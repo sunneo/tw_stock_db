@@ -6,6 +6,7 @@
 
 function register(ipcMain, ctx) {
   const { fs, path } = ctx;
+  const electron = ctx.electron || null;
   // ---------- IPC: raw filesystem（完全不做root範圍檢查，2026-09-15使用者 ----------
   // 明確要求「桌面版不應該有任何限制」——這組handler直接吃使用者/AI給的
   // 絕對路徑，不透過fap_*那套「先授權root、再用相對路徑」的模型，唯一的
@@ -170,6 +171,33 @@ function register(ipcMain, ctx) {
   try { if (ctx.dialog) require("./ci-fetch.js").register(ipcMain, { net: ctx.net, dialog: ctx.dialog, BrowserWindow: ctx.BrowserWindow }); else ipcMain.handle("fa:ci:fetch", async () => needNew("缺少對話框")); }
   catch (e) { console.warn("[main-ext] ci-fetch 載入失敗：", e && e.message); }
 
+  // ---------- 下載：不跳系統層級的「另存新檔」，由程式自己決定存哪裡 ----------
+  // 瀏覽器端的 <a download> 在 Electron 預設會跳 Windows 的另存新檔視窗；這個視窗在部分機器上不會正常顯示或存不下來（檔案不見）。
+  // 這裡接管 will-download：存到 renderer 先指定的資料夾（fa:download:setNext，60 秒內有效），沒指定就存到「下載」資料夾；
+  // 檔名重複會自動加 (1)、(2)；存完（或失敗）用 fa:download:done 通知 renderer 顯示「已存到…」。
+  if (electron && electron.app && electron.session) {
+    const { app, shell, session } = electron; const fsSync = require("fs");
+    let nextDir = null, nextAt = 0;
+    const safeName = (n) => String(n || "download").replace(/[\\/:*?"<>|\x00-\x1f]/g, "_").replace(/^\.+/, "_").slice(0, 180) || "download";
+    const uniquePath = (dir, name) => {
+      const ext = path.extname(name), base = path.basename(name, ext); let p = path.join(dir, name), i = 1;
+      while (fsSync.existsSync(p)) p = path.join(dir, base + " (" + i++ + ")" + ext);
+      return p;
+    };
+    ipcMain.handle("fa:download:defaultDir", async () => app.getPath("downloads"));
+    ipcMain.handle("fa:download:setNext", async (_evt, { dir } = {}) => { nextDir = dir ? path.resolve(rawFsPath(dir)) : null; nextAt = Date.now(); return { ok: true, dir: nextDir || app.getPath("downloads") }; });
+    ipcMain.handle("fa:download:reveal", async (_evt, { file } = {}) => { if (file) shell.showItemInFolder(path.resolve(String(file))); return { ok: true }; });
+    const onWillDownload = (_event, item, wc) => {
+      let dir = (nextDir && Date.now() - nextAt < 60000) ? nextDir : app.getPath("downloads"); nextDir = null;
+      let target;
+      try { fsSync.mkdirSync(dir, { recursive: true }); target = uniquePath(dir, safeName(item.getFilename())); }
+      catch (_) { dir = app.getPath("downloads"); fsSync.mkdirSync(dir, { recursive: true }); target = uniquePath(dir, safeName(item.getFilename())); }
+      item.setSavePath(target);
+      item.once("done", (_e, state) => { try { wc.send("fa:download:done", { state, path: target, name: path.basename(target), size: item.getReceivedBytes() }); } catch (_) { /* 視窗已關 */ } });
+    };
+    const attach = () => { try { session.defaultSession.on("will-download", onWillDownload); } catch (_) { /* 沒有 session（測試環境） */ } };
+    if (app.isReady && app.isReady()) attach(); else app.whenReady().then(attach);
+  }
   return { rawFsPath, detectLikelyBinary };
 }
 

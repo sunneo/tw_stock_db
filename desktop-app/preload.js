@@ -39,6 +39,13 @@ contextBridge.exposeInMainWorld("desktopAPI", {
     confirm: (message) => ipcRenderer.sendSync("fa:sync-confirm", { message }),
     alert: (message) => ipcRenderer.sendSync("fa:sync-alert", { message }),
   },
+  // 下載（見 main-ext.js 的 will-download）：存到哪裡由程式決定，完成後通知畫面
+  downloads: {
+    defaultDir: () => ipcRenderer.invoke("fa:download:defaultDir"),
+    setNext: (dir) => ipcRenderer.invoke("fa:download:setNext", { dir }),
+    reveal: (file) => ipcRenderer.invoke("fa:download:reveal", { file }),
+    onDone: (cb) => { const h = (_e, info) => { try { cb(info); } catch (_) { /* */ } }; ipcRenderer.on("fa:download:done", h); return () => ipcRenderer.removeListener("fa:download:done", h); },
+  },
   fs: {
     stat: (rootId, relPath) => ipcRenderer.invoke("fa:fs:stat", { rootId, relPath }),
     readdir: (rootId, relPath) => ipcRenderer.invoke("fa:fs:readdir", { rootId, relPath }),

@@ -954,6 +954,17 @@ function _faBuildCodingSystemPrompt(env = {}) {
  B3) 定位：讀錯誤位置附近的程式；用repo_ask（誰呼叫它、它做什麼）、explain_code（語法樹＋函式語意）${desktop ? '、fs_grep' : ''}縮小範圍。**說得出「為什麼會這樣」（根因）才往下**，不要只是讓錯誤訊息消失。
  B4) 計畫：coding_task_state action:init存todos（design只寫「根因＋修法」，不用整套Plan Template），通常三項：①加回歸測試（修之前要失敗）②最小的修改 ③跑完整測試。
  B5) 做到：回歸測試由失敗變通過，而且原本通過的測試仍然通過；修好之後說明根因與修法（一兩句），不要只說「已修好」。`;
+    // 版本控制／review／release 常識（兩個平台都給：不需要任何設定，是「知道怎麼做」）；細節桌面版用 ci_guide 的 commit／conflict／release／api／gerrit／github／jenkins 主題查
+    const gitKnowBlock = `**版本控制、Review、Release 常識（要 commit、push、處理衝突或發行時照這個做，不要憑印象）**：
+- commit message：第一行不超過50字、動詞開頭說做了什麼，空一行，內文（每行不超過72字）說為什麼；先看專案自己的風格（git log --oneline -20）；一個commit只做一件事；最後放trailer（Fixes: #123、Change-Id、Signed-off-by）。不要寫「fix bug」「update」這種話；多行訊息寫進檔案再git commit -F。
+- Gerrit：**一律push到refs/for/<目標分支>**（git push origin HEAD:refs/for/main；加%topic=x、%wip），不是直接push分支（會被拒絕）；每個commit訊息要有Change-Id（commit-msg hook產生），amend後再push同一個指令＝新patchset；看review狀態用 ssh -p 29418 user@host gerrit query --format=JSON --current-patch-set --submit-records change:<號碼>，或REST GET /changes/?q=change:<號碼>&o=DETAILED_LABELS&o=SUBMITTABLE（要登入加/a/前綴，回應開頭的 )]}' 要先去掉）；要submit需要Code-Review +2、Verified +1，而且沒有未解決的留言。
+- GitHub：用gh或REST（標頭 Accept: application/vnd.github+json、Authorization: Bearer <token>）；PR用 gh pr create／gh pr checks／gh pr view --comments；Actions失敗用 gh run view <id> --log-failed；token只從環境變數取，不寫進檔案。
+- Jenkins：curl -u 使用者:API token https://主機/job/資料夾/job/名稱/lastBuild/api/json；記錄/consoleText；觸發POST /job/x/buildWithParameters（用密碼認證才需要先GET /crumbIssuer/api/json取crumb）。
+- git衝突：git status找出衝突檔→看懂兩邊各改了什麼→手動合成（不要只挑一邊、不要留<<<<<<<標記）→git add→merge用git commit、rebase用git rebase --continue→跑測試；**rebase時ours是上游、theirs是你自己的commit（跟merge相反）**；做不下去就 git rebase --abort／git merge --abort；lockfile不要手改，取一邊後重新產生；不要用reset --hard解衝突；覆蓋自己的分支只用 --force-with-lease，共用分支絕不force push。
+- GitHub release：更新版本檔與CHANGELOG→CI綠→git tag -a v1.2.3 -m "v1.2.3"→只push這個tag（git push origin v1.2.3）→gh release create v1.2.3 --title "v1.2.3" --notes-file 說明檔（先加--draft確認；預發行加--prerelease；附檔接在最後；也可--generate-notes）；REST是POST /repos/{o}/{r}/releases，附檔POST到uploads.github.com；已公開的版本不要刪tag重推，改發新的PATCH版。
+- push、建立／修改release、在Gerrit／GitHub留言或投票、觸發build都是對外動作：先告訴使用者要做什麼，得到同意再做；絕不force push共用分支。${desktop ? '桌面版：不確定的細節用ci_guide查（topic: commit｜conflict｜release｜api｜gerrit｜github｜jenkins）。' : ''}
+
+`;
     const ciBlock = desktop ? `**CI／Review／Pipeline（任務類型C）**：
 - 看狀態：github_ci（pr看檢查與失敗的job、log做失敗分診）、jenkins（build一次給stage、測試統計與失敗分診）、gerrit（change的blockers＝為什麼還不能submit、comments＝未解決留言、patch）。直接給網址；公開服務不用設定，需要登入時工具會提示去設定「CI/CD 連線」。
 - 處理review留言：gerrit comments逐條用path:line讀檔→改→跑測試→commit→用gerrit push_help的指令（amend後push到refs/for產生新patchset）。**push，以及在Gerrit／GitHub留言、重跑job、觸發build，都是對外動作：使用者沒明講就不要做，做之前先列出要做什麼（工具也會跳確認框）。**
@@ -990,7 +1001,7 @@ ${typeBlock}
 
 ${bugBlock}
 
-${ciBlock}${step2}
+${ciBlock}${gitKnowBlock}${step2}
 
 ${step3}
 
@@ -12900,6 +12911,9 @@ const holder = {};
             '- 標籤（labels）：Code-Review（-2 擋住、-1 不建議、+1 看起來可以、+2 核准）、Verified（-1 CI 失敗、+1 CI 通過；通常只有 CI 帳號能投）。要 submit 需要 Code-Review +2 與 Verified +1（依 project 設定）、沒有 -2、沒有衝突（mergeable）、不是 WIP。blockers 欄位會直接列出缺什麼。',
             '- 未解決的留言（unresolved）也會擋住 submit：逐一處理後在網頁或用 review API 回覆並標成 resolved。',
             '- 衝突：`git fetch origin <分支> && git rebase origin/<分支>`，解完 `git rebase --continue`，再 push 成新 patchset。',
+            '- 看 review 狀態（SSH）：`ssh -p 29418 user@host gerrit query --format=JSON --current-patch-set --submit-records change:12345`——approvals 看 Code-Review／Verified 的投票，submitRecords 的 status 是 OK 才能 submit，NOT_READY 會列出缺哪個 label。',
+            '- 看 review 狀態（REST）：`GET /changes/?q=change:12345&o=DETAILED_LABELS&o=CURRENT_REVISION&o=SUBMITTABLE&o=MESSAGES`；`GET /changes/12345/detail`；行內留言 `GET /changes/12345/comments`；新版的提交需求 `GET /changes/12345?o=SUBMIT_REQUIREMENTS`；投票與回覆 `POST /changes/12345/revisions/current/review`，body `{"message":"…","labels":{"Code-Review":1}}`。',
+            '- 規則：一律 push 到 `refs/for/<目標分支>`，不是 `refs/heads/<分支>`——直接 push 到分支會被拒絕（prohibited by Gerrit）；草稿用 `%wip`、可審查 `%ready`；已經有 Change-Id 的 commit 再 push 同一個指令就是新的 patchset，不會開新 change。',
             '- 搜尋語法：`status:open`、`owner:self`、`project:foo`、`branch:main`、`topic:x`、`change:12345`、`label:Code-Review=-1`、`is:wip`、`age:2d`、`message:"關鍵字"`、`file:path`，用空白連接（且）。',
             '- REST：有登入的網址要加 `/a/` 前綴（HTTP Basic，密碼是 Gerrit 設定頁產生的 HTTP password，不是登入密碼）；回應開頭有 `)]}\'` 防 XSSI，要先去掉。',
             '- CI 通常是 Jenkins／Zuul 帳號在 change 的留言裡貼 build 網址並投 Verified；gerrit action:change 的 ci_links 會抓出來。',
@@ -12925,6 +12939,50 @@ const holder = {};
             '- 節點問題：`Waiting for next available executor`、`Agent went offline`、`Cannot contact <節點>` 是基礎設施問題，重試或找管理員，不是程式錯。',
             '- Replay：Pipeline build 頁面可以修改 Jenkinsfile 後重跑一次（不用 commit），適合試 pipeline 本身的修改；正式修改仍要 commit 進 Jenkinsfile。',
             '- 好的 Jenkinsfile：固定 agent（label／docker）、options 裡設 timeout 與 buildDiscarder、測試後 junit 發佈報告、post 區塊通知與清理、機密只用 credentials()／withCredentials。pipeline_inspect action:lint 會檢查這些。',
+        ].join('\n'),
+        commit: [
+            '【commit message 怎麼寫、commit 怎麼安排】',
+            '- 先看專案自己的習慣：`git log --oneline -20`、`git log -5 --format=%B`，照它的風格（語言、前綴、標題長度），專案有 CONTRIBUTING／commit 規範就以它為準。',
+            '- 通用格式：第一行（標題）不超過 50 字，用「動詞開頭」說做了什麼（Fix null check in parser；中文專案寫「修正…」「新增…」），結尾不加句號；空一行；內文每行不超過 72 字，說「為什麼要改、影響什麼、有什麼取捨」，不要重複 diff 看得到的內容。',
+            '- Conventional Commits（專案有用才用）：`feat(scope): …`、`fix:`、`docs:`、`refactor:`、`test:`、`perf:`、`ci:`、`chore:`；不相容的變更用 `feat!:` 或在內文寫 `BREAKING CHANGE: …`。',
+            '- Trailer（放在最後，與內文空一行）：`Fixes: #123`／`Closes #123`（GitHub 合併後自動關閉 issue）、`Bug: 12345`、`Change-Id: I<40 hex>`（Gerrit：由 commit-msg hook 產生，不要手寫、不要刪；amend 時保留）、`Signed-off-by: 名字 <email>`（`git commit -s`，DCO 專案要求）、`Co-authored-by: 名字 <email>`。Reviewed-by／Tested-by 由別人加，不要自己加。',
+            '- 一個 commit 只做一件事，而且單獨可以編譯、通過測試：重構與功能分開、純格式化另開 commit、測試跟著它測的改動放同一個 commit（或緊接在後）。',
+            '- 一系列相關的修改（patch series）：依相依順序排；每一個 commit 都要能單獨通過；整理歷史用 `git rebase -i`（只對還沒 push 的、或 Gerrit 的 patchset 做，共用分支不要改歷史）；小修正用 `git commit --fixup <sha>` 再 `git rebase -i --autosquash`。',
+            '- 壞例子：「fix bug」「update」「WIP」「修改」；好例子：標題「Fix off-by-one when reading the last chunk」＋內文講根因與修法。',
+            '- 多行訊息用檔案最不會出錯：寫成 msg.txt 再 `git commit -F msg.txt`（避免引號與換行跳脫問題）；改最後一個 commit：`git commit --amend`；沒有改內容只想改訊息：`git commit --amend` 只編輯訊息。',
+            '- 絕不把機密（token、密碼、私鑰）寫進 commit；commit 前 `git diff --cached` 看一遍；不要用 `git add -A` 把無關的檔案（建置產物、.env）一起加進去。',
+        ].join('\n'),
+        conflict: [
+            '【Git 衝突怎麼處理】',
+            '- 先看狀況：`git status`（both modified＝衝突）、`git diff --name-only --diff-filter=U` 列出衝突的檔案；知道自己在做什麼：merge、rebase（`.git/rebase-merge` 存在）、cherry-pick、還是 am。',
+            '- 衝突標記：`<<<<<<< HEAD`（目前這一邊）…`=======`…`>>>>>>> 對方`。**rebase 時 ours／theirs 是反的**：ours＝你正在 rebase 到的上游分支，theirs＝你自己的 commit；merge 時才是 ours＝你目前的分支。',
+            '- 處理步驟：①弄懂兩邊各改了什麼、為什麼（`git log --merge -p <檔>`、`git log HEAD..origin/<分支> -- <檔>`、`git diff <base>...`）；②手動合成「兩邊的意圖都保留」的結果——不是只挑一邊，更不能留標記；③`grep -rn "^<<<<<<<\\|^>>>>>>>" .` 確認沒有殘留標記；④`git add <檔>`；⑤merge 用 `git commit`，rebase 用 `git rebase --continue`，cherry-pick 用 `git cherry-pick --continue`，am 用 `git am --continue`；⑥**一定要跑建置與測試**：衝突解錯最常見的後果是「能編譯但行為不對」。',
+            '- 想放棄回到原點：`git merge --abort`、`git rebase --abort`、`git cherry-pick --abort`、`git am --abort`——這些不會丟掉你的工作；不要用 `git reset --hard` 來「解決」衝突。',
+            '- 確定要整個檔案選一邊：`git checkout --ours -- <檔>` 或 `--theirs`（注意 rebase 時意義相反）；合併整個分支時的 `-X ours／-X theirs` 只在你完全確定時才用。',
+            '- 特殊檔案：lockfile（package-lock.json、yarn.lock、go.sum、Cargo.lock、poetry.lock）不要手改衝突，取其中一邊再重新產生（`npm install`、`go mod tidy`、`cargo update -p …`）；產生出來的檔案重新產生；二進位檔只能選一邊；「一邊改名、一邊修改」的衝突用 `git status` 看 renamed，把修改套到新檔名。',
+            '- 預防：常 `git fetch` 後 `git rebase origin/<分支>`；commit 要小；大範圍搬移或改名先跟團隊講；`git config rerere.enabled true` 讓同一個衝突下次自動套用上次的解法。',
+            '- 套別人的 patch 衝突：`git apply --3way x.patch`、`git am --3way x.patch`；失敗留下的 .rej 檔看哪些 hunk 沒套上，先弄懂那段程式在目標版本變成什麼樣子再手動改，不要硬套。',
+            '- 推送：rebase 之後歷史改了，要覆蓋自己的分支才用 `git push --force-with-lease`（不是 `--force`），而且只對自己的分支；共用分支與 main 絕不 force push。Gerrit 不用 force，amend 後 push 到 refs/for 就是新 patchset。',
+        ].join('\n'),
+        release: [
+            '【在 GitHub 上發行版本（release）】',
+            '- 版本號用語意化版本 `vMAJOR.MINOR.PATCH`：相容的修 bug＝PATCH、相容的新功能＝MINOR、不相容的變更＝MAJOR；預發行 `v2.0.0-rc.1`、`v2.0.0-beta.2`。',
+            '- 流程：①更新版本檔（package.json／pyproject／Cargo.toml…）與 CHANGELOG（Keep a Changelog：Added／Changed／Fixed／Removed）並 commit；②確認 CI 是綠的；③在要發行的 commit 上建 annotated tag：`git tag -a v1.4.2 -m "v1.4.2"`（要簽名用 `-s`）；④只推這個 tag：`git push origin v1.4.2`（不要 `git push --tags` 把所有 tag 都推出去）；⑤建立 release。',
+            '- gh 指令：`gh release create v1.4.2 --title "v1.4.2" --notes-file CHANGELOG-1.4.2.md`（也可 `--notes "文字"`，或 `--generate-notes` 從合併的 PR 自動產生）；先用 `--draft` 建草稿確認再發佈；預發行加 `--prerelease`；`--verify-tag` 確保 tag 已經存在；附檔直接接在後面 `gh release create v1.4.2 dist/app.zip dist/app.zip.sha256`；之後補檔 `gh release upload v1.4.2 file --clobber`；其他：`gh release list`、`gh release view v1.4.2`、`gh release edit v1.4.2 --draft=false`、`gh release delete v1.4.2 --cleanup-tag`。',
+            '- REST API：`POST /repos/{owner}/{repo}/releases`，body `{"tag_name":"v1.4.2","target_commitish":"main","name":"v1.4.2","body":"說明","draft":false,"prerelease":false,"generate_release_notes":true}`；上傳附檔：`POST https://uploads.github.com/repos/{owner}/{repo}/releases/{release_id}/assets?name=app.zip`，標頭 `Content-Type: application/zip`，`curl --data-binary @app.zip`；token 要有 contents:write 權限。',
+            '- 由 CI 自動發行：workflow 用 `on: push: tags: ["v*"]` 觸發，job 設 `permissions: contents: write`，最後一步 `gh release create "$GITHUB_REF_NAME" --generate-notes dist/*`（或 softprops/action-gh-release）；二進位產物附 sha256 檢查碼（`sha256sum dist/* > SHA256SUMS`）。',
+            '- 發行前檢查：版本檔、tag、CHANGELOG 三者版本一致；`git rev-parse v1.4.2^{commit}` 確認 tag 指到正確的 commit；CI 綠；沒有機密或除錯用的東西被打包；release notes 寫「使用者看得懂的變更」，不是 commit 清單。',
+            '- 出錯怎麼辦：還是草稿就直接修；已經公開的版本不要刪 tag 重推（會讓別人拿到不一致的內容），改發新的 PATCH 版；不小心推錯 tag 且還沒人用，`git push origin :refs/tags/v1.4.2` 刪除遠端 tag 後重來。',
+            '- 推 tag、建立或修改 release 都是對外動作：先告訴使用者要發哪個版本、指到哪個 commit、附哪些檔案，得到同意再做。',
+        ].join('\n'),
+        api: [
+            '【用指令呼叫 GitHub／Jenkins／Gerrit 的 API】',
+            '- 共通：GET 是讀取可以直接做；POST／PUT／PATCH／DELETE 是寫入，先告訴使用者要做什麼；`curl -sS -w "\\n%{http_code}\\n"` 看狀態碼；401＝認證錯、403＝沒權限或流量用完（看 x-ratelimit-remaining）、404 也可能是「看不到私有資源」。token 從環境變數或使用者給的值取，不寫進檔案、不印出來、不放進 commit。',
+            '- GitHub REST：標頭 `Accept: application/vnd.github+json`、`Authorization: Bearer $GITHUB_TOKEN`、`X-GitHub-Api-Version: 2022-11-28`。`curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" https://api.github.com/repos/{o}/{r}/pulls/{n}`。常用：`/pulls/{n}/files`、`/pulls/{n}/comments`（行內留言）、`/commits/{sha}/check-runs`、`/commits/{sha}/status`、`/actions/runs/{id}/jobs`、`/actions/jobs/{id}/logs`（回 302 到下載網址，curl 加 -L）、`POST /issues/{n}/comments`、`POST /pulls`（title、head、base、body）。分頁用 `?per_page=100&page=N` 並看 Link 標頭。有 gh 就優先用 `gh api <路徑>`（自己帶認證）。',
+            '- Jenkins：`curl -sS -u "$JENKINS_USER:$JENKINS_API_TOKEN" "$JENKINS/job/<資料夾>/job/<job>/lastBuild/api/json?tree=result,building,number,url"`（巢狀資料夾每層都要 /job/）；記錄原文 `/consoleText`；測試 `/lastBuild/testReport/api/json`；觸發 `POST /job/x/build` 或 `POST /job/x/buildWithParameters?KEY=value`（回 201 與 Location＝queue 項目，輪詢 `/queue/item/<id>/api/json` 取得 executable.number）；停止 `POST /job/x/<n>/stop`。認證用「使用者名稱＋API token」（個人設定頁產生）；用密碼才需要 crumb：`GET /crumbIssuer/api/json` 取得後帶 `Jenkins-Crumb: <值>`。',
+            '- Gerrit REST：登入的請求網址加 `/a/` 前綴、HTTP Basic（密碼是設定頁的 HTTP password）；回應開頭有 `)]}\'` 要先去掉再解析 JSON。例：`curl -sS -u user:httppass "https://host/a/changes/?q=status:open+owner:self&n=25"`。看 review 狀態、留言、投票見 ci_guide topic gerrit。',
+            '- Gerrit SSH：`ssh -p 29418 <user>@<host> gerrit query --format=JSON --current-patch-set --submit-records status:open project:foo`；`gerrit review <change>,<patchset> --code-review +1 --message "文字"`；`gerrit ls-projects`。',
+            '- 本機有 gh／git／curl 就用它們（run_command），沒有的才用 github_ci／jenkins／gerrit 工具或直接組 curl。',
         ].join('\n'),
         patch: [
             '【準備與上 patch】',
@@ -17820,7 +17878,7 @@ const ADVANCED_SETTINGS_GROUPS = {
     desktop: { label: '桌面程式/單機', cats: [], visible: false },
 };
 // 工程模式（Configure 視窗左下角的勾選）沒打勾時藏起來的設定頁：一般使用者不需要動、預設值就夠用的那些
-const ADVANCED_ENGINEERING_CATS = new Set(['llm-sampling', 'llm-debug', 'subagent', 'voice', 'multimedia', 'youtube', 'offline-trainer', 'offline-models', 'domains', 'functions', 'terminal', 'limits', 'ci-connections']);
+const ADVANCED_ENGINEERING_CATS = new Set(['git', 'llm-sampling', 'llm-debug', 'subagent', 'voice', 'multimedia', 'youtube', 'offline-trainer', 'offline-models', 'domains', 'functions', 'terminal', 'limits', 'ci-connections']);
 
 // tw_stock_db客製: 2026-09-20——Chrome擴充功能檔案的後備來源（網頁部署目錄抓不到、或桌面版file://時使用）。
 // tw_stock_db客製: 2026-09-20——啟用瀏覽器控制時，這些工具會被注入「所有」子agent（程式設計/研究/網路搜尋…），
@@ -31982,8 +32040,7 @@ ${fnData.code}
     }
     // 設定「索引自動存回專案資料夾」：off／notes（只存說明）／all（說明＋索引資料）。使用者已經選了自動，所以不再逐次詢問
     async _repoIndexAutoSave(key) {
-        const mode = this.advancedSettings.repoIndexAutoSave || 'off';
-        if (mode === 'off') return null;
+        const mode = 'all'; // 一律把說明與索引資料存回專案資料夾
         try { return await this._repoIndexSaveToProject(key, { include_map: mode === 'all', assume_yes: true }); } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
     }
     // ===== 說明庫 notes.sqlite3（DESIGN.project-index.md §17.2）=====
@@ -33449,7 +33506,7 @@ ${fnData.code}
         root.style.cssText = 'font-size:13px; line-height:1.5;';
         this._riPaneRoot = root;
         this._riPaneRegistered = true;
-        this.registerAdvancedSettingsTab('ai', 'project-index', '專案索引（程式碼問答）', root);
+        this.registerAdvancedSettingsTab('fileaccess', 'project-index', '專案索引（程式碼問答）', root);
         const refresh = () => this._riRenderPane();
         root.addEventListener('input', (ev) => { if (ev.target && ev.target.id === 'ai-ri-new') this._riNewValue = ev.target.value; });
         root.addEventListener('change', (ev) => {
@@ -33465,9 +33522,9 @@ ${fnData.code}
             const act = b.dataset.ri, rootKey = b.dataset.root || '';
             const say = (m) => { this._pushAssistantMessage(m, null); this._persistChatHistory(); this._renderMessageHistory(); };
             try {
-                if (act === 'start') { const r = await this._repoIndexStart(rootKey, {}); if (r.declined) say('已取消。'); }
+                if (act === 'start') { const r = await this._repoIndexStart(rootKey, { approved: true }); if (r.declined) say('已取消。'); }
                 else if (act === 'browse') { const inp0 = root.querySelector('#ai-ri-new'); const pick = await this._repoPickFolder(inp0 && inp0.value && inp0.value.indexOf('fap:') !== 0 ? inp0.value : undefined); if (pick && pick.error) say('⚠️ ' + pick.error); else if (pick && pick.root) { this._riNewValue = pick.root; const inpNow = root.querySelector('#ai-ri-new') || inp0; if (inpNow) inpNow.value = pick.root; if (pick.created) say('📁 已授權資料夾，AI 之後可以用 ' + pick.root + ' 存取。按「建立索引」開始。'); return; } else return; }
-                else if (act === 'add') { const inp = root.querySelector('#ai-ri-new'); const p = this._repoMapKey(inp ? inp.value : ''); if (!p) return; const r = await this._repoIndexStart(p, {}); if (r.declined) say('已取消。'); }
+                else if (act === 'add') { const inp = root.querySelector('#ai-ri-new'); const p = this._repoMapKey(inp ? inp.value : ''); if (!p) return; const r = await this._repoIndexStart(p, { approved: true }); if (r.declined) say('已取消。'); }
                 else if (act === 'stop') this._repoIndexStop(rootKey);
                 else if (act === 'view') { const r = await this._aidocViewerOpen(rootKey); if (!r.ok) say('⚠️ ' + r.error); }
                 else if (act === 'sqlite' || act === 'qa') { b.disabled = true; b.textContent = '產生中…'; try { await this._codeExport(rootKey, act === 'sqlite' ? 'sqlite_html' : 'qa_html', { deliver: true }); } catch (e) { say('⚠️ 匯出失敗：' + String((e && e.message) || e)); } }
@@ -33496,6 +33553,7 @@ ${fnData.code}
         const isDesk = typeof window !== 'undefined' && !!(window.desktopAPI && window.desktopAPI.roots && window.desktopAPI.roots.browse);
         const projects = [];
         try { for (const r of await this.repoMapCache.getAll()) if (r.kind === 'repo_map' && String(r.id).indexOf('map:') === 0) projects.push({ root: String(r.id).slice(4), size: r.sizeBytes || (r.blob && r.blob.size) || 0 }); } catch (_) {}
+        try { if (this._repoJobs) for (const k of this._repoJobs.keys()) if (!projects.some((p) => p.root === k)) projects.push({ root: k, size: 0 }); } catch (_) {} // 建立中的工作也要列出來
         const rows = [];
         for (const p of projects) {
             const job = this._repoJobs && this._repoJobs.get(p.root);
@@ -33516,7 +33574,7 @@ ${fnData.code}
             <div style="display:flex; gap:14px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
                 <label title="最多分析幾個原始碼檔，超過就停下來（可以調高後接續）。0＝不限（預設）">檔案數上限（0＝不限） <input type="number" min="0" step="1000" value="${S.repoIndexMaxFiles}" data-ri-set="repoIndexMaxFiles" style="${inp} width:110px;"></label>
                 <label title="索引（地圖）資料的大小上限，超過就停下來。0＝不限（預設）">索引大小上限（MB）（0＝不限） <input type="number" min="0" step="10" value="${S.repoIndexMaxMb}" data-ri-set="repoIndexMaxMb" style="${inp} width:90px;"></label></div>
-            <div style="margin-bottom:8px;"><label title="索引完成、深入探討完成後，自動把說明（和可選的索引資料）存進專案資料夾的 .floating-assistant/index/，不同人拿同一份專案可以接著延伸">索引自動存回專案資料夾 <select data-ri-sel="repoIndexAutoSave" style="${inp}"><option value="off" ${(S.repoIndexAutoSave || 'off') === 'off' ? 'selected' : ''}>否</option><option value="notes" ${S.repoIndexAutoSave === 'notes' ? 'selected' : ''}>是，只存說明</option><option value="all" ${S.repoIndexAutoSave === 'all' ? 'selected' : ''}>是，說明＋索引資料</option></select></label><label style="margin-left:14px;" title="「離線更新說明」：事實一律來自語法樹與基礎函式語意；選「用模型潤飾」會再用離線文字模型把沒有註解的函式與檔案寫成一句話（第一次會靜默下載模型）">離線更新說明 <select data-ri-sel="repoExplainModel" style="${inp}"><option value="on" ${(S.repoExplainModel || 'on') !== 'off' ? 'selected' : ''}>程式＋離線模型潤飾</option><option value="off" ${S.repoExplainModel === 'off' ? 'selected' : ''}>只用程式（不用模型）</option></select></label><input type="file" id="ai-ri-import-file" accept=".json,application/json" style="display:none;"></div>
+            <div style="margin-bottom:8px; display:none;"><label title="索引完成、深入探討完成後，自動把說明（和可選的索引資料）存進專案資料夾的 .floating-assistant/index/，不同人拿同一份專案可以接著延伸">索引自動存回專案資料夾 <select data-ri-sel="repoIndexAutoSave" style="${inp}"><option value="off" ${(S.repoIndexAutoSave || 'off') === 'off' ? 'selected' : ''}>否</option><option value="notes" ${S.repoIndexAutoSave === 'notes' ? 'selected' : ''}>是，只存說明</option><option value="all" ${S.repoIndexAutoSave === 'all' ? 'selected' : ''}>是，說明＋索引資料</option></select></label><label style="margin-left:14px;" title="「離線更新說明」：事實一律來自語法樹與基礎函式語意；選「用模型潤飾」會再用離線文字模型把沒有註解的函式與檔案寫成一句話（第一次會靜默下載模型）">離線更新說明 <select data-ri-sel="repoExplainModel" style="${inp}"><option value="on" ${(S.repoExplainModel || 'on') !== 'off' ? 'selected' : ''}>程式＋離線模型潤飾</option><option value="off" ${S.repoExplainModel === 'off' ? 'selected' : ''}>只用程式（不用模型）</option></select></label><input type="file" id="ai-ri-import-file" accept=".json,application/json" style="display:none;"></div>
             <div style="display:flex; gap:6px; margin-bottom:6px;"><button style="${btn}" data-ri="browse" title="${isDesk ? '選擇專案資料夾（直接使用路徑）' : '選擇專案資料夾（選完會自動授權成 fap）'}">📁 瀏覽…</button><input id="ai-ri-new" placeholder="${isDesk ? '專案資料夾：按左邊「瀏覽」選擇，或貼上絕對路徑' : '按左邊「瀏覽」選資料夾（會自動授權成 fap），或輸入 fap:名稱'}" value="${esc(this._riNewValue != null ? this._riNewValue : keep0)}" style="${inp} flex:1;"><button style="${btn}" data-ri="add">建立索引</button></div>
             ${rows.join('') || '<div style="color:#94a3b8;">還沒有建立過索引的專案。</div>'}`;
     }
@@ -33836,7 +33894,7 @@ ${fnData.code}
                 }
             } catch (_) { /* 沒有就照原本流程 */ }
         }
-        if (!(known && known.index_approved)) {
+        if (!(known && known.index_approved) && !(parsed && parsed.approved)) { // 從專案索引頁按「建立索引」（approved）就是使用者明確的要求，不再重複問
             const st = known ? this._repoMapStats(known) : null;
             const ans = await this.requestUserForm({
                 title: '🗂️ 要為整個專案建立完整索引嗎？',
@@ -33850,6 +33908,7 @@ ${fnData.code}
             const m = (await this._repoMapLoad(key)) || this._repoMapEmpty(key);
             m.index_approved = true;
             this._repoJobMaps.set(key, m);
+            try { await this._repoMapSave(m); } catch (_) { /* 存不下不影響開始建立；之後的定期存檔會再試 */ } // 一開始就存：專案索引頁的列表（讀已存的地圖）立刻看得到這個專案
             return m;
         });
         const exp = [].concat(parsed.exports || parsed.export || []).map(String).filter((x) => /^(sqlite_html|qa_html)$/.test(x));
@@ -33971,29 +34030,17 @@ ${fnData.code}
     // 網頁版的 fap 專案：索引也是專案資料夾裡的 SQLite 檔。建庫在 OPFS（同步存取檔，真正的隨機寫入），完成後串流複製進專案資料夾；查詢用唯讀 VFS 直接讀專案資料夾裡的檔案（區塊快取，記憶體與檔案大小無關）
     _idxWebOk(key) { return !this._sqlDesktop() && /^fap:/i.test(this._repoMapKey(key)) && typeof FaWasmEngine !== 'undefined' && FaWasmEngine.supported() && typeof navigator !== 'undefined' && !!(navigator.storage && navigator.storage.getDirectory); }
     // 這個環境「能不能」用 SQLite 索引（不管使用者同不同意寫進專案資料夾）
-    _idxCapable(key) { return (this.advancedSettings.repoIndexSql || 'auto') !== 'off' && typeof FaIdxSql !== 'undefined' && ((this._repoMapIsAbsPath(key) && this._sqlDesktop()) || this._idxWebOk(key)); }
+    _idxCapable(key) { return typeof FaIdxSql !== 'undefined' && ((this._repoMapIsAbsPath(key) && this._sqlDesktop()) || this._idxWebOk(key)); }
     // 使用者對這個專案「要不要寫進專案資料夾」的決定：'yes'／'no'／undefined（還沒問過）
     _idxDiskDecision(key) { const d = this.advancedSettings.repoIndexDisk || {}; return d[this._repoMapKey(key)]; }
     _idxSetDiskDecision(key, v) { if (!this.advancedSettings.repoIndexDisk) this.advancedSettings.repoIndexDisk = {}; const k = this._repoMapKey(key); if (v === 'yes' || v === 'no') this.advancedSettings.repoIndexDisk[k] = v; else delete this.advancedSettings.repoIndexDisk[k]; this._saveAdvancedSettings(); }
     // 要用 SQLite 索引＝環境可以、而且使用者沒有選「不儲存」。選了「不儲存」就退回記憶體索引（有保護上限）
-    _idxEligible(key) { return this._idxCapable(key) && this._idxDiskDecision(key) !== 'no'; }
+    _idxEligible(key) { return this._idxCapable(key); } // 2026-10-14：索引一律寫進專案資料夾（不再有「不儲存」的選項）
     // 第一次對這個專案建索引：說清楚索引要寫到哪裡再問（設計見 DESIGN.project-index.md §17.1）。回傳 'yes'／'no'；資料夾裡本來就有索引檔視同已同意。
     async _repoIndexAskDisk(key) {
-        const cur = this._idxDiskDecision(key); if (cur === 'yes' || cur === 'no') return cur;
-        if (!this._idxCapable(key)) return 'no';
-        if (await this._idxHas(key)) { this._idxSetDiskDecision(key, 'yes'); return 'yes'; }
-        let ans = null;
-        try {
-            ans = await this.requestUserForm({
-                title: '💾 要把專案索引存在專案資料夾裡嗎？',
-                description: `專案索引會儲存在你專案資料夾底下的隱藏資料夾「${this._repoMapKey(key)}/.floating-assistant/index/」：所有符號、巨集、說明都寫在那裡，所以索引不再受記憶體上限限制，下次開啟也能直接接上、換電腦也帶得走。\n\n這需要該資料夾的寫入權限；只會寫進這個隱藏資料夾，不會改動你的原始碼，資料夾自帶 .gitignore（內容 *），不會被 git 加入。\n\n選「不儲存」：索引只留在這個瀏覽器／應用程式裡，並啟用保護上限（每個檔案只保留部分定義），之後可以在「設定 → AI → 專案索引」改變心意。`,
-                choices: ['儲存到專案資料夾', '不儲存（啟用保護上限）'],
-            });
-        } catch (_) { ans = null; }
-        const yes = !!(ans && ans.confirmed && ans.answer === '儲存到專案資料夾');
-        if (!ans || !ans.confirmed) return 'no'; // 關掉對話框＝這次不寫，也不記成永久決定（下次建索引再問一次）
-        this._idxSetDiskDecision(key, yes ? 'yes' : 'no');
-        return yes ? 'yes' : 'no';
+        // 2026-10-14：索引一律寫進專案資料夾，不再詢問（也沒有「不儲存」）；環境不支援（沒有寫入權限的網頁版、沒有 SQLite 引擎）才回 'no'
+        if (this._idxCapable(key)) { this._idxSetDiskDecision(key, 'yes'); return 'yes'; }
+        return 'no';
     }
     // 專案資料夾裡放索引的那一層（.floating-assistant/index）的 handle；create＝沒有就建（同時在 .floating-assistant 放 .gitignore）
     async _idxWebDir(key, create) {
@@ -39608,6 +39655,8 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     // 就沒辦法真正恢復（相當於那次工具呼叫直接視為使用者沒有回應），比起
     // 硬做一套可持久化的表單狀態機，這裡選擇不過度工程化。
     requestUserForm(options = {}) {
+        // Configure（設定）視窗開著時，聊天裡的卡片會被視窗擋住、使用者看不到，等他回到對話才處理就太遲了：直接在最上層跳出對話框
+        if (this._isModalOpen(document.getElementById('ai-advanced-modal'))) return new Promise((resolve) => this._showUserFormDialog(options, resolve));
         // 背景對話（使用者已切走）的AI想確認事情：表單是畫在目前對話的畫面上的，不能憑空蓋在別的對話上，
         // 也不能自動當成使用者同意。標成「等你確認」，等使用者切回這個對話再顯示表單。
         if (!this._chatIsVisible()) {
@@ -39622,6 +39671,73 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         return this._requestUserFormNow(options);
     }
 
+    // 桌面版的下載：點了先跳程式自己的「存到哪裡」對話框（不是系統的另存新檔），選好才真的下載；存完用右下角提示告訴使用者存在哪
+    _wireDesktopDownloadLink(linkEl, filename) {
+        const dl = typeof window !== 'undefined' && window.desktopAPI && window.desktopAPI.downloads; if (!dl) return;
+        linkEl.addEventListener('click', async (e) => {
+            if (linkEl._faPassThrough) { linkEl._faPassThrough = false; return; }
+            e.preventDefault();
+            const dir = await this._pickDownloadDir(filename); if (!dir) return;
+            try { await dl.setNext(dir); } catch (_) { /* 沒設成功就存到預設的下載資料夾 */ }
+            linkEl._faPassThrough = true; linkEl.click();
+        });
+    }
+    async _pickDownloadDir(filename) {
+        const dl = window.desktopAPI.downloads; let def = ''; try { def = await dl.defaultDir(); } catch (_) { /* */ }
+        let last = ''; try { last = localStorage.getItem('fa_last_download_dir') || ''; } catch (_) { /* */ }
+        const base = last || def, short = (p) => (p.length > 46 ? '…' + p.slice(-45) : p);
+        const choices = base ? ['存到 ' + short(base), '選擇其他資料夾…', '取消'] : ['選擇資料夾…', '取消'];
+        const ans = await new Promise((resolve) => this._showUserFormDialog({ title: '📥 下載「' + filename + '」', description: base ? '要存到哪裡？\n' + base : '要存到哪裡？', choices }, resolve));
+        if (!ans || !ans.confirmed || /^取消$/.test(ans.answer)) return null;
+        let dir = base;
+        if (!/^存到 /.test(ans.answer)) { // 用程式自己的資料夾瀏覽視窗選
+            let picked = null; try { picked = await window.desktopAPI.roots.browse(base || undefined); } catch (_) { picked = null; }
+            if (!picked) return null; dir = picked;
+        }
+        try { localStorage.setItem('fa_last_download_dir', dir); } catch (_) { /* */ }
+        return dir;
+    }
+    _wireDownloadToast() {
+        const dl = typeof window !== 'undefined' && window.desktopAPI && window.desktopAPI.downloads; if (!dl || this._dlToastWired) return; this._dlToastWired = true;
+        dl.onDone((info) => {
+            const ok = info && info.state === 'completed'; const t = document.createElement('div');
+            t.style.cssText = 'position:fixed; right:16px; bottom:16px; z-index:2147483100; max-width:min(520px,92vw); padding:10px 14px; border-radius:8px; background:#1f2937; color:#f3f4f6; border:1px solid ' + (ok ? '#76b900' : '#f87171') + '; box-shadow:0 8px 30px rgba(0,0,0,.45); font-size:13px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;';
+            const msg = document.createElement('span'); msg.style.cssText = 'flex:1; min-width:160px; word-break:break-all;'; msg.textContent = ok ? '✅ 已存到 ' + info.path : '❌ 下載失敗（' + ((info && info.state) || '未知') + '）：' + ((info && info.name) || ''); t.appendChild(msg);
+            if (ok) { const b = document.createElement('button'); b.type = 'button'; b.textContent = '開啟資料夾'; b.style.cssText = 'padding:3px 10px; border-radius:6px; cursor:pointer; border:1px solid #76b900; background:transparent; color:#a3e635;'; b.onclick = () => { try { dl.reveal(info.path); } catch (_) { /* */ } t.remove(); }; t.appendChild(b); }
+            const x = document.createElement('button'); x.type = 'button'; x.textContent = '×'; x.style.cssText = 'padding:0 8px; cursor:pointer; border:none; background:transparent; color:inherit; font-size:16px;'; x.onclick = () => t.remove(); t.appendChild(x);
+            document.body.appendChild(t); setTimeout(() => { try { t.remove(); } catch (_) { /* */ } }, 15000);
+        });
+    }
+    // 程式自己畫的對話框（DOM，蓋在 Configure 視窗之上；不是 window.confirm／系統對話框）。結果的形狀跟聊天卡片完全一樣：
+    //   choices → { confirmed, answer }；fields → { confirmed, values }；都沒有 → { confirmed }。Esc／點背景＝取消。
+    _showUserFormDialog(options, resolve) {
+        const { title = '🧭 AI 想確認一下', description = '', choices = null, fields = null } = options || {};
+        const esc = (s) => this._escapeHtml(String(s)), pal = this._getThemePalette();
+        const ov = document.createElement('div'); ov.className = 'ai-userform-overlay';
+        ov.style.cssText = 'position:fixed; inset:0; z-index:2147483200; background:rgba(0,0,0,.6); display:flex; align-items:center; justify-content:center; padding:16px; box-sizing:border-box;';
+        const box = document.createElement('div'); box.setAttribute('role', 'dialog'); box.setAttribute('aria-modal', 'true');
+        box.style.cssText = 'width:min(520px,100%); max-height:90vh; overflow:auto; box-sizing:border-box; border-radius:12px; padding:18px 20px; background:' + (pal.chatBg || '#111827') + '; color:' + (pal.chatText || '#e5e7eb') + '; border:1px solid ' + (pal.windowBorder || '#334155') + '; box-shadow:0 18px 50px rgba(0,0,0,.5); font-size:14px; line-height:1.5;';
+        const btn = 'padding:6px 14px; border-radius:6px; cursor:pointer; border:1px solid ' + (pal.inputBorder || '#475569') + '; background:transparent; color:inherit; font-size:13px;', primary = 'padding:6px 14px; border-radius:6px; cursor:pointer; border:none; background:#76b900; color:#fff; font-weight:bold; font-size:13px;';
+        let body = '';
+        if (Array.isArray(choices) && choices.length) body = '<div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; justify-content:flex-end;">' + choices.map((c, i) => '<button type="button" data-choice="' + i + '" style="' + (i === 0 ? primary : btn) + '">' + esc(c) + '</button>').join('') + '</div>';
+        else if (Array.isArray(fields) && fields.length) body = fields.map((f) => '<label style="display:block; margin:8px 0; font-size:13px;"><span style="opacity:.8;">' + esc(f.label || f.key) + '</span><input type="text" data-field="' + esc(f.key) + '" value="' + esc(f.value == null ? '' : f.value) + '" placeholder="' + esc(f.placeholder || '') + '" style="width:100%; box-sizing:border-box; padding:6px 8px; margin-top:3px; border-radius:6px; border:1px solid ' + (pal.inputBorder || '#475569') + '; background:transparent; color:inherit;"></label>').join('') + '<div style="margin-top:14px; display:flex; gap:8px; justify-content:flex-end;"><button type="button" data-act="cancel" style="' + btn + '">取消</button><button type="button" data-act="submit" style="' + primary + '">送出</button></div>';
+        else body = '<div style="margin-top:14px; display:flex; gap:8px; justify-content:flex-end;"><button type="button" data-act="no" style="' + btn + '">取消</button><button type="button" data-act="yes" style="' + primary + '">確定</button></div>';
+        box.innerHTML = '<div style="font-weight:bold; font-size:16px; margin-bottom:6px;">' + esc(title) + '</div>' + (description ? '<div style="opacity:.9; white-space:pre-wrap; font-size:13px;">' + esc(description) + '</div>' : '') + body;
+        ov.appendChild(box); document.body.appendChild(ov);
+        let done = false; const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); finish(fields ? { confirmed: false } : (choices ? { confirmed: false } : { confirmed: false })); } };
+        const finish = (r) => { if (done) return; done = true; document.removeEventListener('keydown', onKey, true); ov.remove(); resolve(r); };
+        document.addEventListener('keydown', onKey, true);
+        ov.addEventListener('mousedown', (e) => { if (e.target === ov) ov._down = true; else ov._down = false; });
+        ov.addEventListener('click', (e) => { if (e.target === ov && ov._down) finish({ confirmed: false }); });
+        box.addEventListener('click', (e) => {
+            const b = e.target.closest('button'); if (!b) return;
+            if (b.dataset.choice != null) finish({ confirmed: true, answer: choices[Number(b.dataset.choice)] });
+            else if (b.dataset.act === 'submit') { const values = {}; box.querySelectorAll('[data-field]').forEach((i) => { values[i.dataset.field] = i.value; }); finish({ confirmed: true, values }); }
+            else if (b.dataset.act === 'yes') finish({ confirmed: true });
+            else if (b.dataset.act === 'cancel' || b.dataset.act === 'no') finish({ confirmed: false });
+        });
+        const first = box.querySelector('button, input'); if (first) setTimeout(() => first.focus(), 0);
+    }
     _requestUserFormNow(options = {}) {
         return new Promise((resolve) => this._showUserForm(options, resolve));
     }
@@ -57602,9 +57718,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     _omSilent() { return !(this.advancedSettings && this.advancedSettings.offlineSilentDownload === false); }
     async _omAskDownload(title, description, yesLabel) {
         if (this._omSilent()) { try { this._log('⬇️ 離線模型靜默下載：' + String(title).replace(/^要下載/, '').replace(/嗎？$/, '')); } catch (_) { /* */ } return true; }
-        const modal = document.getElementById('ai-advanced-modal');
-        if (modal && this._isModalOpen(modal)) return window.confirm(title + '\n\n' + description);
-        const ans = await this.requestUserForm({ title, description, choices: [yesLabel, '取消'] });
+        const ans = await this.requestUserForm({ title, description, choices: [yesLabel, '取消'] }); // Configure 開著時 requestUserForm 會跳最上層的對話框
         return !!(ans && ans.confirmed && ans.answer === yesLabel);
     }
     _omCores() { const ts = this._omThreadSupport(); return { hardware: Math.max(1, (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 1), isolated: ts.ok, coi: ts.coi, reason: ts.reason }; }
@@ -58914,6 +59028,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     }
     _wireAttachmentUpload() {
         this._wirePasteAttachment();
+        try { this._wireDownloadToast(); } catch (_) { /* 網頁版沒有 desktopAPI.downloads */ }
         const attachBtn = document.getElementById('ai-attach-btn');
         const attachInput = document.getElementById('ai-attach-input');
         if (!attachBtn || !attachInput) return;
@@ -64953,7 +65068,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     const url = URL.createObjectURL(blobWithType);
                     linkEl.href = url;
                     linkEl.setAttribute('download', record.filename);
-                    linkEl.addEventListener('click', () => setTimeout(() => URL.revokeObjectURL(url), 4000), { once: true });
+                    // 物件網址不能太早收回：桌面版點下載後要先選資料夾，慢慢選的話下載還沒開始網址就失效，檔案就存不下來——留 10 分鐘
+                    linkEl.addEventListener('click', () => setTimeout(() => URL.revokeObjectURL(url), 10 * 60 * 1000), { once: true });
+                    this._wireDesktopDownloadLink(linkEl, record.filename);
                     // tw_stock_db客製: 2026-09-14使用者要求——mp3/wav/ogg這類音檔
                     // （後來追加：mp4這類影片也要）除了下載連結，旁邊要有一個
                     // 真正能播放的播放器（見_mountMediaPlayer）。這裡沿用同一顆
@@ -66109,7 +66226,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         try { this._otRegisterPane(); } catch (e) { console.warn('離線訓練器分頁註冊失敗', e); }
         try { this._omRegisterPane(); } catch (e) { console.warn('離線模型管理分頁註冊失敗', e); }
         try { this._riRegisterPane(); } catch (e) { console.warn('專案索引分頁註冊失敗', e); }
-        try { this._ciRegisterPane(); } catch (e) { console.warn('CI/CD 連線分頁註冊失敗', e); }
+        // CI/CD 連線設定頁不放進 Configure（使用者不需要）：程式設計 domain 靠內建的知識（ci_guide、提示詞）與 gh／curl／ssh 指令處理 GitHub、Jenkins、Gerrit
         const inputText = document.getElementById('ai-input-text');
         const suggestBar = document.getElementById('ai-autocomplete-bar');
         const suggestText = document.getElementById('ai-suggest-text');

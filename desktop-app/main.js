@@ -608,7 +608,7 @@ let fsxRootsCache = { at: 0, list: [] };
 require("./fsx-sync.js").register(ipcMain, { find: (id) => { try { if (Date.now() - fsxRootsCache.at > 1500) fsxRootsCache = { at: Date.now(), list: JSON.parse(require("fs").readFileSync(ROOTS_FILE(), "utf8")) }; return fsxRootsCache.list.find((r) => r.id === id) || null; } catch (_) { return null; } } });
 // 「桌面版無限制」的 raw filesystem IPC（fa:rawfs:*）與 rawFsPath 在 main-ext.js：它在 live-update 白名單裡，
 // 之後要新增或修改這類 IPC 只要發 patch（下次啟動生效），不用重新安裝。main.js 本身（入口）仍然只能靠重新安裝更新，所以新的 IPC 一律寫進 main-ext.js。
-const { rawFsPath } = require("./main-ext.js").register(ipcMain, { fs, path, execConfirmGate, net, dialog, BrowserWindow });
+const { rawFsPath } = require("./main-ext.js").register(ipcMain, { fs, path, execConfirmGate, net, dialog, BrowserWindow, electron: require("electron") });
 const sqliteEngine = require("./sqlite-engine.js").register(ipcMain, { resolvePath: (p) => path.resolve(rawFsPath(p)) });
 app.on("before-quit", () => { try { sqliteEngine.closeAll(); } catch (_) { /* 退出時盡力關閉 */ } });
 

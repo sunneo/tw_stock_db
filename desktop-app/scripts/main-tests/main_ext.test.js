@@ -40,5 +40,26 @@ const call = (ch, arg) => handlers.get(ch)({}, arg);
     const oc = await h3.get('fa:ci:fetch')({}, { url: 'http://127.0.0.1:1/', method: 'POST' }); check('舊版 main.js（沒有對話框）：CI 的 HTTP 拒絕', !oc.ok && /新版主程式/.test(oc.error || ''), oc);
     await fsp.rm(d2, { recursive: true, force: true });
   }
+  // ---- 下載：will-download 由程式接管（不跳系統另存新檔）
+  {
+    const EventEmitter = require('events'); const sess = new EventEmitter(); const hs = new Map(); const ipc2 = { handle: (ch, fn) => hs.set(ch, fn) };
+    const dl = await fsp.mkdtemp(path.join(os.tmpdir(), 'dlt-')); const other = path.join(dl, 'picked');
+    const electron = { app: { isReady: () => true, getPath: (n) => (n === 'downloads' ? dl : os.tmpdir()), whenReady: () => Promise.resolve() }, shell: { showItemInFolder: () => {} }, session: { defaultSession: sess } };
+    require('../../main-ext.js').register(ipc2, { fs: fsp, path, electron });
+    check('download IPC handlers registered', ['fa:download:defaultDir', 'fa:download:setNext', 'fa:download:reveal'].every((c) => hs.has(c)));
+    const mkItem = (name) => { const it = new EventEmitter(); it.getFilename = () => name; it.setSavePath = (p) => { it.savePath = p; }; it.getReceivedBytes = () => 123; return it; };
+    const sent = []; const wc = { send: (ch, info) => sent.push([ch, info]) };
+    const it1 = mkItem('project-wiki-sqlite.html'); sess.emit('will-download', {}, it1, wc);
+    check('default: saved to the downloads folder without a dialog', it1.savePath === path.join(dl, 'project-wiki-sqlite.html'), it1.savePath);
+    await fsp.writeFile(it1.savePath, 'x'); it1.emit('done', {}, 'completed');
+    check('renderer is told where it was saved', sent.length === 1 && sent[0][0] === 'fa:download:done' && sent[0][1].state === 'completed' && sent[0][1].path === it1.savePath, sent);
+    const it2 = mkItem('project-wiki-sqlite.html'); sess.emit('will-download', {}, it2, wc);
+    check('same name gets (1)', it2.savePath === path.join(dl, 'project-wiki-sqlite (1).html'), it2.savePath);
+    await hs.get('fa:download:setNext')({}, { dir: other }); const it3 = mkItem('a.zip'); sess.emit('will-download', {}, it3, wc);
+    check('setNext: next download goes to the chosen folder (created if missing), once', it3.savePath === path.join(other, 'a.zip') && require('fs').existsSync(other), it3.savePath);
+    const it4 = mkItem('b.zip'); sess.emit('will-download', {}, it4, wc); check('only the next download uses it', it4.savePath === path.join(dl, 'b.zip'), it4.savePath);
+    const it5 = mkItem('..\\..\\evil:name?.txt'); sess.emit('will-download', {}, it5, wc); check('hostile file name is made safe', path.dirname(it5.savePath) === dl && !/[:?]/.test(path.basename(it5.savePath)), it5.savePath);
+    await fsp.rm(dl, { recursive: true, force: true });
+  }
   console.log(bad.length ? 'FAIL\n' + bad.join('\n') : 'main_ext: ' + ok + ' passed'); process.exit(bad.length ? 1 : 0);
 })().catch((e) => { console.log('EXC', e && e.stack || e); process.exit(1); });

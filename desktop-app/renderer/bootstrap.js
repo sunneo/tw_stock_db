@@ -1828,9 +1828,9 @@ function patchCloudflareWording(root) {
 
   fa.register_openai_tool(
     "ci_guide",
-    "查CI/CD與code review的觀念與常用指令速查（弱模型不確定時先查，不要憑印象）。topic: workflow（修CI失敗的標準流程）｜gerrit（change／patchset／Change-Id／refs/for／label／submit）｜github（PR／checks／Actions／gh指令）｜jenkins（Pipeline／console／crumb／參數）｜patch（怎麼準備與上patch：unified diff、git am／apply、coding_edit、coding_patch_tool）｜pipeline（設計pipeline的原則）。不給topic回傳目錄。",
+    "查CI/CD與code review的觀念與常用指令速查（弱模型不確定時先查，不要憑印象）。topic: workflow（修CI失敗的標準流程）｜gerrit（change／patchset／Change-Id／refs/for／label／submit）｜github（PR／checks／Actions／gh指令）｜jenkins（Pipeline／console／crumb／參數）｜commit（commit message怎麼寫與commit怎麼安排：標題／內文／trailer／Change-Id／Signed-off-by／系列）｜conflict（git衝突怎麼處理：merge／rebase／cherry-pick、ours與theirs、lockfile、放棄與預防）｜release（在GitHub發行：tag、gh release、REST、附檔、CI自動發行）｜api（用curl／gh／ssh呼叫GitHub、Jenkins、Gerrit的API與認證）｜patch（怎麼準備與上patch：unified diff、git am／apply、coding_edit、coding_patch_tool）｜pipeline（設計pipeline的原則）。不給topic回傳目錄。",
     async (rawArgs) => { const p = await jsonParse(rawArgs); const G = FaCi.guide; const t = String(p.topic || "").toLowerCase(); if (!t || !G[t]) return JSON.stringify({ ok: true, topics: Object.keys(G), note: "帶 topic 取得內容" }); return JSON.stringify({ ok: true, topic: t, guide: G[t] }); },
-    { type: "object", properties: { topic: { type: "string", enum: ["workflow", "gerrit", "github", "jenkins", "patch", "pipeline"] } }, additionalProperties: false }
+    { type: "object", properties: { topic: { type: "string", enum: ["workflow", "gerrit", "github", "jenkins", "patch", "pipeline", "commit", "conflict", "release", "api"] } }, additionalProperties: false }
   );
 
 
