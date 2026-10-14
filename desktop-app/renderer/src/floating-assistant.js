@@ -13512,6 +13512,211 @@ const holder = {};
 return holder.FaPipeline;
 })();
 /* PIPELINE-END */
+/* DOCMERGE-BEGIN */
+const FaDocMerge = (function () {
+const holder = {};
+(function (module, self) {
+/* 文件合併成 PDF 的核心（UMD，純函式，不碰 DOM／canvas／檔案）：文字檔、docx、xlsx 的「簡化版」轉換——沒有 Word／Excel／LibreOffice 可用時的備援，
+ * 以及判斷檔案種類。完整保真的轉換（版面、圖片、字型）要靠 Word／Excel／LibreOffice（桌面版優先用它們，見 floating-assistant.js 的 _docMergeConvertOffice）。
+ * 簡化版只保留：文字、段落／標題、清單符號、表格（docx）、工作表的儲存格內容（xlsx，日期序號會轉成日期）。圖片、圖表、頁首頁尾、字型、顏色都不保留。
+ *  - readZip(u8)           ：讀 zip（docx／xlsx／pptx 都是 zip），用瀏覽器／Node 內建的 DecompressionStream，不需要 JSZip
+ *  - sniffDoc(u8, name)    ：判斷種類 pdf／image／docx／xlsx／pptx／rtf／ole（舊版 doc／xls／ppt）／text／unknown
+ *  - decodeText(u8)        ：UTF-8／UTF-16（含 BOM）、Big5、GBK、Windows-1252 依序嘗試
+ *  - docxToBlocks／xlsxToBlocks：轉成區塊（段落、標題、表格、換頁）
+ *  - layoutBlocks          ：把區塊排成頁（只算位置，量字寬由呼叫端給 measure，所以在 Node 裡也能測試） */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaDocMerge = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const td = (enc, fatal) => new TextDecoder(enc, { fatal: !!fatal });
+
+    // ───────────────────────── zip ─────────────────────────
+    async function inflateRaw(u8) {
+        const ds = new DecompressionStream('deflate-raw'); const w = ds.writable.getWriter(); w.write(u8); w.close();
+        const buf = await new Response(ds.readable).arrayBuffer(); return new Uint8Array(buf);
+    }
+    async function readZip(u8, want) {
+        const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength); let eocd = -1;
+        for (let i = u8.length - 22; i >= Math.max(0, u8.length - 65557); i--) if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+        if (eocd < 0) throw new Error('不是有效的 zip（docx／xlsx 檔案可能損毀）');
+        const n = dv.getUint16(eocd + 10, true); let p = dv.getUint32(eocd + 16, true); const files = new Map();
+        for (let k = 0; k < n; k++) {
+            if (dv.getUint32(p, true) !== 0x02014b50) throw new Error('zip 目錄損毀');
+            const method = dv.getUint16(p + 10, true), csize = dv.getUint32(p + 20, true), nlen = dv.getUint16(p + 28, true), elen = dv.getUint16(p + 30, true), clen = dv.getUint16(p + 32, true), lho = dv.getUint32(p + 42, true);
+            const name = td('utf-8').decode(u8.subarray(p + 46, p + 46 + nlen)); p += 46 + nlen + elen + clen;
+            if (want && !want(name)) { files.set(name, null); continue; }
+            const lnl = dv.getUint16(lho + 26, true), lel = dv.getUint16(lho + 28, true), start = lho + 30 + lnl + lel; const raw = u8.subarray(start, start + csize);
+            files.set(name, method === 0 ? raw : (method === 8 ? await inflateRaw(raw) : null));
+        }
+        return files;
+    }
+    const str = (files, name) => { const b = files.get(name); return b ? td('utf-8').decode(b) : ''; };
+
+    // ───────────────────────── 種類判斷 ─────────────────────────
+    function decodeText(u8) {
+        if (u8.length >= 3 && u8[0] === 0xEF && u8[1] === 0xBB && u8[2] === 0xBF) return td('utf-8').decode(u8.subarray(3));
+        if (u8.length >= 2 && u8[0] === 0xFF && u8[1] === 0xFE) return td('utf-16le').decode(u8.subarray(2));
+        if (u8.length >= 2 && u8[0] === 0xFE && u8[1] === 0xFF) return td('utf-16be').decode(u8.subarray(2));
+        for (const enc of ['utf-8', 'big5', 'gbk']) { try { return td(enc, true).decode(u8); } catch (_) { /* 換下一個 */ } }
+        return td('windows-1252').decode(u8);
+    }
+    const TEXT_EXT = /\.(txt|text|log|md|markdown|csv|tsv|json|jsonl|xml|html?|ya?ml|ini|cfg|conf|toml|properties|py|js|mjs|ts|tsx|jsx|c|h|cc|cpp|hpp|cs|java|kt|go|rs|rb|php|sh|bash|bat|cmd|ps1|sql|css|scss|lua|swift|r|pl|vb|tex|rst|srt|vtt|diff|patch|env|gitignore)$/i;
+    function looksText(u8) {
+        const n = Math.min(u8.length, 4096); if (!n) return true; let ctl = 0;
+        if (u8.length >= 2 && ((u8[0] === 0xFF && u8[1] === 0xFE) || (u8[0] === 0xFE && u8[1] === 0xFF))) return true;
+        for (let i = 0; i < n; i++) { const c = u8[i]; if (c === 0) return false; if (c < 9 || (c > 13 && c < 32)) ctl++; }
+        return ctl / n < 0.02;
+    }
+    // 回傳 { kind, detail }：kind＝pdf／image／docx／xlsx／pptx／rtf／ole／text／unknown。圖片的格式細節由 images_to_pdf 那邊用內容判斷，這裡只認「是圖片」。
+    async function sniffDoc(u8, name) {
+        const a4 = (i) => String.fromCharCode(u8[i] || 0, u8[i + 1] || 0, u8[i + 2] || 0, u8[i + 3] || 0);
+        if (a4(0) === '%PDF') return { kind: 'pdf' };
+        if (u8[0] === 0xFF && u8[1] === 0xD8 && u8[2] === 0xFF) return { kind: 'image' };
+        if (u8[0] === 0x89 && a4(1).startsWith('PNG')) return { kind: 'image' };
+        if (a4(0) === 'GIF8' || (a4(0) === 'RIFF' && a4(8) === 'WEBP')) return { kind: 'image' };
+        if (u8[0] === 0x42 && u8[1] === 0x4D && [12, 40, 52, 56, 64, 108, 124].includes((u8[14] || 0) | ((u8[15] || 0) << 8))) return { kind: 'image' };
+        if ((u8[0] === 0x49 && u8[1] === 0x49 && u8[2] === 0x2A && u8[3] === 0) || (u8[0] === 0x4D && u8[1] === 0x4D && u8[2] === 0 && u8[3] === 0x2A)) return { kind: 'image', detail: 'tiff' };
+        if (a4(4) === 'ftyp' && /^(avif|avis|heic|heix|hevc|hevx|heim|heis|mif1|msf1)$/.test(a4(8))) return { kind: 'image' };
+        if (u8[0] === 0 && u8[1] === 0 && (u8[2] === 1 || u8[2] === 2) && u8[3] === 0 && u8[4] > 0 && u8[4] < 64) return { kind: 'image' };
+        if (a4(0) === '{\\rt') return { kind: 'rtf' };
+        if (u8[0] === 0xD0 && u8[1] === 0xCF && u8[2] === 0x11 && u8[3] === 0xE0) { const e = (String(name || '').match(/\.([a-z0-9]+)$/i) || [])[1] || ''; return { kind: 'ole', detail: e.toLowerCase() }; }
+        if (u8[0] === 0x50 && u8[1] === 0x4B) {
+            try { const files = await readZip(u8, () => false); const names = Array.from(files.keys());
+                if (names.some((x) => x === 'word/document.xml')) return { kind: 'docx' }; if (names.some((x) => x === 'xl/workbook.xml')) return { kind: 'xlsx' }; if (names.some((x) => x === 'ppt/presentation.xml')) return { kind: 'pptx' };
+                if (names.includes('content.xml') && names.includes('mimetype')) return { kind: 'odf' }; } catch (_) { /* 當成未知 */ }
+            return { kind: 'unknown', detail: 'zip' };
+        }
+        const head = td('utf-8').decode(u8.subarray(0, 1024)).replace(/^﻿/, '').trimStart(); if (/^<svg[\s>]/i.test(head) || (/^<\?xml/i.test(head) && /<svg[\s>]/i.test(head))) return { kind: 'image', detail: 'svg' };
+        if (TEXT_EXT.test(String(name || '')) && looksText(u8)) return { kind: 'text' };
+        if (looksText(u8)) return { kind: 'text', detail: 'guess' };
+        return { kind: 'unknown' };
+    }
+
+    // ───────────────────────── docx ─────────────────────────
+    const ent = (s) => String(s).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16))).replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10))).replace(/&amp;/g, '&');
+    function paraOf(xml) {
+        const style = (/<w:pStyle\s+w:val="([^"]+)"/.exec(xml) || [])[1] || ''; let level = 0; const hm = /^(?:heading|標題|title)\s*(\d)?/i.exec(style.replace(/\s+/g, '')); if (hm) level = Number(hm[1] || 1);
+        if (/^Title$/i.test(style)) level = 1;
+        let text = '', pagebreak = false, bold = false, first = true; const re = /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>|<w:tab\/>|<w:br\s*\/>|<w:br\s+w:type="page"\s*\/>|<w:r(?:\s[^>]*)?>[\s\S]*?<\/w:r>/g; let m;
+        // 逐個 run：第一個 run 有 <w:b/> 就把整段當粗體（簡化）
+        const runRe = /<w:r(?:\s[^>]*)?>([\s\S]*?)<\/w:r>/g; while ((m = runRe.exec(xml))) {
+            const r = m[1]; if (first && /<w:b(?:\s[^>]*)?\/>/.test(r) && !/<w:b\s+w:val="(?:0|false)"/.test(r)) bold = true; first = false;
+            if (/<w:br\s+w:type="page"/.test(r)) pagebreak = true;
+            const tre = /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>|<w:tab\s*\/>|<w:br\s*\/>|<w:br\s[^>]*\/>/g; let t; while ((t = tre.exec(r))) { if (t[1] != null) text += ent(t[1]); else if (/^<w:tab/.test(t[0])) text += '\t'; else if (!/type="page"/.test(t[0])) text += '\n'; }
+        }
+        void re;
+        if (/<w:numPr>/.test(xml) && text) text = '• ' + text;
+        return { text, level, bold, pagebreak };
+    }
+    function docxToBlocks(files) {
+        const xml = str(files, 'word/document.xml'); if (!xml) throw new Error('docx 裡找不到 word/document.xml（檔案損毀或不是 docx）');
+        const body = (/<w:body>([\s\S]*)<\/w:body>/.exec(xml) || [, xml])[1]; const blocks = []; let i = 0; let images = (xml.match(/<w:drawing|<w:pict/g) || []).length;
+        while (i < body.length) {
+            const tbl = body.indexOf('<w:tbl>', i), p1 = body.indexOf('<w:p>', i), p2 = body.indexOf('<w:p ', i); const pp = [p1, p2].filter((x) => x >= 0).sort((a, b) => a - b)[0];
+            if (tbl < 0 && pp == null) break;
+            if (tbl >= 0 && (pp == null || tbl < pp)) {
+                let depth = 0, j = tbl; const tre = /<w:tbl>|<\/w:tbl>/g; tre.lastIndex = tbl; let m; while ((m = tre.exec(body))) { depth += m[0] === '<w:tbl>' ? 1 : -1; if (depth === 0) { j = m.index + m[0].length; break; } }
+                const tx = body.slice(tbl, j); const rows = [];
+                for (const rm of tx.matchAll(/<w:tr(?:\s[^>]*)?>([\s\S]*?)<\/w:tr>/g)) { const cells = []; for (const cm of rm[1].matchAll(/<w:tc>([\s\S]*?)<\/w:tc>/g)) cells.push(Array.from(cm[1].matchAll(/<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>/g)).map((x) => paraOf(x[0]).text).join('\n')); rows.push(cells); }
+                if (rows.length) blocks.push({ type: 'table', rows }); i = j; continue;
+            }
+            const end = body.indexOf('</w:p>', pp); if (end < 0) break; const para = paraOf(body.slice(pp, end + 6)); i = end + 6;
+            if (para.pagebreak) blocks.push({ type: 'pagebreak' });
+            blocks.push({ type: 'p', text: para.text, level: para.level, bold: para.bold || para.level > 0 });
+        }
+        return { blocks, images };
+    }
+
+    // ───────────────────────── xlsx ─────────────────────────
+    const colIndex = (ref) => { const m = /^([A-Z]+)/.exec(ref); let n = 0; for (const ch of m ? m[1] : 'A') n = n * 26 + (ch.charCodeAt(0) - 64); return n - 1; };
+    const isoDate = (serial) => { const ms = Math.round((serial - 25569) * 86400000); const d = new Date(ms); const p = (x) => String(x).padStart(2, '0'); const hasTime = Math.abs(serial - Math.floor(serial)) > 1e-9; return d.getUTCFullYear() + '-' + p(d.getUTCMonth() + 1) + '-' + p(d.getUTCDate()) + (hasTime ? ' ' + p(d.getUTCHours()) + ':' + p(d.getUTCMinutes()) : ''); };
+    function xlsxToBlocks(files, opts) {
+        opts = opts || {}; const maxRows = opts.maxRows || 3000, maxCols = opts.maxCols || 40;
+        const wb = str(files, 'xl/workbook.xml'); if (!wb) throw new Error('xlsx 裡找不到 xl/workbook.xml（檔案損毀或不是 xlsx）');
+        const rels = {}; for (const m of str(files, 'xl/_rels/workbook.xml.rels').matchAll(/<Relationship\s[^>]*>/g)) { const id = /Id="([^"]+)"/.exec(m[0]), tg = /Target="([^"]+)"/.exec(m[0]); if (id && tg) rels[id[1]] = tg[1]; }
+        const shared = []; for (const m of str(files, 'xl/sharedStrings.xml').matchAll(/<si>([\s\S]*?)<\/si>/g)) shared.push(ent(Array.from(m[1].matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)).map((x) => x[1]).join('')));
+        const styles = str(files, 'xl/styles.xml'); const customDate = new Set(); for (const m of styles.matchAll(/<numFmt\s+numFmtId="(\d+)"\s+formatCode="([^"]*)"/g)) if (/[ymdhs]/i.test(m[2].replace(/\[[^\]]*\]|"[^"]*"/g, ''))) customDate.add(Number(m[1]));
+        const xfs = (/<cellXfs[^>]*>([\s\S]*?)<\/cellXfs>/.exec(styles) || [, ''])[1]; const dateXf = []; Array.from(xfs.matchAll(/<xf\s[^>]*>/g)).forEach((m, i) => { const id = Number((/numFmtId="(\d+)"/.exec(m[0]) || [])[1] || 0); dateXf[i] = (id >= 14 && id <= 22) || (id >= 45 && id <= 47) || customDate.has(id); });
+        const blocks = []; const notes = [];
+        for (const sm of wb.matchAll(/<sheet\s[^>]*>/g)) {
+            const nm = /name="([^"]*)"/.exec(sm[0]), rid = /r:id="([^"]+)"/.exec(sm[0]); if (!nm || !rid) continue; let target = rels[rid[1]] || ''; target = target.replace(/^\//, ''); const path = target.startsWith('xl/') ? target : 'xl/' + target;
+            const sx = str(files, path); if (!sx) continue; const rows = []; let truncated = false, maxC = 0;
+            for (const rm of sx.matchAll(/<row\s[^>]*?(?:\/>|>([\s\S]*?)<\/row>)/g)) {
+                const rn = Number((/\sr="(\d+)"/.exec(rm[0]) || [])[1] || rows.length + 1); if (rn > maxRows) { truncated = true; break; } const cells = [];
+                for (const cm of (rm[1] || '').matchAll(/<c\s([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
+                    const at = cm[1], inner = cm[2] || ''; const ref = (/\sr="([A-Z]+\d+)"|^r="([A-Z]+\d+)"/.exec(' ' + at) || [])[1] || (/r="([A-Z]+\d+)"/.exec(at) || [])[1]; const ci = ref ? colIndex(ref) : cells.length; if (ci >= maxCols) { truncated = true; continue; }
+                    const t = (/\st="([^"]+)"/.exec(' ' + at) || [])[1] || 'n', sIdx = Number((/\ss="(\d+)"/.exec(' ' + at) || [])[1] || 0); let v = (/<v>([\s\S]*?)<\/v>/.exec(inner) || [])[1]; let out = '';
+                    if (t === 's') out = shared[Number(v)] || ''; else if (t === 'inlineStr') out = ent(Array.from(inner.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)).map((x) => x[1]).join('')); else if (t === 'b') out = v === '1' ? 'TRUE' : 'FALSE'; else if (v != null) { v = ent(v); if (t === 'n' && dateXf[sIdx] && isFinite(Number(v))) out = isoDate(Number(v)); else if (t === 'n' && isFinite(Number(v))) { const num = Number(v); out = Number.isInteger(num) ? String(num) : String(Math.round(num * 1e10) / 1e10); } else out = v; }
+                    while (cells.length < ci) cells.push(''); cells[ci] = out; maxC = Math.max(maxC, ci + 1);
+                }
+                while (rows.length < rn - 1) rows.push([]); rows[rn - 1] = cells;
+            }
+            while (rows.length && !rows[rows.length - 1].some((c) => c !== '' && c != null)) rows.pop();
+            if (truncated) notes.push('工作表「' + ent(nm[1]) + '」超過 ' + maxRows + ' 列或 ' + maxCols + ' 欄，只轉換前面的部分');
+            blocks.push({ type: 'p', text: ent(nm[1]), level: 2, bold: true }); rows.forEach((r) => { for (let c = 0; c < maxC; c++) if (r[c] == null) r[c] = ''; });
+            if (rows.length) blocks.push({ type: 'table', rows, compact: true }); else blocks.push({ type: 'p', text: '（空白工作表）', level: 0 });
+            blocks.push({ type: 'pagebreak' });
+        }
+        if (blocks.length && blocks[blocks.length - 1].type === 'pagebreak') blocks.pop();
+        return { blocks, notes };
+    }
+
+    // ───────────────────────── 排版 ─────────────────────────
+    // opts: { pageW, pageH, margin, fontPx, lineH（倍數）, measure(text, {bold, mono, size}) → px, mono, header, footer }
+    // 回傳 pages：每頁一個 ops 陣列：{t:'text', x, y, s, size, bold, mono} 或 {t:'line', x1, y1, x2, y2}（y 是文字頂端，向下為正）
+    function wrapText(text, maxW, measure, font) {
+        const out = [];
+        for (const raw of String(text).replace(/\r\n?/g, '\n').split('\n')) {
+            const para = raw.replace(/\t/g, '    '); if (para === '') { out.push(''); continue; } let line = '', w = 0, lastSpace = -1;
+            for (const ch of Array.from(para)) {
+                const cw = measure(ch, font); if (w + cw > maxW && line) { if (lastSpace > 0 && ch !== ' ') { out.push(line.slice(0, lastSpace)); line = line.slice(lastSpace + 1); w = measure(line, font); } else { out.push(line); line = ''; w = 0; } lastSpace = -1; if (ch === ' ' && !line) continue; }
+                line += ch; w += cw; if (ch === ' ') lastSpace = line.length - 1;
+            }
+            out.push(line);
+        }
+        return out;
+    }
+    function layoutBlocks(blocks, o) {
+        const { pageW, pageH, margin } = o; const fontPx = o.fontPx || 21, lh = (o.lineH || 1.4); const topPad = o.header ? fontPx * 2 : 0, botPad = o.footer ? fontPx * 2 : 0;
+        const left = margin, right = pageW - margin, top = margin + topPad, bottom = pageH - margin - botPad; const measure = o.measure; const pages = [[]]; let y = top;
+        const cur = () => pages[pages.length - 1]; const newPage = () => { pages.push([]); y = top; };
+        const place = (s, x, size, bold, mono) => { const h = size * lh; if (y + h > bottom && y > top) newPage(); cur().push({ t: 'text', x, y, s, size, bold: !!bold, mono: !!mono }); y += h; };
+        for (const b of blocks) {
+            if (b.type === 'pagebreak') { if (cur().length) newPage(); continue; }
+            if (b.type === 'p') {
+                const size = b.level ? Math.round(fontPx * ({ 1: 1.7, 2: 1.4, 3: 1.2 }[b.level] || 1.1)) : fontPx; const bold = b.bold || b.level > 0; const mono = !!o.mono && !b.level;
+                if (b.level && y > top) y += size * 0.4; const lines = wrapText(b.text, right - left, measure, { bold, mono, size });
+                for (const ln of lines) place(ln, left, size, bold, mono);
+                y += (b.level ? 0.2 : 0.35) * fontPx * (o.mono ? 0 : 1); continue;
+            }
+            if (b.type === 'table') {
+                const rows = b.rows, nc = Math.max(1, ...rows.map((r) => r.length)); const size = b.compact ? Math.max(11, Math.round(fontPx * 0.8)) : Math.round(fontPx * 0.9); const pad = 6;
+                let want = Array.from({ length: nc }, (_, c) => Math.max(...rows.slice(0, 200).map((r) => measure(String((r[c] == null ? '' : r[c])).split('\n').reduce((a, x) => (x.length > a.length ? x : a), ''), { size })), 30) + 2 * pad);
+                const avail = right - left; let tot = want.reduce((a, c) => a + c, 0); let widths;
+                if (tot <= avail) widths = want; else { const minW = 40; widths = want.map((w) => Math.max(minW, w * avail / tot)); tot = widths.reduce((a, c) => a + c, 0); if (tot > avail) widths = widths.map((w) => w * avail / tot); }
+                const xs = [left]; widths.forEach((w) => xs.push(xs[xs.length - 1] + w));
+                for (const r of rows) {
+                    const cellLines = widths.map((w, c) => wrapText(String(r[c] == null ? '' : r[c]), w - 2 * pad, measure, { size })); const n = Math.max(1, ...cellLines.map((l) => l.length)); const rowH = n * size * lh + 2 * pad * 0.6;
+                    if (y + rowH > bottom && y > top) newPage(); const y0 = y;
+                    cellLines.forEach((ls, c) => ls.forEach((ln, k) => { if (ln) cur().push({ t: 'text', x: xs[c] + pad, y: y0 + pad * 0.6 + k * size * lh, s: ln, size, bold: false, mono: false }); }));
+                    cur().push({ t: 'line', x1: xs[0], y1: y0, x2: xs[xs.length - 1], y2: y0 }); cur().push({ t: 'line', x1: xs[0], y1: y0 + rowH, x2: xs[xs.length - 1], y2: y0 + rowH });
+                    xs.forEach((x) => cur().push({ t: 'line', x1: x, y1: y0, x2: x, y2: y0 + rowH })); y += rowH;
+                }
+                y += fontPx * 0.5;
+            }
+        }
+        if (pages.length > 1 && !pages[pages.length - 1].length) pages.pop();
+        return pages;
+    }
+
+    return { readZip, sniffDoc, decodeText, docxToBlocks, xlsxToBlocks, layoutBlocks, wrapText, looksText, TEXT_EXT };
+});
+
+}).call(null, undefined, holder);
+return holder.FaDocMerge;
+})();
+/* DOCMERGE-END */
 /* IMGPROC-BEGIN */
 const FaImgProc = (function () {
 const holder = {};
@@ -16077,6 +16282,29 @@ const SUBAGENT_MAX_TOOL_ESCALATIONS = 3;
 const SUBAGENT_NEST_MAX_DEPTH = 2;
 const SUBAGENT_NEST_MAX_CALLS = 4;
 const SUBAGENT_NEST_TOOL_NAME = 'delegate_subtask';
+/* TASK-HINTS-BEGIN */
+// tw_stock_db客製: 2026-10-14使用者實測——根模型把「資料夾裡的圖片轉PDF」直接委派給 desktop_ops（或更早的 code_execution），那兩個領域沒有 images_to_pdf，
+// 子agent改去找 img2pdf／Pillow／ImageMagick（不一定有、也不一定裝得起來），還把「等比例縮放置中」做成裁切。依「任務文字」補工具：
+// 不管根模型挑了哪個領域，只要任務明顯是「圖片→PDF」，這次執行就多拿到 images_to_pdf（以及確認附件用的 list_uploaded_files），並附一段專用的做法提醒。
+const FA_TASK_TOOL_HINTS = [
+    {
+        id: 'images_to_pdf',
+        re: /(圖片|圖檔|照片|相片|影像|掃描|images?|photos?|pictures?|scans?|jpe?g|png|webp|heic|tiff?|bmp)[\s\S]{0,120}pdf|pdf[\s\S]{0,60}(圖片|圖檔|照片|相片|images?|photos?|jpe?g|png|webp|heic)/i,
+        neg: /pdf\s*(轉成?|轉換成|轉為|變成|匯出成|輸出成|to|→)\s*(圖片|圖檔|影像|images?|png|jpe?g)|pdf\s*(裡|中|內|上|檔)?\s*(面)?的\s*(圖片|圖檔|照片|圖)|從\s*pdf|(extract|export)[\s\S]{0,30}(images?|pictures?)[\s\S]{0,30}(from|of)[\s\S]{0,10}pdf/i,
+        tools: ['images_to_pdf', 'list_uploaded_files'],
+        note: '【這個需求有專用工具：images_to_pdf】請直接呼叫它完成，忽略任務敘述裡指定的 img2pdf／Pillow／ImageMagick／自己寫腳本的做法（那些不一定有、沙盒也裝不起來）。本機資料夾用 folder 參數（絕對路徑，依檔名自然排序＝1_、2_…10_ 的順序）、對話附件不給 files 就是全部附件；要存到哪裡用 output_path。「等比例縮放、置中、縮放到A4」＝page_size:"a4"＋fit:"contain"（整張放進去、不裁切、留白）——只有使用者明講「填滿／裁掉多的」才用 cover；A4 方向用 orientation:"auto"（寬圖自動橫向、直圖直向；使用者要統一方向才指定 portrait／landscape）。做完用回傳的 pages 回報每頁的來源、輸入／輸出大小與頁面大小。',
+    },
+];
+
+FA_TASK_TOOL_HINTS.push({
+    id: 'merge_pdfs',
+    re: /(docx?|word|xlsx?|excel|txt|文字檔|文字文件|文件檔|試算表|簡報檔|pptx?)[\s\S]{0,100}(合併|合成|併成|整合|拼成|merge|combine)[\s\S]{0,40}pdf|(合併|合成|併成|整合|merge|combine)[\s\S]{0,60}pdf[\s\S]{0,100}(docx?|word|xlsx?|excel|txt|文字檔|試算表|pptx?)|(合併|合成|併成|整合|merge|combine)[\s\S]{0,80}(docx?|word|xlsx?|excel|txt|文字檔|試算表|pptx?)[\s\S]{0,80}pdf/i,
+    neg: /(拆分|分割|切割|抽出|取出|擷取|刪除|split|extract|remove)[\s\S]{0,20}pdf|pdf\s*(轉成?|轉換成|轉為|變成)\s*(word|docx?|excel|xlsx?|txt|圖片)/i,
+    tools: ['merge_pdfs', 'list_uploaded_files'],
+    note: '【這個需求有專用工具：merge_pdfs】PDF、圖片、文字檔、docx、xlsx（可混在一起）要合併成一份PDF，直接呼叫 merge_pdfs，不要自己寫 python／docx2pdf／ImageMagick 腳本。files 照使用者要的順序給（file_id／檔名／fap:名稱/路徑／絕對路徑），或用 folder（整個資料夾，依檔名自然排序）；沒給＝對話附件。docx／xlsx 會用 Word／LibreOffice 轉成原樣（沒有時退回簡化版，工具會在 warnings 說明，請原樣轉告使用者）。要存到哪裡用 output_path。做完回報 files 裡每個檔案的頁數與轉換方式。',
+});
+function _faTaskToolHints(task) { const t = String(task || ''); return FA_TASK_TOOL_HINTS.filter((h) => h.re.test(t) && !(h.neg && h.neg.test(t))); }
+/* TASK-HINTS-END */
 
 // tw_stock_db客製: 2026-09-15使用者回報——桌面版委派給desktop_ops domain
 // 處理「解析資料夾裡面每個內容」這類需要很多輪工具呼叫的大任務時，偶爾會
@@ -17566,6 +17794,10 @@ const FA_ASSET_URLS = {
     // npm鏡射。
     pyodideJsBase: 'https://cdn.jsdelivr.net/pyodide/v314.0.7/full/',
     pyodideBackupBase: 'https://cdn.jsdelivr.net/gh/sunneo/tw_stock_db@pyodide-backup/pyodide-core/',
+    // 圖片轉 PDF 的備援解碼器（Chromium 不認得的格式才載入）：TIFF（UTIF＋pako 解壓）、HEIC／HEIF（heic2any，內含 libheif）
+    utifJs: 'https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.js',
+    pakoJs: 'https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js',
+    heic2anyJs: 'https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js',
     // tw_stock_db客製: 2026-09-16使用者要求——bash_execute的shell要能直接
     // 認得python/jq/xq/column/split這幾個指令（見SANDBOX_COMMAND_REGISTRY）。
     // jq-wasm是真正的jq 1.8.2編譯成wasm（不是語意相近的簡化重寫版），瀏覽器
@@ -17651,7 +17883,7 @@ function _faClassifyMediaFile(filename) {
     if (['mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v', 'mpg', 'mpeg', '3gp', 'ogv'].includes(e)) return 'video';
     if (['mp3', 'wav', 'm4a', 'aac', 'ogg', 'oga', 'flac', 'opus', 'weba', 'wma'].includes(e)) return 'audio';
     if (['srt', 'vtt', 'ass', 'ssa', 'sbv'].includes(e)) return 'subtitle';
-    if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'avif', 'ico'].includes(e)) return 'image';
+    if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'avif', 'ico', 'jfif', 'jpe', 'pjpeg', 'pjp', 'apng', 'dib'].includes(e)) return 'image';
     // tw_stock_db客製: 2026-09-24使用者要求——附件貼上PDF要有viewer可以看，
     // 跟image縮圖同一種「分類出來才知道要不要顯示可互動UI」的用法。
     if (e === 'pdf') return 'pdf';
@@ -26529,21 +26761,32 @@ ${fnData.code}
         );
         // tw_stock_db客製: 2026-09-28使用者要求——「上傳PDF附件，合併成一個PDF」。
         registerOptional('merge_pdfs',
-            '把多份已上傳的PDF依指定順序合併成一份新的PDF（直接複製原始頁面物件，不是重新渲染，合併後文字仍可選取/搜尋、畫質不會劣化）。回傳{ok, pdf_file_id, filename, sizeBytes, pageCount, fileCount, files:[{filename,pages}]}，成功時會自動產生下載附件。⚠️只能合併沒有密碼保護的PDF；遇到有密碼保護（真的加密）的檔案會直接回報是哪一份，不會嘗試強行合併產生看似成功、實際內容是空白/亂碼的檔案——收到這種錯誤時如實轉告使用者需要先自行移除密碼保護。參數: {"files":["PDF的file_id或檔名", ...]（至少2個，依這個順序合併）}',
+            '把多個檔案依指定順序合併成一份PDF：PDF、各種圖片（jpg／png／gif／webp／bmp／avif／tiff／heic／svg…）、文字檔（txt／md／csv／log／json／程式碼…）、docx、xlsx 都可以，也能混在一起；副檔名不重要，用內容判斷。純本地、不經過AI。PDF＝直接複製原始頁面（文字仍可選取）；圖片＝等比例縮放置中到頁面（預設A4；page_size／orientation／fit／margin／zoom／background 同 images_to_pdf，要逐張旋轉或影像處理請改用 images_to_pdf）；文字檔＝排版後畫成頁面（中文OK）；docx／xlsx／pptx／doc／xls／rtf／odt＝桌面版用 Word／Excel／PowerPoint（Windows）或 LibreOffice 轉成PDF（版面、圖片、字型都保留；第一次會跳出「允許執行程式」確認），都沒有時 docx／xlsx 退回簡化版（只有文字、標題、表格內容，會在 warnings 說明），其他格式就明說需要 Office。files＝file_id或檔名（照這個順序）；folder＝整個資料夾（fap:名稱/路徑 或桌面版絕對路徑，依檔名自然排序，pattern可篩如"*.docx"）；沒給＝這個對話附加的全部檔案（依檔名自然排序）；sort：none／name／name_desc／modified／reverse。filename、output_path（fap:名稱/資料夾 或桌面版絕對路徑）；office_engine：auto（預設）／office／libreoffice／simple（不叫外部程式、強制簡化版）；on_error：fail（預設，有一個壞就整份不做並說是哪一個）／skip。⚠️PDF有密碼保護不支援。回傳{ok,pdf_file_id,filename,sizeBytes,pageCount,fileCount,files:[{filename,kind,pages,method}],warnings?,saved_to?}，成功時會自動產生下載附件。',
             async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
-                const fileArgs = Array.isArray(parsed.files) ? parsed.files.map(String).filter(Boolean) : [];
-                if (fileArgs.length < 2) return JSON.stringify({ ok: false, error: '至少需要2個PDF的file_id/檔名才能合併（files參數目前少於2個）' });
                 try {
-                    const result = await this._mergePdfFiles(fileArgs, (m) => this._log('📄 ' + m));
-                    await this._deliverToolResultFile(result, 'pdf_file_id', (r) => `📎 已合併 ${r.fileCount} 份PDF（共${r.pageCount}頁）：${r.filename}（${(r.sizeBytes / 1024 / 1024).toFixed(1)}MB）`);
+                    const result = await this._mergeDocsToPdf(parsed, (m) => this._log('📄 ' + m));
+                    await this._deliverToolResultFile(result, 'pdf_file_id', (r) => `📎 已合併 ${r.fileCount} 個檔案成PDF（共${r.pageCount}頁）：${r.filename}（${(r.sizeBytes / 1024 / 1024).toFixed(1)}MB）${r.saved_to ? '，已存到 ' + r.saved_to : ''}`);
                     return JSON.stringify(result);
                 } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
             },
             { type: 'object', properties: {
-                files: { type: 'array', items: { type: 'string' }, description: '要依序合併的PDF file_id或檔名陣列，至少2個' },
-            }, required: ['files'], additionalProperties: false }
+                files: { type: 'array', items: { type: 'string' }, description: '（選填）要依序合併的檔案 file_id或檔名（也可以是 fap:名稱/路徑、桌面版絕對路徑）；留空＝這個對話附加的全部檔案' },
+                folder: { type: 'string', description: '（選填）整個資料夾：fap:名稱/路徑 或桌面版絕對路徑，依檔名自然排序' },
+                pattern: { type: 'string', description: '（選填）folder 的檔名篩選，例如 "*.docx"' },
+                sort: { type: 'string', enum: ['none', 'name', 'name_desc', 'modified', 'reverse'], description: '（選填）預設：有給 files＝照給的順序，folder／附件＝依檔名自然排序' },
+                page_size: { type: 'string', description: '（選填）圖片與文字頁的頁面大小：a4（預設）／a3／a5／b5／letter／legal／"210x297mm"' },
+                orientation: { type: 'string', enum: ['auto', 'portrait', 'landscape'], description: '（選填）預設 auto（圖片依寬高、文字直式）' },
+                fit: { type: 'string', enum: ['contain', 'cover', 'stretch', 'actual'], description: '（選填）圖片：contain（預設，等比置中）／cover（填滿裁切）／stretch／actual' },
+                margin: { type: 'number', description: '（選填）圖片頁的邊界 pt，預設 0' },
+                margin_mm: { type: 'number', description: '（選填）文字頁的邊界 mm，預設 15' },
+                zoom: { type: 'number' }, background: { type: 'string' }, jpeg_quality: { type: 'number' },
+                office_engine: { type: 'string', enum: ['auto', 'office', 'libreoffice', 'simple'], description: '（選填）docx／xlsx 等怎麼轉：auto（預設，先 Word／Excel 再 LibreOffice 再簡化版）' },
+                filename: { type: 'string', description: '（選填）輸出檔名' },
+                output_path: { type: 'string', description: '（選填）把PDF存到：fap:名稱/資料夾 或桌面版絕對路徑' },
+                on_error: { type: 'string', enum: ['fail', 'skip'], description: '（選填）有檔案壞掉時：fail（預設）／skip' },
+            }, additionalProperties: false }
         );
         // 2026-10-06：圖片轉 PDF（使用者貼圖說「幫我轉pdf」，因為沒有內建工具，AI 先委派 file_analysis 燒掉 20 輪、再委派 media_av 回答「沒有這個工具」，最後才自己用 Python 寫）。
         // 純本地 pdf-lib：PNG／JPEG 直接嵌入（不重新壓縮、畫質不變），其他格式（WebP／GIF／BMP／SVG…）先用 canvas 轉 PNG；多張圖＝多頁。
@@ -26664,6 +26907,7 @@ ${fnData.code}
         registerOptional('images_to_pdf',
             '把圖片合成一份PDF：可以指定順序，每一頁可以縮放、旋轉、做影像處理（灰階、影像強化、色調強化、減少色彩、高斯模糊、馬賽克…）。純本地、不經過AI、幾秒完成。使用者說「圖片轉PDF／合併成PDF／縮放到A4／旋轉／灰階／影像強化／減色／模糊／馬賽克」就直接用這個，不要自己寫Python（沙盒裡沒有Pillow，裝不起來）、也不要用ImageMagick。\n' +
             '【最簡單】不給任何參數＝這個對話附加的全部圖片，依檔名的數字順序（1_、2_…10_，不是上傳順序）一張一頁。\n' +
+            '【格式】副檔名不重要，用檔案內容判斷：jpg／jpeg／jfif／png／gif／webp／bmp／ico／avif／svg／tiff（第一頁）／heic／heif 都可以（沒有副檔名、副檔名亂寫也行）；tga／psd／raw 這類不支援，請使用者先轉成 jpg 或 png。folder 沒給pattern時只收看起來像圖片的副檔名；給 pattern（例如 "*"）就全收、用內容判斷。\n' +
             '【來源】files＝file_id或檔名（照你給的順序）；pages＝每頁一個物件（順序就是頁序）；folder＝整個資料夾（fap:名稱/路徑，或桌面版的絕對路徑，依檔名自然排序，pattern可篩例如"*.jpg"）；sort：none／name／name_desc／modified／reverse。\n' +
             '【頁面】page_size：fit（頁面＝圖片大小，預設）、a3／a4／a5／b5／letter／legal，或"210x297mm"；orientation：auto（寬圖用橫的，預設）／portrait／landscape（使用者說「都是直式A4」用portrait）；fit：contain（整張放進頁面、等比、置中＝「Zoom／縮放置中」，預設）／cover（填滿、超出的裁掉）／stretch（拉伸變形）／actual（原始大小，太大才縮）；zoom：在fit結果上再縮放的百分比（80＝留邊）；margin：pt（預設0）；background：頁面底色（預設白）。\n' +
             '【處理 ops】依序執行，放在頂層＝所有頁面共用，放在pages[i].ops＝只作用那一頁。每個是{"op":名稱,…}：grayscale（灰階）、enhance（影像強化：自動對比＋銳化＋飽和度）、tone（色調強化：自動白平衡＋對比＋飽和度；可帶contrast／saturation／warmth／white_balance）、reduce_colors（減少色彩，colors 2～256，dither:true抖色）、blur（高斯模糊，radius＝標準差像素）、mosaic（馬賽克，block＝格子像素；region:{x,y,w,h}百分比只蓋一塊，不給＝整張）、sharpen、auto_contrast、brightness／contrast／saturation（amount -100～100）、gamma（value）、threshold（黑白二值，預設Otsu）、posterize、invert、rotate（degrees順時針，任意角度）、scale（改圖片像素：percent／width／height／max_side）、crop（x,y,w,h百分比，unit:"px"用像素）、flip（direction）。pages[i].rotate、pages[i].scale是縮寫（最先做）。注意：scale改的是圖片像素，zoom改的是它在頁面上的大小。\n' +
@@ -38955,7 +39199,20 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             return allBuiltins.concat(custom);
         }
         const rootBuiltins = Object.keys(this.tools).filter(n => !this._domainGatedToolNames.has(n));
+        // 依「使用者這一則訊息」補專用工具（見 FA_TASK_TOOL_HINTS）：例如「圖片合併成PDF」直接拿到 images_to_pdf，不用先委派、也不會被委派到一個沒有它的領域去自己寫 python
+        for (const h of this._rootTaskHints()) for (const n of h.tools) if (this.tools[n] && !rootBuiltins.includes(n)) rootBuiltins.push(n);
         return rootBuiltins;
+    }
+    _rootTaskHints() {
+        try {
+            const ms = this.messages || [];
+            for (let i = ms.length - 1; i >= 0; i--) {
+                const m = ms[i]; if (!m || m.role !== 'user') continue;
+                const c = typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.map((x) => (x && x.text) || '').join('\n') : '');
+                return _faTaskToolHints(c);
+            }
+        } catch (_) { /* 取不到就不補 */ }
+        return [];
     }
 
     // tw_stock_db客製: 2026-09-09——multiSubAgentMode三態裡'router'跟'full'
@@ -39158,6 +39415,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
 
         if (rulesMd) sections.push(rulesMd);
         if (basePrompt) sections.push(basePrompt);
+        { const rh = this._rootTaskHints(); if (rh.length) sections.push(rh.map((h) => h.note).join('\n')); } // 這則訊息有專用工具：直接給做法（見 FA_TASK_TOOL_HINTS）
 
         // tw_stock_db客製: 原生tool-call模式下，工具清單已經透過API的tools參數
         // 結構化傳給模型，不需要再用文字重複描述一次工具清單、更不需要
@@ -56737,6 +56995,8 @@ _result
     // ============================================================
     async _hermesReflectAndEvolve(userPrompt, aiResponseText) {
         if (localStorage.getItem(this.HERMES_AUTO_EVOLVE_KEY) !== 'true') return;
+        // 有專用工具的需求（圖片轉PDF…）：不把「這次怎麼用腳本做」記成技能／偏好（那些記憶之後會被喚醒、把模型帶回自己寫腳本的老路）
+        if (_faTaskToolHints(userPrompt).length) { this._log('✨ [Hermes 反思] 這個需求有專用工具，不把腳本做法記成技能'); return; }
 
         const { apiKey, apiUrl, apiModel } = this._getApiConfig();
         if (!apiKey) return;
@@ -60590,23 +60850,56 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (/^[A-Za-z]:[\\/]|^\\\\|^\//.test(r) && window.desktopAPI && window.desktopAPI.rawfs) {
             const res = await window.desktopAPI.rawfs.readFile(r, 'base64'); if (!res || res.base64 == null) throw new Error('讀不到「' + r + '」');
             const bin = atob(res.base64), u8 = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
-            const name = r.split(/[\\/]/).pop(); const ext = (/\.([A-Za-z0-9]+)$/.exec(name) || [])[1] || ''; const type = ({ jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif', bmp: 'image/bmp', svg: 'image/svg+xml' })[ext.toLowerCase()] || '';
-            return { label: name, blob: new Blob([u8], { type }) };
+            return { label: r.split(/[\\/]/).pop(), blob: new Blob([u8]) };
         }
         const rec = await this._resolveUploadedFileRecord(r); if (!rec) throw new Error('找不到符合「' + r + '」的已上傳檔案（或給 fap:名稱/路徑、絕對路徑）');
         return { label: rec.filename, blob: rec.blob, lastModified: rec.lastModified };
     }
-    async _imgPdfListFolder(folder, pattern) {
+    async _imgPdfListFolder(folder, pattern, extRe) {
         const f = String(folder).trim(); const out = []; const re = pattern ? new RegExp(String(pattern).replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.'), 'i') : null;
-        const isImg = (n) => /\.(png|jpe?g|webp|gif|bmp|svg|tiff?|avif)$/i.test(n);
+        const isImg = (n) => (re ? true : (extRe || /\.(png|apng|jpe?g|jfif|jpe|pjpe?g|pjp|webp|gif|bmp|dib|ico|svg|tiff?|avif|heic|heif)$/i).test(n)); // 有給 pattern＝使用者自己決定要哪些檔，不再看副檔名（讀進來再用內容判斷格式）
         if (/^fap:/i.test(f)) { const r = await this._fapListFiles(f); for (const e of r.entries) if (e.type === 'file' && isImg(e.name) && (!re || re.test(e.name))) out.push(f.replace(/\/+$/, '') + '/' + e.name); return out; }
         if (window.desktopAPI && window.desktopAPI.rawfs) { const r = await window.desktopAPI.rawfs.readdir(f); const ents = Array.isArray(r) ? r : ((r && r.entries) || []); for (const e of ents) { const name = e.name || e; const isDir = e.type === 'directory' || e.isDirectory === true; if (!isDir && isImg(name) && (!re || re.test(name))) out.push(f.replace(/[\\/]+$/, '') + (f.includes('\\') ? '\\' : '/') + name); } return out; }
         throw new Error('這個環境讀不了資料夾「' + f + '」（要 fap:名稱/資料夾，或桌面版的絕對路徑）');
     }
-    async _imgPdfDecode(blob, maxPixels) {
+    // 圖片格式用「檔案內容」判斷，不看副檔名也不信 MIME（副檔名常常是錯的：.jfif 裡其實是 PNG、沒有副檔名、.dat…）
+    async _imgPdfSniff(blob) {
+        const u = new Uint8Array(await blob.slice(0, 1536).arrayBuffer()); const asc = (a, b) => String.fromCharCode.apply(null, Array.from(u.subarray(a, b)));
+        if (u.length >= 3 && u[0] === 0xFF && u[1] === 0xD8 && u[2] === 0xFF) return { kind: 'jpeg', mime: 'image/jpeg' };
+        if (u.length >= 8 && u[0] === 0x89 && asc(1, 4) === 'PNG') return { kind: 'png', mime: 'image/png' };
+        if (asc(0, 4) === 'GIF8') return { kind: 'gif', mime: 'image/gif' };
+        if (asc(0, 4) === 'RIFF' && asc(8, 12) === 'WEBP') return { kind: 'webp', mime: 'image/webp' };
+        if (u.length > 18 && u[0] === 0x42 && u[1] === 0x4D && [12, 40, 52, 56, 64, 108, 124].includes(u[14] | (u[15] << 8))) return { kind: 'bmp', mime: 'image/bmp' };
+        if (u.length > 6 && u[0] === 0 && u[1] === 0 && (u[2] === 1 || u[2] === 2) && u[3] === 0 && u[4] > 0 && u[4] < 64) return { kind: 'ico', mime: 'image/x-icon' };
+        if (u.length > 4 && ((u[0] === 0x49 && u[1] === 0x49 && u[2] === 0x2A && u[3] === 0) || (u[0] === 0x4D && u[1] === 0x4D && u[2] === 0 && u[3] === 0x2A))) return { kind: 'tiff', mime: 'image/tiff' };
+        if (asc(4, 8) === 'ftyp') { const brand = asc(8, 12); if (/^(avif|avis)$/.test(brand)) return { kind: 'avif', mime: 'image/avif' }; if (/^(heic|heix|hevc|hevx|heim|heis|mif1|msf1)$/.test(brand)) return { kind: 'heic', mime: 'image/heic' }; }
+        if (asc(0, 4) === '%PDF') return { kind: 'pdf', mime: 'application/pdf' };
+        const head = new TextDecoder('utf-8', { fatal: false }).decode(u.subarray(0, 1024)).replace(/^﻿/, '').trimStart(); if (/^<svg[\s>]/i.test(head) || (/^<\?xml/i.test(head) && /<svg[\s>]/i.test(head))) return { kind: 'svg', mime: 'image/svg+xml' };
+        return { kind: '', mime: '' };
+    }
+    async _imgPdfLoadLib(name) {
+        const url = FA_ASSET_URLS[name]; const g = ({ utifJs: 'UTIF', pakoJs: 'pako', heic2anyJs: 'heic2any' })[name];
+        if (window[g]) return window[g]; await _faLoadScriptOnce(this._viaAssetProxy(url)); if (!window[g]) throw new Error('載入失敗：' + name); return window[g];
+    }
+    // 解碼成 { width, height, data(RGBA) }。Chromium 認得的（jpeg／png／gif／webp／bmp／ico／avif／svg）走 createImageBitmap（套用 EXIF 方向）；TIFF 用 UTIF、HEIC／HEIF 用 heic2any（第一次用才下載）
+    async _imgPdfDecode(blob, maxPixels, sniffed) {
+        const sn = sniffed || await this._imgPdfSniff(blob); const note = {};
+        if (sn.kind === 'tiff') {
+            let UTIF; try { await this._imgPdfLoadLib('pakoJs'); UTIF = await this._imgPdfLoadLib('utifJs'); } catch (err) { throw new Error('TIFF 解碼器載入失敗（需要網路一次）：' + String(err.message || err)); }
+            const buf = await blob.arrayBuffer(); const ifds = UTIF.decode(buf); if (!ifds.length) throw new Error('TIFF 沒有影像'); UTIF.decodeImage(buf, ifds[0]); const rgba = UTIF.toRGBA8(ifds[0]);
+            if (ifds.length > 1) note.pages = ifds.length;
+            const cap0 = Math.min(FaImgProc.MAX_PIXELS / 2, Number(maxPixels) > 0 ? Number(maxPixels) : 60e6); if (ifds[0].width * ifds[0].height > cap0) throw new Error('TIFF 太大（' + ifds[0].width + '×' + ifds[0].height + '）');
+            return { width: ifds[0].width, height: ifds[0].height, data: new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.length), srcWidth: ifds[0].width, srcHeight: ifds[0].height, downscaled: false, tiffPages: note.pages };
+        }
+        let src = sn.mime && blob.type !== sn.mime ? new Blob([blob], { type: sn.mime }) : blob;
+        if (sn.kind === 'heic') {
+            let conv; try { conv = await this._imgPdfLoadLib('heic2anyJs'); } catch (err) { throw new Error('HEIC 解碼器載入失敗（需要網路一次）：' + String(err.message || err)); }
+            let out; try { out = await conv({ blob: src, toType: 'image/jpeg', quality: 0.95 }); } catch (err) { throw new Error('HEIC 轉換失敗：' + String((err && (err.message || err.code)) || err)); }
+            src = Array.isArray(out) ? out[0] : out;
+        }
         let bmp = null, imgEl = null, url = null;
-        try { bmp = await createImageBitmap(blob, { imageOrientation: 'from-image' }); } catch (_) { try { bmp = await createImageBitmap(blob); } catch (_2) { bmp = null; } }
-        if (!bmp) { url = URL.createObjectURL(blob); imgEl = new Image(); await new Promise((res, rej) => { imgEl.onload = res; imgEl.onerror = () => rej(new Error('無法解碼（格式不支援或檔案損毀）')); imgEl.src = url; }); }
+        try { bmp = await createImageBitmap(src, { imageOrientation: 'from-image' }); } catch (_) { try { bmp = await createImageBitmap(src); } catch (_2) { bmp = null; } }
+        if (!bmp) { url = URL.createObjectURL(src); imgEl = new Image(); await new Promise((res, rej) => { imgEl.onload = res; imgEl.onerror = () => rej(new Error(sn.kind ? '無法解碼這個 ' + sn.kind + ' 檔（檔案損毀，或這個瀏覽器不支援這種編碼）' : '不認得的圖片格式（支援 jpg／png／gif／webp／bmp／ico／avif／svg／tiff／heic；tga、psd、raw 等請先轉成 jpg 或 png）')); imgEl.src = url; }); }
         try {
             const w = bmp ? bmp.width : (imgEl.naturalWidth || 1024), h = bmp ? bmp.height : (imgEl.naturalHeight || 768); const cap = Math.min(FaImgProc.MAX_PIXELS / 2, Number(maxPixels) > 0 ? Number(maxPixels) : 60e6);
             const k = w * h > cap ? Math.sqrt(cap / (w * h)) : 1; const tw = Math.max(1, Math.round(w * k)), th = Math.max(1, Math.round(h * k));
@@ -60648,7 +60941,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const sources = [];
         for (let i = 0; i < plan.length; i++) {
             say('讀取第 ' + (i + 1) + '/' + plan.length + ' 張…');
-            try { const src = await this._imgPdfLoadSource(plan[i].ref); if (_faClassifyMediaFile(src.label) !== 'image' && !/^image\//i.test((src.blob && src.blob.type) || '')) throw new Error('「' + src.label + '」不是圖片（要 png／jpg／webp／gif／bmp／svg…）'); sources.push(src); }
+            try { const src = await this._imgPdfLoadSource(plan[i].ref); const sn = await this._imgPdfSniff(src.blob); if (sn.kind === 'pdf') throw new Error('「' + src.label + '」是 PDF 不是圖片（要合併 PDF 請用 merge_pdfs）'); if (!sn.kind && _faClassifyMediaFile(src.label) !== 'image' && !/^image\//i.test((src.blob && src.blob.type) || '')) throw new Error('「' + src.label + '」看起來不是圖片（支援 jpg／png／gif／webp／bmp／ico／avif／svg／tiff／heic，副檔名不重要，用內容判斷；tga、psd、raw 等請先轉成 jpg 或 png）'); src.sniff = sn; sources.push(src); }
             catch (err) { if (spec.on_error === 'skip') { sources.push(null); continue; } return { ok: false, error: '第 ' + (i + 1) + ' 頁（' + plan[i].ref + '）：' + String(err.message || err) }; }
         }
         const explicit = (Array.isArray(spec.pages) && spec.pages.length) || (Array.isArray(spec.files) && spec.files.length);
@@ -60665,7 +60958,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             const src = sources[idx], pl = plan[idx]; if (!src) { warnings.push('略過：' + pl.ref); continue; } n++;
             say('第 ' + n + '/' + order.length + ' 張：' + src.label + (pl.ops.length ? '（' + pl.ops.map((o) => o.op).join('→') + '）' : '') + '…');
             try {
-                const dec = await this._imgPdfDecode(src.blob, spec.max_pixels); if (dec.downscaled) warnings.push(src.label + ' 太大（' + dec.srcWidth + '×' + dec.srcHeight + '），處理前先縮小成 ' + dec.width + '×' + dec.height);
+                const dec = await this._imgPdfDecode(src.blob, spec.max_pixels, src.sniff); if (dec.tiffPages) warnings.push(src.label + ' 是多頁 TIFF（' + dec.tiffPages + ' 頁），目前只用第一頁'); if (dec.downscaled) warnings.push(src.label + ' 太大（' + dec.srcWidth + '×' + dec.srcHeight + '），處理前先縮小成 ' + dec.width + '×' + dec.height);
                 const res = FaImgProc.run({ width: dec.width, height: dec.height, data: dec.data }, pl.ops); let img = res.img;
                 const alpha = FaImgProc.hasTransparency(img); const lossless = pl.ops.some((o) => ['reduce_colors', 'threshold', 'posterize'].includes(o.op));
                 const fmt = fmtPref === 'auto' ? ((alpha && String(pl.background || '').toLowerCase() === 'transparent') || lossless ? 'png' : 'jpeg') : fmtPref;
@@ -60682,6 +60975,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         }
         if (!pages.length) return { ok: false, error: '沒有任何一頁成功', warnings };
         say('產生PDF…'); let out; try { out = await pdf.save(); } catch (err) { return { ok: false, error: '輸出PDF失敗：' + String(err.message || err) }; }
+        if (spec._bytesOnly) return { ok: true, bytes: out, pageCount: pages.length, pages, warnings };
         const blob = new Blob([out], { type: 'application/pdf' });
         let name = String(spec.filename || '').trim().replace(/[\\/:*?"<>|]/g, '_'); if (name && !/\.pdf$/i.test(name)) name += '.pdf'; if (!name) name = '圖片轉PDF_' + Date.now() + '.pdf';
         let pdfFileId; try { pdfFileId = await this.fileCache.put(name, 'application/pdf', blob, 'uploaded'); } catch (err) { return { ok: false, error: '儲存PDF失敗：' + String(err.message || err) }; }
@@ -60692,6 +60986,141 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 const op = String(spec.output_path).trim();
                 if (/^fap:/i.test(op)) { const w = await this._fapCopyFromStorage(pdfFileId, op, { deleteSource: false }); result.saved_to = 'fap:' + w.access_point + '/' + w.filename; }
                 else if (window.desktopAPI && window.desktopAPI.rawfs) { const target = /\.pdf$/i.test(op) ? op : op.replace(/[\\/]+$/, '') + (op.includes('\\') ? '\\' : '/') + name; let bin = ''; const u8 = out; for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); const w = await window.desktopAPI.rawfs.writeFile(target, { base64: btoa(bin) }); result.saved_to = (w && w.path) || target; }
+                else result.save_error = '這個環境不能寫到 ' + op + '（網頁版請用 fap:名稱/路徑）；PDF 已產生成下載附件';
+            } catch (err) { result.save_error = '存到 ' + spec.output_path + ' 失敗：' + String(err.message || err); }
+        }
+        return result;
+    }
+
+    // ===== 合併成一份 PDF：PDF、各種圖片、文字檔、docx、xlsx（pptx／doc／xls／rtf／odt 要有 Word／Excel／PowerPoint／LibreOffice）=====
+    // 種類用檔案內容判斷（FaDocMerge.sniffDoc），副檔名不重要。PDF：直接複製頁面（文字仍可選取）；圖片：走 images_to_pdf 的同一套（頁面大小、縮放置中、EXIF 方向…）；
+    // 文字檔：排版後用 canvas 畫成頁面（中文用系統字型，不是可選取文字）；docx／xlsx／pptx…：桌面版優先用 Word／Excel／PowerPoint（Windows）或 LibreOffice 轉成 PDF（版面、圖片、字型都保留），
+    // 都沒有時 docx／xlsx 退回「簡化版」（文字、標題、表格；圖片與版面不保留，會在 warnings 說明）。
+    async _docMergeConvertOffice(kind, blob, label, opts) {
+        const api = window.desktopAPI; if (!api || !api.rawfs || !api.exec) return { ok: false, reason: '網頁版不能執行本機程式（Word／LibreOffice）' };
+        const engine = String((opts && opts.office_engine) || 'auto').toLowerCase(); if (engine === 'simple') return { ok: false, reason: '已指定用簡化轉換' };
+        const isWin = !!(api.platform && api.platform.isWindows), isMac = !!(api.platform && api.platform.isMac);
+        let base = null; try { base = await api.downloads.defaultDir(); } catch (_) { /* 沒有就放棄 */ } if (!base) return { ok: false, reason: '找不到暫存資料夾' };
+        const sep = isWin ? '\\' : '/'; const fwd = (x) => String(x).replace(/\\/g, '/'); const work = String(base).replace(/[\\/]+$/, '') + sep + '.fa-merge-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+        const ext = ({ docx: 'docx', xlsx: 'xlsx', pptx: 'pptx', rtf: 'rtf', odf: 'odt' })[kind] || ((String(label).match(/\.([a-z0-9]+)$/i) || [])[1] || 'bin').toLowerCase();
+        const inPath = work + sep + 'in.' + ext, outPdf = work + sep + 'out.pdf'; const tried = [];
+        try {
+            await api.rawfs.mkdir(work); const u8 = new Uint8Array(await blob.arrayBuffer()); let bin = ''; for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); await api.rawfs.writeFile(inPath, { base64: btoa(bin) });
+            const readPdf = async (...paths) => { for (const pth of paths) { try { const st = await api.rawfs.stat(pth); if (st && st.size > 0) { const r = await api.rawfs.readFile(pth, 'base64'); const b = atob(r.base64), o = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) o[i] = b.charCodeAt(i); return o; } } catch (_) { /* 沒這個檔 */ } } return null; };
+            const q = (x) => fwd(x).replace(/'/g, "''");
+            const engines = []; if (isWin && engine !== 'libreoffice') engines.push('office'); if (engine !== 'office') engines.push('libreoffice');
+            for (const eng of engines) {
+                if (eng === 'office') {
+                    const app = ({ docx: 'word', rtf: 'word', xlsx: 'excel', pptx: 'powerpoint' })[kind] || ((ext === 'doc' || ext === 'odt') ? 'word' : (ext === 'xls' || ext === 'ods') ? 'excel' : (ext === 'ppt' || ext === 'odp') ? 'powerpoint' : 'word');
+                    const body = app === 'word' ? `$app = New-Object -ComObject Word.Application\n$app.Visible = $false\n$app.DisplayAlerts = 0\ntry { $d = $app.Documents.Open('${q(inPath)}', $false, $true); $d.ExportAsFixedFormat('${q(outPdf)}', 17); $d.Close($false) } finally { $app.Quit() }`
+                        : app === 'excel' ? `$app = New-Object -ComObject Excel.Application\n$app.Visible = $false\n$app.DisplayAlerts = $false\ntry { $wb = $app.Workbooks.Open('${q(inPath)}', 0, $true); $wb.ExportAsFixedFormat(0, '${q(outPdf)}'); $wb.Close($false) } finally { $app.Quit() }`
+                            : `$app = New-Object -ComObject PowerPoint.Application\ntry { $p = $app.Presentations.Open('${q(inPath)}', -1, 0, 0); $p.SaveAs('${q(outPdf)}', 32); $p.Close() } finally { $app.Quit() }`;
+                    const ps1 = work + sep + 'convert.ps1'; await api.rawfs.writeFile(ps1, { text: '\uFEFF$ErrorActionPreference = \'Stop\'\n' + body + '\n' });
+                    let run = null; try { run = await api.exec.run({ rootId: null, command: `powershell -NoProfile -ExecutionPolicy Bypass -File "${fwd(ps1)}"`, args: [], cwdRel: '.', cwdAbs: fwd(work) }); } catch (err) { tried.push('Office：' + String((err && err.message) || err).slice(0, 120)); continue; }
+                    const out = await readPdf(outPdf); if (out) return { ok: true, bytes: out, engine: app === 'word' ? 'Word' : app === 'excel' ? 'Excel' : 'PowerPoint' }; tried.push('Office：沒有輸出（沒安裝 ' + app + '？' + String((run && (run.stderr || run.errorMessage)) || '').slice(0, 80) + '）');
+                } else {
+                    const cands = isWin ? ['C:\\Program Files\\LibreOffice\\program\\soffice.exe', 'C:\\Program Files (x86)\\LibreOffice\\program\\soffice.exe'] : (isMac ? ['/Applications/LibreOffice.app/Contents/MacOS/soffice'] : []);
+                    let exe = 'soffice'; for (const c of cands) { try { const st = await api.rawfs.stat(c); if (st) { exe = c; break; } } catch (_) { /* 下一個 */ } }
+                    const cmd = `"${exe}" --headless --norestore --nolockcheck -env:UserInstallation=file:///${fwd(work).replace(/^\//, '')}/lo-profile --convert-to pdf --outdir "${fwd(work)}" "${fwd(inPath)}"`;
+                    let run = null; try { run = await api.exec.run({ rootId: null, command: cmd, args: [], cwdRel: '.', cwdAbs: fwd(work) }); } catch (err) { tried.push('LibreOffice：' + String((err && err.message) || err).slice(0, 120)); continue; }
+                    const out = await readPdf(work + sep + 'in.pdf'); if (out) return { ok: true, bytes: out, engine: 'LibreOffice' }; tried.push('LibreOffice：沒有輸出（沒安裝？' + String((run && (run.stderr || run.errorMessage)) || '').slice(0, 80) + '）');
+                }
+            }
+            return { ok: false, reason: tried.join('；') || '沒有可用的轉換程式' };
+        } catch (err) { return { ok: false, reason: String((err && err.message) || err) }; }
+        finally { try { await api.rawfs.remove(work, true); } catch (_) { /* 清不掉就留著 */ } }
+    }
+    // 把排好的頁面（FaDocMerge.layoutBlocks 的輸出）用 canvas 畫成圖片頁，加進 pdf。回傳頁數。
+    async _docMergeDrawPages(pdf, pages, o) {
+        const DPI = 150, pw = o.pageW, ph = o.pageH; const SANS = '"Noto Sans TC","Microsoft JhengHei","PingFang TC","Segoe UI",system-ui,sans-serif', MONO = 'Consolas,"Courier New","Noto Sans Mono CJK TC","Microsoft JhengHei","PingFang TC",monospace';
+        for (let i = 0; i < pages.length; i++) {
+            const c = document.createElement('canvas'); c.width = pw; c.height = ph; const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, pw, ph); g.textBaseline = 'top';
+            for (const op of pages[i]) {
+                if (op.t === 'text') { g.font = (op.bold ? 'bold ' : '') + op.size + 'px ' + (op.mono ? MONO : SANS); g.fillStyle = '#111'; g.fillText(op.s, op.x, op.y); }
+                else { g.strokeStyle = '#888'; g.lineWidth = 1; g.beginPath(); g.moveTo(op.x1, op.y1); g.lineTo(op.x2, op.y2); g.stroke(); }
+            }
+            g.font = '16px ' + SANS; g.fillStyle = '#888'; if (o.title) g.fillText(o.title, o.margin, Math.max(8, o.margin / 2)); g.textAlign = 'right'; g.fillText((i + 1) + ' / ' + pages.length, pw - o.margin, ph - Math.max(28, o.margin / 2)); g.textAlign = 'left';
+            const blob = await new Promise((res) => c.toBlob(res, 'image/png')); c.width = c.height = 0; if (!blob) throw new Error('畫面轉 PNG 失敗');
+            const emb = await pdf.embedPng(new Uint8Array(await blob.arrayBuffer())); const page = pdf.addPage([pw * 72 / DPI, ph * 72 / DPI]); page.drawImage(emb, { x: 0, y: 0, width: pw * 72 / DPI, height: ph * 72 / DPI });
+        }
+        return pages.length;
+    }
+    async _docMergeBlocksToPdfBytes(blocks, title, o) {
+        await this._ensurePdfLibLoaded(); const DPI = 150; const mm = (v) => Math.round(v / 25.4 * DPI); const sz = FaImgProc.PAGE_MM[String(o.page_size || 'a4').toLowerCase()] || FaImgProc.PAGE_MM.a4; const land = o.landscape;
+        const pageW = mm(land ? sz[1] : sz[0]), pageH = mm(land ? sz[0] : sz[1]); const margin = Math.round(Math.max(0, Number(o.margin_mm) >= 0 && o.margin_mm != null ? Number(o.margin_mm) : 15) / 25.4 * DPI);
+        const mc = document.createElement('canvas').getContext('2d'); const MONO = 'Consolas,"Courier New","Noto Sans Mono CJK TC","Microsoft JhengHei","PingFang TC",monospace', SANS = '"Noto Sans TC","Microsoft JhengHei","PingFang TC","Segoe UI",system-ui,sans-serif';
+        const measure = (txt, f) => { f = f || {}; mc.font = (f.bold ? 'bold ' : '') + (f.size || o.fontPx || 21) + 'px ' + (f.mono ? MONO : SANS); return mc.measureText(txt).width; };
+        const pages = FaDocMerge.layoutBlocks(blocks, { pageW, pageH, margin, fontPx: o.fontPx || 21, lineH: 1.4, measure, mono: !!o.mono, header: true, footer: true });
+        const MAXP = 400; let truncated = false; if (pages.length > MAXP) { pages.length = MAXP; truncated = true; }
+        const pdf = await PDFLib.PDFDocument.create(); const n = await this._docMergeDrawPages(pdf, pages, { pageW, pageH, margin, title }); const bytes = await pdf.save();
+        return { bytes, pageCount: n, truncated };
+    }
+    async _docMergeOne(src, spec, say, warnings) {
+        const sn = src.sniff; const label = src.label; const u8 = new Uint8Array(await src.blob.arrayBuffer()); const out = { kind: sn.kind, method: '', bytes: null, pages: 0 };
+        if (sn.kind === 'pdf') { out.bytes = u8; out.method = '複製頁面'; return out; }
+        if (sn.kind === 'image') {
+            say('圖片：' + label + '…'); const r = await this._imagesToPdfAdvanced({ pages: [{ file: src.ref }], page_size: spec.page_size || 'a4', orientation: spec.orientation, fit: spec.fit, margin: spec.margin, zoom: spec.zoom, background: spec.background, jpeg_quality: spec.jpeg_quality, ops: spec.ops, dpi: spec.dpi, _bytesOnly: true }, null);
+            if (!r.ok) throw new Error(r.error); (r.warnings || []).forEach((w) => warnings.push(w)); out.bytes = r.bytes; out.method = '圖片（' + (spec.page_size || 'a4') + '）'; return out;
+        }
+        if (sn.kind === 'text') {
+            say('文字檔：' + label + '…'); if (u8.length > 8 * 1024 * 1024) throw new Error('「' + label + '」超過 8MB，文字檔太大不轉成頁面');
+            const txt = FaDocMerge.decodeText(u8); const r = await this._docMergeBlocksToPdfBytes([{ type: 'p', text: txt, level: 0 }], label, { page_size: spec.page_size, margin_mm: spec.margin_mm, mono: true, fontPx: spec.text_font_px, landscape: String(spec.orientation || '').toLowerCase() === 'landscape' });
+            if (r.truncated) warnings.push('「' + label + '」太長，只轉了前 400 頁'); out.bytes = r.bytes; out.method = '文字排版'; return out;
+        }
+        if (['docx', 'xlsx', 'pptx', 'rtf', 'odf', 'ole'].includes(sn.kind)) {
+            say((sn.kind === 'ole' ? '舊版 Office 檔：' : sn.kind + '：') + label + '…'); const conv = await this._docMergeConvertOffice(sn.kind, src.blob, label, spec);
+            if (conv.ok) { out.bytes = conv.bytes; out.method = conv.engine; return out; }
+            if (sn.kind === 'docx' || sn.kind === 'xlsx') {
+                const files = await FaDocMerge.readZip(u8, (nm) => /^(word\/document\.xml|xl\/|\[Content_Types\])/.test(nm)); let blocks, notes = [];
+                if (sn.kind === 'docx') { const d = FaDocMerge.docxToBlocks(files); blocks = d.blocks; if (d.images) notes.push(d.images + ' 張圖片沒有轉進來'); } else { const d = FaDocMerge.xlsxToBlocks(files); blocks = d.blocks; notes = d.notes || []; }
+                const r = await this._docMergeBlocksToPdfBytes(blocks, label, { page_size: spec.page_size, margin_mm: spec.margin_mm, mono: false, fontPx: spec.text_font_px, landscape: sn.kind === 'xlsx' || String(spec.orientation || '').toLowerCase() === 'landscape' });
+                warnings.push('「' + label + '」用簡化版轉換（文字' + (sn.kind === 'docx' ? '、標題、表格' : '與表格內容') + '；版面、字型、顏色' + (sn.kind === 'docx' ? '、圖片' : '、圖表') + '不保留）——' + (conv.reason || '沒有 Word／LibreOffice') + '。要原樣轉請安裝 Word 或 LibreOffice' + (notes.length ? '。另外：' + notes.join('；') : ''));
+                out.bytes = r.bytes; out.method = '簡化版（無 Office）'; return out;
+            }
+            throw new Error('「' + label + '」（' + sn.kind + '）需要 Word／Excel／PowerPoint 或 LibreOffice 才能轉成 PDF：' + (conv.reason || '找不到'));
+        }
+        throw new Error('「' + label + '」不是支援的檔案（PDF、圖片、文字、docx、xlsx、pptx、doc、xls、rtf、odt 都可以；副檔名不重要，用內容判斷）');
+    }
+    async _mergeDocsToPdf(spec, onProgress) {
+        spec = spec || {}; const say = (m) => { if (onProgress) onProgress(m); };
+        let refs = Array.isArray(spec.files) ? spec.files.map(String).filter(Boolean) : (spec.files ? [String(spec.files)] : []);
+        if (spec.folder) { try { refs = refs.concat(await this._imgPdfListFolder(spec.folder, spec.pattern, /\.(pdf|docx?|xlsx?|pptx?|rtf|odt|ods|odp|txt|text|md|markdown|csv|tsv|log|json|jsonl|xml|html?|ya?ml|ini|cfg|conf|toml|png|apng|jpe?g|jfif|jpe|webp|gif|bmp|tiff?|avif|heic|heif|svg|ico)$/i)); } catch (err) { return { ok: false, error: String(err.message || err) }; } }
+        const explicit = Array.isArray(spec.files) && spec.files.length;
+        if (!refs.length) { const cands = await this._attachmentCandidates('any'); refs = cands.map((c) => c.id); }
+        if (!refs.length) return { ok: false, error: '沒有檔案可以合併：請附加檔案，或用 files／folder 指定' };
+        if (refs.length > 300) return { ok: false, error: '一次最多 300 個檔案（給了 ' + refs.length + '）' };
+        const sources = [];
+        for (let i = 0; i < refs.length; i++) {
+            say('讀取第 ' + (i + 1) + '/' + refs.length + ' 個…');
+            try { const src = await this._imgPdfLoadSource(refs[i]); src.ref = refs[i]; const u8 = new Uint8Array(await src.blob.slice(0, 8192).arrayBuffer()); src.sniff = await FaDocMerge.sniffDoc(src.blob.size <= 8192 ? u8 : new Uint8Array(await src.blob.arrayBuffer()), src.label); sources.push(src); }
+            catch (err) { if (spec.on_error === 'skip') { sources.push(null); continue; } return { ok: false, error: '第 ' + (i + 1) + ' 個（' + refs[i] + '）：' + String(err.message || err) }; }
+        }
+        const sortMode = spec.sort ? String(spec.sort).toLowerCase() : (explicit ? 'none' : 'name'); const order = refs.map((_, i) => i);
+        if (sortMode === 'name' || sortMode === 'natural' || sortMode === 'name_desc') { order.sort((a, b) => FaImgProc.naturalCompare((sources[a] || {}).label || '', (sources[b] || {}).label || '')); if (sortMode === 'name_desc') order.reverse(); }
+        else if (sortMode === 'modified') order.sort((a, b) => ((sources[a] || {}).lastModified || 0) - ((sources[b] || {}).lastModified || 0)); else if (sortMode === 'reverse') order.reverse();
+        try { await this._ensurePdfLibLoaded(); } catch (err) { return { ok: false, error: String(err.message || err) }; }
+        const merged = await PDFLib.PDFDocument.create(); const report = [], warnings = []; let total = 0, n = 0;
+        for (const idx of order) {
+            const src = sources[idx]; if (!src) { warnings.push('略過：' + refs[idx]); continue; } n++;
+            say('第 ' + n + '/' + order.length + ' 個：' + src.label + '…');
+            try {
+                const one = await this._docMergeOne(src, spec, say, warnings); let doc;
+                try { doc = await PDFLib.PDFDocument.load(one.bytes); } catch (err) { const enc = err && (err.name === 'EncryptedPDFError' || /encrypt/i.test(String(err.message || ''))); throw new Error(enc ? '是有密碼保護的PDF，不支援解密，請先移除密碼保護' : '不是有效的PDF或已損毀：' + String(err.message || err)); }
+                const pgs = await merged.copyPages(doc, doc.getPageIndices()); pgs.forEach((pg) => merged.addPage(pg)); total += pgs.length; report.push({ filename: src.label, kind: one.kind, pages: pgs.length, method: one.method });
+            } catch (err) { if (spec.on_error === 'skip') { warnings.push('略過 ' + src.label + '：' + String(err.message || err)); n--; continue; } return { ok: false, error: '第 ' + n + ' 個（' + src.label + '）：' + String(err.message || err), done: report }; }
+            await new Promise((r) => setTimeout(r, 0));
+        }
+        if (!report.length) return { ok: false, error: '沒有任何檔案成功', warnings };
+        say('產生PDF…'); let outBytes; try { outBytes = await merged.save(); } catch (err) { return { ok: false, error: '輸出PDF失敗：' + String(err.message || err) }; }
+        const blob = new Blob([outBytes], { type: 'application/pdf' }); let name = String(spec.filename || '').trim().replace(/[\\/:*?"<>|]/g, '_'); if (name && !/\.pdf$/i.test(name)) name += '.pdf'; if (!name) name = '合併_' + Date.now() + '.pdf';
+        let pdfFileId; try { pdfFileId = await this.fileCache.put(name, 'application/pdf', blob, 'uploaded'); } catch (err) { return { ok: false, error: '儲存PDF失敗：' + String(err.message || err) }; }
+        const result = { ok: true, pdf_file_id: pdfFileId, filename: name, sizeBytes: blob.size, pageCount: total, fileCount: report.length, files: report };
+        if (warnings.length) result.warnings = warnings;
+        if (spec.output_path) {
+            try {
+                const op = String(spec.output_path).trim();
+                if (/^fap:/i.test(op)) { const w = await this._fapCopyFromStorage(pdfFileId, op, { deleteSource: false }); result.saved_to = 'fap:' + w.access_point + '/' + w.filename; }
+                else if (window.desktopAPI && window.desktopAPI.rawfs) { const target = /\.pdf$/i.test(op) ? op : op.replace(/[\\/]+$/, '') + (op.includes('\\') ? '\\' : '/') + name; let bin = ''; for (let i = 0; i < outBytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, outBytes.subarray(i, i + 0x8000)); const w = await window.desktopAPI.rawfs.writeFile(target, { base64: btoa(bin) }); result.saved_to = (w && w.path) || target; }
                 else result.save_error = '這個環境不能寫到 ' + op + '（網頁版請用 fap:名稱/路徑）；PDF 已產生成下載附件';
             } catch (err) { result.save_error = '存到 ' + spec.output_path + ' 失敗：' + String(err.message || err); }
         }
@@ -60726,26 +61155,27 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         let fileArgs = text ? text.split(/\s+/).filter(Boolean) : [];
         let consumedIds = null;
         if (!text) {
-            const pending = this._pickPendingAttachmentsByClass('pdf');
-            if (pending.length >= 2) { fileArgs = pending.map((a) => a.id); consumedIds = fileArgs; }
+            // 不給參數＝這次附加的全部檔案（PDF、圖片、文字檔、docx、xlsx…），依附加順序
+            const pending = (this._pendingAttachments || []).filter((a) => a.status === 'done' && !['video', 'audio', 'subtitle'].includes(_faClassifyMediaFile(a.filename)));
+            if (pending.length >= 1) { fileArgs = pending.map((a) => a.id); consumedIds = fileArgs; }
         }
-        if (fileArgs.length < 2) {
-            this._failSlashCommandValidation(`/office-pdf-merge ${text}`.trim(), '/office-pdf-merge：至少需要2個PDF——先附加多個PDF後直接打 /office-pdf-merge（不用打id），或明確指定 /office-pdf-merge file_1 file_2');
+        if (fileArgs.length < 1) {
+            this._failSlashCommandValidation(`/office-pdf-merge ${text}`.trim(), '/office-pdf-merge：沒有檔案——先附加檔案（PDF、圖片、文字檔、docx、xlsx 都可以，依附加順序合併）後直接打 /office-pdf-merge，或明確指定 /office-pdf-merge file_1 file_2');
             return;
         }
-        this.messages.push({ role: 'user', content: `📄 合併PDF：${fileArgs.join(' ')}` });
+        this.messages.push({ role: 'user', content: `📄 合併成PDF：${fileArgs.join(' ')}` });
         const prog = this._createProgressWidget('合併PDF');
         let result;
         try {
-            result = await this._mergePdfFiles(fileArgs, (m) => prog.update({ status: m }));
+            result = await this._mergeDocsToPdf({ files: fileArgs, sort: 'none' }, (m) => prog.update({ status: m }));
         } catch (err) {
             result = { ok: false, error: String(err && err.message || err) };
         }
         if (!result.ok) { this._failSlashCommandRuntime(prog, result.error); return; }
-        prog.finish(`完成：合併 ${result.fileCount} 份PDF，共 ${result.pageCount} 頁`);
+        prog.finish(`完成：合併 ${result.fileCount} 個檔案，共 ${result.pageCount} 頁${(result.warnings || []).length ? '（有提醒，見下）' : ''}`);
         if (consumedIds) this._consumePendingAttachments(consumedIds);
         if (result.pdf_file_id) {
-            await this._deliverExistingCacheFile(result.pdf_file_id, `📎 已合併 ${result.fileCount} 份PDF（共${result.pageCount}頁）：${result.filename}（${(result.sizeBytes / 1024 / 1024).toFixed(1)}MB）`);
+            await this._deliverExistingCacheFile(result.pdf_file_id, `📎 已合併 ${result.fileCount} 個檔案成PDF（共${result.pageCount}頁）：${result.filename}（${(result.sizeBytes / 1024 / 1024).toFixed(1)}MB）${(result.warnings || []).length ? '\n⚠️ ' + result.warnings.join('\n⚠️ ') : ''}`);
         }
     }
 
@@ -61515,7 +61945,14 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         this.messages = this.messages.filter(m => !m.content.startsWith('[Hermes 歷史記憶喚醒]'));
         if (this.advancedSettings.ragEnabled) {
             try {
-                const resolvedChain = await this.ragSystem.query(userText, 3);
+                let resolvedChain = await this.ragSystem.query(userText, 3);
+                // 這則訊息有專用工具（見 FA_TASK_TOOL_HINTS）：記憶裡「自己寫 python／img2pdf／ImageMagick」的舊做法不要再餵給模型——
+                // 真實對話裡，過去失敗或不合意圖的腳本做法被自動記成技能，下一次又被喚醒，模型就跟著再寫一次 python（還把「Zoom」記成「填滿裁切」）
+                if (_faTaskToolHints(userText).length) {
+                    const before = resolvedChain.length;
+                    resolvedChain = resolvedChain.filter((x) => !/img2pdf|Pillow|\bPIL\b|ImageMagick|reportlab|PyPDF2|pypdf|\bfitz\b|PyMuPDF|magick|convert\s+-/i.test(String(x.content || '')));
+                    if (before !== resolvedChain.length) this._log('🧠 這個需求有專用工具：略過 ' + (before - resolvedChain.length) + ' 個「自己寫腳本」的舊記憶');
+                }
 
                 if (resolvedChain.length > 0) {
                     const memoryContent = resolvedChain.map(s => {
@@ -61532,10 +61969,11 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
 
                     this.messages.splice(1, 0, {
                         role: 'system',
-                        content: `[Hermes 歷史記憶喚醒]\n檢索到以下相互關聯的「知識/章節推論依賴圖譜鏈」。某些節點雖然沒有直接與輸入字面匹配，但它是被命中節點的前置 Prerequisites 必要脈絡！請結合以下鏈條回答問題：\n\n${memoryContent}`
+                        content: `[Hermes 歷史記憶喚醒]\n檢索到以下相互關聯的「知識/章節推論依賴圖譜鏈」。某些節點雖然沒有直接與輸入字面匹配，但它是被命中節點的前置 Prerequisites 必要脈絡！請結合以下鏈條回答問題：\n\n${memoryContent}${(() => { const hh = _faTaskToolHints(userText); return hh.length ? '\n\n※ 注意：這個需求現在有專用工具（' + hh.map((h) => h.tools[0]).join('、') + '）。上面記憶裡如果是用 python／img2pdf／Pillow／ImageMagick 之類自己寫腳本的做法，已經過時，不要照做，改用專用工具（做法見系統提示）。' : ''; })()}`,
+                        _ragNodeIds: resolvedChain.map((x) => x.id)
                     });
 
-                    this._log("🧠 圖譜機制已喚醒 " + resolvedChain.length + " 個依賴知識/文章切片節點");
+                    this._log("🧠 圖譜機制已喚醒 " + resolvedChain.length + " 個依賴知識/文章切片節點：" + resolvedChain.map((x) => x.id).join("、"));
                     this._renderMessageHistory();
                 }
             } catch (err) {
@@ -62681,8 +63119,12 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             const isDeck = this._deckIsDomain(domainKey);
             if (isDeck) { this._deckBeginRun(task); this._deckInDomainRun = true; }
             if (isDeck && this._latestDeckUrl && !/client-file\//.test(task)) task += '\n\n【這個對話最近做的簡報是 ' + this._latestDeckUrl + '。如果這次的要求是修改它（改字、換圖、改題目、換配色），先用 get_presentation_yaml 取得它的內容，只改要改的地方再重新產生；如果是要做全新的簡報就不要理它。】';
+            // 依任務文字補專用工具（見 FA_TASK_TOOL_HINTS）：根模型挑的領域沒有那個工具時，這次執行也拿得到
+            const taskHints = isDeck ? [] : _faTaskToolHints(task);
+            const hintedTools = (() => { const base = this._resolveDomainToolNames(domain); if (!Array.isArray(base) || !taskHints.length) return base; const set = new Set(base); for (const h of taskHints) for (const n of h.tools) set.add(n); return Array.from(set); })();
+            if (taskHints.length) { skillDirNote += '\n\n' + taskHints.map((h) => h.note).join('\n\n'); const m = taskHints.map((h) => h.id).join('、'); if (progress) progress.log('🧭 任務符合專用工具：' + m + '——已補給這個子agent'); }
             const runOnce = (taskText) => this._runSubAgentTask(taskText, isDeck ? 90 : (isSkillDomain ? SUBAGENT_DELEGATE_MAX_ROUNDS * 2 : SUBAGENT_DELEGATE_MAX_ROUNDS), {
-                allowedToolNames: this._resolveDomainToolNames(domain),
+                allowedToolNames: hintedTools,
                 meta: extra.meta || { domain: (domain && domain.label) || domainKey, source: '本機', kind: 'local' },
                 systemPrompt: this._resolveDomainSystemPrompt(domain) + skillDirNote,
                 onProgress: (status) => { if (progress) progress.update({ status }); if (extra.onProgress) extra.onProgress(status); },

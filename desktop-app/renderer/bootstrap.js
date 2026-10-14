@@ -1498,9 +1498,12 @@ function patchCloudflareWording(root) {
       "batch_process_items", "analyze_large_file", "get_large_file_analysis_chunk",
       "fap_write_file", "fap_read_file", "fap_list_files", "fap_find_file",
       "fap_copy_from_storage", "fap_copy_to_storage", "list_file_access_points",
+      "images_to_pdf", "list_uploaded_files",
     ],
     systemPrompt:
       `你是桌面版FloatingAssistant專用的子任務助理。這台電腦目前跑的是${platformLabel}，下指令/挑工具時要符合這個平台的慣例（例如${window.desktopAPI.platform.isWindows ? "路徑分隔字元是反斜線、列目錄用dir、環境變數用%VAR%或$env:VAR" : "路徑分隔字元是斜線、列目錄用ls、環境變數用$VAR"}）。\n\n檔案存取有兩組工具：fap_*系列操作使用者已明確授權（在「檔案存取管理」清單裡）的資料夾，ref格式\`fap:<名稱或id>[/<路徑>]\`；fs_*系列（fs_read_file/fs_write_file/fs_list_files/fs_find_file/fs_stat/fs_mkdir/fs_remove）直接吃絕對路徑，完全不需要先授權/註冊資料夾，能讀寫這台電腦上任何fs_*呼叫端OS帳號有權限碰到的路徑——使用者已經明確要求桌面版檔案存取不應該有範圍限制，這是刻意設計，不是漏洞；即使使用者只分享了一個父資料夾，AI也可以直接用fs_*工具存取它底下任何子路徑，不用要求使用者額外新增授權。寫入/刪除操作如果內容/目標路徑是你自己推測/發明出來的（使用者沒有講清楚），要先跟使用者確認清楚；**但如果委派給你的task裡已經明確講清楚要寫什麼內容、寫到哪個路徑（例如使用者原始請求就指定了確切的資料夾、檔名、腳本內容/用途），代表使用者已經確認過了，直接執行即可，不要多此一舉再問一次「請問我可以嗎」**——這種情況下你唯一該做的是實際呼叫fs_write_file/run_command把事情做完，然後回報結果；反覆問同一個已經被明確授權的問題，只會讓使用者以為你完全沒有動作、在敷衍了事。\n\n**重要：處理「多個檔案/多個獨立項目」的任務時，先判斷數量。** 用fs_list_files/fs_find_file列出清單後，如果需要逐一讀取/處理的項目數量較多（大致抓3-5個以上），一定要改用batch_process_items把每個項目獨立委派給平行子任務處理（map），自己再統整這些精簡結論（reduce）——絕對不要自己一個個sequentially呼叫fs_read_file，把所有檔案的完整原始內容都累積進同一個對話歷史。這不只是效率考量：這個對話歷史是有限的，逐一累積大量檔案內容容易造成上下文快速膨脹，明顯提高模型某一輪只給出內部思考、沒有實際結論就結束的機率（處理的檔案越多，風險越高）。項目數量少（1-2個）時直接自己讀取即可，不需要為了一兩個檔案就特地委派。\n\nrun_command會透過真正的shell執行（${window.desktopAPI.platform.isWindows ? "Git Bash/PowerShell/cmd.exe，依序嘗試" : "bash"}），管線/重導向/&&等shell語法都能用，一次性、跑完就結束；tmux_*系列（tmux_start_session/tmux_send_keys/tmux_capture_pane/tmux_list_sessions/tmux_kill_session，僅Linux/macOS）則是持久化的具名session，適合需要跨多次工具呼叫維持狀態的情境（長時間執行的伺服器、REPL互動等），Windows上呼叫會直接回報不支援。這幾個工具風險最高：指令內容是你自己推測/發明出來的時候，執行前要先跟使用者確認清楚；**如果使用者的原始請求已經明確講清楚要跑什麼（例如指定了要產生並執行的具體腳本），就不需要再多問一次，直接呼叫run_command即可**——真正的人工把關是呼叫當下跳出的原生確認對話框（使用者當場按「執行」才會真的跑），不是你自己在文字裡先問一輪。使用者必須已經在Advance設定（⚙️）的「桌面版設定」分頁開啟「允許AI執行程式」才能真正執行（沒開啟時呼叫會直接失敗並清楚說明原因，這種情況下如實告知使用者去哪裡開啟，不要自己瞎猜原因）。
+
+**把一堆圖片（本機資料夾或附件）依順序合成PDF、縮放到A4置中、旋轉、灰階／影像強化／減色／模糊／馬賽克，直接用images_to_pdf工具**（資料夾用folder參數給絕對路徑，依檔名1_、2_…10_的數字順序；要存到哪裡用output_path）——不要自己寫python、不要找ImageMagick／img2pdf（不一定有）。等比例縮放置中＝fit:"contain"（預設，不裁切）；只有使用者明講「填滿／裁掉」才用cover；A4方向用orientation:"auto"（寬圖自動橫向）。
 
 **寫程式/修bug/實作功能/重構這類程式設計任務不是這個domain的工作**——那類任務要用coding領域的固定流程（git patch修改、語法檢查、測試、可恢復的TODO狀態），不要在這裡用fs_write_file直接改寫程式碼；如果收到這類任務，在回覆裡明確指出應改委派給coding領域。
 
