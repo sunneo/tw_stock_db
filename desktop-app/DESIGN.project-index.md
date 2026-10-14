@@ -385,3 +385,16 @@ AI 端工具：`repo_map`（結構、`annotate`、`dive_targets`、`save_index`�
 - 匯出頁：符號／檔案旁的「🧠 解釋」（先授權資料夾 → 讀原始碼 → 語法樹分析 → 可選模型潤飾 → 可編輯後存成說明）；資料夾名稱旁的「ⓘ」進資料夾頁、「🧠 產生資料夾說明」。tree-sitter 與模型從 CDN／HuggingFace 下載一次，存瀏覽器快取。
 
 實測（桌面版 Electron，CPU，Qwen3 0.6B）：每則說明約 5 秒；**約一半的模型輸出被驗證擋下**（簡體、編造名稱、語意錯誤的在驗證下仍可能漏網，例如把 `abort()` 寫成「填充記憶體」），所以預設仍保留程式版說明做底、模型只在驗證通過時替換；使用者可在設定頁關掉模型。0.6B 的措辭品質有限，這是已知限制，不是調參能解決的。
+
+## 21. 與 Redmine 外掛（redmine_ai_chat）的 CHANGES 對齊，以及 C# 索引補洞（2026-10-14）
+
+對照另一邊 `redmine_ai_chat/CHANGES.md`＋`DESIGN.project-index.md` §12–§14，這邊補上的：
+
+- **C# 抽取（這邊獨有的洞）**：正規表示式版 `_faRepoExtract` 對 C# 只抓類別，而且 Kotlin 的 `object` 關鍵字會把參數 `object sender` 當定義；沒有任何方法，所以 `InitializeComponent`、`OnPaint` 都「索引裡沒有」。現在抓 namespace／類別／結構／介面／列舉／record／方法（含建構子、override、單行、多行參數）／屬性，XML 文件註解拿掉標籤；抽取器版本 `sv=3`，舊索引的 C# 檔在「接續索引」時自動重新分析。限制：一行裡同時有類別與方法（`class A { void F() {} }`）只記類別。測試 `scripts/repo-extract.test.js`。
+- **索引完成的判定**：讀不到／分析丟例外的檔案（`job.skipped`）不再重試、不擋住 `index_built`（以前 289／290 永遠「部分」，沒有「開啟檢視器」「離線更新說明」）；專案索引頁列出沒分析到的檔案與原因（`map.skipped_files`）。
+- **檢視器導覽歷史**（aidoc 檢視器、單檔／分段匯出頁共用同一份邏輯）：◀ ▶（Alt+←／→、滑鼠上一頁／下一頁鍵）、🕘 清單（最新在上、標「目前」「下一個位置」、死路標 ⚠）、**每一筆記得捲動位置**、最多 200 筆。
+- **完整名稱的符號連結**：`Namespace.Class.Method` 查不到時改用最後一段（`.`、`::`、`->`、`#` 之後）再查，並在頁首說明「用最後一段查到」；最後一段也沒有時，說明常見原因（繼承／覆寫／框架／沒建索引的函式庫）、列名字相同的其他定義、可回上一個位置。
+- **說明（note）是 Markdown**：匯出頁的檔案說明、定義說明用 Markdown 渲染（表格不再是一排 `|---|`）；定義清單裡長的說明（> 220 字或含換行）收在第一行的 `<details>` 底下；單檔匯出頁第一次把定義說明列進定義表。
+- **行為說明的泛用方法名**：Java／JavaScript／Python 的「接收者後面的單字泛用方法名」（`map.get`、`names.size`、`x.join`…）不分類——要名稱夠特別（有大寫或底線、長度 ≥ 9）或語言明列放行（`bare_ok`：Python 的 `cursor／execute／commit`、JS 的 `on／emit／then`、Java 的 `send／submit`）。以前 `map.get` 被當成並行、`names.size` 被當成檔案。語法樹裡 `ERROR` 區段（原始碼有語法錯誤或文法不認得新語法）的呼叫改用文字比對補，只補查得到分類的，標「（語法錯誤區段）」。
+- **這邊已經有、不用補**：單一函式讀真原始碼（這邊的說明是語法樹事實＋敘事，不是只餵符號清單）、授權條款樣板不當說明（`BOILER_RE`）、`#p-ask` 沒有殘留的 `max-width`、分段匯出、原始碼檢視器、整包更新、問答停靠。
+- **那邊有、這邊刻意沒有**：Electron 離線 Viewer App（這邊本身就是 Electron）；那邊沒有、這邊有的：`behavior_define`、`api_semantics`、`_faBehFold` 的正向路徑展開。

@@ -45,4 +45,15 @@ module.exports = {
     OnTick: F(['string_formatting', 'gui_toolkit'], { doc: 'rotation' }),
     OnPaint: F(['graphics_rendering', 'arithmetic_logic'], { loops: 1, doc: 'GDI' }),
     Run: F(['gui_toolkit'], { doc: 'standalone' }) } },
+  // 泛用方法名（join／get／update／append／sort／split…）對任何物件都可能出現：不能因此被當成執行緒、檔案、資料庫
+  python_generic: { file: 'generic.py', language: 'python', minFunctions: 2, maxUnclassified: 3, functions: {
+    build: { notCategories: ['concurrency', 'file_io', 'database_access', 'network_io', 'process_exec', 'ipc'] },
+    lookup: { notCategories: ['concurrency', 'file_io', 'database_access', 'network_io', 'process_exec', 'ipc'] } } },
+  javascript_generic: { file: 'generic.js', language: 'javascript', minFunctions: 1, maxUnclassified: 4, functions: { build: { notCategories: ['file_io', 'database_access', 'network_io', 'process_exec', 'ipc', 'crypto_security', 'filesystem_management'] } } },
+  java_generic: { file: 'Generic.java', language: 'java', minFunctions: 1, maxUnclassified: 4, functions: { build: { notCategories: ['concurrency', 'file_io', 'database_access', 'network_io', 'process_exec', 'ipc', 'crypto_security', 'filesystem_management'] } } },
+  csharp_generic: { file: 'generic.cs', language: 'csharp', minFunctions: 1, maxUnclassified: 4, functions: { Build: { notCategories: ['concurrency', 'file_io', 'database_access', 'network_io', 'process_exec', 'ipc', 'crypto_security', 'filesystem_management'] } } },
+  ruby_generic: { file: 'generic.rb', language: 'ruby', minFunctions: 1, maxUnclassified: 4, functions: { build: { notCategories: ['concurrency', 'file_io', 'database_access', 'network_io', 'process_exec', 'ipc', 'crypto_security', 'filesystem_management'] } } },
+  lua_generic: { file: 'generic.lua', language: 'lua', minFunctions: 1, maxUnclassified: 4, functions: { build: { notCategories: ['concurrency', 'file_io', 'database_access', 'network_io', 'process_exec', 'ipc', 'crypto_security', 'filesystem_management'] } } },
+  // 語法有錯／文法不認得的新語法：不能整個檔案都沒有函式；錯誤區段外的函式照樣分析
+  csharp_broken: { file: 'broken.cs', language: 'csharp', minFunctions: 2, maxUnclassified: 6, functions: { Load: { categories: ['file_io'] }, Save: { categories: ['file_io'] }, After: { categories: ['filesystem_management'] } } },
 };

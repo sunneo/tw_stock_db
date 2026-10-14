@@ -186,6 +186,7 @@ async function loadTree(path,host){
   host.innerHTML=h;
   host.querySelectorAll('details').forEach(function(dt){dt.addEventListener('toggle',function(){if(dt.open&&!dt.dataset.loaded){dt.dataset.loaded=1;loadTree(dt.dataset.p,dt.querySelector('div'))}})});
 }
+function noteFold(x){x=String(x==null?'':x).trim();if(!x)return '';var multi=x.length>220||x.indexOf('\n')>=0;if(!multi)return '<div class="md">'+mdToHtml(x)+'</div>';var first=(x.split('\n').filter(function(l){return l.trim()})[0]||'').replace(/^#+\s*/,'').replace(/[*`|]/g,'').trim().slice(0,100);return '<details><summary>'+esc(first||'說明')+'</summary><div class="md">'+mdToHtml(x)+'</div></details>'}
 function noteHtml(x){x=String(x==null?'':x);return /\n|\|.*\|/.test(x)?'<div class="md">'+mdToHtml(x)+'</div>':esc(x)}
 function mdEditor(opt){
   /* Markdown 編輯器：工具列（標題、粗體、行內碼、程式碼區塊、清單、表格、引用）＋左右即時預覽；Tab 縮排、Ctrl+Enter 存檔、Esc 取消 */
@@ -287,7 +288,7 @@ async function showFile(path){
   if(f.doc)h+='<p>'+esc(f.doc)+'</p>';
   var cs=[['這個檔案是做什麼的','這個檔案（'+path+'）是做什麼的'],['__explain__','__explain__'],['誰引用它','誰用到 '+path],['它引用了什麼','這個檔案（'+path+'）依賴哪些檔案'],['請 AI 讀過後解釋','請讀 '+path+'，解釋它的用途、主要流程與要注意的地方','ai'],['請 AI 補說明（存進資料庫）','__dive__','ai']];
   h+=chips(cs)+'<div><button id="src">看程式碼</button> <button id="expl">行為說明（可折疊）</button></div><div id="srcbox"></div><div id="explbox" class="md"></div>';
-  h+='<h2>定義（'+f.symbols.length+'）</h2>'+(f.symbols.length?'<table>'+f.symbols.map(function(s){return '<tr><td>'+slink(s.n)+'</td><td><span class="tag">'+esc(s.k)+'</span></td><td>第 '+s.l+' 行</td><td>'+(s.note?'<b>'+noteHtml(s.note)+'</b><br>':'')+(s.d?esc(s.d)+'<br>':'')+(s.sig?'<code>'+esc(s.sig)+'</code>':'')+'</td></tr>'}).join('')+'</table>':'<div class="mut">（沒有抽到定義）</div>');
+  h+='<h2>定義（'+f.symbols.length+'）</h2>'+(f.symbols.length?'<table>'+f.symbols.map(function(s){return '<tr><td>'+slink(s.n)+'</td><td><span class="tag">'+esc(s.k)+'</span></td><td>第 '+s.l+' 行</td><td>'+(s.note?noteFold(s.note):'')+(s.d?esc(s.d)+'<br>':'')+(s.sig?'<code>'+esc(s.sig)+'</code>':'')+'</td></tr>'}).join('')+'</table>':'<div class="mut">（沒有抽到定義）</div>');
   h+='<h2>引用了誰（'+f.imports.length+'）</h2>'+(f.imports.map(function(p){return '<div>'+link(p)+'</div>'}).join('')||'<div class="mut">（沒有）</div>');
   h+='<h2>被誰引用（'+f.imported_by.length+'）</h2>'+(f.imported_by.map(function(p){return '<div>'+link(p)+'</div>'}).join('')||'<div class="mut">（沒有）</div>');
   $('#main').innerHTML=h;$('#main').scrollTop=0;
@@ -308,20 +309,23 @@ async function showDir(path,tr){
 }
 async function showSym(name){
   cur={kind:'symbol',key:name,path:'',name:name};
-  var r=await api('GET','/api/symbol?name='+encodeURIComponent(name));
+  var r=await api('GET','/api/symbol?name='+encodeURIComponent(name)),via='';
   if(!r.defs.length){
     var tr=null;try{tr=await api('GET','/api/tree?path='+encodeURIComponent(name))}catch(e){}
     if(tr&&tr.exists){showDir(name.replace(/\/+$/,''),tr);return}
-navFail('索引裡沒有');
-    var tail=String(name).split(/[.:]+/).filter(Boolean).pop()||name,hits=[];
+var tail=String(name).split(/[.:]+|->|#/).filter(Boolean).pop()||name,hits=[];
+    if(tail&&tail!==name){var alt=null;try{alt=await api('GET','/api/symbol?name='+encodeURIComponent(tail))}catch(e){}
+      if(alt&&alt.defs&&alt.defs.length){r=alt;via='<div class="mut" style="margin-bottom:6px">「'+esc(name)+'」本身不在索引裡，用最後一段「'+esc(tail)+'」查到：</div>';name=tail}}
+    if(!r.defs.length){navFail('索引裡沒有');
     try{hits=((await api('GET','/api/search?q='+encodeURIComponent(tail))).hits||[]).filter(function(x){return x.type==='symbol'&&String(x.name).split(/[.:]+/).pop().toLowerCase()===String(tail).toLowerCase()})}catch(e){}
-    var mh='<div class="note"><b>索引裡沒有「'+esc(name)+'」的定義。</b><br>常見原因：它是<b>繼承或覆寫</b>來的（例如 C# 的 <code>InitializeComponent</code> 在 .Designer.cs 的 partial class 裡，<code>OnPaint</code> 這類來自框架的父類別），或來自沒有建索引的函式庫，或這個檔案還沒被分析到。這不是你的專案壞了。</div>'+
-      '<div style="margin:8px 0"><button class="nvb" data-nav="back"'+(NAV.i>0?'':' disabled')+'>◀ 回到上一個位置</button> <button class="nvb" onclick="document.getElementById(\'navH\').click()">🕘 看瀏覽歷史</button></div>';
-    if(hits.length)mh+='<h2>名字相同的其他定義（'+hits.length+'，不一定是同一個）</h2>'+hits.slice(0,30).map(function(x){return '<div><a class="l" data-go="sym:'+esc(x.name)+'">'+esc(x.name)+'</a> <span class="k">'+esc(x.kind)+' · '+esc(x.path)+':'+x.line+'</span></div>'}).join('');
-    else mh+='<div class="mut">專案裡沒有任何名叫「'+esc(tail)+'」的定義。</div>';
-    $('#main').innerHTML=mh;return}
+      var mh='<div class="note"><b>索引裡沒有「'+esc(name)+'」的定義。</b><br>常見原因：它是<b>繼承或覆寫</b>來的（例如 C# 的 <code>InitializeComponent</code> 在 .Designer.cs 的 partial class 裡，<code>OnPaint</code> 這類來自框架的父類別），或來自沒有建索引的函式庫，或這個檔案還沒被分析到。這不是你的專案壞了。</div>'+
+        '<div style="margin:8px 0"><button class="nvb" data-nav="back"'+(NAV.i>0?'':' disabled')+'>◀ 回到上一個位置</button> <button class="nvb" onclick="document.getElementById(\'navH\').click()">🕘 看瀏覽歷史</button></div>';
+      if(hits.length)mh+='<h2>名字相同的其他定義（'+hits.length+'，不一定是同一個）</h2>'+hits.slice(0,30).map(function(x){return '<div><a class="l" data-go="sym:'+esc(x.name)+'">'+esc(x.name)+'</a> <span class="k">'+esc(x.kind)+' · '+esc(x.path)+':'+x.line+'</span></div>'}).join('');
+      else mh+='<div class="mut">專案裡沒有任何名叫「'+esc(tail)+'」的定義。</div>';
+      $('#main').innerHTML=mh;return}
+  }
   cur.path=r.defs[0].path;
-  var h='<h1 class="t">'+esc(name)+'</h1><div class="mut">'+r.defs.length+' 個定義</div>';
+  var h=via+'<h1 class="t">'+esc(name)+'</h1><div class="mut">'+r.defs.length+' 個定義</div>';
   var cs=[[name+' 是做什麼的',name+' 是做什麼的'],['誰用到 '+name,'誰用到 '+name],[name+' 相關的東西',name+' 相關的東西'],['請 AI 深入解釋','請讀 '+r.defs[0].path+' 裡的 '+name+'，解釋它做什麼、參數與回傳、何時會被呼叫、要注意什麼','ai']];
   r.defs.slice(0,10).forEach(function(d){
     h+='<h2>'+esc(d.kind)+'　'+locLink(d.path,d.line,'',esc(d.path+':'+d.line))+'</h2>';
@@ -334,20 +338,22 @@ navFail('索引裡沒有');
   });
   h+=chips(cs);$('#main').innerHTML=h;wireChips($('#main'),cs);$('#main').scrollTop=0;
 }
-function goRaw(g){var i=g.indexOf(':'),k=g.slice(0,i),v=g.slice(i+1);var p=k==='file'?showFile(v):(k==='dir'?api('GET','/api/tree?path='+encodeURIComponent(v)).then(function(tr){return showDir(v,tr)}):k==='sym'?showSym(v):(k==='page'?showPage(v):null));if(p&&p.catch)p.catch(function(e){$('#main').innerHTML='<div class="note">'+esc(e.message)+'</div>';navFail(e.message)})}
+function goRaw(g){var i=g.indexOf(':'),k=g.slice(0,i),v=g.slice(i+1);var p=k==='file'?showFile(v):(k==='dir'?api('GET','/api/tree?path='+encodeURIComponent(v)).then(function(tr){return showDir(v,tr)}):k==='sym'?showSym(v):(k==='page'?showPage(v):null));if(p&&p.catch)p.catch(function(e){$('#main').innerHTML='<div class="note">'+esc(e.message)+'</div>';navFail(e.message)});return p}
 
 /* ===== 瀏覽歷史：上一個／下一個位置＋歷史清單（像 call stack）。連到壞掉的連結也會留在歷史裡（標紅），隨時可以退回去 ===== */
-var NAV={st:[],i:-1,max:300};
+var NAV={st:[],i:-1,max:200};
+function navScroller(){return document.querySelector('.pane.on .main')||document.getElementById('main')}
+function navSave(){var e=NAV.st[NAV.i],sc=navScroller();if(e&&sc)e.sy=sc.scrollTop}
 function navText(g){var i=g.indexOf(':'),k=g.slice(0,i),v=g.slice(i+1);return (k==='file'?'📄 ':k==='sym'?'ƒ ':(k==='dir'||k==='folder')?'📁 ':k==='page'?'📖 ':'• ')+(k==='file'?v.split('/').slice(-2).join('/'):v)}
-function navPush(g){var top=NAV.st[NAV.i];if(top&&top.g===g){navRender();return}NAV.st.length=NAV.i+1;NAV.st.push({g:g,t:navText(g),fail:''});if(NAV.st.length>NAV.max)NAV.st.shift();NAV.i=NAV.st.length-1;navRender()}
+function navPush(g){navSave();var top=NAV.st[NAV.i];if(top&&top.g===g){navRender();return}NAV.st.length=NAV.i+1;NAV.st.push({g:g,t:navText(g),fail:''});if(NAV.st.length>NAV.max)NAV.st.shift();NAV.i=NAV.st.length-1;navRender()}
 function navFail(why){var e=NAV.st[NAV.i];if(e){e.fail=why||'失敗';navRender()}}
-function navTo(i){if(i<0||i>=NAV.st.length)return;NAV.i=i;var e=NAV.st[i];e.fail='';navRender();goRaw(e.g)}
+function navTo(i){if(i<0||i>=NAV.st.length)return;navSave();NAV.i=i;var e=NAV.st[i],sy=e.sy||0;e.fail='';navRender();var rs=function(){var sc=navScroller();if(sc)sc.scrollTop=sy};Promise.resolve(goRaw(e.g)).then(function(){setTimeout(rs,0);setTimeout(rs,250)},function(){});setTimeout(rs,60)} /* 每一筆記得捲動位置：退回去時回到原本看到的地方 */
 function navBack(){navTo(NAV.i-1)}function navFwd(){navTo(NAV.i+1)}
 function navRender(){
   var b=document.getElementById('navB'),f=document.getElementById('navF');if(b)b.disabled=NAV.i<=0;if(f)f.disabled=NAV.i>=NAV.st.length-1;
   var p=document.getElementById('navp');if(!p||p.style.display==='none')return;
   var h='<div class="nh"><b>瀏覽歷史（'+NAV.st.length+'）　最新在上</b><a data-navclear="1" style="padding:0 6px;display:inline">清除</a></div>';
-  for(var k=NAV.st.length-1;k>=0;k--){var e=NAV.st[k];h+='<a data-navi="'+k+'" class="'+(k===NAV.i?'cur ':'')+(e.fail?'fail':'')+'" title="'+esc(e.fail||e.g)+'"><span class="ix">'+(k+1)+'</span><span>'+esc(e.t)+(e.fail?' ⚠ '+esc(e.fail):'')+'</span></a>'}
+  for(var k=NAV.st.length-1;k>=0;k--){var e=NAV.st[k];h+='<a data-navi="'+k+'" class="'+(k===NAV.i?'cur ':'')+(e.fail?'fail':'')+'" title="'+esc(e.fail||e.g)+'"><span class="ix">'+(k+1)+'</span><span>'+esc(e.t)+(e.fail?' ⚠ '+esc(e.fail):'')+'</span><span style="margin-left:auto;color:var(--mut);font-size:11px;white-space:nowrap">'+(k===NAV.i?'目前':(k>NAV.i?'下一個位置':''))+'</span></a>'}
   p.innerHTML=h}
 (function(){var p=document.createElement('div');p.id='navp';document.body.appendChild(p);
   document.getElementById('navB').onclick=navBack;document.getElementById('navF').onclick=navFwd;

@@ -52,6 +52,7 @@
     function tokenizeShellLine(text) { const cmds = []; for (const seg of text.split(/\|\||&&|[|;]/)) { const tokens = seg.trim().split(/\s+/).filter(Boolean); let idx = 0; while (idx < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[idx])) idx++; if (idx < tokens.length) cmds.push(tokens[idx].split('/').pop()); } return cmds; }
     function detectShellCmds(fnNode, src, shellLookup) { const hits = []; for (const c of findCallsByName(fnNode, src, SHELL_STR_CALLS)) { const a = firstStringLiteralArg(c); if (!a) continue; const text = unquote(T(a, src)); const commands = tokenizeShellLine(text); const matched = {}; for (const cmd of commands) { const cat = shellLookup[cmd]; if (cat) (matched[cat] = matched[cat] || new Set()).add(cmd); } const mc = {}; for (const [k, v] of Object.entries(matched)) mc[k] = sorted(v); hits.push({ call: cCallName(c, src), line: row(c) + 1, command_line: text, commands, matched_categories: mc }); } return hits; }
     // 一個檔案裡所有函式的掃描結果。profile：PROFILES[x]；language：taxonomy 用的語言名稱
+    function uniqStr(a) { return Array.from(new Set(a.filter(Boolean))); }
     function scanTree(root, src, profile, tx, opts) {
         opts = opts || {}; const language = profile.language; const lookup = lookupFor(tx, profile.table_language || language);
         const cf = (tx.control_flow_nodes || {})[language] || {}; const branchTypes = S(cf.branch), loopTypes = S(cf.loop);
@@ -70,8 +71,25 @@
             for (const c of callNodes) {
                 const cands = profile.get_call_candidates(c, src); if (!cands || !cands.length) continue;
                 callCount++; allCalls.push(cands[0]);
-                let cat = null; for (const cd of cands) { cat = lookup[cd]; if (cat) break; }
+                // 接收者後面的單字泛用方法名（x.get／x.size／x.join／x.put…）不分類：太多物件有同名方法，會把 map.get 當成並行、names.size 當成檔案。
+                // 要名稱夠特別（有大寫或底線、或長度 >= 9）、或語言明列放行（bare_ok）才算；沒有接收者的呼叫（open／print）和帶限定的名稱（Files.exists）不受影響。
+                const skipBare = (cd) => profile.bare_specific && cands.length > 1 && cd !== cands[0] && cd.indexOf('.') < 0 && cd.indexOf('::') < 0 && !/[A-Z_]/.test(cd) && cd.length < 9 && !(profile.bare_ok && profile.bare_ok.has(cd));
+                let cat = null; for (const cd of cands) { if (skipBare(cd)) continue; cat = lookup[cd]; if (cat) break; }
                 if (cat) (behaviors[cat] = behaviors[cat] || new Set()).add(cands[0]); else if (!((profile.ignore_names && cands.some((cd) => profile.ignore_names.has(cd))) || (profile.ignore_prefixes && cands.some((cd) => profile.ignore_prefixes.some((pf) => cd.startsWith(pf)))))) unclassified[cands[0]] = (unclassified[cands[0]] || 0) + 1; // ignore_names：語言裡到處都是的小呼叫（Ok／Some／.clone…）不列進「未分類」
+            }
+            // 語法樹裡 ERROR 的區段（原始碼有語法錯誤，或文法不認得新語法）：裡面的呼叫沒有節點可用，改用文字比對，只補「查得到分類」的（不猜、不列入未分類）
+            const errNodes = []; collectTypes(fn, new Set(['ERROR']), errNodes); let errCalls = 0;
+            if (errNodes.length) {
+                const seenErr = new Set();
+                for (const en of errNodes) {
+                    const txt = String(src.slice(en.startIndex, Math.min(en.endIndex, en.startIndex + 4000)) || '');
+                    for (const m of txt.matchAll(/([A-Za-z_]\w*(?:(?:\.|::|->)[A-Za-z_]\w*)*)\s*\(/g)) {
+                        const full = m[1].replace(/->/g, '.'), segs = full.split(/\.|::/), last = segs[segs.length - 1];
+                        const cds = uniqStr([full, segs.length > 1 ? segs.slice(-2).join('.') : null, segs.length > 1 ? '.' + last : null, last]);
+                        let cat = null, hit = null; for (const cd of cds) { if (profile.bare_specific && cd === last && segs.length > 1 && !/[A-Z_]/.test(last) && last.length < 9 && !(profile.bare_ok && profile.bare_ok.has(last))) continue; if (lookup[cd]) { cat = lookup[cd]; hit = cd; break; } }
+                        if (cat && !seenErr.has(full)) { seenErr.add(full); errCalls++; (behaviors[cat] = behaviors[cat] || new Set()).add(full + '（語法錯誤區段）'); }
+                    }
+                }
             }
             const branch = countTypes(fn, branchTypes), loop = countTypes(fn, loopTypes);
             const asmBlocks = [];
