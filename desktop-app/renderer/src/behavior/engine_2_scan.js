@@ -71,7 +71,7 @@
                 const cands = profile.get_call_candidates(c, src); if (!cands || !cands.length) continue;
                 callCount++; allCalls.push(cands[0]);
                 let cat = null; for (const cd of cands) { cat = lookup[cd]; if (cat) break; }
-                if (cat) (behaviors[cat] = behaviors[cat] || new Set()).add(cands[0]); else if (!(profile.ignore_names && cands.some((cd) => profile.ignore_names.has(cd)))) unclassified[cands[0]] = (unclassified[cands[0]] || 0) + 1; // ignore_names：語言裡到處都是的小呼叫（Ok／Some／.clone…）不列進「未分類」
+                if (cat) (behaviors[cat] = behaviors[cat] || new Set()).add(cands[0]); else if (!((profile.ignore_names && cands.some((cd) => profile.ignore_names.has(cd))) || (profile.ignore_prefixes && cands.some((cd) => profile.ignore_prefixes.some((pf) => cd.startsWith(pf)))))) unclassified[cands[0]] = (unclassified[cands[0]] || 0) + 1; // ignore_names：語言裡到處都是的小呼叫（Ok／Some／.clone…）不列進「未分類」
             }
             const branch = countTypes(fn, branchTypes), loop = countTypes(fn, loopTypes);
             const asmBlocks = [];
@@ -100,6 +100,9 @@
             const doc = docOf(fn, src, language);
             functions.push({ name, line: row(fn) + 1, end_line: fn.endPosition.row + 1, line_count: fn.endPosition.row - fn.startPosition.row + 1, behaviors: bh, call_count: callCount, branch_count: branch, loop_count: loop, complexity: 1 + branch + loop, inline_asm: asmBlocks, preprocessor_guards: guards, device_paths: devPaths, env_vars: envHits, embedded_shell_commands: shellCmds, structural_signals: structural, has_leading_comment: !!(fn.previousSibling && fn.previousSibling.type.includes('comment')), leading_comment_text: doc, all_calls: sorted(new Set(allCalls)), _node: fn });
         }
+        // 這個檔案自己定義的函式（含建構子）被呼叫，不算「還不認得」
+        const definedHere = new Set(functions.map((f) => String(f.name).split(/[.:]+/).pop()));
+        for (const k of Object.keys(unclassified)) if (definedHere.has(k.replace(/^(?:this|base)\./, '').split(/[.:]+/).pop())) delete unclassified[k];
         return { functions, unclassified: Object.entries(unclassified).sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, count })) };
     }
 

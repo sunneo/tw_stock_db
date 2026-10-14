@@ -376,7 +376,8 @@
         get_call_name: (n, s) => { const c = csCallCandidates(n, s); return c && c.length ? c[0] : null; }, get_call_candidates: csCallCandidates, get_call_arguments: (n) => bracketedArgs(n, 'argument_list'),
         get_function_name: csFunctionName, get_parameter_names: csParamNames, get_if_branches: fieldIfBranches, get_condition_node: csCondition, control_explain: csControlExplain,
         noreturn_calls: S(['Environment.Exit', 'Application.Exit', 'Environment.FailFast']),
-        ignore_names: S(['.ToString', '.Equals', '.GetHashCode', '.GetType', '.Dispose', '.Add', '.Contains', '.Count', '.ToList', '.ToArray', '.Where', '.Select', 'nameof', 'typeof', 'Exception', 'ArgumentException', 'ArgumentNullException', 'InvalidOperationException', 'NotImplementedException', 'FileNotFoundException', 'IOException', 'NotSupportedException', 'KeyNotFoundException', 'DirectoryNotFoundException', 'TimeoutException', 'UnauthorizedAccessException']),
+        ignore_prefixes: ['base.'],
+        ignore_names: S(['Size', 'SizeF', 'Point', 'PointF', 'Rectangle', 'RectangleF', '.ToString', '.Equals', '.GetHashCode', '.GetType', '.Dispose', '.Add', '.Contains', '.Count', '.ToList', '.ToArray', '.Where', '.Select', 'nameof', 'typeof', 'Exception', 'ArgumentException', 'ArgumentNullException', 'InvalidOperationException', 'NotImplementedException', 'FileNotFoundException', 'IOException', 'NotSupportedException', 'KeyNotFoundException', 'DirectoryNotFoundException', 'TimeoutException', 'UnauthorizedAccessException']),
     });
     PROFILES.ruby = P({
         language: 'ruby', multi_key: true, function_node_types: S(['method', 'singleton_method']), call_node_types: S(['call', 'subshell']), body_node_types: S(['body_statement', 'then', 'do', 'else']),

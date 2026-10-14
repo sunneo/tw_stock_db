@@ -39,4 +39,10 @@ module.exports = {
     UpdateCamera: F(['linear_algebra'], { doc: 'camera' }),
     Frame: F(['event_handling', 'graphics_rendering', 'multimedia_io'], { branches: 1, loops: 1, doc: 'frame' }),
     Dispose: F(['graphics_rendering', 'multimedia_io']) } },
+  // WinForms／GDI+ 的 C#（使用者 Babylon3DCubeDemo.cs 那一類）：建構子、事件處理、OnPaint、Application.Run
+  csharp_winforms: { file: 'winforms.cs', language: 'csharp', minFunctions: 5, maxUnclassified: 2, functions: {
+    Babylon3DCubeDemo: F(['gui_toolkit'], { doc: 'window' }),
+    OnTick: F(['string_formatting', 'gui_toolkit'], { doc: 'rotation' }),
+    OnPaint: F(['graphics_rendering', 'arithmetic_logic'], { loops: 1, doc: 'GDI' }),
+    Run: F(['gui_toolkit'], { doc: 'standalone' }) } },
 };
