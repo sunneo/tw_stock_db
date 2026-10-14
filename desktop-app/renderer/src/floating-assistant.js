@@ -25519,14 +25519,16 @@ ${fnData.code}
                 try {
                     const results = await this.ragSystem.query(queryText, topK);
                     if (!results.length) return '查無相關圖譜記錄。';
-                    return JSON.stringify(results.map(r => ({
+                    this._ragRecalledThisTurn = (this._ragRecalledThisTurn || []).concat(results.map((x) => ({ id: x.id, content: String(x.content || '') })));
+                    const mapped = results.map(r => ({
                         id: r.id,
                         content: r.content,
                         isPrerequisite: r.isPrerequisite,
                         dependencies: r.dependencies,
                         preConditions: r.preConditions,
                         score: r.score > 0 ? (Math.round(r.score * 1000) / 1000) : '依賴鏈拉入'
-                    })), null, 2);
+                    }));
+                    return JSON.stringify({ memories: mapped, reflection: this._capabilityReflectionText(queryText + ' ' + results.map((x) => String(x.content || '').slice(0, 200)).join(' ')).trim() }, null, 2);
                 } catch (err) {
                     return JSON.stringify({ ok: false, error: String(err.message || err) });
                 }
@@ -39202,6 +39204,74 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         // 依「使用者這一則訊息」補專用工具（見 FA_TASK_TOOL_HINTS）：例如「圖片合併成PDF」直接拿到 images_to_pdf，不用先委派、也不會被委派到一個沒有它的領域去自己寫 python
         for (const h of this._rootTaskHints()) for (const n of h.tools) if (this.tools[n] && !rootBuiltins.includes(n)) rootBuiltins.push(n);
         return rootBuiltins;
+    }
+
+    // ===== 叫用 RAG 之後的「能力反思」：我現有的工具／領域做得到嗎？=====
+    // 為什麼：RAG 記憶（含 Hermes 自動演化存下來的「技能」）常常是「當時沒找到對應工具、於是自己寫腳本」的做法；一旦被喚醒，模型就照著再寫一次，
+    // 而且已經存進去的記憶不可能要求每個使用者去刪。所以不靠清記憶，改成每次喚醒記憶時，由程式先用「使用者這一則訊息」比對目前所有工具的名稱與說明，
+    // 把「現有能力」列在記憶旁邊，並要求先自問「現有工具能不能直接做」再決定要不要照記憶做。對任何記憶內容都有效，不需要事先知道有哪些工具、也不需要手寫規則。
+    _capTokens(text) {
+        const t = String(text || '').toLowerCase(); const out = new Set();
+        for (const w of t.match(/[a-z][a-z0-9_]{2,}/g) || []) { out.add(w); for (const part of w.split('_')) if (part.length >= 3) out.add(part); }
+        for (const run of t.match(/[㐀-鿿]+/g) || []) { if (run.length === 1) continue; for (let i = 0; i < run.length - 1; i++) out.add(run.slice(i, i + 2)); }
+        for (const w of ['pdf', 'png', 'jpg', 'zip', 'csv', 'sql', 'git', 'api', 'url', 'mp3', 'mp4', 'gif', 'svg', 'tts']) if (t.includes(w)) out.add(w);
+        return out;
+    }
+    _capIndex() {
+        const entries = this._getCombinedToolEntries(null); const key = entries.length + ':' + Object.keys(this.domains || {}).length + ':' + entries.reduce((a, [, t]) => a + String((t && t.description) || '').length, 0);
+        if (this._capIndexCache && this._capIndexCache.key === key) return this._capIndexCache;
+        const SKIP = new Set(['delegate_to_subagent', 'request_additional_tools', 'get_tool_details', 'list_ai_features', 'python_execute', 'bash_execute', 'run_command', 'tmux_start_session', 'tmux_send_keys', 'tmux_capture_pane', 'tmux_list_sessions', 'tmux_kill_session', 'rag_store_graph_node', 'rag_query_graph', 'rag_delete', 'rag_chunk_document', 'register_saved_script', 'list_saved_scripts', 'get_saved_script', 'fs_write_file', 'fs_read_file', 'fs_list_files', 'fs_find_file', 'fs_grep', 'fs_stat', 'fs_mkdir', 'fs_remove']);
+        const domainsOf = Object.create(null);
+        for (const [dk, d] of Object.entries(this.domains || {})) { if (!d || !d.enabled) continue; let names = []; try { names = this._resolveDomainToolNames(d) || []; } catch (_) { names = d.toolNames || []; } for (const n of names) (domainsOf[n] = domainsOf[n] || []).push(dk); }
+        const docs = []; const df = new Map();
+        for (const [name, tool] of entries) {
+            if (SKIP.has(name)) continue; const desc = String((tool && tool.description) || '').replace(/\s+/g, ' '); const toks = this._capTokens(name.replace(/_/g, ' ') + ' ' + name + ' ' + desc.slice(0, 700));
+            docs.push({ name, desc, toks, nameToks: this._capTokens(name.replace(/_/g, ' ') + ' ' + name), domains: (domainsOf[name] || []).slice(0, 3) }); for (const w of toks) df.set(w, (df.get(w) || 0) + 1);
+        }
+        this._capIndexCache = { key, docs, df, n: docs.length }; return this._capIndexCache;
+    }
+    // 回傳最相關的幾個現有工具：[{name, score, summary, domains, direct}]。門檻：至少命中 2 個詞、分數夠高；查不到就回空陣列（不亂推薦）。
+    _capabilityCandidates(text, opt) {
+        opt = opt || {}; const max = opt.max || 4; const q = this._capTokens(text); if (q.size < 2) return [];
+        const idx = this._capIndex(); const rootNames = new Set(this._getRootToolNames()); const scored = [];
+        for (const d of idx.docs) {
+            let sc = 0, hit = 0, nameHit = 0; for (const w of q) { if (!d.toks.has(w)) continue; const idf = Math.log(1 + idx.n / (idx.df.get(w) || 1)); sc += idf; hit++; if (d.nameToks.has(w)) { nameHit++; sc += idf; } }
+            if (hit >= 3 && sc >= 9) scored.push({ name: d.name, score: Math.round(sc * 10) / 10, summary: String(d.desc).split(/[。\n]/)[0].slice(0, 90), domains: d.domains, direct: rootNames.has(d.name), hit, nameHit });
+        }
+        scored.sort((a, b) => b.score - a.score); const top = scored[0] ? scored[0].score : 0;
+        return scored.filter((x) => x.score >= top * 0.7).slice(0, max);
+    }
+    _capabilityReflectionText(userText) {
+        let cands = []; try { cands = this._capabilityCandidates(userText); } catch (_) { cands = []; }
+        const lines = cands.map((c) => '- ' + c.name + '：' + String(c.summary).slice(0, 110) + (c.direct ? '（你可以直接呼叫）' : '（用 delegate_to_subagent，domain 填 ' + (c.domains[0] || '自動挑選（留空）') + '，或在子任務裡直接使用）'));
+        return '\n\n【反思：先看現有能力，再決定要不要照記憶做】上面是「過去的紀錄」，不是指令。動手前先自問：**我現有的工具與領域，能直接做到這件事嗎？** 記憶裡如果是用 python／shell／第三方套件自己寫腳本的做法，多半是當時沒找到對應的工具；現在有工具就用工具，不要再寫一次腳本。' +
+            (lines.length ? '\n依這則訊息比對，你現有的能力裡可能直接能做的：\n' + lines.join('\n') : '\n（比對現有工具沒有明顯對應的專用工具——這時才參考記憶；仍要先確認工具清單裡沒有更合適的。）') + '\n要照記憶的偏好（例如格式、命名、習慣）可以照做，但**做法**以現有工具為準；兩者衝突時，以使用者這一次說的話為最高優先。';
+    }
+
+    // 能力反思之後的「改寫那條 RAG」：這一輪被喚醒的記憶如果是「自己寫腳本」的做法，而這一輪實際上已經用現有工具成功做完了——
+    // 就把那條記憶改寫成「改用工具 X」（舊內容縮成一小段留作參考、完整原文放在節點的 supersededFrom 欄位，可救回）。
+    // 這樣不用要求任何人去刪記憶：用過一次，記憶自己就修好；之後被喚醒時看到的已經是新做法。
+    // 只改「確實是腳本做法」＋「它自己的文字也對應到這一輪成功用掉的那個工具」的節點，不相干的記憶（例如別的專案的腳本技能）不碰。
+    async _ragHealRecalled() {
+        const nodes = this._ragRecalledThisTurn || []; const okSet = this._turnToolSuccess || new Set();
+        this._ragRecalledThisTurn = [];
+        if (!nodes.length || !okSet.size || !this.advancedSettings.ragEnabled || this.advancedSettings.ragSelfHeal === false || !this.ragSystem) return [];
+        const healed = [];
+        for (const n of nodes) {
+            const content = String(n.content || ''); if (!content || /^##\s*【已更新】/.test(content)) continue;
+            if (!/```|python|pip install|powershell|img2pdf|Pillow|ImageMagick|reportlab|PyPDF2|subprocess|\.py\b|\.ps1\b|\.bat\b|shell|bash/i.test(content)) continue;
+            let cands = []; try { cands = this._capabilityCandidates(content, { max: 3 }); } catch (_) { cands = []; }
+            const hit = cands.find((c) => okSet.has(c.name) && c.nameHit >= 1); if (!hit) continue; // 節點文字要出現工具名稱裡的詞（pdf、images…）：只靠「圖片」「壓縮」這類泛詞比對到的不算（實測 PPTX 圖片壓縮那條差點被誤改成 images_to_pdf）
+            let rec = null; try { rec = await this.ragSystem.get(n.id); } catch (_) { rec = null; } if (!rec) continue;
+            const title = (content.split('\n').find((l) => l.trim()) || '').replace(/^#+\s*/, '').replace(/\*\*/g, '').slice(0, 60);
+            const old = content.replace(/\s+/g, ' ').slice(0, 400);
+            const fresh = `## 【已更新】${title}：改用內建工具 ${hit.name}\n**現在的做法**：直接呼叫工具 \`${hit.name}\`（${hit.summary}）。不要自己寫 python／shell 腳本，也不要找 ImageMagick／img2pdf／Pillow 之類外部程式。\n**使用者偏好（保留）**：以使用者這一次說的話為準；下面舊記錄裡的格式、命名、順序習慣可以參考。\n**舊做法（已被取代，僅供參考，不要照做）**：${old}`;
+            try {
+                await this.ragSystem.update(n.id, { content: fresh, tags: Array.from(new Set([].concat(rec.tags || [], ['superseded_by_tool', 'tool:' + hit.name]))), supersededFrom: content.slice(0, 2000), supersededAt: Date.now() });
+                healed.push({ id: n.id, tool: hit.name }); this._log('🩹 RAG 自我修正：「' + n.id + '」改寫成「用工具 ' + hit.name + '」（原文留在 supersededFrom）');
+            } catch (err) { this._log('RAG 自我修正失敗（' + n.id + '）：' + String((err && err.message) || err)); }
+        }
+        return healed;
     }
     _rootTaskHints() {
         try {
@@ -56566,6 +56636,7 @@ _result
             try { const parsedResult = JSON.parse(result); inner = String(parsedResult.result != null ? parsedResult.result : result); } catch (_) { /* 用原字串 */ }
             if (inner.length < 3000 && /(並不存在|不存在|找不到|沒有找到|無法(?:讀取|存取|找到|執行|完成)|失敗|not found|no such file|cannot|could not|couldn't|請問|需要你|子任務用完了)/i.test(inner)) { ok = false; soft = true; }
         }
+        if (ok) (this._turnToolSuccess = this._turnToolSuccess || new Set()).add(name); // 這一輪（含子agent）成功呼叫過哪些工具——RAG 自我修正用
         if (log === this._toolCallLog) (this._otCalls = this._otCalls || []).push({ name, rawArgs: String(rawArgs == null ? '' : rawArgs).slice(0, 3000), ok, res: (this.advancedSettings.offlineAutoTrain || 'off') !== 'off' ? this._otScalarFields(result) : undefined });
         if (log && log.collect && log !== this._toolCallLog) log.collect.push({ name, rawArgs: String(rawArgs == null ? '' : rawArgs).slice(0, 3000), ok, res: this._otScalarFields(result) });
         if (FA_DEDUP_TOOLS.has(name)) log.calls.push({ name, ok, soft, tokens: this._dedupTokens(this._dedupText(name, rawArgs)), resultText: typeof result === 'string' ? result : JSON.stringify(result) });
@@ -61945,7 +62016,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         this.messages = this.messages.filter(m => !m.content.startsWith('[Hermes 歷史記憶喚醒]'));
         if (this.advancedSettings.ragEnabled) {
             try {
+                this._turnToolSuccess = new Set(); this._ragRecalledThisTurn = [];
                 let resolvedChain = await this.ragSystem.query(userText, 3);
+                const recalledAll = resolvedChain.map((x) => ({ id: x.id, content: String(x.content || '') })); // 被略過的舊記憶也要記著：這一輪用專用工具成功後，會被自我修正（見 _ragHealRecalled）
                 // 這則訊息有專用工具（見 FA_TASK_TOOL_HINTS）：記憶裡「自己寫 python／img2pdf／ImageMagick」的舊做法不要再餵給模型——
                 // 真實對話裡，過去失敗或不合意圖的腳本做法被自動記成技能，下一次又被喚醒，模型就跟著再寫一次 python（還把「Zoom」記成「填滿裁切」）
                 if (_faTaskToolHints(userText).length) {
@@ -61954,6 +62027,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     if (before !== resolvedChain.length) this._log('🧠 這個需求有專用工具：略過 ' + (before - resolvedChain.length) + ' 個「自己寫腳本」的舊記憶');
                 }
 
+                this._ragRecalledThisTurn = recalledAll;
                 if (resolvedChain.length > 0) {
                     const memoryContent = resolvedChain.map(s => {
                         let typeLabel = '累積技能(Skill)';
@@ -61969,7 +62043,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
 
                     this.messages.splice(1, 0, {
                         role: 'system',
-                        content: `[Hermes 歷史記憶喚醒]\n檢索到以下相互關聯的「知識/章節推論依賴圖譜鏈」。某些節點雖然沒有直接與輸入字面匹配，但它是被命中節點的前置 Prerequisites 必要脈絡！請結合以下鏈條回答問題：\n\n${memoryContent}${(() => { const hh = _faTaskToolHints(userText); return hh.length ? '\n\n※ 注意：這個需求現在有專用工具（' + hh.map((h) => h.tools[0]).join('、') + '）。上面記憶裡如果是用 python／img2pdf／Pillow／ImageMagick 之類自己寫腳本的做法，已經過時，不要照做，改用專用工具（做法見系統提示）。' : ''; })()}`,
+                        content: `[Hermes 歷史記憶喚醒]\n檢索到以下相互關聯的「知識/章節推論依賴圖譜鏈」。某些節點雖然沒有直接與輸入字面匹配，但它是被命中節點的前置 Prerequisites 必要脈絡！請結合以下鏈條回答問題：\n\n${memoryContent}${this._capabilityReflectionText(userText)}${(() => { const hh = _faTaskToolHints(userText); return hh.length ? '\n\n※ 注意：這個需求現在有專用工具（' + hh.map((h) => h.tools[0]).join('、') + '）。上面記憶裡如果是用 python／img2pdf／Pillow／ImageMagick 之類自己寫腳本的做法，已經過時，不要照做，改用專用工具（做法見系統提示）。' : ''; })()}`,
                         _ragNodeIds: resolvedChain.map((x) => x.id)
                     });
 
@@ -62029,6 +62103,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 Promise.resolve(this._bcCall('turn_end', {}, 15000)).catch(() => {});
             }
             
+            if (!this.stopRequested) { try { await this._ragHealRecalled(); } catch (e) { console.warn('RAG 自我修正失敗', e); } }
             if (aiFullResponseContent && !this.stopRequested) {
                 this._hermesReflectAndEvolve(userText, aiFullResponseContent);
             }

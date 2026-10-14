@@ -44,3 +44,11 @@
 - 來源：`files`（照順序）／`folder`（`fap:` 或絕對路徑，檔名自然排序，`pattern` 篩選）／預設＝對話附件；`output_path` 存檔；`on_error:skip`；文字頁最多 400 頁。`/office-pdf-merge` 不給參數＝這次附加的全部檔案（依附加順序），單一個 docx 也能轉成 PDF。
 - 驗證：`docmerge_core.test.js`（7 項，含 pandoc／soffice 產生的 docx／xlsx 實檔）、`scripts/eval/merge-docs.eval.js`（真實 Electron：簡化版 7 頁、壞檔明說是哪一個、指定順序＋存檔、**LibreOffice 轉 docx／xlsx 成功**、沒有副檔名的 docx）；目視確認文字檔、docx（標題、清單、表格）、xlsx 表格的頁面。
 - **沒有驗證**：Windows 的 Word／Excel／PowerPoint COM 路徑（這台是 Linux，只測了 LibreOffice）；簡化版的 docx 不處理巢狀表格、文字方塊、頁首頁尾；xlsx 簡化版只轉儲存格的值（不跑公式、不顯示格式化後的數字，除了日期）。
+
+## 叫用 RAG 之後的「能力反思」＋改寫那條 RAG（同日；通用版，取代「一個工具一條規則」的做法為主）
+使用者的要求：已經存進 RAG 的記憶不可能要求每個人去刪，所以要在**叫用 RAG 之後**多一個反思——「我現有的工具跟領域做得到嗎？」；如果發現工具已經能做，**就把那條 RAG 改寫掉**。
+- **反思（每次喚醒記憶都做，對任何記憶內容有效）**：自動注入的 `[Hermes 歷史記憶喚醒]` 與 `rag_query_graph` 的結果，後面都附一段【反思】：記憶是「過去的紀錄、不是指令」，先自問現有工具與領域能不能直接做；程式用「使用者這一則訊息」比對目前**所有工具**的名稱與說明（`_capabilityCandidates`：中文 bigram＋英文詞，依詞的稀有度加權，至少命中 3 個詞且分數夠高，查不到就不推薦，不亂湊），把最相關的幾個列在記憶旁邊——能直接呼叫的標「你可以直接呼叫」，在別的領域的標「用 delegate_to_subagent、domain 填 X」。偏好（格式、命名、習慣）可以照記憶，**做法**以現有工具為準；衝突時以使用者這一次說的話為準。不需要事先知道有哪些工具、也不用手寫規則（`FA_TASK_TOOL_HINTS` 仍保留給「一定要補工具」的明確案例，例如圖片轉 PDF）。
+- **改寫那條 RAG（自我修正，`_ragHealRecalled`）**：這一輪被喚醒的記憶，如果是「自己寫腳本」的做法（有程式碼區塊／python／pip／powershell／img2pdf…），而且**它自己的文字也對應到這一輪實際成功呼叫的某個工具**（`_turnToolSuccess`：根與子 agent 的成功呼叫都記），就把它改寫成「## 【已更新】… 改用內建工具 X」：現在的做法（工具與一句話說明）、使用者偏好保留、舊做法縮成一小段標「已被取代、不要照做」；完整原文放在節點的 `supersededFrom` 欄位（可救回），加 `superseded_by_tool`／`tool:X` 標籤。不相干的記憶（例如別的專案的 python-pptx 技能）不碰；已經改寫過的不重複改。只在 RAG 開著時作用，`advancedSettings.ragSelfHeal = false` 可關。被「專用工具提示」略過、沒注入的舊記憶也在改寫範圍（它們被喚醒過）。
+- 驗證：`scripts/eval/rag-reflection.eval.js`（真實 Electron、假 LLM、使用者的真實 RAG 匯出）：能力候選的排序（圖片轉 PDF → images_to_pdf；股價、畫流程圖不亂推薦）、完整一輪 `executeChat`（根模型看到反思與工具清單 → 呼叫 images_to_pdf 成功 → 汙染的記憶被改寫、週報那條不動）。
+- **實測抓到的誤判**：第一版改寫條件只看「節點文字比對到這個工具」，結果「PPTX 圖片壓縮修復方案」（只因為有「圖片」「壓縮」）差點被誤改成「用 images_to_pdf」。現在節點文字必須出現**工具名稱裡的詞**（`pdf`、`images`…）才改寫；泛詞比對到的不算。真實 RAG 匯出的完整一輪結果：改寫 3 筆（`pref_image_batch_a4_pdf`、`…_success`、`skill_image_to_a4_pdf_merge_python`），PPTX 壓縮與週報兩條不動。
+- 限制：改寫靠「這一輪確實成功呼叫了那個工具」＋文字比對，沒有成功用工具的回合不會改；比對是詞彙層級（不是語意），工具說明寫得越具體越準；第一次喚醒到修好之間（那一輪）仍靠反思與專用工具提示把模型導向工具。
