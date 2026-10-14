@@ -19770,7 +19770,9 @@ function faVlmWorkerMain() {
 // tw_stock_db客製: 2026-09-21——弱模型會「不停重複委派同一件事」（實例：燒錄字幕連續委派十幾次，每次都成功、
 // 每次都產出一個30MB的影片，卻始終不給最終回覆）。這些昂貴/有副作用的工具，同一輪對話裡「內容幾乎相同」的
 // 第二次呼叫會被攔下、直接把上次結果交還給模型，要求它整理成最終回覆。
-const FA_DEDUP_TOOLS = new Set(['delegate_to_subagent', 'delegate_subtask', 'burn_subtitles', 'transcribe_media', 'extract_audio', 'text_to_speech', 'export_document', 'render_3d_scene', 'render_interactive_viewer', 'render_2d_animation', 'convert_media', 'compress_media']);
+// images_to_pdf／merge_pdfs：同一輪用「同樣的設定」再呼叫一次只會多產生一份一模一樣的 PDF（真實對話連續呼叫 4 次、4 份重複檔）——用正規化後的設定逐字比對，不用相似度（檔案清單很長，改一個參數相似度仍很高）
+const FA_DEDUP_EXACT_TOOLS = new Set(['images_to_pdf', 'merge_pdfs']);
+const FA_DEDUP_TOOLS = new Set(['images_to_pdf', 'merge_pdfs', 'delegate_to_subagent', 'delegate_subtask', 'burn_subtitles', 'transcribe_media', 'extract_audio', 'text_to_speech', 'export_document', 'render_3d_scene', 'render_interactive_viewer', 'render_2d_animation', 'convert_media', 'compress_media']);
 const FA_WRITE_EVIDENCE_TOOLS = new Set(['fap_write_file', 'fap_apply_patch', 'attachment_apply_patch', 'fs_write_file', 'fs_mkdir', 'fs_remove', 'apply_git_patch', 'git_commit', 'git_push', 'coding_workspace', 'fap_copy_from_storage', 'fap_download_url', 'skill_create', 'export_document', 'bash_execute', 'python_execute', 'run_command', 'tmux_send_keys', 'browser_type_text', 'terminal_create', 'terminal_run', 'terminal_cp_to', 'terminal_cp_from']);
 const BROWSER_CONTROL_TOOL_NAMES = ['browser_status', 'browser_create_tab_group', 'browser_create_tab', 'browser_list_tabs', 'browser_navigate', 'browser_close', 'browser_activate_tab', 'browser_scroll', 'browser_screenshot', 'browser_get_page_text', 'browser_get_page_structure', 'browser_get_elements', 'browser_mouse', 'browser_click', 'browser_type_text', 'browser_press_key', 'browser_wait_download', 'browser_list_downloads'];
 const BROWSER_CONTROL_HINT = '\n\n【瀏覽器控制已啟用】你另外有browser_*工具可以操控使用者的Chrome（先browser_status確認連線）：所有分頁一律放在同一個「AI Controlled」分頁群組（browser_create_tab/browser_create_tab_group會自動放進去）；找不到分頁（tab_id過期或被關掉）就直接開新分頁，不要回報失敗；用browser_get_page_structure（首選，結構化）/browser_get_elements讀頁面、browser_click(selector或text)點擊（同一種頁面結構要跑很多個網址時可以重用同一個selector，不用每次重新screenshot算座標）、browser_type_text操作、browser_screenshot截圖給使用者看；**會觸發下載的點擊一定要帶wait_download:true，看到download.path才算真的成功，不能假設已下載**；不要輸入密碼/付款資料，登入或付款頁面交還使用者。需要查網頁、看網站實際畫面、操作網頁時優先使用；讀完網頁後回答時盡量結構化（結論→條列/表格→來源連結），不要貼整段原文。';
@@ -26960,7 +26962,7 @@ ${fnData.code}
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 try {
                     const result = await this._mergeDocsToPdf(parsed, (m) => this._log('📄 ' + m));
-                    await this._deliverToolResultFile(result, 'pdf_file_id', (r) => `📎 已合併 ${r.fileCount} 個檔案成PDF（共${r.pageCount}頁）：${r.filename}（${(r.sizeBytes / 1024 / 1024).toFixed(1)}MB）${r.saved_to ? '，已存到 ' + r.saved_to : ''}`);
+                    await this._deliverToolResultFile(result, 'pdf_file_id', (r) => `📎 已合併 ${r.fileCount} 個檔案成PDF（共${r.pageCount}頁）：${r.filename}（${(r.sizeBytes / 1024 / 1024).toFixed(1)}MB）${r.saved_to ? '，已存到 ' + r.saved_to : ''}`, 'merge_pdfs');
                     return JSON.stringify(result);
                 } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
             },
@@ -27110,7 +27112,7 @@ ${fnData.code}
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 try {
                     const result = await this._imagesToPdfAdvanced(parsed, (m) => this._log('🖼️→📄 ' + m));
-                    await this._deliverToolResultFile(result, 'pdf_file_id', (r) => `📎 已把 ${r.pageCount} 張圖片合成PDF：${r.filename}（${(r.sizeBytes / 1024).toFixed(0)}KB）${r.saved_to ? '，已存到 ' + r.saved_to : ''}`);
+                    await this._deliverToolResultFile(result, 'pdf_file_id', (r) => `📎 已把 ${r.pageCount} 張圖片合成PDF：${r.filename}（${(r.sizeBytes / 1024).toFixed(0)}KB）${r.saved_to ? '，已存到 ' + r.saved_to : ''}`, 'images_to_pdf');
                     return JSON.stringify(result);
                 } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
             },
@@ -39552,6 +39554,15 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         for (const [k, d] of entries) if (t.indexOf(k.toLowerCase()) >= 0 || (d.label && d.label.length >= 3 && t.indexOf(String(d.label).toLowerCase()) >= 0)) keep.add(k); // 任務明講的領域一定留
         const out = entries.filter(([k]) => keep.has(k)); this._log('🔎 路由先檢索：' + entries.length + ' 個領域 → ' + out.length + ' 個候選（' + out.map(([k]) => k).join('、') + '）'); return out;
     }
+    // 根對話直接呼叫「依任務文字補上來的專用工具」（不經領域子agent）時，顯示一張輕量卡片，讓人看得出這次是怎麼走的
+    _rootHintCard(fnName) {
+        try {
+            const h = this._rootTaskHints().find((x) => x.tools.indexOf(fnName) >= 0); if (!h) return null;
+            this._hintCardShown = this._hintCardShown || {}; if (this._hintCardShown[fnName]) return null; this._hintCardShown[fnName] = true;
+            const p = this._createProgressWidget('🧭 任務符合專用工具：' + h.id + '（直接呼叫 ' + fnName + '，不經領域子agent）');
+            if (p && p.update) p.update({ status: '執行中…' }); return p;
+        } catch (_) { return null; }
+    }
     _rootTaskHints() {
         try {
             const ms = this.messages || [];
@@ -41122,6 +41133,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         for (let i = 0; i < messages.length; i++) {
             const msg = messages[i];
             if (msg && msg._card) continue; // 互動卡片只給人看，回應也不進對話歷史
+            if (msg && msg._humanOnly) continue; // 工具途中交付的下載卡片：只給人看，不能夾在工具呼叫與結果之間
             if (msg && msg.role === 'tool') {
                 const prev = cleaned.length ? cleaned[cleaned.length - 1] : null;
                 const prevIds = (prev && prev.role === 'assistant' && Array.isArray(prev.tool_calls))
@@ -41134,8 +41146,8 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             if (msg && msg.role === 'assistant' && Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
                 this._ensureToolCallIds(msg.tool_calls);
                 const repliedIds = new Set();
-                for (let j = i + 1; j < messages.length && messages[j] && messages[j].role === 'tool'; j++) {
-                    if (messages[j].tool_call_id) repliedIds.add(messages[j].tool_call_id);
+                for (let j = i + 1; j < messages.length && messages[j] && (messages[j].role === 'tool' || messages[j]._humanOnly || messages[j]._card); j++) { // 夾在中間、只給人看的卡片不算打斷
+                    if (messages[j].role === 'tool' && messages[j].tool_call_id) repliedIds.add(messages[j].tool_call_id);
                 }
                 const keptCalls = msg.tool_calls.filter(tc => repliedIds.has(tc && tc.id));
                 if (keptCalls.length !== msg.tool_calls.length) {
@@ -56891,6 +56903,14 @@ _result
         return new Set(String(text || '').toLowerCase().split(/[^\p{L}\p{N}_.]+/u).filter(Boolean));
     }
     _dedupText(name, rawArgs) {
+        if (FA_DEDUP_EXACT_TOOLS.has(name)) {
+            // 不影響內容的欄位（檔名）與等於預設值的欄位（margin 0）拿掉，key 排序後再比：只是少寫／多寫這些，不算新的做法
+            try {
+                const a = JSON.parse(rawArgs); const o = {};
+                for (const k of Object.keys(a).sort()) { if (k === 'filename') continue; if (k === 'margin' && Number(a[k]) === 0) continue; if (a[k] === '' || a[k] == null) continue; o[k] = typeof a[k] === 'string' ? a[k].trim().toLowerCase() : a[k]; }
+                return JSON.stringify(o);
+            } catch (_) { return String(rawArgs || ''); }
+        }
         if (name === 'delegate_to_subagent') {
             try { const a = JSON.parse(rawArgs); return `${a.domain || ''} ${a.task || ''}`; } catch (_) { /* 解析失敗就用原字串 */ }
         }
@@ -56899,8 +56919,10 @@ _result
     // 同一輪(log)內，若同一個昂貴工具「先前已成功」且內容相似度夠高，回傳那筆紀錄；否則null。
     _findDuplicateToolCall(log, name, rawArgs) {
         if (!log || !FA_DEDUP_TOOLS.has(name)) return null;
-        const cur = this._dedupTokens(this._dedupText(name, rawArgs));
+        const curText = this._dedupText(name, rawArgs);
+        const cur = this._dedupTokens(curText);
         if (!cur.size) return null;
+        if (FA_DEDUP_EXACT_TOOLS.has(name)) { for (const prev of log.calls) if (prev.name === name && prev.ok && prev.key === curText) return prev; return null; }
         const threshold = name === 'delegate_to_subagent' ? (this._isAutoAgentMode() ? 0.85 : 0.6) : 0.95;
         // tw_stock_db客製: 2026-09-26——「表面成功、實質沒有結果」（例如子agent回「這幾個檔案
         // 不存在，請問你知道位置嗎」）不是真的成功：先前直接被當成成功、之後幾乎相同
@@ -56962,7 +56984,7 @@ _result
         if (ok) (this._turnToolSuccess = this._turnToolSuccess || new Set()).add(name); // 這一輪（含子agent）成功呼叫過哪些工具——RAG 自我修正用
         if (log === this._toolCallLog) (this._otCalls = this._otCalls || []).push({ name, rawArgs: String(rawArgs == null ? '' : rawArgs).slice(0, 3000), ok, res: (this.advancedSettings.offlineAutoTrain || 'off') !== 'off' ? this._otScalarFields(result) : undefined });
         if (log && log.collect && log !== this._toolCallLog) log.collect.push({ name, rawArgs: String(rawArgs == null ? '' : rawArgs).slice(0, 3000), ok, res: this._otScalarFields(result) });
-        if (FA_DEDUP_TOOLS.has(name)) log.calls.push({ name, ok, soft, tokens: this._dedupTokens(this._dedupText(name, rawArgs)), resultText: typeof result === 'string' ? result : JSON.stringify(result) });
+        if (FA_DEDUP_TOOLS.has(name)) log.calls.push({ name, ok, soft, key: FA_DEDUP_EXACT_TOOLS.has(name) ? this._dedupText(name, rawArgs) : null, tokens: this._dedupTokens(this._dedupText(name, rawArgs)), resultText: typeof result === 'string' ? result : JSON.stringify(result) });
         return result;
     }
 
@@ -60658,16 +60680,28 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     // tw_stock_db客製: 2026-09-11——把已在fileCache的檔案「交付」給使用者
     // （對話裡出現一則帶下載連結的訊息），不重新存一份。給/media-*指令
     // 產出.srt/.wav後讓使用者能直接下載用。
-    async _deliverExistingCacheFile(fileId, noteText) {
+    async _deliverExistingCacheFile(fileId, noteText, supersedeTag) {
         const rec = await this.fileCache.get(fileId);
         if (!rec) return;
+        // 同一輪、同一種工具又交付一份：前一份卡片拿掉，只留最後一份（模型改了設定重做，前一份就是作廢的）
+        const tag = supersedeTag ? String(supersedeTag) : null; let superseded = null;
+        if (tag) {
+            const map = this._turnDelivered = this._turnDelivered || {};
+            const prevMsg = map[tag]; if (prevMsg) { const i = this.messages.indexOf(prevMsg); if (i >= 0) { superseded = prevMsg._downloadFile ? prevMsg._downloadFile.filename : '前一份'; this.messages.splice(i, 1); } }
+        }
         const msg = this._pushAssistantMessage(noteText, null);
+        if (tag) this._turnDelivered[tag] = msg;
+        Object.defineProperty(msg, '_supersededPrevious', { value: superseded, enumerable: false, configurable: true });
+        // 這則只是給人看的下載卡片：工具執行「途中」被塞進對話，會卡在「工具呼叫」和「工具結果」之間——配對檢查（_sanitizeToolCallPairing）
+        // 就把那組呼叫和結果一起丟掉，模型看不到自己呼叫過、也看不到結果，結果一直重複呼叫同一個工具。標成只給人看，送給模型時略過。
+        Object.defineProperty(msg, '_humanOnly', { value: true, enumerable: false, configurable: true });
         Object.defineProperty(msg, '_downloadFile', {
             value: { id: fileId, filename: rec.filename, mimeType: rec.mimeType, sizeBytes: rec.sizeBytes },
             enumerable: false, configurable: true,
         });
         this._persistChatHistory();
         this._renderMessageHistory();
+        return msg;
     }
 
     // tw_stock_db客製: 2026-09-14使用者回報——AI在一般對話裡直接呼叫
@@ -60681,9 +60715,12 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     // 一個使用者看不到、點不到的file_id。`noteBuilder(result)`用來組出跟
     // 各自斜線指令一致的說明文字，`result`本身原封不動回傳（呼叫端還是要
     // JSON.stringify(result)交回給LLM）。
-    async _deliverToolResultFile(result, fileIdKey, noteBuilder) {
+    async _deliverToolResultFile(result, fileIdKey, noteBuilder, supersedeTag) {
         if (result && result.ok && result[fileIdKey]) {
-            try { await this._deliverExistingCacheFile(result[fileIdKey], noteBuilder(result)); } catch (_) { /* 交付失敗不影響工具本身的回傳結果 */ }
+            try {
+                const m = await this._deliverExistingCacheFile(result[fileIdKey], noteBuilder(result), supersedeTag);
+                if (m && m._supersededPrevious) result.superseded_previous = m._supersededPrevious + '（前一份已從對話拿掉，只留這一份）';
+            } catch (_) { /* 交付失敗不影響工具本身的回傳結果 */ }
         }
         return result;
     }
@@ -62218,7 +62255,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         this._fakeWriteGuard = { count: 0 };
         this._claimPathGuard = { count: 0 };
         this._intentGuard = { count: 0 };
-        this._toolCallLog = { calls: [], blocked: 0 };
+        this._toolCallLog = { calls: [], blocked: 0 }; this._turnDelivered = {}; this._hintCardShown = {}; // 每一輪重新算：交付過的檔案卡片、專用工具卡片
         this._otCalls = [];
         this._forceNoTools = false;
         const rowCfg = this._getInitialFallbackConfig();
@@ -62912,7 +62949,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
 
                         this._log(`執行工具: ${task.fnName}`);
                         const parsedArgs = await this.repairJsonPayload(task.fnArgsRaw);
+                        const hintCard = this._rootHintCard(task.fnName);
                         const result = await this._callToolGuarded(this._toolCallLog, task.fnName, JSON.stringify(parsedArgs), () => Promise.resolve(toolDefinition.callback.call(this, JSON.stringify(parsedArgs))));
+                        if (hintCard && hintCard.finish) hintCard.finish('完成');
                         this._noteWriteEvidence(this._writeEvidence, task.fnName, result);
 
                         this._pushToolResultMessage(task.fnName, result);
@@ -63286,7 +63325,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     const toolDefinition = this._getToolDefinition(fnName);
                     if (!toolDefinition) throw new Error(`找不到工具: ${fnName}`);
                     this._log(`執行工具（原生）: ${fnName}`);
+                    const hintCard = this._rootHintCard(fnName);
                     const result = await this._callToolGuarded(this._toolCallLog, fnName, rawArgs, () => Promise.resolve(toolDefinition.callback.call(this, rawArgs)));
+                    if (hintCard && hintCard.finish) hintCard.finish('完成');
                     this._noteWriteEvidence(this._writeEvidence, fnName, result);
                     this._pushToolResultMessage(fnName, result, { tool_call_id: tc.id });
                 } catch (err) {
