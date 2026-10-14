@@ -18859,7 +18859,7 @@ const ADVANCED_SETTINGS_GROUPS = {
     desktop: { label: '桌面程式/單機', cats: [], visible: false },
 };
 // 工程模式（Configure 視窗左下角的勾選）沒打勾時藏起來的設定頁：一般使用者不需要動、預設值就夠用的那些
-const ADVANCED_ENGINEERING_CATS = new Set(['git', 'llm-sampling', 'llm-debug', 'subagent', 'voice', 'multimedia', 'youtube', 'offline-trainer', 'offline-models', 'domains', 'functions', 'terminal', 'limits', 'ci-connections']);
+const ADVANCED_ENGINEERING_CATS = new Set(['rag', 'git', 'llm-sampling', 'llm-debug', 'subagent', 'voice', 'multimedia', 'youtube', 'offline-trainer', 'offline-models', 'domains', 'functions', 'terminal', 'limits', 'ci-connections']);
 
 // tw_stock_db客製: 2026-09-20——Chrome擴充功能檔案的後備來源（網頁部署目錄抓不到、或桌面版file://時使用）。
 // tw_stock_db客製: 2026-09-20——啟用瀏覽器控制時，這些工具會被注入「所有」子agent（程式設計/研究/網路搜尋…），
@@ -23719,7 +23719,7 @@ class FloatingAssistant {
     // domain，等於rag_lookup整個從AI視角消失，不用另外改任何委派邏輯。
     _syncRagLookupDomainEnabled() {
         if (this.domains.rag_lookup) {
-            this.domains.rag_lookup.enabled = !!(this.advancedSettings && this.advancedSettings.ragEnabled);
+            this.domains.rag_lookup.enabled = false; // 2026-10-15：RAG 不再提供給 AI 查詢，只供離線訓練器使用
         }
     }
 
@@ -31289,11 +31289,6 @@ ${fnData.code}
             const kd = all[dom];
             if (!kd) {
                 // 內建與使用者保存的知識都沒有：看RAG（language_explore選「只記錄到RAG」存的）
-                let rag = [];
-                if (this.advancedSettings.ragEnabled && this.ragSystem) {
-                    try { rag = (await this.ragSystem.query(dom + ' ' + q, 3)).filter((r) => String(r.content || '').toLowerCase().includes(dom)).map((r) => ({ id: r.id, content: String(r.content).slice(0, 1500) })); } catch (_) {}
-                }
-                if (rag.length) return { ok: true, domain: dom, source: 'rag', results: rag };
                 return { ok: false, error: `知識庫沒有「${dom}」。已有的：${Object.keys(all).join('、')}。這是不認識的語言／領域：用 language_explore({"action":"start","language":"${dom}"}) 上網探索，完成後系統會詢問使用者要成為新領域或記到RAG。` };
             }
             const byId = parsed.topic ? kd.cards.find((c) => c.id === String(parsed.topic)) : null;
@@ -31460,9 +31455,6 @@ ${fnData.code}
             const aliasKey = { 'c++': 'cpp', 'c#': 'csharp' }[language.toLowerCase()] || key;
             if (FA_PROG_KNOWLEDGE[aliasKey] || FA_PROG_KNOWLEDGE[key]) { const k = FA_PROG_KNOWLEDGE[aliasKey] ? aliasKey : key; return { ok: true, known: 'built_in', domain: k, next_action: `內建知識庫已經有「${language}」，不用探索。用 programming_knowledge({"action":"lookup","domain":"${k}","query":"關鍵字"}) 查，或委派 know_${k}。` }; }
             if (cl()[key] || all[key]) return { ok: true, known: 'user_added', domain: key, next_action: `使用者之前已經保存過「${language}」。用 programming_knowledge({"action":"lookup","domain":"${key}","query":"關鍵字"}) 查，開發用 prog_${key} 領域。` };
-            if (this.advancedSettings.ragEnabled && this.ragSystem) {
-                try { const r = (await this.ragSystem.query(language + ' language primer', 3)).filter((x) => String(x.content || '').toLowerCase().includes(language.toLowerCase())); if (r.length) return { ok: true, known: 'rag', results: r.map((x) => ({ id: x.id, content: String(x.content).slice(0, 800) })), next_action: 'RAG知識庫裡已經有相關記錄（上面），先用它；不夠再探索。' }; } catch (_) {}
-            }
             const id = 'lang:' + key;
             const rec = { id, key, language, created: Date.now(), sources: [], status: 'exploring' };
             await this._langSave(rec);
@@ -62374,46 +62366,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         // 是「對話中途」才把RAG關掉，之前已經喚醒、還殘留在對話歷史裡的
         // 舊記憶訊息應該照樣被清掉，不要因為關閉RAG反而讓舊訊息卡住不清。
         this.messages = this.messages.filter(m => !m.content.startsWith('[Hermes 歷史記憶喚醒]'));
-        if (this.advancedSettings.ragEnabled) {
-            try {
-                this._turnToolSuccess = new Set(); this._ragRecalledThisTurn = [];
-                let resolvedChain = await this.ragSystem.query(userText, 3);
-                const recalledAll = resolvedChain.map((x) => ({ id: x.id, content: String(x.content || '') })); // 被略過的舊記憶也要記著：這一輪用專用工具成功後，會被自我修正（見 _ragHealRecalled）
-                // 這則訊息有專用工具（見 FA_TASK_TOOL_HINTS）：記憶裡「自己寫 python／img2pdf／ImageMagick」的舊做法不要再餵給模型——
-                // 真實對話裡，過去失敗或不合意圖的腳本做法被自動記成技能，下一次又被喚醒，模型就跟著再寫一次 python（還把「Zoom」記成「填滿裁切」）
-                if (_faTaskToolHints(userText).length) {
-                    const before = resolvedChain.length;
-                    resolvedChain = resolvedChain.filter((x) => !/img2pdf|Pillow|\bPIL\b|ImageMagick|reportlab|PyPDF2|pypdf|\bfitz\b|PyMuPDF|magick|convert\s+-/i.test(String(x.content || '')));
-                    if (before !== resolvedChain.length) this._log('🧠 這個需求有專用工具：略過 ' + (before - resolvedChain.length) + ' 個「自己寫腳本」的舊記憶');
-                }
-
-                this._ragRecalledThisTurn = recalledAll;
-                if (resolvedChain.length > 0) {
-                    const memoryContent = resolvedChain.map(s => {
-                        let typeLabel = '累積技能(Skill)';
-                        if (s.tags && s.tags.includes('user_preference')) typeLabel = '習慣偏好';
-                        if (s.tags && s.tags.includes('document_section')) typeLabel = '章節總結';
-
-                        const scoreLabel = s.score > 0 ? "直接命中相似度: " + (s.score * 100).toFixed(1) + "%" : 'Prerequisite 依賴鏈拉入';
-                        const condLabel = (s.preConditions && s.preConditions.length > 0) ? "\n(前置條件: " + s.preConditions.join(', ') + ")" : '';
-                        const depLabel = (s.dependencies && s.dependencies.length > 0) ? "\n(依賴關係: " + s.dependencies.join(' -> ') + " -> " + s.id + ")" : '';
-
-                        return "【節點 ID: " + s.id + " (" + typeLabel + " · " + scoreLabel + ")" + condLabel + depLabel + "】:\n" + s.content;
-                    }).join('\n\n');
-
-                    this.messages.splice(1, 0, {
-                        role: 'system',
-                        content: `[Hermes 歷史記憶喚醒]\n檢索到以下相互關聯的「知識/章節推論依賴圖譜鏈」。某些節點雖然沒有直接與輸入字面匹配，但它是被命中節點的前置 Prerequisites 必要脈絡！請結合以下鏈條回答問題：\n\n${memoryContent}${this._capabilityReflectionText(userText)}${(() => { const hh = _faTaskToolHints(userText); return hh.length ? '\n\n※ 注意：這個需求現在有專用工具（' + hh.map((h) => h.tools[0]).join('、') + '）。上面記憶裡如果是用 python／img2pdf／Pillow／ImageMagick 之類自己寫腳本的做法，已經過時，不要照做，改用專用工具（做法見系統提示）。' : ''; })()}`,
-                        _ragNodeIds: resolvedChain.map((x) => x.id)
-                    });
-
-                    this._log("🧠 圖譜機制已喚醒 " + resolvedChain.length + " 個依賴知識/文章切片節點：" + resolvedChain.map((x) => x.id).join("、"));
-                    this._renderMessageHistory();
-                }
-            } catch (err) {
-                console.error("圖譜喚醒出錯:", err);
-            }
-        }
+        // 2026-10-15使用者要求：RAG 不再自動插進 AI 的思考（容易誤導）。RAG 只當「離線訓練器」的養分（離線的規則、做法、參考資料）；
+        // 這裡不再有每一輪的「歷史記憶喚醒」，上面那行會把舊對話裡殘留的喚醒訊息清掉。
+        this._turnToolSuccess = new Set(); this._ragRecalledThisTurn = [];
 
         if (userText && !this.commandHistory.includes(userText)) {
             this.commandHistory.unshift(userText);
@@ -65357,9 +65312,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                 <div class="ai-advanced-stack">
                                     <div style="display:flex; align-items:center; gap:6px;">
                                         <input type="checkbox" id="ai-rag-enabled-chk" style="cursor:pointer;">
-                                        <label for="ai-rag-enabled-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">啟用 RAG（rag_lookup 子Agent + 每輪對話自動喚醒歷史記憶）</label>
+                                        <label for="ai-rag-enabled-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">啟用 RAG（只當離線訓練器的養分）</label>
                                     </div>
-                                    <p class="ai-advanced-hint">預設關閉——每一輪對話都會多花一次知識圖譜查詢，對大多數沒有經營知識圖譜內容的使用者只有overhead、沒有實際效益。關閉時rag_lookup這個領域完全不會出現在委派/路由的候選清單裡（AI看不到它存在），下面的節點管理功能仍然可以照常瀏覽/編輯，只是AI自己不會在對話中查詢或自動喚醒。</p>
+                                    <p class="ai-advanced-hint">2026-10-15 起，RAG 不再插進 AI 的思考（不會每一輪自動「喚醒」記憶，也沒有 rag_lookup 領域可以讓 AI 查），避免舊的、不相關的內容誤導 AI。這裡的知識只當「離線訓練器」的養分：離線模式（沒有 AI 時）回答、挑做法時會把 RAG 當作參考資料。勾選＝讓離線訓練器可以用這份知識；不勾＝不用。</p>
                                     <p class="ai-advanced-hint">語意檢索預設用內建的TF-IDF近似算法（免費、免設定，純字面詞頻比對）。如果在「LLM Model 管理」分頁把某一筆model標記成🧬 Embedding，這裡的檢索會改成優先呼叫那個模型的/embeddings端點取得真正的語意向量，理解同義詞/相近語意的能力會好上不少；沒標記、或呼叫當下失敗，會自動退回TF-IDF，不影響RAG照常運作。</p>
                                 </div>
                                 <div class="ai-advanced-stack">
@@ -65681,7 +65636,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     </div>
                     <div class="ai-advanced-footer">
                         <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
-                            <label title="打勾才顯示全部設定頁：LLM Model 管理、LLM Debug、子Agent、語音、多媒體、YouTube、離線訓練器、離線模型管理、Domain、自訂函式、終端機、效能與限制" style="display:inline-flex; align-items:center; gap:4px; cursor:pointer; font-size:12px; font-weight:bold; margin-right:6px;"><input type="checkbox" id="ai-engineering-mode-chk" style="cursor:pointer;">工程模式</label>
+                            <label title="打勾才顯示全部設定頁：RAG 知識庫、LLM Model 管理、LLM Debug、子Agent、語音、多媒體、YouTube、離線訓練器、離線模型管理、Domain、自訂函式、終端機、效能與限制" style="display:inline-flex; align-items:center; gap:4px; cursor:pointer; font-size:12px; font-weight:bold; margin-right:6px;"><input type="checkbox" id="ai-engineering-mode-chk" style="cursor:pointer;">工程模式</label>
                             <span class="ai-advanced-hint" style="font-size:12px;">全部內容以 JSON 格式儲存在 persistent localStorage。</span>
                             <button type="button" id="ai-settings-export-btn" class="ai-advanced-btn">匯出設定</button>
                             <label class="ai-advanced-btn" style="cursor:pointer; display:inline-flex; align-items:center;">匯入設定<input type="file" id="ai-settings-import-input" accept=".json" style="display:none;"></label>
@@ -66296,6 +66251,10 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         // 對應的畫面內容不會變，見_isNearBottom()的說明）。
         const wasNearBottomForRerender = this._isNearBottom(chatBody);
         const prevScrollTopForRerender = chatBody.scrollTop;
+        // 整個清空重繪時，圖片會被重新建立、重新解碼（貼上的大圖尤其明顯），畫面就會閃一下、圖一張張慢慢長出來。
+        // 清空前先把已經解碼好的圖收起來，重繪完用相同來源的舊節點換掉新的，瀏覽器不用重新解碼。
+        const keptImgs = new Map();
+        try { chatBody.querySelectorAll('img').forEach((im) => { const s = im.getAttribute('src') || ''; if (s && im.complete && im.naturalWidth > 0) { if (!keptImgs.has(s)) keptImgs.set(s, []); keptImgs.get(s).push(im); } }); } catch (_) { /* */ }
         chatBody.innerHTML = '';
         this._ensureFestivalParticles(chatBody);
 
@@ -66335,6 +66294,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         // 一律顯示），不是刪除訊息本身——AI仍然看得到完整的對話歷史。
         this._markSupersededVisualDrafts(this.messages);
         this.messages.forEach(msg => this._renderSingleMessage(msg, chatBody, palette));
+        try { if (keptImgs.size) chatBody.querySelectorAll('img').forEach((im) => { const q = keptImgs.get(im.getAttribute('src') || ''); if (q && q.length) { const old = q.shift(); if (old !== im) { old.className = im.className; old.style.cssText = im.style.cssText; im.replaceWith(old); } } }); } catch (_) { /* */ }
         chatBody.scrollTop = wasNearBottomForRerender ? chatBody.scrollHeight : prevScrollTopForRerender;
         this._persistChatHistory();
     }
