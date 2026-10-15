@@ -46774,6 +46774,7 @@ ${sourceTool.handlerScript}
     // 的session/prompt——不嘗試恢復WASM shell的process狀態（那本來就沒有
     // 真的被持久化過、也沒必要，使用者原話「不用保留process狀態」）。
     async _mountTerminalWidget(container, initialCommand, msg) {
+        this._guardWheel(container);
         await this._ensureXtermLoaded();
         const termSettings = this.advancedSettings.terminal || this._createDefaultAdvancedSettings().terminal;
         const term = new Terminal({
@@ -54738,6 +54739,7 @@ _result
     // ＋／－／⟲按鈕與「聚焦」下拉選單；(4)YAML頂層的camera欄位讓動畫自己推進特寫（見_build2DCamera）。
     // 使用者自己的縮放/平移是疊在camera之上的；匯出MP4/快照只看YAML的camera，不含使用者當下的操作。
     async _mount2DAnimation(container, yamlText) {
+        this._guardWheel(container);
         await this._ensureJsYamlLoaded();
         const validation = this._validate2DAnimationYaml(yamlText, { lenient: true });
         if (!validation.ok) {
@@ -56443,6 +56445,7 @@ _result
     }
 
     async _mount3DScene(container, yamlText, opts) {
+        this._guardWheel(container);
         opts = opts || {};
         await this._ensureJsYamlLoaded();
         // tw_stock_db客製: 2026-09-05使用者明確要求——播放/檢視場景時要能
@@ -56660,6 +56663,7 @@ _result
     // 上次save_state存過的狀態當初始值，讓使用者離開又回來的viewer（例如
     // 重新整理頁面）能接續填過的內容。
     async _mountInteractiveViewer(container, viewerDef) {
+        this._guardWheel(container);
         const stateNamespace = `viewer:${viewerDef.state_namespace}`;
         const persisted = (await this.stateStore.get(stateNamespace)) || {};
         const state = Object.assign({}, persisted);
@@ -58489,6 +58493,7 @@ ${existingNodeSummaries}
     // 目前的處理複雜度相近，只是多了pan/zoom互動層；匯出/檢視原始碼按鈕
     // 直接對msg._displayMermaidSvg操作，不需要透過這個函式的回傳值。
     _mountMermaidViewer(container, svgText, viewerOpts) {
+        this._guardWheel(container);
         const viewport = document.createElement('div');
         viewport.tabIndex = 0;
         viewport.style.cssText = 'position:relative; height:420px; overflow:hidden; background:#f7f7f7; border-radius:6px; border:2px solid rgba(0,0,0,0.1); cursor:grab; outline:none; transition:border-color 0.15s;';
@@ -59198,6 +59203,22 @@ ${existingNodeSummaries}
         wrap.appendChild(menu);
         container.appendChild(wrap);
         return wrap;
+    }
+
+    // ===== 嵌在對話裡的檢視器（3D、繪圖、UML、互動表單、2D 動畫、簡報、終端機…）：點一下才吃滾輪 =====
+    // 沒點之前，滾輪屬於對話（照常捲動對話，不會被檢視器吃掉去縮放或捲動）；點一下檢視器才啟用，點到外面就放開。
+    // 檢視器的外框加上 data-fa-wheel 標記（_guardWheel），由對話區的委派監聽統一處理，不用改每個檢視器內部。
+    _guardWheel(el) { if (el && el.setAttribute) el.setAttribute('data-fa-wheel', '1'); return el; }
+    _wireEmbeddedWheelGuard(chatBody) {
+        if (!chatBody || chatBody._faWheelGuard) return; chatBody._faWheelGuard = true;
+        if (!document.getElementById('fa-wheel-guard-css')) { const s = document.createElement('style'); s.id = 'fa-wheel-guard-css'; s.textContent = "[data-fa-wheel]{position:relative}[data-fa-wheel]:not(.fa-wheel-on) iframe{pointer-events:none}[data-fa-wheel]:not(.fa-wheel-on):hover::after{content:'點一下啟用滾輪';position:absolute;right:8px;bottom:6px;z-index:50;font:11px system-ui,sans-serif;background:rgba(22,27,34,.92);color:#9aa7b4;border:1px solid #30363d;border-radius:10px;padding:1px 8px;pointer-events:none}"; document.head.appendChild(s); }
+        chatBody.addEventListener('wheel', (e) => {
+            if (e.ctrlKey) return; const g = e.target && e.target.closest ? e.target.closest('[data-fa-wheel]') : null; if (!g || g.classList.contains('fa-wheel-on')) return;
+            e.preventDefault(); e.stopPropagation(); // 不讓檢視器收到；改成自己捲動對話
+            const k = e.deltaMode === 1 ? 16 : (e.deltaMode === 2 ? chatBody.clientHeight : 1); chatBody.scrollTop += e.deltaY * k; chatBody.scrollLeft += e.deltaX * k;
+        }, { capture: true, passive: false });
+        chatBody.addEventListener('mousedown', (e) => { const g = e.target && e.target.closest ? e.target.closest('[data-fa-wheel]') : null; chatBody.querySelectorAll('.fa-wheel-on').forEach((x) => { if (x !== g) x.classList.remove('fa-wheel-on'); }); if (g) g.classList.add('fa-wheel-on'); }, true);
+        document.addEventListener('mousedown', (e) => { if (!chatBody.contains(e.target)) chatBody.querySelectorAll('.fa-wheel-on').forEach((x) => x.classList.remove('fa-wheel-on')); }, true);
     }
 
     // ===== 資料檢視器（JSON／YAML／TOML／CSV）：AI 回覆裡的程式碼區塊換成可看、可查、可匯出、可問 AI 的檢視器。設計見 DESIGN.data-viewers.md =====
@@ -67302,6 +67323,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         // 顯示出來。
         if (!chatBody) return;
         this._wireImageLightboxDelegation(chatBody);
+        this._wireEmbeddedWheelGuard(chatBody);
         const palette = this._getThemePalette();
         this._applyThemeStyles();
         // tw_stock_db客製: 這個函式會整個清空chatBody重繪（innerHTML=''），
@@ -68276,6 +68298,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 const packMount = document.createElement('div');
                 packWrap.appendChild(packMount);
                 container.appendChild(packWrap);
+                this._guardWheel(packMount);
                 this._deckMountPack(packMount, msg._displayDeckPackId).catch((err) => {
                     packMount.innerHTML = '<div style="padding:8px; color:#e53e3e; font-size:12px;">⚠️ 簡報封包開啟失敗：' + this._escapeHtml(err.message || String(err)) + '</div>';
                 });
@@ -68288,6 +68311,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 const deckMount = document.createElement('div');
                 deckWrap.appendChild(deckMount);
                 container.appendChild(deckWrap);
+                this._guardWheel(deckMount);
                 this._deckMount(deckMount, msg._displayDeckUrl).catch((err) => {
                     deckMount.innerHTML = '<div style="padding:8px; color:#e53e3e; font-size:12px;">⚠️ 簡報載入失敗：' + this._escapeHtml(err.message || String(err)) + '</div>';
                 });
