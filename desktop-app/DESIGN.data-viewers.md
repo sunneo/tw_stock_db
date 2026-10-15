@@ -51,11 +51,21 @@
 | YAML | 行號＋上色 | 樹 | yaml、json、csv、xlsx | 第一階段 |
 | TOML | 行號＋上色 | 樹 | toml 轉出的 json、yaml、csv、xlsx | 第一階段 |
 | CSV | 行號＋上色 | 表格（排序、篩選） | csv、xlsx、sqlite3 | 第一階段（對話裡的 csv 區塊） |
-| XLSX | — | 表格＋工作表頁籤 | xlsx、csv（只匯目前選的工作表）、sqlite3 | 第二階段（需要開檔入口） |
-| SQLite 瀏覽器 | — | 既有 | — | 第二階段：加 Ask AI |
+| XLSX | — | 表格＋工作表頁籤（只有一張也顯示）、Excel 欄名 A、B、…、AA、可拖曳欄寬 | xlsx（全部工作表）、csv（只匯出目前選的工作表）、json、sqlite3 | 完成：用 /view 開附件或檔名 |
+| SQLite 瀏覽器 | — | 既有 | — | 完成：多一個「🤖 Ask AI」分頁（AI 只拿到資料表結構，寫唯讀 SELECT，畫面端執行；失敗帶錯誤訊息重試最多兩次） |
 
 ## 五、程式結構
 
 - `renderer/src/dataview/data_core.js`（`FaDataCore`）：純函式。解析（JSON／YAML／TOML／CSV）、轉出（JSON／YAML／TOML／CSV）、上色、JSON→表格、XLSX 寫入／讀取、搜尋、樹展開。node 可直接測。
 - `renderer/src/dataview/data_ui.js`（`FaDataView`）：DOM 元件，只依賴 host 物件（載入 js-yaml／jszip、下載、問 AI），不依賴 floating-assistant 內部。
 - floating-assistant.js：對話裡的 json／yaml／toml／csv 區塊換成檢視器；`askAI` 接 `big_content` 與子 agent。
+
+## 六、/view 指令
+
+/view [檔名]：開啟附件（附件會從輸入框上方拿掉，不再停在附件列）、指定檔名（用檔名或 file_id 找已上傳的檔案），不帶參數開最近上傳、可以檢視的檔案。訊息裡只存一個小的 fa-dataview 區塊（檔案 id＋名稱），內容每次從檔案快取讀，重新整理後仍在。
+
+## 七、表格類（CSV／XLSX）的畫面規則
+
+- 欄名像 Excel：A、B、…、Z、AA、…、ZZ、AAA…；第一列資料是 row 1（欄位名稱），資料從 row 2 開始。
+- 欄寬可以拖曳欄名右邊界調整，雙擊自動調整；欄名可點選排序。
+- 工作表頁籤一律顯示；AI 的回答一律變成另一張「AI：問題」工作表（有表格用表格，沒有就一行一列），可個別刪除，匯出 xlsx／sqlite3 時一起帶出。

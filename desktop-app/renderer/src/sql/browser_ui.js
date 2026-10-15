@@ -41,10 +41,10 @@
         const bWrite = h('button', { class: 'pri', title: 'COMMIT 並寫回來源 (Ctrl+S)', text: 'Write Changes' }), bRev = h('button', { title: '回滾所有暫存變更', text: 'Revert' }), bRef = h('button', { title: '重新載入', text: '↻' }), bMax = h('button', { text: '🗖' }), bX = h('button', { text: '✕' });
         const bar = h('div', { class: 'bar' }, title, badge, dirtyB, bWrite, bRev, bRef, bMax, bX);
         const tree = h('div', { class: 'tree' }); const tabs = h('div', { class: 'tabs' }); const panes = {};
-        const TABS = [['struct', 'Database Structure'], ['browse', 'Browse Data'], ['sql', 'Execute SQL'], ['pragma', 'Pragmas']];
+        const TABS = [['struct', 'Database Structure'], ['browse', 'Browse Data'], ['sql', 'Execute SQL'], ['pragma', 'Pragmas']]; if (typeof host.askAI === 'function') TABS.push(['ai', '🤖 Ask AI']);
         for (const [id, label] of TABS) { tabs.append(h('span', { 'data-t': id, text: label, onclick: () => setTab(id) })); panes[id] = h('div', { class: 'pane' }); }
         const stat1 = h('span', { text: '' }), stat2 = h('span', { text: '' }); const stat = h('div', { class: 'stat' }, stat1, stat2);
-        const right = h('div', { class: 'right' }, tabs, panes.struct, panes.browse, panes.sql, panes.pragma);
+        const right = h('div', { class: 'right' }, tabs, panes.struct, panes.browse, panes.sql, panes.pragma, panes.ai || null);
         win.append(bar, h('div', { class: 'main' }, tree, right), stat, h('div', { class: 'rz' }));
         document.body.appendChild(win);
         const say = (m, bad) => { stat1.textContent = m; stat1.style.color = bad ? '#ff7b72' : ''; };
@@ -63,7 +63,7 @@
             tree.textContent = ''; const sec = (label, items, fn) => { if (!items.length) return; tree.append(h('h4', { text: label + '（' + items.length + '）' })); for (const it of items) tree.append(h('div', { class: it.name === st.table && fn ? 'on' : '', title: it.name, text: it.name + (it.rows != null ? '  ' + it.rows : ''), onclick: fn ? () => { st.table = it.name; st.page = 0; st.filters = {}; st.sort = []; st.sel.clear(); drawTree(); if (st.tab === 'struct') drawStruct(); else setTab('browse'); } : () => { setTab('struct'); } })); };
             sec('Tables', st.schema.tables, true); sec('Views', st.schema.views.map((v) => ({ name: v.name })), true); sec('Indices', st.schema.indices); sec('Triggers', st.schema.triggers);
         }
-        function setTab(id) { st.tab = id; for (const s of tabs.children) s.classList.toggle('on', s.dataset.t === id); for (const [k, p] of Object.entries(panes)) p.classList.toggle('on', k === id); ({ struct: drawStruct, browse: drawBrowse, sql: drawSql, pragma: drawPragma })[id](); }
+        function setTab(id) { st.tab = id; for (const s of tabs.children) s.classList.toggle('on', s.dataset.t === id); for (const [k, p] of Object.entries(panes)) p.classList.toggle('on', k === id); ({ struct: drawStruct, browse: drawBrowse, sql: drawSql, pragma: drawPragma, ai: drawAi })[id](); }
 
         // ===== 結構 =====
         function drawStruct() {
@@ -144,6 +144,46 @@
         async function exportGrid() { const cols = st.cols.filter((c) => c !== '__rowid__'); const idx = cols.map((c) => st.cols.indexOf(c)); const rows = st.rows.map((r) => idx.map((i) => r[i])); const which = await modal('匯出目前這一頁', h('div', { class: 'mut', text: cols.length + ' 欄 × ' + rows.length + ' 列' }), [['no', '取消'], ['csv', 'CSV'], ['json', 'JSON'], ['md', 'Markdown']]); if (which === 'csv') host.download(st.table + '.csv', C.toCsv(cols, rows), 'text/csv'); else if (which === 'json') host.download(st.table + '.json', C.toJson(cols, rows), 'application/json'); else if (which === 'md') host.download(st.table + '.md', C.toMarkdown(cols, rows), 'text/markdown'); }
 
         // ===== Execute SQL =====
+        // ===== Ask AI：用一句話問資料，AI 寫出唯讀的 SELECT，在這裡執行、顯示結果（卡片可收合、可刪除、可清除）=====
+        function schemaText() {
+            let s = ''; for (const tb of st.schema.tables.concat(st.schema.views.map((v) => ({ name: v.name, columns: [], view: true })))) { const line = tb.name + (tb.view ? '（view）' : '') + '(' + (tb.columns || []).map((c) => c.name + ' ' + (c.type || '') + (c.pk ? ' PK' : '')).join(', ') + ')' + (tb.rows != null ? ' -- ' + tb.rows + ' 列' : '') + '\n'; if (s.length + line.length > 12000) { s += '…（還有更多資料表，只列名稱）\n'; break; } s += line; }
+            return s;
+        }
+        function drawAi() {
+            const p = panes.ai; if (p._built) return; p._built = true; const cards = []; const list = h('div', { class: 'res' });
+            const draw = () => {
+                list.textContent = ''; if (!cards.length) list.append(h('div', { class: 'mut', text: '用一句話問你想要什麼資料（例如：每個客戶的訂單總額，由高到低）。AI 只會寫唯讀的 SELECT，不會改資料；資料庫內容不會整份送給 AI，只送資料表結構。' }));
+                for (const c of cards) {
+                    const body = h('div', { style: 'padding:4px 10px 8px;border-top:1px solid #30363d' + (c.collapsed ? ';display:none' : '') });
+                    if (c.status === 'run') body.append(h('div', { class: 'mut', text: '查詢中…' })); if (c.error) body.append(h('div', { class: 'err', text: c.error }));
+                    if (c.text) body.append(h('div', { style: 'white-space:pre-wrap;margin:4px 0', text: c.text }));
+                    if (c.sql) { body.append(h('pre', { text: c.sql, class: 'mut' })); body.append(h('div', { class: 'tool', style: 'padding:2px 0' }, h('button', { text: '放到 Execute SQL', onclick: () => { setTab('sql'); panes.sql._ta.value = c.sql; } }), c.cols ? h('button', { text: '匯出 CSV', onclick: () => host.download('ai-result.csv', C.toCsv(c.cols, c.rows), 'text/csv') }) : null)); }
+                    if (c.cols) { const tb = h('table'); tb.append(h('tr', null, ...c.cols.map((x) => h('th', { text: x })))); c.rows.slice(0, 100).forEach((row) => tb.append(h('tr', null, ...row.map((v) => { const d = C.cellDisplay(v); return h('td', { class: d.cls, text: d.text }); })))); body.append(h('div', { class: 'gridw', style: 'max-height:260px' }, tb)); if (c.rows.length > 100) body.append(h('div', { class: 'mut', text: '… 只顯示前 100 列（共取回 ' + c.rows.length + ' 列）' })); }
+                    list.append(h('div', { style: 'border:1px solid #30363d;border-radius:6px;margin-bottom:8px' }, h('div', { style: 'display:flex;gap:6px;align-items:center;padding:4px 8px;cursor:pointer', onclick: () => { c.collapsed = !c.collapsed; draw(); } }, h('span', { text: c.collapsed ? '▸' : '▾' }), h('span', { style: 'flex:1', text: 'Q：' + c.q }), h('button', { text: '✕', title: '刪除這則', onclick: (e) => { e.stopPropagation(); cards.splice(cards.indexOf(c), 1); draw(); } })), body));
+                }
+                list.scrollTop = list.scrollHeight;
+            };
+            const inp = h('input', { placeholder: '問資料庫…（Enter）', style: 'flex:1' });
+            async function ask(q) {
+                const c = { q, status: 'run', text: '', sql: '', cols: null, rows: null, error: '' }; cards.push(c); draw();
+                let prev = null, err = null;
+                try {
+                    for (let attempt = 0; attempt < 3; attempt++) {
+                        const r = await host.askAI(q, { schema: schemaText(), prevSql: prev, error: err }); c.text = r.text || ''; const sql = String(r.sql || '').trim().replace(/;+\s*$/, ''); if (!sql) { c.error = c.error || 'AI 沒有給出 SQL'; break; }
+                        c.sql = sql; const parts = SPLIT.split(sql);
+                        if (parts.length !== 1 || C.classify(sql) !== 'read') { c.error = 'AI 給的不是單一句唯讀查詢，已擋下（只執行 SELECT／WITH）。'; break; }
+                        let out; try { out = await exec(sql, undefined, { limit: 500 }); } catch (e) { out = [{ error: String(e.message || e) }]; }
+                        const res = out[0]; if (res && res.error) { err = res.error; prev = sql; c.error = '第 ' + (attempt + 1) + ' 次的 SQL 失敗：' + res.error + (attempt < 2 ? '（請 AI 修正…）' : ''); draw(); continue; }
+                        c.error = ''; c.cols = res.columns || []; c.rows = res.rows || []; break;
+                    }
+                } catch (e) { c.error = String((e && e.message) || e); }
+                c.status = 'done'; draw();
+            }
+            const go = () => { const q = inp.value.trim(); if (!q) return; inp.value = ''; ask(q); };
+            inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
+            p.append(list, h('div', { class: 'tool' }, inp, h('button', { class: 'pri', text: '問', onclick: go }), h('button', { text: '全部清除', onclick: () => { cards.length = 0; draw(); } })));
+            draw();
+        }
         function drawSql() {
             const p = panes.sql; if (p.firstChild) return; const ta = h('textarea', { class: 'sql', placeholder: '輸入 SQL。Ctrl+Enter＝全部執行；選取一段只執行選取的部分。', spellcheck: 'false' }); const res = h('div', { class: 'res' });
             const go = async (explain) => { let sql = ta.value.slice(ta.selectionStart === ta.selectionEnd ? 0 : ta.selectionStart, ta.selectionStart === ta.selectionEnd ? undefined : ta.selectionEnd); if (!sql.trim()) return; if (explain) sql = sql.split(/;\s*\n?/)[0]; if (explain) sql = 'EXPLAIN QUERY PLAN ' + sql; const dg = C.isDangerous(sql); if (dg.length && !(await confirmSql(sql, '這段 SQL 有危險語句：'))) return; await runUser(sql, res, 1000); st.hist.unshift(sql); };
