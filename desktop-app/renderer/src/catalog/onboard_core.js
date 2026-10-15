@@ -47,11 +47,17 @@
         return { counts: out, examples };
     }
 
+    function unresolvedTop(units) {
+        const c = {}; for (const u of units) if (u.effects.includes('unknown')) for (const ev of (u.effect_evidence || [])) if (/^(unresolved|unclassified) /.test(ev)) c[ev] = (c[ev] || 0) + 1;
+        return Object.entries(c).sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, 8).map(([k, v]) => k + ' ×' + v);
+    }
     // ===== 結果摘要（給模型看的，要短）=====
     function summarize(units, extra) {
         extra = extra || {}; const st = Cat.stats(units); const t1 = units.filter((u) => u.tier === 1); const held = heldReasons(units);
         const probed = units.filter((u) => u.probe); const pct = (a, b) => (b ? Math.round((a / b) * 1000) / 10 : null);
         return { units: units.length, trusted: t1.length, trusted_pct: pct(t1.length, units.length), params_typed_pct: st.typed_param_pct, probed: probed.length, verified: probed.filter((u) => u.verified).length, type_conflicts: units.filter((u) => u.type_conflict).length,
+            // 副作用是靜態分析推的（沒有驗證）的可信任單元有幾個；還有哪些沒辦法判斷的呼叫最常擋住副作用判斷（補規則表就能解開）
+            trusted_effects_static: t1.filter((u) => u.effects_src === 'static' && u.effects.length).length, trusted_pure_verified: t1.filter((u) => u.pure && u.verified).length, unresolved_top: unresolvedTop(units),
             trusted_examples: t1.slice(0, 12).map((u) => u.name + '(' + u.params.map((p) => p.name + ':' + p.type).join(', ') + ') → ' + u.returns.type), held_reasons: Object.fromEntries(Object.entries(held.counts).filter(([, v]) => v)), held_examples: held.examples, ...extra };
     }
 

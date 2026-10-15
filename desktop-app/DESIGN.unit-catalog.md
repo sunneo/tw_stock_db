@@ -359,3 +359,35 @@ add_chapters, analyze_large_file, apply_git_patch, attachment_apply_patch, bash_
 4. 套件過期判斷（`staleUnits`）已寫好、已測，但還沒接到「載入時提醒」。
 5. 沒有 `catalog_onboard` 的取消按鈕測試：停止鈕會在階段之間生效，卡在一次安裝或匯入裡時只能等逾時。
 6. 只做了 Python；JavaScript、bash 的 onboard 沒有。
+
+## 十八、副作用細分（第三方函式庫的函式層級靜態分析）
+
+問題：第三方套件的函式原本只有「疑似純」或「不明」兩種，信任等級 1 幾乎拿不到（`six` 43 個函式裡副作用已知的只有 3 個）。做法：對每個模組層級的函式（含類別的建構與方法）讀原始碼，分析它「直接做的事」和「呼叫了誰」，再沿呼叫鏈合併。程式在 `extract_py.py` 的 `analyze_module`。
+
+**直接做的事（看 AST，不執行）**
+- `open(...)`：看模式字串，預設與 `"r"`／`"rb"` 是 `fs.read`；含 `w`／`a`／`x` 是 `fs.write`；含 `+` 兩者都算；模式不是常數字串兩者都算。
+- `os` 依函式名稱分：`getenv`／`putenv` 是 `env`、`listdir`／`stat`／`getcwd` 是 `fs.read`、`remove`／`rename`／`mkdir` 是 `fs.write`、`system`／`popen`／`exec*`／`spawn*`／`fork` 是 `proc`、`urandom` 是 `random`；`os` 裡沒分類到的函式標 unknown（不默默當成純）。
+- `subprocess` 是 `proc`、`socket` 與常見網路函式庫（`requests`、`httpx`、`urllib3`、`aiohttp`…）是 `net`、`time` 是 `time`、`random` 是 `random`、`logging` 與 `print` 是 `ui`、`pathlib` 建構 `Path` 與取 `.name` 是純、`.read_text()` 是 `fs.read`、`sys` 呼叫是 `env`（`getsizeof` 之類除外）。
+- 接收者不明的方法呼叫：只有「名稱幾乎只做這件事」的才算（`connect`／`sendall` 是 `net`、`write_text` 是 `fs.write`、`unlink`／`rmdir`…）；`read`／`write`／`remove` 太常見（在 list、檔案物件、參數上都有）不算。
+- `global` 陳述、修改模組層級容器（`_cache.append(…)`）、指定給匯入模組的屬性（`sys.stdout = …`）是 `state.write`；只讀模組層級的值不算。
+- 呼叫「參數」（回呼）與對「傳進來的檔案物件」讀寫：效果屬於呼叫者傳入的東西，不算這個函式的副作用。
+- `eval`／`exec`／`compile`／`__import__`：unknown（推不了）。
+
+**沿著呼叫鏈合併**：呼叫同模組的函式或類別（類別取它所有方法的聯集），遞迴與互相呼叫會停；同一次抽取裡先分析過的別的第三方模組，呼叫它們時取它們的結果；呼叫不認得的第三方模組是 unknown，並記下是哪個（`effect_evidence` 裡的 `unresolved 模組.函式`，統計會列出最常擋住判斷的呼叫，補規則表就能解開）。
+
+**信任規則**
+- 沒有任何效果、完全解析得開：疑似純（`pure_src:"static"`），**一定要探測驗證過**才升信任等級 1（原本就有的規則）。
+- 有確定的效果、沒有 unknown：可以升信任等級 1，但標 `effects_src:"static"`——這是**證據推出來的下限**，沒有驗證。onboard 的回報會分開列：可信任裡副作用靠靜態分析推的有幾個、純函式且探測驗證過的有幾個。
+- 只要有一個呼叫解析不開，就帶 unknown，信任等級 0。
+- 探測時被稽核掛鉤擋下的事件仍然會學成副作用（只增不減），靜態分析漏報的在這裡補。
+
+**實測**
+- 測試：`extract_py.test.js` 從 49 項到 71 項，用一個 40 多個函式的假模組逐項驗證上面每條規則，包含：`open` 各種模式、遞迴、兩層呼叫鏈、類別建構、巢狀函式、跨模組、回呼參數、`pathlib`、`sys`、`os` 未分類。
+- 真的用 micropip 安裝 PyPI 的 `six` 1.17.0：副作用已知的單元從 3 個（只有原本判的）變成 15 個（全是疑似純）；仍然 unknown 的 28 個（`six` 大量用 `exec`／動態屬性，這是真的推不了）。
+- **信任等級 1 仍然是 0。** 原因不是副作用：`six` 沒有型別註解，參數型別不明（12 個單元）→ 沒辦法產生探測輸入 → 純函式無法驗證 → 不能升級。
+
+要老實講的限制：
+1. **靜態分析會漏報。** 動態屬性、`getattr`、`exec` 產生的程式、猴子補丁、C 擴充模組、框架的隱含行為都看不到；`state.write` 只認我列出的幾種寫法。這就是為什麼純的一定要探測驗證、而有效果的標「靜態推的、沒驗證」。
+2. 接收者不明的方法呼叫用名稱猜，可能把別的東西誤判成 I/O（例如自訂類別的 `.connect()`），誤判的方向是多報，風險較小。
+3. **下一個瓶頸是沒有型別註解的第三方套件：** 沒有型別就產生不出探測輸入。要解的話：從預設值與文件字串推型別；讓 0.6B 看文件字串提型別候選、再用探測驗證；或接受人工補強。
+4. 只做 Python。

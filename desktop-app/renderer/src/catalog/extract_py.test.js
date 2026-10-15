@@ -79,13 +79,97 @@ if (py) {
     if (line) {
         const res = JSON.parse(line.slice('FA_EXTRACT_RESULT:'.length)); const by = (m, n) => res.protos.find((p) => p.module === m && p.name === n);
         check('a module with no risky imports/calls is statically pure (marked static, not allowlist)', by('fa_pure_mod', 'add').pure === true && by('fa_pure_mod', 'add').pure_src === 'static' && by('fa_pure_mod', 'greet').pure === true && by('fa_pure_mod', 'add').stdlib === false, by('fa_pure_mod', 'add'));
-        check('importing os makes it not pure (stays unknown, conservative)', by('fa_io_mod', 'cwd').pure === false && by('fa_io_mod', 'cwd').effects[0] === 'unknown', by('fa_io_mod', 'cwd'));
-        check('open()/eval() calls make it not pure', by('fa_open_mod', 'read').pure === false && by('fa_exec_mod', 'run').pure === false);
+        check('os.getcwd is a file-system read (function-level, not the whole os module), with evidence', by('fa_io_mod', 'cwd').pure === false && eq(by('fa_io_mod', 'cwd').effects, ['fs.read']) && by('fa_io_mod', 'cwd').effects_src === 'static' && by('fa_io_mod', 'cwd').effect_evidence[0] === 'os.getcwd', by('fa_io_mod', 'cwd'));
+        check('open() is a read; eval() is unknown (cannot reason about it)', eq(by('fa_open_mod', 'read').effects, ['fs.read']) && eq(by('fa_exec_mod', 'run').effects, ['unknown']) && by('fa_exec_mod', 'run').pure === false);
         check('annotations come through for third-party code', by('fa_pure_mod', 'add').params[0].annotation === 'int' && by('fa_pure_mod', 'add').returns === 'int');
         const u = C.unitFromPyProto(by('fa_pure_mod', 'add'), { installed: ['fa_pure_mod'] }); check('statically-pure unit is NOT trusted until probed (even though fully typed)', u.pure === true && u.pure_src === 'static' && u.tier === 0 && u.avail.state === 'installed', [u.tier, u.pure_src]);
         check('a network call at import time is blocked and reported, the extractor continues', res.errors.some((e) => e.module === 'fa_net_import' && /blocked-at-import|socket/.test(e.error)) && !!by('fa_pure_mod', 'add'), res.errors);
         check('package versions: installed one has a version, missing one is null', typeof res.pkg_versions.pip === 'string' && res.pkg_versions.no_such_pkg_zz === null, res.pkg_versions);
     }
+    // --- 函式層級副作用分析
+    const d2 = fs.mkdtempSync(path.join(os.tmpdir(), 'fa_fx_')); const w2 = (n, s) => fs.writeFileSync(path.join(d2, n), s);
+    w2('fa_mystery.py', 'def go():\n    return 1\n');
+    w2('requests.py', 'def get(url):\n    return url\n'); // 假的第三方模組（沒有被分析，所以呼叫它的函式是 unknown）
+    w2('fa_helper.py', 'import os\n\ndef wipe(p):\n    os.remove(p)\n\ndef pure_helper(x):\n    return x * 2\n');
+    w2('fa_fx.py', [
+        'import os, sys, json, time, random, subprocess, socket, logging',
+        'import fa_helper',
+        'from pathlib import Path',
+        'from fa_helper import wipe',
+        'import requests',
+        'import fa_mystery',
+        '_cache = {}',
+        '_count = 0',
+        'def pure_math(a, b):\n    return json.dumps({"s": a + b})',
+        'def read_file(p):\n    with open(p) as f:\n        return f.read()',
+        'def read_bin(p):\n    return open(p, "rb").read()',
+        'def write_file(p, s):\n    with open(p, "w") as f:\n        f.write(s)',
+        'def append_file(p, s):\n    open(p, mode="a").write(s)',
+        'def rw_file(p):\n    return open(p, "r+")',
+        'def dyn_mode(p, m):\n    return open(p, m)',
+        'def uses_env():\n    return os.getenv("HOME")',
+        'def lists_dir(p):\n    return os.listdir(p)',
+        'def removes(p):\n    os.remove(p)',
+        'def runs(cmd):\n    return subprocess.run(cmd)',
+        'def sleeps():\n    time.sleep(1)',
+        'def rands():\n    return random.random()',
+        'def logs(m):\n    logging.info(m)',
+        'def prints(m):\n    print(m)',
+        'def calls_pure_helper(x):\n    return pure_math(x, 1)',
+        'def calls_reader(p):\n    return read_file(p)',
+        'def chain2(p):\n    return calls_reader(p)',
+        'def recursive(n):\n    if n:\n        return recursive(n - 1)\n    return write_file("x", "y")',
+        'def sets_global():\n    global _count\n    _count += 1',
+        'def mutates_global(k):\n    _cache.append(k)',
+        'def reads_global(k):\n    return _cache.get(k)',
+        'def calls_param(cb, x):\n    return cb(x)',
+        'def file_like(fp, data):\n    fp.write(data)\n    return fp.read()',
+        'def sock(host):\n    s = socket.socket()\n    s.connect((host, 80))',
+        'def method_net(client):\n    return client.sendall(b"x")',
+        'def pathlib_pure(p):\n    return Path(p).name',
+        'def pathlib_read(p):\n    return Path(p).read_text()',
+        'def http_get(url):\n    return requests.get(url)',
+        'def mystery_lib():\n    return fa_mystery.go()',
+        'def other_module_effect(p):\n    return fa_helper.wipe(p)',
+        'def other_module_pure(x):\n    return fa_helper.pure_helper(x)',
+        'def from_import_effect(p):\n    return wipe(p)',
+        'def evals(s):\n    return eval(s)',
+        'def sys_exit():\n    sys.exit(1)',
+        'def sys_pure(x):\n    return sys.getsizeof(x)',
+        'def sets_module_attr():\n    sys.stdout = None',
+        'def local_import(p):\n    import shutil\n    shutil.rmtree(p)',
+        'class Box:\n    def __init__(self, p):\n        self.data = open(p).read()\n    def get(self):\n        return self.data',
+        'def make_box(p):\n    return Box(p)',
+        'def unclassified_os():\n    return os.get_blocking(0)',
+        'def nested():\n    def inner(p):\n        os.remove(p)\n    return inner',
+    ].join('\n') + '\n');
+    const code2 = fs.readFileSync(path.join(__dirname, 'extract_py.py'), 'utf8').replace('__FA_REQ__', () => JSON.stringify(JSON.stringify({ modules: ['fa_helper', 'fa_fx'], sys_path: [d2], max_per_module: 200, doctest: false })));
+    const r2 = cp.spawnSync(py, ['-I', '-c', code2], { encoding: 'utf8', maxBuffer: 1 << 26 }); const line2 = (r2.stdout || '').split('\n').find((l) => l.startsWith('FA_EXTRACT_RESULT:')); check('effect fixture extracts (requests is not installed, that is fine)', !!line2 && r2.status === 0, r2.stderr.slice(0, 300));
+    if (line2) {
+        const res2 = JSON.parse(line2.slice('FA_EXTRACT_RESULT:'.length)); const f = (n) => res2.protos.find((p) => p.module === 'fa_fx' && p.name === n); const E = (n) => (f(n) ? f(n).effects : null);
+        check('pure code: no effects, pure, static', eq(E('pure_math'), []) && f('pure_math').pure === true && f('pure_math').pure_src === 'static');
+        check('open(): default and "rb" are reads; "w" and "a" are writes; "r+" is both; a variable mode is both', eq(E('read_file'), ['fs.read']) && eq(E('read_bin'), ['fs.read']) && eq(E('write_file'), ['fs.write']) && eq(E('append_file'), ['fs.write']) && eq(E('rw_file'), ['fs.read', 'fs.write']) && eq(E('dyn_mode'), ['fs.read', 'fs.write']), ['read_file', 'read_bin', 'write_file', 'append_file', 'rw_file', 'dyn_mode'].map(E));
+        check('os functions by name: getenv=env, listdir=read, remove=write', eq(E('uses_env'), ['env']) && eq(E('lists_dir'), ['fs.read']) && eq(E('removes'), ['fs.write']));
+        check('subprocess=proc, sleep=time, random=random, logging and print=ui', eq(E('runs'), ['proc']) && eq(E('sleeps'), ['time']) && eq(E('rands'), ['random']) && eq(E('logs'), ['ui']) && eq(E('prints'), ['ui']));
+        check('calls inside the module are followed (pure→pure, reader→reader, 2 hops)', eq(E('calls_pure_helper'), []) && eq(E('calls_reader'), ['fs.read']) && eq(E('chain2'), ['fs.read']) && f('chain2').effect_evidence.some((x) => /calls/.test(x)), f('chain2'));
+        check('recursion terminates and picks up the effect', eq(E('recursive'), ['fs.write']));
+        check('global statement and mutating a module-level container are state writes; reading one is not', eq(E('sets_global'), ['state.write']) && eq(E('mutates_global'), ['state.write']) && eq(E('reads_global'), []));
+        check('calling a parameter (callback) and using a file-like argument are not environment effects', eq(E('calls_param'), []) && f('calls_param').pure === true && eq(E('file_like'), []));
+        check('method names that only mean I/O count even on unknown receivers (connect/sendall)', eq(E('sock'), ['net']) && eq(E('method_net'), ['net']));
+        check('pathlib: constructing a Path and .name are pure, .read_text is a read', eq(E('pathlib_pure'), []) && eq(E('pathlib_read'), ['fs.read']));
+        check('a well-known network library is net; an unknown third-party library is unknown (conservative)', eq(E('http_get'), ['net']) && f('http_get').effect_evidence[0] === 'requests.get' && eq(E('mystery_lib'), ['unknown']) && f('mystery_lib').effect_evidence.some((x) => /unresolved fa_mystery/.test(x)), [f('http_get'), f('mystery_lib')]);
+        check('cross-module: a helper analysed earlier in the same run gives its effects (and its pure functions stay pure)', eq(E('other_module_effect'), ['fs.write']) && eq(E('other_module_pure'), []) && eq(E('from_import_effect'), ['fs.write']), [E('other_module_effect'), E('other_module_pure'), E('from_import_effect')]);
+        check('eval is unknown', eq(E('evals'), ['unknown']));
+        check('sys.exit is env; sys.getsizeof is pure; assigning sys.stdout is a state write', eq(E('sys_exit'), ['env']) && eq(E('sys_pure'), []) && eq(E('sets_module_attr'), ['state.write']));
+        check('imports inside a function are resolved (shutil.rmtree touches the file system)', E('local_import').includes('fs.write') && E('local_import').every((x) => x.startsWith('fs.')), E('local_import'));
+        check('constructing a class takes the effects of its methods', eq(E('make_box'), ['fs.read']), f('make_box'));
+        check('unclassified os function is unknown, not silently pure', eq(E('unclassified_os'), ['unknown']));
+        check('nested function bodies count', eq(E('nested'), ['fs.write']));
+        check('the helper module was analysed on its own', res2.protos.find((p) => p.module === 'fa_helper' && p.name === 'wipe').effects[0] === 'fs.write' && res2.protos.find((p) => p.module === 'fa_helper' && p.name === 'pure_helper').pure === true);
+        const un = res2.protos.filter((p) => p.module === 'fa_fx').map((p) => C.unitFromPyProto(p, { installed: ['fa_fx'] })); check('units from effect analysis validate', un.every((x) => C.validateUnit(x).length === 0), un.filter((x) => C.validateUnit(x).length).map((x) => [x.id, C.validateUnit(x)[0]]));
+        const ur = un.find((x) => x.name === 'fa_fx.read_file'); check('an analysed impure unit keeps its evidence and source', eq(ur.effects, ['fs.read']) && ur.effects_src === 'static' && ur.effect_evidence[0] === 'open()', ur);
+    }
+    fs.rmSync(d2, { recursive: true, force: true });
     fs.rmSync(dir, { recursive: true, force: true });
 }
 console.log(bad.length ? 'FAIL\n' + bad.join('\n') : 'extract_py: ' + ok + ' passed' + skipped); process.exit(bad.length ? 1 : 0);

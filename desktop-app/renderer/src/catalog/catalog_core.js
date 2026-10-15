@@ -188,7 +188,7 @@
         const typedAll = hasSig && params.every((q) => q.type_src !== 'none' && q.type !== 'any' && q.type !== 'callable');
         const u = { id: 'py:' + p.module + '.' + p.name, runtime: 'python', name: p.module + '.' + p.name, summary: summaryOf(p.summary), params, returns: rt ? { type: rt, type_src: rtSrc } : { type: 'any', type_src: 'none' }, effects: pure ? [] : (effects.length ? effects : ['unknown']), pure, avail: { state, needs: [] }, domains: [], tests: (p.tests || []).slice(0, 3),
             call: { runtime: 'python', import: p.module, qualname: p.name, via: 'pyodide' }, sig_src: p.sig_src || 'none' };
-        if (p.version) u.version = p.version; if (p.pure_src) u.pure_src = p.pure_src;
+        if (p.version) u.version = p.version; if (p.pure_src) u.pure_src = p.pure_src; if (p.effects_src) u.effects_src = p.effects_src; if (p.effect_evidence && p.effect_evidence.length) u.effect_evidence = p.effect_evidence.slice(0, 6);
         // 信任等級 1：簽名完整、參數型別都明確（不含 callable）、副作用已知、可用、而且有測試案例或回傳型別明確
         u.tier = (u.pure_src !== 'static' && typedAll && !callableParam.length && rt !== 'callable' && !u.effects.includes('unknown') && (state === 'builtin' || state === 'installed') && (u.tests.length > 0 || !!rt)) ? 1 : 0; return u;
     }

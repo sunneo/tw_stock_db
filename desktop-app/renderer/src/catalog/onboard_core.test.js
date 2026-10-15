@@ -28,6 +28,8 @@ const units = [U('good'), U('nosig', { tier: 0, sig_src: 'none', params: [] }), 
 const h = O.heldReasons(units); check('every held reason is attributed once', h.counts.no_signature === 1 && h.counts.untyped_params === 1 && h.counts.effects_unknown === 1 && h.counts.has_callable === 1 && h.counts.unavailable === 1 && h.counts.type_conflict === 1 && h.counts.probe_failed === 1 && h.counts.no_tests_or_return === 1 && h.counts.other === 0, h.counts);
 check('held examples are names', h.examples.has_callable[0] === 'm.cb');
 const sm = O.summarize(units, { python: '3.14.2' }); check('summary: counts, percentages, examples, only non-zero reasons, extras', sm.units === 9 && sm.trusted === 1 && sm.trusted_pct === 11.1 && sm.trusted_examples[0].startsWith('m.good(x:number)') && !('other' in sm.held_reasons) && sm.python === '3.14.2', sm);
+const ux = [U('a', { tier: 1, effects: ['fs.read'], pure: false, effects_src: 'static' }), U('b', { tier: 0, effects: ['unknown'], pure: false, effect_evidence: ['unresolved foo.bar', 'open()'] }), U('c', { tier: 0, effects: ['unknown'], pure: false, effect_evidence: ['unresolved foo.bar', 'unclassified os.get_blocking'] }), U('d', { tier: 1, verified: true })];
+const sx = O.summarize(ux); check('summary: static-effect trusted count, verified-pure count, and the most common unresolved callees', sx.trusted_effects_static === 1 && sx.trusted_pure_verified === 1 && eq(sx.unresolved_top, ['unresolved foo.bar ×2', 'unclassified os.get_blocking ×1']), sx);
 check('summary is compact', JSON.stringify(O.summarize(Array.from({ length: 500 }, (_, i) => U('f' + i)))).length < 4000);
 
 // --- 持久化與合併

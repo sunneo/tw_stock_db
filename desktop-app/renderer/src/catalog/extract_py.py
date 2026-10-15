@@ -106,32 +106,230 @@ RISKY_IMPORTS = set('os shutil subprocess socket ssl urllib.request http.client 
 RISKY_CALLS = {'open', 'eval', 'exec', 'compile', '__import__', 'input', 'breakpoint', 'system', 'popen'}
 
 
-def static_pure(mod):
-    # 第三方模組的靜態判斷：看模組原始碼有沒有匯入會碰檔案／網路／行程的模組、有沒有呼叫 open／exec 之類。
-    # 只看這一個檔案：它呼叫的別的模組可能做事——所以結果只是「疑似純」，一定要探測驗證（探測時稽核掛鉤會擋）才能信任。
+SYS_PURE_CALLS = {'getsizeof', 'getrecursionlimit', 'intern', 'getdefaultencoding', 'getfilesystemencoding', 'is_finalizing', 'exc_info', 'getrefcount'}
+DANGER_METHODS = {  # 接收者不明的方法呼叫：名稱幾乎只會做這件事的才算（read／write／remove 太常見，在 list、檔案物件、參數上都有，不算）
+    'connect': 'net', 'send': 'net', 'sendall': 'net', 'recv': 'net', 'sendto': 'net', 'recvfrom': 'net', 'urlopen': 'net', 'getaddrinfo': 'net',
+    'popen': 'proc', 'system': 'proc', 'communicate': 'proc', 'unlink': 'fs.write', 'rmdir': 'fs.write', 'mkdir': 'fs.write', 'makedirs': 'fs.write',
+    'write_text': 'fs.write', 'write_bytes': 'fs.write', 'read_text': 'fs.read', 'read_bytes': 'fs.read', 'touch': 'fs.write', 'rename': 'fs.write',
+    'iterdir': 'fs.read', 'listdir': 'fs.read', 'rglob': 'fs.read', 'glob': 'fs.read', 'exists': 'fs.read', 'is_file': 'fs.read', 'is_dir': 'fs.read', 'stat': 'fs.read',
+}
+MUTATORS = {'append', 'extend', 'update', 'add', 'pop', 'clear', 'setdefault', 'insert', 'remove', 'discard', 'popitem', 'sort', 'reverse'}
+BUILTIN_UI = {'print', 'input'}
+BUILTIN_UNKNOWN = {'eval', 'exec', 'compile', '__import__'}
+NET_LIBS = {'requests', 'httpx', 'urllib3', 'aiohttp', 'websockets', 'websocket', 'paramiko', 'boto3', 'botocore', 'grpc', 'pymysql', 'psycopg2', 'redis', 'pymongo'}  # 常見的第三方網路函式庫：呼叫它們就是 net
+SUMMARIES = {}  # 這次抽取裡已經分析過的第三方模組：{模組: {名稱: (效果集合, 證據)}}，後面的模組呼叫它們時用
+
+
+def open_effects(call):
+    mode = None
+    if len(call.args) >= 2 and isinstance(call.args[1], ast.Constant) and isinstance(call.args[1].value, str):
+        mode = call.args[1].value
+    elif len(call.args) >= 2:
+        return {'fs.read', 'fs.write'}  # 模式不是常數字串：兩種都算
+    for k in call.keywords:
+        if k.arg == 'mode':
+            if isinstance(k.value, ast.Constant) and isinstance(k.value.value, str):
+                mode = k.value.value
+            else:
+                return {'fs.read', 'fs.write'}
+    if mode is None or not any(c in mode for c in 'wax+'):
+        return {'fs.read'}
+    return {'fs.write', 'fs.read'} if ('+' in mode) else {'fs.write'}
+
+
+OS_FUNCS = {}
+for _n in 'listdir scandir stat lstat walk getcwd getcwdb readlink access fwalk statvfs path_exists'.split():
+    OS_FUNCS[_n] = {'fs.read'}
+for _n in 'remove unlink rename renames replace rmdir removedirs mkdir makedirs chmod chown lchown truncate symlink link utime mkfifo mknod chdir chroot sync'.split():
+    OS_FUNCS[_n] = {'fs.write'}
+for _n in 'getenv getenvb putenv unsetenv getlogin uname environ_get'.split():
+    OS_FUNCS[_n] = {'env'}
+for _n in 'system popen execv execve execl execle execlp execlpe execvp execvpe spawnl spawnle spawnv spawnve spawnvp spawnlp fork forkpty kill killpg startfile abort _exit wait waitpid'.split():
+    OS_FUNCS[_n] = {'proc'}
+OS_FUNCS['urandom'] = {'random'}
+OS_PURE = set('fsencode fsdecode fspath cpu_count getpid getppid strerror get_terminal_size fdopen_none sep getuid getgid get_exec_path'.split())
+PATHLIB_PURE = {'Path', 'PurePath', 'PurePosixPath', 'PureWindowsPath', 'PosixPath', 'WindowsPath'}
+THREAD_PURE = {'Lock', 'RLock', 'Event', 'local', 'Semaphore', 'BoundedSemaphore', 'Condition', 'Barrier', 'current_thread', 'get_ident', 'active_count'}
+
+
+def module_call_effects(modname, fname):
+    """呼叫「某個已匯入的模組」的函式：回傳 (效果集合, 說明)。標準庫查規則表；第三方先查這次抽取已分析過的模組；都沒有就是 unknown。"""
+    if modname == 'sys':
+        return (set(), '') if fname in SYS_PURE_CALLS else ({'env'}, 'sys.' + fname)
+    if modname in PURE_MODULES or modname.split('.')[0] in PURE_MODULES and modname.split('.')[0] not in ('os',):
+        if modname.startswith('os.path') or modname in ('posixpath', 'ntpath'):
+            return ({'fs.read'}, modname + '.' + fname) if FS_READ_NAMES.match(fname) else (set(), '')
+        return set(), ''
+    if modname in ('os.path', 'posixpath', 'ntpath'):
+        return ({'fs.read'}, modname + '.' + fname) if FS_READ_NAMES.match(fname) else (set(), '')
+    if modname == 'os':  # os 整個模組太粗：依函式名稱分；沒列到的保守當 unknown
+        if fname in OS_PURE:
+            return set(), ''
+        if fname in OS_FUNCS:
+            return set(OS_FUNCS[fname]), 'os.' + fname
+        return {'unknown'}, 'unclassified os.' + fname
+    if modname == 'pathlib' and fname in PATHLIB_PURE:
+        return set(), ''
+    if modname == 'threading' and fname in THREAD_PURE:
+        return set(), ''
+    if modname == 'datetime':
+        return ({'time'}, 'datetime.' + fname) if re.match(r'^(now|today|utcnow|fromtimestamp)$', fname) else (set(), '')
+    for key in (modname, modname.split('.')[0]):
+        if key in EFFECT_MODULES:
+            return set(EFFECT_MODULES[key]), key + '.' + fname
+    if modname.split('.')[0] in NET_LIBS:
+        return {'net'}, modname + '.' + fname
+    if modname in SUMMARIES:
+        s = SUMMARIES[modname].get(fname)
+        if s is not None:
+            return set(s[0]), 'calls ' + modname + '.' + fname
+    if stdlib(modname):
+        return set(), ''  # 其他標準庫（沒列在規則表的）當成沒有副作用——這是假設，不是證明；探測時稽核掛鉤會擋
+    return {'unknown'}, 'unresolved ' + modname + '.' + fname
+
+
+def analyze_module(mod):
+    """第三方模組的函式層級靜態副作用分析：對每個模組層級的函式（和類別的建構／方法），找出它直接做的事、呼叫了什麼，再沿著模組內的呼叫鏈合併。
+    回傳 {名稱: (效果集合, 證據清單)}。看不到原始碼或解析不了的模組回傳 {}（全部 unknown，保守）。"""
     try:
         import inspect as _i
         src = _i.getsource(mod)
-    except Exception:
-        return False
-    try:
         tree = ast.parse(src)
-    except SyntaxError:
-        return False
+    except Exception:
+        return {}
+    imports = {}  # 本地名稱 -> ('mod', 模組) 或 ('from', 模組, 名稱)
+    defs, classes = {}, {}
     for n in ast.walk(tree):
         if isinstance(n, ast.Import):
-            if any(a.name in RISKY_IMPORTS or a.name.split('.')[0] in RISKY_IMPORTS for a in n.names):
-                return False
-        elif isinstance(n, ast.ImportFrom):
-            m = n.module or ''
-            if m in RISKY_IMPORTS or m.split('.')[0] in RISKY_IMPORTS:
-                return False
-        elif isinstance(n, ast.Call):
-            f = n.func
-            name = f.id if isinstance(f, ast.Name) else (f.attr if isinstance(f, ast.Attribute) else '')
-            if name in RISKY_CALLS:
-                return False
-    return True
+            for a in n.names:
+                imports[(a.asname or a.name.split('.')[0])] = ('mod', a.name if a.asname else a.name.split('.')[0])
+        elif isinstance(n, ast.ImportFrom) and n.module and not n.level:
+            for a in n.names:
+                imports[a.asname or a.name] = ('from', n.module, a.name)
+    for n in tree.body:
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            defs[n.name] = n
+        elif isinstance(n, ast.ClassDef):
+            classes[n.name] = n
+    globals_assigned = set()
+    for n in tree.body:
+        if isinstance(n, ast.Assign):
+            for t in n.targets:
+                if isinstance(t, ast.Name):
+                    globals_assigned.add(t.id)
+    direct, edges = {}, {}
+
+    def local_names(fn):
+        names = {a.arg for a in fn.args.args + fn.args.posonlyargs + fn.args.kwonlyargs}
+        if fn.args.vararg:
+            names.add(fn.args.vararg.arg)
+        if fn.args.kwarg:
+            names.add(fn.args.kwarg.arg)
+        for x in ast.walk(fn):
+            if isinstance(x, ast.Name) and isinstance(x.ctx, ast.Store):
+                names.add(x.id)
+        return names
+
+    def scan(fn, key):
+        eff, evid, calls = set(), [], set()
+        loc = local_names(fn)
+        for x in ast.walk(fn):
+            if isinstance(x, ast.Global):
+                eff.add('state.write'); evid.append('global ' + ','.join(x.names))
+            elif isinstance(x, (ast.Import, ast.ImportFrom)) and x is not fn:
+                for a in x.names:  # 函式裡的匯入
+                    if isinstance(x, ast.Import):
+                        imports.setdefault(a.asname or a.name.split('.')[0], ('mod', a.name if a.asname else a.name.split('.')[0]))
+                    elif x.module and not x.level:
+                        imports.setdefault(a.asname or a.name, ('from', x.module, a.name))
+            elif isinstance(x, ast.Attribute) and isinstance(x.ctx, ast.Store):
+                base = x.value
+                while isinstance(base, ast.Attribute):
+                    base = base.value
+                if isinstance(base, ast.Name) and (base.id in imports or (base.id in globals_assigned and base.id not in loc)):
+                    eff.add('state.write'); evid.append('assigns ' + base.id + '.' + x.attr)
+            elif isinstance(x, ast.Call):
+                f = x.func
+                if isinstance(f, ast.Name):
+                    nm = f.id
+                    if nm == 'open' and nm not in loc and nm not in defs:
+                        e = open_effects(x); eff |= e; evid.append('open()')
+                    elif nm in BUILTIN_UI and nm not in loc:
+                        eff.add('ui'); evid.append(nm + '()')
+                    elif nm in BUILTIN_UNKNOWN and nm not in loc:
+                        eff.add('unknown'); evid.append(nm + '()')
+                    elif nm in loc:
+                        pass  # 呼叫參數或區域變數（回呼）：效果屬於傳進來的函式
+                    elif nm in defs or nm in classes:
+                        calls.add(nm)
+                    elif nm in imports:
+                        imp = imports[nm]
+                        if imp[0] == 'from':
+                            e, why = module_call_effects(imp[1], imp[2])
+                            if e:
+                                eff |= e; evid.append(why)
+                        # ('mod', …) 被直接呼叫（模組不能呼叫）：忽略
+                elif isinstance(f, ast.Attribute):
+                    chain, base = [f.attr], f.value
+                    while isinstance(base, ast.Attribute):
+                        chain.append(base.attr)
+                        base = base.value
+                    chain.reverse()
+                    if isinstance(base, ast.Name):
+                        b = base.id
+                        if b in loc and b not in imports:
+                            if f.attr in DANGER_METHODS:
+                                eff.add(DANGER_METHODS[f.attr]); evid.append('.' + f.attr + '()')
+                        elif b in imports:
+                            imp = imports[b]
+                            if imp[0] == 'mod':
+                                full = imp[1] + ''.join('.' + c for c in chain[:-1]); e, why = module_call_effects(full, chain[-1])
+                            else:  # from x import y；y.attr()
+                                full = imp[1] + '.' + imp[2] + ''.join('.' + c for c in chain[:-1]); e, why = module_call_effects(full, chain[-1])
+                                if not e and f.attr in DANGER_METHODS:
+                                    e, why = {DANGER_METHODS[f.attr]}, '.' + f.attr + '()'
+                            if e:
+                                eff |= e; evid.append(why)
+                        elif b in defs or b in classes:
+                            calls.add(b)
+                        elif b in globals_assigned:
+                            if f.attr in MUTATORS:
+                                eff.add('state.write'); evid.append(b + '.' + f.attr + '()')
+                            elif f.attr in DANGER_METHODS:
+                                eff.add(DANGER_METHODS[f.attr]); evid.append('.' + f.attr + '()')
+                    elif f.attr in DANGER_METHODS:
+                        eff.add(DANGER_METHODS[f.attr]); evid.append('.' + f.attr + '()')
+        direct[key] = (eff, evid)
+        edges[key] = calls
+
+    for name, fn in defs.items():
+        scan(fn, name)
+    for cname, cls in classes.items():
+        e_all, ev_all, calls_all = set(), [], set()
+        for m in cls.body:
+            if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                scan(m, cname + '.' + m.name)
+                e, ev = direct[cname + '.' + m.name]
+                e_all |= e
+                ev_all += ev
+                calls_all |= edges[cname + '.' + m.name]
+        direct[cname] = (e_all, ev_all)
+        edges[cname] = calls_all
+    # 沿呼叫鏈合併（到不再變動為止；有環也會停）
+    total = {k: (set(v[0]), list(v[1])) for k, v in direct.items()}
+    for _ in range(len(total) + 1):
+        changed = False
+        for k, calls in edges.items():
+            for c in calls:
+                if c in total:
+                    add = total[c][0] - total[k][0]
+                    if add:
+                        total[k][0].update(add)
+                        total[k][1].append('calls ' + c)
+                        changed = True
+        if not changed:
+            break
+    return {k: (v[0], v[1][:6]) for k, v in total.items() if '.' not in k}
 
 
 def effects_for(modname, fname):
@@ -159,7 +357,9 @@ def extract(modname):
         _imp['armed'] = False
     names = list(getattr(mod, '__all__', None) or [n for n in dir(mod) if not n.startswith('_')])
     protos, skipped = [], 0
-    static_ok = (not stdlib(modname)) and static_pure(mod)
+    summ = {} if stdlib(modname) else analyze_module(mod)
+    if not stdlib(modname):
+        SUMMARIES[modname] = summ
     for n in names[: REQ.get('max_per_module', 400)]:
         o = getattr(mod, n, None)
         if o is None or not callable(o) or inspect.isclass(o):
@@ -177,11 +377,15 @@ def extract(modname):
             sig_src = 'doc' if params is not None else None
         eff, pure = effects_for(modname, n)
         pure_src = 'allowlist' if pure else None
-        if not pure and not stdlib(modname) and eff == ['unknown'] and static_ok:
-            eff, pure, pure_src = [], True, 'static'
+        effects_src, evid = None, []
+        if not pure and not stdlib(modname):
+            info = summ.get(n)
+            if info is not None:  # 函式層級的靜態分析（沒有分析到的，例如從別處轉出的名稱，保持 unknown）
+                effs = sorted(info[0])
+                eff, pure, pure_src, effects_src, evid = effs, (not effs), ('static' if not effs else None), 'static', info[1]
         protos.append({
             'module': modname, 'name': n, 'summary': first_para(doc), 'params': params, 'sig_src': sig_src, 'returns': ret,
-            'effects': eff, 'pure': pure, 'pure_src': pure_src, 'stdlib': stdlib(modname), 'version': getattr(mod, '__version__', None),
+            'effects': eff, 'pure': pure, 'pure_src': pure_src, 'effects_src': effects_src, 'effect_evidence': evid, 'stdlib': stdlib(modname), 'version': getattr(mod, '__version__', None),
             'tests': doctests(doc) if REQ.get('doctest', True) else [], 'has_doc': bool(doc),
         })
     return protos, skipped
