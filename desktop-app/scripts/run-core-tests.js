@@ -40,6 +40,8 @@ const suites = [
     ['單元目錄：型別存根轉換（typeshed 風格的 .pyi → 型別表：TypeVar／別名展開、多載合併、版本與平台分支）與存根型別套進單元', 'renderer/src/catalog/stub_to_types.test.js'],
     ['單元目錄：探測執行（輸入產生、結果套回單元、真實跑探測腳本：擋檔案／系統呼叫、SystemExit、非決定性）', 'renderer/src/catalog/probe_core.test.js'],
     ['單元目錄：catalog_onboard 核心（請求驗證與安全關卡、為什麼沒晉升、摘要、持久化與合併、過期判斷、查詢）', 'renderer/src/catalog/onboard_core.test.js'],
+    ['單元選擇評測核心（中英文檢索、候選與提示、答案解析、選擇與填參數評分、評測集檢查）', 'renderer/src/catalog/select_core.test.js'],
+    ['呼叫格式（IR）與直譯器（靜態檢查、引用與型別、條件與有上限的迴圈、逾時／取消／預算、確認閘、模擬執行、從路徑產生程式）', 'renderer/src/catalog/ir_core.test.js'],
     ['資料檢視器核心（JSON／YAML／TOML／CSV 解析與轉出、上色、SBOM 轉多工作表、XLSX 讀寫、樹與搜尋）', 'renderer/src/dataview/data_core.test.js'],
     ['SQL 語句切分與完整性判斷', 'renderer/src/sql/sql_split.test.js'],
     ['檔案用途／函式做什麼的說明產生器（FaExplain）', 'renderer/src/explain/code_explain.test.js'],

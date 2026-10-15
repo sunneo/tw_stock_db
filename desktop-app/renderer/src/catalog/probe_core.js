@@ -60,7 +60,7 @@
     function typeOk(observed, declared) { try { return Cat.isAssignable(observed, declared); } catch (_) { return false; } }
     function collapse(types) { const u = Array.from(new Set(types)); if (u.includes('number')) return u.filter((x) => x !== 'int').length === 1 ? 'number' : 'union<' + u.filter((x) => x !== 'int').join('|') + '>'; return u.length === 1 ? u[0] : 'union<' + u.join('|') + '>'; }
     function retier(u) {
-        const typedAll = u.params.every((q) => q.type_src !== 'none' && q.type !== 'any' && q.type !== 'callable'); const rt = u.returns && u.returns.type !== 'any' && u.returns.type !== 'json';
+        const typedAll = u.params.filter((q) => q.required).every((q) => q.type_src !== 'none' && q.type !== 'any' && q.type !== 'callable'); const rt = u.returns && u.returns.type !== 'any' && u.returns.type !== 'json';
         const avail = u.avail && (u.avail.state === 'builtin' || u.avail.state === 'installed');
         u.tier = ((u.pure_src !== 'static' || u.verified === true) && typedAll && !u.effects.includes('unknown') && avail && u.returns.type !== 'callable' && !u.type_conflict && (u.tests.length > 0 || rt) && !(u.probe && u.probe.ok === 0)) ? 1 : 0; return u.tier;
     }

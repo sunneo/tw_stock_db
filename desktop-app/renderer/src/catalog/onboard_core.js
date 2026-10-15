@@ -40,8 +40,8 @@
         for (const u of units) {
             if (u.tier === 1) continue;
             if (u.type_conflict) note('type_conflict', u); else if (u.call && u.sig_src === 'none') note('no_signature', u); else if (u.avail && !['builtin', 'installed'].includes(u.avail.state)) note('unavailable', u);
-            else if (u.effects.includes('unknown')) note('effects_unknown', u); else if (u.params.some((p) => p.type === 'callable') || (u.returns && u.returns.type === 'callable')) note('has_callable', u);
-            else if (u.params.some((p) => p.type_src === 'none' || p.type === 'any')) note('untyped_params', u); else if (u.probe && u.probe.ok === 0) note('probe_failed', u);
+            else if (u.effects.includes('unknown')) note('effects_unknown', u); else if (u.params.some((p) => p.required && p.type === 'callable') || (u.returns && u.returns.type === 'callable')) note('has_callable', u);
+            else if (u.params.some((p) => p.required && (p.type_src === 'none' || p.type === 'any'))) note('untyped_params', u); else if (u.probe && u.probe.ok === 0) note('probe_failed', u);
             else if (!(u.tests && u.tests.length) && !(u.returns && u.returns.type !== 'any')) note('no_tests_or_return', u); else note('other', u);
         }
         return { counts: out, examples };

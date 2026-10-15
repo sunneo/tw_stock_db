@@ -10,6 +10,7 @@ import sys, json, importlib, base64, math, re
 
 REQ = json.loads(__FA_PROBE_REQ__)
 MAX_REPR = int(REQ.get('max_repr', 200))
+MAX_JSON = int(REQ.get('max_json', 2000))  # 正式執行時結果可以大一點
 BLOCKED_EVENTS = {'open', 'os.system', 'os.exec', 'os.posix_spawn', 'os.spawn', 'os.fork', 'os.forkpty', 'subprocess.Popen', 'os.remove', 'os.rename', 'os.rmdir', 'os.mkdir',
                   'os.chmod', 'os.chown', 'os.truncate', 'os.symlink', 'os.link', 'os.putenv', 'os.unsetenv', 'shutil.rmtree', 'shutil.copyfile', 'shutil.move', 'shutil.copytree',
                   'ctypes.dlopen', 'ctypes.dlsym', 'exec', 'compile', 'import.__main__', 'webbrowser.open', 'tempfile.mkstemp', 'tempfile.mkdtemp', 'urllib.Request', 'http.client.connect'}
@@ -81,7 +82,7 @@ def srepr(v):
 def jsonable(v):
     try:
         s = json.dumps(v, allow_nan=False)
-        return json.loads(s) if len(s) <= 2000 else None
+        return json.loads(s) if len(s) <= MAX_JSON else None
     except Exception:
         return None
 
@@ -114,11 +115,14 @@ def run_case(fn, case):
         return {'ok': False, 'exc': 'RuntimeError', 'msg': str(e)[:120]}
     except BaseException as e:  # 包含 SystemExit：探測不能讓整個程序結束
         return {'ok': False, 'exc': type(e).__name__, 'msg': str(e)[:120], 'bases': [c.__name__ for c in type(e).__mro__[1:4]]}
-    try:
-        r2 = one_call(fn, {'args': list(case.get('args', [])) + list(case['kwargs'].values()), 'kwargs': {}} if positional else case)
-        det = srepr(r1) == srepr(r2)
-    except BaseException:
-        det = False
+    if REQ.get('once'):  # 正式執行（不是探測）：只呼叫一次，不做「兩次結果相同」的檢查
+        det = True
+    else:
+        try:
+            r2 = one_call(fn, {'args': list(case.get('args', [])) + list(case['kwargs'].values()), 'kwargs': {}} if positional else case)
+            det = srepr(r1) == srepr(r2)
+        except BaseException:
+            det = False
     j = jsonable(r1)
     out = {'ok': True, 'type': tname(r1), 'repr': srepr(r1)[:MAX_REPR], 'det': det, 'jsonable': j is not None or r1 is None}
     if positional:
