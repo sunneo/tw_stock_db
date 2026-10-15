@@ -10817,6 +10817,759 @@ const holder = {};
 return holder.FaGram;
 })();
 /* GRAM-END */
+/* DATACORE-BEGIN */
+const FaDataCore = (function () {
+const holder = {};
+(function (module, self) {
+/* 資料檢視器的核心（UMD，純函式，不碰 DOM）：JSON／YAML／TOML／CSV 的解析與轉出、上色、JSON→表格（CSV／XLSX）、XLSX 讀寫、樹展開、搜尋。
+ * YAML 的解析與輸出由呼叫端提供（deps.yamlLoad／deps.yamlDump：js-yaml 的 load／dump），XLSX 的 zip 由呼叫端提供（deps.JSZip）。
+ * 設計見 DESIGN.data-viewers.md。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaDataCore = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+
+    // ===== 小工具 =====
+    const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+    const isPrim = (v) => v === null || typeof v !== 'object';
+    const MAX_CELL = 32767, MAX_ROWS = 1048575;
+
+    // ===== 格式判斷 =====
+    function detectFormat(text, hint) {
+        const h = String(hint || '').toLowerCase();
+        if (h === 'json' || h === 'jsonc' || h === 'json5') return 'json';
+        if (h === 'yaml' || h === 'yml') return 'yaml';
+        if (h === 'toml') return 'toml';
+        if (h === 'csv' || h === 'tsv') return h;
+        const t = String(text || '').trimStart();
+        if (t[0] === '{') return 'json';
+        if (/^\[\[?[A-Za-z0-9_."' -]+\]\]?\s*$/m.test(t) && /^\s*[\w."-]+\s*=/m.test(t)) return 'toml';
+        if (t[0] === '[') return 'json';
+        return 'yaml';
+    }
+
+    // ===== TOML 解析（子集：表、表陣列、點鍵、四種字串、數字、布林、日期時間（當字串）、陣列、行內表）=====
+    function parseToml(src) {
+        let i = 0; const n = src.length; let line = 1;
+        const err = (m) => { const e = new Error(m); e.line = line; throw e; };
+        const peek = () => src[i];
+        const skipWs = () => { while (i < n && (src[i] === ' ' || src[i] === '\t')) i++; };
+        const skipComment = () => { if (src[i] === '#') while (i < n && src[i] !== '\n') i++; };
+        const skipLine = () => { skipWs(); skipComment(); if (src[i] === '\r') i++; if (i < n && src[i] === '\n') { i++; line++; } else if (i < n) err('這一行後面多了東西'); };
+        const skipBlank = () => { for (;;) { skipWs(); skipComment(); if (src[i] === '\r') i++; if (src[i] === '\n') { i++; line++; continue; } break; } };
+        const ESC = { b: '\b', t: '\t', n: '\n', f: '\f', r: '\r', '"': '"', '\\': '\\' };
+        function basicStr(multi) {
+            let out = '';
+            for (;;) {
+                if (i >= n) err('字串沒有結尾');
+                const c = src[i];
+                if (multi) { if (src.startsWith('"""', i)) { let extra = 0; while (src[i + 3 + extra] === '"' && extra < 2) extra++; out += '"'.repeat(extra); i += 3 + extra; return out; } }
+                else { if (c === '"') { i++; return out; } if (c === '\n') err('字串沒有結尾'); }
+                if (c === '\\') {
+                    i++; const e = src[i];
+                    if (e === 'u' || e === 'U') { const len = e === 'u' ? 4 : 8; out += String.fromCodePoint(parseInt(src.substr(i + 1, len), 16)); i += len + 1; continue; }
+                    if (multi && (e === '\n' || e === '\r' || e === ' ' || e === '\t')) { while (i < n && /[ \t\r\n]/.test(src[i])) { if (src[i] === '\n') line++; i++; } continue; }
+                    if (!(e in ESC)) err('不認得的跳脫字元 \\' + e);
+                    out += ESC[e]; i++; continue;
+                }
+                if (c === '\n') line++;
+                out += c; i++;
+            }
+        }
+        function litStr(multi) {
+            let out = '';
+            for (;;) {
+                if (i >= n) err('字串沒有結尾');
+                if (multi) { if (src.startsWith("'''", i)) { i += 3; return out; } } else { if (src[i] === "'") { i++; return out; } if (src[i] === '\n') err('字串沒有結尾'); }
+                if (src[i] === '\n') line++;
+                out += src[i++];
+            }
+        }
+        function str() {
+            if (src.startsWith('"""', i)) { i += 3; if (src[i] === '\r') i++; if (src[i] === '\n') { i++; line++; } return basicStr(true); }
+            if (src.startsWith("'''", i)) { i += 3; if (src[i] === '\r') i++; if (src[i] === '\n') { i++; line++; } return litStr(true); }
+            if (src[i] === '"') { i++; return basicStr(false); }
+            i++; return litStr(false);
+        }
+        function keyPart() {
+            skipWs();
+            if (src[i] === '"' || src[i] === "'") return src[i] === '"' ? (i++, basicStr(false)) : (i++, litStr(false));
+            const m = /^[A-Za-z0-9_-]+/.exec(src.slice(i, i + 200)); if (!m) err('鍵名不合法'); i += m[0].length; return m[0];
+        }
+        function keyPath() { const ks = [keyPart()]; for (;;) { skipWs(); if (src[i] === '.') { i++; ks.push(keyPart()); } else break; } return ks; }
+        function value() {
+            skipWs(); const c = src[i];
+            if (c === '"' || c === "'") return str();
+            if (c === '[') {
+                i++; const arr = [];
+                for (;;) { skipBlank(); if (src[i] === ']') { i++; return arr; } arr.push(value()); skipBlank(); if (src[i] === ',') { i++; continue; } skipBlank(); if (src[i] === ']') { i++; return arr; } err('陣列裡缺少逗號或結尾'); }
+            }
+            if (c === '{') {
+                i++; const o = {};
+                for (;;) { skipWs(); if (src[i] === '}') { i++; return o; } const ks = keyPath(); skipWs(); if (src[i] !== '=') err('行內表缺少 ='); i++; setPath(o, ks, value()); skipWs(); if (src[i] === ',') { i++; continue; } skipWs(); if (src[i] === '}') { i++; return o; } err('行內表缺少逗號或結尾'); }
+            }
+            const m = /^[^\s,\]}#]+/.exec(src.slice(i, i + 200)); if (!m) err('缺少值'); const tok = m[0]; i += tok.length;
+            if (tok === 'true') return true; if (tok === 'false') return false;
+            if (/^[+-]?(inf|nan)$/.test(tok)) return tok.indexOf('nan') >= 0 ? NaN : (tok[0] === '-' ? -Infinity : Infinity);
+            if (/^[+-]?(0|[1-9](_?\d)*)$/.test(tok)) return parseInt(tok.replace(/_/g, ''), 10);
+            if (/^0x[0-9a-fA-F_]+$/.test(tok)) return parseInt(tok.slice(2).replace(/_/g, ''), 16);
+            if (/^0o[0-7_]+$/.test(tok)) return parseInt(tok.slice(2).replace(/_/g, ''), 8);
+            if (/^0b[01_]+$/.test(tok)) return parseInt(tok.slice(2).replace(/_/g, ''), 2);
+            if (/^[+-]?(\d[\d_]*)(\.\d[\d_]*)?([eE][+-]?\d+)?$/.test(tok)) return parseFloat(tok.replace(/_/g, ''));
+            if (/^\d{4}-\d\d-\d\d([Tt ]\d\d:\d\d(:\d\d(\.\d+)?)?([Zz]|[+-]\d\d:\d\d)?)?$/.test(tok) || /^\d\d:\d\d:\d\d(\.\d+)?$/.test(tok)) {
+                // 日期時間：TOML 日期若帶空格（"1979-05-27 07:32:00Z"）會被切在空格，這裡把後半接上
+                let d = tok; const m2 = /^[ ]\d\d:\d\d(:\d\d(\.\d+)?)?([Zz]|[+-]\d\d:\d\d)?/.exec(src.slice(i, i + 40)); if (m2 && /^\d{4}-\d\d-\d\d$/.test(tok)) { d += m2[0]; i += m2[0].length; } return d;
+            }
+            err('不認得的值：' + tok);
+        }
+        function setPath(o, ks, v) { let cur = o; for (let k = 0; k < ks.length - 1; k++) { const key = ks[k]; if (!(key in cur)) cur[key] = {}; cur = Array.isArray(cur[key]) ? cur[key][cur[key].length - 1] : cur[key]; if (!isObj(cur)) err('鍵名 ' + key + ' 已經被當成別的型別'); } const last = ks[ks.length - 1]; if (last in cur) err('鍵名 ' + last + ' 重複了'); cur[last] = v; }
+        const rootObj = {}; let cur = rootObj;
+        for (;;) {
+            skipBlank(); if (i >= n) break;
+            if (src[i] === '[') {
+                const arrT = src[i + 1] === '['; i += arrT ? 2 : 1; const ks = keyPath(); skipWs();
+                if (!src.startsWith(arrT ? ']]' : ']', i)) err('表的標頭缺少 ]'); i += arrT ? 2 : 1;
+                let o = rootObj;
+                for (let k = 0; k < ks.length; k++) {
+                    const key = ks[k]; const lastK = k === ks.length - 1;
+                    if (lastK && arrT) { if (!(key in o)) o[key] = []; if (!Array.isArray(o[key])) err('鍵名 ' + key + ' 已經不是陣列'); const nw = {}; o[key].push(nw); o = nw; }
+                    else { if (!(key in o)) o[key] = {}; o = Array.isArray(o[key]) ? o[key][o[key].length - 1] : o[key]; if (!isObj(o)) err('鍵名 ' + key + ' 已經被當成別的型別'); }
+                }
+                cur = o; skipLine(); continue;
+            }
+            const ks = keyPath(); skipWs(); if (src[i] !== '=') err('缺少 ='); i++; const v = value(); setPath(cur, ks, v); skipLine();
+        }
+        return rootObj;
+    }
+
+    // ===== TOML 輸出 =====
+    function tomlKey(k) { return /^[A-Za-z0-9_-]+$/.test(k) ? k : JSON.stringify(k); }
+    function tomlVal(v) {
+        if (v === null || v === undefined) return '""';
+        if (typeof v === 'string') return JSON.stringify(v);
+        if (typeof v === 'number') return Number.isFinite(v) ? String(v) : (Number.isNaN(v) ? 'nan' : (v > 0 ? 'inf' : '-inf'));
+        if (typeof v === 'boolean') return String(v);
+        if (Array.isArray(v)) return '[' + v.map(tomlVal).join(', ') + ']';
+        return '{ ' + Object.keys(v).filter((k) => v[k] !== null && v[k] !== undefined).map((k) => tomlKey(k) + ' = ' + tomlVal(v[k])).join(', ') + ' }';
+    }
+    function stringifyToml(obj) {
+        const out = [];
+        (function emit(o, path) {
+            const tables = [], arrT = [];
+            for (const k of Object.keys(o)) {
+                const v = o[k]; if (v === null || v === undefined) continue;
+                if (isObj(v)) tables.push(k); else if (Array.isArray(v) && v.length && v.every(isObj)) arrT.push(k); else out.push(tomlKey(k) + ' = ' + tomlVal(v));
+            }
+            for (const k of tables) { const p = path.concat(k); out.push('', '[' + p.map(tomlKey).join('.') + ']'); emit(o[k], p); }
+            for (const k of arrT) { const p = path.concat(k); for (const el of o[k]) { out.push('', '[[' + p.map(tomlKey).join('.') + ']]'); emit(el, p); } }
+        })(isObj(obj) ? obj : { value: obj }, []);
+        return out.join('\n').replace(/^\n+/, '') + '\n';
+    }
+
+    // ===== CSV =====
+    function parseCsv(text, delim) {
+        text = String(text || '').replace(/^\ufeff/, '');
+        if (!delim) { const first = text.split('\n', 1)[0]; const cnt = (c) => first.split(c).length - 1; delim = cnt('\t') > cnt(',') && cnt('\t') >= cnt(';') ? '\t' : (cnt(';') > cnt(',') ? ';' : ','); }
+        const rows = []; let row = [], f = '', q = false, i = 0; const n = text.length;
+        while (i < n) {
+            const c = text[i];
+            if (q) { if (c === '"') { if (text[i + 1] === '"') { f += '"'; i += 2; continue; } q = false; i++; continue; } f += c; i++; continue; }
+            if (c === '"' && f === '') { q = true; i++; continue; }
+            if (c === delim) { row.push(f); f = ''; i++; continue; }
+            if (c === '\r') { i++; continue; }
+            if (c === '\n') { row.push(f); rows.push(row); row = []; f = ''; i++; continue; }
+            f += c; i++;
+        }
+        if (f !== '' || row.length) { row.push(f); rows.push(row); }
+        return { rows, delim };
+    }
+    function csvCell(v, delim) { let s = v === null || v === undefined ? '' : String(v); if (s.length > MAX_CELL) s = s.slice(0, MAX_CELL); return /["\r\n]/.test(s) || s.indexOf(delim) >= 0 ? '"' + s.replace(/"/g, '""') + '"' : s; }
+    function sheetToCsv(sheet, opts) {
+        opts = opts || {}; const d = opts.delim || ','; const lines = [sheet.columns.map((c) => csvCell(c, d)).join(d)];
+        for (const r of sheet.rows) lines.push(sheet.columns.map((_, k) => csvCell(r[k], d)).join(d));
+        return (opts.bom === false ? '' : '\ufeff') + lines.join('\r\n') + '\r\n';
+    }
+
+    // ===== 解析（統一入口）=====
+    function parse(text, fmt, deps) {
+        deps = deps || {};
+        try {
+            if (fmt === 'json') return { ok: true, data: JSON.parse(text) };
+            if (fmt === 'yaml') {
+                if (!deps.yamlLoad) return { ok: false, error: { message: 'YAML 解析器還沒載入' }, needDeps: 'yaml' };
+                const docs = []; try { deps.yamlLoadAll ? deps.yamlLoadAll(text, (d) => docs.push(d)) : docs.push(deps.yamlLoad(text)); } catch (e) { throw e; }
+                return { ok: true, data: docs.length > 1 ? docs : docs[0] };
+            }
+            if (fmt === 'toml') return { ok: true, data: parseToml(text) };
+            if (fmt === 'csv' || fmt === 'tsv') { const r = parseCsv(text, fmt === 'tsv' ? '\t' : undefined); const head = r.rows[0] || []; return { ok: true, data: { columns: head, rows: r.rows.slice(1) }, table: true }; }
+        } catch (e) {
+            let line = e.line || (e.mark && e.mark.line + 1) || null, col = (e.mark && e.mark.column + 1) || null;
+            if (!line) { const m = /position (\d+)/.exec(e.message || ''); if (m) { const pos = +m[1]; const up = String(text).slice(0, pos); line = up.split('\n').length; col = pos - up.lastIndexOf('\n'); } }
+            return { ok: false, error: { message: String(e.reason || e.message || e).split('\n')[0], line, col } };
+        }
+        return { ok: false, error: { message: '不支援的格式 ' + fmt } };
+    }
+    function stringify(data, fmt, deps) {
+        deps = deps || {};
+        if (fmt === 'json') return JSON.stringify(data, null, 2) + '\n';
+        if (fmt === 'yaml') { if (!deps.yamlDump) throw new Error('YAML 輸出器還沒載入'); return deps.yamlDump(data, { lineWidth: -1, noRefs: true }); }
+        if (fmt === 'toml') return stringifyToml(data);
+        throw new Error('不支援輸出 ' + fmt);
+    }
+
+    // ===== 上色：每行回傳 token 陣列 [{c: 類別, t: 文字}]；類別 k=鍵 s=字串 n=數字 b=布林 z=null p=標點 c=註解 h=標題 a=錨點 d=日期 x=一般 =====
+    const JSON_RE = /("(?:\\.|[^"\\])*")(\s*:)?|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|\b(true|false)\b|\b(null)\b|([{}\[\],:])|(\s+)|([^\s"{}\[\],:]+)/g;
+    function tokJsonLine(s) {
+        const out = []; let m; JSON_RE.lastIndex = 0;
+        while ((m = JSON_RE.exec(s))) {
+            if (m[1] !== undefined) { if (m[2]) { out.push({ c: 'k', t: m[1] }, { c: 'p', t: m[2] }); } else out.push({ c: 's', t: m[1] }); }
+            else if (m[3] !== undefined) out.push({ c: 'n', t: m[3] }); else if (m[4] !== undefined) out.push({ c: 'b', t: m[4] }); else if (m[5] !== undefined) out.push({ c: 'z', t: m[5] });
+            else if (m[6] !== undefined) out.push({ c: 'p', t: m[6] }); else out.push({ c: 'x', t: m[0] });
+        }
+        return out;
+    }
+    function scalarTok(v) {
+        const t = v.trim(); if (!t) return { c: 'x', t: v };
+        let c = 'x';
+        if (/^(["']).*\1$/.test(t)) c = 's'; else if (/^(true|false|yes|no|on|off)$/i.test(t)) c = 'b'; else if (/^(null|~)$/i.test(t)) c = 'z';
+        else if (/^[+-]?(\d[\d_]*)(\.\d+)?([eE][+-]?\d+)?$|^0x[0-9a-fA-F]+$|^[+-]?\.(inf|nan)$/i.test(t)) c = 'n'; else if (/^\d{4}-\d\d-\d\d/.test(t)) c = 'd'; else if (/^[&*]/.test(t)) c = 'a'; else c = 's';
+        return { c, t: v };
+    }
+    function splitComment(s) { // 找出不在引號裡的 " #"
+        let q = ''; for (let i = 0; i < s.length; i++) { const ch = s[i]; if (q) { if (ch === '\\' && q === '"') i++; else if (ch === q) q = ''; } else if (ch === '"' || ch === "'") q = ch; else if (ch === '#' && (i === 0 || /\s/.test(s[i - 1]))) return [s.slice(0, i), s.slice(i)]; }
+        return [s, ''];
+    }
+    function tokYamlLines(lines) {
+        const res = []; let blockIndent = -1;
+        for (const line of lines) {
+            const ind = /^\s*/.exec(line)[0].length;
+            if (blockIndent >= 0) { if (line.trim() === '' || ind > blockIndent) { res.push([{ c: 's', t: line }]); continue; } blockIndent = -1; }
+            if (/^\s*#/.test(line)) { res.push([{ c: 'c', t: line }]); continue; }
+            if (/^(---|\.\.\.)\s*$/.test(line)) { res.push([{ c: 'p', t: line }]); continue; }
+            const [body, cmt] = splitComment(line); const out = [];
+            const m = /^(\s*(?:-\s+)*)((?:"(?:\\.|[^"\\])*"|'[^']*'|[^\s#:'"\-\[{][^#:]*?|-[^\s#:][^#:]*?))(\s*:)(\s+|$)(.*)$/.exec(body);
+            if (m) {
+                if (m[1]) out.push({ c: 'p', t: m[1] }); out.push({ c: 'k', t: m[2] }, { c: 'p', t: m[3] }); if (m[4]) out.push({ c: 'x', t: m[4] });
+                const v = m[5]; if (/^[|>][+-]?\d*\s*$/.test(v.trim())) { out.push({ c: 'p', t: v }); blockIndent = ind; } else if (v) out.push(scalarTok(v));
+            } else {
+                const mm = /^(\s*(?:-\s*)+)(.*)$/.exec(body);
+                if (mm) { out.push({ c: 'p', t: mm[1] }); if (mm[2]) { if (/^[|>][+-]?\d*\s*$/.test(mm[2].trim())) { out.push({ c: 'p', t: mm[2] }); blockIndent = ind; } else out.push(scalarTok(mm[2])); } }
+                else if (body) out.push(scalarTok(body));
+            }
+            if (cmt) out.push({ c: 'c', t: cmt }); res.push(out.length ? out : [{ c: 'x', t: line }]);
+        }
+        return res;
+    }
+    function tokTomlLines(lines) {
+        const res = []; let multi = '';
+        for (const line of lines) {
+            if (multi) { const e = line.indexOf(multi); if (e >= 0) { res.push([{ c: 's', t: line.slice(0, e + 3) }, ...tokTomlValue(line.slice(e + 3))]); multi = ''; } else res.push([{ c: 's', t: line }]); continue; }
+            if (/^\s*#/.test(line)) { res.push([{ c: 'c', t: line }]); continue; }
+            const h = /^(\s*)(\[\[?)([^\]]+)(\]\]?)(.*)$/.exec(line);
+            if (h) { res.push([{ c: 'x', t: h[1] }, { c: 'p', t: h[2] }, { c: 'h', t: h[3] }, { c: 'p', t: h[4] }, ...tokTomlValue(h[5])]); continue; }
+            const kv = /^(\s*)((?:"(?:\\.|[^"\\])*"|'[^']*'|[A-Za-z0-9_.-]+(?:\s*\.\s*[A-Za-z0-9_-]+)*))(\s*=)(\s*)(.*)$/.exec(line);
+            if (kv) {
+                const toks = [{ c: 'x', t: kv[1] }, { c: 'k', t: kv[2] }, { c: 'p', t: kv[3] }, { c: 'x', t: kv[4] }];
+                const v = kv[5]; const ml = v.startsWith('"""') ? '"""' : (v.startsWith("'''") ? "'''" : '');
+                if (ml && v.indexOf(ml, 3) < 0) { multi = ml; toks.push({ c: 's', t: v }); } else toks.push(...tokTomlValue(v));
+                res.push(toks); continue;
+            }
+            res.push([{ c: 'x', t: line }]);
+        }
+        return res;
+    }
+    function tokTomlValue(v) {
+        const out = []; const re = /("(?:\\.|[^"\\])*"|'[^']*')|(#.*$)|(\b(?:true|false)\b)|(\d{4}-\d\d-\d\d(?:[Tt ]\d\d:\d\d(?::\d\d(?:\.\d+)?)?(?:[Zz]|[+-]\d\d:\d\d)?)?)|([+-]?(?:0x[0-9a-fA-F_]+|\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?|inf|nan))|([\[\]{},=])|(\s+)|([^\s\[\]{},=#"']+)/g; let m;
+        while ((m = re.exec(v))) { const c = m[1] ? 's' : m[2] ? 'c' : m[3] ? 'b' : m[4] ? 'd' : m[5] ? 'n' : m[6] ? 'p' : 'x'; out.push({ c, t: m[0] }); }
+        return out;
+    }
+    function tokCsvLine(s, delim) {
+        const out = []; let i = 0; const d = delim || ',';
+        while (i < s.length) { if (s[i] === d) { out.push({ c: 'p', t: d }); i++; continue; } let j = i; if (s[i] === '"') { j = i + 1; while (j < s.length) { if (s[j] === '"') { if (s[j + 1] === '"') j += 2; else { j++; break; } } else j++; } out.push({ c: 's', t: s.slice(i, j) }); } else { while (j < s.length && s[j] !== d) j++; const cell = s.slice(i, j); out.push({ c: /^-?\d+(\.\d+)?$/.test(cell.trim()) ? 'n' : 'x', t: cell }); } i = j; }
+        return out;
+    }
+    function highlight(text, fmt) {
+        const lines = String(text).split('\n').map((l) => l.replace(/\r$/, ''));
+        if (fmt === 'json') return lines.map(tokJsonLine);
+        if (fmt === 'yaml') return tokYamlLines(lines);
+        if (fmt === 'toml') return tokTomlLines(lines);
+        if (fmt === 'csv' || fmt === 'tsv') return lines.map((l) => tokCsvLine(l, fmt === 'tsv' ? '\t' : ','));
+        return lines.map((l) => [{ c: 'x', t: l }]);
+    }
+    // 單行很長的 JSON（壓縮過）：Source 顯示排版後的版本
+    function prettyIfMinified(text, fmt) {
+        if (fmt !== 'json') return { text, pretty: false };
+        const lines = text.split('\n').length; if (lines > 3 || text.length < 400) return { text, pretty: false };
+        try { return { text: JSON.stringify(JSON.parse(text), null, 2), pretty: true }; } catch (_) { return { text, pretty: false }; }
+    }
+
+    // ===== JSON → 表格 =====
+    const ID_KEYS = ['SPDXID', 'spdxId', 'id', '@id', 'bom-ref', 'purl', 'name'];
+    function safeSheetName(name, used) {
+        let s = String(name || 'sheet').replace(/[\[\]:*?\/\\]/g, '_').replace(/^'+|'+$/g, '').slice(0, 31) || 'sheet'; let u = s, k = 2;
+        while (used.has(u.toLowerCase())) { const suf = '~' + k++; u = s.slice(0, 31 - suf.length) + suf; }
+        used.add(u.toLowerCase()); return u;
+    }
+    function cellValue(v) {
+        if (v === null || v === undefined) return '';
+        if (typeof v === 'string') return v.length > MAX_CELL ? v.slice(0, MAX_CELL) : v;
+        if (typeof v === 'number' || typeof v === 'boolean') return v;
+        let s; try { s = JSON.stringify(v); } catch (_) { s = String(v); } return s.length > MAX_CELL ? s.slice(0, MAX_CELL) : s;
+    }
+    function isObjArray(a) { if (!Array.isArray(a) || !a.length) return false; let o = 0; for (const x of a) if (isObj(x)) o++; return o >= Math.max(1, Math.ceil(a.length * 0.6)); }
+    // 把一個物件攤平：巢狀物件用點；原始型別陣列用 "; "；物件陣列交給 onChild
+    function flattenObj(o, prefix, out, onChild, depth) {
+        for (const k of Object.keys(o)) {
+            const v = o[k], p = prefix ? prefix + '.' + k : k;
+            if (isPrim(v)) out[p] = v;
+            else if (Array.isArray(v)) {
+                if (!v.length) out[p] = '';
+                else if (v.every(isPrim)) out[p] = v.map((x) => (x === null ? '' : String(x))).join('; ');
+                else if (isObjArray(v) && depth < 4) onChild(p, v);
+                else out[p] = JSON.stringify(v);
+            } else if (depth < 6) flattenObj(v, p, out, onChild, depth + 1); else out[p] = JSON.stringify(v);
+        }
+        return out;
+    }
+    function toTables(data, opts) {
+        opts = opts || {}; const used = new Set(); const sheets = []; const notes = [];
+        const rootName = opts.rootName || 'data';
+        function addSheet(name, objs, parent, kind) {
+            const sheet = { name: safeSheetName(name, used), baseName: name, columns: [], rows: [], kind: kind || 'rows' };
+            sheets.push(sheet); const colIdx = new Map(); const rowsObj = [];
+            const getCol = (c) => { let i = colIdx.get(c); if (i === undefined) { i = sheet.columns.length; sheet.columns.push(c); colIdx.set(c, i); } return i; };
+            if (parent) { getCol('_parent'); getCol('_parent_id'); }
+            const take = Math.min(objs.length, MAX_ROWS); if (objs.length > take) notes.push(sheet.baseName + '：共 ' + objs.length + ' 列，只匯出前 ' + take + ' 列');
+            for (let r = 0; r < take; r++) {
+                const el = objs[r]; const flat = isObj(el) ? el : { value: el }; const children = [];
+                const f = flattenObj(flat, '', {}, (p, arr) => children.push([p, arr]), 0);
+                const row = []; if (parent) { row[0] = parent.rowNo; row[1] = parent.id; }
+                for (const k of Object.keys(f)) row[getCol(k)] = cellValue(f[k]);
+                sheet.rows.push(row);
+                let rid = ''; for (const key of ID_KEYS) { if (isPrim(flat[key]) && flat[key] !== undefined && flat[key] !== null && flat[key] !== '') { rid = String(flat[key]); break; } }
+                for (const [p, arr] of children) addSheet(sheet.baseName + '.' + p, arr, { rowNo: r + 1, id: rid }, 'child');
+            }
+            for (const row of sheet.rows) for (let i = 0; i < sheet.columns.length; i++) if (row[i] === undefined) row[i] = '';
+            return sheet;
+        }
+        function summaryOf(o) {
+            const rows = []; const walk = (v, p) => { if (isPrim(v)) rows.push([p, cellValue(v), v === null ? 'null' : typeof v]); else if (Array.isArray(v)) { if (v.every(isPrim)) rows.push([p, v.map((x) => (x === null ? '' : String(x))).join('; '), 'array(' + v.length + ')']); else v.forEach((x, i) => walk(x, p + '[' + i + ']')); } else for (const k of Object.keys(v)) walk(v[k], p ? p + '.' + k : k); };
+            walk(o, ''); return rows;
+        }
+        function splitByType(arr, name) {
+            for (const tk of ['type', '@type']) {
+                const groups = new Map(); let ok = true;
+                for (const x of arr) { if (!isObj(x) || typeof x[tk] !== 'string') { ok = false; break; } if (!groups.has(x[tk])) groups.set(x[tk], []); groups.get(x[tk]).push(x); }
+                if (ok && groups.size >= 2 && groups.size <= 30) { for (const [t, g] of groups) addSheet(name + ':' + t, g, null); return true; }
+            }
+            return false;
+        }
+        if (isObjArray(data)) { if (!splitByType(data, rootName)) addSheet(rootName, data, null); }
+        else if (Array.isArray(data)) { const s = { name: safeSheetName('values', used), baseName: 'values', columns: ['index', 'value'], rows: data.map((v, i) => [i, cellValue(v)]), kind: 'rows' }; sheets.push(s); }
+        else if (isObj(data)) {
+            const rest = {}; let tabular = 0;
+            for (const k of Object.keys(data)) { const v = data[k]; if (isObjArray(v)) { tabular++; if (!splitByType(v, k)) addSheet(k, v, null); } else rest[k] = v; }
+            const keys = Object.keys(data);
+            if (!tabular && keys.length >= 2 && keys.every((k) => isObj(data[k]))) { // 以 id 當鍵的字典
+                const rows = keys.map((k) => Object.assign({ _key: k }, data[k])); addSheet(rootName, rows, null); }
+            else { const sr = summaryOf(tabular ? rest : data); if (sr.length || !tabular) sheets.unshift({ name: safeSheetName('summary', used), baseName: 'summary', columns: ['path', 'value', 'type'], rows: sr, kind: 'summary' }); }
+        } else sheets.push({ name: safeSheetName('summary', used), baseName: 'summary', columns: ['path', 'value', 'type'], rows: [['', cellValue(data), data === null ? 'null' : typeof data]], kind: 'summary' });
+        const primary = sheets.reduce((b, s) => (s.kind !== 'summary' && s.kind !== 'child' && (!b || s.rows.length > b.rows.length) ? s : b), null) || sheets[0];
+        if (notes.length) sheets.push({ name: safeSheetName('notes', used), baseName: 'notes', columns: ['說明'], rows: notes.map((x) => [x]), kind: 'summary' });
+        return { sheets, primary: primary ? primary.name : null };
+    }
+
+    // ===== XLSX 寫入（deps.JSZip）=====
+    const xmlEsc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/g, '');
+    function colLetter(i) { let s = ''; i++; while (i > 0) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; }
+    function sheetXml(sheet) {
+        const widths = sheet.columns.map((c, i) => { let w = String(c).length; for (let r = 0; r < Math.min(sheet.rows.length, 200); r++) w = Math.max(w, String(sheet.rows[r][i] == null ? '' : sheet.rows[r][i]).length); return Math.min(60, Math.max(8, w + 2)); });
+        const cell = (v, r, c, style) => {
+            const ref = colLetter(c) + r;
+            if (typeof v === 'number' && Number.isFinite(v)) return '<c r="' + ref + '"' + (style ? ' s="' + style + '"' : '') + '><v>' + v + '</v></c>';
+            if (typeof v === 'boolean') return '<c r="' + ref + '" t="b"><v>' + (v ? 1 : 0) + '</v></c>';
+            const s = v === null || v === undefined ? '' : String(v); if (s === '') return '';
+            return '<c r="' + ref + '" t="inlineStr"' + (style ? ' s="' + style + '"' : '') + '><is><t xml:space="preserve">' + xmlEsc(s.length > MAX_CELL ? s.slice(0, MAX_CELL) : s) + '</t></is></c>';
+        };
+        const parts = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols>' + widths.map((w, i) => '<col min="' + (i + 1) + '" max="' + (i + 1) + '" width="' + w + '" customWidth="1"/>').join('') + '</cols><sheetData>'];
+        parts.push('<row r="1">' + sheet.columns.map((c, i) => cell(String(c), 1, i, 1)).join('') + '</row>');
+        for (let r = 0; r < sheet.rows.length; r++) parts.push('<row r="' + (r + 2) + '">' + sheet.rows[r].map((v, i) => cell(v, r + 2, i, 0)).join('') + '</row>');
+        parts.push('</sheetData>' + (sheet.columns.length ? '<autoFilter ref="A1:' + colLetter(sheet.columns.length - 1) + (sheet.rows.length + 1) + '"/>' : '') + '</worksheet>');
+        return parts.join('');
+    }
+    async function buildXlsx(sheets, deps) {
+        const Z = deps && deps.JSZip; if (!Z) throw new Error('JSZip 還沒載入');
+        if (!sheets.length) sheets = [{ name: 'Sheet1', columns: [], rows: [] }];
+        const zip = new Z();
+        zip.file('[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' + sheets.map((_, i) => '<Override PartName="/xl/worksheets/sheet' + (i + 1) + '.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>').join('') + '</Types>');
+        zip.file('_rels/.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>');
+        zip.file('xl/workbook.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>' + sheets.map((s, i) => '<sheet name="' + xmlEsc(s.name) + '" sheetId="' + (i + 1) + '" r:id="rId' + (i + 1) + '"/>').join('') + '</sheets></workbook>');
+        zip.file('xl/_rels/workbook.xml.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' + sheets.map((_, i) => '<Relationship Id="rId' + (i + 1) + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet' + (i + 1) + '.xml"/>').join('') + '<Relationship Id="rId' + (sheets.length + 1) + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>');
+        zip.file('xl/styles.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFDDEBF7"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs></styleSheet>');
+        sheets.forEach((s, i) => zip.file('xl/worksheets/sheet' + (i + 1) + '.xml', sheetXml(s)));
+        return zip.generateAsync({ type: deps.outType || 'uint8array', compression: 'DEFLATE' });
+    }
+
+    // ===== XLSX 讀取（regex 解析，不需要 DOM）=====
+    const xmlUnesc = (s) => String(s).replace(/&(lt|gt|amp|quot|apos|#\d+|#x[0-9a-fA-F]+);/g, (m, e) => ({ lt: '<', gt: '>', amp: '&', quot: '"', apos: "'" }[e] || (e[1] === 'x' ? String.fromCodePoint(parseInt(e.slice(2), 16)) : String.fromCodePoint(parseInt(e.slice(1), 10)))));
+    function colIndex(ref) { let n = 0; const m = /^[A-Z]+/.exec(ref); for (const ch of m[0]) n = n * 26 + ch.charCodeAt(0) - 64; return n - 1; }
+    async function readXlsx(bytes, deps) {
+        const Z = deps && deps.JSZip; if (!Z) throw new Error('JSZip 還沒載入');
+        const zip = await Z.loadAsync(bytes); const rd = async (p) => { const f = zip.file(p); return f ? f.async('string') : ''; };
+        const wb = await rd('xl/workbook.xml'), rels = await rd('xl/_rels/workbook.xml.rels'), ss = await rd('xl/sharedStrings.xml');
+        const shared = []; if (ss) { const re = /<si>([\s\S]*?)<\/si>/g; let m; while ((m = re.exec(ss))) { let t = ''; const tr = /<t[^>]*>([\s\S]*?)<\/t>/g; let tm; while ((tm = tr.exec(m[1]))) t += xmlUnesc(tm[1]); shared.push(t); } }
+        const relMap = {}; { const re = /<Relationship\b[^>]*>/g; let m; while ((m = re.exec(rels))) { const id = /Id="([^"]+)"/.exec(m[0]), tg = /Target="([^"]+)"/.exec(m[0]); if (id && tg) relMap[id[1]] = tg[1]; } }
+        const sheets = []; const re = /<sheet\b[^>]*>/g; let m;
+        while ((m = re.exec(wb))) {
+            const name = /name="([^"]*)"/.exec(m[0]), rid = /r:id="([^"]+)"/.exec(m[0]); if (!name || !rid) continue;
+            let target = relMap[rid[1]] || ''; target = target.replace(/^\/?(xl\/)?/, 'xl/'); const xml = await rd(target); const rows = [];
+            const rr = /<row\b[^>]*>([\s\S]*?)<\/row>|<row\b[^>]*\/>/g; let rm;
+            while ((rm = rr.exec(xml))) {
+                const row = []; const cr = /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g; let cm;
+                while ((cm = cr.exec(rm[1] || ''))) {
+                    const attrs = cm[1], body = cm[2] || ''; const ref = /r="([A-Z]+\d+)"/.exec(attrs); if (!ref) continue; const t = (/t="(\w+)"/.exec(attrs) || [])[1]; let v = '';
+                    if (t === 'inlineStr') { const tt = /<t[^>]*>([\s\S]*?)<\/t>/g; let x; while ((x = tt.exec(body))) v += xmlUnesc(x[1]); }
+                    else { const vm = /<v>([\s\S]*?)<\/v>/.exec(body); if (vm) { const raw = xmlUnesc(vm[1]); if (t === 's') v = shared[+raw] || ''; else if (t === 'b') v = raw === '1'; else if (t === 'str' || t === 'e') v = raw; else { const num = Number(raw); v = Number.isFinite(num) ? num : raw; } } }
+                    row[colIndex(ref[1])] = v;
+                }
+                rows.push(row);
+            }
+            let width = 0; for (const r of rows) width = Math.max(width, r.length);
+            const grid = rows.map((r) => { const o = []; for (let i = 0; i < width; i++) o.push(r[i] === undefined ? '' : r[i]); return o; });
+            const head = grid.length ? grid[0].map((x, i) => (x === '' ? colLetter(i) : String(x))) : [];
+            sheets.push({ name: xmlUnesc(name[1]), columns: head, rows: grid.slice(1), kind: 'rows' });
+        }
+        return { sheets };
+    }
+
+    // ===== 樹（Viewer 模式）=====
+    function typeOf(v) { return v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v; }
+    function preview(v) {
+        if (v === null) return 'null'; if (Array.isArray(v)) return '[' + v.length + ']'; if (isObj(v)) return '{' + Object.keys(v).length + '}';
+        if (typeof v === 'string') return JSON.stringify(v.length > 160 ? v.slice(0, 160) + '…' : v); return String(v);
+    }
+    // 攤成目前看得到的列。expanded 是 Set<路徑字串>；path 用 JSON 指標風格 /a/0/b。
+    function visibleRows(data, expanded, opts) {
+        opts = opts || {}; const rows = []; const cap = opts.cap || 200000;
+        (function walk(v, key, path, depth, last) {
+            if (rows.length >= cap) return;
+            const container = !isPrim(v); const open = container && expanded.has(path);
+            rows.push({ path, key, depth, type: typeOf(v), preview: preview(v), container, open, count: container ? (Array.isArray(v) ? v.length : Object.keys(v).length) : 0, value: container ? undefined : v });
+            if (open) { if (Array.isArray(v)) v.forEach((x, i) => walk(x, String(i), path + '/' + i, depth + 1)); else for (const k of Object.keys(v)) walk(v[k], k, path + '/' + k.replace(/~/g, '~0').replace(/\//g, '~1'), depth + 1); }
+        })(data, '', '', 0);
+        return rows;
+    }
+    function defaultExpanded(data, maxDepth, maxNodes) {
+        const set = new Set(); let nodes = 0;
+        (function walk(v, path, depth) { if (isPrim(v) || depth >= maxDepth || nodes > maxNodes) return; set.add(path); const ks = Array.isArray(v) ? v.map((_, i) => String(i)) : Object.keys(v); nodes += ks.length; for (const k of ks.slice(0, 200)) walk(v[k], path + '/' + String(k).replace(/~/g, '~0').replace(/\//g, '~1'), depth + 1); })(data, '', 0);
+        return set;
+    }
+    // 找出鍵名或值含關鍵字的節點路徑（上限 maxHits），並回傳要展開的祖先
+    function searchTree(data, q, opts) {
+        opts = opts || {}; const max = opts.max || 2000; const needle = String(q).toLowerCase(); const hits = []; const open = new Set();
+        if (!needle) return { hits, open };
+        (function walk(v, key, path) {
+            if (hits.length >= max) return;
+            const kHit = key !== '' && String(key).toLowerCase().includes(needle); const vHit = isPrim(v) && v !== null && String(v).toLowerCase().includes(needle);
+            if (kHit || vHit) { hits.push(path); const segs = path.split('/'); for (let i = 1; i < segs.length; i++) open.add(segs.slice(0, i).join('/')); }
+            if (!isPrim(v)) { if (Array.isArray(v)) v.forEach((x, i) => walk(x, String(i), path + '/' + i)); else for (const k of Object.keys(v)) walk(v[k], k, path + '/' + k.replace(/~/g, '~0').replace(/\//g, '~1')); }
+        })(data, '', '');
+        return { hits, open };
+    }
+    function getByPath(data, path) { let cur = data; for (const seg of path.split('/').slice(1)) { if (cur === null || typeof cur !== 'object') return undefined; cur = cur[seg.replace(/~1/g, '/').replace(/~0/g, '~')]; } return cur; }
+    // 文字搜尋（Source 模式）：回傳 [{line, col, len}]
+    function searchText(lines, q, opts) {
+        opts = opts || {}; const max = opts.max || 5000; const needle = String(q).toLowerCase(); const hits = []; if (!needle) return hits;
+        for (let i = 0; i < lines.length && hits.length < max; i++) { const l = lines[i].toLowerCase(); let p = 0; while ((p = l.indexOf(needle, p)) >= 0 && hits.length < max) { hits.push({ line: i, col: p, len: needle.length }); p += needle.length || 1; } }
+        return hits;
+    }
+    // 給 AI 看的結構概要（不含大量資料）
+    function outline(data, opts) {
+        opts = opts || {}; const maxDepth = opts.maxDepth || 3;
+        const walk = (v, d) => {
+            if (isPrim(v)) return typeOf(v);
+            if (Array.isArray(v)) return 'array(' + v.length + ')' + (v.length && d < maxDepth ? ' 每筆≈' + JSON.stringify(walk(v[0], d + 1)) : '');
+            if (d >= maxDepth) return 'object(' + Object.keys(v).length + ')';
+            const o = {}; const ks = Object.keys(v); ks.slice(0, 30).forEach((k) => { o[k] = walk(v[k], d + 1); }); if (ks.length > 30) o['…'] = '還有' + (ks.length - 30) + '個欄位'; return o;
+        };
+        const s = JSON.stringify(walk(data, 0)); return s.length > (opts.maxChars || 3000) ? s.slice(0, opts.maxChars || 3000) + '…' : s;
+    }
+
+    return { detectFormat, parse, stringify, parseToml, stringifyToml, parseCsv, sheetToCsv, highlight, prettyIfMinified, toTables, buildXlsx, readXlsx, visibleRows, defaultExpanded, searchTree, searchText, getByPath, outline, preview, typeOf, colLetter, isObj };
+});
+
+}).call(null, undefined, holder);
+return holder.FaDataCore;
+})();
+/* DATACORE-END */
+/* DATAUI-BEGIN */
+const FaDataView = (function () {
+const holder = {};
+(function (module, self) {
+/* 資料檢視器的畫面（DOM）：JSON／YAML／TOML／CSV。Source／Viewer 切換、行號＋上色、搜尋、Export 選單、Ask AI 面板。
+ * 只依賴 FaDataCore 與 host：
+ *   host.deps()                      -> Promise<{yamlLoad, yamlDump, yamlLoadAll, JSZip}>（需要時才載入）
+ *   host.download(data, name, mime)  -> 下載（data 是字串／Uint8Array／Blob）
+ *   host.askAI(question, ctx)        -> Promise<{text, sheet?:{columns,rows}}>（ctx：fmt、name、outline、getData()、getText()）
+ *   host.palette()                   -> {dark, windowBg, windowBorder, detailBg, detailText, inputBg, inputText, inputBorder, ...}（選填）
+ *   host.renderAnswer(text)          -> 已消毒的 HTML 字串（選填，沒有就用純文字）
+ *   host.exportSqlite(sheets)        -> Promise<Uint8Array>（選填；有才會出現 SQLite3 匯出）
+ * 設計見 DESIGN.data-viewers.md。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory(require('./data_core.js'));
+    else root.FaDataView = factory(root.FaDataCore || (typeof FaDataCore !== 'undefined' ? FaDataCore : undefined));
+})(typeof self !== 'undefined' ? self : this, function (C) {
+    'use strict';
+    const LH = 19, TH = 22, GUTTER = 56;
+    const CSS = `.fdv{--bg:#0d1117;--fg:#e6edf3;--bd:#30363d;--hd:#161b22;--mut:#8b949e;--acc:#2f81f7;--k:#79c0ff;--s:#7ee787;--n:#ffa657;--b:#ff7b72;--z:#8b949e;--p:#8b949e;--c:#8b949e;--h:#d2a8ff;--d:#ffa657;--a:#d2a8ff;--hit:#bb800966;--cur:#f2cc6099;margin:6px 0;border:1px solid var(--bd);border-radius:8px;background:var(--bg);color:var(--fg);font:12.5px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;overflow:hidden;max-width:100%;position:relative}
+.fdv.light{--bg:#fff;--fg:#1f2328;--bd:#d0d7de;--hd:#f6f8fa;--mut:#59636e;--acc:#0969da;--k:#0550ae;--s:#116329;--n:#953800;--b:#cf222e;--z:#6e7781;--p:#6e7781;--c:#6e7781;--h:#8250df;--d:#953800;--a:#8250df;--hit:#fff8c5;--cur:#ffd33d99}
+.fdv *{box-sizing:border-box}.fdv button{background:var(--hd);color:inherit;border:1px solid var(--bd);border-radius:5px;padding:2px 9px;cursor:pointer;font:12px system-ui,sans-serif}.fdv button:hover{border-color:var(--acc)}.fdv button.on{background:var(--acc);border-color:var(--acc);color:#fff}.fdv button:disabled{opacity:.45;cursor:not-allowed}
+.fdv .bar{display:flex;align-items:center;gap:6px;padding:5px 8px;background:var(--hd);border-bottom:1px solid var(--bd);flex-wrap:wrap}.fdv .ttl{font:600 12px system-ui,sans-serif;color:var(--mut);margin-right:2px;white-space:nowrap}.fdv .sp{flex:1}
+.fdv input.q{background:var(--bg);color:inherit;border:1px solid var(--bd);border-radius:5px;padding:2px 7px;font:12px system-ui,sans-serif;width:150px;min-width:90px}.fdv .cnt{font:11px system-ui,sans-serif;color:var(--mut);min-width:42px}
+.fdv .seg{display:inline-flex}.fdv .seg button:first-child{border-radius:5px 0 0 5px}.fdv .seg button:last-child{border-radius:0 5px 5px 0;margin-left:-1px}
+.fdv .sc{position:relative;height:var(--fh,340px);min-height:60px;max-height:80vh;overflow:hidden;resize:vertical;outline:none}.fdv .sc.act{overflow:auto}.fdv .sc .hint{position:absolute;right:8px;bottom:6px;font:11px system-ui,sans-serif;background:var(--hd);border:1px solid var(--bd);border-radius:10px;padding:1px 8px;color:var(--mut);pointer-events:none;opacity:0;transition:opacity .15s;z-index:3}.fdv .sc:not(.act):hover .hint{opacity:.95}
+.fdv .win{position:absolute;left:0;right:0;top:0}.fdv .row{position:absolute;left:0;white-space:pre;display:flex}.fdv .ln{position:sticky;left:0;width:${GUTTER}px;flex:none;text-align:right;padding-right:10px;color:var(--mut);background:var(--bg);user-select:none;border-right:1px solid var(--bd);z-index:1}.fdv .row.err{background:#f8514926}.fdv .code{padding-left:10px}
+.fdv .t-k{color:var(--k)}.fdv .t-s{color:var(--s)}.fdv .t-n{color:var(--n)}.fdv .t-b{color:var(--b)}.fdv .t-z{color:var(--z);font-style:italic}.fdv .t-p{color:var(--p)}.fdv .t-c{color:var(--c);font-style:italic}.fdv .t-h{color:var(--h);font-weight:600}.fdv .t-d{color:var(--d)}.fdv .t-a{color:var(--a)}
+.fdv mark{background:var(--hit);color:inherit;border-radius:2px}.fdv mark.cur{background:var(--cur);outline:1px solid var(--acc)}
+.fdv .trow{position:absolute;left:0;right:0;display:flex;align-items:center;white-space:nowrap;cursor:default;padding-right:8px}.fdv .trow:hover{background:var(--hd)}.fdv .trow.sel{background:var(--hit)}.fdv .arr{width:16px;flex:none;text-align:center;color:var(--mut);cursor:pointer;user-select:none}.fdv .cn{color:var(--mut);font-size:11px;margin-left:6px}
+.fdv .grid{position:absolute;left:0;display:flex;white-space:nowrap}.fdv .grid.hd{position:sticky;top:0;background:var(--hd);font-weight:600;z-index:2;border-bottom:1px solid var(--bd)}.fdv .cell{flex:none;width:170px;padding:0 8px;overflow:hidden;text-overflow:ellipsis;border-right:1px solid var(--bd)}.fdv .cell.rn{width:${GUTTER}px;text-align:right;color:var(--mut)}.fdv .cell.num{text-align:right;color:var(--n)}.fdv .grid.hd .cell{cursor:pointer}
+.fdv .foot{display:flex;gap:8px;align-items:center;padding:3px 8px;border-top:1px solid var(--bd);background:var(--hd);font:11px system-ui,sans-serif;color:var(--mut);min-height:24px}.fdv .foot .path{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,Consolas,monospace}
+.fdv .errbar{padding:4px 10px;background:#f8514926;color:var(--b);font:12px system-ui,sans-serif;border-bottom:1px solid var(--bd)}
+.fdv .menu{position:absolute;z-index:9;right:8px;top:34px;background:var(--hd);border:1px solid var(--bd);border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.35);min-width:190px;padding:3px 0;font:12px system-ui,sans-serif;max-height:300px;overflow:auto}.fdv .menu div{padding:5px 14px;cursor:pointer;white-space:nowrap}.fdv .menu div:hover{background:var(--acc);color:#fff}.fdv .menu hr{border:0;border-top:1px solid var(--bd);margin:3px 0}.fdv .menu .lbl{cursor:default;color:var(--mut);font-size:11px}.fdv .menu .lbl:hover{background:none;color:var(--mut)}
+.fdv .ai{border-top:1px solid var(--bd);background:var(--hd);font:12px system-ui,sans-serif}.fdv .ai .ah{display:flex;gap:6px;align-items:center;padding:5px 8px}.fdv .ai .ah b{flex:1}.fdv .ai .list{max-height:300px;overflow:auto;padding:0 8px}.fdv .card{border:1px solid var(--bd);border-radius:6px;margin:5px 0;background:var(--bg)}.fdv .card .ch{display:flex;gap:6px;align-items:center;padding:4px 8px;cursor:pointer}.fdv .card .ch span.q{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.fdv .card .cb{padding:4px 10px 8px;border-top:1px solid var(--bd);white-space:pre-wrap;word-break:break-word;font-family:system-ui,sans-serif;line-height:1.5}.fdv .card .cb table{border-collapse:collapse;font-size:11.5px;margin:4px 0}.fdv .card .cb td,.fdv .card .cb th{border:1px solid var(--bd);padding:1px 6px}.fdv .card .x{border:0;background:none;padding:0 4px;color:var(--mut)}.fdv .ai .qin{display:flex;gap:6px;padding:6px 8px}.fdv .ai .qin input{flex:1;background:var(--bg);color:inherit;border:1px solid var(--bd);border-radius:5px;padding:4px 8px;font:12px system-ui,sans-serif}.fdv .card.run .q::after{content:" …";opacity:.6}`;
+    const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    const h = (tag, attrs, ...kids) => { const e = document.createElement(tag); if (attrs) for (const [k, v] of Object.entries(attrs)) { if (k === 'class') e.className = v; else if (k === 'text') e.textContent = v; else if (k.startsWith('on')) e.addEventListener(k.slice(2), v); else e.setAttribute(k, v); } for (const kid of kids) if (kid) e.append(kid); return e; };
+    const FMT_LABEL = { json: 'JSON', yaml: 'YAML', toml: 'TOML', csv: 'CSV', tsv: 'TSV' };
+    const fmtSize = (n) => (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(1) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
+    const jsPath = (p) => '$' + p.split('/').slice(1).map((s) => { s = s.replace(/~1/g, '/').replace(/~0/g, '~'); return /^\d+$/.test(s) ? '[' + s + ']' : (/^[A-Za-z_]\w*$/.test(s) ? '.' + s : '["' + s + '"]'); }).join('');
+
+    // 嵌在對話裡的檢視器：預設不吃滾輪（滾輪屬於對話），點一下才在檢視器內捲動；點到外面就放開。之後設計的檢視器直接用這個。
+    function focusWheel(rootEl, scroller) {
+        const hint = h('div', { class: 'hint', text: '點一下啟用滾輪' }); scroller.append(hint); scroller.tabIndex = 0;
+        const on = () => scroller.classList.add('act'), off = () => scroller.classList.remove('act');
+        scroller.addEventListener('mousedown', on); scroller.addEventListener('focus', on);
+        scroller.addEventListener('keydown', (e) => { if (e.key === 'Escape') { off(); scroller.blur(); } });
+        rootEl.addEventListener('focusout', (e) => { if (!rootEl.contains(e.relatedTarget)) off(); });
+        document.addEventListener('mousedown', (e) => { if (!rootEl.contains(e.target)) off(); }, true);
+        return { activate: on, deactivate: off };
+    }
+
+    function mount(opts) {
+        const host = opts.host || {}; const text0 = String(opts.text == null ? '' : opts.text);
+        const fmt = C.detectFormat(text0, opts.fmt);
+        if (!document.getElementById('fdv-css')) document.head.appendChild(h('style', { id: 'fdv-css', text: CSS }));
+        const pal = (host.palette && host.palette()) || {};
+        const st = { fmt, mode: 'source', q: '', hits: [], hi: -1, expanded: null, sel: null, data: undefined, parsed: null, tables: null, tableSel: null, ai: [], aiOpen: false, sort: null, extraSheets: [] };
+        const pre = C.prettyIfMinified(text0, fmt); const text = pre.text; const lines = text.split('\n').map((l) => l.replace(/\r$/, '')); if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
+        const isTable = fmt === 'csv' || fmt === 'tsv';
+        let tok = null; const getTokAll = () => tok || (tok = (lines.length <= 40000 ? C.highlight(lines.join('\n'), fmt) : C.highlight(lines.slice(0, 40000).join('\n'), fmt).concat(lines.slice(40000).map((l) => [{ c: 'x', t: l }]))));
+        const rootEl = h('div', { class: 'fdv' + (pal.dark === false ? ' light' : '') });
+        const title = h('span', { class: 'ttl', text: FMT_LABEL[fmt] + ' · ' + lines.length.toLocaleString() + ' 行 · ' + fmtSize(text0.length) + (pre.pretty ? ' · 已排版' : '') });
+        const bSrc = h('button', { text: 'Source', class: 'on' }), bView = h('button', { text: 'Viewer' });
+        const qin = h('input', { class: 'q', placeholder: '🔎 搜尋…', type: 'text' }); const cnt = h('span', { class: 'cnt' });
+        const bPrev = h('button', { text: '◂', title: '上一個 (Shift+Enter)' }), bNext = h('button', { text: '▸', title: '下一個 (Enter)' });
+        const bExp = h('button', { text: 'Export ▾', title: '匯出成別的格式' }), bAi = h('button', { text: '🤖 Ask AI', title: '用一句話問你想要什麼資料' });
+        const bar = h('div', { class: 'bar' }, title, h('span', { class: 'seg' }, bSrc, bView), qin, bPrev, bNext, cnt, h('span', { class: 'sp' }), bExp, bAi);
+        const errbar = h('div', { class: 'errbar' }); errbar.style.display = 'none';
+        const sc = h('div', { class: 'sc' }); const winEl = h('div', { class: 'win' }); sc.append(winEl);
+        const foot = h('div', { class: 'foot' }); const pathEl = h('span', { class: 'path' }); const bCopy = h('button', { text: '複製路徑' }); bCopy.style.display = 'none'; foot.append(pathEl, bCopy);
+        const menu = h('div', { class: 'menu' }); menu.style.display = 'none';
+        const aiPanel = h('div', { class: 'ai' }); aiPanel.style.display = 'none';
+        rootEl.append(bar, errbar, sc, foot, aiPanel, menu);
+        const small = lines.length <= 14; if (small) sc.style.setProperty('--fh', Math.max(60, lines.length * LH + 12) + 'px');
+        focusWheel(rootEl, sc);
+
+        // ---- 解析（Viewer、Export、Ask AI 才需要）
+        let depsP = null; const deps = () => depsP || (depsP = Promise.resolve(host.deps ? host.deps() : {}).catch(() => ({})));
+        async function ensureParsed() {
+            if (st.parsed) return st.parsed;
+            const d = fmt === 'yaml' ? await deps() : {}; st.parsed = C.parse(text0, fmt, d);
+            if (st.parsed.ok) { st.data = st.parsed.data; if (!isTable) st.expanded = C.defaultExpanded(st.data, lines.length > 5000 ? 1 : 2, 3000); }
+            else { errbar.style.display = ''; errbar.textContent = '⚠ ' + (st.parsed.error.line ? '第 ' + st.parsed.error.line + ' 行' + (st.parsed.error.col ? ' 第 ' + st.parsed.error.col + ' 欄' : '') + '：' : '') + st.parsed.error.message + '（仍可看 Source、搜尋；Viewer、Export 需要先修正格式）'; }
+            return st.parsed;
+        }
+        ensureParsed().then(() => { if (st.parsed && !st.parsed.ok) { bView.disabled = true; bView.title = st.parsed.error.message; } render(); }).catch(() => {});
+
+        // ---- 繪製（虛擬捲動：只畫看得到的列）
+        function tokHtml(toks, ln) {
+            const q = st.q.toLowerCase(); let out = ''; let col = 0; const cur = st.hits[st.hi];
+            for (const t of toks) {
+                const cls = 't-' + t.c; let s = t.t;
+                if (q && s.toLowerCase().includes(q)) {
+                    const low = s.toLowerCase(); let p = 0, i; let seg = '';
+                    while ((i = low.indexOf(q, p)) >= 0) { const isCur = cur && cur.line === ln && cur.col === col + i; seg += esc(s.slice(p, i)) + '<mark' + (isCur ? ' class="cur"' : '') + '>' + esc(s.slice(i, i + q.length)) + '</mark>'; p = i + q.length; }
+                    seg += esc(s.slice(p)); out += '<span class="' + cls + '">' + seg + '</span>';
+                } else out += '<span class="' + cls + '">' + esc(s) + '</span>';
+                col += t.t.length;
+            }
+            return out;
+        }
+        let treeRows = [], gridRows = null;
+        function viewH() { return sc.clientHeight || 340; }
+        function render() {
+            const top = sc.scrollTop, vh = viewH();
+            if (st.mode === 'source') {
+                const all = getTokAll(); const total = lines.length; winEl.style.height = total * LH + 'px';
+                const a = Math.max(0, Math.floor(top / LH) - 5), b = Math.min(total, Math.ceil((top + vh) / LH) + 5); let html = '';
+                const errLine = st.parsed && !st.parsed.ok && st.parsed.error.line ? st.parsed.error.line - 1 : -1;
+                for (let i = a; i < b; i++) html += '<div class="row' + (i === errLine ? ' err' : '') + '" style="top:' + i * LH + 'px;height:' + LH + 'px"><span class="ln">' + (i + 1) + '</span><span class="code">' + tokHtml(all[i] || [], i) + '</span></div>';
+                winEl.innerHTML = html;
+                const maxLen = lines.reduce((m, l) => (l.length > m ? l.length : m), 0); winEl.style.minWidth = 'calc(' + Math.min(maxLen, 4000) + 'ch + ' + (GUTTER + 30) + 'px)';
+            } else if (isTable) renderGrid(top, vh);
+            else {
+                if (!st.data && st.data !== null) { winEl.innerHTML = '<div style="padding:10px;color:var(--mut)">解析中…</div>'; return; }
+                treeRows = C.visibleRows(st.data, st.expanded, {}); winEl.style.height = treeRows.length * TH + 'px'; winEl.style.minWidth = '';
+                const a = Math.max(0, Math.floor(top / TH) - 5), b = Math.min(treeRows.length, Math.ceil((top + vh) / TH) + 5); let html = ''; const q = st.q.toLowerCase();
+                for (let i = a; i < b; i++) {
+                    const r = treeRows[i]; const arrow = r.container ? (r.open ? '▾' : '▸') : '';
+                    const keyHtml = r.depth === 0 ? '<span class="t-p">root</span>' : '<span class="t-k">' + hl(r.key, q) + '</span>';
+                    let val; if (r.container) val = '<span class="cn">' + (r.type === 'array' ? '[' + r.count + ']' : '{' + r.count + '}') + '</span>';
+                    else { const cls = r.type === 'string' ? 't-s' : r.type === 'number' ? 't-n' : r.type === 'boolean' ? 't-b' : 't-z'; val = '<span class="t-p">: </span><span class="' + cls + '">' + hl(r.preview, q) + '</span>'; }
+                    html += '<div class="trow' + (st.sel === r.path ? ' sel' : '') + '" data-i="' + i + '" style="top:' + i * TH + 'px;height:' + TH + 'px;padding-left:' + (8 + r.depth * 16) + 'px"><span class="arr" data-t="1">' + arrow + '</span>' + keyHtml + val + '</div>';
+                }
+                winEl.innerHTML = html;
+            }
+        }
+        const hl = (s, q) => { s = String(s); if (!q) return esc(s); const low = s.toLowerCase(); let p = 0, i, out = ''; while ((i = low.indexOf(q, p)) >= 0) { out += esc(s.slice(p, i)) + '<mark>' + esc(s.slice(i, i + q.length)) + '</mark>'; p = i + q.length; } return out + esc(s.slice(p)); };
+        function activeSheet() { if (!isTable) return null; return st.tableSel === null ? null : null; }
+        function tableData() { if (!st.parsed || !st.parsed.ok) return { columns: [], rows: [] }; const t = st.parsed.data; return { columns: t.columns, rows: t.rows }; }
+        function gridView() {
+            if (gridRows) return gridRows; const t = tableData(); let idx = t.rows.map((_, i) => i); const q = st.q.toLowerCase();
+            if (q) idx = idx.filter((i) => t.rows[i].some((c) => String(c).toLowerCase().includes(q)));
+            if (st.sort) { const { col, dir } = st.sort; idx.sort((x, y) => { const a = t.rows[x][col], b = t.rows[y][col]; const na = parseFloat(a), nb = parseFloat(b); const r = !isNaN(na) && !isNaN(nb) && String(na) === String(a).trim() ? na - nb : String(a == null ? '' : a).localeCompare(String(b == null ? '' : b)); return dir * r; }); }
+            return (gridRows = idx);
+        }
+        function renderGrid(top, vh) {
+            const t = tableData(); const idx = gridView(); winEl.style.height = (idx.length + 1) * LH + 'px'; winEl.style.minWidth = (GUTTER + t.columns.length * 170) + 'px';
+            const a = Math.max(0, Math.floor(top / LH) - 5), b = Math.min(idx.length, Math.ceil((top + vh) / LH) + 5); const q = st.q.toLowerCase();
+            let html = '<div class="grid hd" style="top:0;height:' + LH + 'px"><span class="cell rn">#</span>' + t.columns.map((c, i) => '<span class="cell" data-col="' + i + '" title="按一下排序">' + esc(c) + (st.sort && st.sort.col === i ? (st.sort.dir > 0 ? ' ▲' : ' ▼') : '') + '</span>').join('') + '</div>';
+            for (let k = a; k < b; k++) { const r = t.rows[idx[k]]; html += '<div class="grid" style="top:' + (k + 1) * LH + 'px;height:' + LH + 'px"><span class="cell rn">' + (idx[k] + 1) + '</span>' + t.columns.map((_, i) => { const v = r[i] == null ? '' : r[i]; return '<span class="cell' + (v !== '' && !isNaN(+v) ? ' num' : '') + '" title="' + esc(v) + '">' + hl(v, q) + '</span>'; }).join('') + '</div>'; }
+            winEl.innerHTML = html; cnt.textContent = idx.length + ' / ' + t.rows.length + ' 列';
+        }
+        let raf = 0; sc.addEventListener('scroll', () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; render(); }); });
+        new ResizeObserver(() => render()).observe(sc);
+
+        // ---- 切換模式
+        function setMode(m) {
+            if (m === 'viewer') { if (st.parsed && !st.parsed.ok) return; }
+            st.mode = m; bSrc.classList.toggle('on', m === 'source'); bView.classList.toggle('on', m === 'viewer'); bCopy.style.display = 'none'; pathEl.textContent = '';
+            gridRows = null; sc.scrollTop = 0; runSearch(true);
+            ensureParsed().then(() => render());
+        }
+        bSrc.onclick = () => setMode('source'); bView.onclick = () => setMode('viewer');
+
+        // ---- 搜尋
+        function runSearch(keep) {
+            st.q = qin.value; gridRows = null;
+            if (!st.q) { st.hits = []; st.hi = -1; if (st.mode === 'viewer' && isTable) cnt.textContent = ''; else cnt.textContent = ''; render(); return; }
+            if (st.mode === 'source') { st.hits = C.searchText(lines, st.q); st.hi = st.hits.length ? 0 : -1; cnt.textContent = st.hits.length ? '1/' + st.hits.length : '0'; if (st.hi >= 0) reveal(); else render(); }
+            else if (isTable) { st.hits = []; render(); }
+            else ensureParsed().then(() => { if (!st.parsed.ok) return; const r = C.searchTree(st.data, st.q); st.hits = r.hits; r.open.forEach((p) => st.expanded.add(p)); st.hi = r.hits.length ? 0 : -1; cnt.textContent = r.hits.length ? '1/' + r.hits.length + (r.hits.length >= 2000 ? '+' : '') : '0'; if (st.hi >= 0) reveal(); else render(); });
+        }
+        function reveal() {
+            if (st.mode === 'source') { const hit = st.hits[st.hi]; if (!hit) return; const y = hit.line * LH; if (y < sc.scrollTop + 10 || y > sc.scrollTop + viewH() - LH * 2) sc.scrollTop = Math.max(0, y - viewH() / 3); }
+            else { treeRows = C.visibleRows(st.data, st.expanded, {}); const path = st.hits[st.hi]; const i = treeRows.findIndex((r) => r.path === path); if (i >= 0) { const y = i * TH; if (y < sc.scrollTop + 10 || y > sc.scrollTop + viewH() - TH * 2) sc.scrollTop = Math.max(0, y - viewH() / 3); st.sel = path; showPath(path); } }
+            render();
+        }
+        function step(d) { if (!st.hits.length) return; st.hi = (st.hi + d + st.hits.length) % st.hits.length; cnt.textContent = (st.hi + 1) + '/' + st.hits.length; reveal(); }
+        let qt = 0; qin.addEventListener('input', () => { clearTimeout(qt); qt = setTimeout(() => runSearch(), 160); });
+        qin.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); step(e.shiftKey ? -1 : 1); } else if (e.key === 'Escape') { qin.value = ''; runSearch(); } });
+        bPrev.onclick = () => step(-1); bNext.onclick = () => step(1);
+
+        // ---- 樹的互動
+        function showPath(p) { pathEl.textContent = p === '' ? '$' : jsPath(p); bCopy.style.display = ''; }
+        winEl.addEventListener('click', (e) => {
+            const gh = e.target.closest('.grid.hd .cell[data-col]'); if (gh) { const col = +gh.dataset.col; st.sort = !st.sort || st.sort.col !== col ? { col, dir: 1 } : (st.sort.dir === 1 ? { col, dir: -1 } : null); gridRows = null; render(); return; }
+            const row = e.target.closest('.trow'); if (!row) return; const r = treeRows[+row.dataset.i]; if (!r) return;
+            if (r.container && (e.target.dataset.t || e.detail === 2 || true)) { if (r.open) st.expanded.delete(r.path); else st.expanded.add(r.path); }
+            st.sel = r.path; showPath(r.path); render();
+        });
+        bCopy.onclick = () => { try { navigator.clipboard.writeText(pathEl.textContent); bCopy.textContent = '已複製'; setTimeout(() => { bCopy.textContent = '複製路徑'; }, 1200); } catch (_) { /* */ } };
+
+        // ---- Export 選單
+        const baseName = (opts.name || 'data').replace(/\.[^.]+$/, '') || 'data';
+        const note = (m) => { foot.querySelector('.note') && foot.querySelector('.note').remove(); const s = h('span', { class: 'note', text: m }); foot.append(s); setTimeout(() => s.remove(), 4000); };
+        async function doExport(kind, arg) {
+            try {
+                const p = await ensureParsed(); if (!p.ok) { note('格式有錯，先修正才能匯出'); return; } const d = await deps(); const data = p.data;
+                if (kind === 'json') { host.download(isTable ? JSON.stringify(rowsToObjects(data), null, 2) : C.stringify(data, 'json'), baseName + '.json', 'application/json'); }
+                else if (kind === 'yaml') { if (!d.yamlDump) { note('YAML 輸出器載入失敗'); return; } host.download(C.stringify(isTable ? rowsToObjects(data) : data, 'yaml', d), baseName + '.yaml', 'text/yaml'); }
+                else if (kind === 'csv') { const sh = allSheets().find((s) => s.name === arg) || allSheets()[0]; host.download(C.sheetToCsv(sh), baseName + (allSheets().length > 1 ? '-' + sh.name : '') + '.csv', 'text/csv'); }
+                else if (kind === 'xlsx') { if (!d.JSZip) { note('XLSX 工具載入失敗'); return; } const bytes = await C.buildXlsx(allSheets(), d); host.download(bytes, baseName + '.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); }
+                else if (kind === 'sqlite') { const bytes = await host.exportSqlite(allSheets()); host.download(bytes, baseName + '.sqlite3', 'application/vnd.sqlite3'); }
+                note('已匯出');
+            } catch (e) { note('匯出失敗：' + (e && e.message || e)); }
+        }
+        const rowsToObjects = (t) => t.rows.map((r) => { const o = {}; t.columns.forEach((c, i) => { o[c] = r[i] === undefined ? '' : r[i]; }); return o; });
+        function allSheets() {
+            if (!st.tables) { const p = st.parsed; st.tables = p && p.ok ? (isTable ? { sheets: [{ name: baseName.slice(0, 31) || 'Sheet1', columns: p.data.columns, rows: p.data.rows, kind: 'rows' }] } : C.toTables(p.data, { rootName: 'data' })) : { sheets: [] }; }
+            return st.tables.sheets.concat(st.extraSheets);
+        }
+        bExp.onclick = async (e) => {
+            e.stopPropagation(); if (menu.style.display !== 'none') { menu.style.display = 'none'; return; }
+            await ensureParsed(); const sheets = allSheets(); const items = [];
+            items.push(['JSON', 'json']); if (!isTable) items.push(['YAML', 'yaml']);
+            items.push('hr');
+            if (sheets.length <= 1) items.push(['CSV', 'csv', sheets[0] && sheets[0].name]);
+            else { items.push({ lbl: 'CSV（一次一張工作表）' }); for (const s of sheets) items.push(['　' + s.name + '（' + s.rows.length.toLocaleString() + ' 列）', 'csv', s.name]); }
+            items.push(['XLSX' + (sheets.length > 1 ? '（' + sheets.length + ' 張工作表）' : ''), 'xlsx']); if (host.exportSqlite) items.push(['SQLite3', 'sqlite']);
+            menu.innerHTML = ''; for (const it of items) { if (it === 'hr') menu.append(h('hr')); else if (it.lbl) menu.append(h('div', { class: 'lbl', text: it.lbl })); else menu.append(h('div', { text: it[0], onclick: (ev) => { ev.stopPropagation(); menu.style.display = 'none'; doExport(it[1], it[2]); } })); }
+            menu.style.display = '';
+        };
+        document.addEventListener('click', (e) => { if (!menu.contains(e.target)) menu.style.display = 'none'; });
+
+        // ---- Ask AI
+        function buildAiPanel() {
+            aiPanel.innerHTML = '';
+            const bClear = h('button', { text: '全部清除', onclick: () => { st.ai.length = 0; buildAiPanel(); } }), bFold = h('button', { text: st.aiFold ? '▸ 展開' : '▾ 收合', onclick: () => { st.aiFold = !st.aiFold; buildAiPanel(); } });
+            aiPanel.append(h('div', { class: 'ah' }, h('b', { text: '🤖 AI 查詢（問你想要什麼資料，不用學查詢語法）' }), bClear, bFold));
+            if (!st.aiFold) {
+                const list = h('div', { class: 'list' });
+                for (const c of st.ai) {
+                    const body = h('div', { class: 'cb' }); if (c.collapsed) body.style.display = 'none';
+                    if (c.status === 'run') body.textContent = '查詢中…（資料不會整份丟給模型，會用工具解析）'; else if (c.error) body.textContent = '⚠ ' + c.error;
+                    else { if (host.renderAnswer) body.innerHTML = host.renderAnswer(c.text || ''); else body.textContent = c.text || ''; if (c.sheet) body.append(sheetTable(c.sheet, c)); }
+                    const card = h('div', { class: 'card' + (c.status === 'run' ? ' run' : '') }, h('div', { class: 'ch', onclick: () => { c.collapsed = !c.collapsed; buildAiPanel(); } }, h('span', { text: c.collapsed ? '▸' : '▾' }), h('span', { class: 'q', text: 'Q：' + c.q }), h('button', { class: 'x', text: '✕', title: '刪除這則', onclick: (ev) => { ev.stopPropagation(); st.ai.splice(st.ai.indexOf(c), 1); buildAiPanel(); } })), body);
+                    list.append(card);
+                }
+                const inp = h('input', { type: 'text', placeholder: '例如：哪些項目的授權是 GPL？列出名稱和版本', value: st.aiDraft || '' });
+                const go = () => { const q = inp.value.trim(); if (!q) return; st.aiDraft = ''; ask(q); };
+                inp.addEventListener('input', () => { st.aiDraft = inp.value; }); inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
+                aiPanel.append(list, h('div', { class: 'qin' }, inp, h('button', { text: '問', class: 'on', onclick: go })));
+                if (!st.aiFold) setTimeout(() => { list.scrollTop = list.scrollHeight; }, 0);
+            }
+        }
+        function sheetTable(sheet, card) {
+            const wrap = h('div'); const t = h('table'); const rows = sheet.rows.slice(0, 50);
+            t.innerHTML = '<tr>' + sheet.columns.map((c) => '<th>' + esc(c) + '</th>').join('') + '</tr>' + rows.map((r) => '<tr>' + sheet.columns.map((_, i) => '<td>' + esc(r[i] == null ? '' : r[i]) + '</td>').join('') + '</tr>').join('');
+            wrap.append(t); if (sheet.rows.length > 50) wrap.append(h('div', { text: '… 共 ' + sheet.rows.length + ' 列，只顯示前 50 列', style: 'color:var(--mut)' }));
+            const add = h('button', { text: '另存成工作表', onclick: () => { const name = 'AI：' + card.q.slice(0, 20); st.extraSheets.push({ name: name.slice(0, 31), columns: sheet.columns, rows: sheet.rows, kind: 'ai' }); add.textContent = '已加入（Export 可匯出）'; add.disabled = true; } });
+            const dl = h('button', { text: '下載 CSV', onclick: () => host.download(C.sheetToCsv({ columns: sheet.columns, rows: sheet.rows }), baseName + '-ai.csv', 'text/csv') });
+            wrap.append(h('div', { style: 'display:flex;gap:6px;margin-top:4px' }, add, dl)); return wrap;
+        }
+        async function ask(q) {
+            const card = { q, status: 'run', collapsed: false, text: '' }; st.ai.push(card); buildAiPanel();
+            try {
+                await ensureParsed();
+                const ctx = { fmt, name: opts.name || '', outline: st.parsed && st.parsed.ok ? (isTable ? 'columns: ' + JSON.stringify(st.parsed.data.columns) + '；rows: ' + st.parsed.data.rows.length : C.outline(st.parsed.data)) : '（格式有錯，只能當文字找）', getData: () => (st.parsed && st.parsed.ok ? st.parsed.data : null), getText: () => text0, lines: lines.length };
+                const r = await host.askAI(q, ctx); card.text = (r && r.text) || ''; card.sheet = r && r.sheet || null; card.status = 'done';
+            } catch (e) { card.error = (e && e.message) || String(e); card.status = 'done'; }
+            buildAiPanel();
+        }
+        bAi.onclick = () => { st.aiOpen = !st.aiOpen; aiPanel.style.display = st.aiOpen ? '' : 'none'; bAi.classList.toggle('on', st.aiOpen); if (st.aiOpen) buildAiPanel(); };
+
+        render();
+        rootEl._fdv = { state: st, setMode, ask, render };
+        return rootEl;
+    }
+    return { mount, focusWheel };
+});
+
+}).call(null, undefined, holder);
+return holder.FaDataView;
+})();
+/* DATAUI-END */
 /* LR-BEGIN */
 const FaLR = (function () {
 const holder = {};
@@ -58340,6 +59093,64 @@ ${existingNodeSummaries}
         return wrap;
     }
 
+    // ===== 資料檢視器（JSON／YAML／TOML／CSV）：AI 回覆裡的程式碼區塊換成可看、可查、可匯出、可問 AI 的檢視器。設計見 DESIGN.data-viewers.md =====
+    _dataViewHost() {
+        if (this._dvHost) return this._dvHost; const self = this;
+        this._dvHost = {
+            deps: async () => {
+                const u = FA_ASSET_URLS; const jobs = [];
+                if (typeof window.jsyaml === 'undefined') jobs.push(_faLoadScriptOnce(u.jsyaml)); if (typeof window.JSZip === 'undefined') jobs.push(_faLoadScriptOnce(u.jszip));
+                try { await Promise.all(jobs); } catch (_) { /* 載入失敗就沒有 YAML／XLSX，其他照常 */ }
+                const y = window.jsyaml; return { yamlLoad: y && y.load.bind(y), yamlDump: y && y.dump.bind(y), yamlLoadAll: y && y.loadAll.bind(y), JSZip: window.JSZip };
+            },
+            download: (data, name, mime) => { const blob = data instanceof Blob ? data : new Blob([data], { type: mime || 'application/octet-stream' }); return self.generateAndDeliverFile(blob, name, mime || blob.type); },
+            palette: () => ({ dark: !self._isLightTheme() }),
+            renderAnswer: (text) => { try { return DOMPurify.sanitize(self._renderMarkdownWithMath(String(text || ''))); } catch (_) { return esc(String(text || '')); } },
+            askAI: (q, ctx) => self._dataViewAsk(q, ctx),
+        };
+        function esc(s) { return s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
+        return this._dvHost;
+    }
+    _mountDataViewers(mdDiv) {
+        if (typeof FaDataView === 'undefined' || !FaDataView || !FaDataView.mount) return;
+        if (!this._dvCache) this._dvCache = new Map();
+        const LANGS = { json: 'json', jsonc: 'json', yaml: 'yaml', yml: 'yaml', toml: 'toml', csv: 'csv', tsv: 'tsv' };
+        mdDiv.querySelectorAll('pre > code[class*="language-"]').forEach((code) => {
+            const m = /language-([\w+-]+)/.exec(code.className); const fmt = m && LANGS[m[1].toLowerCase()]; if (!fmt) return;
+            const text = code.textContent.replace(/\n$/, ''); if (!text.trim()) return;
+            let hsh = 5381; for (let i = 0; i < text.length; i++) hsh = ((hsh << 5) + hsh + text.charCodeAt(i)) | 0;
+            const key = fmt + ':' + text.length + ':' + hsh; let el = this._dvCache.get(key);
+            if (!el) { el = FaDataView.mount({ text, fmt, name: 'data', host: this._dataViewHost() }); this._dvCache.set(key, el); if (this._dvCache.size > 40) this._dvCache.delete(this._dvCache.keys().next().value); } // 同樣的內容重繪時接回同一個節點：展開、搜尋、AI 查詢紀錄都還在
+            code.parentElement.replaceWith(el);
+        });
+    }
+    // 資料不整份丟給模型：暫存成 bc_N，子 agent 只拿到結構概要，用 big_content 的 js 去解析（繼承大內容守門、斷線重試、離線退路）
+    async _dataViewAsk(q, ctx) {
+        const data = ctx.getData(); const isTbl = data && Array.isArray(data.columns) && Array.isArray(data.rows);
+        const obj = isTbl ? data.rows.map((r) => { const o = {}; data.columns.forEach((c, i) => { o[c] = r[i]; }); return o; }) : data;
+        if (this.advancedSettings.offlineMode || obj === null || obj === undefined) return this._dataViewLocalAnswer(q, obj, '離線模式：不經過 AI，改用本機搜尋找符合的資料。');
+        const id = this._bigStash(JSON.stringify(obj), '資料檢視器：' + (ctx.name || ctx.fmt));
+        const prompt = '使用者在看一份 ' + ctx.fmt.toUpperCase() + ' 資料，想知道：' + q + '\n\n資料已暫存，代號 ' + id + '（約 ' + ctx.lines + ' 行）。結構概要：' + ctx.outline + '\n\n' +
+            '不要把整份資料讀進來。用 big_content 工具（id="' + id + '"）：action=js 寫幾行 JavaScript（參數 data 就是解析好的資料，return 結果）去篩選、統計、取欄位；需要時先 info 看結構、grep 找關鍵字。\n' +
+            '回答要精簡：先用一兩句話講結論；如果結果是多筆資料，最後附一個 ```json 區塊，內容是物件陣列（每個物件一列，鍵名當欄位），畫面會把它做成表格；不要貼大段原文。';
+        let text = '';
+        try {
+            text = await this._runSubAgentTask(prompt, 12, { systemPrompt: '你是資料查詢助理。使用者用一句話描述想要的資料，你用 big_content 工具寫程式從暫存的資料裡取出答案。評估：這份資料放進模型會不會炸掉？我有工具可以達成目的嗎？不要整份讀；只回傳需要的結果與你用的做法。', allowedToolNames: ['big_content'] });
+        } catch (e) { return this._dataViewLocalAnswer(q, obj, 'AI 這次沒有回應（' + String((e && e.message) || e).slice(0, 120) + '），改用本機搜尋：'); }
+        text = String(text || '');
+        let sheet = null; const fence = /```json\s*([\s\S]*?)```\s*$/i.exec(text);
+        if (fence) { try { const arr = JSON.parse(fence[1]); if (Array.isArray(arr) && arr.length && arr.every((x) => x && typeof x === 'object' && !Array.isArray(x))) { const cols = []; arr.forEach((o) => Object.keys(o).forEach((k) => { if (!cols.includes(k)) cols.push(k); })); sheet = { columns: cols, rows: arr.map((o) => cols.map((c) => (o[c] === undefined || o[c] === null ? '' : (typeof o[c] === 'object' ? JSON.stringify(o[c]) : o[c])))) }; text = text.slice(0, fence.index).trim(); } } catch (_) { /* 不是合法的 JSON 就留在文字裡 */ } }
+        return { text, sheet };
+    }
+    // 離線／AI 失敗的退路：用問題裡的關鍵字在資料裡找
+    _dataViewLocalAnswer(q, obj, lead) {
+        const words = Array.from(new Set(String(q).toLowerCase().match(/[a-z0-9_.@:/-]{2,}|[\u4e00-\u9fff]{2,}/g) || [])).filter((w) => !/^(哪些|什麼|所有|列出|請問|有沒有|幫我|找出|顯示)$/.test(w)).sort((a, b) => b.length - a.length).slice(0, 3);
+        if (!words.length) return { text: (lead || '') + '\n沒有抓到可以搜尋的關鍵字，請換個說法（例如包含欄位名稱或要找的值）。' };
+        const rows = []; const C = FaDataCore;
+        for (const w of words) { const r = C.searchTree(obj, w, { max: 60 }); for (const p of r.hits) { if (rows.length >= 60) break; const v = C.getByPath(obj, p); rows.push([w, p === '' ? '$' : p, v !== null && typeof v === 'object' ? C.preview(v) : String(v)]); } }
+        return { text: (lead || '') + '\n' + (rows.length ? '找到 ' + rows.length + ' 筆符合關鍵字（' + words.join('、') + '）的位置：' : '沒有找到符合「' + words.join('、') + '」的資料。'), sheet: rows.length ? { columns: ['關鍵字', '位置', '值'], rows } : null };
+    }
+
     _appendMarkdownExportButton(container, markdownText, palette, msg) {
         const wrap = document.createElement('div');
         wrap.style.cssText = 'position:absolute; bottom:4px; right:6px;';
@@ -67523,6 +68334,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 try {
                     mdDiv.innerHTML = DOMPurify.sanitize(this._renderMarkdownWithMath(answerText));
                     this._wireSendSampleLinks(mdDiv);
+                    try { this._mountDataViewers(mdDiv); } catch (e) { console.warn('資料檢視器掛載失敗', e); }
                 } catch (_) {
                     mdDiv.textContent = answerText;
                 }

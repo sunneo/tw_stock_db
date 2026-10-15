@@ -34,6 +34,7 @@ const suites = [
     ['混合內容語法高亮（切段、語言識別、信心度、自學習、逐詞著色）', 'renderer/src/logmine/mix_core.test.js'],
     ['英文句子理解（詞類、片語、LALR 子句文法、框架、意圖、混合內容引用）', 'renderer/src/logmine/nlu_core.test.js'],
     ['意圖推導（受詞／目標型別、簽名比對、離線計畫可行性）', 'renderer/src/logmine/intent_core.test.js'],
+    ['資料檢視器核心（JSON／YAML／TOML／CSV 解析與轉出、上色、SBOM 轉多工作表、XLSX 讀寫、樹與搜尋）', 'renderer/src/dataview/data_core.test.js'],
     ['SQL 語句切分與完整性判斷', 'renderer/src/sql/sql_split.test.js'],
     ['檔案用途／函式做什麼的說明產生器（FaExplain）', 'renderer/src/explain/code_explain.test.js'],
     ['CI 核心（Gerrit／GitHub／Jenkins 整理、失敗記錄分診 triage）', 'renderer/src/ci/ci_core.test.js'],
