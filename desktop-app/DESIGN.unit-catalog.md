@@ -123,3 +123,32 @@
 - **型別覆蓋率可能不夠**：標準庫 0% 註解已經證實；若存根轉換加文件解析仍不到目標，只收 tier 1 的人工清單，其餘當索引。
 - **探測執行的安全**：探測是整個流程裡唯一會真的執行不明函式的地方，只限 `pure:true`、在沙盒內、有時間與輸出上限；任何一次碰到禁止的能力就中止並降級成 `unknown`。
 - **版本漂移**：Pyodide 升級後單元要重抽，目錄要帶 `version` 欄，不符就標過期，不要沿用。
+
+## 十、第 1 步（已登記工具 → 單元）實作與實測
+
+程式：`renderer/src/catalog/catalog_core.js`（`FaCatalog`，純函式，測試 `catalog_core.test.js` 76 項）；指令 `/unit-catalog [json]`（顯示統計，加 json 會存成 `unit-catalog-<平台>.json`）。
+
+規則：
+- 參數型別從 JSON Schema 轉：`string → text`，名稱含 path／url／file_id／yaml／code／query 的細分（標 `name`）；`integer → int`、`number`、`boolean → bool`；陣列 `list<T>`；列舉 `enum<a|b>`；`oneOf` `union<…>`；有屬性的物件 `object{k:T}`；沒型別但名稱像數字（seconds、limit、fps…）推成 `number`（標 `name`）；其餘 `any`（標 `none`）。
+- 副作用只看工具名稱的規則表（不執行任何東西），名稱規則對不上的標 `unknown`，`unknown` 的單元一律是信任等級 0。
+- 信任等級 1＝有參數結構、有說明、型別都明確、副作用已判斷、這個平台能用（網頁版遇到 `desktop` 的工具標 `unavailable`）。
+- 型別字串可解析成語法樹，`isAssignable(from, to)` 判斷接得上接不上（path → text 可以，反過來不行；int → number；列表協變；列舉子集；聯集；物件欄位），之後建接線矩陣用。
+
+**實測（桌面版，200 個已登記工具）**
+
+| 指標 | 結果 |
+|---|---|
+| 單元數 | 200（沒有參數結構的 7 個） |
+| 格式驗證不合法 | 0 |
+| 信任等級 1 | 185（92.5%） |
+| 參數型別明確 | 838 個參數中 99.0%（參數結構寫明 85.4%、靠名稱猜 13.6%） |
+| 型別還不明的參數 | 8 個：behavior_define.data、compose_video.captions、extract_video_frames.times、offline_trainer.last_tool_result、offline_trainer.pattern、ref_define.data、sandbox_mock.value、start_dubbing_session.ranges |
+| 副作用有規則對上 | 100%（只代表規則有對上，**不代表判斷正確**） |
+| 沒有參數結構 | add_ai_function、call_ai_function、delete_ai_function、list_ai_functions、rag_delete、rag_query_graph、rag_store_graph_node |
+
+注意與限制：
+1. **「副作用 100%」是規則有對上，不是人工核對過的正確率**。第七節要求的「漏報率 0」還沒量。寫這個版本時就發現規則會漏：中文語音（走 API 轉接）與轉逐字稿（第一次下載模型）原本只標了讀寫狀態、沒標連網，已補上。其他工具還需要抽樣核對。
+2. 型別有 13.6% 是靠參數名稱猜的，信任度比 JSON Schema 低；規劃時應該看 `type_src`。
+3. 沒有參數結構的 7 個、型別不明的 8 個參數，是工具定義本身該補的（補完單元自動變好），不是抽取器的問題。
+4. 回傳值型別目前一律是 `json`（`type_src:"none"`）：工具都回傳 JSON 字串，沒有宣告回傳結構。要做接線矩陣前，這一塊必須補（見下一步）。
+5. 沒有測試案例（`tests:[]`），工具有副作用，不能探測執行；測試案例來源要另外想（例如離線訓練器蒸餾時的成功呼叫紀錄）。
