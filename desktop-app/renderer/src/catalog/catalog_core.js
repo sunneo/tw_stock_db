@@ -7,7 +7,7 @@
     'use strict';
     const VERSION = 1;
     const EFFECTS = ['fs.read', 'fs.write', 'net', 'proc', 'time', 'random', 'env', 'desktop', 'browser', 'ui', 'state.read', 'state.write', 'delegate', 'unknown'];
-    const TYPE_SRC = ['annotation', 'stub', 'schema', 'doc', 'name', 'default', 'probe', 'curated', 'none'];
+    const TYPE_SRC = ['annotation', 'stub', 'schema', 'doc', 'name', 'default', 'probe', 'curated', 'observed', 'none'];
     const AVAIL = ['builtin', 'installed', 'cached', 'needs-network', 'disabled', 'unavailable'];
     // 型別詞彙：基本型別、由基本型別特化的（path 是一種 text），容器型別
     // 具體型別 → 它的上一層（可以放進上一層的位置，反過來不行）。檔案識別碼依媒體種類細分：pdf_file、video_file… 都是 file_id；gif_file 同時是 image_file
@@ -198,7 +198,7 @@
     const clip = (s, n) => { s = String(s || '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
     function summaryOf(desc) { const s = String(desc || '').replace(/\s+/g, ' ').trim(); const m = /^(.{2,160}?(?:[。！？]|[.!?](?=\s|$)))/.exec(s); return clip(m ? m[1] : s, 160); }
     // 人工補強：ctx.returnsOverrides[工具名稱] ＝ 型別字串，優先於推論（type_src:curated）；不合法的型別字串直接忽略
-    function overrideReturns(name, ctx) { const o = ctx && ctx.returnsOverrides && ctx.returnsOverrides[name]; if (!o) return null; try { parseType(o); } catch (_) { return null; } return { type: o, type_src: 'curated' }; }
+    function overrideReturns(name, ctx) { let o = ctx && ctx.returnsOverrides && ctx.returnsOverrides[name]; if (!o) return null; const rich = typeof o === 'object'; const ty = rich ? o.type : o; try { parseType(ty); } catch (_) { return null; } if (!rich) return { type: ty, type_src: 'curated' }; const out = { type: ty, type_src: TYPE_SRC.includes(o.type_src) ? o.type_src : 'curated' }; if (o.samples) out.samples = o.samples; if (o.optional && o.optional.length) out.optional = o.optional; return out; }
     function toolToUnit(name, tool, ctx) {
         ctx = ctx || {}; const sc = tool && tool.parametersSchema; const props = (sc && sc.properties) || {}; const req = new Set((sc && sc.required) || []);
         const params = Object.keys(props).map((k) => { const t = schemaType(props[k], k, 0); const p = { name: k, kind: 'named', type: t.type, type_src: t.src, required: req.has(k) }; if (props[k] && props[k].default !== undefined) p.default = props[k].default; const d = clip(props[k] && props[k].description, 120); if (d) p.description = d; return p; });

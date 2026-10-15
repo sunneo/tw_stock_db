@@ -1647,7 +1647,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     unit_catalog: {
         enabled: true,
         label: '單元目錄（認識新的 Python 函式庫、查詢可用的函式單元與型別接線）',
-        toolNames: ['catalog_onboard', 'catalog_query', 'catalog_run'],
+        toolNames: ['catalog_onboard', 'catalog_query', 'catalog_run', 'catalog_bind'],
         systemPrompt: '你負責「認識新的函式庫」和「查有什麼能用」。原則：\n' +
             '1. 先用 catalog_query（search）看目錄裡有沒有現成的單元，有就直接用，不要重複安裝。\n' +
             '2. 沒有、而且使用者要用一個新的 Python 套件，才用 catalog_onboard。只接受 PyPI 套件名稱（可加 ==版本），不接受網址、git、本機路徑；要安裝的套件工具會自己請使用者同意，不要替使用者決定、不要繞過。\n' +
@@ -10851,7 +10851,7 @@ const holder = {};
     'use strict';
     const VERSION = 1;
     const EFFECTS = ['fs.read', 'fs.write', 'net', 'proc', 'time', 'random', 'env', 'desktop', 'browser', 'ui', 'state.read', 'state.write', 'delegate', 'unknown'];
-    const TYPE_SRC = ['annotation', 'stub', 'schema', 'doc', 'name', 'default', 'probe', 'curated', 'none'];
+    const TYPE_SRC = ['annotation', 'stub', 'schema', 'doc', 'name', 'default', 'probe', 'curated', 'observed', 'none'];
     const AVAIL = ['builtin', 'installed', 'cached', 'needs-network', 'disabled', 'unavailable'];
     // 型別詞彙：基本型別、由基本型別特化的（path 是一種 text），容器型別
     // 具體型別 → 它的上一層（可以放進上一層的位置，反過來不行）。檔案識別碼依媒體種類細分：pdf_file、video_file… 都是 file_id；gif_file 同時是 image_file
@@ -11042,7 +11042,7 @@ const holder = {};
     const clip = (s, n) => { s = String(s || '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
     function summaryOf(desc) { const s = String(desc || '').replace(/\s+/g, ' ').trim(); const m = /^(.{2,160}?(?:[。！？]|[.!?](?=\s|$)))/.exec(s); return clip(m ? m[1] : s, 160); }
     // 人工補強：ctx.returnsOverrides[工具名稱] ＝ 型別字串，優先於推論（type_src:curated）；不合法的型別字串直接忽略
-    function overrideReturns(name, ctx) { const o = ctx && ctx.returnsOverrides && ctx.returnsOverrides[name]; if (!o) return null; try { parseType(o); } catch (_) { return null; } return { type: o, type_src: 'curated' }; }
+    function overrideReturns(name, ctx) { let o = ctx && ctx.returnsOverrides && ctx.returnsOverrides[name]; if (!o) return null; const rich = typeof o === 'object'; const ty = rich ? o.type : o; try { parseType(ty); } catch (_) { return null; } if (!rich) return { type: ty, type_src: 'curated' }; const out = { type: ty, type_src: TYPE_SRC.includes(o.type_src) ? o.type_src : 'curated' }; if (o.samples) out.samples = o.samples; if (o.optional && o.optional.length) out.optional = o.optional; return out; }
     function toolToUnit(name, tool, ctx) {
         ctx = ctx || {}; const sc = tool && tool.parametersSchema; const props = (sc && sc.properties) || {}; const req = new Set((sc && sc.required) || []);
         const params = Object.keys(props).map((k) => { const t = schemaType(props[k], k, 0); const p = { name: k, kind: 'named', type: t.type, type_src: t.src, required: req.has(k) }; if (props[k] && props[k].default !== undefined) p.default = props[k].default; const d = clip(props[k] && props[k].description, 120); if (d) p.description = d; return p; });
@@ -11687,6 +11687,336 @@ const holder = {};
 return holder.FaCatalogIR;
 })();
 /* CATIR-END */
+/* CATSHAPE-BEGIN */
+const FaCatalogShape = (function () {
+const holder = {};
+(function (module, self) {
+/* 歷史呼叫逆向推論器（UMD，純函式，不碰 DOM／網路）：從過去「成功的工具呼叫」留下的實際回傳值，反推回傳的 JSON 結構，
+ * 把單元目錄裡「回傳型別不明（json／any，或欄位只有 any）」的單元補成具體型別（type_src:'observed'）。
+ * 資料來源兩種：
+ *   ① 對話紀錄：assistant 的 tool_calls ＋ 後面 role:'tool' 的完整回傳 JSON（完整樣本，可以長出巢狀結構與清單元素型別）
+ *   ② 離線訓練器的 turns：calls[].res 只有第一層的純量欄位（部分樣本，只能確認那幾個欄位的型別，不能判斷「沒有其他欄位」）
+ * 規則：失敗的呼叫（ok:false、有 error）不採用；多次樣本合併（int＋number→number、字串細分型別退回共同上層、缺的欄位標成選填、
+ * 衝突不大的聯集、太雜就退回 any）；樣本數與選填欄位記在 returns 上，規劃時可以看信心。模型不參與。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory(require('./catalog_core.js'));
+    else root.FaCatalogShape = factory(root.FaCatalog || (typeof FaCatalog !== 'undefined' ? FaCatalog : undefined));
+})(typeof self !== 'undefined' ? self : this, function (Cat) {
+    'use strict';
+    const MAX_FIELDS = 16, MAX_DEPTH = 3, MAX_ELEMS = 20;
+    // 具體型別 → 上一層（跟 catalog_core 的 SPECIAL 一致）
+    const PARENT = { path: 'text', url: 'text', file_id: 'text', yaml: 'text', code: 'text', query: 'text', pdf_file: 'file_id', video_file: 'file_id', audio_file: 'file_id', image_file: 'file_id', gif_file: 'image_file', subtitle_file: 'file_id' };
+    const chain = (k) => { const c = [k]; while (PARENT[c[c.length - 1]]) c.push(PARENT[c[c.length - 1]]); return c; };
+    const isTextFamily = (k) => k === 'text' || !!PARENT[k] && chain(k).includes('text');
+    function commonText(a, b) { const ca = chain(a); for (const x of chain(b)) if (ca.includes(x)) return x; return 'text'; }
+    const SPECIAL_BY_KEY = new Set(Object.keys(PARENT));
+
+    // ===== 單一值 → 型別樹 =====
+    function typeOfValue(v, key, depth) {
+        depth = depth || 0;
+        if (v === null || v === undefined) return { k: 'null' };
+        if (typeof v === 'boolean') return { k: 'bool' };
+        if (typeof v === 'number') return { k: Number.isInteger(v) ? 'int' : 'number' };
+        if (typeof v === 'string') {
+            if (/^https?:\/\/\S+$/i.test(v)) return { k: 'url' };
+            const hint = key ? Cat.fieldType(key) : 'any';
+            if (v && SPECIAL_BY_KEY.has(hint) && hint !== 'query') { if (hint === 'path' && /[\r\n]/.test(v)) return { k: 'text' }; if (hint === 'url' && !/^https?:\/\//i.test(v)) return { k: 'text' }; return { k: hint }; }
+            return { k: 'text' };
+        }
+        if (Array.isArray(v)) {
+            if (!v.length) return { k: 'list', of: { k: 'unknown' } };
+            if (depth >= MAX_DEPTH) return { k: 'list', of: { k: 'any' } };
+            let el = null; for (const x of v.slice(0, MAX_ELEMS)) { const t = typeOfValue(x, key && key.replace(/s$/, ''), depth + 1); el = el ? merge(el, t) : t; } return { k: 'list', of: el };
+        }
+        if (typeof v === 'object') {
+            const ks = Object.keys(v); if (!ks.length) return { k: 'dict' };
+            if (ks.length > MAX_FIELDS || depth >= MAX_DEPTH) return { k: 'dict' };
+            const fields = {}; const opt = {}; for (const k of ks) { if (!/^[A-Za-z_][\w]*$/.test(k)) return { k: 'dict' }; fields[k] = typeOfValue(v[k], k, depth + 1); } return { k: 'object', fields, opt };
+        }
+        return { k: 'any' };
+    }
+
+    // ===== 合併兩個型別樹（兩個樣本看到的型別）=====
+    function unionOf(a, b) {
+        const items = []; const add = (t) => { if (t.k === 'union') t.of.forEach(add); else if (!items.some((x) => Cat.typeToString(x) === Cat.typeToString(t))) items.push(t); }; add(a); add(b);
+        if (items.length > 3) return { k: 'any' }; return items.length === 1 ? items[0] : { k: 'union', of: items };
+    }
+    function merge(a, b) {
+        if (a.k === 'unknown') return b; if (b.k === 'unknown') return a;
+        if (a.k === 'null') return b.k === 'null' ? a : Object.assign({}, b, { nullable: true }); if (b.k === 'null') return Object.assign({}, a, { nullable: true });
+        const nul = !!(a.nullable || b.nullable); const done = (t) => (nul ? Object.assign(t, { nullable: true }) : t);
+        if (a.k === b.k) {
+            if (a.k === 'list') return done({ k: 'list', of: merge(a.of, b.of) });
+            if (a.k === 'object') {
+                const fields = {}; const opt = {}; const ks = new Set([...Object.keys(a.fields), ...Object.keys(b.fields)]);
+                for (const k of ks) { const fa = a.fields[k], fb = b.fields[k]; fields[k] = fa && fb ? merge(fa, fb) : (fa || fb); if (!fa || !fb || (a.opt && a.opt[k]) || (b.opt && b.opt[k])) opt[k] = true; }
+                return done({ k: 'object', fields, opt });
+            }
+            if (a.k === 'union' || a.k === 'enum') return done(unionOf(a, b));
+            return done({ k: a.k });
+        }
+        if ((a.k === 'int' && b.k === 'number') || (a.k === 'number' && b.k === 'int')) return done({ k: 'number' });
+        if (isTextFamily(a.k) && isTextFamily(b.k)) return done({ k: commonText(a.k, b.k) });
+        if (a.k === 'object' && b.k === 'dict') return done({ k: 'dict' }); if (a.k === 'dict' && b.k === 'object') return done({ k: 'dict' });
+        return done(unionOf(a, b));
+    }
+    // 部分樣本（只有第一層純量欄位）：只更新已知的那幾個欄位，不新增「必有」也不標選填
+    function mergePartial(a, partialFields) {
+        if (a.k !== 'object') return a; const fields = Object.assign({}, a.fields); const opt = Object.assign({}, a.opt || {});
+        for (const [k, v] of Object.entries(partialFields)) { const t = (v && typeof v === 'object' && typeof v.k === 'string') ? v : typeOfValue(v, k, 1); if (fields[k]) fields[k] = merge(fields[k], t); else { fields[k] = t; opt[k] = true; } }
+        return Object.assign({}, a, { fields, opt });
+    }
+
+    // ===== 型別樹 → 型別字串（跟 catalog_core 的語法一致；unknown 退成 any）=====
+    function toTypeString(t) {
+        if (!t) return 'any'; const strip = (x) => {
+            if (x.k === 'unknown' || x.k === 'null') return { k: 'any' };
+            if (x.k === 'list') return { k: 'list', of: strip(x.of) };
+            if (x.k === 'object') { const f = {}; for (const [k, v] of Object.entries(x.fields)) f[k] = strip(v); return { k: 'object', fields: f }; }
+            if (x.k === 'union') return { k: 'union', of: x.of.map(strip) };
+            return x;
+        };
+        try { return Cat.typeToString(strip(t)); } catch (_) { return 'any'; }
+    }
+    const isLoose = (t) => !t || t.k === 'any' || t.k === 'unknown' || t.k === 'json' || t.k === 'dict' || t.k === 'null';
+
+    // ===== 取樣本 =====
+    const failed = (j) => !!j && typeof j === 'object' && !Array.isArray(j) && (j.ok === false || (typeof j.error === 'string' && j.error) || (j.error && typeof j.error === 'object'));
+    function parseResult(c) { if (c && typeof c === 'object') return { value: c }; try { const j = JSON.parse(String(c)); return j !== null && typeof j === 'object' ? { value: j } : { scalar: j }; } catch (_) { return null; } }
+    // messages: OpenAI 風格的對話紀錄；回傳 [{ tool, value, args }]
+    function samplesFromMessages(messages) {
+        const out = []; const byId = new Map();
+        for (const m of messages || []) {
+            if (m && m.role === 'assistant' && Array.isArray(m.tool_calls)) for (const tc of m.tool_calls) { const name = tc && tc.function && tc.function.name; if (name && tc.id) byId.set(tc.id, { name, args: tc.function.arguments }); }
+            else if (m && m.role === 'tool' && m.tool_call_id && byId.has(m.tool_call_id)) { const c = byId.get(m.tool_call_id); const r = parseResult(m.content); if (!r || r.scalar !== undefined || failed(r.value)) continue; out.push({ tool: c.name, value: r.value }); }
+        }
+        return out;
+    }
+    // turns: 離線訓練器的 turns（calls[].res 只有第一層純量）；回傳部分樣本 [{ tool, partial:{…} }]
+    function samplesFromTurns(turns) {
+        const out = []; for (const t of turns || []) for (const c of (t && t.calls) || []) { if (!c || c.ok === false || !c.res || typeof c.res !== 'object' || failed(c.res)) continue; if (!Object.keys(c.res).length) continue; out.push({ tool: c.name, partial: c.res }); }
+        return out;
+    }
+
+    // ===== 推論：樣本 → 每個工具的型別 =====
+    // 狀態（可以直接 JSON 存檔、下次接著累積）：{ [tool]: { tree, full, partial, pend:[部分樣本最近幾筆] } }
+    const MAX_PEND = 30;
+    function accumulate(state, samples) {
+        state = state || {};
+        for (const s of samples || []) {
+            if (!s || !s.tool) continue; const e = state[s.tool] || (state[s.tool] = { tree: null, full: 0, partial: 0, pend: [] });
+            if (s.value !== undefined) { const t = typeOfValue(s.value, null, 0); e.tree = e.tree ? merge(e.tree, t) : t; e.full++; } else if (s.partial) { e.partial++; e.pend.push(Object.fromEntries(Object.entries(s.partial).map(([k, v]) => [k, typeOfValue(v, k, 1)]))); if (e.pend.length > MAX_PEND) e.pend.shift(); }
+        }
+        return state;
+    }
+    // 回傳 { [tool]: { type, samples, partial_samples, optional:[欄位], conflicts:[欄位], nullable:[欄位], loose } }
+    function summarize(state) {
+        const res = {};
+        for (const [tool, e] of Object.entries(state || {})) {
+            let tree = e.tree;
+            if (!tree && e.pend.length) { tree = { k: 'object', fields: {}, opt: {} }; for (const p of e.pend) tree = mergePartial(tree, p); for (const k of Object.keys(tree.fields)) tree.opt[k] = true; } else if (tree) for (const p of e.pend) tree = mergePartial(tree, p);
+            if (!tree) continue; const optional = [], conflicts = [], nullable = [];
+            if (tree.k === 'object') for (const [k, v] of Object.entries(tree.fields)) { if (tree.opt && tree.opt[k]) optional.push(k); if (v.k === 'union') conflicts.push(k); if (v.nullable) nullable.push(k); }
+            res[tool] = { type: toTypeString(tree), samples: e.full, partial_samples: e.partial, optional, conflicts, nullable, loose: isLoose(tree) };
+        }
+        return res;
+    }
+    function infer(samples) { return summarize(accumulate({}, samples)); }
+
+    // ===== 套進單元目錄：只補「不明」的，不蓋掉文件寫的／人工補的 =====
+    // 規則：returns 是 json／any（type_src:none）→ 整個換成觀察到的；是 doc／name 推的 object，且某些欄位只有 any／list<any> → 只換那些欄位
+    // 要求至少 minSamples 次完整樣本（部分樣本只能補欄位，不能憑空決定整個型別）。
+    function refineReturns(unit, obs, opts) {
+        opts = Object.assign({ minSamples: 1 }, opts || {}); const cur = unit.returns || { type: 'any', type_src: 'none' }; if (!obs || obs.loose) return null;
+        if (cur.type_src === 'curated' || cur.type_src === 'probe' || cur.type_src === 'annotation' || cur.type_src === 'stub') return null;
+        const ct = Cat.parseType(cur.type); const ot = Cat.parseType(obs.type);
+        if (ct.k === 'json' || ct.k === 'any' || ct.k === 'dict') { if (obs.samples < opts.minSamples) return null; return { type: obs.type, type_src: 'observed', samples: obs.samples, optional: obs.optional }; }
+        if (ct.k === 'object' && ot.k === 'object') {
+            const fields = Object.assign({}, ct.fields); let changed = 0;
+            for (const [k, ft] of Object.entries(ct.fields)) { const o = ot.fields[k]; if (!o) continue; const loose = ft.k === 'any' || (ft.k === 'list' && (ft.of.k === 'any' || ft.of.k === 'json')) || ft.k === 'dict'; if (loose && !(o.k === 'any' || o.k === 'dict' && ft.k === 'dict') && Cat.typeToString(o) !== Cat.typeToString(ft)) { fields[k] = o; changed++; } }
+            if (!changed) return null; return { type: Cat.typeToString({ k: 'object', fields }), type_src: cur.type_src === 'doc' ? 'doc' : cur.type_src, samples: obs.samples, refined_fields: changed, optional: obs.optional };
+        }
+        return null;
+    }
+    // 產生 overrides：{ 工具名稱: { type, type_src:'observed', samples, optional } }，給 buildCatalog 的 returnsOverrides
+    function buildOverrides(units, observed, opts) {
+        const out = {}; const report = { refined: [], skipped_loose: [], no_samples: [], unchanged: 0 };
+        for (const u of units || []) {
+            if (u.runtime !== 'app') continue; const obs = observed[u.name]; const cur = u.returns || {}; const unknown = cur.type === 'json' || cur.type === 'any' || cur.type === 'dict';
+            if (!obs) { if (unknown) report.no_samples.push(u.name); continue; }
+            if (obs.loose) { if (unknown) report.skipped_loose.push(u.name); continue; }
+            const r = refineReturns(u, obs, opts); if (r) { out[u.name] = r; report.refined.push({ name: u.name, from: cur.type, to: r.type, samples: r.samples }); } else report.unchanged++;
+        }
+        return { overrides: out, report };
+    }
+
+    return { typeOfValue, merge, mergePartial, toTypeString, samplesFromMessages, samplesFromTurns, accumulate, summarize, infer, refineReturns, buildOverrides };
+});
+
+}).call(null, undefined, holder);
+return holder.FaCatalogShape;
+})();
+/* CATSHAPE-END */
+/* CATBIND-BEGIN */
+const FaCatalogBind = (function () {
+const holder = {};
+(function (module, self) {
+/* 需求 → 活動 → 單元（UMD，純函式）：把 UML 使用案例（參與者依序呼叫「類別.操作(參數):回傳」）接到單元目錄的單元，
+ * 產出可以直接檢查、執行的呼叫程式（FaCatalogIR）。整個過程 0 次模型呼叫：
+ *   ① 型別合約：UML 操作的參數／回傳型別 → 單元目錄的型別（str→text、List<T>→list<T>、列舉→enum、有屬性的類別→object）；
+ *   ② 挑單元：用「類別名稱＋操作名稱＋使用案例名稱」做檢索（BM25，跟評測同一套），再用型別合約打分——
+ *      必填參數能不能從目前手上的資料（使用案例輸入＋前面步驟的輸出）接得上、回傳型別對不對得上宣告的回傳；
+ *   ③ 資料流：每個參數優先接「同名」的資料，其次接型別接得上的最近一個；接不上就用「型別接線矩陣」找一小段橋接單元
+ *      （例如 url →下載→ 檔案 → 數頁），找不到才變成程式的輸入並標示沒接上；
+ *   ④ 沒有任何單元對得上、但合約有明確的輸入／輸出型別的步驟：直接用矩陣從輸入型別走到輸出型別（型別合約自動接線）。
+ * 輸出的程式一定經過 FaCatalogIR.validate；不確定的地方（沒接上、靠名稱猜、用了強制轉型）都列在 issues。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory(require('./catalog_core.js'), require('./matrix_core.js'), require('./select_core.js'), require('./ir_core.js'));
+    else root.FaCatalogBind = factory(root.FaCatalog, root.FaCatalogMatrix, root.FaCatalogSelect, root.FaCatalogIR);
+})(typeof self !== 'undefined' ? self : this, function (Cat, MX, SEL, IR) {
+    'use strict';
+    const snake = (s) => String(s || '').replace(/([a-z0-9])([A-Z])/g, '$1_$2').replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '').toLowerCase();
+    const KINDED = [[/pdf/i, 'pdf_file'], [/video/i, 'video_file'], [/audio/i, 'audio_file'], [/gif/i, 'gif_file'], [/subtitle|srt/i, 'subtitle_file'], [/image|img|picture/i, 'image_file']];
+
+    // ===== UML 型別 → 單元目錄型別字串（'void' 代表沒有回傳）=====
+    function umlToType(t, model, depth) {
+        depth = depth || 0; if (!t) return 'any'; const b = t.base, a = t.args || [];
+        switch (b) {
+            case 'str': return 'text'; case 'int': return 'int'; case 'float': case 'decimal': return 'number'; case 'bool': return 'bool'; case 'date': case 'datetime': return 'text'; case 'bytes': return 'bytes'; case 'any': return 'any'; case 'void': return 'void';
+            case 'List': case 'Set': return 'list<' + umlToType(a[0], model, depth + 1) + '>'; case 'Map': return 'dict'; case 'Optional': return umlToType(a[0], model, depth);
+        }
+        const lower = String(b).toLowerCase();
+        if (/^(path|filepath|dirpath)$/.test(lower)) return 'path'; if (/^(url|uri|link)$/.test(lower)) return 'url';
+        const fm = /file(id)?$/.test(lower) ? KINDED.find(([re]) => re.test(lower)) : null; if (fm) return fm[1]; if (/^fileid$/.test(lower)) return 'file_id';
+        const c = model && model.classes && model.classes.find((x) => x.name === b);
+        if (c) {
+            if (c.kind === 'enum') { const vs = (c.values || []).filter((v) => /^[A-Za-z0-9_\-.]+$/.test(v)); return vs.length && vs.length === (c.values || []).length ? 'enum<' + vs.join('|') + '>' : 'text'; }
+            if (depth < 2 && c.attrs && c.attrs.length) { const fs = c.attrs.filter((x) => /^[A-Za-z_]\w*$/.test(x.name)).slice(0, 8).map((x) => x.name + ':' + umlToType(x.type, model, depth + 1)).filter((x) => !/:void$/.test(x)); if (fs.length) return 'object{' + fs.join(',') + '}'; }
+            return 'dict';
+        }
+        return 'any';
+    }
+    const TEXTISH = new Set(['text', 'path', 'url', 'query', 'code', 'yaml']); const isTextish = (k) => TEXTISH.has(k);
+    const isVoid = (s) => s === 'void' || s === '' || s == null;
+    const isOpaque = (s) => { try { const k = Cat.parseType(s).k; return k === 'any' || k === 'json' || k === 'dict'; } catch (_) { return true; } };
+
+    // ===== 資料池：使用案例輸入＋各步驟輸出 =====
+    function outputEntries(u, sid, step, op) {
+        const outs = MX.outputsOf(u); const aliases = new Set(); const lbl = step && step.returns && /^[A-Za-z_]\w*$/.test(step.returns) ? step.returns : null;
+        if (lbl) aliases.add(lbl); if (step) { aliases.add(snake(step.msg)); aliases.add(snake(step.to) + '_result'); }
+        return outs.map((o) => ({ name: o.name === '$' ? null : o.name, aliases: o.name === '$' ? Array.from(aliases) : [], type: Cat.typeToString(o.type), parsed: o.type, ref: { $ref: sid + (o.name === '$' ? '' : '.' + o.name) }, origin: sid, whole: o.name === '$' }));
+    }
+    // 資料 s 能不能接進型別 want：回傳 0（不行）～1；輸入（使用者給的）型別不明時給低分，步驟的不明輸出不接
+    function fit(s, want) {
+        const sp = s.parsed || Cat.parseType(s.type); const wp = typeof want === 'string' ? Cat.parseType(want) : want;
+        if (s.origin === 'input') { if (sp.k === 'any' || sp.k === 'json') return 0.3; if (isTextish(sp.k) && isTextish(wp.k)) return Cat.isAssignable(sp, wp) ? Math.max(0.3, MX.matchScore(sp, wp)) : 0.3; }
+        if (wp.k === 'any') return 0.2; if (!Cat.isAssignable(sp, wp)) return 0; return MX.matchScore(sp, wp);
+    }
+    function pickSource(pool, pname, want, used) {
+        let best = null;
+        for (let i = pool.length - 1; i >= 0; i--) { // 越新的越優先
+            const s = pool[i]; let f = fit(s, want); if (!f) continue;
+            const names = [s.name].concat(s.aliases || []).filter(Boolean); const nameHit = names.includes(pname) ? 1 : 0; const score = f + nameHit * 1 + (used && used.has(s) ? -0.15 : 0) + i * 1e-4;
+            if (!best || score > best.score) best = { s, score, nameHit: !!nameHit, fit: f };
+        }
+        return best;
+    }
+
+    // ===== 橋接：從資料池的型別走到需要的型別，用矩陣找一小段單元 =====
+    function bridge(M, fromType, toType, opts) {
+        if (!M || !fromType || !toType) return null; let r; try { r = MX.findPipelines(M, { from: fromType, to: toType }, { k: 3, maxLen: opts.maxBridge || 3 }); } catch (_) { return null; }
+        const ok = r.paths.filter((p) => p.score >= (opts.minBridge || 0.2) && !p.extra_required.length); return ok[0] || null;
+    }
+    function emitPath(path, M, sourceRef, nextId, steps, taken) {
+        // 把矩陣的一條路徑展開成 IR 步驟；回傳最後一步的輸出參照
+        let prevId = null, prevOut = null; const byId = new Map(M.units.map((u) => [u.id, u]));
+        path.units.forEach((uid, i) => {
+            const u = byId.get(uid); const sid = nextId(); const args = {}; const via = i > 0 ? path.via[i - 1] : null; const taken0 = via ? via.param : path.start;
+            for (const p of u.params) { if (p.name === taken0) { args[p.name] = i === 0 ? sourceRef : { $ref: prevId + (via.out && via.out !== '$' ? '.' + via.out : '') }; continue; } if (p.required) taken.push({ step: sid, unit: u.id, param: p.name, type: p.type }); }
+            steps.push({ id: sid, call: uid, args }); prevId = sid; prevOut = path.goal;
+        });
+        return { $ref: prevId + (prevOut && prevOut !== '$' ? '.' + prevOut : '') };
+    }
+
+    // ===== 主流程：一個使用案例 =====
+    function bindUseCase(model, uc, ctx) {
+        const cat = ctx.catalog, M = ctx.matrix, opts = ctx.opts || {}; const byId = new Map(cat.units.map((u) => [u.id, u]));
+        const program = { version: 1, inputs: {}, steps: [] }; const pool = []; const issues = []; const report = []; let n = 0; const nextId = () => 's' + (++n);
+        const used = new Set(); let lastRef = null, lastType = null;
+        const addInput = (name, type) => { let nm = name; if (program.inputs[nm]) { if (program.inputs[nm].type === type) return pool.find((p) => p.origin === 'input' && p.name === nm); let k = 2; while (program.inputs[nm + k]) k++; nm = nm + k; } program.inputs[nm] = { type }; const e = { name: nm, aliases: [], type, parsed: Cat.parseType(type), ref: { $in: nm }, origin: 'input' }; pool.push(e); return e; };
+        for (const step of uc.steps) {
+            const cls = model.classes.find((c) => c.name === step.to); const op = cls && cls.ops.find((o) => o.name === step.msg); const label = step.to + '.' + step.msg;
+            const opParams = (op ? op.params : []).map((p, i) => ({ name: (step.args && step.args[i] && /^[A-Za-z_]\w*$/.test(step.args[i])) ? step.args[i] : p.name, type: umlToType(p.type, model) }));
+            if (!op) (step.args || []).forEach((a, i) => { if (/^[A-Za-z_]\w*$/.test(a)) opParams.push({ name: a, type: 'any' }); });
+            const retType = op ? umlToType(op.returns, model) : 'any';
+            // 這一步要的資料：UML 操作的參數。池子裡找得到（同名或型別接得上）就用，找不到就是使用案例的輸入
+            const resolveIn = () => opParams.map((p) => { const hit = pickSource(pool, p.name, p.type, used); if (hit && (hit.nameHit || (hit.fit >= 0.3 && hit.s.origin !== 'input'))) return { p, s: hit.s }; if (lastType && isOpaque(lastType) && program.steps.length) issues.push({ step: label, kind: 'opaque_link', msg: '上一步的回傳型別不明（' + lastType + '），' + p.name + ' 沒辦法從它接過來，只能當輸入' }); return { p, s: addInput(p.name, p.type) }; });
+            const stepIn = program.steps.length === 0 && !pool.length ? resolveIn() : null; // 第一步：UML 的參數就是使用案例的輸入；後面的步驟先看能不能從前面接過來，接不上才變輸入
+            // 挑單元
+            const q = [uc.name, step.to, step.msg, op && op.doc].filter(Boolean).join(' ');
+            const hits = SEL.retrieve(ctx.index, snake(step.to).replace(/_/g, ' ') + ' ' + snake(step.msg).replace(/_/g, ' ') + ' ' + (ctx.intentFor ? ctx.intentFor(step, uc) : '') + ' ' + (opts.useCaseInText ? uc.name : ''), 12);
+            const top = hits.length ? hits[0].score : 1; const cands = [];
+            const exact = cat.units.filter((u) => u.tier === 1 && (snake(u.name.replace(/^[a-z]+:/, '')) === snake(step.msg) || snake(u.name.replace(/^[a-z]+:/, '')) === snake(step.to) + '_' + snake(step.msg)));
+            for (const e of exact) if (!hits.some((h) => h.id === e.id)) hits.unshift({ id: e.id, score: top, u: e });
+            for (const h of hits) {
+                const u = byId.get(h.id); if (!u || u.tier !== 1 || u.avail.state !== 'builtin') continue; const rel = Math.min(1, h.score / (top || 1)) * (exact.some((e) => e.id === u.id) ? 1 : 0.85);
+                const req = u.params.filter((p) => p.required); let sat = 0; const sources = pool.slice(); for (const p of req) if (pickSource(sources, p.name, p.type, null)) sat++;
+                const cov = req.length ? sat / req.length : 1; const ut = u.returns.type; let rf = 1; if (!isVoid(retType) && retType !== 'any') rf = isOpaque(ut) ? 0.6 : (Cat.isAssignable(ut, retType) ? 1 : (MX.outputsOf(u).some((o) => o.name !== '$' && !isOpaque(Cat.typeToString(o.type)) && Cat.isAssignable(o.type, retType)) ? 0.9 : 0.3));
+                cands.push({ unit: u.id, rel: Math.round(rel * 1000) / 1000, coverage: Math.round(cov * 100) / 100, ret_fit: rf, score: Math.round(rel * (0.4 + 0.6 * cov) * (0.5 + 0.5 * rf) * 1000) / 1000 });
+            }
+            cands.sort((a, b) => b.score - a.score); const best = cands[0];
+            const rec = { step: label, op_params: opParams.map((p) => p.name + ':' + p.type), returns: retType, candidates: cands.slice(0, 3) };
+            if (best && best.score >= (opts.minScore || 0.25) && best.rel >= (opts.minRel || 0.3)) {
+                const u = byId.get(best.unit); const sid = nextId(); const args = {}; const bridged = [];
+                for (const p of u.params) {
+                    const hit = pickSource(pool, p.name, p.type, used);
+                    if (hit && (hit.nameHit || hit.fit >= 0.3 || (p.required && hit.fit > 0))) { if (hit.s.origin === 'input' && !Cat.isAssignable(hit.s.type, p.type) && (isTextish(hit.s.parsed.k) || isOpaque(hit.s.type)) && (isTextish(Cat.parseType(p.type).k) || true)) { hit.s.type = p.type; hit.s.parsed = Cat.parseType(p.type); program.inputs[hit.s.name].type = p.type; } args[p.name] = hit.s.ref; used.add(hit.s); if (hit.fit < 0.3 && !hit.nameHit) issues.push({ step: label, kind: 'weak_link', msg: p.name + ' 靠型別勉強接上（得分 ' + hit.fit + '）' }); continue; }
+                    if (!p.required) continue;
+                    // 橋接：從池子裡最新、型別明確的資料走到這個參數要的型別
+                    let done = false; for (let i = pool.length - 1; i >= 0 && i >= pool.length - 8 && !done; i--) { const s = pool[i]; if (isOpaque(s.type)) continue; const path = bridge(M, s.type, p.type, opts); if (!path) continue; const taken = []; const steps = []; const out = emitPath(path, M, s.ref, nextId, steps, taken); if (taken.length) { taken.forEach((t) => { const nm = addInput(t.step + '_' + t.param, t.type); const st = steps.find((x) => x.id === t.step); st.args[t.param] = nm.ref; }); } steps.forEach((x) => program.steps.push(x)); args[p.name] = out; bridged.push(path.names.join(' → ')); used.add(s); done = true; }
+                    if (!done) { const declared = opParams.some((op) => op.name === p.name || (isOpaque(op.type) ? false : Cat.isAssignable(op.type, p.type))); const nm = addInput(p.name, p.type); args[p.name] = nm.ref; if (lastType && isOpaque(lastType) && program.steps.length) issues.push({ step: label, kind: 'opaque_link', msg: '上一步的回傳型別不明（' + lastType + '），' + p.name + ' 沒辦法從它接過來，只能當輸入' }); if (!declared) issues.push({ step: label, kind: 'unwired', msg: '必填參數 ' + p.name + '（' + p.type + '）沒有資料可以接，變成程式的輸入' }); }
+                }
+                program.steps.push({ id: sid, call: u.id, args }); rec.unit = u.id; rec.by = 'retrieval+contract'; rec.score = best.score; if (bridged.length) rec.bridged = bridged;
+                for (const e of outputEntries(u, sid, step, op)) pool.push(e); lastRef = { $ref: sid }; lastType = u.returns.type;
+                if (best.score < 0.5) issues.push({ step: label, kind: 'low_confidence', msg: '挑 ' + u.name + ' 的信心偏低（' + best.score + '）' });
+            } else {
+                // 沒有單元對得上：合約有明確輸入／輸出型別就直接用矩陣接線
+                const typedIn = (stepIn || resolveIn()).filter((x) => !isOpaque(x.s.type)); let wired = false;
+                if (typedIn.length && !isVoid(retType) && !isOpaque(retType)) {
+                    const path = bridge(M, typedIn[0].s.type, retType, opts);
+                    if (path) { const taken = []; const steps = []; const out = emitPath(path, M, typedIn[0].s.ref, nextId, steps, taken); taken.forEach((t) => { const nm = addInput(t.step + '_' + t.param, t.type); steps.find((x) => x.id === t.step).args[t.param] = nm.ref; }); steps.forEach((x) => program.steps.push(x)); rec.by = 'type-wiring'; rec.units = path.units; rec.score = path.score; wired = true; used.add(typedIn[0].s);
+                        const lastU = byId.get(path.units[path.units.length - 1]); const sid = steps[steps.length - 1].id; for (const e of outputEntries(lastU, sid, step, op)) pool.push(e); lastRef = out; lastType = retType; issues.push({ step: label, kind: 'wired_by_type', msg: '沒有對得上名稱的單元，用型別合約接線：' + path.names.join(' → ') }); }
+                }
+                if (!wired) { rec.unit = null; rec.by = 'none'; issues.push({ step: label, kind: 'unbound', msg: '找不到對得上的單元' + (best ? '（最接近 ' + best.unit + '，得分 ' + best.score + '）' : '') }); }
+            }
+            report.push(rec);
+        }
+        program.return = lastRef || { $ref: 's1' };
+        let validation = { ok: false, errors: ['沒有任何步驟'], warnings: [], effects: [] };
+        if (program.steps.length) validation = IR.validate(program, cat);
+        const bound = report.filter((r) => r.unit || r.units).length;
+        return { usecase: uc.name, actor: uc.actor, steps: report, program: program.steps.length ? program : null, text: program.steps.length ? IR.toText(program) : '', valid: validation.ok, errors: validation.errors, warnings: validation.warnings, effects: validation.effects, issues, bound, total: report.length, inputs: Object.keys(program.inputs), result_type: lastType, model_calls: 0 };
+    }
+    // ===== 整份 UML =====
+    // opts: { intents, minScore, minRel, maxBridge, minBridge }；回傳每個使用案例的結果與彙整
+    function bindModel(model, catalog, opts) {
+        opts = opts || {}; const t0 = Date.now(); const M = opts.matrix || MX.buildMatrix(catalog, { allowOpaque: false }); const index = SEL.buildIndex(catalog.units.filter((u) => u.tier === 1), { intents: opts.intents });
+        const ctx = { catalog, matrix: M, index, opts, intentFor: opts.intentFor || null };
+        const results = (model.usecases || []).map((uc) => bindUseCase(model, uc, ctx));
+        const steps = results.reduce((a, r) => a + r.total, 0), bound = results.reduce((a, r) => a + r.bound, 0);
+        return { results, summary: { usecases: results.length, steps, bound, bound_pct: steps ? Math.round((bound / steps) * 1000) / 10 : null, valid: results.filter((r) => r.valid).length, fully_wired: results.filter((r) => r.valid && !r.issues.some((i) => i.kind === 'unwired' || i.kind === 'unbound')).length, issues: results.reduce((a, r) => a + r.issues.length, 0), model_calls: 0, ms: Date.now() - t0 } };
+    }
+    function toText(res) {
+        const L = []; for (const r of res.results) { L.push('▸ ' + r.usecase + '（' + r.actor + '）　' + (r.valid ? '檢查通過' : '檢查失敗：' + (r.errors[0] || '沒有程式')) + '　' + r.bound + '/' + r.total + ' 步有單元'); for (const s of r.steps) L.push('  ' + s.step + ' → ' + (s.unit || (s.units ? s.units.join(' → ') : '（沒有）')) + (s.by ? '　[' + s.by + (s.score != null ? ' ' + s.score : '') + ']' : '')); for (const i of r.issues) L.push('  ⚠ ' + i.msg); }
+        const s = res.summary; L.push('', '共 ' + s.usecases + ' 個使用案例、' + s.steps + ' 步，單元對上 ' + s.bound + ' 步（' + s.bound_pct + '%），程式檢查通過 ' + s.valid + ' 個，完全接通 ' + s.fully_wired + ' 個；模型呼叫 0 次，' + s.ms + ' 毫秒。'); return L.join('\n');
+    }
+    return { umlToType, bindUseCase, bindModel, toText, pickSource };
+});
+
+}).call(null, undefined, holder);
+return holder.FaCatalogBind;
+})();
+/* CATBIND-END */
 /* DATACORE-BEGIN */
 const FaDataCore = (function () {
 const holder = {};
@@ -29346,6 +29676,15 @@ ${fnData.code}
                 try { await this._unitCatalogStoreLoad(); const r = await this._unitCatalogRunProgram(p.program, p.args || {}, { dryRun: p.dry_run === true }); return JSON.stringify(r); } catch (e) { return JSON.stringify({ ok: false, error: String((e && e.message) || e) }); }
             },
             { type: 'object', properties: { program: { type: 'object', description: '呼叫格式程式（inputs、steps、return）' }, args: { type: 'object', description: '輸入值（對應 program.inputs）' }, dry_run: { type: 'boolean' } }, required: ['program'], additionalProperties: false }
+        );
+
+        registerOptional('catalog_bind',
+            '把 UML 使用案例接到單元目錄的單元（需求 → 活動 → 單元），純程式、0 次模型呼叫。給 UML 文字（一行一件事，格式同 uml_to_code：actor: User／class PdfService { +download(url:Url):FileId; +countPages(pdf:PdfFile):int }／usecase 名稱: User -> PdfService.download(url) -> PdfService.countPages(pdf):int），回傳每個使用案例每一步挑到的單元（檢索＋型別合約打分）、資料流怎麼接（同名優先，其次型別接得上；接不上用型別接線矩陣找橋接單元）、可以直接交給 catalog_run 的呼叫程式與檢查結果。沒有單元對得上的步驟會列在 issues，不會亂猜。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try { await this._unitCatalogStoreLoad(); await this._unitCatalogShapeLoad(); const r = this._unitCatalogBind(String(a.uml || '')); if (!r.ok) return JSON.stringify(r); return JSON.stringify({ ok: true, model: r.model, summary: r.summary, usecases: r.results.map((x) => ({ usecase: x.usecase, valid: x.valid, errors: x.errors, bound: x.bound + '/' + x.total, steps: x.steps.map((s) => ({ step: s.step, unit: s.unit || s.units || null, by: s.by, score: s.score })), issues: x.issues, effects: x.effects, program: x.program })) }); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+            },
+            { type: 'object', properties: { uml: { type: 'string', description: 'UML 文字（格式見工具說明）' } }, required: ['uml'], additionalProperties: false }
         );
 
         registerOptional('big_content',
@@ -58823,6 +59162,7 @@ _result
             try { const parsedResult = JSON.parse(result); inner = String(parsedResult.result != null ? parsedResult.result : result); } catch (_) { /* 用原字串 */ }
             if (inner.length < 3000 && /(並不存在|不存在|找不到|沒有找到|無法(?:讀取|存取|找到|執行|完成)|失敗|not found|no such file|cannot|could not|couldn't|請問|需要你|子任務用完了)/i.test(inner)) { ok = false; soft = true; }
         }
+        if (ok) this._unitCatalogObserve(name, result);
         if (ok) (this._turnToolSuccess = this._turnToolSuccess || new Set()).add(name); // 這一輪（含子agent）成功呼叫過哪些工具——RAG 自我修正用
         if (log === this._toolCallLog) (this._otCalls = this._otCalls || []).push({ name, rawArgs: String(rawArgs == null ? '' : rawArgs).slice(0, 3000), ok, res: (this.advancedSettings.offlineAutoTrain || 'off') !== 'off' ? this._otScalarFields(result) : undefined });
         if (log && log.collect && log !== this._toolCallLog) log.collect.push({ name, rawArgs: String(rawArgs == null ? '' : rawArgs).slice(0, 3000), ok, res: this._otScalarFields(result) });
@@ -60126,12 +60466,19 @@ ${existingNodeSummaries}
     // ===== 單元目錄（DESIGN.unit-catalog.md 第 1 步）：已登記的工具 → 單元 =====
     _unitCatalogBuild() {
         if (typeof FaCatalog === 'undefined' || !FaCatalog) throw new Error('單元目錄模組沒有載入');
-        return FaCatalog.buildCatalog(this.tools, this.domains, { platform: this._sqlDesktop && this._sqlDesktop() ? 'desktop' : (typeof window !== 'undefined' && window.desktopAPI ? 'desktop' : 'web'), returnsOverrides: (this.advancedSettings && this.advancedSettings.unitCatalogReturns) || {}, extraUnits: this._unitCatalogExtra ? Array.from(this._unitCatalogExtra.values()) : [] });
+        const base = { platform: this._sqlDesktop && this._sqlDesktop() ? 'desktop' : (typeof window !== 'undefined' && window.desktopAPI ? 'desktop' : 'web'), returnsOverrides: (this.advancedSettings && this.advancedSettings.unitCatalogReturns) || {}, extraUnits: this._unitCatalogExtra ? Array.from(this._unitCatalogExtra.values()) : [] };
+        let cat = FaCatalog.buildCatalog(this.tools, this.domains, base);
+        // 歷史呼叫反推出來的回傳結構：只補不明的，手動覆寫（unitCatalogReturns）優先
+        const ob = this._unitCatalogObservedOverrides ? this._unitCatalogObservedOverrides(cat.units) : null;
+        if (ob && ob.overrides && Object.keys(ob.overrides).length) cat = FaCatalog.buildCatalog(this.tools, this.domains, Object.assign({}, base, { returnsOverrides: Object.assign({}, ob.overrides, base.returnsOverrides) }));
+        return cat;
     }
     async _unitCatalogSlash(argsText) {
         const argv = String(argsText || '').trim().split(/\s+/).filter(Boolean); const wantJson = argv.includes('json'); this.messages.push({ role: 'user', content: '/unit-catalog' + (argv.length ? ' ' + argv.join(' ') : '') });
         try {
             try { await this._unitCatalogStoreLoad(); } catch (_) { /* 存檔的目錄讀不回來就只用這次的 */ }
+            if (argv[0] === 'shapes') { await this._unitCatalogShapesReply(argv.slice(1)); this._persistChatHistory(); this._renderMessageHistory(); return; }
+            if (argv[0] === 'bind') { await this._unitCatalogBindReply(String(argsText || '').replace(/^\s*bind\s*/, '')); this._persistChatHistory(); this._renderMessageHistory(); return; }
             if (argv[0] === 'plan' || argv[0] === 'run') { await this._unitCatalogProgramReply(argv); this._persistChatHistory(); this._renderMessageHistory(); return; }
             if (argv[0] === 'eval') { await this._unitCatalogEvalReply(argv.slice(1)); this._persistChatHistory(); this._renderMessageHistory(); return; }
             if (argv[0] === 'onboard') { await this._unitCatalogStoreLoad(); await this._unitCatalogOnboardReply(argv.slice(1)); this._persistChatHistory(); this._renderMessageHistory(); return; }
@@ -60380,6 +60727,61 @@ ${existingNodeSummaries}
         return '▶️ 執行完成（' + r.calls + ' 次呼叫，' + r.ms + ' 毫秒）\n\n' + r.trace.map((t) => '- ' + t.step + (t.call ? '（' + t.call + '）' + (t.ms != null ? ' ' + t.ms + ' 毫秒' : '') : (t.if ? ' 條件→' + t.took : t.each !== undefined ? ' 迴圈 ' + t.each + ' 次' : (t.note || '')))).join('\n') + '\n\n結果：' + JSON.stringify(r.result).slice(0, 1500) + (r.warnings && r.warnings.length ? '\n警告：' + r.warnings.slice(0, 3).join('；') : '');
     }
 
+    // ===== 歷史呼叫逆向推論：從過去成功的工具呼叫（實際回傳值）反推回傳結構，補齊「回傳型別不明」的單元（設計見 DESIGN.unit-catalog.md 第二十一節）=====
+    // 只存型別，不存值。每次工具成功就順手累積（_unitCatalogObserve），也可以用 /unit-catalog shapes scan 把現有對話與離線訓練器的紀錄補進來。
+    async _unitCatalogShapeLoad() {
+        if (this._unitCatalogShapeState) return this._unitCatalogShapeState; let st = null;
+        try { const all = await this.fileCache.getAll(); const rec = all.filter((r) => r && r.filename === 'unit-catalog-shapes.json').sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0]; if (rec && rec.blob) st = JSON.parse(await rec.blob.text()); } catch (_) { st = null; }
+        this._unitCatalogShapeState = st && typeof st === 'object' && !Array.isArray(st) ? st : {}; this._unitCatalogShapeVer = 0; return this._unitCatalogShapeState;
+    }
+    async _unitCatalogShapeSave() {
+        if (!this._unitCatalogShapeState) return false;
+        try { const all = await this.fileCache.getAll(); for (const r of all) if (r && r.filename === 'unit-catalog-shapes.json') await this.fileCache.delete(r.id); await this.fileCache.put('unit-catalog-shapes.json', 'application/json', new Blob([JSON.stringify(this._unitCatalogShapeState)], { type: 'application/json' }), 'system'); this._unitCatalogShapeDirty = false; return true; } catch (_) { return false; }
+    }
+    // 工具成功時呼叫（同步、很便宜）：太大的結果不看；失敗的結果 FaCatalogShape 會自己丟掉
+    _unitCatalogObserve(name, result) {
+        try {
+            if (typeof FaCatalogShape === 'undefined' || !FaCatalogShape) return; if (!this._unitCatalogShapeState) { if (!this._unitCatalogShapeLoading) this._unitCatalogShapeLoading = this._unitCatalogShapeLoad().catch(() => {}); return; } // 第一次先載入存檔，這一筆略過
+            let v = result; if (typeof v === 'string') { if (v.length > 200000) return; try { v = JSON.parse(v); } catch (_) { return; } } if (v === null || typeof v !== 'object') return;
+            if (v.ok === false || typeof v.error === 'string' && v.error) return;
+            FaCatalogShape.accumulate(this._unitCatalogShapeState, [{ tool: name, value: v }]); this._unitCatalogShapeVer = (this._unitCatalogShapeVer || 0) + 1; this._unitCatalogShapeDirty = true;
+            if (this._unitCatalogShapeTimer) clearTimeout(this._unitCatalogShapeTimer); this._unitCatalogShapeTimer = setTimeout(() => { this._unitCatalogShapeTimer = null; this._unitCatalogShapeSave().catch(() => {}); }, 8000);
+        } catch (_) { /* 觀察失敗不影響工具 */ }
+    }
+    // 把現有紀錄補進來：目前對話（完整回傳值）＋離線訓練器 turns（只有第一層純量欄位）
+    async _unitCatalogShapeScan() {
+        const Sh = FaCatalogShape; const st = await this._unitCatalogShapeLoad(); const before = Object.keys(st).length;
+        const full = Sh.samplesFromMessages(this.messages || []); let turns = []; try { turns = await this._otDb().getAll('turns'); } catch (_) { turns = []; } const part = Sh.samplesFromTurns(turns);
+        Sh.accumulate(st, full); Sh.accumulate(st, part); this._unitCatalogShapeVer = (this._unitCatalogShapeVer || 0) + 1; const saved = await this._unitCatalogShapeSave();
+        return { full_samples: full.length, partial_samples: part.length, tools_before: before, tools_after: Object.keys(st).length, saved };
+    }
+    // 目前觀察到的型別補進目錄的覆寫表（使用者手動的 unitCatalogReturns 優先）；結果依累積版本快取
+    _unitCatalogObservedOverrides(units) {
+        if (typeof FaCatalogShape === 'undefined' || !FaCatalogShape || !this._unitCatalogShapeState) return { overrides: {}, report: null };
+        const key = (this._unitCatalogShapeVer || 0) + ':' + units.length; if (this._unitCatalogObsCache && this._unitCatalogObsCache.key === key) return this._unitCatalogObsCache.val;
+        const val = FaCatalogShape.buildOverrides(units, FaCatalogShape.summarize(this._unitCatalogShapeState), { minSamples: 1 }); this._unitCatalogObsCache = { key, val }; return val;
+    }
+    async _unitCatalogShapesReply(args) {
+        const sub = args[0] || 'show'; const Sh = FaCatalogShape;
+        if (sub === 'clear') { this._unitCatalogShapeState = {}; this._unitCatalogShapeVer = (this._unitCatalogShapeVer || 0) + 1; await this._unitCatalogShapeSave(); this._pushAssistantMessage('已清掉累積的回傳結構（只清型別紀錄，單元目錄本身不動）。', null); return; }
+        await this._unitCatalogShapeLoad(); let scanMsg = '';
+        if (sub === 'scan') { const r = await this._unitCatalogShapeScan(); scanMsg = '掃描完成：對話裡 ' + r.full_samples + ' 筆完整回傳、離線訓練器 ' + r.partial_samples + ' 筆部分欄位；有紀錄的工具 ' + r.tools_before + ' → ' + r.tools_after + (r.saved ? '（已存檔）' : '（存檔失敗，只在這次開啟期間有效）') + '\n\n'; }
+        await this._unitCatalogStoreLoad(); const cat = this._unitCatalogBuild(); const s = cat.stats; const obs = cat.units.filter((u) => u.returns && u.returns.type_src === 'observed'); const unknown = cat.units.filter((u) => u.runtime === 'app' && (u.returns.type === 'json' || u.returns.type === 'any'));
+        const tools = Object.keys(this._unitCatalogShapeState).length;
+        this._pushAssistantMessage(scanMsg + '🔎 回傳結構（從歷史呼叫反推）\n\n- 有紀錄的工具：' + tools + '\n- 回傳型別來自觀察的單元：' + obs.length + '\n- 回傳型別明確的比例：' + s.returns_typed_pct + '%（來源 ' + Object.entries(s.returns_by_src).map(([k, v]) => k + ' ' + v).join('、') + '）\n- 還不明的工具單元：' + unknown.length + (unknown.length ? '（' + unknown.slice(0, 12).map((u) => u.name).join('、') + (unknown.length > 12 ? '…' : '') + '）' : '') + '\n\n' + (obs.length ? '已補齊的（前 10 個）：\n' + obs.slice(0, 10).map((u) => '- ' + u.name + '：' + u.returns.type.slice(0, 110) + '（' + u.returns.samples + ' 次' + (u.returns.optional ? '；選填 ' + u.returns.optional.join('、') : '') + '）').join('\n') : '還沒有補齊的。工具被成功呼叫過、回傳是 JSON 才有樣本；用 /unit-catalog shapes scan 可以把目前對話與離線訓練器的紀錄補進來。'), null);
+    }
+
+    // ===== 需求 → 活動 → 單元：把 UML 使用案例接到單元，0 次模型呼叫（設計見第二十一節）=====
+    _unitCatalogBind(umlText, opts) {
+        opts = opts || {}; const U = FaUml; const parsed = U.parseDsl(String(umlText || '')); if (parsed.errors.length) return { ok: false, error: 'UML 格式有問題：' + parsed.errors.slice(0, 3).map((e) => '第 ' + e.line + ' 行 ' + e.msg).join('；') };
+        const model = parsed.model; if (!model.usecases.length) return { ok: false, error: '沒有使用案例（usecase 名稱: 參與者 -> 類別.操作(參數):回傳）' };
+        const cat = this._unitCatalogBuild(); const res = FaCatalogBind.bindModel(model, cat, { intents: opts.intents, matrix: opts.matrix });
+        return { ok: true, model: model.name, summary: res.summary, results: res.results, text: FaCatalogBind.toText(res) };
+    }
+    async _unitCatalogBindReply(argsText) {
+        const text = String(argsText || '').trim(); if (!text) { this._pushAssistantMessage('用法：/unit-catalog bind <UML 文字>　（一行一件事，例如\nactor: User\nclass PdfService { +download(url:Url):FileId; +countPages(pdf:PdfFile):int }\nusecase CountPages: User -> PdfService.download(url) -> PdfService.countPages(pdf):int ）', null); return; }
+        await this._unitCatalogStoreLoad(); await this._unitCatalogShapeLoad(); const r = this._unitCatalogBind(text); this._pushAssistantMessage(r.ok ? '🔗 需求 → 活動 → 單元\n\n' + r.text + '\n\n' + r.results.filter((x) => x.program).map((x) => '【' + x.usecase + '】\n' + x.text).join('\n\n') : '⚠️ ' + r.error, null);
+    }
     // 型別存根轉出來的型別表（stub_to_types.py 的輸出 JSON）：用 /unit-catalog stubs 附上檔案載入，存在檔案快取（unit-catalog-stubs.json），之後抽取自動使用
     async _unitCatalogGetStubs() {
         if (this._unitCatalogStubs !== undefined) return this._unitCatalogStubs;

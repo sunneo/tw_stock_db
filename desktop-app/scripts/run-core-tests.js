@@ -42,6 +42,8 @@ const suites = [
     ['單元目錄：catalog_onboard 核心（請求驗證與安全關卡、為什麼沒晉升、摘要、持久化與合併、過期判斷、查詢）', 'renderer/src/catalog/onboard_core.test.js'],
     ['單元選擇評測核心（中英文檢索、候選與提示、答案解析、選擇與填參數評分、評測集檢查）', 'renderer/src/catalog/select_core.test.js'],
     ['呼叫格式（IR）與直譯器（靜態檢查、引用與型別、條件與有上限的迴圈、逾時／取消／預算、確認閘、模擬執行、從路徑產生程式）', 'renderer/src/catalog/ir_core.test.js'],
+    ['歷史呼叫逆向推論（從實際回傳值反推 JSON 結構、合併樣本、選填欄位、狀態可存檔累積、套進目錄）', 'renderer/src/catalog/shape_core.test.js'],
+    ['需求→活動→單元（UML 型別合約、檢索加型別打分、資料流、橋接、型別接線）', 'renderer/src/catalog/bind_core.test.js'],
     ['資料檢視器核心（JSON／YAML／TOML／CSV 解析與轉出、上色、SBOM 轉多工作表、XLSX 讀寫、樹與搜尋）', 'renderer/src/dataview/data_core.test.js'],
     ['SQL 語句切分與完整性判斷', 'renderer/src/sql/sql_split.test.js'],
     ['檔案用途／函式做什麼的說明產生器（FaExplain）', 'renderer/src/explain/code_explain.test.js'],
