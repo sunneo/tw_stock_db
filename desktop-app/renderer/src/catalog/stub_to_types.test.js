@@ -89,6 +89,10 @@ if (!py) skipped = '（沒有 python，略過存根轉換）'; else {
     r = convert({ m: OVL }, { py: [3, 12], platform: 'win32' }); check('platform win32 picks the other branch', !!r.t.m.only_win && !r.t.m.only_posix);
     r = convert({ _typeshed: TS, p: PATHS }); const pp = r.t.p;
     check('cross-file aliases (StrPath from _typeshed)', pp.exists.params[0].annotation === 'str | bytes | PathLike[str] | PathLike[bytes] | int' && pp.join.params[0].annotation === 'str | PathLike[str]', pp);
+    r = convert({ genericpath: 'def exists(path: str | int) -> bool: ...\ndef getsize(filename: str) -> int: ...', posixpath: 'from genericpath import exists as exists, getsize as getsize\ndef join(a: str, *p: str) -> str: ...', 'os.path': 'import sys\nif sys.platform == "win32":\n    from ntpath import *\nelse:\n    from posixpath import *', plain: 'from genericpath import exists\n' });
+    check('re-exports (from x import y as y, and import *) are followed', r.t['os.path'] && r.t['os.path'].exists && r.t['os.path'].join && r.t['os.path'].getsize && r.t.posixpath.exists.returns === 'bool', Object.keys(r.t['os.path'] || {}));
+    check('a plain import is not a re-export', !r.t.plain, r.t.plain);
+    r = convert({ rec: 'from typing_extensions import TypeAlias\n_C: TypeAlias = type | tuple[_C, ...]\ndef f(x: _C) -> int: ...' }); check('recursive aliases do not blow up and stay bounded', r.t.rec && r.t.rec.f.params[0].annotation.length < 600 && Object.keys(r.e).length === 0, r);
     r = convert({ ok: 'def a(x: int) -> int: ...', broken: 'def (((' }); check('a broken stub is reported and the rest still converts', r.t.ok && r.t.ok.a && r.e.broken, r);
 
     // --- 存根型別套進單元
@@ -103,6 +107,8 @@ if (!py) skipped = '（沒有 python，略過存根轉換）'; else {
     u = C.unitFromPyProto(proto('mean', [Object.assign(pa('data'), { annotation: 'list[int]' })]), { stubs: table }); check('real annotation beats the stub', u.params[0].type === 'list<int>' && u.params[0].type_src === 'annotation');
     u = C.unitFromPyProto(proto('nope', [pa('data')]), { stubs: table }); check('function not in the stub is unchanged', u.params[0].type === 'any' && u.params[0].type_src === 'none');
     u = C.unitFromPyProto(proto('mean', [pa('other')]), { stubs: table }); check('param name not in the stub is left alone', u.params[0].type_src === 'none');
+    u = C.unitFromPyProto(proto('mean', [pa('data')], { returns: null }), { stubs: { modules: { statistics: { mean: { params: [{ name: 'data', annotation: 'float' }], returns: 'Callable[[float], float]' } } } } }); check('a function that returns a callable is never trusted (cannot be passed as JSON)', u.returns.type === 'callable' && u.tier === 0);
+    u = C.unitFromPyProto(proto('exists', [pa('path')], { module: 'os.path' }), { stubs: { modules: { posixpath: { exists: { params: [{ name: 'path', annotation: 'StrOrBytesPath | int' }], returns: 'bool' } } } } }); check('os.path looks up posixpath in the stubs', u.returns.type === 'bool' && u.returns.type_src === 'stub');
     table.modules.statistics.mean.params[0].annotation = 'Any'; u = C.unitFromPyProto(proto('mean', [pa('data')]), { stubs: table }); check('stub saying Any stays untyped (not a false "typed")', u.params[0].type === 'any' && u.params[0].type_src === 'none');
     check('stub units validate', eq(C.validateUnit(C.unitFromPyProto(proto('mean', [pa('data')]), { stubs: table })), []));
 }

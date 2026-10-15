@@ -10975,6 +10975,8 @@ const holder = {};
         list: 'list<any>', sequence: 'list<any>', iterable: 'list<any>', tuple: 'list<any>', set: 'list<any>', frozenset: 'list<any>', collection: 'list<any>', path: 'path', pathlike: 'path', complex: 'number', decimal: 'number', fraction: 'number', callable: 'callable',
         // typeshed 常用的名稱：數字協定、緩衝區、路徑別名（別名在轉換時多半已展開，這裡是沒展開的保底）
         supportsfloat: 'number', supportsint: 'int', supportsindex: 'int', supportscomplex: 'number', real: 'number', number: 'number', readablebuffer: 'bytes', writablebuffer: 'bytes', buffer: 'bytes', strpath: 'path', strorbytespath: 'path', filedescriptororpath: 'path', hashable: 'any' };
+    // 執行時的模組名稱 → typeshed 裡真正定義函式的模組（os.path 在 typeshed 只是轉出，定義在 posixpath／ntpath）
+    const STUB_MODULE_ALIAS = { 'os.path': 'posixpath', 'collections.abc': '_collections_abc', 'importlib.abc': 'importlib.abc' };
     // 聯集收斂：int 是 number 的一種；text 與 path 並列時取 path（「字串或路徑物件」的意圖是路徑）
     function collapseUnion(nn) { let a = Array.from(new Set(nn)); if (a.includes('number')) a = a.filter((x) => x !== 'int'); if (a.includes('path')) a = a.filter((x) => x !== 'text'); return a.length === 1 ? a[0] : 'union<' + a.join('|') + '>'; }
     function splitTopComma(s) { const out = []; let d = 0, cur = ''; for (const c of s) { if (c === '[') d++; else if (c === ']') d--; if (c === ',' && d === 0) { out.push(cur.trim()); cur = ''; } else cur += c; } if (cur.trim()) out.push(cur.trim()); return out; }
@@ -10996,7 +10998,7 @@ const holder = {};
     function splitTopBar(s) { const out = []; let d = 0, cur = ''; for (const c of s) { if (c === '[') d++; else if (c === ']') d--; if (c === '|' && d === 0) { out.push(cur.trim()); cur = ''; } else cur += c; } out.push(cur.trim()); return out; }
     function pyDefaultType(def) { if (def === null || def === undefined) return null; const d = String(def).trim(); if (/^(True|False)$/.test(d)) return 'bool'; if (/^-?\d+$/.test(d)) return 'int'; if (/^-?\d+\.\d*(e[+-]?\d+)?$/i.test(d)) return 'number'; if (/^(['"]).*\1$/.test(d)) return 'text'; return null; }
     function unitFromPyProto(p, ctx) {
-        ctx = ctx || {}; const params = []; const callableParam = []; const sp = ctx.stubs && ctx.stubs.modules && ctx.stubs.modules[p.module] && ctx.stubs.modules[p.module][p.name]; // 型別存根轉出來的表（stub_to_types.py）
+        ctx = ctx || {}; const params = []; const callableParam = []; const smods = ctx.stubs && ctx.stubs.modules; const sp = smods && ((smods[p.module] && smods[p.module][p.name]) || (STUB_MODULE_ALIAS[p.module] && smods[STUB_MODULE_ALIAS[p.module]] && smods[STUB_MODULE_ALIAS[p.module]][p.name])); // 型別存根轉出來的表（stub_to_types.py）
         for (const pp of (p.params || [])) {
             if (pp.kind === 'VAR_POSITIONAL' || pp.kind === 'VAR_KEYWORD') continue; // *args／**kwargs 不進單元參數（要用就人工補）
             let ty = pyTypeToType(pp.annotation), src = ty ? 'annotation' : null;
@@ -11014,7 +11016,7 @@ const holder = {};
             call: { runtime: 'python', import: p.module, qualname: p.name, via: 'pyodide' }, sig_src: p.sig_src || 'none' };
         if (p.version) u.version = p.version;
         // 信任等級 1：簽名完整、參數型別都明確（不含 callable）、副作用已知、可用、而且有測試案例或回傳型別明確
-        u.tier = (typedAll && !callableParam.length && !u.effects.includes('unknown') && (state === 'builtin' || state === 'installed') && (u.tests.length > 0 || !!rt)) ? 1 : 0; return u;
+        u.tier = (typedAll && !callableParam.length && rt !== 'callable' && !u.effects.includes('unknown') && (state === 'builtin' || state === 'installed') && (u.tests.length > 0 || !!rt)) ? 1 : 0; return u;
     }
 
     // ===== 工具 → 單元 =====

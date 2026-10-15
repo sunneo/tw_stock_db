@@ -6,7 +6,7 @@
 #   - 照目標 Python 版本與平台選 `if sys.version_info >= (3, 12):`／`if sys.platform == "win32":` 的分支。
 #   - TypeVar 展開（有限制條件→聯集、有 bound→bound、都沒有→Any）；模組層級的型別別名（X: TypeAlias = … 或 X = …）展開，跨檔案用簡單名稱對（_typeshed 的 StrPath 之類）。
 #   - 多載合併：每個參數的註解取聯集，回傳型別取聯集；不是每個多載都有的參數標成非必填。
-import ast, json, os, sys, re
+import ast, copy, json, os, sys, re
 
 TARGET = {'py': (3, 12), 'platform': 'linux'}
 
@@ -71,12 +71,14 @@ class Names(ast.NodeTransformer):
 
     def visit_Name(self, node):
         n = node.id
-        if n in self.tvars and self.depth < 6:
-            return ast.copy_location(self.tvars[n], node)
-        if n in self.aliases and self.depth < 6:
+        if n in self.tvars:
+            return ast.copy_location(copy.deepcopy(self.tvars[n]), node)
+        if n in self.aliases:
+            if self.depth >= 3:  # 遞迴別名（例如 _ClassInfo 裡又有 _ClassInfo）：展開到第 3 層就停，剩下的當 Any
+                return ast.copy_location(ast.Name(id='Any', ctx=ast.Load()), node)
             self.depth += 1
             try:
-                return ast.copy_location(self.visit(self.aliases[n]), node)
+                return ast.copy_location(self.visit(copy.deepcopy(self.aliases[n])), node)  # 一定要複製：NodeTransformer 會就地修改，共用節點會被改成循環
             finally:
                 self.depth -= 1
         return node
@@ -119,7 +121,8 @@ def ann_text(node, names):
     if node is None:
         return None
     t = names.visit(ast.fix_missing_locations(ast.parse(ast.unparse(node), mode='eval').body))
-    return ast.unparse(t)
+    s = ast.unparse(t)
+    return s if len(s) <= 600 else 'Any'  # 展開後太長（巢狀聯集爆炸）就放棄
 
 
 def func_proto(fn, names):
@@ -203,6 +206,24 @@ def convert(stubs):
                     errors[mod + '.' + n.name] = str(e)[:100]
         if groups:
             out[mod] = {k: merge_overloads(v) for k, v in groups.items()}
+    # 轉出（re-export）：「from genericpath import exists as exists」「from posixpath import *」這種，把來源模組的函式也算在這個模組底下（os.path 的函式定義在 genericpath／posixpath）
+    for _ in range(3):
+        changed = False
+        for mod, tree in trees.items():
+            for n in walk_top(tree.body):
+                if isinstance(n, ast.ImportFrom) and not n.level and n.module in out and n.module != mod:
+                    for al in n.names:
+                        if al.name == '*':
+                            for fn, pr in out[n.module].items():
+                                if fn not in out.setdefault(mod, {}):
+                                    out[mod][fn] = pr
+                                    changed = True
+                        elif al.name in out[n.module] and al.asname == al.name and al.name not in out.setdefault(mod, {}):
+                            out[mod][al.name] = out[n.module][al.name]
+                            changed = True
+        if not changed:
+            break
+    out = {m: v for m, v in out.items() if v}
     return out, errors
 
 

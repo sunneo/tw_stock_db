@@ -223,3 +223,38 @@ add_chapters, analyze_large_file, apply_git_patch, attachment_apply_patch, bash_
 4. 文件範例（doctest）有些依賴前面的設定行（例如先定義別名 `F`），單獨執行會失敗，驗證時要先檢查範例用到的名稱解析得到，解析不到的不算測試。
 
 限制：目前只抽模組層級的函式，類別（建構子與方法）、非 Python 的環境（JavaScript、bash）還沒做；`install=` 只裝得起純 Python 套件與 Pyodide 官方編好的套件；抽取腳本沒有做逾時保護（有些模組匯入時會有副作用，應該限定在 Worker 內並加逾時）。
+
+## 十三、型別存根轉換（把標準庫的型別補進來）
+
+程式：`renderer/src/catalog/stub_to_types.py`（只用標準庫的 `ast`，建置時跑一次）、`catalog_core.js` 的 `unitFromPyProto`（有存根表就查，標 `stub`）、指令 `/unit-catalog stubs`（附上型別表載入，存進檔案快取 `unit-catalog-stubs.json`，之後自動使用）；測試 `stub_to_types.test.js`（33 項）。資料 `renderer/src/catalog/data/stdlib_types.json`（來源與授權見同資料夾 README）。
+
+轉換做的事：
+- 只收模組層級的函式（含 `@overload`、`async def`、`*args`／`**kwargs`、僅位置／僅關鍵字參數）。類別與方法第一版不收。
+- 依目標 Python 版本與平台選 `if sys.version_info >= (3, 13):`、`if sys.platform == "win32":` 的分支。
+- **TypeVar 展開**：有限制條件→聯集（`_NumberT` → `float | Decimal | Fraction`）、有 bound→bound、都沒有→Any。
+- **型別別名展開**（含跨檔案，`StrPath` 在 `_typeshed`）；遞迴別名只展開 3 層，之後當 Any；一個函式的註解展開後超過 600 字元就放棄（Any）。展開時必須複製節點（`NodeTransformer` 會就地修改，共用節點會被改成循環）——這是第一次跑整個 typeshed 時踩到的坑（15 個函式遞迴爆掉）。
+- **多載合併**：每個參數的註解取聯集、回傳型別取聯集；不是每個多載都有的參數標成選填。
+- **轉出**：`from genericpath import exists as exists`、`from posixpath import *` 這種，把來源模組的函式也算在這個模組底下（`os.path` 的函式定義在 genericpath／posixpath）。
+- 轉成我們的型別詞彙：`SupportsFloat`→number、`SupportsIndex`→int、`StrPath`／`PathLike`→path、`ReadableBuffer`→bytes、`float | Decimal | Fraction`→number（int 併入 number；text 與 path 並列時取 path）。
+
+**實測**（typeshed commit `86d68f86`，2026-10-14，752 個存根檔 2.8 MB，轉換約 3 秒；產出 490 個模組、3412 個函式、690 KB JSON，轉換錯誤 0）：
+
+在 Pyodide（Python 3.14.2）裡對 `statistics`、`json`、`os.path`、`math` 的 113 個函式抽取：
+
+| | 沒有存根 | 有存根 |
+|---|---|---|
+| 參數型別全部明確 | 9.7% | **74.3%** |
+| 信任等級 1 | 1（0.9%） | **81（71.7%）** |
+| 標 `stub` 的參數 | 0 | 143 個 |
+
+（本機 CPython 3.10 抽出的 133 個函式、7 個模組另測：回傳型別明確 0% → 79.7%，信任等級 1：1 → 87。）
+
+**抽樣核對**：信任等級 1 裡每三個取一個、共 30 個，我逐個讀型別，沒有看到明顯錯誤（例如 `statistics.correlation(x: list<number>, y: list<number>) → number`、`math.comb(n: int, k: int) → int`、`os.path.isfile(path) → bool`）。**這不是設計文件第七節要求的「100 個抽樣、正確率 ≥ 90%」**，只是一個粗略的檢查。
+
+要老實講的限制：
+1. **存根是「宣告的型別」，不保證執行時真的如此**，也沒有用執行驗證過。信任等級 1 的意思是「型別已知，而且有範例或回傳型別可以對照」，不是「驗證過」。探測執行才是下一步。
+2. 型別表是 Python 3.14、linux 的版本；其他版本的函式簽名可能不同（例如 3.13 才有的 `statistics.kde`）。
+3. 仍然不明的參數（`Any`、`SupportsCeil[T]` 這類泛型協定、類別型別）會保持不明，不猜：這次樣本裡有 28 個單元有不明參數。
+4. `Callable` 參數與回傳 `Callable` 的函式一律信任等級 0（不能用 JSON 傳）。
+5. typeshed 的授權：多數檔案是 Apache-2.0 與 MIT 雙授權；型別表只留函式名稱、參數名稱與註解文字，散布時要附來源說明（已寫在資料夾 README）。
+6. 重新產生時 typeshed 的版本會變，轉換結果也會變，資料 README 記了 commit。
