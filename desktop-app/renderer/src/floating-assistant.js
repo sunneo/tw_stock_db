@@ -10817,6 +10817,9 @@ const holder = {};
 return holder.FaGram;
 })();
 /* GRAM-END */
+/* CATPROBEPY-BEGIN */
+const FA_CATALOG_PROBE_PY = "# 單元目錄的探測執行（只用標準庫；在 Pyodide 或一般 CPython 裡都能跑）。設計見 DESIGN.unit-catalog.md 第四、五節。\n# 只對「純函式」（模組白名單、沒有副作用）執行，並且：\n#   - 用稽核掛鉤（sys.addaudithook）擋下檔案、網路、子行程、程式碼執行這類事件，碰到就中止那一次呼叫、記成 blocked；\n#   - 每個案例執行兩次，結果不同就標非決定性；結果與輸出都截短；\n#   - 逾時由呼叫端（JS）終止整個 Worker，這裡只負責不讓單次結果太大。\n# 用法：JS 端把 PROBE_REQ 那一行的占位符換成請求（JSON 字串的字面值）再執行；輸出一行 \"FA_PROBE_RESULT:\" + JSON。\n#   請求：{\"jobs\":[{\"id\",\"module\",\"name\",\"cases\":[{\"args\":[...],\"kwargs\":{...}}]}], \"max_repr\":200}\n#   參數值的特殊編碼：{\"$bytes\": \"<base64>\"}→ bytes；{\"$tuple\": [...]}→ tuple。\nimport sys, json, importlib, base64, math, re\n\nREQ = json.loads(__FA_PROBE_REQ__)\nMAX_REPR = int(REQ.get('max_repr', 200))\nBLOCKED_EVENTS = {'open', 'os.system', 'os.exec', 'os.posix_spawn', 'os.spawn', 'os.fork', 'os.forkpty', 'subprocess.Popen', 'os.remove', 'os.rename', 'os.rmdir', 'os.mkdir',\n                  'os.chmod', 'os.chown', 'os.truncate', 'os.symlink', 'os.link', 'os.putenv', 'os.unsetenv', 'shutil.rmtree', 'shutil.copyfile', 'shutil.move', 'shutil.copytree',\n                  'ctypes.dlopen', 'ctypes.dlsym', 'exec', 'compile', 'import.__main__', 'webbrowser.open', 'tempfile.mkstemp', 'tempfile.mkdtemp', 'urllib.Request', 'http.client.connect'}\n_state = {'armed': False}\n\n\ndef _hook(event, args):\n    if not _state['armed']:\n        return\n    if event in BLOCKED_EVENTS or event.startswith('socket.') or event.startswith('subprocess.'):\n        raise RuntimeError('blocked:' + event)\n\n\ntry:\n    sys.addaudithook(_hook)\n    AUDIT = True\nexcept Exception:  # 沒有稽核掛鉤（很舊的版本）：不執行任何探測，直接回報\n    AUDIT = False\n\n\ndef decode(v):\n    if isinstance(v, dict):\n        if '$bytes' in v and len(v) == 1:\n            return base64.b64decode(v['$bytes'])\n        if '$tuple' in v and len(v) == 1:\n            return tuple(decode(x) for x in v['$tuple'])\n        return {k: decode(x) for k, x in v.items()}\n    if isinstance(v, list):\n        return [decode(x) for x in v]\n    return v\n\n\ndef tname(v, depth=0):\n    # 結果值 → 我們的型別詞彙（對不上的一律 any，不猜）\n    if v is None:\n        return 'null'\n    if isinstance(v, bool):\n        return 'bool'\n    if isinstance(v, int):\n        return 'int'\n    if isinstance(v, (float, complex)):\n        return 'number'\n    if type(v).__name__ in ('Fraction', 'Decimal'):\n        return 'number'\n    if isinstance(v, str):\n        return 'text'\n    if isinstance(v, (bytes, bytearray)):\n        return 'bytes'\n    if isinstance(v, dict):\n        return 'dict'\n    if isinstance(v, (list, tuple, set, frozenset)):\n        if depth >= 2:\n            return 'list<any>'\n        items = list(v)[:20]\n        if not items:\n            return 'list<any>'\n        ts = sorted(set(tname(x, depth + 1) for x in items))\n        if 'number' in ts and 'int' in ts:\n            ts.remove('int')\n        return 'list<' + (ts[0] if len(ts) == 1 else 'union<' + '|'.join(ts) + '>') + '>'\n    return 'any'\n\n\ndef srepr(v):\n    # 物件的預設 repr 帶記憶體位址（每次不同），比較與記錄時去掉，不然會被誤判成非決定性\n    return re.sub(r' (at|@) 0x[0-9a-fA-F]+', '', repr(v))\n\n\ndef jsonable(v):\n    try:\n        s = json.dumps(v, allow_nan=False)\n        return json.loads(s) if len(s) <= 2000 else None\n    except Exception:\n        return None\n\n\ndef one_call(fn, case):\n    args = [decode(a) for a in case.get('args', [])]\n    kwargs = {k: decode(v) for k, v in (case.get('kwargs') or {}).items()}\n    _state['armed'] = True\n    try:\n        return fn(*args, **kwargs)\n    finally:\n        _state['armed'] = False\n\n\ndef run_case(fn, case):\n    positional = False\n    try:\n        try:\n            r1 = one_call(fn, case)\n        except TypeError as e:\n            # 存根寫成關鍵字參數、實際是僅位置參數（例如 math.log）：改用位置參數重試一次，並記下來\n            if 'keyword argument' in str(e) and case.get('kwargs'):\n                r1 = one_call(fn, {'args': list(case.get('args', [])) + list(case['kwargs'].values()), 'kwargs': {}})\n                positional = True\n            else:\n                raise\n    except RuntimeError as e:\n        if str(e).startswith('blocked:'):\n            return {'ok': False, 'exc': 'Blocked', 'msg': str(e)[:120], 'blocked': True}\n        return {'ok': False, 'exc': 'RuntimeError', 'msg': str(e)[:120]}\n    except BaseException as e:  # 包含 SystemExit：探測不能讓整個程序結束\n        return {'ok': False, 'exc': type(e).__name__, 'msg': str(e)[:120], 'bases': [c.__name__ for c in type(e).__mro__[1:4]]}\n    try:\n        r2 = one_call(fn, {'args': list(case.get('args', [])) + list(case['kwargs'].values()), 'kwargs': {}} if positional else case)\n        det = srepr(r1) == srepr(r2)\n    except BaseException:\n        det = False\n    j = jsonable(r1)\n    out = {'ok': True, 'type': tname(r1), 'repr': srepr(r1)[:MAX_REPR], 'det': det, 'jsonable': j is not None or r1 is None}\n    if positional:\n        out['positional'] = True\n    if out['jsonable']:\n        out['json'] = j\n    if isinstance(r1, float) and (math.isnan(r1) or math.isinf(r1)):\n        out['jsonable'] = False\n        out.pop('json', None)\n    return out\n\n\nres = {'ok': True, 'python': sys.version.split()[0], 'audit': AUDIT, 'jobs': []}\nfor job in REQ.get('jobs', []):\n    item = {'id': job['id'], 'cases': [], 'import_error': None}\n    if not AUDIT:\n        item['import_error'] = 'no audit hook'\n        res['jobs'].append(item)\n        continue\n    try:\n        mod = importlib.import_module(job['module'])\n        fn = mod\n        for part in job['name'].split('.'):\n            fn = getattr(fn, part)\n        if not callable(fn):\n            raise TypeError('not callable')\n    except BaseException as e:\n        item['import_error'] = type(e).__name__ + ': ' + str(e)[:120]\n        res['jobs'].append(item)\n        continue\n    for case in job.get('cases', []):\n        item['cases'].append(run_case(fn, case))\n    res['jobs'].append(item)\nprint('FA_PROBE_RESULT:' + json.dumps(res, ensure_ascii=False))\n";
+/* CATPROBEPY-END */
 /* CATPY-BEGIN */
 const FA_CATALOG_EXTRACT_PY = "# 單元目錄的 Python 抽取器（只用標準庫；在 Pyodide 或一般 CPython 裡都能跑）。設計見 DESIGN.unit-catalog.md 第三、四、五節。\n# 用法：JS 端把 REQ 那一行的占位符換成請求（JSON 字串的字面值）再執行；輸出一行 \"FA_EXTRACT_RESULT:\" + JSON。\n#   請求：{\"modules\": [\"statistics\", ...], \"max_per_module\": 400, \"doctest\": true}\n# 這個腳本只「讀」：不呼叫任何被抽取的函式（doctest 範例只當文字存起來，之後在沙盒裡驗證才會執行）。\nimport sys, json, inspect, importlib, re, ast\n\nREQ = json.loads(__FA_REQ__)\n\n# 副作用：整個模組的規則（不執行任何東西）。沒有列出的模組一律 unknown（保守）。\nPURE_MODULES = set('json re math cmath statistics string textwrap base64 binascii hashlib hmac zlib html operator itertools functools collections urllib.parse difflib fractions decimal bisect heapq copy unicodedata struct csv shlex pprint numbers keyword token fnmatch posixpath ntpath colorsys calendar'.split())\nEFFECT_MODULES = {\n    'os': ['fs.read', 'fs.write', 'env', 'proc'], 'shutil': ['fs.read', 'fs.write'], 'subprocess': ['proc'], 'socket': ['net'], 'ssl': ['net'], 'urllib.request': ['net'],\n    'http.client': ['net'], 'ftplib': ['net'], 'smtplib': ['net'], 'random': ['random'], 'secrets': ['random'], 'time': ['time'], 'tempfile': ['fs.write'], 'glob': ['fs.read'],\n    'pathlib': ['fs.read', 'fs.write'], 'sqlite3': ['fs.write'], 'webbrowser': ['proc', 'ui'], 'ctypes': ['proc'], 'multiprocessing': ['proc'], 'threading': ['proc'], 'sys': ['env'],\n    'datetime': ['time'], 'logging': ['ui'], 'pickle': ['fs.read', 'fs.write'], 'shelve': ['fs.write'], 'zipfile': ['fs.read', 'fs.write'], 'tarfile': ['fs.read', 'fs.write'],\n}\nFS_READ_NAMES = re.compile(r'^(exists|lexists|isfile|isdir|islink|ismount|getsize|getmtime|getatime|getctime|realpath|samefile|samestat|sameopenfile)$')\n\n\ndef type_name(a):\n    if a is inspect.Parameter.empty or a is inspect.Signature.empty:\n        return None\n    if isinstance(a, str):\n        return a\n    n = getattr(a, '__name__', None)\n    if n and not getattr(a, '__args__', None):\n        return n\n    return str(a).replace('typing.', '')\n\n\ndef first_para(doc):\n    doc = (doc or '').strip()\n    if not doc:\n        return ''\n    para = re.split(r'\\n\\s*\\n', doc, maxsplit=1)[0]\n    return re.sub(r'\\s+', ' ', para)[:300]\n\n\ndef sig_from_doc(name, doc):\n    # C 實作的函式 inspect 拿不到簽名時，試著解析文件字串第一行 name(a, b, /, *, c=1)\n    first = (doc or '').strip().split('\\n', 1)[0]\n    m = re.match(r'^' + re.escape(name) + r'\\((.*)\\)\\s*(?:->.*)?$', first)\n    if not m:\n        return None\n    params, seen_star = [], False\n    for part in [x.strip() for x in m.group(1).split(',') if x.strip()]:\n        if part == '/':\n            for p in params:\n                if p['kind'] == 'POSITIONAL_OR_KEYWORD':\n                    p['kind'] = 'POSITIONAL_ONLY'\n            continue\n        if part == '*':\n            seen_star = True\n            continue\n        default = None\n        if '=' in part:\n            part, default = [x.strip() for x in part.split('=', 1)]\n        kind = 'VAR_POSITIONAL' if part.startswith('**') is False and part.startswith('*') else ('VAR_KEYWORD' if part.startswith('**') else ('KEYWORD_ONLY' if seen_star else 'POSITIONAL_OR_KEYWORD'))\n        params.append({'name': part.lstrip('*'), 'kind': kind, 'default': default, 'annotation': None})\n    return params\n\n\ndef doctests(doc, limit=3):\n    out, lines = [], (doc or '').split('\\n')\n    i = 0\n    while i < len(lines) and len(out) < limit:\n        s = lines[i].strip()\n        if s.startswith('>>> '):\n            expr = s[4:].strip()\n            exp, j = [], i + 1\n            while j < len(lines) and lines[j].strip() and not lines[j].strip().startswith('>>>') and not lines[j].strip().startswith('...'):\n                exp.append(lines[j].strip())\n                j += 1\n            try:\n                ast.parse(expr, mode='eval')\n                ok = True\n            except SyntaxError:\n                ok = False\n            e = ' '.join(exp)\n            if ok and e and '<' not in e and 'Traceback' not in e and len(expr) < 200 and len(e) < 200:\n                out.append({'expr': expr, 'expect': e, 'src': 'doctest'})\n            i = j\n        else:\n            i += 1\n    return out\n\n\ndef effects_for(modname, fname):\n    if modname in PURE_MODULES:\n        return [], True\n    if modname in ('os.path',):\n        return (['fs.read'], False) if FS_READ_NAMES.match(fname) else ([], True)\n    if modname == 'datetime':\n        return (['time'], False) if re.match(r'^(now|today|utcnow|fromtimestamp)$', fname) else ([], True)\n    eff = EFFECT_MODULES.get(modname)\n    return (list(eff), False) if eff else (['unknown'], False)\n\n\ndef stdlib(modname):\n    top = modname.split('.')[0]\n    names = getattr(sys, 'stdlib_module_names', None)\n    return top in names if names else top in sys.builtin_module_names\n\n\ndef extract(modname):\n    mod = importlib.import_module(modname)\n    names = list(getattr(mod, '__all__', None) or [n for n in dir(mod) if not n.startswith('_')])\n    protos, skipped = [], 0\n    for n in names[: REQ.get('max_per_module', 400)]:\n        o = getattr(mod, n, None)\n        if o is None or not callable(o) or inspect.isclass(o):\n            skipped += 1\n            continue\n        doc = inspect.getdoc(o) or ''\n        params, sig_src, ret = None, None, None\n        try:\n            s = inspect.signature(o)\n            params = [{'name': p.name, 'kind': p.kind.name, 'default': None if p.default is p.empty else repr(p.default)[:80], 'annotation': type_name(p.annotation)} for p in s.parameters.values()]\n            ret = type_name(s.return_annotation)\n            sig_src = 'inspect'\n        except (ValueError, TypeError):\n            params = sig_from_doc(n, doc)\n            sig_src = 'doc' if params is not None else None\n        eff, pure = effects_for(modname, n)\n        protos.append({\n            'module': modname, 'name': n, 'summary': first_para(doc), 'params': params, 'sig_src': sig_src, 'returns': ret,\n            'effects': eff, 'pure': pure, 'stdlib': stdlib(modname), 'version': getattr(mod, '__version__', None),\n            'tests': doctests(doc) if REQ.get('doctest', True) else [], 'has_doc': bool(doc),\n        })\n    return protos, skipped\n\n\nres = {'ok': True, 'python': sys.version.split()[0], 'modules': {}, 'protos': [], 'errors': []}\nfor m in REQ.get('modules', []):\n    try:\n        protos, skipped = extract(m)\n        res['modules'][m] = {'callables': len(protos), 'skipped': skipped}\n        res['protos'].extend(protos)\n    except Exception as e:  # 載入不了的模組（沒安裝、缺原生套件）只記錄，不中斷\n        res['errors'].append({'module': m, 'error': type(e).__name__ + ': ' + str(e)[:200]})\nprint('FA_EXTRACT_RESULT:' + json.dumps(res, ensure_ascii=False))\n";
 /* CATPY-END */
@@ -11189,6 +11192,105 @@ const holder = {};
 return holder.FaCatalogMatrix;
 })();
 /* CATMX-END */
+/* CATPROBE-BEGIN */
+const FaCatalogProbe = (function () {
+const holder = {};
+(function (module, self) {
+/* 探測執行的核心（UMD，純函式）：依參數型別產生測試輸入、把探測結果套回單元（驗證型別、補測試案例、重新評信任等級）。
+ * 實際執行在 probe_py.py（Pyodide 或 CPython）。設計見 DESIGN.unit-catalog.md。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory(require('./catalog_core.js'));
+    else root.FaCatalogProbe = factory(root.FaCatalog || (typeof FaCatalog !== 'undefined' ? FaCatalog : undefined));
+})(typeof self !== 'undefined' ? self : this, function (Cat) {
+    'use strict';
+    const b64 = (s) => (typeof Buffer !== 'undefined' ? Buffer.from(s, 'utf8').toString('base64') : btoa(s));
+
+    // ===== 候選輸入：依型別（與參數名稱的提示）產生幾個確定的值（不用亂數，結果可重現）=====
+    function candidates(type, name) {
+        const t = typeof type === 'string' ? Cat.parseType(type) : type; const n = String(name || '');
+        switch (t.k) {
+            case 'int': return /(^|_)(n|k|i|j|count|size|width|length|ndigits|places|base)$/i.test(n) ? [1, 2, 5, 3] : [0, 1, 5, -3];
+            case 'number': return [0.5, 1.5, 2.0, 0.25];
+            case 'bool': return [true, false];
+            case 'text': return /(^|_)(format|fmt)$/i.test(n) ? ['%Y-%m-%d', '%H:%M'] : ['abc', 'Hello, World', '12', ''];
+            case 'query': return ['a.*b', '\\d+', 'abc'];
+            case 'bytes': return [{ $bytes: b64('abc') }, { $bytes: b64('Hello, World') }];
+            case 'path': return ['/tmp/x.txt', 'a/b/c.py', 'dir/file', 'archive.tar.gz'];
+            case 'url': return ['https://example.com/a/b?x=1&y=2', 'http://localhost:8080/path'];
+            case 'null': return [null];
+            case 'dict': return [{ a: 1, b: 2 }, { x: 'y' }];
+            case 'enum': return t.values.slice(0, 4);
+            case 'union': { const lists = t.of.map((x) => candidates(x, name)); const out = []; for (let i = 0; i < 4; i++) for (const l of lists) if (i < l.length) out.push(l[i]); return out.slice(0, 5); }
+            case 'list': {
+                const el = t.of; if (el.k === 'number') return [[0.5, 1.5, 2.0, 0.25], [1, 2, 3, 4], [10, 20, 30, 40, 50]];
+                if (el.k === 'int') return [[1, 2, 3, 4], [5, 3, 8, 1], [10, 20, 30]]; if (el.k === 'text') return [['a', 'b', 'c'], ['x', 'yy']];
+                if (el.k === 'bool') return [[true, false, true]]; if (el.k === 'any') return [[1, 2, 3, 4], [4, 2, 9, 7]];
+                const sub = candidates(el, name); return sub.length ? [sub.slice(0, 3)] : [];
+            }
+            default: return []; // any、callable、yaml、code、file_id…：沒有可靠的產生方式
+        }
+    }
+
+    // 為一個單元產生探測案例。每個必填參數都要有候選，否則回傳 { skip: 原因 }。案例 i 對每個參數取第 i 個候選（輪流），所以多個同型別的清單長度一致。
+    function buildCases(unit, opts) {
+        opts = opts || {}; const maxCases = opts.maxCases || 6; const req = unit.params.filter((p) => p.required), opt = unit.params.filter((p) => !p.required);
+        for (const p of unit.params) if (p.type === 'callable') { if (p.required) return { skip: '參數 ' + p.name + ' 是函式，不能用 JSON 傳' }; }
+        const cand = new Map(); for (const p of unit.params) { let c; try { c = candidates(p.type, p.name); } catch (_) { c = []; } cand.set(p.name, c); }
+        for (const p of req) if (!cand.get(p.name).length) return { skip: '必填參數 ' + p.name + '（' + p.type + '）沒有可靠的測試輸入' };
+        const cases = []; const seen = new Set();
+        const mk = (i, withOpt) => {
+            const args = [], kwargs = {}; let positionalOk = true;
+            for (const p of req) { const c = cand.get(p.name); const v = c[i % c.length]; if (p.kind === 'positional') { if (!positionalOk) return null; args.push(v); } else kwargs[p.name] = v; }
+            if (withOpt) { const c = cand.get(withOpt.name); if (!c.length || withOpt.kind === 'positional') return null; kwargs[withOpt.name] = c[i % c.length]; }
+            const key = JSON.stringify([args, kwargs]); if (seen.has(key)) return null; seen.add(key); return { args, kwargs };
+        };
+        const n = Math.max(1, Math.max(0, ...req.map((p) => Math.min(4, cand.get(p.name).length)))); // 必填參數候選最多的那個決定輪流幾輪
+        for (let i = 0; i < n && cases.length < maxCases; i++) { const c = mk(i); if (c) cases.push(c); }
+        for (const p of opt) { if (cases.length >= maxCases) break; const c = mk(0, p); if (c) cases.push(c); }
+        if (!cases.length) return { skip: '產生不出不重複的案例' }; return { cases };
+    }
+
+    // ===== 把探測結果套回單元 =====
+    function typeOk(observed, declared) { try { return Cat.isAssignable(observed, declared); } catch (_) { return false; } }
+    function collapse(types) { const u = Array.from(new Set(types)); if (u.includes('number')) return u.filter((x) => x !== 'int').length === 1 ? 'number' : 'union<' + u.filter((x) => x !== 'int').join('|') + '>'; return u.length === 1 ? u[0] : 'union<' + u.join('|') + '>'; }
+    function retier(u) {
+        const typedAll = u.params.every((q) => q.type_src !== 'none' && q.type !== 'any' && q.type !== 'callable'); const rt = u.returns && u.returns.type !== 'any' && u.returns.type !== 'json';
+        const avail = u.avail && (u.avail.state === 'builtin' || u.avail.state === 'installed');
+        u.tier = (typedAll && !u.effects.includes('unknown') && avail && u.returns.type !== 'callable' && !u.type_conflict && (u.tests.length > 0 || rt) && !(u.probe && u.probe.ok === 0)) ? 1 : 0; return u.tier;
+    }
+    function applyProbe(unit, job, cases, opts) {
+        opts = opts || {}; const u = unit; const res = job.cases || []; const ok = res.filter((r) => r.ok); const blocked = res.filter((r) => r.blocked).length;
+        const REJ = /^(TypeError|ValueError|OverflowError|ZeroDivisionError|KeyError|IndexError|AttributeError|ArithmeticError|LookupError|UnicodeError)$/; // 輸入被拒絕（我們產生的輸入不合這個函式的要求），不是程式壞掉
+        const rejected = res.filter((r) => !r.ok && !r.blocked && [r.exc].concat(r.bases || []).some((x) => REJ.test(x || ''))).length;
+        const nondet = ok.filter((r) => !r.det).length; const observed = ok.length ? collapse(ok.map((r) => r.type)) : null;
+        u.probe = { cases: res.length, ok: ok.length, rejected, blocked, nondeterministic: nondet, observed, import_error: job.import_error || null, errors: res.filter((r) => !r.ok).slice(0, 3).map((r) => r.exc + ': ' + (r.msg || '').slice(0, 60)) };
+        if (job.import_error) { u.probe.ok = 0; retier(u); return u; }
+        if (nondet) u.nondeterministic = true; if (!ok.length) { retier(u); return u; }
+        // 回傳型別：宣告不明 → 以觀察到的為準（標 probe）；宣告明確 → 每個觀察值都放得進宣告才算驗證過，否則記錄衝突
+        const declared = u.returns && u.returns.type; const unknownDeclared = !declared || declared === 'any' || declared === 'json';
+        if (unknownDeclared) { if (observed && observed !== 'any' && !/^union/.test(observed)) { u.returns = { type: observed, type_src: 'probe', verified: true }; } }
+        else { const bad = ok.filter((r) => !typeOk(r.type, declared)); if (bad.length) u.type_conflict = { declared, observed: collapse(bad.map((r) => r.type)) }; else u.returns.verified = true; }
+        // 參數：有成功案例用到的參數視為「接受這種型別」（不代表會拒絕別的型別）
+        const used = new Set(); (cases || []).forEach((c, i) => { if (res[i] && res[i].ok) { Object.keys(c.kwargs || {}).forEach((k) => used.add(k)); (u.params.filter((p) => p.kind === 'positional' && p.required)).slice(0, (c.args || []).length).forEach((p) => used.add(p.name)); } });
+        for (const p of u.params) if (used.has(p.name)) p.verified = true;
+        // 測試案例：成功、決定性、能轉成 JSON 的呼叫，最多 3 個（連同原本的文件範例總共最多 5 個）
+        // 關鍵字呼叫失敗、改用位置參數才成功的（例如 math.log）：把這些參數的種類改成 positional，測試案例也用位置參數記
+        (cases || []).forEach((c, i) => { if (res[i] && res[i].ok && res[i].positional) for (const k of Object.keys(c.kwargs || {})) { const p = u.params.find((q) => q.name === k); if (p) p.kind = 'positional'; } });
+        const add = []; (cases || []).forEach((c, i) => { const r = res[i]; if (r && r.ok && r.det && r.jsonable && add.length < 3) add.push(r.positional ? { args: (c.args || []).concat(Object.values(c.kwargs || {})), kwargs: {}, expect: r.json === undefined ? null : r.json, src: 'probe' } : { args: c.args, kwargs: c.kwargs, expect: r.json === undefined ? null : r.json, src: 'probe' }); });
+        u.tests = (u.tests || []).concat(add).slice(0, 5); u.verified = !u.type_conflict && !nondet;
+        retier(u); return u;
+    }
+    function probeStats(units) {
+        const pr = units.filter((u) => u.probe); const n = pr.length; const pct = (a) => (n ? Math.round((a / n) * 1000) / 10 : 0);
+        return { probed: n, any_ok: pr.filter((u) => u.probe.ok > 0).length, all_failed: pr.filter((u) => u.probe.ok === 0).length, verified: pr.filter((u) => u.verified).length, conflicts: pr.filter((u) => u.type_conflict).length, nondeterministic: pr.filter((u) => u.nondeterministic).length, blocked: pr.filter((u) => u.probe.blocked).length, with_probe_tests: pr.filter((u) => (u.tests || []).some((t) => t.src === 'probe')).length, verified_pct: pct(pr.filter((u) => u.verified).length), tier1: units.filter((u) => u.tier === 1).length };
+    }
+    return { candidates, buildCases, applyProbe, retier, probeStats, collapse };
+});
+
+}).call(null, undefined, holder);
+return holder.FaCatalogProbe;
+})();
+/* CATPROBE-END */
 /* DATACORE-BEGIN */
 const FaDataCore = (function () {
 const holder = {};
@@ -59604,6 +59706,7 @@ ${existingNodeSummaries}
     async _unitCatalogSlash(argsText) {
         const argv = String(argsText || '').trim().split(/\s+/).filter(Boolean); const wantJson = argv.includes('json'); this.messages.push({ role: 'user', content: '/unit-catalog' + (argv.length ? ' ' + argv.join(' ') : '') });
         try {
+            if (argv[0] === 'probe') { await this._unitCatalogProbeReply(argv.slice(1)); this._persistChatHistory(); this._renderMessageHistory(); return; }
             if (argv[0] === 'stubs') { await this._unitCatalogStubsReply(argsText); this._persistChatHistory(); this._renderMessageHistory(); return; }
             if (argv[0] === 'extract') { await this._unitCatalogExtractReply(argv.slice(1)); this._persistChatHistory(); this._renderMessageHistory(); return; }
             if (argv[0] === 'path') { this._unitCatalogPathReply(argv.slice(1)); this._persistChatHistory(); this._renderMessageHistory(); return; }
@@ -59629,6 +59732,38 @@ ${existingNodeSummaries}
         const res = JSON.parse(line.slice('FA_EXTRACT_RESULT:'.length)); const units = res.protos.map((p) => FaCatalog.unitFromPyProto(p, { installed: installPkgs || [], stubs }));
         if (!this._unitCatalogExtra) this._unitCatalogExtra = new Map(); for (const u of units) this._unitCatalogExtra.set(u.id, u);
         return { units, res, stubs: !!stubs };
+    }
+    // ===== 探測執行：只對純函式，在 Pyodide 沙盒裡真的跑，驗證型別、補測試案例（probe_py.py）。逾時就終止整個 Worker。=====
+    async _unitCatalogRunProbe(jobs, timeoutMs) {
+        if (!FA_CATALOG_PROBE_PY) throw new Error('探測腳本沒有嵌入');
+        const script = FA_CATALOG_PROBE_PY.replace('__FA_PROBE_REQ__', () => JSON.stringify(JSON.stringify({ jobs, max_repr: 200 })));
+        let timer = null; const to = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('TIMEOUT')), timeoutMs); });
+        try {
+            const r = await Promise.race([this._runPyodideIsolated(script, {}), to]); clearTimeout(timer);
+            const line = String(r.stdout || '').split('\n').find((l) => l.startsWith('FA_PROBE_RESULT:')); if (!line) throw new Error('探測沒有結果' + (r.stderr ? '：' + String(r.stderr).split('\n').slice(-2).join(' ') : ''));
+            return JSON.parse(line.slice('FA_PROBE_RESULT:'.length));
+        } catch (e) {
+            clearTimeout(timer); if (String(e.message) === 'TIMEOUT' && this._idrWk) { try { this._idrWk.worker.terminate(); } catch (_) { /* */ } this._idrWk = null; } // 卡住的呼叫只能整個終止（下一次重新載入 Pyodide）
+            throw e;
+        }
+    }
+    async _unitCatalogProbeReply(args) {
+        const mods = args.filter((a) => !/^--/.test(a)); const all = this._unitCatalogExtra ? Array.from(this._unitCatalogExtra.values()) : [];
+        const pool = all.filter((u) => u.runtime === 'python' && u.pure === true && u.effects.length === 0 && u.avail.state === 'builtin' && (!mods.length || mods.some((m) => u.call.import === m || u.call.import.startsWith(m + '.')))); // 只探測純函式（模組白名單判斷出來的）
+        if (!pool.length) { this._pushAssistantMessage('沒有可以探測的單元。先用 /unit-catalog extract python <模組…> 抽出單元（只有判斷為純函式的才會被探測執行）。', null); return; }
+        const PC = FaCatalogProbe; const jobs = [], caseMap = new Map(), skipped = [];
+        for (const u of pool) { const bc = PC.buildCases(u); if (bc.cases) { jobs.push({ id: u.id, module: u.call.import, name: u.call.qualname, cases: bc.cases }); caseMap.set(u.id, bc.cases); } else skipped.push(u.name + '：' + bc.skip); }
+        this._pushAssistantMessage('🧪 探測執行 ' + jobs.length + ' 個純函式（略過 ' + skipped.length + ' 個：沒有可靠的測試輸入）…在 Pyodide 沙盒裡執行，擋下檔案／網路／子行程，逾時會終止。', null); this._renderMessageHistory();
+        const t0 = Date.now(); const byId = new Map(pool.map((u) => [u.id, u])); const timeouts = []; const BATCH = 25;
+        for (let i = 0; i < jobs.length; i += BATCH) {
+            const batch = jobs.slice(i, i + BATCH);
+            try { const pr = await this._unitCatalogRunProbe(batch, 30000); for (const j of pr.jobs) PC.applyProbe(byId.get(j.id), j, caseMap.get(j.id)); }
+            catch (e) { // 整批卡住或失敗：一個一個重跑，找出是哪一個
+                for (const job of batch) { try { const pr = await this._unitCatalogRunProbe([job], 8000); PC.applyProbe(byId.get(job.id), pr.jobs[0], caseMap.get(job.id)); } catch (e2) { timeouts.push(job.id); const u = byId.get(job.id); u.probe = { cases: job.cases.length, ok: 0, rejected: 0, blocked: 0, nondeterministic: 0, observed: null, import_error: null, errors: [String(e2.message) === 'TIMEOUT' ? '逾時' : String(e2.message).slice(0, 80)], timeout: String(e2.message) === 'TIMEOUT' }; PC.retier(u); } }
+            }
+        }
+        const s = PC.probeStats(pool); const conflicts = pool.filter((u) => u.type_conflict).map((u) => u.name + '（宣告 ' + u.type_conflict.declared + '、實際 ' + u.type_conflict.observed + '）'); const failed = pool.filter((u) => u.probe && u.probe.ok === 0 && !u.probe.timeout).slice(0, 12).map((u) => u.name + (u.probe.errors[0] ? '：' + u.probe.errors[0] : ''));
+        this._pushAssistantMessage('🧪 探測完成（' + (Date.now() - t0) + ' 毫秒）\n\n- 探測：' + s.probed + ' 個；至少一個案例成功：' + s.any_ok + '；全部失敗：' + s.all_failed + '\n- 驗證過（有成功案例、型別相符、結果穩定）：' + s.verified + '（' + s.verified_pct + '%）\n- 型別衝突（存根宣告與實際不符）：' + s.conflicts + (conflicts.length ? '：' + conflicts.slice(0, 10).join('、') : '') + '\n- 結果不穩定（兩次執行不同）：' + s.nondeterministic + '\n- 被擋下的危險呼叫：' + s.blocked + '\n- 逾時：' + timeouts.length + (timeouts.length ? '：' + timeouts.slice(0, 8).join('、') : '') + '\n- 新增的探測測試案例：' + s.with_probe_tests + ' 個單元\n- 信任等級 1（這批）：' + s.tier1 + '\n' + (failed.length ? '\n全部失敗的（多半是產生的輸入不合這個函式的要求，不代表函式壞掉）：\n' + failed.map((x) => '- ' + x).join('\n') : '') + (skipped.length ? '\n\n略過（沒有可靠的測試輸入）：' + skipped.slice(0, 10).map((x) => x.split('：')[0]).join('、') + (skipped.length > 10 ? '…' : '') : ''), null);
     }
     // 型別存根轉出來的型別表（stub_to_types.py 的輸出 JSON）：用 /unit-catalog stubs 附上檔案載入，存在檔案快取（unit-catalog-stubs.json），之後抽取自動使用
     async _unitCatalogGetStubs() {
