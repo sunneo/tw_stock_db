@@ -5,6 +5,23 @@
 import sys, json, inspect, importlib, re, ast
 
 REQ = json.loads(__FA_REQ__)
+for _p in REQ.get('sys_path', []):  # 測試用：把暫存資料夾加進搜尋路徑
+    sys.path.insert(0, _p)
+
+# 匯入不明的模組會執行它的程式碼：匯入期間用稽核掛鉤擋下網路、子行程、開瀏覽器、系統呼叫（不擋 open：匯入系統自己要讀檔）。
+_BLOCK_IMPORT = {'os.system', 'os.exec', 'os.posix_spawn', 'os.spawn', 'os.fork', 'os.forkpty', 'webbrowser.open', 'ctypes.dlopen'}
+_imp = {'armed': False}
+
+
+def _import_hook(event, args):
+    if _imp['armed'] and (event in _BLOCK_IMPORT or event.startswith('socket.') or event.startswith('subprocess.')):
+        raise RuntimeError('blocked-at-import:' + event)
+
+
+try:
+    sys.addaudithook(_import_hook)
+except Exception:
+    pass
 
 # 副作用：整個模組的規則（不執行任何東西）。沒有列出的模組一律 unknown（保守）。
 PURE_MODULES = set('json re math cmath statistics string textwrap base64 binascii hashlib hmac zlib html operator itertools functools collections urllib.parse difflib fractions decimal bisect heapq copy unicodedata struct csv shlex pprint numbers keyword token fnmatch posixpath ntpath colorsys calendar'.split())
@@ -85,6 +102,38 @@ def doctests(doc, limit=3):
     return out
 
 
+RISKY_IMPORTS = set('os shutil subprocess socket ssl urllib.request http.client http.server ftplib smtplib poplib imaplib telnetlib tempfile glob pathlib sqlite3 webbrowser ctypes multiprocessing threading pickle shelve zipfile tarfile requests urllib3 httpx aiohttp asyncio selectors signal pty fcntl mmap'.split())
+RISKY_CALLS = {'open', 'eval', 'exec', 'compile', '__import__', 'input', 'breakpoint', 'system', 'popen'}
+
+
+def static_pure(mod):
+    # 第三方模組的靜態判斷：看模組原始碼有沒有匯入會碰檔案／網路／行程的模組、有沒有呼叫 open／exec 之類。
+    # 只看這一個檔案：它呼叫的別的模組可能做事——所以結果只是「疑似純」，一定要探測驗證（探測時稽核掛鉤會擋）才能信任。
+    try:
+        import inspect as _i
+        src = _i.getsource(mod)
+    except Exception:
+        return False
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return False
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Import):
+            if any(a.name in RISKY_IMPORTS or a.name.split('.')[0] in RISKY_IMPORTS for a in n.names):
+                return False
+        elif isinstance(n, ast.ImportFrom):
+            m = n.module or ''
+            if m in RISKY_IMPORTS or m.split('.')[0] in RISKY_IMPORTS:
+                return False
+        elif isinstance(n, ast.Call):
+            f = n.func
+            name = f.id if isinstance(f, ast.Name) else (f.attr if isinstance(f, ast.Attribute) else '')
+            if name in RISKY_CALLS:
+                return False
+    return True
+
+
 def effects_for(modname, fname):
     if modname in PURE_MODULES:
         return [], True
@@ -103,9 +152,14 @@ def stdlib(modname):
 
 
 def extract(modname):
-    mod = importlib.import_module(modname)
+    _imp['armed'] = True
+    try:
+        mod = importlib.import_module(modname)
+    finally:
+        _imp['armed'] = False
     names = list(getattr(mod, '__all__', None) or [n for n in dir(mod) if not n.startswith('_')])
     protos, skipped = [], 0
+    static_ok = (not stdlib(modname)) and static_pure(mod)
     for n in names[: REQ.get('max_per_module', 400)]:
         o = getattr(mod, n, None)
         if o is None or not callable(o) or inspect.isclass(o):
@@ -122,9 +176,12 @@ def extract(modname):
             params = sig_from_doc(n, doc)
             sig_src = 'doc' if params is not None else None
         eff, pure = effects_for(modname, n)
+        pure_src = 'allowlist' if pure else None
+        if not pure and not stdlib(modname) and eff == ['unknown'] and static_ok:
+            eff, pure, pure_src = [], True, 'static'
         protos.append({
             'module': modname, 'name': n, 'summary': first_para(doc), 'params': params, 'sig_src': sig_src, 'returns': ret,
-            'effects': eff, 'pure': pure, 'stdlib': stdlib(modname), 'version': getattr(mod, '__version__', None),
+            'effects': eff, 'pure': pure, 'pure_src': pure_src, 'stdlib': stdlib(modname), 'version': getattr(mod, '__version__', None),
             'tests': doctests(doc) if REQ.get('doctest', True) else [], 'has_doc': bool(doc),
         })
     return protos, skipped
@@ -138,4 +195,12 @@ for m in REQ.get('modules', []):
         res['protos'].extend(protos)
     except Exception as e:  # 載入不了的模組（沒安裝、缺原生套件）只記錄，不中斷
         res['errors'].append({'module': m, 'error': type(e).__name__ + ': ' + str(e)[:200]})
+pv = {}
+for n in REQ.get('packages', []):  # 安裝的套件實際版本（之後套件升版要標過期）
+    try:
+        import importlib.metadata as _md
+        pv[n.split('==')[0]] = _md.version(n.split('==')[0])
+    except Exception:
+        pv[n.split('==')[0]] = None
+res['pkg_versions'] = pv
 print('FA_EXTRACT_RESULT:' + json.dumps(res, ensure_ascii=False))

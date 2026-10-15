@@ -65,4 +65,27 @@ if (!py) skipped = '（沒有 python，略過真實抽取）'; else {
         check('no unit is trusted just from a stdlib signature with no types and no tests', units.filter((x) => x.tier === 1).every((x) => x.tests.length > 0 || x.returns.type_src === 'annotation'));
     }
 }
+
+// --- 第三方模組：靜態判斷純函式、匯入保護、版本
+if (py) {
+    const os = require('os'); const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fa_ex_')); const w = (n, s) => fs.writeFileSync(path.join(dir, n), s);
+    w('fa_pure_mod.py', 'def add(a: int, b: int) -> int:\n    """Add two numbers."""\n    return a + b\n\ndef greet(name, punct="!"):\n    return "hi " + name + punct\n');
+    w('fa_io_mod.py', 'import os\n\ndef cwd():\n    return os.getcwd()\n');
+    w('fa_open_mod.py', 'def read(p):\n    return open(p).read()\n');
+    w('fa_net_import.py', 'import socket\ns = socket.socket()\ns.connect(("127.0.0.1", 9))\ndef f():\n    return 1\n');
+    w('fa_exec_mod.py', 'def run(code):\n    return eval(code)\n');
+    const code = fs.readFileSync(path.join(__dirname, 'extract_py.py'), 'utf8').replace('__FA_REQ__', () => JSON.stringify(JSON.stringify({ modules: ['fa_pure_mod', 'fa_io_mod', 'fa_open_mod', 'fa_net_import', 'fa_exec_mod'], packages: ['pip', 'no_such_pkg_zz'], sys_path: [dir], max_per_module: 50, doctest: true })));
+    const r = cp.spawnSync(py, ['-I', '-c', code], { encoding: 'utf8', maxBuffer: 1 << 26 }); const line = (r.stdout || '').split('\n').find((l) => l.startsWith('FA_EXTRACT_RESULT:')); check('third-party extraction runs', !!line, r.stderr.slice(0, 300));
+    if (line) {
+        const res = JSON.parse(line.slice('FA_EXTRACT_RESULT:'.length)); const by = (m, n) => res.protos.find((p) => p.module === m && p.name === n);
+        check('a module with no risky imports/calls is statically pure (marked static, not allowlist)', by('fa_pure_mod', 'add').pure === true && by('fa_pure_mod', 'add').pure_src === 'static' && by('fa_pure_mod', 'greet').pure === true && by('fa_pure_mod', 'add').stdlib === false, by('fa_pure_mod', 'add'));
+        check('importing os makes it not pure (stays unknown, conservative)', by('fa_io_mod', 'cwd').pure === false && by('fa_io_mod', 'cwd').effects[0] === 'unknown', by('fa_io_mod', 'cwd'));
+        check('open()/eval() calls make it not pure', by('fa_open_mod', 'read').pure === false && by('fa_exec_mod', 'run').pure === false);
+        check('annotations come through for third-party code', by('fa_pure_mod', 'add').params[0].annotation === 'int' && by('fa_pure_mod', 'add').returns === 'int');
+        const u = C.unitFromPyProto(by('fa_pure_mod', 'add'), { installed: ['fa_pure_mod'] }); check('statically-pure unit is NOT trusted until probed (even though fully typed)', u.pure === true && u.pure_src === 'static' && u.tier === 0 && u.avail.state === 'installed', [u.tier, u.pure_src]);
+        check('a network call at import time is blocked and reported, the extractor continues', res.errors.some((e) => e.module === 'fa_net_import' && /blocked-at-import|socket/.test(e.error)) && !!by('fa_pure_mod', 'add'), res.errors);
+        check('package versions: installed one has a version, missing one is null', typeof res.pkg_versions.pip === 'string' && res.pkg_versions.no_such_pkg_zz === null, res.pkg_versions);
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+}
 console.log(bad.length ? 'FAIL\n' + bad.join('\n') : 'extract_py: ' + ok + ' passed' + skipped); process.exit(bad.length ? 1 : 0);

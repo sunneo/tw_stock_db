@@ -53,24 +53,31 @@
     }
 
     // ===== 把探測結果套回單元 =====
+    function eventEffects(ev) {
+        if (ev === 'open') return ['fs.read', 'fs.write']; if (/^socket\./.test(ev) || /^http\.client|^urllib/.test(ev)) return ['net']; if (/^subprocess\./.test(ev) || /^os\.(system|exec|posix_spawn|spawn|fork|forkpty)/.test(ev) || ev === 'ctypes.dlopen' || ev === 'ctypes.dlsym') return ['proc'];
+        if (/^os\.(remove|rename|rmdir|mkdir|chmod|chown|truncate|symlink|link)|^shutil\.|^tempfile\./.test(ev)) return ['fs.write']; if (/^webbrowser\./.test(ev)) return ['proc', 'ui']; if (ev === 'exec' || ev === 'compile') return ['proc']; if (/^os\.(putenv|unsetenv)/.test(ev)) return ['env']; return [];
+    }
     function typeOk(observed, declared) { try { return Cat.isAssignable(observed, declared); } catch (_) { return false; } }
     function collapse(types) { const u = Array.from(new Set(types)); if (u.includes('number')) return u.filter((x) => x !== 'int').length === 1 ? 'number' : 'union<' + u.filter((x) => x !== 'int').join('|') + '>'; return u.length === 1 ? u[0] : 'union<' + u.join('|') + '>'; }
     function retier(u) {
         const typedAll = u.params.every((q) => q.type_src !== 'none' && q.type !== 'any' && q.type !== 'callable'); const rt = u.returns && u.returns.type !== 'any' && u.returns.type !== 'json';
         const avail = u.avail && (u.avail.state === 'builtin' || u.avail.state === 'installed');
-        u.tier = (typedAll && !u.effects.includes('unknown') && avail && u.returns.type !== 'callable' && !u.type_conflict && (u.tests.length > 0 || rt) && !(u.probe && u.probe.ok === 0)) ? 1 : 0; return u.tier;
+        u.tier = ((u.pure_src !== 'static' || u.verified === true) && typedAll && !u.effects.includes('unknown') && avail && u.returns.type !== 'callable' && !u.type_conflict && (u.tests.length > 0 || rt) && !(u.probe && u.probe.ok === 0)) ? 1 : 0; return u.tier;
     }
     function applyProbe(unit, job, cases, opts) {
         opts = opts || {}; const u = unit; const res = job.cases || []; const ok = res.filter((r) => r.ok); const blocked = res.filter((r) => r.blocked).length;
         const REJ = /^(TypeError|ValueError|OverflowError|ZeroDivisionError|KeyError|IndexError|AttributeError|ArithmeticError|LookupError|UnicodeError)$/; // 輸入被拒絕（我們產生的輸入不合這個函式的要求），不是程式壞掉
         const rejected = res.filter((r) => !r.ok && !r.blocked && [r.exc].concat(r.bases || []).some((x) => REJ.test(x || ''))).length;
         const nondet = ok.filter((r) => !r.det).length; const observed = ok.length ? collapse(ok.map((r) => r.type)) : null;
+        // 探測時被稽核掛鉤擋下的事件＝這個函式真的會做的事：記成「學到的副作用」（只增不減）。靜態判斷成純的函式被抓到有副作用時，在這裡改正。
+        const learned = new Set(); for (const r of res) if (r.blocked) { const ev = String(r.msg || '').replace(/^blocked:/, ''); for (const e of eventEffects(ev)) learned.add(e); }
+        if (learned.size) { u.learned_effects = Array.from(learned); u.effects = Cat.EFFECTS.filter((e) => learned.has(e) || (u.effects.includes(e) && e !== 'unknown')); u.pure = false; u.effects_src = 'probe'; }
         u.probe = { cases: res.length, ok: ok.length, rejected, blocked, nondeterministic: nondet, observed, import_error: job.import_error || null, errors: res.filter((r) => !r.ok).slice(0, 3).map((r) => r.exc + ': ' + (r.msg || '').slice(0, 60)) };
         if (job.import_error) { u.probe.ok = 0; retier(u); return u; }
         if (nondet) u.nondeterministic = true; if (!ok.length) { retier(u); return u; }
         // 回傳型別：宣告不明 → 以觀察到的為準（標 probe）；宣告明確 → 每個觀察值都放得進宣告才算驗證過，否則記錄衝突
         const declared = u.returns && u.returns.type; const unknownDeclared = !declared || declared === 'any' || declared === 'json';
-        if (unknownDeclared) { if (observed && observed !== 'any' && !/^union/.test(observed)) { u.returns = { type: observed, type_src: 'probe', verified: true }; } }
+        if (unknownDeclared) { if (observed && observed !== 'any' && !/^union/.test(observed)) { const widen = observed === 'int' && u.params.some((p) => /number|any/.test(p.type)); u.returns = { type: widen ? 'number' : observed, type_src: 'probe', verified: true, ...(widen ? { widened: true } : {}) }; } } // 輸入可能是小數時，只看到 int 不能斷定回傳一定是 int：放寬成 number（寧可不精確，不要錯）
         else { const bad = ok.filter((r) => !typeOk(r.type, declared)); if (bad.length) u.type_conflict = { declared, observed: collapse(bad.map((r) => r.type)) }; else u.returns.verified = true; }
         // 參數：有成功案例用到的參數視為「接受這種型別」（不代表會拒絕別的型別）
         const used = new Set(); (cases || []).forEach((c, i) => { if (res[i] && res[i].ok) { Object.keys(c.kwargs || {}).forEach((k) => used.add(k)); (u.params.filter((p) => p.kind === 'positional' && p.required)).slice(0, (c.args || []).length).forEach((p) => used.add(p.name)); } });
@@ -86,5 +93,5 @@
         const pr = units.filter((u) => u.probe); const n = pr.length; const pct = (a) => (n ? Math.round((a / n) * 1000) / 10 : 0);
         return { probed: n, any_ok: pr.filter((u) => u.probe.ok > 0).length, all_failed: pr.filter((u) => u.probe.ok === 0).length, verified: pr.filter((u) => u.verified).length, conflicts: pr.filter((u) => u.type_conflict).length, nondeterministic: pr.filter((u) => u.nondeterministic).length, blocked: pr.filter((u) => u.probe.blocked).length, with_probe_tests: pr.filter((u) => (u.tests || []).some((t) => t.src === 'probe')).length, verified_pct: pct(pr.filter((u) => u.verified).length), tier1: units.filter((u) => u.tier === 1).length };
     }
-    return { candidates, buildCases, applyProbe, retier, probeStats, collapse };
+    return { candidates, buildCases, applyProbe, retier, probeStats, collapse, eventEffects };
 });

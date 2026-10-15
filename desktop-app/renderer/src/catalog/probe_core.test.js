@@ -48,6 +48,18 @@ check('applied units still validate', eq(C.validateUnit(P.applyProbe(mkU(), { id
 const st = P.probeStats([P.applyProbe(mkU(), { id: 'a', cases: [R()] }, cases3), P.applyProbe(mkU(), { id: 'b', cases: [{ ok: false, exc: 'TypeError' }] }, cases3), mkU()]);
 check('stats', st.probed === 2 && st.any_ok === 1 && st.all_failed === 1 && st.verified === 1 && st.tier1 === 1, st);
 
+u = P.applyProbe(U('prod', [['seq', 'list<number>']], { returns: { type: 'any', type_src: 'none' }, tier: 0 }), { id: 'x', cases: [R({ type: 'int', json: 24 })] }, [{ args: [], kwargs: { seq: [1, 2, 3, 4] } }]); check('an int seen from number-like inputs is widened to number (may return float for float inputs)', u.returns.type === 'number' && u.returns.widened === true, u.returns);
+u = P.applyProbe(U('count', [['s', 'text']], { returns: { type: 'any', type_src: 'none' }, tier: 0 }), { id: 'x', cases: [R({ type: 'int', json: 3 })] }, [{ args: [], kwargs: { s: 'abc' } }]); check('an int from non-numeric inputs stays int', u.returns.type === 'int' && !u.returns.widened, u.returns);
+// --- 靜態純函式：探測驗證過才信任；被擋下的事件學成副作用
+const sp = (extra) => U('sp', [['a', 'int']], Object.assign({ pure_src: 'static', returns: { type: 'int', type_src: 'annotation' }, tier: 0, avail: { state: 'installed', needs: [] } }, extra || {}));
+let us = P.applyProbe(sp(), { id: 'x', cases: [R({ type: 'int', json: 3 })] }, [{ args: [], kwargs: { a: 1 } }]); check('static-pure + verified by probe → trusted', us.verified === true && us.tier === 1, [us.tier, us.verified]);
+us = P.applyProbe(sp(), { id: 'x', cases: [{ ok: false, exc: 'TypeError', msg: 'x' }] }, [{ args: [], kwargs: { a: 1 } }]); check('static-pure but every probe failed → not trusted', us.tier === 0);
+us = sp(); P.retier(us); check('static-pure without a probe is never trusted', us.tier === 0);
+us = P.applyProbe(sp(), { id: 'x', cases: [{ ok: false, exc: 'Blocked', blocked: true, msg: 'blocked:socket.connect' }, R({ type: 'int', json: 3 })] }, [{ args: [], kwargs: { a: 1 } }, { args: [], kwargs: { a: 2 } }]); check('a blocked network call teaches the unit it has the net effect (and it is no longer pure)', eq(us.effects, ['net']) && us.pure === false && eq(us.learned_effects, ['net']) && us.effects_src === 'probe', [us.effects, us.pure]);
+us = P.applyProbe(sp({ effects: ['unknown'], pure: false }), { id: 'x', cases: [{ ok: false, exc: 'Blocked', blocked: true, msg: 'blocked:open' }] }, [{ args: [], kwargs: { a: 1 } }]); check('learned effects replace "unknown"', eq(us.effects, ['fs.read', 'fs.write']), us.effects);
+us = P.applyProbe(sp({ effects: ['fs.read'], pure: false }), { id: 'x', cases: [{ ok: false, exc: 'Blocked', blocked: true, msg: 'blocked:socket.connect' }] }, [{ args: [], kwargs: { a: 1 } }]); check('learning only adds effects, never removes known ones', eq(us.effects, ['fs.read', 'net']), us.effects);
+check('event → effect map', eq(P.eventEffects('subprocess.Popen'), ['proc']) && eq(P.eventEffects('os.remove'), ['fs.write']) && eq(P.eventEffects('webbrowser.open'), ['proc', 'ui']) && eq(P.eventEffects('nothing'), []));
+
 // --- 真的跑探測腳本
 function findPython() { for (const c of ['python', 'python3', 'py']) { try { const r = cp.spawnSync(c, ['-c', 'import sys;assert sys.version_info>=(3,9);print(1)'], { encoding: 'utf8' }); if (r.status === 0) return c; } catch (_) { /* */ } } return null; }
 const py = findPython();

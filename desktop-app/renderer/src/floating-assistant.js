@@ -1643,6 +1643,18 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     // transformers.js在瀏覽器端跑，WebGPU可用時用WebGPU否則CPU WASM）、
     // extract_audio（把音軌抽成WAV檔）。模型首次使用時從HuggingFace下載、
     // 瀏覽器Cache API快取。之後Phase會加上burn_subtitles（把字幕燒進影片）。
+    // 2026-10-16：認識新的函式庫、查詢可用的函式單元與型別接線（單元目錄，設計見 DESIGN.unit-catalog.md）。
+    unit_catalog: {
+        enabled: true,
+        label: '單元目錄（認識新的 Python 函式庫、查詢可用的函式單元與型別接線）',
+        toolNames: ['catalog_onboard', 'catalog_query'],
+        systemPrompt: '你負責「認識新的函式庫」和「查有什麼能用」。原則：\n' +
+            '1. 先用 catalog_query（search）看目錄裡有沒有現成的單元，有就直接用，不要重複安裝。\n' +
+            '2. 沒有、而且使用者要用一個新的 Python 套件，才用 catalog_onboard。只接受 PyPI 套件名稱（可加 ==版本），不接受網址、git、本機路徑；要安裝的套件工具會自己請使用者同意，不要替使用者決定、不要繞過。\n' +
+            '3. 回報要誠實：trusted 的單元才是型別已知且驗證過的；沒 trusted 的要講原因（held_reasons），用之前先告知風險。不要把「抽出來了」說成「可以放心用」。\n' +
+            '4. 想把 A 接到 B 時用 catalog_query 的 path（型別字串，例如 file_id），不要自己猜接線；cast 的接線信心很低，要說明。',
+        dynamicNote: '路由建議：使用者要用一個還不認識的 Python 套件、或問「有沒有能做 X 的函式」「怎麼把 A 接到 B」，委派這個領域。',
+    },
     // 2026-10-15：太大的內容（網頁全文、整份貼上、大型JSON）不整份丟給模型。這個領域專門評估「這會不會炸、我有什麼工具」並動手處理。
     big_content: {
         enabled: true,
@@ -10821,7 +10833,7 @@ return holder.FaGram;
 const FA_CATALOG_PROBE_PY = "# 單元目錄的探測執行（只用標準庫；在 Pyodide 或一般 CPython 裡都能跑）。設計見 DESIGN.unit-catalog.md 第四、五節。\n# 只對「純函式」（模組白名單、沒有副作用）執行，並且：\n#   - 用稽核掛鉤（sys.addaudithook）擋下檔案、網路、子行程、程式碼執行這類事件，碰到就中止那一次呼叫、記成 blocked；\n#   - 每個案例執行兩次，結果不同就標非決定性；結果與輸出都截短；\n#   - 逾時由呼叫端（JS）終止整個 Worker，這裡只負責不讓單次結果太大。\n# 用法：JS 端把 PROBE_REQ 那一行的占位符換成請求（JSON 字串的字面值）再執行；輸出一行 \"FA_PROBE_RESULT:\" + JSON。\n#   請求：{\"jobs\":[{\"id\",\"module\",\"name\",\"cases\":[{\"args\":[...],\"kwargs\":{...}}]}], \"max_repr\":200}\n#   參數值的特殊編碼：{\"$bytes\": \"<base64>\"}→ bytes；{\"$tuple\": [...]}→ tuple。\nimport sys, json, importlib, base64, math, re\n\nREQ = json.loads(__FA_PROBE_REQ__)\nMAX_REPR = int(REQ.get('max_repr', 200))\nBLOCKED_EVENTS = {'open', 'os.system', 'os.exec', 'os.posix_spawn', 'os.spawn', 'os.fork', 'os.forkpty', 'subprocess.Popen', 'os.remove', 'os.rename', 'os.rmdir', 'os.mkdir',\n                  'os.chmod', 'os.chown', 'os.truncate', 'os.symlink', 'os.link', 'os.putenv', 'os.unsetenv', 'shutil.rmtree', 'shutil.copyfile', 'shutil.move', 'shutil.copytree',\n                  'ctypes.dlopen', 'ctypes.dlsym', 'exec', 'compile', 'import.__main__', 'webbrowser.open', 'tempfile.mkstemp', 'tempfile.mkdtemp', 'urllib.Request', 'http.client.connect'}\n_state = {'armed': False}\n\n\ndef _hook(event, args):\n    if not _state['armed']:\n        return\n    if event in BLOCKED_EVENTS or event.startswith('socket.') or event.startswith('subprocess.'):\n        raise RuntimeError('blocked:' + event)\n\n\ntry:\n    sys.addaudithook(_hook)\n    AUDIT = True\nexcept Exception:  # 沒有稽核掛鉤（很舊的版本）：不執行任何探測，直接回報\n    AUDIT = False\n\n\ndef decode(v):\n    if isinstance(v, dict):\n        if '$bytes' in v and len(v) == 1:\n            return base64.b64decode(v['$bytes'])\n        if '$tuple' in v and len(v) == 1:\n            return tuple(decode(x) for x in v['$tuple'])\n        return {k: decode(x) for k, x in v.items()}\n    if isinstance(v, list):\n        return [decode(x) for x in v]\n    return v\n\n\ndef tname(v, depth=0):\n    # 結果值 → 我們的型別詞彙（對不上的一律 any，不猜）\n    if v is None:\n        return 'null'\n    if isinstance(v, bool):\n        return 'bool'\n    if isinstance(v, int):\n        return 'int'\n    if isinstance(v, (float, complex)):\n        return 'number'\n    if type(v).__name__ in ('Fraction', 'Decimal'):\n        return 'number'\n    if isinstance(v, str):\n        return 'text'\n    if isinstance(v, (bytes, bytearray)):\n        return 'bytes'\n    if isinstance(v, dict):\n        return 'dict'\n    if isinstance(v, (list, tuple, set, frozenset)):\n        if depth >= 2:\n            return 'list<any>'\n        items = list(v)[:20]\n        if not items:\n            return 'list<any>'\n        ts = sorted(set(tname(x, depth + 1) for x in items))\n        if 'number' in ts and 'int' in ts:\n            ts.remove('int')\n        return 'list<' + (ts[0] if len(ts) == 1 else 'union<' + '|'.join(ts) + '>') + '>'\n    return 'any'\n\n\ndef srepr(v):\n    # 物件的預設 repr 帶記憶體位址（每次不同），比較與記錄時去掉，不然會被誤判成非決定性\n    return re.sub(r' (at|@) 0x[0-9a-fA-F]+', '', repr(v))\n\n\ndef jsonable(v):\n    try:\n        s = json.dumps(v, allow_nan=False)\n        return json.loads(s) if len(s) <= 2000 else None\n    except Exception:\n        return None\n\n\ndef one_call(fn, case):\n    args = [decode(a) for a in case.get('args', [])]\n    kwargs = {k: decode(v) for k, v in (case.get('kwargs') or {}).items()}\n    _state['armed'] = True\n    try:\n        return fn(*args, **kwargs)\n    finally:\n        _state['armed'] = False\n\n\ndef run_case(fn, case):\n    positional = False\n    try:\n        try:\n            r1 = one_call(fn, case)\n        except TypeError as e:\n            # 存根寫成關鍵字參數、實際是僅位置參數（例如 math.log）：改用位置參數重試一次，並記下來\n            if 'keyword argument' in str(e) and case.get('kwargs'):\n                r1 = one_call(fn, {'args': list(case.get('args', [])) + list(case['kwargs'].values()), 'kwargs': {}})\n                positional = True\n            else:\n                raise\n    except RuntimeError as e:\n        if str(e).startswith('blocked:'):\n            return {'ok': False, 'exc': 'Blocked', 'msg': str(e)[:120], 'blocked': True}\n        return {'ok': False, 'exc': 'RuntimeError', 'msg': str(e)[:120]}\n    except BaseException as e:  # 包含 SystemExit：探測不能讓整個程序結束\n        return {'ok': False, 'exc': type(e).__name__, 'msg': str(e)[:120], 'bases': [c.__name__ for c in type(e).__mro__[1:4]]}\n    try:\n        r2 = one_call(fn, {'args': list(case.get('args', [])) + list(case['kwargs'].values()), 'kwargs': {}} if positional else case)\n        det = srepr(r1) == srepr(r2)\n    except BaseException:\n        det = False\n    j = jsonable(r1)\n    out = {'ok': True, 'type': tname(r1), 'repr': srepr(r1)[:MAX_REPR], 'det': det, 'jsonable': j is not None or r1 is None}\n    if positional:\n        out['positional'] = True\n    if out['jsonable']:\n        out['json'] = j\n    if isinstance(r1, float) and (math.isnan(r1) or math.isinf(r1)):\n        out['jsonable'] = False\n        out.pop('json', None)\n    return out\n\n\nres = {'ok': True, 'python': sys.version.split()[0], 'audit': AUDIT, 'jobs': []}\nfor job in REQ.get('jobs', []):\n    item = {'id': job['id'], 'cases': [], 'import_error': None}\n    if not AUDIT:\n        item['import_error'] = 'no audit hook'\n        res['jobs'].append(item)\n        continue\n    try:\n        mod = importlib.import_module(job['module'])\n        fn = mod\n        for part in job['name'].split('.'):\n            fn = getattr(fn, part)\n        if not callable(fn):\n            raise TypeError('not callable')\n    except BaseException as e:\n        item['import_error'] = type(e).__name__ + ': ' + str(e)[:120]\n        res['jobs'].append(item)\n        continue\n    for case in job.get('cases', []):\n        item['cases'].append(run_case(fn, case))\n    res['jobs'].append(item)\nprint('FA_PROBE_RESULT:' + json.dumps(res, ensure_ascii=False))\n";
 /* CATPROBEPY-END */
 /* CATPY-BEGIN */
-const FA_CATALOG_EXTRACT_PY = "# 單元目錄的 Python 抽取器（只用標準庫；在 Pyodide 或一般 CPython 裡都能跑）。設計見 DESIGN.unit-catalog.md 第三、四、五節。\n# 用法：JS 端把 REQ 那一行的占位符換成請求（JSON 字串的字面值）再執行；輸出一行 \"FA_EXTRACT_RESULT:\" + JSON。\n#   請求：{\"modules\": [\"statistics\", ...], \"max_per_module\": 400, \"doctest\": true}\n# 這個腳本只「讀」：不呼叫任何被抽取的函式（doctest 範例只當文字存起來，之後在沙盒裡驗證才會執行）。\nimport sys, json, inspect, importlib, re, ast\n\nREQ = json.loads(__FA_REQ__)\n\n# 副作用：整個模組的規則（不執行任何東西）。沒有列出的模組一律 unknown（保守）。\nPURE_MODULES = set('json re math cmath statistics string textwrap base64 binascii hashlib hmac zlib html operator itertools functools collections urllib.parse difflib fractions decimal bisect heapq copy unicodedata struct csv shlex pprint numbers keyword token fnmatch posixpath ntpath colorsys calendar'.split())\nEFFECT_MODULES = {\n    'os': ['fs.read', 'fs.write', 'env', 'proc'], 'shutil': ['fs.read', 'fs.write'], 'subprocess': ['proc'], 'socket': ['net'], 'ssl': ['net'], 'urllib.request': ['net'],\n    'http.client': ['net'], 'ftplib': ['net'], 'smtplib': ['net'], 'random': ['random'], 'secrets': ['random'], 'time': ['time'], 'tempfile': ['fs.write'], 'glob': ['fs.read'],\n    'pathlib': ['fs.read', 'fs.write'], 'sqlite3': ['fs.write'], 'webbrowser': ['proc', 'ui'], 'ctypes': ['proc'], 'multiprocessing': ['proc'], 'threading': ['proc'], 'sys': ['env'],\n    'datetime': ['time'], 'logging': ['ui'], 'pickle': ['fs.read', 'fs.write'], 'shelve': ['fs.write'], 'zipfile': ['fs.read', 'fs.write'], 'tarfile': ['fs.read', 'fs.write'],\n}\nFS_READ_NAMES = re.compile(r'^(exists|lexists|isfile|isdir|islink|ismount|getsize|getmtime|getatime|getctime|realpath|samefile|samestat|sameopenfile)$')\n\n\ndef type_name(a):\n    if a is inspect.Parameter.empty or a is inspect.Signature.empty:\n        return None\n    if isinstance(a, str):\n        return a\n    n = getattr(a, '__name__', None)\n    if n and not getattr(a, '__args__', None):\n        return n\n    return str(a).replace('typing.', '')\n\n\ndef first_para(doc):\n    doc = (doc or '').strip()\n    if not doc:\n        return ''\n    para = re.split(r'\\n\\s*\\n', doc, maxsplit=1)[0]\n    return re.sub(r'\\s+', ' ', para)[:300]\n\n\ndef sig_from_doc(name, doc):\n    # C 實作的函式 inspect 拿不到簽名時，試著解析文件字串第一行 name(a, b, /, *, c=1)\n    first = (doc or '').strip().split('\\n', 1)[0]\n    m = re.match(r'^' + re.escape(name) + r'\\((.*)\\)\\s*(?:->.*)?$', first)\n    if not m:\n        return None\n    params, seen_star = [], False\n    for part in [x.strip() for x in m.group(1).split(',') if x.strip()]:\n        if part == '/':\n            for p in params:\n                if p['kind'] == 'POSITIONAL_OR_KEYWORD':\n                    p['kind'] = 'POSITIONAL_ONLY'\n            continue\n        if part == '*':\n            seen_star = True\n            continue\n        default = None\n        if '=' in part:\n            part, default = [x.strip() for x in part.split('=', 1)]\n        kind = 'VAR_POSITIONAL' if part.startswith('**') is False and part.startswith('*') else ('VAR_KEYWORD' if part.startswith('**') else ('KEYWORD_ONLY' if seen_star else 'POSITIONAL_OR_KEYWORD'))\n        params.append({'name': part.lstrip('*'), 'kind': kind, 'default': default, 'annotation': None})\n    return params\n\n\ndef doctests(doc, limit=3):\n    out, lines = [], (doc or '').split('\\n')\n    i = 0\n    while i < len(lines) and len(out) < limit:\n        s = lines[i].strip()\n        if s.startswith('>>> '):\n            expr = s[4:].strip()\n            exp, j = [], i + 1\n            while j < len(lines) and lines[j].strip() and not lines[j].strip().startswith('>>>') and not lines[j].strip().startswith('...'):\n                exp.append(lines[j].strip())\n                j += 1\n            try:\n                ast.parse(expr, mode='eval')\n                ok = True\n            except SyntaxError:\n                ok = False\n            e = ' '.join(exp)\n            if ok and e and '<' not in e and 'Traceback' not in e and len(expr) < 200 and len(e) < 200:\n                out.append({'expr': expr, 'expect': e, 'src': 'doctest'})\n            i = j\n        else:\n            i += 1\n    return out\n\n\ndef effects_for(modname, fname):\n    if modname in PURE_MODULES:\n        return [], True\n    if modname in ('os.path',):\n        return (['fs.read'], False) if FS_READ_NAMES.match(fname) else ([], True)\n    if modname == 'datetime':\n        return (['time'], False) if re.match(r'^(now|today|utcnow|fromtimestamp)$', fname) else ([], True)\n    eff = EFFECT_MODULES.get(modname)\n    return (list(eff), False) if eff else (['unknown'], False)\n\n\ndef stdlib(modname):\n    top = modname.split('.')[0]\n    names = getattr(sys, 'stdlib_module_names', None)\n    return top in names if names else top in sys.builtin_module_names\n\n\ndef extract(modname):\n    mod = importlib.import_module(modname)\n    names = list(getattr(mod, '__all__', None) or [n for n in dir(mod) if not n.startswith('_')])\n    protos, skipped = [], 0\n    for n in names[: REQ.get('max_per_module', 400)]:\n        o = getattr(mod, n, None)\n        if o is None or not callable(o) or inspect.isclass(o):\n            skipped += 1\n            continue\n        doc = inspect.getdoc(o) or ''\n        params, sig_src, ret = None, None, None\n        try:\n            s = inspect.signature(o)\n            params = [{'name': p.name, 'kind': p.kind.name, 'default': None if p.default is p.empty else repr(p.default)[:80], 'annotation': type_name(p.annotation)} for p in s.parameters.values()]\n            ret = type_name(s.return_annotation)\n            sig_src = 'inspect'\n        except (ValueError, TypeError):\n            params = sig_from_doc(n, doc)\n            sig_src = 'doc' if params is not None else None\n        eff, pure = effects_for(modname, n)\n        protos.append({\n            'module': modname, 'name': n, 'summary': first_para(doc), 'params': params, 'sig_src': sig_src, 'returns': ret,\n            'effects': eff, 'pure': pure, 'stdlib': stdlib(modname), 'version': getattr(mod, '__version__', None),\n            'tests': doctests(doc) if REQ.get('doctest', True) else [], 'has_doc': bool(doc),\n        })\n    return protos, skipped\n\n\nres = {'ok': True, 'python': sys.version.split()[0], 'modules': {}, 'protos': [], 'errors': []}\nfor m in REQ.get('modules', []):\n    try:\n        protos, skipped = extract(m)\n        res['modules'][m] = {'callables': len(protos), 'skipped': skipped}\n        res['protos'].extend(protos)\n    except Exception as e:  # 載入不了的模組（沒安裝、缺原生套件）只記錄，不中斷\n        res['errors'].append({'module': m, 'error': type(e).__name__ + ': ' + str(e)[:200]})\nprint('FA_EXTRACT_RESULT:' + json.dumps(res, ensure_ascii=False))\n";
+const FA_CATALOG_EXTRACT_PY = "# 單元目錄的 Python 抽取器（只用標準庫；在 Pyodide 或一般 CPython 裡都能跑）。設計見 DESIGN.unit-catalog.md 第三、四、五節。\n# 用法：JS 端把 REQ 那一行的占位符換成請求（JSON 字串的字面值）再執行；輸出一行 \"FA_EXTRACT_RESULT:\" + JSON。\n#   請求：{\"modules\": [\"statistics\", ...], \"max_per_module\": 400, \"doctest\": true}\n# 這個腳本只「讀」：不呼叫任何被抽取的函式（doctest 範例只當文字存起來，之後在沙盒裡驗證才會執行）。\nimport sys, json, inspect, importlib, re, ast\n\nREQ = json.loads(__FA_REQ__)\nfor _p in REQ.get('sys_path', []):  # 測試用：把暫存資料夾加進搜尋路徑\n    sys.path.insert(0, _p)\n\n# 匯入不明的模組會執行它的程式碼：匯入期間用稽核掛鉤擋下網路、子行程、開瀏覽器、系統呼叫（不擋 open：匯入系統自己要讀檔）。\n_BLOCK_IMPORT = {'os.system', 'os.exec', 'os.posix_spawn', 'os.spawn', 'os.fork', 'os.forkpty', 'webbrowser.open', 'ctypes.dlopen'}\n_imp = {'armed': False}\n\n\ndef _import_hook(event, args):\n    if _imp['armed'] and (event in _BLOCK_IMPORT or event.startswith('socket.') or event.startswith('subprocess.')):\n        raise RuntimeError('blocked-at-import:' + event)\n\n\ntry:\n    sys.addaudithook(_import_hook)\nexcept Exception:\n    pass\n\n# 副作用：整個模組的規則（不執行任何東西）。沒有列出的模組一律 unknown（保守）。\nPURE_MODULES = set('json re math cmath statistics string textwrap base64 binascii hashlib hmac zlib html operator itertools functools collections urllib.parse difflib fractions decimal bisect heapq copy unicodedata struct csv shlex pprint numbers keyword token fnmatch posixpath ntpath colorsys calendar'.split())\nEFFECT_MODULES = {\n    'os': ['fs.read', 'fs.write', 'env', 'proc'], 'shutil': ['fs.read', 'fs.write'], 'subprocess': ['proc'], 'socket': ['net'], 'ssl': ['net'], 'urllib.request': ['net'],\n    'http.client': ['net'], 'ftplib': ['net'], 'smtplib': ['net'], 'random': ['random'], 'secrets': ['random'], 'time': ['time'], 'tempfile': ['fs.write'], 'glob': ['fs.read'],\n    'pathlib': ['fs.read', 'fs.write'], 'sqlite3': ['fs.write'], 'webbrowser': ['proc', 'ui'], 'ctypes': ['proc'], 'multiprocessing': ['proc'], 'threading': ['proc'], 'sys': ['env'],\n    'datetime': ['time'], 'logging': ['ui'], 'pickle': ['fs.read', 'fs.write'], 'shelve': ['fs.write'], 'zipfile': ['fs.read', 'fs.write'], 'tarfile': ['fs.read', 'fs.write'],\n}\nFS_READ_NAMES = re.compile(r'^(exists|lexists|isfile|isdir|islink|ismount|getsize|getmtime|getatime|getctime|realpath|samefile|samestat|sameopenfile)$')\n\n\ndef type_name(a):\n    if a is inspect.Parameter.empty or a is inspect.Signature.empty:\n        return None\n    if isinstance(a, str):\n        return a\n    n = getattr(a, '__name__', None)\n    if n and not getattr(a, '__args__', None):\n        return n\n    return str(a).replace('typing.', '')\n\n\ndef first_para(doc):\n    doc = (doc or '').strip()\n    if not doc:\n        return ''\n    para = re.split(r'\\n\\s*\\n', doc, maxsplit=1)[0]\n    return re.sub(r'\\s+', ' ', para)[:300]\n\n\ndef sig_from_doc(name, doc):\n    # C 實作的函式 inspect 拿不到簽名時，試著解析文件字串第一行 name(a, b, /, *, c=1)\n    first = (doc or '').strip().split('\\n', 1)[0]\n    m = re.match(r'^' + re.escape(name) + r'\\((.*)\\)\\s*(?:->.*)?$', first)\n    if not m:\n        return None\n    params, seen_star = [], False\n    for part in [x.strip() for x in m.group(1).split(',') if x.strip()]:\n        if part == '/':\n            for p in params:\n                if p['kind'] == 'POSITIONAL_OR_KEYWORD':\n                    p['kind'] = 'POSITIONAL_ONLY'\n            continue\n        if part == '*':\n            seen_star = True\n            continue\n        default = None\n        if '=' in part:\n            part, default = [x.strip() for x in part.split('=', 1)]\n        kind = 'VAR_POSITIONAL' if part.startswith('**') is False and part.startswith('*') else ('VAR_KEYWORD' if part.startswith('**') else ('KEYWORD_ONLY' if seen_star else 'POSITIONAL_OR_KEYWORD'))\n        params.append({'name': part.lstrip('*'), 'kind': kind, 'default': default, 'annotation': None})\n    return params\n\n\ndef doctests(doc, limit=3):\n    out, lines = [], (doc or '').split('\\n')\n    i = 0\n    while i < len(lines) and len(out) < limit:\n        s = lines[i].strip()\n        if s.startswith('>>> '):\n            expr = s[4:].strip()\n            exp, j = [], i + 1\n            while j < len(lines) and lines[j].strip() and not lines[j].strip().startswith('>>>') and not lines[j].strip().startswith('...'):\n                exp.append(lines[j].strip())\n                j += 1\n            try:\n                ast.parse(expr, mode='eval')\n                ok = True\n            except SyntaxError:\n                ok = False\n            e = ' '.join(exp)\n            if ok and e and '<' not in e and 'Traceback' not in e and len(expr) < 200 and len(e) < 200:\n                out.append({'expr': expr, 'expect': e, 'src': 'doctest'})\n            i = j\n        else:\n            i += 1\n    return out\n\n\nRISKY_IMPORTS = set('os shutil subprocess socket ssl urllib.request http.client http.server ftplib smtplib poplib imaplib telnetlib tempfile glob pathlib sqlite3 webbrowser ctypes multiprocessing threading pickle shelve zipfile tarfile requests urllib3 httpx aiohttp asyncio selectors signal pty fcntl mmap'.split())\nRISKY_CALLS = {'open', 'eval', 'exec', 'compile', '__import__', 'input', 'breakpoint', 'system', 'popen'}\n\n\ndef static_pure(mod):\n    # 第三方模組的靜態判斷：看模組原始碼有沒有匯入會碰檔案／網路／行程的模組、有沒有呼叫 open／exec 之類。\n    # 只看這一個檔案：它呼叫的別的模組可能做事——所以結果只是「疑似純」，一定要探測驗證（探測時稽核掛鉤會擋）才能信任。\n    try:\n        import inspect as _i\n        src = _i.getsource(mod)\n    except Exception:\n        return False\n    try:\n        tree = ast.parse(src)\n    except SyntaxError:\n        return False\n    for n in ast.walk(tree):\n        if isinstance(n, ast.Import):\n            if any(a.name in RISKY_IMPORTS or a.name.split('.')[0] in RISKY_IMPORTS for a in n.names):\n                return False\n        elif isinstance(n, ast.ImportFrom):\n            m = n.module or ''\n            if m in RISKY_IMPORTS or m.split('.')[0] in RISKY_IMPORTS:\n                return False\n        elif isinstance(n, ast.Call):\n            f = n.func\n            name = f.id if isinstance(f, ast.Name) else (f.attr if isinstance(f, ast.Attribute) else '')\n            if name in RISKY_CALLS:\n                return False\n    return True\n\n\ndef effects_for(modname, fname):\n    if modname in PURE_MODULES:\n        return [], True\n    if modname in ('os.path',):\n        return (['fs.read'], False) if FS_READ_NAMES.match(fname) else ([], True)\n    if modname == 'datetime':\n        return (['time'], False) if re.match(r'^(now|today|utcnow|fromtimestamp)$', fname) else ([], True)\n    eff = EFFECT_MODULES.get(modname)\n    return (list(eff), False) if eff else (['unknown'], False)\n\n\ndef stdlib(modname):\n    top = modname.split('.')[0]\n    names = getattr(sys, 'stdlib_module_names', None)\n    return top in names if names else top in sys.builtin_module_names\n\n\ndef extract(modname):\n    _imp['armed'] = True\n    try:\n        mod = importlib.import_module(modname)\n    finally:\n        _imp['armed'] = False\n    names = list(getattr(mod, '__all__', None) or [n for n in dir(mod) if not n.startswith('_')])\n    protos, skipped = [], 0\n    static_ok = (not stdlib(modname)) and static_pure(mod)\n    for n in names[: REQ.get('max_per_module', 400)]:\n        o = getattr(mod, n, None)\n        if o is None or not callable(o) or inspect.isclass(o):\n            skipped += 1\n            continue\n        doc = inspect.getdoc(o) or ''\n        params, sig_src, ret = None, None, None\n        try:\n            s = inspect.signature(o)\n            params = [{'name': p.name, 'kind': p.kind.name, 'default': None if p.default is p.empty else repr(p.default)[:80], 'annotation': type_name(p.annotation)} for p in s.parameters.values()]\n            ret = type_name(s.return_annotation)\n            sig_src = 'inspect'\n        except (ValueError, TypeError):\n            params = sig_from_doc(n, doc)\n            sig_src = 'doc' if params is not None else None\n        eff, pure = effects_for(modname, n)\n        pure_src = 'allowlist' if pure else None\n        if not pure and not stdlib(modname) and eff == ['unknown'] and static_ok:\n            eff, pure, pure_src = [], True, 'static'\n        protos.append({\n            'module': modname, 'name': n, 'summary': first_para(doc), 'params': params, 'sig_src': sig_src, 'returns': ret,\n            'effects': eff, 'pure': pure, 'pure_src': pure_src, 'stdlib': stdlib(modname), 'version': getattr(mod, '__version__', None),\n            'tests': doctests(doc) if REQ.get('doctest', True) else [], 'has_doc': bool(doc),\n        })\n    return protos, skipped\n\n\nres = {'ok': True, 'python': sys.version.split()[0], 'modules': {}, 'protos': [], 'errors': []}\nfor m in REQ.get('modules', []):\n    try:\n        protos, skipped = extract(m)\n        res['modules'][m] = {'callables': len(protos), 'skipped': skipped}\n        res['protos'].extend(protos)\n    except Exception as e:  # 載入不了的模組（沒安裝、缺原生套件）只記錄，不中斷\n        res['errors'].append({'module': m, 'error': type(e).__name__ + ': ' + str(e)[:200]})\npv = {}\nfor n in REQ.get('packages', []):  # 安裝的套件實際版本（之後套件升版要標過期）\n    try:\n        import importlib.metadata as _md\n        pv[n.split('==')[0]] = _md.version(n.split('==')[0])\n    except Exception:\n        pv[n.split('==')[0]] = None\nres['pkg_versions'] = pv\nprint('FA_EXTRACT_RESULT:' + json.dumps(res, ensure_ascii=False))\n";
 /* CATPY-END */
 /* CATALOG-BEGIN */
 const FaCatalog = (function () {
@@ -11017,9 +11029,9 @@ const holder = {};
         const typedAll = hasSig && params.every((q) => q.type_src !== 'none' && q.type !== 'any' && q.type !== 'callable');
         const u = { id: 'py:' + p.module + '.' + p.name, runtime: 'python', name: p.module + '.' + p.name, summary: summaryOf(p.summary), params, returns: rt ? { type: rt, type_src: rtSrc } : { type: 'any', type_src: 'none' }, effects: pure ? [] : (effects.length ? effects : ['unknown']), pure, avail: { state, needs: [] }, domains: [], tests: (p.tests || []).slice(0, 3),
             call: { runtime: 'python', import: p.module, qualname: p.name, via: 'pyodide' }, sig_src: p.sig_src || 'none' };
-        if (p.version) u.version = p.version;
+        if (p.version) u.version = p.version; if (p.pure_src) u.pure_src = p.pure_src;
         // 信任等級 1：簽名完整、參數型別都明確（不含 callable）、副作用已知、可用、而且有測試案例或回傳型別明確
-        u.tier = (typedAll && !callableParam.length && rt !== 'callable' && !u.effects.includes('unknown') && (state === 'builtin' || state === 'installed') && (u.tests.length > 0 || !!rt)) ? 1 : 0; return u;
+        u.tier = (u.pure_src !== 'static' && typedAll && !callableParam.length && rt !== 'callable' && !u.effects.includes('unknown') && (state === 'builtin' || state === 'installed') && (u.tests.length > 0 || !!rt)) ? 1 : 0; return u;
     }
 
     // ===== 工具 → 單元 =====
@@ -11251,24 +11263,31 @@ const holder = {};
     }
 
     // ===== 把探測結果套回單元 =====
+    function eventEffects(ev) {
+        if (ev === 'open') return ['fs.read', 'fs.write']; if (/^socket\./.test(ev) || /^http\.client|^urllib/.test(ev)) return ['net']; if (/^subprocess\./.test(ev) || /^os\.(system|exec|posix_spawn|spawn|fork|forkpty)/.test(ev) || ev === 'ctypes.dlopen' || ev === 'ctypes.dlsym') return ['proc'];
+        if (/^os\.(remove|rename|rmdir|mkdir|chmod|chown|truncate|symlink|link)|^shutil\.|^tempfile\./.test(ev)) return ['fs.write']; if (/^webbrowser\./.test(ev)) return ['proc', 'ui']; if (ev === 'exec' || ev === 'compile') return ['proc']; if (/^os\.(putenv|unsetenv)/.test(ev)) return ['env']; return [];
+    }
     function typeOk(observed, declared) { try { return Cat.isAssignable(observed, declared); } catch (_) { return false; } }
     function collapse(types) { const u = Array.from(new Set(types)); if (u.includes('number')) return u.filter((x) => x !== 'int').length === 1 ? 'number' : 'union<' + u.filter((x) => x !== 'int').join('|') + '>'; return u.length === 1 ? u[0] : 'union<' + u.join('|') + '>'; }
     function retier(u) {
         const typedAll = u.params.every((q) => q.type_src !== 'none' && q.type !== 'any' && q.type !== 'callable'); const rt = u.returns && u.returns.type !== 'any' && u.returns.type !== 'json';
         const avail = u.avail && (u.avail.state === 'builtin' || u.avail.state === 'installed');
-        u.tier = (typedAll && !u.effects.includes('unknown') && avail && u.returns.type !== 'callable' && !u.type_conflict && (u.tests.length > 0 || rt) && !(u.probe && u.probe.ok === 0)) ? 1 : 0; return u.tier;
+        u.tier = ((u.pure_src !== 'static' || u.verified === true) && typedAll && !u.effects.includes('unknown') && avail && u.returns.type !== 'callable' && !u.type_conflict && (u.tests.length > 0 || rt) && !(u.probe && u.probe.ok === 0)) ? 1 : 0; return u.tier;
     }
     function applyProbe(unit, job, cases, opts) {
         opts = opts || {}; const u = unit; const res = job.cases || []; const ok = res.filter((r) => r.ok); const blocked = res.filter((r) => r.blocked).length;
         const REJ = /^(TypeError|ValueError|OverflowError|ZeroDivisionError|KeyError|IndexError|AttributeError|ArithmeticError|LookupError|UnicodeError)$/; // 輸入被拒絕（我們產生的輸入不合這個函式的要求），不是程式壞掉
         const rejected = res.filter((r) => !r.ok && !r.blocked && [r.exc].concat(r.bases || []).some((x) => REJ.test(x || ''))).length;
         const nondet = ok.filter((r) => !r.det).length; const observed = ok.length ? collapse(ok.map((r) => r.type)) : null;
+        // 探測時被稽核掛鉤擋下的事件＝這個函式真的會做的事：記成「學到的副作用」（只增不減）。靜態判斷成純的函式被抓到有副作用時，在這裡改正。
+        const learned = new Set(); for (const r of res) if (r.blocked) { const ev = String(r.msg || '').replace(/^blocked:/, ''); for (const e of eventEffects(ev)) learned.add(e); }
+        if (learned.size) { u.learned_effects = Array.from(learned); u.effects = Cat.EFFECTS.filter((e) => learned.has(e) || (u.effects.includes(e) && e !== 'unknown')); u.pure = false; u.effects_src = 'probe'; }
         u.probe = { cases: res.length, ok: ok.length, rejected, blocked, nondeterministic: nondet, observed, import_error: job.import_error || null, errors: res.filter((r) => !r.ok).slice(0, 3).map((r) => r.exc + ': ' + (r.msg || '').slice(0, 60)) };
         if (job.import_error) { u.probe.ok = 0; retier(u); return u; }
         if (nondet) u.nondeterministic = true; if (!ok.length) { retier(u); return u; }
         // 回傳型別：宣告不明 → 以觀察到的為準（標 probe）；宣告明確 → 每個觀察值都放得進宣告才算驗證過，否則記錄衝突
         const declared = u.returns && u.returns.type; const unknownDeclared = !declared || declared === 'any' || declared === 'json';
-        if (unknownDeclared) { if (observed && observed !== 'any' && !/^union/.test(observed)) { u.returns = { type: observed, type_src: 'probe', verified: true }; } }
+        if (unknownDeclared) { if (observed && observed !== 'any' && !/^union/.test(observed)) { const widen = observed === 'int' && u.params.some((p) => /number|any/.test(p.type)); u.returns = { type: widen ? 'number' : observed, type_src: 'probe', verified: true, ...(widen ? { widened: true } : {}) }; } } // 輸入可能是小數時，只看到 int 不能斷定回傳一定是 int：放寬成 number（寧可不精確，不要錯）
         else { const bad = ok.filter((r) => !typeOk(r.type, declared)); if (bad.length) u.type_conflict = { declared, observed: collapse(bad.map((r) => r.type)) }; else u.returns.verified = true; }
         // 參數：有成功案例用到的參數視為「接受這種型別」（不代表會拒絕別的型別）
         const used = new Set(); (cases || []).forEach((c, i) => { if (res[i] && res[i].ok) { Object.keys(c.kwargs || {}).forEach((k) => used.add(k)); (u.params.filter((p) => p.kind === 'positional' && p.required)).slice(0, (c.args || []).length).forEach((p) => used.add(p.name)); } });
@@ -11284,13 +11303,108 @@ const holder = {};
         const pr = units.filter((u) => u.probe); const n = pr.length; const pct = (a) => (n ? Math.round((a / n) * 1000) / 10 : 0);
         return { probed: n, any_ok: pr.filter((u) => u.probe.ok > 0).length, all_failed: pr.filter((u) => u.probe.ok === 0).length, verified: pr.filter((u) => u.verified).length, conflicts: pr.filter((u) => u.type_conflict).length, nondeterministic: pr.filter((u) => u.nondeterministic).length, blocked: pr.filter((u) => u.probe.blocked).length, with_probe_tests: pr.filter((u) => (u.tests || []).some((t) => t.src === 'probe')).length, verified_pct: pct(pr.filter((u) => u.verified).length), tier1: units.filter((u) => u.tier === 1).length };
     }
-    return { candidates, buildCases, applyProbe, retier, probeStats, collapse };
+    return { candidates, buildCases, applyProbe, retier, probeStats, collapse, eventEffects };
 });
 
 }).call(null, undefined, holder);
 return holder.FaCatalogProbe;
 })();
 /* CATPROBE-END */
+/* CATONB-BEGIN */
+const FaCatalogOnboard = (function () {
+const holder = {};
+(function (module, self) {
+/* catalog_onboard 的核心（UMD，純函式）：請求驗證與安全關卡、結果摘要、持久化格式與合併、為什麼沒晉升、單元查詢。
+ * 實際的安裝／抽取／探測在 floating-assistant.js（Pyodide Worker）。設計見 DESIGN.unit-catalog.md 第十六節。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory(require('./catalog_core.js'));
+    else root.FaCatalogOnboard = factory(root.FaCatalog || (typeof FaCatalog !== 'undefined' ? FaCatalog : undefined));
+})(typeof self !== 'undefined' ? self : this, function (Cat) {
+    'use strict';
+    const LIMITS = { modules: 20, packages: 5, unitsTotal: 3000, installMs: 120000, extractMs: 60000, probeBatchMs: 30000, probeUnitMs: 8000, storeUnits: 20000, records: 50 };
+    // 匯入就會做事（開視窗、開瀏覽器、跑圖形介面）的標準庫模組：不給匯入
+    const DENY_MODULES = new Set(['antigravity', 'this', 'tkinter', 'turtle', 'turtledemo', 'idlelib', 'webbrowser', 'pydoc', 'pdb', 'code', 'codeop', 'site', '__main__', 'ensurepip', 'venv', 'pip', 'setuptools', 'pkg_resources', 'distutils', 'lib2to3', 'test', 'xmlrpc.server', 'http.server', 'socketserver', 'asyncio.__main__']);
+    const MOD_RE = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/;
+    const PKG_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,60}(==[A-Za-z0-9][A-Za-z0-9._!+-]{0,30})?$/;
+
+    // ===== 請求驗證 =====
+    // args: { modules: string[], packages?: string[], probe?: boolean }
+    function validateRequest(args, env) {
+        env = env || {}; args = args || {}; const errors = [];
+        let modules = Array.isArray(args.modules) ? args.modules : (typeof args.modules === 'string' ? args.modules.split(/[\s,]+/) : []); modules = Array.from(new Set(modules.map((x) => String(x).trim()).filter(Boolean)));
+        let packages = Array.isArray(args.packages) ? args.packages : (typeof args.packages === 'string' ? args.packages.split(/[\s,]+/) : []); packages = Array.from(new Set(packages.map((x) => String(x).trim()).filter(Boolean)));
+        if (!modules.length) errors.push('modules 不能是空的（要抽取哪些模組，例如 ["statistics"]；安裝套件時是它匯入時的名稱，例如 "yaml"）');
+        if (modules.length > LIMITS.modules) errors.push('一次最多 ' + LIMITS.modules + ' 個模組');
+        if (packages.length > LIMITS.packages) errors.push('一次最多安裝 ' + LIMITS.packages + ' 個套件');
+        for (const m of modules) { if (!MOD_RE.test(m)) errors.push('模組名稱不合法：' + m); else if (DENY_MODULES.has(m) || DENY_MODULES.has(m.split('.')[0])) errors.push('不給匯入：' + m + '（匯入就會開視窗、開瀏覽器或啟動伺服器）'); }
+        for (const p of packages) {
+            if (/^(git\+|https?:|ssh:|file:)|[\/\\@: ]/.test(p.replace(/==.*/, ''))) errors.push('不支援這種套件來源：' + p + '（只接受 PyPI 套件名稱，可加 ==版本；git 網址、本機路徑、任意網址都不行——瀏覽器沙盒裡沒有 git，也不讓模型指定任意網址）');
+            else if (!PKG_RE.test(p)) errors.push('套件名稱不合法：' + p);
+        }
+        const allow = new Set((env.allowlist || []).map((x) => String(x).toLowerCase())); const normName = (p) => p.replace(/==.*/, '').toLowerCase().replace(/[_.]+/g, '-');
+        const needConfirm = packages.filter((p) => !allow.has(normName(p)) && !allow.has(p.toLowerCase()));
+        return { ok: !errors.length, errors, modules, packages, probe: args.probe !== false, needConfirm, install: packages.length > 0 };
+    }
+    function confirmText(req) {
+        return '要安裝並匯入這些套件，好讓 AI 學會使用它們：\n\n' + req.needConfirm.map((p) => '- ' + p).join('\n') + '\n\n會發生什麼：從 PyPI 下載（只有純 Python 套件與 Pyodide 官方編好的套件裝得起來），在隔離的 Python 沙盒（Worker）裡安裝並匯入模組：' + req.modules.join('、') + '。\n⚠️ 安裝與匯入本身會執行套件裡的程式碼。沙盒擋下網路連線、子行程與開啟瀏覽器，但不保證安全——只安裝你信任的套件。抽取只讀不呼叫函式；探測只對判斷為純函式的單元，擋下檔案與網路。';
+    }
+
+    // ===== 為什麼沒晉升（信任等級 0 的原因）=====
+    function heldReasons(units) {
+        const out = { no_signature: 0, untyped_params: 0, effects_unknown: 0, has_callable: 0, unavailable: 0, no_tests_or_return: 0, type_conflict: 0, probe_failed: 0, other: 0 }; const examples = {};
+        const note = (k, u) => { out[k]++; (examples[k] = examples[k] || []).length < 5 && examples[k].push(u.name); };
+        for (const u of units) {
+            if (u.tier === 1) continue;
+            if (u.type_conflict) note('type_conflict', u); else if (u.call && u.sig_src === 'none') note('no_signature', u); else if (u.avail && !['builtin', 'installed'].includes(u.avail.state)) note('unavailable', u);
+            else if (u.effects.includes('unknown')) note('effects_unknown', u); else if (u.params.some((p) => p.type === 'callable') || (u.returns && u.returns.type === 'callable')) note('has_callable', u);
+            else if (u.params.some((p) => p.type_src === 'none' || p.type === 'any')) note('untyped_params', u); else if (u.probe && u.probe.ok === 0) note('probe_failed', u);
+            else if (!(u.tests && u.tests.length) && !(u.returns && u.returns.type !== 'any')) note('no_tests_or_return', u); else note('other', u);
+        }
+        return { counts: out, examples };
+    }
+
+    // ===== 結果摘要（給模型看的，要短）=====
+    function summarize(units, extra) {
+        extra = extra || {}; const st = Cat.stats(units); const t1 = units.filter((u) => u.tier === 1); const held = heldReasons(units);
+        const probed = units.filter((u) => u.probe); const pct = (a, b) => (b ? Math.round((a / b) * 1000) / 10 : null);
+        return { units: units.length, trusted: t1.length, trusted_pct: pct(t1.length, units.length), params_typed_pct: st.typed_param_pct, probed: probed.length, verified: probed.filter((u) => u.verified).length, type_conflicts: units.filter((u) => u.type_conflict).length,
+            trusted_examples: t1.slice(0, 12).map((u) => u.name + '(' + u.params.map((p) => p.name + ':' + p.type).join(', ') + ') → ' + u.returns.type), held_reasons: Object.fromEntries(Object.entries(held.counts).filter(([, v]) => v)), held_examples: held.examples, ...extra };
+    }
+
+    // ===== 持久化：{ version, python, records:[…], units:[…] } =====
+    function emptyStore() { return { version: 1, python: null, records: [], units: [] }; }
+    function mergeStore(store, newUnits, record) {
+        const s = store && store.units ? { version: 1, python: store.python || null, records: (store.records || []).slice(), units: store.units.slice() } : emptyStore(); const byId = new Map(s.units.map((u, i) => [u.id, i]));
+        // 同一個模組重新抽取：先清掉這個模組舊的單元（套件升版後函式可能消失，不要留殘影）
+        const mods = new Set(newUnits.map((u) => u.call && u.call.import).filter(Boolean)); s.units = s.units.filter((u) => !(u.call && mods.has(u.call.import))); byId.clear(); s.units.forEach((u, i) => byId.set(u.id, i));
+        for (const u of newUnits) { if (byId.has(u.id)) s.units[byId.get(u.id)] = u; else { byId.set(u.id, s.units.length); s.units.push(u); } }
+        if (s.units.length > LIMITS.storeUnits) s.units = s.units.slice(s.units.length - LIMITS.storeUnits);
+        if (record) { s.records.push(record); if (s.records.length > LIMITS.records) s.records = s.records.slice(-LIMITS.records); s.python = record.python || s.python; }
+        return s;
+    }
+    // 目錄裡的單元過期判斷：套件版本或 Python 版本與目前不同
+    function staleUnits(store, current) { const stale = []; for (const u of (store.units || [])) { const rec = (store.records || []).slice().reverse().find((r) => r.modules && r.modules.includes(u.call && u.call.import)); if (!rec) continue; const pkgChanged = current && current.packages && Object.keys(rec.versions || {}).some((k) => current.packages[k] && current.packages[k] !== rec.versions[k]); const pyChanged = current && current.python && rec.python && current.python.split('.').slice(0, 2).join('.') !== rec.python.split('.').slice(0, 2).join('.'); if (pkgChanged || pyChanged) stale.push(u.id); } return stale; }
+    function makeRecord(req, res, units, now) { return { when: now || new Date().toISOString(), python: res.python, modules: req.modules, packages: req.packages, versions: res.pkg_versions || {}, source: req.install ? 'pypi' : 'stdlib', units: units.length, trusted: units.filter((u) => u.tier === 1).length, probed: req.probe }; }
+
+    // ===== 查詢（給 catalog_query 與模型用）=====
+    function score(u, words) { let s = 0; const hay = (u.name + ' ' + (u.summary || '') + ' ' + u.params.map((p) => p.name).join(' ')).toLowerCase(); for (const w of words) { if (u.name.toLowerCase() === w) s += 10; else if (u.name.toLowerCase().includes(w)) s += 4; else if (hay.includes(w)) s += 1; } return s; }
+    function search(units, text, opts) {
+        opts = opts || {}; const words = String(text || '').toLowerCase().split(/[\s,，、]+/).filter((w) => w.length >= 2); const limit = Math.min(opts.limit || 10, 30); let pool = units;
+        if (opts.onlyTrusted) pool = pool.filter((u) => u.tier === 1); if (opts.runtime) pool = pool.filter((u) => u.runtime === opts.runtime);
+        if (opts.takes) { try { pool = pool.filter((u) => u.params.some((p) => Cat.isAssignable(opts.takes, p.type) && p.type !== 'any')); } catch (_) { /* 型別字串不合法就不篩 */ } }
+        if (opts.returns) { try { pool = pool.filter((u) => u.returns.type !== 'any' && u.returns.type !== 'json' && Cat.isAssignable(u.returns.type, opts.returns)); } catch (_) { /* */ } }
+        const ranked = pool.map((u) => ({ u, s: words.length ? score(u, words) : 1 })).filter((x) => x.s > 0).sort((a, b) => b.s - a.s || b.u.tier - a.u.tier || (a.u.name < b.u.name ? -1 : 1)).slice(0, limit);
+        return ranked.map((x) => brief(x.u));
+    }
+    function brief(u) { return { id: u.id, signature: u.name + '(' + u.params.map((p) => p.name + (p.required ? '' : '?') + ':' + p.type).join(', ') + ') → ' + u.returns.type, summary: (u.summary || '').slice(0, 100), trusted: u.tier === 1, effects: u.effects, verified: !!u.verified, call: u.call || null }; }
+
+    return { LIMITS, DENY_MODULES, validateRequest, confirmText, heldReasons, summarize, emptyStore, mergeStore, staleUnits, makeRecord, search, brief };
+});
+
+}).call(null, undefined, holder);
+return holder.FaCatalogOnboard;
+})();
+/* CATONB-END */
 /* DATACORE-BEGIN */
 const FaDataCore = (function () {
 const holder = {};
@@ -28923,6 +29037,25 @@ ${fnData.code}
         // 這裡另外寫一個對應pyodide.FS介面的walk。stdout/stderr的擷取用
         // Pyodide官方支援的setStdout/setStderr（batched callback），不是
         // 靠python自己print再從某個地方讀回來。
+        registerOptional('catalog_onboard',
+            '認識一個新的 Python 函式庫：（PyPI 套件要使用者同意）安裝→抽取每個函式的簽名、型別、副作用→在沙盒裡探測純函式、驗證型別→登記成可用的「單元」並存檔。回傳：單元數、可信任的數量、沒晉升的原因。參數：{"modules":["要抽取的模組（匯入名稱）"],"packages":["PyPI 套件名稱，可加==版本；標準庫不用填"],"probe":true}。只接受 PyPI 套件名稱，不接受網址或 git。',
+            async function (rawArgs) {
+                let p = {}; try { p = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const prog = this._createProgressWidget('🧩 認識新函式庫：' + (Array.isArray(p.modules) ? p.modules.join('、') : String(p.modules || '')));
+                const r = await this._unitCatalogOnboard(p, prog); if (r.ok) prog.finish('完成：' + r.units + ' 個單元，可信任 ' + r.trusted); else prog.fail(r.error);
+                return JSON.stringify(r);
+            },
+            { type: 'object', properties: { modules: { type: 'array', items: { type: 'string' }, description: '要抽取的模組（匯入名稱，例如 statistics、yaml）' }, packages: { type: 'array', items: { type: 'string' }, description: '要安裝的 PyPI 套件（可加 ==版本）；標準庫不用填' }, probe: { type: 'boolean', description: '是否探測純函式（預設 true）' } }, required: ['modules'], additionalProperties: false }
+        );
+        registerOptional('catalog_query',
+            '查詢單元目錄（已認識的函式、工具）。action：search（text 關鍵字；可加 takes／returns 型別、trusted、runtime、limit）、show（id）、path（from、to 型別字串，找出幾步接得起來的接線；cast=true 允許不明型別強制轉型）、stats。trusted＝型別已知且有測試或探測驗證過；沒 trusted 的要先告知風險。',
+            async function (rawArgs) {
+                let p = {}; try { p = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try { await this._unitCatalogStoreLoad(); return JSON.stringify(this._unitCatalogQuery(p)); } catch (e) { return JSON.stringify({ ok: false, error: String((e && e.message) || e) }); }
+            },
+            { type: 'object', properties: { action: { type: 'string', enum: ['search', 'show', 'path', 'stats'] }, text: { type: 'string' }, id: { type: 'string' }, from: { type: 'string' }, to: { type: 'string' }, takes: { type: 'string' }, returns: { type: 'string' }, trusted: { type: 'boolean' }, runtime: { type: 'string' }, limit: { type: 'number' }, cast: { type: 'boolean' } }, additionalProperties: false }
+        );
+
         registerOptional('big_content',
             '處理「太大、沒有整份放進上下文」的內容（工具回傳或使用者貼上，被暫存起來，帶有代號 bc_N）。action：info（長度、行數、是不是JSON、結構概要）、read（offset+length 分段讀）、grep（pattern 正規式找，附前後文）、json（path 例如 a.items[0].name 或 items[*].id，取JSON指定部分）、js（寫一段JavaScript函式本體，參數 text 是原文、data 是解析好的JSON（不是JSON則為null），return 你要的結果；用來解析、篩選、統計、取欄位）。結果會被限制大小，只拿你需要的。',
             async function (rawArgs) {
@@ -59706,6 +59839,8 @@ ${existingNodeSummaries}
     async _unitCatalogSlash(argsText) {
         const argv = String(argsText || '').trim().split(/\s+/).filter(Boolean); const wantJson = argv.includes('json'); this.messages.push({ role: 'user', content: '/unit-catalog' + (argv.length ? ' ' + argv.join(' ') : '') });
         try {
+            try { await this._unitCatalogStoreLoad(); } catch (_) { /* 存檔的目錄讀不回來就只用這次的 */ }
+            if (argv[0] === 'onboard') { await this._unitCatalogStoreLoad(); await this._unitCatalogOnboardReply(argv.slice(1)); this._persistChatHistory(); this._renderMessageHistory(); return; }
             if (argv[0] === 'probe') { await this._unitCatalogProbeReply(argv.slice(1)); this._persistChatHistory(); this._renderMessageHistory(); return; }
             if (argv[0] === 'stubs') { await this._unitCatalogStubsReply(argsText); this._persistChatHistory(); this._renderMessageHistory(); return; }
             if (argv[0] === 'extract') { await this._unitCatalogExtractReply(argv.slice(1)); this._persistChatHistory(); this._renderMessageHistory(); return; }
@@ -59720,51 +59855,130 @@ ${existingNodeSummaries}
     }
 
     // ===== 不認得的函式庫 → 單元（Python）：在 Pyodide 裡讀簽名、文件、副作用規則，產出原型再轉成單元。只讀，不呼叫任何被抽取的函式。=====
-    async _unitCatalogExtractPython(modules, installPkgs) {
-        if (!FA_CATALOG_EXTRACT_PY) throw new Error('抽取腳本沒有嵌入');
-        const req = { modules, max_per_module: 400, doctest: true }; let script = '';
-        if (installPkgs && installPkgs.length) script += 'import micropip\nawait micropip.install(' + JSON.stringify(installPkgs) + ')\n'; // 純 Python 套件與 Pyodide 官方編好的套件才裝得起來
-        script += FA_CATALOG_EXTRACT_PY.replace('__FA_REQ__', () => JSON.stringify(JSON.stringify(req)));
-        const stubs = await this._unitCatalogGetStubs();
-        const r = await this._runPyodideIsolated(script, {});
-        const line = String(r.stdout || '').split('\n').find((l) => l.startsWith('FA_EXTRACT_RESULT:'));
-        if (!line) throw new Error('抽取沒有結果' + (r.stderr ? '：' + String(r.stderr).split('\n').slice(-3).join(' ') : ''));
-        const res = JSON.parse(line.slice('FA_EXTRACT_RESULT:'.length)); const units = res.protos.map((p) => FaCatalog.unitFromPyProto(p, { installed: installPkgs || [], stubs }));
-        if (!this._unitCatalogExtra) this._unitCatalogExtra = new Map(); for (const u of units) this._unitCatalogExtra.set(u.id, u);
-        return { units, res, stubs: !!stubs };
-    }
-    // ===== 探測執行：只對純函式，在 Pyodide 沙盒裡真的跑，驗證型別、補測試案例（probe_py.py）。逾時就終止整個 Worker。=====
-    async _unitCatalogRunProbe(jobs, timeoutMs) {
-        if (!FA_CATALOG_PROBE_PY) throw new Error('探測腳本沒有嵌入');
-        const script = FA_CATALOG_PROBE_PY.replace('__FA_PROBE_REQ__', () => JSON.stringify(JSON.stringify({ jobs, max_repr: 200 })));
+    // ===== Python 沙盒（Pyodide Worker）的共用執行：逾時就終止整個 Worker =====
+    async _unitCatalogPyJson(script, marker, timeoutMs) {
         let timer = null; const to = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('TIMEOUT')), timeoutMs); });
         try {
             const r = await Promise.race([this._runPyodideIsolated(script, {}), to]); clearTimeout(timer);
-            const line = String(r.stdout || '').split('\n').find((l) => l.startsWith('FA_PROBE_RESULT:')); if (!line) throw new Error('探測沒有結果' + (r.stderr ? '：' + String(r.stderr).split('\n').slice(-2).join(' ') : ''));
-            return JSON.parse(line.slice('FA_PROBE_RESULT:'.length));
-        } catch (e) {
-            clearTimeout(timer); if (String(e.message) === 'TIMEOUT' && this._idrWk) { try { this._idrWk.worker.terminate(); } catch (_) { /* */ } this._idrWk = null; } // 卡住的呼叫只能整個終止（下一次重新載入 Pyodide）
-            throw e;
+            const line = String(r.stdout || '').split('\n').find((l) => l.startsWith(marker)); if (!line) throw new Error('沒有結果' + (r.stderr ? '：' + String(r.stderr).split('\n').slice(-3).join(' ') : ''));
+            return JSON.parse(line.slice(marker.length));
+        } catch (e) { clearTimeout(timer); if (String(e.message) === 'TIMEOUT') this._unitCatalogKillWorker(); throw e; }
+    }
+    _unitCatalogKillWorker() { if (this._idrWk) { try { this._idrWk.worker.terminate(); } catch (_) { /* */ } this._idrWk = null; } } // 卡住的呼叫只能整個終止；下一次重新載入 Pyodide（也順便丟掉被安裝套件改過的狀態）
+    async _unitCatalogExtractPython(modules, installPkgs, opts) {
+        opts = opts || {}; if (!FA_CATALOG_EXTRACT_PY) throw new Error('抽取腳本沒有嵌入');
+        const pkgs = installPkgs || []; const req = { modules, packages: pkgs.map((p) => p.split('==')[0]), max_per_module: 400, doctest: true }; let script = '';
+        if (pkgs.length) script += 'import pyodide_js\nawait pyodide_js.loadPackage("micropip")\nimport micropip\nawait micropip.install(' + JSON.stringify(pkgs) + ')\n'; // 純 Python 套件與 Pyodide 官方編好的套件才裝得起來
+        script += FA_CATALOG_EXTRACT_PY.replace('__FA_REQ__', () => JSON.stringify(JSON.stringify(req)));
+        const stubs = await this._unitCatalogGetStubs();
+        const res = await this._unitCatalogPyJson(script, 'FA_EXTRACT_RESULT:', opts.timeoutMs || (pkgs.length ? 120000 : 60000));
+        const installed = pkgs.length ? modules.map((m) => m.split('.')[0]) : [];
+        const units = res.protos.map((p) => FaCatalog.unitFromPyProto(p, { installed, stubs }));
+        if (!this._unitCatalogExtra) this._unitCatalogExtra = new Map(); for (const u of units) this._unitCatalogExtra.set(u.id, u);
+        return { units, res, stubs: !!stubs };
+    }
+
+    // ===== 探測執行：只對純函式，在 Pyodide 沙盒裡真的跑，驗證型別、補測試案例（probe_py.py）=====
+    async _unitCatalogRunProbe(jobs, timeoutMs) {
+        if (!FA_CATALOG_PROBE_PY) throw new Error('探測腳本沒有嵌入');
+        const script = FA_CATALOG_PROBE_PY.replace('__FA_PROBE_REQ__', () => JSON.stringify(JSON.stringify({ jobs, max_repr: 200 })));
+        return this._unitCatalogPyJson(script, 'FA_PROBE_RESULT:', timeoutMs);
+    }
+    _unitCatalogProbePool(units, mods) { // 只探測純函式（模組白名單或靜態判斷出來的）；有副作用或不明的不探測
+        return units.filter((u) => u.runtime === 'python' && u.pure === true && u.effects.length === 0 && ['builtin', 'installed'].includes(u.avail.state) && (!mods || !mods.length || mods.some((m) => u.call.import === m || u.call.import.startsWith(m + '.'))));
+    }
+    // 探測一批單元。hooks: { isCancelled(), onProgress(done, total) }。整批逾時就一個一個重跑找出卡住的。
+    async _unitCatalogProbeUnits(pool, hooks) {
+        hooks = hooks || {}; const PC = FaCatalogProbe; const jobs = [], caseMap = new Map(), skipped = [], timeouts = [];
+        for (const u of pool) { const bc = PC.buildCases(u); if (bc.cases) { jobs.push({ id: u.id, module: u.call.import, name: u.call.qualname, cases: bc.cases }); caseMap.set(u.id, bc.cases); } else skipped.push(u.name + '：' + bc.skip); }
+        const byId = new Map(pool.map((u) => [u.id, u])); const BATCH = 25; let done = 0;
+        for (let i = 0; i < jobs.length; i += BATCH) {
+            if (hooks.isCancelled && hooks.isCancelled()) break; const batch = jobs.slice(i, i + BATCH);
+            try { const pr = await this._unitCatalogRunProbe(batch, 30000); for (const j of pr.jobs) PC.applyProbe(byId.get(j.id), j, caseMap.get(j.id)); }
+            catch (e) {
+                for (const job of batch) {
+                    if (hooks.isCancelled && hooks.isCancelled()) break;
+                    try { const pr = await this._unitCatalogRunProbe([job], 8000); PC.applyProbe(byId.get(job.id), pr.jobs[0], caseMap.get(job.id)); }
+                    catch (e2) { timeouts.push(job.id); const u = byId.get(job.id); const to = String(e2.message) === 'TIMEOUT'; u.probe = { cases: job.cases.length, ok: 0, rejected: 0, blocked: 0, nondeterministic: 0, observed: null, import_error: null, errors: [to ? '逾時' : String(e2.message).slice(0, 80)], timeout: to }; PC.retier(u); }
+                }
+            }
+            done = Math.min(jobs.length, i + BATCH); if (hooks.onProgress) hooks.onProgress(done, jobs.length);
         }
+        return { jobs: jobs.length, skipped, timeouts };
     }
     async _unitCatalogProbeReply(args) {
-        const mods = args.filter((a) => !/^--/.test(a)); const all = this._unitCatalogExtra ? Array.from(this._unitCatalogExtra.values()) : [];
-        const pool = all.filter((u) => u.runtime === 'python' && u.pure === true && u.effects.length === 0 && u.avail.state === 'builtin' && (!mods.length || mods.some((m) => u.call.import === m || u.call.import.startsWith(m + '.')))); // 只探測純函式（模組白名單判斷出來的）
+        const mods = args.filter((a) => !/^--/.test(a)); const all = this._unitCatalogExtra ? Array.from(this._unitCatalogExtra.values()) : []; const pool = this._unitCatalogProbePool(all, mods);
         if (!pool.length) { this._pushAssistantMessage('沒有可以探測的單元。先用 /unit-catalog extract python <模組…> 抽出單元（只有判斷為純函式的才會被探測執行）。', null); return; }
-        const PC = FaCatalogProbe; const jobs = [], caseMap = new Map(), skipped = [];
-        for (const u of pool) { const bc = PC.buildCases(u); if (bc.cases) { jobs.push({ id: u.id, module: u.call.import, name: u.call.qualname, cases: bc.cases }); caseMap.set(u.id, bc.cases); } else skipped.push(u.name + '：' + bc.skip); }
-        this._pushAssistantMessage('🧪 探測執行 ' + jobs.length + ' 個純函式（略過 ' + skipped.length + ' 個：沒有可靠的測試輸入）…在 Pyodide 沙盒裡執行，擋下檔案／網路／子行程，逾時會終止。', null); this._renderMessageHistory();
-        const t0 = Date.now(); const byId = new Map(pool.map((u) => [u.id, u])); const timeouts = []; const BATCH = 25;
-        for (let i = 0; i < jobs.length; i += BATCH) {
-            const batch = jobs.slice(i, i + BATCH);
-            try { const pr = await this._unitCatalogRunProbe(batch, 30000); for (const j of pr.jobs) PC.applyProbe(byId.get(j.id), j, caseMap.get(j.id)); }
-            catch (e) { // 整批卡住或失敗：一個一個重跑，找出是哪一個
-                for (const job of batch) { try { const pr = await this._unitCatalogRunProbe([job], 8000); PC.applyProbe(byId.get(job.id), pr.jobs[0], caseMap.get(job.id)); } catch (e2) { timeouts.push(job.id); const u = byId.get(job.id); u.probe = { cases: job.cases.length, ok: 0, rejected: 0, blocked: 0, nondeterministic: 0, observed: null, import_error: null, errors: [String(e2.message) === 'TIMEOUT' ? '逾時' : String(e2.message).slice(0, 80)], timeout: String(e2.message) === 'TIMEOUT' }; PC.retier(u); } }
-            }
-        }
+        this._pushAssistantMessage('🧪 探測執行 ' + pool.length + ' 個純函式…在 Pyodide 沙盒裡執行，擋下檔案／網路／子行程，逾時會終止。', null); this._renderMessageHistory();
+        const t0 = Date.now(); const PC = FaCatalogProbe; const { skipped, timeouts } = await this._unitCatalogProbeUnits(pool, {});
         const s = PC.probeStats(pool); const conflicts = pool.filter((u) => u.type_conflict).map((u) => u.name + '（宣告 ' + u.type_conflict.declared + '、實際 ' + u.type_conflict.observed + '）'); const failed = pool.filter((u) => u.probe && u.probe.ok === 0 && !u.probe.timeout).slice(0, 12).map((u) => u.name + (u.probe.errors[0] ? '：' + u.probe.errors[0] : ''));
         this._pushAssistantMessage('🧪 探測完成（' + (Date.now() - t0) + ' 毫秒）\n\n- 探測：' + s.probed + ' 個；至少一個案例成功：' + s.any_ok + '；全部失敗：' + s.all_failed + '\n- 驗證過（有成功案例、型別相符、結果穩定）：' + s.verified + '（' + s.verified_pct + '%）\n- 型別衝突（存根宣告與實際不符）：' + s.conflicts + (conflicts.length ? '：' + conflicts.slice(0, 10).join('、') : '') + '\n- 結果不穩定（兩次執行不同）：' + s.nondeterministic + '\n- 被擋下的危險呼叫：' + s.blocked + '\n- 逾時：' + timeouts.length + (timeouts.length ? '：' + timeouts.slice(0, 8).join('、') : '') + '\n- 新增的探測測試案例：' + s.with_probe_tests + ' 個單元\n- 信任等級 1（這批）：' + s.tier1 + '\n' + (failed.length ? '\n全部失敗的（多半是產生的輸入不合這個函式的要求，不代表函式壞掉）：\n' + failed.map((x) => '- ' + x).join('\n') : '') + (skipped.length ? '\n\n略過（沒有可靠的測試輸入）：' + skipped.slice(0, 10).map((x) => x.split('：')[0]).join('、') + (skipped.length > 10 ? '…' : '') : ''), null);
     }
+
+    // ===== 單元目錄的持久化：存在檔案快取（unit-catalog-python.json），重新載入後自動讀回 =====
+    async _unitCatalogStoreLoad() {
+        if (this._unitCatalogStoreLoaded) return this._unitCatalogStore; this._unitCatalogStoreLoaded = true; let store = null;
+        try { const all = await this.fileCache.getAll(); const rec = all.filter((r) => r && r.filename === 'unit-catalog-python.json').sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0]; if (rec && rec.blob) store = JSON.parse(await rec.blob.text()); } catch (_) { store = null; }
+        this._unitCatalogStore = store && Array.isArray(store.units) ? store : FaCatalogOnboard.emptyStore(); if (!this._unitCatalogExtra) this._unitCatalogExtra = new Map();
+        for (const u of this._unitCatalogStore.units) if (!this._unitCatalogExtra.has(u.id)) this._unitCatalogExtra.set(u.id, u);
+        return this._unitCatalogStore;
+    }
+    async _unitCatalogStoreSave(units, record) {
+        await this._unitCatalogStoreLoad(); this._unitCatalogStore = FaCatalogOnboard.mergeStore(this._unitCatalogStore, units, record); let saved = false;
+        try { const all = await this.fileCache.getAll(); for (const r of all) if (r && r.filename === 'unit-catalog-python.json') await this.fileCache.delete(r.id); await this.fileCache.put('unit-catalog-python.json', 'application/json', new Blob([JSON.stringify(this._unitCatalogStore)], { type: 'application/json' }), 'system'); saved = true; } catch (_) { saved = false; }
+        return saved;
+    }
+
+    // ===== catalog_onboard：認識一個新的 Python 函式庫（取得 → 抽取 → 補型別 → 探測 → 登記 → 存檔）=====
+    // 安全關卡：只接受 PyPI 套件名稱（不給網址、不給 git）；要安裝的套件每次都要使用者同意（除非在 advancedSettings.unitCatalogPackageAllowlist）；
+    // 安裝與匯入在乾淨的 Worker 裡做、完成後丟掉；匯入期間擋網路／子行程；探測只對純函式；每階段有逾時；可以停止。
+    async _unitCatalogOnboard(args, ui) {
+        ui = ui || {}; const O = FaCatalogOnboard; const PC = FaCatalogProbe; const say = (pct, status) => { try { if (ui.update) ui.update({ pct, status }); if (ui.log) ui.log(status); } catch (_) { /* */ } };
+        const req = O.validateRequest(args, { allowlist: (this.advancedSettings && this.advancedSettings.unitCatalogPackageAllowlist) || [] });
+        if (!req.ok) return { ok: false, stage: 'validate', error: req.errors.join('；') };
+        const t0 = Date.now(); let stage = 'confirm';
+        try {
+            await this._unitCatalogStoreLoad();
+            if (req.needConfirm.length) {
+                say(5, '等待使用者同意安裝：' + req.needConfirm.join('、'));
+                const a = await this.requestUserForm({ title: '🧩 要安裝並學習新的函式庫嗎？', description: O.confirmText(req), choices: ['允許安裝', '取消'] });
+                if (!a || !a.confirmed || a.answer !== '允許安裝') return { ok: false, stage: 'confirm', error: '使用者沒有同意安裝，沒有做任何事。' };
+            }
+            if (req.install) this._unitCatalogKillWorker(); // 乾淨的 Worker
+            stage = 'extract'; say(10, (req.install ? '安裝並' : '') + '抽取 ' + req.modules.join('、') + '…（第一次要載入 Pyodide）');
+            const ex = await this._unitCatalogExtractPython(req.modules, req.packages, { timeoutMs: req.install ? O.LIMITS.installMs : O.LIMITS.extractMs });
+            if (this.stopRequested) return { ok: false, stage: 'cancelled', error: '已停止（抽出的單元沒有存檔）。' };
+            let units = ex.units; if (units.length > O.LIMITS.unitsTotal) units = units.slice(0, O.LIMITS.unitsTotal);
+            say(45, '抽出 ' + units.length + ' 個單元' + (ex.res.errors.length ? '（' + ex.res.errors.length + ' 個模組失敗）' : '') + (req.probe ? '，開始探測…' : ''));
+            let probeInfo = null;
+            if (req.probe) {
+                stage = 'probe'; const pool = this._unitCatalogProbePool(units);
+                probeInfo = await this._unitCatalogProbeUnits(pool, { isCancelled: () => this.stopRequested, onProgress: (d, n) => say(45 + Math.round((d / Math.max(1, n)) * 45), '探測 ' + d + '/' + n) });
+                if (this.stopRequested) return { ok: false, stage: 'cancelled', error: '已停止（探測到一半，沒有存檔）。' };
+            }
+            stage = 'save'; say(92, '登記並存檔…'); const record = O.makeRecord(req, ex.res, units); const saved = await this._unitCatalogStoreSave(units, record);
+            const out = O.summarize(units, { python: ex.res.python, modules: ex.res.modules, module_errors: ex.res.errors, versions: ex.res.pkg_versions, probe: probeInfo ? { run: probeInfo.jobs, skipped: probeInfo.skipped.length, timeouts: probeInfo.timeouts.length } : null, types_from_stubs: ex.stubs, persisted: saved, ms: Date.now() - t0 });
+            say(100, '完成：' + units.length + ' 個單元，可信任 ' + out.trusted); return Object.assign({ ok: true }, out);
+        } catch (e) { return { ok: false, stage, error: String(e && e.message || e) + (String(e && e.message) === 'TIMEOUT' ? '（逾時，Worker 已終止）' : '') }; }
+        finally { if (req.install) this._unitCatalogKillWorker(); } // 丟掉安裝過套件的 Worker（不留下被套件改過的狀態）
+    }
+    async _unitCatalogOnboardReply(args) {
+        const inst = args.filter((a) => /^install=/i.test(a)).flatMap((a) => a.slice(8).split(',').map((x) => x.trim()).filter(Boolean)); const noprobe = args.includes('noprobe'); const mods = args.filter((a) => !/^install=/i.test(a) && a !== 'noprobe');
+        if (!mods.length) { this._pushAssistantMessage('用法：/unit-catalog onboard <模組…> [install=套件,…] [noprobe]\n一次做完：取得（PyPI 套件要你同意）→ 抽取 → 補型別 → 探測（只對純函式）→ 登記 → 存檔。AI 也可以用工具 catalog_onboard 做同樣的事。', null); return; }
+        const prog = this._createProgressWidget('🧩 認識新函式庫：' + mods.join('、')); const r = await this._unitCatalogOnboard({ modules: mods, packages: inst, probe: !noprobe }, prog);
+        if (!r.ok) { prog.fail(r.error); this._pushAssistantMessage('⚠️ ' + r.stage + '：' + r.error, null); return; }
+        prog.finish('完成');
+        this._pushAssistantMessage('🧩 認識完成（' + r.ms + ' 毫秒，Python ' + r.python + '）\n\n- 單元：' + r.units + '，**可信任 ' + r.trusted + '（' + r.trusted_pct + '%）**\n- 參數型別明確：' + r.params_typed_pct + '%；型別來自存根：' + (r.types_from_stubs ? '有' : '沒有') + '\n- 探測：' + r.probed + ' 個，驗證過 ' + r.verified + '，型別衝突 ' + r.type_conflicts + '\n- 版本：' + JSON.stringify(r.versions || {}) + '\n- 已存檔：' + (r.persisted ? '是（重新載入後會自動讀回）' : '否（存不下，只在這次執行裡）') + '\n- 沒有晉升的原因：' + (Object.entries(r.held_reasons).map(([k, v]) => k + ' ' + v).join('、') || '（全部晉升）') + (r.module_errors.length ? '\n- ⚠️ 失敗的模組：' + r.module_errors.map((e) => e.module + '（' + e.error.slice(0, 60) + '）').join('、') : ''), null);
+    }
+    // 給模型用的查詢：搜尋單元、看細節、型別接線
+    _unitCatalogQuery(args) {
+        const O = FaCatalogOnboard; const a = args || {}; const act = String(a.action || 'search'); const cat = this._unitCatalogBuild();
+        if (act === 'stats') { const s = cat.stats; return { ok: true, units: s.units, trusted: s.tier1, python_units: cat.units.filter((u) => u.runtime === 'python').length, effects: s.by_effect }; }
+        if (act === 'show') { const u = cat.units.find((x) => x.id === a.id || x.name === a.id); return u ? { ok: true, unit: u } : { ok: false, error: '找不到單元 ' + a.id }; }
+        if (act === 'path') { if (!a.from || !a.to) return { ok: false, error: 'path 需要 from 與 to（型別字串，例如 file_id）' }; const m = FaCatalogMatrix.buildMatrix(cat, { allowOpaque: a.cast === true }); const r = FaCatalogMatrix.findPipelines(m, { from: a.from, to: a.to }, { k: Math.min(a.limit || 5, 10), maxLen: 4 }); return { ok: true, found: r.found || 0, paths: r.paths.map((p) => ({ steps: p.names, via: p.via.map((v) => v.out + '→' + v.param + (v.cast ? '（強制轉型）' : '')), score: p.score, missing: p.extra_required, effects: p.effects })) }; }
+        return { ok: true, results: O.search(cat.units, a.text || '', { limit: a.limit, onlyTrusted: a.trusted === true, runtime: a.runtime, takes: a.takes, returns: a.returns }) };
+    }
+
     // 型別存根轉出來的型別表（stub_to_types.py 的輸出 JSON）：用 /unit-catalog stubs 附上檔案載入，存在檔案快取（unit-catalog-stubs.json），之後抽取自動使用
     async _unitCatalogGetStubs() {
         if (this._unitCatalogStubs !== undefined) return this._unitCatalogStubs;
