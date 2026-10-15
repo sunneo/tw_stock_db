@@ -10833,7 +10833,9 @@ const holder = {};
     const TYPE_SRC = ['annotation', 'stub', 'schema', 'doc', 'name', 'probe', 'curated', 'none'];
     const AVAIL = ['builtin', 'installed', 'cached', 'needs-network', 'disabled', 'unavailable'];
     // 型別詞彙：基本型別、由基本型別特化的（path 是一種 text），容器型別
-    const SPECIAL = { path: 'text', url: 'text', file_id: 'text', yaml: 'text', code: 'text', query: 'text' };
+    // 具體型別 → 它的上一層（可以放進上一層的位置，反過來不行）。檔案識別碼依媒體種類細分：pdf_file、video_file… 都是 file_id；gif_file 同時是 image_file
+    const SPECIAL = { path: 'text', url: 'text', file_id: 'text', yaml: 'text', code: 'text', query: 'text', pdf_file: 'file_id', video_file: 'file_id', audio_file: 'file_id', image_file: 'file_id', gif_file: 'image_file', subtitle_file: 'file_id' };
+    const KINDS = { pdf: 'pdf_file', video: 'video_file', audio: 'audio_file', image: 'image_file', gif: 'gif_file', subtitle: 'subtitle_file' };
 
     // ===== 型別字串：text number int bool any dict json path…、list<T>、enum<a|b>、union<A|B>、object{k:T,…} =====
     function parseType(s) {
@@ -10865,21 +10867,21 @@ const holder = {};
         if (from.k === 'object' && to.k === 'object') return Object.keys(to.fields).every((k) => k in from.fields && isAssignable(from.fields[k], to.fields[k]));
         if (from.k === to.k) return true;
         if (from.k === 'int' && to.k === 'number') return true;
-        if (SPECIAL[from.k] && to.k === SPECIAL[from.k]) return true; // path → text（具體 → 一般），反過來不行
+        for (let k = from.k, guard = 0; SPECIAL[k] && guard < 4; k = SPECIAL[k], guard++) if (SPECIAL[k] === to.k) return true; // path → text、gif_file → image_file → file_id → text（具體 → 一般），反過來不行
         if (from.k === 'json' && (to.k === 'dict' || to.k === 'list')) return true; if (from.k === 'dict' && to.k === 'json') return true;
         return false;
     }
 
     // ===== JSON Schema → 單元的型別 =====
-    const NAME_TYPES = [[/(^|_)(path|dir|folder|filepath|file_path|cwd)$/i, 'path'], [/(^|_)(url|uri|href|link)$/i, 'url'], [/(^|_)(file_id|fileid)$/i, 'file_id'], [/(^|_)(yaml|yml)$/i, 'yaml'], [/^(code|script|source)$/i, 'code'], [/^(query|pattern|keyword|q)$/i, 'query']];
+    const NAME_TYPES = [[/(^|_)(pdf|video|audio|image|gif|subtitle)_?file_?id$/i, 'KIND'], [/(^|_)(path|dir|folder|filepath|file_path|cwd)$/i, 'path'], [/(^|_)(url|uri|href|link)$/i, 'url'], [/(^|_)(file_id|fileid)$/i, 'file_id'], [/(^|_)(yaml|yml)$/i, 'yaml'], [/^(code|script|source)$/i, 'code'], [/^(query|pattern|keyword|q)$/i, 'query']];
     function schemaType(sc, pname, depth) {
         depth = depth || 0;
         if (!sc || typeof sc !== 'object') return { type: 'any', src: 'none' };
         if (Array.isArray(sc.enum) && sc.enum.length && sc.enum.length <= 24) return { type: 'enum<' + sc.enum.map((x) => String(x).replace(/[|<>]/g, '_')).join('|') + '>', src: 'schema' };
         const alt = sc.oneOf || sc.anyOf; if (Array.isArray(alt) && alt.length) { const ts = alt.map((a) => schemaType(a, pname, depth + 1)); return { type: 'union<' + ts.map((x) => x.type).join('|') + '>', src: ts.some((x) => x.src === 'none') ? 'none' : 'schema' }; }
         let ty = Array.isArray(sc.type) ? sc.type.filter((x) => x !== 'null') : sc.type; if (Array.isArray(ty)) { if (ty.length === 1) ty = ty[0]; else return { type: 'union<' + ty.map((x) => baseOf(x)).join('|') + '>', src: 'schema' }; }
-        if (ty === 'string') { const hit = NAME_TYPES.find(([re]) => re.test(pname || '')); return hit ? { type: hit[1], src: 'name' } : { type: 'text', src: 'schema' }; }
-        if (ty === 'array') { const it = sc.items ? schemaType(sc.items, '', depth + 1) : { type: 'any', src: 'none' }; return { type: 'list<' + it.type + '>', src: it.src === 'none' ? 'none' : 'schema' }; }
+        if (ty === 'string') { const hit = NAME_TYPES.find(([re]) => re.test(pname || '')); if (hit) { if (hit[1] === 'KIND') return { type: KINDS[/(pdf|video|audio|image|gif|subtitle)/i.exec(pname)[1].toLowerCase()], src: 'name' }; return { type: hit[1], src: 'name' }; } if (/file_?id/i.test(sc.description || '')) { const kd = /^(pdf|video|audio|image|gif|subtitle|captions?|srt)$/i.exec(pname || ''); return { type: kd ? (KINDS[kd[1].toLowerCase()] || 'subtitle_file') : 'file_id', src: 'doc' }; } return { type: 'text', src: 'schema' }; } // 參數說明提到 file_id（例如「影片 file_id 或檔名」）→ file_id
+        if (ty === 'array') { const it = sc.items ? schemaType(sc.items, '', depth + 1) : { type: 'any', src: 'none' }; if (it.type === 'text' && /file_?id/i.test((sc.description || '') + ' ' + ((sc.items && sc.items.description) || ''))) return { type: 'list<file_id>', src: 'doc' }; return { type: 'list<' + it.type + '>', src: it.src === 'none' ? 'none' : 'schema' }; }
         if (ty === 'object' || sc.properties) {
             const props = sc.properties; if (!props || !Object.keys(props).length || depth >= 2) return { type: 'dict', src: 'schema' };
             const parts = []; let allKnown = true; for (const k of Object.keys(props).slice(0, 16)) { if (!/^[A-Za-z_][\w.-]*$/.test(k)) { return { type: 'dict', src: 'schema' }; } const t = schemaType(props[k], k, depth + 1); if (t.src === 'none') allKnown = false; parts.push(k + ':' + t.type); }
@@ -10917,9 +10919,58 @@ const holder = {};
         return EFFECTS.filter((e) => set.has(e));
     }
 
+    // ===== 回傳型別推論 =====
+    // 工具的回傳值都是 JSON 字串，Schema 沒有回傳結構。這裡從兩個來源推：
+    //   ① 說明文字裡的「回傳 {ok, pdf_file_id, filename…}」這種欄位清單（type_src:'doc'）；
+    //   ② 沒有清單時，從工具名稱推（is_／has_ → bool、*_yaml → yaml、list_ → 清單，type_src:'name'）；
+    //   都推不出來 → json（type_src:'none'），列在設計文件的清單裡讓人手動補。
+    // 欄位型別一律從欄位名稱／字面值推，不是從實際回傳值學來的——信任度低，規劃時要看 type_src。
+    const FIELD_RULES = [
+        [/^(ok|success|has_more|hasmore|truncated|done|exists|found|ready|valid|verification_skipped|likely_binary)$/i, 'bool'], [/^(is|has|can|should)([A-Z_]|$)/, 'bool'],
+        [/(seconds|secs)$/i, 'number'], [/^(fps|framerate)$/i, 'number'], [/^(exit_?code|frames|samplerate|channels|nextoffset)$/i, 'int'], [/^(stdout|stderr|output|language|voice|kind)$/i, 'text'],
+        [/(^|_)pdf_?file_?id$/i, 'pdf_file'], [/(^|_)video_?file_?id$/i, 'video_file'], [/(^|_)audio_?file_?id$/i, 'audio_file'], [/(^|_)gif_?file_?id$/i, 'gif_file'], [/(^|_)(subtitle|transcript|srt)_?file_?id$/i, 'subtitle_file'], [/(^|_)image_?file_?id$/i, 'image_file'],
+        [/(^|_)file_?id$/i, 'file_id'], [/(^|_)(url|href|link)$/i, 'url'], [/(^|_)(path|dir|folder|cwd)$/i, 'path'], [/(^|_)(yaml|yml)$/i, 'yaml'], [/^(code|script|source)$/i, 'code'],
+        [/(^|_)(count|total|size|sizebytes|bytes|length|page|pages|index|offset|limit|width|height|seconds|duration|ms|status|line|lines)$|(count|pages|bytes)$/i, 'int'],
+        [/^(score|ratio|confidence|progress|percent)$/i, 'number'],
+        [/(^|_)(text|content|message|error|reason|summary|title|description|name|filename|label|note|hint|mermaid|markdown|html|answer|result_text)$/i, 'text'],
+    ];
+    function fieldType(name, literal) {
+        const n = String(name).trim();
+        if (literal !== undefined) { const v = String(literal).trim(); if (/^(true|false)$/i.test(v)) return 'bool'; if (/^-?\d+$/.test(v)) return 'int'; if (/^-?\d+\.\d+$/.test(v)) return 'number'; if (/^\[/.test(v)) return 'list<any>'; if (/^\{/.test(v)) return 'dict'; if (/^["']/.test(v) && !FIELD_RULES.some(([re]) => re.test(n))) return 'text'; }
+        for (const [re, ty] of FIELD_RULES) if (re.test(n)) return ty;
+        if (/(s|list|items|results|entries|blocks|sentences|intents|rows|files|pages)$/i.test(n) && !/(status|address|class|process|progress|bytes)$/i.test(n)) return 'list<any>';
+        return 'any';
+    }
+    function splitTop(s) { const out = []; let d = 0, q = '', cur = ''; for (const c of s) { if (q) { cur += c; if (c === q) q = ''; continue; } if (c === '"' || c === "'") { q = c; cur += c; continue; } if ('[{('.includes(c)) d++; else if (']})'.includes(c)) d--; if (c === ',' && d === 0) { out.push(cur); cur = ''; } else cur += c; } if (cur.trim()) out.push(cur); return out; }
+    function inferReturns(name, description) {
+        const desc = String(description || '').replace(/\s+/g, ' ');
+        let m = null; const lead = /(?:回傳|返回|returns?)(?:[^{}]{0,60}?)\{/i.exec(desc);
+        if (lead) { // 找到配對的 }（欄位裡可能有巢狀的 {…}）
+            const s0 = lead.index + lead[0].length - 1; let d = 0, e = -1; for (let i = s0; i < desc.length && i < s0 + 800; i++) { if (desc[i] === '{') d++; else if (desc[i] === '}' && --d === 0) { e = i; break; } }
+            if (e > s0 + 3) m = [null, desc.slice(s0, e + 1)];
+        }
+        if (m) {
+            const fields = {}; let n = 0;
+            for (const item of splitTop(m[1].slice(1, -1))) {
+                const it = item.trim(); if (!it || /^\.{2,}$|^…$/.test(it)) continue;
+                const km = /^["']?([A-Za-z_][\w]*)["']?(?:\s*[（(][^）)]*[）)])?\s*(?::\s*(.+))?$/.exec(it); if (!km) continue;
+                const key = km[1]; const lit = km[2] !== undefined ? km[2].trim() : undefined; if (lit !== undefined && /^[…\.]+$/.test(lit)) continue;
+                fields[key] = fieldType(key, lit && /^(true|false|-?\d+(\.\d+)?|\[.*|\{.*|["'].*)$/i.test(lit) ? lit : undefined); if (++n >= 16) break;
+            }
+            if (n >= 1) return { type: 'object{' + Object.keys(fields).map((k) => k + ':' + fields[k]).join(',') + '}', type_src: 'doc' };
+        }
+        const base = String(name).replace(/__[0-9a-f-]{20,}$/i, '');
+        if (/^(is|has|can|should)_/.test(base)) return { type: 'bool', type_src: 'name' };
+        if (/_yaml$/.test(base) && /^get_/.test(base)) return { type: 'yaml', type_src: 'name' };
+        if (/^list_/.test(base)) return { type: 'list<dict>', type_src: 'name' };
+        return { type: 'json', type_src: 'none' };
+    }
+
     // ===== 工具 → 單元 =====
     const clip = (s, n) => { s = String(s || '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
     function summaryOf(desc) { const s = String(desc || '').replace(/\s+/g, ' ').trim(); const m = /^(.{2,160}?(?:[。！？]|[.!?](?=\s|$)))/.exec(s); return clip(m ? m[1] : s, 160); }
+    // 人工補強：ctx.returnsOverrides[工具名稱] ＝ 型別字串，優先於推論（type_src:curated）；不合法的型別字串直接忽略
+    function overrideReturns(name, ctx) { const o = ctx && ctx.returnsOverrides && ctx.returnsOverrides[name]; if (!o) return null; try { parseType(o); } catch (_) { return null; } return { type: o, type_src: 'curated' }; }
     function toolToUnit(name, tool, ctx) {
         ctx = ctx || {}; const sc = tool && tool.parametersSchema; const props = (sc && sc.properties) || {}; const req = new Set((sc && sc.required) || []);
         const params = Object.keys(props).map((k) => { const t = schemaType(props[k], k, 0); const p = { name: k, kind: 'named', type: t.type, type_src: t.src, required: req.has(k) }; if (props[k] && props[k].default !== undefined) p.default = props[k].default; const d = clip(props[k] && props[k].description, 120); if (d) p.description = d; return p; });
@@ -10927,7 +10978,7 @@ const holder = {};
         let state = 'builtin'; if (ctx.platform === 'web' && effects.includes('desktop')) state = 'unavailable'; else if (domains.length && ctx.domainEnabled && domains.every((d) => ctx.domainEnabled[d] === false)) state = 'disabled';
         const typedAll = params.every((p) => p.type_src !== 'none' && p.type !== 'any');
         const tier = (sc && tool.description && !effects.includes('unknown') && typedAll && state !== 'unavailable') ? 1 : 0;
-        const u = { id: 'tool:' + name, runtime: 'app', name, summary: summaryOf(tool && tool.description), params, returns: { type: 'json', type_src: 'none' }, effects, pure: false, avail: { state, needs: effects.includes('desktop') ? ['desktop'] : [] }, domains, tests: [], tier };
+        const u = { id: 'tool:' + name, runtime: 'app', name, summary: summaryOf(tool && tool.description), params, returns: overrideReturns(name, ctx) || inferReturns(name, tool && tool.description), effects, pure: false, avail: { state, needs: effects.includes('desktop') ? ['desktop'] : [] }, domains, tests: [], tier };
         if (!sc) u.no_schema = true; return u;
     }
     function validateUnit(u) {
@@ -10942,26 +10993,148 @@ const holder = {};
     function buildCatalog(tools, domains, opts) {
         opts = opts || {}; const domainsOf = {}, domainEnabled = {};
         for (const [k, d] of Object.entries(domains || {})) { domainEnabled[k] = d.enabled !== false; if (Array.isArray(d.toolNames)) for (const n of d.toolNames) (domainsOf[n] = domainsOf[n] || []).push(k); }
-        const ctx = { domainsOf, domainEnabled, platform: opts.platform || 'desktop' }; const units = [];
+        const ctx = { domainsOf, domainEnabled, platform: opts.platform || 'desktop', returnsOverrides: opts.returnsOverrides || {} }; const units = [];
         for (const name of Object.keys(tools || {}).sort()) units.push(toolToUnit(name, tools[name], ctx));
         return { version: VERSION, source: 'app-tools', generatedAt: opts.now || new Date().toISOString(), platform: ctx.platform, units, stats: stats(units) };
     }
     // 評量表（DESIGN.unit-catalog.md 第七節）
     function stats(units) {
-        const n = units.length; let params = 0, typed = 0, srcSchema = 0, srcName = 0, tier1 = 0, known = 0, noSchema = 0, invalid = 0; const byEffect = {}; const untyped = [];
-        for (const u of units) { if (validateUnit(u).length) invalid++; if (u.no_schema) noSchema++; if (!u.effects.includes('unknown')) known++; if (u.tier === 1) tier1++; for (const e of u.effects) byEffect[e] = (byEffect[e] || 0) + 1; for (const p of u.params) { params++; const ok = p.type_src !== 'none' && p.type !== 'any'; if (ok) typed++; if (p.type_src === 'schema') srcSchema++; if (p.type_src === 'name') srcName++; if (!ok) untyped.push(u.name + '.' + p.name); } }
+        const n = units.length; let params = 0, typed = 0, srcSchema = 0, srcName = 0, tier1 = 0, known = 0, noSchema = 0, invalid = 0; const byEffect = {}; const untyped = []; let retTyped = 0; const retSrc = {}; const retNone = [];
+        for (const u of units) { const rt = u.returns || {}; retSrc[rt.type_src] = (retSrc[rt.type_src] || 0) + 1; if (rt.type !== 'json' && rt.type !== 'any') retTyped++; else retNone.push(u.name); if (validateUnit(u).length) invalid++; if (u.no_schema) noSchema++; if (!u.effects.includes('unknown')) known++; if (u.tier === 1) tier1++; for (const e of u.effects) byEffect[e] = (byEffect[e] || 0) + 1; for (const p of u.params) { params++; const ok = p.type_src !== 'none' && p.type !== 'any'; if (ok) typed++; if (p.type_src === 'schema') srcSchema++; if (p.type_src === 'name') srcName++; if (!ok) untyped.push(u.name + '.' + p.name); } }
         const pct = (a, b) => (b ? Math.round((a / b) * 1000) / 10 : null);
-        return { units: n, no_schema: noSchema, invalid, tier1, tier1_pct: pct(tier1, n), params, typed_param_pct: pct(typed, params), typed_by_schema_pct: pct(srcSchema, params), typed_by_name_pct: pct(srcName, params), untyped: untyped.slice(0, 60), effects_known_pct: pct(known, n), by_effect: byEffect };
+        return { units: n, no_schema: noSchema, invalid, tier1, tier1_pct: pct(tier1, n), params, typed_param_pct: pct(typed, params), typed_by_schema_pct: pct(srcSchema, params), typed_by_name_pct: pct(srcName, params), untyped: untyped.slice(0, 60), effects_known_pct: pct(known, n), returns_typed_pct: pct(retTyped, n), returns_by_src: retSrc, returns_unknown: retNone.slice(0, 400), by_effect: byEffect };
     }
     function index(catalog) { return catalog.units.map((u) => ({ id: u.id, name: u.name, summary: u.summary, tier: u.tier, avail: u.avail.state, effects: u.effects })); }
 
-    return { VERSION, EFFECTS, TYPE_SRC, AVAIL, parseType, typeToString, isAssignable, schemaType, effectsOf, summaryOf, toolToUnit, validateUnit, buildCatalog, stats, index };
+    return { VERSION, EFFECTS, TYPE_SRC, AVAIL, inferReturns, fieldType, parseType, typeToString, isAssignable, schemaType, effectsOf, summaryOf, toolToUnit, validateUnit, buildCatalog, stats, index };
 });
 
 }).call(null, undefined, holder);
 return holder.FaCatalog;
 })();
 /* CATALOG-END */
+/* CATMX-BEGIN */
+const FaCatalogMatrix = (function () {
+const holder = {};
+(function (module, self) {
+/* 型別接線矩陣與路徑搜尋（UMD，純函式）：由單元目錄（FaCatalog）的參數型別與回傳型別，算出「單元 A 的輸出接得上單元 B 的哪個輸入」的鄰接矩陣，
+ * 用布林矩陣連乘找出「從起始型別走到目標型別」的前 K 條接線（pipeline），並給每條一個接線合法度得分。設計見 DESIGN.unit-catalog.md。
+ * 模型不參與：這一層是純程式，模型之後只在排序與填參數時介入。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory(require('./catalog_core.js'));
+    else root.FaCatalogMatrix = factory(root.FaCatalog || (typeof FaCatalog !== 'undefined' ? FaCatalog : undefined));
+})(typeof self !== 'undefined' ? self : this, function (Cat) {
+    'use strict';
+
+    // ===== 型別的「具體程度」：越具體，接得上越有意義（text 接 text 幾乎什麼都接得上，不能當作有意義的接線）=====
+    const SPEC = { file_id: 1, pdf_file: 1, video_file: 1, audio_file: 1, image_file: 1, gif_file: 1, subtitle_file: 1, path: 1, url: 1, yaml: 1, code: 0.9, query: 0.3, text: 0.15, number: 0.1, int: 0.12, bool: 0.1, dict: 0, json: 0, any: 0, null: 0 };
+    function spec(t) {
+        if (typeof t === 'string') t = Cat.parseType(t);
+        if (t.k === 'list') { const s = spec(t.of); return s >= 0.5 ? 0.6 : (s > 0 ? 0.25 : 0.1); }
+        if (t.k === 'enum') return 0.6;
+        if (t.k === 'object') { const ks = Object.keys(t.fields); return ks.length ? Math.min(0.8, 0.4 + 0.1 * ks.length) : 0.1; }
+        if (t.k === 'union') return Math.max(0, ...t.of.map(spec)) * 0.8;
+        return SPEC[t.k] !== undefined ? SPEC[t.k] : 0.2;
+    }
+    // 輸出 o 能接到輸入 p 的程度（0＝接不上；越具體越高）。比較的是「接收端要的型別」的具體程度，因為接收端決定了這次接線有多有意義。
+    function matchScore(out, inp) {
+        if (typeof out === 'string') out = Cat.parseType(out); if (typeof inp === 'string') inp = Cat.parseType(inp);
+        if (out.k === 'any' || (out.k === 'json' && inp.k !== 'dict' && inp.k !== 'json' && inp.k !== 'list')) return 0; // 不明的輸出不接任何具體輸入
+        if (!Cat.isAssignable(out, inp)) { if (out.k === 'file_id' && /_file$/.test(inp.k)) return 0.5; return 0; } // 種類不明的 file_id 可以接到指定種類的位置，但只有一半把握（要使用者或執行時確認）
+        const looseElem = (t) => t.k === 'any' || t.k === 'json' || (t.k === 'list' && looseElem(t.of));
+        if (out.k === 'list' && looseElem(out.of) && spec(inp) >= 0.5) return 0; // list<any> 不能當作具體清單用（元素是什麼不知道），只能走強制轉型
+        return Math.min(spec(inp), out.k === 'json' ? 0.1 : 1);
+    }
+
+    const isOpaque = (t) => t.k === 'json' || t.k === 'any' || (t.k === 'dict');
+    // 單元的輸出清單：整個回傳值，加上物件的每個欄位（欄位名稱放進 name，之後知道要取哪一欄）
+    function outputsOf(u) {
+        const out = []; const t = Cat.parseType(u.returns && u.returns.type); out.push({ name: '$', type: t });
+        if (t.k === 'object') for (const k of Object.keys(t.fields)) out.push({ name: k, type: t.fields[k] });
+        return out;
+    }
+    const inputsOf = (u) => u.params.map((p) => ({ name: p.name, type: Cat.parseType(p.type), required: !!p.required }));
+
+    // ===== 布林矩陣（位元列）=====
+    function newBits(n) { const w = (n + 31) >>> 5; const rows = []; for (let i = 0; i < n; i++) rows.push(new Uint32Array(w)); return { n, w, rows }; }
+    const setBit = (m, i, j) => { m.rows[i][j >>> 5] |= (1 << (j & 31)) >>> 0; };
+    const getBit = (m, i, j) => (m.rows[i][j >>> 5] >>> (j & 31)) & 1;
+    function boolMul(A, B) { // C = A × B：C 的第 i 列 ＝ A 第 i 列裡每個 1 對應的 B 列 的 OR
+        const C = newBits(A.n);
+        for (let i = 0; i < A.n; i++) { const ci = C.rows[i]; const ai = A.rows[i]; for (let wi = 0; wi < A.w; wi++) { let x = ai[wi]; while (x) { const b = 31 - Math.clz32(x & -x); x &= x - 1; const j = (wi << 5) + b; const bj = B.rows[j]; for (let k = 0; k < A.w; k++) ci[k] |= bj[k]; } } }
+        return C;
+    }
+    function bitsOr(A, B) { const C = newBits(A.n); for (let i = 0; i < A.n; i++) for (let k = 0; k < A.w; k++) C.rows[i][k] = A.rows[i][k] | B.rows[i][k]; return C; }
+    // within[k]＝「最多走 k 步」的可達矩陣（k=1..L）：A、A∪A²、A∪A²∪A³…
+    function reachWithin(A, L) { const out = [null, A]; let P = A, acc = A; for (let k = 2; k <= L; k++) { P = boolMul(P, A); acc = bitsOr(acc, P); out.push(acc); } return out; }
+
+    // ===== 建矩陣 =====
+    function eligible(u, o) {
+        if (u.tier !== 1) return false; if (!o.includeUnavailable && u.avail.state !== 'builtin') return false;
+        if (u.effects.includes('unknown')) return false; if (o.excludeEffects && u.effects.some((e) => o.excludeEffects.includes(e))) return false; return true;
+    }
+    function buildMatrix(catalogOrUnits, opts) {
+        opts = Object.assign({ minScore: 0.5, allowOpaque: false, castScore: 0.2 }, opts || {}); const all = Array.isArray(catalogOrUnits) ? catalogOrUnits : catalogOrUnits.units;
+        const units = all.filter((u) => eligible(u, opts)); const n = units.length; const index = new Map(units.map((u, i) => [u.id, i]));
+        const outs = units.map(outputsOf), ins = units.map(inputsOf); const A = newBits(n); const edges = units.map(() => new Map()); let nEdges = 0;
+        for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+            if (i === j) continue; let best = null;
+            for (const o of outs[i]) for (const p of ins[j]) {
+                let s = matchScore(o.type, p.type), cast = false;
+                // 萬用結構（json／any）的輸出：預設接不到任何具體輸入；allowOpaque 時可以「強制轉型」接上去（分數很低，執行時要檢查實際內容符不符合）
+                if (!s && opts.allowOpaque && isOpaque(o.type) && p.type.k !== 'any') { s = opts.castScore; cast = true; }
+                if ((s >= opts.minScore || cast) && (!best || s > best.score)) best = { score: s, out: o.name, param: p.name, type: Cat.typeToString(p.type), cast };
+            }
+            if (best) { setBit(A, i, j); edges[i].set(j, best); nEdges++; }
+        }
+        return { units, ids: units.map((u) => u.id), index, outs, ins, A, edges, opts, stats: matrixStats(units, edges, nEdges) };
+    }
+    function matrixStats(units, edges, nEdges) {
+        const n = units.length; const outDeg = edges.map((m) => m.size); const inDeg = new Array(n).fill(0); edges.forEach((m) => m.forEach((_, j) => { inDeg[j]++; }));
+        const typed = units.filter((u) => { const t = Cat.parseType(u.returns.type); return t.k !== 'json' && t.k !== 'any'; }).length;
+        const top = (deg, k) => deg.map((d, i) => [units[i].name, d]).sort((a, b) => b[1] - a[1]).slice(0, k);
+        return { units: n, edges: nEdges, density_pct: n > 1 ? Math.round((nEdges / (n * (n - 1))) * 10000) / 100 : 0, isolated: units.filter((_, i) => !outDeg[i] && !inDeg[i]).length, no_out: outDeg.filter((d) => !d).length, no_in: inDeg.filter((d) => !d).length, typed_returns: typed, top_out: top(outDeg, 8), top_in: top(inDeg, 8) };
+    }
+
+    // ===== 找接線 =====
+    // query: { from: 型別字串 | { unit: id }, to: 型別字串 | { unit: id } }；opts: { maxLen=4, k=5, minScore, maxExpand }
+    function findPipelines(M, query, opts) {
+        opts = Object.assign({ maxLen: 4, k: 5, minScore: M.opts.minScore, maxExpand: 200000 }, opts || {}); const n = M.units.length; if (!n) return { paths: [], expanded: 0 };
+        // 起點：能吃下 from 型別的單元（或指定的單元）；終點：輸出能接到 to 型別的單元（或指定的單元）
+        const start = new Map(), goal = new Map();
+        if (query.from && query.from.unit) { if (M.index.has(query.from.unit)) start.set(M.index.get(query.from.unit), { score: 1, param: null }); }
+        else { const ft = Cat.parseType(query.from); for (let i = 0; i < n; i++) { let best = null; for (const p of M.ins[i]) { const s = matchScore(ft, p.type); if (s >= opts.minScore && (!best || s > best.score)) best = { score: s, param: p.name }; } if (best) start.set(i, best); } }
+        if (query.to && query.to.unit) { if (M.index.has(query.to.unit)) goal.set(M.index.get(query.to.unit), { score: 1, out: '$' }); }
+        else { const tt = Cat.parseType(query.to); for (let i = 0; i < n; i++) { let best = null; for (const o of M.outs[i]) { const s = matchScore(o.type, tt); if (s >= opts.minScore && (!best || s > best.score)) best = { score: s, out: o.name }; } if (best) goal.set(i, best); } }
+        if (!start.size || !goal.size) return { paths: [], expanded: 0, start: start.size, goal: goal.size };
+        const W = reachWithin(M.A, opts.maxLen - 1); const gmask = new Uint32Array((n + 31) >>> 5); for (const g of goal.keys()) gmask[g >>> 5] |= (1 << (g & 31)) >>> 0;
+        const canReachGoal = (u, steps) => { if (goal.has(u)) return true; if (steps < 1) return false; const row = W[Math.min(steps, W.length - 1)].rows[u]; for (let k = 0; k < gmask.length; k++) if (row[k] & gmask[k]) return true; return false; };
+        const results = []; let expanded = 0;
+        const reqCount = (j, satisfied) => M.ins[j].filter((p) => p.required).length - satisfied;
+        function dfs(path, score, via) {
+            if (expanded++ > opts.maxExpand) return; const u = path[path.length - 1];
+            if (goal.has(u)) { const g = goal.get(u); results.push({ path: path.slice(), score: score * g.score, via: via.slice(), goal: g }); }
+            if (path.length >= opts.maxLen) return;
+            for (const [v, e] of M.edges[u]) { if (path.includes(v)) continue; if (!canReachGoal(v, opts.maxLen - path.length - 1)) continue; path.push(v); via.push(e); dfs(path, score * e.score, via); path.pop(); via.pop(); }
+        }
+        for (const [s, sc] of start) { if (!canReachGoal(s, opts.maxLen - 1)) continue; dfs([s], sc.score, []); }
+        const paths = results.map((r) => {
+            const len = r.path.length; let pen = 1; const extra = []; r.path.forEach((u, idx) => { const sat = (idx === 0 && query.from && query.from.unit) ? 0 : 1; const miss = Math.max(0, reqCount(u, sat)); if (miss) { extra.push({ unit: M.ids[u], missing: M.ins[u].filter((p) => p.required).map((p) => p.name).slice(sat) }); pen *= 1 / (1 + 0.1 * miss); } });
+            const score = Math.round(r.score * Math.pow(0.9, len - 1) * pen * 1000) / 1000;
+            return { units: r.path.map((u) => M.ids[u]), names: r.path.map((u) => M.units[u].name), score, via: r.via.map((e) => ({ out: e.out, param: e.param, type: e.type, score: e.score, cast: !!e.cast })), start: start.get(r.path[0]).param, goal: r.goal.out, extra_required: extra, effects: Array.from(new Set([].concat(...r.path.map((u) => M.units[u].effects)))) };
+        });
+        paths.sort((a, b) => b.score - a.score || a.units.length - b.units.length || (a.units.join() < b.units.join() ? -1 : 1));
+        return { paths: paths.slice(0, opts.k), found: paths.length, expanded, start: start.size, goal: goal.size };
+    }
+    function explain(p) { return p.names.map((n, i) => (i ? ' →(' + p.via[i - 1].out + '→' + p.via[i - 1].param + ') ' : (p.start ? '(' + p.start + ') ' : '')) + n).join('') + '　得分 ' + p.score; }
+
+    return { spec, matchScore, outputsOf, inputsOf, newBits, setBit, getBit, boolMul, bitsOr, reachWithin, buildMatrix, findPipelines, explain };
+});
+
+}).call(null, undefined, holder);
+return holder.FaCatalogMatrix;
+})();
+/* CATMX-END */
 /* DATACORE-BEGIN */
 const FaDataCore = (function () {
 const holder = {};
@@ -59372,18 +59545,28 @@ ${existingNodeSummaries}
     // ===== 單元目錄（DESIGN.unit-catalog.md 第 1 步）：已登記的工具 → 單元 =====
     _unitCatalogBuild() {
         if (typeof FaCatalog === 'undefined' || !FaCatalog) throw new Error('單元目錄模組沒有載入');
-        return FaCatalog.buildCatalog(this.tools, this.domains, { platform: this._sqlDesktop && this._sqlDesktop() ? 'desktop' : (typeof window !== 'undefined' && window.desktopAPI ? 'desktop' : 'web') });
+        return FaCatalog.buildCatalog(this.tools, this.domains, { platform: this._sqlDesktop && this._sqlDesktop() ? 'desktop' : (typeof window !== 'undefined' && window.desktopAPI ? 'desktop' : 'web'), returnsOverrides: (this.advancedSettings && this.advancedSettings.unitCatalogReturns) || {} });
     }
     async _unitCatalogSlash(argsText) {
-        const wantJson = /\bjson\b/i.test(String(argsText || '')); this.messages.push({ role: 'user', content: '/unit-catalog' + (wantJson ? ' json' : '') });
+        const argv = String(argsText || '').trim().split(/\s+/).filter(Boolean); const wantJson = argv.includes('json'); this.messages.push({ role: 'user', content: '/unit-catalog' + (argv.length ? ' ' + argv.join(' ') : '') });
         try {
+            if (argv[0] === 'path') { this._unitCatalogPathReply(argv.slice(1)); this._persistChatHistory(); this._renderMessageHistory(); return; }
             const cat = this._unitCatalogBuild(); const s = cat.stats; const bad = cat.units.filter((u) => FaCatalog.validateUnit(u).length);
             const topEff = Object.entries(s.by_effect).sort((a, b) => b[1] - a[1]).map(([k, v]) => k + ' ' + v).join('、');
             const unk = cat.units.filter((u) => u.effects.includes('unknown')).map((u) => u.name);
-            this._pushAssistantMessage('📚 單元目錄（' + cat.platform + '）\n\n- 單元：' + s.units + '（沒有參數結構：' + s.no_schema + '；格式不合法：' + s.invalid + '）\n- 信任等級 1（規劃可以用）：' + s.tier1 + '（' + s.tier1_pct + '%）\n- 參數型別明確的比例：' + s.typed_param_pct + '%（參數結構寫明的 ' + s.typed_by_schema_pct + '%、靠參數名稱猜的 ' + s.typed_by_name_pct + '%）\n- 型別還不明的參數（' + s.untyped.length + '）：' + s.untyped.slice(0, 30).join('、') + '\n- 副作用已判斷（不是 unknown）：' + s.effects_known_pct + '%\n- 副作用分佈：' + topEff + (unk.length ? '\n- 副作用還不明（' + unk.length + '）：' + unk.slice(0, 40).join('、') + (unk.length > 40 ? '…' : '') : '') + (bad.length ? '\n- ⚠️ 格式不合法的單元：' + bad.slice(0, 10).map((u) => u.name + '（' + FaCatalog.validateUnit(u)[0] + '）').join('、') : ''), null);
+            this._pushAssistantMessage('📚 單元目錄（' + cat.platform + '）\n\n- 單元：' + s.units + '（沒有參數結構：' + s.no_schema + '；格式不合法：' + s.invalid + '）\n- 信任等級 1（規劃可以用）：' + s.tier1 + '（' + s.tier1_pct + '%）\n- 參數型別明確的比例：' + s.typed_param_pct + '%（參數結構寫明的 ' + s.typed_by_schema_pct + '%、靠參數名稱猜的 ' + s.typed_by_name_pct + '%）\n- 型別還不明的參數（' + s.untyped.length + '）：' + s.untyped.slice(0, 30).join('、') + '\n- 副作用已判斷（不是 unknown）：' + s.effects_known_pct + '%\n- 副作用分佈：' + topEff + (unk.length ? '\n- 副作用還不明（' + unk.length + '）：' + unk.slice(0, 40).join('、') + (unk.length > 40 ? '…' : '') : '') + '\n- 回傳型別已知：' + s.returns_typed_pct + '%（' + Object.entries(s.returns_by_src).map(([k, v]) => k + ' ' + v).join('、') + '）；不明的 ' + s.returns_unknown.length + ' 個（統一當萬用結構 json，預設不接線）' + (() => { try { const m = FaCatalogMatrix.buildMatrix(cat); const x = m.stats; return '\n- 接線矩陣：' + x.units + ' × ' + x.units + '，邊 ' + x.edges + '（密度 ' + x.density_pct + '%），完全沒有出入邊的單元 ' + x.isolated + '；出邊最多：' + x.top_out.slice(0, 5).map((r) => r[0] + ' ' + r[1]).join('、') + '\n  用法：/unit-catalog path <起始型別> <目標型別> [cast]，例如 /unit-catalog path file_id file_id'; } catch (e) { return '\n- 接線矩陣失敗：' + e.message; } })() + (bad.length ? '\n- ⚠️ 格式不合法的單元：' + bad.slice(0, 10).map((u) => u.name + '（' + FaCatalog.validateUnit(u)[0] + '）').join('、') : ''), null);
             if (wantJson) await this.generateAndDeliverFile(new Blob([JSON.stringify(cat, null, 1)], { type: 'application/json' }), 'unit-catalog-' + cat.platform + '.json', 'application/json');
         } catch (e) { this._pushAssistantMessage('⚠️ 產生單元目錄失敗：' + String((e && e.message) || e), null); }
         this._persistChatHistory(); this._renderMessageHistory();
+    }
+
+    // /unit-catalog path <from> <to> [cast]：從起始型別走到目標型別的前 5 條接線（型別矩陣連乘，不經過模型）
+    _unitCatalogPathReply(args) {
+        const from = args[0], to = args[1]; if (!from || !to) { this._pushAssistantMessage('用法：/unit-catalog path <起始型別> <目標型別> [cast]\n型別：file_id、path、url、yaml、code、text、int、number、bool、list<…>、object{…}。加 cast 會允許用「不明型別」強制轉型接線（分數很低）。', null); return; }
+        const cat = this._unitCatalogBuild(); const m = FaCatalogMatrix.buildMatrix(cat, { allowOpaque: args.includes('cast') });
+        try { FaCatalog.parseType(from); FaCatalog.parseType(to); } catch (e) { this._pushAssistantMessage('⚠️ 型別字串不合法：' + e.message, null); return; }
+        const r = FaCatalogMatrix.findPipelines(m, { from, to }, { k: 5, maxLen: 4 });
+        this._pushAssistantMessage('🔗 ' + from + ' → ' + to + '（' + m.stats.units + ' 個可用單元；起點 ' + (r.start || 0) + '、終點 ' + (r.goal || 0) + '；共找到 ' + (r.found || 0) + ' 條，列前 ' + r.paths.length + '）\n\n' + (r.paths.length ? r.paths.map((p, i) => (i + 1) + '. ' + FaCatalogMatrix.explain(p) + (p.extra_required.length ? '\n   還缺參數：' + p.extra_required.map((x) => x.unit.replace('tool:', '') + '（' + x.missing.join('、') + '）').join('；') : '') + '\n   副作用：' + p.effects.join('、')).join('\n') : '沒有接得上的路線。型別接線只認具體型別（file_id、path、url…）；text、數字、不明型別預設不算接線。'), null);
     }
 
     // ===== 資料檢視器（JSON／YAML／TOML／CSV）：AI 回覆裡的程式碼區塊換成可看、可查、可匯出、可問 AI 的檢視器。設計見 DESIGN.data-viewers.md =====

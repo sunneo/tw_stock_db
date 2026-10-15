@@ -152,3 +152,46 @@
 3. 沒有參數結構的 7 個、型別不明的 8 個參數，是工具定義本身該補的（補完單元自動變好），不是抽取器的問題。
 4. 回傳值型別目前一律是 `json`（`type_src:"none"`）：工具都回傳 JSON 字串，沒有宣告回傳結構。要做接線矩陣前，這一塊必須補（見下一步）。
 5. 沒有測試案例（`tests:[]`），工具有副作用，不能探測執行；測試案例來源要另外想（例如離線訓練器蒸餾時的成功呼叫紀錄）。
+
+## 十一、回傳型別與接線矩陣（第 1 步的延伸）
+
+程式：`catalog_core.js` 的 `inferReturns`、`renderer/src/catalog/matrix_core.js`（`FaCatalogMatrix`，測試 `matrix_core.test.js` 51 項）；指令 `/unit-catalog`（統計含矩陣）、`/unit-catalog path <起始型別> <目標型別> [cast]`。
+
+### 回傳型別怎麼推
+工具回傳的都是 JSON 字串，Schema 沒有回傳結構。依序：
+1. **人工補強**（`advancedSettings.unitCatalogReturns[工具名稱] = 型別字串`，標 `curated`）。
+2. **說明文字裡的欄位清單**：找「回傳／返回／returns」後面配對的 `{…}`，每個欄位依名稱／字面值推型別（標 `doc`）：`ok`→bool、`*_file_id`→file_id（`pdf_file_id`→pdf_file 等依媒體種類細分）、`*Seconds`→number、`*count/*Pages/sizeBytes`→int、`*_url`→url、`*_path`→path，複數名稱→list<any>，其餘 any。
+3. **工具名稱**：`is_／has_`→bool、`get_*_yaml`→yaml、`list_*`→list<dict>（標 `name`）。
+4. 都推不出來 → `json`（萬用結構，標 `none`）。
+
+### 不明型別怎麼處理（萬用結構）
+統一當 `json`（任意 JSON 值），**預設不接線**：它接不到任何具體輸入（file_id、path、url…），否則整張圖會被雜訊淹沒。要用就明確打開 `cast`：不明輸出可以「強制轉型」接到任何輸入，邊分數固定 0.2，路徑上標 `cast`，執行時必須檢查實際內容符不符合（漸進型別）。同樣的，`list<any>` 不能當具體清單用，只能走強制轉型。
+
+### 檔案識別碼的細分
+`file_id` 太粗：PDF、影片、音訊、字幕都是 file_id，把 PDF 接去燒字幕在型別上「合法」但沒意義。所以細分成 `pdf_file`、`video_file`、`audio_file`、`image_file`、`gif_file`（也是 image_file）、`subtitle_file`，都是 `file_id` 的子型別：子型別可以放進一般 file_id 的位置，反過來不行；種類不明的 `file_id` 接到指定種類只給 0.5 分。來源：欄位名稱（`video_file_id`）、參數名稱（`video`、`subtitle`，且說明有提到 file_id）。
+
+### 接線矩陣
+- 單元 A 的輸出（整個回傳值，加上物件的每個欄位）接得上單元 B 的哪個參數 → 邊；邊分數＝接收端型別的具體程度（file_id／path／url 1.0，列表與物件 0.25–0.8，text 0.15，數字／bool 0.1，不明 0）。預設只收分數 ≥ 0.5 的邊，所以 text 對 text 這種幾乎什麼都接得上的不算接線。
+- 只收信任等級 1、副作用已知、這個平台可用的單元。
+- 布林矩陣用位元列存，`boolMul` 做連乘，`reachWithin(A, L)` 算「最多 L 步可達」；路徑搜尋用它剪枝（走到某個節點後，剩下的步數內到不了任何終點就不再展開），另有展開次數上限。
+- 路徑得分＝起點分數 × 每條邊分數 × 終點分數 × 0.9^(步數−1) × 每個還缺必填參數的單元 1/(1+0.1×缺的個數)；同分時短的優先。
+- `cast` 邊分數固定 0.2，所以型別明確的路徑一定排在前面。
+
+### 實測（桌面版，200 個已登記工具）
+| 指標 | 結果 |
+|---|---|
+| 回傳型別已知 | 23%（說明文字推出 35、名稱推出 11；不明 154） |
+| 矩陣 | 182 × 182（只收等級 1、可用的單元），邊 375，密度 1.14%，完全沒有出入邊的單元 131 |
+| 搜尋速度 | 一次路徑查詢 1–5 毫秒；矩陣建構約 40 毫秒 |
+| 允許 cast | 邊數增加到約 2 萬 4 千（密度約 74 倍），全部是 0.2 分的低信心邊 |
+
+**這個矩陣目前只在「檔案流」上有訊息**：由 PDF、影片、音訊、字幕、圖片的產生與消費串起來的鏈（例如逐字稿 → 字幕 → 燒字幕 → 動態 GIF）。其餘 131 個單元沒有任何邊，因為它們的回傳型別不明。
+
+### 要老實講的問題（實測看到的）
+1. **種類不明的 file_id 參數會產生看起來合理、實際沒意義的接線。** 例如影片 → 擷取 PDF 頁面：`extract_pdf_pages` 的參數只寫「file_id」沒寫是 PDF，型別上放得進去。解法是人工補這些工具的參數種類（見下面清單，優先補檔案類工具）。
+2. **只問「起始型別 → 目標型別」的路徑會有大量一步就達成的平凡答案**（任何一個吃 file_id 又吐 file_id 的單元）。真正有用的是指定起點單元與終點單元，或加上語意（之後由離線訓練器的意圖比對給目標單元）。
+3. 回傳型別只有 23% 已知，矩陣在文字、狀態、瀏覽器、程式碼類工具上是空的。這些工具要靠人工補強，或之後讓離線訓練器蒸餾時記錄實際回傳結構。
+4. 欄位型別是從名稱／字面值猜的（標 `doc`、`name`），不是從實際回傳值學來的；規劃時要看來源，不要當成保證。
+
+### 回傳型別不明的工具（154 個，統一當萬用結構；請人工補強熱門的幾十個）
+add_chapters, analyze_large_file, apply_git_patch, attachment_apply_patch, bash_execute, begin_presentation, big_content, browser_activate_tab, browser_click, browser_close, browser_create_tab, browser_create_tab_group, browser_get_elements, browser_get_page_structure, browser_get_page_text, browser_list_downloads, browser_list_tabs, browser_mouse, browser_navigate, browser_press_key, browser_scroll, browser_status, browser_type_text, browser_wait_download, call_ai_function, ci_connections, ci_guide, ci_triage, coding_edit, coding_patch_tool, coding_read_file, coding_run_check, coding_run_tests, coding_task_state, coding_workspace, compare_images, define_snippet, delegate_to_machine, delegate_to_subagent, delete_ai_function, design_choices, diagnose_log, explain_build_error, explain_code, extract_pdf_images, extract_pptx_images, extract_video_frames, fap_apply_patch, fap_copy_from_storage, fap_copy_to_storage, fap_download_url, fap_find_file, fap_list_files, fap_write_file, fetch_web_page, fs_find_file, fs_grep, fs_list_files, fs_mkdir, fs_read_file, fs_remove, fs_stat, fs_write_file, gerrit, get_3d_scene_topic, get_large_file_analysis_chunk, get_presentation_topic, get_saved_script, get_tool_details, get_viewer_state, git_clone, git_commit, git_inspect, git_log, git_pull, git_push, git_status, github_ci, glue_define, glue_list, glue_report, image_decompose_redraw, image_parts_annotate, image_parts_teach, image_rig_animate, image_to_text, import_2d_animation_attachment, import_3d_model_attachment, import_fap_image, import_image_url, import_interactive_viewer_attachment, import_uploaded_image, interpret_image, jenkins, language_explore, log_ask, log_learn, mix_highlight, office_export_slide_images, open_existing_presentation, parse_uploaded_file, pipeline_inspect, playbook_state, pptx_inspect, pptx_to_deck, programming_domains, programming_knowledge, python_execute, rag_chunk_document, rag_delete, rag_query_graph, rag_store_graph_node, read_skill_file__4f8a41c9-5d9c-449f-869c-f3442fa7c794, read_skill_file__ba5a3f00-a78e-4967-a540-20f0aae6b175, read_skill_file__d999c385-cc44-410d-a789-064828afccce, ref_define, ref_expand, ref_lookup, ref_resolve, ref_types, ref_validate, register_saved_script, render_2d_animation, render_3d_scene, render_chart, render_drawing, render_interactive_viewer, repo_ask, repo_map, repo_read_doc, repo_sql, repo_wiki, run_command, sandbox_capabilities, sandbox_html, set_viewer_state, skill_create, skill_list, skill_read, summarize_large_text, terminal_cp_from, terminal_cp_to, terminal_get_text, terminal_list, tmux_capture_pane, tmux_kill_session, tmux_list_sessions, tmux_send_keys, tmux_start_session, uefi_parse, uml_design, uml_guide, uml_to_code, youtube_download

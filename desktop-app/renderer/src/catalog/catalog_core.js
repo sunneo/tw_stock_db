@@ -10,7 +10,9 @@
     const TYPE_SRC = ['annotation', 'stub', 'schema', 'doc', 'name', 'probe', 'curated', 'none'];
     const AVAIL = ['builtin', 'installed', 'cached', 'needs-network', 'disabled', 'unavailable'];
     // 型別詞彙：基本型別、由基本型別特化的（path 是一種 text），容器型別
-    const SPECIAL = { path: 'text', url: 'text', file_id: 'text', yaml: 'text', code: 'text', query: 'text' };
+    // 具體型別 → 它的上一層（可以放進上一層的位置，反過來不行）。檔案識別碼依媒體種類細分：pdf_file、video_file… 都是 file_id；gif_file 同時是 image_file
+    const SPECIAL = { path: 'text', url: 'text', file_id: 'text', yaml: 'text', code: 'text', query: 'text', pdf_file: 'file_id', video_file: 'file_id', audio_file: 'file_id', image_file: 'file_id', gif_file: 'image_file', subtitle_file: 'file_id' };
+    const KINDS = { pdf: 'pdf_file', video: 'video_file', audio: 'audio_file', image: 'image_file', gif: 'gif_file', subtitle: 'subtitle_file' };
 
     // ===== 型別字串：text number int bool any dict json path…、list<T>、enum<a|b>、union<A|B>、object{k:T,…} =====
     function parseType(s) {
@@ -42,21 +44,21 @@
         if (from.k === 'object' && to.k === 'object') return Object.keys(to.fields).every((k) => k in from.fields && isAssignable(from.fields[k], to.fields[k]));
         if (from.k === to.k) return true;
         if (from.k === 'int' && to.k === 'number') return true;
-        if (SPECIAL[from.k] && to.k === SPECIAL[from.k]) return true; // path → text（具體 → 一般），反過來不行
+        for (let k = from.k, guard = 0; SPECIAL[k] && guard < 4; k = SPECIAL[k], guard++) if (SPECIAL[k] === to.k) return true; // path → text、gif_file → image_file → file_id → text（具體 → 一般），反過來不行
         if (from.k === 'json' && (to.k === 'dict' || to.k === 'list')) return true; if (from.k === 'dict' && to.k === 'json') return true;
         return false;
     }
 
     // ===== JSON Schema → 單元的型別 =====
-    const NAME_TYPES = [[/(^|_)(path|dir|folder|filepath|file_path|cwd)$/i, 'path'], [/(^|_)(url|uri|href|link)$/i, 'url'], [/(^|_)(file_id|fileid)$/i, 'file_id'], [/(^|_)(yaml|yml)$/i, 'yaml'], [/^(code|script|source)$/i, 'code'], [/^(query|pattern|keyword|q)$/i, 'query']];
+    const NAME_TYPES = [[/(^|_)(pdf|video|audio|image|gif|subtitle)_?file_?id$/i, 'KIND'], [/(^|_)(path|dir|folder|filepath|file_path|cwd)$/i, 'path'], [/(^|_)(url|uri|href|link)$/i, 'url'], [/(^|_)(file_id|fileid)$/i, 'file_id'], [/(^|_)(yaml|yml)$/i, 'yaml'], [/^(code|script|source)$/i, 'code'], [/^(query|pattern|keyword|q)$/i, 'query']];
     function schemaType(sc, pname, depth) {
         depth = depth || 0;
         if (!sc || typeof sc !== 'object') return { type: 'any', src: 'none' };
         if (Array.isArray(sc.enum) && sc.enum.length && sc.enum.length <= 24) return { type: 'enum<' + sc.enum.map((x) => String(x).replace(/[|<>]/g, '_')).join('|') + '>', src: 'schema' };
         const alt = sc.oneOf || sc.anyOf; if (Array.isArray(alt) && alt.length) { const ts = alt.map((a) => schemaType(a, pname, depth + 1)); return { type: 'union<' + ts.map((x) => x.type).join('|') + '>', src: ts.some((x) => x.src === 'none') ? 'none' : 'schema' }; }
         let ty = Array.isArray(sc.type) ? sc.type.filter((x) => x !== 'null') : sc.type; if (Array.isArray(ty)) { if (ty.length === 1) ty = ty[0]; else return { type: 'union<' + ty.map((x) => baseOf(x)).join('|') + '>', src: 'schema' }; }
-        if (ty === 'string') { const hit = NAME_TYPES.find(([re]) => re.test(pname || '')); return hit ? { type: hit[1], src: 'name' } : { type: 'text', src: 'schema' }; }
-        if (ty === 'array') { const it = sc.items ? schemaType(sc.items, '', depth + 1) : { type: 'any', src: 'none' }; return { type: 'list<' + it.type + '>', src: it.src === 'none' ? 'none' : 'schema' }; }
+        if (ty === 'string') { const hit = NAME_TYPES.find(([re]) => re.test(pname || '')); if (hit) { if (hit[1] === 'KIND') return { type: KINDS[/(pdf|video|audio|image|gif|subtitle)/i.exec(pname)[1].toLowerCase()], src: 'name' }; return { type: hit[1], src: 'name' }; } if (/file_?id/i.test(sc.description || '')) { const kd = /^(pdf|video|audio|image|gif|subtitle|captions?|srt)$/i.exec(pname || ''); return { type: kd ? (KINDS[kd[1].toLowerCase()] || 'subtitle_file') : 'file_id', src: 'doc' }; } return { type: 'text', src: 'schema' }; } // 參數說明提到 file_id（例如「影片 file_id 或檔名」）→ file_id
+        if (ty === 'array') { const it = sc.items ? schemaType(sc.items, '', depth + 1) : { type: 'any', src: 'none' }; if (it.type === 'text' && /file_?id/i.test((sc.description || '') + ' ' + ((sc.items && sc.items.description) || ''))) return { type: 'list<file_id>', src: 'doc' }; return { type: 'list<' + it.type + '>', src: it.src === 'none' ? 'none' : 'schema' }; }
         if (ty === 'object' || sc.properties) {
             const props = sc.properties; if (!props || !Object.keys(props).length || depth >= 2) return { type: 'dict', src: 'schema' };
             const parts = []; let allKnown = true; for (const k of Object.keys(props).slice(0, 16)) { if (!/^[A-Za-z_][\w.-]*$/.test(k)) { return { type: 'dict', src: 'schema' }; } const t = schemaType(props[k], k, depth + 1); if (t.src === 'none') allKnown = false; parts.push(k + ':' + t.type); }
@@ -94,9 +96,58 @@
         return EFFECTS.filter((e) => set.has(e));
     }
 
+    // ===== 回傳型別推論 =====
+    // 工具的回傳值都是 JSON 字串，Schema 沒有回傳結構。這裡從兩個來源推：
+    //   ① 說明文字裡的「回傳 {ok, pdf_file_id, filename…}」這種欄位清單（type_src:'doc'）；
+    //   ② 沒有清單時，從工具名稱推（is_／has_ → bool、*_yaml → yaml、list_ → 清單，type_src:'name'）；
+    //   都推不出來 → json（type_src:'none'），列在設計文件的清單裡讓人手動補。
+    // 欄位型別一律從欄位名稱／字面值推，不是從實際回傳值學來的——信任度低，規劃時要看 type_src。
+    const FIELD_RULES = [
+        [/^(ok|success|has_more|hasmore|truncated|done|exists|found|ready|valid|verification_skipped|likely_binary)$/i, 'bool'], [/^(is|has|can|should)([A-Z_]|$)/, 'bool'],
+        [/(seconds|secs)$/i, 'number'], [/^(fps|framerate)$/i, 'number'], [/^(exit_?code|frames|samplerate|channels|nextoffset)$/i, 'int'], [/^(stdout|stderr|output|language|voice|kind)$/i, 'text'],
+        [/(^|_)pdf_?file_?id$/i, 'pdf_file'], [/(^|_)video_?file_?id$/i, 'video_file'], [/(^|_)audio_?file_?id$/i, 'audio_file'], [/(^|_)gif_?file_?id$/i, 'gif_file'], [/(^|_)(subtitle|transcript|srt)_?file_?id$/i, 'subtitle_file'], [/(^|_)image_?file_?id$/i, 'image_file'],
+        [/(^|_)file_?id$/i, 'file_id'], [/(^|_)(url|href|link)$/i, 'url'], [/(^|_)(path|dir|folder|cwd)$/i, 'path'], [/(^|_)(yaml|yml)$/i, 'yaml'], [/^(code|script|source)$/i, 'code'],
+        [/(^|_)(count|total|size|sizebytes|bytes|length|page|pages|index|offset|limit|width|height|seconds|duration|ms|status|line|lines)$|(count|pages|bytes)$/i, 'int'],
+        [/^(score|ratio|confidence|progress|percent)$/i, 'number'],
+        [/(^|_)(text|content|message|error|reason|summary|title|description|name|filename|label|note|hint|mermaid|markdown|html|answer|result_text)$/i, 'text'],
+    ];
+    function fieldType(name, literal) {
+        const n = String(name).trim();
+        if (literal !== undefined) { const v = String(literal).trim(); if (/^(true|false)$/i.test(v)) return 'bool'; if (/^-?\d+$/.test(v)) return 'int'; if (/^-?\d+\.\d+$/.test(v)) return 'number'; if (/^\[/.test(v)) return 'list<any>'; if (/^\{/.test(v)) return 'dict'; if (/^["']/.test(v) && !FIELD_RULES.some(([re]) => re.test(n))) return 'text'; }
+        for (const [re, ty] of FIELD_RULES) if (re.test(n)) return ty;
+        if (/(s|list|items|results|entries|blocks|sentences|intents|rows|files|pages)$/i.test(n) && !/(status|address|class|process|progress|bytes)$/i.test(n)) return 'list<any>';
+        return 'any';
+    }
+    function splitTop(s) { const out = []; let d = 0, q = '', cur = ''; for (const c of s) { if (q) { cur += c; if (c === q) q = ''; continue; } if (c === '"' || c === "'") { q = c; cur += c; continue; } if ('[{('.includes(c)) d++; else if (']})'.includes(c)) d--; if (c === ',' && d === 0) { out.push(cur); cur = ''; } else cur += c; } if (cur.trim()) out.push(cur); return out; }
+    function inferReturns(name, description) {
+        const desc = String(description || '').replace(/\s+/g, ' ');
+        let m = null; const lead = /(?:回傳|返回|returns?)(?:[^{}]{0,60}?)\{/i.exec(desc);
+        if (lead) { // 找到配對的 }（欄位裡可能有巢狀的 {…}）
+            const s0 = lead.index + lead[0].length - 1; let d = 0, e = -1; for (let i = s0; i < desc.length && i < s0 + 800; i++) { if (desc[i] === '{') d++; else if (desc[i] === '}' && --d === 0) { e = i; break; } }
+            if (e > s0 + 3) m = [null, desc.slice(s0, e + 1)];
+        }
+        if (m) {
+            const fields = {}; let n = 0;
+            for (const item of splitTop(m[1].slice(1, -1))) {
+                const it = item.trim(); if (!it || /^\.{2,}$|^…$/.test(it)) continue;
+                const km = /^["']?([A-Za-z_][\w]*)["']?(?:\s*[（(][^）)]*[）)])?\s*(?::\s*(.+))?$/.exec(it); if (!km) continue;
+                const key = km[1]; const lit = km[2] !== undefined ? km[2].trim() : undefined; if (lit !== undefined && /^[…\.]+$/.test(lit)) continue;
+                fields[key] = fieldType(key, lit && /^(true|false|-?\d+(\.\d+)?|\[.*|\{.*|["'].*)$/i.test(lit) ? lit : undefined); if (++n >= 16) break;
+            }
+            if (n >= 1) return { type: 'object{' + Object.keys(fields).map((k) => k + ':' + fields[k]).join(',') + '}', type_src: 'doc' };
+        }
+        const base = String(name).replace(/__[0-9a-f-]{20,}$/i, '');
+        if (/^(is|has|can|should)_/.test(base)) return { type: 'bool', type_src: 'name' };
+        if (/_yaml$/.test(base) && /^get_/.test(base)) return { type: 'yaml', type_src: 'name' };
+        if (/^list_/.test(base)) return { type: 'list<dict>', type_src: 'name' };
+        return { type: 'json', type_src: 'none' };
+    }
+
     // ===== 工具 → 單元 =====
     const clip = (s, n) => { s = String(s || '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
     function summaryOf(desc) { const s = String(desc || '').replace(/\s+/g, ' ').trim(); const m = /^(.{2,160}?(?:[。！？]|[.!?](?=\s|$)))/.exec(s); return clip(m ? m[1] : s, 160); }
+    // 人工補強：ctx.returnsOverrides[工具名稱] ＝ 型別字串，優先於推論（type_src:curated）；不合法的型別字串直接忽略
+    function overrideReturns(name, ctx) { const o = ctx && ctx.returnsOverrides && ctx.returnsOverrides[name]; if (!o) return null; try { parseType(o); } catch (_) { return null; } return { type: o, type_src: 'curated' }; }
     function toolToUnit(name, tool, ctx) {
         ctx = ctx || {}; const sc = tool && tool.parametersSchema; const props = (sc && sc.properties) || {}; const req = new Set((sc && sc.required) || []);
         const params = Object.keys(props).map((k) => { const t = schemaType(props[k], k, 0); const p = { name: k, kind: 'named', type: t.type, type_src: t.src, required: req.has(k) }; if (props[k] && props[k].default !== undefined) p.default = props[k].default; const d = clip(props[k] && props[k].description, 120); if (d) p.description = d; return p; });
@@ -104,7 +155,7 @@
         let state = 'builtin'; if (ctx.platform === 'web' && effects.includes('desktop')) state = 'unavailable'; else if (domains.length && ctx.domainEnabled && domains.every((d) => ctx.domainEnabled[d] === false)) state = 'disabled';
         const typedAll = params.every((p) => p.type_src !== 'none' && p.type !== 'any');
         const tier = (sc && tool.description && !effects.includes('unknown') && typedAll && state !== 'unavailable') ? 1 : 0;
-        const u = { id: 'tool:' + name, runtime: 'app', name, summary: summaryOf(tool && tool.description), params, returns: { type: 'json', type_src: 'none' }, effects, pure: false, avail: { state, needs: effects.includes('desktop') ? ['desktop'] : [] }, domains, tests: [], tier };
+        const u = { id: 'tool:' + name, runtime: 'app', name, summary: summaryOf(tool && tool.description), params, returns: overrideReturns(name, ctx) || inferReturns(name, tool && tool.description), effects, pure: false, avail: { state, needs: effects.includes('desktop') ? ['desktop'] : [] }, domains, tests: [], tier };
         if (!sc) u.no_schema = true; return u;
     }
     function validateUnit(u) {
@@ -119,18 +170,18 @@
     function buildCatalog(tools, domains, opts) {
         opts = opts || {}; const domainsOf = {}, domainEnabled = {};
         for (const [k, d] of Object.entries(domains || {})) { domainEnabled[k] = d.enabled !== false; if (Array.isArray(d.toolNames)) for (const n of d.toolNames) (domainsOf[n] = domainsOf[n] || []).push(k); }
-        const ctx = { domainsOf, domainEnabled, platform: opts.platform || 'desktop' }; const units = [];
+        const ctx = { domainsOf, domainEnabled, platform: opts.platform || 'desktop', returnsOverrides: opts.returnsOverrides || {} }; const units = [];
         for (const name of Object.keys(tools || {}).sort()) units.push(toolToUnit(name, tools[name], ctx));
         return { version: VERSION, source: 'app-tools', generatedAt: opts.now || new Date().toISOString(), platform: ctx.platform, units, stats: stats(units) };
     }
     // 評量表（DESIGN.unit-catalog.md 第七節）
     function stats(units) {
-        const n = units.length; let params = 0, typed = 0, srcSchema = 0, srcName = 0, tier1 = 0, known = 0, noSchema = 0, invalid = 0; const byEffect = {}; const untyped = [];
-        for (const u of units) { if (validateUnit(u).length) invalid++; if (u.no_schema) noSchema++; if (!u.effects.includes('unknown')) known++; if (u.tier === 1) tier1++; for (const e of u.effects) byEffect[e] = (byEffect[e] || 0) + 1; for (const p of u.params) { params++; const ok = p.type_src !== 'none' && p.type !== 'any'; if (ok) typed++; if (p.type_src === 'schema') srcSchema++; if (p.type_src === 'name') srcName++; if (!ok) untyped.push(u.name + '.' + p.name); } }
+        const n = units.length; let params = 0, typed = 0, srcSchema = 0, srcName = 0, tier1 = 0, known = 0, noSchema = 0, invalid = 0; const byEffect = {}; const untyped = []; let retTyped = 0; const retSrc = {}; const retNone = [];
+        for (const u of units) { const rt = u.returns || {}; retSrc[rt.type_src] = (retSrc[rt.type_src] || 0) + 1; if (rt.type !== 'json' && rt.type !== 'any') retTyped++; else retNone.push(u.name); if (validateUnit(u).length) invalid++; if (u.no_schema) noSchema++; if (!u.effects.includes('unknown')) known++; if (u.tier === 1) tier1++; for (const e of u.effects) byEffect[e] = (byEffect[e] || 0) + 1; for (const p of u.params) { params++; const ok = p.type_src !== 'none' && p.type !== 'any'; if (ok) typed++; if (p.type_src === 'schema') srcSchema++; if (p.type_src === 'name') srcName++; if (!ok) untyped.push(u.name + '.' + p.name); } }
         const pct = (a, b) => (b ? Math.round((a / b) * 1000) / 10 : null);
-        return { units: n, no_schema: noSchema, invalid, tier1, tier1_pct: pct(tier1, n), params, typed_param_pct: pct(typed, params), typed_by_schema_pct: pct(srcSchema, params), typed_by_name_pct: pct(srcName, params), untyped: untyped.slice(0, 60), effects_known_pct: pct(known, n), by_effect: byEffect };
+        return { units: n, no_schema: noSchema, invalid, tier1, tier1_pct: pct(tier1, n), params, typed_param_pct: pct(typed, params), typed_by_schema_pct: pct(srcSchema, params), typed_by_name_pct: pct(srcName, params), untyped: untyped.slice(0, 60), effects_known_pct: pct(known, n), returns_typed_pct: pct(retTyped, n), returns_by_src: retSrc, returns_unknown: retNone.slice(0, 400), by_effect: byEffect };
     }
     function index(catalog) { return catalog.units.map((u) => ({ id: u.id, name: u.name, summary: u.summary, tier: u.tier, avail: u.avail.state, effects: u.effects })); }
 
-    return { VERSION, EFFECTS, TYPE_SRC, AVAIL, parseType, typeToString, isAssignable, schemaType, effectsOf, summaryOf, toolToUnit, validateUnit, buildCatalog, stats, index };
+    return { VERSION, EFFECTS, TYPE_SRC, AVAIL, inferReturns, fieldType, parseType, typeToString, isAssignable, schemaType, effectsOf, summaryOf, toolToUnit, validateUnit, buildCatalog, stats, index };
 });
