@@ -1643,6 +1643,16 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     // transformers.js在瀏覽器端跑，WebGPU可用時用WebGPU否則CPU WASM）、
     // extract_audio（把音軌抽成WAV檔）。模型首次使用時從HuggingFace下載、
     // 瀏覽器Cache API快取。之後Phase會加上burn_subtitles（把字幕燒進影片）。
+    // 2026-10-15：太大的內容（網頁全文、整份貼上、大型JSON）不整份丟給模型。這個領域專門評估「這會不會炸、我有什麼工具」並動手處理。
+    big_content: {
+        enabled: true,
+        label: '大型內容處理（太長的網頁／日誌／JSON：解析、分段讀、找關鍵字，不整份放進模型）',
+        toolNames: ['big_content', 'python_execute', 'fs_read_file', 'analyze_large_file'],
+        systemPrompt: '你是專門處理「太大、不能整份放進模型」的內容的子任務助理。每次先自問：(1) 這段內容放進模型會不會炸掉、或讓上下文被迫壓縮？ (2) 我有工具可以達成目的嗎？不要把整份丟給自己讀。\n' +
+            '可用的辦法（依情況挑，不是固定流程）：big_content 工具（info 看結構／長度；json 取指定路徑；grep 找關鍵字；read 分段讀；js 寫幾行JavaScript解析、篩選、統計，只回傳需要的結果）；python_execute 寫腳本處理；檔案則用 fs_read_file 帶 offset 分段、analyze_large_file 做摘要分析。\n' +
+            '使用者有指定查詢（例如某個欄位、符合某條件的項目），就寫程式去解析並只回傳答案，不要把原文倒回來。回覆要精簡：答案、依據的位置（路徑或偏移量）、以及你用的做法。',
+        dynamicNote: '路由建議：結果裡出現「內容很大…代號 bc_N」、或使用者要處理很長的文字／大型JSON／整份網頁，委派這個領域評估該怎麼解析。',
+    },
     media_av: {
         enabled: true,
         label: '影音處理（逐字稿／擷取聲音／燒字幕／動畫版影片／語音合成）',
@@ -27585,6 +27595,49 @@ ${fnData.code}
         // 這裡另外寫一個對應pyodide.FS介面的walk。stdout/stderr的擷取用
         // Pyodide官方支援的setStdout/setStderr（batched callback），不是
         // 靠python自己print再從某個地方讀回來。
+        registerOptional('big_content',
+            '處理「太大、沒有整份放進上下文」的內容（工具回傳或使用者貼上，被暫存起來，帶有代號 bc_N）。action：info（長度、行數、是不是JSON、結構概要）、read（offset+length 分段讀）、grep（pattern 正規式找，附前後文）、json（path 例如 a.items[0].name 或 items[*].id，取JSON指定部分）、js（寫一段JavaScript函式本體，參數 text 是原文、data 是解析好的JSON（不是JSON則為null），return 你要的結果；用來解析、篩選、統計、取欄位）。結果會被限制大小，只拿你需要的。',
+            async function (rawArgs) {
+                let p = {}; try { p = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const rec = this._bigStore && this._bigStore.get(String(p.id || ''));
+                if (!rec) return JSON.stringify({ ok: false, error: '找不到代號 ' + (p.id || '') + '（可能已被清掉或重新載入頁面了）；請重新取得內容。' + (this._bigStore ? '目前有：' + Array.from(this._bigStore.keys()).join('、') : '') });
+                const cap = Math.max(2000, Math.floor(this._toolResultBudgetChars() * 0.4)); const text = rec.text; const act = String(p.action || 'info');
+                const clip = (v) => { let s = typeof v === 'string' ? v : JSON.stringify(v); if (s === undefined) s = String(v); return s.length > cap ? { truncated: true, total: s.length, text: s.slice(0, cap), hint: '結果還是太長：縮小範圍（更精確的path或pattern），或用 js 在內部先統計、取前幾筆再 return。' } : { text: s }; };
+                try {
+                    if (act === 'info') { const ol = this._bigOutline(text); return JSON.stringify({ ok: true, id: p.id, chars: text.length, lines: text.split('\n').length, label: rec.label, isJson: !!ol, outline: ol ? ol.outline : undefined }); }
+                    if (act === 'read') { const off = Math.max(0, Number(p.offset) || 0); const len = Math.min(cap, Math.max(1, Number(p.length) || cap)); return JSON.stringify({ ok: true, offset: off, text: text.slice(off, off + len), next_offset: off + len < text.length ? off + len : null, total: text.length }); }
+                    if (act === 'grep') {
+                        let re; try { re = new RegExp(String(p.pattern || ''), p.ignore_case === false ? 'g' : 'gi'); } catch (e) { return JSON.stringify({ ok: false, error: 'pattern 不是合法的正規式：' + e.message }); }
+                        const ctx = Math.min(400, Math.max(0, Number(p.context) || 80)); const max = Math.min(50, Math.max(1, Number(p.max) || 10)); const hits = []; let m;
+                        while ((m = re.exec(text)) && hits.length < max) { hits.push({ at: m.index, text: text.slice(Math.max(0, m.index - ctx), m.index + m[0].length + ctx) }); if (m[0].length === 0) re.lastIndex++; }
+                        return JSON.stringify({ ok: true, matches: hits.length, hits, note: hits.length >= max ? '只列前' + max + '筆，可調 max 或換更精確的 pattern' : undefined });
+                    }
+                    if (act === 'json') {
+                        let data; try { data = JSON.parse(text); } catch (e) { return JSON.stringify({ ok: false, error: '內容不是合法的JSON：' + e.message + '；改用 grep 或 js。' }); }
+                        const toks = String(p.path || '').replace(/\[(\*|\d+)\]/g, '.$1').split('.').filter(Boolean);
+                        let cur = [data]; for (const k of toks) { const nx = []; for (const c of cur) { if (c === null || typeof c !== 'object') continue; if (k === '*') { Object.keys(c).forEach((kk) => nx.push(c[kk])); } else if (k in c) nx.push(c[k]); } cur = nx; }
+                        const out = toks.includes('*') ? cur : cur[0]; return JSON.stringify(Object.assign({ ok: true, matched: cur.length }, clip(out)));
+                    }
+                    if (act === 'js') {
+                        if (typeof Worker === 'undefined' || typeof Blob === 'undefined') return JSON.stringify({ ok: false, error: '這個環境沒有 Worker，改用 python_execute。' });
+                        const src = 'self.onmessage=(e)=>{try{const text=e.data.text;let data=null;try{data=JSON.parse(text)}catch(_){};const fn=new Function("text","data",e.data.code);const r=fn(text,data);Promise.resolve(r).then((v)=>self.postMessage({ok:true,v:v===undefined?null:v}),(err)=>self.postMessage({ok:false,e:String(err&&err.message||err)}))}catch(err){self.postMessage({ok:false,e:String(err&&err.message||err)})}}';
+                        const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' })); const w = new Worker(url);
+                        const res = await new Promise((resolve) => { const to = setTimeout(() => resolve({ ok: false, e: '執行超過 15 秒被中止，換更有效率的寫法。' }), 15000); w.onmessage = (ev) => { clearTimeout(to); resolve(ev.data); }; w.onerror = (ev) => { clearTimeout(to); resolve({ ok: false, e: String(ev.message || '腳本錯誤') }); }; w.postMessage({ text, code: String(p.code || '') }); });
+                        try { w.terminate(); URL.revokeObjectURL(url); } catch (_) {}
+                        if (!res.ok) return JSON.stringify({ ok: false, error: res.e });
+                        return JSON.stringify(Object.assign({ ok: true }, clip(res.v)));
+                    }
+                    return JSON.stringify({ ok: false, error: '不認得的 action：' + act });
+                } catch (e) { return JSON.stringify({ ok: false, error: String((e && e.message) || e) }); }
+            },
+            { type: 'object', properties: {
+                id: { type: 'string', description: '暫存代號，例如 bc_1' },
+                action: { type: 'string', enum: ['info', 'read', 'grep', 'json', 'js'] },
+                offset: { type: 'number' }, length: { type: 'number' }, pattern: { type: 'string' }, context: { type: 'number' }, max: { type: 'number' }, ignore_case: { type: 'boolean' },
+                path: { type: 'string', description: 'json：a.b[0].c 或 items[*].id' }, code: { type: 'string', description: 'js：函式本體，可用 text、data，要 return 結果' },
+            }, required: ['id', 'action'], additionalProperties: false }
+        );
+
         registerOptional('python_execute',
             '在瀏覽器沙盒內執行一段Python腳本（Pyodide=CPython編譯成wasm，標準函式庫齊全；額外套件可以在腳本開頭用`import micropip; await micropip.install("套件名")`安裝純Python套件，或直接import常見科學計算套件如numpy/pandas讓Pyodide自動載入，第一次載入某個套件會花一點時間；Pyodide 發行版有的套件（micropip、numpy、pandas、pillow、fonttools…）執行前會依腳本的 import 自動載入；沒有 wasm 版的套件裝不起來——例如 img2pdf／pikepdf：圖片轉PDF請改用images_to_pdf工具，或PIL的Image.save(路徑,"PDF")）。腳本執行過程本身是完全隔離的沙盒，不會碰到使用者電腦真正的檔案系統，也沒有對外網路連線能力（micropip.install只能裝Pyodide自己索引到的套件，不是任意網路存取）；但輸入/輸出兩端（見input_files/real_input_files/output_ref參數）如果目前環境已經提供對應能力，可以直接對接真實磁碟路徑。工作目錄是/work，input_files/real_input_files會先寫進這裡，執行後/work底下所有檔案都會依output_ref規則處理（見output_ref參數說明）。腳本頂層程式碼可以直接寫（不需要包在函式或用exec），支援top-level await。**`import subprocess`後`subprocess.run(["python3","other.py"])`／`subprocess.run(["sh","-c","..."])`真的能動**（回頭呼叫另一支python腳本或busybox shell指令，看得到同一份/work內容；子腳本有獨立的變數空間，不會跟呼叫端互相污染；`Popen`只支援`communicate()`/`wait()`這種等到完成才回傳的簡化語意，沒有真正的背景行程控制）。**任務裡如果提到一個真實檔案（絕對路徑如"/home/user/xxx.py"，或使用者提過的File Access Point裡的檔案），尤其使用者說「我改過了」這種暗示要讀取最新內容的情境，用real_input_files直接把它讀進來，不要因為「我沒辦法存取你的檔案系統」就放棄或叫使用者貼上程式碼——兩種參照格式各自需要對應的能力，只有兩者都用不上時才會得到明確錯誤，如實告知使用者即可**。⚠️沒有逾時中斷機制，避免寫真正的無窮迴圈。參數: {"script":"print(\'hello\')\\nwith open(\'/work/out.txt\',\'w\') as f: f.write(\'done\')", "input_files":{"data.csv":"..."}, "real_input_files":{"compute_pi.py":"/home/user/AI-Workspace/compute_pi.py"}, "output_ref":"fap:我的專案/results"}**平行運算**：multiprocessing（Pool.map/starmap/apply_async/imap_unordered、Process、Queue）與concurrent.futures.ProcessPoolExecutor可以用——底層是瀏覽器Web Worker（每個worker一份獨立Pyodide，不共用記憶體，所以Value/Array/Manager/Pipe不能用，改用Pool回傳值或Queue彙整結果）；規則跟真實multiprocessing一樣：進入點要放在`if __name__ == \'__main__\':`底下，交給worker的函式必須是模組最上層定義的具名函式（lambda/巢狀函式無法pickle）。shell裡的`python`指令無法等待worker，會自動改成單執行緒依序執行（結果相同、沒有加速）。**編修使用者的📎附件**：用attachment_files參數（{"工作目錄相對檔名":"附件file_id或檔名"}，二進位檔也行，file_id用list_uploaded_files查）把附件放進工作目錄，腳本讀取、修改後寫回同名檔案（或寫成新檔案）即可；執行完畢後，「新增或內容有變」的檔案會存回persistentStorage並直接在對話裡顯示下載卡片給使用者（原封不動的輸入檔不會重複產出），你只需要用一兩句話說明改了什麼、不要把整份檔案內容貼回對話。',
             async function (rawArgs) {
@@ -40548,10 +40601,41 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     _toolResultBudgetChars() {
         return this._isAutoAgentMode() ? this._getAdaptiveContentBudgetChars(0.25, 16000) : this._getAdaptiveContentBudgetChars(0.15, 8000);
     }
-    _truncateToolResultForContext(text) {
+    // 2026-10-15使用者要求：不論是讀網頁、貼上整份文字、讀大型JSON、瀏覽器工具抓回來的內容，太大的內容不能整份塞進模型（會讓模型端直接炸掉）。
+    // 這裡是所有「進到上下文的文字」共用的守門員：超過預算就把完整內容暫存起來（代號 bc_N），只放開頭＋結構概要＋一段「先自問」的提示，
+    // 讓 AI 自己評估要用 big_content 工具（寫幾行JavaScript解析、分段讀、找關鍵字、取JSON路徑）、python_execute，或請 big_content 領域的子agent處理。
+    // 提示是建議，不是寫死的流程。
+    _bigStash(text, label) {
+        if (!this._bigStore) { this._bigStore = new Map(); this._bigSeq = 0; this._bigBytes = 0; }
+        const id = 'bc_' + (++this._bigSeq); this._bigStore.set(id, { text, label: label || '', at: Date.now() }); this._bigBytes += text.length;
+        while (this._bigBytes > 120 * 1024 * 1024 && this._bigStore.size > 1) { const k = this._bigStore.keys().next().value; this._bigBytes -= this._bigStore.get(k).text.length; this._bigStore.delete(k); }
+        return id;
+    }
+    _bigOutline(text) {
+        const trimmed = text.trimStart(); if (trimmed[0] !== '{' && trimmed[0] !== '[') return null;
+        let data; try { data = JSON.parse(text); } catch (_) { return null; }
+        const ty = (v) => (v === null ? 'null' : Array.isArray(v) ? 'array(' + v.length + ')' : typeof v === 'object' ? 'object(' + Object.keys(v).length + ')' : typeof v);
+        const walk = (v, d) => {
+            if (d > 2 || v === null || typeof v !== 'object') return ty(v);
+            if (Array.isArray(v)) return ty(v) + (v.length ? ' 每筆≈' + JSON.stringify(walk(v[0], d + 1)) : '');
+            const ks = Object.keys(v); const o = {}; ks.slice(0, 25).forEach((k) => { o[k] = walk(v[k], d + 1); }); if (ks.length > 25) o['…'] = '還有' + (ks.length - 25) + '個欄位'; return o;
+        };
+        let s = ''; try { s = JSON.stringify(walk(data, 0)); } catch (_) { return null; }
+        return { outline: s.length > 1500 ? s.slice(0, 1500) + '…' : s };
+    }
+    _truncateToolResultForContext(text, label) {
         const limit = this._toolResultBudgetChars();
         if (text.length <= limit) return text;
-        return text.slice(0, limit) + `\n\n[結果過長已自動截斷：原始長度${text.length}字元，只保留前${limit}字元。**不要用一樣的方式再委派/再呼叫一次，結果同樣會被截斷。** 需要看被截掉的部分時：如果是檔案內容，自己直接用fs_read_file（或fap_read_file）帶offset分段讀（從offset=${limit}附近接著讀，回傳has_more:true就繼續），很長又只需要分析/摘要時改用analyze_large_file；如果是委派子任務的結論，改成請子agent只回傳你真正需要的重點或指定片段，或把任務拆小分次委派。]`;
+        let id = null; try { id = this._bigStash(text, label); } catch (_) { id = null; }
+        let ol = null; try { ol = this._bigOutline(text); } catch (_) { ol = null; }
+        const head = Math.floor(limit * (ol ? 0.12 : 0.5)); // JSON 的開頭沒什麼資訊量，有結構概要就少放一點
+        const approxTok = Math.round(text.length / 3);
+        return text.slice(0, head) + '\n\n[內容很大（' + text.length + '字元，約' + approxTok + ' token），超過這次可放進上下文的量（約' + limit + '字元），只附上開頭' + head + '字元。' +
+            (ol ? '這是JSON，結構概要：' + ol.outline + '。' : '') +
+            (id ? '完整內容已暫存，代號 ' + id + '。' : '') +
+            '先自問：我真的需要整份嗎？我有工具可以代勞嗎？不要用一樣的方式再讀一次（一樣會被截斷）。可以考慮：' +
+            (id ? 'big_content 工具（action: info 看結構、read 分段讀、grep 找關鍵字、json 取指定路徑、js 寫幾行JavaScript解析／篩選／統計，只回傳你要的結果）；' : '') +
+            'python_execute 寫腳本處理；原本是檔案就用 fs_read_file 帶 offset 分段讀，只要分析摘要用 analyze_large_file；不確定怎麼處理時，可以委派 big_content 領域請子agent評估。]';
     }
 
     _formatToolResult(result, toolName) {
@@ -40561,7 +40645,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         // 內容剛好不是嚴格合法JSON），或工具直接回傳了帶base64的字串，還是
         // 可能有大段base64混在裡面，用_stripInlineBase64()兜底清掉，避免
         // 意外塞進送給模型的訊息內容裡（見那個函式的說明）。
-        if (typeof result === 'string') return this._truncateToolResultForContext(this._stripInlineBase64(result));
+        if (typeof result === 'string') return this._truncateToolResultForContext(this._stripInlineBase64(result), toolName);
         if (typeof result === 'undefined') return `[Tool 回傳成功] ${toolName} 執行完成`;
         try {
             // tw_stock_db客製: 原本用 JSON.stringify(result, null, 2) 美化縮排，
@@ -40569,9 +40653,9 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             // 幫助，純粹浪費token（實測同一份300筆OHLCV資料，美化版比壓縮版
             // 多耗費約23%字元數）。畫面上的<details>區塊本身就是等寬字型+
             // 自動換行，壓縮後照樣可讀。
-            return this._truncateToolResultForContext(this._stripInlineBase64(JSON.stringify(result)));
+            return this._truncateToolResultForContext(this._stripInlineBase64(JSON.stringify(result)), toolName);
         } catch (err) {
-            return this._truncateToolResultForContext(this._stripInlineBase64(String(result)));
+            return this._truncateToolResultForContext(this._stripInlineBase64(String(result)), toolName);
         }
     }
 
@@ -62377,6 +62461,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         }
         this.historyIndex = -1;
 
+        // 使用者整份貼上的超大文字（日誌、JSON、網頁全文）：不整份塞進模型，暫存起來讓 AI 用 big_content 工具處理
+        try { if (typeof userText === 'string' && userText.length > this._toolResultBudgetChars() * 2) userText = this._truncateToolResultForContext(userText, '使用者貼上的文字'); } catch (_) { /* */ }
         this.messages.push({ role: "user", content: userText });
         this._renderMessageHistory();
 
