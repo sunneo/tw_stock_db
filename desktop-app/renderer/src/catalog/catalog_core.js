@@ -146,16 +146,21 @@
     // ===== Python 原型（extract_py.py 的輸出）→ 單元 =====
     // 註解字串（str、list[str]、Optional[int]、int | None、Union[A,B]、dict[str, Any]、Path…）→ 我們的型別詞彙。對不上的回傳 null（不猜）。
     const PY_SIMPLE = { str: 'text', int: 'int', float: 'number', bool: 'bool', bytes: 'bytes', bytearray: 'bytes', none: 'null', nonetype: 'null', any: 'any', object: 'any', dict: 'dict', mapping: 'dict', mutablemapping: 'dict', ordereddict: 'dict', defaultdict: 'dict',
-        list: 'list<any>', sequence: 'list<any>', iterable: 'list<any>', tuple: 'list<any>', set: 'list<any>', frozenset: 'list<any>', collection: 'list<any>', path: 'path', pathlike: 'path', complex: 'number', decimal: 'number', fraction: 'number', callable: 'callable' };
+        list: 'list<any>', sequence: 'list<any>', iterable: 'list<any>', tuple: 'list<any>', set: 'list<any>', frozenset: 'list<any>', collection: 'list<any>', path: 'path', pathlike: 'path', complex: 'number', decimal: 'number', fraction: 'number', callable: 'callable',
+        // typeshed 常用的名稱：數字協定、緩衝區、路徑別名（別名在轉換時多半已展開，這裡是沒展開的保底）
+        supportsfloat: 'number', supportsint: 'int', supportsindex: 'int', supportscomplex: 'number', real: 'number', number: 'number', readablebuffer: 'bytes', writablebuffer: 'bytes', buffer: 'bytes', strpath: 'path', strorbytespath: 'path', filedescriptororpath: 'path', hashable: 'any' };
+    // 聯集收斂：int 是 number 的一種；text 與 path 並列時取 path（「字串或路徑物件」的意圖是路徑）
+    function collapseUnion(nn) { let a = Array.from(new Set(nn)); if (a.includes('number')) a = a.filter((x) => x !== 'int'); if (a.includes('path')) a = a.filter((x) => x !== 'text'); return a.length === 1 ? a[0] : 'union<' + a.join('|') + '>'; }
     function splitTopComma(s) { const out = []; let d = 0, cur = ''; for (const c of s) { if (c === '[') d++; else if (c === ']') d--; if (c === ',' && d === 0) { out.push(cur.trim()); cur = ''; } else cur += c; } if (cur.trim()) out.push(cur.trim()); return out; }
     function pyTypeToType(ann) {
         if (ann === undefined || ann === null) return null; let s = String(ann).trim().replace(/^typing\./, '').replace(/typing\./g, '').replace(/^['"]|['"]$/g, ''); if (!s) return null;
         if (/^<class '([\w.]+)'>$/.test(s)) s = /^<class '([\w.]+)'>$/.exec(s)[1].split('.').pop();
-        const bar = splitTopBar(s); if (bar.length > 1) { const ts = bar.map(pyTypeToType); if (ts.some((x) => x === null)) return null; const nn = ts.filter((x) => x !== 'null'); if (nn.length === 1) return nn[0]; return 'union<' + Array.from(new Set(nn)).join('|') + '>'; }
+        const bar = splitTopBar(s); if (bar.length > 1) { const ts = bar.map(pyTypeToType); if (ts.some((x) => x === null)) return null; const nn = ts.filter((x) => x !== 'null'); if (!nn.length) return 'null'; return collapseUnion(nn); }
         const g = /^([\w.]+)\[(.*)\]$/.exec(s);
         if (g) {
             const head = g[1].split('.').pop().toLowerCase(), args = splitTopComma(g[2]);
-            if (head === 'optional') return pyTypeToType(args[0]); if (head === 'union') { const ts = args.map(pyTypeToType); if (ts.some((x) => x === null)) return null; const nn = Array.from(new Set(ts.filter((x) => x !== 'null'))); return nn.length === 1 ? nn[0] : 'union<' + nn.join('|') + '>'; }
+            if (head === 'optional') return pyTypeToType(args[0]); if (head === 'union') { const ts = args.map(pyTypeToType); if (ts.some((x) => x === null)) return null; const nn = ts.filter((x) => x !== 'null'); return nn.length ? collapseUnion(nn) : 'null'; }
+            if (['pathlike', 'supportsabs', 'supportsround'].includes(head)) return head === 'pathlike' ? 'path' : 'number';
             if (['list', 'sequence', 'iterable', 'set', 'frozenset', 'collection', 'tuple', 'mutablesequence', 'deque'].includes(head)) { const el = head === 'tuple' ? null : pyTypeToType(args[0]); return 'list<' + (el || 'any') + '>'; }
             if (['dict', 'mapping', 'mutablemapping', 'ordereddict', 'defaultdict'].includes(head)) return 'dict'; if (head === 'callable') return 'callable'; if (head === 'literal') { const vals = args.map((a) => a.replace(/^['"]|['"]$/g, '')).filter((a) => /^[\w.-]+$/.test(a)); return vals.length === args.length && vals.length ? 'enum<' + vals.join('|') + '>' : 'text'; }
             return null;
@@ -165,20 +170,21 @@
     function splitTopBar(s) { const out = []; let d = 0, cur = ''; for (const c of s) { if (c === '[') d++; else if (c === ']') d--; if (c === '|' && d === 0) { out.push(cur.trim()); cur = ''; } else cur += c; } out.push(cur.trim()); return out; }
     function pyDefaultType(def) { if (def === null || def === undefined) return null; const d = String(def).trim(); if (/^(True|False)$/.test(d)) return 'bool'; if (/^-?\d+$/.test(d)) return 'int'; if (/^-?\d+\.\d*(e[+-]?\d+)?$/i.test(d)) return 'number'; if (/^(['"]).*\1$/.test(d)) return 'text'; return null; }
     function unitFromPyProto(p, ctx) {
-        ctx = ctx || {}; const params = []; const callableParam = [];
+        ctx = ctx || {}; const params = []; const callableParam = []; const sp = ctx.stubs && ctx.stubs.modules && ctx.stubs.modules[p.module] && ctx.stubs.modules[p.module][p.name]; // 型別存根轉出來的表（stub_to_types.py）
         for (const pp of (p.params || [])) {
             if (pp.kind === 'VAR_POSITIONAL' || pp.kind === 'VAR_KEYWORD') continue; // *args／**kwargs 不進單元參數（要用就人工補）
             let ty = pyTypeToType(pp.annotation), src = ty ? 'annotation' : null;
+            if (!ty && sp) { const sq = (sp.params || []).find((q) => q.name === pp.name); const st = sq && pyTypeToType(sq.annotation); if (st && st !== 'any') { ty = st; src = 'stub'; } } // 型別存根（typeshed）：標準庫沒有註解時的主要來源
             if (!ty) { const hit = NAME_TYPES.find(([re]) => re.test(pp.name)); if (hit && hit[1] !== 'KIND') { ty = hit[1]; src = 'name'; } }
             if (!ty) { const dt = pyDefaultType(pp.default); if (dt) { ty = dt; src = 'default'; } }
             if (!ty) { ty = 'any'; src = 'none'; }
             if (ty === 'callable') callableParam.push(pp.name);
             const o = { name: pp.name, kind: pp.kind === 'POSITIONAL_ONLY' ? 'positional' : (pp.kind === 'KEYWORD_ONLY' ? 'keyword' : 'named'), type: ty, type_src: src, required: pp.default === null || pp.default === undefined }; if (pp.default !== null && pp.default !== undefined) o.default = pp.default; params.push(o);
         }
-        const rt = pyTypeToType(p.returns); const effects = (p.effects && p.effects.length) ? p.effects.filter((e) => EFFECTS.includes(e)) : []; const pure = !!p.pure && !effects.length;
+        let rt = pyTypeToType(p.returns), rtSrc = 'annotation'; if (!rt && sp) { const sr = pyTypeToType(sp.returns); if (sr && sr !== 'any') { rt = sr; rtSrc = 'stub'; } } const effects = (p.effects && p.effects.length) ? p.effects.filter((e) => EFFECTS.includes(e)) : []; const pure = !!p.pure && !effects.length;
         const hasSig = Array.isArray(p.params); const state = p.stdlib ? 'builtin' : (ctx.installed && ctx.installed.includes(p.module.split('.')[0]) ? 'installed' : 'needs-network');
         const typedAll = hasSig && params.every((q) => q.type_src !== 'none' && q.type !== 'any' && q.type !== 'callable');
-        const u = { id: 'py:' + p.module + '.' + p.name, runtime: 'python', name: p.module + '.' + p.name, summary: summaryOf(p.summary), params, returns: rt ? { type: rt, type_src: 'annotation' } : { type: 'any', type_src: 'none' }, effects: pure ? [] : (effects.length ? effects : ['unknown']), pure, avail: { state, needs: [] }, domains: [], tests: (p.tests || []).slice(0, 3),
+        const u = { id: 'py:' + p.module + '.' + p.name, runtime: 'python', name: p.module + '.' + p.name, summary: summaryOf(p.summary), params, returns: rt ? { type: rt, type_src: rtSrc } : { type: 'any', type_src: 'none' }, effects: pure ? [] : (effects.length ? effects : ['unknown']), pure, avail: { state, needs: [] }, domains: [], tests: (p.tests || []).slice(0, 3),
             call: { runtime: 'python', import: p.module, qualname: p.name, via: 'pyodide' }, sig_src: p.sig_src || 'none' };
         if (p.version) u.version = p.version;
         // 信任等級 1：簽名完整、參數型別都明確（不含 callable）、副作用已知、可用、而且有測試案例或回傳型別明確
