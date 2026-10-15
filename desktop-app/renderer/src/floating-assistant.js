@@ -10817,6 +10817,9 @@ const holder = {};
 return holder.FaGram;
 })();
 /* GRAM-END */
+/* CATPY-BEGIN */
+const FA_CATALOG_EXTRACT_PY = "# 單元目錄的 Python 抽取器（只用標準庫；在 Pyodide 或一般 CPython 裡都能跑）。設計見 DESIGN.unit-catalog.md 第三、四、五節。\n# 用法：JS 端把 REQ 那一行的占位符換成請求（JSON 字串的字面值）再執行；輸出一行 \"FA_EXTRACT_RESULT:\" + JSON。\n#   請求：{\"modules\": [\"statistics\", ...], \"max_per_module\": 400, \"doctest\": true}\n# 這個腳本只「讀」：不呼叫任何被抽取的函式（doctest 範例只當文字存起來，之後在沙盒裡驗證才會執行）。\nimport sys, json, inspect, importlib, re, ast\n\nREQ = json.loads(__FA_REQ__)\n\n# 副作用：整個模組的規則（不執行任何東西）。沒有列出的模組一律 unknown（保守）。\nPURE_MODULES = set('json re math cmath statistics string textwrap base64 binascii hashlib hmac zlib html operator itertools functools collections urllib.parse difflib fractions decimal bisect heapq copy unicodedata struct csv shlex pprint numbers keyword token fnmatch posixpath ntpath colorsys calendar'.split())\nEFFECT_MODULES = {\n    'os': ['fs.read', 'fs.write', 'env', 'proc'], 'shutil': ['fs.read', 'fs.write'], 'subprocess': ['proc'], 'socket': ['net'], 'ssl': ['net'], 'urllib.request': ['net'],\n    'http.client': ['net'], 'ftplib': ['net'], 'smtplib': ['net'], 'random': ['random'], 'secrets': ['random'], 'time': ['time'], 'tempfile': ['fs.write'], 'glob': ['fs.read'],\n    'pathlib': ['fs.read', 'fs.write'], 'sqlite3': ['fs.write'], 'webbrowser': ['proc', 'ui'], 'ctypes': ['proc'], 'multiprocessing': ['proc'], 'threading': ['proc'], 'sys': ['env'],\n    'datetime': ['time'], 'logging': ['ui'], 'pickle': ['fs.read', 'fs.write'], 'shelve': ['fs.write'], 'zipfile': ['fs.read', 'fs.write'], 'tarfile': ['fs.read', 'fs.write'],\n}\nFS_READ_NAMES = re.compile(r'^(exists|lexists|isfile|isdir|islink|ismount|getsize|getmtime|getatime|getctime|realpath|samefile|samestat|sameopenfile)$')\n\n\ndef type_name(a):\n    if a is inspect.Parameter.empty or a is inspect.Signature.empty:\n        return None\n    if isinstance(a, str):\n        return a\n    n = getattr(a, '__name__', None)\n    if n and not getattr(a, '__args__', None):\n        return n\n    return str(a).replace('typing.', '')\n\n\ndef first_para(doc):\n    doc = (doc or '').strip()\n    if not doc:\n        return ''\n    para = re.split(r'\\n\\s*\\n', doc, maxsplit=1)[0]\n    return re.sub(r'\\s+', ' ', para)[:300]\n\n\ndef sig_from_doc(name, doc):\n    # C 實作的函式 inspect 拿不到簽名時，試著解析文件字串第一行 name(a, b, /, *, c=1)\n    first = (doc or '').strip().split('\\n', 1)[0]\n    m = re.match(r'^' + re.escape(name) + r'\\((.*)\\)\\s*(?:->.*)?$', first)\n    if not m:\n        return None\n    params, seen_star = [], False\n    for part in [x.strip() for x in m.group(1).split(',') if x.strip()]:\n        if part == '/':\n            for p in params:\n                if p['kind'] == 'POSITIONAL_OR_KEYWORD':\n                    p['kind'] = 'POSITIONAL_ONLY'\n            continue\n        if part == '*':\n            seen_star = True\n            continue\n        default = None\n        if '=' in part:\n            part, default = [x.strip() for x in part.split('=', 1)]\n        kind = 'VAR_POSITIONAL' if part.startswith('**') is False and part.startswith('*') else ('VAR_KEYWORD' if part.startswith('**') else ('KEYWORD_ONLY' if seen_star else 'POSITIONAL_OR_KEYWORD'))\n        params.append({'name': part.lstrip('*'), 'kind': kind, 'default': default, 'annotation': None})\n    return params\n\n\ndef doctests(doc, limit=3):\n    out, lines = [], (doc or '').split('\\n')\n    i = 0\n    while i < len(lines) and len(out) < limit:\n        s = lines[i].strip()\n        if s.startswith('>>> '):\n            expr = s[4:].strip()\n            exp, j = [], i + 1\n            while j < len(lines) and lines[j].strip() and not lines[j].strip().startswith('>>>') and not lines[j].strip().startswith('...'):\n                exp.append(lines[j].strip())\n                j += 1\n            try:\n                ast.parse(expr, mode='eval')\n                ok = True\n            except SyntaxError:\n                ok = False\n            e = ' '.join(exp)\n            if ok and e and '<' not in e and 'Traceback' not in e and len(expr) < 200 and len(e) < 200:\n                out.append({'expr': expr, 'expect': e, 'src': 'doctest'})\n            i = j\n        else:\n            i += 1\n    return out\n\n\ndef effects_for(modname, fname):\n    if modname in PURE_MODULES:\n        return [], True\n    if modname in ('os.path',):\n        return (['fs.read'], False) if FS_READ_NAMES.match(fname) else ([], True)\n    if modname == 'datetime':\n        return (['time'], False) if re.match(r'^(now|today|utcnow|fromtimestamp)$', fname) else ([], True)\n    eff = EFFECT_MODULES.get(modname)\n    return (list(eff), False) if eff else (['unknown'], False)\n\n\ndef stdlib(modname):\n    top = modname.split('.')[0]\n    names = getattr(sys, 'stdlib_module_names', None)\n    return top in names if names else top in sys.builtin_module_names\n\n\ndef extract(modname):\n    mod = importlib.import_module(modname)\n    names = list(getattr(mod, '__all__', None) or [n for n in dir(mod) if not n.startswith('_')])\n    protos, skipped = [], 0\n    for n in names[: REQ.get('max_per_module', 400)]:\n        o = getattr(mod, n, None)\n        if o is None or not callable(o) or inspect.isclass(o):\n            skipped += 1\n            continue\n        doc = inspect.getdoc(o) or ''\n        params, sig_src, ret = None, None, None\n        try:\n            s = inspect.signature(o)\n            params = [{'name': p.name, 'kind': p.kind.name, 'default': None if p.default is p.empty else repr(p.default)[:80], 'annotation': type_name(p.annotation)} for p in s.parameters.values()]\n            ret = type_name(s.return_annotation)\n            sig_src = 'inspect'\n        except (ValueError, TypeError):\n            params = sig_from_doc(n, doc)\n            sig_src = 'doc' if params is not None else None\n        eff, pure = effects_for(modname, n)\n        protos.append({\n            'module': modname, 'name': n, 'summary': first_para(doc), 'params': params, 'sig_src': sig_src, 'returns': ret,\n            'effects': eff, 'pure': pure, 'stdlib': stdlib(modname), 'version': getattr(mod, '__version__', None),\n            'tests': doctests(doc) if REQ.get('doctest', True) else [], 'has_doc': bool(doc),\n        })\n    return protos, skipped\n\n\nres = {'ok': True, 'python': sys.version.split()[0], 'modules': {}, 'protos': [], 'errors': []}\nfor m in REQ.get('modules', []):\n    try:\n        protos, skipped = extract(m)\n        res['modules'][m] = {'callables': len(protos), 'skipped': skipped}\n        res['protos'].extend(protos)\n    except Exception as e:  # 載入不了的模組（沒安裝、缺原生套件）只記錄，不中斷\n        res['errors'].append({'module': m, 'error': type(e).__name__ + ': ' + str(e)[:200]})\nprint('FA_EXTRACT_RESULT:' + json.dumps(res, ensure_ascii=False))\n";
+/* CATPY-END */
 /* CATALOG-BEGIN */
 const FaCatalog = (function () {
 const holder = {};
@@ -10830,7 +10833,7 @@ const holder = {};
     'use strict';
     const VERSION = 1;
     const EFFECTS = ['fs.read', 'fs.write', 'net', 'proc', 'time', 'random', 'env', 'desktop', 'browser', 'ui', 'state.read', 'state.write', 'delegate', 'unknown'];
-    const TYPE_SRC = ['annotation', 'stub', 'schema', 'doc', 'name', 'probe', 'curated', 'none'];
+    const TYPE_SRC = ['annotation', 'stub', 'schema', 'doc', 'name', 'default', 'probe', 'curated', 'none'];
     const AVAIL = ['builtin', 'installed', 'cached', 'needs-network', 'disabled', 'unavailable'];
     // 型別詞彙：基本型別、由基本型別特化的（path 是一種 text），容器型別
     // 具體型別 → 它的上一層（可以放進上一層的位置，反過來不行）。檔案識別碼依媒體種類細分：pdf_file、video_file… 都是 file_id；gif_file 同時是 image_file
@@ -10966,6 +10969,48 @@ const holder = {};
         return { type: 'json', type_src: 'none' };
     }
 
+    // ===== Python 原型（extract_py.py 的輸出）→ 單元 =====
+    // 註解字串（str、list[str]、Optional[int]、int | None、Union[A,B]、dict[str, Any]、Path…）→ 我們的型別詞彙。對不上的回傳 null（不猜）。
+    const PY_SIMPLE = { str: 'text', int: 'int', float: 'number', bool: 'bool', bytes: 'bytes', bytearray: 'bytes', none: 'null', nonetype: 'null', any: 'any', object: 'any', dict: 'dict', mapping: 'dict', mutablemapping: 'dict', ordereddict: 'dict', defaultdict: 'dict',
+        list: 'list<any>', sequence: 'list<any>', iterable: 'list<any>', tuple: 'list<any>', set: 'list<any>', frozenset: 'list<any>', collection: 'list<any>', path: 'path', pathlike: 'path', complex: 'number', decimal: 'number', fraction: 'number', callable: 'callable' };
+    function splitTopComma(s) { const out = []; let d = 0, cur = ''; for (const c of s) { if (c === '[') d++; else if (c === ']') d--; if (c === ',' && d === 0) { out.push(cur.trim()); cur = ''; } else cur += c; } if (cur.trim()) out.push(cur.trim()); return out; }
+    function pyTypeToType(ann) {
+        if (ann === undefined || ann === null) return null; let s = String(ann).trim().replace(/^typing\./, '').replace(/typing\./g, '').replace(/^['"]|['"]$/g, ''); if (!s) return null;
+        if (/^<class '([\w.]+)'>$/.test(s)) s = /^<class '([\w.]+)'>$/.exec(s)[1].split('.').pop();
+        const bar = splitTopBar(s); if (bar.length > 1) { const ts = bar.map(pyTypeToType); if (ts.some((x) => x === null)) return null; const nn = ts.filter((x) => x !== 'null'); if (nn.length === 1) return nn[0]; return 'union<' + Array.from(new Set(nn)).join('|') + '>'; }
+        const g = /^([\w.]+)\[(.*)\]$/.exec(s);
+        if (g) {
+            const head = g[1].split('.').pop().toLowerCase(), args = splitTopComma(g[2]);
+            if (head === 'optional') return pyTypeToType(args[0]); if (head === 'union') { const ts = args.map(pyTypeToType); if (ts.some((x) => x === null)) return null; const nn = Array.from(new Set(ts.filter((x) => x !== 'null'))); return nn.length === 1 ? nn[0] : 'union<' + nn.join('|') + '>'; }
+            if (['list', 'sequence', 'iterable', 'set', 'frozenset', 'collection', 'tuple', 'mutablesequence', 'deque'].includes(head)) { const el = head === 'tuple' ? null : pyTypeToType(args[0]); return 'list<' + (el || 'any') + '>'; }
+            if (['dict', 'mapping', 'mutablemapping', 'ordereddict', 'defaultdict'].includes(head)) return 'dict'; if (head === 'callable') return 'callable'; if (head === 'literal') { const vals = args.map((a) => a.replace(/^['"]|['"]$/g, '')).filter((a) => /^[\w.-]+$/.test(a)); return vals.length === args.length && vals.length ? 'enum<' + vals.join('|') + '>' : 'text'; }
+            return null;
+        }
+        const k = s.split('.').pop().toLowerCase(); return PY_SIMPLE[k] || null;
+    }
+    function splitTopBar(s) { const out = []; let d = 0, cur = ''; for (const c of s) { if (c === '[') d++; else if (c === ']') d--; if (c === '|' && d === 0) { out.push(cur.trim()); cur = ''; } else cur += c; } out.push(cur.trim()); return out; }
+    function pyDefaultType(def) { if (def === null || def === undefined) return null; const d = String(def).trim(); if (/^(True|False)$/.test(d)) return 'bool'; if (/^-?\d+$/.test(d)) return 'int'; if (/^-?\d+\.\d*(e[+-]?\d+)?$/i.test(d)) return 'number'; if (/^(['"]).*\1$/.test(d)) return 'text'; return null; }
+    function unitFromPyProto(p, ctx) {
+        ctx = ctx || {}; const params = []; const callableParam = [];
+        for (const pp of (p.params || [])) {
+            if (pp.kind === 'VAR_POSITIONAL' || pp.kind === 'VAR_KEYWORD') continue; // *args／**kwargs 不進單元參數（要用就人工補）
+            let ty = pyTypeToType(pp.annotation), src = ty ? 'annotation' : null;
+            if (!ty) { const hit = NAME_TYPES.find(([re]) => re.test(pp.name)); if (hit && hit[1] !== 'KIND') { ty = hit[1]; src = 'name'; } }
+            if (!ty) { const dt = pyDefaultType(pp.default); if (dt) { ty = dt; src = 'default'; } }
+            if (!ty) { ty = 'any'; src = 'none'; }
+            if (ty === 'callable') callableParam.push(pp.name);
+            const o = { name: pp.name, kind: pp.kind === 'POSITIONAL_ONLY' ? 'positional' : (pp.kind === 'KEYWORD_ONLY' ? 'keyword' : 'named'), type: ty, type_src: src, required: pp.default === null || pp.default === undefined }; if (pp.default !== null && pp.default !== undefined) o.default = pp.default; params.push(o);
+        }
+        const rt = pyTypeToType(p.returns); const effects = (p.effects && p.effects.length) ? p.effects.filter((e) => EFFECTS.includes(e)) : []; const pure = !!p.pure && !effects.length;
+        const hasSig = Array.isArray(p.params); const state = p.stdlib ? 'builtin' : (ctx.installed && ctx.installed.includes(p.module.split('.')[0]) ? 'installed' : 'needs-network');
+        const typedAll = hasSig && params.every((q) => q.type_src !== 'none' && q.type !== 'any' && q.type !== 'callable');
+        const u = { id: 'py:' + p.module + '.' + p.name, runtime: 'python', name: p.module + '.' + p.name, summary: summaryOf(p.summary), params, returns: rt ? { type: rt, type_src: 'annotation' } : { type: 'any', type_src: 'none' }, effects: pure ? [] : (effects.length ? effects : ['unknown']), pure, avail: { state, needs: [] }, domains: [], tests: (p.tests || []).slice(0, 3),
+            call: { runtime: 'python', import: p.module, qualname: p.name, via: 'pyodide' }, sig_src: p.sig_src || 'none' };
+        if (p.version) u.version = p.version;
+        // 信任等級 1：簽名完整、參數型別都明確（不含 callable）、副作用已知、可用、而且有測試案例或回傳型別明確
+        u.tier = (typedAll && !callableParam.length && !u.effects.includes('unknown') && (state === 'builtin' || state === 'installed') && (u.tests.length > 0 || !!rt)) ? 1 : 0; return u;
+    }
+
     // ===== 工具 → 單元 =====
     const clip = (s, n) => { s = String(s || '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
     function summaryOf(desc) { const s = String(desc || '').replace(/\s+/g, ' ').trim(); const m = /^(.{2,160}?(?:[。！？]|[.!?](?=\s|$)))/.exec(s); return clip(m ? m[1] : s, 160); }
@@ -10995,6 +11040,7 @@ const holder = {};
         for (const [k, d] of Object.entries(domains || {})) { domainEnabled[k] = d.enabled !== false; if (Array.isArray(d.toolNames)) for (const n of d.toolNames) (domainsOf[n] = domainsOf[n] || []).push(k); }
         const ctx = { domainsOf, domainEnabled, platform: opts.platform || 'desktop', returnsOverrides: opts.returnsOverrides || {} }; const units = [];
         for (const name of Object.keys(tools || {}).sort()) units.push(toolToUnit(name, tools[name], ctx));
+        for (const u of (opts.extraUnits || [])) units.push(u); // 從別的來源（Python 套件、JavaScript、bash）抽出來的單元
         return { version: VERSION, source: 'app-tools', generatedAt: opts.now || new Date().toISOString(), platform: ctx.platform, units, stats: stats(units) };
     }
     // 評量表（DESIGN.unit-catalog.md 第七節）
@@ -11006,7 +11052,7 @@ const holder = {};
     }
     function index(catalog) { return catalog.units.map((u) => ({ id: u.id, name: u.name, summary: u.summary, tier: u.tier, avail: u.avail.state, effects: u.effects })); }
 
-    return { VERSION, EFFECTS, TYPE_SRC, AVAIL, inferReturns, fieldType, parseType, typeToString, isAssignable, schemaType, effectsOf, summaryOf, toolToUnit, validateUnit, buildCatalog, stats, index };
+    return { VERSION, EFFECTS, TYPE_SRC, AVAIL, unitFromPyProto, pyTypeToType, inferReturns, fieldType, parseType, typeToString, isAssignable, schemaType, effectsOf, summaryOf, toolToUnit, validateUnit, buildCatalog, stats, index };
 });
 
 }).call(null, undefined, holder);
@@ -11027,7 +11073,7 @@ const holder = {};
     'use strict';
 
     // ===== 型別的「具體程度」：越具體，接得上越有意義（text 接 text 幾乎什麼都接得上，不能當作有意義的接線）=====
-    const SPEC = { file_id: 1, pdf_file: 1, video_file: 1, audio_file: 1, image_file: 1, gif_file: 1, subtitle_file: 1, path: 1, url: 1, yaml: 1, code: 0.9, query: 0.3, text: 0.15, number: 0.1, int: 0.12, bool: 0.1, dict: 0, json: 0, any: 0, null: 0 };
+    const SPEC = { bytes: 0.3, callable: 0, file_id: 1, pdf_file: 1, video_file: 1, audio_file: 1, image_file: 1, gif_file: 1, subtitle_file: 1, path: 1, url: 1, yaml: 1, code: 0.9, query: 0.3, text: 0.15, number: 0.1, int: 0.12, bool: 0.1, dict: 0, json: 0, any: 0, null: 0 };
     function spec(t) {
         if (typeof t === 'string') t = Cat.parseType(t);
         if (t.k === 'list') { const s = spec(t.of); return s >= 0.5 ? 0.6 : (s > 0 ? 0.25 : 0.1); }
@@ -59545,11 +59591,12 @@ ${existingNodeSummaries}
     // ===== 單元目錄（DESIGN.unit-catalog.md 第 1 步）：已登記的工具 → 單元 =====
     _unitCatalogBuild() {
         if (typeof FaCatalog === 'undefined' || !FaCatalog) throw new Error('單元目錄模組沒有載入');
-        return FaCatalog.buildCatalog(this.tools, this.domains, { platform: this._sqlDesktop && this._sqlDesktop() ? 'desktop' : (typeof window !== 'undefined' && window.desktopAPI ? 'desktop' : 'web'), returnsOverrides: (this.advancedSettings && this.advancedSettings.unitCatalogReturns) || {} });
+        return FaCatalog.buildCatalog(this.tools, this.domains, { platform: this._sqlDesktop && this._sqlDesktop() ? 'desktop' : (typeof window !== 'undefined' && window.desktopAPI ? 'desktop' : 'web'), returnsOverrides: (this.advancedSettings && this.advancedSettings.unitCatalogReturns) || {}, extraUnits: this._unitCatalogExtra ? Array.from(this._unitCatalogExtra.values()) : [] });
     }
     async _unitCatalogSlash(argsText) {
         const argv = String(argsText || '').trim().split(/\s+/).filter(Boolean); const wantJson = argv.includes('json'); this.messages.push({ role: 'user', content: '/unit-catalog' + (argv.length ? ' ' + argv.join(' ') : '') });
         try {
+            if (argv[0] === 'extract') { await this._unitCatalogExtractReply(argv.slice(1)); this._persistChatHistory(); this._renderMessageHistory(); return; }
             if (argv[0] === 'path') { this._unitCatalogPathReply(argv.slice(1)); this._persistChatHistory(); this._renderMessageHistory(); return; }
             const cat = this._unitCatalogBuild(); const s = cat.stats; const bad = cat.units.filter((u) => FaCatalog.validateUnit(u).length);
             const topEff = Object.entries(s.by_effect).sort((a, b) => b[1] - a[1]).map(([k, v]) => k + ' ' + v).join('、');
@@ -59560,6 +59607,28 @@ ${existingNodeSummaries}
         this._persistChatHistory(); this._renderMessageHistory();
     }
 
+    // ===== 不認得的函式庫 → 單元（Python）：在 Pyodide 裡讀簽名、文件、副作用規則，產出原型再轉成單元。只讀，不呼叫任何被抽取的函式。=====
+    async _unitCatalogExtractPython(modules, installPkgs) {
+        if (!FA_CATALOG_EXTRACT_PY) throw new Error('抽取腳本沒有嵌入');
+        const req = { modules, max_per_module: 400, doctest: true }; let script = '';
+        if (installPkgs && installPkgs.length) script += 'import micropip\nawait micropip.install(' + JSON.stringify(installPkgs) + ')\n'; // 純 Python 套件與 Pyodide 官方編好的套件才裝得起來
+        script += FA_CATALOG_EXTRACT_PY.replace('__FA_REQ__', () => JSON.stringify(JSON.stringify(req)));
+        const r = await this._runPyodideIsolated(script, {});
+        const line = String(r.stdout || '').split('\n').find((l) => l.startsWith('FA_EXTRACT_RESULT:'));
+        if (!line) throw new Error('抽取沒有結果' + (r.stderr ? '：' + String(r.stderr).split('\n').slice(-3).join(' ') : ''));
+        const res = JSON.parse(line.slice('FA_EXTRACT_RESULT:'.length)); const units = res.protos.map((p) => FaCatalog.unitFromPyProto(p, { installed: installPkgs || [] }));
+        if (!this._unitCatalogExtra) this._unitCatalogExtra = new Map(); for (const u of units) this._unitCatalogExtra.set(u.id, u);
+        return { units, res };
+    }
+    async _unitCatalogExtractReply(args) {
+        const lang = (args[0] || '').toLowerCase(); const rest = args.slice(1);
+        if (lang !== 'python' || !rest.length) { this._pushAssistantMessage('用法：/unit-catalog extract python <模組…> [install=套件1,套件2]\n例如：/unit-catalog extract python statistics json os.path\n在 Pyodide 裡只讀不執行：抽出每個函式的簽名、文件、副作用，轉成單元放進目錄（之後 /unit-catalog 的統計會包含它們）。install= 會先用 micropip 裝套件（只有純 Python 套件與 Pyodide 官方編好的套件裝得起來）。', null); return; }
+        const inst = rest.filter((a) => /^install=/i.test(a)).flatMap((a) => a.slice(8).split(',').map((x) => x.trim()).filter(Boolean)); const mods = rest.filter((a) => !/^install=/i.test(a));
+        this._pushAssistantMessage('⏳ 在 Pyodide 裡抽取 ' + mods.join('、') + (inst.length ? '（先安裝 ' + inst.join('、') + '）' : '') + '…第一次要載入 Pyodide，會比較久。', null); this._renderMessageHistory();
+        const t0 = Date.now(); const { units, res } = await this._unitCatalogExtractPython(mods, inst); const n = units.length; const pct = (a) => (n ? Math.round((a / n) * 1000) / 10 : 0);
+        const sig = units.filter((u) => u.sig_src !== 'none').length, typed = units.filter((u) => u.params.length && u.params.every((p) => p.type_src !== 'none' && p.type !== 'any')).length, tests = units.filter((u) => u.tests.length).length, t1 = units.filter((u) => u.tier === 1).length, unk = units.filter((u) => u.effects.includes('unknown')).length, pure = units.filter((u) => u.pure).length;
+        this._pushAssistantMessage('🐍 Python 抽取完成（' + res.python + '，' + (Date.now() - t0) + ' 毫秒）\n\n' + Object.entries(res.modules).map(([m, v]) => '- ' + m + '：' + v.callables + ' 個函式（略過 ' + v.skipped + ' 個類別／非函式）').join('\n') + (res.errors.length ? '\n' + res.errors.map((e) => '- ⚠️ ' + e.module + '：' + e.error).join('\n') : '') + '\n\n- 單元：' + n + '\n- 拿得到簽名：' + pct(sig) + '%\n- 參數型別全部明確：' + pct(typed) + '%\n- 有文件範例當測試：' + pct(tests) + '%\n- 判斷為純函式：' + pct(pure) + '%；副作用還不明：' + pct(unk) + '%\n- 信任等級 1：' + t1 + '（' + pct(t1) + '%）\n\n這些單元已經放進目錄；/unit-catalog json 會一起存出。型別大多要靠參數名稱、預設值猜（標 name／default），標準庫沒有型別註解，要更準需要型別存根或人工補強。', null);
+    }
     // /unit-catalog path <from> <to> [cast]：從起始型別走到目標型別的前 5 條接線（型別矩陣連乘，不經過模型）
     _unitCatalogPathReply(args) {
         const from = args[0], to = args[1]; if (!from || !to) { this._pushAssistantMessage('用法：/unit-catalog path <起始型別> <目標型別> [cast]\n型別：file_id、path、url、yaml、code、text、int、number、bool、list<…>、object{…}。加 cast 會允許用「不明型別」強制轉型接線（分數很低）。', null); return; }

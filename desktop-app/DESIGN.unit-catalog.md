@@ -195,3 +195,31 @@
 
 ### 回傳型別不明的工具（154 個，統一當萬用結構；請人工補強熱門的幾十個）
 add_chapters, analyze_large_file, apply_git_patch, attachment_apply_patch, bash_execute, begin_presentation, big_content, browser_activate_tab, browser_click, browser_close, browser_create_tab, browser_create_tab_group, browser_get_elements, browser_get_page_structure, browser_get_page_text, browser_list_downloads, browser_list_tabs, browser_mouse, browser_navigate, browser_press_key, browser_scroll, browser_status, browser_type_text, browser_wait_download, call_ai_function, ci_connections, ci_guide, ci_triage, coding_edit, coding_patch_tool, coding_read_file, coding_run_check, coding_run_tests, coding_task_state, coding_workspace, compare_images, define_snippet, delegate_to_machine, delegate_to_subagent, delete_ai_function, design_choices, diagnose_log, explain_build_error, explain_code, extract_pdf_images, extract_pptx_images, extract_video_frames, fap_apply_patch, fap_copy_from_storage, fap_copy_to_storage, fap_download_url, fap_find_file, fap_list_files, fap_write_file, fetch_web_page, fs_find_file, fs_grep, fs_list_files, fs_mkdir, fs_read_file, fs_remove, fs_stat, fs_write_file, gerrit, get_3d_scene_topic, get_large_file_analysis_chunk, get_presentation_topic, get_saved_script, get_tool_details, get_viewer_state, git_clone, git_commit, git_inspect, git_log, git_pull, git_push, git_status, github_ci, glue_define, glue_list, glue_report, image_decompose_redraw, image_parts_annotate, image_parts_teach, image_rig_animate, image_to_text, import_2d_animation_attachment, import_3d_model_attachment, import_fap_image, import_image_url, import_interactive_viewer_attachment, import_uploaded_image, interpret_image, jenkins, language_explore, log_ask, log_learn, mix_highlight, office_export_slide_images, open_existing_presentation, parse_uploaded_file, pipeline_inspect, playbook_state, pptx_inspect, pptx_to_deck, programming_domains, programming_knowledge, python_execute, rag_chunk_document, rag_delete, rag_query_graph, rag_store_graph_node, read_skill_file__4f8a41c9-5d9c-449f-869c-f3442fa7c794, read_skill_file__ba5a3f00-a78e-4967-a540-20f0aae6b175, read_skill_file__d999c385-cc44-410d-a789-064828afccce, ref_define, ref_expand, ref_lookup, ref_resolve, ref_types, ref_validate, register_saved_script, render_2d_animation, render_3d_scene, render_chart, render_drawing, render_interactive_viewer, repo_ask, repo_map, repo_read_doc, repo_sql, repo_wiki, run_command, sandbox_capabilities, sandbox_html, set_viewer_state, skill_create, skill_list, skill_read, summarize_large_text, terminal_cp_from, terminal_cp_to, terminal_get_text, terminal_list, tmux_capture_pane, tmux_kill_session, tmux_list_sessions, tmux_send_keys, tmux_start_session, uefi_parse, uml_design, uml_guide, uml_to_code, youtube_download
+
+## 十二、不認得的函式庫 → 單元：Python 抽取器（第 3 步的第一個環境）
+
+程式：`renderer/src/catalog/extract_py.py`（只用標準庫，只讀不呼叫被抽取的函式）、`catalog_core.js` 的 `unitFromPyProto`／`pyTypeToType`、指令 `/unit-catalog extract python <模組…> [install=套件,…]`（在 Pyodide 裡跑，抽出的單元放進目錄，`/unit-catalog json` 一起存出）；測試 `extract_py.test.js`（41 項，有 python 時會真的跑一次抽取腳本）。
+
+單元多了「怎麼叫它」的資訊：`call: { runtime: 'python', import: 'statistics', qualname: 'mean', via: 'pyodide' }`（launch path）、`sig_src`（簽名從哪來：inspect 或解析文件字串）、`version`、`tests`（文件範例）。
+
+型別來源（Python）：註解（標 `annotation`）→ 參數名稱（`path`、`url`…，標 `name`）→ 預設值（`True`→bool、`3`→int，標 `default`）→ 不明（`any`／`none`）。`str`、`list[str]`、`Optional[int]`、`int | None`、`Union`、`Literal`、`Path` 等註解字串會轉成我們的型別詞彙；對不上的不猜。`*args`／`**kwargs` 不進參數；`Callable` 參數不能用 JSON 傳，單元一律信任等級 0。
+
+信任等級 1 的條件（Python）：簽名完整、參數型別都明確、副作用已知、可用（內建或已安裝）、**而且有測試案例或回傳型別明確**。沒有東西可以驗證的，不管簽名多完整都不信任。
+
+**實測（桌面版 Pyodide，Python 3.14.2，4 個標準庫模組 113 個函式，約 4.4 秒）**
+| 指標 | 結果 |
+|---|---|
+| 拿得到簽名 | 100% |
+| 參數型別全部明確 | **9.7%** |
+| 有文件範例當測試 | 17.7% |
+| 判斷為純函式 | 87.6%（用模組白名單，不是驗證出來的） |
+| 副作用還不明 | 0% |
+| 信任等級 1 | **1 個（0.9%）** |
+
+結論：**簽名與副作用可以全自動，型別與測試是瓶頸。** 標準庫沒有型別註解，所以信任等級 1 幾乎是空的。下一步要補的是（由便宜到貴）：
+1. **型別存根**：把常用標準庫與套件的存根檔（`.pyi`）在建置時轉成型別表（標 `stub`），`ast` 就能解析，不需要新工具。
+2. **探測執行**（只對純函式、沙盒內、有時間與輸出上限）：依參數名稱與文件字串猜幾組輸入，真的執行，記錄實際輸入輸出型別與成功的呼叫當測試案例（標 `probe`）。型別由「執行驗證過」比「猜的」可靠。
+3. **讓 0.6B 看文件字串提型別建議，再由探測驗證**：模型的建議只是候選，驗證失敗就丟掉。
+4. 文件範例（doctest）有些依賴前面的設定行（例如先定義別名 `F`），單獨執行會失敗，驗證時要先檢查範例用到的名稱解析得到，解析不到的不算測試。
+
+限制：目前只抽模組層級的函式，類別（建構子與方法）、非 Python 的環境（JavaScript、bash）還沒做；`install=` 只裝得起純 Python 套件與 Pyodide 官方編好的套件；抽取腳本沒有做逾時保護（有些模組匯入時會有副作用，應該限定在 Worker 內並加逾時）。

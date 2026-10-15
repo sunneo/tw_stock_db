@@ -21,6 +21,7 @@ function embed(tplFile, begin, end, constName) {
 }
 embed('renderer/src/code-ui.template.html', 'CODEUI-BEGIN', 'CODEUI-END', 'FA_CODEUI_HTML');
 embed('renderer/src/aidoc-viewer.template.html', 'AIDOCVIEW-BEGIN', 'AIDOCVIEW-END', 'FA_AIDOC_VIEWER_HTML');
+embed('renderer/src/catalog/extract_py.py', 'CATPY-BEGIN', 'CATPY-END', 'FA_CATALOG_EXTRACT_PY');
 function embedPyBridge() {
     const dir = path.join(root, 'renderer/src/pybridge');
     const out = {};

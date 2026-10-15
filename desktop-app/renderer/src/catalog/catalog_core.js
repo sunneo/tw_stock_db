@@ -7,7 +7,7 @@
     'use strict';
     const VERSION = 1;
     const EFFECTS = ['fs.read', 'fs.write', 'net', 'proc', 'time', 'random', 'env', 'desktop', 'browser', 'ui', 'state.read', 'state.write', 'delegate', 'unknown'];
-    const TYPE_SRC = ['annotation', 'stub', 'schema', 'doc', 'name', 'probe', 'curated', 'none'];
+    const TYPE_SRC = ['annotation', 'stub', 'schema', 'doc', 'name', 'default', 'probe', 'curated', 'none'];
     const AVAIL = ['builtin', 'installed', 'cached', 'needs-network', 'disabled', 'unavailable'];
     // 型別詞彙：基本型別、由基本型別特化的（path 是一種 text），容器型別
     // 具體型別 → 它的上一層（可以放進上一層的位置，反過來不行）。檔案識別碼依媒體種類細分：pdf_file、video_file… 都是 file_id；gif_file 同時是 image_file
@@ -143,6 +143,48 @@
         return { type: 'json', type_src: 'none' };
     }
 
+    // ===== Python 原型（extract_py.py 的輸出）→ 單元 =====
+    // 註解字串（str、list[str]、Optional[int]、int | None、Union[A,B]、dict[str, Any]、Path…）→ 我們的型別詞彙。對不上的回傳 null（不猜）。
+    const PY_SIMPLE = { str: 'text', int: 'int', float: 'number', bool: 'bool', bytes: 'bytes', bytearray: 'bytes', none: 'null', nonetype: 'null', any: 'any', object: 'any', dict: 'dict', mapping: 'dict', mutablemapping: 'dict', ordereddict: 'dict', defaultdict: 'dict',
+        list: 'list<any>', sequence: 'list<any>', iterable: 'list<any>', tuple: 'list<any>', set: 'list<any>', frozenset: 'list<any>', collection: 'list<any>', path: 'path', pathlike: 'path', complex: 'number', decimal: 'number', fraction: 'number', callable: 'callable' };
+    function splitTopComma(s) { const out = []; let d = 0, cur = ''; for (const c of s) { if (c === '[') d++; else if (c === ']') d--; if (c === ',' && d === 0) { out.push(cur.trim()); cur = ''; } else cur += c; } if (cur.trim()) out.push(cur.trim()); return out; }
+    function pyTypeToType(ann) {
+        if (ann === undefined || ann === null) return null; let s = String(ann).trim().replace(/^typing\./, '').replace(/typing\./g, '').replace(/^['"]|['"]$/g, ''); if (!s) return null;
+        if (/^<class '([\w.]+)'>$/.test(s)) s = /^<class '([\w.]+)'>$/.exec(s)[1].split('.').pop();
+        const bar = splitTopBar(s); if (bar.length > 1) { const ts = bar.map(pyTypeToType); if (ts.some((x) => x === null)) return null; const nn = ts.filter((x) => x !== 'null'); if (nn.length === 1) return nn[0]; return 'union<' + Array.from(new Set(nn)).join('|') + '>'; }
+        const g = /^([\w.]+)\[(.*)\]$/.exec(s);
+        if (g) {
+            const head = g[1].split('.').pop().toLowerCase(), args = splitTopComma(g[2]);
+            if (head === 'optional') return pyTypeToType(args[0]); if (head === 'union') { const ts = args.map(pyTypeToType); if (ts.some((x) => x === null)) return null; const nn = Array.from(new Set(ts.filter((x) => x !== 'null'))); return nn.length === 1 ? nn[0] : 'union<' + nn.join('|') + '>'; }
+            if (['list', 'sequence', 'iterable', 'set', 'frozenset', 'collection', 'tuple', 'mutablesequence', 'deque'].includes(head)) { const el = head === 'tuple' ? null : pyTypeToType(args[0]); return 'list<' + (el || 'any') + '>'; }
+            if (['dict', 'mapping', 'mutablemapping', 'ordereddict', 'defaultdict'].includes(head)) return 'dict'; if (head === 'callable') return 'callable'; if (head === 'literal') { const vals = args.map((a) => a.replace(/^['"]|['"]$/g, '')).filter((a) => /^[\w.-]+$/.test(a)); return vals.length === args.length && vals.length ? 'enum<' + vals.join('|') + '>' : 'text'; }
+            return null;
+        }
+        const k = s.split('.').pop().toLowerCase(); return PY_SIMPLE[k] || null;
+    }
+    function splitTopBar(s) { const out = []; let d = 0, cur = ''; for (const c of s) { if (c === '[') d++; else if (c === ']') d--; if (c === '|' && d === 0) { out.push(cur.trim()); cur = ''; } else cur += c; } out.push(cur.trim()); return out; }
+    function pyDefaultType(def) { if (def === null || def === undefined) return null; const d = String(def).trim(); if (/^(True|False)$/.test(d)) return 'bool'; if (/^-?\d+$/.test(d)) return 'int'; if (/^-?\d+\.\d*(e[+-]?\d+)?$/i.test(d)) return 'number'; if (/^(['"]).*\1$/.test(d)) return 'text'; return null; }
+    function unitFromPyProto(p, ctx) {
+        ctx = ctx || {}; const params = []; const callableParam = [];
+        for (const pp of (p.params || [])) {
+            if (pp.kind === 'VAR_POSITIONAL' || pp.kind === 'VAR_KEYWORD') continue; // *args／**kwargs 不進單元參數（要用就人工補）
+            let ty = pyTypeToType(pp.annotation), src = ty ? 'annotation' : null;
+            if (!ty) { const hit = NAME_TYPES.find(([re]) => re.test(pp.name)); if (hit && hit[1] !== 'KIND') { ty = hit[1]; src = 'name'; } }
+            if (!ty) { const dt = pyDefaultType(pp.default); if (dt) { ty = dt; src = 'default'; } }
+            if (!ty) { ty = 'any'; src = 'none'; }
+            if (ty === 'callable') callableParam.push(pp.name);
+            const o = { name: pp.name, kind: pp.kind === 'POSITIONAL_ONLY' ? 'positional' : (pp.kind === 'KEYWORD_ONLY' ? 'keyword' : 'named'), type: ty, type_src: src, required: pp.default === null || pp.default === undefined }; if (pp.default !== null && pp.default !== undefined) o.default = pp.default; params.push(o);
+        }
+        const rt = pyTypeToType(p.returns); const effects = (p.effects && p.effects.length) ? p.effects.filter((e) => EFFECTS.includes(e)) : []; const pure = !!p.pure && !effects.length;
+        const hasSig = Array.isArray(p.params); const state = p.stdlib ? 'builtin' : (ctx.installed && ctx.installed.includes(p.module.split('.')[0]) ? 'installed' : 'needs-network');
+        const typedAll = hasSig && params.every((q) => q.type_src !== 'none' && q.type !== 'any' && q.type !== 'callable');
+        const u = { id: 'py:' + p.module + '.' + p.name, runtime: 'python', name: p.module + '.' + p.name, summary: summaryOf(p.summary), params, returns: rt ? { type: rt, type_src: 'annotation' } : { type: 'any', type_src: 'none' }, effects: pure ? [] : (effects.length ? effects : ['unknown']), pure, avail: { state, needs: [] }, domains: [], tests: (p.tests || []).slice(0, 3),
+            call: { runtime: 'python', import: p.module, qualname: p.name, via: 'pyodide' }, sig_src: p.sig_src || 'none' };
+        if (p.version) u.version = p.version;
+        // 信任等級 1：簽名完整、參數型別都明確（不含 callable）、副作用已知、可用、而且有測試案例或回傳型別明確
+        u.tier = (typedAll && !callableParam.length && !u.effects.includes('unknown') && (state === 'builtin' || state === 'installed') && (u.tests.length > 0 || !!rt)) ? 1 : 0; return u;
+    }
+
     // ===== 工具 → 單元 =====
     const clip = (s, n) => { s = String(s || '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
     function summaryOf(desc) { const s = String(desc || '').replace(/\s+/g, ' ').trim(); const m = /^(.{2,160}?(?:[。！？]|[.!?](?=\s|$)))/.exec(s); return clip(m ? m[1] : s, 160); }
@@ -172,6 +214,7 @@
         for (const [k, d] of Object.entries(domains || {})) { domainEnabled[k] = d.enabled !== false; if (Array.isArray(d.toolNames)) for (const n of d.toolNames) (domainsOf[n] = domainsOf[n] || []).push(k); }
         const ctx = { domainsOf, domainEnabled, platform: opts.platform || 'desktop', returnsOverrides: opts.returnsOverrides || {} }; const units = [];
         for (const name of Object.keys(tools || {}).sort()) units.push(toolToUnit(name, tools[name], ctx));
+        for (const u of (opts.extraUnits || [])) units.push(u); // 從別的來源（Python 套件、JavaScript、bash）抽出來的單元
         return { version: VERSION, source: 'app-tools', generatedAt: opts.now || new Date().toISOString(), platform: ctx.platform, units, stats: stats(units) };
     }
     // 評量表（DESIGN.unit-catalog.md 第七節）
@@ -183,5 +226,5 @@
     }
     function index(catalog) { return catalog.units.map((u) => ({ id: u.id, name: u.name, summary: u.summary, tier: u.tier, avail: u.avail.state, effects: u.effects })); }
 
-    return { VERSION, EFFECTS, TYPE_SRC, AVAIL, inferReturns, fieldType, parseType, typeToString, isAssignable, schemaType, effectsOf, summaryOf, toolToUnit, validateUnit, buildCatalog, stats, index };
+    return { VERSION, EFFECTS, TYPE_SRC, AVAIL, unitFromPyProto, pyTypeToType, inferReturns, fieldType, parseType, typeToString, isAssignable, schemaType, effectsOf, summaryOf, toolToUnit, validateUnit, buildCatalog, stats, index };
 });

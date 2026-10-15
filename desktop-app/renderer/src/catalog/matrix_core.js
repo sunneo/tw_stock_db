@@ -8,7 +8,7 @@
     'use strict';
 
     // ===== 型別的「具體程度」：越具體，接得上越有意義（text 接 text 幾乎什麼都接得上，不能當作有意義的接線）=====
-    const SPEC = { file_id: 1, pdf_file: 1, video_file: 1, audio_file: 1, image_file: 1, gif_file: 1, subtitle_file: 1, path: 1, url: 1, yaml: 1, code: 0.9, query: 0.3, text: 0.15, number: 0.1, int: 0.12, bool: 0.1, dict: 0, json: 0, any: 0, null: 0 };
+    const SPEC = { bytes: 0.3, callable: 0, file_id: 1, pdf_file: 1, video_file: 1, audio_file: 1, image_file: 1, gif_file: 1, subtitle_file: 1, path: 1, url: 1, yaml: 1, code: 0.9, query: 0.3, text: 0.15, number: 0.1, int: 0.12, bool: 0.1, dict: 0, json: 0, any: 0, null: 0 };
     function spec(t) {
         if (typeof t === 'string') t = Cat.parseType(t);
         if (t.k === 'list') { const s = spec(t.of); return s >= 0.5 ? 0.6 : (s > 0 ? 0.25 : 0.1); }
