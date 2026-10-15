@@ -19,7 +19,7 @@ const m0 = parse('actor: A\nenum Color { RED, GREEN }\nclass Item { name:str; qt
 const pt = (s) => B.umlToType(U.parseType(s), m0);
 check('uml basic types', pt('str') === 'text' && pt('int') === 'int' && pt('float') === 'number' && pt('bool') === 'bool' && pt('datetime') === 'text' && pt('bytes') === 'bytes' && pt('void') === 'void' && pt('any') === 'any', [pt('str'), pt('float')]);
 check('uml containers', pt('List<int>') === 'list<int>' && pt('Map<str,int>') === 'dict' && pt('Optional<float>') === 'number' && pt('int[]') === 'list<int>' && pt('str?') === 'text');
-check('uml enum/class/kinded', pt('Color') === 'enum<RED|GREEN>' && pt('Item') === 'object{name:text,qty:int}' && pt('Url') === 'url' && pt('PdfFile') === 'pdf_file' && pt('Path') === 'path' && pt('Unknown') === 'any', [pt('Color'), pt('Item'), pt('PdfFile')]);
+check('uml enum/class/kinded', pt('Color') === 'enum<RED|GREEN>' && pt('Item') === 'object{name:text,qty:int}' && pt('Url') === 'url' && pt('PdfFile') === 'pdf_file' && pt('Path') === 'path' && pt('Yaml') === 'yaml' && pt('Unknown') === 'any', [pt('Color'), pt('Item'), pt('PdfFile')]);
 check('mapped types are valid catalog types', ['Color', 'Item', 'Url', 'PdfFile', 'List<Item>'].every((s) => { try { C.parseType(pt(s)); return true; } catch (_) { return false; } }));
 
 // ---- 直接對得上：下載 → 數頁 ----
@@ -70,6 +70,12 @@ const before = B.bindModel(m7, { units: hidden }).results[0];
 const after = B.bindModel(m7, { units: hidden.map((u) => (u.id === 'tool:read_note' ? Object.assign({}, u, { returns: { type: 'object{ok:bool,text:text}', type_src: 'observed' } }) : u)) }).results[0];
 check('opaque return cannot feed next step (becomes input)', before.issues.some((i) => i.kind === 'opaque_link'), before.issues);
 check('observed return type wires the field through', after.valid && !after.issues.some((i) => i.kind === 'opaque_link') && JSON.stringify(after.program.steps[1].args.text) === '{"$ref":"s1.text"}', [after.issues, after.program && after.program.steps]);
+
+// ---- 只靠一個共同字不算對得上（真實目錄裡 countPages 曾被配到 remove_pdf_pages、sendEmail 配到 tmux_send_keys）----
+const noisy = { units: units.concat([mk('tool:remove_pdf_pages', [['pdf', 'pdf_file'], ['pages', 'text']], 'object{ok:bool}', { summary: '刪除 PDF 的頁面' }), mk('tool:tmux_send_keys', [['keys', 'text']], 'object{ok:bool}', { summary: 'send keys to tmux' })]).filter((u) => u.id !== 'tool:count_pages') };
+const nz = B.bindModel(parse(['actor: User', 'class P { +countPages(pdf:PdfFile):int }', 'class M { +sendEmail(to:str):bool }', 'usecase A: User -> P.countPages(pdf)', 'usecase B: User -> M.sendEmail(to)'].join('\n')), noisy);
+check('single shared word is not enough', nz.results[0].steps[0].by === 'none' && nz.results[1].steps[0].by === 'none', nz.results.map((r) => r.steps[0]));
+check('plural/singular stem still matches', B.bindModel(parse(['actor: User', 'class P { +removePage(pdf:PdfFile):bool }', 'usecase A: User -> P.removePage(pdf)'].join('\n')), noisy).results[0].steps[0].unit === 'tool:remove_pdf_pages');
 
 // ---- 文字輸出 ----
 check('toText mentions counts and 0 model calls', /模型呼叫 0 次/.test(B.toText(r1)) && /CountPages/.test(B.toText(r1)));

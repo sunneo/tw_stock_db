@@ -454,3 +454,42 @@ add_chapters, analyze_large_file, apply_git_patch, attachment_apply_patch, bash_
 3. Python 單元只能執行純函式；有副作用的 Python 函式（檔案、網路）還沒有可驗證的執行環境。
 4. 只有工具與 Python 兩種單元；JavaScript、bash 的單元沒有。
 5. 高階函式（callable 參數）、迭代器、事件、工作者都還不支援（第十五節）。
+
+## 二十一、語意補強與需求接線（2026-10-16）
+
+### A. 歷史呼叫逆向推論（`shape_core.js`，`FaCatalogShape`）
+
+目的：工具回傳都是 JSON 字串，Schema 沒寫回傳結構。第七節的做法是從說明文字、工具名稱推，推不出來就是不明（json／any），沒辦法接線。這裡改成**從過去成功的呼叫留下的實際回傳值**反推。
+
+- 樣本來源：①對話紀錄裡 assistant 的 tool_calls 配上後面 role:tool 的完整回傳（完整樣本）；②離線訓練器 turns 裡 `calls[].res`（只有第一層純量欄位，部分樣本）；③之後每次工具成功，`_callToolGuarded` 順手累積（`_unitCatalogObserve`，同步、很便宜，8 秒合併存檔）。
+- 失敗的呼叫（`ok:false`、有 `error`）不採用；超過 20 萬字元的不看。
+- 單一值 → 型別：布林、int／number、字串（網址看值；path／各種 file_id／yaml／code 看欄位名稱，沿用第七節的欄位規則）、清單（元素合併）、物件（最多 16 個欄位、3 層，超過退回 dict；欄位名稱不合法退回 dict）。
+- 多個樣本合併：int＋number→number；字串的細分型別退回共同上層（pdf_file＋video_file→file_id、path＋url→text）；null＋X→X（標可為空）；缺的欄位標成選填（`returns.optional`）；型別衝突做聯集，超過三種退回 any；空清單的元素型別等看到非空的才補。
+- **只存型別，不存值**（部分樣本也在存進去之前轉成型別）。狀態是 JSON，存在 fileCache 的 `unit-catalog-shapes.json`，下次接著累積。
+- 套進目錄的規則（`buildOverrides`）：只補不明的。回傳是 json／any／dict → 整個換成觀察到的（`type_src:'observed'`，附樣本數與選填欄位）；文件推出來的物件裡某些欄位只有 any／list<any> → 只換那些欄位；人工補的（curated）、探測的、型別註解、存根的一律不蓋。Python 單元不動。
+- 手動覆寫 `advancedSettings.unitCatalogReturns` 的優先權最高。
+- 指令：`/unit-catalog shapes`（看現況）、`/unit-catalog shapes scan`（把目前對話與離線訓練器紀錄補進來）、`/unit-catalog shapes clear`。
+
+實測（新的測試設定檔，幾乎沒有歷史）：工具單元回傳不明 155 個；呼叫了安全、不用必填參數的 fs_stat、skill_list、glue_list 各兩次後，變成 154 個不明、3 個 observed（例如 fs_stat → `object{ok:bool,path:path,isDirectory:bool,isFile:bool,size:int,mtimeMs:number}`）。**這只證明機制通了，不代表 155 個會補完**：補得了多少取決於使用者實際用過哪些工具；沒有用過的工具、回傳不是 JSON 的工具、永遠失敗的工具，都不會有樣本。新設定檔裡零參數又無副作用的只有 2 個可以安全主動呼叫，我沒有去呼叫有副作用或需要參數的工具。
+
+限制：①觀察到的是「這幾次看到的」，沒看過的分支（例如錯誤時多出來的欄位）不在裡面；樣本少的型別要看 `samples`；②部分樣本無法確定「沒有其他欄位」，所以只有部分樣本的工具所有欄位都是選填；③清單元素最多看 20 個，混雜的元素型別只做聯集；④檔案識別碼的種類是從欄位名稱判斷（`pdf_file_id`→pdf_file），名稱沒帶種類的只能是 file_id。
+
+### B. 需求 → 活動 → 單元（`bind_core.js`，`FaCatalogBind`）
+
+目的：UML 的使用案例原本只呼叫「類別.操作」（第二十節之前，沒有接到單元）。這裡把每個步驟接到單元目錄的單元，產出可以直接 `catalog_run` 的呼叫程式。**整個流程 0 次模型呼叫**。
+
+流程（對每個使用案例的每個步驟）：
+1. **型別合約**：UML 型別 → 目錄型別（str→text、int、float／decimal→number、bool、date／datetime→text、List<T>→list<T>、Map→dict、Optional<T>→T、列舉→enum<…>、有屬性的類別→object{…}、Url／Path／PdfFile／Yaml 等名稱→對應的具體型別，認不得的→any、void→沒有回傳）。
+2. **挑單元**：用「類別＋操作名稱」檢索（BM25，跟第十九節同一套；可以帶中文用途說明 intents）。操作名稱裡的每個字有多少比例出現在單元的名稱或說明裡（含單複數），低於 60% 的不採用（實測發現只靠一個共同字會錯配：countPages 配到 remove_pdf_pages、sendEmail 配到 tmux_send_keys）。名稱完全一樣的優先。
+3. **打分**：檢索相對分數 × (0.4＋0.6×必填參數接得上的比例) × (0.5＋0.5×回傳符不符合 UML 宣告的回傳；回傳物件裡有一個欄位符合也算 0.9；回傳不明給 0.6)。低於 0.25 不採用；低於 0.5 列為「信心偏低」。
+4. **資料流**：第一步的 UML 參數就是使用案例的輸入。之後每個單元參數：同名的資料優先，其次型別接得上（得分 ≥ 0.3）的最近一個；接不上就用型別接線矩陣從手上的資料找一小段橋接單元（例如 url →下載→ file_id →轉 PDF→ pdf_file）；找不到才變成輸入，UML 有宣告同名參數的當輸入不算問題，沒宣告的標 `unwired`。前一步回傳型別不明、導致後面只能當輸入的，標 `opaque_link`——這就是任務 A 的效益所在：補了回傳結構，這個警告才會消失、資料才接得起來。
+5. **沒有單元對得上**，但 UML 有明確的輸入與回傳型別：直接用矩陣從輸入型別走到回傳型別（`type-wiring`），並標 `wired_by_type`。
+6. 輸出的程式一定經過 `FaCatalogIR.validate`；`issues` 列出所有不確定的地方（沒對上、沒接上、信心低、靠型別勉強接上）。
+
+介面：`catalog_bind` 工具（給 UML 文字）、`/unit-catalog bind <UML>`。
+
+實測（真實目錄，311 個信任等級 1 的單元，矩陣 311×311、544 條邊）：
+- 用真實工具寫的 UML（removePdfPages、fsStat、getPresentationYaml→renderPresentation）：4 步全部對上正確的單元，3 個程式檢查通過、完全接通，0 次模型呼叫、約 110 毫秒。renderPresentation 的 name 參數是使用案例的輸入，yaml 接前一步的輸出。
+- 用目錄裡**沒有**的東西寫的 UML（countPages、sendEmail、convert）：正確地回報找不到，沒有亂配。這也是真實限制：目錄裡很多媒體工具的檔案參數是選填，不在「必填參數接得上」的接線範圍內；沒有數頁數、寄信的單元。
+
+限制：①檢索靠名稱與說明，UML 命名跟單元名稱差太遠（或中文操作名稱）就對不上——語意檢索（神經嵌入、重排）還沒做，這是下一步；②目前只看必填參數；③只做直線流程，UML 沒有分支與迴圈的語意，所以不會產生 if／each；④多個單元都合理時只取最高分，其他在 `candidates` 裡；⑤不會執行，執行用 `catalog_run`。

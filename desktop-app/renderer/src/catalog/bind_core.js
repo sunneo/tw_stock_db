@@ -9,7 +9,7 @@
  * 輸出的程式一定經過 FaCatalogIR.validate；不確定的地方（沒接上、靠名稱猜、用了強制轉型）都列在 issues。 */
 (function (root, factory) {
     if (typeof module === 'object' && module.exports) module.exports = factory(require('./catalog_core.js'), require('./matrix_core.js'), require('./select_core.js'), require('./ir_core.js'));
-    else root.FaCatalogBind = factory(root.FaCatalog, root.FaCatalogMatrix, root.FaCatalogSelect, root.FaCatalogIR);
+    else root.FaCatalogBind = factory(root.FaCatalog || (typeof FaCatalog !== 'undefined' ? FaCatalog : undefined), root.FaCatalogMatrix || (typeof FaCatalogMatrix !== 'undefined' ? FaCatalogMatrix : undefined), root.FaCatalogSelect || (typeof FaCatalogSelect !== 'undefined' ? FaCatalogSelect : undefined), root.FaCatalogIR || (typeof FaCatalogIR !== 'undefined' ? FaCatalogIR : undefined));
 })(typeof self !== 'undefined' ? self : this, function (Cat, MX, SEL, IR) {
     'use strict';
     const snake = (s) => String(s || '').replace(/([a-z0-9])([A-Z])/g, '$1_$2').replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '').toLowerCase();
@@ -23,7 +23,7 @@
             case 'List': case 'Set': return 'list<' + umlToType(a[0], model, depth + 1) + '>'; case 'Map': return 'dict'; case 'Optional': return umlToType(a[0], model, depth);
         }
         const lower = String(b).toLowerCase();
-        if (/^(path|filepath|dirpath)$/.test(lower)) return 'path'; if (/^(url|uri|link)$/.test(lower)) return 'url';
+        if (/^(path|filepath|dirpath)$/.test(lower)) return 'path'; if (/^(url|uri|link)$/.test(lower)) return 'url'; if (lower === 'yaml') return 'yaml'; if (lower === 'code') return 'code';
         const fm = /file(id)?$/.test(lower) ? KINDED.find(([re]) => re.test(lower)) : null; if (fm) return fm[1]; if (/^fileid$/.test(lower)) return 'file_id';
         const c = model && model.classes && model.classes.find((x) => x.name === b);
         if (c) {
@@ -32,6 +32,11 @@
             return 'dict';
         }
         return 'any';
+    }
+    const stem = (w) => (w.length > 3 && /s$/.test(w) && !/ss$/.test(w) ? w.slice(0, -1) : w);
+    // 操作名稱裡的每個字（send、email）有多少比例出現在單元的名稱／說明裡——只靠一個共同字（send）湊出來的不算對得上
+    function tokenCoverage(index, id, words) {
+        if (!words.length) return 1; const d = index.docs.find((x) => x.u.id === id); if (!d) return 0; const have = new Set(Array.from(d.tf.keys()).map(stem)); let hit = 0; for (const w of words) if (have.has(stem(w))) hit++; return hit / words.length;
     }
     const TEXTISH = new Set(['text', 'path', 'url', 'query', 'code', 'yaml']); const isTextish = (k) => TEXTISH.has(k);
     const isVoid = (s) => s === 'void' || s === '' || s == null;
@@ -92,22 +97,22 @@
             // 挑單元
             const q = [uc.name, step.to, step.msg, op && op.doc].filter(Boolean).join(' ');
             const hits = SEL.retrieve(ctx.index, snake(step.to).replace(/_/g, ' ') + ' ' + snake(step.msg).replace(/_/g, ' ') + ' ' + (ctx.intentFor ? ctx.intentFor(step, uc) : '') + ' ' + (opts.useCaseInText ? uc.name : ''), 12);
-            const top = hits.length ? hits[0].score : 1; const cands = [];
+            const top = hits.length ? hits[0].score : 1; const cands = []; const words = SEL.tokenize(snake(step.msg).replace(/_/g, ' ')).filter((w) => w.length >= 2 && !['get', 'do', 'run', 'set'].includes(w));
             const exact = cat.units.filter((u) => u.tier === 1 && (snake(u.name.replace(/^[a-z]+:/, '')) === snake(step.msg) || snake(u.name.replace(/^[a-z]+:/, '')) === snake(step.to) + '_' + snake(step.msg)));
             for (const e of exact) if (!hits.some((h) => h.id === e.id)) hits.unshift({ id: e.id, score: top, u: e });
             for (const h of hits) {
                 const u = byId.get(h.id); if (!u || u.tier !== 1 || u.avail.state !== 'builtin') continue; const rel = Math.min(1, h.score / (top || 1)) * (exact.some((e) => e.id === u.id) ? 1 : 0.85);
                 const req = u.params.filter((p) => p.required); let sat = 0; const sources = pool.slice(); for (const p of req) if (pickSource(sources, p.name, p.type, null)) sat++;
                 const cov = req.length ? sat / req.length : 1; const ut = u.returns.type; let rf = 1; if (!isVoid(retType) && retType !== 'any') rf = isOpaque(ut) ? 0.6 : (Cat.isAssignable(ut, retType) ? 1 : (MX.outputsOf(u).some((o) => o.name !== '$' && !isOpaque(Cat.typeToString(o.type)) && Cat.isAssignable(o.type, retType)) ? 0.9 : 0.3));
-                cands.push({ unit: u.id, rel: Math.round(rel * 1000) / 1000, coverage: Math.round(cov * 100) / 100, ret_fit: rf, score: Math.round(rel * (0.4 + 0.6 * cov) * (0.5 + 0.5 * rf) * 1000) / 1000 });
+                const tc = exact.some((e) => e.id === u.id) ? 1 : tokenCoverage(ctx.index, u.id, words); cands.push({ unit: u.id, token_cov: Math.round(tc * 100) / 100, rel: Math.round(rel * 1000) / 1000, coverage: Math.round(cov * 100) / 100, ret_fit: rf, score: Math.round(rel * (0.4 + 0.6 * cov) * (0.5 + 0.5 * rf) * 1000) / 1000 });
             }
-            cands.sort((a, b) => b.score - a.score); const best = cands[0];
+            cands.sort((a, b) => b.score - a.score); const best = cands.find((c) => c.token_cov >= (opts.minTokenCoverage || 0.6)); // 名稱對不上的不採用
             const rec = { step: label, op_params: opParams.map((p) => p.name + ':' + p.type), returns: retType, candidates: cands.slice(0, 3) };
             if (best && best.score >= (opts.minScore || 0.25) && best.rel >= (opts.minRel || 0.3)) {
                 const u = byId.get(best.unit); const sid = nextId(); const args = {}; const bridged = [];
                 for (const p of u.params) {
-                    const hit = pickSource(pool, p.name, p.type, used);
-                    if (hit && (hit.nameHit || hit.fit >= 0.3 || (p.required && hit.fit > 0))) { if (hit.s.origin === 'input' && !Cat.isAssignable(hit.s.type, p.type) && (isTextish(hit.s.parsed.k) || isOpaque(hit.s.type)) && (isTextish(Cat.parseType(p.type).k) || true)) { hit.s.type = p.type; hit.s.parsed = Cat.parseType(p.type); program.inputs[hit.s.name].type = p.type; } args[p.name] = hit.s.ref; used.add(hit.s); if (hit.fit < 0.3 && !hit.nameHit) issues.push({ step: label, kind: 'weak_link', msg: p.name + ' 靠型別勉強接上（得分 ' + hit.fit + '）' }); continue; }
+                    const hit = pickSource(pool, p.name, p.type, used); 
+                    if (hit && (hit.nameHit || hit.fit >= 0.3)) { if (hit.s.origin === 'input' && !Cat.isAssignable(hit.s.type, p.type) && (isTextish(hit.s.parsed.k) || isOpaque(hit.s.type)) && (isTextish(Cat.parseType(p.type).k) || true)) { hit.s.type = p.type; hit.s.parsed = Cat.parseType(p.type); program.inputs[hit.s.name].type = p.type; } args[p.name] = hit.s.ref; used.add(hit.s); if (hit.fit < 0.3 && !hit.nameHit) issues.push({ step: label, kind: 'weak_link', msg: p.name + ' 靠型別勉強接上（得分 ' + hit.fit + '）' }); continue; }
                     if (!p.required) continue;
                     // 橋接：從池子裡最新、型別明確的資料走到這個參數要的型別
                     let done = false; for (let i = pool.length - 1; i >= 0 && i >= pool.length - 8 && !done; i--) { const s = pool[i]; if (isOpaque(s.type)) continue; const path = bridge(M, s.type, p.type, opts); if (!path) continue; const taken = []; const steps = []; const out = emitPath(path, M, s.ref, nextId, steps, taken); if (taken.length) { taken.forEach((t) => { const nm = addInput(t.step + '_' + t.param, t.type); const st = steps.find((x) => x.id === t.step); st.args[t.param] = nm.ref; }); } steps.forEach((x) => program.steps.push(x)); args[p.name] = out; bridged.push(path.names.join(' → ')); used.add(s); done = true; }
