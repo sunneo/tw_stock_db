@@ -241,7 +241,7 @@ function register(ipcMain, ctx) {
     ipcMain.handle("fa:mcp:writeFiles", async (_e, { name, files, clean } = {}) => {
       const base = path.join(installRoot(), safeSeg(name)); let written = 0, skipped = 0, bytes = 0;
       try {
-        if (clean) await fs.rm(base, { recursive: true, force: true }); await fs.mkdir(base, { recursive: true });
+        if (clean) await fs.rm(base, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 }); await fs.mkdir(base, { recursive: true }); // Windows 上剛結束的程式還會鎖住資料夾一下子，所以重試
         for (const f of files || []) {
           const rel = String(f.path || "").replace(/\\/g, "/").replace(/^\/+/, ""); const segs = rel.split("/").filter(Boolean);
           if (!segs.length || segs.some((s) => s === "..") || /^[A-Za-z]:/.test(rel) || rel.includes("\0")) { skipped++; continue; }
@@ -252,7 +252,7 @@ function register(ipcMain, ctx) {
         return { ok: true, dir: base, written, skipped, bytes };
       } catch (e) { return { ok: false, error: String((e && e.message) || e), written }; }
     });
-    ipcMain.handle("fa:mcp:removeDir", async (_e, { dir } = {}) => { const d = path.resolve(String(dir || "")); const root = installRoot(); if (!(d + path.sep).startsWith(root + path.sep) || d === root) return { ok: false, error: "只能刪除 MCP 安裝資料夾裡的東西" }; try { await fs.rm(d, { recursive: true, force: true }); return { ok: true }; } catch (e) { return { ok: false, error: String((e && e.message) || e) }; } });
+    ipcMain.handle("fa:mcp:removeDir", async (_e, { dir } = {}) => { const d = path.resolve(String(dir || "")); const root = installRoot(); if (!(d + path.sep).startsWith(root + path.sep) || d === root) return { ok: false, error: "只能刪除 MCP 安裝資料夾裡的東西" }; try { await fs.rm(d, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 }); return { ok: true }; } catch (e) { return { ok: false, error: String((e && e.message) || e) }; } });
     // 跑安裝指令（npm install、pip install…）：過確認閘，輸出只留最後 20KB，逾時（預設 10 分鐘）就終止
     ipcMain.handle("fa:mcp:exec", async (evt, { command, args, cwd, timeoutMs, label } = {}) => {
       if (!command) return { ok: false, error: "缺少 command" }; const wd = cwd ? path.resolve(rawFsPath(cwd)) : undefined; const denied = await gateOr(evt, label || "MCP 安裝", display(command, args), wd); if (denied) return denied;

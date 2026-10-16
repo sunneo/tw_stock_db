@@ -62418,6 +62418,7 @@ ${existingNodeSummaries}
         const needFiles = cand.kind !== 'config' || cand.servers.some((s) => s.transport === 'stdio'); let installDir = null; const notes = [];
         if (needFiles) {
             if (!br) return { ok: false, error: '「' + filename + '」裡是要在本機執行的 MCP 伺服器，網頁版沒辦法執行；請在桌面版安裝（或改用 HTTP／SSE 型的遠端 MCP 伺服器）' };
+            await this._mcpLoad(); if (this._mcpStore.servers.some((x) => x.name === baseName) && this._mcpRt(baseName).status !== 'stopped') { await this._mcpStop(baseName); await new Promise((r) => setTimeout(r, 900)); } // 同名的還在跑：先停掉，等它放開資料夾
             const rt = await br.runtimes().catch(() => ({})); if (cand.needs_runtime === 'node' && rt.node && !rt.node.ok) return { ok: false, error: '這個伺服器需要 Node.js，但這台電腦找不到 node（先安裝 Node.js：https://nodejs.org）' }; if (cand.needs_runtime === 'python' && rt.python && !rt.python.ok) return { ok: false, error: '這個伺服器需要 Python，但這台電腦找不到 python（先安裝 Python）' };
             const prefix = cand.dir || ''; const sel = files.filter((e) => e.name.startsWith(prefix)); let batch = [], size = 0, first = true, written = 0;
             const flush = async () => { if (!batch.length) return; const r = await br.writeFiles(baseName, batch, first); first = false; if (!r || !r.ok) throw new Error((r && r.error) || '寫入失敗'); installDir = r.dir; written += r.written; batch = []; size = 0; };
@@ -62482,8 +62483,8 @@ ${existingNodeSummaries}
     async _mcpRemove(name) {
         await this._mcpLoad(); const i = this._mcpStore.servers.findIndex((s) => s.name === name); if (i < 0) return { ok: false, error: '沒有這個 MCP 伺服器：' + name };
         const cfg = this._mcpStore.servers[i]; const a = await this.requestUserForm({ title: '🗑️ 移除 MCP 伺服器「' + name + '」？', description: cfg.installDir ? '安裝資料夾也會一起刪除：\n' + cfg.installDir : '只會刪除設定。', choices: ['移除', '取消'] }); if (!a || !a.confirmed || a.answer !== '移除') return { ok: false, error: '使用者取消' };
-        try { await this._mcpStop(name); } catch (_) { /* */ } let dir_removed = false; if (cfg.installDir && this._mcpBridge()) { const r = await this._mcpBridge().removeDir(cfg.installDir); dir_removed = !!(r && r.ok); }
-        this._mcpStore.servers.splice(i, 1); this._mcpRuntime && this._mcpRuntime.delete(name); await this._mcpSave(); return { ok: true, dir_removed };
+        try { await this._mcpStop(name); } catch (_) { /* */ } let dir_removed = false; let dir_error = ''; if (cfg.installDir && this._mcpBridge()) { await new Promise((r) => setTimeout(r, 600)); const r = await this._mcpBridge().removeDir(cfg.installDir); dir_removed = !!(r && r.ok); if (!dir_removed) dir_error = (r && r.error) || ''; }
+        this._mcpStore.servers.splice(i, 1); this._mcpRuntime && this._mcpRuntime.delete(name); await this._mcpSave(); return { ok: true, dir_removed, dir_error: dir_error || undefined };
     }
     // ===== 設定 → AI → MCP：安裝、啟動／停止、看工具、測試呼叫、日誌、移除 =====
     _mcpRegisterPane() {
