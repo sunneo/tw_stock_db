@@ -1,0 +1,319 @@
+{
+ "version": 1,
+ "note": "探索迴圈評測集：6 個需求、17 個真實專案 README 的標註（語言／能否在瀏覽器執行）、14 個錯誤訊息的下一步。README 內容不放進來（有版權），評測時由 GitHub API 取得，檔名是 owner_repo.md。",
+ "tasks": [
+  {
+   "id": "T1",
+   "need": "做一個拍貼機：用相機拍照，並套上美顏濾鏡",
+   "groups": [
+    [
+     "camera",
+     "webcam",
+     "photo",
+     "getusermedia",
+     "booth"
+    ],
+    [
+     "beauty",
+     "beautify",
+     "face",
+     "skin",
+     "filter",
+     "smooth",
+     "retouch"
+    ],
+    [
+     "browser",
+     "javascript",
+     "js",
+     "web"
+    ]
+   ],
+   "rel": [
+    "justadudewhohacks_face-api.js",
+    "eduardolundgren_tracking.js",
+    "evanw_glfx.js",
+    "meltingice_CamanJS"
+   ]
+  },
+  {
+   "id": "T2",
+   "need": "把多張圖片合成一份 PDF 檔",
+   "groups": [
+    [
+     "pdf"
+    ],
+    [
+     "image",
+     "images",
+     "jpeg",
+     "jpg",
+     "png",
+     "picture"
+    ],
+    [
+     "merge",
+     "convert",
+     "generate",
+     "create",
+     "combine"
+    ]
+   ],
+   "rel": [
+    "parallax_jsPDF",
+    "Hopding_pdf-lib"
+   ]
+  },
+  {
+   "id": "T3",
+   "need": "在網頁上用鏡頭掃描 QR code",
+   "groups": [
+    [
+     "qr",
+     "barcode"
+    ],
+    [
+     "scan",
+     "read",
+     "decode",
+     "detect",
+     "reader"
+    ],
+    [
+     "browser",
+     "javascript",
+     "js",
+     "webcam",
+     "camera",
+     "web"
+    ]
+   ],
+   "rel": [
+    "cozmo_jsQR"
+   ]
+  },
+  {
+   "id": "T4",
+   "need": "把資料畫成長條圖",
+   "groups": [
+    [
+     "chart",
+     "graph",
+     "plot"
+    ],
+    [
+     "bar"
+    ],
+    [
+     "data",
+     "csv",
+     "table",
+     "javascript",
+     "js",
+     "browser"
+    ]
+   ],
+   "rel": [
+    "chartjs_Chart.js"
+   ]
+  },
+  {
+   "id": "T5",
+   "need": "調整圖片大小並壓縮",
+   "groups": [
+    [
+     "resize",
+     "scale",
+     "thumbnail"
+    ],
+    [
+     "compress",
+     "quality",
+     "optimi",
+     "size"
+    ],
+    [
+     "image",
+     "photo",
+     "picture"
+    ]
+   ],
+   "rel": [
+    "nodeca_pica",
+    "lovell_sharp",
+    "python-pillow_Pillow"
+   ]
+  },
+  {
+   "id": "T6",
+   "need": "讀取 Excel 試算表檔案",
+   "groups": [
+    [
+     "excel",
+     "xlsx",
+     "xls",
+     "spreadsheet"
+    ],
+    [
+     "read",
+     "parse",
+     "import",
+     "extract",
+     "open",
+     "load"
+    ]
+   ],
+   "rel": [
+    "SheetJS_sheetjs"
+   ]
+  }
+ ],
+ "lang": {
+  "justadudewhohacks_face-api.js": {
+   "language": "js",
+   "browser": true
+  },
+  "eduardolundgren_tracking.js": {
+   "language": "js",
+   "browser": true
+  },
+  "evanw_glfx.js": {
+   "language": "js",
+   "browser": true
+  },
+  "meltingice_CamanJS": {
+   "language": "js",
+   "browser": true
+  },
+  "nodeca_pica": {
+   "language": "js",
+   "browser": true
+  },
+  "parallax_jsPDF": {
+   "language": "js",
+   "browser": true
+  },
+  "Hopding_pdf-lib": {
+   "language": "js",
+   "browser": true
+  },
+  "cozmo_jsQR": {
+   "language": "js",
+   "browser": true
+  },
+  "chartjs_Chart.js": {
+   "language": "js",
+   "browser": true
+  },
+  "python-pillow_Pillow": {
+   "language": "python",
+   "browser": false
+  },
+  "NaturalIntelligence_fast-xml-parser": {
+   "language": "js",
+   "browser": true
+  },
+  "ffmpegwasm_ffmpeg.wasm": {
+   "language": "js",
+   "browser": true
+  },
+  "videojs_video.js": {
+   "language": "js",
+   "browser": true
+  },
+  "jhildenbiddle_css-vars-ponyfill": {
+   "language": "js",
+   "browser": true
+  },
+  "mozilla_pdf.js": {
+   "language": "js",
+   "browser": true
+  },
+  "SheetJS_sheetjs": {
+   "language": "js",
+   "browser": true
+  },
+  "lovell_sharp": {
+   "language": "js",
+   "browser": false
+  }
+ },
+ "errors": [
+  {
+   "msg": "Uncaught ReferenceError: faceapi is not defined",
+   "gold": "A"
+  },
+  {
+   "msg": "Error: Cannot find module 'sharp'",
+   "gold": "A"
+  },
+  {
+   "msg": "ModuleNotFoundError: No module named cv2",
+   "gold": "A"
+  },
+  {
+   "msg": "TypeError: booth.start is not a function",
+   "gold": "B"
+  },
+  {
+   "msg": "TypeError: drawImage() takes 3 arguments but 1 was given",
+   "gold": "B"
+  },
+  {
+   "msg": "AttributeError: module pica has no attribute resizeAll",
+   "gold": "B"
+  },
+  {
+   "msg": "NotAllowedError: Permission denied",
+   "gold": "C"
+  },
+  {
+   "msg": "DOMException: Permission denied to access camera device",
+   "gold": "C"
+  },
+  {
+   "msg": "Access to fetch at https://cdn.x.com/model.json blocked by CORS policy",
+   "gold": "D"
+  },
+  {
+   "msg": "TypeError: Failed to fetch",
+   "gold": "D"
+  },
+  {
+   "msg": "RangeError: WebGL context lost: out of memory",
+   "gold": "E"
+  },
+  {
+   "msg": "Error: operation timed out after 30000ms",
+   "gold": "E"
+  },
+  {
+   "msg": "SyntaxError: Unexpected token } in JSON at position 41",
+   "gold": "F"
+  },
+  {
+   "msg": "[object Promise] is not iterable; forgot await",
+   "gold": "F"
+  }
+ ],
+ "options": {
+  "A": "缺少或沒載入函式庫：安裝或載入它",
+  "B": "API 名稱或參數用錯：對照文件修正",
+  "C": "權限被擋：請使用者授權或改用上傳檔案",
+  "D": "網路或跨來源被擋：改用 CDN 或代理",
+  "E": "資源不足或逾時：換輕量做法或重試",
+  "F": "語法或非同步寫法錯誤：修正程式碼"
+ },
+ "kind_to_option": {
+  "missing_module": "A",
+  "not_defined": "A",
+  "wrong_api": "B",
+  "wrong_args": "B",
+  "permission": "C",
+  "network": "D",
+  "resource": "E",
+  "timeout": "E",
+  "syntax": "F",
+  "async": "F"
+ }
+}

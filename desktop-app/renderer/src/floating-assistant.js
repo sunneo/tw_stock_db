@@ -1647,7 +1647,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     unit_catalog: {
         enabled: true,
         label: '單元目錄（認識新的 Python 函式庫、查詢可用的函式單元與型別接線）',
-        toolNames: ['catalog_onboard', 'catalog_query', 'catalog_run', 'catalog_bind', 'catalog_intent'],
+        toolNames: ['catalog_onboard', 'catalog_query', 'catalog_run', 'catalog_bind', 'catalog_intent', 'catalog_card', 'catalog_js', 'catalog_discover'],
         systemPrompt: '你負責「認識新的函式庫」和「查有什麼能用」。原則：\n' +
             '1. 先用 catalog_query（search）看目錄裡有沒有現成的單元，有就直接用，不要重複安裝。\n' +
             '2. 沒有、而且使用者要用一個新的 Python 套件，才用 catalog_onboard。只接受 PyPI 套件名稱（可加 ==版本），不接受網址、git、本機路徑；要安裝的套件工具會自己請使用者同意，不要替使用者決定、不要繞過。\n' +
@@ -11146,7 +11146,7 @@ const holder = {};
 
     // ===== 建矩陣 =====
     function eligible(u, o) {
-        if (u.tier !== 1) return false; if (!o.includeUnavailable && u.avail.state !== 'builtin') return false;
+        if (u.tier !== 1 && !o.includeUntrusted) return false; if (!o.includeUnavailable && u.avail.state !== 'builtin') return false;
         if (u.effects.includes('unknown')) return false; if (o.excludeEffects && u.effects.some((e) => o.excludeEffects.includes(e))) return false; return true;
     }
     function buildMatrix(catalogOrUnits, opts) {
@@ -12027,10 +12027,10 @@ const holder = {};
                 const fused = EMB.rrf([hits.map((h) => ({ id: h.id, u: h.u })), dl.map((x) => ({ id: x.id, u: byId.get(x.id) }))]).slice(0, 14); hits = fused.map((f) => ({ id: f.id, score: f.score, u: f.u || byId.get(f.id) }));
             } else hits = hits.slice(0, 12);
             const top = hits.length ? hits[0].score : 1; const cands = []; const words = SEL.tokenize(snake(step.msg).replace(/_/g, ' ')).filter((w) => w.length >= 2 && !['get', 'do', 'run', 'set'].includes(w));
-            const fwords = words.flatMap(fine); const exact = cat.units.filter((u) => u.tier === 1 && (snake(u.name.replace(/^[a-z]+:/, '')) === snake(step.msg) || snake(u.name.replace(/^[a-z]+:/, '')) === snake(step.to) + '_' + snake(step.msg)));
+            const fwords = words.flatMap(fine); const usable = (u) => (u.tier === 1 || !!opts.includeUntrusted) && (u.avail.state === 'builtin' || !!opts.includeUnavailable); const exact = cat.units.filter((u) => usable(u) && (snake(u.name.replace(/^[a-z]+:/, '')) === snake(step.msg) || snake(u.name.replace(/^[a-z]+:/, '')) === snake(step.to) + '_' + snake(step.msg)));
             for (const e of exact) if (!hits.some((h) => h.id === e.id)) hits.unshift({ id: e.id, score: top, u: e });
             for (const h of hits) {
-                const u = byId.get(h.id); if (!u || u.tier !== 1 || u.avail.state !== 'builtin') continue; const rel = Math.min(1, h.score / (top || 1)) * (exact.some((e) => e.id === u.id) ? 1 : 0.85);
+                const u = byId.get(h.id); if (!u || !usable(u)) continue; const rel = Math.min(1, h.score / (top || 1)) * (exact.some((e) => e.id === u.id) ? 1 : 0.85);
                 const req = u.params.filter((p) => p.required); let sat = 0; const sources = pool.slice(); for (const p of req) if (pickSource(sources, p.name, p.type, null)) sat++;
                 const cov = req.length ? sat / req.length : 1; const ut = u.returns.type; let rf = 1; if (!isVoid(retType) && retType !== 'any') rf = isOpaque(ut) ? 0.6 : (Cat.isAssignable(ut, retType) ? 1 : (MX.outputsOf(u).some((o) => o.name !== '$' && !isOpaque(Cat.typeToString(o.type)) && Cat.isAssignable(o.type, retType)) ? 0.9 : 0.3));
                 const tc = exact.some((e) => e.id === u.id) ? 1 : tokenCoverage(ctx.index, u.id, words); const pm = opParams.length ? opParams.filter((op) => req.some((p) => snake(p.name) === snake(op.name))).length / opParams.length : 0; const fnName = u.name.replace(/^[a-z]+:/, '').split('.').pop(); const fnToks = fine(fnName); const nameToks = new Set(fine(u.name.replace(/^[a-z]+:/, ''))); const nh = fwords.length ? fwords.filter((w) => nameToks.has(w)).length / fwords.length : 0; // 操作名稱的字有幾成是單元『名稱』裡的整個字（exists 對 posixpath.exists，不是 lexists）
@@ -12078,7 +12078,7 @@ const holder = {};
     // ===== 整份 UML =====
     // opts: { intents, minScore, minRel, maxBridge, minBridge }；回傳每個使用案例的結果與彙整
     function bindModel(model, catalog, opts) {
-        opts = opts || {}; const t0 = Date.now(); const M = opts.matrix || MX.buildMatrix(catalog, { allowOpaque: false }); const index = SEL.buildIndex(catalog.units.filter((u) => u.tier === 1), { intents: opts.intents });
+        opts = opts || {}; const t0 = Date.now(); const M = opts.matrix || MX.buildMatrix(catalog, { allowOpaque: false, includeUntrusted: !!opts.includeUntrusted, includeUnavailable: !!opts.includeUnavailable }); const index = SEL.buildIndex(catalog.units.filter((u) => u.tier === 1 || !!opts.includeUntrusted), { intents: opts.intents }); // includeUntrusted／includeUnavailable：規劃用，信任等級 0（例如只靜態抽取過的 JavaScript）或還沒安裝的單元也算
         const dense = opts.dense && opts.dense.unitVecs && opts.dense.unitVecs.size ? opts.dense : null; const ctx = { catalog, matrix: M, index, opts, intentFor: opts.intentFor || null, dense };
         const results = (model.usecases || []).map((uc) => bindUseCase(model, uc, ctx));
         const steps = results.reduce((a, r) => a + r.total, 0), bound = results.reduce((a, r) => a + r.bound, 0);
@@ -12095,6 +12095,512 @@ const holder = {};
 return holder.FaCatalogBind;
 })();
 /* CATBIND-END */
+/* CATEXTJS-BEGIN */
+const FaCatalogExtractJs = (function () {
+const holder = {};
+(function (module, self) {
+/* JavaScript 單元抽取器（UMD，純函式）：讀一份 JavaScript 原始碼，找出它「對外提供」的函式／類別方法（ES module 的 export、CommonJS 的
+ * module.exports／exports.x、UMD 工廠函式回傳的物件、瀏覽器全域的頂層函式與類別、Foo.prototype.bar），轉成跟 Python 單元同一格式的單元
+ * （id 為 js:套件.名稱）：參數（含預設值、JSDoc 的 @param 型別）、回傳（@returns）、說明（JSDoc 第一段）、副作用（函式本體的靜態分析，
+ * 順著同一份檔案裡的呼叫鏈合併）。不執行任何程式碼。
+ * 語法樹由呼叫端提供（opts.parse(src, onComment)，Node 用 acorn，瀏覽器用 CDN 的 acorn 或 web-tree-sitter 轉出的 ESTree），這個檔案不綁解析器。
+ * 信任等級一律 0：靜態分析沒辦法保證純度，也還沒有 JavaScript 的探測環境；規劃時要用 includeUntrusted。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory(require('./catalog_core.js'));
+    else root.FaCatalogExtractJs = factory(root.FaCatalog || (typeof FaCatalog !== 'undefined' ? FaCatalog : undefined));
+})(typeof self !== 'undefined' ? self : this, function (Cat) {
+    'use strict';
+    const MAX_UNITS = 200, MAX_CHAIN = 4;
+
+    // ===== JSDoc =====
+    function parseJsDoc(text) {
+        const body = String(text || '').replace(/^\*+/, '').replace(/[ \t]+@(param|arg|argument|returns?|private|internal|access|deprecated)\b/g, '\n@$1').split('\n').map((l) => l.replace(/^\s*\*\s?/, '')).join('\n').trim(); const tags = [];
+        const main = []; let cur = null;
+        for (const line of body.split('\n')) { const m = /^@(\w+)\s*(.*)$/.exec(line.trim()); if (m) { cur = { tag: m[1], text: m[2] }; tags.push(cur); } else if (cur) cur.text += ' ' + line.trim(); else main.push(line); }
+        const summary = main.join(' ').replace(/\s+/g, ' ').trim(); const params = {}; let returns = null; const deprecated = tags.some((t) => t.tag === 'deprecated'); const isPrivate = tags.some((t) => t.tag === 'private' || t.tag === 'internal' || (t.tag === 'access' && /private/.test(t.text)));
+        for (const t of tags) {
+            if (t.tag === 'param' || t.tag === 'arg' || t.tag === 'argument') { const m = /^(?:\{([^}]*)\}\s*)?(\[)?([\w$.]+)(?:=([^\]\s]+))?\]?(?:\s*-?\s*(.*))?$/.exec(t.text.trim()); if (m) params[m[3]] = { type: m[1] || null, optional: !!m[2] || m[4] !== undefined, desc: (m[5] || '').trim() }; }
+            else if ((t.tag === 'returns' || t.tag === 'return') && !returns) { const m = /^(?:\{([^}]*)\}\s*)?(.*)$/.exec(t.text.trim()); returns = { type: m[1] || null, desc: (m[2] || '').trim() }; }
+        }
+        return { summary, params, returns, deprecated, isPrivate };
+    }
+    const DOM_ANY = /^(HTML\w*Element|Element|Node|Event|ImageData|ImageBitmap|CanvasRenderingContext2D|WebGL\w*|MediaStream|Blob|File|Response|Request|Window|Document)$/;
+    function jsDocType(t) {
+        if (t == null) return null; let s = String(t).trim().replace(/^[?!]/, '').replace(/=$/, ''); if (!s) return null;
+        if (/^\.\.\./.test(s)) return null;
+        const un = splitTop(s, '|').map((x) => x.trim()).filter((x) => x && !/^(null|undefined|void)$/.test(x)); if (un.length > 1) { const ms = un.map(jsDocType); if (ms.some((x) => !x)) return 'any'; const u = Array.from(new Set(ms)); return u.length === 1 ? u[0] : (u.length <= 3 ? 'union<' + u.join('|') + '>' : 'any'); }
+        s = un[0] || s; let m;
+        if ((m = /^(?:Array|Set)\s*<(.+)>$/.exec(s)) || (m = /^(.+)\[\]$/.exec(s))) { const e = jsDocType(m[1]); return 'list<' + (e || 'any') + '>'; }
+        if ((m = /^Promise\s*<(.+)>$/.exec(s))) return jsDocType(m[1]) || 'any';
+        if (/^(Map|Object|object|Record\b.*|\{.*\})$/.test(s)) return 'dict';
+        const k = s.toLowerCase(); if (k === 'number' || k === 'float' || k === 'double') return 'number'; if (k === 'int' || k === 'integer') return 'int'; if (k === 'string') return 'text'; if (k === 'boolean' || k === 'bool') return 'bool';
+        if (k === 'function' || /^\(.*\)\s*=>/.test(s) || k === 'callback') return 'callable'; if (s === '*' || k === 'any' || k === 'mixed') return 'any';
+        if (/^(ArrayBuffer|Uint8Array|Uint8ClampedArray|Buffer|Float32Array|Int16Array)$/.test(s)) return 'bytes'; if (DOM_ANY.test(s)) return 'any'; if (k === 'url') return 'url'; if (k === 'array') return 'list<any>';
+        return 'any';
+    }
+    function splitTop(s, ch) { const out = []; let d = 0, cur = ''; for (const c of s) { if ('<([{'.includes(c)) d++; else if ('>)]}'.includes(c)) d--; if (c === ch && d === 0) { out.push(cur); cur = ''; } else cur += c; } out.push(cur); return out; }
+
+    // ===== AST 小工具 =====
+    const isFn = (n) => n && (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression');
+    function walk(node, fn, skipFns) { if (!node || typeof node.type !== 'string') return; if (fn(node) === false) return; for (const k of Object.keys(node)) { if (k === 'loc' || k === 'range') continue; const v = node[k]; if (Array.isArray(v)) { for (const c of v) if (c && typeof c.type === 'string') { if (skipFns && isFn(c)) continue; walk(c, fn, skipFns); } } else if (v && typeof v.type === 'string') { if (skipFns && isFn(v)) continue; walk(v, fn, skipFns); } } }
+    const keyName = (n) => (!n ? null : (n.type === 'Identifier' ? n.name : (n.type === 'Literal' ? String(n.value) : null)));
+    const memberPath = (n) => { const parts = []; let c = n; while (c && c.type === 'MemberExpression') { const p = c.computed ? (c.property.type === 'Literal' ? String(c.property.value) : '*') : c.property.name; parts.unshift(p); c = c.object; } if (c && c.type === 'Identifier') parts.unshift(c.name); else if (c && c.type === 'ThisExpression') parts.unshift('this'); else return null; return parts.join('.'); };
+
+    // ===== 副作用（函式本體靜態分析）=====
+    const FS_READ = /^(readFile|readFileSync|readdir|readdirSync|stat|statSync|existsSync|exists|createReadStream|readlink|access|accessSync)$/, FS_WRITE = /^(writeFile|writeFileSync|appendFile|appendFileSync|unlink|unlinkSync|rm|rmSync|mkdir|mkdirSync|rename|renameSync|copyFile|copyFileSync|createWriteStream|rmdir|rmdirSync)$/;
+    function directEffects(fnNode) {
+        const eff = new Set(); const ev = []; const add = (e, why) => { eff.add(e); if (ev.length < 6) ev.push(e + '：' + why); }; const callees = new Set();
+        walk(fnNode.body || fnNode, (n) => {
+            if (n.type === 'CallExpression' || n.type === 'NewExpression') {
+                const c = n.callee; const name = c.type === 'Identifier' ? c.name : memberPath(c); const last = name ? name.split('.').pop() : '';
+                if (c.type === 'Identifier') callees.add(c.name);
+                if (name === 'fetch' || /^(XMLHttpRequest|WebSocket|EventSource)$/.test(name || '') || /(^|\.)sendBeacon$/.test(name || '') || /^(axios|got|request)(\.|$)/.test(name || '')) add('net', name);
+                else if (/^(http|https|net|dgram)\.(request|get|connect|createServer|createConnection)$/.test(name || '')) add('net', name);
+                if (name === 'require' && n.arguments[0] && n.arguments[0].type === 'Literal') { const m = String(n.arguments[0].value).replace(/^node:/, ''); if (/^(http|https|net|dgram|tls|http2)$/.test(m)) add('net', 'require ' + m); else if (m === 'child_process') add('proc', 'require child_process'); }
+                if (/^(alert|confirm|prompt)$/.test(name || '') || /(^|\.)(createElement|getContext|appendChild|querySelector|querySelectorAll|getElementById|insertAdjacentHTML|drawImage|fillRect|putImageData|toDataURL)$/.test(name || '') || name === 'Image' || name === 'Audio') add('ui', name);
+                if (/(^|\.)(getUserMedia|getDisplayMedia|requestFullscreen|showOpenFilePicker|showSaveFilePicker)$/.test(name || '')) add('desktop', name);
+                if (/^(localStorage|sessionStorage)\.(setItem|removeItem|clear)$/.test(name || '') || /^indexedDB\./.test(name || '')) add('state.write', name); else if (/^(localStorage|sessionStorage)\.getItem$/.test(name || '')) add('state.read', name);
+                if (/^(child_process\.)?(spawn|exec|execSync|execFile|spawnSync|fork)$/.test(name || '') || /^process\.(exit|kill|abort)$/.test(name || '')) add('proc', name);
+                if (/^(fs|fsp|fs\.promises)\./.test(name || '')) { if (FS_READ.test(last)) add('fs.read', name); else if (FS_WRITE.test(last)) add('fs.write', name); else add('fs.read', name + '（不認得的 fs 函式，當成讀）'); }
+                if (name === 'Math.random' || /(^|\.)getRandomValues$/.test(name || '') || /^crypto\.random/.test(name || '')) add('random', name);
+                if (name === 'Date.now' || name === 'performance.now' || (n.type === 'NewExpression' && c.type === 'Identifier' && c.name === 'Date') || /^(setTimeout|setInterval|requestAnimationFrame)$/.test(name || '')) add('time', name || 'Date');
+                if (name === 'eval' || (c.type === 'Identifier' && c.name === 'Function' && n.type !== 'FunctionDeclaration') || (n.type === 'NewExpression' && c.type === 'Identifier' && c.name === 'Function')) add('unknown', 'eval／new Function');
+                if (/^(importScripts|require)$/.test(name || '') && n.arguments[0] && n.arguments[0].type !== 'Literal') add('unknown', '動態載入 ' + name);
+            } else if (n.type === 'MemberExpression') {
+                const p = memberPath(n); if (p && /^(document\.(cookie|body|title|location)|window\.(location|open|innerWidth|innerHeight|scrollTo)|location\.href)/.test(p)) add('ui', p); if (p && /^document\.cookie/.test(p)) add('state.read', p);
+            } else if (n.type === 'AssignmentExpression') {
+                const p = memberPath(n.left); if (p && /^(document\.cookie|localStorage|sessionStorage)/.test(p)) add('state.write', p); if (p && /\.(innerHTML|outerHTML|textContent|src|href|style)(\.|$)/.test(p) && !/^this\./.test(p)) add('ui', p);
+            }
+        });
+        return { eff, ev, callees };
+    }
+
+    // ===== 單元 =====
+    function paramsOf(fnNode, doc) {
+        const out = []; (fnNode.params || []).forEach((p, i) => {
+            let name = null, dflt, optional = false, variadic = false, shape = null;
+            if (p.type === 'Identifier') name = p.name;
+            else if (p.type === 'AssignmentPattern') { optional = true; if (p.left.type === 'Identifier') name = p.left.name; else if (p.left.type === 'ObjectPattern') { name = 'options'; shape = p.left; } else name = 'arg' + (i + 1); dflt = p.right; }
+            else if (p.type === 'RestElement') { variadic = true; name = p.argument && p.argument.type === 'Identifier' ? p.argument.name : 'rest'; }
+            else if (p.type === 'ObjectPattern') { name = 'options'; shape = p; } else if (p.type === 'ArrayPattern') name = 'arg' + (i + 1); else name = 'arg' + (i + 1);
+            if (variadic) return; // 可變長度參數不進單元參數（跟 Python 的 *args 一樣）
+            const jd = doc && doc.params && doc.params[name]; let ty = null, src = null;
+            if (jd && jd.type) { ty = jsDocType(jd.type); if (ty) src = 'doc'; } if (jd && jd.optional) optional = true;
+            if (!ty && dflt && dflt.type === 'Literal') { const v = dflt.value; ty = typeof v === 'boolean' ? 'bool' : (typeof v === 'number' ? (Number.isInteger(v) ? 'int' : 'number') : (typeof v === 'string' ? 'text' : null)); if (ty) src = 'default'; }
+            if (!ty && shape) { ty = 'dict'; src = 'default'; }
+            if (!ty) { const t = Cat.fieldType(name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase()); if (t && t !== 'any' && !/^list<any>$/.test(t)) { ty = t; src = 'name'; } }
+            if (!ty) { ty = 'any'; src = 'none'; }
+            const o = { name, kind: 'named', type: ty, type_src: src, required: !optional }; if (dflt && dflt.type === 'Literal') o.default = dflt.raw; const d = jd && jd.desc; if (d) o.description = d.slice(0, 120); out.push(o);
+        });
+        // 最後一個選填之前的必填都留著；JavaScript 沒有關鍵字參數，位置固定
+        out.forEach((o) => { o.kind = 'positional'; }); return out;
+    }
+    const clip = (s, n) => { s = String(s || '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
+    function firstSentence(s) { const m = /^(.{2,160}?(?:[。！？]|[.!?](?=\s|$)))/.exec(String(s || '')); return clip(m ? m[1] : s, 160); }
+
+    function extract(src, opts) {
+        opts = opts || {}; if (typeof opts.parse !== 'function') throw new Error('extract 需要 opts.parse（回傳 ESTree）'); const pkg = String(opts.pkg || 'lib').replace(/[^\w.-]/g, '_'); const warnings = []; const comments = [];
+        let ast; try { ast = opts.parse(String(src), (block, text, start, end) => comments.push({ block, text, start, end })); } catch (e) { return { ok: false, error: '語法解析失敗：' + String((e && e.message) || e), units: [], exports: [], warnings }; }
+        const body = ast.body || []; const srcS = String(src);
+        const docBefore = (node) => { // 緊貼在節點前面的 /** … */
+            let best = null; for (const c of comments) { if (!c.block || c.text[0] !== '*') continue; if (c.end <= node.start && /^\s*$/.test(srcS.slice(c.end, node.start))) best = c; else if (c.end <= node.start && /^\s*(export\s+(default\s+)?|var\s+|let\s+|const\s+|static\s+|async\s+)*\s*$/.test(srcS.slice(c.end, node.start))) best = c; } return best ? parseJsDoc(best.text) : null;
+        };
+        // 範圍：頂層，加上 UMD／IIFE 工廠函式的本體
+        const scopes = [{ name: 'top', body }]; (function findFactories(stmts, depth) {
+            if (depth > 2) return; for (const st of stmts) {
+                const exprs = []; if (st.type === 'ExpressionStatement') exprs.push(st.expression); if (st.type === 'VariableDeclaration') st.declarations.forEach((d) => d.init && exprs.push(d.init));
+                for (const ex0 of exprs) { let ex = ex0; if (ex.type === 'UnaryExpression' || ex.type === 'SequenceExpression') ex = ex.argument || ex.expressions[0]; if (ex && ex.type === 'AssignmentExpression') ex = ex.right; if (ex && ex.type === 'CallExpression') { const callee = ex.callee.type === 'MemberExpression' && ex.callee.object && isFn(ex.callee.object) && /^(call|apply)$/.test(keyName(ex.callee.property) || '') ? ex.callee.object : ex.callee; // (function(){…}).call(this) 也是 IIFE
+                        const fns = [callee].concat(ex.arguments).filter((a) => a && (a.type === 'FunctionExpression' || a.type === 'ArrowFunctionExpression') && a.body && a.body.type === 'BlockStatement'); for (const f of fns) { if (f.body.body.length > 1) { scopes.push({ name: 'factory', body: f.body.body, fn: f }); findFactories(f.body.body, depth + 1); } } } }
+            }
+        })(body, 0);
+        const decls = new Map(); // 名稱 → { node, doc, scope }
+        const addDecl = (name, node, doc, scopeName) => { const key = scopeName + ':' + name; if (!decls.has(key)) decls.set(key, { name, node, doc, scope: scopeName }); };
+        const exportsList = []; // { qual, fn, doc, kind, via, cls }
+        const resolve = (id, scopeName) => decls.get(scopeName + ':' + id) || decls.get('top:' + id) || Array.from(decls.values()).find((d) => d.name === id);
+        for (const sc of scopes) {
+            for (const st of sc.body) {
+                let node = st, exported = false, exportDefault = false; if (st.type === 'ExportNamedDeclaration' && st.declaration) { node = st.declaration; exported = true; } else if (st.type === 'ExportDefaultDeclaration') { node = st.declaration; exportDefault = true; exported = true; }
+                const doc = docBefore(st) || docBefore(node);
+                if (node.type === 'FunctionDeclaration' && node.id) { addDecl(node.id.name, node, doc, sc.name); if (exported) exportsList.push({ qual: exportDefault ? 'default' : node.id.name, fn: node, doc, via: 'esm' }); }
+                else if (node.type === 'ClassDeclaration' && node.id) { addDecl(node.id.name, node, doc, sc.name); if (exported) exportsList.push({ qual: exportDefault ? 'default' : node.id.name, cls: node, doc, via: 'esm' }); }
+                else if (node.type === 'VariableDeclaration') { for (const d of node.declarations) { if (d.id.type !== 'Identifier' || !d.init) continue; const dd = docBefore(st) || docBefore(d); if (isFn(d.init) || d.init.type === 'ClassExpression' || d.init.type === 'ObjectExpression') { addDecl(d.id.name, d.init, dd, sc.name); if (exported) exportsList.push({ qual: d.id.name, fn: isFn(d.init) ? d.init : null, cls: d.init.type === 'ClassExpression' ? d.init : null, obj: d.init.type === 'ObjectExpression' ? d.init : null, doc: dd, via: 'esm' }); } } }
+                else if (node.type === 'ExportNamedDeclaration' || st.type === 'ExportNamedDeclaration') { for (const sp of (st.specifiers || [])) { exportsList.push({ qual: sp.exported.name, ref: sp.local.name, via: 'esm' }); } }
+                else if (st.type === 'ExportDefaultDeclaration' && node.type === 'Identifier') exportsList.push({ qual: 'default', ref: node.name, via: 'esm' });
+                // CommonJS／UMD 賦值
+                if (st.type === 'ExpressionStatement' && st.expression.type === 'AssignmentExpression') {
+                    const a = st.expression; const lp = memberPath(a.left); const rhs = a.right;
+                    if (lp === 'module.exports') { if (rhs.type === 'ObjectExpression') for (const pr of rhs.properties) { if (pr.type !== 'Property') continue; const k = keyName(pr.key); if (!k) continue; if (pr.value.type === 'Identifier') exportsList.push({ qual: k, ref: pr.value.name, via: 'cjs' }); else if (isFn(pr.value)) exportsList.push({ qual: k, fn: pr.value, doc: docBefore(pr), via: 'cjs' }); }
+                        else if (rhs.type === 'Identifier') exportsList.push({ qual: 'default', ref: rhs.name, via: 'cjs' }); else if (isFn(rhs)) exportsList.push({ qual: 'default', fn: rhs, doc, via: 'cjs' }); else if (rhs.type === 'ClassExpression') exportsList.push({ qual: 'default', cls: rhs, doc, via: 'cjs' }); }
+                    else if (lp && /^(module\.)?exports\.[\w$]+$/.test(lp)) { const k = lp.split('.').pop(); if (isFn(rhs)) exportsList.push({ qual: k, fn: rhs, doc, via: 'cjs' }); else if (rhs.type === 'Identifier') exportsList.push({ qual: k, ref: rhs.name, via: 'cjs' }); else if (rhs.type === 'ClassExpression') exportsList.push({ qual: k, cls: rhs, doc, via: 'cjs' }); }
+                    else if (lp && /^(window|self|globalThis|root|global)\.[\w$]+$/.test(lp)) { const k = lp.split('.').pop(); if (isFn(rhs)) exportsList.push({ qual: k, fn: rhs, doc, via: 'global' }); else if (rhs.type === 'Identifier') exportsList.push({ qual: k, ref: rhs.name, via: 'global' }); else if (rhs.type === 'ObjectExpression') exportsList.push({ qual: k, obj: rhs, doc, via: 'global' }); }
+                    else if (lp && /\.prototype\.[\w$]+$/.test(lp) && isFn(rhs)) { const parts = lp.split('.'); exportsList.push({ qual: parts[0] + '.' + parts[parts.length - 1], fn: rhs, doc, via: 'prototype', cls: null }); }
+                    else if (lp && /^[A-Z][\w$]*\.[\w$]+$/.test(lp) && isFn(rhs)) exportsList.push({ qual: lp, fn: rhs, doc, via: 'static' });
+                }
+                // 工廠函式 return { a, b }
+                if (sc.name === 'factory' && st.type === 'ReturnStatement' && st.argument) { const r = st.argument; if (r.type === 'ObjectExpression') for (const pr of r.properties) { if (pr.type !== 'Property') continue; const k = keyName(pr.key); if (!k) continue; if (pr.value.type === 'Identifier') exportsList.push({ qual: k, ref: pr.value.name, via: 'umd', scope: sc.name }); else if (isFn(pr.value)) exportsList.push({ qual: k, fn: pr.value, doc: docBefore(pr), via: 'umd' }); } else if (r.type === 'Identifier') exportsList.push({ qual: 'default', ref: r.name, via: 'umd', scope: sc.name }); }
+            }
+        }
+        // 都沒有明確匯出：瀏覽器全域指令稿，頂層函式與類別就是對外的
+        if (!exportsList.some((e) => ['esm', 'cjs', 'umd', 'global'].includes(e.via))) for (const d of decls.values()) if ((d.scope === 'top' || /^[A-Z]/.test(d.name)) && (d.node.type === 'FunctionDeclaration' || d.node.type === 'ClassDeclaration' || d.node.type === 'ObjectExpression') && !/^_/.test(d.name)) exportsList.push({ qual: d.name, ref: d.name, via: 'global' });
+        // 解開 ref
+        const resolved = []; const seenQ = new Set();
+        for (const ex of exportsList) {
+            let e = ex; if (ex.ref) { const d = resolve(ex.ref, ex.scope || 'top'); if (!d) { warnings.push('匯出 ' + ex.qual + ' 指向 ' + ex.ref + '，但在這份檔案裡找不到宣告（可能來自別的檔案）'); continue; } e = Object.assign({}, ex, { fn: isFn(d.node) ? d.node : null, cls: (d.node.type === 'ClassDeclaration' || d.node.type === 'ClassExpression') ? d.node : null, obj: d.node.type === 'ObjectExpression' ? d.node : null, doc: ex.doc || d.doc }); }
+            if (seenQ.has(e.qual)) continue; seenQ.add(e.qual); resolved.push(e);
+        }
+        // 展開成『可呼叫的東西』：函式、類別（建構子＋方法）、物件的函式成員、已知類別上的 prototype 方法
+        const callables = []; const push = (qual, fn, doc, extra) => { if (callables.length < MAX_UNITS && fn) callables.push(Object.assign({ qual, fn, doc: doc || null }, extra || {})); };
+        const classByName = new Map(resolved.filter((e) => e.cls).map((e) => [e.qual, e]));
+        for (const e of resolved) {
+            if (e.via === 'prototype') { push(e.qual, e.fn, e.doc, { method: true }); continue; }
+            if (e.fn) push(e.qual, e.fn, e.doc);
+            if (e.cls) { const ctor = (e.cls.body.body || []).find((m) => m.type === 'MethodDefinition' && m.kind === 'constructor'); push(e.qual + '.new', ctor ? ctor.value : { type: 'FunctionExpression', params: [], body: { type: 'BlockStatement', body: [] } }, e.doc, { ctor: true }); for (const m of e.cls.body.body || []) { if (m.type !== 'MethodDefinition' || m.kind === 'constructor') continue; const mk = keyName(m.key); if (!mk || /^[_#]/.test(mk) || m.key.type === 'PrivateIdentifier') continue; push(e.qual + '.' + mk, m.value, docBefore(m), { method: !m.static, static: !!m.static }); } }
+            if (e.obj) for (const pr of e.obj.properties) { if (pr.type !== 'Property') continue; const k = keyName(pr.key); if (!k || /^_/.test(k)) continue; if (isFn(pr.value)) push(e.qual + '.' + k, pr.value, docBefore(pr)); }
+        }
+        // 副作用：順著同一份檔案的呼叫鏈合併
+        const nameToFn = new Map(); for (const d of decls.values()) if (isFn(d.node)) nameToFn.set(d.name, d.node);
+        const effCache = new Map();
+        function effectsOf(fn, chain) { if (effCache.has(fn)) return effCache.get(fn); const de = directEffects(fn); const eff = new Set(de.eff); const ev = de.ev.slice(); let unresolved = 0;
+            if (chain.length < MAX_CHAIN) for (const c of de.callees) { const t = nameToFn.get(c); if (!t || chain.includes(t) || t === fn) continue; const r = effectsOf(t, chain.concat([fn])); r.eff.forEach((x) => eff.add(x)); r.ev.forEach((x) => { if (ev.length < 6) ev.push(x + '（經由 ' + c + '）'); }); }
+            const out = { eff, ev, unresolved }; if (!chain.length) effCache.set(fn, out); return out; }
+        const stateTouch = (fn) => { let read = false, write = false; walk(fn.body || fn, (n) => { if (n.type === 'ThisExpression') read = true; if (n.type === 'AssignmentExpression' || n.type === 'UpdateExpression') { const tgt = n.left || n.argument; const p = memberPath(tgt); if (p && /^this\./.test(p)) write = true; } }); return { read, write }; }; // 方法用到 this＝跟實例狀態有關，不是純的
+        const units = []; const state = opts.state || 'needs-network';
+        for (const c of callables) {
+            const doc = c.doc; if (doc && doc.isPrivate) continue; const params = paramsOf(c.fn, doc); const r = effectsOf(c.fn, []); const effects = Array.from(r.eff).filter((e) => Cat.EFFECTS.includes(e));
+            const tdoc = doc && doc.returns && doc.returns.type ? jsDocType(doc.returns.type) : null; const returns = tdoc ? { type: tdoc, type_src: 'doc' } : { type: 'any', type_src: 'none' };
+            const isMethod = !!c.method && !c.ctor; const st = isMethod ? stateTouch(c.fn) : { read: false, write: false }; const touches = st.read || st.write; const pure = !effects.length && !touches && !c.ctor;
+            const u = { id: 'js:' + pkg + '.' + c.qual, runtime: 'js', name: pkg + '.' + c.qual, summary: firstSentence(doc && doc.summary), params, returns, effects: pure ? [] : (effects.length ? effects : (c.ctor || st.write ? ['state.write'] : (st.read ? ['state.read'] : ['unknown']))), pure, avail: { state, needs: [] }, domains: [], tests: [], tier: 0,
+                call: { runtime: 'js', module: pkg, import: pkg, qualname: c.qual, via: opts.via || 'unloaded', async: !!c.fn.async, ctor: !!c.ctor, method: isMethod || undefined }, sig_src: 'ast' };
+            if (doc && doc.deprecated) u.deprecated = true; if (r.ev.length) u.effect_evidence = r.ev; if (pure) u.pure_src = 'static'; if (opts.version) u.version = opts.version; units.push(u);
+        }
+        const typed = units.reduce((a, u) => a + u.params.filter((p) => p.type_src !== 'none').length, 0), all = units.reduce((a, u) => a + u.params.length, 0);
+        return { ok: true, units, exports: resolved.map((e) => e.qual), via: Array.from(new Set(resolved.map((e) => e.via))), warnings, stats: { exports: resolved.length, units: units.length, params: all, typed_params: typed, documented: units.filter((u) => u.summary).length, effects_known: units.filter((u) => !u.effects.includes('unknown')).length } };
+    }
+    return { extract, parseJsDoc, jsDocType, directEffects };
+});
+
+}).call(null, undefined, holder);
+return holder.FaCatalogExtractJs;
+})();
+/* CATEXTJS-END */
+/* CATCARD-BEGIN */
+const FaCatalogCard = (function () {
+const holder = {};
+(function (module, self) {
+/* 能力卡片（UMD，純函式）：從一份很長的 README／說明文字，整理出「這個專案能做什麼、用什麼語言、在哪裡跑、怎麼安裝、有哪些主要函式、需要什麼條件」。
+ * 長文的做法是「地圖縮放＋多片段投票融合」，不是整份塞進模型：
+ *   ① 切片（slice）：依標題分成章節樹（地圖）；程式碼區塊不拆開；太長的章節再依段落切並保留重疊；片段大小可以隨模型的上下文長度調整；
+ *   ② 縮放（zoom）：先只看地圖（標題與大小），依章節標題的重要性（安裝、用法、功能、API、範例…）排優先順序，在字數預算內由大到小一塊一塊放大；
+ *   ③ 每個片段各自抽事實（程式規則；可選用模型再投一票）：安裝指令、語言、執行環境、主要呼叫的函式、能力描述（動詞＋受詞）、需要的條件、停止維護的警告；
+ *   ④ 投票與融合：各片段的票依章節權重加總；欄位取得票最多的並附信心（得票比例）與出處片段；能力與函式用相似度合併同義的，保留得票高的。
+ * 沒有模型也能跑；模型只是多一票（opts.votes），不是必要條件。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaCatalogCard = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+
+    // ===== 清理 =====
+    function clean(text) {
+        return String(text || '').replace(/\r\n?/g, '\n').replace(/^([^\n|#`>][^\n]*)\n={3,}[ \t]*$/gm, '# $1').replace(/^([^\n|#`>-][^\n]*)\n-{3,}[ \t]*$/gm, '## $1').replace(/^(={2,6})\s*([^=\n]+?)\s*\1\s*$/gm, (m, e, ti) => '#'.repeat(Math.max(1, e.length - 1)) + ' ' + ti).replace(/<!--[\s\S]*?-->/g, '').replace(/!\[[^\]]*\]\([^)]*\)/g, '').replace(/\[!\[[^\]]*\]\([^)]*\)\]\([^)]*\)/g, '').replace(/<img\b[^>]*>/gi, '').replace(/<\/?(?:p|div|span|br|a|b|i|em|strong|center|details|summary|h[1-6]|table|tr|td|th|ul|ol|li|sub|sup|kbd)\b[^>]*>/gi, (m) => (/^<h([1-6])\b/i.test(m) ? '\n' + '#'.repeat(+/^<h([1-6])/i.exec(m)[1]) + ' ' : (/^<\/h[1-6]/i.test(m) ? '\n' : (/<(?:br|p|div|li|tr)\b|<\/(?:p|div|li|tr)>/i.test(m) ? '\n' : ' ')))).replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n');
+    }
+
+    // ===== 切片 =====
+    // 回傳 { outline: [{ id, title, level, path, chars, slices }], slices: [{ id, sec, path, kind, text }], chars }
+    // opts.maxChars：每片最大字數（預設 1800）；opts.contextTokens：給了就用上下文長度算（約 25% 的 token × 3 字／token，最少 600）；opts.overlap：長章節切段的重疊字數
+    function sliceSize(opts) { opts = opts || {}; if (opts.maxChars) return Math.max(300, opts.maxChars | 0); if (opts.contextTokens) return Math.max(600, Math.round(opts.contextTokens * 0.25 * 3)); return 1800; }
+    function slice(text, opts) {
+        opts = opts || {}; const max = sliceSize(opts); const overlap = opts.overlap == null ? Math.round(max * 0.1) : opts.overlap; const src = clean(text); const lines = src.split('\n');
+        const secs = []; let cur = { title: '(開頭)', level: 0, lines: [], path: [] }; const stack = []; let fence = null;
+        for (const line of lines) {
+            const f = /^\s*(```|~~~)/.exec(line); if (f) { if (!fence) fence = f[1]; else if (f[1] === fence) fence = null; }
+            const h = !fence && /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line);
+            if (h) { secs.push(cur); const level = h[1].length; while (stack.length && stack[stack.length - 1].level >= level) stack.pop(); stack.push({ level, title: h[2].trim() }); cur = { title: h[2].trim(), level, lines: [], path: stack.map((s) => s.title) }; } else cur.lines.push(line);
+        }
+        secs.push(cur);
+        const outline = [], slices = []; let sid = 0;
+        secs.forEach((s, si) => {
+            const body = s.lines.join('\n').trim(); if (!body && si !== 0) { outline.push({ id: 's' + si, title: s.title, level: s.level, path: s.path, chars: 0, slices: [] }); return; } if (!body) return;
+            // 依「程式碼區塊整塊」與「空行分段」切成最小單位，再裝箱到 max
+            const units = []; let buf = [], inFence = false;
+            for (const l of body.split('\n')) { if (/^\s*(```|~~~)/.test(l)) { if (!inFence) { if (buf.length) units.push({ t: buf.join('\n'), code: false }); buf = [l]; inFence = true; } else { buf.push(l); units.push({ t: buf.join('\n'), code: true }); buf = []; inFence = false; } continue; } if (inFence) { buf.push(l); continue; } if (!l.trim()) { if (buf.length) { units.push({ t: buf.join('\n'), code: false }); buf = []; } continue; } buf.push(l); }
+            if (buf.length) units.push({ t: buf.join('\n'), code: inFence });
+            const parts = []; let acc = '', hasCode = false, hasProse = false;
+            const flush = () => { if (acc.trim()) parts.push({ text: acc.trim(), kind: hasCode && hasProse ? 'mixed' : (hasCode ? 'code' : 'prose') }); acc = ''; hasCode = false; hasProse = false; };
+            for (let u of units) {
+                while (u.t.length > max) { // 單一單位就超過：硬切（程式碼區塊在行邊界切），保留重疊
+                    flush(); let cut = u.t.lastIndexOf('\n', max); if (cut < max * 0.5) cut = max; parts.push({ text: u.t.slice(0, cut).trim(), kind: u.code ? 'code' : 'prose' }); const back = Math.min(overlap, cut); u = { t: u.t.slice(cut - back).trim(), code: u.code }; if (u.t.length <= back) { u = { t: '', code: false }; break; }
+                }
+                if (!u.t) continue; if (acc.length + u.t.length + 2 > max) flush(); acc += (acc ? '\n\n' : '') + u.t; if (u.code) hasCode = true; else hasProse = true;
+            }
+            flush();
+            const ids = parts.map((p) => { const id = 'p' + (sid++); slices.push({ id, sec: 's' + si, path: s.path, title: s.title, kind: p.kind, text: p.text }); return id; });
+            outline.push({ id: 's' + si, title: s.title, level: s.level, path: s.path, chars: body.length, slices: ids });
+        });
+        return { outline, slices, chars: src.length, maxChars: max };
+    }
+
+    // ===== 縮放：章節重要性 =====
+    // 章節標題 → 權重與種類。依文件種類（opts.kind：readme、qa、wiki、guide、design）有不同的規則；沒指定就用 readme 的。
+    const DEV_RE = /develop|building|build from|contribut|testing|tests?\b|release|compile|maintain|roadmap|todo|貢獻|開發|編譯|測試/i;
+    const META_RE = /changelog|history|credits|acknowledg|sponsor|backer|donat|license|authors?|faq|issues?|code of conduct|references|see also|external links|notes|更新紀錄|授權|參考資料/i;
+    const RULES = {
+        readme: [[/install|setup|set up|getting started|quick ?start|安裝|快速開始|入門|requirements|prerequisite|download/i, 2.2, 'install'], [/usage|use\b|example|demo|tutorial|how to|guide|用法|範例|使用|教學|api|reference|documentation|docs?\b|methods?|functions?|options?/i, 2, 'usage'], [/feature|capabilit|what|overview|about|introduction|why|highlights|功能|特色|簡介|概述|support/i, 1.6, 'features'], [/browser|node|platform|compat|environment|runtime|wasm|webgl|瀏覽器|相容|平台/i, 1.3, 'env'], [DEV_RE, 0.3, 'dev'], [META_RE, 0.3, 'meta']],
+        qa: [[/answer|accepted|solution|解答|回答|解法/i, 2.4, 'answer'], [/question|problem|issue|問題/i, 1.8, 'question'], [/comment|related|linked|留言|相關/i, 0.4, 'meta']],
+        wiki: [[/usage|application|feature|overview|description|operation|function|principle|design|architecture|概述|特色|用途|原理/i, 1.8, 'features'], [/history|etymology|references|see also|external links|notes|further reading|歷史|參考|外部連結/i, 0.3, 'meta']],
+        guide: [[/overview|concept|getting started|quick ?start|tutorial|how to|task|usage|install|setup|basics|入門|概念|教學|使用/i, 2, 'usage'], [/architecture|design|principle|how it works|internals|架構|設計|原理/i, 1.7, 'features'], [/appendix|changelog|glossary|release|credits|附錄|詞彙/i, 0.4, 'meta'], [DEV_RE, 0.4, 'dev']],
+    };
+    RULES.design = RULES.guide;
+    function secWeight(s, kind) { if (s.level === 0) return { w: 1.8, kind: 'intro' }; const rules = RULES[kind] || RULES.readme; for (const [re, w, k] of rules) if (re.test(s.title) || re.test((s.path || []).join(' '))) return { w, kind: k }; return { w: 1, kind: 'other' }; }
+    // 地圖縮放：在字數預算內，依重要性（章節權重，同權重時越靠前越先）挑要放大的章節；回傳 { picked: [slice], skipped: [章節], used }
+    function zoom(sliced, opts) {
+        opts = opts || {}; const budget = opts.budgetChars || 12000; const secs = sliced.outline.filter((o) => o.slices.length).map((o, i) => Object.assign({ order: i }, o, secWeight(o, opts.kind)));
+        const sorted = secs.slice().sort((a, b) => b.w - a.w || a.order - b.order); const bySec = new Map(); for (const sl of sliced.slices) { (bySec.get(sl.sec) || bySec.set(sl.sec, []).get(sl.sec)).push(sl); }
+        const picked = [], skipped = []; let used = 0; const want = opts.wantTitle ? new RegExp(opts.wantTitle, 'i') : null;
+        for (const s of (want ? sorted.slice().sort((a, b) => (want.test(b.title) ? 1 : 0) - (want.test(a.title) ? 1 : 0) || b.w - a.w || a.order - b.order) : sorted)) {
+            const sl = bySec.get(s.id) || []; const need = sl.reduce((a, x) => a + x.text.length, 0);
+            if (used + need <= budget) { for (const x of sl) picked.push(Object.assign({ w: s.w, secKind: s.kind }, x)); used += need; }
+            else { // 放不下整章：放前幾片
+                let took = 0; for (const x of sl) { if (used + x.text.length > budget) break; picked.push(Object.assign({ w: s.w * 0.8, secKind: s.kind }, x)); used += x.text.length; took++; } skipped.push({ title: s.title, chars: s.chars, took });
+            }
+        }
+        picked.sort((a, b) => (a.id.slice(1) | 0) - (b.id.slice(1) | 0)); return { picked, skipped, used, sections: secs.length };
+    }
+
+    // ===== 單一片段的事實（程式規則）=====
+    const MANAGERS = [[/\b(?:npm\s+(?:install|i)|yarn\s+add|pnpm\s+(?:add|install)|bun\s+add)\b\s*(?:-[-\w]+\s+)*([@\w./-]+)?/i, 'js', 'npm'], [/\b(?:pip3?\s+install|python3?\s+-m\s+pip\s+install|conda\s+install|poetry\s+add|uv\s+(?:pip\s+install|add))\b\s*(?:-[-\w]+\s+)*([\w.[\]-]+)?/i, 'python', 'pip'], [/\bcargo\s+(?:add|install)\b\s*(\S+)?/i, 'rust', 'cargo'], [/\bgo\s+(?:get|install)\b\s*(\S+)?/i, 'go', 'go'], [/\bgem\s+install\b\s*(\S+)?/i, 'ruby', 'gem'], [/\bcomposer\s+require\b\s*(\S+)?/i, 'php', 'composer'], [/\b(?:apt(?:-get)?|brew|choco|winget)\s+install\b\s*(\S+)?/i, 'native', 'system']];
+    const VERBS = 'detect|recogni[sz]e|resize|convert|generate|render|parse|encode|decode|scan|draw|filter|compress|decompress|extract|transform|merge|split|edit|record|play|stream|track|apply|create|read|write|validate|format|manipulate|process|analy[sz]e|classify|segment|crop|rotate|blur|sharpen|enhance|smooth|beautify|retouch|embed|serialize|deserialize|query|fetch|download|upload|send|receive|connect|compute|calculate|measure|compare|search|index|sort|translate|transcribe|synthesi[sz]e|speak|capture|export|import|build|compile|bundle|minify|visuali[sz]e|plot|chart|animate|simulate|mock|test|lint|sign|encrypt|decrypt|hash|authenticate|schedule|cache|queue|log|monitor|display|show|load|save|open|print|scrape|crawl|diff|patch'.split('|');
+    const VERB_RE = new RegExp('\\b(' + VERBS.join('|') + ')(?:s|es|ing|ed)?\\b', 'i');
+    const NOT_CAP = /\b(issues?|wiki|pull requests?|contribut\w*|tests?|changelog|documentation|docs\b|licen[sc]e|cake|npm run|compile when|please|feel free|you(?:'ll| will| need| can)? (?:need|have to)|see (?:the )?|read the|click|star|sponsor|fork)\b/i;
+    const NEEDS = [[/getUserMedia|\bwebcam\b|\bcamera\b|攝影機|相機/i, 'camera'], [/\bmicrophone\b|麥克風/i, 'microphone'], [/\bwebgl\b|\bgpu\b|\bwebgpu\b/i, 'gpu'], [/\bwebassembly\b|\bwasm\b/i, 'wasm'], [/\bapi[ _-]?key\b|\btoken\b.*\brequired\b|\bsign up\b/i, 'api_key'], [/\bffmpeg\b/i, 'ffmpeg'], [/pre-?trained|\bweights?\b|download(?:ing)? (?:the )?models?|model files?|\.onnx|\.tflite|\.pb\b/i, 'model_files'], [/\bserver\b.*\brequired\b|\bbackend\b.*\brequired\b|\bdocker\b/i, 'server'], [/\bpython ?3?\.\d+/i, 'python_version'], [/\bnode(?:\.js)? ?(?:>=?|v)?\s?\d+/i, 'node_version'], [/\bcanvas\b/i, 'canvas']];
+    const API_BAD = /^(console|window|document|Math|JSON|Object|Array|Promise|String|Number|process|this|self|navigator|location|Date|Error|Buffer|require|module|exports|el|e|err|res|req|app\.use|alert|prompt|confirm|setTimeout|setInterval|fetch|then|catch|log|\$)\./;
+    function factsOfSlice(sl) {
+        const text = sl.text; const f = { lang: {}, runtime: {}, installs: [], apis: {}, caps: [], needs: {}, flags: {}, license: null }; const bump = (o, k, n) => { o[k] = (o[k] || 0) + (n || 1); };
+        // 程式碼區塊與行內程式碼
+        const codes = []; text.replace(/(```|~~~)[^\n]*\n([\s\S]*?)\1/g, (m, _f, body) => { codes.push(body); return ''; }); const inline = []; text.replace(/`([^`\n]{3,120})`/g, (m, c) => { inline.push(c); return ''; });
+        const codeAll = codes.join('\n') + '\n' + inline.join('\n'); const prose = text.replace(/(```|~~~)[^\n]*\n[\s\S]*?\1/g, ' ');
+        for (const [re, lang, mgr] of MANAGERS) { const m = re.exec(codeAll) || (/^\s*\$?\s*(?:npm|pip|cargo|go|gem|composer)\b/m.test(codeAll) ? re.exec(codeAll) : null); if (m) { bump(f.lang, lang, 3); f.installs.push({ manager: mgr, pkg: m[1] || null, line: (m[0] || '').trim().slice(0, 100) }); if (lang === 'js') bump(f.runtime, 'node', 1); if (lang === 'python') bump(f.runtime, 'python', 2); } }
+        const scripts = codeAll.match(/<script[^>]+src=["']([^"']+)["']/gi) || []; if (scripts.length) { bump(f.lang, 'js', 3); bump(f.runtime, 'browser', 3); f.cdn = scripts.slice(0, 2).map((s) => /src=["']([^"']+)["']/i.exec(s)[1]); }
+        if (/\b(?:import|export)\s+[\w{*]/.test(codeAll) && /\bfrom\s+['"]/.test(codeAll) || /\brequire\s*\(\s*['"]/.test(codeAll)) { bump(f.lang, 'js', 2); }
+        if (/^\s*(?:from\s+[\w.]+\s+import\s|import\s+[\w.]+\s*(?:as\s+\w+)?\s*$)/m.test(codeAll) && /\bdef\s|\bprint\(|:\s*$/m.test(codeAll + ':')) bump(f.lang, 'python', 2);
+        if (/^#include\s*[<"]/m.test(codeAll)) bump(f.lang, 'c/c++', 2); if (/\bfn\s+main\(|\buse\s+\w+::/.test(codeAll)) bump(f.lang, 'rust', 1); if (/\bpackage\s+main\b|\bfunc\s+\w+\(/.test(codeAll)) bump(f.lang, 'go', 1);
+        if (/\bbrowsers?\b|client-?side|in the browser|瀏覽器|\bDOM\b|\bwebgl\b|\bcanvas\b|<canvas|getContext\(|document\.|window\./i.test(text)) bump(f.runtime, 'browser', 2); if (/\bnode(?:\.?js)?\b|\bnpm\b|require\s*\(/i.test(text)) bump(f.runtime, 'node', 1); if (/\bdeno\b/i.test(text)) bump(f.runtime, 'deno', 1); if (/\bpython\b|\bpip\b/i.test(text)) bump(f.runtime, 'python', 1); if (/\bcommand[- ]line\b|\bCLI\b/.test(text)) bump(f.runtime, 'cli', 1);
+        // 主要呼叫的函式
+        const fenceLangs = {}; text.replace(/(?:```|~~~)\s*([A-Za-z+#]+)/g, (m, l) => { fenceLangs[l.toLowerCase()] = 1; return ''; }); if (fenceLangs.js || fenceLangs.javascript || fenceLangs.jsx || fenceLangs.ts || fenceLangs.typescript || fenceLangs.html) bump(f.lang, 'js', 2); if (fenceLangs.python || fenceLangs.py) bump(f.lang, 'python', 2); if (fenceLangs.rust) bump(f.lang, 'rust', 2); if (fenceLangs.go) bump(f.lang, 'go', 2); if (fenceLangs.c || fenceLangs.cpp || fenceLangs['c++']) bump(f.lang, 'c/c++', 2); if (fenceLangs.java) bump(f.lang, 'java', 2);
+        if (/\b(?:JavaScript|TypeScript|ECMAScript|node\.?js)\b|\b[\w-]+\.js\b|\bJS\b/i.test(prose)) bump(f.lang, 'js', 1); if (/\bPython ?[23]?\b/.test(prose) && !/javascript/i.test(prose)) bump(f.lang, 'python', 1); if (/\b(?:const|let|var)\s+\w+\s*=|=>\s*[{(]|\bawait\s/.test(codeAll)) bump(f.lang, 'js', 1);
+        const callRe = /\b(new\s+)?([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*\(/g; let m;
+        while ((m = callRe.exec(codeAll))) { const nm = (m[1] ? 'new ' : '') + m[2]; const bare = m[2]; if (/^(if|for|while|switch|catch|function|return|typeof|def|print|len|range|str|int|float|list|dict|set|isinstance|super|async|await|import|from|class|elif|except)$/.test(bare)) continue; if (API_BAD.test(bare + '.') || API_BAD.test(bare)) continue; if (/^[a-z]$/.test(bare)) continue; if (bare.length < 3) continue; bump(f.apis, nm); }
+        const pyImp = /^\s*from\s+([\w.]+)\s+import\s+([\w, *]+)/gm; while ((m = pyImp.exec(codeAll))) for (const n of m[2].split(',').map((x) => x.trim()).filter((x) => x && x !== '*')) bump(f.apis, m[1] + '.' + n, 1);
+        // 能力描述：條列項與前幾句的『動詞＋受詞』
+        const cand = []; for (const l of prose.split('\n')) { const b = /^\s*(?:[-*+•]|\d+[.)])\s+(.+)$/.exec(l); if (b) cand.push({ t: b[1], bullet: true }); }
+        const para = prose.split(/\n\s*\n/).map((x) => x.replace(/^\s*(?:[-*+•]|\d+[.)])\s+/gm, '').replace(/\s+/g, ' ').trim()).filter(Boolean); for (const p of para.slice(0, 6)) for (const s of p.split(/(?<=[.!?。！？])\s+/).slice(0, 4)) cand.push({ t: s, bullet: false });
+        for (const c of cand) { const t = c.t.replace(/\*\*|__|`|\[([^\]]+)\]\([^)]*\)/g, '$1').trim(); const vm = VERB_RE.exec(t); if (!vm || t.length < 8 || t.length > 260) continue; if (NOT_CAP.test(t)) continue; if (!c.bullet && vm.index > 28) continue; const span = t.slice(vm.index).split(/[,;。，；(（]|(?:\s[-–—]\s)|\.\s/)[0].trim().slice(0, 70); if (span.split(/\s+/).length < 2 && !/[㐀-鿿]/.test(span)) continue; f.caps.push({ phrase: span, bullet: c.bullet }); }
+        for (const [re, name] of NEEDS) if (re.test(text)) bump(f.needs, name); if (/deprecated|no longer (?:maintained|supported)|unmaintained|archived|not maintained|停止維護|已棄用/i.test(text)) f.flags.deprecated = true;
+        const lic = /\b(MIT|Apache[- ]2(?:\.0)?|GPL[- ]?v?[23]?|LGPL|BSD(?:[- ]\d)?(?:[- ]Clause)?|ISC|MPL[- ]2(?:\.0)?|Unlicense|CC0)\b/i.exec(text); if (lic && (/licen[sc]e|授權/i.test(text) || sl.secKind === 'meta')) f.license = lic[1];
+        return f;
+    }
+
+    // ===== 融合 =====
+    const toks = (s) => new Set(String(s).toLowerCase().replace(/[^a-z0-9㐀-鿿]+/g, ' ').split(' ').filter((w) => w.length > 1).map((w) => (w.length > 3 && /s$/.test(w) && !/ss$/.test(w) ? w.slice(0, -1) : w)));
+    const jacc = (a, b) => { let i = 0; a.forEach((x) => { if (b.has(x)) i++; }); const u = a.size + b.size - i; return u ? i / u : 0; };
+    function top(votes, minShare) { const e = Object.entries(votes).sort((a, b) => b[1] - a[1]); const sum = e.reduce((a, x) => a + x[1], 0); if (!e.length) return { value: null, confidence: 0, all: [] }; return { value: e[0][0], confidence: Math.round((e[0][1] / sum) * 100) / 100, all: e.filter((x) => x[1] >= (minShare || 0) * e[0][1]).map((x) => x[0]) }; }
+    // factsList: [{ facts, w, id }]；extra：模型投的票（同格式的 facts，附 w）
+    function fuse(items, opts) {
+        opts = opts || {}; const lang = {}, runtime = {}, needs = {}, apis = new Map(), caps = []; const installs = []; const evidence = { lang: {}, runtime: {} }; let deprecated = false, license = null; const cdn = [];
+        for (const it of items) {
+            const f = it.facts, w = it.w == null ? 1 : it.w;
+            for (const [k, n] of Object.entries(f.lang)) { lang[k] = (lang[k] || 0) + n * w; (evidence.lang[k] = evidence.lang[k] || []).push(it.id); } for (const [k, n] of Object.entries(f.runtime)) { runtime[k] = (runtime[k] || 0) + n * w; (evidence.runtime[k] = evidence.runtime[k] || []).push(it.id); } for (const [k, n] of Object.entries(f.needs)) needs[k] = (needs[k] || 0) + n * w;
+            for (const i of f.installs) if (!installs.some((x) => x.line === i.line)) installs.push(Object.assign({ from: it.id }, i)); if (f.cdn) for (const c of f.cdn) if (!cdn.includes(c)) cdn.push(c);
+            for (const [k, n] of Object.entries(f.apis)) { const key = k.replace(/^new /, ''); const e = apis.get(key) || { name: k, votes: 0, slices: new Set() }; e.votes += n * w; e.slices.add(it.id); if (/^new /.test(k)) e.name = k; apis.set(key, e); }
+            for (const c of f.caps) { const t = toks(c.phrase); let hit = caps.find((x) => jacc(x.t, t) >= 0.6); const ww = w * (c.bullet ? 1.3 : 1); if (hit) { hit.votes += ww; hit.slices.add(it.id); if (c.phrase.length < hit.phrase.length && c.phrase.length > 12) hit.phrase = c.phrase; } else caps.push({ phrase: c.phrase, t, votes: ww, slices: new Set([it.id]) }); }
+            if (f.flags.deprecated) deprecated = true; if (f.license && !license) license = f.license;
+        }
+        const L = top(lang), R = top(runtime, 0.3); let runtimeGuess = false; if (L.value === 'js' && !R.all.length) { R.all = ['browser', 'node']; R.confidence = 0.3; runtimeGuess = true; }
+        const capList = caps.sort((a, b) => b.votes - a.votes).slice(0, opts.maxCaps || 12).map((c) => ({ phrase: c.phrase, votes: Math.round(c.votes * 10) / 10, slices: c.slices.size }));
+        const apiList = Array.from(apis.values()).sort((a, b) => b.votes - a.votes).slice(0, opts.maxApis || 15).map((a) => ({ name: a.name, votes: Math.round(a.votes * 10) / 10, slices: a.slices.size }));
+        const needList = Object.entries(needs).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]).map(([k]) => k);
+        return { language: L.value, language_confidence: L.confidence, runtime: R.all, runtime_confidence: R.confidence, runtime_guess: runtimeGuess, installs: installs.slice(0, 4), cdn: cdn.slice(0, 2), capabilities: capList, api: apiList, needs: needList, license, deprecated, evidence: { language: (evidence.lang[L.value] || []).slice(0, 4), runtime: (evidence.runtime[R.value] || []).slice(0, 4) } };
+    }
+
+    // 開頭那句『X 是用來做 Y 的』：第一個像樣的散文段落的第一句（跳過標題、表格、程式碼、連結列、徽章）
+    function tagline(sliced) {
+        for (const sl of sliced.slices.slice(0, 4)) { if (sl.kind === 'code') continue; for (const para of sl.text.split(/\n\s*\n/)) { const p = para.replace(/\s+/g, ' ').replace(/\*\*|__|`/g, '').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').trim(); if (p.length < 25 || /^[|#<>\[!-]/.test(p) || /^(?:\w+\s*\|)/.test(p)) continue; const s = p.split(/(?<=[.!?。！？])\s+/)[0]; if (s.split(/\s+/).length >= 4 || /[㐀-鿿]{8,}/.test(s)) return s.slice(0, 200); } }
+        return '';
+    }
+
+    // ===== 主流程 =====
+    // opts: { name, maxChars | contextTokens, budgetChars, votes: [{ id, facts, w }]（模型或其他來源多投的票）, wantTitle }
+    function cardFromReadme(readme, opts) {
+        opts = opts || {}; const sliced = slice(readme, opts); const z = zoom(sliced, opts);
+        const items = z.picked.map((s) => ({ id: s.id, w: (s.w || 1) * (s.kind === 'code' ? 1.1 : 1), facts: factsOfSlice(s) })); for (const v of opts.votes || []) items.push(v);
+        const card = fuse(items, opts); card.name = opts.name || null; card.summary = opts.description ? String(opts.description).slice(0, 200) : tagline(sliced); if (!card.license) { const body = clean(readme); const lm = /(?:^|\n)#{1,6}\s*licen[sc]e[^\n]*\n+([^\n]{0,200})/i.exec(body) || /licen[sc]ed under(?: the)?\s+([^\n.]{0,60})|released under(?: the)?\s+([^\n.]{0,60})/i.exec(body); const seg = lm ? (lm[1] || lm[2] || '') : ''; const lic = /\b(MIT|Apache[- ]2(?:\.0)?|GPL[- ]?v?[23]?|LGPL|BSD(?:[- ]\d)?(?:[- ]Clause)?|ISC|MPL[- ]2(?:\.0)?|Unlicense|CC0|HPND|Zlib)\b/i.exec(seg); if (lic) card.license = lic[1]; }
+        card.trace = { chars: sliced.chars, slice_chars: sliced.maxChars, sections: z.sections, slices: sliced.slices.length, read_slices: z.picked.length, read_chars: z.used, skipped_sections: z.skipped.length, coverage_pct: sliced.slices.length ? Math.round((z.used / sliced.slices.reduce((a, s) => a + s.text.length, 0)) * 100) : 100, outline: sliced.outline.slice(0, 40).map((o) => o.title) };
+        { const freq = new Map(); for (const sl of z.picked) for (const w of (sl.text.toLowerCase().match(/[a-z][a-z0-9]{2,}/g) || [])) freq.set(w, (freq.get(w) || 0) + 1); card.terms = Array.from(freq.entries()).sort((a, b) => b[1] - a[1]).slice(0, 400).map((x) => x[0]); }
+        card.confidence = Math.round(((card.language_confidence || 0) * 0.4 + (card.capabilities.length ? 0.3 : 0) + (card.api.length ? 0.15 : 0) + (card.installs.length || card.cdn.length ? 0.15 : 0)) * 100) / 100; return card;
+    }
+    // 給檢索（BM25／嵌入）用的文字
+    function cardText(card) { return [card.name, card.language, (card.runtime || []).join(' '), (card.capabilities || []).map((c) => c.phrase).join('. '), (card.api || []).map((a) => a.name).join(' '), (card.needs || []).join(' ')].filter(Boolean).join('. '); }
+
+    return { clean, slice, sliceSize, zoom, factsOfSlice, fuse, cardFromReadme, cardText, secWeight };
+});
+
+}).call(null, undefined, holder);
+return holder.FaCatalogCard;
+})();
+/* CATCARD-END */
+/* CATDISC-BEGIN */
+const FaCatalogDiscover = (function () {
+const holder = {};
+(function (module, self) {
+/* 缺口驅動的探索迴圈（UMD，純函式＋注入的主機函式）：需求（UML 使用案例）→ 接線 → 找出『沒有單元可用』的缺口 → 為每個缺口產生搜尋關鍵字 →
+ * 搜尋（wiki、GitHub、SourceForge、CodeProject、StackOverflow…）→ 讀 README／說明（地圖縮放＋多片段投票，見 card_core.js）→ 整理成能力卡片 →
+ * 依缺口排名挑最合適的專案 → （可選）抽取成單元再接一次線 → 直到沒有缺口、沒有進展或用完預算 → 產出計畫。
+ * 每一步先用程式；模型只是可注入的『多投一票』（host.vote）。搜尋、下載、抽取、執行都由主機函式注入（host.search／fetchText／onboard／tryRun），
+ * 所以這個檔案可以用假的主機完整測試。出錯時 classifyError 把錯誤訊息歸類成『下一步該做什麼』，nextAttempt 避免重複同樣的失敗。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory(require('./card_core.js'), require('./select_core.js'));
+    else root.FaCatalogDiscover = factory(root.FaCatalogCard || (typeof FaCatalogCard !== 'undefined' ? FaCatalogCard : undefined), root.FaCatalogSelect || (typeof FaCatalogSelect !== 'undefined' ? FaCatalogSelect : undefined));
+})(typeof self !== 'undefined' ? self : this, function (Card, SEL) {
+    'use strict';
+    const snake = (s) => String(s || '').replace(/([a-z0-9])([A-Z])/g, '$1_$2').replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '').toLowerCase();
+    const words = (s) => snake(s).split('_').filter((w) => w.length > 1);
+
+    // ===== 中文需求詞 → 搜尋用的英文 =====
+    const GLOSSARY = { '拍貼機': 'photo booth', '拍貼': 'photo booth', '美顏': 'face beautify skin smoothing', '磨皮': 'skin smoothing', '相機': 'camera', '攝影機': 'webcam camera', '鏡頭': 'webcam', '人臉': 'face detection', '臉部': 'face', '濾鏡': 'image filter', '照片': 'photo image', '圖片': 'image', '影片': 'video', '音訊': 'audio', '字幕': 'subtitle', '轉檔': 'convert', '轉換': 'convert', '合併': 'merge', '壓縮': 'compress', '縮放': 'resize', '裁切': 'crop', '旋轉': 'rotate', '條碼': 'barcode', '二維碼': 'qr code', 'QR': 'qr code', '圖表': 'chart', '表格': 'table spreadsheet', '試算表': 'spreadsheet', '文件': 'document', '簡報': 'presentation slides', '語音': 'speech', '辨識': 'recognition recognize detect', '偵測': 'detection', '追蹤': 'tracking', '貼紙': 'sticker overlay', '列印': 'print', '下載': 'download', '上傳': 'upload', '瀏覽器': 'browser', '網頁': 'web page', '動畫': 'animation', '三維': '3d', '3D': '3d', '地圖': 'map', '時間': 'date time', '加密': 'encrypt', '搜尋': 'search', '爬蟲': 'scraper crawler', '解析': 'parse', '壓縮檔': 'zip archive', '錄影': 'video recording', '錄音': 'audio recording', '截圖': 'screenshot', '拼貼': 'collage', '邊框': 'frame border', '背景移除': 'background removal', '去背': 'background removal', '畫': 'draw plot', '長條圖': 'bar chart', '折線圖': 'line chart', '圓餅圖': 'pie chart', '資料': 'data', '讀取': 'read parse', '寫入': 'write export', '匯出': 'export', '匯入': 'import', '檔案': 'file', 'Excel': 'excel xlsx spreadsheet', 'CSV': 'csv', 'PDF': 'pdf', 'JSON': 'json', 'XML': 'xml', '大小': 'size resize', '調整': 'adjust resize', '圖形': 'graphics', '視覺化': 'visualization', '編輯': 'editor edit', '播放': 'player play', '影音': 'media', '串流': 'stream', '通知': 'notification', '郵件': 'email', '登入': 'login authentication', '資料庫': 'database', '排程': 'scheduler cron', '產生': 'generate', '生成': 'generate', '掃描': 'scan read decode', '手勢': 'gesture', '姿勢': 'pose estimation', '表情': 'facial expression', '年齡': 'age', '翻譯': 'translate', '文字轉語音': 'text to speech', '語音轉文字': 'speech to text', '手機': 'mobile', '遊戲': 'game', '拖曳': 'drag drop', '表單': 'form', '驗證': 'validation', '日期': 'date', '壓縮圖片': 'image compress' };
+    function toEnglish(text) { let out = String(text || ''); const found = []; const groups = []; for (const k of Object.keys(GLOSSARY).sort((a, b) => b.length - a.length)) if (out.includes(k)) { found.push(GLOSSARY[k]); groups.push(GLOSSARY[k].split(/\s+/)); out = out.split(k).join(' '); } return { english: found.join(' '), groups, rest: out.replace(/[㐀-鿿，。、；：！？（）]+/g, ' ').replace(/\s+/g, ' ').trim() }; }
+
+    // ===== 從接線結果找缺口 =====
+    // bindResult：catalog_bind 的結果（results[].steps／issues）；回傳 [{ id, usecase, step, op, cls, params, returns, issues }]
+    function gapsFrom(bind) {
+        const out = []; for (const r of (bind && bind.results) || []) for (const s of r.steps || []) { if (s.unit || (s.units && s.units.length)) continue; const m = /^([^.]+)\.(.+)$/.exec(s.step || ''); out.push({ id: r.usecase + '/' + s.step, usecase: r.usecase, step: s.step, cls: m ? m[1] : '', op: m ? m[2] : s.step, params: s.op_params || [], returns: s.returns || 'any', text: ((m ? m[1] : '') + ' ' + (m ? m[2] : s.step)).trim() }); }
+        return out;
+    }
+    // 沒有 UML、只有一串需要的能力（['擷取相機畫面', '美顏', '存成圖片']）時，每條當一個缺口
+    function gapsFromNeeds(needs) { return (needs || []).map((n, i) => ({ id: 'need/' + i, usecase: 'need', step: String(n), op: String(n), cls: '', params: [], returns: 'any', text: String(n) })); }
+
+    // ===== 搜尋關鍵字 =====
+    // 產生 3 組：功能描述＋library、功能描述＋執行環境、替代說法；來源提示（github、npm、pypi…）放在 sources
+    function queriesFor(gap, opts) {
+        opts = opts || {}; const t = toEnglish(gap.text + ' ' + (opts.context || '')); const ws = words(gap.op).concat(words(gap.cls)); const base = Array.from(new Set([t.english].concat(t.rest ? [t.rest] : [], ws)).values()).join(' ').replace(/\s+/g, ' ').trim();
+        const env = opts.runtime || 'browser'; const lang = env === 'python' ? 'python' : 'javascript'; const q = [];
+        if (base) { q.push(base + ' library'); q.push(base + ' ' + lang + (env === 'browser' ? ' browser' : '')); q.push(base + (env === 'python' ? ' pypi package' : ' npm package')); }
+        for (const x of (opts.extraQueries || [])) if (/[a-z]{3}/i.test(x)) q.push(String(x).trim()); return { queries: Array.from(new Set(q.map((x) => x.trim()).filter(Boolean))).slice(0, opts.extraQueries && opts.extraQueries.length ? 5 : 3), base, sources: opts.sources || ['github', 'npm', 'pypi', 'stackoverflow', 'wiki'] };
+    }
+
+    // ===== 候選排名 =====
+    // 需求拆成『概念組』：詞庫命中的一個詞條是一組同義詞（拍貼機＝photo booth），其餘的英文字各自一組。
+    // 相關度＝文件裡找得到的概念組的加權比例（權重＝稀有度，所有候選都有的字權重低但不為零）——這是絕對分數（0～1），
+    // 不是『每題最高分都正規化成 1』，所以門檻（預設 0.35）有意義：沒有任何一組概念對得上的候選，不會因為環境相容之類的加分混過門檻。
+    function conceptGroups(gap, context) {
+        const t = toEnglish(gap.text + ' ' + (context || '')); const groups = t.groups.map((g) => g.map((w) => w.toLowerCase()));
+        const seen = new Set(groups.flat()); const extra = Array.from(new Set(words(t.rest + ' ' + gap.op + ' ' + gap.cls))).filter((w) => !seen.has(w) && !['get', 'set', 'do', 'run', 'make', 'the', 'and', 'for', 'new'].includes(w));
+        for (const w of extra) groups.push([w]); return groups;
+    }
+    const GENERIC = new Set(['file', 'files', 'data', 'image', 'images', 'read', 'write', 'code', 'page', 'web', 'size', 'adjust', 'make', 'use', 'tool', 'tools', 'library', 'create', 'text', 'edit', 'convert', 'output', 'input', 'new', 'get', 'set', 'run', 'do', 'the', 'and', 'for']);
+    const stemW = (w) => (w.length > 3 && /s$/.test(w) && !/ss$/.test(w) ? w.slice(0, -1) : w);
+    // cards：[{ id, name, url, summary, card }]；回傳依分數排序 [{ ...candidate, score, relevance, why:[…] }]
+    function rank(gap, cards, opts) {
+        opts = opts || {}; const want = (opts.runtime || 'browser'); const groups = conceptGroups(gap, opts.context);
+        const docs = cards.map((c) => new Set(SEL.tokenize([c.name, c.summary, Card.cardText(c.card), (c.card.terms || []).join(' ')].join('. ')).map(stemW)));
+        const N = docs.length || 1; const idf = (w) => { const n = docs.filter((d) => d.has(stemW(w))).length; return 0.5 + Math.log(1 + (N - n + 0.5) / (n + 0.5)); };
+        const spec = groups.map((g) => { const sp = g.filter((w) => !GENERIC.has(w)); return sp.length ? sp : g; }); const gw = spec.map((g, gi) => Math.max(...g.map(idf)) * (g.every((w) => GENERIC.has(w)) ? 0.35 : 1)); const total = gw.reduce((a, b) => a + b, 0) || 1; const out = [];
+        cards.forEach((c, i) => {
+            const k = c.card; const why = []; let hit = 0; const missed = []; spec.forEach((g, gi) => { if (g.some((w) => docs[i].has(stemW(w)))) hit += gw[gi]; else missed.push(g[0]); });
+            const rel = hit / total; let s = rel; if (rel > 0) why.push('概念對上 ' + Math.round(rel * 100) + '%' + (missed.length ? '（缺 ' + missed.slice(0, 3).join('、') + '）' : ''));
+            if (rel >= 0.15) {
+                const qw = spec.flat().filter((w) => !GENERIC.has(w)); if ((k.api || []).some((a) => qw.some((w) => snake(a.name).includes(w)))) { s += 0.1; why.push('函式名稱對得上'); }
+                if ((k.runtime || []).includes(want)) { s += k.runtime_guess ? 0.03 : 0.1; why.push((k.runtime_guess ? '大概可在 ' : '可在 ') + want + ' 執行'); } else if (k.runtime && k.runtime.length) { const soft = (want === 'browser' && k.language === 'js') || (want === 'node' && k.language === 'js'); s -= soft ? 0.08 : 0.3; why.push('執行環境是 ' + k.runtime.join('/') + '，不是 ' + want + (soft ? '（JavaScript 函式庫，可能也能用）' : '')); }
+                if (k.deprecated) { s *= 0.5; why.push('已停止維護'); } if (!k.license) why.push('授權不明'); if ((k.installs && k.installs.length) || (k.cdn && k.cdn.length)) s += 0.03;
+                if ((k.needs || []).includes('api_key')) { s -= 0.1; why.push('需要 API 金鑰'); } if ((k.needs || []).includes('server')) { s -= 0.1; why.push('需要伺服器'); }
+            } else if (k.deprecated) why.push('已停止維護');
+            out.push(Object.assign({}, c, { score: Math.round(Math.max(0, s) * 1000) / 1000, relevance: Math.round(rel * 1000) / 1000, why }));
+        });
+        return out.sort((a, b) => b.score - a.score);
+    }
+
+    // ===== 能力層級的缺口偵測：每個需要的能力，最接近的卡片是誰、夠不夠近 =====
+    function coverage(needs, cards, opts) {
+        opts = opts || {}; const th = opts.threshold == null ? 0.35 : opts.threshold; const rows = needs.map((n) => { const g = gapsFromNeeds([n])[0]; const r = rank(g, cards, opts); const top = r[0]; return { need: n, best: top ? top.id : null, score: top ? top.score : 0, covered: !!top && top.score >= th }; });
+        return { rows, gaps: rows.filter((r) => !r.covered).map((r) => r.need), covered_pct: rows.length ? Math.round((rows.filter((r) => r.covered).length / rows.length) * 100) : 100 };
+    }
+
+    // ===== 錯誤 → 下一步 =====
+    const ERRORS = [
+        [/ModuleNotFoundError|No module named|Cannot find module|Failed to resolve module|Module not found|ImportError|ERR_MODULE_NOT_FOUND/i, 'missing_module', 'install_or_import', '缺套件：安裝它，或在瀏覽器改用 CDN／ES 模組網址'],
+        [/\b(\w[\w$.]*) is not defined|ReferenceError|NameError: name/i, 'not_defined', 'add_import', '用了沒有宣告／匯入的名稱：補 import 或載入該函式庫'],
+        [/is not a function|is not a constructor|has no attribute|AttributeError|has no exported member|is not exported|Cannot read propert(?:y|ies) of undefined/i, 'wrong_api', 'check_api_version', '呼叫的 API 不存在或版本不同：對照 README 的範例與版本'],
+        [/NotAllowedError|Permission denied|PermissionDeniedError|NotFoundError.*(?:device|camera)|getUserMedia|denied|not allowed to/i, 'permission', 'grant_permission', '權限被擋（相機、麥克風、檔案）：請使用者授權，或換成上傳檔案'],
+        [/CORS|Access-Control-Allow-Origin|cross-origin|Failed to fetch|NetworkError|ERR_CONNECTION|ECONNREFUSED|ENOTFOUND|net::/i, 'network', 'use_proxy_or_cdn', '網路／跨來源被擋：改用 CDN、本機代理，或離線取得檔案'],
+        [/WebGL|webgl|GPU|out of memory|OOM|RangeError: Invalid array length|Maximum call stack|memory access out of bounds/i, 'resource', 'lighter_alternative', '資源不夠或環境不支援：換比較輕的做法／縮小輸入'],
+        [/SyntaxError|Unexpected token|Unexpected identifier|IndentationError|invalid syntax|Unexpected end of input/i, 'syntax', 'fix_syntax', '語法錯誤：修正產生的程式碼'],
+        [/TypeError.*(?:argument|undefined|null)|expected .* got|TypeError: .* takes|missing \d+ required|required positional/i, 'wrong_args', 'fix_arguments', '參數數量或型別不對：對照函式簽名修正'],
+        [/await|Promise|async|not iterable.*Promise|\[object Promise\]/i, 'async', 'add_await', '漏了 await／回傳是 Promise'],
+        [/timed? ?out|Timeout|deadline|ETIMEDOUT/i, 'timeout', 'retry_or_smaller', '逾時：重試一次，或縮小輸入、換更快的做法'],
+        [/404|Not Found|no such file|ENOENT|FileNotFoundError/i, 'missing_resource', 'fix_path', '找不到檔案／網址：檢查路徑或模型檔下載位置'],
+    ];
+    function classifyError(err) { const s = String((err && (err.message || err.stack)) || err || ''); for (const [re, kind, action, hint] of ERRORS) if (re.test(s)) return { kind, action, hint, matched: (re.exec(s) || [''])[0].slice(0, 60) }; return { kind: 'unknown', action: 'ask_user', hint: '看不出原因：把錯誤訊息原文交給使用者或更強的模型', matched: '' }; }
+    // history：之前試過的 [{ candidate, kind, action }]；current：現在用的候選；candidates：可以換的候選 [{ id }]。
+    // 規則：同一個候選＋同一個動作不重複；同一種錯在同一個候選上最多修 2 次；修不動就換候選；沒有候選可換就放棄；看不出原因交給人。
+    function nextAttempt(history, err, candidates, current) {
+        const c = classifyError(err); const hist = history || []; const tried = new Set(hist.map((h) => h.candidate + '|' + h.action)); const cur = current || (hist.length ? hist[hist.length - 1].candidate : null);
+        if (c.action === 'ask_user') return Object.assign({ next: 'ask_user', candidate: cur }, c);
+        const sameKind = hist.filter((h) => h.kind === c.kind && h.candidate === cur).length;
+        if (cur && !tried.has(cur + '|' + c.action) && sameKind < 2) return Object.assign({ next: c.action, candidate: cur }, c);
+        const alt = (candidates || []).find((x) => x.id !== cur && !hist.some((h) => h.candidate === x.id) && x.id !== undefined);
+        if (alt) return Object.assign({ next: 'switch_candidate', candidate: alt.id }, c);
+        return Object.assign({ next: 'give_up', candidate: cur }, c);
+    }
+
+    // ===== 迴圈 =====
+    // host：{ bind(), search(query, sources) → [{title,url,snippet}], fetchText(url) → string, vote?(slice) → facts, onboard?(candidate) → {units}, tryRun?(plan) → {ok, error} }
+    // need：{ uml } 或 { needs:[…] }；opts：{ runtime, maxRounds, maxGaps, perGap（每個缺口最多讀幾個候選）, minScore, budgetChars, contextTokens }
+    async function run(host, need, opts) {
+        opts = Object.assign({ runtime: 'browser', maxRounds: 2, maxGaps: 6, perGap: 4, minScore: 0.35, budgetChars: 12000 }, opts || {}); const trace = []; const log = (e) => trace.push(Object.assign({ at: trace.length }, e));
+        let gaps = []; let bindRes = null;
+        if (need.uml && host.bind) { bindRes = await host.bind(need.uml); if (!bindRes || bindRes.ok === false) return { ok: false, error: (bindRes && bindRes.error) || '接線失敗', trace }; gaps = gapsFrom(bindRes); log({ step: 'bind', usecases: (bindRes.results || []).length, gaps: gaps.length }); } else gaps = gapsFromNeeds(need.needs || []);
+        const chosen = {}; const cardCache = new Map(); const unresolved = []; let round = 0; const initial = gaps.length;
+        while (gaps.length && round < opts.maxRounds) {
+            round++; const todo = gaps.slice(0, opts.maxGaps); const rest = gaps.slice(opts.maxGaps); const progress = [];
+            for (const gap of todo) {
+                let extra = []; if (host.rewrite) { try { extra = (await host.rewrite(gap)) || []; } catch (e) { log({ step: 'rewrite_error', gap: gap.id, error: String((e && e.message) || e) }); } } const q = queriesFor(gap, Object.assign({}, opts, { extraQueries: extra })); log({ step: 'queries', rewritten: extra.length, gap: gap.id, queries: q.queries }); const found = new Map();
+                for (const query of q.queries) { let hits = []; try { hits = (await host.search(query, q.sources)) || []; } catch (e) { log({ step: 'search_error', gap: gap.id, error: String((e && e.message) || e) }); } for (const h of hits) if (h && h.url && !found.has(h.url)) found.set(h.url, h); if (found.size >= opts.perGap * 3) break; }
+                const cards = []; for (const h of Array.from(found.values()).slice(0, opts.perGap * 2)) {
+                    if (cards.length >= opts.perGap) break; let c = cardCache.get(h.url);
+                    if (!c) { let text = ''; try { text = await host.fetchText(h.url); } catch (e) { log({ step: 'fetch_error', url: h.url, error: String((e && e.message) || e) }); continue; } if (!text || text.length < 40) continue; const votes = host.vote ? await host.vote({ url: h.url, text }) : []; const card = Card.cardFromReadme(text, { name: h.title, description: h.snippet, budgetChars: opts.budgetChars, contextTokens: opts.contextTokens, kind: h.kind, votes: votes || [] }); c = { id: h.url, name: h.title || h.url, url: h.url, summary: card.summary, card }; cardCache.set(h.url, c); }
+                    cards.push(c);
+                }
+                const ranked = rank(gap, cards, opts); log({ step: 'rank', gap: gap.id, candidates: ranked.map((r) => ({ id: r.id, score: r.score, why: r.why })) });
+                const best = ranked.find((r) => r.score >= opts.minScore); if (best) { chosen[gap.id] = { gap, pick: best, alternatives: ranked.filter((r) => r !== best).slice(0, 3) }; progress.push(gap.id); } else unresolved.push({ gap, reason: ranked.length ? '最像的也只有 ' + (ranked[0].score) + ' 分（門檻 ' + opts.minScore + '）' : '搜不到可用的候選' });
+            }
+            // 抽成單元後再接一次線，看缺口有沒有真的補上
+            if (host.onboard && progress.length) { let added = 0; for (const id of progress) { try { const r = await host.onboard(chosen[id].pick); if (r && r.units && r.units.length) { chosen[id].units = r.units.length; added += r.units.length; } } catch (e) { log({ step: 'onboard_error', gap: id, error: String((e && e.message) || e) }); } } log({ step: 'onboard', added }); if (added && need.uml && host.bind) { bindRes = await host.bind(need.uml); const left = gapsFrom(bindRes); log({ step: 'rebind', gaps: left.length }); gaps = left.filter((g) => !chosen[g.id] || !chosen[g.id].units); if (!gaps.length) break; if (gaps.length >= initial && !progress.length) break; continue; } }
+            gaps = rest.filter((g) => !chosen[g.id]); if (!progress.length) break;
+        }
+        const planOut = { ok: true, runtime: opts.runtime, rounds: round, gaps_initial: initial, resolved: Object.keys(chosen).length, unresolved: unresolved.filter((u) => !chosen[u.gap.id]).map((u) => ({ gap: u.gap.id, reason: u.reason })), candidates: Object.values(chosen).map((c) => ({ gap: c.gap.id, name: c.pick.name, url: c.pick.url, score: c.pick.score, why: c.pick.why, summary: c.pick.summary, language: c.pick.card.language, runtime: c.pick.card.runtime, install: (c.pick.card.installs[0] && c.pick.card.installs[0].line) || (c.pick.card.cdn[0] ? '<script src="' + c.pick.card.cdn[0] + '">' : null), api: c.pick.card.api.slice(0, 5).map((a) => a.name), needs: c.pick.card.needs, license: c.pick.card.license, units: c.units || 0, alternatives: c.alternatives.map((a) => ({ name: a.name, score: a.score })) })), trace };
+        // 自我修正：照計畫試跑，錯誤歸類後換做法
+        if (host.tryRun && planOut.candidates.length) {
+            const history = []; let attempt = 0; let cur = planOut.candidates[0] && planOut.candidates[0].url; const all = Object.values(chosen).flatMap((c) => [c.pick].concat(c.alternatives)).map((c) => ({ id: c.id })); let r = await host.tryRun(planOut); log({ step: 'tryRun', ok: !!(r && r.ok) });
+            while (r && !r.ok && attempt < (opts.maxFixes || 3)) {
+                attempt++; const nx = nextAttempt(history, r.error, all, cur); history.push({ candidate: cur, kind: nx.kind, action: nx.next });
+                log({ step: 'fix', attempt, error: String(r.error).slice(0, 120), kind: nx.kind, next: nx.next, candidate: nx.candidate }); if (nx.next === 'give_up' || nx.next === 'ask_user') break;
+                if (nx.next === 'switch_candidate') cur = nx.candidate; r = await host.tryRun(Object.assign({}, planOut, { fix: nx })); log({ step: 'tryRun', ok: !!(r && r.ok) });
+            }
+            planOut.run = { ok: !!(r && r.ok), error: r && !r.ok ? String(r.error).slice(0, 200) : null, attempts: attempt };
+        }
+        return planOut;
+    }
+    function toText(plan) {
+        if (!plan.ok) return '⚠️ ' + plan.error; const L = ['缺口 ' + plan.gaps_initial + ' 個，找到候選的 ' + plan.resolved + ' 個（' + plan.rounds + ' 輪）'];
+        for (const c of plan.candidates) { L.push('▸ ' + c.gap + ' → ' + c.name + '（' + c.score + '）' + (c.language ? ' [' + c.language + (c.runtime && c.runtime.length ? '/' + c.runtime.join('/') : '') + ']' : '')); if (c.summary) L.push('    ' + c.summary.slice(0, 120)); if (c.install) L.push('    安裝：' + c.install); if (c.api.length) L.push('    主要函式：' + c.api.join('、')); if (c.needs.length) L.push('    需要：' + c.needs.join('、')); L.push('    ' + c.why.join('；') + (c.alternatives.length ? '；備選：' + c.alternatives.map((a) => a.name).join('、') : '')); }
+        for (const u of plan.unresolved) L.push('✗ ' + u.gap + '：' + u.reason); if (plan.run) L.push(plan.run.ok ? '試跑通過' : '試跑失敗（' + plan.run.attempts + ' 次修正）：' + plan.run.error); return L.join('\n');
+    }
+    return { GLOSSARY, toEnglish, gapsFrom, gapsFromNeeds, queriesFor, rank, coverage, classifyError, nextAttempt, run, toText };
+});
+
+}).call(null, undefined, holder);
+return holder.FaCatalogDiscover;
+})();
+/* CATDISC-END */
 /* DATACORE-BEGIN */
 const FaDataCore = (function () {
 const holder = {};
@@ -29777,6 +30283,31 @@ ${fnData.code}
                 } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
             },
             { type: 'object', properties: { action: { type: 'string', enum: ['missing', 'set', 'list'], default: 'missing' }, items: { type: 'object', description: 'action:"set" 用：{單元id: "一句中文說明"}' }, limit: { type: 'number', description: 'action:"missing" 最多列幾個（預設 30，最多 60）' } }, additionalProperties: false }
+        );
+
+        registerOptional('catalog_card',
+            '讀一份很長的說明文件（GitHub 倉庫的 README、使用手冊、設計文件、維基、StackOverflow 問答），整理成「能力卡片」：一句說明、語言、執行環境（瀏覽器／Node／Python）、安裝指令或 CDN 網址、主要函式、能力描述（動詞＋受詞）、需要的條件（相機、WebGL、模型檔、API 金鑰…）、授權、是否停止維護，每個欄位附信心。長文用「地圖縮放」：先切成章節樹，依重要性（安裝、用法、功能、API）在字數預算內由大到小放大讀，每片段各自抽事實再投票融合——不是整份塞給模型。給 url（GitHub 倉庫網址會自動抓 README）或 text；kind 可選 readme／qa／wiki／guide／design。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try { const r = await this._unitCatalogCard(a); return JSON.stringify({ ok: true, kind: r.kind, chars: r.chars, card: r.card }); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+            },
+            { type: 'object', properties: { url: { type: 'string', description: '說明文件的網址（GitHub 倉庫網址會自動取 README）' }, text: { type: 'string', description: '直接給文字（跟 url 二選一）' }, kind: { type: 'string', enum: ['readme', 'qa', 'wiki', 'guide', 'design'], description: '文件種類，影響章節的重要性判斷（預設 readme）' }, name: { type: 'string' }, description: { type: 'string', description: '搜尋結果給的一句話描述（有的話優先當說明）' }, budget_chars: { type: 'number', description: '最多讀幾個字（預設 12000）' }, context_tokens: { type: 'number', description: '模型的上下文長度，用來決定每片大小' } }, additionalProperties: false }
+        );
+        registerOptional('catalog_js',
+            '把一份 JavaScript 原始碼（未壓縮的 .js 檔網址，或直接給文字）抽成單元登記進單元目錄：找出對外提供的函式與類別方法（ES module export、CommonJS、UMD 工廠函式、瀏覽器全域函式、prototype 方法），參數與回傳型別來自 JSDoc、預設值、參數名稱，副作用（網路、DOM、相機、檔案、計時…）靜態分析並順著呼叫鏈合併。不執行任何程式碼；信任等級一律 0，規劃時才會被用到。壓縮過的檔案函式名稱已被縮短，抽出來沒什麼用。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try { return JSON.stringify(await this._unitCatalogJsOnboard(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+            },
+            { type: 'object', properties: { url: { type: 'string' }, text: { type: 'string' }, pkg: { type: 'string', description: '單元名稱的前綴（預設取檔名）' }, version: { type: 'string' } }, additionalProperties: false }
+        );
+        registerOptional('catalog_discover',
+            '缺口驅動的探索：給 UML 使用案例（uml）或需要的能力清單（needs），先用單元目錄接線，沒有單元可用的步驟就是「缺口」；為每個缺口產生英文搜尋關鍵字、用 browser_search 找（github、wiki、stackoverflow、codeproject…）、讀 README（長文地圖縮放＋多片段投票，見 catalog_card）、整理成能力卡片、依缺口排名（說明相符、執行環境相容、有沒有停止維護、需不需要金鑰或伺服器），輸出計畫：每個缺口建議用哪個專案、怎麼安裝、主要函式、需要什麼、備選是誰；找不到的明講。extract 不是 false 時，如果卡片有未壓縮的 CDN 檔會順手抽成單元再接一次線看缺口有沒有補上。這個工具只規劃，不安裝也不執行。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try { const plan = await this._unitCatalogDiscover(a); return JSON.stringify({ ok: plan.ok, gaps: plan.gaps_initial, resolved: plan.resolved, rounds: plan.rounds, candidates: plan.candidates, unresolved: plan.unresolved, text: plan.text, error: plan.error }); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+            },
+            { type: 'object', properties: { uml: { type: 'string', description: 'UML 文字（格式同 catalog_bind）' }, needs: { type: 'array', items: { type: 'string' }, description: '沒有 UML 時，直接列需要的能力（中英文都可以）' }, runtime: { type: 'string', enum: ['browser', 'node', 'python'], default: 'browser' }, extract: { type: 'boolean', description: 'false＝不要抽單元，只規劃' }, use_model: { type: 'boolean', description: 'true＝用離線小模型把需求改寫成英文搜尋關鍵字（實測這一步它比詞庫好）；預設不用' }, max_gaps: { type: 'number' }, per_gap: { type: 'number' }, context_tokens: { type: 'number' } }, additionalProperties: false }
         );
 
         registerOptional('big_content',
@@ -60569,6 +61100,7 @@ ${existingNodeSummaries}
         const argv = String(argsText || '').trim().split(/\s+/).filter(Boolean); const wantJson = argv.includes('json'); this.messages.push({ role: 'user', content: '/unit-catalog' + (argv.length ? ' ' + argv.join(' ') : '') });
         try {
             try { await this._unitCatalogStoreLoad(); } catch (_) { /* 存檔的目錄讀不回來就只用這次的 */ }
+            if (argv[0] === 'card' || argv[0] === 'js' || argv[0] === 'discover') { await this._unitCatalogDiscoverReply(argv, argsText); this._persistChatHistory(); this._renderMessageHistory(); return; }
             if (argv[0] === 'embed') { await this._unitCatalogEmbedReply(argv.slice(1)); this._persistChatHistory(); this._renderMessageHistory(); return; }
             if (argv[0] === 'intents') { await this._unitCatalogIntentsReply(argv.slice(1)); this._persistChatHistory(); this._renderMessageHistory(); return; }
             if (argv[0] === 'shapes') { await this._unitCatalogShapesReply(argv.slice(1)); this._persistChatHistory(); this._renderMessageHistory(); return; }
@@ -60869,7 +61401,7 @@ ${existingNodeSummaries}
     _unitCatalogBind(umlText, opts) {
         opts = opts || {}; const U = FaUml; const parsed = U.parseDsl(String(umlText || '')); if (parsed.errors.length) return { ok: false, error: 'UML 格式有問題：' + parsed.errors.slice(0, 3).map((e) => '第 ' + e.line + ' 行 ' + e.msg).join('；') };
         const model = parsed.model; if (!model.usecases.length) return { ok: false, error: '沒有使用案例（usecase 名稱: 參與者 -> 類別.操作(參數):回傳）' };
-        const cat = this._unitCatalogBuild(); const res = FaCatalogBind.bindModel(model, cat, { intents: opts.intents || this._unitCatalogIntents(), matrix: opts.matrix, dense: opts.dense });
+        const cat = this._unitCatalogBuild(); const res = FaCatalogBind.bindModel(model, cat, { intents: opts.intents || this._unitCatalogIntents(), matrix: opts.matrix, dense: opts.dense, includeUntrusted: opts.includeUntrusted, includeUnavailable: opts.includeUnavailable });
         return { ok: true, model: model.name, summary: res.summary, results: res.results, text: FaCatalogBind.toText(res), semantic: !!res.summary.semantic };
     }
     // 有啟用語意檢索（且模型載得起來、向量夠）就先把這份 UML 的查詢句嵌入；否則退回名稱檢索，原因寫在 semantic_note
@@ -60971,6 +61503,66 @@ ${existingNodeSummaries}
         await this._unitCatalogIntentsLoad(); const miss = this._unitCatalogIntentMissing();
         if (args[0] === 'missing' || !args.length) { this._pushAssistantMessage('📝 中文用途說明\n\n- 內建＋補的：' + Object.keys(this._unitCatalogIntents()).length + ' 個\n- 還缺：' + miss.length + ' 個' + (miss.length ? '\n\n' + miss.slice(0, 40).map((u) => '- ' + u.id + '：' + u.summary.slice(0, 60)).join('\n') + (miss.length > 40 ? '\n…' : '') + '\n\n請 AI 用 catalog_intent 工具（action:"set"）補上。' : ''), null); return; }
         this._pushAssistantMessage('用法：/unit-catalog intents [missing]', null);
+    }
+    // ===== 能力卡片、JavaScript 單元抽取、缺口驅動探索（設計見 DESIGN.unit-catalog.md 第二十五節）=====
+    // acorn（JavaScript 語法樹）：第一次用到才從 CDN 載入，之後在瀏覽器快取。載入失敗就沒辦法抽取 JavaScript 單元（能力卡片不需要它）。
+    async _unitCatalogAcorn() {
+        if (this._unitCatalogAcornParse) return this._unitCatalogAcornParse;
+        const mod = await import('https://cdn.jsdelivr.net/npm/acorn@8.14.0/+esm'); const parse = mod.parse || (mod.default && mod.default.parse); if (!parse) throw new Error('acorn 載入了但沒有 parse');
+        this._unitCatalogAcornParse = (src, onComment) => { const o = { ecmaVersion: 'latest', allowReturnOutsideFunction: true, allowAwaitOutsideFunction: true, onComment }; try { return parse(src, Object.assign({ sourceType: 'script' }, o)); } catch (_) { return parse(src, Object.assign({ sourceType: 'module' }, o)); } };
+        return this._unitCatalogAcornParse;
+    }
+    _unitCatalogHtmlToText(html) {
+        return String(html || '').replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>|<nav[\s\S]*?<\/nav>|<footer[\s\S]*?<\/footer>|<svg[\s\S]*?<\/svg>/gi, ' ').replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, (m, c) => '\n```\n' + c.replace(/<[^>]+>/g, '') + '\n```\n').replace(/<li[^>]*>/gi, '\n- ').replace(/<[^>]+>/g, (m) => (/^<h[1-6]\b|^<\/h[1-6]|^<\/?(?:p|div|br|tr)\b/i.test(m) ? m : ' ')).replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+    }
+    // 取得一份說明文件的文字：GitHub 倉庫網址 → README（API 原始內容）＋倉庫描述；其他網址 → 網頁轉文字。回傳 { text, description, kind, name }
+    async _unitCatalogFetchDoc(url) {
+        const u = String(url || ''); let m = /^https?:\/\/github\.com\/([^/\s]+)\/([^/\s#?]+)/i.exec(u);
+        const get = async (target, headers) => { const r = await this._terminalHttpFetch('GET', target, { headers, timeoutMs: 30000 }); const resp = r && r.resp ? r.resp : r; if (!resp || !resp.ok) throw new Error('HTTP ' + (resp && resp.status)); return resp; };
+        if (m) { const repo = m[1] + '/' + m[2].replace(/\.git$/, ''); const text = await (await get('https://api.github.com/repos/' + repo + '/readme', { Accept: 'application/vnd.github.raw' })).text(); let description = ''; try { const j = await (await get('https://api.github.com/repos/' + repo, { Accept: 'application/vnd.github+json' })).json(); description = j.description || ''; } catch (_) { /* 沒有描述就算了 */ } return { text, description, kind: 'readme', name: repo }; }
+        const resp = await get(u, { Accept: 'text/html,text/markdown,text/plain' }); const body = await resp.text(); const isHtml = /<html|<body|<div|<p[ >]/i.test(body.slice(0, 4000)); const kind = /stackoverflow\.com|stackexchange\.com/i.test(u) ? 'qa' : (/wikipedia\.org|wiki/i.test(u) ? 'wiki' : (/docs?\.|guide|manual|design/i.test(u) ? 'guide' : 'readme'));
+        return { text: isHtml ? this._unitCatalogHtmlToText(body) : body, description: '', kind, name: u.replace(/^https?:\/\//, '').slice(0, 60) };
+    }
+    async _unitCatalogCard(a) {
+        const Card = FaCatalogCard; let doc;
+        if (a.text) doc = { text: String(a.text), description: a.description || '', kind: a.kind || 'readme', name: a.name || '' }; else if (a.url) doc = await this._unitCatalogFetchDoc(a.url); else throw new Error('要給 url 或 text');
+        const card = Card.cardFromReadme(doc.text, { name: a.name || doc.name, description: a.description || doc.description, kind: a.kind || doc.kind, budgetChars: Number(a.budget_chars) || 12000, contextTokens: Number(a.context_tokens) || undefined });
+        return { card, kind: doc.kind, chars: doc.text.length };
+    }
+    // JavaScript 原始碼 → 單元（信任等級 0）。url 或 text 二選一；登記進單元目錄（需要網路載入，avail:needs-network）
+    async _unitCatalogJsOnboard(a) {
+        const parse = await this._unitCatalogAcorn(); let src = a.text ? String(a.text) : ''; if (!src && a.url) { const r = await this._terminalHttpFetch('GET', String(a.url), { timeoutMs: 30000 }); const resp = r && r.resp ? r.resp : r; if (!resp || !resp.ok) throw new Error('下載失敗：HTTP ' + (resp && resp.status)); src = await resp.text(); }
+        if (!src) throw new Error('要給 url 或 text'); if (src.length > 3000000) throw new Error('原始碼超過 3MB，不處理'); const pkg = String(a.pkg || (a.url ? String(a.url).split('/').pop().replace(/\.(min\.)?js.*$/, '') : 'lib')).replace(/[^\w.-]/g, '_') || 'lib';
+        const minified = src.length > 20000 && src.split('\n').length < src.length / 800; const r = FaCatalogExtractJs.extract(src, { parse, pkg, version: a.version, via: a.url ? 'cdn' : 'text' });
+        if (!r.ok) return { ok: false, error: r.error }; const units = r.units.slice(0, 200); await this._unitCatalogStoreLoad(); const saved = units.length ? await this._unitCatalogStoreSave(units, { when: new Date().toISOString(), source: 'js', modules: [pkg], units: units.length, trusted: 0, python: null }) : false; for (const u of units) this._unitCatalogExtra.set(u.id, u);
+        return { ok: true, pkg, units: units.length, stats: r.stats, via: r.via, warnings: r.warnings.slice(0, 5), minified, saved, sample: units.slice(0, 12).map((u) => u.name + '(' + u.params.map((p) => p.name + ':' + p.type).join(',') + ')' + (u.effects.length ? ' [' + u.effects.join('+') + ']' : '')) };
+    }
+    // 缺口驅動的探索：UML（或能力清單）→ 接線 → 缺口 → 搜尋 → 讀說明 → 卡片 → 排名 → （可選）抽取單元再接線 → 計畫
+    async _unitCatalogDiscover(a) {
+        const D = FaCatalogDiscover; const Card = FaCatalogCard; const runtime = String(a.runtime || 'browser');
+        const BS = typeof BROWSER_SEARCH_SOURCES !== 'undefined' ? BROWSER_SEARCH_SOURCES : []; await this._unitCatalogStoreLoad(); await this._unitCatalogShapeLoad(); await this._unitCatalogIntentsLoad();
+        const host = {
+            bind: async (uml) => this._unitCatalogBindAsync(uml, { includeUntrusted: true, includeUnavailable: true }),
+            search: async (query, sources) => {
+                const use = (sources || []).filter((s) => BS.includes(s)); const r = await this._browserSearch(query, use.length ? use : BS.slice(0, 3)); if (!r || r.ok === false) throw new Error((r && r.error) || '搜尋失敗'); const out = [];
+                const take = (v) => { if (!v) return; if (Array.isArray(v)) { for (const x of v) if (x && (x.url || x.link || x.href)) out.push({ title: x.title || x.name || x.url, url: x.url || x.link || x.href, snippet: x.snippet || x.summary || x.description || '' }); return; } if (typeof v === 'object') for (const k of Object.keys(v)) if (/^(results|items|hits|entries|data)$/.test(k) || Array.isArray(v[k]) || (v[k] && typeof v[k] === 'object')) take(v[k]); };
+                take(r.results || r); return out;
+            },
+            fetchText: async (url) => { const d = await this._unitCatalogFetchDoc(url); this._unitCatalogDiscoverDocs = this._unitCatalogDiscoverDocs || new Map(); this._unitCatalogDiscoverDocs.set(url, d); return d.text; },
+            // 離線小模型幫忙把需求改寫成英文搜尋關鍵字（實測 0.6B 在這一步比詞庫好：關鍵概念涵蓋 83% 對 67%；其他步驟它不行，所以只有這一步用它）。預設關閉，use_model:true 才用
+            rewrite: a.use_model === true ? async (gap) => { try { const m = FaVlm.byId(this.advancedSettings.offlineTextModel || 'qwen3-0.6b'); if (!m) return []; const raw = await this._llmGenerate(m, { messages: [{ role: 'system', content: '你是搜尋助手。把使用者的需求改寫成 3 組英文搜尋關鍵字，用來在 GitHub 或 npm 找函式庫。每行一組，只輸出關鍵字，不要解釋。' }, { role: 'user', content: '需求：' + gap.text }], deterministic: true, maxTokens: 60 }, {}); return String(raw || '').split('\n').map((l) => l.replace(/^[-*\d.\s]+/, '').trim()).filter((l) => /[a-z]{3}/i.test(l) && l.length < 80).slice(0, 3); } catch (_) { return []; } } : null,
+            onboard: a.extract === false ? null : async (cand) => { const u = cand.card && cand.card.cdn && cand.card.cdn[0]; if (!u || /\.min\./.test(u) && false) return { units: [] }; const r = await this._unitCatalogJsOnboard({ url: u.replace(/\.min\.js$/, '.js'), pkg: (cand.name || 'lib').split('/').pop() }); return { units: r.ok ? new Array(r.units).fill(0) : [] }; },
+        };
+        const need = a.uml ? { uml: String(a.uml) } : { needs: Array.isArray(a.needs) ? a.needs.map(String) : [] };
+        if (!need.uml && !need.needs.length) throw new Error('要給 uml（UML 文字）或 needs（需要的能力清單）');
+        const plan = await D.run(host, need, { runtime, maxGaps: Math.min(10, Number(a.max_gaps) || 6), perGap: Math.min(6, Number(a.per_gap) || 4), maxRounds: 2, contextTokens: Number(a.context_tokens) || undefined });
+        plan.text = D.toText(plan); return plan;
+    }
+    async _unitCatalogDiscoverReply(args, argsText) {
+        const sub = args[0]; const rest = String(argsText || '').replace(/^\s*\w+\s*/, '').trim();
+        if (sub === 'card') { if (!rest) { this._pushAssistantMessage('用法：/unit-catalog card <網址>　（GitHub 倉庫、README、維基、StackOverflow、說明文件）', null); return; } const r = await this._unitCatalogCard({ url: rest.split(/\s+/)[0] }); const c = r.card; this._pushAssistantMessage('🗂️ 能力卡片（' + r.kind + '，' + r.chars + ' 字，讀了 ' + c.trace.read_slices + '/' + c.trace.slices + ' 片、涵蓋 ' + c.trace.coverage_pct + '%）\n\n- 說明：' + c.summary + '\n- 語言：' + (c.language || '?') + '（信心 ' + c.language_confidence + '）　環境：' + (c.runtime.join('/') || '?') + '\n- 安裝：' + (c.installs.map((i) => i.line).join('；') || (c.cdn[0] ? '<script src="' + c.cdn[0] + '">' : '（沒找到）')) + '\n- 能力：' + (c.capabilities.slice(0, 6).map((x) => x.phrase).join('；') || '（沒抽到）') + '\n- 主要函式：' + (c.api.slice(0, 8).map((x) => x.name).join('、') || '（沒抽到）') + '\n- 需要：' + (c.needs.join('、') || '—') + '　授權：' + (c.license || '不明') + (c.deprecated ? '　⚠️ 已停止維護' : ''), null); return; }
+        if (sub === 'js') { if (!rest) { this._pushAssistantMessage('用法：/unit-catalog js <原始碼網址>　（未壓縮的 .js 檔；壓縮過的函式名稱已經被改掉，抽出來沒什麼用）', null); return; } const r = await this._unitCatalogJsOnboard({ url: rest.split(/\s+/)[0] }); this._pushAssistantMessage(r.ok ? '📦 JavaScript 單元：' + r.pkg + '\n\n- 抽出 ' + r.units + ' 個單元（匯出方式 ' + (r.via.join('/') || '無') + '；有型別的參數 ' + r.stats.typed_params + '/' + r.stats.params + '；有說明 ' + r.stats.documented + '）' + (r.minified ? '\n- ⚠️ 看起來是壓縮過的檔案，函式名稱可能被縮短' : '') + '\n- 信任等級 0（靜態分析，沒有執行驗證）；規劃時用 includeUntrusted\n\n' + r.sample.join('\n') + (r.warnings.length ? '\n\n警告：' + r.warnings.join('；') : '') : '⚠️ ' + r.error, null); return; }
+        if (sub === 'discover') { if (!rest) { this._pushAssistantMessage('用法：/unit-catalog discover <UML 文字>　或　/unit-catalog discover need: 擷取相機畫面; 美顏; 存成圖片', null); return; } const nm = /^need[:：]\s*(.+)$/i.exec(rest); const plan = await this._unitCatalogDiscover(nm ? { needs: nm[1].split(/[;；\n]/).map((s) => s.trim()).filter(Boolean) } : { uml: rest }); this._pushAssistantMessage('🧭 缺口驅動探索\n\n' + plan.text, null); }
     }
     // 型別存根轉出來的型別表（stub_to_types.py 的輸出 JSON）：用 /unit-catalog stubs 附上檔案載入，存在檔案快取（unit-catalog-stubs.json），之後抽取自動使用
     async _unitCatalogGetStubs() {

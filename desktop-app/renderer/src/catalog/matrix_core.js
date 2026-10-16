@@ -51,7 +51,7 @@
 
     // ===== 建矩陣 =====
     function eligible(u, o) {
-        if (u.tier !== 1) return false; if (!o.includeUnavailable && u.avail.state !== 'builtin') return false;
+        if (u.tier !== 1 && !o.includeUntrusted) return false; if (!o.includeUnavailable && u.avail.state !== 'builtin') return false;
         if (u.effects.includes('unknown')) return false; if (o.excludeEffects && u.effects.some((e) => o.excludeEffects.includes(e))) return false; return true;
     }
     function buildMatrix(catalogOrUnits, opts) {

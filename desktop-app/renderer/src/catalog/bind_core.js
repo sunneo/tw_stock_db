@@ -108,10 +108,10 @@
                 const fused = EMB.rrf([hits.map((h) => ({ id: h.id, u: h.u })), dl.map((x) => ({ id: x.id, u: byId.get(x.id) }))]).slice(0, 14); hits = fused.map((f) => ({ id: f.id, score: f.score, u: f.u || byId.get(f.id) }));
             } else hits = hits.slice(0, 12);
             const top = hits.length ? hits[0].score : 1; const cands = []; const words = SEL.tokenize(snake(step.msg).replace(/_/g, ' ')).filter((w) => w.length >= 2 && !['get', 'do', 'run', 'set'].includes(w));
-            const fwords = words.flatMap(fine); const exact = cat.units.filter((u) => u.tier === 1 && (snake(u.name.replace(/^[a-z]+:/, '')) === snake(step.msg) || snake(u.name.replace(/^[a-z]+:/, '')) === snake(step.to) + '_' + snake(step.msg)));
+            const fwords = words.flatMap(fine); const usable = (u) => (u.tier === 1 || !!opts.includeUntrusted) && (u.avail.state === 'builtin' || !!opts.includeUnavailable); const exact = cat.units.filter((u) => usable(u) && (snake(u.name.replace(/^[a-z]+:/, '')) === snake(step.msg) || snake(u.name.replace(/^[a-z]+:/, '')) === snake(step.to) + '_' + snake(step.msg)));
             for (const e of exact) if (!hits.some((h) => h.id === e.id)) hits.unshift({ id: e.id, score: top, u: e });
             for (const h of hits) {
-                const u = byId.get(h.id); if (!u || u.tier !== 1 || u.avail.state !== 'builtin') continue; const rel = Math.min(1, h.score / (top || 1)) * (exact.some((e) => e.id === u.id) ? 1 : 0.85);
+                const u = byId.get(h.id); if (!u || !usable(u)) continue; const rel = Math.min(1, h.score / (top || 1)) * (exact.some((e) => e.id === u.id) ? 1 : 0.85);
                 const req = u.params.filter((p) => p.required); let sat = 0; const sources = pool.slice(); for (const p of req) if (pickSource(sources, p.name, p.type, null)) sat++;
                 const cov = req.length ? sat / req.length : 1; const ut = u.returns.type; let rf = 1; if (!isVoid(retType) && retType !== 'any') rf = isOpaque(ut) ? 0.6 : (Cat.isAssignable(ut, retType) ? 1 : (MX.outputsOf(u).some((o) => o.name !== '$' && !isOpaque(Cat.typeToString(o.type)) && Cat.isAssignable(o.type, retType)) ? 0.9 : 0.3));
                 const tc = exact.some((e) => e.id === u.id) ? 1 : tokenCoverage(ctx.index, u.id, words); const pm = opParams.length ? opParams.filter((op) => req.some((p) => snake(p.name) === snake(op.name))).length / opParams.length : 0; const fnName = u.name.replace(/^[a-z]+:/, '').split('.').pop(); const fnToks = fine(fnName); const nameToks = new Set(fine(u.name.replace(/^[a-z]+:/, ''))); const nh = fwords.length ? fwords.filter((w) => nameToks.has(w)).length / fwords.length : 0; // 操作名稱的字有幾成是單元『名稱』裡的整個字（exists 對 posixpath.exists，不是 lexists）
@@ -159,7 +159,7 @@
     // ===== 整份 UML =====
     // opts: { intents, minScore, minRel, maxBridge, minBridge }；回傳每個使用案例的結果與彙整
     function bindModel(model, catalog, opts) {
-        opts = opts || {}; const t0 = Date.now(); const M = opts.matrix || MX.buildMatrix(catalog, { allowOpaque: false }); const index = SEL.buildIndex(catalog.units.filter((u) => u.tier === 1), { intents: opts.intents });
+        opts = opts || {}; const t0 = Date.now(); const M = opts.matrix || MX.buildMatrix(catalog, { allowOpaque: false, includeUntrusted: !!opts.includeUntrusted, includeUnavailable: !!opts.includeUnavailable }); const index = SEL.buildIndex(catalog.units.filter((u) => u.tier === 1 || !!opts.includeUntrusted), { intents: opts.intents }); // includeUntrusted／includeUnavailable：規劃用，信任等級 0（例如只靜態抽取過的 JavaScript）或還沒安裝的單元也算
         const dense = opts.dense && opts.dense.unitVecs && opts.dense.unitVecs.size ? opts.dense : null; const ctx = { catalog, matrix: M, index, opts, intentFor: opts.intentFor || null, dense };
         const results = (model.usecases || []).map((uc) => bindUseCase(model, uc, ctx));
         const steps = results.reduce((a, r) => a + r.total, 0), bound = results.reduce((a, r) => a + r.bound, 0);
