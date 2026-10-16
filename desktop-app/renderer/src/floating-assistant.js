@@ -20205,11 +20205,13 @@ const SCENE3D_TOPIC_DOCS = {
 // 2026-10-03：nvidia/nemotron-3-super-120b-a12b 被 NVIDIA 下架（end of life，HTTP 410 Gone），預設改成
 // nvidia/nemotron-3-ultra-550b-a55b（2026-06 發布，實測回應約1秒）排第一，nvidia/nemotron-3.5-lightning-30b-a3b 排第二。
 // 使用者設定裡還留著舊名稱的 row 會在載入時自動換成新名稱（見 FA_MODEL_RENAMES）。
+// 2026-10-17使用者指定順序（為了讓使用者感覺速度，最快的 lightning 排第一）：
+// lightning → ultra → super-vl → nano-omni；nemotron-3-nano-30b-a3b 移除。內建 row 不帶 API KEY。
 const PRESET_MODEL_OPTIONS = [
-    'nvidia/nemotron-3-ultra-550b-a55b',
     'nvidia/nemotron-3.5-lightning-30b-a3b',
+    'nvidia/nemotron-3-ultra-550b-a55b',
+    'nvidia/nemotron-3.5-super-vl-120b-a12b',
     'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning',
-    'nvidia/nemotron-3-nano-30b-a3b',
     'openai/gpt-oss-20b',
     'openrouter/free',
 ];
@@ -20945,7 +20947,7 @@ const PRESET_MODEL_TOOLCALL_SUPPORT = {
     'nvidia/nemotron-3-ultra-550b-a55b': true, // 2026-10-03 實測：帶 tools 參數會回標準的 tool_calls
     'nvidia/nemotron-3.5-lightning-30b-a3b': true,
     'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning': true,
-    'nvidia/nemotron-3-nano-30b-a3b': false,
+    'nvidia/nemotron-3.5-super-vl-120b-a12b': true, // 2026-10-16 實測：支援工具呼叫與圖片
     'openai/gpt-oss-20b': true,
 };
 
