@@ -1647,7 +1647,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     unit_catalog: {
         enabled: true,
         label: '單元目錄（認識新的 Python 函式庫、查詢可用的函式單元與型別接線）',
-        toolNames: ['catalog_onboard', 'catalog_query', 'catalog_run', 'catalog_bind', 'catalog_intent', 'catalog_card', 'catalog_js', 'catalog_discover'],
+        toolNames: ['catalog_onboard', 'catalog_query', 'catalog_run', 'catalog_bind', 'catalog_intent', 'catalog_card', 'catalog_js', 'catalog_discover', 'catalog_feedback'],
         systemPrompt: '你負責「認識新的函式庫」和「查有什麼能用」。原則：\n' +
             '1. 先用 catalog_query（search）看目錄裡有沒有現成的單元，有就直接用，不要重複安裝。\n' +
             '2. 沒有、而且使用者要用一個新的 Python 套件，才用 catalog_onboard。只接受 PyPI 套件名稱（可加 ==版本），不接受網址、git、本機路徑；要安裝的套件工具會自己請使用者同意，不要替使用者決定、不要繞過。\n' +
@@ -12617,13 +12617,14 @@ const holder = {};
                 }
                 let dense = null; if (host.embed && cards.length) { try { const gq = queryText(gap, opts.context); const vs = await host.embed([{ text: gq, role: 'query' }].concat(cards.map((c) => ({ text: (c.card.head || [c.name, c.summary, Card.cardText(c.card)].join('. ')).slice(0, 700), role: 'passage' })))); if (vs && vs.length === cards.length + 1) dense = { q: vs[0], cards: new Map(cards.map((c, i) => [c.id, vs[i + 1]])) }; } catch (e) { log({ step: 'embed_error', gap: gap.id, error: String((e && e.message) || e) }); } }
                 const ranked = rank(gap, cards, Object.assign({}, opts, { dense })); log({ step: 'rank', gap: gap.id, candidates: ranked.map((r) => ({ id: r.id, score: r.score, why: r.why })) });
-                const best = ranked.find((r) => r.score >= opts.minScore); if (best) { chosen[gap.id] = { gap, pick: best, alternatives: ranked.filter((r) => r !== best).slice(0, 3) }; progress.push(gap.id); } else unresolved.push({ gap, reason: ranked.length ? '最像的也只有 ' + (ranked[0].score) + ' 分（門檻 ' + opts.minScore + '）' : '搜不到可用的候選' });
+                let fmap = new Map(); try { const fz = featurize(gap, cards, { runtime: opts.runtime, dense, context: opts.context }); cards.forEach((c, i) => fmap.set(c.id, fz[i])); } catch (_) { fmap = new Map(); }
+                const best = ranked.find((r) => r.score >= opts.minScore); if (best) { chosen[gap.id] = { gap, pick: best, alternatives: ranked.filter((r) => r !== best).slice(0, 3), features: fmap }; progress.push(gap.id); } else unresolved.push({ gap, reason: ranked.length ? '最像的也只有 ' + (ranked[0].score) + ' 分（門檻 ' + opts.minScore + '）' : '搜不到可用的候選' });
             }
             // 抽成單元後再接一次線，看缺口有沒有真的補上
             if (host.onboard && progress.length) { let added = 0; for (const id of progress) { try { const r = await host.onboard(chosen[id].pick); if (r && r.units && r.units.length) { chosen[id].units = r.units.length; added += r.units.length; } } catch (e) { log({ step: 'onboard_error', gap: id, error: String((e && e.message) || e) }); } } log({ step: 'onboard', added }); if (added && need.uml && host.bind) { bindRes = await host.bind(need.uml); const left = gapsFrom(bindRes); log({ step: 'rebind', gaps: left.length }); gaps = left.filter((g) => !chosen[g.id] || !chosen[g.id].units); if (!gaps.length) break; if (gaps.length >= initial && !progress.length) break; continue; } }
             gaps = rest.filter((g) => !chosen[g.id]); if (!progress.length) break;
         }
-        const planOut = { ok: true, runtime: opts.runtime, rounds: round, gaps_initial: initial, resolved: Object.keys(chosen).length, unresolved: unresolved.filter((u) => !chosen[u.gap.id]).map((u) => ({ gap: u.gap.id, reason: u.reason })), references, candidates: Object.values(chosen).map((c) => ({ gap: c.gap.id, name: c.pick.name, url: c.pick.url, score: c.pick.score, why: c.pick.why, summary: c.pick.summary, language: c.pick.card.language, runtime: c.pick.card.runtime, install: (c.pick.card.installs[0] && c.pick.card.installs[0].line) || (c.pick.card.cdn[0] ? '<script src="' + c.pick.card.cdn[0] + '">' : null), api: c.pick.card.api.slice(0, 5).map((a) => a.name), needs: c.pick.card.needs, license: c.pick.card.license, units: c.units || 0, alternatives: c.alternatives.map((a) => ({ name: a.name, score: a.score })) })), trace };
+        const planOut = { ok: true, plan_id: 'plan_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), runtime: opts.runtime, rounds: round, gaps_initial: initial, resolved: Object.keys(chosen).length, unresolved: unresolved.filter((u) => !chosen[u.gap.id]).map((u) => ({ gap: u.gap.id, reason: u.reason })), references, candidates: Object.values(chosen).map((c) => ({ gap: c.gap.id, name: c.pick.name, url: c.pick.url, score: c.pick.score, why: c.pick.why, summary: c.pick.summary, language: c.pick.card.language, runtime: c.pick.card.runtime, install: (c.pick.card.installs[0] && c.pick.card.installs[0].line) || (c.pick.card.cdn[0] ? '<script src="' + c.pick.card.cdn[0] + '">' : null), api: c.pick.card.api.slice(0, 5).map((a) => a.name), needs: c.pick.card.needs, license: c.pick.card.license, units: c.units || 0, features: c.features.get(c.pick.id) || null, card: c.pick.card, need: c.gap.text, kind: c.pick.kind || 'project', alternatives: c.alternatives.map((a) => ({ name: a.name, url: a.url, score: a.score, card: a.card, features: c.features.get(a.id) || null })) })), trace };
         // 自我修正：照計畫試跑，錯誤歸類後換做法
         if (host.tryRun && planOut.candidates.length) {
             const history = []; let attempt = 0; let cur = planOut.candidates[0] && planOut.candidates[0].url; const all = Object.values(chosen).flatMap((c) => [c.pick].concat(c.alternatives)).map((c) => ({ id: c.id })); let r = await host.tryRun(planOut); log({ step: 'tryRun', ok: !!(r && r.ok) });
@@ -12648,6 +12649,134 @@ const holder = {};
 return holder.FaCatalogDiscover;
 })();
 /* CATDISC-END */
+/* CATFB-BEGIN */
+const FaCatalogFeedback = (function () {
+const holder = {};
+(function (module, self) {
+/* 採用／退回的回饋累積（UMD，純函式）：把『探索計畫裡推薦的專案，使用者採用了或退回了』『拿它試跑成功或失敗』記成結構化的標註，
+ * 累積成排名模型（rank_train.js）的訓練資料。存的是壓縮過的卡片（說明、語言、環境、安裝、函式、需要的條件、README 開頭 600 字）
+ * 和當時算出來的特徵，不存整份 README，也不存使用者的其他內容。
+ * 標註的可信度不一樣，所以每筆有權重：使用者明講採用／退回最可信（1.0）；試跑成功次之（0.6）；試跑失敗要看是誰的錯——
+ * 權限、網路、資源、逾時是環境的問題，不是這個專案不好，不算（0）；API 用錯、缺套件、沒定義可能是專案也可能是整合，算輕的負例（0.4）。
+ * 使用者採用某個專案時，同一個缺口裡其他列出來的備選當成輕的負例（0.3）——只是『這次沒被選』，不代表它們不好。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaCatalogFeedback = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const MAX_RECORDS = 3000;
+    // 失敗種類 → 這個專案的責任有多大（0＝跟專案無關，不拿來訓練）
+    const FAIL_WEIGHT = { wrong_api: 0.4, wrong_args: 0.3, not_defined: 0.4, missing_module: 0.3, syntax: 0.2, async: 0.2, missing_resource: 0.2, permission: 0, network: 0, resource: 0, timeout: 0, unknown: 0.2 };
+    const SOURCE_WEIGHT = { user_adopt: 1, user_reject: 1, run_ok: 0.6, alt: 0.3 };
+
+    // 卡片壓縮：訓練與回顧需要的欄位，README 開頭 600 字，讀過的字取前 60 個
+    function compactCard(card) {
+        if (!card) return null; const pick = (a, n, f) => (a || []).slice(0, n).map(f);
+        return { summary: String(card.summary || '').slice(0, 200), language: card.language || null, runtime: (card.runtime || []).slice(0, 4), runtime_guess: !!card.runtime_guess, installs: pick(card.installs, 2, (i) => i.line), cdn: (card.cdn || []).slice(0, 1), api: pick(card.api, 8, (a) => a.name), capabilities: pick(card.capabilities, 5, (c) => c.phrase), needs: (card.needs || []).slice(0, 6), license: card.license || null, deprecated: !!card.deprecated, head: String(card.head || '').slice(0, 600), terms: (card.terms || []).slice(0, 60) };
+    }
+    function emptyStore() { return { version: 1, records: [] }; }
+    const keyOf = (r) => [r.plan_id || '', r.gap_id || '', r.url || '', r.source].join('|');
+    // rec：{ plan_id, gap_id, need, runtime, url, name, kind, card（原始卡片或壓縮過的）, features, label(1/0), source('user_adopt'|'user_reject'|'run_ok'|'run_fail'), fail_kind, detail, alts:[{url,name,card,features}] }
+    function makeRecord(rec, now) {
+        if (!rec || !rec.url || !rec.gap_id || (rec.label !== 0 && rec.label !== 1)) throw new Error('回饋要有 url、gap_id、label（0 或 1）');
+        if (!/^(user_adopt|user_reject|run_ok|run_fail)$/.test(rec.source)) throw new Error('不認得的來源：' + rec.source);
+        const cc = (c) => (c && c.head !== undefined && c.installs && typeof (c.installs[0]) === 'string' ? c : compactCard(c)); const at = now || new Date().toISOString();
+        return { id: 'fb_' + at.replace(/\D/g, '').slice(0, 14) + '_' + Math.random().toString(36).slice(2, 6), at, plan_id: rec.plan_id || '', gap_id: rec.gap_id, need: String(rec.need || '').slice(0, 200), runtime: rec.runtime || 'browser', url: String(rec.url), name: String(rec.name || '').slice(0, 120), kind: rec.kind || 'project', label: rec.label, source: rec.source, fail_kind: rec.fail_kind || null, detail: String(rec.detail || '').slice(0, 300), card: cc(rec.card), features: rec.features || null,
+            alts: (rec.alts || []).slice(0, 5).map((a) => ({ url: String(a.url), name: String(a.name || '').slice(0, 120), card: cc(a.card), features: a.features || null })) };
+    }
+    // 追加；同一個（計畫，缺口，網址，來源）後來的覆蓋先前的（使用者改變主意）；超過上限丟最舊的
+    function append(store, recs) {
+        const s = store && Array.isArray(store.records) ? { version: 1, records: store.records.slice() } : emptyStore(); const idx = new Map(s.records.map((r, i) => [keyOf(r), i]));
+        for (const r of recs) { const k = keyOf(r); if (idx.has(k)) s.records[idx.get(k)] = r; else { idx.set(k, s.records.length); s.records.push(r); } }
+        if (s.records.length > MAX_RECORDS) s.records = s.records.slice(-MAX_RECORDS); return s;
+    }
+    // 權重：失敗看種類；使用者說的最重；備選輕
+    function weightOf(r) { if (r.source === 'run_fail') return FAIL_WEIGHT[r.fail_kind || 'unknown'] != null ? FAIL_WEIGHT[r.fail_kind || 'unknown'] : 0.2; return SOURCE_WEIGHT[r.source] != null ? SOURCE_WEIGHT[r.source] : 0.5; }
+    // 轉成 rank_train 吃的資料：[{ group, id, y, w, x }]；沒有特徵的略過；同一個缺口裡同一個網址以最新的為準
+    function toRows(store, opts) {
+        opts = opts || {}; const rows = []; const minW = opts.minWeight == null ? 0.1 : opts.minWeight; const recs = (store && store.records) || [];
+        // 使用者的結論和試跑的結果分開算：同一個專案，使用者後來改變主意以最新的為準；試跑結果也以最新的為準；但試跑失敗（例如權限被擋）不會蓋掉使用者說的『採用』
+        const kindKey = (r) => (/^user_/.test(r.source) ? 'user' : 'run'); const latest = new Map(); for (const r of recs) latest.set([r.plan_id, r.gap_id, r.url, kindKey(r)].join('|'), r);
+        for (const r of latest.values()) {
+            const group = (r.plan_id || 'p') + '/' + r.gap_id; const w = weightOf(r);
+            if (r.features && w >= minW) rows.push({ group, id: r.url, y: r.label, w, x: r.features, source: r.source });
+            if (r.source === 'user_adopt') for (const a of r.alts || []) if (a.features && !latest.has([r.plan_id, r.gap_id, a.url, 'user'].join('|'))) rows.push({ group, id: a.url, y: 0, w: SOURCE_WEIGHT.alt, x: a.features, source: 'alt' });
+        }
+        return rows;
+    }
+    // 從探索計畫（discover_core.run 的結果）裡某個缺口的推薦，產生一筆回饋。
+    // verdict：'adopt'｜'reject'｜'run_ok'｜'run_fail'；opts：{ error（run_fail 的錯誤訊息）、classify（錯誤歸類函式，回傳 { kind }）、reason、url（指定要評的候選，預設是推薦的那個；可以是備選）}
+    function fromPlan(plan, gapId, verdict, opts) {
+        opts = opts || {}; const c = (plan && plan.candidates || []).find((x) => x.gap === gapId); if (!c) throw new Error('計畫裡沒有缺口 ' + gapId + '（有：' + ((plan && plan.candidates) || []).map((x) => x.gap).join('、') + '）');
+        let target = c; if (opts.url && opts.url !== c.url) { const alt = (c.alternatives || []).find((a) => a.url === opts.url); if (!alt) throw new Error('這個缺口的推薦與備選裡沒有 ' + opts.url); target = Object.assign({}, c, alt, { alternatives: [] }); }
+        const map = { adopt: ['user_adopt', 1], reject: ['user_reject', 0], run_ok: ['run_ok', 1], run_fail: ['run_fail', 0] }; const m = map[verdict]; if (!m) throw new Error('verdict 要是 adopt、reject、run_ok、run_fail 其中之一');
+        const failKind = verdict === 'run_fail' ? ((opts.classify && opts.error ? opts.classify(opts.error).kind : null) || 'unknown') : null;
+        return makeRecord({ plan_id: plan.plan_id, gap_id: gapId, need: c.need, runtime: plan.runtime, url: target.url, name: target.name, kind: c.kind, card: target.card, features: target.features, label: m[1], source: m[0], fail_kind: failKind, detail: opts.reason || (opts.error ? String(opts.error) : ''), alts: verdict === 'adopt' && target === c ? c.alternatives : [] });
+    }
+    function stats(store) {
+        const recs = (store && store.records) || []; const by = {}; for (const r of recs) by[r.source] = (by[r.source] || 0) + 1; const rows = toRows(store);
+        const pos = rows.filter((r) => r.y === 1).length, neg = rows.length - pos, groups = new Set(rows.map((r) => r.group)).size;
+        const need = { groups: 8, positives: 10, negatives: 20 }; const ready = groups >= need.groups && pos >= need.positives && neg >= need.negatives;
+        return { records: recs.length, by_source: by, rows: rows.length, positives: pos, negatives: neg, groups, ready_to_train: ready, need, missing: ready ? [] : ['groups ' + groups + '/' + need.groups, 'positives ' + pos + '/' + need.positives, 'negatives ' + neg + '/' + need.negatives].filter((x) => { const [a, b] = x.split(' ')[1].split('/'); return +a < +b; }) };
+    }
+    return { fromPlan, MAX_RECORDS, FAIL_WEIGHT, SOURCE_WEIGHT, compactCard, emptyStore, makeRecord, append, weightOf, toRows, stats };
+});
+
+}).call(null, undefined, holder);
+return holder.FaCatalogFeedback;
+})();
+/* CATFB-END */
+/* CATRT-BEGIN */
+const FaCatalogRankTrain = (function () {
+const holder = {};
+(function (module, self) {
+/* 排名模型的訓練（UMD，純函式）：邏輯迴歸（L2 正則、類別不平衡加權、特徵標準化），加上『留一組』交叉驗證。
+ * 資料是 [{ group, x: {特徵名: 數值}, y: 0|1 }]；group 是需求（同一個需求的所有候選一組）。訓練結果是一個小 JSON
+ * { names, use, mean, std, w, b }，discover_core.predict 直接用。資料很少時（幾十筆）交叉驗證的數字會抖，要看樣本數。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaCatalogRankTrain = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const sigmoid = (z) => 1 / (1 + Math.exp(-z));
+    // rows：[{ x, y }]；opts：{ use（特徵名稱清單）, l2, lr, iters, balance }
+    function fit(rows, opts) {
+        opts = Object.assign({ l2: 0.05, lr: 0.3, iters: 1500, balance: true }, opts || {}); const use = opts.use || Object.keys(rows[0].x); const n = rows.length, d = use.length;
+        const mean = use.map((nm) => rows.reduce((a, r) => a + (r.x[nm] || 0), 0) / n); const std = use.map((nm, j) => Math.sqrt(rows.reduce((a, r) => a + ((r.x[nm] || 0) - mean[j]) ** 2, 0) / n) || 1);
+        const X = rows.map((r) => use.map((nm, j) => ((r.x[nm] || 0) - mean[j]) / std[j])); const pos = rows.filter((r) => r.y === 1).length, neg = n - pos; const wp = opts.balance && pos ? n / (2 * pos) : 1, wn = opts.balance && neg ? n / (2 * neg) : 1;
+        const w = new Array(d).fill(0); let b = 0;
+        for (let it = 0; it < opts.iters; it++) {
+            const gw = new Array(d).fill(0); let gb = 0;
+            for (let i = 0; i < n; i++) { let z = b; for (let j = 0; j < d; j++) z += w[j] * X[i][j]; const e = (sigmoid(z) - rows[i].y) * (rows[i].y === 1 ? wp : wn) * (rows[i].w == null ? 1 : rows[i].w); for (let j = 0; j < d; j++) gw[j] += e * X[i][j]; gb += e; }
+            for (let j = 0; j < d; j++) w[j] -= opts.lr * (gw[j] / n + opts.l2 * w[j]); b -= opts.lr * gb / n;
+        }
+        return { names: use.slice(), use, mean, std, w, b };
+    }
+    const predictOne = (m, x) => { let z = m.b; m.use.forEach((nm, i) => { z += m.w[i] * (((x[nm] || 0) - m.mean[i]) / (m.std[i] || 1)); }); return sigmoid(z); };
+    // 留一組交叉驗證：每次拿掉一個 group 訓練，預測被拿掉的那組；回傳全部預測與彙整
+    function crossValidate(data, opts, threshold) {
+        threshold = threshold == null ? 0.5 : threshold; const groups = Array.from(new Set(data.map((r) => r.group))); const preds = [];
+        for (const g of groups) { const train = data.filter((r) => r.group !== g); const test = data.filter((r) => r.group === g); const m = fit(train, opts); for (const r of test) preds.push({ group: g, id: r.id, y: r.y, p: predictOne(m, r.x) }); }
+        return Object.assign({ preds }, evaluate(preds, threshold));
+    }
+    function evaluate(preds, threshold) {
+        threshold = threshold == null ? 0.5 : threshold; let tp = 0, fp = 0, fn = 0, tn = 0; for (const r of preds) { const v = r.p >= threshold; if (v && r.y) tp++; else if (v && !r.y) fp++; else if (!v && r.y) fn++; else tn++; }
+        const pct = (a, b) => (b ? Math.round((a / b) * 1000) / 10 : null); const P = tp / (tp + fp || 1), R = tp / (tp + fn || 1); const groups = Array.from(new Set(preds.map((r) => r.group)));
+        const top = (k) => groups.filter((g) => preds.filter((r) => r.group === g).sort((a, b) => b.p - a.p).slice(0, k).some((r) => r.y)).length;
+        return { precision: pct(tp, tp + fp), recall: pct(tp, tp + fn), f1: Math.round((2 * P * R / ((P + R) || 1)) * 1000) / 10, top1: top(1) + '/' + groups.length, top3: top(3) + '/' + groups.length, n: preds.length, positives: preds.filter((r) => r.y).length };
+    }
+    // 一次做完：留一組交叉驗證（用不同強度的正則化各試一次、挑 F1 最好的）＋用全部資料訓練最後的模型
+    function trainReport(rows, opts) {
+        opts = Object.assign({ l2s: [0.05, 0.5, 2], threshold: 0.5 }, opts || {}); const tries = opts.l2s.map((l2) => { const cv = crossValidate(rows, Object.assign({}, opts, { l2 }), opts.threshold); return { l2, precision: cv.precision, recall: cv.recall, f1: cv.f1, top1: cv.top1, top3: cv.top3 }; }); const best = tries.slice().sort((a, b) => b.f1 - a.f1)[0];
+        return { n: rows.length, positives: rows.filter((r) => r.y === 1).length, groups: new Set(rows.map((r) => r.group)).size, tries, best, model: fit(rows, Object.assign({}, opts, { l2: best.l2 })) };
+    }
+    return { fit, predict: predictOne, crossValidate, evaluate, trainReport };
+});
+
+}).call(null, undefined, holder);
+return holder.FaCatalogRankTrain;
+})();
+/* CATRT-END */
 /* DATACORE-BEGIN */
 const FaDataCore = (function () {
 const holder = {};
@@ -30352,9 +30481,18 @@ ${fnData.code}
             '缺口驅動的探索：給 UML 使用案例（uml）或需要的能力清單（needs），先用單元目錄接線，沒有單元可用的步驟就是「缺口」；為每個缺口產生英文搜尋關鍵字、用 browser_search 找（github、wiki、stackoverflow、codeproject…）、讀 README（長文地圖縮放＋多片段投票，見 catalog_card）、整理成能力卡片、依缺口排名（說明相符、執行環境相容、有沒有停止維護、需不需要金鑰或伺服器），輸出計畫：每個缺口建議用哪個專案、怎麼安裝、主要函式、需要什麼、備選是誰；找不到的明講。extract 不是 false 時，如果卡片有未壓縮的 CDN 檔會順手抽成單元再接一次線看缺口有沒有補上。這個工具只規劃，不安裝也不執行。',
             async function (rawArgs) {
                 let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
-                try { const plan = await this._unitCatalogDiscover(a); return JSON.stringify({ ok: plan.ok, gaps: plan.gaps_initial, resolved: plan.resolved, rounds: plan.rounds, candidates: plan.candidates, unresolved: plan.unresolved, text: plan.text, error: plan.error }); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+                try { const plan = await this._unitCatalogDiscover(a); return JSON.stringify({ ok: plan.ok, plan_id: plan.plan_id, feedback_hint: '使用者採用或退回、或你試跑之後，用 catalog_feedback 記下來（plan_id＋gap＋verdict）', gaps: plan.gaps_initial, resolved: plan.resolved, rounds: plan.rounds, candidates: (plan.candidates || []).map((c) => { const { card, features, need, ...rest } = c; return Object.assign(rest, { alternatives: (rest.alternatives || []).map((x) => ({ name: x.name, url: x.url, score: x.score })) }); }), references: plan.references, unresolved: plan.unresolved, text: plan.text, error: plan.error }); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
             },
-            { type: 'object', properties: { uml: { type: 'string', description: 'UML 文字（格式同 catalog_bind）' }, needs: { type: 'array', items: { type: 'string' }, description: '沒有 UML 時，直接列需要的能力（中英文都可以）' }, runtime: { type: 'string', enum: ['browser', 'node', 'python'], default: 'browser' }, extract: { type: 'boolean', description: 'false＝不要抽單元，只規劃' }, use_embed: { type: 'boolean', description: 'false＝不用嵌入模型排名（語意檢索有啟用才會用）' }, use_model: { type: 'boolean', description: 'true＝用離線小模型把需求改寫成英文搜尋關鍵字（實測這一步它比詞庫好）；預設不用' }, max_gaps: { type: 'number' }, per_gap: { type: 'number' }, context_tokens: { type: 'number' } }, additionalProperties: false }
+            { type: 'object', properties: { uml: { type: 'string', description: 'UML 文字（格式同 catalog_bind）' }, needs: { type: 'array', items: { type: 'string' }, description: '沒有 UML 時，直接列需要的能力（中英文都可以）' }, runtime: { type: 'string', enum: ['browser', 'node', 'python'], default: 'browser' }, extract: { type: 'boolean', description: 'false＝不要抽單元，只規劃' }, use_learned: { type: 'boolean', description: 'true＝用 catalog_feedback train 存下來的排名模型（資料夠才有意義）' }, use_embed: { type: 'boolean', description: 'false＝不用嵌入模型排名（語意檢索有啟用才會用）' }, use_model: { type: 'boolean', description: 'true＝用離線小模型把需求改寫成英文搜尋關鍵字（實測這一步它比詞庫好）；預設不用' }, max_gaps: { type: 'number' }, per_gap: { type: 'number' }, context_tokens: { type: 'number' } }, additionalProperties: false }
+        );
+
+        registerOptional('catalog_feedback',
+            '把 catalog_discover 計畫的結果記成標註，累積成排名模型的訓練資料。verdict：adopt（使用者採用了推薦的專案）、reject（使用者退回，可附 reason）、run_ok（拿它在沙盒試跑成功）、run_fail（試跑失敗，附 error 原文——權限、網路、資源、逾時這類環境問題不會算成專案不好，API 用錯、缺套件、沒定義算輕的負例）。gap 是缺口編號（例如 need/1），不給就是計畫裡全部；url 可以指定備選專案；plan_id 不給就用最近一次的計畫。使用者明講採用或退回時、你在沙盒試過它之後，都要呼叫。另外 action:"stats" 看累積多少、夠不夠訓練；"train" 做留一組交叉驗證（save:true 才存模型）；"export" 匯出 JSON；"clear" 清掉。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try { const r = await this._unitCatalogFeedback(a); if (r.json) delete r.json; return JSON.stringify(r); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+            },
+            { type: 'object', properties: { verdict: { type: 'string', enum: ['adopt', 'reject', 'run_ok', 'run_fail'] }, gap: { type: 'string', description: '缺口編號，例如 need/1 或 使用案例/類別.操作' }, url: { type: 'string', description: '要評的候選網址（不給就是推薦的那個；可以給備選的）' }, plan_id: { type: 'string' }, reason: { type: 'string' }, error: { type: 'string', description: 'run_fail 的錯誤訊息原文' }, action: { type: 'string', enum: ['stats', 'train', 'export', 'clear'] }, save: { type: 'boolean' }, force: { type: 'boolean' }, dense: { type: 'boolean', description: 'false＝訓練時不用嵌入特徵' } }, additionalProperties: false }
         );
 
         registerOptional('big_content',
@@ -61147,6 +61285,7 @@ ${existingNodeSummaries}
         const argv = String(argsText || '').trim().split(/\s+/).filter(Boolean); const wantJson = argv.includes('json'); this.messages.push({ role: 'user', content: '/unit-catalog' + (argv.length ? ' ' + argv.join(' ') : '') });
         try {
             try { await this._unitCatalogStoreLoad(); } catch (_) { /* 存檔的目錄讀不回來就只用這次的 */ }
+            if (argv[0] === 'feedback') { await this._unitCatalogFeedbackReply(argv.slice(1), argsText); this._persistChatHistory(); this._renderMessageHistory(); return; }
             if (argv[0] === 'card' || argv[0] === 'js' || argv[0] === 'discover') { await this._unitCatalogDiscoverReply(argv, argsText); this._persistChatHistory(); this._renderMessageHistory(); return; }
             if (argv[0] === 'embed') { await this._unitCatalogEmbedReply(argv.slice(1)); this._persistChatHistory(); this._renderMessageHistory(); return; }
             if (argv[0] === 'intents') { await this._unitCatalogIntentsReply(argv.slice(1)); this._persistChatHistory(); this._renderMessageHistory(); return; }
@@ -61604,14 +61743,58 @@ ${existingNodeSummaries}
         };
         const need = a.uml ? { uml: String(a.uml) } : { needs: Array.isArray(a.needs) ? a.needs.map(String) : [] };
         if (!need.uml && !need.needs.length) throw new Error('要給 uml（UML 文字）或 needs（需要的能力清單）');
-        const plan = await D.run(host, need, { runtime, maxGaps: Math.min(10, Number(a.max_gaps) || 6), perGap: Math.min(6, Number(a.per_gap) || 4), maxRounds: 2, contextTokens: Number(a.context_tokens) || undefined });
-        plan.text = D.toText(plan); return plan;
+        const learned = a.use_learned === true ? await this._unitCatalogRankModelLoad() : null; const plan = await D.run(host, need, { model: learned || undefined, runtime, maxGaps: Math.min(10, Number(a.max_gaps) || 6), perGap: Math.min(6, Number(a.per_gap) || 4), maxRounds: 2, contextTokens: Number(a.context_tokens) || undefined });
+        plan.text = D.toText(plan); this._unitCatalogRememberPlan(plan); return plan;
     }
     async _unitCatalogDiscoverReply(args, argsText) {
         const sub = args[0]; const rest = String(argsText || '').replace(/^\s*\w+\s*/, '').trim();
         if (sub === 'card') { if (!rest) { this._pushAssistantMessage('用法：/unit-catalog card <網址>　（GitHub 倉庫、README、維基、StackOverflow、說明文件）', null); return; } const r = await this._unitCatalogCard({ url: rest.split(/\s+/)[0] }); const c = r.card; this._pushAssistantMessage('🗂️ 能力卡片（' + r.kind + '，' + r.chars + ' 字，讀了 ' + c.trace.read_slices + '/' + c.trace.slices + ' 片、涵蓋 ' + c.trace.coverage_pct + '%）\n\n- 說明：' + c.summary + '\n- 語言：' + (c.language || '?') + '（信心 ' + c.language_confidence + '）　環境：' + (c.runtime.join('/') || '?') + '\n- 安裝：' + (c.installs.map((i) => i.line).join('；') || (c.cdn[0] ? '<script src="' + c.cdn[0] + '">' : '（沒找到）')) + '\n- 能力：' + (c.capabilities.slice(0, 6).map((x) => x.phrase).join('；') || '（沒抽到）') + '\n- 主要函式：' + (c.api.slice(0, 8).map((x) => x.name).join('、') || '（沒抽到）') + '\n- 需要：' + (c.needs.join('、') || '—') + '　授權：' + (c.license || '不明') + (c.deprecated ? '　⚠️ 已停止維護' : ''), null); return; }
         if (sub === 'js') { if (!rest) { this._pushAssistantMessage('用法：/unit-catalog js <原始碼網址>　（未壓縮的 .js 檔；壓縮過的函式名稱已經被改掉，抽出來沒什麼用）', null); return; } const r = await this._unitCatalogJsOnboard({ url: rest.split(/\s+/)[0] }); this._pushAssistantMessage(r.ok ? '📦 JavaScript 單元：' + r.pkg + '\n\n- 抽出 ' + r.units + ' 個單元（匯出方式 ' + (r.via.join('/') || '無') + '；有型別的參數 ' + r.stats.typed_params + '/' + r.stats.params + '；有說明 ' + r.stats.documented + '）' + (r.minified ? '\n- ⚠️ 看起來是壓縮過的檔案，函式名稱可能被縮短' : '') + '\n- 信任等級 0（靜態分析，沒有執行驗證）；規劃時用 includeUntrusted\n\n' + r.sample.join('\n') + (r.warnings.length ? '\n\n警告：' + r.warnings.join('；') : '') : '⚠️ ' + r.error, null); return; }
         if (sub === 'discover') { if (!rest) { this._pushAssistantMessage('用法：/unit-catalog discover <UML 文字>　或　/unit-catalog discover need: 擷取相機畫面; 美顏; 存成圖片', null); return; } const nm = /^need[:：]\s*(.+)$/i.exec(rest); const plan = await this._unitCatalogDiscover(nm ? { needs: nm[1].split(/[;；\n]/).map((s) => s.trim()).filter(Boolean) } : { uml: rest }); this._pushAssistantMessage('🧭 缺口驅動探索\n\n' + plan.text, null); }
+    }
+    // ===== 採用／退回的回饋累積（設計見 DESIGN.unit-catalog.md 第二十七節）=====
+    // 探索計畫裡的推薦，使用者採用或退回、拿它試跑成功或失敗，都記成標註（附當時的特徵與壓縮過的卡片），累積成排名模型的訓練資料。
+    async _unitCatalogFeedbackLoad() {
+        if (this._unitCatalogFeedbackStore) return this._unitCatalogFeedbackStore; let st = null;
+        try { const all = await this.fileCache.getAll(); const rec = all.filter((r) => r && r.filename === 'unit-catalog-feedback.json').sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0]; if (rec && rec.blob) st = JSON.parse(await rec.blob.text()); } catch (_) { st = null; }
+        this._unitCatalogFeedbackStore = st && Array.isArray(st.records) ? st : FaCatalogFeedback.emptyStore(); return this._unitCatalogFeedbackStore;
+    }
+    async _unitCatalogFeedbackSave() {
+        try { const all = await this.fileCache.getAll(); for (const r of all) if (r && r.filename === 'unit-catalog-feedback.json') await this.fileCache.delete(r.id); await this.fileCache.put('unit-catalog-feedback.json', 'application/json', new Blob([JSON.stringify(this._unitCatalogFeedbackStore)], { type: 'application/json' }), 'system'); return true; } catch (_) { return false; }
+    }
+    // 記下最近幾個探索計畫（完整版，含卡片與特徵），回饋時用 plan_id 對回去
+    _unitCatalogRememberPlan(plan) { this._unitCatalogPlans = this._unitCatalogPlans || new Map(); this._unitCatalogPlans.set(plan.plan_id, plan); this._unitCatalogLastPlanId = plan.plan_id; while (this._unitCatalogPlans.size > 12) this._unitCatalogPlans.delete(this._unitCatalogPlans.keys().next().value); }
+    async _unitCatalogRankModelLoad() {
+        if (this._unitCatalogRankModel !== undefined) return this._unitCatalogRankModel; let m = null;
+        try { const all = await this.fileCache.getAll(); const rec = all.filter((r) => r && r.filename === 'unit-catalog-rank-model.json').sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0]; if (rec && rec.blob) m = JSON.parse(await rec.blob.text()); } catch (_) { m = null; }
+        this._unitCatalogRankModel = m && Array.isArray(m.w) ? m : null; return this._unitCatalogRankModel;
+    }
+    async _unitCatalogFeedback(a) {
+        const F = FaCatalogFeedback; const store = await this._unitCatalogFeedbackLoad(); const act = String(a.action || (a.verdict ? 'record' : 'stats'));
+        if (act === 'stats') { const s = F.stats(store); return { ok: true, stats: s, last_plan: this._unitCatalogLastPlanId || null, plans_in_memory: this._unitCatalogPlans ? this._unitCatalogPlans.size : 0, model_saved: !!(await this._unitCatalogRankModelLoad()) }; }
+        if (act === 'clear') { this._unitCatalogFeedbackStore = F.emptyStore(); await this._unitCatalogFeedbackSave(); return { ok: true, cleared: true }; }
+        if (act === 'export') { const rows = F.toRows(store); return { ok: true, records: store.records.length, rows: rows.length, json: { records: store.records, rows } }; }
+        if (act === 'train') {
+            const rows = F.toRows(store); const s = F.stats(store); if (!rows.length) return { ok: false, error: '還沒有可以訓練的回饋（要有特徵的採用／退回紀錄）' };
+            const D = FaCatalogDiscover; const use = D.FEATURES.filter((n) => a.dense === false ? !D.DENSE_FEATURES.has(n) : true); const rep = FaCatalogRankTrain.trainReport(rows, { use }); const out = { ok: true, ready: s.ready_to_train, missing: s.missing, rows: rep.n, positives: rep.positives, groups: rep.groups, cross_validation: rep.tries, best: rep.best, note: s.ready_to_train ? '' : '資料還少（' + s.missing.join('、') + '），交叉驗證的數字會抖，只當參考；不要拿來取代手調的排名。' };
+            if (a.save === true) { if (!s.ready_to_train && a.force !== true) { out.saved = false; out.save_refused = '資料還沒到門檻，不存（force:true 可以強制）'; } else { try { const all = await this.fileCache.getAll(); for (const r of all) if (r && r.filename === 'unit-catalog-rank-model.json') await this.fileCache.delete(r.id); await this.fileCache.put('unit-catalog-rank-model.json', 'application/json', new Blob([JSON.stringify(Object.assign({}, rep.model, { trained_at: new Date().toISOString(), rows: rep.n, cv: rep.best }))], { type: 'application/json' }), 'system'); this._unitCatalogRankModel = undefined; out.saved = true; } catch (e) { out.saved = false; out.save_error = String((e && e.message) || e); } } }
+            return out;
+        }
+        // record：把某個缺口的推薦記成一筆回饋
+        const planId = String(a.plan_id || this._unitCatalogLastPlanId || ''); const plan = this._unitCatalogPlans && this._unitCatalogPlans.get(planId); if (!plan) return { ok: false, error: '找不到探索計畫 ' + (planId || '（還沒有）') + '——計畫只留在記憶體裡最近 12 個，重開之後要重新跑 catalog_discover' };
+        const verdict = String(a.verdict || ''); const gaps = a.gap ? [String(a.gap)] : plan.candidates.map((c) => c.gap); const recs = [];
+        for (const g of gaps) recs.push(F.fromPlan(plan, g, verdict, { reason: a.reason, error: a.error, url: a.url, classify: FaCatalogDiscover.classifyError }));
+        const next = F.append(store, recs); this._unitCatalogFeedbackStore = next; const saved = await this._unitCatalogFeedbackSave();
+        return { ok: true, recorded: recs.map((r) => ({ gap: r.gap_id, name: r.name, label: r.label, source: r.source, fail_kind: r.fail_kind, weight: F.weightOf(r) })), saved, stats: F.stats(next) };
+    }
+    async _unitCatalogFeedbackReply(args, argsText) {
+        const sub = args[0] || 'stats';
+        if (sub === 'adopt' || sub === 'reject') { const gap = args[1]; const r = await this._unitCatalogFeedback({ verdict: sub, gap: gap && gap !== 'all' ? (/^need\//.test(gap) ? gap : (/^\d+$/.test(gap) ? 'need/' + (Number(gap) - 1) : gap)) : undefined, reason: args.slice(2).join(' ') }); this._pushAssistantMessage(r.ok ? '📝 已記下（' + r.recorded.map((x) => x.gap + ' → ' + x.name + '：' + (x.label ? '採用' : '退回')).join('；') + '）\n累積 ' + r.stats.records + ' 筆回饋，可訓練的列 ' + r.stats.rows + '（正 ' + r.stats.positives + '／負 ' + r.stats.negatives + '，' + r.stats.groups + ' 組）' : '⚠️ ' + r.error, null); return; }
+        if (sub === 'train') { const r = await this._unitCatalogFeedback({ action: 'train', save: args.includes('save'), force: args.includes('force') }); this._pushAssistantMessage(r.ok ? '🧪 排名模型訓練（留一組交叉驗證）\n\n- 資料：' + r.rows + ' 列（正 ' + r.positives + '），' + r.groups + ' 組需求' + (r.ready ? '' : '\n- ⚠️ ' + r.note) + '\n' + r.cross_validation.map((t) => '- l2=' + t.l2 + '：精確率 ' + t.precision + '%、召回率 ' + t.recall + '%、F1 ' + t.f1 + '、第 1 名 ' + t.top1).join('\n') + (r.saved === true ? '\n\n已存檔；catalog_discover 加 use_learned:true 才會用。' : (r.save_refused ? '\n\n' + r.save_refused : '\n\n加 save 才會存檔。')) : '⚠️ ' + r.error, null); return; }
+        if (sub === 'export') { const r = await this._unitCatalogFeedback({ action: 'export' }); await this.generateAndDeliverFile(new Blob([JSON.stringify(r.json, null, 1)], { type: 'application/json' }), 'unit-catalog-feedback.json', 'application/json'); this._pushAssistantMessage('已匯出 ' + r.records + ' 筆回饋（' + r.rows + ' 列訓練資料）。', null); return; }
+        if (sub === 'clear') { await this._unitCatalogFeedback({ action: 'clear' }); this._pushAssistantMessage('已清掉回饋紀錄。', null); return; }
+        const r = await this._unitCatalogFeedback({ action: 'stats' }); const s = r.stats;
+        this._pushAssistantMessage('📈 回饋累積\n\n- 紀錄：' + s.records + ' 筆（' + (Object.entries(s.by_source).map(([k, v]) => k + ' ' + v).join('、') || '還沒有') + '）\n- 可訓練的列：' + s.rows + '（正 ' + s.positives + '／負 ' + s.negatives + '，' + s.groups + ' 組需求）\n- ' + (s.ready_to_train ? '資料夠了，可以 /unit-catalog feedback train' : '還不夠訓練：' + s.missing.join('、')) + '\n- 已存的排名模型：' + (r.model_saved ? '有' : '沒有') + '\n- 最近的探索計畫：' + (r.last_plan || '沒有') + '\n\n用法：/unit-catalog feedback adopt [缺口編號|all]｜reject [缺口編號] [原因]｜train [save]｜export｜clear', null);
     }
     // 型別存根轉出來的型別表（stub_to_types.py 的輸出 JSON）：用 /unit-catalog stubs 附上檔案載入，存在檔案快取（unit-catalog-stubs.json），之後抽取自動使用
     async _unitCatalogGetStubs() {

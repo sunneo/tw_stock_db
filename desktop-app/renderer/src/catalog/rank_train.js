@@ -15,7 +15,7 @@
         const w = new Array(d).fill(0); let b = 0;
         for (let it = 0; it < opts.iters; it++) {
             const gw = new Array(d).fill(0); let gb = 0;
-            for (let i = 0; i < n; i++) { let z = b; for (let j = 0; j < d; j++) z += w[j] * X[i][j]; const e = (sigmoid(z) - rows[i].y) * (rows[i].y === 1 ? wp : wn); for (let j = 0; j < d; j++) gw[j] += e * X[i][j]; gb += e; }
+            for (let i = 0; i < n; i++) { let z = b; for (let j = 0; j < d; j++) z += w[j] * X[i][j]; const e = (sigmoid(z) - rows[i].y) * (rows[i].y === 1 ? wp : wn) * (rows[i].w == null ? 1 : rows[i].w); for (let j = 0; j < d; j++) gw[j] += e * X[i][j]; gb += e; }
             for (let j = 0; j < d; j++) w[j] -= opts.lr * (gw[j] / n + opts.l2 * w[j]); b -= opts.lr * gb / n;
         }
         return { names: use.slice(), use, mean, std, w, b };
@@ -33,5 +33,10 @@
         const top = (k) => groups.filter((g) => preds.filter((r) => r.group === g).sort((a, b) => b.p - a.p).slice(0, k).some((r) => r.y)).length;
         return { precision: pct(tp, tp + fp), recall: pct(tp, tp + fn), f1: Math.round((2 * P * R / ((P + R) || 1)) * 1000) / 10, top1: top(1) + '/' + groups.length, top3: top(3) + '/' + groups.length, n: preds.length, positives: preds.filter((r) => r.y).length };
     }
-    return { fit, predict: predictOne, crossValidate, evaluate };
+    // 一次做完：留一組交叉驗證（用不同強度的正則化各試一次、挑 F1 最好的）＋用全部資料訓練最後的模型
+    function trainReport(rows, opts) {
+        opts = Object.assign({ l2s: [0.05, 0.5, 2], threshold: 0.5 }, opts || {}); const tries = opts.l2s.map((l2) => { const cv = crossValidate(rows, Object.assign({}, opts, { l2 }), opts.threshold); return { l2, precision: cv.precision, recall: cv.recall, f1: cv.f1, top1: cv.top1, top3: cv.top3 }; }); const best = tries.slice().sort((a, b) => b.f1 - a.f1)[0];
+        return { n: rows.length, positives: rows.filter((r) => r.y === 1).length, groups: new Set(rows.map((r) => r.group)).size, tries, best, model: fit(rows, Object.assign({}, opts, { l2: best.l2 })) };
+    }
+    return { fit, predict: predictOne, crossValidate, evaluate, trainReport };
 });
