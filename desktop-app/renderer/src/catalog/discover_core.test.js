@@ -17,10 +17,10 @@ check('gaps from plain needs', D.gapsFromNeeds(['擷取相機畫面', '美顏'])
 
 // ---- 搜尋關鍵字 ----
 const q = D.queriesFor(gaps[1], { runtime: 'browser' });
-check('queries: words from the op, library/environment variants', q.queries.length === 3 && q.queries[0].includes('smooth skin') && /javascript browser/.test(q.queries[1]) && /npm package/.test(q.queries[2]), q);
+check('queries: short (search engines want every word), include the language, no duplicates', q.queries.length >= 2 && q.queries.every((x) => x.split(' ').length <= 4 && /javascript/.test(x)) && q.queries[0].includes('smooth') && new Set(q.queries).size === q.queries.length, q);
 const qz = D.queriesFor(D.gapsFromNeeds(['美顏濾鏡'])[0], { runtime: 'browser' });
-check('queries: chinese need is translated', /beautify/.test(qz.queries[0]) && !/[㐀-鿿]/.test(qz.queries.join(' ')), qz.queries);
-check('python runtime asks for pypi', /pypi package/.test(D.queriesFor(gaps[0], { runtime: 'python' }).queries[2]));
+check('queries: chinese need is translated', /beautify|face/.test(qz.queries.join(' ')) && !/[㐀-鿿]/.test(qz.queries.join(' ')), qz.queries);
+check('python runtime searches python', D.queriesFor(gaps[0], { runtime: 'python' }).queries.every((x) => /python/.test(x) && !/javascript/.test(x)));
 
 // ---- 排名 ----
 const mk = (id, name, md, desc) => ({ id, name, url: id, summary: '', card: Card.cardFromReadme(md, { name, description: desc }) });
@@ -91,6 +91,21 @@ const mkHost = (over) => {
   let binds = 0; const reHost = mkHost({ bind: async () => { binds++; return { ok: true, results: binds === 1 ? bind.results : [{ usecase: 'Snap', steps: [{ step: 'Files.fsStat', unit: 'tool:fs_stat' }] }] }; }, onboard: async () => ({ units: [{ id: 'js:x.y' }] }) });
   const re = await D.run(reHost, { uml: 'x' }, {});
   check('onboard then rebind: gaps close', binds >= 2 && re.candidates.every((c) => c.units === 1) && re.trace.some((t) => t.step === 'rebind' && t.gaps === 0), re.trace.filter((t) => /bind/.test(t.step)));
+
+  // ---- 實測暴露的問題：維基只是參考資料；『畫面』不能被『畫』截走；不像函式庫的頁面降分 ----
+  check('kindOf: project / wiki / qa / article', D.kindOf('https://github.com/a/b') === 'project' && D.kindOf('https://zh.wikipedia.org/wiki/PDF') === 'wiki' && D.kindOf('https://stackoverflow.com/questions/1/x') === 'qa' && D.kindOf('https://www.codeproject.com/Articles/1/x') === 'article' && D.kindOf('https://sourceforge.net/projects/x/') === 'project');
+  check('glossary: 畫面 is not 畫', !/draw|plot/.test(D.toEnglish('擷取相機畫面').english) && /frame/.test(D.toEnglish('擷取相機畫面').english) && /draw/.test(D.toEnglish('把資料畫成長條圖').english), [D.toEnglish('擷取相機畫面'), D.toEnglish('把資料畫成長條圖')]);
+  check('default sources are for finding libraries, not encyclopedias', D.queriesFor(gaps[0]).sources.join() === 'github,sourceforge,codeproject,stackoverflow');
+  const refHost = mkHost({ search: async () => [{ title: 'PDF - Wikipedia', url: 'https://en.wikipedia.org/wiki/PDF', snippet: '' }, { title: 'face-smooth', url: 'https://x/face', snippet: '' }], fetchText: async (u) => (/wikipedia/.test(u) ? j('# PDF', '', 'Portable Document Format is a file format. It was invented by Adobe to present documents. Smooth skin on faces is not related.') : PAGES[u]) });
+  const refPlan = await D.run(refHost, { needs: ['smooth skin on faces'] }, {});
+  check('wiki pages become references, not the chosen project', refPlan.candidates.length === 1 && refPlan.candidates[0].name === 'face-smooth' && refPlan.references.length === 1 && refPlan.references[0].kind === 'wiki' && /參考資料/.test(D.toText(refPlan)), [refPlan.candidates.map((c) => c.name), refPlan.references]);
+  const asProj = await D.run(refHost, { needs: ['smooth skin on faces'] }, { allowKnowledge: true });
+  check('allowKnowledge lets them compete', asProj.references.length === 0);
+  const objHost = mkHost({ fetchText: async (u) => ({ text: PAGES[u] || 'x'.repeat(10), kind: 'readme', description: 'smooth skin for faces' }) });
+  check('fetchText may return an object with kind and description', (await D.run(objHost, { needs: ['smooth skin on faces'] }, {})).resolved >= 1);
+  const lib = mk('u/page', 'a-blog-post', j('# a blog post', '', 'Some words about nothing in particular here.'));
+  const rr = D.rank(D.gapsFromNeeds(['smooth skin on faces'])[0], [lib, faceLib], { runtime: 'browser' });
+  check('a page that is not a library is penalised', rr[0].id === 'u/face' && rr.find((x) => x.id === 'u/page').why.some((w) => /不像可以直接用的函式庫/.test(w)) || rr.find((x) => x.id === 'u/page').relevance < 0.15, rr.map((x) => x.id + ':' + x.score));
 
   console.log('discover_core: ' + ok + ' passed' + (bad.length ? ', ' + bad.length + ' FAILED' : '')); bad.forEach((x) => console.log('FAIL', x)); process.exit(bad.length ? 1 : 0);
 })();

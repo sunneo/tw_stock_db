@@ -36,6 +36,9 @@
 | 需求接線 | UML 使用案例 → 單元 → 呼叫程式，0 次模型呼叫 | `catalog_bind`、`/unit-catalog bind` | 二十一、二十三 |
 | 中文用途說明 | 讓中文需求找得到英文名稱的單元 | `catalog_intent`、`/unit-catalog intents` | 二十三 |
 | 語意檢索 | 嵌入模型＋BM25 排名融合；沒啟用就退回名稱檢索 | `/unit-catalog embed`（`enable`、`build`、`disable`） | 二十二、二十三 |
+| JavaScript 單元抽取 | 讀 JavaScript 原始碼，抽出對外提供的函式與類別方法（型別來自 JSDoc、副作用靜態分析），信任等級 0 | `catalog_js`、`/unit-catalog js <網址>` | 二十五 |
+| 能力卡片 | 把很長的 README、使用手冊、維基、問答、設計文件，用地圖縮放＋多片段投票整理成：說明、語言、環境、安裝、函式、能力、需要的條件、授權、是否停止維護 | `catalog_card`、`/unit-catalog card <網址>` | 二十五 |
+| 缺口驅動探索 | 接線後沒有單元可用的步驟 → 搜尋（GitHub、SourceForge、CodeProject、StackOverflow）→ 讀說明 → 卡片 → 排名 → 計畫；錯誤歸類與換做法 | `catalog_discover`、`/unit-catalog discover <UML>` | 二十五 |
 | 小模型評測 | 量 0.6B 挑單元、填參數的能力 | `/unit-catalog eval` | 十九 |
 
 ## 四、常見做法
@@ -55,6 +58,15 @@
 **想啟用語意檢索**
 `/unit-catalog embed enable`，同意下載約 118MB，約 1 分鐘算完單元向量。之後 `catalog_bind` 自動使用；`/unit-catalog embed disable` 隨時關掉。
 
+**UML 裡有些步驟沒有單元，想知道網路上有什麼可以用**
+`/unit-catalog discover <UML>`（或 `need: 能力1; 能力2`）。它只規劃：列出每個缺口建議的專案、怎麼安裝、主要函式、需要什麼、備選是誰，以及參考資料（維基、問答）。想讓離線小模型幫忙改寫搜尋關鍵字，工具參數加 `use_model:true`。
+
+**想看某個專案的 README／使用手冊到底講了什麼**
+`/unit-catalog card <網址>`。長文會先看地圖（章節標題），挑安裝、用法、功能這些章節放大讀。
+
+**想把某個 JavaScript 函式庫的函式放進單元目錄**
+`/unit-catalog js <未壓縮的 .js 網址>`。這些單元信任等級 0，規劃時才會被用到，目前還不能被 `catalog_run` 執行。
+
 **認識一個新的 Python 函式庫**
 `catalog_onboard`（PyPI 套件名稱，安裝每次都要同意）；完成後用 `catalog_intent` 補中文說明，再 `/unit-catalog embed build` 補向量。
 
@@ -69,6 +81,9 @@
 
 ## 六、目前的限制（誠實版）
 
+- 離線小模型（0.6B）只適合「把中文需求改寫成英文搜尋關鍵字」和「判斷程式語言」；判斷專案能不能用（永遠說可以）、環境、缺口、錯誤對策都不行，這些由程式做（第二十五節的實驗）。
+- 缺口驅動探索只規劃，不安裝、不執行；排名靠詞比對，歧義的需求（例如「相機畫面」）會選錯，要看備選。
+- JavaScript 單元只有靜態抽取，沒有執行環境；壓縮過的檔案抽不出有用的名稱。
 - 目錄裡**沒有**的單元就是沒有：例如沒有「數頁數」「寄信」「資料轉換」（取清單前幾個、字串相接）。
 - 很多媒體工具的檔案參數是選填，不在「必填參數接得上」的接線範圍內。
 - UML 只做直線流程，不會產生條件與迴圈。
@@ -80,6 +95,6 @@
 ## 七、檔案地圖
 
 核心（都是純函式，Node 與瀏覽器共用，旁邊有 `.test.js`）在 `renderer/src/catalog/`：
-`catalog_core`（單元與型別）、`matrix_core`（接線矩陣）、`extract_py.py`／`stub_to_types.py`／`probe_py.py`／`probe_core`／`onboard_core`（抽取、探測、認識新函式庫）、`ir_core`（呼叫格式與直譯器）、`select_core`（檢索與評測）、`shape_core`（回傳結構逆向推論）、`embed_core`（嵌入檢索）、`bind_core`（需求→活動→單元）。
+`catalog_core`（單元與型別）、`matrix_core`（接線矩陣）、`extract_py.py`／`stub_to_types.py`／`probe_py.py`／`probe_core`／`onboard_core`（抽取、探測、認識新函式庫）、`ir_core`（呼叫格式與直譯器）、`select_core`（檢索與評測）、`shape_core`（回傳結構逆向推論）、`embed_core`（嵌入檢索）、`bind_core`（需求→活動→單元）、`extract_js`（JavaScript 單元抽取）、`card_core`（能力卡片：長文切片、地圖縮放、投票融合）、`discover_core`（缺口驅動探索、錯誤歸類）。
 資料在 `renderer/src/catalog/data/`（`stdlib_types.json` 標準庫型別表、`unit_intents.json` 中文用途說明）與 `eval/selection_set.json`（評測集）。
 主程式整合在 `renderer/src/floating-assistant.js` 搜尋 `_unitCatalog`。
