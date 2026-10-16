@@ -107,5 +107,24 @@ const mkHost = (over) => {
   const rr = D.rank(D.gapsFromNeeds(['smooth skin on faces'])[0], [lib, faceLib], { runtime: 'browser' });
   check('a page that is not a library is penalised', rr[0].id === 'u/face' && rr.find((x) => x.id === 'u/page').why.some((w) => /不像可以直接用的函式庫/.test(w)) || rr.find((x) => x.id === 'u/page').relevance < 0.15, rr.map((x) => x.id + ':' + x.score));
 
+  // ---- 語意（嵌入）分數 ----
+  const nv = (a) => { const n = Math.sqrt(a.reduce((x, y) => x + y * y, 0)); return a.map((x) => x / n); };
+  const gCam = D.gapsFromNeeds(['擷取相機畫面'])[0];
+  const camA = mk('u/drone', 'SkyPath', j('# SkyPath', '', 'Interactive visualization of drone camera flight patterns with a chase view and frame by frame telemetry.'));
+  const camB = mk('u/cap', 'camera-capture', j('# camera-capture', '', 'Capture frames from the webcam and save them as images in the browser.'));
+  const noDense = D.rank(gCam, [camA, camB], { runtime: 'browser' });
+  const withDense = D.rank(gCam, [camA, camB], { runtime: 'browser', dense: { q: nv([1, 0, 0]), cards: new Map([['u/drone', nv([0.55, 0.8, 0.2])], ['u/cap', nv([0.97, 0.1, 0.1])]]) } });
+  check('glossary: 擷取 means capture', /capture/.test(D.toEnglish('擷取相機畫面').english));
+  check('lexical: the project that says capture beats the drone visualisation', noDense[0].id === 'u/cap', noDense.map((x) => x.id + ':' + x.score));
+  check('dense lifts the semantically close one and records why', withDense[0].id === 'u/cap' && withDense[0].why.some((w) => /語意相近/.test(w)) && withDense[0].score - withDense[1].score > noDense[0].score - noDense[1].score, withDense.map((x) => x.id + ':' + x.score));
+  const flip = D.rank(gCam, [camA, camB], { runtime: 'browser', dense: { q: nv([1, 0, 0]), cards: new Map([['u/drone', nv([0.99, 0.05, 0])], ['u/cap', nv([0.5, 0.8, 0.3])]]) } });
+  check('dense can reorder when lexical evidence is weak but not invent relevance from nothing', flip.find((x) => x.id === 'u/drone').score > 0 && D.rank(D.gapsFromNeeds(['smooth skin on faces'])[0], [pdfLib, camA], { runtime: 'browser', dense: { q: nv([1, 0, 0]), cards: new Map([['u/pdf', nv([0.1, 0.9, 0])], ['u/drone', nv([0.1, 0.9, 0.1])]]) } }).every((x) => x.score < 0.35));
+  check('missing vectors fall back to lexical only', D.rank(gCam, [camA, camB], { runtime: 'browser', dense: { q: nv([1, 0, 0]), cards: new Map() } })[0].id === 'u/cap');
+  let embedCalls = 0; const embHost = mkHost({ search: async () => [{ title: 'face-smooth', url: 'https://x/face', snippet: '' }, { title: 'webcam-grab', url: 'https://x/cam', snippet: '' }], embed: async (items) => { embedCalls++; return items.map((it, i) => nv(i === 0 ? [1, 0, 0] : (/face|skin/i.test(it.text) ? [0.95, 0.1, 0.05] : [0.4, 0.8, 0.2]))); } });
+  const embPlan = await D.run(embHost, { needs: ['smooth skin on faces'] }, {});
+  check('loop uses host.embed once per gap and ranks with it', embedCalls === 1 && embPlan.resolved === 1 && embPlan.candidates[0].why.some((w) => /語意相近/.test(w)), [embedCalls, embPlan.candidates && embPlan.candidates[0] && embPlan.candidates[0].why]);
+  const badEmb = await D.run(mkHost({ embed: async () => { throw new Error('model gone'); } }), { needs: ['smooth skin on faces'] }, {});
+  check('embedding failure is logged and the loop falls back to lexical', badEmb.resolved === 1 && badEmb.trace.some((x) => x.step === 'embed_error'));
+
   console.log('discover_core: ' + ok + ' passed' + (bad.length ? ', ' + bad.length + ' FAILED' : '')); bad.forEach((x) => console.log('FAIL', x)); process.exit(bad.length ? 1 : 0);
 })();
