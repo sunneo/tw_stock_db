@@ -12436,6 +12436,7 @@ const holder = {};
         const card = fuse(items, opts); card.name = opts.name || null; card.summary = opts.description ? String(opts.description).slice(0, 200) : tagline(sliced); if (!card.license) { const body = clean(readme); const lm = /(?:^|\n)#{1,6}\s*licen[sc]e[^\n]*\n+([^\n]{0,200})/i.exec(body) || /licen[sc]ed under(?: the)?\s+([^\n.]{0,60})|released under(?: the)?\s+([^\n.]{0,60})/i.exec(body); const seg = lm ? (lm[1] || lm[2] || '') : ''; const lic = /\b(MIT|Apache[- ]2(?:\.0)?|GPL[- ]?v?[23]?|LGPL|BSD(?:[- ]\d)?(?:[- ]Clause)?|ISC|MPL[- ]2(?:\.0)?|Unlicense|CC0|HPND|Zlib)\b/i.exec(seg); if (lic) card.license = lic[1]; }
         card.trace = { chars: sliced.chars, slice_chars: sliced.maxChars, sections: z.sections, slices: sliced.slices.length, read_slices: z.picked.length, read_chars: z.used, skipped_sections: z.skipped.length, coverage_pct: sliced.slices.length ? Math.round((z.used / sliced.slices.reduce((a, s) => a + s.text.length, 0)) * 100) : 100, outline: sliced.outline.slice(0, 40).map((o) => o.title) };
         { const freq = new Map(); for (const sl of z.picked) for (const w of (sl.text.toLowerCase().match(/[a-z][a-z0-9]{2,}/g) || [])) freq.set(w, (freq.get(w) || 0) + 1); card.terms = Array.from(freq.entries()).sort((a, b) => b[1] - a[1]).slice(0, 400).map((x) => x[0]); }
+        card.head = clean(readme).replace(/\s+/g, ' ').trim().slice(0, 600); // README 開頭（嵌入排名用：實測用開頭 600 字比用『名稱＋說明＋能力』準）
         card.confidence = Math.round(((card.language_confidence || 0) * 0.4 + (card.capabilities.length ? 0.3 : 0) + (card.api.length ? 0.15 : 0) + (card.installs.length || card.cdn.length ? 0.15 : 0)) * 100) / 100; return card;
     }
     // 給檢索（BM25／嵌入）用的文字
@@ -12509,10 +12510,37 @@ const holder = {};
         for (const w of extra) groups.push([w]); return groups;
     }
     const GENERIC = new Set(['file', 'files', 'data', 'image', 'images', 'read', 'write', 'code', 'page', 'web', 'size', 'adjust', 'make', 'use', 'tool', 'tools', 'library', 'create', 'text', 'edit', 'convert', 'output', 'input', 'new', 'get', 'set', 'run', 'do', 'the', 'and', 'for']);
+    // 給嵌入模型的『需求句』：把概念組攤平（photo booth face beautify skin smoothing camera…）
+    function queryText(gap, context) { return conceptGroups(gap, context).map((g) => g.join(' ')).join(' '); }
     const stemW = (w) => (w.length > 3 && /s$/.test(w) && !/ss$/.test(w) ? w.slice(0, -1) : w);
+    // ===== 排名的特徵與學出來的模型（傳統 NLP：詞匯覆蓋＋嵌入相似度 → 邏輯迴歸）=====
+    // 手調權重（上面的 rank）在一組題上調過就偏樂觀；這裡把每個（缺口，候選）變成一組特徵，用有標註的資料訓練迴歸（rank_train.js），
+    // 訓練出來的模型（權重、平均、標準差）是一個小 JSON，存起來就能用；沒有模型時 rank 還是用手調的。
+    const FEATURES = ['rel_all', 'rel_head', 'cos', 'cos_z', 'cos_rank', 'runtime_ok', 'runtime_bad', 'deprecated', 'has_install', 'api_hit', 'is_library', 'blocker', 'has_license'];
+    const DENSE_FEATURES = new Set(['cos', 'cos_z', 'cos_rank']);
+    function featurize(gap, cards, opts) {
+        opts = opts || {}; const want = opts.runtime || 'browser'; const groups = conceptGroups(gap, opts.context);
+        const heads = cards.map((c) => new Set(SEL.tokenize([c.name, c.summary, Card.cardText(c.card)].join('. ')).map(stemW)));
+        const docs = cards.map((c, i) => new Set(Array.from(heads[i]).concat(SEL.tokenize((c.card.terms || []).join(' ')).map(stemW))));
+        const N = docs.length || 1; const idf = (w) => { const n = docs.filter((d) => d.has(stemW(w))).length; return 0.5 + Math.log(1 + (N - n + 0.5) / (n + 0.5)); };
+        const spec = groups.map((g) => { const sp = g.filter((w) => !GENERIC.has(w)); return sp.length ? sp : g; }); const gw = spec.map((g) => Math.max(...g.map(idf)) * (g.every((w) => GENERIC.has(w)) ? 0.35 : 1)); const total = gw.reduce((a, b) => a + b, 0) || 1; const qw = spec.flat().filter((w) => !GENERIC.has(w));
+        let cos = null, mean = 0, sd = 0.02; if (opts.dense && opts.dense.q && opts.dense.cards) { const dot = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; }; cos = cards.map((c) => { const v = opts.dense.cards.get(c.id); return v ? dot(opts.dense.q, v) : null; }); const vals = cos.filter((x) => x != null); if (vals.length >= 2) { mean = vals.reduce((a, b) => a + b, 0) / vals.length; sd = Math.max(0.02, Math.sqrt(vals.reduce((a, b) => a + (b - mean) * (b - mean), 0) / vals.length)); } else cos = null; }
+        const order = cos ? cos.map((x, i) => [x, i]).filter(([x]) => x != null).sort((a, b) => b[0] - a[0]).map(([, i]) => i) : [];
+        return cards.map((c, i) => {
+            const k = c.card; let all = 0, head = 0; spec.forEach((g, gi) => { if (g.some((w) => heads[i].has(stemW(w)))) { all += gw[gi]; head += gw[gi]; } else if (g.some((w) => docs[i].has(stemW(w)))) all += gw[gi] * 0.5; });
+            const rt = k.runtime || []; const ok = rt.includes(want); const guess = !!k.runtime_guess; const bad = !ok && rt.length > 0 && !((want === 'browser' || want === 'node') && k.language === 'js');
+            const x = { rel_all: all / total, rel_head: head / total, cos: cos && cos[i] != null ? cos[i] : mean, cos_z: cos && cos[i] != null ? (cos[i] - mean) / sd : 0, cos_rank: cos && cos[i] != null ? 1 - order.indexOf(i) / Math.max(1, order.length - 1) : 0.5,
+                runtime_ok: ok ? (guess ? 0.5 : 1) : 0, runtime_bad: bad ? 1 : 0, deprecated: k.deprecated ? 1 : 0, has_install: ((k.installs && k.installs.length) || (k.cdn && k.cdn.length)) ? 1 : 0, api_hit: (k.api || []).some((a) => qw.some((w) => snake(a.name).includes(w))) ? 1 : 0,
+                is_library: ((k.installs && k.installs.length) || (k.cdn && k.cdn.length) || (k.api && k.api.length) || k.language) ? 1 : 0, blocker: ((k.needs || []).includes('api_key') || (k.needs || []).includes('server')) ? 1 : 0, has_license: k.license ? 1 : 0 };
+            return x;
+        });
+    }
+    // model：{ names, use（用到的特徵名稱）, mean, std, w, b }；回傳 0～1 的機率
+    function predict(model, x) { let z = model.b; model.use.forEach((nm, i) => { z += model.w[i] * (((x[nm] || 0) - model.mean[i]) / (model.std[i] || 1)); }); return 1 / (1 + Math.exp(-z)); }
+
     // cards：[{ id, name, url, summary, card }]；回傳依分數排序 [{ ...candidate, score, relevance, why:[…] }]
     function rank(gap, cards, opts) {
-        opts = opts || {}; const want = (opts.runtime || 'browser'); const groups = conceptGroups(gap, opts.context);
+        opts = opts || {}; if (opts.model) { const fs = featurize(gap, cards, opts); return cards.map((c, i) => { const pr = predict(opts.model, fs[i]); const why = ['模型分數 ' + Math.round(pr * 100) + '%（概念 ' + Math.round(fs[i].rel_all * 100) + '%' + (opts.dense ? '、語意餘弦 ' + Math.round(fs[i].cos * 1000) / 1000 : '') + '）']; if (fs[i].deprecated) why.push('已停止維護'); if (fs[i].runtime_bad) why.push('執行環境是 ' + (c.card.runtime || []).join('/') + '，不是 ' + (opts.runtime || 'browser')); if (!fs[i].has_license) why.push('授權不明'); return Object.assign({}, c, { score: Math.round(pr * 1000) / 1000, relevance: Math.round(fs[i].rel_all * 1000) / 1000, features: fs[i], why }); }).sort((a, b) => b.score - a.score); } const want = (opts.runtime || 'browser'); const groups = conceptGroups(gap, opts.context);
         const heads = cards.map((c) => new Set(SEL.tokenize([c.name, c.summary, Card.cardText(c.card)].join('. ')).map(stemW))); // 名稱、一句話說明、能力、函式
         const docs = cards.map((c, i) => new Set(Array.from(heads[i]).concat(SEL.tokenize((c.card.terms || []).join(' ')).map(stemW)))); // 加上 README 讀過的字
         const N = docs.length || 1; const idf = (w) => { const n = docs.filter((d) => d.has(stemW(w))).length; return 0.5 + Math.log(1 + (N - n + 0.5) / (n + 0.5)); };
@@ -12521,16 +12549,18 @@ const holder = {};
         let semArr = null; if (opts.dense && opts.dense.q && opts.dense.cards) { const dot = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; }; const cos = cards.map((c) => { const v = opts.dense.cards.get(c.id); return v ? dot(opts.dense.q, v) : null; }); const vals = cos.filter((x) => x != null); if (vals.length >= 2) { const mean = vals.reduce((a, b) => a + b, 0) / vals.length; const sd = Math.max(0.02, Math.sqrt(vals.reduce((a, b) => a + (b - mean) * (b - mean), 0) / vals.length)); semArr = cos.map((x) => (x == null ? null : { cos: x, sem: 0.5 * Math.min(1, Math.max(0, (x - 0.78) / 0.1)) + 0.5 * Math.min(1, Math.max(0, 0.5 + (x - mean) / sd / 4)) })); } }
         cards.forEach((c, i) => {
             const k = c.card; const why = []; let hit = 0; const missed = []; spec.forEach((g, gi) => { if (g.some((w) => heads[i].has(stemW(w)))) hit += gw[gi]; else if (g.some((w) => docs[i].has(stemW(w)))) hit += gw[gi] * 0.5; else missed.push(g[0]); }); // 只在 README 某處出現過的字，只算一半
-            const rel0 = hit / total; const sm = semArr && semArr[i]; const rel = sm ? 0.65 * rel0 + 0.35 * sm.sem : rel0; let s = rel; if (rel0 > 0) why.push('概念對上 ' + Math.round(rel0 * 100) + '%' + (missed.length ? '（缺 ' + missed.slice(0, 3).join('、') + '）' : '')); if (sm) why.push('語意相近 ' + Math.round(sm.sem * 100) + '%（餘弦 ' + Math.round(sm.cos * 1000) / 1000 + '）');
+            const rel0 = hit / total; const sm = semArr && semArr[i]; const rel = rel0; let s = rel; if (rel0 > 0) why.push('概念對上 ' + Math.round(rel0 * 100) + '%' + (missed.length ? '（缺 ' + missed.slice(0, 3).join('、') + '）' : '')); if (sm) why.push('語意相近 ' + Math.round(sm.sem * 100) + '%（餘弦 ' + Math.round(sm.cos * 1000) / 1000 + '）');
             if (rel >= 0.15) {
                 const qw = spec.flat().filter((w) => !GENERIC.has(w)); if ((k.api || []).some((a) => qw.some((w) => snake(a.name).includes(w)))) { s += 0.1; why.push('函式名稱對得上'); }
                 if ((k.runtime || []).includes(want)) { s += k.runtime_guess ? 0.03 : 0.1; why.push((k.runtime_guess ? '大概可在 ' : '可在 ') + want + ' 執行'); } else if (k.runtime && k.runtime.length) { const soft = (want === 'browser' && k.language === 'js') || (want === 'node' && k.language === 'js'); s -= soft ? 0.08 : 0.3; why.push('執行環境是 ' + k.runtime.join('/') + '，不是 ' + want + (soft ? '（JavaScript 函式庫，可能也能用）' : '')); }
                 if (k.deprecated) { s *= 0.5; why.push('已停止維護'); } if (!(k.installs && k.installs.length) && !(k.cdn && k.cdn.length) && !(k.api && k.api.length) && !k.language) { s *= 0.5; why.push('不像可以直接用的函式庫（沒有安裝方式、函式、語言）'); } if (!k.license) why.push('授權不明'); if ((k.installs && k.installs.length) || (k.cdn && k.cdn.length)) s += 0.03;
                 if ((k.needs || []).includes('api_key')) { s -= 0.1; why.push('需要 API 金鑰'); } if ((k.needs || []).includes('server')) { s -= 0.1; why.push('需要伺服器'); }
             } else if (k.deprecated) why.push('已停止維護');
-            out.push(Object.assign({}, c, { score: Math.round(Math.max(0, s) * 1000) / 1000, relevance: Math.round(rel * 1000) / 1000, why }));
+            out.push(Object.assign({}, c, { score: Math.round(Math.max(0, s) * 1000) / 1000, relevance: Math.round(rel * 1000) / 1000, cos: sm ? Math.round(sm.cos * 1000) / 1000 : null, why }));
         });
-        return out.sort((a, b) => b.score - a.score);
+        // 排序：過門檻的（詞比對夠）排前面，其中有嵌入向量的用語意相似度重排；沒過門檻的照詞比對分數。score 仍然是詞比對分數，門檻的意義不變。
+        const gate = opts.minScore == null ? 0.35 : opts.minScore; const top = Math.max(0, ...out.map((x) => x.score)); const near = (x) => x.score >= gate && x.score >= 0.6 * top; const key = (x) => (x.cos != null ? x.cos : -1); // 只有『過門檻、而且分數不比第一名差太多』的才用嵌入重排——品質明顯差的（不像函式庫、停止維護、環境不合）不能靠語意相似擠上來
+        return out.sort((a, b) => (near(b) - near(a)) || (near(a) && near(b) && semArr ? (key(b) - key(a)) || (b.score - a.score) : b.score - a.score));
     }
 
     // ===== 能力層級的缺口偵測：每個需要的能力，最接近的卡片是誰、夠不夠近 =====
@@ -12585,7 +12615,7 @@ const holder = {};
                     if (c.kind !== 'project' && !opts.allowKnowledge) { if (!references.some((r) => r.url === c.url) && references.length < 8) references.push({ gap: gap.id, kind: c.kind, name: c.name, url: c.url, summary: c.summary, install: (c.card.installs[0] && c.card.installs[0].line) || null, api: c.card.api.slice(0, 5).map((a) => a.name) }); continue; }
                     cards.push(c);
                 }
-                let dense = null; if (host.embed && cards.length) { try { const gq = conceptGroups(gap, opts.context).map((g) => g.join(' ')).join(' '); const vs = await host.embed([{ text: gq, role: 'query' }].concat(cards.map((c) => ({ text: [c.name, c.summary, Card.cardText(c.card)].join('. ').slice(0, 700), role: 'passage' })))); if (vs && vs.length === cards.length + 1) dense = { q: vs[0], cards: new Map(cards.map((c, i) => [c.id, vs[i + 1]])) }; } catch (e) { log({ step: 'embed_error', gap: gap.id, error: String((e && e.message) || e) }); } }
+                let dense = null; if (host.embed && cards.length) { try { const gq = queryText(gap, opts.context); const vs = await host.embed([{ text: gq, role: 'query' }].concat(cards.map((c) => ({ text: (c.card.head || [c.name, c.summary, Card.cardText(c.card)].join('. ')).slice(0, 700), role: 'passage' })))); if (vs && vs.length === cards.length + 1) dense = { q: vs[0], cards: new Map(cards.map((c, i) => [c.id, vs[i + 1]])) }; } catch (e) { log({ step: 'embed_error', gap: gap.id, error: String((e && e.message) || e) }); } }
                 const ranked = rank(gap, cards, Object.assign({}, opts, { dense })); log({ step: 'rank', gap: gap.id, candidates: ranked.map((r) => ({ id: r.id, score: r.score, why: r.why })) });
                 const best = ranked.find((r) => r.score >= opts.minScore); if (best) { chosen[gap.id] = { gap, pick: best, alternatives: ranked.filter((r) => r !== best).slice(0, 3) }; progress.push(gap.id); } else unresolved.push({ gap, reason: ranked.length ? '最像的也只有 ' + (ranked[0].score) + ' 分（門檻 ' + opts.minScore + '）' : '搜不到可用的候選' });
             }
@@ -12611,7 +12641,7 @@ const holder = {};
         for (const c of plan.candidates) { L.push('▸ ' + c.gap + ' → ' + c.name + '（' + c.score + '）' + (c.language ? ' [' + c.language + (c.runtime && c.runtime.length ? '/' + c.runtime.join('/') : '') + ']' : '')); if (c.summary) L.push('    ' + c.summary.slice(0, 120)); if (c.install) L.push('    安裝：' + c.install); if (c.api.length) L.push('    主要函式：' + c.api.join('、')); if (c.needs.length) L.push('    需要：' + c.needs.join('、')); L.push('    ' + c.why.join('；') + (c.alternatives.length ? '；備選：' + c.alternatives.map((a) => a.name).join('、') : '')); }
         for (const u of plan.unresolved) L.push('✗ ' + u.gap + '：' + u.reason); if (plan.references && plan.references.length) { L.push('參考資料（概念、別人的做法，不是採用對象）：'); for (const r of plan.references.slice(0, 5)) L.push('  · [' + r.kind + '] ' + r.name + (r.summary ? '：' + r.summary.slice(0, 80) : '')); } if (plan.run) L.push(plan.run.ok ? '試跑通過' : '試跑失敗（' + plan.run.attempts + ' 次修正）：' + plan.run.error); return L.join('\n');
     }
-    return { GLOSSARY, kindOf, toEnglish, gapsFrom, gapsFromNeeds, queriesFor, rank, coverage, classifyError, nextAttempt, run, toText };
+    return { GLOSSARY, FEATURES, DENSE_FEATURES, featurize, predict, queryText, kindOf, toEnglish, gapsFrom, gapsFromNeeds, queriesFor, rank, coverage, classifyError, nextAttempt, run, toText };
 });
 
 }).call(null, undefined, holder);

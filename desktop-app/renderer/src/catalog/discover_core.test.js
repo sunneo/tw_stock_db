@@ -116,7 +116,13 @@ const mkHost = (over) => {
   const withDense = D.rank(gCam, [camA, camB], { runtime: 'browser', dense: { q: nv([1, 0, 0]), cards: new Map([['u/drone', nv([0.55, 0.8, 0.2])], ['u/cap', nv([0.97, 0.1, 0.1])]]) } });
   check('glossary: 擷取 means capture', /capture/.test(D.toEnglish('擷取相機畫面').english));
   check('lexical: the project that says capture beats the drone visualisation', noDense[0].id === 'u/cap', noDense.map((x) => x.id + ':' + x.score));
-  check('dense lifts the semantically close one and records why', withDense[0].id === 'u/cap' && withDense[0].why.some((w) => /語意相近/.test(w)) && withDense[0].score - withDense[1].score > noDense[0].score - noDense[1].score, withDense.map((x) => x.id + ':' + x.score));
+  const camC = mk('u/capB', 'frame-grab', j('# frame-grab', '', 'Capture camera frames in the browser: grab a frame from the webcam stream.'));
+  const camD = mk('u/capA', 'webcam-snap', j('# webcam-snap', '', 'Capture camera frames in the browser with a webcam helper.'));
+  const twoPass = D.rank(gCam, [camC, camD], { runtime: 'browser', dense: { q: nv([1, 0, 0]), cards: new Map([['u/capB', nv([0.99, 0.05, 0])], ['u/capA', nv([0.6, 0.8, 0])]]) } });
+  const twoPass2 = D.rank(gCam, [camC, camD], { runtime: 'browser', dense: { q: nv([1, 0, 0]), cards: new Map([['u/capB', nv([0.6, 0.8, 0])], ['u/capA', nv([0.99, 0.05, 0])]]) } });
+  check('both pass the lexical gate → the embedding decides the order (and flips with the vectors)', twoPass[0].score >= 0.35 && twoPass[1].score >= 0.35 && twoPass[0].id === 'u/capB' && twoPass2[0].id === 'u/capA' && twoPass[0].why.some((w) => /語意相近/.test(w)), [twoPass.map((x) => x.id + ':' + x.score + '/' + x.cos), twoPass2.map((x) => x.id)]);
+  const gated = D.rank(gCam, [camA, camB], { runtime: 'browser', dense: { q: nv([1, 0, 0]), cards: new Map([['u/drone', nv([0.99, 0.05, 0])], ['u/cap', nv([0.6, 0.8, 0])]]) } });
+  check('failing the lexical gate cannot be rescued by a high cosine', gated[0].id === 'u/cap' && gated.find((x) => x.id === 'u/drone').score < 0.35, gated.map((x) => x.id + ':' + x.score + '/' + x.cos));
   const flip = D.rank(gCam, [camA, camB], { runtime: 'browser', dense: { q: nv([1, 0, 0]), cards: new Map([['u/drone', nv([0.99, 0.05, 0])], ['u/cap', nv([0.5, 0.8, 0.3])]]) } });
   check('dense can reorder when lexical evidence is weak but not invent relevance from nothing', flip.find((x) => x.id === 'u/drone').score > 0 && D.rank(D.gapsFromNeeds(['smooth skin on faces'])[0], [pdfLib, camA], { runtime: 'browser', dense: { q: nv([1, 0, 0]), cards: new Map([['u/pdf', nv([0.1, 0.9, 0])], ['u/drone', nv([0.1, 0.9, 0.1])]]) } }).every((x) => x.score < 0.35));
   check('missing vectors fall back to lexical only', D.rank(gCam, [camA, camB], { runtime: 'browser', dense: { q: nv([1, 0, 0]), cards: new Map() } })[0].id === 'u/cap');
@@ -125,6 +131,11 @@ const mkHost = (over) => {
   check('loop uses host.embed once per gap and ranks with it', embedCalls === 1 && embPlan.resolved === 1 && embPlan.candidates[0].why.some((w) => /語意相近/.test(w)), [embedCalls, embPlan.candidates && embPlan.candidates[0] && embPlan.candidates[0].why]);
   const badEmb = await D.run(mkHost({ embed: async () => { throw new Error('model gone'); } }), { needs: ['smooth skin on faces'] }, {});
   check('embedding failure is logged and the loop falls back to lexical', badEmb.resolved === 1 && badEmb.trace.some((x) => x.step === 'embed_error'));
+
+  // 品質明顯差的（不像函式庫）不能靠語意相似擠到好的前面
+  const game = mk('u/game', 'face-game', j('# face-game', '', 'Face filter game: smooth skin and beautify faces, a running game for fun.'));
+  const guard = D.rank(D.gapsFromNeeds(['smooth skin on faces'])[0], [game, faceLib], { runtime: 'browser', dense: { q: nv([1, 0, 0]), cards: new Map([['u/game', nv([0.99, 0.05, 0])], ['u/face', nv([0.7, 0.7, 0])]]) } });
+  check('a much weaker candidate is not promoted by cosine alone', guard[0].id === 'u/face' && guard.find((x) => x.id === 'u/game').score < 0.6 * guard[0].score, guard.map((x) => x.id + ':' + x.score + '/' + x.cos));
 
   console.log('discover_core: ' + ok + ' passed' + (bad.length ? ', ' + bad.length + ' FAILED' : '')); bad.forEach((x) => console.log('FAIL', x)); process.exit(bad.length ? 1 : 0);
 })();
