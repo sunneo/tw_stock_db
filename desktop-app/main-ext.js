@@ -198,6 +198,82 @@ function register(ipcMain, ctx) {
     const attach = () => { try { session.defaultSession.on("will-download", onWillDownload); } catch (_) { /* 沒有 session（測試環境） */ } };
     if (app.isReady && app.isReady()) attach(); else app.whenReady().then(attach);
   }
+  // ---------- MCP 伺服器（stdio）的子行程管理 ----------
+  // MCP 伺服器就是『一個會讀 stdin、寫 stdout 的程式』：這裡負責啟動它、轉送輸出給 renderer、關掉它，以及把安裝包解開到專用資料夾、跑安裝指令。
+  // 啟動與跑安裝指令都要過 execConfirmGate（跟 run_command 同一個確認閘，使用者在桌面版設定裡決定要不要每次確認）；沒有確認閘（舊版主程式）就拒絕。
+  // 全部 IPC 都在這個檔案，之後改只要發 patch；只有 preload.js 要多一段（同樣可以 patch，下次啟動生效）。
+  try {
+    const { spawn, execFile } = require("child_process");
+    const procs = new Map(); let seq = 0; const MAX_PROCS = 16; const isWin = process.platform === "win32";
+    const installRoot = () => path.join(electron.app.getPath("userData"), "mcp-servers");
+    const safeSeg = (s) => String(s || "server").replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^\.+/, "_").slice(0, 60) || "server";
+    // cmd.exe 的引號規則：含空白或特殊字元就整個包起來，裡面的雙引號跳脫
+    const quoteWin = (s) => (/^[\w@%+=:,./\\-]+$/.test(s) ? s : '"' + String(s).replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, "$1$1") + '"');
+    const display = (command, args) => [command].concat(args || []).map((x) => (/\s/.test(String(x)) ? '"' + x + '"' : String(x))).join(" ");
+    const plan = (command, args) => (isWin ? { file: [command].concat(args || []).map((x) => quoteWin(String(x))).join(" "), args: [], shell: true } : { file: command, args: args || [], shell: false });
+    const gateOr = async (evt, label, cmdLine, cwd) => {
+      if (!ctx.execConfirmGate) return needNew("MCP 需要確認閘");
+      try { await ctx.execConfirmGate("[" + label + "] " + cmdLine, cwd || process.cwd(), evt.sender.id); return null; } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+    };
+    const killTree = (child) => {
+      try { if (isWin && child.pid) spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true }); else child.kill("SIGTERM"); } catch (_) { /* 已經結束 */ }
+      setTimeout(() => { try { child.kill("SIGKILL"); } catch (_) { /* */ } }, 4000).unref();
+    };
+    ipcMain.handle("fa:mcp:installDir", async () => installRoot());
+    ipcMain.handle("fa:mcp:start", async (evt, { spec } = {}) => {
+      if (!spec || !spec.command) return { ok: false, error: "缺少 command" };
+      if (procs.size >= MAX_PROCS) return { ok: false, error: "同時執行的 MCP 伺服器太多（上限 " + MAX_PROCS + "）" };
+      const cwd = spec.cwd ? path.resolve(rawFsPath(spec.cwd)) : undefined; const denied = await gateOr(evt, "MCP 伺服器 " + (spec.name || ""), display(spec.command, spec.args), cwd); if (denied) return denied;
+      const sp = plan(String(spec.command), (spec.args || []).map(String)); const env = Object.assign({}, process.env, spec.env || {}); let child;
+      try { child = spawn(sp.file, sp.args, { cwd, env, shell: sp.shell, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] }); } catch (e) { return { ok: false, error: "啟動失敗：" + String((e && e.message) || e) }; }
+      const id = "mcp" + (++seq) + "_" + Date.now().toString(36); const rec = { child, wc: evt.sender, name: spec.name, started: Date.now() }; procs.set(id, rec);
+      const send = (ch, payload) => { try { if (!rec.wc.isDestroyed()) rec.wc.send(ch, payload); } catch (_) { /* 視窗已關 */ } };
+      child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8"); child.stdout.on("data", (d) => send("fa:mcp:data", { id, text: d, stream: "stdout" })); child.stderr.on("data", (d) => send("fa:mcp:data", { id, text: d, stream: "stderr" }));
+      child.stdin.on("error", () => { /* 子行程先結束時寫入會 EPIPE：交給 exit 事件處理 */ });
+      child.on("exit", (code, signal) => { procs.delete(id); send("fa:mcp:exit", { id, code, signal }); });
+      const started = await new Promise((resolve) => { const t = setTimeout(() => resolve({ ok: true }), 1500); child.once("spawn", () => { clearTimeout(t); resolve({ ok: true }); }); child.once("error", (e) => { clearTimeout(t); procs.delete(id); resolve({ ok: false, error: (e && e.code === "ENOENT" ? "找不到程式 " + spec.command + "（沒安裝，或不在 PATH 裡）" : String((e && e.message) || e)) }); }); });
+      if (!started.ok) return started; return { ok: true, id, pid: child.pid };
+    });
+    ipcMain.handle("fa:mcp:write", async (_e, { id, text } = {}) => { const r = procs.get(id); if (!r) return { ok: false, error: "這個 MCP 行程已經結束" }; try { r.child.stdin.write(String(text)); return { ok: true }; } catch (e) { return { ok: false, error: String((e && e.message) || e) }; } });
+    ipcMain.handle("fa:mcp:stop", async (_e, { id } = {}) => { const r = procs.get(id); if (!r) return { ok: true, already: true }; killTree(r.child); return { ok: true }; });
+    ipcMain.handle("fa:mcp:list", async () => Array.from(procs.entries()).map(([id, r]) => ({ id, name: r.name, pid: r.child.pid, started: r.started })));
+    // 把安裝包的檔案寫進專用資料夾。files：[{ path（相對路徑）, base64 }]；clean:true＝先清掉舊的。路徑不能跳出資料夾（擋 ../、絕對路徑、磁碟機代號）。
+    ipcMain.handle("fa:mcp:writeFiles", async (_e, { name, files, clean } = {}) => {
+      const base = path.join(installRoot(), safeSeg(name)); let written = 0, skipped = 0, bytes = 0;
+      try {
+        if (clean) await fs.rm(base, { recursive: true, force: true }); await fs.mkdir(base, { recursive: true });
+        for (const f of files || []) {
+          const rel = String(f.path || "").replace(/\\/g, "/").replace(/^\/+/, ""); const segs = rel.split("/").filter(Boolean);
+          if (!segs.length || segs.some((s) => s === "..") || /^[A-Za-z]:/.test(rel) || rel.includes("\0")) { skipped++; continue; }
+          const target = path.join(base, ...segs); if (!(target + path.sep).startsWith(base + path.sep)) { skipped++; continue; }
+          const buf = Buffer.from(String(f.base64 || ""), "base64"); bytes += buf.length; if (bytes > 800 * 1048576) return { ok: false, error: "解開後超過 800MB，停止" };
+          await fs.mkdir(path.dirname(target), { recursive: true }); await fs.writeFile(target, buf); written++;
+        }
+        return { ok: true, dir: base, written, skipped, bytes };
+      } catch (e) { return { ok: false, error: String((e && e.message) || e), written }; }
+    });
+    ipcMain.handle("fa:mcp:removeDir", async (_e, { dir } = {}) => { const d = path.resolve(String(dir || "")); const root = installRoot(); if (!(d + path.sep).startsWith(root + path.sep) || d === root) return { ok: false, error: "只能刪除 MCP 安裝資料夾裡的東西" }; try { await fs.rm(d, { recursive: true, force: true }); return { ok: true }; } catch (e) { return { ok: false, error: String((e && e.message) || e) }; } });
+    // 跑安裝指令（npm install、pip install…）：過確認閘，輸出只留最後 20KB，逾時（預設 10 分鐘）就終止
+    ipcMain.handle("fa:mcp:exec", async (evt, { command, args, cwd, timeoutMs, label } = {}) => {
+      if (!command) return { ok: false, error: "缺少 command" }; const wd = cwd ? path.resolve(rawFsPath(cwd)) : undefined; const denied = await gateOr(evt, label || "MCP 安裝", display(command, args), wd); if (denied) return denied;
+      const sp = plan(String(command), (args || []).map(String)); const t0 = Date.now();
+      return await new Promise((resolve) => {
+        let out = ""; let done = false; const child = spawn(sp.file, sp.args, { cwd: wd, shell: sp.shell, windowsHide: true, env: process.env });
+        const add = (d) => { out += d; if (out.length > 40000) out = out.slice(-20000); }; child.stdout.on("data", add); child.stderr.on("data", add);
+        const timer = setTimeout(() => { if (!done) { done = true; killTree(child); resolve({ ok: false, error: "逾時（" + Math.round((timeoutMs || 600000) / 1000) + " 秒），已終止", output: out.slice(-20000), ms: Date.now() - t0 }); } }, timeoutMs || 600000);
+        child.on("error", (e) => { if (!done) { done = true; clearTimeout(timer); resolve({ ok: false, error: e && e.code === "ENOENT" ? "找不到程式 " + command : String((e && e.message) || e), output: out.slice(-20000) }); } });
+        child.on("exit", (code) => { if (!done) { done = true; clearTimeout(timer); resolve({ ok: code === 0, code, output: out.slice(-20000), ms: Date.now() - t0, error: code === 0 ? undefined : "結束代碼 " + code }); } });
+      });
+    });
+    // 檢查執行環境有沒有裝（固定的 --version 指令，不過確認閘）
+    ipcMain.handle("fa:mcp:runtimes", async () => {
+      const probe = (cmd, args) => new Promise((resolve) => { const sp = plan(cmd, args); try { execFile(sp.file, sp.args, { shell: sp.shell, timeout: 6000, windowsHide: true }, (err, stdout, stderr) => resolve(err ? { ok: false } : { ok: true, version: String(stdout || stderr).trim().split(/\r?\n/)[0].slice(0, 80) })); } catch (_) { resolve({ ok: false }); } });
+      const names = { node: ["node", ["--version"]], npm: ["npm", ["--version"]], npx: ["npx", ["--version"]], python: [isWin ? "python" : "python3", ["--version"]], pip: [isWin ? "pip" : "pip3", ["--version"]], uv: ["uv", ["--version"]], uvx: ["uvx", ["--version"]], docker: ["docker", ["--version"]] };
+      const out = {}; await Promise.all(Object.entries(names).map(async ([k, [c, a]]) => { out[k] = await probe(c, a); })); return out;
+    });
+    if (electron && electron.app) electron.app.on("before-quit", () => { for (const r of procs.values()) { try { r.child.kill(); } catch (_) { /* */ } } });
+  } catch (e) { console.warn("[main-ext] MCP 載入失敗：", e && e.message); }
+
   return { rawFsPath, detectLikelyBinary };
 }
 

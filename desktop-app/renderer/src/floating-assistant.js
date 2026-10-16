@@ -1427,6 +1427,13 @@ const AI_REASONING_DEADEND_PROMPT = '[系統提示] 你剛才那一輪只完成�
 const FA_AI_FEATURES_CATALOG = /*__FA_AI_FEATURES__*/null;
 
 const SUBAGENT_DOMAIN_REGISTRY = {
+    // MCP 獨立成一個 domain：使用者裝了哪些 MCP 伺服器、各自有什麼工具，主要對話不需要知道，交給這個子 agent 去查、去呼叫。
+    mcp: {
+        enabled: true,
+        label: 'MCP 伺服器（使用者安裝的外部工具包：查詢、呼叫、安裝、管理）',
+        toolNames: ['mcp_servers', 'mcp_tools', 'mcp_call', 'mcp_resources', 'mcp_install', 'mcp_manage'],
+        systemPrompt: '你是專門使用 MCP（Model Context Protocol）伺服器的子任務助理。使用者在設定裡安裝了一些 MCP 伺服器，每個伺服器提供一組工具。你的流程固定是：(1) 用 mcp_servers 看有哪些伺服器、狀態如何；(2) 用 mcp_tools 查那個伺服器有哪些工具（要看完整輸入格式就帶 tool 參數），絕對不要猜工具名稱或參數；(3) 用 mcp_call 呼叫，arguments 照輸入格式填；(4) 把結果用精簡的文字回報。規則：工具回報 ok:false 或 is_error:true 就是失敗，把原因如實講出來，不要假裝成功，也不要拿別的工具硬湊；伺服器連不上時用 mcp_manage 的 logs 看原因再回報；使用者要安裝 MCP 就用 mcp_install（附件的 file_id 或貼上的 JSON／網址），它會自己請使用者確認，使用者拒絕就停下來，不要換個方式再裝；不要自己叫使用者去終端機執行指令，除非 mcp_install 明講需要。回覆用使用者的語言，只講跟任務有關的結果。'
+    },
     rag_lookup: {
         enabled: true,
         label: 'RAG知識圖譜查詢',
@@ -12892,6 +12899,232 @@ const holder = {};
 return holder.FaArchive;
 })();
 /* ARCHIVE-END */
+/* MCP-BEGIN */
+const FaMcp = (function () {
+const holder = {};
+(function (module, self) {
+/* MCP（Model Context Protocol）用戶端的核心（UMD，純函式＋傳輸層介面，不碰 DOM／Electron）：
+ *  - 設定檔：parseConfigText 認得各家的 mcp.json 寫法（Claude Desktop／Cursor／VS Code／Windsurf 的 mcpServers、servers、mcp.servers，單一伺服器物件、陣列），
+ *    容忍註解與結尾逗號；parseManifest 認得 .mcpb／.dxt 的 manifest.json（含 ${__dirname}、${user_config.x}）；detectProject 從解開的檔案猜怎麼啟動（package.json、pyproject.toml、server.py…）。
+ *  - 協定：McpClient 做 JSON-RPC 2.0（initialize 握手、tools／resources／prompts、ping、逾時、取消、分頁、伺服器發來的請求）。
+ *  - 傳輸：StdioTransport（透過主程式 IPC 橋接的子行程）、HttpTransport（Streamable HTTP：POST，回應是 JSON 或 SSE）、SseTransport（舊版 HTTP+SSE）。
+ *  - 工具名稱：mcp__伺服器__工具（最長 64 字元，太長加雜湊）；formatResult 把 MCP 的內容區塊轉成給模型看的文字。
+ * 傳輸層都是 { start(), send(msg), close(), onmessage, onclose, onerror }，所以可以用假的傳輸完整測試。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaMcp = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
+    const CLIENT_INFO = { name: 'floating-ai-assistant', version: '1.0.0' };
+
+    // ===== 設定檔 =====
+    // 去掉 // 與 /* */ 註解、結尾逗號（字串裡面的不動）
+    function stripJsonc(text) {
+        let out = '', i = 0; const s = String(text || '').replace(/^﻿/, ''); const n = s.length; let inStr = false;
+        while (i < n) {
+            const c = s[i]; if (inStr) { out += c; if (c === '\\') { out += s[i + 1] || ''; i += 2; continue; } if (c === '"') inStr = false; i++; continue; }
+            if (c === '"') { inStr = true; out += c; i++; continue; }
+            if (c === '/' && s[i + 1] === '/') { while (i < n && s[i] !== '\n') i++; continue; }
+            if (c === '/' && s[i + 1] === '*') { i += 2; while (i < n && !(s[i] === '*' && s[i + 1] === '/')) i++; i += 2; continue; }
+            out += c; i++;
+        }
+        return out.replace(/,(\s*[}\]])/g, '$1');
+    }
+    function sanitizeName(s, fallback) { const t = String(s || '').toLowerCase().replace(/^@/, '').replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40); return t || fallback || 'server'; }
+    const SENSITIVE = /(token|secret|password|passwd|api[-_]?key|auth|credential|private[-_]?key|bearer)/i;
+    const maskEnv = (env) => Object.fromEntries(Object.entries(env || {}).map(([k, v]) => [k, SENSITIVE.test(k) && String(v).length ? '••••' : String(v)]));
+    // 一個伺服器設定 → 統一格式。type：stdio／http（Streamable HTTP）／sse。
+    function normalizeServer(name, raw) {
+        if (!raw || typeof raw !== 'object') return { ok: false, error: '伺服器 ' + name + ' 的設定不是物件' };
+        const t = String(raw.type || raw.transport || '').toLowerCase(); const url = raw.url || raw.serverUrl || raw.httpUrl || raw.baseUrl || '';
+        let transport = /sse/.test(t) ? 'sse' : (/http|stream/.test(t) ? 'http' : (t === 'stdio' ? 'stdio' : (url ? (/\/sse\/?$/i.test(url) ? 'sse' : 'http') : 'stdio')));
+        const out = { name: sanitizeName(name), transport, disabled: !!(raw.disabled || raw.enabled === false), description: raw.description ? String(raw.description).slice(0, 300) : undefined };
+        if (transport === 'stdio') {
+            let command = raw.command, args = Array.isArray(raw.args) ? raw.args.map(String) : [];
+            if (Array.isArray(command)) { args = command.slice(1).map(String).concat(args); command = command[0]; } // OpenCode 風格：command 是陣列
+            if (typeof command === 'string' && /\s/.test(command.trim()) && !args.length && !/^["']?[A-Za-z]:\\|^\//.test(command.trim())) { const parts = command.trim().match(/"[^"]*"|'[^']*'|\S+/g) || []; command = parts[0].replace(/^["']|["']$/g, ''); args = parts.slice(1).map((x) => x.replace(/^["']|["']$/g, '')); } // 整行命令寫在 command 裡
+            if (!command || typeof command !== 'string') return { ok: false, error: '伺服器 ' + name + ' 沒有 command（stdio）也沒有 url' };
+            out.command = command; out.args = args; if (raw.env && typeof raw.env === 'object') out.env = Object.fromEntries(Object.entries(raw.env).map(([k, v]) => [k, String(v)])); if (raw.cwd) out.cwd = String(raw.cwd);
+        } else {
+            if (!/^https?:\/\//i.test(url)) return { ok: false, error: '伺服器 ' + name + ' 的 url 要是 http(s)：' + url }; out.url = String(url); const h = raw.headers || raw.http_headers; if (h && typeof h === 'object') out.headers = Object.fromEntries(Object.entries(h).map(([k, v]) => [k, String(v)]));
+        }
+        return { ok: true, server: out };
+    }
+    // 回傳 { ok, servers:[…], errors:[…], format }
+    function parseConfigText(text) {
+        let data; try { data = JSON.parse(stripJsonc(text)); } catch (e) { return { ok: false, error: '不是合法的 JSON：' + String(e.message || e).slice(0, 100) }; }
+        let map = null, format = '';
+        if (Array.isArray(data)) { map = {}; data.forEach((x, i) => { map[(x && (x.name || x.id)) || 'server' + (i + 1)] = x; }); format = 'array'; }
+        else if (data && typeof data === 'object') {
+            if (data.mcpServers && typeof data.mcpServers === 'object') { map = data.mcpServers; format = 'mcpServers'; }
+            else if (data.mcp && data.mcp.servers && typeof data.mcp.servers === 'object') { map = data.mcp.servers; format = 'mcp.servers'; }
+            else if (data.servers && typeof data.servers === 'object' && !Array.isArray(data.servers) && !('command' in data) && !('url' in data)) { map = data.servers; format = 'servers'; }
+            else if (data.mcp && typeof data.mcp === 'object' && Object.values(data.mcp).some((v) => v && typeof v === 'object' && (v.command || v.url))) { map = data.mcp; format = 'mcp'; }
+            else if (data.command || data.url || data.serverUrl) { map = { [data.name || 'server']: data }; format = 'single'; }
+            else if (data.context_servers && typeof data.context_servers === 'object') { map = data.context_servers; format = 'context_servers'; } // Zed
+            else if (Object.values(data).length && Object.values(data).every((v) => v && typeof v === 'object' && (v.command || v.url))) { map = data; format = 'bare-map'; }
+        }
+        if (!map) return { ok: false, error: '看不出這是 MCP 設定（要有 mcpServers、servers，或單一伺服器的 command／url）' };
+        const servers = [], errors = []; for (const [k, v] of Object.entries(map)) { const r = normalizeServer(k, (v && v.command && typeof v.command === 'object' && !Array.isArray(v.command)) ? Object.assign({}, v, { command: v.command.path || v.command.command, args: v.command.args || v.args, env: v.command.env || v.env }) : v); if (r.ok) servers.push(r.server); else errors.push(r.error); }
+        const seen = new Set(); for (const s of servers) { let n = s.name, i = 2; while (seen.has(n)) n = s.name + '-' + i++; s.name = n; seen.add(n); }
+        if (!servers.length) return { ok: false, error: errors[0] || '沒有可用的伺服器設定', errors };
+        return { ok: true, servers, errors, format };
+    }
+    // ${a.b}、${__dirname}、${HOME}…；沒有的變數保留原樣並回報
+    function substitute(str, vars, missing) { return String(str).replace(/\$\{([^}]+)\}/g, (m, k) => { const v = k.split('.').reduce((a, p) => (a == null ? a : a[p]), vars); if (v == null) { if (missing) missing.add(k); return m; } return String(v); }); }
+    // .mcpb／.dxt 的 manifest.json。回傳 { ok, name, version, description, server:{command,args,env}|null, user_config, tools, needs_runtime }
+    function parseManifest(json, vars) {
+        let m = json; if (typeof json === 'string') { try { m = JSON.parse(stripJsonc(json)); } catch (e) { return { ok: false, error: 'manifest.json 不是合法的 JSON' }; } }
+        if (!m || typeof m !== 'object' || !(m.manifest_version || m.dxt_version) || !m.server) return { ok: false, error: '不是 MCP bundle 的 manifest（要有 manifest_version 和 server）' };
+        const sv = m.server; const uc = {}; for (const [k, d] of Object.entries(m.user_config || {})) uc[k] = { type: d.type || 'string', title: d.title || k, description: d.description || '', required: !!d.required, sensitive: !!d.sensitive, default: d.default, multiple: !!d.multiple };
+        const missing = new Set(); const cfg = sv.mcp_config || {}; const platform = vars && vars.__platform; const pcfg = (platform && cfg.platform_overrides && cfg.platform_overrides[platform]) || {}; const merged = Object.assign({}, cfg, pcfg);
+        const sub = (x) => substitute(x, Object.assign({ user_config: {} }, vars || {}), missing);
+        let command = merged.command ? sub(merged.command) : null; let args = (merged.args || []).map(sub); const env = merged.env ? Object.fromEntries(Object.entries(merged.env).map(([k, v]) => [k, sub(v)])) : undefined;
+        if (!command && sv.entry_point) { const type = sv.type || 'node'; command = type === 'python' ? 'python' : (type === 'binary' ? sub('${__dirname}/' + sv.entry_point) : 'node'); if (type !== 'binary') args = [sub('${__dirname}/' + sv.entry_point)]; }
+        const needs = (sv.type === 'python' || /^python/.test(command || '')) ? 'python' : (sv.type === 'binary' ? null : ((/^(node|npx)/.test(command || '') || sv.type === 'node') ? 'node' : null));
+        return { ok: true, name: sanitizeName(m.name || m.display_name), display_name: m.display_name || m.name, version: m.version || '', description: m.description || '', author: m.author && (m.author.name || m.author) || '', server: command ? { command, args, env } : null, user_config: uc, unresolved: Array.from(missing), tools: (m.tools || []).map((t) => ({ name: t.name, description: t.description || '' })), needs_runtime: needs, compatibility: m.compatibility || undefined };
+    }
+    // 從解開的檔案猜怎麼啟動。files：{ 路徑: 文字或 null }（只需要給關鍵檔案：keyFiles 回傳要讀哪些）。回傳候選陣列（最可信的在前）
+    const KEY_FILE_RE = /(^|\/)(manifest\.json|mcp\.json|\.mcp\.json|claude_desktop_config\.json|mcp_config\.json|cline_mcp_settings\.json|package\.json|pyproject\.toml|requirements\.txt|smithery\.yaml|server\.json|Dockerfile|README(\.md)?)$/i;
+    function keyFiles(paths, depth) { const maxD = depth == null ? 2 : depth; return paths.filter((p) => KEY_FILE_RE.test(p) && p.split('/').filter(Boolean).length - 1 <= maxD); }
+    const dirOf = (p) => p.replace(/[^/]*$/, '');
+    function detectProject(paths, files) {
+        const out = []; const read = (p) => (files && files[p] != null ? files[p] : null); const roots = Array.from(new Set(paths.filter((p) => KEY_FILE_RE.test(p)).map(dirOf))).sort((a, b) => a.length - b.length);
+        for (const dir of roots) {
+            const at = (n) => paths.includes(dir + n) ? dir + n : null;
+            // 1. 已經是 mcp 設定檔
+            for (const n of ['mcp.json', '.mcp.json', 'claude_desktop_config.json', 'mcp_config.json', 'cline_mcp_settings.json']) { const p = at(n); if (p && read(p) != null) { const r = parseConfigText(read(p)); if (r.ok) out.push({ kind: 'config', dir, via: p, servers: r.servers, confidence: 0.95 }); } }
+            // 2. MCP bundle
+            const mf = at('manifest.json'); if (mf && read(mf) != null) { const r = parseManifest(read(mf), { __dirname: '${__dirname}' }); if (r.ok) out.push({ kind: 'bundle', dir, via: mf, manifest: r, confidence: 0.95 }); }
+            // 3. Node 專案
+            const pj = at('package.json'); if (pj && read(pj) != null) {
+                let j = null; try { j = JSON.parse(read(pj)); } catch (_) { j = null; }
+                if (j) { const bin = typeof j.bin === 'string' ? j.bin : (j.bin && Object.values(j.bin)[0]); const looks = /mcp|model-context-protocol/i.test(JSON.stringify([j.name, j.description, j.keywords, Object.keys(j.dependencies || {})]));
+                    const entry = bin || j.main || (j.scripts && j.scripts.start ? null : 'index.js'); const built = (p) => (p && /^dist|^build|^lib/.test(p.replace(/^\.\//, '')) && !paths.includes(dir + p.replace(/^\.\//, '')));
+                    const steps = []; if (j.dependencies && Object.keys(j.dependencies).length) steps.push({ run: 'npm install', cwd: dir, why: '安裝相依套件' }); if (j.scripts && j.scripts.build && (built(entry) || !entry)) steps.push({ run: 'npm run build', cwd: dir, why: '編譯（入口檔還不存在）' });
+                    const args = j.scripts && j.scripts.start && !bin ? ['run', 'start'] : [entry ? entry.replace(/^\.\//, '') : 'index.js']; const command = j.scripts && j.scripts.start && !bin ? 'npm' : 'node';
+                    out.push({ kind: 'node', dir, via: pj, name: sanitizeName(j.name), description: j.description || '', server: { command, args, cwd: dir }, steps, needs_runtime: 'node', confidence: looks ? 0.8 : 0.45, mcp_like: looks }); }
+            }
+            // 4. Python 專案
+            const pp = at('pyproject.toml'); if (pp && read(pp) != null) {
+                const txt = read(pp); const name = (/^\s*name\s*=\s*["']([^"']+)["']/m.exec(txt) || [])[1]; const scripts = /\[project\.scripts\]([\s\S]*?)(\n\[|$)/.exec(txt); const sc = scripts ? (/^\s*([\w.-]+)\s*=/m.exec(scripts[1]) || [])[1] : null; const looks = /mcp|model-context-protocol/i.test(txt);
+                const steps = [{ run: 'pip install -e .', cwd: dir, why: '安裝這個專案與相依套件' }]; const py = ['server.py', 'main.py', '__main__.py'].map((n) => at(n)).find(Boolean);
+                out.push({ kind: 'python', dir, via: pp, name: sanitizeName(name), server: sc ? { command: sc, args: [], cwd: dir } : (py ? { command: 'python', args: [py.slice(dir.length)], cwd: dir } : { command: 'python', args: ['-m', (name || 'server').replace(/-/g, '_')], cwd: dir }), steps, needs_runtime: 'python', confidence: looks ? 0.75 : 0.4, mcp_like: looks });
+            } else { const rq = at('requirements.txt'); const py = ['server.py', 'main.py', 'app.py'].map((n) => at(n)).find(Boolean); if (rq && py) out.push({ kind: 'python', dir, via: py, name: sanitizeName(dir.split('/').filter(Boolean).pop() || 'python-server'), server: { command: 'python', args: [py.slice(dir.length)], cwd: dir }, steps: [{ run: 'pip install -r requirements.txt', cwd: dir, why: '安裝相依套件' }], needs_runtime: 'python', confidence: /mcp/i.test(read(rq) || '') ? 0.7 : 0.3, mcp_like: /mcp/i.test(read(rq) || '') }); }
+            // 5. Smithery
+            const sm = at('smithery.yaml'); if (sm && read(sm) != null) { const txt = read(sm); const cmd = /command:\s*['"]?([^\s'"]+)['"]?/.exec(txt); const args = /args:\s*\[([^\]]*)\]/.exec(txt); if (cmd) out.push({ kind: 'smithery', dir, via: sm, server: { command: cmd[1], args: args ? args[1].split(',').map((x) => x.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean) : [], cwd: dir }, steps: [], confidence: 0.6, note: 'smithery.yaml 的啟動命令可能用到 configSchema 的參數，要確認' }); }
+            // 6. Docker 以外沒有線索
+            const dk = at('Dockerfile'); if (dk && !out.some((o) => o.dir === dir)) out.push({ kind: 'docker', dir, via: dk, unsupported: true, confidence: 0.1, note: '只有 Dockerfile：需要 Docker，目前不支援自動安裝' });
+        }
+        return out.sort((a, b) => b.confidence - a.confidence);
+    }
+
+    // ===== 工具名稱與結果 =====
+    function hash(s) { let h = 0x811c9dc5; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; } return h.toString(36).slice(0, 5); }
+    function toolName(server, tool) { const base = 'mcp__' + sanitizeName(server).replace(/-/g, '_') + '__' + String(tool).replace(/[^A-Za-z0-9_-]/g, '_'); return base.length <= 64 ? base : base.slice(0, 57) + '_' + hash(base).slice(0, 6); }
+    // MCP 的內容區塊 → 給模型看的文字。回傳 { text, isError, images:[{mimeType,data}], truncated }
+    function formatResult(res, maxChars) {
+        const max = maxChars || 20000; if (!res || typeof res !== 'object') return { text: String(res == null ? '' : res), isError: false, images: [], truncated: false };
+        const parts = [], images = []; for (const c of res.content || []) {
+            if (!c) continue; if (c.type === 'text') parts.push(String(c.text)); else if (c.type === 'image') { images.push({ mimeType: c.mimeType, data: c.data }); parts.push('[圖片 ' + (c.mimeType || '') + '，' + Math.round(String(c.data || '').length * 0.75 / 1024) + ' KB]'); }
+            else if (c.type === 'audio') parts.push('[音訊 ' + (c.mimeType || '') + ']'); else if (c.type === 'resource' && c.resource) parts.push(c.resource.text != null ? '[資源 ' + c.resource.uri + ']\n' + c.resource.text : '[資源 ' + c.resource.uri + ' ' + (c.resource.mimeType || '') + '（二進位）]'); else if (c.type === 'resource_link') parts.push('[資源連結 ' + (c.name || '') + ' ' + c.uri + ']'); else parts.push(JSON.stringify(c));
+        }
+        if (res.structuredContent && !parts.length) parts.push(JSON.stringify(res.structuredContent)); let text = parts.join('\n'); let truncated = false; if (text.length > max) { text = text.slice(0, max) + '\n…（共 ' + text.length + ' 字元，已截斷）'; truncated = true; }
+        return { text, isError: !!res.isError, images, truncated };
+    }
+
+    // ===== SSE 解析 =====
+    function createSseParser(onEvent) {
+        let buf = '', ev = { event: 'message', data: [], id: undefined };
+        const flush = () => { if (ev.data.length) onEvent({ event: ev.event, data: ev.data.join('\n'), id: ev.id }); ev = { event: 'message', data: [], id: undefined }; };
+        return { feed(chunk) { buf += chunk; let i; while ((i = buf.search(/\r\n|\n|\r/)) >= 0) { const m = /^(\r\n|\n|\r)/.exec(buf.slice(i)); const line = buf.slice(0, i); buf = buf.slice(i + m[1].length); if (line === '') { flush(); continue; } if (line[0] === ':') continue; const c = line.indexOf(':'); const f = c < 0 ? line : line.slice(0, c); let v = c < 0 ? '' : line.slice(c + 1); if (v[0] === ' ') v = v.slice(1); if (f === 'data') ev.data.push(v); else if (f === 'event') ev.event = v; else if (f === 'id') ev.id = v; } }, end() { flush(); } };
+    }
+
+    // ===== 用戶端 =====
+    class McpError extends Error { constructor(msg, code, data) { super(msg); this.name = 'McpError'; this.code = code; this.data = data; } }
+    class McpClient {
+        constructor(transport, opts) { opts = opts || {}; this.t = transport; this.timeoutMs = opts.timeoutMs || 30000; this.id = 0; this.pending = new Map(); this.closed = false; this.info = null; this.capabilities = null; this.protocolVersion = null; this.handlers = {}; this.log = opts.log || (() => {});
+            transport.onmessage = (m) => this._onmessage(m); transport.onclose = (why) => this._onclose(why); transport.onerror = (e) => this.log('transport error: ' + String((e && e.message) || e)); }
+        on(method, fn) { this.handlers[method] = fn; }
+        _onclose(why) { this.closed = true; for (const [, p] of this.pending) { clearTimeout(p.timer); p.reject(new McpError('連線已關閉' + (why ? '：' + why : ''), -32000)); } this.pending.clear(); if (this.onclose) this.onclose(why); }
+        async _onmessage(m) {
+            if (!m || typeof m !== 'object') return;
+            if (m.id != null && (('result' in m) || ('error' in m)) && !m.method) { const p = this.pending.get(m.id); if (!p) return; this.pending.delete(m.id); clearTimeout(p.timer); if (m.error) p.reject(new McpError(m.error.message || 'MCP 錯誤', m.error.code, m.error.data)); else p.resolve(m.result); return; }
+            if (m.method && m.id != null) { // 伺服器發來的請求
+                let result, error; try { if (m.method === 'ping') result = {}; else if (m.method === 'roots/list') result = { roots: [] }; else if (this.handlers[m.method]) result = await this.handlers[m.method](m.params); else error = { code: -32601, message: '用戶端不支援 ' + m.method }; } catch (e) { error = { code: -32603, message: String((e && e.message) || e) }; }
+                try { await this.t.send(error ? { jsonrpc: '2.0', id: m.id, error } : { jsonrpc: '2.0', id: m.id, result }); } catch (_) { /* 連線可能已關 */ } return;
+            }
+            if (m.method) { if (this.handlers[m.method]) { try { this.handlers[m.method](m.params); } catch (_) { /* 通知的處理失敗不影響連線 */ } } }
+        }
+        request(method, params, opts) {
+            if (this.closed) return Promise.reject(new McpError('連線已關閉', -32000)); const id = ++this.id; const ms = (opts && opts.timeoutMs) || this.timeoutMs;
+            return new Promise((resolve, reject) => { const timer = setTimeout(() => { this.pending.delete(id); try { this.t.send({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: id, reason: 'timeout' } }); } catch (_) { /* */ } reject(new McpError(method + ' 逾時（' + Math.round(ms / 1000) + ' 秒）', -32001)); }, ms); this.pending.set(id, { resolve, reject, timer }); Promise.resolve(this.t.send({ jsonrpc: '2.0', id, method, params })).catch((e) => { if (this.pending.delete(id)) { clearTimeout(timer); reject(e); } }); });
+        }
+        notify(method, params) { return this.t.send({ jsonrpc: '2.0', method, params }); }
+        async initialize(extra) {
+            const r = await this.request('initialize', { protocolVersion: PROTOCOL_VERSIONS[0], capabilities: Object.assign({ roots: { listChanged: false } }, extra && extra.capabilities), clientInfo: CLIENT_INFO }, { timeoutMs: (extra && extra.timeoutMs) || 60000 });
+            if (!r || !PROTOCOL_VERSIONS.includes(r.protocolVersion)) throw new McpError('伺服器用的協定版本 ' + (r && r.protocolVersion) + ' 這個用戶端不支援（支援 ' + PROTOCOL_VERSIONS.join('、') + '）', -32002);
+            this.protocolVersion = r.protocolVersion; this.capabilities = r.capabilities || {}; this.info = r.serverInfo || {}; this.instructions = r.instructions; if (this.t.setProtocolVersion) this.t.setProtocolVersion(r.protocolVersion); await this.notify('notifications/initialized'); return r;
+        }
+        async _list(method, key, params) { const all = []; let cursor; for (let i = 0; i < 50; i++) { const r = await this.request(method, Object.assign({}, params, cursor ? { cursor } : {})); all.push(...(r[key] || [])); if (!r.nextCursor) break; cursor = r.nextCursor; } return all; }
+        listTools() { return this._list('tools/list', 'tools'); }
+        callTool(name, args, opts) { return this.request('tools/call', { name, arguments: args || {} }, { timeoutMs: (opts && opts.timeoutMs) || 120000 }); }
+        listResources() { return this._list('resources/list', 'resources'); }
+        readResource(uri) { return this.request('resources/read', { uri }); }
+        listPrompts() { return this._list('prompts/list', 'prompts'); }
+        getPrompt(name, args) { return this.request('prompts/get', { name, arguments: args || {} }); }
+        async close() { this.closed = true; for (const [, p] of this.pending) { clearTimeout(p.timer); p.reject(new McpError('連線已關閉', -32000)); } this.pending.clear(); try { await this.t.close(); } catch (_) { /* */ } }
+    }
+
+    // ===== 傳輸 =====
+    // stdio：換行分隔的 JSON；子行程由主程式啟動，bridge 是 { start(spec)→id, write(id,text), stop(id), onData(fn(id,text,stream)), onExit(fn(id,code,signal)) }
+    class StdioTransport {
+        constructor(bridge, spec) { this.b = bridge; this.spec = spec; this.id = null; this.buf = ''; this.stderr = []; this.onmessage = null; this.onclose = null; this.onerror = null; }
+        async start() { const r = await this.b.start(this.spec); if (!r || r.ok === false) throw new Error((r && r.error) || '啟動失敗'); this.id = r.id; this.pid = r.pid; this._off = [this.b.onData((id, text, stream) => { if (id !== this.id) return; if (stream === 'stderr') { this.stderr.push(text); if (this.stderr.length > 200) this.stderr.shift(); return; } this.buf += text; let i; while ((i = this.buf.indexOf('\n')) >= 0) { const line = this.buf.slice(0, i).replace(/\r$/, ''); this.buf = this.buf.slice(i + 1); if (!line.trim()) continue; let m = null; try { m = JSON.parse(line); } catch (_) { this.stderr.push('[非 JSON 的輸出] ' + line.slice(0, 200)); continue; } if (this.onmessage) this.onmessage(m); } }), this.b.onExit((id, code, signal) => { if (id !== this.id) return; if (this.onclose) this.onclose('子行程結束（code ' + code + (signal ? ', ' + signal : '') + '）' + (this.stderr.length ? '：' + this.stderr.slice(-3).join(' | ').slice(0, 300) : '')); })]; }
+        async send(msg) { if (this.id == null) throw new Error('還沒啟動'); const r = await this.b.write(this.id, JSON.stringify(msg) + '\n'); if (r && r.ok === false) throw new Error(r.error || '寫入失敗'); }
+        async close() { if (this.id != null) { try { await this.b.stop(this.id); } catch (_) { /* */ } } for (const f of this._off || []) { try { if (typeof f === 'function') f(); } catch (_) { /* */ } } }
+        logs() { return this.stderr.slice(-50).join('\n'); }
+    }
+    // Streamable HTTP：每個訊息 POST 一次；回應是 application/json 或 text/event-stream。202＝通知已收到。session 用 Mcp-Session-Id。
+    class HttpTransport {
+        constructor(url, opts) { opts = opts || {}; this.url = url; this.headers = opts.headers || {}; this.fetch = opts.fetch || ((typeof fetch !== 'undefined') ? fetch.bind(globalThis) : null); this.session = null; this.pv = null; this.onmessage = null; this.onclose = null; this.onerror = null; this.closed = false; this.ctrl = new Set(); }
+        async start() { if (!this.fetch) throw new Error('這個環境沒有 fetch'); }
+        setProtocolVersion(v) { this.pv = v; }
+        async send(msg) {
+            const h = Object.assign({ 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' }, this.headers); if (this.session) h['Mcp-Session-Id'] = this.session; if (this.pv) h['MCP-Protocol-Version'] = this.pv;
+            const ac = typeof AbortController !== 'undefined' ? new AbortController() : null; if (ac) this.ctrl.add(ac); let resp;
+            try { resp = await this.fetch(this.url, { method: 'POST', headers: h, body: JSON.stringify(msg), signal: ac ? ac.signal : undefined }); } catch (e) { if (ac) this.ctrl.delete(ac); throw new Error('連不上 ' + this.url + '：' + String((e && e.message) || e)); }
+            const sid = resp.headers && resp.headers.get && resp.headers.get('Mcp-Session-Id'); if (sid) this.session = sid;
+            if (resp.status === 202 || resp.status === 204) { if (ac) this.ctrl.delete(ac); return; }
+            if (!resp.ok) { if (ac) this.ctrl.delete(ac); let body = ''; try { body = (await resp.text()).slice(0, 200); } catch (_) { /* */ } throw new Error('HTTP ' + resp.status + (body ? '：' + body : '') + (resp.status === 401 || resp.status === 403 ? '（可能需要在 headers 帶金鑰或權杖）' : '')); }
+            const ct = (resp.headers && resp.headers.get && resp.headers.get('content-type')) || '';
+            if (/text\/event-stream/i.test(ct)) { const done = this._readSse(resp, ac); if (msg.id == null) { done.catch(() => {}); return; } done.catch((e) => { if (this.onerror) this.onerror(e); }); return; }
+            const j = await resp.json(); if (ac) this.ctrl.delete(ac); for (const m of (Array.isArray(j) ? j : [j])) if (this.onmessage) this.onmessage(m);
+        }
+        async _readSse(resp, ac) { const p = createSseParser((ev) => { if (ev.event !== 'message') return; try { const m = JSON.parse(ev.data); if (this.onmessage) this.onmessage(m); } catch (_) { /* 非 JSON 事件略過 */ } }); const rd = resp.body && resp.body.getReader ? resp.body.getReader() : null; const td = new TextDecoder(); try { if (rd) { for (;;) { const { value, done } = await rd.read(); if (done) break; p.feed(td.decode(value, { stream: true })); } } else p.feed(await resp.text()); p.end(); } finally { if (ac) this.ctrl.delete(ac); } }
+        async close() { this.closed = true; for (const a of this.ctrl) { try { a.abort(); } catch (_) { /* */ } } this.ctrl.clear(); if (this.session) { try { await this.fetch(this.url, { method: 'DELETE', headers: Object.assign({ 'Mcp-Session-Id': this.session }, this.headers) }); } catch (_) { /* 伺服器不一定支援 */ } } }
+    }
+    // 舊版 HTTP+SSE：GET url 開事件串流，第一個 endpoint 事件給 POST 的位置
+    class SseTransport {
+        constructor(url, opts) { opts = opts || {}; this.url = url; this.headers = opts.headers || {}; this.fetch = opts.fetch || ((typeof fetch !== 'undefined') ? fetch.bind(globalThis) : null); this.endpoint = null; this.onmessage = null; this.onclose = null; this.onerror = null; this.ac = typeof AbortController !== 'undefined' ? new AbortController() : null; }
+        async start() {
+            const resp = await this.fetch(this.url, { headers: Object.assign({ Accept: 'text/event-stream' }, this.headers), signal: this.ac ? this.ac.signal : undefined }); if (!resp.ok) throw new Error('HTTP ' + resp.status + '（' + this.url + '）'); let resolveEp, rejectEp; const epReady = new Promise((a, b) => { resolveEp = a; rejectEp = b; }); const to = setTimeout(() => rejectEp(new Error('等不到 endpoint 事件（這可能不是 SSE 型的 MCP 伺服器）')), 15000);
+            const p = createSseParser((ev) => { if (ev.event === 'endpoint') { this.endpoint = new URL(ev.data, this.url).href; clearTimeout(to); resolveEp(); } else if (ev.event === 'message') { try { if (this.onmessage) this.onmessage(JSON.parse(ev.data)); } catch (_) { /* */ } } });
+            (async () => { try { const rd = resp.body.getReader(); const td = new TextDecoder(); for (;;) { const { value, done } = await rd.read(); if (done) break; p.feed(td.decode(value, { stream: true })); } if (this.onclose) this.onclose('事件串流結束'); } catch (e) { if (!(this.ac && this.ac.signal.aborted)) { if (this.onerror) this.onerror(e); if (this.onclose) this.onclose(String((e && e.message) || e)); } } })();
+            await epReady;
+        }
+        async send(msg) { if (!this.endpoint) throw new Error('還沒連上'); const r = await this.fetch(this.endpoint, { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, this.headers), body: JSON.stringify(msg) }); if (!r.ok) throw new Error('HTTP ' + r.status); }
+        async close() { if (this.ac) this.ac.abort(); }
+    }
+
+    return { PROTOCOL_VERSIONS, CLIENT_INFO, stripJsonc, sanitizeName, maskEnv, SENSITIVE, normalizeServer, parseConfigText, substitute, parseManifest, keyFiles, detectProject, toolName, formatResult, createSseParser, McpError, McpClient, StdioTransport, HttpTransport, SseTransport };
+});
+
+}).call(null, undefined, holder);
+return holder.FaMcp;
+})();
+/* MCP-END */
 /* CATRT-BEGIN */
 const FaCatalogRankTrain = (function () {
 const holder = {};
@@ -26002,6 +26235,12 @@ class FloatingAssistant {
         this.register_slash_command('/unit-catalog', '[json]',
             '把這個程式已登記的工具轉成「單元目錄」（每個工具一個單元：參數與型別、副作用、可用性、信任等級），顯示評量統計；加 json 會把完整目錄存成檔案。是讓離線小模型組合行為的第一步，設計見 DESIGN.unit-catalog.md。',
             (argsText, run) => (run || this)._unitCatalogSlash(argsText));
+        this.register_slash_command('/mcp-install', '<附件：mcp.json／.mcpb／.zip／.7z／.tar.gz…，或 JSON 設定、https 網址>',
+            '安裝 MCP 伺服器：附上 mcp.json、.mcpb／.dxt、zip／7z／tar.gz／rar 壓縮檔（可以一次附很多個），或貼上 JSON 設定、遠端伺服器網址。會先列出「要執行什麼」讓你確認，有安裝指令（npm install、pip install）也要你同意；裝好會連線一次並列出它有哪些工具。跟 設定 → AI → MCP 頁面的「安裝」是同一個功能。',
+            (argsText, run) => (run || this)._mcpInstallSlash(argsText));
+        this.register_slash_command('/mcp', '[list|start|stop|restart|tools|remove] [名稱]',
+            '列出或管理已安裝的 MCP 伺服器（狀態、啟動、停止、重新啟動、看工具、移除）。安裝請用 /mcp-install。',
+            (argsText, run) => (run || this)._mcpSlash(argsText));
         this.register_slash_command('/view', '[檔名]',
             '在對話裡開啟檔案檢視器：xlsx（工作表頁籤、AI 的回答變成另一張工作表）、csv、tsv、json、yaml、toml。先附上檔案再下 /view，或 /view 檔名；不帶參數開最近上傳、可以檢視的檔案。可搜尋、匯出（xlsx／csv／sqlite3…）、問 AI。',
             (argsText, run) => (run || this)._viewSlash(argsText));
@@ -30660,6 +30899,69 @@ ${fnData.code}
                 try { const r = await this._unitCatalogFeedback(a); if (r.json) delete r.json; return JSON.stringify(r); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
             },
             { type: 'object', properties: { verdict: { type: 'string', enum: ['adopt', 'reject', 'run_ok', 'run_fail'] }, gap: { type: 'string', description: '缺口編號，例如 need/1 或 使用案例/類別.操作' }, url: { type: 'string', description: '要評的候選網址（不給就是推薦的那個；可以給備選的）' }, plan_id: { type: 'string' }, reason: { type: 'string' }, error: { type: 'string', description: 'run_fail 的錯誤訊息原文' }, action: { type: 'string', enum: ['stats', 'train', 'export', 'clear'] }, save: { type: 'boolean' }, force: { type: 'boolean' }, dense: { type: 'boolean', description: 'false＝訓練時不用嵌入特徵' } }, additionalProperties: false }
+        );
+
+        // ===== MCP domain 的工具（子 agent 專用）：mcp_servers → mcp_tools → mcp_call =====
+        registerOptional('mcp_servers',
+            '列出已安裝的 MCP 伺服器：名稱、連線方式（stdio／http／sse）、狀態（stopped／starting／ready／error／disabled）、工具數、錯誤訊息。呼叫 MCP 工具之前先用這個確認有哪些伺服器可以用。',
+            async function () { try { await this._mcpLoad(); return JSON.stringify({ ok: true, desktop: !!this._mcpBridge(), servers: this._mcpStore.servers.map((c) => this._mcpPublic(c)) }); } catch (e) { return JSON.stringify({ ok: false, error: String((e && e.message) || e) }); } },
+            { type: 'object', properties: {}, additionalProperties: false }
+        );
+        registerOptional('mcp_tools',
+            '列出某個 MCP 伺服器提供的工具（必要時會先啟動它）：每個工具的名稱、說明、必填參數；加 tool 參數會回傳那個工具完整的輸入格式（JSON Schema）。不要猜工具名稱與參數，先用這個查。query 可以用關鍵字篩選。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try {
+                    const server = String(a.server || ''); if (!server) return JSON.stringify({ ok: false, error: '要給 server（用 mcp_servers 查名稱）' }); const rt = await this._mcpStart(server);
+                    if (a.tool) { const t = rt.tools.find((x) => x.name === a.tool); return JSON.stringify(t ? { ok: true, tool: t } : { ok: false, error: '沒有工具 ' + a.tool, tools: rt.tools.map((x) => x.name).slice(0, 30) }); }
+                    const q = String(a.query || '').toLowerCase().trim(); const list = rt.tools.filter((t) => !q || (t.name + ' ' + (t.description || '')).toLowerCase().includes(q));
+                    return JSON.stringify({ ok: true, server, instructions: rt.instructions ? String(rt.instructions).slice(0, 600) : undefined, total: rt.tools.length, tools: list.slice(0, 60).map((t) => ({ name: t.name, description: String(t.description || '').slice(0, 240), required: (t.inputSchema && t.inputSchema.required) || [], params: Object.keys((t.inputSchema && t.inputSchema.properties) || {}) })) });
+                } catch (e) { return JSON.stringify({ ok: false, error: String((e && e.message) || e) }); }
+            },
+            { type: 'object', properties: { server: { type: 'string', description: '伺服器名稱（mcp_servers 查得到）' }, tool: { type: 'string', description: '（選填）要看完整輸入格式的工具名稱' }, query: { type: 'string', description: '（選填）用關鍵字篩選工具' } }, required: ['server'], additionalProperties: false }
+        );
+        registerOptional('mcp_call',
+            '呼叫某個 MCP 伺服器的工具（必要時會先啟動它）。server＝伺服器名稱、tool＝工具名稱、arguments＝依 mcp_tools 查到的輸入格式填的參數物件。回傳工具的文字結果；ok:false 或 is_error:true 代表工具回報失敗，把原因如實轉告，不要假裝成功。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try { if (!a.server || !a.tool) return JSON.stringify({ ok: false, error: '要給 server 和 tool（先用 mcp_servers、mcp_tools 查）' }); return JSON.stringify(await this._mcpCall(String(a.server), String(a.tool), a.arguments)); } catch (e) { return JSON.stringify({ ok: false, error: String((e && e.message) || e) }); }
+            },
+            { type: 'object', properties: { server: { type: 'string' }, tool: { type: 'string' }, arguments: { type: 'object', description: '依工具的輸入格式填的參數' } }, required: ['server', 'tool'], additionalProperties: false }
+        );
+        registerOptional('mcp_resources',
+            '列出某個 MCP 伺服器提供的資源（檔案、資料表之類），或給 uri 讀取其中一個的內容。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try { if (!a.server) return JSON.stringify({ ok: false, error: '要給 server' }); const rt = await this._mcpStart(String(a.server)); if (!(rt.client && rt.client.capabilities && rt.client.capabilities.resources)) return JSON.stringify({ ok: false, error: '這個伺服器沒有提供資源（resources）' });
+                    if (a.uri) { const r = await rt.client.readResource(String(a.uri)); return JSON.stringify({ ok: true, contents: (r.contents || []).map((c) => ({ uri: c.uri, mimeType: c.mimeType, text: c.text != null ? String(c.text).slice(0, 20000) : undefined, binary: c.blob ? true : undefined })) }); }
+                    return JSON.stringify({ ok: true, resources: (await rt.client.listResources()).slice(0, 100) }); } catch (e) { return JSON.stringify({ ok: false, error: String((e && e.message) || e) }); }
+            },
+            { type: 'object', properties: { server: { type: 'string' }, uri: { type: 'string', description: '（選填）要讀取的資源 uri；不給就列出全部' } }, required: ['server'], additionalProperties: false }
+        );
+        registerOptional('mcp_install',
+            '安裝 MCP 伺服器。file_id（使用者上傳的 mcp.json、.mcpb、.dxt、.zip、.7z、.tar.gz 等；可以給 file_ids 陣列一次裝好幾個）、text（貼上的 JSON 設定，或遠端 MCP 伺服器的 https 網址）至少給一個。會先把「要執行什麼」給使用者看，同意才安裝；有安裝指令（npm install、pip install）也要使用者同意；裝好會連線一次並列出工具。使用者拒絕就是拒絕，不要換個方式再裝一次。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try { const ids = [].concat(a.file_ids || [], a.file_id ? [a.file_id] : []).map(String); const r = await this._mcpInstall({ text: a.text, file_ids: ids }); return JSON.stringify(Object.assign({}, r, { summary: this._mcpInstallSummary(r) })); } catch (e) { return JSON.stringify({ ok: false, error: String((e && e.message) || e) }); }
+            },
+            { type: 'object', properties: { file_id: { type: 'string', description: '使用者上傳的檔案 id（list_uploaded_files）' }, file_ids: { type: 'array', items: { type: 'string' } }, text: { type: 'string', description: '貼上的 MCP JSON 設定，或遠端 MCP 伺服器的網址' } }, additionalProperties: false }
+        );
+        registerOptional('mcp_manage',
+            '管理已安裝的 MCP 伺服器：start、stop、restart、enable、disable、remove（會先問使用者）、logs（看伺服器的錯誤輸出，排查連不上的原因）。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try {
+                    await this._mcpLoad(); const name = String(a.server || ''); const act = String(a.action || ''); const cfg = this._mcpStore.servers.find((s) => s.name === name); if (!cfg) return JSON.stringify({ ok: false, error: '沒有這個 MCP 伺服器：' + name });
+                    if (act === 'start') { const rt = await this._mcpStart(name); return JSON.stringify({ ok: true, status: rt.status, tools: rt.tools.length }); }
+                    if (act === 'stop') return JSON.stringify(await this._mcpStop(name));
+                    if (act === 'restart') { await this._mcpStop(name); const rt = await this._mcpStart(name); return JSON.stringify({ ok: true, status: rt.status, tools: rt.tools.length }); }
+                    if (act === 'enable' || act === 'disable') { cfg.disabled = act === 'disable'; if (cfg.disabled) await this._mcpStop(name); await this._mcpSave(); return JSON.stringify({ ok: true, disabled: cfg.disabled }); }
+                    if (act === 'remove') return JSON.stringify(await this._mcpRemove(name));
+                    if (act === 'logs') { const rt = this._mcpRt(name); return JSON.stringify({ ok: true, status: rt.status, error: rt.error || undefined, logs: (rt.transport && rt.transport.logs ? rt.transport.logs() : rt.logs || '').slice(-3000) }); }
+                    return JSON.stringify({ ok: false, error: 'action 要是 start／stop／restart／enable／disable／remove／logs' });
+                } catch (e) { return JSON.stringify({ ok: false, error: String((e && e.message) || e) }); }
+            },
+            { type: 'object', properties: { server: { type: 'string' }, action: { type: 'string', enum: ['start', 'stop', 'restart', 'enable', 'disable', 'remove', 'logs'] } }, required: ['server', 'action'], additionalProperties: false }
         );
 
         registerOptional('big_content',
@@ -62021,6 +62323,221 @@ ${existingNodeSummaries}
         if (ar.single) out.note = '單一檔案壓縮；用 entry 指定檔名可以讀解開後的內容。'; else out.note = '只列出項目；要看某一項的內容，帶 entry 指定。';
         return out;
     }
+    // ===== MCP（Model Context Protocol）伺服器管理（設計見 DESIGN.mcp.md）=====
+    // 設定存在 fileCache 的 mcp-servers.json；執行狀態（連線、工具清單、日誌）只在記憶體。stdio 型的伺服器要桌面版（主程式啟動子行程，見 main-ext.js 的 fa:mcp:*）；
+    // HTTP／SSE 型的遠端伺服器網頁版也能連。AI 不直接看到每個 MCP 工具，而是透過獨立的 mcp domain（子 agent）呼叫：mcp_servers → mcp_tools → mcp_call。
+    _mcpBridge() { return (typeof window !== 'undefined' && window.desktopAPI && window.desktopAPI.mcp) || null; }
+    async _mcpLoad() {
+        if (this._mcpStore) return this._mcpStore; let st = null;
+        try { const all = await this.fileCache.getAll(); const rec = all.filter((r) => r && r.filename === 'mcp-servers.json').sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0]; if (rec && rec.blob) st = JSON.parse(await rec.blob.text()); } catch (_) { st = null; }
+        this._mcpStore = st && Array.isArray(st.servers) ? st : { version: 1, servers: [] }; return this._mcpStore;
+    }
+    async _mcpSave() {
+        try { const all = await this.fileCache.getAll(); for (const r of all) if (r && r.filename === 'mcp-servers.json') await this.fileCache.delete(r.id); await this.fileCache.put('mcp-servers.json', 'application/json', new Blob([JSON.stringify(this._mcpStore)], { type: 'application/json' }), 'system'); return true; } catch (_) { return false; }
+    }
+    _mcpRt(name) { this._mcpRuntime = this._mcpRuntime || new Map(); if (!this._mcpRuntime.has(name)) this._mcpRuntime.set(name, { status: 'stopped', tools: [], error: '', logs: '', starting: null, client: null, transport: null }); return this._mcpRuntime.get(name); }
+    // HTTP 型伺服器的 fetch：先直接連；被瀏覽器的跨來源規則擋掉（TypeError）就改走程式的網路層
+    _mcpFetch() {
+        return async (url, init) => {
+            try { return await fetch(url, init); } catch (e) {
+                if (!(e instanceof TypeError) || typeof this._terminalHttpFetch !== 'function') throw e;
+                const r = await this._terminalHttpFetch(init.method || 'GET', url, { headers: init.headers, body: init.body, timeoutMs: 90000 }); return r && r.resp ? r.resp : r;
+            }
+        };
+    }
+    _mcpTransport(cfg) {
+        const M = FaMcp;
+        if (cfg.transport === 'stdio') { const br = this._mcpBridge(); if (!br) throw new Error('這是 stdio 型的 MCP 伺服器（要在本機啟動程式），需要桌面版才能執行；網頁版只能連 HTTP／SSE 型的遠端伺服器'); return new M.StdioTransport(br, { name: cfg.name, command: cfg.command, args: cfg.args || [], env: cfg.env || {}, cwd: cfg.cwd || cfg.installDir || undefined }); }
+        if (cfg.transport === 'sse') return new M.SseTransport(cfg.url, { headers: cfg.headers, fetch: this._mcpFetch() });
+        return new M.HttpTransport(cfg.url, { headers: cfg.headers, fetch: this._mcpFetch() });
+    }
+    async _mcpStart(name) {
+        await this._mcpLoad(); const cfg = this._mcpStore.servers.find((s) => s.name === name); if (!cfg) throw new Error('沒有這個 MCP 伺服器：' + name); if (cfg.disabled) throw new Error('MCP 伺服器 ' + name + ' 已停用（在設定 → MCP 打開它）');
+        const rt = this._mcpRt(name); if (rt.status === 'ready' && rt.client && !rt.client.closed) return rt; if (rt.starting) return rt.starting;
+        rt.starting = (async () => {
+            rt.status = 'starting'; rt.error = ''; let tp = null, cl = null;
+            try {
+                tp = this._mcpTransport(cfg); cl = new FaMcp.McpClient(tp, { timeoutMs: 30000 }); rt.transport = tp; rt.client = cl;
+                cl.onclose = (why) => { if (rt.client === cl) { rt.status = rt.stopping ? 'stopped' : 'error'; if (!rt.stopping) rt.error = '連線中斷：' + (why || ''); rt.logs = tp.logs ? tp.logs() : rt.logs; rt.client = null; } };
+                cl.on('notifications/tools/list_changed', () => { cl.listTools().then((t) => { rt.tools = t; }).catch(() => {}); });
+                await tp.start(); await cl.initialize(); rt.tools = await cl.listTools(); rt.info = cl.info; rt.instructions = cl.instructions; rt.status = 'ready'; rt.startedAt = Date.now(); rt.logs = tp.logs ? tp.logs() : '';
+                return rt;
+            } catch (e) {
+                rt.status = 'error'; rt.logs = tp && tp.logs ? tp.logs() : ''; rt.error = String((e && e.message) || e) + (rt.logs ? '\n--- 伺服器輸出 ---\n' + rt.logs.slice(-800) : ''); try { if (cl) await cl.close(); } catch (_) { /* */ } rt.client = null; throw new Error(rt.error);
+            } finally { rt.starting = null; }
+        })();
+        return rt.starting;
+    }
+    async _mcpStop(name) { const rt = this._mcpRt(name); rt.stopping = true; try { if (rt.client) await rt.client.close(); } catch (_) { /* */ } rt.client = null; rt.status = 'stopped'; rt.stopping = false; return { ok: true }; }
+    async _mcpCall(server, tool, args) {
+        const rt = await this._mcpStart(server); const t = rt.tools.find((x) => x.name === tool);
+        if (!t) { const near = rt.tools.filter((x) => x.name.toLowerCase().includes(String(tool).toLowerCase().slice(0, 4))).slice(0, 5).map((x) => x.name); return { ok: false, error: '伺服器 ' + server + ' 沒有工具 ' + tool, tools: near.length ? near : rt.tools.slice(0, 12).map((x) => x.name) }; }
+        const a = args && typeof args === 'object' ? args : {}; const req = (t.inputSchema && t.inputSchema.required) || []; const miss = req.filter((k) => a[k] === undefined);
+        if (miss.length) return { ok: false, error: '缺少必填參數：' + miss.join('、'), input_schema: t.inputSchema };
+        const res = await rt.client.callTool(tool, a); const f = FaMcp.formatResult(res); return { ok: !f.isError, is_error: f.isError, text: f.text, images: f.images.length || undefined, truncated: f.truncated || undefined };
+    }
+    _mcpPublic(cfg) { const rt = this._mcpRt(cfg.name); return { name: cfg.name, transport: cfg.transport, status: cfg.disabled ? 'disabled' : rt.status, tools: rt.tools.length, command: cfg.transport === 'stdio' ? [cfg.command].concat(cfg.args || []).join(' ') : cfg.url, install_dir: cfg.installDir || undefined, source: cfg.source || undefined, error: rt.error ? rt.error.slice(0, 300) : undefined, description: cfg.description || (rt.info && rt.info.name ? rt.info.name + ' ' + (rt.info.version || '') : undefined) }; }
+
+    // --- 安裝 ---
+    // 加入伺服器設定：先給使用者看清楚會執行什麼（命令列、環境變數名稱、來源），同意才存
+    async _mcpAddServers(servers, meta) {
+        await this._mcpLoad(); meta = meta || {}; const br = this._mcpBridge(); const lines = servers.map((s) => '• ' + s.name + '（' + s.transport + '）\n    ' + (s.transport === 'stdio' ? '執行：' + [s.command].concat(s.args || []).join(' ') + (s.cwd ? '\n    資料夾：' + s.cwd : '') : '連線：' + s.url) + (s.env && Object.keys(s.env).length ? '\n    環境變數：' + Object.keys(s.env).join('、') + '（值不顯示）' : '') + (s.headers && Object.keys(s.headers).length ? '\n    標頭：' + Object.keys(s.headers).join('、') : '') + (this._mcpStore.servers.some((x) => x.name === s.name) ? '\n    ⚠️ 已有同名的伺服器，會被取代' : ''));
+        const noRun = servers.some((s) => s.transport === 'stdio') && !br ? '\n\n⚠️ 這是網頁版：stdio 型的伺服器只會存下設定，要在桌面版才能啟動。' : '';
+        const ans = await this.requestUserForm({ title: '🔌 要安裝這些 MCP 伺服器嗎？', description: (meta.source ? '來源：' + meta.source + '\n\n' : '') + lines.join('\n') + '\n\nMCP 伺服器是會在你的電腦上執行的程式（或遠端服務），可以讀寫檔案、連網路。只安裝你信任的來源。' + noRun, choices: ['安裝', '取消'] });
+        if (!ans || !ans.confirmed || ans.answer !== '安裝') return { ok: false, cancelled: true, error: '使用者沒有同意安裝' };
+        for (const s of servers) { const rec = Object.assign({}, s, { source: meta.source || 'manual', installDir: meta.installDir || s.installDir, installed_at: new Date().toISOString(), approved_at: new Date().toISOString() }); const i = this._mcpStore.servers.findIndex((x) => x.name === s.name); if (i >= 0) { try { await this._mcpStop(s.name); } catch (_) { /* */ } this._mcpStore.servers[i] = rec; } else this._mcpStore.servers.push(rec); }
+        const saved = await this._mcpSave(); const out = []; // 順便試著連一次，確認真的能用、順便列出工具
+        for (const s of servers) { if (s.disabled) { out.push({ name: s.name, status: 'disabled' }); continue; } try { const rt = await this._mcpStart(s.name); out.push({ name: s.name, status: 'ready', tools: rt.tools.map((t) => t.name) }); } catch (e) { out.push({ name: s.name, status: 'error', error: String((e && e.message) || e).slice(0, 400) }); } }
+        return { ok: true, saved, servers: out };
+    }
+    // 讀一個檔案（blob）並安裝：JSON 設定、MCP bundle（.mcpb／.dxt）、壓縮檔裡的專案（zip／7z／tar.gz…）
+    async _mcpInstallBlob(blob, filename) {
+        const A = FaArchive; const head = new Uint8Array(await blob.slice(0, 0x8200).arrayBuffer()); const sn = A.sniff(head, filename);
+        const looksJson = !sn.format && (/\.(json|jsonc)$/i.test(filename) || (head[0] === 0x7b || head[0] === 0x5b || (head[0] === 0xef && head[1] === 0xbb)));
+        if (looksJson || (/\.(json|jsonc|txt)$/i.test(filename) && !sn.format)) {
+            if (blob.size > 2 * 1048576) return { ok: false, error: '設定檔太大（' + Math.round(blob.size / 1024) + ' KB）' };
+            const r = FaMcp.parseConfigText(await blob.text()); if (!r.ok) return { ok: false, error: filename + '：' + r.error };
+            return await this._mcpAddServers(r.servers, { source: filename + '（' + r.format + '）' });
+        }
+        if (!sn.format) return { ok: false, error: '認不出「' + filename + '」是什麼：要是 mcp.json／設定的 JSON，或 .mcpb／.dxt／.zip／.7z／.tar.gz 之類的壓縮檔' };
+        return await this._mcpInstallArchive(blob, filename);
+    }
+    async _mcpInstallArchive(blob, filename) {
+        const A = FaArchive; let ar; try { ar = await this._archiveOpen(blob, filename, { maxBytes: 600 * 1048576 }); } catch (e) { return { ok: false, error: '打不開壓縮檔：' + String((e && e.message) || e) }; }
+        if (ar.encrypted) return { ok: false, error: '壓縮檔有加密，目前不支援（請先解壓縮再重新壓縮成沒加密的）' };
+        const files = ar.entries.filter((e) => !e.isDir && !/(^|\/)(\.git|__MACOSX)\//.test(e.name)); const paths = files.map((e) => e.name); const want = FaMcp.keyFiles(paths, 2); const texts = {};
+        for (const p of want) { const e = files.find((x) => x.name === p); if (e && (e.size == null || e.size < 1048576)) { try { const b = await ar.read(p); if (b && !A.looksBinary(b)) texts[p] = A.decodeText(b); } catch (_) { /* 讀不到就略過 */ } } }
+        const cands = FaMcp.detectProject(paths, texts).filter((c) => !c.unsupported); if (!cands.length) { const un = FaMcp.detectProject(paths, texts).find((c) => c.unsupported); return { ok: false, error: un ? un.note : '在「' + filename + '」裡找不到 MCP 伺服器的設定或程式（沒有 mcp.json、manifest.json、package.json、pyproject.toml）', entries: paths.slice(0, 15) }; }
+        let cand = cands[0];
+        if (cands.length > 1 && cands[1].confidence >= 0.4 && cands[1].dir !== cands[0].dir) {
+            const labels = cands.slice(0, 4).map((c, i) => (i + 1) + '. ' + (c.dir || '(根目錄)') + '：' + c.kind + (c.name ? ' ' + c.name : '') + '（把握 ' + Math.round(c.confidence * 100) + '%）');
+            const a = await this.requestUserForm({ title: '📦 壓縮檔裡有好幾個可能的 MCP 伺服器', description: labels.join('\n') + '\n\n要安裝哪一個？', choices: labels.map((l, i) => String(i + 1)).concat(['取消']) }); if (!a || !a.confirmed || a.answer === '取消') return { ok: false, cancelled: true, error: '使用者取消' }; cand = cands[Number(a.answer) - 1] || cands[0];
+        }
+        const br = this._mcpBridge(); const baseName = FaMcp.sanitizeName(cand.manifest ? cand.manifest.name : (cand.name || (cand.servers && cand.servers[0].name) || filename.replace(/\.[^.]+$/, '').replace(/\.tar$/, '')));
+        // 先決定要不要解開（有程式要執行 → 解開到專用資料夾；只有網址型設定 → 不用）
+        const needFiles = cand.kind !== 'config' || cand.servers.some((s) => s.transport === 'stdio'); let installDir = null; const notes = [];
+        if (needFiles) {
+            if (!br) return { ok: false, error: '「' + filename + '」裡是要在本機執行的 MCP 伺服器，網頁版沒辦法執行；請在桌面版安裝（或改用 HTTP／SSE 型的遠端 MCP 伺服器）' };
+            const rt = await br.runtimes().catch(() => ({})); if (cand.needs_runtime === 'node' && rt.node && !rt.node.ok) return { ok: false, error: '這個伺服器需要 Node.js，但這台電腦找不到 node（先安裝 Node.js：https://nodejs.org）' }; if (cand.needs_runtime === 'python' && rt.python && !rt.python.ok) return { ok: false, error: '這個伺服器需要 Python，但這台電腦找不到 python（先安裝 Python）' };
+            const prefix = cand.dir || ''; const sel = files.filter((e) => e.name.startsWith(prefix)); let batch = [], size = 0, first = true, written = 0;
+            const flush = async () => { if (!batch.length) return; const r = await br.writeFiles(baseName, batch, first); first = false; if (!r || !r.ok) throw new Error((r && r.error) || '寫入失敗'); installDir = r.dir; written += r.written; batch = []; size = 0; };
+            try { for (const e of sel) { const b = await ar.read(e.name); if (!b) continue; const rel = e.name.slice(prefix.length); let bin = ''; for (let i = 0; i < b.length; i += 0x8000) bin += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); batch.push({ path: rel, base64: btoa(bin) }); size += b.length; if (size > 6 * 1048576) await flush(); } await flush(); } catch (e) { return { ok: false, error: '解開失敗：' + String((e && e.message) || e) }; }
+            if (!installDir) { const r = await br.writeFiles(baseName, [], true); installDir = r && r.dir; } notes.push('已解開 ' + written + ' 個檔案到 ' + installDir);
+        }
+        // 安裝步驟（npm install、pip install…）：列給使用者看、同意才跑
+        const steps = cand.steps || [];
+        if (steps.length) {
+            const a = await this.requestUserForm({ title: '🛠️ 要執行安裝指令嗎？', description: steps.map((s) => '• ' + s.run + '　（' + s.why + '）').join('\n') + '\n\n資料夾：' + installDir + '\n這會下載並執行第三方程式碼，只在你信任這個來源時才同意。', choices: ['執行', '先不執行（之後自己跑）', '取消'] });
+            if (!a || !a.confirmed || a.answer === '取消') return { ok: false, cancelled: true, error: '使用者取消' };
+            if (a.answer === '執行') for (const s of steps) { let parts = s.run.split(/\s+/); if (parts[0] === 'pip') parts = ['python', '-m', 'pip'].concat(parts.slice(1)); const r = await br.exec({ command: parts[0], args: parts.slice(1), cwd: installDir, label: 'MCP 安裝：' + baseName, timeoutMs: 900000 }); notes.push((r.ok ? '✅ ' : '❌ ') + s.run + (r.ok ? '' : '：' + (r.error || '') + '\n' + String(r.output || '').slice(-600))); if (!r.ok) return { ok: false, error: '安裝指令失敗：' + s.run, notes, output: String(r.output || '').slice(-1500) }; }
+            else notes.push('略過安裝指令（要自己執行：' + steps.map((s) => s.run).join('；') + '）');
+        }
+        let servers = [];
+        if (cand.kind === 'config') servers = cand.servers.map((s) => s.transport === 'stdio' ? Object.assign({}, s, { cwd: s.cwd || (installDir ? installDir : undefined) }) : s);
+        else if (cand.kind === 'bundle') {
+            const m = cand.manifest; const uc = m.user_config || {}; const values = {};
+            const need = Object.entries(uc).filter(([, d]) => d.required || d.default !== undefined);
+            if (need.length) { const a = await this.requestUserForm({ title: '⚙️ ' + (m.display_name || m.name) + ' 的設定', description: (m.description || '') + '\n\n填入它需要的設定（金鑰類只存在這台電腦）。', fields: need.map(([k, d]) => ({ key: k, label: (d.title || k) + (d.sensitive ? '（機密）' : '') + (d.required ? ' *' : ''), value: d.default != null ? String(d.default) : '', placeholder: d.description || '' })) }); if (!a || !a.confirmed) return { ok: false, cancelled: true, error: '使用者取消' }; for (const [k, v] of Object.entries(a.values || {})) if (String(v).length) values[k] = v; }
+            const hostPlatform = (this._mcpBridge() && window.desktopAPI.platform && window.desktopAPI.platform.name) || 'web'; const pm = FaMcp.parseManifest(texts[cand.via], { __dirname: installDir ? installDir.replace(/\\/g, '/') : '', user_config: values, __platform: hostPlatform, HOME: '', });
+            if (!pm.ok || !pm.server) return { ok: false, error: 'bundle 的 manifest 沒有可執行的 mcp_config' }; if (pm.unresolved.length) notes.push('⚠️ 還有沒填的設定：' + pm.unresolved.join('、'));
+            servers = [{ name: baseName, transport: 'stdio', command: pm.server.command, args: pm.server.args, env: pm.server.env, cwd: installDir, description: pm.description }];
+        } else servers = [Object.assign({ name: baseName, transport: 'stdio', description: cand.description }, cand.server, { cwd: installDir })];
+        const r = await this._mcpAddServers(servers, { source: filename + '（' + cand.kind + (cand.dir ? '：' + cand.dir : '') + '）', installDir }); r.notes = notes.concat(r.notes || []); return r;
+    }
+    // 給 /mcp-install 與 mcp_install 工具用：文字（JSON 設定、網址）＋附件（檔案 id）
+    async _mcpInstall(inp) {
+        inp = inp || {}; const results = [];
+        if (inp.text && String(inp.text).trim()) {
+            const t = String(inp.text).trim();
+            if (/^https?:\/\/\S+$/i.test(t) && !/\.(json|zip|7z|mcpb|dxt|tgz|gz|tar|rar)(\?|$)/i.test(t)) { const sv = [{ name: FaMcp.sanitizeName(new URL(t).hostname.replace(/^(www|mcp|api)\./, '').split('.')[0]), transport: /\/sse\/?$/i.test(t) ? 'sse' : 'http', url: t }]; results.push({ source: t, result: await this._mcpAddServers(sv, { source: t }) }); }
+            else if (/^https?:\/\//i.test(t)) { try { const r = await this._mcpFetch()(t, { method: 'GET' }); if (!r.ok) throw new Error('HTTP ' + r.status); const blob = new Blob([await (r.blob ? r.blob() : r.arrayBuffer())]); results.push({ source: t, result: await this._mcpInstallBlob(blob, decodeURIComponent(t.split('?')[0].split('/').pop() || 'download')) }); } catch (e) { results.push({ source: t, result: { ok: false, error: '下載失敗：' + String((e && e.message) || e) } }); } }
+            else { const r = FaMcp.parseConfigText(t); results.push({ source: '貼上的文字', result: r.ok ? await this._mcpAddServers(r.servers, { source: '貼上的設定（' + r.format + '）' }) : { ok: false, error: r.error } }); }
+        }
+        for (const id of inp.file_ids || []) { const rec = await this.fileCache.get(id); if (!rec || !rec.blob) { results.push({ source: id, result: { ok: false, error: '找不到附件 ' + id } }); continue; } results.push({ source: rec.filename, result: await this._mcpInstallBlob(rec.blob, rec.filename) }); }
+        for (const b of inp.blobs || []) results.push({ source: b.name, result: await this._mcpInstallBlob(b.blob, b.name) });
+        if (!results.length) return { ok: false, error: '沒有東西可以安裝：附上 mcp.json／.mcpb／.zip／.7z 檔案，或貼上 JSON 設定或網址' };
+        return { ok: results.every((r) => r.result.ok), results };
+    }
+    _mcpInstallSummary(r) {
+        if (!r.results) return '⚠️ ' + (r.error || '失敗');
+        return r.results.map((x) => { const v = x.result; if (!v.ok) return '❌ ' + x.source + '：' + (v.cancelled ? '已取消' : v.error) + (v.notes && v.notes.length ? '\n  ' + v.notes.join('\n  ') : '') + (v.output ? '\n' + v.output : ''); return '✅ ' + x.source + '\n' + (v.notes || []).map((n) => '  ' + n).join('\n') + (v.servers || []).map((s) => '\n  • ' + s.name + '：' + (s.status === 'ready' ? '連線成功，' + s.tools.length + ' 個工具（' + s.tools.slice(0, 8).join('、') + (s.tools.length > 8 ? '…' : '') + '）' : (s.status === 'disabled' ? '已加入（停用中）' : '已加入，但這次連線失敗：' + s.error))).join(''); }).join('\n\n');
+    }
+    async _mcpInstallSlash(argsText) {
+        const atts = FaRecipe.parseAttachments(String(argsText || '')); const text = FaRecipe.stripAttachments(String(argsText || '')); this._pushAssistantMessage('🔌 安裝 MCP：' + (atts.map((a) => a.filename).concat(text ? [text.slice(0, 60)] : []).join('、') || '（沒有內容）'), null);
+        if (!atts.length && !text) { this._pushAssistantMessage('用法：/mcp-install 後面接附件（mcp.json、.mcpb、.dxt、.zip、.7z、.tar.gz、.rar…，可以一次附很多個），或貼上 JSON 設定、https:// 網址。會顯示要執行什麼、你同意才裝；裝好會連一次，列出它有哪些工具。', null); return; }
+        const r = await this._mcpInstall({ text, file_ids: atts.map((a) => a.id) }); this._pushAssistantMessage(this._mcpInstallSummary(r), null);
+    }
+    async _mcpSlash(argsText) {
+        const argv = String(argsText || '').trim().split(/\s+/).filter(Boolean); const sub = argv[0] || 'list'; await this._mcpLoad();
+        if (sub === 'list') { const l = this._mcpStore.servers.map((c) => this._mcpPublic(c)); this._pushAssistantMessage(l.length ? '🔌 MCP 伺服器（' + l.length + '）\n\n' + l.map((s) => '• ' + s.name + '（' + s.transport + '）：' + s.status + (s.tools ? '，' + s.tools + ' 個工具' : '') + (s.error ? '\n    ⚠️ ' + s.error.split('\n')[0] : '')).join('\n') + '\n\n管理：/mcp start|stop|restart|remove|tools <名稱>；安裝：/mcp-install；也可以到 設定 → AI → MCP' : '還沒有 MCP 伺服器。用 /mcp-install 附上 mcp.json、.mcpb 或壓縮檔來安裝，或到 設定 → AI → MCP。', null); return; }
+        const name = argv[1]; if (!name) { this._pushAssistantMessage('用法：/mcp ' + sub + ' <名稱>', null); return; }
+        try {
+            if (sub === 'start' || sub === 'restart') { if (sub === 'restart') await this._mcpStop(name); const rt = await this._mcpStart(name); this._pushAssistantMessage('✅ ' + name + ' 連線成功，' + rt.tools.length + ' 個工具', null); return; }
+            if (sub === 'stop') { await this._mcpStop(name); this._pushAssistantMessage('已停止 ' + name, null); return; }
+            if (sub === 'tools') { const rt = await this._mcpStart(name); this._pushAssistantMessage('🧰 ' + name + ' 的工具：\n' + rt.tools.map((t) => '• ' + t.name + '：' + String(t.description || '').split('\n')[0].slice(0, 100)).join('\n'), null); return; }
+            if (sub === 'remove') { const r = await this._mcpRemove(name); this._pushAssistantMessage(r.ok ? '已移除 ' + name + (r.dir_removed ? '（連安裝資料夾一起刪了）' : '') : '⚠️ ' + r.error, null); return; }
+            this._pushAssistantMessage('不認得的子指令：' + sub + '（list｜start｜stop｜restart｜tools｜remove）', null);
+        } catch (e) { this._pushAssistantMessage('⚠️ ' + String((e && e.message) || e), null); }
+    }
+    async _mcpRemove(name) {
+        await this._mcpLoad(); const i = this._mcpStore.servers.findIndex((s) => s.name === name); if (i < 0) return { ok: false, error: '沒有這個 MCP 伺服器：' + name };
+        const cfg = this._mcpStore.servers[i]; const a = await this.requestUserForm({ title: '🗑️ 移除 MCP 伺服器「' + name + '」？', description: cfg.installDir ? '安裝資料夾也會一起刪除：\n' + cfg.installDir : '只會刪除設定。', choices: ['移除', '取消'] }); if (!a || !a.confirmed || a.answer !== '移除') return { ok: false, error: '使用者取消' };
+        try { await this._mcpStop(name); } catch (_) { /* */ } let dir_removed = false; if (cfg.installDir && this._mcpBridge()) { const r = await this._mcpBridge().removeDir(cfg.installDir); dir_removed = !!(r && r.ok); }
+        this._mcpStore.servers.splice(i, 1); this._mcpRuntime && this._mcpRuntime.delete(name); await this._mcpSave(); return { ok: true, dir_removed };
+    }
+    // ===== 設定 → AI → MCP：安裝、啟動／停止、看工具、測試呼叫、日誌、移除 =====
+    _mcpRegisterPane() {
+        if (this._mcpPaneRegistered) return; const root = document.createElement('div'); root.id = 'ai-mcp-pane'; root.style.cssText = 'font-size:13px; line-height:1.5;';
+        this._mcpPaneRoot = root; this._mcpPaneRegistered = true; this._mcpPaneOpen = {};
+        this.registerAdvancedSettingsTab('ai', 'mcp', 'MCP 伺服器', root);
+        const rerender = () => this._mcpRenderPane();
+        root.addEventListener('change', async (ev) => {
+            const t = ev.target;
+            if (t.id === 'ai-mcp-file' && t.files && t.files.length) { const blobs = Array.from(t.files).map((f) => ({ name: f.name, blob: f })); t.value = ''; this._mcpPaneStatus('安裝中…（會跳出確認視窗）'); try { const r = await this._mcpInstall({ blobs }); this._mcpPaneStatus(this._mcpInstallSummary(r), r.ok ? '#86efac' : '#fca5a5'); } catch (e) { this._mcpPaneStatus('⚠️ ' + String((e && e.message) || e), '#fca5a5'); } rerender(); return; }
+            if (t.dataset && t.dataset.mcpToggle) { await this._mcpLoad(); const c = this._mcpStore.servers.find((s) => s.name === t.dataset.mcpToggle); if (c) { c.disabled = !t.checked; if (c.disabled) await this._mcpStop(c.name); await this._mcpSave(); } rerender(); }
+        });
+        root.addEventListener('click', async (ev) => {
+            const b = ev.target.closest('button'); if (!b) return; const act = b.dataset.mcp; const name = b.dataset.name; if (!act) return;
+            try {
+                if (act === 'pick') { root.querySelector('#ai-mcp-file').click(); return; }
+                if (act === 'refresh') { rerender(); return; }
+                if (act === 'paste') { const ta = root.querySelector('#ai-mcp-json'); const txt = ta.value.trim(); if (!txt) { this._mcpPaneStatus('先貼上 JSON 設定或網址', '#fca5a5'); return; } this._mcpPaneStatus('安裝中…'); const r = await this._mcpInstall({ text: txt }); this._mcpPaneStatus(this._mcpInstallSummary(r), r.ok ? '#86efac' : '#fca5a5'); if (r.ok) ta.value = ''; rerender(); return; }
+                if (act === 'addurl') { const n = root.querySelector('#ai-mcp-url-name').value.trim(), u = root.querySelector('#ai-mcp-url').value.trim(), h = root.querySelector('#ai-mcp-url-headers').value.trim(); if (!/^https?:\/\//i.test(u)) { this._mcpPaneStatus('網址要是 http(s)://…', '#fca5a5'); return; } let headers; if (h) { try { headers = JSON.parse(h); } catch (_) { this._mcpPaneStatus('標頭要是 JSON，例如 {"Authorization":"Bearer …"}', '#fca5a5'); return; } } const r = await this._mcpAddServers([{ name: FaMcp.sanitizeName(n || new URL(u).hostname.split('.')[0]), transport: root.querySelector('#ai-mcp-url-type').value || (/\/sse\/?$/i.test(u) ? 'sse' : 'http'), url: u, headers }], { source: '設定頁（網址）' }); this._mcpPaneStatus(this._mcpInstallSummary({ ok: r.ok, results: [{ source: u, result: r }] }), r.ok ? '#86efac' : '#fca5a5'); rerender(); return; }
+                if (act === 'start' || act === 'restart') { b.disabled = true; b.textContent = '連線中…'; if (act === 'restart') await this._mcpStop(name); try { await this._mcpStart(name); } catch (_) { /* 錯誤會顯示在卡片上 */ } rerender(); return; }
+                if (act === 'stop') { await this._mcpStop(name); rerender(); return; }
+                if (act === 'remove') { const r = await this._mcpRemove(name); if (!r.ok && !/取消/.test(r.error || '')) this._mcpPaneStatus('⚠️ ' + r.error, '#fca5a5'); rerender(); return; }
+                if (act === 'tools' || act === 'logs') { const k = act + ':' + name; this._mcpPaneOpen[k] = !this._mcpPaneOpen[k]; if (act === 'tools' && this._mcpPaneOpen[k]) { try { await this._mcpStart(name); } catch (_) { /* */ } } rerender(); return; }
+                if (act === 'call') { const wrap = b.closest('[data-mcp-tool]'); const tool = wrap.dataset.mcpTool; const ta = wrap.querySelector('textarea'); const out = wrap.querySelector('.ai-mcp-out'); let args = {}; try { args = ta.value.trim() ? JSON.parse(ta.value) : {}; } catch (_) { out.textContent = '參數要是 JSON 物件'; return; } out.textContent = '呼叫中…'; try { const r = await this._mcpCall(name, tool, args); out.textContent = (r.ok ? '' : '⚠️ ' + (r.error || '工具回報失敗') + '\n') + (r.text || JSON.stringify(r, null, 1)).slice(0, 4000); } catch (e) { out.textContent = '⚠️ ' + String((e && e.message) || e); } return; }
+            } catch (e) { this._mcpPaneStatus('⚠️ ' + String((e && e.message) || e), '#fca5a5'); rerender(); }
+        });
+        this._mcpRenderPane();
+        const side = document.getElementById('ai-advanced-sidebar'); if (side) side.addEventListener('click', (ev) => { const c = ev.target.closest('.ai-advanced-cat'); if (c && c.dataset.cat === 'mcp') this._mcpRenderPane(); });
+    }
+    _mcpPaneStatus(text, color) { const el = this._mcpPaneRoot && this._mcpPaneRoot.querySelector('#ai-mcp-status'); if (el) { el.textContent = text; el.style.color = color || '#cbd5e1'; } }
+    async _mcpRenderPane() {
+        const root = this._mcpPaneRoot; if (!root) return; await this._mcpLoad(); const br = this._mcpBridge(); const esc = (x) => String(x == null ? '' : x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+        const inp = 'padding:5px 8px; border-radius:6px; border:1px solid #475569; background:#0f172a; color:#f8fafc; font-size:12px;'; const btn = 'padding:3px 9px; border-radius:6px; border:1px solid #475569; background:#1e293b; color:#e2e8f0; cursor:pointer; font-size:12px;';
+        const dot = { ready: '#22c55e', starting: '#f59e0b', error: '#ef4444', stopped: '#64748b', disabled: '#475569' }; const keep = (root.querySelector('#ai-mcp-status') || {}).textContent || ''; const keepColor = (root.querySelector('#ai-mcp-status') || { style: {} }).style.color;
+        let rtInfo = ''; if (br) { try { const rt = await br.runtimes(); rtInfo = ['node', 'python', 'uv'].map((k) => k + '：' + (rt[k] && rt[k].ok ? '✅ ' + rt[k].version : '❌ 沒有')).join('　'); } catch (_) { rtInfo = ''; } }
+        const cards = this._mcpStore.servers.map((c) => {
+            const p = this._mcpPublic(c); const rt = this._mcpRt(c.name); const env = c.env ? FaMcp.maskEnv(c.env) : null; const toolsOpen = this._mcpPaneOpen['tools:' + c.name], logsOpen = this._mcpPaneOpen['logs:' + c.name];
+            const tools = toolsOpen ? '<div style="margin-top:6px; border-top:1px solid #334155; padding-top:6px;">' + (rt.tools.length ? rt.tools.map((t) => '<details style="margin:3px 0;"><summary style="cursor:pointer;"><b>' + esc(t.name) + '</b> <span style="opacity:.7">' + esc(String(t.description || '').split('\n')[0].slice(0, 90)) + '</span></summary><div data-mcp-tool="' + esc(t.name) + '" style="margin:4px 0 4px 12px;"><pre style="white-space:pre-wrap; margin:0 0 4px; font-size:11px; opacity:.85;">' + esc(JSON.stringify(t.inputSchema || {}, null, 1).slice(0, 1500)) + '</pre><textarea rows="2" placeholder="參數（JSON 物件）" style="' + inp + ' width:100%; box-sizing:border-box;">{}</textarea><button type="button" data-mcp="call" data-name="' + esc(c.name) + '" style="' + btn + '">測試呼叫</button><pre class="ai-mcp-out" style="white-space:pre-wrap; margin:4px 0 0; font-size:11px; max-height:160px; overflow:auto;"></pre></div></details>').join('') : '<div style="opacity:.7;">沒有工具（還沒連線成功？）</div>') + '</div>' : '';
+            const logs = logsOpen ? '<pre style="white-space:pre-wrap; margin:6px 0 0; font-size:11px; max-height:160px; overflow:auto; background:#0f172a; padding:6px; border-radius:6px;">' + esc((rt.transport && rt.transport.logs ? rt.transport.logs() : rt.logs) || '（沒有輸出）') + (rt.error ? '\n--- 錯誤 ---\n' + esc(rt.error) : '') + '</pre>' : '';
+            return '<div style="border:1px solid #334155; border-radius:8px; padding:8px 10px; margin:8px 0;">'
+                + '<div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;"><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:' + (dot[p.status] || '#64748b') + ';"></span><b>' + esc(c.name) + '</b><span style="opacity:.7;">' + esc(c.transport) + '　' + esc(p.status) + (p.tools ? '　' + p.tools + ' 個工具' : '') + '</span><span style="flex:1"></span>'
+                + '<label style="font-size:12px;"><input type="checkbox" data-mcp-toggle="' + esc(c.name) + '"' + (c.disabled ? '' : ' checked') + '> 啟用</label>'
+                + (rt.status === 'ready' ? '<button type="button" data-mcp="restart" data-name="' + esc(c.name) + '" style="' + btn + '">重新啟動</button><button type="button" data-mcp="stop" data-name="' + esc(c.name) + '" style="' + btn + '">停止</button>' : '<button type="button" data-mcp="start" data-name="' + esc(c.name) + '" style="' + btn + '"' + (c.disabled ? ' disabled' : '') + '>啟動</button>')
+                + '<button type="button" data-mcp="tools" data-name="' + esc(c.name) + '" style="' + btn + '">工具</button><button type="button" data-mcp="logs" data-name="' + esc(c.name) + '" style="' + btn + '">日誌</button><button type="button" data-mcp="remove" data-name="' + esc(c.name) + '" style="' + btn + ' color:#fca5a5;">移除</button></div>'
+                + '<div style="font-size:12px; opacity:.8; margin-top:3px; word-break:break-all;">' + esc(p.command || '') + (env && Object.keys(env).length ? '<br>環境變數：' + Object.entries(env).map(([k, v]) => esc(k) + '=' + esc(v)).join('　') : '') + (c.installDir ? '<br>安裝在：' + esc(c.installDir) : '') + (c.source ? '<br>來源：' + esc(c.source) : '') + '</div>'
+                + (rt.error ? '<div style="color:#fca5a5; font-size:12px; margin-top:4px; white-space:pre-wrap;">' + esc(rt.error.slice(0, 400)) + '</div>' : '') + tools + logs + '</div>';
+        }).join('');
+        root.innerHTML = '<div style="color:#94a3b8; margin-bottom:8px;">MCP（Model Context Protocol）伺服器是別人寫好的工具包（資料庫、檔案、網站、各種服務…）。裝好之後，AI 透過獨立的 <b>mcp</b> domain（子 agent）呼叫，不會把每個工具都塞進主要對話。' + (br ? '' : '<br><span style="color:#fbbf24;">這是網頁版：只能連 HTTP／SSE 型的遠端伺服器；要在本機啟動程式的（stdio）需要桌面版。</span>') + (rtInfo ? '<br>執行環境　' + esc(rtInfo) : '') + '</div>'
+            + '<div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:6px;"><button type="button" data-mcp="pick" style="' + btn + ' background:#2563eb; border-color:#2563eb; color:#fff;">📦 安裝 MCP（選檔案）</button><input id="ai-mcp-file" type="file" multiple accept=".json,.jsonc,.mcpb,.dxt,.zip,.7z,.rar,.tar,.tgz,.gz,.bz2,.xz,.jar,.iso" style="display:none"><button type="button" data-mcp="refresh" style="' + btn + '">重新整理</button><span style="opacity:.7; font-size:12px;">mcp.json、.mcpb／.dxt、.zip／.7z／.tar.gz／.rar 都可以，一次選好幾個也行；對話裡用 <code>/mcp-install</code> 附檔案也一樣</span></div>'
+            + '<div id="ai-mcp-status" style="white-space:pre-wrap; font-size:12px; margin:6px 0; min-height:1em;"></div>' + (cards || '<div style="opacity:.7; margin:10px 0;">還沒有 MCP 伺服器。</div>')
+            + '<details style="margin-top:10px;"><summary style="cursor:pointer;">貼上 JSON 設定、或用網址加入遠端伺服器</summary><div style="margin-top:6px;"><textarea id="ai-mcp-json" rows="5" placeholder=\'{ "mcpServers": { "name": { "command": "npx", "args": ["-y", "@scope/server"] } } }　（Claude Desktop／Cursor／VS Code 的格式都可以，也可以貼 https:// 網址）\' style="' + inp + ' width:100%; box-sizing:border-box;"></textarea><button type="button" data-mcp="paste" style="' + btn + '">加入</button></div>'
+            + '<div style="margin-top:8px; display:flex; gap:6px; flex-wrap:wrap; align-items:center;"><input id="ai-mcp-url-name" placeholder="名稱" style="' + inp + ' width:120px;"><input id="ai-mcp-url" placeholder="https://…/mcp" style="' + inp + ' flex:1; min-width:220px;"><select id="ai-mcp-url-type" style="' + inp + '"><option value="">自動判斷</option><option value="http">Streamable HTTP</option><option value="sse">SSE（舊版）</option></select><input id="ai-mcp-url-headers" placeholder=\'標頭 JSON（選填）\' style="' + inp + ' width:220px;"><button type="button" data-mcp="addurl" style="' + btn + '">加入網址</button></div></details>';
+        const st = root.querySelector('#ai-mcp-status'); if (st && keep) { st.textContent = keep; if (keepColor) st.style.color = keepColor; }
+    }
     // 型別存根轉出來的型別表（stub_to_types.py 的輸出 JSON）：用 /unit-catalog stubs 附上檔案載入，存在檔案快取（unit-catalog-stubs.json），之後抽取自動使用
     async _unitCatalogGetStubs() {
         if (this._unitCatalogStubs !== undefined) return this._unitCatalogStubs;
@@ -71798,6 +72315,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         try { this._otRegisterPane(); } catch (e) { console.warn('離線訓練器分頁註冊失敗', e); }
         try { this._omRegisterPane(); } catch (e) { console.warn('離線模型管理分頁註冊失敗', e); }
         try { this._riRegisterPane(); } catch (e) { console.warn('專案索引分頁註冊失敗', e); }
+        try { this._mcpRegisterPane(); } catch (e) { console.warn('MCP 分頁註冊失敗', e); }
         // CI/CD 連線設定頁不放進 Configure（使用者不需要）：程式設計 domain 靠內建的知識（ci_guide、提示詞）與 gh／curl／ssh 指令處理 GitHub、Jenkins、Gerrit
         const inputText = document.getElementById('ai-input-text');
         const suggestBar = document.getElementById('ai-autocomplete-bar');

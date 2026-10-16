@@ -57,6 +57,20 @@ contextBridge.exposeInMainWorld("desktopAPI", {
   // 2026-09-15使用者明確要求「桌面版不應該有任何限制」——這組跟上面的
   // `fs`（root-scoped，先授權才能碰）並存，直接吃絕對路徑，main.js的
   // fa:rawfs:*完全不做root範圍檢查，唯一邊界是OS本身的檔案權限。
+  // MCP 伺服器（stdio）：啟動／寫入／關閉子行程、輸出事件、安裝包解開、安裝指令、環境檢查。實作在 main-ext.js（fa:mcp:*）。
+  mcp: {
+    installDir: () => ipcRenderer.invoke("fa:mcp:installDir"),
+    start: (spec) => ipcRenderer.invoke("fa:mcp:start", { spec }),
+    write: (id, text) => ipcRenderer.invoke("fa:mcp:write", { id, text }),
+    stop: (id) => ipcRenderer.invoke("fa:mcp:stop", { id }),
+    list: () => ipcRenderer.invoke("fa:mcp:list"),
+    writeFiles: (name, files, clean) => ipcRenderer.invoke("fa:mcp:writeFiles", { name, files, clean }),
+    removeDir: (dir) => ipcRenderer.invoke("fa:mcp:removeDir", { dir }),
+    exec: (opts) => ipcRenderer.invoke("fa:mcp:exec", opts || {}),
+    runtimes: () => ipcRenderer.invoke("fa:mcp:runtimes"),
+    onData: (cb) => { const h = (_e, m) => { try { cb(m.id, m.text, m.stream); } catch (_) { /* */ } }; ipcRenderer.on("fa:mcp:data", h); return () => ipcRenderer.removeListener("fa:mcp:data", h); },
+    onExit: (cb) => { const h = (_e, m) => { try { cb(m.id, m.code, m.signal); } catch (_) { /* */ } }; ipcRenderer.on("fa:mcp:exit", h); return () => ipcRenderer.removeListener("fa:mcp:exit", h); },
+  },
   rawfs: {
     stat: (path) => ipcRenderer.invoke("fa:rawfs:stat", { path }),
     readdir: (path) => ipcRenderer.invoke("fa:rawfs:readdir", { path }),

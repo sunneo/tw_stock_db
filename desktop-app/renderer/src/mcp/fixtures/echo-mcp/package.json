@@ -1,0 +1,1 @@
+{ "name": "echo-mcp", "version": "0.0.1", "description": "test MCP server (echo, add, fail)", "main": "server.js", "bin": { "echo-mcp": "server.js" }, "keywords": ["mcp"] }

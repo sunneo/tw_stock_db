@@ -1,0 +1,14 @@
+{
+  "manifest_version": "0.2",
+  "name": "echo-mcp-bundle",
+  "display_name": "Echo MCP",
+  "version": "0.0.1",
+  "description": "測試用 MCP bundle",
+  "author": { "name": "test" },
+  "server": {
+    "type": "node",
+    "entry_point": "server.js",
+    "mcp_config": { "command": "node", "args": ["${__dirname}/server.js"], "env": { "ECHO_GREETING": "${user_config.greeting}" } }
+  },
+  "user_config": { "greeting": { "type": "string", "title": "問候語", "required": true, "default": "你好 MCP" } }
+}
