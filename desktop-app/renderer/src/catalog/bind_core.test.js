@@ -79,7 +79,7 @@ check('plural/singular stem still matches', B.bindModel(parse(['actor: User', 'c
 
 // ---- 語意檢索（嵌入）：名稱對不上時靠語意；向量用人造的 ----
 const E = require('./embed_core.js');
-const chartUnits = { units: units.concat([mk('tool:render_chart', [['data', 'text']], 'object{ok:bool}', { summary: '畫圖表' }), mk('tool:other_a', [['x', 'text']], 'object{ok:bool}', { summary: '別的 A' }), mk('tool:other_b', [['x', 'text']], 'object{ok:bool}', { summary: '別的 B' })]) };
+const chartUnits = { units: units.concat([mk('tool:render_chart', [['data', 'text']], 'object{ok:bool}', { summary: '畫圖表' }), mk('tool:other_a', [['x', 'text']], 'object{ok:bool}', { summary: '別的 A' }), mk('tool:other_b', [['x', 'text']], 'object{ok:bool}', { summary: '別的 B' }), mk('tool:other_c', [['x', 'text']], 'object{ok:bool}', { summary: '別的 C' })]) };
 const mChart = parse(['actor: User', 'class Viz { +drawBarGraph(data:str):bool }', 'usecase Plot: User -> Viz.drawBarGraph(data)'].join('\n'));
 const q0 = B.queriesOf(mChart); check('queriesOf', q0.length === 1 && q0[0] === 'viz draw bar graph', q0);
 const vec = (a) => E.normalize(Float32Array.from(a));
@@ -92,12 +92,32 @@ check('semantic match binds', near.steps[0].unit === 'tool:render_chart' && near
 check('semantic match is flagged', near.issues.some((i) => i.kind === 'semantic_match'), near.issues);
 const far = B.bindModel(mChart, chartUnits, { dense: mkDense([1, 0, 0], { 'tool:render_chart': [0.05, 1, 0.1], 'tool:other_a': [0, 1, 0], 'tool:other_b': [0, 0, 1] }) }).results[0];
 check('too close to the crowd (z below threshold) is rejected', far.steps[0].by === 'none', far.steps[0]);
-const third = B.bindModel(mChart, chartUnits, { dense: mkDense([1, 0, 0], { 'tool:other_a': [1, 0.01, 0], 'tool:other_b': [1, 0.02, 0], 'tool:render_chart': [1, 0.03, 0] }) }).results[0];
-check('dense rank beyond 2 is rejected even when cosine is high', third.steps[0].by === 'none' || third.steps[0].unit !== 'tool:render_chart', third.steps[0]);
+const third = B.bindModel(mChart, chartUnits, { dense: mkDense([1, 0, 0], { 'tool:other_a': [1, 0.01, 0], 'tool:other_b': [1, 0.02, 0], 'tool:other_c': [1, 0.025, 0], 'tool:render_chart': [1, 0.03, 0] }) }).results[0];
+check('dense rank beyond 3 is rejected even when cosine is high', third.steps[0].by === 'none' || third.steps[0].unit !== 'tool:render_chart', third.steps[0]);
 const sum = B.bindModel(mChart, chartUnits, { dense: mkDense([1, 0.1, 0], { 'tool:render_chart': [1, 0.15, 0] }) }).summary;
 check('summary reports semantic', sum.semantic === true && sum.semantic_steps === 1, sum);
 check('empty dense falls back to BM25', B.bindModel(mChart, chartUnits, { dense: { queryVecs: new Map(), unitVecs: new Map() } }).summary.semantic === false);
 check('name matches still go through the name path with dense on', B.bindModel(m1, cat, { dense: { queryVecs: new Map(B.queriesOf(m1).map((q) => [q, vec([1, 0, 0])])), unitVecs: new Map([['tool:download', vec([0, 1, 0])]]) } }).results[0].steps[0].by === 'retrieval+contract');
+
+// ---- 錯配修正：參數名稱吻合、難分的要標出來 ----
+const qp = { units: [mk('tool:parse_url', [['url', 'url']], 'object{ok:bool}', { summary: 'parse url query params' }), mk('tool:parse_qs', [['qs', 'text']], 'object{ok:bool}', { summary: 'parse query params' })] };
+const mQ = parse(['actor: User', 'class Net { +getQueryParams(qs:str):Any }', 'usecase Q: User -> Net.getQueryParams(qs)'].join('\n'));
+const uQ = B.bindModel(mQ, qp).results[0];
+check('param name match picks the unit with the same parameter name', uQ.steps[0].unit === 'tool:parse_qs' && uQ.steps[0].candidates.find((c) => c.unit === 'tool:parse_qs').param_match === 1, uQ.steps[0]);
+const mQ2 = parse(['actor: User', 'class Net { +getQueryParams(url:Url):Any }', 'usecase Q: User -> Net.getQueryParams(url)'].join('\n'));
+check('same op but parameter named url picks the url one', B.bindModel(mQ2, qp).results[0].steps[0].unit === 'tool:parse_url');
+const twin = { units: [mk('tool:calc_deviation_a', [['data', 'list<number>']], 'number', { summary: 'compute standard deviation' }), mk('tool:calc_deviation_b', [['data', 'list<number>']], 'number', { summary: 'compute standard deviation' })] };
+const mT = parse(['actor: User', 'class M { +computeStandardDeviation(data:List<float>):float }', 'usecase S: User -> M.computeStandardDeviation(data)'].join('\n'));
+const uT = B.bindModel(mT, twin).results[0];
+check('near-tie is flagged as ambiguous with the alternative', uT.issues.some((i) => i.kind === 'ambiguous') && uT.steps[0].alternatives.length === 1, [uT.issues, uT.steps[0]]);
+check('clear winner is not flagged', !u1.issues.some((i) => i.kind === 'ambiguous') && !(u2.issues || []).some((i) => i.kind === 'ambiguous'), u1.issues);
+check('ambiguity still produces a valid program', uT.valid === true, uT.errors);
+
+// ---- 名稱裡的整個字要算：exists 對 posixpath.exists，而不是 lexists ----
+const ex = { units: [mk('py:posixpath.lexists', [['path', 'path']], 'bool', { runtime: 'python', effects: [], pure: true, summary: 'Test whether a path exists.' }), mk('py:posixpath.exists', [['path', 'path']], 'bool', { runtime: 'python', effects: [], pure: true, summary: 'Test whether a path exists.' })] };
+const mE = parse(['actor: User', 'class Fs { +checkPathExists(path:Path):bool }', 'usecase E: User -> Fs.checkPathExists(path)'].join('\n'));
+const uE = B.bindModel(mE, ex).results[0];
+check('whole word in the unit name beats a lookalike', uE.steps[0].unit === 'py:posixpath.exists' && uE.steps[0].candidates.find((c) => c.unit === 'py:posixpath.exists').name_hit > uE.steps[0].candidates.find((c) => c.unit === 'py:posixpath.lexists').name_hit, uE.steps[0]);
 
 // ---- 文字輸出 ----
 check('toText mentions counts and 0 model calls', /模型呼叫 0 次/.test(B.toText(r1)) && /CountPages/.test(B.toText(r1)));
