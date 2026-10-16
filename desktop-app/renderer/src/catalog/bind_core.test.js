@@ -77,6 +77,28 @@ const nz = B.bindModel(parse(['actor: User', 'class P { +countPages(pdf:PdfFile)
 check('single shared word is not enough', nz.results[0].steps[0].by === 'none' && nz.results[1].steps[0].by === 'none', nz.results.map((r) => r.steps[0]));
 check('plural/singular stem still matches', B.bindModel(parse(['actor: User', 'class P { +removePage(pdf:PdfFile):bool }', 'usecase A: User -> P.removePage(pdf)'].join('\n')), noisy).results[0].steps[0].unit === 'tool:remove_pdf_pages');
 
+// ---- 語意檢索（嵌入）：名稱對不上時靠語意；向量用人造的 ----
+const E = require('./embed_core.js');
+const chartUnits = { units: units.concat([mk('tool:render_chart', [['data', 'text']], 'object{ok:bool}', { summary: '畫圖表' }), mk('tool:other_a', [['x', 'text']], 'object{ok:bool}', { summary: '別的 A' }), mk('tool:other_b', [['x', 'text']], 'object{ok:bool}', { summary: '別的 B' })]) };
+const mChart = parse(['actor: User', 'class Viz { +drawBarGraph(data:str):bool }', 'usecase Plot: User -> Viz.drawBarGraph(data)'].join('\n'));
+const q0 = B.queriesOf(mChart); check('queriesOf', q0.length === 1 && q0[0] === 'viz draw bar graph', q0);
+const vec = (a) => E.normalize(Float32Array.from(a));
+const fillers = Array.from({ length: 40 }, (_, i) => ['filler' + i, [Math.sin(i) * 0.1, Math.cos(i * 1.7), Math.sin(i * 2.3)]]); // 一群跟查詢不太像的單元，讓『高於平均幾個標準差』有母體可算
+const mkDense = (qv, uv) => ({ queryVecs: new Map([[q0[0], vec(qv)]]), unitVecs: new Map(Object.entries(uv).concat(fillers).map(([k, v]) => [k, vec(v)])) });
+const base = B.bindModel(mChart, chartUnits).results[0];
+check('without embeddings the renamed op is unbound', base.steps[0].by === 'none', base.steps[0]);
+const near = B.bindModel(mChart, chartUnits, { dense: mkDense([1, 0.1, 0], { 'tool:render_chart': [1, 0.15, 0], 'tool:other_a': [0, 1, 0], 'tool:other_b': [0, 0, 1] }) }).results[0];
+check('semantic match binds', near.steps[0].unit === 'tool:render_chart' && near.steps[0].by === 'semantic+contract' && near.steps[0].cos > 0.98 && near.valid, near.steps[0]);
+check('semantic match is flagged', near.issues.some((i) => i.kind === 'semantic_match'), near.issues);
+const far = B.bindModel(mChart, chartUnits, { dense: mkDense([1, 0, 0], { 'tool:render_chart': [0.05, 1, 0.1], 'tool:other_a': [0, 1, 0], 'tool:other_b': [0, 0, 1] }) }).results[0];
+check('too close to the crowd (z below threshold) is rejected', far.steps[0].by === 'none', far.steps[0]);
+const third = B.bindModel(mChart, chartUnits, { dense: mkDense([1, 0, 0], { 'tool:other_a': [1, 0.01, 0], 'tool:other_b': [1, 0.02, 0], 'tool:render_chart': [1, 0.03, 0] }) }).results[0];
+check('dense rank beyond 2 is rejected even when cosine is high', third.steps[0].by === 'none' || third.steps[0].unit !== 'tool:render_chart', third.steps[0]);
+const sum = B.bindModel(mChart, chartUnits, { dense: mkDense([1, 0.1, 0], { 'tool:render_chart': [1, 0.15, 0] }) }).summary;
+check('summary reports semantic', sum.semantic === true && sum.semantic_steps === 1, sum);
+check('empty dense falls back to BM25', B.bindModel(mChart, chartUnits, { dense: { queryVecs: new Map(), unitVecs: new Map() } }).summary.semantic === false);
+check('name matches still go through the name path with dense on', B.bindModel(m1, cat, { dense: { queryVecs: new Map(B.queriesOf(m1).map((q) => [q, vec([1, 0, 0])])), unitVecs: new Map([['tool:download', vec([0, 1, 0])]]) } }).results[0].steps[0].by === 'retrieval+contract');
+
 // ---- 文字輸出 ----
 check('toText mentions counts and 0 model calls', /模型呼叫 0 次/.test(B.toText(r1)) && /CountPages/.test(B.toText(r1)));
 

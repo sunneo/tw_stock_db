@@ -8,12 +8,16 @@
  *   ④ 沒有任何單元對得上、但合約有明確的輸入／輸出型別的步驟：直接用矩陣從輸入型別走到輸出型別（型別合約自動接線）。
  * 輸出的程式一定經過 FaCatalogIR.validate；不確定的地方（沒接上、靠名稱猜、用了強制轉型）都列在 issues。 */
 (function (root, factory) {
-    if (typeof module === 'object' && module.exports) module.exports = factory(require('./catalog_core.js'), require('./matrix_core.js'), require('./select_core.js'), require('./ir_core.js'));
-    else root.FaCatalogBind = factory(root.FaCatalog || (typeof FaCatalog !== 'undefined' ? FaCatalog : undefined), root.FaCatalogMatrix || (typeof FaCatalogMatrix !== 'undefined' ? FaCatalogMatrix : undefined), root.FaCatalogSelect || (typeof FaCatalogSelect !== 'undefined' ? FaCatalogSelect : undefined), root.FaCatalogIR || (typeof FaCatalogIR !== 'undefined' ? FaCatalogIR : undefined));
-})(typeof self !== 'undefined' ? self : this, function (Cat, MX, SEL, IR) {
+    if (typeof module === 'object' && module.exports) module.exports = factory(require('./catalog_core.js'), require('./matrix_core.js'), require('./select_core.js'), require('./ir_core.js'), require('./embed_core.js'));
+    else root.FaCatalogBind = factory(root.FaCatalog || (typeof FaCatalog !== 'undefined' ? FaCatalog : undefined), root.FaCatalogMatrix || (typeof FaCatalogMatrix !== 'undefined' ? FaCatalogMatrix : undefined), root.FaCatalogSelect || (typeof FaCatalogSelect !== 'undefined' ? FaCatalogSelect : undefined), root.FaCatalogIR || (typeof FaCatalogIR !== 'undefined' ? FaCatalogIR : undefined), root.FaCatalogEmbed || (typeof FaCatalogEmbed !== 'undefined' ? FaCatalogEmbed : undefined));
+})(typeof self !== 'undefined' ? self : this, function (Cat, MX, SEL, IR, EMB) {
     'use strict';
     const snake = (s) => String(s || '').replace(/([a-z0-9])([A-Z])/g, '$1_$2').replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '').toLowerCase();
     const KINDED = [[/pdf/i, 'pdf_file'], [/video/i, 'video_file'], [/audio/i, 'audio_file'], [/gif/i, 'gif_file'], [/subtitle|srt/i, 'subtitle_file'], [/image|img|picture/i, 'image_file']];
+
+    // 一個步驟拿去檢索（BM25 與嵌入共用）的查詢文字：類別名稱＋操作名稱的字
+    const stepQuery = (step) => snake(step.to).replace(/_/g, ' ') + ' ' + snake(step.msg).replace(/_/g, ' ');
+    function queriesOf(model) { const s = new Set(); for (const uc of model.usecases || []) for (const st of uc.steps) s.add(stepQuery(st)); return Array.from(s); }
 
     // ===== UML 型別 → 單元目錄型別字串（'void' 代表沒有回傳）=====
     function umlToType(t, model, depth) {
@@ -96,7 +100,12 @@
             const stepIn = program.steps.length === 0 && !pool.length ? resolveIn() : null; // 第一步：UML 的參數就是使用案例的輸入；後面的步驟先看能不能從前面接過來，接不上才變輸入
             // 挑單元
             const q = [uc.name, step.to, step.msg, op && op.doc].filter(Boolean).join(' ');
-            const hits = SEL.retrieve(ctx.index, snake(step.to).replace(/_/g, ' ') + ' ' + snake(step.msg).replace(/_/g, ' ') + ' ' + (ctx.intentFor ? ctx.intentFor(step, uc) : '') + ' ' + (opts.useCaseInText ? uc.name : ''), 12);
+            const query = stepQuery(step); let hits = SEL.retrieve(ctx.index, query + ' ' + (ctx.intentFor ? ctx.intentFor(step, uc) : '') + ' ' + (opts.useCaseInText ? uc.name : ''), 30); const cosOf = new Map(), denseRank = new Map(), zOf = new Map();
+            if (ctx.dense && EMB && ctx.dense.queryVecs.get(query)) { // 語意檢索：嵌入排名跟 BM25 排名融合（實測依據見設計文件第二十二節）
+                const full = EMB.rankDense(ctx.dense.queryVecs.get(query), ctx.dense.unitVecs); const mean = full.reduce((a, x) => a + x.score, 0) / (full.length || 1); const sd = Math.sqrt(full.reduce((a, x) => a + (x.score - mean) * (x.score - mean), 0) / (full.length || 1)) || 1; // 餘弦的絕對值跟查詢的說法有關（英文駝峰比中文說明整體低），所以另外看「比這句話對全部單元的平均高幾個標準差」
+                const dl = full.slice(0, 30); full.forEach((x, i) => { if (i < 60) { cosOf.set(x.id, x.score); denseRank.set(x.id, i + 1); zOf.set(x.id, (x.score - mean) / sd); } });
+                const fused = EMB.rrf([hits.map((h) => ({ id: h.id, u: h.u })), dl.map((x) => ({ id: x.id, u: byId.get(x.id) }))]).slice(0, 14); hits = fused.map((f) => ({ id: f.id, score: f.score, u: f.u || byId.get(f.id) }));
+            } else hits = hits.slice(0, 12);
             const top = hits.length ? hits[0].score : 1; const cands = []; const words = SEL.tokenize(snake(step.msg).replace(/_/g, ' ')).filter((w) => w.length >= 2 && !['get', 'do', 'run', 'set'].includes(w));
             const exact = cat.units.filter((u) => u.tier === 1 && (snake(u.name.replace(/^[a-z]+:/, '')) === snake(step.msg) || snake(u.name.replace(/^[a-z]+:/, '')) === snake(step.to) + '_' + snake(step.msg)));
             for (const e of exact) if (!hits.some((h) => h.id === e.id)) hits.unshift({ id: e.id, score: top, u: e });
@@ -104,9 +113,10 @@
                 const u = byId.get(h.id); if (!u || u.tier !== 1 || u.avail.state !== 'builtin') continue; const rel = Math.min(1, h.score / (top || 1)) * (exact.some((e) => e.id === u.id) ? 1 : 0.85);
                 const req = u.params.filter((p) => p.required); let sat = 0; const sources = pool.slice(); for (const p of req) if (pickSource(sources, p.name, p.type, null)) sat++;
                 const cov = req.length ? sat / req.length : 1; const ut = u.returns.type; let rf = 1; if (!isVoid(retType) && retType !== 'any') rf = isOpaque(ut) ? 0.6 : (Cat.isAssignable(ut, retType) ? 1 : (MX.outputsOf(u).some((o) => o.name !== '$' && !isOpaque(Cat.typeToString(o.type)) && Cat.isAssignable(o.type, retType)) ? 0.9 : 0.3));
-                const tc = exact.some((e) => e.id === u.id) ? 1 : tokenCoverage(ctx.index, u.id, words); cands.push({ unit: u.id, token_cov: Math.round(tc * 100) / 100, rel: Math.round(rel * 1000) / 1000, coverage: Math.round(cov * 100) / 100, ret_fit: rf, score: Math.round(rel * (0.4 + 0.6 * cov) * (0.5 + 0.5 * rf) * 1000) / 1000 });
+                const tc = exact.some((e) => e.id === u.id) ? 1 : tokenCoverage(ctx.index, u.id, words); cands.push({ unit: u.id, cos: cosOf.has(u.id) ? Math.round(cosOf.get(u.id) * 1000) / 1000 : null, z: zOf.has(u.id) ? Math.round(zOf.get(u.id) * 100) / 100 : null, dense_rank: denseRank.get(u.id) || null, token_cov: Math.round(tc * 100) / 100, rel: Math.round(rel * 1000) / 1000, coverage: Math.round(cov * 100) / 100, ret_fit: rf, score: Math.round(rel * (0.4 + 0.6 * cov) * (0.5 + 0.5 * rf) * 1000) / 1000 });
             }
-            cands.sort((a, b) => b.score - a.score); const best = cands.find((c) => c.token_cov >= (opts.minTokenCoverage || 0.6)); // 名稱對不上的不採用
+            cands.sort((a, b) => b.score - a.score); const minZ = opts.minZ || 3; // 名稱對不上的不採用；有嵌入時，語意夠近也算：嵌入排名第 1、而且比這句話對全部單元的平均高 minZ 個標準差以上
+            const best = cands.find((c) => c.token_cov >= (opts.minTokenCoverage || 0.6)) || (ctx.dense ? cands.find((c) => c.z != null && c.dense_rank === 1 && c.z >= minZ && c.rel >= (opts.minRel || 0.3)) : undefined); if (best) best.via = best.token_cov >= (opts.minTokenCoverage || 0.6) ? 'name' : 'semantic';
             const rec = { step: label, op_params: opParams.map((p) => p.name + ':' + p.type), returns: retType, candidates: cands.slice(0, 3) };
             if (best && best.score >= (opts.minScore || 0.25) && best.rel >= (opts.minRel || 0.3)) {
                 const u = byId.get(best.unit); const sid = nextId(); const args = {}; const bridged = [];
@@ -118,7 +128,7 @@
                     let done = false; for (let i = pool.length - 1; i >= 0 && i >= pool.length - 8 && !done; i--) { const s = pool[i]; if (isOpaque(s.type)) continue; const path = bridge(M, s.type, p.type, opts); if (!path) continue; const taken = []; const steps = []; const out = emitPath(path, M, s.ref, nextId, steps, taken); if (taken.length) { taken.forEach((t) => { const nm = addInput(t.step + '_' + t.param, t.type); const st = steps.find((x) => x.id === t.step); st.args[t.param] = nm.ref; }); } steps.forEach((x) => program.steps.push(x)); args[p.name] = out; bridged.push(path.names.join(' → ')); used.add(s); done = true; }
                     if (!done) { const declared = opParams.some((op) => op.name === p.name || (isOpaque(op.type) ? false : Cat.isAssignable(op.type, p.type))); const nm = addInput(p.name, p.type); args[p.name] = nm.ref; if (lastType && isOpaque(lastType) && program.steps.length) issues.push({ step: label, kind: 'opaque_link', msg: '上一步的回傳型別不明（' + lastType + '），' + p.name + ' 沒辦法從它接過來，只能當輸入' }); if (!declared) issues.push({ step: label, kind: 'unwired', msg: '必填參數 ' + p.name + '（' + p.type + '）沒有資料可以接，變成程式的輸入' }); }
                 }
-                program.steps.push({ id: sid, call: u.id, args }); rec.unit = u.id; rec.by = 'retrieval+contract'; rec.score = best.score; if (bridged.length) rec.bridged = bridged;
+                program.steps.push({ id: sid, call: u.id, args }); rec.unit = u.id; rec.by = best.via === 'semantic' ? 'semantic+contract' : 'retrieval+contract'; rec.score = best.score; if (best.cos != null) rec.cos = best.cos; if (best.via === 'semantic') issues.push({ step: label, kind: 'semantic_match', msg: '名稱對不上，靠語意挑了 ' + u.name + '（餘弦 ' + best.cos + '，高於平均 ' + best.z + ' 個標準差）' }); if (bridged.length) rec.bridged = bridged;
                 for (const e of outputEntries(u, sid, step, op)) pool.push(e); lastRef = { $ref: sid }; lastType = u.returns.type;
                 if (best.score < 0.5) issues.push({ step: label, kind: 'low_confidence', msg: '挑 ' + u.name + ' 的信心偏低（' + best.score + '）' });
             } else {
@@ -143,14 +153,14 @@
     // opts: { intents, minScore, minRel, maxBridge, minBridge }；回傳每個使用案例的結果與彙整
     function bindModel(model, catalog, opts) {
         opts = opts || {}; const t0 = Date.now(); const M = opts.matrix || MX.buildMatrix(catalog, { allowOpaque: false }); const index = SEL.buildIndex(catalog.units.filter((u) => u.tier === 1), { intents: opts.intents });
-        const ctx = { catalog, matrix: M, index, opts, intentFor: opts.intentFor || null };
+        const dense = opts.dense && opts.dense.unitVecs && opts.dense.unitVecs.size ? opts.dense : null; const ctx = { catalog, matrix: M, index, opts, intentFor: opts.intentFor || null, dense };
         const results = (model.usecases || []).map((uc) => bindUseCase(model, uc, ctx));
         const steps = results.reduce((a, r) => a + r.total, 0), bound = results.reduce((a, r) => a + r.bound, 0);
-        return { results, summary: { usecases: results.length, steps, bound, bound_pct: steps ? Math.round((bound / steps) * 1000) / 10 : null, valid: results.filter((r) => r.valid).length, fully_wired: results.filter((r) => r.valid && !r.issues.some((i) => i.kind === 'unwired' || i.kind === 'unbound')).length, issues: results.reduce((a, r) => a + r.issues.length, 0), model_calls: 0, ms: Date.now() - t0 } };
+        return { results, summary: { usecases: results.length, steps, bound, bound_pct: steps ? Math.round((bound / steps) * 1000) / 10 : null, valid: results.filter((r) => r.valid).length, fully_wired: results.filter((r) => r.valid && !r.issues.some((i) => i.kind === 'unwired' || i.kind === 'unbound')).length, issues: results.reduce((a, r) => a + r.issues.length, 0), semantic: !!dense, semantic_steps: results.reduce((a, r) => a + r.steps.filter((s) => s.by === 'semantic+contract').length, 0), model_calls: 0, ms: Date.now() - t0 } };
     }
     function toText(res) {
         const L = []; for (const r of res.results) { L.push('▸ ' + r.usecase + '（' + r.actor + '）　' + (r.valid ? '檢查通過' : '檢查失敗：' + (r.errors[0] || '沒有程式')) + '　' + r.bound + '/' + r.total + ' 步有單元'); for (const s of r.steps) L.push('  ' + s.step + ' → ' + (s.unit || (s.units ? s.units.join(' → ') : '（沒有）')) + (s.by ? '　[' + s.by + (s.score != null ? ' ' + s.score : '') + ']' : '')); for (const i of r.issues) L.push('  ⚠ ' + i.msg); }
-        const s = res.summary; L.push('', '共 ' + s.usecases + ' 個使用案例、' + s.steps + ' 步，單元對上 ' + s.bound + ' 步（' + s.bound_pct + '%），程式檢查通過 ' + s.valid + ' 個，完全接通 ' + s.fully_wired + ' 個；模型呼叫 0 次，' + s.ms + ' 毫秒。'); return L.join('\n');
+        const s = res.summary; L.push('', '共 ' + s.usecases + ' 個使用案例、' + s.steps + ' 步，單元對上 ' + s.bound + ' 步（' + s.bound_pct + '%），程式檢查通過 ' + s.valid + ' 個，完全接通 ' + s.fully_wired + ' 個；模型呼叫 0 次，' + s.ms + ' 毫秒；' + (s.semantic ? '有用語意檢索（嵌入）' : '只用名稱檢索（BM25）') + '。'); return L.join('\n');
     }
-    return { umlToType, bindUseCase, bindModel, toText, pickSource };
+    return { umlToType, bindUseCase, bindModel, toText, pickSource, stepQuery, queriesOf };
 });

@@ -523,3 +523,44 @@ add_chapters, analyze_large_file, apply_git_patch, attachment_apply_patch, bash_
 3. 只測了一個嵌入模型（沒有比 paraphrase-multilingual-MiniLM、Qwen3-Embedding-0.6B）。
 4. 沒有實測 UML 操作名稱（英文駝峰）當查詢的情況。
 5. 這一節只是量測，**還沒接進產品**：目前的檢索（挑單元、`catalog_bind`）仍是 BM25。若要接，做法是：單元嵌入算一次存檔（跟單元目錄同版本），查詢時 BM25 與嵌入各取排名，RRF 融合；嵌入模型沒下載或載入失敗時退回 BM25。
+
+## 二十三、把中文用途說明與語意檢索接進 catalog_bind（2026-10-16）
+
+### 中文用途說明（intents）
+- 內建一份 `renderer/src/catalog/data/unit_intents.json`（單元 id → 一句中文）：原本評測用的 33 個，加上這次補的 124 個（13 個英文說明的工具、111 個 Python 標準庫函式：math、statistics、posixpath、base64、urllib.parse…）。補完後，信任等級 1 的 311 個單元裡，「說明不是中文、也沒有用途說明」的剩 0 個。
+- 使用者／AI 補的存在 `unit-catalog-intents.json`（fileCache），優先於內建。
+- 工具 `catalog_intent`：`action:"missing"` 列出還缺的（id、英文說明、必填參數）；`action:"set"` 一次補多個（驗證：單元要存在、2～80 字、要有中文）；`action:"list"`。指令 `/unit-catalog intents`。以後 `catalog_onboard` 認識新函式庫後，缺的說明就是請 AI 用這個工具補。
+- 用途說明同時用在 BM25 與嵌入的單元文字；說明改了，該單元的向量自動失效重算。
+
+### 語意檢索（嵌入）
+- 模型：`Xenova/multilingual-e5-small`（8 位元量化約 118MB，WebAssembly，頁面主執行緒，分批並讓出執行緒不卡畫面）。**第一次啟用要使用者同意下載**（`/unit-catalog embed enable` 會跳確認視窗）；下載後在瀏覽器快取，之後載入約 2 秒。
+- 向量：311 個單元約 47 秒算完，存在 `unit-catalog-embeddings.json`（Float32 → base64，每個單元附文字雜湊）。單元的說明、用途說明、必填參數任何一個變了，只重算那一個。
+- 指令：`/unit-catalog embed`（狀態）、`enable`、`build`（補算）、`disable`。
+- 沒啟用、模型載入失敗、或向量覆蓋率低於 50% 時，`catalog_bind` 自動退回名稱檢索（BM25），並在結果的 `semantic_note` 說明原因；不會因為嵌入壞掉而整個失敗。
+
+### catalog_bind 怎麼用嵌入
+1. 每個步驟的查詢句（類別名稱＋操作名稱的字）同時做 BM25 與嵌入排名，用倒數排名融合（RRF）取前 14 名。
+2. 原本的門檻「操作名稱的字要有 60% 出現在單元名稱／說明裡」保留。新增第二條路：嵌入排名第 1，而且**比這句話對全部單元的平均餘弦高 3 個標準差以上**，也算對得上（`by:'semantic+contract'`，並在 issues 加 `semantic_match` 讓人看得到）。
+3. 為什麼用「高於平均幾個標準差」而不是固定餘弦門檻：實測英文駝峰操作名稱（`computeStandardDeviation`）的餘弦整體落在 0.79～0.88，比第二十二節中文查詢的範圍低，固定 0.86 會把對的都擋掉；改看相對平均的離群程度比較穩，但 3 這個數字是我從幾個例子挑的，**沒有經過大量資料校準**。
+4. 型別合約、資料流、橋接、程式檢查全都照舊。
+
+### 實測（真實目錄，311 個單元、8 個英文駝峰操作名稱的 UML）
+| 操作 | 只用名稱檢索 | 加語意檢索 |
+|---|---|---|
+| `computeStandardDeviation(data)` | 沒對上 | `statistics.stdev`（語意；pstdev 是第二名，兩者本來就難分） |
+| `wrapLongText(text)` | `textwrap.wrap` | `textwrap.wrap` |
+| `splitUrl(url)` | 沒對上 | `urllib.parse.urlsplit`（語意） |
+| `getQueryParams(qs)` | `urllib.parse.urlparse`（**不是最好的**） | 一樣（名稱路徑先贏了；嵌入第 1 名其實是正確的 `parse_qs`） |
+| `checkPathExists(path)` | `posixpath.exists` | 一樣 |
+| `fsStat(path)` | `fs_stat` | 一樣 |
+| `drawBarGraph(type, categories, series)` | `render_chart` | 一樣 |
+| `sendEmail(to)`（目錄裡沒有） | 沒對上 | 沒對上（最高只有 2.93 個標準差，沒過門檻） |
+
+對上的步驟 5/8 → 7/8，多對上的 2 個都是正確的選擇，沒有新增錯配；負面題沒被硬配。
+
+### 限制（要看清楚）
+1. 只有 8 個步驟，是我寫的；這只是可行性驗證，不是基準測試。
+2. `getQueryParams` 這種「名稱路徑先通過、但不是最佳」的錯配沒有被語意檢索修正；`exists` 與 `lexists`、`stdev` 與 `pstdev` 這類近義單元，目前是取最高分，不會問使用者。
+3. 3 個標準差的門檻、14 名的融合長度都是經驗值。
+4. 嵌入模型在主執行緒跑，算單元向量時介面會間歇卡頓（每批 8 個之間有讓出，但不是獨立 Worker）。
+5. 向量檔約 640KB，單元數增加到幾千個時要改成分檔或 IndexedDB。
