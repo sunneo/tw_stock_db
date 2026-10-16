@@ -142,7 +142,7 @@ function guardOverlayPreload(win, overlayMd5) {
     if (ok) return;
     try { require("fs").writeFileSync(path.join(app.getPath("userData"), "live-patch", "preload.bad"), overlayMd5); } catch (_) { /* 寫不了也還是要重啟 */ }
     console.error("[live-patch] 覆蓋版 preload.js 沒有掛出 window.desktopAPI，已標記為壞版本並重新啟動（改用安裝包內建版）");
-    app.relaunch(); app.exit(0);
+    relaunchApp(); app.exit(0);
   });
 }
 
@@ -1599,11 +1599,22 @@ ipcMain.handle("fa:update:apply", async () => {
   }
 });
 
+// AppImage 執行時 process.execPath 指到暫時掛載的 /tmp/.mount_xxx/，結束後掛載點就消失，
+// 預設的 app.relaunch() 會啟動一個不存在的路徑（所以更新後沒有自動重開）。
+// 這時要改指到 AppImage 檔案本身。
+function relaunchApp() {
+  if (process.platform === "linux" && process.env.APPIMAGE) {
+    app.relaunch({ execPath: process.env.APPIMAGE, args: process.argv.slice(1) });
+  } else {
+    app.relaunch();
+  }
+}
+
 // apply()只負責落地檔案＋記錄狀態，不會自己導航視窗——由renderer在顯示
 // 「更新完成」訊息之後才呼叫這個handler，讓使用者看得到那句話，不會畫面
 // 一閃就被loadFile()換頁蓋掉。
 ipcMain.handle("fa:update:relaunch", async () => {
-  app.relaunch();
+  relaunchApp();
   app.exit(0);
   return { ok: true };
 });
