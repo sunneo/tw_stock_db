@@ -39,6 +39,7 @@
 | JavaScript 單元抽取 | 讀 JavaScript 原始碼，抽出對外提供的函式與類別方法（型別來自 JSDoc、副作用靜態分析），信任等級 0 | `catalog_js`、`/unit-catalog js <網址>` | 二十五 |
 | 能力卡片 | 把很長的 README、使用手冊、維基、問答、設計文件，用地圖縮放＋多片段投票整理成：說明、語言、環境、安裝、函式、能力、需要的條件、授權、是否停止維護 | `catalog_card`、`/unit-catalog card <網址>` | 二十五 |
 | 缺口驅動探索 | 接線後沒有單元可用的步驟 → 搜尋（GitHub、SourceForge、CodeProject、StackOverflow）→ 讀說明 → 卡片 → 排名 → 計畫；錯誤歸類與換做法 | `catalog_discover`、`/unit-catalog discover <UML>` | 二十五 |
+| 回饋累積 | 探索計畫的推薦被採用／退回、試跑成功／失敗，記成標註（附特徵與壓縮卡片），累積成排名模型的訓練資料；資料夠了可以做交叉驗證訓練 | `catalog_feedback`、`/unit-catalog feedback` | 二十七 |
 | 小模型評測 | 量 0.6B 挑單元、填參數的能力 | `/unit-catalog eval` | 十九 |
 
 ## 四、常見做法

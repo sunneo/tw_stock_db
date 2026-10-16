@@ -9,15 +9,15 @@
     else root.FaCatalogFeedback = factory();
 })(typeof self !== 'undefined' ? self : this, function () {
     'use strict';
-    const MAX_RECORDS = 3000;
+    const MAX_RECORDS = 1500; // 一筆約 4～6KB（含壓縮卡片），1500 筆約 6～9MB
     // 失敗種類 → 這個專案的責任有多大（0＝跟專案無關，不拿來訓練）
     const FAIL_WEIGHT = { wrong_api: 0.4, wrong_args: 0.3, not_defined: 0.4, missing_module: 0.3, syntax: 0.2, async: 0.2, missing_resource: 0.2, permission: 0, network: 0, resource: 0, timeout: 0, unknown: 0.2 };
     const SOURCE_WEIGHT = { user_adopt: 1, user_reject: 1, run_ok: 0.6, alt: 0.3 };
 
     // 卡片壓縮：訓練與回顧需要的欄位，README 開頭 600 字，讀過的字取前 60 個
-    function compactCard(card) {
+    function compactCard(card, small) {
         if (!card) return null; const pick = (a, n, f) => (a || []).slice(0, n).map(f);
-        return { summary: String(card.summary || '').slice(0, 200), language: card.language || null, runtime: (card.runtime || []).slice(0, 4), runtime_guess: !!card.runtime_guess, installs: pick(card.installs, 2, (i) => i.line), cdn: (card.cdn || []).slice(0, 1), api: pick(card.api, 8, (a) => a.name), capabilities: pick(card.capabilities, 5, (c) => c.phrase), needs: (card.needs || []).slice(0, 6), license: card.license || null, deprecated: !!card.deprecated, head: String(card.head || '').slice(0, 600), terms: (card.terms || []).slice(0, 60) };
+        return { compact: true, summary: String(card.summary || '').slice(0, 200), language: card.language || null, runtime: (card.runtime || []).slice(0, 4), runtime_guess: !!card.runtime_guess, installs: pick(card.installs, 2, (i) => i.line), cdn: (card.cdn || []).slice(0, 1), api: pick(card.api, 8, (a) => a.name), capabilities: pick(card.capabilities, 5, (c) => c.phrase), needs: (card.needs || []).slice(0, 6), license: card.license || null, deprecated: !!card.deprecated, head: String(card.head || '').slice(0, small ? 300 : 600), terms: (card.terms || []).slice(0, small ? 20 : 40) };
     }
     function emptyStore() { return { version: 1, records: [] }; }
     const keyOf = (r) => [r.plan_id || '', r.gap_id || '', r.url || '', r.source].join('|');
@@ -25,9 +25,9 @@
     function makeRecord(rec, now) {
         if (!rec || !rec.url || !rec.gap_id || (rec.label !== 0 && rec.label !== 1)) throw new Error('回饋要有 url、gap_id、label（0 或 1）');
         if (!/^(user_adopt|user_reject|run_ok|run_fail)$/.test(rec.source)) throw new Error('不認得的來源：' + rec.source);
-        const cc = (c) => (c && c.head !== undefined && c.installs && typeof (c.installs[0]) === 'string' ? c : compactCard(c)); const at = now || new Date().toISOString();
+        const cc = (c, small) => (c && c.compact ? c : compactCard(c, small)); const at = now || new Date().toISOString();
         return { id: 'fb_' + at.replace(/\D/g, '').slice(0, 14) + '_' + Math.random().toString(36).slice(2, 6), at, plan_id: rec.plan_id || '', gap_id: rec.gap_id, need: String(rec.need || '').slice(0, 200), runtime: rec.runtime || 'browser', url: String(rec.url), name: String(rec.name || '').slice(0, 120), kind: rec.kind || 'project', label: rec.label, source: rec.source, fail_kind: rec.fail_kind || null, detail: String(rec.detail || '').slice(0, 300), card: cc(rec.card), features: rec.features || null,
-            alts: (rec.alts || []).slice(0, 5).map((a) => ({ url: String(a.url), name: String(a.name || '').slice(0, 120), card: cc(a.card), features: a.features || null })) };
+            alts: (rec.alts || []).slice(0, 5).map((a) => ({ url: String(a.url), name: String(a.name || '').slice(0, 120), card: cc(a.card, true), features: a.features || null })) };
     }
     // 追加；同一個（計畫，缺口，網址，來源）後來的覆蓋先前的（使用者改變主意）；超過上限丟最舊的
     function append(store, recs) {
