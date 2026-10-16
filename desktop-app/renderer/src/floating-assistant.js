@@ -3822,9 +3822,10 @@ function _faRepoExt(p) { const m = /\.([A-Za-z0-9]+)$/.exec(String(p || '')); re
 // 文件型檔案（pdf／xlsx／docx／pptx／csv／壓縮檔）也進索引：不是「程式語言」，lang 記成 doc:<種類>
 function _faRepoDocKind(p) {
     const s = String(p || '').toLowerCase();
-    if (/\.(tar\.gz|tgz)$/.test(s)) return 'tgz';
+    if (/\.(tar\.gz|tgz)$/.test(s)) return 'archive';
     const m = /\.([a-z0-9]+)$/.exec(s); const e = m ? m[1] : '';
-    return ({ pdf: 'pdf', xlsx: 'xlsx', docx: 'docx', pptx: 'pptx', csv: 'csv', tsv: 'csv', zip: 'zip', tar: 'tar' })[e] || '';
+    if (/\.(tar\.bz2|tbz2?|tb2|tar\.xz|txz|tar\.zst|tzst)$/.test(s)) return 'archive';
+    return ({ pdf: 'pdf', xlsx: 'xlsx', docx: 'docx', pptx: 'pptx', csv: 'csv', tsv: 'csv', zip: 'archive', tar: 'archive', jar: 'archive', war: 'archive', ear: 'archive', aar: 'archive', '7z': 'archive', rar: 'archive', gz: 'archive', bz2: 'archive', xz: 'archive', iso: 'archive', cab: 'archive', zst: 'archive' })[e] || '';
 }
 function _faRepoLang(p) { const l = FA_REPOMAP_LANG[_faRepoExt(p)]; if (l) return l; const d = _faRepoDocKind(p); return d ? 'doc:' + d : ''; }
 function _faRepoDirname(p) { const i = String(p).lastIndexOf('/'); return i < 0 ? '' : p.slice(0, i); }
@@ -12664,15 +12665,15 @@ const holder = {};
     else root.FaCatalogFeedback = factory();
 })(typeof self !== 'undefined' ? self : this, function () {
     'use strict';
-    const MAX_RECORDS = 3000;
+    const MAX_RECORDS = 1500; // 一筆約 4～6KB（含壓縮卡片），1500 筆約 6～9MB
     // 失敗種類 → 這個專案的責任有多大（0＝跟專案無關，不拿來訓練）
     const FAIL_WEIGHT = { wrong_api: 0.4, wrong_args: 0.3, not_defined: 0.4, missing_module: 0.3, syntax: 0.2, async: 0.2, missing_resource: 0.2, permission: 0, network: 0, resource: 0, timeout: 0, unknown: 0.2 };
     const SOURCE_WEIGHT = { user_adopt: 1, user_reject: 1, run_ok: 0.6, alt: 0.3 };
 
     // 卡片壓縮：訓練與回顧需要的欄位，README 開頭 600 字，讀過的字取前 60 個
-    function compactCard(card) {
+    function compactCard(card, small) {
         if (!card) return null; const pick = (a, n, f) => (a || []).slice(0, n).map(f);
-        return { summary: String(card.summary || '').slice(0, 200), language: card.language || null, runtime: (card.runtime || []).slice(0, 4), runtime_guess: !!card.runtime_guess, installs: pick(card.installs, 2, (i) => i.line), cdn: (card.cdn || []).slice(0, 1), api: pick(card.api, 8, (a) => a.name), capabilities: pick(card.capabilities, 5, (c) => c.phrase), needs: (card.needs || []).slice(0, 6), license: card.license || null, deprecated: !!card.deprecated, head: String(card.head || '').slice(0, 600), terms: (card.terms || []).slice(0, 60) };
+        return { compact: true, summary: String(card.summary || '').slice(0, 200), language: card.language || null, runtime: (card.runtime || []).slice(0, 4), runtime_guess: !!card.runtime_guess, installs: pick(card.installs, 2, (i) => i.line), cdn: (card.cdn || []).slice(0, 1), api: pick(card.api, 8, (a) => a.name), capabilities: pick(card.capabilities, 5, (c) => c.phrase), needs: (card.needs || []).slice(0, 6), license: card.license || null, deprecated: !!card.deprecated, head: String(card.head || '').slice(0, small ? 300 : 600), terms: (card.terms || []).slice(0, small ? 20 : 40) };
     }
     function emptyStore() { return { version: 1, records: [] }; }
     const keyOf = (r) => [r.plan_id || '', r.gap_id || '', r.url || '', r.source].join('|');
@@ -12680,9 +12681,9 @@ const holder = {};
     function makeRecord(rec, now) {
         if (!rec || !rec.url || !rec.gap_id || (rec.label !== 0 && rec.label !== 1)) throw new Error('回饋要有 url、gap_id、label（0 或 1）');
         if (!/^(user_adopt|user_reject|run_ok|run_fail)$/.test(rec.source)) throw new Error('不認得的來源：' + rec.source);
-        const cc = (c) => (c && c.head !== undefined && c.installs && typeof (c.installs[0]) === 'string' ? c : compactCard(c)); const at = now || new Date().toISOString();
+        const cc = (c, small) => (c && c.compact ? c : compactCard(c, small)); const at = now || new Date().toISOString();
         return { id: 'fb_' + at.replace(/\D/g, '').slice(0, 14) + '_' + Math.random().toString(36).slice(2, 6), at, plan_id: rec.plan_id || '', gap_id: rec.gap_id, need: String(rec.need || '').slice(0, 200), runtime: rec.runtime || 'browser', url: String(rec.url), name: String(rec.name || '').slice(0, 120), kind: rec.kind || 'project', label: rec.label, source: rec.source, fail_kind: rec.fail_kind || null, detail: String(rec.detail || '').slice(0, 300), card: cc(rec.card), features: rec.features || null,
-            alts: (rec.alts || []).slice(0, 5).map((a) => ({ url: String(a.url), name: String(a.name || '').slice(0, 120), card: cc(a.card), features: a.features || null })) };
+            alts: (rec.alts || []).slice(0, 5).map((a) => ({ url: String(a.url), name: String(a.name || '').slice(0, 120), card: cc(a.card, true), features: a.features || null })) };
     }
     // 追加；同一個（計畫，缺口，網址，來源）後來的覆蓋先前的（使用者改變主意）；超過上限丟最舊的
     function append(store, recs) {
@@ -12726,6 +12727,171 @@ const holder = {};
 return holder.FaCatalogFeedback;
 })();
 /* CATFB-END */
+/* ARCHIVE-BEGIN */
+const FaArchive = (function () {
+const holder = {};
+(function (module, self) {
+/* 壓縮檔的辨識與純 JavaScript 解碼（UMD，純函式，不碰 DOM／網路）：
+ *  - sniff(u8, name)  ：用檔頭魔術數字（不只看副檔名）判斷格式：zip／jar、7z、rar（4 與 5）、tar、gzip、bzip2、xz、zstd、iso，以及 tar.gz／tgz、tar.bz2／tbz2、tar.xz／txz 這類『壓縮過的 tar』
+ *  - parseTar(u8)      ：tar 讀取（ustar 的 prefix、pax 擴充標頭、GNU 長檔名，hard link／symlink 標示）
+ *  - bzip2Decode(u8)   ：bzip2 解壓（含多區塊、多串接串流、區塊 CRC 檢查、輸出上限）
+ *  - looksBinary(u8)、decodeText(u8)、jarSummary(entries)、tree(entries)
+ * 其他格式（7z、rar、iso、xz、tar.xz…）由應用程式端用 libarchive（WebAssembly）解開，見 floating-assistant.js 的 _archiveOpen；
+ * 這裡的 gzip 靠瀏覽器／Node 內建的 DecompressionStream（呼叫端提供）。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaArchive = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const MAX_OUT = 256 * 1048576;
+    const ASCII = (u8, off, s) => { for (let i = 0; i < s.length; i++) if (u8[off + i] !== s.charCodeAt(i)) return false; return true; };
+    const EXT_FORMATS = [[/\.(tar\.gz|tgz|taz)$/i, 'tgz'], [/\.(tar\.bz2|tbz2?|tb2|tar\.bz)$/i, 'tbz2'], [/\.(tar\.xz|txz)$/i, 'txz'], [/\.(tar\.zst|tzst|tar\.zstd)$/i, 'tzst'], [/\.(jar|war|ear|apk|aar|xpi|nupkg|whl|egg|vsix|crx|odt|ods|odp|epub|zip)$/i, 'zip'], [/\.7z$/i, '7z'], [/\.rar$/i, 'rar'], [/\.tar$/i, 'tar'], [/\.(gz|gzip)$/i, 'gz'], [/\.(bz2|bzip2)$/i, 'bz2'], [/\.xz$/i, 'xz'], [/\.(zst|zstd)$/i, 'zst'], [/\.(iso|img)$/i, 'iso'], [/\.(cab)$/i, 'cab'], [/\.(lz4)$/i, 'lz4'], [/\.(z)$/i, 'z']];
+    // 副檔名 → 格式（沒有檔頭可看的時候用）；不是壓縮檔回傳 ''
+    function formatFromName(name) { const s = String(name || ''); for (const [re, f] of EXT_FORMATS) if (re.test(s)) return f; return ''; }
+    const LABEL = { zip: 'zip', jar: 'jar（Java 套件）', '7z': '7z', rar: 'rar', tar: 'tar', gz: 'gzip', tgz: 'tar.gz', bz2: 'bzip2', tbz2: 'tar.bz2', xz: 'xz', txz: 'tar.xz', zst: 'zstd', tzst: 'tar.zst', iso: 'iso（光碟映像）', cab: 'cab', lz4: 'lz4', z: 'compress(.Z)' };
+    // 檔頭 → { format, compressed（是不是單檔壓縮，裡面可能還有 tar）}
+    function sniff(u8, name) {
+        const n = u8 ? u8.length : 0; const byName = formatFromName(name); let magic = '';
+        if (n >= 4 && u8[0] === 0x50 && u8[1] === 0x4b && (u8[2] === 3 || u8[2] === 5 || u8[2] === 7) && (u8[3] === 4 || u8[3] === 6 || u8[3] === 8)) magic = 'zip';
+        else if (n >= 6 && u8[0] === 0x37 && u8[1] === 0x7a && u8[2] === 0xbc && u8[3] === 0xaf && u8[4] === 0x27 && u8[5] === 0x1c) magic = '7z';
+        else if (n >= 7 && ASCII(u8, 0, 'Rar!\x1a\x07')) magic = 'rar';
+        else if (n >= 3 && u8[0] === 0x1f && u8[1] === 0x8b) magic = 'gz';
+        else if (n >= 4 && ASCII(u8, 0, 'BZh') && u8[3] >= 0x31 && u8[3] <= 0x39) magic = 'bz2';
+        else if (n >= 6 && u8[0] === 0xfd && ASCII(u8, 1, '7zXZ') && u8[5] === 0) magic = 'xz';
+        else if (n >= 4 && u8[0] === 0x28 && u8[1] === 0xb5 && u8[2] === 0x2f && u8[3] === 0xfd) magic = 'zst';
+        else if (n >= 4 && u8[0] === 0x04 && u8[1] === 0x22 && u8[2] === 0x4d && u8[3] === 0x18) magic = 'lz4';
+        else if (n >= 4 && ASCII(u8, 0, 'MSCF')) magic = 'cab';
+        else if (n >= 2 && u8[0] === 0x1f && u8[1] === 0x9d) magic = 'z';
+        else if (n >= 262 && ASCII(u8, 257, 'ustar')) magic = 'tar';
+        else if (n >= 0x8006 && ASCII(u8, 0x8001, 'CD001')) magic = 'iso';
+        else if (n >= 512 && validTarHeader(u8)) magic = 'tar'; // 古老的 v7 tar 沒有 ustar 標記，靠檢查碼認
+        // 檔頭優先；檔頭認不出來（例如被截斷）才用副檔名。壓縮過的 tar 用副檔名補上『裡面是 tar』
+        let format = magic || byName; let tarInside = false;
+        if (magic === 'gz' && /^(tgz)$/.test(byName)) { format = 'tgz'; tarInside = true; } else if (magic === 'bz2' && byName === 'tbz2') { format = 'tbz2'; tarInside = true; } else if (magic === 'xz' && byName === 'txz') { format = 'txz'; tarInside = true; } else if (magic === 'zst' && byName === 'tzst') { format = 'tzst'; tarInside = true; }
+        if (format === 'zip' && /\.(jar|war|ear|aar)$/i.test(String(name || ''))) format = 'jar';
+        const single = /^(gz|bz2|xz|zst|lz4|z)$/.test(format) || /^(tgz|tbz2|txz|tzst)$/.test(format);
+        const base = { tgz: 'gz', tbz2: 'bz2', txz: 'xz', tzst: 'zst' }[format] || format;
+        return { format: format || '', label: LABEL[format] || format || '', codec: single ? base : '', tarInside, byMagic: !!magic, mismatch: !!(magic && byName && byName !== magic && !(['tgz', 'tbz2', 'txz', 'tzst'].includes(byName)) && !(magic === 'zip' && byName === 'zip')) };
+    }
+    // tar 標頭檢查碼：第 148～155 位元組是八進位的 checksum，把這 8 個位元組當空白算出來的總和要一致
+    function validTarHeader(u8) {
+        if (u8.length < 512) return false; let sum = 0; for (let i = 0; i < 512; i++) sum += (i >= 148 && i < 156) ? 32 : u8[i];
+        let s = ''; for (let i = 148; i < 156; i++) { if (u8[i] === 0 || u8[i] === 32) { if (s) break; else continue; } s += String.fromCharCode(u8[i]); } if (!/^[0-7]+$/.test(s)) return false; return parseInt(s, 8) === sum && u8[0] !== 0;
+    }
+
+    // ===== tar =====
+    const dec = (u8) => new TextDecoder('utf-8').decode(u8);
+    function octal(seg) { let s = ''; for (const b of seg) { if (b === 0 || b === 32) { if (s) break; else continue; } s += String.fromCharCode(b); } return s ? parseInt(s, 8) : 0; }
+    function cstr(seg) { let e = seg.indexOf(0); if (e < 0) e = seg.length; return dec(seg.subarray(0, e)); }
+    // pax 的紀錄長度是『位元組數』（含長度本身、空白、等號與結尾換行），所以要照位元組走，不能照字元走
+    function parsePax(u8) {
+        const out = {}; let i = 0;
+        while (i < u8.length) { let sp = i; while (sp < u8.length && u8[sp] !== 32) sp++; if (sp >= u8.length) break; const len = parseInt(dec(u8.subarray(i, sp)), 10); if (!len || i + len > u8.length) break; const rec = dec(u8.subarray(sp + 1, i + len - 1)); const eq = rec.indexOf('='); if (eq > 0) out[rec.slice(0, eq)] = rec.slice(eq + 1); i += len; }
+        return out;
+    }
+    // 回傳 { entries:[{ name, size, isDir, type, linkname, mtime, mode, _off }], truncated }；資料不完整時盡量讀到哪算哪
+    function parseTar(u8) {
+        const entries = []; let off = 0; let pendingName = null, pax = null, globalPax = null, truncated = false;
+        while (off + 512 <= u8.length) {
+            const h = u8.subarray(off, off + 512); let zero = true; for (let i = 0; i < 512; i++) if (h[i] !== 0) { zero = false; break; } if (zero) break;
+            let name = cstr(h.subarray(0, 100)); const size = octal(h.subarray(124, 136)); const type = String.fromCharCode(h[156] || 48); const magic = cstr(h.subarray(257, 263));
+            if (/^ustar/.test(magic)) { const prefix = cstr(h.subarray(345, 500)); if (prefix) name = prefix + '/' + name; }
+            const dataOff = off + 512; const next = dataOff + Math.ceil(size / 512) * 512; if (dataOff + size > u8.length) truncated = true;
+            if (type === 'L') { pendingName = cstr(u8.subarray(dataOff, dataOff + size)); off = next; continue; } // GNU 長檔名
+            if (type === 'K') { off = next; continue; } // GNU 長連結名（不用）
+            if (type === 'x') { pax = parsePax(u8.subarray(dataOff, dataOff + size)); off = next; continue; }
+            if (type === 'g') { globalPax = parsePax(u8.subarray(dataOff, dataOff + size)); off = next; continue; }
+            const px = Object.assign({}, globalPax || {}, pax || {}); if (pendingName) name = pendingName; if (px.path) name = px.path; const fsize = px.size ? parseInt(px.size, 10) : size;
+            entries.push({ name, size: fsize, isDir: type === '5' || name.endsWith('/'), type, linkname: px.linkpath || cstr(h.subarray(157, 257)) || undefined, mtime: px.mtime ? Math.floor(Number(px.mtime)) : octal(h.subarray(136, 148)), mode: octal(h.subarray(100, 108)), _off: dataOff });
+            pendingName = null; pax = null; off = dataOff + Math.ceil(fsize / 512) * 512;
+        }
+        return { entries, truncated, bytes: u8 };
+    }
+    function tarRead(parsed, name) { const e = parsed.entries.find((x) => x.name === name); if (!e) return null; if (e.type === '1' || e.type === '2') return null; return parsed.bytes.subarray(e._off, e._off + e.size); }
+
+    // ===== bzip2 =====
+    const CRC_T = (() => { const t = new Uint32Array(256); for (let i = 0; i < 256; i++) { let c = i << 24; for (let j = 0; j < 8; j++) c = (c & 0x80000000) ? ((c << 1) ^ 0x04c11db7) : (c << 1); t[i] = c >>> 0; } return t; })();
+    function bzip2Decode(data, opts) {
+        const maxOut = (opts && opts.maxOut) || MAX_OUT; let pos = 0, bitBuf = 0, bitCnt = 0;
+        const bits = (n) => { while (bitCnt < n) { if (pos >= data.length) throw new Error('bzip2：資料不完整（檔案可能被截斷）'); bitBuf = (bitBuf << 8) | data[pos++]; bitCnt += 8; } bitCnt -= n; const v = (bitBuf >>> bitCnt) & ((1 << n) - 1); bitBuf &= (1 << bitCnt) - 1; return v; };
+        const bit = () => bits(1);
+        let out = new Uint8Array(Math.min(maxOut, Math.max(65536, data.length * 4))); let outLen = 0;
+        const put = (b) => { if (outLen >= out.length) { if (out.length >= maxOut) throw new Error('bzip2：解開後超過上限 ' + Math.round(maxOut / 1048576) + 'MB（可能是壓縮炸彈）'); const bigger = new Uint8Array(Math.min(maxOut, out.length * 2)); bigger.set(out); out = bigger; } out[outLen++] = b; };
+        let streams = 0;
+        while (true) {
+            if (!(bits(8) === 0x42 && bits(8) === 0x5a && bits(8) === 0x68)) { if (streams) break; throw new Error('不是 bzip2 檔案（檔頭不是 BZh）'); }
+            const level = bits(8) - 0x30; if (level < 1 || level > 9) throw new Error('bzip2：區塊大小不合法'); const blockMax = level * 100000; streams++; let combined = 0;
+            while (true) {
+                const m1 = bits(24), m2 = bits(24);
+                if (m1 === 0x177245 && m2 === 0x385090) { const stored = bits(16) * 65536 + bits(16); if ((stored >>> 0) !== (combined >>> 0)) throw new Error('bzip2：整個串流的 CRC 對不上（資料損毀）'); bitBuf = 0; bitCnt = 0; break; } // 串流結束，對齊到位元組
+                if (m1 !== 0x314159 || m2 !== 0x265359) throw new Error('bzip2：區塊標記不對（資料損毀）');
+                const blockCrc = ((bits(16) * 65536) + bits(16)) >>> 0; if (bit()) throw new Error('bzip2：不支援舊版的隨機化區塊'); const origPtr = bits(24);
+                const used16 = bits(16); const seqToUnseq = []; for (let i = 0; i < 16; i++) if (used16 & (0x8000 >> i)) { const b = bits(16); for (let j = 0; j < 16; j++) if (b & (0x8000 >> j)) seqToUnseq.push(i * 16 + j); }
+                const nInUse = seqToUnseq.length; if (!nInUse) throw new Error('bzip2：區塊裡沒有任何符號'); const alpha = nInUse + 2; const nGroups = bits(3); if (nGroups < 2 || nGroups > 6) throw new Error('bzip2：霍夫曼表數量不對'); const nSel = bits(15); if (nSel < 1) throw new Error('bzip2：沒有選擇器');
+                const selMtf = []; for (let i = 0; i < nSel; i++) { let j = 0; while (bit()) { j++; if (j >= nGroups) throw new Error('bzip2：選擇器損毀'); } selMtf.push(j); }
+                const pos0 = []; for (let i = 0; i < nGroups; i++) pos0.push(i); const selector = new Uint8Array(nSel); for (let i = 0; i < nSel; i++) { const v = selMtf[i]; const t = pos0[v]; for (let k = v; k > 0; k--) pos0[k] = pos0[k - 1]; pos0[0] = t; selector[i] = t; }
+                const tables = []; for (let t = 0; t < nGroups; t++) {
+                    const len = new Uint8Array(alpha); let cur = bits(5); for (let i = 0; i < alpha; i++) { while (true) { if (cur < 1 || cur > 20) throw new Error('bzip2：霍夫曼碼長不合法'); if (!bit()) break; if (!bit()) cur++; else cur--; } len[i] = cur; }
+                    let minL = 32, maxL = 0; for (let i = 0; i < alpha; i++) { if (len[i] > maxL) maxL = len[i]; if (len[i] < minL) minL = len[i]; }
+                    const perm = new Int32Array(alpha); let pp = 0; for (let i = minL; i <= maxL; i++) for (let j = 0; j < alpha; j++) if (len[j] === i) perm[pp++] = j;
+                    const base = new Int32Array(23), limit = new Int32Array(23); for (let i = 0; i < alpha; i++) base[len[i] + 1]++; for (let i = 1; i < 23; i++) base[i] += base[i - 1];
+                    let vec = 0; for (let i = minL; i <= maxL; i++) { vec += base[i + 1] - base[i]; limit[i] = vec - 1; vec <<= 1; } for (let i = minL + 1; i <= maxL; i++) base[i] = ((limit[i - 1] + 1) << 1) - base[i];
+                    tables.push({ minL, maxL, perm, base, limit });
+                }
+                const EOB = nInUse + 1; const tt = new Int32Array(blockMax); const unz = new Int32Array(256); const yy = new Uint8Array(nInUse); for (let i = 0; i < nInUse; i++) yy[i] = i;
+                let groupNo = -1, groupPos = 0, tab = null, nblock = 0;
+                const nextSym = () => { if (groupPos === 0) { groupNo++; if (groupNo >= nSel) throw new Error('bzip2：選擇器用完了（資料損毀）'); groupPos = 50; tab = tables[selector[groupNo]]; } groupPos--; let zn = tab.minL; let zv = bits(zn); while (zv > tab.limit[zn]) { zn++; if (zn > 20) throw new Error('bzip2：霍夫曼解碼失敗'); zv = (zv << 1) | bit(); } const idx = zv - tab.base[zn]; if (idx < 0 || idx >= alpha) throw new Error('bzip2：霍夫曼解碼失敗'); return tab.perm[idx]; };
+                let sym = nextSym();
+                while (sym !== EOB) {
+                    if (sym <= 1) { let es = -1, N = 1; do { es += (sym === 0 ? 1 : 2) * N; N <<= 1; if (N > (1 << 22)) throw new Error('bzip2：重複次數太大（資料損毀）'); sym = nextSym(); } while (sym <= 1); es++; const uc = seqToUnseq[yy[0]]; if (nblock + es > blockMax) throw new Error('bzip2：區塊超過大小（資料損毀）'); unz[uc] += es; while (es-- > 0) tt[nblock++] = uc; continue; }
+                    if (nblock >= blockMax) throw new Error('bzip2：區塊超過大小（資料損毀）'); const nn = sym - 1; const u = yy[nn]; for (let k = nn; k > 0; k--) yy[k] = yy[k - 1]; yy[0] = u; const byte = seqToUnseq[u]; unz[byte]++; tt[nblock++] = byte; sym = nextSym();
+                }
+                if (origPtr >= nblock && nblock) throw new Error('bzip2：起點指標不對（資料損毀）');
+                const cf = new Int32Array(256); let sum = 0; for (let i = 0; i < 256; i++) { cf[i] = sum; sum += unz[i]; } for (let i = 0; i < nblock; i++) { const uc = tt[i] & 0xff; tt[cf[uc]++] |= (i << 8); }
+                // 逆 BWT ＋ 第一層 RLE（連續 4 個相同位元組後面接一個重複次數）
+                let tPos = nblock ? (tt[origPtr] >> 8) : 0; let run = 0, prev = -1, crc = 0xffffffff;
+                const emit = (b) => { put(b); crc = ((crc << 8) ^ CRC_T[((crc >>> 24) ^ b) & 0xff]) >>> 0; };
+                for (let i = 0; i < nblock; i++) {
+                    tPos = tt[tPos]; const ch = tPos & 0xff; tPos >>= 8;
+                    if (run === 4) { for (let k = 0; k < ch; k++) emit(prev); run = 0; prev = -1; continue; }
+                    if (ch === prev) run++; else { run = 1; prev = ch; } emit(ch);
+                }
+                crc = (~crc) >>> 0; if (crc !== blockCrc) throw new Error('bzip2：區塊 CRC 對不上（資料損毀）'); combined = (((combined << 1) | (combined >>> 31)) ^ crc) >>> 0;
+            }
+            if (pos >= data.length) break;
+        }
+        return out.subarray(0, outLen);
+    }
+
+    // ===== 內容判斷 =====
+    function looksBinary(u8, n) { const m = Math.min(u8.length, n || 4096); let ctrl = 0; for (let i = 0; i < m; i++) { const b = u8[i]; if (b === 0) return true; if (b < 9 || (b > 13 && b < 32)) ctrl++; } return m > 0 && ctrl / m > 0.1; }
+    function decodeText(u8) {
+        if (u8.length >= 3 && u8[0] === 0xef && u8[1] === 0xbb && u8[2] === 0xbf) return new TextDecoder('utf-8').decode(u8.subarray(3));
+        if (u8.length >= 2 && u8[0] === 0xff && u8[1] === 0xfe) return new TextDecoder('utf-16le').decode(u8.subarray(2)); if (u8.length >= 2 && u8[0] === 0xfe && u8[1] === 0xff) return new TextDecoder('utf-16be').decode(u8.subarray(2));
+        try { return new TextDecoder('utf-8', { fatal: true }).decode(u8); } catch (_) { /* 往下試 */ }
+        for (const enc of ['big5', 'gbk', 'windows-1252']) { try { return new TextDecoder(enc, { fatal: true }).decode(u8); } catch (_) { /* 下一個 */ } }
+        return new TextDecoder('utf-8').decode(u8);
+    }
+    // 項目清單的摘要：資料夾樹的第一層、副檔名統計、總大小
+    function summarize(entries) {
+        const files = entries.filter((e) => !e.isDir); const ext = {}; for (const f of files) { const m = /\.([A-Za-z0-9]+)$/.exec(f.name); const k = m ? m[1].toLowerCase() : '(無)'; ext[k] = (ext[k] || 0) + 1; }
+        const top = {}; for (const e of entries) { const p = e.name.replace(/^\.?\//, '').split('/')[0]; if (p) top[p] = (top[p] || 0) + 1; }
+        return { files: files.length, dirs: entries.length - files.length, total_bytes: files.reduce((a, f) => a + (f.size || 0), 0), by_ext: Object.entries(ext).sort((a, b) => b[1] - a[1]).slice(0, 8), top_level: Object.entries(top).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([k, v]) => k + (v > 1 ? '（' + v + ' 項）' : '')) };
+    }
+    // Java 套件：MANIFEST.MF 的重點、類別數、有沒有 module-info、套件目錄
+    function jarSummary(entries, manifestText) {
+        const classes = entries.filter((e) => /\.class$/i.test(e.name)).length; const pk = new Set(); for (const e of entries) { if (/\.class$/i.test(e.name)) { const d = e.name.split('/').slice(0, -1).join('.'); if (d) pk.add(d); } }
+        const man = {}; String(manifestText || '').replace(/\r?\n[ \t]/g, '').split(/\r?\n/).forEach((l) => { const m = /^([A-Za-z0-9_-]+):\s*(.*)$/.exec(l); if (m) man[m[1]] = m[2]; });
+        return { classes, packages: Array.from(pk).slice(0, 12), packages_total: pk.size, main_class: man['Main-Class'] || null, title: man['Implementation-Title'] || man['Bundle-Name'] || null, version: man['Implementation-Version'] || man['Bundle-Version'] || null, created_by: man['Created-By'] || null, module_info: entries.some((e) => /(^|\/)module-info\.class$/.test(e.name)), spring_boot: entries.some((e) => /^BOOT-INF\//.test(e.name)) };
+    }
+    const SUPPORTED = ['zip', 'jar', '7z', 'rar', 'tar', 'tar.gz / tgz', 'gzip', 'bzip2', 'tar.bz2 / tbz2', 'xz', 'tar.xz / txz', 'iso'];
+    return { MAX_OUT, SUPPORTED, formatFromName, sniff, validTarHeader, parseTar, tarRead, bzip2Decode, looksBinary, decodeText, summarize, jarSummary };
+});
+
+}).call(null, undefined, holder);
+return holder.FaArchive;
+})();
+/* ARCHIVE-END */
 /* CATRT-BEGIN */
 const FaCatalogRankTrain = (function () {
 const holder = {};
@@ -29197,7 +29363,7 @@ ${fnData.code}
         );
 
         registerOptional('repo_read_doc',
-            '讀專案裡的文件型檔案（pdf／xlsx／docx／pptx／csv／zip／tar／tgz）的全文，分段回傳：pdf 每頁前有「[第N頁]」、xlsx 每個工作表前有「[工作表 名稱]」、pptx 每張前有「[投影片 N]」。壓縮檔不給 entry 只列項目，給 entry 讀裡面某個文字檔。用於深入探討文件、回答「這份 PDF／表格在講什麼」。原始碼請用 coding_read_file。',
+            '讀專案裡的文件型檔案（pdf／xlsx／docx／pptx／csv／壓縮檔 zip／jar／7z／rar／tar／tgz／gzip／bzip2／xz／iso）的全文，分段回傳：pdf 每頁前有「[第N頁]」、xlsx 每個工作表前有「[工作表 名稱]」、pptx 每張前有「[投影片 N]」。壓縮檔不給 entry 只列項目，給 entry 讀裡面某個文字檔。用於深入探討文件、回答「這份 PDF／表格在講什麼」。原始碼請用 coding_read_file。',
             async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -29690,7 +29856,7 @@ ${fnData.code}
         );
 
         registerOptional('parse_uploaded_file',
-            '解析一個已上傳檔案的內容，依副檔名自動判斷格式（csv/xlsx/js/json/txt/markdown/yaml/docx/pptx/pdf/toon/cfg/inf/ini/log/zip/tar/tgz都支援）。壓縮檔（zip/tar/tgz）預設只回傳內含項目清單，要看特定項目的實際內容再帶entry_path指定。pdf會逐頁擷取文字內容接成fullText（只回傳前12000字元，超長文件需要完整全文請改用summarize_large_text）；純掃描/圖片PDF沒有文字層，擷取不到內容屬於正常情況（不支援OCR），回應裡的note欄位會說明。**PDF文字跟圖片是分開解析的**：預設只解析文字（速度快），如果PDF裡有圖表/圖片需要理解內容，帶interpret_images:true重新呼叫——有圖片的頁面會被整頁截圖（不是逐一還原內嵌圖片，比較可靠），截圖先以「[圖片區塊：第N頁截圖｜file_id=...]」佔位標籤插入該頁文字，interpret_images:true時才會真的呼叫vision model描述內容並附加在佔位標籤後面（interpret_images_count控制最多對幾頁截圖做vision描述，避免每頁都跑vision太慢，預設3）；回應的pageImages欄位列出每張截圖的file_id/是否已描述，之後也可以直接拿file_id呼叫interpret_image單獨補問。**有密碼保護的PDF**：呼叫這個工具時如果偵測到需要密碼，會在畫面上自動跳出密碼輸入框讓使用者當場輸入（跟File Access Point權限不足時的行為一致），這次工具呼叫會停在那裡等使用者輸入完成，不需要事先知道密碼或另外處理，使用者輸入錯誤會再跳一次、取消輸入則工具回報明確錯誤。參數: {"file_id":"...", "entry_path":"（選填，僅壓縮檔用）"}**分頁讀取**：純文字、壓縮檔項目、PDF文字如果回傳has_more:true，用offset/start_line/max_chars/max_lines繼續讀到完整份；精準編修（程式碼、字幕）不要用summarize_large_text，要分頁把整份讀完。要「改」附件內容請用bash_execute/python_execute的attachment_files參數。',
+            '解析一個已上傳檔案的內容，依副檔名自動判斷格式（csv/xlsx/js/json/txt/markdown/yaml/docx/pptx/pdf/toon/cfg/inf/ini/log都支援，壓縮檔支援zip/jar/7z/rar/tar/tar.gz/tgz/gzip/bzip2/tar.bz2/xz/tar.xz/iso，用檔頭判斷格式，副檔名不對也認得出來）。壓縮檔預設只回傳內含項目清單與摘要（jar會附MANIFEST重點、類別與套件），要看特定項目的實際內容再帶entry_path指定（二進位項目不會顯示；有加密要帶password）。pdf會逐頁擷取文字內容接成fullText（只回傳前12000字元，超長文件需要完整全文請改用summarize_large_text）；純掃描/圖片PDF沒有文字層，擷取不到內容屬於正常情況（不支援OCR），回應裡的note欄位會說明。**PDF文字跟圖片是分開解析的**：預設只解析文字（速度快），如果PDF裡有圖表/圖片需要理解內容，帶interpret_images:true重新呼叫——有圖片的頁面會被整頁截圖（不是逐一還原內嵌圖片，比較可靠），截圖先以「[圖片區塊：第N頁截圖｜file_id=...]」佔位標籤插入該頁文字，interpret_images:true時才會真的呼叫vision model描述內容並附加在佔位標籤後面（interpret_images_count控制最多對幾頁截圖做vision描述，避免每頁都跑vision太慢，預設3）；回應的pageImages欄位列出每張截圖的file_id/是否已描述，之後也可以直接拿file_id呼叫interpret_image單獨補問。**有密碼保護的PDF**：呼叫這個工具時如果偵測到需要密碼，會在畫面上自動跳出密碼輸入框讓使用者當場輸入（跟File Access Point權限不足時的行為一致），這次工具呼叫會停在那裡等使用者輸入完成，不需要事先知道密碼或另外處理，使用者輸入錯誤會再跳一次、取消輸入則工具回報明確錯誤。參數: {"file_id":"...", "entry_path":"（選填，僅壓縮檔用）"}**分頁讀取**：純文字、壓縮檔項目、PDF文字如果回傳has_more:true，用offset/start_line/max_chars/max_lines繼續讀到完整份；精準編修（程式碼、字幕）不要用summarize_large_text，要分頁把整份讀完。要「改」附件內容請用bash_execute/python_execute的attachment_files參數。',
             async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -29700,12 +29866,13 @@ ${fnData.code}
                 if (!record || record.kind !== 'uploaded') {
                     return JSON.stringify({ ok: false, error: `找不到上傳檔案 file_id=${fileId}（可能已被淘汰或這不是使用者上傳的檔案）` });
                 }
-                const result = await this._parseUploadedFileContent(record, { entryPath: parsed.entry_path, offset: parsed.offset, maxChars: parsed.max_chars, startLine: parsed.start_line, maxLines: parsed.max_lines, interpretImages: parsed.interpret_images, interpretImagesCount: parsed.interpret_images_count });
+                const result = await this._parseUploadedFileContent(record, { entryPath: parsed.entry_path, offset: parsed.offset, maxChars: parsed.max_chars, startLine: parsed.start_line, maxLines: parsed.max_lines, interpretImages: parsed.interpret_images, interpretImagesCount: parsed.interpret_images_count, password: parsed.password });
                 return JSON.stringify(Object.assign({ filename: record.filename }, result));
             },
             { type: 'object', properties: {
                 file_id: { type: 'string', description: '要解析的檔案id，用list_uploaded_files取得' },
                 entry_path: { type: 'string', description: '（選填）壓縮檔內要抽取內容的項目路徑' },
+                password: { type: 'string', description: '（選填）加密壓縮檔（zip／7z／rar）的密碼；使用者沒給就不要猜' },
                 offset: { type: 'integer', description: '選填：純文字/壓縮檔項目/PDF文字從第幾個字元開始讀（分頁用，預設0）' },
                 max_chars: { type: 'integer', description: '選填：這次最多讀幾個字元（預設依模型內容窗口自適應）' },
                 start_line: { type: 'integer', description: '選填：從第幾行開始讀（1起算，優先於offset）' },
@@ -38829,13 +38996,12 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             out.pages = files.length; out.text = parts.join('\n\n'); return out;
         }
         if (kind === 'csv') { out.text = await blob.text(); return out; }
-        if (kind === 'zip' || kind === 'tar' || kind === 'tgz') {
-            let entries, readEntry;
-            if (kind === 'zip') { await this._ensureJSZipLoaded(); const zip = await JSZip.loadAsync(blob); entries = Object.keys(zip.files).map((n) => ({ name: n, isDir: zip.files[n].dir })); readEntry = async (n) => { const e = zip.file(n); return e ? await e.async('string') : null; }; }
-            else { const buf = kind === 'tgz' ? await this._gunzipToArrayBuffer(blob) : await blob.arrayBuffer(); const parsed = this._parseTarBuffer(buf); entries = parsed.entries.map((e) => ({ name: e.name, size: e.size, isDir: e.isDir })); readEntry = async (n) => { const raw = this._extractTarEntry(parsed, n); return raw ? new TextDecoder('utf-8', { fatal: false }).decode(raw) : null; }; }
-            out.entries = entries;
-            if (o.entry) { const tx = await readEntry(o.entry); if (tx == null) return { ok: false, error: '壓縮檔內找不到項目：' + o.entry }; out.text = tx; return out; }
-            out.text = entries.map((e) => (e.isDir ? '[資料夾] ' : '') + e.name + (e.size != null ? '（' + e.size + ' 位元組）' : '')).join('\n'); out.note = '只列出項目；要看某一項的內容，帶 entry 指定。'; return out;
+        if (kind === 'archive') {
+            const r = await this._archiveDescribe(blob, filename, { entry: o.entry, password: o.password, maxChars: 5000000 }); if (!r.ok) return r;
+            out.format = r.format; out.entries = r.entries;
+            if (r.entry) out.text = r.binary ? '（' + r.note + '）' : (r.content || '');
+            else { out.text = (r.entries || []).map((e) => (e.isDir ? '[資料夾] ' : '') + e.name + (e.size != null ? '（' + e.size + ' 位元組）' : '')).join('\n'); out.note = r.note || ''; if (r.jar) out.jar = r.jar; }
+            return out;
         }
         return { ok: false, error: '不支援的文件格式：' + filename };
     }
@@ -38853,7 +39019,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     async _repoReadDoc(p) {
         p = p || {}; const key = this._repoMapKey(p.root); const path = String(p.path || '').replace(/^\/+/, '');
         if (!key || !path) return { ok: false, error: '要給 root（專案）與 path（專案內的檔案路徑）' };
-        if (!_faRepoDocKind(path)) return { ok: false, error: '這個工具讀文件型檔案（pdf／xlsx／docx／pptx／csv／zip／tar／tgz）；原始碼請用 coding_read_file' };
+        if (!_faRepoDocKind(path)) return { ok: false, error: '這個工具讀文件型檔案（pdf／xlsx／docx／pptx／csv／壓縮檔 zip／jar／7z／rar／tar／tgz／gzip／bzip2／xz／iso）；原始碼請用 coding_read_file' };
         const r = await this._repoDocFullText(key, path, { entry: p.entry });
         if (!r.ok) return r;
         const pg = this._pageText(r.text, { offset: p.offset, maxChars: p.max_chars });
@@ -38872,7 +39038,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         let doc = '';
         if (kind === 'xlsx') { (r.sheets || []).forEach((s) => add(s.name, 'sheet', 1)); doc = (r.sheets || []).length + ' 個工作表：' + (r.sheets || []).slice(0, 6).map((s) => s.name + '（' + s.rows + ' 列）').join('、'); }
         else if (kind === 'csv') { const h = (lines[0] || '').split(/[\t,]/).map((x) => x.replace(/^"|"$/g, '').trim()).filter(Boolean); h.slice(0, 60).forEach((c) => add(c, 'column', 1)); doc = '共 ' + Math.max(0, lines.filter(Boolean).length - 1) + ' 列；欄位：' + h.slice(0, 12).join('、'); }
-        else if (kind === 'zip' || kind === 'tar' || kind === 'tgz') { (r.entries || []).filter((e) => !e.isDir).slice(0, 150).forEach((e) => add(e.name, 'entry', 1)); doc = (r.entries || []).length + ' 個項目：' + (r.entries || []).slice(0, 5).map((e) => e.name).join('、'); }
+        else if (kind === 'archive') { (r.entries || []).filter((e) => !e.isDir).slice(0, 150).forEach((e) => add(e.name, 'entry', 1)); doc = (r.format || '壓縮檔') + '，' + (r.entries || []).length + ' 個項目：' + (r.entries || []).slice(0, 5).map((e) => e.name).join('、') + (r.jar && r.jar.main_class ? '；主類別 ' + r.jar.main_class : ''); }
         else {
             const HEAD = /^(第[一二三四五六七八九十百\d]+[章節篇部]|[一二三四五六七八九十]+[、.．]|\d+(\.\d+){0,3}[.、．]?\s+\S|[A-Z][A-Z0-9 \-]{4,60}$)/;
             let page = 1; lines.forEach((ln, i) => { const pm = /^\[(?:第(\d+)頁|投影片 (\d+))\]$/.exec(ln); if (pm) { page = Number(pm[1] || pm[2]); return; } const s = ln.trim(); if (s.length >= 3 && s.length <= 80 && HEAD.test(s)) add(s, 'heading', i + 1); });
@@ -59308,28 +59474,10 @@ _result
             };
         }
         try {
-            if (format === 'zip') {
-                await this._ensureJSZipLoaded();
-                const zip = await JSZip.loadAsync(record.blob);
-                if (entryPath) {
-                    const entry = zip.file(entryPath);
-                    if (!entry) return { ok: false, error: `zip內找不到項目: ${entryPath}` };
-                    const text = await entry.async('string');
-                    return { ok: true, format: 'zip_entry', entryPath, ...this._pageText(text, opts) };
-                }
-                const entries = Object.keys(zip.files).map(name => ({ name, isDir: zip.files[name].dir }));
-                return { ok: true, format: 'zip', entries };
-            }
-            if (format === 'tar' || format === 'tgz') {
-                const buffer = format === 'tgz' ? await this._gunzipToArrayBuffer(record.blob) : await record.blob.arrayBuffer();
-                const parsed = this._parseTarBuffer(buffer);
-                if (entryPath) {
-                    const raw = this._extractTarEntry(parsed, entryPath);
-                    if (!raw) return { ok: false, error: `${format}內找不到項目: ${entryPath}` };
-                    const text = new TextDecoder('utf-8', { fatal: false }).decode(raw);
-                    return { ok: true, format: `${format}_entry`, entryPath, ...this._pageText(text, opts) };
-                }
-                return { ok: true, format, entries: parsed.entries.map(e => ({ name: e.name, size: e.size, isDir: e.isDir })) };
+            // 壓縮檔：zip／jar／7z／rar／tar／tar.gz／tgz／gzip／bzip2／tar.bz2／xz／tar.xz／iso…（用檔頭判斷，副檔名只是輔助）
+            if (FaArchive.formatFromName(record.filename) || (!/^(docx|xlsx|pptx|pdf|csv|json|txt|md|yaml|yml|js|ts)$/.test(format) && record.blob && record.blob.size > 4 && FaArchive.sniff(new Uint8Array(await record.blob.slice(0, 0x8200).arrayBuffer()), record.filename).format)) {
+                const r = await this._archiveDescribe(record.blob, record.filename, { entry: entryPath, password: opts.password, offset: opts.offset, maxChars: opts.maxChars });
+                if (!r.ok) return r; return r.entry ? Object.assign({}, r, { format: r.format + '_entry', entryPath: r.entry }) : r;
             }
             if (format === 'xlsx') {
                 await this._ensureJSZipLoaded();
@@ -61795,6 +61943,83 @@ ${existingNodeSummaries}
         if (sub === 'clear') { await this._unitCatalogFeedback({ action: 'clear' }); this._pushAssistantMessage('已清掉回饋紀錄。', null); return; }
         const r = await this._unitCatalogFeedback({ action: 'stats' }); const s = r.stats;
         this._pushAssistantMessage('📈 回饋累積\n\n- 紀錄：' + s.records + ' 筆（' + (Object.entries(s.by_source).map(([k, v]) => k + ' ' + v).join('、') || '還沒有') + '）\n- 可訓練的列：' + s.rows + '（正 ' + s.positives + '／負 ' + s.negatives + '，' + s.groups + ' 組需求）\n- ' + (s.ready_to_train ? '資料夠了，可以 /unit-catalog feedback train' : '還不夠訓練：' + s.missing.join('、')) + '\n- 已存的排名模型：' + (r.model_saved ? '有' : '沒有') + '\n- 最近的探索計畫：' + (r.last_plan || '沒有') + '\n\n用法：/unit-catalog feedback adopt [缺口編號|all]｜reject [缺口編號] [原因]｜train [save]｜export｜clear', null);
+    }
+    // ===== 壓縮檔：用檔頭辨識格式，支援 zip／jar、7z、rar、tar、tar.gz／tgz、gzip、bzip2／tar.bz2、xz／tar.xz、iso、cab、zstd（設計見 DESIGN.archive.md）=====
+    // 分工：zip 用 JSZip；tar、gzip、bzip2、xz 在瀏覽器裡自己解（bzip2 是純 JavaScript、xz 用小型 WebAssembly 解碼器）；
+    // 7z、rar、iso、cab、zstd 用 libarchive（WebAssembly，約 1MB，第一次用到才從 CDN 載入，之後在瀏覽器快取）。
+    async _archiveLoadLibarchive() {
+        if (this._archiveLibPromise) return this._archiveLibPromise;
+        this._archiveLibPromise = (async () => {
+            const BASE = 'https://cdn.jsdelivr.net/npm/libarchive.js@2.0.2/dist/'; const mod = await import(BASE + 'libarchive.js'); const Archive = mod.Archive || (mod.default && mod.default.Archive); if (!Archive) throw new Error('libarchive 載入了但沒有 Archive');
+            // 工作者必須同源：把工作者程式抓下來、把 wasm 的位置改成絕對網址，再用 Blob 網址啟動
+            let src = await (await fetch(BASE + 'worker-bundle.js')).text(); src = src.replace(/new URL\("libarchive\.wasm",import\.meta\.url\)\.href/g, JSON.stringify(BASE + 'libarchive.wasm'));
+            Archive.init({ workerUrl: URL.createObjectURL(new Blob([src], { type: 'text/javascript' })) }); return Archive;
+        })().catch((e) => { this._archiveLibPromise = null; throw e; });
+        return this._archiveLibPromise;
+    }
+    async _archiveLoadXz() {
+        if (this._archiveXzPromise) return this._archiveXzPromise;
+        this._archiveXzPromise = (async () => {
+            const src = await (await fetch('https://cdn.jsdelivr.net/npm/xz-decompress@0.2.3/dist/package/xz-decompress.js')).text(); const module = { exports: {} }; new Function('module', 'exports', 'require', src)(module, module.exports, () => ({}));
+            if (!module.exports.XzReadableStream) throw new Error('xz 解碼器載入了但沒有 XzReadableStream'); return module.exports;
+        })().catch((e) => { this._archiveXzPromise = null; throw e; });
+        return this._archiveXzPromise;
+    }
+    // 從串流讀到底，超過上限就中止（擋壓縮炸彈）
+    async _archiveDrain(stream, maxOut) {
+        const reader = stream.getReader(); const chunks = []; let n = 0;
+        for (;;) { const { value, done } = await reader.read(); if (done) break; n += value.length; if (n > maxOut) { try { await reader.cancel(); } catch (_) { /* 已經中止 */ } throw new Error('解開後超過上限 ' + Math.round(maxOut / 1048576) + 'MB（可能是壓縮炸彈）'); } chunks.push(value); }
+        const out = new Uint8Array(n); let o = 0; for (const c of chunks) { out.set(c, o); o += c.length; } return out;
+    }
+    // 打開一個壓縮檔。回傳 { format, label, entries:[{name,size,isDir}], read(name)→Uint8Array|null, notes[], encrypted?, mismatch }
+    async _archiveOpen(blob, filename, opts) {
+        opts = opts || {}; const A = FaArchive; const maxBytes = opts.maxBytes || 300 * 1048576; const maxOut = opts.maxOut || 256 * 1048576;
+        if (blob.size > maxBytes) throw new Error('壓縮檔太大（' + Math.round(blob.size / 1048576) + ' MB，上限 ' + Math.round(maxBytes / 1048576) + ' MB）');
+        const head = new Uint8Array(await blob.slice(0, 0x8200).arrayBuffer()); const sn = A.sniff(head, filename); if (!sn.format) throw new Error('認不出這是哪一種壓縮檔（檔頭和副檔名都對不上）：' + filename);
+        const res = { format: sn.format, label: sn.label, mismatch: sn.mismatch, notes: [], entries: [], read: async () => null }; const CAP = 20000;
+        const finish = (entries) => { if (entries.length > CAP) { res.notes.push('項目超過 ' + CAP + ' 個，只列前 ' + CAP + ' 個'); entries = entries.slice(0, CAP); } res.entries = entries; return res; };
+        if (sn.mismatch) res.notes.push('副檔名和實際格式不一致，照檔頭判斷成 ' + sn.label);
+        const viaLibarchive = async () => {
+            const Archive = await this._archiveLoadLibarchive(); const ar = await Archive.open(new File([blob], filename || 'archive')); if (opts.password) { try { await ar.usePassword(opts.password); } catch (_) { /* 往下試 */ } } // 檔名也加密的 7z／rar 要先給密碼才列得出項目
+            let enc = false; try { enc = await ar.hasEncryptedData(); } catch (_) { enc = false; }
+            if (enc && !opts.password) { res.encrypted = true; res.notes.push('這個壓縮檔有加密，要密碼才能看內容（帶 password）'); }
+            const list = await ar.getFilesArray(); const map = new Map(); const ents = list.map((x) => { const nm = String(x.path || '') + String(x.file && x.file.name || ''); map.set(nm, x.file); return { name: nm, size: x.file && x.file.size != null ? x.file.size : undefined, isDir: false }; });
+            res.read = async (name) => { const f = map.get(name); if (!f) return null; const real = await f.extract(); return new Uint8Array(await real.arrayBuffer()); };
+            return finish(ents);
+        };
+        const fromTar = (u8) => { const t = A.parseTar(u8); if (t.truncated) res.notes.push('tar 內容被截斷，只讀到完整的部分'); res.read = async (name) => A.tarRead(t, name); return finish(t.entries.map((e) => ({ name: e.name, size: e.size, isDir: e.isDir, link: e.type === '2' || e.type === '1' ? (e.linkname || true) : undefined }))); };
+        const afterDecode = (u8, stripExt) => { if (sn.tarInside || A.validTarHeader(u8) || (u8.length >= 262 && A.sniff(u8, '').format === 'tar')) return fromTar(u8); const nm = String(filename || 'data').replace(/\.(gz|gzip|bz2|bzip2|xz|zst|zstd)$/i, '') || 'data'; res.single = true; res.notes.push('這是單一檔案壓縮（' + sn.label + '），解開後只有一個檔案'); res.read = async () => u8; return finish([{ name: nm, size: u8.length, isDir: false }]); };
+        if (sn.format === 'zip' || sn.format === 'jar') {
+            try { await this._ensureJSZipLoaded(); const zip = await JSZip.loadAsync(blob); const ents = Object.keys(zip.files).map((n) => ({ name: n, isDir: zip.files[n].dir, size: zip.files[n]._data && zip.files[n]._data.uncompressedSize != null ? zip.files[n]._data.uncompressedSize : undefined })); res.read = async (name) => { const f = zip.file(name); return f ? await f.async('uint8array') : null; }; return finish(ents); }
+            catch (e) { res.notes.push('JSZip 打不開（' + String((e && e.message) || e).slice(0, 60) + '），改用 libarchive'); return await viaLibarchive(); }
+        }
+        if (sn.format === 'tar') return fromTar(new Uint8Array(await blob.arrayBuffer()));
+        if (sn.codec === 'gz') { if (typeof DecompressionStream === 'undefined') throw new Error('這個瀏覽器不支援 DecompressionStream，無法解開 gzip'); return afterDecode(await this._archiveDrain(blob.stream().pipeThrough(new DecompressionStream('gzip')), maxOut)); }
+        if (sn.codec === 'bz2') return afterDecode(A.bzip2Decode(new Uint8Array(await blob.arrayBuffer()), { maxOut }));
+        if (sn.codec === 'xz') { const X = await this._archiveLoadXz(); return afterDecode(await this._archiveDrain(new X.XzReadableStream(blob.stream()), maxOut)); }
+        return await viaLibarchive(); // 7z、rar、iso、cab、zstd、lz4、.Z
+    }
+    // 給解析附件與讀專案文件用：列出項目（附摘要）或讀某一項的內容。opts：{ entry, password, offset, maxChars }
+    async _archiveDescribe(blob, filename, opts) {
+        opts = opts || {}; const A = FaArchive; let ar; try { ar = await this._archiveOpen(blob, filename, opts); } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+        const base = { ok: true, format: ar.format, label: ar.label, notes: ar.notes.length ? ar.notes : undefined, encrypted: ar.encrypted || undefined };
+        if (opts.entry) {
+            if (ar.encrypted) return Object.assign(base, { ok: false, error: '壓縮檔有加密，要帶 password 才讀得到內容' });
+            const hit = ar.entries.find((e) => e.name === opts.entry) || ar.entries.find((e) => e.name.replace(/^\.?\//, '') === String(opts.entry).replace(/^\.?\//, ''));
+            if (!hit) return Object.assign(base, { ok: false, error: '壓縮檔內找不到項目：' + opts.entry + (ar.entries.length ? '（有 ' + ar.entries.length + ' 個項目，例如 ' + ar.entries.slice(0, 3).map((e) => e.name).join('、') + '）' : '') });
+            if (hit.isDir) return Object.assign(base, { ok: false, error: opts.entry + ' 是資料夾' });
+            if (hit.link && !hit.size) return Object.assign(base, { ok: false, error: opts.entry + ' 是連結（→ ' + (hit.link === true ? '?' : hit.link) + '），沒有自己的內容' });
+            const cap = opts.maxEntryBytes || 20 * 1048576; if (hit.size != null && hit.size > cap) return Object.assign(base, { ok: false, error: '這一項太大（' + Math.round(hit.size / 1048576) + ' MB），不讀', size: hit.size });
+            let bytes; try { bytes = await ar.read(hit.name); } catch (e) { return Object.assign(base, { ok: false, error: '讀取失敗：' + String((e && e.message) || e).slice(0, 120) + (ar.encrypted ? '（可能要密碼）' : '') }); }
+            if (!bytes) return Object.assign(base, { ok: false, error: '讀不到項目：' + opts.entry });
+            const inner = A.sniff(bytes.subarray(0, 0x8200), hit.name); if (A.looksBinary(bytes)) return Object.assign(base, { entry: hit.name, binary: true, size: bytes.length, nested_archive: inner.format || undefined, note: inner.format ? '這一項本身也是壓縮檔（' + inner.label + '）；要看裡面的內容，先把它另外存成檔案再解析' : '二進位內容，不顯示（' + bytes.length + ' 位元組）' });
+            const text = A.decodeText(bytes); const pg = this._pageText(text, opts); return Object.assign(base, { entry: hit.name, size: bytes.length }, pg);
+        }
+        const summary = A.summarize(ar.entries); const out = Object.assign(base, { entries: ar.entries.slice(0, 500), entry_count: ar.entries.length, summary });
+        if (ar.entries.length > 500) out.notes = (out.notes || []).concat(['只回傳前 500 個項目的清單，共 ' + ar.entries.length + ' 個']);
+        if (ar.format === 'jar' || ar.entries.some((e) => e.name === 'META-INF/MANIFEST.MF')) { let man = ''; try { const b = ar.encrypted ? null : await ar.read('META-INF/MANIFEST.MF'); if (b) man = A.decodeText(b); } catch (_) { man = ''; } out.jar = A.jarSummary(ar.entries, man); }
+        if (ar.single) out.note = '單一檔案壓縮；用 entry 指定檔名可以讀解開後的內容。'; else out.note = '只列出項目；要看某一項的內容，帶 entry 指定。';
+        return out;
     }
     // 型別存根轉出來的型別表（stub_to_types.py 的輸出 JSON）：用 /unit-catalog stubs 附上檔案載入，存在檔案快取（unit-catalog-stubs.json），之後抽取自動使用
     async _unitCatalogGetStubs() {
