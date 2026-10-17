@@ -30305,11 +30305,12 @@ ${fnData.code}
             { type: 'object', properties: { question: { type: 'string', description: '問題；省略＝摘要' }, format: { type: 'string', description: '學過的格式名稱（省略＝最近一份）' }, text: { type: 'string', description: '一行日誌或一行 key = value（問這一行是什麼）、或整份日誌／設定檔文字' }, file_id: { type: 'string' }, path: { type: 'string' }, other_text: { type: 'string', description: '（設定檔比較）另一份設定檔的文字' }, other_file_id: { type: 'string' }, other_path: { type: 'string' }, kind: { type: 'string', enum: ['log', 'config', 'grammar'] } }, additionalProperties: false }
         );
         registerOptional('ask_user_card',
-            '在對話裡放一張「互動卡片」讓使用者填（表單或多步驟 wizard），等使用者送出後把回應交給你。用在「需要使用者從幾個選項裡決定、或補幾個欄位」而你不該替他猜的時候，比用文字一題一題問快。使用者看到的是勾選／單選／下拉／文字框，送出後卡片變唯讀；回應只回傳給這個工具，不會變成使用者訊息。規格 spec：{title, description, questions:[…]}（單張表單）或 {title, steps:[{id,title,questions,next:[{when:{q,eq|in|has|nonEmpty},goto:步驟id|"done"}]}]}（wizard，next 沒寫就依序）。題目 {id, type, label, hint, required, default, showIf:{q,eq|in|has|nonEmpty}, media:{text,image(https或data:image),html(可互動的 widget，在沙盒 iframe，用 window.faCard.answer(值) 回傳；type 要是 widget),height}}。type：single（單選）、multi（多選，minSelect／maxSelect）、dropdown、text、textarea、number（min／max）、color、widget、info（只顯示）。single／multi 的選項 {id,label,desc,image,color(#rrggbb 色塊),extra:{kind:"text"|"select",options,required}}：extra 是選項後面的文字框或下拉（選到那個選項才能填）；題目還可以有 after:[{id,kind:"text"|"select",label,options}] 固定接在選項後面。id 一律英文字母開頭。回傳 {ok,confirmed,status,answers:{題目id:值,"題目id.選項id":後面欄位的值},summary:[…]}；confirmed=false 是使用者取消。需要依回應決定下一張卡片：用這個工具兩次，第二次的規格依第一次的回應來寫。',
+            '在對話裡放一張「互動卡片」讓使用者填（表單或多步驟 wizard），等使用者送出後把回應交給你。用在「需要使用者從幾個選項裡決定、或補幾個欄位」而你不該替他猜的時候，比用文字一題一題問快。使用者看到的是勾選／單選／下拉／文字框，送出後卡片變唯讀；回應只回傳給這個工具，不會變成使用者訊息。規格 spec：{title, description, questions:[…]}（單張表單）或 {title, steps:[{id,title,questions,next:[{when:{q,eq|in|has|nonEmpty},goto:步驟id|"done"}]}]}（wizard，next 沒寫就依序）。題目 {id, type, label, hint, required, default, showIf:{q,eq|in|has|nonEmpty}, media:{text,image(https或data:image),html(可互動的 widget，在沙盒 iframe，用 window.faCard.answer(值) 回傳；type 要是 widget),height}}。type：single（單選）、multi（多選，minSelect／maxSelect）、dropdown、text、textarea、number（min／max）、color、widget、info（只顯示）。single／multi 的選項 {id,label,desc,image,color(#rrggbb 色塊),extra:{kind:"text"|"select",options,required}}：extra 是選項後面的文字框或下拉（選到那個選項才能填）；題目還可以有 after:[{id,kind:"text"|"select",label,options}] 固定接在選項後面。id 一律英文字母開頭。回傳 {ok,confirmed,status,answers:{題目id:值,"題目id.選項id":後面欄位的值},summary:[…]}；confirmed=false 是使用者取消；如果回傳 skipped:true 與 supplement，代表使用者沒點選項、直接打字回答，那段文字就是他的回答與補充條件，照它做。只在計畫真的有分歧（幾條做法差很多、缺必要資訊又沒有合理預設、動作不可逆）時才問，每題要標出建議的選項，一次最多問2到3題，其餘用預設值並在計畫裡註明。需要依回應決定下一張卡片：用這個工具兩次，第二次的規格依第一次的回應來寫。',
             async function (rawArgs) {
                 let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const spec = a.spec && typeof a.spec === 'object' ? a.spec : a; const r = await this.askCard(spec);
                 if (!r.ok) return JSON.stringify({ ok: false, error: r.error, hint: '修正規格後再呼叫一次' });
+                if (r.supplement) return JSON.stringify({ ok: true, confirmed: false, skipped: true, status: r.status, supplement: r.supplement, answers_so_far: r.flat, note: '使用者沒有用卡片作答，改成直接打字回答（內容在 supplement，也已顯示在對話裡）。請把它當成使用者對這個問題的回答與補充條件，照它調整做法；不要當成使用者取消，也不要把同一題再問一次。' });
                 return JSON.stringify({ ok: true, confirmed: r.confirmed, status: r.status, answers: r.flat, summary: r.summary, steps: r.steps });
             },
             { type: 'object', properties: { spec: { type: 'object', description: '卡片規格：{title,description,questions} 或 {title,steps:[…]}，欄位見工具說明' } }, required: ['spec'], additionalProperties: true }
@@ -44348,6 +44349,50 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         return this._requestUserFormNow(options);
     }
 
+    // 2026-10-17使用者要求：使用者跳過選擇題、直接在輸入框打字時，把那段話當成補充（回答），不要變成插話或被擋掉。
+    // 卡片（askCard）一律接受；表單（requestUserForm）只有呼叫端明確帶 allowSupplement:true 才接受——
+    // 執行程式、安裝、刪除這類「要使用者同意」的表單，打字絕不能被當成同意。
+    // 回傳 true＝這段文字已經交給等待中的問題，呼叫端不要再送出一次。
+    _tryFeedPendingAsk(text) {
+        const t = String(text || '').trim(); if (!t || t.startsWith('/')) return false;
+        for (let i = this.messages.length - 1; i >= 0; i--) {
+            const m = this.messages[i]; if (!m || !m._card) continue;
+            const w = this._cardWaitersMap().get(m); if (!w || m._card.state.status !== 'open') continue;
+            const r = Object.assign(this._cardResult(m), { confirmed: false, status: 'skipped', supplement: t });
+            try { FaCard.cancel(m._card.state); } catch (_) { /* 狀態改不了也還是要把話交出去 */ }
+            this._cardWaitersMap().delete(m);
+            this._pushHumanOnlyUserNote(t);
+            this._persistChatHistory(); this._renderMessageHistory();
+            try { w(r); } catch (_) { /* */ }
+            return true;
+        }
+        const ctx = this._ctx, pf = ctx && ctx.pendingForm;
+        if (pf && pf.options && pf.options.allowSupplement && Array.isArray(pf.options.choices) && pf.options.choices.length) {
+            try { pf.container.remove(); } catch (_) { /* */ }
+            ctx.pendingForm = null;
+            this._pushHumanOnlyUserNote(t);
+            this._persistChatHistory(); this._renderMessageHistory();
+            pf.resolve({ confirmed: true, answer: null, skipped: true, supplement: t });
+            return true;
+        }
+        return false;
+    }
+    // 只給人看的使用者訊息：不進送給模型的對話（插在「工具呼叫」與「工具結果」之間會破壞配對），補充內容由工具結果交給模型
+    _pushHumanOnlyUserNote(t) { const m = { role: 'user', content: t }; Object.defineProperty(m, '_humanOnly', { value: true, enumerable: false, configurable: true }); this.messages.push(m); }
+    // 計畫分歧時問使用者：第一個選項是建議的、按鈕是主色。回傳 {kind:'choice',answer,index} | {kind:'supplement',text} | {kind:'cancel'}。
+    // 使用者不點、直接打字＝supplement，呼叫端要把 text 當成他補充的條件。
+    async askBranchChoice({ title, description, options, recommended = 0, cancelLabel = '先不要' }) {
+        const opts = (options || []).map((o) => String(o && o.label != null ? o.label : o)).filter(Boolean); if (!opts.length) return { kind: 'cancel' };
+        const rec = Math.max(0, Math.min(opts.length - 1, Number(recommended) || 0));
+        const labels = opts.map((l, i) => (i === rec ? l + '（建議）' : l)); const order = [rec].concat(labels.map((_, i) => i).filter((i) => i !== rec));
+        const choices = order.map((i) => labels[i]).concat(cancelLabel ? [cancelLabel] : []);
+        const ans = await this.requestUserForm({ title: title || '🧭 要怎麼做？', description: description || '', choices, allowSupplement: true });
+        if (!ans || !ans.confirmed) return { kind: 'cancel' };
+        if (ans.skipped && ans.supplement) return { kind: 'supplement', text: ans.supplement };
+        const k = choices.indexOf(ans.answer); if (k < 0 || (cancelLabel && k === choices.length - 1)) return { kind: 'cancel' };
+        return { kind: 'choice', answer: opts[order[k]], index: order[k] };
+    }
+
     // 桌面版的下載：點了先跳程式自己的「存到哪裡」對話框（不是系統的另存新檔），選好才真的下載；存完用右下角提示告訴使用者存在哪
     _wireDesktopDownloadLink(linkEl, filename) {
         const dl = typeof window !== 'undefined' && window.desktopAPI && window.desktopAPI.downloads; if (!dl) return;
@@ -44421,7 +44466,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
 
     _showUserForm(options, resolve) {
         {
-            const { title = '🧭 AI 想確認一下', description = '', choices = null, fields = null } = options;
+            const { title = '🧭 AI 想確認一下', description = '', choices = null, fields = null, allowSupplement = false } = options;
             const chatBody = document.getElementById('ai-chat-body');
             if (!chatBody) { resolve({ confirmed: true }); return; } // 理論上不該發生(呼叫這個方法時對話視窗一定已經開著)，保守起見不卡住整個工具呼叫流程
             const palette = this._getThemePalette();
@@ -44453,6 +44498,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
                 <div style="font-weight:bold; margin-bottom:4px;">${this._escapeHtml(title)}</div>
                 ${description ? `<div style="font-size:12px; color:${palette.detailText}; white-space:pre-wrap;">${this._escapeHtml(description)}</div>` : ''}
                 ${bodyHtml}
+                ${allowSupplement && Array.isArray(choices) && choices.length ? `<div style="margin-top:6px; font-size:11px; color:${palette.detailText}; opacity:.8;">💬 都不是？直接在下面的輸入框打字補充，會當成你的回答。</div>` : ''}
             </div>`;
             chatBody.insertAdjacentHTML('beforeend', html);
             chatBody.scrollTo({ top: chatBody.scrollHeight, behavior: 'smooth' });
@@ -64504,6 +64550,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             this._renderPendingAttachments();
         }
 
+        if (this._tryFeedPendingAsk(textToSend)) return; // 有選擇題在等：這段話是對它的補充，不是插話也不是新的一輪
         if (this.isResponding) {
             this._setRespondingState(true, '⏳ AI 回應中（Steering 已加入）');
         }
