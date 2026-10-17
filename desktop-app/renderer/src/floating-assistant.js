@@ -12836,6 +12836,259 @@ const holder = {};
 return holder.FaCatalogBranch;
 })();
 /* CATBR-END */
+/* CATRELU-BEGIN */
+const FaCatalogRelu = (function () {
+const holder = {};
+(function (module, self) {
+/* CoLU 的 ReLU 形式（UMD，純函式）：把接線矩陣的核心運算（可達性、最佳接線分數）寫成「矩陣連乘＋ReLU」，
+ * 結果跟位元壓縮版（matrix_core.js）逐位元相同。設計見 DESIGN.unit-catalog.md 第三十節。
+ * 為什麼要有這個形式：(1) 概念一致——CoLU 的運算就是「矩陣連乘加 ReLU」，跟 Handwired 同一種語言；
+ * (2) 後端可替換——所有矩陣連乘都經過 matmul(X, Y, n)，之後換成 Web Worker 平行版或 WebGPU 版，只要通過這裡的一致性檢查（selfCheck）就能啟用；
+ * (3) 可以接進計算圖——跟學出來的排名模型放在同一張圖裡。它不比位元版快（密集 n³ 對位元壓縮 n³/32），預設仍用位元版。
+ * 三個基本零件（x 是非負整數時精確成立）：
+ *   relu(x)   = max(0, x)
+ *   sat(x)    = x − relu(x − 1)        → min(1, x)：把「有幾條路」壓成「有／沒有」（布林矩陣連乘的壓縮）
+ *   max2(a,b) = b + relu(a − b)        → max(a, b)：取最佳（最佳接線分數用） */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory(require('./catalog_core.js'), require('./matrix_core.js'));
+    else root.FaCatalogRelu = factory(root.FaCatalog || (typeof FaCatalog !== 'undefined' ? FaCatalog : undefined), root.FaCatalogMatrix || (typeof FaCatalogMatrix !== 'undefined' ? FaCatalogMatrix : undefined));
+})(typeof self !== 'undefined' ? self : this, function (Cat, MX) {
+    'use strict';
+    const relu = (x) => (x > 0 ? x : 0);
+    const sat = (x) => x - relu(x - 1);
+    const max2 = (a, b) => b + relu(a - b);
+
+    // ===== 密集矩陣（Float32Array，列優先；計數在 2^24 以內精確，所以單元數要小於 1600 萬，實際用不到）=====
+    function zeros(n) { return { n, data: new Float32Array(n * n) }; }
+    function fromBits(A) { const D = zeros(A.n); for (let i = 0; i < A.n; i++) for (let j = 0; j < A.n; j++) if ((A.rows[i][j >>> 5] >>> (j & 31)) & 1) D.data[i * A.n + j] = 1; return D; }
+    function toBits(D) { const n = D.n, w = (n + 31) >>> 5; const rows = []; for (let i = 0; i < n; i++) { const r = new Uint32Array(w); for (let j = 0; j < n; j++) if (D.data[i * n + j] > 0) r[j >>> 5] |= (1 << (j & 31)) >>> 0; rows.push(r); } return { n, w, rows }; }
+    // 預設的矩陣連乘（i-k-j 迴圈，跳過 0）。後端要換就換這一個：matmul(X, Y, n) → Float32Array(n*n)
+    function matmulJs(X, Y, n) {
+        const C = new Float32Array(n * n);
+        for (let i = 0; i < n; i++) { const ci = i * n; for (let k = 0; k < n; k++) { const a = X[ci + k]; if (a === 0) continue; const bk = k * n; for (let j = 0; j < n; j++) C[ci + j] += a * Y[bk + j]; } }
+        return C;
+    }
+    let backend = { name: 'js', matmul: matmulJs };
+    function use(b) { backend = b && b.matmul ? { name: b.name || 'custom', matmul: b.matmul } : { name: 'js', matmul: matmulJs }; return backend.name; }
+    function current() { return backend.name; }
+    const satAll = (data) => { const out = new Float32Array(data.length); for (let i = 0; i < data.length; i++) out[i] = sat(data[i]); return out; };
+
+    // ===== 可達性（等於 matrix_core.reachWithin）：P_k = sat(P_{k-1}·A)，累計 = sat(累計 + P_k) =====
+    function reachWithin(Abits, L, opts) {
+        const mm = (opts && opts.matmul) || backend.matmul; const A = fromBits(Abits), n = A.n; const out = [null, Abits]; let P = A.data, acc = A.data;
+        for (let k = 2; k <= L; k++) { P = satAll(mm(P, A.data, n)); const s = new Float32Array(n * n); for (let i = 0; i < s.length; i++) s[i] = sat(acc[i] + P[i]); acc = s; out.push(toBits({ n, data: acc })); }
+        return out;
+    }
+
+    // ===== 真正的 ReLU 網路：x → relu(Wx + b) 的層疊，輸入是起點向量，輸出是「最多走 L 步」到得了的單元 =====
+    // 一步：R' = sat((I + Aᵀ)R)。sat(z) = z − relu(z − 1)，所以一步＝一層 relu([M;M]·R + [0;−1])（2n 個單元）再接一個線性的 [I −I]。
+    // 把線性的 [I −I] 併進下一層的權重，就是純粹的「relu 層疊」。
+    function reachNet(Abits, L) {
+        const A = fromBits(Abits), n = A.n; const M = new Float32Array(n * n); for (let i = 0; i < n; i++) { M[i * n + i] = 1; for (let j = 0; j < n; j++) if (A.data[j * n + i] > 0) M[i * n + j] = 1; } // M = I + Aᵀ（(i,j)＝j 走一步能到 i）
+        const stack = (c) => { const W = new Float32Array(2 * n * c); return W; };
+        const layers = []; const b = new Float32Array(2 * n); for (let i = 0; i < n; i++) b[n + i] = -1;
+        // 第 1 層：輸入 n 維
+        const W1 = stack(n); for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) { W1[i * n + j] = M[i * n + j]; W1[(n + i) * n + j] = M[i * n + j]; } layers.push({ r: 2 * n, c: n, W: W1, b, act: 'relu' });
+        // 第 2…L 層：輸入是上一層的 2n 維 [h1; h2]，R = h1 − h2，所以權重是 [M;M]·[I −I]
+        for (let k = 2; k <= L; k++) { const W = stack(2 * n); for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) { const m = M[i * n + j]; W[i * 2 * n + j] = m; W[i * 2 * n + n + j] = -m; W[(n + i) * 2 * n + j] = m; W[(n + i) * 2 * n + n + j] = -m; } layers.push({ r: 2 * n, c: 2 * n, W, b, act: 'relu' }); }
+        // 最後：線性 [I −I]
+        const Wo = new Float32Array(n * 2 * n); for (let i = 0; i < n; i++) { Wo[i * 2 * n + i] = 1; Wo[i * 2 * n + n + i] = -1; } layers.push({ r: n, c: 2 * n, W: Wo, b: new Float32Array(n), act: 'linear' });
+        return { n, L, layers };
+    }
+    function forward(net, x) {
+        let v = Float32Array.from(x);
+        for (const ly of net.layers) { const o = new Float32Array(ly.r); for (let i = 0; i < ly.r; i++) { let s = ly.b[i]; const wi = i * ly.c; for (let j = 0; j < ly.c; j++) s += ly.W[wi + j] * v[j]; o[i] = ly.act === 'relu' ? relu(s) : s; } v = o; }
+        return v;
+    }
+
+    // ===== 最佳接線分數（等於 matrix_core.findPipelines 的第一名分數）=====
+    // 分數都 ≤ 1 而且每多一個單元只會再乘上 ≤ 1 的數，所以走迴圈不會更好——「最佳的走法」＝「最佳的不重複走法」，可以用動態規劃：
+    //   s_1[i] = 起點分數 × 缺必填參數的折扣；s_k[j] = max_i( s_{k-1}[i] × 邊分數[i][j] ) × 0.9 × 折扣[j]；答案 = max_k max_j( s_k[j] × 終點分數[j] )
+    // 其中的 max 全部用 max2（ReLU）算。這裡只算『分數』與一條最佳路徑，不列前 K 名（要前 K 名還是用 findPipelines）。
+    function bestPipeline(M, query, opts) {
+        opts = Object.assign({ maxLen: 4, minScore: M.opts.minScore }, opts || {}); const n = M.units.length; if (!n) return { score: 0, units: [] };
+        const mt = (a, b) => a * b; const start = new Float32Array(n), goal = new Float32Array(n);
+        const pickIn = (i, ft) => { let best = 0; for (const p of M.ins[i]) { const s = MX.matchScore(ft, p.type); if (s >= opts.minScore && s > best) best = s; } return best; };
+        const pickOut = (i, tt) => { let best = 0; for (const o of M.outs[i]) { const s = MX.matchScore(o.type, tt); if (s >= opts.minScore && s > best) best = s; } return best; };
+        if (query.from && query.from.unit) { if (M.index.has(query.from.unit)) start[M.index.get(query.from.unit)] = 1; } else { const ft = Cat.parseType(query.from); for (let i = 0; i < n; i++) start[i] = pickIn(i, ft); }
+        if (query.to && query.to.unit) { if (M.index.has(query.to.unit)) goal[M.index.get(query.to.unit)] = 1; } else { const tt = Cat.parseType(query.to); for (let i = 0; i < n; i++) goal[i] = pickOut(i, tt); }
+        const pen = new Float32Array(n); for (let i = 0; i < n; i++) { const miss = Math.max(0, M.ins[i].filter((p) => p.required).length - ((i < n && query.from && query.from.unit && M.index.get(query.from.unit) === i) ? 0 : 1)); pen[i] = 1 / (1 + 0.1 * miss); }
+        const E = zeros(n); for (let i = 0; i < n; i++) for (const [j, e] of M.edges[i]) E.data[i * n + j] = e.score;
+        let s = new Float32Array(n); for (let i = 0; i < n; i++) s[i] = mt(start[i], pen[i]); let best = 0, bestK = 0, bestJ = -1; const parents = [null];
+        const consider = (k) => { for (let j = 0; j < n; j++) { const v = mt(s[j], goal[j]) * Math.pow(0.9, k - 1); const m = max2(v, best); if (v > best) { best = m; bestK = k; bestJ = j; } } };
+        consider(1);
+        for (let k = 2; k <= opts.maxLen; k++) { const nx = new Float32Array(n), par = new Int32Array(n).fill(-1); for (let j = 0; j < n; j++) { let m = 0, arg = -1; for (let i = 0; i < n; i++) { const e = E.data[i * n + j]; if (!e || !s[i]) continue; const v = mt(s[i], e); const nm = max2(v, m); if (v > m) { m = nm; arg = i; } } nx[j] = mt(m, pen[j]); par[j] = arg; } s = nx; parents.push(par); consider(k); }
+        if (bestJ < 0) return { score: 0, units: [] };
+        // 往回找路徑（重算每一層的 s 找最佳來源）
+        const path = [bestJ]; let j = bestJ; for (let k = bestK; k >= 2; k--) { j = parents[k - 1][j]; path.unshift(j); }
+        return { score: Math.round(best * 1000) / 1000, length: bestK, units: path.map((u) => M.ids[u]), names: path.map((u) => M.units[u].name) };
+    }
+
+    // ===== 後端一致性檢查：新的矩陣連乘後端（Worker、WebGPU…）要先通過這個才可以啟用 =====
+    // 用固定種子產生幾個隨機矩陣，要求 (1) 乘積與預設後端逐位元相同 (2) 壓縮後的可達矩陣與位元版相同。回傳 { ok, cases, failed:[…] }
+    function selfCheck(candidateMatmul, opts) {
+        opts = Object.assign({ sizes: [1, 2, 5, 17, 33, 64], density: 0.15, seed: 12345 }, opts || {}); let seed = opts.seed; const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+        const failed = []; let cases = 0;
+        for (const n of opts.sizes) {
+            const A = MX.newBits(n); for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) if (rnd() < opts.density) MX.setBit(A, i, j);
+            const D = fromBits(A); const want = matmulJs(D.data, D.data, n), got = candidateMatmul(D.data, D.data, n); cases++;
+            let same = got && got.length === want.length; if (same) for (let i = 0; i < want.length; i++) if (got[i] !== want[i]) { same = false; break; } if (!same) failed.push('n=' + n + ' 乘積不一致');
+            const ref = MX.reachWithin(A, 3), rl = reachWithin(A, 3, { matmul: candidateMatmul }); cases++;
+            for (let k = 1; k <= 3; k++) { for (let i = 0; i < n; i++) for (let w = 0; w < A.w; w++) if (ref[k].rows[i][w] !== rl[k].rows[i][w]) { failed.push('n=' + n + ' 可達矩陣 k=' + k + ' 不一致'); k = 9; break; } if (k === 9) break; }
+        }
+        return { ok: !failed.length, cases, failed };
+    }
+    return { relu, sat, max2, zeros, fromBits, toBits, matmulJs, use, current, reachWithin, reachNet, forward, bestPipeline, selfCheck };
+});
+
+}).call(null, undefined, holder);
+return holder.FaCatalogRelu;
+})();
+/* CATRELU-END */
+/* COLUB-BEGIN */
+const FaColuBench = (function () {
+const holder = {};
+(function (module, self) {
+/* CoLU 接線題（UMD，純函式）：評估一個語言模型「串接多個工具」的能力，並建議該用哪種輔助方式。設計見 DESIGN.unit-catalog.md 第三十節。
+ * 題目從單元目錄的接線矩陣出（走一條合法的路，再加幾個干擾的單元），評分全由程式用型別接線矩陣判定，不靠模型自評：
+ *   A. 自己排（self）：給一堆函式（名稱、參數型別、回傳型別），要模型排出呼叫順序。合法＝第一個吃得下起始型別、每相鄰兩步接得上、最後一個產出目標型別、
+ *      名稱都在清單裡、沒有重複。不要求跟出題的那條一模一樣（只要合法都算對）。
+ *   B. CoLU 先給計畫（assisted）：程式算出幾條合法接線讓模型選，需求用白話描述（優先用函式的說明，沒有才用名稱），要模型選出最符合需求的那一條。
+ *   C. CoLU 直接排（auto）：不呼叫模型。只統計「CoLU 的第一名剛好是出題那條」的比例，當作參考（CoLU 不知道使用者的意圖，只保證合法）。
+ * 結果：自己排的成功率、選計畫的成功率、輸出格式正確率、退化率（空白、只有思考、重複輸出）、中位耗時，以及建議（self／guided／auto／unknown）。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory(require('./catalog_core.js'), require('./matrix_core.js'));
+    else root.FaColuBench = factory(root.FaCatalog || (typeof FaCatalog !== 'undefined' ? FaCatalog : undefined), root.FaCatalogMatrix || (typeof FaCatalogMatrix !== 'undefined' ? FaCatalogMatrix : undefined));
+})(typeof self !== 'undefined' ? self : this, function (Cat, MX) {
+    'use strict';
+    const DEFAULTS = { n: 6, minLen: 2, maxLen: 3, distractors: 5, options: 3, high: 0.8, unstable: 0.25, minCalls: 3, minEdge: 0.9, requireOptions: true };
+    const mkRng = (seed) => { let s = (seed >>> 0) || 1; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; };
+    const shuffle = (arr, rnd) => { const a = arr.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+    const typeStr = (t) => Cat.typeToString(t);
+    const generic = (t) => t.k === 'json' || t.k === 'any' || t.k === 'dict' || t.k === 'null';
+    const short = (s, n) => String(s || '').replace(/\s+/g, ' ').trim().slice(0, n);
+
+    function describeUnit(M, i) {
+        const u = M.units[i]; const ps = M.ins[i].map((p) => p.name + (p.required ? '' : '?') + ': ' + typeStr(p.type)).join(', ');
+        return { id: u.id, name: u.name, line: u.name + '(' + ps + ') → ' + short(u.returns && u.returns.type, 60) + (u.summary ? '　// ' + short(u.summary, 40) : ''), summary: short(u.summary, 60) };
+    }
+    const sameIds = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+
+    // 出題：從矩陣走合法的路（只走分數夠高的接線、起訖只用具體的型別），再用 CoLU 找同起訖的其他合法接線當選項。回傳 { tasks, skipped }
+    // 出完每一題都先用評分器驗證「出題那條」自己是對的、清單裡沒有同名的函式——題目自己有問題就不出，免得把模型的分數算低。
+    const specific = (t) => MX.matchScore(t, t) >= 0.9;
+    function makeTasks(M, opts) {
+        const o = Object.assign({}, DEFAULTS, opts || {}); const rnd = mkRng(o.seed == null ? 20261017 : o.seed); const n = M.units.length; const tasks = []; const seen = new Set(); let tries = 0; const skipped = { dup: 0, no_types: 0, few_options: 0, inconsistent: 0, dup_names: 0 };
+        const strongOut = (i) => Array.from(M.edges[i].entries()).filter(([, e]) => e.score >= o.minEdge).map(([j]) => j);
+        const starts = M.units.map((_, i) => i).filter((i) => strongOut(i).length);
+        if (n < 4 || !starts.length) return { tasks, skipped, reason: '單元太少或接得起來的接線太少（' + n + ' 個單元），出不了題' };
+        while (tasks.length < o.n && tries++ < o.n * 120) {
+            const len = o.minLen + Math.floor(rnd() * (o.maxLen - o.minLen + 1)); const start = starts[Math.floor(rnd() * starts.length)]; const path = [start];
+            while (path.length < len) { const nexts = strongOut(path[path.length - 1]).filter((j) => !path.includes(j)); if (!nexts.length) break; path.push(nexts[Math.floor(rnd() * nexts.length)]); }
+            if (path.length < o.minLen) continue; const key = path.join('>'); if (seen.has(key)) { skipped.dup++; continue; } seen.add(key);
+            const inP = M.ins[path[0]].filter((p) => !generic(p.type) && specific(p.type)); const outP = M.outs[path[path.length - 1]].filter((x) => !generic(x.type) && specific(x.type));
+            if (!inP.length || !outP.length) { skipped.no_types++; continue; }
+            const from = typeStr((inP.find((p) => p.required) || inP[0]).type), to = typeStr(outP[0].type);
+            const intended = path.map((i) => M.ids[i]); const found = MX.findPipelines(M, { from, to }, { k: 12, maxLen: o.maxLen + 1 }).paths;
+            const rank = found.findIndex((p) => sameIds(p.units, intended)); const others = found.filter((p) => !sameIds(p.units, intended));
+            const hasOpts = others.length >= o.options - 1; if (!hasOpts && o.requireOptions) { skipped.few_options++; continue; }
+            const rest = [], pool = shuffle(M.units.map((_, i) => i).filter((i) => !path.includes(i)), rnd); for (const i of pool) { if (rest.length >= o.distractors) break; rest.push(i); }
+            const cand = shuffle(path.concat(rest), rnd).map((i) => describeUnit(M, i));
+            if (new Set(cand.map((c) => c.name.toLowerCase())).size !== cand.length) { skipped.dup_names++; continue; }
+            const task = { id: 't' + tasks.length, from, to, intended, candidates: cand, rank, options: null, answerIndex: -1, need: null };
+            const self = grade(M, task, JSON.stringify({ steps: intended.map((id) => cand.find((c) => c.id === id).name) }), 'self'); if (!self.ok) { skipped.inconsistent++; continue; }
+            if (hasOpts) {
+                const opts2 = shuffle([intended].concat(others.slice(0, o.options - 1).map((p) => p.units)), rnd); const idx = new Map(M.ids.map((id, i) => [id, i]));
+                task.options = opts2.map((us) => us.map((id) => describeUnit(M, idx.get(id)))); task.answerIndex = opts2.findIndex((us) => sameIds(us, intended));
+                task.need = '我有一個「' + from + '」，想得到「' + to + '」。需要的步驟是：' + intended.map((id) => { const d = describeUnit(M, idx.get(id)); return d.summary || d.name; }).join('，接著');
+            } else skipped.few_options++;
+            tasks.push(task);
+        }
+        return { tasks, skipped };
+    }
+    // 亂猜的成功率：從清單裡隨機挑 2～3 個、隨機排，有多少機率碰巧合法。拿來對照「自己排」的成功率，看它是不是比亂猜好
+    function randomBaseline(M, tasks, opts) {
+        const rnd = mkRng((opts && opts.seed) || 99); const trials = (opts && opts.trials) || 200; let okN = 0, total = 0;
+        for (const t of tasks) for (let k = 0; k < trials; k++) { const len = 2 + Math.floor(rnd() * 2); const pick = shuffle(t.candidates, rnd).slice(0, len); total++; if (grade(M, t, JSON.stringify({ steps: pick.map((c) => c.name) }), 'self').ok) okN++; }
+        return total ? Math.round((okN / total) * 1000) / 1000 : null;
+    }
+
+    const SYS_A = '你是工具串接的助手。只回 JSON，不要多說話。';
+    function buildPrompt(task, mode) {
+        if (mode === 'self') return { system: SYS_A, user: '手上有一個「' + task.from + '」型別的資料，要得到「' + task.to + '」型別的結果。下面是可以用的函式（括號裡是參數，→ 後面是回傳）：\n\n' + task.candidates.map((c) => '- ' + c.line).join('\n') + '\n\n請排出呼叫順序：第一個要吃得下「' + task.from + '」，前一個的輸出要能接給下一個的輸入，最後一個要產出「' + task.to + '」；每個函式最多用一次，只用清單裡的函式。\n只回這個格式：{"steps":["函式名稱","函式名稱"]}' };
+        return { system: SYS_A, user: '需求：' + task.need + '\n\n程式已經算好幾條接得起來的接線，選出最符合需求的那一條：\n\n' + task.options.map((us, i) => (i + 1) + '. ' + us.map((d) => d.name + (d.summary ? '（' + d.summary + '）' : '')).join(' → ')).join('\n') + '\n\n只回這個格式：{"choice":編號}' };
+    }
+
+    function extractJson(text) {
+        const t = String(text || '').replace(/<think>[\s\S]*?<\/think>/gi, ''); const m = t.match(/\{[\s\S]*\}|\[[\s\S]*\]/); if (!m) return null;
+        try { return JSON.parse(m[0]); } catch (_) { const m2 = t.match(/\{[^{}]*\}/); if (m2) { try { return JSON.parse(m2[0]); } catch (_2) { return null; } } return null; }
+    }
+    function parseAnswer(text, mode) {
+        const j = extractJson(text);
+        if (mode === 'self') { const steps = Array.isArray(j) ? j : (j && Array.isArray(j.steps) ? j.steps : null); return steps ? { parsed: true, steps: steps.map(String) } : { parsed: false }; }
+        let c = j && typeof j === 'object' && !Array.isArray(j) ? (j.choice != null ? j.choice : j.answer) : null; if (c == null) { const m = String(text || '').replace(/<think>[\s\S]*?<\/think>/gi, '').match(/(?:choice|選|第)\D{0,3}(\d+)/i) || String(text || '').trim().match(/^\D{0,3}(\d+)\D{0,3}$/); if (m) c = m[1]; }
+        const num = Number(c); return Number.isFinite(num) && num >= 1 ? { parsed: true, choice: Math.floor(num) } : { parsed: false };
+    }
+    function grade(M, task, text, mode) {
+        const a = parseAnswer(text, mode); if (!a.parsed) return { parsed: false, ok: false, reason: '格式不對' };
+        if (mode === 'assisted') { if (!task.options) return { parsed: true, ok: false, reason: '這題沒有選項', skip: true }; const ok = a.choice - 1 === task.answerIndex; return { parsed: true, ok, reason: ok ? '' : (a.choice > task.options.length ? '編號超出範圍' : '選錯了') }; }
+        const byName = new Map(task.candidates.map((c) => [c.name.toLowerCase(), c.id])); const ids = []; for (const s of a.steps) { const id = byName.get(String(s).trim().toLowerCase()); if (!id) return { parsed: true, ok: false, reason: '用了清單裡沒有的函式：' + String(s).slice(0, 30) }; ids.push(id); }
+        if (!ids.length) return { parsed: true, ok: false, reason: '沒有排任何步驟' }; if (new Set(ids).size !== ids.length) return { parsed: true, ok: false, reason: '同一個函式用了兩次' };
+        const idx = ids.map((id) => M.index.get(id)); const ft = Cat.parseType(task.from), tt = Cat.parseType(task.to); const min = M.opts.minScore;
+        if (!M.ins[idx[0]].some((p) => MX.matchScore(ft, p.type) >= min)) return { parsed: true, ok: false, reason: '第一個函式吃不下「' + task.from + '」' };
+        for (let k = 0; k + 1 < idx.length; k++) if (!M.edges[idx[k]].has(idx[k + 1])) return { parsed: true, ok: false, reason: '「' + M.units[idx[k]].name + '」的輸出接不到「' + M.units[idx[k + 1]].name + '」' };
+        if (!M.outs[idx[idx.length - 1]].some((o) => MX.matchScore(o.type, tt) >= min)) return { parsed: true, ok: false, reason: '最後一個函式產不出「' + task.to + '」' };
+        return { parsed: true, ok: true, reason: '', exact: sameIds(ids, task.intended) };
+    }
+
+    // 退化：空白、只有思考沒有答案、同一行或同一段重複好幾次
+    function degenerate(call) {
+        const text = String((call && call.content) || '').trim(); if (!text) return call && call.reasoning ? '只有思考、沒有答案' : '空白回應';
+        const lines = text.split('\n').map((x) => x.trim()).filter((x) => x.length >= 4); const cnt = new Map(); for (const l of lines) cnt.set(l, (cnt.get(l) || 0) + 1); if (Array.from(cnt.values()).some((c) => c >= 3)) return '同一行重複輸出';
+        const tail = text.slice(-120); if (text.length > 400 && text.split(tail.slice(0, 40)).length - 1 >= 3) return '同一段重複輸出';
+        return '';
+    }
+    const median = (a) => { if (!a.length) return null; const s = a.slice().sort((x, y) => x - y); const m = s.length >> 1; return s.length % 2 ? s[m] : Math.round((s[m - 1] + s[m]) / 2); };
+    const frac = (ok, n) => ({ ok, n, rate: n ? Math.round((ok / n) * 100) / 100 : null });
+
+    // results：[{ mode:'self'|'assisted', task, ok, parsed, http_ok, degenerate:'', ms, error, reason }]
+    function summarize(results, tasks, opts) {
+        const o = Object.assign({}, DEFAULTS, opts || {}); const baseline = o.baseline == null ? null : o.baseline; const good = results.filter((r) => r.http_ok !== false); const failed = results.length - good.length;
+        const A = good.filter((r) => r.mode === 'self'), B = good.filter((r) => r.mode === 'assisted' && !r.skip);
+        const self = frac(A.filter((r) => r.ok).length, A.length), assisted = frac(B.filter((r) => r.ok).length, B.length);
+        const parsed = frac(good.filter((r) => r.parsed).length, good.length), deg = frac(good.filter((r) => r.degenerate).length, good.length);
+        const withOpt = (tasks || []).filter((t) => t.options); const auto = frac(withOpt.filter((t) => t.rank === 0).length, withOpt.length);
+        const notes = []; let advice, why;
+        if (A.length < o.minCalls || B.length < o.minCalls) { advice = 'unknown'; why = '能用的回應太少（自己排 ' + A.length + ' 次、選計畫 ' + B.length + ' 次，至少要各 ' + o.minCalls + ' 次）' + (failed ? '，有 ' + failed + ' 次連線或呼叫失敗' : '') + '，判斷不了'; }
+        else if (self.rate >= o.high && deg.rate < o.unstable) { advice = 'self'; why = '自己排的成功率 ' + self.ok + '/' + self.n + '，夠穩，不需要 CoLU 代勞'; }
+        else if (assisted.rate >= o.high) { advice = 'guided'; why = '自己排只有 ' + self.ok + '/' + self.n + (deg.rate >= o.unstable ? '，而且常退化（' + deg.ok + '/' + deg.n + '）' : '') + '，但給它算好的計畫選就有 ' + assisted.ok + '/' + assisted.n + '：由 CoLU 先算計畫，模型只負責選與填參數'; }
+        else { advice = 'auto'; why = '自己排 ' + self.ok + '/' + self.n + '、選計畫 ' + assisted.ok + '/' + assisted.n + '，都不穩：串接這一步交給 CoLU 直接排（取第一名），模型只負責講解與填參數'; if (assisted.rate < 0.5) notes.push('連選擇題都不穩，不建議讓這個模型做工具串接'); }
+        if (deg.rate >= o.unstable && advice !== 'unknown') notes.push('退化率偏高（' + deg.ok + '/' + deg.n + '：' + Array.from(new Set(good.filter((r) => r.degenerate).map((r) => r.degenerate))).join('、') + '）');
+        if (parsed.rate != null && parsed.rate < 0.8) notes.push('輸出格式正確率只有 ' + parsed.ok + '/' + parsed.n + '，常常不照指定的 JSON 格式回');
+        if (failed) notes.push(failed + ' 次連線或呼叫失敗，沒算進成功率');
+        if (auto.n) notes.push('參考：CoLU 的第一名剛好是題目那條的比例 ' + auto.ok + '/' + auto.n + '（CoLU 只保證合法，不知道你的意圖）');
+        if (baseline != null) notes.push('對照：隨機亂排碰巧合法的機率約 ' + Math.round(baseline * 100) + '%' + (A.length >= o.minCalls && self.rate != null && self.rate <= baseline + 0.15 ? '——它自己排的成功率跟亂猜差不多' : ''));
+        const n = Math.max(A.length, B.length); if (n < 10) notes.push('每種只測了 ' + n + ' 題，只是粗略估計；要更準可以增加題數');
+        return { self, assisted, parsed, degenerate: deg, auto_top1: auto, median_ms: median(good.map((r) => r.ms).filter((x) => x != null)), failed_calls: failed, advice, reason: why, notes };
+    }
+    const ADVICE_LABEL = { self: '自己排就好', guided: 'CoLU 先給計畫、模型只選', auto: '交給 CoLU 直接排', unknown: '資料不足' };
+    function toText(model, p) {
+        const f = (x) => (x.n ? x.ok + '/' + x.n : '—');
+        return '🧪 CoLU 接線題：' + model + '\n・自己排接線：' + f(p.self) + '\n・給計畫、選一條：' + f(p.assisted) + '\n・輸出格式正確：' + f(p.parsed) + '\n・退化（空白、只有思考、重複）：' + f(p.degenerate) + '\n・中位耗時：' + (p.median_ms != null ? p.median_ms + ' ms' : '—') + '\n\n建議：' + ADVICE_LABEL[p.advice] + '\n' + p.reason + (p.notes.length ? '\n\n' + p.notes.map((x) => '・' + x).join('\n') : '');
+    }
+    // 之後使用這個模型時，加在系統提示裡的一句話（self／unknown 不加）
+    function hintFor(advice) {
+        if (advice === 'guided') return '【CoLU 輔助】你串接多個工具的順序不穩定。需要把兩個以上的工具串起來時，先呼叫 catalog_query（action:"path"，from＝手上資料的型別，to＝要得到的型別）取得程式算好的合法接線，從它給的幾條裡選最符合需求的，照順序用；不要自己憑感覺排順序。';
+        if (advice === 'auto') return '【CoLU 輔助】你串接多個工具的能力不可靠。需要把兩個以上的工具串起來時，先呼叫 catalog_query（action:"plan"，from＝手上資料的型別，to＝要得到的型別）取得程式排好的接線骨架，直接照它執行，只負責填參數與向使用者說明；不要自己重排順序。';
+        return '';
+    }
+    return { DEFAULTS, makeTasks, randomBaseline, buildPrompt, extractJson, parseAnswer, grade, degenerate, summarize, toText, hintFor, ADVICE_LABEL };
+});
+
+}).call(null, undefined, holder);
+return holder.FaColuBench;
+})();
+/* COLUB-END */
 /* ARCHIVE-BEGIN */
 const FaArchive = (function () {
 const holder = {};
@@ -26348,6 +26601,9 @@ class FloatingAssistant {
         this.register_slash_command('/ask-mode', '[ask|recommended]',
             '計畫有分歧時要不要問你：ask＝問（預設）、recommended＝不再問、統一走建議的。不帶參數看目前的設定。',
             (argsText, run) => { const r = run || this; const a = String(argsText || '').trim().toLowerCase(); if (a === 'ask' || a === 'recommended') { r._setBranchAskMode(a); r._pushAssistantMessage(a === 'ask' ? '好，計畫有分歧的地方會問你。' : '好，之後遇到計畫分歧就直接照建議的做，不再問你。', null); } else { r._pushAssistantMessage('目前：' + (r._branchAskRecommended() ? 'recommended（不再問，統一走建議的）' : 'ask（有分歧才問）') + '。用 /ask-mode ask 或 /ask-mode recommended 切換。', null); } try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ } });
+        this.register_slash_command('/colu-bench', '[題數] [模型列#編號或名稱]',
+            'CoLU 接線題：測一個模型串接多個工具的能力（自己排 vs. 給它算好的計畫選），建議要自己排、由 CoLU 先給計畫、或交給 CoLU 直接排。會呼叫該模型十幾次，開始前會先問你。結果存在模型列上，之後用這個模型時自動加提示。',
+            (argsText, run) => (run || this)._coluBenchSlash(argsText));
         this.register_slash_command('/view', '[檔名]',
             '在對話裡開啟檔案檢視器：xlsx（工作表頁籤、AI 的回答變成另一張工作表）、csv、tsv、json、yaml、toml。先附上檔案再下 /view，或 /view 檔名；不帶參數開最近上傳、可以檢視的檔案。可搜尋、匯出（xlsx／csv／sqlite3…）、問 AI。',
             (argsText, run) => (run || this)._viewSlash(argsText));
@@ -28524,6 +28780,11 @@ class FloatingAssistant {
                 testedAt: Number(row.abilityTags.testedAt),
             };
         }
+        // CoLU 接線題的結果（獨立欄位，不會被上面兩項探測的 Benchmark 覆蓋掉）
+        { const cp = row.coluProfile; const fr = (x) => ({ ok: Math.max(0, Math.floor(Number(x && x.ok)) || 0), n: Math.max(0, Math.floor(Number(x && x.n)) || 0) });
+          if (cp && typeof cp === 'object' && ['self', 'guided', 'auto', 'unknown'].includes(cp.advice) && Number.isFinite(Number(cp.testedAt))) {
+              normalized.coluProfile = { testedAt: Number(cp.testedAt), advice: cp.advice, reason: String(cp.reason || '').slice(0, 400), self: fr(cp.self), assisted: fr(cp.assisted), parsed: fr(cp.parsed), degenerate: fr(cp.degenerate), median_ms: Number.isFinite(Number(cp.median_ms)) ? Number(cp.median_ms) : null, notes: (Array.isArray(cp.notes) ? cp.notes : []).map((x) => String(x).slice(0, 200)).slice(0, 8) };
+          } }
         return normalized;
     }
 
@@ -43301,7 +43562,8 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
 
         if (rulesMd) sections.push(rulesMd);
         if (basePrompt) sections.push(basePrompt);
-        { const rh = this._rootTaskHints(); if (rh.length) sections.push(rh.map((h) => h.note).join('\n')); } // 這則訊息有專用工具：直接給做法（見 FA_TASK_TOOL_HINTS）
+        { const rh = this._rootTaskHints(); if (rh.length) sections.push(rh.map((h) => h.note).join('\n')); }
+        { const ch = this._coluHint(); if (ch) sections.push(ch); } // 這個模型做過 CoLU 接線題、建議要輔助：告訴它先用 catalog_query 取得算好的接線 // 這則訊息有專用工具：直接給做法（見 FA_TASK_TOOL_HINTS）
 
         // tw_stock_db客製: 原生tool-call模式下，工具清單已經透過API的tools參數
         // 結構化傳給模型，不需要再用文字重複描述一次工具清單、更不需要
@@ -43752,6 +44014,63 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         } catch (_) {
             return false;
         }
+    }
+
+    // ===== CoLU 接線題（設計見 DESIGN.unit-catalog.md 第三十節）=====
+    // 目前使用的模型（依名稱找到的、做過接線題的那幾列）建議要輔助的話，回傳加進系統提示的一句話；沒做過、或建議自己排就好，回傳空字串
+    _coluHint() {
+        try {
+            const { apiModel } = this._getApiConfig(); const rows = this._getModelRows().filter((r) => r.modelName === apiModel && r.coluProfile && (r.coluProfile.advice === 'guided' || r.coluProfile.advice === 'auto'));
+            if (!rows.length) return ''; rows.sort((a, b) => b.coluProfile.testedAt - a.coluProfile.testedAt); return FaColuBench.hintFor(rows[0].coluProfile.advice);
+        } catch (_) { return ''; }
+    }
+    // 單次呼叫某個模型列（非串流、獨立訊息，不動使用者的對話）
+    async _coluBenchCall(cfg, p) {
+        const t0 = Date.now(); const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 60000);
+        try {
+            const resp = await fetch(cfg.apiUrl + '/chat/completions', { method: 'POST', headers: { 'Authorization': 'Bearer ' + cfg.apiKey, 'Content-Type': 'application/json' }, signal: controller.signal, body: JSON.stringify({ model: cfg.apiModel, messages: [{ role: 'system', content: p.system }, { role: 'user', content: p.user }], temperature: 0.1, max_tokens: 4096, stream: false }) });
+            const ms = Date.now() - t0; if (!resp.ok) { let body = ''; try { body = (await resp.text()).slice(0, 160); } catch (_) { /* */ } return { http_ok: false, status: resp.status, content: '', error: 'HTTP ' + resp.status + (body ? '：' + body : ''), ms }; }
+            const j = await resp.json(); const m = (j && j.choices && j.choices[0] && j.choices[0].message) || {}; return { http_ok: true, status: resp.status, content: String(m.content || ''), reasoning: String(m.reasoning_content || m.reasoning || ''), finish: j && j.choices && j.choices[0] && j.choices[0].finish_reason, ms };
+        } catch (e) { return { http_ok: false, content: '', error: (e && e.name === 'AbortError') ? '逾時（超過 60 秒沒回應）' : String((e && e.message) || e), ms: Date.now() - t0 }; }
+        finally { clearTimeout(timer); }
+    }
+    async _coluBenchRow(rowId, opts) {
+        const row = this._getModelRows().find((r) => r.id === rowId); if (!row) return { ok: false, error: '找不到這個模型列' };
+        if (this._coluBenchBusy) return { ok: false, error: '已經有一個 CoLU 接線題在跑了，等它做完。' };
+        const cfg = this._resolveModelRowConfig(row); const n = Math.max(3, Math.min(20, Math.floor(Number(opts && opts.n)) || 6));
+        let M; try { await this._unitCatalogStoreLoad(); M = FaCatalogMatrix.buildMatrix(this._unitCatalogBuild()); } catch (e) { const m = '建單元目錄失敗：' + String((e && e.message) || e); this._pushAssistantMessage('⚠️ ' + m, null); return { ok: false, error: m }; }
+        const mk = FaColuBench.makeTasks(M, { n, seed: Date.now() % 1000000007 });
+        if (mk.tasks.length < 3) { const m = '單元目錄裡可以串起來的單元太少，出不了 3 題以上（' + (mk.reason || ('目前 ' + M.units.length + ' 個單元，' + M.stats.edges + ' 條接線')) + '）。先用 /unit-catalog 認識更多函式庫再測。'; this._pushAssistantMessage('⚠️ ' + m, null); return { ok: false, error: m }; }
+        const calls = mk.tasks.length + mk.tasks.filter((t) => t.options).length;
+        const ans = await this.requestUserForm({ title: '🧪 對「' + cfg.apiModel + '」跑 CoLU 接線題？', description: '會呼叫這個模型約 ' + calls + ' 次（自己排 ' + mk.tasks.length + ' 題、給計畫選 ' + mk.tasks.filter((t) => t.options).length + ' 題），一次一個、最多各等 60 秒，會用掉一些額度。\n\n測的是「串接多個工具」的能力，結果用來建議這個模型要自己排、還是由 CoLU 先給計畫（或直接排）。題目從目前的單元目錄（' + M.units.length + ' 個單元）隨機出，評分全由程式用型別接線判定。', choices: ['開始', '取消'] });
+        if (!ans || !ans.confirmed || ans.answer !== '開始') return { ok: false, cancelled: true };
+        this._coluBenchBusy = row.id; this._renderModelRowsList();
+        const prog = this._createProgressWidget('🧪 CoLU 接線題：' + cfg.apiModel); const results = []; let done = 0;
+        try {
+            for (const mode of ['self', 'assisted']) for (const task of mk.tasks) {
+                if (mode === 'assisted' && !task.options) continue; if (this.stopRequested) throw new Error('使用者停止');
+                prog.update({ status: (mode === 'self' ? '自己排' : '給計畫選') + '：第 ' + (done + 1) + '/' + calls + ' 次…', pct: Math.round((done / calls) * 100) });
+                const call = await this._coluBenchCall(cfg, FaColuBench.buildPrompt(task, mode)); done++;
+                const g = call.http_ok ? FaColuBench.grade(M, task, call.content, mode) : { parsed: false, ok: false, reason: call.error };
+                results.push(Object.assign({ mode, http_ok: call.http_ok, degenerate: call.http_ok ? FaColuBench.degenerate(call) : '', ms: call.ms, error: call.error, finish: call.finish }, g));
+                await new Promise((r) => setTimeout(r, 300));
+            }
+            const profile = FaColuBench.summarize(results, mk.tasks, { baseline: FaColuBench.randomBaseline(M, mk.tasks) });
+            row.coluProfile = { testedAt: Date.now(), advice: profile.advice, reason: profile.reason, self: { ok: profile.self.ok, n: profile.self.n }, assisted: { ok: profile.assisted.ok, n: profile.assisted.n }, parsed: { ok: profile.parsed.ok, n: profile.parsed.n }, degenerate: { ok: profile.degenerate.ok, n: profile.degenerate.n }, median_ms: profile.median_ms, notes: profile.notes };
+            try { this._saveAdvancedSettings(); } catch (_) { /* 存不了這次的畫面還是有 */ }
+            const fails = results.filter((r) => !r.ok && !r.skip).slice(0, 4).map((r) => '・' + (r.mode === 'self' ? '自己排' : '選計畫') + '：' + (r.reason || r.error || '失敗') + (r.degenerate ? '（' + r.degenerate + '）' : '') + (r.finish && r.finish !== 'stop' ? '［finish_reason=' + r.finish + '］' : ''));
+            prog.finish('完成：' + FaColuBench.ADVICE_LABEL[profile.advice]);
+            this._pushAssistantMessage(FaColuBench.toText(cfg.apiModel, profile) + (fails.length ? '\n\n失敗的例子（實際看到的）：\n' + fails.join('\n') : '') + (profile.advice === 'guided' || profile.advice === 'auto' ? '\n\n之後新的對話用這個模型時，系統提示會自動加一句，叫它串接工具前先用 catalog_query 取得算好的接線。' : ''), null);
+            return { ok: true, profile };
+        } catch (e) { try { prog.fail ? prog.fail(String((e && e.message) || e)) : prog.finish('中止'); } catch (_) { /* */ } return { ok: false, error: String((e && e.message) || e) }; }
+        finally { this._coluBenchBusy = null; try { this._renderModelRowsList(); this._persistChatHistory(); this._renderMessageHistory(); } catch (_) { /* */ } }
+    }
+    async _coluBenchSlash(argsText) {
+        const parts = String(argsText || '').trim().split(/\s+/).filter(Boolean); const rows = this._getModelRows(); let n = 6; let ref = '';
+        for (const p of parts) { if (/^#\d+$/.test(p)) ref = p; else if (/^\d+$/.test(p)) { if (parts.length === 1 && Number(p) <= rows.length) ref = '#' + p; else n = Number(p); } else ref = ref ? ref + ' ' + p : p; }
+        let row = null; if (/^#\d+$/.test(ref)) row = rows[Number(ref.slice(1)) - 1]; else if (ref) row = rows.find((r) => String(r.modelName).toLowerCase().includes(ref.toLowerCase())); else row = rows[0];
+        if (!row) { this._pushAssistantMessage('用法：/colu-bench [題數 3～20] [模型列編號或名稱]　例如 /colu-bench 8 #2　或　/colu-bench lightning。不帶參數測第 1 列。', null); return; }
+        await this._coluBenchRow(row.id, { n });
     }
 
     // tw_stock_db客製: 2026-09-17使用者要求——LLM Models清單裡每個row旁邊
@@ -47668,6 +47987,8 @@ ${sourceTool.handlerScript}
                             : '尚未測試'
                     }</span>
                     <button type="button" class="ai-advanced-btn ai-model-row-benchmark-btn" data-row-id="${row.id}" ${(row.abilityTags && row.abilityTags.testing) ? 'disabled' : ''} style="padding:1px 8px; font-size:10px;">${(row.abilityTags && row.abilityTags.testing) ? '測試中…' : 'Benchmark'}</button>
+                    <button type="button" class="ai-advanced-btn ai-model-row-colu-btn" data-row-id="${row.id}" ${this._coluBenchBusy ? 'disabled' : ''} title="CoLU 接線題：測這個模型『串接多個工具』的能力（自己排 vs. 給它算好的計畫選），建議要用哪種輔助方式。會呼叫這個模型十幾次，按下去會先問你。" style="padding:1px 8px; font-size:10px;">${this._coluBenchBusy === row.id ? '測試中…' : 'CoLU'}</button>
+                    ${row.coluProfile ? `<span style="font-size:11px; color:#94a3b8;" title="${this._escapeHtml(row.coluProfile.reason + '（' + new Date(row.coluProfile.testedAt).toLocaleString('zh-TW') + '）')}">🧭 ${this._escapeHtml(FaColuBench.ADVICE_LABEL[row.coluProfile.advice] || '')}</span>` : ''}
                     <label style="display:inline-flex; align-items:center; gap:3px; font-size:10px; color:#94a3b8; cursor:pointer;" title="標記這筆是embedding模型（呼叫/embeddings端點，不是/chat/completions）。RAG語意檢索需要計算向量時，如果有標記的row會優先呼叫它取得真正的embedding，沒有標記時退回內建的TF-IDF近似算法。">
                         <input type="checkbox" class="ai-model-row-embedding-chk" data-row-id="${row.id}" ${row.isEmbeddingModel ? 'checked' : ''} style="cursor:pointer;">
                         🧬 Embedding
@@ -72996,6 +73317,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     this._toggleModelRowStandalone(toggleStandaloneBtn.dataset.rowId);
                     return;
                 }
+                const coluBtn = e.target.closest('.ai-model-row-colu-btn');
+                if (coluBtn) { this._coluBenchRow(coluBtn.dataset.rowId); return; }
                 const benchmarkBtn = e.target.closest('.ai-model-row-benchmark-btn');
                 if (benchmarkBtn) {
                     this._benchmarkModelRow(benchmarkBtn.dataset.rowId);
