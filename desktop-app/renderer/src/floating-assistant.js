@@ -33748,6 +33748,8 @@ ${fnData.code}
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const script = this._terminalRewriteBuiltinPaths(String(parsed.script || parsed.code || parsed.source || parsed.python || parsed.bash || ''));
                 if (!script.trim()) return JSON.stringify({ ok: false, error: '缺少script參數' });
+                // 腳本文字裡有真的 NUL 字元（U+0000）時，shell 會在那裡截斷或整段沒有輸出，而且不報錯——常見原因是產生腳本的程式把「反斜線加 00」當成跳脫序列解開了（例如 Python 字串裡的反斜線加 00）。
+                if (script.indexOf(String.fromCharCode(0)) >= 0) return JSON.stringify({ ok: false, error: '腳本裡有 NUL 字元（U+0000），shell 無法處理，會在那裡截斷。如果你要的是「反斜線加 00」這幾個字（例如 LLVM IR 的字串結尾），表示產生腳本的程式把它當跳脫序列解開了，請把反斜線寫成兩個，或改用 input_files 寫檔案。' });
                 let inputFiles;
                 try {
                     inputFiles = parseExecutionInputFiles(parsed.input_files);

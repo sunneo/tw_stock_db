@@ -164,4 +164,4 @@ usecase Checkout: Customer -> Cart.add(book) -> Order.pay(total):bool
 2. 終端機的指令必須同步：瀏覽器（Chrome）主執行緒只允許同步編譯 4KB 以下的 wasm——網頁版的 `lli` 遇到較大的程式會明講並請改用 `llvm_execute`（非同步，不受限）；桌面版（Electron）實測 34KB 沒問題。
 3. wasm 的 `i8`／`i1` 當 32 位元處理，有號比較要先 sext。
 4. 不支援 phi、例外、函式指標、可變參數、float（只有 double）。
-5. 既有問題（不是這次新增）：`bash_execute` 的腳本裡，heredoc 內容出現「反斜線加數字」（例如 IR 字串結尾的 `\00`）會讓整段腳本沒有輸出。寫 IR 檔請用 `input_files`（檔案會放在 /work/）或 `printf`。
+5. 腳本文字裡不能有真的 NUL 字元（U+0000）：產生腳本的程式如果把「反斜線加 00」當跳脫序列解開（例如 Python 字串裡的反斜線加 00），腳本裡就會多出 NUL，shell 會在那裡截斷。`bash_execute` 現在遇到會直接回錯誤並說明；heredoc 裡寫真正的「反斜線加 00」（例如 LLVM IR 的字串結尾）是沒問題的。
