@@ -52,6 +52,65 @@ const oracle = async (req) => {
     p = B.summarize(sh); const tx = B.toText('測試模型', p); check('報告文字：完成、第一次合格、建議', /完成：3\/3/.test(tx) && /第一次就合格：18\/36/.test(tx) && /建議：一次一小題＋退回重來/.test(tx) && /測試模型/.test(tx), tx);
     check('提示：只有 stepwise 與 program_first 有，且指向 uml_guide／uml_design', /uml_guide/.test(B.hintFor('program_first')) && /uml_design/.test(B.hintFor('stepwise')) && B.hintFor('self') === '' && B.hintFor('unknown') === '' && B.hintFor(undefined) === '');
 
+
+    // ===== 大問題：兩條路（直接做／走 UML design）=====
+    const pascal = (s) => String(s).replace(/(^|[\s_-])([a-z])/g, (_, a, b) => b.toUpperCase());
+    const eng = (g) => pascal(g.find((x) => /^[a-z ]+$/i.test(x)) || g[0]);
+    // 理想的答案：把「該有的東西」每一組各寫成一個參與者／類別／使用案例（用第一個英文同義詞）
+    const idealDsl = (fx, keep) => {
+        const acts = fx.actors.map(eng), cls = fx.classes.map(eng); const lines = ['model: 綜合', 'actor: ' + acts.join(', ')];
+        for (const c of cls) lines.push('class ' + c + ' { +id:int; +name:str; +get():void }');
+        fx.usecases.slice(0, keep == null ? 99 : keep).forEach((g, i) => lines.push('usecase Uc' + eng(g) + ': ' + acts[i % acts.length] + ' -> ' + cls[i % cls.length] + '.get() -> ' + cls[(i + 1) % cls.length] + '.get()'));
+        return lines.join('\n');
+    };
+    const big = B.BIG[0];
+    check('大問題：三個領域併成一個，十個以上的使用案例', B.BIG.length === 3 && B.BIG.every((b) => b.big && b.usecases.length >= 9 && b.classes.length >= 6 && b.actors.length >= 4 && b.scenario.startsWith('綜合平台：')), B.BIG.map((b) => [b.actors.length, b.classes.length, b.usecases.length]));
+    check('大問題的該有的東西是三個情境的聯集、沒有重複', (() => { const ks = big.classes.map((g) => g[0]); return new Set(ks).size === ks.length; })());
+    check('抽出 UML 文字：去掉說明、程式碼框、思考標籤', (() => { const d = B.dslOf('<think>想想</think>好的：\n```\nmodel: x\nactor: A\nclass P { +id:int; +f():void }\nusecase U: A -> P.f()\n```\n希望有幫助'); return d.split('\n').length === 4 && !/好的|希望/.test(d); })());
+
+    // 直接做
+    const oracleDirect = async () => idealDsl(big);
+    let rd = await B.runDirect(big, oracleDirect); check('直接做：理想答案 → 完成、驗證通過、全找到、達標', rd.completed && rd.valid && rd.recall.actors === 1 && rd.recall.classes === 1 && rd.recall.usecases === 1 && rd.recall.sequences === 1 && B.success(rd) && rd.tries === 1 && rd.stats.calls === 1, rd);
+    rd = await B.runDirect(big, async () => '我覺得這個平台需要很多功能，建議先分析使用者……'); check('直接做：只回散文 → 沒完成、退回一次後放棄、不達標', !rd.completed && !B.success(rd) && rd.tries === 2 && rd.stats.calls === 2 && /沒有任何 UML 行/.test(rd.error), rd);
+    rd = await B.runDirect(big, async () => idealDsl(big, 3)); check('直接做：格式對但缺了大半使用案例 → 完成、驗證通過、不達標（三項取最低）', rd.completed && rd.valid && !B.success(rd) && rd.recall.usecases < 0.7 && rd.recall.actors === 1, rd.recall);
+    rd = await B.runDirect(big, async (req) => { return /上一個回覆不合格/.test(req.messages.map((m) => m.content).join('')) ? idealDsl(big) : 'class Broken {'; }); check('直接做：第一次不合格、退回後改對 → 達標，tries=2', rd.completed && B.success(rd) && rd.tries === 2, { tries: rd.tries, err: rd.error });
+    rd = await B.runDirect(big, async () => { throw new Error('HTTP 429'); }); check('直接做：呼叫失敗不當掉，記下錯誤', !rd.completed && rd.stats.failed === 1 && /429/.test(rd.stats.errors[0]) && /呼叫失敗/.test(rd.error), rd);
+    rd = await B.runDirect(big, async () => idealDsl(big).replace('usecase', 'usecase ').replace(/\.get\(\) -> /g, '.nothing() -> ')); check('直接做：呼叫了不存在的操作 → 驗證擋下來', !rd.valid, rd.error);
+
+    // 走 UML design（一次一小題）：階段答案從理想模型推出來
+    // 依這一塊的內容回答：找出它對應的領域（FIXTURES 裡的哪個情境），回那個領域的理想答案
+    const strip = (t) => String(t).replace(/^[^：]+：/, '');
+    const chunkOracle = async (req) => { const t = text(req); const part = B.FIXTURES.find((f) => t.includes(strip(f.scenario))); const ideal = U.parseDsl(idealDsl(part || big)).model; let m;
+        if (/找出參與者/.test(t)) return JSON.stringify({ actors: ideal.actors, usecases: ideal.usecases.map((u) => ({ name: u.name, actor: u.actor, summary: u.name })) });
+        if (/找出系統需要的類別/.test(t)) return JSON.stringify({ classes: ideal.classes.map((c) => ({ name: c.name, kind: 'class', label: c.name })) });
+        if ((m = /替類別「(\w+)」/.exec(t))) { const c = ideal.classes.find((x) => x.name === m[1]); return JSON.stringify({ attrs: c.attrs.map((x) => ({ name: x.name, type: U.typeToString(x.type) })), ops: c.ops.map((o) => ({ name: o.name, params: [], returns: 'void' })) }); }
+        if (/列出類別「(\w+)」跟其他類別的關係/.test(t)) return JSON.stringify({ relations: [] });
+        if ((m = /列出使用案例「(\w+)」/.exec(t))) { const u = ideal.usecases.find((x) => x.name === m[1]); return JSON.stringify({ steps: u.steps.map((s) => ({ to: s.to, op: s.msg })) }); }
+        return '???'; };
+    const stageOracle = chunkOracle; const unusedOracle = async (req) => { const t = text(req); let m;
+        if (/找出參與者/.test(t)) return JSON.stringify({ actors: ideal.actors, usecases: ideal.usecases.map((u) => ({ name: u.name, actor: u.actor, summary: u.name })) });
+        if (/找出系統需要的類別/.test(t)) return JSON.stringify({ classes: ideal.classes.map((c) => ({ name: c.name, kind: 'class', label: c.name })) });
+        if ((m = /替類別「(\w+)」/.exec(t))) { const c = ideal.classes.find((x) => x.name === m[1]); return JSON.stringify({ attrs: c.attrs.map((a) => ({ name: a.name, type: U.typeToString(a.type) })), ops: c.ops.map((o) => ({ name: o.name, params: [], returns: 'void' })) }); }
+        if (/列出類別「(\w+)」跟其他類別的關係/.test(t)) return JSON.stringify({ relations: [] });
+        if ((m = /列出使用案例「(\w+)」/.exec(t))) { const u = ideal.usecases.find((x) => x.name === m[1]); return JSON.stringify({ steps: u.steps.map((s) => ({ to: s.to, op: s.msg })) }); }
+        return '???'; };
+    let rs = await B.runScenario(big, stageOracle); check('走 UML design：大問題先切成小塊、各塊拆完再合併 → 完成、達標', rs.completed && B.success(rs) && rs.stageN > 20, { c: rs.completed, v: rs.valid, recall: rs.recall, err: rs.error, n: rs.stageN });
+    rs = await B.runScenario(big, noise); check('走 UML design：亂答 → 沒完成、不達標', !rs.completed && !B.success(rs));
+
+    // 結論
+    const okD = [await B.runDirect(big, oracleDirect), await B.runDirect(B.BIG[1], async () => idealDsl(B.BIG[1])), await B.runDirect(B.BIG[2], async () => idealDsl(B.BIG[2]))];
+    const badD = [await B.runDirect(big, async () => '不會'), await B.runDirect(B.BIG[1], async () => '不會'), await B.runDirect(B.BIG[2], async () => '不會')];
+    const okS = []; for (const b of B.BIG) okS.push(await B.runScenario(b, stageOracle));
+    const badS = [await B.runScenario(big, noise), await B.runScenario(B.BIG[1], noise), await B.runScenario(B.BIG[2], noise)];
+    let rt = B.summarizeRoute(okD, okS); check('結論：直接做就達標 → direct', rt.route === 'direct' && rt.direct.ok === 3 && /不用拆/.test(rt.reason), rt);
+    rt = B.summarizeRoute(badD, okS); check('結論：直接做不行、走 UML design 行 → uml（補救）', rt.route === 'uml' && rt.direct.ok === 0 && rt.uml.ok === 3 && /UML design 補救/.test(rt.reason) && rt.notes.some((x) => /直接做沒達標的原因/.test(x)), rt);
+    rt = B.summarizeRoute(badD, badS); check('結論：兩條都不行 → program_first，並說明是流程要調整', rt.route === 'program_first' && /uml_guide/.test(rt.reason), rt);
+    const halfD = [await B.runDirect(big, async () => idealDsl(big, 3)), await B.runDirect(B.BIG[1], async () => idealDsl(B.BIG[1], 3)), await B.runDirect(B.BIG[2], async () => idealDsl(B.BIG[2], 3))]; rt = B.summarizeRoute(halfD, okS);
+    check('結論：直接做只涵蓋一部分（不完整）→ 也走 UML design 補救，並講出找到幾成', rt.route === 'uml' && rt.notes.some((x) => /只找到 \d+%/.test(x)), rt.notes);
+    const downD = [await B.runDirect(big, async () => { throw new Error('HTTP 503'); })], downS = [await B.runScenario(big, async () => { throw new Error('HTTP 503'); })]; rt = B.summarizeRoute(downD, downS); check('結論：全部呼叫失敗 → unknown，附上原因', rt.route === 'unknown' && /503/.test(rt.reason), rt);
+    rt = B.summarizeRoute(badD, okS); const tx2 = B.routeText('測試模型', rt); check('報告文字：兩條路的達標數與結論', /直接做（一次寫出整份）：0\/3/.test(tx2) && /走 UML design（一次一小題）：3\/3/.test(tx2) && /結論：大問題要用 UML design 補救/.test(tx2), tx2);
+    check('提示：uml 路線＝大問題先用 uml_design；direct＝做不下去時用 uml_design 補救；program_first 指向 uml_guide', /uml_design/.test(B.hintFor(undefined, 'uml')) && /不要自己一次做完/.test(B.hintFor(undefined, 'uml')) && /uml_design/.test(B.hintFor(undefined, 'direct')) && /uml_guide/.test(B.hintFor(undefined, 'program_first')) && B.hintFor(undefined, 'unknown') === '' && B.hintFor('self', undefined) === '');
+
     console.log('uml_bench_core: ' + ok + ' passed' + (bad.length ? ', ' + bad.length + ' failed ' + JSON.stringify(bad) : ''));
     if (bad.length) process.exit(1);
 })();

@@ -9,7 +9,7 @@
     else root.FaUmlBench = factory(root.FaUml || (typeof FaUml !== 'undefined' ? FaUml : undefined));
 })(typeof self !== 'undefined' ? self : this, function (U) {
     'use strict';
-    const DEFAULTS = { n: 3, maxTries: 2, selfFirstTry: 0.75, stepwiseEventual: 0.8, minRecall: 0.6, minCompletion: 0.8, minCalls: 5 };
+    const DEFAULTS = { n: 3, bigN: 3, successRecall: 0.7, successSeq: 0.5, directOk: 0.8, umlOk: 0.67, maxTries: 2, selfFirstTry: 0.75, stepwiseEventual: 0.8, minRecall: 0.6, minCompletion: 0.8, minCalls: 5 };
     // 每個情境該有的東西：同義詞（英文名稱）與中文關鍵字，只要其中一個出現就算找到
     const FIXTURES = [
         { id: 'shop', scenario: '網路商店：顧客可以瀏覽商品、加入購物車、結帳。管理員可以上架商品。',
@@ -28,6 +28,11 @@
           actors: [['patient', 'user', 'customer', '病人'], ['doctor', 'physician', '醫生']], classes: [['appointment', 'registration', 'booking', 'visit'], ['record', 'chart', 'history', 'medical', '病歷'], ['prescription', 'medicine', 'drug', '處方']],
           usecases: [['register', 'appointment', 'book', '掛號'], ['view', 'record', 'history', 'chart', '查看', '病歷'], ['prescribe', 'prescription', 'issue', '處方', '開立']] },
     ];
+    // 大問題：把三個領域併成一個綜合情境（約 10 個使用案例、8 個以上類別），一次做完很難。該有的東西是三個情境的聯集。
+    const strip = (t) => String(t).replace(/^[^：]+：/, '');
+    const bigOf = (id, ids) => { const parts = ids.map((i) => FIXTURES.find((f) => f.id === i)); const seen = new Set(); const uniq = (g) => g.filter((x) => { const k = x[0]; if (seen.has(k)) return false; seen.add(k); return true; }); const grp = (key) => { seen.clear(); return uniq([].concat(...parts.map((p) => p[key]))); };
+        return { id, big: true, parts: ids, scenario: '綜合平台：' + parts.map((p) => strip(p.scenario)).join(''), actors: grp('actors'), classes: grp('classes'), usecases: grp('usecases') }; };
+    const BIG = [bigOf('big_a', ['shop', 'library', 'member']), bigOf('big_b', ['booking', 'clinic', 'shop']), bigOf('big_c', ['library', 'clinic', 'booking'])];
     const low = (s) => String(s || '').toLowerCase();
     const hit = (alts, names) => alts.some((a) => names.some((n) => low(n).includes(low(a))));
     const frac = (ok, n) => ({ ok, n, rate: n ? Math.round((ok / n) * 100) / 100 : null });
@@ -51,10 +56,49 @@
     // 跑一個情境；回傳這個情境的結果列
     async function runScenario(fx, generate, opts) {
         const o = Object.assign({}, DEFAULTS, opts || {}); const stats = { calls: 0, failed: 0, degenerate: 0, degenerateKinds: [], errors: [], ms: [] };
-        let res; try { res = await U.scenarioToModel(fx.scenario, { generate: wrapGenerate(generate, stats, o.degenerate), program: false, maxTries: o.maxTries }); } catch (e) { res = { ok: false, error: String((e && e.message) || e), model: U.emptyModel ? U.emptyModel() : { actors: [], classes: [], usecases: [] }, decisions: [], warnings: [], errors: [] }; }
+        let res; try { res = await U.scenarioToModelBig(fx.scenario, { generate: wrapGenerate(generate, stats, o.degenerate), program: false, maxTries: o.maxTries }); } catch (e) { res = { ok: false, error: String((e && e.message) || e), model: U.emptyModel ? U.emptyModel() : { actors: [], classes: [], usecases: [] }, decisions: [], warnings: [], errors: [] }; }
         const dec = (res.decisions || []).filter((d) => d.by === 'model'); const g = gradeModel(fx, res.model || {});
         return { id: fx.id, completed: !!res.ok, valid: !!res.ok && !(res.errors && res.errors.length), error: res.ok ? '' : res.error, stages: dec.map((d) => ({ stage: d.stage, label: d.label, ok: !!d.ok, tries: d.tries, rejected: (d.rejected || []).slice(0, 2).map((x) => (x.errors || []).join('；').slice(0, 120)) })),
             firstTry: dec.filter((d) => d.ok && d.tries === 1).length, eventual: dec.filter((d) => d.ok).length, stageN: dec.length, recall: g, warnings: (res.warnings || []).length, stats };
+    }
+    // ===== 路線 A：直接做——一次要模型寫出整份 UML 文字（一行一件事，程式解析）；不合格就把精確的錯誤退回，最多 maxTries 次 =====
+    const SYNTAX = ['model: 部落格', 'actor: Reader, Author', 'class Post { +id:int; +title:str; +body:str; +publish():void; +list():list<Post> }', 'class Comment { +id:int; +text:str; +add():void }', 'Post o-- Comment', 'usecase WritePost: Author -> Post.publish()', 'usecase ReadPost: Reader -> Post.list() -> Comment.add()'].join('\n');
+    function dslOf(text) { const t = String(text || '').replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/```[a-z]*\n?/gi, ''); return t.split('\n').map((l) => l.trim()).filter((l) => /^(model:|actor:|class |interface |enum |usecase |[A-Z][A-Za-z0-9]*\s*(<\|--|<\|\.\.|o--|\*--|-->|\.\.>|--))/.test(l)).join('\n'); }
+    async function runDirect(fx, generate, opts) {
+        const o = Object.assign({}, DEFAULTS, opts || {}); const stats = { calls: 0, failed: 0, degenerate: 0, degenerateKinds: [], errors: [], ms: [] }; const gen = wrapGenerate(generate, stats, o.degenerate);
+        const base = [{ role: 'system', content: '你是軟體設計助手。只輸出 UML 文字，一行一件事，不要任何說明。' }, { role: 'user', content: '情境：' + fx.scenario + '\n\n請一次寫出整份 UML：參與者、所有類別（含屬性與操作）、類別之間的關係、每個使用案例的呼叫順序。格式範例（換成這個情境的內容，不要照抄範例）：\n' + SYNTAX + '\n\n類別與使用案例名稱用英文 PascalCase。只輸出這些行。' }];
+        let msgs = base, last = '', errors = [], model = null, tries = 0, completed = false;
+        for (tries = 1; tries <= o.maxTries; tries++) {
+            let raw; try { raw = await gen({ messages: msgs, maxTokens: 4096 }); } catch (e) { errors = ['呼叫失敗：' + String((e && e.message) || e).slice(0, 100)]; break; }
+            const dsl = dslOf(raw); const p = U.parseDsl(dsl); errors = (p.errors || []).slice(); model = p.model; if (!dsl) errors.push('沒有任何 UML 行（要用上面格式，一行一件事）');
+            if (!errors.length && model) { errors = U.validateModel(model); if (!errors.length) { completed = true; break; } }
+            if (String(raw).trim() === last.trim()) break; last = String(raw);
+            msgs = base.concat([{ role: 'assistant', content: String(raw).slice(0, 1500) }, { role: 'user', content: '上一個回覆不合格：' + errors.slice(0, 6).join('；') + '。請只輸出修正後的整份 UML 文字。' }]);
+        }
+        const g = model ? gradeModel(fx, model) : { actors: 0, classes: 0, usecases: 0, sequences: 0 };
+        return { id: fx.id, mode: 'direct', completed, valid: completed && !errors.length, error: completed ? '' : (errors[0] || '沒有結果'), tries: Math.min(tries, o.maxTries), recall: g, size: model ? { classes: model.classes.length, usecases: model.usecases.length } : null, stats };
+    }
+    // 兩條路用同一套標準判成功：完成、驗證通過、該有的東西找到七成以上、呼叫順序有兩步以上
+    function success(row, opts) { const o = Object.assign({}, DEFAULTS, opts || {}); const r = row.recall || {}; const low = Math.min(r.actors, r.classes, r.usecases); return !!(row.completed && row.valid && low >= o.successRecall && (r.sequences || 0) >= o.successSeq); } // 三項各自都要達標（取最低的）：缺了一大塊就不算做完
+    // 大問題的結論：先直接做；不行才走 UML design；兩條都不行，程式先讀情境
+    function summarizeRoute(directRows, stepRows, opts) {
+        const o = Object.assign({}, DEFAULTS, opts || {}); const A = frac(directRows.filter((r) => success(r, o)).length, directRows.length), B = frac(stepRows.filter((r) => success(r, o)).length, stepRows.length);
+        const callsA = directRows.reduce((a, r) => a + r.stats.calls - r.stats.failed, 0), callsB = stepRows.reduce((a, r) => a + r.stats.calls - r.stats.failed, 0); const failed = [].concat(directRows, stepRows).reduce((a, r) => a + r.stats.failed, 0);
+        const avgOf = (rows, k) => mean(rows.filter((r) => r.completed).map((r) => r.recall[k]));
+        let route, why;
+        if (callsA < 1 || callsB < 3) { route = 'unknown'; why = '能用的回應太少（直接做 ' + callsA + ' 次、走 UML 拆解 ' + callsB + ' 次）' + (failed ? '，' + failed + ' 次呼叫失敗：' + Array.from(new Set([].concat(...[].concat(directRows, stepRows).map((r) => r.stats.errors)))).slice(0, 2).join('；') : '') + '，判斷不了'; }
+        else if (A.rate >= o.directOk) { route = 'direct'; why = '大問題一次直接做，' + A.ok + '/' + A.n + ' 個達標：不用拆'; }
+        else if (B.rate >= o.umlOk) { route = 'uml'; why = '大問題直接做只有 ' + A.ok + '/' + A.n + ' 個達標，但走 UML design 一次一小題有 ' + B.ok + '/' + B.n + ' 個：做不完的大問題用 UML design 補救'; }
+        else { route = 'program_first'; why = '直接做 ' + A.ok + '/' + A.n + '、走 UML design ' + B.ok + '/' + B.n + ' 都沒達標：UML 由程式先讀情境（uml_guide），模型只補程式讀不出的'; }
+        const notes = []; const dr = directRows.filter((r) => !success(r, o)); if (dr.length && route !== 'unknown') notes.push('直接做沒達標的原因：' + Array.from(new Set(dr.map((r) => r.completed ? '該有的東西最少的一項只找到 ' + Math.round(Math.min(r.recall.actors, r.recall.classes, r.recall.usecases) * 100) + '%（參與者 ' + Math.round(r.recall.actors * 100) + '、類別 ' + Math.round(r.recall.classes * 100) + '、使用案例 ' + Math.round(r.recall.usecases * 100) + '），或呼叫順序不足' : r.error))).slice(0, 3).join('｜'));
+        const sr = stepRows.filter((r) => !success(r, o)); if (sr.length && route !== 'unknown') notes.push('走 UML design 沒達標的原因：' + Array.from(new Set(sr.map((r) => r.completed ? '該有的東西最少的一項只找到 ' + Math.round(Math.min(r.recall.actors, r.recall.classes, r.recall.usecases) * 100) + '%，或呼叫順序不足（' + Math.round((r.recall.sequences || 0) * 100) + '% 達標）' : r.error))).slice(0, 3).join('｜'));
+        if (failed) notes.push(failed + ' 次呼叫失敗，沒算進結果');
+        return { route, reason: why, direct: A, uml: B, direct_recall: { actors: avgOf(directRows, 'actors'), classes: avgOf(directRows, 'classes'), usecases: avgOf(directRows, 'usecases'), sequences: avgOf(directRows, 'sequences') }, uml_recall: { actors: avgOf(stepRows, 'actors'), classes: avgOf(stepRows, 'classes'), usecases: avgOf(stepRows, 'usecases'), sequences: avgOf(stepRows, 'sequences') }, notes, scenarios: directRows.length };
+    }
+    const ROUTE_LABEL = { direct: '大問題可以直接做', uml: '大問題要用 UML design 補救', program_first: '程式先讀情境（uml_guide）', unknown: '資料不足' };
+    function routeText(model, r) {
+        const f = (x) => (x.n ? x.ok + '/' + x.n : '—'); const pc = (x) => (x == null ? '—' : Math.round(x * 100) + '%');
+        return '🧩 大問題測試：' + model + '（每個大問題約 10 個使用案例、8 個以上類別）\n・直接做（一次寫出整份）：' + f(r.direct) + ' 達標（找到 參與者 ' + pc(r.direct_recall.actors) + '、類別 ' + pc(r.direct_recall.classes) + '、使用案例 ' + pc(r.direct_recall.usecases) + '）\n・走 UML design（一次一小題）：' + f(r.uml) + ' 達標（找到 參與者 ' + pc(r.uml_recall.actors) + '、類別 ' + pc(r.uml_recall.classes) + '、使用案例 ' + pc(r.uml_recall.usecases) + '）\n\n結論：' + ROUTE_LABEL[r.route] + '\n' + r.reason + (r.notes.length ? '\n\n' + r.notes.map((x) => '・' + x).join('\n') : '');
     }
     // 整理成模型的 UML 能力
     function summarize(rows, opts) {
@@ -83,10 +127,14 @@
         const f = (x) => (x.n ? x.ok + '/' + x.n : '—'); const pc = (x) => (x == null ? '—' : Math.round(x * 100) + '%');
         return '🧩 UML 拆解題：' + model + '\n・完成：' + f(p.completion) + '　驗證通過：' + f(p.valid) + '\n・各階段第一次就合格：' + f(p.firstTry) + '　含退回重來：' + f(p.eventual) + '\n・該有的東西找到：參與者 ' + pc(p.recall.actors) + '、類別 ' + pc(p.recall.classes) + '、使用案例 ' + pc(p.recall.usecases) + '\n・呼叫 ' + p.calls + ' 次，中位耗時 ' + (p.median_ms != null ? p.median_ms + ' ms' : '—') + '\n\n建議：' + ADVICE_LABEL[p.advice] + '\n' + p.reason + (p.notes.length ? '\n\n' + p.notes.map((x) => '・' + x).join('\n') : '');
     }
-    function hintFor(advice) {
+    function hintFor(advice, route) {
+        if (route === 'uml') return '【UML design 補救】遇到大問題（多個需求、多個模組、十個以上的使用案例或八個以上的類別），不要自己一次做完——你一次做大問題常常不完整。先用 uml_design 把它拆成極小的 UML 單元（一次一小題、每題都檢查），再依拆出來的單元一塊一塊做。小問題可以直接做。';
+        if (route === 'direct') return '【UML design 補救】大問題你可以直接做；但做到一半發現太大、自己的輸出開始重複或少了東西時，改用 uml_design 把它拆成極小的 UML 單元，再一塊一塊做。';
+        if (route === 'program_first') return '【UML 輔助】你自己拆 UML 與直接做大問題都不穩定。需要設計系統、拆解需求或寫程式骨架時，不要自己一次寫完：先呼叫 uml_guide 讓程式讀情境、用卡片逐步跟使用者確認，再依它的結果往下做。';
+        if (route === 'unknown') return '';
         if (advice === 'program_first') return '【UML 輔助】你自己拆 UML 不穩定。需要設計系統、拆解需求或寫程式骨架時，不要自己一次寫完整份 UML：先呼叫 uml_guide 讓程式讀情境、用卡片逐步跟使用者確認，再依它的結果往下做。';
         if (advice === 'stepwise') return '【UML 輔助】你拆 UML 時第一次常常不合格。需要設計系統時，不要整份一次寫完：用 uml_design 或 uml_guide 一次處理一小塊（參與者、類別、成員、關係、呼叫順序），每塊檢查過再做下一塊。';
         return '';
     }
-    return { DEFAULTS, FIXTURES, gradeModel, wrapGenerate, runScenario, summarize, toText, hintFor, ADVICE_LABEL };
+    return { DEFAULTS, FIXTURES, BIG, gradeModel, wrapGenerate, runScenario, runDirect, success, summarizeRoute, routeText, dslOf, summarize, toText, hintFor, ADVICE_LABEL, ROUTE_LABEL };
 });

@@ -487,5 +487,37 @@ class {{className}}Test {
         return { ok: true, model, dsl, decisions, warnings, errors: errs };
     }
 
-    return { ACTORS, NOUNS, VERBS, scenarioHints, PREFILL, CLASS_NAME, MEMBER_NAME, PRIMS, KINDS, LANGS, parseType, typeToString, typeRefs, parseDsl, toDsl, validateModel, ensureOps, toMermaidClass, toMermaidSequence, toMermaidUseCase, toPlantUml, renderTpl, FILTERS, langType, genFiles, genReadme, scenarioToModel, stageSpec, emptyModel };
+    // ===== 大問題：先切成小塊，每塊各自走一次一小題的流程，最後合併 =====
+    // 一次一小題的每個階段都有上限（參與者 1～4、使用案例 1～6、類別 2～10），那是為超小模型設計的；大問題（十個使用案例、八個類別以上）一次丟進去會被擋掉。
+    // 做法（全由程式）：把情境依句子切開，標題（第一個冒號前）每塊都帶著；每塊最多 maxClauses 句；每塊各自 scenarioToModel；
+    // 合併：參與者聯集、同名類別合併成員、關係聯集（去重）、使用案例照順序（同名加編號）；最後 normalize（拿掉指向不存在類別的東西）與 ensureOps。
+    function splitScenario(scenario, opts) {
+        const o = Object.assign({ maxClauses: 2, maxItems: 4 }, opts || {}); const text = String(scenario || '').trim(); const m = /^([^：:。\n]{1,20})[：:]/.exec(text); const title = m ? m[0] : ''; const body = m ? text.slice(title.length) : text;
+        const clauses = body.split(/[。；;\n]+/).map((s) => s.trim()).filter(Boolean); if (!clauses.length) return [text];
+        const items = (c) => c.split(/[，,、]/).filter((x) => x.trim()).length; const chunks = []; let cur = [], n = 0;
+        for (const c of clauses) { if (cur.length && (cur.length >= o.maxClauses || n + items(c) > o.maxItems + 2)) { chunks.push(cur); cur = []; n = 0; } cur.push(c); n += items(c); }
+        if (cur.length) chunks.push(cur); return chunks.map((cs) => title + cs.join('。') + '。');
+    }
+    function mergeModels(models) {
+        const out = emptyModel(); out.name = (models[0] && models[0].name) || out.name; const have = new Map();
+        for (const m of models) {
+            for (const a of m.actors || []) if (!out.actors.includes(a)) out.actors.push(a);
+            for (const c of m.classes || []) { const ex = have.get(c.name); if (!ex) { const copy = JSON.parse(JSON.stringify(c)); out.classes.push(copy); have.set(c.name, copy); continue; }
+                const names = new Set(ex.attrs.map((x) => x.name).concat(ex.ops.map((x) => x.name))); for (const a of c.attrs || []) if (!names.has(a.name)) { ex.attrs.push(JSON.parse(JSON.stringify(a))); names.add(a.name); } for (const op of c.ops || []) if (!names.has(op.name)) { ex.ops.push(JSON.parse(JSON.stringify(op))); names.add(op.name); } if (ex.kind === 'enum') for (const v of c.values || []) if (!(ex.values || []).includes(v)) ex.values.push(v); if (!ex.label && c.label) ex.label = c.label; }
+            for (const r of m.relations || []) if (!out.relations.some((x) => x.from === r.from && x.to === r.to && x.kind === r.kind)) out.relations.push(Object.assign({}, r));
+            for (const u of m.usecases || []) { let name = u.name, k = 2; while (out.usecases.some((x) => x.name === name)) name = u.name + k++; out.usecases.push(Object.assign(JSON.parse(JSON.stringify(u)), { name })); }
+        }
+        const names = new Set(out.classes.map((c) => c.name)); out.relations = out.relations.filter((r) => names.has(r.from) && names.has(r.to)); for (const u of out.usecases) { u.steps = u.steps.filter((s) => names.has(s.to)); let prev = u.actor; for (const s of u.steps) { s.from = prev; prev = s.to; } }
+        ensureOps(out); return out;
+    }
+    // 跟 scenarioToModel 一樣的回傳；情境小就直接走一次，大就切塊。回傳多一個 chunks（切成幾塊）
+    async function scenarioToModelBig(scenario, opts) {
+        opts = opts || {}; const parts = opts.split === false ? [String(scenario || '')] : splitScenario(scenario, opts); if (parts.length <= 1) { const r = await scenarioToModel(scenario, opts); return Object.assign(r, { chunks: 1 }); }
+        const decisions = [], warnings = [], models = []; let okAny = false, firstErr = '';
+        for (let i = 0; i < parts.length; i++) { const r = await scenarioToModel(parts[i], opts); for (const d of r.decisions || []) decisions.push(Object.assign({ chunk: i + 1 }, d)); for (const w of r.warnings || []) warnings.push('第 ' + (i + 1) + ' 塊：' + w); if (r.ok && r.model && (r.model.classes.length || r.model.usecases.length)) { okAny = true; models.push(r.model); } else { if (!firstErr) firstErr = r.error || '這一塊沒有結果'; warnings.push('第 ' + (i + 1) + ' 塊沒有拆出來：' + (r.error || '沒有結果')); } }
+        if (!okAny) return { ok: false, model: emptyModel(), dsl: '', decisions, warnings, error: firstErr || '找不到參與者與使用案例', chunks: parts.length };
+        const model = mergeModels(models); model.name = String(scenario || '').split(/[：:。\n]/)[0].trim().slice(0, 24) || model.name; const errs = validateModel(model); if (errs.length) warnings.push('合併後驗證有 ' + errs.length + ' 個問題：' + errs.slice(0, 3).join('；'));
+        decisions.push({ stage: 'merge', by: 'program', ok: true, chunks: parts.length }); return { ok: true, model, dsl: toDsl(model), decisions, warnings, errors: errs, chunks: parts.length, partial: models.length < parts.length };
+    }
+    return { ACTORS, NOUNS, VERBS, splitScenario, mergeModels, scenarioToModelBig, scenarioHints, PREFILL, CLASS_NAME, MEMBER_NAME, PRIMS, KINDS, LANGS, parseType, typeToString, typeRefs, parseDsl, toDsl, validateModel, ensureOps, toMermaidClass, toMermaidSequence, toMermaidUseCase, toPlantUml, renderTpl, FILTERS, langType, genFiles, genReadme, scenarioToModel, stageSpec, emptyModel };
 });

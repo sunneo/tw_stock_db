@@ -8566,7 +8566,39 @@ class {{className}}Test {
         return { ok: true, model, dsl, decisions, warnings, errors: errs };
     }
 
-    return { ACTORS, NOUNS, VERBS, scenarioHints, PREFILL, CLASS_NAME, MEMBER_NAME, PRIMS, KINDS, LANGS, parseType, typeToString, typeRefs, parseDsl, toDsl, validateModel, ensureOps, toMermaidClass, toMermaidSequence, toMermaidUseCase, toPlantUml, renderTpl, FILTERS, langType, genFiles, genReadme, scenarioToModel, stageSpec, emptyModel };
+    // ===== 大問題：先切成小塊，每塊各自走一次一小題的流程，最後合併 =====
+    // 一次一小題的每個階段都有上限（參與者 1～4、使用案例 1～6、類別 2～10），那是為超小模型設計的；大問題（十個使用案例、八個類別以上）一次丟進去會被擋掉。
+    // 做法（全由程式）：把情境依句子切開，標題（第一個冒號前）每塊都帶著；每塊最多 maxClauses 句；每塊各自 scenarioToModel；
+    // 合併：參與者聯集、同名類別合併成員、關係聯集（去重）、使用案例照順序（同名加編號）；最後 normalize（拿掉指向不存在類別的東西）與 ensureOps。
+    function splitScenario(scenario, opts) {
+        const o = Object.assign({ maxClauses: 2, maxItems: 4 }, opts || {}); const text = String(scenario || '').trim(); const m = /^([^：:。\n]{1,20})[：:]/.exec(text); const title = m ? m[0] : ''; const body = m ? text.slice(title.length) : text;
+        const clauses = body.split(/[。；;\n]+/).map((s) => s.trim()).filter(Boolean); if (!clauses.length) return [text];
+        const items = (c) => c.split(/[，,、]/).filter((x) => x.trim()).length; const chunks = []; let cur = [], n = 0;
+        for (const c of clauses) { if (cur.length && (cur.length >= o.maxClauses || n + items(c) > o.maxItems + 2)) { chunks.push(cur); cur = []; n = 0; } cur.push(c); n += items(c); }
+        if (cur.length) chunks.push(cur); return chunks.map((cs) => title + cs.join('。') + '。');
+    }
+    function mergeModels(models) {
+        const out = emptyModel(); out.name = (models[0] && models[0].name) || out.name; const have = new Map();
+        for (const m of models) {
+            for (const a of m.actors || []) if (!out.actors.includes(a)) out.actors.push(a);
+            for (const c of m.classes || []) { const ex = have.get(c.name); if (!ex) { const copy = JSON.parse(JSON.stringify(c)); out.classes.push(copy); have.set(c.name, copy); continue; }
+                const names = new Set(ex.attrs.map((x) => x.name).concat(ex.ops.map((x) => x.name))); for (const a of c.attrs || []) if (!names.has(a.name)) { ex.attrs.push(JSON.parse(JSON.stringify(a))); names.add(a.name); } for (const op of c.ops || []) if (!names.has(op.name)) { ex.ops.push(JSON.parse(JSON.stringify(op))); names.add(op.name); } if (ex.kind === 'enum') for (const v of c.values || []) if (!(ex.values || []).includes(v)) ex.values.push(v); if (!ex.label && c.label) ex.label = c.label; }
+            for (const r of m.relations || []) if (!out.relations.some((x) => x.from === r.from && x.to === r.to && x.kind === r.kind)) out.relations.push(Object.assign({}, r));
+            for (const u of m.usecases || []) { let name = u.name, k = 2; while (out.usecases.some((x) => x.name === name)) name = u.name + k++; out.usecases.push(Object.assign(JSON.parse(JSON.stringify(u)), { name })); }
+        }
+        const names = new Set(out.classes.map((c) => c.name)); out.relations = out.relations.filter((r) => names.has(r.from) && names.has(r.to)); for (const u of out.usecases) { u.steps = u.steps.filter((s) => names.has(s.to)); let prev = u.actor; for (const s of u.steps) { s.from = prev; prev = s.to; } }
+        ensureOps(out); return out;
+    }
+    // 跟 scenarioToModel 一樣的回傳；情境小就直接走一次，大就切塊。回傳多一個 chunks（切成幾塊）
+    async function scenarioToModelBig(scenario, opts) {
+        opts = opts || {}; const parts = opts.split === false ? [String(scenario || '')] : splitScenario(scenario, opts); if (parts.length <= 1) { const r = await scenarioToModel(scenario, opts); return Object.assign(r, { chunks: 1 }); }
+        const decisions = [], warnings = [], models = []; let okAny = false, firstErr = '';
+        for (let i = 0; i < parts.length; i++) { const r = await scenarioToModel(parts[i], opts); for (const d of r.decisions || []) decisions.push(Object.assign({ chunk: i + 1 }, d)); for (const w of r.warnings || []) warnings.push('第 ' + (i + 1) + ' 塊：' + w); if (r.ok && r.model && (r.model.classes.length || r.model.usecases.length)) { okAny = true; models.push(r.model); } else { if (!firstErr) firstErr = r.error || '這一塊沒有結果'; warnings.push('第 ' + (i + 1) + ' 塊沒有拆出來：' + (r.error || '沒有結果')); } }
+        if (!okAny) return { ok: false, model: emptyModel(), dsl: '', decisions, warnings, error: firstErr || '找不到參與者與使用案例', chunks: parts.length };
+        const model = mergeModels(models); model.name = String(scenario || '').split(/[：:。\n]/)[0].trim().slice(0, 24) || model.name; const errs = validateModel(model); if (errs.length) warnings.push('合併後驗證有 ' + errs.length + ' 個問題：' + errs.slice(0, 3).join('；'));
+        decisions.push({ stage: 'merge', by: 'program', ok: true, chunks: parts.length }); return { ok: true, model, dsl: toDsl(model), decisions, warnings, errors: errs, chunks: parts.length, partial: models.length < parts.length };
+    }
+    return { ACTORS, NOUNS, VERBS, splitScenario, mergeModels, scenarioToModelBig, scenarioHints, PREFILL, CLASS_NAME, MEMBER_NAME, PRIMS, KINDS, LANGS, parseType, typeToString, typeRefs, parseDsl, toDsl, validateModel, ensureOps, toMermaidClass, toMermaidSequence, toMermaidUseCase, toPlantUml, renderTpl, FILTERS, langType, genFiles, genReadme, scenarioToModel, stageSpec, emptyModel };
 });
 
 }).call(null, undefined, holder);
@@ -9704,7 +9736,7 @@ public class Application {
         const seed = opts.seed === false ? { model: U.emptyModel(), used: [], skipped: [] } : seedModel(scenario, opts); trail.push({ stage: 'seed', by: 'program', used: seed.used });
         let res;
         if (opts.model) res = { ok: true, model: opts.model, decisions: [], warnings: [] };
-        else { res = await U.scenarioToModel(scenario, { generate: opts.generate, onStage: opts.onStage, maxTries: opts.maxTries, program: opts.program, glossary: opts.glossary }); if (!res.ok) return { ok: false, error: res.error, trail, decisions: res.decisions, warnings: res.warnings }; }
+        else { res = await U.scenarioToModelBig(scenario, { generate: opts.generate, onStage: opts.onStage, maxTries: opts.maxTries, program: opts.program, glossary: opts.glossary }); if (!res.ok) return { ok: false, error: res.error, trail, decisions: res.decisions, warnings: res.warnings }; }
         const model = res.model; // 種子片段的類別補進來（名稱不衝突的）
         for (const c of seed.model.classes) if (!model.classes.some((x) => x.name === c.name) && model.classes.length < 10) model.classes.push(c); for (const r of seed.model.relations) if (!model.relations.some((x) => x.from === r.from && x.to === r.to && x.kind === r.kind)) model.relations.push(r);
         normalize(model); let rw = { rounds: [], remaining: findIssues(model) }; if (opts.generate && opts.rework !== false) rw = await reworkModel(model, scenario, { generate: opts.generate, maxRounds: opts.maxRounds || 2 }); trail.push({ stage: 'rework', rounds: rw.rounds.length, remaining: rw.remaining.length });
@@ -13236,7 +13268,7 @@ const holder = {};
     else root.FaUmlBench = factory(root.FaUml || (typeof FaUml !== 'undefined' ? FaUml : undefined));
 })(typeof self !== 'undefined' ? self : this, function (U) {
     'use strict';
-    const DEFAULTS = { n: 3, maxTries: 2, selfFirstTry: 0.75, stepwiseEventual: 0.8, minRecall: 0.6, minCompletion: 0.8, minCalls: 5 };
+    const DEFAULTS = { n: 3, bigN: 3, successRecall: 0.7, successSeq: 0.5, directOk: 0.8, umlOk: 0.67, maxTries: 2, selfFirstTry: 0.75, stepwiseEventual: 0.8, minRecall: 0.6, minCompletion: 0.8, minCalls: 5 };
     // 每個情境該有的東西：同義詞（英文名稱）與中文關鍵字，只要其中一個出現就算找到
     const FIXTURES = [
         { id: 'shop', scenario: '網路商店：顧客可以瀏覽商品、加入購物車、結帳。管理員可以上架商品。',
@@ -13255,6 +13287,11 @@ const holder = {};
           actors: [['patient', 'user', 'customer', '病人'], ['doctor', 'physician', '醫生']], classes: [['appointment', 'registration', 'booking', 'visit'], ['record', 'chart', 'history', 'medical', '病歷'], ['prescription', 'medicine', 'drug', '處方']],
           usecases: [['register', 'appointment', 'book', '掛號'], ['view', 'record', 'history', 'chart', '查看', '病歷'], ['prescribe', 'prescription', 'issue', '處方', '開立']] },
     ];
+    // 大問題：把三個領域併成一個綜合情境（約 10 個使用案例、8 個以上類別），一次做完很難。該有的東西是三個情境的聯集。
+    const strip = (t) => String(t).replace(/^[^：]+：/, '');
+    const bigOf = (id, ids) => { const parts = ids.map((i) => FIXTURES.find((f) => f.id === i)); const seen = new Set(); const uniq = (g) => g.filter((x) => { const k = x[0]; if (seen.has(k)) return false; seen.add(k); return true; }); const grp = (key) => { seen.clear(); return uniq([].concat(...parts.map((p) => p[key]))); };
+        return { id, big: true, parts: ids, scenario: '綜合平台：' + parts.map((p) => strip(p.scenario)).join(''), actors: grp('actors'), classes: grp('classes'), usecases: grp('usecases') }; };
+    const BIG = [bigOf('big_a', ['shop', 'library', 'member']), bigOf('big_b', ['booking', 'clinic', 'shop']), bigOf('big_c', ['library', 'clinic', 'booking'])];
     const low = (s) => String(s || '').toLowerCase();
     const hit = (alts, names) => alts.some((a) => names.some((n) => low(n).includes(low(a))));
     const frac = (ok, n) => ({ ok, n, rate: n ? Math.round((ok / n) * 100) / 100 : null });
@@ -13278,10 +13315,49 @@ const holder = {};
     // 跑一個情境；回傳這個情境的結果列
     async function runScenario(fx, generate, opts) {
         const o = Object.assign({}, DEFAULTS, opts || {}); const stats = { calls: 0, failed: 0, degenerate: 0, degenerateKinds: [], errors: [], ms: [] };
-        let res; try { res = await U.scenarioToModel(fx.scenario, { generate: wrapGenerate(generate, stats, o.degenerate), program: false, maxTries: o.maxTries }); } catch (e) { res = { ok: false, error: String((e && e.message) || e), model: U.emptyModel ? U.emptyModel() : { actors: [], classes: [], usecases: [] }, decisions: [], warnings: [], errors: [] }; }
+        let res; try { res = await U.scenarioToModelBig(fx.scenario, { generate: wrapGenerate(generate, stats, o.degenerate), program: false, maxTries: o.maxTries }); } catch (e) { res = { ok: false, error: String((e && e.message) || e), model: U.emptyModel ? U.emptyModel() : { actors: [], classes: [], usecases: [] }, decisions: [], warnings: [], errors: [] }; }
         const dec = (res.decisions || []).filter((d) => d.by === 'model'); const g = gradeModel(fx, res.model || {});
         return { id: fx.id, completed: !!res.ok, valid: !!res.ok && !(res.errors && res.errors.length), error: res.ok ? '' : res.error, stages: dec.map((d) => ({ stage: d.stage, label: d.label, ok: !!d.ok, tries: d.tries, rejected: (d.rejected || []).slice(0, 2).map((x) => (x.errors || []).join('；').slice(0, 120)) })),
             firstTry: dec.filter((d) => d.ok && d.tries === 1).length, eventual: dec.filter((d) => d.ok).length, stageN: dec.length, recall: g, warnings: (res.warnings || []).length, stats };
+    }
+    // ===== 路線 A：直接做——一次要模型寫出整份 UML 文字（一行一件事，程式解析）；不合格就把精確的錯誤退回，最多 maxTries 次 =====
+    const SYNTAX = ['model: 部落格', 'actor: Reader, Author', 'class Post { +id:int; +title:str; +body:str; +publish():void; +list():list<Post> }', 'class Comment { +id:int; +text:str; +add():void }', 'Post o-- Comment', 'usecase WritePost: Author -> Post.publish()', 'usecase ReadPost: Reader -> Post.list() -> Comment.add()'].join('\n');
+    function dslOf(text) { const t = String(text || '').replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/```[a-z]*\n?/gi, ''); return t.split('\n').map((l) => l.trim()).filter((l) => /^(model:|actor:|class |interface |enum |usecase |[A-Z][A-Za-z0-9]*\s*(<\|--|<\|\.\.|o--|\*--|-->|\.\.>|--))/.test(l)).join('\n'); }
+    async function runDirect(fx, generate, opts) {
+        const o = Object.assign({}, DEFAULTS, opts || {}); const stats = { calls: 0, failed: 0, degenerate: 0, degenerateKinds: [], errors: [], ms: [] }; const gen = wrapGenerate(generate, stats, o.degenerate);
+        const base = [{ role: 'system', content: '你是軟體設計助手。只輸出 UML 文字，一行一件事，不要任何說明。' }, { role: 'user', content: '情境：' + fx.scenario + '\n\n請一次寫出整份 UML：參與者、所有類別（含屬性與操作）、類別之間的關係、每個使用案例的呼叫順序。格式範例（換成這個情境的內容，不要照抄範例）：\n' + SYNTAX + '\n\n類別與使用案例名稱用英文 PascalCase。只輸出這些行。' }];
+        let msgs = base, last = '', errors = [], model = null, tries = 0, completed = false;
+        for (tries = 1; tries <= o.maxTries; tries++) {
+            let raw; try { raw = await gen({ messages: msgs, maxTokens: 4096 }); } catch (e) { errors = ['呼叫失敗：' + String((e && e.message) || e).slice(0, 100)]; break; }
+            const dsl = dslOf(raw); const p = U.parseDsl(dsl); errors = (p.errors || []).slice(); model = p.model; if (!dsl) errors.push('沒有任何 UML 行（要用上面格式，一行一件事）');
+            if (!errors.length && model) { errors = U.validateModel(model); if (!errors.length) { completed = true; break; } }
+            if (String(raw).trim() === last.trim()) break; last = String(raw);
+            msgs = base.concat([{ role: 'assistant', content: String(raw).slice(0, 1500) }, { role: 'user', content: '上一個回覆不合格：' + errors.slice(0, 6).join('；') + '。請只輸出修正後的整份 UML 文字。' }]);
+        }
+        const g = model ? gradeModel(fx, model) : { actors: 0, classes: 0, usecases: 0, sequences: 0 };
+        return { id: fx.id, mode: 'direct', completed, valid: completed && !errors.length, error: completed ? '' : (errors[0] || '沒有結果'), tries: Math.min(tries, o.maxTries), recall: g, size: model ? { classes: model.classes.length, usecases: model.usecases.length } : null, stats };
+    }
+    // 兩條路用同一套標準判成功：完成、驗證通過、該有的東西找到七成以上、呼叫順序有兩步以上
+    function success(row, opts) { const o = Object.assign({}, DEFAULTS, opts || {}); const r = row.recall || {}; const low = Math.min(r.actors, r.classes, r.usecases); return !!(row.completed && row.valid && low >= o.successRecall && (r.sequences || 0) >= o.successSeq); } // 三項各自都要達標（取最低的）：缺了一大塊就不算做完
+    // 大問題的結論：先直接做；不行才走 UML design；兩條都不行，程式先讀情境
+    function summarizeRoute(directRows, stepRows, opts) {
+        const o = Object.assign({}, DEFAULTS, opts || {}); const A = frac(directRows.filter((r) => success(r, o)).length, directRows.length), B = frac(stepRows.filter((r) => success(r, o)).length, stepRows.length);
+        const callsA = directRows.reduce((a, r) => a + r.stats.calls - r.stats.failed, 0), callsB = stepRows.reduce((a, r) => a + r.stats.calls - r.stats.failed, 0); const failed = [].concat(directRows, stepRows).reduce((a, r) => a + r.stats.failed, 0);
+        const avgOf = (rows, k) => mean(rows.filter((r) => r.completed).map((r) => r.recall[k]));
+        let route, why;
+        if (callsA < 1 || callsB < 3) { route = 'unknown'; why = '能用的回應太少（直接做 ' + callsA + ' 次、走 UML 拆解 ' + callsB + ' 次）' + (failed ? '，' + failed + ' 次呼叫失敗：' + Array.from(new Set([].concat(...[].concat(directRows, stepRows).map((r) => r.stats.errors)))).slice(0, 2).join('；') : '') + '，判斷不了'; }
+        else if (A.rate >= o.directOk) { route = 'direct'; why = '大問題一次直接做，' + A.ok + '/' + A.n + ' 個達標：不用拆'; }
+        else if (B.rate >= o.umlOk) { route = 'uml'; why = '大問題直接做只有 ' + A.ok + '/' + A.n + ' 個達標，但走 UML design 一次一小題有 ' + B.ok + '/' + B.n + ' 個：做不完的大問題用 UML design 補救'; }
+        else { route = 'program_first'; why = '直接做 ' + A.ok + '/' + A.n + '、走 UML design ' + B.ok + '/' + B.n + ' 都沒達標：UML 由程式先讀情境（uml_guide），模型只補程式讀不出的'; }
+        const notes = []; const dr = directRows.filter((r) => !success(r, o)); if (dr.length && route !== 'unknown') notes.push('直接做沒達標的原因：' + Array.from(new Set(dr.map((r) => r.completed ? '該有的東西最少的一項只找到 ' + Math.round(Math.min(r.recall.actors, r.recall.classes, r.recall.usecases) * 100) + '%（參與者 ' + Math.round(r.recall.actors * 100) + '、類別 ' + Math.round(r.recall.classes * 100) + '、使用案例 ' + Math.round(r.recall.usecases * 100) + '），或呼叫順序不足' : r.error))).slice(0, 3).join('｜'));
+        const sr = stepRows.filter((r) => !success(r, o)); if (sr.length && route !== 'unknown') notes.push('走 UML design 沒達標的原因：' + Array.from(new Set(sr.map((r) => r.completed ? '該有的東西最少的一項只找到 ' + Math.round(Math.min(r.recall.actors, r.recall.classes, r.recall.usecases) * 100) + '%，或呼叫順序不足（' + Math.round((r.recall.sequences || 0) * 100) + '% 達標）' : r.error))).slice(0, 3).join('｜'));
+        if (failed) notes.push(failed + ' 次呼叫失敗，沒算進結果');
+        return { route, reason: why, direct: A, uml: B, direct_recall: { actors: avgOf(directRows, 'actors'), classes: avgOf(directRows, 'classes'), usecases: avgOf(directRows, 'usecases'), sequences: avgOf(directRows, 'sequences') }, uml_recall: { actors: avgOf(stepRows, 'actors'), classes: avgOf(stepRows, 'classes'), usecases: avgOf(stepRows, 'usecases'), sequences: avgOf(stepRows, 'sequences') }, notes, scenarios: directRows.length };
+    }
+    const ROUTE_LABEL = { direct: '大問題可以直接做', uml: '大問題要用 UML design 補救', program_first: '程式先讀情境（uml_guide）', unknown: '資料不足' };
+    function routeText(model, r) {
+        const f = (x) => (x.n ? x.ok + '/' + x.n : '—'); const pc = (x) => (x == null ? '—' : Math.round(x * 100) + '%');
+        return '🧩 大問題測試：' + model + '（每個大問題約 10 個使用案例、8 個以上類別）\n・直接做（一次寫出整份）：' + f(r.direct) + ' 達標（找到 參與者 ' + pc(r.direct_recall.actors) + '、類別 ' + pc(r.direct_recall.classes) + '、使用案例 ' + pc(r.direct_recall.usecases) + '）\n・走 UML design（一次一小題）：' + f(r.uml) + ' 達標（找到 參與者 ' + pc(r.uml_recall.actors) + '、類別 ' + pc(r.uml_recall.classes) + '、使用案例 ' + pc(r.uml_recall.usecases) + '）\n\n結論：' + ROUTE_LABEL[r.route] + '\n' + r.reason + (r.notes.length ? '\n\n' + r.notes.map((x) => '・' + x).join('\n') : '');
     }
     // 整理成模型的 UML 能力
     function summarize(rows, opts) {
@@ -13310,12 +13386,16 @@ const holder = {};
         const f = (x) => (x.n ? x.ok + '/' + x.n : '—'); const pc = (x) => (x == null ? '—' : Math.round(x * 100) + '%');
         return '🧩 UML 拆解題：' + model + '\n・完成：' + f(p.completion) + '　驗證通過：' + f(p.valid) + '\n・各階段第一次就合格：' + f(p.firstTry) + '　含退回重來：' + f(p.eventual) + '\n・該有的東西找到：參與者 ' + pc(p.recall.actors) + '、類別 ' + pc(p.recall.classes) + '、使用案例 ' + pc(p.recall.usecases) + '\n・呼叫 ' + p.calls + ' 次，中位耗時 ' + (p.median_ms != null ? p.median_ms + ' ms' : '—') + '\n\n建議：' + ADVICE_LABEL[p.advice] + '\n' + p.reason + (p.notes.length ? '\n\n' + p.notes.map((x) => '・' + x).join('\n') : '');
     }
-    function hintFor(advice) {
+    function hintFor(advice, route) {
+        if (route === 'uml') return '【UML design 補救】遇到大問題（多個需求、多個模組、十個以上的使用案例或八個以上的類別），不要自己一次做完——你一次做大問題常常不完整。先用 uml_design 把它拆成極小的 UML 單元（一次一小題、每題都檢查），再依拆出來的單元一塊一塊做。小問題可以直接做。';
+        if (route === 'direct') return '【UML design 補救】大問題你可以直接做；但做到一半發現太大、自己的輸出開始重複或少了東西時，改用 uml_design 把它拆成極小的 UML 單元，再一塊一塊做。';
+        if (route === 'program_first') return '【UML 輔助】你自己拆 UML 與直接做大問題都不穩定。需要設計系統、拆解需求或寫程式骨架時，不要自己一次寫完：先呼叫 uml_guide 讓程式讀情境、用卡片逐步跟使用者確認，再依它的結果往下做。';
+        if (route === 'unknown') return '';
         if (advice === 'program_first') return '【UML 輔助】你自己拆 UML 不穩定。需要設計系統、拆解需求或寫程式骨架時，不要自己一次寫完整份 UML：先呼叫 uml_guide 讓程式讀情境、用卡片逐步跟使用者確認，再依它的結果往下做。';
         if (advice === 'stepwise') return '【UML 輔助】你拆 UML 時第一次常常不合格。需要設計系統時，不要整份一次寫完：用 uml_design 或 uml_guide 一次處理一小塊（參與者、類別、成員、關係、呼叫順序），每塊檢查過再做下一塊。';
         return '';
     }
-    return { DEFAULTS, FIXTURES, gradeModel, wrapGenerate, runScenario, summarize, toText, hintFor, ADVICE_LABEL };
+    return { DEFAULTS, FIXTURES, BIG, gradeModel, wrapGenerate, runScenario, runDirect, success, summarizeRoute, routeText, dslOf, summarize, toText, hintFor, ADVICE_LABEL, ROUTE_LABEL };
 });
 
 }).call(null, undefined, holder);
@@ -21504,7 +21584,12 @@ function _buildDefaultModelRows() {
         repetition_penalty: null,
         length_penalty: null,
         maxOutputTokens: null,
-    }));
+    })).map(_faWithPresetState);
+}
+// 內建的測試結果（FA_PRESET_MODEL_STATE，見下面）掛到同名的模型列上；深拷貝，使用者重測會蓋掉
+function _faWithPresetState(row) {
+    try { const st = typeof FA_PRESET_MODEL_STATE !== 'undefined' ? FA_PRESET_MODEL_STATE[row.modelName] : null; if (!st) return row; const c = JSON.parse(JSON.stringify(st)); if (c.abilityTags && !row.abilityTags) row.abilityTags = c.abilityTags; if (c.coluProfile && !row.coluProfile) row.coluProfile = c.coluProfile; } catch (_) { /* */ }
+    return row;
 }
 
 // tw_stock_db客製: 使用者要求「內建模型就提前把model card的支援tool call
@@ -21531,10 +21616,235 @@ function _buildDefaultModelRows() {
 // NVIDIA NIM端點上失效，不是單純tool-call支援與否的問題），這份表只保留
 // 還在PRESET_MODEL_OPTIONS清單裡的項目，避免留著兩筆永遠不會再被查詢到
 // 的孤兒紀錄。
+// 2026-10-17：內建預設模型的測試結果（在模型列按「CoLU」同一套：接線題與 UML 拆解題，加上工具呼叫與視覺的探測），用真實端點測出來的。
+// 新安裝的預設模型列直接帶著；既有的模型列沒有結果時，同名的模型沿用（使用者自己重測會蓋掉）。連線失敗沒測出來的模型不在這裡（不會把「連不上」當成「不支援」）。
+const FA_PRESET_MODEL_STATE = {
+    "openai/gpt-oss-20b": {
+        "abilityTags": {
+            "toolCall": true,
+            "vision": false,
+            "testedAt": 1792218601611
+        },
+        "coluProfile": {
+            "preset": true,
+            "testedAt": 1792218601611,
+            "advice": "self",
+            "reason": "自己排的成功率 6/6，夠穩，不需要 CoLU 代勞",
+            "self": {
+                "ok": 6,
+                "n": 6
+            },
+            "assisted": {
+                "ok": 6,
+                "n": 6
+            },
+            "parsed": {
+                "ok": 12,
+                "n": 12
+            },
+            "degenerate": {
+                "ok": 0,
+                "n": 12
+            },
+            "median_ms": 2418,
+            "notes": [
+                "參考：CoLU 的第一名剛好是題目那條的比例 0/6（CoLU 只保證合法，不知道你的意圖）",
+                "對照：隨機亂排碰巧合法的機率約 3%",
+                "每種只測了 6 題，只是粗略估計；要更準可以增加題數"
+            ],
+            "uml": {
+                "route": "uml",
+                "route_reason": "大問題直接做只有 0/3 個達標，但走 UML design 一次一小題有 3/3 個：做不完的大問題用 UML design 補救",
+                "direct": {
+                    "ok": 0,
+                    "n": 3
+                },
+                "uml_ok": {
+                    "ok": 3,
+                    "n": 3
+                },
+                "direct_recall": {
+                    "actors": 1,
+                    "classes": 1,
+                    "usecases": 1,
+                    "sequences": 0.09
+                },
+                "uml_recall": {
+                    "actors": 1,
+                    "classes": 1,
+                    "usecases": 1,
+                    "sequences": 0.97
+                },
+                "route_notes": [
+                    "直接做沒達標的原因：該有的東西最少的一項只找到 100%（參與者 100、類別 100、使用案例 100），或呼叫順序不足｜沒有任何 UML 行（要用上面格式，一行一件事）｜使用案例「QueryBorrowRecord」呼叫 BorrowRecord.query，但這個類別沒有這個操作"
+                ],
+                "advice": "self",
+                "reason": "各階段第一次就合格 193/203，該有的東西找到約 100%，可以自己走 UML 拆解（仍然用一次一小題）",
+                "completion": {
+                    "ok": 3,
+                    "n": 3
+                },
+                "valid": {
+                    "ok": 3,
+                    "n": 3
+                },
+                "firstTry": {
+                    "ok": 193,
+                    "n": 203
+                },
+                "eventual": {
+                    "ok": 198,
+                    "n": 203
+                },
+                "recall": {
+                    "actors": 1,
+                    "classes": 1,
+                    "usecases": 1,
+                    "sequences": 0.97
+                },
+                "calls": 213,
+                "notes": [
+                    "只測了 3 個情境，只是粗略估計"
+                ]
+            }
+        }
+    },
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning": {
+        "abilityTags": {
+            "toolCall": false,
+            "vision": true,
+            "testedAt": 1792218601611
+        },
+        "coluProfile": {
+            "preset": true,
+            "testedAt": 1792218601611,
+            "advice": "self",
+            "reason": "自己排的成功率 6/6，夠穩，不需要 CoLU 代勞",
+            "self": {
+                "ok": 6,
+                "n": 6
+            },
+            "assisted": {
+                "ok": 5,
+                "n": 5
+            },
+            "parsed": {
+                "ok": 11,
+                "n": 11
+            },
+            "degenerate": {
+                "ok": 0,
+                "n": 11
+            },
+            "median_ms": 9515,
+            "notes": [
+                "1 次連線或呼叫失敗，沒算進成功率",
+                "參考：CoLU 的第一名剛好是題目那條的比例 0/6（CoLU 只保證合法，不知道你的意圖）",
+                "對照：隨機亂排碰巧合法的機率約 3%",
+                "每種只測了 6 題，只是粗略估計；要更準可以增加題數"
+            ]
+        }
+    },
+    "nvidia/nemotron-3.5-super-vl-120b-a12b": {
+        "abilityTags": {
+            "toolCall": true,
+            "vision": true,
+            "testedAt": 1792218601612
+        },
+        "coluProfile": {
+            "preset": true,
+            "testedAt": 1792218601612,
+            "advice": "self",
+            "reason": "自己排的成功率 6/6，夠穩，不需要 CoLU 代勞",
+            "self": {
+                "ok": 6,
+                "n": 6
+            },
+            "assisted": {
+                "ok": 6,
+                "n": 6
+            },
+            "parsed": {
+                "ok": 12,
+                "n": 12
+            },
+            "degenerate": {
+                "ok": 0,
+                "n": 12
+            },
+            "median_ms": 3457,
+            "notes": [
+                "參考：CoLU 的第一名剛好是題目那條的比例 0/6（CoLU 只保證合法，不知道你的意圖）",
+                "對照：隨機亂排碰巧合法的機率約 3%",
+                "每種只測了 6 題，只是粗略估計；要更準可以增加題數"
+            ],
+            "uml": {
+                "route": "uml",
+                "route_reason": "大問題直接做只有 0/3 個達標，但走 UML design 一次一小題有 2/3 個：做不完的大問題用 UML design 補救",
+                "direct": {
+                    "ok": 0,
+                    "n": 3
+                },
+                "uml_ok": {
+                    "ok": 2,
+                    "n": 3
+                },
+                "direct_recall": {
+                    "actors": 0.8,
+                    "classes": 0.67,
+                    "usecases": 0.67,
+                    "sequences": 0.23
+                },
+                "uml_recall": {
+                    "actors": 0.94,
+                    "classes": 0.88,
+                    "usecases": 0.93,
+                    "sequences": 0.97
+                },
+                "route_notes": [
+                    "直接做沒達標的原因：該有的東西最少的一項只找到 0%（參與者 40、類別 0、使用案例 0），或呼叫順序不足｜該有的東西最少的一項只找到 100%（參與者 100、類別 100、使用案例 100），或呼叫順序不足",
+                    "走 UML design 沒達標的原因：該有的東西最少的一項只找到 63%，或呼叫順序不足（100% 達標）",
+                    "7 次呼叫失敗，沒算進結果"
+                ],
+                "advice": "self",
+                "reason": "各階段第一次就合格 107/115，該有的東西找到約 92%，可以自己走 UML 拆解（仍然用一次一小題）",
+                "completion": {
+                    "ok": 3,
+                    "n": 3
+                },
+                "valid": {
+                    "ok": 3,
+                    "n": 3
+                },
+                "firstTry": {
+                    "ok": 107,
+                    "n": 115
+                },
+                "eventual": {
+                    "ok": 108,
+                    "n": 115
+                },
+                "recall": {
+                    "actors": 0.94,
+                    "classes": 0.88,
+                    "usecases": 0.93,
+                    "sequences": 0.97
+                },
+                "calls": 116,
+                "notes": [
+                    "退化 1/116 次（空白回應）",
+                    "7 次呼叫失敗，沒算進階段成功率",
+                    "只測了 3 個情境，只是粗略估計"
+                ]
+            }
+        }
+    }
+};
+
 const PRESET_MODEL_TOOLCALL_SUPPORT = {
     'nvidia/nemotron-3-ultra-550b-a55b': true, // 2026-10-03 實測：帶 tools 參數會回標準的 tool_calls
     'nvidia/nemotron-3.5-lightning-30b-a3b': true,
-    'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning': true,
+    'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning': false, // 2026-10-17 實測兩次都不支援原生工具呼叫（原本寫 true）
     'nvidia/nemotron-3.5-super-vl-120b-a12b': true, // 2026-10-16 實測：支援工具呼叫與圖片
     'openai/gpt-oss-20b': true,
 };
@@ -29016,10 +29326,11 @@ class FloatingAssistant {
         // CoLU 接線題的結果（獨立欄位，不會被上面兩項探測的 Benchmark 覆蓋掉）
         { const cp = row.coluProfile; const fr = (x) => ({ ok: Math.max(0, Math.floor(Number(x && x.ok)) || 0), n: Math.max(0, Math.floor(Number(x && x.n)) || 0) });
           if (cp && typeof cp === 'object' && ['self', 'guided', 'auto', 'unknown'].includes(cp.advice) && Number.isFinite(Number(cp.testedAt))) {
-              normalized.coluProfile = { testedAt: Number(cp.testedAt), advice: cp.advice, reason: String(cp.reason || '').slice(0, 400), self: fr(cp.self), assisted: fr(cp.assisted), parsed: fr(cp.parsed), degenerate: fr(cp.degenerate), median_ms: Number.isFinite(Number(cp.median_ms)) ? Number(cp.median_ms) : null, notes: (Array.isArray(cp.notes) ? cp.notes : []).map((x) => String(x).slice(0, 200)).slice(0, 8) };
+              normalized.coluProfile = { preset: cp.preset === true ? true : undefined, testedAt: Number(cp.testedAt), advice: cp.advice, reason: String(cp.reason || '').slice(0, 400), self: fr(cp.self), assisted: fr(cp.assisted), parsed: fr(cp.parsed), degenerate: fr(cp.degenerate), median_ms: Number.isFinite(Number(cp.median_ms)) ? Number(cp.median_ms) : null, notes: (Array.isArray(cp.notes) ? cp.notes : []).map((x) => String(x).slice(0, 200)).slice(0, 8) };
               const u = cp.uml; const num = (x) => (x != null && Number.isFinite(Number(x)) ? Math.round(Number(x) * 100) / 100 : null);
-              if (u && typeof u === 'object' && ['self', 'stepwise', 'program_first', 'unknown'].includes(u.advice)) normalized.coluProfile.uml = { advice: u.advice, reason: String(u.reason || '').slice(0, 400), completion: fr(u.completion), valid: fr(u.valid), firstTry: fr(u.firstTry), eventual: fr(u.eventual), recall: { actors: num(u.recall && u.recall.actors), classes: num(u.recall && u.recall.classes), usecases: num(u.recall && u.recall.usecases), sequences: num(u.recall && u.recall.sequences) }, calls: Math.max(0, Math.floor(Number(u.calls)) || 0), notes: (Array.isArray(u.notes) ? u.notes : []).map((x) => String(x).slice(0, 200)).slice(0, 8) };
+              if (u && typeof u === 'object' && ['self', 'stepwise', 'program_first', 'unknown'].includes(u.advice)) normalized.coluProfile.uml = { route: ['direct', 'uml', 'program_first', 'unknown'].includes(u.route) ? u.route : undefined, route_reason: u.route_reason ? String(u.route_reason).slice(0, 400) : undefined, direct: u.direct ? fr(u.direct) : undefined, uml_ok: u.uml_ok ? fr(u.uml_ok) : undefined, direct_recall: u.direct_recall ? { actors: num(u.direct_recall.actors), classes: num(u.direct_recall.classes), usecases: num(u.direct_recall.usecases), sequences: num(u.direct_recall.sequences) } : undefined, uml_recall: u.uml_recall ? { actors: num(u.uml_recall.actors), classes: num(u.uml_recall.classes), usecases: num(u.uml_recall.usecases), sequences: num(u.uml_recall.sequences) } : undefined, route_notes: (Array.isArray(u.route_notes) ? u.route_notes : []).map((x) => String(x).slice(0, 300)).slice(0, 6), advice: u.advice, reason: String(u.reason || '').slice(0, 400), completion: fr(u.completion), valid: fr(u.valid), firstTry: fr(u.firstTry), eventual: fr(u.eventual), recall: { actors: num(u.recall && u.recall.actors), classes: num(u.recall && u.recall.classes), usecases: num(u.recall && u.recall.usecases), sequences: num(u.recall && u.recall.sequences) }, calls: Math.max(0, Math.floor(Number(u.calls)) || 0), notes: (Array.isArray(u.notes) ? u.notes : []).map((x) => String(x).slice(0, 200)).slice(0, 8) };
           } }
+        if (!normalized.coluProfile || !normalized.abilityTags) _faWithPresetState(normalized); // 沒有自己的測試結果：同名的預設模型沿用內建的
         return normalized;
     }
 
@@ -30928,7 +31239,7 @@ ${fnData.code}
             { type: 'object', properties: { scenario: { type: 'string', description: '情境（使用者故事、需求文字）' }, language: { type: 'string', enum: ['python', 'typescript', 'java'], default: 'python' }, package: { type: 'string' }, constraints: { type: 'object', description: '（選填）已經決定的抉擇，卡片會用它當預設值' } }, required: ['scenario'], additionalProperties: false }
         );
         registerOptional('uml_design',
-            '用「這台電腦上的離線小模型」把情境一步一步設計成 UML 再產生程式骨架：程式把設計拆成封閉的小問題（參與者與使用案例 → 類別 → 每個類別的屬性與操作 → 關係 → 呼叫順序），模型一次只回答一個、每個回覆都被驗證，之後只重做有問題的那一區（top-down rework），再用 design_choices 的規則選架構與 library。比較強的線上 AI 不需要這個：自己寫 UML 文字直接呼叫 uml_to_code 更快更準。預設用離線文字模型（第一次要下載，會先問）；model 可以指定 offline／online——online 只會用「在模型列按過 CoLU、UML 拆解題結果是可以自己拆或一次一小題」的線上模型，沒有就會說明；不指定時，線上模型證明自己拆得好就用它，否則用離線的。回傳的 model_used 說明這次用了哪個。',
+            '用「這台電腦上的離線小模型」把情境一步一步設計成 UML 再產生程式骨架：程式把設計拆成封閉的小問題（參與者與使用案例 → 類別 → 每個類別的屬性與操作 → 關係 → 呼叫順序），模型一次只回答一個、每個回覆都被驗證，之後只重做有問題的那一區（top-down rework），再用 design_choices 的規則選架構與 library。比較強的線上 AI 不需要這個：自己寫 UML 文字直接呼叫 uml_to_code 更快更準。這是線上模型的補救能力：大問題自己一次做不完時用它。大問題會先由程式切成小塊（依句子，每塊一個領域），每塊各自一次一小題拆完，再合併成一份。預設用目前的線上模型（體檢結果是「程式先讀情境」的除外，那種改用離線模型或 uml_guide）；model 可以指定 offline（離線小模型，第一次要下載）或 online。回傳的 model_used 說明這次用了哪個。',
             async function (rawArgs) {
                 let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 try { return JSON.stringify(await this._umlDesign(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
@@ -44255,58 +44566,79 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     // 目前使用的模型（依名稱找到的、做過接線題的那幾列）建議要輔助的話，回傳加進系統提示的一句話；沒做過、或建議自己排就好，回傳空字串
     _coluHint() {
         try {
-            const { apiModel } = this._getApiConfig(); const rows = this._getModelRows().filter((r) => r.modelName === apiModel && r.coluProfile);
-            if (!rows.length) return ''; rows.sort((x, y) => y.coluProfile.testedAt - x.coluProfile.testedAt); const cp = rows[0].coluProfile;
-            return [FaColuBench.hintFor(cp.advice), cp.uml ? FaUmlBench.hintFor(cp.uml.advice) : ''].filter(Boolean).join(String.fromCharCode(10, 10));
+            const { apiModel } = this._getApiConfig(); const rows = this._getModelRows().filter((r) => r.modelName === apiModel && r.coluProfile); rows.sort((x, y) => y.coluProfile.testedAt - x.coluProfile.testedAt); const cp = rows[0] && rows[0].coluProfile;
+            // 沒做過體檢的模型也有「大問題做不下去時用 uml_design 補救」這一句——UML design 是線上模型的補救能力
+            const uml = cp && cp.uml ? FaUmlBench.hintFor(cp.uml.advice, cp.uml.route) : FaUmlBench.hintFor(undefined, 'direct');
+            return [cp ? FaColuBench.hintFor(cp.advice) : '', uml].filter(Boolean).join(String.fromCharCode(10, 10));
         } catch (_) { return ''; }
     }
     // UML 拆解題：用真正的拆解流程（強制走模型）跑固定情境；每次呼叫都走這個模型列
     async _umlBenchRun(cfg, prog) {
-        const fxs = FaUmlBench.FIXTURES.slice(0, FaUmlBench.DEFAULTS.n); const rows = []; let k = 0;
-        const gen = async (req) => { if (this.stopRequested) throw new Error('使用者停止'); const call = await this._coluBenchCall(cfg, { messages: req.messages, maxTokens: Math.max(1024, (req && req.maxTokens) || 0) }); k++; if (!call.http_ok) throw new Error(call.error || '呼叫失敗'); await new Promise((r) => setTimeout(r, 200)); return call.content; };
-        for (let i = 0; i < fxs.length; i++) { prog.update({ status: 'UML 拆解：第 ' + (i + 1) + '/' + fxs.length + ' 個情境（' + fxs[i].id + '），已呼叫 ' + k + ' 次…' }); rows.push(await FaUmlBench.runScenario(fxs[i], gen, { degenerate: (c) => FaColuBench.degenerate(c), maxTries: 2 })); }
-        return FaUmlBench.summarize(rows);
+        const fxs = FaUmlBench.BIG.slice(0, FaUmlBench.DEFAULTS.bigN); const directRows = [], stepRows = []; let k = 0; const deg = (c) => FaColuBench.degenerate(c);
+        const gen = async (req) => { if (this.stopRequested) throw new Error('使用者停止'); const call = await this._coluBenchCall(cfg, { messages: req.messages, maxTokens: 4096 }); k++; if (!call.http_ok) throw new Error(call.error || '呼叫失敗'); await new Promise((r) => setTimeout(r, 200)); return call.content; };
+        for (let i = 0; i < fxs.length; i++) {
+            prog.update({ status: '大問題 ' + (i + 1) + '/' + fxs.length + '（' + fxs[i].id + '）：直接做（一次寫出整份）…' }); directRows.push(await FaUmlBench.runDirect(fxs[i], gen, { degenerate: deg }));
+            prog.update({ status: '大問題 ' + (i + 1) + '/' + fxs.length + '（' + fxs[i].id + '）：走 UML design（先切塊、一次一小題），已呼叫 ' + k + ' 次…' }); stepRows.push(await FaUmlBench.runScenario(fxs[i], gen, { degenerate: deg, maxTries: 2 }));
+        }
+        const route = FaUmlBench.summarizeRoute(directRows, stepRows); const step = FaUmlBench.summarize(stepRows);
+        return Object.assign({}, step, { route: route.route, route_reason: route.reason, direct: route.direct, uml_ok: route.uml, direct_recall: route.direct_recall, uml_recall: route.uml_recall, route_notes: route.notes, _routeText: FaUmlBench.routeText(cfg.apiModel, route) });
     }
-    // 單次呼叫某個模型列（非串流、獨立訊息，不動使用者的對話）
+    // 單次呼叫某個模型（非串流、獨立訊息，不動使用者的對話）。429／5xx／網路錯誤自動重試最多 2 次（等 Retry-After 或 4、10 秒）——限速不能讓模型看起來像「不會」；重試次數與最後的錯誤都會回報
     async _coluBenchCall(cfg, p) {
-        const t0 = Date.now(); const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 60000);
-        try {
-            const resp = await fetch(cfg.apiUrl + '/chat/completions', { method: 'POST', headers: { 'Authorization': 'Bearer ' + cfg.apiKey, 'Content-Type': 'application/json' }, signal: controller.signal, body: JSON.stringify({ model: cfg.apiModel, messages: p.messages || [{ role: 'system', content: p.system }, { role: 'user', content: p.user }], temperature: 0.1, max_tokens: p.maxTokens || 4096, stream: false }) });
-            const ms = Date.now() - t0; if (!resp.ok) { let body = ''; try { body = (await resp.text()).slice(0, 160); } catch (_) { /* */ } return { http_ok: false, status: resp.status, content: '', error: 'HTTP ' + resp.status + (body ? '：' + body : ''), ms }; }
-            const j = await resp.json(); const m = (j && j.choices && j.choices[0] && j.choices[0].message) || {}; return { http_ok: true, status: resp.status, content: String(m.content || ''), reasoning: String(m.reasoning_content || m.reasoning || ''), finish: j && j.choices && j.choices[0] && j.choices[0].finish_reason, ms };
-        } catch (e) { return { http_ok: false, content: '', error: (e && e.name === 'AbortError') ? '逾時（超過 60 秒沒回應）' : String((e && e.message) || e), ms: Date.now() - t0 }; }
-        finally { clearTimeout(timer); }
+        const t0 = Date.now(); const waits = [4000, 10000]; let attempt = 0, last = null;
+        for (;;) {
+            const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 120000); let retryAfter = null;
+            try {
+                const resp = await fetch(cfg.apiUrl + '/chat/completions', { method: 'POST', headers: { 'Authorization': 'Bearer ' + cfg.apiKey, 'Content-Type': 'application/json' }, signal: controller.signal, body: JSON.stringify({ model: cfg.apiModel, messages: p.messages || [{ role: 'system', content: p.system }, { role: 'user', content: p.user }], temperature: 0.1, max_tokens: p.maxTokens || 4096, stream: false }) });
+                if (!resp.ok) { let body = ''; try { body = (await resp.text()).slice(0, 160); } catch (_) { /* */ } const ra = Number(resp.headers && resp.headers.get && resp.headers.get('retry-after')); if (ra > 0) retryAfter = Math.min(30000, ra * 1000); last = { http_ok: false, status: resp.status, content: '', error: 'HTTP ' + resp.status + (body ? '：' + body : ''), ms: Date.now() - t0, retries: attempt }; if (![429, 500, 502, 503, 504].includes(resp.status)) return last; }
+                else { const j = await resp.json(); const m = (j && j.choices && j.choices[0] && j.choices[0].message) || {}; return { http_ok: true, status: resp.status, content: String(m.content || ''), reasoning: String(m.reasoning_content || m.reasoning || ''), finish: j && j.choices && j.choices[0] && j.choices[0].finish_reason, ms: Date.now() - t0, retries: attempt }; }
+            } catch (e) { const aborted = e && e.name === 'AbortError'; last = { http_ok: false, content: '', error: aborted ? '逾時（超過 120 秒沒回應）' : String((e && e.message) || e), ms: Date.now() - t0, retries: attempt }; if (aborted) return last; }
+            finally { clearTimeout(timer); }
+            if (attempt >= waits.length || this.stopRequested) return last; await new Promise((r) => setTimeout(r, retryAfter || waits[attempt])); attempt++;
+        }
+    }
+    // 純執行：對一組設定（apiKey／apiUrl／apiModel）跑接線題（可加 UML 拆解題）。不動模型列、不存檔、不跳表單，由呼叫端決定結果存哪。opts：{ n, withUml, seed, onProgress(文字) }
+    async _coluBenchCore(cfg, opts) {
+        const o = opts || {}; const n = Math.max(3, Math.min(20, Math.floor(Number(o.n)) || 6)); const say = (x) => { try { if (o.onProgress) o.onProgress(x); } catch (_) { /* */ } };
+        let M; try { await this._unitCatalogStoreLoad(); M = FaCatalogMatrix.buildMatrix(this._unitCatalogBuild()); } catch (e) { return { ok: false, error: '建單元目錄失敗：' + String((e && e.message) || e) }; }
+        const mk = FaColuBench.makeTasks(M, { n, seed: o.seed != null ? o.seed : Date.now() % 1000000007 });
+        if (mk.tasks.length < 3) return { ok: false, error: '單元目錄裡可以串起來的單元太少，出不了 3 題以上（' + (mk.reason || ('目前 ' + M.units.length + ' 個單元，' + M.stats.edges + ' 條接線')) + '）。先用 /unit-catalog 認識更多函式庫再測。' };
+        const calls = mk.tasks.length + mk.tasks.filter((t) => t.options).length; const results = []; let done = 0, retries = 0;
+        if (!o.skipWiring) for (const mode of ['self', 'assisted']) for (const task of mk.tasks) {
+            if (mode === 'assisted' && !task.options) continue; if (this.stopRequested) return { ok: false, error: '使用者停止' };
+            say((mode === 'self' ? '自己排' : '給計畫選') + '：第 ' + (done + 1) + '/' + calls + ' 次');
+            const call = await this._coluBenchCall(cfg, FaColuBench.buildPrompt(task, mode)); done++; retries += call.retries || 0;
+            const g = call.http_ok ? FaColuBench.grade(M, task, call.content, mode) : { parsed: false, ok: false, reason: call.error };
+            results.push(Object.assign({ mode, http_ok: call.http_ok, degenerate: call.http_ok ? FaColuBench.degenerate(call) : '', ms: call.ms, error: call.error, finish: call.finish }, g));
+            await new Promise((r) => setTimeout(r, 300));
+        }
+        const profile = o.skipWiring ? null : FaColuBench.summarize(results, mk.tasks, { baseline: FaColuBench.randomBaseline(M, mk.tasks) });
+        const umlProfile = o.withUml ? await this._umlBenchRun(cfg, { update: (x) => say(x.status || '') }) : null;
+        const fails = results.filter((r) => !r.ok && !r.skip).slice(0, 4).map((r) => '・' + (r.mode === 'self' ? '自己排' : '選計畫') + '：' + (r.reason || r.error || '失敗') + (r.degenerate ? '（' + r.degenerate + '）' : '') + (r.finish && r.finish !== 'stop' ? '［finish_reason=' + r.finish + '］' : ''));
+        return { ok: true, profile, umlProfile, fails, wiringCalls: calls, retries };
+    }
+    // 把兩項結果整理成存在模型列上的 coluProfile（uml 沒重測就沿用舊的）
+    _coluProfileOf(profile, umlProfile, oldUml) {
+        return { uml: umlProfile ? { route: umlProfile.route, route_reason: umlProfile.route_reason, direct: umlProfile.direct, uml_ok: umlProfile.uml_ok, direct_recall: umlProfile.direct_recall, uml_recall: umlProfile.uml_recall, route_notes: umlProfile.route_notes, advice: umlProfile.advice, reason: umlProfile.reason, completion: umlProfile.completion, valid: umlProfile.valid, firstTry: umlProfile.firstTry, eventual: umlProfile.eventual, recall: umlProfile.recall, calls: umlProfile.calls, notes: umlProfile.notes } : (oldUml || undefined),
+            testedAt: Date.now(), advice: profile.advice, reason: profile.reason, self: { ok: profile.self.ok, n: profile.self.n }, assisted: { ok: profile.assisted.ok, n: profile.assisted.n }, parsed: { ok: profile.parsed.ok, n: profile.parsed.n }, degenerate: { ok: profile.degenerate.ok, n: profile.degenerate.n }, median_ms: profile.median_ms, notes: profile.notes };
     }
     async _coluBenchRow(rowId, opts) {
         const row = this._getModelRows().find((r) => r.id === rowId); if (!row) return { ok: false, error: '找不到這個模型列' };
         if (this._coluBenchBusy) return { ok: false, error: '已經有一個 CoLU 接線題在跑了，等它做完。' };
         const cfg = this._resolveModelRowConfig(row); const n = Math.max(3, Math.min(20, Math.floor(Number(opts && opts.n)) || 6));
-        let M; try { await this._unitCatalogStoreLoad(); M = FaCatalogMatrix.buildMatrix(this._unitCatalogBuild()); } catch (e) { const m = '建單元目錄失敗：' + String((e && e.message) || e); this._pushAssistantMessage('⚠️ ' + m, null); return { ok: false, error: m }; }
-        const mk = FaColuBench.makeTasks(M, { n, seed: Date.now() % 1000000007 });
-        if (mk.tasks.length < 3) { const m = '單元目錄裡可以串起來的單元太少，出不了 3 題以上（' + (mk.reason || ('目前 ' + M.units.length + ' 個單元，' + M.stats.edges + ' 條接線')) + '）。先用 /unit-catalog 認識更多函式庫再測。'; this._pushAssistantMessage('⚠️ ' + m, null); return { ok: false, error: m }; }
-        const calls = mk.tasks.length + mk.tasks.filter((t) => t.options).length;
-        const ans = await this.requestUserForm({ title: '🧪 對「' + cfg.apiModel + '」跑 CoLU 接線題？', description: '會呼叫這個模型約 ' + calls + ' 次（自己排 ' + mk.tasks.length + ' 題、給計畫選 ' + mk.tasks.filter((t) => t.options).length + ' 題），一次一個、最多各等 60 秒，會用掉一些額度。\n\n測的是「串接多個工具」的能力，結果用來建議這個模型要自己排、還是由 CoLU 先給計畫（或直接排）。題目從目前的單元目錄（' + M.units.length + ' 個單元）隨機出，評分全由程式用型別接線判定。' + String.fromCharCode(10, 10) + '選「接線題＋UML 拆解題」會再多呼叫約 ' + (FaUmlBench.DEFAULTS.n * 14) + ' 次：用真正的 UML 拆解流程（參與者 → 類別 → 成員 → 關係 → 呼叫順序，一次一個封閉小問題）跑 ' + FaUmlBench.DEFAULTS.n + ' 個固定情境，測這個模型能不能自己把需求拆成極小的 UML 單元。', choices: ['接線題＋UML 拆解題', '只做接線題', '取消'] });
+        const ans = await this.requestUserForm({ title: '🧪 對「' + cfg.apiModel + '」跑 CoLU 接線題？', description: '會呼叫這個模型約 ' + (n * 2) + ' 次（自己排 ' + n + ' 題、給計畫選 ' + n + ' 題），一次一個、最多各等 120 秒（429 等限速會自動重試），會用掉一些額度。' + String.fromCharCode(10, 10) + '測的是「串接多個工具」的能力，結果用來建議這個模型要自己排、還是由 CoLU 先給計畫（或直接排）。題目從目前的單元目錄隨機出，評分全由程式用型別接線判定。' + String.fromCharCode(10, 10) + '選「接線題＋UML 拆解題」會再多呼叫約 ' + (FaUmlBench.DEFAULTS.bigN * 40) + ' 次，測「大問題」：' + FaUmlBench.DEFAULTS.bigN + ' 個綜合情境（各約 10 個使用案例、8 個以上類別），每個都走兩條路——(A) 直接做：一次寫出整份 UML；(B) 走 UML design：先切成小塊、每塊一次一小題（參與者 → 類別 → 成員 → 關係 → 呼叫順序）再合併。用同一套標準判斷，結論是「可以直接做」、「要用 UML design 補救」或「程式先讀情境」。', choices: ['接線題＋UML 拆解題', '只做接線題', '取消'] });
         if (!ans || !ans.confirmed || !/^(接線題＋UML 拆解題|只做接線題)$/.test(ans.answer)) return { ok: false, cancelled: true };
         const withUml = ans.answer === '接線題＋UML 拆解題';
         this._coluBenchBusy = row.id; this._renderModelRowsList();
-        const prog = this._createProgressWidget('🧪 CoLU 接線題：' + cfg.apiModel); const results = []; let done = 0;
+        const prog = this._createProgressWidget('🧪 CoLU 接線題：' + cfg.apiModel);
         try {
-            for (const mode of ['self', 'assisted']) for (const task of mk.tasks) {
-                if (mode === 'assisted' && !task.options) continue; if (this.stopRequested) throw new Error('使用者停止');
-                prog.update({ status: (mode === 'self' ? '自己排' : '給計畫選') + '：第 ' + (done + 1) + '/' + calls + ' 次…', pct: Math.round((done / calls) * 100) });
-                const call = await this._coluBenchCall(cfg, FaColuBench.buildPrompt(task, mode)); done++;
-                const g = call.http_ok ? FaColuBench.grade(M, task, call.content, mode) : { parsed: false, ok: false, reason: call.error };
-                results.push(Object.assign({ mode, http_ok: call.http_ok, degenerate: call.http_ok ? FaColuBench.degenerate(call) : '', ms: call.ms, error: call.error, finish: call.finish }, g));
-                await new Promise((r) => setTimeout(r, 300));
-            }
-            const profile = FaColuBench.summarize(results, mk.tasks, { baseline: FaColuBench.randomBaseline(M, mk.tasks) });
-            const umlProfile = withUml ? await this._umlBenchRun(cfg, prog) : null;
-            row.coluProfile = { uml: umlProfile ? { advice: umlProfile.advice, reason: umlProfile.reason, completion: umlProfile.completion, valid: umlProfile.valid, firstTry: umlProfile.firstTry, eventual: umlProfile.eventual, recall: umlProfile.recall, calls: umlProfile.calls, notes: umlProfile.notes } : ((row.coluProfile && row.coluProfile.uml) || undefined), testedAt: Date.now(), advice: profile.advice, reason: profile.reason, self: { ok: profile.self.ok, n: profile.self.n }, assisted: { ok: profile.assisted.ok, n: profile.assisted.n }, parsed: { ok: profile.parsed.ok, n: profile.parsed.n }, degenerate: { ok: profile.degenerate.ok, n: profile.degenerate.n }, median_ms: profile.median_ms, notes: profile.notes };
+            const r = await this._coluBenchCore(cfg, { n, withUml, onProgress: (x) => prog.update({ status: x }) });
+            if (!r.ok) { prog.fail ? prog.fail(r.error) : prog.finish('中止'); this._pushAssistantMessage('⚠️ ' + r.error, null); return r; }
+            const cur = this._getModelRows().find((x) => x.id === rowId) || row; cur.coluProfile = this._coluProfileOf(r.profile, r.umlProfile, cur.coluProfile && cur.coluProfile.uml);
             try { this._saveAdvancedSettings(); } catch (_) { /* 存不了這次的畫面還是有 */ }
-            const fails = results.filter((r) => !r.ok && !r.skip).slice(0, 4).map((r) => '・' + (r.mode === 'self' ? '自己排' : '選計畫') + '：' + (r.reason || r.error || '失敗') + (r.degenerate ? '（' + r.degenerate + '）' : '') + (r.finish && r.finish !== 'stop' ? '［finish_reason=' + r.finish + '］' : ''));
-            prog.finish('完成：' + FaColuBench.ADVICE_LABEL[profile.advice]);
-            this._pushAssistantMessage(FaColuBench.toText(cfg.apiModel, profile) + (umlProfile ? String.fromCharCode(10, 10) + FaUmlBench.toText(cfg.apiModel, umlProfile) : '') + (fails.length ? '\n\n失敗的例子（實際看到的）：\n' + fails.join('\n') : '') + (profile.advice === 'guided' || profile.advice === 'auto' ? '\n\n之後新的對話用這個模型時，系統提示會自動加一句，叫它串接工具前先用 catalog_query 取得算好的接線。' : ''), null);
-            return { ok: true, profile };
+            prog.finish('完成：' + FaColuBench.ADVICE_LABEL[r.profile.advice]);
+            this._pushAssistantMessage(FaColuBench.toText(cfg.apiModel, r.profile) + (r.umlProfile ? String.fromCharCode(10, 10) + (r.umlProfile._routeText || '') + String.fromCharCode(10, 10) + FaUmlBench.toText(cfg.apiModel, r.umlProfile) : '') + (r.fails.length ? String.fromCharCode(10, 10) + '失敗的例子（實際看到的）：' + String.fromCharCode(10) + r.fails.join(String.fromCharCode(10)) : '') + (r.retries ? String.fromCharCode(10, 10) + '（共自動重試 ' + r.retries + ' 次限速或暫時性錯誤）' : '') + (r.profile.advice === 'guided' || r.profile.advice === 'auto' ? String.fromCharCode(10, 10) + '之後新的對話用這個模型時，系統提示會自動加一句，叫它串接工具前先用 catalog_query 取得算好的接線。' : ''), null);
+            return { ok: true, profile: r.profile, umlProfile: r.umlProfile };
         } catch (e) { try { prog.fail ? prog.fail(String((e && e.message) || e)) : prog.finish('中止'); } catch (_) { /* */ } return { ok: false, error: String((e && e.message) || e) }; }
         finally { this._coluBenchBusy = null; try { this._renderModelRowsList(); this._persistChatHistory(); this._renderMessageHistory(); } catch (_) { /* */ } }
     }
@@ -48233,7 +48565,7 @@ ${sourceTool.handlerScript}
                     }</span>
                     <button type="button" class="ai-advanced-btn ai-model-row-benchmark-btn" data-row-id="${row.id}" ${(row.abilityTags && row.abilityTags.testing) ? 'disabled' : ''} style="padding:1px 8px; font-size:10px;">${(row.abilityTags && row.abilityTags.testing) ? '測試中…' : 'Benchmark'}</button>
                     <button type="button" class="ai-advanced-btn ai-model-row-colu-btn" data-row-id="${row.id}" ${this._coluBenchBusy ? 'disabled' : ''} title="CoLU 接線題：測這個模型『串接多個工具』的能力（自己排 vs. 給它算好的計畫選），建議要用哪種輔助方式。會呼叫這個模型十幾次，按下去會先問你。" style="padding:1px 8px; font-size:10px;">${this._coluBenchBusy === row.id ? '測試中…' : 'CoLU'}</button>
-                    ${row.coluProfile ? `<span style="font-size:11px; color:#94a3b8;" title="${this._escapeHtml(row.coluProfile.reason + '（' + new Date(row.coluProfile.testedAt).toLocaleString('zh-TW') + '）')}">🧭 接線：${this._escapeHtml(FaColuBench.ADVICE_LABEL[row.coluProfile.advice] || '')}${row.coluProfile.uml ? '｜UML：' + this._escapeHtml(FaUmlBench.ADVICE_LABEL[row.coluProfile.uml.advice] || '') : ''}</span>` : ''}
+                    ${row.coluProfile ? `<span style="font-size:11px; color:#94a3b8;" title="${this._escapeHtml(row.coluProfile.reason + '（' + new Date(row.coluProfile.testedAt).toLocaleString('zh-TW') + '）')}">🧭 接線：${this._escapeHtml(FaColuBench.ADVICE_LABEL[row.coluProfile.advice] || '')}${row.coluProfile.uml ? '｜' + this._escapeHtml(row.coluProfile.uml.route ? (FaUmlBench.ROUTE_LABEL[row.coluProfile.uml.route] || '') : 'UML：' + (FaUmlBench.ADVICE_LABEL[row.coluProfile.uml.advice] || '')) : ''}${row.coluProfile.preset ? '（內建測試結果）' : ''}</span>` : ''}
                     <label style="display:inline-flex; align-items:center; gap:3px; font-size:10px; color:#94a3b8; cursor:pointer;" title="標記這筆是embedding模型（呼叫/embeddings端點，不是/chat/completions）。RAG語意檢索需要計算向量時，如果有標記的row會優先呼叫它取得真正的embedding，沒有標記時退回內建的TF-IDF近似算法。">
                         <input type="checkbox" class="ai-model-row-embedding-chk" data-row-id="${row.id}" ${row.isEmbeddingModel ? 'checked' : ''} style="cursor:pointer;">
                         🧬 Embedding
@@ -64659,20 +64991,19 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     // UML 拆解用哪個模型：離線小模型（預設）或線上模型。線上的只用「做過 UML 拆解題、建議自己拆（self）或一次一小題（stepwise）」的模型列；
     // 自動（auto）：線上模型證明自己拆得好（self）就用它；否則離線可用就離線；離線不能用、線上有 stepwise 的才用線上。回傳 { gen, ensure, label, online } 或 { error }
     _umlOnlineRow() {
-        const rows = this._getModelRows().filter((r) => r.coluProfile && r.coluProfile.uml && ['self', 'stepwise'].includes(r.coluProfile.uml.advice)); if (!rows.length) return null;
-        const rank = { self: 0, stepwise: 1 }; rows.sort((x, y) => rank[x.coluProfile.uml.advice] - rank[y.coluProfile.uml.advice] || y.coluProfile.testedAt - x.coluProfile.testedAt); return rows[0];
+        const { apiModel } = this._getApiConfig(); const rows = this._getModelRows().filter((r) => r.modelName === apiModel && r.apiKey !== undefined); const row = rows[0] || null; if (!row) return null;
+        const u = row.coluProfile && row.coluProfile.uml; const hopeless = u && (u.route === 'program_first' || (!u.route && u.advice === 'program_first')); // 體檢說連拆解流程都沒跑通：不拿它去拆（走 uml_guide）
+        return hopeless ? null : row;
     }
     async _umlModel(pref) {
         const p = (pref === 'online' || pref === 'offline') ? pref : 'auto'; const row = this._umlOnlineRow();
-        const online = () => { const cfg = this._resolveModelRowConfig(row); return { online: true, label: '線上模型 ' + cfg.apiModel, advice: row.coluProfile.uml.advice, model: { id: 'online:' + cfg.apiModel }, ensure: async () => undefined,
-            gen: async (req) => { if (this.stopRequested) throw new Error('使用者停止'); const call = await this._coluBenchCall(cfg, { messages: req.messages, maxTokens: Math.max(1024, (req && req.maxTokens) || 0) }); if (!call.http_ok) throw new Error(call.error || '呼叫失敗'); return call.content; } }; };
-        if (p === 'online') return row ? online() : { error: '沒有做過「UML 拆解題」、而且建議自己拆或一次一小題的線上模型。先在模型列按「CoLU」跑一次，或改用 model:"offline"。' };
+        const online = () => { const cfg = this._resolveModelRowConfig(row); const u = row.coluProfile && row.coluProfile.uml; return { online: true, label: '線上模型 ' + cfg.apiModel, advice: u ? (u.route || u.advice) : 'untested', model: { id: 'online:' + cfg.apiModel }, ensure: async () => undefined,
+            gen: async (req) => { if (this.stopRequested) throw new Error('使用者停止'); const call = await this._coluBenchCall(cfg, { messages: req.messages, maxTokens: 4096 }); if (!call.http_ok) throw new Error(call.error || '呼叫失敗'); return call.content; } }; };
+        if (p === 'online') return row ? online() : { error: '目前的線上模型做過體檢、結論是連一次一小題的拆解流程都沒跑通，所以不用它拆 UML。請改用 uml_guide（程式讀情境、卡片逐步確認，不需要模型），或 model:"offline"。' };
+        if (p === 'auto' && row) return online(); // UML design 是線上模型的補救能力：預設就用目前的線上模型拆（離線模型要下載、在 CPU 上很慢）
         const off = await this._planModel({}); const err = await off.ensure();
-        if (p === 'offline') return err ? { error: '離線文字模型不能用：' + err } : Object.assign(off, { label: '離線模型' });
-        if (row && row.coluProfile.uml.advice === 'self') return online();
         if (!err) return Object.assign(off, { label: '離線模型' });
-        if (row) return online();
-        return { error: '離線文字模型不能用：' + err + '；也沒有做過 UML 拆解題、適合的線上模型（先在模型列按「CoLU」）' };
+        return { error: '離線文字模型不能用：' + err + '；目前的線上模型做過體檢、也沒跑通一次一小題的拆解流程。請改用 uml_guide（程式讀情境、卡片逐步確認，不需要模型）。' };
     }
     async _umlDesign(a) {
         const scenario = String(a.scenario || '').trim(); if (!scenario) return { ok: false, error: '缺少 scenario' }; const lang = ['python', 'typescript', 'java'].includes(a.language) ? a.language : 'python';
