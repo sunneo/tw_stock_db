@@ -125,7 +125,14 @@
     }
     // ③ 接回去：翻成英文時，句子之間要有空格（中文句子後面沒有空白，譯文接起來會黏在一起）；翻成中文不加
     function joinFor(parts, to) {
-        let out = ''; for (let i = 0; i < parts.length; i++) { const p = parts[i]; let sep = p.sep || ''; const last = i === parts.length - 1; if (to === 'zh' && /^[ \t]+$/.test(sep) && /[。？！]$/.test(p.text)) sep = ''; // 中文句號後面不留英文原本的空格 if (to === 'en' && !last && !sep && /[.!?;:]["')\]]*$/.test(p.text) && p.text.trim()) sep = ' '; out += p.text + sep; } return out;
+        let out = '';
+        for (let i = 0; i < parts.length; i++) {
+            const p = parts[i]; let sep = p.sep || ''; const last = i === parts.length - 1;
+            if (to === 'zh' && /^[ \t]+$/.test(sep) && /[。？！]$/.test(p.text)) sep = ''; // 中文句號後面不留英文原本的空格
+            if (to === 'en' && !last && !sep && /[.!?;:]["')\]]*$/.test(p.text) && p.text.trim()) sep = ' '; // 中文句子後面沒有空白，譯成英文要補
+            out += p.text + sep;
+        }
+        return out;
     }
     return { detect, directionFor, split, join, joinFor, collapseRepeats, postZh, protect, restore, KEEP, check, llmMessages, termsIn, intent, unquote };
 });
