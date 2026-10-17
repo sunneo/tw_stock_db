@@ -78,6 +78,15 @@ check('自動套用：全部依建議、都不算明確選擇', p.decisions.leng
 check('自動套用：取捨換成不需要金鑰的、勉強合格照用、找不到略過', p.candidates.find((c) => c.gap === 'need/0').name === 'local' && p.candidates.some((c) => c.gap === 'need/1') && p.decisions.find((x) => x.gap === 'need/9').decision === 'skipped', p.decisions.map((x) => x.decision));
 check('自動套用：摘要寫「依建議」', /依建議用「local」/.test(B.summarize(p, d)) && /依建議略過/.test(B.summarize(p, d)), B.summarize(p, d));
 
+
+// ---- 反思過、可能是新的需求 ----
+p = plan([], [{ gap: 'need/3', reason: '搜不到任何候選' }]); p.novel = [{ gap: 'need/3', need: 'x', reason: '搜不到任何候選；詞庫不認得：zorbulax；也不像打錯字' }];
+d = B.detect(p); q = d.questions[0];
+check('可能是新的：標題與說明講「新的需求」，建議是用 UML 拆解（不是略過）', /也許是新的需求/.test(q.title) && /UML 拆成極小的單元/.test(q.description) && q.options[0].novel && q.options[1].skip && q.recommended === 0 && q.priority === 55, q);
+rec = B.apply(p, q, { kind: 'choice', index: 0 }); check('選用 UML 拆解：記下決定、缺口留著不移除', rec.decision === 'novel' && rec.explicit && p.novel_confirmed.length === 1 && p.unresolved.length === 1, rec);
+p2 = plan([], [{ gap: 'need/3', reason: 'x' }]); p2.novel = [{ gap: 'need/3', need: 'x', reason: 'y' }]; rec = B.apply(p2, B.detect(p2).questions[0], { kind: 'choice', index: 0 }, { auto: true }); check('統一走建議：自動當成新的需求，不算明確選擇', rec.decision === 'novel' && !rec.explicit && rec.auto && /依建議當成新的需求/.test(B.summarize(p2, { deferred: [], quiet: 0 })), B.summarize(p2, { deferred: [], quiet: 0 }));
+p3 = plan([], [{ gap: 'need/3', reason: '搜不到' }]); q = B.detect(p3).questions[0]; check('沒有反思過的找不到：還是原本的問法（只有略過）', q.options.length === 1 && q.options[0].skip && !/新的需求/.test(q.title) && q.priority === 50, q);
+
 // ---- 摘要 ----
 p = plan([cand('need/0', 'a', 0.62, [['b', 0.6]]), cand('need/1', 'z', 0.9, [])]); d = B.detect(p); B.apply(p, d.questions[0], { kind: 'choice', index: 1 });
 const s = B.summarize(p, d);

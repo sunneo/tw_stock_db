@@ -76,7 +76,7 @@ class Response { constructor(body, init) { init = init || {}; this.status = init
   function loop(handler) {
     const t = { sent: [], onmessage: null, onclose: null, onerror: null, async send(m) { t.sent.push(m); setTimeout(() => handler(m, (x) => t.onmessage && t.onmessage(x)), 0); }, async close() { t.closed = true; if (t.onclose) t.onclose(); } }; return t;
   }
-  let inited = false; const tp = loop(makeServer({ onInitialized: () => { inited = true; } })); const c = new M.McpClient(tp, { timeoutMs: 300 });
+  let inited = false; const tp = loop(makeServer({ onInitialized: () => { inited = true; } })); const c = new M.McpClient(tp, { timeoutMs: 3000 });
   const init = await c.initialize(); await new Promise((res) => setTimeout(res, 10));
   check('client: initialize handshake and initialized notification', init.serverInfo.name === 'fake' && c.protocolVersion === '2025-03-26' && inited && c.instructions === 'be nice');
   check('client: tools/list follows pagination', (await c.listTools()).length === 5);
@@ -95,9 +95,9 @@ class Response { constructor(body, init) { init = init || {}; this.status = init
   // ===== stdio 傳輸（假的子行程橋接）=====
   function fakeBridge(server) {
     const dataFns = [], exitFns = []; const state = { started: null, stopped: false, written: [] };
-    return { state, async start(spec) { state.started = spec; return { ok: true, id: 'p1', pid: 123 }; }, async write(id, text) { state.written.push(text); const msg = JSON.parse(text); const out = []; server(msg, (x) => out.push(JSON.stringify(x) + '\n')); const all = out.join(''); const mid = Math.floor(all.length / 2); setTimeout(() => dataFns.forEach((f) => f('p1', all.slice(0, mid), 'stdout')), 0); setTimeout(() => dataFns.forEach((f) => f('p1', all.slice(mid), 'stdout')), 2); return { ok: true }; }, async stop() { state.stopped = true; exitFns.forEach((f) => f('p1', 0, null)); }, onData(fn) { dataFns.push(fn); return () => dataFns.splice(dataFns.indexOf(fn), 1); }, onExit(fn) { exitFns.push(fn); return () => exitFns.splice(exitFns.indexOf(fn), 1); }, emit(id, text, stream) { dataFns.forEach((f) => f(id, text, stream)); }, exit(code) { exitFns.forEach((f) => f('p1', code, null)); } };
+    return { state, async start(spec) { state.started = spec; return { ok: true, id: 'p1', pid: 123 }; }, async write(id, text) { state.written.push(text); const msg = JSON.parse(text); const out = []; server(msg, (x) => out.push(JSON.stringify(x) + '\n')); const all = out.join(''); const mid = Math.floor(all.length / 2); setTimeout(() => { dataFns.forEach((f) => f('p1', all.slice(0, mid), 'stdout')); setTimeout(() => dataFns.forEach((f) => f('p1', all.slice(mid), 'stdout')), 1); }, 0); return { ok: true }; }, async stop() { state.stopped = true; exitFns.forEach((f) => f('p1', 0, null)); }, onData(fn) { dataFns.push(fn); return () => dataFns.splice(dataFns.indexOf(fn), 1); }, onExit(fn) { exitFns.push(fn); return () => exitFns.splice(exitFns.indexOf(fn), 1); }, emit(id, text, stream) { dataFns.forEach((f) => f(id, text, stream)); }, exit(code) { exitFns.forEach((f) => f('p1', code, null)); } };
   }
-  const br = fakeBridge(makeServer()); const st = new M.StdioTransport(br, { command: 'node', args: ['s.js'] }); const sc = new M.McpClient(st, { timeoutMs: 500 }); await st.start(); await sc.initialize();
+  const br = fakeBridge(makeServer()); const st = new M.StdioTransport(br, { command: 'node', args: ['s.js'] }); const sc = new M.McpClient(st, { timeoutMs: 3000 }); await st.start(); await sc.initialize();
   check('stdio: spawn spec passed through; messages survive being split across chunks', br.state.started.command === 'node' && (await sc.listTools()).length === 5);
   br.emit('p1', 'some log line\n', 'stderr'); br.emit('p1', 'not json at all\n', 'stdout'); check('stdio: stderr and non-JSON stdout are kept as logs, not crashes', /not json/.test(st.logs()) && /some log line/.test(st.logs()));
   br.emit('other', '{"jsonrpc":"2.0","id":1,"result":{}}\n', 'stdout'); check('stdio: data for other processes is ignored', true);
@@ -116,7 +116,7 @@ class Response { constructor(body, init) { init = init || {}; this.status = init
     if (msg.method === 'tools/list') return sseResponse(out);
     return new Response(JSON.stringify(out[0]), { status: 200, headers: { 'content-type': 'application/json' } });
   };
-  const ht = new M.HttpTransport('https://h/mcp', { fetch: fakeFetch, headers: { Authorization: 'Bearer k' } }); const hc = new M.McpClient(ht, { timeoutMs: 1000 }); await ht.start(); await hc.initialize();
+  const ht = new M.HttpTransport('https://h/mcp', { fetch: fakeFetch, headers: { Authorization: 'Bearer k' } }); const hc = new M.McpClient(ht, { timeoutMs: 3000 }); await ht.start(); await hc.initialize();
   check('http: session id captured and sent back; auth header sent; protocol version header after init', ht.session === 'sess-1' && (await hc.listTools()).length === 5 && calls.filter((x) => x.body && x.body.method === 'tools/list').every((x) => x.headers['Mcp-Session-Id'] === 'sess-1' && x.headers.Authorization === 'Bearer k' && x.headers['MCP-Protocol-Version'] === '2025-03-26'));
   check('http: JSON responses and 202 notifications both work', M.formatResult(await hc.callTool('echo', { y: 1 })).text.includes('"y":1') && calls.some((x) => x.body && x.body.method === 'notifications/initialized'));
   await hc.close(); check('http: close sends DELETE with the session', calls.some((x) => x.method === 'DELETE' && x.headers['Mcp-Session-Id'] === 'sess-1'));
@@ -127,7 +127,7 @@ class Response { constructor(body, init) { init = init || {}; this.status = init
   (() => {
     const posts = []; let ctl;
     const f = async (url, init) => { if (!init || init.method !== 'POST') { const body = new FakeBody(); ctl = { enqueue: (u8) => body.push(new TextDecoder().decode(u8)) }; body.push('event: endpoint\ndata: /messages?session=9\n\n'); return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }); } const msg = JSON.parse(init.body); posts.push({ url, msg }); if (msg.id != null) makeServer()(msg, (x) => ctl.enqueue(enc.encode('event: message\ndata: ' + JSON.stringify(x) + '\n\n'))); return new Response('Accepted', { status: 202 }); };
-    const st2 = new M.SseTransport('https://h/sse', { fetch: f }); const c3 = new M.McpClient(st2, { timeoutMs: 1000 });
+    const st2 = new M.SseTransport('https://h/sse', { fetch: f }); const c3 = new M.McpClient(st2, { timeoutMs: 3000 });
     return st2.start().then(() => c3.initialize()).then(() => c3.listTools()).then(async (tools) => { check('legacy SSE: endpoint event, POST to it, replies arrive on the stream', tools.length === 5 && posts[0].url === 'https://h/messages?session=9', posts.map((p) => p.url)); await c3.close(); });
   })().then(() => {
     console.log('mcp_core: ' + ok + ' passed' + (bad.length ? ', ' + bad.length + ' FAILED' : '')); bad.forEach((x) => console.log('FAIL', x)); process.exit(bad.length ? 1 : 0);

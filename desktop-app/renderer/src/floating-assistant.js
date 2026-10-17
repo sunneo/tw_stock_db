@@ -12632,7 +12632,7 @@ const holder = {};
             if (host.onboard && progress.length) { let added = 0; for (const id of progress) { try { const r = await host.onboard(chosen[id].pick); if (r && r.units && r.units.length) { chosen[id].units = r.units.length; added += r.units.length; } } catch (e) { log({ step: 'onboard_error', gap: id, error: String((e && e.message) || e) }); } } log({ step: 'onboard', added }); if (added && need.uml && host.bind) { bindRes = await host.bind(need.uml); const left = gapsFrom(bindRes); log({ step: 'rebind', gaps: left.length }); gaps = left.filter((g) => !chosen[g.id] || !chosen[g.id].units); if (!gaps.length) break; if (gaps.length >= initial && !progress.length) break; continue; } }
             gaps = rest.filter((g) => !chosen[g.id]); if (!progress.length) break;
         }
-        const planOut = { ok: true, plan_id: 'plan_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), runtime: opts.runtime, rounds: round, gaps_initial: initial, resolved: Object.keys(chosen).length, unresolved: unresolved.filter((u) => !chosen[u.gap.id]).map((u) => ({ gap: u.gap.id, reason: u.reason })), references, candidates: Object.values(chosen).map((c) => ({ gap: c.gap.id, name: c.pick.name, url: c.pick.url, score: c.pick.score, why: c.pick.why, summary: c.pick.summary, language: c.pick.card.language, runtime: c.pick.card.runtime, install: (c.pick.card.installs[0] && c.pick.card.installs[0].line) || (c.pick.card.cdn[0] ? '<script src="' + c.pick.card.cdn[0] + '">' : null), api: c.pick.card.api.slice(0, 5).map((a) => a.name), needs: c.pick.card.needs, license: c.pick.card.license, units: c.units || 0, features: c.features.get(c.pick.id) || null, card: c.pick.card, need: c.gap.text, kind: c.pick.kind || 'project', alternatives: c.alternatives.map((a) => ({ name: a.name, url: a.url, score: a.score, card: a.card, features: c.features.get(a.id) || null })) })), trace };
+        const planOut = { ok: true, plan_id: 'plan_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), runtime: opts.runtime, rounds: round, gaps_initial: initial, resolved: Object.keys(chosen).length, unresolved: unresolved.filter((u) => !chosen[u.gap.id]).map((u) => ({ gap: u.gap.id, need: u.gap.text, reason: u.reason })), references, candidates: Object.values(chosen).map((c) => ({ gap: c.gap.id, name: c.pick.name, url: c.pick.url, score: c.pick.score, why: c.pick.why, summary: c.pick.summary, language: c.pick.card.language, runtime: c.pick.card.runtime, install: (c.pick.card.installs[0] && c.pick.card.installs[0].line) || (c.pick.card.cdn[0] ? '<script src="' + c.pick.card.cdn[0] + '">' : null), api: c.pick.card.api.slice(0, 5).map((a) => a.name), needs: c.pick.card.needs, license: c.pick.card.license, units: c.units || 0, features: c.features.get(c.pick.id) || null, card: c.pick.card, need: c.gap.text, kind: c.pick.kind || 'project', alternatives: c.alternatives.map((a) => ({ name: a.name, url: a.url, score: a.score, card: a.card, features: c.features.get(a.id) || null })) })), trace };
         // 自我修正：照計畫試跑，錯誤歸類後換做法
         if (host.tryRun && planOut.candidates.length) {
             const history = []; let attempt = 0; let cur = planOut.candidates[0] && planOut.candidates[0].url; const all = Object.values(chosen).flatMap((c) => [c.pick].concat(c.alternatives)).map((c) => ({ id: c.id })); let r = await host.tryRun(planOut); log({ step: 'tryRun', ok: !!(r && r.ok) });
@@ -12786,7 +12786,10 @@ const holder = {};
                 found.push({ id: c.gap + ':weak_pick', gap: c.gap, kind: 'weak_pick', priority: 40, title: '🧭 「' + String(need).slice(0, 40) + '」只找到勉強合格的', description: '最像的只有一個，而且只是剛好過門檻：\n\n' + line(pick), rows: [pick], options: [{ label: '用「' + pick.name + '」試試', name: pick.name, url: pick.url }, { label: '這個需求先略過', skip: true }], recommended: 0 });
             } else quiet++;
         }
-        for (const u of (plan && plan.unresolved) || []) found.push({ id: u.gap + ':unresolved', gap: u.gap, kind: 'unresolved', priority: 50, title: '🧭 「' + u.gap + '」找不到合適的', description: (u.reason || '找不到夠像的候選') + '。\n如果你手上有適合的函式庫、網址或做法，直接在輸入框打字告訴我；沒有的話可以先略過。', rows: [], options: [{ label: '先略過這個需求', skip: true }], recommended: 0 });
+        for (const u of (plan && plan.unresolved) || []) {
+            const nv = ((plan && plan.novel) || []).find((x) => x.gap === u.gap); // 反思過了：不像打錯字，也不是現成就有的
+            found.push({ id: u.gap + ':unresolved', gap: u.gap, kind: 'unresolved', priority: nv ? 55 : 50, title: '🧭 「' + u.gap + '」' + (nv ? '也許是新的需求' : '找不到合適的'), description: (u.reason || '找不到夠像的候選') + '。' + (nv ? '\n我反思過了：' + nv.reason + '。這個需求也許是新的，不是現成就有。可以改成用 UML 拆成極小的單元來做（現有的部分用 CoLU 接線，沒有的才新寫）。' : '') + '\n如果你手上有適合的函式庫、網址或做法，直接在輸入框打字告訴我。', rows: [], options: nv ? [{ label: '當成新的需求，用 UML 拆解來做', novel: true }, { label: '先略過這個需求', skip: true }] : [{ label: '先略過這個需求', skip: true }], recommended: 0 });
+        }
         found.sort((a, b) => b.priority - a.priority);
         return { questions: found.slice(0, o.maxQuestions), deferred: found.slice(o.maxQuestions), quiet };
     }
@@ -12810,6 +12813,7 @@ const holder = {};
         } else if (answer && answer.kind === 'choice') {
             const opt = q.options[answer.index]; rec.explicit = !auto;
             if (!opt) { rec.explicit = false; }
+            else if (opt.novel) { rec.decision = 'novel'; plan.novel_confirmed = (plan.novel_confirmed || []).concat([{ gap: q.gap }]); }
             else if (opt.skip) { rec.decision = 'skipped'; if (cur) { plan.candidates.splice(idx, 1); plan.unresolved = (plan.unresolved || []).concat([{ gap: q.gap, reason: '使用者選擇略過' }]); } }
             else { rec.decision = 'picked'; rec.name = opt.name; rec.url = opt.url; if (cur && opt.url && opt.url !== cur.url) { const alt = (cur.alternatives || []).find((a) => a.url === opt.url); if (alt) { const old = { name: cur.name, url: cur.url, score: cur.score, why: cur.why, summary: cur.summary, card: cur.card, features: cur.features }; const next = fromAlt(cur, alt); next.alternatives = [old].concat((cur.alternatives || []).filter((a) => a !== alt)); plan.candidates[idx] = next; } } }
         }
@@ -12817,7 +12821,7 @@ const holder = {};
     }
     // 給人看的一小段：問了什麼、用了哪些預設
     function summarize(plan, det) {
-        const L = []; for (const d of plan.decisions || []) L.push('・' + d.gap + '：' + (d.auto ? ({ picked: '依建議用「' + d.name + '」', skipped: '依建議略過', default: '依建議' }[d.decision] || '依建議') : ({ picked: '你選了「' + d.name + '」', skipped: '你選擇略過', supplement: '你補充了：' + String(d.text || '').slice(0, 60), default: '沒有選，用推薦的' }[d.decision] || d.decision)));
+        const L = []; for (const d of plan.decisions || []) L.push('・' + d.gap + '：' + (d.auto ? ({ picked: '依建議用「' + d.name + '」', skipped: '依建議略過', novel: '依建議當成新的需求，用 UML 拆解', default: '依建議' }[d.decision] || '依建議') : ({ picked: '你選了「' + d.name + '」', skipped: '你選擇略過', novel: '你選擇當成新的需求，用 UML 拆解', supplement: '你補充了：' + String(d.text || '').slice(0, 60), default: '沒有選，用推薦的' }[d.decision] || d.decision)));
         if (det && det.deferred && det.deferred.length) L.push('另外 ' + det.deferred.length + ' 個地方也有分歧，為了不一次問太多，先用推薦的：' + det.deferred.map((q) => q.gap).join('、'));
         if (det && det.quiet) L.push(det.quiet + ' 個需求只有一條合理路線，直接用推薦的。');
         return L.join('\n');
@@ -13089,6 +13093,134 @@ const holder = {};
 return holder.FaColuBench;
 })();
 /* COLUB-END */
+/* CATREF-BEGIN */
+const FaCatalogReflect = (function () {
+const holder = {};
+(function (module, self) {
+/* 探索時的反思（UMD，純函式）：找不到現成的東西時，先問自己兩件事，而不是直接說「沒有」：
+ *   ① 也許使用者不小心打錯字——從他的概念去找（英文字拼錯一兩個字母、中文錯別字／同音近形字、字母順序顛倒）；
+ *   ② 也許使用者提出的是新的——詞庫、單元目錄、搜尋結果都對不上，而且不像打錯字：那就不是「找不到」，是「還沒有」，改走拆解：
+ *      用 UML 拆成極小的單元、現有的部分用 CoLU 接線，沒有的才新寫，寫好抽成單元回填目錄，下次就有了。
+ * 全部由程式判斷（詞庫、編輯距離），不靠模型。設計見 DESIGN.unit-catalog.md 第三十一節。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaCatalogReflect = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    // 中文常見的同音／近形字（兩個字互換算一個字的差異；兩個字的詞也只有這樣才算打錯，不然「相機」跟「相簿」會被當成同一個）
+    const CONFUSABLE = [['像', '相'], ['象', '像'], ['象', '相'], ['截', '擷'], ['劃', '畫'], ['再', '在'], ['做', '作'], ['麵', '面'], ['帶', '代'], ['戴', '帶'], ['影', '映'], ['預', '與'], ['型', '形'], ['週', '周'], ['線', '綫'], ['圖', '圓'], ['聲', '生'], ['錄', '路'], ['攝', '射'], ['換', '緩'], ['辨', '辯'], ['辨', '辦']];
+    const CONF = new Set(); for (const [a, b] of CONFUSABLE) { CONF.add(a + b); CONF.add(b + a); }
+    const isCjk = (ch) => /[㐀-鿿]/.test(ch);
+    const stem = (w) => (w.length > 3 && /s$/.test(w) && !/ss$/.test(w) ? w.slice(0, -1) : w);
+
+    // 編輯距離（Damerau：插入、刪除、替換、相鄰兩字對調各算 1），超過 max 就提早放棄
+    function editDistance(a, b, max) {
+        if (a === b) return 0; if (Math.abs(a.length - b.length) > max) return max + 1; const al = a.length, bl = b.length; let prev2 = null, prev = Array.from({ length: bl + 1 }, (_, j) => j);
+        for (let i = 1; i <= al; i++) { const cur = [i]; let rowMin = i; for (let j = 1; j <= bl; j++) { let v = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); if (prev2 && i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) v = Math.min(v, prev2[j - 2] + 1); cur[j] = v; if (v < rowMin) rowMin = v; } if (rowMin > max) return max + 1; prev2 = prev; prev = cur; }
+        return prev[bl];
+    }
+    // 詞庫：zh＝中文詞條（GLOSSARY 的鍵）、en＝英文字（GLOSSARY 的值、單元名稱與說明裡的字）。texts 是任意文字，會把裡面的英文字加進詞庫
+    function vocabFrom(parts) {
+        const zh = Array.from(new Set((parts && parts.zh) || [])).filter((t) => t && t.length >= 2); const en = new Set(); const freq = new Map();
+        const add = (w) => { w = String(w).toLowerCase(); if (w.length < 3) return; en.add(w); en.add(stem(w)); freq.set(stem(w), (freq.get(stem(w)) || 0) + 1); };
+        for (const w of (parts && parts.en) || []) add(w); for (const t of (parts && parts.texts) || []) for (const w of latinWords(t)) add(w);
+        return { zh, en, freq };
+    }
+    // 英文字：先把 snake_case、camelCase 拆開，只留 3 個字母以上的
+    function latinWords(text) { const out = []; for (const m of String(text || '').matchAll(/[A-Za-z][A-Za-z0-9]*/g)) for (const p of m[0].replace(/([a-z0-9])([A-Z])/g, '$1 $2').split(/\s+/)) if (p.length >= 3) out.push(p.toLowerCase()); return out; }
+
+    function suggestWord(word, V, opts) {
+        const w = word.toLowerCase(); if (V.en.has(w) || V.en.has(stem(w))) return []; const max = w.length >= 8 ? 2 : 1; const out = [];
+        for (const c of V.en) { if (Math.abs(c.length - w.length) > max) continue; const d = editDistance(w, c, max); if (d > max) continue; if (d >= 2 && c[0] !== w[0]) continue; out.push({ to: c, dist: d, freq: V.freq.get(c) || 0 }); }
+        out.sort((x, y) => x.dist - y.dist || y.freq - x.freq || (x.to < y.to ? -1 : 1)); const seen = new Set(); return out.filter((x) => { const k = stem(x.to); if (seen.has(k)) return false; seen.add(k); return true; }).slice(0, (opts && opts.top) || 3);
+    }
+    // 中文：文字裡沒有這個詞條，但有一段等長、只差一個字的（一個字是同音近形字，或詞條有 3 字以上）
+    function suggestZh(text, V) {
+        const out = []; const known = []; for (const t of V.zh) { let i = text.indexOf(t); while (i >= 0) { known.push([i, i + t.length]); i = text.indexOf(t, i + 1); } }
+        const covered = (a, b) => known.some(([x, y]) => a < y && b > x);
+        for (const t of V.zh) {
+            if (text.includes(t) || t.length < 2) continue;
+            for (let i = 0; i + t.length <= text.length; i++) {
+                const s = text.slice(i, i + t.length); if (![...s].every(isCjk) || covered(i, i + t.length)) continue; let diff = 0, k = -1; for (let j = 0; j < t.length; j++) if (s[j] !== t[j]) { diff++; k = j; } if (diff !== 1) continue;
+                if (t.length === 2 && !CONF.has(s[k] + t[k])) continue; // 兩個字的詞，只有常見的同音近形字才算
+                out.push({ from: s, to: t, at: i, kind: 'zh', dist: CONF.has(s[k] + t[k]) ? 0.5 : 1 });
+            }
+        }
+        out.sort((x, y) => x.dist - y.dist || y.to.length - x.to.length); const used = []; return out.filter((x) => { if (used.some(([a, b]) => x.at < b && x.at + x.from.length > a)) return false; used.push([x.at, x.at + x.from.length]); return true; });
+    }
+
+    // 分析一句需求：打錯字的嫌疑、詞庫不認得的字、改正後的句子、只留下認得的概念
+    function analyze(text, V) {
+        const t = String(text || ''); const typos = []; const unknown = [];
+        for (const m of t.matchAll(/[A-Za-z][A-Za-z0-9]{3,}/g)) { const parts = m[0].replace(/([a-z0-9])([A-Z])/g, '$1 $2').split(/\s+/).filter((p) => p.length >= 4); for (const p of parts) { if (V.en.has(p.toLowerCase()) || V.en.has(stem(p.toLowerCase()))) continue; const s = suggestWord(p, V); if (s.length) typos.push({ from: p, to: s[0].to, alts: s.map((x) => x.to), kind: 'en', dist: s[0].dist, ambiguous: s.length > 1 && s[1].dist === s[0].dist && s[1].freq >= s[0].freq }); else if (!unknown.includes(p)) unknown.push(p); } }
+        const zhFix = suggestZh(t, V); for (const z of zhFix) typos.push(z);
+        // 中文裡詞庫完全沒蓋到的部分（連續 3 個字以上）：可能是新概念
+        const cover = new Array(t.length).fill(false); for (const w of V.zh) { let i = t.indexOf(w); while (i >= 0) { for (let k = i; k < i + w.length; k++) cover[k] = true; i = t.indexOf(w, i + 1); } } for (const z of zhFix) for (let k = z.at; k < z.at + z.from.length; k++) cover[k] = true;
+        const uncovered = []; let run = ''; for (let i = 0; i < t.length; i++) { if (isCjk(t[i]) && !cover[i]) run += t[i]; else { if (run.length >= 3) uncovered.push(run); run = ''; } } if (run.length >= 3) uncovered.push(run);
+        let corrected = t; for (const x of typos.filter((y) => y.kind === 'en').sort((a, b) => b.from.length - a.from.length)) corrected = corrected.replace(new RegExp('\\b' + x.from + '\\b', 'g'), x.to); for (const z of typos.filter((y) => y.kind === 'zh').sort((a, b) => b.at - a.at)) corrected = corrected.split(z.from).join(z.to);
+        // 概念句：拿掉詞庫不認得的英文字和沒蓋到的中文，只留認得的（找不到的時候，用這個再找一次）
+        let concept = corrected; for (const u of unknown) concept = concept.replace(new RegExp('\\b' + u + '\\b', 'g'), ' '); for (const u of uncovered) concept = concept.split(u).join(' '); concept = concept.replace(/\s+/g, ' ').trim();
+        return { text: t, typos, unknown, uncovered, corrected: corrected !== t ? corrected : null, concept: concept && concept !== corrected ? concept : null };
+    }
+
+    // 判斷這個缺口屬於哪一種：ok（找到夠好的）／typo_suspect（可能打錯字）／novel_suspect（可能是新的）／plain（單純沒找到，沒有線索）
+    // outcome：{ n 候選數, best 最高分 }
+    function classify(analysis, outcome, opts) {
+        const o = Object.assign({ minScore: 0.35, weakBand: 0.12 }, opts || {}); const best = outcome && outcome.best != null ? outcome.best : 0; const n = (outcome && outcome.n) || 0;
+        if (n && best >= o.minScore + o.weakBand) return { kind: 'ok' };
+        if (analysis.typos.length) return { kind: 'typo_suspect', reason: '可能打錯字：' + analysis.typos.slice(0, 3).map((x) => '「' + x.from + '」→「' + x.to + '」').join('、') };
+        if (!n || best < o.minScore) { const why = []; if (!n) why.push('搜不到任何候選'); else why.push('最像的也只有 ' + Math.round(best * 100) + ' 分'); if (analysis.unknown.length) why.push('詞庫不認得：' + analysis.unknown.slice(0, 3).join('、')); if (analysis.uncovered.length) why.push('中文裡有詞庫沒涵蓋的部分：' + analysis.uncovered.slice(0, 3).join('、')); why.push('也不像打錯字'); return { kind: 'novel_suspect', reason: why.join('；') }; }
+        return { kind: 'plain' };
+    }
+    const NOVEL_NEXT = '這個需求現成的找不到，也許是新的：先用 UML 把它拆成極小的單元（uml_guide 或 uml_design），現有的部分用 catalog_bind 接線，沒有現成的才新寫；寫好之後用 catalog_onboard 抽成單元，下次就找得到了。';
+    function toText(reflections) {
+        const L = []; for (const r of reflections || []) L.push('・' + r.gap + '：' + ({ typo: '「' + r.from + '」可能是「' + r.to + '」，' + ({ found: '改用後找到了「' + r.name + '」', still: '改用後還是沒找到', declined: '你說不是打錯，照原樣' }[r.outcome] || ''), concept: '只用認得的概念「' + r.to + '」再找，' + (r.outcome === 'found' ? '找到了「' + r.name + '」' : '還是沒找到'), novel: '現成的找不到，可能是新的需求（' + r.reason + '）' }[r.kind] || r.kind));
+        return L.join('\n');
+    }
+    // ===== 對一份探索計畫做反思：沒找到的、只勉強過門檻的缺口，逐一判斷是打錯字、還是新的 =====
+    // ctx：{ D（discover_core）, host（探索用的主機函式）, runOpts（跟原本探索同樣的選項）, V（詞庫）,
+    //        ask(q)→{kind:'choice'|'supplement'|'cancel', index, text}（問使用者；不要問就不傳，或設 auto:true＝統一走建議）, maxGaps（最多反思幾個缺口，預設 3，每個最多多搜兩次）}
+    // 做法：打錯字的嫌疑 → 先問使用者（有建議：改成這個重找；也可以直接打字給他自己的說法；或說「不是打錯」）→ 用改正後的句子再探索一次；
+    //       還是沒有 → 只用認得的概念再找一次（從他的概念來找）；還是沒有 → 標成可能是新的需求（plan.novel），不是「失敗」。
+    // 會改 plan：candidates／unresolved／resolved／references 補上新找到的；plan.reflections 記下每一步；plan.novel 記下可能是新的缺口。
+    function targets(plan, min, weak) {
+        const out = []; for (const u of plan.unresolved || []) if (u.need) out.push({ gap: u.gap, need: u.need, n: 0, best: 0 });
+        for (const c of plan.candidates || []) if (c.score < min + weak) out.push({ gap: c.gap, need: c.need || c.gap, n: 1, best: c.score, cand: c });
+        return out;
+    }
+    async function retry(ctx, text) { return ctx.D.run(ctx.host, { needs: [text] }, Object.assign({}, ctx.runOpts, { maxRounds: 1, tryRun: undefined })); }
+    function merge(plan, gapId, sub, min) {
+        const c = sub && sub.ok && sub.candidates && sub.candidates[0]; if (!c || c.score < min) return null; const old = (plan.candidates || []).findIndex((x) => x.gap === gapId);
+        if (old >= 0 && plan.candidates[old].score >= c.score) return null; const next = Object.assign({}, c, { gap: gapId }); if (old >= 0) plan.candidates[old] = next; else { plan.candidates.push(next); plan.resolved = (plan.resolved || 0) + 1; }
+        plan.unresolved = (plan.unresolved || []).filter((u) => u.gap !== gapId); plan.references = (plan.references || []).concat((sub.references || []).filter((r) => !(plan.references || []).some((x) => x.url === r.url)));
+        return next;
+    }
+    async function reflectPlan(plan, ctx) {
+        const min = ctx.runOpts && ctx.runOpts.minScore != null ? ctx.runOpts.minScore : 0.35; const weak = 0.12; plan.reflections = plan.reflections || []; plan.novel = plan.novel || []; let used = 0;
+        for (const t of targets(plan, min, weak)) {
+            if (used >= (ctx.maxGaps || 3)) break; const an = analyze(t.need, ctx.V); const cl = classify(an, { n: t.n, best: t.best }, { minScore: min, weakBand: weak }); if (cl.kind === 'ok' || cl.kind === 'plain') continue; used++;
+            const novel = (why) => { plan.novel.push({ gap: t.gap, need: t.need, reason: why }); plan.reflections.push({ gap: t.gap, kind: 'novel', reason: why }); };
+            if (cl.kind === 'typo_suspect') {
+                const first = an.typos[0]; let corrected = an.corrected; let declined = false;
+                if (ctx.ask && !ctx.auto) { const ans = await ctx.ask({ gap: t.gap, need: t.need, corrected, reason: cl.reason }); if (ans && ans.kind === 'supplement' && ans.text) corrected = ans.text; else if (ans && ans.kind === 'choice' && ans.index === 1) declined = true; }
+                if (declined) { plan.reflections.push({ gap: t.gap, kind: 'typo', from: first.from, to: first.to, outcome: 'declined' }); plan.novel.push({ gap: t.gap, need: t.need, reason: '你說不是打錯字' }); continue; }
+                const c = merge(plan, t.gap, await retry(ctx, corrected), min); plan.reflections.push({ gap: t.gap, kind: 'typo', from: first.from, to: first.to, outcome: c ? 'found' : 'still', name: c && c.name }); if (c) continue;
+                if (an.concept) { const c2 = merge(plan, t.gap, await retry(ctx, an.concept), min); plan.reflections.push({ gap: t.gap, kind: 'concept', to: an.concept, outcome: c2 ? 'found' : 'still', name: c2 && c2.name }); if (c2) continue; }
+                novel('改正錯字後還是找不到'); continue;
+            }
+            // novel_suspect：先只用認得的概念再找一次，還是沒有才說可能是新的
+            if (an.concept) { const c2 = merge(plan, t.gap, await retry(ctx, an.concept), min); plan.reflections.push({ gap: t.gap, kind: 'concept', to: an.concept, outcome: c2 ? 'found' : 'still', name: c2 && c2.name }); if (c2) continue; }
+            novel(cl.reason);
+        }
+        plan.reflect_text = toText(plan.reflections); return plan;
+    }
+    return { CONFUSABLE, editDistance, vocabFrom, latinWords, suggestWord, suggestZh, analyze, classify, toText, NOVEL_NEXT, targets, merge, reflectPlan };
+});
+
+}).call(null, undefined, holder);
+return holder.FaCatalogReflect;
+})();
+/* CATREF-END */
 /* ARCHIVE-BEGIN */
 const FaArchive = (function () {
 const holder = {};
@@ -31256,12 +31388,12 @@ ${fnData.code}
             { type: 'object', properties: { url: { type: 'string' }, text: { type: 'string' }, pkg: { type: 'string', description: '單元名稱的前綴（預設取檔名）' }, version: { type: 'string' } }, additionalProperties: false }
         );
         registerOptional('catalog_discover',
-            '缺口驅動的探索：給 UML 使用案例（uml）或需要的能力清單（needs），先用單元目錄接線，沒有單元可用的步驟就是「缺口」；為每個缺口產生英文搜尋關鍵字、用 browser_search 找（github、wiki、stackoverflow、codeproject…）、讀 README（長文地圖縮放＋多片段投票，見 catalog_card）、整理成能力卡片、依缺口排名（說明相符、執行環境相容、有沒有停止維護、需不需要金鑰或伺服器），輸出計畫：每個缺口建議用哪個專案、怎麼安裝、主要函式、需要什麼、備選是誰；找不到的明講。extract 不是 false 時，如果卡片有未壓縮的 CDN 檔會順手抽成單元再接一次線看缺口有沒有補上。這個工具只規劃，不安裝也不執行。計畫出來後，只有真的有分歧的地方（幾個候選分數差不多、推薦的需要金鑰或伺服器而備選不需要、只勉強過門檻、找不到）才會跳選擇題問使用者，沒有分歧的直接用推薦的；使用者不點選項、直接打字，就當成補充（內容在 user_notes，裡面的網址在 user_urls，可以拿去 catalog_card 讀）。decisions 是使用者做的決定，照它做，不要再問一次。',
+            '缺口驅動的探索：給 UML 使用案例（uml）或需要的能力清單（needs），先用單元目錄接線，沒有單元可用的步驟就是「缺口」；為每個缺口產生英文搜尋關鍵字、用 browser_search 找（github、wiki、stackoverflow、codeproject…）、讀 README（長文地圖縮放＋多片段投票，見 catalog_card）、整理成能力卡片、依缺口排名（說明相符、執行環境相容、有沒有停止維護、需不需要金鑰或伺服器），輸出計畫：每個缺口建議用哪個專案、怎麼安裝、主要函式、需要什麼、備選是誰；找不到的明講。extract 不是 false 時，如果卡片有未壓縮的 CDN 檔會順手抽成單元再接一次線看缺口有沒有補上。這個工具只規劃，不安裝也不執行。計畫出來後，只有真的有分歧的地方（幾個候選分數差不多、推薦的需要金鑰或伺服器而備選不需要、只勉強過門檻、找不到）才會跳選擇題問使用者，沒有分歧的直接用推薦的；使用者不點選項、直接打字，就當成補充（內容在 user_notes，裡面的網址在 user_urls，可以拿去 catalog_card 讀）。decisions 是使用者做的決定，照它做，不要再問一次。找不到或只勉強過門檻的缺口，會先反思：可能打錯字（問使用者要不要改成猜的那個、或讓他直接打自己的說法，改正後再找一次）、可能是新的需求（reflections 裡 kind 是 novel、novel 列出缺口）——這種不是「找不到」，是「還沒有」：照 novel_next 改用 UML 拆成極小的單元、現有的用 catalog_bind 接線、沒有的才新寫，寫好用 catalog_onboard 回填目錄。reflect:false 可以關掉反思。',
             async function (rawArgs) {
                 let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
-                try { const plan = await this._unitCatalogDiscover(a); return JSON.stringify({ ok: plan.ok, plan_id: plan.plan_id, feedback_hint: '使用者採用或退回、或你試跑之後，用 catalog_feedback 記下來（plan_id＋gap＋verdict）', gaps: plan.gaps_initial, resolved: plan.resolved, rounds: plan.rounds, candidates: (plan.candidates || []).map((c) => { const { card, features, need, ...rest } = c; return Object.assign(rest, { alternatives: (rest.alternatives || []).map((x) => ({ name: x.name, url: x.url, score: x.score })) }); }), references: plan.references, unresolved: plan.unresolved, decisions: plan.decisions, user_notes: plan.user_notes, user_urls: plan.user_urls, text: plan.text, error: plan.error }); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+                try { const plan = await this._unitCatalogDiscover(a); return JSON.stringify({ ok: plan.ok, plan_id: plan.plan_id, feedback_hint: '使用者採用或退回、或你試跑之後，用 catalog_feedback 記下來（plan_id＋gap＋verdict）', gaps: plan.gaps_initial, resolved: plan.resolved, rounds: plan.rounds, candidates: (plan.candidates || []).map((c) => { const { card, features, need, ...rest } = c; return Object.assign(rest, { alternatives: (rest.alternatives || []).map((x) => ({ name: x.name, url: x.url, score: x.score })) }); }), references: plan.references, unresolved: plan.unresolved, decisions: plan.decisions, user_notes: plan.user_notes, user_urls: plan.user_urls, reflections: plan.reflections, novel: plan.novel, novel_next: (plan.novel || []).length ? FaCatalogReflect.NOVEL_NEXT : undefined, text: plan.text, error: plan.error }); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
             },
-            { type: 'object', properties: { ask: { type: 'boolean', description: 'false＝遇到分歧也不問使用者，全部用推薦的（預設：只有真的有分歧才問，一次最多3題）' }, max_questions: { type: 'number', description: '一次最多問幾題，預設3' }, uml: { type: 'string', description: 'UML 文字（格式同 catalog_bind）' }, needs: { type: 'array', items: { type: 'string' }, description: '沒有 UML 時，直接列需要的能力（中英文都可以）' }, runtime: { type: 'string', enum: ['browser', 'node', 'python'], default: 'browser' }, extract: { type: 'boolean', description: 'false＝不要抽單元，只規劃' }, use_learned: { type: 'boolean', description: 'true＝用 catalog_feedback train 存下來的排名模型（資料夠才有意義）' }, use_embed: { type: 'boolean', description: 'false＝不用嵌入模型排名（語意檢索有啟用才會用）' }, use_model: { type: 'boolean', description: 'true＝用離線小模型把需求改寫成英文搜尋關鍵字（實測這一步它比詞庫好）；預設不用' }, max_gaps: { type: 'number' }, per_gap: { type: 'number' }, context_tokens: { type: 'number' } }, additionalProperties: false }
+            { type: 'object', properties: { reflect: { type: 'boolean', description: 'false＝不做反思（預設：找不到或只勉強過門檻的缺口，先想想是不是打錯字、或是新的需求）' }, ask: { type: 'boolean', description: 'false＝遇到分歧也不問使用者，全部用推薦的（預設：只有真的有分歧才問，一次最多3題）' }, max_questions: { type: 'number', description: '一次最多問幾題，預設3' }, uml: { type: 'string', description: 'UML 文字（格式同 catalog_bind）' }, needs: { type: 'array', items: { type: 'string' }, description: '沒有 UML 時，直接列需要的能力（中英文都可以）' }, runtime: { type: 'string', enum: ['browser', 'node', 'python'], default: 'browser' }, extract: { type: 'boolean', description: 'false＝不要抽單元，只規劃' }, use_learned: { type: 'boolean', description: 'true＝用 catalog_feedback train 存下來的排名模型（資料夠才有意義）' }, use_embed: { type: 'boolean', description: 'false＝不用嵌入模型排名（語意檢索有啟用才會用）' }, use_model: { type: 'boolean', description: 'true＝用離線小模型把需求改寫成英文搜尋關鍵字（實測這一步它比詞庫好）；預設不用' }, max_gaps: { type: 'number' }, per_gap: { type: 'number' }, context_tokens: { type: 'number' } }, additionalProperties: false }
         );
 
         registerOptional('catalog_feedback',
@@ -62695,10 +62827,24 @@ ${existingNodeSummaries}
         };
         const need = a.uml ? { uml: String(a.uml) } : { needs: Array.isArray(a.needs) ? a.needs.map(String) : [] };
         if (!need.uml && !need.needs.length) throw new Error('要給 uml（UML 文字）或 needs（需要的能力清單）');
-        const learned = a.use_learned === true ? await this._unitCatalogRankModelLoad() : null; const plan = await D.run(host, need, { model: learned || undefined, runtime, maxGaps: Math.min(10, Number(a.max_gaps) || 6), perGap: Math.min(6, Number(a.per_gap) || 4), maxRounds: 2, contextTokens: Number(a.context_tokens) || undefined });
+        const learned = a.use_learned === true ? await this._unitCatalogRankModelLoad() : null; const runOpts = { model: learned || undefined, runtime, maxGaps: Math.min(10, Number(a.max_gaps) || 6), perGap: Math.min(6, Number(a.per_gap) || 4), maxRounds: 2, contextTokens: Number(a.context_tokens) || undefined };
+        const plan = await D.run(host, need, runOpts);
+        // 反思：沒找到、只勉強過門檻的缺口，先想想是不是打錯字、或這其實是新的需求（見 catalog/reflect_core.js）。a.reflect === false 可以關掉
+        if (plan.ok && a.reflect !== false) { try { await this._unitCatalogReflect(plan, D, host, runOpts, a); } catch (e) { plan.reflect_error = String((e && e.message) || e); } }
         this._unitCatalogRememberPlan(plan);
         if (plan.ok && a.ask !== false) { try { await this._unitCatalogAskBranches(plan, a); } catch (e) { plan.branch_error = String((e && e.message) || e); } }
-        plan.text = D.toText(plan) + (plan.branch_text ? String.fromCharCode(10, 10) + plan.branch_text : ''); return plan;
+        const nn = String.fromCharCode(10, 10);
+        plan.text = D.toText(plan) + (plan.reflect_text ? nn + '🔎 反思：' + String.fromCharCode(10) + plan.reflect_text : '') + ((plan.novel || []).length ? nn + FaCatalogReflect.NOVEL_NEXT : '') + (plan.branch_text ? nn + plan.branch_text : ''); return plan;
+    }
+    // 詞庫：中文詞條與英文字（來自探索用的詞庫）加上單元目錄裡單元的名稱與說明
+    _unitCatalogReflectVocab(D) {
+        let texts = []; try { texts = this._unitCatalogBuild().units.map((u) => u.name + ' ' + (u.summary || '')); } catch (_) { texts = []; }
+        return FaCatalogReflect.vocabFrom({ zh: Object.keys(D.GLOSSARY), en: Object.values(D.GLOSSARY).join(' ').split(/\s+/), texts });
+    }
+    async _unitCatalogReflect(plan, D, host, runOpts, a) {
+        const V = this._unitCatalogReflectVocab(D); const auto = this._branchAskRecommended() || (a && a.ask === false);
+        await FaCatalogReflect.reflectPlan(plan, { D, host, runOpts, V, auto, maxGaps: 3,
+            ask: (q) => this.askBranchChoice({ title: '🧭 「' + q.gap + '」可能打錯字？', description: '你寫的是：' + q.need + String.fromCharCode(10) + '我猜你想的是：' + q.corrected + String.fromCharCode(10) + '（' + q.reason + '）' + String.fromCharCode(10, 10) + '也可以直接在輸入框打你想說的話，我用那句去找。', options: [{ label: '改成「' + String(q.corrected).slice(0, 40) + '」重找' }, { label: '不是打錯，照原樣（也許是新的）' }], recommended: 0, cancelLabel: '照建議' }) });
     }
     // 只在真的有分歧的地方問使用者（規則見 catalog/branch_core.js）；使用者明確選的，記成最可信的採用／退回標註；打字＝補充
     async _unitCatalogAskBranches(plan, a) {

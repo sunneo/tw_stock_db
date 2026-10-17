@@ -46,7 +46,10 @@
                 found.push({ id: c.gap + ':weak_pick', gap: c.gap, kind: 'weak_pick', priority: 40, title: '🧭 「' + String(need).slice(0, 40) + '」只找到勉強合格的', description: '最像的只有一個，而且只是剛好過門檻：\n\n' + line(pick), rows: [pick], options: [{ label: '用「' + pick.name + '」試試', name: pick.name, url: pick.url }, { label: '這個需求先略過', skip: true }], recommended: 0 });
             } else quiet++;
         }
-        for (const u of (plan && plan.unresolved) || []) found.push({ id: u.gap + ':unresolved', gap: u.gap, kind: 'unresolved', priority: 50, title: '🧭 「' + u.gap + '」找不到合適的', description: (u.reason || '找不到夠像的候選') + '。\n如果你手上有適合的函式庫、網址或做法，直接在輸入框打字告訴我；沒有的話可以先略過。', rows: [], options: [{ label: '先略過這個需求', skip: true }], recommended: 0 });
+        for (const u of (plan && plan.unresolved) || []) {
+            const nv = ((plan && plan.novel) || []).find((x) => x.gap === u.gap); // 反思過了：不像打錯字，也不是現成就有的
+            found.push({ id: u.gap + ':unresolved', gap: u.gap, kind: 'unresolved', priority: nv ? 55 : 50, title: '🧭 「' + u.gap + '」' + (nv ? '也許是新的需求' : '找不到合適的'), description: (u.reason || '找不到夠像的候選') + '。' + (nv ? '\n我反思過了：' + nv.reason + '。這個需求也許是新的，不是現成就有。可以改成用 UML 拆成極小的單元來做（現有的部分用 CoLU 接線，沒有的才新寫）。' : '') + '\n如果你手上有適合的函式庫、網址或做法，直接在輸入框打字告訴我。', rows: [], options: nv ? [{ label: '當成新的需求，用 UML 拆解來做', novel: true }, { label: '先略過這個需求', skip: true }] : [{ label: '先略過這個需求', skip: true }], recommended: 0 });
+        }
         found.sort((a, b) => b.priority - a.priority);
         return { questions: found.slice(0, o.maxQuestions), deferred: found.slice(o.maxQuestions), quiet };
     }
@@ -70,6 +73,7 @@
         } else if (answer && answer.kind === 'choice') {
             const opt = q.options[answer.index]; rec.explicit = !auto;
             if (!opt) { rec.explicit = false; }
+            else if (opt.novel) { rec.decision = 'novel'; plan.novel_confirmed = (plan.novel_confirmed || []).concat([{ gap: q.gap }]); }
             else if (opt.skip) { rec.decision = 'skipped'; if (cur) { plan.candidates.splice(idx, 1); plan.unresolved = (plan.unresolved || []).concat([{ gap: q.gap, reason: '使用者選擇略過' }]); } }
             else { rec.decision = 'picked'; rec.name = opt.name; rec.url = opt.url; if (cur && opt.url && opt.url !== cur.url) { const alt = (cur.alternatives || []).find((a) => a.url === opt.url); if (alt) { const old = { name: cur.name, url: cur.url, score: cur.score, why: cur.why, summary: cur.summary, card: cur.card, features: cur.features }; const next = fromAlt(cur, alt); next.alternatives = [old].concat((cur.alternatives || []).filter((a) => a !== alt)); plan.candidates[idx] = next; } } }
         }
@@ -77,7 +81,7 @@
     }
     // 給人看的一小段：問了什麼、用了哪些預設
     function summarize(plan, det) {
-        const L = []; for (const d of plan.decisions || []) L.push('・' + d.gap + '：' + (d.auto ? ({ picked: '依建議用「' + d.name + '」', skipped: '依建議略過', default: '依建議' }[d.decision] || '依建議') : ({ picked: '你選了「' + d.name + '」', skipped: '你選擇略過', supplement: '你補充了：' + String(d.text || '').slice(0, 60), default: '沒有選，用推薦的' }[d.decision] || d.decision)));
+        const L = []; for (const d of plan.decisions || []) L.push('・' + d.gap + '：' + (d.auto ? ({ picked: '依建議用「' + d.name + '」', skipped: '依建議略過', novel: '依建議當成新的需求，用 UML 拆解', default: '依建議' }[d.decision] || '依建議') : ({ picked: '你選了「' + d.name + '」', skipped: '你選擇略過', novel: '你選擇當成新的需求，用 UML 拆解', supplement: '你補充了：' + String(d.text || '').slice(0, 60), default: '沒有選，用推薦的' }[d.decision] || d.decision)));
         if (det && det.deferred && det.deferred.length) L.push('另外 ' + det.deferred.length + ' 個地方也有分歧，為了不一次問太多，先用推薦的：' + det.deferred.map((q) => q.gap).join('、'));
         if (det && det.quiet) L.push(det.quiet + ' 個需求只有一條合理路線，直接用推薦的。');
         return L.join('\n');
