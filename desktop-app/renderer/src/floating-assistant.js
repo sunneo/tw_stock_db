@@ -13402,6 +13402,124 @@ const holder = {};
 return holder.FaUmlBench;
 })();
 /* UMLB-END */
+/* TTSI-BEGIN */
+const FaTtsIntent = (function () {
+const holder = {};
+(function (module, self) {
+/* 語音合成的意圖辨識（UMD，純函式）：使用者用自然語言說「用英文語音說 Goodnight sleepy head」「把「晚安」念出來」「tts: hello」時，
+ * 程式直接認出來、抽出「要念的字」，走跟 /media-text-to-speech 同一條路——不經過模型，念的字一個字都不改。
+ * 原因（2026-10-17 使用者實測）：交給模型時，它先說「我沒有語音合成工具」（text_to_speech 在影音領域，不在最上層），重來後念的內容也不對；
+ * 這種「動作明確、參數就是使用者打的字」的需求，程式比模型可靠。
+ * 只認「像命令」的句子：提問（怎麼用語音合成？你有語音功能嗎？）、句子太長、有附件，都不當成命令，交給模型。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaTtsIntent = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const LANGS = { 英文: 'en', 英語: 'en', english: 'en', 中文: 'zh', 國語: 'zh', 普通話: 'zh', 粵語: 'yue', 廣東話: 'yue', 日文: 'ja', 日語: 'ja', 韓文: 'ko', 韓語: 'ko' };
+    const LANG_RE = '(英文|英語|English|中文|國語|普通話|粵語|廣東話|日文|日語|韓文|韓語)';
+    const POLITE = '(?:請|麻煩|幫我|幫忙|可以|能不能|你可以)?\\s*(?:請)?';
+    const QUESTION = /(怎麼|如何|為什麼|為何|是什麼|什麼是|能不能|可不可以|可以嗎|有沒有|有嗎|支援|不能|不行|壞了|失敗|設定|在哪|哪裡|教我|教學|說明|\?|？|嗎\s*$|呢\s*$)/;
+    const unquote = (t) => { let s = String(t).trim(); const pairs = [['「', '」'], ['『', '』'], ['“', '”'], ['"', '"'], ["'", "'"], ['‘', '’']]; for (const [a, b] of pairs) if (s.length >= 2 && s.startsWith(a) && s.endsWith(b)) { s = s.slice(1, -1).trim(); break; } return s; };
+    // 回傳 { text, lang, form } 或 null
+    function parse(message) {
+        const raw = String(message || '').trim(); if (!raw || raw.length > 400 || raw.startsWith('/')) return null;
+        let m;
+        // C：tts: hello／TTS hello world
+        if ((m = /^tts\s*[：:]?\s*([\s\S]+)$/i.exec(raw))) return done(m[1], null, 'tts');
+        // D：read aloud: hello／say out loud hello
+        if ((m = /^(?:please\s+)?(?:read|say|speak)\s+(?:aloud|out\s*loud)\s*[：:]?\s*([\s\S]+)$/i.exec(raw))) return done(m[1], null, 'aloud');
+        // B：把「晚安」念出來／把這句念出來：Hello
+        if ((m = new RegExp('^' + POLITE + '把\\s*([\\s\\S]+?)\\s*(?:念|唸|讀|朗讀)(?:出來|一下|給我聽)?\\s*$').exec(raw))) { const t = unquote(m[1]); if (!/^(這句|這段|這個|它|上面|剛剛|上一句)/.test(t)) return done(t, null, 'ba'); }
+        // B2：把這句念出來：Hello
+        if ((m = new RegExp('^' + POLITE + '把\\s*(?:這句|這段|這個|以下|下面)[話文字]*\\s*(?:念|唸|讀|朗讀)(?:出來|一下|給我聽)?\\s*[：:，,]\\s*([\\s\\S]+)$').exec(raw))) return done(m[1], null, 'ba2');
+        // A：用英文語音說 xxx／請用語音念：xxx／朗讀 xxx／念出來：xxx
+        if ((m = new RegExp('^' + POLITE + '(?:用|以|使用)?\\s*' + LANG_RE + '?\\s*(語音|聲音|配音|發音)?\\s*(說|講|唸|念|讀|朗讀|唸出|念出|讀出)((?:出來|一下|看看|給我聽)?)\\s*([：:，,]?)\\s*([\\s\\S]+)$', 'i').exec(raw))) {
+            const lang = m[1] ? LANGS[m[1].toLowerCase()] || LANGS[m[1]] : null, voiceWord = m[2], verb = m[3], suffix = m[4], sep = m[5], text = m[6];
+            if ((verb === '說' || verb === '講') && !voiceWord) return null; // 單純「說」不一定是語音合成（「說明一下…」「說說看…」）
+            // 「念／唸／讀」也常見於別的意思（念書、讀一下檔案）：沒說「語音」也沒指定語言時，要有「出來／給我聽」或冒號才算
+            if (['念', '唸', '讀'].includes(verb) && !voiceWord && !lang && !/出來|給我聽/.test(suffix) && !sep) return null;
+            return done(text, lang, 'a');
+        }
+        return null;
+        function done(text, lang, form) {
+            const t = unquote(text); if (!t || t.length > 300) return null; if (QUESTION.test(raw) && !/^["「『“]/.test(String(text).trim())) return null;
+            if (/^(這個功能|語音合成|語音功能|語音|聲音|tts)$/i.test(t)) return null; // 只剩功能名稱，不是要念的字
+            return { text: t, lang: lang || null, form };
+        }
+    }
+    return { parse, unquote, LANGS };
+});
+
+}).call(null, undefined, holder);
+return holder.FaTtsIntent;
+})();
+/* TTSI-END */
+/* CAPR-BEGIN */
+const FaCapReflect = (function () {
+const holder = {};
+(function (module, self) {
+/* 「我沒有這個工具」的反思（UMD，純函式）：模型回覆說沒有某種工具／功能／能力，但它其實沒有查過別的領域（工具被分到各個領域，最上層看不到全部）。
+ * 程式不讓這句話直接放行：先替它搜尋「所有領域的所有工具」，把找到的交還給它，叫它用找到的去做；真的都不符合才可以回答沒有，並說明查過哪些。
+ * 設計見 DESIGN.unit-catalog.md 第三十五節。（2026-10-17 使用者實測：用英文語音說一句話，模型回「我沒有語音合成工具」，text_to_speech 其實就在影音領域。）
+ * 全部是程式判斷：宣稱偵測（詞組）、工具搜尋（CJK 雙字詞＋英文字，依稀有度加權）、提示文字。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaCapReflect = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    // ===== 偵測「沒有工具」的宣稱 =====
+    const ZH_NEG = '(?:沒有|沒|無法|不能|不具備|缺少|找不到|沒辦法|無從|無)';
+    const ZH_THING = '(?:工具|功能|能力|函式|函數|指令|API|api|skill|技能|服務|套件|模組)';
+    const RE_ZH = new RegExp('(?:我|目前|現在|這裡|此時)?[^。！？\\n]{0,14}' + ZH_NEG + '([^。！？\\n]{0,26}?)' + ZH_THING);
+    const RE_EN = /\b(?:i\s+)?(?:don'?t|do not|doesn'?t|cannot|can'?t|am unable to|have no|there(?:'s| is) no|no)\b([^.!?\n]{0,50}?)\b(?:tools?|functions?|abilit(?:y|ies)|capabilit(?:y|ies)|access|way to|api)\b/i;
+    const FILLER_ZH = /(的|可以|相關|任何|直接|能夠|能|用來|來|這個|這種|那個|一個|適合|合適|對應)/g;
+    const FILLER_EN = /(?<![\w-])(a|an|any|the|have|has|got|available|in|my|current|toolset|to|that|can|for|with|of|this|such|relevant|suitable|appropriate|directly|tool|tools|function|access)(?![\w-])/gi; // 連字號的字（text-to-speech）裡的 to 不能被當成填充字拿掉
+    // 回覆很長、前面已經在做事的不算：只看開頭一小段（宣稱通常在最前面）
+    function claimsNoTool(text) {
+        const t = String(text || '').trim(); if (!t) return null; const head = t.slice(0, 320);
+        // 排除「沒有的是別的東西」：說「沒有找到錯誤」「沒有問題」不是在說沒工具——這些不會同時出現工具／功能類的詞，上面已經要求要有
+        let m = RE_ZH.exec(head) || RE_EN.exec(head); if (!m) return null;
+        const sentence = (head.split(/[。！？!?\n]/).find((s) => s.includes(m[0].slice(0, 6)) || s.includes(m[0].slice(-6))) || m[0]).trim();
+        const concept = String(m[1] || '').replace(FILLER_ZH, ' ').replace(FILLER_EN, ' ').replace(/[()（）,，、:：]+/g, ' ').replace(/\s+/g, ' ').trim(); // 「沒有〔語音合成〕的工具」中間那段才是它在找的東西
+        return { claim: sentence.slice(0, 160), matched: m[0].slice(0, 80), concept };
+    }
+
+    // ===== 搜尋所有領域的工具 =====
+    const STOP_ZH = new Set(['一個', '我們', '可以', '需要', '使用', '幫我', '請你', '你的', '這個', '那個', '如果', '因為', '所以', '但是', '目前', '現在', '沒有', '工具', '功能', '能力', '一下', '什麼', '怎麼', '來', '用英', '英文']);
+    const STOP_EN = new Set(['the', 'and', 'for', 'with', 'you', 'your', 'this', 'that', 'have', 'not', 'can', 'tool', 'tools', 'available', 'current', 'toolset', 'function', 'ability', 'don', 'any', 'are', 'from', 'use', 'using']);
+    function tokens(text) {
+        const out = new Set(); const t = String(text || '');
+        for (const run of t.match(/[㐀-鿿]+/g) || []) for (let i = 0; i + 2 <= run.length; i++) { const bg = run.slice(i, i + 2); if (!STOP_ZH.has(bg)) out.add(bg); }
+        for (const w of t.toLowerCase().match(/[a-z][a-z0-9]{2,}/g) || []) { for (const p of w.split(/_+/)) if (p.length >= 3 && !STOP_EN.has(p)) out.add(p); }
+        return out;
+    }
+    // entries：[{ name, domains:[{id,label}], text（名稱＋說明）, direct（最上層就能直接呼叫）}]
+    // 回傳依分數排序的前 k 個 { name, score, domains, direct, why:[命中的詞] }；分數沒到最高分的一半、或沒有任何命中的詞，不列
+    function search(query, entries, opts) {
+        const o = Object.assign({ k: 3, minScore: 5, labelWeight: 0.4 }, opts || {}); const q = tokens(query); if (!q.size) return [];
+        const docs = entries.map((e) => ({ e, toks: tokens(e.name + ' ' + (e.text || '')), lab: tokens((e.domains || []).map((d) => d.label || d.id).join(' ')) })); const N = docs.length || 1;
+        const df = new Map(); for (const d of docs) { for (const t of d.toks) df.set(t, (df.get(t) || 0) + 1); for (const t of d.lab) if (!d.toks.has(t)) df.set(t, (df.get(t) || 0) + 1); }
+        const idf = (t) => Math.log(1 + (N - (df.get(t) || 0) + 0.5) / ((df.get(t) || 0) + 0.5));
+        const nameToks = (e) => tokens(e.name.replace(/_/g, ' '));
+        const scored = docs.map(({ e, toks, lab }) => { let s = 0; const why = []; const nt = nameToks(e); for (const t of q) { if (toks.has(t)) { s += idf(t) * (nt.has(t) ? 2.5 : 1); why.push(t); } else if (lab.has(t)) { s += idf(t) * o.labelWeight; why.push(t + '(領域)'); } } return { name: e.name, score: Math.round(s * 100) / 100, domains: e.domains || [], direct: !!e.direct, why: why.slice(0, 6), text: e.text || '' }; });
+        scored.sort((a, b) => b.score - a.score); const best = scored[0] ? scored[0].score : 0; if (best < o.minScore) return [];
+        return scored.filter((x) => x.score >= o.minScore && x.score >= best * 0.5).slice(0, o.k);
+    }
+
+    // ===== 給模型的提示 =====
+    function shortDesc(t) { return String(t || '').replace(/\s+/g, ' ').replace(/^把?/, '').slice(0, 90); }
+    function nudgeText(claim, hits, userText) {
+        const lines = hits.map((h, i) => (i + 1) + '. ' + h.name + (h.domains.length ? '（領域：' + h.domains.map((d) => d.id + (d.label ? '／' + d.label : '')).join('、') + '）' : '') + '：' + shortDesc(h.text) + '\n   ' + (h.direct ? '你的工具清單裡就有，直接呼叫。' : '最上層沒有直接列出，用 delegate_to_subagent，domain 填「' + ((h.domains[0] && h.domains[0].id) || '') + '」，task 裡把使用者要做的事與要用的字原樣寫清楚。'));
+        return '[系統驗證] 你剛才說「' + String(claim).slice(0, 100) + '」，但你還沒有查過別的領域——工具被分到各個領域，最上層只列一部分，「最上層沒看到」不等於「沒有」。程式替你搜尋了所有領域的所有工具，找到可能相符的：\n' + lines.join('\n') + '\n請現在就用上面的工具去做使用者要的事（使用者說的字、語言、數字一個字都不要改、不要自己翻譯或改寫）。只有上面都真的不符合，才可以回答沒有，並說明你查過上面哪幾個、為什麼不符合。不要再提「我可以給你程式碼讓你自己做」這類替代方案，除非工具真的做不到。';
+    }
+    return { claimsNoTool, tokens, search, nudgeText };
+});
+
+}).call(null, undefined, holder);
+return holder.FaCapReflect;
+})();
+/* CAPR-END */
 /* ARCHIVE-BEGIN */
 const FaArchive = (function () {
 const holder = {};
@@ -20371,6 +20489,13 @@ const FA_TASK_TOOL_HINTS = [
     },
 ];
 
+FA_TASK_TOOL_HINTS.push({
+    id: 'text_to_speech',
+    re: /(語音|聲音|配音|朗讀|念出來|唸出來|讀出來|念給|唸給|讀給|tts|text[- ]?to[- ]?speech|read aloud|say aloud|speak)/i,
+    neg: /(怎麼|如何|為什麼|為何|是什麼|能不能|可不可以|可以嗎|有沒有|支援|設定|教我|說明)|語音(轉文字|辨識|輸入|轉錄)|轉(成)?逐字稿|(辨識|轉錄|聽寫)/i,
+    tools: ['text_to_speech'],
+    note: '【這個需求有專用工具：text_to_speech】使用者要把文字念成語音，直接呼叫 text_to_speech，不要說「沒有語音工具」或「建議用瀏覽器／其他服務」。text 就是使用者要念的那段字，一個字都不要改、不要翻譯、不要加標點或改大小寫；voice 留空（依文字語言自動選）；使用者指定了聲音才填。它是工具，不是 skill，不用去找 SKILL.md。',
+});
 FA_TASK_TOOL_HINTS.push({
     id: 'merge_pdfs',
     re: /(docx?|word|xlsx?|excel|txt|文字檔|文字文件|文件檔|試算表|簡報檔|pptx?)[\s\S]{0,100}(合併|合成|併成|整合|拼成|merge|combine)[\s\S]{0,40}pdf|(合併|合成|併成|整合|merge|combine)[\s\S]{0,60}pdf[\s\S]{0,100}(docx?|word|xlsx?|excel|txt|文字檔|試算表|pptx?)|(合併|合成|併成|整合|merge|combine)[\s\S]{0,80}(docx?|word|xlsx?|excel|txt|文字檔|試算表|pptx?)[\s\S]{0,80}pdf/i,
@@ -61573,6 +61698,18 @@ _result
     // 開頭是「讓我／我來／接下來…」加上動作動詞、卻沒有任何工具呼叫，就退回請它
     // 真的做或如實說做不到；桌面版（auto agent mode）每一輪最多6次、網頁版2次，
     // 工具被強制關掉（_forceNoTools）時不攔。
+    // 模型說「我沒有某某工具」：程式替它搜尋所有領域的所有工具（工具被分到各個領域，最上層只列一部分），找到就退回請它用；每一輪最多 2 次。（見 tools/cap_reflect.js）
+    _noToolClaimNudge(text, counterHolder) {
+        try {
+            if (this._forceNoTools || !counterHolder || (counterHolder.cap || 0) >= 2) return null; if ((this._toolCallLog && this._toolCallLog.calls || []).some((c) => /^(delegate_to_subagent|get_tool_details|catalog_query)$/.test(c.name))) return null; // 已經查過了
+            const c = FaCapReflect.claimsNoTool(text); if (!c) return null;
+            const user = String(this._currentTurnUserText || ''); const root = new Set(this._getRootToolNames ? (this._getRootToolNames() || Object.keys(this.tools)) : Object.keys(this.tools)); const byTool = new Map();
+            for (const [id, d] of Object.entries(this.domains || {})) for (const n of (() => { let tn = d && d.toolNames; if (typeof tn === 'function') { try { tn = tn.call(d); } catch (_) { tn = []; } } return Array.isArray(tn) ? tn : []; })()) { if (!this.tools[n]) continue; if (!byTool.has(n)) byTool.set(n, []); byTool.get(n).push({ id, label: d.label || '' }); }
+            const entries = Object.entries(this.tools).map(([name, t]) => ({ name, domains: byTool.get(name) || [], text: String((t && t.description) || '').slice(0, 400), direct: root.has(name) })).filter((e) => !/^(delegate_|get_tool_details|catalog_)/.test(e.name));
+            const hits = FaCapReflect.search(user + ' ' + (c.concept || ''), entries, { k: 3 }); if (!hits.length) return null;
+            counterHolder.cap = (counterHolder.cap || 0) + 1; return FaCapReflect.nudgeText(c.claim, hits, user);
+        } catch (_) { return null; }
+    }
     _unfulfilledIntentNudge(text, counterHolder) {
         if (this._forceNoTools || !counterHolder || (counterHolder.count || 0) >= (this._isAutoAgentMode() ? 6 : 2)) return null;
         const t = String(text || '').trim();
@@ -65635,6 +65772,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         }
 
         if (this._tryFeedPendingAsk(textToSend)) return; // 有選擇題在等
+        { const ti = !hasAttachments && !this.advancedSettings.offlineMode ? FaTtsIntent.parse(textToSend) : null; if (ti) { this._runTtsIntent(textToSend, ti); return; } } // 「用英文語音說…」「把「…」念出來」：程式直接認得、直接合成，不經過模型（念的字一個字都不改）
         if (!hasAttachments && this._handleAskModeIntent(textToSend)) return; // 單獨一句「不要再問」「統一走建議」：記成偏好，不送給模型
         //：這段話是對它的補充，不是插話也不是新的一輪
         if (this.isResponding) {
@@ -66560,13 +66698,22 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         }
     }
 
+    // 自然語言的語音合成命令：跟斜線指令走同一條路，只是畫面上先放使用者原本打的那句話
+    _runTtsIntent(original, intent) {
+        const ctx = this._activeCtx; const run = this._chatRunner(ctx); this._chatMarkTouched && this._chatMarkTouched(original);
+        try { if (!this.commandHistory.includes(original)) { this.commandHistory.unshift(original); if (this.commandHistory.length > 50) this.commandHistory.pop(); localStorage.setItem(this.HISTORY_KEY, JSON.stringify(this.commandHistory)); } this.historyIndex = -1; } catch (_) { /* */ }
+        try { run._setRespondingState(true, '⏳ 語音合成中'); } catch (_) { /* */ }
+        Promise.resolve().then(() => run._handleMediaTextToSpeechCommand(intent.text, { echoText: original }))
+            .catch((e) => { try { run._pushAssistantMessage('⚠️ 語音合成失敗：' + String((e && e.message) || e), null); } catch (_) { /* */ } })
+            .finally(() => { try { run._setRespondingState(false, '', run.stopRequested ? 'stopped' : 'completed'); } catch (_) { /* */ } });
+    }
     // /media-text-to-speech <文字…> [聲音代號]
     // tw_stock_db客製: 2026-09-12——<聲音代號>是最後一個token、且剛好完全
     // 符合某個voice id（本地Kokoro或API）時才當作聲音代號抽掉，否則整段都
     // 當文字（避免文字內容剛好以某個詞結尾時被誤判——voice id都是固定格式
     // "xf_name"/"xx-XX-NameNeural"，一般句子結尾不會剛好完全符合）。留空時
     // 交給_synthesizeSpeech依文字語言自動判斷engine。
-    async _handleMediaTextToSpeechCommand(argsText) {
+    async _handleMediaTextToSpeechCommand(argsText, opts) {
         const raw = String(argsText || '').trim();
         if (!raw) { this._log('⚠️ /media-text-to-speech：請提供要念的文字，例如 /media-text-to-speech Hello world af_bella'); return; }
         const tokens = raw.split(/\s+/);
@@ -66579,7 +66726,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         }
         const voice = allVoices.find(v => v.id === voiceId);
         const label = voice ? voice.name : (voiceId || '自動判斷');
-        this.messages.push({ role: 'user', content: `🗣️ 語音合成（${label}）：${text.length > 60 ? text.slice(0, 60) + '…' : text}` });
+        this.messages.push({ role: 'user', content: (opts && opts.echoText) || `🗣️ 語音合成（${label}）：${text.length > 60 ? text.slice(0, 60) + '…' : text}` });
         const prog = this._createProgressWidget(`語音合成（${label}）`);
         const origLog = this._log.bind(this);
         this._log = (m) => { prog.update({ status: String(m).replace(/^🗣️\s*/, '') }); origLog(m); };
@@ -68550,6 +68697,13 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                         this._pushAssistantMessage(this._claimPathWarning(pc).trim(), null);
                     }
                 }
+                const capNudge = this._noToolClaimNudge(fullContent, this._intentGuard || (this._intentGuard = { count: 0 }));
+                if (capNudge) {
+                    this._log('🔎 模型說沒有某個工具：已替它搜尋所有領域的工具，退回請它用找到的。');
+                    this.messages.push({ role: 'system', content: capNudge });
+                    this._renderMessageHistory();
+                    return await this._loopFetch(apiKey, apiUrl, apiModel, 1, genOverrides);
+                }
                 const intentNudge = this._unfulfilledIntentNudge(fullContent, this._intentGuard || (this._intentGuard = { count: 0 }));
                 if (intentNudge) {
                     this._log('🛡️ 偵測到「說要做某件事卻沒有呼叫任何工具就結束」，已退回請AI真的去做。');
@@ -68829,6 +68983,13 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                         }
                         this._pushAssistantMessage(this._claimPathWarning(pc).trim(), null);
                     }
+                }
+                const capNudge = this._noToolClaimNudge(finalContent, this._intentGuard || (this._intentGuard = { count: 0 }));
+                if (capNudge) {
+                    this._log('🔎 模型說沒有某個工具：已替它搜尋所有領域的工具，退回請它用找到的。');
+                    this.messages.push({ role: 'system', content: capNudge });
+                    this._renderMessageHistory();
+                    return await this._loopFetchNative(apiKey, apiUrl, apiModel, 1, genOverrides);
                 }
                 const intentNudge = this._unfulfilledIntentNudge(finalContent, this._intentGuard || (this._intentGuard = { count: 0 }));
                 if (intentNudge) {
