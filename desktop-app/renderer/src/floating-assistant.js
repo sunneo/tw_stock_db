@@ -14656,7 +14656,7 @@ const holder = {};
                 if ((m = /^@([\w.$-]+)\s*=\s*(.*)$/.exec(raw))) {
                     let rest = m[2].replace(/\b(private|internal|external|common|linkonce_odr|weak|dso_local|unnamed_addr|local_unnamed_addr|hidden)\b/g, ' ').replace(/,\s*align\s+\d+/g, '').replace(/\s+/g, ' ').trim();
                     const isConst = /^constant\b/.test(rest); rest = rest.replace(/^(constant|global)\s+/, '');
-                    const r = parseTypeAt(rest, 0); const init = rest.slice(r.end).trim(); let g = { name: m[1], ty: r.ty, isConst, bytes: null, line: n + 1, init: null };
+                    const r = parseTypeAt(rest, 0); const init = rest.slice(r.end).trim(); let g = { name: m[1], ty: r.ty, isConst, bytes: null, line: n + 1, init: null, external: /\bexternal\b/.test(m[2]) };
                     if ((m = /^c"(.*)"$/.exec(init))) g.bytes = decodeCString(m[1]); else if (init) g.init = parseValue(init, r.ty);
                     mod.globals.push(g); continue;
                 }
@@ -14728,7 +14728,9 @@ const holder = {};
     const ICMP = new Set(['eq', 'ne', 'slt', 'sle', 'sgt', 'sge', 'ult', 'ule', 'ugt', 'uge']);
     const FCMP = new Set(['oeq', 'one', 'olt', 'ogt', 'ole', 'oge', 'une', 'ueq']);
     const isInt = (t) => t && t.k === 'int'; const isPtr = (t) => t && t.k === 'ptr';
-    function check(mod) {
+    // copts.partial：檢查「物件檔」——還沒連結，所以允許宣告了但沒有實作的函式、沒有進入點
+    function check(mod, copts) {
+        const partial = !!(copts && copts.partial);
         const errors = []; const E = (line, msg) => errors.push({ line, msg });
         const globals = new Map(mod.globals.map((g) => [g.name, g])); const funcs = new Map();
         for (const d of mod.declares) { funcs.set(d.name, { ret: d.ret, params: d.params, declared: true }); if (INTRINSICS[d.name]) { if (d.params.map(typeStr).join() !== INTRINSICS[d.name].params.map(typeStr).join() || typeStr(d.ret) !== typeStr(INTRINSICS[d.name].ret)) E(d.line, '@' + d.name + ' 的簽名不對'); } else if (!WASI[d.name]) E(d.line, '宣告的函式 @' + d.name + ' 沒有實作（支援的 WASI：' + Object.keys(WASI).join('、') + '；內建的 libc：puts、putchar、malloc、calloc、free、strlen、memcpy、memset、memcmp、strcmp、abs、exit、getchar；printf 這類可變參數函式不支援）'); else if (!INTRINSICS[d.name] && typeStr(WASI[d.name].ret) !== typeStr(d.ret) || d.params.map(typeStr).join() !== WASI[d.name].params.map(typeStr).join()) E(d.line, '@' + d.name + ' 的簽名要是 ' + typeStr(WASI[d.name].ret) + ' (' + WASI[d.name].params.map(typeStr).join(', ') + ')'); }
@@ -14792,7 +14794,7 @@ const holder = {};
             }
         }
         if (!mod.funcs.some((f) => f.name === '_start' || f.name === 'main')) errors.push({ line: 0, msg: '沒有進入點 @_start（或 @main）' });
-        return errors;
+        return partial ? errors.filter((e) => !/沒有實作|沒有進入點/.test(e.msg)) : errors;
     }
     function resolveShallow(mod, t) { try { return resolve(mod, t); } catch (_) { return t; } }
     // getelementptr 的結果型別（索引第一個走過指標、之後進入 struct 或 array）
@@ -14975,7 +14977,7 @@ const holder = {};
     function runSync(bytes, io) {
         let mem = null; const wasi = makeWasi(io, () => mem); let instance;
         try { instance = new WebAssembly.Instance(new WebAssembly.Module(bytes), wasi.imports); }
-        catch (e) { const msg = String((e && e.message) || e); if (/main thread|compile|RangeError/i.test(msg) && bytes.length > 4096) throw new Error('這個環境的主執行緒不允許同步編譯較大的 wasm（' + bytes.length + ' 位元組）：' + msg + '。請改用 llvm_execute 工具（非同步編譯，不受這個限制）'); throw e; }
+        catch (e) { const msg = String((e && e.message) || e); if (/main thread|compile|RangeError/i.test(msg) && bytes.length > 4096) throw new Error('這個瀏覽器不允許在主執行緒同步編譯這麼大的 wasm（' + bytes.length + ' 位元組）：' + msg + '。請改用 llvm_execute 工具（非同步編譯，不受這個限制）'); throw e; }
         mem = instance.exports.memory; return finishRun(instance, wasi);
     }
 
@@ -15022,6 +15024,57 @@ const holder = {};
         for (const f of extra.mod.funcs) if (!mod.funcs.some((x) => x.name === f.name)) mod.funcs.push(f);
         return [...want].filter((n) => n !== '__w' && n !== '__alloc');
     }
+    // =====================================================================
+    // 物件檔與連結器：llc -c 把每個 .ll 編成 .o（解析＋檢查後的模組，存成文字；放在沙盒檔案系統就會跟著持久化，放 /mnt 就是存進 File Access Point），
+    // llink 把好幾個 .o（或 .ll）合併成一個程式——解決符號、檢查重複與型別衝突，再連結 libc、編成 wasm。分開編譯、只重連結。
+    // =====================================================================
+    function serializeModule(mod) {
+        return JSON.stringify({ fmt: 'fa-llvm-obj', v: 1, mod }, (k, v) => (k === 'regTypes' ? undefined : typeof v === 'bigint' ? { $big: v.toString() } : v instanceof Map ? { $map: Array.from(v.entries()) } : v));
+    }
+    function deserializeModule(text) {
+        let o; try { o = JSON.parse(text, (k, v) => (v && typeof v === 'object' && v.$big !== undefined ? BigInt(v.$big) : v && typeof v === 'object' && Array.isArray(v.$map) ? new Map(v.$map) : v)); } catch (e) { throw new Error('不是 LLVM 物件檔（.o）：' + e.message); }
+        if (!o || o.fmt !== 'fa-llvm-obj' || !o.mod) throw new Error('不是 LLVM 物件檔（.o）'); return o.mod;
+    }
+    const isObjectText = (t) => String(t).slice(0, 40).indexOf('"fmt":"fa-llvm-obj"') >= 0;
+    // 解析並檢查一份 .ll，回傳物件檔文字（allowUndefined：允許外部符號）
+    function compileObject(text) {
+        const p = parse(text); if (p.errors.length) return { errors: p.errors, stage: 'parse' };
+        const errs = check(p.mod, { partial: true }); if (errs.length) return { errors: errs, stage: 'check' };
+        return { obj: serializeModule(p.mod), mod: p.mod, stage: 'ok', undefinedSymbols: p.mod.declares.filter((d) => !WASI[d.name] && !INTRINSICS[d.name] && !LIBC_NAMES.includes(d.name) && !p.mod.funcs.some((f) => f.name === d.name)).map((d) => d.name) };
+    }
+    function linkModules(mods) {
+        const out = { types: new Map(), globals: [], funcs: [], declares: [], triple: '' }; const errors = []; const E = (line, msg) => errors.push({ line, msg });
+        const fdef = new Map(), gdef = new Map();
+        for (const m of mods) {
+            if (m.triple && !out.triple) out.triple = m.triple;
+            for (const [k, v] of m.types) { const have = out.types.get(k); if (have && typeStr(have) !== typeStr(v)) E(0, '型別 %' + k + ' 在不同檔案裡的定義不一樣'); else out.types.set(k, v); }
+            for (const g of m.globals) { const have = gdef.get(g.name); if (!have) { gdef.set(g.name, g); out.globals.push(g); } else if (have.external && !g.external) { out.globals[out.globals.indexOf(have)] = g; gdef.set(g.name, g); } else if (!have.external && !g.external) E(g.line, '全域 @' + g.name + ' 在多個檔案裡都有定義'); else if (!sameType(have.ty, g.ty)) E(g.line, '全域 @' + g.name + ' 在不同檔案裡的型別不一樣'); }
+            for (const f of m.funcs) { if (fdef.has(f.name)) E(f.line, '函式 @' + f.name + ' 在多個檔案裡都有定義'); else { fdef.set(f.name, f); out.funcs.push(f); } }
+        }
+        const seen = new Set();
+        for (const m of mods) for (const d of m.declares) {
+            const f = fdef.get(d.name);
+            if (f) { if (!sameType(f.ret, d.ret) || f.params.length !== d.params.length || f.params.some((p, i) => !sameType(p.ty, d.params[i]))) E(d.line, '@' + d.name + ' 的宣告跟定義的簽名不一致'); continue; }
+            if (!seen.has(d.name)) { seen.add(d.name); out.declares.push(d); }
+        }
+        for (const d of out.declares) if (!WASI[d.name] && !INTRINSICS[d.name] && !LIBC_NAMES.includes(d.name)) E(d.line, '未定義的符號 @' + d.name + '（沒有任何檔案定義它，也不是內建的 libc 或 WASI 函式）');
+        for (const g of out.globals) if (g.external && g.name !== '__heap_base') E(g.line, '全域 @' + g.name + ' 宣告成 external，但沒有任何檔案定義它');
+        return { mod: out, errors };
+    }
+    // 輸入是「文字」陣列（.ll 或 .o 混合都行）。回傳 { mod } 或 { errors, stage }
+    function loadAndLink(texts) {
+        const mods = []; for (let i = 0; i < texts.length; i++) { const t = texts[i].text; const name = texts[i].name || ('#' + (i + 1)); if (isObjectText(t)) { try { mods.push(deserializeModule(t)); } catch (e) { return { errors: [{ line: 0, msg: name + '：' + e.message }], stage: 'load' }; } } else { const p = parse(t); if (p.errors.length) return { errors: p.errors.map((e) => ({ line: e.line, msg: (texts.length > 1 ? name + ':' : '') + e.msg })), stage: 'parse' }; mods.push(p.mod); } }
+        const l = linkModules(mods); if (l.errors.length) return { errors: l.errors, stage: 'link' }; return { mod: l.mod, stage: 'ok' };
+    }
+    // 連結好的模組 → wasm（連結 libc、檢查、輸出）
+    function compileModule(mod, opts) {
+        opts = opts || {}; let linked = []; try { linked = linkLibc(mod); } catch (e) { return { errors: [{ line: 0, msg: e.message }], stage: 'link' }; }
+        const errs = check(mod); if (errs.length) return { errors: errs, stage: 'check' };
+        try { return { wasm: toWasm(mod, { fuel: opts.fuel, entry: opts.entry }), linked, stage: 'ok' }; } catch (e) { return { errors: [{ line: 0, msg: String((e && e.message) || e) }], stage: 'wasm' }; }
+    }
+    // 多個檔案一次：連結＋編譯。texts：[{ name, text }]
+    function compileMany(texts, opts) { const l = loadAndLink(texts); if (!l.mod) return l; return compileModule(l.mod, opts); }
+
     // 給終端機指令用：IR 文字（或 wasm 位元組）→ 連結 libc → 檢查 → wasm。回傳 { wasm } 或 { errors }
     function compileIr(text, opts) {
         opts = opts || {}; const p = parse(text); if (p.errors.length) return { errors: p.errors, stage: 'parse' };
@@ -15106,7 +15159,7 @@ const holder = {};
         return { ok: match, stage: match ? 'done' : 'verify', ir: g.ir, wasm, warnings: g.warnings, expected: g.expected, stdout: r.stdout, exitCode: r.exitCode, trap: r.trap, bytes: wasm.length };
     }
 
-    return { parse, check, toWasm, run, runSync, makeWasi, linkLibc, compileIr, LIBC_NAMES, WASI_NAMES: Object.keys(WASI), fromModel, build, parseType, typeStr, layout, DATA_BASE, STACK_TOP, RUNTIME_IR };
+    return { parse, check, toWasm, run, runSync, serializeModule, deserializeModule, isObjectText, compileObject, linkModules, loadAndLink, compileModule, compileMany, makeWasi, linkLibc, compileIr, LIBC_NAMES, WASI_NAMES: Object.keys(WASI), fromModel, build, parseType, typeStr, layout, DATA_BASE, STACK_TOP, RUNTIME_IR };
 });
 
 }).call(null, undefined, holder);
@@ -23011,6 +23064,7 @@ const SANDBOX_COMMAND_REGISTRY = {
     llc:     { kind: 'llvm' },
     llcheck: { kind: 'llvm' },
     wasmrun: { kind: 'llvm' },
+    llink:   { kind: 'llvm' },
     // tw_stock_db客製: 2026-09-25使用者實測回報——sleep/curl/wget/httping
     // 原本只有「送進WASM之前的JS層攔截」（TERMINAL_SHELL_BUILTINS）這一條
     // 路，只在「這一行的第一個詞」就是這些指令時才生效，`for`/`while`/`if`
@@ -33320,12 +33374,12 @@ ${fnData.code}
             '用途：驗證手寫或模型產生的 IR、教學、把 UML 產生的 IR（uml_to_wasm）改過再跑、做小型的底層實驗。emit：run（預設，編譯並執行）、check（只檢查）、wasm（編成 .wasm 並交付檔案）。' +
             '支援範圍（第一版）：i1／i8／i32／i64／double、指標（ptr 或 T*）、struct、陣列、字串常數（c"..."）、全域變數、br／if／迴圈、直接呼叫、記憶體讀寫、整數與浮點運算、型別轉換；進入點是 @_start（void）或 @main（回傳結束碼）。' +
             '內建的 libc：puts、putchar、getchar、malloc、calloc、free、strlen、memcpy、memset、memcmp、strcmp、abs、exit（宣告了就自動連結；printf 這類可變參數函式不支援，用 puts／putchar）；WASI：fd_write、fd_read、args_get、environ_get、clock_time_get、random_get、proc_exit。' +
-            '不支援：phi、例外、函式指標、可變參數、float（只有 double）、有號的 i8／i1 比較（先 sext）。預設有步數上限（一億次區塊轉換），無窮迴圈會被中止並說明；fuel 給 0＝不設上限。終端機裡也有同樣的指令：lli（執行）、llc（編譯）、llcheck（檢查）、wasmrun（執行 .wasm）。',
+            '不支援：phi、例外、函式指標、可變參數、float（只有 double）、有號的 i8／i1 比較（先 sext）。預設有步數上限（一億次區塊轉換），無窮迴圈會被中止並說明；fuel 給 0＝不設上限。終端機裡也有同樣的指令：lli（執行）、llc（編譯；-c 產生物件檔）、llcheck（檢查）、llink（連結多個檔案）、wasmrun（執行 .wasm）；物件檔放在 /mnt 底下就是存進 File Access Point。',
             async function (rawArgs) {
                 let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 try { return JSON.stringify(await this._llvmExecute(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
             },
-            { type: 'object', properties: { ir: { type: 'string', description: 'LLVM IR 文字' }, emit: { type: 'string', enum: ['run', 'check', 'wasm'] }, args: { type: 'array', items: { type: 'string' }, description: '程式的命令列參數' }, stdin: { type: 'string' }, env: { type: 'object' }, fuel: { type: 'integer', description: '步數上限（區塊轉換次數），0＝不限' }, name: { type: 'string' } }, required: ['ir'] }
+            { type: 'object', properties: { ir: { type: 'string', description: 'LLVM IR 文字' }, emit: { type: 'string', enum: ['run', 'check', 'wasm'] }, args: { type: 'array', items: { type: 'string' }, description: '程式的命令列參數' }, stdin: { type: 'string' }, env: { type: 'object' }, fuel: { type: 'integer', description: '步數上限（區塊轉換次數），0＝不限' }, name: { type: 'string' }, modules: { type: 'array', items: { type: 'object' }, description: '選填：要一起連結的其他檔案 [{name, ir}]（ir 可以是 .ll 文字，也可以是 llc -c 產生的物件檔文字）；連結器會解決符號、擋重複定義與簽名衝突' } }, required: ['ir'] }
         );
         registerOptional('uml_to_wasm',
             '把 UML 設計編成 LLVM IR 再編成 WebAssembly（wasm32-wasi），在這裡真的跑一次並驗證：類別→struct、操作→函式、使用案例→會依序呼叫操作的函式；執行輸出必須跟 UML 預期的呼叫軌跡一致才算通過。產出 model.ll（LLVM IR 文字）、model.wasm、run.js（用 node 跑）。' +
@@ -34904,7 +34958,7 @@ ${fnData.code}
         );
 
         registerOptional('terminal_run',
-            `在指定的終端機裡執行一行bash指令（跟你自己在畫面上打字是同一個沙盒busybox ash環境、同一個目前工作目錄），等執行完畢才回傳，拿到{ok, exit_code, stdout, stderr}——這是這個沙盒目前唯一「能拿到結構化執行結果」的方式（直接在終端機打字只會印到畫面上，看不到exit code）。同一輪畫面上使用者也看得到指令即時輸出，不會偷偷跑。output_file/stderr_file選填：把這次輸出額外寫進沙盒檔案系統的指定路徑（JS層直接寫入accumulate好的內容，不是靠shell的>重導向，所以不會影響你同時拿到的stdout/stderr）。⚠️每次呼叫是全新的wasm執行，沒有真正的長時間背景程序概念，不要拿來跑需要人機互動/常駐監聽的指令。除了busybox指令，也支援sleep（秒數，可加s/m/h單位）、curl/wget（用法跟標準的一樣：curl支援-s -S -k -L -f -i -I -o -O -X -H -d/--data-* -u -A -e -b -m -w -G --url與合併旗標、管線與重導向（curl -s URL | tail -50、curl URL > file、2>/dev/null）、沒加-L不跟隨轉址、-f失敗離開碼22；wget支援-q -O(含-O -) -P --header --post-data --user/--password --no-check-certificate，預設存檔並跟隨轉址；網路請求走既有的proxy機制，跨網域常需要Advance Settings先設定assetBackupProxyUrl）、httping（-c指定次數）、m4（GNU m4的簡化子集，define/ifelse/ifdef/include等）、lli／llc／llcheck／wasmrun（LLVM IR：lli 編成wasm並執行、llc 只編譯成.wasm、llcheck 只檢查、wasmrun 執行.wasm；可接管線與重新導向，內建 puts／putchar／malloc／strlen等最小libc，printf不支援，預設有步數上限防無窮迴圈）、make（讀取cwd底下的Makefile，簡化子集不支援條件式/include/函式呼叫）——sleep/httping/m4/make不是真的busybox applet，是JS層實作的，httping/m4/make不能跟其他指令用管線接，用各自的輸出檔案旗標取代重導向。**切換工作目錄要單獨一次呼叫只下'cd <path>'（整行只有cd，不要跟其他指令用&&接在一起），下一個指令再另外呼叫一次**——這個沙盒沒有真正的shell parser，'cd x && y'這種複合指令裡的cd不會被偵測到、不會持續影響之後的cwd（單獨的cd指令才會被正確辨識並記住）。參數: {"id_or_name":"terminal_list查到的id或name","command":"要執行的bash指令","output_file":"（選填）把stdout寫進這個沙盒內的路徑","stderr_file":"（選填）把stderr寫進這個沙盒內的路徑"}`,
+            `在指定的終端機裡執行一行bash指令（跟你自己在畫面上打字是同一個沙盒busybox ash環境、同一個目前工作目錄），等執行完畢才回傳，拿到{ok, exit_code, stdout, stderr}——這是這個沙盒目前唯一「能拿到結構化執行結果」的方式（直接在終端機打字只會印到畫面上，看不到exit code）。同一輪畫面上使用者也看得到指令即時輸出，不會偷偷跑。output_file/stderr_file選填：把這次輸出額外寫進沙盒檔案系統的指定路徑（JS層直接寫入accumulate好的內容，不是靠shell的>重導向，所以不會影響你同時拿到的stdout/stderr）。⚠️每次呼叫是全新的wasm執行，沒有真正的長時間背景程序概念，不要拿來跑需要人機互動/常駐監聽的指令。除了busybox指令，也支援sleep（秒數，可加s/m/h單位）、curl/wget（用法跟標準的一樣：curl支援-s -S -k -L -f -i -I -o -O -X -H -d/--data-* -u -A -e -b -m -w -G --url與合併旗標、管線與重導向（curl -s URL | tail -50、curl URL > file、2>/dev/null）、沒加-L不跟隨轉址、-f失敗離開碼22；wget支援-q -O(含-O -) -P --header --post-data --user/--password --no-check-certificate，預設存檔並跟隨轉址；網路請求走既有的proxy機制，跨網域常需要Advance Settings先設定assetBackupProxyUrl）、httping（-c指定次數）、m4（GNU m4的簡化子集，define/ifelse/ifdef/include等）、lli／llc／llcheck／llink／wasmrun（LLVM IR：lli 編成wasm並執行、llc 只編譯成.wasm（llc -c 編成物件檔.o）、llcheck 只檢查、llink 連結器把多個.o或.ll合併成.wasm、wasmrun 執行.wasm；可接管線與重新導向，內建 puts／putchar／malloc／strlen等最小libc，printf不支援，預設有步數上限防無窮迴圈）、make（讀取cwd底下的Makefile，簡化子集不支援條件式/include/函式呼叫）——sleep/httping/m4/make不是真的busybox applet，是JS層實作的，httping/m4/make不能跟其他指令用管線接，用各自的輸出檔案旗標取代重導向。**切換工作目錄要單獨一次呼叫只下'cd <path>'（整行只有cd，不要跟其他指令用&&接在一起），下一個指令再另外呼叫一次**——這個沙盒沒有真正的shell parser，'cd x && y'這種複合指令裡的cd不會被偵測到、不會持續影響之後的cwd（單獨的cd指令才會被正確辨識並記住）。參數: {"id_or_name":"terminal_list查到的id或name","command":"要執行的bash指令","output_file":"（選填）把stdout寫進這個沙盒內的路徑","stderr_file":"（選填）把stderr寫進這個沙盒內的路徑"}`,
             async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -58578,39 +58632,66 @@ _result
         const enc = new TextEncoder(), dec = new TextDecoder('utf-8'); const NL = String.fromCharCode(10); const L = FaLlvm;
         const cmd = String(ctx.argv[0] || 'lli').split('/').pop(); const rest = ctx.argv.slice(1);
         const out = (t) => ctx.stdout(enc.encode(t)); const err = (t) => ctx.stderr(enc.encode(t));
-        const help = { lli: 'lli [--fuel N] 檔案.ll|檔案.wasm|- [參數…]　把 LLVM IR 編成 wasm 並執行（- 是從標準輸入讀）。--fuel 0＝不設步數上限', llc: 'llc 檔案.ll|- [-o 輸出.wasm|-] [-v]　把 LLVM IR 編成 wasm（預設輸出檔名是把副檔名換成 .wasm）', llcheck: 'llcheck [-v] 檔案.ll…　只檢查 IR（解析、型別、標籤、呼叫），錯誤帶行號', wasmrun: 'wasmrun 檔案.wasm|- [參數…]　執行 wasm（WASI：輸出、輸入、參數、環境變數、時間、亂數、結束碼）' };
-        let fuel = 100000000, outPath = null, verbose = false; const files = []; let progArgs = [];
+        const help = {
+            lli: 'lli [--fuel N] [-l 檔.o|檔.ll]… 檔.ll|檔.o|檔.wasm|- [參數…]　把 LLVM IR 編成 wasm 並執行（- 是從標準輸入讀；-l 加入要一起連結的檔案）。--fuel 0＝不設步數上限',
+            llc: 'llc [-c] 檔.ll|- [-o 輸出] [-v]　編成 wasm（預設輸出把副檔名換成 .wasm）；-c＝只編成物件檔 .o（先解析與檢查，外部符號留給連結）',
+            llink: 'llink [-o 輸出.wasm|輸出.o] [-v] 檔.o|檔.ll…　連結器：把好幾個物件檔（或 .ll）合併，解決符號、擋重複定義與簽名衝突，連結內建 libc，輸出 .wasm（預設 a.wasm）或合併後的 .o',
+            llcheck: 'llcheck [-v] 檔.ll…　只檢查 IR（解析、型別、標籤、呼叫），錯誤帶行號',
+            wasmrun: 'wasmrun 檔.wasm|- [參數…]　執行 wasm（WASI：輸出、輸入、參數、環境變數、時間、亂數、結束碼）'
+        };
+        let fuel = 100000000, outPath = null, verbose = false, objOnly = false; const files = [], libs = []; let progArgs = [];
         for (let i = 0; i < rest.length; i++) {
             const a = rest[i];
             if (a === '-h' || a === '--help') { out(help[cmd] + NL); return 0; }
             if (a === '--fuel' || a === '-fuel') { fuel = Number(rest[++i]); if (!(fuel >= 0)) { err(cmd + ': --fuel 要是 0 或正整數' + NL); return 2; } continue; }
-            if (a === '-o' && cmd === 'llc') { outPath = rest[++i]; continue; }
+            if (a === '-o' && (cmd === 'llc' || cmd === 'llink')) { outPath = rest[++i]; continue; }
+            if (a === '-c' && cmd === 'llc') { objOnly = true; continue; }
+            if (a === '-l' && cmd === 'lli') { libs.push(rest[++i]); continue; }
             if (a === '-v') { verbose = true; continue; }
             files.push(a); if (cmd === 'lli' || cmd === 'wasmrun') { progArgs = rest.slice(i + 1); break; }
         }
         if (!files.length) { err(help[cmd] + NL); return 2; }
         const readBytes = (f) => { const b = f === '-' ? ctx.stdin() : ctx.fs.read(f); if (b === null || b === undefined) throw new Error('找不到檔案'); return typeof b === 'string' ? enc.encode(b) : b; };
         const isWasm = (b) => b && b.length > 4 && b[0] === 0 && b[1] === 0x61 && b[2] === 0x73 && b[3] === 0x6d;
-        const showErrors = (f, errors) => { for (const e of errors.slice(0, 30)) err(f + ':' + (e.line ? e.line + ':' : '') + ' ' + e.msg + NL); if (errors.length > 30) err('…還有 ' + (errors.length - 30) + ' 個錯誤' + NL); };
-        const compile = (f, bytes, withFuel) => { const r = L.compileIr(dec.decode(bytes), { fuel: withFuel ? fuel : 0 }); if (!r.wasm) { showErrors(f, r.errors); return null; } if (verbose && r.linked && r.linked.length) err(cmd + ': 連結內建 libc：' + r.linked.join('、') + NL); return r.wasm; };
+        const showErrors = (f, errors) => { for (const e of errors.slice(0, 30)) err((f ? f + ':' : '') + (e.line ? e.line + ':' : '') + ' ' + e.msg + NL); if (errors.length > 30) err('…還有 ' + (errors.length - 30) + ' 個錯誤' + NL); };
         const code = (n) => ((Number(n) % 256) + 256) % 256;
+        const baseOf = (f, ext) => { const dot = f.lastIndexOf('.'); return (dot > f.lastIndexOf('/') ? f.slice(0, dot) : f) + ext; };
+        const readTexts = (list) => list.map((f) => ({ name: f, text: dec.decode(readBytes(f)) }));
+        const compileAll = (list, withFuel) => { const r = L.compileMany(readTexts(list), { fuel: withFuel ? fuel : 0 }); if (!r.wasm) { showErrors('', r.errors); return null; } if (verbose && r.linked && r.linked.length) err(cmd + ': 連結內建 libc：' + r.linked.join('、') + NL); return r.wasm; };
         try {
             if (cmd === 'llcheck') {
                 let bad = 0;
-                for (const f of files) { let b; try { b = readBytes(f); } catch (e) { err('llcheck: ' + f + ': ' + String((e && e.message) || e) + NL); bad++; continue; } const r = L.compileIr(dec.decode(b), {}); if (!r.wasm) { showErrors(f, r.errors); bad++; } else out(f + ': OK（wasm ' + r.wasm.length + ' 位元組' + (r.linked && r.linked.length ? '，連結 libc：' + r.linked.join('、') : '') + '）' + NL); }
+                for (const f of files) { let b; try { b = readBytes(f); } catch (e) { err('llcheck: ' + f + ': ' + String((e && e.message) || e) + NL); bad++; continue; } const t = dec.decode(b); if (L.isObjectText(t)) { out(f + ': 是物件檔（.o），已經檢查過了' + NL); continue; } const r = L.compileIr(t, {}); if (!r.wasm) { showErrors(f, r.errors); bad++; } else out(f + ': OK（wasm ' + r.wasm.length + ' 位元組' + (r.linked && r.linked.length ? '，連結 libc：' + r.linked.join('、') : '') + '）' + NL); }
                 return bad ? 1 : 0;
             }
-            if (cmd === 'llc') {
-                const f = files[0]; let b; try { b = readBytes(f); } catch (e) { err('llc: ' + f + ': ' + String((e && e.message) || e) + NL); return 1; }
-                const w = compile(f, b, false); if (!w) return 1;
-                const dot = f.lastIndexOf('.'); const dst = outPath || (f === '-' ? 'a.wasm' : (dot > f.lastIndexOf('/') ? f.slice(0, dot) : f) + '.wasm');
-                if (dst === '-') ctx.stdout(w); else { ctx.fs.write(dst, w); if (verbose) err('llc: 寫入 ' + dst + '（' + w.length + ' 位元組）' + NL); }
+            if (cmd === 'llc' && objOnly) {
+                let bad = 0; if (outPath && files.length > 1) { err('llc: -c 搭配 -o 只能給一個輸入檔' + NL); return 2; }
+                for (const f of files) {
+                    let b; try { b = readBytes(f); } catch (e) { err('llc: ' + f + ': ' + String((e && e.message) || e) + NL); bad++; continue; }
+                    const r = L.compileObject(dec.decode(b)); if (!r.obj) { showErrors(f, r.errors); bad++; continue; }
+                    const dst = outPath || (f === '-' ? 'a.o' : baseOf(f, '.o')); const bytes = enc.encode(r.obj);
+                    if (dst === '-') ctx.stdout(bytes); else { ctx.fs.write(dst, bytes); if (verbose) err('llc: 寫入 ' + dst + '（' + bytes.length + ' 位元組' + (r.undefinedSymbols.length ? '，外部符號：' + r.undefinedSymbols.join('、') : '') + '）' + NL); }
+                }
+                return bad ? 1 : 0;
+            }
+            if (cmd === 'llink' || cmd === 'llc') {
+                if (cmd === 'llc' && files.length > 1) { err('llc: 只能給一個輸入檔（要合併多個檔案請用 llink）' + NL); return 2; }
+                const dst = outPath || (cmd === 'llink' ? 'a.wasm' : (files[0] === '-' ? 'a.wasm' : baseOf(files[0], '.wasm')));
+                if (/[.]o$/.test(dst)) { // llink -o 合併.o：只連結，不編譯
+                    const l = L.loadAndLink(readTexts(files)); if (!l.mod) { showErrors('', l.errors); return 1; }
+                    const bytes = enc.encode(L.serializeModule(l.mod)); ctx.fs.write(dst, bytes); if (verbose) err('llink: 寫入 ' + dst + '（' + bytes.length + ' 位元組）' + NL); return 0;
+                }
+                const w = compileAll(files, false); if (!w) return 1;
+                if (dst === '-') ctx.stdout(w); else { ctx.fs.write(dst, w); if (verbose) err(cmd + ': 寫入 ' + dst + '（' + w.length + ' 位元組）' + NL); }
                 return 0;
             }
             // lli、wasmrun
             const f = files[0]; let b; try { b = readBytes(f); } catch (e) { err(cmd + ': ' + f + ': ' + String((e && e.message) || e) + NL); return 1; }
             let wasm;
-            if (isWasm(b)) wasm = b; else if (cmd === 'wasmrun') { err('wasmrun: ' + f + ' 不是 wasm 檔（要執行 LLVM IR 請用 lli）' + NL); return 1; } else { wasm = compile(f, b, true); if (!wasm) return 1; }
+            if (isWasm(b)) { if (libs.length) { err(cmd + ': .wasm 已經連結好了，不能再加 -l' + NL); return 2; } wasm = b; }
+            else if (cmd === 'wasmrun') { err('wasmrun: ' + f + ' 不是 wasm 檔（要執行 LLVM IR 請用 lli）' + NL); return 1; }
+            else { const list = libs.concat([f]); const texts = []; for (const x of list) { if (x === '-') texts.push({ name: 'stdin', text: dec.decode(b) }); else { try { texts.push({ name: x, text: dec.decode(x === f ? b : readBytes(x)) }); } catch (e) { err(cmd + ': ' + x + ': ' + String((e && e.message) || e) + NL); return 1; } } }
+                const r = L.compileMany(texts, { fuel }); if (!r.wasm) { showErrors('', r.errors); return 1; } if (verbose && r.linked && r.linked.length) err(cmd + ': 連結內建 libc：' + r.linked.join('、') + NL); wasm = r.wasm; }
             const stdinBytes = f === '-' ? new Uint8Array(0) : (() => { try { return ctx.stdin(); } catch (_) { return new Uint8Array(0); } })();
             const r = L.runSync(wasm, { args: [f === '-' ? 'stdin' : f].concat(progArgs), env: ctx.env || {}, stdin: stdinBytes });
             if (r.stdoutBytes && r.stdoutBytes.length) ctx.stdout(r.stdoutBytes); if (r.stderrBytes && r.stderrBytes.length) ctx.stderr(r.stderrBytes);
@@ -58623,11 +58704,11 @@ _result
         const NL = String.fromCharCode(10); const ir = String((a && a.ir) || ''); if (!ir.trim()) return { ok: false, error: '缺少 ir（LLVM IR 文字）' };
         if (typeof WebAssembly === 'undefined') return { ok: false, error: '這個環境沒有 WebAssembly' };
         const fuel = a.fuel === 0 ? 0 : (Number(a.fuel) > 0 ? Math.min(Number(a.fuel), 2000000000) : 100000000);
-        const c = FaLlvm.compileIr(ir, { fuel }); const fmt = (e) => (e.line ? e.line + ': ' : '') + e.msg;
+        const texts = [{ name: 'main.ll', text: ir }].concat((Array.isArray(a.modules) ? a.modules : []).map((m, i) => ({ name: String((m && m.name) || ('module' + (i + 1))), text: String((m && (m.ir || m.text)) || '') }))); const c = FaLlvm.compileMany(texts, { fuel }); const fmt = (e) => (e.line ? e.line + ': ' : '') + e.msg;
         if (!c.wasm) return { ok: false, stage: c.stage, errors: c.errors.slice(0, 20).map(fmt), hint: '修好這些行再呼叫一次；支援的範圍見工具說明' };
         const emit = a.emit === 'check' || a.emit === 'wasm' ? a.emit : 'run';
         if (emit === 'check') return { ok: true, stage: 'ok', wasm_bytes: c.wasm.length, linked_libc: c.linked };
-        if (emit === 'wasm') { const noFuel = FaLlvm.compileIr(ir, { fuel: 0 }); const z = await this._umlZip([{ path: 'model.ll', content: ir }, { path: 'model.wasm', content: noFuel.wasm }], String(a.name || 'program'), 'wasm'); const res = { ok: true, stage: 'ok', zip_file_id: z.id, filename: z.filename, wasm_bytes: noFuel.wasm.length, linked_libc: c.linked }; await this._deliverToolResultFile(res, 'zip_file_id', (x) => '📎 LLVM IR → wasm：' + x.filename); return res; }
+        if (emit === 'wasm') { const noFuel = FaLlvm.compileMany(texts, { fuel: 0 }); const z = await this._umlZip([{ path: 'model.ll', content: ir }, { path: 'model.wasm', content: noFuel.wasm }], String(a.name || 'program'), 'wasm'); const res = { ok: true, stage: 'ok', zip_file_id: z.id, filename: z.filename, wasm_bytes: noFuel.wasm.length, linked_libc: c.linked }; await this._deliverToolResultFile(res, 'zip_file_id', (x) => '📎 LLVM IR → wasm：' + x.filename); return res; }
         const enc = new TextEncoder(); const r = await FaLlvm.run(c.wasm, { args: [String(a.name || 'prog')].concat(Array.isArray(a.args) ? a.args.map(String) : []), env: a.env && typeof a.env === 'object' ? a.env : {}, stdin: enc.encode(String(a.stdin || '')) });
         const clip = (t) => (t.length > 20000 ? t.slice(0, 20000) + NL + '…（輸出太長，只留前 20000 字）' : t);
         return { ok: !r.trap && r.exitCode === 0, stage: 'run', exit_code: r.exitCode, stdout: clip(r.stdout), stderr: clip(r.stderr), trap: r.trap || undefined, linked_libc: c.linked && c.linked.length ? c.linked : undefined, wasm_bytes: c.wasm.length };

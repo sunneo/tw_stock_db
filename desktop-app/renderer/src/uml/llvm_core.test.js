@@ -157,5 +157,27 @@ function fromParts(src, withRuntime) {
     check('一般大小的配置照常', q.exit === 5, q);
     check('UML 產生的程式也用同一個配置器', /define ptr @malloc/.test(L.fromModel(U.parseDsl('model: A\nactor: U\nclass C { +id:int; +f():void }\nusecase t: U -> C.f()').model).ir));
 
+    // ---- 物件檔（.o）與連結器：分開編譯、只重連結 ----
+    const LIB = ['@counter = global i32 100', '@big = global i64 5000000000', '%Pt = type { i32, i32 }', 'define i32 @add(i32 %a, i32 %b) {', 'entry:', '  %c = add i32 %a, %b', '  ret i32 %c', '}', 'define i32 @bump() {', 'entry:', '  %v = load i32, ptr @counter', '  %w = add i32 %v, 1', '  store i32 %w, ptr @counter', '  ret i32 %w', '}', 'define i32 @bigdiv() {', 'entry:', '  %v = load i64, ptr @big', '  %d = sdiv i64 %v, 1000000000', '  %t = trunc i64 %d to i32', '  ret i32 %t', '}'].join(NL);
+    const APP = ['declare i32 @add(i32, i32)', 'declare i32 @bump()', 'declare i32 @bigdiv()', '@counter = external global i32', 'declare i32 @puts(ptr)', 'define i32 @main() {', 'entry:', '  %x = call i32 @add(i32 3, i32 4)', '  %b = call i32 @bump()', '  %cv = load i32, ptr @counter', '  %d = call i32 @bigdiv()', '  %s1 = add i32 %x, %cv', '  %s2 = add i32 %s1, %d', '  ret i32 %s2', '}'].join(NL);
+    const oLib = L.compileObject(LIB), oApp = L.compileObject(APP);
+    check('物件檔：各自編譯，外部符號允許', oLib.obj && oApp.obj && oApp.undefinedSymbols.join() === 'add,bump,bigdiv', { a: oApp.errors, u: oApp.undefinedSymbols });
+    check('物件檔是文字，能辨認', L.isObjectText(oLib.obj) && !L.isObjectText(LIB));
+    check('物件檔：i64 常數存取不會失真（BigInt 來回）', (() => { const m = L.deserializeModule(oLib.obj); const g = m.globals.find((x) => x.name === 'big'); return g.init.v === 5000000000n && m.types.has('Pt'); })());
+    let lk = L.compileMany([{ name: 'app.o', text: oApp.obj }, { name: 'lib.o', text: oLib.obj }]);
+    check('連結兩個物件檔並編譯', !!lk.wasm, lk);
+    if (lk.wasm) { const rr = L.runSync(lk.wasm, {}); check('連結後的程式：7 + 101 + 5 = 113', rr.exitCode === 113, rr); }
+    lk = L.compileMany([{ name: 'app.ll', text: APP }, { name: 'lib.o', text: oLib.obj }]); check('.ll 與 .o 可以混著連結', !!lk.wasm, lk);
+    lk = L.compileMany([{ name: 'app.o', text: oApp.obj }]); check('少了定義：說明哪個符號沒有實作', !lk.wasm && /未定義的符號 @add/.test(lk.errors.map((e) => e.msg).join('；')) && /未定義的符號 @bump/.test(lk.errors.map((e) => e.msg).join('；')), lk);
+    lk = L.compileMany([{ name: 'a', text: oLib.obj }, { name: 'b', text: oLib.obj }, { name: 'c', text: oApp.obj }]); check('同一個符號定義兩次：連結器擋下', !lk.wasm && lk.stage === 'link' && /在多個檔案裡都有定義/.test(lk.errors.map((e) => e.msg).join('；')), lk);
+    lk = L.compileMany([{ name: 'lib', text: oLib.obj }, { name: 'app', text: APP.replace('declare i32 @add(i32, i32)', 'declare i32 @add(i32)') }]); check('宣告跟定義的簽名不一致：擋下', !lk.wasm && /簽名不一致/.test(lk.errors.map((e) => e.msg).join('；')), lk);
+    lk = L.compileMany([{ name: 'app', text: APP.replace('@counter = external global i32', '@counter = external global i32\n@ghost = external global i32') }, { name: 'lib', text: LIB }]); check('external 全域沒有人定義：說明', !lk.wasm && /@ghost 宣告成 external/.test(lk.errors.map((e) => e.msg).join('；')), lk);
+    lk = L.compileMany([{ name: 'x', text: '%T = type { i32 }\ndefine void @_start() {\nentry:\n  ret void\n}' }, { name: 'y', text: '%T = type { double }' }]); check('同名型別定義不同：擋下', !lk.wasm && /型別 %T/.test(lk.errors.map((e) => e.msg).join('；')), lk);
+    lk = L.compileMany([{ name: 'bad.o', text: '{"fmt":"fa-llvm-obj","v":1,"mod":' }]); check('壞掉的物件檔：說明', !lk.wasm && /不是 LLVM 物件檔/.test(lk.errors.map((e) => e.msg).join('；')), lk);
+    const badObj = L.compileObject('define i32 @f() {\nentry:\n  %x = add i32 %nope, 1\n  ret i32 %x\n}'); check('物件編譯時就抓得到型別錯誤（帶行號）', !badObj.obj && badObj.errors[0].line === 3, badObj);
+    // 連結 libc 與物件檔一起
+    { const oc = L.compileObject(['declare i32 @puts(ptr)', '@m = private constant [3 x i8] c"ok' + BS + '00"', 'define void @say() {', 'entry:', '  %r = call i32 @puts(ptr @m)', '  ret void', '}'].join(NL)); const om = L.compileObject(['declare void @say()', 'define i32 @main() {', 'entry:', '  call void @say()', '  ret i32 0', '}'].join(NL));
+        const l2 = L.compileMany([{ name: 'main.o', text: om.obj }, { name: 'say.o', text: oc.obj }]); const rr = l2.wasm ? L.runSync(l2.wasm, {}) : { out: 'x' }; check('物件檔 + 內建 libc 一起連結', l2.wasm && rr.stdout === 'ok' + NL && l2.linked.includes('puts'), l2.errors || rr); }
+
     console.log('llvm_core: ' + ok + ' passed, ' + bad.length + ' failed'); if (bad.length) { console.log(bad.join(NL)); process.exit(1); }
 })();

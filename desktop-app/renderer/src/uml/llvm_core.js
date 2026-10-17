@@ -99,7 +99,7 @@
                 if ((m = /^@([\w.$-]+)\s*=\s*(.*)$/.exec(raw))) {
                     let rest = m[2].replace(/\b(private|internal|external|common|linkonce_odr|weak|dso_local|unnamed_addr|local_unnamed_addr|hidden)\b/g, ' ').replace(/,\s*align\s+\d+/g, '').replace(/\s+/g, ' ').trim();
                     const isConst = /^constant\b/.test(rest); rest = rest.replace(/^(constant|global)\s+/, '');
-                    const r = parseTypeAt(rest, 0); const init = rest.slice(r.end).trim(); let g = { name: m[1], ty: r.ty, isConst, bytes: null, line: n + 1, init: null };
+                    const r = parseTypeAt(rest, 0); const init = rest.slice(r.end).trim(); let g = { name: m[1], ty: r.ty, isConst, bytes: null, line: n + 1, init: null, external: /\bexternal\b/.test(m[2]) };
                     if ((m = /^c"(.*)"$/.exec(init))) g.bytes = decodeCString(m[1]); else if (init) g.init = parseValue(init, r.ty);
                     mod.globals.push(g); continue;
                 }
@@ -171,7 +171,9 @@
     const ICMP = new Set(['eq', 'ne', 'slt', 'sle', 'sgt', 'sge', 'ult', 'ule', 'ugt', 'uge']);
     const FCMP = new Set(['oeq', 'one', 'olt', 'ogt', 'ole', 'oge', 'une', 'ueq']);
     const isInt = (t) => t && t.k === 'int'; const isPtr = (t) => t && t.k === 'ptr';
-    function check(mod) {
+    // copts.partial：檢查「物件檔」——還沒連結，所以允許宣告了但沒有實作的函式、沒有進入點
+    function check(mod, copts) {
+        const partial = !!(copts && copts.partial);
         const errors = []; const E = (line, msg) => errors.push({ line, msg });
         const globals = new Map(mod.globals.map((g) => [g.name, g])); const funcs = new Map();
         for (const d of mod.declares) { funcs.set(d.name, { ret: d.ret, params: d.params, declared: true }); if (INTRINSICS[d.name]) { if (d.params.map(typeStr).join() !== INTRINSICS[d.name].params.map(typeStr).join() || typeStr(d.ret) !== typeStr(INTRINSICS[d.name].ret)) E(d.line, '@' + d.name + ' 的簽名不對'); } else if (!WASI[d.name]) E(d.line, '宣告的函式 @' + d.name + ' 沒有實作（支援的 WASI：' + Object.keys(WASI).join('、') + '；內建的 libc：puts、putchar、malloc、calloc、free、strlen、memcpy、memset、memcmp、strcmp、abs、exit、getchar；printf 這類可變參數函式不支援）'); else if (!INTRINSICS[d.name] && typeStr(WASI[d.name].ret) !== typeStr(d.ret) || d.params.map(typeStr).join() !== WASI[d.name].params.map(typeStr).join()) E(d.line, '@' + d.name + ' 的簽名要是 ' + typeStr(WASI[d.name].ret) + ' (' + WASI[d.name].params.map(typeStr).join(', ') + ')'); }
@@ -235,7 +237,7 @@
             }
         }
         if (!mod.funcs.some((f) => f.name === '_start' || f.name === 'main')) errors.push({ line: 0, msg: '沒有進入點 @_start（或 @main）' });
-        return errors;
+        return partial ? errors.filter((e) => !/沒有實作|沒有進入點/.test(e.msg)) : errors;
     }
     function resolveShallow(mod, t) { try { return resolve(mod, t); } catch (_) { return t; } }
     // getelementptr 的結果型別（索引第一個走過指標、之後進入 struct 或 array）
@@ -418,7 +420,7 @@
     function runSync(bytes, io) {
         let mem = null; const wasi = makeWasi(io, () => mem); let instance;
         try { instance = new WebAssembly.Instance(new WebAssembly.Module(bytes), wasi.imports); }
-        catch (e) { const msg = String((e && e.message) || e); if (/main thread|compile|RangeError/i.test(msg) && bytes.length > 4096) throw new Error('這個環境的主執行緒不允許同步編譯較大的 wasm（' + bytes.length + ' 位元組）：' + msg + '。請改用 llvm_execute 工具（非同步編譯，不受這個限制）'); throw e; }
+        catch (e) { const msg = String((e && e.message) || e); if (/main thread|compile|RangeError/i.test(msg) && bytes.length > 4096) throw new Error('這個瀏覽器不允許在主執行緒同步編譯這麼大的 wasm（' + bytes.length + ' 位元組）：' + msg + '。請改用 llvm_execute 工具（非同步編譯，不受這個限制）'); throw e; }
         mem = instance.exports.memory; return finishRun(instance, wasi);
     }
 
@@ -465,6 +467,57 @@
         for (const f of extra.mod.funcs) if (!mod.funcs.some((x) => x.name === f.name)) mod.funcs.push(f);
         return [...want].filter((n) => n !== '__w' && n !== '__alloc');
     }
+    // =====================================================================
+    // 物件檔與連結器：llc -c 把每個 .ll 編成 .o（解析＋檢查後的模組，存成文字；放在沙盒檔案系統就會跟著持久化，放 /mnt 就是存進 File Access Point），
+    // llink 把好幾個 .o（或 .ll）合併成一個程式——解決符號、檢查重複與型別衝突，再連結 libc、編成 wasm。分開編譯、只重連結。
+    // =====================================================================
+    function serializeModule(mod) {
+        return JSON.stringify({ fmt: 'fa-llvm-obj', v: 1, mod }, (k, v) => (k === 'regTypes' ? undefined : typeof v === 'bigint' ? { $big: v.toString() } : v instanceof Map ? { $map: Array.from(v.entries()) } : v));
+    }
+    function deserializeModule(text) {
+        let o; try { o = JSON.parse(text, (k, v) => (v && typeof v === 'object' && v.$big !== undefined ? BigInt(v.$big) : v && typeof v === 'object' && Array.isArray(v.$map) ? new Map(v.$map) : v)); } catch (e) { throw new Error('不是 LLVM 物件檔（.o）：' + e.message); }
+        if (!o || o.fmt !== 'fa-llvm-obj' || !o.mod) throw new Error('不是 LLVM 物件檔（.o）'); return o.mod;
+    }
+    const isObjectText = (t) => String(t).slice(0, 40).indexOf('"fmt":"fa-llvm-obj"') >= 0;
+    // 解析並檢查一份 .ll，回傳物件檔文字（allowUndefined：允許外部符號）
+    function compileObject(text) {
+        const p = parse(text); if (p.errors.length) return { errors: p.errors, stage: 'parse' };
+        const errs = check(p.mod, { partial: true }); if (errs.length) return { errors: errs, stage: 'check' };
+        return { obj: serializeModule(p.mod), mod: p.mod, stage: 'ok', undefinedSymbols: p.mod.declares.filter((d) => !WASI[d.name] && !INTRINSICS[d.name] && !LIBC_NAMES.includes(d.name) && !p.mod.funcs.some((f) => f.name === d.name)).map((d) => d.name) };
+    }
+    function linkModules(mods) {
+        const out = { types: new Map(), globals: [], funcs: [], declares: [], triple: '' }; const errors = []; const E = (line, msg) => errors.push({ line, msg });
+        const fdef = new Map(), gdef = new Map();
+        for (const m of mods) {
+            if (m.triple && !out.triple) out.triple = m.triple;
+            for (const [k, v] of m.types) { const have = out.types.get(k); if (have && typeStr(have) !== typeStr(v)) E(0, '型別 %' + k + ' 在不同檔案裡的定義不一樣'); else out.types.set(k, v); }
+            for (const g of m.globals) { const have = gdef.get(g.name); if (!have) { gdef.set(g.name, g); out.globals.push(g); } else if (have.external && !g.external) { out.globals[out.globals.indexOf(have)] = g; gdef.set(g.name, g); } else if (!have.external && !g.external) E(g.line, '全域 @' + g.name + ' 在多個檔案裡都有定義'); else if (!sameType(have.ty, g.ty)) E(g.line, '全域 @' + g.name + ' 在不同檔案裡的型別不一樣'); }
+            for (const f of m.funcs) { if (fdef.has(f.name)) E(f.line, '函式 @' + f.name + ' 在多個檔案裡都有定義'); else { fdef.set(f.name, f); out.funcs.push(f); } }
+        }
+        const seen = new Set();
+        for (const m of mods) for (const d of m.declares) {
+            const f = fdef.get(d.name);
+            if (f) { if (!sameType(f.ret, d.ret) || f.params.length !== d.params.length || f.params.some((p, i) => !sameType(p.ty, d.params[i]))) E(d.line, '@' + d.name + ' 的宣告跟定義的簽名不一致'); continue; }
+            if (!seen.has(d.name)) { seen.add(d.name); out.declares.push(d); }
+        }
+        for (const d of out.declares) if (!WASI[d.name] && !INTRINSICS[d.name] && !LIBC_NAMES.includes(d.name)) E(d.line, '未定義的符號 @' + d.name + '（沒有任何檔案定義它，也不是內建的 libc 或 WASI 函式）');
+        for (const g of out.globals) if (g.external && g.name !== '__heap_base') E(g.line, '全域 @' + g.name + ' 宣告成 external，但沒有任何檔案定義它');
+        return { mod: out, errors };
+    }
+    // 輸入是「文字」陣列（.ll 或 .o 混合都行）。回傳 { mod } 或 { errors, stage }
+    function loadAndLink(texts) {
+        const mods = []; for (let i = 0; i < texts.length; i++) { const t = texts[i].text; const name = texts[i].name || ('#' + (i + 1)); if (isObjectText(t)) { try { mods.push(deserializeModule(t)); } catch (e) { return { errors: [{ line: 0, msg: name + '：' + e.message }], stage: 'load' }; } } else { const p = parse(t); if (p.errors.length) return { errors: p.errors.map((e) => ({ line: e.line, msg: (texts.length > 1 ? name + ':' : '') + e.msg })), stage: 'parse' }; mods.push(p.mod); } }
+        const l = linkModules(mods); if (l.errors.length) return { errors: l.errors, stage: 'link' }; return { mod: l.mod, stage: 'ok' };
+    }
+    // 連結好的模組 → wasm（連結 libc、檢查、輸出）
+    function compileModule(mod, opts) {
+        opts = opts || {}; let linked = []; try { linked = linkLibc(mod); } catch (e) { return { errors: [{ line: 0, msg: e.message }], stage: 'link' }; }
+        const errs = check(mod); if (errs.length) return { errors: errs, stage: 'check' };
+        try { return { wasm: toWasm(mod, { fuel: opts.fuel, entry: opts.entry }), linked, stage: 'ok' }; } catch (e) { return { errors: [{ line: 0, msg: String((e && e.message) || e) }], stage: 'wasm' }; }
+    }
+    // 多個檔案一次：連結＋編譯。texts：[{ name, text }]
+    function compileMany(texts, opts) { const l = loadAndLink(texts); if (!l.mod) return l; return compileModule(l.mod, opts); }
+
     // 給終端機指令用：IR 文字（或 wasm 位元組）→ 連結 libc → 檢查 → wasm。回傳 { wasm } 或 { errors }
     function compileIr(text, opts) {
         opts = opts || {}; const p = parse(text); if (p.errors.length) return { errors: p.errors, stage: 'parse' };
@@ -549,5 +602,5 @@
         return { ok: match, stage: match ? 'done' : 'verify', ir: g.ir, wasm, warnings: g.warnings, expected: g.expected, stdout: r.stdout, exitCode: r.exitCode, trap: r.trap, bytes: wasm.length };
     }
 
-    return { parse, check, toWasm, run, runSync, makeWasi, linkLibc, compileIr, LIBC_NAMES, WASI_NAMES: Object.keys(WASI), fromModel, build, parseType, typeStr, layout, DATA_BASE, STACK_TOP, RUNTIME_IR };
+    return { parse, check, toWasm, run, runSync, serializeModule, deserializeModule, isObjectText, compileObject, linkModules, loadAndLink, compileModule, compileMany, makeWasi, linkLibc, compileIr, LIBC_NAMES, WASI_NAMES: Object.keys(WASI), fromModel, build, parseType, typeStr, layout, DATA_BASE, STACK_TOP, RUNTIME_IR };
 });
