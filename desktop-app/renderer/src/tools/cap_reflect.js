@@ -79,6 +79,7 @@
         bash_execute: '跑指令 執行指令 shell 終端機 命令列',
         render_presentation: '做簡報 投影片 ppt 簡報 slides 製作簡報',
         pptx_to_deck: 'pptx轉簡報 匯入ppt 簡報匯入',
+        translate_text: '翻譯 翻成英文 翻成中文 中翻英 英翻中 譯成 中英互譯 translate 英文翻譯 中文翻譯',
     };
     const aliasOf = (name, learned) => [SEED_ALIASES[name] || ''].concat(learned || []).filter(Boolean);
     // 學別名：反思成功（退回提醒之後，模型不再說沒有工具）→ 把使用者那句話記成找到的第一名工具的別名。store：{ tools: { 工具名: [{ p, n, at }] } }，每個工具最多 3 句、最多 400 個工具。回傳是否有新增
