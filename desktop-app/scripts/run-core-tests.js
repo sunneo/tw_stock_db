@@ -52,6 +52,7 @@ const suites = [
     ['語音合成的意圖辨識（用英文語音說…、把「…」念出來、tts: …；提問與別的「念／讀」不誤判）', 'renderer/src/tools/tts_intent.test.js'],
     ['「沒有工具」的反思（宣稱偵測、搜尋所有領域的工具、提示文字）', 'renderer/src/tools/cap_reflect.test.js'],
     ['UML 拆解題（真的拆解流程＋假模型：完美、亂答、靠退回重來、連線失敗、空白；評分同義詞與中文關鍵字；建議 self／stepwise／program_first／unknown）', 'renderer/src/uml/uml_bench_core.test.js'],
+    ['UML 編修（各種編修、套用後驗證並退回壞的、diff、問題→候選編修、小模型選編號、一批問題解決）', 'renderer/src/uml/uml_edit_core.test.js'],
     ['探索時的反思（錯字：英文編輯距離／中文同音近形字、不認得的字、概念再找、可能是新的需求、整份計畫反思：問使用者／統一走建議／上限）', 'renderer/src/catalog/reflect_core.test.js'],
     ['CoLU 的 ReLU 形式（relu／sat／max2、可達性逐位元等於位元版、ReLU 層疊網路、最佳接線分數等於 findPipelines、矩陣連乘後端一致性檢查）', 'renderer/src/catalog/relu_core.test.js'],
     ['CoLU 接線題（出題、評分、退化偵測、假模型跑整套、建議 self／guided／auto／unknown、使用時的提示）', 'renderer/src/catalog/colu_bench_core.test.js'],
