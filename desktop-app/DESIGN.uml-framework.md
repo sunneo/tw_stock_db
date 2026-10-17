@@ -131,3 +131,22 @@ usecase Checkout: Customer -> Cart.add(book) -> Order.pay(total):bool
 
 ## 10. 移植到 宿主專案
 帶走 `uml_core.js`＋`design_core.js`＋測試（只依賴 `recipe_core.js` 的 `jsonStep`／`chooseTool`）。宿主提供：`generate`（強制 JSON 的文字生成，支援 prefill）、zip 輸出、訓練器的詞彙與偏好。宿主專案 的 `scene3d`／`block_diagram` 等食譜與這裡是同一套「程式決定、模型只做封閉小決策」的做法；UML 可以用它的 Mermaid 渲染工具顯示。
+
+## UML → LLVM IR → WebAssembly（wasm32-wasi，2026-10-18）
+
+`renderer/src/uml/llvm_core.js`（工具 `uml_to_wasm`）。LLVM 的「很多語言」是各語言的編譯器前端，它們都產生 LLVM IR；LLVM 本身不會把 IR 轉回 Java 或 C# 原始碼。所以 UML 轉 IR 的好處是：一份 IR 可以編成原生碼或 wasm，不是得到更多語言的原始碼。JVM／.NET 上的語言（Java、Kotlin、C#、Groovy）仍然用範本產生。
+
+**為什麼自己寫 IR → wasm**：使用者的機器不一定有 clang／llc，網頁版更沒有；IR 是我們自己產生的、範圍很小，所以自己寫了一個小的 IR 解析器、型別檢查器和 wasm 輸出器。同時輸出標準的 `model.ll`（不透明指標 `ptr` 寫法，LLVM 15 以後的 clang 吃得進去，帶 wasi 的 import 屬性與編譯指令的註解），有 clang 的人可以自己編。
+
+**第一版範圍**：i1／i8／i32／i64／double、指標、struct、陣列、字串常數、全域變數、if／迴圈（br）、直接呼叫、記憶體讀寫、整數與浮點運算、型別轉換。不做：繼承的虛擬呼叫、例外、容器（List／Map 用空指標並警告）、phi（用 alloca／load／store，跟 clang -O0 一樣）、可變參數、函式指標。
+
+**對應**：類別→`%Class = type {…}`；操作→`@Class_op(ptr %self, …)`（stub：印出「類別#id.操作」，回傳零值）；使用案例→`@uc_N`（配置物件、設 id 與字串欄位、照順序呼叫）；`@_start` 依序呼叫所有使用案例。runtime（`rt_alloc`、`rt_strlen`、`rt_print`、`rt_print_int`）也是 IR，名字加 `rt_` 避免跟 libc 撞名。
+
+**wasm 輸出**：函式內的基本區塊用「迴圈＋`br_table` 分派」處理任意跳轉；alloca 放在影子堆疊（全域 `$sp`）；全域與字串放在資料段（從 1024 起）；記憶體 16 頁；WASI 只匯入 `fd_write`、`proc_exit`；`run()` 用瀏覽器或 Node 內建的 WebAssembly 執行。
+
+**驗證（程式能判定的對錯）**：產生的程式執行後印出的軌跡，必須跟 UML 預期的呼叫順序（`== 使用案例 ==` 與每一步的 `類別#id.操作`）逐行一致；IR 先過自己的檢查器（定義前使用、型別一致、標籤存在、區塊有結尾、呼叫參數對得上…），錯誤指出行號。
+
+**已知限制**：
+1. 沒有用真的 LLVM（clang／llc／llvm-as）驗證過產生的 `.ll`——這台機器沒有裝，檢查器是自己寫的，可能接受 LLVM 會拒絕的東西，或相反。
+2. 記憶體配置只往前加（不釋放）；單一全域資料上限約 32KB。
+3. wasm 的 `i8`／`i1` 當 32 位元處理，有號比較要先 sext。
