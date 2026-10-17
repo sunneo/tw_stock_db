@@ -13497,12 +13497,12 @@ const holder = {};
     // entries：[{ name, domains:[{id,label}], text（名稱＋說明）, direct（最上層就能直接呼叫）}]
     // 回傳依分數排序的前 k 個 { name, score, domains, direct, why:[命中的詞] }；分數沒到最高分的一半、或沒有任何命中的詞，不列
     function search(query, entries, opts) {
-        const o = Object.assign({ k: 3, minScore: 5, labelWeight: 0.4 }, opts || {}); const q = tokens(query); if (!q.size) return [];
-        const docs = entries.map((e) => ({ e, toks: tokens(e.name + ' ' + (e.text || '')), lab: tokens((e.domains || []).map((d) => d.label || d.id).join(' ')) })); const N = docs.length || 1;
-        const df = new Map(); for (const d of docs) { for (const t of d.toks) df.set(t, (df.get(t) || 0) + 1); for (const t of d.lab) if (!d.toks.has(t)) df.set(t, (df.get(t) || 0) + 1); }
+        const o = Object.assign({ k: 3, minScore: 5, labelWeight: 0.4, aliasWeight: 1.6 }, opts || {}); const q = tokens(query); if (!q.size) return [];
+        const docs = entries.map((e) => ({ e, toks: tokens(e.name + ' ' + (e.text || '')), lab: tokens((e.domains || []).map((d) => d.label || d.id).join(' ')), alias: tokens([].concat(e.aliases || []).join(' ')) })); const N = docs.length || 1;
+        const df = new Map(); for (const d of docs) { for (const t of d.toks) df.set(t, (df.get(t) || 0) + 1); for (const t of d.lab) if (!d.toks.has(t)) df.set(t, (df.get(t) || 0) + 1); for (const t of d.alias) if (!d.toks.has(t) && !d.lab.has(t)) df.set(t, (df.get(t) || 0) + 1); }
         const idf = (t) => Math.log(1 + (N - (df.get(t) || 0) + 0.5) / ((df.get(t) || 0) + 0.5));
         const nameToks = (e) => tokens(e.name.replace(/_/g, ' '));
-        const scored = docs.map(({ e, toks, lab }) => { let s = 0; const why = []; const nt = nameToks(e); for (const t of q) { if (toks.has(t)) { s += idf(t) * (nt.has(t) ? 2.5 : 1); why.push(t); } else if (lab.has(t)) { s += idf(t) * o.labelWeight; why.push(t + '(領域)'); } } return { name: e.name, score: Math.round(s * 100) / 100, domains: e.domains || [], direct: !!e.direct, why: why.slice(0, 6), text: e.text || '' }; });
+        const scored = docs.map(({ e, toks, lab, alias }) => { let s = 0; const why = []; const nt = nameToks(e); for (const t of q) { const wOwn = toks.has(t) ? idf(t) * (nt.has(t) ? 2.5 : 1) : 0, wAl = alias.has(t) ? idf(t) * o.aliasWeight : 0; if (wOwn || wAl) { s += Math.max(wOwn, wAl); why.push(wAl > wOwn ? t + '(別名)' : t); } else if (lab.has(t)) { s += idf(t) * o.labelWeight; why.push(t + '(領域)'); } } return { name: e.name, score: Math.round(s * 100) / 100, domains: e.domains || [], direct: !!e.direct, why: why.slice(0, 6), text: e.text || '' }; });
         scored.sort((a, b) => b.score - a.score); const best = scored[0] ? scored[0].score : 0; if (best < o.minScore) return [];
         return scored.filter((x) => x.score >= o.minScore && x.score >= best * 0.5).slice(0, o.k);
     }
@@ -13513,7 +13513,44 @@ const holder = {};
         const lines = hits.map((h, i) => (i + 1) + '. ' + h.name + (h.domains.length ? '（領域：' + h.domains.map((d) => d.id + (d.label ? '／' + d.label : '')).join('、') + '）' : '') + '：' + shortDesc(h.text) + '\n   ' + (h.direct ? '你的工具清單裡就有，直接呼叫。' : '最上層沒有直接列出，用 delegate_to_subagent，domain 填「' + ((h.domains[0] && h.domains[0].id) || '') + '」，task 裡把使用者要做的事與要用的字原樣寫清楚。'));
         return '[系統驗證] 你剛才說「' + String(claim).slice(0, 100) + '」，但你還沒有查過別的領域——工具被分到各個領域，最上層只列一部分，「最上層沒看到」不等於「沒有」。程式替你搜尋了所有領域的所有工具，找到可能相符的：\n' + lines.join('\n') + '\n請現在就用上面的工具去做使用者要的事（使用者說的字、語言、數字一個字都不要改、不要自己翻譯或改寫）。只有上面都真的不符合，才可以回答沒有，並說明你查過上面哪幾個、為什麼不符合。不要再提「我可以給你程式碼讓你自己做」這類替代方案，除非工具真的做不到。';
     }
-    return { claimsNoTool, tokens, search, nudgeText };
+    // 口語別名（種子）：使用者平常怎麼說這件事（工具說明裡不一定寫得出來的說法）。只在反思搜尋時讀，不進模型的提示；使用者實際用過的說法會另外學進來（見 learnAlias）
+    const SEED_ALIASES = {
+        text_to_speech: '念出來 唸出來 讀出來 朗讀 配音 發音 說話 講出來 念給我聽 語音 聲音 tts read aloud speak',
+        transcribe_media: '逐字稿 聽寫 字幕檔 語音轉文字 轉錄 聽打 轉成文字 stt',
+        extract_audio: '抽出聲音 取出音訊 影片轉mp3 擷取聲音 提取音軌',
+        concat_audio: '接音檔 合併音檔 串接聲音',
+        burn_subtitles: '燒字幕 硬字幕 字幕壓進影片 加字幕',
+        compose_video: '剪輯影片 合成影片 做影片 影片合成 剪片',
+        convert_to_animated_gif: '影片轉gif 做成動圖 動態圖 轉成gif 製作gif',
+        youtube_download: '下載影片 載影片 抓youtube yt 下載youtube',
+        images_to_pdf: '圖片轉pdf 照片合成pdf 掃描檔轉pdf 圖片合併成pdf 相片轉pdf',
+        merge_pdfs: '合併pdf pdf合併 pdf接起來 多個pdf變一個',
+        remove_pdf_pages: '刪除pdf頁 移除頁面 pdf刪頁 去掉某幾頁',
+        extract_pdf_pages: '擷取pdf頁 pdf拆分 分割pdf 取出某幾頁',
+        extract_pdf_images: 'pdf轉圖片 pdf轉成圖片 pdf存成圖',
+        render_drawing: '畫圖 繪圖 畫畫 畫一個 流程圖 示意圖 向量圖 svg 插圖 圖示',
+        render_2d_animation: '做動畫 2d動畫 動畫 動起來',
+        render_3d_scene: '3d場景 立體 3d模型 三維 建模',
+        browser_search: '上網查 搜尋 查資料 google 找資料 網路搜尋',
+        fetch_web_page: '讀網頁 開網址 抓網頁 網頁內容 看這個連結',
+        parse_uploaded_file: '看附件 讀檔案 解析檔案 看這份文件 讀取上傳的檔案',
+        interpret_image: '看圖 圖片說明 辨識圖片 圖片裡有什麼 解讀圖片',
+        export_document: '匯出文件 存成docx 存成word 輸出成檔案 下載成檔案',
+        python_execute: '跑python 執行python 算一下 寫程式算 運算',
+        bash_execute: '跑指令 執行指令 shell 終端機 命令列',
+        render_presentation: '做簡報 投影片 ppt 簡報 slides 製作簡報',
+        pptx_to_deck: 'pptx轉簡報 匯入ppt 簡報匯入',
+    };
+    const aliasOf = (name, learned) => [SEED_ALIASES[name] || ''].concat(learned || []).filter(Boolean);
+    // 學別名：反思成功（退回提醒之後，模型不再說沒有工具）→ 把使用者那句話記成找到的第一名工具的別名。store：{ tools: { 工具名: [{ p, n, at }] } }，每個工具最多 3 句、最多 400 個工具。回傳是否有新增
+    function learnAlias(store, toolName, userText, now) {
+        const p = String(userText || '').replace(/\s+/g, ' ').trim().slice(0, 60); if (!p || !toolName) return false; store.tools = store.tools || {}; const list = store.tools[toolName] = store.tools[toolName] || [];
+        const hit = list.find((x) => x.p === p); if (hit) { hit.n++; hit.at = now || Date.now(); return false; }
+        list.push({ p, n: 1, at: now || Date.now() }); list.sort((a, b) => b.n - a.n || b.at - a.at); if (list.length > 3) list.length = 3;
+        const names = Object.keys(store.tools); if (names.length > 400) { names.sort((a, b) => Math.max(0, ...store.tools[a].map((x) => x.at)) - Math.max(0, ...store.tools[b].map((x) => x.at))); for (const n of names.slice(0, names.length - 400)) delete store.tools[n]; }
+        return true;
+    }
+    return { claimsNoTool, tokens, search, nudgeText, SEED_ALIASES, aliasOf, learnAlias };
 });
 
 }).call(null, undefined, holder);
@@ -27272,6 +27309,9 @@ class FloatingAssistant {
         this.register_slash_command('/colu-bench', '[題數] [模型列#編號或名稱]',
             'CoLU 接線題：測一個模型串接多個工具的能力（自己排 vs. 給它算好的計畫選），建議要自己排、由 CoLU 先給計畫、或交給 CoLU 直接排。會呼叫該模型十幾次，開始前會先問你。結果存在模型列上，之後用這個模型時自動加提示。',
             (argsText, run) => (run || this)._coluBenchSlash(argsText));
+        this.register_slash_command('/tool-aliases', '[list|clear]',
+            '看或清掉「學來的工具別名」：模型說沒有某個工具、程式替它找到之後它真的做出來了，使用者那句話就會記成那個工具的別名（只在反思搜尋時用，不佔對話的 context）。',
+            async (argsText, run) => { const r = run || this; const st = await r._capAliasLoad(); const a = String(argsText || '').trim().toLowerCase(); if (a === 'clear') { st.tools = {}; await r._capAliasSave(); r._pushAssistantMessage('已清掉學來的別名。', null); } else { const rows = Object.entries(st.tools || {}); r._pushAssistantMessage(rows.length ? '學來的別名（' + rows.length + ' 個工具）：\n' + rows.map(([k, v]) => '・' + k + '：' + v.map((x) => '「' + x.p + '」×' + x.n).join('、')).join('\n') : '還沒有學到別名。模型說沒有某個工具、程式替它找到、它也真的做出來了，才會記下來。', null); } try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ } });
         this.register_slash_command('/view', '[檔名]',
             '在對話裡開啟檔案檢視器：xlsx（工作表頁籤、AI 的回答變成另一張工作表）、csv、tsv、json、yaml、toml。先附上檔案再下 /view，或 /view 檔名；不帶參數開最近上傳、可以檢視的檔案。可搜尋、匯出（xlsx／csv／sqlite3…）、問 AI。',
             (argsText, run) => (run || this)._viewSlash(argsText));
@@ -61698,16 +61738,32 @@ _result
     // 開頭是「讓我／我來／接下來…」加上動作動詞、卻沒有任何工具呼叫，就退回請它
     // 真的做或如實說做不到；桌面版（auto agent mode）每一輪最多6次、網頁版2次，
     // 工具被強制關掉（_forceNoTools）時不攔。
+    // 學來的別名（反思成功的說法）存在 fileCache 的 tool-aliases.json；搜尋時才讀，不進提示。/tool-aliases 可以看、清
+    async _capAliasLoad() {
+        if (this._capAliasStore) return this._capAliasStore; let st = null;
+        try { const all = await this.fileCache.getAll(); const rec = all.filter((r) => r && r.filename === 'tool-aliases.json').sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0]; if (rec && rec.blob) st = JSON.parse(await rec.blob.text()); } catch (_) { st = null; }
+        this._capAliasStore = st && st.tools ? st : { version: 1, tools: {} }; return this._capAliasStore;
+    }
+    _capAliasLearn(user, tool) {
+        try { const st = this._capAliasStore || (this._capAliasStore = { version: 1, tools: {} }); if (!FaCapReflect.learnAlias(st, tool, user)) return; this._log('🧠 記下別名：「' + String(user).slice(0, 30) + '」→ ' + tool); this._capAliasSave(); } catch (_) { /* 學不起來不影響回答 */ }
+    }
+    async _capAliasSave() {
+        try { const all = await this.fileCache.getAll(); for (const r of all) if (r && r.filename === 'tool-aliases.json') await this.fileCache.delete(r.id); await this.fileCache.put('tool-aliases.json', 'application/json', new Blob([JSON.stringify(this._capAliasStore)], { type: 'application/json' }), 'generated'); } catch (_) { /* 存不了這次還是有效 */ }
+    }
     // 模型說「我沒有某某工具」：程式替它搜尋所有領域的所有工具（工具被分到各個領域，最上層只列一部分），找到就退回請它用；每一輪最多 2 次。（見 tools/cap_reflect.js）
     _noToolClaimNudge(text, counterHolder) {
         try {
+            // 退回提醒之後，模型的最終回覆不再說沒有工具＝反思成功：把使用者那句話記成第一名工具的別名（以後同樣的說法搜得到）
+            if (this._capPending && !FaCapReflect.claimsNoTool(text)) { const p = this._capPending; this._capPending = null; this._capAliasLearn(p.user, p.tool); }
+            else if (this._capPending && counterHolder && (counterHolder.cap || 0) >= 2) this._capPending = null; // 提醒了兩次還是說沒有：不學
             if (this._forceNoTools || !counterHolder || (counterHolder.cap || 0) >= 2) return null; if ((this._toolCallLog && this._toolCallLog.calls || []).some((c) => /^(delegate_to_subagent|get_tool_details|catalog_query)$/.test(c.name))) return null; // 已經查過了
             const c = FaCapReflect.claimsNoTool(text); if (!c) return null;
             const user = String(this._currentTurnUserText || ''); const root = new Set(this._getRootToolNames ? (this._getRootToolNames() || Object.keys(this.tools)) : Object.keys(this.tools)); const byTool = new Map();
             for (const [id, d] of Object.entries(this.domains || {})) for (const n of (() => { let tn = d && d.toolNames; if (typeof tn === 'function') { try { tn = tn.call(d); } catch (_) { tn = []; } } return Array.isArray(tn) ? tn : []; })()) { if (!this.tools[n]) continue; if (!byTool.has(n)) byTool.set(n, []); byTool.get(n).push({ id, label: d.label || '' }); }
-            const entries = Object.entries(this.tools).map(([name, t]) => ({ name, domains: byTool.get(name) || [], text: String((t && t.description) || '').slice(0, 400), direct: root.has(name) })).filter((e) => !/^(delegate_|get_tool_details|catalog_)/.test(e.name));
+            const learned = this._capAliasStore ? this._capAliasStore.tools || {} : {};
+            const entries = Object.entries(this.tools).map(([name, t]) => ({ name, domains: byTool.get(name) || [], text: String((t && t.description) || '').slice(0, 400), direct: root.has(name), aliases: FaCapReflect.aliasOf(name, (learned[name] || []).map((x) => x.p)) })).filter((e) => !/^(delegate_|get_tool_details|catalog_)/.test(e.name));
             const hits = FaCapReflect.search(user + ' ' + (c.concept || ''), entries, { k: 3 }); if (!hits.length) return null;
-            counterHolder.cap = (counterHolder.cap || 0) + 1; return FaCapReflect.nudgeText(c.claim, hits, user);
+            counterHolder.cap = (counterHolder.cap || 0) + 1; this._capPending = { user, tool: hits[0].name }; return FaCapReflect.nudgeText(c.claim, hits, user);
         } catch (_) { return null; }
     }
     _unfulfilledIntentNudge(text, counterHolder) {
@@ -67961,6 +68017,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         this._fakeWriteGuard = { count: 0 };
         this._claimPathGuard = { count: 0 };
         this._intentGuard = { count: 0 };
+        this._capPending = null; this._capAliasLoad(); // 別名先載好（非同步，之後同步使用）
         this._toolCallLog = { calls: [], blocked: 0 }; this._turnDelivered = {}; this._hintCardShown = {}; // 每一輪重新算：交付過的檔案卡片、專用工具卡片
         this._otCalls = [];
         this._forceNoTools = false;

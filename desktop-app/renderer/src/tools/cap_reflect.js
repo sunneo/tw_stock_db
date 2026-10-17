@@ -36,12 +36,12 @@
     // entries：[{ name, domains:[{id,label}], text（名稱＋說明）, direct（最上層就能直接呼叫）}]
     // 回傳依分數排序的前 k 個 { name, score, domains, direct, why:[命中的詞] }；分數沒到最高分的一半、或沒有任何命中的詞，不列
     function search(query, entries, opts) {
-        const o = Object.assign({ k: 3, minScore: 5, labelWeight: 0.4 }, opts || {}); const q = tokens(query); if (!q.size) return [];
-        const docs = entries.map((e) => ({ e, toks: tokens(e.name + ' ' + (e.text || '')), lab: tokens((e.domains || []).map((d) => d.label || d.id).join(' ')) })); const N = docs.length || 1;
-        const df = new Map(); for (const d of docs) { for (const t of d.toks) df.set(t, (df.get(t) || 0) + 1); for (const t of d.lab) if (!d.toks.has(t)) df.set(t, (df.get(t) || 0) + 1); }
+        const o = Object.assign({ k: 3, minScore: 5, labelWeight: 0.4, aliasWeight: 1.6 }, opts || {}); const q = tokens(query); if (!q.size) return [];
+        const docs = entries.map((e) => ({ e, toks: tokens(e.name + ' ' + (e.text || '')), lab: tokens((e.domains || []).map((d) => d.label || d.id).join(' ')), alias: tokens([].concat(e.aliases || []).join(' ')) })); const N = docs.length || 1;
+        const df = new Map(); for (const d of docs) { for (const t of d.toks) df.set(t, (df.get(t) || 0) + 1); for (const t of d.lab) if (!d.toks.has(t)) df.set(t, (df.get(t) || 0) + 1); for (const t of d.alias) if (!d.toks.has(t) && !d.lab.has(t)) df.set(t, (df.get(t) || 0) + 1); }
         const idf = (t) => Math.log(1 + (N - (df.get(t) || 0) + 0.5) / ((df.get(t) || 0) + 0.5));
         const nameToks = (e) => tokens(e.name.replace(/_/g, ' '));
-        const scored = docs.map(({ e, toks, lab }) => { let s = 0; const why = []; const nt = nameToks(e); for (const t of q) { if (toks.has(t)) { s += idf(t) * (nt.has(t) ? 2.5 : 1); why.push(t); } else if (lab.has(t)) { s += idf(t) * o.labelWeight; why.push(t + '(領域)'); } } return { name: e.name, score: Math.round(s * 100) / 100, domains: e.domains || [], direct: !!e.direct, why: why.slice(0, 6), text: e.text || '' }; });
+        const scored = docs.map(({ e, toks, lab, alias }) => { let s = 0; const why = []; const nt = nameToks(e); for (const t of q) { const wOwn = toks.has(t) ? idf(t) * (nt.has(t) ? 2.5 : 1) : 0, wAl = alias.has(t) ? idf(t) * o.aliasWeight : 0; if (wOwn || wAl) { s += Math.max(wOwn, wAl); why.push(wAl > wOwn ? t + '(別名)' : t); } else if (lab.has(t)) { s += idf(t) * o.labelWeight; why.push(t + '(領域)'); } } return { name: e.name, score: Math.round(s * 100) / 100, domains: e.domains || [], direct: !!e.direct, why: why.slice(0, 6), text: e.text || '' }; });
         scored.sort((a, b) => b.score - a.score); const best = scored[0] ? scored[0].score : 0; if (best < o.minScore) return [];
         return scored.filter((x) => x.score >= o.minScore && x.score >= best * 0.5).slice(0, o.k);
     }
@@ -52,5 +52,42 @@
         const lines = hits.map((h, i) => (i + 1) + '. ' + h.name + (h.domains.length ? '（領域：' + h.domains.map((d) => d.id + (d.label ? '／' + d.label : '')).join('、') + '）' : '') + '：' + shortDesc(h.text) + '\n   ' + (h.direct ? '你的工具清單裡就有，直接呼叫。' : '最上層沒有直接列出，用 delegate_to_subagent，domain 填「' + ((h.domains[0] && h.domains[0].id) || '') + '」，task 裡把使用者要做的事與要用的字原樣寫清楚。'));
         return '[系統驗證] 你剛才說「' + String(claim).slice(0, 100) + '」，但你還沒有查過別的領域——工具被分到各個領域，最上層只列一部分，「最上層沒看到」不等於「沒有」。程式替你搜尋了所有領域的所有工具，找到可能相符的：\n' + lines.join('\n') + '\n請現在就用上面的工具去做使用者要的事（使用者說的字、語言、數字一個字都不要改、不要自己翻譯或改寫）。只有上面都真的不符合，才可以回答沒有，並說明你查過上面哪幾個、為什麼不符合。不要再提「我可以給你程式碼讓你自己做」這類替代方案，除非工具真的做不到。';
     }
-    return { claimsNoTool, tokens, search, nudgeText };
+    // 口語別名（種子）：使用者平常怎麼說這件事（工具說明裡不一定寫得出來的說法）。只在反思搜尋時讀，不進模型的提示；使用者實際用過的說法會另外學進來（見 learnAlias）
+    const SEED_ALIASES = {
+        text_to_speech: '念出來 唸出來 讀出來 朗讀 配音 發音 說話 講出來 念給我聽 語音 聲音 tts read aloud speak',
+        transcribe_media: '逐字稿 聽寫 字幕檔 語音轉文字 轉錄 聽打 轉成文字 stt',
+        extract_audio: '抽出聲音 取出音訊 影片轉mp3 擷取聲音 提取音軌',
+        concat_audio: '接音檔 合併音檔 串接聲音',
+        burn_subtitles: '燒字幕 硬字幕 字幕壓進影片 加字幕',
+        compose_video: '剪輯影片 合成影片 做影片 影片合成 剪片',
+        convert_to_animated_gif: '影片轉gif 做成動圖 動態圖 轉成gif 製作gif',
+        youtube_download: '下載影片 載影片 抓youtube yt 下載youtube',
+        images_to_pdf: '圖片轉pdf 照片合成pdf 掃描檔轉pdf 圖片合併成pdf 相片轉pdf',
+        merge_pdfs: '合併pdf pdf合併 pdf接起來 多個pdf變一個',
+        remove_pdf_pages: '刪除pdf頁 移除頁面 pdf刪頁 去掉某幾頁',
+        extract_pdf_pages: '擷取pdf頁 pdf拆分 分割pdf 取出某幾頁',
+        extract_pdf_images: 'pdf轉圖片 pdf轉成圖片 pdf存成圖',
+        render_drawing: '畫圖 繪圖 畫畫 畫一個 流程圖 示意圖 向量圖 svg 插圖 圖示',
+        render_2d_animation: '做動畫 2d動畫 動畫 動起來',
+        render_3d_scene: '3d場景 立體 3d模型 三維 建模',
+        browser_search: '上網查 搜尋 查資料 google 找資料 網路搜尋',
+        fetch_web_page: '讀網頁 開網址 抓網頁 網頁內容 看這個連結',
+        parse_uploaded_file: '看附件 讀檔案 解析檔案 看這份文件 讀取上傳的檔案',
+        interpret_image: '看圖 圖片說明 辨識圖片 圖片裡有什麼 解讀圖片',
+        export_document: '匯出文件 存成docx 存成word 輸出成檔案 下載成檔案',
+        python_execute: '跑python 執行python 算一下 寫程式算 運算',
+        bash_execute: '跑指令 執行指令 shell 終端機 命令列',
+        render_presentation: '做簡報 投影片 ppt 簡報 slides 製作簡報',
+        pptx_to_deck: 'pptx轉簡報 匯入ppt 簡報匯入',
+    };
+    const aliasOf = (name, learned) => [SEED_ALIASES[name] || ''].concat(learned || []).filter(Boolean);
+    // 學別名：反思成功（退回提醒之後，模型不再說沒有工具）→ 把使用者那句話記成找到的第一名工具的別名。store：{ tools: { 工具名: [{ p, n, at }] } }，每個工具最多 3 句、最多 400 個工具。回傳是否有新增
+    function learnAlias(store, toolName, userText, now) {
+        const p = String(userText || '').replace(/\s+/g, ' ').trim().slice(0, 60); if (!p || !toolName) return false; store.tools = store.tools || {}; const list = store.tools[toolName] = store.tools[toolName] || [];
+        const hit = list.find((x) => x.p === p); if (hit) { hit.n++; hit.at = now || Date.now(); return false; }
+        list.push({ p, n: 1, at: now || Date.now() }); list.sort((a, b) => b.n - a.n || b.at - a.at); if (list.length > 3) list.length = 3;
+        const names = Object.keys(store.tools); if (names.length > 400) { names.sort((a, b) => Math.max(0, ...store.tools[a].map((x) => x.at)) - Math.max(0, ...store.tools[b].map((x) => x.at))); for (const n of names.slice(0, names.length - 400)) delete store.tools[n]; }
+        return true;
+    }
+    return { claimsNoTool, tokens, search, nudgeText, SEED_ALIASES, aliasOf, learnAlias };
 });

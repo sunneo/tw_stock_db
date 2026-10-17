@@ -47,5 +47,28 @@ check('提示：講出模型說了什麼、找到哪個工具、在哪個領域'
 check('提示：最上層沒有的要用 delegate_to_subagent 並指定領域；直接有的就直接呼叫', /delegate_to_subagent，domain 填「media_av」/.test(nd) && /直接呼叫/.test(C.nudgeText('x', [{ name: 'merge_pdfs', domains: [], direct: true, text: 'a' }])));
 check('提示：要求原樣照用戶的字、不要改寫，都不符合才可以說沒有並說明查過什麼', /一個字都不要改/.test(nd) && /才可以回答沒有/.test(nd) && /查過上面哪幾個/.test(nd));
 
+// ---- 別名：只在搜尋時用，不進提示 ----
+const EA = [
+    { name: 'render_drawing', domains: [{ id: 'drawing', label: '繪圖' }], text: 'render_drawing 產生 SVG 向量圖', direct: false, aliases: C.aliasOf('render_drawing') },
+    { name: 'render_2d_animation', domains: [{ id: 'media_av', label: '影音處理' }], text: 'render_2d_animation 依 YAML 產生動畫', direct: false, aliases: C.aliasOf('render_2d_animation') },
+    { name: 'merge_pdfs', domains: [{ id: 'office', label: '文件處理' }], text: 'merge_pdfs 把多個 PDF 合成一個', direct: true, aliases: C.aliasOf('merge_pdfs') },
+    { name: 'fs_read_file', domains: [], text: 'fs_read_file 讀取檔案內容', direct: true, aliases: C.aliasOf('fs_read_file') },
+    { name: 'browser_search', domains: [], text: 'browser_search 搜尋網頁', direct: true, aliases: C.aliasOf('browser_search') },
+];
+const noAlias = EA.map((e) => Object.assign({}, e, { aliases: [] }));
+let ah = C.search('幫我畫畫', EA, { minScore: 1 }); check('別名：說明裡沒有的口語說法（畫畫）靠別名找得到', ah.length && ah[0].name === 'render_drawing' && ah[0].why.some((w) => /別名/.test(w)), ah.map((h) => [h.name, h.score, h.why]));
+check('別名：拿掉別名就找不到（證明是別名的功勞）', C.search('幫我畫畫', noAlias, { minScore: 1 }).length === 0);
+ah = C.search('把 pdf 接起來', EA, { minScore: 1 }); check('別名：另一個口語說法（pdf 接起來）', ah.length && ah[0].name === 'merge_pdfs', ah.map((h) => [h.name, h.score]));
+check('別名：種子表的每個鍵都是字串、而且有內容', Object.entries(C.SEED_ALIASES).every(([k, v]) => /^[a-z0-9_]+$/.test(k) && typeof v === 'string' && v.length > 3) && Object.keys(C.SEED_ALIASES).length >= 20);
+check('別名：aliasOf 把種子與學來的合在一起', C.aliasOf('text_to_speech', ['用英文語音說hi']).length === 2 && C.aliasOf('不存在的工具', []).length === 0 && C.aliasOf('不存在的工具', ['x']).join() === 'x');
+// 學別名
+const store = { tools: {} };
+check('學別名：第一次新增', C.learnAlias(store, 'text_to_speech', '用英文語音說Goodnight sleepy head', 1000) === true && store.tools.text_to_speech.length === 1 && store.tools.text_to_speech[0].n === 1);
+check('學別名：同一句再來只加次數，不重複新增', C.learnAlias(store, 'text_to_speech', '用英文語音說Goodnight sleepy head', 2000) === false && store.tools.text_to_speech.length === 1 && store.tools.text_to_speech[0].n === 2 && store.tools.text_to_speech[0].at === 2000);
+for (let i = 0; i < 5; i++) C.learnAlias(store, 'text_to_speech', '第' + i + '種說法', 3000 + i);
+check('學別名：每個工具最多留 3 句（次數多的、新的優先）', store.tools.text_to_speech.length === 3 && store.tools.text_to_speech[0].p === '用英文語音說Goodnight sleepy head', store.tools.text_to_speech);
+check('學別名：空字串或沒有工具名不學；很長的句子截到 60 字', C.learnAlias(store, 'x', '   ') === false && C.learnAlias(store, '', 'abc') === false && (C.learnAlias(store, 'y', 'a'.repeat(200)), store.tools.y[0].p.length === 60));
+const big = { tools: {} }; for (let i = 0; i < 450; i++) C.learnAlias(big, 't' + i, '說法' + i, i + 1); check('學別名：最多 400 個工具（丟掉最久沒用的）', Object.keys(big.tools).length === 400 && !big.tools.t0 && !!big.tools.t449, Object.keys(big.tools).length);
+const learnedHit = C.search('用英文語音說Goodnight sleepy head', [{ name: 'text_to_speech', domains: [], text: 'text_to_speech 念成MP3', direct: false, aliases: C.aliasOf('text_to_speech', ['用英文語音說Goodnight sleepy head']) }, { name: 'fs_read_file', domains: [], text: 'fs_read_file 讀取檔案', direct: true, aliases: [] }], { minScore: 1 }); check('學來的別名（使用者的原句）下次搜得到', learnedHit.length && learnedHit[0].name === 'text_to_speech', learnedHit);
 console.log('cap_reflect: ' + ok + ' passed' + (bad.length ? ', ' + bad.length + ' failed ' + JSON.stringify(bad) : ''));
 if (bad.length) process.exit(1);
