@@ -171,6 +171,10 @@ function createBrowserControlServer({ userDataDir, onLog }) {
   async function call(cmd, args, timeoutMs) {
     if (serverError) return { ok: false, error: serverError };
     let launchInfo = null;
+    // 探測（ping 且 args.probe）只是在問「現在連得上嗎」，不能為了回答這個問題去開瀏覽器：否則每次查能力都會彈出「誰在使用 Chrome？」設定檔選擇器
+    // （那時擴充功能還沒載入，也不該替使用者選帳號）。環境變數 FA_BROWSER_CONTROL_NO_LAUNCH=1 可以整個關掉自動開啟（測試用）
+    const noLaunch = process.env.FA_BROWSER_CONTROL_NO_LAUNCH === "1" || (cmd === "ping" && args && args.probe === true);
+    if (!connected() && noLaunch) return { ok: false, error: "NOT_CONNECTED", note: "Chrome 擴充功能目前沒有連線到桌面版（探測不會自動開啟瀏覽器；如果瀏覽器停在「誰在使用 Chrome？」，請先自己選好設定檔）。" };
     if (!connected()) {
       launchInfo = await ensureBrowser();
       if (!connected()) return { ok: false, error: "NOT_CONNECTED", note: (launchInfo.error ? launchInfo.error + "。" : "") + "Chrome 擴充功能尚未連線到桌面版。請確認已安裝擴充功能、貼上配對碼並儲存（設定 → 瀏覽器控制）。" };

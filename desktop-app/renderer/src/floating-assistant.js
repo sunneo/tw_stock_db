@@ -1503,7 +1503,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     coding: {
         enabled: true,
         label: '程式設計（評估／需求分析／設計計畫／git patch實作／語法檢查／測試／發佈，可中斷恢復）',
-        toolNames: ['uml_to_code', 'design_choices', 'uml_design', 'uml_guide', 'uml_edit', 'ask_user_card', 'log_learn', 'log_ask', 'mix_understand', 'mix_highlight', 'glue_list', 'glue_define', 'glue_report', 'list_file_access_points', 'fap_list_files', 'fap_find_file', 'repo_map', 'repo_ask', 'repo_sql', 'repo_read_doc', 'repo_wiki', 'explain_code', 'behavior_define', 'coding_workspace', 'coding_read_file', 'apply_git_patch', 'git_inspect', 'git_commit', 'git_push', 'coding_task_state', 'coding_run_check', 'coding_run_tests', 'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'terminal_cp_to', 'terminal_cp_from', 'browser_search', 'fetch_web_page'],
+        toolNames: ['uml_to_code', 'design_choices', 'uml_design', 'uml_guide', 'uml_edit', 'plan_route', 'ask_user_card', 'log_learn', 'log_ask', 'mix_understand', 'mix_highlight', 'glue_list', 'glue_define', 'glue_report', 'list_file_access_points', 'fap_list_files', 'fap_find_file', 'repo_map', 'repo_ask', 'repo_sql', 'repo_read_doc', 'repo_wiki', 'explain_code', 'behavior_define', 'coding_workspace', 'coding_read_file', 'apply_git_patch', 'git_inspect', 'git_commit', 'git_push', 'coding_task_state', 'coding_run_check', 'coding_run_tests', 'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'terminal_cp_to', 'terminal_cp_from', 'browser_search', 'fetch_web_page'],
         systemPrompt: _faBuildCodingSystemPrompt({ kind: 'web' }),
     },
     // tw_stock_db客製: 2026-09-20使用者要求——skills domain：建立Claude格式的skill（SKILL.md＋scripts/references）。
@@ -13621,10 +13621,17 @@ const holder = {};
         return out;
     }
 
+    // 小模型常回字母（A／B）或加引號的數字：都接受，統一成 0 起算的索引；不合格回傳 -1
+    function pickIndex(v, n) {
+        let x = v && typeof v === 'object' ? v.choice : v;
+        if (typeof x === 'string') { x = x.trim().replace(/["'.。、）)]/g, ''); if (/^[A-Za-z]$/.test(x)) x = x.toUpperCase().charCodeAt(0) - 64; else if (/^\d+$/.test(x)) x = Number(x); }
+        return Number.isInteger(x) && x >= 1 && x <= n ? x - 1 : -1;
+    }
+    const LETTER = (i) => String.fromCharCode(65 + i);
     function chooseMessages(model, issue, cands) {
-        const lines = cands.map((c, i) => (i + 1) + '. ' + c.label).join('\n');
-        const desc = String((issue && (issue.msg || issue.need || issue.kind)) || '').slice(0, 200);
-        return [{ role: 'system', content: '你在修改一份 UML 設計。只輸出一個 JSON 物件，格式：{"choice": 編號}。編號只能是選單裡有的數字。' },
+        const lines = cands.map((c, i) => LETTER(i) + '. ' + c.label).join('\n');
+        const desc = String((issue && (issue.desc || (issue.kind === 'unneeded_step' ? '「' + issue.usecase + '」裡的 ' + issue.to + '.' + issue.msg + ' 可能不需要' : issue.msg) || issue.need || issue.kind)) || '').slice(0, 200);
+        return [{ role: 'system', content: '你在修改一份 UML 設計。只輸出一個 JSON 物件，格式：{"choice": "字母"}，字母只能是選單裡有的（A、B、C…）。' },
             { role: 'user', content: '問題：' + desc + '\n選單：\n' + lines }];
     }
     // 小模型從候選裡挑一個；挑不出來就用程式的預設（標了 default 的，沒有就第一個）
@@ -13632,9 +13639,9 @@ const holder = {};
         opts = opts || {}; const def = cands.findIndex((c) => c.default); const defIdx = def >= 0 ? def : 0;
         if (cands.length === 1 || !opts.generate) return { index: defIdx, cand: cands[defIdx], by: 'program' };
         const n = cands.length;
-        const r = await R.jsonStep({ generate: opts.generate, messages: chooseMessages(model, issue, cands), maxTokens: 40, maxTries: opts.maxTries || 2, prefill: '{"choice":', validate: (o) => (Number.isInteger(o.choice) && o.choice >= 1 && o.choice <= n ? [] : ['「choice」必須是 1～' + n + ' 之間的整數']) });
+        const r = await R.jsonStep({ generate: opts.generate, messages: chooseMessages(model, issue, cands), maxTokens: 40, maxTries: opts.maxTries || 2, prefill: '{"choice":', validate: (o) => (pickIndex(o, n) >= 0 ? [] : ['「choice」必須是選單裡的字母 A～' + LETTER(n - 1)]) });
         if (!r.ok) return { index: defIdx, cand: cands[defIdx], by: 'program', rejected: r.rejected };
-        return { index: r.value.choice - 1, cand: cands[r.value.choice - 1], by: 'model', tries: r.tries };
+        const pi = pickIndex(r.value, n); return { index: pi, cand: cands[pi], by: 'model', tries: r.tries };
     }
 
     // 一次處理一批問題：每個問題 → 候選 → 選 → 套用。回傳 { model, steps:[{issue,choice,applied,rejected}], diff, applied, rejected }
@@ -13648,13 +13655,172 @@ const holder = {};
         return { model: cur, steps, diff: diff(model, cur), applied: steps.reduce((n, s) => n + s.applied.length, 0), rejected: steps.reduce((n, s) => n + s.rejected.length, 0) };
     }
 
-    return { OPS, REL_KINDS, parseMemberText, parseStepText, applyOne, apply, diff, candidates, chooseMessages, choose, resolve };
+    return { pickIndex, OPS, REL_KINDS, parseMemberText, parseStepText, applyOne, apply, diff, candidates, chooseMessages, choose, resolve };
 });
 
 }).call(null, undefined, holder);
 return holder.FaUmlEdit;
 })();
 /* UMLE-END */
+/* ROUTE-BEGIN */
+const FaRoute = (function () {
+const holder = {};
+(function (module, self) {
+/* 達成路線（FaRoute）：找不到工具時，不猜、不放棄——把「做不到」變成一條可以走的路線。設計見 DESIGN.unit-catalog.md 第三十七節。
+ *
+ *   classify：程式讀需求，判斷這是哪一類缺口——external_action（寄信、發文、付款…有副作用，需要外部世界）、model（翻譯、語音、辨識…用 Hugging Face／離線模型）、
+ *             program（計算、轉換、解析…寫程式）、design（一整個系統／應用…先用 UML design 拆）。
+ *   plan：依環境（桌面版／網頁版、有沒有瀏覽器控制）排出路線與步驟。程式的語言依環境選：桌面 Python／JavaScript／bash；網頁版 Python（Pyodide，純 Python 套件）／JavaScript（iframe、Worker）／bash（busybox 模擬）。
+ *         外部動作：問使用者要不要提供 API、或用瀏覽器控制操作網頁版、或給信件範本讓使用者自己寄——三條都不行才說做不到。
+ *   gate：手動模式＝先把計畫送出、問使用者要不要；自動模式＝直接做。有副作用的步驟（寄出、發佈、付款、刪除）兩種模式都一定先問。
+ *   umlIssue：把缺口對應成 UML 編修的「缺能力」問題（見 uml_edit_core.candidates），反思的結論因此能改 UML 再重建。
+ * 純函式（UMD）；選路線的歧義題由注入的 generate 回答（封閉選擇題），沒有模型就用程式的第一名。
+ */
+(function (root, factory) {
+    const R = (typeof FaRecipe !== 'undefined' && FaRecipe) || (root && root.FaRecipe) || (typeof require === 'function' ? require('../recipe/recipe_core.js') : null);
+    if (typeof module === 'object' && module.exports) module.exports = factory(R);
+    else root.FaRoute = factory(R);
+})(typeof self !== 'undefined' ? self : this, function (R) {
+    'use strict';
+
+    const KINDS = ['external_action', 'model', 'program', 'design'];
+    // 關鍵字表：每個命中算一分；external_action 的詞更具體，命中就加權
+    const RULES = {
+        external_action: { w: 3, re: [/寄(?:出|送)?(?:一?封)?(?:信|郵件|電子郵件|mail)/i, /(?:發|傳|送)(?:一?封)?(?:信|郵件|email|e-mail)/i, /\bemail\b|e-mail|\bsmtp\b/i, /發(?:送)?(?:訊息|簡訊|通知)|傳(?:訊息|line|簡訊)|\bline\b|\bslack\b|\bdiscord\b|telegram/i, /發(?:文|佈|布|推|貼)|貼文|推文|\btweet\b|\bpost to\b|發表/i, /付款|轉帳|匯款|刷卡|下訂|訂購|購買|結帳|預約|訂位|報名/, /刪除(?:帳號|帳戶|資料庫|全部)|註冊帳號|提交表單|送出表單/] },
+        model: { w: 2, re: [/翻譯|translate/i, /語音|朗讀|唸出來|念出來|\btts\b|text.?to.?speech|speech/i, /辨識|\bocr\b|文字辨識|圖片.*(?:文字|內容)|影像分類|物件偵測/i, /轉錄|逐字稿|字幕|transcrib|whisper/i, /摘要|summari[sz]e|情感分析|分類|語意|embedding|向量/i, /hugging ?face|離線模型|\bhf\b/i] },
+        program: { w: 1.5, re: [/計算|統計|排序|轉換|轉成|格式化|解析|parse|批次|重新命名|壓縮|解壓|合併|拆分|過濾|萃取|擷取|爬|產生.*(?:檔|圖|報表)|畫.*圖|圖表|繪製/i, /\bpython\b|javascript|\bjs\b|\bbash\b|腳本|script|程式/i, /csv|json|excel|xlsx|pdf|docx|markdown|正規/i] },
+        design: { w: 1.2, re: [/系統|平台|應用程式|\bapp\b|網站|後台|管理(?:系統|介面)|資料庫|架構|服務|多個.*(?:功能|模組)|完整/i, /使用者.*(?:登入|註冊)|購物車|訂單|會員|庫存|預約系統/] }
+    };
+
+    function score(need) {
+        const t = String(need || ''); const out = {}; const why = {};
+        for (const k of KINDS) { let s = 0; const hit = []; for (const re of RULES[k].re) { const m = re.exec(t); if (m) { s += RULES[k].w; hit.push(m[0]); } } out[k] = s; why[k] = hit; }
+        return { score: out, why };
+    }
+    // 回傳 { kind, ranked:[{kind,score,why}], ambiguous }；沒有任何命中就是 program（寫程式是最通用的路線）
+    function classify(need) {
+        const { score: sc, why } = score(need);
+        const ranked = KINDS.map((k) => ({ kind: k, score: sc[k], why: why[k] })).sort((a, b) => b.score - a.score);
+        // 有副作用的一旦命中，就一定當外部動作處理（寧可多問，不要誤做）
+        if (sc.external_action > 0) return { kind: 'external_action', ranked, ambiguous: false };
+        if (!ranked[0].score) return { kind: 'program', ranked, ambiguous: false, fallback: true };
+        const ambiguous = ranked[1].score > 0 && ranked[0].score - ranked[1].score < 1;
+        return { kind: ranked[0].kind, ranked, ambiguous };
+    }
+    async function classifyWithModel(need, opts) {
+        const c = classify(need); if (!c.ambiguous || !opts || !opts.generate) return Object.assign({ by: 'program' }, c);
+        const cands = c.ranked.filter((r) => r.score > 0).slice(0, 3); const label = { model: '用現成的模型（翻譯、語音、辨識…）', program: '寫一小段程式', design: '先設計（UML）再做一整個系統', external_action: '要對外部世界做事' };
+        const L = (i) => String.fromCharCode(65 + i);
+        const pick = (v) => { let x = v && typeof v === 'object' ? v.choice : v; if (typeof x === 'string') { x = x.trim().replace(/["'.。、）)]/g, ''); if (/^[A-Za-z]$/.test(x)) x = x.toUpperCase().charCodeAt(0) - 64; else if (/^\d+$/.test(x)) x = Number(x); } return Number.isInteger(x) && x >= 1 && x <= cands.length ? x - 1 : -1; };
+        const msgs = [{ role: 'system', content: '你替一個需求挑最合適的做法。只輸出一個 JSON 物件，格式：{"choice": "字母"}，字母只能是選單裡有的（A、B、C…）。' }, { role: 'user', content: '需求：' + String(need).slice(0, 300) + '\n選單：\n' + cands.map((x, i) => L(i) + '. ' + label[x.kind]).join('\n') }];
+        const r = await R.jsonStep({ generate: opts.generate, messages: msgs, maxTokens: 40, maxTries: 2, prefill: '{"choice":', validate: (o) => (pick(o) >= 0 ? [] : ['「choice」必須是選單裡的字母 A～' + L(cands.length - 1)]) });
+        if (!r.ok) return Object.assign({ by: 'program' }, c);
+        return Object.assign({}, c, { kind: cands[pick(r.value)].kind, by: 'model', ambiguous: false });
+    }
+
+    // 程式語言：依環境與需求挑（回傳排好序的候選與理由）
+    function pickLanguages(need, env) {
+        const t = String(need || ''); const web = env && env.environment === 'web';
+        const wantJs = /網頁|前端|dom|瀏覽器|按鈕|頁面|canvas|\bjs\b|javascript/i.test(t), wantBash = /檔案|資料夾|目錄|指令|批次.*(?:檔|名)|\bbash\b|\bshell\b|終端/i.test(t), wantPy = /\bpython\b|資料(?!夾)|統計|csv|excel|xlsx|pdf|圖表|分析|爬/i.test(t);
+        const langs = [];
+        const add = (id, label, how) => { if (!langs.some((l) => l.id === id)) langs.push({ id, label, how }); };
+        const py = web ? ['python', 'Python（網頁版用 Pyodide，純 Python 套件可用 micropip 安裝；沒有原生編譯的套件）', 'python_execute'] : ['python', 'Python', 'python_execute 或 bash_execute'];
+        const js = web ? ['javascript', 'JavaScript（在隔離的 iframe 或 Worker 裡跑）', 'sandbox_html／sandbox_worker'] : ['javascript', 'JavaScript', 'sandbox_html／sandbox_worker 或 node'];
+        const sh = web ? ['bash', 'bash（網頁版是 busybox 模擬，檔案與簡單指令流程適合）', 'run-terminal'] : ['bash', 'bash', 'bash_execute'];
+        const order = wantJs ? [js, py, sh] : (wantBash && !wantPy ? [sh, py, js] : [py, js, sh]);
+        for (const [id, label, how] of order) add(id, label, how);
+        return langs;
+    }
+
+    function mailDraft(need) {
+        const t = String(need || ''); const to = (/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/.exec(t) || [])[0] || '';
+        const subj = (/(?:主旨|標題|subject)[:：]\s*([^\n，。]+)/i.exec(t) || [])[1] || '';
+        return { to, subject: subj, body: '（內容由使用者確認後填入）\n\n需求原文：' + t.slice(0, 300) };
+    }
+
+    // 缺口 → UML 的「缺能力」問題（接 uml_edit_core.candidates）
+    const CAPS = [
+        [/寄|mail|email|信/i, 'Mailer', 'send(to:str,subject:str,body:str):bool', '寄信'],
+        [/翻譯|translate/i, 'Translator', 'translate(text:str,to:str):str', '翻譯'],
+        [/語音|朗讀|tts|speech/i, 'Speech', 'speak(text:str):bytes', '語音合成'],
+        [/ocr|辨識|圖片.*文字/i, 'Ocr', 'read(image:bytes):str', '文字辨識'],
+        [/轉錄|逐字稿|字幕|whisper/i, 'Transcriber', 'transcribe(audio:bytes):str', '語音轉文字'],
+        [/付款|轉帳|結帳/, 'Payment', 'pay(amount:decimal):bool', '付款'],
+        [/發文|貼文|推文|post/i, 'Publisher', 'publish(text:str):bool', '發佈']
+    ];
+    function umlIssue(need, usecase) {
+        for (const [re, cls, op, label] of CAPS) if (re.test(need)) return { kind: 'missing_capability', need: label, cls, op, usecase };
+        return { kind: 'missing_capability', need: String(need).slice(0, 20), cls: 'Capability', op: 'run(input:any):any', usecase };
+    }
+
+    // 排計畫。env：{ environment:'desktop'|'web', browserControl:bool, apiProvided:bool }；回傳 { need, kind, routes, steps, sideEffect, summary }
+    function plan(need, env, cls) {
+        env = env || {}; const c = cls || classify(need); const kind = c.kind; let n = 0; const id = () => 's' + (++n);
+        const steps = []; const routes = [];
+        const st = (kindS, text, extra) => { const s = Object.assign({ id: id(), kind: kindS, text, sideEffect: false }, extra || {}); steps.push(s); return s; };
+        if (kind === 'external_action') {
+            const draft = mailDraft(need);
+            routes.push({ id: 'api', label: '你提供對應的 API（網址與金鑰），我用程式呼叫', available: true, needs: '使用者提供 API', default: !!env.apiProvided });
+            routes.push({ id: 'browser_control', label: '用瀏覽器控制操作網頁版（例如網頁信箱），每個動作先規劃、再核對、再執行', available: !!env.browserControl, reason: env.browserControl ? '' : '瀏覽器控制還沒啟用', default: !env.apiProvided && !!env.browserControl });
+            routes.push({ id: 'template', label: '我寫好範本，由你自己送出', available: true, default: !env.apiProvided && !env.browserControl });
+            st('ask', '問使用者選哪一條路線（API／瀏覽器控制／範本），需要的資料（收件者、內容）一併確認', { tool: 'ask_user_card' });
+            st('draft', '寫好內容範本' + (draft.to ? '（收件者 ' + draft.to + '）' : '') + '，給使用者確認', { draft });
+            st('send', '實際送出（寄出／發佈／付款）——有副作用，一定要使用者當下同意', { sideEffect: true, tool: 'depends_on_route' });
+        } else if (kind === 'model') {
+            routes.push({ id: 'hf_model', label: '用 Hugging Face／離線模型（程式檢查輸出，不合格就退回重來）', available: true, default: true });
+            routes.push({ id: 'program', label: '寫一小段程式處理（模型做不到的部分）', available: true });
+            st('reflect', '搜尋現有工具與別名，確認真的沒有', { tool: 'catalog_discover' });
+            st('model', '選模型（版本釘死、下載前先問使用者），程式檢查輸出', { tool: 'depends_on_model' });
+            st('verify', '用範例輸入試跑，檢查輸出格式與內容', {});
+            st('deliver', '把結果交給使用者', {});
+        } else if (kind === 'design') {
+            routes.push({ id: 'uml_design', label: '先用 UML design 拆成使用案例、類別、呼叫順序，再逐步寫程式', available: true, default: true });
+            st('design', '把需求拆成 UML（參與者、使用案例、類別、成員、關係、呼叫順序）', { tool: 'uml_design' });
+            st('edit', '依檢查出的問題補或刪 UML，重建專案骨架', { tool: 'uml_edit' });
+            st('code', '照 UML 逐個檔案寫程式', {});
+            st('run', '在隔離的沙盒裡跑測試', {});
+            st('deliver', '交付專案與設計檢視器', {});
+        } else {
+            const langs = pickLanguages(need, env);
+            routes.push({ id: 'program', label: '寫程式：' + langs.map((l) => l.label).join('；'), available: true, default: true, languages: langs });
+            if (String(need).length > 40) st('design', '需求較長：先用 UML design 拆成小步驟', { tool: 'uml_design' });
+            st('code', '用 ' + langs[0].label + ' 寫出來', { tool: langs[0].how, language: langs[0].id });
+            st('run', '在沙盒裡試跑，檢查輸出', {});
+            st('deliver', '把結果（或程式）交給使用者', {});
+        }
+        const sideEffect = steps.some((s) => s.sideEffect);
+        return { need: String(need), kind, ambiguous: !!c.ambiguous, environment: env.environment || 'desktop', routes, steps, sideEffect, summary: summarize({ kind, routes, steps }) };
+    }
+    function summarize(p) {
+        const label = { external_action: '需要對外部世界做事', model: '用現成模型', program: '寫程式', design: '先設計再做' }[p.kind];
+        return label + '：' + p.steps.map((s, i) => (i + 1) + '. ' + s.text).join('；');
+    }
+
+    // 閘門：手動模式＝先送計畫問使用者；自動模式＝直接做；有副作用的步驟永遠先問
+    function gate(p, mode) {
+        const manual = mode !== 'auto';
+        const steps = p.steps.map((s) => Object.assign({}, s, { confirm: manual || !!s.sideEffect || s.kind === 'ask' }));
+        return { mode: manual ? 'manual' : 'auto', askPlanFirst: manual, steps, alwaysAsk: steps.filter((s) => s.sideEffect).map((s) => s.id) };
+    }
+    // 下一個動作能不能直接做
+    function mayRun(step, mode) { return !step.sideEffect && step.kind !== 'ask' && mode === 'auto'; }
+
+    function planMessage(p, g) {
+        const L = ['我找不到現成的工具，但這件事可以這樣做（' + { external_action: '需要對外部世界做事', model: '用現成模型', program: '寫程式', design: '先設計再做' }[p.kind] + '）：'];
+        if (p.routes.length > 1) { L.push('可選的路線：'); p.routes.forEach((r, i) => L.push('  ' + String.fromCharCode(65 + i) + '. ' + r.label + (r.available ? '' : '（目前不能用：' + r.reason + '）') + (r.default ? '　← 建議' : ''))); }
+        else L.push('路線：' + p.routes[0].label);
+        L.push('步驟：'); g.steps.forEach((s, i) => L.push('  ' + (i + 1) + '. ' + s.text + (s.sideEffect ? '　【有副作用，執行前一定會再問你】' : '')));
+        L.push(g.askPlanFirst ? '要照這個計畫做嗎？（手動模式：你同意我才動手）' : '（自動模式：我直接開始；有副作用的步驟會先問你）');
+        return L.join('\n');
+    }
+
+    return { KINDS, classify, classifyWithModel, pickLanguages, mailDraft, umlIssue, plan, summarize, gate, mayRun, planMessage };
+});
+
+}).call(null, undefined, holder);
+return holder.FaRoute;
+})();
+/* ROUTE-END */
 /* TRANS-BEGIN */
 const FaTranslate = (function () {
 const holder = {};
@@ -27717,6 +27883,12 @@ class FloatingAssistant {
         this.register_slash_command('/ask-mode', '[ask|recommended]',
             '計畫有分歧時要不要問你：ask＝問（預設）、recommended＝不再問、統一走建議的。不帶參數看目前的設定。',
             (argsText, run) => { const r = run || this; const a = String(argsText || '').trim().toLowerCase(); if (a === 'ask' || a === 'recommended') { r._setBranchAskMode(a); r._pushAssistantMessage(a === 'ask' ? '好，計畫有分歧的地方會問你。' : '好，之後遇到計畫分歧就直接照建議的做，不再問你。', null); } else { r._pushAssistantMessage('目前：' + (r._branchAskRecommended() ? 'recommended（不再問，統一走建議的）' : 'ask（有分歧才問）') + '。用 /ask-mode ask 或 /ask-mode recommended 切換。', null); } try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ } });
+        this.register_slash_command('/route', '[auto|manual|需求]',
+            '找不到工具時的達成路線：auto＝直接做（有副作用的步驟仍一定先問）、manual＝先送計畫問你（預設）；帶一句需求就排出路線給你看。不帶參數看目前的設定。',
+            async (argsText, run) => { const r = run || this; const a = String(argsText || '').trim(); const done = () => { try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ } };
+                if (a === 'auto' || a === 'manual') { r.advancedSettings.routeMode = a; try { r._saveAdvancedSettings(); } catch (_) { /* */ } r._pushAssistantMessage(a === 'auto' ? '好，找不到工具時我會直接開發；有副作用的步驟（寄出、發佈、付款、刪除）還是會先問你。' : '好，找不到工具時我會先把計畫送給你、你同意才動手。', null); return done(); }
+                if (!a) { r._pushAssistantMessage('目前：' + (r.advancedSettings.routeMode === 'auto' ? 'auto（直接做，有副作用的先問）' : 'manual（先送計畫問你）') + '。用 /route auto 或 /route manual 切換；/route 後面接一句需求可以看路線。', null); return done(); }
+                const p = await r._routePlan({ need: a }); r._pushAssistantMessage(p.ok ? p.message : '⚠️ ' + p.error, null); done(); });
         this.register_slash_command('/colu-bench', '[題數] [模型列#編號或名稱]',
             'CoLU 接線題：測一個模型串接多個工具的能力（自己排 vs. 給它算好的計畫選），建議要自己排、由 CoLU 先給計畫、或交給 CoLU 直接排。會呼叫該模型十幾次，開始前會先問你。結果存在模型列上，之後用這個模型時自動加提示。',
             (argsText, run) => (run || this)._coluBenchSlash(argsText));
@@ -28819,6 +28991,7 @@ class FloatingAssistant {
             // 不論這個設定都一律要先問，見_faBuildCodingSystemPrompt的步驟7）。
             codingDomainEnabled: true,
             codingPublishMode: 'ask',
+            routeMode: 'manual', // 達成路線：manual＝先送計畫問使用者（預設）；auto＝直接做（有副作用的步驟仍一定先問）
             branchAskMode: 'ask', // 計畫分歧時：ask＝問使用者（預設）；recommended＝使用者說過「不要再問」，統一走建議的（/ask-mode 可切換）
             // tw_stock_db客製: 2026-09-26使用者要求——台灣節慶套版（Configure > LLM基礎設定），預設開啟。
             festivalThemeEnabled: true,
@@ -30071,6 +30244,7 @@ class FloatingAssistant {
             })(),
             codingDomainEnabled: raw.codingDomainEnabled !== false,
             codingPublishMode: raw.codingPublishMode === 'auto' ? 'auto' : 'ask',
+            routeMode: raw.routeMode === 'auto' ? 'auto' : 'manual',
             branchAskMode: raw.branchAskMode === 'recommended' ? 'recommended' : 'ask',
             festivalThemeEnabled: raw.festivalThemeEnabled !== false,
             assetBackupProxyUrl: String(raw.assetBackupProxyUrl || '').trim(),
@@ -31824,6 +31998,15 @@ ${fnData.code}
                 try { return JSON.stringify(await this._umlDesign(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
             },
             { type: 'object', properties: { scenario: { type: 'string', description: '情境（使用者故事、需求文字）' }, language: { type: 'string', enum: ['python', 'typescript', 'java'], default: 'python' }, package: { type: 'string' }, constraints: { type: 'object', description: '（選填）指定抉擇' }, model: { type: 'string', enum: ['offline', 'online'], description: '（選填）用離線小模型或線上模型；不指定就自動選' } }, required: ['scenario'], additionalProperties: false }
+        );
+        registerOptional('plan_route',
+            '找不到工具時用這個，不要猜也不要說做不到：把需求排成一條可以走的路線。程式判斷需求是哪一類——要對外部世界做事（寄信、發文、付款：問使用者提供 API、或用瀏覽器控制操作網頁版、或寫好範本由使用者自己送）、用現成模型（翻譯、語音、辨識：Hugging Face／離線模型）、寫程式（桌面版 Python／JavaScript／bash；網頁版 Python（Pyodide）／JavaScript／bash（busybox 模擬））、或先用 UML design 拆的大系統。' +
+            '回傳路線、步驟與閘門：手動模式（預設）先把計畫送給使用者、問要不要；自動模式直接做；有副作用的步驟（寄出、發佈、付款、刪除）兩種模式都一定先問使用者。message 是可以直接給使用者看的計畫文字；uml_issue 可以餵給 uml_edit 的 issues，把缺的能力補進 UML。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try { return JSON.stringify(await this._routePlan(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+            },
+            { type: 'object', properties: { need: { type: 'string', description: '要做的事（原話）' }, mode: { type: 'string', enum: ['manual', 'auto'], description: '不給就用 /route 的設定' }, api_provided: { type: 'boolean', description: '使用者已經提供了 API' } }, required: ['need'] }
         );
         registerOptional('uml_edit',
             '編修進行中的 UML 設計（uml_design／uml_guide 產生的那一份）：反思或決策的結論要對應到「補哪裡、刪哪裡」，這個工具就是把它套上去並重建專案。ops＝編修指令陣列（每個都被程式驗證，會讓設計出錯的會被退回並說明原因）：' +
@@ -35850,7 +36033,7 @@ ${fnData.code}
         let tab = { available: false, reason: '瀏覽器控制沒有啟用（Configure→瀏覽器控制）' };
         if (this.advancedSettings.browserControlEnabled) {
             try {
-                const p = await this._bcCall('ping', {}, 3000);
+                const p = await this._bcCall('ping', { probe: true }, 3000);
                 if (p && p.ok && p.allowed !== false) {
                     const caps = Array.isArray(p.capabilities) ? p.capabilities : [];
                     tab = caps.includes('eval_js')
@@ -54660,7 +54843,7 @@ ${sourceTool.handlerScript}
         if (this._extFetchAvail && now - this._extFetchAvail.at < 60000) return this._extFetchAvail.ok;
         let ok = false;
         try {
-            const r = await this._bcCall('ping', {}, 3000);
+            const r = await this._bcCall('ping', { probe: true }, 3000);
             const v = String((r && r.version) || '0').split('.').map((n) => parseInt(n, 10) || 0);
             ok = !!(r && r.ok && r.allowed !== false && (v[0] > 1 || (v[0] === 1 && v[1] >= 1)));
         } catch (_) { ok = false; }
@@ -63904,7 +64087,11 @@ ${existingNodeSummaries}
         this._unitCatalogRememberPlan(plan);
         if (plan.ok && a.ask !== false) { try { await this._unitCatalogAskBranches(plan, a); } catch (e) { plan.branch_error = String((e && e.message) || e); } }
         const nn = String.fromCharCode(10, 10);
-        plan.text = D.toText(plan) + (plan.reflect_text ? nn + '🔎 反思：' + String.fromCharCode(10) + plan.reflect_text : '') + ((plan.novel || []).length ? nn + FaCatalogReflect.NOVEL_NEXT : '') + (plan.branch_text ? nn + plan.branch_text : ''); return plan;
+        plan.text = D.toText(plan) + (plan.reflect_text ? nn + '🔎 反思：' + String.fromCharCode(10) + plan.reflect_text : '') + ((plan.novel || []).length ? nn + FaCatalogReflect.NOVEL_NEXT : '') + (plan.branch_text ? nn + plan.branch_text : '');
+        // 還是找不到的缺口：不猜、不放棄——標出它屬於哪一類，提示用 plan_route 排出達成路線
+        const left = (plan.unresolved || []).filter((u) => u && u.need);
+        if (left.length) { for (const u of left) { try { u.route = { kind: FaRoute.classify(u.need).kind }; } catch (_) { /* 標不出來不影響 */ } } plan.text += nn + '🛣️ 還找不到的需求不要說做不到：用 plan_route 排出達成路線（' + left.slice(0, 3).map((u) => '「' + String(u.need).slice(0, 20) + '」→' + ({ external_action: '對外部世界做事', model: '用現成模型', program: '寫程式', design: '先設計再做' }[u.route && u.route.kind] || '寫程式')).join('、') + '）。'; }
+        return plan;
     }
     // 詞庫：中文詞條與英文字（來自探索用的詞庫）加上單元目錄裡單元的名稱與說明
     _unitCatalogReflectVocab(D) {
@@ -65461,6 +65648,17 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const s = { id: 'uml_' + Date.now().toString(36), model, lang, pkg, scenario, design }; this._umlSessionBuild(s);
         if (!this._umlSessions) this._umlSessions = new Map(); this._umlSessions.set(s.id, s); this._umlLastSession = s.id;
         while (this._umlSessions.size > 8) this._umlSessions.delete(this._umlSessions.keys().next().value); return s;
+    }
+    // 達成路線：找不到工具時，把「做不到」變成可以走的路線（見 catalog/route_core.js）；手動＝先送計畫問使用者、自動＝直接做，有副作用的步驟一律先問
+    async _routePlan(a) {
+        const need = String((a && a.need) || '').trim(); if (!need) return { ok: false, error: '缺少 need' };
+        let caps = null; try { caps = await this._sandboxCapabilities(); } catch (_) { /* 查不到就當桌面版 */ }
+        const env = { environment: (caps && caps.environment) || (typeof window !== 'undefined' && window.desktopAPI ? 'desktop' : 'web'), browserControl: !!this.advancedSettings.browserControlEnabled, apiProvided: !!a.api_provided };
+        const mode = a.mode === 'auto' || a.mode === 'manual' ? a.mode : (this.advancedSettings.routeMode === 'auto' ? 'auto' : 'manual');
+        let cls = FaRoute.classify(need); let by = 'program';
+        if (cls.ambiguous && a.use_model !== false) { try { const M = await this._umlModel(); if (!M.error) { const c2 = await FaRoute.classifyWithModel(need, { generate: M.gen }); cls = c2; by = c2.by; } } catch (_) { /* 用程式第一名 */ } }
+        const p = FaRoute.plan(need, env, cls); const g = FaRoute.gate(p, mode);
+        return { ok: true, need, kind: p.kind, classified_by: by, mode, ask_plan_first: g.askPlanFirst, routes: p.routes, steps: g.steps, always_ask: g.alwaysAsk, uml_issue: FaRoute.umlIssue(need), message: FaRoute.planMessage(p, g) };
     }
     // UML 編修：把「補哪裡、刪哪裡」的結論（ops，或由程式找出的問題 issues 讓小模型挑）套到工作階段的模型，驗證後重建專案；檢視器開著就同步更新
     async _umlEdit(a) {

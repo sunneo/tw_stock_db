@@ -93,8 +93,15 @@ const fake = (choice) => async () => JSON.stringify({ choice });
     check('沒有模型 → 程式預設', c.by === 'program' && c.cand.id === 'remove');
     let n = 0; c = await E.choose(model, orphan, cs, { generate: async () => (++n === 1 ? '胡言亂語' : JSON.stringify({ choice: 2 })) });
     check('第一次亂答、退回重來後挑對', c.by === 'model' && c.cand.id === 'relate' && c.tries === 2, c);
+    c = await E.choose(model, orphan, cs, { generate: async () => '{"choice": "B"}' });
+    check('模型回字母（加引號）也收', c.by === 'model' && c.cand.id === 'relate', c);
+    c = await E.choose(model, orphan, cs, { generate: async () => '{"choice": "c"}' });
+    check('小寫字母也收', c.cand.id === 'keep' && c.by === 'model');
+    c = await E.choose(model, orphan, cs, { generate: async () => '{"choice": "2"}' });
+    check('引號數字也收', c.cand.id === 'relate');
+    check('pickIndex 邊界', E.pickIndex('D', 3) === -1 && E.pickIndex(0, 3) === -1 && E.pickIndex({ choice: 'A' }, 3) === 0 && E.pickIndex('A.', 3) === 0 && E.pickIndex(null, 3) === -1);
     const msg = E.chooseMessages(model, orphan, cs)[1].content;
-    check('選擇題內容包含編號與問題', /1\. .*Junk/.test(msg) && /Junk 沒人用/.test(msg), msg);
+    check('選擇題內容包含字母與問題', /A\. .*Junk/.test(msg) && /Junk 沒人用/.test(msg), msg);
 
     const res = await E.resolve(model, [orphan, { kind: 'missing_capability', need: '語音合成', cls: 'Speech', op: 'speak(text:str):bytes', usecase: '下單' }], { generate: fake(1) });
     check('resolve：刪孤兒＋補能力', res.applied === 3 && res.rejected === 0 && !res.model.classes.some((x) => x.name === 'Junk') && res.model.classes.some((x) => x.name === 'Speech') && res.diff.length >= 3, res);

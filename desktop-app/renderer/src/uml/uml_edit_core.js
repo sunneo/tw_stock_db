@@ -206,10 +206,17 @@
         return out;
     }
 
+    // 小模型常回字母（A／B）或加引號的數字：都接受，統一成 0 起算的索引；不合格回傳 -1
+    function pickIndex(v, n) {
+        let x = v && typeof v === 'object' ? v.choice : v;
+        if (typeof x === 'string') { x = x.trim().replace(/["'.。、）)]/g, ''); if (/^[A-Za-z]$/.test(x)) x = x.toUpperCase().charCodeAt(0) - 64; else if (/^\d+$/.test(x)) x = Number(x); }
+        return Number.isInteger(x) && x >= 1 && x <= n ? x - 1 : -1;
+    }
+    const LETTER = (i) => String.fromCharCode(65 + i);
     function chooseMessages(model, issue, cands) {
-        const lines = cands.map((c, i) => (i + 1) + '. ' + c.label).join('\n');
-        const desc = String((issue && (issue.msg || issue.need || issue.kind)) || '').slice(0, 200);
-        return [{ role: 'system', content: '你在修改一份 UML 設計。只輸出一個 JSON 物件，格式：{"choice": 編號}。編號只能是選單裡有的數字。' },
+        const lines = cands.map((c, i) => LETTER(i) + '. ' + c.label).join('\n');
+        const desc = String((issue && (issue.desc || (issue.kind === 'unneeded_step' ? '「' + issue.usecase + '」裡的 ' + issue.to + '.' + issue.msg + ' 可能不需要' : issue.msg) || issue.need || issue.kind)) || '').slice(0, 200);
+        return [{ role: 'system', content: '你在修改一份 UML 設計。只輸出一個 JSON 物件，格式：{"choice": "字母"}，字母只能是選單裡有的（A、B、C…）。' },
             { role: 'user', content: '問題：' + desc + '\n選單：\n' + lines }];
     }
     // 小模型從候選裡挑一個；挑不出來就用程式的預設（標了 default 的，沒有就第一個）
@@ -217,9 +224,9 @@
         opts = opts || {}; const def = cands.findIndex((c) => c.default); const defIdx = def >= 0 ? def : 0;
         if (cands.length === 1 || !opts.generate) return { index: defIdx, cand: cands[defIdx], by: 'program' };
         const n = cands.length;
-        const r = await R.jsonStep({ generate: opts.generate, messages: chooseMessages(model, issue, cands), maxTokens: 40, maxTries: opts.maxTries || 2, prefill: '{"choice":', validate: (o) => (Number.isInteger(o.choice) && o.choice >= 1 && o.choice <= n ? [] : ['「choice」必須是 1～' + n + ' 之間的整數']) });
+        const r = await R.jsonStep({ generate: opts.generate, messages: chooseMessages(model, issue, cands), maxTokens: 40, maxTries: opts.maxTries || 2, prefill: '{"choice":', validate: (o) => (pickIndex(o, n) >= 0 ? [] : ['「choice」必須是選單裡的字母 A～' + LETTER(n - 1)]) });
         if (!r.ok) return { index: defIdx, cand: cands[defIdx], by: 'program', rejected: r.rejected };
-        return { index: r.value.choice - 1, cand: cands[r.value.choice - 1], by: 'model', tries: r.tries };
+        const pi = pickIndex(r.value, n); return { index: pi, cand: cands[pi], by: 'model', tries: r.tries };
     }
 
     // 一次處理一批問題：每個問題 → 候選 → 選 → 套用。回傳 { model, steps:[{issue,choice,applied,rejected}], diff, applied, rejected }
@@ -233,5 +240,5 @@
         return { model: cur, steps, diff: diff(model, cur), applied: steps.reduce((n, s) => n + s.applied.length, 0), rejected: steps.reduce((n, s) => n + s.rejected.length, 0) };
     }
 
-    return { OPS, REL_KINDS, parseMemberText, parseStepText, applyOne, apply, diff, candidates, chooseMessages, choose, resolve };
+    return { pickIndex, OPS, REL_KINDS, parseMemberText, parseStepText, applyOne, apply, diff, candidates, chooseMessages, choose, resolve };
 });
