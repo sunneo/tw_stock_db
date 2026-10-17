@@ -1,7 +1,7 @@
 # UML → 程式骨架 framework：設計語意 → UML → framework（top-down，每一區都是 template）
 
 > 構想：以前常用「文字情境（user scenario）→ UML → 程式碼」。UML 確定之後，接下來多半是選架構、選各領域的 library——那是選擇題與填空題；UML 設計階段本身也可以 top-down 遞迴 rework，並對應到離線訓練器。弱的小模型（離線模型，或比較弱的線上模型）就能一路從設計語意走到程式骨架。
-> 核心：`renderer/src/uml/uml_core.js`（`FaUml`）、`renderer/src/uml/design_core.js`（`FaDesign`），純函式 UMD，測試 `uml_core.test.js`（60 項）、`design_core.test.js`（47 項）。與 `DESIGN.offline-recipes.md`、`DESIGN.offline-plans.md` 同一套原則：**程式能決定的就程式決定，模型只做封閉的小決策，每一步驗證，每個決定都記錄。**
+> 核心：`renderer/src/uml/uml_core.js`（`FaUml`）、`renderer/src/uml/design_core.js`（`FaDesign`），純函式 UMD，測試 `uml_core.test.js`（76 項）、`design_core.test.js`（54 項）；2026-10-17～18 新增：UML design 補救、UML 編修（`uml_edit_core.js`）、LLVM IR → wasm（`llvm_core.js`）與終端機工具。總覽見 [DESIGN.colu.md](DESIGN.colu.md)、反思見 [DESIGN.reflection.md](DESIGN.reflection.md)、移植見 [DESIGN.colu-porting.md](DESIGN.colu-porting.md)。與 `DESIGN.offline-recipes.md`、`DESIGN.offline-plans.md` 同一套原則：**程式能決定的就程式決定，模型只做封閉的小決策，每一步驗證，每個決定都記錄。**
 
 ## 1. 管線
 
@@ -131,6 +131,37 @@ usecase Checkout: Customer -> Cart.add(book) -> Order.pay(total):bool
 
 ## 10. 移植到 宿主專案
 帶走 `uml_core.js`＋`design_core.js`＋測試（只依賴 `recipe_core.js` 的 `jsonStep`／`chooseTool`）。宿主提供：`generate`（強制 JSON 的文字生成，支援 prefill）、zip 輸出、訓練器的詞彙與偏好。宿主專案 的 `scene3d`／`block_diagram` 等食譜與這裡是同一套「程式決定、模型只做封閉小決策」的做法；UML 可以用它的 Mermaid 渲染工具顯示。
+
+## UML design 補救：大問題直接做不完，就用 UML design（2026-10-17）
+
+> 立場（使用者的要求）：**UML design 是弱模型推理能力的補救與擴充**——離線超小模型走這條路就能完成，線上模型沒有理由比它差。UML 加上決策邏輯（決策表、決策樹）是擴充設計與推理的方法。細節與實測在 [DESIGN.unit-catalog.md 第三十二～三十四節](DESIGN.unit-catalog.md)；總覽在 [DESIGN.colu.md](DESIGN.colu.md) 第八、九節。
+
+**1. 為什麼要補救**：大問題（約 10 個使用案例、6 個以上參與者、6～8 個類別）讓模型「一次寫出整份 UML」，實測兩個預設模型都是 0/3（最常見：呼叫順序不足、格式不合）。同一個問題走「先切塊、一次一小題」是 2/3 與 3/3（使用者貼出的 `nemotron-3-ultra` 也是直接做 0/3、UML design 3/3）。
+
+**2. 做法**（`uml_core.js`）：
+- `splitScenario`：依句子切（標題每塊都帶著，每塊最多 2 句、一句裡項目太多的獨立一塊）。
+- 每塊各自走 `scenarioToModel`（參與者與使用案例 → 類別 → 每個類別的成員 → 關係 → 呼叫順序；**一個封閉的小題、每個回覆程式驗證、不合格把它自己的回覆加精確的錯誤退回，最多兩次**）。
+- `mergeModels`：參與者聯集、同名類別合併成員、關係聯集（指向不存在類別的拿掉）、使用案例同名加編號、呼叫步驟接回前一步，最後 `ensureOps`。
+- `scenarioToModelBig`：小情境走一次、大的才切；某一塊拆不出來只警告那一塊；全部拆不出來才失敗。`designProject`（`uml_design`）改用它。
+
+**3. 預設開放給線上模型**：`uml_design` 預設用目前的線上模型（`_umlModel`），離線模型要下載、在 CPU 上慢。體檢結果是 `program_first`（連一次一小題都沒跑通）的模型不用，改走離線或 `uml_guide`（程式讀情境、卡片逐步確認，不需要模型）。線上模型在這條路上失敗，**先查流程**（輸出預算：推理模型要 4096、不是 1024；格式；服務過載），不是「模型太弱」。
+
+**4. 體檢怎麼量**（`uml_bench_core.js`）：同一個大問題、同一套成功標準（完成、驗證通過、該有的參與者／類別／使用案例**各自**都找到七成以上——取最低的，平均會蓋掉缺掉的一大塊）。結論 `direct`／`uml`（用 UML design 補救）／`program_first`／`unknown`，存在模型列的 `coluProfile`，之後自動在系統提示加一句。
+
+**5. 反思接進 UML**：設計裡的問題（孤兒類別、空類別、太短的呼叫順序、缺的能力、多餘的步驟）→ 候選編修 → 小模型挑字母 → 套用、驗證、重建，見下一節。
+
+## UML 編修（`uml_edit`，2026-10-17）
+
+**要解的問題**：反思或決策的結論（「這裡缺語音合成」「這個類別沒人用」）要能對應成「補哪裡、刪哪裡」，再接到重建。
+
+`uml/uml_edit_core.js`（`FaUmlEdit`，48 項測試）：
+- **13 種編修指令**：`add_actor`／`remove_actor`、`add_class`（可帶成員）／`remove_class`／`rename_class`、`add_member`／`remove_member`、`add_relation`／`remove_relation`、`add_usecase`／`remove_usecase`、`add_step`／`remove_step`。
+- **`apply`**：一個一個套用；每個之後整理（`design_core.normalize`：刪類別時關係與呼叫步驟一併收拾、補上缺的操作）並比較驗證錯誤——**讓設計出現新錯誤的編修會被退回並說明**；原模型不被改動。
+- **`candidates(model, issue)`**：從問題算出候選編修（見 [反思](DESIGN.reflection.md) 第七節的表）。**`choose`**：小模型挑字母；挑不出來用程式預設。**`resolve`**：一批問題一次處理，回傳 `diff`。
+- **宿主**：`_umlEdit`（工具 `uml_edit`；`auto_fix:true` 讓程式找問題、小模型挑；`use_model:false` 全用程式預設）。套用後 `_umlSessionBuild` 重建專案，設計檢視器開著就同步更新。
+- **瀏覽器計畫也是 UML**：`bcplan_core.toModel／fromModel` 把一批動作變成使用案例的呼叫順序，所以也能用 `uml_edit` 補或刪步驟。
+
+**實測**：桌面版建立設計後編修：新增類別與步驟、刪孤兒、被退回的編修（不存在的類別）都符合預期；離線 0.6B 模型挑「刪孤兒」「補能力」6/6 格式正確，但答對的都等於程式預設，還沒證明它會判斷；「刪多餘步驟」格式三次都不對，退回預設。
 
 ## UML → LLVM IR → WebAssembly（wasm32-wasi，2026-10-18）
 

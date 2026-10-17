@@ -1,6 +1,22 @@
 # 單元目錄（Unit Catalog）：第 1 步——呼叫原型抽取器
 
-> 這份是逐步累積的設計與實測紀錄（第一到三十五節）。**要看整體怎麼想、每一塊負責什麼、要改從哪裡下手，先看 [DESIGN.colu.md](DESIGN.colu.md)（CoLU 設計指南）。**
+> 這份是逐步累積的設計與實測紀錄（第一到三十九節）。**要看整體怎麼想、每一塊負責什麼、要改從哪裡下手，先看 [DESIGN.colu.md](DESIGN.colu.md)（CoLU 設計指南）。**
+
+
+> **節點地圖（2026-10-15 ～ 10-18 的功能在哪份文件）**
+>
+> | 主題 | 去哪看 | 本檔的節 |
+> |---|---|---|
+> | CoLU 總覽、原則、模型體檢、決策紀錄 | [DESIGN.colu.md](DESIGN.colu.md) | 二十九～三十一 |
+> | 單元與型別、接線矩陣、抽取、探測、嵌入、回饋、探索（10/15～10/16） | 本檔 | 一～二十七 |
+> | 反思（缺口反思、分歧才問、達成路線、UML 編修、失敗後重新計畫） | [DESIGN.reflection.md](DESIGN.reflection.md) | 二十八、三十一、三十七～三十九 |
+> | 工具呼叫的反思（我沒有工具、別名、命令直接做、翻譯） | [DESIGN.tool-reflection.md](DESIGN.tool-reflection.md) | 三十五、三十六 |
+> | UML 設計、UML design 補救、UML 編修、LLVM IR → wasm、終端機 lli 系列 | [DESIGN.uml-framework.md](DESIGN.uml-framework.md) | 三十二～三十四、三十七 |
+> | 瀏覽器控制的穩定生成 | 本檔 | 三十九 |
+> | 資料的離線精準查詢 | [DESIGN.data-viewers.md](DESIGN.data-viewers.md) 第八節 | — |
+> | 搬到別的專案（例如 Redmine AI） | [DESIGN.colu-porting.md](DESIGN.colu-porting.md) | — |
+>
+> 本檔第一到三十九節是依時間累積的紀錄；第三十七、三十八節只寫摘要，完整設計在反思與 UML 文件；第三十九節（瀏覽器控制）的設計本體就在本檔。
 
 2026-10-15。背景：想讓弱模型（Qwen3 0.6B）離線也能組出程式——把行為變成「有固定介面、可組合的單元」，程式負責接線與驗證，模型只在少數候選裡挑、填參數。這份只設計**第 1 步**：從三個執行環境（JavaScript、Python／Pyodide、bash 模擬器）自動抽出呼叫原型，產生單元目錄。直譯器、型別矩陣、規劃、編譯是後面的步驟，不在這裡。
 

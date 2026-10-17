@@ -1,6 +1,6 @@
 # CoLU 設計指南：弱模型的固定路線、工具反思、別名
 
-這份是**入口與總覽**。細節與實測數字在 [DESIGN.unit-catalog.md](DESIGN.unit-catalog.md)（第一到三十五節），UML 拆解在 [DESIGN.uml-framework.md](DESIGN.uml-framework.md)，離線食譜與計畫在 [DESIGN.offline-recipes.md](DESIGN.offline-recipes.md)、[DESIGN.offline-plans.md](DESIGN.offline-plans.md)。這裡只講：整體怎麼想、每一塊負責什麼、要改的時候從哪裡下手。
+這份是**入口與總覽**。細節與實測數字在 [DESIGN.unit-catalog.md](DESIGN.unit-catalog.md)（第一到三十九節）；反思在 [DESIGN.reflection.md](DESIGN.reflection.md)，工具呼叫的反思在 [DESIGN.tool-reflection.md](DESIGN.tool-reflection.md)，資料查詢在 [DESIGN.data-viewers.md](DESIGN.data-viewers.md) 第八節，搬到別的專案看 [DESIGN.colu-porting.md](DESIGN.colu-porting.md)，UML 拆解在 [DESIGN.uml-framework.md](DESIGN.uml-framework.md)，離線食譜與計畫在 [DESIGN.offline-recipes.md](DESIGN.offline-recipes.md)、[DESIGN.offline-plans.md](DESIGN.offline-plans.md)。這裡只講：整體怎麼想、每一塊負責什麼、要改的時候從哪裡下手。
 
 ---
 
@@ -234,3 +234,51 @@
 - **連不上不寫成「不支援」**：避免把暫時的服務問題固化成錯的結論。
 - **同意類的表單，打字不算同意**：執行程式、安裝、刪除永遠要明確點選。
 - **名字**：取自「Connect Library Units」，音近 ReLU；受 Handwired（把 JavaScript 編譯成手寫權重的神經網路）啟發，取了「程式變矩陣」的方向，但矩陣表示的是型別接線，不是程式執行。
+
+---
+
+## 十五、2026-10-17～18 新增的模組（同一個形狀，之後抽成「弱模型的思考外殼」）
+
+這一批模組都長成同一個樣子：**資料先結構化 → 程式把選項縮成封閉小題（字母）→ 模型只挑或填 → 程式檢查放行 → 選不出來用程式預設 → 執行並驗證 → 失敗重新計畫 → 副作用先問**。等它們穩定了、累積到三四個，再比較共同介面、提出外殼草案（使用者的方向：把 CoLU 抽象、正規化成弱模型的思考外殼；現在先不抽）。
+
+| 模組 | 檔案 | 解的問題 | 設計文件 |
+|---|---|---|---|
+| UML 編修 | `uml/uml_edit_core.js` | 反思的結論要能補或刪 UML、重建 | [反思](DESIGN.reflection.md) 第七節 |
+| 達成路線 | `catalog/route_core.js` | 找不到工具時不猜、不放棄：分類、排路線、手動／自動閘門 | [反思](DESIGN.reflection.md) 第六節 |
+| 瀏覽器控制穩定生成 | `browser/bcplan_core.js` | 離線小模型邊想邊下指令不穩：先計畫、CoLU 檢查、才執行 | [unit-catalog 第三十九節](DESIGN.unit-catalog.md) |
+| 資料離線精準查詢 | `dataview/dataquery_core.js` | 口語問題 → 穩定、精準的查詢 | [data-viewers 第八節](DESIGN.data-viewers.md) |
+| UML → LLVM IR → wasm | `uml/llvm_core.js` | 可驗證的 UML 轉碼、環境裡的底層程式工具 | [uml-framework](DESIGN.uml-framework.md) |
+| 工具呼叫反思 | `tools/cap_reflect.js`、`tts_intent.js`、`translate_core.js` | 弱模型說「沒有工具」 | [工具反思](DESIGN.tool-reflection.md) |
+
+**這一批的共同決定**：
+1. **選單用字母，一次最多 4 個**。實測離線 0.6B 模型面對 11 個選項選不出來，縮到 2～4 個可以；縮小靠「決策表」（程式的知識，例如「剛開完頁，下一步只有看元素或讀文字」），搬到別的專案不要拿掉。
+2. **小模型挑不出來就用程式的第一個**（選項本來都是合法的，退回是安全的），並寫進「我做的假設」。
+3. **接受模型的格式變化**：`{"choice":"B"}`、`"b"`、`"2"` 都收（小模型常回字母而且加引號）；驗證只認解析後的結果。
+4. **有副作用的步驟，自動模式也一定先問**（送出、付款、刪除、發佈、登入、提交）；不替使用者輸入密碼或卡號；不替使用者選瀏覽器帳號。
+5. **每個模組都能用假模型完整測試**，所以搬到別處不需要真的模型就能驗收（見 [DESIGN.colu-porting.md](DESIGN.colu-porting.md)）。
+6. **測試要有沒調過的題目**：自己寫的題庫會高估（42 題全對 vs 沒調過的約 16～17／20）。
+
+**內建預設模型的補充（使用者貼出的結果，2026-10-18，尚未寫進 `FA_PRESET_MODEL_STATE`）**：`nemotron-3-ultra-550b-a55b`：接線題自己排 6/6、給計畫選 6/6、退化 0/12、中位耗時約 105 毫秒 → 自己排就好；大問題直接做 0/3、走 UML design 3/3（參與者 100%、類別 94%、使用案例 91%）→ 用 UML design 補救；UML 拆解題 3/3 完成、各階段第一次就合格 85/86 → 可以自己拆。另有一次 UML 拆解題因 HTTP 429 記成「資料不足」（沒有算成失敗）。這個結果是使用者的環境跑出來的，不是我這邊測的。
+
+**更新後的元件對應**（接在第四節的表後面）：
+
+| 元件 | 檔案 | 做什麼 | 設計節 |
+|---|---|---|---|
+| UML 編修 | `uml/uml_edit_core.js` | 13 種編修、候選、小模型挑字母、重建 | 三十七 |
+| 達成路線 | `catalog/route_core.js` | 缺口分類、環境語言、三條外部路線、閘門 | 三十八 |
+| 瀏覽器計畫 | `browser/bcplan_core.js` | 動作表、狀態接線檢查、決策表、等擴充功能連上、執行驗證、重新計畫 | 三十九 |
+| 資料查詢 | `dataview/dataquery_core.js` | 表結構、讀問題、計畫、檢查、執行、SQL | data-viewers 八 |
+| LLVM | `uml/llvm_core.js` | IR 解析／檢查／連結器、wasm 輸出、最小 libc、WASI | uml-framework |
+
+**新增的工具與指令**：`uml_edit`、`plan_route`（`/route`）、`browser_task`、`uml_to_wasm`、`llvm_execute`；終端機 `lli`／`llc`（`-c`）／`llcheck`／`llink`／`wasmrun`。
+
+**新增的設定**：`advancedSettings.routeMode`（`manual`／`auto`）、`advancedSettings.dataQueryFirst`。
+
+**測試**（`node 檔名.test.js`）：`uml_edit_core` 48、`route_core` 41、`bcplan_core` 70、`dataquery_core` 31、`llvm_core` 103。
+
+**測試環境的注意事項（踩過的）**：
+1. 啟動測試用桌面程式前一定要設 `FA_BROWSER_CONTROL_PORT=17990` 與 `FA_BROWSER_CONTROL_NO_LAUNCH=1`；否則會搶走使用者真實桌面版的瀏覽器控制連線（擴充功能顯示「配對碼不正確」）、並彈出「誰在使用 Chrome？」的設定檔選擇器。
+2. 探測用的瀏覽器控制呼叫（只是問「連上了嗎」）要帶 `probe:true`，不能讓它開瀏覽器。
+3. 腳本文字裡不能有真的 NUL 字元（產生腳本的程式把「反斜線加 00」當跳脫解開時會出現）；`bash_execute` 現在遇到會直接回錯誤。
+
+**下一步**：把工具反思找不到的結果自動接到 `plan_route`；證明或證偽小模型挑編修候選的判斷力（設計「正確答案不是預設」的題目）；用真的 clang／llvm-as 驗證產生的 `.ll`；補測 `lightning`、`ultra`（已有使用者貼出的結果）、`omni` 的大問題；累積足夠的模組後，評估把共同的形狀抽成外殼。
