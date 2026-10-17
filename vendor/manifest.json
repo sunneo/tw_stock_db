@@ -1,0 +1,189 @@
+{
+  "schema": 1,
+  "kind": "vendor-models",
+  "createdAt": "2026-10-17T12:58:30.136Z",
+  "partBytes": 41943040,
+  "note": "大檔案切成 partBytes 大小的片（.partNNN），依序接起來再核對 sha256；小檔案原樣放。版本以 revision（Hugging Face 的 commit）釘住，內容不會變。",
+  "models": {
+    "opus-mt-zh-en": {
+      "repo": "Xenova/opus-mt-zh-en",
+      "revision": "39d480d52a9ea3065a1f117adfe4dbc55de10e6f",
+      "base": "Helsinki-NLP/opus-mt-zh-en",
+      "license": "CC-BY-4.0",
+      "source": "zh",
+      "target": "en",
+      "dtype": "q8",
+      "files": [
+        {
+          "path": "config.json",
+          "size": 1389,
+          "sha256": "293d318fce41dbf04114eac45037bb88a32d7c4ee21011a75e24a8b98ca45ad1"
+        },
+        {
+          "path": "generation_config.json",
+          "size": 293,
+          "sha256": "8dc29fef0fe82109f94ef3c2e6ea6bded3215d357b226c34cf7b4630726766c9"
+        },
+        {
+          "path": "onnx/decoder_model_merged_quantized.onnx",
+          "size": 60212804,
+          "sha256": "c6b7f04ff1ba0fbd1bf6852599b4c0cad6fe512d57cd887f44ef36cf705424cb",
+          "parts": [
+            {
+              "name": "onnx/decoder_model_merged_quantized.onnx.part000",
+              "size": 41943040,
+              "sha256": "17ed0114eb24af448fa12da7e2d5f3b74a2cd2fb2f18f43ab24038be50ccebd4"
+            },
+            {
+              "name": "onnx/decoder_model_merged_quantized.onnx.part001",
+              "size": 18269764,
+              "sha256": "0012a4ae777acdf73e5d9bdd06b43d79193431e880fcef1e44c06595c53f667b"
+            }
+          ]
+        },
+        {
+          "path": "onnx/encoder_model_quantized.onnx",
+          "size": 52899742,
+          "sha256": "84d5e171b626bc8b6b220d022ac58696e9528c25deeacca62b5cbf4364547a99",
+          "parts": [
+            {
+              "name": "onnx/encoder_model_quantized.onnx.part000",
+              "size": 41943040,
+              "sha256": "5677c510a30e83b3c60804a2d90b3f9089e88b4bccbc857257a4caf4bfa5b96a"
+            },
+            {
+              "name": "onnx/encoder_model_quantized.onnx.part001",
+              "size": 10956702,
+              "sha256": "d037393a7521c5c23106be48a8e2a5f22f8ec324558d68ee4eef910e1c065e47"
+            }
+          ]
+        },
+        {
+          "path": "quantize_config.json",
+          "size": 3124,
+          "sha256": "c4778282349f504c7075f51468ca181d88580fbdc149ed9fcb921db61be4a2eb"
+        },
+        {
+          "path": "source.spm",
+          "size": 804677,
+          "sha256": "e27a3a1b539f4959ec72ea60e453f49156289f95d4e6000b29332efc45616203"
+        },
+        {
+          "path": "special_tokens_map.json",
+          "size": 74,
+          "sha256": "5e4d1f5e759d74cb1c2fe1d165cfc62b5237aa904de759380cd6f43042eec723"
+        },
+        {
+          "path": "target.spm",
+          "size": 806530,
+          "sha256": "6a881f4717cd7265f53fea54fd3dc689c767c05338fac7a4590f3088cb2d7855"
+        },
+        {
+          "path": "tokenizer.json",
+          "size": 6381339,
+          "sha256": "b306d0301cf280bfd647d7067b5ade2a97b987e6d678df110703c002433643ff"
+        },
+        {
+          "path": "tokenizer_config.json",
+          "size": 282,
+          "sha256": "08849acc0a539c4749d8665e9d6217735503a97871ccebeea8a762d5fba1acf7"
+        },
+        {
+          "path": "vocab.json",
+          "size": 1747906,
+          "sha256": "08a119a1defd522fa047cb5e3bfe3e89633e96caa38ced0dc9cee7ef1021a011"
+        }
+      ]
+    },
+    "opus-mt-en-zh": {
+      "repo": "Xenova/opus-mt-en-zh",
+      "revision": "046f55aec303cdee3e0318604406d4df20f1e8ea",
+      "base": "Helsinki-NLP/opus-mt-en-zh",
+      "license": "Apache-2.0",
+      "source": "en",
+      "target": "zh",
+      "dtype": "q8",
+      "files": [
+        {
+          "path": "config.json",
+          "size": 1503,
+          "sha256": "4727d1229a04f95bf6f39abf949d8080615433d99d6ebd85f81c09edd247d5fa"
+        },
+        {
+          "path": "generation_config.json",
+          "size": 293,
+          "sha256": "b743baabb7da4c1a2f19fe558bd6b4c0c7c3b0762fcb5ca7a48fe5a2c2219803"
+        },
+        {
+          "path": "onnx/decoder_model_merged_quantized.onnx",
+          "size": 60212804,
+          "sha256": "023be4f841f4c47cd65fffcbaa81c0d99d7f7e0138f7ba0e03fa220a4e688aff",
+          "parts": [
+            {
+              "name": "onnx/decoder_model_merged_quantized.onnx.part000",
+              "size": 41943040,
+              "sha256": "2732029befa9b715a3bf46a355b4cf7e2044060a8e33e7c00800d165210609ab"
+            },
+            {
+              "name": "onnx/decoder_model_merged_quantized.onnx.part001",
+              "size": 18269764,
+              "sha256": "696f25b910ac84f72c131fdd172c3acaeee743a192ff2d040c86901affe8246b"
+            }
+          ]
+        },
+        {
+          "path": "onnx/encoder_model_quantized.onnx",
+          "size": 52899742,
+          "sha256": "d3b7912bf6a9bd27e4c074c2df91d4ff3d5b4bc5f7f6c8d7cc9c805c98fbafee",
+          "parts": [
+            {
+              "name": "onnx/encoder_model_quantized.onnx.part000",
+              "size": 41943040,
+              "sha256": "e13ba416c3f9217f7c188c8728fb26a55d08314d796b50a24c8484a09eee6576"
+            },
+            {
+              "name": "onnx/encoder_model_quantized.onnx.part001",
+              "size": 10956702,
+              "sha256": "37c680e99bdcb3907eb5b68f62fc491c3802a9544756ae92886f45f3cadfc6c4"
+            }
+          ]
+        },
+        {
+          "path": "quantize_config.json",
+          "size": 3124,
+          "sha256": "2c2150d92906491fcea5423adf1c5c4b481f27d65e82d24698b23826534c0bf1"
+        },
+        {
+          "path": "source.spm",
+          "size": 806435,
+          "sha256": "5775ddc9e3ff2fae91554da56468ad35ff56edaba870fea74447bc7234bfdaa8"
+        },
+        {
+          "path": "special_tokens_map.json",
+          "size": 74,
+          "sha256": "5e4d1f5e759d74cb1c2fe1d165cfc62b5237aa904de759380cd6f43042eec723"
+        },
+        {
+          "path": "target.spm",
+          "size": 804600,
+          "sha256": "81dc94efa84e4025ef38d25d5d07429fe41e3eb29d44003f1db6fe98487b0052"
+        },
+        {
+          "path": "tokenizer.json",
+          "size": 6380952,
+          "sha256": "d0c7da27056e8f42adce9e76d8e792e5daa64e15f5acd2e7aabf0121877dd4c1"
+        },
+        {
+          "path": "tokenizer_config.json",
+          "size": 282,
+          "sha256": "a914596e6bff113a8428d4793b586da87cd0b95697a0e72aba90cc1d95858481"
+        },
+        {
+          "path": "vocab.json",
+          "size": 1747795,
+          "sha256": "22c957348eed495ee925afc40a36da3e387c8a34a734c8486967c2dca271613e"
+        }
+      ]
+    }
+  }
+}
