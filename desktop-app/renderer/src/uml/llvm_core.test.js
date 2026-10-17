@@ -46,8 +46,7 @@ function fromParts(src, withRuntime) {
     r = await exec(['@s = private constant [13 x i8] c"h\\C3\\A9llo \\E4\\B8\\AD\\E6\\96\\87\\0A\\00"', 'define void @_start() {', 'entry:', '  call void @rt_print(i8* getelementptr inbounds ([13 x i8], [13 x i8]* @s, i32 0, i32 0))', '  call void @rt_print_int(i32 -123)', '  call void @rt_print(i8* getelementptr inbounds ([13 x i8], [13 x i8]* @s, i32 0, i32 6))', '  call void @rt_print_int(i32 0)', '  call void @rt_print_int(i32 2147483647)', '  ret void', '}'].join(NL), true);
     check('字串（含非 ASCII）與整數輸出', r.out === 'héllo 中文' + NL + '-123' + ' 中文' + NL + '0' + '2147483647', r);
     r = await exec(['declare void @proc_exit(i32)', 'define void @_start() {', 'entry:', '  call void @proc_exit(i32 3)', '  unreachable', '}'].join(NL)); check('proc_exit 的結束碼', r.exit === 3, r);
-    r = await exec(['define i32 @main() {', 'entry:', '  %p = call i8* @rt_alloc(i32 16)', '  %q = call i8* @rt_alloc(i32 16)', '  %a = ptrtoint i8* %p to i32', '  %b = ptrtoint i8* %q to i32', '  %d = sub i32 %b, %a', '  ret i32 %d', '}'].join(NL), true); check('alloc：每次 16 位元組、對齊 8', r.exit === 16, r);
-
+    
     // ---- 檢查器：能擋的錯 ----
     const errOf = (src) => { const p = L.parse(src); if (p.errors.length) return 'P:' + p.errors.map((e) => e.msg).join('；'); return 'C:' + L.check(p.mod).map((e) => (e.line ? e.line + ':' : '') + e.msg).join('；'); };
     const E = (name, src, re) => { const m = errOf(src); check('檢查器：' + name, re.test(m), m); };
@@ -102,6 +101,61 @@ function fromParts(src, withRuntime) {
     check('預期軌跡', gen.expected === '== 下單 ==' + NL + 'Cart#1.add' + NL + 'Order#1.pay' + NL + '== 查看 ==' + NL + 'Cart#1.total' + NL, gen.expected);
     // 軌跡不一致要抓得到：把預期的順序弄錯
     const tamper = await (async () => { const g = L.fromModel(U.parseDsl(models['商店']).model); const p = L.parse(g.ir); const w = L.toWasm(p.mod); const rr = await L.run(w); return rr.stdout !== g.expected.split(NL).reverse().join(NL); })(); check('順序不同的軌跡不會被當成一樣', tamper);
+
+    // ---- 終端機指令用的部分：libc 連結、參數、標準輸入、步數上限、同步執行 ----
+    const sync = (src, io, opts) => { const c = L.compileIr(src, opts || {}); if (!c.wasm) return { err: c.stage + ':' + c.errors.map((e) => e.msg).join('；') }; const rr = L.runSync(c.wasm, io || {}); return { out: rr.stdout, err: rr.stderr, exit: rr.exitCode, trap: rr.trap, linked: c.linked, bytes: c.wasm.length }; };
+    const BS = String.fromCharCode(92);
+    let q = sync(['@msg = private constant [6 x i8] c"hello' + BS + '00"', 'declare i32 @puts(ptr)', 'declare i32 @putchar(i32)', 'define i32 @main() {', 'entry:', '  %r = call i32 @puts(ptr @msg)', '  %c = call i32 @putchar(i32 33)', '  %d = call i32 @putchar(i32 10)', '  ret i32 0', '}'].join(NL));
+    check('libc：puts／putchar 自動連結', q.out === 'hello' + NL + '!' + NL && q.exit === 0 && q.linked.includes('puts'), q);
+    q = sync(['declare ptr @malloc(i32)', 'declare void @free(ptr)', 'declare ptr @memcpy(ptr, ptr, i32)', 'declare ptr @memset(ptr, i32, i32)', 'declare i32 @memcmp(ptr, ptr, i32)', 'declare i32 @strlen(ptr)', 'declare i32 @strcmp(ptr, ptr)', 'declare i32 @abs(i32)', '@a = private constant [4 x i8] c"abc' + BS + '00"', '@b = private constant [4 x i8] c"abd' + BS + '00"', 'define i32 @main() {', 'entry:', '  %p = call ptr @malloc(i32 8)', '  %q = call ptr @memset(ptr %p, i32 65, i32 3)', '  %c = call ptr @memcpy(ptr %p, ptr @a, i32 4)', '  %l = call i32 @strlen(ptr %p)', '  %cmp = call i32 @strcmp(ptr @a, ptr @b)', '  %ab = call i32 @abs(i32 %cmp)', '  %mc = call i32 @memcmp(ptr @a, ptr @a, i32 3)', '  call void @free(ptr %p)', '  %t = add i32 %l, %ab', '  %u = add i32 %t, %mc', '  ret i32 %u', '}'].join(NL));
+    check('libc：malloc／memcpy／memset／strlen／strcmp／abs／memcmp（3 + 1 + 0）', q.exit === 4, q);
+    q = sync(['declare i32 @printf(ptr)', 'define i32 @main() {', 'entry:', '  ret i32 0', '}'].join(NL));
+    check('libc：printf 明講不支援', /printf 這類可變參數函式不支援/.test(q.err || ''), q);
+    q = sync(['declare void @exit(i32)', 'define i32 @main() {', 'entry:', '  call void @exit(i32 7)', '  ret i32 0', '}'].join(NL)); check('libc：exit', q.exit === 7, q);
+    q = sync(['target triple = "wasm32-unknown-wasi"', '@.str = private unnamed_addr constant [3 x i8] c"hi' + BS + '00", align 1', 'declare noundef i32 @puts(ptr noundef) #1', 'define dso_local noundef i32 @main() #0 {', 'entry:', '  %call = call noundef i32 @puts(ptr noundef @.str)', '  ret i32 0', '}', 'attributes #0 = { noinline nounwind optnone }', 'attributes #1 = { "frame-pointer"="none" }'].join(NL));
+    check('clang 風格的標頭與屬性能解析', q.out === 'hi' + NL && q.exit === 0, q);
+    const argsIr = ['declare i32 @args_sizes_get(i32, i32)', 'define i32 @main() {', 'entry:', '  %sz = alloca [2 x i32]', '  %szi = ptrtoint ptr %sz to i32', '  %p1 = getelementptr [2 x i32], ptr %sz, i32 0, i32 1', '  %p1i = ptrtoint ptr %p1 to i32', '  %r = call i32 @args_sizes_get(i32 %szi, i32 %p1i)', '  %n = load i32, ptr %sz', '  ret i32 %n', '}'].join(NL);
+    q = sync(argsIr, { args: ['prog', 'a', 'b'] }); check('WASI：參數個數', q.exit === 3, q);
+    const echoIr = ['declare i32 @fd_read(i32, i32, i32, i32)', 'declare i32 @fd_write(i32, i32, i32, i32)', '@buf = global [64 x i8] zeroinitializer', '@iov = global [2 x i32] zeroinitializer', '@n = global i32 0', 'define i32 @main() {', 'entry:', '  %bi = ptrtoint ptr @buf to i32', '  store i32 %bi, ptr @iov', '  %lp = getelementptr [2 x i32], ptr @iov, i32 0, i32 1', '  store i32 64, ptr %lp', '  %iov = ptrtoint ptr @iov to i32', '  %np = ptrtoint ptr @n to i32', '  %r = call i32 @fd_read(i32 0, i32 %iov, i32 1, i32 %np)', '  %cnt = load i32, ptr @n', '  store i32 %cnt, ptr %lp', '  %w = call i32 @fd_write(i32 1, i32 %iov, i32 1, i32 %np)', '  ret i32 %cnt', '}'].join(NL);
+    const hi = new TextEncoder().encode('你好 stdin');
+    q = sync(echoIr, { stdin: hi }); check('WASI：標準輸入讀進來再原樣輸出', q.out === '你好 stdin' && q.exit === hi.length, q);
+    q = sync(['declare i32 @getchar()', 'declare i32 @putchar(i32)', 'define i32 @main() {', 'entry:', '  %a = call i32 @getchar()', '  %b = call i32 @getchar()', '  %c = call i32 @getchar()', '  %x = call i32 @putchar(i32 %b)', '  %y = call i32 @putchar(i32 %a)', '  ret i32 %c', '}'].join(NL), { stdin: new TextEncoder().encode('ab') });
+    check('libc：getchar（讀到結尾回 -1）', q.out === 'ba' && (q.exit === -1 || q.exit === 255), q);
+    q = sync(['declare i32 @clock_time_get(i32, i64, i32)', 'declare i32 @random_get(i32, i32)', '@t = global i64 0', '@rnd = global [8 x i8] zeroinitializer', 'define i32 @main() {', 'entry:', '  %tp = ptrtoint ptr @t to i32', '  %r = call i32 @clock_time_get(i32 0, i64 1, i32 %tp)', '  %v = load i64, ptr @t', '  %big = icmp ugt i64 %v, 1000000000000', '  %rp = ptrtoint ptr @rnd to i32', '  %r2 = call i32 @random_get(i32 %rp, i32 8)', '  %z = zext i1 %big to i32', '  ret i32 %z', '}'].join(NL)); check('WASI：時間與亂數', q.exit === 1, q);
+    const spin = ['define i32 @main() {', 'entry:', '  br label %l', 'l:', '  br label %l', '}'].join(NL);
+    q = sync(spin, {}, { fuel: 100000 }); check('步數上限：無窮迴圈被中止並說明', q.trap && /步數用完/.test(q.trap), q);
+    q = sync(['define i32 @main() {', 'entry:', '  ret i32 5', '}'].join(NL), {}, { fuel: 100000 }); check('步數上限：正常程式不受影響', q.exit === 5 && !q.trap, q);
+    q = sync(['define i32 @f(i32 %n) {', 'entry:', '  %r = call i32 @f(i32 %n)', '  ret i32 %r', '}', 'define i32 @main() {', 'entry:', '  %r = call i32 @f(i32 1)', '  ret i32 %r', '}'].join(NL), {}, { fuel: 1000000 }); check('無窮遞迴：堆疊溢位被說明', q.trap && /堆疊溢位|步數用完/.test(q.trap), q);
+    q = sync(['define i32 @main() {', 'entry:', '  %a = sdiv i32 1, 0', '  ret i32 %a', '}'].join(NL)); check('除以零的 trap 被說明', q.trap && /除以零|溢位/.test(q.trap), q);
+    check('compileIr：錯誤帶階段與行號', (() => { const c = L.compileIr(['define i32 @main() {', 'entry:', '  %x = add i32 %nope, 1', '  ret i32 %x', '}'].join(NL)); return !c.wasm && c.stage === 'check' && c.errors[0].line === 3; })());
+    check('沒有實作的外部函式被擋', /沒有實作/.test(sync(['declare i32 @mystery()', 'define i32 @main() {', 'entry:', '  ret i32 0', '}'].join(NL)).err || ''));
+    { const c = L.compileIr(echoIr); const rr = await L.run(c.wasm, { stdin: new TextEncoder().encode('xyz') }); check('async run 也吃 io', rr.stdout === 'xyz' && rr.exitCode === 3, rr); }
+    check('wasm 位元組開頭是 0asm', (() => { const c = L.compileIr(['define i32 @main() {', 'entry:', '  ret i32 0', '}'].join(NL)); return c.wasm[0] === 0 && c.wasm[1] === 0x61 && c.wasm[2] === 0x73 && c.wasm[3] === 0x6d; })());
+
+    // ---- 記憶體：真的有 free、堆積會長大、資料不設上限、影子堆疊溢位有說明 ----
+    q = sync(['declare ptr @malloc(i32)', 'define i32 @main() {', 'entry:', '  %a = call ptr @malloc(i32 16)', '  %b = call ptr @malloc(i32 16)', '  %x = ptrtoint ptr %a to i32', '  %y = ptrtoint ptr %b to i32', '  %d = sub i32 %y, %x', '  ret i32 %d', '}'].join(NL));
+    check('malloc：每塊 16 位元組加 8 位元組標頭，間隔 24', q.exit === 24, q);
+    q = sync(['declare ptr @malloc(i32)', 'declare void @free(ptr)', 'define i32 @main() {', 'entry:', '  %a = call ptr @malloc(i32 16)', '  call void @free(ptr %a)', '  %b = call ptr @malloc(i32 16)', '  %same = icmp eq ptr %a, %b', '  %big = call ptr @malloc(i32 100)', '  call void @free(ptr %big)', '  %c = call ptr @malloc(i32 16)', '  %differs = icmp ne ptr %c, %big', '  %s = zext i1 %same to i32', '  %t = zext i1 %differs to i32', '  %r = shl i32 %t, 1', '  %u = or i32 %s, %r', '  ret i32 %u', '}'].join(NL));
+    check('free：同大小的塊會被重複使用，不同大小不會混用', q.exit === 3, q);
+    q = sync(['declare ptr @malloc(i32)', 'declare void @free(ptr)', 'declare i32 @llvm.wasm.memory.size.i32(i32)', 'define i32 @main() {', 'entry:', '  %i = alloca i32', '  store i32 0, ptr %i', '  %before = call i32 @llvm.wasm.memory.size.i32(i32 0)', '  br label %loop', 'loop:', '  %iv = load i32, ptr %i', '  %p = call ptr @malloc(i32 24)', '  call void @free(ptr %p)', '  %n = add i32 %iv, 1', '  store i32 %n, ptr %i', '  %c = icmp slt i32 %n, 20000', '  br i1 %c, label %loop, label %done', 'done:', '  %after = call i32 @llvm.wasm.memory.size.i32(i32 0)', '  %same = icmp eq i32 %before, %after', '  %r = zext i1 %same to i32', '  ret i32 %r', '}'].join(NL));
+    check('free：兩萬次 malloc／free 之後記憶體沒有變大', q.exit === 1, q);
+    q = sync(['declare ptr @malloc(i32)', 'declare ptr @realloc(ptr, i32)', 'define i32 @main() {', 'entry:', '  %a = call ptr @malloc(i32 16)', '  store i32 4660, ptr %a', '  %b = call ptr @realloc(ptr %a, i32 1000)', '  %v = load i32, ptr %b', '  %moved = icmp ne ptr %a, %b', '  %m = zext i1 %moved to i32', '  %ok = icmp eq i32 %v, 4660', '  %o = zext i1 %ok to i32', '  %c = call ptr @realloc(ptr %b, i32 900)', '  %stay = icmp eq ptr %b, %c', '  %s = zext i1 %stay to i32', '  %t1 = shl i32 %o, 1', '  %t2 = shl i32 %s, 2', '  %u = or i32 %m, %t1', '  %w = or i32 %u, %t2', '  ret i32 %w', '}'].join(NL));
+    check('realloc：長大會搬、內容保留；縮小或夠用就原地', q.exit === 7, q);
+    q = sync(['declare ptr @malloc(i32)', 'declare ptr @calloc(i32, i32)', 'declare void @free(ptr)', 'define i32 @main() {', 'entry:', '  %a = call ptr @malloc(i32 32)', '  store i32 7, ptr %a', '  call void @free(ptr %a)', '  %b = call ptr @calloc(i32 8, i32 4)', '  %v = load i32, ptr %b', '  ret i32 %v', '}'].join(NL));
+    check('calloc：重複使用的塊也會清成零', q.exit === 0, q);
+    q = sync(['declare ptr @malloc(i32)', 'define i32 @main() {', 'entry:', '  %p = call ptr @malloc(i32 8388608)', '  %isn = icmp eq ptr %p, null', '  br i1 %isn, label %fail, label %ok', 'ok:', '  %e = getelementptr i8, ptr %p, i32 8388604', '  store i32 42, ptr %e', '  %v = load i32, ptr %e', '  ret i32 %v', 'fail:', '  ret i32 -1', '}'].join(NL));
+    check('堆積會長大：一次要 8MB（超過一開始的記憶體）', q.exit === 42, q);
+    q = sync(['declare ptr @malloc(i32)', 'define i32 @main() {', 'entry:', '  %p = call ptr @malloc(i32 -1)', '  %isn = icmp eq ptr %p, null', '  %r = zext i1 %isn to i32', '  ret i32 %r', '}'].join(NL));
+    check('要不到的記憶體回傳 null，不會當掉', q.exit === 1, q);
+    q = sync(['@big = global [3000000 x i8] zeroinitializer', '@tail = global [4 x i8] c"ok' + BS + '00' + BS + '00"', 'define i32 @main() {', 'entry:', '  %b = getelementptr [3000000 x i8], ptr @big, i32 0, i32 2999999', '  store i8 9, ptr %b', '  %v = load i8, ptr %b', '  %vi = zext i8 %v to i32', '  %c = load i8, ptr @tail', '  %ci = zext i8 %c to i32', '  %r = add i32 %vi, %ci', '  ret i32 %r', '}'].join(NL));
+    check('全域資料不設上限（3MB 的陣列）', q.exit === 9 + 111 && q.bytes < 2000, q);
+    q = sync(['define i32 @f(i32 %n) {', 'entry:', '  %x = alloca i32', '  store i32 %n, ptr %x', '  %c = icmp eq i32 %n, 0', '  br i1 %c, label %base, label %rec', 'base:', '  ret i32 0', 'rec:', '  %m = sub i32 %n, 1', '  %r = call i32 @f(i32 %m)', '  %v = load i32, ptr %x', '  %s = add i32 %r, 1', '  ret i32 %s', '}', 'define i32 @main() {', 'entry:', '  %r = call i32 @f(i32 10000)', '  %t = srem i32 %r, 256', '  ret i32 %t', '}'].join(NL));
+    check('遞迴一萬層（每層有區域變數）沒問題', q.exit === 10000 % 256 && !q.trap, q);
+    q = sync(['define i32 @f(i32 %n) {', 'entry:', '  %x = alloca [1024 x i32]', '  %r = call i32 @f(i32 %n)', '  ret i32 %r', '}', 'define i32 @main() {', 'entry:', '  %r = call i32 @f(i32 1)', '  ret i32 %r', '}'].join(NL));
+    check('影子堆疊用完：說明是堆疊溢位', q.trap && /堆疊溢位/.test(q.trap), q);
+    q = sync(['declare ptr @malloc(i32)', 'define i32 @main() {', 'entry:', '  %p = call ptr @malloc(i32 100)', '  %e = getelementptr i8, ptr %p, i32 99', '  store i8 5, ptr %e', '  %v = load i8, ptr %e', '  %r = zext i8 %v to i32', '  ret i32 %r', '}'].join(NL));
+    check('一般大小的配置照常', q.exit === 5, q);
+    check('UML 產生的程式也用同一個配置器', /define ptr @malloc/.test(L.fromModel(U.parseDsl('model: A\nactor: U\nclass C { +id:int; +f():void }\nusecase t: U -> C.f()').model).ir));
 
     console.log('llvm_core: ' + ok + ' passed, ' + bad.length + ' failed'); if (bad.length) { console.log(bad.join(NL)); process.exit(1); }
 })();

@@ -1720,8 +1720,8 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     // C/nodejs（compile to wasm）使用者明確要求先不做，之後才加。
     code_execution: {
         enabled: true,
-        label: '程式執行環境（bash／python，瀏覽器沙盒內執行）',
-        toolNames: ['bash_execute', 'python_execute', 'register_saved_script', 'list_saved_scripts', 'get_saved_script', 'images_to_pdf', 'list_uploaded_files'],
+        label: '程式執行環境（bash／python／LLVM IR，瀏覽器沙盒內執行）',
+        toolNames: ['bash_execute', 'python_execute', 'llvm_execute', 'register_saved_script', 'list_saved_scripts', 'get_saved_script', 'images_to_pdf', 'list_uploaded_files'],
         systemPrompt: '你是一個專門執行程式的子任務助理，能力：\n' +
             '- **先判斷：圖片轉PDF／把一堆圖片依順序合成PDF／圖片縮放旋轉／灰階／影像強化／減色／模糊／馬賽克，不要在沙盒裡寫Python（沙盒沒有Pillow、img2pdf，也裝不起來，試了只會用光回合）——直接呼叫images_to_pdf（頁面大小、縮放置中、旋轉、每頁不同處理都是參數）。**\n' +
             '- bash_execute：在瀏覽器沙盒內執行一段bash/sh腳本（busybox ash+coreutils：ls/cat/grep/sed/awk/find/mkdir/echo/管線/重導向/&&/||等都支援，額外認得python/python3/jq/xq/column/split這幾個按需下載的指令）。腳本執行過程本身是完全隔離的沙盒，不會碰到使用者電腦的真實檔案系統。\n' +
@@ -14610,7 +14610,8 @@ const holder = {};
     // =====================================================================
     function stripComment(line) { let q = false; for (let i = 0; i < line.length; i++) { const c = line[i]; if (c === '"') q = !q; else if (c === ';' && !q) return line.slice(0, i); } return line; }
     function splitTop(s) { const out = []; let d = 0, cur = '', q = false; for (const c of s) { if (c === '"') q = !q; if (!q) { if ('([{'.includes(c)) d++; else if (')]}'.includes(c)) d--; if (c === ',' && d === 0) { out.push(cur.trim()); cur = ''; continue; } } cur += c; } if (cur.trim()) out.push(cur.trim()); return out; }
-    const ATTRS = /\b(nounwind|noinline|optnone|uwtable|readnone|readonly|local_unnamed_addr|unnamed_addr|dso_local|nsw|nuw|inbounds|tail|noundef|nonnull|signext|zeroext)\b|#\d+|align\s+\d+/g;
+    // 屬性字（不能誤刪名字裡的：@tail、%nuw 這種前面有 % @ 的是名字）
+    const ATTRS = /(?<![%@\w.$-])(noalias|nounwind|noinline|optnone|uwtable|readnone|readonly|local_unnamed_addr|unnamed_addr|dso_local|nsw|nuw|inbounds|tail|noundef|nonnull|signext|zeroext)(?![\w.$-])|#\d+|align\s+\d+/g;
     function decodeCString(body) {
         const out = []; for (let i = 0; i < body.length; i++) { const c = body[i]; if (c === String.fromCharCode(92)) { const h = body.slice(i + 1, i + 3); if (/^[0-9A-Fa-f]{2}$/.test(h)) { out.push(parseInt(h, 16)); i += 2; } else if (body[i + 1] === String.fromCharCode(92)) { out.push(92); i++; } else throw new Error('c"…" 裡的跳脫不認得：' + body.slice(i, i + 3)); } else { const cp = c.codePointAt(0); if (cp < 128) out.push(cp); else { const bytes = typeof TextEncoder !== 'undefined' ? Array.from(new TextEncoder().encode(String.fromCodePoint(cp))) : [63]; out.push.apply(out, bytes); if (cp > 0xffff) i++; } } }
         return out;
@@ -14716,7 +14717,12 @@ const holder = {};
     // =====================================================================
     // 檢查（型別、定義前使用、標籤、呼叫）
     // =====================================================================
-    const WASI = { fd_write: { params: [T.i32, T.i32, T.i32, T.i32], ret: T.i32 }, proc_exit: { params: [T.i32], ret: T.void } };
+    const WASI = {
+        fd_write: { params: [T.i32, T.i32, T.i32, T.i32], ret: T.i32 }, fd_read: { params: [T.i32, T.i32, T.i32, T.i32], ret: T.i32 }, proc_exit: { params: [T.i32], ret: T.void },
+        args_sizes_get: { params: [T.i32, T.i32], ret: T.i32 }, args_get: { params: [T.i32, T.i32], ret: T.i32 }, environ_sizes_get: { params: [T.i32, T.i32], ret: T.i32 }, environ_get: { params: [T.i32, T.i32], ret: T.i32 },
+        clock_time_get: { params: [T.i32, T.i64, T.i32], ret: T.i32 }, random_get: { params: [T.i32, T.i32], ret: T.i32 }
+    };
+    const INTRINSICS = { 'llvm.wasm.memory.grow.i32': { params: [T.i32, T.i32], ret: T.i32 }, 'llvm.wasm.memory.size.i32': { params: [T.i32], ret: T.i32 } };
     const INT_BIN = new Set(['add', 'sub', 'mul', 'sdiv', 'udiv', 'srem', 'urem', 'and', 'or', 'xor', 'shl', 'ashr', 'lshr']);
     const F_BIN = new Set(['fadd', 'fsub', 'fmul', 'fdiv']);
     const ICMP = new Set(['eq', 'ne', 'slt', 'sle', 'sgt', 'sge', 'ult', 'ule', 'ugt', 'uge']);
@@ -14725,7 +14731,7 @@ const holder = {};
     function check(mod) {
         const errors = []; const E = (line, msg) => errors.push({ line, msg });
         const globals = new Map(mod.globals.map((g) => [g.name, g])); const funcs = new Map();
-        for (const d of mod.declares) { funcs.set(d.name, { ret: d.ret, params: d.params, declared: true }); if (!WASI[d.name]) E(d.line, '宣告的函式 @' + d.name + ' 沒有實作（第一版只支援 WASI 的 fd_write、proc_exit）'); else if (typeStr(WASI[d.name].ret) !== typeStr(d.ret) || d.params.map(typeStr).join() !== WASI[d.name].params.map(typeStr).join()) E(d.line, '@' + d.name + ' 的簽名要是 ' + typeStr(WASI[d.name].ret) + ' (' + WASI[d.name].params.map(typeStr).join(', ') + ')'); }
+        for (const d of mod.declares) { funcs.set(d.name, { ret: d.ret, params: d.params, declared: true }); if (INTRINSICS[d.name]) { if (d.params.map(typeStr).join() !== INTRINSICS[d.name].params.map(typeStr).join() || typeStr(d.ret) !== typeStr(INTRINSICS[d.name].ret)) E(d.line, '@' + d.name + ' 的簽名不對'); } else if (!WASI[d.name]) E(d.line, '宣告的函式 @' + d.name + ' 沒有實作（支援的 WASI：' + Object.keys(WASI).join('、') + '；內建的 libc：puts、putchar、malloc、calloc、free、strlen、memcpy、memset、memcmp、strcmp、abs、exit、getchar；printf 這類可變參數函式不支援）'); else if (!INTRINSICS[d.name] && typeStr(WASI[d.name].ret) !== typeStr(d.ret) || d.params.map(typeStr).join() !== WASI[d.name].params.map(typeStr).join()) E(d.line, '@' + d.name + ' 的簽名要是 ' + typeStr(WASI[d.name].ret) + ' (' + WASI[d.name].params.map(typeStr).join(', ') + ')'); }
         for (const f of mod.funcs) { if (funcs.has(f.name) && !funcs.get(f.name).declared) E(f.line, '函式 @' + f.name + ' 定義了兩次'); funcs.set(f.name, { ret: f.ret, params: f.params.map((p) => p.ty) }); }
         for (const [name, t] of mod.types) { try { layout(mod, t); } catch (e) { E(0, '型別 %' + name + '：' + e.message); } }
         for (const g of mod.globals) { try { layout(mod, g.ty); } catch (e) { E(g.line, '全域 @' + g.name + '：' + e.message); } }
@@ -14822,27 +14828,38 @@ const holder = {};
         opts = opts || {}; const errs = check(mod); if (errs.length) throw new Error('IR 沒有通過檢查：' + errs.slice(0, 5).map((e) => (e.line ? '第 ' + e.line + ' 行：' : '') + e.msg).join('；'));
         // 全域變數的位址
         const addr = new Map(); let off = DATA_BASE; const segs = [];
-        for (const g of mod.globals) { const l = layout(mod, g.ty); off = Math.ceil(off / l.align) * l.align; addr.set(g.name, off); let bytes = null; if (g.bytes) { bytes = g.bytes.slice(); while (bytes.length < l.size) bytes.push(0); } else if (g.init && g.init.k === 'int') { bytes = []; let v = BigInt.asUintN(l.size * 8, g.init.v); for (let k = 0; k < l.size; k++) { bytes.push(Number(v & 0xffn)); v >>= 8n; } } else if (g.init && g.init.k === 'float') bytes = f64bytes(g.init.v); if (bytes && bytes.some((x) => x)) segs.push({ at: off, bytes }); off += l.size; }
-        if (off >= STACK_TOP / 2) throw new Error('全域資料太大（' + off + ' 位元組），第一版上限約 32KB');
+        for (const g of mod.globals) {
+            if (g.name === '__heap_base') continue; // 由後端決定（跟 wasm-ld 一樣：堆積的起點）
+            const l = layout(mod, g.ty); off = Math.ceil(off / l.align) * l.align; addr.set(g.name, off); let bytes = null;
+            if (g.bytes) { bytes = g.bytes.slice(); while (bytes.length < l.size) bytes.push(0); }
+            else if (g.init && g.init.k === 'int') { bytes = []; let v = BigInt.asUintN(l.size * 8, g.init.v); for (let k = 0; k < l.size; k++) { bytes.push(Number(v & 0xffn)); v >>= 8n; } }
+            else if (g.init && g.init.k === 'float') bytes = f64bytes(g.init.v);
+            if (bytes && bytes.some((x) => x)) segs.push({ at: off, bytes });
+            off += l.size;
+        }
+        // 記憶體配置：[保留 0..1024) [資料（多大都行）] [影子堆疊（往下長，預設 1MB，可用 opts.stackSize 調）] [堆積：malloc 不夠會 memory.grow]
+        const stackSize = Math.max(4096, Math.floor(opts.stackSize || 1048576)); const stackStart = Math.ceil(off / 16) * 16; const stackTop = stackStart + stackSize; const heapBase = stackTop;
+        addr.set('__heap_base', heapBase); const initPages = Math.ceil((heapBase + 65536) / 65536); if (initPages >= 65536) throw new Error('全域資料加堆疊太大，超過 wasm32 的 4GB 上限');
         // 函式索引：匯入在前
         const imports = mod.declares.filter((d) => WASI[d.name]); const fidx = new Map(); imports.forEach((d, i) => fidx.set(d.name, i)); mod.funcs.forEach((f, i) => fidx.set(f.name, imports.length + i));
         const sigs = []; const sigOf = (params, ret) => { const key = params.map((p) => wtype(mod, p)).join() + '>' + (wtype(mod, ret) || ''); let i = sigs.findIndex((s) => s.key === key); if (i < 0) { sigs.push({ key, params: params.map((p) => wtype(mod, p)), ret: wtype(mod, ret) }); i = sigs.length - 1; } return i; };
         const impSig = imports.map((d) => sigOf(d.params, d.ret)); const fnSig = mod.funcs.map((f) => sigOf(f.params.map((p) => p.ty), f.ret));
-        const bodies = mod.funcs.map((f) => emitFunction(mod, f, addr, fidx));
+        const bodies = mod.funcs.map((f) => emitFunction(mod, f, addr, fidx, !!(opts.fuel), stackStart));
         const typeSec = section(1, vec(sigs.map((s) => [0x60].concat(vec(s.params.map((p) => [VT[p]])), s.ret ? vec([[VT[s.ret]]]) : [0]))));
         const impSec = section(2, vec(imports.map((d, i) => str('wasi_snapshot_preview1').concat(str(d.name), [0x00], uleb(impSig[i])))));
         const funcSec = section(3, vec(fnSig.map((i) => uleb(i))));
-        const memSec = section(5, vec([[0x00].concat(uleb(PAGES))]));
-        const globSec = section(6, vec([[VT.i32, 0x01, OP.i32_const].concat(sleb(STACK_TOP), [OP.end])]));
+        const memSec = section(5, vec([[0x00].concat(uleb(initPages))]));
+        const fuel = opts.fuel ? Math.min(Math.floor(opts.fuel), 2147483000) : 0;
+        const globSec = section(6, vec([[VT.i32, 0x01, OP.i32_const].concat(sleb(stackTop), [OP.end]), [VT.i32, 0x00, OP.i32_const].concat(sleb(stackStart), [OP.end])].concat(fuel ? [[VT.i32, 0x01, OP.i32_const].concat(sleb(fuel), [OP.end])] : [])));
         const entry = mod.funcs.find((f) => f.name === (opts.entry || '_start')) || mod.funcs.find((f) => f.name === 'main');
-        const expSec = section(7, vec([str('memory').concat([0x02], uleb(0)), str(entry.name === 'main' ? 'main' : '_start').concat([0x00], uleb(fidx.get(entry.name)))]));
+        const expSec = section(7, vec([str('memory').concat([0x02], uleb(0)), str(entry.name === 'main' ? 'main' : '_start').concat([0x00], uleb(fidx.get(entry.name))), str('__sp').concat([0x03], uleb(0)), str('__stack_limit').concat([0x03], uleb(1))].concat(fuel ? [str('__fuel').concat([0x03], uleb(2))] : [])));
         const codeSec = section(10, vec(bodies.map((b) => uleb(b.length).concat(b))));
         const dataSec = section(11, vec(segs.map((s) => [0x00, OP.i32_const].concat(sleb(s.at), [OP.end], uleb(s.bytes.length), s.bytes))));
         const bytes = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00].concat(typeSec, impSec, funcSec, memSec, globSec, expSec, codeSec, segs.length ? dataSec : []);
         return new Uint8Array(bytes);
     }
 
-    function emitFunction(mod, f, addr, fidx) {
+    function emitFunction(mod, f, addr, fidx, fuel, stackStart) {
         const code = []; const emit = (...b) => { for (const x of b) { if (Array.isArray(x)) code.push.apply(code, x); else code.push(x); } };
         const localTypes = []; const regIdx = new Map();
         f.params.forEach((p, i) => { regIdx.set(p.name || String(i), i); });
@@ -14869,7 +14886,7 @@ const holder = {};
         const setRes = (i) => emit(OP.local_set, uleb(regIdx.get(i.res)));
         // 區塊分派
         const n = f.blocks.length; const labelIdx = new Map(f.blocks.map((b, k) => [b.label, k]));
-        if (frame) { emit(OP.global_get, 0, OP.i32_const, sleb(frame), 0x6b, OP.local_tee, uleb(fp), OP.global_set, 0); for (const a of allocas) { emit(OP.local_get, uleb(fp), OP.i32_const, sleb(a.off), 0x6a, OP.local_set, uleb(regIdx.get(a.res))); } }
+        if (frame) { emit(OP.global_get, 0, OP.i32_const, sleb(frame), 0x6b, OP.local_tee, uleb(fp), OP.global_set, 0, OP.local_get, uleb(fp), OP.i32_const, sleb(stackStart), 0x49, OP.if, 0x40, OP.unreachable, OP.end); for (const a of allocas) { emit(OP.local_get, uleb(fp), OP.i32_const, sleb(a.off), 0x6a, OP.local_set, uleb(regIdx.get(a.res))); } }
         emit(OP.loop, 0x40); for (let k = 0; k < n; k++) emit(OP.block, 0x40);
         emit(OP.local_get, uleb(pc), OP.br_table, uleb(n)); for (let k = 0; k < n; k++) emit(uleb(k)); emit(uleb(n - 1));
         for (let k = 0; k < n; k++) {
@@ -14879,7 +14896,7 @@ const holder = {};
         }
         emit(OP.end, OP.unreachable, OP.end);
         function restoreSp() { if (frame) emit(OP.local_get, uleb(fp), OP.i32_const, sleb(frame), 0x6a, OP.global_set, 0); }
-        function jump(label, back) { emit(OP.i32_const, sleb(labelIdx.get(label)), OP.local_set, uleb(pc), OP.br, uleb(back)); }
+        function jump(label, back, extra) { if (fuel) emit(OP.global_get, 2, OP.i32_const, 1, 0x6b, OP.global_set, 2, OP.global_get, 2, 0x45, OP.if, 0x40, OP.unreachable, OP.end); emit(OP.i32_const, sleb(labelIdx.get(label)), OP.local_set, uleb(pc), OP.br, uleb(back)); void extra; }
         function emitTerm(t, back) {
             if (t.op === 'br') { if (t.cond) { push(t.cond, T.i1); emit(OP.if, 0x40); jump(t.then, back + 1); emit(OP.else); jump(t.else, back + 1); emit(OP.end); emit(OP.unreachable); } else jump(t.to, back); }
             else if (t.op === 'ret') { if (t.val) { push(t.val, t.ty); restoreSp(); emit(OP.return); } else { restoreSp(); emit(OP.return); } }
@@ -14910,7 +14927,7 @@ const holder = {};
                 case 'fptosi': { push(i.v, i.from); emit(wt(i.to) === 'i64' ? 0xb0 : 0xaa); setRes(i); return; }
                 case 'ptrtoint': { push(i.v, i.from); if (wt(i.to) === 'i64') emit(0xad); setRes(i); return; }
                 case 'inttoptr': { push(i.v, i.from); if (wt(i.from) === 'i64') emit(0xa7); setRes(i); return; }
-                case 'call': { for (const a of i.args) push(a.v, a.ty); emit(OP.call, uleb(fidx.get(i.callee))); if (i.ret.k !== 'void') { if (i.res) setRes(i); else emit(OP.drop); } return; }
+                case 'call': { if (i.callee === 'llvm.wasm.memory.grow.i32') { push(i.args[1].v, i.args[1].ty); emit(0x40, 0x00); if (i.res) setRes(i); else emit(OP.drop); return; } if (i.callee === 'llvm.wasm.memory.size.i32') { emit(0x3f, 0x00); if (i.res) setRes(i); else emit(OP.drop); return; } for (const a of i.args) push(a.v, a.ty); emit(OP.call, uleb(fidx.get(i.callee))); if (i.ret.k !== 'void') { if (i.res) setRes(i); else emit(OP.drop); } return; }
                 default:
                     if (INT_BIN.has(i.op)) { push(i.a, i.ty); push(i.b, i.ty); emit(BIN[wt(i.ty) === 'i64' ? 'i64' : 'i32'][i.op]); const bits = resolve(mod, i.ty).bits; if (bits < 32 && !['and', 'or', 'xor'].includes(i.op)) emit(OP.i32_const, sleb((1 << bits) - 1), 0x71); setRes(i); return; }
                     if (F_BIN.has(i.op)) { push(i.a, i.ty); push(i.b, i.ty); emit(BIN.f64[i.op]); setRes(i); return; }
@@ -14925,16 +14942,92 @@ const holder = {};
     // =====================================================================
     // 執行（WebAssembly＋最小 WASI）
     // =====================================================================
-    async function run(bytes, opts) {
-        opts = opts || {}; const out = []; let mem = null; let exitCode = null;
-        const imports = { wasi_snapshot_preview1: {
-            fd_write: (fd, iovs, n, nw) => { const dv = new DataView(mem.buffer); let total = 0; for (let k = 0; k < n; k++) { const p = dv.getUint32(iovs + k * 8, true), l = dv.getUint32(iovs + k * 8 + 4, true); if (fd === 1 || fd === 2) out.push(new Uint8Array(mem.buffer.slice(p, p + l))); total += l; } dv.setUint32(nw, total, true); return 0; },
-            proc_exit: (code) => { exitCode = code; throw { wasiExit: code }; }
-        } };
-        const { instance } = await WebAssembly.instantiate(bytes, imports); mem = instance.exports.memory;
-        let trap = null; try { const fn = instance.exports._start || instance.exports.main; const r = fn(); if (typeof r === 'number') exitCode = r; if (exitCode === null) exitCode = 0; } catch (e) { if (e && e.wasiExit !== undefined) exitCode = e.wasiExit; else trap = String((e && e.message) || e); }
-        let total = 0; for (const c of out) total += c.length; const all = new Uint8Array(total); let o = 0; for (const c of out) { all.set(c, o); o += c.length; }
-        return { stdout: new TextDecoder().decode(all), exitCode, trap };
+    // 最小的 WASI：輸出（1、2）、輸入（0）、參數、環境變數、時間、亂數、結束碼。io：{ args:[], env:{}, stdin:Uint8Array }
+    function makeWasi(io, getMem) {
+        io = io || {}; const out = [], err = []; let stdinPos = 0; const stdin = io.stdin || new Uint8Array(0); const enc = new TextEncoder();
+        const args = (io.args || []).map((a) => enc.encode(String(a) + String.fromCharCode(0))); const envs = Object.keys(io.env || {}).map((k) => enc.encode(k + '=' + io.env[k] + String.fromCharCode(0)));
+        const dvOf = () => new DataView(getMem().buffer); const u8 = () => new Uint8Array(getMem().buffer);
+        const sizes = (list, pc, ps) => { const dv = dvOf(); dv.setUint32(pc, list.length, true); dv.setUint32(ps, list.reduce((a, b) => a + b.length, 0), true); return 0; };
+        const fill = (list, ptrs, buf) => { const dv = dvOf(), m = u8(); let o = buf; list.forEach((b, i) => { dv.setUint32(ptrs + i * 4, o, true); m.set(b, o); o += b.length; }); return 0; };
+        const W = {
+            fd_write(fd, iovs, n, nw) { const dv = dvOf(); let total = 0; for (let k = 0; k < n; k++) { const p = dv.getUint32(iovs + k * 8, true), l = dv.getUint32(iovs + k * 8 + 4, true); if (fd === 1) out.push(u8().slice(p, p + l)); else if (fd === 2) err.push(u8().slice(p, p + l)); else return 8; total += l; } dv.setUint32(nw, total, true); return 0; },
+            fd_read(fd, iovs, n, nr) { if (fd !== 0) return 8; const dv = dvOf(), m = u8(); let total = 0; for (let k = 0; k < n; k++) { const p = dv.getUint32(iovs + k * 8, true), l = dv.getUint32(iovs + k * 8 + 4, true); const take = Math.min(l, stdin.length - stdinPos); if (take > 0) { m.set(stdin.subarray(stdinPos, stdinPos + take), p); stdinPos += take; total += take; } if (take < l) break; } dv.setUint32(nr, total, true); return 0; },
+            args_sizes_get(pc, ps) { return sizes(args, pc, ps); }, args_get(argv, buf) { return fill(args, argv, buf); },
+            environ_sizes_get(pc, ps) { return sizes(envs, pc, ps); }, environ_get(e, buf) { return fill(envs, e, buf); },
+            clock_time_get(id, prec, outp) { const ns = id === 1 ? BigInt(Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) * 1e6)) : BigInt(Date.now()) * 1000000n; dvOf().setBigUint64(outp, ns, true); return 0; },
+            random_get(buf, len) { const m = u8(); for (let i = 0; i < len; i++) m[buf + i] = Math.floor(Math.random() * 256); return 0; },
+            proc_exit(code) { throw { wasiExit: code }; }
+        };
+        const cat = (list) => { let t = 0; for (const c of list) t += c.length; const all = new Uint8Array(t); let o = 0; for (const c of list) { all.set(c, o); o += c.length; } return all; };
+        return { imports: { wasi_snapshot_preview1: W }, stdout: () => cat(out), stderr: () => cat(err) };
+    }
+    function finishRun(instance, wasi, args0) {
+        let exitCode = null, trap = null;
+        try { const fn = instance.exports._start || instance.exports.main; if (!fn) throw new Error('wasm 沒有匯出 _start 或 main'); const r = fn(); if (typeof r === 'number') exitCode = r; if (exitCode === null) exitCode = 0; }
+        catch (e) { if (e && e.wasiExit !== undefined) exitCode = e.wasiExit; else { trap = String((e && e.message) || e); const f = instance.exports.__fuel; const spg = instance.exports.__sp, lim = instance.exports.__stack_limit; if (f && f.value === 0) trap = '步數用完了（可能是無窮迴圈）'; else if (spg && lim && spg.value < lim.value) trap = '堆疊溢位（影子堆疊 1MB 用完，遞迴太深或區域陣列太大）'; else if (/call stack|Maximum call/i.test(trap)) trap = '堆疊溢位（遞迴太深）'; else if (/unreachable/i.test(trap)) trap = '執行到不可能到的地方（unreachable）'; else if (/out of bounds/i.test(trap)) trap = '記憶體存取超出範圍'; else if (/divide by zero|integer overflow/i.test(trap)) trap = '整數除以零或溢位'; } }
+        void args0; const dec = new TextDecoder();
+        return { stdout: dec.decode(wasi.stdout()), stderr: dec.decode(wasi.stderr()), stdoutBytes: wasi.stdout(), stderrBytes: wasi.stderr(), exitCode, trap };
+    }
+    async function run(bytes, io) {
+        let mem = null; const wasi = makeWasi(io, () => mem); const { instance } = await WebAssembly.instantiate(bytes, wasi.imports); mem = instance.exports.memory; return finishRun(instance, wasi);
+    }
+    // 同步版（終端機的指令必須同步）：編譯與執行都同步。瀏覽器主執行緒對較大的 wasm 會拒絕同步編譯，這時丟出說明清楚的錯誤
+    function runSync(bytes, io) {
+        let mem = null; const wasi = makeWasi(io, () => mem); let instance;
+        try { instance = new WebAssembly.Instance(new WebAssembly.Module(bytes), wasi.imports); }
+        catch (e) { const msg = String((e && e.message) || e); if (/main thread|compile|RangeError/i.test(msg) && bytes.length > 4096) throw new Error('這個環境的主執行緒不允許同步編譯較大的 wasm（' + bytes.length + ' 位元組）：' + msg + '。請改用 llvm_execute 工具（非同步編譯，不受這個限制）'); throw e; }
+        mem = instance.exports.memory; return finishRun(instance, wasi);
+    }
+
+    // =====================================================================
+    // 最小的 libc（用 IR 寫，連結時才加進來）：IR 宣告了這些函式、又沒有自己定義，就補上實作
+    // =====================================================================
+    const LIBC_DEPS = { __w: [], __alloc: [], puts: ['__w', 'strlen'], putchar: ['__w'], malloc: ['__alloc'], calloc: ['malloc', 'memset'], free: ['__alloc'], realloc: ['malloc', 'free', 'memcpy'], strlen: [], memcpy: [], memset: [], memcmp: [], strcmp: [], abs: [], exit: [], getchar: [] };
+    const LIBC_IR = {
+        __w: ['@__libc_nl = private constant [2 x i8] c"' + String.fromCharCode(92) + '0A' + String.fromCharCode(92) + '00"', '@__libc_ch = global [4 x i8] zeroinitializer', 'define void @__libc_write(ptr %p, i32 %n) {', 'entry:', '  %pi = ptrtoint ptr %p to i32', '  store i32 %pi, ptr @scratch', '  %lp = getelementptr i32, ptr @scratch, i32 1', '  store i32 %n, ptr %lp', '  %nw = getelementptr i32, ptr @scratch, i32 4', '  %iov = ptrtoint ptr @scratch to i32', '  %nwi = ptrtoint ptr %nw to i32', '  %r = call i32 @fd_write(i32 1, i32 %iov, i32 1, i32 %nwi)', '  ret void', '}'],
+        __alloc: ["@heap_ptr = global i32 0", "@__free_lists = global [32 x i32] zeroinitializer", "@__heap_base = external global i8", "declare i32 @llvm.wasm.memory.grow.i32(i32, i32)", "declare i32 @llvm.wasm.memory.size.i32(i32)", "define i32 @__bump(i32 %total) {", "entry:", "  %hp = load i32, ptr @heap_ptr", "  %uninit = icmp eq i32 %hp, 0", "  %hb = ptrtoint ptr @__heap_base to i32", "  %cur = select i1 %uninit, i32 %hb, i32 %hp", "  %c1 = add i32 %cur, 7", "  %p = and i32 %c1, -8", "  %q = add i32 %p, %total", "  %wrap = icmp ult i32 %q, %p", "  br i1 %wrap, label %oom, label %chk", "chk:", "  %pg = call i32 @llvm.wasm.memory.size.i32(i32 0)", "  %lim = mul i32 %pg, 65536", "  %over = icmp ugt i32 %q, %lim", "  br i1 %over, label %grow, label %ok", "grow:", "  %diff = sub i32 %q, %lim", "  %d1 = add i32 %diff, 65535", "  %need = lshr i32 %d1, 16", "  %r = call i32 @llvm.wasm.memory.grow.i32(i32 0, i32 %need)", "  %fail = icmp slt i32 %r, 0", "  br i1 %fail, label %oom, label %ok", "ok:", "  store i32 %q, ptr @heap_ptr", "  ret i32 %p", "oom:", "  ret i32 0", "}"],
+        malloc: ["define ptr @malloc(i32 %n) {", "entry:", "  %cap = alloca i32", "  %cls = alloca i32", "  %small = icmp ult i32 %n, 16", "  %m = select i1 %small, i32 16, i32 %n", "  store i32 16, ptr %cap", "  store i32 0, ptr %cls", "  br label %loop", "loop:", "  %cv = load i32, ptr %cap", "  %lt = icmp ult i32 %cv, %m", "  br i1 %lt, label %grow, label %found", "grow:", "  %kv = load i32, ptr %cls", "  %toobig = icmp uge i32 %kv, 27", "  br i1 %toobig, label %fail, label %dbl", "dbl:", "  %c2 = shl i32 %cv, 1", "  store i32 %c2, ptr %cap", "  %k2 = add i32 %kv, 1", "  store i32 %k2, ptr %cls", "  br label %loop", "found:", "  %capv = load i32, ptr %cap", "  %clsv = load i32, ptr %cls", "  %lp = getelementptr [32 x i32], ptr @__free_lists, i32 0, i32 %clsv", "  %head = load i32, ptr %lp", "  %has = icmp ne i32 %head, 0", "  br i1 %has, label %reuse, label %fresh", "reuse:", "  %hptr = inttoptr i32 %head to ptr", "  %next = load i32, ptr %hptr", "  store i32 %next, ptr %lp", "  ret ptr %hptr", "fresh:", "  %total = add i32 %capv, 8", "  %raw = call i32 @__bump(i32 %total)", "  %bad = icmp eq i32 %raw, 0", "  br i1 %bad, label %fail, label %okk", "okk:", "  %hdr = inttoptr i32 %raw to ptr", "  store i32 %clsv, ptr %hdr", "  %pay = add i32 %raw, 8", "  %pp = inttoptr i32 %pay to ptr", "  ret ptr %pp", "fail:", "  ret ptr null", "}"],
+        free: ["define void @free(ptr %p) {", "entry:", "  %isnull = icmp eq ptr %p, null", "  br i1 %isnull, label %done, label %do", "do:", "  %pi = ptrtoint ptr %p to i32", "  %hi = sub i32 %pi, 8", "  %hp = inttoptr i32 %hi to ptr", "  %cls = load i32, ptr %hp", "  %lp = getelementptr [32 x i32], ptr @__free_lists, i32 0, i32 %cls", "  %head = load i32, ptr %lp", "  store i32 %head, ptr %p", "  store i32 %pi, ptr %lp", "  br label %done", "done:", "  ret void", "}"],
+        calloc: ["define ptr @calloc(i32 %a, i32 %b) {", "entry:", "  %n = mul i32 %a, %b", "  %r = call ptr @malloc(i32 %n)", "  %isnull = icmp eq ptr %r, null", "  br i1 %isnull, label %done, label %zero", "zero:", "  %z = call ptr @memset(ptr %r, i32 0, i32 %n)", "  br label %done", "done:", "  ret ptr %r", "}"],
+        realloc: ["define ptr @realloc(ptr %p, i32 %n) {", "entry:", "  %isnull = icmp eq ptr %p, null", "  br i1 %isnull, label %alloc, label %have", "alloc:", "  %a = call ptr @malloc(i32 %n)", "  ret ptr %a", "have:", "  %pi = ptrtoint ptr %p to i32", "  %hi = sub i32 %pi, 8", "  %hp = inttoptr i32 %hi to ptr", "  %cls = load i32, ptr %hp", "  %cap = shl i32 16, %cls", "  %fits = icmp ule i32 %n, %cap", "  br i1 %fits, label %same, label %move", "same:", "  ret ptr %p", "move:", "  %np = call ptr @malloc(i32 %n)", "  %isn = icmp eq ptr %np, null", "  br i1 %isn, label %fail, label %copy", "copy:", "  %r = call ptr @memcpy(ptr %np, ptr %p, i32 %cap)", "  call void @free(ptr %p)", "  ret ptr %np", "fail:", "  ret ptr null", "}"],
+        strlen: ['define i32 @strlen(ptr %s) {', 'entry:', '  %i = alloca i32', '  store i32 0, ptr %i', '  br label %loop', 'loop:', '  %iv = load i32, ptr %i', '  %cp = getelementptr i8, ptr %s, i32 %iv', '  %c = load i8, ptr %cp', '  %z = icmp eq i8 %c, 0', '  br i1 %z, label %done, label %next', 'next:', '  %n = add i32 %iv, 1', '  store i32 %n, ptr %i', '  br label %loop', 'done:', '  ret i32 %iv', '}'],
+        puts: ['define i32 @puts(ptr %s) {', 'entry:', '  %n = call i32 @strlen(ptr %s)', '  call void @__libc_write(ptr %s, i32 %n)', '  call void @__libc_write(ptr @__libc_nl, i32 1)', '  ret i32 1', '}'],
+        putchar: ['define i32 @putchar(i32 %c) {', 'entry:', '  %b = trunc i32 %c to i8', '  store i8 %b, ptr @__libc_ch', '  call void @__libc_write(ptr @__libc_ch, i32 1)', '  ret i32 %c', '}'],
+        memcpy: ['define ptr @memcpy(ptr %d, ptr %s, i32 %n) {', 'entry:', '  %i = alloca i32', '  store i32 0, ptr %i', '  br label %loop', 'loop:', '  %iv = load i32, ptr %i', '  %c = icmp slt i32 %iv, %n', '  br i1 %c, label %body, label %done', 'body:', '  %sp = getelementptr i8, ptr %s, i32 %iv', '  %v = load i8, ptr %sp', '  %dp = getelementptr i8, ptr %d, i32 %iv', '  store i8 %v, ptr %dp', '  %n2 = add i32 %iv, 1', '  store i32 %n2, ptr %i', '  br label %loop', 'done:', '  ret ptr %d', '}'],
+        memset: ['define ptr @memset(ptr %d, i32 %v, i32 %n) {', 'entry:', '  %b = trunc i32 %v to i8', '  %i = alloca i32', '  store i32 0, ptr %i', '  br label %loop', 'loop:', '  %iv = load i32, ptr %i', '  %c = icmp slt i32 %iv, %n', '  br i1 %c, label %body, label %done', 'body:', '  %dp = getelementptr i8, ptr %d, i32 %iv', '  store i8 %b, ptr %dp', '  %n2 = add i32 %iv, 1', '  store i32 %n2, ptr %i', '  br label %loop', 'done:', '  ret ptr %d', '}'],
+        memcmp: ['define i32 @memcmp(ptr %a, ptr %b, i32 %n) {', 'entry:', '  %i = alloca i32', '  store i32 0, ptr %i', '  br label %loop', 'loop:', '  %iv = load i32, ptr %i', '  %c = icmp slt i32 %iv, %n', '  br i1 %c, label %body, label %same', 'body:', '  %ap = getelementptr i8, ptr %a, i32 %iv', '  %bp = getelementptr i8, ptr %b, i32 %iv', '  %x = load i8, ptr %ap', '  %y = load i8, ptr %bp', '  %xi = zext i8 %x to i32', '  %yi = zext i8 %y to i32', '  %ne = icmp ne i32 %xi, %yi', '  br i1 %ne, label %diff, label %next', 'next:', '  %n2 = add i32 %iv, 1', '  store i32 %n2, ptr %i', '  br label %loop', 'diff:', '  %d = sub i32 %xi, %yi', '  ret i32 %d', 'same:', '  ret i32 0', '}'],
+        strcmp: ['define i32 @strcmp(ptr %a, ptr %b) {', 'entry:', '  %i = alloca i32', '  store i32 0, ptr %i', '  br label %loop', 'loop:', '  %iv = load i32, ptr %i', '  %ap = getelementptr i8, ptr %a, i32 %iv', '  %bp = getelementptr i8, ptr %b, i32 %iv', '  %x = load i8, ptr %ap', '  %y = load i8, ptr %bp', '  %xi = zext i8 %x to i32', '  %yi = zext i8 %y to i32', '  %ne = icmp ne i32 %xi, %yi', '  br i1 %ne, label %diff, label %chk', 'chk:', '  %z = icmp eq i32 %xi, 0', '  br i1 %z, label %same, label %next', 'next:', '  %n2 = add i32 %iv, 1', '  store i32 %n2, ptr %i', '  br label %loop', 'diff:', '  %d = sub i32 %xi, %yi', '  ret i32 %d', 'same:', '  ret i32 0', '}'],
+        abs: ['define i32 @abs(i32 %x) {', 'entry:', '  %n = icmp slt i32 %x, 0', '  %m = sub i32 0, %x', '  %r = select i1 %n, i32 %m, i32 %x', '  ret i32 %r', '}'],
+        exit: ['define void @exit(i32 %c) {', 'entry:', '  call void @proc_exit(i32 %c)', '  unreachable', '}'],
+        getchar: ['define i32 @getchar() {', 'entry:', '  %sc = ptrtoint ptr @scratch to i32', '  %iovp = getelementptr i32, ptr @scratch, i32 4', '  %buf = getelementptr i8, ptr @scratch, i32 40', '  %bi = ptrtoint ptr %buf to i32', '  store i32 %bi, ptr %iovp', '  %lp = getelementptr i32, ptr @scratch, i32 5', '  store i32 1, ptr %lp', '  %iov = ptrtoint ptr %iovp to i32', '  %nrp = getelementptr i32, ptr @scratch, i32 6', '  %nri = ptrtoint ptr %nrp to i32', '  %r = call i32 @fd_read(i32 0, i32 %iov, i32 1, i32 %nri)', '  %n = load i32, ptr %nrp', '  %z = icmp eq i32 %n, 0', '  br i1 %z, label %eof, label %ok', 'ok:', '  %c = load i8, ptr %buf', '  %ci = zext i8 %c to i32', '  ret i32 %ci', 'eof:', '  ret i32 -1', '}']
+    };
+    const LIBC_NAMES = Object.keys(LIBC_IR).filter((k) => k !== '__w' && k !== '__alloc');
+    // 把「宣告了、但沒有定義」的 libc 函式補上實作（直接改 mod）。回傳補了哪些
+    function linkLibc(mod) {
+        const defined = new Set(mod.funcs.map((f) => f.name)); const want = new Set();
+        const add = (n) => { if (want.has(n) || defined.has(n) || !LIBC_IR[n]) return; want.add(n); (LIBC_DEPS[n] || []).forEach(add); };
+        for (const d of mod.declares) if (LIBC_NAMES.includes(d.name) && !defined.has(d.name)) add(d.name);
+        if (!want.size) return [];
+        const parts = ['@scratch = global [48 x i8] zeroinitializer'].filter((l) => !mod.globals.some((g) => g.name === l.slice(1, l.indexOf(' '))));
+        const needExit = want.has('exit'), needRead = want.has('getchar');
+        const have = new Set(mod.declares.map((d) => d.name));
+        if (!have.has('fd_write')) parts.push('declare i32 @fd_write(i32, i32, i32, i32)'); if (needExit && !have.has('proc_exit')) parts.push('declare void @proc_exit(i32)'); if (needRead && !have.has('fd_read')) parts.push('declare i32 @fd_read(i32, i32, i32, i32)');
+        for (const n of want) parts.push(LIBC_IR[n].join(String.fromCharCode(10)));
+        const extra = parse(parts.join(String.fromCharCode(10)));
+        if (extra.errors.length) throw new Error('內建 libc 解析失敗：' + extra.errors[0].msg);
+        mod.declares = mod.declares.filter((d) => !want.has(d.name)); const names = new Set(mod.declares.map((d) => d.name));
+        for (const d of extra.mod.declares) if (!names.has(d.name)) mod.declares.push(d);
+        for (const g of extra.mod.globals) if (!mod.globals.some((x) => x.name === g.name)) mod.globals.push(g);
+        for (const [k, v] of extra.mod.types) if (!mod.types.has(k)) mod.types.set(k, v);
+        for (const f of extra.mod.funcs) if (!mod.funcs.some((x) => x.name === f.name)) mod.funcs.push(f);
+        return [...want].filter((n) => n !== '__w' && n !== '__alloc');
+    }
+    // 給終端機指令用：IR 文字（或 wasm 位元組）→ 連結 libc → 檢查 → wasm。回傳 { wasm } 或 { errors }
+    function compileIr(text, opts) {
+        opts = opts || {}; const p = parse(text); if (p.errors.length) return { errors: p.errors, stage: 'parse' };
+        let linked = []; try { linked = linkLibc(p.mod); } catch (e) { return { errors: [{ line: 0, msg: e.message }], stage: 'link' }; }
+        const errs = check(p.mod); if (errs.length) return { errors: errs, stage: 'check' };
+        try { return { wasm: toWasm(p.mod, { fuel: opts.fuel, entry: opts.entry }), linked, stage: 'ok' }; } catch (e) { return { errors: [{ line: 0, msg: String((e && e.message) || e) }], stage: 'wasm' }; }
     }
 
     // =====================================================================
@@ -14975,7 +15068,7 @@ const holder = {};
             const used = []; for (const s of u.steps) { const c = classes.find((x) => x.name === s.to); if (c && !used.includes(c)) used.push(c); }
             const f = ['define void @uc_' + ui + '() {', 'entry:', '  call void @rt_print(ptr ' + strRef('== ' + u.name + ' ==' + NL) + ')']; expected.push('== ' + u.name + ' ==');
             used.forEach((c, k) => {
-                const sz = Math.max(1, structSize(m, c, attrsOf, warn)); f.push('  %o' + k + ' = call ptr @rt_alloc(i32 ' + sz + ')');
+                const sz = Math.max(1, structSize(m, c, attrsOf, warn)); f.push('  %o' + k + ' = call ptr @malloc(i32 ' + sz + ')');
                 attrsOf(c).forEach((a, ai) => { const ty = llType(m, a.type); const v = a.name === 'id' && ty === 'i32' ? '1' : (ty === 'ptr' && a.type.base === 'str' ? strRef(a.name) : null); if (v !== null) f.push('  %f' + k + '_' + ai + ' = getelementptr %' + c.name + ', ptr %o' + k + ', i32 0, i32 ' + ai, '  store ' + ty + ' ' + v + ', ptr %f' + k + '_' + ai); });
             });
             u.steps.forEach((s, si) => {
@@ -14988,8 +15081,8 @@ const holder = {};
         });
         const start = ['define void @_start() {', 'entry:'].concat(m.usecases.map((_, i) => '  call void @uc_' + i + '()'), ['  ret void', '}']).join(NL);
         L.push('; 由 UML 設計產生（模型 ' + (m.name || 'Model') + '）。目標：wasm32-wasi', '; 用 clang 編譯：clang --target=wasm32-wasi -nostdlib -Wl,--no-entry -Wl,--export=_start model.ll -o model.wasm', '; （也可以直接用附的 model.wasm，或用 node run.js 執行）', 'target datalayout = "e-m:e-p:32:32-p10:8:8-p20:8:8-i64:64-n32:64-S128-ni:1:10:20"', 'target triple = "wasm32-unknown-wasi"', '',
-            'declare i32 @fd_write(i32, i32, i32, i32) #0', 'attributes #0 = { "wasm-import-module"="wasi_snapshot_preview1" "wasm-import-name"="fd_write" }', '', '@heap_ptr = global i32 ' + STACK_TOP, '@scratch = global [48 x i8] zeroinitializer', '');
-        L.push(RUNTIME_IR, '');
+            'declare i32 @fd_write(i32, i32, i32, i32) #0', 'attributes #0 = { "wasm-import-module"="wasi_snapshot_preview1" "wasm-import-name"="fd_write" }', '', '@scratch = global [48 x i8] zeroinitializer', '');
+        L.push(LIBC_IR.__alloc.concat(LIBC_IR.malloc).join(NL), '', RUNTIME_IR, '');
         if (body.length) L.push(body.join(NL), '');
         const strDefs = [...strs.entries()].map(([s, e]) => '@.s' + e.id + ' = private constant [' + e.len + ' x i8] c"' + escBytes(s) + String.fromCharCode(92) + '00"'); if (strDefs.length) L.push(strDefs.join(NL), '');
         L.push(funcs.concat(ucs, [start]).join(NL + NL), '');
@@ -14998,7 +15091,6 @@ const holder = {};
     function structSize(m, c, attrsOf, warn) { let off = 0, al = 1; for (const a of attrsOf(c)) { const t = llType(m, a.type, warn); const sz = t === 'double' ? 8 : 4; off = Math.ceil(off / sz) * sz + sz; al = Math.max(al, sz); } return Math.ceil(off / al) * al || 1; }
     // 固定的 runtime：記憶體配置、字串輸出、整數輸出（名字都加 rt_，避免跟 libc 撞名）
     const RUNTIME_IR = [
-        'define ptr @rt_alloc(i32 %n) {', 'entry:', '  %p = load i32, ptr @heap_ptr', '  %n8 = add i32 %n, 7', '  %n8b = and i32 %n8, -8', '  %q = add i32 %p, %n8b', '  store i32 %q, ptr @heap_ptr', '  %r = inttoptr i32 %p to ptr', '  ret ptr %r', '}', '',
         'define i32 @rt_strlen(ptr %s) {', 'entry:', '  %i = alloca i32', '  store i32 0, ptr %i', '  br label %loop', 'loop:', '  %iv = load i32, ptr %i', '  %cp = getelementptr i8, ptr %s, i32 %iv', '  %c = load i8, ptr %cp', '  %z = icmp eq i8 %c, 0', '  br i1 %z, label %done, label %next', 'next:', '  %n = add i32 %iv, 1', '  store i32 %n, ptr %i', '  br label %loop', 'done:', '  ret i32 %iv', '}', '',
         'define void @rt_print(ptr %s) {', 'entry:', '  %len = call i32 @rt_strlen(ptr %s)', '  %sp = ptrtoint ptr %s to i32', '  store i32 %sp, ptr @scratch', '  %lenp = getelementptr i32, ptr @scratch, i32 1', '  store i32 %len, ptr %lenp', '  %nw = getelementptr i32, ptr @scratch, i32 4', '  %iovi = ptrtoint ptr @scratch to i32', '  %nwi = ptrtoint ptr %nw to i32', '  %r = call i32 @fd_write(i32 1, i32 %iovi, i32 1, i32 %nwi)', '  ret void', '}', '',
         'define void @rt_print_int(i32 %v) {', 'entry:', '  %buf = alloca [16 x i8]', '  %pos = alloca i32', '  %n = alloca i32', '  store i32 15, ptr %pos', '  store i32 %v, ptr %n', '  %b0 = getelementptr [16 x i8], ptr %buf, i32 0, i32 15', '  store i8 0, ptr %b0', '  %neg = icmp slt i32 %v, 0', '  br i1 %neg, label %negate, label %digits', 'negate:', '  %nv = sub i32 0, %v', '  store i32 %nv, ptr %n', '  br label %digits', 'digits:', '  %cur = load i32, ptr %n', '  %d = srem i32 %cur, 10', '  %q = sdiv i32 %cur, 10', '  store i32 %q, ptr %n', '  %p = load i32, ptr %pos', '  %p1 = sub i32 %p, 1', '  store i32 %p1, ptr %pos', '  %dc = trunc i32 %d to i8', '  %ch = add i8 %dc, 48', '  %cp = getelementptr [16 x i8], ptr %buf, i32 0, i32 %p1', '  store i8 %ch, ptr %cp', '  %more = icmp ne i32 %q, 0', '  br i1 %more, label %digits, label %sign', 'sign:', '  br i1 %neg, label %minus, label %out', 'minus:', '  %p2 = load i32, ptr %pos', '  %p3 = sub i32 %p2, 1', '  store i32 %p3, ptr %pos', '  %mp = getelementptr [16 x i8], ptr %buf, i32 0, i32 %p3', '  store i8 45, ptr %mp', '  br label %out', 'out:', '  %pf = load i32, ptr %pos', '  %sp = getelementptr [16 x i8], ptr %buf, i32 0, i32 %pf', '  call void @rt_print(ptr %sp)', '  ret void', '}'
@@ -15014,7 +15106,7 @@ const holder = {};
         return { ok: match, stage: match ? 'done' : 'verify', ir: g.ir, wasm, warnings: g.warnings, expected: g.expected, stdout: r.stdout, exitCode: r.exitCode, trap: r.trap, bytes: wasm.length };
     }
 
-    return { parse, check, toWasm, run, fromModel, build, parseType, typeStr, layout, DATA_BASE, STACK_TOP };
+    return { parse, check, toWasm, run, runSync, makeWasi, linkLibc, compileIr, LIBC_NAMES, WASI_NAMES: Object.keys(WASI), fromModel, build, parseType, typeStr, layout, DATA_BASE, STACK_TOP, RUNTIME_IR };
 });
 
 }).call(null, undefined, holder);
@@ -22914,6 +23006,11 @@ const SANDBOX_COMMAND_REGISTRY = {
     // column/split同一種「純本地JS重新實作、不需要下載」的處理方式，不是
     // 「按需下載」的情境（見_runM4Builtin），刻意跟pyodide/jq/xq分開註記。
     m4:      { kind: 'm4' },
+    // 2026-10-18：LLVM IR 的「編譯器／直譯器」——跟 python／jq 一樣是 host 端同步 builtin（見 _runLlvmBuiltin、uml/llvm_core.js）。
+    lli:     { kind: 'llvm' },
+    llc:     { kind: 'llvm' },
+    llcheck: { kind: 'llvm' },
+    wasmrun: { kind: 'llvm' },
     // tw_stock_db客製: 2026-09-25使用者實測回報——sleep/curl/wget/httping
     // 原本只有「送進WASM之前的JS層攔截」（TERMINAL_SHELL_BUILTINS）這一條
     // 路，只在「這一行的第一個詞」就是這些指令時才生效，`for`/`while`/`if`
@@ -33218,6 +33315,18 @@ ${fnData.code}
             },
             { type: 'object', properties: { need: { type: 'string', description: '要做的事（原話）' }, mode: { type: 'string', enum: ['manual', 'auto'], description: '不給就用 /route 的設定' }, api_provided: { type: 'boolean', description: '使用者已經提供了 API' } }, required: ['need'] }
         );
+        registerOptional('llvm_execute',
+            'LLVM IR 的執行環境（跟 python_execute、bash_execute 一樣是程式開發工具）：給一份 LLVM IR 文字，在這裡編成 WebAssembly 並執行，回傳 stdout／stderr／結束碼；IR 有錯會指出行號。不需要 clang 或 llc。' +
+            '用途：驗證手寫或模型產生的 IR、教學、把 UML 產生的 IR（uml_to_wasm）改過再跑、做小型的底層實驗。emit：run（預設，編譯並執行）、check（只檢查）、wasm（編成 .wasm 並交付檔案）。' +
+            '支援範圍（第一版）：i1／i8／i32／i64／double、指標（ptr 或 T*）、struct、陣列、字串常數（c"..."）、全域變數、br／if／迴圈、直接呼叫、記憶體讀寫、整數與浮點運算、型別轉換；進入點是 @_start（void）或 @main（回傳結束碼）。' +
+            '內建的 libc：puts、putchar、getchar、malloc、calloc、free、strlen、memcpy、memset、memcmp、strcmp、abs、exit（宣告了就自動連結；printf 這類可變參數函式不支援，用 puts／putchar）；WASI：fd_write、fd_read、args_get、environ_get、clock_time_get、random_get、proc_exit。' +
+            '不支援：phi、例外、函式指標、可變參數、float（只有 double）、有號的 i8／i1 比較（先 sext）。預設有步數上限（一億次區塊轉換），無窮迴圈會被中止並說明；fuel 給 0＝不設上限。終端機裡也有同樣的指令：lli（執行）、llc（編譯）、llcheck（檢查）、wasmrun（執行 .wasm）。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try { return JSON.stringify(await this._llvmExecute(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+            },
+            { type: 'object', properties: { ir: { type: 'string', description: 'LLVM IR 文字' }, emit: { type: 'string', enum: ['run', 'check', 'wasm'] }, args: { type: 'array', items: { type: 'string' }, description: '程式的命令列參數' }, stdin: { type: 'string' }, env: { type: 'object' }, fuel: { type: 'integer', description: '步數上限（區塊轉換次數），0＝不限' }, name: { type: 'string' } }, required: ['ir'] }
+        );
         registerOptional('uml_to_wasm',
             '把 UML 設計編成 LLVM IR 再編成 WebAssembly（wasm32-wasi），在這裡真的跑一次並驗證：類別→struct、操作→函式、使用案例→會依序呼叫操作的函式；執行輸出必須跟 UML 預期的呼叫軌跡一致才算通過。產出 model.ll（LLVM IR 文字）、model.wasm、run.js（用 node 跑）。' +
             '第一版範圍：整數、浮點、布林、字串、類別的欄位與方法、使用案例的呼叫順序；不含繼承的虛擬呼叫、例外、容器（List／Map 用空指標代替並警告）。不需要 clang 或 llc。uml 是文字 DSL（跟 uml_to_code 一樣）；不給 uml 就用最近一次 uml_design／uml_guide 的設計。',
@@ -34793,7 +34902,7 @@ ${fnData.code}
         );
 
         registerOptional('terminal_run',
-            `在指定的終端機裡執行一行bash指令（跟你自己在畫面上打字是同一個沙盒busybox ash環境、同一個目前工作目錄），等執行完畢才回傳，拿到{ok, exit_code, stdout, stderr}——這是這個沙盒目前唯一「能拿到結構化執行結果」的方式（直接在終端機打字只會印到畫面上，看不到exit code）。同一輪畫面上使用者也看得到指令即時輸出，不會偷偷跑。output_file/stderr_file選填：把這次輸出額外寫進沙盒檔案系統的指定路徑（JS層直接寫入accumulate好的內容，不是靠shell的>重導向，所以不會影響你同時拿到的stdout/stderr）。⚠️每次呼叫是全新的wasm執行，沒有真正的長時間背景程序概念，不要拿來跑需要人機互動/常駐監聽的指令。除了busybox指令，也支援sleep（秒數，可加s/m/h單位）、curl/wget（用法跟標準的一樣：curl支援-s -S -k -L -f -i -I -o -O -X -H -d/--data-* -u -A -e -b -m -w -G --url與合併旗標、管線與重導向（curl -s URL | tail -50、curl URL > file、2>/dev/null）、沒加-L不跟隨轉址、-f失敗離開碼22；wget支援-q -O(含-O -) -P --header --post-data --user/--password --no-check-certificate，預設存檔並跟隨轉址；網路請求走既有的proxy機制，跨網域常需要Advance Settings先設定assetBackupProxyUrl）、httping（-c指定次數）、m4（GNU m4的簡化子集，define/ifelse/ifdef/include等）、make（讀取cwd底下的Makefile，簡化子集不支援條件式/include/函式呼叫）——sleep/httping/m4/make不是真的busybox applet，是JS層實作的，httping/m4/make不能跟其他指令用管線接，用各自的輸出檔案旗標取代重導向。**切換工作目錄要單獨一次呼叫只下'cd <path>'（整行只有cd，不要跟其他指令用&&接在一起），下一個指令再另外呼叫一次**——這個沙盒沒有真正的shell parser，'cd x && y'這種複合指令裡的cd不會被偵測到、不會持續影響之後的cwd（單獨的cd指令才會被正確辨識並記住）。參數: {"id_or_name":"terminal_list查到的id或name","command":"要執行的bash指令","output_file":"（選填）把stdout寫進這個沙盒內的路徑","stderr_file":"（選填）把stderr寫進這個沙盒內的路徑"}`,
+            `在指定的終端機裡執行一行bash指令（跟你自己在畫面上打字是同一個沙盒busybox ash環境、同一個目前工作目錄），等執行完畢才回傳，拿到{ok, exit_code, stdout, stderr}——這是這個沙盒目前唯一「能拿到結構化執行結果」的方式（直接在終端機打字只會印到畫面上，看不到exit code）。同一輪畫面上使用者也看得到指令即時輸出，不會偷偷跑。output_file/stderr_file選填：把這次輸出額外寫進沙盒檔案系統的指定路徑（JS層直接寫入accumulate好的內容，不是靠shell的>重導向，所以不會影響你同時拿到的stdout/stderr）。⚠️每次呼叫是全新的wasm執行，沒有真正的長時間背景程序概念，不要拿來跑需要人機互動/常駐監聽的指令。除了busybox指令，也支援sleep（秒數，可加s/m/h單位）、curl/wget（用法跟標準的一樣：curl支援-s -S -k -L -f -i -I -o -O -X -H -d/--data-* -u -A -e -b -m -w -G --url與合併旗標、管線與重導向（curl -s URL | tail -50、curl URL > file、2>/dev/null）、沒加-L不跟隨轉址、-f失敗離開碼22；wget支援-q -O(含-O -) -P --header --post-data --user/--password --no-check-certificate，預設存檔並跟隨轉址；網路請求走既有的proxy機制，跨網域常需要Advance Settings先設定assetBackupProxyUrl）、httping（-c指定次數）、m4（GNU m4的簡化子集，define/ifelse/ifdef/include等）、lli／llc／llcheck／wasmrun（LLVM IR：lli 編成wasm並執行、llc 只編譯成.wasm、llcheck 只檢查、wasmrun 執行.wasm；可接管線與重新導向，內建 puts／putchar／malloc／strlen等最小libc，printf不支援，預設有步數上限防無窮迴圈）、make（讀取cwd底下的Makefile，簡化子集不支援條件式/include/函式呼叫）——sleep/httping/m4/make不是真的busybox applet，是JS層實作的，httping/m4/make不能跟其他指令用管線接，用各自的輸出檔案旗標取代重導向。**切換工作目錄要單獨一次呼叫只下'cd <path>'（整行只有cd，不要跟其他指令用&&接在一起），下一個指令再另外呼叫一次**——這個沙盒沒有真正的shell parser，'cd x && y'這種複合指令裡的cd不會被偵測到、不會持續影響之後的cwd（單獨的cd指令才會被正確辨識並記住）。參數: {"id_or_name":"terminal_list查到的id或name","command":"要執行的bash指令","output_file":"（選填）把stdout寫進這個沙盒內的路徑","stderr_file":"（選填）把stderr寫進這個沙盒內的路徑"}`,
             async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -37265,6 +37374,7 @@ ${fnData.code}
         out.backends.popup = { available: typeof window !== 'undefined' && typeof window.open === 'function', isolation: '彈出視窗裡再放一層sandbox iframe（AI寫的程式仍然隔離）', needs_user_action: true, how: 'sandbox_html({"backend":"popup",...})：畫面右下角會出現「開啟測試視窗」按鈕，使用者按下才能彈出（瀏覽器規定彈出視窗一定要使用者操作，這就是pending action）' };
         out.backends.worker = { available: typeof Worker !== 'undefined', persistent_fs: true, how: 'sandbox_worker({"code":"...","requests":[...]})：Web Worker，沒有DOM；有fs.read/write/list/remove存到持久檔案系統；可以寫handler(request)當成Service Worker／Cloudflare Worker測試' };
         out.backends.mock_server = { available: typeof Worker !== 'undefined', persistent: true, how: 'sandbox_mock（先deploy伺服器程式）＋sandbox_html({mock:"名稱"})：頁面照常寫fetch／WebSocket，沙盒接到持久儲存的模擬伺服器；頁面程式不用改，伺服器程式可export成Node／Cloudflare部署檔。支援fetch、XMLHttpRequest、EventSource（Server-Sent Events）、WebSocket；iframe與瀏覽器分頁後端都支援（分頁靠主頁面輪詢，每個請求多約0.1～0.3秒）。沙盒不使用Cloudflare Worker的流量：*.workers.dev、*.pages.dev與你設定的proxy網址一律擋下' };
+        out.backends.llvm = { available: typeof WebAssembly !== 'undefined', how: 'llvm_execute（給 LLVM IR 文字，編成 wasm 執行）；終端機指令 lli／llc／llcheck／wasmrun；UML 轉 IR 用 uml_to_wasm', limits: '只支援 IR 的子集（見 llvm_execute 說明）；沒有 clang，不能從 C 原始碼開始', persistent_fs: false };
         out.backends.python = { available: true, micropip: true, how: 'python_execute（純腳本）或sandbox_py_app（Flask/FastAPI等web app，用micropip安裝純Python套件後直接以測試請求呼叫app）' };
         out.backends.terminal = { available: true, how: 'run-terminal（busybox ash＋python -c）：適合檔案與指令流程；注意終端機裡的python是同步執行，不能await micropip.install，要裝套件請用python_execute或sandbox_py_app' };
         out.backends.service_worker = { available: false, reason: 'Service Worker必須由「同源的script檔案網址」註冊，瀏覽器不接受blob或data網址，所以網頁版沒辦法把AI剛寫的程式註冊成Service Worker；桌面版也一樣，除非另外在本機proxy提供固定路徑（目前沒有）。替代做法：sandbox_worker用handler(request)模擬Service Worker／Cloudflare Worker的fetch處理，行為（路由、Request/Response、快取邏輯）可以完整驗證。' };
@@ -58167,6 +58277,7 @@ _result
             if (kind === 'column') return this._runColumnBuiltin(ctx);
             if (kind === 'split') return this._runSplitBuiltin(ctx);
             if (kind === 'm4') return this._runM4Builtin(ctx);
+            if (kind === 'llvm') return this._runLlvmBuiltin(ctx);
             if (kind === 'sleep') return this._runSleepBuiltin(ctx);
             if (kind === 'curl') return this._runCurlBuiltin(ctx);
             if (kind === 'wget') return this._runWgetBuiltin(ctx);
@@ -58459,6 +58570,66 @@ _result
     // 前綴）。這個子集足以應付autoconf巨集庫常見用法（define/ifelse/
     // ifdef/include這幾個用得最頻繁），複雜的巨集庫（真正的autoconf.m4f）
     // 沒有實測過能不能完整跑通。
+    // LLVM IR 在終端機：lli（編成 wasm 再執行，瀏覽器引擎即時編成機器碼）、llc（只編譯成 .wasm）、llcheck（只檢查）、wasmrun（執行 .wasm）。
+    // 跟 python／m4 一樣是同步的 host builtin：讀沙盒檔案、接管線與重新導向、回傳結束碼。無窮迴圈靠「步數上限」（--fuel，預設一億次區塊轉換）中止。
+    _runLlvmBuiltin(ctx) {
+        const enc = new TextEncoder(), dec = new TextDecoder('utf-8'); const NL = String.fromCharCode(10); const L = FaLlvm;
+        const cmd = String(ctx.argv[0] || 'lli').split('/').pop(); const rest = ctx.argv.slice(1);
+        const out = (t) => ctx.stdout(enc.encode(t)); const err = (t) => ctx.stderr(enc.encode(t));
+        const help = { lli: 'lli [--fuel N] 檔案.ll|檔案.wasm|- [參數…]　把 LLVM IR 編成 wasm 並執行（- 是從標準輸入讀）。--fuel 0＝不設步數上限', llc: 'llc 檔案.ll|- [-o 輸出.wasm|-] [-v]　把 LLVM IR 編成 wasm（預設輸出檔名是把副檔名換成 .wasm）', llcheck: 'llcheck [-v] 檔案.ll…　只檢查 IR（解析、型別、標籤、呼叫），錯誤帶行號', wasmrun: 'wasmrun 檔案.wasm|- [參數…]　執行 wasm（WASI：輸出、輸入、參數、環境變數、時間、亂數、結束碼）' };
+        let fuel = 100000000, outPath = null, verbose = false; const files = []; let progArgs = [];
+        for (let i = 0; i < rest.length; i++) {
+            const a = rest[i];
+            if (a === '-h' || a === '--help') { out(help[cmd] + NL); return 0; }
+            if (a === '--fuel' || a === '-fuel') { fuel = Number(rest[++i]); if (!(fuel >= 0)) { err(cmd + ': --fuel 要是 0 或正整數' + NL); return 2; } continue; }
+            if (a === '-o' && cmd === 'llc') { outPath = rest[++i]; continue; }
+            if (a === '-v') { verbose = true; continue; }
+            files.push(a); if (cmd === 'lli' || cmd === 'wasmrun') { progArgs = rest.slice(i + 1); break; }
+        }
+        if (!files.length) { err(help[cmd] + NL); return 2; }
+        const readBytes = (f) => { const b = f === '-' ? ctx.stdin() : ctx.fs.read(f); if (b === null || b === undefined) throw new Error('找不到檔案'); return typeof b === 'string' ? enc.encode(b) : b; };
+        const isWasm = (b) => b && b.length > 4 && b[0] === 0 && b[1] === 0x61 && b[2] === 0x73 && b[3] === 0x6d;
+        const showErrors = (f, errors) => { for (const e of errors.slice(0, 30)) err(f + ':' + (e.line ? e.line + ':' : '') + ' ' + e.msg + NL); if (errors.length > 30) err('…還有 ' + (errors.length - 30) + ' 個錯誤' + NL); };
+        const compile = (f, bytes, withFuel) => { const r = L.compileIr(dec.decode(bytes), { fuel: withFuel ? fuel : 0 }); if (!r.wasm) { showErrors(f, r.errors); return null; } if (verbose && r.linked && r.linked.length) err(cmd + ': 連結內建 libc：' + r.linked.join('、') + NL); return r.wasm; };
+        const code = (n) => ((Number(n) % 256) + 256) % 256;
+        try {
+            if (cmd === 'llcheck') {
+                let bad = 0;
+                for (const f of files) { let b; try { b = readBytes(f); } catch (e) { err('llcheck: ' + f + ': ' + String((e && e.message) || e) + NL); bad++; continue; } const r = L.compileIr(dec.decode(b), {}); if (!r.wasm) { showErrors(f, r.errors); bad++; } else out(f + ': OK（wasm ' + r.wasm.length + ' 位元組' + (r.linked && r.linked.length ? '，連結 libc：' + r.linked.join('、') : '') + '）' + NL); }
+                return bad ? 1 : 0;
+            }
+            if (cmd === 'llc') {
+                const f = files[0]; let b; try { b = readBytes(f); } catch (e) { err('llc: ' + f + ': ' + String((e && e.message) || e) + NL); return 1; }
+                const w = compile(f, b, false); if (!w) return 1;
+                const dot = f.lastIndexOf('.'); const dst = outPath || (f === '-' ? 'a.wasm' : (dot > f.lastIndexOf('/') ? f.slice(0, dot) : f) + '.wasm');
+                if (dst === '-') ctx.stdout(w); else { ctx.fs.write(dst, w); if (verbose) err('llc: 寫入 ' + dst + '（' + w.length + ' 位元組）' + NL); }
+                return 0;
+            }
+            // lli、wasmrun
+            const f = files[0]; let b; try { b = readBytes(f); } catch (e) { err(cmd + ': ' + f + ': ' + String((e && e.message) || e) + NL); return 1; }
+            let wasm;
+            if (isWasm(b)) wasm = b; else if (cmd === 'wasmrun') { err('wasmrun: ' + f + ' 不是 wasm 檔（要執行 LLVM IR 請用 lli）' + NL); return 1; } else { wasm = compile(f, b, true); if (!wasm) return 1; }
+            const stdinBytes = f === '-' ? new Uint8Array(0) : (() => { try { return ctx.stdin(); } catch (_) { return new Uint8Array(0); } })();
+            const r = L.runSync(wasm, { args: [f === '-' ? 'stdin' : f].concat(progArgs), env: ctx.env || {}, stdin: stdinBytes });
+            if (r.stdoutBytes && r.stdoutBytes.length) ctx.stdout(r.stdoutBytes); if (r.stderrBytes && r.stderrBytes.length) ctx.stderr(r.stderrBytes);
+            if (r.trap) { err(cmd + ': ' + r.trap + NL); return /步數用完/.test(r.trap) ? 124 : 134; }
+            return code(r.exitCode);
+        } catch (e) { err(cmd + ': ' + String((e && e.message) || e) + NL); return 1; }
+    }
+    // AI 的工具版（跟 python_execute 一樣是「程式開發工具」）：直接給 IR，編譯、執行、回傳輸出；錯誤帶行號
+    async _llvmExecute(a) {
+        const NL = String.fromCharCode(10); const ir = String((a && a.ir) || ''); if (!ir.trim()) return { ok: false, error: '缺少 ir（LLVM IR 文字）' };
+        if (typeof WebAssembly === 'undefined') return { ok: false, error: '這個環境沒有 WebAssembly' };
+        const fuel = a.fuel === 0 ? 0 : (Number(a.fuel) > 0 ? Math.min(Number(a.fuel), 2000000000) : 100000000);
+        const c = FaLlvm.compileIr(ir, { fuel }); const fmt = (e) => (e.line ? e.line + ': ' : '') + e.msg;
+        if (!c.wasm) return { ok: false, stage: c.stage, errors: c.errors.slice(0, 20).map(fmt), hint: '修好這些行再呼叫一次；支援的範圍見工具說明' };
+        const emit = a.emit === 'check' || a.emit === 'wasm' ? a.emit : 'run';
+        if (emit === 'check') return { ok: true, stage: 'ok', wasm_bytes: c.wasm.length, linked_libc: c.linked };
+        if (emit === 'wasm') { const noFuel = FaLlvm.compileIr(ir, { fuel: 0 }); const z = await this._umlZip([{ path: 'model.ll', content: ir }, { path: 'model.wasm', content: noFuel.wasm }], String(a.name || 'program'), 'wasm'); const res = { ok: true, stage: 'ok', zip_file_id: z.id, filename: z.filename, wasm_bytes: noFuel.wasm.length, linked_libc: c.linked }; await this._deliverToolResultFile(res, 'zip_file_id', (x) => '📎 LLVM IR → wasm：' + x.filename); return res; }
+        const enc = new TextEncoder(); const r = await FaLlvm.run(c.wasm, { args: [String(a.name || 'prog')].concat(Array.isArray(a.args) ? a.args.map(String) : []), env: a.env && typeof a.env === 'object' ? a.env : {}, stdin: enc.encode(String(a.stdin || '')) });
+        const clip = (t) => (t.length > 20000 ? t.slice(0, 20000) + NL + '…（輸出太長，只留前 20000 字）' : t);
+        return { ok: !r.trap && r.exitCode === 0, stage: 'run', exit_code: r.exitCode, stdout: clip(r.stdout), stderr: clip(r.stderr), trap: r.trap || undefined, linked_libc: c.linked && c.linked.length ? c.linked : undefined, wasm_bytes: c.wasm.length };
+    }
     _runM4Builtin(ctx) {
         const argv = ctx.argv.slice(1);
         const files = [];

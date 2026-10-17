@@ -53,7 +53,8 @@
     // =====================================================================
     function stripComment(line) { let q = false; for (let i = 0; i < line.length; i++) { const c = line[i]; if (c === '"') q = !q; else if (c === ';' && !q) return line.slice(0, i); } return line; }
     function splitTop(s) { const out = []; let d = 0, cur = '', q = false; for (const c of s) { if (c === '"') q = !q; if (!q) { if ('([{'.includes(c)) d++; else if (')]}'.includes(c)) d--; if (c === ',' && d === 0) { out.push(cur.trim()); cur = ''; continue; } } cur += c; } if (cur.trim()) out.push(cur.trim()); return out; }
-    const ATTRS = /\b(nounwind|noinline|optnone|uwtable|readnone|readonly|local_unnamed_addr|unnamed_addr|dso_local|nsw|nuw|inbounds|tail|noundef|nonnull|signext|zeroext)\b|#\d+|align\s+\d+/g;
+    // 屬性字（不能誤刪名字裡的：@tail、%nuw 這種前面有 % @ 的是名字）
+    const ATTRS = /(?<![%@\w.$-])(noalias|nounwind|noinline|optnone|uwtable|readnone|readonly|local_unnamed_addr|unnamed_addr|dso_local|nsw|nuw|inbounds|tail|noundef|nonnull|signext|zeroext)(?![\w.$-])|#\d+|align\s+\d+/g;
     function decodeCString(body) {
         const out = []; for (let i = 0; i < body.length; i++) { const c = body[i]; if (c === String.fromCharCode(92)) { const h = body.slice(i + 1, i + 3); if (/^[0-9A-Fa-f]{2}$/.test(h)) { out.push(parseInt(h, 16)); i += 2; } else if (body[i + 1] === String.fromCharCode(92)) { out.push(92); i++; } else throw new Error('c"…" 裡的跳脫不認得：' + body.slice(i, i + 3)); } else { const cp = c.codePointAt(0); if (cp < 128) out.push(cp); else { const bytes = typeof TextEncoder !== 'undefined' ? Array.from(new TextEncoder().encode(String.fromCodePoint(cp))) : [63]; out.push.apply(out, bytes); if (cp > 0xffff) i++; } } }
         return out;
@@ -159,7 +160,12 @@
     // =====================================================================
     // 檢查（型別、定義前使用、標籤、呼叫）
     // =====================================================================
-    const WASI = { fd_write: { params: [T.i32, T.i32, T.i32, T.i32], ret: T.i32 }, proc_exit: { params: [T.i32], ret: T.void } };
+    const WASI = {
+        fd_write: { params: [T.i32, T.i32, T.i32, T.i32], ret: T.i32 }, fd_read: { params: [T.i32, T.i32, T.i32, T.i32], ret: T.i32 }, proc_exit: { params: [T.i32], ret: T.void },
+        args_sizes_get: { params: [T.i32, T.i32], ret: T.i32 }, args_get: { params: [T.i32, T.i32], ret: T.i32 }, environ_sizes_get: { params: [T.i32, T.i32], ret: T.i32 }, environ_get: { params: [T.i32, T.i32], ret: T.i32 },
+        clock_time_get: { params: [T.i32, T.i64, T.i32], ret: T.i32 }, random_get: { params: [T.i32, T.i32], ret: T.i32 }
+    };
+    const INTRINSICS = { 'llvm.wasm.memory.grow.i32': { params: [T.i32, T.i32], ret: T.i32 }, 'llvm.wasm.memory.size.i32': { params: [T.i32], ret: T.i32 } };
     const INT_BIN = new Set(['add', 'sub', 'mul', 'sdiv', 'udiv', 'srem', 'urem', 'and', 'or', 'xor', 'shl', 'ashr', 'lshr']);
     const F_BIN = new Set(['fadd', 'fsub', 'fmul', 'fdiv']);
     const ICMP = new Set(['eq', 'ne', 'slt', 'sle', 'sgt', 'sge', 'ult', 'ule', 'ugt', 'uge']);
@@ -168,7 +174,7 @@
     function check(mod) {
         const errors = []; const E = (line, msg) => errors.push({ line, msg });
         const globals = new Map(mod.globals.map((g) => [g.name, g])); const funcs = new Map();
-        for (const d of mod.declares) { funcs.set(d.name, { ret: d.ret, params: d.params, declared: true }); if (!WASI[d.name]) E(d.line, '宣告的函式 @' + d.name + ' 沒有實作（第一版只支援 WASI 的 fd_write、proc_exit）'); else if (typeStr(WASI[d.name].ret) !== typeStr(d.ret) || d.params.map(typeStr).join() !== WASI[d.name].params.map(typeStr).join()) E(d.line, '@' + d.name + ' 的簽名要是 ' + typeStr(WASI[d.name].ret) + ' (' + WASI[d.name].params.map(typeStr).join(', ') + ')'); }
+        for (const d of mod.declares) { funcs.set(d.name, { ret: d.ret, params: d.params, declared: true }); if (INTRINSICS[d.name]) { if (d.params.map(typeStr).join() !== INTRINSICS[d.name].params.map(typeStr).join() || typeStr(d.ret) !== typeStr(INTRINSICS[d.name].ret)) E(d.line, '@' + d.name + ' 的簽名不對'); } else if (!WASI[d.name]) E(d.line, '宣告的函式 @' + d.name + ' 沒有實作（支援的 WASI：' + Object.keys(WASI).join('、') + '；內建的 libc：puts、putchar、malloc、calloc、free、strlen、memcpy、memset、memcmp、strcmp、abs、exit、getchar；printf 這類可變參數函式不支援）'); else if (!INTRINSICS[d.name] && typeStr(WASI[d.name].ret) !== typeStr(d.ret) || d.params.map(typeStr).join() !== WASI[d.name].params.map(typeStr).join()) E(d.line, '@' + d.name + ' 的簽名要是 ' + typeStr(WASI[d.name].ret) + ' (' + WASI[d.name].params.map(typeStr).join(', ') + ')'); }
         for (const f of mod.funcs) { if (funcs.has(f.name) && !funcs.get(f.name).declared) E(f.line, '函式 @' + f.name + ' 定義了兩次'); funcs.set(f.name, { ret: f.ret, params: f.params.map((p) => p.ty) }); }
         for (const [name, t] of mod.types) { try { layout(mod, t); } catch (e) { E(0, '型別 %' + name + '：' + e.message); } }
         for (const g of mod.globals) { try { layout(mod, g.ty); } catch (e) { E(g.line, '全域 @' + g.name + '：' + e.message); } }
@@ -265,27 +271,38 @@
         opts = opts || {}; const errs = check(mod); if (errs.length) throw new Error('IR 沒有通過檢查：' + errs.slice(0, 5).map((e) => (e.line ? '第 ' + e.line + ' 行：' : '') + e.msg).join('；'));
         // 全域變數的位址
         const addr = new Map(); let off = DATA_BASE; const segs = [];
-        for (const g of mod.globals) { const l = layout(mod, g.ty); off = Math.ceil(off / l.align) * l.align; addr.set(g.name, off); let bytes = null; if (g.bytes) { bytes = g.bytes.slice(); while (bytes.length < l.size) bytes.push(0); } else if (g.init && g.init.k === 'int') { bytes = []; let v = BigInt.asUintN(l.size * 8, g.init.v); for (let k = 0; k < l.size; k++) { bytes.push(Number(v & 0xffn)); v >>= 8n; } } else if (g.init && g.init.k === 'float') bytes = f64bytes(g.init.v); if (bytes && bytes.some((x) => x)) segs.push({ at: off, bytes }); off += l.size; }
-        if (off >= STACK_TOP / 2) throw new Error('全域資料太大（' + off + ' 位元組），第一版上限約 32KB');
+        for (const g of mod.globals) {
+            if (g.name === '__heap_base') continue; // 由後端決定（跟 wasm-ld 一樣：堆積的起點）
+            const l = layout(mod, g.ty); off = Math.ceil(off / l.align) * l.align; addr.set(g.name, off); let bytes = null;
+            if (g.bytes) { bytes = g.bytes.slice(); while (bytes.length < l.size) bytes.push(0); }
+            else if (g.init && g.init.k === 'int') { bytes = []; let v = BigInt.asUintN(l.size * 8, g.init.v); for (let k = 0; k < l.size; k++) { bytes.push(Number(v & 0xffn)); v >>= 8n; } }
+            else if (g.init && g.init.k === 'float') bytes = f64bytes(g.init.v);
+            if (bytes && bytes.some((x) => x)) segs.push({ at: off, bytes });
+            off += l.size;
+        }
+        // 記憶體配置：[保留 0..1024) [資料（多大都行）] [影子堆疊（往下長，預設 1MB，可用 opts.stackSize 調）] [堆積：malloc 不夠會 memory.grow]
+        const stackSize = Math.max(4096, Math.floor(opts.stackSize || 1048576)); const stackStart = Math.ceil(off / 16) * 16; const stackTop = stackStart + stackSize; const heapBase = stackTop;
+        addr.set('__heap_base', heapBase); const initPages = Math.ceil((heapBase + 65536) / 65536); if (initPages >= 65536) throw new Error('全域資料加堆疊太大，超過 wasm32 的 4GB 上限');
         // 函式索引：匯入在前
         const imports = mod.declares.filter((d) => WASI[d.name]); const fidx = new Map(); imports.forEach((d, i) => fidx.set(d.name, i)); mod.funcs.forEach((f, i) => fidx.set(f.name, imports.length + i));
         const sigs = []; const sigOf = (params, ret) => { const key = params.map((p) => wtype(mod, p)).join() + '>' + (wtype(mod, ret) || ''); let i = sigs.findIndex((s) => s.key === key); if (i < 0) { sigs.push({ key, params: params.map((p) => wtype(mod, p)), ret: wtype(mod, ret) }); i = sigs.length - 1; } return i; };
         const impSig = imports.map((d) => sigOf(d.params, d.ret)); const fnSig = mod.funcs.map((f) => sigOf(f.params.map((p) => p.ty), f.ret));
-        const bodies = mod.funcs.map((f) => emitFunction(mod, f, addr, fidx));
+        const bodies = mod.funcs.map((f) => emitFunction(mod, f, addr, fidx, !!(opts.fuel), stackStart));
         const typeSec = section(1, vec(sigs.map((s) => [0x60].concat(vec(s.params.map((p) => [VT[p]])), s.ret ? vec([[VT[s.ret]]]) : [0]))));
         const impSec = section(2, vec(imports.map((d, i) => str('wasi_snapshot_preview1').concat(str(d.name), [0x00], uleb(impSig[i])))));
         const funcSec = section(3, vec(fnSig.map((i) => uleb(i))));
-        const memSec = section(5, vec([[0x00].concat(uleb(PAGES))]));
-        const globSec = section(6, vec([[VT.i32, 0x01, OP.i32_const].concat(sleb(STACK_TOP), [OP.end])]));
+        const memSec = section(5, vec([[0x00].concat(uleb(initPages))]));
+        const fuel = opts.fuel ? Math.min(Math.floor(opts.fuel), 2147483000) : 0;
+        const globSec = section(6, vec([[VT.i32, 0x01, OP.i32_const].concat(sleb(stackTop), [OP.end]), [VT.i32, 0x00, OP.i32_const].concat(sleb(stackStart), [OP.end])].concat(fuel ? [[VT.i32, 0x01, OP.i32_const].concat(sleb(fuel), [OP.end])] : [])));
         const entry = mod.funcs.find((f) => f.name === (opts.entry || '_start')) || mod.funcs.find((f) => f.name === 'main');
-        const expSec = section(7, vec([str('memory').concat([0x02], uleb(0)), str(entry.name === 'main' ? 'main' : '_start').concat([0x00], uleb(fidx.get(entry.name)))]));
+        const expSec = section(7, vec([str('memory').concat([0x02], uleb(0)), str(entry.name === 'main' ? 'main' : '_start').concat([0x00], uleb(fidx.get(entry.name))), str('__sp').concat([0x03], uleb(0)), str('__stack_limit').concat([0x03], uleb(1))].concat(fuel ? [str('__fuel').concat([0x03], uleb(2))] : [])));
         const codeSec = section(10, vec(bodies.map((b) => uleb(b.length).concat(b))));
         const dataSec = section(11, vec(segs.map((s) => [0x00, OP.i32_const].concat(sleb(s.at), [OP.end], uleb(s.bytes.length), s.bytes))));
         const bytes = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00].concat(typeSec, impSec, funcSec, memSec, globSec, expSec, codeSec, segs.length ? dataSec : []);
         return new Uint8Array(bytes);
     }
 
-    function emitFunction(mod, f, addr, fidx) {
+    function emitFunction(mod, f, addr, fidx, fuel, stackStart) {
         const code = []; const emit = (...b) => { for (const x of b) { if (Array.isArray(x)) code.push.apply(code, x); else code.push(x); } };
         const localTypes = []; const regIdx = new Map();
         f.params.forEach((p, i) => { regIdx.set(p.name || String(i), i); });
@@ -312,7 +329,7 @@
         const setRes = (i) => emit(OP.local_set, uleb(regIdx.get(i.res)));
         // 區塊分派
         const n = f.blocks.length; const labelIdx = new Map(f.blocks.map((b, k) => [b.label, k]));
-        if (frame) { emit(OP.global_get, 0, OP.i32_const, sleb(frame), 0x6b, OP.local_tee, uleb(fp), OP.global_set, 0); for (const a of allocas) { emit(OP.local_get, uleb(fp), OP.i32_const, sleb(a.off), 0x6a, OP.local_set, uleb(regIdx.get(a.res))); } }
+        if (frame) { emit(OP.global_get, 0, OP.i32_const, sleb(frame), 0x6b, OP.local_tee, uleb(fp), OP.global_set, 0, OP.local_get, uleb(fp), OP.i32_const, sleb(stackStart), 0x49, OP.if, 0x40, OP.unreachable, OP.end); for (const a of allocas) { emit(OP.local_get, uleb(fp), OP.i32_const, sleb(a.off), 0x6a, OP.local_set, uleb(regIdx.get(a.res))); } }
         emit(OP.loop, 0x40); for (let k = 0; k < n; k++) emit(OP.block, 0x40);
         emit(OP.local_get, uleb(pc), OP.br_table, uleb(n)); for (let k = 0; k < n; k++) emit(uleb(k)); emit(uleb(n - 1));
         for (let k = 0; k < n; k++) {
@@ -322,7 +339,7 @@
         }
         emit(OP.end, OP.unreachable, OP.end);
         function restoreSp() { if (frame) emit(OP.local_get, uleb(fp), OP.i32_const, sleb(frame), 0x6a, OP.global_set, 0); }
-        function jump(label, back) { emit(OP.i32_const, sleb(labelIdx.get(label)), OP.local_set, uleb(pc), OP.br, uleb(back)); }
+        function jump(label, back, extra) { if (fuel) emit(OP.global_get, 2, OP.i32_const, 1, 0x6b, OP.global_set, 2, OP.global_get, 2, 0x45, OP.if, 0x40, OP.unreachable, OP.end); emit(OP.i32_const, sleb(labelIdx.get(label)), OP.local_set, uleb(pc), OP.br, uleb(back)); void extra; }
         function emitTerm(t, back) {
             if (t.op === 'br') { if (t.cond) { push(t.cond, T.i1); emit(OP.if, 0x40); jump(t.then, back + 1); emit(OP.else); jump(t.else, back + 1); emit(OP.end); emit(OP.unreachable); } else jump(t.to, back); }
             else if (t.op === 'ret') { if (t.val) { push(t.val, t.ty); restoreSp(); emit(OP.return); } else { restoreSp(); emit(OP.return); } }
@@ -353,7 +370,7 @@
                 case 'fptosi': { push(i.v, i.from); emit(wt(i.to) === 'i64' ? 0xb0 : 0xaa); setRes(i); return; }
                 case 'ptrtoint': { push(i.v, i.from); if (wt(i.to) === 'i64') emit(0xad); setRes(i); return; }
                 case 'inttoptr': { push(i.v, i.from); if (wt(i.from) === 'i64') emit(0xa7); setRes(i); return; }
-                case 'call': { for (const a of i.args) push(a.v, a.ty); emit(OP.call, uleb(fidx.get(i.callee))); if (i.ret.k !== 'void') { if (i.res) setRes(i); else emit(OP.drop); } return; }
+                case 'call': { if (i.callee === 'llvm.wasm.memory.grow.i32') { push(i.args[1].v, i.args[1].ty); emit(0x40, 0x00); if (i.res) setRes(i); else emit(OP.drop); return; } if (i.callee === 'llvm.wasm.memory.size.i32') { emit(0x3f, 0x00); if (i.res) setRes(i); else emit(OP.drop); return; } for (const a of i.args) push(a.v, a.ty); emit(OP.call, uleb(fidx.get(i.callee))); if (i.ret.k !== 'void') { if (i.res) setRes(i); else emit(OP.drop); } return; }
                 default:
                     if (INT_BIN.has(i.op)) { push(i.a, i.ty); push(i.b, i.ty); emit(BIN[wt(i.ty) === 'i64' ? 'i64' : 'i32'][i.op]); const bits = resolve(mod, i.ty).bits; if (bits < 32 && !['and', 'or', 'xor'].includes(i.op)) emit(OP.i32_const, sleb((1 << bits) - 1), 0x71); setRes(i); return; }
                     if (F_BIN.has(i.op)) { push(i.a, i.ty); push(i.b, i.ty); emit(BIN.f64[i.op]); setRes(i); return; }
@@ -368,16 +385,92 @@
     // =====================================================================
     // 執行（WebAssembly＋最小 WASI）
     // =====================================================================
-    async function run(bytes, opts) {
-        opts = opts || {}; const out = []; let mem = null; let exitCode = null;
-        const imports = { wasi_snapshot_preview1: {
-            fd_write: (fd, iovs, n, nw) => { const dv = new DataView(mem.buffer); let total = 0; for (let k = 0; k < n; k++) { const p = dv.getUint32(iovs + k * 8, true), l = dv.getUint32(iovs + k * 8 + 4, true); if (fd === 1 || fd === 2) out.push(new Uint8Array(mem.buffer.slice(p, p + l))); total += l; } dv.setUint32(nw, total, true); return 0; },
-            proc_exit: (code) => { exitCode = code; throw { wasiExit: code }; }
-        } };
-        const { instance } = await WebAssembly.instantiate(bytes, imports); mem = instance.exports.memory;
-        let trap = null; try { const fn = instance.exports._start || instance.exports.main; const r = fn(); if (typeof r === 'number') exitCode = r; if (exitCode === null) exitCode = 0; } catch (e) { if (e && e.wasiExit !== undefined) exitCode = e.wasiExit; else trap = String((e && e.message) || e); }
-        let total = 0; for (const c of out) total += c.length; const all = new Uint8Array(total); let o = 0; for (const c of out) { all.set(c, o); o += c.length; }
-        return { stdout: new TextDecoder().decode(all), exitCode, trap };
+    // 最小的 WASI：輸出（1、2）、輸入（0）、參數、環境變數、時間、亂數、結束碼。io：{ args:[], env:{}, stdin:Uint8Array }
+    function makeWasi(io, getMem) {
+        io = io || {}; const out = [], err = []; let stdinPos = 0; const stdin = io.stdin || new Uint8Array(0); const enc = new TextEncoder();
+        const args = (io.args || []).map((a) => enc.encode(String(a) + String.fromCharCode(0))); const envs = Object.keys(io.env || {}).map((k) => enc.encode(k + '=' + io.env[k] + String.fromCharCode(0)));
+        const dvOf = () => new DataView(getMem().buffer); const u8 = () => new Uint8Array(getMem().buffer);
+        const sizes = (list, pc, ps) => { const dv = dvOf(); dv.setUint32(pc, list.length, true); dv.setUint32(ps, list.reduce((a, b) => a + b.length, 0), true); return 0; };
+        const fill = (list, ptrs, buf) => { const dv = dvOf(), m = u8(); let o = buf; list.forEach((b, i) => { dv.setUint32(ptrs + i * 4, o, true); m.set(b, o); o += b.length; }); return 0; };
+        const W = {
+            fd_write(fd, iovs, n, nw) { const dv = dvOf(); let total = 0; for (let k = 0; k < n; k++) { const p = dv.getUint32(iovs + k * 8, true), l = dv.getUint32(iovs + k * 8 + 4, true); if (fd === 1) out.push(u8().slice(p, p + l)); else if (fd === 2) err.push(u8().slice(p, p + l)); else return 8; total += l; } dv.setUint32(nw, total, true); return 0; },
+            fd_read(fd, iovs, n, nr) { if (fd !== 0) return 8; const dv = dvOf(), m = u8(); let total = 0; for (let k = 0; k < n; k++) { const p = dv.getUint32(iovs + k * 8, true), l = dv.getUint32(iovs + k * 8 + 4, true); const take = Math.min(l, stdin.length - stdinPos); if (take > 0) { m.set(stdin.subarray(stdinPos, stdinPos + take), p); stdinPos += take; total += take; } if (take < l) break; } dv.setUint32(nr, total, true); return 0; },
+            args_sizes_get(pc, ps) { return sizes(args, pc, ps); }, args_get(argv, buf) { return fill(args, argv, buf); },
+            environ_sizes_get(pc, ps) { return sizes(envs, pc, ps); }, environ_get(e, buf) { return fill(envs, e, buf); },
+            clock_time_get(id, prec, outp) { const ns = id === 1 ? BigInt(Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) * 1e6)) : BigInt(Date.now()) * 1000000n; dvOf().setBigUint64(outp, ns, true); return 0; },
+            random_get(buf, len) { const m = u8(); for (let i = 0; i < len; i++) m[buf + i] = Math.floor(Math.random() * 256); return 0; },
+            proc_exit(code) { throw { wasiExit: code }; }
+        };
+        const cat = (list) => { let t = 0; for (const c of list) t += c.length; const all = new Uint8Array(t); let o = 0; for (const c of list) { all.set(c, o); o += c.length; } return all; };
+        return { imports: { wasi_snapshot_preview1: W }, stdout: () => cat(out), stderr: () => cat(err) };
+    }
+    function finishRun(instance, wasi, args0) {
+        let exitCode = null, trap = null;
+        try { const fn = instance.exports._start || instance.exports.main; if (!fn) throw new Error('wasm 沒有匯出 _start 或 main'); const r = fn(); if (typeof r === 'number') exitCode = r; if (exitCode === null) exitCode = 0; }
+        catch (e) { if (e && e.wasiExit !== undefined) exitCode = e.wasiExit; else { trap = String((e && e.message) || e); const f = instance.exports.__fuel; const spg = instance.exports.__sp, lim = instance.exports.__stack_limit; if (f && f.value === 0) trap = '步數用完了（可能是無窮迴圈）'; else if (spg && lim && spg.value < lim.value) trap = '堆疊溢位（影子堆疊 1MB 用完，遞迴太深或區域陣列太大）'; else if (/call stack|Maximum call/i.test(trap)) trap = '堆疊溢位（遞迴太深）'; else if (/unreachable/i.test(trap)) trap = '執行到不可能到的地方（unreachable）'; else if (/out of bounds/i.test(trap)) trap = '記憶體存取超出範圍'; else if (/divide by zero|integer overflow/i.test(trap)) trap = '整數除以零或溢位'; } }
+        void args0; const dec = new TextDecoder();
+        return { stdout: dec.decode(wasi.stdout()), stderr: dec.decode(wasi.stderr()), stdoutBytes: wasi.stdout(), stderrBytes: wasi.stderr(), exitCode, trap };
+    }
+    async function run(bytes, io) {
+        let mem = null; const wasi = makeWasi(io, () => mem); const { instance } = await WebAssembly.instantiate(bytes, wasi.imports); mem = instance.exports.memory; return finishRun(instance, wasi);
+    }
+    // 同步版（終端機的指令必須同步）：編譯與執行都同步。瀏覽器主執行緒對較大的 wasm 會拒絕同步編譯，這時丟出說明清楚的錯誤
+    function runSync(bytes, io) {
+        let mem = null; const wasi = makeWasi(io, () => mem); let instance;
+        try { instance = new WebAssembly.Instance(new WebAssembly.Module(bytes), wasi.imports); }
+        catch (e) { const msg = String((e && e.message) || e); if (/main thread|compile|RangeError/i.test(msg) && bytes.length > 4096) throw new Error('這個環境的主執行緒不允許同步編譯較大的 wasm（' + bytes.length + ' 位元組）：' + msg + '。請改用 llvm_execute 工具（非同步編譯，不受這個限制）'); throw e; }
+        mem = instance.exports.memory; return finishRun(instance, wasi);
+    }
+
+    // =====================================================================
+    // 最小的 libc（用 IR 寫，連結時才加進來）：IR 宣告了這些函式、又沒有自己定義，就補上實作
+    // =====================================================================
+    const LIBC_DEPS = { __w: [], __alloc: [], puts: ['__w', 'strlen'], putchar: ['__w'], malloc: ['__alloc'], calloc: ['malloc', 'memset'], free: ['__alloc'], realloc: ['malloc', 'free', 'memcpy'], strlen: [], memcpy: [], memset: [], memcmp: [], strcmp: [], abs: [], exit: [], getchar: [] };
+    const LIBC_IR = {
+        __w: ['@__libc_nl = private constant [2 x i8] c"' + String.fromCharCode(92) + '0A' + String.fromCharCode(92) + '00"', '@__libc_ch = global [4 x i8] zeroinitializer', 'define void @__libc_write(ptr %p, i32 %n) {', 'entry:', '  %pi = ptrtoint ptr %p to i32', '  store i32 %pi, ptr @scratch', '  %lp = getelementptr i32, ptr @scratch, i32 1', '  store i32 %n, ptr %lp', '  %nw = getelementptr i32, ptr @scratch, i32 4', '  %iov = ptrtoint ptr @scratch to i32', '  %nwi = ptrtoint ptr %nw to i32', '  %r = call i32 @fd_write(i32 1, i32 %iov, i32 1, i32 %nwi)', '  ret void', '}'],
+        __alloc: ["@heap_ptr = global i32 0", "@__free_lists = global [32 x i32] zeroinitializer", "@__heap_base = external global i8", "declare i32 @llvm.wasm.memory.grow.i32(i32, i32)", "declare i32 @llvm.wasm.memory.size.i32(i32)", "define i32 @__bump(i32 %total) {", "entry:", "  %hp = load i32, ptr @heap_ptr", "  %uninit = icmp eq i32 %hp, 0", "  %hb = ptrtoint ptr @__heap_base to i32", "  %cur = select i1 %uninit, i32 %hb, i32 %hp", "  %c1 = add i32 %cur, 7", "  %p = and i32 %c1, -8", "  %q = add i32 %p, %total", "  %wrap = icmp ult i32 %q, %p", "  br i1 %wrap, label %oom, label %chk", "chk:", "  %pg = call i32 @llvm.wasm.memory.size.i32(i32 0)", "  %lim = mul i32 %pg, 65536", "  %over = icmp ugt i32 %q, %lim", "  br i1 %over, label %grow, label %ok", "grow:", "  %diff = sub i32 %q, %lim", "  %d1 = add i32 %diff, 65535", "  %need = lshr i32 %d1, 16", "  %r = call i32 @llvm.wasm.memory.grow.i32(i32 0, i32 %need)", "  %fail = icmp slt i32 %r, 0", "  br i1 %fail, label %oom, label %ok", "ok:", "  store i32 %q, ptr @heap_ptr", "  ret i32 %p", "oom:", "  ret i32 0", "}"],
+        malloc: ["define ptr @malloc(i32 %n) {", "entry:", "  %cap = alloca i32", "  %cls = alloca i32", "  %small = icmp ult i32 %n, 16", "  %m = select i1 %small, i32 16, i32 %n", "  store i32 16, ptr %cap", "  store i32 0, ptr %cls", "  br label %loop", "loop:", "  %cv = load i32, ptr %cap", "  %lt = icmp ult i32 %cv, %m", "  br i1 %lt, label %grow, label %found", "grow:", "  %kv = load i32, ptr %cls", "  %toobig = icmp uge i32 %kv, 27", "  br i1 %toobig, label %fail, label %dbl", "dbl:", "  %c2 = shl i32 %cv, 1", "  store i32 %c2, ptr %cap", "  %k2 = add i32 %kv, 1", "  store i32 %k2, ptr %cls", "  br label %loop", "found:", "  %capv = load i32, ptr %cap", "  %clsv = load i32, ptr %cls", "  %lp = getelementptr [32 x i32], ptr @__free_lists, i32 0, i32 %clsv", "  %head = load i32, ptr %lp", "  %has = icmp ne i32 %head, 0", "  br i1 %has, label %reuse, label %fresh", "reuse:", "  %hptr = inttoptr i32 %head to ptr", "  %next = load i32, ptr %hptr", "  store i32 %next, ptr %lp", "  ret ptr %hptr", "fresh:", "  %total = add i32 %capv, 8", "  %raw = call i32 @__bump(i32 %total)", "  %bad = icmp eq i32 %raw, 0", "  br i1 %bad, label %fail, label %okk", "okk:", "  %hdr = inttoptr i32 %raw to ptr", "  store i32 %clsv, ptr %hdr", "  %pay = add i32 %raw, 8", "  %pp = inttoptr i32 %pay to ptr", "  ret ptr %pp", "fail:", "  ret ptr null", "}"],
+        free: ["define void @free(ptr %p) {", "entry:", "  %isnull = icmp eq ptr %p, null", "  br i1 %isnull, label %done, label %do", "do:", "  %pi = ptrtoint ptr %p to i32", "  %hi = sub i32 %pi, 8", "  %hp = inttoptr i32 %hi to ptr", "  %cls = load i32, ptr %hp", "  %lp = getelementptr [32 x i32], ptr @__free_lists, i32 0, i32 %cls", "  %head = load i32, ptr %lp", "  store i32 %head, ptr %p", "  store i32 %pi, ptr %lp", "  br label %done", "done:", "  ret void", "}"],
+        calloc: ["define ptr @calloc(i32 %a, i32 %b) {", "entry:", "  %n = mul i32 %a, %b", "  %r = call ptr @malloc(i32 %n)", "  %isnull = icmp eq ptr %r, null", "  br i1 %isnull, label %done, label %zero", "zero:", "  %z = call ptr @memset(ptr %r, i32 0, i32 %n)", "  br label %done", "done:", "  ret ptr %r", "}"],
+        realloc: ["define ptr @realloc(ptr %p, i32 %n) {", "entry:", "  %isnull = icmp eq ptr %p, null", "  br i1 %isnull, label %alloc, label %have", "alloc:", "  %a = call ptr @malloc(i32 %n)", "  ret ptr %a", "have:", "  %pi = ptrtoint ptr %p to i32", "  %hi = sub i32 %pi, 8", "  %hp = inttoptr i32 %hi to ptr", "  %cls = load i32, ptr %hp", "  %cap = shl i32 16, %cls", "  %fits = icmp ule i32 %n, %cap", "  br i1 %fits, label %same, label %move", "same:", "  ret ptr %p", "move:", "  %np = call ptr @malloc(i32 %n)", "  %isn = icmp eq ptr %np, null", "  br i1 %isn, label %fail, label %copy", "copy:", "  %r = call ptr @memcpy(ptr %np, ptr %p, i32 %cap)", "  call void @free(ptr %p)", "  ret ptr %np", "fail:", "  ret ptr null", "}"],
+        strlen: ['define i32 @strlen(ptr %s) {', 'entry:', '  %i = alloca i32', '  store i32 0, ptr %i', '  br label %loop', 'loop:', '  %iv = load i32, ptr %i', '  %cp = getelementptr i8, ptr %s, i32 %iv', '  %c = load i8, ptr %cp', '  %z = icmp eq i8 %c, 0', '  br i1 %z, label %done, label %next', 'next:', '  %n = add i32 %iv, 1', '  store i32 %n, ptr %i', '  br label %loop', 'done:', '  ret i32 %iv', '}'],
+        puts: ['define i32 @puts(ptr %s) {', 'entry:', '  %n = call i32 @strlen(ptr %s)', '  call void @__libc_write(ptr %s, i32 %n)', '  call void @__libc_write(ptr @__libc_nl, i32 1)', '  ret i32 1', '}'],
+        putchar: ['define i32 @putchar(i32 %c) {', 'entry:', '  %b = trunc i32 %c to i8', '  store i8 %b, ptr @__libc_ch', '  call void @__libc_write(ptr @__libc_ch, i32 1)', '  ret i32 %c', '}'],
+        memcpy: ['define ptr @memcpy(ptr %d, ptr %s, i32 %n) {', 'entry:', '  %i = alloca i32', '  store i32 0, ptr %i', '  br label %loop', 'loop:', '  %iv = load i32, ptr %i', '  %c = icmp slt i32 %iv, %n', '  br i1 %c, label %body, label %done', 'body:', '  %sp = getelementptr i8, ptr %s, i32 %iv', '  %v = load i8, ptr %sp', '  %dp = getelementptr i8, ptr %d, i32 %iv', '  store i8 %v, ptr %dp', '  %n2 = add i32 %iv, 1', '  store i32 %n2, ptr %i', '  br label %loop', 'done:', '  ret ptr %d', '}'],
+        memset: ['define ptr @memset(ptr %d, i32 %v, i32 %n) {', 'entry:', '  %b = trunc i32 %v to i8', '  %i = alloca i32', '  store i32 0, ptr %i', '  br label %loop', 'loop:', '  %iv = load i32, ptr %i', '  %c = icmp slt i32 %iv, %n', '  br i1 %c, label %body, label %done', 'body:', '  %dp = getelementptr i8, ptr %d, i32 %iv', '  store i8 %b, ptr %dp', '  %n2 = add i32 %iv, 1', '  store i32 %n2, ptr %i', '  br label %loop', 'done:', '  ret ptr %d', '}'],
+        memcmp: ['define i32 @memcmp(ptr %a, ptr %b, i32 %n) {', 'entry:', '  %i = alloca i32', '  store i32 0, ptr %i', '  br label %loop', 'loop:', '  %iv = load i32, ptr %i', '  %c = icmp slt i32 %iv, %n', '  br i1 %c, label %body, label %same', 'body:', '  %ap = getelementptr i8, ptr %a, i32 %iv', '  %bp = getelementptr i8, ptr %b, i32 %iv', '  %x = load i8, ptr %ap', '  %y = load i8, ptr %bp', '  %xi = zext i8 %x to i32', '  %yi = zext i8 %y to i32', '  %ne = icmp ne i32 %xi, %yi', '  br i1 %ne, label %diff, label %next', 'next:', '  %n2 = add i32 %iv, 1', '  store i32 %n2, ptr %i', '  br label %loop', 'diff:', '  %d = sub i32 %xi, %yi', '  ret i32 %d', 'same:', '  ret i32 0', '}'],
+        strcmp: ['define i32 @strcmp(ptr %a, ptr %b) {', 'entry:', '  %i = alloca i32', '  store i32 0, ptr %i', '  br label %loop', 'loop:', '  %iv = load i32, ptr %i', '  %ap = getelementptr i8, ptr %a, i32 %iv', '  %bp = getelementptr i8, ptr %b, i32 %iv', '  %x = load i8, ptr %ap', '  %y = load i8, ptr %bp', '  %xi = zext i8 %x to i32', '  %yi = zext i8 %y to i32', '  %ne = icmp ne i32 %xi, %yi', '  br i1 %ne, label %diff, label %chk', 'chk:', '  %z = icmp eq i32 %xi, 0', '  br i1 %z, label %same, label %next', 'next:', '  %n2 = add i32 %iv, 1', '  store i32 %n2, ptr %i', '  br label %loop', 'diff:', '  %d = sub i32 %xi, %yi', '  ret i32 %d', 'same:', '  ret i32 0', '}'],
+        abs: ['define i32 @abs(i32 %x) {', 'entry:', '  %n = icmp slt i32 %x, 0', '  %m = sub i32 0, %x', '  %r = select i1 %n, i32 %m, i32 %x', '  ret i32 %r', '}'],
+        exit: ['define void @exit(i32 %c) {', 'entry:', '  call void @proc_exit(i32 %c)', '  unreachable', '}'],
+        getchar: ['define i32 @getchar() {', 'entry:', '  %sc = ptrtoint ptr @scratch to i32', '  %iovp = getelementptr i32, ptr @scratch, i32 4', '  %buf = getelementptr i8, ptr @scratch, i32 40', '  %bi = ptrtoint ptr %buf to i32', '  store i32 %bi, ptr %iovp', '  %lp = getelementptr i32, ptr @scratch, i32 5', '  store i32 1, ptr %lp', '  %iov = ptrtoint ptr %iovp to i32', '  %nrp = getelementptr i32, ptr @scratch, i32 6', '  %nri = ptrtoint ptr %nrp to i32', '  %r = call i32 @fd_read(i32 0, i32 %iov, i32 1, i32 %nri)', '  %n = load i32, ptr %nrp', '  %z = icmp eq i32 %n, 0', '  br i1 %z, label %eof, label %ok', 'ok:', '  %c = load i8, ptr %buf', '  %ci = zext i8 %c to i32', '  ret i32 %ci', 'eof:', '  ret i32 -1', '}']
+    };
+    const LIBC_NAMES = Object.keys(LIBC_IR).filter((k) => k !== '__w' && k !== '__alloc');
+    // 把「宣告了、但沒有定義」的 libc 函式補上實作（直接改 mod）。回傳補了哪些
+    function linkLibc(mod) {
+        const defined = new Set(mod.funcs.map((f) => f.name)); const want = new Set();
+        const add = (n) => { if (want.has(n) || defined.has(n) || !LIBC_IR[n]) return; want.add(n); (LIBC_DEPS[n] || []).forEach(add); };
+        for (const d of mod.declares) if (LIBC_NAMES.includes(d.name) && !defined.has(d.name)) add(d.name);
+        if (!want.size) return [];
+        const parts = ['@scratch = global [48 x i8] zeroinitializer'].filter((l) => !mod.globals.some((g) => g.name === l.slice(1, l.indexOf(' '))));
+        const needExit = want.has('exit'), needRead = want.has('getchar');
+        const have = new Set(mod.declares.map((d) => d.name));
+        if (!have.has('fd_write')) parts.push('declare i32 @fd_write(i32, i32, i32, i32)'); if (needExit && !have.has('proc_exit')) parts.push('declare void @proc_exit(i32)'); if (needRead && !have.has('fd_read')) parts.push('declare i32 @fd_read(i32, i32, i32, i32)');
+        for (const n of want) parts.push(LIBC_IR[n].join(String.fromCharCode(10)));
+        const extra = parse(parts.join(String.fromCharCode(10)));
+        if (extra.errors.length) throw new Error('內建 libc 解析失敗：' + extra.errors[0].msg);
+        mod.declares = mod.declares.filter((d) => !want.has(d.name)); const names = new Set(mod.declares.map((d) => d.name));
+        for (const d of extra.mod.declares) if (!names.has(d.name)) mod.declares.push(d);
+        for (const g of extra.mod.globals) if (!mod.globals.some((x) => x.name === g.name)) mod.globals.push(g);
+        for (const [k, v] of extra.mod.types) if (!mod.types.has(k)) mod.types.set(k, v);
+        for (const f of extra.mod.funcs) if (!mod.funcs.some((x) => x.name === f.name)) mod.funcs.push(f);
+        return [...want].filter((n) => n !== '__w' && n !== '__alloc');
+    }
+    // 給終端機指令用：IR 文字（或 wasm 位元組）→ 連結 libc → 檢查 → wasm。回傳 { wasm } 或 { errors }
+    function compileIr(text, opts) {
+        opts = opts || {}; const p = parse(text); if (p.errors.length) return { errors: p.errors, stage: 'parse' };
+        let linked = []; try { linked = linkLibc(p.mod); } catch (e) { return { errors: [{ line: 0, msg: e.message }], stage: 'link' }; }
+        const errs = check(p.mod); if (errs.length) return { errors: errs, stage: 'check' };
+        try { return { wasm: toWasm(p.mod, { fuel: opts.fuel, entry: opts.entry }), linked, stage: 'ok' }; } catch (e) { return { errors: [{ line: 0, msg: String((e && e.message) || e) }], stage: 'wasm' }; }
     }
 
     // =====================================================================
@@ -418,7 +511,7 @@
             const used = []; for (const s of u.steps) { const c = classes.find((x) => x.name === s.to); if (c && !used.includes(c)) used.push(c); }
             const f = ['define void @uc_' + ui + '() {', 'entry:', '  call void @rt_print(ptr ' + strRef('== ' + u.name + ' ==' + NL) + ')']; expected.push('== ' + u.name + ' ==');
             used.forEach((c, k) => {
-                const sz = Math.max(1, structSize(m, c, attrsOf, warn)); f.push('  %o' + k + ' = call ptr @rt_alloc(i32 ' + sz + ')');
+                const sz = Math.max(1, structSize(m, c, attrsOf, warn)); f.push('  %o' + k + ' = call ptr @malloc(i32 ' + sz + ')');
                 attrsOf(c).forEach((a, ai) => { const ty = llType(m, a.type); const v = a.name === 'id' && ty === 'i32' ? '1' : (ty === 'ptr' && a.type.base === 'str' ? strRef(a.name) : null); if (v !== null) f.push('  %f' + k + '_' + ai + ' = getelementptr %' + c.name + ', ptr %o' + k + ', i32 0, i32 ' + ai, '  store ' + ty + ' ' + v + ', ptr %f' + k + '_' + ai); });
             });
             u.steps.forEach((s, si) => {
@@ -431,8 +524,8 @@
         });
         const start = ['define void @_start() {', 'entry:'].concat(m.usecases.map((_, i) => '  call void @uc_' + i + '()'), ['  ret void', '}']).join(NL);
         L.push('; 由 UML 設計產生（模型 ' + (m.name || 'Model') + '）。目標：wasm32-wasi', '; 用 clang 編譯：clang --target=wasm32-wasi -nostdlib -Wl,--no-entry -Wl,--export=_start model.ll -o model.wasm', '; （也可以直接用附的 model.wasm，或用 node run.js 執行）', 'target datalayout = "e-m:e-p:32:32-p10:8:8-p20:8:8-i64:64-n32:64-S128-ni:1:10:20"', 'target triple = "wasm32-unknown-wasi"', '',
-            'declare i32 @fd_write(i32, i32, i32, i32) #0', 'attributes #0 = { "wasm-import-module"="wasi_snapshot_preview1" "wasm-import-name"="fd_write" }', '', '@heap_ptr = global i32 ' + STACK_TOP, '@scratch = global [48 x i8] zeroinitializer', '');
-        L.push(RUNTIME_IR, '');
+            'declare i32 @fd_write(i32, i32, i32, i32) #0', 'attributes #0 = { "wasm-import-module"="wasi_snapshot_preview1" "wasm-import-name"="fd_write" }', '', '@scratch = global [48 x i8] zeroinitializer', '');
+        L.push(LIBC_IR.__alloc.concat(LIBC_IR.malloc).join(NL), '', RUNTIME_IR, '');
         if (body.length) L.push(body.join(NL), '');
         const strDefs = [...strs.entries()].map(([s, e]) => '@.s' + e.id + ' = private constant [' + e.len + ' x i8] c"' + escBytes(s) + String.fromCharCode(92) + '00"'); if (strDefs.length) L.push(strDefs.join(NL), '');
         L.push(funcs.concat(ucs, [start]).join(NL + NL), '');
@@ -441,7 +534,6 @@
     function structSize(m, c, attrsOf, warn) { let off = 0, al = 1; for (const a of attrsOf(c)) { const t = llType(m, a.type, warn); const sz = t === 'double' ? 8 : 4; off = Math.ceil(off / sz) * sz + sz; al = Math.max(al, sz); } return Math.ceil(off / al) * al || 1; }
     // 固定的 runtime：記憶體配置、字串輸出、整數輸出（名字都加 rt_，避免跟 libc 撞名）
     const RUNTIME_IR = [
-        'define ptr @rt_alloc(i32 %n) {', 'entry:', '  %p = load i32, ptr @heap_ptr', '  %n8 = add i32 %n, 7', '  %n8b = and i32 %n8, -8', '  %q = add i32 %p, %n8b', '  store i32 %q, ptr @heap_ptr', '  %r = inttoptr i32 %p to ptr', '  ret ptr %r', '}', '',
         'define i32 @rt_strlen(ptr %s) {', 'entry:', '  %i = alloca i32', '  store i32 0, ptr %i', '  br label %loop', 'loop:', '  %iv = load i32, ptr %i', '  %cp = getelementptr i8, ptr %s, i32 %iv', '  %c = load i8, ptr %cp', '  %z = icmp eq i8 %c, 0', '  br i1 %z, label %done, label %next', 'next:', '  %n = add i32 %iv, 1', '  store i32 %n, ptr %i', '  br label %loop', 'done:', '  ret i32 %iv', '}', '',
         'define void @rt_print(ptr %s) {', 'entry:', '  %len = call i32 @rt_strlen(ptr %s)', '  %sp = ptrtoint ptr %s to i32', '  store i32 %sp, ptr @scratch', '  %lenp = getelementptr i32, ptr @scratch, i32 1', '  store i32 %len, ptr %lenp', '  %nw = getelementptr i32, ptr @scratch, i32 4', '  %iovi = ptrtoint ptr @scratch to i32', '  %nwi = ptrtoint ptr %nw to i32', '  %r = call i32 @fd_write(i32 1, i32 %iovi, i32 1, i32 %nwi)', '  ret void', '}', '',
         'define void @rt_print_int(i32 %v) {', 'entry:', '  %buf = alloca [16 x i8]', '  %pos = alloca i32', '  %n = alloca i32', '  store i32 15, ptr %pos', '  store i32 %v, ptr %n', '  %b0 = getelementptr [16 x i8], ptr %buf, i32 0, i32 15', '  store i8 0, ptr %b0', '  %neg = icmp slt i32 %v, 0', '  br i1 %neg, label %negate, label %digits', 'negate:', '  %nv = sub i32 0, %v', '  store i32 %nv, ptr %n', '  br label %digits', 'digits:', '  %cur = load i32, ptr %n', '  %d = srem i32 %cur, 10', '  %q = sdiv i32 %cur, 10', '  store i32 %q, ptr %n', '  %p = load i32, ptr %pos', '  %p1 = sub i32 %p, 1', '  store i32 %p1, ptr %pos', '  %dc = trunc i32 %d to i8', '  %ch = add i8 %dc, 48', '  %cp = getelementptr [16 x i8], ptr %buf, i32 0, i32 %p1', '  store i8 %ch, ptr %cp', '  %more = icmp ne i32 %q, 0', '  br i1 %more, label %digits, label %sign', 'sign:', '  br i1 %neg, label %minus, label %out', 'minus:', '  %p2 = load i32, ptr %pos', '  %p3 = sub i32 %p2, 1', '  store i32 %p3, ptr %pos', '  %mp = getelementptr [16 x i8], ptr %buf, i32 0, i32 %p3', '  store i8 45, ptr %mp', '  br label %out', 'out:', '  %pf = load i32, ptr %pos', '  %sp = getelementptr [16 x i8], ptr %buf, i32 0, i32 %pf', '  call void @rt_print(ptr %sp)', '  ret void', '}'
@@ -457,5 +549,5 @@
         return { ok: match, stage: match ? 'done' : 'verify', ir: g.ir, wasm, warnings: g.warnings, expected: g.expected, stdout: r.stdout, exitCode: r.exitCode, trap: r.trap, bytes: wasm.length };
     }
 
-    return { parse, check, toWasm, run, fromModel, build, parseType, typeStr, layout, DATA_BASE, STACK_TOP };
+    return { parse, check, toWasm, run, runSync, makeWasi, linkLibc, compileIr, LIBC_NAMES, WASI_NAMES: Object.keys(WASI), fromModel, build, parseType, typeStr, layout, DATA_BASE, STACK_TOP, RUNTIME_IR };
 });
