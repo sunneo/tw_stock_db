@@ -48,6 +48,7 @@ const suites = [
     ['排名模型訓練（邏輯迴歸、類別不平衡、留一組交叉驗證、特徵、模型排名）', 'renderer/src/catalog/rank_train.test.js'],
     ['MCP（設定檔各家寫法、bundle manifest、專案偵測、JSON-RPC 用戶端、stdio／Streamable HTTP／SSE 傳輸、結果格式）', 'renderer/src/mcp/mcp_core.test.js'],
     ['壓縮檔（檔頭辨識 zip／jar／7z／rar／tar／gzip／bzip2／xz／iso、bzip2 解碼、tar 的 pax／GNU 長檔名、內容判斷、jar 摘要）', 'renderer/src/archive/archive_core.test.js'],
+    ['計畫的分歧偵測（沒有分歧不問、分數接近／取捨／勉強合格／找不到、題數上限、套用回答、打字補充撿網址、摘要）', 'renderer/src/catalog/branch_core.test.js'],
     ['採用／退回的回饋累積（壓縮卡片、計畫轉標註、權重、覆蓋規則、轉成訓練資料、可不可以訓練、樣本權重）', 'renderer/src/catalog/feedback_core.test.js'],
     ['缺口驅動探索（缺口、搜尋關鍵字、候選排名、錯誤歸類與換做法、整個迴圈用假主機）', 'renderer/src/catalog/discover_core.test.js'],
     ['單元嵌入檢索（單元文字、向量打包與失效、餘弦排名、排名融合）', 'renderer/src/catalog/embed_core.test.js'],
