@@ -146,7 +146,22 @@ usecase Checkout: Customer -> Cart.add(book) -> Order.pay(total):bool
 
 **驗證（程式能判定的對錯）**：產生的程式執行後印出的軌跡，必須跟 UML 預期的呼叫順序（`== 使用案例 ==` 與每一步的 `類別#id.操作`）逐行一致；IR 先過自己的檢查器（定義前使用、型別一致、標籤存在、區塊有結尾、呼叫參數對得上…），錯誤指出行號。
 
+**記憶體（2026-10-18 更新）**：資料大小不設上限；版面是 [保留 0..1024) [資料] [影子堆疊（預設 1MB，往下長，溢位會說明）] [堆積]；`malloc`／`free`／`realloc`／`calloc` 是真的配置器（用 IR 寫的：依大小分級的空閒串列，`free` 會被重複使用；堆積不夠時用 `llvm.wasm.memory.grow.i32` 長大，要不到就回傳 null）。`@__heap_base` 跟 wasm-ld 一樣由後端提供。
+
+## 終端機與 AI 工具：lli／llc／llcheck／wasmrun、llvm_execute
+
+跟 bash／python 一樣是「環境裡的工具」：
+
+- 終端機指令（host 同步 builtin，登記在 `SANDBOX_COMMAND_REGISTRY`，見 `_runLlvmBuiltin`）：`lli [--fuel N] 檔.ll|檔.wasm|- [參數…]` 編成 wasm 並執行；`llc 檔.ll [-o 輸出.wasm|-] [-v]` 只編譯；`llcheck 檔.ll…` 只檢查；`wasmrun 檔.wasm [參數…]` 執行 wasm。可接管線與重新導向，結束碼會傳回 shell（超過步數＝124、trap＝134）。
+- AI 工具 `llvm_execute`（在 code_execution 領域，跟 python_execute 並列）：給 IR 文字，emit＝run／check／wasm。`sandbox_capabilities` 的 backends 有 llvm。
+- 內建的最小 libc（IR 宣告了就自動連結）：puts、putchar、getchar、malloc、calloc、realloc、free、strlen、memcpy、memset、memcmp、strcmp、abs、exit；printf 這類可變參數函式不支援。
+- WASI：fd_write、fd_read（標準輸入）、args_get／args_sizes_get、environ_get／environ_sizes_get、clock_time_get、random_get、proc_exit。
+- 無窮迴圈：預設有步數上限（每次區塊轉換扣一，預設一億次），用完會中止並說明；`--fuel 0` 不設上限。
+
 **已知限制**：
+
 1. 沒有用真的 LLVM（clang／llc／llvm-as）驗證過產生的 `.ll`——這台機器沒有裝，檢查器是自己寫的，可能接受 LLVM 會拒絕的東西，或相反。
-2. 記憶體配置只往前加（不釋放）；單一全域資料上限約 32KB。
+2. 終端機的指令必須同步：瀏覽器（Chrome）主執行緒只允許同步編譯 4KB 以下的 wasm——網頁版的 `lli` 遇到較大的程式會明講並請改用 `llvm_execute`（非同步，不受限）；桌面版（Electron）實測 34KB 沒問題。
 3. wasm 的 `i8`／`i1` 當 32 位元處理，有號比較要先 sext。
+4. 不支援 phi、例外、函式指標、可變參數、float（只有 double）。
+5. 既有問題（不是這次新增）：`bash_execute` 的腳本裡，heredoc 內容出現「反斜線加數字」（例如 IR 字串結尾的 `\00`）會讓整段腳本沒有輸出。寫 IR 檔請用 `input_files`（檔案會放在 /work/）或 `printf`。
