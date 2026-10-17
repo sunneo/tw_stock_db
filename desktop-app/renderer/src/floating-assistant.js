@@ -49126,6 +49126,7 @@ ${sourceTool.handlerScript}
             const time = document.createElement('span'); time.className = 'cl-time'; time.textContent = this._chatTimeText(c.updatedAt);
             if (cx && cx.unread) { const d = document.createElement('span'); d.className = 'cl-unread'; d.title = '有新內容'; el.appendChild(d); }
             el.appendChild(t); el.appendChild(time);
+            const more = document.createElement('span'); more.className = 'cl-more'; more.textContent = '⋯'; more.title = '更多（重新命名、匯出、移到群組、刪除）'; more.setAttribute('role', 'button'); more.setAttribute('aria-label', '更多'); el.appendChild(more);
             return el;
         };
         // 使用者要求清單順序不要再變：依「建立時間」排（新對話在最上面），不會因為點擊、傳訊息、AI回覆而跳動。
@@ -49138,6 +49139,7 @@ ${sourceTool.handlerScript}
             const name = document.createElement('span'); name.className = 'cl-title'; name.textContent = `📁 ${g.name}`; name.title = g.name;
             const count = document.createElement('span'); count.className = 'cl-count'; count.textContent = String(members.length);
             head.appendChild(arrow); head.appendChild(name); head.appendChild(count);
+            const gmore = document.createElement('span'); gmore.className = 'cl-more'; gmore.textContent = '⋯'; gmore.title = '更多（重新命名群組、刪除）'; gmore.setAttribute('role', 'button'); gmore.setAttribute('aria-label', '更多'); head.appendChild(gmore);
             list.appendChild(head);
             if (!g.collapsed) members.forEach((c) => list.appendChild(chatEl(c, true)));
         }
@@ -49210,10 +49212,11 @@ ${sourceTool.handlerScript}
         menu.style.left = `${Math.max(4, Math.min(x, window.innerWidth - w - 4))}px`;
         menu.style.top = `${Math.max(4, Math.min(y, window.innerHeight - h - 4))}px`;
         const close = () => { this._closeChatMenu(); };
-        this._chatMenuClose = () => { document.removeEventListener('mousedown', outside, true); document.removeEventListener('keydown', esc, true); window.removeEventListener('blur', close); };
-        const outside = (e) => { if (!menu.contains(e.target)) close(); };
+        this._chatMenuClose = () => { document.removeEventListener('mousedown', outside, true); document.removeEventListener('touchstart', outside, true); document.removeEventListener('keydown', esc, true); window.removeEventListener('blur', close); };
+        const openedAt = Date.now();
+        const outside = (e) => { if (Date.now() - openedAt < 400) return; if (!menu.contains(e.target)) close(); };
         const esc = (e) => { if (e.key === 'Escape') close(); };
-        document.addEventListener('mousedown', outside, true);
+        document.addEventListener('mousedown', outside, true); document.addEventListener('touchstart', outside, true);
         document.addEventListener('keydown', esc, true);
         window.addEventListener('blur', close);
     }
@@ -49269,6 +49272,9 @@ ${sourceTool.handlerScript}
         side.querySelector('[data-act="new"]').addEventListener('click', () => { if (this._rgCloseRemoteView) this._rgCloseRemoteView(); this._chatNew(null); });
         side.querySelector('[data-act="group"]').addEventListener('click', () => this._chatGroupCreate());
         list.addEventListener('click', (e) => {
+            if (this._chatLpAt && Date.now() - this._chatLpAt < 800) { e.preventDefault(); e.stopPropagation(); return; } // 長按剛開過選單：這一下 click 不算
+            const moreBtn = e.target.closest('.cl-more');
+            if (moreBtn) { e.preventDefault(); e.stopPropagation(); const host = moreBtn.closest('.cl-item, .cl-group'); const r = moreBtn.getBoundingClientRect(); this._onChatListContextMenu({ preventDefault() {}, target: host || moreBtn, clientX: Math.max(4, r.right - 190), clientY: r.bottom + 2 }); return; }
             if (e.target.closest('.cl-rename')) return;
             const arow = e.target.closest('[data-rg-actrow]'); if (arow) { this._rgFocusAct(arow.dataset.rgActrow); return; }
             const rch = e.target.closest('[data-rg-rchat]'); if (rch) { const v = rch.dataset.rgRchat, k = v.indexOf('|'); this._rgOpenRemoteChat(v.slice(0, k), v.slice(k + 1)); return; }
@@ -49285,7 +49291,20 @@ ${sourceTool.handlerScript}
             if (item) { const id = item.dataset.chatId; const en = this._chatEntry(id); this._chatInlineRename(`[data-chat-id="${id}"] .cl-title`, en ? en.title : '', (v) => this._chatRename(id, v)); }
             else if (head) { const gid = head.dataset.groupId; const g = this._chatIndex.groups.find((x) => x.id === gid); if (g) this._chatInlineRename(`[data-group-id="${gid}"] .cl-title`, g.name, (v) => { g.name = v; this._renderChatList(); this._saveChatIndex(); }); }
         });
-        list.addEventListener('contextmenu', (e) => this._onChatListContextMenu(e));
+        list.addEventListener('contextmenu', (e) => { if (this._chatLpAt && Date.now() - this._chatLpAt < 800) { e.preventDefault(); return; } this._onChatListContextMenu(e); }); // 長按已經自己開過選單時，瀏覽器接著送的 contextmenu 不再開第二次
+        // 觸控裝置沒有右鍵：長按（約 0.5 秒、手指沒移動）開同一份選單。iOS Safari 長按不會送 contextmenu，所以要自己做。
+        {
+            let lp = null; const LP_MS = 500, LP_MOVE = 10;
+            const clearLp = () => { if (lp && lp.timer) clearTimeout(lp.timer); lp = null; };
+            list.addEventListener('touchstart', (e) => {
+                if (e.touches.length !== 1 || e.target.closest('.cl-rename')) { clearLp(); return; }
+                const t = e.touches[0]; const target = e.target; clearLp();
+                lp = { x: t.clientX, y: t.clientY, target, timer: setTimeout(() => { if (!lp) return; const p = lp; lp = null; this._chatLpAt = Date.now(); try { if (navigator.vibrate) navigator.vibrate(15); } catch (_) { /* 沒有震動就算了 */ } this._onChatListContextMenu({ preventDefault() {}, target: p.target, clientX: p.x, clientY: p.y }); }, LP_MS) };
+            }, { passive: true });
+            list.addEventListener('touchmove', (e) => { if (!lp) return; const t = e.touches[0]; if (Math.abs(t.clientX - lp.x) > LP_MOVE || Math.abs(t.clientY - lp.y) > LP_MOVE) clearLp(); }, { passive: true });
+            list.addEventListener('touchend', (e) => { clearLp(); if (this._chatLpAt && Date.now() - this._chatLpAt < 800 && e.cancelable) e.preventDefault(); }, { passive: false }); // 長按後放開：擋掉瀏覽器補送的滑鼠事件，選單才不會被「點到外面」立刻關掉
+            list.addEventListener('touchcancel', clearLp, { passive: true });
+        }
         // 拖曳：把對話拖到群組標題上＝移進該群組；拖到空白處＝移出群組
         list.addEventListener('dragstart', (e) => {
             const item = e.target.closest('.cl-item');
@@ -49377,6 +49396,16 @@ ${sourceTool.handlerScript}
                 #ai-cl-menu .mi:hover { background: var(--cl-hover); }
                 #ai-cl-menu .mi.danger { color: #e5484d; }
                 #ai-cl-menu .sep { height: 1px; background: var(--cl-border); margin: 4px 0; }
+                #ai-chatlist .cl-more { flex: 0 0 auto; padding: 0 6px; border-radius: 5px; color: var(--cl-muted); cursor: pointer; line-height: 1.4; opacity: 0; user-select: none; -webkit-user-select: none; }
+                #ai-chatlist .cl-item:hover .cl-more, #ai-chatlist .cl-group:hover .cl-more, #ai-chatlist .cl-item.active .cl-more, #ai-chatlist .cl-more:focus { opacity: 1; }
+                #ai-chatlist .cl-more:hover { background: var(--cl-hover); color: var(--cl-text); }
+                #ai-chatlist .cl-item, #ai-chatlist .cl-group { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
+                @media (hover: none), (pointer: coarse) {
+                    #ai-chatlist .cl-more { opacity: 1; min-width: 32px; min-height: 32px; display: inline-flex; align-items: center; justify-content: center; font-size: 18px; }
+                    #ai-chatlist .cl-item, #ai-chatlist .cl-group { min-height: 44px; }
+                    #ai-cl-menu .mi { padding: 12px 14px; font-size: 15px; }
+                    #ai-cl-menu { min-width: 220px; max-height: 80vh; overflow-y: auto; }
+                }
             `;
             document.head.appendChild(style);
         }
