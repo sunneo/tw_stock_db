@@ -30928,12 +30928,12 @@ ${fnData.code}
             { type: 'object', properties: { scenario: { type: 'string', description: '情境（使用者故事、需求文字）' }, language: { type: 'string', enum: ['python', 'typescript', 'java'], default: 'python' }, package: { type: 'string' }, constraints: { type: 'object', description: '（選填）已經決定的抉擇，卡片會用它當預設值' } }, required: ['scenario'], additionalProperties: false }
         );
         registerOptional('uml_design',
-            '用「這台電腦上的離線小模型」把情境一步一步設計成 UML 再產生程式骨架：程式把設計拆成封閉的小問題（參與者與使用案例 → 類別 → 每個類別的屬性與操作 → 關係 → 呼叫順序），模型一次只回答一個、每個回覆都被驗證，之後只重做有問題的那一區（top-down rework），再用 design_choices 的規則選架構與 library。比較強的線上 AI 不需要這個：自己寫 UML 文字直接呼叫 uml_to_code 更快更準。需要先下載離線文字模型（第一次會問）。',
+            '用「這台電腦上的離線小模型」把情境一步一步設計成 UML 再產生程式骨架：程式把設計拆成封閉的小問題（參與者與使用案例 → 類別 → 每個類別的屬性與操作 → 關係 → 呼叫順序），模型一次只回答一個、每個回覆都被驗證，之後只重做有問題的那一區（top-down rework），再用 design_choices 的規則選架構與 library。比較強的線上 AI 不需要這個：自己寫 UML 文字直接呼叫 uml_to_code 更快更準。預設用離線文字模型（第一次要下載，會先問）；model 可以指定 offline／online——online 只會用「在模型列按過 CoLU、UML 拆解題結果是可以自己拆或一次一小題」的線上模型，沒有就會說明；不指定時，線上模型證明自己拆得好就用它，否則用離線的。回傳的 model_used 說明這次用了哪個。',
             async function (rawArgs) {
                 let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 try { return JSON.stringify(await this._umlDesign(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
             },
-            { type: 'object', properties: { scenario: { type: 'string', description: '情境（使用者故事、需求文字）' }, language: { type: 'string', enum: ['python', 'typescript', 'java'], default: 'python' }, package: { type: 'string' }, constraints: { type: 'object', description: '（選填）指定抉擇' } }, required: ['scenario'], additionalProperties: false }
+            { type: 'object', properties: { scenario: { type: 'string', description: '情境（使用者故事、需求文字）' }, language: { type: 'string', enum: ['python', 'typescript', 'java'], default: 'python' }, package: { type: 'string' }, constraints: { type: 'object', description: '（選填）指定抉擇' }, model: { type: 'string', enum: ['offline', 'online'], description: '（選填）用離線小模型或線上模型；不指定就自動選' } }, required: ['scenario'], additionalProperties: false }
         );
         // domain-gated 工具（registerOptional）：不出現在根層級的工具清單（不佔每一輪的 context），一般 AI 要用時透過 delegate_to_subagent 進 file_analysis／media_av domain 才看得到；離線訓練器規則與 /media-image-to-pdf 則直接呼叫。
         registerOptional('images_to_pdf',
@@ -64494,7 +64494,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const regionOf = () => (kind === 'class' ? 'class:' + name0 : (kind === 'op' ? 'class:' + className : (kind === 'usecase' ? 'usecase:' + name0 : (kind === 'package' ? 'package:' + name0 : 'system'))));
         if (msg.action === 'download-zip') { const z = await this._umlZip(s.proj.files, s.model.name, s.lang); const res = this._umlResult(s.model, s.lang, s.proj, z); await this._deliverToolResultFile(res, 'zip_file_id', (r) => '📎 設計檢視器的專案：' + r.filename + '（' + r.fileCount + ' 個檔案）'); return { type: 'note', note: '已產生下載附件：' + z.filename }; }
         if (msg.action === 'add-usecase') { const r = FaDesign.addUsecaseFromText(s.model, String((msg.args && msg.args.text) || ''), this.advancedSettings.umlGlossary || {}); FaRecipe.decide(trace, { stage: 'viewer_add_usecase', answer: r.ok ? r.added : r.error, by: 'program' }); this._recipeSaveTrace(trace); if (!r.ok) return { type: 'note', note: r.error }; this._umlSessionBuild(s); return { type: 'bundle', bundle: s.bundle, note: '已新增 ' + r.added + ' 個使用案例（程式依詞彙表與動作表展開）。' }; }
-        const M = await this._planModel({}); const err = await M.ensure(); if (err) return { type: 'note', note: '離線文字模型不能用：' + err };
+        const M = await this._umlModel(); if (M.error) return { type: 'note', note: M.error };
         let r; if (msg.action === 'rework-system') r = await FaDesign.reworkRegion(s.model, s.scenario, 'system', { generate: M.gen }); else if (msg.action === 'rework-region') r = await FaDesign.reworkRegion(s.model, s.scenario, regionOf(), { generate: M.gen }); else if (msg.action === 'add-members') r = await FaDesign.addMembers(s.model, s.scenario, className, { generate: M.gen }); else return { type: 'note', note: '不認得的動作：' + msg.action };
         FaRecipe.decide(trace, { stage: 'viewer_' + msg.action, region: regionOf(), answer: r.ok ? 'ok' : r.error, by: 'model', log: r.log || r.rejected }); this._recipeSaveTrace(trace);
         if (!r.ok) return { type: 'note', note: '沒有改動：' + (r.error || '失敗') }; const errs = FaUml.validateModel(s.model); this._umlSessionBuild(s);
@@ -64656,13 +64656,32 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (this.advancedSettings.umlViewerAutoOpen !== false && typeof document !== 'undefined') { try { this._umlViewerOpen(sess); res.viewer = '已開啟設計檢視器'; } catch (_) {} }
         await this._umlLearnBack(scenario, r.dsl, r.design, r.warnings, sess.bundle); return res;
     }
+    // UML 拆解用哪個模型：離線小模型（預設）或線上模型。線上的只用「做過 UML 拆解題、建議自己拆（self）或一次一小題（stepwise）」的模型列；
+    // 自動（auto）：線上模型證明自己拆得好（self）就用它；否則離線可用就離線；離線不能用、線上有 stepwise 的才用線上。回傳 { gen, ensure, label, online } 或 { error }
+    _umlOnlineRow() {
+        const rows = this._getModelRows().filter((r) => r.coluProfile && r.coluProfile.uml && ['self', 'stepwise'].includes(r.coluProfile.uml.advice)); if (!rows.length) return null;
+        const rank = { self: 0, stepwise: 1 }; rows.sort((x, y) => rank[x.coluProfile.uml.advice] - rank[y.coluProfile.uml.advice] || y.coluProfile.testedAt - x.coluProfile.testedAt); return rows[0];
+    }
+    async _umlModel(pref) {
+        const p = (pref === 'online' || pref === 'offline') ? pref : 'auto'; const row = this._umlOnlineRow();
+        const online = () => { const cfg = this._resolveModelRowConfig(row); return { online: true, label: '線上模型 ' + cfg.apiModel, advice: row.coluProfile.uml.advice, model: { id: 'online:' + cfg.apiModel }, ensure: async () => undefined,
+            gen: async (req) => { if (this.stopRequested) throw new Error('使用者停止'); const call = await this._coluBenchCall(cfg, { messages: req.messages, maxTokens: Math.max(1024, (req && req.maxTokens) || 0) }); if (!call.http_ok) throw new Error(call.error || '呼叫失敗'); return call.content; } }; };
+        if (p === 'online') return row ? online() : { error: '沒有做過「UML 拆解題」、而且建議自己拆或一次一小題的線上模型。先在模型列按「CoLU」跑一次，或改用 model:"offline"。' };
+        const off = await this._planModel({}); const err = await off.ensure();
+        if (p === 'offline') return err ? { error: '離線文字模型不能用：' + err } : Object.assign(off, { label: '離線模型' });
+        if (row && row.coluProfile.uml.advice === 'self') return online();
+        if (!err) return Object.assign(off, { label: '離線模型' });
+        if (row) return online();
+        return { error: '離線文字模型不能用：' + err + '；也沒有做過 UML 拆解題、適合的線上模型（先在模型列按「CoLU」）' };
+    }
     async _umlDesign(a) {
         const scenario = String(a.scenario || '').trim(); if (!scenario) return { ok: false, error: '缺少 scenario' }; const lang = ['python', 'typescript', 'java'].includes(a.language) ? a.language : 'python';
-        const M = await this._planModel({}); const err = await M.ensure(); if (err) return { ok: false, error: '離線文字模型不能用：' + err };
-        const prog = this._createProgressWidget('情境→UML→程式骨架（離線模型）'); const r = await FaDesign.designProject(scenario, { generate: M.gen, language: lang, package: a.package, constraints: a.constraints, prefs: this.advancedSettings.designPrefs || {}, glossary: this.advancedSettings.umlGlossary || {}, userGlue: this.advancedSettings.userGlue || [], experience: this.advancedSettings.glueExperience || {}, onStage: (e) => { if (e.type === 'stage') prog.log('✔ ' + e.stage + (e.label ? '：' + e.label : '') + (e.ok ? '' : '（模型沒給出合格回覆，用保守預設）')); } });
+        const M = await this._umlModel(a.model); if (M.error) return { ok: false, error: M.error };
+        const prog = this._createProgressWidget('情境→UML→程式骨架（' + M.label + '）'); const r = await FaDesign.designProject(scenario, { generate: M.gen, language: lang, package: a.package, constraints: a.constraints, prefs: this.advancedSettings.designPrefs || {}, glossary: this.advancedSettings.umlGlossary || {}, userGlue: this.advancedSettings.userGlue || [], experience: this.advancedSettings.glueExperience || {}, onStage: (e) => { if (e.type === 'stage') prog.log('✔ ' + e.stage + (e.label ? '：' + e.label : '') + (e.ok ? '' : '（模型沒給出合格回覆，用保守預設）')); } });
         if (!r.ok) { prog.fail(r.error); return { ok: false, error: r.error, warnings: r.warnings }; }
         const sess = await this._umlStartSession(r.model, lang, a.package, scenario, r.design); const z = await this._umlZip(sess.proj.files, r.model.name || 'design', lang); prog.finish('完成：' + sess.proj.files.length + ' 個檔案');
         const res = this._umlResult(r.model, lang, { files: sess.proj.files, design: r.design }, z, { uml: r.dsl, seededFrom: r.seedUsed, rework: r.rework.rounds.map((x) => x.issues.length + ' 個問題'), warnings: r.warnings.slice(0, 8) });
+        res.model_used = M.label;
         await this._deliverToolResultFile(res, 'zip_file_id', (x) => '📎 已產生 ' + lang + ' 程式骨架（' + x.fileCount + ' 個檔案，含 viewer.html 設計檢視器）：' + x.filename);
         if (this.advancedSettings.umlViewerAutoOpen !== false && typeof document !== 'undefined') { try { this._umlViewerOpen(sess); res.viewer = '已開啟設計檢視器'; } catch (_) {} }
         await this._umlLearnBack(scenario, r.dsl, r.design, r.warnings, sess.bundle); return res;
