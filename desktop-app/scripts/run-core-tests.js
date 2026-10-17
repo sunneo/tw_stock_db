@@ -48,6 +48,7 @@ const suites = [
     ['排名模型訓練（邏輯迴歸、類別不平衡、留一組交叉驗證、特徵、模型排名）', 'renderer/src/catalog/rank_train.test.js'],
     ['MCP（設定檔各家寫法、bundle manifest、專案偵測、JSON-RPC 用戶端、stdio／Streamable HTTP／SSE 傳輸、結果格式）', 'renderer/src/mcp/mcp_core.test.js'],
     ['壓縮檔（檔頭辨識 zip／jar／7z／rar／tar／gzip／bzip2／xz／iso、bzip2 解碼、tar 的 pax／GNU 長檔名、內容判斷、jar 摘要）', 'renderer/src/archive/archive_core.test.js'],
+    ['UML 拆解題（真的拆解流程＋假模型：完美、亂答、靠退回重來、連線失敗、空白；評分同義詞與中文關鍵字；建議 self／stepwise／program_first／unknown）', 'renderer/src/uml/uml_bench_core.test.js'],
     ['探索時的反思（錯字：英文編輯距離／中文同音近形字、不認得的字、概念再找、可能是新的需求、整份計畫反思：問使用者／統一走建議／上限）', 'renderer/src/catalog/reflect_core.test.js'],
     ['CoLU 的 ReLU 形式（relu／sat／max2、可達性逐位元等於位元版、ReLU 層疊網路、最佳接線分數等於 findPipelines、矩陣連乘後端一致性檢查）', 'renderer/src/catalog/relu_core.test.js'],
     ['CoLU 接線題（出題、評分、退化偵測、假模型跑整套、建議 self／guided／auto／unknown、使用時的提示）', 'renderer/src/catalog/colu_bench_core.test.js'],
