@@ -12799,15 +12799,16 @@ const holder = {};
     }
     // 把使用者的回答套回計畫（會直接改 plan）。answer：{kind:'choice',index} | {kind:'supplement',text} | {kind:'cancel'}
     // 回傳這一題的決定紀錄 { gap, kind, decision: 'picked'|'default'|'skipped'|'supplement', name?, url?, explicit, text?, urls? }
-    function apply(plan, q, answer) {
-        plan.decisions = plan.decisions || []; const rec = { gap: q.gap, kind: q.kind, decision: 'default', explicit: false };
+    function apply(plan, q, answer, flags) {
+        const auto = !!(flags && flags.auto); // auto＝使用者設定了『不要再問，統一走建議』，不是他這次明確選的
+        plan.decisions = plan.decisions || []; const rec = { gap: q.gap, kind: q.kind, decision: 'default', explicit: false, auto };
         const idx = plan.candidates.findIndex((x) => x.gap === q.gap); const cur = idx >= 0 ? plan.candidates[idx] : null;
         if (answer && answer.kind === 'supplement') {
             rec.decision = 'supplement'; rec.explicit = true; rec.text = String(answer.text || '').slice(0, 500); rec.urls = urlsIn(answer.text);
             plan.user_notes = (plan.user_notes || []).concat([{ gap: q.gap, text: rec.text, urls: rec.urls }]);
             if (rec.urls.length) plan.user_urls = Array.from(new Set((plan.user_urls || []).concat(rec.urls)));
         } else if (answer && answer.kind === 'choice') {
-            const opt = q.options[answer.index]; rec.explicit = true;
+            const opt = q.options[answer.index]; rec.explicit = !auto;
             if (!opt) { rec.explicit = false; }
             else if (opt.skip) { rec.decision = 'skipped'; if (cur) { plan.candidates.splice(idx, 1); plan.unresolved = (plan.unresolved || []).concat([{ gap: q.gap, reason: '使用者選擇略過' }]); } }
             else { rec.decision = 'picked'; rec.name = opt.name; rec.url = opt.url; if (cur && opt.url && opt.url !== cur.url) { const alt = (cur.alternatives || []).find((a) => a.url === opt.url); if (alt) { const old = { name: cur.name, url: cur.url, score: cur.score, why: cur.why, summary: cur.summary, card: cur.card, features: cur.features }; const next = fromAlt(cur, alt); next.alternatives = [old].concat((cur.alternatives || []).filter((a) => a !== alt)); plan.candidates[idx] = next; } } }
@@ -12816,12 +12817,19 @@ const holder = {};
     }
     // 給人看的一小段：問了什麼、用了哪些預設
     function summarize(plan, det) {
-        const L = []; for (const d of plan.decisions || []) L.push('・' + d.gap + '：' + ({ picked: '你選了「' + d.name + '」', skipped: '你選擇略過', supplement: '你補充了：' + String(d.text || '').slice(0, 60), default: '沒有選，用推薦的' }[d.decision] || d.decision));
+        const L = []; for (const d of plan.decisions || []) L.push('・' + d.gap + '：' + (d.auto ? ({ picked: '依建議用「' + d.name + '」', skipped: '依建議略過', default: '依建議' }[d.decision] || '依建議') : ({ picked: '你選了「' + d.name + '」', skipped: '你選擇略過', supplement: '你補充了：' + String(d.text || '').slice(0, 60), default: '沒有選，用推薦的' }[d.decision] || d.decision)));
         if (det && det.deferred && det.deferred.length) L.push('另外 ' + det.deferred.length + ' 個地方也有分歧，為了不一次問太多，先用推薦的：' + det.deferred.map((q) => q.gap).join('、'));
         if (det && det.quiet) L.push(det.quiet + ' 個需求只有一條合理路線，直接用推薦的。');
         return L.join('\n');
     }
-    return { DEFAULTS, detect, apply, summarize, urlsIn, fromAlt };
+    // 使用者說「不要再問」「統一走建議」之類（只認短句，免得長指令裡剛好出現這幾個字被誤判）；說「可以再問我」就是恢復。回傳 'recommended' | 'ask' | null
+    function askModeIntent(text) {
+        const t = String(text || '').trim(); if (!t || t.length > 40) return null;
+        if (/(可以|開始|恢復|重新|繼續)(再)?(問我|詢問|提問)|恢復(詢問|提問)|(問我|讓我)(的)?(意見|決定|選)/.test(t)) return 'ask';
+        if (/(不要|別|不用|不必|無須|毋須|停止)再?(問|詢問|提問)|別問了|(都|統一|一律|全部|通通|直接)(照|用|走|按|選)(你)?(的)?(建議|推薦)|(stop|do not|dont) ask/i.test(t)) return 'recommended';
+        return null;
+    }
+    return { DEFAULTS, detect, apply, summarize, urlsIn, fromAlt, askModeIntent };
 });
 
 }).call(null, undefined, holder);
@@ -26337,6 +26345,9 @@ class FloatingAssistant {
         this.register_slash_command('/mcp', '[list|start|stop|restart|tools|remove] [名稱]',
             '列出或管理已安裝的 MCP 伺服器（狀態、啟動、停止、重新啟動、看工具、移除）。安裝請用 /mcp-install。',
             (argsText, run) => (run || this)._mcpSlash(argsText));
+        this.register_slash_command('/ask-mode', '[ask|recommended]',
+            '計畫有分歧時要不要問你：ask＝問（預設）、recommended＝不再問、統一走建議的。不帶參數看目前的設定。',
+            (argsText, run) => { const r = run || this; const a = String(argsText || '').trim().toLowerCase(); if (a === 'ask' || a === 'recommended') { r._setBranchAskMode(a); r._pushAssistantMessage(a === 'ask' ? '好，計畫有分歧的地方會問你。' : '好，之後遇到計畫分歧就直接照建議的做，不再問你。', null); } else { r._pushAssistantMessage('目前：' + (r._branchAskRecommended() ? 'recommended（不再問，統一走建議的）' : 'ask（有分歧才問）') + '。用 /ask-mode ask 或 /ask-mode recommended 切換。', null); } try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ } });
         this.register_slash_command('/view', '[檔名]',
             '在對話裡開啟檔案檢視器：xlsx（工作表頁籤、AI 的回答變成另一張工作表）、csv、tsv、json、yaml、toml。先附上檔案再下 /view，或 /view 檔名；不帶參數開最近上傳、可以檢視的檔案。可搜尋、匯出（xlsx／csv／sqlite3…）、問 AI。',
             (argsText, run) => (run || this)._viewSlash(argsText));
@@ -27430,6 +27441,7 @@ class FloatingAssistant {
             // 不論這個設定都一律要先問，見_faBuildCodingSystemPrompt的步驟7）。
             codingDomainEnabled: true,
             codingPublishMode: 'ask',
+            branchAskMode: 'ask', // 計畫分歧時：ask＝問使用者（預設）；recommended＝使用者說過「不要再問」，統一走建議的（/ask-mode 可切換）
             // tw_stock_db客製: 2026-09-26使用者要求——台灣節慶套版（Configure > LLM基礎設定），預設開啟。
             festivalThemeEnabled: true,
             // tw_stock_db客製: 2026-09-16——bash_execute/python_execute要抓的
@@ -28673,6 +28685,7 @@ class FloatingAssistant {
             })(),
             codingDomainEnabled: raw.codingDomainEnabled !== false,
             codingPublishMode: raw.codingPublishMode === 'auto' ? 'auto' : 'ask',
+            branchAskMode: raw.branchAskMode === 'recommended' ? 'recommended' : 'ask',
             festivalThemeEnabled: raw.festivalThemeEnabled !== false,
             assetBackupProxyUrl: String(raw.assetBackupProxyUrl || '').trim(),
             whisperWasmThreads: (() => {
@@ -30404,6 +30417,7 @@ ${fnData.code}
                 let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const spec = a.spec && typeof a.spec === 'object' ? a.spec : a; const r = await this.askCard(spec);
                 if (!r.ok) return JSON.stringify({ ok: false, error: r.error, hint: '修正規格後再呼叫一次' });
+                if (r.useRecommended) return JSON.stringify({ ok: true, confirmed: false, skipped: true, use_defaults: true, answers_so_far: r.flat, note: '使用者說之後都不要再問、統一用建議的：這題不用他回答，請用你認為最合理的預設做，並在回覆裡簡短說你用了什麼；之後同類的分歧也直接用建議的，不要再用這個工具問。' });
                 if (r.supplement) return JSON.stringify({ ok: true, confirmed: false, skipped: true, status: r.status, supplement: r.supplement, answers_so_far: r.flat, note: '使用者沒有用卡片作答，改成直接打字回答（內容在 supplement，也已顯示在對話裡）。請把它當成使用者對這個問題的回答與補充條件，照它調整做法；不要當成使用者取消，也不要把同一題再問一次。' });
                 return JSON.stringify({ ok: true, confirmed: r.confirmed, status: r.status, answers: r.flat, summary: r.summary, steps: r.steps });
             },
@@ -44447,8 +44461,30 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     // 卡片（askCard）一律接受；表單（requestUserForm）只有呼叫端明確帶 allowSupplement:true 才接受——
     // 執行程式、安裝、刪除這類「要使用者同意」的表單，打字絕不能被當成同意。
     // 回傳 true＝這段文字已經交給等待中的問題，呼叫端不要再送出一次。
+    _branchAskRecommended() { return (this.advancedSettings && this.advancedSettings.branchAskMode) === 'recommended'; }
+    _setBranchAskMode(mode) { if (!this.advancedSettings) return; this.advancedSettings.branchAskMode = mode === 'recommended' ? 'recommended' : 'ask'; try { this._saveAdvancedSettings(); } catch (_) { /* 存不了這次還是有效 */ } }
+    // 使用者單獨說一句「不要再問」「統一走建議」：記住這個偏好，並說明怎麼恢復。回傳 true＝這句話已處理完，不要再送給模型
+    _handleAskModeIntent(text) {
+        const intent = FaCatalogBranch.askModeIntent(text); if (!intent) return false;
+        if (intent === 'ask' && !this._branchAskRecommended()) return false; // 本來就會問，這句話是別的意思
+        this._setBranchAskMode(intent); this._pushHumanOnlyUserNote(String(text).trim());
+        this._pushAssistantMessage(intent === 'recommended' ? '好，之後遇到計畫分歧我就直接照建議的做，不再問你；每次用了哪些建議的，會在計畫裡註明。想恢復詢問，輸入 /ask-mode ask。' : '好，之後計畫有分歧的地方會再問你。', null);
+        try { this._persistChatHistory(); this._renderMessageHistory(); } catch (_) { /* */ }
+        return true;
+    }
     _tryFeedPendingAsk(text) {
         const t = String(text || '').trim(); if (!t || t.startsWith('/')) return false;
+        if (FaCatalogBranch.askModeIntent(t) === 'recommended') { // 在等答案時說「不要再問」：這題也用建議的
+            const pendingCard = this.messages.slice().reverse().find((m) => m && m._card && this._cardWaitersMap().get(m) && m._card.state.status === 'open');
+            const pf = this._ctx && this._ctx.pendingForm; const formOk = pf && pf.options && pf.options.allowSupplement && Array.isArray(pf.options.choices) && pf.options.choices.length;
+            if (pendingCard || formOk) {
+                this._setBranchAskMode('recommended');
+                if (pendingCard) { const w = this._cardWaitersMap().get(pendingCard); const r = Object.assign(this._cardResult(pendingCard), { confirmed: false, status: 'skipped', useRecommended: true }); try { FaCard.cancel(pendingCard._card.state); } catch (_) { /* */ } this._cardWaitersMap().delete(pendingCard); this._pushHumanOnlyUserNote(t); this._persistChatHistory(); this._renderMessageHistory(); try { w(r); } catch (_) { /* */ } }
+                else { try { pf.container.remove(); } catch (_) { /* */ } this._ctx.pendingForm = null; this._pushHumanOnlyUserNote(t); this._persistChatHistory(); this._renderMessageHistory(); pf.resolve({ confirmed: true, answer: null, skipped: true, useRecommended: true }); }
+                this._pushAssistantMessage('好，這題用建議的，之後遇到分歧也直接照建議的做，不再問你。想恢復詢問，輸入 /ask-mode ask。', null);
+                return true;
+            }
+        }
         for (let i = this.messages.length - 1; i >= 0; i--) {
             const m = this.messages[i]; if (!m || !m._card) continue;
             const w = this._cardWaitersMap().get(m); if (!w || m._card.state.status !== 'open') continue;
@@ -44478,11 +44514,14 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     async askBranchChoice({ title, description, options, recommended = 0, cancelLabel = '先不要' }) {
         const opts = (options || []).map((o) => String(o && o.label != null ? o.label : o)).filter(Boolean); if (!opts.length) return { kind: 'cancel' };
         const rec = Math.max(0, Math.min(opts.length - 1, Number(recommended) || 0));
+        if (this._branchAskRecommended()) return { kind: 'choice', answer: opts[rec], index: rec, auto: true }; // 使用者說過不要再問：統一走建議的
         const labels = opts.map((l, i) => (i === rec ? l + '（建議）' : l)); const order = [rec].concat(labels.map((_, i) => i).filter((i) => i !== rec));
-        const choices = order.map((i) => labels[i]).concat(cancelLabel ? [cancelLabel] : []);
+        const neverLabel = '之後都照建議的，不要再問'; const choices = order.map((i) => labels[i]).concat([neverLabel]).concat(cancelLabel ? [cancelLabel] : []);
         const ans = await this.requestUserForm({ title: title || '🧭 要怎麼做？', description: description || '', choices, allowSupplement: true });
         if (!ans || !ans.confirmed) return { kind: 'cancel' };
+        if (ans.useRecommended) return { kind: 'choice', answer: opts[rec], index: rec, auto: true };
         if (ans.skipped && ans.supplement) return { kind: 'supplement', text: ans.supplement };
+        if (ans.answer === neverLabel) { this._setBranchAskMode('recommended'); return { kind: 'choice', answer: opts[rec], index: rec, auto: true }; }
         const k = choices.indexOf(ans.answer); if (k < 0 || (cancelLabel && k === choices.length - 1)) return { kind: 'cancel' };
         return { kind: 'choice', answer: opts[order[k]], index: order[k] };
     }
@@ -62344,15 +62383,20 @@ ${existingNodeSummaries}
     async _unitCatalogAskBranches(plan, a) {
         const B = FaCatalogBranch; const det = B.detect(plan, { maxQuestions: Math.max(1, Math.min(6, Number(a && a.max_questions) || B.DEFAULTS.maxQuestions)) });
         plan.branch = { asked: det.questions.length, deferred: det.deferred.map((q) => q.gap), quiet: det.quiet };
-        for (const q of det.questions) {
+        for (let qi = 0; qi < det.questions.length; qi++) {
+            const q = det.questions[qi];
             const ans = await this.askBranchChoice({ title: q.title, description: q.description, options: q.options, recommended: q.recommended, cancelLabel: '照推薦的做' });
+            if (ans.auto) { // 使用者設定了不要再問（含這題才剛按的）：這題與後面的題目都直接用建議的，不算他明確選的，不記標註
+                for (const rest of det.questions.slice(qi).concat(det.deferred)) B.apply(plan, rest, { kind: 'choice', index: rest.recommended }, { auto: true });
+                det.deferred = []; break;
+            }
             const opt = ans.kind === 'choice' ? q.options[ans.index] : null;
             if (opt && opt.skip && q.kind === 'weak_pick') { try { await this._unitCatalogFeedback({ verdict: 'reject', gap: q.gap, plan_id: plan.plan_id, reason: '使用者略過勉強合格的推薦' }); } catch (_) { /* 記不了不影響計畫 */ } }
             const rec = B.apply(plan, q, ans);
             if (rec.decision === 'picked' && rec.url && rec.explicit) { try { await this._unitCatalogFeedback({ verdict: 'adopt', gap: q.gap, plan_id: plan.plan_id, url: rec.url }); } catch (_) { /* 同上 */ } }
             if (rec.decision === 'supplement' && rec.urls && rec.urls.length) { plan.references = (plan.references || []).concat(rec.urls.map((u) => ({ gap: q.gap, kind: 'user', name: '使用者提供', url: u, summary: rec.text.slice(0, 80) }))); }
         }
-        plan.branch_text = B.summarize(plan, det);
+        plan.branch_text = B.summarize(plan, det) + ((plan.decisions || []).some((d) => d.auto) ? '\n（你設定了「不要再問，統一走建議」，輸入 /ask-mode ask 可以恢復詢問。）' : '');
     }
     async _unitCatalogDiscoverReply(args, argsText) {
         const sub = args[0]; const rest = String(argsText || '').replace(/^\s*\w+\s*/, '').trim();
@@ -64660,7 +64704,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             this._renderPendingAttachments();
         }
 
-        if (this._tryFeedPendingAsk(textToSend)) return; // 有選擇題在等：這段話是對它的補充，不是插話也不是新的一輪
+        if (this._tryFeedPendingAsk(textToSend)) return; // 有選擇題在等
+        if (!hasAttachments && this._handleAskModeIntent(textToSend)) return; // 單獨一句「不要再問」「統一走建議」：記成偏好，不送給模型
+        //：這段話是對它的補充，不是插話也不是新的一輪
         if (this.isResponding) {
             this._setRespondingState(true, '⏳ AI 回應中（Steering 已加入）');
         }

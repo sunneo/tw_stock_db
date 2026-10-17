@@ -59,15 +59,16 @@
     }
     // 把使用者的回答套回計畫（會直接改 plan）。answer：{kind:'choice',index} | {kind:'supplement',text} | {kind:'cancel'}
     // 回傳這一題的決定紀錄 { gap, kind, decision: 'picked'|'default'|'skipped'|'supplement', name?, url?, explicit, text?, urls? }
-    function apply(plan, q, answer) {
-        plan.decisions = plan.decisions || []; const rec = { gap: q.gap, kind: q.kind, decision: 'default', explicit: false };
+    function apply(plan, q, answer, flags) {
+        const auto = !!(flags && flags.auto); // auto＝使用者設定了『不要再問，統一走建議』，不是他這次明確選的
+        plan.decisions = plan.decisions || []; const rec = { gap: q.gap, kind: q.kind, decision: 'default', explicit: false, auto };
         const idx = plan.candidates.findIndex((x) => x.gap === q.gap); const cur = idx >= 0 ? plan.candidates[idx] : null;
         if (answer && answer.kind === 'supplement') {
             rec.decision = 'supplement'; rec.explicit = true; rec.text = String(answer.text || '').slice(0, 500); rec.urls = urlsIn(answer.text);
             plan.user_notes = (plan.user_notes || []).concat([{ gap: q.gap, text: rec.text, urls: rec.urls }]);
             if (rec.urls.length) plan.user_urls = Array.from(new Set((plan.user_urls || []).concat(rec.urls)));
         } else if (answer && answer.kind === 'choice') {
-            const opt = q.options[answer.index]; rec.explicit = true;
+            const opt = q.options[answer.index]; rec.explicit = !auto;
             if (!opt) { rec.explicit = false; }
             else if (opt.skip) { rec.decision = 'skipped'; if (cur) { plan.candidates.splice(idx, 1); plan.unresolved = (plan.unresolved || []).concat([{ gap: q.gap, reason: '使用者選擇略過' }]); } }
             else { rec.decision = 'picked'; rec.name = opt.name; rec.url = opt.url; if (cur && opt.url && opt.url !== cur.url) { const alt = (cur.alternatives || []).find((a) => a.url === opt.url); if (alt) { const old = { name: cur.name, url: cur.url, score: cur.score, why: cur.why, summary: cur.summary, card: cur.card, features: cur.features }; const next = fromAlt(cur, alt); next.alternatives = [old].concat((cur.alternatives || []).filter((a) => a !== alt)); plan.candidates[idx] = next; } } }
@@ -76,10 +77,17 @@
     }
     // 給人看的一小段：問了什麼、用了哪些預設
     function summarize(plan, det) {
-        const L = []; for (const d of plan.decisions || []) L.push('・' + d.gap + '：' + ({ picked: '你選了「' + d.name + '」', skipped: '你選擇略過', supplement: '你補充了：' + String(d.text || '').slice(0, 60), default: '沒有選，用推薦的' }[d.decision] || d.decision));
+        const L = []; for (const d of plan.decisions || []) L.push('・' + d.gap + '：' + (d.auto ? ({ picked: '依建議用「' + d.name + '」', skipped: '依建議略過', default: '依建議' }[d.decision] || '依建議') : ({ picked: '你選了「' + d.name + '」', skipped: '你選擇略過', supplement: '你補充了：' + String(d.text || '').slice(0, 60), default: '沒有選，用推薦的' }[d.decision] || d.decision)));
         if (det && det.deferred && det.deferred.length) L.push('另外 ' + det.deferred.length + ' 個地方也有分歧，為了不一次問太多，先用推薦的：' + det.deferred.map((q) => q.gap).join('、'));
         if (det && det.quiet) L.push(det.quiet + ' 個需求只有一條合理路線，直接用推薦的。');
         return L.join('\n');
     }
-    return { DEFAULTS, detect, apply, summarize, urlsIn, fromAlt };
+    // 使用者說「不要再問」「統一走建議」之類（只認短句，免得長指令裡剛好出現這幾個字被誤判）；說「可以再問我」就是恢復。回傳 'recommended' | 'ask' | null
+    function askModeIntent(text) {
+        const t = String(text || '').trim(); if (!t || t.length > 40) return null;
+        if (/(可以|開始|恢復|重新|繼續)(再)?(問我|詢問|提問)|恢復(詢問|提問)|(問我|讓我)(的)?(意見|決定|選)/.test(t)) return 'ask';
+        if (/(不要|別|不用|不必|無須|毋須|停止)再?(問|詢問|提問)|別問了|(都|統一|一律|全部|通通|直接)(照|用|走|按|選)(你)?(的)?(建議|推薦)|(stop|do not|dont) ask/i.test(t)) return 'recommended';
+        return null;
+    }
+    return { DEFAULTS, detect, apply, summarize, urlsIn, fromAlt, askModeIntent };
 });

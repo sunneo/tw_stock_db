@@ -64,6 +64,20 @@ check('網址撿取：最多 5 個、去重', B.urlsIn(Array.from({ length: 9 },
 rec = B.apply(p, q, { kind: 'choice', index: 99 });
 check('不存在的選項：當成預設', rec.decision === 'default' && !rec.explicit, rec);
 
+
+// ---- 不要再問：意圖辨識與自動套用 ----
+const yes = ['不要再問了', '別問了', '不用再問我', '都照你的建議', '統一走建議', '一律用推薦的', '直接用建議的', 'stop asking', '以後不要再詢問我'];
+const no = ['幫我做一個網站，不要再問一堆問題之後才開始，要用 vue 還有 typescript 並且加上測試', '問題在哪', '建議你先看日誌', '', '這個函式怎麼用'];
+check('不要再問：認得這些說法', yes.every((t) => B.askModeIntent(t) === 'recommended'), yes.filter((t) => B.askModeIntent(t) !== 'recommended'));
+check('不要再問：長指令與無關的話不誤判', no.every((t) => B.askModeIntent(t) === null), no.filter((t) => B.askModeIntent(t) !== null));
+check('恢復詢問：認得', ['可以再問我', '恢復詢問', '開始問我', '讓我決定'].every((t) => B.askModeIntent(t) === 'ask'));
+p = plan([cand('need/0', 'cloud', 0.7, [['local', 0.6]], { needs: ['api_key'], card: card({ needs: ['api_key'] }) }), cand('need/1', 'meh', 0.38, [])], [{ gap: 'need/9', reason: 'x' }]);
+d = B.detect(p); const all = d.questions.concat(d.deferred);
+for (const qq of all) B.apply(p, qq, { kind: 'choice', index: qq.recommended }, { auto: true });
+check('自動套用：全部依建議、都不算明確選擇', p.decisions.length === 3 && p.decisions.every((x) => x.auto && !x.explicit), p.decisions);
+check('自動套用：取捨換成不需要金鑰的、勉強合格照用、找不到略過', p.candidates.find((c) => c.gap === 'need/0').name === 'local' && p.candidates.some((c) => c.gap === 'need/1') && p.decisions.find((x) => x.gap === 'need/9').decision === 'skipped', p.decisions.map((x) => x.decision));
+check('自動套用：摘要寫「依建議」', /依建議用「local」/.test(B.summarize(p, d)) && /依建議略過/.test(B.summarize(p, d)), B.summarize(p, d));
+
 // ---- 摘要 ----
 p = plan([cand('need/0', 'a', 0.62, [['b', 0.6]]), cand('need/1', 'z', 0.9, [])]); d = B.detect(p); B.apply(p, d.questions[0], { kind: 'choice', index: 1 });
 const s = B.summarize(p, d);
