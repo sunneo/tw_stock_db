@@ -13821,6 +13821,129 @@ const holder = {};
 return holder.FaRoute;
 })();
 /* ROUTE-END */
+/* SKILLC-BEGIN */
+const FaSkillC = (function () {
+const holder = {};
+(function (module, self) {
+/* 技能→食譜編譯器（FaSkillC）：讀一份技能（SKILL.md／persona prompt，內建的或匯入的），解讀成「可重複執行的食譜」。
+ *
+ * CoLU 的形狀：程式讀、程式綁、程式檢查；模型只在歧義時從封閉選單挑；對不上的不猜，列成「缺口」交給 UML design（缺的能力）。
+ *   extract：從文字抽出  ① 觸發詞（技能名稱、description 的關鍵詞）② 步驟（編號清單／Step N／「WORKFLOW」底下的項目）③ 每一步提到的工具（只認工具表裡真的有的名稱）④ 提到的腳本。
+ *   compile：每個有工具的步驟 → 食譜的 tool 步驟；工具的欄位依「名稱＋型別」綁到手上有的東西（附件、網址、使用者的話、使用者說的選項）；
+ *            綁不到的必填欄位、沒有對應工具的步驟、只提到腳本的步驟 → gaps（每個缺口附一句給 uml_design 的情境、以及搜尋到的相近現有工具）。
+ *   最後一個 tool 步驟標成 final（由呼叫端執行）；有缺口的食譜是 draft（不自動使用），沒有缺口的是 compiled。
+ * 純函式（UMD）；沒有任何模型呼叫（歧義用 pick 注入：封閉選擇題，沒有就用程式的第一名）。
+ */
+(function (root, factory) {
+    const R = (typeof FaRecipe !== 'undefined' && FaRecipe) || (root && root.FaRecipe) || (typeof require === 'function' ? require('./recipe_core.js') : null);
+    if (typeof module === 'object' && module.exports) module.exports = factory(R);
+    else root.FaSkillC = factory(R);
+})(typeof self !== 'undefined' ? self : this, function (R) {
+    'use strict';
+
+    const STOP = new Set('the and for with that this from into your you are will when then use used using not any all can its has have but also only each per via should must may one two'.split(' '));
+    const MAX_STEPS = (R && R.MAX_STEPS) || 12;
+
+    function stripFrontmatter(text) {
+        const m = /^---\s*\n([\s\S]*?)\n---\s*\n?/.exec(String(text || '')); if (!m) return { meta: {}, body: String(text || '') };
+        const meta = {}; for (const ln of m[1].split('\n')) { const k = /^([A-Za-z_-]+)\s*:\s*(.*)$/.exec(ln); if (k) meta[k[1].toLowerCase()] = k[2].replace(/^["']|["']$/g, '').trim(); }
+        return { meta, body: String(text).slice(m[0].length) };
+    }
+    // 觸發詞：技能名稱的字、description 裡的關鍵詞（英文取 4 字母以上的非停用字；中文取 2～4 字的詞）
+    function triggerWords(name, description) {
+        const out = []; const add = (w) => { w = String(w).trim(); if (w && !out.includes(w) && out.length < 14) out.push(w); };
+        String(name || '').split(/[-_\s]+/).filter((w) => w.length >= 3 && !STOP.has(w.toLowerCase())).forEach(add);
+        const d = String(description || '');
+        (d.match(/[A-Za-z]{4,}/g) || []).filter((w) => !STOP.has(w.toLowerCase())).slice(0, 8).forEach((w) => add(w.toLowerCase()));
+        (d.match(/[一-鿿]{2,4}/g) || []).slice(0, 8).forEach(add);
+        return out;
+    }
+    function escRe(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+    // 步驟：編號清單（1. / 1) / Step 1 / 步驟 1）；沒有編號就用「列點」；每項是一句話
+    function steps(body) {
+        const lines = String(body || '').replace(/\r/g, '').split('\n'); const out = [];
+        let cur = null; const push = () => { if (cur && cur.text.trim()) out.push({ n: out.length + 1, text: cur.text.replace(/\s+/g, ' ').trim() }); cur = null; };
+        for (const ln of lines) {
+            const m = /^\s{0,3}(?:(\d{1,2})[.)、]\s+(.*)|(?:Step|步驟)\s*(\d{1,2})\s*[:：.、)]?\s*(.*))$/i.exec(ln);
+            if (m) { push(); cur = { text: (m[2] != null ? m[2] : m[4]) || '' }; continue; }
+            if (cur && /^\s{2,}\S/.test(ln)) { cur.text += ' ' + ln.trim(); continue; } // 縮排的接續行
+            if (cur && /^\s*$/.test(ln)) { push(); continue; }
+            if (cur && /^\s*#/.test(ln)) { push(); continue; }
+        }
+        push();
+        if (out.length) return out;
+        for (const ln of lines) { const b = /^\s{0,3}[-*•]\s+(.{12,})$/.exec(ln); if (b) out.push({ n: out.length + 1, text: b[1].replace(/\s+/g, ' ').trim() }); }
+        return out;
+    }
+    function mentionedTools(text, toolNames) {
+        const out = []; const t = String(text || '');
+        for (const n of toolNames || []) { if (n.length < 4) continue; const re = new RegExp('(^|[^A-Za-z0-9_])' + escRe(n) + '(?![A-Za-z0-9_])'); const m = re.exec(t); if (m) out.push({ name: n, at: m.index + m[1].length }); }
+        return out.sort((a, b) => a.at - b.at).map((x) => x.name);
+    }
+    function scriptsIn(text) { return Array.from(new Set((String(text || '').match(/(?:scripts?|bin)\/[\w./-]+\.(?:py|js|sh|ts)/g) || []))); }
+
+    function extract(text, opts) {
+        opts = opts || {}; const fm = stripFrontmatter(text); const name = opts.name || fm.meta.name || ''; const description = opts.description || fm.meta.description || '';
+        const st = steps(fm.body).map((s) => Object.assign({}, s, { tools: mentionedTools(s.text, opts.toolNames), scripts: scriptsIn(s.text) }));
+        return { name, description, triggers: triggerWords(name, description), steps: st, tools: mentionedTools(fm.body, opts.toolNames), scripts: scriptsIn(fm.body) };
+    }
+
+    // 欄位綁定：名稱＋型別 → 手上有的東西。回傳 { value }（要放進食譜 args 的 {{…}} 字串或常數）或 null（綁不到）
+    function bindSlot(def, kindsAvail) {
+        const n = String(def.name || '').toLowerCase(); const has = (k) => kindsAvail.indexOf(k) >= 0;
+        if (/(^|_)(file_?id|image|img|picture|photo|video|audio|pdf|document|file)(_?id)?$/.test(n) || /file_?id/.test(n)) return def.type === 'array' ? { value: '{{slots.attachment_ids}}', kind: 'attachment' } : { value: '{{slots.attachments.0.id}}', kind: 'attachment' };
+        if (/(^|_)(urls?|link|page_?url|website)$/.test(n)) return { value: '{{slots.url}}', kind: 'url' };
+        if (/(^|_)(query|q|keyword|keywords|search)$/.test(n)) return { value: '{{slots.query}}', kind: 'usertext' };
+        if (/(^|_)(text|content|prompt|question|task|message|body|instruction|goal|topic|need|scenario|input)$/.test(n)) return { value: '{{slots.task}}', kind: 'usertext' };
+        if (/(^|_)(voice)$/.test(n)) return { value: '{{slots.voice}}', kind: 'option' };
+        if (/(^|_)(speed|rate)$/.test(n)) return { value: '{{slots.speed}}', kind: 'option' };
+        if (/(^|_)(lang|language)$/.test(n)) return { value: '{{slots.lang}}', kind: 'option' };
+        if (def.default !== undefined) return { value: def.default, kind: 'default' };
+        return null;
+    }
+    // 工具欄位的型別提示：file／url／文字 → 這個步驟需要什麼種類的材料（用在食譜的 needs）
+    function needKind(def) { const n = String(def.name || '').toLowerCase(); if (/image|img|picture|photo/.test(n)) return 'image'; if (/video/.test(n)) return 'video'; if (/audio/.test(n)) return 'audio'; if (/pdf/.test(n)) return 'pdf'; if (/file|document/.test(n)) return 'doc'; if (/url|link|website/.test(n)) return 'url'; return ''; }
+
+    // 編譯：info＝extract 的結果；toolDefs＝{ 工具名: { parametersSchema, description } }；search(text)→[{name,score}]（找相近的現有工具）；opts.id/skill/builtinId
+    function compile(info, toolDefs, opts) {
+        opts = opts || {}; const search = opts.search || (() => []); const recipeSteps = []; const gaps = []; const needs = new Set(); let n = 0;
+        const used = new Set(); let prevId = '';
+        for (const s of info.steps) {
+            if (recipeSteps.length >= MAX_STEPS - 1) { gaps.push({ step: s.n, text: s.text.slice(0, 160), why: '步驟太多（食譜最多 ' + MAX_STEPS + ' 步）', scenario: s.text }); continue; }
+            if (s.tools.length) {
+                // 一句話裡提到好幾個工具：照出現順序各一步（同一個工具重複出現只算一次）
+                for (const tn of s.tools) {
+                    if (used.has(tn)) continue; const def = toolDefs[tn]; if (!def) { gaps.push({ step: s.n, text: s.text.slice(0, 160), why: '提到的工具「' + tn + '」目前沒有', scenario: s.text }); continue; }
+                    const slots = R.slotsFromSchema(def.parametersSchema || {}); const args = {}; const missing = [];
+                    const flow = /transcript|result|output|words|summary|content|text of|逐字|結果|內容|摘要|讀到/i.test(s.text);
+                    for (const d of slots) { const b = (prevId && flow && /(^|_)(text|content|body|input|prompt)$/.test(d.name)) ? { value: '{{vars.' + prevId + '.text}}', kind: 'flow' } : bindSlot(d, []); if (b) { args[d.name] = b.value; const nk = needKind(d); if (nk && b.kind === 'attachment') needs.add(nk); if (b.kind === 'url') needs.add('url'); } else if (d.required) missing.push(d.name); }
+                    if (missing.length) { gaps.push({ step: s.n, tool: tn, text: s.text.slice(0, 160), why: '工具「' + tn + '」的必填欄位綁不到手上的東西：' + missing.join('、'), scenario: s.text, missing }); continue; }
+                    used.add(tn); n++; prevId = 's' + n; recipeSteps.push({ id: 's' + n, type: 'tool', name: tn, args, note: s.text.slice(0, 120) });
+                }
+            } else if (s.scripts.length) {
+                gaps.push({ step: s.n, text: s.text.slice(0, 160), why: '這一步要執行腳本（' + s.scripts.join('、') + '），食譜不直接跑腳本', scenario: s.text, scripts: s.scripts, similar: search(s.text).slice(0, 2) });
+            } else if (/^(?:read|check|open|call|run|use|get|fetch|write|create|generate|build|make|convert|extract|parse|search|find|send|post|讀|查|開|呼叫|執行|使用|取得|寫|建立|產生|轉換|抽出|解析|搜尋|找|寄|發)/i.test(s.text)) {
+                const sim = search(s.text).slice(0, 3); gaps.push({ step: s.n, text: s.text.slice(0, 160), why: '這一步沒有指名工具', scenario: s.text, similar: sim });
+            }
+        }
+        if (!recipeSteps.length) return { ok: false, error: '這份技能沒有對得上現有工具的步驟', gaps, recipe: null };
+        recipeSteps[recipeSteps.length - 1].final = true;
+        const trig = (info.triggers || []).map(escRe).join('|');
+        const recipe = { id: String(opts.id || 'r_' + String(info.name || 'skill').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')).slice(0, 30).replace(/^([^a-z])/, 'r$1'), skill: info.name || opts.skill || '', builtinId: opts.builtinId, label: String(info.description || info.name || '').slice(0, 120),
+            needs: Array.from(needs), triggers: trig ? [trig] : [], steps: recipeSteps, status: gaps.length ? 'draft' : 'compiled', gaps, compiledAt: Date.now() };
+        const errs = R.validateRecipe({ id: recipe.id, steps: recipeSteps.map((s) => ({ id: s.id, type: s.type, name: s.name, args: s.args })) }); if (errs.length) return { ok: false, error: '編出來的食譜不合法：' + errs.join('；'), gaps, recipe };
+        return { ok: true, recipe, gaps };
+    }
+    // 缺口 → 給 uml_design 的情境（一段話）：把「這一步要做什麼」連同這份技能的目的交給它
+    function gapScenario(info, gap) { return (info.description ? info.description + '\n' : '') + '這份技能的一個步驟需要新的能力：' + gap.scenario; }
+
+    return { stripFrontmatter, triggerWords, steps, mentionedTools, scriptsIn, extract, bindSlot, needKind, compile, gapScenario };
+});
+
+}).call(null, undefined, holder);
+return holder.FaSkillC;
+})();
+/* SKILLC-END */
 /* BCPLAN-BEGIN */
 const FaBcPlan = (function () {
 const holder = {};
@@ -29999,7 +30122,7 @@ class FloatingAssistant {
         this.domains.designed_tools = {
             enabled: true,
             label: '設計出來的工具（runtime：UML design → 登記成工具，進 CoLU／食譜）',
-            toolNames: () => ['register_designed_tool', 'list_designed_tools', 'remove_designed_tool'].concat((this.advancedSettings.designedTools || []).filter((t) => t.enabled).map((t) => t.name)),
+            toolNames: () => ['register_designed_tool', 'list_designed_tools', 'remove_designed_tool', 'skill_compile'].concat((this.advancedSettings.designedTools || []).filter((t) => t.enabled).map((t) => t.name)),
             systemPrompt: '你負責管理「runtime 設計出來的工具」。流程：先用 uml_design 把需求設計成 UML、再用程式實現；實現好的函式用 register_designed_tool 登記成工具（名稱、說明、參數結構、處理程式），登記後它就跟內建工具一樣可以被呼叫、被食譜與 CoLU 挑到。list_designed_tools 看現有的、remove_designed_tool 刪除。處理程式是一段 JavaScript（可以用 await，參數在 args，回傳值就是工具結果）。',
         };
         // tw_stock_db客製: 2026-09-13使用者要求——host頁面（例如piano-web未來
@@ -33584,6 +33707,15 @@ ${fnData.code}
                 try { return JSON.stringify(this._designedRegister(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
             },
             { type: 'object', properties: { name: { type: 'string' }, description: { type: 'string' }, parameters: { type: 'object', description: 'JSON Schema' }, handler: { type: 'string', description: 'JavaScript 處理程式本體（args 是參數物件）' }, uml: { type: 'string', description: '設計用的 UML（文字 DSL）' }, scenario: { type: 'string' }, enabled: { type: 'boolean' } }, required: ['name', 'description', 'handler'] }
+        );
+        registerOptional('skill_compile',
+            '把技能（內建的或匯入的 SKILL）讀成「食譜」：程式讀 SKILL.md 抽出步驟與用到的工具、依欄位名稱與型別綁到手上有的東西（附件、網址、使用者的話、聲音／語速／語言），編成可重複執行的食譜；最後一步交給呼叫端執行。' +
+            '對不上的步驟（沒指名工具、工具不存在、要跑腳本、必填欄位綁不到）不猜，列成「缺口」，附相近的現有工具或給 uml_design 的情境——缺的能力用 uml_design 設計、register_designed_tool 登記後再編一次。有缺口的是草稿（不會自動使用）。skill＝技能名稱（省略＝全部啟用中的技能）；save＝true 才存下來。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try { return JSON.stringify(await this._skillCompile(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+            },
+            { type: 'object', properties: { skill: { type: 'string', description: '技能名稱（省略＝全部）' }, save: { type: 'boolean', description: 'true＝存成食譜（草稿或已編好）' } } }
         );
         registerOptional('list_designed_tools',
             '列出 runtime 設計出來的工具（名稱、說明、參數、是否啟用、執行次數、最近的錯誤）。',
@@ -64196,6 +64328,8 @@ _result
             else if (act === 'remove') { if (confirm('刪除設計出來的工具「' + name + '」？')) this._designedRemove(name); }
             else if (act === 'run') { const inp = root.querySelector('[data-dt-args="' + name + '"]'); const out = root.querySelector('[data-dt-out="' + name + '"]'); if (out) out.textContent = '執行中…'; const r = await this._designedRun(name, inp ? inp.value || '{}' : '{}'); if (out) out.textContent = String(r).slice(0, 2000); this._designedRenderPane(true); }
             else if (act === 'view' && t) { const box = root.querySelector('[data-dt-view="' + name + '"]'); if (box) box.style.display = box.style.display === 'none' ? 'block' : 'none'; }
+            else if (act === 'rc-toggle') { const r = (this.advancedSettings.skillRecipes || []).find((x) => x.id === name); if (r) { r.enabled = r.enabled === false; this._saveAdvancedSettings(); this._designedRenderPane(); } }
+            else if (act === 'rc-remove') { this.advancedSettings.skillRecipes = (this.advancedSettings.skillRecipes || []).filter((x) => x.id !== name); this._saveAdvancedSettings(); this._designedRenderPane(); }
             else if (act === 'export') { const blob = new Blob([JSON.stringify({ format: 'fa-designed-tools', tools: this.advancedSettings.designedTools || [] }, null, 2)], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'designed-tools.json'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); }
             else if (act === 'import') { const f = document.createElement('input'); f.type = 'file'; f.accept = '.json'; f.onchange = async () => { try { const j = JSON.parse(await f.files[0].text()); let n = 0, bad = []; for (const x of (j.tools || [])) { const r = this._designedRegister({ name: x.name, description: x.description, parameters: x.parametersSchema, handler: x.handlerScript, uml: x.uml, scenario: x.scenario, enabled: x.enabled }); if (r.ok) n++; else bad.push(x.name + '：' + r.error); } alert('匯入 ' + n + ' 個' + (bad.length ? '；失敗：\n' + bad.join('\n') : '')); } catch (e) { alert('匯入失敗：' + e.message); } }; f.click(); }
         });
@@ -64204,6 +64338,8 @@ _result
         const root = this._designedPaneRoot; if (!root) return; const esc = (x) => this._escapeHtml(String(x == null ? '' : x)); const list = this.advancedSettings.designedTools || [];
         const btn = 'padding:3px 10px; border-radius:6px; border:1px solid #475569; background:#1e293b; color:#e2e8f0; cursor:pointer; font-size:12px;';
         const keep = {}; if (keepOut) root.querySelectorAll('[data-dt-out]').forEach((e) => { keep[e.dataset.dtOut] = e.textContent; });
+        const recs = (this.advancedSettings.skillRecipes || []);
+        const recHtml = '<h4 style="margin:14px 0 4px;">技能食譜（技能→食譜）</h4><p style="color:#94a3b8;">內建技能的食譜在程式裡（media-presentation：圖片讀字做簡報、文章整理做簡報）；匯入的技能用 skill_compile 編。有缺口的是草稿，不會自動使用。</p>' + (recs.length ? recs.map((r) => '<div style="border:1px solid #334155; border-radius:8px; padding:8px; margin:6px 0;"><b>' + esc(r.skill || r.id) + '</b> <span style="color:' + (r.status === 'compiled' ? '#22c55e' : '#f59e0b') + ';">' + esc(r.status) + '</span>' + (r.enabled === false ? ' <span style="color:#94a3b8;">（停用）</span>' : '') + '<div style="color:#94a3b8;">' + esc((r.steps || []).map((s) => s.name || s.fn).join(' → ')) + '</div>' + ((r.gaps || []).length ? '<div style="color:#f59e0b;">缺口 ' + r.gaps.length + ' 個：' + esc(r.gaps.map((g) => g.why).join('；').slice(0, 300)) + '</div>' : '') + '<button style="' + btn + '" data-dt="rc-toggle" data-name="' + esc(r.id) + '">' + (r.enabled === false ? '啟用' : '停用') + '</button> <button style="' + btn + '" data-dt="rc-remove" data-name="' + esc(r.id) + '">刪除</button></div>').join('') : '<p style="color:#94a3b8;">還沒有編過的食譜。對 AI 說「把技能 xxx 編成食譜（skill_compile，save）」。</p>');
         root.innerHTML = '<p style="color:#94a3b8;">用 uml_design 設計、再用程式實現的功能，登記成工具後會出現在這裡。登記後它跟內建工具一樣：食譜（CoLU 選擇題＋程式填欄位）挑得到、工具反思搜尋得到、離線模式下也能被橋接呼叫。AI 用 register_designed_tool 登記、list_designed_tools 查看、remove_designed_tool 刪除。</p>'
             + '<div style="margin:6px 0;"><button style="' + btn + '" data-dt="export">匯出</button> <button style="' + btn + '" data-dt="import">匯入</button> <span style="color:#94a3b8;">共 ' + list.length + ' 個</span></div>'
             + (list.length ? list.map((t) => '<div style="border:1px solid #334155; border-radius:8px; padding:8px; margin:8px 0;">'
@@ -64213,7 +64349,34 @@ _result
                 + '<div style="margin-top:4px;"><button style="' + btn + '" data-dt="toggle" data-name="' + esc(t.name) + '">' + (t.enabled ? '停用' : '啟用') + '</button> <button style="' + btn + '" data-dt="view" data-name="' + esc(t.name) + '">UML／程式</button> <button style="' + btn + '" data-dt="remove" data-name="' + esc(t.name) + '">刪除</button></div>'
                 + '<div style="margin-top:4px;"><input data-dt-args="' + esc(t.name) + '" placeholder=\'試跑的參數（JSON），例如 {"x":1}\' style="width:60%; background:#0f172a; color:#e2e8f0; border:1px solid #475569; border-radius:6px; padding:3px 6px;"> <button style="' + btn + '" data-dt="run" data-name="' + esc(t.name) + '">試跑</button></div>'
                 + '<pre data-dt-out="' + esc(t.name) + '" style="white-space:pre-wrap; color:#94a3b8; margin:4px 0 0;">' + esc(keep[t.name] || '') + '</pre>'
-                + '<div data-dt-view="' + esc(t.name) + '" style="display:none; margin-top:4px;"><div style="color:#94a3b8;">情境：' + esc(t.scenario || '（沒有）') + '</div><pre style="white-space:pre-wrap; background:#0f172a; padding:6px; border-radius:6px;">' + esc(t.uml || '（沒有 UML）') + '</pre><pre style="white-space:pre-wrap; background:#0f172a; padding:6px; border-radius:6px;">' + esc(t.handlerScript) + '</pre></div></div>').join('') : '<p style="color:#94a3b8;">還沒有。</p>');
+                + '<div data-dt-view="' + esc(t.name) + '" style="display:none; margin-top:4px;"><div style="color:#94a3b8;">情境：' + esc(t.scenario || '（沒有）') + '</div><pre style="white-space:pre-wrap; background:#0f172a; padding:6px; border-radius:6px;">' + esc(t.uml || '（沒有 UML）') + '</pre><pre style="white-space:pre-wrap; background:#0f172a; padding:6px; border-radius:6px;">' + esc(t.handlerScript) + '</pre></div></div>').join('') : '<p style="color:#94a3b8;">還沒有。</p>') + recHtml;
+    }
+    // ===== 技能→食譜：把一份技能（內建或匯入）讀成食譜（FaSkillC）；對不上的缺口交給 UML design =====
+    async _skillBundleText(b) {
+        let t = String(b.personaPrompt || '');
+        try { for (const f of (b.files || []).filter((x) => /(^|\/)SKILL\.md$/i.test(x.path)).slice(0, 1)) { const rec = await this.skillFileCache.get(b.id + '::' + f.path); if (rec && rec.blob) t = (await rec.blob.text()) + '\n' + t; } } catch (_) { /* 沒有就只用 persona */ }
+        return t;
+    }
+    _skillToolDefs(extra) { const defs = {}; const names = Object.keys(this.tools).concat(extra || []); for (const n of names) if (this.tools[n]) defs[n] = { parametersSchema: this.tools[n].parametersSchema || {}, description: this.tools[n].description || '' }; return defs; }
+    async _skillCompile(a) {
+        const bundles = (this.advancedSettings.skillBundles || []).filter((b) => b.enabled !== false);
+        const want = String((a && (a.skill || a.name)) || '').trim().toLowerCase();
+        const list = want ? bundles.filter((b) => b.name.toLowerCase() === want || b.id === want || b.builtinId === want) : bundles;
+        if (!list.length) return { ok: false, error: want ? '找不到啟用中的技能「' + want + '」' : '沒有啟用中的技能' };
+        const defs = this._skillToolDefs(); const out = [];
+        for (const b of list.slice(0, 40)) {
+            const text = await this._skillBundleText(b); const info = FaSkillC.extract(text, { name: b.name, toolNames: Object.keys(defs).concat(b.builtinToolNames || []) });
+            if (!info.steps.length && !info.tools.length) { out.push({ skill: b.name, ok: false, error: '讀不出步驟（沒有編號清單或列點，也沒有提到工具）' }); continue; }
+            const res = FaSkillC.compile(info, defs, { id: undefined, skill: b.name, builtinId: b.builtinId, search: (t) => this._capSearchTools(t, 3) });
+            const item = { skill: b.name, ok: res.ok, error: res.error, status: res.recipe && res.recipe.status, steps: res.recipe ? res.recipe.steps.map((s) => s.name + (s.final ? '（最後一步，交給呼叫端執行）' : '')) : [], gaps: (res.gaps || []).map((g) => ({ step: g.step, why: g.why, similar: (g.similar || []).map((x) => x.name), suggestion: g.similar && g.similar.length && g.similar[0].score >= 8 ? '可能可以用現有工具「' + g.similar[0].name + '」' : '需要新能力：用 uml_design 設計（情境見 scenario）', scenario: FaSkillC.gapScenario(info, g).slice(0, 600) })) };
+            if (res.recipe && a && a.save) {
+                const rc = Object.assign({}, res.recipe, { id: ('r_' + b.id.replace(/[^a-z0-9]/gi, '').slice(0, 20)).toLowerCase(), skillId: b.id, enabled: true });
+                const l = this.advancedSettings.skillRecipes = this.advancedSettings.skillRecipes || []; const i = l.findIndex((x) => x.skillId === b.id); if (i >= 0) l[i] = rc; else l.push(rc); item.saved = rc.id;
+            }
+            out.push(item);
+        }
+        if (a && a.save) { this._saveAdvancedSettings(); try { if (this._designedPaneRoot) this._designedRenderPane(); } catch (_) { /* */ } }
+        return { ok: true, results: out, note: '有缺口的食譜是草稿（status: draft）：不會自動使用。缺口要嘛對上現有工具，要嘛用 uml_design 設計出新能力、再用 register_designed_tool 登記，然後再編譯一次。' };
     }
     // ===== 技能→食譜（builtin skill to recipe；匯入的技能由 skill_compile 編成同一種食譜）=====
     // 一份技能食譜 ＝ { id, skill（技能名）, label, needs（手上要有的種類：image／video／pdf／url／text…，任一種），triggers（字串形式的正規表示式，任一個符合）, steps（食譜引擎的步驟：tool／compute／phrase／render；
@@ -64240,12 +64403,31 @@ _result
     _skillRecipes() {
         const user = ((this.advancedSettings && this.advancedSettings.skillRecipes) || []).filter((r) => r && r.status !== 'draft' && r.enabled !== false);
         const bundles = (this.advancedSettings && this.advancedSettings.skillBundles) || [];
+        const auto = []; for (const b of bundles.filter((x) => x.enabled !== false && !x.builtinId)) { if (user.some((r) => r.skillId === b.id)) continue; const c = (this._skillAutoRecipes || {})[b.id]; if (c && c.status === 'compiled') auto.push(c); }
+        user.push(...auto);
         const builtin = this._builtinSkillRecipes().filter((r) => { const b = bundles.find((x) => x.builtinId === r.builtinId); return !b || b.enabled !== false; }); // 技能被停用就不用它的食譜
         return builtin.concat(user);
     }
+    async _skillAutoCompile(log) {
+        const bundles = (this.advancedSettings.skillBundles || []).filter((b) => b.enabled !== false && !b.builtinId); this._skillAutoRecipes = this._skillAutoRecipes || {};
+        const saved = new Set((this.advancedSettings.skillRecipes || []).map((r) => r.skillId)); const defs = this._skillToolDefs();
+        for (const b of bundles) {
+            if (saved.has(b.id)) continue; const sig = b.id + ':' + String(b.personaPrompt || '').length + ':' + (b.files || []).length + ':' + Object.keys(defs).length; const c = this._skillAutoRecipes[b.id];
+            if (c && c.sig === sig) continue;
+            try {
+                const text = await this._skillBundleText(b); const info = FaSkillC.extract(text, { name: b.name, toolNames: Object.keys(defs).concat(b.builtinToolNames || []) });
+                const res = info.steps.length ? FaSkillC.compile(info, defs, { skill: b.name, search: (x) => this._capSearchTools(x, 3) }) : { ok: false };
+                this._skillAutoRecipes[b.id] = res.ok ? Object.assign({}, res.recipe, { id: ('r_' + b.id.replace(/[^a-z0-9]/gi, '').slice(0, 20)).toLowerCase(), skillId: b.id, sig, info: { description: info.description } }) : { sig, status: 'none' };
+                if (res.ok && log) log('匯入的技能「' + b.name + '」讀成食譜：' + res.recipe.status + '（' + res.recipe.steps.length + ' 步' + (res.gaps.length ? '，' + res.gaps.length + ' 個缺口' : '') + '）');
+            } catch (_) { this._skillAutoRecipes[b.id] = { sig, status: 'none' }; }
+        }
+    }
     async _skillRecipeRun(task, toolNames, log) {
         log = log || (() => {}); const t = String(task || '');
+        try { await this._skillAutoCompile(log); } catch (_) { /* 編不出來就只用內建的 */ }
         const atts = FaRecipe.parseAttachments(t); const kinds = new Set(atts.map((a) => FaRecipe.kindOf(a.filename)));
+        const slotsAll = { task: t, attachments: atts, attachment_ids: atts.map((a) => a.id), url: (/https?:\/\/[^\s)）]+/.exec(t) || [])[0] || '', query: FaRecipe.cleanQuery(t), voice: (/\b([ab][fm]_[a-z]+)\b/i.exec(t) || [])[1] || '', speed: Number((/(?:語速|速度|speed)\s*[:：=]?\s*([0-9]*\.?[0-9]+)/i.exec(t) || [])[1]) || '', lang: /英文|english/i.test(t) ? 'en' : (/中文|國語|華語/.test(t) ? 'zh-TW' : '') };
+        const dropEmpty = (o) => { const r = {}; for (const [k, v] of Object.entries(o || {})) if (!(v === '' || v == null || (typeof v === 'number' && !isFinite(v)))) r[k] = v; return r; };
         if (/https?:\/\//i.test(t)) kinds.add('url'); if (t.replace(/\[附件：[^\]]*\]/g, '').trim()) kinds.add('text');
         let lastErr = null;
         for (const rc of this._skillRecipes()) {
@@ -64258,10 +64440,10 @@ _result
             const fns = { acquire_article: async (a) => { const r = await self._articleAcquire(a.task, log); if (!r || !r.text) throw new Error((r && r.error) || '找不到可以整理的文章'); return r; },
                 deck_from_article: async (a) => { const r = self._articleToDeck(a.article, a.task, log); if (!r || r.error) throw new Error((r && r.error) || '整理不出簡報'); return r; },
                 deck_from_images: async (a) => { const r = await self._deckImageRecipe(a.task, log); if (!r || r.error || !r.yaml) { compErr = (r && r.error) || '這個任務沒有可用的圖片'; throw new Error(compErr); } return r; } };
-            const run = await FaRecipe.runRecipe({ id: rc.id, steps: (rc.steps || []).filter((s) => !s.final) }, { task: t, attachments: atts }, { tool: async (name, args) => { try { const tl = self.tools[name]; const raw = await tl.callback.call(self, JSON.stringify(args)); let ok = true; try { const j = JSON.parse(raw); if (j && (j.ok === false || j.error)) ok = false; } catch (_) { /* */ } return { ok, text: String(raw), raw }; } catch (e) { return { ok: false, text: String((e && e.message) || e) }; } }, fns, question: t });
+            const run = await FaRecipe.runRecipe({ id: rc.id, steps: (rc.steps || []).filter((s) => !s.final) }, slotsAll, { tool: async (name, args) => { try { const tl = self.tools[name]; const raw = await tl.callback.call(self, JSON.stringify(dropEmpty(args))); let ok = true, text = String(raw); try { const j = JSON.parse(raw); if (j && (j.ok === false || j.error)) ok = false; for (const k of ['text', 'transcript', 'description', 'content', 'summary', 'result', 'answer']) if (j && typeof j[k] === 'string' && j[k].trim()) { text = j[k]; break; } } catch (_) { /* */ } return { ok, text, raw }; } catch (e) { return { ok: false, text: String((e && e.message) || e) }; } }, fns, question: t });
             if (!run.ok) { lastErr = { recipe: rc.id, skill: rc.skill, error: run.error }; log('✗ ' + rc.id + '：' + run.error); continue; }
             if (!fin) return { recipe: rc.id, skill: rc.skill, error: '這份食譜沒有交給呼叫端的最後一步（final）' };
-            const scope = { slots: { task: t }, vars: run.vars }; const args = FaRecipe.interp(fin.args || {}, scope);
+            const scope = { slots: slotsAll, vars: run.vars }; const args = dropEmpty(FaRecipe.interp(fin.args || {}, scope));
             return { recipe: rc.id, skill: rc.skill, planned: { tool: fin.name, args }, vars: run.vars };
         }
         return lastErr;
