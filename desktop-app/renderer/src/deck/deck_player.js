@@ -466,7 +466,9 @@
     var h = 5381; for (var i = 0; i < text.length; i++) { h = ((h << 5) + h + text.charCodeAt(i)) | 0; }
     return Promise.resolve('d' + (h >>> 0).toString(16) + '-' + text.length);
   }
-  function diskUrl(hash) { return location.origin + '/__ai_chat_deck_tts/' + hash + '.mp3'; }
+  // Cache Storage only accepts http(s) request URLs: the desktop app is loaded from file:// (location.origin is "file://" or "null" there), where a key built
+  // from the origin made every put() fail silently -- nothing was ever stored. A fixed https address works everywhere (it is only a key, never fetched).
+  function diskUrl(hash) { return 'https://ai-chat-deck-tts.invalid/__ai_chat_deck_tts/' + hash + '.mp3'; }
 
   // Cache Storage only exists on secure origins (https / localhost); Redmine reached over plain http (e.g. through an internal proxy)
   // has IndexedDB but no Cache Storage -- so the same cache lives in IndexedDB there.
@@ -494,16 +496,19 @@
   }
 
   function diskGet(hash) {
+    var fromIdb = function () { return idbReq('readonly', function (st) { return st.get(hash); }).then(function (rec) { return rec ? rec.mp3 : null; }).catch(function () { return null; }); };
     if (window.caches) {
-      return caches.open(DISK_CACHE).then(function (c) { return c.match(diskUrl(hash)); }).then(function (r) { return r ? r.arrayBuffer() : null; }).catch(function () { return null; });
+      return caches.open(DISK_CACHE).then(function (c) { return c.match(diskUrl(hash)); }).then(function (r) { return r ? r.arrayBuffer() : null; }).catch(function () { return null; }).then(function (hit) { return hit || fromIdb(); });
     }
-    return idbReq('readonly', function (st) { return st.get(hash); }).then(function (rec) { return rec ? rec.mp3 : null; }).catch(function () { return null; });
+    return fromIdb();
   }
   function diskPut(hash, mp3) {
     if (window.caches) {
       caches.open(DISK_CACHE).then(function (c) {
         return c.put(diskUrl(hash), new Response(mp3.slice(0), { headers: { 'Content-Type': 'audio/mpeg', 'x-ai-chat-stored-at': String(Date.now()) } })).then(function () { return prune(c); });
-      }).catch(function () { /* full / private mode: fine */ });
+      }).catch(function () { // Cache Storage refused (full / unsupported origin): keep it in IndexedDB instead
+        idbReq('readwrite', function (st) { return st.put({ hash: hash, mp3: mp3.slice(0), at: Date.now() }); }).then(pruneIdb).catch(function () { /* fine */ });
+      });
       return;
     }
     idbReq('readwrite', function (st) { return st.put({ hash: hash, mp3: mp3.slice(0), at: Date.now() }); }).then(pruneIdb).catch(function () { /* fine */ });
