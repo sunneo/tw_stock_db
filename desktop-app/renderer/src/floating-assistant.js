@@ -71575,8 +71575,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     // （關閉）維持今天以前完全靜默的既有行為，使用者主動選擇要看內部細節時
     // 才多顯示這個卡片，跟其餘4處trace區塊同一個「預設隱藏、開了才顯示」的
     // 開關語意一致。
-    _createSubagentProgressWidget(title) {
-        if (this.advancedSettings.showInternalTrace !== true) return null;
+    // force：使用者自己下的指令（簡報、技能包）要跑好幾分鐘，卡片一定要有——不然整個過程靜悄悄、做不出來時也看不到卡在哪。
+    _createSubagentProgressWidget(title, force) {
+        if (this.advancedSettings.showInternalTrace !== true && !force) return null;
         return this._createProgressWidget(title);
     }
 
@@ -71634,7 +71635,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             const inSettings = String(domainKey).indexOf('skill_') === 0 && (this.advancedSettings.skillBundles || []).some((b) => 'skill_' + b.id === domainKey);
             return { ok: false, error: `domain "${domainKey}" 尚未實作或不存在` + (inSettings ? '（設定裡有這個技能包，但它是停用的或領域沒有登記成功——到 Advance Settings 的技能分頁確認它是啟用的）' : '（這台機器的設定裡沒有這個技能包：技能包的代號每台機器不同，不能直接拿別台的代號來用）'), available_domains: available };
         }
-        const progress = this._createSubagentProgressWidget(`🤖 委派給「${domain.label}」子agent`);
+        const progress = this._createSubagentProgressWidget(`🤖 委派給「${domain.label}」子agent`, this._deckIsDomain(domainKey) || String(domainKey).indexOf('skill_') === 0);
         const isSkillDomain = String(domainKey).indexOf('skill_') === 0;
         // 巢狀委派（領域／技能再委派給另一個領域／技能）：這些實例旗標要「還原成進來時的值」，不能直接設成 false，不然內層結束會弄壞外層還在跑的那一個
         const nestedCall = Array.isArray(extra.delegationChain) && extra.delegationChain.length > 0;
