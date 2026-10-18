@@ -67951,6 +67951,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         inputText.value = '';
         if (suggestBar) suggestBar.style.display = 'none';
 
+        this._installOfflineGuard();
         const remoteSlash = !!(this._rg && this._rgTarget && /^\/media-presentation\s+\S/i.test(textToSend));
         if (textToSend.startsWith('/') && !remoteSlash) {
             const firstToken = textToSend.split(/\s+/)[0].toLowerCase();
@@ -75968,7 +75969,38 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         this._renderMessageHistory();
     }
 
+    // 離線模式的總閘：開著的時候，任何要連到 AI 模型（/chat/completions、/v1/messages、/embeddings）或線上語音（/edge-tts）的請求一律擋下，
+    // 不管是一般對話、斜線指令、技能包、子任務還是工具自己發的。擋下來的每一次都記在 this._offlineBlocked，並在聊天裡說一聲（同一種 20 秒內只說一次），
+    // 這樣測試離線模式時，缺了什麼一目了然，不會有「看起來離線、其實偷偷連線」的情況。
+    _installOfflineGuard() {
+        if (this._offlineGuardOn || typeof window === 'undefined' || typeof window.fetch !== 'function') return;
+        this._offlineGuardOn = true; this._offlineBlocked = []; this._offlineBlockedSaid = {};
+        const real = window.fetch.bind(window), self = this;
+        const kind = (u) => /\/chat\/completions|\/v1\/messages/.test(u) ? 'AI 模型對話' : /\/embeddings/.test(u) ? 'AI 向量化' : /\/edge-tts/.test(u) ? '線上語音合成' : '';
+        window.fetch = function (input, init) {
+            try {
+                if (self.advancedSettings && self.advancedSettings.offlineMode) {
+                    const u = String(typeof input === 'string' ? input : (input && input.url) || '');
+                    const k = kind(u);
+                    if (k) {
+                        let host = ''; try { host = new URL(u, location.href).host; } catch (_) { host = u.slice(0, 60); }
+                        self._offlineBlocked.push({ at: Date.now(), kind: k, host, task: String(self._currentTurnUserText || '').slice(0, 80) });
+                        if (self._offlineBlocked.length > 200) self._offlineBlocked.shift();
+                        const now = Date.now();
+                        if (!self._offlineBlockedSaid[k] || now - self._offlineBlockedSaid[k] > 20000) {
+                            self._offlineBlockedSaid[k] = now;
+                            try { self._pushAssistantMessage('🔌 離線模式：擋下了一次「' + k + '」連線（' + host + '）。離線模式下所有內容都不連線；這個動作在離線下做不到，需要先把離線模型補到能處理它，或把離線關掉。', null); self._persistChatHistory(); self._renderMessageHistory(); } catch (_) { /* 提示失敗不影響擋下 */ }
+                        }
+                        const err = new Error('離線模式：已擋下「' + k + '」連線（' + host + '）'); err.name = 'FaOfflineBlocked'; err.offlineBlocked = true;
+                        return Promise.reject(err);
+                    }
+                }
+            } catch (e) { if (e && e.offlineBlocked) return Promise.reject(e); }
+            return real(input, init);
+        };
+    }
     _applyOfflineModeUI() {
+        this._installOfflineGuard();
         const on = !!this.advancedSettings.offlineMode;
         const track = document.getElementById('ai-offline-track'), knob = document.getElementById('ai-offline-knob'), label = document.getElementById('ai-offline-label'), chk = document.getElementById('ai-offline-chk');
         if (chk) chk.checked = on;
