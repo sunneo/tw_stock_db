@@ -7,6 +7,20 @@ description: 修改desktop-app的renderer前端檔案（floating-assistant.js／
 
 這份技能只管「怎麼把renderer前端的改動送到已安裝使用者手上」。live-update機制本身的完整設計（manifest-diff比對、userData/live-patch覆蓋目錄、md5驗證）在`desktop-app/README.FloatingAssitant.md`的「🔄 Live Update」章節，第一次做這件事建議先讀那份，這裡只給**操作流程＋踩過的坑**。
 
+## 一鍵腳本（優先用這個）
+
+`scripts/publish.sh` 把下面的標準流程寫成可重複執行的指令（建置 → 語法檢查 → 提交推到 desktop-app → 組 desktop-app-patch（單一 commit、強制推）→ 驗證版本與每個檔案的檢查碼 → 網頁版釘新的 commit SHA 並推到 main）：
+
+```bash
+scripts/publish.sh -m "這次改了什麼" [--dry-run] [--no-web] [--version N] [--skip-build] [--commit-msg "提交訊息"]
+```
+
+- `--dry-run`：只建置、組出 patch 內容並列出會做什麼，不提交、不推、不改網頁。
+- 版本號預設是遠端 manifest 的版本 + 1；`PUBLISH_TRAILER` 環境變數可以給每個提交訊息加一行（例如 Co-Authored-By）；`WEB_REPO` 指定網頁版 repo（預設 `<本 repo>/../videos-嗨投資`）。
+- manifest 的轉換（本機是 `{路徑: "md5"}`、遠端是 `{路徑: {md5}}`）在 `scripts/publish-manifest.js`。
+- 驗證步驟比的是「推上去的 blob」的檢查碼（git 會把 CRLF 正規化成 LF；工作目錄的 CRLF 檔案算出來的檢查碼會不同，那不是錯）。
+- 下面的手動步驟保留，是這支腳本背後的做法與踩過的坑。
+
 ## 什麼會被熱更新、什麼不會
 
 白名單（`main.js`裡`LIVE_PATCH_ALLOWED_FILES`＋`LIVE_PATCH_MAIN_FILES`、`build-assistant.js`裡同名常數，**兩處要保持同步**）分兩類。**renderer前端（套用後立即生效）：**
