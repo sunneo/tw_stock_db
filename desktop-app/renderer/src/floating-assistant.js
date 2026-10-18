@@ -29067,6 +29067,78 @@ if (typeof module === 'object' && module.exports) module.exports = FaDeckTools;
 
 /* DECKHOST-END */
 
+// ===== 統一的 LLM 橋接：所有「連到 AI 模型／向量化／線上語音」的請求都走這一個地方 =====
+// 為什麼統一：線上／離線的切換要在一處決定，不能靠十幾個呼叫點各自記得檢查。每個呼叫點都是 FaLlm.fetch(url, init)：
+//   ① 離線開關開著 → 不連線，改由離線文字模型回答（回傳跟線上一模一樣的 OpenAI 格式，呼叫端不用改；要串流就包成串流）。
+//   ② 線上 → 照常連線；連續失敗的次數達到「模型列的數量」（每一個模型都試過了、都失敗）→ 這一次改交給離線文字模型試圖解決。
+//   ③ 離線做不到的（向量化、線上語音）→ 回報失敗，讓呼叫端走它們自己的離線備援（TF-IDF、本地 Kokoro）。
+// Python／JavaScript／bash 的「問 AI」最後也是走同一批呼叫點，所以效果一致。window.fetch 上另有同一道後備（抓漏網的，例如技能包 Python 轉接層）。
+const FaLlm = {
+    host: null, realFetch: null, blocked: [], said: {}, streak: 0, streakAt: 0,
+    kindOf(u) { return /\/chat\/completions|\/v1\/messages/.test(u) ? 'chat' : /\/embeddings/.test(u) ? 'embed' : /\/edge-tts/.test(u) ? 'tts' : ''; },
+    label(k) { return { chat: 'AI 模型對話', embed: 'AI 向量化', tts: '線上語音合成' }[k] || k; },
+    urlOf(input) { return String(typeof input === 'string' ? input : (input && input.url) || ''); },
+    say(key, text) {
+        const now = Date.now(); if (this.said[key] && now - this.said[key] < 20000) return; this.said[key] = now;
+        const h = this.host; try { h._pushAssistantMessage(text, null); h._persistChatHistory(); h._renderMessageHistory(); } catch (_) { /* 提示失敗不影響 */ }
+    },
+    reject(k, u, why) {
+        let host = ''; try { host = new URL(u, location.href).host; } catch (_) { host = u.slice(0, 60); }
+        this.blocked.push({ at: Date.now(), kind: this.label(k), host, why });
+        if (this.blocked.length > 200) this.blocked.shift();
+        const err = new Error('離線模式：「' + this.label(k) + '」不連線（' + host + '）' + (why ? '：' + why : '')); err.name = 'FaOfflineBlocked'; err.offlineBlocked = true;
+        return err;
+    },
+    parseBody(init) { try { return init && typeof init.body === 'string' ? JSON.parse(init.body) : null; } catch (_) { return null; } },
+    textOf(c) { return typeof c === 'string' ? c : Array.isArray(c) ? c.map((b) => (b && b.text) || '').join('') : ''; },
+    // 離線文字模型回答：把這次請求的對話交給 _offlineLlmAnswer（不開進度卡片、不帶工具），回傳 OpenAI 格式的 Response
+    async offlineResponse(body, reason) {
+        const h = this.host; const msgs = (body && Array.isArray(body.messages)) ? body.messages : [];
+        let lastUser = -1; for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i] && msgs[i].role === 'user') { lastUser = i; break; }
+        if (lastUser < 0 || !h || typeof h._offlineLlmAnswer !== 'function') return null;
+        const sys = msgs.filter((m) => m && m.role === 'system').map((m) => this.textOf(m.content)).join('\n').trim();
+        const userText = (sys ? '【指示】\n' + sys.slice(0, 1500) + '\n\n【內容】\n' : '') + this.textOf(msgs[lastUser].content);
+        const history = msgs.slice(0, lastUser).filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string').slice(-6).map((m) => ({ role: m.role, content: m.content }));
+        const r = await h._offlineLlmAnswer(userText, null, { force: true, ui: false, noTools: true, history, fallback: reason === 'fallback' });
+        if (!r || !r.ok || !String(r.text || '').trim()) return { error: (r && r.error) || '離線文字模型沒有產生內容' };
+        const model = r.route && r.route.answer ? 'offline:' + r.route.answer.id : 'offline';
+        const data = { id: 'chatcmpl-offline-' + Date.now(), object: 'chat.completion', created: Math.floor(Date.now() / 1000), model, _faOffline: true, choices: [{ index: 0, message: { role: 'assistant', content: String(r.text).trim() }, finish_reason: 'stop' }], usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 } };
+        if (body && body.stream) {
+            const enc = new TextEncoder();
+            const chunk = { id: data.id, object: 'chat.completion.chunk', created: data.created, model, choices: [{ index: 0, delta: { role: 'assistant', content: data.choices[0].message.content }, finish_reason: null }] };
+            const fin = { id: data.id, object: 'chat.completion.chunk', created: data.created, model, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] };
+            const stream = new ReadableStream({ start(c) { c.enqueue(enc.encode('data: ' + JSON.stringify(chunk) + '\n\n')); c.enqueue(enc.encode('data: ' + JSON.stringify(fin) + '\n\n')); c.enqueue(enc.encode('data: [DONE]\n\n')); c.close(); } });
+            return { response: new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }), model };
+        }
+        return { response: new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } }), model };
+    },
+    isFailure(res) { return !res || res.status === 408 || res.status === 429 || res.status === 401 || res.status === 403 || res.status >= 500; },
+    async fetch(input, init) {
+        const real = this.realFetch || window.fetch.bind(window);
+        const u = this.urlOf(input), k = this.kindOf(u), h = this.host;
+        if (!k || !h || !h.advancedSettings) return real(input, init);
+        const offline = !!h.advancedSettings.offlineMode;
+        if (k !== 'chat') { if (offline) return Promise.reject(this.reject(k, u, '離線下沒有對應的線上服務，會改用本機的做法')); return real(input, init); }
+        if (offline) {
+            const o = await this.offlineResponse(this.parseBody(init), 'offline');
+            if (o && o.response) { this.say('off:' + o.model, '🔌 離線模式：這次改由離線模型「' + o.model.replace(/^offline:/, '') + '」回答（不連線）。'); return o.response; }
+            this.say('offfail', '🔌 離線模式：離線文字模型沒辦法處理這個請求（' + ((o && o.error) || '未知原因') + '）。離線下不會連到線上 AI。');
+            return Promise.reject(this.reject(k, u, (o && o.error) || ''));
+        }
+        // 線上：照常連線；每一個模型列都失敗後，這一次交給離線模型
+        let res = null, netErr = null;
+        try { res = await real(input, init); } catch (e) { netErr = e; }
+        if (!netErr && !this.isFailure(res)) { this.streak = 0; return res; }
+        const now = Date.now(); this.streak = (now - this.streakAt < 120000 ? this.streak : 0) + 1; this.streakAt = now;
+        let rows = 1; try { rows = Math.max(1, (h._getModelRows() || []).length); } catch (_) { rows = 1; }
+        if (this.streak >= rows && (h.advancedSettings.offlineLlmFallback !== false)) {
+            const o = await this.offlineResponse(this.parseBody(init), 'fallback');
+            if (o && o.response) { this.streak = 0; this.say('fb:' + o.model, '🔌 線上 AI（共 ' + rows + ' 個模型）都沒辦法回應，這次改由離線模型「' + o.model.replace(/^offline:/, '') + '」試著解決（能力比較有限）。'); return o.response; }
+        }
+        if (netErr) throw netErr; return res;
+    },
+};
+
 class FloatingAssistant {
     // tw_stock_db客製: 2026-08-28使用者要求——讓host頁面能在`new FloatingAssistant()`
     // 之前，把PPT/PDF/markdown渲染用到的外部函式庫網址（pptxgenjs/pdfmake/
@@ -35903,7 +35975,7 @@ ${fnData.code}
             try {
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 20000);
-                resp = await fetch(base + '/edge-tts', {
+                resp = await FaLlm.fetch(base + '/edge-tts', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ text: chunks[i], voice: voice.id, lang, rate }),
@@ -40177,7 +40249,7 @@ ${fnData.code}
             const body = Object.assign({}, a); delete body._requested_model; body.model = cfg.apiModel; body.stream = false;
             body.messages = msgs.map((m) => { const o = Object.assign({}, m); if (o.content != null && typeof o.content !== 'string' && !Array.isArray(o.content)) o.content = JSON.stringify(o.content); return o; });
             let resp;
-            try { resp = await fetch(cfg.apiUrl + '/chat/completions', { method: 'POST', headers: { 'Authorization': 'Bearer ' + cfg.apiKey, 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); }
+            try { resp = await FaLlm.fetch(cfg.apiUrl + '/chat/completions', { method: 'POST', headers: { 'Authorization': 'Bearer ' + cfg.apiKey, 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); }
             catch (e) { errors.push(cfg.apiModel + ': 網路錯誤 ' + ((e && e.message) || e)); continue; }
             if (!resp.ok) { lastStatus = resp.status; const tx = await resp.text().catch(() => ''); errors.push(cfg.apiModel + ': HTTP ' + resp.status + ' ' + tx.slice(0, 120)); continue; }
             const data = await resp.json(); const ch = data && data.choices && data.choices[0]; if (!ch) { errors.push(cfg.apiModel + ': 回應沒有 choices'); continue; }
@@ -46438,7 +46510,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const { apiUrl, apiKey, apiModel } = this._resolveModelRowConfig(row);
         const modelKey = `${apiUrl}::${apiModel}`;
         try {
-            const response = await fetch(`${apiUrl}/embeddings`, {
+            const response = await FaLlm.fetch(`${apiUrl}/embeddings`, {
                 method: 'POST',
                 headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
                 body: JSON.stringify({ model: apiModel, input: String(text || '').slice(0, 8000) }),
@@ -46647,7 +46719,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             const timeoutId = setTimeout(() => controller.abort(), 45000);
             let response;
             try {
-                response = await fetch(`${apiUrl}/chat/completions`, {
+                response = await FaLlm.fetch(`${apiUrl}/chat/completions`, {
                     method: 'POST',
                     headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
                     signal: controller.signal,
@@ -46710,7 +46782,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             const imageDataUrl = this._generateTestColorImageDataUrl('#ff0000');
             let response;
             try {
-                response = await fetch(`${apiUrl}/chat/completions`, {
+                response = await FaLlm.fetch(`${apiUrl}/chat/completions`, {
                     method: 'POST',
                     headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
                     signal: controller.signal,
@@ -46767,7 +46839,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         for (;;) {
             const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 120000); let retryAfter = null;
             try {
-                const resp = await fetch(cfg.apiUrl + '/chat/completions', { method: 'POST', headers: { 'Authorization': 'Bearer ' + cfg.apiKey, 'Content-Type': 'application/json' }, signal: controller.signal, body: JSON.stringify({ model: cfg.apiModel, messages: p.messages || [{ role: 'system', content: p.system }, { role: 'user', content: p.user }], temperature: 0.1, max_tokens: p.maxTokens || 4096, stream: false }) });
+                const resp = await FaLlm.fetch(cfg.apiUrl + '/chat/completions', { method: 'POST', headers: { 'Authorization': 'Bearer ' + cfg.apiKey, 'Content-Type': 'application/json' }, signal: controller.signal, body: JSON.stringify({ model: cfg.apiModel, messages: p.messages || [{ role: 'system', content: p.system }, { role: 'user', content: p.user }], temperature: 0.1, max_tokens: p.maxTokens || 4096, stream: false }) });
                 if (!resp.ok) { let body = ''; try { body = (await resp.text()).slice(0, 160); } catch (_) { /* */ } const ra = Number(resp.headers && resp.headers.get && resp.headers.get('retry-after')); if (ra > 0) retryAfter = Math.min(30000, ra * 1000); last = { http_ok: false, status: resp.status, content: '', error: 'HTTP ' + resp.status + (body ? '：' + body : ''), ms: Date.now() - t0, retries: attempt }; if (![429, 500, 502, 503, 504].includes(resp.status)) return last; }
                 else { const j = await resp.json(); const m = (j && j.choices && j.choices[0] && j.choices[0].message) || {}; return { http_ok: true, status: resp.status, content: String(m.content || ''), reasoning: String(m.reasoning_content || m.reasoning || ''), finish: j && j.choices && j.choices[0] && j.choices[0].finish_reason, ms: Date.now() - t0, retries: attempt }; }
             } catch (e) { const aborted = e && e.name === 'AbortError'; last = { http_ok: false, content: '', error: aborted ? '逾時（超過 120 秒沒回應）' : String((e && e.message) || e), ms: Date.now() - t0, retries: attempt }; if (aborted) return last; }
@@ -46938,7 +47010,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     async _visionChat(cfg, messages, maxTokens) {
         const controller = this._createAbortController(); const timeoutId = setTimeout(() => controller.abort(), 60000);
         let response;
-        try { response = await fetch(`${cfg.apiUrl}/chat/completions`, { method: 'POST', headers: { 'Authorization': `Bearer ${cfg.apiKey}`, 'Content-Type': 'application/json' }, signal: controller.signal, body: JSON.stringify({ model: cfg.apiModel, messages, temperature: 0.2, max_tokens: maxTokens, stream: false }) }); }
+        try { response = await FaLlm.fetch(`${cfg.apiUrl}/chat/completions`, { method: 'POST', headers: { 'Authorization': `Bearer ${cfg.apiKey}`, 'Content-Type': 'application/json' }, signal: controller.signal, body: JSON.stringify({ model: cfg.apiModel, messages, temperature: 0.2, max_tokens: maxTokens, stream: false }) }); }
         finally { clearTimeout(timeoutId); }
         if (!response.ok) throw new Error('HTTP ' + response.status);
         const data = await response.json(); const content = String((data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '').trim();
@@ -48239,7 +48311,7 @@ ${sourceTool.handlerScript}
             return { ok: false, error: new Error('缺少 API Key，無法使用 LLM 修復 JSON。') };
         }
         try {
-            const response = await fetch(`${apiUrl}/chat/completions`, {
+            const response = await FaLlm.fetch(`${apiUrl}/chat/completions`, {
                 method: 'POST',
                 headers: {
                     'Authorization': 'Bearer ' + apiKey,
@@ -64023,7 +64095,7 @@ _result
 
         try {
             const controller = this._createAbortController();
-            const response = await fetch(`${apiUrl}/chat/completions`, {
+            const response = await FaLlm.fetch(`${apiUrl}/chat/completions`, {
                 method: 'POST',
                 headers: {
                     'Authorization': `Bearer ${apiKey}`,
@@ -64151,7 +64223,7 @@ _result
 
         try {
             const controller = this._createAbortController();
-            const response = await fetch(`${apiUrl}/chat/completions`, {
+            const response = await FaLlm.fetch(`${apiUrl}/chat/completions`, {
                 method: 'POST',
                 headers: {
                     'Authorization': `Bearer ${apiKey}`,
@@ -64203,7 +64275,7 @@ _result
 需要摘要的舊對話內容：\n${JSON.stringify(fullHistoryWithoutSystem)}`;
 
                 const summaryController = this._createAbortController();
-                const summaryResponse = await fetch(`${apiUrl}/chat/completions`, {
+                const summaryResponse = await FaLlm.fetch(`${apiUrl}/chat/completions`, {
                     method: 'POST',
                     headers: {
                         'Authorization': `Bearer ${apiKey}`,
@@ -64309,7 +64381,7 @@ ${existingNodeSummaries}
 }`;
 
         try {
-            const response = await fetch(`${apiUrl}/chat/completions`, {
+            const response = await FaLlm.fetch(`${apiUrl}/chat/completions`, {
                 method: 'POST',
                 headers: {
                     'Authorization': 'Bearer ' + apiKey,
@@ -69897,7 +69969,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 const timeoutId = setTimeout(() => controller.abort(), Math.max(5000, remaining));
                 let response;
                 try {
-                    response = await fetch(`${apiUrl}/chat/completions`, {
+                    response = await FaLlm.fetch(`${apiUrl}/chat/completions`, {
                         method: 'POST',
                         headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
                         signal: controller.signal,
@@ -70611,7 +70683,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
 
                 const roundStartTime = Date.now();
                 const controller = this._createAbortController();
-                const response = await fetch(`${apiUrl}/chat/completions`, {
+                const response = await FaLlm.fetch(`${apiUrl}/chat/completions`, {
                     method: 'POST',
                     headers: {
                         'Authorization': `Bearer ${apiKey}`,
@@ -71165,7 +71237,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
 
                 const roundStartTime = Date.now();
                 const controller = this._createAbortController();
-                const response = await fetch(`${apiUrl}/chat/completions`, {
+                const response = await FaLlm.fetch(`${apiUrl}/chat/completions`, {
                     method: 'POST',
                     headers: {
                         'Authorization': `Bearer ${apiKey}`,
@@ -71749,7 +71821,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         messages.push({ role: 'user', content: userPrompt });
         let response;
         try {
-            response = await fetch(`${apiUrl}/chat/completions`, {
+            response = await FaLlm.fetch(`${apiUrl}/chat/completions`, {
                 method: 'POST',
                 headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
                 body: JSON.stringify({ model: apiModel, messages, temperature, max_tokens: maxTokens, stream: false }),
@@ -71938,7 +72010,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             let response;
             let networkError = null;
             try {
-                response = await fetch(`${apiUrl}/chat/completions`, {
+                response = await FaLlm.fetch(`${apiUrl}/chat/completions`, {
                     method: 'POST',
                     headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -72721,7 +72793,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             let response = null;
             let networkError = null;
             try {
-                response = await fetch(`${apiUrl}/chat/completions`, {
+                response = await FaLlm.fetch(`${apiUrl}/chat/completions`, {
                     method: 'POST',
                     headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
                     body: JSON.stringify(body),
@@ -75969,35 +76041,13 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         this._renderMessageHistory();
     }
 
-    // 離線模式的總閘：開著的時候，任何要連到 AI 模型（/chat/completions、/v1/messages、/embeddings）或線上語音（/edge-tts）的請求一律擋下，
-    // 不管是一般對話、斜線指令、技能包、子任務還是工具自己發的。擋下來的每一次都記在 this._offlineBlocked，並在聊天裡說一聲（同一種 20 秒內只說一次），
-    // 這樣測試離線模式時，缺了什麼一目了然，不會有「看起來離線、其實偷偷連線」的情況。
+    // 離線／線上橋接的安裝：把宿主交給 FaLlm，並在 window.fetch 上裝同一道判斷當後備（已知呼叫點都走 FaLlm.fetch；後備抓漏網的）。
     _installOfflineGuard() {
+        FaLlm.host = this;
         if (this._offlineGuardOn || typeof window === 'undefined' || typeof window.fetch !== 'function') return;
-        this._offlineGuardOn = true; this._offlineBlocked = []; this._offlineBlockedSaid = {};
-        const real = window.fetch.bind(window), self = this;
-        const kind = (u) => /\/chat\/completions|\/v1\/messages/.test(u) ? 'AI 模型對話' : /\/embeddings/.test(u) ? 'AI 向量化' : /\/edge-tts/.test(u) ? '線上語音合成' : '';
-        window.fetch = function (input, init) {
-            try {
-                if (self.advancedSettings && self.advancedSettings.offlineMode) {
-                    const u = String(typeof input === 'string' ? input : (input && input.url) || '');
-                    const k = kind(u);
-                    if (k) {
-                        let host = ''; try { host = new URL(u, location.href).host; } catch (_) { host = u.slice(0, 60); }
-                        self._offlineBlocked.push({ at: Date.now(), kind: k, host, task: String(self._currentTurnUserText || '').slice(0, 80) });
-                        if (self._offlineBlocked.length > 200) self._offlineBlocked.shift();
-                        const now = Date.now();
-                        if (!self._offlineBlockedSaid[k] || now - self._offlineBlockedSaid[k] > 20000) {
-                            self._offlineBlockedSaid[k] = now;
-                            try { self._pushAssistantMessage('🔌 離線模式：擋下了一次「' + k + '」連線（' + host + '）。離線模式下所有內容都不連線；這個動作在離線下做不到，需要先把離線模型補到能處理它，或把離線關掉。', null); self._persistChatHistory(); self._renderMessageHistory(); } catch (_) { /* 提示失敗不影響擋下 */ }
-                        }
-                        const err = new Error('離線模式：已擋下「' + k + '」連線（' + host + '）'); err.name = 'FaOfflineBlocked'; err.offlineBlocked = true;
-                        return Promise.reject(err);
-                    }
-                }
-            } catch (e) { if (e && e.offlineBlocked) return Promise.reject(e); }
-            return real(input, init);
-        };
+        this._offlineGuardOn = true;
+        const real = window.fetch.bind(window); FaLlm.realFetch = real;
+        window.fetch = function (input, init) { return FaLlm.kindOf(FaLlm.urlOf(input)) ? FaLlm.fetch(input, init) : real(input, init); };
     }
     _applyOfflineModeUI() {
         this._installOfflineGuard();
