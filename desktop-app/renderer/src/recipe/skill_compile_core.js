@@ -81,6 +81,7 @@
     function compile(info, toolDefs, opts) {
         opts = opts || {}; const search = opts.search || (() => []); const recipeSteps = []; const gaps = []; const needs = new Set(); let n = 0;
         const used = new Set(); let prevId = '';
+        for (const s of info.steps) { if (!s.tools.length && (s.scripts.length || /^(?:read|check|open|call|run|use|get|fetch|write|create|generate|build|make|convert|extract|parse|search|find|send|post|讀|查|開|呼叫|執行|使用|取得|寫|建立|產生|轉換|抽出|解析|搜尋|找|寄|發)/i.test(s.text))) { const sim = search(s.text); if (sim[0] && sim[0].designed && toolDefs[sim[0].name]) s.tools = [sim[0].name]; } }
         for (const s of info.steps) {
             if (recipeSteps.length >= MAX_STEPS - 1) { gaps.push({ step: s.n, text: s.text.slice(0, 160), why: '步驟太多（食譜最多 ' + MAX_STEPS + ' 步）', scenario: s.text }); continue; }
             if (s.tools.length) {

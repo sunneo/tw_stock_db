@@ -93,6 +93,12 @@ check('compile: 沒有任何對得上工具的步驟 → 失敗並說明', none.
 // 步驟上限
 const many = S.compile(S.extract(Array.from({ length: 15 }, (_, i) => (i + 1) + '. Use fetch_web_page for the url').join('\n'), { toolNames: TOOLS }), DEFS, {});
 check('compile: 同一個工具重複只算一步', many.ok && many.recipe.steps.length === 1);
+// 缺口對上設計出來的工具：搜尋第一名是已啟用的 runtime 設計的工具 → 那一步改用它，不再是缺口
+const dd = Object.assign({ gap_picture_reader_4: { parametersSchema: { type: 'object', properties: { input: { type: 'string', description: 'x' } }, required: ['input'] } } }, DEFS);
+const resolved = S.compile(S.extract(SKILL, { toolNames: TOOLS }), dd, { search: (tx) => (/cleanup|temporary/i.test(tx) ? [{ name: 'gap_picture_reader_4', score: 20, designed: true }] : []) });
+check('compile: 腳本那一步改用設計出來的工具', resolved.recipe.steps.some((s) => s.name === 'gap_picture_reader_4'), JSON.stringify(resolved.recipe.steps.map((s) => s.name)));
+check('compile: 該缺口消失（剩下「沒指名工具」那一個）', !resolved.gaps.some((g) => g.scripts) && resolved.gaps.length === 1, JSON.stringify(resolved.gaps.map((g) => g.why)));
+check('compile: 不是設計出來的相近工具不會自動換', S.compile(S.extract(SKILL, { toolNames: TOOLS }), dd, { search: () => [{ name: 'gap_picture_reader_4', score: 20 }] }).gaps.some((g) => g.scripts));
 // 缺口情境
 check('gapScenario: 帶著技能目的與缺的步驟', /Read the text/.test(S.gapScenario(info, res.gaps[0])) && S.gapScenario(info, res.gaps[0]).includes(res.gaps[0].scenario));
 // 內建技能的 persona prompt（沒有 frontmatter）也能抽

@@ -13908,6 +13908,7 @@ const holder = {};
     function compile(info, toolDefs, opts) {
         opts = opts || {}; const search = opts.search || (() => []); const recipeSteps = []; const gaps = []; const needs = new Set(); let n = 0;
         const used = new Set(); let prevId = '';
+        for (const s of info.steps) { if (!s.tools.length && (s.scripts.length || /^(?:read|check|open|call|run|use|get|fetch|write|create|generate|build|make|convert|extract|parse|search|find|send|post|讀|查|開|呼叫|執行|使用|取得|寫|建立|產生|轉換|抽出|解析|搜尋|找|寄|發)/i.test(s.text))) { const sim = search(s.text); if (sim[0] && sim[0].designed && toolDefs[sim[0].name]) s.tools = [sim[0].name]; } }
         for (const s of info.steps) {
             if (recipeSteps.length >= MAX_STEPS - 1) { gaps.push({ step: s.n, text: s.text.slice(0, 160), why: '步驟太多（食譜最多 ' + MAX_STEPS + ' 步）', scenario: s.text }); continue; }
             if (s.tools.length) {
@@ -33710,12 +33711,12 @@ ${fnData.code}
         );
         registerOptional('skill_compile',
             '把技能（內建的或匯入的 SKILL）讀成「食譜」：程式讀 SKILL.md 抽出步驟與用到的工具、依欄位名稱與型別綁到手上有的東西（附件、網址、使用者的話、聲音／語速／語言），編成可重複執行的食譜；最後一步交給呼叫端執行。' +
-            '對不上的步驟（沒指名工具、工具不存在、要跑腳本、必填欄位綁不到）不猜，列成「缺口」，附相近的現有工具或給 uml_design 的情境——缺的能力用 uml_design 設計、register_designed_tool 登記後再編一次。有缺口的是草稿（不會自動使用）。skill＝技能名稱（省略＝全部啟用中的技能）；save＝true 才存下來。',
+            '對不上的步驟（沒指名工具、工具不存在、要跑腳本、必填欄位綁不到）不猜，列成「缺口」，附相近的現有工具或給 uml_design 的情境。design＝true：缺的能力直接用 uml_design 設計、登記成「待實作」的設計工具（草稿）；處理程式補上並啟用後再編一次，缺口就對上它。有缺口的是草稿（不會自動使用）。skill＝技能名稱（省略＝全部啟用中的技能）；save＝true 才存下來。',
             async function (rawArgs) {
                 let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 try { return JSON.stringify(await this._skillCompile(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
             },
-            { type: 'object', properties: { skill: { type: 'string', description: '技能名稱（省略＝全部）' }, save: { type: 'boolean', description: 'true＝存成食譜（草稿或已編好）' } } }
+            { type: 'object', properties: { skill: { type: 'string', description: '技能名稱（省略＝全部）' }, save: { type: 'boolean', description: 'true＝存成食譜（草稿或已編好）' }, design: { type: 'boolean', description: 'true＝缺口用 UML design 設計並登記成待實作的設計工具（手動模式會先問你）' } } }
         );
         registerOptional('list_designed_tools',
             '列出 runtime 設計出來的工具（名稱、說明、參數、是否啟用、執行次數、最近的錯誤）。',
@@ -64273,7 +64274,7 @@ _result
         if (!schema || typeof schema !== 'object' || Array.isArray(schema)) schema = { type: 'object', properties: {} };
         if (schema.type !== 'object') schema = { type: 'object', properties: {} };
         return { id: String(t.id || ('dt_' + name)), name, description: String(t.description || '').slice(0, 600), parametersSchema: schema, handlerScript: String(t.handlerScript || '').replace(/\r\n/g, '\n').slice(0, 60000),
-            uml: String(t.uml || '').slice(0, 30000), scenario: String(t.scenario || '').slice(0, 3000), enabled: t.enabled !== false, designedAt: Number(t.designedAt) || Date.now(), runs: Math.max(0, Math.floor(Number(t.runs)) || 0), lastError: String(t.lastError || '').slice(0, 300) };
+            uml: String(t.uml || '').slice(0, 30000), scenario: String(t.scenario || '').slice(0, 3000), enabled: t.enabled !== false, draft: t.draft === true, fromSkill: String(t.fromSkill || '').slice(0, 80), designedAt: Number(t.designedAt) || Date.now(), runs: Math.max(0, Math.floor(Number(t.runs)) || 0), lastError: String(t.lastError || '').slice(0, 300) };
     }
     _syncDesignedTools() {
         const list = (this.advancedSettings && this.advancedSettings.designedTools) || [];
@@ -64296,7 +64297,7 @@ _result
     }
     // 登記（或更新）一個設計出來的工具：名稱不能蓋掉內建工具或自訂技能；處理程式要先過語法檢查
     _designedRegister(a) {
-        const t = this._designedNormalize({ name: a.name, description: a.description, parametersSchema: a.parameters || a.parametersSchema, handlerScript: a.handler || a.handlerScript || a.code, uml: a.uml, scenario: a.scenario, enabled: a.enabled });
+        const t = this._designedNormalize({ name: a.name, description: a.description, parametersSchema: a.parameters || a.parametersSchema, handlerScript: a.handler || a.handlerScript || a.code, uml: a.uml, scenario: a.scenario, enabled: a.enabled, draft: a.draft, fromSkill: a.fromSkill });
         if (!t) return { ok: false, error: '名稱要是英文字母、數字、底線（2～64 字，不能數字開頭）' };
         if (!t.description) return { ok: false, error: '缺少 description（一句話說明這個工具做什麼，食譜與搜尋都靠它）' };
         if (!t.handlerScript.trim()) return { ok: false, error: '缺少 handler（JavaScript 處理程式：參數在 args，回傳值就是工具結果）' };
@@ -64324,7 +64325,7 @@ _result
         if (side) side.addEventListener('click', (ev) => { const c = ev.target.closest('.ai-advanced-cat'); if (c && c.dataset.cat === 'designed-tools') this._designedRenderPane(); });
         root.addEventListener('click', async (ev) => {
             const b = ev.target.closest('[data-dt]'); if (!b) return; const act = b.dataset.dt, name = b.dataset.name; const t = (this.advancedSettings.designedTools || []).find((x) => x.name === name);
-            if (act === 'toggle' && t) { t.enabled = !t.enabled; this._saveAdvancedSettings(); this._syncDesignedTools(); this._designedRenderPane(); }
+            if (act === 'toggle' && t) { t.enabled = !t.enabled; if (t.enabled) t.draft = false; this._saveAdvancedSettings(); this._syncDesignedTools(); this._designedRenderPane(); }
             else if (act === 'remove') { if (confirm('刪除設計出來的工具「' + name + '」？')) this._designedRemove(name); }
             else if (act === 'run') { const inp = root.querySelector('[data-dt-args="' + name + '"]'); const out = root.querySelector('[data-dt-out="' + name + '"]'); if (out) out.textContent = '執行中…'; const r = await this._designedRun(name, inp ? inp.value || '{}' : '{}'); if (out) out.textContent = String(r).slice(0, 2000); this._designedRenderPane(true); }
             else if (act === 'view' && t) { const box = root.querySelector('[data-dt-view="' + name + '"]'); if (box) box.style.display = box.style.display === 'none' ? 'block' : 'none'; }
@@ -64343,7 +64344,7 @@ _result
         root.innerHTML = '<p style="color:#94a3b8;">用 uml_design 設計、再用程式實現的功能，登記成工具後會出現在這裡。登記後它跟內建工具一樣：食譜（CoLU 選擇題＋程式填欄位）挑得到、工具反思搜尋得到、離線模式下也能被橋接呼叫。AI 用 register_designed_tool 登記、list_designed_tools 查看、remove_designed_tool 刪除。</p>'
             + '<div style="margin:6px 0;"><button style="' + btn + '" data-dt="export">匯出</button> <button style="' + btn + '" data-dt="import">匯入</button> <span style="color:#94a3b8;">共 ' + list.length + ' 個</span></div>'
             + (list.length ? list.map((t) => '<div style="border:1px solid #334155; border-radius:8px; padding:8px; margin:8px 0;">'
-                + '<div><b>' + esc(t.name) + '</b> ' + (t.enabled ? '<span style="color:#22c55e;">啟用</span>' : '<span style="color:#f59e0b;">停用</span>') + ' <span style="color:#94a3b8;">執行過 ' + t.runs + ' 次' + (t.lastError ? '；最近的錯誤：' + esc(t.lastError) : '') + '</span></div>'
+                + '<div><b>' + esc(t.name) + '</b> ' + (t.draft ? '<span style="color:#f59e0b;">待實作（UML 已設計' + (t.fromSkill ? '，來自技能「' + esc(t.fromSkill) + '」' : '') + '）</span>' : (t.enabled ? '<span style="color:#22c55e;">啟用</span>' : '<span style="color:#f59e0b;">停用</span>')) + ' <span style="color:#94a3b8;">執行過 ' + t.runs + ' 次' + (t.lastError ? '；最近的錯誤：' + esc(t.lastError) : '') + '</span></div>'
                 + '<div style="color:#cbd5e1;">' + esc(t.description) + '</div>'
                 + '<div style="color:#94a3b8;">參數：' + (Object.keys((t.parametersSchema && t.parametersSchema.properties) || {}).map(esc).join('、') || '（無）') + '</div>'
                 + '<div style="margin-top:4px;"><button style="' + btn + '" data-dt="toggle" data-name="' + esc(t.name) + '">' + (t.enabled ? '停用' : '啟用') + '</button> <button style="' + btn + '" data-dt="view" data-name="' + esc(t.name) + '">UML／程式</button> <button style="' + btn + '" data-dt="remove" data-name="' + esc(t.name) + '">刪除</button></div>'
@@ -64368,7 +64369,8 @@ _result
             const text = await this._skillBundleText(b); const info = FaSkillC.extract(text, { name: b.name, toolNames: Object.keys(defs).concat(b.builtinToolNames || []) });
             if (!info.steps.length && !info.tools.length) { out.push({ skill: b.name, ok: false, error: '讀不出步驟（沒有編號清單或列點，也沒有提到工具）' }); continue; }
             const res = FaSkillC.compile(info, defs, { id: undefined, skill: b.name, builtinId: b.builtinId, search: (t) => this._capSearchTools(t, 3) });
-            const item = { skill: b.name, ok: res.ok, error: res.error, status: res.recipe && res.recipe.status, steps: res.recipe ? res.recipe.steps.map((s) => s.name + (s.final ? '（最後一步，交給呼叫端執行）' : '')) : [], gaps: (res.gaps || []).map((g) => ({ step: g.step, why: g.why, similar: (g.similar || []).map((x) => x.name), suggestion: g.similar && g.similar.length && g.similar[0].score >= 8 ? '可能可以用現有工具「' + g.similar[0].name + '」' : '需要新能力：用 uml_design 設計（情境見 scenario）', scenario: FaSkillC.gapScenario(info, g).slice(0, 600) })) };
+            const item = { skill: b.name, ok: res.ok, error: res.error, status: res.recipe && res.recipe.status, steps: res.recipe ? res.recipe.steps.map((s) => s.name + (s.final ? '（最後一步，交給呼叫端執行）' : '')) : [], gaps: (res.gaps || []).map((g) => ({ step: g.step, why: g.why, similar: (g.similar || []).map((x) => x.name), suggestion: !g.scripts && g.similar && g.similar.length && g.similar[0].score >= 8 ? '可能可以用現有工具「' + g.similar[0].name + '」' : '需要新能力：用 uml_design 設計（情境見 scenario）', scenario: FaSkillC.gapScenario(info, g).slice(0, 600) })) };
+            if (a && a.design && res.gaps && res.gaps.length) item.design = await this._skillDesignGaps(b.name, info, res.gaps.map((g) => Object.assign({}, g, { similar: g.similar || [] })), a);
             if (res.recipe && a && a.save) {
                 const rc = Object.assign({}, res.recipe, { id: ('r_' + b.id.replace(/[^a-z0-9]/gi, '').slice(0, 20)).toLowerCase(), skillId: b.id, enabled: true });
                 const l = this.advancedSettings.skillRecipes = this.advancedSettings.skillRecipes || []; const i = l.findIndex((x) => x.skillId === b.id); if (i >= 0) l[i] = rc; else l.push(rc); item.saved = rc.id;
@@ -64377,6 +64379,25 @@ _result
         }
         if (a && a.save) { this._saveAdvancedSettings(); try { if (this._designedPaneRoot) this._designedRenderPane(); } catch (_) { /* */ } }
         return { ok: true, results: out, note: '有缺口的食譜是草稿（status: draft）：不會自動使用。缺口要嘛對上現有工具，要嘛用 uml_design 設計出新能力、再用 register_designed_tool 登記，然後再編譯一次。' };
+    }
+    // 缺口交給 UML design：對每個需要新能力的缺口，離線模型一次一小題設計出 UML（情境＝缺的那一步），登記成「待實作」的設計工具（草稿，停用）。
+    // 實作（處理程式）由更強的模型或你補上、啟用之後，再編譯一次，那一步就會對上它。手動模式先問一次（有副作用以外的、只是設計與登記，但設計在離線 CPU 上很慢，所以要先問）；自動模式直接做。
+    async _skillDesignGaps(skillName, info, gaps, a) {
+        const todo = (gaps || []).filter((g) => g.scripts || !(g.similar && g.similar[0] && g.similar[0].score >= 8)).slice(0, 4); // 要跑腳本的缺口，相近的現有工具不是替代品 if (!todo.length) return { ok: true, designed: [], note: '沒有需要新設計的缺口' };
+        const auto = this.advancedSettings.routeMode === 'auto' || (a && a.auto === true);
+        if (!auto) {
+            let ok = false; try { const ans = await this.requestUserForm({ title: '🧩 技能「' + skillName + '」有 ' + todo.length + ' 個缺的能力', description: todo.map((g, i) => (i + 1) + '. ' + g.why + '\n   ' + String(g.scenario).slice(0, 120)).join('\n') + '\n\n要用 UML design 一個一個設計出來嗎？（離線模型在 CPU 上很慢，每個要幾分鐘；設計完會登記成「待實作」的工具，不會自己執行。）', choices: ['照這個做', '不用'] }); ok = !!(ans && ans.confirmed && ans.answer === '照這個做'); } catch (_) { ok = false; }
+            if (!ok) return { ok: true, designed: [], note: '你選了不設計；缺口留在食譜裡' };
+        }
+        const designed = [];
+        for (const g of todo) {
+            const name = ('gap_' + String(skillName).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') + '_' + g.step).slice(0, 60);
+            let uml = '', err = '';
+            try { const r = await this._umlDesign({ scenario: FaSkillC.gapScenario(info, g), language: 'python', model: a && a.model || 'offline' }); if (r && r.ok) uml = String(r.uml || r.dsl || r.message || '').slice(0, 20000); else err = String((r && r.error) || '設計沒做成').slice(0, 200); } catch (e) { err = String((e && e.message) || e).slice(0, 200); }
+            const reg = this._designedRegister({ name, description: String(g.scenario).slice(0, 300), parameters: { type: 'object', properties: { input: { type: 'string', description: '這一步的輸入（待實作）' } } }, handler: "throw new Error('這個工具還沒實作：UML 設計已經有了（到「設計出來的工具」看），處理程式要補上並啟用');", uml, scenario: g.scenario, enabled: false, draft: true, fromSkill: skillName });
+            designed.push({ gap: g.step, tool: name, ok: reg.ok, uml: !!uml, error: err || (reg.ok ? undefined : reg.error) });
+        }
+        return { ok: true, designed, note: '已登記成待實作的設計工具；補上處理程式並啟用後，再編譯一次技能，缺口就會對上它。' };
     }
     // ===== 技能→食譜（builtin skill to recipe；匯入的技能由 skill_compile 編成同一種食譜）=====
     // 一份技能食譜 ＝ { id, skill（技能名）, label, needs（手上要有的種類：image／video／pdf／url／text…，任一種），triggers（字串形式的正規表示式，任一個符合）, steps（食譜引擎的步驟：tool／compute／phrase／render；
@@ -64537,7 +64558,7 @@ _result
             const byTool = new Map(); const learned = this._capAliasStore ? this._capAliasStore.tools || {} : {};
             for (const [id, d] of Object.entries(this.domains || {})) for (const n of (() => { let tn = d && d.toolNames; if (typeof tn === 'function') { try { tn = tn.call(d); } catch (_) { tn = []; } } return Array.isArray(tn) ? tn : []; })()) { if (!this.tools[n]) continue; if (!byTool.has(n)) byTool.set(n, []); byTool.get(n).push({ id, label: d.label || '' }); }
             const entries = Object.entries(this.tools).map(([name, t]) => ({ name, domains: byTool.get(name) || [], text: String((t && t.description) || '').slice(0, 400), direct: false, aliases: FaCapReflect.aliasOf(name, (learned[name] || []).map((x) => x.p)).concat(this._designedAliases(name)) })).filter((e) => !/^(delegate_|get_tool_details|catalog_)/.test(e.name));
-            return FaCapReflect.search(String(text || ''), entries, { k: k || 3 }) || [];
+            return (FaCapReflect.search(String(text || ''), entries, { k: k || 3 }) || []).map((h) => Object.assign({}, h, { designed: !!(this.tools[h.name] && this.tools[h.name].designed) }));
         } catch (_) { return []; }
     }
     _unfulfilledIntentNudge(text, counterHolder) {
