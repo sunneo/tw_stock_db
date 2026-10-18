@@ -55,6 +55,7 @@ const suites = [
     ['UML 編修（各種編修、套用後驗證並退回壞的、diff、問題→候選編修、小模型選編號、一批問題解決）', 'renderer/src/uml/uml_edit_core.test.js'],
     ['達成路線（分類、依環境選程式語言、寄信三條路線、手動／自動閘門與副作用一定先問、缺能力→UML 編修）', 'renderer/src/catalog/route_core.test.js'],
     ['技能→食譜編譯器（抽步驟與工具、綁欄位、缺口交給 UML design、資料流）', 'renderer/src/recipe/skill_compile_core.test.js'],
+    ['意圖解析（文字切割、語意角色、行為、隱含期待與驗證、缺口問題、UML、測試案例、中英翻譯輔助與媒合）', 'renderer/src/uml/user_intent_core.test.js'],
     ['瀏覽器控制穩定生成（動作檢查、狀態接線、副作用標記、UML 來回、計畫一批、等擴充功能連上、執行驗證重試、整個任務）', 'renderer/src/browser/bcplan_core.test.js'],
     ['資料離線精準查詢（SPDX／工作表：結構、讀問題、計畫、檢查、執行、SQL、放寬與最接近的值、歧義問字母、題庫）', 'renderer/src/dataview/dataquery_core.test.js'],
     ['UML → LLVM IR → wasm32-wasi（IR 解析與型別檢查、wasm 產生、真的執行、運算／迴圈／遞迴／struct／全域／字串、檢查器擋錯、UML 軌跡一致）', 'renderer/src/uml/llvm_core.test.js'],
