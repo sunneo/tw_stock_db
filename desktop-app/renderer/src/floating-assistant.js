@@ -29372,7 +29372,7 @@ const FaLlm = {
         { const sh = await this.weakShell(this.parseBody(init)); if (sh) return sh; }
         let res = null, netErr = null;
         try { res = await real(input, init); } catch (e) { netErr = e; }
-        if (!netErr && !this.isFailure(res)) { this.streak = 0; return res; }
+        if (!netErr && !this.isFailure(res)) { this.streak = 0; try { const b = this.parseBody(init); if (b && !b.stream && /openrouter\.ai/i.test(u) && res.clone) res.clone().json().then((d) => { if (d && d.model && b.model) { this.served = this.served || {}; this.served[b.model] = { served: String(d.model), at: Date.now() }; } }).catch(() => {}); } catch (_) { /* 只是記錄 */ } return res; }
         const now = Date.now(); this.streak = (now - this.streakAt < 120000 ? this.streak : 0) + 1; this.streakAt = now;
         let rows = 1; try { rows = Math.max(1, (h._getModelRows() || []).length); } catch (_) { rows = 1; }
         if (this.streak >= rows && (h.advancedSettings.offlineLlmFallback !== false)) {
@@ -47100,6 +47100,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             }
             if (!response.ok) return false;
             const data = await response.json();
+            if (this._isOpenRouter(apiUrl) && data && data.model) { this._lastProbeServed = { requested: apiModel, served: String(data.model), at: Date.now() }; if (/guard|moderat|safety|shield|classif/i.test(String(data.model))) return false; const cap = await this._servedImageCapable(String(data.model), apiUrl); if (cap === false) return false; }
             const content = String((data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '').toLowerCase();
             return content.includes('red') || content.includes('紅') || content.includes('红');
         } catch (_) {
@@ -47309,11 +47310,32 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         finally { clearTimeout(timeoutId); }
         if (!response.ok) throw new Error('HTTP ' + response.status);
         const data = await response.json(); const content = String((data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '').trim();
+        if (this._isOpenRouter(cfg.apiUrl)) this._lastServed = { requested: cfg.apiModel, served: String(data.model || ''), provider: String((data.provider && (data.provider.name || data.provider)) || data.provider_name || '') };
         if (!content) throw new Error('回覆是空的');
         return content;
     }
     // 線上視覺模型看圖：每個候選 row 先確認「真的會看圖」，再要它分兩段回答——先逐字轉錄圖中文字、再描述／回答（跟離線的輸出格式一致，見 FaVlm.combineVision）。
     // 回覆沒照格式時補做一次專門的文字轉錄，確保一定有轉錄那一段。回傳 { description（兩段合在一起）, transcription, answer, modelUsed, backend:'online' }。
+    // ===== 「這個回應有沒有真的看到圖」：兩道獨立的證據 =====
+    // ① 實際回答的模型的能力：OpenRouter 的回應 JSON 裡 model 是真正服務的那個（openrouter/free 這種路由器每次可能不同）；
+    //    OpenRouter 公開的模型清單（/api/v1/models）有每個模型接受的輸入種類（architecture.input_modalities），含 image 才看得到圖。回傳 true／false／null（查不到）。
+    async _servedImageCapable(served, apiUrl) {
+        try {
+            if (!served || !/openrouter\.ai/i.test(String(apiUrl || ''))) return null;
+            const now = Date.now(); const c = this._orModels;
+            if (!c || now - c.at > 6 * 3600 * 1000) {
+                const r = await FaLlm.fetch('https://openrouter.ai/api/v1/models', { method: 'GET', headers: { Accept: 'application/json' } }); // 不是 chat／embed／tts：FaLlm 直接放行
+                if (!r.ok) throw new Error('HTTP ' + r.status); const j = await r.json(); const map = {};
+                for (const m of (j && j.data) || []) { const mods = (m.architecture && (m.architecture.input_modalities || (m.architecture.modality ? String(m.architecture.modality).split('->')[0].split('+') : []))) || []; map[m.id] = mods.map((x) => String(x).toLowerCase()).includes('image'); }
+                this._orModels = { at: now, map };
+            }
+            const map = this._orModels.map; const id = String(served).replace(/:free$/, ''); const hit = map[served] !== undefined ? map[served] : map[id];
+            return hit === undefined ? null : !!hit;
+        } catch (_) { return null; }
+    }
+    // 顏色驗證題只用在 benchmark／看圖測試（_probeVisionSupport 的純色測試圖），不放進真實的看圖呼叫（不能改使用者的提示詞、也不能多花一行輸出）。
+    // 這裡只對 OpenRouter 做行為檢查：它的後面是路由器，同一個名字每次可能是不同的模型（甚至是安全分類模型），不可控；別的供應商照原本的做法。
+    _isOpenRouter(url) { return /(^|\/\/|\.)openrouter\.ai(\/|$|:)/i.test(String(url || '')); }
     async _interpretImageOnline(dataUrl, question, labels, opts) {
         opts = opts || {}; const step = opts.step || (() => {});
         const candidates = this._orderedVisionCandidateRows();
@@ -47332,15 +47354,24 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
                 }
                 step('線上視覺模型「' + cfg.apiModel + '」：轉錄圖中文字並解讀…');
                 const content = await this._visionChat(cfg, [{ role: 'user', content: [{ type: 'text', text: prompt }, ...imageParts] }], multi ? 3072 : 2048);
+                const orRow = this._isOpenRouter(cfg.apiUrl); // 以下行為檢查只對 OpenRouter
+                const srv = orRow && this._lastServed && this._lastServed.requested === cfg.apiModel ? this._lastServed : null;
+                if (srv && srv.served && srv.served !== cfg.apiModel) step('「' + cfg.apiModel + '」實際由「' + srv.served + '」回答' + (srv.provider ? '（' + srv.provider + '）' : ''));
+                if (srv && /guard|moderat|safety|shield|classif|審查|安全/i.test(srv.served)) { errors.push(cfg.apiModel + ': 實際回答的是「' + srv.served + '」（內容安全／審查類的模型，不是視覺模型）'); step('「' + cfg.apiModel + '」實際是安全分類模型「' + srv.served + '」，換下一個'); continue; }
+                const capable = orRow && srv && srv.served ? await this._servedImageCapable(srv.served, cfg.apiUrl) : null;
+                if (capable === false) { errors.push(cfg.apiModel + ': 實際回答的「' + srv.served + '」不接受圖片輸入'); step('「' + cfg.apiModel + '」實際是不看圖的模型「' + srv.served + '」，換下一個'); continue; }
                 const looksLikeRefusal = /^(i'?m sorry|i cannot|i can't|i am unable|as an ai|抱歉|我無法|我不能|我看不到|無法看到|沒有(?:辦法)?(?:看到|讀取)圖片)/i.test(content);
                 if (looksLikeRefusal && !(row.abilityTags && row.abilityTags.vision === true)) { errors.push(cfg.apiModel + ': 回覆內容像是看不懂圖片'); continue; }
+                // 免費路由有時把請求分給「內容安全分類」模型（Llama Guard 之類）：它不讀圖，只回 "User Safety: safe" 這種分類標籤——不是圖上的字，不能當逐字轉錄
+                const _ct = content.trim(); const looksLikeClassifier = /^(?:(?:user|assistant|agent|prompt|response)\s*)?safety\s*[:：]\s*\w+$/i.test(_ct) || /^(?:safe|unsafe)(?:\s*\n\s*S\d+(?:\s*,\s*S\d+)*)?$/i.test(_ct) || /圖中文字[^\n]*\n\s*(?:user\s*)?safety\s*:\s*\w+\s*(?:\n|$)/i.test(_ct) && _ct.length < 120;
+                if (orRow && looksLikeClassifier) { errors.push(cfg.apiModel + ': 回覆是內容安全分類的標籤（' + _ct.slice(0, 40).replace(/\s+/g, ' ') + '），不是讀圖的結果——這個模型這次沒有看圖'); step('「' + cfg.apiModel + '」回的是安全分類標籤，不是讀圖結果，換下一個'); continue; }
                 let parsed = FaVlm.parseStructured(content);
                 if (!parsed) {
                     step('「' + cfg.apiModel + '」沒有照格式回答，補做一次文字轉錄…'); let tr = '';
                     try { tr = await this._visionChat(cfg, [{ role: 'user', content: [{ type: 'text', text: '逐字抄寫這' + (multi ? '幾張' : '張') + '圖片裡看得到的所有文字（保留原文、語言與換行' + (multi ? '，每張圖前面標「圖N：」' : '') + '）。完全沒有文字就只回答「沒有文字」。看不清楚的寫「（看不清楚）」，絕對不要猜測、補字或編造。' }, ...imageParts] }], 2048); } catch (_) { tr = ''; }
                     parsed = { transcription: tr, answer: content };
                 }
-                return { description: FaVlm.combineVision(parsed.transcription, parsed.answer), transcription: parsed.transcription, answer: parsed.answer, modelUsed: cfg.apiModel, visionConfirmed: true, backend: 'online' };
+                return { description: FaVlm.combineVision(parsed.transcription, parsed.answer), transcription: parsed.transcription, answer: parsed.answer, modelUsed: (srv && srv.served && srv.served !== cfg.apiModel) ? cfg.apiModel + '（實際：' + srv.served + '）' : cfg.apiModel, servedModel: srv && srv.served || undefined, visionConfirmed: true, confirmedBy: capable === true ? 'openrouter_modalities' : 'row_probe', backend: 'online' };
             } catch (err) { errors.push(`${cfg.apiModel}: ${String((err && err.message) || err)}`); step('「' + cfg.apiModel + '」失敗：' + String((err && err.message) || err).slice(0, 80)); }
         }
         throw new Error(`所有線上視覺模型都無法解讀這張圖片：${errors.join('；')}。建議到進階設定的LLM Models清單，對確定支援讀圖的model按「Benchmark」測試一次。`);

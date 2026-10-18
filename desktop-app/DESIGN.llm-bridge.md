@@ -113,3 +113,21 @@ window.fetch 後備（抓漏網的）─────────────┘
 - **工具呼叫回 `tool_calls`、由呼叫端執行**：保留呼叫端的確認、紀錄、視覺結果。
 - **弱的判斷用體檢**：不另外寫一套；體檢的結論就是「要不要輔助」。
 - **程式決定、模型措辭、措辭要過檢查**：離線模型不被信任寫事實。
+
+## 十一、OpenRouter 的行為檢查（只對 OpenRouter，2026-10-18）
+
+**起因（遠端實測）**：`openrouter/free` 是路由器，同一個名字每次可能分給不同的模型。有一次看圖回的是 `User Safety: safe`（Llama Guard 這類內容安全分類模型的輸出），「圖中文字」與「描述」同一句，簡報被塞進錯的旁白；舊的結果還標 `vision_confirmed: true`（那只代表「這一列通過過看圖測試」，不代表這一次真的有看圖）。後面是誰、不可控，所以這些檢查**只對 OpenRouter**（網址含 `openrouter.ai`，`_isOpenRouter`），別的供應商照原本的做法。
+
+| 檢查 | 做法 | 位置 |
+|---|---|---|
+| 實際回答的模型 | 回應 JSON 的 `model`（與 `provider`）才是真正服務的；記在 `_lastServed`，transcript 寫「「openrouter/free」實際由「xxx」回答」，結果多一個 `servedModel` | `_visionChat`、`_interpretImageOnline` |
+| 名稱是安全／審查類 | `guard／moderat／safety／shield／classif` → 當成沒看圖，換下一個模型列 | 同上 |
+| 清單上不接受圖片 | OpenRouter 公開的 `/api/v1/models`（`architecture.input_modalities`，快取 6 小時）：實際模型不含 `image` → 換下一個；含 `image` → 結果標 `confirmedBy: openrouter_modalities` | `_servedImageCapable` |
+| 回的是安全分類標籤 | `User Safety: safe`、`safe／unsafe` ＋ `S1`…（含包在「圖中文字」格式裡的）→ 不是讀圖結果，換下一個 | `_interpretImageOnline` |
+| 全部都不行 | 丟錯 → `_visionDescribe` 退到離線圖像模型（Florence-2 的 OCR），實測讀到真的字 | `_visionDescribe` |
+| benchmark 的看圖測試 | `_probeVisionSupport` 的純色測試圖（本來就是顏色驗證題）：OpenRouter 實際是 guard 模型、或清單上不接受圖片 → 不算通過；實際模型記在 `_lastProbeServed` | `_probeVisionSupport` |
+| 一般聊天呼叫 | 成功時記下實際服務的模型（`FaLlm.served[請求的名字]`），只記不擋 | `FaLlm.fetch` |
+
+**顏色驗證題只用在 benchmark／看圖測試**，不放進真實的看圖呼叫（不能改使用者的提示詞、也不該多花一行輸出）。（一度做過把 `AVGCOLOR=…` 塞進每次看圖呼叫，已拿掉。）
+
+測試：用假的回應跑 OpenRouter 與非 OpenRouter 兩種網址——guard 名稱、安全標籤、不接受圖片被擋；接受圖片的通過；非 OpenRouter 的同樣回應不檢查；提示詞裡沒有顏色驗證題；benchmark 測試圖對 guard 回 false。
