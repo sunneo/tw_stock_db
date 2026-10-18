@@ -25066,7 +25066,7 @@ const ADVANCED_SETTINGS_GROUPS = {
     desktop: { label: '桌面程式/單機', cats: [], visible: false },
 };
 // 工程模式（Configure 視窗左下角的勾選）沒打勾時藏起來的設定頁：一般使用者不需要動、預設值就夠用的那些
-const ADVANCED_ENGINEERING_CATS = new Set(['rag', 'git', 'llm-sampling', 'llm-debug', 'subagent', 'voice', 'multimedia', 'youtube', 'offline-trainer', 'offline-models', 'domains', 'functions', 'terminal', 'limits', 'ci-connections']);
+const ADVANCED_ENGINEERING_CATS = new Set(['rag', 'git', 'llm-sampling', 'llm-debug', 'subagent', 'voice', 'multimedia', 'youtube', 'offline-trainer', 'offline-models', 'domains', 'functions', 'terminal', 'limits', 'ci-connections', 'designed-tools']);
 
 // tw_stock_db客製: 2026-09-20——Chrome擴充功能檔案的後備來源（網頁部署目錄抓不到、或桌面版file://時使用）。
 // tw_stock_db客製: 2026-09-20——啟用瀏覽器控制時，這些工具會被注入「所有」子agent（程式設計/研究/網路搜尋…），
@@ -29091,28 +29091,125 @@ const FaLlm = {
     },
     parseBody(init) { try { return init && typeof init.body === 'string' ? JSON.parse(init.body) : null; } catch (_) { return null; } },
     textOf(c) { return typeof c === 'string' ? c : Array.isArray(c) ? c.map((b) => (b && b.text) || '').join('') : ''; },
-    // 離線文字模型回答：把這次請求的對話交給 _offlineLlmAnswer（不開進度卡片、不帶工具），回傳 OpenAI 格式的 Response
-    async offlineResponse(body, reason) {
+    // ---- 回應的外殼（OpenAI 格式；要串流就包成串流）----
+    wrap(body, message, finishReason, model) {
+        const id = 'chatcmpl-offline-' + Date.now(), created = Math.floor(Date.now() / 1000);
+        if (body && body.stream) {
+            const enc = new TextEncoder(); const delta = { role: 'assistant' };
+            if (message.content != null) delta.content = message.content;
+            if (message.tool_calls) delta.tool_calls = message.tool_calls.map((t, n) => Object.assign({ index: n }, t));
+            const chunk = { id, object: 'chat.completion.chunk', created, model, choices: [{ index: 0, delta, finish_reason: null }] };
+            const fin = { id, object: 'chat.completion.chunk', created, model, choices: [{ index: 0, delta: {}, finish_reason: finishReason }] };
+            const stream = new ReadableStream({ start(c) { c.enqueue(enc.encode('data: ' + JSON.stringify(chunk) + '\n\n')); c.enqueue(enc.encode('data: ' + JSON.stringify(fin) + '\n\n')); c.enqueue(enc.encode('data: [DONE]\n\n')); c.close(); } });
+            return new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+        }
+        const data = { id, object: 'chat.completion', created, model, _faOffline: true, choices: [{ index: 0, message, finish_reason: finishReason }], usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 } };
+        return new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+    textResponse(body, text, model) { return this.wrap(body, { role: 'assistant', content: text }, 'stop', model || 'offline'); },
+    // 工具呼叫是橋接的：食譜／CoLU 決定「用哪個工具、填什麼」，這裡回標準的 tool_calls，由呼叫端自己執行（它的確認、紀錄、重試都照常）
+    toolCallResponse(body, name, args, model) {
+        const call = { id: 'call_off_' + Math.random().toString(36).slice(2, 10), type: 'function', function: { name, arguments: JSON.stringify(args || {}) } };
+        return this.wrap(body, { role: 'assistant', content: null, tool_calls: [call] }, 'tool_calls', model || 'offline');
+    },
+    toolNames(body) { return (body && Array.isArray(body.tools) ? body.tools : []).map((t) => t && t.function && t.function.name).filter(Boolean); },
+    // 過程紀錄：每一次橋接都有一張卡片，寫清楚走了哪條路、誰決定的、花多久、失敗在哪（跟線上子任務的執行紀錄同一種東西）
+    trace(title) {
+        const h = this.host; let prog = null; const t0 = Date.now();
+        try { prog = h._createProgressWidget(title); } catch (_) { prog = null; }
+        return { log: (x) => { try { if (prog) prog.log(x); } catch (_) { /* */ } }, done: (x) => { try { if (prog) prog.finish((x || '完成') + '（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）'); } catch (_) { /* */ } }, fail: (x) => { try { if (prog) prog.fail(x); } catch (_) { /* */ } } };
+    },
+    // 反思（解不出來的時候，程式依序看）：① 是不是有現有工具（搜尋所有領域；呼叫端給了的才能用）→ ② 達成路線（UML design／程式／模型），把路線當成回答
+    async reflect(task, body, tr) {
+        const h = this.host; const names = this.toolNames(body); const hits = h._capSearchTools(task, 3);
+        tr.log('反思①：是不是有現有工具？ → ' + (hits.length ? hits.map((x) => x.name).join('、') : '搜尋所有領域，沒有相近的'));
+        if (names.length) {
+            const hit = hits.find((x) => names.indexOf(x.name) >= 0);
+            if (hit) {
+                try {
+                    const plan = await h._otPlan(task); const rr = await h._recipeAnswer(task, plan, { fallback: true, planOnly: true, noModel: true, forceTool: hit.name });
+                    if (rr && rr.planned) { tr.log('→ 用現有工具「' + hit.name + '」（欄位由程式填好）'); return { toolCall: rr.planned }; }
+                    tr.log('→ 「' + hit.name + '」欄位補不齊' + (rr && rr.missing ? '（缺 ' + rr.missing.join('、') + '）' : ''));
+                } catch (e) { tr.log('→ 用現有工具失敗：' + String((e && e.message) || e).slice(0, 120)); }
+            }
+        }
+        try {
+            const rp = await h._routePlan({ need: task, mode: 'manual', use_model: false });
+            if (rp && rp.ok && rp.kind === 'design') {
+                tr.log('反思②：達成路線 → design（先用 UML design 設計，再用程式實現）');
+                let go = !rp.ask_plan_first;
+                if (!go) { try { const ans = await h.requestUserForm({ title: '🌉 離線流程：這件事要先用 UML design 設計', description: rp.message, choices: ['照這個做', '不用'] }); go = !!(ans && ans.confirmed && ans.answer === '照這個做'); tr.log('手動模式：' + (go ? '你同意了' : '你選了不做')); } catch (_) { go = false; } }
+                if (go) {
+                    tr.log('執行 uml_design（離線模型一次一小題拆解、程式檢查、有問題用 UML 編修補救）');
+                    try { const r = await h._umlDesign({ scenario: task, model: 'offline' });
+                        if (r && r.ok) return { text: '離線流程已用 UML design 設計完成並產生程式骨架（拆解與檢查都是離線做的）：\n' + String(r.message || r.summary || r.filename || JSON.stringify(r).slice(0, 400)) };
+                        tr.log('uml_design 沒做成：' + String((r && r.error) || '').slice(0, 160));
+                        return { text: '離線流程走了 UML design，但沒有做成：' + String((r && r.error) || '未知原因').slice(0, 200) + '\n\n達成路線：\n' + rp.message };
+                    } catch (e) { tr.log('uml_design 出錯：' + String((e && e.message) || e).slice(0, 160)); }
+                }
+            }
+            if (rp && rp.ok && rp.message) { tr.log('反思②：達成路線 → ' + rp.kind + '（' + (rp.classified_by || '程式') + '）'); return { text: '離線流程沒有現成的做法可以直接解這件事，所以先排出達成路線（不猜、也不放棄）：\n\n' + rp.message + (rp.uml_issue ? '\n\n這件事需要先用 UML design 設計出來，再用程式實現。' : '\n\n要做的話，可以用 uml_design 先設計、再用程式實現。') }; }
+        } catch (e) { tr.log('反思②失敗：' + String((e && e.message) || e).slice(0, 120)); }
+        return null;
+    },
+    // 離線流程回答（跟離線模式下直接問它同一條路）：
+    //  · 最後一則是工具結果 → 離線文字模型根據結果寫回答
+    //  · 這次請求帶了工具 → 食譜（路由→欄位）決定工具與參數，回 tool_calls；決定不了就反思
+    //  · 其餘 → 整套離線流程（規則與快取、計畫、食譜、離線文字模型）照跑、結果收集起來；解不出來同樣反思
+    async offlineResponse(body, reason, ctx) {
         const h = this.host; const msgs = (body && Array.isArray(body.messages)) ? body.messages : [];
         let lastUser = -1; for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i] && msgs[i].role === 'user') { lastUser = i; break; }
         if (lastUser < 0 || !h || typeof h._offlineLlmAnswer !== 'function') return null;
-        // 整套離線流程照跑（離線訓練器的規則與快取、計畫、食譜＝工具轉食譜、CoLU 的選擇題＋程式檢查、離線文字模型寫回答），只是結果不貼進聊天、收集起來當成這次請求的回答。
-        // 跟你直接在離線模式下問它是同一條路，所以離線模型怎麼補強，這裡就自動跟著強。
-        const task = this.textOf(msgs[lastUser].content);
-        h._offlineLastNote = '';
-        let text = '';
-        try { text = String(await h._offlineRespond(task, { capture: true, skipUser: true, fallback: true }) || '').trim(); } catch (e) { return { error: String((e && e.message) || e) }; }
-        if (!text) return { error: h._offlineLastNote || '離線流程沒有解出來' };
-        const model = 'offline';
-        const data = { id: 'chatcmpl-offline-' + Date.now(), object: 'chat.completion', created: Math.floor(Date.now() / 1000), model, _faOffline: true, choices: [{ index: 0, message: { role: 'assistant', content: text }, finish_reason: 'stop' }], usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 } };
-        if (body && body.stream) {
-            const enc = new TextEncoder();
-            const chunk = { id: data.id, object: 'chat.completion.chunk', created: data.created, model, choices: [{ index: 0, delta: { role: 'assistant', content: data.choices[0].message.content }, finish_reason: null }] };
-            const fin = { id: data.id, object: 'chat.completion.chunk', created: data.created, model, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] };
-            const stream = new ReadableStream({ start(c) { c.enqueue(enc.encode('data: ' + JSON.stringify(chunk) + '\n\n')); c.enqueue(enc.encode('data: ' + JSON.stringify(fin) + '\n\n')); c.enqueue(enc.encode('data: [DONE]\n\n')); c.close(); } });
-            return { response: new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }), model };
-        }
-        return { response: new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } }), model };
+        const tr = this.trace(reason === 'fallback' ? '🌉 橋接：線上全失敗，改走離線流程' : '🌉 橋接：離線模式'); const task = this.textOf(msgs[lastUser].content); const names = this.toolNames(body);
+        try {
+            const lastRole = msgs.length ? msgs[msgs.length - 1].role : '';
+            if (lastRole === 'tool') {
+                const raws = msgs.slice(lastUser + 1).filter((m) => m && m.role === 'tool').map((m) => String(this.textOf(m.content)).slice(0, 4000));
+                const pretty = raws.map((x) => { try { return h._otPretty(x, task); } catch (_) { return x; } }).join('\n---\n');
+                tr.log('收到 ' + raws.length + ' 筆工具結果 → 程式整理成可讀的結果；模型只負責措辭，措辭要通過檢查（只能重述結果裡有的）');
+                let phrase = '', chk = { ok: false, reason: '沒有措辭' };
+                try {
+                    const r = await h._offlineLlmAnswer(task + '\n\n【工具結果】\n' + pretty.slice(0, 2500) + '\n\n請只根據上面的工具結果回答（1～2 句）；結果裡沒有的就說沒有，不要編造。', null, { force: true, ui: false, noTools: true, history: [], fallback: true });
+                    if (r && r.ok) { phrase = String(r.text || '').trim(); chk = phrase ? FaRecipe.checkExtractive(phrase, [pretty].concat(raws)) : chk; tr.log('措辭：' + ((r.route && r.route.answer && r.route.answer.id) || '?') + ' → ' + (chk.ok ? '通過檢查' : '被退回（' + (chk.reason || '不符') + '），改用程式整理的結果')); }
+                    else tr.log('離線文字模型沒寫出措辭（' + ((r && r.error) || '') + '），用程式整理的結果');
+                } catch (e) { tr.log('措辭失敗（' + String((e && e.message) || e).slice(0, 100) + '），用程式整理的結果'); }
+                tr.done('完成'); return { response: this.textResponse(body, chk.ok ? phrase + '\n\n' + pretty : pretty), model: 'offline' };
+            }
+            if (names.length) {
+                const plan = await h._otPlan(task); tr.log('離線訓練器：' + ((plan && plan.decision && plan.decision.status) || '?') + (plan && plan.decision && plan.decision.chosen ? '（' + (plan.decision.chosen.intent || plan.decision.chosen.pattern) + '）' : ''));
+                const hits = h._capSearchTools(task, 6); const top = hits.length ? hits[0].score : 0; const extraScores = {}; hits.forEach((x) => { extraScores[x.name] = top > 0 ? Math.round(Math.min(0.95, 0.95 * x.score / top) * 100) / 100 : 0.3; });
+                if (hits.length) tr.log('工具搜尋（含設計出來的工具）：' + hits.slice(0, 4).map((x) => x.name + ':' + x.score).join('、'));
+                const rr = await h._recipeAnswer(task, plan, { fallback: true, planOnly: true, onlyTools: names, extraTools: hits.map((x) => x.name).concat(names), extraScores, noModel: !!(ctx && ctx.noModel) });
+                if (rr && rr.planned) { tr.log(rr.header || ''); tr.log('→ tool_calls：' + rr.planned.tool + ' ' + JSON.stringify(rr.planned.args).slice(0, 160)); tr.done('由食譜決定工具'); return { response: this.toolCallResponse(body, rr.planned.tool, rr.planned.args), model: 'offline' }; }
+                tr.log('食譜決定不了' + (rr && rr.missing ? '（缺 ' + rr.missing.join('、') + '）' : '') + '，改走反思');
+                const rf = await this.reflect(task, body, tr);
+                if (rf && rf.toolCall) { tr.done('反思找到現有工具'); return { response: this.toolCallResponse(body, rf.toolCall.tool, rf.toolCall.args), model: 'offline' }; }
+                if (rf && rf.text) { tr.done('給出達成路線'); return { response: this.textResponse(body, rf.text), model: 'offline' }; }
+                tr.fail('食譜與反思都沒有解出來'); return { error: '離線的食譜與反思都沒有解出來' };
+            }
+            h._offlineLastNote = '';
+            tr.log('整套離線流程（規則與快取、計畫、食譜、離線文字模型）');
+            const text = String(await h._offlineRespond(task, { capture: true, skipUser: true, fallback: true }) || '').trim();
+            if (text) { tr.done('完成'); return { response: this.textResponse(body, text), model: 'offline' }; }
+            tr.log('離線流程沒解出來：' + (h._offlineLastNote || '沒有對應的規則').slice(0, 160) + '，改走反思');
+            const rf = await this.reflect(task, body, tr);
+            if (rf && rf.text) { tr.done('給出達成路線'); return { response: this.textResponse(body, rf.text), model: 'offline' }; }
+            tr.fail('沒有解出來'); return { error: h._offlineLastNote || '離線流程沒有解出來' };
+        } catch (e) { tr.fail(String((e && e.message) || e).slice(0, 200)); return { error: String((e && e.message) || e) }; }
+    },
+    // 弱模型外殼：這個模型列做過 CoLU 體檢、結論是要輔助（guided／auto）→ 帶工具的請求先讓食譜（只用程式的決定、不呼叫任何模型）試一次；
+    // 工具與欄位都有證據支持就直接回 tool_calls，弱模型不必自己挑；決定不了才照常交給它（系統提示裡已有體檢結論的提示）。只在使用者那一輪的第一次呼叫做，工具結果回來之後不介入。
+    weakRow(h, body) {
+        try { const rows = h._getModelRows() || []; const m = body && body.model; const row = rows.find((r) => r.modelName === m) || null; const cp = row && row.coluProfile; return cp && (cp.advice === 'guided' || cp.advice === 'auto') ? row : null; } catch (_) { return null; }
+    },
+    async weakShell(body) {
+        const h = this.host; if (!h || h.advancedSettings.weakModelShell === false) return null;
+        const msgs = body && Array.isArray(body.messages) ? body.messages : []; if (!msgs.length || msgs[msgs.length - 1].role !== 'user') return null;
+        if (!this.toolNames(body).length) return null; const row = this.weakRow(h, body); if (!row) return null;
+        const tr = this.trace('🧩 弱模型外殼（' + row.modelName + '，體檢建議：' + row.coluProfile.advice + '）');
+        const o = await this.offlineResponse(body, 'shell', { noModel: true });
+        if (o && o.response) { tr.log('食譜（只用程式）已決定工具，弱模型不必自己挑'); tr.done('已用外殼'); return o.response; }
+        tr.log('程式決定不了，交給模型'); tr.done('交給模型'); return null;
     },
     isFailure(res) { return !res || res.status === 408 || res.status === 429 || res.status === 401 || res.status === 403 || res.status >= 500; },
     async fetch(input, init) {
@@ -29127,7 +29224,8 @@ const FaLlm = {
             this.say('offfail', '🔌 離線模式：離線文字模型沒辦法處理這個請求（' + ((o && o.error) || '未知原因') + '）。離線下不會連到線上 AI。');
             return Promise.reject(this.reject(k, u, (o && o.error) || ''));
         }
-        // 線上：照常連線；每一個模型列都失敗後，這一次交給離線模型
+        // 線上：弱模型外殼（程式先試）→ 照常連線；每一個模型列都失敗後，這一次交給離線流程
+        { const sh = await this.weakShell(this.parseBody(init)); if (sh) return sh; }
         let res = null, netErr = null;
         try { res = await real(input, init); } catch (e) { netErr = e; }
         if (!netErr && !this.isFailure(res)) { this.streak = 0; return res; }
@@ -29876,6 +29974,14 @@ class FloatingAssistant {
                 + '(Skill，各自是一段JS callback)的子任務助理。依task內容判斷該呼叫哪個'
                 + '技能、需要的話呼叫多個，把結果整理成最終結論回傳。',
         };
+        // runtime 設計的工具：UML design 設計出來、登記成工具的東西。它們是一般的工具（有名稱、說明、參數結構），
+        // 所以食譜（CoLU 選擇題＋程式填欄位）、工具反思的搜尋、離線橋接都會自動看到；這個領域負責管理它們。
+        this.domains.designed_tools = {
+            enabled: true,
+            label: '設計出來的工具（runtime：UML design → 登記成工具，進 CoLU／食譜）',
+            toolNames: () => ['register_designed_tool', 'list_designed_tools', 'remove_designed_tool'].concat((this.advancedSettings.designedTools || []).filter((t) => t.enabled).map((t) => t.name)),
+            systemPrompt: '你負責管理「runtime 設計出來的工具」。流程：先用 uml_design 把需求設計成 UML、再用程式實現；實現好的函式用 register_designed_tool 登記成工具（名稱、說明、參數結構、處理程式），登記後它就跟內建工具一樣可以被呼叫、被食譜與 CoLU 挑到。list_designed_tools 看現有的、remove_designed_tool 刪除。處理程式是一段 JavaScript（可以用 await，參數在 args，回傳值就是工具結果）。',
+        };
         // tw_stock_db客製: 2026-09-13使用者要求——host頁面（例如piano-web未來
         // 上百種曲風domain）可以把domain分類，讓_routeTaskHierarchical能先選
         // 類別、再選細分domain，避免domain數一多扁平路由目錄塞爆稀釋注意力。
@@ -30252,6 +30358,7 @@ class FloatingAssistant {
             rulesMd: '',
             customFunctions: '',
             customTools: [],
+            designedTools: [], // UML design 設計出來、登記成工具的東西（runtime 設計的工具；見 _designedRegister）
             // tw_stock_db客製: 2026-09-18使用者要求（TODO.md Phase 3第2/3項）
             // ——使用者自建的domain（跟內建的SUBAGENT_DOMAIN_REGISTRY/host
             // 用register_domain()註冊的domain分開存放，才知道哪些domain
@@ -30979,6 +31086,7 @@ class FloatingAssistant {
     // _reregisterCustomTools()「先清舊entry、再逐一重新註冊」的既有慣例，
     // 避免bundle被刪除/改id後domain殘留。
     _syncSkillBundleDomains() {
+        try { this._syncDesignedTools(); } catch (_) { /* 設計出來的工具同步失敗不影響技能包 */ }
         Object.keys(this.domains).filter(k => k.startsWith('skill_')).forEach(k => delete this.domains[k]);
         // tw_stock_db客製: 2026-09-16——見下面主迴圈的說明，先清掉上一輪
         // 動態註冊的read_skill_file__<id>工具，避免bundle被刪除/改名後殘留
@@ -31560,6 +31668,7 @@ class FloatingAssistant {
                 .map((tool, index) => this._normalizeCustomTool(tool, `custom_tool_${index + 1}`))
                 .filter(Boolean)
             : [];
+        const designedTools = Array.isArray(raw.designedTools) ? raw.designedTools.map((t) => this._designedNormalize(t)).filter(Boolean) : [];
         const skillBundles = Array.isArray(raw.skillBundles)
             ? raw.skillBundles.map(b => this._normalizeSkillBundle(b)).filter(Boolean)
             : [];
@@ -31585,6 +31694,7 @@ class FloatingAssistant {
             rulesMd: String(raw.rulesMd || '').replace(/\r\n/g, '\n'),
             customFunctions: String(raw.customFunctions || '').replace(/\r\n/g, '\n'),
             customTools,
+            designedTools,
             skillBundles,
             customDomains,
             primaryDomainPreference: String(raw.primaryDomainPreference || '').trim(),
@@ -33442,6 +33552,28 @@ ${fnData.code}
                 try { return JSON.stringify(await this._routePlan(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
             },
             { type: 'object', properties: { need: { type: 'string', description: '要做的事（原話）' }, mode: { type: 'string', enum: ['manual', 'auto'], description: '不給就用 /route 的設定' }, api_provided: { type: 'boolean', description: '使用者已經提供了 API' } }, required: ['need'] }
+        );
+        registerOptional('register_designed_tool',
+            '把「UML design 設計、再用程式實現」的功能登記成工具（runtime 設計的工具）。登記後它跟內建工具一樣：有名稱、說明、參數結構，食譜（CoLU 的選擇題＋程式填欄位）挑得到、工具反思搜得到、離線模式也能呼叫；到 Advance Settings「設計出來的工具」可以管理。' +
+            'name＝英文字母數字底線；description＝一句話說明（搜尋與路由都靠它，寫使用者平常會怎麼說）；parameters＝JSON Schema（{type:"object",properties:{…},required:[…]}，欄位要有 description，食譜才補得對）；handler＝JavaScript 處理程式的本體（參數在 args，可以 await，回傳值就是結果；只能用瀏覽器內的功能）；uml 與 scenario 選填，留著以後修改設計用。同名會更新。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try { return JSON.stringify(this._designedRegister(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+            },
+            { type: 'object', properties: { name: { type: 'string' }, description: { type: 'string' }, parameters: { type: 'object', description: 'JSON Schema' }, handler: { type: 'string', description: 'JavaScript 處理程式本體（args 是參數物件）' }, uml: { type: 'string', description: '設計用的 UML（文字 DSL）' }, scenario: { type: 'string' }, enabled: { type: 'boolean' } }, required: ['name', 'description', 'handler'] }
+        );
+        registerOptional('list_designed_tools',
+            '列出 runtime 設計出來的工具（名稱、說明、參數、是否啟用、執行次數、最近的錯誤）。',
+            async function () { return JSON.stringify({ ok: true, tools: this._designedList() }); },
+            { type: 'object', properties: {} }
+        );
+        registerOptional('remove_designed_tool',
+            '刪除一個 runtime 設計出來的工具（只刪登記，不影響內建工具）。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                return JSON.stringify(this._designedRemove(String(a.name || '')));
+            },
+            { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] }
         );
         registerOptional('llvm_execute',
             'LLVM IR 的執行環境（跟 python_execute、bash_execute 一樣是程式開發工具）：給一份 LLVM IR 文字，在這裡編成 WebAssembly 並執行，回傳 stdout／stderr／結束碼；IR 有錯會指出行號。不需要 clang 或 llc。' +
@@ -63971,10 +64103,104 @@ _result
             const user = String(this._currentTurnUserText || ''); const root = new Set(this._getRootToolNames ? (this._getRootToolNames() || Object.keys(this.tools)) : Object.keys(this.tools)); const byTool = new Map();
             for (const [id, d] of Object.entries(this.domains || {})) for (const n of (() => { let tn = d && d.toolNames; if (typeof tn === 'function') { try { tn = tn.call(d); } catch (_) { tn = []; } } return Array.isArray(tn) ? tn : []; })()) { if (!this.tools[n]) continue; if (!byTool.has(n)) byTool.set(n, []); byTool.get(n).push({ id, label: d.label || '' }); }
             const learned = this._capAliasStore ? this._capAliasStore.tools || {} : {};
-            const entries = Object.entries(this.tools).map(([name, t]) => ({ name, domains: byTool.get(name) || [], text: String((t && t.description) || '').slice(0, 400), direct: root.has(name), aliases: FaCapReflect.aliasOf(name, (learned[name] || []).map((x) => x.p)) })).filter((e) => !/^(delegate_|get_tool_details|catalog_)/.test(e.name));
+            const entries = Object.entries(this.tools).map(([name, t]) => ({ name, domains: byTool.get(name) || [], text: String((t && t.description) || '').slice(0, 400), direct: root.has(name), aliases: FaCapReflect.aliasOf(name, (learned[name] || []).map((x) => x.p)).concat(this._designedAliases(name)) })).filter((e) => !/^(delegate_|get_tool_details|catalog_)/.test(e.name));
             const hits = FaCapReflect.search(user + ' ' + (c.concept || ''), entries, { k: 3 }); if (!hits.length) return null;
             counterHolder.cap = (counterHolder.cap || 0) + 1; this._capPending = { user, tool: hits[0].name }; return FaCapReflect.nudgeText(c.claim, hits, user);
         } catch (_) { return null; }
+    }
+    // ===== runtime 設計的工具（UML design → 登記成工具 → 進 CoLU／食譜）=====
+    // 一個設計出來的工具＝ { id, name, description, parametersSchema, handlerScript(JavaScript), uml, scenario, enabled, designedAt, runs, lastError }。
+    // 登記後會同步進 this.tools（跟內建工具一樣有名稱、說明、參數結構），所以食譜的路由選單、欄位補齊、工具反思的搜尋、離線橋接的 tool_calls 都會自動看到它。
+    _designedNormalize(t) {
+        if (!t || typeof t !== 'object') return null;
+        const name = String(t.name || '').trim(); if (!/^[A-Za-z_][A-Za-z0-9_]{1,63}$/.test(name)) return null;
+        let schema = t.parametersSchema; if (typeof schema === 'string') { try { schema = JSON.parse(schema); } catch (_) { schema = null; } }
+        if (!schema || typeof schema !== 'object' || Array.isArray(schema)) schema = { type: 'object', properties: {} };
+        if (schema.type !== 'object') schema = { type: 'object', properties: {} };
+        return { id: String(t.id || ('dt_' + name)), name, description: String(t.description || '').slice(0, 600), parametersSchema: schema, handlerScript: String(t.handlerScript || '').replace(/\r\n/g, '\n').slice(0, 60000),
+            uml: String(t.uml || '').slice(0, 30000), scenario: String(t.scenario || '').slice(0, 3000), enabled: t.enabled !== false, designedAt: Number(t.designedAt) || Date.now(), runs: Math.max(0, Math.floor(Number(t.runs)) || 0), lastError: String(t.lastError || '').slice(0, 300) };
+    }
+    _syncDesignedTools() {
+        const list = (this.advancedSettings && this.advancedSettings.designedTools) || [];
+        const want = new Set(list.filter((t) => t.enabled).map((t) => t.name));
+        for (const old of this._designedNames || []) if (!want.has(old) && this.tools[old] && this.tools[old].designed) delete this.tools[old];
+        for (const t of list) {
+            if (!t.enabled) continue;
+            if (this.tools[t.name] && !this.tools[t.name].designed) continue; // 不蓋掉內建工具
+            const self = this;
+            this.tools[t.name] = { designed: true, description: t.description + '（runtime 設計的工具）', parametersSchema: t.parametersSchema, callback: async function (rawArgs) { return self._designedRun(t.name, rawArgs); } };
+        }
+        this._designedNames = want;
+    }
+    async _designedRun(name, rawArgs) {
+        const t = ((this.advancedSettings.designedTools) || []).find((x) => x.name === name); if (!t) return JSON.stringify({ ok: false, error: '找不到設計出來的工具「' + name + '」' });
+        try {
+            const out = await this._executeCustomTool({ name: t.name, description: t.description, handlerScript: t.handlerScript }, rawArgs);
+            t.runs = (t.runs || 0) + 1; t.lastError = ''; this._saveAdvancedSettings(); return out;
+        } catch (e) { t.lastError = String((e && e.message) || e).slice(0, 300); try { this._saveAdvancedSettings(); } catch (_) { /* */ } return JSON.stringify({ ok: false, error: '設計出來的工具「' + name + '」執行失敗：' + t.lastError }); }
+    }
+    // 登記（或更新）一個設計出來的工具：名稱不能蓋掉內建工具或自訂技能；處理程式要先過語法檢查
+    _designedRegister(a) {
+        const t = this._designedNormalize({ name: a.name, description: a.description, parametersSchema: a.parameters || a.parametersSchema, handlerScript: a.handler || a.handlerScript || a.code, uml: a.uml, scenario: a.scenario, enabled: a.enabled });
+        if (!t) return { ok: false, error: '名稱要是英文字母、數字、底線（2～64 字，不能數字開頭）' };
+        if (!t.description) return { ok: false, error: '缺少 description（一句話說明這個工具做什麼，食譜與搜尋都靠它）' };
+        if (!t.handlerScript.trim()) return { ok: false, error: '缺少 handler（JavaScript 處理程式：參數在 args，回傳值就是工具結果）' };
+        if (this.tools[t.name] && !this.tools[t.name].designed) return { ok: false, error: '「' + t.name + '」已經是內建工具，換一個名稱' };
+        if ((this.advancedSettings.customTools || []).some((c) => c.name === t.name)) return { ok: false, error: '「' + t.name + '」已經是自訂技能，換一個名稱' };
+        try { new Function('args', 'rawArgs', 'helpers', '"use strict"; return (async () => {\n' + t.handlerScript + '\n})();'); } catch (e) { return { ok: false, error: '處理程式語法錯誤：' + String((e && e.message) || e).slice(0, 200) }; }
+        const list = this.advancedSettings.designedTools = this.advancedSettings.designedTools || []; const i = list.findIndex((x) => x.name === t.name);
+        if (i >= 0) { t.runs = list[i].runs; t.designedAt = list[i].designedAt; list[i] = t; } else list.push(t);
+        this._saveAdvancedSettings(); this._syncDesignedTools(); try { this._refreshSystemPromptMessage(); } catch (_) { /* */ }
+        try { if (this._designedPaneRoot) this._designedRenderPane(); } catch (_) { /* */ }
+        return { ok: true, name: t.name, updated: i >= 0, message: '已登記成工具「' + t.name + '」：現在食譜（CoLU）、工具搜尋、離線橋接都看得到它；到 Advance Settings →「設計出來的工具」可以管理。' };
+    }
+    _designedRemove(name) {
+        const list = this.advancedSettings.designedTools || []; const i = list.findIndex((x) => x.name === name); if (i < 0) return { ok: false, error: '沒有這個設計出來的工具：' + name };
+        list.splice(i, 1); this._saveAdvancedSettings(); this._syncDesignedTools(); try { if (this._designedPaneRoot) this._designedRenderPane(); } catch (_) { /* */ } return { ok: true, removed: name };
+    }
+    _designedList() { return (this.advancedSettings.designedTools || []).map((t) => ({ name: t.name, description: t.description, enabled: t.enabled, runs: t.runs, parameters: Object.keys((t.parametersSchema && t.parametersSchema.properties) || {}), has_uml: !!t.uml, last_error: t.lastError || undefined })); }
+    // 管理介面：Advance Settings → AI → 設計出來的工具（列表、啟用／停用、試跑、看 UML 與處理程式、刪除、匯入／匯出）
+    _designedRegisterPane() {
+        if (this._designedPaneRegistered) return;
+        const root = document.createElement('div'); root.id = 'ai-designed-pane'; root.style.cssText = 'font-size:13px; line-height:1.5;';
+        this._designedPaneRoot = root; this._designedPaneRegistered = true;
+        this.registerAdvancedSettingsTab('ai', 'designed-tools', '設計出來的工具', root);
+        const side = document.getElementById('ai-advanced-sidebar');
+        if (side) side.addEventListener('click', (ev) => { const c = ev.target.closest('.ai-advanced-cat'); if (c && c.dataset.cat === 'designed-tools') this._designedRenderPane(); });
+        root.addEventListener('click', async (ev) => {
+            const b = ev.target.closest('[data-dt]'); if (!b) return; const act = b.dataset.dt, name = b.dataset.name; const t = (this.advancedSettings.designedTools || []).find((x) => x.name === name);
+            if (act === 'toggle' && t) { t.enabled = !t.enabled; this._saveAdvancedSettings(); this._syncDesignedTools(); this._designedRenderPane(); }
+            else if (act === 'remove') { if (confirm('刪除設計出來的工具「' + name + '」？')) this._designedRemove(name); }
+            else if (act === 'run') { const inp = root.querySelector('[data-dt-args="' + name + '"]'); const out = root.querySelector('[data-dt-out="' + name + '"]'); if (out) out.textContent = '執行中…'; const r = await this._designedRun(name, inp ? inp.value || '{}' : '{}'); if (out) out.textContent = String(r).slice(0, 2000); this._designedRenderPane(true); }
+            else if (act === 'view' && t) { const box = root.querySelector('[data-dt-view="' + name + '"]'); if (box) box.style.display = box.style.display === 'none' ? 'block' : 'none'; }
+            else if (act === 'export') { const blob = new Blob([JSON.stringify({ format: 'fa-designed-tools', tools: this.advancedSettings.designedTools || [] }, null, 2)], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'designed-tools.json'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); }
+            else if (act === 'import') { const f = document.createElement('input'); f.type = 'file'; f.accept = '.json'; f.onchange = async () => { try { const j = JSON.parse(await f.files[0].text()); let n = 0, bad = []; for (const x of (j.tools || [])) { const r = this._designedRegister({ name: x.name, description: x.description, parameters: x.parametersSchema, handler: x.handlerScript, uml: x.uml, scenario: x.scenario, enabled: x.enabled }); if (r.ok) n++; else bad.push(x.name + '：' + r.error); } alert('匯入 ' + n + ' 個' + (bad.length ? '；失敗：\n' + bad.join('\n') : '')); } catch (e) { alert('匯入失敗：' + e.message); } }; f.click(); }
+        });
+    }
+    _designedRenderPane(keepOut) {
+        const root = this._designedPaneRoot; if (!root) return; const esc = (x) => this._escapeHtml(String(x == null ? '' : x)); const list = this.advancedSettings.designedTools || [];
+        const btn = 'padding:3px 10px; border-radius:6px; border:1px solid #475569; background:#1e293b; color:#e2e8f0; cursor:pointer; font-size:12px;';
+        const keep = {}; if (keepOut) root.querySelectorAll('[data-dt-out]').forEach((e) => { keep[e.dataset.dtOut] = e.textContent; });
+        root.innerHTML = '<p style="color:#94a3b8;">用 uml_design 設計、再用程式實現的功能，登記成工具後會出現在這裡。登記後它跟內建工具一樣：食譜（CoLU 選擇題＋程式填欄位）挑得到、工具反思搜尋得到、離線模式下也能被橋接呼叫。AI 用 register_designed_tool 登記、list_designed_tools 查看、remove_designed_tool 刪除。</p>'
+            + '<div style="margin:6px 0;"><button style="' + btn + '" data-dt="export">匯出</button> <button style="' + btn + '" data-dt="import">匯入</button> <span style="color:#94a3b8;">共 ' + list.length + ' 個</span></div>'
+            + (list.length ? list.map((t) => '<div style="border:1px solid #334155; border-radius:8px; padding:8px; margin:8px 0;">'
+                + '<div><b>' + esc(t.name) + '</b> ' + (t.enabled ? '<span style="color:#22c55e;">啟用</span>' : '<span style="color:#f59e0b;">停用</span>') + ' <span style="color:#94a3b8;">執行過 ' + t.runs + ' 次' + (t.lastError ? '；最近的錯誤：' + esc(t.lastError) : '') + '</span></div>'
+                + '<div style="color:#cbd5e1;">' + esc(t.description) + '</div>'
+                + '<div style="color:#94a3b8;">參數：' + (Object.keys((t.parametersSchema && t.parametersSchema.properties) || {}).map(esc).join('、') || '（無）') + '</div>'
+                + '<div style="margin-top:4px;"><button style="' + btn + '" data-dt="toggle" data-name="' + esc(t.name) + '">' + (t.enabled ? '停用' : '啟用') + '</button> <button style="' + btn + '" data-dt="view" data-name="' + esc(t.name) + '">UML／程式</button> <button style="' + btn + '" data-dt="remove" data-name="' + esc(t.name) + '">刪除</button></div>'
+                + '<div style="margin-top:4px;"><input data-dt-args="' + esc(t.name) + '" placeholder=\'試跑的參數（JSON），例如 {"x":1}\' style="width:60%; background:#0f172a; color:#e2e8f0; border:1px solid #475569; border-radius:6px; padding:3px 6px;"> <button style="' + btn + '" data-dt="run" data-name="' + esc(t.name) + '">試跑</button></div>'
+                + '<pre data-dt-out="' + esc(t.name) + '" style="white-space:pre-wrap; color:#94a3b8; margin:4px 0 0;">' + esc(keep[t.name] || '') + '</pre>'
+                + '<div data-dt-view="' + esc(t.name) + '" style="display:none; margin-top:4px;"><div style="color:#94a3b8;">情境：' + esc(t.scenario || '（沒有）') + '</div><pre style="white-space:pre-wrap; background:#0f172a; padding:6px; border-radius:6px;">' + esc(t.uml || '（沒有 UML）') + '</pre><pre style="white-space:pre-wrap; background:#0f172a; padding:6px; border-radius:6px;">' + esc(t.handlerScript) + '</pre></div></div>').join('') : '<p style="color:#94a3b8;">還沒有。</p>');
+    }
+    // 反思：「是不是有現有工具」——搜尋所有領域的所有工具（cap_reflect），回傳最像的幾個 { name, score }；不經過模型
+    _designedAliases(name) { const t = ((this.advancedSettings && this.advancedSettings.designedTools) || []).find((x) => x.name === name); return t ? [t.description, t.scenario].filter(Boolean) : []; }
+    _capSearchTools(text, k) {
+        try {
+            const byTool = new Map(); const learned = this._capAliasStore ? this._capAliasStore.tools || {} : {};
+            for (const [id, d] of Object.entries(this.domains || {})) for (const n of (() => { let tn = d && d.toolNames; if (typeof tn === 'function') { try { tn = tn.call(d); } catch (_) { tn = []; } } return Array.isArray(tn) ? tn : []; })()) { if (!this.tools[n]) continue; if (!byTool.has(n)) byTool.set(n, []); byTool.get(n).push({ id, label: d.label || '' }); }
+            const entries = Object.entries(this.tools).map(([name, t]) => ({ name, domains: byTool.get(name) || [], text: String((t && t.description) || '').slice(0, 400), direct: false, aliases: FaCapReflect.aliasOf(name, (learned[name] || []).map((x) => x.p)).concat(this._designedAliases(name)) })).filter((e) => !/^(delegate_|get_tool_details|catalog_)/.test(e.name));
+            return FaCapReflect.search(String(text || ''), entries, { k: k || 3 }) || [];
+        } catch (_) { return []; }
     }
     _unfulfilledIntentNudge(text, counterHolder) {
         if (this._forceNoTools || !counterHolder || (counterHolder.count || 0) >= (this._isAutoAgentMode() ? 6 : 2)) return null;
@@ -67635,13 +67861,14 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     // 流程：候選工具（離線訓練器給的）→ 路由（分數差距夠大就程式決定，否則模型從編號選單挑；可以選「都不是」）→ 欄位（程式從網址／路徑／附件／引號／列舉／預設補，
     // 補不到的才讓模型填空，模型不知道就填 null、不准編）→ 執行（有副作用的工具先問使用者）→ 措辭（資訊類結果讓模型寫 1～2 句，會被檢查，不過就用程式整理的結果）。
     // 每個決定都記錄（誰決定的、選項、被退回的原因）。模型每一步都沒有前面步驟的記憶。
-    _recipeCandidates(plan, forceTool, extraTools) {
+    _recipeCandidates(plan, forceTool, extraTools, onlyTools, extraScores) {
         const out = []; const add = (tool, intent, score) => { if (!tool || !this.tools[tool] || FA_OT_META_TOOLS.has(tool) || out.some((c) => c.tool === tool)) return; out.push({ tool, intent: intent || String(this.tools[tool].description || tool).slice(0, 40), score: Number(score) || 0 }); };
         if (forceTool) { add(forceTool, '', 1); return out; }
         const d = plan && plan.decision; if (d && d.chosen && d.chosen.tool) { add(d.chosen.tool, d.chosen.intent, d.chosen.score); if (out[0] && out[0].tool === d.chosen.tool && d.chosen.args && typeof d.chosen.args === 'object') out[0].trainerArgs = d.chosen.args; }
         for (const a of (plan && plan.alternatives) || []) add(a.tool, a.intent, a.score);
-        (extraTools || []).forEach((n) => add(n, '', 0.3)); // 橋接：這次請求本來要給線上模型挑的工具（只收登記過的）
+        (extraTools || []).forEach((n) => add(n, '', extraScores && extraScores[n] != null ? extraScores[n] : 0.3)); // 橋接：這次請求本來要給線上模型挑的工具（只收登記過的）
         ['ref_lookup', 'browser_search', 'fetch_web_page'].forEach((n) => add(n, '', 0));
+        if (onlyTools) { const ok = new Set(onlyTools); return out.filter((c) => ok.has(c.tool)).slice(0, 6); } // 橋接回 tool_calls 時，只能挑呼叫端真的給了的工具
         return out.slice(0, 6);
     }
     _recipeSaveTrace(trace) { try { const k = 'fa_recipe_traces_v1'; const cur = JSON.parse(localStorage.getItem(k) || '[]'); localStorage.setItem(k, JSON.stringify(FaRecipe.pushRing(cur, trace, 30, 400000))); } catch (_) {} }
@@ -67650,9 +67877,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     async _recipeAnswer(userText, plan, opts) {
         opts = opts || {}; const S = this._omSettings(); if (!S.recipes) return { handled: false };
         const question = FaRecipe.stripAttachments(userText) || String(userText);
-        if (S.plans && !opts.forceTool) { const pr = await this._planAnswer(userText, plan, opts); if (pr && pr.handled) return pr; } // 多步驟：有明確的目標（影片做摘要、網頁摘要、上網查資料…）就先走計畫
+        if (S.plans && !opts.forceTool && !opts.planOnly) { const pr = await this._planAnswer(userText, plan, opts); if (pr && pr.handled) return pr; } // 多步驟：有明確的目標（影片做摘要、網頁摘要、上網查資料…）就先走計畫
         const trace = FaRecipe.newTrace(userText, { recipe: 'tool_auto' });
-        const cands = this._recipeCandidates(plan, opts.forceTool, opts.extraTools); if (!cands.length) return { handled: false };
+        const cands = this._recipeCandidates(plan, opts.forceTool, opts.extraTools, opts.onlyTools, opts.extraScores); if (!cands.length) return { handled: false };
         const inst = await this._omInstalled(); const route = FaVlm.routeStages({ config: S.roles, bench: S.bench, installed: inst.set, requireInstalled: !!opts.fallback, defaultId: S.textModel, hasTools: false });
         const model = route.answer; let modelErr = undefined; this._omDeclined = this._omDeclined || new Set();
         const ensureModel = async () => { // 第一次真的要用模型才檢查／下載；自動備援不偷偷下載
@@ -67661,7 +67888,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             if (need > 20 * 1048576) { if (!this._omSilent() && (opts.fallback || this._omDeclined.has(model.id))) return (modelErr = '離線文字模型「' + model.label + '」還沒下載（約 ' + FaVlm.fmtBytes(need) + '）'); const ok = await this._omAskDownload('要下載離線文字模型嗎？', '「' + model.label + '」\n來源：huggingface.co/' + model.repo + '\n大小：約 ' + FaVlm.fmtBytes(need) + '（食譜需要用它挑工具、填欄位）。', '下載並使用'); if (!ok) { this._omDeclined.add(model.id); return (modelErr = '使用者取消了下載'); } }
             return (modelErr = null);
         };
-        const gen = async (a) => { const err = await ensureModel(); if (err) throw new Error(err); return this._llmGenerate(model, Object.assign({}, a, { tools: [], deterministic: true }), {}); };
+        const gen = async (a) => { if (opts.noModel) throw new Error('這一步不用模型（只讓程式決定）'); const err = await ensureModel(); if (err) throw new Error(err); return this._llmGenerate(model, Object.assign({}, a, { tools: [], deterministic: true }), {}); };
         const steps = [];
         try {
             // 證據：附件（訊息裡的、待送的、這個對話最近一則有附件的）與離線訓練器抽出的欄位（網址、路徑、引號…）
@@ -67713,6 +67940,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             }
             steps.push('欄位：' + (fieldBy.join('、') || '（無）'));
             const header0 = '🍳 離線食譜｜' + steps.join(' → ');
+            if (opts.planOnly) { this._recipeSaveTrace(trace); return remaining.length ? { handled: false, missing: remaining.map((d) => d.name), header: header0 } : { handled: true, planned: { tool: cand.tool, args }, header: header0, steps }; } // 橋接：只決定「用哪個工具、填什麼」，執行由呼叫端做（它自己的確認、紀錄都照常）
             if (remaining.length) { this._recipeSaveTrace(trace); return { handled: true, ok: false, header: header0, text: '要執行「' + cand.tool + '」，但還缺：' + remaining.map((d) => d.name + (d.description ? '（' + d.description + '）' : '')).join('、') + '。請補上（例如附上圖片／檔案、貼網址，或直接說清楚），我就能做。' }; }
             // ③ 執行
             if (FA_OT_RISKY_TOOL.test(cand.tool)) { const ans = await this.requestUserForm({ title: '🍳 離線食譜要執行有副作用的工具', description: '工具：' + cand.tool + '\n參數：' + JSON.stringify(args).slice(0, 400) + '\n\n這是離線小模型加規則決定的，不一定正確。要執行嗎？', choices: ['執行', '取消'] }); if (!ans || !ans.confirmed || ans.answer !== '執行') { this._recipeSaveTrace(trace); return { handled: true, ok: false, header: header0, text: '已取消。' }; } }
@@ -76127,6 +76355,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const win = document.getElementById('ai-floating-window');
         try { this._otRegisterPane(); } catch (e) { console.warn('離線訓練器分頁註冊失敗', e); }
         try { this._omRegisterPane(); } catch (e) { console.warn('離線模型管理分頁註冊失敗', e); }
+        try { this._designedRegisterPane(); } catch (e) { console.warn('設計出來的工具分頁註冊失敗', e); }
         try { this._riRegisterPane(); } catch (e) { console.warn('專案索引分頁註冊失敗', e); }
         try { this._mcpRegisterPane(); } catch (e) { console.warn('MCP 分頁註冊失敗', e); }
         // CI/CD 連線設定頁不放進 Configure（使用者不需要）：程式設計 domain 靠內建的知識（ci_guide、提示詞）與 gh／curl／ssh 指令處理 GitHub、Jenkins、Gerrit
