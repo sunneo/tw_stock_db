@@ -88,3 +88,9 @@
 
 ## 7. 移植到 宿主專案（或其他宿主）
 帶走 `recipe_core.js`＋測試（純函式，只依賴注入的 `generate`／工具呼叫）。宿主要提供：工具表與 JSON Schema（`parametersSchema`）、附件清單（id＋檔名）、離線訓練器抽出的欄位（網址、路徑、引號、數字）、一個能強制 JSON 的文字生成函式（本專案是 `_llmGenerate`）、危險工具的確認介面。宿主專案 現有的 `fillSlots`／`recipePhrase`／`jsonStep` 對應到這裡的 `modelFill`／`phraseMessages＋checkExtractive`／`jsonStep`，行為一致（退回只帶最後一次回覆與精確錯誤、相同回覆提前停止）。
+
+## 追記（2026-10-18）：簡報旁白與技能食譜
+
+- **旁白每句獨立合成、句尾補停頓**：Kokoro 整段一次念時句與句之間幾乎沒有停頓（"It Is Halloween! Trick or treat!" 黏在一起）。簡報的合成（`_deckSynthesizeNow`）傳 `sentencePause`：依標點分句、每句合成後修掉前後的靜音（約半秒）、句尾補約 `0.35 秒 ÷ 語速` 的靜音；中文本地語音（拼音路線）不套用。實測 `deck.speed: 0.75` 的四句旁白由 5.7 秒變 8.2 秒。快取鍵加版本（`p1`），舊的沒停頓音檔不再被用到。
+- **旁白快取在桌面版其實存不下來**：桌面版用 `file://` 載入，用 `location.origin` 組的快取網址被 Cache Storage 拒絕（只收 http／https），存檔失敗被悄悄吞掉，每次重開對話都要重新合成。改用固定的 https 鍵、被拒時退回 IndexedDB、讀取時兩邊都找。
+- **簡報的食譜**：圖片讀字做簡報、文章整理做簡報，見 [DESIGN.skill-recipes.md](DESIGN.skill-recipes.md)。
