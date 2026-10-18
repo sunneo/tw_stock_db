@@ -549,7 +549,7 @@
   }
 
   function synthesize(text, voice, speed, lang) {
-    var key = [voice || '', speed || 1, text].join('|');
+    var key = ['p1', voice || '', speed || 1, text].join('|'); // 'p1': narration with pauses between sentences (older cached audio had none)
     if (audioCache[key]) { return audioCache[key]; }
     var p = sha256Hex(key).then(function (hash) {
       return diskGet(hash).then(function (hit) {

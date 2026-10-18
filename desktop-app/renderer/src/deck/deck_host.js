@@ -240,7 +240,7 @@ const FaDeckHost = (function () {
             try { return await this._deckSynthesizeNow(text, voice, speed, lang); } finally { release(); }
         },
         async _deckSynthesizeNow(text, voice, speed, lang) {
-            const r = await this._synthesizeSpeech(String(text), voice || null, null, speed);
+            const r = await this._synthesizeSpeech(String(text), voice || null, null, speed, { sentencePause: true });
             if (!r || !r.ok) throw new Error((r && r.error) || '語音合成失敗');
             const rec = await this.fileCache.get(r.audio_file_id);
             if (!rec) throw new Error('語音合成的結果檔不見了');
