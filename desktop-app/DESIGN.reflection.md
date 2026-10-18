@@ -29,6 +29,7 @@
 | 6 | **失敗後重新計畫** | 瀏覽器控制的步驟失敗、探索的錯誤歸類 | 重新觀察、再計畫（有次數上限） | 否；有副作用的步驟要問 | `browser/bcplan_core.js`、`discover_core.js` |
 | 7 | **沒有結果的反思**（資料查詢） | 查不到資料 | 先放寬（精確→包含），再列最接近的值；不編答案 | 否（寫進答案） | `dataview/dataquery_core.js` |
 | 9 | **橋接的反思**（離線流程解不出來） | 離線／備援的請求，食譜決定不了 | ① 是不是有現有工具（搜尋所有領域，含設計出來的工具）→ ② 達成路線（設計類真的跑 `uml_design`） | 手動模式問一次 | `FaLlm.reflect`（見 [橋接](DESIGN.llm-bridge.md)） |
+| 11 | **意圖的反思**（議題／測試需求） | 描述像議題（bugfix／testcase），離線流程解不出來，或 plan_route 收到議題 | 讀出行為、現象、期待（含隱含）、驗證；缺口用封閉問題先問；不硬湊不相干的工具 | 缺口就先問 | `user_intent_core.js`（見 [意圖解析](DESIGN.intent.md)） |
 | 10 | **技能缺口反思**（技能→食譜的缺口） | 編譯技能時對不上工具、要跑腳本、必填欄位綁不到 | 相近的現有工具（建議）或 `uml_design` 設計並登記成「待實作」的工具，實作後再編譯對上 | 手動模式問一次（離線 CPU 很慢） | `skill_compile_core.js`、`_skillDesignGaps`（見 [技能→食譜](DESIGN.skill-recipes.md)） |
 | 8 | **對模型本身的反思**（模型體檢） | 使用者按「CoLU」或 `/colu-bench` | 這個模型該靠哪一層輔助，存進 `coluProfile`，之後自動加提示 | 否 | `catalog/colu_bench_core.js`、`uml/uml_bench_core.js` |
 

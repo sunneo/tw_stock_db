@@ -29534,8 +29534,11 @@ const FaLlm = {
         return { log: (x) => { touch(); try { if (prog) prog.log(x); } catch (_) { /* */ } }, done: (x) => { touch(); try { if (prog) prog.update({ status: (x || '完成') + '（第 ' + (this.card ? this.card.n : 1) + ' 次，' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）' }); } catch (_) { /* */ } }, fail: (x) => { touch(); try { if (prog) { prog.log('✗ ' + x); prog.update({ status: '失敗：' + String(x).slice(0, 60) }); } } catch (_) { /* */ } } };
     },
     // 反思（解不出來的時候，程式依序看）：① 是不是有現有工具（搜尋所有領域；呼叫端給了的才能用）→ ② 達成路線（UML design／程式／模型），把路線當成回答
-    async reflect(task, body, tr) {
-        const h = this.host; const names = this.toolNames(body); const hits = h._capSearchTools(task, 3);
+    async reflect(task, body, tr, intentR) {
+        const h = this.host; const names = this.toolNames(body);
+        // ⓪ 像議題／測試需求：把讀出的意圖交出去（含缺口的封閉問題與下一步）——這比「排一條通用路線」有用得多
+        if (intentR && intentR.ok && (intentR.kind === 'bugfix' || intentR.kind === 'testcase' || intentR.kind === 'feature') && intentR.confidence >= 0.3) { tr.log('反思⓪：像議題／測試需求 → 交出讀到的意圖'); return { text: h._intentBrief(intentR) }; }
+        const hits = h._capSearchTools(task, 3);
         tr.log('反思①：是不是有現有工具？ → ' + (hits.length ? hits.map((x) => x.name).join('、') : '搜尋所有領域，沒有相近的'));
         if (names.length) {
             const hit = hits.find((x) => names.indexOf(x.name) >= 0);
@@ -29571,15 +29574,19 @@ const FaLlm = {
     //  · 這次請求帶了工具 → 食譜（路由→欄位）決定工具與參數，回 tool_calls；決定不了就反思
     //  · 其餘 → 整套離線流程（規則與快取、計畫、食譜、離線文字模型）照跑、結果收集起來；解不出來同樣反思
     async offlineResponse(body, reason, ctx) {
+        const lastRole0 = (m) => (m && m.length ? m[m.length - 1].role : '');
         const h = this.host; const msgs = (body && Array.isArray(body.messages)) ? body.messages : [];
         let lastUser = -1; for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i] && msgs[i].role === 'user') { lastUser = i; break; }
         if (lastUser < 0 || !h || typeof h._offlineLlmAnswer !== 'function') return null;
         if (msgs.some((m) => m && Array.isArray(m.content) && m.content.some((b) => b && (b.type === 'image_url' || b.type === 'image' || b.type === 'input_image')))) return { error: '這是看圖的請求，離線的文字流程看不到圖片；要交給離線圖像模型（image_to_text）處理，呼叫端請改走它自己的離線圖像備援' };
         const tr = this.trace(reason === 'fallback' ? '🌉 橋接：線上全失敗，改走離線流程' : '🌉 橋接：離線模式');
         const isNudge = (m) => /^\s*(【|\[系統)/.test(this.textOf(m && m.content));
+        let intentR = null; // 議題／測試需求：先讀意圖（離線時讀不出的句子會用中英互譯）
+
         let taskIdx = lastUser; while (taskIdx > 0 && isNudge(msgs[taskIdx])) { let k = taskIdx - 1; while (k >= 0 && !(msgs[k] && msgs[k].role === 'user')) k--; if (k < 0) break; taskIdx = k; }
         const task = this.textOf(msgs[taskIdx].content); const names = this.toolNames(body);
         if (taskIdx !== lastUser) tr.log('最後一則是系統提醒（不是使用者要做的事），規劃用原本的任務');
+        if (lastRole0(msgs) !== 'tool' && h._looksLikeIssue(task)) { try { intentR = await h._intentParse({ text: task, uml: true, match: true }); if (intentR && intentR.ok) tr.log('意圖：' + intentR.kind + '（把握度 ' + Math.round(intentR.confidence * 100) + '%）；步驟 ' + intentR.steps.length + '、現象 ' + intentR.observations.length + '、期待 ' + intentR.expectations.length + '（隱含 ' + intentR.expectations.filter((e) => e.implicit).length + '）、驗證 ' + intentR.verifications.length + (intentR.gaps.length ? '；缺 ' + intentR.gaps.join('、') : '') + (intentR.translated_segments ? '；用翻譯讀了 ' + intentR.translated_segments + ' 句' : '')); else intentR = null; } catch (_) { intentR = null; } }
         try {
             const lastRole = msgs.length ? msgs[msgs.length - 1].role : '';
             if (lastRole === 'tool') {
@@ -29600,15 +29607,19 @@ const FaLlm = {
                 if (sr && sr.error) tr.log('技能食譜「' + sr.recipe + '」沒做成：' + sr.error);
                 if (sr && /沒有找到可以整理的文章/.test(sr.error || '') && names.indexOf('render_presentation') >= 0) { tr.done('沒有素材'); return { response: this.textResponse(body, '這個簡報任務沒有給我素材：沒有圖片或文件附件、沒有網址，也沒有夠長的文字，所以我不會編造內容。請附上素材（例如要解讀的圖片、要整理的文章或網址）再送一次。'), model: 'offline' }; }
             }
+            // 議題／測試需求：沒有高度相符（≥0.8）的現有工具，就直接把讀到的意圖（含缺口的封閉問題）交出去，不硬湊一個不相干的工具
+            if (intentR && (intentR.kind === 'bugfix' || intentR.kind === 'testcase') && !(intentR.matched_tools || []).some((m) => (m.score || 0) >= 0.8)) { tr.log('議題／測試需求，沒有高度相符的現有工具 → 直接交出讀到的意圖'); tr.done('意圖'); return { response: this.textResponse(body, h._intentBrief(intentR)), model: 'offline' }; }
             if (names.length) {
+                if (intentR && intentR.matched_tools) ctx = Object.assign({}, ctx, { intentMatched: intentR.matched_tools.map((m) => m.name || m) });
                 const plan = await h._otPlan(task); tr.log('離線訓練器：' + ((plan && plan.decision && plan.decision.status) || '?') + (plan && plan.decision && plan.decision.chosen ? '（' + (plan.decision.chosen.intent || plan.decision.chosen.pattern) + '）' : ''));
                 const hits = h._capSearchTools(task, 6); const top = hits.length ? hits[0].score : 0; const extraScores = {}; hits.forEach((x) => { extraScores[x.name] = top > 0 ? Math.round(Math.min(0.95, 0.95 * x.score / top) * 100) / 100 : 0.3; });
+                if (ctx && ctx.intentMatched && ctx.intentMatched.length) { ctx.intentMatched.forEach((m) => { if (names.indexOf(m) >= 0) extraScores[m] = Math.max(extraScores[m] || 0, 0.9); }); tr.log('意象配到的工具：' + ctx.intentMatched.join('、')); }
                 if (hits.length) tr.log('工具搜尋（含設計出來的工具）：' + hits.slice(0, 4).map((x) => x.name + ':' + x.score).join('、'));
-                const rr = await h._recipeAnswer(task, plan, { fallback: true, planOnly: true, onlyTools: names, extraTools: hits.map((x) => x.name).concat(names), extraScores, noModel: !!(ctx && ctx.noModel) });
+                const rr = await h._recipeAnswer(task, plan, { fallback: true, planOnly: true, onlyTools: names, extraTools: hits.map((x) => x.name).concat((intentR && intentR.matched_tools) || []).concat(names), extraScores, noModel: !!(ctx && ctx.noModel) });
                 if (rr && rr.planned) { const bad = Object.entries(rr.planned.args || {}).find(([k, v]) => /^(yaml|json|html|code|script|markdown|xml|svg|css|sql)$/i.test(k) && typeof v === 'string' && !/\n/.test(v.trim())); if (bad) { tr.log('✗ 欄位「' + bad[0] + '」要的是一份文件，但填的是一行字（' + String(bad[1]).slice(0, 60) + '）——離線模型寫不出整份文件，這個決定作廢'); rr.planned = null; rr.handled = false; } }
                 if (rr && rr.planned) { tr.log(rr.header || ''); tr.log('→ tool_calls：' + rr.planned.tool + ' ' + JSON.stringify(rr.planned.args).slice(0, 160)); tr.done('由食譜決定工具'); return { response: this.toolCallResponse(body, rr.planned.tool, rr.planned.args), model: 'offline' }; }
                 tr.log('食譜決定不了' + (rr && rr.missing ? '（缺 ' + rr.missing.join('、') + '）' : '') + '，改走反思');
-                const rf = await this.reflect(task, body, tr);
+                const rf = await this.reflect(task, body, tr, intentR);
                 if (rf && rf.toolCall) { tr.done('反思找到現有工具'); return { response: this.toolCallResponse(body, rf.toolCall.tool, rf.toolCall.args), model: 'offline' }; }
                 if (rf && rf.text) { tr.done('給出達成路線'); return { response: this.textResponse(body, rf.text), model: 'offline' }; }
                 tr.fail('食譜與反思都沒有解出來'); return { error: '離線的食譜與反思都沒有解出來' };
@@ -29618,7 +29629,7 @@ const FaLlm = {
             const text = String(await h._offlineRespond(task, { capture: true, skipUser: true, fallback: true }) || '').trim();
             if (text) { tr.done('完成'); return { response: this.textResponse(body, text), model: 'offline' }; }
             tr.log('離線流程沒解出來：' + (h._offlineLastNote || '沒有對應的規則').slice(0, 160) + '，改走反思');
-            const rf = await this.reflect(task, body, tr);
+            const rf = await this.reflect(task, body, tr, intentR);
             if (rf && rf.text) { tr.done('給出達成路線'); return { response: this.textResponse(body, rf.text), model: 'offline' }; }
             tr.fail('沒有解出來'); return { error: h._offlineLastNote || '離線流程沒有解出來' };
         } catch (e) { tr.fail(String((e && e.message) || e).slice(0, 200)); return { error: String((e && e.message) || e) }; }
@@ -64919,6 +64930,25 @@ _result
         const doc = { deck, chapters: [{ title: deck.title, slides }] };
         return { name: deck.title, yaml: JSON.stringify(doc), notes };
     }
+    // 意圖 → 給人看的摘要（封閉問題帶選項；隱含的標「推」）
+    _intentBrief(r, opts) {
+        opts = opts || {}; const L = []; const kindLabel = { bugfix: '修問題（bugfix）', testcase: '寫測試案例（testcase）', feature: '新功能（feature）', unknown: '類型不明' }[r.kind] || r.kind;
+        L.push('我從描述讀出的意圖（' + kindLabel + '，把握度 ' + Math.round((r.confidence || 0) * 100) + '%）：');
+        if (r.environment && r.environment.length) L.push('環境：' + r.environment.slice(0, 3).join('；'));
+        if (r.steps && r.steps.length) L.push('步驟：' + r.steps.slice(0, 6).map((x) => x.n + '. ' + x.text).join('　'));
+        if (r.observations && r.observations.length) L.push('現象：' + r.observations.slice(0, 3).map((o) => o.text).join('；'));
+        if (r.expectations && r.expectations.length) L.push('期待：' + r.expectations.slice(0, 4).map((e) => (e.implicit ? '〔推〕' : '') + e.text).join('；'));
+        if (r.verifications && r.verifications.length) L.push('驗證：' + r.verifications.slice(0, 2).map((v) => (v.implicit ? '〔推〕' : '') + v.text).join('；'));
+        L.push('（〔推〕是程式從描述推出來的，不是你寫的；不對請改。）');
+        if (r.questions && r.questions.length) L.push('\n先請你補這幾件事（我不猜）：\n' + r.questions.map((q, i) => (i + 1) + '. ' + q.q + '　選項：' + q.options.join(' ／ ')).join('\n'));
+        if (opts.next !== false && r.kind === 'bugfix') L.push('\n下一步：' + (r.questions && r.questions.length ? '補完上面的問題後，' : '') + '照重現步驟重現 → 修正 → 用「驗證」確認期待的狀態。重現與驗證可以用 UML 設計（intent_parse 的 uml:true）接 uml_to_code。');
+        if (opts.next !== false && r.kind === 'testcase') L.push('\n下一步：' + (r.questions && r.questions.length ? '補完上面的問題後，' : '') + '用 intent_parse 的 testcase:true 取得結構化的測試案例（正向＋迴歸），再交給測試案例的工具。');
+        return L.join('\n');
+    }
+    // 要不要把這段文字當成「議題／測試需求」來讀：類型是 bugfix／testcase，或有明確的章節（重現步驟、預期結果…）
+    _looksLikeIssue(text) {
+        try { const t = String(text || ''); const segs = FaUserIntent.segment(t); const k = FaUserIntent.detectKind(t); return (k === 'bugfix' || k === 'testcase') && (segs.length >= 2 || t.length >= 12) || segs.some((x) => x.section === 'action' || x.section === 'expectation'); } catch (_) { return false; }
+    }
     // 反思：「是不是有現有工具」——搜尋所有領域的所有工具（cap_reflect），回傳最像的幾個 { name, score }；不經過模型
     _designedAliases(name) { const t = ((this.advancedSettings && this.advancedSettings.designedTools) || []).find((x) => x.name === name); return t ? [t.description, t.scenario].filter(Boolean) : []; }
     _capSearchTools(text, k) {
@@ -68240,7 +68270,10 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         let cls = FaRoute.classify(need); let by = 'program';
         if (cls.ambiguous && a.use_model !== false) { try { const M = await this._umlModel(); if (!M.error) { const c2 = await FaRoute.classifyWithModel(need, { generate: M.gen }); cls = c2; by = c2.by; } } catch (_) { /* 用程式第一名 */ } }
         const p = FaRoute.plan(need, env, cls); const g = FaRoute.gate(p, mode);
-        return { ok: true, need, kind: p.kind, classified_by: by, mode, ask_plan_first: g.askPlanFirst, routes: p.routes, steps: g.steps, always_ask: g.alwaysAsk, uml_issue: FaRoute.umlIssue(need), message: FaRoute.planMessage(p, g) };
+        // 需求像議題／測試需求：先讀意圖（行為、現象、期待含隱含的、驗證），缺口先問使用者；意圖附在路線上，下一步照它做
+        let intent = null; let intentText = '';
+        if (this._looksLikeIssue(need)) { try { intent = await this._intentParse({ text: need, uml: true, match: true }); if (intent && intent.ok) intentText = '\n\n' + this._intentBrief(intent); else intent = null; } catch (_) { intent = null; } }
+        return { ok: true, need, kind: p.kind, classified_by: by, mode, ask_plan_first: g.askPlanFirst || !!(intent && intent.questions && intent.questions.length), routes: p.routes, steps: g.steps, always_ask: g.alwaysAsk, uml_issue: FaRoute.umlIssue(need), intent: intent ? { kind: intent.kind, confidence: intent.confidence, steps: intent.steps, observations: intent.observations, expectations: intent.expectations, verifications: intent.verifications, gaps: intent.gaps, questions: intent.questions, uml: intent.uml, matched_tools: intent.matched_tools } : undefined, message: FaRoute.planMessage(p, g) + intentText };
     }
     // UML → LLVM IR → WebAssembly（wasm32-wasi）：產生 model.ll 與 model.wasm，並在這裡真的跑一次，輸出要跟 UML 預期的呼叫軌跡一致（見 uml/llvm_core.js）
     async _umlToWasm(a) {

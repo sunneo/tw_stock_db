@@ -111,6 +111,16 @@ usecase VerifyFix: User -> … -> SystemUnderTest.expectOk1()     # testcase 類
 - 評估通過（`submit`）時，意圖的重點（類型、步驟、期待、驗證）附在評估成果的 `intent` 上；**設計階段**的回傳多一個 `uml_for_design`：從意圖推出的 UML（重現與驗證的使用案例），當設計的起點，用 `uml_to_code`／`uml_edit` 往下走。
 - 有缺口（`questions` 不空）就**先問使用者**，不要硬寫評估。
 
+## 四之三、接進離線橋接與達成路線（plan_route）
+
+**離線橋接**（`FaLlm.offlineResponse`，見 [DESIGN.llm-bridge.md](DESIGN.llm-bridge.md)）：像議題／測試需求的請求（`_looksLikeIssue`：類型是 bugfix／testcase 且有章節或夠長）先讀意圖：
+1. transcript 記一行摘要：意圖類型、把握度、步驟／現象／期待（隱含幾個）／驗證、缺什麼、用翻譯讀了幾句。
+2. **帶工具的請求**：意象配到的現有工具（`matched_tools`）在食譜裡的初始分數提高到 0.9；配到的有 ≥ 0.8 的才走工具（例如 testcase design 這類）→ 回 `tool_calls`，參數由食譜填。
+3. **沒有高度相符（≥ 0.8）的工具** → 不硬湊一個不相干的工具，直接把讀到的意圖交出去（`_intentBrief`）：類型、步驟、現象、期待（〔推〕標隱含的）、驗證、**缺口的封閉問題（含選項）**、下一步（bugfix：重現→修正→驗證，可接 UML；testcase：`intent_parse` 的 `testcase:true`）。
+4. 反思的第 ⓪ 步：離線流程解不出來時，像議題的請求先交意圖，才輪到「現有工具」與「達成路線」。
+
+**達成路線**（`plan_route`／`_routePlan`）：需求像議題時多讀一次意圖，路線結果多了 `intent`（類型、步驟、現象、期待、驗證、缺口問題、UML、配到的工具）；`message` 後面接意圖摘要；**有缺口問題就強制 `ask_plan_first`（先問，再動手）**。不像議題的需求（例如「把銷售資料畫成圖表」）完全不變。
+
 ## 五、資料與設定
 
 | 項目 | 位置 |
@@ -138,7 +148,7 @@ usecase VerifyFix: User -> … -> SystemUnderTest.expectOk1()     # testcase 類
 1. 詞表偏中文與英文的常見說法，沒有拿大量真實的 ITS 描述量過準確度；步驟動詞認不得的會落到雜訊／歧義。
 2. 物件（object）的抽取是規則（動詞後的第一個名詞片語），複雜的句子會抓不到或抓偏。
 3. 隱含的期待只做「反面」這一種；因果、時序（「之後」「重開機後」）的隱含關係還沒有。
-4. 已接進程式設計領域的評估階段（上一節）；還沒接進離線橋接與 `plan_route` 的前置、也還沒把 `behaviors` 登記成 UML catalog 的單元候選。
+4. 已接進程式設計領域的評估階段、離線橋接與 `plan_route`（四之二、四之三）；還沒把 `behaviors` 登記成 UML catalog 的單元候選。
 5. `matched_tools` 的媒合是詞的重疊，沒有語意向量；候選的說明太短時分數不穩。
 6. 沒有對接 qarobotz 的 testcase writer／design（不知道它們的介面）：`toTestCase` 給的是通用結構，要接的人自己對欄位。
 
