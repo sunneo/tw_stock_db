@@ -100,6 +100,17 @@ usecase VerifyFix: User -> … -> SystemUnderTest.expectOk1()     # testcase 類
 3. 迴歸案例保護「原本的現象不再發生」；正向案例驗證期待的行為。
 4. 缺環境、缺預期就問，不要編。
 
+## 四之二、接進「評估」階段（程式設計領域的狀態機）
+
+程式設計領域（`playbook_state`）的階段是：評估 → 實驗 → 設計 → 實作 → 驗證 → 交付。**評估階段要交 `goal`／`risks`／`environment`／`backend`／`experiment_plan`／`verification_level`**，弱模型常常不知道寫什麼。現在評估時會先推估意象：
+
+- `playbook_state({action:"start", domain, title, goal, description?})`：建立任務時，程式用標題與使用者的原始描述（沒有 `description` 就用標題與目標）跑 `intent_parse`（含 UML 與工具媒合），存在任務上（`st.intent`）。回傳多了：
+  - `intent`：類型、步驟、觀察、期待（`[推]` 是隱含的）、驗證、`gaps`／`questions`（封閉的小問題，不猜）、意象（正規化的動詞與狀態）、配到的現有工具。
+  - `evaluate_suggestions`（只在評估階段）：**建議的評估草稿**——`goal`、`risks`（現象、需要確認的隱含期待、描述裡沒有的東西）、`experiment_plan`（照描述的步驟重現＋驗證）、`environment`（沒有就寫「要問」）。照抄或修改，標「推的」的是隱含關係。
+- `playbook_state({action:"intent", text})`：使用者補充了描述（重現步驟、預期結果、環境）之後重新推估；任何階段都能用。
+- 評估通過（`submit`）時，意圖的重點（類型、步驟、期待、驗證）附在評估成果的 `intent` 上；**設計階段**的回傳多一個 `uml_for_design`：從意圖推出的 UML（重現與驗證的使用案例），當設計的起點，用 `uml_to_code`／`uml_edit` 往下走。
+- 有缺口（`questions` 不空）就**先問使用者**，不要硬寫評估。
+
 ## 五、資料與設定
 
 | 項目 | 位置 |
@@ -127,7 +138,7 @@ usecase VerifyFix: User -> … -> SystemUnderTest.expectOk1()     # testcase 類
 1. 詞表偏中文與英文的常見說法，沒有拿大量真實的 ITS 描述量過準確度；步驟動詞認不得的會落到雜訊／歧義。
 2. 物件（object）的抽取是規則（動詞後的第一個名詞片語），複雜的句子會抓不到或抓偏。
 3. 隱含的期待只做「反面」這一種；因果、時序（「之後」「重開機後」）的隱含關係還沒有。
-4. `intent_parse` 沒有自動接進 `uml_design`／食譜：目前是 AI 或使用者先呼叫、再把 DSL 交給 `uml_to_code`。下一步：把它接成離線橋接與 `plan_route` 的前置，並把 `behaviors` 登記成 UML catalog 的單元候選。
+4. 已接進程式設計領域的評估階段（上一節）；還沒接進離線橋接與 `plan_route` 的前置、也還沒把 `behaviors` 登記成 UML catalog 的單元候選。
 5. `matched_tools` 的媒合是詞的重疊，沒有語意向量；候選的說明太短時分數不穩。
 6. 沒有對接 qarobotz 的 testcase writer／design（不知道它們的介面）：`toTestCase` 給的是通用結構，要接的人自己對欄位。
 

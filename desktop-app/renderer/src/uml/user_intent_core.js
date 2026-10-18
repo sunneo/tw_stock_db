@@ -163,7 +163,8 @@
         return build(text, items, opts);
     }
     function build(text, items, opts) {
-        const by = (r) => items.filter((x) => x.role === r); const kind = detectKind(text, opts.kind);
+        const first = items[0]; const explicitSec = (r) => items.some((x) => x.section === r && x !== first);
+        const by = (r) => items.filter((x) => x.role === r && !(x === first && !x.section && (r === 'action' || r === 'observation') && explicitSec(r))); const kind = detectKind(text, opts.kind);
         const intent = { kind, title: '', environment: by('environment').map((x) => x.text), preconditions: by('precondition').map((x) => x.text),
             steps: by('action').map((x, n) => ({ n: n + 1, text: x.text, behavior: x.behavior, explicit: x.explicit || x.kind === 'step' })),
             observations: by('observation').map((x) => ({ text: x.text, behavior: x.behavior, explicit: x.explicit })),

@@ -14114,7 +14114,8 @@ const holder = {};
         return build(text, items, opts);
     }
     function build(text, items, opts) {
-        const by = (r) => items.filter((x) => x.role === r); const kind = detectKind(text, opts.kind);
+        const first = items[0]; const explicitSec = (r) => items.some((x) => x.section === r && x !== first);
+        const by = (r) => items.filter((x) => x.role === r && !(x === first && !x.section && (r === 'action' || r === 'observation') && explicitSec(r))); const kind = detectKind(text, opts.kind);
         const intent = { kind, title: '', environment: by('environment').map((x) => x.text), preconditions: by('precondition').map((x) => x.text),
             steps: by('action').map((x, n) => ({ n: n + 1, text: x.text, behavior: x.behavior, explicit: x.explicit || x.kind === 'step' })),
             observations: by('observation').map((x) => ({ text: x.text, behavior: x.behavior, explicit: x.explicit })),
@@ -33163,7 +33164,7 @@ ${fnData.code}
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 return JSON.stringify(await this._playbookRun(parsed));
             },
-            { type: 'object', properties: { action: { type: 'string', enum: ['start', 'get', 'list', 'submit', 'todo', 'add_todo', 'log_experiment', 'abort'] }, task_id: { type: 'string' }, domain: { type: 'string', description: 'start時必填：領域代號（programming_domains list查）' }, title: { type: 'string' }, goal: { type: 'string' }, artifact: { type: 'object', description: 'submit時填：目前階段要交的成果，欄位見回傳的submit_fields' }, todo_id: { type: 'number' }, status: { type: 'string', enum: ['in_progress', 'done', 'blocked'] }, evidence: { type: 'string', description: 'todo done時必填：實際看到的測試輸出/觀察結果' }, notes: { type: 'string' }, text: { type: 'string' }, test: { type: 'string' }, position: { type: 'string', enum: ['now', 'next', 'end'] }, observed: { type: 'string' }, expected: { type: 'string' }, backend: { type: 'string' }, reason: { type: 'string' }, force: { type: 'boolean' } }, required: ['action'], additionalProperties: true }
+            { type: 'object', properties: { action: { type: 'string', enum: ['start', 'get', 'list', 'submit', 'todo', 'add_todo', 'log_experiment', 'intent', 'abort'] }, task_id: { type: 'string' }, domain: { type: 'string', description: 'start時必填：領域代號（programming_domains list查）' }, title: { type: 'string' }, goal: { type: 'string' }, description: { type: 'string', description: 'start選填：使用者原本的描述（議題內容）——程式會從標題、目標與這段描述推估意圖（重現步驟、現象、預期，含隱含的）。action:intent 用 text 補充描述後重推' }, artifact: { type: 'object', description: 'submit時填：目前階段要交的成果，欄位見回傳的submit_fields' }, todo_id: { type: 'number' }, status: { type: 'string', enum: ['in_progress', 'done', 'blocked'] }, evidence: { type: 'string', description: 'todo done時必填：實際看到的測試輸出/觀察結果' }, notes: { type: 'string' }, text: { type: 'string' }, test: { type: 'string' }, position: { type: 'string', enum: ['now', 'next', 'end'] }, observed: { type: 'string' }, expected: { type: 'string' }, backend: { type: 'string' }, reason: { type: 'string' }, force: { type: 'boolean' } }, required: ['action'], additionalProperties: true }
         );
 
         registerOptional('programming_domains',
@@ -37779,6 +37780,22 @@ ${fnData.code}
         }
     }
 
+    // ===== 評估階段推估意象（FaUserIntent）：從任務的標題與目標（可再補描述）讀出行為、觀察、期待（含隱含的）、驗證，存在任務上 =====
+    // 評估要交的 goal／risks／experiment_plan，弱模型常常不知道寫什麼：程式先讀出意圖，給「建議的評估草稿」（照抄或修改），缺的東西列成封閉的小問題，不猜。
+    async _playbookIntent(st, extraText) {
+        const text = (extraText ? [st.title, extraText] : [st.title, st.goal]).filter(Boolean).join('\n'); let r = null; // 有使用者的原始描述就用描述（goal 是「修正…」這種指令句，不是現象）
+        try { r = await this._intentParse({ text, uml: true, match: true }); } catch (_) { r = null; }
+        if (!r || !r.ok) return null;
+        return { at: Date.now(), kind: r.kind, confidence: r.confidence, steps: r.steps.map((x) => x.text), observations: r.observations, expectations: r.expectations, verifications: r.verifications, environment: r.environment,
+            gaps: r.gaps, questions: r.questions, imagery: r.imagery || null, matched_tools: (r.matched_tools || []).slice(0, 3).map((m) => m.name), uml: r.uml || '', translated_segments: r.translated_segments || 0 };
+    }
+    _playbookEvaluateSuggestions(st) {
+        const it = st.intent; if (!it) return null; const imp = (x) => (x.implicit ? '（推的：' + String(x.basis || '').slice(0, 50) + '）' : '');
+        const risks = []; (it.observations || []).slice(0, 2).forEach((o) => risks.push('現象：' + o.text)); (it.expectations || []).filter((e) => e.implicit).slice(0, 2).forEach((e) => risks.push('隱含的期待需要確認：' + e.text)); (it.gaps || []).forEach((g) => risks.push('描述裡沒有：' + ({ steps: '重現步驟', expectation: '預期結果', observation: '實際現象', environment: '環境', kind: '類型' }[g] || g)));
+        const plan = (it.steps || []).length ? '先照描述的步驟重現（' + it.steps.slice(0, 4).join(' → ') + '）；' : '先確認怎麼重現；'; const ver = (it.verifications || [])[0];
+        return { goal: st.goal, risks: risks.length ? risks : ['描述很完整，沒有明顯缺口；風險是推出的隱含期待可能不是使用者要的'], experiment_plan: plan + (ver ? ver.text + (ver.implicit ? '（推的）' : '') : '再確認結果'), environment: (it.environment || []).join('；') || '（描述沒有提到，要問）',
+            note: '這是程式從標題與目標讀出來的「建議草稿」，照抄或修改；標「推的」的是隱含關係，不是使用者寫的。' };
+    }
     _playbookView(st, extra) {
         const spec = (this.programmingPlaybooks || {})[st.domain] || {};
         const counts = {};
@@ -37797,6 +37814,8 @@ ${fnData.code}
             submit_fields: guide.submit_fields,
             required_headings: guide.required_headings,
             next_action: '【現在：' + ((FA_PLAYBOOK_PHASE_ENV[st.phase] || '').split('：')[0]) + '】' + guide.next_action,
+            intent: st.intent ? { kind: st.intent.kind, confidence: st.intent.confidence, steps: st.intent.steps, observations: st.intent.observations.map((o) => o.text), expectations: st.intent.expectations.map((e) => (e.implicit ? '[推] ' : '') + e.text), verifications: st.intent.verifications.map((v) => (v.implicit ? '[推] ' : '') + v.text), gaps: st.intent.gaps, questions: st.intent.questions, imagery: st.intent.imagery, matched_tools: st.intent.matched_tools, uml_for_design: st.phase === 'design' ? st.intent.uml : undefined } : undefined,
+            evaluate_suggestions: st.phase === 'evaluate' ? this._playbookEvaluateSuggestions(st) : undefined,
         }, extra || {});
     }
 
@@ -37845,8 +37864,8 @@ ${fnData.code}
                 phase: 'evaluate', verification_level: playbooks[domain].verification || 'sandbox',
                 artifacts: {}, experiments: [], todos: [], steering_log: [], created_at: Date.now(), updated_at: Date.now(),
             };
-            await this._playbookSave(st);
-            return this._playbookView(st, { note: `已建立任務。領域重點：${playbooks[domain].focus}` });
+            st.intent = await this._playbookIntent(st, parsed.description); await this._playbookSave(st);
+            return this._playbookView(st, { note: `已建立任務。領域重點：${playbooks[domain].focus}` + (st.intent ? '　已從標題與目標推估意圖（intent）：類型 ' + st.intent.kind + '，' + (st.intent.questions.length ? '有 ' + st.intent.questions.length + ' 個缺口要問使用者（見 intent.questions），不要猜；' : '沒有明顯缺口；') + '評估請參考 evaluate_suggestions。' : '') });
         }
 
         let st = null;
@@ -37906,7 +37925,12 @@ ${fnData.code}
             await this._playbookSave(st);
             return this._playbookView(st, allSettled ? { advanced: true, note: '所有TODO都處理完了，進入驗證階段。' } : {});
         }
-        if (action !== 'submit') return { ok: false, error: `不認得的action「${action}」。可用：start／get／list／submit／todo／add_todo／log_experiment／abort` };
+        if (action === 'intent') {
+            const more = String(parsed.text || '').trim(); if (!more) return { ok: false, error: 'intent需要text（使用者補充的描述，例如重現步驟、預期結果、環境）' };
+            st.goal_extra = [st.goal_extra, more].filter(Boolean).join('\n'); st.intent = await this._playbookIntent(st, st.goal_extra); await this._playbookSave(st);
+            return this._playbookView(st, { note: '已用補充的描述重新推估意圖。' });
+        }
+        if (action !== 'submit') return { ok: false, error: `不認得的action「${action}」。可用：start／get／list／submit／todo／add_todo／log_experiment／intent／abort` };
 
         // ---- submit：每個階段交出指定成果，通過才進下一階段 ----
         const a = parsed.artifact && typeof parsed.artifact === 'object' ? parsed.artifact : null;
@@ -37926,6 +37950,7 @@ ${fnData.code}
                 if (!want.length || bad.length) return reject(`評估要交layer（這次改動屬於哪一層，可多個）：${valid.join('／')}。${bad.length ? '不認得：' + bad.join('、') + '。' : ''}各層說明：${spec0.layers.map((l) => l.key + '＝' + l.label).join('；')}`);
                 st.layers = want;
             }
+            if (st.intent && !a.intent) a.intent = { kind: st.intent.kind, expectations: st.intent.expectations.map((e) => e.text), verifications: st.intent.verifications.map((v) => v.text), steps: st.intent.steps };
             st.artifacts.evaluate = a; st.verification_level = String(a.verification_level); st.phase = 'experiment';
             await this._playbookSave(st);
             return this._playbookView(st, { note: '評估完成，進入實驗階段（先在沙盒確認行為，再設計）。' });

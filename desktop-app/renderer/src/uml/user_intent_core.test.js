@@ -64,11 +64,14 @@ check('parse: 3 個步驟、行為正規化', zh.steps.length === 3 && zh.steps[
 check('parse: 環境 2 項', zh.environment.length === 2);
 check('parse: 觀察有當機與卡住', zh.observations.length >= 1 && zh.observations.some((o) => /當機/.test(o.text)));
 check('parse: 明確的期待', zh.expectations.some((e) => e.explicit && /正常重新開機/.test(e.text)));
-check('parse: 壞掉的觀察也產生隱含的期待', zh.expectations.some((e) => e.implicit && /不應該/.test(e.text) && e.basis), zh.expectations);
+check('parse: 壞掉的觀察也產生隱含的期待', zh.expectations.some((e) => e.implicit && /應該/.test(e.text) && e.basis), zh.expectations);
 check('parse: 沒有明確驗證 → 隱含的驗證（照重現步驟再做一次）', zh.verifications.length === 1 && zh.verifications[0].implicit && /重現步驟/.test(zh.verifications[0].text));
 check('parse: 資料齊全 → 沒有缺口', zh.gaps.length === 0 && zh.questions.length === 0, zh.gaps);
 check('parse: 信心高', zh.confidence >= 0.9, zh.confidence);
 
+check('parse: 標題那一行不當步驟（描述裡已有明確的重現步驟章節）', !zh.steps.some((s) => /Setup 按下 F10 儲存後系統當機/.test(s.text)) && zh.steps.length === 3, zh.steps.map((s) => s.text));
+check('parse: 標題不重複當觀察（已有明確的實際結果章節）', zh.observations.filter((o) => /當機/.test(o.text)).length === 1, zh.observations.map((o) => o.text));
+check('parse: 只有標題時，標題仍然可以是隱含的觀察', (() => { const x = I.parse('[BIOS] 儲存後系統當機'); return x.observations.length === 1 && !x.observations[0].explicit && x.expectations.some((e) => e.implicit); })());
 // ---------- 英文 + 沒有章節（口語）----------
 const en = I.parse('Device cannot boot after firmware update. Click the update button then reboot. It should boot into the OS normally.');
 check('parse(en): bugfix', en.kind === 'bugfix');
