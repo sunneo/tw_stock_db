@@ -29079,7 +29079,7 @@ const FaLlm = {
     label(k) { return { chat: 'AI 模型對話', embed: 'AI 向量化', tts: '線上語音合成' }[k] || k; },
     urlOf(input) { return String(typeof input === 'string' ? input : (input && input.url) || ''); },
     say(key, text) {
-        const now = Date.now(); if (this.said[key] && now - this.said[key] < 20000) return; this.said[key] = now;
+        const now = Date.now(); if (this.said[key] && now - this.said[key] < 600000) return; this.said[key] = now;
         const h = this.host; try { h._pushAssistantMessage(text, null); h._persistChatHistory(); h._renderMessageHistory(); } catch (_) { /* 提示失敗不影響 */ }
     },
     reject(k, u, why) {
@@ -29115,9 +29115,17 @@ const FaLlm = {
     toolNames(body) { return (body && Array.isArray(body.tools) ? body.tools : []).map((t) => t && t.function && t.function.name).filter(Boolean); },
     // 過程紀錄：每一次橋接都有一張卡片，寫清楚走了哪條路、誰決定的、花多久、失敗在哪（跟線上子任務的執行紀錄同一種東西）
     trace(title) {
-        const h = this.host; let prog = null; const t0 = Date.now();
-        try { prog = h._createProgressWidget(title); } catch (_) { prog = null; }
-        return { log: (x) => { try { if (prog) prog.log(x); } catch (_) { /* */ } }, done: (x) => { try { if (prog) prog.finish((x || '完成') + '（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）'); } catch (_) { /* */ } }, fail: (x) => { try { if (prog) prog.fail(x); } catch (_) { /* */ } } };
+        const h = this.host; const t0 = Date.now(); let prog = null;
+        const at = h && h._activeTranscript;
+        if (at) { // 在子任務裡：寫進子任務的 transcript（沒開卡片就不出聲）
+            const sub = at === 'none' ? null : at; const pre = '🌉 ';
+            return { log: (x) => { try { if (sub) sub.log(pre + x); } catch (_) { /* */ } }, done: (x) => { try { if (sub) sub.log(pre + '✓ ' + (x || '完成') + '（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）'); } catch (_) { /* */ } }, fail: (x) => { try { if (sub) sub.log(pre + '✗ ' + x); } catch (_) { /* */ } } };
+        }
+        const c = this.card;
+        if (c && c.prog && t0 - c.lastAt < 120000) { prog = c.prog; c.n++; c.lastAt = t0; try { prog.log('—— 第 ' + c.n + ' 次橋接：' + title + ' ——'); } catch (_) { /* */ } }
+        else { try { prog = h._createProgressWidget('🌉 橋接（離線／備援）：一個任務的所有呼叫都記在這張卡片'); } catch (_) { prog = null; } this.card = { prog, n: 1, lastAt: t0 }; try { if (prog) prog.log('—— 第 1 次橋接：' + title + ' ——'); } catch (_) { /* */ } }
+        const touch = () => { if (this.card) this.card.lastAt = Date.now(); };
+        return { log: (x) => { touch(); try { if (prog) prog.log(x); } catch (_) { /* */ } }, done: (x) => { touch(); try { if (prog) prog.update({ status: (x || '完成') + '（第 ' + (this.card ? this.card.n : 1) + ' 次，' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）' }); } catch (_) { /* */ } }, fail: (x) => { touch(); try { if (prog) { prog.log('✗ ' + x); prog.update({ status: '失敗：' + String(x).slice(0, 60) }); } } catch (_) { /* */ } } };
     },
     // 反思（解不出來的時候，程式依序看）：① 是不是有現有工具（搜尋所有領域；呼叫端給了的才能用）→ ② 達成路線（UML design／程式／模型），把路線當成回答
     async reflect(task, body, tr) {
@@ -29160,7 +29168,12 @@ const FaLlm = {
         const h = this.host; const msgs = (body && Array.isArray(body.messages)) ? body.messages : [];
         let lastUser = -1; for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i] && msgs[i].role === 'user') { lastUser = i; break; }
         if (lastUser < 0 || !h || typeof h._offlineLlmAnswer !== 'function') return null;
-        const tr = this.trace(reason === 'fallback' ? '🌉 橋接：線上全失敗，改走離線流程' : '🌉 橋接：離線模式'); const task = this.textOf(msgs[lastUser].content); const names = this.toolNames(body);
+        if (msgs.some((m) => m && Array.isArray(m.content) && m.content.some((b) => b && (b.type === 'image_url' || b.type === 'image' || b.type === 'input_image')))) return { error: '這是看圖的請求，離線的文字流程看不到圖片；要交給離線圖像模型（image_to_text）處理，呼叫端請改走它自己的離線圖像備援' };
+        const tr = this.trace(reason === 'fallback' ? '🌉 橋接：線上全失敗，改走離線流程' : '🌉 橋接：離線模式');
+        const isNudge = (m) => /^\s*(【|\[系統)/.test(this.textOf(m && m.content));
+        let taskIdx = lastUser; while (taskIdx > 0 && isNudge(msgs[taskIdx])) { let k = taskIdx - 1; while (k >= 0 && !(msgs[k] && msgs[k].role === 'user')) k--; if (k < 0) break; taskIdx = k; }
+        const task = this.textOf(msgs[taskIdx].content); const names = this.toolNames(body);
+        if (taskIdx !== lastUser) tr.log('最後一則是系統提醒（不是使用者要做的事），規劃用原本的任務');
         try {
             const lastRole = msgs.length ? msgs[msgs.length - 1].role : '';
             if (lastRole === 'tool') {
@@ -29180,6 +29193,7 @@ const FaLlm = {
                 const hits = h._capSearchTools(task, 6); const top = hits.length ? hits[0].score : 0; const extraScores = {}; hits.forEach((x) => { extraScores[x.name] = top > 0 ? Math.round(Math.min(0.95, 0.95 * x.score / top) * 100) / 100 : 0.3; });
                 if (hits.length) tr.log('工具搜尋（含設計出來的工具）：' + hits.slice(0, 4).map((x) => x.name + ':' + x.score).join('、'));
                 const rr = await h._recipeAnswer(task, plan, { fallback: true, planOnly: true, onlyTools: names, extraTools: hits.map((x) => x.name).concat(names), extraScores, noModel: !!(ctx && ctx.noModel) });
+                if (rr && rr.planned) { const bad = Object.entries(rr.planned.args || {}).find(([k, v]) => /^(yaml|json|html|code|script|markdown|xml|svg|css|sql)$/i.test(k) && typeof v === 'string' && !/\n/.test(v.trim())); if (bad) { tr.log('✗ 欄位「' + bad[0] + '」要的是一份文件，但填的是一行字（' + String(bad[1]).slice(0, 60) + '）——離線模型寫不出整份文件，這個決定作廢'); rr.planned = null; rr.handled = false; } }
                 if (rr && rr.planned) { tr.log(rr.header || ''); tr.log('→ tool_calls：' + rr.planned.tool + ' ' + JSON.stringify(rr.planned.args).slice(0, 160)); tr.done('由食譜決定工具'); return { response: this.toolCallResponse(body, rr.planned.tool, rr.planned.args), model: 'offline' }; }
                 tr.log('食譜決定不了' + (rr && rr.missing ? '（缺 ' + rr.missing.join('、') + '）' : '') + '，改走反思');
                 const rf = await this.reflect(task, body, tr);
@@ -29220,7 +29234,7 @@ const FaLlm = {
         if (k !== 'chat') { if (offline) return Promise.reject(this.reject(k, u, '離線下沒有對應的線上服務，會改用本機的做法')); return real(input, init); }
         if (offline) {
             const o = await this.offlineResponse(this.parseBody(init), 'offline');
-            if (o && o.response) { this.say('off:' + o.model, '🔌 離線模式：這次改由離線流程（規則、計畫、食譜、離線模型）回答（不連線）。'); return o.response; }
+            if (o && o.response) { this.say('off', '🔌 離線模式：AI 請求改由離線流程（規則、計畫、食譜、離線模型）處理，過程記在「橋接」卡片裡。'); return o.response; }
             this.say('offfail', '🔌 離線模式：離線文字模型沒辦法處理這個請求（' + ((o && o.error) || '未知原因') + '）。離線下不會連到線上 AI。');
             return Promise.reject(this.reject(k, u, (o && o.error) || ''));
         }
@@ -29233,7 +29247,7 @@ const FaLlm = {
         let rows = 1; try { rows = Math.max(1, (h._getModelRows() || []).length); } catch (_) { rows = 1; }
         if (this.streak >= rows && (h.advancedSettings.offlineLlmFallback !== false)) {
             const o = await this.offlineResponse(this.parseBody(init), 'fallback');
-            if (o && o.response) { this.streak = 0; this.say('fb:' + o.model, '🔌 線上 AI（共 ' + rows + ' 個模型）都沒辦法回應，這次改由離線流程（規則、計畫、食譜、離線模型）試著解決（能力比較有限）。'); return o.response; }
+            if (o && o.response) { this.streak = 0; this.say('fb', '🔌 線上 AI（共 ' + rows + ' 個模型）都沒辦法回應，改由離線流程（規則、計畫、食譜、離線模型）試著解決（能力比較有限），過程記在「橋接」卡片裡。'); return o.response; }
         }
         if (netErr) throw netErr; return res;
     },
@@ -71927,7 +71941,13 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         } catch (_) { /* 找不到就當沒有 */ }
         return '';
     }
+    // 子任務執行期間，橋接（FaLlm）的紀錄要寫進這個子任務自己的 transcript（同一張卡片），不另外開卡片：
+    // this._activeTranscript ＝ 子任務的進度卡片；'none' ＝ 子任務存在但沒有開卡片（沒開「顯示追蹤」）→ 橋接也不出聲。
     async _delegateToSubagentDomain(domainKey, task, extra) {
+        const prev = this._activeTranscript;
+        try { return await this._delegateToSubagentDomainInner(domainKey, task, extra); } finally { this._activeTranscript = prev; }
+    }
+    async _delegateToSubagentDomainInner(domainKey, task, extra) {
         extra = extra || {};
         this._ensureDomainSplits(); // 工具太多的領域先依預算切成協調者＋階段子領域
         // tw_stock_db客製: 2026-09-06改讀instance-level this.domains（見
@@ -71945,6 +71965,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             return { ok: false, error: `domain "${domainKey}" 尚未實作或不存在` + (inSettings ? '（設定裡有這個技能包，但它是停用的或領域沒有登記成功——到 Advance Settings 的技能分頁確認它是啟用的）' : '（這台機器的設定裡沒有這個技能包：技能包的代號每台機器不同，不能直接拿別台的代號來用）'), available_domains: available };
         }
         const progress = this._createSubagentProgressWidget(`🤖 委派給「${domain.label}」子agent`, this._deckIsDomain(domainKey) || String(domainKey).indexOf('skill_') === 0);
+        this._activeTranscript = progress || 'none';
         const isSkillDomain = String(domainKey).indexOf('skill_') === 0;
         // 巢狀委派（領域／技能再委派給另一個領域／技能）：這些實例旗標要「還原成進來時的值」，不能直接設成 false，不然內層結束會弄壞外層還在跑的那一個
         const nestedCall = Array.isArray(extra.delegationChain) && extra.delegationChain.length > 0;
