@@ -38584,7 +38584,7 @@ ${fnData.code}
                     if (rr && rr.handled) { say(rr.header + '\n\n' + rr.text); this._persistChatHistory(); this._renderMessageHistory(); return cap ? cap.join('\n\n') : undefined; }
                 }
                 const lr = await this._offlineLlmAnswer(text, plan, { fallback: !!opts.fallback, noTools: this._omSettings().recipes });
-                if (lr.ok) { say(lr.header + '\n\n' + lr.text); this._persistChatHistory(); this._renderMessageHistory(); return cap ? cap.join('\n\n') : undefined; }
+                if (lr.ok) { say(cap ? lr.text : lr.header + '\n\n' + lr.text); this._persistChatHistory(); this._renderMessageHistory(); return cap ? cap.join('\n\n') : undefined; }
                 llmNote = '\n\n（離線文字模型沒能回答：' + (lr.error || '失敗') + '）';
             }
             if (cap) { this._offlineLastNote = (llmNote || '').trim() || String(d.reason || '沒有對應的規則'); return ''; }
