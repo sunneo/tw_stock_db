@@ -25980,7 +25980,7 @@ function faVlmWorkerMain() {
 // images_to_pdf／merge_pdfs：同一輪用「同樣的設定」再呼叫一次只會多產生一份一模一樣的 PDF（真實對話連續呼叫 4 次、4 份重複檔）——用正規化後的設定逐字比對，不用相似度（檔案清單很長，改一個參數相似度仍很高）
 const FA_DEDUP_EXACT_TOOLS = new Set(['images_to_pdf', 'merge_pdfs']);
 const FA_DEDUP_TOOLS = new Set(['images_to_pdf', 'merge_pdfs', 'delegate_to_subagent', 'delegate_subtask', 'burn_subtitles', 'transcribe_media', 'extract_audio', 'text_to_speech', 'export_document', 'render_3d_scene', 'render_interactive_viewer', 'render_2d_animation', 'convert_media', 'compress_media']);
-const FA_WRITE_EVIDENCE_TOOLS = new Set(['fap_write_file', 'fap_apply_patch', 'attachment_apply_patch', 'fs_write_file', 'fs_mkdir', 'fs_remove', 'apply_git_patch', 'git_commit', 'git_push', 'coding_workspace', 'fap_copy_from_storage', 'fap_download_url', 'skill_create', 'export_document', 'bash_execute', 'python_execute', 'run_command', 'tmux_send_keys', 'browser_type_text', 'terminal_create', 'terminal_run', 'terminal_cp_to', 'terminal_cp_from']);
+const FA_WRITE_EVIDENCE_TOOLS = new Set(['fap_write_file', 'fap_apply_patch', 'attachment_apply_patch', 'fs_write_file', 'fs_mkdir', 'fs_remove', 'apply_git_patch', 'git_commit', 'git_push', 'coding_workspace', 'fap_copy_from_storage', 'fap_download_url', 'skill_create', 'export_document', 'bash_execute', 'python_execute', 'run_command', 'tmux_send_keys', 'browser_type_text', 'terminal_create', 'terminal_run', 'terminal_cp_to', 'terminal_cp_from', 'render_presentation', 'begin_presentation', 'add_chapters', 'finish_presentation', 'render_3d_scene', 'render_drawing', 'render_interactive_viewer', 'render_2d_animation']);
 const BROWSER_CONTROL_TOOL_NAMES = ['browser_status', 'browser_create_tab_group', 'browser_create_tab', 'browser_list_tabs', 'browser_navigate', 'browser_close', 'browser_activate_tab', 'browser_scroll', 'browser_screenshot', 'browser_get_page_text', 'browser_get_page_structure', 'browser_get_elements', 'browser_mouse', 'browser_click', 'browser_type_text', 'browser_press_key', 'browser_wait_download', 'browser_list_downloads', 'browser_task'];
 const BROWSER_CONTROL_HINT = '\n\n【瀏覽器控制已啟用】你另外有browser_*工具可以操控使用者的Chrome（先browser_status確認連線）：所有分頁一律放在同一個「AI Controlled」分頁群組（browser_create_tab/browser_create_tab_group會自動放進去）；找不到分頁（tab_id過期或被關掉）就直接開新分頁，不要回報失敗；用browser_get_page_structure（首選，結構化）/browser_get_elements讀頁面、browser_click(selector或text)點擊（同一種頁面結構要跑很多個網址時可以重用同一個selector，不用每次重新screenshot算座標）、browser_type_text操作、browser_screenshot截圖給使用者看；**會觸發下載的點擊一定要帶wait_download:true，看到download.path才算真的成功，不能假設已下載**；不要輸入密碼/付款資料，登入或付款頁面交還使用者。需要查網頁、看網站實際畫面、操作網頁時優先使用；讀完網頁後回答時盡量結構化（結論→條列/表格→來源連結），不要貼整段原文。';
 const FA_BROWSER_EXTENSION_FALLBACK_BASE = 'https://raw.githubusercontent.com/sunneo/tw_stock_db/desktop-app/web/browser-control-extension/';
@@ -49519,6 +49519,7 @@ ${sourceTool.handlerScript}
         if (historyPanel) {
             historyPanel.style.background = palette.windowBg;
             historyPanel.style.borderColor = palette.inputBorder;
+            historyPanel.style.color = palette.inputText; // 文字顏色也要跟主題（原本沒設，繼承頁面預設的黑色，深色主題下看不到字）
         }
         // tw_stock_db客製: 2026-09-16使用者實測回報——切換主題時📎附加檔案／
         // 🎤語音輸入這兩顆按鈕顏色沒有跟著變，要重開才會套用。跟上面
@@ -67960,6 +67961,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 if (hasAttachments) { // 有附件就一律帶進指令（不挑哪個指令）
                     const note = await this._takeAttachmentNote();
                     if (note) argsText = (argsText ? argsText + '\n\n' : '') + '[附件：' + note + ']';
+                    else { try { this._pushAssistantMessage('⚠️ 你附的檔案沒有帶上這則指令（上傳失敗或被取消了）。請重新附一次再送出。', null); } catch (_) { /* */ } }
                 }
                 this._armedSkill = null; // 打了別的斜線指令就取消「等圖片」
                 // 2026-10-03使用者回報：斜線指令（例如 /sp1-weekly-report-v2）執行到一半切去別的對話，再切回來就看不到執行中，
@@ -68023,6 +68025,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 : '請視需要使用檔案解讀能力（parse_uploaded_file / delegate_to_subagent的file_analysis領域）查看下面附件的內容，再回答我。';
             // attachmentNote可能因為等待期間全部被取消而變空——這種情況下
             // 不要留下一個空的「[附件：]」標記。
+            if (!attachmentNote) { try { this._pushAssistantMessage('⚠️ 你附的檔案沒有帶上這則訊息（上傳失敗或被取消了），AI 看不到它。請重新附一次再送出。', null); } catch (_) { /* */ } }
             textToSend = attachmentNote ? `${instruction}\n\n[附件：${attachmentNote}]` : instruction;
             this._pendingAttachments = [];
             this._renderPendingAttachments();
@@ -68210,6 +68213,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             entry.promise = this._readFileWithProgress(file, entry).catch((err) => {
                 if (entry.cancelled) return; // 使用者主動取消，不算失敗，不用額外記log
                 this._log(`⚠️ 附件「${file.name}」存檔失敗：${err.message || err}`);
+                try { this._pushAssistantMessage('⚠️ 附件「' + file.name + '」沒有存成功（' + String((err && err.message) || err).slice(0, 120) + '），所以不會附在訊息上。請再附一次。', null); } catch (_) { /* 提示失敗不影響 */ }
                 this._pendingAttachments = this._pendingAttachments.filter(a => a !== entry);
                 this._renderPendingAttachments();
             });
@@ -71585,6 +71589,21 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         }
         return n ? { dir, files: n } : null;
     }
+    // 使用者把同一句話重送一次、這次沒帶附件（上一次送出的附件已經用掉）：沿用上一則「有附件」的使用者訊息的附件標記。
+    // 只在兩句話（去掉附件標記與開頭的斜線指令）完全相同時才沿用——不猜、不從更早的上傳裡亂挑。
+    _retryAttachmentNote(task) {
+        try {
+            const t = String(task || ''); if (/\[附件：/.test(t)) return '';
+            const strip = (x) => String(x || '').replace(/\[附件：[^\]]*\]/g, ' ').replace(/^\s*\/\S+\s*/, '').replace(/\s+/g, ' ').trim();
+            const msgs = this.messages || []; let seen = 0;
+            for (let i = msgs.length - 1; i >= 0 && seen < 8; i--) {
+                const m = msgs[i]; if (!m || m.role !== 'user') continue; seen++;
+                const c = typeof m.content === 'string' ? m.content : ''; const mm = /\[附件：[^\]]*\]/.exec(c); if (!mm) continue;
+                return strip(c) && strip(c) === strip(t) ? mm[0] : '';
+            }
+        } catch (_) { /* 找不到就當沒有 */ }
+        return '';
+    }
     async _delegateToSubagentDomain(domainKey, task, extra) {
         extra = extra || {};
         this._ensureDomainSplits(); // 工具太多的領域先依預算切成協調者＋階段子領域
@@ -71612,6 +71631,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 } catch (_) {}
             }
             const isDeck = this._deckIsDomain(domainKey);
+            if (isDeck) { const again = this._retryAttachmentNote(task); if (again) { task += String.fromCharCode(10, 10) + again; if (progress) progress.log('🔁 這句話跟上一則一樣、這次沒有附檔——沿用上一則訊息的附件'); } }
             if (isDeck) { this._deckBeginRun(task); this._deckInDomainRun = true; }
             if (isDeck && this._latestDeckUrl && !/client-file\//.test(task)) task += '\n\n【這個對話最近做的簡報是 ' + this._latestDeckUrl + '。如果這次的要求是修改它（改字、換圖、改題目、換配色），先用 get_presentation_yaml 取得它的內容，只改要改的地方再重新產生；如果是要做全新的簡報就不要理它。】';
             // 依任務文字補專用工具（見 FA_TASK_TOOL_HINTS）：根模型挑的領域沒有那個工具時，這次執行也拿得到
@@ -71637,13 +71657,19 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 delegationExclude: extra.delegationExclude || [],
             });
             let subResult = await runOnce(task);
+            // 任務完全沒有素材（沒有附件、網址、檔案）而模型說「需要素材」——這是對的答案，直接交給使用者；不要當成失敗再逼它交出一份簡報（逼出來的是編造的示範簡報）
+            const hasMaterial = (t) => /\[附件：|client-file\/|https?:\/\/|fap:/i.test(String(t || '')) || /[A-Za-z]:[\\\/]/.test(String(t || ''));
+            const asksMaterial = (t) => /(source material|please attach|attach (the )?(file|image|picture)s?|provide (the )?(files?|material|url)|need (the )?(source|material|files?)|請(提供|附上|上傳|附)|需要.{0,12}(素材|附件|檔案|來源)|沒有(收到|看到).{0,8}(附件|檔案|素材))/i.test(String(t || ''));
+            const askedForMaterial = (r) => isDeck && r && !r.visual && !hasMaterial(task) && asksMaterial(r.text);
+            if (askedForMaterial(subResult)) { if (progress) progress.finish('需要素材'); return { ok: true, domain: domainKey, result: String(subResult.text || '') + String.fromCharCode(10, 10) + '（這次的任務沒有附上檔案或網址，所以沒有產生簡報。請附上素材（例如要解讀的圖片）再送一次。）' }; }
             // 簡報領域：模型只用文字說「已完成」、實際沒有成功產生簡報（沒有播放器可以顯示）時不能信——自己重來，最多再兩次；
             // 還是沒有就老實回報失敗，不把空話當成結果交出去
-            for (let attempt = 1; isDeck && attempt <= 2 && !(subResult && subResult.visual) && !(extra.shouldStop && extra.shouldStop()); attempt++) {
+            for (let attempt = 1; isDeck && attempt <= 2 && !(subResult && subResult.visual) && !askedForMaterial(subResult) && !(extra.shouldStop && extra.shouldStop()); attempt++) {
                 const line = '⚠️ 子agent說做完了，但實際沒有產生簡報（沒有成功呼叫 render_presentation）——自動重來（第 ' + attempt + ' 次）';
                 if (progress) progress.log(line); if (extra.onTrace) extra.onTrace(line);
-                subResult = await runOnce(task + '\n\n【上一次嘗試沒有成功產生簡報：你只用文字說明、沒有真的呼叫 render_presentation 並得到成功結果。這次直接寫出完整的簡報 yaml 並呼叫 render_presentation；它回報問題就修正後再呼叫，成功之後才回答。不要再只用文字描述。】');
+                subResult = await runOnce(task + '\n\n【上一次嘗試沒有成功產生簡報：你只用文字說明、沒有真的呼叫 render_presentation 並得到成功結果。這次直接寫出完整的簡報 yaml 並呼叫 render_presentation；它回報問題就修正後再呼叫，成功之後才回答。不要再只用文字描述。如果這個任務沒有給你任何素材或主題（沒有附件、網址、檔案，也沒有說要講什麼），不要編造內容、也不要做示範簡報，直接用文字說明需要什麼素材。】');
             }
+            if (askedForMaterial(subResult)) { if (progress) progress.finish('需要素材'); return { ok: true, domain: domainKey, result: String(subResult.text || '') + String.fromCharCode(10, 10) + '（這次的任務沒有附上檔案或網址，所以沒有產生簡報。請附上素材再送一次。）' }; }
             if (isDeck && !(subResult && subResult.visual)) { if (progress) progress.fail('沒有產生簡報'); return { ok: false, error: '子agent重試了 3 次，仍然沒有真正產生簡報（它只回了文字說明）。這個模型可能不夠穩，可以換較強的模型，或把需求拆小一點再試。', model_said: String((subResult && subResult.text) || '').slice(0, 600) }; }
             if (progress) progress.finish('完成');
             return this._mergeSubAgentResultForDisplay({ domain: domainKey }, subResult);
@@ -72886,6 +72912,10 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 }
             }
 
+            if (!useNative && toolCalls.length && !toolTasks.length) { // 模型列標成不支援原生工具呼叫、伺服器卻回了 tool_calls：不能丟掉（丟掉就變成「想了、說要做、然後什麼都沒做」）
+                for (const tc of toolCalls) { const nm = tc.function && tc.function.name; if (!nm) continue; toolTasks.push({ fnName: nm, fnArgsRaw: String((tc.function && tc.function.arguments) || '{}') }); }
+                if (toolTasks.length) { truncated = toolTasks.map((x) => '[CALL:' + x.fnName + '(' + x.fnArgsRaw + ')]').join(String.fromCharCode(10)); if (onTrace) onTrace('🔁 回覆帶了原生工具呼叫（這個模型列標成不支援，但實際有回）：' + toolTasks.map((x) => x.fnName).join('、') + '，照樣執行'); }
+            }
             if (!toolTasks.length && autoExecDescribed < 80) {
                 const dc = this._parseDescribedToolCall(this._stripInlineBase64(rawContent).trim(), allowedToolNames);
                 if (dc) {
@@ -72951,6 +72981,11 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                         }
                         return { text: this._claimPathWarning(pc) + (finalText || ''), visual: capturedVisual };
                     }
+                }
+                if (!finalText) { // 最終回覆是空的：不能當成「做完了」。留下具體診斷（見使用者要求：失敗訊息要有真實資訊），並請它重來
+                    const ch = data.choices && data.choices[0]; const diag = 'finish_reason=' + (ch && ch.finish_reason) + '、content長度=' + String(rawContent).length + '、reasoning長度=' + String(reasoningContent).length + '、tool_calls=' + toolCalls.length + '、useNative=' + useNative + '、模型=' + apiModel;
+                    if (onTrace) onTrace('📋 診斷：' + diag);
+                    if (reasoningDeadendRetries < SUBAGENT_MAX_REASONING_DEADEND_RETRIES) { reasoningDeadendRetries++; if (onProgress) onProgress('↻ 最終回覆是空的，請AI繼續（第' + reasoningDeadendRetries + '次）…'); messages.push({ role: 'assistant', content: '（這一輪沒有輸出內容）' }); messages.push({ role: 'user', content: AI_REASONING_DEADEND_PROMPT }); round--; continue; }
                 }
                 if (onTrace) onTrace('✅ 最終回覆：' + traceSnip(finalText || '（無回應）', 600));
                 return { text: finalText || '（子任務無回應）', visual: capturedVisual };
@@ -77288,9 +77323,10 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     historyPanel.innerHTML = `<div style="padding:12px; font-size:12px; color:${palette.detailText}; text-align:center;">目前沒有歷史訊息</div>`;
                 } else {
                     historyPanel.innerHTML = this.commandHistory.map((cmd, i) => `
-                        <div class="ai-history-row" data-history-idx="${i}" style="padding:9px 12px; font-size:13px; border-bottom:1px solid ${palette.inputBorder}; cursor:pointer; white-space:pre-wrap; word-break:break-word;">${this._escapeHtml(cmd)}</div>
+                        <div class="ai-history-row" data-history-idx="${i}" style="padding:11px 12px; font-size:14px; border-bottom:1px solid ${palette.inputBorder}; cursor:pointer; white-space:pre-wrap; word-break:break-word;">${this._escapeHtml(cmd)}</div>
                     `).join('');
                 }
+                historyPanel.style.background = palette.windowBg; historyPanel.style.borderColor = palette.inputBorder; historyPanel.style.color = palette.inputText; // 每次開啟都用當下的主題色
                 historyPanel.style.display = 'block';
             });
             historyPanel.addEventListener('click', (e) => {
