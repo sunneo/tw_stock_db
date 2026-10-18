@@ -29188,6 +29188,12 @@ const FaLlm = {
                 } catch (e) { tr.log('措辭失敗（' + String((e && e.message) || e).slice(0, 100) + '），用程式整理的結果'); }
                 tr.done('完成'); return { response: this.textResponse(body, chk.ok ? phrase + '\n\n' + pretty : pretty), model: 'offline' };
             }
+            { // 技能食譜：啟用中的技能（內建的、匯入編過的）有符合這個任務的食譜就照它做；最後一步是呼叫端的工具，回 tool_calls 讓呼叫端執行
+                const sr = await h._skillRecipeRun(task, names, (x) => tr.log(x));
+                if (sr && sr.planned) { tr.log('→ tool_calls：' + sr.planned.tool + '（技能「' + sr.skill + '」的食譜：' + sr.recipe + '）'); tr.done('技能食譜'); return { response: this.toolCallResponse(body, sr.planned.tool, sr.planned.args), model: 'offline' }; }
+                if (sr && sr.error) tr.log('技能食譜「' + sr.recipe + '」沒做成：' + sr.error);
+                if (sr && /沒有找到可以整理的文章/.test(sr.error || '') && names.indexOf('render_presentation') >= 0) { tr.done('沒有素材'); return { response: this.textResponse(body, '這個簡報任務沒有給我素材：沒有圖片或文件附件、沒有網址，也沒有夠長的文字，所以我不會編造內容。請附上素材（例如要解讀的圖片、要整理的文章或網址）再送一次。'), model: 'offline' }; }
+            }
             if (names.length) {
                 const plan = await h._otPlan(task); tr.log('離線訓練器：' + ((plan && plan.decision && plan.decision.status) || '?') + (plan && plan.decision && plan.decision.chosen ? '（' + (plan.decision.chosen.intent || plan.decision.chosen.pattern) + '）' : ''));
                 const hits = h._capSearchTools(task, 6); const top = hits.length ? hits[0].score : 0; const extraScores = {}; hits.forEach((x) => { extraScores[x.name] = top > 0 ? Math.round(Math.min(0.95, 0.95 * x.score / top) * 100) / 100 : 0.3; });
@@ -30372,6 +30378,7 @@ class FloatingAssistant {
             rulesMd: '',
             customFunctions: '',
             customTools: [],
+            skillRecipes: [], // 技能→食譜（編譯過的；內建技能的食譜在程式裡）
             designedTools: [], // UML design 設計出來、登記成工具的東西（runtime 設計的工具；見 _designedRegister）
             // tw_stock_db客製: 2026-09-18使用者要求（TODO.md Phase 3第2/3項）
             // ——使用者自建的domain（跟內建的SUBAGENT_DOMAIN_REGISTRY/host
@@ -31682,6 +31689,7 @@ class FloatingAssistant {
                 .map((tool, index) => this._normalizeCustomTool(tool, `custom_tool_${index + 1}`))
                 .filter(Boolean)
             : [];
+        const skillRecipes = Array.isArray(raw.skillRecipes) ? raw.skillRecipes.filter((r) => r && typeof r === 'object' && /^[a-z][a-z0-9_]{0,30}$/.test(r.id || '') && Array.isArray(r.steps)).slice(0, 200) : [];
         const designedTools = Array.isArray(raw.designedTools) ? raw.designedTools.map((t) => this._designedNormalize(t)).filter(Boolean) : [];
         const skillBundles = Array.isArray(raw.skillBundles)
             ? raw.skillBundles.map(b => this._normalizeSkillBundle(b)).filter(Boolean)
@@ -31709,6 +31717,7 @@ class FloatingAssistant {
             customFunctions: String(raw.customFunctions || '').replace(/\r\n/g, '\n'),
             customTools,
             designedTools,
+            skillRecipes,
             skillBundles,
             customDomains,
             primaryDomainPreference: String(raw.primaryDomainPreference || '').trim(),
@@ -64205,6 +64214,139 @@ _result
                 + '<div style="margin-top:4px;"><input data-dt-args="' + esc(t.name) + '" placeholder=\'試跑的參數（JSON），例如 {"x":1}\' style="width:60%; background:#0f172a; color:#e2e8f0; border:1px solid #475569; border-radius:6px; padding:3px 6px;"> <button style="' + btn + '" data-dt="run" data-name="' + esc(t.name) + '">試跑</button></div>'
                 + '<pre data-dt-out="' + esc(t.name) + '" style="white-space:pre-wrap; color:#94a3b8; margin:4px 0 0;">' + esc(keep[t.name] || '') + '</pre>'
                 + '<div data-dt-view="' + esc(t.name) + '" style="display:none; margin-top:4px;"><div style="color:#94a3b8;">情境：' + esc(t.scenario || '（沒有）') + '</div><pre style="white-space:pre-wrap; background:#0f172a; padding:6px; border-radius:6px;">' + esc(t.uml || '（沒有 UML）') + '</pre><pre style="white-space:pre-wrap; background:#0f172a; padding:6px; border-radius:6px;">' + esc(t.handlerScript) + '</pre></div></div>').join('') : '<p style="color:#94a3b8;">還沒有。</p>');
+    }
+    // ===== 技能→食譜（builtin skill to recipe；匯入的技能由 skill_compile 編成同一種食譜）=====
+    // 一份技能食譜 ＝ { id, skill（技能名）, label, needs（手上要有的種類：image／video／pdf／url／text…，任一種），triggers（字串形式的正規表示式，任一個符合）, steps（食譜引擎的步驟：tool／compute／phrase／render；
+    // 最後一個 final:true 的 tool 步驟不在這裡執行，而是回給呼叫端執行）, status（builtin／compiled／draft）, gaps（編譯時沒對上的句子或缺的能力）}。
+    // 執行器就是 FaRecipe.runRecipe（有驗證、有步數上限、每一步記錄）；不夠的能力（gaps）交給 uml_design 補。
+    _builtinSkillRecipes() {
+        return [{
+            id: 'deck_from_images', skill: 'media-presentation', builtinId: 'builtin-skill-media-presentation', label: '附圖片的簡報：讀出圖上的字 → 每張圖一頁 → render_presentation',
+            needs: ['image'], triggers: ['簡報|投影片|slide|presentation|deck|配音'], status: 'builtin',
+            steps: [
+                { id: 'deck', type: 'compute', fn: 'deck_from_images', args: { task: '{{slots.task}}' } },
+                { id: 'final', type: 'tool', name: 'render_presentation', args: { name: '{{vars.deck.name}}', yaml: '{{vars.deck.yaml}}' }, final: true },
+            ],
+        }, {
+            id: 'deck_from_article', skill: 'media-presentation', builtinId: 'builtin-skill-media-presentation', label: '文章／網頁／文件做簡報：取得全文 → 照段落整理 → 每段一頁 → render_presentation（例如「把 wiki 今日歷史整理成簡報」）',
+            needs: ['url', 'text', 'doc', 'pdf'], triggers: ['簡報|投影片|slide|presentation|deck'], status: 'builtin',
+            steps: [
+                { id: 'src', type: 'compute', fn: 'acquire_article', args: { task: '{{slots.task}}' } },
+                { id: 'deck', type: 'compute', fn: 'deck_from_article', args: { task: '{{slots.task}}', article: '{{vars.src}}' } },
+                { id: 'final', type: 'tool', name: 'render_presentation', args: { name: '{{vars.deck.name}}', yaml: '{{vars.deck.yaml}}' }, final: true },
+            ],
+        }];
+    }
+    _skillRecipes() {
+        const user = ((this.advancedSettings && this.advancedSettings.skillRecipes) || []).filter((r) => r && r.status !== 'draft' && r.enabled !== false);
+        const bundles = (this.advancedSettings && this.advancedSettings.skillBundles) || [];
+        const builtin = this._builtinSkillRecipes().filter((r) => { const b = bundles.find((x) => x.builtinId === r.builtinId); return !b || b.enabled !== false; }); // 技能被停用就不用它的食譜
+        return builtin.concat(user);
+    }
+    async _skillRecipeRun(task, toolNames, log) {
+        log = log || (() => {}); const t = String(task || '');
+        const atts = FaRecipe.parseAttachments(t); const kinds = new Set(atts.map((a) => FaRecipe.kindOf(a.filename)));
+        if (/https?:\/\//i.test(t)) kinds.add('url'); if (t.replace(/\[附件：[^\]]*\]/g, '').trim()) kinds.add('text');
+        let lastErr = null;
+        for (const rc of this._skillRecipes()) {
+            let trig = false; for (const x of rc.triggers || []) { try { if (new RegExp(x, 'i').test(t)) { trig = true; break; } } catch (_) { /* 壞的觸發字略過 */ } }
+            if (!trig) continue; if ((rc.needs || []).length && !(rc.needs || []).some((k) => kinds.has(k))) continue;
+            const fin = (rc.steps || []).find((s) => s.final); if (fin && (toolNames || []).indexOf(fin.name) < 0) continue; // 呼叫端沒有最後那個工具，這份食譜幫不上
+            const errs = FaRecipe.validateRecipe({ id: rc.id, steps: (rc.steps || []).filter((s) => !s.final), result: undefined }); if (errs.length) { log('食譜「' + rc.id + '」不合法：' + errs.join('；')); continue; }
+            log('技能食譜：' + rc.skill + ' / ' + rc.id + '（' + rc.label + '）');
+            const self = this; let compErr = '';
+            const fns = { acquire_article: async (a) => { const r = await self._articleAcquire(a.task, log); if (!r || !r.text) throw new Error((r && r.error) || '找不到可以整理的文章'); return r; },
+                deck_from_article: async (a) => { const r = self._articleToDeck(a.article, a.task, log); if (!r || r.error) throw new Error((r && r.error) || '整理不出簡報'); return r; },
+                deck_from_images: async (a) => { const r = await self._deckImageRecipe(a.task, log); if (!r || r.error || !r.yaml) { compErr = (r && r.error) || '這個任務沒有可用的圖片'; throw new Error(compErr); } return r; } };
+            const run = await FaRecipe.runRecipe({ id: rc.id, steps: (rc.steps || []).filter((s) => !s.final) }, { task: t, attachments: atts }, { tool: async (name, args) => { try { const tl = self.tools[name]; const raw = await tl.callback.call(self, JSON.stringify(args)); let ok = true; try { const j = JSON.parse(raw); if (j && (j.ok === false || j.error)) ok = false; } catch (_) { /* */ } return { ok, text: String(raw), raw }; } catch (e) { return { ok: false, text: String((e && e.message) || e) }; } }, fns, question: t });
+            if (!run.ok) { lastErr = { recipe: rc.id, skill: rc.skill, error: run.error }; log('✗ ' + rc.id + '：' + run.error); continue; }
+            if (!fin) return { recipe: rc.id, skill: rc.skill, error: '這份食譜沒有交給呼叫端的最後一步（final）' };
+            const scope = { slots: { task: t }, vars: run.vars }; const args = FaRecipe.interp(fin.args || {}, scope);
+            return { recipe: rc.id, skill: rc.skill, planned: { tool: fin.name, args }, vars: run.vars };
+        }
+        return lastErr;
+    }
+    // ===== 文章→簡報：取得全文（附件／網址／搜尋）→ 整理（程式，不靠小模型）=====
+    async _articleAcquire(task, log) {
+        log = log || (() => {}); const t = String(task || ''); const atts = FaRecipe.parseAttachments(t).filter((a) => FaRecipe.kindOf(a.filename) !== 'image'); const parts = []; let source = '';
+        const readTool = async (name, args) => { const tl = this.tools[name]; if (!tl) return null; let j = null; try { j = JSON.parse(await tl.callback.call(this, JSON.stringify(args))); } catch (_) { return null; } return j; };
+        const textOfResult = async (j) => { if (!j) return ''; if (typeof j.text === 'string' && j.text.length > 50) return j.text; if (typeof j.content === 'string' && j.content.length > 50) return j.content; const id = j.file_id || j.markdown_file_id || j.text_file_id; if (id) { try { const rec = await this.fileCache.get(String(id)); if (rec && rec.blob) return await rec.blob.text(); } catch (_) { /* */ } } return ''; };
+        for (const a of atts) {
+            const k = FaRecipe.kindOf(a.filename); let txt = '';
+            if (k === 'doc' || k === 'pdf' || /\.(docx|pptx|xlsx)$/i.test(a.filename)) txt = await textOfResult(await readTool('parse_uploaded_file', { file_id: a.id }));
+            else { try { const rec = await this.fileCache.get(a.id); if (rec && rec.blob) txt = await rec.blob.text(); } catch (_) { /* */ } }
+            if (txt) { parts.push(txt); source = source || a.filename; log('讀入附件「' + a.filename + '」：' + txt.length + ' 字'); } else log('附件「' + a.filename + '」讀不出文字');
+        }
+        let url = (/https?:\/\/[^\s)）]+/.exec(t) || [])[0] || '';
+        if (!parts.length && !url && /wiki|維基/i.test(t) && /今日歷史|歷史上的今天|今天.{0,4}歷史|on this day/i.test(t)) { const d = new Date(); url = 'https://zh.wikipedia.org/wiki/' + encodeURIComponent((d.getMonth() + 1) + '月' + d.getDate() + '日'); log('「維基今日歷史」→ 今天的日期頁：' + decodeURIComponent(url)); }
+        if (!parts.length && !url && /wiki|維基|搜尋|上網|查一下|查詢/i.test(t)) { const q = FaRecipe.cleanQuery(t); const r = await readTool('browser_search', { query: q }); const hit = (JSON.stringify(r || {}).match(/https?:\/\/[^"\s\\]+/g) || []).find((u) => !/(?:google|bing|duckduckgo|baidu)\.[a-z.]+\/(?:search|url|\?)/i.test(u)); if (hit) { url = hit; log('搜尋「' + q + '」→ ' + hit); } }
+        if (url) { const j = await readTool('fetch_web_page', { url }); const txt = await textOfResult(j); if (txt) { parts.push(txt); source = source || url; log('抓到網頁：' + url + '（' + txt.length + ' 字）'); } else log('網頁抓不到內容：' + url + (j && j.error ? '（' + String(j.error).slice(0, 80) + '）' : '')); }
+        const inline = t.replace(/\[附件：[^\]]*\]/g, ' ').replace(/https?:\/\/\S+/g, ' ').trim();
+        if (!parts.length && inline.length >= 400) { parts.push(inline); source = '你貼的文字'; log('使用你貼的文字：' + inline.length + ' 字'); }
+        const text = parts.join('\n\n').trim();
+        return text ? { text, source } : { error: '沒有找到可以整理的文章（沒有文件附件、網址，也沒有夠長的貼文）' };
+    }
+    // 把一大段文章整理成簡報（全部由程式做、可重複）：清掉標記 → 依標題分段（沒有標題就依段落分組）→ 清單項目每 5 項一頁、文章段落抽重點句 → 旁白用同一批句子念出來
+    _articleToDeck(article, task, log) {
+        log = log || (() => {}); const raw = String((article && article.text) || ''); if (!raw.trim()) return { error: '沒有文章內容' };
+        const t = String(task || ''); const sp = Number((/(?:語速|速度|speed)\s*[:：=]?\s*([0-9]*\.?[0-9]+)/i.exec(t) || [])[1]); const voice = (/\b([ab][fm]_[a-z]+|zh-[A-Za-z]+-[A-Za-z]+)\b/.exec(t) || [])[1] || '';
+        const clean = (x) => String(x).replace(/!\[[^\]]*\]\([^)]*\)/g, '').replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/\[\d+\]|\[編輯\]|\[edit\]/gi, '').replace(/[*_`>]+/g, '').replace(/\s+/g, ' ').trim();
+        const lines = raw.replace(/\r/g, '').split('\n'); const sections = []; let cur = { title: '', items: [], prose: [] }; const flush = () => { if (cur.items.length || cur.prose.length) sections.push(cur); cur = { title: '', items: [], prose: [] }; };
+        let docTitle = '';
+        for (const ln of lines) {
+            const h = /^\s{0,3}(#{1,4})\s+(.+)$/.exec(ln); if (h) { const ttl = clean(h[2]); if (h[1].length === 1 && !docTitle) { docTitle = ttl; continue; } if (/^(參考|外部連結|註釋|腳註|相關條目|參見|目錄|導航|References|External links|See also|Notes)/i.test(ttl)) { flush(); cur.title = '__skip__'; continue; } flush(); cur.title = ttl; continue; }
+            if (cur.title === '__skip__') continue;
+            const li = /^\s*(?:[*\-+•]|\d+[.)])\s+(.+)$/.exec(ln); if (li) { const x = clean(li[1]); if (x.length >= 4) cur.items.push(x); continue; }
+            const x = clean(ln); if (x.length >= 12) cur.prose.push(x);
+        }
+        flush(); const secs = sections.filter((x) => x.title !== '__skip__' && (x.items.length || x.prose.join('').length >= 40));
+        if (!secs.length) return { error: '文章整理不出段落（內容太短或不是文章）' };
+        const cjkRatio = (x) => { const m = String(x).match(/[\u3400-\u9fff]/g); return m ? m.length / Math.max(1, String(x).length) : 0; };
+        const lang = cjkRatio(raw.slice(0, 2000)) > 0.15 ? 'zh-TW' : 'en'; const sentence = (x) => { const y = String(x).replace(/\s[-–—]\s/, lang === 'zh-TW' ? '，' : ', '); return /[。.!?！？]$/.test(y) ? y : y + (lang === 'zh-TW' ? '。' : '.'); };
+        const MAX = 12; const slides = []; const deckTitle = (docTitle || (secs[0] && secs[0].title) || String(t).replace(/\[附件：[^\]]*\]/g, '').replace(/https?:\/\/\S+/g, '').trim().slice(0, 40) || (lang === 'zh-TW' ? '文章整理' : 'Article')).slice(0, 60);
+        slides.push({ layout: 'title', title: deckTitle, subtitle: (article && article.source ? String(article.source).replace(/^https?:\/\//, '').slice(0, 60) : ''), narration: sentence(deckTitle) });
+        for (const sec of secs) {
+            if (slides.length >= MAX) break;
+            if (sec.items.length) { for (let i = 0; i < sec.items.length && slides.length < MAX; i += 5) { const grp = sec.items.slice(i, i + 5).map((x) => x.slice(0, 90)); const n = Math.ceil(sec.items.length / 5); slides.push({ layout: 'content', title: ((sec.title || deckTitle) + (n > 1 ? ' (' + (i / 5 + 1) + '/' + n + ')' : '')).slice(0, 70), bullets: grp, narration: grp.map(sentence).join(' ') }); } }
+            else { const pickN = Math.min(4, Math.max(2, Math.round(sec.prose.join('').length / 400))); const key = FaRecipe.extractiveSummary(sec.prose.join('\n'), pickN).split('\n').map((x) => x.trim()).filter(Boolean); if (!key.length) continue; slides.push({ layout: 'content', title: (sec.title || key[0].slice(0, 30)).slice(0, 70), bullets: key.map((x) => x.slice(0, 90)), narration: key.map(sentence).join(' ').slice(0, 600) }); }
+        }
+        const omitted = secs.length > 0 && slides.length >= MAX ? '（內容較多，只做了前 ' + MAX + ' 頁）' : '';
+        log('整理：' + secs.length + ' 個段落 → ' + slides.length + ' 頁，語言 ' + lang + omitted);
+        const deck = { title: deckTitle, lang }; if (voice) deck.voice = voice; if (sp >= 0.5 && sp <= 2) deck.speed = sp;
+        return { name: deckTitle, yaml: JSON.stringify({ deck, chapters: [{ title: deckTitle, slides }] }), notes: omitted ? [omitted] : [] };
+    }
+    // ===== 簡報食譜：圖片→簡報（拆解 media-presentation 技能對「附上有文字的圖片」做的事）=====
+    // 技能的做法（線上子 agent 照著做）：每張附件圖 import_uploaded_image → "@imgN"；圖上有字就 interpret_image 逐字讀出來、用讀到的字（不編）；
+    // 每張圖一頁（版面 split：條列在左、圖在右，或 visual）；旁白＝讀到的字；使用者說的語言、聲音、語速進 deck.lang／voice／speed；最後 render_presentation。
+    // 這裡把它變成程式：讀字用離線圖像模型（image_to_text OCR），其餘（匯入、組 yaml、驗證）全是程式；回傳要交給呼叫端執行的 render_presentation 的參數。
+    // 不適用（沒有圖片附件）就回 null，讓後面的食譜／反思接手。
+    async _deckImageRecipe(task, log) {
+        log = log || (() => {});
+        const atts = FaRecipe.parseAttachments(task).filter((a) => FaRecipe.kindOf(a.filename) === 'image'); if (!atts.length) return null;
+        const t = String(task || '');
+        const voice = (/\b([ab][fm]_[a-z]+)\b/i.exec(t) || [])[1] || ''; const sp = Number((/(?:語速|速度|speed)\s*[:：=]?\s*([0-9]*\.?[0-9]+)/i.exec(t) || [])[1]);
+        const speed = sp >= 0.5 && sp <= 2 ? sp : 0; const wantEn = /英文|english|\ben\b|配音/i.test(t) && !/中文|國語|華語/.test(t.replace(/英文/g, '')); const lang = wantEn ? 'en' : 'zh-TW';
+        log('簡報食譜：' + atts.length + ' 張圖片；語言 ' + lang + (voice ? '、聲音 ' + voice : '') + (speed ? '、語速 ' + speed : ''));
+        const slides = []; const notes = [];
+        for (let i = 0; i < atts.length; i++) {
+            const a = atts[i]; let ref = '';
+            try { const r = JSON.parse(await this.tools.import_uploaded_image.callback.call(this, JSON.stringify({ file_id: a.id }))); if (r && r.ok !== false && r.ref) ref = r.ref; else log('✗ 第 ' + (i + 1) + ' 張匯入失敗：' + String((r && r.error) || '').slice(0, 100)); } catch (e) { log('✗ 第 ' + (i + 1) + ' 張匯入出錯：' + String((e && e.message) || e).slice(0, 100)); }
+            if (!ref) { notes.push(a.filename + '：匯入失敗'); continue; }
+            let text = '';
+            try { const o = await this._imageToText({ task: 'ocr', image: a.id, silent: true, fallback: true }); if (o && o.ok && o.text) text = String(o.text); else log('第 ' + (i + 1) + ' 張讀不出文字：' + String((o && o.error) || '').slice(0, 100)); } catch (e) { log('第 ' + (i + 1) + ' 張讀字出錯：' + String((e && e.message) || e).slice(0, 100)); }
+            // 整理讀到的字：一行一行、去掉版權與頁碼雜訊（©、期號、純數字代碼）、去掉重複行
+            const seen = new Set(); const lines = text.replace(/([.!?])(?=[A-Z])/g, '$1 ').split(/\r?\n/).flatMap((x) => x.split(/(?<=[.!?。！？])\s+/)).map((x) => x.replace(/\s+/g, ' ').trim()).filter((x) => x && !/©|\(c\)|copyright|^\W*$|^[\d\s|\-./KW]{5,}$/i.test(x) && !seen.has(x.toLowerCase()) && seen.add(x.toLowerCase()));
+            const speakable = lang === 'en' ? lines.filter((x) => !/[\u3400-\u9fff]/.test(x)) : lines;
+            log('第 ' + (i + 1) + ' 張：' + a.filename + ' → ' + (ref) + '；讀到 ' + lines.length + ' 行' + (speakable.length ? '：' + speakable.join(' / ').slice(0, 80) : '（沒有可念的字）'));
+            const sl = { title: (speakable[0] || a.filename.replace(/\.[a-z0-9]+$/i, '') || ('Page ' + (i + 1))).replace(/^(.{1,60})(\s.*)?$/s, '$1').slice(0, 60), visual: { kind: 'image', src: ref } };
+            if (speakable.length) { sl.layout = 'split'; sl.bullets = speakable.slice(0, 6).map((x) => x.slice(0, 80)); sl.narration = speakable.join(' '); } else { sl.layout = 'visual'; sl.duration = 4; notes.push(a.filename + '：圖上讀不出可念的字'); }
+            slides.push(sl);
+        }
+        if (!slides.length) return { error: '沒有任何一張圖片能放進簡報（' + notes.join('；') + '）' };
+        const first = slides[0].title; const deck = { title: (lang === 'en' ? first : first) || 'Presentation', lang };
+        if (voice) deck.voice = voice; if (speed) deck.speed = speed;
+        const doc = { deck, chapters: [{ title: deck.title, slides }] };
+        return { name: deck.title, yaml: JSON.stringify(doc), notes };
     }
     // 反思：「是不是有現有工具」——搜尋所有領域的所有工具（cap_reflect），回傳最像的幾個 { name, score }；不經過模型
     _designedAliases(name) { const t = ((this.advancedSettings && this.advancedSettings.designedTools) || []).find((x) => x.name === name); return t ? [t.description, t.scenario].filter(Boolean) : []; }
