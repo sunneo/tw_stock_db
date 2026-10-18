@@ -71610,10 +71610,16 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         // tw_stock_db客製: 2026-09-06改讀instance-level this.domains（見
         // register_domain），讓host頁面自己新增的domain也能透過明確指定
         // domain參數委派，不限於內建的SUBAGENT_DOMAIN_REGISTRY。
-        const domain = this.domains[domainKey];
+        let domain = this.domains[domainKey];
+        // 技能包的領域是由 _syncSkillBundleDomains() 依設定裡的技能包登記的；技能包在設定裡、領域卻還沒登記（剛更新、剛匯入、或另一台機器的設定不同步）時，
+        // 先重新同步一次再找，不要直接說「不存在」
+        if ((!domain || !domain.enabled) && String(domainKey).indexOf('skill_') === 0 && (this.advancedSettings.skillBundles || []).some((b) => 'skill_' + b.id === domainKey)) {
+            try { this._syncSkillBundleDomains(); domain = this.domains[domainKey]; } catch (_) { /* 同步失敗就照原本的錯誤 */ }
+        }
         if (!domain || !domain.enabled) {
             const available = Object.entries(this.domains).filter(([, d]) => d.enabled && !d.internal).map(([k]) => k);
-            return { ok: false, error: `domain "${domainKey}" 尚未實作或不存在`, available_domains: available };
+            const inSettings = String(domainKey).indexOf('skill_') === 0 && (this.advancedSettings.skillBundles || []).some((b) => 'skill_' + b.id === domainKey);
+            return { ok: false, error: `domain "${domainKey}" 尚未實作或不存在` + (inSettings ? '（設定裡有這個技能包，但它是停用的或領域沒有登記成功——到 Advance Settings 的技能分頁確認它是啟用的）' : '（這台機器的設定裡沒有這個技能包：技能包的代號每台機器不同，不能直接拿別台的代號來用）'), available_domains: available };
         }
         const progress = this._createSubagentProgressWidget(`🤖 委派給「${domain.label}」子agent`);
         const isSkillDomain = String(domainKey).indexOf('skill_') === 0;
@@ -71631,7 +71637,14 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 } catch (_) {}
             }
             const isDeck = this._deckIsDomain(domainKey);
-            if (isDeck) { const again = this._retryAttachmentNote(task); if (again) { task += String.fromCharCode(10, 10) + again; if (progress) progress.log('🔁 這句話跟上一則一樣、這次沒有附檔——沿用上一則訊息的附件'); } }
+            const task0 = task; // 使用者原本的要求（還沒補任何說明）
+            if (isDeck && !/\[附件：/.test(task)) {
+                // 接續：這次沒帶附件時，(a) 跟上一則一樣的句子、或 (b) 上一次簡報任務沒做成（30 分鐘內）——沿用那次的附件，並告訴子agent這是接續
+                let again = this._retryAttachmentNote(task); let why = '這句話跟上一則一樣';
+                const lf = this._deckLastFailure;
+                if (!again && lf && lf.marker && Date.now() - lf.at < 30 * 60 * 1000) { again = lf.marker; why = '接續上一次沒做成的簡報'; task += String.fromCharCode(10, 10) + '【這是接著上一次沒做成的簡報任務：上一次的要求是「' + String(lf.task || '').replace(/\[附件：[^\]]*\]/g, '').trim().slice(0, 200) + '」，用同一份素材（附件如下）繼續做；這次的要求在最前面，以這次的為準。】'; }
+                if (again) { task += String.fromCharCode(10, 10) + again; if (progress) progress.log('🔁 ' + why + '——沿用上一次的附件'); }
+            }
             if (isDeck) { this._deckBeginRun(task); this._deckInDomainRun = true; }
             if (isDeck && this._latestDeckUrl && !/client-file\//.test(task)) task += '\n\n【這個對話最近做的簡報是 ' + this._latestDeckUrl + '。如果這次的要求是修改它（改字、換圖、改題目、換配色），先用 get_presentation_yaml 取得它的內容，只改要改的地方再重新產生；如果是要做全新的簡報就不要理它。】';
             // 依任務文字補專用工具（見 FA_TASK_TOOL_HINTS）：根模型挑的領域沒有那個工具時，這次執行也拿得到
@@ -71670,7 +71683,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 subResult = await runOnce(task + '\n\n【上一次嘗試沒有成功產生簡報：你只用文字說明、沒有真的呼叫 render_presentation 並得到成功結果。這次直接寫出完整的簡報 yaml 並呼叫 render_presentation；它回報問題就修正後再呼叫，成功之後才回答。不要再只用文字描述。如果這個任務沒有給你任何素材或主題（沒有附件、網址、檔案，也沒有說要講什麼），不要編造內容、也不要做示範簡報，直接用文字說明需要什麼素材。】');
             }
             if (askedForMaterial(subResult)) { if (progress) progress.finish('需要素材'); return { ok: true, domain: domainKey, result: String(subResult.text || '') + String.fromCharCode(10, 10) + '（這次的任務沒有附上檔案或網址，所以沒有產生簡報。請附上素材再送一次。）' }; }
-            if (isDeck && !(subResult && subResult.visual)) { if (progress) progress.fail('沒有產生簡報'); return { ok: false, error: '子agent重試了 3 次，仍然沒有真正產生簡報（它只回了文字說明）。這個模型可能不夠穩，可以換較強的模型，或把需求拆小一點再試。', model_said: String((subResult && subResult.text) || '').slice(0, 600) }; }
+            if (isDeck && !(subResult && subResult.visual)) { const mk = /\[附件：[^\]]*\]/.exec(task); this._deckLastFailure = { at: Date.now(), task: task0, marker: mk ? mk[0] : '' }; if (progress) progress.fail('沒有產生簡報'); return { ok: false, error: '子agent重試了 3 次，仍然沒有真正產生簡報（它只回了文字說明）。這個模型可能不夠穩，可以換較強的模型，或把需求拆小一點再試。', model_said: String((subResult && subResult.text) || '').slice(0, 600) }; }
+            if (isDeck) this._deckLastFailure = null; // 做成了，下一次不是接續
             if (progress) progress.finish('完成');
             return this._mergeSubAgentResultForDisplay({ domain: domainKey }, subResult);
         } catch (err) {
