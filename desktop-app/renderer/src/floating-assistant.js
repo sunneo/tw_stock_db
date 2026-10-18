@@ -29096,13 +29096,15 @@ const FaLlm = {
         const h = this.host; const msgs = (body && Array.isArray(body.messages)) ? body.messages : [];
         let lastUser = -1; for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i] && msgs[i].role === 'user') { lastUser = i; break; }
         if (lastUser < 0 || !h || typeof h._offlineLlmAnswer !== 'function') return null;
-        const sys = msgs.filter((m) => m && m.role === 'system').map((m) => this.textOf(m.content)).join('\n').trim();
-        const userText = (sys ? '【指示】\n' + sys.slice(0, 1500) + '\n\n【內容】\n' : '') + this.textOf(msgs[lastUser].content);
-        const history = msgs.slice(0, lastUser).filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string').slice(-6).map((m) => ({ role: m.role, content: m.content }));
-        const r = await h._offlineLlmAnswer(userText, null, { force: true, ui: false, noTools: true, history, fallback: reason === 'fallback' });
-        if (!r || !r.ok || !String(r.text || '').trim()) return { error: (r && r.error) || '離線文字模型沒有產生內容' };
-        const model = r.route && r.route.answer ? 'offline:' + r.route.answer.id : 'offline';
-        const data = { id: 'chatcmpl-offline-' + Date.now(), object: 'chat.completion', created: Math.floor(Date.now() / 1000), model, _faOffline: true, choices: [{ index: 0, message: { role: 'assistant', content: String(r.text).trim() }, finish_reason: 'stop' }], usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 } };
+        // 整套離線流程照跑（離線訓練器的規則與快取、計畫、食譜＝工具轉食譜、CoLU 的選擇題＋程式檢查、離線文字模型寫回答），只是結果不貼進聊天、收集起來當成這次請求的回答。
+        // 跟你直接在離線模式下問它是同一條路，所以離線模型怎麼補強，這裡就自動跟著強。
+        const task = this.textOf(msgs[lastUser].content);
+        h._offlineLastNote = '';
+        let text = '';
+        try { text = String(await h._offlineRespond(task, { capture: true, skipUser: true, fallback: true }) || '').trim(); } catch (e) { return { error: String((e && e.message) || e) }; }
+        if (!text) return { error: h._offlineLastNote || '離線流程沒有解出來' };
+        const model = 'offline';
+        const data = { id: 'chatcmpl-offline-' + Date.now(), object: 'chat.completion', created: Math.floor(Date.now() / 1000), model, _faOffline: true, choices: [{ index: 0, message: { role: 'assistant', content: text }, finish_reason: 'stop' }], usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 } };
         if (body && body.stream) {
             const enc = new TextEncoder();
             const chunk = { id: data.id, object: 'chat.completion.chunk', created: data.created, model, choices: [{ index: 0, delta: { role: 'assistant', content: data.choices[0].message.content }, finish_reason: null }] };
@@ -29121,7 +29123,7 @@ const FaLlm = {
         if (k !== 'chat') { if (offline) return Promise.reject(this.reject(k, u, '離線下沒有對應的線上服務，會改用本機的做法')); return real(input, init); }
         if (offline) {
             const o = await this.offlineResponse(this.parseBody(init), 'offline');
-            if (o && o.response) { this.say('off:' + o.model, '🔌 離線模式：這次改由離線模型「' + o.model.replace(/^offline:/, '') + '」回答（不連線）。'); return o.response; }
+            if (o && o.response) { this.say('off:' + o.model, '🔌 離線模式：這次改由離線流程（規則、計畫、食譜、離線模型）回答（不連線）。'); return o.response; }
             this.say('offfail', '🔌 離線模式：離線文字模型沒辦法處理這個請求（' + ((o && o.error) || '未知原因') + '）。離線下不會連到線上 AI。');
             return Promise.reject(this.reject(k, u, (o && o.error) || ''));
         }
@@ -29133,7 +29135,7 @@ const FaLlm = {
         let rows = 1; try { rows = Math.max(1, (h._getModelRows() || []).length); } catch (_) { rows = 1; }
         if (this.streak >= rows && (h.advancedSettings.offlineLlmFallback !== false)) {
             const o = await this.offlineResponse(this.parseBody(init), 'fallback');
-            if (o && o.response) { this.streak = 0; this.say('fb:' + o.model, '🔌 線上 AI（共 ' + rows + ' 個模型）都沒辦法回應，這次改由離線模型「' + o.model.replace(/^offline:/, '') + '」試著解決（能力比較有限）。'); return o.response; }
+            if (o && o.response) { this.streak = 0; this.say('fb:' + o.model, '🔌 線上 AI（共 ' + rows + ' 個模型）都沒辦法回應，這次改由離線流程（規則、計畫、食譜、離線模型）試著解決（能力比較有限）。'); return o.response; }
         }
         if (netErr) throw netErr; return res;
     },
@@ -38536,19 +38538,22 @@ ${fnData.code}
 
     async _offlineRespond(userText, opts) {
         opts = opts || {};
+        // opts.capture：橋接（FaLlm）用——整套離線流程（訓練器規則、計畫、食譜、離線文字模型）照跑，但不往聊天裡貼，回覆文字收集起來回傳
+        const cap = opts.capture ? [] : null;
+        const say = (t) => { if (cap) cap.push(String(t)); else this._pushAssistantMessage(t, null); };
         const text = String(userText || '').trim();
-        if (!text) return;
-        if (!opts.skipUser) {
+        if (!text) return cap ? '' : undefined;
+        if (!opts.skipUser && !cap) {
             this._chatMarkTouched && this._chatMarkTouched(text);
             this.messages.push({ role: 'user', content: text });
             this._renderMessageHistory();
         }
         if (this._activePlanRun && this._activePlanRun.run && this._activePlanRun.run.state === 'waiting' && text.charAt(0) !== '/' && this._omSettings().plans) {
             const rr = await this._planResume(text, { fallback: !!opts.fallback });
-            if (rr && rr.handled) { this._pushAssistantMessage(rr.header + '\n\n' + rr.text, null); this._persistChatHistory(); this._renderMessageHistory(); return; }
+            if (rr && rr.handled) { say(rr.header + '\n\n' + rr.text); this._persistChatHistory(); this._renderMessageHistory(); return cap ? cap.join('\n\n') : undefined; }
         }
         let plan;
-        try { plan = await this._otPlan(text); } catch (e) { this._pushAssistantMessage('⚠️ 離線訓練器出錯：' + String((e && e.message) || e), null); this._persistChatHistory(); this._renderMessageHistory(); return; }
+        try { plan = await this._otPlan(text); } catch (e) { say('⚠️ 離線訓練器出錯：' + String((e && e.message) || e), null); this._persistChatHistory(); this._renderMessageHistory(); return cap ? cap.join('\n\n') : undefined; }
         const d = plan.decision;
         const c = d.chosen;
         const errLines = opts.errors && opts.errors.length ? '\n' + opts.errors.map((e) => `- ${e.model}：${e.err}`).join('\n') : '';
@@ -38556,40 +38561,42 @@ ${fnData.code}
         const why = c ? `比對：「${c.domain} / ${c.pattern}」信心 ${c.score}（${c.via || '規則'}${c.explain ? `；字面${c.explain.bm25}、重排${c.explain.textrank}` : ''}）` : '';
         if (d.status === 'planned' || d.status === 'cache') {
             const act = c.kind === 'fsm' ? `執行狀態機 ${c.state}（技能：${c.intent || c.pattern}）` : c.kind === 'steps' ? `依序執行 ${(c.steps || []).map((x) => x.tool).join(' → ')}` : c.kind === 'tool' ? `呼叫工具 \`${c.tool}\`，參數 ${JSON.stringify(c.args).slice(0, 200)}` : (c.kind === 'slash' ? `執行指令 ${c.slash}` : (c.kind === 'cache' ? `重放 ${(c.calls || []).length} 個已驗證的工具呼叫` : '回答（來自已學到的內容）'));
-            this._pushAssistantMessage(`${head}\n${why}\n動作：${act}`, null);
+            say(`${head}\n${why}\n動作：${act}`);
             this._persistChatHistory(); this._renderMessageHistory();
             const r = await this._otExecute(plan);
             await this._otBumpHit(plan);
             if (!r.ok && !r.cancelled) this._otNoteUnresolved(text, '執行失敗：' + String(r.error || '').slice(0, 120));
-            if (!r.silent) this._pushAssistantMessage(r.ok ? r.text : (r.cancelled ? '已取消。' : `⚠️ ${r.error || '執行失敗'}\n\n${r.text || ''}`), null);
+            if (!r.silent) say(r.ok ? r.text : (r.cancelled ? '已取消。' : `⚠️ ${r.error || '執行失敗'}\n\n${r.text || ''}`));
         } else if (d.status === 'needs_input') {
             // 食譜：離線訓練器知道要用哪個工具、只缺參數 → 先讓食譜補欄位（程式從網址／附件／引號補，補不到才讓模型填空），不要馬上問使用者
             if (this._omSettings().recipes && c && c.tool && text.charAt(0) !== '/') {
                 const rr = await this._recipeAnswer(text, plan, { forceTool: c.tool, fallback: !!opts.fallback });
-                if (rr && rr.handled) { this._pushAssistantMessage(rr.header + '\n\n' + rr.text, null); this._persistChatHistory(); this._renderMessageHistory(); return; }
+                if (rr && rr.handled) { say(rr.header + '\n\n' + rr.text); this._persistChatHistory(); this._renderMessageHistory(); return cap ? cap.join('\n\n') : undefined; }
             }
             this._otNoteUnresolved(text, d.reason || '缺少參數');
-            this._pushAssistantMessage(`${head}\n${why}\n${d.reason}`, null);
+            say(`${head}\n${why}\n${d.reason}`);
         } else {
             this._otNoteUnresolved(text, d.reason || '沒有對應的規則');
             let llmNote = '';
             if (FaVlm.shouldUseOfflineLlm(d, this.advancedSettings) && text.charAt(0) !== '/') {
                 if (this._omSettings().recipes) { // 先走食譜：程式／模型一步一步挑工具、填欄位、執行；沒有合適的工具才交給文字生成
                     const rr = await this._recipeAnswer(text, plan, { fallback: !!opts.fallback });
-                    if (rr && rr.handled) { this._pushAssistantMessage(rr.header + '\n\n' + rr.text, null); this._persistChatHistory(); this._renderMessageHistory(); return; }
+                    if (rr && rr.handled) { say(rr.header + '\n\n' + rr.text); this._persistChatHistory(); this._renderMessageHistory(); return cap ? cap.join('\n\n') : undefined; }
                 }
                 const lr = await this._offlineLlmAnswer(text, plan, { fallback: !!opts.fallback, noTools: this._omSettings().recipes });
-                if (lr.ok) { this._pushAssistantMessage(lr.header + '\n\n' + lr.text, null); this._persistChatHistory(); this._renderMessageHistory(); return; }
+                if (lr.ok) { say(lr.header + '\n\n' + lr.text); this._persistChatHistory(); this._renderMessageHistory(); return cap ? cap.join('\n\n') : undefined; }
                 llmNote = '\n\n（離線文字模型沒能回答：' + (lr.error || '失敗') + '）';
             }
+            if (cap) { this._offlineLastNote = (llmNote || '').trim() || String(d.reason || '沒有對應的規則'); return ''; }
             const alts = [c].concat(plan.alternatives.map((a) => ({ domain: a.domain, pattern: a.pattern, intent: a.intent, score: a.score }))).filter(Boolean).slice(0, 4);
             let msg = `${head}\n${d.reason}\n\n可能相關：\n` + (alts.length ? alts.map((a) => `- ${a.intent || a.pattern}（${a.domain}，${a.score}）`).join('\n') : '（沒有）');
             if (plan.rag && plan.rag.length) msg += '\n\n知識庫(RAG)裡有相近的內容：\n' + plan.rag.map((r) => `- ${String(r.content).replace(/\s+/g, ' ').slice(0, 160)}`).join('\n');
             msg += llmNote;
             msg += '\n\n要讓它學會這句話：到「Configure → AI → 離線訓練器」用乾跑確認並加入範例，或切回線上模式讓AI回答（線上的成功做法會自動學起來）。';
-            this._pushAssistantMessage(msg, null);
+            say(msg);
         }
         this._persistChatHistory(); this._renderMessageHistory();
+        return cap ? cap.join('\n\n') : undefined;
     }
 
     // ---- 學習：從線上AI的一輪對話、RAG、對話紀錄訓練 ----
@@ -67628,11 +67635,12 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     // 流程：候選工具（離線訓練器給的）→ 路由（分數差距夠大就程式決定，否則模型從編號選單挑；可以選「都不是」）→ 欄位（程式從網址／路徑／附件／引號／列舉／預設補，
     // 補不到的才讓模型填空，模型不知道就填 null、不准編）→ 執行（有副作用的工具先問使用者）→ 措辭（資訊類結果讓模型寫 1～2 句，會被檢查，不過就用程式整理的結果）。
     // 每個決定都記錄（誰決定的、選項、被退回的原因）。模型每一步都沒有前面步驟的記憶。
-    _recipeCandidates(plan, forceTool) {
+    _recipeCandidates(plan, forceTool, extraTools) {
         const out = []; const add = (tool, intent, score) => { if (!tool || !this.tools[tool] || FA_OT_META_TOOLS.has(tool) || out.some((c) => c.tool === tool)) return; out.push({ tool, intent: intent || String(this.tools[tool].description || tool).slice(0, 40), score: Number(score) || 0 }); };
         if (forceTool) { add(forceTool, '', 1); return out; }
         const d = plan && plan.decision; if (d && d.chosen && d.chosen.tool) { add(d.chosen.tool, d.chosen.intent, d.chosen.score); if (out[0] && out[0].tool === d.chosen.tool && d.chosen.args && typeof d.chosen.args === 'object') out[0].trainerArgs = d.chosen.args; }
         for (const a of (plan && plan.alternatives) || []) add(a.tool, a.intent, a.score);
+        (extraTools || []).forEach((n) => add(n, '', 0.3)); // 橋接：這次請求本來要給線上模型挑的工具（只收登記過的）
         ['ref_lookup', 'browser_search', 'fetch_web_page'].forEach((n) => add(n, '', 0));
         return out.slice(0, 6);
     }
@@ -67644,7 +67652,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const question = FaRecipe.stripAttachments(userText) || String(userText);
         if (S.plans && !opts.forceTool) { const pr = await this._planAnswer(userText, plan, opts); if (pr && pr.handled) return pr; } // 多步驟：有明確的目標（影片做摘要、網頁摘要、上網查資料…）就先走計畫
         const trace = FaRecipe.newTrace(userText, { recipe: 'tool_auto' });
-        const cands = this._recipeCandidates(plan, opts.forceTool); if (!cands.length) return { handled: false };
+        const cands = this._recipeCandidates(plan, opts.forceTool, opts.extraTools); if (!cands.length) return { handled: false };
         const inst = await this._omInstalled(); const route = FaVlm.routeStages({ config: S.roles, bench: S.bench, installed: inst.set, requireInstalled: !!opts.fallback, defaultId: S.textModel, hasTools: false });
         const model = route.answer; let modelErr = undefined; this._omDeclined = this._omDeclined || new Set();
         const ensureModel = async () => { // 第一次真的要用模型才檢查／下載；自動備援不偷偷下載
