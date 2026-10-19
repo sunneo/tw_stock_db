@@ -11,7 +11,7 @@
   var DECK_URL_RE = /\.deck\.yaml(\?.*)?$/i;
   var PREHEAT = 3;      // slides that must be ready before the play button appears
   var LOOKAHEAD = 3;    // slides prepared ahead of the one being shown
-  var ttsProvider = null, ttsConcurrent = false, speechPreparer = null;
+  var ttsProvider = null, ttsConcurrent = false, speechPreparer = null, voiceLister = null;
   var audioCtx = null;
 
   // ------------------------------------------------------------------ small utilities
@@ -545,14 +545,16 @@
   function decodeMp3(mp3) {
     var ctx = getAudioCtx();
     if (!ctx) { return Promise.reject(new Error('this browser has no Web Audio')); }
-    return ctx.decodeAudioData(mp3.slice(0)).then(function (buffer) { return { mp3: mp3, duration: buffer.duration, sampleRate: buffer.sampleRate }; });
+    return ctx.decodeAudioData(mp3.slice(0)).then(function (buffer) { return { mp3: mp3, duration: buffer.duration, sampleRate: buffer.sampleRate, note: mp3.fa_note || '' }; });
   }
 
-  function synthesize(text, voice, speed, lang) {
+  // force: the viewer asked to redo this slide's voice -- skip the memory and disk caches (a failed or unwanted voice must not come back from them)
+  function synthesize(text, voice, speed, lang, force) {
     var key = ['p1', voice || '', speed || 1, text].join('|'); // 'p1': narration with pauses between sentences (older cached audio had none)
+    if (force) { delete audioCache[key]; }
     if (audioCache[key]) { return audioCache[key]; }
     var p = sha256Hex(key).then(function (hash) {
-      return diskGet(hash).then(function (hit) {
+      return (force ? Promise.resolve(null) : diskGet(hash)).then(function (hit) {
         if (hit) { return decodeMp3(hit); }
         var run = function () {
           if (!ttsProvider) { return Promise.reject(new Error('no text-to-speech engine is available here')); }
@@ -681,9 +683,9 @@
     var lang = slide.lang || this.deck.deck.lang;
     var prepared = slide.narration && !packed && speechPreparer ? speechPreparer(slide.narration, voice, lang).catch(function () { return null; }) : Promise.resolve(null);
     var audioP = slide.narration ? prepared.then(function (r) {
-      if (r && typeof r.text === 'string' && r.text.trim() && r.text !== slide.narration) { slide.narrationOriginal = slide.narration; slide.narration = r.text; }
+      if (r && typeof r.text === 'string' && r.text.trim() && r.text !== slide.narration) { slide.narrationOriginal = slide.narration; if (!slide.caption && self.deck.deck.captions !== 'spoken') { slide.caption = slide.narration; } slide.narration = r.text; }
       if (r && r.voice != null) { voice = r.voice; }
-      return withTimeout(packed ? decodeMp3(packed) : synthesize(slide.narration, voice, speed, lang), 240000, 'narration');
+      return withTimeout(packed ? decodeMp3(packed) : synthesize(slide.narration, voice, speed, lang), 1800000, 'narration');
     }).then(function (a) { pr.audio = a; }, function (e) { pr.error = String(e && e.message || e); }) : Promise.resolve();
     var visualP = withTimeout(prepVisual(slide), 90000, 'visual').then(function (v) { pr.visual = v; self.restoreResults(i); }, function (e) { pr.visual = null; pr.error = pr.error || String(e && e.message || e); });
     pr.promise = Promise.all([audioP, visualP]).then(function () {
@@ -692,6 +694,27 @@
       self.retime();
     });
     return pr.promise;
+  };
+
+  // Redo the narration of slide i (the viewer pressed 重試 / chose another voice). opts.voice: a voice id, '' = back to the deck's voice, undefined = keep.
+  // The original (untranslated) text is spoken again from scratch, the caches are bypassed.
+  Session.prototype.resynth = function (i, opts) {
+    opts = opts || {};
+    var self = this, pr = this.preps[i], slide = this.deck.slides[i];
+    if (!slide || !(slide.narration || slide.narrationOriginal)) { return Promise.resolve(); }
+    if (opts.voice !== undefined) { slide.voice = opts.voice || ''; }
+    var src = slide.narrationOriginal || slide.narration, voice = slide.voice || this.deck.deck.voice, speed = this.deck.deck.speed || 1, lang = slide.lang || this.deck.deck.lang;
+    pr.error = null; pr.state = 'loading'; this.emit('state');
+    var prepared = speechPreparer ? speechPreparer(src, voice, lang).catch(function () { return null; }) : Promise.resolve(null);
+    return prepared.then(function (r) {
+      if (slide.narrationOriginal) { slide.narration = slide.narrationOriginal; }
+      if (r && typeof r.text === 'string' && r.text.trim() && r.text !== slide.narration) { slide.narrationOriginal = slide.narration; if (!slide.caption && self.deck.deck.captions !== 'spoken') { slide.caption = slide.narration; } slide.narration = r.text; }
+      if (r && r.voice != null && !opts.voice) { voice = r.voice; }
+      return withTimeout(synthesize(slide.narration, voice, speed, lang, true), 1800000, 'narration');
+    }).then(function (a) { pr.audio = a; }, function (e) { pr.error = String(e && e.message || e); }).then(function () {
+      pr.timing = Core.timingFor(slide, pr.audio ? pr.audio.duration : 0, pr.visual && pr.visual.duration || 0);
+      pr.state = 'ready'; self.retime(); self.emit('state');
+    });
   };
 
   // Answers saved in a deck pack go back into the cards / widgets of slide i (keyed "<slide id>#<n-th scored piece of the slide>").
@@ -889,6 +912,7 @@
     this.timeEl = el('span', 'ai-chat-deck-time', '0:00 / 0:00'); ctl.appendChild(this.timeEl);
     this.scoreEl = el('span', 'ai-chat-deck-score'); this.scoreEl.style.display = 'none'; this.scoreEl.title = '互動卡片的得分'; ctl.appendChild(this.scoreEl);
     this.ccBtn = this.btn('CC', '字幕開關 (C)', function () { self.subtitles = !self.subtitles; self.ccBtn.classList.toggle('off', !self.subtitles); self.draw(); }); ctl.appendChild(this.ccBtn);
+    this.voiceBtn = this.btn('🎙', '這一頁的配音：重試、換聲音 (V)', function () { self.toggleVoicePanel(); }); ctl.appendChild(this.voiceBtn);
     this.muteBtn = this.btn('🔊', '靜音 (M)', function () { self.setMuted(!self.muted); }); ctl.appendChild(this.muteBtn);
     var spd = el('select', 'ai-chat-deck-speed');
     [0.75, 1, 1.25, 1.5, 2].forEach(function (v) { var o = el('option', null, v + 'x'); o.value = v; if (v === 1) { o.selected = true; } spd.appendChild(o); });
@@ -908,7 +932,7 @@
       var k = e.key;
       if (k === 'ArrowRight' || k === 'PageDown') { self.next(); } else if (k === 'ArrowLeft' || k === 'PageUp') { self.prev(); }
       else if (k === ' ') { self.toggle(); } else if (k === 'f' || k === 'F') { self.toggleFullscreen(); }
-      else if (k === 'c' || k === 'C') { self.ccBtn.click(); } else if (k === 'm' || k === 'M') { self.setMuted(!self.muted); }
+      else if (k === 'c' || k === 'C') { self.ccBtn.click(); } else if (k === 'm' || k === 'M') { self.setMuted(!self.muted); } else if (k === 'v' || k === 'V') { self.toggleVoicePanel(); }
       else if (k === 'Escape' && self.floating) { self.toggleFloat(); } else { return; }
       e.preventDefault();
     });
@@ -917,6 +941,39 @@
     if (window.ResizeObserver) { new ResizeObserver(function () { self.resize(); self.draw(); }).observe(stage); }
     this.updateChapters();
     this.resize();
+  };
+
+  // 🎙 voice panel of the current slide: what happened to its narration (ok / fell back to another voice / failed and why), retry, another voice, retry every failed slide.
+  Player.prototype.toggleVoicePanel = function () {
+    var self = this;
+    if (this.voicePanel) { this.voicePanel.remove(); this.voicePanel = null; return; }
+    var i = this.curIndex(), s = this.s, pr = s.preps[i], slide = s.deck.slides[i];
+    var p = el('div', 'ai-chat-deck-voicepanel'); this.voicePanel = p;
+    p.style.cssText = 'position:absolute;right:8px;bottom:48px;z-index:20;background:#0f2a43;color:#fff;border:1px solid rgba(255,255,255,.25);border-radius:8px;padding:10px 12px;font-size:13px;line-height:1.5;width:min(360px,92%);box-shadow:0 6px 24px rgba(0,0,0,.4);';
+    var head = el('div', null, '🎙 第 ' + (i + 1) + ' 頁的配音'); head.style.cssText = 'font-weight:700;margin-bottom:4px;'; p.appendChild(head);
+    var st = el('div', null); st.style.cssText = 'margin-bottom:6px;white-space:pre-wrap;word-break:break-word;';
+    if (!slide.narration && !slide.narrationOriginal) { st.textContent = '這一頁沒有旁白。'; }
+    else if (pr.state === 'loading') { st.textContent = '配音準備中…'; }
+    else if (pr.error) { st.textContent = '⚠ 配音失敗：' + pr.error; st.style.color = '#ffb4a8'; }
+    else if (pr.audio && pr.audio.note) { st.textContent = 'ℹ ' + pr.audio.note; st.style.color = '#ffe08a'; }
+    else if (pr.audio) { st.textContent = '✓ 已有配音（' + (slide.voice || s.deck.deck.voice || '自動挑選') + '，' + pr.audio.duration.toFixed(1) + ' 秒）'; }
+    else { st.textContent = '尚未準備。'; }
+    p.appendChild(st);
+    var voices = []; try { voices = voiceLister ? (voiceLister() || []) : []; } catch (e) { voices = []; }
+    var sel = el('select', null); sel.style.cssText = 'width:100%;margin-bottom:6px;background:#173a59;color:#fff;border:1px solid rgba(255,255,255,.3);border-radius:6px;padding:3px;';
+    var o0 = el('option', null, '（沿用簡報的聲音' + (s.deck.deck.voice ? '：' + s.deck.deck.voice : '，自動挑選') + '）'); o0.value = ''; sel.appendChild(o0);
+    voices.forEach(function (v) { var o = el('option', null, v.label || v.id); o.value = v.id; if (slide.voice === v.id) { o.selected = true; } sel.appendChild(o); });
+    if (voices.length) { p.appendChild(sel); }
+    var row = el('div', null); row.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
+    function act(label, fn) { var b = el('button', null, label); b.type = 'button'; b.style.cssText = 'background:#2d6da3;color:#fff;border:0;border-radius:6px;padding:4px 10px;cursor:pointer;'; b.addEventListener('click', fn); row.appendChild(b); return b; }
+    if (slide.narration || slide.narrationOriginal) {
+      act('重做這一頁', function () { var v = voices.length ? sel.value : undefined; self.toggleVoicePanel(); s.resynth(i, v === undefined ? {} : { voice: v }); });
+    }
+    var failed = []; s.preps.forEach(function (q, k) { if (q.error) { failed.push(k); } });
+    if (failed.length) { act('重試所有失敗的頁（' + failed.length + '）', function () { self.toggleVoicePanel(); failed.reduce(function (pp, k) { return pp.then(function () { return s.resynth(k, {}); }); }, Promise.resolve()); }); }
+    act('關閉', function () { self.toggleVoicePanel(); });
+    p.appendChild(row);
+    this.box.style.position = this.box.style.position || 'relative'; this.box.appendChild(p);
   };
 
   Player.prototype.btn = function (label, title, fn) {
@@ -1440,7 +1497,8 @@
     var silent = !ttsProvider ? '(此環境沒有語音引擎,以字幕呈現)' : '';
     var text = '已準備 ' + ready + '/' + n + ' 頁' + (silent ? ' ' + silent : '');
     if (s.deck.slides.some(function (sl) { return sl.stage === '3d'; })) { text += s.stage3d ? ' · 3D 視窗(拖曳旋轉、滾輪縮放、雙擊回到這頁的鏡頭)' : (s.stageNote ? ' · ' + s.stageNote : ' · 3D 舞台載入中…'); }
-    if (errs.length) { text += ' · 🔇 ' + errs.length + ' 頁旁白失敗:' + errs[0].slice(0, 80); }
+    if (errs.length) { text += ' · 🔇 ' + errs.length + ' 頁旁白失敗:' + errs[0].slice(0, 80) + '（按 🎙 重試或換聲音）'; }
+    var fbs = s.preps.filter(function (q) { return q.audio && q.audio.note; }).length; if (fbs) { text += ' · ℹ ' + fbs + ' 頁改用了備援的語音（按 🎙 看原因）'; }
     var failedVis = s.preps.filter(function (p) { return visualFailed(p.visual); }).length;
     if (failedVis) {
       var firstBad = s.preps.filter(function (p) { return visualFailed(p.visual); })[0].visual;
@@ -1550,6 +1608,7 @@
     // fn(text, voiceId|null, lang) -> Promise<{text, voice}>: last look at a slide's narration before it is spoken (translate it for an English voice, pick the
     // Chinese voice for Chinese text). The returned text replaces the narration (so the subtitles match what is heard).
     setSpeechPreparer: function (fn) { speechPreparer = fn; },
+    setVoiceLister: function (fn) { voiceLister = fn; },
     hasTts: function () { return !!ttsProvider; },
     // fn(system, user) -> Promise<{score: 0..1, feedback}>; replaces the default AI grader of answer cards
     setGradeProvider: function (fn) { gradeProvider = fn; },

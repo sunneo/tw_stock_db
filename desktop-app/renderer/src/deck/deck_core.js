@@ -280,6 +280,7 @@
     if (deck.theme != null && typeof deck.theme !== 'string') { err('deck.theme', 'must be a string'); }
     if (deck.colors != null) { checkDeckColors(deck.colors, err); }
     if (deck.speed != null && !(typeof deck.speed === 'number' && deck.speed >= 0.5 && deck.speed <= 2)) { err('deck.speed', 'must be a number between 0.5 and 2'); }
+    if (deck.captions != null && deck.captions !== 'original' && deck.captions !== 'spoken') { err('deck.captions', 'must be original (default: the subtitles show the text you wrote even when the voice speaks a translation) or spoken'); }
     if (deck.aspect != null && deck.aspect !== '16:9') { err('deck.aspect', 'only "16:9" is supported'); }
     if (deck.style != null && STYLES.indexOf(deck.style) < 0) { err('deck.style', 'must be flat or 3d'); }
     if (deck.environment != null && ENVIRONMENTS.indexOf(deck.environment) < 0) { err('deck.environment', 'must be one of ' + ENVIRONMENTS.join(', ')); }
@@ -330,6 +331,8 @@
     var narration = s.narration;
     if (narration != null && typeof narration !== 'string') { err(p + '.narration', 'must be a string'); narration = ''; }
     if (str(narration).length > LIMITS.narration) { err(p + '.narration', 'longer than ' + LIMITS.narration + ' characters (split the slide)'); }
+    if (s.caption != null && typeof s.caption !== 'string') { err(p + '.caption', 'must be a string (the subtitle text; the narration is what is SPOKEN)'); }
+    else if (str(s.caption).length > LIMITS.narration) { err(p + '.caption', 'longer than ' + LIMITS.narration + ' characters'); }
     // the narration is what the audience HEARS: how fast the voice is, is a deck setting (deck.speed), never a sentence of the talk
     // (only a warning here: a deck saved before this rule must still play; the server refuses it when a model writes one -- MediaDeckValidator)
     if (SPEED_TALK.test(str(narration))) { warn(p + '.narration', 'mentions the speaking speed -- that is the deck setting deck.speed, not something to say; remove that sentence from the narration'); }
@@ -709,7 +712,7 @@
         if (visual) { visual = normalizeVisual(visual, 0); }
         var tr = s.transition ? Object.assign({ ms: 500 }, s.transition) : { type: n === 0 ? 'none' : (deck.style === '3d' ? 'fly' : 'fade'), ms: deck.style === '3d' ? 1400 : 500 };
         slides.push({ id: s.id || ('s' + (n + 1)), index: n, chapter: ci, chapterTitle: str(ch.title), layout: layout, title: str(s.title),
-          subtitle: str(s.subtitle), voice: str(s.voice), lang: str(s.lang), bullets: bullets, narration: speakable(s.narration), notes: str(s.notes), visual: visual, cues: Array.isArray(s.cues) ? s.cues : [],
+          subtitle: str(s.subtitle), voice: str(s.voice), lang: str(s.lang), bullets: bullets, narration: speakable(s.narration), caption: speakable(s.caption), notes: str(s.notes), visual: visual, cues: Array.isArray(s.cues) ? s.cues : [],
           transition: tr, duration: typeof s.duration === 'number' ? s.duration : 0, stage: s.stage || deck.style,
           camera: s.camera == null ? null : (Array.isArray(s.camera) ? s.camera : [s.camera]).map(function (c) { return typeof c === 'string' ? { preset: c } : Object.assign({}, c); }) });
       });
@@ -740,7 +743,9 @@
     var spans = distribute(sents, narr, lead);
     var vis = slide.visual && slide.visual.mode === 'timed' && sceneSec > 0 ? sceneSec : 0;
     var dur = Math.max(slide.duration || 0, hasNarr ? lead + narr + TAIL : 0, vis, hasNarr ? MIN_SLIDE : (slide.duration ? 1 : MIN_SILENT));
-    return { sentences: spans, narrStart: lead, narrSec: narr, duration: dur, audioKnown: known, silent: !hasNarr };
+    var caps = hasNarr && slide.caption ? splitSentences(slide.caption) : [];
+    var capSpans = caps.length ? (caps.length === spans.length ? spans.map(function (sp, i) { return { text: caps[i], start: sp.start, end: sp.end }; }) : distribute(caps, narr, lead)) : null;
+    return { sentences: spans, captions: capSpans, narrStart: lead, narrSec: narr, duration: dur, audioKnown: known, silent: !hasNarr };
   }
 
   // Whole-deck timeline. timings[i] = timingFor(...). The transition INTO slide i (i>0) runs first, then its body.
@@ -1169,7 +1174,7 @@
   }
 
   function currentSentence(timing, t) {
-    var ss = timing.sentences;
+    var ss = timing.captions || timing.sentences;
     for (var i = 0; i < ss.length; i++) { if (t >= ss[i].start && t < ss[i].end + (i === ss.length - 1 ? 0.4 : 0)) { return ss[i]; } }
     return null;
   }
@@ -1492,7 +1497,7 @@
     var lines = format === 'vtt' ? ['WEBVTT', ''] : [], n = 0;
     deck.slides.forEach(function (_s, i) {
       var seg = tl.segs[i];
-      (timings[i] ? timings[i].sentences : []).forEach(function (sp) {
+      (timings[i] ? (timings[i].captions || timings[i].sentences) : []).forEach(function (sp) {
         n++;
         if (format !== 'vtt') { lines.push(String(n)); }
         lines.push(fmtTime(seg.bodyStart + sp.start, format !== 'vtt') + ' --> ' + fmtTime(seg.bodyStart + sp.end, format !== 'vtt'));

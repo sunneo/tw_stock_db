@@ -43,6 +43,7 @@ const FaDeckHost = (function () {
                 if (!w.AiChatDeck || !w.AiChatDeckCore) throw new Error('簡報元件載入後找不到 AiChatDeck');
                 w.AiChatDeck.setTtsProvider((text, voice, speed, lang) => this._deckSynthesize(text, voice, speed, lang), { concurrent: true });
                 w.AiChatDeck.setSpeechPreparer((text, voice, lang) => this._deckPrepareSpeech(text, voice, lang));
+                if (w.AiChatDeck.setVoiceLister) w.AiChatDeck.setVoiceLister(() => this._deckVoiceList());
                 w.AiChatDeck.setGradeProvider((system, user) => this._deckGrade(system, user));
                 return true;
             })();
@@ -234,10 +235,38 @@ const FaDeckHost = (function () {
             } catch (_) { out = null; }
             this._deckTransCache.set(key, out); return out;
         },
+        // 一頁旁白的合成：
+        //  · 逾時（240 秒）從「拿到語音引擎」才開始算，排隊等前面的頁不算（以前是整段都算，長簡報後面的頁會因為排隊就失敗：「narration did not answer within 240 seconds」）
+        //  · 失敗或逾時 → 改用離線語音再試一次（中文：本地中文；英文：本地英文），在回傳的資料上放一則說明（fa_note），播放器的 🎙 面板會告訴使用者發生了什麼
+        //  · 兩個都失敗才丟錯，錯誤裡兩邊的原因都寫
         async _deckSynthesize(text, voice, speed, lang) {
-            const isApi = voice ? (typeof TTS_API_VOICES !== 'undefined' && TTS_API_VOICES.some((v) => v.id === voice)) : this._looksLikeCjkText(String(text));
-            const release = await this._deckTtsGate(isApi ? 'api' : 'local');
-            try { return await this._deckSynthesizeNow(text, voice, speed, lang); } finally { release(); }
+            const isApiVoice = (v) => (v ? (typeof TTS_API_VOICES !== 'undefined' && TTS_API_VOICES.some((x) => x.id === v)) : this._looksLikeCjkText(String(text)));
+            const attempt = async (v) => {
+                const release = await this._deckTtsGate(isApiVoice(v) ? 'api' : 'local');
+                let timer; try { return await Promise.race([this._deckSynthesizeNow(text, v, speed, lang), new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('語音合成 240 秒內沒有回應')), 240000); })]); } finally { clearTimeout(timer); release(); }
+            };
+            try { return await attempt(voice); }
+            catch (e1) {
+                const fb = this._deckFallbackVoice(text, voice); const why1 = String((e1 && e1.message) || e1).slice(0, 160);
+                if (!fb) throw e1;
+                try { this._log('⚠️ 簡報旁白用「' + (voice || '自動') + '」失敗（' + why1 + '），改用' + fb.label); } catch (_) { /* */ }
+                try { const buf = await attempt(fb.id); try { buf.fa_note = '原本的語音失敗（' + why1 + '），這一頁改用' + fb.label + '。可以按 🎙 換聲音或重試。'; } catch (_) { /* */ } return buf; }
+                catch (e2) { throw new Error(why1 + '；改用' + fb.label + '也失敗：' + String((e2 && e2.message) || e2).slice(0, 160)); }
+            }
+        },
+        _deckFallbackVoice(text, voice) {
+            const local = typeof TTS_VOICES !== 'undefined' ? TTS_VOICES : [];
+            if (this._looksLikeCjkText(String(text))) {
+                const zh = this._pickZhLocalVoice ? this._pickZhLocalVoice(null) : null; if (!zh || zh.id === voice) return null; return { id: zh.id, label: '離線中文語音「' + zh.name + '」' };
+            }
+            const en = local.find((v) => v.id === (this.advancedSettings && this.advancedSettings.ttsDefaultVoice)) || local[0]; if (!en || en.id === voice) return null;
+            return { id: en.id, label: '離線英文語音「' + en.name + '」' };
+        },
+        // 播放器 🎙 面板的聲音清單：本地英文、本地中文、線上中文（有啟用才列）
+        _deckVoiceList() {
+            const out = []; const add = (list, tag) => (list || []).forEach((v) => out.push({ id: v.id, label: v.name + '（' + tag + (v.gender ? '，' + v.gender : '') + '）' }));
+            try { add(typeof TTS_VOICES !== 'undefined' ? TTS_VOICES : [], '離線英文'); add(typeof TTS_ZH_VOICES !== 'undefined' ? TTS_ZH_VOICES : [], '離線中文'); if (this.advancedSettings && this.advancedSettings.ttsApiEnabled) add(typeof TTS_API_VOICES !== 'undefined' ? TTS_API_VOICES : [], '線上中文'); } catch (_) { /* 清單拿不到就不列 */ }
+            return out;
         },
         async _deckSynthesizeNow(text, voice, speed, lang) {
             const r = await this._synthesizeSpeech(String(text), voice || null, null, speed, { sentencePause: true });

@@ -84,6 +84,7 @@ const suites = [
     ['遠端群組：慢速信箱（Cloudflare KV，用假 KV 測 Worker 與傳輸）', 'scripts/remote-tests/rg_kv.test.js'],
     ['遠端群組：內容傳輸（直連與轉送備援、完整性驗證、未宣告拒絕）', 'scripts/remote-tests/rg_files.test.js'],
     ['動畫簡報：格式、驗證、時間軸、渲染（deck_core）', 'scripts/deck-tests/deck_core.test.js'],
+    ['動畫簡報：字幕可以跟念的不一樣（caption）、配音失敗／逾時的備援、聲音清單', 'scripts/deck-tests/deck_voice.test.js'],
     ['動畫簡報：程式碼視窗、patch、問答卡、小工具沙盒、互動視覺的格式規則', 'scripts/deck-tests/deck_interactive.test.js'],
     ['動畫簡報：影片視覺（播放、重播、快轉、速度、A-B 循環的格式規則）', 'scripts/deck-tests/deck_video.test.js'],
     ['動畫簡報：每份簡報自己的外框配色（deck.colors）', 'scripts/deck-tests/deck_colors.test.js'],
