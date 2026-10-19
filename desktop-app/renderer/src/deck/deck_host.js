@@ -5,7 +5,7 @@
 const FaDeckHost = (function () {
     'use strict';
     // 載入順序與外掛的 index.html.erb 相同
-    const ORDER = ['viewer3d', 'viewer2d', 'video_export', 'deck_core', 'deck_stage3d', 'deck_code', 'deck_quiz', 'deck_widget', 'deck_player', 'deck_pack', 'deck_export'];
+    const ORDER = ['viewer3d', 'viewer2d', 'video_export', 'deck_core', 'deck_sfx', 'stage_core', 'deck_stage3d', 'deck_code', 'deck_quiz', 'deck_widget', 'deck_player', 'deck_pack', 'deck_export'];
     const CLIENT_PREFIX = 'client-file/';
     // 預設樣板：結構與外掛的 config/deck_template.default.json 相同（版面座標以 1920x1080 設計空間計），沒有品牌圖片
     const DECK_CSS_ID = 'fa-deck-css';
@@ -44,6 +44,7 @@ const FaDeckHost = (function () {
                 w.AiChatDeck.setTtsProvider((text, voice, speed, lang) => this._deckSynthesize(text, voice, speed, lang), { concurrent: true });
                 w.AiChatDeck.setSpeechPreparer((text, voice, lang) => this._deckPrepareSpeech(text, voice, lang));
                 if (w.AiChatDeck.setVoiceLister) w.AiChatDeck.setVoiceLister(() => this._deckVoiceList());
+                if (w.AiChatDeck.setCaptionTranslator) w.AiChatDeck.setCaptionTranslator((text, to) => this._deckTranslateCaption(text, to));
                 w.AiChatDeck.setGradeProvider((system, user) => this._deckGrade(system, user));
                 return true;
             })();
@@ -261,6 +262,13 @@ const FaDeckHost = (function () {
             }
             const en = local.find((v) => v.id === (this.advancedSettings && this.advancedSettings.ttsDefaultVoice)) || local[0]; if (!en || en.id === voice) return null;
             return { id: en.id, label: '離線英文語音「' + en.name + '」' };
+        },
+        // 字幕的另一種語言（中英文字幕）：中英互譯；離線模式只用離線翻譯模型。沒有譯文回 null（那一軌就不出現）
+        async _deckTranslateCaption(text, to) {
+            this._deckCapTr = this._deckCapTr || new Map(); const key = to + '|' + text; if (this._deckCapTr.has(key)) return this._deckCapTr.get(key);
+            let out = null;
+            try { const r = await this.translateText({ text: String(text), to, engine: this.advancedSettings && this.advancedSettings.offlineMode ? 'offline' : 'auto' }); if (r && r.ok && r.engine !== 'none' && typeof r.text === 'string' && r.text.trim()) out = r.text; } catch (_) { out = null; }
+            this._deckCapTr.set(key, out); return out;
         },
         // 播放器 🎙 面板的聲音清單：本地英文、本地中文、線上中文（有啟用才列）
         _deckVoiceList() {

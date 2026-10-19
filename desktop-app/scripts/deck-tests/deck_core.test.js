@@ -87,7 +87,7 @@ check('timing: a silent slide lasts its duration or 4 s', C.timingFor(deck.slide
 const t1 = C.timingFor(deck.slides[1], 8, 0);
 const sch = C.cueSchedule(deck.slides[1], t1);
 const bull = sch.filter(c => c.target.type === 'bullet');
-check('cues: bullets auto-reveal one per sentence, skipping the intro sentence', bull.length === 3 && Math.abs(bull[0].at - t1.sentences[1].start) < 1e-9 && Math.abs(bull[2].at - t1.sentences[3].start) < 1e-9, bull.map(b => b.at));
+check('cues: bullets auto-reveal one per sentence (skipping the intro sentence), the text 0.7 s BEFORE the voice reads it and highlighted while it is read', (() => { const sh = bull.filter(b => b.kind === 'show'); return sh.length === 3 && Math.abs(sh[0].at - (t1.sentences[1].start - 0.7)) < 1e-9 && Math.abs(sh[2].at - (t1.sentences[3].start - 0.7)) < 1e-9 && bull.filter(b => b.kind === 'highlight').length === 3; })(), bull.map(b => b.kind + ':' + b.at));
 const shapeCue = sch.find(c => c.target.type === 'shape');
 check('cues: an explicit shape cue lands at the start of sentence 3', shapeCue && Math.abs(shapeCue.at - t1.sentences[2].start) < 1e-9 && shapeCue.effect === 'pop');
 const rows = C.cueSchedule(deck.slides[2], C.timingFor(deck.slides[2], 6, 0)).filter(c => c.target.type === 'row');

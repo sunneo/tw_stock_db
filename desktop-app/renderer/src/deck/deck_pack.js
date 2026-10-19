@@ -119,7 +119,8 @@
         walkUrls(doc, function (o, k, v) { if (typeof paths[v] === 'string') { o[k] = paths[v]; } });
         var raw = window.jsyaml.dump(doc, { lineWidth: -1 }), deck = Core.parseDeck(raw, window.jsyaml);
         var session = new Deck.Session(deck, raw, '');
-        session.packAudio = audio; session.packResults = results && results.items || {}; session.packTerminals = results && results.terminals || {};
+        session.manualVoice = true; session.packAudio = audio; // a pack is played as it was exported: a slide without an audio file stays silent (subtitles only); the viewer can generate it from the 🎙 panel
+         session.packResults = results && results.items || {}; session.packTerminals = results && results.terminals || {};
         status.remove();
         container._deckPlayer = new Deck.Player(session, container);
         return container._deckPlayer;

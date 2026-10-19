@@ -11,7 +11,7 @@
   var DECK_URL_RE = /\.deck\.yaml(\?.*)?$/i;
   var PREHEAT = 3;      // slides that must be ready before the play button appears
   var LOOKAHEAD = 3;    // slides prepared ahead of the one being shown
-  var ttsProvider = null, ttsConcurrent = false, speechPreparer = null, voiceLister = null;
+  var ttsProvider = null, ttsConcurrent = false, speechPreparer = null, voiceLister = null, captionTranslator = null;
   var audioCtx = null;
 
   // ------------------------------------------------------------------ small utilities
@@ -308,6 +308,12 @@
         return Promise.all(list.map(function (im, i) {
           return loadImage(im.src).then(function (img) { out.images[i] = img; }, function (e) { out.failed[i] = true; out.errors.push(String(e && e.message || e)); });
         })).then(function () { return out; });
+      }
+      case 'collage': {
+        var citems = v.items || [], cout = { images: [], failed: [], errors: [] };
+        return Promise.all(citems.map(function (im, i) {
+          return loadImage(im.src).then(function (img) { cout.images[i] = img; }, function (e) { cout.failed[i] = true; cout.errors.push(String(e && e.message || e)); });
+        })).then(function () { return cout; });
       }
       case 'shapes': p = sceneVisual(v.scene); break;
       case 'anim2d': p = window.AiChat2D.ensureJsYamlLoaded().then(function () { return fetchText(v.ref); }).then(function (t) { var o = window.jsyaml.load(t); delete o.kind; return sceneVisual(o); }); break;
@@ -682,18 +688,56 @@
     var packed = this.packAudio && this.packAudio[slide.id];
     var lang = slide.lang || this.deck.deck.lang;
     var prepared = slide.narration && !packed && speechPreparer ? speechPreparer(slide.narration, voice, lang).catch(function () { return null; }) : Promise.resolve(null);
-    var audioP = slide.narration ? prepared.then(function (r) {
-      if (r && typeof r.text === 'string' && r.text.trim() && r.text !== slide.narration) { slide.narrationOriginal = slide.narration; if (!slide.caption && self.deck.deck.captions !== 'spoken') { slide.caption = slide.narration; } slide.narration = r.text; }
+    pr.noVoice = !!(this.manualVoice && slide.narration && !packed);
+    var audioP = slide.narration && !pr.noVoice ? prepared.then(function (r) {
+      if (r && typeof r.text === 'string' && r.text.trim() && r.text !== slide.narration) { slide.narrationOriginal = slide.narration; slide.narration = r.text; }
       if (r && r.voice != null) { voice = r.voice; }
       return withTimeout(packed ? decodeMp3(packed) : synthesize(slide.narration, voice, speed, lang), 1800000, 'narration');
     }).then(function (a) { pr.audio = a; }, function (e) { pr.error = String(e && e.message || e); }) : Promise.resolve();
     var visualP = withTimeout(prepVisual(slide), 90000, 'visual').then(function (v) { pr.visual = v; self.restoreResults(i); }, function (e) { pr.visual = null; pr.error = pr.error || String(e && e.message || e); });
     pr.promise = Promise.all([audioP, visualP]).then(function () {
+      self.refreshCaptions(i, true);
       pr.timing = Core.timingFor(slide, pr.audio ? pr.audio.duration : 0, pr.visual && pr.visual.duration || 0);
       pr.state = 'ready';
       self.retime();
     });
     return pr.promise;
+  };
+
+  // ---- subtitle tracks (stacked): deck.captions = original | spoken | bilingual | [zh, en, ...]. A track is a text for the viewer to READ; the narration is what is HEARD.
+  //  original: what you wrote (slide.caption, else the text before it was translated for the voice, else the narration)   spoken: the narration
+  //  zh / en: the Chinese / English text (taken from what exists: the caption, the original, the narration; the missing one is translated by the host's translator)
+  function hasCjk(t) { return /[\u3400-\u9fff]/.test(t || ''); }
+  function trackIds(mode) {
+    if (Array.isArray(mode)) { return mode.slice(0, 3); }
+    if (mode === 'spoken') { return ['spoken']; } if (mode === 'bilingual') { return ['zh', 'en']; } return ['original'];
+  }
+  Session.prototype.setCaptionMode = function (mode) {
+    var self = this; this.deck.deck.captions = mode;
+    this.deck.slides.forEach(function (_s, i) { self.refreshCaptions(i, false); });
+  };
+  // Recompute slide i's subtitle tracks (and its timing). sync=true: called while preparing (the caller re-times); otherwise re-time here.
+  Session.prototype.refreshCaptions = function (i, sync) {
+    var self = this, slide = this.deck.slides[i], pr = this.preps[i]; if (!slide) { return; }
+    var ids = trackIds(this.deck.deck.captions), cands = [slide.captionYaml, slide.narrationOriginal, slide.narration].filter(Boolean), out = [], need = [];
+    slide._tr = slide._tr || {}; slide._trTried = slide._trTried || {};
+    ids.forEach(function (id) {
+      var tx = '';
+      if (id === 'spoken') { tx = slide.narration || ''; }
+      else if (id === 'original') { tx = slide.captionYaml || slide.narrationOriginal || ''; }
+      else if (id === 'zh') { tx = cands.filter(hasCjk)[0] || slide._tr.zh || ''; }
+      else if (id === 'en') { tx = cands.filter(function (c) { return /[A-Za-z]/.test(c) && !hasCjk(c); })[0] || slide._tr.en || ''; }
+      if (!tx && (id === 'zh' || id === 'en') && cands.length) { need.push(id); }
+      if (tx && out.indexOf(tx) < 0) { out.push(tx); }
+    });
+    // the default (original) with nothing written/translated = no separate subtitle: the narration itself is shown
+    slide.tracks = out.length && !(ids.length === 1 && ids[0] === 'original' && !slide.captionYaml && !slide.narrationOriginal) ? out : [];
+    slide.caption = slide.tracks[0] && slide.tracks[0] !== slide.narration ? slide.tracks[0] : '';
+    need.forEach(function (id) {
+      if (!captionTranslator || slide._trTried[id]) { return; } slide._trTried[id] = true;
+      Promise.resolve().then(function () { return captionTranslator(cands[0], id === 'zh' ? 'zh' : 'en'); }).then(function (t) { if (t && typeof t === 'string' && t.trim()) { slide._tr[id] = t.trim(); self.refreshCaptions(i, false); } }, function () { /* no translation: the track stays out */ });
+    });
+    if (!sync && pr && pr.state === 'ready') { pr.timing = Core.timingFor(slide, pr.audio ? pr.audio.duration : 0, pr.visual && pr.visual.duration || 0); this.retime(); this.emit('state'); }
   };
 
   // Redo the narration of slide i (the viewer pressed 重試 / chose another voice). opts.voice: a voice id, '' = back to the deck's voice, undefined = keep.
@@ -704,14 +748,15 @@
     if (!slide || !(slide.narration || slide.narrationOriginal)) { return Promise.resolve(); }
     if (opts.voice !== undefined) { slide.voice = opts.voice || ''; }
     var src = slide.narrationOriginal || slide.narration, voice = slide.voice || this.deck.deck.voice, speed = this.deck.deck.speed || 1, lang = slide.lang || this.deck.deck.lang;
-    pr.error = null; pr.state = 'loading'; this.emit('state');
+    pr.error = null; pr.noVoice = false; pr.state = 'loading'; this.emit('state');
     var prepared = speechPreparer ? speechPreparer(src, voice, lang).catch(function () { return null; }) : Promise.resolve(null);
     return prepared.then(function (r) {
       if (slide.narrationOriginal) { slide.narration = slide.narrationOriginal; }
-      if (r && typeof r.text === 'string' && r.text.trim() && r.text !== slide.narration) { slide.narrationOriginal = slide.narration; if (!slide.caption && self.deck.deck.captions !== 'spoken') { slide.caption = slide.narration; } slide.narration = r.text; }
+      if (r && typeof r.text === 'string' && r.text.trim() && r.text !== slide.narration) { slide.narrationOriginal = slide.narration; slide.narration = r.text; }
       if (r && r.voice != null && !opts.voice) { voice = r.voice; }
       return withTimeout(synthesize(slide.narration, voice, speed, lang, true), 1800000, 'narration');
     }).then(function (a) { pr.audio = a; }, function (e) { pr.error = String(e && e.message || e); }).then(function () {
+      self.refreshCaptions(i, true);
       pr.timing = Core.timingFor(slide, pr.audio ? pr.audio.duration : 0, pr.visual && pr.visual.duration || 0);
       pr.state = 'ready'; self.retime(); self.emit('state');
     });
@@ -795,11 +840,27 @@
 
   // The whole narration as ONE mono track, produced chunk by chunk (never all at once): {sampleRate, channels:1, length, read(pos, n)}.
   // Used by the MP4 export, which feeds it straight into the audio encoder.
+  // Sound cues of slide i (collage: pop / step / whoosh / speech and collage.sounds), on the slide clock. Recomputed when the slide is re-timed.
+  Session.prototype.sfxFor = function (i) {
+    var pr = this.preps[i], slide = this.deck.slides[i]; if (!pr || !slide || !slide.visual || slide.visual.kind !== 'collage') { return []; }
+    var key = pr.timing ? pr.timing.narrSec + '|' + (pr.timing.sentences || []).length : '';
+    if (pr._sfxKey !== key) { pr._sfxKey = key; pr._sfx = Core.sfxCues(slide, pr.timing || Core.timingFor(slide, 0, 0)); }
+    return pr._sfx || [];
+  };
+  var sfxCache = {};
+  function sfxSamples(name, sr) {
+    var k = name + '@' + sr; if (!sfxCache[k]) { sfxCache[k] = window.AiChatDeckSfx ? window.AiChatDeckSfx.render(name, sr) : new Float32Array(0); } return sfxCache[k];
+  }
+
   Session.prototype.audioSource = function () {
     var self = this, ctx = getAudioCtx();
     var withAudio = this.preps.map(function (p, i) { return p.audio ? i : -1; }).filter(function (i) { return i >= 0; });
-    if (!withAudio.length || !ctx) { return null; }
+    var hasSfx = this.deck.slides.some(function (_s, i) { return self.sfxFor(i).length > 0; });
+    if ((!withAudio.length && !hasSfx) || !ctx) { return null; }
     var sr = ctx.sampleRate;
+    // sound effects: [{start (sample), samples}] on the whole-deck clock, mixed in below
+    var sfxSpans = [];
+    this.deck.slides.forEach(function (_s, i) { var seg = self.tl.segs[i]; self.sfxFor(i).forEach(function (c) { var smp = sfxSamples(c.name, sr), st0 = Math.round((seg.bodyStart + c.t) * sr); if (smp.length) { sfxSpans.push({ start: st0, end: st0 + smp.length, samples: smp, vol: c.vol == null ? 0.8 : c.vol }); } }); });
     var spans = withAudio.map(function (i) {
       var seg = self.tl.segs[i], start = Math.round((seg.bodyStart + self.preps[i].timing.narrStart) * sr);
       return { i: i, start: start, end: start + Math.ceil(self.preps[i].audio.duration * sr) };
@@ -816,7 +877,10 @@
               for (var k = from; k < to; k++) { var v = out[k - pos] + ch[k - sp.start]; out[k - pos] = v > 1 ? 1 : (v < -1 ? -1 : v); }
             });
           });
-        }, Promise.resolve()).then(function () { return out; });
+        }, Promise.resolve()).then(function () {
+          sfxSpans.forEach(function (sp) { if (sp.start >= end || sp.end <= pos) { return; } var from = Math.max(pos, sp.start), to = Math.min(end, sp.end); for (var k = from; k < to; k++) { var v = out[k - pos] + sp.samples[k - sp.start] * sp.vol; out[k - pos] = v > 1 ? 1 : (v < -1 ? -1 : v); } });
+          return out;
+        });
       }
     };
   };
@@ -943,17 +1007,19 @@
     this.resize();
   };
 
-  // 🎙 voice panel of the current slide: what happened to its narration (ok / fell back to another voice / failed and why), retry, another voice, retry every failed slide.
+  // 🎙 panel of the current slide: what happened to its narration (ok / silent because the pack has no audio / fell back to another voice / failed and why),
+  // redo this slide (another voice), redo ALL slides, retry the failed ones, and the subtitle mode (stacked tracks).
   Player.prototype.toggleVoicePanel = function () {
     var self = this;
     if (this.voicePanel) { this.voicePanel.remove(); this.voicePanel = null; return; }
     var i = this.curIndex(), s = this.s, pr = s.preps[i], slide = s.deck.slides[i];
     var p = el('div', 'ai-chat-deck-voicepanel'); this.voicePanel = p;
-    p.style.cssText = 'position:absolute;right:8px;bottom:48px;z-index:20;background:#0f2a43;color:#fff;border:1px solid rgba(255,255,255,.25);border-radius:8px;padding:10px 12px;font-size:13px;line-height:1.5;width:min(360px,92%);box-shadow:0 6px 24px rgba(0,0,0,.4);';
-    var head = el('div', null, '🎙 第 ' + (i + 1) + ' 頁的配音'); head.style.cssText = 'font-weight:700;margin-bottom:4px;'; p.appendChild(head);
+    p.style.cssText = 'position:absolute;right:8px;bottom:48px;z-index:20;background:#0f2a43;color:#fff;border:1px solid rgba(255,255,255,.25);border-radius:8px;padding:10px 12px;font-size:13px;line-height:1.5;width:min(380px,94%);box-shadow:0 6px 24px rgba(0,0,0,.4);max-height:80%;overflow:auto;';
+    var head = el('div', null, '🎙 第 ' + (i + 1) + ' 頁的配音與字幕'); head.style.cssText = 'font-weight:700;margin-bottom:4px;'; p.appendChild(head);
     var st = el('div', null); st.style.cssText = 'margin-bottom:6px;white-space:pre-wrap;word-break:break-word;';
     if (!slide.narration && !slide.narrationOriginal) { st.textContent = '這一頁沒有旁白。'; }
     else if (pr.state === 'loading') { st.textContent = '配音準備中…'; }
+    else if (pr.noVoice) { st.textContent = '🔇 封包裡沒有這一頁的音檔，保持靜音（字幕照常）。要聲音按「重做這一頁」。'; st.style.color = '#ffe08a'; }
     else if (pr.error) { st.textContent = '⚠ 配音失敗：' + pr.error; st.style.color = '#ffb4a8'; }
     else if (pr.audio && pr.audio.note) { st.textContent = 'ℹ ' + pr.audio.note; st.style.color = '#ffe08a'; }
     else if (pr.audio) { st.textContent = '✓ 已有配音（' + (slide.voice || s.deck.deck.voice || '自動挑選') + '，' + pr.audio.duration.toFixed(1) + ' 秒）'; }
@@ -964,15 +1030,25 @@
     var o0 = el('option', null, '（沿用簡報的聲音' + (s.deck.deck.voice ? '：' + s.deck.deck.voice : '，自動挑選') + '）'); o0.value = ''; sel.appendChild(o0);
     voices.forEach(function (v) { var o = el('option', null, v.label || v.id); o.value = v.id; if (slide.voice === v.id) { o.selected = true; } sel.appendChild(o); });
     if (voices.length) { p.appendChild(sel); }
-    var row = el('div', null); row.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
+    var row = el('div', null); row.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;';
     function act(label, fn) { var b = el('button', null, label); b.type = 'button'; b.style.cssText = 'background:#2d6da3;color:#fff;border:0;border-radius:6px;padding:4px 10px;cursor:pointer;'; b.addEventListener('click', fn); row.appendChild(b); return b; }
-    if (slide.narration || slide.narrationOriginal) {
-      act('重做這一頁', function () { var v = voices.length ? sel.value : undefined; self.toggleVoicePanel(); s.resynth(i, v === undefined ? {} : { voice: v }); });
-    }
+    function chain(list) { return list.reduce(function (pp, k) { return pp.then(function () { return s.resynth(k, {}); }); }, Promise.resolve()); }
+    var hasNarr = function (k) { var sl = s.deck.slides[k]; return !!(sl.narration || sl.narrationOriginal); };
+    if (hasNarr(i)) { act('重做這一頁', function () { var v = voices.length ? sel.value : undefined; self.toggleVoicePanel(); s.resynth(i, v === undefined ? {} : { voice: v }); }); }
+    var all = []; s.deck.slides.forEach(function (_sl, k) { if (hasNarr(k)) { all.push(k); } });
+    if (all.length > 1) { act('全部重做（' + all.length + ' 頁）', function () { self.toggleVoicePanel(); chain(all); }); }
     var failed = []; s.preps.forEach(function (q, k) { if (q.error) { failed.push(k); } });
-    if (failed.length) { act('重試所有失敗的頁（' + failed.length + '）', function () { self.toggleVoicePanel(); failed.reduce(function (pp, k) { return pp.then(function () { return s.resynth(k, {}); }); }, Promise.resolve()); }); }
-    act('關閉', function () { self.toggleVoicePanel(); });
+    if (failed.length) { act('重試失敗的頁（' + failed.length + '）', function () { self.toggleVoicePanel(); chain(failed); }); }
+    var silent = []; s.preps.forEach(function (q, k) { if (q.noVoice) { silent.push(k); } });
+    if (silent.length) { act('幫沒有音檔的頁生成（' + silent.length + '）', function () { self.toggleVoicePanel(); chain(silent); }); }
     p.appendChild(row);
+    // subtitles: stacked tracks (the first is the big one)
+    var cap = el('div', null, '字幕'); cap.style.cssText = 'font-weight:700;margin:4px 0 2px;'; p.appendChild(cap);
+    var cs = el('select', null); cs.style.cssText = 'width:100%;background:#173a59;color:#fff;border:1px solid rgba(255,255,255,.3);border-radius:6px;padding:3px;';
+    var MODES = [['original', '原文（你寫的）'], ['spoken', '念的（翻譯後）'], ['bilingual', '中英文字幕（中文在上，英文小字在下）'], [['en', 'zh'], '英中字幕（英文在上，中文小字在下）']];
+    var cur = s.deck.deck.captions || 'original', curKey = JSON.stringify(cur);
+    MODES.forEach(function (m) { var o = el('option', null, m[1]); o.value = JSON.stringify(m[0]); if (JSON.stringify(m[0]) === curKey) { o.selected = true; } cs.appendChild(o); });
+    cs.addEventListener('change', function () { s.setCaptionMode(JSON.parse(cs.value)); self.draw(); }); p.appendChild(cs);
     this.box.style.position = this.box.style.position || 'relative'; this.box.appendChild(p);
   };
 
@@ -1400,6 +1476,21 @@
   };
   // Starts slide i's narration so it lines up with the playhead (a slide starts its narration LEAD seconds in). The decoded audio comes
   // from the session's small LRU; if it is not there yet the start waits for the decode (a few ms) and re-reads the playhead.
+  // Sound effects (collage) while playing: fire every cue the playhead passed since the last frame; after a seek nothing behind the playhead is fired.
+  Player.prototype.syncSfx = function (loc) {
+    if (!this.playing || loc.phase !== 'body') { this.sfxLast = null; return; }
+    var cues = this.s.sfxFor(loc.i), last = this.sfxLast && this.sfxLast.i === loc.i ? this.sfxLast.t : loc.t;
+    if (loc.t < last || loc.t - last > 0.6) { last = loc.t; }
+    var self = this; cues.forEach(function (c) { if (c.t > last && c.t <= loc.t) { self.playSfx(c); } });
+    this.sfxLast = { i: loc.i, t: loc.t };
+  };
+  Player.prototype.playSfx = function (c) {
+    var ctx = getAudioCtx(); if (!ctx || this.muted) { return; }
+    var smp = sfxSamples(c.name, ctx.sampleRate); if (!smp.length) { return; }
+    var buf = ctx.createBuffer(1, smp.length, ctx.sampleRate); buf.copyToChannel(smp, 0);
+    var src = ctx.createBufferSource(), g = ctx.createGain(); src.buffer = buf; src.playbackRate.value = this.speed; g.gain.value = c.vol == null ? 0.8 : c.vol;
+    src.connect(g); g.connect(ctx.destination); src.start();
+  };
   Player.prototype.syncAudio = function (loc) {
     if (!this.playing || loc.phase !== 'body') { if (loc.phase !== 'body') { this.stopAudio(); } return; }
     if (this.audioFor === loc.i) { return; }
@@ -1449,6 +1540,7 @@
     var loc = this.loc();
     if (loc.i !== this.s.cursor && loc.phase === 'body') { this.s.setCursor(loc.i); }
     this.syncAudio(loc);
+    this.syncSfx(loc);
     if (this.holding && !(this.playing && this.holdsForQuiz(loc.i))) { this.holding = false; }
     this.holdEl.style.display = this.holding ? '' : 'none';
     this.draw();
@@ -1498,6 +1590,7 @@
     var text = '已準備 ' + ready + '/' + n + ' 頁' + (silent ? ' ' + silent : '');
     if (s.deck.slides.some(function (sl) { return sl.stage === '3d'; })) { text += s.stage3d ? ' · 3D 視窗(拖曳旋轉、滾輪縮放、雙擊回到這頁的鏡頭)' : (s.stageNote ? ' · ' + s.stageNote : ' · 3D 舞台載入中…'); }
     if (errs.length) { text += ' · 🔇 ' + errs.length + ' 頁旁白失敗:' + errs[0].slice(0, 80) + '（按 🎙 重試或換聲音）'; }
+    var nov = s.preps.filter(function (q) { return q.noVoice; }).length; if (nov) { text += ' · 🔇 ' + nov + ' 頁沒有音檔，保持靜音（按 🎙 可以生成）'; }
     var fbs = s.preps.filter(function (q) { return q.audio && q.audio.note; }).length; if (fbs) { text += ' · ℹ ' + fbs + ' 頁改用了備援的語音（按 🎙 看原因）'; }
     var failedVis = s.preps.filter(function (p) { return visualFailed(p.visual); }).length;
     if (failedVis) {
@@ -1609,6 +1702,7 @@
     // Chinese voice for Chinese text). The returned text replaces the narration (so the subtitles match what is heard).
     setSpeechPreparer: function (fn) { speechPreparer = fn; },
     setVoiceLister: function (fn) { voiceLister = fn; },
+    setCaptionTranslator: function (fn) { captionTranslator = fn; },
     hasTts: function () { return !!ttsProvider; },
     // fn(system, user) -> Promise<{score: 0..1, feedback}>; replaces the default AI grader of answer cards
     setGradeProvider: function (fn) { gradeProvider = fn; },
