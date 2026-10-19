@@ -748,18 +748,25 @@
     if (!slide || !(slide.narration || slide.narrationOriginal)) { return Promise.resolve(); }
     if (opts.voice !== undefined) { slide.voice = opts.voice || ''; }
     var src = slide.narrationOriginal || slide.narration, voice = slide.voice || this.deck.deck.voice, speed = this.deck.deck.speed || 1, lang = slide.lang || this.deck.deck.lang;
-    pr.error = null; pr.noVoice = false; pr.state = 'loading'; this.emit('state');
+    if (pr.redoing) { return pr.redoing; } // pressed twice: the one already running answers both
+    var old = pr.audio; pr.error = null; pr.noVoice = false; pr.state = 'loading'; this.emit('state');
     var prepared = speechPreparer ? speechPreparer(src, voice, lang).catch(function () { return null; }) : Promise.resolve(null);
-    return prepared.then(function (r) {
+    pr.redoing = prepared.then(function (r) {
       if (slide.narrationOriginal) { slide.narration = slide.narrationOriginal; }
       if (r && typeof r.text === 'string' && r.text.trim() && r.text !== slide.narration) { slide.narrationOriginal = slide.narration; slide.narration = r.text; }
       if (r && r.voice != null && !opts.voice) { voice = r.voice; }
       return withTimeout(synthesize(slide.narration, voice, speed, lang, true), 1800000, 'narration');
-    }).then(function (a) { pr.audio = a; }, function (e) { pr.error = String(e && e.message || e); }).then(function () {
+    }).then(function (a) {
+      if (!a || !(a.duration > 0.2)) { throw new Error('the new narration came back empty'); }
+      pr.audio = a; if (self.pcm) { delete self.pcm[i]; } // the decoded copy of the OLD audio must not be played any more
+    }, function (e) { pr.error = String(e && e.message || e); }).then(function () {
+      // a redo that failed keeps the audio the slide had (it must never turn a slide silent)
+      if (pr.error && old && !pr.audio) { pr.audio = old; }
       self.refreshCaptions(i, true);
       pr.timing = Core.timingFor(slide, pr.audio ? pr.audio.duration : 0, pr.visual && pr.visual.duration || 0);
-      pr.state = 'ready'; self.retime(); self.emit('state');
+      pr.state = 'ready'; pr.redoing = null; self.retime(); self.emit('state');
     });
+    return pr.redoing;
   };
 
   // Answers saved in a deck pack go back into the cards / widgets of slide i (keyed "<slide id>#<n-th scored piece of the slide>").
@@ -1009,13 +1016,19 @@
 
   // 🎙 panel of the current slide: what happened to its narration (ok / silent because the pack has no audio / fell back to another voice / failed and why),
   // redo this slide (another voice), redo ALL slides, retry the failed ones, and the subtitle mode (stacked tracks).
+  Player.prototype.closeVoicePanel = function () { var p = this.voicePanel; if (!p) { return; } if (p._off) { p._off(); } p.remove(); this.voicePanel = null; };
   Player.prototype.toggleVoicePanel = function () {
     var self = this;
-    if (this.voicePanel) { this.voicePanel.remove(); this.voicePanel = null; return; }
+    if (this.voicePanel) { this.closeVoicePanel(); return; }
     var i = this.curIndex(), s = this.s, pr = s.preps[i], slide = s.deck.slides[i];
-    var p = el('div', 'ai-chat-deck-voicepanel'); this.voicePanel = p;
+    var p = el('div', 'ai-chat-deck-voicepanel'); this.voicePanel = p; p._i = i;
+    // dismiss: the ✕, Esc, a click anywhere outside the panel, or moving to another slide (the buttons are about THIS slide)
+    var away = function (ev) { if (!p.contains(ev.target) && ev.target !== self.voiceBtn && !(self.voiceBtn && self.voiceBtn.contains(ev.target))) { self.closeVoicePanel(); } };
+    var esc = function (ev) { if (ev.key === 'Escape') { ev.stopPropagation(); self.closeVoicePanel(); } };
+    setTimeout(function () { if (self.voicePanel === p) { document.addEventListener('pointerdown', away, true); document.addEventListener('keydown', esc, true); p._off = function () { document.removeEventListener('pointerdown', away, true); document.removeEventListener('keydown', esc, true); }; } }, 0);
     p.style.cssText = 'position:absolute;right:8px;bottom:48px;z-index:20;background:#0f2a43;color:#fff;border:1px solid rgba(255,255,255,.25);border-radius:8px;padding:10px 12px;font-size:13px;line-height:1.5;width:min(380px,94%);box-shadow:0 6px 24px rgba(0,0,0,.4);max-height:80%;overflow:auto;';
-    var head = el('div', null, '🎙 第 ' + (i + 1) + ' 頁的配音與字幕'); head.style.cssText = 'font-weight:700;margin-bottom:4px;'; p.appendChild(head);
+    var head = el('div', null, '🎙 第 ' + (i + 1) + ' 頁的配音與字幕'); head.style.cssText = 'font-weight:700;margin-bottom:4px;padding-right:26px;'; p.appendChild(head);
+    var x = el('button', null, '✕'); x.type = 'button'; x.title = '關閉 (Esc)'; x.style.cssText = 'position:absolute;top:6px;right:8px;background:transparent;color:#fff;border:0;font-size:16px;cursor:pointer;line-height:1;'; x.addEventListener('click', function () { self.closeVoicePanel(); }); p.appendChild(x);
     var st = el('div', null); st.style.cssText = 'margin-bottom:6px;white-space:pre-wrap;word-break:break-word;';
     if (!slide.narration && !slide.narrationOriginal) { st.textContent = '這一頁沒有旁白。'; }
     else if (pr.state === 'loading') { st.textContent = '配音準備中…'; }
@@ -1034,13 +1047,13 @@
     function act(label, fn) { var b = el('button', null, label); b.type = 'button'; b.style.cssText = 'background:#2d6da3;color:#fff;border:0;border-radius:6px;padding:4px 10px;cursor:pointer;'; b.addEventListener('click', fn); row.appendChild(b); return b; }
     function chain(list) { return list.reduce(function (pp, k) { return pp.then(function () { return s.resynth(k, {}); }); }, Promise.resolve()); }
     var hasNarr = function (k) { var sl = s.deck.slides[k]; return !!(sl.narration || sl.narrationOriginal); };
-    if (hasNarr(i)) { act('重做這一頁', function () { var v = voices.length ? sel.value : undefined; self.toggleVoicePanel(); s.resynth(i, v === undefined ? {} : { voice: v }); }); }
+    if (hasNarr(i)) { act('重做這一頁', function () { var v = voices.length ? sel.value : undefined; self.closeVoicePanel(); s.resynth(i, v === undefined ? {} : { voice: v }); }); }
     var all = []; s.deck.slides.forEach(function (_sl, k) { if (hasNarr(k)) { all.push(k); } });
-    if (all.length > 1) { act('全部重做（' + all.length + ' 頁）', function () { self.toggleVoicePanel(); chain(all); }); }
+    if (all.length > 1) { act('全部重做（' + all.length + ' 頁）', function () { self.closeVoicePanel(); chain(all); }); }
     var failed = []; s.preps.forEach(function (q, k) { if (q.error) { failed.push(k); } });
-    if (failed.length) { act('重試失敗的頁（' + failed.length + '）', function () { self.toggleVoicePanel(); chain(failed); }); }
+    if (failed.length) { act('重試失敗的頁（' + failed.length + '）', function () { self.closeVoicePanel(); chain(failed); }); }
     var silent = []; s.preps.forEach(function (q, k) { if (q.noVoice) { silent.push(k); } });
-    if (silent.length) { act('幫沒有音檔的頁生成（' + silent.length + '）', function () { self.toggleVoicePanel(); chain(silent); }); }
+    if (silent.length) { act('幫沒有音檔的頁生成（' + silent.length + '）', function () { self.closeVoicePanel(); chain(silent); }); }
     p.appendChild(row);
     // subtitles: stacked tracks (the first is the big one)
     var cap = el('div', null, '字幕'); cap.style.cssText = 'font-weight:700;margin:4px 0 2px;'; p.appendChild(cap);
@@ -1492,12 +1505,13 @@
     src.connect(g); g.connect(ctx.destination); src.start();
   };
   Player.prototype.syncAudio = function (loc) {
+    if (this.voicePanel && this.voicePanel._i !== loc.i) { this.closeVoicePanel(); }
     if (!this.playing || loc.phase !== 'body') { if (loc.phase !== 'body') { this.stopAudio(); } return; }
-    if (this.audioFor === loc.i) { return; }
+    if (this.audioFor === loc.i && this.audioObj === this.s.preps[loc.i].audio) { return; } // a redone narration starts over
     this.stopAudio();
     var self = this, idx = loc.i;
     this.audioFor = idx;
-    var pr = this.s.preps[idx], ctx = getAudioCtx();
+    var pr = this.s.preps[idx], ctx = getAudioCtx(); this.audioObj = pr.audio;
     if (!pr.audio || !ctx) { return; }
     this.s.audioBuffer(idx).then(function (buffer) {
       if (!buffer || self.audioFor !== idx || !self.playing) { return; }

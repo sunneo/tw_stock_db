@@ -134,15 +134,29 @@
     (opts.persist || []).forEach(function (d) { if (d && d.label && !byLabel[d.label]) { var pit = { id: d.id, label: d.label, anon: false, first: 0, last: 0, kind: d.kind, emoji: d.emoji, zh: d.zh }; inst.unshift(pit); byLabel[d.label] = pit; } });
     var chars = inst.filter(function (x) { return x.kind !== 'place'; }), places = inst.filter(function (x) { return x.kind === 'place'; });
     var bgPlace = places[0] || null, hasInside = sents.some(function (s) { return s.inside; }) && !!bgPlace;
-    // 位置：背景（地點）在中間大大的；角色排成一排（人數多就小一點、錯開高低）
-    var n = chars.length, w = clamp(0.62 / Math.max(1, n), 0.13, 0.24), items = [], cam = [], sounds = [], texts = [];
-    if (bgPlace) { items.push({ src: 'emoji:' + bgPlace.emoji, label: undefined, x: 0.3, y: 0.05, w: 0.4, at: 0, enter: 'none', z: 0, card: false, _inst: bgPlace.label }); }
+    // 位置（舞台約 2.2:1，一張卡的高度是它寬度的 2.2 倍左右，所以排版要看高度不看寬度）：
+    // 地點（房子）上方中間；角色一排在下面（超過 4 個分兩排）；東西（材料）小小的排在房子左右兩邊，不跟角色搶位置。
+    var things = chars.filter(function (x) { return x.kind !== 'char'; }); chars = chars.filter(function (x) { return x.kind === 'char'; });
+    var n = chars.length, items = [], cam = [], sounds = [], texts = [];
+    if (bgPlace) { items.push({ src: 'emoji:' + bgPlace.emoji, label: undefined, x: 0.4, y: 0.02, w: 0.2, at: 0, enter: 'none', z: 0, card: false, _inst: bgPlace.label }); }
+    var perRow = 4, cw = clamp(0.5 / Math.min(perRow, Math.max(1, n)), 0.1, 0.14), rowH = 0.37, top = bgPlace ? 0.47 : 0.1;
+    function spread(k, cnt, w) { return cnt === 1 ? 0.5 - w / 2 : 0.1 + (0.8 - w) * k / (cnt - 1); }
     chars.forEach(function (c, k) {
-      var x = n === 1 ? 0.4 : 0.1 + (0.8 - w) * k / (n - 1), y = (k % 2 === 0 ? 0.46 : 0.5) + (bgPlace ? 0.04 : 0);
-      var it = { src: 'emoji:' + c.emoji, x: Math.round(x * 100) / 100, y: y, w: w, at: c.first ? { sentence: c.first } : 0, z: 2 + k, label: c.zh === c.label ? c.zh : c.label, _inst: c.label };
+      var row = Math.floor(k / perRow), inRow = Math.min(perRow, n - row * perRow), col = k - row * perRow;
+      var x = spread(col, inRow, cw), y = top + row * rowH + (col % 2 ? 0.02 : 0);
+      var it = { src: 'emoji:' + c.emoji, x: Math.round(x * 100) / 100, y: Math.round(y * 100) / 100, w: cw, at: c.first ? { sentence: c.first } : 0, z: 2 + k, label: c.zh === c.label ? c.zh : c.label, _inst: c.label };
       if (!c.first) { it.enter = 'none'; }
       if (c.kind === 'char') { it.swing = 6; }
       if (opts.ring) { it.ring = 'circle'; }
+      items.push(it);
+    });
+    var tw = 0.085, belowY = top + Math.max(1, Math.ceil(n / perRow)) * rowH;
+    things.forEach(function (c, k) {
+      var x, y;
+      if (bgPlace) { var side = k % 2, slot = Math.floor(k / 2); x = side ? 0.64 + slot * 0.11 : 0.27 - slot * 0.11; y = 0.1 + (slot > 1 ? 0.24 : 0); if (slot > 1) { x = side ? 0.64 + (slot - 2) * 0.11 : 0.27 - (slot - 2) * 0.11; } }
+      else { x = spread(k, Math.min(things.length, 6), tw); y = Math.min(0.72, belowY); }
+      var it = { src: 'emoji:' + c.emoji, x: Math.round(x * 100) / 100, y: Math.round(y * 100) / 100, w: tw, at: c.first ? { sentence: c.first } : 0, z: 2 + n + k, label: c.zh === c.label ? c.zh : c.label, _inst: c.label };
+      if (!c.first) { it.enter = 'none'; }
       items.push(it);
     });
     // 對話、動作、聲音、鏡頭
@@ -164,7 +178,7 @@
         else if (fx.sfx) { sounds.push({ sfx: fx.sfx, sentence: s.i, offset: 0.3 }); }
       });
       if (s.shout) { texts.push({ text: s.shout.replace(/[「」『』]/g, ''), sentence: s.i, offset: 0.2, style: 'shout', sec: 2 }); }
-      if (hasInside && s.inside && !s.outside) { cam.push({ at: { sentence: s.i, offset: 1.2 }, sec: 1.2, zoom: 1.7, x: 0.5, y: 0.58 }); }
+      if (hasInside && s.inside && !s.outside) { cam.push({ at: { sentence: s.i, offset: 1.2 }, sec: 1.2, zoom: 1.5, x: 0.5, y: 0.4 }); }
       else if (hasInside && s.outside) { cam.push({ at: { sentence: s.i, offset: 1.0 }, sec: 1.2, zoom: 1, x: 0.5, y: 0.5 }); }
     });
     // 只有一個角色在說很多話時，說話的角色要有音效（狼：低吼）
