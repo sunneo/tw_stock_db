@@ -6,8 +6,8 @@
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
-  var NAMES = ['pop', 'boing', 'whoosh', 'thump', 'knock', 'step', 'wind', 'ding', 'sparkle', 'growl', 'bell', 'splat'];
-  var SEC = { pop: 0.18, boing: 0.5, whoosh: 0.7, thump: 0.35, knock: 0.45, step: 0.16, wind: 1.6, ding: 0.9, sparkle: 0.8, growl: 0.9, bell: 1.2, splat: 0.4 };
+  var NAMES = ['pop', 'boing', 'whoosh', 'thump', 'knock', 'step', 'wind', 'ding', 'sparkle', 'growl', 'bell', 'splat', 'blip'];
+  var SEC = { pop: 0.18, boing: 0.5, whoosh: 0.7, thump: 0.35, knock: 0.45, step: 0.16, wind: 1.6, ding: 0.9, sparkle: 0.8, growl: 0.9, bell: 1.2, splat: 0.4, blip: 0.09 };
 
   function rng(seed) { var s = seed >>> 0 || 1; return function () { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return (s / 4294967296) * 2 - 1; }; }
   function env(t, a, d) { return t < a ? t / a : Math.exp(-(t - a) / d); }
@@ -28,7 +28,7 @@
 
   function render(name, sr, opts) {
     opts = opts || {}; name = NAMES.indexOf(name) >= 0 ? name : 'pop'; sr = sr || 44100;
-    var dur = opts.dur || SEC[name], out = new Float32Array(Math.ceil(dur * sr)), vol = opts.volume == null ? 1 : opts.volume;
+    var dur = opts.dur || (name === 'blip' ? ((opts.voice && opts.voice.len) || 0.06) + 0.03 : SEC[name]), out = new Float32Array(Math.ceil(dur * sr)), vol = opts.volume == null ? 1 : opts.volume;
     if (name === 'pop') { tone(out, sr, 0, 0.16, 520, 1500, 0.004, 0.035, 0.7, 'sine'); noise(out, sr, 0, 0.04, 0.001, 0.01, 0.25, 0.6, 3); }
     else if (name === 'boing') { tone(out, sr, 0, 0.45, 180, 520, 0.005, 0.18, 0.55, 'tri'); tone(out, sr, 0.04, 0.4, 360, 1040, 0.005, 0.12, 0.2, 'sine'); }
     else if (name === 'whoosh') { noise(out, sr, 0, 0.7, 0.18, 0.22, 0.9, 0.12, 11); noise(out, sr, 0.1, 0.5, 0.2, 0.15, 0.4, 0.4, 13); }
@@ -40,6 +40,16 @@
     else if (name === 'sparkle') { [0, 0.08, 0.16, 0.26, 0.36].forEach(function (s, k) { tone(out, sr, s, 0.3, 1800 + k * 380, 2200 + k * 380, 0.002, 0.07, 0.3, 'sine'); }); }
     else if (name === 'growl') { tone(out, sr, 0, 0.9, 90, 70, 0.08, 0.5, 0.6, 'square'); tone(out, sr, 0, 0.9, 135, 100, 0.08, 0.4, 0.25, 'tri'); noise(out, sr, 0, 0.9, 0.1, 0.5, 0.15, 0.05, 23); }
     else if (name === 'bell') { [523, 1046, 1568, 2093].forEach(function (f, k) { tone(out, sr, 0, 1.2, f, f, 0.002, 0.5 / (k + 1), 0.4 / (k + 1), 'sine'); }); }
+    else if (name === 'blip') {
+      // one letter of somebody's voice: a short tone, its pitch hopping from letter to letter (step -2..2 comes from the letter), vibrato, a little noise for a rough voice
+      var vc = opts.voice || {}, st = opts.step || 0, len = vc.len || 0.06, jit = vc.jitter == null ? 0.5 : vc.jitter, f = (vc.pitch || 230) * Math.pow(2, st * jit * 1.6 / 12), ph = 0, vib = vc.vibrato || 0, shape = vc.wave || 'tri';
+      for (var bi = 0; bi < Math.floor(len * sr) && bi < out.length; bi++) {
+        var bt = bi / sr; ph += 2 * Math.PI * f * (1 + vib * 0.05 * Math.sin(2 * Math.PI * 28 * bt)) / sr;
+        var bv = shape === 'square' ? (Math.sin(ph) > 0 ? 0.6 : -0.6) : (shape === 'tri' ? (2 / Math.PI) * Math.asin(Math.sin(ph)) : Math.sin(ph));
+        out[bi] += bv * env(bt, 0.004, len * 0.5) * 0.9;
+      }
+      if (vc.noise) { noise(out, sr, 0, len, 0.002, len * 0.4, vc.noise * 0.7, 0.35, 41 + st + 3); }
+    }
     else if (name === 'splat') { noise(out, sr, 0, 0.3, 0.002, 0.07, 0.8, 0.25, 31); tone(out, sr, 0, 0.3, 220, 80, 0.002, 0.06, 0.5, 'sine'); }
     var peak = 0; for (var i = 0; i < out.length; i++) { var a = Math.abs(out[i]); if (a > peak) { peak = a; } }
     var g = peak > 0 ? (0.85 / peak) * vol : 0; for (var j = 0; j < out.length; j++) { out[j] *= g; }

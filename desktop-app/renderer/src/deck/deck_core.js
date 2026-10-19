@@ -12,6 +12,13 @@
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
+  // procedural pictures (map:, actor:, bust:, cg:, fx:) live in rpg_art.js; resolved lazily so load order does not matter
+  var _art = null;
+  function art() { if (_art) { return _art; } _art = (typeof AiChatDeckRpgArt !== 'undefined' && AiChatDeckRpgArt) || (typeof require === 'function' ? (function () { try { return require('./rpg_art.js'); } catch (e) { return null; } })() : null); return _art; }
+  function isProc(src) { return /^(map|actor|bust|cg|fx):/.test(str(src)); }
+  // a valid moment: seconds, or { sentence: N (1-based) | line: <say id>, edge?: start|end, offset?: seconds }
+  function okAt(at) { if (typeof at === 'number') { return true; } if (!isObj(at)) { return false; } if (at.edge != null && at.edge !== 'start' && at.edge !== 'end') { return false; } if (at.offset != null && typeof at.offset !== 'number') { return false; } return (Number.isInteger(at.sentence) && at.sentence >= 1) || (typeof at.line === 'string' && at.line.length > 0); }
+
   var W = 1920, H = 1080;
   var KIND = 'ai_chat_deck';
   var LAYOUTS = ['title', 'topic', 'content', 'split', 'visual'];
@@ -30,8 +37,29 @@
   var IN_EFFECTS = ['fade', 'rise', 'pop', 'wipe'];
   var MOTIONS = ['none', 'float', 'pulse', 'spin', 'kenburns'];
   var MODES = ['loop', 'timed'];
-  var SFX_NAMES = ['pop', 'boing', 'whoosh', 'thump', 'knock', 'step', 'wind', 'ding', 'sparkle', 'growl', 'bell', 'splat'];
-  var LIMITS = { collage: 12, chapters: 30, slides: 150, bullets: 6, narration: 1200, svg: 200000, mermaid: 4000, title: 120, bullet: 220,
+  var SFX_NAMES = ['pop', 'boing', 'whoosh', 'thump', 'knock', 'step', 'wind', 'ding', 'sparkle', 'growl', 'bell', 'splat', 'blip'];
+  // Voices of the characters: a "blip" for every character typed in a dialogue box / subtitle, like an RPG. pitch Hz, wave sine|tri|square, jitter 0..1 (how much the
+  // pitch hops from letter to letter), vibrato 0..1, noise 0..1 (roughness), len seconds of one blip, rate 0.5..1 (1 = a blip for every character, 0.5 = every second one), vol 0..1.
+  var VOICES = {
+    calm: { pitch: 230, wave: 'tri', jitter: 0.5, vibrato: 0, noise: 0, len: 0.06, rate: 1, vol: 0.3 },
+    deep: { pitch: 110, wave: 'square', jitter: 0.35, vibrato: 0, noise: 0.05, len: 0.09, rate: 0.7, vol: 0.26 },
+    rough: { pitch: 95, wave: 'square', jitter: 0.8, vibrato: 0, noise: 0.35, len: 0.05, rate: 1, vol: 0.28 },
+    elder: { pitch: 150, wave: 'tri', jitter: 0.3, vibrato: 0.2, noise: 0, len: 0.08, rate: 0.7, vol: 0.27 },
+    old_woman: { pitch: 330, wave: 'tri', jitter: 0.45, vibrato: 0.55, noise: 0, len: 0.07, rate: 0.8, vol: 0.27 },
+    young: { pitch: 300, wave: 'tri', jitter: 0.6, vibrato: 0, noise: 0, len: 0.05, rate: 1, vol: 0.28 },
+    child: { pitch: 440, wave: 'sine', jitter: 0.7, vibrato: 0.1, noise: 0, len: 0.045, rate: 1, vol: 0.26 },
+    narrator: { pitch: 200, wave: 'sine', jitter: 0.2, vibrato: 0, noise: 0, len: 0.06, rate: 0.6, vol: 0.2 }
+  };
+  // the voice of a picture: its own `voice` (a preset name, numbers, or none), else the default of a drawn character (liu_bei -> calm ...), else none
+  function voiceOf(it) {
+    if (!it || it.voice === false || it.voice === 'none') { return null; }
+    var v = it.voice, A = art();
+    if (v == null && A && isProc(it.src)) { var pp = A.parse(it.src); if (pp && (pp.kind === 'actor' || pp.kind === 'bust')) { var pre = (it.look && it.look.preset) || pp.name; v = (A.VOICE_OF && A.VOICE_OF[pre]) || null; } }
+    if (v == null) { return null; }
+    var base = typeof v === 'string' ? VOICES[v] : Object.assign({}, VOICES.calm, v);
+    return base ? Object.assign({}, base) : null;
+  }
+  var LIMITS = { collage: 24, chapters: 30, slides: 150, bullets: 6, narration: 1200, svg: 200000, mermaid: 4000, title: 120, bullet: 220,
     cols: 8, rows: 12, cell: 120, images: 8, callouts: 6, duration: 180, groupItems: 4,
     code: 400000, codeLines: 20000, commands: 20, command: 300, question: 400, option: 160, options: 6, explain: 600 };
   var LEAD = 0.3, TAIL = 0.6, MIN_SLIDE = 2.5, MIN_SILENT = 4;
@@ -457,12 +485,12 @@
       // can be circled / boxed, swings a little left and right, and shows a name bubble. Positions are fractions 0..1 of the visual area.
       var items = Array.isArray(v.items) ? v.items : null;
       if (v.scenes != null) {
-        if (!Array.isArray(v.scenes) || !v.scenes.length || v.scenes.length > 8) { err(vp + '.scenes', 'a list (1..8) of {scene, at?, effect?, sec?, x?, y?}: the first one is the scene the stage starts in; the later ones switch the scene at "at" (effect fade, zoom = the old scene grows and fades while the new one comes up from small, cut) -- the pictures with scene: <name> are shown only in their scene (no scene / all = always)'); }
-        else { v.scenes.forEach(function (sc, q) { var sp = vp + '.scenes[' + q + ']'; if (!isObj(sc) || !str(sc.scene).trim()) { err(sp + '.scene', 'required: the scene name'); return; } if (q > 0 && !(typeof sc.at === 'number' || (isObj(sc.at) && Number.isInteger(sc.at.sentence) && sc.at.sentence >= 1))) { err(sp + '.at', 'seconds or {sentence: N, offset?: seconds}'); } if (sc.effect != null && ['fade', 'zoom', 'cut'].indexOf(sc.effect) < 0) { err(sp + '.effect', 'fade, zoom or cut'); } if (sc.sec != null && !(typeof sc.sec === 'number' && sc.sec >= 0.1 && sc.sec <= 5)) { err(sp + '.sec', '0.1..5 seconds'); } }); }
+        if (!Array.isArray(v.scenes) || !v.scenes.length || v.scenes.length > 8) { err(vp + '.scenes', 'a list (1..8) of {scene, at?, effect?, sec?, x?, y?}: the first one is the scene the stage starts in; the later ones switch the scene at "at" (effect fade, zoom = the old scene grows and fades while the new one comes up from small, cut, black = through black like a curtain) -- the pictures with scene: <name> are shown only in their scene (no scene / all = always)'); }
+        else { v.scenes.forEach(function (sc, q) { var sp = vp + '.scenes[' + q + ']'; if (!isObj(sc) || !str(sc.scene).trim()) { err(sp + '.scene', 'required: the scene name'); return; } if (q > 0 && !okAt(sc.at)) { err(sp + '.at', 'seconds or {sentence: N, offset?: seconds}'); } if (sc.effect != null && ['fade', 'zoom', 'cut', 'black'].indexOf(sc.effect) < 0) { err(sp + '.effect', 'fade, zoom, cut or black (fade out to black, then the new scene comes up from black)'); } if (sc.sec != null && !(typeof sc.sec === 'number' && sc.sec >= 0.1 && sc.sec <= 5)) { err(sp + '.sec', '0.1..5 seconds'); } }); }
       }
       if (v.texts != null) {
         if (!Array.isArray(v.texts) || v.texts.length > 12) { err(vp + '.texts', 'a list (<= 12) of {text, sentence | at, sec?, pos?, style?}: story text drawn on the stage (style narrative = a storybook panel with the words typed out, title, shout = big comic lettering such as "POW!")'); }
-        else { v.texts.forEach(function (tx, q) { var tp = vp + '.texts[' + q + ']'; if (!isObj(tx) || !str(tx.text).trim() || str(tx.text).length > 200) { err(tp + '.text', 'required, <= 200 characters'); } else if (!(typeof tx.at === 'number' || (Number.isInteger(tx.sentence) && tx.sentence >= 1))) { err(tp, 'needs sentence: N (1-based) or at: seconds'); } if (tx.style != null && ['narrative', 'title', 'shout'].indexOf(tx.style) < 0) { err(tp + '.style', 'narrative, title or shout'); } if (tx.pos != null && ['top', 'center', 'bottom'].indexOf(tx.pos) < 0) { err(tp + '.pos', 'top, center or bottom'); } }); }
+        else { v.texts.forEach(function (tx, q) { var tp = vp + '.texts[' + q + ']'; if (!isObj(tx) || !str(tx.text).trim() || str(tx.text).length > 200) { err(tp + '.text', 'required, <= 200 characters'); } else if (!(okAt(tx.at) || (Number.isInteger(tx.sentence) && tx.sentence >= 1))) { err(tp, 'needs sentence: N (1-based), or at: seconds, or at: { sentence | line, edge: start|end, offset? }'); } else if (isObj(tx.at) && tx.at.line != null && !(typeof tx.at.line === 'string')) { err(tp + '.at', 'a line id'); } if (tx.style != null && ['narrative', 'title', 'shout'].indexOf(tx.style) < 0) { err(tp + '.style', 'narrative, title or shout'); } if (tx.pos != null && ['top', 'center', 'bottom'].indexOf(tx.pos) < 0) { err(tp + '.pos', 'top, center or bottom'); } }); }
       }
       if (v.sounds != null) {
         if (!Array.isArray(v.sounds) || v.sounds.length > 24) { err(vp + '.sounds', 'a list (<= 24) of {sfx, sentence | at, offset?, vol?}: sound effects on the slide clock, mixed with the narration (' + SFX_NAMES.join(', ') + ')'); }
@@ -470,7 +498,14 @@
       }
       if (v.camera != null) {
         if (!Array.isArray(v.camera) || v.camera.length > 8) { err(vp + '.camera', 'a list (<= 8) of {at, sec?, zoom?, x?, y?}: zoom into the scene (zoom 1..5 around the point x, y as fractions 0..1) and back out, arriving at "at"'); }
-        else { v.camera.forEach(function (kf, q) { if (!isObj(kf) || !(typeof kf.at === 'number' || (isObj(kf.at) && Number.isInteger(kf.at.sentence) && kf.at.sentence >= 1))) { err(vp + '.camera[' + q + '].at', 'seconds or {sentence: N, offset?: seconds}'); } else { if (kf.zoom != null && !(typeof kf.zoom === 'number' && kf.zoom >= 1 && kf.zoom <= 5)) { err(vp + '.camera[' + q + '].zoom', '1..5'); } ['x', 'y'].forEach(function (f) { if (kf[f] != null && !(typeof kf[f] === 'number' && kf[f] >= 0 && kf[f] <= 1)) { err(vp + '.camera[' + q + '].' + f, 'a fraction 0..1'); } }); } }); }
+        else { v.camera.forEach(function (kf, q) { if (!isObj(kf) || !okAt(kf.at)) { err(vp + '.camera[' + q + '].at', 'seconds or {sentence: N, offset?: seconds}'); } else { if (kf.zoom != null && !(typeof kf.zoom === 'number' && kf.zoom >= 1 && kf.zoom <= 5)) { err(vp + '.camera[' + q + '].zoom', '1..5'); } ['x', 'y'].forEach(function (f) { if (kf[f] != null && !(typeof kf[f] === 'number' && kf[f] >= 0 && kf[f] <= 1)) { err(vp + '.camera[' + q + '].' + f, 'a fraction 0..1'); } }); } }); }
+      }
+      if (v.fullscreen != null && typeof v.fullscreen !== 'boolean') { err(vp + '.fullscreen', 'true or false (needs layout visual): the stage fills the whole slide, no title or card -- for a game-like scene'); }
+      if (v.depth != null && v.depth !== 'y' && v.depth !== 'none') { err(vp + '.depth', 'y (or none): the pictures on the map grid (characters, sprites) and the objects of the map (trees, houses, tables) are drawn in the order of their feet, so a character walking behind a tree is hidden by it, and in front of it hides it'); }
+      if (v.spotlight != null && typeof v.spotlight !== 'boolean') { err(vp + '.spotlight', 'true or false: while someone speaks in a dialogue box or a subtitle, that picture is lit and the other characters are dimmed'); }
+      if (v.curtain != null) {
+        if (!Array.isArray(v.curtain) || v.curtain.length > 12) { err(vp + '.curtain', 'a list (<= 12) of {at, sec?, alpha}: a black curtain over the whole stage (alpha 0 = open, 1 = black) that moves to each keyframe, arriving at "at" (fade to black = alpha 1, back = alpha 0)'); }
+        else { v.curtain.forEach(function (kf, q) { if (!isObj(kf) || !okAt(kf.at)) { err(vp + '.curtain[' + q + '].at', 'seconds or {sentence: N, offset?: seconds}'); } else if (!(typeof kf.alpha === 'number' && kf.alpha >= 0 && kf.alpha <= 1)) { err(vp + '.curtain[' + q + '].alpha', '0..1'); } }); }
       }
       if (!items || !items.length) { err(vp + '.items', 'kind "collage" needs a list of items {src, x, y, w, label?, ring?, swing?, rot?, z?, at?}'); }
       else {
@@ -478,7 +513,85 @@
         items.forEach(function (it, k) {
           var ip = vp + '.items[' + k + ']';
           if (!isObj(it)) { err(ip, 'must be a mapping'); return; }
-          if (!str(it.src).trim()) { err(ip + '.src', 'required (a picture handle such as "@img1" or "client-file/<id>")'); } else if (/^\s*javascript:/i.test(it.src)) { err(ip + '.src', 'not allowed'); }
+          if (!str(it.src).trim()) { err(ip + '.src', 'required (a picture handle such as "@img1" or "client-file/<id>", or a drawn picture: map:village, actor:liu_bei, bust:guan_yu, cg:peach_oath, fx:petals)'); } else if (/^\s*javascript:/i.test(it.src)) { err(ip + '.src', 'not allowed'); }
+          else if (isProc(it.src)) { var A = art(); var se = A ? A.srcError(it.src, it) : null; if (se) { err(ip + '.src', se); } }
+          if (it.look != null && art()) { art().lookErrors(it.look, err, ip + '.look'); }
+          if (it.name != null && (typeof it.name !== 'string' || it.name.length > 12)) { err(ip + '.name', 'a short name (<= 12 characters) shown on the dialogue box (a "label" is the tag under the picture instead)'); }
+          if (it.anchor != null && ['feet', 'center', 'topleft'].indexOf(it.anchor) < 0) { err(ip + '.anchor', 'which point of the picture x/y (or tx/ty) place: feet (bottom centre; the default for actor:), center or topleft (the default for pictures)'); }
+          if (it.face != null && ['down', 'up', 'left', 'right'].indexOf(it.face) < 0) { err(ip + '.face', 'the direction a character faces at the start: down, up, left or right (it turns by itself when it moves)'); }
+          if (it.tz != null && !(typeof it.tz === 'number' && it.tz >= -4 && it.tz <= 8)) { err(ip + '.tz', 'height above the ground in tiles (-4..8): a jump, a platform; the shadow stays on the ground'); }
+          if (it.shadow != null && typeof it.shadow !== 'boolean') { err(ip + '.shadow', 'true or false: a soft shadow on the ground under a picture on the map grid (default: on for characters when the stage uses depth: y, or when they have a height)'); }
+          if (it.parallax != null && !(typeof it.parallax === 'number' && it.parallax >= 0 && it.parallax <= 1)) { err(ip + '.parallax', '0..1: 1 moves with the world (default), 0 stays on the screen while the camera moves (far scenery)'); }
+          ['tx', 'ty'].forEach(function (f) { if (it[f] != null && !(typeof it[f] === 'number' && it[f] >= -2 && it[f] <= 18)) { err(ip + '.' + f, 'a tile of the 16 x 9 map grid (tx 0..15 across, ty 0..8 down; the picture stands at the bottom centre of that tile; use it instead of x/y)'); } });
+          if (it.sheet != null) {
+            var sh = it.sheet;
+            if (!isObj(sh) || !(Number.isInteger(sh.cols) && sh.cols >= 1 && sh.cols <= 16) || !(Number.isInteger(sh.rows) && sh.rows >= 1 && sh.rows <= 16)) { err(ip + '.sheet', 'a sprite sheet {cols, rows, dirs?, idle?, fps?}: the picture is a grid of cols x rows frames; each row is one direction (dirs, default "down,left,right,up"), the columns are the walk cycle -- it turns and walks by itself'); }
+            else {
+              if (sh.dirs != null && !(typeof sh.dirs === 'string' && sh.dirs.split(',').every(function (d) { return ['down', 'up', 'left', 'right'].indexOf(d.trim()) >= 0; }))) { err(ip + '.sheet.dirs', 'the direction of each row, top to bottom, comma separated: down,left,right,up'); }
+              if (sh.idle != null && !(Number.isInteger(sh.idle) && sh.idle >= 0 && sh.idle < sh.cols)) { err(ip + '.sheet.idle', 'the column shown while it stands still (0-based)'); }
+              if (sh.fps != null && !(typeof sh.fps === 'number' && sh.fps >= 1 && sh.fps <= 30)) { err(ip + '.sheet.fps', 'walk frames per second, 1..30 (default 6)'); }
+            }
+          }
+          var okHandle = function (h) { return typeof h === 'string' && h.trim().length > 0 && h.length <= 300; };
+          if (it.id != null && !(typeof it.id === 'string' && /^[A-Za-z0-9_\-]{1,24}$/.test(it.id))) { err(ip + '.id', 'a short name (letters, digits, _ -) that triggers of other pictures can watch: when: { item: <id>, ... }'); }
+          if (it.states != null) {
+            if (!isObj(it.states) || !Object.keys(it.states).length || Object.keys(it.states).length > 12) { err(ip + '.states', 'a mapping state name -> look (1..12): the pictures / frames / pose a character has (walk, idle, bow, open ...)'); }
+            else {
+              Object.keys(it.states).forEach(function (nm) {
+                var sp2 = ip + '.states.' + nm, d = it.states[nm];
+                if (!/^[A-Za-z0-9_]{1,16}$/.test(nm)) { err(sp2, 'a state name: letters, digits, _ (<= 16)'); return; }
+                if (!isObj(d)) { err(sp2, 'a look {frames?, src?, sheet?, fps?, loop?, facing?, pose?}'); return; }
+                if (d.src != null && !okHandle(d.src)) { err(sp2 + '.src', 'a picture handle (@imgN): the picture this state uses (its frames are cells of it)'); }
+                if (d.sheet != null && !(isObj(d.sheet) && Number.isInteger(d.sheet.cols) && d.sheet.cols >= 1 && d.sheet.cols <= 16 && Number.isInteger(d.sheet.rows) && d.sheet.rows >= 1 && d.sheet.rows <= 16)) { err(sp2 + '.sheet', 'the grid of this state\'s picture {cols, rows}'); }
+                if (d.fps != null && !(typeof d.fps === 'number' && d.fps >= 1 && d.fps <= 30)) { err(sp2 + '.fps', 'frames per second, 1..30 (default 6)'); }
+                if (d.loop != null && typeof d.loop !== 'boolean') { err(sp2 + '.loop', 'true (default) or false (play the frames once and stay on the last one)'); }
+                if (d.facing != null && typeof d.facing !== 'boolean') { err(sp2 + '.facing', 'true (default: a list of frames is the columns of the row of the direction it faces) or false (the numbers are cells counted row by row)'); }
+                if (d.pose != null && ['bow', 'jump', 'shake', 'surprise'].indexOf(d.pose) < 0) { err(sp2 + '.pose', 'bow, jump, shake or surprise (a drawn character moves like that)'); }
+                var grid = d.sheet || (!d.src && it.sheet);
+                var chkFrame = function (e, pth) { if (Number.isInteger(e) && e >= 0 && e < 1024) { if (!grid) { err(pth, 'a frame number needs a sheet grid: give this look "sheet" {cols, rows} (with its own "src"), or "sheet" on the item when the look uses the item\'s picture'); } } else if (!okHandle(e)) { err(pth, 'a cell number, or a picture handle (@imgN) for a frame that is a picture of its own'); } };
+                if (d.frames != null) {
+                  if (Array.isArray(d.frames)) { if (!d.frames.length || d.frames.length > 32) { err(sp2 + '.frames', 'a list of 1..32 frames'); } else { d.frames.forEach(function (e, q) { chkFrame(e, sp2 + '.frames[' + q + ']'); }); } }
+                  else if (isObj(d.frames)) { Object.keys(d.frames).forEach(function (dir) { if (['down', 'up', 'left', 'right', 'up_left', 'up_right', 'down_left', 'down_right'].indexOf(dir) < 0) { err(sp2 + '.frames.' + dir, 'a direction: down, up, left, right'); } else if (!Array.isArray(d.frames[dir]) || !d.frames[dir].length || d.frames[dir].length > 32) { err(sp2 + '.frames.' + dir, 'a list of 1..32 frames'); } else { d.frames[dir].forEach(function (e, q) { chkFrame(e, sp2 + '.frames.' + dir + '[' + q + ']'); }); } }); }
+                  else { err(sp2 + '.frames', 'a list of frames, or a mapping direction -> list'); }
+                }
+                if (d.frames == null && d.src == null && d.pose == null) { err(sp2, 'a look needs frames, src or pose'); }
+              });
+            }
+          }
+          if (it.auto != null) {
+            if (!isObj(it.auto)) { err(ip + '.auto', '{moving: <state>, still: <state>}: the state while it moves / stands (default walk / idle)'); }
+            else { ['moving', 'still'].forEach(function (f) { if (it.auto[f] != null && !(isObj(it.states) && it.states[it.auto[f]])) { err(ip + '.auto.' + f, 'no such state (give it in states)'); } }); }
+          }
+          if (it.triggers != null) {
+            if (!Array.isArray(it.triggers) || it.triggers.length > 12) { err(ip + '.triggers', 'a list (<= 12) of {when, state | src, hold?, once?}: change the picture when it (or the picture with id `when.item`) gets somewhere'); }
+            else {
+              it.triggers.forEach(function (tr, q) {
+                var tp = ip + '.triggers[' + q + ']';
+                if (!isObj(tr) || !isObj(tr.when)) { err(tp + '.when', 'one of { tile: [x, y] } (it stands on that tile), { near: [x, y], r? } (within r tiles, default 1), { at: <moment> }; add item: <id> to watch another picture'); return; }
+                var w = tr.when, kinds = ['tile', 'near', 'at'].filter(function (f) { return w[f] != null; });
+                if (kinds.length !== 1) { err(tp + '.when', 'exactly one of tile, near, at'); }
+                else if ((w.tile != null || w.near != null) && !(Array.isArray(w[kinds[0]]) && w[kinds[0]].length === 2 && w[kinds[0]].every(function (n) { return typeof n === 'number'; }))) { err(tp + '.when.' + kinds[0], 'two numbers [x, y] (map tiles)'); }
+                else if (w.at != null && !okAt(w.at)) { err(tp + '.when.at', 'seconds or { sentence | line, edge?, offset? }'); }
+                if (w.r != null && !(typeof w.r === 'number' && w.r >= 0.2 && w.r <= 8)) { err(tp + '.when.r', 'tiles 0.2..8'); }
+                if (w.item != null && typeof w.item !== 'string') { err(tp + '.when.item', 'the id of the picture to watch'); }
+                if ((tr.state == null) === (tr.src == null)) { err(tp, 'exactly one of state (switch to that state) or src (swap the picture)'); }
+                else if (tr.state != null && !(isObj(it.states) && it.states[tr.state])) { err(tp + '.state', 'no such state (give it in states)'); }
+                else if (tr.src != null && !okHandle(tr.src)) { err(tp + '.src', 'a picture handle (@imgN)'); }
+                if (tr.hold != null && !(typeof tr.hold === 'number' && tr.hold >= 0.1 && tr.hold <= 60)) { err(tp + '.hold', 'seconds 0.1..60: after that it goes back to its automatic state'); }
+                if (tr.once != null && typeof tr.once !== 'boolean') { err(tp + '.once', 'true (default: the first time) or false (every time it gets there)'); }
+              });
+            }
+          }
+          if (it.voice != null && it.voice !== false) {
+            if (typeof it.voice === 'string') { if (it.voice !== 'none' && !VOICES[it.voice]) { err(ip + '.voice', 'one of ' + Object.keys(VOICES).join(', ') + ', none, or numbers {pitch 70..700, wave sine|tri|square, jitter, vibrato, noise 0..1, len 0.03..0.15, rate 0.5..1, vol 0.05..0.8}: the blips of its dialogue box / subtitle lines'); } }
+            else if (!isObj(it.voice)) { err(ip + '.voice', 'a preset name, none, or numbers {pitch, wave, jitter, vibrato, noise, len, rate, vol}'); }
+            else {
+              [['pitch', 70, 700], ['jitter', 0, 1], ['vibrato', 0, 1], ['noise', 0, 1], ['len', 0.03, 0.15], ['rate', 0.5, 1], ['vol', 0.05, 0.8]].forEach(function (f) { if (it.voice[f[0]] != null && !(typeof it.voice[f[0]] === 'number' && it.voice[f[0]] >= f[1] && it.voice[f[0]] <= f[2])) { err(ip + '.voice.' + f[0], 'a number ' + f[1] + '..' + f[2]); } });
+              if (it.voice.wave != null && ['sine', 'tri', 'square'].indexOf(it.voice.wave) < 0) { err(ip + '.voice.wave', 'sine, tri or square'); }
+            }
+          }
+          if (it.portrait != null && (typeof it.portrait !== 'string' || !it.portrait.trim())) { err(ip + '.portrait', 'a picture handle (@imgN) shown in the dialogue box when this character speaks (instead of the drawn portrait)'); }
+          if (it.tw != null && !(typeof it.tw === 'number' && it.tw >= 0.3 && it.tw <= 16)) { err(ip + '.tw', 'width in map tiles (0.3..16; a character is about 1.3)'); }
           ['x', 'y'].forEach(function (f) { if (it[f] != null && !(typeof it[f] === 'number' && it[f] >= -1 && it[f] <= 2)) { err(ip + '.' + f, 'a fraction of the visual area (0 = left / top edge, 1 = right / bottom; outside 0..1 = off stage: a character that runs in)'); } });
           if (it.scene != null && (typeof it.scene !== 'string' || !it.scene.trim() || it.scene.length > 30)) { err(ip + '.scene', 'the name of the scene this picture belongs to (see scenes), or all'); }
           if (it.sfx != null && it.sfx !== false) { if (!isObj(it.sfx)) { err(ip + '.sfx', 'false (no sound) or {enter, move, say}: the sound effect names played when it pops in / while it moves / when it speaks (' + SFX_NAMES.join(', ') + ')'); } else { ['enter', 'move', 'say'].forEach(function (f) { if (it.sfx[f] != null && it.sfx[f] !== false && SFX_NAMES.indexOf(it.sfx[f]) < 0) { err(ip + '.sfx.' + f, 'must be one of ' + SFX_NAMES.join(', ')); } }); } }
@@ -488,19 +601,31 @@
           if (it.ring != null && ['circle', 'box', 'none'].indexOf(it.ring) < 0) { err(ip + '.ring', 'must be circle, box or none (a coloured outline that is drawn around the picture)'); }
           if (it.label != null && (typeof it.label !== 'string' || it.label.length > 60)) { err(ip + '.label', 'a short name (<= 60 characters) shown in a bubble next to the picture'); }
           if (it.z != null && !Number.isInteger(it.z)) { err(ip + '.z', 'integer: higher = in front'); }
-          if (it.at != null && !(typeof it.at === 'number' || (isObj(it.at) && Number.isInteger(it.at.sentence) && it.at.sentence >= 1))) { err(ip + '.at', 'seconds (number) or {sentence: N} (1-based): when the picture pops in; default: the sentence with the same number as the picture'); }
+          if (it.at != null && !okAt(it.at)) { err(ip + '.at', 'seconds (number) or {sentence: N} (1-based): when the picture pops in; default: the sentence with the same number as the picture'); }
           if (it.alpha != null && !(typeof it.alpha === 'number' && it.alpha >= 0 && it.alpha <= 1)) { err(ip + '.alpha', 'opacity 0..1 (0.45 = a see-through house); animate it with keys'); }
           if (it.enter != null && ['pop', 'fade', 'none'].indexOf(it.enter) < 0) { err(ip + '.enter', 'must be pop (default), fade or none (visible from the start of its time)'); }
           if (it.bob != null && !(typeof it.bob === 'number' && it.bob >= 0 && it.bob <= 60)) { err(ip + '.bob', 'hop height in design pixels, 0..60: it hops while it is moving (a running animal)'); }
           if (it.keys != null) {
-            if (!Array.isArray(it.keys) || it.keys.length > 12) { err(ip + '.keys', 'a list (<= 12) of {at, sec?, x?, y?, alpha?, scale?, rot?}: the picture is at its own values first and moves / fades / scales to each keyframe, arriving at "at" (the move lasts "sec", default 1)'); }
-            else { it.keys.forEach(function (kf, q) { if (!isObj(kf) || !(typeof kf.at === 'number' || (isObj(kf.at) && Number.isInteger(kf.at.sentence) && kf.at.sentence >= 1))) { err(ip + '.keys[' + q + '].at', 'seconds or {sentence: N, offset?: seconds}'); } else { ['x', 'y', 'alpha', 'scale', 'rot', 'sec'].forEach(function (f) { if (kf[f] != null && typeof kf[f] !== 'number') { err(ip + '.keys[' + q + '].' + f, 'must be a number'); } }); } }); }
+            if (!Array.isArray(it.keys) || it.keys.length > 24) { err(ip + '.keys', 'a list (<= 24) of {at, sec?, x?, y?, tx?, ty?, face?, state?, src?, hold?, alpha?, scale?, rot?}: the picture is at its own values first and moves / fades / scales to each keyframe, arriving at "at" (the move lasts "sec", default 1)'); }
+            else { it.keys.forEach(function (kf, q) { if (!isObj(kf) || !okAt(kf.at)) { err(ip + '.keys[' + q + '].at', 'seconds or {sentence: N, offset?: seconds}'); } else { ['x', 'y', 'tx', 'ty', 'tz', 'alpha', 'scale', 'rot', 'sec'].forEach(function (f) { if (kf[f] != null && typeof kf[f] !== 'number') { err(ip + '.keys[' + q + '].' + f, 'must be a number'); } }); if (kf.face != null && ['down', 'up', 'left', 'right'].indexOf(kf.face) < 0) { err(ip + '.keys[' + q + '].face', 'down, up, left or right'); } if (kf.state != null && !(isObj(it.states) && it.states[kf.state])) { err(ip + '.keys[' + q + '].state', 'no such state (give it in states)'); } if (kf.src != null && !(typeof kf.src === 'string' && kf.src.trim())) { err(ip + '.keys[' + q + '].src', 'a picture handle (@imgN): the picture is swapped at that time'); } if (kf.hold != null && !(typeof kf.hold === 'number' && kf.hold >= 0.1 && kf.hold <= 60)) { err(ip + '.keys[' + q + '].hold', 'seconds 0.1..60: after that it goes back to its automatic state'); } } }); }
           }
           if (it.say != null) {
-            if (!Array.isArray(it.say) || it.say.length > 6) { err(ip + '.say', 'a list (<= 6) of {text, sentence | at, sec?}: speech bubbles over the picture (dialogue)'); }
-            else { it.say.forEach(function (sy, q) { if (!isObj(sy) || !str(sy.text).trim() || str(sy.text).length > 80) { err(ip + '.say[' + q + '].text', 'a short line (<= 80 characters)'); } else if (!(typeof sy.at === 'number' || (Number.isInteger(sy.sentence) && sy.sentence >= 1))) { err(ip + '.say[' + q + ']', 'needs sentence: N (1-based) or at: seconds'); } }); }
+            if (!Array.isArray(it.say) || it.say.length > 12) { err(ip + '.say', 'a list (<= 12) of {text, sentence | at, id?, sec?, style?}: what the picture says (say[].id lets walks and other lines wait for it: at: { line: id, edge: end }); style bubble (default, a speech bubble over it), box (an RPG dialogue box at the bottom with its portrait and name, the text typed out, a blinking arrow) or subtitle (film subtitles with its name)'); }
+            else { it.say.forEach(function (sy, q) { if (!isObj(sy) || !str(sy.text).trim() || str(sy.text).length > 80) { err(ip + '.say[' + q + '].text', 'a short line (<= 80 characters)'); } else if (!(okAt(sy.at) || (Number.isInteger(sy.sentence) && sy.sentence >= 1))) { err(ip + '.say[' + q + ']', 'needs sentence: N (1-based, said with that narration sentence), or at: seconds, or at: { sentence | line, edge: start|end, offset? } (after a narration sentence, or after another line)'); } else if (sy.id != null && !(typeof sy.id === 'string' && /^[A-Za-z0-9_\-]{1,24}$/.test(sy.id))) { err(ip + '.say[' + q + '].id', 'a short name (letters, digits, _ -) other things can wait for: at: { line: <id>, edge: end }'); } else if (sy.sec != null && !(typeof sy.sec === 'number' && sy.sec >= 0.5 && sy.sec <= 30)) { err(ip + '.say[' + q + '].sec', 'how long the line stays, seconds 0.5..30 (default: the sentence it is tied to, or the typing time)'); } else if (sy.style != null && ['bubble', 'box', 'subtitle'].indexOf(sy.style) < 0) { err(ip + '.say[' + q + '].style', 'bubble, box or subtitle'); } }); }
           }
         });
+        // every { line: id } must name a say[].id, and ids are unique
+        var lineIds = {};
+        items.forEach(function (it, k) { if (isObj(it)) { (Array.isArray(it.say) ? it.say : []).forEach(function (sy, q) { if (isObj(sy) && typeof sy.id === 'string') { if (lineIds[sy.id]) { err(vp + '.items[' + k + '].say[' + q + '].id', 'used twice (ids must be unique)'); } lineIds[sy.id] = true; } }); } });
+        var itemIds = {};
+        items.forEach(function (it, k) { if (isObj(it) && typeof it.id === 'string') { if (itemIds[it.id]) { err(vp + '.items[' + k + '].id', 'used twice (ids must be unique)'); } itemIds[it.id] = true; } });
+        items.forEach(function (it, k) { if (isObj(it) && Array.isArray(it.triggers)) { it.triggers.forEach(function (tr, q) { if (isObj(tr) && isObj(tr.when) && typeof tr.when.item === 'string' && !itemIds[tr.when.item]) { err(vp + '.items[' + k + '].triggers[' + q + '].when.item', 'no item with id "' + tr.when.item + '"'); } }); } });
+        var chkLine = function (at, path) { if (isObj(at) && at.line != null && !lineIds[at.line]) { err(path, 'there is no line with id "' + at.line + '" (give the say entry an id)'); } };
+        items.forEach(function (it, k) { if (!isObj(it)) { return; } chkLine(it.at, vp + '.items[' + k + '].at'); (Array.isArray(it.keys) ? it.keys : []).forEach(function (kf, q) { if (isObj(kf)) { chkLine(kf.at, vp + '.items[' + k + '].keys[' + q + '].at'); } }); (Array.isArray(it.say) ? it.say : []).forEach(function (sy, q) { if (isObj(sy)) { chkLine(sy.at, vp + '.items[' + k + '].say[' + q + '].at'); } }); });
+        (Array.isArray(v.scenes) ? v.scenes : []).forEach(function (sc, q) { if (isObj(sc)) { chkLine(sc.at, vp + '.scenes[' + q + '].at'); } });
+        (Array.isArray(v.curtain) ? v.curtain : []).forEach(function (kf, q) { if (isObj(kf)) { chkLine(kf.at, vp + '.curtain[' + q + '].at'); } });
+        (Array.isArray(v.camera) ? v.camera : []).forEach(function (kf, q) { if (isObj(kf)) { chkLine(kf.at, vp + '.camera[' + q + '].at'); } });
+        (Array.isArray(v.texts) ? v.texts : []).forEach(function (tx, q) { if (isObj(tx)) { chkLine(tx.at, vp + '.texts[' + q + '].at'); } });
       }
     } else if (v.kind === 'code') {
       // a long listing / patch in a scrollable, syntax-highlighted window (a screenshot of the current view in PPTX)
@@ -781,8 +906,40 @@
   function visualImageSources(visual) {
     if (!visual) { return []; }
     if (visual.kind === 'image') { return (Array.isArray(visual.images) ? visual.images : [{ src: visual.src }]).map(function (i) { return i.src; }); }
-    if (visual.kind === 'collage') { return (visual.items || []).map(function (i) { return i.src; }); }
+    if (visual.kind === 'collage') { return (visual.items || []).map(function (i) { return isProc(i.src) ? '' : i.src; }); }
     return [];
+  }
+
+  // ------------------------------------------------------------------ dialogue lines (say[] of every picture)
+  // A line starts at: its narration sentence (sentence: N), seconds (at: 12), or an anchor at: { sentence | line, edge: start|end, offset } -- e.g. when narration
+  // sentence 3 has been read, or 0.4 s after another line (say[].id) has been said. It lasts as long as its sentence when tied to one, else `sec`, else as long as
+  // the typing takes (about 10 characters a second). So the narration can tell the story and then the characters speak with voices of their own.
+  function lineLen(text) { return Math.max(1.4, 0.7 + Array.from(str(text)).length * 0.125); }
+  function resolveLines(v, timing) {
+    var all = [], byId = {}, map = typeof Map === 'function' ? new Map() : null;
+    ((v && v.items) || []).forEach(function (it, k) { (it.say || []).forEach(function (sy, q) { var L = { k: k, q: q, sy: sy, t0: null, dur: 0, state: 0 }; all.push(L); if (sy.id) { byId[sy.id] = L; } if (map) { map.set(sy, L); } }); });
+    var sents = (timing && timing.sentences) || [], T = { sentences: sents, lines: { byId: byId } };
+    function startOf(L) {
+      if (L.state === 2) { return L.t0; } if (L.state === 1) { return null; } L.state = 1;
+      var sy = L.sy, t = null, tied = false, sn = null;
+      if (sy.at != null) { if (isObj(sy.at) && sy.at.line != null && byId[sy.at.line]) { startOf(byId[sy.at.line]); } t = secOf(sy.at, T); tied = isObj(sy.at) && sy.at.sentence != null && sy.at.edge !== 'end' && !sy.at.offset; if (tied) { sn = sy.at.sentence; } }
+      else if (sy.sentence != null) { t = secOf({ sentence: sy.sentence, offset: sy.offset || 0 }, T); tied = true; sn = sy.sentence; }
+      var dur = sy.sec; if (dur == null && tied && sents.length) { var sp = sents[Math.min(sents.length, sn) - 1]; if (sp) { dur = (sp.end != null ? sp.end : sp.start + 2.5) - sp.start; } }
+      L.t0 = t; L.dur = Math.max(0.8, dur == null ? lineLen(sy.text) : dur); L.state = 2; return t;
+    }
+    all.forEach(startOf);
+    var list = all.filter(function (L) { return L.t0 != null; }).sort(function (a, b) { return a.t0 - b.t0; });
+    return { list: list, byId: byId, map: map, end: list.reduce(function (m, L) { return Math.max(m, L.t0 + L.dur); }, 0) };
+  }
+  function linesOf(v, timing) { return timing && timing.lines ? timing.lines : resolveLines(v, timing); }
+  // when the last thing of a collage has happened (lines said, walks arrived, scenes and curtain finished): the slide lasts until then
+  function collageEnd(v, timing) {
+    var end = (timing && timing.lines ? timing.lines : resolveLines(v, timing)).end;
+    (v.items || []).forEach(function (it) { (it.keys || []).forEach(function (kf) { var t = secOf(kf.at, timing); if (t != null) { end = Math.max(end, t); } }); });
+    (v.curtain || []).forEach(function (kf) { var t = secOf(kf.at, timing); if (t != null) { end = Math.max(end, t + (kf.sec || 1)); } });
+    (v.texts || []).forEach(function (tx) { var t = secOf(tx.at != null ? tx.at : { sentence: tx.sentence, offset: tx.offset || 0 }, timing); if (t != null) { end = Math.max(end, t + (tx.sec == null ? 4 : tx.sec)); } });
+    (v.scenes || []).forEach(function (sc, q) { if (q > 0) { var t = secOf(sc.at, timing); if (t != null) { end = Math.max(end, t + (sc.sec || 0.9)); } } });
+    return end;
   }
 
   // ------------------------------------------------------------------ per-slide timing
@@ -805,7 +962,10 @@
       var rest = tracks.slice(1).map(function (tx) { return splitSentences(str(tx)); });
       capSpans = base.map(function (sp, i) { var lines = [sp.text]; rest.forEach(function (arr) { var x = mapSent(arr, i, base.length); if (x) { lines.push(x); } }); sp.lines = lines; return sp; });
     }
-    return { sentences: spans, captions: capSpans, narrStart: lead, narrSec: narr, duration: dur, audioKnown: known, silent: !hasNarr };
+    var tm = { sentences: spans, captions: capSpans, narrStart: lead, narrSec: narr, duration: dur, audioKnown: known, silent: !hasNarr };
+    // a collage with dialogue / walks of its own lasts until the last of them has happened (the narration may be shorter, or there may be none)
+    if (slide.visual && slide.visual.kind === 'collage') { tm.lines = resolveLines(slide.visual, tm); var ce = collageEnd(slide.visual, tm); if (ce > 0) { tm.duration = Math.max(tm.duration, ce + 1.0); } }
+    return tm;
   }
 
   // Whole-deck timeline. timings[i] = timingFor(...). The transition INTO slide i (i>0) runs first, then its body.
@@ -1121,11 +1281,18 @@
   //      move / fade / scale along keyframes (keys), say things in speech bubbles (say), and the whole stage can zoom into a place and back out (camera).
   //      "this is a spider, this is a monkey": item k appears at the start of sentence k (1-based; an intro sentence is skipped, like bullets) unless it says `at`.
   function ease(p) { p = clamp(p, 0, 1); return p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2; }
+  // a moment on the slide clock: seconds, or an anchor { sentence | line, edge?: start (default) | end, offset?: seconds }
+  // sentence = a sentence of the narration; line = a line somebody says (say[].id), so a walk can start when a line has been said
   function secOf(at, timing) {
     var sents = (timing && timing.sentences) || [];
     if (typeof at === 'number') { return at; }
-    if (at && at.sentence != null && sents.length) { return sents[Math.min(sents.length, Math.max(1, at.sentence)) - 1].start + (at.offset || 0); }
-    if (at && at.sentence != null) { return 0.4 + (at.sentence - 1) * 0.9 + (at.offset || 0); }
+    var edge = at && at.edge === 'end' ? 'end' : 'start', off = (at && at.offset) || 0;
+    if (at && at.line != null) {
+      var L = timing && timing.lines && timing.lines.byId[at.line]; if (!L || L.t0 == null) { return null; }
+      return (edge === 'end' ? L.t0 + L.dur : L.t0) + off;
+    }
+    if (at && at.sentence != null && sents.length) { var sp = sents[Math.min(sents.length, Math.max(1, at.sentence)) - 1]; return (edge === 'end' ? (sp.end != null ? sp.end : sp.start + 2.5) : sp.start) + off; }
+    if (at && at.sentence != null) { return 0.4 + (at.sentence - 1) * 0.9 + (edge === 'end' ? 0.9 : 0) + off; }
     return null;
   }
   // value of one property along keyframes: starts at `base`, moves to each keyframe (arriving at its time, the move lasting `sec`)
@@ -1160,6 +1327,7 @@
   function sceneFactor(it, st) {
     if (!st || !it.scene || it.scene === 'all') { return { a: 1, s: 1 }; }
     var P = ease(st.p);
+    if (st.effect === 'black' && st.prev) { return it.scene === st.scene ? { a: P >= 0.5 ? 1 : 0, s: 1 } : (it.scene === st.prev ? { a: P < 0.5 ? 1 : 0, s: 1 } : { a: 0, s: 1 }); } // through black: the old scene goes out, then the new one comes in
     if (it.scene === st.scene) { return { a: st.prev ? P : 1, s: st.prev && st.effect === 'zoom' ? 0.72 + 0.28 * P : 1 }; }
     if (st.prev && it.scene === st.prev) { return { a: 1 - P, s: st.effect === 'zoom' ? 1 + 0.85 * P : 1 }; }
     return { a: 0, s: 1 };
@@ -1167,7 +1335,7 @@
   // story text on the stage: a storybook panel (typed out), a big title, or comic lettering (shout)
   function drawStageTexts(ctx, v, timing, t, rect) {
     (v.texts || []).forEach(function (tx) {
-      var t0 = tx.at != null ? tx.at : secOf({ sentence: tx.sentence, offset: tx.offset || 0 }, timing); if (t0 == null) { return; }
+      var t0 = secOf(tx.at != null ? tx.at : { sentence: tx.sentence, offset: tx.offset || 0 }, timing); if (t0 == null) { return; }
       var sec = tx.sec == null ? 4 : tx.sec, age = t - t0; if (age < 0 || age > sec + 0.4) { return; }
       var style = tx.style || 'narrative', a = clamp(age / 0.3, 0, 1) * clamp((sec + 0.4 - age) / 0.4, 0, 1);
       ctx.save(); ctx.globalAlpha *= a; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
@@ -1194,21 +1362,30 @@
   function sfxCues(slide, timing) {
     var v = slide && slide.visual, out = [];
     if (!v || v.kind !== 'collage') { return out; }
-    var items = v.items || [], times = collageTimes(v, timing);
+    var items = v.items || [], times = collageTimes(v, timing), LT0 = linesOf(v, timing);
     items.forEach(function (it, k) {
       if (it.sfx === false) { return; }
       var sfx = isObj(it.sfx) ? it.sfx : {}, vol = 0.8;
       var enter = sfx.enter === false ? null : (sfx.enter || ((it.enter || 'pop') === 'pop' && times[k] > 0.05 ? 'pop' : null));
       if (enter) { out.push({ t: times[k], name: enter, vol: vol }); }
-      var move = sfx.move === false ? null : (sfx.move || (it.bob ? 'step' : null));
+      var move = sfx.move === false ? null : (sfx.move || (it.bob || /^actor:/.test(str(it.src)) ? 'step' : null));
       if (move) {
-        (it.keys || []).filter(function (kf) { return kf.x != null || kf.y != null; }).forEach(function (kf) {
+        (it.keys || []).filter(function (kf) { return kf.x != null || kf.y != null || kf.tx != null || kf.ty != null; }).forEach(function (kf) {
           var tEnd = secOf(kf.at, timing), sec = kf.sec == null ? 1 : kf.sec; if (tEnd == null) { return; }
           if (move === 'whoosh') { out.push({ t: tEnd - sec, name: 'whoosh', vol: vol }); }
           else { for (var tt = tEnd - sec; tt < tEnd - 0.1; tt += 0.45) { out.push({ t: tt, name: move, vol: vol * 0.8 }); } }
         });
       }
-      if (sfx.say) { (it.say || []).forEach(function (sy) { var ts = sy.at != null ? sy.at : secOf({ sentence: sy.sentence }, timing); if (ts != null) { out.push({ t: ts, name: sfx.say, vol: 0.6 }); } }); }
+      if (sfx.say) { (it.say || []).forEach(function (sy) { var L = LT0.map && LT0.map.get(sy), ts = L ? L.t0 : null; if (ts != null) { out.push({ t: ts, name: sfx.say, vol: 0.6 }); } }); }
+    });
+    // the characters' own voices: a blip for each character typed in a dialogue box / subtitle (not for spaces and punctuation), in time with the typing
+    LT0.list.forEach(function (L) {
+      if ((L.sy.style || 'bubble') === 'bubble') { return; } var vc = voiceOf(items[L.k]); if (!vc) { return; }
+      var chars = Array.from(str(L.sy.text)), n = chars.length, every = vc.rate && vc.rate < 1 ? Math.max(1, Math.round(1 / vc.rate)) : 1, c = 0;
+      chars.forEach(function (ch, j) {
+        if (/[\s，。！？、；：…—「」『』（）,.!?;:"'()\-]/.test(ch)) { return; } if ((c++ % every) !== 0) { return; }
+        out.push({ t: L.t0 + (j / n) * L.dur * 0.8, name: 'blip', vol: vc.vol, voice: vc, step: (((ch.codePointAt(0) * 2654435761) >>> 0) % 5) - 2 });
+      });
     });
     (v.sounds || []).forEach(function (sn) { var ts = sn.at != null ? sn.at : secOf({ sentence: sn.sentence, offset: sn.offset || 0 }, timing); if (ts != null) { out.push({ t: ts, name: sn.sfx, vol: sn.vol == null ? 0.8 : sn.vol }); } });
     return out.filter(function (c) { return c.t >= 0; }).sort(function (a, b) { return a.t - b.t; });
@@ -1227,8 +1404,43 @@
     ctx.fillStyle = '#222222'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(text, bx + bw / 2, by + bh / 2 + 2, bw - 24);
     ctx.restore();
   }
+  // ---- states, frames and triggers of a picture (the picture changes with what it does and where it is)
+  //   states: { walk: { frames: [0,1,2,3], fps: 6 }, bow: { src: '@img2', sheet: {cols: 3, rows: 1}, frames: [0,1,2,2], fps: 4, loop: false }, ... }
+  //   auto: { moving: walk, still: idle }   -- which state while it moves / stands (defaults walk / idle)
+  //   keys: [{ at, state: 'bow', hold: 1.5 }, { at, src: '@img9' }]   -- switch the state (or the picture) at a time; hold = seconds, then back to the automatic state
+  //   triggers: [{ when: { tile: [11,5] } | { near: [3,4], r: 1 } | { at: anchor }, item?: <id>, state | src, hold?, once? }]  -- when it (or the item with that id) gets there
+  var EVMEMO = typeof WeakMap === 'function' ? new WeakMap() : null;
+  function poseFx(pose, age, T) { // procedural poses of a character: bow, jump, shake, surprise
+    var p = { rot: 0, hop: 0, dx: 0, s: 1 }, a = Math.max(0, age);
+    if (pose === 'bow') { p.rot = Math.sin(Math.min(1, a / 0.9) * Math.PI) * 18; }
+    else if (pose === 'jump') { p.hop = Math.abs(Math.sin(Math.min(a, 0.9) / 0.9 * Math.PI)) * 0.7 * T; }
+    else if (pose === 'shake') { p.dx = Math.sin(a * 40) * 0.05 * T * Math.max(0, 1 - a / 1.2); }
+    else if (pose === 'surprise') { var q = Math.sin(Math.min(a, 0.5) / 0.5 * Math.PI); p.hop = Math.abs(q) * 0.35 * T; p.s = 1 + 0.08 * q; }
+    return p;
+  }
+  // the direction a walking picture faces: along its last movement (it keeps facing that way when it stops); `pos(tt)` is its anchor point in pixels at time tt
+  function facingOf(pos, t, start, keys, timing) {
+    var tt = t, dir = null, tau = -1e9;
+    for (var j = 0; j < 160 && tt > -1; j++) {
+      var a = pos(tt), b = pos(tt - 0.06), dx = a.x - b.x, dy = a.y - b.y;
+      if (Math.abs(dx) + Math.abs(dy) > 0.5) { dir = Math.abs(dx) >= Math.abs(dy) ? (dx < 0 ? 'left' : 'right') : (dy < 0 ? 'up' : 'down'); tau = tt; break; }
+      tt -= j < 20 ? 0.1 : 0.5;
+    }
+    // a `face` keyframe turns it to face a direction (standing and talking to someone); it wins over an older movement
+    (keys || []).forEach(function (kf) { if (kf && kf.face) { var ft = secOf(kf.at, timing); if (ft != null && ft <= t && ft >= tau) { dir = kf.face; tau = ft; } } });
+    return dir || start || 'down';
+  }
+  // the lines said in a dialogue box or as subtitles (style box / subtitle), resolved: [{k (item), t0, dur, text, style}] by start time
+  function stageLines(v, timing) {
+    return linesOf(v, timing).list.filter(function (L) { return (L.sy.style || 'bubble') !== 'bubble'; }).map(function (L) { return { k: L.k, t0: L.t0, dur: L.dur, text: L.sy.text, style: L.sy.style }; });
+  }
   function drawCollage(ctx, v, pv, timing, t, rect) {
     var items = v.items || []; if (!items.length) { return; }
+    var A = art(), gr = A ? A.grid(rect) : { T: 1, ox: rect.x, oy: rect.y };
+    if (timing && !timing.lines) { timing.lines = resolveLines(v, timing); } // keys / scenes can be anchored to a line (at: { line })
+    var LT = linesOf(v, timing);
+    var slines = stageLines(v, timing), act = null; slines.forEach(function (ln) { if (t >= ln.t0 && t < ln.t0 + ln.dur + 0.25) { act = ln; } });
+    var spotK = act ? act.k : -1, spot = v.spotlight === true;
     var times = collageTimes(v, timing), order = items.map(function (_it, k) { return k; }).sort(function (a, b) { return ((items[a].z || 0) - (items[b].z || 0)) || (a - b); });
     var nextAt = function (k) { var later = times.filter(function (x) { return x > times[k] + 0.01; }); return later.length ? Math.min.apply(null, later) : times[k] + 3.5; };
     // camera: zoom into a place of the stage and back (the pictures, bubbles and rings all move with it)
@@ -1241,32 +1453,121 @@
     var scs = sceneState(v.scenes, t, timing);
     // the part of the stage that is on screen (the camera may have zoomed in): bubbles and name tags stay inside it
     var vb = { x: rect.x + fx * rect.w - rect.w / zoom / 2, y: rect.y + fy * rect.h - rect.h / zoom / 2, w: rect.w / zoom, h: rect.h / zoom };
-    order.forEach(function (k) {
+    // where a picture is at time tt (px): tile coordinates (tx, ty; it stands on the bottom centre of that tile) or fractions of the stage (x, y)
+    var makePos = function (it, k) {
+      var baseX = it.x != null ? it.x : 0.1 + 0.25 * (k % 3), baseY = it.y != null ? it.y : 0.1 + 0.3 * Math.floor(k / 3);
+      if (it.tx != null) { return function (tt) { return { x: gr.ox + (track(it.keys, 'tx', tt, it.tx, timing) + 0.5) * gr.T, y: gr.oy + (track(it.keys, 'ty', tt, it.ty == null ? 0 : it.ty, timing) + 1) * gr.T }; }; }
+      return function (tt) { return { x: rect.x + track(it.keys, 'x', tt, baseX, timing) * rect.w, y: rect.y + track(it.keys, 'y', tt, baseY, timing) * rect.h }; };
+    };
+    // the moments the look of a picture changes: state / src keys, and triggers (when it, or another picture, gets to a tile / near a place, or at a moment) -- found by walking its path once
+    var EVSIG = (timing ? (timing.duration || 0) + '|' + ((timing.sentences || []).length) + '|' + (timing.lines ? timing.lines.end : 0) : '') + '|' + gr.T + '|' + gr.ox + '|' + rect.w;
+    var lookEvents = function (it, k) {
+      var m = EVMEMO && EVMEMO.get(it); if (m && m.sig === EVSIG) { return m.list; }
+      var list = [];
+      (it.keys || []).forEach(function (kf) { if (kf && (kf.state || kf.src)) { var te = secOf(kf.at, timing); if (te != null) { list.push({ t: te, state: kf.state || null, src: kf.src || null, hold: kf.hold }); } } });
+      var horizon = Math.max((timing && timing.duration) || 0, 8);
+      (it.triggers || []).forEach(function (tr) {
+        var w = (tr && tr.when) || {};
+        if (w.at != null) { var ta = secOf(w.at, timing); if (ta != null) { list.push({ t: ta, state: tr.state || null, src: tr.src || null, hold: tr.hold }); } return; }
+        var W = it, kW = k; if (w.item) { items.some(function (x, i) { if (x && x.id === w.item) { W = x; kW = i; return true; } return false; }); }
+        var pf = makePos(W, kW), prev = false, once = tr.once !== false, fired = false;
+        for (var tt = 0; tt <= horizon; tt += 0.05) {
+          var pp = pf(tt), tx = (pp.x - gr.ox) / gr.T - 0.5, ty = (pp.y - gr.oy) / gr.T - 1, hit = false;
+          if (w.tile) { hit = Math.abs(tx - w.tile[0]) <= 0.3 && Math.abs(ty - w.tile[1]) <= 0.3; } else if (w.near) { hit = Math.sqrt(Math.pow(tx - w.near[0], 2) + Math.pow(ty - w.near[1], 2)) <= (w.r == null ? 1 : w.r); }
+          if (hit && !prev && !(once && fired)) { list.push({ t: tt, state: tr.state || null, src: tr.src || null, hold: tr.hold }); fired = true; }
+          prev = hit;
+        }
+      });
+      list.sort(function (a, b2) { return a.t - b2.t; }); if (EVMEMO) { EVMEMO.set(it, { sig: EVSIG, list: list }); } return list;
+    };
+    // what a picture looks like now: { img, cell: {cols, rows, col, row} | null, pose, age } or null (the plain picture)
+    var itemLook = function (it, k, img, moving, face) {
+      var evs = lookEvents(it, k), e = null; for (var i = 0; i < evs.length; i++) { if (evs[i].t <= t) { e = evs[i]; } }
+      var auto = it.auto || {}, name = e && e.state ? e.state : (moving ? (auto.moving || 'walk') : (auto.still || 'idle'));
+      if (e && e.hold != null && t > e.t + e.hold) { e = null; name = moving ? (auto.moving || 'walk') : (auto.still || 'idle'); } // the hold is over: back to the automatic state
+      var def = it.states && it.states[name], sheet = it.sheet && img ? it.sheet : null, since = e && e.state ? e.t : 0;
+      var extra = function (h) { if (!h) { return null; } if (h === it.src) { return img; } return (pv && pv.extra && pv.extra[h]) || null; };
+      var out = { img: null, cell: null, pose: null, age: t - since };
+      if (def) {
+        if (def.pose) { out.pose = def.pose; }
+        var dimg = def.src ? extra(def.src) : img, grid = def.sheet || (!def.src ? sheet : null), fps = def.fps || 6, fr = def.frames, arr = null;
+        if (fr) { arr = Array.isArray(fr) ? fr : (fr[face || 'down'] || fr.down || fr[Object.keys(fr)[0]]); }
+        if (arr && arr.length) {
+          var n = arr.length, idx = def.loop === false ? Math.min(n - 1, Math.floor(out.age * fps)) : Math.floor(out.age * fps) % n, ent = arr[idx];
+          if (typeof ent === 'string') { out.img = extra(ent); }
+          else if (dimg && grid) {
+            var dirs = String((it.sheet && it.sheet.dirs) || (def.sheet && def.sheet.dirs) || 'down,left,right,up').split(',').map(function (d) { return d.trim(); }), col, row;
+            if (Array.isArray(fr) && def.facing !== false) { row = Math.max(0, dirs.indexOf(face || 'down')); col = ent % grid.cols; } else { col = ent % grid.cols; row = Math.floor(ent / grid.cols); }
+            out.img = dimg; out.cell = { cols: grid.cols, rows: grid.rows, col: col, row: row };
+          }
+        } else if (def.src && dimg) { out.img = dimg; }
+      } else if (e && e.src) { out.img = extra(e.src); }
+      else if (sheet) { // the plain sprite sheet: a row for the direction, the columns are the walk cycle (and the idle column when it stands)
+        var dirs2 = String(sheet.dirs || 'down,left,right,up').split(',').map(function (d) { return d.trim(); });
+        out.img = img; out.cell = { cols: sheet.cols, rows: sheet.rows, col: moving ? Math.floor(t * (sheet.fps || 6)) % sheet.cols : (sheet.idle != null ? sheet.idle : (sheet.cols >= 3 ? 1 : 0)), row: Math.max(0, dirs2.indexOf(face || 'down')) };
+      }
+      return out.img || out.pose ? out : null;
+    };
+    // part: undefined = the whole picture; 'ground' = only the floor of a map; an object of the map = only that object (depth: y draws them in the order of their feet, together with the characters)
+    var depthY = v.depth === 'y' && !!A;
+    var runItem = function (k, part) {
       var it = items[k], img = pv && pv.images && pv.images[k], age = t - times[k];
       if (age < 0) { return; }
       var sf = sceneFactor(it, scs); if (sf.a <= 0.003) { return; }
-      var iw = img && (img.naturalWidth || img.width) || 4, ih = img && (img.naturalHeight || img.height) || 3;
-      var baseX = it.x != null ? it.x : 0.1 + 0.25 * (k % 3), baseY = it.y != null ? it.y : 0.1 + 0.3 * Math.floor(k / 3);
-      var px = track(it.keys, 'x', t, baseX, timing), py = track(it.keys, 'y', t, baseY, timing);
+      var proc = A && isProc(it.src) ? A.parse(it.src) : null, bgPic = proc && (proc.kind === 'map' || proc.kind === 'cg' || proc.kind === 'fx');
+      var baseImg = img && img.width ? img : null;
       var scl = track(it.keys, 'scale', t, 1, timing), rotK = track(it.keys, 'rot', t, 0, timing), alphaV = track(it.keys, 'alpha', t, it.alpha == null ? 1 : it.alpha, timing);
-      var w = (it.w || 0.28) * rect.w, h = w * ih / iw, maxH = rect.h * 0.92; if (h > maxH) { w *= maxH / h; h = maxH; }
-      var moving = it.keys && Math.abs(track(it.keys, 'x', t, baseX, timing) - track(it.keys, 'x', t - 0.06, baseX, timing)) + Math.abs(track(it.keys, 'y', t, baseY, timing) - track(it.keys, 'y', t - 0.06, baseY, timing)) > 0.0004;
-      var hop = it.bob && moving ? -Math.abs(Math.sin(2 * Math.PI * t / 0.45)) * it.bob : 0;
-      var x = rect.x + px * rect.w, y = rect.y + py * rect.h + hop, cx = x + w / 2, cy = y + h / 2;
+      var tiled = it.tx != null, pos = makePos(it, k);
+      var p0 = pos(t), p1 = pos(t - 0.06), moving = !!it.keys && Math.abs(p0.x - p1.x) + Math.abs(p0.y - p1.y) > 0.5;
+      var hasStates = !!(it.states || it.triggers || (it.keys && it.keys.some(function (kf) { return kf && (kf.state || kf.src); })));
+      var actorLike = (proc && proc.kind === 'actor') || (!proc && !!(it.sheet || it.states));
+      var face = actorLike ? facingOf(pos, t, it.face, it.keys, timing) : null;
+      var lk = (!proc && (it.sheet || hasStates)) || (proc && hasStates) ? itemLook(it, k, baseImg, moving, face) : null; // null: the plain picture
+      var pf = lk && lk.pose ? poseFx(lk.pose, lk.age, gr.T) : null;
+      var dimg = lk && lk.img ? lk.img : baseImg;
+      var iw = dimg && (dimg.naturalWidth || dimg.width) || 4, ih = dimg && (dimg.naturalHeight || dimg.height) || 3;
+      if (lk && lk.cell) { iw /= lk.cell.cols; ih /= lk.cell.rows; }
+      if (proc && !(lk && lk.img)) { iw = A.aspect(it.src) * 100; ih = 100; }
+      var w, h;
+      if (bgPic) { w = rect.w; h = rect.h; }
+      else if (proc && proc.kind === 'actor' && !(lk && lk.img)) { w = (it.tw || 1.3) * gr.T; h = w / A.aspect(it.src); }
+      else if (lk && lk.cell) { w = (it.tw || 1.3) * gr.T; h = w * ih / iw; }
+      else if (it.tw != null) { w = it.tw * gr.T; h = w * ih / iw; } // a picture sized in map tiles (a tree, a table made as a sprite)
+      else { w = (it.w || 0.28) * rect.w; h = w * ih / iw; var maxH = rect.h * 0.92; if (h > maxH) { w *= maxH / h; h = maxH; } }
+      var tzv = tiled && !bgPic ? track(it.keys, 'tz', t, it.tz == null ? 0 : it.tz, timing) : 0;
+      var hop = (it.bob && moving ? -Math.abs(Math.sin(2 * Math.PI * t / 0.45)) * it.bob : 0) - (pf ? pf.hop : 0) - tzv * gr.T, pdx = pf ? pf.dx : 0;
+      var ownShadow = !part && tiled && !bgPic && (it.shadow === true || (it.shadow !== false && actorLike && (depthY || tzv !== 0)));
+      var parX = it.parallax != null && !bgPic ? (1 - it.parallax) * (fx - 0.5) * rect.w : 0;
+      var anc = it.anchor || (tiled || actorLike ? 'feet' : 'topleft');
+      var x = (bgPic ? rect.x : (anc === 'feet' ? p0.x - w / 2 : (anc === 'center' ? p0.x - w / 2 : p0.x))) + pdx, y = (bgPic ? rect.y : (anc === 'feet' ? p0.y - h : (anc === 'center' ? p0.y - h / 2 : p0.y))) + hop, cx = x + w / 2, cy = y + h / 2;
       var enter = it.enter || 'pop', pp = enter === 'none' ? 1 : clamp(age / (enter === 'fade' ? 0.7 : 0.55), 0, 1), pop = enter === 'pop' ? (pp < 1 ? easeOutBack(pp) : 1) : 1;
       var reading = t >= times[k] && t < nextAt(k);
+      var litNow = spot && spotK === k, dimF = spot && spotK >= 0 && spotK !== k && proc && (proc.kind === 'actor' || proc.kind === 'bust') ? 0.78 : 1;
       var swingDeg = it.swing === true ? 10 : (typeof it.swing === 'number' ? it.swing : 0);
-      var rot = (it.rot || 0) + rotK + (swingDeg && age > 0.5 ? swingDeg * Math.sin(2 * Math.PI * (age - 0.5) / 1.8) : 0);
+      var rot = (it.rot || 0) + rotK + (pf ? pf.rot : 0) + (swingDeg && age > 0.5 ? swingDeg * Math.sin(2 * Math.PI * (age - 0.5) / 1.8) : 0);
       ctx.save();
       if (sf.s !== 1) { var fcx = rect.x + (scs ? scs.fx : 0.5) * rect.w, fcy = rect.y + (scs ? scs.fy : 0.5) * rect.h; ctx.translate(fcx, fcy); ctx.scale(sf.s, sf.s); ctx.translate(-fcx, -fcy); }
       ctx.globalAlpha *= (enter === 'none' ? 1 : clamp(age / (enter === 'fade' ? 0.7 : 0.18), 0, 1)) * alphaV * sf.a;
+      if (parX) { ctx.translate(parX, 0); }
       if (ctx.globalAlpha > 0.003) {
-        ctx.translate(cx, cy); ctx.rotate(rot * Math.PI / 180); var sc = Math.max(0.01, pop) * scl * (reading && it.label ? 1.04 : 1); ctx.scale(sc, sc); ctx.translate(-cx, -cy);
+        if (ownShadow) { var lift = clamp(tzv, 0, 3), shw = w * 0.3 * (1 - 0.12 * lift); ctx.save(); ctx.globalAlpha *= 0.3 * (1 - 0.16 * lift); ctx.fillStyle = '#000000'; ctx.beginPath(); ctx.ellipse(p0.x, p0.y - 2, shw, shw * 0.3, 0, 0, 7); ctx.fill(); ctx.restore(); }
+        ctx.translate(cx, cy); ctx.rotate(rot * Math.PI / 180); var sc = Math.max(0.01, pop) * scl * (pf ? pf.s : 1) * (reading && it.label ? 1.04 : 1); ctx.scale(sc, sc); ctx.translate(-cx, -cy);
         // white card with a soft shadow (a sticker); a see-through item (alpha < 1) is just the picture, no card
-        var card = (it.card != null ? it.card : (it.alpha == null || it.alpha >= 1));
+        if (proc) { A.drawItem(ctx, it, { rect: rect, T: gr.T, x: x + w / 2, y: y + h, w: w, h: h, face: face, moving: moving, phase: t / 0.2, lit: litNow, dim: dimF, t: t, talking: spotK === k, part: part, noShadow: ownShadow }); }
+        else if (lk && lk.img && (lk.cell || actorLike)) {
+          // a picture of a character: a frame of a sheet (row = the direction it faces, column = the walk cycle), or one of its other pictures
+          var sx = 0, sy = 0, sw = dimg.naturalWidth || dimg.width, sh2 = dimg.naturalHeight || dimg.height;
+          if (lk.cell) { sw = sw / lk.cell.cols; sh2 = sh2 / lk.cell.rows; sx = lk.cell.col * sw; sy = lk.cell.row * sh2; }
+          ctx.save(); ctx.imageSmoothingEnabled = !(it.pixel === true || (lk.cell && !(it.sheet && it.sheet.smooth === true))); if (!ownShadow && it.shadow !== false) { ctx.fillStyle = 'rgba(0,0,0,0.22)'; ctx.beginPath(); ctx.ellipse(cx, y + h - 3, w * 0.32, w * 0.09, 0, 0, 7); ctx.fill(); }
+          if (dimF < 1) { ctx.filter = 'brightness(' + dimF + ')'; } ctx.drawImage(dimg, sx, sy, sw, sh2, x, y, w, h); ctx.restore();
+          if (litNow) { var bn = Math.sin(t * 8) * 4; ctx.fillStyle = '#FFE066'; ctx.beginPath(); ctx.moveTo(cx - 14, y - 30 + bn); ctx.lineTo(cx + 14, y - 30 + bn); ctx.lineTo(cx, y - 8 + bn); ctx.closePath(); ctx.fill(); }
+        }
+        else {
+        var card = (it.card != null ? it.card : ((it.alpha == null || it.alpha >= 1) && !tiled && it.pixel !== true));
         if (card) { ctx.fillStyle = '#FFFFFF'; ctx.shadowColor = 'rgba(0,0,0,0.25)'; ctx.shadowBlur = 20; ctx.shadowOffsetY = 6; roundRect(ctx, x - 8, y - 8, w + 16, h + 16, 18); ctx.fill(); ctx.shadowBlur = 0; ctx.shadowOffsetY = 0; ctx.shadowColor = 'transparent'; }
-        if (img && img.width) { ctx.save(); if (card) { roundRect(ctx, x, y, w, h, 12); ctx.clip(); } ctx.drawImage(img, x, y, w, h); ctx.restore(); }
+        if (dimg && dimg.width) { ctx.save(); if (card) { roundRect(ctx, x, y, w, h, 12); ctx.clip(); } if (it.pixel === true) { ctx.imageSmoothingEnabled = false; } ctx.drawImage(dimg, x, y, w, h); ctx.restore(); }
         else { ctx.fillStyle = COLORS.soft; roundRect(ctx, x, y, w, h, 12); ctx.fill(); }
+        }
         if (it.ring && it.ring !== 'none') {
           var rp = clamp((age - 0.25) / 0.6, 0, 1), col = it.ringColor || COLLAGE_RING[k % COLLAGE_RING.length], pad = 14;
           ctx.strokeStyle = col; ctx.lineWidth = reading ? 9 : 6; ctx.lineCap = 'round';
@@ -1275,6 +1576,7 @@
         }
       }
       ctx.restore();
+      if (part) { return; } // a part of a map has no name tag or speech bubble
       ctx.save(); if (sf.s !== 1) { var gx = rect.x + (scs ? scs.fx : 0.5) * rect.w, gy = rect.y + (scs ? scs.fy : 0.5) * rect.h; ctx.translate(gx, gy); ctx.scale(sf.s, sf.s); ctx.translate(-gx, -gy); }
       var vis = clamp(age / 0.2, 0, 1) * alphaV * sf.a;
       // name tag under the picture
@@ -1290,16 +1592,45 @@
       }
       // speech bubbles (dialogue): shown from their time for `sec` seconds (default: until the next line of this picture, at most 4 s)
       if (it.say && vis > 0.05) {
-        var lines = it.say.map(function (sy) { return { t0: sy.at != null ? sy.at : secOf({ sentence: sy.sentence }, timing), sec: sy.sec, text: sy.text }; }).filter(function (q) { return q.t0 != null; }).sort(function (a, b) { return a.t0 - b.t0; });
+        var lines = it.say.map(function (sy) { return { t0: (LT.map && LT.map.get(sy) ? LT.map.get(sy).t0 : null), sec: sy.sec, text: sy.text, style: sy.style }; }).filter(function (q) { return q.t0 != null && (q.style || 'bubble') === 'bubble'; }).sort(function (a, b) { return a.t0 - b.t0; });
         lines.forEach(function (ln, q) {
           var end = ln.t0 + (ln.sec != null ? ln.sec : Math.min(4, (lines[q + 1] ? lines[q + 1].t0 - ln.t0 : 4)));
           if (t >= ln.t0 && t < end) { speechBubble(ctx, ln.text, cx, Math.max(y - 10, vb.y + 90), vb, it.ringColor || COLLAGE_RING[k % COLLAGE_RING.length], easeOutBack(clamp((t - ln.t0) / 0.35, 0, 1))); }
         });
       }
       ctx.restore();
-    });
+    };
+    if (!depthY) { order.forEach(function (k) { runItem(k); }); }
+    else {
+      // depth: y -- the floor of every map first, then the objects of the maps and the pictures on the map grid together, the one whose feet are higher up first; the rest (flying words, effects) on top
+      var seq = [], bucket = [], lastGround = -1, firstTile = -1;
+      order.forEach(function (k) {
+        var it = items[k], pr = isProc(it.src) ? A.parse(it.src) : null;
+        if (pr && pr.kind === 'map') { seq.push({ k: k, part: 'ground' }); lastGround = seq.length; A.mapObjects(pr.name).forEach(function (o) { bucket.push({ k: k, part: o, key: o.base, z: it.z || 0 }); }); }
+        else if (it.tx != null) { if (firstTile < 0) { firstTile = seq.length; } bucket.push({ k: k, tile: true, z: it.z || 0 }); }
+        else { seq.push({ k: k }); }
+      });
+      var at = lastGround >= 0 ? lastGround : (firstTile >= 0 ? firstTile : seq.length);
+      seq.splice(at, 0, { sorted: true });
+      seq.forEach(function (e) {
+        if (!e.sorted) { runItem(e.k, e.part); return; }
+        bucket.forEach(function (b, q) { b.q = q; if (b.tile) { var pp = makePos(items[b.k], b.k)(t); b.key = (pp.y - gr.oy) / gr.T; } });
+        bucket.slice().sort(function (a, b) { return (a.key - b.key) || (a.z - b.z) || (a.q - b.q); }).forEach(function (b) { runItem(b.k, b.part); });
+      });
+    }
     ctx.restore();
     drawStageTexts(ctx, v, timing, t, rect);
+    if (act && A) {
+      var sit = items[act.k] || {}, sproc = isProc(sit.src) ? A.parse(sit.src) : null, slook = sproc && (sproc.kind === 'actor' || sproc.kind === 'bust') ? A.itemLook(sit) : null, sname = sit.name || sit.label || (slook && slook.name) || '';
+      var pimg = pv && pv.portraits ? pv.portraits[act.k] : null, simg = pimg && pimg.width ? pimg : (!slook && pv && pv.images ? pv.images[act.k] : null);
+      if (pimg && pimg.width) { slook = null; }
+      if (act.style === 'box') { A.dialogBox(ctx, { text: act.text, t0: act.t0, dur: act.dur, name: sname, look: slook, image: simg && simg.width ? simg : null, talking: t < act.t0 + act.dur }, t, rect); }
+      else { A.subtitle(ctx, { text: act.text, t0: act.t0, dur: act.dur, name: sname }, t, rect); }
+    }
+    // curtain: a black layer over the whole stage (curtain keys), and the dip to black between two scenes (effect black)
+    var curt = v.curtain ? track(v.curtain, 'alpha', t, 0, timing) : 0;
+    if (scs && scs.effect === 'black' && scs.prev) { curt = Math.max(curt, 1 - Math.abs(2 * ease(scs.p) - 1)); }
+    if (curt > 0.003) { ctx.save(); ctx.fillStyle = 'rgba(0,0,0,' + clamp(curt, 0, 1).toFixed(3) + ')'; ctx.fillRect(rect.x, rect.y, rect.w, rect.h); ctx.restore(); }
   }
 
   function drawImages(ctx, v, prepVisual, sched, t, rect) {
@@ -1491,7 +1822,7 @@
     else {
       drawContentHeader(ctx, slide, sched, t, info);
       var a = GEO.area;
-      if (slide.layout === 'visual') { drawVisual(ctx, slide, prep, sched, t, visualRect('visual')); }
+      if (slide.layout === 'visual') { drawVisual(ctx, slide, prep, sched, t, slide.visual && slide.visual.kind === 'collage' && slide.visual.fullscreen === true ? { x: 0, y: 0, w: W, h: H } : visualRect('visual')); } // fullscreen: a game-like stage over the whole slide
       else if (slide.layout === 'split') {
         drawBullets(ctx, slide, sched, t, { x: a.x, y: a.y, w: TPL.split.bulletsW, h: a.h });
         drawVisual(ctx, slide, prep, sched, t, visualRect('split'));
@@ -1812,7 +2143,7 @@
     DEFAULT_TEMPLATE: DEFAULT_TEMPLATE, applyTemplate: applyTemplate, template: template, mergeTemplate: mergeTemplate,
     splitSentences: splitSentences, estimateSeconds: estimateSeconds, distribute: distribute,
     parseAt: parseAt, parseTarget: parseTarget, validate: validate, normalize: normalize, parseDeck: parseDeck,
-    visualImageSources: visualImageSources, visualRect: visualRect, interactiveRegions: interactiveRegions, boxRect: boxRect, INTERACTIVE_KINDS: INTERACTIVE_KINDS,
+    visualImageSources: visualImageSources, isProc: isProc, VOICES: VOICES, voiceOf: voiceOf, resolveLines: resolveLines, visualRect: visualRect, interactiveRegions: interactiveRegions, boxRect: boxRect, INTERACTIVE_KINDS: INTERACTIVE_KINDS,
     sfxCues: sfxCues, SFX_NAMES: SFX_NAMES,
     timingFor: timingFor, buildTimeline: buildTimeline, locate: locate, cueSchedule: cueSchedule, elementState: elementState,
     wrapLines: wrapLines, drawSlide: scopedColors(drawSlide), drawTransition: drawTransition, renderFrame: scopedColors(renderFrame),

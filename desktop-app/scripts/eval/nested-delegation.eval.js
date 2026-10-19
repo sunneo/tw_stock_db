@@ -2,6 +2,7 @@
 // 用法：FA_DEBUG_EVAL_FILE=scripts/eval/nested-delegation.eval.js xvfb-run -a node_modules/electron/dist/electron . --no-sandbox --user-data-dir=$(mktemp -d)
 // 預期：A 有 delegate_subtask、被它委派的 B 沒有（深度上限）；B 的結果回到 A；委派給自己會被擋；領域顯示名稱也能當 domain。
 const fa = window.fa; const R = { reqs: [] };
+if (typeof FaLlm !== 'undefined') { FaLlm.realFetch = null; } // 離線橋接層啟動時存了一份原始 fetch；設成 null 它就改用目前的 window.fetch（這裡的假 LLM）
 fa.register_domain('test_a', { label: '甲領域', toolNames: [], systemPrompt: '你是甲。AAA' });
 fa.register_domain('test_b', { label: '乙領域', toolNames: [], systemPrompt: '你是乙。BBB' });
 fa._resolveModelRowConfig = () => ({ apiModel: 'm', apiUrl: 'http://fake.local/v1', apiKey: 'k', samplingOverrides: null, maxOutputTokens: 512 });

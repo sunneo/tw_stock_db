@@ -27,6 +27,8 @@
   function loadScriptOnce(src) {
     return new Promise(function (resolve, reject) {
       if (!src) { reject(new Error('missing script url')); return; }
+      // 宿主（桌面版／網頁版）提供的載入器：本機 vendor 或自己 pin 的網址載入失敗時退回 CDN，並共用已載入的快取
+      if (typeof window.AiChatLoadScript === 'function') { window.AiChatLoadScript(src).then(resolve, reject); return; }
       var script = document.createElement('script');
       script.src = src;
       script.async = true;

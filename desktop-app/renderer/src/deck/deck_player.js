@@ -311,9 +311,20 @@
       }
       case 'collage': {
         var citems = v.items || [], cout = { images: [], failed: [], errors: [] };
-        return Promise.all(citems.map(function (im, i) {
-          return loadImage(im.src).then(function (img) { cout.images[i] = img; }, function (e) { cout.failed[i] = true; cout.errors.push(String(e && e.message || e)); });
-        })).then(function () { return cout; });
+        // the other pictures a character uses: the ones of its states (src, frames given as pictures), swapped by keys or triggers -- loaded once each, by handle
+        var extraH = {}; citems.forEach(function (im) {
+          Object.keys(im.states || {}).forEach(function (nm) { var d = im.states[nm] || {}; if (d.src) { extraH[d.src] = 1; } var fr = d.frames; (Array.isArray(fr) ? [fr] : (fr && typeof fr === 'object' ? Object.keys(fr).map(function (k2) { return fr[k2]; }) : [])).forEach(function (arr) { (Array.isArray(arr) ? arr : []).forEach(function (e) { if (typeof e === 'string') { extraH[e] = 1; } }); }); });
+          (im.keys || []).forEach(function (kf) { if (kf && kf.src) { extraH[kf.src] = 1; } }); (im.triggers || []).forEach(function (tr) { if (tr && tr.src) { extraH[tr.src] = 1; } });
+        });
+        cout.extra = {};
+        var extraJobs = Object.keys(extraH).filter(function (h) { return !Core.isProc(h); }).map(function (h) { return loadImage(h).then(function (img) { cout.extra[h] = img; }, function (e) { cout.errors.push(String(e && e.message || e)); }); });
+        return Promise.all(extraJobs.concat(citems.map(function (im, i) {
+          var jobs = [];
+          if (im.portrait && !Core.isProc(im.portrait)) { cout.portraits = cout.portraits || []; jobs.push(loadImage(im.portrait).then(function (img) { cout.portraits[i] = img; }, function (e) { cout.errors.push(String(e && e.message || e)); })); } // the picture shown in the dialogue box
+          if (Core.isProc(im.src)) { return Promise.all(jobs); } // drawn by the renderer (map: actor: bust: cg: fx:), no picture file
+          jobs.push(loadImage(im.src).then(function (img) { cout.images[i] = img; }, function (e) { cout.failed[i] = true; cout.errors.push(String(e && e.message || e)); }));
+          return Promise.all(jobs);
+        }))).then(function () { return cout; });
       }
       case 'shapes': p = sceneVisual(v.scene); break;
       case 'anim2d': p = window.AiChat2D.ensureJsYamlLoaded().then(function () { return fetchText(v.ref); }).then(function (t) { var o = window.jsyaml.load(t); delete o.kind; return sceneVisual(o); }); break;
@@ -855,8 +866,10 @@
     return pr._sfx || [];
   };
   var sfxCache = {};
-  function sfxSamples(name, sr) {
-    var k = name + '@' + sr; if (!sfxCache[k]) { sfxCache[k] = window.AiChatDeckSfx ? window.AiChatDeckSfx.render(name, sr) : new Float32Array(0); } return sfxCache[k];
+  // a cue may carry a voice (the blips of a character): the sound depends on its numbers and on the pitch step of the letter, so they are part of the cache key
+  function sfxSamples(name, sr, cue) {
+    var vc = cue && cue.voice, k = name + '@' + sr + (vc ? '|' + [vc.pitch, vc.wave, vc.jitter, vc.vibrato, vc.noise, vc.len].join(',') + '|' + (cue.step || 0) : '');
+    if (!sfxCache[k]) { sfxCache[k] = window.AiChatDeckSfx ? window.AiChatDeckSfx.render(name, sr, vc ? { voice: vc, step: cue.step || 0 } : undefined) : new Float32Array(0); } return sfxCache[k];
   }
 
   Session.prototype.audioSource = function () {
@@ -867,7 +880,7 @@
     var sr = ctx.sampleRate;
     // sound effects: [{start (sample), samples}] on the whole-deck clock, mixed in below
     var sfxSpans = [];
-    this.deck.slides.forEach(function (_s, i) { var seg = self.tl.segs[i]; self.sfxFor(i).forEach(function (c) { var smp = sfxSamples(c.name, sr), st0 = Math.round((seg.bodyStart + c.t) * sr); if (smp.length) { sfxSpans.push({ start: st0, end: st0 + smp.length, samples: smp, vol: c.vol == null ? 0.8 : c.vol }); } }); });
+    this.deck.slides.forEach(function (_s, i) { var seg = self.tl.segs[i]; self.sfxFor(i).forEach(function (c) { var smp = sfxSamples(c.name, sr, c), st0 = Math.round((seg.bodyStart + c.t) * sr); if (smp.length) { sfxSpans.push({ start: st0, end: st0 + smp.length, samples: smp, vol: c.vol == null ? 0.8 : c.vol }); } }); });
     var spans = withAudio.map(function (i) {
       var seg = self.tl.segs[i], start = Math.round((seg.bodyStart + self.preps[i].timing.narrStart) * sr);
       return { i: i, start: start, end: start + Math.ceil(self.preps[i].audio.duration * sr) };
@@ -1499,7 +1512,7 @@
   };
   Player.prototype.playSfx = function (c) {
     var ctx = getAudioCtx(); if (!ctx || this.muted) { return; }
-    var smp = sfxSamples(c.name, ctx.sampleRate); if (!smp.length) { return; }
+    var smp = sfxSamples(c.name, ctx.sampleRate, c); if (!smp.length) { return; }
     var buf = ctx.createBuffer(1, smp.length, ctx.sampleRate); buf.copyToChannel(smp, 0);
     var src = ctx.createBufferSource(), g = ctx.createGain(); src.buffer = buf; src.playbackRate.value = this.speed; g.gain.value = c.vol == null ? 0.8 : c.vol;
     src.connect(g); g.connect(ctx.destination); src.start();

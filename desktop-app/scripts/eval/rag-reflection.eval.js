@@ -2,6 +2,7 @@
 // 用法：FA_DEBUG_EVAL_FILE=scripts/eval/rag-reflection.eval.js xvfb-run -a node_modules/electron/dist/electron . --no-sandbox --user-data-dir=$(mktemp -d)
 // 需要 /tmp/rag-records.json（RAG 匯出）；沒有時改用內建的三筆代表性記錄。
 const fa = window.fa; const raw = window.desktopAPI.rawfs; const R = {};
+if (typeof FaLlm !== 'undefined') { FaLlm.realFetch = null; } // 離線橋接層啟動時存了一份原始 fetch；設成 null 它就改用目前的 window.fetch（這裡的假 LLM）
 let json; try { json = (await raw.readFile('/tmp/rag-records.json')).text; } catch (_) { json = null; }
 if (!json) json = JSON.stringify({ version: 1, records: [
   { id: 'pref_image_batch_a4_pdf', content: '## 圖片批次縮放與 PDF 合併 (A4 Zoom)\n依檔名數字前綴排序，使用 Pillow 縮放到 A4，img2pdf 合併。\n```python\nfrom PIL import Image\nimport img2pdf\n```', timestamp: Date.now(), lastAccessed: Date.now(), dependencies: [], preConditions: [], tags: ['python', 'pdf'] },

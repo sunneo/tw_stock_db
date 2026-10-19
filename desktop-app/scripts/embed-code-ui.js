@@ -218,7 +218,7 @@ function embedFapWorker() {
 // /media-presentation：簡報播放器（外掛移植）與主機轉接層。播放器的各個模組以字串內嵌，第一次用到時才注入頁面
 function embedDeck() {
     const dir = path.join(root, 'renderer/src/deck'); const map = {};
-    for (const n of ['viewer3d', 'viewer2d', 'video_export', 'deck_core', 'deck_sfx', 'stage_core', 'deck_stage3d', 'deck_code', 'deck_quiz', 'deck_widget', 'deck_player', 'deck_pack', 'deck_export']) map[n] = fs.readFileSync(path.join(dir, n + '.js'), 'utf8').replace(/\r\n/g, '\n');
+    for (const n of ['viewer3d', 'viewer2d', 'video_export', 'rpg_art', 'sprite_pixel', 'sprite_raster', 'char_model', 'pixel_art', 'deck_core', 'deck_sfx', 'stage_core', 'rpg_plan', 'deck_stage3d', 'deck_code', 'deck_quiz', 'deck_widget', 'deck_player', 'deck_pack', 'deck_export']) map[n] = fs.readFileSync(path.join(dir, n + '.js'), 'utf8').replace(/\r\n/g, '\n');
     map.css = fs.readFileSync(path.join(dir, 'deck.css'), 'utf8').replace(/\r\n/g, '\n');
     map.topics = JSON.parse(fs.readFileSync(path.join(dir, 'deck_topics.json'), 'utf8'));
     let a = src.indexOf('/* DECKSRC-BEGIN */'), b = src.indexOf('/* DECKSRC-END */'); if (a < 0 || b < 0) throw new Error('找不到 DECKSRC 標記');

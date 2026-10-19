@@ -30,7 +30,7 @@ check('the pigs story is a valid deck (no warnings about the stage)', d.slides.l
 check('collage is a visual kind and a picture kind', Core.VISUAL_KINDS.indexOf('collage') >= 0);
 const err = (v) => { try { deckOf(v); return ''; } catch (e) { return String(e.message || e); } };
 check('collage without items is refused', /items/.test(err({ kind: 'collage' })));
-check('too many items are refused', /at most/.test(err({ kind: 'collage', items: Array.from({ length: 13 }, () => ({ src: IMG })) })));
+check('too many items are refused', /at most/.test(err({ kind: 'collage', items: Array.from({ length: 25 }, () => ({ src: IMG })) })));
 check('an item needs a picture', /src/.test(err({ kind: 'collage', items: [{ x: 0.1 }] })));
 check('a character may stand off stage (x < 0) but not absurdly far', err({ kind: 'collage', items: [{ src: IMG, x: -0.6 }] }) === '' && /x/.test(err({ kind: 'collage', items: [{ src: IMG, x: -3 }] })));
 check('ring must be circle / box / none', /ring/.test(err({ kind: 'collage', items: [{ src: IMG, ring: 'star' }] })));

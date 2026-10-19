@@ -38,6 +38,7 @@
   function loadScriptOnce(src) {
     return new Promise(function (resolve, reject) {
       if (window.THREE) { resolve(); return; }
+      if (typeof window.AiChatLoadScript === 'function') { window.AiChatLoadScript(src).then(resolve, reject); return; }
       var script = document.createElement('script');
       script.src = src; script.async = true; script.onload = resolve;
       script.onerror = function () { reject(new Error('failed to load ' + src)); };

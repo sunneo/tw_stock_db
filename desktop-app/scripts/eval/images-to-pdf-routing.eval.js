@@ -1,6 +1,7 @@
 // 「圖片轉PDF」的專用工具會不會被找到：根層級（使用者訊息命中→直接拿到 images_to_pdf＋做法提醒）與委派（不管根模型挑哪個領域）。假 LLM、真實 Electron。
 // 用法：FA_DEBUG_EVAL_FILE=scripts/eval/images-to-pdf-routing.eval.js xvfb-run -a node_modules/electron/dist/electron . --no-sandbox --user-data-dir=$(mktemp -d)
 const fa = window.fa; const R = {};
+if (typeof FaLlm !== 'undefined') { FaLlm.realFetch = null; } // 離線橋接層啟動時存了一份原始 fetch；設成 null 它就改用目前的 window.fetch（這裡的假 LLM）
 const saved = fa.messages; const U = (t) => [{ role: 'user', content: t }];
 fa.messages = U('C:\\Users\\hungfu.lee\\Pictures\\topdf\\in-1\n每個圖片檔案前面有編號prefix (1_ , 2_, ...12_)\n先把圖片變成等比例縮放，置中，每張圖都縮放到A4大小\n然後再合併成一個pdf');
 R.root_hit = { tools: fa._getRootToolNames().filter((n) => /images_to_pdf|list_uploaded/.test(n)), note: /images_to_pdf/.test(fa._getFinalSystemPrompt()) };

@@ -2,6 +2,7 @@
 // 路由先檢索（提示大小固定）、第一次呼叫失敗時附完整說明。
 // 用法：FA_DEBUG_EVAL_FILE=scripts/eval/tool-budget.eval.js xvfb-run -a node_modules/electron/dist/electron . --no-sandbox --user-data-dir=$(mktemp -d)
 const fa = window.fa; const B = FaToolBudget; const R = {};
+if (typeof FaLlm !== 'undefined') { FaLlm.realFetch = null; } // 離線橋接層啟動時存了一份原始 fetch；設成 null 它就改用目前的 window.fetch（這裡的假 LLM）
 // 1) 預算報告
 const rep = fa._toolBudgetReport(); R.report = { ok: rep.ok, violations: rep.violations.map((v) => v.kind + ':' + v.key), tokens: rep.tokens, split: rep.split && { mixers: rep.split.mixers.length, groups: rep.split.groups, skipped: rep.split.skipped.map((x) => x.key + '(' + x.reason + ')') } };
 // 2) 切割後的領域

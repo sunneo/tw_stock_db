@@ -1,5 +1,6 @@
 // 根對話：圖片轉 PDF 的真實流程（假 LLM、真實 Electron）。記下模型每一輪實際看到的工具清單與工具結果，檢查會不會一直重複呼叫。
 const SCENARIO = (window.__FA_EVAL_SCENARIO || 'repeat'); const fa = window.fa; const R = {};
+if (typeof FaLlm !== 'undefined') { FaLlm.realFetch = null; } // 離線橋接層啟動時存了一份原始 fetch；設成 null 它就改用目前的 window.fetch（這裡的假 LLM）
 fa._resolveModelRowConfig = () => ({ apiModel: 'm', apiUrl: 'http://fake.local/v1', apiKey: 'k', samplingOverrides: null, maxOutputTokens: 512 });
 fa._getApiConfig = () => ({ apiKey: 'k', apiUrl: 'http://fake.local/v1', apiModel: 'm' }); fa._shouldUseNativeToolCalls = () => true; fa._ensureNativeToolSupportProbed = async () => true;
 const mkPng = async (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; c.getContext('2d').fillRect(0, 0, w, h); return await new Promise((r) => c.toBlob(r)); };

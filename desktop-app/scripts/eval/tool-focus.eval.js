@@ -2,6 +2,7 @@
 // 任務跟工具沒有共同詞時不聚焦（給全部）；小領域不受影響。
 // 用法：FA_DEBUG_EVAL_FILE=scripts/eval/tool-focus.eval.js xvfb-run -a node_modules/electron/dist/electron . --no-sandbox --user-data-dir=$(mktemp -d)
 const fa = window.fa; const R = {};
+if (typeof FaLlm !== 'undefined') { FaLlm.realFetch = null; } // 離線橋接層啟動時存了一份原始 fetch；設成 null 它就改用目前的 window.fetch（這裡的假 LLM）
 const topics = ['invoice', 'payroll', 'shipping', 'inventory', 'refund', 'tax', 'audit', 'vendor', 'budget', 'contract'];
 const names = []; topics.forEach((t) => ['lookup', 'create', 'cancel'].forEach((v) => { const n = `biz_${t}_${v}`; names.push(n); fa.register_openai_tool(n, { description: `${v} a ${t} record in the company ${t} system. Long details about ${t} handling follow here.`, parametersSchema: { type: 'object', properties: { id: { type: 'string' } } }, callback: async () => JSON.stringify({ ok: true, tool: n }) }); }));
 fa.register_domain('biz_big', { label: '商務大領域', toolNames: names, systemPrompt: '你是商務助手。' });

@@ -5,7 +5,7 @@
 const FaDeckHost = (function () {
     'use strict';
     // 載入順序與外掛的 index.html.erb 相同
-    const ORDER = ['viewer3d', 'viewer2d', 'video_export', 'deck_core', 'deck_sfx', 'stage_core', 'deck_stage3d', 'deck_code', 'deck_quiz', 'deck_widget', 'deck_player', 'deck_pack', 'deck_export'];
+    const ORDER = ['viewer3d', 'viewer2d', 'video_export', 'rpg_art', 'sprite_pixel', 'sprite_raster', 'char_model', 'pixel_art', 'deck_core', 'deck_sfx', 'stage_core', 'rpg_plan', 'deck_stage3d', 'deck_code', 'deck_quiz', 'deck_widget', 'deck_player', 'deck_pack', 'deck_export'];
     const CLIENT_PREFIX = 'client-file/';
     // 預設樣板：結構與外掛的 config/deck_template.default.json 相同（版面座標以 1920x1080 設計空間計），沒有品牌圖片
     const DECK_CSS_ID = 'fa-deck-css';
@@ -35,6 +35,7 @@ const FaDeckHost = (function () {
                 if (!SRC) throw new Error('這個版本沒有內嵌簡報元件');
                 const w = window;
                 w.AiChatExportAssetUrls = Object.assign({}, w.AiChatExportAssetUrls || {}, this._deckAssetUrls());
+                if (typeof _faLoadScriptOnce === 'function') w.AiChatLoadScript = _faLoadScriptOnce;
                 this._deckInstallShims();
                 if (!document.getElementById(DECK_CSS_ID)) { const st = document.createElement('style'); st.id = DECK_CSS_ID; st.textContent = SRC.css || ''; document.head.appendChild(st); }
                 const tpl = await this._deckLoadTemplate();
@@ -305,6 +306,63 @@ const FaDeckHost = (function () {
             const rec = await this.fileCache.get(id);
             if (!rec) throw new Error('找不到簡報檔：' + s);
             return rec.blob.text();
+        },
+        // 單一物件的點陣精靈（階段 1a）：內建 3D 物件樣板 → 零件 → 自己的 z-buffer 光柵（sprite_raster.js，不需要 WebGL／three.js）
+        // → 縮進畫格（預設 32×48）、調色盤、外框 → PNG 匯入成圖片代號。
+        async _deckMakeObjectSprite(a) {
+            const SP = window.AiChatDeckSpritePixel; if (!SP) return { ok: false, error: 'sprite module is not loaded' };
+            const kind = String(a.kind || '').toLowerCase(); if (SP.KINDS.indexOf(kind) < 0) return { ok: false, error: 'kind must be one of ' + SP.KINDS.join(', ') };
+            const frame = Array.isArray(a.frame) && a.frame.length === 2 && a.frame.every((v) => Number.isInteger(v) && v >= 8 && v <= 128) ? a.frame : SP.defaultFrame(kind);
+            const SR = window.AiChatDeckSpriteRaster; if (!SR) return { ok: false, error: 'sprite raster is not loaded' };
+            // 3D 樣板 → 零件 → 自己的 z-buffer 光柵（sprite_raster.js；不需要 WebGL／three.js、沒有網路相依，直接輸出透明度）
+            const model = SP.objectParts(kind, { color: a.color, wall: a.wall, roof: a.roof, scale: a.scale }), Wp = frame[0] * 12, Hp = frame[1] * 12;
+            const cut = SR.render(model.parts, model.camera, { width: Wp, height: Hp, light: model.light, ambient: model.ambient });
+            const px = SP.pixelate(cut, { frame, palette: a.palette || 16, outline: a.outline || 'dark', gamma: a.gamma > 0 ? a.gamma : 1.15 }), problems = SP.check(px, { palette: a.palette || 16 });
+            if (problems.length) return { ok: false, error: 'the sprite did not pass the check: ' + problems.join('; ') };
+            const out = document.createElement('canvas'); out.width = px.width; out.height = px.height; out.getContext('2d').putImageData(new ImageData(px.data, px.width, px.height), 0, 0);
+            const blob = await new Promise((res) => out.toBlob(res, 'image/png')); if (!blob) return { ok: false, error: 'could not encode the PNG' };
+            const r = await this._deckImportImageBlob(blob, 'pixel ' + kind + (a.color ? ' (' + a.color + ')' : ''), 'make_object_sprite', { tiny: true });
+            return r.error ? { ok: false, error: r.error } : { ok: true, kind, ref: r.ref, url: r.url, frame, colors: px.palette.length, note: 'use it as a collage item: { src: "' + r.ref + '", tx, ty, tw: ' + (kind === 'house' ? 3 : 1.3) + ', pixel: true }' };
+        },
+        // 人物精靈圖（階段 1）：外觀（預設名稱或 look）＋風格（real／anime／cute）→ 3D 人物零件（char_model.js）→ 4 方向 × 4 走路相位 = 16 格，
+        // 每格用自己的 z-buffer 光柵（sprite_raster.js）渲染成帶透明度的影像 → 16 格共用同一個裁切、縮放與調色盤（不然走路時會抖、會變色）→ 精靈圖 PNG（4 欄 4 列，列＝下 左 右 上）。
+        async _deckMakeCharacterSprite(a) {
+            const SP = window.AiChatDeckSpritePixel, CM = window.AiChatDeckCharModel, Art = window.AiChatDeckRpgArt; if (!SP || !CM || !Art) return { ok: false, error: 'sprite modules are not loaded' };
+            const style = a.style == null ? 'anime' : String(a.style); if (CM.STYLES.indexOf(style) < 0) return { ok: false, error: 'style must be one of ' + CM.STYLES.join(', ') };
+            let look = a.look || null, name = a.name || '';
+            if (a.preset) { const pr = Art.PRESETS[a.preset]; if (!pr) return { ok: false, error: 'preset must be one of ' + Art.PRESET_NAMES.join(', ') }; look = Object.assign({}, pr, a.look || {}); name = name || pr.name || a.preset; }
+            if (!look) return { ok: false, error: 'give a preset (' + Art.PRESET_NAMES.join(', ') + ') or a look {skin, hair, hairStyle, beard, robe, head}' };
+            const le = CM.lookErrors(look); if (le.length) return { ok: false, error: 'look: ' + le.join('; ') };
+            const frame = Array.isArray(a.frame) && a.frame.length === 2 && a.frame.every((v) => Number.isInteger(v) && v >= 16 && v <= 96) ? a.frame : [32, 48];
+            const SR = window.AiChatDeckSpriteRaster; if (!SR) return { ok: false, error: 'sprite raster is not loaded' };
+            // 自己的 z-buffer 光柵（sprite_raster.js）：不需要 WebGL／three.js，沒有網路相依；直接輸出透明度，不用雙背景去背
+            const Wp = frame[0] * 8, Hp = frame[1] * 8, cuts = [];
+            for (const f of CM.frameList()) { const m = CM.parts(look, { style, dir: f.dir, step: f.step }); cuts.push(SR.render(m.parts, m.camera, { width: Wp, height: Hp, light: m.light, ambient: m.ambient })); }
+            const po = CM.pixelOpts(style), frames = SP.pixelateMany(cuts, Object.assign({ frame }, po, a.palette ? { palette: a.palette } : {})), problems = [];
+            frames.forEach((fr, i) => { const pr = SP.check(fr, { palette: po.palette, outline: po.outline, sheet: true }); if (pr.length) problems.push('frame ' + i + ': ' + pr.join(', ')); });
+            const diff = (x, y) => { let n = 0; for (let i = 3; i < x.data.length; i += 4) { if (x.data[i] !== y.data[i] || (x.data[i] && (x.data[i - 3] !== y.data[i - 3] || x.data[i - 2] !== y.data[i - 2]))) n++; } return n; };
+            if (!problems.length && diff(frames[0], frames[1]) < 6) problems.push('the walk frames are identical (the legs do not move)');
+            if (!problems.length && diff(frames[0], frames[4]) < 6) problems.push('the facing directions are identical');
+            if (problems.length) return { ok: false, error: 'the character sheet did not pass the check: ' + problems.slice(0, 3).join('; ') };
+            const sheet = SP.packSheet(frames, 4), out = document.createElement('canvas'); out.width = sheet.width; out.height = sheet.height; out.getContext('2d').putImageData(new ImageData(sheet.data, sheet.width, sheet.height), 0, 0);
+            const blob = await new Promise((res) => out.toBlob(res, 'image/png')); if (!blob) return { ok: false, error: 'could not encode the PNG' };
+            const r = await this._deckImportImageBlob(blob, 'character ' + (name || 'custom') + ' (' + style + ')', 'make_character_sprite', { tiny: true });
+            if (r.error) return { ok: false, error: r.error };
+            const colors = new Set(); frames.forEach((fr) => fr.palette.forEach((c) => colors.add(c)));
+            return { ok: true, ref: r.ref, url: r.url, style, frame, colors: colors.size, sheet: CM.SHEET, note: 'use it as a collage item: { src: "' + r.ref + '", sheet: {cols: 4, rows: 4, dirs: "down,left,right,up", idle: 1}, tx, ty, tw: 1.3, pixel: true' + (name ? ', name: "' + name + '"' : '') + ' } -- it turns and walks by itself' };
+        },
+        // 點陣圖物件設計工具：模型給調色盤＋字母列＋少數繪圖指令（或選一個內建範例換色）→ 程式驗證、畫出來、檢查 → PNG 匯入成圖片代號；
+        // 結果以文字預覽（每個像素一個字元）回給模型，讓它檢查畫得對不對；有錯就逐項指出哪個欄位、怎麼改。
+        async _deckMakePixelArt(a) {
+            const PA = window.AiChatDeckPixelArt; if (!PA) return { ok: false, error: 'pixel art module is not loaded' };
+            let spec = a;
+            if (a.template != null) { spec = PA.template(String(a.template), a.recolor); if (!spec) return { ok: false, error: 'template must be one of ' + PA.TEMPLATE_NAMES.join(', ') }; if (a.shade != null) spec.shade = a.shade; if (a.outline != null) spec.outline = a.outline; }
+            const v = PA.validate(spec); if (!v.ok) return { ok: false, errors: v.errors, hint: 'palette: {"a": "#rrggbb", ...} (one character each; "." and space are transparent); rows: one string per pixel row using those characters; mirror: "x" draws only the left half; ops: rect/line/circle/ellipse/fill/dot/erase; shade: true; outline: true. Or use template: ' + PA.TEMPLATE_NAMES.join(' | ') };
+            const img = PA.render(spec), problems = PA.check(img); if (problems.length) return { ok: false, errors: problems, preview: img.ascii };
+            const out = document.createElement('canvas'); out.width = img.width; out.height = img.height; out.getContext('2d').putImageData(new ImageData(img.data, img.width, img.height), 0, 0);
+            const blob = await new Promise((res) => out.toBlob(res, 'image/png')); if (!blob) return { ok: false, error: 'could not encode the PNG' };
+            const r = await this._deckImportImageBlob(blob, 'pixel art ' + (a.template || a.name || img.width + 'x' + img.height), 'pixel_art', { tiny: true }); if (r.error) return { ok: false, error: r.error };
+            return { ok: true, ref: r.ref, url: r.url, size: [img.width, img.height], colors: img.palette.length, warnings: v.warnings, preview: img.height <= 32 ? img.ascii : undefined, note: 'use it as a collage item: { src: "' + r.ref + '", tx, ty, tw: ' + Math.max(0.6, Math.round(img.width / 16 * 10) / 10) + ', pixel: true } (tw = width in map tiles; a tile is 16 pixels wide)' };
         },
         // 在容器裡掛上播放器
         async _deckMount(container, url) {
