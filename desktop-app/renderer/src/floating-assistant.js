@@ -29997,6 +29997,9 @@ class FloatingAssistant {
         this.register_slash_command('/translate', '[en|zh] <文字>',
             '中文與英文互譯：/translate 今天天氣很好（自動判斷方向）、/translate en 你好、/translate zh Hello。譯文會經過程式檢查；預設用線上語言模型、檢查不過換離線翻譯模型（離線模式只用離線；第一次要下載約 118MB，會先問）。',
             async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim(); const m = /^(en|zh|英文|中文)\s+([\s\S]+)$/i.exec(raw); const to = m ? (/^en|英/i.test(m[1]) ? 'en' : 'zh') : null; const text = m ? m[2] : raw; if (!text) { r._pushAssistantMessage('用法：/translate 要翻的文字（自動判斷方向）；/translate en 你好；/translate zh Hello', null); return; } r.messages.push({ role: 'user', content: '/translate ' + raw }); const res = await r.translateText({ text, to }); r._pushAssistantMessage(res.ok ? res.text + (res.engine !== 'none' ? String.fromCharCode(10, 10) + '（' + (res.engine === 'online' ? '線上語言模型' : '離線翻譯模型 OPUS-MT') + '）' + (res.warnings && res.warnings.length ? '　⚠️ ' + res.warnings.join('、') : '') : String.fromCharCode(10, 10) + '（' + res.note + '）') : '⚠️ ' + res.error, null); try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ } });
+        this.register_slash_command('/rounds', '[ask|auto [總上限]]',
+            '看或改「子任務回合用完時怎麼辦」：ask＝回合用完還沒做完，放一張卡片問你要不要擴展（預設）；auto＝不再問，自動擴展到總回合上限（預設 60），用光就誠實失敗。例：/rounds auto 60、/rounds ask。',
+            async (argsText, run) => { const r = run || this; const m = /^(ask|auto)(?:\s+(\d+))?$/i.exec(String(argsText || '').trim()); const cur = r._roundsPolicy(); if (m) { r.advancedSettings.roundExtend = { mode: m[1].toLowerCase(), cap: Math.max(10, Math.min(200, Number(m[2]) || cur.cap)) }; r._saveAdvancedSettings(); } const now = r._roundsPolicy(); r._pushAssistantMessage('子任務回合用完時：' + (now.mode === 'auto' ? '自動擴展到總上限 ' + now.cap + ' 回合，用光就失敗（不再問你）' : '放一張卡片問你要不要擴展（上限 200 回合）') + '。\n改：/rounds ask　或　/rounds auto 60', null); try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ } });
         this.register_slash_command('/tool-aliases', '[list|clear]',
             '看或清掉「學來的工具別名」：模型說沒有某個工具、程式替它找到之後它真的做出來了，使用者那句話就會記成那個工具的別名（只在反思搜尋時用，不佔對話的 context）。',
             async (argsText, run) => { const r = run || this; const st = await r._capAliasLoad(); const a = String(argsText || '').trim().toLowerCase(); if (a === 'clear') { st.tools = {}; await r._capAliasSave(); r._pushAssistantMessage('已清掉學來的別名。', null); } else { const rows = Object.entries(st.tools || {}); r._pushAssistantMessage(rows.length ? '學來的別名（' + rows.length + ' 個工具）：\n' + rows.map(([k, v]) => '・' + k + '：' + v.map((x) => '「' + x.p + '」×' + x.n).join('、')).join('\n') : '還沒有學到別名。模型說沒有某個工具、程式替它找到、它也真的做出來了，才會記下來。', null); } try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ } });
@@ -31037,6 +31040,7 @@ class FloatingAssistant {
             // 見get multiSubAgentMode()的說明。預設'router'＝維持原本的兩層
             // 委派行為不變。2026-10-13使用者要求：預設改成 'full'（模式 2：Orchestrator + 認識全部工具的子Agent + 多領域子Agent）。
             multiSubAgentMode: 'full',
+            roundExtend: { mode: 'ask', cap: 60 }, // 子任務回合用完時：ask＝問使用者要不要擴展；auto＝自動擴展到總上限（用光就失敗）。見 _askExtendRounds
             // tw_stock_db客製: browser_search子agent預設關閉——需要有一個部署
             // 了/browser-search路由的Cloudflare Worker（見
             // tw_stock_db_code私有repo的code/cloudflare-worker/worker.js）才有作用，browserSearchProxyUrl
@@ -32331,6 +32335,7 @@ class FloatingAssistant {
                 return Number.isFinite(n) && n > 0 ? Math.max(1, Math.round(n)) : 5;
             })(),
             multiSubAgentMode: ['router', 'full', 'off', 'hierarchical', 'intent'].includes(raw.multiSubAgentMode) ? raw.multiSubAgentMode : 'full',
+            roundExtend: { mode: raw.roundExtend && raw.roundExtend.mode === 'auto' ? 'auto' : 'ask', cap: Math.max(10, Math.min(200, Math.round(Number(raw.roundExtend && raw.roundExtend.cap)) || 60)) },
             browserSearchEnabled: raw.browserSearchEnabled !== false,
             browserControlEnabled: raw.browserControlEnabled === true,
             browserSearchProxyUrl: String(raw.browserSearchProxyUrl || '').trim(),
@@ -46787,6 +46792,39 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         return rootBuiltins;
     }
 
+    // ===== 回合不夠用：擴展回合（extend_rounds）=====
+    // 子任務（領域子Agent）的回合數是固定的；讀 wiki 這種長來源讀完才發現還沒做完，以前會直接用完回合、只丟一段進度回報。
+    // 現在：(1) 模型知道任務大小時呼叫 extend_rounds(estimate, reason)；(2) 回合用完還在做時，程式代替它提出同一個請求。
+    // 兩條都停在使用者決定的卡片：允許 +N／改成其他數字／不要（用現有結果回答）／以後都不要問（自動擴展到總上限，用光就失敗）。
+    // 保護：估計值限制在 4～60；每個子任務最多問 4 次；使用者回的數字由程式重新限制範圍；auto 模式用總回合上限擋；批次平行的子任務不問（沒有可以停下來等的使用者）。
+    _roundsPolicy() { const r = (this.advancedSettings && this.advancedSettings.roundExtend) || {}; return { mode: r.mode === 'auto' ? 'auto' : 'ask', cap: Math.max(10, Math.min(200, Math.round(Number(r.cap)) || 60)) }; }
+    async _askExtendRounds(o) {
+        const pol = this._roundsPolicy(), ES = o.state, ABS = 200, cap = pol.mode === 'auto' ? pol.cap : ABS;
+        if (pol.mode !== 'auto' && ES.asks >= 4) return { ok: false, reason: 'asks' };
+        const room = cap - o.max; if (room <= 0) return { ok: false, reason: 'cap', cap };
+        let est = Math.round(Number(o.estimate)); if (!(est > 0)) est = Math.max(4, Math.ceil(o.max / 2)); est = Math.min(room, Math.max(4, Math.min(60, est)));
+        ES.asks++;
+        if (pol.mode === 'auto') { ES.added += est; return { ok: true, add: est, auto: true }; }
+        const why = String(o.reason || '').replace(/\s+/g, ' ').slice(0, 300) || (o.by === 'program' ? '回合用完了，工作還沒結束' : '');
+        const spec = { id: 'extend_rounds', title: '子任務還沒做完，要擴展回合嗎？', description: 'AI 用了 ' + o.used + '/' + o.max + ' 個回合，預估還需要約 ' + est + ' 個回合。' + (why ? '\n原因：' + why : ''), questions: [{ id: 'choice', type: 'single', label: '你要怎麼處理？', required: true, default: 'allow', options: [
+            { id: 'allow', label: '允許 +' + est },
+            { id: 'other', label: '改成其他數字（要加幾個回合）', extra: { kind: 'text', required: true } },
+            { id: 'deny', label: '不要：用現有的結果回答' },
+            { id: 'never', label: '以後都不要問：自動擴展到總回合上限（預設 ' + pol.cap + '），用光就失敗', extra: { kind: 'text', required: false } },
+        ] }] };
+        let r; try { r = await this.askCard(spec); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+        if (!r || !r.ok) return { ok: false, reason: 'denied' };
+        const flat = r.flat || {}; let choice = String(flat.choice || ''); const num = (v) => { const n = Math.round(Number(String(v == null ? '' : v).replace(/[^0-9.]/g, ''))); return n > 0 ? n : 0; };
+        if (r.supplement) { const n = num(r.supplement); if (!n) return { ok: false, reason: 'denied' }; choice = 'other'; flat['choice.other'] = n; }
+        if (!r.confirmed && !r.supplement) return { ok: false, reason: 'denied' };
+        let add = est;
+        if (choice === 'deny' || !choice) return { ok: false, reason: 'denied' };
+        if (choice === 'other') { add = num(flat['choice.other']); if (!add) return { ok: false, reason: 'denied' }; }
+        if (choice === 'never') { const c = num(flat['choice.never']); this.advancedSettings.roundExtend = { mode: 'auto', cap: Math.max(10, Math.min(200, c || pol.cap)) }; try { this._saveAdvancedSettings(); } catch (_) { /* 這次還是有效 */ } }
+        add = Math.max(1, Math.min(add, (choice === 'never' ? this._roundsPolicy().cap : ABS) - o.max)); if (add < 1) return { ok: false, reason: 'cap', cap };
+        ES.added += add; return { ok: true, add, choice };
+    }
+
     // ===== 模式5：意圖過濾（Orchestrator + intent filter + 多領域子Agent）=====
     // 為什麼：根層級每一輪都送全部工具的說明，其中絕大多數這一輪用不到（只問一句「列出議題」，卻背了 97% 的無關工具）。
     // 做法（全部在本地、不呼叫模型）：
@@ -47550,6 +47588,13 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const mode = this.advancedSettings.toolCallMode || 'auto';
         if (mode === 'native') return true;
         if (mode === 'text') return false;
+        const base = this._nativeToolCallsAuto(apiModel);
+        if (!base) return false;
+        // 工具清單只送一種：原生 schema 或文字清單。模型卡（/benchmark-model）量過兩種送法，文字清單明顯比較穩才改用文字
+        try { const card = this._getModelCards()[apiModel]; if (card && card.toolMode === 'text' && (!card.apiUrl || card.apiUrl === this._getApiConfig().apiUrl)) return false; } catch (_) { /* 沒有卡片就照原本 */ }
+        return true;
+    }
+    _nativeToolCallsAuto(apiModel) {
         // tw_stock_db客製: auto模式優先信任_ensureNativeToolSupportProbed()
         // 實測過的結果（見那邊的說明——用一個小探測請求直接問端點支不支援
         // tools/tool_choice，而不是靠模型名稱pattern猜）；還沒探測過、或
@@ -71622,6 +71667,10 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             setProgress('②測試單一工具呼叫…');
             const test2 = await this._benchmarkTest2(apiKey, apiUrl, model, useNative, subProgress('②'));
             setProgress(`②完成：${test2.score}分`);
+            // 工具要怎麼送給這個模型：原生 schema（tools 參數）或文字清單（[CALL:...]）二選一，不兩份都送。
+            // 支援原生的模型再用文字清單測一次單一工具呼叫，兩個分數都記進模型卡，自動模式照卡片選（見 _shouldUseNativeToolCalls）
+            let test2Text = null;
+            if (useNative) { setProgress('②-2用文字清單再測一次單一工具呼叫（比較哪種送法比較穩）…'); try { test2Text = await this._benchmarkTest2(apiKey, apiUrl, model, false, subProgress('②-2')); setProgress(`②-2完成：${test2Text.score}分`); } catch (_) { test2Text = null; } }
 
             setProgress('③-1測試完整多步驟請求（第1次）…');
             const attempt1 = await this._benchmarkTest3Attempt(apiKey, apiUrl, model, useNative, subProgress('③-1'));
@@ -71636,7 +71685,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             const verdict = overallScore >= 80 ? '✅ 建議加入'
                 : overallScore >= 50 ? '⚠️ 可用但不穩定，建議人工複核'
                 : '❌ 不建議加入';
-            report = { model, apiUrl, useNative, test1, test2, attempt1, attempt2, test3avg, overallScore, verdict };
+            // 原生分數太低（<50）、而且文字清單明顯比較穩（高 15 分以上）才選文字；其他情況原生（省 token、模型也是照這種格式訓練的）
+            const toolMode = !useNative ? 'text' : (test2Text && test2.score < 50 && test2Text.score >= test2.score + 15 ? 'text' : 'native');
+            report = { model, apiUrl, useNative, test1, test2, test2Text, toolMode, attempt1, attempt2, test3avg, overallScore, verdict };
         } catch (err) {
             report = { model, apiUrl, error: String(err.message || err) };
         } finally {
@@ -71684,6 +71735,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             verdict: report.verdict,
             test1Score: report.test1 && report.test1.score,
             test2Score: report.test2 && report.test2.score,
+            test2TextScore: report.test2Text ? report.test2Text.score : undefined,
+            toolMode: report.toolMode,
             test3avgScore: report.test3avg,
             testedAt: new Date().toISOString(),
         };
@@ -71734,7 +71787,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             : '';
         return `<div style="margin:8px 0; padding:10px 12px; border:1px solid ${palette.windowBorder}; border-radius:8px; font-size:12px;">
             <div style="font-weight:bold; margin-bottom:6px;">🧪 模型基準測試報告 — ${this._escapeHtml(r.model)}</div>
-            <div style="font-size:11px; color:${palette.detailText}; margin-bottom:6px;">端點：${this._escapeHtml(r.apiUrl)}　協定：${r.useNative ? '原生tool_calls' : '文字式[CALL:...]'}　max_tokens：${this._getGenerationSettings().maxOutputTokens}</div>
+            <div style="font-size:11px; color:${palette.detailText}; margin-bottom:6px;">端點：${this._escapeHtml(r.apiUrl)}　協定：${r.useNative ? '原生tool_calls' : '文字式[CALL:...]'}${r.test2Text ? `（單一工具呼叫：原生${r.test2.score}分／文字清單${r.test2Text.score}分，自動模式用「${r.toolMode === 'text' ? '文字清單' : '原生'}」）` : ''}　max_tokens：${this._getGenerationSettings().maxOutputTokens}</div>
             ${repetitionBanner}
             <table style="border-collapse:collapse; font-size:12px;">
                 ${row('①簡易回應速度', r.test1)}
@@ -73918,6 +73971,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         // 這種情境下不存在，比單純提示更可靠。
         const pipelineStepPrefixMatch = /^\s*\[分階段\s*(\d+)\s*\/\s*(\d+)\s*\]/.exec(userPrompt);
         const canRequestMore = Array.isArray(allowedToolNames) && !pipelineStepPrefixMatch && !options.mixer && !options.noMoreTools; // 協調者不從別處追加工具（它只負責交辦）
+        const canExtend = options.rateLimitPerMinute == null && options.noExtend !== true && !options.mixer; // 批次平行的子任務沒有可以停下來等的使用者，不問
+        const EXTEND_ROUNDS_NAME = 'extend_rounds'; const extendState = { asks: 0, added: 0, denied: '' }; let roundNow = 0;
         // 巢狀委派：領域／技能的子agent可以把一個完整的子問題交給「另一個領域或技能」（見 SUBAGENT_NEST_MAX_DEPTH 的說明）
         const nestChain = Array.isArray(options.delegationChain) ? options.delegationChain : [];
         const nestExclude = new Set([].concat(nestChain.filter((k) => k !== 'auto'), options.delegationExclude || []));
@@ -73972,6 +74027,15 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         // 不存在了），所以_getToolDefinition/_getCombinedToolEntries撈不到，
         // 這裡優先攔截，其餘名稱照舊查this.tools/customTools。
         const resolveTool = (fnName) => {
+            if (canExtend && fnName === EXTEND_ROUNDS_NAME) {
+                return { callback: async (rawArgs) => {
+                    let parsed = {}; try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                    if (onProgress) onProgress('⏳ 子agent評估回合不夠，等你決定要不要擴展…');
+                    const ext = await this._askExtendRounds({ state: extendState, used: roundNow, max: maxRounds, estimate: parsed.estimate, reason: parsed.reason, by: 'model' });
+                    if (ext.ok) { maxRounds += ext.add; if (onProgress) onProgress('➕ 回合擴展 +' + ext.add + '（現在共 ' + maxRounds + '）'); return JSON.stringify({ ok: true, added: ext.add, rounds_now: maxRounds, note: '已擴展，繼續做；一樣先把最重要的做完，最後留幾個回合整理結果。' }); }
+                    extendState.denied = ext.reason; return JSON.stringify({ ok: false, reason: ext.reason, rounds_now: maxRounds, note: ext.reason === 'cap' ? '已用完總回合上限：用現有的結果回答，如實說明做了什麼、還剩什麼。' : '使用者不擴展回合：不要再呼叫工具，用現有的結果回答，如實說明做了什麼、還剩什麼、建議怎麼縮小需求。' });
+                } };
+            }
             if (canRequestMore && fnName === REQUEST_MORE_TOOLS_NAME) {
                 return {
                     callback: async (rawArgs) => {
@@ -74079,6 +74143,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         } else if (canRequestMore) {
             systemPrompt += `\n\n如果執行到一半發現需要額外的工具/領域能力，可以呼叫${REQUEST_MORE_TOOLS_NAME}({"need":"..."})跟系統申請追加，成功後就能直接呼叫新工具，不用結束對話。`;
         }
+        if (canExtend) systemPrompt += `\n\n【回合預算】你這次大約有 ${Math.round(maxRounds * (this._isAutoAgentMode() ? 2 : 1))} 個回合（每次呼叫工具算一回合）。先評估任務多大：讀取資料最多用掉約 60%，其餘留給整理與寫出結果。知道任務比預算大時（例如讀完大綱才發現有很多頁要讀），呼叫${EXTEND_ROUNDS_NAME}({"estimate":還需要幾個回合,"reason":"做完了什麼、還剩什麼"})，系統會請使用者決定要不要擴展；不要自己默默縮水或亂省略內容。`;
         if (canDelegate && !mixerKids) {
             systemPrompt += `\n\n【你可以請「另一個領域或技能」幫忙】缺的不是單一工具、而是另一種專長時（例如需要別的領域的作法、或某個技能整理出來的結果），呼叫${SUBAGENT_NEST_TOOL_NAME}({"task":"完整、獨立的需求（對方看不到你的對話，要把需要的資料與期望的輸出格式寫進去）","domain":"選填：下面清單裡的領域代號或技能名稱；留空會自動挑選"})——它是另一個有自己工具與知識的子agent，做完把結果交回給你，你再接著完成原本的任務。可選（domain 填領域代號或技能名稱）：${nestedCatalog() || '（目前沒有其他可用的領域）'}。限制：不能委派給你自己或上層、最多${SUBAGENT_NEST_MAX_CALLS}次、對方不能再往下委派；單純缺一個工具用${REQUEST_MORE_TOOLS_NAME}，不要為了小事委派。`;
         }
@@ -74116,7 +74181,10 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         let steeringSeen = (this._steeringLog || []).length;
 
         if (this._isAutoAgentMode()) maxRounds = Math.round(maxRounds * 2);
-        for (let round = 0; round < maxRounds; round++) {
+        let round = 0;
+        extendLoop: for (;;) { // 回合用完還沒做完：停下來問使用者要不要擴展（見 _askExtendRounds），擴展了就從原來的回合接著做
+        for (; round < maxRounds; round++) {
+            roundNow = round + 1;
             // tw_stock_db客製: 見_acquireBatchRateSlot()同一段說明——使用者
             // 按下停止時，平行跑的子任務要一起停掉，不能只有根對話迴圈認得
             // stopRequested。這裡是每一輪真正送出請求前的第一道檢查點。
@@ -74149,6 +74217,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     description: '如果執行到一半才發現需要一個原本沒給你的工具/領域能力（例如任務中途才顯示需要查詢另一種資料），呼叫這個工具描述你現在缺什麼，系統會直接把符合的工具追加給你、馬上可以呼叫，不用結束對話、不會中斷目前進度。',
                     parametersSchema: { type: 'object', properties: { need: { type: 'string', description: '簡短描述現在還缺什麼能力/需要查什麼類型的資料' } }, required: ['need'], additionalProperties: false },
                 }]] : [];
+                if (canExtend) nativeExtraEntries.push([EXTEND_ROUNDS_NAME, { description: '回合預算不夠完成任務時呼叫：估計還需要幾個回合、做完了什麼、還剩什麼。系統會請使用者決定要不要擴展（允許／改數字／不要／以後都不要問）。回傳 ok:false 就不要再呼叫工具，用現有結果如實回答。', parametersSchema: { type: 'object', properties: { estimate: { type: 'integer', description: '還需要約幾個回合（4～60）' }, reason: { type: 'string', description: '做完了什麼、還剩什麼' } }, required: ['estimate', 'reason'], additionalProperties: false } }]);
                 if (canDelegate) nativeExtraEntries.push([SUBAGENT_NEST_TOOL_NAME, {
                     description: `把一個完整的子問題交給「另一個領域或技能」的子agent，等它做完拿結果回來再繼續（它有自己的工具與知識）。用在你缺的是另一種專長、而不是單一工具時。不能委派給自己或上層、最多${SUBAGENT_NEST_MAX_CALLS}次。`,
                     parametersSchema: { type: 'object', properties: { task: { type: 'string', description: '完整、獨立的需求：對方看不到你的對話，要把需要的資料與期望的輸出格式寫進去' }, domain: mixerKids ? { type: 'string', enum: mixerKids.map((c) => c.domain), description: '階段代號' } : { type: 'string', description: '選填：領域代號或技能名稱（見系統提示的清單）；留空會自動挑選' } }, required: mixerKids ? ['task', 'domain'] : ['task'], additionalProperties: false },
@@ -74508,6 +74577,13 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             }
             // 迴圈繼續下一輪，讓模型看到工具結果後給出最終結論
         }
+        if (canExtend && !extendState.denied) {
+            if (onProgress) onProgress('⏳ 回合用完還沒做完，等你決定要不要擴展…');
+            const ext = await this._askExtendRounds({ state: extendState, used: round, max: maxRounds, by: 'program', reason: '回合用完了，工作還沒結束' });
+            if (ext.ok) { maxRounds += ext.add; if (onProgress) onProgress('➕ 回合擴展 +' + ext.add + '（現在共 ' + maxRounds + '）'); continue extendLoop; }
+            extendState.denied = ext.reason;
+        }
+        break; }
         // 2026-10-03使用者回報：技能包子任務用完回合只回一句罐頭訊息，使用者完全看不到做到哪、卡在哪。這裡最後做一次不帶工具的整理，回傳進度回報。
         let progressReport = '';
         try {
@@ -74518,6 +74594,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             }).join('\n');
             progressReport = await this._callSimpleCompletion('下面是一個子任務最近的執行過程（已用完回合、還沒做完）。請用繁體中文整理一份簡短的進度回報，只根據過程裡真的出現的工具結果，不要編造：1) 已經確實完成的步驟（有工具結果佐證）；2) 目前卡在哪、為什麼；3) 建議的下一步（可以拆成哪幾個小任務）。\n\n任務：' + String(userPrompt).slice(0, 600) + '\n\n過程：\n' + digest, { maxTokens: 700, temperature: 0.1 });
         } catch (_) { progressReport = ''; }
+        const whyStop = { denied: '你選擇不再擴展回合', cap: '已用完總回合上限', asks: '擴展次數已達上限（4 次）' }[extendState.denied] || '';
+        if (whyStop) return { text: '【這個請求沒有完成：' + whyStop + '】\n' + (progressReport ? String(progressReport).trim() + '\n\n' : '') + `共用了${maxRounds}個回合（含擴展 +${extendState.added}）。建議把還沒做完的部分縮小範圍、拆成幾個小請求再做；不要再委派一模一樣的任務。`, visual: capturedVisual, exhausted: true, extendFailed: extendState.denied };
         return { text: (progressReport ? '【進度回報（子任務用完回合，還沒做完）】\n' + String(progressReport).trim() + '\n\n' : '') + `[子任務用完了${maxRounds}個回合仍未給出最終結論（不是失敗，是還沒做完）。請不要再委派一模一樣的任務：把還沒做完的部分拆成更小的子任務再委派，或由你自己直接用工具完成。]`, visual: capturedVisual };
     }
 
