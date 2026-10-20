@@ -1452,15 +1452,31 @@
   Player.prototype.loc = function () { return Core.locate(this.s.tl, this.T); };
   Player.prototype.curIndex = function () { return this.loc().i; };
 
+  // Waiting for a slide to be prepared (the voice is still being made): `buffering` is the slide waited for, `bufTok` identifies THIS wait. Any move of the viewer
+  // (a slide, a dot, prev / next, the tracker) cancels the wait first; an old wait that finishes later does nothing (it used to drag the playhead back to the slide
+  // it had been waiting for, and a wait left behind froze the playhead -- the subtitles never came back until the tracker was used).
+  Player.prototype.cancelBuffering = function () {
+    this.bufTok = (this.bufTok || 0) + 1; this.navTok = (this.navTok || 0) + 1; this.bufArrive = null; // navTok: every move of the viewer
+    if (this.buffering >= 0) { this.buffering = -1; this.hideOverlay(); }
+  };
+  // Wait for slide `want`; when it is ready (checked when the preparation finishes AND on every frame) run `arrive` and go on.
+  Player.prototype.armBuffering = function (want, arrive) {
+    var self = this; this.cancelBuffering(); var tok = this.bufTok;
+    this.buffering = want; this.bufArrive = arrive; this.showOverlay('準備第 ' + (want + 1) + ' 頁…');
+    this.s.whenReady(want).then(function () { if (self.bufTok === tok) { self.finishBuffering(); } });
+  };
+  Player.prototype.finishBuffering = function () {
+    var a = this.bufArrive; this.bufTok = (this.bufTok || 0) + 1; this.bufArrive = null; this.buffering = -1; this.hideOverlay(); if (a) { a.call(this); }
+  };
   Player.prototype.goTo = function (i) {
     var self = this;
     i = Math.max(0, Math.min(this.s.deck.slides.length - 1, i));
+    this.cancelBuffering();
     this.s.setCursor(i);
     this.stopAudio();
     this.ended = false;
     if (!this.s.isReady(i)) {
-      this.buffering = i; this.showOverlay('準備第 ' + (i + 1) + ' 頁…'); this.updateStatus();
-      this.s.whenReady(i).then(function () { if (self.buffering === i) { self.buffering = -1; self.hideOverlay(); self.T = self.s.tl.segs[i].bodyStart; self.draw(); } });
+      this.armBuffering(i, function () { self.T = self.s.tl.segs[i].bodyStart; self.audioFor = -1; self.draw(); }); this.updateStatus();
       return;
     }
     this.T = this.s.tl.segs[i].bodyStart; this.draw(); this.updateUi();
@@ -1468,6 +1484,7 @@
   Player.prototype.next = function () {
     var i = this.curIndex(), n = this.s.deck.slides.length;
     if (i + 1 >= n) { return; }
+    this.cancelBuffering();
     if (this.s.isReady(i + 1)) { this.stopAudio(); this.T = this.s.tl.segs[i + 1].transStart; this.s.setCursor(i + 1); this.started = true; this.ended = false; this.draw(); } else { this.goTo(i + 1); }
   };
   Player.prototype.prev = function () {
@@ -1478,15 +1495,16 @@
   Player.prototype.seekFraction = function (f) {
     var T = Math.max(0, Math.min(1, f)) * this.s.tl.total, loc = Core.locate(this.s.tl, T);
     this.goTo(loc.i);
-    var self = this;
-    this.s.whenReady(loc.i).then(function () { var seg = self.s.tl.segs[loc.i]; self.T = Math.min(seg.end - 0.01, Math.max(seg.bodyStart, T)); self.draw(); });
+    var self = this, nt = this.navTok; // goTo has just cancelled any old wait and (if the slide is not ready) started its own; a later move of the viewer cancels this one too
+    this.s.whenReady(loc.i).then(function () { if (self.navTok !== nt) { return; } var seg = self.s.tl.segs[loc.i]; self.T = Math.min(seg.end - 0.01, Math.max(seg.bodyStart, T)); self.draw(); });
   };
 
   Player.prototype.play = function () {
     var ctx = getAudioCtx();
     if (ctx && ctx.state === 'suspended') { ctx.resume(); }
     if (this.ended) { this.T = 0; this.ended = false; }
-    this.started = true; this.playing = true; this.audioFor = -1; this.hideOverlay(); this.updateUi();
+    if (this.buffering >= 0 && this.s.isReady(this.buffering)) { this.finishBuffering(); } // the slide became ready while paused
+    this.started = true; this.playing = true; this.audioFor = -1; if (this.buffering < 0) { this.hideOverlay(); } this.updateUi();
   };
   Player.prototype.pause = function () { this.playing = false; this.stopAudio(); this.updateUi(); };
   Player.prototype.toggle = function () { if (this.playing) { this.pause(); } else { this.play(); } };
@@ -1545,6 +1563,7 @@
   Player.prototype.tick = function (now) {
     var dt = this.last ? Math.min(0.1, (now - this.last) / 1000) : 0;
     this.last = now;
+    if (this.buffering >= 0 && this.s.isReady(this.buffering)) { this.finishBuffering(); } // never stay waiting for a slide that is ready
     if (this.playing && this.buffering < 0) {
       var tl = this.s.tl, cur = Core.locate(tl, this.T), nextT = this.T + dt * this.speed;
       var n = Core.locate(tl, nextT);
@@ -1556,9 +1575,8 @@
       else if (n.i !== cur.i && !this.s.isReady(n.i)) {
         // the next slide is not prepared yet: hold at the end of this one until it is
         var self = this, want = n.i;
-        this.T = tl.segs[cur.i].end - 0.002; this.buffering = want; this.showOverlay('準備第 ' + (want + 1) + ' 頁…');
-        this.s.setCursor(want);
-        this.s.whenReady(want).then(function () { if (self.buffering === want) { self.buffering = -1; self.hideOverlay(); self.T = self.s.tl.segs[want].transStart; self.audioFor = -1; } });
+        this.T = tl.segs[cur.i].end - 0.002; this.s.setCursor(want);
+        this.armBuffering(want, function () { self.T = self.s.tl.segs[want].transStart; self.audioFor = -1; });
       } else if (n.i !== cur.i && this.holdsForQuiz(cur.i)) {
         // an answer card with wait: true: the deck waits at the end of the slide until it is answered (or the viewer pages on)
         this.T = tl.segs[cur.i].end - 0.002; this.setHold(cur.i); this.holding = true;
