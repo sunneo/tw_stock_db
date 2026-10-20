@@ -36626,7 +36626,8 @@ ${fnData.code}
         if (last < s.length) out.push({ text: s.slice(last), en: false }); return out.filter((x) => x.text.trim());
     }
     // 接在一起的片段（中文與英文聲音各自合成）：修掉每一段前後多餘的靜音，只留一點點，聽起來才不會一段一段斷開
-    _trimEdgeSilence(a) { let i = 0, j = a.length; const th = 0.008; while (i < j && Math.abs(a[i]) < th) i++; while (j > i && Math.abs(a[j - 1]) < th) j--; const g = Math.round(TTS_SAMPLE_RATE * 0.03); return a.subarray(Math.max(0, i - g), Math.min(a.length, j + g)); }
+    // 門檻跟著這一段的最大音量走（約 3%，至少 0.006），不是固定值：模型輸出前後的「安靜」常帶著低音量的尾巴，固定門檻會漏掉。前面留 30 毫秒、後面留 60 毫秒（尾音自然收掉，不會被切斷）
+    _trimEdgeSilence(a) { let pk = 0; for (let k = 0; k < a.length; k++) { const x = Math.abs(a[k]); if (x > pk) pk = x; } let i = 0, j = a.length; const th = Math.max(0.006, pk * 0.03); while (i < j && Math.abs(a[i]) < th) i++; while (j > i && Math.abs(a[j - 1]) < th) j--; return a.subarray(Math.max(0, i - Math.round(TTS_SAMPLE_RATE * 0.03)), Math.min(a.length, j + Math.round(TTS_SAMPLE_RATE * 0.06))); }
     async _synthesizeSpeechLocal(t, voice, onProgress, speed, opts) {
         let chunks;
         if (voice.engine === 'local-zh') {
@@ -36637,7 +36638,7 @@ ${fnData.code}
             if (!hasEn) {
                 let ph; try { ph = await this._zhPhonemeChunks(t, onProgress); } catch (err) { return { ok: false, error: '中文語音的文字轉拼音失敗：' + String((err && err.message) || err) }; }
                 if (!ph.length) return { ok: false, error: '這段文字裡沒有可以念的中文內容' };
-                chunks = ph.map((p) => ({ phonemes: p }));
+                chunks = ph.map((p) => ({ phonemes: p, join: true })); // 純中文也修掉每段前後的空白（以前只有中英混合才修：整段念完後面還拖著將近一秒的空白）
             } else {
                 chunks = [];
                 for (const sg of segs) {
@@ -36668,6 +36669,8 @@ ${fnData.code}
                 const samples = await this._synthesizeTtsChunk(chunks[i].text, chunks[i].voiceOverride || voice, onProgress, speed, chunks[i].phonemes);
                 parts.push(sentencePause ? trimSilence(samples) : (chunks[i].join ? this._trimEdgeSilence(samples) : samples));
                 if (sentencePause && chunks[i].endOfSentence && i < chunks.length - 1) parts.push(new Float32Array(gapSamples));
+                // 本地中文長段落分成好幾塊時：塊與塊之間補一小段自然的句間停頓（修掉空白後，不能黏在一起）
+                else if (voice.engine === 'local-zh' && i < chunks.length - 1 && chunks[i].phonemes && /[.!?。！？…]\s*$/.test(chunks[i].phonemes)) parts.push(new Float32Array(Math.round(TTS_SAMPLE_RATE * 0.28 / Math.max(0.5, Number(speed) || 1))));
             }
         } catch (err) {
             return { ok: false, error: '語音合成失敗：' + String(err && err.message || err) };
