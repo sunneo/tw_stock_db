@@ -75752,52 +75752,88 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         // 對應的畫面內容不會變，見_isNearBottom()的說明）。
         const wasNearBottomForRerender = this._isNearBottom(chatBody);
         const prevScrollTopForRerender = chatBody.scrollTop;
-        // 整個清空重繪時，圖片會被重新建立、重新解碼（貼上的大圖尤其明顯），畫面就會閃一下、圖一張張慢慢長出來。
-        // 清空前先把已經解碼好的圖收起來，重繪完用相同來源的舊節點換掉新的，瀏覽器不用重新解碼。
-        const keptImgs = new Map();
-        try { chatBody.querySelectorAll('img').forEach((im) => { const s = im.getAttribute('src') || ''; if (s && im.complete && im.naturalWidth > 0) { if (!keptImgs.has(s)) keptImgs.set(s, []); keptImgs.get(s).push(im); } }); } catch (_) { /* */ }
-        chatBody.innerHTML = '';
-        this._ensureFestivalParticles(chatBody);
-
-        // tw_stock_db客製: pruneContext()壓縮上下文時，被移出this.messages
-        // 的原始訊息存在archivedDisplayBlocks裡（純粹給畫面用，不會回頭餵
-        // 給API）。block.silent===true（例行token-limit壓縮，見
-        // pruneContext）的區塊直接原樣攤開渲染、不包摺疊卡片，畫面上跟沒
-        // 被壓縮過一樣；只有block.silent!==true（話題轉移，使用者主動切換
-        // 討論方向）才包成一張可摺疊的「已封存對話」卡片，明確提示這是
-        // 一次話題轉場。
-        (this.archivedDisplayBlocks || []).forEach((block, idx) => {
-            if (block.silent) {
-                block.messages.forEach(m => this._renderSingleMessage(m, chatBody, palette));
-                return;
-            }
-            const archiveEl = this._bindDetailOpenState(document.createElement('details'), block, 'archive');
-            archiveEl.style.cssText = `margin-bottom: 12px; font-size: 12px; background: ${palette.detailBg}; border-left: 4px solid #94a3b8; border-radius: 6px; padding: 6px 10px; color: ${palette.detailText}; max-width: 95%;`;
-            const summaryEl = document.createElement('summary');
-            summaryEl.style.cssText = 'font-weight: bold; outline: none; user-select: none; cursor: pointer;';
-            summaryEl.textContent = `📦 已封存對話 #${idx + 1}（原因：${block.reason}，共${block.messages.length}則，點擊展開）`;
-            archiveEl.appendChild(summaryEl);
-            const inner = document.createElement('div');
-            inner.style.cssText = 'margin-top: 6px;';
-            block.messages.forEach(m => this._renderSingleMessage(m, inner, palette));
-            archiveEl.appendChild(inner);
-            chatBody.appendChild(archiveEl);
-        });
-
-        // tw_stock_db客製: 2026-09-05使用者實測回報——「我沒看到星空，重做」
-        // 這種情境下，AI在同一輪對話裡連續呼叫好幾次render_3d_scene（或
-        // render_drawing/render_interactive_viewer）試錯，原本每一次都是
-        // 「一律顯示」的最終視覺結果，導致畫面被好幾張其實已經被取代的
-        // 草稿灌爆——使用者要的是「交件之前都是對草稿的修改」，只有同一輪
-        // 裡最後一次同類型的呼叫才算數。這裡在重繪之前先標記哪些訊息是
-        // 「後來被同一輪更新的呼叫取代掉的草稿」，讓_renderSingleMessage
-        // 把它們當成內部過程處理（受showInternalTrace開關控制，不是
-        // 一律顯示），不是刪除訊息本身——AI仍然看得到完整的對話歷史。
+        // ── 增量重繪（2026-10-20 使用者回報）──
+        // 原本每次都 chatBody.innerHTML = '' 整個重建：調整設定、發出新需求、進來一段新的 transcript 都會把整個對話重畫，
+        // 捲動條亂跳，而且上面已經掛好的東西（簡報播放器、viewer、「全部重新配音」的進度）全被重建而歸零。
+        // 現在每則訊息畫在自己的包裝節點（.fa-msg-wrap）裡，用「這則訊息畫面相關的內容」算一個簽章（_chatMsgSig）：
+        // 簽章沒變的訊息原封不動留著（連 DOM 都不碰），只有真的變了的才重畫，新的訊息只是附加在後面。
+        // 畫面相關的全域設定（主題色、顯示內部過程、markdown 函式庫是否載入…）變了才整批重畫。
+        const envSig = JSON.stringify([palette, this.advancedSettings.showInternalTrace === true, this.advancedSettings.slashCommandMenuEnabled, typeof marked !== 'undefined', typeof DOMPurify !== 'undefined']);
+        if (!this._chatNodeCache || this._chatNodeEnv !== envSig) { this._chatNodeCache = new WeakMap(); this._chatNodeEnv = envSig; }
+        const nodeCache = this._chatNodeCache;
         this._markSupersededVisualDrafts(this.messages);
-        this.messages.forEach(msg => this._renderSingleMessage(msg, chatBody, palette));
-        try { if (keptImgs.size) chatBody.querySelectorAll('img').forEach((im) => { const q = keptImgs.get(im.getAttribute('src') || ''); if (q && q.length) { const old = q.shift(); if (old !== im) { old.className = im.className; old.style.cssText = im.style.cssText; im.replaceWith(old); } } }); } catch (_) { /* */ }
-        chatBody.scrollTop = wasNearBottomForRerender ? chatBody.scrollHeight : prevScrollTopForRerender;
+        // 計畫：一個項目 ＝ 一個包裝節點。被封存且不摺疊的（silent）訊息各自一個；摺疊的封存區塊整個一個；其餘是目前的訊息。
+        const plan = [];
+        (this.archivedDisplayBlocks || []).forEach((block, idx) => {
+            if (block.silent) { block.messages.forEach((m) => plan.push({ owner: m, build: (el) => this._renderSingleMessage(m, el, palette) })); return; }
+            plan.push({ owner: block, sig: idx + '|' + block.reason + '|' + block.messages.map((m) => this._chatMsgSig(m)).join('/'), build: (el) => {
+                const archiveEl = this._bindDetailOpenState(document.createElement('details'), block, 'archive');
+                archiveEl.style.cssText = `margin-bottom: 12px; font-size: 12px; background: ${palette.detailBg}; border-left: 4px solid #94a3b8; border-radius: 6px; padding: 6px 10px; color: ${palette.detailText}; max-width: 95%;`;
+                const summaryEl = document.createElement('summary');
+                summaryEl.style.cssText = 'font-weight: bold; outline: none; user-select: none; cursor: pointer;';
+                summaryEl.textContent = `📦 已封存對話 #${idx + 1}（原因：${block.reason}，共${block.messages.length}則，點擊展開）`;
+                archiveEl.appendChild(summaryEl);
+                const inner = document.createElement('div');
+                inner.style.cssText = 'margin-top: 6px;';
+                block.messages.forEach(m => this._renderSingleMessage(m, inner, palette));
+                archiveEl.appendChild(inner);
+                el.appendChild(archiveEl);
+            } });
+        });
+        this.messages.forEach((msg) => plan.push({ owner: msg, build: (el) => this._renderSingleMessage(msg, el, palette) }));
+        plan.forEach((p) => { if (p.sig == null) p.sig = this._chatMsgSig(p.owner); const c = nodeCache.get(p.owner); if (c && c.sig === p.sig && c.el.parentNode === chatBody) p.reuse = c.el; });
+        // 不再需要的節點（訊息被改掉、被壓縮移走、整批重畫、或不是本函式管的雜物）先拿掉；拿掉前把解碼好的圖收起來，換上新節點時重用，圖不會閃一下。
+        const keptImgs = new Map(), reused = new Set(plan.filter((p) => p.reuse).map((p) => p.reuse));
+        let removedAny = false;
+        Array.from(chatBody.children).forEach((n) => {
+            if (n.id === 'ai-festival-particles' || reused.has(n)) return;
+            removedAny = true;
+            try { n.querySelectorAll('img').forEach((im) => { const src = im.getAttribute('src') || ''; if (src && im.complete && im.naturalWidth > 0) { if (!keptImgs.has(src)) keptImgs.set(src, []); keptImgs.get(src).push(im); } }); } catch (_) { /* */ }
+            n.remove();
+        });
+        this._ensureFestivalParticles(chatBody);
+        let prevEl = null; const changed = removedAny || plan.some((p) => !p.reuse);
+        const boxEl = document.getElementById('ai-festival-particles'), startRef = boxEl && boxEl.parentNode === chatBody ? boxEl.nextSibling : chatBody.firstChild;
+        plan.forEach((p) => {
+            let el = p.reuse;
+            const ref = prevEl ? prevEl.nextSibling : startRef;
+            if (el) { if (el !== ref) chatBody.insertBefore(el, ref); }
+            else {
+                el = document.createElement('div'); el.className = 'fa-msg-wrap'; chatBody.insertBefore(el, ref); // 先放進畫面再畫：裡面的元件要量寬度
+                try { p.build(el); nodeCache.set(p.owner, { sig: p.sig, el }); } catch (e) { console.warn('訊息渲染失敗，下次重畫:', e); nodeCache.delete(p.owner); }
+            }
+            prevEl = el;
+        });
+        try { if (keptImgs.size) chatBody.querySelectorAll('img').forEach((im) => { const q = keptImgs.get(im.getAttribute('src') || ''); if (q && q.length) { const old = q.shift(); if (old !== im && im.parentNode) { old.className = im.className; old.style.cssText = im.style.cssText; im.replaceWith(old); } } }); } catch (_) { /* */ }
+        // 有東西真的變了才動捲動位置（原本在底部的就跟到新的底部）；什麼都沒變就完全不碰
+        if (changed) chatBody.scrollTop = wasNearBottomForRerender ? chatBody.scrollHeight : prevScrollTopForRerender;
         this._persistChatHistory();
+    }
+
+    // 一則訊息「畫面相關」的簽章：自己所有的屬性（含不可列舉的 _display*、_card、_progressWidget…），值遞迴最多 3 層；
+    // 字串用雜湊（超長的只取頭尾與 7 個取樣點，所以「長度不變、只改了中間一段」的超長字串不會被發現——串流與一般編輯都會改變長度）；
+    // 函式與 DOM 節點只記種類（它們是執行期的 handle，不是畫面的輸入）。要強制重畫某則訊息：this._chatNodeCache.delete(msg)。
+    _chatMsgSig(msg) {
+        const h32 = (s) => { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); };
+        const hs = (s) => { if (s.length <= 20000) return h32(s); let t = s.slice(0, 200) + s.slice(-200); for (let k = 1; k < 8; k++) { const at = Math.floor(s.length * k / 8); t += s.slice(at, at + 24); } return h32(t); };
+        const sg = (v, d) => {
+            if (v == null) return String(v);
+            const t = typeof v;
+            if (t === 'string') return 's' + v.length + ':' + hs(v);
+            if (t === 'number' || t === 'boolean' || t === 'bigint') return String(v);
+            if (t === 'function' || t === 'symbol') return t[0];
+            if (typeof Node !== 'undefined' && v instanceof Node) return 'node';
+            if (d > 3) return '…';
+            if (Array.isArray(v)) return '[' + v.length + ':' + v.slice(0, 200).map((x) => sg(x, d + 1)).join(',') + ']';
+            if (t === 'object') return '{' + Object.keys(v).sort().map((k) => k + '=' + sg(v[k], d + 1)).join(',') + '}';
+            return t;
+        };
+        // 畫面上不顯示的 system 訊息（_renderSingleMessage 的第一個判斷）：內容怎麼改都不影響畫面，系統提示重整時不用重畫
+        if (msg && msg.role === 'system' && typeof msg.content === 'string' && !/^\[(歷史對話摘要|Topic Transition Summary|Steering\])/.test(msg.content)) return 'hidden-system';
+        const SKIP = { _scene3DHandle: 1, _anim2DHandle: 1 }; // 執行期的 handle（渲染的結果，不是輸入）
+        let out = '';
+        try { Object.getOwnPropertyNames(msg).sort().forEach((k) => { if (!SKIP[k]) { let v; try { v = msg[k]; } catch (_) { v = '!'; } out += k + '=' + sg(v, 0) + ';'; } }); } catch (_) { return 'x' + Math.random(); }
+        return out;
     }
 
     // 「同一輪」定義為兩則role:'user'訊息之間的區間。同一輪內，同一種視覺
