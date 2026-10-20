@@ -3344,6 +3344,7 @@ const FA_SEM_VER = 4; // 嵌入演算法版本：改了斷詞／權重／概念�
 // 工具名稱裡的「動詞」對應到中英文說法：同一個功能有多個工具時，用它挑最貼近這句話的那個
 const FA_OT_VERBS = { commit: '提交 commit', push: '推送 push', pull: '拉取 pull', clone: '克隆 複製專案 clone', status: '狀態 status', log: '紀錄 歷史 log', read: '讀取 讀 看 讀檔 read cat open', write: '寫入 寫 存 儲存 write save', list: '列出 清單 list ls', find: '搜尋 找 尋找 find search', delete: '刪除 移除 delete remove', apply: '套用 修改 apply patch', copy: '複製 copy', download: '下載 download', render: '繪製 畫 render draw', import: '匯入 import', export: '匯出 export', merge: '合併 merge', transcribe: '逐字稿 辨識 transcribe', summarize: '摘要 summarize', parse: '解析 parse', extract: '擷取 抽取 extract', convert: '轉換 轉 convert', search: '搜尋 查 search', fetch: '讀取網頁 抓取 fetch', create: '建立 新增 create', run: '執行 run execute', start: '開始 啟動 start', stop: '停止 stop' };
 const FA_OT_RISKY_TOOL = /(write|delete|remove|commit|push|apply|patch|exec|execute|run_command|terminal_run|tmux|send|post|upload|copy|move|install|deploy|kill|reset|clear|drop)/i;
+const FA_INTENT_ROOT_CAP = 14; // 模式5：根層級每一輪完整送出的（跟這句話有關的）工具數上限，必備的不算
 const FA_OT_META_TOOLS = new Set(['delegate_to_subagent', 'request_additional_tools', 'get_tool_details', 'list_ai_features', 'rag_store_graph_node', 'rag_query_graph', 'rag_delete', 'rag_chunk_document', 'offline_trainer', 'skill_list', 'skill_read', 'skill_create']);
 
 class FaOtDb {
@@ -30602,7 +30603,7 @@ class FloatingAssistant {
         // （對應到新的'off'模式），沒有任何一邊有指定時退回內建預設'router'
         // （＝原本的'domains'行為，維持既有預設不變）。
         if (localStorage.getItem(this.ADVANCED_SETTINGS_KEY) === null) {
-            if (['router', 'full', 'off', 'hierarchical'].includes(options.multiSubAgentMode)) {
+            if (['router', 'full', 'off', 'hierarchical', 'intent'].includes(options.multiSubAgentMode)) {
                 this.advancedSettings.multiSubAgentMode = options.multiSubAgentMode;
             } else if (options.builtinToolExposure === 'root') {
                 this.advancedSettings.multiSubAgentMode = 'off';
@@ -30652,7 +30653,7 @@ class FloatingAssistant {
         // 不建議用（多一次網路往返卻沒有token/準確度優勢，見這次計畫的實測
         // 數據），只有domain數大到像成噸曲風分類這種規模才划算，所以刻意不是
         // 預設值。
-        return (v === 'router' || v === 'off' || v === 'hierarchical') ? v : 'full'; // 沒設定或不合法：預設模式 2（full）
+        return (v === 'router' || v === 'off' || v === 'hierarchical' || v === 'intent') ? v : 'full'; // 沒設定或不合法：預設模式 2（full）
     }
 
     // tw_stock_db客製: 向下相容既有程式碼裡任何直接讀this.builtinToolExposure
@@ -32329,7 +32330,7 @@ class FloatingAssistant {
                 const n = Number(raw.mp4DefaultDurationSeconds);
                 return Number.isFinite(n) && n > 0 ? Math.max(1, Math.round(n)) : 5;
             })(),
-            multiSubAgentMode: ['router', 'full', 'off', 'hierarchical'].includes(raw.multiSubAgentMode) ? raw.multiSubAgentMode : 'full',
+            multiSubAgentMode: ['router', 'full', 'off', 'hierarchical', 'intent'].includes(raw.multiSubAgentMode) ? raw.multiSubAgentMode : 'full',
             browserSearchEnabled: raw.browserSearchEnabled !== false,
             browserControlEnabled: raw.browserControlEnabled === true,
             browserSearchProxyUrl: String(raw.browserSearchProxyUrl || '').trim(),
@@ -32868,6 +32869,7 @@ ${fnData.code}
                     if (entry) found[name] = { description: entry[1].description, parameters: entry[1].parametersSchema || undefined };
                     else notFound.push(name);
                 }
+                if (this._intentOn && this._intentOn()) this._intentAdmit(Object.keys(found), '查了工具細節');
                 return JSON.stringify({ ok: true, tools: found, notFound: notFound.length ? notFound : undefined });
             },
             { type: 'object', properties: { names: { type: 'array', items: { type: 'string' }, description: '要查詢的工具名稱清單' } }, additionalProperties: false }
@@ -46781,7 +46783,78 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const rootBuiltins = Object.keys(this.tools).filter(n => !this._domainGatedToolNames.has(n));
         // 依「使用者這一則訊息」補專用工具（見 FA_TASK_TOOL_HINTS）：例如「圖片合併成PDF」直接拿到 images_to_pdf，不用先委派、也不會被委派到一個沒有它的領域去自己寫 python
         for (const h of this._rootTaskHints()) for (const n of h.tools) if (this.tools[n] && !rootBuiltins.includes(n)) rootBuiltins.push(n);
+        if (mode === 'intent') return this._intentFilter(rootBuiltins);
         return rootBuiltins;
+    }
+
+    // ===== 模式5：意圖過濾（Orchestrator + intent filter + 多領域子Agent）=====
+    // 為什麼：根層級每一輪都送全部工具的說明，其中絕大多數這一輪用不到（只問一句「列出議題」，卻背了 97% 的無關工具）。
+    // 做法（全部在本地、不呼叫模型）：
+    //   1. 用這句話比對每個工具的名稱／一行說明／學到的別名，只把最相關的 FA_INTENT_ROOT_CAP 個＋必備的送給模型；其餘只列名稱。
+    //   2. 委派時 domain 留空，先用本地意圖比對挑領域（最多 3 個，橫跨多個就一起開放）；沒把握才交給路由模型。
+    // 自我調整、而且不打擾使用者（使用者要的是做完，猜錯不能變成回頭問他）：
+    //   - 模型直接叫了沒列出的工具：照常執行、當場補進清單，並把這句話記成那個工具的別名（下次一開始就有）；
+    //   - 查工具細節、說「我沒有某某工具」：這一輪放寬成完整清單；
+    //   - 子Agent缺工具：用本地比對補（跟 request_additional_tools 同一條）；委派結果看起來是裝備不足：靜默改走完整路由重做一次；
+    //   - 比對沒有任何依據：不過濾（寧可多給，也不要亂挑）。
+    // 所有調整只寫在 log／進度卡片，不會跳出任何需要使用者回答的東西。
+    _intentOn() { return this.multiSubAgentMode === 'intent'; }
+    _intentFilter(all) {
+        const ALWAYS = ['delegate_to_subagent', 'get_tool_details', 'list_ai_features', 'request_additional_tools'];
+        const cap = FA_INTENT_ROOT_CAP; const text = String(this._currentTurnUserText || '').trim();
+        this._intentAll = all;
+        if (this._intentWiden || !text || all.length <= cap + ALWAYS.length) { this._intentHidden = []; return all; }
+        const key = all.length + ':' + text + ':' + (this._intentExtra ? this._intentExtra.size : 0) + ':' + (this._intentRecent ? this._intentRecent.size : 0) + ':' + (this._capAliasStore ? Object.keys(this._capAliasStore.tools || {}).length : 0);
+        if (this._intentPlanCache && this._intentPlanCache.key === key) { this._intentHidden = this._intentPlanCache.hidden; return this._intentPlanCache.names; }
+        const learned = (this._capAliasStore && this._capAliasStore.tools) || {}; const entries = new Map(this._getCombinedToolEntries(all).map(([n, t]) => [n, t]));
+        const docs = all.filter((n) => ALWAYS.indexOf(n) < 0 && entries.has(n)).map((n) => ({ id: n, text: n.replace(/_/g, ' ') + ' ' + this._toolShort(n, entries.get(n)) + ' ' + FaCapReflect.aliasOf(n, (learned[n] || []).map((x) => x.p)).join(' '), nameText: n }));
+        const ranked = FaToolBudget.rank(FaToolBudget.buildIndex(docs), text, { minHit: 1, minScore: 0, ratio: 0.35, max: cap, minKeep: 0 });
+        if (!ranked.length) { this._intentHidden = []; return all; } // 沒有任何詞對得上：不過濾
+        const keep = new Set(ALWAYS.filter((n) => all.indexOf(n) >= 0)); ranked.forEach((r) => keep.add(r.id));
+        for (const h of this._rootTaskHints()) for (const n of h.tools) keep.add(n);
+        for (const n of (this._intentRecent || [])) keep.add(n); for (const n of (this._intentExtra || [])) keep.add(n);
+        const names = all.filter((n) => keep.has(n)); const hidden = all.filter((n) => !keep.has(n));
+        this._intentPlanCache = { key, names, hidden }; this._intentHidden = hidden;
+        if (this._intentLogged !== text) { this._intentLogged = text; this._log('🎯 意圖過濾：根層級 ' + all.length + ' 個工具 → 送 ' + names.length + ' 個（' + names.filter((n) => ALWAYS.indexOf(n) < 0).slice(0, 8).join('、') + (names.length > 8 ? '…' : '') + '），其餘 ' + hidden.length + ' 個只列名稱'); }
+        return names;
+    }
+    // 補進這一輪的清單（模型要用了、或查了細節）；不跳任何提示
+    _intentAdmit(names, why) {
+        if (!this._intentOn()) return; const add = (names || []).filter((n) => n && this.tools[n] && !(this._intentExtra && this._intentExtra.has(n)));
+        if (!add.length) return; this._intentExtra = this._intentExtra || new Set(); add.forEach((n) => this._intentExtra.add(n));
+        this._intentPlanCache = null; this._log('🎯 意圖過濾：補進 ' + add.join('、') + (why ? '（' + why + '）' : '')); this._intentRefreshPrompt();
+    }
+    _intentRefreshPrompt() { try { const m = this.messages && this.messages[0]; if (m && m.role === 'system') m.content = this._getFinalSystemPrompt(); } catch (_) { /* 下一輪會重算 */ } }
+    // 這一輪沒送完整說明的工具：只列名稱，要用就直接叫（參數不確定先 get_tool_details）
+    _intentRosterNote() {
+        if (!this._intentOn()) return ''; this._getRootToolNames(); const hid = (this._intentHidden || []).slice(0, 90);
+        if (!hid.length) return '';
+        return '[其他工具（這一輪沒有送完整說明，只列名稱）] ' + hid.join('、') + '。需要時直接呼叫它的名稱（參數不確定就先 get_tool_details）；不確定有沒有、或任務橫跨好幾種工作，用 delegate_to_subagent（domain 留空，系統用本地意圖比對挑領域，不多花一輪模型呼叫）。不要因為這裡沒有列完整說明就說「我沒有這個工具」。';
+    }
+    // 本地意圖比對挑領域（0 次模型呼叫）：最多 3 個；沒有把握回 null，由呼叫端交給路由模型
+    _intentRouteLocal(task) {
+        try {
+            this._ensureDomainSplits(); const pub = Object.entries(this.domains).filter(([, d]) => d.enabled && !d.internal);
+            if (pub.length < 4) return null; this._shortlistDomains(task, pub, { max: 8 }); // 順便建好詞彙索引
+            if (!this._domIndexCache || !this._domIndexCache.index) return null;
+            const ranked = FaToolBudget.rank(this._domIndexCache.index, String(task || ''), { minHit: 2, minScore: 8, ratio: 0.6, max: 3, minKeep: 0 });
+            const keys = ranked.map((r) => r.id).filter((k) => this.domains[k] && this.domains[k].enabled); if (!keys.length) return null;
+            const toolNames = [...new Set(keys.flatMap((k) => this._resolveRunToolNames(this.domains[k])))];
+            const note = '\n\n【工具是用意圖比對挑的，可能不完整】缺工具就用 request_additional_tools 說明缺什麼；領域選得不對也一樣，直接補、不要放棄，更不要停下來問使用者。';
+            const systemPrompt = keys.map((k) => '## ' + this.domains[k].label + '\n' + this._resolveDomainSystemPrompt(this.domains[k])).join('\n\n') + note;
+            this._log('🎯 意圖過濾：本地挑領域 ' + keys.join('、')); this._intentLocalUsed = true;
+            return { ok: true, domains: keys, toolNames, systemPrompt, local: true };
+        } catch (_) { return null; }
+    }
+    async _routeTaskIntent(task, ctx) {
+        if (!(ctx && ctx.intentWide)) { const local = this._intentRouteLocal(task); if (local) return local; }
+        return await this._routeTaskToDomains(task);
+    }
+    // 委派的結果看起來是「裝備不足／領域選錯」：靜默改走完整路由
+    _intentLooksUnderEquipped(r) {
+        let t = ''; try { t = typeof r === 'string' ? r : JSON.stringify(r); } catch (_) { return false; } t = String(t || '').slice(0, 4000);
+        const failed = (r && typeof r === 'object' && r.ok === false) || /"ok"\s*:\s*false/.test(t.slice(0, 200));
+        return (failed && /不需要用到任何專家領域|找不到符合|路由失敗|沒有適合|沒有.{0,6}工具|缺少?.{0,6}工具|無法完成.{0,10}工具/.test(t)) || /【未解決】[^\n]{0,80}(缺|沒有).{0,6}工具/.test(t);
     }
 
     // ===== 叫用 RAG 之後的「能力反思」：我現有的工具／領域做得到嗎？=====
@@ -47011,6 +47084,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             const domainList = enabledDomains.map(([k, d]) => `${k}(${d.label})`).join('、');
             return base + ` 目前登記的專家領域代號：${domainList}。你已經知道這些領域代號，**建議直接在domain參數指定最相關的一個**（可以省下系統內部自動判斷那一輪額外往返）；如果任務同時橫跨好幾個領域、或你不確定該選哪一個，把domain留空，系統會自動判斷需要開放哪些領域的工具（可以一次判斷出多個）。參數: {"task":"要委派的任務描述（可以包含多件事）","domain":"（建議指定上面列出的領域代號之一，不確定或橫跨多領域時可留空讓系統自動判斷）"}`;
         }
+        if (this.multiSubAgentMode === 'intent') return base + ' 本模式下domain留空是最快的做法：系統用本地意圖比對直接挑出最相關的領域（最多3個，橫跨多個就一起開放給同一個子agent），不多花一輪模型呼叫；挑得不對系統會自己放寬重做，不用你處理。一件任務橫跨好幾種工作時，把整段需求寫進同一次task就好。參數: {"task":"要委派的任務描述（可以包含多件事）","domain":"（選填，通常留空）"}';
         return base + ' 不確定該用哪個領域時把domain留空，系統會依task內容自動判斷該開放哪些工具，一次可以判斷出多個領域一起開放給同一個子agent；已經明確知道領域代號時可以直接指定domain跳過自動判斷。參數: {"task":"要委派的任務描述（可以包含多件事）","domain":"（選填）領域代號"}';
     }
 
@@ -47163,6 +47237,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         if (rulesMd) sections.push(rulesMd);
         if (basePrompt) sections.push(basePrompt);
         { const rh = this._rootTaskHints(); if (rh.length) sections.push(rh.map((h) => h.note).join('\n')); }
+        { const rn = this._intentRosterNote(); if (rn) sections.push(rn); }
         { const ch = this._coluHint(); if (ch) sections.push(ch); } // 這個模型做過 CoLU 接線題、建議要輔助：告訴它先用 catalog_query 取得算好的接線 // 這則訊息有專用工具：直接給做法（見 FA_TASK_TOOL_HINTS）
 
         // tw_stock_db客製: 原生tool-call模式下，工具清單已經透過API的tools參數
@@ -64666,6 +64741,9 @@ _result
     }
     // 包住工具執行：重複呼叫直接回傳「已做過」的提示，不真的再跑一次；否則執行並記錄結果。
     async _callToolGuarded(log, name, rawArgs, run) {
+        if (this._intentOn() && log === this._toolCallLog && this.tools[name] && !/^(delegate_to_subagent|get_tool_details|request_additional_tools|list_ai_features)$/.test(name)) {
+            try { const adv = this._getRootToolNames() || []; if (adv.indexOf(name) < 0 && this._intentAll && this._intentAll.indexOf(name) >= 0) { (this._intentMiss = this._intentMiss || new Set()).add(name); this._intentAdmit([name], '模型直接叫了沒送說明的工具'); } } catch (_) { /* 不影響執行 */ }
+        }
         const dup = this._findDuplicateToolCall(log, name, rawArgs);
         if (dup) {
             log.blocked = (log.blocked || 0) + 1;
@@ -64707,6 +64785,7 @@ _result
         }
         if (ok) this._unitCatalogObserve(name, result);
         if (ok) (this._turnToolSuccess = this._turnToolSuccess || new Set()).add(name); // 這一輪（含子agent）成功呼叫過哪些工具——RAG 自我修正用
+        if (ok && this._intentOn() && log === this._toolCallLog) { try { if (this._intentMiss && this._intentMiss.has(name)) { this._intentMiss.delete(name); this._capAliasLearn(this._currentTurnUserText, name); } const rt = (this._intentRecentTurns = this._intentRecentTurns || []); let cur = rt[rt.length - 1]; if (!cur || cur.turn !== this._currentTurnUserText) { cur = { turn: this._currentTurnUserText, names: [] }; rt.push(cur); } if (cur.names.indexOf(name) < 0) cur.names.push(name); if (rt.length > 6) rt.shift(); } catch (_) { /* 學不起來不影響回答 */ } }
         if (log === this._toolCallLog) (this._otCalls = this._otCalls || []).push({ name, rawArgs: String(rawArgs == null ? '' : rawArgs).slice(0, 3000), ok, res: (this.advancedSettings.offlineAutoTrain || 'off') !== 'off' ? this._otScalarFields(result) : undefined });
         if (log && log.collect && log !== this._toolCallLog) log.collect.push({ name, rawArgs: String(rawArgs == null ? '' : rawArgs).slice(0, 3000), ok, res: this._otScalarFields(result) });
         if (FA_DEDUP_TOOLS.has(name)) log.calls.push({ name, ok, soft, key: FA_DEDUP_EXACT_TOOLS.has(name) ? this._dedupText(name, rawArgs) : null, tokens: this._dedupTokens(this._dedupText(name, rawArgs)), resultText: typeof result === 'string' ? result : JSON.stringify(result) });
@@ -64799,6 +64878,7 @@ _result
             else if (this._capPending && counterHolder && (counterHolder.cap || 0) >= 2) this._capPending = null; // 提醒了兩次還是說沒有：不學
             if (this._forceNoTools || !counterHolder || (counterHolder.cap || 0) >= 2) return null; if ((this._toolCallLog && this._toolCallLog.calls || []).some((c) => /^(delegate_to_subagent|get_tool_details|catalog_query)$/.test(c.name))) return null; // 已經查過了
             const c = FaCapReflect.claimsNoTool(text); if (!c) return null;
+            if (this._intentOn()) { this._intentWiden = true; this._intentPlanCache = null; this._intentRefreshPrompt(); this._log('🎯 意圖過濾：模型說沒有工具，這一輪放寬成完整清單'); }
             const user = String(this._currentTurnUserText || ''); const root = new Set(this._getRootToolNames ? (this._getRootToolNames() || Object.keys(this.tools)) : Object.keys(this.tools)); const byTool = new Map();
             for (const [id, d] of Object.entries(this.domains || {})) for (const n of (() => { let tn = d && d.toolNames; if (typeof tn === 'function') { try { tn = tn.call(d); } catch (_) { tn = []; } } return Array.isArray(tn) ? tn : []; })()) { if (!this.tools[n]) continue; if (!byTool.has(n)) byTool.set(n, []); byTool.get(n).push({ id, label: d.label || '' }); }
             const learned = this._capAliasStore ? this._capAliasStore.tools || {} : {};
@@ -71750,6 +71830,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         // 固定用這裡存的原始文字，不管壓縮幾次，重新接回去的內容永遠只有
         // 一層包裝。
         this._currentTurnUserText = userText;
+        if (this._intentOn()) { this._intentWiden = false; this._intentExtra = new Set(); this._intentMiss = new Set(); this._intentPlanCache = null; this._intentRecent = new Set((this._intentRecentTurns || []).slice(-3).flatMap((x) => x.names)); }
 
         // tw_stock_db客製: 原本這裡有一個「訊息數超過20則就主動壓縮」的
         // proactive檢查——這跟先前被移除的token估算式proactive檢查是同一類
@@ -73602,13 +73683,20 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         return best ? best.key : null;
     }
     async _delegateToSubagentAuto(task, ctx) {
+        ctx = ctx || {}; this._intentLocalUsed = false;
+        const r = await this._delegateToSubagentAutoOnce(task, ctx);
+        if (!this._intentOn() || ctx.intentWide || !this._intentLocalUsed || !this._intentLooksUnderEquipped(r)) return r;
+        this._log('🎯 意圖過濾：領域或工具不夠用，靜默改走完整路由再做一次（不打擾使用者）');
+        return await this._delegateToSubagentAutoOnce(task, Object.assign({}, ctx, { intentWide: true }));
+    }
+    async _delegateToSubagentAutoOnce(task, ctx) {
         ctx = ctx || {};
         const skillKey = this._findSkillDomainForTask(task);
         if (skillKey && !(ctx.delegationExclude || []).includes(skillKey)) return await this._delegateToSubagentDomain(skillKey, task, ctx.delegationChain ? { delegationChain: ctx.delegationChain, delegationExclude: ctx.delegationExclude, shouldStop: ctx.shouldStop } : undefined);
         const progress = this._createSubagentProgressWidget('🤖 自動判斷該委派給哪個領域…');
         const routed = this.multiSubAgentMode === 'hierarchical'
             ? await this._routeTaskHierarchical(task)
-            : await this._routeTaskToDomains(task);
+            : (this._intentOn() ? await this._routeTaskIntent(task, ctx) : await this._routeTaskToDomains(task));
         // tw_stock_db客製: 2026-09-06使用者實測發現的真實問題——自動路由失敗
         // 時（不管是分類請求本身出錯，還是分類出來domains是空陣列），原本的
         // 錯誤訊息只叫根模型「可以指定明確的domain重試」，卻完全沒有告訴它
@@ -73911,7 +73999,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                         }
                         const routed = this.multiSubAgentMode === 'hierarchical'
                             ? await this._routeTaskHierarchical(need)
-                            : await this._routeTaskToDomains(need);
+                            : (this._intentOn() && !options._intentWide ? (this._intentRouteLocal(need) || await this._routeTaskToDomains(need)) : await this._routeTaskToDomains(need));
                         if (!routed.ok || !routed.toolNames || !routed.toolNames.length) {
                             if (onProgress) onProgress(`🔧 追加失敗：找不到符合「${need}」的工具`);
                             return JSON.stringify({ ok: false, error: '找不到符合這個需求的額外工具，請改用現有工具完成、或直接回答已知的部分。' });
@@ -74918,13 +75006,15 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                         <option value="full">2. Orchestrator + 認識全部工具的子Agent + 多領域子Agent（預設）</option>
                                         <option value="off">3. 不使用子Agent（全部內建工具直接掛在根層級）</option>
                                         <option value="hierarchical">4. Orchestrator + 兩層領域路由（先選類別、再選細分domain）</option>
+                                        <option value="intent">5. Orchestrator + 意圖過濾 + 多領域子Agent（只送跟這句話有關的工具，自我調整、不打擾使用者）</option>
                                     </select>
                                     <p class="ai-advanced-hint">
                                         <b>模式1（router）</b>：根層級對話只看得到自己註冊的工具＋委派入口，不知道有哪些領域可選；不確定要委派給誰時，系統會先問一個「認識全部工具」的路由子Agent該開放哪些領域，再把任務交給真正執行的子Agent——每次委派多一輪內部LLM往返，但根層級system prompt/tools每輪對話都精簡。<br>
                                         <b>模式2（full）</b>：根層級直接看得到全部領域代號+說明，可以自己判斷、直接指定領域委派（省掉路由子Agent那一輪往返）；代價是根層級system prompt/tools每輪對話都多背一份領域清單。<br>
                                         <b>模式3（off）</b>：完全不透過子Agent委派，全部內建工具（AI自製函式/RAG/檔案解讀/3D場景/繪圖/互動viewer/2D動畫/網路搜尋）直接掛在根層級對話——最簡單、沒有委派往返，但根層級system prompt/tools會攤開全部工具的完整說明，工具越多越容易稀釋模型注意力。<br>
                                         <b>模式4（hierarchical）</b>：委派時先問「這個任務屬於哪個大類別」，選中的類別再各自問一次「該用哪個細分領域」，比模式1多一輪網路往返——<b>domain數量不多時不建議用</b>（用真實測試量到的數字：45個domain時比模式1省58%路由token、但延遲多6-7秒，是拿延遲換規模化時的token效率跟準確度）；只有像大量曲風/風格這種domain數上百時才划算。domain完全沒有被分類別時會自動退回跟模式1一樣的行為，不會多花這次往返。<br>
-                                        四種模式可以隨時切換，立即生效，不用重新整理頁面。
+                                        <b>模式5（intent）</b>：每一輪先用程式（不呼叫模型）比對這句話的意圖，根層級只送「跟這句話有關的工具」的完整說明，其他工具只留名稱清單；委派時留空domain，也是先用本地意圖比對挑出最多3個領域（橫跨多個就一起開放），沒把握才交給路由模型。<b>自己會修正、不會回頭問你</b>：模型直接叫了沒列出的工具就當場補進來並記住這種說法；查工具細節、說「沒有這個工具」、子Agent缺工具或領域選錯，都靜默放寬再做一次，不會用提問打斷你。適合工具很多、每輪常駐說明太肥的情況。<br>
+                                        五種模式可以隨時切換，立即生效，不用重新整理頁面。
                                     </p>
                                 </div>
                                 <div class="ai-advanced-stack">
@@ -78214,7 +78304,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const multiSubAgentModeSelect = document.getElementById('ai-multi-subagent-mode');
         if (multiSubAgentModeSelect) {
             multiSubAgentModeSelect.addEventListener('change', () => {
-                if (['router', 'full', 'off', 'hierarchical'].includes(multiSubAgentModeSelect.value)) {
+                if (['router', 'full', 'off', 'hierarchical', 'intent'].includes(multiSubAgentModeSelect.value)) {
                     this.advancedSettings.multiSubAgentMode = multiSubAgentModeSelect.value;
                 }
                 this._saveAdvancedSettings();
