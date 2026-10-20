@@ -91,6 +91,7 @@ const suites = [
     ['動畫簡報：點陣圖物件設計工具（調色盤、字母列、鏡射、繪圖指令、亮暗部、外框、內建範例）', 'scripts/deck-tests/pixel_art.test.js'],
     ['動畫簡報：人物精靈圖（3D 人物零件、z-buffer 光柵、多格共用調色盤、精靈圖打包、三種風格）', 'scripts/deck-tests/sprite_char.test.js'],
     ['動畫簡報：故事／名詞清單→舞台（意象推導＋CoLU：角色與對話、動作與音效、進出場景、名詞清單、封閉問題）', 'scripts/deck-tests/deck_stage.test.js'],
+    ['教育文書（學習單）：讀請求、驗證、排版、SVG／HTML／PDF、參考圖片、編輯動作、封閉題', 'scripts/worksheet-tests/worksheet_core.test.js'],
     ['動畫簡報：程式碼視窗、patch、問答卡、小工具沙盒、互動視覺的格式規則', 'scripts/deck-tests/deck_interactive.test.js'],
     ['動畫簡報：影片視覺（播放、重播、快轉、速度、A-B 循環的格式規則）', 'scripts/deck-tests/deck_video.test.js'],
     ['動畫簡報：每份簡報自己的外框配色（deck.colors）', 'scripts/deck-tests/deck_colors.test.js'],
