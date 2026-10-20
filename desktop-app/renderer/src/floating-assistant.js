@@ -36626,8 +36626,18 @@ ${fnData.code}
         if (last < s.length) out.push({ text: s.slice(last), en: false }); return out.filter((x) => x.text.trim());
     }
     // 接在一起的片段（中文與英文聲音各自合成）：修掉每一段前後多餘的靜音，只留一點點，聽起來才不會一段一段斷開
-    // 門檻跟著這一段的最大音量走（約 3%，至少 0.006），不是固定值：模型輸出前後的「安靜」常帶著低音量的尾巴，固定門檻會漏掉。前面留 30 毫秒、後面留 60 毫秒（尾音自然收掉，不會被切斷）
-    _trimEdgeSilence(a) { let pk = 0; for (let k = 0; k < a.length; k++) { const x = Math.abs(a[k]); if (x > pk) pk = x; } let i = 0, j = a.length; const th = Math.max(0.006, pk * 0.03); while (i < j && Math.abs(a[i]) < th) i++; while (j > i && Math.abs(a[j - 1]) < th) j--; return a.subarray(Math.max(0, i - Math.round(TTS_SAMPLE_RATE * 0.03)), Math.min(a.length, j + Math.round(TTS_SAMPLE_RATE * 0.06))); }
+    // 門檻跟著這一段的最大音量走，不是固定值：模型輸出前後的「安靜」常帶著低音量的尾巴。
+    // 尾巴要切得比前面緊（7%）：中文片段被當成「一句話的結尾」合成，最後一個字會拖長、慢慢淡出，接英文時聽起來像換氣；
+    // 切掉淡出的尾巴、留 25 毫秒並做 25 毫秒的淡出，英文就緊接著上來。前面留 20 毫秒、做 8 毫秒淡入（不咔一聲）。
+    _trimEdgeSilence(a) {
+        let pk = 0; for (let k = 0; k < a.length; k++) { const x = Math.abs(a[k]); if (x > pk) pk = x; }
+        if (!(pk > 0)) return a; const thL = Math.max(0.006, pk * 0.03), thT = Math.max(0.01, pk * 0.07); let i = 0, j = a.length;
+        while (i < j && Math.abs(a[i]) < thL) i++; while (j > i && Math.abs(a[j - 1]) < thT) j--;
+        const sr = TTS_SAMPLE_RATE, s0 = Math.max(0, i - Math.round(sr * 0.02)), e0 = Math.min(a.length, j + Math.round(sr * 0.025)); const out = Float32Array.from(a.subarray(s0, e0));
+        const fi = Math.min(out.length, Math.round(sr * 0.008)), fo = Math.min(out.length, Math.round(sr * 0.025));
+        for (let k = 0; k < fi; k++) out[k] *= k / fi; for (let k = 0; k < fo; k++) out[out.length - 1 - k] *= k / fo;
+        return out;
+    }
     async _synthesizeSpeechLocal(t, voice, onProgress, speed, opts) {
         let chunks;
         if (voice.engine === 'local-zh') {
@@ -36662,24 +36672,27 @@ ${fnData.code}
         const gapSamples = Math.round(TTS_SAMPLE_RATE * 0.35 / Math.max(0.5, Number(speed) || 1));
         // 每句自己前後的靜音先修掉（模型每次輸出前後都帶約半秒的空白），停頓才是我們補的那一段、長度可控
         const trimSilence = (a) => { let i = 0, j = a.length; const th = 0.01; while (i < j && Math.abs(a[i]) < th) i++; while (j > i && Math.abs(a[j - 1]) < th) j--; const g = Math.round(TTS_SAMPLE_RATE * 0.04); return a.subarray(Math.max(0, i - g), Math.min(a.length, j + g)); };
-        const parts = [];
+        const parts = []; const joinFlags = []; // joinFlags[k]：這一段是「同一句話裡接起來的片段」（修過前後、可以跟前一段重疊）
         try {
             for (let i = 0; i < chunks.length; i++) {
                 if (onProgress && chunks.length > 1) onProgress(`合成中… 第 ${i + 1}/${chunks.length} 段`);
                 const samples = await this._synthesizeTtsChunk(chunks[i].text, chunks[i].voiceOverride || voice, onProgress, speed, chunks[i].phonemes);
-                parts.push(sentencePause ? trimSilence(samples) : (chunks[i].join ? this._trimEdgeSilence(samples) : samples));
-                if (sentencePause && chunks[i].endOfSentence && i < chunks.length - 1) parts.push(new Float32Array(gapSamples));
+                parts.push(sentencePause ? trimSilence(samples) : (chunks[i].join ? this._trimEdgeSilence(samples) : samples)); joinFlags.push(!sentencePause && !!chunks[i].join);
+                if (sentencePause && chunks[i].endOfSentence && i < chunks.length - 1) { parts.push(new Float32Array(gapSamples)); joinFlags.push(false); }
                 // 本地中文長段落分成好幾塊時：塊與塊之間補一小段自然的句間停頓（修掉空白後，不能黏在一起）
-                else if (voice.engine === 'local-zh' && i < chunks.length - 1 && chunks[i].phonemes && /[.!?。！？…]\s*$/.test(chunks[i].phonemes)) parts.push(new Float32Array(Math.round(TTS_SAMPLE_RATE * 0.28 / Math.max(0.5, Number(speed) || 1))));
+                else if (voice.engine === 'local-zh' && i < chunks.length - 1 && chunks[i].phonemes && /[.!?。！？…]\s*$/.test(chunks[i].phonemes)) { parts.push(new Float32Array(Math.round(TTS_SAMPLE_RATE * 0.28 / Math.max(0.5, Number(speed) || 1)))); joinFlags.push(false); }
             }
         } catch (err) {
             return { ok: false, error: '語音合成失敗：' + String(err && err.message || err) };
         }
+        // 同一句話裡中文與英文片段接起來：前後各自是「一句話的收尾／開頭」，接在一起像換氣；讓兩段重疊 60 毫秒（前段的尾巴淡出、後段的開頭淡入），中間就不會有縫
+        const OVL = Math.round(TTS_SAMPLE_RATE * 0.06);
+        const ov = parts.map((p, k) => (k > 0 && joinFlags[k] && joinFlags[k - 1]) ? Math.max(0, Math.min(OVL, Math.floor(p.length / 3), Math.floor(parts[k - 1].length / 3))) : 0);
         let totalLen = 0;
-        for (const p of parts) totalLen += p.length;
+        parts.forEach((p, k) => { totalLen += p.length - ov[k]; });
         const merged = new Float32Array(totalLen);
         let off = 0;
-        for (const p of parts) { merged.set(p, off); off += p.length; }
+        parts.forEach((p, k) => { off -= ov[k]; for (let n = 0; n < p.length; n++) merged[off + n] += p[n]; off += p.length; });
 
         const wantMp3 = this.advancedSettings.extractAudioFormat !== 'wav'; // 沿用同一個「要不要壓縮」偏好
         let blob, ext, mimeType;
