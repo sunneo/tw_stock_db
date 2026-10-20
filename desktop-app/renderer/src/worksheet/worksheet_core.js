@@ -101,11 +101,12 @@
       y += 4;
     }
     var top = y + 4, bottom = H - M, area = bottom - top;
-    var gen = { text: text, line: line, prims: prims, W: W, H: H, M: M, notes: notes };
+    var boxes = [{ kind: 'title', x: M, y: M, w: W - 2 * M, h: Math.max(8, top - M - (sp.header.name || sp.header.date ? 14 : 2)) }]; if (sp.header.name || sp.header.date || sp.header.school || sp.header.score) boxes.push({ kind: 'header', x: M, y: top - 18, w: W - 2 * M, h: 12 });
+    var gen = { text: text, line: line, prims: prims, W: W, H: H, M: M, notes: notes, rowBoxes: [] };
     // 每個區塊按權重分配高度
     var weights = sp.blocks.map(function (b) { return blockWeight(b); }), totalW = weights.reduce(function (a, b) { return a + b; }, 0) || 1, cursor = top;
-    sp.blocks.forEach(function (b, i) { var h = area * weights[i] / totalW; drawBlock(b, gen, M, cursor, W - 2 * M, h); cursor += h; });
-    return { w: W, h: H, prims: prims, notes: notes, spec: sp };
+    sp.blocks.forEach(function (b, i) { var h = area * weights[i] / totalW; gen.bi = i; drawBlock(b, gen, M, cursor, W - 2 * M, h); boxes.push({ kind: 'block', b: i, x: M, y: cursor, w: W - 2 * M, h: h }); cursor += h; });
+    return { w: W, h: H, prims: prims, notes: notes, spec: sp, boxes: boxes, rowBoxes: gen.rowBoxes };
   }
   function blockWeight(b) {
     if (b.type === 'spacer') return Math.max(0.05, b.mm / 200);
@@ -133,7 +134,7 @@
       var n = b.counts.length, maxC = Math.max.apply(null, b.counts), ansW = b.answer.side === 'right' ? 38 : 0, ringR = 0.17;
       var avail = w - ansW - 2; var d = Math.min(avail / (b.base + maxC + 1.7), (h / n) * 0.62, 11) * b.size, r = d / 2, step = h / n;
       b.counts.forEach(function (c, i) {
-        var cy = y0 + step * i + step / 2, x = x0 + d * ringR; ring(P, x, cy, d * ringR); x += d * ringR + r * 0.9; var gold = hex(b.baseColor, GOLD);
+        var cy = y0 + step * i + step / 2, x = x0 + d * ringR; g.rowBoxes.push({ b: g.bi, r: i, count: c, x: x0, y: y0 + step * i, w: w, h: step }); ring(P, x, cy, d * ringR); x += d * ringR + r * 0.9; var gold = hex(b.baseColor, GOLD);
         for (var k = 0; k < b.base; k++) { bead(P, x, cy, r, gold, darker(gold)); x += d; }
         x += d * 0.18; var col = hex(b.colors[c], BEAD_COLORS[c] || '#999999');
         for (var j = 0; j < c; j++) { bead(P, x - r * 0.9 + r, cy, r, col, col.toUpperCase() === '#FFFFFF' ? '#555555' : darker(col)); x += d; }
@@ -144,7 +145,7 @@
     }
     if (b.type === 'count_rows') {
       var nr = b.counts.length, maxN = Math.max.apply(null, b.counts), aw = b.answer.side === 'right' ? 38 : 0, sz = Math.min((w - aw - 4) / (maxN + 0.5), (h / nr) * 0.7, 12) * b.size, st = h / nr;
-      b.counts.forEach(function (c, i) { var cy = y0 + st * i + st / 2, col = (b.colors && b.colors.length ? b.colors[i % b.colors.length] : b.color); for (var k = 0; k < c; k++) shape(P, b.shape, x0 + sz * (k + 0.6), cy, sz * 0.42, col); answerSlot(g, b, x0 + w - aw + 6, x0 + w, cy, c); });
+      b.counts.forEach(function (c, i) { g.rowBoxes.push({ b: g.bi, r: i, count: c, x: x0, y: y0 + st * i, w: w, h: st }); var cy = y0 + st * i + st / 2, col = (b.colors && b.colors.length ? b.colors[i % b.colors.length] : b.color); for (var k = 0; k < c; k++) shape(P, b.shape, x0 + sz * (k + 0.6), cy, sz * 0.42, col); answerSlot(g, b, x0 + w - aw + 6, x0 + w, cy, c); });
       return;
     }
     if (b.type === 'equations') {
@@ -188,7 +189,18 @@
       else if (p.t === 'poly') o.push('<polygon points="' + p.pts.map(function (q) { return f(q[0]) + ',' + f(q[1]); }).join(' ') + '" fill="' + p.fill + '" stroke="' + p.stroke + '" stroke-width="' + f(p.sw) + '"/>');
       else if (p.t === 'text') o.push('<text x="' + f(p.x) + '" y="' + f(p.y) + '" font-size="' + f(p.size) + '"' + (p.bold ? ' font-weight="700"' : '') + ' text-anchor="' + p.anchor + '" fill="' + p.fill + '">' + esc(p.s) + '</text>');
     });
+    var sel = opt.selected;
+    if (sel) {
+      var bx = null; if (sel.kind === 'row') bx = (L.rowBoxes || []).filter(function (x) { return x.b === sel.b && x.r === sel.r; })[0]; else if (sel.kind === 'block') bx = (L.boxes || []).filter(function (x) { return x.kind === 'block' && x.b === sel.b; })[0]; else bx = (L.boxes || []).filter(function (x) { return x.kind === sel.kind; })[0];
+      if (bx) o.push('<rect x="' + f(bx.x - 1) + '" y="' + f(bx.y) + '" width="' + f(bx.w + 2) + '" height="' + f(bx.h) + '" fill="#2F81F7" fill-opacity="0.07" stroke="#2F81F7" stroke-width="0.5" stroke-dasharray="2 1.2" rx="1.5" pointer-events="none"/>');
+    }
     o.push('</svg>'); return o.join('\n');
+  }
+  // 點到版面上的什麼（座標是毫米）：{kind:'row',b,r}｜{kind:'block',b}｜{kind:'title'|'header'}｜null
+  function hitTest(L, mx, my) {
+    var inb = function (x) { return mx >= x.x && mx <= x.x + x.w && my >= x.y && my <= x.y + x.h; };
+    var rb = (L.rowBoxes || []).filter(inb)[0]; if (rb) return { kind: 'row', b: rb.b, r: rb.r };
+    var hb = (L.boxes || []).filter(inb), blk = hb.filter(function (x) { return x.kind === 'block'; })[0]; if (blk) return { kind: 'block', b: blk.b }; if (hb[0]) return { kind: hb[0].kind }; return null;
   }
   // 可以直接開啟、列印、再微調的 HTML（一頁一張 SVG；@page 設好紙張，瀏覽器「列印→另存 PDF」就是同一個樣子）
   function toHtml(L, opt) {
@@ -294,12 +306,13 @@
   function mergeRef(spec, ref) {
     var v = validate(spec), s = v.spec, notes = []; if (!ref || !ref.ok) return { spec: s, notes: ['沒有可用的參考圖片資訊'] };
     var b = s.blocks.filter(function (x) { return x.type === 'bead_rows'; })[0];
+    if (!b && ref.rows.length) { b = beadBlock({ counts: ref.rows.map(function (r) { return r.count; }).sort(function (x, y) { return x - y; }) }); s.blocks.push(b); if (!s.title) s.title = ref.title || '彩色串珠｜10又幾（一）'; if (!s.subtitle) s.subtitle = ref.subtitle || ''; notes.push('照參考圖片新增一組串珠'); }
     if (b) { if (ref.rows.length) { b.counts = ref.rows.map(function (r) { return r.count; }).sort(function (x, y) { return x - y; }); ref.rows.forEach(function (r) { if (r.color) b.colors[r.count] = r.color; }); notes.push('串數與顏色照參考圖片（' + ref.rows.length + ' 串）'); } if (ref.baseColor) b.baseColor = ref.baseColor; if (ref.base) b.base = ref.base; }
     return { spec: validate(s).spec, notes: notes };
   }
 
   // ───────────────────────── 人工調整：封閉的編輯動作 ─────────────────────────
-  var OPS = ['set_title', 'set_subtitle', 'set_counts', 'set_color', 'set_base_color', 'set_answer', 'set_page', 'set_size', 'set_header', 'add_block', 'remove_block', 'set_rows'];
+  var OPS = ['set_title', 'set_subtitle', 'set_counts', 'set_color', 'set_base_color', 'set_answer', 'set_page', 'set_size', 'set_header', 'add_block', 'remove_block', 'set_rows', 'set_block', 'move_block'];
   function applyEdits(spec, edits) {
     var s = validate(spec).spec, applied = [], rejected = []; var list = Array.isArray(edits) ? edits : (edits ? [edits] : []);
     var bead = function () { return s.blocks.filter(function (x) { return x.type === 'bead_rows' || x.type === 'count_rows' || x.type === 'ten_frames'; })[0]; };
@@ -316,6 +329,8 @@
         else if (op === 'set_size') { var f2 = clamp(e.scale, 0.4, 1.4); s.blocks.forEach(function (x) { if (x.size !== undefined) x.size = f2; }); }
         else if (op === 'set_header') { s.header = Object.assign({}, s.header, { name: e.name === undefined ? s.header.name : e.name !== false, date: e.date === undefined ? s.header.date : e.date !== false, school: e.school === true ? '' : s.header.school, score: e.score === undefined ? s.header.score : e.score === true }); }
         else if (op === 'add_block') { var nb = validateBlock(e.block, [], s.blocks.length + 1); if (!nb) throw new Error('區塊不合法'); if (s.blocks.length >= LIMITS.blocks) throw new Error('區塊太多'); s.blocks.splice(clamp(e.index == null ? s.blocks.length : e.index, 0, s.blocks.length), 0, nb); }
+        else if (op === 'set_block') { var sbi = int(e.index, -1); if (sbi < 0 || sbi >= s.blocks.length) throw new Error('沒有第 ' + sbi + ' 個區塊（從 0 起算）'); if (!e.patch || typeof e.patch !== 'object') throw new Error('patch 要是物件'); var probs = []; var merged = validateBlock(Object.assign({}, s.blocks[sbi], e.patch, { type: s.blocks[sbi].type }), probs, sbi + 1); if (!merged) throw new Error('改完的區塊不合法'); s.blocks[sbi] = merged; }
+        else if (op === 'move_block') { var mi = int(e.index, -1), mt = int(e.to, -1); if (mi < 0 || mi >= s.blocks.length || mt < 0 || mt >= s.blocks.length) throw new Error('index／to 要在 0～' + (s.blocks.length - 1)); var mb = s.blocks.splice(mi, 1)[0]; s.blocks.splice(mt, 0, mb); }
         else if (op === 'remove_block') { var ix = int(e.index, -1); if (ix < 0 || ix >= s.blocks.length) throw new Error('沒有第 ' + ix + ' 個區塊（從 0 起算）'); s.blocks.splice(ix, 1); }
         else throw new Error('不認得的動作「' + op + '」（可用：' + OPS.join('、') + '）');
         applied.push(op);
@@ -328,12 +343,83 @@
     s.blocks.forEach(function (b, i) { var d = (i) + '. ' + b.type; if (b.counts) d += '（' + b.counts.length + ' 筆：' + b.counts.join('、') + '）'; if (b.items) d += '（' + b.items.length + ' 題）'; if (b.answer) d += b.answer.show ? '，附答案' : '，答案留白'; out.push(d); });
     return out;
   }
+
+  // ───────────────────────── 編輯對話：程式先讀「改什麼」，讀不懂的才交給模型（封閉的動作集）─────────────────────────
+  var COLOR_KEYS = Object.keys(COLOR_WORDS).sort(function (a, b) { return b.length - a.length; });
+  function colorIn(t) { var m = /#[0-9a-f]{6}\b/i.exec(t); if (m) return m[0].toUpperCase(); var low = t.toLowerCase(); for (var i = 0; i < COLOR_KEYS.length; i++) if (low.indexOf(COLOR_KEYS[i]) >= 0) return COLOR_WORDS[COLOR_KEYS[i]]; return null; }
+  function colorRe() { return '(#[0-9a-fA-F]{6}|' + COLOR_KEYS.map(function (k) { return k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }).join('|') + ')'; }
+  // 一句話（或一段話）→ { edits:[…], matched:[原句…], unmatched:[原句…] }；每一小句各自判斷，沒對上的原樣留給呼叫端（交給模型或回報沒聽懂）
+  function parseEditRequest(text, spec) {
+    var out = { edits: [], matched: [], unmatched: [] }, cur = validate(spec).spec; var clauses = String(text || '').replace(/\[附件：[^\]]*\]/g, ' ').split(/[，,。；;\n]+|(?:然後|並且|而且|還有|接著|再來|另外)/).map(function (x) { return x.trim(); }).filter(Boolean);
+    var CR = colorRe(), bead = cur.blocks.filter(function (b) { return b.type === 'bead_rows'; })[0];
+    clauses.forEach(function (c) {
+      var e = [], m;
+      if ((m = /(?:標題|題目名稱)\s*(?:改成|換成|改為|設為|變成|是|叫做?|:|：)\s*[「"'『]?(.+?)[」"'』]?$/.exec(c))) e.push({ op: 'set_title', text: m[1] });
+      else if ((m = /(?:說明|副標題|指示)(?:文字)?\s*(?:改成|換成|改為|設為|變成|是|:|：)\s*[「"'『]?(.+?)[」"'』]?$/.exec(c))) e.push({ op: 'set_subtitle', text: m[1] });
+      else if ((m = /(?:改成|變成|做成|改做|做|只要|留|剩|減少到|增加到|共)\s*(\d+|[一二兩三四五六七八九十]{1,3})\s*(?:串|排|列|行)/.exec(c)) && !/顏色|色/.test(c.replace(/(\d+)\s*(串|排)/, ''))) { var n = cnNum(m[1]); if (n >= 1 && n <= LIMITS.rows) e.push({ op: 'set_rows', n: n }); }
+      else if ((m = new RegExp('(?:第\\s*)?(\\d+|[一二兩三四五六七八九十]{1,3})\\s*(?:顆|串|排|列|行|號)?[^，。,;]{0,6}?(?:的)?(?:顏色|色|珠)?\\s*(?:都)?(?:改成|換成|改為|變成|設為|用)\\s*' + CR, 'i').exec(c)) && bead) { var k = cnNum(m[1]), col = colorIn(m[2]); if (k >= 1 && col) e.push({ op: 'set_color', count: k, color: col }); }
+      else if ((m = new RegExp('(?:金色珠|金珠|金色|底部|前面那(?:一)?串|長串)[^，。,;]{0,6}(?:改成|換成|改為|變成|設為|用)\\s*' + CR, 'i').exec(c)) && bead) e.push({ op: 'set_base_color', color: colorIn(m[1]) });
+      else if (/(?:不要|拿掉|取消|隱藏|關掉)[^，。]{0,4}(?:答案線|橫線)/.test(c)) e.push({ op: 'set_answer', line: false });
+      else if (/(?:不要|拿掉|取消|隱藏|關掉|別)[^，。]{0,4}(?:答案|解答)|學生版|答案留白|留白/.test(c)) e.push({ op: 'set_answer', show: false });
+      else if (/(?:附|加|顯示|寫出|標出|要有|填上|寫上)[^，。]{0,4}(?:答案|解答)|教師版|answer\s*key/i.test(c)) e.push({ op: 'set_answer', show: true });
+      else if (/答案(?:線)?[^，。]{0,4}(?:下面|下方|題目下)|(?:下面|下方)[^，。]{0,4}(?:填|寫)/.test(c)) e.push({ op: 'set_answer', side: 'below' });
+      else if (/答案(?:線)?[^，。]{0,4}(?:右邊|右側)|(?:右邊|右側)[^，。]{0,4}(?:填|寫|答案)/.test(c)) e.push({ op: 'set_answer', side: 'right' });
+      else if (/橫式|橫向|landscape/i.test(c)) e.push({ op: 'set_page', orient: 'landscape' });
+      else if (/直式|直向|portrait/i.test(c)) e.push({ op: 'set_page', orient: 'portrait' });
+      else if (/\bA5\b/i.test(c)) e.push({ op: 'set_page', size: 'A5' }); else if (/\bA4\b/i.test(c)) e.push({ op: 'set_page', size: 'A4' }); else if (/letter/i.test(c)) e.push({ op: 'set_page', size: 'Letter' });
+      else if (/(?:大一點|放大|大一些|珠子大)/.test(c)) { var sz = (bead && bead.size) || 1; e.push({ op: 'set_size', scale: Math.min(1.4, Math.round(sz * 1.15 * 100) / 100) }); }
+      else if (/(?:小一點|縮小|小一些|珠子小)/.test(c)) { var sz2 = (bead && bead.size) || 1; e.push({ op: 'set_size', scale: Math.max(0.4, Math.round(sz2 * 0.87 * 100) / 100) }); }
+      else if ((m = /(?:不要|拿掉|取消|隱藏)[^，。]{0,3}(姓名|名字|日期)/.exec(c))) e.push({ op: 'set_header', [/日期/.test(m[1]) ? 'date' : 'name']: false });
+      else if ((m = /(?:加|要有|顯示)[^，。]{0,3}(姓名|名字|日期|分數)/.exec(c))) e.push({ op: 'set_header', [/日期/.test(m[1]) ? 'date' : (/分數/.test(m[1]) ? 'score' : 'name')]: true });
+      else if ((m = /(?:加|新增|再加|多一個)[^，。]{0,3}(數線|十格框|加法|減法|算式|數一數|文字)/.exec(c))) { var nm = m[1], blk = nm === '數線' ? { type: 'number_line', from: 0, to: 20 } : (nm === '十格框' ? { type: 'ten_frames' } : (nm === '數一數' ? { type: 'count_rows' } : (nm === '文字' ? { type: 'text', lines: ['在這裡寫說明'] } : { type: 'equations', kind: nm === '減法' ? 'sub' : 'add' }))); e.push({ op: 'add_block', block: blk }); }
+      else if ((m = /(?:刪掉|刪除|移除|拿掉)[^，。]{0,3}第\s*(\d+|[一二兩三四五六七八九十]{1,3})\s*個?\s*(?:區塊|塊)/.exec(c))) { var ix = cnNum(m[1]) - 1; if (ix >= 0) e.push({ op: 'remove_block', index: ix }); }
+      if (e.length) { out.edits = out.edits.concat(e); out.matched.push(c); } else out.unmatched.push(c);
+    });
+    return out;
+  }
+  // 讀不懂的句子才交給模型：只准回 { say, edits:[…] }，edits 的 op 必須在封閉清單裡（再由 applyEdits 逐一驗證）
+  function editPrompt(spec, unmatchedText) {
+    var s = validate(spec).spec; var compact = JSON.stringify(s).slice(0, 3000);
+    return { system: '你是學習單的編輯助手。使用者用一句話說想怎麼改這份學習單，你把它翻成「編輯動作」。只回一段 JSON，不要說明、不要 markdown：{"say":"一句話告訴使用者你改了什麼（做不到就說做不到）","edits":[…]}。\\n動作只能是下面這些（欄位照寫，不要發明新的動作）：\\n' + TOPICS.edits + '\\n顏色一律用 #RRGGBB。看不懂、或做不到的要求：edits 給空陣列，在 say 說明，不要亂猜。',
+      user: '目前的學習單：\\n' + describe(s).join('\\n') + '\\n描述（JSON）：' + compact + '\\n\\n使用者說：' + String(unmatchedText || '') };
+  }
+  function parseEditsReply(text) {
+    var j = extractJson(text); if (!j || typeof j !== 'object') return { ok: false, say: '', edits: [], error: '模型的回覆讀不成 JSON' };
+    var edits = (Array.isArray(j.edits) ? j.edits : []).filter(function (e) { return e && OPS.indexOf(e.op) >= 0; }).slice(0, 20);
+    return { ok: true, say: j.say ? str(j.say, 300) : '', edits: edits, dropped: (Array.isArray(j.edits) ? j.edits.length : 0) - edits.length };
+  }
+  // ───────────────────────── 把整個編輯過程摘要成一段 prompt（程式組，沒有模型也行）─────────────────────────
+  // history：[{ text: 使用者說的話, kind: 'chat'|'panel'|'image'|'undo', summary: '改了什麼' }]；回傳可以直接貼給 worksheet_make 重做同一份的原話
+  function specToPrompt(spec, history) {
+    var s = validate(spec).spec, L = []; var pg = s.page.size + (s.page.orient === 'landscape' ? ' 橫式' : ' 直式');
+    L.push('幫我做一份' + pg + '的學習單' + (s.title ? '，標題是「' + s.title + '」' : '') + (s.subtitle ? '，說明文字是「' + s.subtitle + '」' : '') + '，抬頭有' + [s.header.name ? '姓名' : '', s.header.date ? '日期' : '', s.header.school ? '學校' : '', s.header.score ? '分數' : ''].filter(Boolean).join('、') + '欄。');
+    s.blocks.forEach(function (b, i) {
+      var d = '第 ' + (i + 1) + ' 區：';
+      if (b.type === 'bead_rows') { var names = {}; d += b.base + ' 又幾串珠，共 ' + b.counts.length + ' 串（' + b.base + '又' + b.counts.join('、' + b.base + '又') + '）；前面一整串 ' + b.base + ' 顆金珠（' + b.baseColor + '），後面的彩色珠顏色：' + b.counts.map(function (c) { return c + '顆' + (hex(b.colors[c], BEAD_COLORS[c] || '#999999')); }).join('、') + '；' + answerWords(b.answer) + (b.size !== 1 ? '；珠子大小 ' + Math.round(b.size * 100) + '%' : ''); }
+      else if (b.type === 'count_rows') d += '數一數，' + b.counts.length + ' 排，數量 ' + b.counts.join('、') + '，用' + ({ circle: '圓', square: '方塊', star: '星星' }[b.shape]) + '（' + b.color + '）；' + answerWords(b.answer);
+      else if (b.type === 'equations') d += (b.items.length) + ' 題算式，分 ' + b.columns + ' 欄：' + b.items.slice(0, 6).join('、') + (b.items.length > 6 ? '…' : '');
+      else if (b.type === 'ten_frames') d += '十格框 ' + b.counts.length + ' 個，點數 ' + b.counts.join('、') + '（' + b.color + '）；' + answerWords(b.answer);
+      else if (b.type === 'number_line') d += '數線 ' + b.from + '～' + b.to + '，空格在 ' + (b.blanks.join('、') || '（沒有）');
+      else if (b.type === 'text') d += '文字：' + b.lines.join(' / ');
+      else d += '空白 ' + b.mm + ' 毫米';
+      L.push(d + '。');
+    });
+    var steps = (history || []).filter(function (h) { return h && h.kind !== 'undo' && h.kind !== 'start' && (h.summary || h.text); });
+    if (steps.length) { L.push('', '（編輯過程，依序）：'); steps.forEach(function (h, i) { L.push((i + 1) + '. ' + (h.text ? '我說：「' + String(h.text).slice(0, 80) + '」→ ' : '') + (h.summary || '')); }); }
+    return L.join('\n');
+  }
+  function answerWords(a) { a = a || {}; return a.side === 'none' ? '沒有答案線' : '答案線在' + (a.side === 'below' ? '下方' : '右側') + (a.show ? '，寫出答案（教師版）' : '，留白（學生版）'); }
+  // 一組編輯動作 → 一行白話（編輯記錄用）
+  function editWords(e) {
+    var o = e && e.op; var t = { set_title: function () { return '標題改成「' + e.text + '」'; }, set_subtitle: function () { return '說明改成「' + e.text + '」'; }, set_counts: function () { return '顆數改成 ' + (e.counts || []).join('、'); }, set_rows: function () { return '串數改成 ' + e.n; }, set_color: function () { return '第 ' + e.count + ' 串的顏色改成 ' + e.color; }, set_base_color: function () { return '金珠顏色改成 ' + e.color; }, set_answer: function () { return (e.show === true ? '附上答案' : e.show === false ? '答案留白' : '') + (e.side ? '答案線放' + (e.side === 'below' ? '下方' : e.side === 'right' ? '右側' : '：無') : '') + (e.line === false ? '拿掉答案線' : ''); }, set_page: function () { return '紙張：' + [e.size, e.orient === 'landscape' ? '橫式' : (e.orient === 'portrait' ? '直式' : '')].filter(Boolean).join(' '); }, set_size: function () { return '珠子大小 ' + Math.round(e.scale * 100) + '%'; }, set_header: function () { return '抬頭欄位調整'; }, add_block: function () { return '新增一個「' + (e.block && e.block.type) + '」區塊'; }, remove_block: function () { return '刪掉第 ' + (e.index + 1) + ' 個區塊'; }, set_block: function () { return '調整第 ' + (e.index + 1) + ' 個區塊（' + Object.keys(e.patch || {}).join('、') + '）'; }, move_block: function () { return '把第 ' + (e.index + 1) + ' 個區塊移到第 ' + (e.to + 1) + ' 個'; } };
+    return t[o] ? t[o]() : String(o || '');
+  }
   var TOPICS = {
     format: '學習單描述（JSON）：{title, subtitle, header:{name,date,school,score}, page:{size:"A4|A5|Letter", orient:"portrait|landscape", margin:mm}, blocks:[區塊…]}。區塊 type：bead_rows｛base:10, counts:[1..8], colors:{顆數:"#RRGGBB"}, baseColor, answer:{side:"right|below|none", line, show}, size｝、count_rows｛counts, shape:"circle|square|star", color, answer｝、equations｛kind:"add|sub", max, count, columns 或 items:["3 + 4 = ____"]｝、ten_frames｛counts:[0..10], color, answer, columns｝、number_line｛from, to, blanks:[數字]｝、text｛lines:[…], size, align, bold｝、spacer｛mm｝。座標與文字大小程式自己排，不要寫座標。',
-    edits: '調整用 worksheet_adjust 的 edits（一次可以多個）：{op:"set_title",text}、{op:"set_subtitle",text}、{op:"set_counts",counts:[…]}、{op:"set_rows",n}、{op:"set_color",count:3,color:"#F2D4CF"}、{op:"set_base_color",color}、{op:"set_answer",show:true|false,side:"right|below|none",line:true|false}、{op:"set_page",size,orient,margin}、{op:"set_size",scale:0.4~1.4}、{op:"set_header",name,date,score}、{op:"add_block",block:{…},index}、{op:"remove_block",index}。',
+    edits: '調整用 worksheet_adjust 的 edits（一次可以多個）：{op:"set_title",text}、{op:"set_subtitle",text}、{op:"set_counts",counts:[…]}、{op:"set_rows",n}、{op:"set_color",count:3,color:"#F2D4CF"}、{op:"set_base_color",color}、{op:"set_answer",show:true|false,side:"right|below|none",line:true|false}、{op:"set_page",size,orient,margin}、{op:"set_size",scale:0.4~1.4}、{op:"set_header",name,date,score}、{op:"add_block",block:{…},index}、{op:"remove_block",index}、{op:"set_block",index,patch:{…該區塊的欄位，例如 base、counts、shape、kind、max、count、columns、from、to、blanks、lines}}、{op:"move_block",index,to}。',
     reference: '有參考圖片時：worksheet_make 帶 reference_file_id（上傳圖片的 file_id）。視覺模型只被問一小段 JSON（每串的顆數與顏色、標題、金色珠的顏色），程式檢查後合併進學習單；看不出來的欄位用預設，不會亂猜。顏色不對就用 set_color 一個一個改。',
     colors: '串珠標準色（蒙特梭利）：1 紅 #C8174F、2 綠 #8CC63F、3 粉 #F2D4CF、4 黃 #F5E51E、5 藍 #3F87D4、6 紫 #5E2C79、7 白 #FFFFFF、8 桃紅 #E0457B、9 深藍 #274B8F，金色（10）#E9B22E。'
   };
   return { PAGES: PAGES, LIMITS: LIMITS, BEAD_COLORS: BEAD_COLORS, GOLD: GOLD, OPS: OPS, TOPICS: TOPICS, defaults: defaults, beadBlock: beadBlock, validate: validate, layout: layout, toSvg: toSvg, toHtml: toHtml, toPdfmake: toPdfmake, drawCanvas: drawCanvas, textWidth: textWidth,
-    detectTemplate: detectTemplate, parseRequest: parseRequest, resolveQuestions: resolveQuestions, refPrompt: refPrompt, refFromReply: refFromReply, mergeRef: mergeRef, applyEdits: applyEdits, describe: describe, hex: hex, makeEquations: makeEquations };
+    detectTemplate: detectTemplate, parseRequest: parseRequest, resolveQuestions: resolveQuestions, refPrompt: refPrompt, refFromReply: refFromReply, mergeRef: mergeRef, applyEdits: applyEdits, describe: describe, hex: hex, makeEquations: makeEquations, hitTest: hitTest, parseEditRequest: parseEditRequest, editPrompt: editPrompt, parseEditsReply: parseEditsReply, specToPrompt: specToPrompt, editWords: editWords };
 });

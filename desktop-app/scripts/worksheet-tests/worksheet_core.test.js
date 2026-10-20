@@ -71,6 +71,23 @@ check('edits: do not change the input spec', r.spec.title === '彩色串珠｜10
 check('edits: add and remove blocks', (() => { const a = W.applyEdits(r.spec, [{ op: 'add_block', block: { type: 'text', lines: ['hi'] } }]); const c = W.applyEdits(a.spec, [{ op: 'remove_block', index: 0 }]); return a.spec.blocks.length === 2 && c.spec.blocks.length === 1 && c.spec.blocks[0].type === 'text'; })());
 check('edits: describe lists the blocks in plain words', W.describe(r.spec).join('\n').includes('bead_rows') && /答案留白/.test(W.describe(r.spec).join('\n')));
 
+// ---------- 編輯對話：程式先讀（讀不懂的才交給模型）----------
+const PE = W.parseEditRequest('把第3串改成粉紅色，附上答案，改成橫式，珠子大一點，標題改成「我的串珠」，然後變魔術', r.spec);
+check('edit request: each clause is read by the program (colour, answers, landscape, size, title)', PE.edits.map((e) => e.op).join() === 'set_color,set_answer,set_page,set_size,set_title' && PE.edits[0].count === 3 && PE.edits[0].color === '#F2D4CF' && PE.edits[1].show === true && PE.edits[2].orient === 'landscape' && PE.edits[4].text === '我的串珠', PE.edits);
+check('edit request: what it cannot read is left over for the model, nothing is guessed', PE.unmatched.join() === '變魔術' && PE.matched.length === 5, PE);
+check('edit request: rows, header, add/remove blocks, teacher/student version', (() => { const o = (t) => W.parseEditRequest(t, r.spec).edits[0]; return o('做成5串').n === 5 && o('不要日期').date === false && o('加一個數線').block.type === 'number_line' && o('刪掉第1個區塊').index === 0 && o('學生版').show === false && o('答案放下方').side === 'below' && o('金色珠改成橘色').color === '#F28C28'; })());
+check('edit request: "第3串改成…" without a bead block is not misread', W.parseEditRequest('第3串改成紅色', { blocks: [{ type: 'equations' }] }).edits.length === 0);
+check('edit request: the edits it produces are all valid ops (applyEdits accepts them)', (() => { const x = W.applyEdits(r.spec, PE.edits); return x.rejected.length === 0 && x.applied.length === 5; })());
+const mp = W.editPrompt(r.spec, '弄得更適合小朋友'); check('model prompt: closed op list, current sheet and the sentence', /set_color/.test(mp.system) && /只回一段 JSON/.test(mp.system) && /弄得更適合小朋友/.test(mp.user) && /bead_rows/.test(mp.user));
+const pr2 = W.parseEditsReply('好：{"say":"改好了","edits":[{"op":"set_title","text":"x"},{"op":"rm_rf"},{"nope":1}]}'); check('model reply: only ops in the closed list survive; garbage is not ok', pr2.ok && pr2.edits.length === 1 && pr2.dropped === 2 && W.parseEditsReply('hello').ok === false);
+check('set_block / move_block: patch is re-validated; bad index is rejected', (() => { const x = W.applyEdits(r.spec, [{ op: 'set_block', index: 0, patch: { base: 99, counts: [1, 2], type: 'text' } }, { op: 'set_block', index: 7, patch: {} }, { op: 'move_block', index: 0, to: 3 }]); return x.spec.blocks[0].type === 'bead_rows' && x.spec.blocks[0].base === 20 && x.spec.blocks[0].counts.join() === '1,2' && x.rejected.length === 2; })());
+check('hitTest: a click on a bead row, on the title, outside', (() => { const Lx = W.layout(r.spec); const rb = Lx.rowBoxes[2]; const h1 = W.hitTest(Lx, rb.x + 10, rb.y + rb.h / 2), h2 = W.hitTest(Lx, 105, 15), h3 = W.hitTest(Lx, -5, -5); return h1.kind === 'row' && h1.r === 2 && h2.kind === 'title' && h3 === null; })());
+check('svg selection box is drawn only when something is selected', !/stroke-dasharray="2 1.2"/.test(W.toSvg(W.layout(r.spec))) && /stroke-dasharray="2 1.2"/.test(W.toSvg(W.layout(r.spec), { selected: { kind: 'row', b: 0, r: 1 } })));
+const SP = W.specToPrompt(E.spec, [{ kind: 'start', summary: '開始' }, { kind: 'chat', text: '改標題', summary: '標題改成「彩色串珠（二）」' }, { kind: 'undo', summary: 'x' }]);
+check('summary prompt: describes the sheet (title, rows, colours, answers) and lists the edit steps (no start/undo)', /彩色串珠（二）/.test(SP) && /5 串/.test(SP) && /#F2D4CF/.test(SP) && /教師版/.test(SP) && /編輯過程/.test(SP) && /1\. 我說：「改標題」/.test(SP) && !/開始/.test(SP), SP);
+check('summary prompt can be read back by the request parser (round trip: same rows)', W.parseRequest(SP).spec.blocks[0].counts.length >= 1);
+check('mergeRef creates a bead block when the sheet has none', (() => { const m = W.mergeRef(W.validate({ title: '', blocks: [] }).spec, W.refFromReply('{"rows":[{"count":1,"color":"#111111"},{"count":2,"color":"#222222"}]}')); return m.spec.blocks.length === 1 && m.spec.blocks[0].counts.join() === '1,2' && m.spec.blocks[0].colors[2] === '#222222' && m.spec.title !== ''; })());
+
 // ---------- 封閉題：弱模型只選字母，選不出來就用預設 ----------
 (async () => {
   const asked = []; const a = await W.resolveQuestions(W.parseRequest('串珠 10又1'), async (q, opts) => { asked.push({ q, opts }); return 2; });
