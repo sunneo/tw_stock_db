@@ -76,8 +76,27 @@
     if (t === 'ten_frames') { var ns = (Array.isArray(b.counts) ? b.counts : []).map(function (x) { return int(x, -1); }).filter(function (x) { return x >= 0 && x <= 10; }).slice(0, 12); if (!ns.length) ns = [3, 5, 7, 8, 4, 6]; return { type: 'ten_frames', counts: ns, color: hex(b.color, '#3F87D4'), answer: validateAnswer(b.answer), columns: clamp(int(b.columns, 2), 1, 3) }; }
     if (t === 'number_line') { var from = int(b.from, 0), to = int(b.to, 20); if (to <= from || to - from > 40) { problems.push('數線範圍不合理，改用 0～20'); from = 0; to = 20; } return { type: 'number_line', from: from, to: to, blanks: (Array.isArray(b.blanks) ? b.blanks : []).map(function (x) { return int(x, from - 1); }).filter(function (x) { return x >= from && x <= to; }).slice(0, 20) }; }
     if (t === 'text') { return { type: 'text', lines: (Array.isArray(b.lines) ? b.lines : [str(b.text, LIMITS.text)]).map(function (x) { return str(x, 200); }).filter(Boolean).slice(0, 30), size: clamp(b.size == null ? 1 : b.size, 0.6, 2), align: b.align === 'center' ? 'center' : 'left', bold: b.bold === true }; }
+    if (t === 'number_bond') {
+      var tot = clamp(int(b.total, 5), 2, 12); var cells = (Array.isArray(b.cells) ? b.cells : []).slice(0, 12).map(function (c) {
+        var a = c && c.a != null && c.a !== '' ? int(c.a, null) : null, bb = c && c.b != null && c.b !== '' ? int(c.b, null) : null; if (a != null && (a < 0 || a > tot)) a = null; if (bb != null && (bb < 0 || bb > tot)) bb = null;
+        if (a != null && bb != null && a + bb !== tot) { problems.push('第 ' + n + ' 個區塊的 ' + a + '+' + bb + ' 加起來不是 ' + tot + '，右邊改成 ' + (tot - a)); bb = tot - a; } return { a: a, b: bb }; });
+      if (!cells.length) cells = bondCells(tot, [], 0, 'fill');
+      var cc = Array.isArray(b.cubeColors) ? b.cubeColors : [];
+      return { type: 'number_bond', total: tot, cells: cells, cols: clamp(int(b.cols, cells.length <= 2 ? 1 : (cells.length <= 8 ? 2 : 3)), 1, 3), showNumbers: b.showNumbers !== false, fill: b.fill === true, rootColor: hex(b.rootColor, '#D93025'), childColor: hex(b.childColor, '#2F6FD0'), cubeColors: [hex(cc[0], '#F6A33B'), hex(cc[1], '#E5383B')] };
+    }
     if (t === 'spacer') return { type: 'spacer', mm: clamp(b.mm == null ? 10 : b.mm, 1, 80) };
     problems.push('不認得的區塊種類「' + t + '」（第 ' + n + ' 個），略過'); return null;
+  }
+  // 數的組成（二元樹）每一格的拆法：listed＝[[a,b],…]；wanted＝總格數（0＝只用 listed，沒有 listed 就列出全部 1..total-1）
+  var CIRCLE_COLORS = { 紅: '#D93025', 藍: '#2F6FD0', 綠: '#2E9E4F', 黃: '#E8B923', 紫: '#7B3FA0', 橘: '#F28C28', 黑: '#222222' };
+  function bondCells(total, listed, wanted, mode) {
+    var cells = (listed || []).map(function (p) { return { a: p[0], b: p[1] }; });
+    if (!cells.length && !wanted) { for (var i = 1; i < total; i++) cells.push({ a: i, b: total - i }); return cells; }
+    if (!wanted || wanted <= cells.length) return cells;
+    if (mode === 'blank') { while (cells.length < wanted) cells.push({ a: null, b: null }); return cells; }
+    if (mode === 'repeat') { var base = cells.slice(); var k = 0; while (cells.length < wanted && base.length) cells.push(base[k++ % base.length]); return cells; }
+    var have = {}; cells.forEach(function (c) { have[c.a] = 1; }); for (var a = 0; a <= total && cells.length < wanted; a++) if (!have[a]) { cells.push({ a: a, b: total - a }); have[a] = 1; }
+    while (cells.length < wanted) cells.push({ a: null, b: null }); return cells;
   }
   function makeEquations(kind, max, count, seed) {
     var out = [], s = seed || 7; function rnd(n) { s = (s * 1103515245 + 12345) & 0x7fffffff; return s % n; }
@@ -112,6 +131,7 @@
     if (b.type === 'spacer') return Math.max(0.05, b.mm / 200);
     if (b.type === 'text') return Math.max(0.12, b.lines.length * 0.05 * b.size);
     if (b.type === 'number_line') return 0.3;
+    if (b.type === 'number_bond') return Math.max(0.9, Math.ceil(b.cells.length / b.cols) * 0.34);
     if (b.type === 'equations') return Math.max(0.4, Math.ceil(b.items.length / b.columns) * 0.09 * b.size);
     if (b.type === 'ten_frames') return Math.max(0.5, Math.ceil(b.counts.length / b.columns) * 0.28);
     if (b.type === 'count_rows') return Math.max(0.6, b.counts.length * 0.12 * b.size);
@@ -151,6 +171,29 @@
     if (b.type === 'equations') {
       var rowsN = Math.ceil(b.items.length / b.columns), rh = Math.min(h / rowsN, 18), fs = Math.min(rh * 0.5, 7.5) * b.size, cw = w / b.columns;
       b.items.forEach(function (q, i) { var rr = Math.floor(i / b.columns), cc = i % b.columns; g.text(x0 + cc * cw + 4, y0 + rh * rr + rh * 0.7, (i + 1) + '.  ' + q, fs); });
+      return;
+    }
+    if (b.type === 'number_bond') {
+      var cols2 = b.cols, rows2 = Math.ceil(b.cells.length / cols2), cw3 = w / cols2, ch3 = h / rows2, T = b.total;
+      for (var kc = 1; kc < cols2; kc++) g.line(x0 + cw3 * kc, y0 + 1, x0 + cw3 * kc, y0 + h - 1, { stroke: '#666666', sw: 0.35 });
+      for (var kr = 1; kr < rows2; kr++) g.line(x0 + 1, y0 + ch3 * kr, x0 + w - 1, y0 + ch3 * kr, { stroke: '#666666', sw: 0.35 });
+      b.cells.forEach(function (c, i) {
+        var rr = Math.floor(i / cols2), cc2 = i % cols2, cx0 = x0 + cw3 * cc2, cy0 = y0 + ch3 * rr;
+        var bx = cx0 + 8, by = cy0 + 8, bs = 4.4; P.push({ t: 'poly', pts: [[bx, by - bs], [bx + bs, by], [bx, by + bs], [bx - bs, by]], fill: '#5BAA3C', stroke: '#3F7F28', sw: 0.2 }); g.text(bx, by + 1.3, String(i + 1), 3.6, { anchor: 'middle', fill: '#FFFFFF', bold: true });
+        // 積木：一直排 T 個（頂端有連接的小凸起），塗色版（教師版）依拆法上色：上面 a 個一種顏色、其餘另一種
+        var cs = Math.min((ch3 - 26) / T, 10.5, cw3 * 0.17), colX = cx0 + cw3 * 0.09, colTop = cy0 + (ch3 - T * cs) / 2 + 3;
+        P.push({ t: 'rect', x: colX + cs * 0.27, y: colTop - cs * 0.2, w: cs * 0.46, h: cs * 0.2, fill: '#FFFFFF', stroke: '#555555', sw: 0.3, rx: 0 });
+        var split = c.a != null ? c.a : (c.b != null ? T - c.b : null);
+        for (var j = 0; j < T; j++) {
+          var fillc = b.fill && split != null ? (j < split ? b.cubeColors[0] : b.cubeColors[1]) : '#FFFFFF'; P.push({ t: 'rect', x: colX, y: colTop + j * cs, w: cs, h: cs, fill: fillc, stroke: '#555555', sw: 0.3, rx: cs * 0.1 });
+          P.push({ t: 'circle', cx: colX + cs / 2, cy: colTop + j * cs + cs / 2, r: cs * 0.21, fill: b.fill && split != null ? lighter(fillc) : '#FFFFFF', stroke: '#777777', sw: 0.2 });
+        }
+        // 樹：上面一個紅圈（樹根），下面左右各一個藍圈（兒子），兒子裡寫數字
+        var tx = cx0 + cw3 * 0.63, r = Math.min(cw3 * 0.11, ch3 * 0.12, 9), rootY = cy0 + ch3 * 0.3, childY = cy0 + ch3 * 0.68, spread = cw3 * 0.17;
+        g.line(tx, rootY + r, tx - spread, childY - r, { stroke: '#8A8A8A', sw: 0.5 }); g.line(tx, rootY + r, tx + spread, childY - r, { stroke: '#8A8A8A', sw: 0.5 });
+        P.push({ t: 'circle', cx: tx, cy: rootY, r: r, fill: '#FFFFFF', stroke: b.rootColor, sw: 0.9 }); if (b.fill) g.text(tx, rootY + r * 0.36, String(T), r * 1.05, { anchor: 'middle', fill: b.rootColor, bold: true });
+        [[-spread, c.a], [spread, c.b]].forEach(function (ch) { P.push({ t: 'circle', cx: tx + ch[0], cy: childY, r: r, fill: '#FFFFFF', stroke: b.childColor, sw: 0.9 }); if (ch[1] != null && (b.showNumbers || b.fill)) g.text(tx + ch[0], childY + r * 0.36, String(ch[1]), r * 1.05, { anchor: 'middle', fill: b.childColor, bold: true }); });
+      });
       return;
     }
     if (b.type === 'ten_frames') {
@@ -237,6 +280,7 @@
   function cnNum(s) { var m = { 零: 0, 〇: 0, 一: 1, 二: 2, 兩: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 }; if (/^\d+$/.test(s)) return parseInt(s, 10); if (s === '十') return 10; if (s.length === 1) return m[s]; if (s[0] === '十') return 10 + (m[s[1]] || 0); if (s[1] === '十') return (m[s[0]] || 0) * 10 + (m[s[2]] || 0); return NaN; }
   function detectTemplate(t) {
     if (/串珠|金色珠|彩色珠|\d+\s*又\s*\d*|又\s*幾|bead/i.test(t)) return 'bead_rows';
+    if (/二元樹|樹狀|樹根|兒子|數的組成|分解|number\s*bond|組成.*積木|積木.*組成|(?:積木|方塊|cubes?)[\s\S]{0,80}\d+\s*[+＋]\s*\d+|\d+\s*[+＋]\s*\d+[\s\S]{0,80}(?:積木|方塊|cubes?)/i.test(t)) return 'number_bond';
     if (/十格|ten[\s-]?frame/i.test(t)) return 'ten_frames';
     if (/數線|number[\s-]?line/i.test(t)) return 'number_line';
     if (/數一數|數數看|幾個|count(ing)?\b/i.test(t)) return 'count_rows';
@@ -267,6 +311,23 @@
       spec.title = base === 10 ? '彩色串珠｜10又幾（一）' : '彩色串珠｜' + base + '又幾（一）';
       spec.subtitle = '每一串有一整串' + base + '顆金色珠，再加上幾顆彩色珠？在右側橫線上寫下對應的數字';
       spec.blocks.push({ type: 'bead_rows', base: base, counts: counts, colors: colors, baseColor: baseColor, answer: answer, size: 1 });
+    } else if (tpl === 'number_bond') {
+      var pairsB = [], rp = /(\d+)\s*[+＋]\s*(\d+)/g, mp; while ((mp = rp.exec(t))) pairsB.push([parseInt(mp[1], 10), parseInt(mp[2], 10)]);
+      var tm = /每\s*(?:個|一個)?\s*格子?\s*(?:都)?\s*(?:是|有)\s*(\d+|[一二兩三四五六七八九十]{1,3})\s*(?:個)?\s*(?:積木|方塊)/.exec(t) || /(\d+|[一二兩三四五六七八九十]{1,3})\s*(?:個)?\s*(?:積木|方塊)/.exec(t) || /(?:分解|組成)\s*(\d+|[一二兩三四五六七八九十]{1,3})/.exec(t);
+      var total = tm ? cnNum(tm[1]) : (pairsB.length ? pairsB[0][0] + pairsB[0][1] : 5); if (!(total >= 2 && total <= 12)) { notes.push('積木數不合理，改用 5'); total = 5; }
+      var refB = ctx.reference && ctx.reference.kind === 'number_bond' ? ctx.reference : null; // 參考圖片只補「請求裡沒說」的部分，請求裡明講的優先
+      if (refB) { if (!tm && refB.total) total = refB.total; if (!pairsB.length) pairsB = refB.cells.filter(function (c) { return c.a != null && c.b != null; }).map(function (c) { return [c.a, c.b]; }); if (refB.total || pairsB.length) notes.push('參考圖片：' + (refB.total ? '每格 ' + refB.total + ' 個積木' : '') + (refB.cellCount ? '、' + refB.cellCount + ' 格' : '')); }
+      var kept = pairsB.filter(function (q) { return q[0] + q[1] === total; }); if (kept.length < pairsB.length) notes.push('有 ' + (pairsB.length - kept.length) + ' 組算式加起來不是 ' + total + '，已略過'); pairsB = kept.filter(function (q, i) { return kept.findIndex(function (z) { return z[0] === q[0]; }) === i; });
+      var cmm = /(\d+|[一二兩三四五六七八九十]{1,3})\s*個?\s*(?:大)?格(?:子)?/.exec(t), wanted = cmm ? cnNum(cmm[1]) : 0; if (!(wanted >= 1 && wanted <= 12)) wanted = 0;
+      if (!wanted && refB && refB.cellCount) wanted = refB.cellCount;
+      var fillMode = ctx.fill || 'fill'; var cellsB = bondCells(total, pairsB, wanted, fillMode);
+      if (wanted && wanted < pairsB.length) notes.push('列了 ' + pairsB.length + ' 組算式，格子增加成 ' + pairsB.length + ' 個'); if (!pairsB.length) notes.push('沒有指定算式：列出 ' + total + ' 的全部拆法（1+' + (total - 1) + ' 到 ' + (total - 1) + '+1）');
+      if (wanted > pairsB.length && pairsB.length) { notes.push('有 ' + wanted + ' 格但只列了 ' + pairsB.length + ' 組：' + (fillMode === 'blank' ? '其餘留空白' : (fillMode === 'repeat' ? '其餘重複前面的' : '其餘補上其他拆法（' + cellsB.slice(pairsB.length).map(function (c) { return c.a + '+' + c.b; }).join('、') + '）')));
+        if (!ctx.fill) questions.push({ id: 'fill', q: '有 ' + wanted + ' 格，但只列了 ' + pairsB.length + ' 組算式，其餘的格子怎麼辦？', options: ['補上其他拆法（預設）', '留空白，讓學生自己填', '重複前面的'], values: ['fill', 'blank', 'repeat'], default: 0, data: { total: total, listed: pairsB, wanted: wanted } }); }
+      var teacher = /(附|有|含|顯示|標出)[^，。,;]{0,6}(答案|解答)|教師版|塗好|著色好|answer\s*key/i.test(t), noNum = /(不要|別|先不要|留空|空白)[^，。,;]{0,5}(數字|兒子|圈)|(數字|兒子|圈)[^，。,;]{0,4}(留空|空白|先不寫|不要寫|不用寫)/.test(t);
+      var rc = (/樹根[^，。,;]{0,4}?(紅|藍|綠|黃|紫|橘|黑)/.exec(t) || [])[1], cc3 = (/兒子[^，。,;]{0,4}?(紅|藍|綠|黃|紫|橘|黑)/.exec(t) || [])[1];
+      spec.title = '數的組成：' + total + ' 可以分成哪兩個數？'; spec.subtitle = '塗一塗積木，想一想 ' + total + ' 可以分成哪兩個數，把數字寫在下面的圓圈裡';
+      spec.blocks.push({ type: 'number_bond', total: total, cells: cellsB, cols: cellsB.length <= 2 ? 1 : (cellsB.length <= 8 ? 2 : 3), showNumbers: !noNum, fill: teacher, rootColor: rc ? (CIRCLE_COLORS[rc] || '#D93025') : '#D93025', childColor: cc3 ? (CIRCLE_COLORS[cc3] || '#2F6FD0') : '#2F6FD0' }); if (teacher) notes.push('做成教師版：積木上色、樹根寫出 ' + total);
     } else if (tpl === 'count_rows') {
       var nums = (t.match(/\d+/g) || []).map(Number).filter(function (x) { return x >= 1 && x <= LIMITS.beads; }); var shp = /星/.test(t) ? 'star' : (/方/.test(t) ? 'square' : 'circle'); var cl = (Object.keys(COLOR_WORDS).filter(function (k) { return t.indexOf(k) >= 0 && k.length > 1; }).map(function (k) { return COLOR_WORDS[k]; })[0]) || '#E0457B';
       spec.title = '數一數'; spec.subtitle = '數數看有幾個，在右側橫線上寫下數字'; spec.blocks.push({ type: 'count_rows', counts: nums.length >= 2 ? nums.slice(0, LIMITS.rows) : [3, 5, 2, 7, 4, 6, 8, 1], shape: shp, color: cl, answer: answer });
@@ -285,6 +346,7 @@
     var asked = []; if (!res || !res.questions || !res.questions.length || typeof pick !== 'function') return res;
     for (var i = 0; i < res.questions.length; i++) {
       var q = res.questions[i], idx = q.default; try { var r = await pick(q.q, q.options.slice()); if (typeof r === 'number' && r >= 0 && r < q.options.length) idx = r; } catch (e) { idx = q.default; }
+      if (q.id === 'fill' && q.values && q.values[idx] && q.data) { var bb2 = res.spec.blocks.filter(function (x) { return x.type === 'number_bond'; })[0]; if (bb2) { bb2.cells = bondCells(q.data.total, q.data.listed, q.data.wanted, q.values[idx]); } }
       if (q.id === 'range' && q.values && q.values[idx]) { var rg = q.values[idx], cs = []; for (var k = rg[0]; k <= rg[1]; k++) cs.push(k); var b = res.spec.blocks.filter(function (x) { return x.type === 'bead_rows'; })[0]; if (b) b.counts = cs; }
       asked.push({ id: q.id, chosen: q.options[idx], default: idx === q.default });
     }
@@ -293,19 +355,22 @@
 
   // ───────────────────────── 參考圖片：視覺模型只回一小段 JSON，程式檢查 ─────────────────────────
   function refPrompt() {
-    return '這是一張學習單（或拍下學習單的照片）。只回一段 JSON，不要任何說明、不要 markdown 區塊：{"title":"標題","subtitle":"說明文字","rows":[{"count":1,"color":"#RRGGBB"}],"base_color":"#RRGGBB","base":10,"answer_lines":true}。' +
-      'rows 是從上到下每一串「彩色珠」的顆數與顏色（金色／黃色那一長串是 base，不要算進 count）；顏色用最接近的 #RRGGBB。看不出來的欄位就省略，不要猜。';
+    return '這是一張學習單（或拍下學習單的照片）。只回一段 JSON，不要任何說明、不要 markdown 區塊：{"kind":"bead_rows 或 number_bond 或其他","title":"標題","subtitle":"說明文字","rows":[{"count":1,"color":"#RRGGBB"}],"base_color":"#RRGGBB","base":10,"answer_lines":true,"total":5,"cell_count":4,"cells":[{"a":1,"b":4}]}。' +
+      '串珠（一長串金珠加幾顆彩色珠）用 kind=bead_rows：rows 是從上到下每一串「彩色珠」的顆數與顏色（金色／黃色那一長串是 base，不要算進 count）。數的組成（每格一直排積木、旁邊一棵二元樹，上面一個圈、下面左右兩個圈）用 kind=number_bond：total 是每格積木數，cell_count 是格子數，cells 是每格下面兩個圈裡的數字（空的就省略 a 或 b）。顏色用最接近的 #RRGGBB。看不出來的欄位就省略，不要猜。';
   }
   function extractJson(text) { var s = String(text || ''), a = s.indexOf('{'), b = s.lastIndexOf('}'); if (a < 0 || b <= a) return null; try { return JSON.parse(s.slice(a, b + 1)); } catch (e) { return null; } }
   function refFromReply(text) {
     var j = extractJson(text); if (!j || typeof j !== 'object') return { ok: false, error: '視覺模型的回覆讀不成 JSON' };
     var rows = (Array.isArray(j.rows) ? j.rows : []).map(function (r) { return { count: int(r && r.count, 0), color: hex(r && r.color) }; }).filter(function (r) { return r.count >= 1 && r.count <= LIMITS.beads; }).slice(0, LIMITS.rows);
     var seen = {}; rows = rows.filter(function (r) { if (seen[r.count]) return false; seen[r.count] = 1; return true; });
-    return { ok: true, title: j.title ? str(j.title, LIMITS.title) : '', subtitle: j.subtitle ? str(j.subtitle, 160) : '', rows: rows, baseColor: hex(j.base_color), base: j.base ? clamp(int(j.base, 10), 2, 20) : 0, answerLines: j.answer_lines !== false };
+    var cellsR = (Array.isArray(j.cells) ? j.cells : []).slice(0, 12).map(function (c) { return { a: c && c.a != null ? int(c.a, null) : null, b: c && c.b != null ? int(c.b, null) : null }; });
+    return { ok: true, kind: /number_bond/i.test(String(j.kind || '')) ? 'number_bond' : (/bead/i.test(String(j.kind || '')) ? 'bead_rows' : ''), total: j.total ? clamp(int(j.total, 5), 2, 12) : 0, cellCount: j.cell_count ? clamp(int(j.cell_count, 0), 0, 12) : 0, cells: cellsR, title: j.title ? str(j.title, LIMITS.title) : '', subtitle: j.subtitle ? str(j.subtitle, 160) : '', rows: rows, baseColor: hex(j.base_color), base: j.base ? clamp(int(j.base, 10), 2, 20) : 0, answerLines: j.answer_lines !== false };
   }
   function mergeRef(spec, ref) {
     var v = validate(spec), s = v.spec, notes = []; if (!ref || !ref.ok) return { spec: s, notes: ['沒有可用的參考圖片資訊'] };
     var b = s.blocks.filter(function (x) { return x.type === 'bead_rows'; })[0];
+    if (ref.kind === 'number_bond' || (!ref.rows.length && ref.total)) { var nb2 = s.blocks.filter(function (x) { return x.type === 'number_bond'; })[0]; var tot2 = ref.total || (ref.cells[0] && ref.cells[0].a != null && ref.cells[0].b != null ? ref.cells[0].a + ref.cells[0].b : 5); var want = ref.cellCount || ref.cells.length;
+      var blk = validateBlock({ type: 'number_bond', total: tot2, cells: want > ref.cells.length ? bondCells(tot2, ref.cells.filter(function (c) { return c.a != null && c.b != null; }).map(function (c) { return [c.a, c.b]; }), want, 'fill') : ref.cells }, [], 1); if (nb2) s.blocks[s.blocks.indexOf(nb2)] = Object.assign(blk, { cols: nb2.cols, rootColor: nb2.rootColor, childColor: nb2.childColor }); else s.blocks.push(blk); if (!s.title) s.title = '數的組成：' + tot2 + ' 可以分成哪兩個數？'; notes.push('照參考圖片：每格 ' + tot2 + ' 個積木，共 ' + blk.cells.length + ' 格'); return { spec: validate(s).spec, notes: notes }; }
     if (!b && ref.rows.length) { b = beadBlock({ counts: ref.rows.map(function (r) { return r.count; }).sort(function (x, y) { return x - y; }) }); s.blocks.push(b); if (!s.title) s.title = ref.title || '彩色串珠｜10又幾（一）'; if (!s.subtitle) s.subtitle = ref.subtitle || ''; notes.push('照參考圖片新增一組串珠'); }
     if (b) { if (ref.rows.length) { b.counts = ref.rows.map(function (r) { return r.count; }).sort(function (x, y) { return x - y; }); ref.rows.forEach(function (r) { if (r.color) b.colors[r.count] = r.color; }); notes.push('串數與顏色照參考圖片（' + ref.rows.length + ' 串）'); } if (ref.baseColor) b.baseColor = ref.baseColor; if (ref.base) b.base = ref.base; }
     return { spec: validate(s).spec, notes: notes };
@@ -324,7 +389,7 @@
         else if (op === 'set_rows') { var b2 = bead(); if (!b2) throw new Error('沒有可以改串數的區塊'); var n = int(e.n, 0); if (n < 1 || n > LIMITS.rows) throw new Error('n 要在 1～' + LIMITS.rows); var st = b2.counts[0] || 1, cs = []; for (var i = 0; i < n; i++) cs.push(st + i); b2.counts = cs; }
         else if (op === 'set_color') { var b3 = s.blocks.filter(function (x) { return x.type === 'bead_rows'; })[0]; var col = hex(e.color); if (!b3 || !col) throw new Error('要有串珠區塊與合法的顏色'); var k = int(e.count, 0); if (k < 1) throw new Error('count 要是正整數'); b3.colors[k] = col; }
         else if (op === 'set_base_color') { var b4 = s.blocks.filter(function (x) { return x.type === 'bead_rows'; })[0]; var c4 = hex(e.color); if (!b4 || !c4) throw new Error('要有串珠區塊與合法的顏色'); b4.baseColor = c4; }
-        else if (op === 'set_answer') { s.blocks.forEach(function (x) { if (x.answer) x.answer = validateAnswer(Object.assign({}, x.answer, { show: e.show === undefined ? x.answer.show : e.show === true, side: e.side || x.answer.side, line: e.line === undefined ? x.answer.line : e.line !== false })); }); }
+        else if (op === 'set_answer') { s.blocks.forEach(function (x) { if (x.type === 'number_bond' && e.show !== undefined) x.fill = e.show === true; if (x.answer) x.answer = validateAnswer(Object.assign({}, x.answer, { show: e.show === undefined ? x.answer.show : e.show === true, side: e.side || x.answer.side, line: e.line === undefined ? x.answer.line : e.line !== false })); }); }
         else if (op === 'set_page') { s.page = validate({ page: Object.assign({}, s.page, e.page || e) }).spec.page; }
         else if (op === 'set_size') { var f2 = clamp(e.scale, 0.4, 1.4); s.blocks.forEach(function (x) { if (x.size !== undefined) x.size = f2; }); }
         else if (op === 'set_header') { s.header = Object.assign({}, s.header, { name: e.name === undefined ? s.header.name : e.name !== false, date: e.date === undefined ? s.header.date : e.date !== false, school: e.school === true ? '' : s.header.school, score: e.score === undefined ? s.header.score : e.score === true }); }
@@ -340,7 +405,7 @@
   }
   function describe(spec) {
     var s = validate(spec).spec, out = [(s.title || '（沒有標題）') + '：' + s.page.size + (s.page.orient === 'landscape' ? ' 橫式' : ' 直式')];
-    s.blocks.forEach(function (b, i) { var d = (i) + '. ' + b.type; if (b.counts) d += '（' + b.counts.length + ' 筆：' + b.counts.join('、') + '）'; if (b.items) d += '（' + b.items.length + ' 題）'; if (b.answer) d += b.answer.show ? '，附答案' : '，答案留白'; out.push(d); });
+    s.blocks.forEach(function (b, i) { var d = (i) + '. ' + b.type; if (b.type === 'number_bond') d += '（' + b.total + ' 的組成，' + b.cells.length + ' 格：' + b.cells.map(function (c) { return c.a == null ? '空白' : c.a + '+' + c.b; }).join('、') + '）' + (b.fill ? '，教師版' : ''); else if (b.counts) d += '（' + b.counts.length + ' 筆：' + b.counts.join('、') + '）'; if (b.items) d += '（' + b.items.length + ' 題）'; if (b.answer) d += b.answer.show ? '，附答案' : '，答案留白'; out.push(d); });
     return out;
   }
 
@@ -396,6 +461,7 @@
     s.blocks.forEach(function (b, i) {
       var d = '第 ' + (i + 1) + ' 區：';
       if (b.type === 'bead_rows') { var names = {}; d += b.base + ' 又幾串珠，共 ' + b.counts.length + ' 串（' + b.base + '又' + b.counts.join('、' + b.base + '又') + '）；前面一整串 ' + b.base + ' 顆金珠（' + b.baseColor + '），後面的彩色珠顏色：' + b.counts.map(function (c) { return c + '顆' + (hex(b.colors[c], BEAD_COLORS[c] || '#999999')); }).join('、') + '；' + answerWords(b.answer) + (b.size !== 1 ? '；珠子大小 ' + Math.round(b.size * 100) + '%' : ''); }
+      else if (b.type === 'number_bond') d += '數的組成（二元樹）：每格 ' + b.total + ' 個積木排成一直排，旁邊一棵樹——樹根紅圈、兩個藍圈兒子；共 ' + b.cells.length + ' 格（' + b.cols + ' 欄）：' + b.cells.map(function (c) { return c.a == null ? '空白' : c.a + '+' + c.b; }).join('、') + (b.showNumbers ? '，兒子圈裡寫出數字' : '，圈裡留空') + (b.fill ? '；教師版（積木塗色、樹根寫 ' + b.total + '）' : '；學生版');
       else if (b.type === 'count_rows') d += '數一數，' + b.counts.length + ' 排，數量 ' + b.counts.join('、') + '，用' + ({ circle: '圓', square: '方塊', star: '星星' }[b.shape]) + '（' + b.color + '）；' + answerWords(b.answer);
       else if (b.type === 'equations') d += (b.items.length) + ' 題算式，分 ' + b.columns + ' 欄：' + b.items.slice(0, 6).join('、') + (b.items.length > 6 ? '…' : '');
       else if (b.type === 'ten_frames') d += '十格框 ' + b.counts.length + ' 個，點數 ' + b.counts.join('、') + '（' + b.color + '）；' + answerWords(b.answer);
@@ -418,8 +484,9 @@
     format: '學習單描述（JSON）：{title, subtitle, header:{name,date,school,score}, page:{size:"A4|A5|Letter", orient:"portrait|landscape", margin:mm}, blocks:[區塊…]}。區塊 type：bead_rows｛base:10, counts:[1..8], colors:{顆數:"#RRGGBB"}, baseColor, answer:{side:"right|below|none", line, show}, size｝、count_rows｛counts, shape:"circle|square|star", color, answer｝、equations｛kind:"add|sub", max, count, columns 或 items:["3 + 4 = ____"]｝、ten_frames｛counts:[0..10], color, answer, columns｝、number_line｛from, to, blanks:[數字]｝、text｛lines:[…], size, align, bold｝、spacer｛mm｝。座標與文字大小程式自己排，不要寫座標。',
     edits: '調整用 worksheet_adjust 的 edits（一次可以多個）：{op:"set_title",text}、{op:"set_subtitle",text}、{op:"set_counts",counts:[…]}、{op:"set_rows",n}、{op:"set_color",count:3,color:"#F2D4CF"}、{op:"set_base_color",color}、{op:"set_answer",show:true|false,side:"right|below|none",line:true|false}、{op:"set_page",size,orient,margin}、{op:"set_size",scale:0.4~1.4}、{op:"set_header",name,date,score}、{op:"add_block",block:{…},index}、{op:"remove_block",index}、{op:"set_block",index,patch:{…該區塊的欄位，例如 base、counts、shape、kind、max、count、columns、from、to、blanks、lines}}、{op:"move_block",index,to}。',
     reference: '有參考圖片時：worksheet_make 帶 reference_file_id（上傳圖片的 file_id）。視覺模型只被問一小段 JSON（每串的顆數與顏色、標題、金色珠的顏色），程式檢查後合併進學習單；看不出來的欄位用預設，不會亂猜。顏色不對就用 set_color 一個一個改。',
+    number_bond: '數的組成（二元樹）區塊 number_bond：{type:"number_bond", total:5（每格幾個積木，2～12）, cells:[{a:1,b:4},{a:2,b:3},{a:null,b:null}（空白格）], cols:1～3, showNumbers:true（兒子圈裡寫數字）, fill:false（教師版：積木上色、樹根寫總數）, rootColor:"#D93025", childColor:"#2F6FD0", cubeColors:["#F6A33B","#E5383B"]}。每格是一直排積木＋一棵樹（上面紅圈、下面左右兩個藍圈）。調整用 set_block 的 patch（例如 patch:{cells:[…]}）。',
     colors: '串珠標準色（蒙特梭利）：1 紅 #C8174F、2 綠 #8CC63F、3 粉 #F2D4CF、4 黃 #F5E51E、5 藍 #3F87D4、6 紫 #5E2C79、7 白 #FFFFFF、8 桃紅 #E0457B、9 深藍 #274B8F，金色（10）#E9B22E。'
   };
   return { PAGES: PAGES, LIMITS: LIMITS, BEAD_COLORS: BEAD_COLORS, GOLD: GOLD, OPS: OPS, TOPICS: TOPICS, defaults: defaults, beadBlock: beadBlock, validate: validate, layout: layout, toSvg: toSvg, toHtml: toHtml, toPdfmake: toPdfmake, drawCanvas: drawCanvas, textWidth: textWidth,
-    detectTemplate: detectTemplate, parseRequest: parseRequest, resolveQuestions: resolveQuestions, refPrompt: refPrompt, refFromReply: refFromReply, mergeRef: mergeRef, applyEdits: applyEdits, describe: describe, hex: hex, makeEquations: makeEquations, hitTest: hitTest, parseEditRequest: parseEditRequest, editPrompt: editPrompt, parseEditsReply: parseEditsReply, specToPrompt: specToPrompt, editWords: editWords };
+    detectTemplate: detectTemplate, parseRequest: parseRequest, resolveQuestions: resolveQuestions, refPrompt: refPrompt, refFromReply: refFromReply, mergeRef: mergeRef, applyEdits: applyEdits, describe: describe, hex: hex, makeEquations: makeEquations, bondCells: bondCells, hitTest: hitTest, parseEditRequest: parseEditRequest, editPrompt: editPrompt, parseEditsReply: parseEditsReply, specToPrompt: specToPrompt, editWords: editWords };
 });

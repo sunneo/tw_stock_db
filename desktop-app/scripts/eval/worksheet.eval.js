@@ -36,5 +36,20 @@ R.recipe = rc && { recipe: rc.recipe, tool: rc.planned && rc.planned.tool, args:
 const rc2 = await fa._skillRecipeRun('今天天氣很好，聊聊天', ['worksheet_make'], () => {}); R.recipe_unrelated = !rc2 || rc2.recipe !== 'worksheet_from_request';
 // 7) 依任務補工具／領域
 R.hints = [REQ, '幫我做一份10又幾的學習單', '怎麼做學習單比較好', '把這張圖轉成pdf'].map((t) => _faTaskToolHints(t).map((h) => h.id).join());
+// 8) 使用者的真實說法（手機遠端訊息）：說「教材」也要拿到學習單工具；做出數的組成、編輯器訊息帶著描述
+const BOND1 = '[來自 手機-股市galaxy 的遠端訊息]\n製作這種教材，每個格子都是5個積木，用一個像是而二元樹的樹狀表達，上面樹根用紅色圈，下面左右兒子用藍色圈，兒子裡面寫上數字，顯示1+4,2+3,3+2,4+1\n[附件：1792556374379.jpg（file_id=' + pngId + '）]';
+const BOND2 = '是做成html ->pdf 教材，六個大格子，每個大格子旁邊有直直的5個積木代表5';
+R.hints_user = [BOND1, BOND2, '幫我寫一份教材網站的介紹文'].map((t) => _faTaskToolHints(t).map((h) => h.id).join());
+R.recipe_user = await (async () => { const lg = []; const rc = await fa._skillRecipeRun(BOND1, ['worksheet_make'], (x) => lg.push(x)); return rc && { recipe: rc.recipe, tool: rc.planned && rc.planned.tool, refId: rc.planned && rc.planned.args.reference_file_id === pngId }; })();
+fa.messages = []; fa._interpretImageWithVisionModel = async () => ({ description: JSON.stringify({ kind: 'number_bond', total: 5, cell_count: 6, cells: [{ a: 1, b: 4 }, { a: 2, b: 3 }, { a: 3, b: 2 }, { a: 4, b: 1 }] }) });
+const bm = await fa._worksheetMake({ request: BOND1 + '\n' + BOND2, reference_file_id: pngId }); fa._interpretImageWithVisionModel = realVlm;
+R.bond = { ok: bm.ok, files: Object.keys(bm.files || {}), summary: bm.summary, notes: bm.notes, questions: (bm.questions || []).map((q) => q.default) };
+const fence = fa.messages.filter((m) => /```fa-worksheet/.test(String(m.content || ''))).pop(); const payload = fence && JSON.parse(/```fa-worksheet\n([\s\S]*?)\n```/.exec(fence.content)[1]);
+R.bond_editor = { hasFence: !!fence, hasSpec: !!(payload && payload.spec && payload.spec.blocks[0].type === 'number_bond') };
+// 別台機器（沒有這台的存檔）：用訊息裡帶的描述開編輯器
+fa._wsEditors = new Map(); fa._wsSpecs.delete(bm.worksheet_id); for (const r of await fa.fileCache.getAll()) if (r.filename === 'worksheet_' + bm.worksheet_id + '.json') await fa.fileCache.delete(r.id);
+const hold = document.createElement('div'); hold.innerHTML = '<pre><code class="language-fa-worksheet">' + JSON.stringify(payload) + '</code></pre>'; document.body.appendChild(hold); fa._mountWorksheetEditors(hold); await new Promise((r) => setTimeout(r, 1200));
+R.remote_open = { mounted: !!hold.querySelector('.fwk'), cells: hold.querySelector('.fwk') && hold.querySelector('.fwk')._ws.getState().states[0].spec.blocks[0].cells.length }; hold.remove();
+R.bond_png_b64 = await b64((await fa.fileCache.get(bm.files.png.file_id)).blob);
 R.domain = !!(fa.domains && fa.domains.worksheet && fa.domains.worksheet.enabled); R.domain_tools = fa.domains && fa.domains.worksheet && fa.domains.worksheet.toolNames;
 return R;
