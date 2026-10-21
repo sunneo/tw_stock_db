@@ -161,16 +161,21 @@ const FaKnowledgeHost = (function () {
         // ───── 預處理的第二半：語意向量（小型嵌入模型；vendor-models 分支優先，抓不到再 HuggingFace）─────
         _kiModelId() { const M = FaCatalogEmbed.MODEL; return M.repo + '@' + M.dtype; },
         async _kiEmbedPipe(onProgress) { const p = await this._unitCatalogEmbedder(onProgress); return p || null; },
+        // 進度事件：{ op: 'embed'|'organize', done, total, text, source_id?, end? }——面板訂閱後畫進度條
+        _kiOn(fn) { (this._kiLs = this._kiLs || new Set()).add(fn); return () => this._kiLs.delete(fn); },
+        _kiEmit(ev) { for (const fn of Array.from(this._kiLs || [])) { try { fn(ev); } catch (_) { /* */ } } },
         async _kiEmbedPending(onProgress) {
             const st = this._kiSettings(); if (!st.embedConsent) return { skipped: true, note: '語意索引還沒啟用（/knowledge embed）' };
             const pipe = await this._kiEmbedPipe(onProgress); if (!pipe) return { error: '嵌入模型載入失敗：' + (this._unitCatalogEmbedError || '原因不明') + '；目前用關鍵字檢索。' };
             const model = this._kiModelId(), M = FaCatalogEmbed.MODEL; let done = 0; const t0 = Date.now();
-            for (;;) {
+            const st0 = await this._kiRun((store) => store.stats()); const total = Math.max(0, ((st0 && st0.chunks) || 0) - ((st0 && st0.vectors) || 0));
+            this._kiEmit({ op: 'embed', done: 0, total, text: '語意向量 0/' + total });
+            try { for (;;) {
                 const batch = await this._kiRun((store) => store.pendingVectors(model, 32)); if (!batch.length) break;
                 const vecs = await this._unitCatalogEmbedTexts(pipe, batch.map((b) => String(b.text).slice(0, 1500)), M.passagePrefix);
                 await this._kiRun((store) => store.putVectors(model, batch.map((b, i) => ({ id: b.id, vec: vecs[i] }))), true);
-                done += batch.length; if (onProgress) onProgress('語意索引 ' + done);
-            }
+                done += batch.length; if (onProgress) onProgress('語意索引 ' + done); this._kiEmit({ op: 'embed', done, total, text: '語意向量 ' + done + '/' + total });
+            } } finally { this._kiEmit({ op: 'embed', done, total, end: true }); }
             return { embedded: done, ms: Date.now() - t0, model };
         },
         async _kiQueryVec(question) {
@@ -183,7 +188,9 @@ const FaKnowledgeHost = (function () {
         // ───── 問答：回傳原文與出處，不生成 ─────
         async _kiAsk(a) {
             const q = String((a && (a.question || a.query)) || '').trim(); if (!q) return { ok: false, error: '缺少問題（question）' };
+            const step = (t) => { try { if (a && typeof a.onStep === 'function') a.onStep(t); } catch (_) { /* */ } };
             const ids = a.sources ? await this._kiResolveIds(a.sources) : null;
+            step('🔎 檢索：關鍵字（BM25）' + (this._kiSettings().embedConsent ? '＋語意向量' : '（語意索引沒開）') + (ids ? '，限定 ' + ids.length + ' 個來源' : ''));
             const qv = await this._kiQueryVec(q).catch(() => ({ vec: null, why: '語意檢索出錯' }));
             const lim = Math.min(Math.max(Number(a.limit) || 5, 1), 12), model = this._kiModelId();
             let res = await this._kiRun((store) => store.answer(q, { limit: lim, sources: ids, queryVec: qv.vec || undefined, model }));
@@ -191,15 +198,47 @@ const FaKnowledgeHost = (function () {
             // 模型只出主意；找到的永遠是原文，詞對不上就找不到，不會因此編出內容。已經有「關鍵字與語意都命中」的結果就不必問模型。
             const strong = (r) => (r.hits || []).some((h) => /＋/.test(h.found_by || ''));
             let expanded = null;
+            step('　第一輪：' + (res.found ? '找到 ' + res.hits.length + ' 筆' + (strong(res) ? '（有關鍵字與語意都命中的）' : '（沒有雙重命中）') : '沒有找到'));
             if (!(a && a.no_expand) && !strong(res)) {
+                step('🧭 問法可能跟文件用字對不上，請模型想「文件裡可能出現的詞」…');
                 const terms = await this._kiExpandQuery(q).catch(() => []);
+                step(terms.length ? '　模型提的詞：' + terms.join('、') : '　（模型沒有回應，維持第一輪的結果）');
                 if (terms.length) {
                     const q2 = q + ' ' + terms.join(' '); const qv2 = qv.vec ? await this._kiQueryVec(q2).catch(() => ({ vec: null })) : { vec: null };
                     const r2 = await this._kiRun((store) => store.answer(q2, { minCoverage: 0.06, limit: lim, sources: ids, queryVec: qv2.vec || qv.vec || undefined, model }));
-                    if (r2.found && (!res.found || strong(r2) || (r2.hits[0] && r2.hits[0].score > ((res.hits[0] && res.hits[0].score) || 0)))) { res = r2; expanded = terms; }
+                    const hasKw = (r) => (r.hits || []).some((h) => /關鍵字/.test(h.found_by || '')); const take = r2.found && (!res.found || strong(r2) || (hasKw(r2) && !hasKw(res)) || (r2.hits[0] && r2.hits[0].score > ((res.hits[0] && res.hits[0].score) || 0)));
+                    step('　第二輪：' + (r2.found ? '找到 ' + r2.hits.length + ' 筆，' + (take ? '採用這一輪' : '不比第一輪好，維持第一輪') : '沒有找到，維持第一輪'));
+                    if (take) { res = r2; expanded = terms; }
                 }
             }
             return Object.assign(res, { expanded_terms: expanded || undefined, semantic: !!qv.vec, semantic_note: qv.vec ? undefined : qv.why + '（只用關鍵字檢索）', how_to_answer: res.found ? '只能根據 hits 裡的 quote 回答，每個說法後面標出處（label：來源、第幾行）；quote 沒講到的就說沒有，不要補充或推測。' : '沒有找到，就照實說在知識庫裡找不到，不要用自己的知識代替。' });
+        },
+        // AI 整理：把找到的原文片段編號交給模型，請它只用這些回答、每句結尾標 [編號]。
+        // 程式逐句核對：沒標編號、編號不存在、句子裡的指令／數字／英文識別字在被引用的原文裡找不到的句子，一律丟掉（並告訴使用者丟了幾句）。
+        async _kiAnswerAI(question, hits, onStep) {
+            const step = (t) => { try { if (onStep) onStep(t); } catch (_) { /* */ } };
+            const use = (hits || []).slice(0, 6); if (!use.length) return { ok: false, error: '沒有可以整理的原文' };
+            if (typeof this._callSimpleCompletion !== 'function') return { ok: false, error: '這個環境沒有可用的模型' };
+            const ctx = use.map((h, i) => '[' + (i + 1) + '] 《' + h.source + '》' + String(h.quote).slice(0, 700)).join('\n\n');
+            step('🤖 交給模型整理（只准用 ' + use.length + ' 段原文，每句要標編號）…'); const t0 = Date.now();
+            let reply = ''; try {
+                reply = await this._callSimpleCompletion('問題：' + question + '\n\n下面是從知識庫找到的原文片段（有編號）：\n\n' + ctx + '\n\n請只根據這些片段回答問題。規則：1) 每一句結尾都要標它所根據的片段編號，例如「按下 Save 鈕 [2]」；2) 指令、數字、名稱原樣照抄，不要改寫；3) 片段沒有講到的就不要說，不要補充或推測；4) 完全找不到答案就只輸出「找不到」。', { systemPrompt: '你只能用給你的片段回答，每句都要標編號。', maxTokens: 1500, temperature: 0 });
+            } catch (e) { return { ok: false, error: '模型沒有回應：' + String((e && e.message) || e).slice(0, 160), ms: Date.now() - t0 }; }
+            step('　模型回應了（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒），逐句核對編號與原文…');
+            const norm = (x) => String(x || '').toLowerCase().replace(/\s+/g, ''); const sentences = [], dropped = [];
+            const pieces = String(reply || '').split(/\n+/).flatMap((l) => l.split(/(?<=[。！？!?；;])\s*/)).map((x) => x.trim()).filter(Boolean);
+            for (const piece of pieces) {
+                const cites = Array.from(piece.matchAll(/\[(\d+)\]/g)).map((m) => Number(m[1])); const text = piece.replace(/\s*\[\d+\]\s*/g, ' ').trim();
+                if (!text || /^[^\p{L}\p{N}]*找不到[^\p{L}\p{N}]*$/u.test(text)) continue;
+                if (!cites.length) { dropped.push({ text, why: '沒有標編號' }); continue; }
+                if (cites.some((n) => n < 1 || n > use.length)) { dropped.push({ text, why: '編號不存在' }); continue; }
+                const src = cites.map((n) => norm(use[n - 1].quote)).join('');
+                const ids = text.match(/[A-Za-z][A-Za-z0-9_.\-/]{2,}|\d+(?:\.\d+)*/g) || []; const missing = ids.filter((w) => src.indexOf(norm(w)) < 0);
+                if (missing.length) { dropped.push({ text, why: '「' + missing.slice(0, 3).join('、') + '」在引用的原文裡找不到' }); continue; }
+                sentences.push({ text, cites: Array.from(new Set(cites)) });
+            }
+            step('　核對完成：留下 ' + sentences.length + ' 句' + (dropped.length ? '，丟掉 ' + dropped.length + ' 句（對不上原文）' : '') + '（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）');
+            return { ok: true, sentences, dropped, sources: use.map((h) => ({ n: 0, label: h.label })).map((x, i) => ({ n: i + 1, label: use[i].label })), ms: Date.now() - t0 };
         },
         // 模型想的「可能出現在文件裡的詞」：只拿來多找一輪，不當答案。沒有模型可用就回空的（維持原本的檢索結果）。
         async _kiExpandQuery(q) {
@@ -220,7 +259,7 @@ const FaKnowledgeHost = (function () {
             if (!targets.length) return { ok: false, error: ref ? '找不到來源：' + ref : '知識庫是空的' };
             const report = []; let rejected = 0;
             for (const t of targets) {
-                if (onProgress) onProgress('整理「' + t.name + '」…');
+                if (onProgress) onProgress('整理「' + t.name + '」…'); this._kiEmit({ op: 'organize', source_id: t.id, name: t.name, done: report.length, total: targets.length, text: '模型整理 ' + (report.length + 1) + '/' + targets.length + '：' + t.name });
                 const src = await this._kiRun((store) => store.getSource(t.id)); const sample = src.text.length > 6000 ? src.text.slice(0, 3000) + '\n…\n' + src.text.slice(Math.floor(src.text.length / 2) - 1000, Math.floor(src.text.length / 2) + 1000) : src.text;
                 let reply = '';
                 try { reply = await this._callSimpleCompletion('下面是一份文件的內容（可能只有節錄）。請列出最多 8 個最能代表它的關鍵詞或短語。規則：每一個都必須是文件裡「原本出現過的字詞」，原樣抄下來，不要翻譯、不要改寫、不要新創；一行一個，只輸出詞本身。\n\n' + sample, { systemPrompt: '你是文件整理助手，只做挑選，不做創作。', maxTokens: 1500, temperature: 0 }); } catch (e) { report.push({ source: t.name, error: '模型沒有回應：' + String((e && e.message) || e).slice(0, 120) }); continue; }
@@ -229,7 +268,8 @@ const FaKnowledgeHost = (function () {
                 await this._kiRun((store) => store.setTags(t.id, terms.slice(0, 8), 'model'), true);
                 report.push({ source: t.name, tags: terms.slice(0, 8) });
             }
-            const lk = await this._kiRun((store) => store.rebuildLinks(), true);
+            this._kiEmit({ op: 'organize', done: targets.length, total: targets.length, text: '重算關聯…' });
+            const lk = await this._kiRun((store) => store.rebuildLinks(), true); this._kiEmit({ op: 'organize', end: true, done: targets.length, total: targets.length });
             return { ok: true, organized: report, links: lk.links, rejected_terms: rejected, note: '關鍵詞都是來源裡原本就有的字（程式逐個核對過，沒有的丟掉了）；關聯只用字面證據。' };
         },
 
@@ -255,7 +295,7 @@ const FaKnowledgeHost = (function () {
             return {
                 palette: () => ({ dark: !self._isLightTheme() }),
                 status: () => self._kiStatus(), sources: () => self._kiSources(),
-                ask: (a) => self._kiAsk(a),
+                ask: (a) => self._kiAsk(a), answerAI: (q, hits, onStep) => self._kiAnswerAI(q, hits, onStep), onProgress: (fn) => self._kiOn(fn),
                 outline: (ref) => self._kiWithSource(ref, (store, s) => store.outline(s.id)),
                 detail: (ref, which, o) => self._kiWithSource(ref, (store, s) => store.detail(s.id, which, o)),
                 summary: (ref) => self._kiWithSource(ref, (store, s) => store.summary(s.id)),

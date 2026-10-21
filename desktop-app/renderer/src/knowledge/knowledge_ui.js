@@ -25,7 +25,11 @@
     + '.fki .hit{border:1px solid var(--bd);border-radius:6px;padding:6px 8px;display:flex;flex-direction:column;gap:4px}.fki .hit .lb{font-weight:600}.fki .hit .by{font-size:11px;color:var(--mut);border:1px solid var(--bd);border-radius:8px;padding:0 6px;margin-left:6px}'
     + '.fki blockquote{margin:0;padding:3px 8px;border-left:3px solid var(--acc);white-space:pre-wrap;word-break:break-word}.fki mark{background:var(--hl);color:inherit;border-radius:2px}'
     + '.fki pre.code{margin:0;padding:6px;background:var(--hd);border:1px solid var(--bd);border-radius:6px;max-height:260px;overflow:auto;font:12px/1.5 ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-all}.fki .ln{color:var(--mut);display:inline-block;min-width:3.2em;text-align:right;margin-right:8px;user-select:none}.fki .ln.hot{color:var(--acc);font-weight:700}'
-    + '.fki .ask{border-top:1px solid var(--bd);padding:8px;display:flex;flex-direction:column;gap:4px;background:var(--hd)}.fki .ask .r{display:flex;gap:6px;align-items:flex-end}.fki .ask textarea{flex:1;min-height:42px;max-height:120px}.fki .ok{color:var(--ok)}.fki .bad{color:var(--bad)}';
+    + '.fki .ask{border-top:1px solid var(--bd);padding:8px;display:flex;flex-direction:column;gap:4px;background:var(--hd)}.fki .ask .r{display:flex;gap:6px;align-items:flex-end}.fki .ask textarea{flex:1;min-height:42px;max-height:120px}.fki .ok{color:var(--ok)}.fki .bad{color:var(--bad)}'
+    + '.fki .src{flex-wrap:wrap}.fki .pg{flex-basis:100%;display:flex;flex-direction:column;gap:2px;padding:0 2px 2px 24px}.fki .pgb{height:5px;border-radius:3px;background:var(--bd);overflow:hidden}.fki .pgb i{display:block;height:100%;background:var(--acc);width:0;transition:width .25s}.fki .pgb.run i{background:var(--acc)}.fki .pgb.full i{background:var(--ok)}.fki .pgt{font-size:11px;color:var(--mut)}'
+    + '.fki .opl{padding:4px 8px;font-size:12px;color:var(--acc);border-bottom:1px solid var(--bd);background:var(--hd);display:none;white-space:pre-wrap;word-break:break-word}.fki .opl.on{display:block}'
+    + '.fki details.tr{border:1px dashed var(--bd);border-radius:6px;padding:2px 8px;font-size:12px;color:var(--mut)}.fki details.tr summary{cursor:pointer}.fki .trl{padding:1px 0;white-space:pre-wrap;word-break:break-word}.fki .trl.bad{color:var(--bad)}.fki .trl.ok{color:var(--ok)}'
+    + '.fki .ans{border:1px solid var(--acc);border-radius:8px;padding:6px 8px;display:flex;flex-direction:column;gap:4px}.fki .ans .cite{font-size:11px;color:var(--acc);margin-left:2px}.fki .ask select{max-width:110px}';
   function h(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
   function esc(s) { return String(s == null ? '' : s); }
   // 把查詢的詞在原文裡標起來（只是顯示，不改內容）
@@ -39,7 +43,20 @@
   function mount(opt) {
     var host = opt.host || {}, el = h('div', 'fki'), dark = false; try { dark = !!(host.palette && host.palette().dark); } catch (e) { dark = false; } if (dark) el.className += ' dark';
     if (!document.getElementById('fki-css')) { var st0 = document.createElement('style'); st0.id = 'fki-css'; st0.textContent = CSS; (document.head || document.documentElement).appendChild(st0); }
-    var sources = [], busy = false, lastQuery = '', statusInfo = {};
+    var sources = [], busy = false, lastQuery = '', statusInfo = {}, orgNow = null, orgDone = {}, embActive = false, embText = '', refreshT = 0;
+    // 進度事件（建立語意向量、模型整理）：上面的進度列說明現在做到哪，每個來源下面的進度條跟著動
+    function setOpl(t) { opl.textContent = t || ''; opl.className = 'opl' + (t ? ' on' : ''); }
+    var offProg = host.onProgress ? host.onProgress(function (ev) {
+      if (ev.op === 'embed') {
+        embActive = !ev.end; embText = ev.text || '';
+        if (ev.end) { setOpl(''); refreshStatus(); return; }
+        setOpl('🧠 ' + embText); var now = Date.now(); if (now - refreshT > 1200) { refreshT = now; refreshSourcesOnly(); }
+      } else if (ev.op === 'organize') {
+        if (ev.end) { orgNow = null; setOpl(''); renderList(); return; }
+        if (ev.source_id != null) { if (orgNow != null) orgDone[orgNow] = true; orgNow = ev.source_id; } setOpl('🧹 ' + (ev.text || '模型整理中…')); renderList();
+      }
+    }) : null;
+    function refreshSourcesOnly() { return host.sources().then(function (r) { sources = (r && r.sources) || sources; renderList(); }).catch(function () { /* */ }); }
     // ───── 骨架 ─────
     var bar = h('div', 'bar'), ttl = h('span', 'ttl', '📚 Knowledge Inventory'), stat = h('span', 'st'), spacer = h('span', 'spacer');
     var bRef = h('button', 'pri', '🔄 更新'), bOrg = h('button', null, '🧹 整理'), bEmb = h('button', null, '🧠 語意'), bLk = h('button', null, '🔗 關聯'), bSet = h('button', null, '⚙ 設定');
@@ -49,9 +66,10 @@
     var body = h('div', 'body'), side = h('div', 'side'), sash = h('div', 'sash'), main = h('div', 'main');
     var sidehd = h('div', 'sidehd'), sidetitle = h('b', null, '來源'), bAll = h('input'), bAdd = h('button', 'pri', '＋ 加入'), fileIn = h('input'), list = h('div', 'list'), dropov = h('div', 'dropov', '放開滑鼠，把檔案加入知識庫');
     bAll.type = 'checkbox'; bAll.title = '全選／全不選'; bAdd.title = '加入來源：檔案、網址、貼上的文字（也可以直接把檔案拖進來）'; fileIn.type = 'file'; fileIn.multiple = true; fileIn.style.display = 'none';
-    [bAll, sidetitle, bAdd, fileIn].forEach(function (x) { sidehd.appendChild(x); }); [sidehd, list, dropov].forEach(function (x) { side.appendChild(x); });
+    [bAll, sidetitle, bAdd, fileIn].forEach(function (x) { sidehd.appendChild(x); }); var opl = h('div', 'opl'); [sidehd, opl, list, dropov].forEach(function (x) { side.appendChild(x); });
     var msgs = h('div', 'msgs'), askbox = h('div', 'ask'), askrow = h('div', 'r'), ta = h('textarea'), go = h('button', 'pri', '問'), scope = h('div', 'st');
-    ta.rows = 2; ta.placeholder = '問你放進知識庫的資料（Enter 送出，Shift+Enter 換行）——回答只會是原文，附出處'; askrow.appendChild(ta); askrow.appendChild(go); askbox.appendChild(askrow); askbox.appendChild(scope);
+    var mode = h('select'); [['quote', '原文'], ['ai', '🤖 AI 整理']].forEach(function (k) { var o = h('option', null, k[1]); o.value = k[0]; mode.appendChild(o); }); mode.title = '原文：只給原文片段與出處。AI 整理：模型只用找到的原文回答，每句標編號，程式逐句核對（對不上原文的句子會被丟掉）'; try { mode.value = localStorage.getItem('fa.ki.mode') === 'ai' ? 'ai' : 'quote'; } catch (e) { /* */ } mode.onchange = function () { try { localStorage.setItem('fa.ki.mode', mode.value); } catch (e) { /* */ } };
+    ta.rows = 2; ta.placeholder = '問你放進知識庫的資料（Enter 送出，Shift+Enter 換行）——回答只會是原文，附出處'; askrow.appendChild(mode); askrow.appendChild(ta); askrow.appendChild(go); askbox.appendChild(askrow); askbox.appendChild(scope);
     main.appendChild(msgs); main.appendChild(askbox); [side, sash, main].forEach(function (x) { body.appendChild(x); }); el.appendChild(bar); el.appendChild(body);
     // sash：拖曳調整左邊寬度（會記住）
     var sideW = 230; try { var sw = Number(localStorage.getItem('fa.ki.sideW')); if (sw >= 150) sideW = sw; } catch (e) { /* */ } side.style.width = sideW + 'px';
@@ -85,7 +103,15 @@
         cb.onchange = guard(function () { return host.enable(s.id, cb.checked).then(refreshStatus); });
         nm.onclick = guard(function () { return showOutline(s); });
         del.onclick = guard(function () { if (!window.confirm('把「' + s.name + '」從知識庫刪除？（片段、向量、關聯都會一起刪）')) return; return host.remove(s.id).then(function () { var c = card('🗑 已刪除'); note(c, s.name); return refreshStatus(); }); });
-        [cb, nm, meta, del].forEach(function (x) { r.appendChild(x); }); list.appendChild(r);
+        [cb, nm, meta, del].forEach(function (x) { r.appendChild(x); });
+        // 進度條：模型整理中的來源、語意向量還沒補滿的來源
+        var vtotal = s.chunks || 0, vdone = s.vectors || 0, pend = !!statusInfo.semantic && vtotal > 0 && vdone < vtotal;
+        if (orgNow === s.id || pend || (embActive && vtotal > 0 && vdone < vtotal)) {
+          var pg = h('div', 'pg'), bar2 = h('div', 'pgb' + (orgNow === s.id ? ' run' : '')), fill = h('i'), tx = h('div', 'pgt');
+          if (orgNow === s.id) { fill.style.width = '100%'; fill.style.opacity = '.5'; tx.textContent = '模型整理中…'; } else { fill.style.width = Math.round(vdone / vtotal * 100) + '%'; tx.textContent = '語意向量 ' + vdone + '/' + vtotal; }
+          bar2.appendChild(fill); pg.appendChild(bar2); pg.appendChild(tx); r.appendChild(pg);
+        } else if (orgDone[s.id] && s.tags && s.tags.length) { var pg2 = h('div', 'pg'); pg2.appendChild(h('div', 'pgt', '已整理：' + s.tags.slice(0, 4).join('、'))); r.appendChild(pg2); }
+        list.appendChild(r);
       });
     }
     bAll.onchange = guard(function () { var on = bAll.checked; return Promise.all(sources.map(function (s) { return s.enabled === on ? null : host.enable(s.id, on); }).filter(Boolean)).then(refreshStatus); });
@@ -109,14 +135,35 @@
       bt.onclick = guard(function () { if (!tx.value.trim()) return; return host.addText(tn.value.trim() || '貼上的文字', tx.value, tk.value).then(function (r) { out.textContent = r.ok ? '✅ 已加入：' + r.name + '（' + r.lines + ' 行）' : '⚠️ ' + r.error; if (r.ok) { tx.value = ''; tn.value = ''; } return refreshStatus(); }); });
     }
     // ───── 中：問答 ─────
+    // 過程記錄：像 transcript，一步一步寫出現在在做什麼（含等待模型的秒數）；做完收合成一行
+    function transcript(c, title) {
+      var d = h('details', 'tr'), sm = h('summary', null, title), body = h('div'), t0 = Date.now(), timer = null; d.open = true; d.appendChild(sm); d.appendChild(body); c.appendChild(d);
+      function line(t, cls) { var l = h('div', 'trl' + (cls ? ' ' + cls : '')); l.textContent = '[' + ((Date.now() - t0) / 1000).toFixed(1) + ' s] ' + t; body.appendChild(l); scroll(); return l; }
+      return {
+        step: function (t, cls) { return line(t, cls); },
+        wait: function (label) { var l = line(label + '（0 秒）'), w0 = Date.now(); timer = setInterval(function () { l.textContent = '[' + ((Date.now() - t0) / 1000).toFixed(1) + ' s] ' + label + '（' + Math.round((Date.now() - w0) / 1000) + ' 秒）'; }, 1000); return function () { if (timer) clearInterval(timer); timer = null; if (l.parentNode) l.remove(); }; },
+        end: function (t) { if (timer) clearInterval(timer); sm.textContent = t || '🧾 過程'; d.open = false; }
+      };
+    }
     var ask = guard(function () {
-      var q = ta.value.trim(); if (!q) return; lastQuery = q; ta.value = ''; userMsg(q); var c = card('🔎 查詢'), p = note(c, '查詢中…');
-      return host.ask({ question: q, limit: 6 }).then(function (res) {
-        p.remove();
-        if (!res.found) { note(c, res.message || '在目前勾選的來源裡找不到相關內容。'); if (res.semantic === false) note(c, '（' + (res.semantic_note || '只用關鍵字檢索') + '）'); return; }
-        note(c, '找到 ' + res.hits.length + ' 筆　' + (res.semantic ? '關鍵字＋語意' : (res.semantic_note || '只用關鍵字')));
-        res.hits.forEach(function (hit, i) { c.appendChild(hitCard(hit, i, q)); }); scroll();
-      });
+      var q = ta.value.trim(); if (!q) return; lastQuery = q; ta.value = ''; userMsg(q); var c = card('🔎 查詢'), tr = transcript(c, '🧾 過程（進行中…）'), aiMode = mode.value === 'ai' && !!host.answerAI, t0 = Date.now();
+      var stopWait = tr.wait('檢索中');
+      return host.ask({ question: q, limit: 6, onStep: function (t) { stopWait(); tr.step(t); stopWait = tr.wait('檢索中'); } }).then(function (res) {
+        stopWait();
+        if (!res.found) { tr.step('沒有找到相關內容', 'bad'); tr.end('🧾 過程（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒，沒找到）'); note(c, res.message || '在目前勾選的來源裡找不到相關內容。'); if (res.semantic === false) note(c, '（' + (res.semantic_note || '只用關鍵字檢索') + '）'); return; }
+        tr.step('找到 ' + res.hits.length + ' 筆　' + (res.semantic ? '關鍵字＋語意' : (res.semantic_note || '只用關鍵字')), 'ok');
+        var showHits = function () { var hd = h('div', 'st', '原文出處（' + res.hits.length + ' 筆）'); c.appendChild(hd); res.hits.forEach(function (hit, i) { c.appendChild(hitCard(hit, i, q)); }); scroll(); };
+        if (!aiMode) { tr.end('🧾 過程（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）'); showHits(); return; }
+        var stop2 = tr.wait('等待模型回應');
+        return host.answerAI(q, res.hits, function (t) { stop2(); tr.step(t); }).then(function (ai) {
+          stop2(); tr.end('🧾 過程（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）');
+          if (!ai.ok) { note(c, '⚠️ AI 整理失敗：' + ai.error + '\n下面是原文。', 'st bad'); showHits(); return; }
+          if (!ai.sentences.length) note(c, '模型沒有給出能對上原文的回答（' + (ai.dropped.length ? '丟掉了 ' + ai.dropped.length + ' 句對不上原文的' : '它說找不到') + '）。請看下面的原文。');
+          else { var box = h('div', 'ans'); ai.sentences.forEach(function (x) { var p = h('div'); p.appendChild(document.createTextNode(x.text)); x.cites.forEach(function (n) { p.appendChild(h('span', 'cite', '[' + n + ']')); }); box.appendChild(p); }); c.appendChild(box); }
+          if (ai.dropped.length) { var dd = h('details', 'tr'); dd.appendChild(h('summary', null, '丟掉了 ' + ai.dropped.length + ' 句（對不上原文，沒有採用）')); ai.dropped.forEach(function (x) { dd.appendChild(h('div', 'trl', x.text + '　← ' + x.why)); }); c.appendChild(dd); }
+          showHits();
+        });
+      }).catch(function (e) { stopWait(); tr.step('⚠️ ' + String((e && e.message) || e).slice(0, 200), 'bad'); tr.end('🧾 過程（出錯）'); });
     });
     go.onclick = ask; ta.onkeydown = function (e) { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); ask(); } };
     function hitCard(hit, i, question) {
@@ -158,7 +205,7 @@
     };
     // ───── 視窗外殼：彈出、最大化、收回對話裡（共用 FaWin；元素留在原位，不重新載入）─────
     var win = WIN ? WIN.decorate(el, { id: 'knowledge', title: '📚 Knowledge Inventory', bar: bar, minW: 520, minH: 320 }) : null;
-    el._ki = { win: win, pop: function () { if (win) win.pop(); }, dock: function () { if (win) win.dock(); }, maximize: function (on) { if (win) win.maximize(on); }, isPopped: function () { return !!win && win.isPopped(); }, isMaximized: function () { return !!win && win.isMaximized(); }, toggleSide: function (show) { sideHidden = show === undefined ? !sideHidden : !show; applySide(); }, isSideHidden: function () { return sideHidden; }, refresh: refreshStatus, destroy: function () { try { if (win) win.destroy(); el.remove(); } catch (e) { /* */ } }, ask: function (q) { ta.value = q; ask(); }, showAdd: showAdd };
+    el._ki = { win: win, pop: function () { if (win) win.pop(); }, dock: function () { if (win) win.dock(); }, maximize: function (on) { if (win) win.maximize(on); }, isPopped: function () { return !!win && win.isPopped(); }, isMaximized: function () { return !!win && win.isMaximized(); }, toggleSide: function (show) { sideHidden = show === undefined ? !sideHidden : !show; applySide(); }, isSideHidden: function () { return sideHidden; }, refresh: refreshStatus, destroy: function () { try { if (offProg) offProg(); if (win) win.destroy(); el.remove(); } catch (e) { /* */ } }, ask: function (q) { ta.value = q; ask(); }, showAdd: showAdd };
     refreshStatus().then(function () { var c = card('👋 你好'); note(c, '左邊是你的來源：勾選的才會用來回答，可以拖檔案進來或按「＋ 加入」。下面問問題，回答只會是原文，標明來源與第幾行。上面的按鈕可以更新知識庫、模型整理、建立語意索引、看關聯、設定位置與容量。'); });
     return el;
   }
