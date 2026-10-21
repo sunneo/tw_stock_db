@@ -10,8 +10,8 @@
  *   host.palette()                -> {dark}（選填）
  * mount({ id, state, spec, host, W }) 回傳 DOM 元素；el._ws = { getState(), reload(state), setSpec(spec, summary) }。 */
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory(require('./worksheet_core.js')); else root.FaWorksheetUI = factory(root.FaWorksheet || (typeof FaWorksheet !== 'undefined' ? FaWorksheet : undefined));
-})(typeof self !== 'undefined' ? self : this, function (WS) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./worksheet_core.js'), require('../ui/win_shell.js')); else root.FaWorksheetUI = factory(root.FaWorksheet || (typeof FaWorksheet !== 'undefined' ? FaWorksheet : undefined), root.FaWin || (typeof FaWin !== 'undefined' ? FaWin : undefined));
+})(typeof self !== 'undefined' ? self : this, function (WS, WIN) {
   'use strict';
   var MAXSTATES = 60;
   var CSS = '.fwk{--bg:#fff;--fg:#1f2328;--bd:#d0d7de;--hd:#f6f8fa;--mut:#59636e;--acc:#0969da;--ok:#1a7f37;--bad:#cf222e;border:1px solid var(--bd);border-radius:8px;background:var(--bg);color:var(--fg);font:13px system-ui,"Microsoft JhengHei",sans-serif;margin:6px 0;overflow:hidden;max-width:100%}.fwk.dark{--bg:#0d1117;--fg:#e6edf3;--bd:#30363d;--hd:#161b22;--mut:#8b949e;--acc:#2f81f7;--ok:#3fb950;--bad:#f85149}'
@@ -56,7 +56,7 @@
     var bar = h('div', 'bar'), ttl = h('span', 'ttl', '📐 學習單編輯器'), bUndo = h('button', null, '↶ 復原'), bRedo = h('button', null, '↷ 重做'), bSum = h('button', null, '📝 摘要成 prompt'), bTpl = h('button', null, '📋 範本'), bExp = h('select'), bFull = h('button', null, '⛶'), stat = h('span', 'st');
     bUndo.title = 'Ctrl+Z'; bRedo.title = 'Ctrl+Y'; bFull.title = '放大／還原';
     [['', '⬇ 匯出…'], ['pdf', 'PDF（向量）'], ['png', 'PNG 預覽圖'], ['html', 'HTML（可列印）'], ['json', '描述（JSON）']].forEach(function (o) { var op = h('option', null, o[1]); op.value = o[0]; bExp.appendChild(op); });
-    [ttl, stat, bUndo, bRedo, bTpl, bSum, bExp, bFull].forEach(function (x) { bar.appendChild(x); });
+    [ttl, stat, bUndo, bRedo, bTpl, bSum, bExp].forEach(function (x) { bar.appendChild(x); });
     var sum = h('div', 'sum'), sumTa = h('textarea'); sumTa.rows = 8; var sumRow = h('div', 'row'), bCopy = h('button', null, '📋 複製'), bRegen = h('button', 'pri', '↻ 用這段重新生成'), bPol = h('button', null, '✨ 請 AI 潤飾'), bSumX = h('button', null, '✕'); [bCopy, bRegen, bPol, bSumX].forEach(function (x) { sumRow.appendChild(x); }); sumRow.insertBefore(h('span', 'st', '把目前的樣子與編輯過程整理成一段可以重用的描述'), bCopy); sum.appendChild(sumTa); sum.appendChild(sumRow);
     // 範本：從範本開始（一步，可以復原）、把目前這份存成範本（使用者範本由 host 保管）
     var tpl = h('div', 'sum'), tplList = h('div', 'tpls'), tplSave = h('div', 'row'), tplName = h('input'), tplBtn = h('button', null, '💾 把目前這份存成範本'), tplX = h('button', null, '✕'); tplName.placeholder = '範本名稱'; tplName.style.flex = '1'; tplName.style.minWidth = '120px';
@@ -201,7 +201,7 @@
       } catch (e) { stat.textContent = '匯出失敗：' + String((e && e.message) || e).slice(0, 80); }
       setTimeout(function () { stat.textContent = ''; }, 3000);
     };
-    bFull.onclick = function () { var on = el.className.indexOf(' full') >= 0; el.className = el.className.replace(' full', '') + (on ? '' : ' full'); bFull.textContent = on ? '⛶' : '🗗'; };
+    var win = WIN ? WIN.decorate(el, { id: 'ws:' + (opt.id || ''), title: '📐 學習單編輯器', bar: bar, minW: 640, minH: 420 }) : null; el._win = win;
     bUndo.onclick = undo; bRedo.onclick = redo;
     el.addEventListener('keydown', function (ev) { if (ev.target && /^(INPUT|TEXTAREA|SELECT)$/.test(ev.target.tagName) && ev.target !== el) { if (!(ev.ctrlKey || ev.metaKey)) return; if (ev.target.tagName === 'TEXTAREA' || ev.target.type === 'text') return; } if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && ev.key.toLowerCase() === 'z') { ev.preventDefault(); undo(); } else if ((ev.ctrlKey || ev.metaKey) && (ev.key.toLowerCase() === 'y' || (ev.shiftKey && ev.key.toLowerCase() === 'z'))) { ev.preventDefault(); redo(); } else if (ev.key === 'Escape' && el.className.indexOf(' full') >= 0) bFull.onclick(); });
     el.tabIndex = 0;

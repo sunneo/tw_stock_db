@@ -10,8 +10,8 @@
  *   host.ask({text, images, spec, onStatus}) -> Promise<{say, edits?, refs?, notes?}>   （程式讀不懂的句子／附圖／後端要改時才呼叫）
  *   host.download(blob, name, mime)、host.save(state)、host.regenerate(promptText)?、host.polish(text)?、host.palette()? */
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory(require('./webedit_core.js')); else root.FaWebEditUI = factory(root.FaWebEdit || (typeof FaWebEdit !== 'undefined' ? FaWebEdit : undefined));
-})(typeof self !== 'undefined' ? self : this, function (WE) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./webedit_core.js'), require('../ui/win_shell.js')); else root.FaWebEditUI = factory(root.FaWebEdit || (typeof FaWebEdit !== 'undefined' ? FaWebEdit : undefined), root.FaWin || (typeof FaWin !== 'undefined' ? FaWin : undefined));
+})(typeof self !== 'undefined' ? self : this, function (WE, WIN) {
   'use strict';
   var MAXSTATES = 25;
   var CSS = '.fwe{--bg:#fff;--fg:#1f2328;--bd:#d0d7de;--hd:#f6f8fa;--mut:#59636e;--acc:#0969da;--ok:#1a7f37;--bad:#cf222e;border:1px solid var(--bd);border-radius:8px;background:var(--bg);color:var(--fg);font:13px system-ui,"Microsoft JhengHei",sans-serif;margin:6px 0;overflow:hidden;max-width:100%}.fwe.dark{--bg:#0d1117;--fg:#e6edf3;--bd:#30363d;--hd:#161b22;--mut:#8b949e;--acc:#2f81f7;--ok:#3fb950;--bad:#f85149}'
@@ -50,7 +50,7 @@
     var bar = h('div', 'bar'), ttl = h('span', 'ttl', '🌐 網頁編輯器'), stat = h('span', 'st'), bUndo = h('button', null, '↶ 復原'), bRedo = h('button', null, '↷ 重做'), bTpl = h('button', null, '📋 起手式'), bSum = h('button', null, '📝 摘要成 prompt'), bExp = h('select'), bFull = h('button', null, '⛶');
     bUndo.title = 'Ctrl+Z'; bRedo.title = 'Ctrl+Y';
     [['', '⬇ 匯出…'], ['html', '網頁（單一 HTML）'], ['json', '專案描述（JSON）'], ['node', '後端：Node 部署檔'], ['cloudflare', '後端：Cloudflare 部署檔']].forEach(function (o) { var op = h('option', null, o[1]); op.value = o[0]; bExp.appendChild(op); });
-    [ttl, stat, bUndo, bRedo, bTpl, bSum, bExp, bFull].forEach(function (x) { bar.appendChild(x); });
+    [ttl, stat, bUndo, bRedo, bTpl, bSum, bExp].forEach(function (x) { bar.appendChild(x); });
     var tpl = h('div', 'sum'), tplList = h('div', 'row'), tplX = h('button', null, '✕'); tpl.appendChild(h('div', 'st', '從起手式開始（會換掉目前的內容，這一步可以復原）：')); tpl.appendChild(tplList); tpl.appendChild(tplX);
     (W.listStarters ? W.listStarters() : []).forEach(function (t) { var b = h('button', null, t.label); b.title = t.desc; b.onclick = function () { var sp = W.starter(t.id); if (sp) { commit(sp, '從起手式「' + t.label + '」開始', '', 'chat'); tpl.className = 'sum'; curFile = 'index.html'; } }; tplList.appendChild(b); });
     bTpl.onclick = function () { tpl.className = tpl.className.indexOf(' on') >= 0 ? 'sum' : 'sum on'; }; tplX.onclick = function () { tpl.className = 'sum'; };
@@ -156,7 +156,7 @@
     bPol.style.display = host.polish ? '' : 'none'; bPol.onclick = function () { bPol.disabled = true; var old = bPol.textContent; bPol.textContent = '潤飾中…'; Promise.resolve(host.polish(sumTa.value)).then(function (t) { if (t) sumTa.value = t; }, function () { /* 用原本的 */ }).then(function () { bPol.disabled = false; bPol.textContent = old; }); };
     function safeName() { return String(cur().title || '網頁').replace(/[\\/:*?"<>|｜]/g, '_').replace(/\s+/g, '').slice(0, 40) || 'webpage'; }
     bExp.onchange = async function () { var k = bExp.value; bExp.value = ''; if (!k) return; if (k === 'node' || k === 'cloudflare') { doExport(k); return; } if (!host.download) return; try { if (k === 'html') await host.download(new Blob([W.buildHtml(cur())], { type: 'text/html' }), safeName() + '.html', 'text/html'); else await host.download(new Blob([JSON.stringify(cur(), null, 1)], { type: 'application/json' }), safeName() + '.json', 'application/json'); stat.textContent = '已匯出'; } catch (e) { stat.textContent = '匯出失敗：' + String((e && e.message) || e).slice(0, 80); } setTimeout(function () { stat.textContent = ''; }, 3000); };
-    bFull.onclick = function () { var on = el.className.indexOf(' full') >= 0; el.className = el.className.replace(' full', '') + (on ? '' : ' full'); bFull.textContent = on ? '⛶' : '🗗'; };
+    var win = WIN ? WIN.decorate(el, { id: 'we:' + (opt.id || ''), title: '🌐 網頁編輯器', bar: bar, minW: 640, minH: 420 }) : null; el._win = win;
     bUndo.onclick = undo; bRedo.onclick = redo;
     el.addEventListener('keydown', function (ev) { var tag = ev.target && ev.target.tagName; if ((tag === 'TEXTAREA' || tag === 'INPUT' || tag === 'SELECT') && ev.target !== el) return; if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && ev.key.toLowerCase() === 'z') { ev.preventDefault(); undo(); } else if ((ev.ctrlKey || ev.metaKey) && (ev.key.toLowerCase() === 'y' || (ev.shiftKey && ev.key.toLowerCase() === 'z'))) { ev.preventDefault(); redo(); } else if (ev.key === 'Escape' && el.className.indexOf(' full') >= 0) bFull.onclick(); });
     el.tabIndex = 0;

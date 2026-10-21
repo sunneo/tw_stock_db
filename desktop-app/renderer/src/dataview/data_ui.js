@@ -10,8 +10,8 @@
  * mount 的選項：{text, fmt, name, host} 或 {sheets:[{name,columns,rows}], name, host}（XLSX）。設計見 DESIGN.data-viewers.md。 */
 (function (root, factory) {
     if (typeof module === 'object' && module.exports) module.exports = factory(require('./data_core.js'));
-    else root.FaDataView = factory(root.FaDataCore || (typeof FaDataCore !== 'undefined' ? FaDataCore : undefined));
-})(typeof self !== 'undefined' ? self : this, function (C) {
+    else root.FaDataView = factory(root.FaDataCore || (typeof FaDataCore !== 'undefined' ? FaDataCore : undefined), root.FaWin || (typeof FaWin !== 'undefined' ? FaWin : undefined));
+})(typeof self !== 'undefined' ? self : this, function (C, WIN) {
     'use strict';
     const LH = 19, TH = 22, GUTTER = 56, DEFW = 120;
     const CSS = `.fdv{--bg:#0d1117;--fg:#e6edf3;--bd:#30363d;--hd:#161b22;--mut:#8b949e;--acc:#2f81f7;--k:#79c0ff;--s:#7ee787;--n:#ffa657;--b:#ff7b72;--z:#8b949e;--p:#8b949e;--c:#8b949e;--hh:#d2a8ff;--d:#ffa657;--a:#d2a8ff;--hit:#bb800966;--cur:#f2cc6099;margin:6px 0;border:1px solid var(--bd);border-radius:8px;background:var(--bg);color:var(--fg);font:12.5px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;overflow:hidden;max-width:100%;position:relative}
@@ -306,6 +306,7 @@
 
         buildTabs(); render();
         rootEl._fdv = { state: st, setMode, ask, render, selectSheet };
+        if (WIN) { try { WIN.decorate(rootEl, { id: opts && opts.id ? 'dv:' + opts.id : null, title: '資料檢視器：' + (opts && opts.name ? opts.name : ''), bar: bar, minW: 520, minH: 300 }); } catch (e) { /* 外殼失敗不影響檢視器 */ } }
         return rootEl;
     }
     return { mount, focusWheel };

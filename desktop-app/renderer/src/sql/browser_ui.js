@@ -2,11 +2,12 @@
  *   host.openDb(ref, {readonly}) -> Promise<{db, label, readonly, commit(), close()}>
  *   host.call(op, args)          -> Promise<引擎結果>（exec／query／schema／pragma／status／cancel）
  *   host.download(name, text, mime)  host.pickFile() -> Promise<{name, bytes}|null>
- * 編輯一律先在開著的交易裡暫存（粗體標示），按 Write Changes 才 COMMIT 並寫回來源；Revert 回滾。 */
+ * 編輯一律先在開著的交易裡暫存（粗體標示），按 Write Changes 才 COMMIT 並寫回來源；Revert 回滾。
+ * opts.mount：放進這個元素（對話裡的卡片），視窗行為（彈出、改大小、最大化、收回）交給 FaWin；沒給就是舊的獨立浮動視窗。 */
 (function (root, factory) {
-    if (typeof module === 'object' && module.exports) module.exports = factory(require('./browser_core.js'));
-    else root.FaSqliteBrowser = factory(typeof FaSqliteBrowserCore !== 'undefined' ? FaSqliteBrowserCore : root.FaSqliteBrowserCore);
-})(typeof self !== 'undefined' ? self : this, function (C) {
+    if (typeof module === 'object' && module.exports) module.exports = factory(require('./browser_core.js'), require('../ui/win_shell.js'));
+    else root.FaSqliteBrowser = factory(typeof FaSqliteBrowserCore !== 'undefined' ? FaSqliteBrowserCore : root.FaSqliteBrowserCore, root.FaWin || (typeof FaWin !== 'undefined' ? FaWin : undefined));
+})(typeof self !== 'undefined' ? self : this, function (C, WIN) {
     'use strict';
     const SPLIT = typeof FaSqlSplit !== 'undefined' ? FaSqlSplit : (typeof require === 'function' ? require('./sql_split.js') : null);
     const Z = 2147482550; // 高於終端機、AIDoc 檢視器等浮動視窗，低於全域對話框
@@ -36,17 +37,17 @@
         opts = opts || {}; const key = String(ref) + (opts.readonly ? '#ro' : ''); const prev = reg.get(key); if (prev && prev.win.isConnected) { prev.win.style.zIndex = String(Z); return prev.api; }
         if (!document.getElementById('fsb-css')) document.head.appendChild(h('style', { id: 'fsb-css', text: CSS }));
         const st = { handle: null, db: null, ro: !!opts.readonly, schema: null, table: null, tab: 'browse', page: 0, pageSize: 100, filters: {}, sort: [], total: null, cols: [], rows: [], hasRowid: false, inTxn: false, changes: 0, sel: new Set(), chg: new Set(), hist: [], lastRes: null };
-        const win = h('div', { class: 'fsb' }); win.style.cssText = 'left:6vw;top:5vh;width:88vw;height:84vh;min-width:520px;min-height:340px;z-index:' + Z;
+        const win = h('div', { class: 'fsb' }); if (opts.mount) win.classList.add('fwd'); else win.style.cssText = 'left:6vw;top:5vh;width:88vw;height:84vh;min-width:520px;min-height:340px;z-index:' + Z;
         const title = h('b', { text: '🗄 ' + ref }); const badge = h('span', { class: 'badge', text: '連線中…' }); const dirtyB = h('span', { class: 'badge dirty', text: '' }); dirtyB.style.display = 'none';
         const bWrite = h('button', { class: 'pri', title: 'COMMIT 並寫回來源 (Ctrl+S)', text: 'Write Changes' }), bRev = h('button', { title: '回滾所有暫存變更', text: 'Revert' }), bRef = h('button', { title: '重新載入', text: '↻' }), bMax = h('button', { text: '🗖' }), bX = h('button', { text: '✕' });
-        const bar = h('div', { class: 'bar' }, title, badge, dirtyB, bWrite, bRev, bRef, bMax, bX);
+        const bar = h('div', { class: 'bar' }, title, badge, dirtyB, bWrite, bRev, bRef, opts.mount ? null : bMax, bX);
         const tree = h('div', { class: 'tree' }); const tabs = h('div', { class: 'tabs' }); const panes = {};
         const TABS = [['struct', 'Database Structure'], ['browse', 'Browse Data'], ['sql', 'Execute SQL'], ['pragma', 'Pragmas']]; if (typeof host.askAI === 'function') TABS.push(['ai', '🤖 Ask AI']);
         for (const [id, label] of TABS) { tabs.append(h('span', { 'data-t': id, text: label, onclick: () => setTab(id) })); panes[id] = h('div', { class: 'pane' }); }
         const stat1 = h('span', { text: '' }), stat2 = h('span', { text: '' }); const stat = h('div', { class: 'stat' }, stat1, stat2);
         const right = h('div', { class: 'right' }, tabs, panes.struct, panes.browse, panes.sql, panes.pragma, panes.ai || null);
-        win.append(bar, h('div', { class: 'main' }, tree, right), stat, h('div', { class: 'rz' }));
-        document.body.appendChild(win);
+        win.append(bar, h('div', { class: 'main' }, tree, right), stat); if (!opts.mount) win.append(h('div', { class: 'rz' }));
+        (opts.mount || document.body).appendChild(win);
         const say = (m, bad) => { stat1.textContent = m; stat1.style.color = bad ? '#ff7b72' : ''; };
         const q = C.quoteIdent;
         const call = async (op, args) => host.call(op, Object.assign({ db: st.db }, args || {}));
@@ -231,12 +232,13 @@
         win.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); commit(); } });
         window.addEventListener('beforeunload', bu);
         let maxed = false, saved = ''; bMax.onclick = () => { maxed = !maxed; if (maxed) { saved = win.style.cssText; win.style.left = '0'; win.style.top = '0'; win.style.width = '100vw'; win.style.height = '100vh'; win.style.borderRadius = '0'; } else win.style.cssText = saved; };
-        let ox = 0, oy = 0, drag = false, rz = false; bar.addEventListener('mousedown', (e) => { if (e.target.tagName === 'BUTTON' || maxed) return; drag = true; const r = win.getBoundingClientRect(); ox = e.clientX - r.left; oy = e.clientY - r.top; win.style.zIndex = String(Z); });
-        win.querySelector('.rz').addEventListener('mousedown', (e) => { rz = true; e.preventDefault(); });
+        let ox = 0, oy = 0, drag = false, rz = false; bar.addEventListener('mousedown', (e) => { if (opts.mount || e.target.tagName === 'BUTTON' || maxed) return; drag = true; const r = win.getBoundingClientRect(); ox = e.clientX - r.left; oy = e.clientY - r.top; win.style.zIndex = String(Z); });
+        const rzEl = win.querySelector('.rz'); if (rzEl) rzEl.addEventListener('mousedown', (e) => { rz = true; e.preventDefault(); });
         const mv = (e) => { if (drag) { win.style.left = Math.max(0, e.clientX - ox) + 'px'; win.style.top = Math.max(0, e.clientY - oy) + 'px'; } else if (rz) { const r = win.getBoundingClientRect(); win.style.width = Math.max(520, e.clientX - r.left) + 'px'; win.style.height = Math.max(340, e.clientY - r.top) + 'px'; } }; const up = () => { drag = false; rz = false; };
         window.addEventListener('mousemove', mv); window.addEventListener('mouseup', up);
         const api = { win, state: st, close: dispose, commit, revert, refresh: bRef.onclick, setTab, ready: null };
         reg.set(key, { win, api });
+        if (opts.mount && WIN) { try { api.fwin = WIN.decorate(win, { id: 'sql:' + String(ref).slice(0, 60), title: '🗄 ' + ref, bar: bar, minW: 520, minH: 340 }); } catch (e) { /* 外殼失敗不影響 sqlitebrowser */ } }
         api.ready = (async () => {
             try {
                 st.handle = await host.openDb(ref, { readonly: st.ro }); st.db = st.handle.db; st.ro = st.ro || !!st.handle.readonly; title.textContent = '🗄 ' + (st.handle.label || ref); badge.textContent = st.ro ? '唯讀' : '可寫'; markDirty(); await loadSchema(); setTab(st.table ? 'browse' : 'struct'); say('已開啟');
