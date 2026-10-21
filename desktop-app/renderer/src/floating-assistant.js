@@ -33461,6 +33461,56 @@ class FloatingAssistant {
             window.postMessage({ source: 'fa-bc-page', type: 'req', id, cmd, args: args || {} }, target);
         });
     }
+    // 擷取下載（capture）的管線：擴充功能把下載攔在自己的記憶體，這裡一段一段拉回來（每段最多 768 KB），
+    // 邊收邊算 crc32，收完核對大小與 crc32、再算 sha256，最後轉向寫出去：
+    //   - 一律交給 FAP（對話裡出現下載卡片，進檔案快取）；
+    //   - 帶 save_path（桌面版，存檔資料夾的絕對路徑）就同時寫進那個資料夾（也就是「預設下載資料夾」）。
+    // 驗證失敗不寫出去、也不釋放擷取（可以再試一次）。回傳助理看得懂的結果：抓了什麼、多大、雜湊、存到哪。
+    async _bcIngestCapture(info, opts) {
+        opts = opts || {};
+        const t0 = Date.now();
+        if (!this._crcTable) { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } this._crcTable = t; }
+        const T = this._crcTable; let crc = 0xFFFFFFFF;
+        const parts = []; let off = 0, size = Number(info.size_bytes) || 0, last = null;
+        for (;;) {
+            const r = await this._bcCall('read_capture', { id: info.capture_id, offset: off, length: 786432 }, 30000);
+            if (!r || r.ok === false || !r.b64 && !r.eof) throw new Error('讀取擷取的下載失敗：' + String((r && (r.error || r.note)) || '沒有回應'));
+            const bin = atob(r.b64 || ''); const u = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) { const b = bin.charCodeAt(i); u[i] = b; crc = T[(crc ^ b) & 0xFF] ^ (crc >>> 8); }
+            parts.push(u); off += u.length; last = r;
+            if (r.eof || u.length === 0) break;
+        }
+        const crcHex = ((crc ^ 0xFFFFFFFF) >>> 0).toString(16).padStart(8, '0');
+        if (off !== size || crcHex !== String(info.crc32 || last.crc32) || (last && last.size != null && last.size !== off)) throw new Error('擷取的下載驗證失敗（收到 ' + off + ' 位元組、crc32 ' + crcHex + '；擴充功能那邊是 ' + size + ' 位元組、crc32 ' + (info.crc32 || (last && last.crc32)) + '）：沒有寫出去，擷取還留著，可以再試一次');
+        const name = String(info.filename || 'download').replace(/[\\/:*?"<>|]+/g, '_');
+        const blob = new Blob(parts, { type: info.mime || 'application/octet-stream' });
+        let sha256 = null; try { const h = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer()); sha256 = Array.from(new Uint8Array(h)).map((x) => x.toString(16).padStart(2, '0')).join(''); } catch (_) { /* 沒有 WebCrypto 就沒有 sha256 */ }
+        const out = { captured: true, filename: name, mime: info.mime || null, size_bytes: off, sha256, crc32: crcHex, verified: true, source: info.source, url: info.url, duration_ms: Date.now() - t0 };
+        if (opts.save_path) {
+            const raw = window.desktopAPI && window.desktopAPI.rawfs;
+            if (!raw || typeof raw.writeFile !== 'function') out.save_path_error = '這個環境不能直接寫進資料夾（只有桌面版可以）；檔案已交給 FAP 的下載卡片';
+            else {
+                try {
+                    const dir = String(opts.save_path); const sep = dir.includes('\\') && !dir.includes('/') ? '\\' : '/';
+                    const full = dir.replace(/[\\/]+$/, '') + sep + name; let b64 = ''; const CH = 0x8000 * 3;
+                    const all = new Uint8Array(await blob.arrayBuffer()); for (let i = 0; i < all.length; i += CH) { let sb = ''; const sl = all.subarray(i, i + CH); for (let j = 0; j < sl.length; j += 0x2000) sb += String.fromCharCode.apply(null, sl.subarray(j, j + 0x2000)); b64 += btoa(sb); }
+                    const w = await raw.writeFile(full, { base64: b64 }); out.saved_to = (w && w.path) || full;
+                } catch (e) { out.save_path_error = String((e && e.message) || e); }
+            }
+        }
+        if (opts.deliver !== false) { try { const d = await this.generateAndDeliverFile(blob, name, info.mime || blob.type || 'application/octet-stream'); out.delivered = true; out.file_id = d && d.id; } catch (e) { out.deliver_error = String((e && e.message) || e); } }
+        try { await this._bcCall('release_capture', { id: info.capture_id }, 10000); } catch (_) { /* 釋放失敗不影響結果，擴充功能 20 分鐘後自己清 */ }
+        return out;
+    }
+    // browser_click／browser_wait_download 回來的結果裡如果有擷取到的下載，就走管線；抓到什麼、驗證結果直接寫進結果給助理看
+    async _bcPostprocess(cmd, args, result) {
+        const dl = cmd === 'click' ? result && result.download : cmd === 'wait_download' ? result : null;
+        if (!dl || !dl.captured || !dl.capture_id) return result;
+        let done; try { done = await this._bcIngestCapture(dl, { save_path: args && args.save_path, deliver: args && args.deliver }); } catch (e) { done = Object.assign({}, dl, { ingest_error: String((e && e.message) || e) }); }
+        if (cmd === 'click') { result.download = done; return result; }
+        return Object.assign({}, result, done);
+    }
+
     async _bcCall(cmd, args, timeoutMs = 30000) {
         // 2026-09-30：回合結束時要通知擴充功能關閉這一輪開的分頁（見executeChat結尾的turn_end）
         if (cmd !== 'ping' && cmd !== 'turn_end') this._bcUsedThisTurn = true;
@@ -35141,7 +35191,11 @@ ${fnData.code}
             async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
-                try { return JSON.stringify(this._bcShapeResult(cmd, await this._bcCall(cmd, parsed, timeoutMs || 30000))); }
+                try {
+                    // 要等這次點擊的下載、又沒指定下載行為：預設擷取（不跳另存新檔對話框，也知道抓到了什麼）
+                    if (cmd === 'click' && parsed.wait_download && !parsed.download_behavior) parsed.download_behavior = 'capture';
+                    return JSON.stringify(this._bcShapeResult(cmd, await this._bcPostprocess(cmd, parsed, await this._bcCall(cmd, parsed, timeoutMs || 30000))));
+                }
                 catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
             },
             { type: 'object', properties: props, required: required || [], additionalProperties: false }
@@ -35290,11 +35344,11 @@ ${fnData.code}
         // 找到元素再點，同一種頁面結構下每個網址都能重用同一個selector。找不到時會回報「selector比對到
         // 幾個、可見的有幾個」，方便判斷是selector寫錯還是這個頁面結構跟預期不同。
         bcTool('browser_click', 'click', '用CSS selector或文字內容找到元素並點擊（真實滑鼠事件），不用先截圖算座標——**同一個網站的很多個頁面結構相同時（例如逐一走訪多個網址各下載一次），同一個selector可以在每個頁面重複使用，比每次screenshot+browser_get_elements快很多**。selector與text至少給一個（可以只給text，例如text:"免費下載"會在常見可點擊元素裡找innerText/value包含這段文字的）；兩者都給時先用selector篩選、再用text篩選。index選填，同時符合多個時選第幾個（0起算，預設0）。**如果這次點擊預期會觸發檔案下載，一定要加wait_download:true**，回傳的download會有實際存檔路徑(path)、檔名可以從path取得——沒有這個flag點了下載也不知道有沒有成功、存在哪裡。找不到元素時回報的visible_count/matched_by_selector等數字要拿來判斷selector對不對，不要瞎猜著重試。',
-            { tab_id: tabIdProp, selector: { type: 'string', description: '選填，CSS selector' }, text: { type: 'string', description: '選填，元素可見文字/value/aria-label要包含這段（不分大小寫）' }, index: { type: 'integer', description: '選填，同時符合多個時選第幾個，0起算，預設0' }, wait_download: { type: 'boolean', description: '選填，點擊後等待這次觸發的檔案下載完成，回傳存檔路徑' }, download_timeout_ms: { type: 'integer', description: '選填，等下載的逾時時間(毫秒)，預設20000' }, download_behavior: { type: 'string', enum: ['allow', 'deny', 'default'], description: '選填，這次點擊前先設定這個分頁的下載行為：allow=直接存到download_path、不跳「另存新檔」對話框（會一直生效到改成default或分頁關掉）；deny=擋掉下載、只回報有下載想發生（denied:true）；default=還給Chrome自己處理。預期會跳另存新檔對話框時用allow' }, download_path: { type: 'string', description: 'download_behavior為allow時必填：存檔資料夾的絕對路徑（例如C:\\Users\\你\\Downloads\\ai 或 /home/你/Downloads/ai）' } }, [], 30000);
+            { tab_id: tabIdProp, selector: { type: 'string', description: '選填，CSS selector' }, text: { type: 'string', description: '選填，元素可見文字/value/aria-label要包含這段（不分大小寫）' }, index: { type: 'integer', description: '選填，同時符合多個時選第幾個，0起算，預設0' }, wait_download: { type: 'boolean', description: '選填，點擊後等待這次觸發的檔案下載完成，回傳存檔路徑' }, download_timeout_ms: { type: 'integer', description: '選填，等下載的逾時時間(毫秒)，預設20000' }, download_behavior: { type: 'string', enum: ['capture', 'allow', 'deny', 'default'], description: '選填，這次點擊前先設定這個分頁的下載行為：capture=（wait_download:true時的預設，建議）攔下下載、不讓Chrome存檔，位元組串流給FAP並驗證大小與crc32、回傳抓到了什麼（檔名、大小、sha256），再寫進FAP的下載卡片（帶save_path還會寫進該資料夾）；allow=直接存到download_path、不跳「另存新檔」對話框（會一直生效到改成default或分頁關掉）；deny=擋掉下載、只回報有下載想發生（denied:true）；default=還給Chrome自己處理。預期會跳另存新檔對話框時用allow' }, save_path: { type: 'string', description: '選填，capture擷取到的檔案要同時寫進哪個資料夾（絕對路徑，桌面版才能寫；不給就只進FAP的下載卡片）' }, deliver: { type: 'boolean', description: '選填，capture的檔案是否交給FAP下載卡片，預設true' }, download_path: { type: 'string', description: 'download_behavior為allow時必填：存檔資料夾的絕對路徑（例如C:\\Users\\你\\Downloads\\ai 或 /home/你/Downloads/ai）' } }, [], 30000);
         bcTool('browser_wait_download', 'wait_download', '等待一個新的檔案下載完成，回傳存檔路徑(path)、網址、mime、大小。用在下載不是由browser_click直接觸發的情況（例如按Enter觸發、或頁面延遲幾秒後才自動下載）；如果是點擊按鈕觸發下載，優先在browser_click直接帶wait_download:true，不用另外呼叫這個。since_ms選填，不給就只等「這次呼叫之後」才新出現的下載。',
-            { since_ms: { type: 'number', description: '選填，只算這個時間戳記(ms)之後才建立的下載為新下載；不給就用呼叫當下的時間' }, timeout_ms: { type: 'integer', description: '選填，逾時時間(毫秒)，預設20000' }, tab_id: tabIdProp }, [], 190000);
-        bcTool('browser_set_download_behavior', 'set_download_behavior', '預先設定一個分頁的下載行為（之後這個分頁觸發的下載都照它處理，直到改回default或分頁關掉）。behavior=allow要附path（存檔資料夾的絕對路徑）：下載直接存進去、不跳「另存新檔」對話框（擴充功能碰不到系統對話框，所以要靠這個避開）；deny=擋掉下載、只回報有下載想發生；default=還給Chrome。通常直接在browser_click帶download_behavior就好，這個用在下載不是點擊觸發的情況。',
-            { tab_id: tabIdProp, behavior: { type: 'string', enum: ['allow', 'deny', 'default'] }, path: { type: 'string', description: 'behavior為allow時必填，存檔資料夾的絕對路徑' } }, ['behavior'], 15000);
+            { since_ms: { type: 'number', description: '選填，只算這個時間戳記(ms)之後才建立的下載為新下載；不給就用呼叫當下的時間' }, timeout_ms: { type: 'integer', description: '選填，逾時時間(毫秒)，預設20000' }, tab_id: tabIdProp, save_path: { type: 'string', description: '選填，capture擷取到的檔案要同時寫進哪個資料夾（絕對路徑，桌面版）' }, deliver: { type: 'boolean', description: '選填，是否交給FAP下載卡片，預設true' } }, [], 190000);
+        bcTool('browser_set_download_behavior', 'set_download_behavior', '預先設定一個分頁的下載行為（之後這個分頁觸發的下載都照它處理，直到改回default或分頁關掉）。behavior=allow要附path（存檔資料夾的絕對路徑）：下載直接存進去、不跳「另存新檔」對話框（擴充功能碰不到系統對話框，所以要靠這個避開）；capture=攔下下載交給FAP（建議，抓到什麼都看得到、驗得到）；deny=擋掉下載、只回報有下載想發生；default=還給Chrome。通常直接在browser_click帶download_behavior（或wait_download:true，預設capture）就好，這個用在下載不是點擊觸發的情況。',
+            { tab_id: tabIdProp, behavior: { type: 'string', enum: ['capture', 'allow', 'deny', 'default'] }, path: { type: 'string', description: 'behavior為allow時必填，存檔資料夾的絕對路徑' } }, ['behavior'], 15000);
         bcTool('browser_list_downloads', 'list_downloads', '列出這次擴充功能執行期間記得的最近幾筆下載（除錯用，不是完整下載歷史，重新啟動瀏覽器/擴充功能就會清空）。',
             { max: { type: 'integer', description: '選填，最多列幾筆，預設10' } }, [], 10000);
         // ==== SKILLS-BC-TOOLS-END ====
