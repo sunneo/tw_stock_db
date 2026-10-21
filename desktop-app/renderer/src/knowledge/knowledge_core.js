@@ -99,6 +99,19 @@
     return { source: src.name, source_id: src.id, kind: src.kind, line_start: a, line_end: b, section: sec ? sec.title : '', loc: loc, label: lbl, quote: quote };
   }
 
+  // 片段裡「真正回答問題的那幾行」：每行算和查詢共有幾個詞，取最高分那行，連著分數夠高的相鄰行（最多 3 行）。
+  // 出處指到這幾行（不是整個片段）；片段本身的範圍另外放在 chunk_line_start／chunk_line_end。沒有任何一行有共同詞（純語意命中）就用整個片段。
+  function pinpoint(src, ch, qt) {
+    var set = {}; qt.forEach(function (t) { set[t] = 1; });
+    var sc = [], best = 0, bi = -1;
+    for (var ln = ch.line_start; ln <= ch.line_end; ln++) { var toks = Array.from(new Set(tokenize(src.lines[ln - 1] || ''))), n = 0; toks.forEach(function (t) { if (set[t]) n += t.length > 1 ? 1 : 0.3; }); sc.push(n); if (n > best) { best = n; bi = ln; } }
+    if (bi < 0) return { a: ch.line_start, b: ch.line_end, exact: false };
+    var a = bi, b = bi, thr = Math.max(0.5, best / 2);
+    while (b - a < 2 && a > ch.line_start && sc[a - 1 - ch.line_start] >= thr) a--;
+    while (b - a < 2 && b < ch.line_end && sc[b + 1 - ch.line_start] >= thr) b++;
+    return { a: a, b: b, exact: true };
+  }
+
   // ───── 關鍵字索引與檢索（BM25）；儲存層用 FTS5 時也用同一套斷詞（toks 欄位）─────
   function buildIndex(sources) {
     var docs = [], df = {}, total = 0;
@@ -116,7 +129,7 @@
     });
     hits.sort(function (a, c) { return c.score - a.score; });
     var minCov = opts.minCoverage == null ? 0.3 : opts.minCoverage;
-    return hits.filter(function (h) { return h.coverage >= minCov; }).slice(0, opts.limit || 5).map(function (h) { var ch = h.d.ch; return Object.assign(cite(h.d.src, ch.line_start, ch.line_end, ch.text), { score: Math.round(h.score * 100) / 100, coverage: Math.round(h.coverage * 100) / 100, chunk_n: ch.n }); });
+    return hits.filter(function (h) { return h.coverage >= minCov; }).slice(0, opts.limit || 5).map(function (h) { var ch = h.d.ch, pp = pinpoint(h.d.src, ch, qt); return Object.assign(cite(h.d.src, pp.a, pp.b, h.d.src.lines.slice(pp.a - 1, pp.b).join('\n')), { score: Math.round(h.score * 100) / 100, coverage: Math.round(h.coverage * 100) / 100, chunk_n: ch.n, chunk_line_start: ch.line_start, chunk_line_end: ch.line_end }); });
   }
 
   // ───── 混合檢索：關鍵字（BM25）＋小型向量模型（語意）─────
@@ -133,7 +146,7 @@
     }
     var key = function (src, ch) { return (src.id || src.name) + '#' + ch.n; }, fused = {};
     lex.forEach(function (h, r) { var kk = (h.source_id || h.source) + '#' + h.chunk_n; fused[kk] = fused[kk] || { rrf: 0, hit: h, how: [] }; fused[kk].rrf += 1 / (k + r + 1); fused[kk].how.push('關鍵字'); });
-    dense.slice(0, Math.max(limit * 4, 20)).forEach(function (x, r) { var kk = key(x.d.src, x.d.ch); if (!fused[kk]) fused[kk] = { rrf: 0, hit: Object.assign(cite(x.d.src, x.d.ch.line_start, x.d.ch.line_end, x.d.ch.text), { chunk_n: x.d.ch.n }), how: [] }; fused[kk].rrf += 1 / (k + r + 1); fused[kk].how.push('語意'); fused[kk].hit.similarity = Math.round(x.sim * 1000) / 1000; });
+    dense.slice(0, Math.max(limit * 4, 20)).forEach(function (x, r) { var kk = key(x.d.src, x.d.ch); if (!fused[kk]) fused[kk] = { rrf: 0, hit: (function () { var pp = pinpoint(x.d.src, x.d.ch, Array.from(new Set(tokenize(query)))); return Object.assign(cite(x.d.src, pp.a, pp.b, x.d.src.lines.slice(pp.a - 1, pp.b).join('\n')), { chunk_n: x.d.ch.n, chunk_line_start: x.d.ch.line_start, chunk_line_end: x.d.ch.line_end }); })(), how: [] }; fused[kk].rrf += 1 / (k + r + 1); fused[kk].how.push('語意'); fused[kk].hit.similarity = Math.round(x.sim * 1000) / 1000; });
     return Object.keys(fused).map(function (kk) { var f = fused[kk]; return Object.assign({}, f.hit, { score: Math.round(f.rrf * 10000) / 10000, found_by: f.how.join('＋') }); }).sort(function (a, b) { return b.score - a.score; }).slice(0, limit);
   }
 
