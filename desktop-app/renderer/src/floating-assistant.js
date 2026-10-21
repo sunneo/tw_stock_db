@@ -17081,6 +17081,106 @@ const holder = {};
 return holder.FaArticleOutline;
 })();
 /* ARTOUT-END */
+/* WIN-BEGIN */
+const FaWin = (function () {
+const holder = {};
+(function (module, self) {
+/* 專屬介面的「視窗外殼」（UMD）：讓對話裡的任何一個介面（終端機、檢視器、編輯器、sqlitebrowser、知識庫…）都能
+ *   ⤢ 彈出成浮動視窗（拖曳標題列移動、八個邊角把手改大小）、☐ 最大化／❐ 還原（也可以雙擊標題列）、⤓ 收回對話裡。
+ * 做法：元素**留在原本的位置**，只改成 position:fixed（原位留一個佔位提示）——不搬動 DOM，所以 iframe、canvas、WebGL、終端機都不會重新載入或掉狀態。
+ * 如果祖先元素讓 position:fixed 失效（transform、filter 等會變成新的定位基準），自動改成搬到 document.body（那種情況 iframe 會重新載入）。
+ * 彈出的狀態（位置、大小、有沒有最大化）依 id 記在 localStorage；重新整理後介面本身會從對話紀錄回來（停在對話內），要不要再彈出由使用者決定。
+ *
+ *   FaWin.decorate(el, { id, title, bar, minW, minH, floating, onChange }) → ctl
+ *     bar：介面自己的標題列（有的話按鈕加在裡面、拿它當拖曳把手）；沒有就在元素右上角放一排小按鈕（滑過才明顯），彈出時多一條標題列。
+ *     floating：true＝一開始就彈出。
+ *   ctl: { pop(), dock(), maximize(on), toggleMax(), isPopped(), isMaximized(), destroy() }
+ *   FaWin.registry：目前有外殼的元素（除錯與測試用）。 */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaWin = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var Z0 = 100000, zTop = Z0;
+  var CSS = '.fwin-tools{position:absolute;top:3px;right:6px;z-index:6;display:flex;gap:3px;opacity:.25;transition:opacity .15s}.fwin-host:hover>.fwin-tools,.fwin-tools:focus-within{opacity:.95}.fwin-tools button,.fwin-title button,.fwin-btn{background:rgba(127,127,127,.18);color:inherit;border:1px solid rgba(127,127,127,.45);border-radius:5px;padding:0 6px;cursor:pointer;font:12px/20px system-ui,"Microsoft JhengHei",sans-serif;height:22px}.fwin-tools button:hover,.fwin-title button:hover,.fwin-btn:hover{border-color:#58a6ff}'
+    + '.fwin-host{position:relative}.fwin-ph{border:1px dashed rgba(127,127,127,.6);border-radius:8px;padding:14px;color:#8b949e;font:13px system-ui,"Microsoft JhengHei",sans-serif;display:flex;align-items:center;gap:10px}'
+    + '.fwin-host.fwin-pop{position:fixed!important;margin:0!important;box-shadow:0 10px 44px rgba(0,0,0,.5);border-radius:10px!important;overflow:hidden;max-width:none!important;max-height:none!important;box-sizing:border-box}.fwin-host.fwin-pop.fwin-max{border-radius:0!important;box-shadow:none}'
+    + '.fwin-host.fwin-pop.fwin-notitle{padding-top:26px!important}.fwin-title{position:absolute;top:0;left:0;right:0;height:26px;z-index:6;display:flex;align-items:center;gap:6px;padding:2px 6px;background:rgba(33,38,45,.96);color:#e6edf3;cursor:move;user-select:none;font:12px system-ui,"Microsoft JhengHei",sans-serif}.fwin-title b{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}'
+    + '.fwin-rz{position:absolute;z-index:7}.fwin-rz.n{top:0;left:8px;right:8px;height:5px;cursor:ns-resize}.fwin-rz.s{bottom:0;left:8px;right:8px;height:5px;cursor:ns-resize}.fwin-rz.e{right:0;top:8px;bottom:8px;width:5px;cursor:ew-resize}.fwin-rz.w{left:0;top:8px;bottom:8px;width:5px;cursor:ew-resize}.fwin-rz.ne{top:0;right:0;width:10px;height:10px;cursor:nesw-resize}.fwin-rz.nw{top:0;left:0;width:10px;height:10px;cursor:nwse-resize}.fwin-rz.se{bottom:0;right:0;width:14px;height:14px;cursor:nwse-resize}.fwin-rz.sw{bottom:0;left:0;width:10px;height:10px;cursor:nesw-resize}';
+  var registry = [];
+  function injectCss() { if (document.getElementById('fwin-css')) return; var s = document.createElement('style'); s.id = 'fwin-css'; s.textContent = CSS; (document.head || document.documentElement).appendChild(s); }
+  function h(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+  var isBtn = function (t) { return /^(BUTTON|INPUT|SELECT|TEXTAREA|A|LABEL)$/.test(t.tagName); };
+  function load(id) { try { return id ? JSON.parse(localStorage.getItem('fwin:' + id) || 'null') : null; } catch (e) { return null; } }
+  function save(id, st) { try { if (id) localStorage.setItem('fwin:' + id, JSON.stringify(st)); } catch (e) { /* 存不了就算了 */ } }
+
+  function decorate(el, opts) {
+    opts = opts || {}; injectCss(); if (el._fwin) return el._fwin;
+    var MINW = opts.minW || 480, MINH = opts.minH || 300, id = opts.id || null, bar = opts.bar || null, titleText = opts.title || '';
+    var popped = false, maxed = false, ph = null, saved = null, rect = null, rects = null, mode = null, rzDir = null, sx = 0, sy = 0, reparent = false, homeParent = null, homeNext = null, titleEl = null, handles = [], cleanup = null;
+    el.classList.add('fwin-host'); if (getComputedStyle(el).position === 'static') el.style.position = 'relative';
+    var bMax = h('button', null, '☐'), bPop = h('button', null, '⤢'); bMax.title = '最大化（也可以雙擊標題列）'; bPop.title = '彈出成可以拖曳、改大小的視窗';
+    var tools = null;
+    if (bar) { bar.appendChild(bMax); bar.appendChild(bPop); } else { tools = h('div', 'fwin-tools'); tools.appendChild(bMax); tools.appendChild(bPop); el.insertBefore(tools, el.firstChild); }
+    function notify() { if (typeof opts.onChange === 'function') { try { opts.onChange({ popped: popped, maximized: maxed }); } catch (e) { /* */ } } }
+    function front() { zTop += 1; el.style.zIndex = String(zTop); }
+    function persist() { if (popped && rect) save(id, { rect: rect, maxed: maxed }); }
+    function apply(r) { rect = r; el.style.left = r.left + 'px'; el.style.top = r.top + 'px'; el.style.width = r.width + 'px'; el.style.height = r.height + 'px'; }
+    function clamp(r) { var W = window.innerWidth, H = window.innerHeight; var w = Math.max(Math.min(MINW, W), Math.min(r.width, W)), hh = Math.max(Math.min(MINH, H), Math.min(r.height, H)); return { left: Math.max(0, Math.min(W - Math.min(w, 120), r.left)), top: Math.max(0, Math.min(H - 40, r.top)), width: w, height: hh }; }
+    function setMax(on) {
+      if (!popped) { if (on) pop(); else return; } if (on === maxed) return; maxed = on;
+      if (on) { rects = rect; el.classList.add('fwin-max'); apply({ left: 0, top: 0, width: window.innerWidth, height: window.innerHeight }); bMax.textContent = '❐'; bMax.title = '還原'; handles.forEach(function (x) { x.style.display = 'none'; }); }
+      else { el.classList.remove('fwin-max'); apply(clamp(rects || rect)); bMax.textContent = '☐'; bMax.title = '最大化（也可以雙擊標題列）'; handles.forEach(function (x) { x.style.display = ''; }); }
+      persist(); notify();
+    }
+    function pop() {
+      if (popped) { front(); return ctl; }
+      var r = el.getBoundingClientRect(), st = load(id), start = clamp(st && st.rect ? st.rect : { left: Math.max(20, r.left), top: Math.max(20, Math.min(r.top, window.innerHeight - 420)), width: Math.max(MINW, Math.min(r.width, 960)), height: Math.max(MINH, Math.min(Math.max(r.height, 520), window.innerHeight - 40)) });
+      saved = el.getAttribute('style') || ''; ph = h('div', 'fwin-ph'); ph.style.height = Math.min(Math.max(r.height, 60), 220) + 'px'; ph.appendChild(h('span', null, '📌 ' + (titleText || '這個介面') + ' 已彈出成視窗')); var back = h('button', 'fwin-btn', '⤓ 收回'); back.onclick = function () { dock(); }; ph.appendChild(back);
+      homeParent = el.parentNode; homeNext = el.nextSibling; if (homeParent) homeParent.insertBefore(ph, el);
+      el.classList.add('fwin-pop'); if (!bar) el.classList.add('fwin-notitle'); el.style.height = ''; popped = true; maxed = false; apply(start); front();
+      // position:fixed 被祖先（transform／filter…）改成相對於祖先時，位置會不對：改搬到 document.body
+      var chk = el.getBoundingClientRect(); if (Math.abs(chk.left - start.left) > 3 || Math.abs(chk.top - start.top) > 3) { reparent = true; document.body.appendChild(el); apply(start); }
+      if (!bar) { titleEl = h('div', 'fwin-title'); titleEl.appendChild(h('b', null, titleText || '')); titleEl.appendChild(bMax); titleEl.appendChild(bPop); el.insertBefore(titleEl, el.firstChild); if (tools) tools.style.display = 'none'; }
+      bPop.textContent = '⤓'; bPop.title = '收回對話裡'; var dragEl = bar || titleEl; if (dragEl) { dragEl.style.cursor = 'move'; }
+      ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'].forEach(function (d) { var x = h('div', 'fwin-rz ' + d); x.onmousedown = function (e) { if (maxed) return; mode = 'rz'; rzDir = d; sx = e.clientX; sy = e.clientY; rects = null; el._r0 = { l: rect.left, t: rect.top, w: rect.width, h: rect.height }; front(); e.preventDefault(); e.stopPropagation(); }; el.appendChild(x); handles.push(x); });
+      var down = function (e) { if (maxed || isBtn(e.target)) return; mode = 'mv'; sx = e.clientX; sy = e.clientY; el._o = { l: rect.left, t: rect.top }; front(); e.preventDefault(); };
+      var dbl = function (e) { if (isBtn(e.target)) return; setMax(!maxed); };
+      if (dragEl) { dragEl.addEventListener('mousedown', down); dragEl.addEventListener('dblclick', dbl); }
+      var mv = function (e) {
+        if (!mode) return; var dx = e.clientX - sx, dy = e.clientY - sy;
+        if (mode === 'mv') { apply({ left: Math.max(0, Math.min(window.innerWidth - 120, el._o.l + dx)), top: Math.max(0, Math.min(window.innerHeight - 40, el._o.t + dy)), width: rect.width, height: rect.height }); return; }
+        var o = el._r0, L = o.l, T = o.t, W = o.w, H = o.h;
+        if (rzDir.indexOf('e') >= 0) W = Math.max(MINW, Math.min(window.innerWidth - L, o.w + dx));
+        if (rzDir.indexOf('s') >= 0) H = Math.max(MINH, Math.min(window.innerHeight - T, o.h + dy));
+        if (rzDir.indexOf('w') >= 0) { var nw = Math.max(MINW, o.w - dx); L = Math.max(0, o.l + o.w - nw); W = o.l + o.w - L; }
+        if (rzDir.indexOf('n') >= 0) { var nh = Math.max(MINH, o.h - dy); T = Math.max(0, o.t + o.h - nh); H = o.t + o.h - T; }
+        apply({ left: L, top: T, width: W, height: H });
+      };
+      var up = function () { if (mode) { mode = null; persist(); } }, rs = function () { if (!popped) return; if (maxed) apply({ left: 0, top: 0, width: window.innerWidth, height: window.innerHeight }); else apply(clamp(rect)); };
+      var onDown = function () { front(); }; el.addEventListener('mousedown', onDown, true);
+      document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up); window.addEventListener('resize', rs);
+      cleanup = function () { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); window.removeEventListener('resize', rs); el.removeEventListener('mousedown', onDown, true); if (dragEl) { dragEl.removeEventListener('mousedown', down); dragEl.removeEventListener('dblclick', dbl); dragEl.style.cursor = ''; } };
+      if (st && st.maxed) setMax(true);
+      notify(); return ctl;
+    }
+    function dock() {
+      if (!popped) return ctl; if (cleanup) cleanup(); cleanup = null; maxed = false; popped = false;
+      handles.forEach(function (x) { x.remove(); }); handles = []; if (titleEl) { bMax.remove(); bPop.remove(); titleEl.remove(); titleEl = null; if (tools) { tools.style.display = ''; tools.appendChild(bMax); tools.appendChild(bPop); } else if (bar) { bar.appendChild(bMax); bar.appendChild(bPop); } }
+      el.classList.remove('fwin-pop', 'fwin-max', 'fwin-notitle'); if (saved) el.setAttribute('style', saved); else el.removeAttribute('style'); if (getComputedStyle(el).position === 'static') el.style.position = 'relative';
+      if (reparent && ph && ph.parentNode) { ph.parentNode.insertBefore(el, ph); } reparent = false; if (ph) { ph.remove(); ph = null; }
+      bMax.textContent = '☐'; bMax.title = '最大化（也可以雙擊標題列）'; bPop.textContent = '⤢'; bPop.title = '彈出成可以拖曳、改大小的視窗'; notify(); return ctl;
+    }
+    bPop.onclick = function () { if (popped) dock(); else pop(); }; bMax.onclick = function () { setMax(!maxed); };
+    var ctl = { pop: pop, dock: dock, maximize: function (on) { setMax(on === undefined ? !maxed : !!on); return ctl; }, toggleMax: function () { setMax(!maxed); return ctl; }, isPopped: function () { return popped; }, isMaximized: function () { return maxed; }, setTitle: function (t) { titleText = t; if (titleEl && titleEl.firstChild) titleEl.firstChild.textContent = t; }, destroy: function () { if (popped) dock(); if (tools) tools.remove(); try { bMax.remove(); bPop.remove(); } catch (e) { /* */ } el.classList.remove('fwin-host'); delete el._fwin; var i = registry.indexOf(ctl); if (i >= 0) registry.splice(i, 1); }, el: el };
+    el._fwin = ctl; registry.push(ctl); if (opts.floating) pop(); return ctl;
+  }
+  return { decorate: decorate, registry: registry };
+});
+
+}).call(null, undefined, holder);
+return holder.FaWin;
+})();
+/* WIN-END */
 /* KNOW-BEGIN */
 const FaKnowledge = (function () {
 const holder = {};
@@ -17525,6 +17625,181 @@ const holder = {};
 return holder.FaKnowledgeStore;
 })();
 /* KSTORE-END */
+/* KUI-BEGIN */
+const FaKnowledgeUI = (function () {
+const holder = {};
+(function (module, self) {
+/* Knowledge Inventory 的畫面：像 NotebookLM 的三塊版面，可以彈出成獨立的浮動視窗（拖曳標題列移動、拉角落改大小、收回對話裡）。
+ *   左：來源清單（Inventory）——可以拖曳檔案進來、按「＋加入」加入來源；每個來源可勾選／取消勾選（勾選的才會用來回答）、刪除；
+ *       左右兩塊中間的 sash 可以拖曳調整寬度（會記住）。
+ *   中：訊息區（問答、目錄、摘要、更新結果、關聯、設定都以訊息卡片出現），下面是詢問對話區。
+ *   上方工具列：🔄更新知識庫、🧹模型整理、🧠語意索引、🔗關聯、⚙設定（.keeplookup 放哪裡與搬家、容量上限可無限）、⤢彈出／⤓收回。
+ * 每個回答都是原文片段，標明來源、第幾行、章節（頁／投影片／工作表／時間），查詢的詞會標起來，可展開上下文、複製出處。
+ * 只依賴 host（由 app 提供）：
+ *   status() sources() ask({question,sources,limit}) outline(ref) detail(ref, which, opts) summary(ref)
+ *   links() setLinkStatus(id, status) rebuildLinks() addUrl(url) addText(name, text, kind) addFile(File) remove(ref) enable(ref, on)
+ *   refresh() organize(ref) embedStatus() embedRun() migrate(kind, path, keepOld) setCapacity(mb) palette()? */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('../ui/win_shell.js')); else root.FaKnowledgeUI = factory(root.FaWin || (typeof FaWin !== 'undefined' ? FaWin : undefined));
+})(typeof self !== 'undefined' ? self : this, function (WIN) {
+  'use strict';
+  var CSS = '.fki{--bg:#fff;--fg:#1f2328;--bd:#d0d7de;--hd:#f6f8fa;--mut:#59636e;--acc:#0969da;--ok:#1a7f37;--bad:#cf222e;--hl:#fff3b0;border:1px solid var(--bd);border-radius:8px;background:var(--bg);color:var(--fg);font:13px system-ui,"Microsoft JhengHei",sans-serif;margin:6px 0;overflow:hidden;max-width:100%;display:flex;flex-direction:column;height:560px}'
+    + '.fki.dark{--bg:#161b22;--fg:#e6edf3;--bd:#30363d;--hd:#21262d;--mut:#8b949e;--acc:#58a6ff;--ok:#3fb950;--bad:#f85149;--hl:#5a4a00}.fki *{box-sizing:border-box}'
+    + '.fki button{background:var(--hd);color:inherit;border:1px solid var(--bd);border-radius:5px;padding:3px 9px;cursor:pointer;font:inherit}.fki button:hover:not(:disabled){border-color:var(--acc)}.fki button:disabled{opacity:.4;cursor:default}.fki button.pri{background:var(--acc);border-color:var(--acc);color:#fff}.fki button.ic{padding:1px 6px;background:transparent;border-color:transparent}.fki button.ic:hover{border-color:var(--bd)}'
+    + '.fki input[type=text],.fki input[type=number],.fki select,.fki textarea{background:var(--bg);color:inherit;border:1px solid var(--bd);border-radius:5px;padding:4px 6px;font:inherit;max-width:100%}.fki textarea{width:100%;resize:none}'
+    + '.fki .bar{display:flex;align-items:center;gap:6px;padding:6px 8px;background:var(--hd);border-bottom:1px solid var(--bd);flex-wrap:wrap;cursor:default}.fki .ttl{font-weight:600}.fki .st{color:var(--mut);font-size:12px}.fki .spacer{margin-left:auto}'
+    + '.fki .body{display:flex;flex:1;min-height:0}.fki .side{width:230px;min-width:150px;display:flex;flex-direction:column;border-right:0;position:relative;background:var(--bg)}.fki .sash{width:6px;cursor:col-resize;background:var(--hd);border-left:1px solid var(--bd);border-right:1px solid var(--bd);flex:none}.fki .sash:hover,.fki .sash.drag{background:var(--acc);opacity:.6}'
+    + '.fki .sidehd{display:flex;align-items:center;gap:6px;padding:6px 8px;border-bottom:1px solid var(--bd);background:var(--hd)}.fki .sidehd b{margin-right:auto}.fki .list{flex:1;overflow:auto;padding:4px}.fki .src{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:5px;border:1px solid transparent}.fki .src:hover{border-color:var(--bd)}.fki .src.off .nm{opacity:.5;text-decoration:line-through}.fki .src .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}.fki .src .meta{color:var(--mut);font-size:11px}'
+    + '.fki .dropov{position:absolute;inset:0;background:rgba(9,105,218,.12);border:2px dashed var(--acc);display:none;align-items:center;justify-content:center;color:var(--acc);font-weight:600;z-index:2;text-align:center;padding:10px}.fki .side.over .dropov{display:flex}.fki .empty{color:var(--mut);padding:10px;text-align:center}'
+    + '.fki .main{flex:1;min-width:0;display:flex;flex-direction:column}.fki .msgs{flex:1;overflow:auto;padding:8px;display:flex;flex-direction:column;gap:8px}.fki .u{align-self:flex-end;max-width:85%;background:var(--acc);color:#fff;border-radius:10px;padding:5px 10px;white-space:pre-wrap;word-break:break-word}'
+    + '.fki .card{border:1px solid var(--bd);border-radius:8px;padding:6px 8px;display:flex;flex-direction:column;gap:6px;background:var(--bg)}.fki .card h4{margin:0;font-size:13px;display:flex;align-items:center;gap:6px}.fki .row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}.fki .row label{color:var(--mut)}'
+    + '.fki .hit{border:1px solid var(--bd);border-radius:6px;padding:6px 8px;display:flex;flex-direction:column;gap:4px}.fki .hit .lb{font-weight:600}.fki .hit .by{font-size:11px;color:var(--mut);border:1px solid var(--bd);border-radius:8px;padding:0 6px;margin-left:6px}'
+    + '.fki blockquote{margin:0;padding:3px 8px;border-left:3px solid var(--acc);white-space:pre-wrap;word-break:break-word}.fki mark{background:var(--hl);color:inherit;border-radius:2px}'
+    + '.fki pre.code{margin:0;padding:6px;background:var(--hd);border:1px solid var(--bd);border-radius:6px;max-height:260px;overflow:auto;font:12px/1.5 ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-all}.fki .ln{color:var(--mut);display:inline-block;min-width:3.2em;text-align:right;margin-right:8px;user-select:none}.fki .ln.hot{color:var(--acc);font-weight:700}'
+    + '.fki .ask{border-top:1px solid var(--bd);padding:8px;display:flex;flex-direction:column;gap:4px;background:var(--hd)}.fki .ask .r{display:flex;gap:6px;align-items:flex-end}.fki .ask textarea{flex:1;min-height:42px;max-height:120px}.fki .ok{color:var(--ok)}.fki .bad{color:var(--bad)}';
+  function h(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+  function esc(s) { return String(s == null ? '' : s); }
+  // 把查詢的詞在原文裡標起來（只是顯示，不改內容）
+  function highlight(container, text, query) {
+    var words = Array.from(new Set((String(query || '').toLowerCase().match(/[a-z0-9][a-z0-9_.\-]*|[㐀-鿿]{1,}/g) || []).flatMap(function (w) { return /[㐀-鿿]/.test(w) ? (w.length > 1 ? w.split('').concat(Array.from({ length: w.length - 1 }, function (_, i) { return w.slice(i, i + 2); })) : [w]) : [w]; })));
+    var t = String(text), low = t.toLowerCase(), marks = new Array(t.length).fill(false);
+    words.sort(function (a, b) { return b.length - a.length; }).forEach(function (w) { if (w.length === 1 && /[a-z0-9]/.test(w)) return; var i = -1; while ((i = low.indexOf(w, i + 1)) >= 0) for (var k = i; k < i + w.length; k++) marks[k] = true; });
+    var i2 = 0; while (i2 < t.length) { var j = i2; while (j < t.length && marks[j] === marks[i2]) j++; var seg = t.slice(i2, j); if (marks[i2]) { var m = document.createElement('mark'); m.textContent = seg; container.appendChild(m); } else container.appendChild(document.createTextNode(seg)); i2 = j; }
+  }
+
+  function mount(opt) {
+    var host = opt.host || {}, el = h('div', 'fki'), dark = false; try { dark = !!(host.palette && host.palette().dark); } catch (e) { dark = false; } if (dark) el.className += ' dark';
+    if (!document.getElementById('fki-css')) { var st0 = document.createElement('style'); st0.id = 'fki-css'; st0.textContent = CSS; (document.head || document.documentElement).appendChild(st0); }
+    var sources = [], busy = false, lastQuery = '', statusInfo = {};
+    // ───── 骨架 ─────
+    var bar = h('div', 'bar'), ttl = h('span', 'ttl', '📚 Knowledge Inventory'), stat = h('span', 'st'), spacer = h('span', 'spacer');
+    var bRef = h('button', 'pri', '🔄 更新'), bOrg = h('button', null, '🧹 整理'), bEmb = h('button', null, '🧠 語意'), bLk = h('button', null, '🔗 關聯'), bSet = h('button', null, '⚙ 設定');
+    bRef.title = '更新知識庫：重新抓取網址來源（內容有變才更新）、補算語意向量、重算關聯'; bOrg.title = '模型整理：請模型替每個來源挑關鍵詞（只能是來源裡原本有的字，程式逐個核對）；線上模型用不了會自動改用離線模型'; bEmb.title = '語意索引：用小型向量模型建立（第一次要下載約 118 MB）'; bLk.title = '關聯：只用字面證據（來源互相提到、共有的專有名詞或關鍵詞）'; bSet.title = '.keeplookup 放哪裡、搬家、容量上限';
+    var bSide = h('button', null, '☰'); bSide.title = '隱藏／顯示左邊的來源清單';
+    [bSide, ttl, stat, spacer, bRef, bOrg, bEmb, bLk, bSet].forEach(function (x) { bar.appendChild(x); });
+    var body = h('div', 'body'), side = h('div', 'side'), sash = h('div', 'sash'), main = h('div', 'main');
+    var sidehd = h('div', 'sidehd'), sidetitle = h('b', null, '來源'), bAll = h('input'), bAdd = h('button', 'pri', '＋ 加入'), fileIn = h('input'), list = h('div', 'list'), dropov = h('div', 'dropov', '放開滑鼠，把檔案加入知識庫');
+    bAll.type = 'checkbox'; bAll.title = '全選／全不選'; bAdd.title = '加入來源：檔案、網址、貼上的文字（也可以直接把檔案拖進來）'; fileIn.type = 'file'; fileIn.multiple = true; fileIn.style.display = 'none';
+    [bAll, sidetitle, bAdd, fileIn].forEach(function (x) { sidehd.appendChild(x); }); [sidehd, list, dropov].forEach(function (x) { side.appendChild(x); });
+    var msgs = h('div', 'msgs'), askbox = h('div', 'ask'), askrow = h('div', 'r'), ta = h('textarea'), go = h('button', 'pri', '問'), scope = h('div', 'st');
+    ta.rows = 2; ta.placeholder = '問你放進知識庫的資料（Enter 送出，Shift+Enter 換行）——回答只會是原文，附出處'; askrow.appendChild(ta); askrow.appendChild(go); askbox.appendChild(askrow); askbox.appendChild(scope);
+    main.appendChild(msgs); main.appendChild(askbox); [side, sash, main].forEach(function (x) { body.appendChild(x); }); el.appendChild(bar); el.appendChild(body);
+    // sash：拖曳調整左邊寬度（會記住）
+    var sideW = 230; try { var sw = Number(localStorage.getItem('fa.ki.sideW')); if (sw >= 150) sideW = sw; } catch (e) { /* */ } side.style.width = sideW + 'px';
+    sash.onmousedown = function (ev) { ev.preventDefault(); var x0 = ev.clientX, w0 = side.getBoundingClientRect().width; sash.className = 'sash drag'; var mv = function (e) { var max = Math.max(200, body.getBoundingClientRect().width * 0.6); sideW = Math.max(150, Math.min(max, w0 + e.clientX - x0)); side.style.width = sideW + 'px'; }; var up = function () { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); sash.className = 'sash'; try { localStorage.setItem('fa.ki.sideW', String(Math.round(sideW))); } catch (e) { /* */ } }; document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up); };
+
+    // 左邊可隱藏／顯示（會記住）
+    var sideHidden = false; try { sideHidden = localStorage.getItem('fa.ki.sideHidden') === '1'; } catch (e) { /* */ }
+    function applySide() { side.style.display = sideHidden ? 'none' : ''; sash.style.display = sideHidden ? 'none' : ''; bSide.title = sideHidden ? '顯示左邊的來源清單' : '隱藏左邊的來源清單'; bSide.style.borderColor = sideHidden ? 'var(--acc)' : ''; }
+    bSide.onclick = function () { sideHidden = !sideHidden; try { localStorage.setItem('fa.ki.sideHidden', sideHidden ? '1' : '0'); } catch (e) { /* */ } applySide(); }; applySide();
+    function scroll() { msgs.scrollTop = msgs.scrollHeight; }
+    function userMsg(t) { var m = h('div', 'u', t); msgs.appendChild(m); scroll(); return m; }
+    function card(title) { var c = h('div', 'card'), hd = h('h4', null, title); c.appendChild(hd); var x = h('button', 'ic', '✕'); x.title = '關掉這張卡片'; x.style.marginLeft = 'auto'; x.onclick = function () { c.remove(); }; hd.appendChild(x); msgs.appendChild(c); scroll(); return c; }
+    function note(c, t, cls) { var p = h('div', cls || 'st', t); p.style.whiteSpace = 'pre-wrap'; c.appendChild(p); scroll(); return p; }
+    function guard(fn) { return function () { var a = arguments; if (busy) { stat.textContent = '還在處理上一個動作…'; return; } busy = true; var done = function () { busy = false; }; try { Promise.resolve(fn.apply(null, a)).then(done, function (e) { done(); stat.className = 'st bad'; stat.textContent = '⚠️ ' + String((e && e.message) || e).slice(0, 160); }); } catch (e) { done(); stat.textContent = '⚠️ ' + e.message; } }; }
+
+    function refreshStatus() {
+      return Promise.all([host.status(), host.sources()]).then(function (r) {
+        statusInfo = r[0] || {}; var st = statusInfo.stats || {}; sources = (r[1] && r[1].sources) || [];
+        stat.className = 'st'; stat.textContent = '來源 ' + (st.sources || 0) + '（用 ' + (st.enabled || 0) + '）・片段 ' + (st.chunks || 0) + '・向量 ' + (st.vectors || 0) + '・關聯 ' + (st.links || 0);
+        scope.textContent = '回答範圍：左邊勾選的 ' + (st.enabled || 0) + ' 個來源　語意：' + (statusInfo.semantic ? '開（關鍵字＋語意）' : '關（只用關鍵字；🧠 可以啟用）') + '　位置：' + (statusInfo.location_label || '');
+        renderList(); return statusInfo;
+      }).catch(function (e) { stat.className = 'st bad'; stat.textContent = '⚠️ ' + String((e && e.message) || e).slice(0, 160); });
+    }
+    // ───── 左：來源清單 ─────
+    function renderList() {
+      list.textContent = ''; bAll.checked = sources.length > 0 && sources.every(function (s) { return s.enabled; });
+      if (!sources.length) { list.appendChild(h('div', 'empty', '還沒有來源\n把檔案拖進來，或按「＋ 加入」')); list.firstChild.style.whiteSpace = 'pre-wrap'; return; }
+      sources.forEach(function (s) {
+        var r = h('div', 'src' + (s.enabled ? '' : ' off')), cb = h('input'), nm = h('span', 'nm', s.name), meta = h('span', 'meta', (s.kind || '') + (s.vectors ? '' : '')), del = h('button', 'ic', '🗑');
+        cb.type = 'checkbox'; cb.checked = !!s.enabled; cb.title = s.enabled ? '勾選中：這個來源會用來回答（取消勾選＝不用，資料還在）' : '沒勾選：不會用來回答'; nm.title = s.name + '\n' + (s.kind || '') + '・' + (s.sections || 0) + ' 節・' + (s.chunks || 0) + ' 片段・向量 ' + (s.vectors || 0) + (s.tags && s.tags.length ? '\n關鍵詞：' + s.tags.join('、') : '') + '\n（點一下看目錄）'; del.title = '刪除這個來源';
+        cb.onchange = guard(function () { return host.enable(s.id, cb.checked).then(refreshStatus); });
+        nm.onclick = guard(function () { return showOutline(s); });
+        del.onclick = guard(function () { if (!window.confirm('把「' + s.name + '」從知識庫刪除？（片段、向量、關聯都會一起刪）')) return; return host.remove(s.id).then(function () { var c = card('🗑 已刪除'); note(c, s.name); return refreshStatus(); }); });
+        [cb, nm, meta, del].forEach(function (x) { r.appendChild(x); }); list.appendChild(r);
+      });
+    }
+    bAll.onchange = guard(function () { var on = bAll.checked; return Promise.all(sources.map(function (s) { return s.enabled === on ? null : host.enable(s.id, on); }).filter(Boolean)).then(refreshStatus); });
+    // 拖曳加入
+    var dragDepth = 0;
+    side.ondragenter = function (e) { if (e.dataTransfer && Array.from(e.dataTransfer.types || []).indexOf('Files') >= 0) { dragDepth++; side.className = 'side over'; } };
+    side.ondragover = function (e) { e.preventDefault(); }; side.ondragleave = function () { dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) side.className = 'side'; };
+    side.ondrop = function (e) { e.preventDefault(); dragDepth = 0; side.className = 'side'; addFiles(e.dataTransfer && e.dataTransfer.files); };
+    bAdd.onclick = function () { showAdd(); }; fileIn.onchange = function () { addFiles(fileIn.files); fileIn.value = ''; };
+    var addFiles = guard(function (files) {
+      var arr = Array.from(files || []); if (!arr.length) return; var c = card('📥 加入檔案'), p = note(c, ''), msgs2 = [], chain = Promise.resolve();
+      arr.forEach(function (f) { chain = chain.then(function () { p.textContent = msgs2.concat('加入「' + f.name + '」…（音訊影片要先轉錄，會比較久）').join('\n'); return host.addFile(f).then(function (r) { msgs2.push(r.ok ? '✅ ' + r.name + '（' + r.kind + '，' + r.lines + ' 行、' + r.chunks + ' 片段' + (r.status === 'unchanged' ? '，內容沒變' : r.status === 'updated' ? '，已更新' : '') + '）' : '⚠️ ' + f.name + '：' + r.error); p.textContent = msgs2.join('\n'); }); }); });
+      return chain.then(refreshStatus);
+    });
+    function showAdd() {
+      var c = card('＋ 加入來源'); var r1 = h('div', 'row'), url = h('input'), bu = h('button', null, '加入網址'), bf = h('button', null, '選檔案…'); url.type = 'text'; url.placeholder = '網址（網頁、wiki、新聞…）'; url.style.flex = '1 1 220px'; [url, bu, bf].forEach(function (x) { r1.appendChild(x); }); c.appendChild(r1);
+      bf.onclick = function () { fileIn.click(); };
+      var out = note(c, '支援：pdf、docx、pptx、xlsx、md、txt、textile、mediawiki、json、jsonl、yaml、toon、csv、mp3／mp4（轉錄）…。檔案也可以直接拖到左邊。');
+      bu.onclick = guard(function () { var u = url.value.trim(); if (!u) return; out.textContent = '加入中：' + u + ' …'; return host.addUrl(u).then(function (r) { out.textContent = r.ok ? '✅ ' + (r.status === 'unchanged' ? '內容沒變：' : r.status === 'updated' ? '已更新：' : '已加入：') + r.name + '（' + r.kind + '，' + r.lines + ' 行、' + r.sections + ' 節）' + (r.embedding && r.embedding.note ? '\n' + r.embedding.note : '') : '⚠️ ' + r.error; if (r.ok) url.value = ''; return refreshStatus(); }); });
+      var tn = h('input'), tk = h('select'), tx = h('textarea'), bt = h('button', null, '加入這段文字'), r3 = h('div', 'row'); tn.type = 'text'; tn.placeholder = '名稱（貼上文字時用）'; ['txt', 'md', 'textile', 'mediawiki', 'json', 'jsonl', 'yaml', 'toon', 'csv'].forEach(function (k) { var o = h('option', null, k); o.value = k; tk.appendChild(o); }); tx.rows = 3; tx.placeholder = '或直接貼上文字…'; tx.style.resize = 'vertical'; [tn, tk, bt].forEach(function (x) { r3.appendChild(x); }); c.appendChild(r3); c.appendChild(tx);
+      bt.onclick = guard(function () { if (!tx.value.trim()) return; return host.addText(tn.value.trim() || '貼上的文字', tx.value, tk.value).then(function (r) { out.textContent = r.ok ? '✅ 已加入：' + r.name + '（' + r.lines + ' 行）' : '⚠️ ' + r.error; if (r.ok) { tx.value = ''; tn.value = ''; } return refreshStatus(); }); });
+    }
+    // ───── 中：問答 ─────
+    var ask = guard(function () {
+      var q = ta.value.trim(); if (!q) return; lastQuery = q; ta.value = ''; userMsg(q); var c = card('🔎 查詢'), p = note(c, '查詢中…');
+      return host.ask({ question: q, limit: 6 }).then(function (res) {
+        p.remove();
+        if (!res.found) { note(c, res.message || '在目前勾選的來源裡找不到相關內容。'); if (res.semantic === false) note(c, '（' + (res.semantic_note || '只用關鍵字檢索') + '）'); return; }
+        note(c, '找到 ' + res.hits.length + ' 筆　' + (res.semantic ? '關鍵字＋語意' : (res.semantic_note || '只用關鍵字')));
+        res.hits.forEach(function (hit, i) { c.appendChild(hitCard(hit, i, q)); }); scroll();
+      });
+    });
+    go.onclick = ask; ta.onkeydown = function (e) { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); ask(); } };
+    function hitCard(hit, i, question) {
+      var c = h('div', 'hit'), top = h('div'), lb = h('span', 'lb', (i + 1) + '. ' + hit.label), by = h('span', 'by', hit.found_by || '關鍵字'); top.appendChild(lb); top.appendChild(by); c.appendChild(top);
+      var bq = h('blockquote'); highlight(bq, hit.quote, question); c.appendChild(bq);
+      var row = h('div', 'row'), ctx = h('button', null, '看上下文'), cp = h('button', null, '複製出處'), box = h('div'); [ctx, cp].forEach(function (x) { row.appendChild(x); }); c.appendChild(row); c.appendChild(box);
+      cp.onclick = function () { var t = hit.label + '\n' + hit.quote; try { navigator.clipboard.writeText(t); cp.textContent = '已複製'; setTimeout(function () { cp.textContent = '複製出處'; }, 1200); } catch (e) { cp.textContent = '複製不了'; } };
+      ctx.onclick = guard(function () { if (box.firstChild) { box.textContent = ''; ctx.textContent = '看上下文'; return; } return host.detail(hit.source_id || hit.source, { line_start: Math.max(1, hit.line_start - 4), line_end: hit.line_end + 4 }, { maxLines: 40 }).then(function (d) { box.appendChild(lineView(d.lines || [], hit.line_start, hit.line_end)); ctx.textContent = '收起'; }); });
+      return c;
+    }
+    function lineView(lines, hotA, hotB) { var pre = h('pre', 'code'); lines.forEach(function (l) { pre.appendChild(h('span', 'ln' + (l.line >= hotA && l.line <= hotB ? ' hot' : ''), String(l.line))); pre.appendChild(document.createTextNode(l.text + '\n')); }); return pre; }
+    function showOutline(s) {
+      return host.outline(s.id).then(function (o) {
+        var c = card('📑 目錄：' + s.name + '（' + (o.lines || 0) + ' 行）'), sum = h('button', null, '看摘要（只選原句）'); c.firstChild.insertBefore(sum, c.firstChild.lastChild);
+        (o.sections || []).forEach(function (x) { var r = h('div', 'row'), t = h('span', null, '　'.repeat(Math.max(0, x.level - 1)) + x.title), g = h('button', null, '第 ' + x.line_start + '–' + x.line_end + ' 行'); g.onclick = guard(function () { return host.detail(s.id, { line_start: x.line_start, line_end: x.line_end }, { maxLines: 60 }).then(function (d) { var old = c.querySelector('pre'); if (old) old.remove(); c.appendChild(lineView(d.lines || [], x.line_start, x.line_end)); scroll(); }); }); r.appendChild(t); r.appendChild(g); c.appendChild(r); });
+        sum.onclick = guard(function () { return host.summary(s.id).then(function (m) { var c2 = card('📝 摘要：' + s.name + '（只選原句，每句附行號）'); (m.sentences || []).forEach(function (x) { c2.appendChild(h('blockquote', null, x.quote)); note(c2, '第 ' + x.line_start + ' 行' + (x.section ? '，' + x.section : '') + (x.loc ? '，' + x.loc : '')); }); if (!(m.sentences || []).length) note(c2, '（沒有可選的句子）'); }); });
+      });
+    }
+    // ───── 工具列 ─────
+    bRef.onclick = guard(function () { var c = card('🔄 更新知識庫'), p = note(c, '更新中…'); return host.refresh().then(function (r) { p.textContent = '✅ 更新完成\n' + ((r.refreshed || []).map(function (x) { return '- ' + x.source + '：' + (x.error ? '⚠️ ' + x.error : x.status); }).join('\n') || '（沒有網址來源需要重抓）') + '\n語意索引：' + (r.embedding && r.embedding.embedded != null ? '新增 ' + r.embedding.embedded + ' 個向量' : (r.embedding && (r.embedding.note || r.embedding.error)) || '—') + '\n關聯：' + r.links + ' 筆'; return refreshStatus(); }); });
+    bOrg.onclick = guard(function () { var c = card('🧹 模型整理'), p = note(c, '整理中…（線上模型用不了會自動改用離線模型）'); return host.organize().then(function (r) { p.textContent = r.ok ? '✅ 整理好了\n' + (r.organized || []).map(function (x) { return '- ' + x.source + '：' + (x.error ? '⚠️ ' + x.error : (x.tags.length ? x.tags.join('、') : '（沒有挑出可以核對的關鍵詞）')); }).join('\n') + '\n' + (r.note || '') : '⚠️ ' + r.error; return refreshStatus(); }); });
+    bEmb.onclick = guard(function () { var c = card('🧠 語意索引'), p = note(c, '檢查中…'); return host.embedStatus().then(function (s) { if (s.enabled && !s.pending) { p.textContent = '語意索引已啟用：向量 ' + s.vectors + '/' + s.chunks + '，沒有待補的片段。'; return; } p.textContent = s.enabled ? '補算語意向量…' : '啟用語意索引（第一次要下載約 ' + s.approx_mb + ' MB 的小型模型）…'; return host.embedRun().then(function (r) { p.textContent = r.ok === false ? '⚠️ ' + r.error : '✅ 建立了 ' + (r.embedded || 0) + ' 個片段的向量'; return refreshStatus(); }); }); });
+    bLk.onclick = guard(function () { var c = card('🔗 關聯（字面證據）'), p = note(c, '載入中…'); return host.links().then(function (res) {
+      var ls = res.links || []; p.textContent = ls.length ? ls.length + ' 筆關聯，雙方都附行號與原文' : '目前沒有找到關聯（來源互相提到、共有的專有名詞或關鍵詞才算）。';
+      ls.forEach(function (l) {
+        var k = h('div', 'hit'), top = h('div'); top.appendChild(h('span', 'lb', l.from.source + ' ⇄ ' + l.to.source)); top.appendChild(h('span', 'by', l.kind === 'mentions' ? '提到' : '共有「' + l.term + '」')); if (l.status === 'confirmed') top.appendChild(h('span', 'by ok', '已確認')); k.appendChild(top);
+        [l.from, l.to].forEach(function (sd) { if (!sd.line_start) return; k.appendChild(h('blockquote', null, sd.source + ' 第 ' + sd.line_start + ' 行：' + esc(sd.quote))); });
+        var row = h('div', 'row'), ok = h('button', null, '確認'), no = h('button', null, '拒絕'); ok.onclick = guard(function () { return host.setLinkStatus(l.id, 'confirmed').then(function () { k.appendChild(h('div', 'st ok', '已確認')); }); }); no.onclick = guard(function () { return host.setLinkStatus(l.id, 'rejected').then(function () { k.remove(); }); }); row.appendChild(ok); row.appendChild(no); k.appendChild(row); c.appendChild(k);
+      }); scroll(); }); });
+    bSet.onclick = function () {
+      var c = card('⚙ 設定'), locSt = note(c, '載入中…'); var kind = h('select'); [['idb', '瀏覽器 IndexedDB'], ['file', '磁碟檔案（桌面版）'], ['fap', 'FAP 資料夾']].forEach(function (k) { var o = h('option', null, k[1]); o.value = k[0]; kind.appendChild(o); });
+      var path = h('input'); path.type = 'text'; path.style.flex = '1 1 220px'; path.placeholder = '磁碟：完整路徑；FAP：<名稱>/<路徑>'; var keep = h('input'); keep.type = 'checkbox'; keep.checked = true; var kl = h('label', null, '保留舊檔'), mv = h('button', null, '搬過去'), r5 = h('div', 'row'); [h('label', null, '.keeplookup 放在'), kind, path, keep, kl, mv].forEach(function (x) { r5.appendChild(x); }); c.appendChild(r5);
+      var out = note(c, '');
+      mv.onclick = guard(function () { out.textContent = '搬家中（會先核對數量一致才切換）…'; return host.migrate(kind.value, path.value.trim(), keep.checked).then(function (r) { out.textContent = r.ok ? '✅ 已搬到 ' + r.to + '，數量核對一致（來源 ' + r.verified.sources + '、片段 ' + r.verified.chunks + '、向量 ' + r.verified.vectors + '）' + (r.note ? '\n' + r.note : '') : '⚠️ ' + r.error; return refreshStatus(); }); });
+      var cap = h('input'); cap.type = 'number'; cap.min = '1'; cap.step = '10'; cap.style.width = '110px'; var unl = h('input'); unl.type = 'checkbox'; var cs = h('button', null, '套用容量'), r6 = h('div', 'row'); [h('label', null, '容量上限（MB）'), cap, unl, h('label', null, '無限'), cs].forEach(function (x) { r6.appendChild(x); }); c.appendChild(r6);
+      unl.onchange = function () { cap.disabled = unl.checked; };
+      cs.onclick = guard(function () { var mb = unl.checked ? 0 : Number(cap.value); if (!unl.checked && !(mb > 0)) { out.textContent = '⚠️ 容量要是大於 0 的數字，或勾「無限」'; return; } return host.setCapacity(mb).then(function () { out.textContent = '✅ 容量上限：' + (mb ? mb + ' MB' : '無限'); return refreshStatus(); }); });
+      host.status().then(function (s) { locSt.textContent = '目前：' + (s.location_label || '') + '（' + (s.ref || '') + '）'; kind.value = (s.location && s.location.kind) || 'idb'; unl.checked = !s.capacity_mb; cap.value = s.capacity_mb || ''; cap.disabled = unl.checked; }).catch(function () { locSt.textContent = ''; });
+    };
+    // ───── 視窗外殼：彈出、最大化、收回對話裡（共用 FaWin；元素留在原位，不重新載入）─────
+    var win = WIN ? WIN.decorate(el, { id: 'knowledge', title: '📚 Knowledge Inventory', bar: bar, minW: 520, minH: 320 }) : null;
+    el._ki = { win: win, pop: function () { if (win) win.pop(); }, dock: function () { if (win) win.dock(); }, maximize: function (on) { if (win) win.maximize(on); }, isPopped: function () { return !!win && win.isPopped(); }, isMaximized: function () { return !!win && win.isMaximized(); }, toggleSide: function (show) { sideHidden = show === undefined ? !sideHidden : !show; applySide(); }, isSideHidden: function () { return sideHidden; }, refresh: refreshStatus, destroy: function () { try { if (win) win.destroy(); el.remove(); } catch (e) { /* */ } }, ask: function (q) { ta.value = q; ask(); }, showAdd: showAdd };
+    refreshStatus().then(function () { var c = card('👋 你好'); note(c, '左邊是你的來源：勾選的才會用來回答，可以拖檔案進來或按「＋ 加入」。下面問問題，回答只會是原文，標明來源與第幾行。上面的按鈕可以更新知識庫、模型整理、建立語意索引、看關聯、設定位置與容量。'); });
+    return el;
+  }
+  return { mount: mount, highlight: highlight };
+});
+
+}).call(null, undefined, holder);
+return holder.FaKnowledgeUI;
+})();
+/* KUI-END */
 /* WEB-BEGIN */
 const FaWebEdit = (function () {
 const holder = {};
@@ -32074,6 +32349,68 @@ const FaKnowledgeHost = (function () {
             return { ok: true, organized: report, links: lk.links, rejected_terms: rejected, note: '關鍵詞都是來源裡原本就有的字（程式逐個核對過，沒有的丟掉了）；關聯只用字面證據。' };
         },
 
+        // ───── 更新知識庫（按鈕）：網址來源重新抓（內容有變才更新）、補算語意向量、重算關聯 ─────
+        async _kiRefresh() {
+            const list = await this._kiRun((store) => store.listSources()); const refreshed = [];
+            for (const s of list) {
+                if (!s.url || !/^https?:\/\//i.test(s.url)) continue;
+                try { const r = await this._kiAdd({ url: s.url, name: s.name }); refreshed.push({ source: s.name, status: r.ok ? r.status : 'failed', error: r.ok ? undefined : r.error }); }
+                catch (e) { refreshed.push({ source: s.name, status: 'failed', error: String((e && e.message) || e) }); }
+            }
+            const embedding = await this._kiEmbedPending().catch((x) => ({ error: String((x && x.message) || x) }));
+            const lk = await this._kiRun((store) => store.rebuildLinks(), true); await this._kiNoteFlag();
+            return { ok: true, refreshed, embedding, links: lk.links };
+        },
+        async _kiStatus() {
+            const st = await this._kiRun((store) => store.stats()); const k = this._kiSettings();
+            return { ok: true, location: k.location, location_label: this._kiLocationLabel(), ref: this._kiRef(), capacity_mb: k.maxMB || 0, stats: st, semantic: !!(k.embedConsent && st.vectors > 0) };
+        },
+        // ───── 面板（對話裡的小工具：查詢／管理／關聯）─────
+        _kiPanelHost() {
+            const self = this;
+            return {
+                palette: () => ({ dark: !self._isLightTheme() }),
+                status: () => self._kiStatus(), sources: () => self._kiSources(),
+                ask: (a) => self._kiAsk(a),
+                outline: (ref) => self._kiWithSource(ref, (store, s) => store.outline(s.id)),
+                detail: (ref, which, o) => self._kiWithSource(ref, (store, s) => store.detail(s.id, which, o)),
+                summary: (ref) => self._kiWithSource(ref, (store, s) => store.summary(s.id)),
+                links: async () => self._kiRun(async (store) => { let ls = await store.getLinks(null); if (!ls.length) { await store.rebuildLinks(); ls = await store.getLinks(null); } return { ok: true, links: ls }; }, true),
+                setLinkStatus: (id, status) => self._kiRun((store) => store.setLinkStatus(id, status), true),
+                rebuildLinks: () => self._kiRun((store) => store.rebuildLinks(), true),
+                addUrl: (url) => self._kiAdd({ url }),
+                addText: (name, text, kind) => self._kiAdd({ text, name, kind }),
+                addFile: async (file) => { const id = await self.fileCache.put(file.name, file.type || 'application/octet-stream', file, 'uploaded'); return self._kiAdd({ file_id: id, name: file.name }); },
+                remove: (ref) => self._kiRemove(ref), enable: (ref, on) => self._kiEnable(ref, on),
+                refresh: () => self._kiRefresh(), organize: (ref) => self._kiOrganize(ref || null),
+                embedStatus: () => self._kiEmbedCommand('status'), embedRun: () => self._kiEmbedCommand('run'),
+                migrate: (kind, path, keepOld) => self._kiMigrate({ kind, ref: path }, { keepOld }),
+                setCapacity: async (mb) => { self._kiSaveSettings({ maxMB: Number(mb) > 0 ? Number(mb) : 0 }); return { ok: true }; },
+            };
+        },
+        // 開面板：面板一律是對話裡的一則訊息（重新整理後還在對話內）；預設立刻彈出成視窗（可拖曳、改大小、最大化、收回），inline=true 就留在對話裡。
+        _kiLivePanels() { return Array.from((this._kiPanels || new Map()).values()).filter((w) => w._panel && w._panel.isConnected && w._panel._ki); },
+        _kiOpenPanel(tab, inline) {
+            const live = this._kiLivePanels();
+            if (!inline && live.length) { const k = live[live.length - 1]._panel._ki; k.pop(); k.refresh(); return live[live.length - 1]._panel; }
+            this._kiPopOnMount = !inline;
+            this._pushAssistantMessage('📚 Knowledge Inventory：來源、問答、管理都在這個面板（可以彈出成視窗、最大化、收回對話裡）。\n\n```fa-knowledge\n' + JSON.stringify({ id: 'k' + Date.now().toString(36), tab: tab || 'ask' }) + '\n```', null);
+            try { this._persistChatHistory(); this._renderMessageHistory(); } catch (_) { /* */ }
+        },
+        _mountKnowledgePanels(mdDiv) {
+            if (typeof FaKnowledgeUI === 'undefined' || !FaKnowledgeUI || !FaKnowledgeUI.mount) return; this._kiPanels = this._kiPanels || new Map();
+            mdDiv.querySelectorAll('pre > code.language-fa-knowledge').forEach((code) => {
+                let ref = null; try { ref = JSON.parse(code.textContent); } catch (_) { /* */ } if (!ref) return; const key = String(ref.id || 'main');
+                let wrap = this._kiPanels.get(key);
+                if (!wrap || !wrap._panel || !wrap._panel.isConnected) {
+                    wrap = document.createElement('div'); const panel = FaKnowledgeUI.mount({ host: this._kiPanelHost() }); wrap.appendChild(panel); wrap._panel = panel; this._kiPanels.set(key, wrap);
+                    if (this._kiPanels.size > 6) { for (const [k, w] of this._kiPanels) { if (k !== key && !(w._panel && w._panel._ki && w._panel._ki.isPopped())) { try { w._panel._ki.destroy(); } catch (_) { /* */ } this._kiPanels.delete(k); break; } } }
+                }
+                code.parentElement.replaceWith(wrap);
+                if (this._kiPopOnMount) { this._kiPopOnMount = false; setTimeout(() => { try { wrap._panel._ki.pop(); } catch (_) { /* */ } }, 0); }
+            });
+        },
+
         // ───── 搬家：IndexedDB ⇄ 磁碟檔案 ⇄ FAP ─────
         async _kiReadBytes(loc) {
             if (loc.kind === 'idb') return this._kiIdbGet(loc.ref || 'default');
@@ -32122,7 +32459,7 @@ const FaKnowledgeHost = (function () {
             tool('knowledge_remove', '把一個來源從 Knowledge Inventory 移除（連同它的片段、向量、關聯）。', { source: SRC }, ['source'], function (a) { return this._kiRemove(a.source); });
             tool('knowledge_enable', '啟用或停用一個來源（停用的來源不會出現在回答裡，但資料還在）。', { source: SRC, enabled: { type: 'boolean' } }, ['source', 'enabled'], function (a) { return this._kiEnable(a.source, a.enabled !== false); });
             tool('knowledge_embed', '建立語意索引（小型向量模型把每個片段轉成向量）。第一次要下載約 118 MB 的模型（先從專案的 vendor-models 分支，沒有再 HuggingFace）；action:"enable" 同意並開始，"status" 看進度。', { action: { type: 'string', enum: ['status', 'enable', 'run'] } }, [], function (a) { return this._kiEmbedCommand(a.action || 'status'); });
-            tool('knowledge_refresh', '更新知識庫：補算還沒有向量的片段、重算關聯。（改過的來源請用 knowledge_add 重新加入，內容有變才會更新。）', {}, [], async function () { const e = await this._kiEmbedPending().catch((x) => ({ error: String((x && x.message) || x) })); const lk = await this._kiRun((store) => store.rebuildLinks(), true); await this._kiNoteFlag(); return { ok: true, embedding: e, links: lk.links }; });
+            tool('knowledge_refresh', '更新知識庫：網址來源重新抓一次（內容有變才更新）、補算還沒有向量的片段、重算關聯。（檔案來源要更新請用 knowledge_add 重新加入，內容有變才會更新。）', {}, [], function () { return this._kiRefresh(); });
             tool('knowledge_organize', '模型整理：請模型替每個來源挑關鍵詞（只能是來源裡原本有的字，程式逐個核對），並重算關聯。線上模型用不了會自動改用離線模型。', { source: SRC }, [], function (a) { return this._kiOrganize(a.source); });
             tool('knowledge_location', '看或搬 Knowledge Inventory（.keeplookup，SQLite3 檔）放的位置：action:"status"；action:"migrate" 搬到 to＝idb（瀏覽器 IndexedDB）、file（磁碟，path 給完整路徑，桌面版）、fap（path 給 <FAP 名稱>/<路徑>）。搬完會核對數量，不一致就退回。', { action: { type: 'string', enum: ['status', 'migrate'] }, to: { type: 'string', enum: ['idb', 'file', 'fap'] }, path: { type: 'string' }, keep_old: { type: 'boolean' } }, [], async function (a) { if (a.action === 'migrate') return this._kiMigrate({ kind: a.to, ref: a.path }, { keepOld: a.keep_old !== false }); const st = await this._kiRun((store) => store.stats()); return { ok: true, location: this._kiLocationLabel(), ref: this._kiRef(), capacity_mb: this._kiSettings().maxMB || '無限', stats: st }; });
         },
@@ -32146,7 +32483,7 @@ const FaKnowledgeHost = (function () {
                     try {
                         if (!raw || sub === 'help' || sub === '?') {
                             const st = await r._kiRun((store) => store.stats());
-                            say(r, '📚 **Knowledge Inventory**　位置：' + r._kiLocationLabel() + '\n來源 ' + st.sources + '（啟用 ' + st.enabled + '）、片段 ' + st.chunks + '、向量 ' + st.vectors + '、關聯 ' + st.links + '、容量上限 ' + (r._kiSettings().maxMB ? r._kiSettings().maxMB + ' MB' : '無限') + '\n\n用法：`/knowledge 問題`（直接問）、`add <網址｜檔名>`、`list`、`outline <來源>`、`summary <來源>`、`detail <來源> <章節>`、`links`、`remove <來源>`、`embed`（語意索引）、`organize`（模型整理）、`refresh`、`where`、`migrate idb｜file <路徑>｜fap <名稱/路徑>`、`capacity <MB｜無限>`。');
+                            say(r, '📚 **Knowledge Inventory**　位置：' + r._kiLocationLabel() + '\n來源 ' + st.sources + '（啟用 ' + st.enabled + '）、片段 ' + st.chunks + '、向量 ' + st.vectors + '、關聯 ' + st.links + '、容量上限 ' + (r._kiSettings().maxMB ? r._kiSettings().maxMB + ' MB' : '無限') + '\n\n用法：`/knowledge ui`（開啟浮動視窗：來源、問答、管理）、`/knowledge 問題`（直接問）、`add <網址｜檔名>`、`list`、`outline <來源>`、`summary <來源>`、`detail <來源> <章節>`、`links`、`remove <來源>`、`embed`（語意索引）、`organize`（模型整理）、`refresh`、`where`、`migrate idb｜file <路徑>｜fap <名稱/路徑>`、`capacity <MB｜無限>`。');
                         } else if (sub === 'list') {
                             const s = await r._kiSources(); say(r, '📚 ' + s.location + '\n' + (s.sources.length ? s.sources.map((x) => '- **' + x.id + '** ' + x.name + '（' + x.kind + '，' + x.sections + ' 節、' + x.chunks + ' 片段、向量 ' + x.vectors + (x.enabled ? '' : '，已停用') + (x.tags && x.tags.length ? '，關鍵詞：' + x.tags.join('、') : '') + '）').join('\n') : '（還沒有來源。/knowledge add <網址或檔名>）'));
                         } else if (sub === 'add') {
@@ -32163,7 +32500,8 @@ const FaKnowledgeHost = (function () {
                         } else if (sub === 'remove') { const o = await r._kiRemove(rest); say(r, o.ok ? '🗑 已移除：' + o.removed : '⚠️ ' + o.error);
                         } else if (sub === 'embed') { say(r, '🧠 語意索引…'); const o = await r._kiEmbedCommand(rest === 'status' ? 'status' : 'run'); say(r, o.ok === false ? '⚠️ ' + o.error : '✅ ' + (o.embedded != null ? '建立了 ' + o.embedded + ' 個片段的向量（' + Math.round(o.ms / 100) / 10 + ' 秒）' : '語意索引：' + (o.enabled ? '已啟用' : '未啟用') + '，向量 ' + o.vectors + '/' + o.chunks));
                         } else if (sub === 'organize') { say(r, '🧹 模型整理中…（線上模型用不了會自動改用離線模型）'); const o = await r._kiOrganize(rest || null); say(r, o.ok ? '✅ 整理好了\n' + o.organized.map((x) => '- ' + x.source + '：' + (x.error ? '⚠️ ' + x.error : (x.tags.length ? x.tags.join('、') : '（沒有挑出可以核對的關鍵詞）'))).join('\n') + '\n\n' + o.note : '⚠️ ' + o.error);
-                        } else if (sub === 'refresh') { const e = await r._kiEmbedPending().catch((x) => ({ error: String((x && x.message) || x) })); const lk = await r._kiRun((store) => store.rebuildLinks(), true); say(r, '🔄 更新完成：' + (e.embedded != null ? '新增 ' + e.embedded + ' 個向量；' : e.note ? e.note + '；' : e.error ? '語意索引 ⚠️ ' + e.error + '；' : '') + '關聯 ' + lk.links + ' 筆');
+                        } else if (sub === 'refresh') { say(r, '🔄 更新中…'); const o = await r._kiRefresh(); const e = o.embedding || {}; say(r, '🔄 更新完成：' + (o.refreshed.length ? '網址來源 ' + o.refreshed.map((x) => x.source + '（' + (x.error ? '⚠️ ' + x.error : x.status) + '）').join('、') + '；' : '') + (e.embedded != null ? '新增 ' + e.embedded + ' 個向量；' : e.note ? e.note + '；' : e.error ? '語意索引 ⚠️ ' + e.error + '；' : '') + '關聯 ' + o.links + ' 筆');
+                        } else if (sub === 'ui' || sub === 'panel' || sub === 'manage' || sub === '管理') { r._kiOpenPanel(null, /inline|對話/.test(rest));
                         } else if (sub === 'where' || sub === 'location') { const st = await r._kiRun((store) => store.stats()); say(r, '📍 ' + r._kiLocationLabel() + '\n（SQLite3 檔，副檔名 .keeplookup；ref：' + r._kiRef() + '）\n來源 ' + st.sources + '、片段 ' + st.chunks + '、向量 ' + st.vectors);
                         } else if (sub === 'migrate') { const mm = /^(idb|file|fap)\s*([\s\S]*)$/i.exec(rest); if (!mm) say(r, '用法：/knowledge migrate idb｜file <完整路徑>｜fap <FAP名稱/路徑>'); else { say(r, '📦 搬家中…'); const o = await r._kiMigrate({ kind: mm[1].toLowerCase(), ref: mm[2].trim() }, { keepOld: true }); say(r, o.ok ? '✅ 已搬到 ' + o.to + '，數量核對一致（來源 ' + o.verified.sources + '、片段 ' + o.verified.chunks + '、向量 ' + o.verified.vectors + '）。' + (o.note ? '\n' + o.note : '') : '⚠️ ' + o.error); }
                         } else if (sub === 'capacity') { const v = /^(無限|不限|unlimited|0)$/i.test(rest) ? 0 : Number(rest); if (!Number.isFinite(v) || v < 0) say(r, '用法：/knowledge capacity <MB 數字｜無限>'); else { r._kiSaveSettings({ maxMB: v }); say(r, '✅ 容量上限：' + (v ? v + ' MB' : '無限')); } }
@@ -80576,6 +80914,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     try { this._mountDataViewers(mdDiv); } catch (e) { console.warn('資料檢視器掛載失敗', e); }
                     try { this._mountWorksheetEditors(mdDiv); } catch (e) { console.warn('學習單編輯器掛載失敗', e); }
                     try { this._mountWebEditors(mdDiv); } catch (e) { console.warn('網頁編輯器掛載失敗', e); }
+                    try { this._mountKnowledgePanels(mdDiv); } catch (e) { console.warn('知識庫面板掛載失敗', e); }
                 } catch (_) {
                     mdDiv.textContent = answerText;
                 }

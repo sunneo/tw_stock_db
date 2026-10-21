@@ -199,6 +199,68 @@ const FaKnowledgeHost = (function () {
             return { ok: true, organized: report, links: lk.links, rejected_terms: rejected, note: '關鍵詞都是來源裡原本就有的字（程式逐個核對過，沒有的丟掉了）；關聯只用字面證據。' };
         },
 
+        // ───── 更新知識庫（按鈕）：網址來源重新抓（內容有變才更新）、補算語意向量、重算關聯 ─────
+        async _kiRefresh() {
+            const list = await this._kiRun((store) => store.listSources()); const refreshed = [];
+            for (const s of list) {
+                if (!s.url || !/^https?:\/\//i.test(s.url)) continue;
+                try { const r = await this._kiAdd({ url: s.url, name: s.name }); refreshed.push({ source: s.name, status: r.ok ? r.status : 'failed', error: r.ok ? undefined : r.error }); }
+                catch (e) { refreshed.push({ source: s.name, status: 'failed', error: String((e && e.message) || e) }); }
+            }
+            const embedding = await this._kiEmbedPending().catch((x) => ({ error: String((x && x.message) || x) }));
+            const lk = await this._kiRun((store) => store.rebuildLinks(), true); await this._kiNoteFlag();
+            return { ok: true, refreshed, embedding, links: lk.links };
+        },
+        async _kiStatus() {
+            const st = await this._kiRun((store) => store.stats()); const k = this._kiSettings();
+            return { ok: true, location: k.location, location_label: this._kiLocationLabel(), ref: this._kiRef(), capacity_mb: k.maxMB || 0, stats: st, semantic: !!(k.embedConsent && st.vectors > 0) };
+        },
+        // ───── 面板（對話裡的小工具：查詢／管理／關聯）─────
+        _kiPanelHost() {
+            const self = this;
+            return {
+                palette: () => ({ dark: !self._isLightTheme() }),
+                status: () => self._kiStatus(), sources: () => self._kiSources(),
+                ask: (a) => self._kiAsk(a),
+                outline: (ref) => self._kiWithSource(ref, (store, s) => store.outline(s.id)),
+                detail: (ref, which, o) => self._kiWithSource(ref, (store, s) => store.detail(s.id, which, o)),
+                summary: (ref) => self._kiWithSource(ref, (store, s) => store.summary(s.id)),
+                links: async () => self._kiRun(async (store) => { let ls = await store.getLinks(null); if (!ls.length) { await store.rebuildLinks(); ls = await store.getLinks(null); } return { ok: true, links: ls }; }, true),
+                setLinkStatus: (id, status) => self._kiRun((store) => store.setLinkStatus(id, status), true),
+                rebuildLinks: () => self._kiRun((store) => store.rebuildLinks(), true),
+                addUrl: (url) => self._kiAdd({ url }),
+                addText: (name, text, kind) => self._kiAdd({ text, name, kind }),
+                addFile: async (file) => { const id = await self.fileCache.put(file.name, file.type || 'application/octet-stream', file, 'uploaded'); return self._kiAdd({ file_id: id, name: file.name }); },
+                remove: (ref) => self._kiRemove(ref), enable: (ref, on) => self._kiEnable(ref, on),
+                refresh: () => self._kiRefresh(), organize: (ref) => self._kiOrganize(ref || null),
+                embedStatus: () => self._kiEmbedCommand('status'), embedRun: () => self._kiEmbedCommand('run'),
+                migrate: (kind, path, keepOld) => self._kiMigrate({ kind, ref: path }, { keepOld }),
+                setCapacity: async (mb) => { self._kiSaveSettings({ maxMB: Number(mb) > 0 ? Number(mb) : 0 }); return { ok: true }; },
+            };
+        },
+        // 開面板：面板一律是對話裡的一則訊息（重新整理後還在對話內）；預設立刻彈出成視窗（可拖曳、改大小、最大化、收回），inline=true 就留在對話裡。
+        _kiLivePanels() { return Array.from((this._kiPanels || new Map()).values()).filter((w) => w._panel && w._panel.isConnected && w._panel._ki); },
+        _kiOpenPanel(tab, inline) {
+            const live = this._kiLivePanels();
+            if (!inline && live.length) { const k = live[live.length - 1]._panel._ki; k.pop(); k.refresh(); return live[live.length - 1]._panel; }
+            this._kiPopOnMount = !inline;
+            this._pushAssistantMessage('📚 Knowledge Inventory：來源、問答、管理都在這個面板（可以彈出成視窗、最大化、收回對話裡）。\n\n```fa-knowledge\n' + JSON.stringify({ id: 'k' + Date.now().toString(36), tab: tab || 'ask' }) + '\n```', null);
+            try { this._persistChatHistory(); this._renderMessageHistory(); } catch (_) { /* */ }
+        },
+        _mountKnowledgePanels(mdDiv) {
+            if (typeof FaKnowledgeUI === 'undefined' || !FaKnowledgeUI || !FaKnowledgeUI.mount) return; this._kiPanels = this._kiPanels || new Map();
+            mdDiv.querySelectorAll('pre > code.language-fa-knowledge').forEach((code) => {
+                let ref = null; try { ref = JSON.parse(code.textContent); } catch (_) { /* */ } if (!ref) return; const key = String(ref.id || 'main');
+                let wrap = this._kiPanels.get(key);
+                if (!wrap || !wrap._panel || !wrap._panel.isConnected) {
+                    wrap = document.createElement('div'); const panel = FaKnowledgeUI.mount({ host: this._kiPanelHost() }); wrap.appendChild(panel); wrap._panel = panel; this._kiPanels.set(key, wrap);
+                    if (this._kiPanels.size > 6) { for (const [k, w] of this._kiPanels) { if (k !== key && !(w._panel && w._panel._ki && w._panel._ki.isPopped())) { try { w._panel._ki.destroy(); } catch (_) { /* */ } this._kiPanels.delete(k); break; } } }
+                }
+                code.parentElement.replaceWith(wrap);
+                if (this._kiPopOnMount) { this._kiPopOnMount = false; setTimeout(() => { try { wrap._panel._ki.pop(); } catch (_) { /* */ } }, 0); }
+            });
+        },
+
         // ───── 搬家：IndexedDB ⇄ 磁碟檔案 ⇄ FAP ─────
         async _kiReadBytes(loc) {
             if (loc.kind === 'idb') return this._kiIdbGet(loc.ref || 'default');
@@ -247,7 +309,7 @@ const FaKnowledgeHost = (function () {
             tool('knowledge_remove', '把一個來源從 Knowledge Inventory 移除（連同它的片段、向量、關聯）。', { source: SRC }, ['source'], function (a) { return this._kiRemove(a.source); });
             tool('knowledge_enable', '啟用或停用一個來源（停用的來源不會出現在回答裡，但資料還在）。', { source: SRC, enabled: { type: 'boolean' } }, ['source', 'enabled'], function (a) { return this._kiEnable(a.source, a.enabled !== false); });
             tool('knowledge_embed', '建立語意索引（小型向量模型把每個片段轉成向量）。第一次要下載約 118 MB 的模型（先從專案的 vendor-models 分支，沒有再 HuggingFace）；action:"enable" 同意並開始，"status" 看進度。', { action: { type: 'string', enum: ['status', 'enable', 'run'] } }, [], function (a) { return this._kiEmbedCommand(a.action || 'status'); });
-            tool('knowledge_refresh', '更新知識庫：補算還沒有向量的片段、重算關聯。（改過的來源請用 knowledge_add 重新加入，內容有變才會更新。）', {}, [], async function () { const e = await this._kiEmbedPending().catch((x) => ({ error: String((x && x.message) || x) })); const lk = await this._kiRun((store) => store.rebuildLinks(), true); await this._kiNoteFlag(); return { ok: true, embedding: e, links: lk.links }; });
+            tool('knowledge_refresh', '更新知識庫：網址來源重新抓一次（內容有變才更新）、補算還沒有向量的片段、重算關聯。（檔案來源要更新請用 knowledge_add 重新加入，內容有變才會更新。）', {}, [], function () { return this._kiRefresh(); });
             tool('knowledge_organize', '模型整理：請模型替每個來源挑關鍵詞（只能是來源裡原本有的字，程式逐個核對），並重算關聯。線上模型用不了會自動改用離線模型。', { source: SRC }, [], function (a) { return this._kiOrganize(a.source); });
             tool('knowledge_location', '看或搬 Knowledge Inventory（.keeplookup，SQLite3 檔）放的位置：action:"status"；action:"migrate" 搬到 to＝idb（瀏覽器 IndexedDB）、file（磁碟，path 給完整路徑，桌面版）、fap（path 給 <FAP 名稱>/<路徑>）。搬完會核對數量，不一致就退回。', { action: { type: 'string', enum: ['status', 'migrate'] }, to: { type: 'string', enum: ['idb', 'file', 'fap'] }, path: { type: 'string' }, keep_old: { type: 'boolean' } }, [], async function (a) { if (a.action === 'migrate') return this._kiMigrate({ kind: a.to, ref: a.path }, { keepOld: a.keep_old !== false }); const st = await this._kiRun((store) => store.stats()); return { ok: true, location: this._kiLocationLabel(), ref: this._kiRef(), capacity_mb: this._kiSettings().maxMB || '無限', stats: st }; });
         },
@@ -271,7 +333,7 @@ const FaKnowledgeHost = (function () {
                     try {
                         if (!raw || sub === 'help' || sub === '?') {
                             const st = await r._kiRun((store) => store.stats());
-                            say(r, '📚 **Knowledge Inventory**　位置：' + r._kiLocationLabel() + '\n來源 ' + st.sources + '（啟用 ' + st.enabled + '）、片段 ' + st.chunks + '、向量 ' + st.vectors + '、關聯 ' + st.links + '、容量上限 ' + (r._kiSettings().maxMB ? r._kiSettings().maxMB + ' MB' : '無限') + '\n\n用法：`/knowledge 問題`（直接問）、`add <網址｜檔名>`、`list`、`outline <來源>`、`summary <來源>`、`detail <來源> <章節>`、`links`、`remove <來源>`、`embed`（語意索引）、`organize`（模型整理）、`refresh`、`where`、`migrate idb｜file <路徑>｜fap <名稱/路徑>`、`capacity <MB｜無限>`。');
+                            say(r, '📚 **Knowledge Inventory**　位置：' + r._kiLocationLabel() + '\n來源 ' + st.sources + '（啟用 ' + st.enabled + '）、片段 ' + st.chunks + '、向量 ' + st.vectors + '、關聯 ' + st.links + '、容量上限 ' + (r._kiSettings().maxMB ? r._kiSettings().maxMB + ' MB' : '無限') + '\n\n用法：`/knowledge ui`（開啟浮動視窗：來源、問答、管理）、`/knowledge 問題`（直接問）、`add <網址｜檔名>`、`list`、`outline <來源>`、`summary <來源>`、`detail <來源> <章節>`、`links`、`remove <來源>`、`embed`（語意索引）、`organize`（模型整理）、`refresh`、`where`、`migrate idb｜file <路徑>｜fap <名稱/路徑>`、`capacity <MB｜無限>`。');
                         } else if (sub === 'list') {
                             const s = await r._kiSources(); say(r, '📚 ' + s.location + '\n' + (s.sources.length ? s.sources.map((x) => '- **' + x.id + '** ' + x.name + '（' + x.kind + '，' + x.sections + ' 節、' + x.chunks + ' 片段、向量 ' + x.vectors + (x.enabled ? '' : '，已停用') + (x.tags && x.tags.length ? '，關鍵詞：' + x.tags.join('、') : '') + '）').join('\n') : '（還沒有來源。/knowledge add <網址或檔名>）'));
                         } else if (sub === 'add') {
@@ -288,7 +350,8 @@ const FaKnowledgeHost = (function () {
                         } else if (sub === 'remove') { const o = await r._kiRemove(rest); say(r, o.ok ? '🗑 已移除：' + o.removed : '⚠️ ' + o.error);
                         } else if (sub === 'embed') { say(r, '🧠 語意索引…'); const o = await r._kiEmbedCommand(rest === 'status' ? 'status' : 'run'); say(r, o.ok === false ? '⚠️ ' + o.error : '✅ ' + (o.embedded != null ? '建立了 ' + o.embedded + ' 個片段的向量（' + Math.round(o.ms / 100) / 10 + ' 秒）' : '語意索引：' + (o.enabled ? '已啟用' : '未啟用') + '，向量 ' + o.vectors + '/' + o.chunks));
                         } else if (sub === 'organize') { say(r, '🧹 模型整理中…（線上模型用不了會自動改用離線模型）'); const o = await r._kiOrganize(rest || null); say(r, o.ok ? '✅ 整理好了\n' + o.organized.map((x) => '- ' + x.source + '：' + (x.error ? '⚠️ ' + x.error : (x.tags.length ? x.tags.join('、') : '（沒有挑出可以核對的關鍵詞）'))).join('\n') + '\n\n' + o.note : '⚠️ ' + o.error);
-                        } else if (sub === 'refresh') { const e = await r._kiEmbedPending().catch((x) => ({ error: String((x && x.message) || x) })); const lk = await r._kiRun((store) => store.rebuildLinks(), true); say(r, '🔄 更新完成：' + (e.embedded != null ? '新增 ' + e.embedded + ' 個向量；' : e.note ? e.note + '；' : e.error ? '語意索引 ⚠️ ' + e.error + '；' : '') + '關聯 ' + lk.links + ' 筆');
+                        } else if (sub === 'refresh') { say(r, '🔄 更新中…'); const o = await r._kiRefresh(); const e = o.embedding || {}; say(r, '🔄 更新完成：' + (o.refreshed.length ? '網址來源 ' + o.refreshed.map((x) => x.source + '（' + (x.error ? '⚠️ ' + x.error : x.status) + '）').join('、') + '；' : '') + (e.embedded != null ? '新增 ' + e.embedded + ' 個向量；' : e.note ? e.note + '；' : e.error ? '語意索引 ⚠️ ' + e.error + '；' : '') + '關聯 ' + o.links + ' 筆');
+                        } else if (sub === 'ui' || sub === 'panel' || sub === 'manage' || sub === '管理') { r._kiOpenPanel(null, /inline|對話/.test(rest));
                         } else if (sub === 'where' || sub === 'location') { const st = await r._kiRun((store) => store.stats()); say(r, '📍 ' + r._kiLocationLabel() + '\n（SQLite3 檔，副檔名 .keeplookup；ref：' + r._kiRef() + '）\n來源 ' + st.sources + '、片段 ' + st.chunks + '、向量 ' + st.vectors);
                         } else if (sub === 'migrate') { const mm = /^(idb|file|fap)\s*([\s\S]*)$/i.exec(rest); if (!mm) say(r, '用法：/knowledge migrate idb｜file <完整路徑>｜fap <FAP名稱/路徑>'); else { say(r, '📦 搬家中…'); const o = await r._kiMigrate({ kind: mm[1].toLowerCase(), ref: mm[2].trim() }, { keepOld: true }); say(r, o.ok ? '✅ 已搬到 ' + o.to + '，數量核對一致（來源 ' + o.verified.sources + '、片段 ' + o.verified.chunks + '、向量 ' + o.verified.vectors + '）。' + (o.note ? '\n' + o.note : '') : '⚠️ ' + o.error); }
                         } else if (sub === 'capacity') { const v = /^(無限|不限|unlimited|0)$/i.test(rest) ? 0 : Number(rest); if (!Number.isFinite(v) || v < 0) say(r, '用法：/knowledge capacity <MB 數字｜無限>'); else { r._kiSaveSettings({ maxMB: v }); say(r, '✅ 容量上限：' + (v ? v + ' MB' : '無限')); } }
