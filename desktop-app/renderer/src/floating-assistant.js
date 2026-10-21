@@ -73659,7 +73659,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const names = [...new Set([...PRESET_MODEL_OPTIONS, ...Object.keys(cards)])];
         return names.map(m => {
             const c = cards[m];
-            if (!c) return `<option value="${this._escapeAttr(m)}"></option>`;
+            // 卡片可能是舊版或別處寫的（沒有verdict／分數）：缺欄位就當沒有評分，不要讓整個介面起不來
+            if (!c || typeof c.verdict !== 'string' || typeof c.overallScore !== 'number') return `<option value="${this._escapeAttr(m)}"></option>`;
             const badge = c.verdict.startsWith('✅') ? '✅' : c.verdict.startsWith('⚠️') ? '⚠️' : '❌';
             const dateStr = c.testedAt ? c.testedAt.slice(0, 10) : '';
             return `<option value="${this._escapeAttr(m)}">${badge} ${c.overallScore}/100（${dateStr}）</option>`;
