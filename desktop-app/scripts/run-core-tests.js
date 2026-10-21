@@ -95,6 +95,8 @@ const suites = [
     ['教育文書（學習單）：讀請求、驗證、排版、SVG／HTML／PDF、參考圖片、編輯動作、封閉題', 'scripts/worksheet-tests/worksheet_core.test.js'],
     ['網頁編輯器：描述驗證、預覽內嵌、起手式、編輯動作、後端分流', 'scripts/webedit-tests/webedit_core.test.js'],
     ['長文章目錄：wiki、新聞、小說章回、分段閱讀', 'scripts/article-tests/article_outline.test.js'],
+    ['NVIDIA 線上圖像生成：請求整理、參數夾範圍、回應解析', 'scripts/imagegen-tests/nvidia_image.test.js'],
+    ['NVIDIA 線上圖像生成：請求整理、參數夾範圍、回應解析', 'scripts/imagegen-tests/nvidia_image.test.js'],
     ['動畫簡報：程式碼視窗、patch、問答卡、小工具沙盒、互動視覺的格式規則', 'scripts/deck-tests/deck_interactive.test.js'],
     ['動畫簡報：影片視覺（播放、重播、快轉、速度、A-B 循環的格式規則）', 'scripts/deck-tests/deck_video.test.js'],
     ['動畫簡報：每份簡報自己的外框配色（deck.colors）', 'scripts/deck-tests/deck_colors.test.js'],

@@ -16817,6 +16817,114 @@ const holder = {};
 return holder.FaAgentModel;
 })();
 /* AGM-END */
+/* NVIMG-BEGIN */
+const FaNvidiaImage = (function () {
+const holder = {};
+(function (module, self) {
+/* NVIDIA 線上圖像生成（ai.api.nvidia.com/v1/genai/…）的請求與回應整理（純函式，UMD）。
+ * 各模型的參數範圍不同（steps、尺寸、有沒有 cfg_scale／negative_prompt），這裡用一張表描述，建請求時把使用者的值夾進合法範圍並記下調整了什麼，
+ * 不會把不合法的值送出去才吃 422。回應格式也不只一種（artifacts[].base64、image、data[].b64_json…），解析時都認。
+ * 沒在表裡的模型（使用者自己填的路徑，例如 black-forest-labs/flux.2-klein-4b 之後的新版本）照 FLUX 的格式送，回應照通用格式解析。 */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaNvidiaImage = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var BASE = 'https://ai.api.nvidia.com/v1/genai/';
+
+  // kind: flux（prompt、width、height、seed、steps，可選 cfg_scale／mode）｜sd3（prompt、aspect_ratio、cfg_scale、seed、steps、negative_prompt）
+  var MODELS = [
+    { id: 'black-forest-labs/flux.1-schnell', label: 'FLUX.1 schnell（最快，4 步）', kind: 'flux', steps: { min: 1, max: 4, def: 4 }, size: { min: 256, max: 2048, step: 64, def: 1024 } },
+    { id: 'black-forest-labs/flux.2-klein-4b', label: 'FLUX.2 klein 4B（小、快，4 步）', kind: 'flux', steps: { min: 1, max: 8, def: 4 }, size: { min: 256, max: 2048, step: 64, def: 1024 } },
+    { id: 'black-forest-labs/flux-3-image-klein', label: 'FLUX klein（較多步數，細緻）', kind: 'flux', steps: { min: 1, max: 100, def: 50 }, size: { min: 256, max: 2048, step: 64, def: 1024 } },
+    { id: 'black-forest-labs/flux.1-dev', label: 'FLUX.1 dev（品質高，步數多）', kind: 'flux', steps: { min: 5, max: 100, def: 50 }, size: { min: 256, max: 2048, step: 64, def: 1024 }, cfg: { min: 1, max: 9, def: 3.5 }, extra: { mode: 'base' } },
+    { id: 'stabilityai/stable-diffusion-3-medium', label: 'Stable Diffusion 3 Medium', kind: 'sd3', steps: { min: 5, max: 100, def: 50 }, cfg: { min: 1, max: 9, def: 5 }, ratios: ['1:1', '16:9', '21:9', '3:2', '2:3', '4:5', '5:4', '9:16', '9:21'] },
+  ];
+  var DEFAULT_MODEL = MODELS[0].id;
+
+  function info(id) { id = String(id || '').trim(); for (var i = 0; i < MODELS.length; i++) if (MODELS[i].id === id) return MODELS[i]; return null; }
+  function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
+  function snap(v, step, lo, hi) { return clamp(Math.round(v / step) * step, lo, hi); }
+  function ratioOf(w, h) { var best = '1:1', bd = 1e9; (MODELS[4].ratios).forEach(function (r) { var p = r.split(':'), d = Math.abs(Math.log((w / h) / (p[0] / p[1]))); if (d < bd) { bd = d; best = r; } }); return best; }
+
+  // 模型路徑只允許「廠商/模型名」這種寫法（用在網址裡，不能夾帶別的）
+  function validModelPath(id) { return /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/i.test(String(id || '').trim()); }
+
+  // opts：{ model, prompt, width, height, seed, steps, cfg_scale, negative_prompt }
+  // → { ok, url, body, notes:[被調整的項目], model } 或 { ok:false, error }
+  function buildRequest(opts) {
+    opts = opts || {};
+    var id = String(opts.model || DEFAULT_MODEL).trim();
+    if (!validModelPath(id)) return { ok: false, error: '模型路徑要是「廠商/模型名」，例如 black-forest-labs/flux.1-schnell：' + id.slice(0, 80) };
+    var prompt = String(opts.prompt == null ? '' : opts.prompt).trim();
+    if (!prompt) return { ok: false, error: '缺少 prompt（要畫什麼）' };
+    if (prompt.length > 4000) return { ok: false, error: 'prompt 太長（' + prompt.length + ' 字，上限 4000）' };
+    var m = info(id) || { id: id, kind: 'flux', steps: { min: 1, max: 100, def: 4 }, size: { min: 256, max: 2048, step: 64, def: 1024 }, custom: true };
+    var notes = [], body = { prompt: prompt };
+    var num = function (v) { var n = Number(v); return isFinite(n) ? n : null; };
+    var seed = num(opts.seed); body.seed = seed != null && seed >= 0 ? Math.floor(seed) : 0;
+    var steps = num(opts.steps), sdef = m.steps.def;
+    if (steps == null) steps = sdef; var s2 = clamp(Math.round(steps), m.steps.min, m.steps.max); if (s2 !== steps && opts.steps != null) notes.push('steps ' + opts.steps + ' → ' + s2 + '（這個模型的範圍是 ' + m.steps.min + '–' + m.steps.max + '）'); body.steps = s2;
+    if (m.kind === 'sd3') {
+      var w0 = num(opts.width) || 1024, h0 = num(opts.height) || 1024; body.aspect_ratio = ratioOf(w0, h0);
+      if (opts.width && opts.height && ratioOf(w0, h0) && body.aspect_ratio !== (w0 + ':' + h0)) notes.push('Stable Diffusion 3 只收固定比例，' + w0 + '×' + h0 + ' → ' + body.aspect_ratio);
+      var c0 = num(opts.cfg_scale); body.cfg_scale = clamp(c0 == null ? m.cfg.def : c0, m.cfg.min, m.cfg.max);
+      if (opts.negative_prompt) body.negative_prompt = String(opts.negative_prompt).slice(0, 1000);
+    } else {
+      var sz = m.size, w = num(opts.width) || sz.def, h = num(opts.height) || sz.def;
+      var w2 = snap(w, sz.step, sz.min, sz.max), h2 = snap(h, sz.step, sz.min, sz.max);
+      if (opts.width && w2 !== Number(opts.width)) notes.push('width ' + opts.width + ' → ' + w2 + '（要是 ' + sz.step + ' 的倍數，範圍 ' + sz.min + '–' + sz.max + '）');
+      if (opts.height && h2 !== Number(opts.height)) notes.push('height ' + opts.height + ' → ' + h2 + '（要是 ' + sz.step + ' 的倍數，範圍 ' + sz.min + '–' + sz.max + '）');
+      body.width = w2; body.height = h2;
+      if (m.cfg) { var c1 = num(opts.cfg_scale); body.cfg_scale = clamp(c1 == null ? m.cfg.def : c1, m.cfg.min, m.cfg.max); }
+      if (m.extra) Object.keys(m.extra).forEach(function (k) { body[k] = m.extra[k]; });
+    }
+    return { ok: true, url: BASE + id, body: body, notes: notes, model: m.id, kind: m.kind, known: !m.custom };
+  }
+
+  function sniffMime(b64) {
+    var h = String(b64 || '').slice(0, 16);
+    if (h.indexOf('/9j/') === 0) return 'image/jpeg';
+    if (h.indexOf('iVBOR') === 0) return 'image/png';
+    if (h.indexOf('UklGR') === 0) return 'image/webp';
+    if (h.indexOf('R0lGOD') === 0) return 'image/gif';
+    return 'image/png';
+  }
+  function stripDataUrl(s) { var m = /^data:([^;,]+)[^,]*,(.*)$/s.exec(String(s)); return m ? { mime: m[1], b64: m[2] } : { mime: null, b64: String(s) }; }
+
+  // 回應 → { ok, images:[{ b64, mime, seed, finish }] } 或 { ok:false, error, filtered }
+  function parseResponse(j) {
+    if (!j || typeof j !== 'object') return { ok: false, error: '回應不是 JSON 物件' };
+    var found = [], push = function (raw, extra) { if (typeof raw !== 'string' || raw.length < 100) return; var d = stripDataUrl(raw.replace(/\s+/g, '')); found.push({ b64: d.b64, mime: d.mime || sniffMime(d.b64), seed: extra && extra.seed != null ? extra.seed : null, finish: (extra && (extra.finishReason || extra.finish_reason)) || null }); };
+    if (Array.isArray(j.artifacts)) j.artifacts.forEach(function (a) { push(a && (a.base64 || a.b64_json || a.image), a); });
+    if (Array.isArray(j.data)) j.data.forEach(function (a) { push(a && (a.b64_json || a.base64 || a.image), a); });
+    if (Array.isArray(j.images)) j.images.forEach(function (a) { push(typeof a === 'string' ? a : a && (a.base64 || a.b64_json || a.image), typeof a === 'object' ? a : null); });
+    if (!found.length) push(j.image || j.base64 || j.b64_json, j);
+    // 安全過濾：沒有圖，回報原因
+    var reasons = [].concat(j.artifacts || [], [j]).map(function (a) { return a && (a.finishReason || a.finish_reason); }).filter(function (x) { return x && !/^(SUCCESS|success|stop)$/.test(x); });
+    if (!found.length) return { ok: false, filtered: reasons.some(function (r) { return /FILTER|CONTENT|BLOCK|NSFW/i.test(r); }), error: reasons.length ? '沒有產生圖片（' + reasons[0] + '）' : '回應裡找不到圖片資料（欄位：' + Object.keys(j).slice(0, 8).join('、') + '）' };
+    var bad = found.filter(function (f) { return f.finish && !/^(SUCCESS|success|stop)$/.test(f.finish); });
+    if (bad.length === found.length) return { ok: false, filtered: /FILTER|CONTENT|BLOCK|NSFW/i.test(bad[0].finish), error: '沒有產生圖片（' + bad[0].finish + '）' };
+    return { ok: true, images: found.filter(function (f) { return !f.finish || /^(SUCCESS|success|stop)$/.test(f.finish); }) };
+  }
+
+  // HTTP 錯誤 → 白話原因
+  function explainHttpError(status, bodyText) {
+    var t = String(bodyText || '').slice(0, 300);
+    if (status === 401 || status === 403) return 'NVIDIA 拒絕這把金鑰（HTTP ' + status + '）：金鑰錯誤、過期，或沒有這個模型的使用權限。' + (t ? ' 回應：' + t : '');
+    if (status === 404) return '找不到這個模型（HTTP 404）：路徑可能打錯，或這個模型不是用 /v1/genai/ 開放的。' + (t ? ' 回應：' + t : '');
+    if (status === 422) return '參數不被接受（HTTP 422）：' + (t || '沒有說明');
+    if (status === 429) return '請求太頻繁或額度用完（HTTP 429），稍後再試。';
+    if (status >= 500) return 'NVIDIA 服務暫時有問題（HTTP ' + status + '），稍後再試。' + (t ? ' 回應：' + t : '');
+    return 'HTTP ' + status + (t ? '：' + t : '');
+  }
+
+  return { BASE: BASE, MODELS: MODELS, DEFAULT_MODEL: DEFAULT_MODEL, info: info, validModelPath: validModelPath, buildRequest: buildRequest, parseResponse: parseResponse, sniffMime: sniffMime, explainHttpError: explainHttpError };
+});
+
+}).call(null, undefined, holder);
+return holder.FaNvidiaImage;
+})();
+/* NVIMG-END */
 /* ARTOUT-BEGIN */
 const FaArticleOutline = (function () {
 const holder = {};
@@ -24373,6 +24481,13 @@ const FA_TOOL_SHORTS = {
 // 不管根模型挑了哪個領域，只要任務明顯是「圖片→PDF」，這次執行就多拿到 images_to_pdf（以及確認附件用的 list_uploaded_files），並附一段專用的做法提醒。
 const FA_TASK_TOOL_HINTS = [
     {
+        id: 'generate_image',
+        re: /(畫|生成|產生|製作|做|繪製|generate|create|draw|make)[\s\S]{0,12}(一張|一幅|張|幅|個)?[\s\S]{0,12}(圖片|圖像|插圖|插畫|照片|海報|封面|圖|image|picture|illustration|photo|poster|artwork)|text[- ]?to[- ]?image|文字生圖|AI\s*(畫圖|繪圖|生圖)|flux|stable diffusion/i,
+        neg: /流程圖|架構圖|圖表|統計圖|長條圖|折線圖|圓餅圖|甘特圖|心智圖|uml|mermaid|chart|diagram|flowchart|圖片轉|轉成?圖片|匯出成?圖片|pdf/i,
+        tools: ['generate_image'],
+        note: '【這個需求有專用工具：generate_image】使用者要一張用 AI 畫出來的圖。把需求整理成英文描述當 prompt 直接呼叫 generate_image（預設模型在設定裡選好了；不確定就不用帶 model）；結果會直接顯示在對話裡，要用在簡報就用回傳的 client_file_url。沒有設定金鑰時工具會說去哪裡填，照實告訴使用者，不要自己編金鑰。',
+    },
+    {
         id: 'images_to_pdf',
         re: /(圖片|圖檔|照片|相片|影像|掃描|images?|photos?|pictures?|scans?|jpe?g|png|webp|heic|tiff?|bmp)[\s\S]{0,120}pdf|pdf[\s\S]{0,60}(圖片|圖檔|照片|相片|images?|photos?|jpe?g|png|webp|heic)/i,
         neg: /pdf\s*(轉成?|轉換成|轉為|變成|匯出成|輸出成|to|→)\s*(圖片|圖檔|影像|images?|png|jpe?g)|pdf\s*(裡|中|內|上|檔)?\s*(面)?的\s*(圖片|圖檔|照片|圖)|從\s*pdf|(extract|export)[\s\S]{0,30}(images?|pictures?)[\s\S]{0,30}(from|of)[\s\S]{0,10}pdf/i,
@@ -31689,6 +31804,21 @@ class FloatingAssistant {
                     let res; if (!raw) { const cur = await r._weLoad(); res = cur ? await r._webeditOpen({ id: cur.id }) : await r._webeditOpen({ starter: 'blank' }); } else if (raw === '起手式' || raw === 'starters') { r._pushAssistantMessage('網頁編輯器的起手式（/webedit 名稱）：\n' + FaWebEdit.listStarters().map((t) => '・' + t.id + '：' + t.label + '——' + t.desc).join('\n'), null); res = { ok: true }; } else res = st ? await r._webeditOpen({ starter: st.id }) : await r._webeditOpen({ request: raw });
                     if (res && res.ok === false) r._pushAssistantMessage('⚠️ ' + (res.error || '做不出來'), null);
                 } catch (e) { r._pushAssistantMessage('⚠️ 網頁編輯器失敗：' + String((e && e.message) || e), null); } try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ } });
+        this.register_slash_command('/image', '[model=廠商/模型名] [steps=N] [size=寬x高] 要畫什麼（英文效果較好）',
+            '用 NVIDIA 線上圖像生成模型畫圖（FLUX.1 schnell／dev、FLUX.2 klein、FLUX klein、Stable Diffusion 3，或自己填的 廠商/模型名）。例：/image a macro photo of a green frog in a rainforest pond、/image model=black-forest-labs/flux.1-dev steps=30 size=1344x768 a quiet harbor at dawn。不帶參數會列出可用的模型。金鑰在「進階設定 → 影音處理」填。',
+            async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/image' + (raw ? ' ' + raw : '') });
+                try {
+                    if (!raw) { const c = r._imageGenConfig(); r._pushAssistantMessage('🖼 可用的圖像生成模型（/image model=…）：\n' + FaNvidiaImage.MODELS.map((m) => '- ' + m.id + '：' + m.label).join('\n') + '\n\n目前預設：' + c.model + '；金鑰：' + (c.apiKey ? '已設定' + (c.keyFrom === 'llm' ? '（沿用語言模型的 NVIDIA 金鑰）' : '') : '尚未設定（進階設定 → 影音處理）') + '\n也可以直接填別的「廠商/模型名」。', null); }
+                    else {
+                        const a = {}; let prompt = raw;
+                        for (let guard = 0; guard < 6; guard++) { const m = /^(model|steps|seed|size|width|height|cfg|negative)=(\S+)\s*/i.exec(prompt); if (!m) break; const k = m[1].toLowerCase(), v = m[2]; prompt = prompt.slice(m[0].length); if (k === 'size') { const z = /^(\d+)[x×](\d+)$/i.exec(v); if (z) { a.width = +z[1]; a.height = +z[2]; } } else if (k === 'model') a.model = v; else if (k === 'cfg') a.cfg_scale = +v; else if (k === 'negative') a.negative_prompt = v; else a[k] = +v; }
+                        a.prompt = prompt;
+                        r._pushAssistantMessage('🖼 畫圖中…（' + (a.model || r._imageGenConfig().model) + '）', null);
+                        const res = await r._nvidiaGenerateImage(a);
+                        if (!res.ok) r._pushAssistantMessage('⚠️ ' + res.error, null);
+                        else r._pushAssistantMessage('✅ 畫好了（' + res.model + '，' + res.size + '，' + res.steps + ' 步，seed ' + res.images[0].seed + '，' + Math.round(res.duration_ms / 100) / 10 + ' 秒）' + (res.adjusted ? '\n參數調整：' + res.adjusted.join('；') : '') + '\n檔案：' + res.images[0].filename + '（可在簡報裡當圖片來源：' + res.client_file_url + '）', null);
+                    }
+                } catch (e) { r._pushAssistantMessage('⚠️ 畫圖失敗：' + String((e && e.message) || e), null); } try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ } });
         this.register_slash_command('/worksheet', '[學習單描述]',
             '學習單編輯器：/worksheet 10又幾 做8串（程式讀你的描述做出一份，並在對話裡放一個編輯器）；/worksheet 範本（列出所有範本）、/worksheet 範本 數的組成（從範本開始）；不帶描述＝接著開最近一份（沒有就開一份空白的，直接在編輯器裡用對話做）。編輯器裡可以用對話或屬性面板改、附圖、復原／重做、把編輯過程摘要成 prompt。',
             async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/worksheet' + (raw ? ' ' + raw : '') });
@@ -32862,6 +32992,7 @@ class FloatingAssistant {
             // tw_stock_db客製: 2026-09-12——extract_audio輸出格式，預設mp3
             // （省persistentStorage空間，使用者要求）；改成'wav'要無損。
             extractAudioFormat: 'mp3',
+            imageGen: { apiKey: '', model: 'black-forest-labs/flux.1-schnell', customModel: '' }, // 圖像生成（NVIDIA 線上模型）：金鑰、選的模型、自己填的模型路徑
             // tw_stock_db客製: 2026-09-12——text_to_speech預設語音代號（見
             // TTS_VOICES）。
             ttsDefaultVoice: TTS_DEFAULT_VOICE,
@@ -34247,6 +34378,7 @@ class FloatingAssistant {
             offlineToolBench: (() => { const out = {}; const src = raw.offlineToolBench && typeof raw.offlineToolBench === 'object' ? raw.offlineToolBench : {}; for (const m of FaVlm.textModels()) { const b = src[m.id]; if (!b || typeof b !== 'object' || !['good', 'fair', 'poor'].includes(b.rating)) continue; out[m.id] = { passed: Math.max(0, Math.floor(Number(b.passed) || 0)), total: Math.max(0, Math.floor(Number(b.total) || 0)), formatOk: Math.max(0, Math.floor(Number(b.formatOk) || 0)), rating: b.rating, label: String(b.label || '').slice(0, 80), at: Number(b.at) || 0, device: b.device === 'gpu' ? 'gpu' : 'cpu', ms: Math.max(0, Math.floor(Number(b.ms) || 0)), details: Array.isArray(b.details) ? b.details.slice(0, 12).map((d) => ({ id: String(d && d.id || '').slice(0, 24), ok: !!(d && d.ok), reason: String(d && d.reason || '').slice(0, 120) })) : [] }; } return out; })(),
             visionBackendPolicy: ['llm-first', 'offline-first', 'llm', 'offline'].includes(raw.visionBackendPolicy) ? raw.visionBackendPolicy : (raw.offlineVisionFallback === false ? 'llm' : 'llm-first'),
             extractAudioFormat: raw.extractAudioFormat === 'wav' ? 'wav' : 'mp3',
+            imageGen: (() => { const g = raw.imageGen || {}; return { apiKey: String(g.apiKey || '').trim().slice(0, 300), model: String(g.model || 'black-forest-labs/flux.1-schnell').trim().slice(0, 120), customModel: String(g.customModel || '').trim().slice(0, 120) }; })(),
             ttsDefaultVoice: TTS_VOICES.some(v => v.id === raw.ttsDefaultVoice) ? raw.ttsDefaultVoice : TTS_DEFAULT_VOICE,
             // tw_stock_db客製: 2026-09-14——這裡改成`!== false`（不是
             // `=== true`）：舊版settings沒有ttsApiEnabled這個欄位時
@@ -36354,6 +36486,18 @@ ${fnData.code}
             { type: 'object', properties: {
                 url: { type: 'string', description: '要抓取的網頁完整網址，須以http(s)://開頭' },
             }, required: ['url'], additionalProperties: false }
+        );
+
+        // 圖像生成（NVIDIA 線上模型）：FLUX.1 schnell／dev、FLUX.2 klein、FLUX klein、Stable Diffusion 3，也可以填自己的 廠商/模型名 路徑。
+        // 金鑰在「進階設定 → 影音處理」填（沒填且目前的語言模型也是 NVIDIA 的話，沿用那把）。結果直接顯示在對話裡，並存成檔案（可下載、可給簡報用）。
+        registerOptional('generate_image',
+            '用 NVIDIA 線上的圖像生成模型畫一張圖（FLUX.1 schnell 最快、FLUX.1 dev 品質高、FLUX.2 klein 小而快、Stable Diffusion 3 Medium…）。參數：prompt（要畫什麼，英文通常效果較好；中文需求請先自己翻成英文描述）、model（選填，預設用設定裡選的；格式「廠商/模型名」，例如 black-forest-labs/flux.1-schnell）、width／height（FLUX 要是 64 的倍數、256–2048，預設 1024；SD3 只收固定比例，會自動挑最接近的）、steps（schnell 最多 4；超出範圍會自動調整並在結果裡說明）、seed（同樣的 seed 可重現）、negative_prompt（只有 SD3 有）。回傳 file_id 與 client_file_url（可以直接當簡報的圖片來源 client-file/…），圖片已顯示在對話裡。沒有設定金鑰時會告訴使用者去哪裡填，不要自己編金鑰。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try { return JSON.stringify(await this._nvidiaGenerateImage(a)); }
+                catch (e) { return JSON.stringify({ ok: false, error: String((e && e.message) || e) }); }
+            },
+            { type: 'object', properties: { prompt: { type: 'string', description: '要畫什麼（英文效果較好）' }, model: { type: 'string', description: '選填：廠商/模型名，例如 black-forest-labs/flux.1-schnell' }, width: { type: 'integer' }, height: { type: 'integer' }, steps: { type: 'integer' }, seed: { type: 'integer' }, cfg_scale: { type: 'number' }, negative_prompt: { type: 'string' } }, required: ['prompt'], additionalProperties: false }
         );
 
         // 長文章的目錄與分段閱讀：外面的 wiki、新聞、一整本小說、上傳的文件。先看目錄再挑章節讀，不用一直翻頁讀不完。
@@ -49821,6 +49965,51 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     // 「固定用清單第一筆」的既有行為（回傳shape跟改動前一模一樣，這些呼叫
     // 端完全不用改）。真正的main chat loop（_loopFetch/_loopFetchNative/
     // _runSubAgentTask）改呼叫_getApiConfigForRow()取得完整per-row設定。
+    // 圖像生成的金鑰與模型：進階設定 → 影音處理；沒填金鑰時，若目前的語言模型網址是 nvidia.com 就沿用它的金鑰
+    _imageGenConfig() {
+        const g = (this.advancedSettings && this.advancedSettings.imageGen) || {};
+        let key = String(g.apiKey || '').trim(), from = key ? 'settings' : '';
+        if (!key) { try { const c = this._getApiConfig(); if (c && /nvidia\.com/i.test(String(c.apiUrl || '')) && c.apiKey) { key = String(c.apiKey).trim(); from = 'llm'; } } catch (_) { /* 沒有就沒有 */ } }
+        const custom = String(g.customModel || '').trim();
+        return { apiKey: key, keyFrom: from, model: custom && FaNvidiaImage.validModelPath(custom) ? custom : (g.model || FaNvidiaImage.DEFAULT_MODEL) };
+    }
+    async _nvidiaGenerateImage(a) {
+        const cfg = this._imageGenConfig();
+        if (!cfg.apiKey) return { ok: false, error: '還沒有設定圖像生成的金鑰：到「進階設定 → 影音處理」的「圖像生成」填入 NVIDIA API 金鑰（nvapi- 開頭），或把語言模型也設成 NVIDIA 的網址與金鑰。' };
+        const req = FaNvidiaImage.buildRequest(Object.assign({}, a, { model: a.model || cfg.model }));
+        if (!req.ok) return req;
+        const t0 = Date.now();
+        let resp, text = '';
+        try {
+            resp = await fetch(req.url, { method: 'POST', headers: { 'Authorization': 'Bearer ' + cfg.apiKey, 'Accept': 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify(req.body) });
+            text = await resp.text();
+        } catch (e) {
+            return { ok: false, error: '連不到 NVIDIA（' + String((e && e.message) || e).slice(0, 120) + '）。網頁版可能被瀏覽器的跨網域限制擋住（CORS），桌面版或自己架的轉送 proxy 通常可以；也可能是網路不通。', model: req.model };
+        }
+        if (!resp.ok) return { ok: false, error: FaNvidiaImage.explainHttpError(resp.status, text), status: resp.status, model: req.model, adjusted: req.notes.length ? req.notes : undefined };
+        let j; try { j = JSON.parse(text); } catch (_) { return { ok: false, error: '回應不是 JSON（' + text.slice(0, 120) + '）', model: req.model }; }
+        const parsed = FaNvidiaImage.parseResponse(j);
+        if (!parsed.ok) return { ok: false, error: parsed.error + (parsed.filtered ? '——內容被安全過濾擋掉，換個描述再試。' : ''), filtered: parsed.filtered || undefined, model: req.model };
+        const out = []; let n = 0;
+        for (const im of parsed.images.slice(0, 4)) {
+            const bin = atob(im.b64), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+            const ext = im.mime === 'image/jpeg' ? 'jpg' : im.mime === 'image/webp' ? 'webp' : 'png';
+            const blob = new Blob([u], { type: im.mime });
+            const name = 'image-' + req.model.split('/').pop() + '-' + Date.now().toString(36) + (n ? '-' + n : '') + '.' + ext; n++;
+            const id = await this.fileCache.put(name, im.mime, blob, 'generated');
+            let ref = null; try { if (this._deckRunState && this._deckInDomainRun) { const e = this._deckRun().catalog.add('client-file/' + id, { alt: String(a.prompt).slice(0, 100), from: 'generate_image' }); ref = e && e.ref; } } catch (_) { /* 目錄只是方便 */ }
+            // 直接顯示在對話裡（跟其他工具產生的圖一樣），圖片位元組不進模型的上下文
+            try {
+                const dataUrl = 'data:' + im.mime + ';base64,' + im.b64;
+                const msg = { role: 'tool', content: '[generate_image 已產生一張圖片（' + req.model + '，seed ' + (im.seed != null ? im.seed : req.body.seed) + '），已直接顯示給使用者看，圖片內容不列入對話上下文。file_id=' + id + ']' };
+                Object.defineProperty(msg, '_displayDataUrl', { value: dataUrl, enumerable: false, configurable: true });
+                this.messages.push(msg); this._persistChatHistory(); this._renderMessageHistory();
+            } catch (_) { /* 顯示失敗不影響檔案 */ }
+            out.push({ file_id: id, client_file_url: 'client-file/' + id, filename: name, mime: im.mime, size_bytes: u.length, seed: im.seed != null ? im.seed : req.body.seed, deck_ref: ref || undefined });
+        }
+        return { ok: true, model: req.model, images: out, file_id: out[0].file_id, client_file_url: out[0].client_file_url, size: req.body.width ? req.body.width + 'x' + req.body.height : req.body.aspect_ratio, steps: req.body.steps, adjusted: req.notes.length ? req.notes : undefined, key_from: cfg.keyFrom === 'llm' ? '用的是語言模型那把 NVIDIA 金鑰' : undefined, duration_ms: Date.now() - t0 };
+    }
+
     _getApiConfig() {
         const rows = this._getModelRows();
         const cfg = this._resolveModelRowConfig(rows[0]);
@@ -54449,6 +54638,10 @@ ${sourceTool.handlerScript}
         if (whisperThreadsInput) whisperThreadsInput.value = this._omSettings().maxCores || this._omCores().hardware;
         const extractAudioFormatSelect = document.getElementById('ai-extract-audio-format');
         if (extractAudioFormatSelect) extractAudioFormatSelect.value = this.advancedSettings.extractAudioFormat === 'wav' ? 'wav' : 'mp3';
+        { const g = this.advancedSettings.imageGen || {}; const kEl = document.getElementById('ai-imggen-key'), mEl = document.getElementById('ai-imggen-model'), cEl = document.getElementById('ai-imggen-custom');
+          if (kEl) kEl.value = g.apiKey || '';
+          if (mEl) { mEl.innerHTML = FaNvidiaImage.MODELS.map((m) => '<option value="' + m.id + '">' + this._escapeHtml(m.label) + '</option>').join(''); mEl.value = FaNvidiaImage.info(g.model) ? g.model : FaNvidiaImage.DEFAULT_MODEL; }
+          if (cEl) cEl.value = g.customModel || ''; }
         const subtitleSizeInput = document.getElementById('ai-subtitle-size');
         if (subtitleSizeInput) subtitleSizeInput.value = this._getSubtitleStyle().fontScale;
         const subtitlePosSelect = document.getElementById('ai-subtitle-position');
@@ -77563,6 +77756,16 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                     <p class="ai-advanced-hint">字級 0.052 大約是常見影片字幕的大小；1080p 影片就是約 56px。其餘外觀（白字黑邊、半透明底、置中換行）用內建預設。</p>
                                 </div>
                                 <div class="ai-advanced-stack">
+                                    <label class="ai-advanced-label">圖像生成（generate_image／/image，NVIDIA 線上模型）</label>
+                                    <p class="ai-advanced-hint">畫圖的請求會送到 NVIDIA（ai.api.nvidia.com），金鑰只存在這台的設定裡。沒填金鑰、而語言模型本來就是 NVIDIA 的網址時，會沿用那把金鑰。</p>
+                                    <label class="ai-advanced-label" for="ai-imggen-key" style="font-weight:normal;">NVIDIA API 金鑰（nvapi- 開頭）</label>
+                                    <input type="password" id="ai-imggen-key" class="ai-advanced-input" autocomplete="off" placeholder="nvapi-…">
+                                    <label class="ai-advanced-label" for="ai-imggen-model" style="font-weight:normal; margin-top:8px;">預設模型</label>
+                                    <select id="ai-imggen-model" class="ai-advanced-input"></select>
+                                    <label class="ai-advanced-label" for="ai-imggen-custom" style="font-weight:normal; margin-top:8px;">自己填模型路徑（選填，填了就用它，格式「廠商/模型名」）</label>
+                                    <input type="text" id="ai-imggen-custom" class="ai-advanced-input" placeholder="例如 black-forest-labs/flux.2-klein-4b">
+                                </div>
+                                <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label" for="ai-perf-max-mesh-triangles">匯入3D模型三角形數量上限</label>
                                     <input type="number" id="ai-perf-max-mesh-triangles" class="ai-advanced-input" min="0" step="1">
                                     <p class="ai-advanced-hint">STL/OBJ/3MF/FBX匯入時的三角形數量上限，超過會被拒絕；填 0 代表不限制（掃描級/CAD高面數模型也會嘗試匯入，可能拖慢畫面）。</p>
@@ -80990,6 +81193,16 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 const ok = await this._clearWhisperCache();
                 this._log(ok ? '🗑️ 已清除 Whisper 模型快取' : '⚠️ 清除模型快取失敗');
                 this._refreshWhisperCacheSizeDisplay();
+            });
+        }
+        for (const id of ['ai-imggen-key', 'ai-imggen-model', 'ai-imggen-custom']) {
+            const el = document.getElementById(id);
+            if (el) el.addEventListener('change', () => {
+                const g = Object.assign({ apiKey: '', model: FaNvidiaImage.DEFAULT_MODEL, customModel: '' }, this.advancedSettings.imageGen);
+                if (id === 'ai-imggen-key') g.apiKey = el.value.trim();
+                else if (id === 'ai-imggen-model') g.model = el.value;
+                else { const v = el.value.trim(); if (v && !FaNvidiaImage.validModelPath(v)) { el.value = g.customModel || ''; this._pushAssistantMessage('⚠️ 模型路徑要是「廠商/模型名」，例如 black-forest-labs/flux.2-klein-4b', null); return; } g.customModel = v; }
+                this.advancedSettings.imageGen = g; this._saveAdvancedSettings();
             });
         }
         const extractAudioFormatSelect = document.getElementById('ai-extract-audio-format');
