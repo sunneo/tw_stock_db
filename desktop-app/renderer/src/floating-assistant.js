@@ -46240,11 +46240,13 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             '    if sess is not None and (__fa_reset or sess["code"] != __fa_user_code): sess = None',
             '    fresh = sess is None',
             '    if fresh:',
-            '        pk = json.loads(__fa_packages_json)',
+            '        inst = builtins.__dict__.setdefault("_fa_py_installed", set())',
+            '        pk = [p for p in json.loads(__fa_packages_json) if __fa_reset or p not in inst]',
             '        if pk:',
             '            import micropip',
             '            try: await micropip.install(pk, reinstall=bool(__fa_reset))',
             '            except TypeError: await micropip.install(pk)',
+            '            inst.update(pk)',
             '        ns = {"__name__": "sandbox_app"}',
             '        exec(compile(__fa_user_code, "app.py", "exec"), ns)',
             '        app = ns.get("app") or ns.get("application")',
@@ -48334,7 +48336,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         };
         hub.wsOpen = (sink, urlStr) => { let path = '/'; try { path = new URL(urlStr).pathname; } catch (_) { /* */ } sink.path = path; rec({ kind: 'ws', ev: 'rejected', path, error: 'Python 後端還不支援 WebSocket' }); setTimeout(() => sink.onReject('Python 後端還不支援 WebSocket（要即時通訊請用 JS 後端）'), 0); return 0; };
         hub.wsSend = () => {}; hub.wsClose = () => {}; hub.cancelStream = () => {};
-        hub.close = () => { if (hub.closed) return; hub.closed = true; try { const P = me._pyodideInstance; if (P && P.globals) P.runPython('import builtins; builtins.__dict__.get("_fa_py_sessions", {}).pop(' + JSON.stringify(sess) + ', None)'); } catch (_) { /* */ } hub.listeners.forEach((f) => { try { f(); } catch (_) { /* */ } }); };
+        hub.close = () => { if (hub.closed) return; hub.closed = true; hub.listeners.forEach((f) => { try { f(); } catch (_) { /* */ } }); };
         hub.summary = () => ({ server: name, routes: hub.routes, ws_routes: [], http_calls: hub.calls.filter((c) => c.kind === 'http').length, calls: hub.calls.slice(-60) });
         this._mockPageMethods(hub); return { ok: true, hub };
     }
@@ -48363,7 +48365,8 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         if (err) return { ok: false, error: err, kind: be && be.lang };
         return { ok: true, kind: run.hub ? (be.lang === 'python' ? 'python' : 'js') : null, routes: run.hub ? (run.hub.routes || []) : [], wsRoutes: run.hub ? (run.hub.wsRoutes || []) : [] };
     }
-    _webeditStop(id) { const run = this._weRuns && this._weRuns.get(id); if (run && run.hub) { try { run.hub.close(); } catch (_) { /* */ } } if (this._weRuns) this._weRuns.delete(id); }
+    _webeditDropPySession(id) { try { const P = this._pyodideInstance; if (P && P.globals) P.runPython('import builtins; builtins.__dict__.get("_fa_py_sessions", {}).pop(' + JSON.stringify('webedit_' + this._weMockName(id)) + ', None)'); } catch (_) { /* */ } }
+    _webeditStop(id) { this._webeditDropPySession(id); const run = this._weRuns && this._weRuns.get(id); if (run && run.hub) { try { run.hub.close(); } catch (_) { /* */ } } if (this._weRuns) this._weRuns.delete(id); }
     // 對話：程式讀不懂的句子、附圖、後端要改時才會到這裡。後端交給程式設計領域的子Agent（沙盒裡先測過），頁面用封閉的編輯動作
     async _webeditAsk(req) {
         req = req || {}; const spec = FaWebEdit.validate(req.spec).spec, notes = [], edits = []; let say = ''; const text = String(req.text || '').trim(); const status = typeof req.onStatus === 'function' ? req.onStatus : () => {};

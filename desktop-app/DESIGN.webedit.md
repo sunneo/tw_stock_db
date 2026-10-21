@@ -18,7 +18,7 @@
 ## 執行
 
 - JS 後端：沿用 `sandbox_mock` 的 hub（`http`、`wsOpen`、`wsSend`、`attach`、`db.*`），所以 WebSocket、SSE、持久資料都真的能用，頁面裡的 `fetch`／`WebSocket` 由 `__faMockShim` 導進同一個 hub。
-- Python 後端：`_sandboxPyAppRun`（Pyodide）；Flask 等框架第一次由 `pyPackages` 偵測 import 後安裝。同一個編輯器用同一個 session（`session` 參數）：app 只載入一次，記憶體裡的變數在請求之間保留；程式碼改了才重載。沒有 WebSocket。
+- Python 後端：`_sandboxPyAppRun`（Pyodide）；Flask 等框架第一次由 `pyPackages` 偵測 import 後安裝。session 的壽命是整個編輯期間（編輯器開著就在，關掉編輯器才丟）：app 只載入一次，記憶體裡的變數在請求之間保留；程式碼改了只重新執行程式（變數會歸零，但已裝的套件不會重裝）。沒有 WebSocket。
 - 「🔄 重整後端」按鈕（提示文字「這會讓套件重裝」）：丟掉 session、重新載入程式並重新安裝套件（`reset`），是唯一會重裝套件的操作。
 - 套用新後端程式碼前，先用暫時名稱載入檢查；失敗就保留舊的後端繼續跑，並把原因說出來。
 - 匯出：這裡的伺服器只是讓人體驗架設的感覺，要上線就匯出。每次匯出都帶 `README.md`（部署教學：本機跑、Render／Railway／Fly.io、自己的主機、注意事項）與 `PROMPT.md`（重建專案用的 prompt 加部署教學）。JS 後端匯出 Node（含 `public/` 頁面）或 Cloudflare；Python 後端匯出 `app.py`、`main.py`（把 `public/` 的頁面一起服務）、`requirements.txt`、`Procfile`、`Dockerfile`。PHP 不能執行也不能匯出。
