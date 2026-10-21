@@ -219,10 +219,15 @@ const FaKnowledgeHost = (function () {
             const step = (t) => { try { if (onStep) onStep(t); } catch (_) { /* */ } };
             const use = (hits || []).slice(0, 6); if (!use.length) return { ok: false, error: '沒有可以整理的原文' };
             if (typeof this._callSimpleCompletion !== 'function') return { ok: false, error: '這個環境沒有可用的模型' };
-            const ctx = use.map((h, i) => '[' + (i + 1) + '] 《' + h.source + '》' + String(h.quote).slice(0, 700)).join('\n\n');
+            // 命中的只是標題（投影片標題、章節名）時，答案常在它後面幾行：把後面的幾行一起交給模型（仍是原文）
+            for (const h of use) {
+                h.ctx = String(h.quote);
+                if (h.ctx.length < 160 && h.source_id) { try { const d = await this._kiRun((store) => store.detail(h.source_id, { line_start: h.line_start, line_end: h.line_end + 8 }, { maxLines: 12 })); const t = ((d && d.lines) || []).map((l) => l.text).join('\n'); if (t.length > h.ctx.length) h.ctx = t; } catch (_) { /* */ } }
+            }
+            const ctx = use.map((h, i) => '[' + (i + 1) + '] 《' + h.source + '》' + h.ctx.slice(0, 900)).join('\n\n');
             step('🤖 交給模型整理（只准用 ' + use.length + ' 段原文，每句要標編號）…'); const t0 = Date.now();
             let reply = ''; try {
-                reply = await this._callSimpleCompletion('問題：' + question + '\n\n下面是從知識庫找到的原文片段（有編號）：\n\n' + ctx + '\n\n請只根據這些片段回答問題。規則：1) 每一句結尾都要標它所根據的片段編號，例如「按下 Save 鈕 [2]」；2) 指令、數字、名稱原樣照抄，不要改寫；3) 片段沒有講到的就不要說，不要補充或推測；4) 完全找不到答案就只輸出「找不到」。', { systemPrompt: '你只能用給你的片段回答，每句都要標編號。', maxTokens: 1500, temperature: 0 });
+                reply = await this._callSimpleCompletion('問題：' + question + '\n\n下面是從知識庫找到的原文片段（有編號）：\n\n' + ctx + '\n\n請只根據這些片段回答問題。規則：1) 每一句結尾都要標它所根據的片段編號，例如「按下 Save 鈕 [2]」；2) 指令、數字、名稱原樣照抄，不要改寫；3) 片段沒有講到的就不要說，不要補充或推測；4) 標題或章節名稱跟問題對得上也算有找到（例如「在《某某》找到標題『Plugin Installation』 [2]」），把它後面接著的內容也一併說出來；5) 完全找不到答案就只輸出「找不到」。', { systemPrompt: '你只能用給你的片段回答，每句都要標編號。', maxTokens: 1500, temperature: 0 });
             } catch (e) { return { ok: false, error: '模型沒有回應：' + String((e && e.message) || e).slice(0, 160), ms: Date.now() - t0 }; }
             step('　模型回應了（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒），逐句核對編號與原文…');
             const norm = (x) => String(x || '').toLowerCase().replace(/\s+/g, ''); const sentences = [], dropped = [];
@@ -232,13 +237,13 @@ const FaKnowledgeHost = (function () {
                 if (!text || /^[^\p{L}\p{N}]*找不到[^\p{L}\p{N}]*$/u.test(text)) continue;
                 if (!cites.length) { dropped.push({ text, why: '沒有標編號' }); continue; }
                 if (cites.some((n) => n < 1 || n > use.length)) { dropped.push({ text, why: '編號不存在' }); continue; }
-                const src = cites.map((n) => norm(use[n - 1].quote)).join('');
+                const src = cites.map((n) => norm(use[n - 1].ctx || use[n - 1].quote)).join('');
                 const ids = text.match(/[A-Za-z][A-Za-z0-9_.\-/]{2,}|\d+(?:\.\d+)*/g) || []; const missing = ids.filter((w) => src.indexOf(norm(w)) < 0);
                 if (missing.length) { dropped.push({ text, why: '「' + missing.slice(0, 3).join('、') + '」在引用的原文裡找不到' }); continue; }
                 sentences.push({ text, cites: Array.from(new Set(cites)) });
             }
             step('　核對完成：留下 ' + sentences.length + ' 句' + (dropped.length ? '，丟掉 ' + dropped.length + ' 句（對不上原文）' : '') + '（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）');
-            return { ok: true, sentences, dropped, sources: use.map((h) => ({ n: 0, label: h.label })).map((x, i) => ({ n: i + 1, label: use[i].label })), ms: Date.now() - t0 };
+            return { ok: true, sentences, dropped, cited: Array.from(new Set(sentences.flatMap((x) => x.cites))), sources: use.map((h) => ({ n: 0, label: h.label })).map((x, i) => ({ n: i + 1, label: use[i].label })), ms: Date.now() - t0 };
         },
         // 模型想的「可能出現在文件裡的詞」：只拿來多找一輪，不當答案。沒有模型可用就回空的（維持原本的檢索結果）。
         async _kiExpandQuery(q) {

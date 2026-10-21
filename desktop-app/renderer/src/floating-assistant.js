@@ -17776,7 +17776,7 @@ const holder = {};
     + '.fki .src{flex-wrap:wrap}.fki .pg{flex-basis:100%;display:flex;flex-direction:column;gap:2px;padding:0 2px 2px 24px}.fki .pgb{height:5px;border-radius:3px;background:var(--bd);overflow:hidden}.fki .pgb i{display:block;height:100%;background:var(--acc);width:0;transition:width .25s}.fki .pgb.run i{background:var(--acc)}.fki .pgb.full i{background:var(--ok)}.fki .pgt{font-size:11px;color:var(--mut)}'
     + '.fki .opl{padding:4px 8px;font-size:12px;color:var(--acc);border-bottom:1px solid var(--bd);background:var(--hd);display:none;white-space:pre-wrap;word-break:break-word}.fki .opl.on{display:block}'
     + '.fki details.tr{border:1px dashed var(--bd);border-radius:6px;padding:2px 8px;font-size:12px;color:var(--mut)}.fki details.tr summary{cursor:pointer}.fki .trl{padding:1px 0;white-space:pre-wrap;word-break:break-word}.fki .trl.bad{color:var(--bad)}.fki .trl.ok{color:var(--ok)}'
-    + '.fki .ans{border:1px solid var(--acc);border-radius:8px;padding:6px 8px;display:flex;flex-direction:column;gap:4px}.fki .ans .cite{font-size:11px;color:var(--acc);margin-left:2px}.fki .ask select{max-width:110px}';
+    + '.fki details.dim{border:1px solid var(--bd);border-radius:6px;padding:2px 8px;font-size:11px;color:var(--mut);opacity:.85}.fki details.dim summary{cursor:pointer}.fki details.dim .hit{font-size:11px;filter:grayscale(1)}.fki details.dim blockquote{border-left-color:var(--bd)}.fki .ans{border:1px solid var(--acc);border-radius:8px;padding:6px 8px;display:flex;flex-direction:column;gap:4px}.fki .ans .cite{font-size:11px;color:var(--acc);margin-left:2px}.fki .ask select{max-width:110px}';
   function h(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
   function esc(s) { return String(s == null ? '' : s); }
   // 把查詢的詞在原文裡標起來（只是顯示，不改內容）
@@ -17897,18 +17897,25 @@ const holder = {};
       var stopWait = tr.wait('檢索中');
       return host.ask({ question: q, limit: 6, onStep: function (t) { stopWait(); tr.step(t); stopWait = tr.wait('檢索中'); } }).then(function (res) {
         stopWait();
-        if (!res.found) { tr.step('沒有找到相關內容', 'bad'); tr.end('🧾 過程（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒，沒找到）'); note(c, res.message || '在目前勾選的來源裡找不到相關內容。'); if (res.semantic === false) note(c, '（' + (res.semantic_note || '只用關鍵字檢索') + '）'); return; }
+        if (!res.found) { tr.step('沒有找到相關內容', 'bad'); tr.end('🧾 過程（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒，沒找到）'); var nf0 = h('details', 'dim'); nf0.appendChild(h('summary', null, '沒有找到相關內容')); nf0.appendChild(h('div', null, (res.message || '在目前勾選的來源裡找不到相關內容。') + (res.semantic === false ? '（' + (res.semantic_note || '只用關鍵字檢索') + '）' : ''))); c.appendChild(nf0); return; }
         tr.step('找到 ' + res.hits.length + ' 筆　' + (res.semantic ? '關鍵字＋語意' : (res.semantic_note || '只用關鍵字')), 'ok');
-        var showHits = function () { var hd = h('div', 'st', '原文出處（' + res.hits.length + ' 筆）'); c.appendChild(hd); res.hits.forEach(function (hit, i) { c.appendChild(hitCard(hit, i, q)); }); scroll(); };
+        // 回答用到的原文照常顯示；沒用到的（模型沒引用、或沒找到答案）變灰階、小字，收在可展開的區塊裡，預設收合
+        var showHits = function (cited) {
+          var used = [], rest = []; res.hits.forEach(function (hit, i) { (!cited || cited.indexOf(i + 1) >= 0 ? used : rest).push([hit, i]); });
+          if (used.length) { c.appendChild(h('div', 'st', '原文出處（' + used.length + ' 筆）')); used.forEach(function (x) { c.appendChild(hitCard(x[0], x[1], q)); }); }
+          if (rest.length) { var dm = h('details', 'dim'); dm.appendChild(h('summary', null, (used.length ? '其他找到的原文（' : '找到的原文，但沒有對上問題的答案（') + rest.length + ' 筆，沒有採用）')); rest.forEach(function (x) { dm.appendChild(hitCard(x[0], x[1], q)); }); c.appendChild(dm); }
+          scroll();
+        };
         if (!aiMode) { tr.end('🧾 過程（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）'); showHits(); return; }
         var stop2 = tr.wait('等待模型回應');
         return host.answerAI(q, res.hits, function (t) { stop2(); tr.step(t); }).then(function (ai) {
           stop2(); tr.end('🧾 過程（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）');
           if (!ai.ok) { note(c, '⚠️ AI 整理失敗：' + ai.error + '\n下面是原文。', 'st bad'); showHits(); return; }
-          if (!ai.sentences.length) note(c, '模型沒有給出能對上原文的回答（' + (ai.dropped.length ? '丟掉了 ' + ai.dropped.length + ' 句對不上原文的' : '它說找不到') + '）。請看下面的原文。');
+          var citedList = ai.cited || [];
+          if (!ai.sentences.length) { var nf = h('details', 'dim'); nf.appendChild(h('summary', null, '沒有找到能回答的內容（' + (ai.dropped.length ? '丟掉了 ' + ai.dropped.length + ' 句對不上原文的' : '模型說找不到') + '）')); c.appendChild(nf); }
           else { var box = h('div', 'ans'); ai.sentences.forEach(function (x) { var p = h('div'); p.appendChild(document.createTextNode(x.text)); x.cites.forEach(function (n) { p.appendChild(h('span', 'cite', '[' + n + ']')); }); box.appendChild(p); }); c.appendChild(box); }
-          if (ai.dropped.length) { var dd = h('details', 'tr'); dd.appendChild(h('summary', null, '丟掉了 ' + ai.dropped.length + ' 句（對不上原文，沒有採用）')); ai.dropped.forEach(function (x) { dd.appendChild(h('div', 'trl', x.text + '　← ' + x.why)); }); c.appendChild(dd); }
-          showHits();
+          if (ai.dropped.length) { var dd = h('details', 'dim'); dd.appendChild(h('summary', null, '丟掉了 ' + ai.dropped.length + ' 句（對不上原文，沒有採用）')); ai.dropped.forEach(function (x) { dd.appendChild(h('div', 'trl', x.text + '　← ' + x.why)); }); c.appendChild(dd); }
+          showHits(citedList);
         });
       }).catch(function (e) { stopWait(); tr.step('⚠️ ' + String((e && e.message) || e).slice(0, 200), 'bad'); tr.end('🧾 過程（出錯）'); });
     });
@@ -32538,10 +32545,15 @@ const FaKnowledgeHost = (function () {
             const step = (t) => { try { if (onStep) onStep(t); } catch (_) { /* */ } };
             const use = (hits || []).slice(0, 6); if (!use.length) return { ok: false, error: '沒有可以整理的原文' };
             if (typeof this._callSimpleCompletion !== 'function') return { ok: false, error: '這個環境沒有可用的模型' };
-            const ctx = use.map((h, i) => '[' + (i + 1) + '] 《' + h.source + '》' + String(h.quote).slice(0, 700)).join('\n\n');
+            // 命中的只是標題（投影片標題、章節名）時，答案常在它後面幾行：把後面的幾行一起交給模型（仍是原文）
+            for (const h of use) {
+                h.ctx = String(h.quote);
+                if (h.ctx.length < 160 && h.source_id) { try { const d = await this._kiRun((store) => store.detail(h.source_id, { line_start: h.line_start, line_end: h.line_end + 8 }, { maxLines: 12 })); const t = ((d && d.lines) || []).map((l) => l.text).join('\n'); if (t.length > h.ctx.length) h.ctx = t; } catch (_) { /* */ } }
+            }
+            const ctx = use.map((h, i) => '[' + (i + 1) + '] 《' + h.source + '》' + h.ctx.slice(0, 900)).join('\n\n');
             step('🤖 交給模型整理（只准用 ' + use.length + ' 段原文，每句要標編號）…'); const t0 = Date.now();
             let reply = ''; try {
-                reply = await this._callSimpleCompletion('問題：' + question + '\n\n下面是從知識庫找到的原文片段（有編號）：\n\n' + ctx + '\n\n請只根據這些片段回答問題。規則：1) 每一句結尾都要標它所根據的片段編號，例如「按下 Save 鈕 [2]」；2) 指令、數字、名稱原樣照抄，不要改寫；3) 片段沒有講到的就不要說，不要補充或推測；4) 完全找不到答案就只輸出「找不到」。', { systemPrompt: '你只能用給你的片段回答，每句都要標編號。', maxTokens: 1500, temperature: 0 });
+                reply = await this._callSimpleCompletion('問題：' + question + '\n\n下面是從知識庫找到的原文片段（有編號）：\n\n' + ctx + '\n\n請只根據這些片段回答問題。規則：1) 每一句結尾都要標它所根據的片段編號，例如「按下 Save 鈕 [2]」；2) 指令、數字、名稱原樣照抄，不要改寫；3) 片段沒有講到的就不要說，不要補充或推測；4) 標題或章節名稱跟問題對得上也算有找到（例如「在《某某》找到標題『Plugin Installation』 [2]」），把它後面接著的內容也一併說出來；5) 完全找不到答案就只輸出「找不到」。', { systemPrompt: '你只能用給你的片段回答，每句都要標編號。', maxTokens: 1500, temperature: 0 });
             } catch (e) { return { ok: false, error: '模型沒有回應：' + String((e && e.message) || e).slice(0, 160), ms: Date.now() - t0 }; }
             step('　模型回應了（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒），逐句核對編號與原文…');
             const norm = (x) => String(x || '').toLowerCase().replace(/\s+/g, ''); const sentences = [], dropped = [];
@@ -32551,13 +32563,13 @@ const FaKnowledgeHost = (function () {
                 if (!text || /^[^\p{L}\p{N}]*找不到[^\p{L}\p{N}]*$/u.test(text)) continue;
                 if (!cites.length) { dropped.push({ text, why: '沒有標編號' }); continue; }
                 if (cites.some((n) => n < 1 || n > use.length)) { dropped.push({ text, why: '編號不存在' }); continue; }
-                const src = cites.map((n) => norm(use[n - 1].quote)).join('');
+                const src = cites.map((n) => norm(use[n - 1].ctx || use[n - 1].quote)).join('');
                 const ids = text.match(/[A-Za-z][A-Za-z0-9_.\-/]{2,}|\d+(?:\.\d+)*/g) || []; const missing = ids.filter((w) => src.indexOf(norm(w)) < 0);
                 if (missing.length) { dropped.push({ text, why: '「' + missing.slice(0, 3).join('、') + '」在引用的原文裡找不到' }); continue; }
                 sentences.push({ text, cites: Array.from(new Set(cites)) });
             }
             step('　核對完成：留下 ' + sentences.length + ' 句' + (dropped.length ? '，丟掉 ' + dropped.length + ' 句（對不上原文）' : '') + '（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）');
-            return { ok: true, sentences, dropped, sources: use.map((h) => ({ n: 0, label: h.label })).map((x, i) => ({ n: i + 1, label: use[i].label })), ms: Date.now() - t0 };
+            return { ok: true, sentences, dropped, cited: Array.from(new Set(sentences.flatMap((x) => x.cites))), sources: use.map((h) => ({ n: 0, label: h.label })).map((x, i) => ({ n: i + 1, label: use[i].label })), ms: Date.now() - t0 };
         },
         // 模型想的「可能出現在文件裡的詞」：只拿來多找一輪，不當答案。沒有模型可用就回空的（維持原本的檢索結果）。
         async _kiExpandQuery(q) {
