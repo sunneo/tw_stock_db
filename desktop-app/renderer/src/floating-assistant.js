@@ -31808,7 +31808,7 @@ class FloatingAssistant {
             '用 NVIDIA 線上圖像生成模型畫圖（FLUX.1 schnell／dev、FLUX.2 klein、FLUX klein、Stable Diffusion 3，或自己填的 廠商/模型名）。例：/image a macro photo of a green frog in a rainforest pond、/image model=black-forest-labs/flux.1-dev steps=30 size=1344x768 a quiet harbor at dawn。不帶參數會列出可用的模型。金鑰在「進階設定 → 影音處理」填。',
             async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/image' + (raw ? ' ' + raw : '') });
                 try {
-                    if (!raw) { const c = r._imageGenConfig(); r._pushAssistantMessage('🖼 可用的圖像生成模型（/image model=…）：\n' + FaNvidiaImage.MODELS.map((m) => '- ' + m.id + '：' + m.label).join('\n') + '\n\n目前預設：' + c.model + '；金鑰：' + (c.apiKey ? '已設定' + (c.keyFrom === 'llm' ? '（沿用語言模型的 NVIDIA 金鑰）' : '') : '尚未設定（進階設定 → 影音處理）') + '\n也可以直接填別的「廠商/模型名」。', null); }
+                    if (!raw) { const c = r._imageGenConfig(); r._pushAssistantMessage('🖼 可用的圖像生成模型（/image model=…）：\n' + FaNvidiaImage.MODELS.map((m) => '- ' + m.id + '：' + m.label).join('\n') + '\n\n目前預設：' + c.model + '；金鑰：' + (c.apiKey ? (c.keyFrom === 'default' ? '用內建預設' + (c.route === 'worker' ? '（經 Worker 轉送）' : '') : '已設定自己的金鑰') : '沒有可用的金鑰（進階設定 → 影音處理）') + '\n也可以直接填別的「廠商/模型名」。', null); }
                     else {
                         const a = {}; let prompt = raw;
                         for (let guard = 0; guard < 6; guard++) { const m = /^(model|steps|seed|size|width|height|cfg|negative)=(\S+)\s*/i.exec(prompt); if (!m) break; const k = m[1].toLowerCase(), v = m[2]; prompt = prompt.slice(m[0].length); if (k === 'size') { const z = /^(\d+)[x×](\d+)$/i.exec(v); if (z) { a.width = +z[1]; a.height = +z[2]; } } else if (k === 'model') a.model = v; else if (k === 'cfg') a.cfg_scale = +v; else if (k === 'negative') a.negative_prompt = v; else a[k] = +v; }
@@ -49965,23 +49965,31 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     // 「固定用清單第一筆」的既有行為（回傳shape跟改動前一模一樣，這些呼叫
     // 端完全不用改）。真正的main chat loop（_loopFetch/_loopFetchNative/
     // _runSubAgentTask）改呼叫_getApiConfigForRow()取得完整per-row設定。
-    // 圖像生成的金鑰與模型：進階設定 → 影音處理；沒填金鑰時，若目前的語言模型網址是 nvidia.com 就沿用它的金鑰
+    // 圖像生成的連線與模型。沒有填金鑰＝內建預設，規則跟內建的 NVIDIA row 一樣：留空就退回「我們預設的網址與金鑰」。
+    //   - 自己填了金鑰（進階設定 → 影音處理）：直接打 NVIDIA（ai.api.nvidia.com/v1/genai/…）。
+    //   - 沒填：用預設的網址與金鑰。預設是 NVIDIA 官方端點（nvidia.com）就直接打；是 Cloudflare Worker（訪客的預設）就打 {Worker}/genai/{廠商/模型名}，
+    //     金鑰由 Worker 那端解析（跟 /openrouter 同一種作法；Worker 要有這條路由，見 DESIGN.image-generation.md）。
     _imageGenConfig() {
         const g = (this.advancedSettings && this.advancedSettings.imageGen) || {};
-        let key = String(g.apiKey || '').trim(), from = key ? 'settings' : '';
-        if (!key) { try { const c = this._getApiConfig(); if (c && /nvidia\.com/i.test(String(c.apiUrl || '')) && c.apiKey) { key = String(c.apiKey).trim(); from = 'llm'; } } catch (_) { /* 沒有就沒有 */ } }
         const custom = String(g.customModel || '').trim();
-        return { apiKey: key, keyFrom: from, model: custom && FaNvidiaImage.validModelPath(custom) ? custom : (g.model || FaNvidiaImage.DEFAULT_MODEL) };
+        const model = custom && FaNvidiaImage.validModelPath(custom) ? custom : (g.model || FaNvidiaImage.DEFAULT_MODEL);
+        const own = String(g.apiKey || '').trim();
+        if (own) return { apiKey: own, keyFrom: 'settings', route: 'direct', base: FaNvidiaImage.BASE, model };
+        let r = null; try { r = this._resolveModelRowConfig({ modelName: 'nvidia/image-generation' }); } catch (_) { /* 沒有預設就沒有 */ }
+        const url = r ? String(r.apiUrl || '').trim().replace(/\/+$/, '') : '', key = r ? String(r.apiKey || '').trim() : '';
+        if (!key) return { apiKey: '', keyFrom: '', route: 'direct', base: FaNvidiaImage.BASE, model };
+        if (/nvidia\.com/i.test(url)) return { apiKey: key, keyFrom: 'default', route: 'direct', base: FaNvidiaImage.BASE, model };
+        return { apiKey: key, keyFrom: 'default', route: 'worker', base: url.replace(/\/v1$/i, '') + '/genai/', model };
     }
     async _nvidiaGenerateImage(a) {
         const cfg = this._imageGenConfig();
-        if (!cfg.apiKey) return { ok: false, error: '還沒有設定圖像生成的金鑰：到「進階設定 → 影音處理」的「圖像生成」填入 NVIDIA API 金鑰（nvapi- 開頭），或把語言模型也設成 NVIDIA 的網址與金鑰。' };
+        if (!cfg.apiKey) return { ok: false, error: '還沒有可用的圖像生成金鑰：內建預設沒有金鑰可用，請到「進階設定 → 影音處理」的「圖像生成」填入 NVIDIA API 金鑰（nvapi- 開頭）。' };
         const req = FaNvidiaImage.buildRequest(Object.assign({}, a, { model: a.model || cfg.model }));
         if (!req.ok) return req;
         const t0 = Date.now();
         let resp, text = '';
         try {
-            resp = await fetch(req.url, { method: 'POST', headers: { 'Authorization': 'Bearer ' + cfg.apiKey, 'Accept': 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify(req.body) });
+            resp = await fetch(cfg.route === 'worker' ? cfg.base + req.model : req.url, { method: 'POST', headers: { 'Authorization': 'Bearer ' + cfg.apiKey, 'Accept': 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify(req.body) });
             text = await resp.text();
         } catch (e) {
             return { ok: false, error: '連不到 NVIDIA（' + String((e && e.message) || e).slice(0, 120) + '）。網頁版可能被瀏覽器的跨網域限制擋住（CORS），桌面版或自己架的轉送 proxy 通常可以；也可能是網路不通。', model: req.model };
@@ -50007,7 +50015,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             } catch (_) { /* 顯示失敗不影響檔案 */ }
             out.push({ file_id: id, client_file_url: 'client-file/' + id, filename: name, mime: im.mime, size_bytes: u.length, seed: im.seed != null ? im.seed : req.body.seed, deck_ref: ref || undefined });
         }
-        return { ok: true, model: req.model, images: out, file_id: out[0].file_id, client_file_url: out[0].client_file_url, size: req.body.width ? req.body.width + 'x' + req.body.height : req.body.aspect_ratio, steps: req.body.steps, adjusted: req.notes.length ? req.notes : undefined, key_from: cfg.keyFrom === 'llm' ? '用的是語言模型那把 NVIDIA 金鑰' : undefined, duration_ms: Date.now() - t0 };
+        return { ok: true, model: req.model, images: out, file_id: out[0].file_id, client_file_url: out[0].client_file_url, size: req.body.width ? req.body.width + 'x' + req.body.height : req.body.aspect_ratio, steps: req.body.steps, adjusted: req.notes.length ? req.notes : undefined, key_from: cfg.keyFrom === 'default' ? (cfg.route === 'worker' ? '用內建預設（經 Worker 轉送，金鑰由 Worker 提供）' : '用內建預設的 NVIDIA 金鑰') : undefined, duration_ms: Date.now() - t0 };
     }
 
     _getApiConfig() {
@@ -77757,9 +77765,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                 </div>
                                 <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label">圖像生成（generate_image／/image，NVIDIA 線上模型）</label>
-                                    <p class="ai-advanced-hint">畫圖的請求會送到 NVIDIA（ai.api.nvidia.com），金鑰只存在這台的設定裡。沒填金鑰、而語言模型本來就是 NVIDIA 的網址時，會沿用那把金鑰。</p>
+                                    <p class="ai-advanced-hint">內建預設不需要填金鑰：留空時跟內建的 NVIDIA 模型一樣，退回「我們預設的網址與金鑰」。自己填金鑰的話，請求會直接送到 NVIDIA（ai.api.nvidia.com），金鑰只存在這台的設定裡。</p>
                                     <label class="ai-advanced-label" for="ai-imggen-key" style="font-weight:normal;">NVIDIA API 金鑰（nvapi- 開頭）</label>
-                                    <input type="password" id="ai-imggen-key" class="ai-advanced-input" autocomplete="off" placeholder="nvapi-…">
+                                    <input type="password" id="ai-imggen-key" class="ai-advanced-input" autocomplete="off" placeholder="留空＝用內建預設（nvapi-…）">
                                     <label class="ai-advanced-label" for="ai-imggen-model" style="font-weight:normal; margin-top:8px;">預設模型</label>
                                     <select id="ai-imggen-model" class="ai-advanced-input"></select>
                                     <label class="ai-advanced-label" for="ai-imggen-custom" style="font-weight:normal; margin-top:8px;">自己填模型路徑（選填，填了就用它，格式「廠商/模型名」）</label>
