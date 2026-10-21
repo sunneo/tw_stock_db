@@ -16515,6 +16515,144 @@ const holder = {};
 return holder.FaWorksheetUI;
 })();
 /* WKSUI-END */
+/* AGM-BEGIN */
+const FaAgentModel = (function () {
+const holder = {};
+(function (module, self) {
+// Agent Model Configure 核心：不同「多重子Agent模式」的不同階段（Orchestrator／路由／領域子Agent／Reducer…）各自偏好哪些模型。
+// 純函式，node 與瀏覽器都能跑（UMD，嵌入成 FaAgentModel，見 scripts/embed-code-ui.js）。
+//
+// 設定的形狀（存在 advancedSettings.agentModels，整份保留；開關只決定「套不套用」，不會動到已存的設定）：
+//   { v:1, enabled:false,                         // 總開關，預設關：關著時行為跟以前完全一樣（模型列的順序）
+//     useBuiltin:true,                            // 沒有自訂時，要不要用「內建預設」（依模型名稱樣式挑）
+//     modes:{ router:{ enabled:true, stages:{ orchestrator:{ prefs:[列id,…] }, … } }, … } }
+// 解析順序（resolve）：總開關關 → 不套用；這個模式被關 → 不套用；這個階段有自訂偏好（只算還存在的列）→ 用自訂；
+// 否則用內建預設（有對得上的列才用）；都沒有 → 不套用（那個階段照原本的順序）。
+// 偏好只是「優先順序」：實際呼叫時排在前面，後面照原本的備援順序補上，所以挑到壞掉的模型也不會卡死。
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaAgentModel = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var TRAITS = ['speed', 'context', 'tools', 'accuracy'];
+  var TRAIT_LABEL = { speed: '回應速度', context: '上下文長度', tools: '工具呼叫', accuracy: '謹慎正確' };
+  // 階段：每個階段是「一種模型呼叫」；weights 是這種呼叫最在意哪些特性（程式自動決定時用）
+  var STAGES = {
+    orchestrator: { label: 'Orchestrator', desc: '接使用者的話、決定自己做還是委派。要反應快。', weights: { speed: 0.55, tools: 0.25, context: 0.2 } },
+    category_router: { label: '類別路由', desc: '兩層路由的第一層：先選大類別。短、要快。', weights: { speed: 0.6, context: 0.3, accuracy: 0.1 } },
+    router: { label: '路由（認識全部功能）', desc: '認識全部領域與工具，挑出這個任務要開放哪些領域。要快、context 大。', weights: { speed: 0.45, context: 0.4, accuracy: 0.15 } },
+    domain_agent: { label: '領域子Agent', desc: '真正呼叫工具、把事做完。工具呼叫要穩。', weights: { tools: 0.45, accuracy: 0.3, speed: 0.25 } },
+    reducer: { label: 'Reducer（統整）', desc: '把子Agent回來的結果收攏、寫給使用者的最後回覆。要謹慎、能吃長內容。', weights: { accuracy: 0.7, context: 0.25, speed: 0.05 } }
+  };
+  var MODES = {
+    off: { label: '不使用子Agent', desc: '全部工具直接掛在根層級，只有一個 Orchestrator 自己做完。', stages: ['orchestrator'], edges: [], tweak: { orchestrator: { tools: 0.35, accuracy: 0.3, speed: 0.15, context: 0.2 } } },
+    router: { label: '1. 兩層委派（router）', desc: 'Orchestrator 不認識領域；先問路由子Agent，再交給領域子Agent，最後統整。', stages: ['orchestrator', 'router', 'domain_agent', 'reducer'], edges: [['orchestrator', 'router'], ['router', 'domain_agent'], ['domain_agent', 'reducer']], tweak: {} },
+    full: { label: '2. 認識全部領域（full）', desc: 'Orchestrator 直接看得到全部領域、自己指定，省掉路由那一輪。', stages: ['orchestrator', 'domain_agent', 'reducer'], edges: [['orchestrator', 'domain_agent'], ['domain_agent', 'reducer']], tweak: { orchestrator: { speed: 0.4, context: 0.35, tools: 0.25 } } },
+    hierarchical: { label: '4. 兩層領域路由（hierarchical）', desc: '先選類別、再選細分領域，適合領域很多的時候。', stages: ['orchestrator', 'category_router', 'router', 'domain_agent', 'reducer'], edges: [['orchestrator', 'category_router'], ['category_router', 'router'], ['router', 'domain_agent'], ['domain_agent', 'reducer']], tweak: {} },
+    intent: { label: '5. 意圖過濾（intent）', desc: '用程式比對意圖挑工具與領域（不呼叫模型）；比對沒把握才用路由當備援。', stages: ['orchestrator', 'router', 'domain_agent', 'reducer'], edges: [['orchestrator', 'domain_agent'], ['router', 'domain_agent'], ['domain_agent', 'reducer']], dashed: ['router'], tweak: { orchestrator: { speed: 0.5, tools: 0.3, context: 0.2 }, router: { speed: 0.5, context: 0.3, accuracy: 0.2 } } }
+  };
+  // 內建預設：依「模型名稱的樣式」挑，順序＝偏好順序（對得上現有模型列才用；沒有對得上的階段就不套用）。預設不啟用，啟用後才生效。
+  var BUILTIN = {
+    orchestrator: ['lightning|flash|mini|nano|haiku|lite|turbo', '20b|8b|7b|9b', 'free'],
+    category_router: ['lightning|flash|mini|nano|haiku|lite|turbo', '20b|8b|7b|9b'],
+    router: ['super|120b|flash|lightning|sonnet|pro', '30b|20b|nano'],
+    domain_agent: ['super|120b|sonnet|ultra|opus|qwen3|deepseek', 'gpt-oss|nemotron', 'lightning|20b'],
+    reducer: ['ultra|opus|550b|405b|thinking|pro|sonnet', '120b|super|deepseek', 'gpt-oss|nemotron']
+  };
+  function clamp(n, a, b) { n = Number(n); if (!isFinite(n)) return a; return Math.max(a, Math.min(b, n)); }
+  function sizeB(name) { var s = String(name || '').toLowerCase(), m = /[-_](?:a)(\d+(?:\.\d+)?)b/.exec(s); if (m) return { active: parseFloat(m[1]), total: ((/(\d+(?:\.\d+)?)b/.exec(s) || [])[1] ? parseFloat(/(\d+(?:\.\d+)?)b/.exec(s)[1]) : parseFloat(m[1])) }; m = /(\d+(?:\.\d+)?)b\b/.exec(s); return m ? { active: parseFloat(m[1]), total: parseFloat(m[1]) } : null; }
+  // 一個模型列的四種特性（0～1）。優先用實測（模型卡 /benchmark-model、CoLU 體檢），沒有才用名稱與設定估；notes 說明每個數字從哪來
+  function profile(row, card) {
+    row = row || {}; card = card || null; var name = String(row.modelName || ''), low = name.toLowerCase(), notes = [], p = {}; var sz = sizeB(name);
+    // speed
+    if (card && typeof card.test1Score === 'number') { p.speed = clamp(card.test1Score / 100, 0, 1); notes.push('速度：實測 ' + card.test1Score + ' 分'); }
+    else { var s = sz ? (sz.active <= 8 ? 0.9 : sz.active <= 30 ? 0.75 : sz.active <= 70 ? 0.55 : sz.active <= 130 ? 0.4 : 0.25) : 0.5; if (/lightning|flash|mini|nano|haiku|lite|turbo|fast|instant/.test(low)) s += 0.15; if (/thinking|reason|opus|ultra|pro\b/.test(low)) s -= 0.1; p.speed = clamp(s, 0.05, 1); notes.push('速度：依名稱估計'); }
+    // context
+    var cw = Number(row.contextWindowTokens); if (cw > 0) { p.context = clamp(Math.log(cw / 8000) / Math.log(2) / 4, 0, 1); notes.push('context：設定 ' + Math.round(cw / 1000) + 'k'); } else { p.context = clamp(/1m|million|long|super|ultra/.test(low) ? 0.7 : 0.4, 0, 1); notes.push('context：沒填，估計'); }
+    // tools
+    var tl = null; if (card && (typeof card.test2Score === 'number' || typeof card.test3avgScore === 'number')) { var xs = [card.test2Score, card.test3avgScore].filter(function (x) { return typeof x === 'number'; }); tl = xs.reduce(function (a, b) { return a + b; }, 0) / xs.length / 100; notes.push('工具：實測 ' + xs.join('／') + ' 分'); }
+    else if (row.coluProfile && row.coluProfile.advice) { tl = { self: 0.8, guided: 0.55, auto: 0.4 }[row.coluProfile.advice]; if (tl != null) notes.push('工具：CoLU 體檢（' + row.coluProfile.advice + '）'); }
+    if (row.abilityTags && row.abilityTags.toolCall === false) { tl = 0.1; notes.push('工具：不支援原生工具呼叫'); }
+    p.tools = clamp(tl == null ? 0.5 : tl, 0, 1); if (tl == null) notes.push('工具：沒有資料，估 0.5');
+    // accuracy
+    if (card && typeof card.overallScore === 'number') { p.accuracy = clamp(card.overallScore / 100, 0, 1); notes.push('謹慎：基準總分 ' + card.overallScore); }
+    else { var a = sz ? (sz.total >= 300 ? 0.9 : sz.total >= 100 ? 0.8 : sz.total >= 30 ? 0.65 : 0.45) : 0.55; if (/opus|ultra|pro\b|thinking|reason/.test(low)) a += 0.05; p.accuracy = clamp(a, 0.1, 1); notes.push('謹慎：依名稱估計'); }
+    return { speed: p.speed, context: p.context, tools: p.tools, accuracy: p.accuracy, notes: notes };
+  }
+  function weightsFor(mode, stage) { var base = STAGES[stage] && STAGES[stage].weights || {}, tw = MODES[mode] && MODES[mode].tweak && MODES[mode].tweak[stage]; return tw || base; }
+  function score(pr, w) { var t = 0, sum = 0; TRAITS.forEach(function (k) { var wk = w[k] || 0; t += wk * (pr[k] || 0); sum += wk; }); return sum ? t / sum : 0; }
+  function usable(rows) { return (rows || []).filter(function (r) { return r && r.id && r.modelName && !r.isEmbeddingModel; }); }
+  // 程式自動決定：依每個階段在意的特性，用現有資料（模型卡、體檢、設定）給每個模型打分，挑前 top 個
+  function autoDecide(rows, cards, opt) {
+    opt = opt || {}; var top = clamp(opt.top || 3, 1, 6), out = {}, list = usable(rows), seen = {}; var modes = opt.mode ? [opt.mode] : Object.keys(MODES);
+    var profs = {}; list.forEach(function (r) { profs[r.id] = profile(r, (cards || {})[r.modelName]); });
+    modes.forEach(function (m) {
+      out[m] = {};
+      MODES[m].stages.forEach(function (st) {
+        var w = weightsFor(m, st); var ranked = list.filter(function (r) { return !(st !== 'reducer' && st !== 'category_router' && r.abilityTags && r.abilityTags.toolCall === false && (st === 'domain_agent' || st === 'orchestrator')); }).map(function (r) { return { r: r, s: score(profs[r.id], w) }; }).sort(function (a, b) { return b.s - a.s; });
+        var names = {}, ids = [], why = []; ranked.forEach(function (x) { if (ids.length >= top || names[x.r.modelName]) return; names[x.r.modelName] = 1; ids.push(x.r.id); var pr = profs[x.r.id]; why.push(x.r.modelName + '（' + TRAITS.filter(function (k) { return (w[k] || 0) >= 0.2; }).map(function (k) { return TRAIT_LABEL[k] + ' ' + Math.round(pr[k] * 100); }).join('、') + '）'); });
+        out[m][st] = { prefs: ids, why: why };
+      });
+    });
+    return { assign: out, profiles: profs };
+  }
+  function builtinFor(rows, stage) {
+    var list = usable(rows), pats = BUILTIN[stage] || [], ids = [], used = {};
+    pats.forEach(function (p) { var re = new RegExp(p, 'i'); list.forEach(function (r) { if (!used[r.id] && re.test(r.modelName)) { used[r.id] = 1; ids.push(r.id); } }); });
+    return ids;
+  }
+  function defaults() { return { v: 1, enabled: false, useBuiltin: true, modes: {} }; }
+  function normalize(raw) {
+    var o = defaults(); if (!raw || typeof raw !== 'object') return o; o.enabled = raw.enabled === true; o.useBuiltin = raw.useBuiltin !== false;
+    Object.keys(MODES).forEach(function (m) {
+      var rm = raw.modes && raw.modes[m]; if (!rm || typeof rm !== 'object') return; var stages = {};
+      MODES[m].stages.forEach(function (st) { var ps = rm.stages && rm.stages[st] && rm.stages[st].prefs; if (Array.isArray(ps)) { var ids = [], seen = {}; ps.forEach(function (x) { x = String(x); if (x && !seen[x] && ids.length < 12) { seen[x] = 1; ids.push(x); } }); if (ids.length) stages[st] = { prefs: ids }; } });
+      o.modes[m] = { enabled: rm.enabled !== false, stages: stages };
+    });
+    return o;
+  }
+  function ensureMode(cfg, m) { cfg.modes[m] = cfg.modes[m] || { enabled: true, stages: {} }; return cfg.modes[m]; }
+  function setPrefs(cfg, mode, stage, ids) { if (!MODES[mode] || MODES[mode].stages.indexOf(stage) < 0) return cfg; var m = ensureMode(cfg, mode); if (ids && ids.length) m.stages[stage] = { prefs: ids.slice(0, 12) }; else delete m.stages[stage]; return cfg; }
+  function setModeEnabled(cfg, mode, on) { ensureMode(cfg, mode).enabled = on !== false; return cfg; }
+  // 全部重置成預設值：自訂的偏好與各模式的開關都清掉；總開關（套不套用）是使用者的選擇，不動
+  function reset(cfg) { var e = cfg && cfg.enabled === true; var o = defaults(); o.enabled = e; return o; }
+  // 一個階段實際要用的模型列（依序）；{ids, source:'off'|'custom'|'builtin'|'none'}
+  function resolve(cfg, mode, stage, rows) {
+    cfg = normalize(cfg); if (!cfg.enabled) return { ids: [], source: 'off' }; var m = cfg.modes[mode]; if (m && m.enabled === false) return { ids: [], source: 'off' };
+    var exist = {}; usable(rows).forEach(function (r) { exist[r.id] = 1; });
+    var mine = ((m && m.stages[stage] && m.stages[stage].prefs) || []).filter(function (x) { return exist[x]; }); if (mine.length) return { ids: mine, source: 'custom' };
+    if (cfg.useBuiltin) { var b = builtinFor(rows, stage); if (b.length) return { ids: b, source: 'builtin' }; }
+    return { ids: [], source: 'none' };
+  }
+  // 把偏好排到前面：groups 是備援用的分組（每組有 rows），偏好列所在的組依偏好順序移到最前面，其餘照原順序補在後面
+  function orderGroups(groups, ids) {
+    if (!ids || !ids.length) return groups; var out = [], used = {};
+    ids.forEach(function (id) { for (var i = 0; i < groups.length; i++) { if (used[i]) continue; if ((groups[i].rows || []).some(function (r) { return r.id === id; })) { used[i] = 1; out.push(groups[i]); break; } } });
+    groups.forEach(function (g, i) { if (!used[i]) out.push(g); }); return out;
+  }
+  // 讓 AI 決定：一次把所有模型的實測與設定給它，只准回封閉的 JSON（用字母代號指模型）；程式檢查後才採用
+  function aiPrompt(rows, cards) {
+    var list = usable(rows).slice(0, 26), letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', map = {};
+    var lines = list.map(function (r, i) { map[letters[i]] = r.id; var p = profile(r, (cards || {})[r.modelName]); return letters[i] + '. ' + r.modelName + '｜速度 ' + Math.round(p.speed * 100) + '｜context ' + Math.round(p.context * 100) + '｜工具 ' + Math.round(p.tools * 100) + '｜謹慎 ' + Math.round(p.accuracy * 100) + (r.abilityTags && r.abilityTags.vision ? '｜看圖' : ''); });
+    var stages = Object.keys(STAGES).map(function (k) { return k + '：' + STAGES[k].label + '——' + STAGES[k].desc; }).join('\n');
+    return { map: map, system: '你是 AI 助理的模型調度顧問。下面是可用的模型（分數 0～100，是實測或估計）與各個階段的需求。為每個階段挑 1～3 個偏好的模型，依偏好順序。只回一段 JSON，不要說明、不要 markdown：{"orchestrator":["A","C"],"category_router":["B"],"router":["A"],"domain_agent":["D","A"],"reducer":["E"]}。模型一律用字母代號；沒有適合的階段回空陣列。不要編造不在清單裡的代號。',
+      user: '可用的模型：\n' + lines.join('\n') + '\n\n階段：\n' + stages };
+  }
+  function parseAi(text, map) {
+    var s = String(text || ''), a = s.indexOf('{'), b = s.lastIndexOf('}'); if (a < 0 || b <= a) return { ok: false, error: '回覆讀不成 JSON' }; var j; try { j = JSON.parse(s.slice(a, b + 1)); } catch (e) { return { ok: false, error: '回覆讀不成 JSON' }; }
+    var assign = {}, dropped = 0; Object.keys(STAGES).forEach(function (st) { var ids = [], seen = {}; (Array.isArray(j[st]) ? j[st] : []).forEach(function (l) { var id = map[String(l).trim().toUpperCase()]; if (!id) { dropped++; return; } if (!seen[id] && ids.length < 3) { seen[id] = 1; ids.push(id); } }); assign[st] = ids; });
+    return { ok: true, assign: assign, dropped: dropped };
+  }
+  // 把「各階段的偏好」套到所有模式（模式沒有那個階段就略過）；onlyEmpty＝只填還沒自訂的階段
+  function applyAssign(cfg, assign, opt) {
+    opt = opt || {}; var modes = opt.mode ? [opt.mode] : Object.keys(MODES);
+    modes.forEach(function (m) { MODES[m].stages.forEach(function (st) { var ids = assign && (assign[st] || (assign[m] && assign[m][st] && assign[m][st].prefs)); if (assign && assign[m] && assign[m][st]) ids = assign[m][st].prefs; if (!ids || !ids.length) return; if (opt.onlyEmpty && cfg.modes[m] && cfg.modes[m].stages[st]) return; setPrefs(cfg, m, st, ids); }); });
+    return cfg;
+  }
+  return { TRAITS: TRAITS, TRAIT_LABEL: TRAIT_LABEL, STAGES: STAGES, MODES: MODES, BUILTIN: BUILTIN, profile: profile, weightsFor: weightsFor, score: score, autoDecide: autoDecide, builtinFor: builtinFor, defaults: defaults, normalize: normalize, setPrefs: setPrefs, setModeEnabled: setModeEnabled, reset: reset, resolve: resolve, orderGroups: orderGroups, aiPrompt: aiPrompt, parseAi: parseAi, applyAssign: applyAssign, usable: usable };
+});
+
+}).call(null, undefined, holder);
+return holder.FaAgentModel;
+})();
+/* AGM-END */
 /* ARCHIVE-BEGIN */
 const FaArchive = (function () {
 const holder = {};
@@ -27875,12 +28013,22 @@ const FaRemoteHost = (function () {
             if (!this._rgVisBound) { this._rgVisBound = true; const wake = () => { const rg = this._rg; if (!rg) return; if (rg.room.status !== 'SUBSCRIBED') this._rgScheduleReconnect(rg); this._rgSyncPending(true); }; document.addEventListener('visibilitychange', () => { if (!document.hidden) wake(); }); window.addEventListener('online', wake); }
             this._rgRender(); this._rgKeepAlive(); this._rgAutoRejoin();
         },
+        // 換主題：面板裡的按鈕、輸入框、複製鈕都是用「建立當下」的顏色寫死的，不重建就會停在舊主題的顏色（面板收著時 _rgRender 也不會重建）。
+        // 顏色組合變了才重建目前的畫面，表單裡填到一半的欄位（名稱、密碼、房間代號、勾選）先存起來再填回去；「交給」下拉也一起重上色。
+        _rgThemeRefresh() {
+            const p = document.getElementById('ai-rg-panel'); if (!p) return; const pal = this._getThemePalette(); const sig = [pal.windowBg, pal.chatText, pal.inputBg, pal.inputText, pal.inputBorder, this._isLightTheme() ? 'L' : 'D'].join('|');
+            if (this._rgThemeSig === sig) return; const first = this._rgThemeSig == null; this._rgThemeSig = sig; if (first && !p.dataset.built) { this._rgSyncTargetSelect(); return; }
+            const keep = {}; p.querySelectorAll('[data-rg]').forEach((el) => { const k = el.getAttribute('data-rg'); if (el.type === 'checkbox') keep[k] = el.checked; else if ('value' in el && el.tagName !== 'BUTTON') keep[k] = el.value; });
+            p.dataset.view = ''; p.dataset.built = ''; this._rgRender();
+            p.querySelectorAll('[data-rg]').forEach((el) => { const k = el.getAttribute('data-rg'); if (!(k in keep)) return; if (el.type === 'checkbox') el.checked = !!keep[k]; else if ('value' in el && el.tagName !== 'BUTTON') el.value = keep[k]; });
+            this._rgSyncTargetSelect();
+        },
         // 「交給」選單：已加入群組才出現；選項是其他在線機器
         _rgSyncTargetSelect() {
             const sel = document.getElementById('ai-rg-target'); if (!sel) return;
             const rg = this._rg; if (!rg) { sel.style.display = 'none'; sel.innerHTML = ''; const inp0 = document.getElementById('ai-input-text'); if (inp0 && this._rgPh != null) inp0.placeholder = this._rgPh; try { this._renderChatList(); } catch (_) { /* */ } return; }
             const pal = this._getThemePalette(), cur = this._rgTarget || '';
-            sel.style.background = pal.inputBg; sel.style.color = pal.inputText; sel.style.border = '1px solid ' + pal.inputBorder;
+            sel.style.background = pal.inputBg; sel.style.color = pal.inputText; sel.style.border = '1px solid ' + pal.inputBorder; sel.style.colorScheme = this._isLightTheme() ? 'light' : 'dark';
             const opts = ['<option value="">交給：本機</option>'].concat(this._rgTargets().map((m) => '<option value="' + this._escapeHtml(m.nodeId) + '"' + (m.allow === false ? ' disabled' : '') + '>交給：' + this._escapeHtml(m.name) + (m.kind === 'desktop' ? '（桌面）' : '（網頁）') + (m.busy ? ' 忙碌' : '') + (m.allow === false ? ' 不接受' : '') + '</option>'));
             sel.innerHTML = opts.join(''); sel.value = this._rgTargets().some((m) => m.nodeId === cur) ? cur : ''; if (sel.value !== cur) this._rgTarget = sel.value;
             sel.style.display = '';
@@ -28079,7 +28227,7 @@ const FaRemoteHost = (function () {
         _rgRender() {
             const btn = document.getElementById('ai-rg-btn'), p = document.getElementById('ai-rg-panel'); if (!btn || !p) return;
             btn.textContent = this._rgBtnLabel(); btn.title = this._rg ? '遠端群組 ' + this._rg.code + '（' + this._rg.room.members().length + ' 台在線）：點開看機器、動態與設定' : '遠端群組：加入或建立群組，把工作交給群組裡的其他電腦'; btn.style.background = this._rg ? 'rgba(118,185,0,.25)' : 'transparent';
-            const pal = this._getThemePalette(); p.style.background = pal.windowBg; p.style.color = pal.chatText; p.style.borderLeft = '1px solid ' + pal.windowBorder;
+            const pal = this._getThemePalette(); p.style.background = pal.windowBg; p.style.color = pal.chatText; p.style.borderLeft = '1px solid ' + pal.windowBorder; p.style.colorScheme = this._isLightTheme() ? 'light' : 'dark'; // 下拉選單、輸入框、捲軸的原生外觀也跟著主題
             if (!this._rgOpen && p.dataset.built) { /* 面板收著時只更新按鈕 */ return; }
             if (this._rgView === 'joined' && this._rg) { if (p.dataset.view !== 'joined') this._rgBuildJoined(p, pal); else { this._rgRenderMembers(); this._rgRenderLog(); this._rgRenderActs(); } }
             else if (this._rgView === 'busy') { /* 忙碌畫面由 _rgBusy 設定 */ }
@@ -31692,6 +31840,7 @@ class FloatingAssistant {
             // 見get multiSubAgentMode()的說明。預設'router'＝維持原本的兩層
             // 委派行為不變。2026-10-13使用者要求：預設改成 'full'（模式 2：Orchestrator + 認識全部工具的子Agent + 多領域子Agent）。
             multiSubAgentMode: 'full',
+            agentModels: { v: 1, enabled: false, useBuiltin: true, modes: {} }, // Agent Model Configure：各模式各階段偏好的模型（預設不啟用）。見 FaAgentModel
             roundExtend: { mode: 'ask', cap: 60 }, // 子任務回合用完時：ask＝問使用者要不要擴展；auto＝自動擴展到總上限（用光就失敗）。見 _askExtendRounds
             // tw_stock_db客製: browser_search子agent預設關閉——需要有一個部署
             // 了/browser-search路由的Cloudflare Worker（見
@@ -32987,6 +33136,7 @@ class FloatingAssistant {
                 return Number.isFinite(n) && n > 0 ? Math.max(1, Math.round(n)) : 5;
             })(),
             multiSubAgentMode: ['router', 'full', 'off', 'hierarchical', 'intent'].includes(raw.multiSubAgentMode) ? raw.multiSubAgentMode : 'full',
+            agentModels: FaAgentModel.normalize(raw.agentModels),
             roundExtend: { mode: raw.roundExtend && raw.roundExtend.mode === 'auto' ? 'auto' : 'ask', cap: Math.max(10, Math.min(200, Math.round(Number(raw.roundExtend && raw.roundExtend.cap)) || 60)) },
             browserSearchEnabled: raw.browserSearchEnabled !== false,
             browserControlEnabled: raw.browserControlEnabled === true,
@@ -47612,6 +47762,100 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         return { ok: !!(out.files.pdf || out.files.png), worksheet_id: cur.id, applied: r.applied, rejected: r.rejected.length ? r.rejected : undefined, files: out.files, summary: FaWorksheet.describe(r.spec), editor: '已經開著的編輯器會同步更新（多了一步，可以復原）', problems: out.problems.length ? out.problems : undefined };
     }
 
+    // ===== Agent Model Configure 的設定畫面：階段圖（每個階段一個節點）、點節點設偏好模型清單、總開關、重置、自動決定 =====
+    _agentModelRender() {
+        const root = document.getElementById('ai-agent-model-config'); if (!root) return; const A = FaAgentModel, pal = this._getThemePalette(), esc = (x) => this._escapeHtml(String(x == null ? '' : x));
+        const cfg = this.advancedSettings.agentModels = A.normalize(this.advancedSettings.agentModels); const rows = A.usable(this._getModelRows()), cards = this._getModelCards();
+        const mode = this._amMode && A.MODES[this._amMode] ? this._amMode : this.multiSubAgentMode; this._amMode = mode; const M = A.MODES[mode];
+        const stage = this._amStage && M.stages.indexOf(this._amStage) >= 0 ? this._amStage : M.stages[0]; this._amStage = stage;
+        const nameOf = (id) => { const r = rows.find((x) => x.id === id); return r ? r.modelName : '（已刪除的模型）'; }; const short = (n) => String(n).split('/').pop();
+        const res = (st) => A.resolve(cfg, mode, st, this._getModelRows()); const mcfg = cfg.modes[mode] || { enabled: true, stages: {} };
+        const border = pal.inputBorder, fg = pal.chatText, bg = pal.inputBg, accent = '#76b900';
+        // 階段圖（SVG）：節點由左到右，箭頭是資料流向；虛線節點＝備援（只在比對沒把握時才用）
+        const NW = 132, NH = 58, GAP = 34, W = M.stages.length * NW + (M.stages.length - 1) * GAP + 8, pos = {}; M.stages.forEach((st, i) => { pos[st] = { x: 4 + i * (NW + GAP), y: 8 }; });
+        let svg = '<svg viewBox="0 0 ' + W + ' 76" style="width:100%; max-width:' + W + 'px; height:auto; display:block;"><defs><marker id="am-arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="' + border + '"/></marker></defs>';
+        M.edges.forEach((e) => { const a = pos[e[0]], b = pos[e[1]]; if (!a || !b) return; const y = a.y + NH / 2; if (b.x > a.x) svg += '<line x1="' + (a.x + NW) + '" y1="' + y + '" x2="' + (b.x - 2) + '" y2="' + y + '" stroke="' + border + '" stroke-width="1.5"' + ((M.dashed || []).indexOf(e[0]) >= 0 ? ' stroke-dasharray="4 3"' : '') + ' marker-end="url(#am-arr)"/>'; else svg += '<path d="M' + (a.x + NW / 2) + ',' + (a.y + NH) + ' Q' + (a.x + NW / 2) + ',' + (a.y + NH + 14) + ' ' + (b.x + NW / 2) + ',' + (b.y + NH + 2) + '" fill="none" stroke="' + border + '" stroke-width="1.5" marker-end="url(#am-arr)"/>'; });
+        M.stages.forEach((st) => { const r = res(st), p = pos[st], on = st === stage, ids = r.ids; const badge = { custom: '自訂', builtin: '內建', none: '沒有偏好', off: cfg.enabled ? '此模式關閉' : '未啟用' }[r.source]; const nm = ids.length ? short(nameOf(ids[0])) + (ids.length > 1 ? ' +' + (ids.length - 1) : '') : '照原本順序';
+            svg += '<g data-am="stage" data-st="' + st + '" style="cursor:pointer;"><rect x="' + p.x + '" y="' + p.y + '" width="' + NW + '" height="' + NH + '" rx="8" fill="' + bg + '" stroke="' + (on ? accent : border) + '" stroke-width="' + (on ? 2.5 : 1.2) + '"' + ((M.dashed || []).indexOf(st) >= 0 ? ' stroke-dasharray="5 3"' : '') + '/>'
+                + '<text x="' + (p.x + 8) + '" y="' + (p.y + 18) + '" font-size="11.5" font-weight="700" fill="' + fg + '">' + esc(A.STAGES[st].label.slice(0, 14)) + '</text><text x="' + (p.x + 8) + '" y="' + (p.y + 35) + '" font-size="10.5" fill="' + fg + '" opacity=".85">' + esc(nm.slice(0, 20)) + '</text><text x="' + (p.x + 8) + '" y="' + (p.y + 50) + '" font-size="9.5" fill="' + (r.source === 'custom' ? accent : fg) + '" opacity="' + (r.source === 'custom' ? 1 : .6) + '">' + esc(badge) + '</text></g>'; });
+        svg += '</svg>';
+        // 選到的階段：偏好清單
+        const S = A.STAGES[stage], sr = res(stage), mine = ((mcfg.stages[stage] && mcfg.stages[stage].prefs) || []).filter((id) => rows.some((r) => r.id === id)); const shown = mine.length ? mine : sr.ids;
+        const w = A.weightsFor(mode, stage); const traitBar = (pr) => A.TRAITS.map((k) => '<span title="' + A.TRAIT_LABEL[k] + ' ' + Math.round(pr[k] * 100) + '" style="display:inline-block; width:34px; margin-right:3px; vertical-align:middle;"><span style="display:block; height:5px; background:' + border + '; border-radius:3px;"><span style="display:block; height:5px; width:' + Math.round(pr[k] * 100) + '%; background:' + accent + '; border-radius:3px; opacity:' + (w[k] ? 1 : .4) + ';"></span></span></span>').join('');
+        const rowHtml = shown.map((id, i) => { const r = rows.find((x) => x.id === id); if (!r) return ''; const pr = A.profile(r, cards[r.modelName]); return '<div style="display:flex; align-items:center; gap:6px; padding:4px 6px; border:1px solid ' + border + '; border-radius:6px; margin-bottom:4px;"><b style="min-width:18px;">' + (i + 1) + '</b><span style="flex:1; word-break:break-all;">' + esc(r.modelName) + '</span><span title="速度／上下文／工具／謹慎（粗體是這個階段在意的）">' + traitBar(pr) + '</span>' + (mine.length ? '<button type="button" class="ai-advanced-btn" data-am="up" data-id="' + esc(id) + '" ' + (i === 0 ? 'disabled' : '') + '>▲</button><button type="button" class="ai-advanced-btn" data-am="down" data-id="' + esc(id) + '" ' + (i === shown.length - 1 ? 'disabled' : '') + '>▼</button><button type="button" class="ai-advanced-btn" data-am="rm" data-id="' + esc(id) + '">✕</button>' : '') + '</div>'; }).join('');
+        const addOpts = rows.filter((r) => mine.indexOf(r.id) < 0).map((r) => '<option value="' + esc(r.id) + '">' + esc(r.modelName) + '</option>').join('');
+        const modeTabs = Object.keys(A.MODES).map((m) => '<button type="button" class="ai-advanced-btn" data-am="mode" data-m="' + m + '" style="' + (m === mode ? 'border-color:' + accent + '; font-weight:700;' : '') + (m === this.multiSubAgentMode ? '' : '') + '">' + esc(A.MODES[m].label) + (m === this.multiSubAgentMode ? '（目前使用）' : '') + '</button>').join(' ');
+        root.innerHTML = '<label class="ai-advanced-label" style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="checkbox" data-am="enable" ' + (cfg.enabled ? 'checked' : '') + '> Agent Model Configure：不同階段用不同的模型（預設關閉）</label>'
+            + '<p class="ai-advanced-hint">每個「多重子Agent模式」有自己的階段圖，每個階段可以指定偏好的模型清單（排前面的優先，後面照原本的備援順序補上）。<b>啟用／關閉只決定套不套用，已存的設定都會保留</b>；關閉時完全照模型列原本的順序。</p>'
+            + '<label style="display:flex; align-items:center; gap:6px; font-size:12px; margin:2px 0;"><input type="checkbox" data-am="builtin" ' + (cfg.useBuiltin ? 'checked' : '') + '> 沒有自訂的階段，使用內建預設（依模型名稱挑：Orchestrator 挑快的、領域子Agent 挑工具穩的、Reducer 挑最謹慎的）</label>'
+            + '<div style="margin:8px 0 4px; display:flex; flex-wrap:wrap; gap:4px;">' + modeTabs + '</div>'
+            + '<div style="font-size:12px; opacity:.85; margin-bottom:4px;">' + esc(M.desc) + '</div>'
+            + '<label style="display:flex; align-items:center; gap:6px; font-size:12px; margin:2px 0 6px;"><input type="checkbox" data-am="modeon" ' + (mcfg.enabled !== false ? 'checked' : '') + '> 這個模式套用偏好設定</label>'
+            + '<div style="overflow-x:auto; padding:4px 0;">' + svg + '</div>'
+            + '<div style="border:1px solid ' + border + '; border-radius:8px; padding:8px; margin-top:4px;"><div style="font-weight:700; margin-bottom:2px;">' + esc(S.label) + '</div><div style="font-size:12px; opacity:.85; margin-bottom:4px;">' + esc(S.desc) + '</div>'
+            + '<div style="font-size:11px; opacity:.8; margin-bottom:4px;">在意的特性：' + A.TRAITS.filter((k) => w[k]).map((k) => A.TRAIT_LABEL[k] + ' ' + Math.round(w[k] * 100) + '%').join('、') + '　｜　現在這個階段：' + ({ custom: '用你的自訂偏好', builtin: '用內建預設', none: '沒有偏好（照原本順序）', off: cfg.enabled ? '這個模式已關閉套用' : '總開關未啟用（不套用）' }[sr.source]) + '</div>'
+            + (rowHtml || '<div style="font-size:12px; opacity:.7; margin-bottom:4px;">（沒有偏好：照模型列原本的順序）</div>')
+            + '<div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin-top:4px;"><select class="ai-advanced-input" data-am="addsel" style="max-width:260px;"><option value="">＋ 加入模型…</option>' + addOpts + '</select>'
+            + (mine.length ? '' : (sr.source === 'builtin' ? '<button type="button" class="ai-advanced-btn" data-am="copybuiltin" title="把現在的內建預設複製成自己的設定，再調整">複製內建預設來改</button>' : ''))
+            + (mine.length ? '<button type="button" class="ai-advanced-btn" data-am="clear" title="清掉這個階段的自訂偏好">清除這個階段的自訂</button>' : '') + '</div></div>'
+            + '<div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:10px;"><button type="button" class="ai-advanced-btn" data-am="auto" title="用現有的模型卡、體檢結果、模型設定給每個模型打分，不呼叫模型">🪄 自動決定（用現有資料）</button><button type="button" class="ai-advanced-btn" data-am="bench" title="對還沒有基準資料的模型補跑速度與單一工具呼叫測試，再自動決定（會呼叫這些模型）">' + (this._amBenching ? '⏹ 停止測試' : '🧪 補跑基準測試再決定') + '</button><button type="button" class="ai-advanced-btn" data-am="ai" ' + (this.advancedSettings.offlineMode ? 'disabled title="離線模式不能問線上模型"' : 'title="把所有模型的資料交給目前的模型，請它挑；程式檢查後才套用"') + '>🤖 讓 AI 決定</button><button type="button" class="ai-advanced-btn" data-am="reset" style="margin-left:auto;">🔄 全部重置成預設值</button></div>'
+            + '<div data-am="status" style="font-size:12px; margin-top:6px; white-space:pre-wrap; min-height:16px;">' + esc(this._amStatus || '') + '</div>';
+        if (!root._amBound) { root._amBound = true; root.addEventListener('click', (e) => this._agentModelOnClick(e)); root.addEventListener('change', (e) => this._agentModelOnChange(e)); }
+    }
+    _amSave(note) { this._saveAdvancedSettings(); if (note !== undefined) this._amStatus = note; this._agentModelRender(); }
+    _amSet(fn) { const A = FaAgentModel; const cfg = A.normalize(this.advancedSettings.agentModels); fn(cfg, A); this.advancedSettings.agentModels = cfg; }
+    _agentModelOnChange(e) {
+        const t = e.target; const act = t && t.getAttribute && t.getAttribute('data-am'); if (!act) return; const A = FaAgentModel, mode = this._amMode, stage = this._amStage;
+        if (act === 'enable') { this._amSet((c) => { c.enabled = t.checked; }); this._amSave(t.checked ? '已啟用：各階段依偏好選模型（沒自訂的用內建預設）。' : '已關閉：照原本的模型順序；你的設定都還在。'); }
+        else if (act === 'builtin') { this._amSet((c) => { c.useBuiltin = t.checked; }); this._amSave(''); }
+        else if (act === 'modeon') { this._amSet((c, A2) => { A2.setModeEnabled(c, mode, t.checked); }); this._amSave(''); }
+        else if (act === 'addsel' && t.value) { const id = t.value; this._amSet((c, A2) => { const cur = (c.modes[mode] && c.modes[mode].stages[stage] && c.modes[mode].stages[stage].prefs) || []; A2.setPrefs(c, mode, stage, cur.concat([id])); }); this._amSave(''); }
+    }
+    async _agentModelOnClick(e) {
+        const el = e.target.closest && e.target.closest('[data-am]'); if (!el) return; const act = el.getAttribute('data-am'); if (['enable', 'builtin', 'modeon', 'addsel', 'status'].indexOf(act) >= 0) return; const A = FaAgentModel, mode = this._amMode, stage = this._amStage; const id = el.getAttribute('data-id');
+        const prefsOf = (c) => ((c.modes[mode] && c.modes[mode].stages[stage] && c.modes[mode].stages[stage].prefs) || []).slice();
+        if (act === 'stage') { this._amStage = el.getAttribute('data-st'); this._agentModelRender(); }
+        else if (act === 'mode') { this._amMode = el.getAttribute('data-m'); this._amStage = null; this._agentModelRender(); }
+        else if (act === 'up' || act === 'down') { this._amSet((c, A2) => { const l = prefsOf(c), i = l.indexOf(id), j = act === 'up' ? i - 1 : i + 1; if (i >= 0 && j >= 0 && j < l.length) { const x = l[i]; l[i] = l[j]; l[j] = x; A2.setPrefs(c, mode, stage, l); } }); this._amSave(''); }
+        else if (act === 'rm') { this._amSet((c, A2) => { A2.setPrefs(c, mode, stage, prefsOf(c).filter((x) => x !== id)); }); this._amSave(''); }
+        else if (act === 'clear') { this._amSet((c, A2) => { A2.setPrefs(c, mode, stage, []); }); this._amSave('已清掉這個階段的自訂偏好。'); }
+        else if (act === 'copybuiltin') { this._amSet((c, A2) => { A2.setPrefs(c, mode, stage, A2.builtinFor(this._getModelRows(), stage)); }); this._amSave('已把內建預設複製成自己的設定，可以再調整。'); }
+        else if (act === 'reset') { if (!window.confirm('全部重置成預設值？\n所有模式、所有階段自訂的偏好都會清掉（改回內建預設）。總開關不變。')) return; this._amSet((c, A2) => { const r = A2.reset(c); c.modes = r.modes; c.useBuiltin = r.useBuiltin; }); this._amSave('已全部重置成預設值。'); }
+        else if (act === 'auto') { this._agentModelAuto(); }
+        else if (act === 'bench') { if (this._amBenching) { this._amStop = true; this._amStatus = '正在停止…'; this._agentModelRender(); } else this._agentModelBench(); }
+        else if (act === 'ai') { this._agentModelAi(); }
+    }
+    // 自動決定（用現有資料）：不呼叫模型。只填「還沒自訂」的階段，已自訂的不覆蓋
+    _agentModelAuto(extraNote) {
+        const A = FaAgentModel, rows = this._getModelRows(), D = A.autoDecide(rows, this._getModelCards(), { top: 3 }); let n = 0, kept = 0;
+        this._amSet((c) => { Object.keys(D.assign).forEach((m) => Object.keys(D.assign[m]).forEach((st) => { if (c.modes[m] && c.modes[m].stages[st]) { kept++; return; } if (D.assign[m][st].prefs.length) { A.setPrefs(c, m, st, D.assign[m][st].prefs); n++; } })); });
+        const mode = this._amMode, why = []; (A.MODES[mode].stages || []).forEach((st) => { const x = D.assign[mode][st]; if (x && x.why.length) why.push(A.STAGES[st].label + '：' + x.why[0]); });
+        this._amSave((extraNote ? extraNote + '\n' : '') + '已依現有資料決定 ' + n + ' 個階段' + (kept ? '（' + kept + ' 個已自訂的階段沒動）' : '') + '。目前這個模式：\n' + why.join('\n') + (this._getModelRows().length < 2 ? '\n（只有一個模型可選，沒有什麼好分配的）' : '') + (Object.keys(this._getModelCards()).length ? '' : '\n（還沒有任何模型卡：速度與準確度是依名稱估計的，可以按「補跑基準測試再決定」讓它更準）'));
+    }
+    // 補跑基準測試：只對還沒有速度與單一工具資料的模型跑兩項（簡易回應速度、單一工具呼叫），結果存進模型卡，然後自動決定
+    async _agentModelBench() {
+        const rows = FaAgentModel.usable(this._getModelRows()), cards = this._getModelCards(); const seen = {}; const todo = rows.filter((r) => { if (seen[r.modelName]) return false; seen[r.modelName] = 1; const c = cards[r.modelName]; return !(c && typeof c.test1Score === 'number' && typeof c.test2Score === 'number'); });
+        if (!todo.length) { this._amStatus = '所有模型都已經有基準資料了。'; this._agentModelAuto('所有模型都已經有基準資料了。'); return; }
+        if (!window.confirm('要對 ' + todo.length + ' 個還沒有基準資料的模型各跑兩項測試（簡易回應、單一工具呼叫）嗎？\n每個模型約 1～2 分鐘，會呼叫這些模型（可能計費）。中途可以按「停止測試」。')) return;
+        this._amBenching = true; this._amStop = false; const done = [], failed = [];
+        for (let i = 0; i < todo.length && !this._amStop; i++) {
+            const row = todo[i]; this._amStatus = '測試中（' + (i + 1) + '／' + todo.length + '）：' + row.modelName; this._agentModelRender();
+            try { const cfg = this._resolveModelRowConfig(row); const useNative = await this._ensureNativeToolSupportProbed(cfg.apiKey, cfg.apiUrl, cfg.apiModel); const t1 = await this._benchmarkTest1(cfg.apiKey, cfg.apiUrl, cfg.apiModel, useNative, () => {}); const t2 = await this._benchmarkTest2(cfg.apiKey, cfg.apiUrl, cfg.apiModel, useNative, () => {});
+                const all = this._getModelCards(); all[row.modelName] = Object.assign({}, all[row.modelName] || {}, { model: row.modelName, apiUrl: cfg.apiUrl, useNative, test1Score: t1.score, test2Score: t2.score, partial: !(all[row.modelName] && all[row.modelName].overallScore != null), testedAt: new Date().toISOString() }); try { localStorage.setItem(this.MODEL_CARDS_KEY, JSON.stringify(all)); } catch (_) { /* */ } done.push(row.modelName + '（速度 ' + t1.score + '、工具 ' + t2.score + '）'); }
+            catch (err) { failed.push(row.modelName + '：' + String((err && err.message) || err).slice(0, 60)); }
+        }
+        const stopped = this._amStop; this._amBenching = false; this._amStop = false;
+        this._agentModelAuto((stopped ? '已停止。' : '測試完成。') + '測了 ' + done.length + ' 個' + (failed.length ? '、失敗 ' + failed.length + ' 個（' + failed.join('；') + '）' : '') + '：\n' + done.join('\n'));
+    }
+    // 讓 AI 決定：把所有模型的實測／估計與各階段需求交給目前的模型，只收封閉的 JSON（字母代號），程式檢查後才套用；失敗就用程式決定
+    async _agentModelAi() {
+        const A = FaAgentModel, rows = this._getModelRows(); if (A.usable(rows).length < 2) { this._amSave('只有一個模型可選，沒有什麼好分配的。'); return; }
+        this._amStatus = '請目前的模型挑選中…'; this._agentModelRender(); const P = A.aiPrompt(rows, this._getModelCards()); let out = '';
+        try { out = await this._callSimpleCompletion(P.user, { systemPrompt: P.system, maxTokens: 700, temperature: 0 }); } catch (err) { this._amSave('AI 這次沒有回應（' + String((err && err.message) || err).slice(0, 80) + '）：改用程式依現有資料決定。'); this._agentModelAuto(); return; }
+        const r = A.parseAi(out, P.map); if (!r.ok) { this._agentModelAuto('AI 的回覆讀不成可用的 JSON：改用程式依現有資料決定。'); return; }
+        let n = 0; this._amSet((c) => { Object.keys(A.MODES).forEach((m) => A.MODES[m].stages.forEach((st) => { if (c.modes[m] && c.modes[m].stages[st]) return; const ids = r.assign[st]; if (ids && ids.length) { A.setPrefs(c, m, st, ids); n++; } })); });
+        this._amSave('AI 已挑好 ' + n + ' 個階段' + (r.dropped ? '（有 ' + r.dropped + ' 個不存在的代號已略過）' : '') + '，已自訂的階段沒動。');
+    }
     // ===== 回合不夠用：擴展回合（extend_rounds）=====
     // 子任務（領域子Agent）的回合數是固定的；讀 wiki 這種長來源讀完才發現還沒做完，以前會直接用完回合、只丟一段進度回報。
     // 現在：(1) 模型知道任務大小時呼叫 extend_rounds(estimate, reason)；(2) 回合用完還在做時，程式代替它提出同一個請求。
@@ -48296,7 +48540,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     // 見_buildModelRowHtml/「移出群組」按鈕。回傳的陣列順序＝每組第一個
     // 成員在原始rows陣列裡第一次出現的順序，維持「row排列順序＝fallback
     // 優先順序」這個既有直覺不變。
-    _computeModelRowGroups() {
+    _computeModelRowGroups(stage) {
         const rows = this._getModelRows();
         const groups = [];
         const keyToGroup = new Map();
@@ -48322,7 +48566,23 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             }
             group.rows.push(row);
         }
+        // Agent Model Configure：這個階段有偏好的模型就排到最前面，其餘照原本的備援順序補在後面（偏好挑到壞掉的模型不會卡死）
+        if (stage) { const ids = this._agentStageIds(stage); if (ids.length) return FaAgentModel.orderGroups(groups, ids); }
         return groups;
+    }
+    // ===== Agent Model Configure：不同模式的不同階段用不同的模型 =====
+    // 階段：orchestrator（接話）、category_router／router（路由）、domain_agent（領域子Agent）、reducer（子Agent結果回來之後的統整）。
+    // 總開關預設關：關著時完全照原本的模型列順序；開著才依 advancedSettings.agentModels 解析（自訂 > 內建預設 > 不套用）。
+    _agentStageIds(stage) { try { return FaAgentModel.resolve(this.advancedSettings && this.advancedSettings.agentModels, this.multiSubAgentMode, stage, this._getModelRows()).ids; } catch (_) { return []; } }
+    _agentStageApi(stage) { const ids = this._agentStageIds(stage); const rows = this._getModelRows(); const row = ids.length ? rows.find((r) => r.id === ids[0]) : null; if (!row) return this._getApiConfig(); const c = this._resolveModelRowConfig(row); return { apiKey: c.apiKey, apiUrl: c.apiUrl, apiModel: c.apiModel }; }
+    // 根對話：這一輪呼叫了委派工具、子Agent的結果回來了 → 下一輪（把結果統整成回覆）改用 reducer 階段偏好的模型
+    _agentReducerNext(names, cur) {
+        try {
+            if (!(names || []).some((n) => n === 'delegate_to_subagent' || n === 'delegate_subtask' || n === 'batch_analyze_stocks')) return cur; const ids = this._agentStageIds('reducer'); if (!ids.length) return cur;
+            const row = this._getModelRows().find((r) => r.id === ids[0]); if (!row) return cur; const c = this._resolveModelRowConfig(row); if (c.apiModel === cur.apiModel && c.apiUrl === cur.apiUrl) return cur;
+            this._log('🧩 子Agent結果回來了，統整階段改用「' + c.apiModel + '」（Agent Model Configure）'); try { this._updateHeaderModelName(c.apiModel, true); } catch (_) { /* */ }
+            return { apiKey: c.apiKey, apiUrl: c.apiUrl, apiModel: c.apiModel, genOverrides: { temperature: c.temperature, samplingOverrides: c.samplingOverrides, maxOutputTokens: c.maxOutputTokens } };
+        } catch (_) { return cur; }
     }
 
     // tw_stock_db客製: 2026-09-17——同一組底下round-robin選一筆row，用
@@ -48345,7 +48605,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     // GroupAttempts），供_nextAutoFallbackModel()接續判斷要不要換下一筆/
     // 下一組。
     _getInitialFallbackConfig() {
-        const groups = this._computeModelRowGroups();
+        const groups = this._computeModelRowGroups('orchestrator');
         this._autoFallbackGroups = groups;
         this._autoFallbackGroupIndex = 0;
         this._autoFallbackGroupAttempts = 1;
@@ -51344,6 +51604,7 @@ ${sourceTool.handlerScript}
         if (!win || !header || !chatBody || !inputWrap || !inputText || !status) return;
 
         const palette = this._getThemePalette();
+        try { if (typeof this._rgThemeRefresh === 'function') this._rgThemeRefresh(); } catch (_) { /* 遠端群組面板重上色失敗不影響其他 */ }
         win.style.background = palette.windowBg;
         win.style.borderColor = palette.windowBorder;
         header.style.background = palette.headerBg;
@@ -52845,6 +53106,7 @@ ${sourceTool.handlerScript}
         if (terminalResourceCountLimitInput) terminalResourceCountLimitInput.value = term.resourceCountLimit;
         const multiSubAgentModeSelect = document.getElementById('ai-multi-subagent-mode');
         if (multiSubAgentModeSelect) multiSubAgentModeSelect.value = this.multiSubAgentMode;
+        try { this._amMode = null; this._agentModelRender(); } catch (e) { console.warn('Agent Model Configure 畫面失敗', e); }
         const voiceInputEnabledChk = document.getElementById('ai-voice-input-enabled-chk');
         if (voiceInputEnabledChk) voiceInputEnabledChk.checked = this.advancedSettings.voiceInputEnabled === true;
         const voiceInputLangSelect = document.getElementById('ai-voice-input-lang');
@@ -73355,7 +73617,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 // 工具」（toolTasks.length>0）就遞迴，不論成功或失敗都要讓AI
                 // 看到結果繼續下去。
                 if (toolTasks.length > 0) {
-                    return await this._loopFetch(apiKey, apiUrl, apiModel, 1, genOverrides);
+                    const nx = this._agentReducerNext(toolTasks.map((t) => t.fnName), { apiKey, apiUrl, apiModel, genOverrides });
+                    return await this._loopFetch(nx.apiKey, nx.apiUrl, nx.apiModel, 1, nx.genOverrides);
                 }
             } else {
                 // 完全沒有[CALL:的純文字回答，contentForMessage就是fullContent本身，
@@ -73719,7 +73982,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 this._renderMessageHistory();
             }
 
-            return await this._loopFetchNative(apiKey, apiUrl, apiModel, 1, genOverrides);
+            { const nx = this._agentReducerNext(toolCalls.map((t) => t.function && t.function.name), { apiKey, apiUrl, apiModel, genOverrides }); return await this._loopFetchNative(nx.apiKey, nx.apiUrl, nx.apiModel, 1, nx.genOverrides); }
 
         } catch (err) {
             if (err.name === 'AbortError' || this.stopRequested) return "";
@@ -74223,8 +74486,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     // 每個選中類別平行1次）都共用，避免貼三份幾乎一樣的fetch邏輯。回傳
     // {ok:true, parsed:{...}}或{ok:false, error}，parsed是repairJsonPayload
     // 解析出來的物件，呼叫端自己決定要讀哪些欄位（domains/categories）。
-    async _callRouterLLM(routerSystemPrompt, userText) {
-        const { apiKey, apiUrl, apiModel } = this._getApiConfig();
+    async _callRouterLLM(routerSystemPrompt, userText, stage) {
+        const { apiKey, apiUrl, apiModel } = this._agentStageApi(stage || 'router');
         // tw_stock_db客製: 2026-09-15使用者用/benchmark-model實測回報——這個
         // 路由呼叫完全沒有重試，端點暫時性錯誤（500/502/503這類過載/抖動，或
         // 429 rate limit）一撞到就直接整個委派失敗，回報「路由子任務API錯誤
@@ -74505,7 +74768,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             '嚴格只回傳這個格式的JSON，不要有任何其他文字說明、不要用markdown程式碼區塊包住：{"categories": ["類別代號1"], "domains": ["獨立領域代號1"]}',
         ].filter(Boolean).join('\n');
 
-        const step1 = await this._callRouterLLM(step1Prompt, task);
+        const step1 = await this._callRouterLLM(step1Prompt, task, 'category_router');
         if (!step1.ok) return step1;
         const chosenCategories = (Array.isArray(step1.parsed.categories) ? step1.parsed.categories.map(String) : [])
             .filter(k => categoryKeys.includes(k));
@@ -74759,7 +75022,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         // 排列順序本身就是fallback優先順序，不再需要「MODEL NAME是否留空」
         // 這個判斷（改動前用modelFieldBlank決定要不要fallback），只要清單
         // 還有下一筆就會往下試，見下面錯誤處理段落。
-        const groups = this._computeModelRowGroups();
+        const groups = this._computeModelRowGroups('domain_agent');
         let groupIndex = 0;
         let groupAttempts = 1;
         let rowConfig = this._resolveModelRowConfig(this._pickRowFromGroup(groups[groupIndex]));
@@ -75923,6 +76186,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                         五種模式可以隨時切換，立即生效，不用重新整理頁面。
                                     </p>
                                 </div>
+                                <div class="ai-advanced-stack" id="ai-agent-model-config"></div>
                                 <div class="ai-advanced-stack">
                                     <div style="display:flex; align-items:center; gap:6px;">
                                         <input type="checkbox" id="ai-browser-search-enabled-chk" style="cursor:pointer;">
@@ -79212,7 +79476,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (multiSubAgentModeSelect) {
             multiSubAgentModeSelect.addEventListener('change', () => {
                 if (['router', 'full', 'off', 'hierarchical', 'intent'].includes(multiSubAgentModeSelect.value)) {
-                    this.advancedSettings.multiSubAgentMode = multiSubAgentModeSelect.value;
+                    this.advancedSettings.multiSubAgentMode = multiSubAgentModeSelect.value; this._amMode = multiSubAgentModeSelect.value; try { this._agentModelRender(); } catch (_) { /* */ }
                 }
                 this._saveAdvancedSettings();
             });

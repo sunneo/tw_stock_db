@@ -233,12 +233,22 @@ const FaRemoteHost = (function () {
             if (!this._rgVisBound) { this._rgVisBound = true; const wake = () => { const rg = this._rg; if (!rg) return; if (rg.room.status !== 'SUBSCRIBED') this._rgScheduleReconnect(rg); this._rgSyncPending(true); }; document.addEventListener('visibilitychange', () => { if (!document.hidden) wake(); }); window.addEventListener('online', wake); }
             this._rgRender(); this._rgKeepAlive(); this._rgAutoRejoin();
         },
+        // 換主題：面板裡的按鈕、輸入框、複製鈕都是用「建立當下」的顏色寫死的，不重建就會停在舊主題的顏色（面板收著時 _rgRender 也不會重建）。
+        // 顏色組合變了才重建目前的畫面，表單裡填到一半的欄位（名稱、密碼、房間代號、勾選）先存起來再填回去；「交給」下拉也一起重上色。
+        _rgThemeRefresh() {
+            const p = document.getElementById('ai-rg-panel'); if (!p) return; const pal = this._getThemePalette(); const sig = [pal.windowBg, pal.chatText, pal.inputBg, pal.inputText, pal.inputBorder, this._isLightTheme() ? 'L' : 'D'].join('|');
+            if (this._rgThemeSig === sig) return; const first = this._rgThemeSig == null; this._rgThemeSig = sig; if (first && !p.dataset.built) { this._rgSyncTargetSelect(); return; }
+            const keep = {}; p.querySelectorAll('[data-rg]').forEach((el) => { const k = el.getAttribute('data-rg'); if (el.type === 'checkbox') keep[k] = el.checked; else if ('value' in el && el.tagName !== 'BUTTON') keep[k] = el.value; });
+            p.dataset.view = ''; p.dataset.built = ''; this._rgRender();
+            p.querySelectorAll('[data-rg]').forEach((el) => { const k = el.getAttribute('data-rg'); if (!(k in keep)) return; if (el.type === 'checkbox') el.checked = !!keep[k]; else if ('value' in el && el.tagName !== 'BUTTON') el.value = keep[k]; });
+            this._rgSyncTargetSelect();
+        },
         // 「交給」選單：已加入群組才出現；選項是其他在線機器
         _rgSyncTargetSelect() {
             const sel = document.getElementById('ai-rg-target'); if (!sel) return;
             const rg = this._rg; if (!rg) { sel.style.display = 'none'; sel.innerHTML = ''; const inp0 = document.getElementById('ai-input-text'); if (inp0 && this._rgPh != null) inp0.placeholder = this._rgPh; try { this._renderChatList(); } catch (_) { /* */ } return; }
             const pal = this._getThemePalette(), cur = this._rgTarget || '';
-            sel.style.background = pal.inputBg; sel.style.color = pal.inputText; sel.style.border = '1px solid ' + pal.inputBorder;
+            sel.style.background = pal.inputBg; sel.style.color = pal.inputText; sel.style.border = '1px solid ' + pal.inputBorder; sel.style.colorScheme = this._isLightTheme() ? 'light' : 'dark';
             const opts = ['<option value="">交給：本機</option>'].concat(this._rgTargets().map((m) => '<option value="' + this._escapeHtml(m.nodeId) + '"' + (m.allow === false ? ' disabled' : '') + '>交給：' + this._escapeHtml(m.name) + (m.kind === 'desktop' ? '（桌面）' : '（網頁）') + (m.busy ? ' 忙碌' : '') + (m.allow === false ? ' 不接受' : '') + '</option>'));
             sel.innerHTML = opts.join(''); sel.value = this._rgTargets().some((m) => m.nodeId === cur) ? cur : ''; if (sel.value !== cur) this._rgTarget = sel.value;
             sel.style.display = '';
@@ -437,7 +447,7 @@ const FaRemoteHost = (function () {
         _rgRender() {
             const btn = document.getElementById('ai-rg-btn'), p = document.getElementById('ai-rg-panel'); if (!btn || !p) return;
             btn.textContent = this._rgBtnLabel(); btn.title = this._rg ? '遠端群組 ' + this._rg.code + '（' + this._rg.room.members().length + ' 台在線）：點開看機器、動態與設定' : '遠端群組：加入或建立群組，把工作交給群組裡的其他電腦'; btn.style.background = this._rg ? 'rgba(118,185,0,.25)' : 'transparent';
-            const pal = this._getThemePalette(); p.style.background = pal.windowBg; p.style.color = pal.chatText; p.style.borderLeft = '1px solid ' + pal.windowBorder;
+            const pal = this._getThemePalette(); p.style.background = pal.windowBg; p.style.color = pal.chatText; p.style.borderLeft = '1px solid ' + pal.windowBorder; p.style.colorScheme = this._isLightTheme() ? 'light' : 'dark'; // 下拉選單、輸入框、捲軸的原生外觀也跟著主題
             if (!this._rgOpen && p.dataset.built) { /* 面板收著時只更新按鈕 */ return; }
             if (this._rgView === 'joined' && this._rg) { if (p.dataset.view !== 'joined') this._rgBuildJoined(p, pal); else { this._rgRenderMembers(); this._rgRenderLog(); this._rgRenderActs(); } }
             else if (this._rgView === 'busy') { /* 忙碌畫面由 _rgBusy 設定 */ }
