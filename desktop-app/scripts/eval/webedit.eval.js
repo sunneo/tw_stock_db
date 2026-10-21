@@ -68,9 +68,12 @@ const tiny = FaWebEdit.starter('blank'); fa._weSpecs.clear(); for (const r of aw
 const hold2 = document.createElement('div'); hold2.innerHTML = '<pre><code class="language-fa-webedit">' + JSON.stringify({ id: 'we_remote1', spec: tiny }) + '</code></pre>'; document.body.appendChild(hold2); fa._mountWebEditors(hold2); const ed3 = await until(() => hold2.querySelector('.fwe')); R.remote_open = { mounted: !!ed3, title: ed3 && ed3._we.getState().states[0].spec.title }; if (ed3) ed3._we.destroy(); hold2.remove();
 // 11) 聊天室（WebSocket）：頁面真的連上、後端廣播
 const o2 = await fa._webeditOpen({ starter: 'chat' }); fa._renderMessageHistory(); const edc = await until(() => lastEditor()); const idc = o2.id;
-await until(() => { const r = fa._weRuns.get(idc); return r && r.hub && r.hub.calls.some((c) => c.kind === 'ws' && c.ev === 'open'); }, 20000);
-const hc = fa._weRuns.get(idc).hub; R.chat_ws = { pageOpened: hc.calls.some((c) => c.kind === 'ws' && c.ev === 'open' && c.path === '/chat'), wsRoutes: hc.wsRoutes };
-const got = []; let conn = hc.wsOpen({ onOpen() { }, onMessage: (d) => got.push(String(d)), onClose() { }, onReject() { } }, 'ws://mock.local/chat'); await wait(400); hc.wsSend(conn, 'hello'); await wait(600); R.ws_broadcast = got;
+// 聊天室（輪詢）：頁面用 fetch 輪詢、訊息存在後端的持久資料（假伺服器，記憶體／持久儲存傳遞，沒有 WebSocket）
+await until(() => { const r = fa._weRuns.get(idc); return r && r.hub && r.hub.calls.some((c) => c.kind === 'http' && /\/api\/messages/.test(c.path)); }, 20000);
+const hc = fa._weRuns.get(idc).hub; const jb = (r) => JSON.parse(new TextDecoder().decode(r.body));
+R.chat_poll = { page_polled: hc.calls.some((c) => c.kind === 'http' && c.method === 'GET' && /\/api\/messages/.test(c.path)), no_ws_routes: (hc.wsRoutes || []).length === 0, no_ws_calls: !hc.calls.some((c) => c.kind === 'ws') };
+const mk = await hc.http({ method: 'POST', url: 'http://mock.local/api/messages', headers: [['content-type', 'application/json']], body: new TextEncoder().encode(JSON.stringify({ name: 'Amy', text: 'hello', at: 1 })) });
+const lst = await hc.http({ method: 'GET', url: 'http://mock.local/api/messages' }); R.chat_store = { created: mk.status, listed: jb(lst).length >= 1, text: jb(lst)[0] && jb(lst)[0].text };
 // 12) Python 後端（Pyodide）：測試請求、頁面路由讀取；WebSocket 要說明不支援
 const cnt0 = document.querySelectorAll('.fwe').length; const o3 = await fa._webeditOpen({ starter: 'python_api' }); fa._renderMessageHistory(); const edp = await until(() => document.querySelectorAll('.fwe').length > cnt0 && lastEditor()); const idp = o3.id; const hp = fa._webeditHost(idp);
 await until(() => { const r = fa._weRuns.get(idp); return r && r.hub; }, 180000); R.py_started = !!(fa._weRuns.get(idp) && fa._weRuns.get(idp).hub);

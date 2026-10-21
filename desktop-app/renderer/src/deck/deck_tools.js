@@ -464,6 +464,7 @@ const FaDeckTools = (function () {
         async _deckRender(a) {
             const yamlText = String(a.yaml || '');
             if (!yamlText.trim()) return { error: 'yaml is required' };
+            { const yk = FaYamlKind.check(yamlText, 'deck'); if (!yk.ok) return { error: yk.message }; }
             await this._ensureJsYamlLoaded();
             const parsed = this._deckParseYaml(yamlText); if (parsed.error) return { error: parsed.error };
             const data = parsed.data;

@@ -19,8 +19,8 @@ check('buildHtml: an external stylesheet or script is left alone; "</script" ins
 
 // ---------- 起手式 ----------
 check('starters: blank, todo, chat, form, python_api; each validates cleanly and has what it promises', E.listStarters().map((s) => s.id).join() === 'blank,todo,chat,form,python_api' && E.listStarters().every((s) => { const sp = E.starter(s.id); return sp && E.validate(sp).problems.length === 0; }) && E.starter('nope') === null);
-check('starters: todo/form/chat use the mock-server style, python_api uses Flask; the page uses relative paths only', E.starter('todo').backend.code.indexOf('app.crud') >= 0 && E.starter('chat').backend.code.indexOf('app.ws') >= 0 && E.starter('form').backend.code.indexOf('env.db') >= 0 && E.starter('python_api').backend.lang === 'python' && E.starter('todo').files.every((f) => !/https?:\/\//.test(f.content.replace(/xmlns="[^"]*"/, ''))));
-check('routesOf: reads routes from JS and Python backends', E.routesOf(E.starter('todo').backend.code, 'js').join() === 'CRUD /api/todos,GET /api/ping' && E.routesOf(E.starter('chat').backend.code, 'js').join() === 'WS /chat' && E.routesOf(E.starter('python_api').backend.code, 'python').join() === 'GET /api/hello' && E.routesOf('@app.route("/x", methods=["POST","GET"])\ndef x(): pass', 'python').join() === 'POST,GET /x');
+check('starters: todo/form/chat use the mock-server style, python_api uses Flask; the page uses relative paths only', E.starter('todo').backend.code.indexOf('app.crud') >= 0 && E.starter('chat').backend.code.indexOf('app.crud') >= 0 && !/app\.ws|WebSocket/.test(E.starter('chat').backend.code + E.starter('chat').files.map((f) => f.content).join('')) && /fetch/.test(E.starter('chat').files[0].content) && E.starter('form').backend.code.indexOf('env.db') >= 0 && E.starter('python_api').backend.lang === 'python' && E.starter('todo').files.every((f) => !/https?:\/\//.test(f.content.replace(/xmlns="[^"]*"/, ''))));
+check('routesOf: reads routes from JS and Python backends', E.routesOf(E.starter('todo').backend.code, 'js').join() === 'CRUD /api/todos,GET /api/ping' && E.routesOf(E.starter('chat').backend.code, 'js').join() === 'CRUD /api/messages' && E.routesOf(E.starter('python_api').backend.code, 'python').join() === 'GET /api/hello' && E.routesOf('@app.route("/x", methods=["POST","GET"])\ndef x(): pass', 'python').join() === 'POST,GET /x');
 
 // ---------- 編輯動作 ----------
 const base = E.starter('blank');
@@ -49,7 +49,7 @@ check('parseEditsReply: only closed ops survive; garbage is not ok', R.ok && R.e
 // ---------- 後端任務（交給程式設計領域）----------
 const T = E.backendTask(todo, '加一個 /api/search?q= 的搜尋端點');
 check('backendTask: self-contained (request, current backend, the page that calls it, the dialect, how to test, the answer format)', /搜尋端點/.test(T) && /app\.crud/.test(T) && /index\.html/.test(T) && /sandbox_mock/.test(T) && /完整的新後端程式/.test(T) && /router\(\)/.test(T));
-check('backendTask: python backends get the Flask/Pyodide dialect', /Flask/.test(E.backendTask(E.starter('python_api'), '加一個端點')) && /不支援 WebSocket/.test(E.backendTask(E.starter('python_api'), 'x')));
+check('backendTask: python backends get the Flask/Pyodide dialect', /Flask/.test(E.backendTask(E.starter('python_api'), '加一個端點')) && /不要用 WebSocket/.test(E.backendTask(E.starter('python_api'), 'x')));
 check('extractCode: takes the last code block of the right language; none -> null', E.extractCode('說明\n```js\nconst a=1\n```\n好了\n```js\nconst app = router();\n```\n結束', 'js') === 'const app = router();\n' && E.extractCode('沒有程式碼', 'js') === null && E.extractCode('```python\napp = 1\n```', 'python') === 'app = 1\n' && E.extractCode('```python\napp = 1\n```', 'js') === null);
 // ---------- 摘要 prompt ----------
 const SP = E.specToPrompt(E.applyEdits(todo, [{ op: 'set_title', text: '我的待辦' }]).spec, [{ kind: 'start', summary: '開始' }, { kind: 'chat', text: '改標題', summary: '標題改成「我的待辦」' }]);

@@ -17,11 +17,12 @@
 
 ## 執行
 
-- JS 後端：沿用 `sandbox_mock` 的 hub（`http`、`wsOpen`、`wsSend`、`attach`、`db.*`），所以 WebSocket、SSE、持久資料都真的能用，頁面裡的 `fetch`／`WebSocket` 由 `__faMockShim` 導進同一個 hub。
-- Python 後端：`_sandboxPyAppRun`（Pyodide）；Flask 等框架第一次由 `pyPackages` 偵測 import 後安裝。session 的壽命是整個編輯期間（編輯器開著就在，關掉編輯器才丟）：app 只載入一次，記憶體裡的變數在請求之間保留；程式碼改了只重新執行程式（變數會歸零，但已裝的套件不會重裝）。沒有 WebSocket。
+- **傳遞方式（2026-10-21 使用者更正）**：後端是一個「假的伺服器」，傳遞方式跟 AIDoc 的假 server 一樣，**不是 WebSocket 模擬**：頁面的請求（`fetch`／`XMLHttpRequest`）由 `__faMockShim` 用訊息（postMessage）傳給 app，app 在記憶體裡執行後端程式（`sandbox_mock` 的 hub：`http`、`attach`、`db.*`），把結果用訊息傳回頁面；資料放在記憶體或持久儲存（`env.db` 寫進沙盒檔案系統，重新整理不會消失）。不開任何埠、不需要 WebSocket。要即時更新的需求（例如聊天室）就讓頁面定時 `fetch`（輪詢），內建的「聊天室」起手式就是這樣做的。（底層的訊息通道還認得 `WebSocket`／`EventSource` 的呼叫，只是為了相容，不是設計重點，也不會寫進 AI 的提示詞。）
+- JS 後端：`sandbox_mock` 的 hub 加上上面的訊息傳遞。
+- Python 後端：`_sandboxPyAppRun`（Pyodide），傳遞方式同上（請求用訊息傳進 Pyodide、結果傳回來）；Flask 等框架第一次由 `pyPackages` 偵測 import 後安裝。session 的壽命是整個編輯期間（編輯器開著就在，關掉編輯器才丟）：app 只載入一次，記憶體裡的變數在請求之間保留；程式碼改了只重新執行程式（變數會歸零，但已裝的套件不會重裝）。
 - 「🔄 重整後端」按鈕（提示文字「這會讓套件重裝」）：丟掉 session、重新載入程式並重新安裝套件（`reset`），是唯一會重裝套件的操作。
 - 套用新後端程式碼前，先用暫時名稱載入檢查；失敗就保留舊的後端繼續跑，並把原因說出來。
-- 匯出：這裡的伺服器只是讓人體驗架設的感覺，要上線就匯出。每次匯出都帶 `README.md`（部署教學：本機跑、Render／Railway／Fly.io、自己的主機、注意事項）與 `PROMPT.md`（重建專案用的 prompt 加部署教學）。JS 後端匯出 Node（含 `public/` 頁面）或 Cloudflare；Python 後端匯出 `app.py`、`main.py`（把 `public/` 的頁面一起服務）、`requirements.txt`、`Procfile`、`Dockerfile`。PHP 不能執行也不能匯出。
+- 匯出：這裡的伺服器只是讓人體驗架設的感覺，要上線就匯出。每次匯出都帶 `README.md`（部署教學：本機跑、Render／Railway／Fly.io、自己的主機、注意事項）與 `PROMPT.md`（重建專案用的 prompt 加部署教學）。JS 後端匯出 Node（含 `public/` 頁面）或 Cloudflare（匯出後是真的伺服器，用 HTTP 就能跑，輪詢的頁面不用改）；Python 後端匯出 `app.py`、`main.py`（把 `public/` 的頁面一起服務）、`requirements.txt`、`Procfile`、`Dockerfile`。PHP 不能執行也不能匯出。
 
 ## AI 修改
 
@@ -36,9 +37,9 @@
 ## 限制
 
 - PHP 不能執行。
-- Python 後端沒有 WebSocket；第一次需要網路安裝套件。
+- Python 後端第一次需要網路安裝套件。
 - 學習單編輯器不需要後端，維持純學習單設計，不併進這個外殼。
 
 ## 驗證
 
-`scripts/webedit-tests/webedit_core.test.js`（28 項）與 `scripts/eval/webedit.eval.js`（真實 Electron：開啟、頁面 fetch、WebSocket 廣播、資料庫、匯出、AI 分流、載入檢查、持久化、跨機器開啟、Python 請求／404／WebSocket 拒絕／匯出拒絕）。
+`scripts/webedit-tests/webedit_core.test.js`（28 項）與 `scripts/eval/webedit.eval.js`（真實 Electron：開啟、頁面 fetch、聊天室輪詢（訊息存進持久資料）、資料庫、匯出、AI 分流、載入檢查、持久化、跨機器開啟、Python 請求／404／匯出）。

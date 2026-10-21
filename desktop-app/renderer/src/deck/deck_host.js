@@ -297,6 +297,7 @@ const FaDeckHost = (function () {
         // ---- 簡報檔：存成 fileCache 裡的 .deck.yaml，網址是 client-file/<id>.deck.yaml（播放器用副檔名認簡報） ----
         async _deckSaveYaml(yamlText, title) {
             const name = String(title || 'presentation').replace(/[\\/:*?"<>|]+/g, '_').slice(0, 60) + '.deck.yaml';
+            yamlText = FaYamlKind.stamp(String(yamlText), 'deck').text; // 開頭一行 #!fa:deck（合法的 YAML 註解），看檔案就知道是簡報
             const id = await this.fileCache.put(name, 'text/yaml', new Blob([yamlText], { type: 'text/yaml' }), 'generated');
             return { id, name, url: CLIENT_PREFIX + id + '.deck.yaml' };
         },
