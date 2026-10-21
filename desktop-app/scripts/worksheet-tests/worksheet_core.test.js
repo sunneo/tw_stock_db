@@ -125,6 +125,18 @@ check('draw layout: shapes are placed inside the block (percent of its width/hei
 check('draw: svg, html and pdf outputs all contain the drawing', W.toSvg(DL).split('<circle').length - 1 === 3 && W.toPdfmake(DL).content[0].canvas.filter((c) => c.type === 'ellipse').length === 3);
 check('draw: edits and descriptions know it; the topic text exists', W.describe(DR.spec).join('').includes('自由繪圖') && !!W.TOPICS.draw && /百分比/.test(W.TOPICS.draw) && W.applyEdits(DR.spec, [{ op: 'set_block', index: 0, patch: { height: 40 } }]).spec.blocks[0].height === 40);
 
+// ---------- 編輯對話：畫圖形、放繪圖區域（程式先讀，不必問模型）----------
+const EMPTY = W.validate({ title: 't', blocks: [] }).spec;
+const shapeOf = (txt) => { const pe = W.parseEditRequest(txt, EMPTY), r = W.applyEdits(EMPTY, pe.edits); return { n: pe.edits.length, un: pe.unmatched.length, rej: r.rejected.length, blocks: r.spec.blocks.map((b) => b.type + ':' + (b.items && b.items[0].shape)).join() }; };
+check('shape requests are read by the program: triangle, circle, line, star, drawing area (no model, nothing rejected)', ['在上面畫上三角形', '加一個紅色圓形', '畫一條線', '在下面畫一個星星', '自己放一個繪圖區域'].every((x) => { const r = shapeOf(x); return r.n === 1 && r.un === 0 && r.rej === 0 && /^draw:/.test(r.blocks); }), ['在上面畫上三角形', '自己放一個繪圖區域'].map(shapeOf));
+check('"上面" puts the new block first, otherwise last', (() => { const base = W.validate({ blocks: [{ type: 'text', lines: ['x'] }] }).spec; const top = W.applyEdits(base, W.parseEditRequest('在上面畫上三角形', base).edits).spec.blocks, end = W.applyEdits(base, W.parseEditRequest('畫一個圓', base).edits).spec.blocks; return top[0].type === 'draw' && end[1].type === 'draw'; })());
+check('the colour in the sentence is used (紅色圓形 is filled red)', W.applyEdits(EMPTY, W.parseEditRequest('加一個紅色圓形', EMPTY).edits).spec.blocks[0].items[0].fill === '#C8174F');
+check('"先清空學習單" removes every block (the title stays); on an empty sheet it is understood and does nothing', (() => { const base = W.validate({ title: 'T', blocks: [{ type: 'text', lines: ['a'] }, { type: 'spacer' }] }).spec; const pe = W.parseEditRequest('先清空學習單', base); const r = W.applyEdits(base, pe.edits); const e2 = W.parseEditRequest('清空', EMPTY); return pe.edits.length === 2 && r.spec.blocks.length === 0 && r.spec.title === 'T' && e2.unmatched.length === 0; })());
+check('"加一個數線" is still a number line, not a line shape', W.parseEditRequest('加一個數線', EMPTY).edits[0].block.type === 'number_line');
+check('a draw triangle (x,y,w,h) becomes a 3-point polygon', (() => { const it = W.validate({ blocks: [{ type: 'draw', items: [{ shape: 'triangle', x: 10, y: 10, w: 30, h: 30 }] }] }).spec.blocks[0].items[0]; return it.shape === 'poly' && it.pts.length === 3; })());
+check('a rejected add_block says why (no type / unknown type) so the model and the user can fix it', (() => { const r = W.applyEdits(EMPTY, [{ op: 'add_block', block: { type: 'triangle' } }, { op: 'add_block', block: {} }]); return r.rejected.length === 2 && r.rejected.every((x) => /不認得|type/.test(x.error) && /draw/.test(x.error)); })());
+check('the model prompt carries the draw format and real line breaks', (() => { const P = W.editPrompt(EMPTY, '畫一個三角形'); return /draw 區塊/.test(P.system) && /triangle/.test(P.system) && P.system.indexOf(String.fromCharCode(92) + 'n') < 0; })());
+
 // ---------- 封閉題：弱模型只選字母，選不出來就用預設 ----------
 (async () => {
   const asked = []; const a = await W.resolveQuestions(W.parseRequest('串珠 10又1'), async (q, opts) => { asked.push({ q, opts }); return 2; });

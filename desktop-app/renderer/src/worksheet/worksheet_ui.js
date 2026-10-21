@@ -136,8 +136,7 @@
     // ───── AI 對話（可附圖）─────
     var logEl = h('div', 'log'), sugEl = h('div', 'sug'), attEl = h('div', 'att'), inRow = h('div', 'row'), ta = h('textarea'), bAtt = h('button', null, '📎'), bSend = h('button', 'pri', '送出'), file = h('input'); file.type = 'file'; file.accept = 'image/*'; file.multiple = true; file.style.display = 'none';
     ta.rows = 2; ta.placeholder = '說說想怎麼改，例如「把第3串改成粉紅色」「附上答案」；也可以附一張圖片叫我照它的顏色與串數'; bAtt.title = '附圖（也可以直接貼上、拖進來）'; inRow.appendChild(bAtt); inRow.appendChild(bSend);
-    SUGGEST.forEach(function (q) { var b = h('button', null, q); b.onclick = function () { ta.value = q; send(); }; sugEl.appendChild(b); });
-    panes.ai.appendChild(logEl); panes.ai.appendChild(sugEl); panes.ai.appendChild(attEl); panes.ai.appendChild(ta); panes.ai.appendChild(inRow); panes.ai.appendChild(file);
+    panes.ai.appendChild(logEl); panes.ai.appendChild(attEl); panes.ai.appendChild(ta); panes.ai.appendChild(inRow); panes.ai.appendChild(file);
     function addMsg(role, text, chips, rejected) {
       var m = h('div', 'msg ' + (role === 'user' ? 'u' : 'a')); m.appendChild(document.createTextNode(text || '')); (chips || []).forEach(function (c) { m.appendChild(h('span', 'chip', c)); }); (rejected || []).forEach(function (c) { m.appendChild(h('span', 'chip rej', c)); }); logEl.appendChild(m); logEl.scrollTop = logEl.scrollHeight; return m;
     }
@@ -166,6 +165,7 @@
         var r = W.applyEdits(next, edits); if (r.applied.length) { next = r.spec; edits.forEach(function (e) { if (r.applied.indexOf(e.op) >= 0) words.push(W.editWords(e)); }); }
         (r.rejected || []).forEach(function (x) { rej.push('✗ ' + x.op + '：' + x.error); });
         if (JSON.stringify(next) !== JSON.stringify(spec0)) { commit(next, words.filter(Boolean).join('；'), text || '（附圖）', imgs.length ? 'image' : 'chat'); applied = words.length; words.filter(Boolean).forEach(function (w) { chips.push('✓ ' + w); }); }
+        if (!applied && rej.length) say = '這次沒有改成：';
         if (!say) say = applied ? '改好了：' : (rej.length ? '有幾個動作沒辦法做：' : (pr.unmatched.length ? '' : '這樣已經是目前的樣子了。'));
       } catch (e) { say = '這次沒成功：' + String((e && e.message) || e).slice(0, 160); }
       think.remove(); var am = { role: 'ai', text: say, chips: chips.slice(0, 12), rejected: rej.slice(0, 6) }; S.log.push(am); addMsg('ai', am.text, am.chips, am.rejected); persist(); busy = false; bSend.disabled = false;

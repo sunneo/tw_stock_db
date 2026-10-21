@@ -92,6 +92,7 @@
         if (sh === 'rect') return { shape: 'rect', x: n1(it.x, 0), y: n1(it.y, 0), w: clamp(it.w == null ? 10 : it.w, 0.2, 140), h: clamp(it.h == null ? 10 : it.h, 0.2, 140), fill: it.fill === 'none' ? 'none' : (col || '#FFFFFF'), stroke: it.stroke === 'none' ? 'none' : (st || '#222222'), sw: clamp(it.sw == null ? 0.4 : it.sw, 0.05, 3), rx: clamp(it.rx == null ? 0 : it.rx, 0, 30) };
         if (sh === 'line') return { shape: 'line', x1: n1(it.x1, 0), y1: n1(it.y1, 0), x2: n1(it.x2, 100), y2: n1(it.y2, 0), stroke: st || '#222222', sw: clamp(it.sw == null ? 0.4 : it.sw, 0.05, 3), dash: it.dash === true };
         if (sh === 'poly') { var pts = (Array.isArray(it.pts) ? it.pts : []).slice(0, 40).map(function (q) { return Array.isArray(q) ? [n1(q[0], 0), n1(q[1], 0)] : null; }).filter(Boolean); return pts.length >= 3 ? { shape: 'poly', pts: pts, fill: it.fill === 'none' ? 'none' : (col || '#FFFFFF'), stroke: it.stroke === 'none' ? 'none' : (st || '#222222'), sw: clamp(it.sw == null ? 0.4 : it.sw, 0.05, 3) } : null; }
+        if (sh === 'triangle') { var tx = n1(it.x, 40), ty = n1(it.y, 30), tw = clamp(it.w == null ? 20 : it.w, 0.5, 140), th = clamp(it.h == null ? 20 : it.h, 0.5, 140); return { shape: 'poly', pts: [[tx + tw / 2, ty], [tx + tw, ty + th], [tx, ty + th]], fill: it.fill === 'none' ? 'none' : (col || '#FFFFFF'), stroke: it.stroke === 'none' ? 'none' : (st || '#222222'), sw: clamp(it.sw == null ? 0.6 : it.sw, 0.05, 3) }; }
         if (sh === 'text') return { shape: 'text', x: n1(it.x, 50), y: n1(it.y, 50), text: str(it.text, 80), size: clamp(it.size == null ? 4 : it.size, 1, 30), anchor: it.anchor === 'start' || it.anchor === 'end' ? it.anchor : 'middle', color: hex(it.color, '#222222'), bold: it.bold === true };
         return null; }).filter(Boolean);
       if (!items2.length) { problems.push('自由繪圖區塊（第 ' + n + ' 個）沒有任何有效的圖形，略過'); return null; }
@@ -418,7 +419,7 @@
         else if (op === 'set_page') { s.page = validate({ page: Object.assign({}, s.page, e.page || e) }).spec.page; }
         else if (op === 'set_size') { var f2 = clamp(e.scale, 0.4, 1.4); s.blocks.forEach(function (x) { if (x.size !== undefined) x.size = f2; }); }
         else if (op === 'set_header') { s.header = Object.assign({}, s.header, { name: e.name === undefined ? s.header.name : e.name !== false, date: e.date === undefined ? s.header.date : e.date !== false, school: e.school === true ? '' : s.header.school, score: e.score === undefined ? s.header.score : e.score === true }); }
-        else if (op === 'add_block') { var nb = validateBlock(e.block, [], s.blocks.length + 1); if (!nb) throw new Error('區塊不合法'); if (s.blocks.length >= LIMITS.blocks) throw new Error('區塊太多'); s.blocks.splice(clamp(e.index == null ? s.blocks.length : e.index, 0, s.blocks.length), 0, nb); }
+        else if (op === 'add_block') { var abp = []; var nb = validateBlock(e.block, abp, s.blocks.length + 1); if (!nb) throw new Error('區塊不合法：' + (abp.join('；') || 'block 要有 type（bead_rows、number_bond、count_rows、equations、ten_frames、number_line、text、draw、spacer）') + '。畫圖形請用 {type:"draw",items:[{shape:"triangle|circle|rect|line|poly|text",…}]}'); if (s.blocks.length >= LIMITS.blocks) throw new Error('區塊太多'); s.blocks.splice(clamp(e.index == null ? s.blocks.length : e.index, 0, s.blocks.length), 0, nb); }
         else if (op === 'set_block') { var sbi = int(e.index, -1); if (sbi < 0 || sbi >= s.blocks.length) throw new Error('沒有第 ' + sbi + ' 個區塊（從 0 起算）'); if (!e.patch || typeof e.patch !== 'object') throw new Error('patch 要是物件'); var probs = []; var merged = validateBlock(Object.assign({}, s.blocks[sbi], e.patch, { type: s.blocks[sbi].type }), probs, sbi + 1); if (!merged) throw new Error('改完的區塊不合法'); s.blocks[sbi] = merged; }
         else if (op === 'move_block') { var mi = int(e.index, -1), mt = int(e.to, -1); if (mi < 0 || mi >= s.blocks.length || mt < 0 || mt >= s.blocks.length) throw new Error('index／to 要在 0～' + (s.blocks.length - 1)); var mb = s.blocks.splice(mi, 1)[0]; s.blocks.splice(mt, 0, mb); }
         else if (op === 'remove_block') { var ix = int(e.index, -1); if (ix < 0 || ix >= s.blocks.length) throw new Error('沒有第 ' + ix + ' 個區塊（從 0 起算）'); s.blocks.splice(ix, 1); }
@@ -461,6 +462,17 @@
       else if (/(?:小一點|縮小|小一些|珠子小)/.test(c)) { var sz2 = (bead && bead.size) || 1; e.push({ op: 'set_size', scale: Math.max(0.4, Math.round(sz2 * 0.87 * 100) / 100) }); }
       else if ((m = /(?:不要|拿掉|取消|隱藏)[^，。]{0,3}(姓名|名字|日期)/.exec(c))) e.push({ op: 'set_header', [/日期/.test(m[1]) ? 'date' : 'name']: false });
       else if ((m = /(?:加|要有|顯示)[^，。]{0,3}(姓名|名字|日期|分數)/.exec(c))) e.push({ op: 'set_header', [/日期/.test(m[1]) ? 'date' : (/分數/.test(m[1]) ? 'score' : 'name')]: true });
+      else if (/(?:清空|清掉|全部刪(?:掉|除)|刪光|全部移除|重新開始)/.test(c)) { for (var ci = 0; ci < cur.blocks.length; ci++) e.push({ op: 'remove_block', index: 0 }); if (!e.length) { out.matched.push(c); return; } }
+      else if (/(?:放|加|新增|畫|留|開)[^，。,;]{0,6}(?:繪圖|畫圖|畫畫|塗鴉|畫布|空白)[^，。,;]{0,3}(?:區域|區塊|區|格|框|空間|畫布)/.test(c)) { e.push({ op: 'add_block', block: { type: 'draw', height: 60, items: [{ shape: 'rect', x: 1, y: 1, w: 98, h: 98, fill: 'none', stroke: '#9AA0A6', sw: 0.4, rx: 1 }] }, index: /上面|上方|最上|頂部|最前|開頭/.test(c) ? 0 : undefined }); }
+      else if ((m = /(?:畫|加|新增|放|再加|多一個)[^，。,;]{0,8}(三角形|圓形|圓圈|圓|正方形|方形|方框|長方形|矩形|星星|星形|直線|(?<!數)線)/.exec(c))) {
+        var SH = m[1], col2 = colorIn(c.replace(/(?:畫|加|新增|放)/, '')), top2 = /上面|上方|最上|頂部|最前|開頭/.test(c), cfill = col2 || '#FFFFFF', it;
+        if (/三角/.test(SH)) it = { shape: 'triangle', x: 38, y: 25, w: 24, h: 50, fill: col2 || '#FFFFFF', stroke: '#222222' };
+        else if (/圓/.test(SH)) it = { shape: 'circle', x: 50, y: 50, r: 25, fill: cfill, stroke: '#222222' };
+        else if (/星/.test(SH)) { var sp5 = []; for (var si = 0; si < 10; si++) { var ang = -Math.PI / 2 + si * Math.PI / 5, rr2 = si % 2 ? 11 : 26; sp5.push([50 + rr2 * Math.cos(ang), 52 + rr2 * Math.sin(ang)]); } it = { shape: 'poly', pts: sp5, fill: cfill, stroke: '#222222' }; }
+        else if (/線/.test(SH)) it = { shape: 'line', x1: 10, y1: 50, x2: 90, y2: 50, stroke: col2 || '#222222', sw: 0.6 };
+        else it = { shape: 'rect', x: 30, y: 25, w: 40, h: 50, fill: cfill, stroke: '#222222' };
+        e.push({ op: 'add_block', block: { type: 'draw', height: 50, items: [it] }, index: top2 ? 0 : undefined });
+      }
       else if ((m = /(?:加|新增|再加|多一個)[^，。]{0,3}(數線|十格框|加法|減法|算式|數一數|文字)/.exec(c))) { var nm = m[1], blk = nm === '數線' ? { type: 'number_line', from: 0, to: 20 } : (nm === '十格框' ? { type: 'ten_frames' } : (nm === '數一數' ? { type: 'count_rows' } : (nm === '文字' ? { type: 'text', lines: ['在這裡寫說明'] } : { type: 'equations', kind: nm === '減法' ? 'sub' : 'add' }))); e.push({ op: 'add_block', block: blk }); }
       else if ((m = /(?:刪掉|刪除|移除|拿掉)[^，。]{0,3}第\s*(\d+|[一二兩三四五六七八九十]{1,3})\s*個?\s*(?:區塊|塊)/.exec(c))) { var ix = cnNum(m[1]) - 1; if (ix >= 0) e.push({ op: 'remove_block', index: ix }); }
       if (e.length) { out.edits = out.edits.concat(e); out.matched.push(c); } else out.unmatched.push(c);
@@ -470,7 +482,7 @@
   // 讀不懂的句子才交給模型：只准回 { say, edits:[…] }，edits 的 op 必須在封閉清單裡（再由 applyEdits 逐一驗證）
   function editPrompt(spec, unmatchedText) {
     var s = validate(spec).spec; var compact = JSON.stringify(s).slice(0, 3000);
-    return { system: '你是學習單的編輯助手。使用者用一句話說想怎麼改這份學習單，你把它翻成「編輯動作」。只回一段 JSON，不要說明、不要 markdown：{"say":"一句話告訴使用者你改了什麼（做不到就說做不到）","edits":[…]}。\\n動作只能是下面這些（欄位照寫，不要發明新的動作）：\\n' + TOPICS.edits + '\\n顏色一律用 #RRGGBB。看不懂、或做不到的要求：edits 給空陣列，在 say 說明，不要亂猜。',
+    return { system: '你是學習單的編輯助手。使用者用一句話說想怎麼改這份學習單，你把它翻成「編輯動作」。只回一段 JSON，不要說明、不要 markdown：{"say":"一句話告訴使用者你改了什麼（做不到就說做不到）","edits":[…]}。\n動作只能是下面這些（欄位照寫，不要發明新的動作）：\n' + TOPICS.edits + '\n要新增圖形（三角形、圓、方框、線、文字、繪圖區域…）用 add_block 加一個 draw 區塊：\n' + TOPICS.draw + '\n三角形可以用 {shape:"triangle",x,y,w,h}；「繪圖區域」就是一個 draw 區塊，裡面放一個虛線方框。add_block 的 block 一定要有 type。顏色一律用 #RRGGBB。看不懂、或做不到的要求：edits 給空陣列，在 say 說明，不要亂猜。',
       user: '目前的學習單：\\n' + describe(s).join('\\n') + '\\n描述（JSON）：' + compact + '\\n\\n使用者說：' + String(unmatchedText || '') };
   }
   function parseEditsReply(text) {
