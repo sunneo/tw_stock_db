@@ -9,7 +9,7 @@
 // 安全邊界：除了 ping，所有指令都只作用在「助理自己建立的分頁」（managedTabs），
 // 不能讀取或操作使用者原本開著的其他分頁。
 
-const VERSION = "1.6.1";
+const VERSION = "1.7.0";
 const AI_GROUP_TITLE = "AI Controlled";
 const AI_GROUP_COLOR = "purple";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -402,6 +402,91 @@ chrome.debugger.onEvent.addListener((src, method, p) => {
   else if (method === "Page.downloadWillBegin" && /^(blob|data):/i.test(p.url || "")) captureFromPage(tabId, p.url, p.suggestedFilename);
 });
 
+// ---------- 上傳（把助理手上的檔案放進網頁的檔案欄位）----------
+// 和下載對稱：檔案來源可以是助理手上的位元組（聊天附件、FAP 檔案快取…，一段一段送進來並驗證 crc32），
+// 也可以是本機路徑（桌面版，Chrome 自己讀檔，沒有大小限制）。放進網頁的方式：
+//  - 直接指定 <input type=file>：set_file_input；
+//  - 點一個會開檔案選擇對話框的按鈕：click 帶 upload，或先 arm_file_chooser。用 Page.setInterceptFileChooserDialog 攔下對話框
+//    （不會跳系統對話框），收到 Page.fileChooserOpened 後直接把檔案放進那個欄位。
+// 位元組模式在頁面裡用 DataTransfer 組成 File 再填進 input.files 並觸發 input／change；路徑模式用 DOM.setFileInputFiles。
+const uploads = new Map(); // id -> { id, name, mime, size, chunks, bytes, crc, ready, startTime }
+const chooserArm = new Map(); // tabId -> { upload_ids, paths, once, result, time }
+function uploadsTotal() { let n = 0; for (const u of uploads.values()) n += u.bytes; return n; }
+function pruneUploads() { const now = Date.now(); for (const [id, u] of uploads) if (now - u.startTime > CAP_KEEP_MS) uploads.delete(id); }
+function uploadSpecs(ids) {
+  return (ids || []).map((id) => { const u = uploads.get(String(id)); if (!u) throw new Error("找不到這個上傳檔案（可能已釋放或超過保存時間）：" + id); if (!u.ready) throw new Error("上傳檔案還沒收完或驗證沒過：" + u.name); return u; });
+}
+async function fillFileInput(tabId, objectId, arm) {
+  await send(tabId, "DOM.enable");
+  if (arm.paths && arm.paths.length) {
+    await send(tabId, "DOM.setFileInputFiles", { files: arm.paths.map(String), objectId });
+    return { mode: "path", files: arm.paths.map((p) => String(p).split(/[\\/]/).pop()) };
+  }
+  const ups = uploadSpecs(arm.upload_ids);
+  if (!ups.length) throw new Error("沒有要上傳的檔案（要帶 upload_ids 或 paths）");
+  await send(tabId, "Runtime.evaluate", { expression: "window.__faUp = {}" });
+  for (const u of ups) {
+    const all = []; for (const ch of u.chunks) all.push(ch);
+    let pos = 0;
+    while (pos < u.bytes) {
+      const bytes = capSlice({ chunks: u.chunks, bytes: u.bytes }, pos, CAP_SLICE);
+      await send(tabId, "Runtime.evaluate", { expression: "(()=>{const a=atob(" + JSON.stringify(bytesToB64(bytes)) + ");const u=new Uint8Array(a.length);for(let i=0;i<a.length;i++)u[i]=a.charCodeAt(i);(window.__faUp[" + JSON.stringify(u.id) + "]=window.__faUp[" + JSON.stringify(u.id) + "]||[]).push(u)})()" });
+      pos += bytes.length;
+    }
+  }
+  const specs = ups.map((u) => ({ id: u.id, name: u.name, mime: u.mime }));
+  const r = await send(tabId, "Runtime.callFunctionOn", {
+    objectId, returnByValue: true,
+    functionDeclaration: "function(specs){ if(this.tagName!=='INPUT'||this.type!=='file') return {error:'目標不是檔案欄位（input type=file）'}; if(specs.length>1&&!this.multiple) return {error:'這個欄位不能選多個檔案（沒有 multiple）'}; const dt=new DataTransfer(); for(const s of specs){ dt.items.add(new File(window.__faUp[s.id]||[], s.name, {type:s.mime||''})); } this.files=dt.files; this.dispatchEvent(new Event('input',{bubbles:true})); this.dispatchEvent(new Event('change',{bubbles:true})); window.__faUp={}; return {count:this.files.length, names:Array.from(this.files).map(f=>f.name), sizes:Array.from(this.files).map(f=>f.size)}; }",
+    arguments: [{ value: specs }],
+  });
+  if (r.exceptionDetails) throw new Error("放進檔案欄位失敗：" + String((r.exceptionDetails.exception && r.exceptionDetails.exception.description) || r.exceptionDetails.text || "").slice(0, 160));
+  const v = r.result.value || {};
+  if (v.error) throw new Error(v.error);
+  const bad = ups.map((u, i) => (v.sizes && v.sizes[i] === u.bytes ? null : u.name)).filter(Boolean);
+  if (bad.length) throw new Error("放進欄位後的檔案大小和送出的不一致：" + bad.join("、"));
+  return { mode: "bytes", files: v.names, sizes: v.sizes };
+}
+async function inputObjectId(tabId, a) {
+  const selector = a.selector ? String(a.selector) : 'input[type=file]';
+  const idx = Number.isInteger(Number(a.index)) && Number(a.index) >= 0 ? Number(a.index) : 0;
+  const r = await send(tabId, "Runtime.evaluate", { expression: "(()=>{const l=Array.from(document.querySelectorAll(" + JSON.stringify(selector) + ")).filter(e=>e.tagName==='INPUT'&&e.type==='file');return l[" + idx + "]||null})()" });
+  if (!r.result || !r.result.objectId) throw new Error("找不到檔案欄位（selector=" + selector + " index=" + idx + "；要是 input type=file。欄位被藏起來也找得到，找不到通常是 selector 不對或頁面還沒載入）");
+  return r.result.objectId;
+}
+async function armFileChooser(tabId, u) {
+  if (!((u.upload_ids && u.upload_ids.length) || (u.paths && u.paths.length))) throw new Error("upload 要帶 upload_ids（助理送進來的檔案）或 paths（本機路徑）");
+  if (u.upload_ids) uploadSpecs(u.upload_ids);
+  await dbg(tabId);
+  await send(tabId, "Page.enable");
+  await send(tabId, "Page.setInterceptFileChooserDialog", { enabled: true });
+  chooserArm.set(tabId, { upload_ids: u.upload_ids || [], paths: u.paths || [], once: u.keep !== true, result: null, time: Date.now() });
+}
+async function disarmFileChooser(tabId) { chooserArm.delete(tabId); try { await send(tabId, "Page.setInterceptFileChooserDialog", { enabled: false }); } catch (_) { /* 分頁已關或除錯器已中斷 */ } }
+async function waitChooserResult(tabId, timeoutMs) {
+  const end = Date.now() + Math.max(1000, Math.min(60000, Number(timeoutMs) || 8000));
+  for (;;) {
+    const arm = chooserArm.get(tabId);
+    if (arm && arm.result) { if (arm.result.error) throw new Error("放進檔案失敗：" + arm.result.error); return arm.result; }
+    if (Date.now() >= end) throw new Error("點擊之後沒有開出檔案選擇對話框（點到的可能不是上傳按鈕；或這個網站用拖放區上傳，擴充功能攔不到）");
+    await sleep(100);
+  }
+}
+chrome.debugger.onEvent.addListener((src, method, p) => {
+  if (method !== "Page.fileChooserOpened" || src.tabId == null) return;
+  const tabId = src.tabId, arm = chooserArm.get(tabId); if (!arm || arm.result) return;
+  (async () => {
+    try {
+      await send(tabId, "DOM.enable");
+      const { object } = await send(tabId, "DOM.resolveNode", { backendNodeId: p.backendNodeId });
+      const res = await fillFileInput(tabId, object.objectId, arm);
+      arm.result = Object.assign({ ok: true, via: "file_chooser", chooser_mode: p.mode }, res);
+    } catch (err) { arm.result = { ok: false, error: String((err && err.message) || err) }; }
+    if (arm.once && arm.result.ok) await send(tabId, "Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
+  })();
+});
+chrome.debugger.onDetach.addListener((src) => { if (src.tabId != null) chooserArm.delete(src.tabId); });
+
 async function waitLoad(tabId, timeoutMs) {
   const end = Date.now() + timeoutMs;
   while (Date.now() < end) {
@@ -791,11 +876,16 @@ const commands = {
     if (a.download_behavior) out_dl = await setDownloadBehavior(tabId, a.download_behavior, a.download_path, a.capture_limits);
     const sinceTs = Date.now(); // 一定要在真正點擊「之前」記下，避免下載在我們開始等待前就已完成的race condition
     const ev = (type, extra) => send(tabId, "Input.dispatchMouseEvent", Object.assign({ type, x: res.x, y: res.y, button: "left", modifiers: 0 }, extra));
+    if (a.upload) await armFileChooser(tabId, a.upload); // 點下去會開檔案選擇對話框：先攔下來，等一下直接填入檔案
     await ev("mouseMoved", { button: "none" });
     await ev("mousePressed", { clickCount: 1 });
     await ev("mouseReleased", { clickCount: 1 });
     await sleep(150);
     const out = { ok: true, x: res.x, y: res.y, tag: res.tag, clicked_text: res.matched_text, visible_count: res.visible_count };
+    if (a.upload) {
+      try { out.upload = await waitChooserResult(tabId, a.upload_timeout_ms); }
+      finally { if (!a.upload.keep) await disarmFileChooser(tabId); }
+    }
     if (out_dl) out.download_behavior = out_dl;
     if (a.wait_download) out.download = await waitForNewDownload(a.download_timeout_ms, sinceTs, tabId);
     return out;
@@ -824,6 +914,50 @@ const commands = {
     const n = Math.max(1, Math.min(40, Number(a.max) || 10));
     return { captures: [...captures.values()].sort((x, y) => y.startTime - x.startTime).slice(0, n).map((c) => Object.assign(capInfo(c), { done: c.done, error: c.error, tab_id: c.tabId, age_ms: Date.now() - c.startTime })), total_bytes: capTotal() };
   },
+
+  // 上傳：位元組由助理一段一段送進來（upload_begin → upload_chunk… → upload_end 驗證 crc32），之後用 set_file_input／click+upload 放進網頁
+  async upload_begin(a) {
+    pruneUploads();
+    const id = String(a.id || ""); if (!id) throw new Error("缺少 id");
+    const size = Math.floor(Number(a.size)); if (!Number.isFinite(size) || size < 0) throw new Error("缺少 size");
+    if (size > CAP_MAX_FILE) throw new Error("檔案 " + (a.name || id) + " 超過上限 " + Math.round(CAP_MAX_FILE / 1048576) + " MB（可在設定的「瀏覽器控制」調高單檔上限）");
+    if (uploadsTotal() + size > CAP_MAX_TOTAL) throw new Error("暫存的上傳檔案合計會超過上限 " + Math.round(CAP_MAX_TOTAL / 1048576) + " MB，請先送出或放掉前面的檔案");
+    uploads.set(id, { id, name: String(a.name || "file").replace(/[\\/:*?"<>|]+/g, "_").slice(0, 180), mime: String(a.mime || ""), size, chunks: [], bytes: 0, crc: 0, ready: false, startTime: Date.now() });
+    return { ok: true, id, size };
+  },
+  async upload_chunk(a) {
+    const u = uploads.get(String(a.id || "")); if (!u) throw new Error("找不到這個上傳（沒有先 upload_begin？）：" + a.id);
+    if (Number(a.offset) !== u.bytes) throw new Error("上傳段落順序不對（要從 " + u.bytes + " 接下去，收到 " + a.offset + "）");
+    const bytes = b64ToBytes(String(a.b64 || ""));
+    if (u.bytes + bytes.length > u.size) throw new Error("收到的位元組超過宣告的大小");
+    u.chunks.push(bytes); u.bytes += bytes.length; u.crc = crc32Update(u.crc, bytes);
+    return { ok: true, received: u.bytes };
+  },
+  async upload_end(a) {
+    const u = uploads.get(String(a.id || "")); if (!u) throw new Error("找不到這個上傳：" + a.id);
+    if (u.bytes !== u.size) throw new Error("上傳不完整（收到 " + u.bytes + " / " + u.size + " 位元組）");
+    if (a.crc32 && String(a.crc32).toLowerCase() !== crcHex(u.crc)) { uploads.delete(u.id); throw new Error("上傳驗證失敗（crc32 " + crcHex(u.crc) + " ≠ " + a.crc32 + "），已丟棄"); }
+    u.ready = true; return { ok: true, id: u.id, size: u.bytes, crc32: crcHex(u.crc) };
+  },
+  async upload_drop(a) { const ids = Array.isArray(a.ids) ? a.ids : [a.id]; let n = 0; for (const id of ids) if (uploads.delete(String(id))) n++; return { ok: true, dropped: n }; },
+  // 直接把檔案放進指定的 <input type=file>（selector 不給就用頁面上第一個檔案欄位）
+  async set_file_input(a, ctx) {
+    const { tabId } = await needTab(a, ctx);
+    await keepPageFocused(tabId);
+    const oid = await inputObjectId(tabId, a);
+    const res = await fillFileInput(tabId, oid, { upload_ids: a.upload_ids, paths: a.paths });
+    return Object.assign({ ok: true, via: "set_file_input" }, res);
+  },
+  // 先準備好，等網頁自己（或之後的 click）開檔案選擇對話框時填入；disarm_file_chooser 取消
+  async arm_file_chooser(a, ctx) {
+    const { tabId } = await needTab(a, ctx);
+    await keepPageFocused(tabId);
+    await armFileChooser(tabId, { upload_ids: a.upload_ids, paths: a.paths, keep: a.keep === true });
+    return { ok: true, armed: true };
+  },
+  async disarm_file_chooser(a, ctx) { const { tabId } = await needTab(a, ctx); await disarmFileChooser(tabId); return { ok: true }; },
+  async wait_file_chooser(a, ctx) { const { tabId } = await needTab(a, ctx); try { return await waitChooserResult(tabId, a.timeout_ms); } finally { if (chooserArm.get(tabId) && chooserArm.get(tabId).once) await disarmFileChooser(tabId); } },
+  async list_uploads() { return { uploads: [...uploads.values()].map((u) => ({ id: u.id, name: u.name, size: u.size, received: u.bytes, ready: u.ready, crc32: crcHex(u.crc) })), total_bytes: uploadsTotal() }; },
 
   // 預先設定這個分頁的下載行為（之後這個分頁觸發的下載都照它處理，直到改回 default 或分頁關掉）。
   async set_download_behavior(a, ctx) {

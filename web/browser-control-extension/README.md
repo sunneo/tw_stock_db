@@ -24,6 +24,16 @@
 - 滑鼠/鍵盤/截圖使用 Chrome 的偵錯功能，操作期間瀏覽器會顯示「正在偵錯此瀏覽器」提示列，這是正常的。
 - 只接受 http(s) 網址。
 
+## 1.7.0：上傳
+
+把助理手上的檔案放進網頁的檔案欄位，不跳系統的檔案選擇對話框：
+
+- **檔案來源**：位元組（聊天附件、FAP 檔案）由助理分段送進來（`upload_begin`／`upload_chunk`／`upload_end`，每段約 384 KB，收完核對 crc32；受 1.6.1 的單檔／合計上限限制），或本機路徑 `paths`（桌面版，Chrome 自己讀檔，沒有大小限制）。
+- **放進網頁**：`set_file_input{selector, upload_ids|paths}` 直接填 `<input type=file>`（欄位被藏起來也行）；或 `click` 帶 `upload:{upload_ids|paths}`，點一個會開對話框的按鈕——用 `Page.setInterceptFileChooserDialog` 攔下對話框，收到 `Page.fileChooserOpened` 後填入。也可以先 `arm_file_chooser`、之後再 `wait_file_chooser`。
+- 位元組模式在頁面裡用 `DataTransfer` 組成 `File`，填進 `input.files` 並觸發 `input`／`change`；填完會核對網頁那邊每個 `File` 的大小。沒有 `multiple` 的欄位不收多個檔案。
+- 做不到的：沒有 `<input type=file>`、要真實拖放事件的上傳區。
+- 驗證：`test/upload-harness.js`（真 Chrome）：位元組模式 sha256 與原檔一致、真實滑鼠點擊觸發的對話框被攔下並填入、路徑模式、壞 crc 被丟棄、不能多選的欄位擋兩個檔案、找不到欄位會說明。
+
 ## 1.6.1：擷取上限可以調
 
 `click`／`set_download_behavior` 在 capture 時可帶 `capture_limits:{max_file_mb, max_total_mb, keep_min}`（預設 200／400／20；硬上限 2000／4000／240）。桌面版在「瀏覽器控制」設定頁有三個欄位，助理會自動帶上。超過單檔上限會回報錯誤並說明，且不留位元組；失敗的請求會被中止，不會卡住頁面。
