@@ -344,6 +344,68 @@ const FaKnowledgeHost = (function () {
             this._kiEmit({ op: 'organize', end: true });
             return { ok: true, checked: pairs.length, proposed, dropped, failed, terms: results, note: '模型提出的關聯要你確認才會用在回答裡；片語都是程式核對過、真的同時出現在兩邊的行裡。' };
         },
+        // ───── 對話保存：每個庫一份，存在這個瀏覽器的 IndexedDB（不放進 .keeplookup 檔），最多 60 則；重新整理後恢復 ─────
+        _kiChatDb() { return new Promise((res, rej) => { const rq = indexedDB.open('fa-ki-chat', 1); rq.onupgradeneeded = () => { rq.result.createObjectStore('chats'); }; rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error); }); },
+        async _kiChatLoad() { try { const db = await this._kiChatDb(), key = this._kiRef(); const v = await new Promise((res, rej) => { const r = db.transaction('chats').objectStore('chats').get(key); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); db.close(); return Array.isArray(v) ? v : []; } catch (_) { return []; } },
+        async _kiChatSave(list) { try { const db = await this._kiChatDb(), key = this._kiRef(); await new Promise((res, rej) => { const tx = db.transaction('chats', 'readwrite'); tx.objectStore('chats').put(JSON.parse(JSON.stringify(list.slice(-60))), key); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }); db.close(); return true; } catch (_) { return false; } },
+        async _kiChatClear() { try { const db = await this._kiChatDb(), key = this._kiRef(); await new Promise((res, rej) => { const tx = db.transaction('chats', 'readwrite'); tx.objectStore('chats').delete(key); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }); db.close(); } catch (_) { /* */ } return true; },
+        // ───── 閒聊路由：招呼、道謝、閒聊直接聊；要資訊就查原文 ─────
+        // 先用規則判斷（問句詞、識別字、指令、很長的話一定查）；只有「不確定」的（很短又不像在問資料、或是接著上一輪的追問）才問模型：CHAT: 回覆，或 SEARCH: 補成完整的查詢句。
+        // 保險：看起來是在問資料的話，就算模型選了閒聊也照樣查原文，模型憑記憶寫的回答不顯示。
+        _kiLooksLikeLookup(q) { const t = String(q || '').trim(); return /[?？]/.test(t) || /怎麼|如何|什麼|甚麼|為什麼|為何|哪[裡個些邊]|是否|能不能|可以|有沒有|多少|幾個|\b(how|what|why|where|which|can|does|is there)\b/i.test(t) || /[A-Za-z]+[_.:\-][A-Za-z0-9]+|[A-Z][a-z]+[A-Z]|\d{2,}|--?\w{2,}|\(\)/.test(t) || t.length > 40; },
+        async _kiRoute(q, history, onStep, ctl) {
+            const step = (t) => { try { if (onStep) onStep(t); } catch (_) { /* */ } }; const t = String(q || '').trim(), hist = Array.isArray(history) ? history.slice(-4) : [];
+            const lookup = this._kiLooksLikeLookup(t), followUp = hist.length > 0 && t.length <= 14 && /^(那|還有|然後|所以|它|這個|那個|另外|and |what about|how about)/i.test(t);
+            if (lookup && !followUp) return { route: 'search', query: t };
+            step('🧭 判斷是閒聊還是要查資料…');
+            let names = []; try { names = (await this._kiRun((store) => store.listSources())).slice(0, 20).map((x) => x.name); } catch (_) { /* */ }
+            const prompt = '你是知識庫助理。使用者說：「' + t + '」\n' + (hist.length ? '前幾輪：\n' + hist.map((h) => '使用者：' + String(h.q).slice(0, 80) + '\n助理：' + String(h.a || '').slice(0, 120)).join('\n') + '\n' : '') + '知識庫裡的來源：' + (names.join('、') || '（空的）') + '\n請判斷並只輸出一行：\n1) 招呼、道謝、閒聊、問你是誰／能做什麼／知識庫裡有什麼 → CHAT: <簡短回覆，繁體中文；不要回答任何需要查資料的事>\n2) 其他（包含接著上一輪的追問）→ SEARCH: <把使用者的話用前幾輪補成一句完整、獨立的查詢句>';
+            let reply = ''; try { reply = await this._kiLlm(prompt, { systemPrompt: '你只負責分流，不回答資料問題。', maxTokens: 300, temperature: 0 }, { label: '判斷', timeoutMs: 45000, onStep, ctl }); } catch (e) { step('　（模型沒有回應，直接查原文）'); return { route: 'search', query: t }; }
+            const lines = String(reply).split('\n').map((x) => x.trim()), lastChat = lines.filter((x) => /^CHAT\s*[:：]/i.test(x)).pop(), lastSearch = lines.filter((x) => /^SEARCH\s*[:：]/i.test(x)).pop();
+            if (lastSearch) { const qq = lastSearch.replace(/^SEARCH\s*[:：]\s*/i, '').trim(); if (qq) { if (qq !== t) step('　改寫成查詢句：' + qq); return { route: 'search', query: qq }; } }
+            if (lastChat && !lookup) { const rp = lastChat.replace(/^CHAT\s*[:：]\s*/i, '').trim(); if (rp) return { route: 'chat', reply: rp }; }
+            return { route: 'search', query: t };
+        },
+        // ───── 創作：請 AI 設計／寫出「知識庫裡沒有的東西」（例如看完 C 和 C++ 的 programming guide 之後設計一個程式） ─────
+        // 做法：1) 請模型列出要先查的東西 → 程式用每一條去查知識庫，收集素材；2) 把素材（編號）交給模型，允許它創作；用到素材裡的語法／API／規則要標 [編號]，
+        // 素材沒講、憑它自己知識補的標 [外]；3) 程式做「依據檢查」：程式碼裡用到的函式／標頭／名稱，哪些在素材裡找得到（附出處編號）、哪些素材沒提到。創作內容不丟棄，但明講哪些有依據、哪些沒有。
+        async _kiCreate(request, onStep, ctl, sources) {
+            const step = (t) => { try { if (onStep) onStep(t); } catch (_) { /* */ } }, t0 = Date.now(); const req = String(request || '').trim(); if (!req) return { ok: false, error: '請說要創作什麼' };
+            step('✨ 創作：先決定要從知識庫查哪些資料…');
+            let queries = []; try {
+                const rp = await this._kiLlm('使用者想請你創作（設計、寫程式、規劃…）：「' + req + '」\n他有一個知識庫（裡面是他放進去的手冊、文件）。為了做好這件事，需要先從知識庫查哪些資料（語法規則、函式用法、設計規範…）？請列出最多 8 個查詢，一行一個，每個只有 1 到 3 個詞，像搜尋引擎的關鍵詞（例如：struct、vector sort、scanf、class 建構），中英文都可以，不要解釋、不要寫完整句子。', { systemPrompt: '你只負責列出要查什麼，不回答。', maxTokens: 500, temperature: 0 }, { label: '決定要查什麼', timeoutMs: 45000, onStep, ctl });
+                queries = String(rp || '').split('\n').map((l) => l.replace(/^[\s\-*\d.、)）]+/, '').trim()).filter((l) => l && l.length <= 40).slice(0, 8);
+            } catch (e) { if (/已略過/.test(String((e && e.message) || e))) throw e; }
+            if (!queries.length) queries = [req.slice(0, 120)]; step('　要查：' + queries.join('；'));
+            const mats = [], seen = new Set();
+            for (const q of queries) {
+                const r = await this._kiAsk({ question: q, limit: 4, no_expand: true, sources }).catch(() => null); let n = 0;
+                for (const h of ((r && r.hits) || [])) { const k = h.source_id + ':' + h.line_start; if (seen.has(k) || mats.length >= 12) continue; seen.add(k); mats.push(h); n++; }
+                step('　「' + q.slice(0, 30) + '」→ ' + (n ? '新增 ' + n + ' 段素材' : '沒有找到'));
+            }
+            // 每個勾選的來源至少再用整個需求查一輪（限定那個來源），避免只撈到其中一份手冊
+            try { const srcList = (await this._kiRun((store) => store.listSources())).filter((x) => x.enabled).slice(0, 8); for (const sc of srcList) { if (mats.some((h) => h.source_id === sc.id) || mats.length >= 12) continue; const r = await this._kiAsk({ question: queries.join(' ') + ' ' + req.slice(0, 60), limit: 2, no_expand: true, sources: [sc.id] }).catch(() => null); let n = 0; for (const h of ((r && r.hits) || [])) { const k = h.source_id + ':' + h.line_start; if (seen.has(k) || mats.length >= 12) continue; seen.add(k); mats.push(h); n++; } if (n) step('　再從《' + sc.name + '》補 ' + n + ' 段素材'); } } catch (_) { /* */ }
+            if (!mats.length) return { ok: false, error: '知識庫裡找不到跟這件事相關的資料，沒有素材可以參考。（要憑 AI 自己的知識創作的話，請直接問一般的 AI 對話。）', queries };
+            for (const h of mats) { h.ctx = String(h.quote); if (h.ctx.length < 200 && h.source_id) { try { const d = await this._kiRun((store) => store.detail(h.source_id, { line_start: h.line_start, line_end: h.line_end + 10 }, { maxLines: 14 })); const tx = ((d && d.lines) || []).map((l) => l.text).join('\n'); if (tx.length > h.ctx.length) h.ctx = tx; } catch (_) { /* */ } } }
+            step('📚 收集到 ' + mats.length + ' 段素材，交給模型創作…');
+            const mkCtx = (per, n) => mats.slice(0, n).map((h, i) => '[' + (i + 1) + '] 《' + h.source + '》' + h.ctx.slice(0, per)).join('\n\n'), ctx = mkCtx(700, 12);
+            const prompt = ('要創作的事：' + req + '\n\n下面是從使用者知識庫找到的參考素材（有編號）：\n\n' + ctx + '\n\n請完成創作（例如設計、寫程式、規劃）。規則：1) 用到素材裡的語法、函式、API、規則、數字時，一定要照素材寫，並在那一句（或程式碼的那一行註解）標上素材編號，例如 [2]；2) 素材沒有講、但你憑自己的知識補上的用法，在那一句（或那行註解）標 [外]，讓使用者知道要自己確認；3) 結構、構想、演算法是你自己創作的，不用標；4) 不要假裝素材裡有它沒有的東西；5) 先用幾句話說明設計，再給成品；程式碼放在 ``` 圍起來的區塊裡。回答使用者用的語言。');
+            let text = ''; try { text = await this._kiLlm(prompt, { systemPrompt: '你是依據參考素材創作的助手：素材有的照素材，素材沒有的標 [外]。', maxTokens: 3800, temperature: 0.4 }, { label: '創作', timeoutMs: 240000, onStep, ctl, offlinePrompt: () => prompt.replace(ctx, () => mkCtx(300, 5)) }); } catch (e) { return { ok: false, error: '模型沒有回應：' + String((e && e.message) || e).slice(0, 160), queries, sources: mats }; }
+            text = String(text || '').trim(); if (!text) return { ok: false, error: '模型回了空白', queries };
+            let truncated = false; if ((text.match(/```/g) || []).length % 2 === 1) { text += '\n```'; truncated = true; } // 輸出被截斷時，程式碼區塊沒關起來
+            // 依據檢查
+            const corpus = mats.map((h) => FaKnowledge.fold(h.ctx)); const refs = new Map(); let invalid = 0;
+            const fixRef = (m, d) => { const k = Number(d); if (k >= 1 && k <= mats.length) { refs.set(k, true); return m; } invalid++; return '[?]'; };
+            const fixed = text.split(/(```[^\n]*\n[\s\S]*?```)/g).map((part) => /^```/.test(part) ? part.split('\n').map((ln) => { const ci = ln.search(/\/\/|\/\*|(^|\s)#(?!include|define|if|endif|else|pragma)|--\s/); return ci < 0 ? ln : ln.slice(0, ci) + ln.slice(ci).replace(/\[(\d+)\]/g, fixRef); }).join('\n') : part.replace(/\[(\d+)\]/g, fixRef)).join('');
+            const code = Array.from(fixed.matchAll(/```[^\n]*\n([\s\S]*?)```/g)).map((m) => m[1]).join('\n'), defined = new Set(Array.from(code.matchAll(/\b(?:int|void|char|float|double|auto|bool|long|short|unsigned|class|struct|enum|def|function|func|fn)\s+\**([A-Za-z_]\w*)\s*[(\{:<=]/g)).map((m) => m[1]).concat(Array.from(code.matchAll(/\b([A-Za-z_]\w*)\s*(?:=\s*(?:\(|function|lambda)|\(\s*[^)]*\)\s*\{)/g)).map((m) => m[1])));
+            const KW = new Set(['if', 'for', 'while', 'switch', 'return', 'sizeof', 'main', 'catch', 'else', 'do', 'case', 'new', 'delete', 'throw', 'print', 'range', 'len', 'typeof', 'defined', 'elif', 'and', 'or', 'not']);
+            const names = []; const add = (x) => { if (x && x.length >= 3 && !KW.has(x) && !defined.has(x.split(/::|\.|->/).pop()) && names.indexOf(x) < 0) names.push(x); };
+            Array.from(code.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*(?:(?:::|\.|->)[A-Za-z_][A-Za-z0-9_]*)*)\s*\(/g)).forEach((m) => add(m[1])); Array.from(code.matchAll(/#include\s*[<"]([^>"]+)[>"]/g)).forEach((m) => add(m[1])); Array.from(code.matchAll(/\bstd::[A-Za-z_]\w*/g)).forEach((m) => add(m[0]));
+            const inKb = [], notInKb = [];
+            for (const nm of names.slice(0, 40)) { const probe = [nm, nm.split(/::|\.|->/).pop()].filter((x) => x && x.length >= 3); let at = -1; for (const pr of probe) { at = corpus.findIndex((c) => c.indexOf(FaKnowledge.fold(pr)) >= 0); if (at >= 0) break; } if (at >= 0) inKb.push({ name: nm, n: at + 1 }); else notInKb.push(nm); }
+            step('🔍 依據檢查：程式碼用到 ' + names.length + ' 個名稱，素材裡找得到 ' + inKb.length + ' 個，素材沒提到 ' + notInKb.length + ' 個');
+            return { ok: true, text: fixed, queries, sources: mats.map((h, i) => ({ n: i + 1, label: h.label, source: h.source, source_id: h.source_id, line_start: h.line_start, line_end: h.line_end, quote: h.quote, ctx: h.ctx })), report: { inKb, notInKb, invalid_refs: invalid, cited: Array.from(refs.keys()), truncated }, ms: Date.now() - t0 };
+        },
         // 叫模型：先走線上；線上逾時／出錯，緊接著改用離線文字模型（使用者在 Configure 裝好的）；離線也不行，再試一次線上（節點重新上線後就接得上）。
         // 每一步都用 onStep 說出原因與秒數；使用者可以按「略過等待」（ctl.cancel）。全部失敗就丟出最後一個錯誤，呼叫端退回「只給原文」，不會卡住。
         // 離線小模型的上下文小，所以呼叫端可以給 offlinePrompt（較短的提示詞）。離線模型寫出來的東西一樣要過逐句核對。
@@ -441,7 +503,7 @@ const FaKnowledgeHost = (function () {
             return {
                 palette: () => ({ dark: !self._isLightTheme() }),
                 status: () => self._kiStatus(), sources: () => self._kiSources(),
-                ask: (a) => self._kiAsk(a), proposeLinks: (onStep) => self._kiProposeLinks(onStep), answerAI: (q, hits, onStep, ctl) => self._kiAnswerAI(q, hits, onStep, ctl), onProgress: (fn) => self._kiOn(fn),
+                ask: (a) => self._kiAsk(a), proposeLinks: (onStep) => self._kiProposeLinks(onStep), chatLoad: () => self._kiChatLoad(), chatSave: (l) => self._kiChatSave(l), chatClear: () => self._kiChatClear(), route: (q, h, onStep, ctl) => self._kiRoute(q, h, onStep, ctl), create: (req, onStep, ctl) => self._kiCreate(req, onStep, ctl), answerAI: (q, hits, onStep, ctl) => self._kiAnswerAI(q, hits, onStep, ctl), onProgress: (fn) => self._kiOn(fn),
                 outline: (ref) => self._kiWithSource(ref, (store, s) => store.outline(s.id)),
                 detail: (ref, which, o) => self._kiWithSource(ref, (store, s) => store.detail(s.id, which, o)),
                 summary: (ref) => self._kiWithSource(ref, (store, s) => store.summary(s.id)),

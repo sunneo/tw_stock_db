@@ -17897,13 +17897,14 @@ const holder = {};
     var bRef = h('button', 'pri', '🔄 更新'), bOrg = h('button', null, '🧹 整理'), bEmb = h('button', null, '🧠 語意'), bLk = h('button', null, '🔗 關聯'), bSet = h('button', null, '⚙ 設定');
     bRef.title = '更新知識庫：重新抓取網址來源（內容有變才更新）、補算語意向量、重算關聯'; bOrg.title = '模型整理：請模型替每個來源挑關鍵詞（只能是來源裡原本有的字，程式逐個核對）；線上模型用不了會自動改用離線模型'; bEmb.title = '語意索引：用小型向量模型建立（第一次要下載約 118 MB）'; bLk.title = '關聯：只用字面證據（來源互相提到、共有的專有名詞或關鍵詞）'; bSet.title = '.keeplookup 放哪裡、搬家、容量上限';
     var bSide = h('button', null, '☰'); bSide.title = '隱藏／顯示左邊的來源清單';
-    [bSide, ttl, stat, spacer, bRef, bOrg, bEmb, bLk, bSet].forEach(function (x) { bar.appendChild(x); });
+    var bClr = h('button', null, '🗑'); bClr.title = '清除這個庫的對話紀錄（按兩下確認）';
+    [bSide, ttl, stat, spacer, bRef, bOrg, bEmb, bLk, bClr, bSet].forEach(function (x) { bar.appendChild(x); });
     var body = h('div', 'body'), side = h('div', 'side'), sash = h('div', 'sash'), main = h('div', 'main');
     var sidehd = h('div', 'sidehd'), sidetitle = h('b', null, '來源'), bAll = h('input'), bAdd = h('button', 'pri', '＋ 加入'), fileIn = h('input'), list = h('div', 'list'), dropov = h('div', 'dropov', '放開滑鼠，把檔案加入知識庫');
     bAll.type = 'checkbox'; bAll.title = '全選／全不選'; bAdd.title = '加入來源：檔案、網址、貼上的文字（也可以直接把檔案拖進來）'; fileIn.type = 'file'; fileIn.multiple = true; fileIn.style.display = 'none';
     [bAll, sidetitle, bAdd, fileIn].forEach(function (x) { sidehd.appendChild(x); }); var opl = h('div', 'opl'); [sidehd, opl, list, dropov].forEach(function (x) { side.appendChild(x); });
     var msgs = h('div', 'msgs'), askbox = h('div', 'ask'), askrow = h('div', 'r'), ta = h('textarea'), go = h('button', 'pri', '問'), scope = h('div', 'st');
-    var mode = h('select'); [['quote', '原文'], ['ai', '🤖 AI 整理']].forEach(function (k) { var o = h('option', null, k[1]); o.value = k[0]; mode.appendChild(o); }); mode.title = '原文：只給原文片段與出處。AI 整理：模型只用找到的原文回答，每句標編號，程式逐句核對（對不上原文的句子會被丟掉）'; try { mode.value = localStorage.getItem('fa.ki.mode') === 'ai' ? 'ai' : 'quote'; } catch (e) { /* */ } mode.onchange = function () { try { localStorage.setItem('fa.ki.mode', mode.value); } catch (e) { /* */ } };
+    var mode = h('select'); [['quote', '原文'], ['ai', '🤖 AI 整理'], ['create', '✨ 創作']].forEach(function (k) { var o = h('option', null, k[1]); o.value = k[0]; mode.appendChild(o); }); mode.title = '原文：只給原文片段與出處。AI 整理：閒聊直接聊，問資料才查；模型只用找到的原文回答，每句標編號，程式逐句核對（對不上原文的句子會被丟掉）。創作：請 AI 依知識庫裡的資料設計／寫出知識庫裡沒有的東西（例如看完手冊後設計程式），用到資料的地方標編號，AI 自己補的標 [外]，並做依據檢查'; try { var mv = localStorage.getItem('fa.ki.mode'); mode.value = mv === 'ai' || mv === 'create' ? mv : 'quote'; } catch (e) { /* */ } mode.onchange = function () { try { localStorage.setItem('fa.ki.mode', mode.value); } catch (e) { /* */ } };
     ta.rows = 2; ta.placeholder = '問你放進知識庫的資料（Enter 送出，Shift+Enter 換行）——回答只會是原文，附出處'; askrow.appendChild(mode); askrow.appendChild(ta); askrow.appendChild(go); askbox.appendChild(askrow); askbox.appendChild(scope);
     main.appendChild(msgs); main.appendChild(askbox); [side, sash, main].forEach(function (x) { body.appendChild(x); }); el.appendChild(bar); el.appendChild(body);
     // sash：拖曳調整左邊寬度（會記住）
@@ -17990,35 +17991,95 @@ const holder = {};
       function fin() { if (run === me) run = null; syncBtn(); }
       me.done = askCore(q, me).then(fin, fin); return me.done;
     }
-    function askCore(q, me) {
-      lastQuery = q; userMsg(q); var c = card('🔎 查詢'), tr = transcript(c, '🧾 過程（進行中…）'), aiMode = mode.value === 'ai' && !!host.answerAI, t0 = Date.now();
-      var ctl = me.ctl, stopWait = tr.wait('檢索中', ctl);
-      return host.ask({ question: q, limit: 6, ctl: ctl, onStep: function (t) { stopWait(); tr.step(t); stopWait = tr.wait('檢索中', ctl); } }).then(function (res) {
-        stopWait(); if (me.aborted) { tr.step('⏹ 已停止', 'bad'); tr.end('🧾 過程（已停止）'); return; }
-        if (!res.found) { tr.step('沒有找到相關內容', 'bad'); tr.end('🧾 過程（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒，沒找到）'); var nf0 = h('details', 'dim'); nf0.appendChild(h('summary', null, '沒有找到相關內容')); nf0.appendChild(h('div', null, (res.message || '在目前勾選的來源裡找不到相關內容。') + (res.semantic === false ? '（' + (res.semantic_note || '只用關鍵字檢索') + '）' : ''))); c.appendChild(nf0); return; }
-        tr.step('找到 ' + res.hits.length + ' 筆　' + (res.semantic ? '關鍵字＋語意' : (res.semantic_note || '只用關鍵字')), 'ok');
-        // 回答用到的原文照常顯示；沒用到的（模型沒引用、或沒找到答案）變灰階、小字，收在可展開的區塊裡，預設收合
-        var showHits = function (cited) {
-          if (cited) { var all = h('details', 'dim'); all.appendChild(h('summary', null, '找到的原文（' + res.hits.length + ' 筆；點答案裡的 [編號] 看出處）')); res.hits.forEach(function (hit, i) { all.appendChild(hitCard(hit, i, q)); }); c.appendChild(all); scroll(); return; }
-          var used = [], rest = []; res.hits.forEach(function (hit, i) { used.push([hit, i]); });
-          if (used.length) { c.appendChild(h('div', 'st', '原文出處（' + used.length + ' 筆）')); used.forEach(function (x) { c.appendChild(hitCard(x[0], x[1], q)); }); }
-          if (rest.length) { var dm = h('details', 'dim'); dm.appendChild(h('summary', null, (used.length ? '其他找到的原文（' : '找到的原文，但沒有對上問題的答案（') + rest.length + ' 筆，沒有採用）')); rest.forEach(function (x) { dm.appendChild(hitCard(x[0], x[1], q)); }); c.appendChild(dm); }
-          scroll();
-        };
-        if (!aiMode) { tr.end('🧾 過程（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）'); showHits(); return; }
-        var ctl2 = me.ctl2, stop2 = tr.wait('等待模型回應', ctl2);
-        return host.answerAI(q, res.hits, function (t) { stop2(); tr.step(t); stop2 = tr.wait('等待模型回應', ctl2); }, ctl2).then(function (ai) {
-          stop2(); if (me.aborted) { tr.step('⏹ 已停止', 'bad'); tr.end('🧾 過程（已停止）'); return; } tr.end('🧾 過程（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）');
-          if (!ai.ok) { note(c, '⚠️ AI 整理失敗：' + ai.error + '\n下面是原文。', 'st bad'); showHits(); return; }
-          var citedList = ai.cited || [];
-          if (!ai.sentences.length) { var nf = h('details', 'dim'); nf.appendChild(h('summary', null, '沒有找到能回答的內容（' + (ai.dropped.length ? '丟掉了 ' + ai.dropped.length + ' 句對不上原文的' : '模型說找不到') + '）')); c.appendChild(nf); }
-          else { var box = h('div', 'ans'); ai.sentences.forEach(function (x) { var p = h('div'); p.appendChild(document.createTextNode(x.text)); if (x.image) { var im = h('span', 'cite', '🖼'); im.title = '這句的根據包含圖片的模型描述（不是原文，可能有誤）'; p.appendChild(im); }
- x.cites.forEach(function (n) { var b = h('button', 'cite', '[' + n + ']'), sr = (ai.sources || [])[n - 1]; b.title = sr ? sr.label : ''; b.onclick = function () { if (sr) openSource(sr); }; p.appendChild(b); }); box.appendChild(p); }); c.appendChild(box); }
-          if (ai.dropped.length) { var dd = h('details', 'dim'); dd.appendChild(h('summary', null, '丟掉了 ' + ai.dropped.length + ' 句（對不上原文，沒有採用）')); ai.dropped.forEach(function (x) { dd.appendChild(h('div', 'trl', x.text + '　← ' + x.why)); }); c.appendChild(dd); }
-          showHits(citedList);
-        });
-      }).catch(function (e) { stopWait(); if (me.aborted) { tr.step('⏹ 已停止', 'bad'); tr.end('🧾 過程（已停止）'); return; } tr.step('⚠️ ' + String((e && e.message) || e).slice(0, 200), 'bad'); tr.end('🧾 過程（出錯）'); });
+    // ───── 對話：保存（這個瀏覽器的 IndexedDB，每個庫一份，最多 60 則）與恢復、清除 ─────
+    var conv = [];
+    function saveConv() { if (host.chatSave) { try { host.chatSave(conv.slice(-60)); } catch (e) { /* */ } } }
+    function histForRoute() { return conv.filter(function (r) { return r.k === 'a' || r.k === 'chat'; }).slice(-4).map(function (r) { var a = r.k === 'chat' ? r.reply : ((r.ai && r.ai.sentences && r.ai.sentences.map(function (x) { return x.text; }).join(' ')) || (r.res && r.res.found ? '（找到 ' + r.res.hits.length + ' 筆原文）' : '（沒找到）')); return { q: r.q, a: a }; }); }
+    function cardTitle(rec) { return rec.k === 'chat' ? '💬 對話' : rec.k === 'create' ? '✨ 創作' : '🔎 查詢'; }
+    function copyText(t, btn, label) { try { navigator.clipboard.writeText(t); btn.textContent = '已複製'; } catch (e) { btn.textContent = '複製不了'; } setTimeout(function () { btn.textContent = label; }, 1200); }
+    // 文字裡的 [編號] 變成可點的小標籤（點開才是原始資料），[外] 是「知識庫沒有、AI 憑自己的知識補的」
+    function addInline(p, text, sources) {
+      var re = /\[(\d+|外|\?)\]/g, last = 0, m;
+      while ((m = re.exec(text))) {
+        p.appendChild(document.createTextNode(text.slice(last, m.index)));
+        if (m[1] === '外') { var o = h('span', 'cite', '外'); o.title = '知識庫沒有，AI 憑自己的知識補的，請自己確認'; o.style.opacity = '.6'; p.appendChild(o); }
+        else if (m[1] === '?') p.appendChild(document.createTextNode('[?]'));
+        else { var n = Number(m[1]), sr = (sources || [])[n - 1], b = h('button', 'cite', '[' + n + ']'); b.title = sr ? sr.label : ''; b.onclick = (function (x) { return function () { if (x) openSource(x); }; })(sr); p.appendChild(b); }
+        last = m.index + m[0].length;
+      }
+      p.appendChild(document.createTextNode(text.slice(last)));
     }
+    function showHits(c, res, q, cited) {
+      if (cited) { var all = h('details', 'dim'); all.appendChild(h('summary', null, '找到的原文（' + res.hits.length + ' 筆；點答案裡的 [編號] 看出處）')); res.hits.forEach(function (hit, i) { all.appendChild(hitCard(hit, i, q)); }); c.appendChild(all); scroll(); return; }
+      c.appendChild(h('div', 'st', '原文出處（' + res.hits.length + ' 筆）')); res.hits.forEach(function (hit, i) { c.appendChild(hitCard(hit, i, q)); }); scroll();
+    }
+    // 創作的成品：說明文字＋程式碼區塊（可複製）、依據檢查、參考的素材
+    function renderCreate(c, cr) {
+      c.appendChild(h('div', 'st', '✨ AI 創作——設計與寫法是 AI 自己的，不是知識庫原文。用到知識庫的語法／API 標 [編號]（點開看原始資料）；標 [外] 的是知識庫沒有、AI 憑自己的知識補的，請自己確認。'));
+      var box = h('div', 'ans'); String(cr.text).split(/(```[^\n]*\n[\s\S]*?```)/g).forEach(function (pt) {
+        var m = /^```([^\n]*)\n([\s\S]*?)```$/.exec(pt);
+        if (m) { var pre = h('pre', 'code'), cb = h('button', 'ic', '複製'); pre.textContent = m[2].replace(/\n$/, ''); cb.onclick = function () { copyText(m[2], cb, '複製'); }; box.appendChild(h('div', 'st', m[1].trim() || '程式碼')); box.appendChild(pre); box.appendChild(cb); }
+        else pt.split(/\n{2,}/).forEach(function (para) { if (!para.trim()) return; var p = h('div'); p.style.whiteSpace = 'pre-wrap'; addInline(p, para.trim(), cr.sources); box.appendChild(p); });
+      }); c.appendChild(box);
+      var row = h('div', 'row'), cpAll = h('button', null, '複製全部'), dl = h('button', null, '下載 .md'); cpAll.onclick = function () { copyText(cr.text, cpAll, '複製全部'); }; dl.onclick = function () { try { var a = document.createElement('a'), u = URL.createObjectURL(new Blob([cr.text], { type: 'text/markdown' })); a.href = u; a.download = '創作.md'; a.click(); setTimeout(function () { URL.revokeObjectURL(u); }, 2000); } catch (e) { /* */ } }; row.appendChild(cpAll); row.appendChild(dl); c.appendChild(row);
+      var rp = cr.report || {}, dt = h('details', 'tr'); dt.open = true; dt.appendChild(h('summary', null, '🔍 依據檢查：程式碼用到的名稱，' + (rp.inKb || []).length + ' 個在知識庫素材裡找得到、' + (rp.notInKb || []).length + ' 個素材沒提到' + (rp.invalid_refs ? '、' + rp.invalid_refs + ' 個編號不存在' : '')));
+      if ((rp.inKb || []).length) { var d1 = h('div', 'trl'); d1.appendChild(document.createTextNode('素材裡找得到：')); rp.inKb.forEach(function (x) { d1.appendChild(document.createTextNode(x.name + ' ')); var b = h('button', 'cite', '[' + x.n + ']'), sr = (cr.sources || [])[x.n - 1]; b.title = sr ? sr.label : ''; b.onclick = function () { if (sr) openSource(sr); }; d1.appendChild(b); d1.appendChild(document.createTextNode('　')); }); dt.appendChild(d1); }
+      if ((rp.notInKb || []).length) dt.appendChild(h('div', 'trl', '素材沒提到（AI 憑自己的知識用的，請自己確認）：' + rp.notInKb.join('、')));
+      if (rp.truncated) dt.appendChild(h('div', 'trl bad', '⚠️ 模型的輸出被截斷了（太長），程式碼可能不完整；可以請它分成幾次、或只做其中一個版本。'));
+      c.appendChild(dt);
+      var src = h('details', 'dim'); src.appendChild(h('summary', null, '參考的素材（' + (cr.sources || []).length + ' 段' + (cr.queries && cr.queries.length ? '；查詢：' + cr.queries.join('、') : '') + '）')); (cr.sources || []).forEach(function (sr) { var b = h('button', 'cite', '[' + sr.n + '] ' + sr.label); b.style.display = 'block'; b.onclick = function () { openSource(sr); }; src.appendChild(b); }); c.appendChild(src); scroll();
+    }
+    // 把一則對話紀錄畫成卡片內容（即時回答與重新整理後恢復都用這個）
+    function fillRec(c, rec) {
+      var q = rec.q;
+      if (rec.k === 'chat') { var tx = h('div'); tx.style.whiteSpace = 'pre-wrap'; tx.textContent = rec.reply; c.appendChild(tx); return; }
+      if (rec.err && rec.err !== '已停止') note(c, '⚠️ ' + rec.err, 'st bad');
+      if (rec.k === 'create') { if (rec.cr) renderCreate(c, rec.cr); return; }
+      var res = rec.res; if (!res) return;
+      if (!res.found) { var nf0 = h('details', 'dim'); nf0.appendChild(h('summary', null, '沒有找到相關內容')); nf0.appendChild(h('div', null, (res.message || '在目前勾選的來源裡找不到相關內容。') + (res.semantic === false ? '（' + (res.semantic_note || '只用關鍵字檢索') + '）' : ''))); c.appendChild(nf0); return; }
+      var ai = rec.ai; if (!ai) { showHits(c, res, q); return; }
+      if (!ai.ok) { note(c, '⚠️ AI 整理失敗：' + ai.error + '\n下面是原文。', 'st bad'); showHits(c, res, q); return; }
+      if (!ai.sentences.length) { var nf = h('details', 'dim'); nf.appendChild(h('summary', null, '沒有找到能回答的內容（' + (ai.dropped.length ? '丟掉了 ' + ai.dropped.length + ' 句對不上原文的' : '模型說找不到') + '）')); c.appendChild(nf); }
+      else { var box = h('div', 'ans'); ai.sentences.forEach(function (x) { var p = h('div'); p.appendChild(document.createTextNode(x.text)); if (x.image) { var im = h('span', 'cite', '🖼'); im.title = '這句的根據包含圖片的模型描述（不是原文，可能有誤）'; p.appendChild(im); } x.cites.forEach(function (n) { var b = h('button', 'cite', '[' + n + ']'), sr = (ai.sources || [])[n - 1]; b.title = sr ? sr.label : ''; b.onclick = function () { if (sr) openSource(sr); }; p.appendChild(b); }); box.appendChild(p); }); c.appendChild(box); }
+      if (ai.dropped && ai.dropped.length) { var dd = h('details', 'dim'); dd.appendChild(h('summary', null, '丟掉了 ' + ai.dropped.length + ' 句（對不上原文，沒有採用）')); ai.dropped.forEach(function (x) { dd.appendChild(h('div', 'trl', x.text + '　← ' + x.why)); }); c.appendChild(dd); }
+      showHits(c, res, q, ai.cited || []);
+    }
+    function restoreConv(list) {
+      conv = list.slice();
+      conv.forEach(function (rec) { userMsg(rec.q); var c = card(cardTitle(rec)); if (rec.steps && rec.steps.length) { var tr0 = transcript(c, '🧾 過程'); rec.steps.forEach(function (st) { tr0.step(st[0], st[1]); }); tr0.end(rec.took || '🧾 過程'); } fillRec(c, rec); });
+      scroll();
+    }
+    function askCore(q, me) {
+      var kindMode = mode.value; lastQuery = q; userMsg(q);
+      var hist0 = histForRoute(), rec = { k: 'a', q: q, mode: kindMode, steps: [], ts: Date.now() }; conv.push(rec);
+      var c = card('🔎 查詢'), tr0 = transcript(c, '🧾 過程（進行中…）'), t0 = Date.now(), ctl = me.ctl;
+      var tr = { step: function (t, cls) { rec.steps.push([t, cls || '']); return tr0.step(t, cls); }, wait: tr0.wait, end: function (t) { rec.took = t; tr0.end(t); } };
+      var stopWait = tr.wait('處理中', ctl);
+      var onStep = function (t) { stopWait(); tr.step(t); stopWait = tr.wait('處理中', ctl); };
+      var setTitle = function (t) { try { c.firstChild.firstChild.nodeValue = t; } catch (e) { /* */ } };
+      function aborted() { if (me.aborted) { stopWait(); tr.step('⏹ 已停止', 'bad'); tr.end('🧾 過程（已停止）'); rec.err = '已停止'; saveConv(); return true; } return false; }
+      function finish(label) { stopWait(); tr.end('🧾 過程（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒' + (label ? '，' + label : '') + '）'); saveConv(); scroll(); }
+      function onErr(e) { stopWait(); if (me.aborted) { aborted(); return; } rec.err = String((e && e.message) || e).slice(0, 200); tr.step('⚠️ ' + rec.err, 'bad'); tr.end('🧾 過程（出錯）'); saveConv(); }
+      if (kindMode === 'create' && host.create) {
+        rec.k = 'create'; setTitle('✨ 創作');
+        return host.create(q, onStep, ctl).then(function (cr) { stopWait(); if (aborted()) return; if (!cr.ok) { rec.err = cr.error; fillRec(c, rec); finish('沒完成'); return; } rec.cr = cr; fillRec(c, rec); finish(); }).catch(onErr);
+      }
+      var routeP = (kindMode === 'ai' && host.route) ? host.route(q, hist0, onStep, ctl) : Promise.resolve({ route: 'search', query: q });
+      return routeP.then(function (rt) {
+        if (aborted()) return;
+        if (rt.route === 'chat') { rec.k = 'chat'; rec.reply = rt.reply; setTitle('💬 對話'); stopWait(); fillRec(c, rec); finish(); return; }
+        var qq = rt.query || q; rec.query = qq;
+        return host.ask({ question: qq, limit: 6, ctl: ctl, onStep: onStep }).then(function (res) {
+          stopWait(); if (aborted()) return; rec.res = res;
+          if (!res.found) { tr.step('沒有找到相關內容', 'bad'); fillRec(c, rec); finish('沒找到'); return; }
+          tr.step('找到 ' + res.hits.length + ' 筆　' + (res.semantic ? '關鍵字＋語意' : (res.semantic_note || '只用關鍵字')), 'ok');
+          if (kindMode !== 'ai' || !host.answerAI) { fillRec(c, rec); finish(); return; }
+          var ctl2 = me.ctl2, stop2 = tr.wait('等待模型回應', ctl2);
+          return host.answerAI(qq, res.hits, function (t) { stop2(); tr.step(t); stop2 = tr.wait('等待模型回應', ctl2); }, ctl2).then(function (ai) { stop2(); if (aborted()) return; rec.ai = ai; fillRec(c, rec); finish(); });
+        });
+      }).catch(onErr);
+    }
+    var clrT = null; bClr.onclick = function () { if (!clrT) { bClr.textContent = '再按一次清除'; clrT = setTimeout(function () { bClr.textContent = '🗑'; clrT = null; }, 3000); return; } clearTimeout(clrT); clrT = null; bClr.textContent = '🗑'; conv = []; msgs.textContent = ''; if (host.chatClear) host.chatClear(); var cc = card('🗑 已清除這個庫的對話紀錄'); note(cc, '來源與索引都還在。'); };
     go.onclick = send; ta.oninput = syncBtn; ta.onkeydown = function (e) { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } };
     function hitCard(hit, i, question) {
       var c = h('div', 'hit'), top = h('div'), lb = h('span', 'lb', (i + 1) + '. ' + hit.label), by = h('span', 'by', hit.found_by || '關鍵字'); top.appendChild(lb); top.appendChild(by); c.appendChild(top);
@@ -18075,7 +18136,7 @@ const holder = {};
     // ───── 視窗外殼：彈出、最大化、收回對話裡（共用 FaWin；元素留在原位，不重新載入）─────
     var win = WIN ? WIN.decorate(el, { id: 'knowledge', title: '📚 Knowledge Inventory', bar: bar, minW: 520, minH: 320 }) : null;
     el._ki = { win: win, pop: function () { if (win) win.pop(); }, dock: function () { if (win) win.dock(); }, maximize: function (on) { if (win) win.maximize(on); }, isPopped: function () { return !!win && win.isPopped(); }, isMaximized: function () { return !!win && win.isMaximized(); }, toggleSide: function (show) { sideHidden = show === undefined ? !sideHidden : !show; applySide(); }, isSideHidden: function () { return sideHidden; }, refresh: refreshStatus, destroy: function () { try { if (offProg) offProg(); if (win) win.destroy(); el.remove(); } catch (e) { /* */ } }, ask: function (q) { ta.value = q; send(); }, showAdd: showAdd };
-    refreshStatus().then(function () { var c = card('👋 你好'); note(c, '左邊是你的來源：勾選的才會用來回答，可以拖檔案進來或按「＋ 加入」。下面問問題，回答只會是原文，標明來源與第幾行。上面的按鈕可以更新知識庫、模型整理、建立語意索引、看關聯、設定位置與容量。'); });
+    refreshStatus().then(function () { return (host.chatLoad ? host.chatLoad() : Promise.resolve([])).then(function (list) { if (list && list.length) { restoreConv(list); return; } var c = card('👋 你好'); note(c, '左邊是你的來源：勾選的才會用來回答，可以拖檔案進來或按「＋ 加入」。下面問問題，回答只會是原文，標明來源與第幾行。上面的按鈕可以更新知識庫、模型整理、建立語意索引、看關聯、設定位置與容量。「🤖 AI 整理」閒聊直接聊、問資料才查原文；「✨ 創作」可以請 AI 依知識庫的資料設計知識庫裡沒有的東西。對話紀錄會保存，重新整理後還在（🗑 可以清除）。'); }); });
     return el;
   }
   return { mount: mount, highlight: highlight };
@@ -32785,6 +32846,68 @@ const FaKnowledgeHost = (function () {
             this._kiEmit({ op: 'organize', end: true });
             return { ok: true, checked: pairs.length, proposed, dropped, failed, terms: results, note: '模型提出的關聯要你確認才會用在回答裡；片語都是程式核對過、真的同時出現在兩邊的行裡。' };
         },
+        // ───── 對話保存：每個庫一份，存在這個瀏覽器的 IndexedDB（不放進 .keeplookup 檔），最多 60 則；重新整理後恢復 ─────
+        _kiChatDb() { return new Promise((res, rej) => { const rq = indexedDB.open('fa-ki-chat', 1); rq.onupgradeneeded = () => { rq.result.createObjectStore('chats'); }; rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error); }); },
+        async _kiChatLoad() { try { const db = await this._kiChatDb(), key = this._kiRef(); const v = await new Promise((res, rej) => { const r = db.transaction('chats').objectStore('chats').get(key); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); db.close(); return Array.isArray(v) ? v : []; } catch (_) { return []; } },
+        async _kiChatSave(list) { try { const db = await this._kiChatDb(), key = this._kiRef(); await new Promise((res, rej) => { const tx = db.transaction('chats', 'readwrite'); tx.objectStore('chats').put(JSON.parse(JSON.stringify(list.slice(-60))), key); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }); db.close(); return true; } catch (_) { return false; } },
+        async _kiChatClear() { try { const db = await this._kiChatDb(), key = this._kiRef(); await new Promise((res, rej) => { const tx = db.transaction('chats', 'readwrite'); tx.objectStore('chats').delete(key); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }); db.close(); } catch (_) { /* */ } return true; },
+        // ───── 閒聊路由：招呼、道謝、閒聊直接聊；要資訊就查原文 ─────
+        // 先用規則判斷（問句詞、識別字、指令、很長的話一定查）；只有「不確定」的（很短又不像在問資料、或是接著上一輪的追問）才問模型：CHAT: 回覆，或 SEARCH: 補成完整的查詢句。
+        // 保險：看起來是在問資料的話，就算模型選了閒聊也照樣查原文，模型憑記憶寫的回答不顯示。
+        _kiLooksLikeLookup(q) { const t = String(q || '').trim(); return /[?？]/.test(t) || /怎麼|如何|什麼|甚麼|為什麼|為何|哪[裡個些邊]|是否|能不能|可以|有沒有|多少|幾個|\b(how|what|why|where|which|can|does|is there)\b/i.test(t) || /[A-Za-z]+[_.:\-][A-Za-z0-9]+|[A-Z][a-z]+[A-Z]|\d{2,}|--?\w{2,}|\(\)/.test(t) || t.length > 40; },
+        async _kiRoute(q, history, onStep, ctl) {
+            const step = (t) => { try { if (onStep) onStep(t); } catch (_) { /* */ } }; const t = String(q || '').trim(), hist = Array.isArray(history) ? history.slice(-4) : [];
+            const lookup = this._kiLooksLikeLookup(t), followUp = hist.length > 0 && t.length <= 14 && /^(那|還有|然後|所以|它|這個|那個|另外|and |what about|how about)/i.test(t);
+            if (lookup && !followUp) return { route: 'search', query: t };
+            step('🧭 判斷是閒聊還是要查資料…');
+            let names = []; try { names = (await this._kiRun((store) => store.listSources())).slice(0, 20).map((x) => x.name); } catch (_) { /* */ }
+            const prompt = '你是知識庫助理。使用者說：「' + t + '」\n' + (hist.length ? '前幾輪：\n' + hist.map((h) => '使用者：' + String(h.q).slice(0, 80) + '\n助理：' + String(h.a || '').slice(0, 120)).join('\n') + '\n' : '') + '知識庫裡的來源：' + (names.join('、') || '（空的）') + '\n請判斷並只輸出一行：\n1) 招呼、道謝、閒聊、問你是誰／能做什麼／知識庫裡有什麼 → CHAT: <簡短回覆，繁體中文；不要回答任何需要查資料的事>\n2) 其他（包含接著上一輪的追問）→ SEARCH: <把使用者的話用前幾輪補成一句完整、獨立的查詢句>';
+            let reply = ''; try { reply = await this._kiLlm(prompt, { systemPrompt: '你只負責分流，不回答資料問題。', maxTokens: 300, temperature: 0 }, { label: '判斷', timeoutMs: 45000, onStep, ctl }); } catch (e) { step('　（模型沒有回應，直接查原文）'); return { route: 'search', query: t }; }
+            const lines = String(reply).split('\n').map((x) => x.trim()), lastChat = lines.filter((x) => /^CHAT\s*[:：]/i.test(x)).pop(), lastSearch = lines.filter((x) => /^SEARCH\s*[:：]/i.test(x)).pop();
+            if (lastSearch) { const qq = lastSearch.replace(/^SEARCH\s*[:：]\s*/i, '').trim(); if (qq) { if (qq !== t) step('　改寫成查詢句：' + qq); return { route: 'search', query: qq }; } }
+            if (lastChat && !lookup) { const rp = lastChat.replace(/^CHAT\s*[:：]\s*/i, '').trim(); if (rp) return { route: 'chat', reply: rp }; }
+            return { route: 'search', query: t };
+        },
+        // ───── 創作：請 AI 設計／寫出「知識庫裡沒有的東西」（例如看完 C 和 C++ 的 programming guide 之後設計一個程式） ─────
+        // 做法：1) 請模型列出要先查的東西 → 程式用每一條去查知識庫，收集素材；2) 把素材（編號）交給模型，允許它創作；用到素材裡的語法／API／規則要標 [編號]，
+        // 素材沒講、憑它自己知識補的標 [外]；3) 程式做「依據檢查」：程式碼裡用到的函式／標頭／名稱，哪些在素材裡找得到（附出處編號）、哪些素材沒提到。創作內容不丟棄，但明講哪些有依據、哪些沒有。
+        async _kiCreate(request, onStep, ctl, sources) {
+            const step = (t) => { try { if (onStep) onStep(t); } catch (_) { /* */ } }, t0 = Date.now(); const req = String(request || '').trim(); if (!req) return { ok: false, error: '請說要創作什麼' };
+            step('✨ 創作：先決定要從知識庫查哪些資料…');
+            let queries = []; try {
+                const rp = await this._kiLlm('使用者想請你創作（設計、寫程式、規劃…）：「' + req + '」\n他有一個知識庫（裡面是他放進去的手冊、文件）。為了做好這件事，需要先從知識庫查哪些資料（語法規則、函式用法、設計規範…）？請列出最多 8 個查詢，一行一個，每個只有 1 到 3 個詞，像搜尋引擎的關鍵詞（例如：struct、vector sort、scanf、class 建構），中英文都可以，不要解釋、不要寫完整句子。', { systemPrompt: '你只負責列出要查什麼，不回答。', maxTokens: 500, temperature: 0 }, { label: '決定要查什麼', timeoutMs: 45000, onStep, ctl });
+                queries = String(rp || '').split('\n').map((l) => l.replace(/^[\s\-*\d.、)）]+/, '').trim()).filter((l) => l && l.length <= 40).slice(0, 8);
+            } catch (e) { if (/已略過/.test(String((e && e.message) || e))) throw e; }
+            if (!queries.length) queries = [req.slice(0, 120)]; step('　要查：' + queries.join('；'));
+            const mats = [], seen = new Set();
+            for (const q of queries) {
+                const r = await this._kiAsk({ question: q, limit: 4, no_expand: true, sources }).catch(() => null); let n = 0;
+                for (const h of ((r && r.hits) || [])) { const k = h.source_id + ':' + h.line_start; if (seen.has(k) || mats.length >= 12) continue; seen.add(k); mats.push(h); n++; }
+                step('　「' + q.slice(0, 30) + '」→ ' + (n ? '新增 ' + n + ' 段素材' : '沒有找到'));
+            }
+            // 每個勾選的來源至少再用整個需求查一輪（限定那個來源），避免只撈到其中一份手冊
+            try { const srcList = (await this._kiRun((store) => store.listSources())).filter((x) => x.enabled).slice(0, 8); for (const sc of srcList) { if (mats.some((h) => h.source_id === sc.id) || mats.length >= 12) continue; const r = await this._kiAsk({ question: queries.join(' ') + ' ' + req.slice(0, 60), limit: 2, no_expand: true, sources: [sc.id] }).catch(() => null); let n = 0; for (const h of ((r && r.hits) || [])) { const k = h.source_id + ':' + h.line_start; if (seen.has(k) || mats.length >= 12) continue; seen.add(k); mats.push(h); n++; } if (n) step('　再從《' + sc.name + '》補 ' + n + ' 段素材'); } } catch (_) { /* */ }
+            if (!mats.length) return { ok: false, error: '知識庫裡找不到跟這件事相關的資料，沒有素材可以參考。（要憑 AI 自己的知識創作的話，請直接問一般的 AI 對話。）', queries };
+            for (const h of mats) { h.ctx = String(h.quote); if (h.ctx.length < 200 && h.source_id) { try { const d = await this._kiRun((store) => store.detail(h.source_id, { line_start: h.line_start, line_end: h.line_end + 10 }, { maxLines: 14 })); const tx = ((d && d.lines) || []).map((l) => l.text).join('\n'); if (tx.length > h.ctx.length) h.ctx = tx; } catch (_) { /* */ } } }
+            step('📚 收集到 ' + mats.length + ' 段素材，交給模型創作…');
+            const mkCtx = (per, n) => mats.slice(0, n).map((h, i) => '[' + (i + 1) + '] 《' + h.source + '》' + h.ctx.slice(0, per)).join('\n\n'), ctx = mkCtx(700, 12);
+            const prompt = ('要創作的事：' + req + '\n\n下面是從使用者知識庫找到的參考素材（有編號）：\n\n' + ctx + '\n\n請完成創作（例如設計、寫程式、規劃）。規則：1) 用到素材裡的語法、函式、API、規則、數字時，一定要照素材寫，並在那一句（或程式碼的那一行註解）標上素材編號，例如 [2]；2) 素材沒有講、但你憑自己的知識補上的用法，在那一句（或那行註解）標 [外]，讓使用者知道要自己確認；3) 結構、構想、演算法是你自己創作的，不用標；4) 不要假裝素材裡有它沒有的東西；5) 先用幾句話說明設計，再給成品；程式碼放在 ``` 圍起來的區塊裡。回答使用者用的語言。');
+            let text = ''; try { text = await this._kiLlm(prompt, { systemPrompt: '你是依據參考素材創作的助手：素材有的照素材，素材沒有的標 [外]。', maxTokens: 3800, temperature: 0.4 }, { label: '創作', timeoutMs: 240000, onStep, ctl, offlinePrompt: () => prompt.replace(ctx, () => mkCtx(300, 5)) }); } catch (e) { return { ok: false, error: '模型沒有回應：' + String((e && e.message) || e).slice(0, 160), queries, sources: mats }; }
+            text = String(text || '').trim(); if (!text) return { ok: false, error: '模型回了空白', queries };
+            let truncated = false; if ((text.match(/```/g) || []).length % 2 === 1) { text += '\n```'; truncated = true; } // 輸出被截斷時，程式碼區塊沒關起來
+            // 依據檢查
+            const corpus = mats.map((h) => FaKnowledge.fold(h.ctx)); const refs = new Map(); let invalid = 0;
+            const fixRef = (m, d) => { const k = Number(d); if (k >= 1 && k <= mats.length) { refs.set(k, true); return m; } invalid++; return '[?]'; };
+            const fixed = text.split(/(```[^\n]*\n[\s\S]*?```)/g).map((part) => /^```/.test(part) ? part.split('\n').map((ln) => { const ci = ln.search(/\/\/|\/\*|(^|\s)#(?!include|define|if|endif|else|pragma)|--\s/); return ci < 0 ? ln : ln.slice(0, ci) + ln.slice(ci).replace(/\[(\d+)\]/g, fixRef); }).join('\n') : part.replace(/\[(\d+)\]/g, fixRef)).join('');
+            const code = Array.from(fixed.matchAll(/```[^\n]*\n([\s\S]*?)```/g)).map((m) => m[1]).join('\n'), defined = new Set(Array.from(code.matchAll(/\b(?:int|void|char|float|double|auto|bool|long|short|unsigned|class|struct|enum|def|function|func|fn)\s+\**([A-Za-z_]\w*)\s*[(\{:<=]/g)).map((m) => m[1]).concat(Array.from(code.matchAll(/\b([A-Za-z_]\w*)\s*(?:=\s*(?:\(|function|lambda)|\(\s*[^)]*\)\s*\{)/g)).map((m) => m[1])));
+            const KW = new Set(['if', 'for', 'while', 'switch', 'return', 'sizeof', 'main', 'catch', 'else', 'do', 'case', 'new', 'delete', 'throw', 'print', 'range', 'len', 'typeof', 'defined', 'elif', 'and', 'or', 'not']);
+            const names = []; const add = (x) => { if (x && x.length >= 3 && !KW.has(x) && !defined.has(x.split(/::|\.|->/).pop()) && names.indexOf(x) < 0) names.push(x); };
+            Array.from(code.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*(?:(?:::|\.|->)[A-Za-z_][A-Za-z0-9_]*)*)\s*\(/g)).forEach((m) => add(m[1])); Array.from(code.matchAll(/#include\s*[<"]([^>"]+)[>"]/g)).forEach((m) => add(m[1])); Array.from(code.matchAll(/\bstd::[A-Za-z_]\w*/g)).forEach((m) => add(m[0]));
+            const inKb = [], notInKb = [];
+            for (const nm of names.slice(0, 40)) { const probe = [nm, nm.split(/::|\.|->/).pop()].filter((x) => x && x.length >= 3); let at = -1; for (const pr of probe) { at = corpus.findIndex((c) => c.indexOf(FaKnowledge.fold(pr)) >= 0); if (at >= 0) break; } if (at >= 0) inKb.push({ name: nm, n: at + 1 }); else notInKb.push(nm); }
+            step('🔍 依據檢查：程式碼用到 ' + names.length + ' 個名稱，素材裡找得到 ' + inKb.length + ' 個，素材沒提到 ' + notInKb.length + ' 個');
+            return { ok: true, text: fixed, queries, sources: mats.map((h, i) => ({ n: i + 1, label: h.label, source: h.source, source_id: h.source_id, line_start: h.line_start, line_end: h.line_end, quote: h.quote, ctx: h.ctx })), report: { inKb, notInKb, invalid_refs: invalid, cited: Array.from(refs.keys()), truncated }, ms: Date.now() - t0 };
+        },
         // 叫模型：先走線上；線上逾時／出錯，緊接著改用離線文字模型（使用者在 Configure 裝好的）；離線也不行，再試一次線上（節點重新上線後就接得上）。
         // 每一步都用 onStep 說出原因與秒數；使用者可以按「略過等待」（ctl.cancel）。全部失敗就丟出最後一個錯誤，呼叫端退回「只給原文」，不會卡住。
         // 離線小模型的上下文小，所以呼叫端可以給 offlinePrompt（較短的提示詞）。離線模型寫出來的東西一樣要過逐句核對。
@@ -32882,7 +33005,7 @@ const FaKnowledgeHost = (function () {
             return {
                 palette: () => ({ dark: !self._isLightTheme() }),
                 status: () => self._kiStatus(), sources: () => self._kiSources(),
-                ask: (a) => self._kiAsk(a), proposeLinks: (onStep) => self._kiProposeLinks(onStep), answerAI: (q, hits, onStep, ctl) => self._kiAnswerAI(q, hits, onStep, ctl), onProgress: (fn) => self._kiOn(fn),
+                ask: (a) => self._kiAsk(a), proposeLinks: (onStep) => self._kiProposeLinks(onStep), chatLoad: () => self._kiChatLoad(), chatSave: (l) => self._kiChatSave(l), chatClear: () => self._kiChatClear(), route: (q, h, onStep, ctl) => self._kiRoute(q, h, onStep, ctl), create: (req, onStep, ctl) => self._kiCreate(req, onStep, ctl), answerAI: (q, hits, onStep, ctl) => self._kiAnswerAI(q, hits, onStep, ctl), onProgress: (fn) => self._kiOn(fn),
                 outline: (ref) => self._kiWithSource(ref, (store, s) => store.outline(s.id)),
                 detail: (ref, which, o) => self._kiWithSource(ref, (store, s) => store.detail(s.id, which, o)),
                 summary: (ref) => self._kiWithSource(ref, (store, s) => store.summary(s.id)),
