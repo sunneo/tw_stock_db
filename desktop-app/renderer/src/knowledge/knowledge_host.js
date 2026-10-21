@@ -287,6 +287,7 @@ const FaKnowledgeHost = (function () {
                     if (take) { res = r2; expanded = terms; }
                 }
             }
+            if (res.found) for (const h of res.hits) { try { const rel = await this._kiRun((store) => store.relatedOf(h.source_id, h.line_start, h.line_end)); if (rel.length) h.related = rel; } catch (_) { /* */ } }
             return Object.assign(res, { expanded_terms: expanded || undefined, semantic: !!qv.vec, semantic_note: qv.vec ? undefined : qv.why + '（只用關鍵字檢索）', how_to_answer: res.found ? '只能根據 hits 裡的 quote 回答，每個說法後面標出處（label：來源、第幾行）；quote 沒講到的就說沒有，不要補充或推測。' : '沒有找到，就照實說在知識庫裡找不到，不要用自己的知識代替。' });
         },
         // AI 整理：把找到的原文片段編號交給模型，請它只用這些回答、每句結尾標 [編號]。
@@ -300,10 +301,10 @@ const FaKnowledgeHost = (function () {
                 h.ctx = String(h.quote);
                 if (h.ctx.length < 160 && h.source_id) { try { const d = await this._kiRun((store) => store.detail(h.source_id, { line_start: h.line_start, line_end: h.line_end + 8 }, { maxLines: 12 })); const t = ((d && d.lines) || []).map((l) => l.text).join('\n'); if (t.length > h.ctx.length) h.ctx = t; } catch (_) { /* */ } }
             }
-            const ctx = use.map((h, i) => '[' + (i + 1) + '] 《' + h.source + '》' + h.ctx.slice(0, 900)).join('\n\n');
+            const mkCtx = (per, n) => use.slice(0, n).map((h, i) => '[' + (i + 1) + '] 《' + h.source + '》' + h.ctx.slice(0, per)).join('\n\n'), ctx = mkCtx(900, 6);
             step('🤖 交給模型整理（只准用 ' + use.length + ' 段原文，每句要標編號）…'); const t0 = Date.now();
             let reply = ''; try {
-                reply = await this._kiLlm('問題：' + question + '\n\n下面是從知識庫找到的原文片段（有編號）：\n\n' + ctx + '\n\n請只根據這些片段回答問題。規則：1) 每一句結尾都要標它所根據的片段編號，例如「按下 Save 鈕 [2]」；2) 指令放在 `反引號` 裡，並且逐字照抄原文；數字、名稱原樣照抄，不要改寫；3) 片段沒有講到的就不要說，不要補充或推測；4) 標題或章節名稱跟問題對得上也算有找到（例如「在《某某》找到標題『Plugin Installation』 [2]」），把它後面接著的內容也一併說出來；5) 完全找不到答案就只輸出「找不到」。', { systemPrompt: '你只能用給你的片段回答，每句都要標編號。', maxTokens: 1500, temperature: 0 }, { label: '整理回答', timeoutMs: 120000, tries: 3, onStep: step, ctl });
+                const prompt1 = ('問題：' + question + '\n\n下面是從知識庫找到的原文片段（有編號）：\n\n' + ctx + '\n\n請只根據這些片段回答問題。規則：1) 每一句結尾都要標它所根據的片段編號，例如「按下 Save 鈕 [2]」；2) 指令放在 `反引號` 裡，並且逐字照抄原文；數字、名稱原樣照抄，不要改寫；3) 片段沒有講到的就不要說，不要補充或推測；4) 標題或章節名稱跟問題對得上也算有找到（例如「在《某某》找到標題『Plugin Installation』 [2]」），把它後面接著的內容也一併說出來；5) 完全找不到答案就只輸出「找不到」。'); reply = await this._kiLlm(prompt1, { systemPrompt: '你只能用給你的片段回答，每句都要標編號。', maxTokens: 1500, temperature: 0 }, { label: '整理回答', timeoutMs: 120000, onStep: step, ctl, offlinePrompt: () => prompt1.replace(ctx, () => mkCtx(350, 4)) });
             } catch (e) { return { ok: false, error: '模型沒有回應：' + String((e && e.message) || e).slice(0, 160), ms: Date.now() - t0 }; }
             step('　模型回應了（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒），逐句核對編號與原文…');
             const norm = (x) => String(x || '').toLowerCase().replace(/\s+/g, ''); const sentences = [], dropped = [];
@@ -323,33 +324,72 @@ const FaKnowledgeHost = (function () {
             step('　核對完成：留下 ' + sentences.length + ' 句' + (dropped.length ? '，丟掉 ' + dropped.length + ' 句（對不上原文）' : '') + '（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）');
             return { ok: true, sentences, dropped, cited: Array.from(new Set(sentences.flatMap((x) => x.cites))), sources: use.map((h, i) => ({ n: i + 1, label: h.label, source: h.source, source_id: h.source_id, line_start: h.line_start, line_end: h.line_end, quote: h.quote, ctx: h.ctx })), ms: Date.now() - t0 };
         },
-        // 叫模型：逾時就當這次失敗、自動重試（AI 節點斷線再上線後，重試就接得上），每次失敗都用 onStep 說出原因與秒數；使用者也可以按「略過等待」（ctl.cancel）。
-        // 全部失敗就丟出最後一個錯誤，呼叫端退回「只給原文」，不會卡在那裡。
+        // 模型找關聯：程式用語意向量找出「不同來源、意思接近」的段落配對（最多 10 組），請模型說它們的共同點並給一個「兩段都原封不動出現的片語」；
+        // 程式核對那個片語真的同時出現在兩邊各自的某一行，才存成「模型提出」（status=proposed，要使用者確認才用在回答裡）。模型編的片語、跨行的片語一律不採用。
+        async _kiProposeLinks(onStep) {
+            const step = (t) => { try { if (onStep) onStep(t); } catch (_) { /* */ } };
+            if (!this._kiSettings().embedConsent) return { ok: false, error: '要先建立語意向量（🧠 語意），才能找出意思接近的段落請模型判斷' };
+            const model = this._kiModelId(), pairs = await this._kiRun((store) => store.nearestPairs(model, 10, 0.88));
+            if (!pairs.length) return { ok: true, checked: 0, proposed: 0, dropped: 0, failed: 0, note: '沒有找到「不同來源、意思夠接近」的段落（相似度 0.88 以上）。' };
+            let proposed = 0, dropped = 0, failed = 0; const results = [];
+            for (let i = 0; i < pairs.length; i++) {
+                const pr = pairs[i]; step('🔗 判斷第 ' + (i + 1) + '/' + pairs.length + ' 組（相似度 ' + pr.sim.toFixed(2) + '）…'); this._kiEmit({ op: 'organize', done: i, total: pairs.length, text: '模型找關聯 ' + (i + 1) + '/' + pairs.length });
+                const mk = (n) => '下面是兩段來自不同文件的原文。如果它們講的是同一件事、有共同的主題，請只輸出一行：LINK: <兩段都「原封不動」出現的一個片語>（照抄原文，不要翻譯、不要改寫、不要自己造詞）。沒有共同點就只輸出 NONE。\n\n[甲]\n' + String(pr.a.text).slice(0, n) + '\n\n[乙]\n' + String(pr.b.text).slice(0, n);
+                let reply = null; try { reply = await this._kiLlm(mk(700), { systemPrompt: '你只判斷，不創作。', maxTokens: 600, temperature: 0 }, { label: '判斷關聯', timeoutMs: 90000, onStep, offlinePrompt: () => mk(300) }); } catch (e) { failed++; continue; }
+                const ms = Array.from(String(reply).matchAll(/LINK:\s*(.+)/gi)); if (!ms.length) continue;
+                const term = ms[ms.length - 1][1].trim().replace(/^[「『"'`]+|[」』"'`。.]+$/g, '');
+                const r = await this._kiRun((store) => store.proposeLink('model', term, pr.a, pr.b), true);
+                if (r.ok) { proposed++; results.push(term); } else { dropped++; step('　（丟掉：「' + term.slice(0, 30) + '」' + (r.why || '') + '）'); }
+            }
+            this._kiEmit({ op: 'organize', end: true });
+            return { ok: true, checked: pairs.length, proposed, dropped, failed, terms: results, note: '模型提出的關聯要你確認才會用在回答裡；片語都是程式核對過、真的同時出現在兩邊的行裡。' };
+        },
+        // 叫模型：先走線上；線上逾時／出錯，緊接著改用離線文字模型（使用者在 Configure 裝好的）；離線也不行，再試一次線上（節點重新上線後就接得上）。
+        // 每一步都用 onStep 說出原因與秒數；使用者可以按「略過等待」（ctl.cancel）。全部失敗就丟出最後一個錯誤，呼叫端退回「只給原文」，不會卡住。
+        // 離線小模型的上下文小，所以呼叫端可以給 offlinePrompt（較短的提示詞）。離線模型寫出來的東西一樣要過逐句核對。
         async _kiLlm(prompt, opts, o) {
-            o = o || {}; const tries = o.tries || 2, tm = o.timeoutMs || 60000;
-            let lastErr;
-            for (let t = 1; t <= tries; t++) {
-                let timer = null; const t0 = Date.now();
+            o = o || {}; const tm = o.timeoutMs || 60000, step = o.onStep || (() => {}), offFirst = !!(this.advancedSettings && this.advancedSettings.offlineMode);
+            const plan = offFirst ? ['offline', 'online'] : ['online', 'offline', 'online']; let lastErr = null, offlineGone = false;
+            for (let i = 0; i < plan.length; i++) {
+                const kind = plan[i]; if (kind === 'offline' && offlineGone) continue;
+                let timer = null; const t0 = Date.now(), label = (o.label || '模型') + (kind === 'offline' ? '（離線模型）' : '');
+                if (kind === 'offline') step('🔌 ' + (i === 0 ? '離線模式：' : '線上沒成功，緊接著') + '改用離線文字模型…（第一次要載入模型，會比較慢；小模型的品質有限，寫出來的一樣會逐句核對）');
                 try {
+                    const lim = kind === 'offline' ? Math.max(tm, 180000) : tm;
+                    const call = kind === 'offline' ? this._kiOfflineComplete(o.offlinePrompt ? o.offlinePrompt() : prompt, opts) : this._callSimpleCompletion(prompt, opts);
                     const reply = await Promise.race([
-                        this._callSimpleCompletion(prompt, opts),
-                        new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('等了 ' + Math.round(tm / 1000) + ' 秒沒有回應（AI 節點可能斷線了）')), tm); }),
+                        call,
+                        new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('等了 ' + Math.round(lim / 1000) + ' 秒沒有回應' + (kind === 'online' ? '（AI 節點可能斷線了）' : ''))), lim); }),
                         new Promise((_, rej) => { if (o.ctl) o.ctl.cancel = () => rej(new Error('已略過等待')); }),
                     ]);
-                    clearTimeout(timer); return reply;
+                    clearTimeout(timer);
+                    if (!String(reply || '').trim()) throw new Error('模型回了空白');
+                    if (kind === 'offline') step('　✅ 離線模型回應了（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）'); else if (i > 0) step('　✅ 線上模型接上了（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）');
+                    return reply;
                 } catch (e) {
                     clearTimeout(timer); lastErr = e; const msg = String((e && e.message) || e);
                     if (/已略過/.test(msg)) throw e;
-                    if (o.onStep) o.onStep('　⚠️ ' + (o.label || '模型') + '沒成功（第 ' + t + '/' + tries + ' 次，' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）：' + msg.slice(0, 140) + (t < tries ? '。' + 3 * t + ' 秒後重試（節點重新上線後就接得上）' : ''));
-                    if (t < tries) await new Promise((r) => setTimeout(r, 3000 * t));
+                    if (kind === 'offline' && /還沒下載|沒有已下載|NOT_SUPPORTED|關掉|使用者取消/.test(msg)) offlineGone = true;
+                    const next = plan.slice(i + 1).find((k) => !(k === 'offline' && offlineGone));
+                    step('　⚠️ ' + label + '沒成功（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）：' + msg.slice(0, 140) + (next === 'offline' ? '。緊接著改用離線模型' : next === 'online' ? '。3 秒後再試線上（節點重新上線後就接得上）' : ''));
+                    if (next === 'online') await new Promise((r) => setTimeout(r, 3000));
                 }
             }
             throw lastErr;
         },
+        // 離線文字模型（Configure 裡選好、已下載的）：只拿「文字生成」，不經過離線訓練器與工具
+        async _kiOfflineComplete(prompt, opts) {
+            opts = opts || {}; const S = this._omSettings(), inst = await this._omInstalled();
+            const route = FaVlm.routeStages({ config: S.roles, bench: S.bench, installed: inst.set, requireInstalled: true, defaultId: S.textModel, hasTools: false });
+            const model = route && route.answer; if (!model) throw new Error('還沒有下載離線文字模型（Configure → 離線模型 裡可以下載）');
+            const msgs = []; if (opts.systemPrompt) msgs.push({ role: 'system', content: opts.systemPrompt }); msgs.push({ role: 'user', content: String(prompt) });
+            const r = await this._llmGenerate(model, { messages: msgs, maxTokens: Math.min(Number(opts.maxTokens) || 512, 700), deterministic: true }, { update() { /* */ }, log() { /* */ }, onToken() { /* */ } });
+            return String(r == null ? '' : r).trim();
+        },
         // 模型想的「可能出現在文件裡的詞」：只拿來多找一輪，不當答案。沒有模型可用就回空的（維持原本的檢索結果）。
         async _kiExpandQuery(q, onStep, ctl) {
             if (typeof this._callSimpleCompletion !== 'function') return [];
-            const reply = await this._kiLlm('使用者在一份文件（可能是英文的使用手冊、教學、講義）裡找答案，問題是：「' + q + '」\n請列出最多 8 個「這個問題的答案附近很可能出現的詞或短語」，中文和英文都要有（例如問題問「怎麼安裝」，可以列 install、installation、安裝、setup）。一行一個，只輸出詞本身，不要解釋。', { systemPrompt: '你是搜尋助手，只負責想關鍵詞，不回答問題。', maxTokens: 800, temperature: 0 }, { label: '想關鍵詞', timeoutMs: 45000, tries: 3, onStep, ctl });
+            const reply = await this._kiLlm('使用者在一份文件（可能是英文的使用手冊、教學、講義）裡找答案，問題是：「' + q + '」\n請列出最多 8 個「這個問題的答案附近很可能出現的詞或短語」，中文和英文都要有（例如問題問「怎麼安裝」，可以列 install、installation、安裝、setup）。一行一個，只輸出詞本身，不要解釋。', { systemPrompt: '你是搜尋助手，只負責想關鍵詞，不回答問題。', maxTokens: 800, temperature: 0 }, { label: '想關鍵詞', timeoutMs: 45000, onStep, ctl });
             return String(reply || '').split('\n').map((l) => l.replace(/^[\s\-*\d.、)）]+/, '').trim()).filter((l) => l && l.length <= 30).slice(0, 8);
         },
         async _kiResolveIds(list) { const arr = Array.isArray(list) ? list : String(list).split(/[,，、]/); return this._kiRun(async (store) => { const ids = []; for (const x of arr) { const s = await store.findSource(String(x).trim()); if (s) ids.push(s.id); } return ids; }); },
@@ -368,7 +408,7 @@ const FaKnowledgeHost = (function () {
                 if (onProgress) onProgress('整理「' + t.name + '」…'); this._kiEmit({ op: 'organize', source_id: t.id, name: t.name, done: report.length, total: targets.length, text: '模型整理 ' + (report.length + 1) + '/' + targets.length + '：' + t.name });
                 const src = await this._kiRun((store) => store.getSource(t.id)); const sample = src.text.length > 6000 ? src.text.slice(0, 3000) + '\n…\n' + src.text.slice(Math.floor(src.text.length / 2) - 1000, Math.floor(src.text.length / 2) + 1000) : src.text;
                 let reply = '';
-                try { reply = await this._kiLlm('下面是一份文件的內容（可能只有節錄）。請列出最多 8 個最能代表它的關鍵詞或短語。規則：每一個都必須是文件裡「原本出現過的字詞」，原樣抄下來，不要翻譯、不要改寫、不要新創；一行一個，只輸出詞本身。\n\n' + sample, { systemPrompt: '你是文件整理助手，只做挑選，不做創作。', maxTokens: 1500, temperature: 0 }, { label: '整理「' + t.name.slice(0, 20) + '」', timeoutMs: 120000, tries: 3, onStep: onProgress }); } catch (e) { report.push({ source: t.name, error: '模型沒有回應：' + String((e && e.message) || e).slice(0, 120) }); continue; }
+                try { const prompt2 = ('下面是一份文件的內容（可能只有節錄）。請列出最多 8 個最能代表它的關鍵詞或短語。規則：每一個都必須是文件裡「原本出現過的字詞」，原樣抄下來，不要翻譯、不要改寫、不要新創；一行一個，只輸出詞本身。\n\n' + sample); reply = await this._kiLlm(prompt2, { systemPrompt: '你是文件整理助手，只做挑選，不做創作。', maxTokens: 1500, temperature: 0 }, { label: '整理「' + t.name.slice(0, 20) + '」', timeoutMs: 120000, onStep: onProgress, offlinePrompt: () => prompt2.replace(sample, () => sample.slice(0, 1500)) }); } catch (e) { report.push({ source: t.name, error: '模型沒有回應：' + String((e && e.message) || e).slice(0, 120) }); continue; }
                 const hay = src.text.toLowerCase().replace(/\s+/g, ''); const terms = [];
                 String(reply || '').split('\n').map((l) => l.replace(/^[\s\-*\d.、)）]+/, '').trim()).filter((l) => l && l.length <= 40).forEach((l) => { if (hay.indexOf(l.toLowerCase().replace(/\s+/g, '')) >= 0 && terms.indexOf(l) < 0) terms.push(l); else rejected++; });
                 await this._kiRun((store) => store.setTags(t.id, terms.slice(0, 8), 'model'), true);
@@ -401,7 +441,7 @@ const FaKnowledgeHost = (function () {
             return {
                 palette: () => ({ dark: !self._isLightTheme() }),
                 status: () => self._kiStatus(), sources: () => self._kiSources(),
-                ask: (a) => self._kiAsk(a), answerAI: (q, hits, onStep, ctl) => self._kiAnswerAI(q, hits, onStep, ctl), onProgress: (fn) => self._kiOn(fn),
+                ask: (a) => self._kiAsk(a), proposeLinks: (onStep) => self._kiProposeLinks(onStep), answerAI: (q, hits, onStep, ctl) => self._kiAnswerAI(q, hits, onStep, ctl), onProgress: (fn) => self._kiOn(fn),
                 outline: (ref) => self._kiWithSource(ref, (store, s) => store.outline(s.id)),
                 detail: (ref, which, o) => self._kiWithSource(ref, (store, s) => store.detail(s.id, which, o)),
                 summary: (ref) => self._kiWithSource(ref, (store, s) => store.summary(s.id)),

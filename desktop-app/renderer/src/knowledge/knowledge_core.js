@@ -231,21 +231,54 @@
   }
 
   // ───── 關聯：只用字面上確定的證據 ─────
-  // 1) 來源 A 的文字直接提到來源 B 的名稱（去掉副檔名）  2) 兩個來源共有的專有名詞／數字／較長的詞（都附雙方的行號）
+  // 種類（kind）：mentions 來源提到另一個來源的名稱／identifier 同一個罕見識別字（版本、編號、CVE…）／same_quote 同一句話／heading_match 同樣的章節標題／
+  //   issue_ref 一行寫了議題編號或網址，另一個來源就是那個議題／wiki_link 一行有 [[頁名]]，另一個來源就是那一頁／url_link 一行含另一個來源的網址／shared_term 共有的專有名詞／model 模型提出（要使用者接受才用）。
+  // 每一條的 term 是「證據文字」，寫入前一定核對：證據真的在 from 那一行裡（兩端型的，兩邊的行都要有）；沒有證據就不寫。
+  var LINK_LABELS = { mentions: '提到', identifier: '同一個識別字', same_quote: '同一句話', heading_match: '同樣的章節標題', issue_ref: '議題引用', wiki_link: 'wiki 連結', url_link: '網址連結', shared_term: '共有的詞', model: '模型提出' };
+  function foldLow(s) { return fold(s).toLowerCase().replace(/\s+/g, ' ').trim(); }
+  var ID_RE = /\bCVE-\d{4}-\d{4,}\b|\bv?\d+\.\d+\.\d+(?:\.\d+)?\b|(?:^|[\s(（])#\d{2,}\b|\b0x[0-9a-fA-F]{3,}\b|\b[A-Z]{2,}\d{3,}(?:-\d+)?\b|\b[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+){2,}\b/g;
+  var GENERIC_TITLE = /^(第 \d+ 段|（開頭|目錄|前言|簡介|概述|Introduction|Overview|Contents|Table of Contents)/i;
+  function normUrl(u) { return String(u || '').trim().toLowerCase().replace(/#.*$/, '').replace(/\/+$/, ''); }
   function links(sources, opts) {
-    opts = opts || {}; var out = [], cap = opts.max || 60;
+    opts = opts || {}; var out = [], cap = opts.max || 60, per = {}, seen = {};
     var base = function (s) { return String(s.name).replace(/\.[A-Za-z0-9]+$/, ''); };
-    sources.forEach(function (a) {
-      sources.forEach(function (b) {
-        if (a === b || out.length >= cap) return; var nm = base(b); if (nm.length < 3) return;
-        for (var i = 0; i < a.lines.length; i++) if (a.lines[i].indexOf(nm) >= 0) { out.push({ kind: 'mentions', from: cite(a, i + 1, i + 1, a.lines[i].trim().slice(0, 160)), to: { source: b.name, source_id: b.id }, term: nm }); break; }
-      });
-    });
+    // 寫入前核對證據：term 要在 from 那一行；pair=true 的（兩端型）也要在 to 那一行
+    function push(kind, term, a, ai, b, bi, pair) {
+      if (out.length >= cap || (per[kind] || 0) >= (opts.perKind || 40)) return;
+      var t = foldLow(term); if (!t || t.length < 2) return;
+      if (foldLow(a.lines[ai - 1]).indexOf(t) < 0) return;
+      if (pair && (bi == null || foldLow(b.lines[bi - 1]).indexOf(t) < 0)) return;
+      var key = kind + '|' + a.id + ':' + ai + '>' + b.id + ':' + (bi || 0) + '|' + t; if (seen[key]) return; seen[key] = 1;
+      per[kind] = (per[kind] || 0) + 1;
+      out.push({ kind: kind, term: term, from: cite(a, ai, ai, a.lines[ai - 1].trim().slice(0, 160)), to: bi != null ? cite(b, bi, bi, b.lines[bi - 1].trim().slice(0, 160)) : { source: b.name, source_id: b.id } });
+    }
+    // 1) 提到另一個來源的名稱
+    sources.forEach(function (a) { sources.forEach(function (b) {
+      if (a === b) return; var nm = base(b); if (nm.length < 3) return;
+      for (var i = 0; i < a.lines.length; i++) if (a.lines[i].indexOf(nm) >= 0) { push('mentions', nm, a, i + 1, b, null, false); break; }
+    }); });
+    // 2) 議題引用、wiki 連結、網址連結（來源有網址／名稱才比得到）
+    sources.forEach(function (a) { for (var i = 0; i < a.lines.length; i++) {
+      var ln = a.lines[i];
+      (ln.match(/(?:issues?\/|issue\s*#?|#)(\d{2,})/gi) || []).forEach(function (m) { var num = (/\d+/.exec(m) || [])[0]; sources.forEach(function (b) { if (b !== a && ((b.url && new RegExp('issues?/' + num + '(?:\\D|$)').test(b.url)) || new RegExp('(?:issue\\s*#?|#)' + num + '(?:\\D|$)', 'i').test(b.name))) push('issue_ref', m.trim(), a, i + 1, b, null, false); }); });
+      (ln.match(/\[\[([^\]|#]+)/g) || []).forEach(function (m) { var pg = foldLow(m.replace(/^\[\[/, '')); sources.forEach(function (b) { if (b !== a && foldLow(base(b)) === pg) push('wiki_link', m.replace(/^\[\[/, ''), a, i + 1, b, null, false); }); });
+      (ln.match(/https?:\/\/[^\s)>\]"']+/g) || []).forEach(function (u) { sources.forEach(function (b) { if (b !== a && b.url && normUrl(b.url) === normUrl(u)) push('url_link', u, a, i + 1, b, null, false); }); });
+    } });
+    // 3) 同一句話（30 字以上，兩邊都有一模一樣的一行）
+    var quoteMap = {}; sources.forEach(function (a) { a.lines.forEach(function (ln, i) { var t = foldLow(ln); if (t.length < 30) return; (quoteMap[t] = quoteMap[t] || []).push([a, i + 1]); }); });
+    Object.keys(quoteMap).forEach(function (t) { var occ = quoteMap[t]; for (var x = 1; x < occ.length; x++) if (occ[x][0] !== occ[0][0]) { push('same_quote', occ[0][0].lines[occ[0][1] - 1].trim(), occ[0][0], occ[0][1], occ[x][0], occ[x][1], true); break; } });
+    // 4) 同樣的章節標題（不算「第 1 段」「目錄」這類每份都有的）
+    var titleMap = {}; sources.forEach(function (a) { (a.sections || []).forEach(function (sc) { var t = foldLow(sc.title); if (t.length < 4 || GENERIC_TITLE.test(sc.title)) return; (titleMap[t] = titleMap[t] || []).push([a, sc]); }); });
+    Object.keys(titleMap).forEach(function (t) { var occ = titleMap[t]; for (var x = 1; x < occ.length; x++) if (occ[x][0] !== occ[0][0]) { var a0 = occ[0][0], l0 = occ[0][1].line_start, b0 = occ[x][0], l1 = occ[x][1].line_start; var ta = foldLow(a0.lines[l0 - 1]), tb = foldLow(b0.lines[l1 - 1]); if (ta.indexOf(t) >= 0 && tb.indexOf(t) >= 0) push('heading_match', occ[0][1].title, a0, l0, b0, l1, true); break; } });
+    // 5) 同一個罕見識別字：全庫出現在 12 行以內、至少兩個來源
+    var idMap = {}; sources.forEach(function (a) { a.lines.forEach(function (ln, i) { (ln.match(ID_RE) || []).forEach(function (raw) { var t = raw.replace(/^[\s(（]+/, ''); (idMap[t] = idMap[t] || []).push([a, i + 1]); }); }); });
+    Object.keys(idMap).forEach(function (t) { var occ = idMap[t], srcSet = {}; occ.forEach(function (o) { srcSet[o[0].id] = 1; }); if (occ.length > 12 || Object.keys(srcSet).length < 2) return; for (var x = 1; x < occ.length; x++) if (occ[x][0] !== occ[0][0]) { push('identifier', t, occ[0][0], occ[0][1], occ[x][0], occ[x][1], true); break; } });
+    // 6) 共有的專有名詞／較長的詞（比較弱，最後才補）
     var termLines = function (src) { var m = {}; src.lines.forEach(function (ln, i) { (ln.match(/[A-Z][A-Za-z]{3,}(?:\s[A-Z][A-Za-z]{3,})*|\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|[A-Za-z][A-Za-z0-9_]{5,}|[㐀-鿿]{3,6}/g) || []).forEach(function (t) { if (!m[t]) m[t] = i + 1; }); }); return m; };
     var maps = sources.map(termLines);
-    for (var x = 0; x < sources.length; x++) for (var y = x + 1; y < sources.length; y++) {
-      var shared = Object.keys(maps[x]).filter(function (t) { return maps[y][t] != null; });
-      shared.sort(function (p, q) { return q.length - p.length; }).slice(0, 5).forEach(function (t) { if (out.length < cap) out.push({ kind: 'shared_term', term: t, from: cite(sources[x], maps[x][t], maps[x][t], sources[x].lines[maps[x][t] - 1].trim().slice(0, 160)), to: cite(sources[y], maps[y][t], maps[y][t], sources[y].lines[maps[y][t] - 1].trim().slice(0, 160)) }); });
+    for (var x2 = 0; x2 < sources.length; x2++) for (var y2 = x2 + 1; y2 < sources.length; y2++) {
+      var shared = Object.keys(maps[x2]).filter(function (t) { return maps[y2][t] != null; });
+      shared.sort(function (p, q) { return q.length - p.length; }).slice(0, 5).forEach(function (t) { push('shared_term', t, sources[x2], maps[x2][t], sources[y2], maps[y2][t], true); });
     }
     return out;
   }
@@ -257,5 +290,5 @@
     return { ok: true, found: true, hits: hits.map(function (h) { return { label: h.label, source: h.source, line_start: h.line_start, line_end: h.line_end, section: h.section, loc: h.loc, quote: h.quote, score: h.score, found_by: h.found_by || '關鍵字' }; }) };
   }
 
-  return { denseKeep: denseKeep, pinpoint: pinpoint, tokenize: tokenize, queryTokens: queryTokens, fold: fold, isHowTo: isHowTo, cmdLine: cmdLine, normalize: normalize, ingest: ingest, cite: cite, buildIndex: buildIndex, search: search, searchHybrid: searchHybrid, summarize: summarize, verifyQuote: verifyQuote, verifyAll: verifyAll, detail: detail, links: links, answer: answer, locLabel: locLabel };
+  return { denseKeep: denseKeep, pinpoint: pinpoint, tokenize: tokenize, queryTokens: queryTokens, LINK_LABELS: LINK_LABELS, foldLow: foldLow, fold: fold, isHowTo: isHowTo, cmdLine: cmdLine, normalize: normalize, ingest: ingest, cite: cite, buildIndex: buildIndex, search: search, searchHybrid: searchHybrid, summarize: summarize, verifyQuote: verifyQuote, verifyAll: verifyAll, detail: detail, links: links, answer: answer, locLabel: locLabel };
 });

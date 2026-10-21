@@ -17519,21 +17519,54 @@ const holder = {};
   }
 
   // ───── 關聯：只用字面上確定的證據 ─────
-  // 1) 來源 A 的文字直接提到來源 B 的名稱（去掉副檔名）  2) 兩個來源共有的專有名詞／數字／較長的詞（都附雙方的行號）
+  // 種類（kind）：mentions 來源提到另一個來源的名稱／identifier 同一個罕見識別字（版本、編號、CVE…）／same_quote 同一句話／heading_match 同樣的章節標題／
+  //   issue_ref 一行寫了議題編號或網址，另一個來源就是那個議題／wiki_link 一行有 [[頁名]]，另一個來源就是那一頁／url_link 一行含另一個來源的網址／shared_term 共有的專有名詞／model 模型提出（要使用者接受才用）。
+  // 每一條的 term 是「證據文字」，寫入前一定核對：證據真的在 from 那一行裡（兩端型的，兩邊的行都要有）；沒有證據就不寫。
+  var LINK_LABELS = { mentions: '提到', identifier: '同一個識別字', same_quote: '同一句話', heading_match: '同樣的章節標題', issue_ref: '議題引用', wiki_link: 'wiki 連結', url_link: '網址連結', shared_term: '共有的詞', model: '模型提出' };
+  function foldLow(s) { return fold(s).toLowerCase().replace(/\s+/g, ' ').trim(); }
+  var ID_RE = /\bCVE-\d{4}-\d{4,}\b|\bv?\d+\.\d+\.\d+(?:\.\d+)?\b|(?:^|[\s(（])#\d{2,}\b|\b0x[0-9a-fA-F]{3,}\b|\b[A-Z]{2,}\d{3,}(?:-\d+)?\b|\b[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+){2,}\b/g;
+  var GENERIC_TITLE = /^(第 \d+ 段|（開頭|目錄|前言|簡介|概述|Introduction|Overview|Contents|Table of Contents)/i;
+  function normUrl(u) { return String(u || '').trim().toLowerCase().replace(/#.*$/, '').replace(/\/+$/, ''); }
   function links(sources, opts) {
-    opts = opts || {}; var out = [], cap = opts.max || 60;
+    opts = opts || {}; var out = [], cap = opts.max || 60, per = {}, seen = {};
     var base = function (s) { return String(s.name).replace(/\.[A-Za-z0-9]+$/, ''); };
-    sources.forEach(function (a) {
-      sources.forEach(function (b) {
-        if (a === b || out.length >= cap) return; var nm = base(b); if (nm.length < 3) return;
-        for (var i = 0; i < a.lines.length; i++) if (a.lines[i].indexOf(nm) >= 0) { out.push({ kind: 'mentions', from: cite(a, i + 1, i + 1, a.lines[i].trim().slice(0, 160)), to: { source: b.name, source_id: b.id }, term: nm }); break; }
-      });
-    });
+    // 寫入前核對證據：term 要在 from 那一行；pair=true 的（兩端型）也要在 to 那一行
+    function push(kind, term, a, ai, b, bi, pair) {
+      if (out.length >= cap || (per[kind] || 0) >= (opts.perKind || 40)) return;
+      var t = foldLow(term); if (!t || t.length < 2) return;
+      if (foldLow(a.lines[ai - 1]).indexOf(t) < 0) return;
+      if (pair && (bi == null || foldLow(b.lines[bi - 1]).indexOf(t) < 0)) return;
+      var key = kind + '|' + a.id + ':' + ai + '>' + b.id + ':' + (bi || 0) + '|' + t; if (seen[key]) return; seen[key] = 1;
+      per[kind] = (per[kind] || 0) + 1;
+      out.push({ kind: kind, term: term, from: cite(a, ai, ai, a.lines[ai - 1].trim().slice(0, 160)), to: bi != null ? cite(b, bi, bi, b.lines[bi - 1].trim().slice(0, 160)) : { source: b.name, source_id: b.id } });
+    }
+    // 1) 提到另一個來源的名稱
+    sources.forEach(function (a) { sources.forEach(function (b) {
+      if (a === b) return; var nm = base(b); if (nm.length < 3) return;
+      for (var i = 0; i < a.lines.length; i++) if (a.lines[i].indexOf(nm) >= 0) { push('mentions', nm, a, i + 1, b, null, false); break; }
+    }); });
+    // 2) 議題引用、wiki 連結、網址連結（來源有網址／名稱才比得到）
+    sources.forEach(function (a) { for (var i = 0; i < a.lines.length; i++) {
+      var ln = a.lines[i];
+      (ln.match(/(?:issues?\/|issue\s*#?|#)(\d{2,})/gi) || []).forEach(function (m) { var num = (/\d+/.exec(m) || [])[0]; sources.forEach(function (b) { if (b !== a && ((b.url && new RegExp('issues?/' + num + '(?:\\D|$)').test(b.url)) || new RegExp('(?:issue\\s*#?|#)' + num + '(?:\\D|$)', 'i').test(b.name))) push('issue_ref', m.trim(), a, i + 1, b, null, false); }); });
+      (ln.match(/\[\[([^\]|#]+)/g) || []).forEach(function (m) { var pg = foldLow(m.replace(/^\[\[/, '')); sources.forEach(function (b) { if (b !== a && foldLow(base(b)) === pg) push('wiki_link', m.replace(/^\[\[/, ''), a, i + 1, b, null, false); }); });
+      (ln.match(/https?:\/\/[^\s)>\]"']+/g) || []).forEach(function (u) { sources.forEach(function (b) { if (b !== a && b.url && normUrl(b.url) === normUrl(u)) push('url_link', u, a, i + 1, b, null, false); }); });
+    } });
+    // 3) 同一句話（30 字以上，兩邊都有一模一樣的一行）
+    var quoteMap = {}; sources.forEach(function (a) { a.lines.forEach(function (ln, i) { var t = foldLow(ln); if (t.length < 30) return; (quoteMap[t] = quoteMap[t] || []).push([a, i + 1]); }); });
+    Object.keys(quoteMap).forEach(function (t) { var occ = quoteMap[t]; for (var x = 1; x < occ.length; x++) if (occ[x][0] !== occ[0][0]) { push('same_quote', occ[0][0].lines[occ[0][1] - 1].trim(), occ[0][0], occ[0][1], occ[x][0], occ[x][1], true); break; } });
+    // 4) 同樣的章節標題（不算「第 1 段」「目錄」這類每份都有的）
+    var titleMap = {}; sources.forEach(function (a) { (a.sections || []).forEach(function (sc) { var t = foldLow(sc.title); if (t.length < 4 || GENERIC_TITLE.test(sc.title)) return; (titleMap[t] = titleMap[t] || []).push([a, sc]); }); });
+    Object.keys(titleMap).forEach(function (t) { var occ = titleMap[t]; for (var x = 1; x < occ.length; x++) if (occ[x][0] !== occ[0][0]) { var a0 = occ[0][0], l0 = occ[0][1].line_start, b0 = occ[x][0], l1 = occ[x][1].line_start; var ta = foldLow(a0.lines[l0 - 1]), tb = foldLow(b0.lines[l1 - 1]); if (ta.indexOf(t) >= 0 && tb.indexOf(t) >= 0) push('heading_match', occ[0][1].title, a0, l0, b0, l1, true); break; } });
+    // 5) 同一個罕見識別字：全庫出現在 12 行以內、至少兩個來源
+    var idMap = {}; sources.forEach(function (a) { a.lines.forEach(function (ln, i) { (ln.match(ID_RE) || []).forEach(function (raw) { var t = raw.replace(/^[\s(（]+/, ''); (idMap[t] = idMap[t] || []).push([a, i + 1]); }); }); });
+    Object.keys(idMap).forEach(function (t) { var occ = idMap[t], srcSet = {}; occ.forEach(function (o) { srcSet[o[0].id] = 1; }); if (occ.length > 12 || Object.keys(srcSet).length < 2) return; for (var x = 1; x < occ.length; x++) if (occ[x][0] !== occ[0][0]) { push('identifier', t, occ[0][0], occ[0][1], occ[x][0], occ[x][1], true); break; } });
+    // 6) 共有的專有名詞／較長的詞（比較弱，最後才補）
     var termLines = function (src) { var m = {}; src.lines.forEach(function (ln, i) { (ln.match(/[A-Z][A-Za-z]{3,}(?:\s[A-Z][A-Za-z]{3,})*|\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|[A-Za-z][A-Za-z0-9_]{5,}|[㐀-鿿]{3,6}/g) || []).forEach(function (t) { if (!m[t]) m[t] = i + 1; }); }); return m; };
     var maps = sources.map(termLines);
-    for (var x = 0; x < sources.length; x++) for (var y = x + 1; y < sources.length; y++) {
-      var shared = Object.keys(maps[x]).filter(function (t) { return maps[y][t] != null; });
-      shared.sort(function (p, q) { return q.length - p.length; }).slice(0, 5).forEach(function (t) { if (out.length < cap) out.push({ kind: 'shared_term', term: t, from: cite(sources[x], maps[x][t], maps[x][t], sources[x].lines[maps[x][t] - 1].trim().slice(0, 160)), to: cite(sources[y], maps[y][t], maps[y][t], sources[y].lines[maps[y][t] - 1].trim().slice(0, 160)) }); });
+    for (var x2 = 0; x2 < sources.length; x2++) for (var y2 = x2 + 1; y2 < sources.length; y2++) {
+      var shared = Object.keys(maps[x2]).filter(function (t) { return maps[y2][t] != null; });
+      shared.sort(function (p, q) { return q.length - p.length; }).slice(0, 5).forEach(function (t) { push('shared_term', t, sources[x2], maps[x2][t], sources[y2], maps[y2][t], true); });
     }
     return out;
   }
@@ -17545,7 +17578,7 @@ const holder = {};
     return { ok: true, found: true, hits: hits.map(function (h) { return { label: h.label, source: h.source, line_start: h.line_start, line_end: h.line_end, section: h.section, loc: h.loc, quote: h.quote, score: h.score, found_by: h.found_by || '關鍵字' }; }) };
   }
 
-  return { denseKeep: denseKeep, pinpoint: pinpoint, tokenize: tokenize, queryTokens: queryTokens, fold: fold, isHowTo: isHowTo, cmdLine: cmdLine, normalize: normalize, ingest: ingest, cite: cite, buildIndex: buildIndex, search: search, searchHybrid: searchHybrid, summarize: summarize, verifyQuote: verifyQuote, verifyAll: verifyAll, detail: detail, links: links, answer: answer, locLabel: locLabel };
+  return { denseKeep: denseKeep, pinpoint: pinpoint, tokenize: tokenize, queryTokens: queryTokens, LINK_LABELS: LINK_LABELS, foldLow: foldLow, fold: fold, isHowTo: isHowTo, cmdLine: cmdLine, normalize: normalize, ingest: ingest, cite: cite, buildIndex: buildIndex, search: search, searchHybrid: searchHybrid, summarize: summarize, verifyQuote: verifyQuote, verifyAll: verifyAll, detail: detail, links: links, answer: answer, locLabel: locLabel };
 });
 
 }).call(null, undefined, holder);
@@ -17612,7 +17645,9 @@ const holder = {};
     o = o || {}; var hash = o.hash || hashText(src.text), now = Date.now();
     var ex = rowsOf(await this.exec('SELECT id, hash FROM sources WHERE name=? AND IFNULL(url,\'\')=?', [src.name, src.url || '']));
     var id = null, status = 'added';
-    if (ex.length) { if (ex[0].hash === hash && !o.force) return { id: ex[0].id, status: 'unchanged', chunks: 0 }; id = ex[0].id; status = 'updated'; await this._dropContent(id); }
+    if (ex.length) { if (ex[0].hash === hash && !o.force) return { id: ex[0].id, status: 'unchanged', chunks: 0 }; id = ex[0].id; status = 'updated'; await this._dropContent(id);
+      // 來源內容變了：模型提出的／使用者確認過的關聯不默默指到別行，標成「失效」；程式建立的會在重算時重來
+      await this.exec("UPDATE links SET status='stale' WHERE (from_source=? OR to_source=?) AND status IN ('proposed','confirmed')", [id, id]); }
     if (id == null) {
       await this.exec('INSERT INTO sources(name, kind, url, hash, notes, text, loc_runs, outline_style, chars, enabled, tags, added_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)', [src.name, src.kind, src.url || null, hash, JSON.stringify(src.notes || []), src.text, JSON.stringify(locRuns(src.locators)), src.outline_style || '', src.text.length, 1, o.tags ? JSON.stringify(o.tags) : null, now, now]);
       id = Number(rowsOf(await this.exec('SELECT last_insert_rowid() AS id'))[0].id);
@@ -17748,8 +17783,33 @@ const holder = {};
     return { links: n };
   };
   Store.prototype.getLinks = async function (id) {
-    var rows = rowsOf(await this.exec('SELECT l.*, a.name AS from_name, b.name AS to_name FROM links l JOIN sources a ON a.id=l.from_source JOIN sources b ON b.id=l.to_source WHERE l.status<>\'rejected\'' + (id != null ? ' AND (l.from_source=? OR l.to_source=?)' : '') + ' ORDER BY l.kind, l.id LIMIT 200', id != null ? [id, id] : []));
+    var rows = rowsOf(await this.exec('SELECT l.*, a.name AS from_name, b.name AS to_name FROM links l JOIN sources a ON a.id=l.from_source JOIN sources b ON b.id=l.to_source WHERE l.status<>\'rejected\'' + (id != null ? ' AND (l.from_source=? OR l.to_source=?)' : '') + ' ORDER BY CASE l.status WHEN \'proposed\' THEN 0 WHEN \'confirmed\' THEN 1 WHEN \'auto\' THEN 2 ELSE 3 END, l.kind, l.id LIMIT 300', id != null ? [id, id] : []));
     return rows.map(function (r) { return { id: r.id, kind: r.kind, term: r.term, status: r.status, from: { source: r.from_name, source_id: r.from_source, line_start: r.from_start, line_end: r.from_end, quote: r.from_quote }, to: { source: r.to_name, source_id: r.to_source, line_start: r.to_start, line_end: r.to_end, quote: r.to_quote } }; });
+  };
+  // 模型提出的關聯：兩段原文各自的某一行都逐字含有 term 才存（status='proposed'，要使用者確認才用在回答裡）
+  Store.prototype.proposeLink = async function (kind, term, a, b) {
+    var ta = K.foldLow(term); if (!ta || ta.length < 3) return { ok: false, why: '片語太短' };
+    var la = null, lb = null, srcA = await this.getSource(a.source_id), srcB = await this.getSource(b.source_id); if (!srcA || !srcB) return { ok: false, why: '找不到來源' };
+    for (var i = a.line_start; i <= a.line_end && !la; i++) if (K.foldLow(srcA.lines[i - 1]).indexOf(ta) >= 0) la = i;
+    for (var j = b.line_start; j <= b.line_end && !lb; j++) if (K.foldLow(srcB.lines[j - 1]).indexOf(ta) >= 0) lb = j;
+    if (!la || !lb) return { ok: false, why: '片語沒有同時逐字出現在兩邊的行裡' };
+    var dup = rowsOf(await this.exec('SELECT id FROM links WHERE kind=? AND term=? AND from_source=? AND to_source=?', [kind, term, a.source_id, b.source_id]));
+    if (dup.length) return { ok: false, why: '已經有了' };
+    await this.exec('INSERT INTO links(kind, term, from_source, from_start, from_end, from_quote, to_source, to_start, to_end, to_quote, status) VALUES(?,?,?,?,?,?,?,?,?,?,\'proposed\')', [kind, term, a.source_id, la, la, srcA.lines[la - 1].trim().slice(0, 160), b.source_id, lb, lb, srcB.lines[lb - 1].trim().slice(0, 160)]);
+    return { ok: true };
+  };
+  // 不同來源、意思接近的片段配對（要有語意向量）：每個片段找最像的「別的來源」的片段，取最像的前 maxPairs 組，同一對來源最多 3 組
+  Store.prototype.nearestPairs = async function (model, maxPairs, minSim) {
+    var dense = (await this._dense(model)).slice(0, 3000), best = [];
+    for (var i = 0; i < dense.length; i++) { var bj = -1, bs = -1; for (var j = 0; j < dense.length; j++) { if (dense[j].source_id === dense[i].source_id || dense[j].vec.length !== dense[i].vec.length) continue; var d = 0, u = dense[i].vec, v = dense[j].vec; for (var k = 0; k < u.length; k++) d += u[k] * v[k]; if (d > bs) { bs = d; bj = j; } } if (bj >= 0 && bs >= minSim && dense[i].id < dense[bj].id) best.push({ a: dense[i].id, b: dense[bj].id, sim: bs }); }
+    best.sort(function (x, y) { return y.sim - x.sim; }); var perPair = {}, pick = [];
+    for (var m = 0; m < best.length && pick.length < maxPairs; m++) { var ca = best[m]; var rows = rowsOf(await this.exec('SELECT id, source_id, line_start, line_end, text FROM chunks WHERE id IN (?,?)', [ca.a, ca.b])); var ra = rows.filter(function (r) { return r.id === ca.a; })[0], rb = rows.filter(function (r) { return r.id === ca.b; })[0]; if (!ra || !rb) continue; var pk = Math.min(ra.source_id, rb.source_id) + '-' + Math.max(ra.source_id, rb.source_id); perPair[pk] = (perPair[pk] || 0) + 1; if (perPair[pk] > 3) continue; pick.push({ sim: ca.sim, a: { source_id: ra.source_id, line_start: ra.line_start, line_end: ra.line_end, text: ra.text }, b: { source_id: rb.source_id, line_start: rb.line_start, line_end: rb.line_end, text: rb.text } }); }
+    return pick;
+  };
+  // 命中的片段旁邊的關聯（程式建立的與使用者確認過的，一跳）：回答時顯示「這裡還有相關的」
+  Store.prototype.relatedOf = async function (sourceId, a, b) {
+    var rows = rowsOf(await this.exec("SELECT l.*, s.name AS to_name FROM links l JOIN sources s ON s.id=l.to_source WHERE l.from_source=? AND l.status IN ('auto','confirmed') AND l.from_start<=? AND l.from_end>=? AND l.to_start IS NOT NULL LIMIT 3", [sourceId, b, a]));
+    return rows.map(function (r) { return { kind: r.kind, evidence: r.term, status: r.status, source: r.to_name, source_id: r.to_source, line_start: r.to_start, line_end: r.to_end, quote: r.to_quote }; });
   };
   Store.prototype.setLinkStatus = async function (id, status) { await this.exec('UPDATE links SET status=? WHERE id=?', [status, id]); };
   // 關鍵詞（模型整理挑的，或使用者自己加的）：存成 {terms, by, at}；之後關聯會用到
@@ -17803,6 +17863,7 @@ const holder = {};
     + '.fki details.tr{border:1px dashed var(--bd);border-radius:6px;padding:2px 8px;font-size:12px;color:var(--mut)}.fki details.tr summary{cursor:pointer}.fki .trl{padding:1px 0;white-space:pre-wrap;word-break:break-word}.fki .trl.bad{color:var(--bad)}.fki .trl.ok{color:var(--ok)}'
     + '.fki details.dim{border:1px solid var(--bd);border-radius:6px;padding:2px 8px;font-size:11px;color:var(--mut);opacity:.85}.fki details.dim summary{cursor:pointer}.fki details.dim .hit{font-size:11px;filter:grayscale(1)}.fki details.dim blockquote{border-left-color:var(--bd)}.fki button.cite{padding:0 6px;margin-left:3px;font-size:11px;border-radius:9px;color:var(--acc);background:transparent}.fki .dlgbg{position:absolute;inset:0;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;z-index:5}.fki .dlg{background:var(--bg);border:1px solid var(--bd);border-radius:8px;width:min(640px,92%);max-height:86%;overflow:auto;padding:8px 10px;display:flex;flex-direction:column;gap:6px;box-shadow:0 6px 24px rgba(0,0,0,.35)}.fki .dlg h4{margin:0;font-size:13px;display:flex;gap:6px;align-items:center}.fki .ans{border:1px solid var(--acc);border-radius:8px;padding:6px 8px;display:flex;flex-direction:column;gap:4px}.fki .ans .cite{font-size:11px;color:var(--acc);margin-left:2px}.fki .ask select{max-width:110px}';
   function h(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+  var LKIND = { mentions: '提到', identifier: '同一個識別字', same_quote: '同一句話', heading_match: '同樣的章節標題', issue_ref: '議題引用', wiki_link: 'wiki 連結', url_link: '網址連結', shared_term: '共有的詞', model: '模型提出' };
   function esc(s) { return String(s == null ? '' : s); }
   // 把查詢的詞在原文裡標起來（只是顯示，不改內容）
   function highlight(container, text, query) {
@@ -17962,6 +18023,7 @@ const holder = {};
     function hitCard(hit, i, question) {
       var c = h('div', 'hit'), top = h('div'), lb = h('span', 'lb', (i + 1) + '. ' + hit.label), by = h('span', 'by', hit.found_by || '關鍵字'); top.appendChild(lb); top.appendChild(by); c.appendChild(top);
       var bq = h('blockquote'); highlight(bq, hit.quote, question); c.appendChild(bq);
+      (hit.related || []).forEach(function (r) { var rl = h('div', 'st', '🔗 相關（' + (LKIND[r.kind] || r.kind) + '「' + String(r.evidence).slice(0, 30) + '」）→ ' + r.source + ' 第 ' + r.line_start + ' 行：' + String(r.quote).slice(0, 80)); c.appendChild(rl); });
       var row = h('div', 'row'), ctx = h('button', null, '看上下文'), cp = h('button', null, '複製出處'), box = h('div'); [ctx, cp].forEach(function (x) { row.appendChild(x); }); c.appendChild(row); c.appendChild(box);
       cp.onclick = function () { var t = hit.label + '\n' + hit.quote; try { navigator.clipboard.writeText(t); cp.textContent = '已複製'; setTimeout(function () { cp.textContent = '複製出處'; }, 1200); } catch (e) { cp.textContent = '複製不了'; } };
       ctx.onclick = guard(function () { if (box.firstChild) { box.textContent = ''; ctx.textContent = '看上下文'; return; } return host.detail(hit.source_id || hit.source, { line_start: Math.max(1, hit.line_start - 4), line_end: hit.line_end + 4 }, { maxLines: 40 }).then(function (d) { box.appendChild(lineView(d.lines || [], hit.line_start, hit.line_end)); ctx.textContent = '收起'; }); });
@@ -17987,12 +18049,12 @@ const holder = {};
     bRef.onclick = guard(function () { var c = card('🔄 更新知識庫'), p = note(c, '更新中…'); return host.refresh().then(function (r) { p.textContent = '✅ 更新完成\n' + ((r.refreshed || []).map(function (x) { return '- ' + x.source + '：' + (x.error ? '⚠️ ' + x.error : x.status); }).join('\n') || '（沒有網址來源需要重抓）') + '\n語意索引：' + (r.embedding && r.embedding.embedded != null ? '新增 ' + r.embedding.embedded + ' 個向量' : (r.embedding && (r.embedding.note || r.embedding.error)) || '—') + '\n關聯：' + r.links + ' 筆'; return refreshStatus(); }); });
     bOrg.onclick = guard(function () { var c = card('🧹 模型整理'), p = note(c, '整理中…（線上模型用不了會自動改用離線模型）'); return host.organize().then(function (r) { p.textContent = r.ok ? '✅ 整理好了\n' + (r.organized || []).map(function (x) { return '- ' + x.source + '：' + (x.error ? '⚠️ ' + x.error : (x.tags.length ? x.tags.join('、') : '（沒有挑出可以核對的關鍵詞）')); }).join('\n') + '\n' + (r.note || '') : '⚠️ ' + r.error; return refreshStatus(); }); });
     bEmb.onclick = guard(function () { var c = card('🧠 語意索引'), p = note(c, '檢查中…'); return host.embedStatus().then(function (s) { if (s.enabled && !s.pending) { p.textContent = '語意索引已啟用：向量 ' + s.vectors + '/' + s.chunks + '，沒有待補的片段。'; return; } p.textContent = s.enabled ? '補算語意向量…' : '啟用語意索引（第一次要下載約 ' + s.approx_mb + ' MB 的小型模型）…'; return host.embedRun().then(function (r) { p.textContent = r.ok === false ? '⚠️ ' + r.error : '✅ 建立了 ' + (r.embedded || 0) + ' 個片段的向量'; return refreshStatus(); }); }); });
-    bLk.onclick = guard(function () { var c = card('🔗 關聯（字面證據）'), p = note(c, '載入中…'); return host.links().then(function (res) {
-      var ls = res.links || []; p.textContent = ls.length ? ls.length + ' 筆關聯，雙方都附行號與原文' : '目前沒有找到關聯（來源互相提到、共有的專有名詞或關鍵詞才算）。';
+    bLk.onclick = guard(function () { var c = card('🔗 關聯（每一條都附證據）'), p = note(c, '載入中…'); if (host.proposeLinks) { var pb = h('button', null, '🤖 請模型找更多關聯'), po = h('div', 'st'); pb.title = '用語意向量找「不同來源、意思接近」的段落，請模型說共同點；片語由程式核對過才收，要你接受才會用在回答裡'; pb.onclick = guard(function () { po.textContent = '找關聯中…'; return host.proposeLinks(function (t) { po.textContent = t; }).then(function (r) { po.textContent = r.ok ? '✅ 看了 ' + r.checked + ' 組，提出 ' + r.proposed + ' 條' + (r.dropped ? '，丟掉 ' + r.dropped + ' 條對不上原文的' : '') + (r.failed ? '，' + r.failed + ' 組模型沒回應' : '') + (r.note ? '\n' + r.note : '') : '⚠️ ' + r.error; return refreshStatus(); }); }); c.insertBefore(pb, p); c.insertBefore(po, p); } return host.links().then(function (res) {
+      var ls = res.links || [], cnt = {}; ls.forEach(function (l) { cnt[LKIND[l.kind] || l.kind] = (cnt[LKIND[l.kind] || l.kind] || 0) + 1; }); p.textContent = ls.length ? ls.length + ' 筆關聯（' + Object.keys(cnt).map(function (k) { return k + ' ' + cnt[k]; }).join('、') + '），每一條都附證據與行號' : '目前沒有找到關聯（來源互相提到、同一個識別字、同一句話、同樣的章節標題、議題／wiki／網址引用才算）。';
       ls.forEach(function (l) {
-        var k = h('div', 'hit'), top = h('div'); top.appendChild(h('span', 'lb', l.from.source + ' ⇄ ' + l.to.source)); top.appendChild(h('span', 'by', l.kind === 'mentions' ? '提到' : '共有「' + l.term + '」')); if (l.status === 'confirmed') top.appendChild(h('span', 'by ok', '已確認')); k.appendChild(top);
+        var k = h('div', 'hit'), top = h('div'); top.appendChild(h('span', 'lb', l.from.source + ' ⇄ ' + l.to.source)); top.appendChild(h('span', 'by', (LKIND[l.kind] || l.kind) + (l.term ? '「' + String(l.term).slice(0, 40) + '」' : ''))); if (l.status === 'confirmed') top.appendChild(h('span', 'by ok', '已確認')); if (l.status === 'proposed') top.appendChild(h('span', 'by', '🤖 模型提出・等你決定')); if (l.status === 'stale') { top.appendChild(h('span', 'by bad', '失效（來源內容變了）')); k.style.opacity = '.6'; } k.appendChild(top);
         [l.from, l.to].forEach(function (sd) { if (!sd.line_start) return; k.appendChild(h('blockquote', null, sd.source + ' 第 ' + sd.line_start + ' 行：' + esc(sd.quote))); });
-        var row = h('div', 'row'), ok = h('button', null, '確認'), no = h('button', null, '拒絕'); ok.onclick = guard(function () { return host.setLinkStatus(l.id, 'confirmed').then(function () { k.appendChild(h('div', 'st ok', '已確認')); }); }); no.onclick = guard(function () { return host.setLinkStatus(l.id, 'rejected').then(function () { k.remove(); }); }); row.appendChild(ok); row.appendChild(no); k.appendChild(row); c.appendChild(k);
+        var row = h('div', 'row'), ok = h('button', null, l.status === 'proposed' ? '接受' : '確認'), no = h('button', null, l.status === 'proposed' ? '拒絕' : '移除'); if (l.status === 'stale') ok.disabled = true; ok.onclick = guard(function () { return host.setLinkStatus(l.id, 'confirmed').then(function () { k.appendChild(h('div', 'st ok', '已確認')); }); }); no.onclick = guard(function () { return host.setLinkStatus(l.id, 'rejected').then(function () { k.remove(); }); }); row.appendChild(ok); row.appendChild(no); k.appendChild(row); c.appendChild(k);
       }); scroll(); }); });
     bSet.onclick = function () {
       var c = card('⚙ 設定'), locSt = note(c, '載入中…'); var kind = h('select'); [['idb', '瀏覽器 IndexedDB'], ['file', '磁碟檔案（桌面版）'], ['fap', 'FAP 資料夾']].forEach(function (k) { var o = h('option', null, k[1]); o.value = k[0]; kind.appendChild(o); });
@@ -32666,6 +32728,7 @@ const FaKnowledgeHost = (function () {
                     if (take) { res = r2; expanded = terms; }
                 }
             }
+            if (res.found) for (const h of res.hits) { try { const rel = await this._kiRun((store) => store.relatedOf(h.source_id, h.line_start, h.line_end)); if (rel.length) h.related = rel; } catch (_) { /* */ } }
             return Object.assign(res, { expanded_terms: expanded || undefined, semantic: !!qv.vec, semantic_note: qv.vec ? undefined : qv.why + '（只用關鍵字檢索）', how_to_answer: res.found ? '只能根據 hits 裡的 quote 回答，每個說法後面標出處（label：來源、第幾行）；quote 沒講到的就說沒有，不要補充或推測。' : '沒有找到，就照實說在知識庫裡找不到，不要用自己的知識代替。' });
         },
         // AI 整理：把找到的原文片段編號交給模型，請它只用這些回答、每句結尾標 [編號]。
@@ -32679,10 +32742,10 @@ const FaKnowledgeHost = (function () {
                 h.ctx = String(h.quote);
                 if (h.ctx.length < 160 && h.source_id) { try { const d = await this._kiRun((store) => store.detail(h.source_id, { line_start: h.line_start, line_end: h.line_end + 8 }, { maxLines: 12 })); const t = ((d && d.lines) || []).map((l) => l.text).join('\n'); if (t.length > h.ctx.length) h.ctx = t; } catch (_) { /* */ } }
             }
-            const ctx = use.map((h, i) => '[' + (i + 1) + '] 《' + h.source + '》' + h.ctx.slice(0, 900)).join('\n\n');
+            const mkCtx = (per, n) => use.slice(0, n).map((h, i) => '[' + (i + 1) + '] 《' + h.source + '》' + h.ctx.slice(0, per)).join('\n\n'), ctx = mkCtx(900, 6);
             step('🤖 交給模型整理（只准用 ' + use.length + ' 段原文，每句要標編號）…'); const t0 = Date.now();
             let reply = ''; try {
-                reply = await this._kiLlm('問題：' + question + '\n\n下面是從知識庫找到的原文片段（有編號）：\n\n' + ctx + '\n\n請只根據這些片段回答問題。規則：1) 每一句結尾都要標它所根據的片段編號，例如「按下 Save 鈕 [2]」；2) 指令放在 `反引號` 裡，並且逐字照抄原文；數字、名稱原樣照抄，不要改寫；3) 片段沒有講到的就不要說，不要補充或推測；4) 標題或章節名稱跟問題對得上也算有找到（例如「在《某某》找到標題『Plugin Installation』 [2]」），把它後面接著的內容也一併說出來；5) 完全找不到答案就只輸出「找不到」。', { systemPrompt: '你只能用給你的片段回答，每句都要標編號。', maxTokens: 1500, temperature: 0 }, { label: '整理回答', timeoutMs: 120000, tries: 3, onStep: step, ctl });
+                const prompt1 = ('問題：' + question + '\n\n下面是從知識庫找到的原文片段（有編號）：\n\n' + ctx + '\n\n請只根據這些片段回答問題。規則：1) 每一句結尾都要標它所根據的片段編號，例如「按下 Save 鈕 [2]」；2) 指令放在 `反引號` 裡，並且逐字照抄原文；數字、名稱原樣照抄，不要改寫；3) 片段沒有講到的就不要說，不要補充或推測；4) 標題或章節名稱跟問題對得上也算有找到（例如「在《某某》找到標題『Plugin Installation』 [2]」），把它後面接著的內容也一併說出來；5) 完全找不到答案就只輸出「找不到」。'); reply = await this._kiLlm(prompt1, { systemPrompt: '你只能用給你的片段回答，每句都要標編號。', maxTokens: 1500, temperature: 0 }, { label: '整理回答', timeoutMs: 120000, onStep: step, ctl, offlinePrompt: () => prompt1.replace(ctx, () => mkCtx(350, 4)) });
             } catch (e) { return { ok: false, error: '模型沒有回應：' + String((e && e.message) || e).slice(0, 160), ms: Date.now() - t0 }; }
             step('　模型回應了（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒），逐句核對編號與原文…');
             const norm = (x) => String(x || '').toLowerCase().replace(/\s+/g, ''); const sentences = [], dropped = [];
@@ -32702,33 +32765,72 @@ const FaKnowledgeHost = (function () {
             step('　核對完成：留下 ' + sentences.length + ' 句' + (dropped.length ? '，丟掉 ' + dropped.length + ' 句（對不上原文）' : '') + '（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）');
             return { ok: true, sentences, dropped, cited: Array.from(new Set(sentences.flatMap((x) => x.cites))), sources: use.map((h, i) => ({ n: i + 1, label: h.label, source: h.source, source_id: h.source_id, line_start: h.line_start, line_end: h.line_end, quote: h.quote, ctx: h.ctx })), ms: Date.now() - t0 };
         },
-        // 叫模型：逾時就當這次失敗、自動重試（AI 節點斷線再上線後，重試就接得上），每次失敗都用 onStep 說出原因與秒數；使用者也可以按「略過等待」（ctl.cancel）。
-        // 全部失敗就丟出最後一個錯誤，呼叫端退回「只給原文」，不會卡在那裡。
+        // 模型找關聯：程式用語意向量找出「不同來源、意思接近」的段落配對（最多 10 組），請模型說它們的共同點並給一個「兩段都原封不動出現的片語」；
+        // 程式核對那個片語真的同時出現在兩邊各自的某一行，才存成「模型提出」（status=proposed，要使用者確認才用在回答裡）。模型編的片語、跨行的片語一律不採用。
+        async _kiProposeLinks(onStep) {
+            const step = (t) => { try { if (onStep) onStep(t); } catch (_) { /* */ } };
+            if (!this._kiSettings().embedConsent) return { ok: false, error: '要先建立語意向量（🧠 語意），才能找出意思接近的段落請模型判斷' };
+            const model = this._kiModelId(), pairs = await this._kiRun((store) => store.nearestPairs(model, 10, 0.88));
+            if (!pairs.length) return { ok: true, checked: 0, proposed: 0, dropped: 0, failed: 0, note: '沒有找到「不同來源、意思夠接近」的段落（相似度 0.88 以上）。' };
+            let proposed = 0, dropped = 0, failed = 0; const results = [];
+            for (let i = 0; i < pairs.length; i++) {
+                const pr = pairs[i]; step('🔗 判斷第 ' + (i + 1) + '/' + pairs.length + ' 組（相似度 ' + pr.sim.toFixed(2) + '）…'); this._kiEmit({ op: 'organize', done: i, total: pairs.length, text: '模型找關聯 ' + (i + 1) + '/' + pairs.length });
+                const mk = (n) => '下面是兩段來自不同文件的原文。如果它們講的是同一件事、有共同的主題，請只輸出一行：LINK: <兩段都「原封不動」出現的一個片語>（照抄原文，不要翻譯、不要改寫、不要自己造詞）。沒有共同點就只輸出 NONE。\n\n[甲]\n' + String(pr.a.text).slice(0, n) + '\n\n[乙]\n' + String(pr.b.text).slice(0, n);
+                let reply = null; try { reply = await this._kiLlm(mk(700), { systemPrompt: '你只判斷，不創作。', maxTokens: 600, temperature: 0 }, { label: '判斷關聯', timeoutMs: 90000, onStep, offlinePrompt: () => mk(300) }); } catch (e) { failed++; continue; }
+                const ms = Array.from(String(reply).matchAll(/LINK:\s*(.+)/gi)); if (!ms.length) continue;
+                const term = ms[ms.length - 1][1].trim().replace(/^[「『"'`]+|[」』"'`。.]+$/g, '');
+                const r = await this._kiRun((store) => store.proposeLink('model', term, pr.a, pr.b), true);
+                if (r.ok) { proposed++; results.push(term); } else { dropped++; step('　（丟掉：「' + term.slice(0, 30) + '」' + (r.why || '') + '）'); }
+            }
+            this._kiEmit({ op: 'organize', end: true });
+            return { ok: true, checked: pairs.length, proposed, dropped, failed, terms: results, note: '模型提出的關聯要你確認才會用在回答裡；片語都是程式核對過、真的同時出現在兩邊的行裡。' };
+        },
+        // 叫模型：先走線上；線上逾時／出錯，緊接著改用離線文字模型（使用者在 Configure 裝好的）；離線也不行，再試一次線上（節點重新上線後就接得上）。
+        // 每一步都用 onStep 說出原因與秒數；使用者可以按「略過等待」（ctl.cancel）。全部失敗就丟出最後一個錯誤，呼叫端退回「只給原文」，不會卡住。
+        // 離線小模型的上下文小，所以呼叫端可以給 offlinePrompt（較短的提示詞）。離線模型寫出來的東西一樣要過逐句核對。
         async _kiLlm(prompt, opts, o) {
-            o = o || {}; const tries = o.tries || 2, tm = o.timeoutMs || 60000;
-            let lastErr;
-            for (let t = 1; t <= tries; t++) {
-                let timer = null; const t0 = Date.now();
+            o = o || {}; const tm = o.timeoutMs || 60000, step = o.onStep || (() => {}), offFirst = !!(this.advancedSettings && this.advancedSettings.offlineMode);
+            const plan = offFirst ? ['offline', 'online'] : ['online', 'offline', 'online']; let lastErr = null, offlineGone = false;
+            for (let i = 0; i < plan.length; i++) {
+                const kind = plan[i]; if (kind === 'offline' && offlineGone) continue;
+                let timer = null; const t0 = Date.now(), label = (o.label || '模型') + (kind === 'offline' ? '（離線模型）' : '');
+                if (kind === 'offline') step('🔌 ' + (i === 0 ? '離線模式：' : '線上沒成功，緊接著') + '改用離線文字模型…（第一次要載入模型，會比較慢；小模型的品質有限，寫出來的一樣會逐句核對）');
                 try {
+                    const lim = kind === 'offline' ? Math.max(tm, 180000) : tm;
+                    const call = kind === 'offline' ? this._kiOfflineComplete(o.offlinePrompt ? o.offlinePrompt() : prompt, opts) : this._callSimpleCompletion(prompt, opts);
                     const reply = await Promise.race([
-                        this._callSimpleCompletion(prompt, opts),
-                        new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('等了 ' + Math.round(tm / 1000) + ' 秒沒有回應（AI 節點可能斷線了）')), tm); }),
+                        call,
+                        new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('等了 ' + Math.round(lim / 1000) + ' 秒沒有回應' + (kind === 'online' ? '（AI 節點可能斷線了）' : ''))), lim); }),
                         new Promise((_, rej) => { if (o.ctl) o.ctl.cancel = () => rej(new Error('已略過等待')); }),
                     ]);
-                    clearTimeout(timer); return reply;
+                    clearTimeout(timer);
+                    if (!String(reply || '').trim()) throw new Error('模型回了空白');
+                    if (kind === 'offline') step('　✅ 離線模型回應了（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）'); else if (i > 0) step('　✅ 線上模型接上了（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）');
+                    return reply;
                 } catch (e) {
                     clearTimeout(timer); lastErr = e; const msg = String((e && e.message) || e);
                     if (/已略過/.test(msg)) throw e;
-                    if (o.onStep) o.onStep('　⚠️ ' + (o.label || '模型') + '沒成功（第 ' + t + '/' + tries + ' 次，' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）：' + msg.slice(0, 140) + (t < tries ? '。' + 3 * t + ' 秒後重試（節點重新上線後就接得上）' : ''));
-                    if (t < tries) await new Promise((r) => setTimeout(r, 3000 * t));
+                    if (kind === 'offline' && /還沒下載|沒有已下載|NOT_SUPPORTED|關掉|使用者取消/.test(msg)) offlineGone = true;
+                    const next = plan.slice(i + 1).find((k) => !(k === 'offline' && offlineGone));
+                    step('　⚠️ ' + label + '沒成功（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）：' + msg.slice(0, 140) + (next === 'offline' ? '。緊接著改用離線模型' : next === 'online' ? '。3 秒後再試線上（節點重新上線後就接得上）' : ''));
+                    if (next === 'online') await new Promise((r) => setTimeout(r, 3000));
                 }
             }
             throw lastErr;
         },
+        // 離線文字模型（Configure 裡選好、已下載的）：只拿「文字生成」，不經過離線訓練器與工具
+        async _kiOfflineComplete(prompt, opts) {
+            opts = opts || {}; const S = this._omSettings(), inst = await this._omInstalled();
+            const route = FaVlm.routeStages({ config: S.roles, bench: S.bench, installed: inst.set, requireInstalled: true, defaultId: S.textModel, hasTools: false });
+            const model = route && route.answer; if (!model) throw new Error('還沒有下載離線文字模型（Configure → 離線模型 裡可以下載）');
+            const msgs = []; if (opts.systemPrompt) msgs.push({ role: 'system', content: opts.systemPrompt }); msgs.push({ role: 'user', content: String(prompt) });
+            const r = await this._llmGenerate(model, { messages: msgs, maxTokens: Math.min(Number(opts.maxTokens) || 512, 700), deterministic: true }, { update() { /* */ }, log() { /* */ }, onToken() { /* */ } });
+            return String(r == null ? '' : r).trim();
+        },
         // 模型想的「可能出現在文件裡的詞」：只拿來多找一輪，不當答案。沒有模型可用就回空的（維持原本的檢索結果）。
         async _kiExpandQuery(q, onStep, ctl) {
             if (typeof this._callSimpleCompletion !== 'function') return [];
-            const reply = await this._kiLlm('使用者在一份文件（可能是英文的使用手冊、教學、講義）裡找答案，問題是：「' + q + '」\n請列出最多 8 個「這個問題的答案附近很可能出現的詞或短語」，中文和英文都要有（例如問題問「怎麼安裝」，可以列 install、installation、安裝、setup）。一行一個，只輸出詞本身，不要解釋。', { systemPrompt: '你是搜尋助手，只負責想關鍵詞，不回答問題。', maxTokens: 800, temperature: 0 }, { label: '想關鍵詞', timeoutMs: 45000, tries: 3, onStep, ctl });
+            const reply = await this._kiLlm('使用者在一份文件（可能是英文的使用手冊、教學、講義）裡找答案，問題是：「' + q + '」\n請列出最多 8 個「這個問題的答案附近很可能出現的詞或短語」，中文和英文都要有（例如問題問「怎麼安裝」，可以列 install、installation、安裝、setup）。一行一個，只輸出詞本身，不要解釋。', { systemPrompt: '你是搜尋助手，只負責想關鍵詞，不回答問題。', maxTokens: 800, temperature: 0 }, { label: '想關鍵詞', timeoutMs: 45000, onStep, ctl });
             return String(reply || '').split('\n').map((l) => l.replace(/^[\s\-*\d.、)）]+/, '').trim()).filter((l) => l && l.length <= 30).slice(0, 8);
         },
         async _kiResolveIds(list) { const arr = Array.isArray(list) ? list : String(list).split(/[,，、]/); return this._kiRun(async (store) => { const ids = []; for (const x of arr) { const s = await store.findSource(String(x).trim()); if (s) ids.push(s.id); } return ids; }); },
@@ -32747,7 +32849,7 @@ const FaKnowledgeHost = (function () {
                 if (onProgress) onProgress('整理「' + t.name + '」…'); this._kiEmit({ op: 'organize', source_id: t.id, name: t.name, done: report.length, total: targets.length, text: '模型整理 ' + (report.length + 1) + '/' + targets.length + '：' + t.name });
                 const src = await this._kiRun((store) => store.getSource(t.id)); const sample = src.text.length > 6000 ? src.text.slice(0, 3000) + '\n…\n' + src.text.slice(Math.floor(src.text.length / 2) - 1000, Math.floor(src.text.length / 2) + 1000) : src.text;
                 let reply = '';
-                try { reply = await this._kiLlm('下面是一份文件的內容（可能只有節錄）。請列出最多 8 個最能代表它的關鍵詞或短語。規則：每一個都必須是文件裡「原本出現過的字詞」，原樣抄下來，不要翻譯、不要改寫、不要新創；一行一個，只輸出詞本身。\n\n' + sample, { systemPrompt: '你是文件整理助手，只做挑選，不做創作。', maxTokens: 1500, temperature: 0 }, { label: '整理「' + t.name.slice(0, 20) + '」', timeoutMs: 120000, tries: 3, onStep: onProgress }); } catch (e) { report.push({ source: t.name, error: '模型沒有回應：' + String((e && e.message) || e).slice(0, 120) }); continue; }
+                try { const prompt2 = ('下面是一份文件的內容（可能只有節錄）。請列出最多 8 個最能代表它的關鍵詞或短語。規則：每一個都必須是文件裡「原本出現過的字詞」，原樣抄下來，不要翻譯、不要改寫、不要新創；一行一個，只輸出詞本身。\n\n' + sample); reply = await this._kiLlm(prompt2, { systemPrompt: '你是文件整理助手，只做挑選，不做創作。', maxTokens: 1500, temperature: 0 }, { label: '整理「' + t.name.slice(0, 20) + '」', timeoutMs: 120000, onStep: onProgress, offlinePrompt: () => prompt2.replace(sample, () => sample.slice(0, 1500)) }); } catch (e) { report.push({ source: t.name, error: '模型沒有回應：' + String((e && e.message) || e).slice(0, 120) }); continue; }
                 const hay = src.text.toLowerCase().replace(/\s+/g, ''); const terms = [];
                 String(reply || '').split('\n').map((l) => l.replace(/^[\s\-*\d.、)）]+/, '').trim()).filter((l) => l && l.length <= 40).forEach((l) => { if (hay.indexOf(l.toLowerCase().replace(/\s+/g, '')) >= 0 && terms.indexOf(l) < 0) terms.push(l); else rejected++; });
                 await this._kiRun((store) => store.setTags(t.id, terms.slice(0, 8), 'model'), true);
@@ -32780,7 +32882,7 @@ const FaKnowledgeHost = (function () {
             return {
                 palette: () => ({ dark: !self._isLightTheme() }),
                 status: () => self._kiStatus(), sources: () => self._kiSources(),
-                ask: (a) => self._kiAsk(a), answerAI: (q, hits, onStep, ctl) => self._kiAnswerAI(q, hits, onStep, ctl), onProgress: (fn) => self._kiOn(fn),
+                ask: (a) => self._kiAsk(a), proposeLinks: (onStep) => self._kiProposeLinks(onStep), answerAI: (q, hits, onStep, ctl) => self._kiAnswerAI(q, hits, onStep, ctl), onProgress: (fn) => self._kiOn(fn),
                 outline: (ref) => self._kiWithSource(ref, (store, s) => store.outline(s.id)),
                 detail: (ref, which, o) => self._kiWithSource(ref, (store, s) => store.detail(s.id, which, o)),
                 summary: (ref) => self._kiWithSource(ref, (store, s) => store.summary(s.id)),

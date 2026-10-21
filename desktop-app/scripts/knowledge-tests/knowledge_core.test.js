@@ -111,5 +111,20 @@ check('isHowTo / cmdLine', K.isHowTo('QaRobotZ 我要怎麼單測') && K.isHowTo
   const raw = Array.from({ length: 30 }, (_, i) => '第' + (i + 1) + '行，內容是一段說明文字，大約三十個字左右，不重複編號' + i).join('\n'), ch = K.ingest({ name: 'o', kind: 'txt', raw }).chunks;
   check('chunks overlap by one line and still cover every line', ch.length > 2 && ch.slice(1).every((c, i) => c.line_start <= ch[i].line_end) && ch[ch.length - 1].line_end === 30 && ch[0].line_start === 1, ch.map((c) => c.line_start + '-' + c.line_end));
 }
+// ---- 關聯的種類：每一條都有證據，而且證據真的在行裡
+{
+  const mk = (id, name, raw, url, kind) => Object.assign(K.ingest({ name, kind: kind || 'md', raw, url }), { id });
+  const A = mk(1, '部署指南.md', '# 部署指南\n\n## 回復步驟\n\n升級到 1.36.0 之前先備份。相關議題見 https://tracker.example/issues/123 與 [[網路設定]]。\n這一行是一模一樣的說明文字，兩份文件都有，長度超過三十個字。\n');
+  const B = mk(2, '網路設定.md', '# 網路設定\n\n## 回復步驟\n\n1.36.0 版修好了 DHCP 的問題。\n這一行是一模一樣的說明文字，兩份文件都有，長度超過三十個字。\n', 'https://wiki.example/網路設定');
+  const C = mk(3, 'issue #123.md', '# 議題\n\n標題：升級失敗\n', 'https://tracker.example/issues/123');
+  const ls = K.links([A, B, C], { max: 100 }), kinds = ls.map((l) => l.kind);
+  check('links: identifier (version) shared by two sources', ls.some((l) => l.kind === 'identifier' && l.term === '1.36.0'), kinds);
+  check('links: same_quote, heading_match, wiki_link, url_link, issue_ref all found', ['same_quote', 'heading_match', 'wiki_link', 'issue_ref'].every((k) => kinds.indexOf(k) >= 0), kinds);
+  check('links: every link has its evidence in the from line (and in the to line for two-ended kinds)', ls.every((l) => K.foldLow(A.lines.concat(B.lines, C.lines).join('\n')).indexOf(K.foldLow(l.term)) >= 0 && (!l.from.line_start || [A, B, C].some((s) => s.name === l.from.source && K.foldLow(s.lines[l.from.line_start - 1]).indexOf(K.foldLow(l.term)) >= 0))), ls.map((l) => l.kind + ':' + l.term));
+  check('links: two-ended kinds have the evidence on both sides', ls.filter((l) => ['identifier', 'same_quote', 'heading_match', 'shared_term'].indexOf(l.kind) >= 0).every((l) => { const sB = [A, B, C].find((s) => s.name === l.to.source); return sB && l.to.line_start && K.foldLow(sB.lines[l.to.line_start - 1]).indexOf(K.foldLow(l.term)) >= 0; }));
+  check('links: generic headings (第 1 段) never become heading_match', !K.links([mk(5, 'a.txt', '第一行\n', null, 'txt'), mk(6, 'b.txt', '第一行\n', null, 'txt')], {}).some((l) => l.kind === 'heading_match'));
+  check('links: an identifier that appears on too many lines is not evidence', K.links([mk(7, 'x.md', Array.from({ length: 14 }, () => '版本 9.9.9 出現').join('\n')), mk(8, 'y.md', '版本 9.9.9 出現')], {}).every((l) => l.kind !== 'identifier'));
+  check('LINK_LABELS covers every kind', ['mentions', 'identifier', 'same_quote', 'heading_match', 'issue_ref', 'wiki_link', 'url_link', 'shared_term', 'model'].every((k) => K.LINK_LABELS[k]));
+}
 console.log(bad.length ? 'FAILED:\n  ' + bad.join('\n  ') : 'knowledge_core: ' + ok + ' passed');
 process.exit(bad.length ? 1 : 0);

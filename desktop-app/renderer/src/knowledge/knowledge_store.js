@@ -54,7 +54,9 @@
     o = o || {}; var hash = o.hash || hashText(src.text), now = Date.now();
     var ex = rowsOf(await this.exec('SELECT id, hash FROM sources WHERE name=? AND IFNULL(url,\'\')=?', [src.name, src.url || '']));
     var id = null, status = 'added';
-    if (ex.length) { if (ex[0].hash === hash && !o.force) return { id: ex[0].id, status: 'unchanged', chunks: 0 }; id = ex[0].id; status = 'updated'; await this._dropContent(id); }
+    if (ex.length) { if (ex[0].hash === hash && !o.force) return { id: ex[0].id, status: 'unchanged', chunks: 0 }; id = ex[0].id; status = 'updated'; await this._dropContent(id);
+      // 來源內容變了：模型提出的／使用者確認過的關聯不默默指到別行，標成「失效」；程式建立的會在重算時重來
+      await this.exec("UPDATE links SET status='stale' WHERE (from_source=? OR to_source=?) AND status IN ('proposed','confirmed')", [id, id]); }
     if (id == null) {
       await this.exec('INSERT INTO sources(name, kind, url, hash, notes, text, loc_runs, outline_style, chars, enabled, tags, added_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)', [src.name, src.kind, src.url || null, hash, JSON.stringify(src.notes || []), src.text, JSON.stringify(locRuns(src.locators)), src.outline_style || '', src.text.length, 1, o.tags ? JSON.stringify(o.tags) : null, now, now]);
       id = Number(rowsOf(await this.exec('SELECT last_insert_rowid() AS id'))[0].id);
@@ -190,8 +192,33 @@
     return { links: n };
   };
   Store.prototype.getLinks = async function (id) {
-    var rows = rowsOf(await this.exec('SELECT l.*, a.name AS from_name, b.name AS to_name FROM links l JOIN sources a ON a.id=l.from_source JOIN sources b ON b.id=l.to_source WHERE l.status<>\'rejected\'' + (id != null ? ' AND (l.from_source=? OR l.to_source=?)' : '') + ' ORDER BY l.kind, l.id LIMIT 200', id != null ? [id, id] : []));
+    var rows = rowsOf(await this.exec('SELECT l.*, a.name AS from_name, b.name AS to_name FROM links l JOIN sources a ON a.id=l.from_source JOIN sources b ON b.id=l.to_source WHERE l.status<>\'rejected\'' + (id != null ? ' AND (l.from_source=? OR l.to_source=?)' : '') + ' ORDER BY CASE l.status WHEN \'proposed\' THEN 0 WHEN \'confirmed\' THEN 1 WHEN \'auto\' THEN 2 ELSE 3 END, l.kind, l.id LIMIT 300', id != null ? [id, id] : []));
     return rows.map(function (r) { return { id: r.id, kind: r.kind, term: r.term, status: r.status, from: { source: r.from_name, source_id: r.from_source, line_start: r.from_start, line_end: r.from_end, quote: r.from_quote }, to: { source: r.to_name, source_id: r.to_source, line_start: r.to_start, line_end: r.to_end, quote: r.to_quote } }; });
+  };
+  // 模型提出的關聯：兩段原文各自的某一行都逐字含有 term 才存（status='proposed'，要使用者確認才用在回答裡）
+  Store.prototype.proposeLink = async function (kind, term, a, b) {
+    var ta = K.foldLow(term); if (!ta || ta.length < 3) return { ok: false, why: '片語太短' };
+    var la = null, lb = null, srcA = await this.getSource(a.source_id), srcB = await this.getSource(b.source_id); if (!srcA || !srcB) return { ok: false, why: '找不到來源' };
+    for (var i = a.line_start; i <= a.line_end && !la; i++) if (K.foldLow(srcA.lines[i - 1]).indexOf(ta) >= 0) la = i;
+    for (var j = b.line_start; j <= b.line_end && !lb; j++) if (K.foldLow(srcB.lines[j - 1]).indexOf(ta) >= 0) lb = j;
+    if (!la || !lb) return { ok: false, why: '片語沒有同時逐字出現在兩邊的行裡' };
+    var dup = rowsOf(await this.exec('SELECT id FROM links WHERE kind=? AND term=? AND from_source=? AND to_source=?', [kind, term, a.source_id, b.source_id]));
+    if (dup.length) return { ok: false, why: '已經有了' };
+    await this.exec('INSERT INTO links(kind, term, from_source, from_start, from_end, from_quote, to_source, to_start, to_end, to_quote, status) VALUES(?,?,?,?,?,?,?,?,?,?,\'proposed\')', [kind, term, a.source_id, la, la, srcA.lines[la - 1].trim().slice(0, 160), b.source_id, lb, lb, srcB.lines[lb - 1].trim().slice(0, 160)]);
+    return { ok: true };
+  };
+  // 不同來源、意思接近的片段配對（要有語意向量）：每個片段找最像的「別的來源」的片段，取最像的前 maxPairs 組，同一對來源最多 3 組
+  Store.prototype.nearestPairs = async function (model, maxPairs, minSim) {
+    var dense = (await this._dense(model)).slice(0, 3000), best = [];
+    for (var i = 0; i < dense.length; i++) { var bj = -1, bs = -1; for (var j = 0; j < dense.length; j++) { if (dense[j].source_id === dense[i].source_id || dense[j].vec.length !== dense[i].vec.length) continue; var d = 0, u = dense[i].vec, v = dense[j].vec; for (var k = 0; k < u.length; k++) d += u[k] * v[k]; if (d > bs) { bs = d; bj = j; } } if (bj >= 0 && bs >= minSim && dense[i].id < dense[bj].id) best.push({ a: dense[i].id, b: dense[bj].id, sim: bs }); }
+    best.sort(function (x, y) { return y.sim - x.sim; }); var perPair = {}, pick = [];
+    for (var m = 0; m < best.length && pick.length < maxPairs; m++) { var ca = best[m]; var rows = rowsOf(await this.exec('SELECT id, source_id, line_start, line_end, text FROM chunks WHERE id IN (?,?)', [ca.a, ca.b])); var ra = rows.filter(function (r) { return r.id === ca.a; })[0], rb = rows.filter(function (r) { return r.id === ca.b; })[0]; if (!ra || !rb) continue; var pk = Math.min(ra.source_id, rb.source_id) + '-' + Math.max(ra.source_id, rb.source_id); perPair[pk] = (perPair[pk] || 0) + 1; if (perPair[pk] > 3) continue; pick.push({ sim: ca.sim, a: { source_id: ra.source_id, line_start: ra.line_start, line_end: ra.line_end, text: ra.text }, b: { source_id: rb.source_id, line_start: rb.line_start, line_end: rb.line_end, text: rb.text } }); }
+    return pick;
+  };
+  // 命中的片段旁邊的關聯（程式建立的與使用者確認過的，一跳）：回答時顯示「這裡還有相關的」
+  Store.prototype.relatedOf = async function (sourceId, a, b) {
+    var rows = rowsOf(await this.exec("SELECT l.*, s.name AS to_name FROM links l JOIN sources s ON s.id=l.to_source WHERE l.from_source=? AND l.status IN ('auto','confirmed') AND l.from_start<=? AND l.from_end>=? AND l.to_start IS NOT NULL LIMIT 3", [sourceId, b, a]));
+    return rows.map(function (r) { return { kind: r.kind, evidence: r.term, status: r.status, source: r.to_name, source_id: r.to_source, line_start: r.to_start, line_end: r.to_end, quote: r.to_quote }; });
   };
   Store.prototype.setLinkStatus = async function (id, status) { await this.exec('UPDATE links SET status=? WHERE id=?', [status, id]); };
   // 關鍵詞（模型整理挑的，或使用者自己加的）：存成 {terms, by, at}；之後關聯會用到
