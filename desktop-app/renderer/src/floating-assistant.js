@@ -1427,6 +1427,13 @@ const AI_REASONING_DEADEND_PROMPT = '[系統提示] 你剛才那一輪只完成�
 const FA_AI_FEATURES_CATALOG = /*__FA_AI_FEATURES__*/null;
 
 const SUBAGENT_DOMAIN_REGISTRY = {
+    knowledge: {
+        enabled: true,
+        label: 'Knowledge Inventory（使用者自己放進去的文件、網頁、講義、錄音轉錄的本機知識庫：查詢、目錄、摘要、細節、關聯、加入／移除／更新）',
+        toolNames: ['knowledge_ask', 'knowledge_sources', 'knowledge_outline', 'knowledge_detail', 'knowledge_summary', 'knowledge_links', 'knowledge_add', 'knowledge_remove', 'knowledge_enable', 'knowledge_embed', 'knowledge_refresh', 'knowledge_organize', 'knowledge_location', 'list_uploaded_files'],
+        systemPrompt: '你負責 Knowledge Inventory（使用者自己的知識庫）。鐵則：回答只根據 knowledge_ask 回傳的原文片段（quote），每個說法後面標出處（label：「來源」第幾行、章節／頁／時間）；quote 沒講到的就說知識庫裡沒有，不要用自己的知識補、不要推測、不要改寫數字與名稱。摘要用 knowledge_summary（只選原句）；要細節用 knowledge_outline 看目錄再用 knowledge_detail 讀那幾行。使用者要加資料就用 knowledge_add（附件用 file_id、網頁／wiki 用 url）。找不到就明講找不到。',
+        dynamicNote: '路由建議：使用者問「我放進知識庫／我的文件／我上傳的資料裡有沒有…」「根據我的資料…」「/knowledge」，或要把檔案、網頁、wiki、講義、錄音轉錄加進知識庫、更新知識庫、查出處時，委派這個領域。',
+    },
     webedit: {
         enabled: true,
         label: '網頁編輯器（用對話做小網站：HTML／CSS／JS＋模擬後端 Node／Python，預覽、改後端、測試、匯出）',
@@ -17074,6 +17081,450 @@ const holder = {};
 return holder.FaArticleOutline;
 })();
 /* ARTOUT-END */
+/* KNOW-BEGIN */
+const FaKnowledge = (function () {
+const holder = {};
+(function (module, self) {
+/* Knowledge Inventory 的核心（純函式，UMD）：把各種格式的文字整理成「帶行號的來源」，切片段、建關鍵字索引、檢索、
+ * 選原句做摘要、找字面上的關聯。每一個輸出都帶出處（哪個來源、第幾行、哪個章節／頁／投影片／工作表／時間），
+ * 而且摘要與回答只會是「來源裡原本就有的字」——不改寫、不補充，核對不過的丟掉。
+ *
+ * 行號的意思：把來源轉成「純文字行」之後的第幾行（從 1 算）。純文字類（txt、md、textile、mediawiki、log、csv…）就是檔案本身的行號；
+ * json 會先格式化成每個欄位一行（引用時會註明是格式化後的行號，並附欄位路徑）；docx／pdf／pptx／mp3／mp4 先由 app 轉成文字，
+ * 轉換時留下的 [第 3 頁]、[投影片 2]、[00:01:23] 標記會成為該行的位置資訊。
+ * 儲存（.keeplookup＝SQLite3 檔）與介面不在這裡，這裡只有不碰儲存的邏輯，方便測試。 */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('../tools/article_outline.js')); else root.FaKnowledge = factory(root.FaArticleOutline || (typeof FaArticleOutline !== 'undefined' ? FaArticleOutline : undefined));
+})(typeof self !== 'undefined' ? self : this, function (Outline) {
+  'use strict';
+  var CHUNK_CHARS = 1200;
+
+  // ───── 斷詞：英文數字用整個字（小寫），中日韓用相鄰兩字（bigram）＋單字，檢索與建索引用同一套 ─────
+  var CJK = /[㐀-鿿豈-﫿぀-ヿ가-힯]/;
+  function tokenize(text) {
+    var out = [], s = String(text == null ? '' : text).toLowerCase(), i = 0, n = s.length;
+    while (i < n) {
+      var c = s[i];
+      if (CJK.test(c)) { var j = i; while (j < n && CJK.test(s[j])) j++; var run = s.slice(i, j); for (var k = 0; k < run.length; k++) { out.push(run[k]); if (k + 1 < run.length) out.push(run.slice(k, k + 2)); } i = j; }
+      else if (/[a-z0-9]/.test(c)) { var j2 = i; while (j2 < n && /[a-z0-9_.\-]/.test(s[j2]) && !CJK.test(s[j2])) j2++; var w = s.slice(i, j2).replace(/[.\-_]+$/, ''); if (w) out.push(w); i = j2; }
+      else i++;
+    }
+    return out;
+  }
+
+  // ───── 各種格式 → 純文字行（含每一行的位置資訊 locator）─────
+  function pathLocators(lines, kind) {
+    // json／yaml／toon：用縮排追出欄位路徑（只是說明位置用，不影響內容）
+    var stack = [], loc = [];
+    lines.forEach(function (ln) {
+      var m = /^(\s*)(?:- )?"?([^":\s][^":]*)"?\s*:/.exec(ln);
+      if (!m) { loc.push(stack.length ? { path: stack.map(function (x) { return x.k; }).join('.') } : {}); return; }
+      var ind = m[1].length; while (stack.length && stack[stack.length - 1].ind >= ind) stack.pop();
+      stack.push({ ind: ind, k: m[2] }); loc.push({ path: stack.map(function (x) { return x.k; }).join('.') });
+    });
+    return loc;
+  }
+  function prettyJson(raw) { try { return JSON.stringify(JSON.parse(raw), null, 2); } catch (e) { return null; } }
+
+  // raw：原始文字；kind：副檔名或種類（md、txt、json、jsonl、csv、yaml、toon、textile、mediawiki、log、docx…）
+  // xlsx 這種已由 app 解析好的，用 { sheets:[{ name, rows:[[…]] }] } 當 raw
+  function normalize(kind, raw) {
+    kind = String(kind || 'txt').toLowerCase().replace(/^\./, '');
+    var notes = [], text, locators = null;
+    if (raw && typeof raw === 'object' && Array.isArray(raw.sheets)) {
+      var ls = [], lc = [];
+      raw.sheets.forEach(function (sh) { (sh.rows || []).forEach(function (row, ri) { ls.push(sh.name + '!' + (ri + 1) + '：' + (row || []).map(function (c) { return c == null ? '' : String(c); }).join(' | ')); lc.push({ sheet: sh.name, row: ri + 1 }); }); });
+      return { kind: 'xlsx', text: ls.join('\n'), locators: lc, notes: ['xlsx：每一行是「工作表!列號：儲存格 | 儲存格…」'] };
+    }
+    text = String(raw == null ? '' : raw).replace(/\r\n/g, '\n').replace(/^﻿/, '');
+    if (kind === 'json') { var p = prettyJson(text); if (p != null) { text = p; notes.push('json：行號是格式化（每個欄位一行）之後的行號'); } else notes.push('json 解析失敗，當純文字處理'); }
+    if (kind === 'jsonl' || kind === 'ndjson') { var recs = text.split('\n'); locators = recs.map(function (_, i) { return { record: i + 1 }; }); notes.push('jsonl：每一行是一筆記錄'); }
+    if (kind === 'json' || kind === 'yaml' || kind === 'yml' || kind === 'toon') { locators = pathLocators(text.split('\n'), kind); }
+    if (kind === 'csv' || kind === 'tsv') notes.push(kind + '：第 1 行是欄位名稱，之後每行一筆，行號就是檔案裡的行號');
+    // 位置標記：[第 3 頁]、[page 3]、[投影片 2]、[slide 2]、[00:01:23]、[00:01:23 - 00:01:30]
+    var lines = text.split('\n'); var cur = {}; var loc2 = [];
+    lines.forEach(function (ln, i) {
+      var m = /^\s*\[\s*(?:第\s*(\d+)\s*頁|page\s*(\d+)|投影片\s*(\d+)|slide\s*(\d+)|(\d{1,2}:\d{2}(?::\d{2})?)(?:\s*[-–~～]\s*\d{1,2}:\d{2}(?::\d{2})?)?)\s*\]/i.exec(ln);
+      if (m) { cur = m[1] || m[2] ? { page: +(m[1] || m[2]) } : m[3] || m[4] ? { slide: +(m[3] || m[4]) } : { time: m[5] }; }
+      var base = locators && locators[i] ? locators[i] : {};
+      loc2.push(Object.assign({}, cur, base));
+    });
+    return { kind: kind, text: text, locators: loc2, notes: notes };
+  }
+
+  // ───── 來源：行、章節目錄、片段 ─────
+  function locLabel(l) { if (!l) return ''; var o = []; if (l.sheet) o.push('工作表 ' + l.sheet + ' 第 ' + l.row + ' 列'); if (l.page) o.push('第 ' + l.page + ' 頁'); if (l.slide) o.push('投影片 ' + l.slide); if (l.time) o.push('時間 ' + l.time); if (l.record) o.push('第 ' + l.record + ' 筆'); if (l.path) o.push('欄位 ' + l.path); return o.join('，'); }
+
+  // opts: { id, name, kind, raw, url, chunkChars }
+  function ingest(opts) {
+    opts = opts || {};
+    var n = normalize(opts.kind, opts.raw), text = n.text;
+    var lines = text.split('\n'), starts = [0]; for (var i = 0; i < text.length; i++) if (text[i] === '\n') starts.push(i + 1);
+    var lineOf = function (off) { var lo = 0, hi = starts.length - 1; while (lo < hi) { var mid = (lo + hi + 1) >> 1; if (starts[mid] <= off) lo = mid; else hi = mid - 1; } return lo + 1; };
+    var ol = Outline.outline(text);
+    var sections = ol.sections.map(function (s) { return { n: s.n, level: s.level, title: s.title, line_start: lineOf(s.start), line_end: lineOf(Math.max(s.start, s.end - 1)), chars: s.chars }; });
+    var secOfLine = function (ln) { for (var k = sections.length - 1; k >= 0; k--) if (sections[k].line_start <= ln) return sections[k]; return null; };
+    var chunks = [], max = Math.max(200, opts.chunkChars || CHUNK_CHARS), buf = [], bufChars = 0, bufStart = 1;
+    var flush = function (endLine) { if (!buf.length) return; var t = buf.join('\n'); if (t.trim()) { var sec = secOfLine(bufStart); chunks.push({ n: chunks.length + 1, line_start: bufStart, line_end: endLine, text: t, section: sec ? sec.title : '', section_n: sec ? sec.n : 0, loc: locLabel(n.locators[bufStart - 1]) }); } buf = []; bufChars = 0; };
+    var headerLine = (n.kind === 'csv' || n.kind === 'tsv') ? lines[0] : null;
+    for (var li = 0; li < lines.length; li++) {
+      var ln = lines[li], lineNo = li + 1, sec2 = secOfLine(lineNo), prevSec = buf.length ? secOfLine(bufStart) : null;
+      if (buf.length && ((sec2 && prevSec && sec2.n !== prevSec.n) || bufChars + ln.length + 1 > max)) { flush(lineNo - 1); }
+      if (!buf.length) bufStart = lineNo;
+      buf.push(ln); bufChars += ln.length + 1;
+    }
+    flush(lines.length);
+    return { id: opts.id || null, name: opts.name || '(未命名)', kind: n.kind, url: opts.url || null, notes: n.notes, text: text, lines: lines, locators: n.locators, sections: sections, chunks: chunks, outline_style: ol.style, total_chars: text.length };
+  }
+
+  // ───── 出處 ─────
+  // 每一則檢索結果與摘要句都長這樣：{ source, source_id, kind, line_start, line_end, section, loc, quote }
+  function cite(src, a, b, quote) {
+    var sec = null; for (var k = src.sections.length - 1; k >= 0; k--) if (src.sections[k].line_start <= a) { sec = src.sections[k]; break; }
+    var lbl = '「' + src.name + '」' + (a === b ? '第 ' + a + ' 行' : '第 ' + a + '–' + b + ' 行') + (src.kind === 'json' ? '（json 格式化後）' : '') + (sec && sec.title && sec.title.indexOf('（開頭') !== 0 ? '，章節「' + sec.title + '」' : '');
+    var loc = locLabel(src.locAt ? src.locAt(a) : src.locators[a - 1]); if (loc) lbl += '，' + loc;
+    return { source: src.name, source_id: src.id, kind: src.kind, line_start: a, line_end: b, section: sec ? sec.title : '', loc: loc, label: lbl, quote: quote };
+  }
+
+  // 片段裡「真正回答問題的那幾行」：每行算和查詢共有幾個詞，取最高分那行，連著分數夠高的相鄰行（最多 3 行）。
+  // 出處指到這幾行（不是整個片段）；片段本身的範圍另外放在 chunk_line_start／chunk_line_end。沒有任何一行有共同詞（純語意命中）就用整個片段。
+  function pinpoint(src, ch, qt) {
+    var set = {}; qt.forEach(function (t) { set[t] = 1; });
+    var sc = [], best = 0, bi = -1;
+    for (var ln = ch.line_start; ln <= ch.line_end; ln++) { var toks = Array.from(new Set(tokenize(src.lines[ln - 1] || ''))), n = 0; toks.forEach(function (t) { if (set[t]) n += t.length > 1 ? 1 : 0.3; }); sc.push(n); if (n > best) { best = n; bi = ln; } }
+    if (bi < 0) return { a: ch.line_start, b: ch.line_end, exact: false };
+    var a = bi, b = bi, thr = Math.max(0.5, best / 2);
+    while (b - a < 2 && a > ch.line_start && sc[a - 1 - ch.line_start] >= thr) a--;
+    while (b - a < 2 && b < ch.line_end && sc[b + 1 - ch.line_start] >= thr) b++;
+    return { a: a, b: b, exact: true };
+  }
+
+  // ───── 關鍵字索引與檢索（BM25）；儲存層用 FTS5 時也用同一套斷詞（toks 欄位）─────
+  function buildIndex(sources) {
+    var docs = [], df = {}, total = 0;
+    sources.forEach(function (src) { src.chunks.forEach(function (ch) { var toks = tokenize(ch.text + ' ' + (ch.section || '')); var tf = {}; toks.forEach(function (t) { tf[t] = (tf[t] || 0) + 1; }); Object.keys(tf).forEach(function (t) { df[t] = (df[t] || 0) + 1; }); docs.push({ src: src, ch: ch, tf: tf, len: toks.length || 1 }); total += toks.length || 1; }); });
+    return { docs: docs, df: df, avg: docs.length ? total / docs.length : 1, n: docs.length };
+  }
+  function search(index, query, opts) {
+    opts = opts || {}; var qt = Array.from(new Set(tokenize(query))); if (!qt.length || !index.n) return [];
+    var allowed = opts.sources ? new Set(opts.sources) : null, k1 = 1.5, b = 0.75, hits = [];
+    index.docs.forEach(function (d) {
+      if (allowed && !allowed.has(d.src.id) && !allowed.has(d.src.name)) return;
+      var score = 0, matched = 0;
+      qt.forEach(function (t) { var f = d.tf[t]; if (!f) return; matched++; var idf = Math.log(1 + (index.n - (index.df[t] || 0) + 0.5) / ((index.df[t] || 0) + 0.5)); score += idf * (f * (k1 + 1)) / (f + k1 * (1 - b + b * d.len / index.avg)) * (t.length > 1 ? 1 : 0.4); });
+      if (score > 0) hits.push({ score: score, coverage: matched / qt.length, d: d });
+    });
+    hits.sort(function (a, c) { return c.score - a.score; });
+    var minCov = opts.minCoverage == null ? 0.3 : opts.minCoverage;
+    return hits.filter(function (h) { return h.coverage >= minCov; }).slice(0, opts.limit || 5).map(function (h) { var ch = h.d.ch, pp = pinpoint(h.d.src, ch, qt); return Object.assign(cite(h.d.src, pp.a, pp.b, h.d.src.lines.slice(pp.a - 1, pp.b).join('\n')), { score: Math.round(h.score * 100) / 100, coverage: Math.round(h.coverage * 100) / 100, chunk_n: ch.n, chunk_line_start: ch.line_start, chunk_line_end: ch.line_end }); });
+  }
+
+  // 哪些向量命中算數。multilingual-e5-small 的相似度很擠（實測：相關的問題 0.86–0.92，完全無關的也有 0.78–0.82），所以不能只設一個低門檻：
+  //   ① sim ≥ strict（預設 0.85）→ 算；
+  //   ② 不到 strict 但 ≥ floor（0.75），而且比「全部片段相似度的中位數」高出 gap（0.045）以上、池子有 5 個以上片段 → 也算（跨語言的問法會落在這裡，例如英文問中文文件）；
+  //   其餘一律不算。寧可漏掉也不要把無關的片段交出去（回傳的是原文，但「看起來有關」的無關片段仍然會誤導）。
+  function denseKeep(pool, opts) {
+    opts = opts || {}; var strict = opts.minDense == null ? 0.85 : opts.minDense, floor = opts.floorDense == null ? 0.75 : opts.floorDense, gap = opts.minGap == null ? 0.045 : opts.minGap;
+    var med = null; if (pool.length >= 5) { var s = pool.map(function (x) { return x.sim; }).sort(function (a, b) { return a - b; }); med = s[s.length >> 1]; }
+    return pool.filter(function (x) { return x.sim >= strict || (med != null && x.sim >= floor && x.sim - med >= gap); });
+  }
+
+  // ───── 混合檢索：關鍵字（BM25）＋小型向量模型（語意）─────
+  // 向量由 app 端用小型嵌入模型算好（每個片段一條、已正規化）放進 index.docs[i].vec；查詢向量用 opts.queryVec。
+  // 兩邊各自排名，用 RRF 合併；向量命中要夠像（minDense）才算，避免「語意上有點像」的片段混進來——回傳的永遠是原文片段與出處。
+  function searchHybrid(index, query, opts) {
+    opts = opts || {}; var limit = opts.limit || 5, k = 60;
+    var lex = search(index, query, Object.assign({}, opts, { limit: Math.max(limit * 4, 20), minCoverage: opts.minCoverage == null ? 0.3 : opts.minCoverage }));
+    var qv = opts.queryVec, dense = [];
+    if (qv && qv.length) {
+      var allowed = opts.sources ? new Set(opts.sources) : null, pool = [];
+      index.docs.forEach(function (d) { if (!d.vec || d.vec.length !== qv.length) return; if (allowed && !allowed.has(d.src.id) && !allowed.has(d.src.name)) return; var dot = 0; for (var i = 0; i < qv.length; i++) dot += qv[i] * d.vec[i]; pool.push({ d: d, sim: dot }); });
+      dense = denseKeep(pool, opts).sort(function (a, b) { return b.sim - a.sim; });
+    }
+    var key = function (src, ch) { return (src.id || src.name) + '#' + ch.n; }, fused = {};
+    lex.forEach(function (h, r) { var kk = (h.source_id || h.source) + '#' + h.chunk_n; fused[kk] = fused[kk] || { rrf: 0, hit: h, how: [] }; fused[kk].rrf += 1 / (k + r + 1); fused[kk].how.push('關鍵字'); });
+    dense.slice(0, Math.max(limit * 4, 20)).forEach(function (x, r) { var kk = key(x.d.src, x.d.ch); if (!fused[kk]) fused[kk] = { rrf: 0, hit: (function () { var pp = pinpoint(x.d.src, x.d.ch, Array.from(new Set(tokenize(query)))); return Object.assign(cite(x.d.src, pp.a, pp.b, x.d.src.lines.slice(pp.a - 1, pp.b).join('\n')), { chunk_n: x.d.ch.n, chunk_line_start: x.d.ch.line_start, chunk_line_end: x.d.ch.line_end }); })(), how: [] }; fused[kk].rrf += 1 / (k + r + 1); fused[kk].how.push('語意'); fused[kk].hit.similarity = Math.round(x.sim * 1000) / 1000; });
+    return Object.keys(fused).map(function (kk) { var f = fused[kk]; return Object.assign({}, f.hit, { score: Math.round(f.rrf * 10000) / 10000, found_by: f.how.join('＋') }); }).sort(function (a, b) { return b.score - a.score; }).slice(0, limit);
+  }
+
+  // ───── 摘要：只選原句 ─────
+  function sentencesOf(src) {
+    var out = [];
+    src.lines.forEach(function (ln, i) {
+      var t = ln.trim(); if (!t || /^(#{1,6}\s|={2,6}|h[1-6]\.\s|[-=]{3,}\s*$)/.test(t) || t.length < 6) return;
+      t.split(/(?<=[。！？!?；;])|(?<=[.])\s+(?=[A-Z0-9「"'(（])/).forEach(function (s) { s = s.trim(); if (s.length >= 6) out.push({ text: s, line: i + 1 }); });
+    });
+    return out;
+  }
+  // 每個章節挑最有代表性的幾句（詞頻分數），回傳原句與出處；不改寫
+  function summarize(src, opts) {
+    opts = opts || {}; var per = opts.perSection || 2, ss = sentencesOf(src), df = {}, tf = {};
+    ss.forEach(function (s) { s.toks = Array.from(new Set(tokenize(s.text))); s.toks.forEach(function (t) { df[t] = (df[t] || 0) + 1; }); tokenize(s.text).forEach(function (t) { tf[t] = (tf[t] || 0) + 1; }); });
+    var N = ss.length || 1;
+    ss.forEach(function (s) { var sc = 0; s.toks.forEach(function (t) { if (t.length > 1) sc += (tf[t] || 1) * Math.log(1 + N / (df[t] || 1)); }); s.score = sc / Math.sqrt(s.toks.length || 1); });
+    var bySec = {}; ss.forEach(function (s) { var sec = src.sections.slice().reverse().find(function (x) { return x.line_start <= s.line; }); var key = sec ? sec.n : 0; (bySec[key] = bySec[key] || []).push(s); });
+    var out = [];
+    Object.keys(bySec).map(Number).sort(function (a, b) { return a - b; }).forEach(function (key) {
+      var pick = bySec[key].slice().sort(function (a, b) { return b.score - a.score; }).slice(0, per).sort(function (a, b) { return a.line - b.line; });
+      pick.forEach(function (s) { out.push(cite(src, s.line, s.line, s.text)); });
+    });
+    var cap = opts.maxSentences || 40; if (out.length > cap) out = out.sort(function (a, b) { return b.quote.length - a.quote.length; }).slice(0, cap).sort(function (a, b) { return a.line_start - b.line_start; });
+    return out;
+  }
+
+  // 核對：一句話（摘要、回答裡引用的字）真的出現在來源的那幾行裡？（忽略空白差異）
+  function verifyQuote(src, quote, a, b) {
+    var squash = function (s) { return String(s).replace(/\s+/g, ''); };
+    var q = squash(quote); if (!q) return false;
+    var from = Math.max(1, a || 1), to = Math.min(src.lines.length, b || src.lines.length);
+    return squash(src.lines.slice(from - 1, to).join('\n')).indexOf(q) >= 0;
+  }
+  function verifyAll(src, cites) { var bad = []; cites.forEach(function (c) { if (!verifyQuote(src, c.quote, c.line_start, c.line_end)) bad.push(c); }); return { ok: bad.length === 0, bad: bad }; }
+
+  // 細節：某個章節（或行範圍）的原文，逐行附行號
+  function detail(src, which, opts) {
+    opts = opts || {}; var a, b;
+    if (which && typeof which === 'object' && which.line_start) { a = which.line_start; b = which.line_end || a; }
+    else { var sec = typeof which === 'number' ? src.sections[which - 1] : src.sections.filter(function (s) { return s.title.toLowerCase().indexOf(String(which).toLowerCase()) >= 0; })[0]; if (!sec) return { error: '找不到這個章節：' + which }; a = sec.line_start; b = sec.line_end; }
+    var cap = opts.maxLines || 200, to = Math.min(b, a + cap - 1);
+    return { cite: cite(src, a, to, null), lines: src.lines.slice(a - 1, to).map(function (t, i) { return { line: a + i, text: t }; }), truncated: to < b, next_line: to < b ? to + 1 : null };
+  }
+
+  // ───── 關聯：只用字面上確定的證據 ─────
+  // 1) 來源 A 的文字直接提到來源 B 的名稱（去掉副檔名）  2) 兩個來源共有的專有名詞／數字／較長的詞（都附雙方的行號）
+  function links(sources, opts) {
+    opts = opts || {}; var out = [], cap = opts.max || 60;
+    var base = function (s) { return String(s.name).replace(/\.[A-Za-z0-9]+$/, ''); };
+    sources.forEach(function (a) {
+      sources.forEach(function (b) {
+        if (a === b || out.length >= cap) return; var nm = base(b); if (nm.length < 3) return;
+        for (var i = 0; i < a.lines.length; i++) if (a.lines[i].indexOf(nm) >= 0) { out.push({ kind: 'mentions', from: cite(a, i + 1, i + 1, a.lines[i].trim().slice(0, 160)), to: { source: b.name, source_id: b.id }, term: nm }); break; }
+      });
+    });
+    var termLines = function (src) { var m = {}; src.lines.forEach(function (ln, i) { (ln.match(/[A-Z][A-Za-z]{3,}(?:\s[A-Z][A-Za-z]{3,})*|\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|[A-Za-z][A-Za-z0-9_]{5,}|[㐀-鿿]{3,6}/g) || []).forEach(function (t) { if (!m[t]) m[t] = i + 1; }); }); return m; };
+    var maps = sources.map(termLines);
+    for (var x = 0; x < sources.length; x++) for (var y = x + 1; y < sources.length; y++) {
+      var shared = Object.keys(maps[x]).filter(function (t) { return maps[y][t] != null; });
+      shared.sort(function (p, q) { return q.length - p.length; }).slice(0, 5).forEach(function (t) { if (out.length < cap) out.push({ kind: 'shared_term', term: t, from: cite(sources[x], maps[x][t], maps[x][t], sources[x].lines[maps[x][t] - 1].trim().slice(0, 160)), to: cite(sources[y], maps[y][t], maps[y][t], sources[y].lines[maps[y][t] - 1].trim().slice(0, 160)) }); });
+    }
+    return out;
+  }
+
+  // 回答：只把檢索到的原文片段與出處交出去（不生成）；找不到就明說找不到
+  function answer(index, question, opts) {
+    var hits = (opts && opts.queryVec) ? searchHybrid(index, question, opts) : search(index, question, opts);
+    if (!hits.length) return { ok: true, found: false, message: '在目前選用的來源裡找不到相關內容。', hits: [] };
+    return { ok: true, found: true, hits: hits.map(function (h) { return { label: h.label, source: h.source, line_start: h.line_start, line_end: h.line_end, section: h.section, loc: h.loc, quote: h.quote, score: h.score, found_by: h.found_by || '關鍵字' }; }) };
+  }
+
+  return { denseKeep: denseKeep, pinpoint: pinpoint, tokenize: tokenize, normalize: normalize, ingest: ingest, cite: cite, buildIndex: buildIndex, search: search, searchHybrid: searchHybrid, summarize: summarize, verifyQuote: verifyQuote, verifyAll: verifyAll, detail: detail, links: links, answer: answer, locLabel: locLabel };
+});
+
+}).call(null, undefined, holder);
+return holder.FaKnowledge;
+})();
+/* KNOW-END */
+/* KSTORE-BEGIN */
+const FaKnowledgeStore = (function () {
+const holder = {};
+(function (module, self) {
+/* Knowledge Inventory 的儲存層（UMD）：一個 SQLite3 檔（副檔名 .keeplookup），放來源、章節、片段、全文索引（FTS5）、向量、關聯、摘要。
+ * 這裡只管 SQL：用 exec(sql, bind) → Promise<[{ columns, rows }]> 跟任何 SQLite 引擎講話（桌面版 node:sqlite、網頁版 sqlite-wasm、測試用的 node:sqlite 都一樣），
+ * 檔案放哪裡（IndexedDB、磁碟、FAP）由 app 那層決定，這裡不知道也不在意。
+ * BLOB 的交換格式跟引擎協定一致：綁定時 { $blob: base64 }，讀回來也是 { $blob: base64 }。
+ * 全文索引用核心的斷詞（CJK 二字詞）預先斷好存進 toks 欄位，所以中文也能查；FTS5 的 unicode61 另外把 . - _ 當成詞的一部分，讓 flux.1-schnell 這種詞完整。 */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./knowledge_core.js')); else root.FaKnowledgeStore = factory(root.FaKnowledge || (typeof FaKnowledge !== 'undefined' ? FaKnowledge : undefined));
+})(typeof self !== 'undefined' ? self : this, function (K) {
+  'use strict';
+  var VERSION = 1;
+  var SCHEMA = [
+    'CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)',
+    'CREATE TABLE IF NOT EXISTS sources (id INTEGER PRIMARY KEY, name TEXT NOT NULL, kind TEXT, url TEXT, hash TEXT, notes TEXT, text TEXT NOT NULL, loc_runs TEXT, outline_style TEXT, chars INTEGER, enabled INTEGER DEFAULT 1, tags TEXT, added_at INTEGER, updated_at INTEGER)',
+    'CREATE INDEX IF NOT EXISTS sources_name ON sources(name)',
+    'CREATE TABLE IF NOT EXISTS sections (source_id INTEGER, n INTEGER, level INTEGER, title TEXT, line_start INTEGER, line_end INTEGER, chars INTEGER, PRIMARY KEY (source_id, n))',
+    'CREATE TABLE IF NOT EXISTS chunks (id INTEGER PRIMARY KEY, source_id INTEGER, n INTEGER, line_start INTEGER, line_end INTEGER, text TEXT, section TEXT, section_n INTEGER, loc TEXT, toks TEXT)',
+    'CREATE INDEX IF NOT EXISTS chunks_source ON chunks(source_id)',
+    "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(toks, content='', tokenize=\"unicode61 tokenchars '.-_'\")",
+    'CREATE TABLE IF NOT EXISTS vectors (chunk_id INTEGER PRIMARY KEY, model TEXT, dim INTEGER, vec BLOB)',
+    'CREATE TABLE IF NOT EXISTS links (id INTEGER PRIMARY KEY, kind TEXT, term TEXT, from_source INTEGER, from_start INTEGER, from_end INTEGER, from_quote TEXT, to_source INTEGER, to_start INTEGER, to_end INTEGER, to_quote TEXT, status TEXT DEFAULT \'auto\')',
+    'CREATE TABLE IF NOT EXISTS summaries (source_id INTEGER, section TEXT, line_start INTEGER, line_end INTEGER, quote TEXT)',
+  ];
+
+  // ───── 小工具 ─────
+  function b64FromBytes(u8) { var s = '', CH = 0x8000; for (var i = 0; i < u8.length; i += CH) s += String.fromCharCode.apply(null, u8.subarray(i, i + CH)); return typeof btoa === 'function' ? btoa(s) : Buffer.from(s, 'binary').toString('base64'); }
+  function bytesFromB64(b64) { var bin = typeof atob === 'function' ? atob(b64) : Buffer.from(b64, 'base64').toString('binary'); var u = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; }
+  function vecToBlob(v) { var f = v instanceof Float32Array ? v : Float32Array.from(v); return { $blob: b64FromBytes(new Uint8Array(f.buffer, f.byteOffset, f.byteLength)) }; }
+  function blobToVec(b) { var u = bytesFromB64(b && b.$blob ? b.$blob : ''); return new Float32Array(u.buffer, u.byteOffset, Math.floor(u.byteLength / 4)); }
+  function hashText(s) { var h = 2166136261 >>> 0; s = String(s); for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; } return h.toString(16).padStart(8, '0') + ':' + s.length; }
+  function rowsOf(res) { var r = res && res[0]; if (!r || !r.columns) return []; return r.rows.map(function (row) { var o = {}; r.columns.forEach(function (c, i) { o[c] = row[i]; }); return o; }); }
+  function ftsQuery(tokens) { return tokens.slice(0, 24).map(function (t) { return '"' + t.replace(/"/g, '""') + '"'; }).join(' OR '); }
+
+  // 每一行的位置資訊壓成「從第幾行開始是哪個位置」的清單（頁、投影片、時間、工作表…），查某一行時二分搜尋
+  function locRuns(locators) {
+    var runs = [], last = null;
+    (locators || []).forEach(function (l, i) { var j = JSON.stringify(l || {}); if (j !== last) { runs.push([i + 1, l || {}]); last = j; } });
+    return runs;
+  }
+  function locAtFrom(runs) { return function (line) { var lo = 0, hi = runs.length - 1, ans = null; while (lo <= hi) { var mid = (lo + hi) >> 1; if (runs[mid][0] <= line) { ans = runs[mid][1]; lo = mid + 1; } else hi = mid - 1; } return ans; }; }
+
+  function Store(exec, opts) { this.exec = exec; this.opts = opts || {}; this.denseCache = null; }
+  Store.prototype.init = async function () {
+    for (var i = 0; i < SCHEMA.length; i++) await this.exec(SCHEMA[i]);
+    var v = rowsOf(await this.exec("SELECT value FROM meta WHERE key='version'"));
+    if (!v.length) await this.exec("INSERT INTO meta(key,value) VALUES('version', ?)", [String(VERSION)]);
+    else if (Number(v[0].value) > VERSION) throw new Error('這個知識庫檔案是比較新的版本（' + v[0].value + '），這個 app 只認得到版本 ' + VERSION);
+    return { version: VERSION };
+  };
+  Store.prototype.getMeta = async function (k) { var r = rowsOf(await this.exec('SELECT value FROM meta WHERE key=?', [k])); return r.length ? r[0].value : null; };
+  Store.prototype.setMeta = async function (k, v) { await this.exec('INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', [k, String(v)]); };
+
+  // src：K.ingest() 的結果。同名同內容（hash 相同）就不動；同名內容變了就整份換掉。回傳 { id, status: 'added'|'updated'|'unchanged', chunks }
+  Store.prototype.addSource = async function (src, o) {
+    o = o || {}; var hash = o.hash || hashText(src.text), now = Date.now();
+    var ex = rowsOf(await this.exec('SELECT id, hash FROM sources WHERE name=? AND IFNULL(url,\'\')=?', [src.name, src.url || '']));
+    var id = null, status = 'added';
+    if (ex.length) { if (ex[0].hash === hash && !o.force) return { id: ex[0].id, status: 'unchanged', chunks: 0 }; id = ex[0].id; status = 'updated'; await this._dropContent(id); }
+    if (id == null) {
+      await this.exec('INSERT INTO sources(name, kind, url, hash, notes, text, loc_runs, outline_style, chars, enabled, tags, added_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)', [src.name, src.kind, src.url || null, hash, JSON.stringify(src.notes || []), src.text, JSON.stringify(locRuns(src.locators)), src.outline_style || '', src.text.length, 1, o.tags ? JSON.stringify(o.tags) : null, now, now]);
+      id = Number(rowsOf(await this.exec('SELECT last_insert_rowid() AS id'))[0].id);
+    } else {
+      await this.exec('UPDATE sources SET kind=?, hash=?, notes=?, text=?, loc_runs=?, outline_style=?, chars=?, updated_at=? WHERE id=?', [src.kind, hash, JSON.stringify(src.notes || []), src.text, JSON.stringify(locRuns(src.locators)), src.outline_style || '', src.text.length, now, id]);
+    }
+    for (var i = 0; i < src.sections.length; i++) { var s = src.sections[i]; await this.exec('INSERT INTO sections(source_id,n,level,title,line_start,line_end,chars) VALUES(?,?,?,?,?,?,?)', [id, s.n, s.level, s.title, s.line_start, s.line_end, s.chars]); }
+    for (var j = 0; j < src.chunks.length; j++) {
+      var c = src.chunks[j], toks = K.tokenize(c.text + ' ' + (c.section || '')).join(' ');
+      await this.exec('INSERT INTO chunks(source_id,n,line_start,line_end,text,section,section_n,loc,toks) VALUES(?,?,?,?,?,?,?,?,?)', [id, c.n, c.line_start, c.line_end, c.text, c.section || '', c.section_n || 0, c.loc || '', toks]);
+      var cid = Number(rowsOf(await this.exec('SELECT last_insert_rowid() AS id'))[0].id);
+      await this.exec('INSERT INTO chunks_fts(rowid, toks) VALUES(?,?)', [cid, toks]);
+    }
+    this.denseCache = null;
+    return { id: id, status: status, chunks: src.chunks.length };
+  };
+  Store.prototype._dropContent = async function (id) {
+    var ids = rowsOf(await this.exec('SELECT id FROM chunks WHERE source_id=?', [id])).map(function (r) { return r.id; });
+    for (var i = 0; i < ids.length; i++) { await this.exec("INSERT INTO chunks_fts(chunks_fts, rowid, toks) VALUES('delete', ?, (SELECT toks FROM chunks WHERE id=?))", [ids[i], ids[i]]); }
+    await this.exec('DELETE FROM vectors WHERE chunk_id IN (SELECT id FROM chunks WHERE source_id=?)', [id]);
+    await this.exec('DELETE FROM chunks WHERE source_id=?', [id]); await this.exec('DELETE FROM sections WHERE source_id=?', [id]);
+    await this.exec('DELETE FROM summaries WHERE source_id=?', [id]); await this.exec('DELETE FROM links WHERE from_source=? OR to_source=?', [id, id]);
+    this.denseCache = null;
+  };
+  Store.prototype.removeSource = async function (id) { await this._dropContent(id); await this.exec('DELETE FROM sources WHERE id=?', [id]); return { ok: true }; };
+  Store.prototype.setEnabled = async function (id, on) { await this.exec('UPDATE sources SET enabled=? WHERE id=?', [on ? 1 : 0, id]); this.denseCache = null; };
+  Store.prototype.listSources = async function () {
+    return rowsOf(await this.exec('SELECT s.id, s.name, s.kind, s.url, s.chars, s.enabled, s.updated_at, s.tags, (SELECT COUNT(*) FROM chunks c WHERE c.source_id=s.id) AS chunks, (SELECT COUNT(*) FROM vectors v JOIN chunks c ON c.id=v.chunk_id WHERE c.source_id=s.id) AS vectors, (SELECT COUNT(*) FROM sections x WHERE x.source_id=s.id) AS sections FROM sources s ORDER BY s.name'));
+  };
+  Store.prototype.findSource = async function (ref) {
+    var all = await this.listSources(), r = String(ref == null ? '' : ref).trim(), lower = r.toLowerCase();
+    var hit = all.filter(function (s) { return String(s.id) === r; })[0] || all.filter(function (s) { return s.name === r; })[0] || all.filter(function (s) { return s.name.toLowerCase() === lower; })[0] || all.filter(function (s) { return s.name.toLowerCase().indexOf(lower) >= 0; })[0];
+    return hit || null;
+  };
+  // 還原成核心函式用的來源物件（lines、sections、locAt）
+  Store.prototype.getSource = async function (id) {
+    var r = rowsOf(await this.exec('SELECT * FROM sources WHERE id=?', [id]))[0]; if (!r) return null;
+    var secs = rowsOf(await this.exec('SELECT n, level, title, line_start, line_end, chars FROM sections WHERE source_id=? ORDER BY n', [id]));
+    var runs = []; try { runs = JSON.parse(r.loc_runs || '[]'); } catch (_) { runs = []; }
+    return { id: r.id, name: r.name, kind: r.kind, url: r.url, text: r.text, lines: r.text.split('\n'), sections: secs, locAt: locAtFrom(runs), locators: [], notes: JSON.parse(r.notes || '[]'), enabled: !!r.enabled };
+  };
+
+  // ───── 向量 ─────
+  Store.prototype.pendingVectors = async function (model, limit) {
+    return rowsOf(await this.exec('SELECT c.id, c.text FROM chunks c JOIN sources s ON s.id=c.source_id LEFT JOIN vectors v ON v.chunk_id=c.id AND v.model=? WHERE v.chunk_id IS NULL ORDER BY c.id LIMIT ?', [model, limit || 64]));
+  };
+  Store.prototype.putVectors = async function (model, items) {
+    for (var i = 0; i < items.length; i++) await this.exec('INSERT INTO vectors(chunk_id, model, dim, vec) VALUES(?,?,?,?) ON CONFLICT(chunk_id) DO UPDATE SET model=excluded.model, dim=excluded.dim, vec=excluded.vec', [items[i].id, model, items[i].vec.length, vecToBlob(items[i].vec)]);
+    this.denseCache = null;
+  };
+  Store.prototype._dense = async function (model) {
+    if (this.denseCache && this.denseCache.model === model) return this.denseCache.rows;
+    var rows = rowsOf(await this.exec('SELECT v.chunk_id AS id, v.vec AS vec, c.source_id AS source_id FROM vectors v JOIN chunks c ON c.id=v.chunk_id JOIN sources s ON s.id=c.source_id WHERE v.model=? AND s.enabled=1', [model])).map(function (r) { return { id: r.id, source_id: r.source_id, vec: blobToVec(r.vec) }; });
+    this.denseCache = { model: model, rows: rows }; return rows;
+  };
+
+  // ───── 檢索：FTS5（關鍵字，BM25）＋向量（語意），RRF 合併；只回原文與出處 ─────
+  // opts: { limit, sources:[id], queryVec, model, minDense, minCoverage }
+  Store.prototype.search = async function (query, opts) {
+    opts = opts || {}; var limit = opts.limit || 5, qt = Array.from(new Set(K.tokenize(query))), k = 60;
+    var allowed = opts.sources ? new Set(opts.sources.map(Number)) : null, fused = {};
+    var addHit = function (id, how, r) { var f = fused[id] = fused[id] || { rrf: 0, how: [], sim: null }; f.rrf += 1 / (k + r + 1); if (f.how.indexOf(how) < 0) f.how.push(how); };
+    var covOf = {};
+    if (qt.length) {
+      var rows = rowsOf(await this.exec('SELECT c.id AS id, c.source_id AS source_id, c.toks AS toks FROM chunks_fts JOIN chunks c ON c.id=chunks_fts.rowid JOIN sources s ON s.id=c.source_id WHERE chunks_fts MATCH ? AND s.enabled=1 ORDER BY bm25(chunks_fts) LIMIT 80', [ftsQuery(qt)]));
+      var minCov = opts.minCoverage == null ? 0.3 : opts.minCoverage, rank = 0;
+      rows.forEach(function (r) { if (allowed && !allowed.has(Number(r.source_id))) return; var set = new Set(String(r.toks || '').split(' ')), m = 0; qt.forEach(function (t) { if (set.has(t)) m++; }); var cov = m / qt.length; if (cov < minCov) return; covOf[r.id] = cov; addHit(r.id, '關鍵字', rank++); });
+    }
+    if (opts.queryVec && opts.queryVec.length) {
+      var qv = opts.queryVec, all = [];
+      (await this._dense(opts.model || '')).forEach(function (d) { if (d.vec.length !== qv.length) return; if (allowed && !allowed.has(Number(d.source_id))) return; var dot = 0; for (var i = 0; i < qv.length; i++) dot += qv[i] * d.vec[i]; all.push({ id: d.id, sim: dot }); });
+      K.denseKeep(all, opts).sort(function (a, b) { return b.sim - a.sim; }).slice(0, 40).forEach(function (x, r) { addHit(x.id, '語意', r); fused[x.id].sim = Math.round(x.sim * 1000) / 1000; });
+    }
+    var ids = Object.keys(fused).sort(function (a, b) { return fused[b].rrf - fused[a].rrf; }).slice(0, limit); if (!ids.length) return [];
+    var chunks = rowsOf(await this.exec('SELECT id, source_id, n, line_start, line_end, text FROM chunks WHERE id IN (' + ids.map(function () { return '?'; }).join(',') + ')', ids.map(Number)));
+    var byId = {}; chunks.forEach(function (c) { byId[c.id] = c; });
+    var srcCache = {}, out = [];
+    for (var i = 0; i < ids.length; i++) {
+      var ch = byId[ids[i]]; if (!ch) continue;
+      var src = srcCache[ch.source_id]; if (!src) { var full = await this.getSource(ch.source_id); src = srcCache[ch.source_id] = { id: full.id, name: full.name, kind: full.kind, sections: full.sections, locAt: full.locAt, locators: [], lines: [] }; }
+      var lines = new Array(ch.line_end), cl = String(ch.text).split('\n'); cl.forEach(function (t, j) { lines[ch.line_start - 1 + j] = t; });
+      var tmp = { lines: lines }, pp = K.pinpoint(tmp, ch, qt);
+      var c = K.cite(src, pp.a, pp.b, lines.slice(pp.a - 1, pp.b).join('\n'));
+      var f = fused[ids[i]];
+      out.push(Object.assign(c, { score: Math.round(f.rrf * 10000) / 10000, found_by: f.how.join('＋'), coverage: covOf[ids[i]] != null ? Math.round(covOf[ids[i]] * 100) / 100 : undefined, similarity: f.sim != null ? f.sim : undefined, chunk_n: ch.n, chunk_line_start: ch.line_start, chunk_line_end: ch.line_end }));
+    }
+    return out;
+  };
+  Store.prototype.answer = async function (question, opts) {
+    var hits = await this.search(question, opts);
+    if (!hits.length) return { ok: true, found: false, message: '在目前選用的來源裡找不到相關內容。', hits: [] };
+    return { ok: true, found: true, hits: hits.map(function (h) { return { label: h.label, source: h.source, source_id: h.source_id, line_start: h.line_start, line_end: h.line_end, section: h.section, loc: h.loc, quote: h.quote, found_by: h.found_by, score: h.score }; }) };
+  };
+
+  // ───── 摘要、細節、關聯 ─────
+  Store.prototype.summary = async function (id, o) {
+    var src = await this.getSource(id); if (!src) return { error: '找不到這個來源' };
+    var list = K.summarize(src, o); var chk = K.verifyAll(src, list);
+    var good = list.filter(function (x) { return chk.bad.indexOf(x) < 0; });
+    await this.exec('DELETE FROM summaries WHERE source_id=?', [id]);
+    for (var i = 0; i < good.length; i++) await this.exec('INSERT INTO summaries(source_id, section, line_start, line_end, quote) VALUES(?,?,?,?,?)', [id, good[i].section, good[i].line_start, good[i].line_end, good[i].quote]);
+    return { source: src.name, kind: 'extractive', note: '摘要的每一句都是來源裡的原句，附行號；沒有改寫。', sentences: good, dropped: chk.bad.length };
+  };
+  Store.prototype.outline = async function (id) {
+    var src = await this.getSource(id); if (!src) return { error: '找不到這個來源' };
+    return { source: src.name, source_id: src.id, kind: src.kind, lines: src.lines.length, notes: src.notes, sections: src.sections.map(function (s) { return { n: s.n, level: s.level, title: s.title, line_start: s.line_start, line_end: s.line_end, chars: s.chars }; }) };
+  };
+  Store.prototype.detail = async function (id, which, o) {
+    var src = await this.getSource(id); if (!src) return { error: '找不到這個來源' };
+    var d = K.detail(src, which, o); if (d.error) return d;
+    return { source: src.name, source_id: src.id, cite: d.cite, lines: d.lines, truncated: d.truncated, next_line: d.next_line };
+  };
+  // 重新計算關聯（只用字面證據）；使用者確認過或拒絕過的（status 不是 auto）保留
+  Store.prototype.rebuildLinks = async function () {
+    var ids = rowsOf(await this.exec('SELECT id FROM sources WHERE enabled=1')).map(function (r) { return r.id; }), srcs = [];
+    for (var i = 0; i < ids.length; i++) srcs.push(await this.getSource(ids[i]));
+    await this.exec("DELETE FROM links WHERE status='auto'");
+    var ls = K.links(srcs, { max: 200 }), n = 0;
+    for (var j = 0; j < ls.length; j++) { var l = ls[j], to = l.to; var toId = to.source_id != null ? to.source_id : null; await this.exec('INSERT INTO links(kind, term, from_source, from_start, from_end, from_quote, to_source, to_start, to_end, to_quote, status) VALUES(?,?,?,?,?,?,?,?,?,?,\'auto\')', [l.kind, l.term, l.from.source_id, l.from.line_start, l.from.line_end, l.from.quote, toId, to.line_start || null, to.line_end || null, to.quote || null]); n++; }
+    return { links: n };
+  };
+  Store.prototype.getLinks = async function (id) {
+    var rows = rowsOf(await this.exec('SELECT l.*, a.name AS from_name, b.name AS to_name FROM links l JOIN sources a ON a.id=l.from_source JOIN sources b ON b.id=l.to_source WHERE l.status<>\'rejected\'' + (id != null ? ' AND (l.from_source=? OR l.to_source=?)' : '') + ' ORDER BY l.kind, l.id LIMIT 200', id != null ? [id, id] : []));
+    return rows.map(function (r) { return { id: r.id, kind: r.kind, term: r.term, status: r.status, from: { source: r.from_name, source_id: r.from_source, line_start: r.from_start, line_end: r.from_end, quote: r.from_quote }, to: { source: r.to_name, source_id: r.to_source, line_start: r.to_start, line_end: r.to_end, quote: r.to_quote } }; });
+  };
+  Store.prototype.setLinkStatus = async function (id, status) { await this.exec('UPDATE links SET status=? WHERE id=?', [status, id]); };
+  // 關鍵詞（模型整理挑的，或使用者自己加的）：存成 {terms, by, at}；之後關聯會用到
+  Store.prototype.setTags = async function (id, terms, by) { await this.exec('UPDATE sources SET tags=? WHERE id=?', [JSON.stringify({ terms: terms, by: by || 'user', at: Date.now() }), id]); };
+  Store.prototype.stats = async function () {
+    var r = rowsOf(await this.exec('SELECT (SELECT COUNT(*) FROM sources) AS sources, (SELECT COUNT(*) FROM sources WHERE enabled=1) AS enabled, (SELECT COUNT(*) FROM chunks) AS chunks, (SELECT COUNT(*) FROM vectors) AS vectors, (SELECT IFNULL(SUM(chars),0) FROM sources) AS chars, (SELECT COUNT(*) FROM links WHERE status<>\'rejected\') AS links'))[0];
+    return r;
+  };
+
+  return { Store: Store, VERSION: VERSION, vecToBlob: vecToBlob, blobToVec: blobToVec, hashText: hashText, locRuns: locRuns };
+});
+
+}).call(null, undefined, holder);
+return holder.FaKnowledgeStore;
+})();
+/* KSTORE-END */
 /* WEB-BEGIN */
 const FaWebEdit = (function () {
 const holder = {};
@@ -24481,6 +24932,13 @@ const FA_TOOL_SHORTS = {
 // 不管根模型挑了哪個領域，只要任務明顯是「圖片→PDF」，這次執行就多拿到 images_to_pdf（以及確認附件用的 list_uploaded_files），並附一段專用的做法提醒。
 const FA_TASK_TOOL_HINTS = [
     {
+        id: 'knowledge_ask',
+        re: /知識庫|knowledge\s*inventory|keeplookup|(根據|依據|照|查)我(自己|上傳|放進|加入)?的?(資料|文件|筆記|講義)|我的(文件|筆記|資料)裡(面)?(有沒有|是不是|怎麼)/i,
+        neg: /知識圖譜|knowledge graph/i,
+        tools: ['knowledge_ask', 'knowledge_sources', 'knowledge_outline', 'knowledge_detail', 'knowledge_summary', 'knowledge_add'],
+        note: '【這個需求有專用工具：knowledge_ask】使用者問的是他自己放進 Knowledge Inventory 的資料。先 knowledge_ask 查，回答只根據回傳的原文片段（quote），每個說法標出處（label）；找不到就照實說知識庫裡沒有，不要用自己的知識補。要加資料用 knowledge_add（附件 file_id、網頁 url）。',
+    },
+    {
         id: 'generate_image',
         re: /(畫|生成|產生|製作|做|繪製|generate|create|draw|make)[\s\S]{0,12}(一張|一幅|張|幅|個)?[\s\S]{0,12}(圖片|圖像|插圖|插畫|照片|海報|封面|圖|image|picture|illustration|photo|poster|artwork)|text[- ]?to[- ]?image|文字生圖|AI\s*(畫圖|繪圖|生圖)|flux|stable diffusion/i,
         neg: /流程圖|架構圖|圖表|統計圖|長條圖|折線圖|圓餅圖|甘特圖|心智圖|uml|mermaid|chart|diagram|flowchart|圖片轉|轉成?圖片|匯出成?圖片|pdf/i,
@@ -26001,7 +26459,7 @@ const FA_PRESET_MODEL_STATE = {
 };
 
 // 預先釘版、切片的模型檔放在 vendor-models 分支（單一提交；程式用完整 SHA 取檔，內容不可變）。見該分支的 README.md 與 vendor/manifest.json
-const FA_VENDOR_MODELS = { owner: 'sunneo/tw_stock_db', sha: 'b9bfeb8d25ab63d53d26a4c7b6769789915caf46', models: { 'zh-en': 'opus-mt-zh-en', 'en-zh': 'opus-mt-en-zh' } };
+const FA_VENDOR_MODELS = { owner: 'sunneo/tw_stock_db', sha: 'baa84b5e701e683fcbfc0f512da28aa3520aa721', models: { 'zh-en': 'opus-mt-zh-en', 'en-zh': 'opus-mt-en-zh', embed: 'multilingual-e5-small' } };
 const PRESET_MODEL_TOOLCALL_SUPPORT = {
     'nvidia/nemotron-3-ultra-550b-a55b': true, // 2026-10-03 實測：帶 tools 參數會回標準的 tool_calls
     'nvidia/nemotron-3.5-lightning-30b-a3b': true,
@@ -31414,6 +31872,313 @@ const FaDeckTools = (function () {
 if (typeof module === 'object' && module.exports) module.exports = FaDeckTools;
 
 /* DECKHOST-END */
+/* KIHOST-BEGIN */
+/* Knowledge Inventory 的 app 轉接層（掛到 FloatingAssistant.prototype）：.keeplookup 放哪裡（IndexedDB／磁碟／FAP）、搬家、
+ * 把各種檔案讀成帶行號的文字、預處理（BM25 全文索引＋語意向量）、問答（每個回答都帶出處）、模型整理（接 LLM 橋接，線上不行自動改離線）、
+ * knowledge_* 工具與 /knowledge 指令。純邏輯在 knowledge_core.js／knowledge_store.js，這裡只做 app 的事。 */
+const FaKnowledgeHost = (function () {
+    'use strict';
+    const IDB_NAME = 'FloatingAssistantKnowledge';
+    const READ_TOOLS = ['knowledge_ask', 'knowledge_outline', 'knowledge_detail', 'knowledge_sources'];
+    const ALL_TOOLS = READ_TOOLS.concat(['knowledge_summary', 'knowledge_links', 'knowledge_add', 'knowledge_remove', 'knowledge_enable', 'knowledge_refresh', 'knowledge_embed', 'knowledge_organize', 'knowledge_location']);
+    const AUDIO_VIDEO = /^(mp3|wav|m4a|ogg|oga|flac|aac|opus|mp4|m4v|mov|mkv|webm|avi)$/i;
+    const TEXT_KINDS = { md: 'md', markdown: 'md', txt: 'txt', text: 'txt', log: 'log', textile: 'textile', mediawiki: 'mediawiki', wiki: 'mediawiki', json: 'json', jsonl: 'jsonl', ndjson: 'jsonl', yaml: 'yaml', yml: 'yaml', toon: 'toon', csv: 'csv', tsv: 'tsv', ini: 'txt', cfg: 'txt', inf: 'txt', toml: 'txt', rst: 'txt', tex: 'txt', xml: 'txt', js: 'txt', ts: 'txt', py: 'txt', c: 'txt', cpp: 'txt', h: 'txt', java: 'txt', go: 'txt', rs: 'txt', sh: 'txt', sql: 'txt' };
+
+    const pad2 = (n) => String(Math.floor(n)).padStart(2, '0');
+    const hms = (sec) => { sec = Math.max(0, Math.floor(sec || 0)); return pad2(sec / 3600) + ':' + pad2((sec % 3600) / 60) + ':' + pad2(sec % 60); };
+
+    const methods = {
+        // ───── 設定 ─────
+        _kiSettings() {
+            const k = (this.advancedSettings && this.advancedSettings.knowledge) || {};
+            const L = k.location && ['idb', 'file', 'fap'].includes(k.location.kind) ? k.location : { kind: 'idb', ref: 'default' };
+            return { location: { kind: L.kind, ref: String(L.ref || (L.kind === 'idb' ? 'default' : '')) }, maxMB: Number(k.maxMB) > 0 ? Number(k.maxMB) : 0, embedConsent: !!k.embedConsent, autoEmbed: k.autoEmbed !== false };
+        },
+        _kiSaveSettings(patch) { this.advancedSettings.knowledge = Object.assign({}, this._kiSettings(), patch); this._saveAdvancedSettings(); },
+        _kiRef() { const L = this._kiSettings().location; if (L.kind === 'idb') return 'idb:' + (L.ref || 'default'); if (L.kind === 'file') return 'file:' + L.ref; return 'fap:' + String(L.ref).replace(/^fap:/i, ''); },
+        _kiLocationLabel() { const L = this._kiSettings().location; return L.kind === 'idb' ? '瀏覽器的 IndexedDB（只在這個瀏覽器／這台 app 裡）' : L.kind === 'file' ? '磁碟檔案：' + L.ref : 'FAP 資料夾：' + L.ref; },
+
+        // ───── IndexedDB 放法（.keeplookup 的位元組整個存成一筆；不受檔案快取的容量淘汰影響）─────
+        _kiIdb() {
+            if (!this._kiIdbP) this._kiIdbP = new Promise((res, rej) => { const rq = indexedDB.open(IDB_NAME, 1); rq.onupgradeneeded = () => { rq.result.createObjectStore('dbs'); }; rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error || new Error('IndexedDB 打不開')); });
+            return this._kiIdbP;
+        },
+        async _kiIdbGet(key) { const db = await this._kiIdb(); return new Promise((res, rej) => { const rq = db.transaction('dbs', 'readonly').objectStore('dbs').get(key); rq.onsuccess = () => res(rq.result ? new Uint8Array(rq.result) : null); rq.onerror = () => rej(rq.error); }); },
+        async _kiIdbPut(key, bytes) { const db = await this._kiIdb(); return new Promise((res, rej) => { const tx = db.transaction('dbs', 'readwrite'); tx.objectStore('dbs').put(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), key); tx.oncomplete = () => res(true); tx.onerror = () => rej(tx.error); tx.onabort = () => rej(tx.error); }); },
+        async _kiIdbDel(key) { const db = await this._kiIdb(); return new Promise((res, rej) => { const tx = db.transaction('dbs', 'readwrite'); tx.objectStore('dbs').delete(key); tx.oncomplete = () => res(true); tx.onerror = () => rej(tx.error); }); },
+
+        // ───── 連線（一個工作階段：開著，寫入後存回；換位置時關掉重開）─────
+        async _kiSession() {
+            const ref = this._kiRef();
+            if (this._kiS && this._kiS.ref === ref) return this._kiS;
+            await this._kiClose();
+            if (!this._sqlAvailable()) throw new Error('這個環境沒有 SQLite 引擎（需要桌面版，或支援 Web Worker 的瀏覽器）');
+            const h = await this._sqlOpen(ref, { create: true });
+            const exec = async (sql, bind) => (await this._sqlCall('exec', { db: h.db, sql, bind, limit: 1000000, timeoutMs: 600000 })).results;
+            const store = new FaKnowledgeStore.Store(exec); await store.init(); await h.commit();
+            this._kiS = { ref, h, store, chain: Promise.resolve() };
+            return this._kiS;
+        },
+        async _kiClose() { const s = this._kiS; this._kiS = null; if (s) { try { await s.chain; } catch (_) { /* */ } try { await s.h.close(); } catch (_) { /* 已關或沒開 */ } } },
+        // 依序執行（同一時間只有一個動作碰資料庫）；write=true 的動作做完把變更存回去
+        async _kiRun(fn, write) {
+            const s = await this._kiSession();
+            const run = s.chain.then(async () => { const r = await fn(s.store, s); if (write) await s.h.commit(); return r; });
+            s.chain = run.catch(() => {}); return run;
+        },
+        async _kiNoteFlag() { try { const st = await this._kiRun((store) => store.stats()); localStorage.setItem('fa.ki.has', st && st.enabled > 0 ? '1' : '0'); this._kiHas = !!(st && st.enabled > 0); } catch (_) { /* */ } },
+        _kiHasSources() { if (this._kiHas === undefined) { try { this._kiHas = localStorage.getItem('fa.ki.has') === '1'; } catch (_) { this._kiHas = false; } } return !!this._kiHas; },
+
+        // ───── 把各種來源讀成帶行號的文字（完整，不截斷）─────
+        async _kiLoadSource(a) {
+            a = a || {};
+            if (a.text != null && String(a.text).trim()) return { name: String(a.name || '貼上的文字').slice(0, 120), kind: TEXT_KINDS[String(a.kind || 'txt').toLowerCase()] || 'txt', raw: String(a.text), url: null };
+            let rec = null, url = a.url ? String(a.url).trim() : null, title = a.name ? String(a.name) : '';
+            if (url) {
+                if (!/^https?:\/\//i.test(url)) return { error: 'url 要是 http(s):// 開頭的完整網址' };
+                const tl = this.tools.fetch_web_page; if (!tl) return { error: '這個環境沒有 fetch_web_page，請改用 file_id 或 text' };
+                let j; try { j = JSON.parse(await tl.callback.call(this, JSON.stringify({ url }))); } catch (e) { return { error: '抓取網頁失敗：' + String((e && e.message) || e) }; }
+                if (!j || j.ok === false) return { error: String((j && j.error) || '抓取網頁失敗') };
+                rec = await this.fileCache.get(j.file_id); title = title || j.title || url;
+            } else if (a.file_id) {
+                rec = await this.fileCache.get(String(a.file_id)); if (!rec) return { error: '找不到檔案 file_id=' + a.file_id };
+            } else if (a.path) {
+                const raw = window.desktopAPI && window.desktopAPI.rawfs; if (!raw) return { error: '網頁版讀不到本機路徑；請把檔案附加到對話再用 file_id 加入' };
+                let r; try { r = await raw.readFile(String(a.path), 'base64'); } catch (e) { return { error: '讀不到檔案：' + String((e && e.message) || e) }; }
+                const bin = atob(r.base64 || ''), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+                rec = { filename: String(a.path).split(/[\\/]/).pop(), blob: new Blob([u]) };
+            } else return { error: '要給 url、file_id、path 或 text 其中一個' };
+            const fname = String(rec.filename || title || 'source'), ext = ((/\.([A-Za-z0-9]+)$/.exec(fname) || [])[1] || '').toLowerCase();
+            const name = (title || fname).slice(0, 160);
+            if (ext === 'pdf') {
+                const { numPages, pageTexts } = await this._extractPdfPageTexts(rec.blob, { filename: fname });
+                const text = pageTexts.map((t, i) => '[第 ' + (i + 1) + ' 頁]\n' + t).join('\n');
+                if (!pageTexts.some((t) => String(t).trim())) return { error: '這份 PDF 沒有文字層（可能是掃描件），沒有辦法讀；Knowledge Inventory 不會用猜的補內容。' };
+                return { name, kind: 'pdf', raw: text, url, pages: numPages };
+            }
+            if (ext === 'docx') return { name, kind: 'docx', raw: await this._kiDocxText(rec.blob), url };
+            if (ext === 'pptx') return { name, kind: 'pptx', raw: await this._kiPptxText(rec.blob), url };
+            if (ext === 'xlsx') {
+                const d = await this._dataViewHost().deps(); if (!d.JSZip) return { error: 'XLSX 讀取工具載入失敗（需要網路載入 JSZip）' };
+                const wb = await FaDataCore.readXlsx(new Uint8Array(await rec.blob.arrayBuffer()), d);
+                return { name, kind: 'xlsx', raw: { sheets: wb.sheets.map((sh) => ({ name: sh.name, rows: [sh.columns || []].concat(sh.rows || []) })) }, url };
+            }
+            if (AUDIO_VIDEO.test(ext)) {
+                const tr = await this._transcribeMedia(rec, a.language); if (tr && tr.ok === false) return { error: '語音轉錄失敗：' + tr.error };
+                const text = (tr.chunks && tr.chunks.length) ? tr.chunks.map((c) => '[' + hms(c.timestamp && c.timestamp[0]) + ']\n' + String(c.text || '').trim()).join('\n') : String(tr.text || '');
+                if (!text.trim()) return { error: '轉錄結果是空的' };
+                return { name, kind: ext, raw: text, url, note: '語音轉錄文字，可能有錯字；時間是該句開始的時間。' };
+            }
+            if (ext === 'html' || ext === 'htm') { const r = this._extractReadableContentFromHtml(await rec.blob.text()); return { name: title || r.title || name, kind: 'md', raw: r.markdown, url }; }
+            const kind = a.kind ? (TEXT_KINDS[String(a.kind).toLowerCase()] || 'txt') : (TEXT_KINDS[ext] || (url ? 'md' : null));
+            const head = new Uint8Array(await rec.blob.slice(0, 4096).arrayBuffer());
+            if (!kind && head.indexOf(0) >= 0) return { error: '「' + fname + '」看起來是二進位檔（副檔名 ' + (ext || '沒有') + '），不支援。支援：pdf、docx、pptx、xlsx、mp3／mp4 等音訊影片（轉錄）、md、txt、textile、mediawiki、json、jsonl、yaml、toon、csv，以及其他純文字。' };
+            return { name, kind: kind || 'txt', raw: await rec.blob.text(), url };
+        },
+        async _kiDocxText(blob) {
+            await this._ensureJSZipLoaded(); const zip = await JSZip.loadAsync(blob), f = zip.file('word/document.xml'); if (!f) throw new Error('找不到 word/document.xml，可能不是有效的 docx');
+            const doc = new DOMParser().parseFromString(await f.async('string'), 'application/xml'), W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+            const textOf = (p) => { let s = ''; const walk = (n) => { for (const c of Array.from(n.childNodes)) { if (c.nodeType !== 1) continue; if (c.localName === 't') s += c.textContent; else if (c.localName === 'tab') s += '\t'; else if (c.localName === 'br' || c.localName === 'cr') s += '\n'; else walk(c); } }; walk(p); return s; };
+            const para = (p) => { const st = p.getElementsByTagNameNS(W, 'pStyle')[0], sv = st ? st.getAttributeNS(W, 'val') : ''; const m = /^(?:Heading|標題)\s*(\d)$/i.exec(sv || ''); const t = textOf(p).trim(); if (!t) return ''; if (m) return '#'.repeat(+m[1]) + ' ' + t; if (p.getElementsByTagNameNS(W, 'numPr')[0]) return '- ' + t; return t; };
+            const out = []; const body = doc.getElementsByTagNameNS(W, 'body')[0];
+            for (const n of Array.from(body ? body.childNodes : [])) {
+                if (n.nodeType !== 1) continue;
+                if (n.localName === 'p') { const t = para(n); if (t) out.push(t); }
+                else if (n.localName === 'tbl') for (const tr of Array.from(n.getElementsByTagNameNS(W, 'tr'))) out.push(Array.from(tr.getElementsByTagNameNS(W, 'tc')).map((tc) => Array.from(tc.getElementsByTagNameNS(W, 'p')).map(textOf).join(' ').trim()).join(' | '));
+            }
+            return out.join('\n');
+        },
+        async _kiPptxText(blob) {
+            await this._ensureJSZipLoaded(); const zip = await JSZip.loadAsync(blob);
+            const slides = Object.keys(zip.files).map((n) => ({ n, i: Number((/slides\/slide(\d+)\.xml$/.exec(n) || [])[1]) })).filter((x) => x.i).sort((a, b) => a.i - b.i), A = 'http://schemas.openxmlformats.org/drawingml/2006/main', out = [];
+            const lines = (xml) => { const d = new DOMParser().parseFromString(xml, 'application/xml'); return Array.from(d.getElementsByTagNameNS(A, 'p')).map((p) => Array.from(p.getElementsByTagNameNS(A, 't')).map((t) => t.textContent).join('')).map((s) => s.trim()).filter(Boolean); };
+            for (const s of slides) {
+                out.push('[投影片 ' + s.i + ']'); out.push(...lines(await zip.file(s.n).async('string')));
+                const nf = zip.file('ppt/notesSlides/notesSlide' + s.i + '.xml'); if (nf) { const nl = lines(await nf.async('string')).filter((l) => !/^\d+$/.test(l)); if (nl.length) { out.push('（講者備註）'); out.push(...nl); } }
+            }
+            return out.join('\n');
+        },
+
+        // ───── 加入、更新、移除 ─────
+        _kiCapacityCheck(stats, addChars) { const cap = this._kiSettings().maxMB; if (!cap) return null; const used = (stats && stats.chars) || 0; if ((used + addChars) / 1048576 > cap) return '超過知識庫的容量上限（' + cap + ' MB，已用約 ' + Math.round(used / 1048576 * 10) / 10 + ' MB）。到管理設定把上限調高或改成「無限」，或先移除不要的來源。'; return null; },
+        async _kiAdd(a) {
+            const loaded = await this._kiLoadSource(a); if (loaded.error) return { ok: false, error: loaded.error };
+            const src = FaKnowledge.ingest({ name: loaded.name, kind: loaded.kind, raw: loaded.raw, url: loaded.url });
+            if (!src.text.trim()) return { ok: false, error: '這個來源沒有可讀的文字，沒有加入。' };
+            if (loaded.note) src.notes = (src.notes || []).concat(loaded.note);
+            const res = await this._kiRun(async (store) => { const over = this._kiCapacityCheck(await store.stats(), src.text.length); if (over) return { ok: false, error: over }; const r = await store.addSource(src, { force: !!a.force }); return Object.assign({ ok: true }, r); }, true);
+            if (!res.ok) return res;
+            await this._kiNoteFlag();
+            const out = { ok: true, status: res.status, source_id: res.id, name: src.name, kind: src.kind, lines: src.lines.length, sections: src.sections.length, chunks: res.chunks, notes: src.notes };
+            if (res.status !== 'unchanged' && this._kiSettings().autoEmbed && this._kiSettings().embedConsent) { const e = await this._kiEmbedPending().catch((x) => ({ error: String((x && x.message) || x) })); out.embedding = e; }
+            else if (res.status !== 'unchanged') out.embedding = { skipped: true, note: this._kiSettings().embedConsent ? '自動建立語意索引已關閉；用 knowledge_embed 補' : '還沒啟用語意索引（第一次要下載約 118 MB 的小型模型，/knowledge embed 啟用）；目前只有關鍵字檢索（BM25）。' };
+            return out;
+        },
+        async _kiRemove(ref) { return this._kiRun(async (store) => { const s = await store.findSource(ref); if (!s) return { ok: false, error: '找不到來源：' + ref }; await store.removeSource(s.id); return { ok: true, removed: s.name }; }, true).then(async (r) => { await this._kiNoteFlag(); return r; }); },
+        async _kiEnable(ref, on) { return this._kiRun(async (store) => { const s = await store.findSource(ref); if (!s) return { ok: false, error: '找不到來源：' + ref }; await store.setEnabled(s.id, on); return { ok: true, name: s.name, enabled: !!on }; }, true).then(async (r) => { await this._kiNoteFlag(); return r; }); },
+        async _kiSources() { return this._kiRun(async (store) => ({ ok: true, location: this._kiLocationLabel(), stats: await store.stats(), sources: (await store.listSources()).map((s) => ({ id: s.id, name: s.name, kind: s.kind, enabled: !!s.enabled, chars: s.chars, sections: s.sections, chunks: s.chunks, vectors: s.vectors, tags: s.tags ? (() => { try { return JSON.parse(s.tags).terms; } catch (_) { return undefined; } })() : undefined })) })); },
+
+        // ───── 預處理的第二半：語意向量（小型嵌入模型；vendor-models 分支優先，抓不到再 HuggingFace）─────
+        _kiModelId() { const M = FaCatalogEmbed.MODEL; return M.repo + '@' + M.dtype; },
+        async _kiEmbedPipe(onProgress) { const p = await this._unitCatalogEmbedder(onProgress); return p || null; },
+        async _kiEmbedPending(onProgress) {
+            const st = this._kiSettings(); if (!st.embedConsent) return { skipped: true, note: '語意索引還沒啟用（/knowledge embed）' };
+            const pipe = await this._kiEmbedPipe(onProgress); if (!pipe) return { error: '嵌入模型載入失敗：' + (this._unitCatalogEmbedError || '原因不明') + '；目前用關鍵字檢索。' };
+            const model = this._kiModelId(), M = FaCatalogEmbed.MODEL; let done = 0; const t0 = Date.now();
+            for (;;) {
+                const batch = await this._kiRun((store) => store.pendingVectors(model, 32)); if (!batch.length) break;
+                const vecs = await this._unitCatalogEmbedTexts(pipe, batch.map((b) => String(b.text).slice(0, 1500)), M.passagePrefix);
+                await this._kiRun((store) => store.putVectors(model, batch.map((b, i) => ({ id: b.id, vec: vecs[i] }))), true);
+                done += batch.length; if (onProgress) onProgress('語意索引 ' + done);
+            }
+            return { embedded: done, ms: Date.now() - t0, model };
+        },
+        async _kiQueryVec(question) {
+            const st = this._kiSettings(); if (!st.embedConsent) return { vec: null, why: '語意索引還沒啟用' };
+            const stats = await this._kiRun((store) => store.stats()); if (!stats || !stats.vectors) return { vec: null, why: '還沒有向量（/knowledge embed）' };
+            const pipe = await this._kiEmbedPipe(); if (!pipe) return { vec: null, why: '嵌入模型載入失敗' };
+            const v = await this._unitCatalogEmbedTexts(pipe, [question], FaCatalogEmbed.MODEL.queryPrefix); return { vec: v[0], why: '' };
+        },
+
+        // ───── 問答：回傳原文與出處，不生成 ─────
+        async _kiAsk(a) {
+            const q = String((a && (a.question || a.query)) || '').trim(); if (!q) return { ok: false, error: '缺少問題（question）' };
+            const ids = a.sources ? await this._kiResolveIds(a.sources) : null;
+            const qv = await this._kiQueryVec(q).catch(() => ({ vec: null, why: '語意檢索出錯' }));
+            const res = await this._kiRun((store) => store.answer(q, { limit: Math.min(Math.max(Number(a.limit) || 5, 1), 12), sources: ids, queryVec: qv.vec || undefined, model: this._kiModelId() }));
+            return Object.assign(res, { semantic: !!qv.vec, semantic_note: qv.vec ? undefined : qv.why + '（只用關鍵字檢索）', how_to_answer: res.found ? '只能根據 hits 裡的 quote 回答，每個說法後面標出處（label：來源、第幾行）；quote 沒講到的就說沒有，不要補充或推測。' : '沒有找到，就照實說在知識庫裡找不到，不要用自己的知識代替。' });
+        },
+        async _kiResolveIds(list) { const arr = Array.isArray(list) ? list : String(list).split(/[,，、]/); return this._kiRun(async (store) => { const ids = []; for (const x of arr) { const s = await store.findSource(String(x).trim()); if (s) ids.push(s.id); } return ids; }); },
+        async _kiWithSource(ref, fn) { return this._kiRun(async (store) => { const s = await store.findSource(ref); if (!s) return { ok: false, error: '找不到來源：' + ref + '（knowledge_sources 看清單）' }; return Object.assign({ ok: true }, await fn(store, s)); }); },
+        _kiFormatHits(res) {
+            if (!res.found) return '🔎 ' + res.message;
+            return res.hits.map((h, i) => '**' + (i + 1) + '.** ' + h.label + (h.found_by ? '　〔' + h.found_by + '〕' : '') + '\n' + String(h.quote).split('\n').slice(0, 6).map((l) => '> ' + l).join('\n')).join('\n\n');
+        },
+
+        // ───── 模型整理（按鈕／指令）：接 LLM 橋接——線上不行時橋接自動改走離線模型。模型只挑「來源裡原本就有的詞」，程式逐個核對 ─────
+        async _kiOrganize(ref, onProgress) {
+            const list = await this._kiRun((store) => store.listSources()); const one = ref ? await this._kiRun((store) => store.findSource(ref)) : null; const targets = ref ? (one ? list.filter((s) => s.id === one.id) : []) : list.filter((s) => s.enabled);
+            if (!targets.length) return { ok: false, error: ref ? '找不到來源：' + ref : '知識庫是空的' };
+            const report = []; let rejected = 0;
+            for (const t of targets) {
+                if (onProgress) onProgress('整理「' + t.name + '」…');
+                const src = await this._kiRun((store) => store.getSource(t.id)); const sample = src.text.length > 6000 ? src.text.slice(0, 3000) + '\n…\n' + src.text.slice(Math.floor(src.text.length / 2) - 1000, Math.floor(src.text.length / 2) + 1000) : src.text;
+                let reply = '';
+                try { reply = await this._callSimpleCompletion('下面是一份文件的內容（可能只有節錄）。請列出最多 8 個最能代表它的關鍵詞或短語。規則：每一個都必須是文件裡「原本出現過的字詞」，原樣抄下來，不要翻譯、不要改寫、不要新創；一行一個，只輸出詞本身。\n\n' + sample, { systemPrompt: '你是文件整理助手，只做挑選，不做創作。', maxTokens: 300, temperature: 0 }); } catch (e) { report.push({ source: t.name, error: '模型沒有回應：' + String((e && e.message) || e).slice(0, 120) }); continue; }
+                const hay = src.text.toLowerCase().replace(/\s+/g, ' '); const terms = [];
+                String(reply || '').split('\n').map((l) => l.replace(/^[\s\-*\d.、)）]+/, '').trim()).filter((l) => l && l.length <= 40).forEach((l) => { if (hay.indexOf(l.toLowerCase().replace(/\s+/g, ' ')) >= 0 && terms.indexOf(l) < 0) terms.push(l); else rejected++; });
+                await this._kiRun((store) => store.setTags(t.id, terms.slice(0, 8), 'model'), true);
+                report.push({ source: t.name, tags: terms.slice(0, 8) });
+            }
+            const lk = await this._kiRun((store) => store.rebuildLinks(), true);
+            return { ok: true, organized: report, links: lk.links, rejected_terms: rejected, note: '關鍵詞都是來源裡原本就有的字（程式逐個核對過，沒有的丟掉了）；關聯只用字面證據。' };
+        },
+
+        // ───── 搬家：IndexedDB ⇄ 磁碟檔案 ⇄ FAP ─────
+        async _kiReadBytes(loc) {
+            if (loc.kind === 'idb') return this._kiIdbGet(loc.ref || 'default');
+            const ref = loc.kind === 'file' ? 'file:' + loc.ref : 'fap:' + String(loc.ref).replace(/^fap:/i, '');
+            if (loc.kind === 'file') { const raw = window.desktopAPI && window.desktopAPI.rawfs; if (!raw) throw new Error('網頁版讀不到磁碟路徑'); const r = await raw.readFile(loc.ref, 'base64'); return this._sqlB64ToBytes(r.base64 || ''); }
+            return (await this._resolveTerminalCopySource(ref)).bytes;
+        },
+        async _kiWriteBytes(loc, bytes) {
+            if (loc.kind === 'idb') return this._kiIdbPut(loc.ref || 'default', bytes);
+            if (loc.kind === 'file') { const raw = window.desktopAPI && window.desktopAPI.rawfs; if (!raw) throw new Error('網頁版不能寫磁碟路徑，請選 IndexedDB 或 FAP'); await raw.writeFile(loc.ref, { base64: this._sqlBytesToB64(bytes) }); return true; }
+            const ref = 'fap:' + String(loc.ref).replace(/^fap:/i, ''); return this._writeTerminalCopyDestination(ref, bytes, ref.split('/').pop() || 'knowledge.keeplookup', 'application/vnd.sqlite3');
+        },
+        // 搬到新位置：先把目前的內容存回、複製過去、用新位置開起來核對（來源數、片段數、向量數都要一樣）、確認沒問題才切換設定。舊的預設保留（keepOld=false 才刪）。
+        async _kiMigrate(to, o) {
+            o = o || {}; const from = this._kiSettings().location; const dest = { kind: to.kind, ref: String(to.ref || (to.kind === 'idb' ? 'default' : '')) };
+            if (!['idb', 'file', 'fap'].includes(dest.kind)) return { ok: false, error: '位置要是 idb、file 或 fap' };
+            if (dest.kind !== 'idb' && !dest.ref) return { ok: false, error: dest.kind === 'file' ? '磁碟檔案要給完整路徑，例如 D:\\knowledge\\main.keeplookup' : 'FAP 要給 <名稱>/<路徑>，例如 myfolder/knowledge/main.keeplookup' };
+            if (dest.kind === 'file' && !/\.keeplookup$/i.test(dest.ref)) dest.ref += '.keeplookup'; if (dest.kind === 'fap' && !/\.keeplookup$/i.test(dest.ref)) dest.ref += '.keeplookup';
+            if (dest.kind === from.kind && dest.ref === from.ref) return { ok: false, error: '已經在這個位置了' };
+            if (dest.kind === 'file' && !(window.desktopAPI && window.desktopAPI.rawfs)) return { ok: false, error: '網頁版沒有磁碟路徑可以用；請選 IndexedDB 或 FAP 資料夾' };
+            const before = await this._kiRun((store) => store.stats()); await this._kiRun(() => 0, true); await this._kiClose();
+            let bytes; try { bytes = await this._kiReadBytes(from); } catch (e) { return { ok: false, error: '讀不到目前的知識庫檔案：' + String((e && e.message) || e) }; }
+            if (!bytes || !bytes.length) return { ok: false, error: '目前的知識庫是空的（還沒有存過），不用搬；直接換位置即可。' };
+            try { await this._kiWriteBytes(dest, bytes); } catch (e) { return { ok: false, error: '寫不進新位置：' + String((e && e.message) || e) + '（目前的位置沒有動）' }; }
+            const prev = this.advancedSettings.knowledge; this._kiSaveSettings({ location: dest });
+            let after; try { after = await this._kiRun((store) => store.stats()); } catch (e) { this.advancedSettings.knowledge = prev; this._saveAdvancedSettings(); await this._kiClose(); return { ok: false, error: '新位置打不開，已退回原本的位置：' + String((e && e.message) || e) }; }
+            const same = after.sources === before.sources && after.chunks === before.chunks && after.vectors === before.vectors;
+            if (!same) { this.advancedSettings.knowledge = prev; this._saveAdvancedSettings(); await this._kiClose(); return { ok: false, error: '搬過去之後數量對不起來（來源 ' + before.sources + '→' + after.sources + '、片段 ' + before.chunks + '→' + after.chunks + '、向量 ' + before.vectors + '→' + after.vectors + '），已退回原本的位置。' }; }
+            let removed = false; if (o.keepOld === false) { try { if (from.kind === 'idb') { await this._kiIdbDel(from.ref || 'default'); removed = true; } else if (from.kind === 'file' && window.desktopAPI && window.desktopAPI.rawfs && window.desktopAPI.rawfs.remove) { await window.desktopAPI.rawfs.remove(from.ref, false); removed = true; } } catch (_) { /* 刪不掉就留著 */ } }
+            return { ok: true, from: from.kind + ':' + from.ref, to: dest.kind + ':' + dest.ref, verified: after, old_removed: removed, note: removed ? undefined : '舊位置的檔案還留著（確認新位置正常之後可以自己刪）。' };
+        },
+
+        // ───── 工具與指令 ─────
+        _registerKnowledgeTools(registerOptional) {
+            const parse = async (raw) => { try { return await this.repairJsonPayload(String(raw || '{}')); } catch (_) { return {}; } };
+            const tool = (name, desc, props, required, fn) => registerOptional(name, desc, async function (raw) { const a = await parse(raw); try { return JSON.stringify(await fn.call(this, a)); } catch (e) { return JSON.stringify({ ok: false, error: String((e && e.message) || e) }); } }, { type: 'object', properties: props, required: required || [], additionalProperties: false });
+            const SRC = { type: 'string', description: '來源的名稱（可以只寫一部分）或編號，knowledge_sources 看清單' };
+            tool('knowledge_ask', '問 Knowledge Inventory（使用者自己放進去的文件、網頁、講義、錄音轉錄…）。回傳最相關的**原文片段**與出處（哪個來源、第幾行、章節／頁／投影片／時間），不生成、不改寫。回答時只能根據 hits 的 quote，每個說法標出處；找不到就說找不到。檢索是關鍵字（BM25）加語意（小型向量模型，已啟用時）。sources 可限定來源。',
+                { question: { type: 'string', description: '問題或關鍵字' }, sources: { type: 'array', items: { type: 'string' }, description: '選填：只在這些來源裡找（名稱或編號）' }, limit: { type: 'integer', description: '最多幾個片段，預設 5' } }, ['question'], function (a) { return this._kiAsk(a); });
+            tool('knowledge_sources', '列出 Knowledge Inventory 裡的來源（編號、名稱、格式、有沒有啟用、片段數、向量數）與知識庫放在哪裡、總量。', {}, [], function () { return this._kiSources(); });
+            tool('knowledge_outline', '看一個來源的目錄（章節標題、層級、每節從第幾行到第幾行）。再用 knowledge_detail 讀某一節。', { source: SRC }, ['source'], function (a) { return this._kiWithSource(a.source, (store, s) => store.outline(s.id)); });
+            tool('knowledge_detail', '讀一個來源的原文並逐行附行號：section＝章節編號或標題的一部分，或給 line_start／line_end。長的會分段（truncated／next_line）。', { source: SRC, section: { description: '章節編號或標題的一部分' }, line_start: { type: 'integer' }, line_end: { type: 'integer' }, max_lines: { type: 'integer', description: '最多幾行，預設 200' } }, ['source'], function (a) { return this._kiWithSource(a.source, (store, s) => store.detail(s.id, a.line_start ? { line_start: a.line_start, line_end: a.line_end || a.line_start } : (a.section != null ? a.section : 1), { maxLines: a.max_lines })); });
+            tool('knowledge_summary', '一個來源的摘要：只選來源裡的原句（每章節最多 2 句），每句附行號，逐句核對過，沒有改寫。', { source: SRC }, ['source'], function (a) { return this._kiWithSource(a.source, (store, s) => store.summary(s.id)); });
+            tool('knowledge_links', '知識之間的關聯（只用字面證據：來源互相提到、共有的專有名詞或關鍵詞），雙方都附行號與原文。source 不給就列全部。', { source: SRC }, [], async function (a) { const r = await this._kiRun(async (store) => { let id = null; if (a.source) { const s = await store.findSource(a.source); if (!s) return { ok: false, error: '找不到來源：' + a.source }; id = s.id; } let ls = await store.getLinks(id); if (!ls.length) { await store.rebuildLinks(); ls = await store.getLinks(id); } return { ok: true, links: ls }; }, true); return r; });
+            tool('knowledge_add', '把東西放進 Knowledge Inventory：file_id（聊天附件或已上傳的檔案：pdf、docx、pptx、xlsx、md、txt、textile、mediawiki、json、jsonl、yaml、toon、csv、其他文字，mp3／mp4 會先語音轉錄）、url（網頁／wiki，會抓下來）、path（桌面版本機路徑）、text（直接給文字，可指定 kind）。同名同內容不會重複加。容量上限看設定（可設無限）。', { file_id: { type: 'string' }, url: { type: 'string' }, path: { type: 'string' }, text: { type: 'string' }, name: { type: 'string', description: '選填：來源名稱' }, kind: { type: 'string', description: '選填：格式（md、txt、textile、mediawiki、json、jsonl、yaml、toon、csv…）' }, force: { type: 'boolean' } }, [], function (a) { return this._kiAdd(a); });
+            tool('knowledge_remove', '把一個來源從 Knowledge Inventory 移除（連同它的片段、向量、關聯）。', { source: SRC }, ['source'], function (a) { return this._kiRemove(a.source); });
+            tool('knowledge_enable', '啟用或停用一個來源（停用的來源不會出現在回答裡，但資料還在）。', { source: SRC, enabled: { type: 'boolean' } }, ['source', 'enabled'], function (a) { return this._kiEnable(a.source, a.enabled !== false); });
+            tool('knowledge_embed', '建立語意索引（小型向量模型把每個片段轉成向量）。第一次要下載約 118 MB 的模型（先從專案的 vendor-models 分支，沒有再 HuggingFace）；action:"enable" 同意並開始，"status" 看進度。', { action: { type: 'string', enum: ['status', 'enable', 'run'] } }, [], function (a) { return this._kiEmbedCommand(a.action || 'status'); });
+            tool('knowledge_refresh', '更新知識庫：補算還沒有向量的片段、重算關聯。（改過的來源請用 knowledge_add 重新加入，內容有變才會更新。）', {}, [], async function () { const e = await this._kiEmbedPending().catch((x) => ({ error: String((x && x.message) || x) })); const lk = await this._kiRun((store) => store.rebuildLinks(), true); await this._kiNoteFlag(); return { ok: true, embedding: e, links: lk.links }; });
+            tool('knowledge_organize', '模型整理：請模型替每個來源挑關鍵詞（只能是來源裡原本有的字，程式逐個核對），並重算關聯。線上模型用不了會自動改用離線模型。', { source: SRC }, [], function (a) { return this._kiOrganize(a.source); });
+            tool('knowledge_location', '看或搬 Knowledge Inventory（.keeplookup，SQLite3 檔）放的位置：action:"status"；action:"migrate" 搬到 to＝idb（瀏覽器 IndexedDB）、file（磁碟，path 給完整路徑，桌面版）、fap（path 給 <FAP 名稱>/<路徑>）。搬完會核對數量，不一致就退回。', { action: { type: 'string', enum: ['status', 'migrate'] }, to: { type: 'string', enum: ['idb', 'file', 'fap'] }, path: { type: 'string' }, keep_old: { type: 'boolean' } }, [], async function (a) { if (a.action === 'migrate') return this._kiMigrate({ kind: a.to, ref: a.path }, { keepOld: a.keep_old !== false }); const st = await this._kiRun((store) => store.stats()); return { ok: true, location: this._kiLocationLabel(), ref: this._kiRef(), capacity_mb: this._kiSettings().maxMB || '無限', stats: st }; });
+        },
+        async _kiEmbedCommand(action) {
+            const st = this._kiSettings(); const stats = await this._kiRun((store) => store.stats());
+            if (action === 'status') return { ok: true, enabled: st.embedConsent, model: FaCatalogEmbed.MODEL.repo, approx_mb: FaCatalogEmbed.MODEL.approxMB, vectors: stats.vectors, chunks: stats.chunks, pending: stats.chunks - stats.vectors };
+            if (!st.embedConsent) {
+                const ans = await this.requestUserForm({ title: '⬇️ 要啟用語意索引嗎？', description: '會下載小型的語意向量模型（' + FaCatalogEmbed.MODEL.repo + '，約 ' + FaCatalogEmbed.MODEL.approxMB + ' MB，先從專案的 vendor-models 分支，沒有再用 HuggingFace），在你的瀏覽器／這台機器上跑，文字不會上傳。之後每個加入的來源都會建立語意索引，問答能找到「意思相近但用字不同」的片段。', fields: [], submitLabel: '下載並啟用' }).catch(() => null);
+                if (!ans || ans.cancelled) return { ok: false, error: '沒有啟用語意索引（你取消了）' };
+                this._kiSaveSettings({ embedConsent: true });
+            }
+            const r = await this._kiEmbedPending(); return Object.assign({ ok: !r.error }, r);
+        },
+        _registerKnowledgeCommand() {
+            const say = (r, t) => r._pushAssistantMessage(t, null);
+            this.register_slash_command('/knowledge', '[問題｜add｜list｜outline｜summary｜detail｜links｜remove｜embed｜organize｜refresh｜where｜migrate｜capacity]',
+                'Knowledge Inventory：你自己放進去的文件、網頁、講義、錄音轉錄的本機知識庫，回答只用裡面的原文，每個回答都標出處（來源、第幾行、章節／頁／時間）。/knowledge 蜘蛛怎麼結網（直接問）；/knowledge add <網址或檔名>、/knowledge list、/knowledge outline <來源>、/knowledge summary <來源>、/knowledge detail <來源> <章節>、/knowledge links、/knowledge remove <來源>、/knowledge embed（啟用語意索引）、/knowledge organize（模型整理）、/knowledge refresh（更新）、/knowledge where、/knowledge migrate idb|file <路徑>|fap <名稱/路徑>、/knowledge capacity <MB｜無限>。',
+                async (argsText, run) => {
+                    const r = run || this; const raw = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/knowledge' + (raw ? ' ' + raw : '') });
+                    const m = /^(\S+)\s*([\s\S]*)$/.exec(raw) || [], sub = (m[1] || '').toLowerCase(), rest = (m[2] || '').trim();
+                    try {
+                        if (!raw || sub === 'help' || sub === '?') {
+                            const st = await r._kiRun((store) => store.stats());
+                            say(r, '📚 **Knowledge Inventory**　位置：' + r._kiLocationLabel() + '\n來源 ' + st.sources + '（啟用 ' + st.enabled + '）、片段 ' + st.chunks + '、向量 ' + st.vectors + '、關聯 ' + st.links + '、容量上限 ' + (r._kiSettings().maxMB ? r._kiSettings().maxMB + ' MB' : '無限') + '\n\n用法：`/knowledge 問題`（直接問）、`add <網址｜檔名>`、`list`、`outline <來源>`、`summary <來源>`、`detail <來源> <章節>`、`links`、`remove <來源>`、`embed`（語意索引）、`organize`（模型整理）、`refresh`、`where`、`migrate idb｜file <路徑>｜fap <名稱/路徑>`、`capacity <MB｜無限>`。');
+                        } else if (sub === 'list') {
+                            const s = await r._kiSources(); say(r, '📚 ' + s.location + '\n' + (s.sources.length ? s.sources.map((x) => '- **' + x.id + '** ' + x.name + '（' + x.kind + '，' + x.sections + ' 節、' + x.chunks + ' 片段、向量 ' + x.vectors + (x.enabled ? '' : '，已停用') + (x.tags && x.tags.length ? '，關鍵詞：' + x.tags.join('、') : '') + '）').join('\n') : '（還沒有來源。/knowledge add <網址或檔名>）'));
+                        } else if (sub === 'add') {
+                            if (!rest) { say(r, '用法：/knowledge add <網址｜附件或已上傳的檔名｜file_id>'); }
+                            else {
+                                const a = /^https?:\/\//i.test(rest) ? { url: rest } : { file_id: rest };
+                                if (a.file_id) { const all = await r.fileCache.getAll(); const hit = all.filter((x) => x && x.blob && (x.id === rest || String(x.filename || '').toLowerCase().includes(rest.toLowerCase()))).sort((p, q) => (q.createdAt || 0) - (p.createdAt || 0))[0]; if (hit) a.file_id = hit.id; else { say(r, '⚠️ 找不到檔案「' + rest + '」：請先把檔案附加到對話（📎），或給網址。'); a.file_id = null; } }
+                                if (a.url || a.file_id) { say(r, '📥 加入中…'); const res = await r._kiAdd(a); say(r, res.ok ? '✅ ' + (res.status === 'unchanged' ? '內容沒有變，不用更新：' : res.status === 'updated' ? '已更新：' : '已加入：') + res.name + '（' + res.kind + '，' + res.lines + ' 行、' + res.sections + ' 節、' + res.chunks + ' 片段）' + (res.embedding && res.embedding.embedded ? '\n語意索引：' + res.embedding.embedded + ' 片段' : res.embedding && res.embedding.note ? '\n' + res.embedding.note : '') : '⚠️ ' + res.error); }
+                            }
+                        } else if (sub === 'outline') { const o = await r._kiWithSource(rest, (store, s) => store.outline(s.id)); say(r, o.ok === false ? '⚠️ ' + o.error : '📑 **' + o.source + '**（' + o.lines + ' 行）\n' + o.sections.map((x) => '　'.repeat(Math.max(0, x.level - 1)) + '- ' + x.title + '　〔第 ' + x.line_start + '–' + x.line_end + ' 行〕').join('\n'));
+                        } else if (sub === 'summary') { const o = await r._kiWithSource(rest, (store, s) => store.summary(s.id)); say(r, o.ok === false ? '⚠️ ' + o.error : '📝 **' + o.source + '** 的摘要（只選原句，附行號）\n' + o.sentences.map((x) => '- ' + x.quote + '　〔第 ' + x.line_start + ' 行' + (x.section ? '，' + x.section : '') + '〕').join('\n'));
+                        } else if (sub === 'detail') { const mm = /^(\S+(?:\s+\S+)*?)\s+(\S+)$/.exec(rest) || [null, rest, '1']; const o = await r._kiWithSource(mm[1], (store, s) => store.detail(s.id, /^\d+$/.test(mm[2]) ? Number(mm[2]) : mm[2], { maxLines: 80 })); say(r, o.ok === false || o.error ? '⚠️ ' + (o.error) : '📄 ' + o.cite.label + '\n```\n' + o.lines.map((l) => String(l.line).padStart(4) + '  ' + l.text).join('\n') + '\n```' + (o.truncated ? '\n（還有，從第 ' + o.next_line + ' 行接著看）' : ''));
+                        } else if (sub === 'links') { const o = await r._kiRun(async (store) => { let ls = await store.getLinks(null); if (!ls.length) { await store.rebuildLinks(); ls = await store.getLinks(null); } return ls; }, true); say(r, o.length ? '🔗 知識關聯（字面證據）\n' + o.slice(0, 30).map((l) => '- **' + l.from.source + '** ⇄ **' + l.to.source + '**　〔' + (l.kind === 'mentions' ? '提到' : '共有「' + l.term + '」') + '〕\n  > ' + l.from.source + ' 第 ' + l.from.line_start + ' 行：' + String(l.from.quote || '').slice(0, 80) + (l.to.line_start ? '\n  > ' + l.to.source + ' 第 ' + l.to.line_start + ' 行：' + String(l.to.quote || '').slice(0, 80) : '')).join('\n') : '（目前沒有找到關聯）');
+                        } else if (sub === 'remove') { const o = await r._kiRemove(rest); say(r, o.ok ? '🗑 已移除：' + o.removed : '⚠️ ' + o.error);
+                        } else if (sub === 'embed') { say(r, '🧠 語意索引…'); const o = await r._kiEmbedCommand(rest === 'status' ? 'status' : 'run'); say(r, o.ok === false ? '⚠️ ' + o.error : '✅ ' + (o.embedded != null ? '建立了 ' + o.embedded + ' 個片段的向量（' + Math.round(o.ms / 100) / 10 + ' 秒）' : '語意索引：' + (o.enabled ? '已啟用' : '未啟用') + '，向量 ' + o.vectors + '/' + o.chunks));
+                        } else if (sub === 'organize') { say(r, '🧹 模型整理中…（線上模型用不了會自動改用離線模型）'); const o = await r._kiOrganize(rest || null); say(r, o.ok ? '✅ 整理好了\n' + o.organized.map((x) => '- ' + x.source + '：' + (x.error ? '⚠️ ' + x.error : (x.tags.length ? x.tags.join('、') : '（沒有挑出可以核對的關鍵詞）'))).join('\n') + '\n\n' + o.note : '⚠️ ' + o.error);
+                        } else if (sub === 'refresh') { const e = await r._kiEmbedPending().catch((x) => ({ error: String((x && x.message) || x) })); const lk = await r._kiRun((store) => store.rebuildLinks(), true); say(r, '🔄 更新完成：' + (e.embedded != null ? '新增 ' + e.embedded + ' 個向量；' : e.note ? e.note + '；' : e.error ? '語意索引 ⚠️ ' + e.error + '；' : '') + '關聯 ' + lk.links + ' 筆');
+                        } else if (sub === 'where' || sub === 'location') { const st = await r._kiRun((store) => store.stats()); say(r, '📍 ' + r._kiLocationLabel() + '\n（SQLite3 檔，副檔名 .keeplookup；ref：' + r._kiRef() + '）\n來源 ' + st.sources + '、片段 ' + st.chunks + '、向量 ' + st.vectors);
+                        } else if (sub === 'migrate') { const mm = /^(idb|file|fap)\s*([\s\S]*)$/i.exec(rest); if (!mm) say(r, '用法：/knowledge migrate idb｜file <完整路徑>｜fap <FAP名稱/路徑>'); else { say(r, '📦 搬家中…'); const o = await r._kiMigrate({ kind: mm[1].toLowerCase(), ref: mm[2].trim() }, { keepOld: true }); say(r, o.ok ? '✅ 已搬到 ' + o.to + '，數量核對一致（來源 ' + o.verified.sources + '、片段 ' + o.verified.chunks + '、向量 ' + o.verified.vectors + '）。' + (o.note ? '\n' + o.note : '') : '⚠️ ' + o.error); }
+                        } else if (sub === 'capacity') { const v = /^(無限|不限|unlimited|0)$/i.test(rest) ? 0 : Number(rest); if (!Number.isFinite(v) || v < 0) say(r, '用法：/knowledge capacity <MB 數字｜無限>'); else { r._kiSaveSettings({ maxMB: v }); say(r, '✅ 容量上限：' + (v ? v + ' MB' : '無限')); } }
+                        else {
+                            const res = await r._kiAsk({ question: raw }); say(r, '🔎 **' + raw + '**\n\n' + r._kiFormatHits(res) + (res.found && !res.semantic ? '\n\n（' + res.semantic_note + '）' : ''));
+                        }
+                    } catch (e) { say(r, '⚠️ Knowledge Inventory：' + String((e && e.message) || e)); }
+                    try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ }
+                });
+        },
+    };
+    return { methods, READ_TOOLS, ALL_TOOLS };
+})();
+
+/* KIHOST-END */
 
 // ===== 統一的 LLM 橋接：所有「連到 AI 模型／向量化／線上語音」的請求都走這一個地方 =====
 // 為什麼統一：線上／離線的切換要在一處決定，不能靠十幾個呼叫點各自記得檢查。每個呼叫點都是 FaLlm.fetch(url, init)：
@@ -31804,6 +32569,7 @@ class FloatingAssistant {
                     let res; if (!raw) { const cur = await r._weLoad(); res = cur ? await r._webeditOpen({ id: cur.id }) : await r._webeditOpen({ starter: 'blank' }); } else if (raw === '起手式' || raw === 'starters') { r._pushAssistantMessage('網頁編輯器的起手式（/webedit 名稱）：\n' + FaWebEdit.listStarters().map((t) => '・' + t.id + '：' + t.label + '——' + t.desc).join('\n'), null); res = { ok: true }; } else res = st ? await r._webeditOpen({ starter: st.id }) : await r._webeditOpen({ request: raw });
                     if (res && res.ok === false) r._pushAssistantMessage('⚠️ ' + (res.error || '做不出來'), null);
                 } catch (e) { r._pushAssistantMessage('⚠️ 網頁編輯器失敗：' + String((e && e.message) || e), null); } try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ } });
+        this._registerKnowledgeCommand();
         this.register_slash_command('/image', '[model=廠商/模型名] [steps=N] [size=寬x高] 要畫什麼（英文效果較好）',
             '用 NVIDIA 線上圖像生成模型畫圖（FLUX.1 schnell／dev、FLUX.2 klein、FLUX klein、Stable Diffusion 3，或自己填的 廠商/模型名）。例：/image a macro photo of a green frog in a rainforest pond、/image model=black-forest-labs/flux.1-dev steps=30 size=1344x768 a quiet harbor at dawn。不帶參數會列出可用的模型。金鑰在「進階設定 → 影音處理」填。',
             async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/image' + (raw ? ' ' + raw : '') });
@@ -32883,6 +33649,7 @@ class FloatingAssistant {
             // 端點只會讓根模型/路由子agent誤以為有這個能力可用卻每次都失敗）。
             browserSearchEnabled: true, // 2026-10-13使用者要求：預設啟用網路搜尋（browser_search）
             browserControlEnabled: false,
+            knowledge: { location: { kind: 'idb', ref: 'default' }, maxMB: 0, embedConsent: false, autoEmbed: true }, // Knowledge Inventory：.keeplookup 放哪裡、容量上限（0＝無限）、是否同意語意索引、新增時自動建立
             bcCapture: { maxFileMB: 200, maxTotalMB: 400, keepMinutes: 20 }, // 擷取下載的上限（擴充功能記憶體）：單檔、合計、保存分鐘
             browserSearchProxyUrl: '',
             // tw_stock_db客製: 2026-09-17使用者明確要求——RAG（rag_lookup
@@ -34300,6 +35067,7 @@ class FloatingAssistant {
             roundExtend: { mode: raw.roundExtend && raw.roundExtend.mode === 'auto' ? 'auto' : 'ask', cap: Math.max(10, Math.min(200, Math.round(Number(raw.roundExtend && raw.roundExtend.cap)) || 60)) },
             browserSearchEnabled: raw.browserSearchEnabled !== false,
             browserControlEnabled: raw.browserControlEnabled === true,
+            knowledge: (() => { const k = raw.knowledge || {}, L = k.location || {}; const kind = ['idb', 'file', 'fap'].includes(L.kind) ? L.kind : 'idb'; return { location: { kind, ref: String(L.ref || (kind === 'idb' ? 'default' : '')).slice(0, 500) }, maxMB: Number(k.maxMB) > 0 ? Math.round(Number(k.maxMB) * 1000000) / 1000000 : 0, embedConsent: k.embedConsent === true, autoEmbed: k.autoEmbed !== false }; })(),
             bcCapture: (() => { const c = raw.bcCapture || {}; const f = (v, d, lo, hi) => { const n = Math.floor(Number(v)); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; }; return { maxFileMB: f(c.maxFileMB, 200, 1, 2000), maxTotalMB: f(c.maxTotalMB, 400, 1, 4000), keepMinutes: f(c.keepMinutes, 20, 1, 240) }; })(),
             browserSearchProxyUrl: String(raw.browserSearchProxyUrl || '').trim(),
             // tw_stock_db客製: 2026-09-17——見_createDefaultAdvancedSettings()
@@ -37615,6 +38383,7 @@ ${fnData.code}
 
         // /media-presentation：動畫簡報的工具與領域（renderer/src/deck/deck_tools.js）
         this._registerDeckTools(registerOptional);
+        this._registerKnowledgeTools(registerOptional);
         this._rgRegisterTools(); // 遠端群組：list_remote_machines、delegate_to_machine
 
         // tw_stock_db客製: 2026-09-09使用者要求新增的網路搜尋工具（browser_search
@@ -59594,7 +60363,10 @@ ${sourceTool.handlerScript}
         // 暫存副本
         let bytes = null, name = 'db.sqlite3', writeBack = null, kind = 'staged';
         const unchanged = (b) => { const a = bytes; if (!a || !b || a.length !== b.length) return false; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false; return true; };
-        if (/^fap:/i.test(ref)) {
+        if (/^idb:/i.test(ref)) { // Knowledge Inventory 放在 IndexedDB：位元組存在專用的資料庫裡，寫回也寫回去
+            kind = 'idb'; const key = ref.replace(/^idb:/i, '') || 'default'; name = key.replace(/[^\w.-]/g, '_') + '.keeplookup';
+            bytes = await this._kiIdbGet(key); writeBack = (b) => this._kiIdbPut(key, b);
+        } else if (/^fap:/i.test(ref)) {
             kind = 'fap'; name = ref.split('/').pop() || name;
             try { bytes = (await this._resolveTerminalCopySource(ref)).bytes; } catch (e) { if (!o.create) throw e; }
             writeBack = (b) => this._writeTerminalCopyDestination(ref, b, name, 'application/vnd.sqlite3');
@@ -69569,6 +70341,8 @@ ${existingNodeSummaries}
         const E = FaCatalogEmbed.MODEL;
         this._unitCatalogEmbedLoading = (async () => {
             try {
+                // 先從專案的 vendor-models 分支取（固定版本、切片接起來並核對 sha256）；取不到再走 HuggingFace
+                try { const vp = await this._vendorEmbedPipe(onProgress); if (vp) { this._unitCatalogEmbedPipe = vp; this._unitCatalogEmbedError = ''; return vp; } } catch (ve) { this._unitCatalogEmbedVendorError = String((ve && ve.message) || ve); }
                 const L = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.5/+esm'); L.env.allowLocalModels = false; L.env.useBrowserCache = true; let last = 0;
                 const pipe = await L.pipeline('feature-extraction', E.repo, { dtype: E.dtype, device: 'wasm', progress_callback: (p) => { if (onProgress && p && p.status === 'progress' && p.progress - last >= 10) { last = p.progress; onProgress(Math.round(p.progress), p.file); } } });
                 this._unitCatalogEmbedPipe = pipe; this._unitCatalogEmbedError = ''; return pipe;
@@ -73098,6 +73872,18 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         })();
         this._mtPipes[dir].catch(() => { delete this._mtPipes[dir]; }); return this._mtPipes[dir];
     }
+    // 語意向量模型（multilingual-e5-small）：從 vendor-models 分支取檔，跟離線翻譯同一套（接起來、核對、放進 Cache Storage）
+    async _vendorEmbedPipe(onProgress) {
+        const name = FA_VENDOR_MODELS.models.embed; if (!name) return null;
+        const vf = await this._vendorModelFiles(name, onProgress);
+        const imp = async (url) => { try { return await import(/* webpackIgnore: true */ url); } catch (e1) { try { return await import(/* webpackIgnore: true */ this._viaAssetProxy(url)); } catch (_) { throw e1; } } };
+        const L = await imp('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.5/+esm'); const env = L.env; const prev = { uc: env.useCustomCache, cc: env.customCache, ub: env.useBrowserCache, al: env.allowLocalModels };
+        const mime = (p) => (/\.json$/.test(p) ? 'application/json' : 'application/octet-stream');
+        env.allowLocalModels = false; env.useBrowserCache = false; env.useCustomCache = true;
+        env.customCache = { match: async (key) => { const k = String(key); if (!k.includes(vf.repo)) return undefined; for (const [p, buf] of vf.files) if (k.endsWith('/' + p)) return new Response(buf, { status: 200, headers: { 'Content-Type': mime(p) } }); return undefined; }, put: async () => {} };
+        try { const pipe = await L.pipeline('feature-extraction', vf.repo, { dtype: FaCatalogEmbed.MODEL.dtype, device: 'wasm' }); this._vendorLoading.delete(name); return pipe; }
+        finally { env.useCustomCache = prev.uc; env.customCache = prev.cc; env.useBrowserCache = prev.ub; env.allowLocalModels = prev.al; }
+    }
     // 簡繁：英翻中的輸出是簡體，轉成台灣繁體；中翻英的輸入先轉簡體（模型的訓練資料以簡體為主）
     async _translateOpencc(kind) {
         this._openccConv = this._openccConv || {}; if (this._openccConv[kind]) return this._openccConv[kind];
@@ -75606,6 +76392,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     // 這個領域「整體能做什麼」的工具集合（目錄、能力比對、報告用）：協調者算上子領域
     _resolveDomainToolNames(domain) {
         const names = this._resolveRunToolNames(domain).slice();
+        // Knowledge Inventory 裡有來源時，所有領域（含斜線指令、技能、子代理）都能查——只給唯讀的查詢工具
+        if (typeof FaKnowledgeHost !== 'undefined' && this._kiHasSources && this._kiHasSources()) for (const n of FaKnowledgeHost.READ_TOOLS) if (this.tools[n] && names.indexOf(n) < 0) names.push(n);
         if (domain && domain.mixer) for (const c of domain.mixer.children) for (const n of c.tools) if (names.indexOf(n) < 0) names.push(n);
         return names;
     }
@@ -81606,7 +82394,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
 }
 
 // /media-presentation：簡報播放器的主機轉接層（renderer/src/deck/deck_host.js）
-Object.assign(FloatingAssistant.prototype, FaDeckHost.methods, FaDeckTools.methods);
+Object.assign(FloatingAssistant.prototype, FaDeckHost.methods, FaDeckTools.methods, FaKnowledgeHost.methods);
 // 遠端群組（renderer/src/remote/，設計見 DESIGN.remote-group.md）
 Object.assign(FloatingAssistant.prototype, FaRemoteHost.methods, FaRemoteDispatch.methods);
 FaRemoteDispatch.installTracking(FloatingAssistant); // 追蹤這台機器正在跑的子任務（給在線名單的數字與清單）

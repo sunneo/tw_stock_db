@@ -46,10 +46,17 @@
 - 管理介面：決定回應從哪些來源取、要放什麼資料進去、「更新知識庫」按鈕（重新解析有變動的來源、補算向量）；另有專屬查詢介面。
 
 ## 進度
-- 第 1 階段（完成）：核心 `renderer/src/knowledge/knowledge_core.js`（34 項測試）。
-- 第 2 階段：`.keeplookup` 儲存（SQLite＋FTS5＋向量）、`knowledge_*` 工具、`/knowledge` 指令、其他指令／技能／子代理可查。
-- 第 3 階段：管理介面與查詢介面、更新按鈕、來源選擇。
-- 第 4 階段：容量設定（可無限）、wiki 索引、關聯的呈現與確認。
+- 第 1 階段（完成）：核心 `knowledge_core.js`（38 項測試）：各格式整理成帶行號的來源、出處、關鍵字＋向量混合檢索、原句摘要、核對、字面關聯。
+- 第 2 階段（完成，2026-10-21）：
+  - 儲存層 `knowledge_store.js`：一個 SQLite3 檔（`.keeplookup`），來源、章節、片段、FTS5 全文索引、向量（BLOB）、關聯、摘要、關鍵詞；用真的 SQLite 測（26 項，要 Node 22.5 以上）。
+  - app 轉接層 `knowledge_host.js`：放哪裡（IndexedDB／磁碟檔案／FAP，管理介面或 `/knowledge migrate` 選）、搬家（複製過去、用新位置開起來核對來源／片段／向量數量一致才切換，不一致退回；舊檔保留）、各格式讀入（pdf 帶頁碼、docx 帶標題層級與表格、pptx 帶投影片與講者備註、xlsx 逐列、mp3／mp4 轉錄帶時間、網頁／wiki 轉 Markdown、txt／md／textile／mediawiki／json／jsonl／yaml／toon／csv…）、容量上限（可設無限，超過不會悄悄淘汰而是拒絕並說明）、預處理（加入時建 BM25 全文索引，語意向量由「語意索引」補）。
+  - 工具：`knowledge_ask`／`sources`／`outline`／`detail`／`summary`／`links`／`add`／`remove`／`enable`／`embed`／`refresh`／`organize`／`location`；指令 `/knowledge`；領域 `knowledge`；依任務補工具。
+  - **其他斜線指令、技能、子代理也能查**：知識庫裡有來源時，所有領域的工具清單都會多出唯讀的 `knowledge_ask`／`outline`／`detail`／`sources`（寫入類工具不會共用）。
+  - **語意檢索**：小型向量模型 multilingual-e5-small（384 維，q8，約 118 MB）。模型檔已**切成 40 MB 一片放進 `vendor-models` 分支**（釘版 SHA `baa84b5e…`，附 sha256 清單、MIT 授權標示）；app 先從這個分支取、接起來並核對 sha256、放進 Cache Storage，取不到才用 HuggingFace。單元目錄的語意檢索也共用這個來源。
+  - **向量門檻（用實測分數校準）**：e5-small 的相似度很擠（相關 0.86–0.92、無關也有 0.78–0.82），所以：≥ 0.85 算；不到 0.85 但 ≥ 0.75 且比全部片段的中位數高出 0.045 以上（池子 5 個以上片段）也算（跨語言的問法）；其餘不算。寧可漏掉，也不交出無關的片段。
+  - **模型整理**（`knowledge_organize`／`/knowledge organize`，之後是管理介面的按鈕）：走 LLM 橋接（線上不行自動改離線），模型只挑關鍵詞，程式逐個核對「真的出現在來源裡」，沒有的丟掉；再用字面證據重算關聯。
+- 第 3 階段（下一步）：管理介面與專屬查詢介面——決定回應從哪些來源取、要放什麼資料進去、「更新知識庫」按鈕、「模型整理」按鈕、選擇／搬家 `.keeplookup` 的位置、容量上限設定、語意索引啟用。
+- 第 4 階段：wiki 索引的專用流程、關聯的確認／拒絕介面、摘要的模型壓縮（同樣強制核對）。
 
 ## 待決定
 2. 片段大小與重疊。

@@ -55,6 +55,13 @@ const hv2 = K.searchHybrid(idx2, '蜘蛛結網', { queryVec: vec([1, 0.05, 0]) }
 check('hybrid: found by both → both marked', /關鍵字＋語意|語意＋關鍵字/.test(hv2[0].found_by), hv2[0]);
 check('hybrid: a vector that is not close enough is ignored', K.searchHybrid(idx2, '完全無關', { queryVec: vec([0, 0, 1]) }).length === 0);
 
+// ---- 向量門檻（用實測的 e5-small 分數校準）
+const mk = (sims) => sims.map((s, i) => ({ id: i, sim: s }));
+check('denseKeep: related (0.86+) kept, unrelated (<=0.82) dropped', K.denseKeep(mk([0.863, 0.9, 0.855, 0.778, 0.801])).length === 3 && K.denseKeep(mk([0.787, 0.797, 0.795, 0.821, 0.795])).length === 0);
+check('denseKeep: cross-language hit (0.777 vs the rest ~0.72) kept by the gap rule', K.denseKeep(mk([0.726, 0.777, 0.733, 0.683, 0.715])).map((x) => x.id).join() === '1');
+check('denseKeep: a flat pool (everything ~0.80) gives nothing, even the top one', K.denseKeep(mk([0.794, 0.814, 0.811, 0.803, 0.793])).length === 0);
+check('denseKeep: with fewer than 5 chunks only the strict rule applies', K.denseKeep(mk([0.78, 0.7])).length === 0 && K.denseKeep(mk([0.9, 0.7])).length === 1);
+
 // ---- 回答：只交出原文
 const ans = K.answer(idx, '蜘蛛怎麼結網');
 check('answer: returns quotes with labels, found:true', ans.found && ans.hits[0].quote && ans.hits[0].label.indexOf('蜘蛛.md') >= 0);

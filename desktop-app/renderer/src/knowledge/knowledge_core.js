@@ -7,7 +7,7 @@
  * 轉換時留下的 [第 3 頁]、[投影片 2]、[00:01:23] 標記會成為該行的位置資訊。
  * 儲存（.keeplookup＝SQLite3 檔）與介面不在這裡，這裡只有不碰儲存的邏輯，方便測試。 */
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory(require('../tools/article_outline.js')); else root.FaKnowledge = factory(root.FaArticleOutline);
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('../tools/article_outline.js')); else root.FaKnowledge = factory(root.FaArticleOutline || (typeof FaArticleOutline !== 'undefined' ? FaArticleOutline : undefined));
 })(typeof self !== 'undefined' ? self : this, function (Outline) {
   'use strict';
   var CHUNK_CHARS = 1200;
@@ -95,7 +95,7 @@
   function cite(src, a, b, quote) {
     var sec = null; for (var k = src.sections.length - 1; k >= 0; k--) if (src.sections[k].line_start <= a) { sec = src.sections[k]; break; }
     var lbl = '「' + src.name + '」' + (a === b ? '第 ' + a + ' 行' : '第 ' + a + '–' + b + ' 行') + (src.kind === 'json' ? '（json 格式化後）' : '') + (sec && sec.title && sec.title.indexOf('（開頭') !== 0 ? '，章節「' + sec.title + '」' : '');
-    var loc = locLabel(src.locators[a - 1]); if (loc) lbl += '，' + loc;
+    var loc = locLabel(src.locAt ? src.locAt(a) : src.locators[a - 1]); if (loc) lbl += '，' + loc;
     return { source: src.name, source_id: src.id, kind: src.kind, line_start: a, line_end: b, section: sec ? sec.title : '', loc: loc, label: lbl, quote: quote };
   }
 
@@ -132,6 +132,16 @@
     return hits.filter(function (h) { return h.coverage >= minCov; }).slice(0, opts.limit || 5).map(function (h) { var ch = h.d.ch, pp = pinpoint(h.d.src, ch, qt); return Object.assign(cite(h.d.src, pp.a, pp.b, h.d.src.lines.slice(pp.a - 1, pp.b).join('\n')), { score: Math.round(h.score * 100) / 100, coverage: Math.round(h.coverage * 100) / 100, chunk_n: ch.n, chunk_line_start: ch.line_start, chunk_line_end: ch.line_end }); });
   }
 
+  // 哪些向量命中算數。multilingual-e5-small 的相似度很擠（實測：相關的問題 0.86–0.92，完全無關的也有 0.78–0.82），所以不能只設一個低門檻：
+  //   ① sim ≥ strict（預設 0.85）→ 算；
+  //   ② 不到 strict 但 ≥ floor（0.75），而且比「全部片段相似度的中位數」高出 gap（0.045）以上、池子有 5 個以上片段 → 也算（跨語言的問法會落在這裡，例如英文問中文文件）；
+  //   其餘一律不算。寧可漏掉也不要把無關的片段交出去（回傳的是原文，但「看起來有關」的無關片段仍然會誤導）。
+  function denseKeep(pool, opts) {
+    opts = opts || {}; var strict = opts.minDense == null ? 0.85 : opts.minDense, floor = opts.floorDense == null ? 0.75 : opts.floorDense, gap = opts.minGap == null ? 0.045 : opts.minGap;
+    var med = null; if (pool.length >= 5) { var s = pool.map(function (x) { return x.sim; }).sort(function (a, b) { return a - b; }); med = s[s.length >> 1]; }
+    return pool.filter(function (x) { return x.sim >= strict || (med != null && x.sim >= floor && x.sim - med >= gap); });
+  }
+
   // ───── 混合檢索：關鍵字（BM25）＋小型向量模型（語意）─────
   // 向量由 app 端用小型嵌入模型算好（每個片段一條、已正規化）放進 index.docs[i].vec；查詢向量用 opts.queryVec。
   // 兩邊各自排名，用 RRF 合併；向量命中要夠像（minDense）才算，避免「語意上有點像」的片段混進來——回傳的永遠是原文片段與出處。
@@ -140,9 +150,9 @@
     var lex = search(index, query, Object.assign({}, opts, { limit: Math.max(limit * 4, 20), minCoverage: opts.minCoverage == null ? 0.3 : opts.minCoverage }));
     var qv = opts.queryVec, dense = [];
     if (qv && qv.length) {
-      var allowed = opts.sources ? new Set(opts.sources) : null, minDense = opts.minDense == null ? 0.8 : opts.minDense;
-      index.docs.forEach(function (d) { if (!d.vec || d.vec.length !== qv.length) return; if (allowed && !allowed.has(d.src.id) && !allowed.has(d.src.name)) return; var dot = 0; for (var i = 0; i < qv.length; i++) dot += qv[i] * d.vec[i]; if (dot >= minDense) dense.push({ d: d, sim: dot }); });
-      dense.sort(function (a, b) { return b.sim - a.sim; });
+      var allowed = opts.sources ? new Set(opts.sources) : null, pool = [];
+      index.docs.forEach(function (d) { if (!d.vec || d.vec.length !== qv.length) return; if (allowed && !allowed.has(d.src.id) && !allowed.has(d.src.name)) return; var dot = 0; for (var i = 0; i < qv.length; i++) dot += qv[i] * d.vec[i]; pool.push({ d: d, sim: dot }); });
+      dense = denseKeep(pool, opts).sort(function (a, b) { return b.sim - a.sim; });
     }
     var key = function (src, ch) { return (src.id || src.name) + '#' + ch.n; }, fused = {};
     lex.forEach(function (h, r) { var kk = (h.source_id || h.source) + '#' + h.chunk_n; fused[kk] = fused[kk] || { rrf: 0, hit: h, how: [] }; fused[kk].rrf += 1 / (k + r + 1); fused[kk].how.push('關鍵字'); });
@@ -220,5 +230,5 @@
     return { ok: true, found: true, hits: hits.map(function (h) { return { label: h.label, source: h.source, line_start: h.line_start, line_end: h.line_end, section: h.section, loc: h.loc, quote: h.quote, score: h.score, found_by: h.found_by || '關鍵字' }; }) };
   }
 
-  return { tokenize: tokenize, normalize: normalize, ingest: ingest, cite: cite, buildIndex: buildIndex, search: search, searchHybrid: searchHybrid, summarize: summarize, verifyQuote: verifyQuote, verifyAll: verifyAll, detail: detail, links: links, answer: answer, locLabel: locLabel };
+  return { denseKeep: denseKeep, pinpoint: pinpoint, tokenize: tokenize, normalize: normalize, ingest: ingest, cite: cite, buildIndex: buildIndex, search: search, searchHybrid: searchHybrid, summarize: summarize, verifyQuote: verifyQuote, verifyAll: verifyAll, detail: detail, links: links, answer: answer, locLabel: locLabel };
 });
