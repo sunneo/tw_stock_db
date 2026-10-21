@@ -17302,23 +17302,34 @@ const holder = {};
 
   // ───── 斷詞：英文數字用整個字（小寫），中日韓用相鄰兩字（bigram）＋單字，檢索與建索引用同一套 ─────
   var CJK = /[㐀-鿿豈-﫿぀-ヿ가-힯]/;
+  // 只折疊這幾個區段（康熙部首、部首補充、CJK 相容字、全形英數），不做完整 NFKC（否則 x² 會變 x2、™ 變 TM）
+  var FOLD_RE = /[\u2E80-\u2FDF\uF900-\uFAFF\uFF01-\uFF5E]/g;
+  function fold(text) { return String(text == null ? '' : text).replace(FOLD_RE, function (c) { return c.normalize('NFKC'); }); }
   function tokenize(text) {
-    var out = [], s = String(text == null ? '' : text).toLowerCase(), i = 0, n = s.length;
+    var orig = fold(text), out = [], s = orig.toLowerCase(), i = 0, n = s.length;
     while (i < n) {
       var c = s[i];
       if (CJK.test(c)) { var j = i; while (j < n && CJK.test(s[j])) j++; var run = s.slice(i, j); for (var k = 0; k < run.length; k++) { out.push(run[k]); if (k + 1 < run.length) out.push(run.slice(k, k + 2)); } i = j; }
-      else if (/[a-z0-9]/.test(c)) { var j2 = i; while (j2 < n && /[a-z0-9_.\-]/.test(s[j2]) && !CJK.test(s[j2])) j2++; var w = s.slice(i, j2).replace(/[.\-_]+$/, ''); if (w) out.push(w); i = j2; }
+      else if (/[a-z0-9]/.test(c)) { var j2 = i; while (j2 < n && /[a-z0-9_.\-]/.test(s[j2]) && !CJK.test(s[j2])) j2++; var w = s.slice(i, j2).replace(/[.\-_]+$/, ''); if (w) out.push(w);
+        // CamelCase、底線連起來的識別字（FullTestCaseId、run_case）也把各個字拆出來當詞：問「testcase」要找得到 --FullTestCaseId
+        if (orig.length === n) { var rawW = orig.slice(i, j2), parts = rawW.match(/[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+/g); if (parts && parts.length > 1 && /[a-z][A-Z]|_/.test(rawW)) { parts.forEach(function (x) { if (x.length >= 2) out.push(x.toLowerCase()); }); var j3 = parts.join('').toLowerCase(); if (parts.length > 2 && j3 !== w) out.push(parts.slice(0, -1).join('').toLowerCase()); } }
+        i = j2; }
       else i++;
     }
     return out;
   }
 
+  // 「怎麼做」類問題要給指令：問句像在問做法（怎麼、如何、how to、指令、參數…）時，長得像指令的行（--flag、.exe／.sh／.py、$ 提示、./、常見指令名、磁碟路徑）排前面
+  var HOWTO_RE = /怎麼|怎樣|如何|怎么|指令|命令|參數|参数|\bhow\s+(to|do|can)\b|command|\bcli\b|usage/i;
+  var CMD_RE = /(^|\s)--?[a-z][\w-]*|\.(exe|sh|py|bat|cmd|ps1)\b|^\s*\$\s+\S|(^|\s)\.\/\S|\b(git|npm|pip|docker|sudo|curl|wget|make|cmake|python3?|node|java|apt(-get)?|yum|chmod|ssh|scp|cd|ls|cp|mv|rm|mkdir|cat|grep)\s+\S|[A-Za-z]:\\\S/i;
+  function isHowTo(q) { return HOWTO_RE.test(String(q || '')); }
+  function cmdLine(line) { return CMD_RE.test(String(line || '')); }
   // 問句的詞：「怎麼」「如何」「請問」這類每個問題都有的字，不能拿來比對（會讓毫不相關的片段也命中）
   var Q_STOP = ['為什麼', '為甚麼', '能不能', '有沒有', '是不是', '請問', '告訴我', '怎麼樣', '怎麼', '怎樣', '如何', '什麼', '甚麼', '為何', '哪裡', '哪個', '哪些', '哪邊', '是否', '可以', '一下', '嗎', '呢', '吧', '的', '了', '我', '你', '要', '請', '是', '有', '在', '從', '和', '跟', '與'];
   var Q_STOP_RE = new RegExp(Q_STOP.join('|'), 'g');
   // 查詢用的詞：去掉問句的詞後，連續中文只留兩字詞（單字太常見，會到處命中）；英文照常
   function queryTokens(text) {
-    var s = String(text == null ? '' : text).replace(Q_STOP_RE, ' '), all = tokenize(s), runs = s.toLowerCase().match(new RegExp('(?:' + CJK.source + ')+', 'g')) || [], single = {};
+    var s = fold(text).replace(Q_STOP_RE, ' '), all = tokenize(s), runs = s.toLowerCase().match(new RegExp('(?:' + CJK.source + ')+', 'g')) || [], single = {};
     runs.forEach(function (r) { if (r.length === 1) single[r] = true; });
     return all.filter(function (t) { return !(t.length === 1 && CJK.test(t) && !single[t]); });
   }
@@ -17380,7 +17391,8 @@ const holder = {};
     var headerLine = (n.kind === 'csv' || n.kind === 'tsv') ? lines[0] : null;
     for (var li = 0; li < lines.length; li++) {
       var ln = lines[li], lineNo = li + 1, sec2 = secOfLine(lineNo), prevSec = buf.length ? secOfLine(bufStart) : null;
-      if (buf.length && ((sec2 && prevSec && sec2.n !== prevSec.n) || bufChars + ln.length + 1 > max)) { flush(lineNo - 1); }
+      var secCut = !!(sec2 && prevSec && sec2.n !== prevSec.n), sizeCut = !secCut && buf.length > 1 && bufChars + ln.length + 1 > max, lastLn = buf.length ? buf[buf.length - 1] : '';
+      if (buf.length && (secCut || bufChars + ln.length + 1 > max)) { flush(lineNo - 1); if (sizeCut && lastLn.length < 200) { buf = [lastLn]; bufStart = lineNo - 1; bufChars = lastLn.length + 1; } }
       if (!buf.length) bufStart = lineNo;
       buf.push(ln); bufChars += ln.length + 1;
     }
@@ -17533,7 +17545,7 @@ const holder = {};
     return { ok: true, found: true, hits: hits.map(function (h) { return { label: h.label, source: h.source, line_start: h.line_start, line_end: h.line_end, section: h.section, loc: h.loc, quote: h.quote, score: h.score, found_by: h.found_by || '關鍵字' }; }) };
   }
 
-  return { denseKeep: denseKeep, pinpoint: pinpoint, tokenize: tokenize, queryTokens: queryTokens, normalize: normalize, ingest: ingest, cite: cite, buildIndex: buildIndex, search: search, searchHybrid: searchHybrid, summarize: summarize, verifyQuote: verifyQuote, verifyAll: verifyAll, detail: detail, links: links, answer: answer, locLabel: locLabel };
+  return { denseKeep: denseKeep, pinpoint: pinpoint, tokenize: tokenize, queryTokens: queryTokens, fold: fold, isHowTo: isHowTo, cmdLine: cmdLine, normalize: normalize, ingest: ingest, cite: cite, buildIndex: buildIndex, search: search, searchHybrid: searchHybrid, summarize: summarize, verifyQuote: verifyQuote, verifyAll: verifyAll, detail: detail, links: links, answer: answer, locLabel: locLabel };
 });
 
 }).call(null, undefined, holder);
@@ -17645,7 +17657,7 @@ const holder = {};
 
   // ───── 向量 ─────
   Store.prototype.pendingVectors = async function (model, limit) {
-    return rowsOf(await this.exec('SELECT c.id, c.text FROM chunks c JOIN sources s ON s.id=c.source_id LEFT JOIN vectors v ON v.chunk_id=c.id AND v.model=? WHERE v.chunk_id IS NULL ORDER BY c.id LIMIT ?', [model, limit || 64]));
+    return rowsOf(await this.exec('SELECT c.id, c.text, c.section FROM chunks c JOIN sources s ON s.id=c.source_id LEFT JOIN vectors v ON v.chunk_id=c.id AND v.model=? WHERE v.chunk_id IS NULL ORDER BY c.id LIMIT ?', [model, limit || 64]));
   };
   Store.prototype.putVectors = async function (model, items) {
     for (var i = 0; i < items.length; i++) await this.exec('INSERT INTO vectors(chunk_id, model, dim, vec) VALUES(?,?,?,?) ON CONFLICT(chunk_id) DO UPDATE SET model=excluded.model, dim=excluded.dim, vec=excluded.vec', [items[i].id, model, items[i].vec.length, vecToBlob(items[i].vec)]);
@@ -17664,6 +17676,12 @@ const holder = {};
     var allowed = opts.sources ? new Set(opts.sources.map(Number)) : null, fused = {};
     var addHit = function (id, how, r) { var f = fused[id] = fused[id] || { rrf: 0, how: [], sim: null }; f.rrf += 1 / (k + r + 1); if (f.how.indexOf(how) < 0) f.how.push(how); };
     var covOf = {};
+    // 太常見的字（出現在超過 25% 片段，例如整份手冊裡的產品名）只要問句裡還有更有鑑別力的字，就不參與比對
+    if (qt.length > 1) {
+      var nch = Number((rowsOf(await this.exec('SELECT COUNT(*) AS n FROM chunks'))[0] || {}).n || 0), dfs = {};
+      if (nch >= 20) { for (var qi = 0; qi < qt.length && qi < 24; qi++) { try { dfs[qt[qi]] = Number((rowsOf(await this.exec('SELECT COUNT(*) AS n FROM chunks_fts WHERE chunks_fts MATCH ?', [ftsQuery([qt[qi]])]))[0] || {}).n || 0); } catch (e) { dfs[qt[qi]] = 0; } }
+        var rare = qt.filter(function (t) { return dfs[t] <= nch * 0.25; }); if (rare.length && rare.length < qt.length) qt = rare; }
+    }
     if (qt.length) {
       var rows = rowsOf(await this.exec('SELECT c.id AS id, c.source_id AS source_id, c.toks AS toks FROM chunks_fts JOIN chunks c ON c.id=chunks_fts.rowid JOIN sources s ON s.id=c.source_id WHERE chunks_fts MATCH ? AND s.enabled=1 ORDER BY bm25(chunks_fts) LIMIT 80', [ftsQuery(qt)]));
       var minCov = opts.minCoverage == null ? 0.3 : opts.minCoverage, rank = 0;
@@ -17674,7 +17692,13 @@ const holder = {};
       (await this._dense(opts.model || '')).forEach(function (d) { if (d.vec.length !== qv.length) return; if (allowed && !allowed.has(Number(d.source_id))) return; var dot = 0; for (var i = 0; i < qv.length; i++) dot += qv[i] * d.vec[i]; all.push({ id: d.id, sim: dot }); });
       K.denseKeep(all, opts).sort(function (a, b) { return b.sim - a.sim; }).slice(0, 40).forEach(function (x, r) { addHit(x.id, '語意', r); fused[x.id].sim = Math.round(x.sim * 1000) / 1000; });
     }
-    var ids = Object.keys(fused).sort(function (a, b) { return fused[b].rrf - fused[a].rrf; }).slice(0, limit); if (!ids.length) return [];
+    var ranked = Object.keys(fused).sort(function (a, b) { return fused[b].rrf - fused[a].rrf; });
+    if (K.isHowTo(query) && ranked.length) {
+      var top = ranked.slice(0, 40), trows = rowsOf(await this.exec('SELECT id, text FROM chunks WHERE id IN (' + top.map(function () { return '?'; }).join(',') + ')', top.map(Number)));
+      trows.forEach(function (r) { var lines = String(r.text).split('\n'); if (lines.some(function (l) { return K.cmdLine(l) && qt.some(function (t) { return K.fold(l).toLowerCase().indexOf(t) >= 0; }); })) fused[r.id].rrf += 0.02; });
+      ranked = Object.keys(fused).sort(function (a, b) { return fused[b].rrf - fused[a].rrf; });
+    }
+    var ids = ranked.slice(0, limit + 4); if (!ids.length) return [];
     var chunks = rowsOf(await this.exec('SELECT id, source_id, n, line_start, line_end, text FROM chunks WHERE id IN (' + ids.map(function () { return '?'; }).join(',') + ')', ids.map(Number)));
     var byId = {}; chunks.forEach(function (c) { byId[c.id] = c; });
     var srcCache = {}, out = [];
@@ -17685,9 +17709,10 @@ const holder = {};
       var tmp = { lines: lines }, pp = K.pinpoint(tmp, ch, qt);
       var c = K.cite(src, pp.a, pp.b, lines.slice(pp.a - 1, pp.b).join('\n'));
       var f = fused[ids[i]];
+      if (out.some(function (o) { return o.source_id === c.source_id && o.line_start <= c.line_end && c.line_start <= o.line_end; })) continue; // 重疊的片段命中同一段，只留一條
       out.push(Object.assign(c, { score: Math.round(f.rrf * 10000) / 10000, found_by: f.how.join('＋'), coverage: covOf[ids[i]] != null ? Math.round(covOf[ids[i]] * 100) / 100 : undefined, similarity: f.sim != null ? f.sim : undefined, chunk_n: ch.n, chunk_line_start: ch.line_start, chunk_line_end: ch.line_end }));
     }
-    return out;
+    return out.slice(0, limit);
   };
   Store.prototype.answer = async function (question, opts) {
     var hits = await this.search(question, opts);
@@ -17798,6 +17823,8 @@ const holder = {};
         embActive = !ev.end; embText = ev.text || '';
         if (ev.end) { setOpl(''); refreshStatus(); return; }
         setOpl('🧠 ' + embText); var now = Date.now(); if (now - refreshT > 1200) { refreshT = now; refreshSourcesOnly(); }
+      } else if (ev.op === 'images') {
+        setOpl(ev.end ? '' : ev.text || '🖼 讀圖片中…');
       } else if (ev.op === 'organize') {
         if (ev.end) { orgNow = null; setOpl(''); renderList(); return; }
         if (ev.source_id != null) { if (orgNow != null) orgDone[orgNow] = true; orgNow = ev.source_id; } setOpl('🧹 ' + (ev.text || '模型整理中…')); renderList();
@@ -17914,7 +17941,8 @@ const holder = {};
           if (!ai.ok) { note(c, '⚠️ AI 整理失敗：' + ai.error + '\n下面是原文。', 'st bad'); showHits(); return; }
           var citedList = ai.cited || [];
           if (!ai.sentences.length) { var nf = h('details', 'dim'); nf.appendChild(h('summary', null, '沒有找到能回答的內容（' + (ai.dropped.length ? '丟掉了 ' + ai.dropped.length + ' 句對不上原文的' : '模型說找不到') + '）')); c.appendChild(nf); }
-          else { var box = h('div', 'ans'); ai.sentences.forEach(function (x) { var p = h('div'); p.appendChild(document.createTextNode(x.text)); x.cites.forEach(function (n) { var b = h('button', 'cite', '[' + n + ']'), sr = (ai.sources || [])[n - 1]; b.title = sr ? sr.label : ''; b.onclick = function () { if (sr) openSource(sr); }; p.appendChild(b); }); box.appendChild(p); }); c.appendChild(box); }
+          else { var box = h('div', 'ans'); ai.sentences.forEach(function (x) { var p = h('div'); p.appendChild(document.createTextNode(x.text)); if (x.image) { var im = h('span', 'cite', '🖼'); im.title = '這句的根據包含圖片的模型描述（不是原文，可能有誤）'; p.appendChild(im); }
+ x.cites.forEach(function (n) { var b = h('button', 'cite', '[' + n + ']'), sr = (ai.sources || [])[n - 1]; b.title = sr ? sr.label : ''; b.onclick = function () { if (sr) openSource(sr); }; p.appendChild(b); }); box.appendChild(p); }); c.appendChild(box); }
           if (ai.dropped.length) { var dd = h('details', 'dim'); dd.appendChild(h('summary', null, '丟掉了 ' + ai.dropped.length + ' 句（對不上原文，沒有採用）')); ai.dropped.forEach(function (x) { dd.appendChild(h('div', 'trl', x.text + '　← ' + x.why)); }); c.appendChild(dd); }
           showHits(citedList);
         });
@@ -17964,6 +17992,12 @@ const holder = {};
       var cap = h('input'); cap.type = 'number'; cap.min = '1'; cap.step = '10'; cap.style.width = '110px'; var unl = h('input'); unl.type = 'checkbox'; var cs = h('button', null, '套用容量'), r6 = h('div', 'row'); [h('label', null, '容量上限（MB）'), cap, unl, h('label', null, '無限'), cs].forEach(function (x) { r6.appendChild(x); }); c.appendChild(r6);
       unl.onchange = function () { cap.disabled = unl.checked; };
       cs.onclick = guard(function () { var mb = unl.checked ? 0 : Number(cap.value); if (!unl.checked && !(mb > 0)) { out.textContent = '⚠️ 容量要是大於 0 的數字，或勾「無限」'; return; } return host.setCapacity(mb).then(function () { out.textContent = '✅ 容量上限：' + (mb ? mb + ' MB' : '無限'); return refreshStatus(); }); });
+      // 圖片：pptx／docx／pdf 裡的圖片要不要用視覺模型讀（線上視覺模型優先，失敗自動改離線模型）。讀出來的字標「圖片描述（模型）」，不是原文
+      var imEn = h('input'), imMax = h('input'), imKB = h('input'), imSave = h('button', null, '套用圖片設定'), r7 = h('div', 'row'), r8 = h('div', 'row'); imEn.type = 'checkbox'; imMax.type = 'number'; imMax.min = '1'; imMax.max = '60'; imMax.style.width = '70px'; imKB.type = 'number'; imKB.min = '1'; imKB.max = '500'; imKB.style.width = '70px';
+      [h('label', null, '🖼 讀取圖片'), imEn, h('label', null, '（用視覺模型描述 pptx／docx／pdf 裡的圖片）')].forEach(function (x) { r7.appendChild(x); }); [h('label', null, '每個來源最多'), imMax, h('label', null, '張，小於'), imKB, h('label', null, 'KB 的圖不讀'), imSave].forEach(function (x) { r8.appendChild(x); }); c.appendChild(r7); c.appendChild(r8);
+      note(c, '開啟後，新加入或更新的來源才會讀圖片（已加入的來源要移除後重新加入）。圖片讀出來的內容會標「圖片描述（模型）」，回答引用到時會標 🖼；會比較慢，也可能讀錯。');
+      imSave.onclick = guard(function () { return host.setImages({ enabled: imEn.checked, maxPerSource: Number(imMax.value) || 12, minKB: Number(imKB.value) || 15 }).then(function () { out.textContent = '✅ 圖片設定已套用'; }); });
+      host.status().then(function (s) { var im = s.images || {}; imEn.checked = !!im.enabled; imMax.value = im.maxPerSource || 12; imKB.value = im.minKB || 15; }).catch(function () { /* */ });
       host.status().then(function (s) { locSt.textContent = '目前：' + (s.location_label || '') + '（' + (s.ref || '') + '）'; kind.value = (s.location && s.location.kind) || 'idb'; unl.checked = !s.capacity_mb; cap.value = s.capacity_mb || ''; cap.disabled = unl.checked; }).catch(function () { locSt.textContent = ''; });
     };
     // ───── 視窗外殼：彈出、最大化、收回對話裡（共用 FaWin；元素留在原位，不重新載入）─────
@@ -32352,7 +32386,7 @@ const FaKnowledgeHost = (function () {
         _kiSettings() {
             const k = (this.advancedSettings && this.advancedSettings.knowledge) || {};
             const L = k.location && ['idb', 'file', 'fap'].includes(k.location.kind) ? k.location : { kind: 'idb', ref: 'default' };
-            return { location: { kind: L.kind, ref: String(L.ref || (L.kind === 'idb' ? 'default' : '')) }, maxMB: Number(k.maxMB) > 0 ? Number(k.maxMB) : 0, embedConsent: !!k.embedConsent, autoEmbed: k.autoEmbed !== false };
+            return { location: { kind: L.kind, ref: String(L.ref || (L.kind === 'idb' ? 'default' : '')) }, maxMB: Number(k.maxMB) > 0 ? Number(k.maxMB) : 0, embedConsent: !!k.embedConsent, autoEmbed: k.autoEmbed !== false, images: { enabled: !!(k.images && k.images.enabled), maxPerSource: Math.max(1, Math.min(60, Number(k.images && k.images.maxPerSource) || 12)), minKB: Math.max(1, Math.min(500, Number(k.images && k.images.minKB) || 15)) } };
         },
         _kiSaveSettings(patch) { this.advancedSettings.knowledge = Object.assign({}, this._kiSettings(), patch); this._saveAdvancedSettings(); },
         _kiRef() { const L = this._kiSettings().location; if (L.kind === 'idb') return 'idb:' + (L.ref || 'default'); if (L.kind === 'file') return 'file:' + L.ref; return 'fap:' + String(L.ref).replace(/^fap:/i, ''); },
@@ -32411,15 +32445,21 @@ const FaKnowledgeHost = (function () {
             const fname = String(rec.filename || title || 'source'), ext = ((/\.([A-Za-z0-9]+)$/.exec(fname) || [])[1] || '').toLowerCase();
             const name = (title || fname).slice(0, 160);
             if (ext === 'pdf') {
-                const { numPages, pageTexts } = await this._extractPdfPageTexts(rec.blob, { filename: fname });
+                const img = this._kiSettings().images; let nImg = 0;
+                let numPages, pageTexts;
+                if (img.enabled) {
+                    this._kiEmit({ op: 'images', text: '🖼 讀 PDF 裡有圖片的頁面…（用視覺模型，會比較久）' });
+                    try { ({ numPages, pageTexts } = await this._extractPdfPageContentWithImages(rec.blob, { filename: fname, interpretImages: true, interpretImagesCount: img.maxPerSource })); } finally { this._kiEmit({ op: 'images', end: true }); }
+                    pageTexts = pageTexts.map((t) => String(t).replace(/\[圖片區塊：[^\]]*\]\n?/g, '').replace(/\[圖片內容描述：([\s\S]*)\]\s*$/, (m, d) => { nImg++; return '[圖片描述（模型）] ' + String(d).replace(/\s+/g, ' ').trim(); }).replace(/\[圖片內容描述失敗：([^\]]*)\]/g, (m, e) => '[圖片描述（模型）] （沒有讀成功：' + String(e).slice(0, 60) + '）').replace(/（已超過[^）]*）|（尚未由[^）]*）/g, '').trim());
+                } else ({ numPages, pageTexts } = await this._extractPdfPageTexts(rec.blob, { filename: fname }));
                 const text = pageTexts.map((t, i) => '[第 ' + (i + 1) + ' 頁]\n' + t).join('\n');
                 if (!pageTexts.some((t) => String(t).trim())) return { error: '這份 PDF 沒有文字層（可能是掃描件），沒有辦法讀；Knowledge Inventory 不會用猜的補內容。' };
-                return { name, kind: 'pdf', raw: text, url, pages: numPages };
+                return { name, kind: 'pdf', raw: text, url, pages: numPages, note: nImg ? '含 ' + nImg + ' 段圖片內容的模型描述（標「圖片描述（模型）」），不是原文，可能有誤。' : undefined };
             }
             if (ext === 'docx') {
-                const raw = await this._kiDocxText(rec.blob);
+                const bud = this._kiImgBudget(), raw = await this._kiDocxText(rec.blob, bud);
                 if (!String(raw).trim()) { await this._ensureJSZipLoaded(); const zf = await JSZip.loadAsync(rec.blob), n = Object.keys(zf.files).filter((f) => /^word\/media\//.test(f)).length; return { error: '這份 docx 沒有文字' + (n ? '，裡面只有 ' + n + ' 張圖片（可能是投影片截圖）' : '') + '，Knowledge Inventory 不會用猜的補內容；要用的話請先把圖片裡的字轉成文字。' }; }
-                return { name, kind: 'docx', raw, url };
+                return { name, kind: 'docx', raw, url, note: this._kiImgNote(bud) };
             }
             if (ext === 'srt' || ext === 'vtt') {
                 // 字幕檔：每則字幕前面放開始時間，跟語音轉錄一樣，出處就能指到「第幾分幾秒」
@@ -32432,7 +32472,7 @@ const FaKnowledgeHost = (function () {
                 if (!out.length) return { error: '這個字幕檔讀不出任何字幕（格式不是 srt／vtt？）' };
                 return { name, kind: ext, raw: out.join('\n'), url, note: '字幕檔；時間是該則字幕的開始時間。' };
             }
-            if (ext === 'pptx') return { name, kind: 'pptx', raw: await this._kiPptxText(rec.blob), url };
+            if (ext === 'pptx') { const bud = this._kiImgBudget(), raw = await this._kiPptxText(rec.blob, bud); return { name, kind: 'pptx', raw, url, note: this._kiImgNote(bud) }; }
             if (ext === 'xlsx') {
                 const d = await this._dataViewHost().deps(); if (!d.JSZip) return { error: 'XLSX 讀取工具載入失敗（需要網路載入 JSZip）' };
                 const wb = await FaDataCore.readXlsx(new Uint8Array(await rec.blob.arrayBuffer()), d);
@@ -32450,7 +32490,31 @@ const FaKnowledgeHost = (function () {
             if (!kind && head.indexOf(0) >= 0) return { error: '「' + fname + '」看起來是二進位檔（副檔名 ' + (ext || '沒有') + '），不支援。支援：pdf、docx、pptx、xlsx、mp3／mp4 等音訊影片（轉錄）、md、txt、textile、mediawiki、json、jsonl、yaml、toon、csv，以及其他純文字。' };
             return { name, kind: kind || 'txt', raw: await rec.blob.text(), url };
         },
-        async _kiDocxText(blob) {
+        // ───── 圖片：用視覺模型讀（設定裡開啟才會讀）。讀出來的字一律標「圖片描述（模型）」，不是原文，可能有誤；讀不到就照實寫讀不到 ─────
+        _kiImgBudget() { const im = this._kiSettings().images; return im.enabled ? { left: im.maxPerSource, used: 0, failed: 0, skipped: 0, minBytes: im.minKB * 1024 } : null; },
+        _kiImgNote(bud) { return bud && (bud.used || bud.failed) ? '含 ' + bud.used + ' 張圖片的模型描述（標「圖片描述（模型）」），不是原文，可能有誤' + (bud.failed ? '；' + bud.failed + ' 張沒讀成功' : '') + (bud.skipped ? '；另有 ' + bud.skipped + ' 張超過設定的張數上限沒讀' : '') + '。' : undefined; },
+        async _kiVisionImage(blob, hint) {
+            try {
+                const dataUrl = await this._pptxShrinkToDataUrl(blob, 1400);
+                const prompt = '這是文件裡的一張圖片' + (hint ? '（所在位置：' + hint + '）' : '') + '。請：1) 逐項照抄圖上讀得到的文字、數字、標籤；2) 再用一兩句話說明這張圖是什麼（圖表、截圖、照片、流程圖…）。只寫看得到的，看不清楚就說看不清楚，不要推測。';
+                const r = await this._visionDescribe({ images: [dataUrl], prompt, runLlm: () => this._interpretImageWithVisionModel(dataUrl, prompt) });
+                if (!r || !r.ok) return { error: String((r && r.error) || '視覺模型沒有回應').slice(0, 120) };
+                const text = String(r.backend === 'llm' ? (r.llm && r.llm.description) : r.text || '').replace(/\s+/g, ' ').trim();
+                return text ? { text: text.slice(0, 1500) } : { error: '視覺模型沒有讀出內容' };
+            } catch (e) { return { error: String((e && e.message) || e).slice(0, 120) }; }
+        },
+        async _kiZipImageLine(zip, path, hint, bud) {
+            if (!bud) return ''; const f = zip.file(path); if (!f) return '';
+            const ext = (/\.([A-Za-z0-9]+)$/.exec(path) || [])[1] || '', mime = ({ png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp' })[ext.toLowerCase()];
+            if (!mime) return ''; const b = await f.async('blob'); if (b.size < bud.minBytes) return '';
+            if (bud.left <= 0) { bud.skipped++; return ''; }
+            bud.left--; this._kiEmit({ op: 'images', text: '🖼 讀圖片 ' + (bud.used + bud.failed + 1) + '：' + hint });
+            const r = await this._kiVisionImage(new Blob([b], { type: mime }), hint);
+            if (r.error) { bud.failed++; return '[圖片描述（模型）] （沒有讀成功：' + r.error + '）'; }
+            bud.used++; return '[圖片描述（模型）] ' + r.text;
+        },
+        _kiRels(zip, relsPath) { const f = zip.file(relsPath); return f ? f.async('string').then((x) => { const m = {}; Array.from(new DOMParser().parseFromString(x, 'application/xml').getElementsByTagName('Relationship')).forEach((e) => { m[e.getAttribute('Id')] = e.getAttribute('Target'); }); return m; }) : Promise.resolve({}); },
+        async _kiDocxText(blob, bud) {
             await this._ensureJSZipLoaded(); const zip = await JSZip.loadAsync(blob), f = zip.file('word/document.xml'); if (!f) throw new Error('找不到 word/document.xml，可能不是有效的 docx');
             const doc = new DOMParser().parseFromString(await f.async('string'), 'application/xml'), W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
             const textOf = (p) => { let s = ''; const walk = (n) => { for (const c of Array.from(n.childNodes)) { if (c.nodeType !== 1) continue; if (c.localName === 't') s += c.textContent; else if (c.localName === 'tab') s += '\t'; else if (c.localName === 'br' || c.localName === 'cr') s += '\n'; else walk(c); } }; walk(p); return s; };
@@ -32458,17 +32522,19 @@ const FaKnowledgeHost = (function () {
             const out = []; const body = doc.getElementsByTagNameNS(W, 'body')[0];
             for (const n of Array.from(body ? body.childNodes : [])) {
                 if (n.nodeType !== 1) continue;
-                if (n.localName === 'p') { const t = para(n); if (t) out.push(t); }
+                if (n.localName === 'p') { const t = para(n); if (t) out.push(t); if (bud) Array.from(n.getElementsByTagNameNS('http://schemas.openxmlformats.org/drawingml/2006/main', 'blip')).forEach((bl) => { const rid = bl.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'embed'); if (rid) out.push('\u0001' + rid); }); }
                 else if (n.localName === 'tbl') for (const tr of Array.from(n.getElementsByTagNameNS(W, 'tr'))) out.push(Array.from(tr.getElementsByTagNameNS(W, 'tc')).map((tc) => Array.from(tc.getElementsByTagNameNS(W, 'p')).map(textOf).join(' ').trim()).join(' | '));
             }
+            if (bud && out.some((x) => x.charCodeAt(0) === 1)) { const rels = await this._kiRels(zip, 'word/_rels/document.xml.rels'), res = []; let k = 0; for (const x of out) { if (x.charCodeAt(0) === 1) { k++; const tg = rels[x.slice(1)]; const ln = tg ? await this._kiZipImageLine(zip, 'word/' + tg.replace(/^\.?\//, ''), '文件裡第 ' + k + ' 張圖', bud) : ''; if (ln) res.push(ln); } else res.push(x); } return res.join('\n'); }
             return out.join('\n');
         },
-        async _kiPptxText(blob) {
+        async _kiPptxText(blob, bud) {
             await this._ensureJSZipLoaded(); const zip = await JSZip.loadAsync(blob);
             const slides = Object.keys(zip.files).map((n) => ({ n, i: Number((/slides\/slide(\d+)\.xml$/.exec(n) || [])[1]) })).filter((x) => x.i).sort((a, b) => a.i - b.i), A = 'http://schemas.openxmlformats.org/drawingml/2006/main', out = [];
             const lines = (xml) => { const d = new DOMParser().parseFromString(xml, 'application/xml'); return Array.from(d.getElementsByTagNameNS(A, 'p')).map((p) => Array.from(p.getElementsByTagNameNS(A, 't')).map((t) => t.textContent).join('')).map((s) => s.trim()).filter(Boolean); };
             for (const s of slides) {
-                out.push('[投影片 ' + s.i + ']'); out.push(...lines(await zip.file(s.n).async('string')));
+                const sx = await zip.file(s.n).async('string'); out.push('[投影片 ' + s.i + ']'); out.push(...lines(sx));
+                if (bud) { const rels = await this._kiRels(zip, 'ppt/slides/_rels/slide' + s.i + '.xml.rels'), seen = {}; for (const bl of Array.from(new DOMParser().parseFromString(sx, 'application/xml').getElementsByTagNameNS('http://schemas.openxmlformats.org/drawingml/2006/main', 'blip'))) { const rid = bl.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'embed'), tg = rels[rid]; if (!tg || seen[rid]) continue; seen[rid] = 1; const ln = await this._kiZipImageLine(zip, 'ppt/' + tg.replace(/^\.\.\//, ''), '投影片 ' + s.i, bud); if (ln) out.push(ln); } }
                 const nf = zip.file('ppt/notesSlides/notesSlide' + s.i + '.xml'); if (nf) { const nl = lines(await nf.async('string')).filter((l) => !/^\d+$/.test(l)); if (nl.length) { out.push('（講者備註）'); out.push(...nl); } }
             }
             return out.join('\n');
@@ -32507,7 +32573,7 @@ const FaKnowledgeHost = (function () {
             this._kiEmit({ op: 'embed', done: 0, total, text: '語意向量 0/' + total });
             try { for (;;) {
                 const batch = await this._kiRun((store) => store.pendingVectors(model, 32)); if (!batch.length) break;
-                const vecs = await this._unitCatalogEmbedTexts(pipe, batch.map((b) => String(b.text).slice(0, 1500)), M.passagePrefix);
+                const vecs = await this._unitCatalogEmbedTexts(pipe, batch.map((b) => (b.section ? b.section + '\n' : '') + String(b.text).slice(0, 1500)), M.passagePrefix);
                 await this._kiRun((store) => store.putVectors(model, batch.map((b, i) => ({ id: b.id, vec: vecs[i] }))), true);
                 done += batch.length; if (onProgress) onProgress('語意索引 ' + done); this._kiEmit({ op: 'embed', done, total, text: '語意向量 ' + done + '/' + total });
             } } finally { this._kiEmit({ op: 'embed', done, total, end: true }); }
@@ -32562,7 +32628,7 @@ const FaKnowledgeHost = (function () {
             const ctx = use.map((h, i) => '[' + (i + 1) + '] 《' + h.source + '》' + h.ctx.slice(0, 900)).join('\n\n');
             step('🤖 交給模型整理（只准用 ' + use.length + ' 段原文，每句要標編號）…'); const t0 = Date.now();
             let reply = ''; try {
-                reply = await this._callSimpleCompletion('問題：' + question + '\n\n下面是從知識庫找到的原文片段（有編號）：\n\n' + ctx + '\n\n請只根據這些片段回答問題。規則：1) 每一句結尾都要標它所根據的片段編號，例如「按下 Save 鈕 [2]」；2) 指令、數字、名稱原樣照抄，不要改寫；3) 片段沒有講到的就不要說，不要補充或推測；4) 標題或章節名稱跟問題對得上也算有找到（例如「在《某某》找到標題『Plugin Installation』 [2]」），把它後面接著的內容也一併說出來；5) 完全找不到答案就只輸出「找不到」。', { systemPrompt: '你只能用給你的片段回答，每句都要標編號。', maxTokens: 1500, temperature: 0 });
+                reply = await this._callSimpleCompletion('問題：' + question + '\n\n下面是從知識庫找到的原文片段（有編號）：\n\n' + ctx + '\n\n請只根據這些片段回答問題。規則：1) 每一句結尾都要標它所根據的片段編號，例如「按下 Save 鈕 [2]」；2) 指令放在 `反引號` 裡，並且逐字照抄原文；數字、名稱原樣照抄，不要改寫；3) 片段沒有講到的就不要說，不要補充或推測；4) 標題或章節名稱跟問題對得上也算有找到（例如「在《某某》找到標題『Plugin Installation』 [2]」），把它後面接著的內容也一併說出來；5) 完全找不到答案就只輸出「找不到」。', { systemPrompt: '你只能用給你的片段回答，每句都要標編號。', maxTokens: 1500, temperature: 0 });
             } catch (e) { return { ok: false, error: '模型沒有回應：' + String((e && e.message) || e).slice(0, 160), ms: Date.now() - t0 }; }
             step('　模型回應了（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒），逐句核對編號與原文…');
             const norm = (x) => String(x || '').toLowerCase().replace(/\s+/g, ''); const sentences = [], dropped = [];
@@ -32572,10 +32638,12 @@ const FaKnowledgeHost = (function () {
                 if (!text || /^[^\p{L}\p{N}]*找不到[^\p{L}\p{N}]*$/u.test(text)) continue;
                 if (!cites.length) { dropped.push({ text, why: '沒有標編號' }); continue; }
                 if (cites.some((n) => n < 1 || n > use.length)) { dropped.push({ text, why: '編號不存在' }); continue; }
-                const src = cites.map((n) => norm(use[n - 1].ctx || use[n - 1].quote)).join('');
+                const src = cites.map((n) => norm(FaKnowledge.fold(use[n - 1].ctx || use[n - 1].quote))).join('');
+                const bt = Array.from(text.matchAll(/`([^`]+)`/g)).map((m) => m[1]); const badCmd = bt.find((c) => src.indexOf(norm(FaKnowledge.fold(c))) < 0 && src.indexOf(norm(c)) < 0);
+                if (badCmd) { dropped.push({ text, why: '指令「' + badCmd.slice(0, 40) + '」不是原文的逐字片段' }); continue; }
                 const ids = text.match(/[A-Za-z][A-Za-z0-9_.\-/]{2,}|\d+(?:\.\d+)*/g) || []; const missing = ids.filter((w) => src.indexOf(norm(w)) < 0);
                 if (missing.length) { dropped.push({ text, why: '「' + missing.slice(0, 3).join('、') + '」在引用的原文裡找不到' }); continue; }
-                sentences.push({ text, cites: Array.from(new Set(cites)) });
+                sentences.push({ text, cites: Array.from(new Set(cites)), image: cites.some((n) => /\[圖片描述（模型）\]/.test(use[n - 1].ctx || use[n - 1].quote || '')) });
             }
             step('　核對完成：留下 ' + sentences.length + ' 句' + (dropped.length ? '，丟掉 ' + dropped.length + ' 句（對不上原文）' : '') + '（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）');
             return { ok: true, sentences, dropped, cited: Array.from(new Set(sentences.flatMap((x) => x.cites))), sources: use.map((h, i) => ({ n: i + 1, label: h.label, source: h.source, source_id: h.source_id, line_start: h.line_start, line_end: h.line_end, quote: h.quote, ctx: h.ctx })), ms: Date.now() - t0 };
@@ -32627,7 +32695,7 @@ const FaKnowledgeHost = (function () {
         },
         async _kiStatus() {
             const st = await this._kiRun((store) => store.stats()); const k = this._kiSettings();
-            return { ok: true, location: k.location, location_label: this._kiLocationLabel(), ref: this._kiRef(), capacity_mb: k.maxMB || 0, stats: st, semantic: !!(k.embedConsent && st.vectors > 0) };
+            return { ok: true, location: k.location, location_label: this._kiLocationLabel(), ref: this._kiRef(), capacity_mb: k.maxMB || 0, images: k.images, stats: st, semantic: !!(k.embedConsent && st.vectors > 0) };
         },
         // ───── 面板（對話裡的小工具：查詢／管理／關聯）─────
         _kiPanelHost() {
@@ -32649,6 +32717,7 @@ const FaKnowledgeHost = (function () {
                 refresh: () => self._kiRefresh(), organize: (ref) => self._kiOrganize(ref || null),
                 embedStatus: () => self._kiEmbedCommand('status'), embedRun: () => self._kiEmbedCommand('run'),
                 migrate: (kind, path, keepOld) => self._kiMigrate({ kind, ref: path }, { keepOld }),
+                setImages: async (o) => { const cur = self._kiSettings().images; self._kiSaveSettings({ images: Object.assign({}, cur, o || {}) }); return { ok: true, images: self._kiSettings().images }; },
                 setCapacity: async (mb) => { self._kiSaveSettings({ maxMB: Number(mb) > 0 ? Number(mb) : 0 }); return { ok: true }; },
             };
         },

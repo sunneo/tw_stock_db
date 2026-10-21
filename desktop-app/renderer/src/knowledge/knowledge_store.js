@@ -99,7 +99,7 @@
 
   // ───── 向量 ─────
   Store.prototype.pendingVectors = async function (model, limit) {
-    return rowsOf(await this.exec('SELECT c.id, c.text FROM chunks c JOIN sources s ON s.id=c.source_id LEFT JOIN vectors v ON v.chunk_id=c.id AND v.model=? WHERE v.chunk_id IS NULL ORDER BY c.id LIMIT ?', [model, limit || 64]));
+    return rowsOf(await this.exec('SELECT c.id, c.text, c.section FROM chunks c JOIN sources s ON s.id=c.source_id LEFT JOIN vectors v ON v.chunk_id=c.id AND v.model=? WHERE v.chunk_id IS NULL ORDER BY c.id LIMIT ?', [model, limit || 64]));
   };
   Store.prototype.putVectors = async function (model, items) {
     for (var i = 0; i < items.length; i++) await this.exec('INSERT INTO vectors(chunk_id, model, dim, vec) VALUES(?,?,?,?) ON CONFLICT(chunk_id) DO UPDATE SET model=excluded.model, dim=excluded.dim, vec=excluded.vec', [items[i].id, model, items[i].vec.length, vecToBlob(items[i].vec)]);
@@ -118,6 +118,12 @@
     var allowed = opts.sources ? new Set(opts.sources.map(Number)) : null, fused = {};
     var addHit = function (id, how, r) { var f = fused[id] = fused[id] || { rrf: 0, how: [], sim: null }; f.rrf += 1 / (k + r + 1); if (f.how.indexOf(how) < 0) f.how.push(how); };
     var covOf = {};
+    // 太常見的字（出現在超過 25% 片段，例如整份手冊裡的產品名）只要問句裡還有更有鑑別力的字，就不參與比對
+    if (qt.length > 1) {
+      var nch = Number((rowsOf(await this.exec('SELECT COUNT(*) AS n FROM chunks'))[0] || {}).n || 0), dfs = {};
+      if (nch >= 20) { for (var qi = 0; qi < qt.length && qi < 24; qi++) { try { dfs[qt[qi]] = Number((rowsOf(await this.exec('SELECT COUNT(*) AS n FROM chunks_fts WHERE chunks_fts MATCH ?', [ftsQuery([qt[qi]])]))[0] || {}).n || 0); } catch (e) { dfs[qt[qi]] = 0; } }
+        var rare = qt.filter(function (t) { return dfs[t] <= nch * 0.25; }); if (rare.length && rare.length < qt.length) qt = rare; }
+    }
     if (qt.length) {
       var rows = rowsOf(await this.exec('SELECT c.id AS id, c.source_id AS source_id, c.toks AS toks FROM chunks_fts JOIN chunks c ON c.id=chunks_fts.rowid JOIN sources s ON s.id=c.source_id WHERE chunks_fts MATCH ? AND s.enabled=1 ORDER BY bm25(chunks_fts) LIMIT 80', [ftsQuery(qt)]));
       var minCov = opts.minCoverage == null ? 0.3 : opts.minCoverage, rank = 0;
@@ -128,7 +134,13 @@
       (await this._dense(opts.model || '')).forEach(function (d) { if (d.vec.length !== qv.length) return; if (allowed && !allowed.has(Number(d.source_id))) return; var dot = 0; for (var i = 0; i < qv.length; i++) dot += qv[i] * d.vec[i]; all.push({ id: d.id, sim: dot }); });
       K.denseKeep(all, opts).sort(function (a, b) { return b.sim - a.sim; }).slice(0, 40).forEach(function (x, r) { addHit(x.id, '語意', r); fused[x.id].sim = Math.round(x.sim * 1000) / 1000; });
     }
-    var ids = Object.keys(fused).sort(function (a, b) { return fused[b].rrf - fused[a].rrf; }).slice(0, limit); if (!ids.length) return [];
+    var ranked = Object.keys(fused).sort(function (a, b) { return fused[b].rrf - fused[a].rrf; });
+    if (K.isHowTo(query) && ranked.length) {
+      var top = ranked.slice(0, 40), trows = rowsOf(await this.exec('SELECT id, text FROM chunks WHERE id IN (' + top.map(function () { return '?'; }).join(',') + ')', top.map(Number)));
+      trows.forEach(function (r) { var lines = String(r.text).split('\n'); if (lines.some(function (l) { return K.cmdLine(l) && qt.some(function (t) { return K.fold(l).toLowerCase().indexOf(t) >= 0; }); })) fused[r.id].rrf += 0.02; });
+      ranked = Object.keys(fused).sort(function (a, b) { return fused[b].rrf - fused[a].rrf; });
+    }
+    var ids = ranked.slice(0, limit + 4); if (!ids.length) return [];
     var chunks = rowsOf(await this.exec('SELECT id, source_id, n, line_start, line_end, text FROM chunks WHERE id IN (' + ids.map(function () { return '?'; }).join(',') + ')', ids.map(Number)));
     var byId = {}; chunks.forEach(function (c) { byId[c.id] = c; });
     var srcCache = {}, out = [];
@@ -139,9 +151,10 @@
       var tmp = { lines: lines }, pp = K.pinpoint(tmp, ch, qt);
       var c = K.cite(src, pp.a, pp.b, lines.slice(pp.a - 1, pp.b).join('\n'));
       var f = fused[ids[i]];
+      if (out.some(function (o) { return o.source_id === c.source_id && o.line_start <= c.line_end && c.line_start <= o.line_end; })) continue; // 重疊的片段命中同一段，只留一條
       out.push(Object.assign(c, { score: Math.round(f.rrf * 10000) / 10000, found_by: f.how.join('＋'), coverage: covOf[ids[i]] != null ? Math.round(covOf[ids[i]] * 100) / 100 : undefined, similarity: f.sim != null ? f.sim : undefined, chunk_n: ch.n, chunk_line_start: ch.line_start, chunk_line_end: ch.line_end }));
     }
-    return out;
+    return out.slice(0, limit);
   };
   Store.prototype.answer = async function (question, opts) {
     var hits = await this.search(question, opts);

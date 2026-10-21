@@ -14,23 +14,34 @@
 
   // ───── 斷詞：英文數字用整個字（小寫），中日韓用相鄰兩字（bigram）＋單字，檢索與建索引用同一套 ─────
   var CJK = /[㐀-鿿豈-﫿぀-ヿ가-힯]/;
+  // 只折疊這幾個區段（康熙部首、部首補充、CJK 相容字、全形英數），不做完整 NFKC（否則 x² 會變 x2、™ 變 TM）
+  var FOLD_RE = /[\u2E80-\u2FDF\uF900-\uFAFF\uFF01-\uFF5E]/g;
+  function fold(text) { return String(text == null ? '' : text).replace(FOLD_RE, function (c) { return c.normalize('NFKC'); }); }
   function tokenize(text) {
-    var out = [], s = String(text == null ? '' : text).toLowerCase(), i = 0, n = s.length;
+    var orig = fold(text), out = [], s = orig.toLowerCase(), i = 0, n = s.length;
     while (i < n) {
       var c = s[i];
       if (CJK.test(c)) { var j = i; while (j < n && CJK.test(s[j])) j++; var run = s.slice(i, j); for (var k = 0; k < run.length; k++) { out.push(run[k]); if (k + 1 < run.length) out.push(run.slice(k, k + 2)); } i = j; }
-      else if (/[a-z0-9]/.test(c)) { var j2 = i; while (j2 < n && /[a-z0-9_.\-]/.test(s[j2]) && !CJK.test(s[j2])) j2++; var w = s.slice(i, j2).replace(/[.\-_]+$/, ''); if (w) out.push(w); i = j2; }
+      else if (/[a-z0-9]/.test(c)) { var j2 = i; while (j2 < n && /[a-z0-9_.\-]/.test(s[j2]) && !CJK.test(s[j2])) j2++; var w = s.slice(i, j2).replace(/[.\-_]+$/, ''); if (w) out.push(w);
+        // CamelCase、底線連起來的識別字（FullTestCaseId、run_case）也把各個字拆出來當詞：問「testcase」要找得到 --FullTestCaseId
+        if (orig.length === n) { var rawW = orig.slice(i, j2), parts = rawW.match(/[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+/g); if (parts && parts.length > 1 && /[a-z][A-Z]|_/.test(rawW)) { parts.forEach(function (x) { if (x.length >= 2) out.push(x.toLowerCase()); }); var j3 = parts.join('').toLowerCase(); if (parts.length > 2 && j3 !== w) out.push(parts.slice(0, -1).join('').toLowerCase()); } }
+        i = j2; }
       else i++;
     }
     return out;
   }
 
+  // 「怎麼做」類問題要給指令：問句像在問做法（怎麼、如何、how to、指令、參數…）時，長得像指令的行（--flag、.exe／.sh／.py、$ 提示、./、常見指令名、磁碟路徑）排前面
+  var HOWTO_RE = /怎麼|怎樣|如何|怎么|指令|命令|參數|参数|\bhow\s+(to|do|can)\b|command|\bcli\b|usage/i;
+  var CMD_RE = /(^|\s)--?[a-z][\w-]*|\.(exe|sh|py|bat|cmd|ps1)\b|^\s*\$\s+\S|(^|\s)\.\/\S|\b(git|npm|pip|docker|sudo|curl|wget|make|cmake|python3?|node|java|apt(-get)?|yum|chmod|ssh|scp|cd|ls|cp|mv|rm|mkdir|cat|grep)\s+\S|[A-Za-z]:\\\S/i;
+  function isHowTo(q) { return HOWTO_RE.test(String(q || '')); }
+  function cmdLine(line) { return CMD_RE.test(String(line || '')); }
   // 問句的詞：「怎麼」「如何」「請問」這類每個問題都有的字，不能拿來比對（會讓毫不相關的片段也命中）
   var Q_STOP = ['為什麼', '為甚麼', '能不能', '有沒有', '是不是', '請問', '告訴我', '怎麼樣', '怎麼', '怎樣', '如何', '什麼', '甚麼', '為何', '哪裡', '哪個', '哪些', '哪邊', '是否', '可以', '一下', '嗎', '呢', '吧', '的', '了', '我', '你', '要', '請', '是', '有', '在', '從', '和', '跟', '與'];
   var Q_STOP_RE = new RegExp(Q_STOP.join('|'), 'g');
   // 查詢用的詞：去掉問句的詞後，連續中文只留兩字詞（單字太常見，會到處命中）；英文照常
   function queryTokens(text) {
-    var s = String(text == null ? '' : text).replace(Q_STOP_RE, ' '), all = tokenize(s), runs = s.toLowerCase().match(new RegExp('(?:' + CJK.source + ')+', 'g')) || [], single = {};
+    var s = fold(text).replace(Q_STOP_RE, ' '), all = tokenize(s), runs = s.toLowerCase().match(new RegExp('(?:' + CJK.source + ')+', 'g')) || [], single = {};
     runs.forEach(function (r) { if (r.length === 1) single[r] = true; });
     return all.filter(function (t) { return !(t.length === 1 && CJK.test(t) && !single[t]); });
   }
@@ -92,7 +103,8 @@
     var headerLine = (n.kind === 'csv' || n.kind === 'tsv') ? lines[0] : null;
     for (var li = 0; li < lines.length; li++) {
       var ln = lines[li], lineNo = li + 1, sec2 = secOfLine(lineNo), prevSec = buf.length ? secOfLine(bufStart) : null;
-      if (buf.length && ((sec2 && prevSec && sec2.n !== prevSec.n) || bufChars + ln.length + 1 > max)) { flush(lineNo - 1); }
+      var secCut = !!(sec2 && prevSec && sec2.n !== prevSec.n), sizeCut = !secCut && buf.length > 1 && bufChars + ln.length + 1 > max, lastLn = buf.length ? buf[buf.length - 1] : '';
+      if (buf.length && (secCut || bufChars + ln.length + 1 > max)) { flush(lineNo - 1); if (sizeCut && lastLn.length < 200) { buf = [lastLn]; bufStart = lineNo - 1; bufChars = lastLn.length + 1; } }
       if (!buf.length) bufStart = lineNo;
       buf.push(ln); bufChars += ln.length + 1;
     }
@@ -245,5 +257,5 @@
     return { ok: true, found: true, hits: hits.map(function (h) { return { label: h.label, source: h.source, line_start: h.line_start, line_end: h.line_end, section: h.section, loc: h.loc, quote: h.quote, score: h.score, found_by: h.found_by || '關鍵字' }; }) };
   }
 
-  return { denseKeep: denseKeep, pinpoint: pinpoint, tokenize: tokenize, queryTokens: queryTokens, normalize: normalize, ingest: ingest, cite: cite, buildIndex: buildIndex, search: search, searchHybrid: searchHybrid, summarize: summarize, verifyQuote: verifyQuote, verifyAll: verifyAll, detail: detail, links: links, answer: answer, locLabel: locLabel };
+  return { denseKeep: denseKeep, pinpoint: pinpoint, tokenize: tokenize, queryTokens: queryTokens, fold: fold, isHowTo: isHowTo, cmdLine: cmdLine, normalize: normalize, ingest: ingest, cite: cite, buildIndex: buildIndex, search: search, searchHybrid: searchHybrid, summarize: summarize, verifyQuote: verifyQuote, verifyAll: verifyAll, detail: detail, links: links, answer: answer, locLabel: locLabel };
 });

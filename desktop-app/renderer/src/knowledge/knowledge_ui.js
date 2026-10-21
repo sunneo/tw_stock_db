@@ -51,6 +51,8 @@
         embActive = !ev.end; embText = ev.text || '';
         if (ev.end) { setOpl(''); refreshStatus(); return; }
         setOpl('🧠 ' + embText); var now = Date.now(); if (now - refreshT > 1200) { refreshT = now; refreshSourcesOnly(); }
+      } else if (ev.op === 'images') {
+        setOpl(ev.end ? '' : ev.text || '🖼 讀圖片中…');
       } else if (ev.op === 'organize') {
         if (ev.end) { orgNow = null; setOpl(''); renderList(); return; }
         if (ev.source_id != null) { if (orgNow != null) orgDone[orgNow] = true; orgNow = ev.source_id; } setOpl('🧹 ' + (ev.text || '模型整理中…')); renderList();
@@ -167,7 +169,8 @@
           if (!ai.ok) { note(c, '⚠️ AI 整理失敗：' + ai.error + '\n下面是原文。', 'st bad'); showHits(); return; }
           var citedList = ai.cited || [];
           if (!ai.sentences.length) { var nf = h('details', 'dim'); nf.appendChild(h('summary', null, '沒有找到能回答的內容（' + (ai.dropped.length ? '丟掉了 ' + ai.dropped.length + ' 句對不上原文的' : '模型說找不到') + '）')); c.appendChild(nf); }
-          else { var box = h('div', 'ans'); ai.sentences.forEach(function (x) { var p = h('div'); p.appendChild(document.createTextNode(x.text)); x.cites.forEach(function (n) { var b = h('button', 'cite', '[' + n + ']'), sr = (ai.sources || [])[n - 1]; b.title = sr ? sr.label : ''; b.onclick = function () { if (sr) openSource(sr); }; p.appendChild(b); }); box.appendChild(p); }); c.appendChild(box); }
+          else { var box = h('div', 'ans'); ai.sentences.forEach(function (x) { var p = h('div'); p.appendChild(document.createTextNode(x.text)); if (x.image) { var im = h('span', 'cite', '🖼'); im.title = '這句的根據包含圖片的模型描述（不是原文，可能有誤）'; p.appendChild(im); }
+ x.cites.forEach(function (n) { var b = h('button', 'cite', '[' + n + ']'), sr = (ai.sources || [])[n - 1]; b.title = sr ? sr.label : ''; b.onclick = function () { if (sr) openSource(sr); }; p.appendChild(b); }); box.appendChild(p); }); c.appendChild(box); }
           if (ai.dropped.length) { var dd = h('details', 'dim'); dd.appendChild(h('summary', null, '丟掉了 ' + ai.dropped.length + ' 句（對不上原文，沒有採用）')); ai.dropped.forEach(function (x) { dd.appendChild(h('div', 'trl', x.text + '　← ' + x.why)); }); c.appendChild(dd); }
           showHits(citedList);
         });
@@ -217,6 +220,12 @@
       var cap = h('input'); cap.type = 'number'; cap.min = '1'; cap.step = '10'; cap.style.width = '110px'; var unl = h('input'); unl.type = 'checkbox'; var cs = h('button', null, '套用容量'), r6 = h('div', 'row'); [h('label', null, '容量上限（MB）'), cap, unl, h('label', null, '無限'), cs].forEach(function (x) { r6.appendChild(x); }); c.appendChild(r6);
       unl.onchange = function () { cap.disabled = unl.checked; };
       cs.onclick = guard(function () { var mb = unl.checked ? 0 : Number(cap.value); if (!unl.checked && !(mb > 0)) { out.textContent = '⚠️ 容量要是大於 0 的數字，或勾「無限」'; return; } return host.setCapacity(mb).then(function () { out.textContent = '✅ 容量上限：' + (mb ? mb + ' MB' : '無限'); return refreshStatus(); }); });
+      // 圖片：pptx／docx／pdf 裡的圖片要不要用視覺模型讀（線上視覺模型優先，失敗自動改離線模型）。讀出來的字標「圖片描述（模型）」，不是原文
+      var imEn = h('input'), imMax = h('input'), imKB = h('input'), imSave = h('button', null, '套用圖片設定'), r7 = h('div', 'row'), r8 = h('div', 'row'); imEn.type = 'checkbox'; imMax.type = 'number'; imMax.min = '1'; imMax.max = '60'; imMax.style.width = '70px'; imKB.type = 'number'; imKB.min = '1'; imKB.max = '500'; imKB.style.width = '70px';
+      [h('label', null, '🖼 讀取圖片'), imEn, h('label', null, '（用視覺模型描述 pptx／docx／pdf 裡的圖片）')].forEach(function (x) { r7.appendChild(x); }); [h('label', null, '每個來源最多'), imMax, h('label', null, '張，小於'), imKB, h('label', null, 'KB 的圖不讀'), imSave].forEach(function (x) { r8.appendChild(x); }); c.appendChild(r7); c.appendChild(r8);
+      note(c, '開啟後，新加入或更新的來源才會讀圖片（已加入的來源要移除後重新加入）。圖片讀出來的內容會標「圖片描述（模型）」，回答引用到時會標 🖼；會比較慢，也可能讀錯。');
+      imSave.onclick = guard(function () { return host.setImages({ enabled: imEn.checked, maxPerSource: Number(imMax.value) || 12, minKB: Number(imKB.value) || 15 }).then(function () { out.textContent = '✅ 圖片設定已套用'; }); });
+      host.status().then(function (s) { var im = s.images || {}; imEn.checked = !!im.enabled; imMax.value = im.maxPerSource || 12; imKB.value = im.minKB || 15; }).catch(function () { /* */ });
       host.status().then(function (s) { locSt.textContent = '目前：' + (s.location_label || '') + '（' + (s.ref || '') + '）'; kind.value = (s.location && s.location.kind) || 'idb'; unl.checked = !s.capacity_mb; cap.value = s.capacity_mb || ''; cap.disabled = unl.checked; }).catch(function () { locSt.textContent = ''; });
     };
     // ───── 視窗外殼：彈出、最大化、收回對話裡（共用 FaWin；元素留在原位，不重新載入）─────

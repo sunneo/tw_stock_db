@@ -17,7 +17,7 @@ const FaKnowledgeHost = (function () {
         _kiSettings() {
             const k = (this.advancedSettings && this.advancedSettings.knowledge) || {};
             const L = k.location && ['idb', 'file', 'fap'].includes(k.location.kind) ? k.location : { kind: 'idb', ref: 'default' };
-            return { location: { kind: L.kind, ref: String(L.ref || (L.kind === 'idb' ? 'default' : '')) }, maxMB: Number(k.maxMB) > 0 ? Number(k.maxMB) : 0, embedConsent: !!k.embedConsent, autoEmbed: k.autoEmbed !== false };
+            return { location: { kind: L.kind, ref: String(L.ref || (L.kind === 'idb' ? 'default' : '')) }, maxMB: Number(k.maxMB) > 0 ? Number(k.maxMB) : 0, embedConsent: !!k.embedConsent, autoEmbed: k.autoEmbed !== false, images: { enabled: !!(k.images && k.images.enabled), maxPerSource: Math.max(1, Math.min(60, Number(k.images && k.images.maxPerSource) || 12)), minKB: Math.max(1, Math.min(500, Number(k.images && k.images.minKB) || 15)) } };
         },
         _kiSaveSettings(patch) { this.advancedSettings.knowledge = Object.assign({}, this._kiSettings(), patch); this._saveAdvancedSettings(); },
         _kiRef() { const L = this._kiSettings().location; if (L.kind === 'idb') return 'idb:' + (L.ref || 'default'); if (L.kind === 'file') return 'file:' + L.ref; return 'fap:' + String(L.ref).replace(/^fap:/i, ''); },
@@ -76,15 +76,21 @@ const FaKnowledgeHost = (function () {
             const fname = String(rec.filename || title || 'source'), ext = ((/\.([A-Za-z0-9]+)$/.exec(fname) || [])[1] || '').toLowerCase();
             const name = (title || fname).slice(0, 160);
             if (ext === 'pdf') {
-                const { numPages, pageTexts } = await this._extractPdfPageTexts(rec.blob, { filename: fname });
+                const img = this._kiSettings().images; let nImg = 0;
+                let numPages, pageTexts;
+                if (img.enabled) {
+                    this._kiEmit({ op: 'images', text: '🖼 讀 PDF 裡有圖片的頁面…（用視覺模型，會比較久）' });
+                    try { ({ numPages, pageTexts } = await this._extractPdfPageContentWithImages(rec.blob, { filename: fname, interpretImages: true, interpretImagesCount: img.maxPerSource })); } finally { this._kiEmit({ op: 'images', end: true }); }
+                    pageTexts = pageTexts.map((t) => String(t).replace(/\[圖片區塊：[^\]]*\]\n?/g, '').replace(/\[圖片內容描述：([\s\S]*)\]\s*$/, (m, d) => { nImg++; return '[圖片描述（模型）] ' + String(d).replace(/\s+/g, ' ').trim(); }).replace(/\[圖片內容描述失敗：([^\]]*)\]/g, (m, e) => '[圖片描述（模型）] （沒有讀成功：' + String(e).slice(0, 60) + '）').replace(/（已超過[^）]*）|（尚未由[^）]*）/g, '').trim());
+                } else ({ numPages, pageTexts } = await this._extractPdfPageTexts(rec.blob, { filename: fname }));
                 const text = pageTexts.map((t, i) => '[第 ' + (i + 1) + ' 頁]\n' + t).join('\n');
                 if (!pageTexts.some((t) => String(t).trim())) return { error: '這份 PDF 沒有文字層（可能是掃描件），沒有辦法讀；Knowledge Inventory 不會用猜的補內容。' };
-                return { name, kind: 'pdf', raw: text, url, pages: numPages };
+                return { name, kind: 'pdf', raw: text, url, pages: numPages, note: nImg ? '含 ' + nImg + ' 段圖片內容的模型描述（標「圖片描述（模型）」），不是原文，可能有誤。' : undefined };
             }
             if (ext === 'docx') {
-                const raw = await this._kiDocxText(rec.blob);
+                const bud = this._kiImgBudget(), raw = await this._kiDocxText(rec.blob, bud);
                 if (!String(raw).trim()) { await this._ensureJSZipLoaded(); const zf = await JSZip.loadAsync(rec.blob), n = Object.keys(zf.files).filter((f) => /^word\/media\//.test(f)).length; return { error: '這份 docx 沒有文字' + (n ? '，裡面只有 ' + n + ' 張圖片（可能是投影片截圖）' : '') + '，Knowledge Inventory 不會用猜的補內容；要用的話請先把圖片裡的字轉成文字。' }; }
-                return { name, kind: 'docx', raw, url };
+                return { name, kind: 'docx', raw, url, note: this._kiImgNote(bud) };
             }
             if (ext === 'srt' || ext === 'vtt') {
                 // 字幕檔：每則字幕前面放開始時間，跟語音轉錄一樣，出處就能指到「第幾分幾秒」
@@ -97,7 +103,7 @@ const FaKnowledgeHost = (function () {
                 if (!out.length) return { error: '這個字幕檔讀不出任何字幕（格式不是 srt／vtt？）' };
                 return { name, kind: ext, raw: out.join('\n'), url, note: '字幕檔；時間是該則字幕的開始時間。' };
             }
-            if (ext === 'pptx') return { name, kind: 'pptx', raw: await this._kiPptxText(rec.blob), url };
+            if (ext === 'pptx') { const bud = this._kiImgBudget(), raw = await this._kiPptxText(rec.blob, bud); return { name, kind: 'pptx', raw, url, note: this._kiImgNote(bud) }; }
             if (ext === 'xlsx') {
                 const d = await this._dataViewHost().deps(); if (!d.JSZip) return { error: 'XLSX 讀取工具載入失敗（需要網路載入 JSZip）' };
                 const wb = await FaDataCore.readXlsx(new Uint8Array(await rec.blob.arrayBuffer()), d);
@@ -115,7 +121,31 @@ const FaKnowledgeHost = (function () {
             if (!kind && head.indexOf(0) >= 0) return { error: '「' + fname + '」看起來是二進位檔（副檔名 ' + (ext || '沒有') + '），不支援。支援：pdf、docx、pptx、xlsx、mp3／mp4 等音訊影片（轉錄）、md、txt、textile、mediawiki、json、jsonl、yaml、toon、csv，以及其他純文字。' };
             return { name, kind: kind || 'txt', raw: await rec.blob.text(), url };
         },
-        async _kiDocxText(blob) {
+        // ───── 圖片：用視覺模型讀（設定裡開啟才會讀）。讀出來的字一律標「圖片描述（模型）」，不是原文，可能有誤；讀不到就照實寫讀不到 ─────
+        _kiImgBudget() { const im = this._kiSettings().images; return im.enabled ? { left: im.maxPerSource, used: 0, failed: 0, skipped: 0, minBytes: im.minKB * 1024 } : null; },
+        _kiImgNote(bud) { return bud && (bud.used || bud.failed) ? '含 ' + bud.used + ' 張圖片的模型描述（標「圖片描述（模型）」），不是原文，可能有誤' + (bud.failed ? '；' + bud.failed + ' 張沒讀成功' : '') + (bud.skipped ? '；另有 ' + bud.skipped + ' 張超過設定的張數上限沒讀' : '') + '。' : undefined; },
+        async _kiVisionImage(blob, hint) {
+            try {
+                const dataUrl = await this._pptxShrinkToDataUrl(blob, 1400);
+                const prompt = '這是文件裡的一張圖片' + (hint ? '（所在位置：' + hint + '）' : '') + '。請：1) 逐項照抄圖上讀得到的文字、數字、標籤；2) 再用一兩句話說明這張圖是什麼（圖表、截圖、照片、流程圖…）。只寫看得到的，看不清楚就說看不清楚，不要推測。';
+                const r = await this._visionDescribe({ images: [dataUrl], prompt, runLlm: () => this._interpretImageWithVisionModel(dataUrl, prompt) });
+                if (!r || !r.ok) return { error: String((r && r.error) || '視覺模型沒有回應').slice(0, 120) };
+                const text = String(r.backend === 'llm' ? (r.llm && r.llm.description) : r.text || '').replace(/\s+/g, ' ').trim();
+                return text ? { text: text.slice(0, 1500) } : { error: '視覺模型沒有讀出內容' };
+            } catch (e) { return { error: String((e && e.message) || e).slice(0, 120) }; }
+        },
+        async _kiZipImageLine(zip, path, hint, bud) {
+            if (!bud) return ''; const f = zip.file(path); if (!f) return '';
+            const ext = (/\.([A-Za-z0-9]+)$/.exec(path) || [])[1] || '', mime = ({ png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp' })[ext.toLowerCase()];
+            if (!mime) return ''; const b = await f.async('blob'); if (b.size < bud.minBytes) return '';
+            if (bud.left <= 0) { bud.skipped++; return ''; }
+            bud.left--; this._kiEmit({ op: 'images', text: '🖼 讀圖片 ' + (bud.used + bud.failed + 1) + '：' + hint });
+            const r = await this._kiVisionImage(new Blob([b], { type: mime }), hint);
+            if (r.error) { bud.failed++; return '[圖片描述（模型）] （沒有讀成功：' + r.error + '）'; }
+            bud.used++; return '[圖片描述（模型）] ' + r.text;
+        },
+        _kiRels(zip, relsPath) { const f = zip.file(relsPath); return f ? f.async('string').then((x) => { const m = {}; Array.from(new DOMParser().parseFromString(x, 'application/xml').getElementsByTagName('Relationship')).forEach((e) => { m[e.getAttribute('Id')] = e.getAttribute('Target'); }); return m; }) : Promise.resolve({}); },
+        async _kiDocxText(blob, bud) {
             await this._ensureJSZipLoaded(); const zip = await JSZip.loadAsync(blob), f = zip.file('word/document.xml'); if (!f) throw new Error('找不到 word/document.xml，可能不是有效的 docx');
             const doc = new DOMParser().parseFromString(await f.async('string'), 'application/xml'), W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
             const textOf = (p) => { let s = ''; const walk = (n) => { for (const c of Array.from(n.childNodes)) { if (c.nodeType !== 1) continue; if (c.localName === 't') s += c.textContent; else if (c.localName === 'tab') s += '\t'; else if (c.localName === 'br' || c.localName === 'cr') s += '\n'; else walk(c); } }; walk(p); return s; };
@@ -123,17 +153,19 @@ const FaKnowledgeHost = (function () {
             const out = []; const body = doc.getElementsByTagNameNS(W, 'body')[0];
             for (const n of Array.from(body ? body.childNodes : [])) {
                 if (n.nodeType !== 1) continue;
-                if (n.localName === 'p') { const t = para(n); if (t) out.push(t); }
+                if (n.localName === 'p') { const t = para(n); if (t) out.push(t); if (bud) Array.from(n.getElementsByTagNameNS('http://schemas.openxmlformats.org/drawingml/2006/main', 'blip')).forEach((bl) => { const rid = bl.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'embed'); if (rid) out.push('\u0001' + rid); }); }
                 else if (n.localName === 'tbl') for (const tr of Array.from(n.getElementsByTagNameNS(W, 'tr'))) out.push(Array.from(tr.getElementsByTagNameNS(W, 'tc')).map((tc) => Array.from(tc.getElementsByTagNameNS(W, 'p')).map(textOf).join(' ').trim()).join(' | '));
             }
+            if (bud && out.some((x) => x.charCodeAt(0) === 1)) { const rels = await this._kiRels(zip, 'word/_rels/document.xml.rels'), res = []; let k = 0; for (const x of out) { if (x.charCodeAt(0) === 1) { k++; const tg = rels[x.slice(1)]; const ln = tg ? await this._kiZipImageLine(zip, 'word/' + tg.replace(/^\.?\//, ''), '文件裡第 ' + k + ' 張圖', bud) : ''; if (ln) res.push(ln); } else res.push(x); } return res.join('\n'); }
             return out.join('\n');
         },
-        async _kiPptxText(blob) {
+        async _kiPptxText(blob, bud) {
             await this._ensureJSZipLoaded(); const zip = await JSZip.loadAsync(blob);
             const slides = Object.keys(zip.files).map((n) => ({ n, i: Number((/slides\/slide(\d+)\.xml$/.exec(n) || [])[1]) })).filter((x) => x.i).sort((a, b) => a.i - b.i), A = 'http://schemas.openxmlformats.org/drawingml/2006/main', out = [];
             const lines = (xml) => { const d = new DOMParser().parseFromString(xml, 'application/xml'); return Array.from(d.getElementsByTagNameNS(A, 'p')).map((p) => Array.from(p.getElementsByTagNameNS(A, 't')).map((t) => t.textContent).join('')).map((s) => s.trim()).filter(Boolean); };
             for (const s of slides) {
-                out.push('[投影片 ' + s.i + ']'); out.push(...lines(await zip.file(s.n).async('string')));
+                const sx = await zip.file(s.n).async('string'); out.push('[投影片 ' + s.i + ']'); out.push(...lines(sx));
+                if (bud) { const rels = await this._kiRels(zip, 'ppt/slides/_rels/slide' + s.i + '.xml.rels'), seen = {}; for (const bl of Array.from(new DOMParser().parseFromString(sx, 'application/xml').getElementsByTagNameNS('http://schemas.openxmlformats.org/drawingml/2006/main', 'blip'))) { const rid = bl.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'embed'), tg = rels[rid]; if (!tg || seen[rid]) continue; seen[rid] = 1; const ln = await this._kiZipImageLine(zip, 'ppt/' + tg.replace(/^\.\.\//, ''), '投影片 ' + s.i, bud); if (ln) out.push(ln); } }
                 const nf = zip.file('ppt/notesSlides/notesSlide' + s.i + '.xml'); if (nf) { const nl = lines(await nf.async('string')).filter((l) => !/^\d+$/.test(l)); if (nl.length) { out.push('（講者備註）'); out.push(...nl); } }
             }
             return out.join('\n');
@@ -172,7 +204,7 @@ const FaKnowledgeHost = (function () {
             this._kiEmit({ op: 'embed', done: 0, total, text: '語意向量 0/' + total });
             try { for (;;) {
                 const batch = await this._kiRun((store) => store.pendingVectors(model, 32)); if (!batch.length) break;
-                const vecs = await this._unitCatalogEmbedTexts(pipe, batch.map((b) => String(b.text).slice(0, 1500)), M.passagePrefix);
+                const vecs = await this._unitCatalogEmbedTexts(pipe, batch.map((b) => (b.section ? b.section + '\n' : '') + String(b.text).slice(0, 1500)), M.passagePrefix);
                 await this._kiRun((store) => store.putVectors(model, batch.map((b, i) => ({ id: b.id, vec: vecs[i] }))), true);
                 done += batch.length; if (onProgress) onProgress('語意索引 ' + done); this._kiEmit({ op: 'embed', done, total, text: '語意向量 ' + done + '/' + total });
             } } finally { this._kiEmit({ op: 'embed', done, total, end: true }); }
@@ -227,7 +259,7 @@ const FaKnowledgeHost = (function () {
             const ctx = use.map((h, i) => '[' + (i + 1) + '] 《' + h.source + '》' + h.ctx.slice(0, 900)).join('\n\n');
             step('🤖 交給模型整理（只准用 ' + use.length + ' 段原文，每句要標編號）…'); const t0 = Date.now();
             let reply = ''; try {
-                reply = await this._callSimpleCompletion('問題：' + question + '\n\n下面是從知識庫找到的原文片段（有編號）：\n\n' + ctx + '\n\n請只根據這些片段回答問題。規則：1) 每一句結尾都要標它所根據的片段編號，例如「按下 Save 鈕 [2]」；2) 指令、數字、名稱原樣照抄，不要改寫；3) 片段沒有講到的就不要說，不要補充或推測；4) 標題或章節名稱跟問題對得上也算有找到（例如「在《某某》找到標題『Plugin Installation』 [2]」），把它後面接著的內容也一併說出來；5) 完全找不到答案就只輸出「找不到」。', { systemPrompt: '你只能用給你的片段回答，每句都要標編號。', maxTokens: 1500, temperature: 0 });
+                reply = await this._callSimpleCompletion('問題：' + question + '\n\n下面是從知識庫找到的原文片段（有編號）：\n\n' + ctx + '\n\n請只根據這些片段回答問題。規則：1) 每一句結尾都要標它所根據的片段編號，例如「按下 Save 鈕 [2]」；2) 指令放在 `反引號` 裡，並且逐字照抄原文；數字、名稱原樣照抄，不要改寫；3) 片段沒有講到的就不要說，不要補充或推測；4) 標題或章節名稱跟問題對得上也算有找到（例如「在《某某》找到標題『Plugin Installation』 [2]」），把它後面接著的內容也一併說出來；5) 完全找不到答案就只輸出「找不到」。', { systemPrompt: '你只能用給你的片段回答，每句都要標編號。', maxTokens: 1500, temperature: 0 });
             } catch (e) { return { ok: false, error: '模型沒有回應：' + String((e && e.message) || e).slice(0, 160), ms: Date.now() - t0 }; }
             step('　模型回應了（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒），逐句核對編號與原文…');
             const norm = (x) => String(x || '').toLowerCase().replace(/\s+/g, ''); const sentences = [], dropped = [];
@@ -237,10 +269,12 @@ const FaKnowledgeHost = (function () {
                 if (!text || /^[^\p{L}\p{N}]*找不到[^\p{L}\p{N}]*$/u.test(text)) continue;
                 if (!cites.length) { dropped.push({ text, why: '沒有標編號' }); continue; }
                 if (cites.some((n) => n < 1 || n > use.length)) { dropped.push({ text, why: '編號不存在' }); continue; }
-                const src = cites.map((n) => norm(use[n - 1].ctx || use[n - 1].quote)).join('');
+                const src = cites.map((n) => norm(FaKnowledge.fold(use[n - 1].ctx || use[n - 1].quote))).join('');
+                const bt = Array.from(text.matchAll(/`([^`]+)`/g)).map((m) => m[1]); const badCmd = bt.find((c) => src.indexOf(norm(FaKnowledge.fold(c))) < 0 && src.indexOf(norm(c)) < 0);
+                if (badCmd) { dropped.push({ text, why: '指令「' + badCmd.slice(0, 40) + '」不是原文的逐字片段' }); continue; }
                 const ids = text.match(/[A-Za-z][A-Za-z0-9_.\-/]{2,}|\d+(?:\.\d+)*/g) || []; const missing = ids.filter((w) => src.indexOf(norm(w)) < 0);
                 if (missing.length) { dropped.push({ text, why: '「' + missing.slice(0, 3).join('、') + '」在引用的原文裡找不到' }); continue; }
-                sentences.push({ text, cites: Array.from(new Set(cites)) });
+                sentences.push({ text, cites: Array.from(new Set(cites)), image: cites.some((n) => /\[圖片描述（模型）\]/.test(use[n - 1].ctx || use[n - 1].quote || '')) });
             }
             step('　核對完成：留下 ' + sentences.length + ' 句' + (dropped.length ? '，丟掉 ' + dropped.length + ' 句（對不上原文）' : '') + '（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）');
             return { ok: true, sentences, dropped, cited: Array.from(new Set(sentences.flatMap((x) => x.cites))), sources: use.map((h, i) => ({ n: i + 1, label: h.label, source: h.source, source_id: h.source_id, line_start: h.line_start, line_end: h.line_end, quote: h.quote, ctx: h.ctx })), ms: Date.now() - t0 };
@@ -292,7 +326,7 @@ const FaKnowledgeHost = (function () {
         },
         async _kiStatus() {
             const st = await this._kiRun((store) => store.stats()); const k = this._kiSettings();
-            return { ok: true, location: k.location, location_label: this._kiLocationLabel(), ref: this._kiRef(), capacity_mb: k.maxMB || 0, stats: st, semantic: !!(k.embedConsent && st.vectors > 0) };
+            return { ok: true, location: k.location, location_label: this._kiLocationLabel(), ref: this._kiRef(), capacity_mb: k.maxMB || 0, images: k.images, stats: st, semantic: !!(k.embedConsent && st.vectors > 0) };
         },
         // ───── 面板（對話裡的小工具：查詢／管理／關聯）─────
         _kiPanelHost() {
@@ -314,6 +348,7 @@ const FaKnowledgeHost = (function () {
                 refresh: () => self._kiRefresh(), organize: (ref) => self._kiOrganize(ref || null),
                 embedStatus: () => self._kiEmbedCommand('status'), embedRun: () => self._kiEmbedCommand('run'),
                 migrate: (kind, path, keepOld) => self._kiMigrate({ kind, ref: path }, { keepOld }),
+                setImages: async (o) => { const cur = self._kiSettings().images; self._kiSaveSettings({ images: Object.assign({}, cur, o || {}) }); return { ok: true, images: self._kiSettings().images }; },
                 setCapacity: async (mb) => { self._kiSaveSettings({ maxMB: Number(mb) > 0 ? Number(mb) : 0 }); return { ok: true }; },
             };
         },

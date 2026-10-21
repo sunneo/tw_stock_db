@@ -103,5 +103,13 @@ check('queryTokens keeps english words and single-char terms standing alone', K.
   check('denseKeep (large pool): a flat pool keeps nothing', K.denseKeep(pool.slice(0, 20), {}).length === 0);
 }
 check('chunks are small enough to match one specific topic', (() => { const long = Array.from({ length: 60 }, (_, i) => '第 ' + (i + 1) + ' 行：這是一行說明文字，內容不重複 ' + i).join('\n'); return K.ingest({ name: 'x', kind: 'txt', raw: long }).chunks.every((c) => c.text.length <= 520); })());
+// ---- 折疊（pdf 的康熙部首）、怎麼做類問題的指令行、片段重疊
+check('fold: kangxi radicals and full-width become the normal characters, ² and ™ stay', K.fold('執⾏ ⽐對 ａｂｃ') === '執行 比對 abc' && K.fold('x² ™') === 'x² ™', K.fold('執⾏ ⽐對 ａｂｃ'));
+check('tokenize: a radical form finds the same tokens as the normal form', JSON.stringify(K.tokenize('執⾏')) === JSON.stringify(K.tokenize('執行')));
+check('isHowTo / cmdLine', K.isHowTo('QaRobotZ 我要怎麼單測') && K.isHowTo('how to run the test') && !K.isHowTo('蜘蛛的種類') && K.cmdLine('QaRobotZ.exe -a runCase --FullTestCaseId TR2301-1') && K.cmdLine('$ git status') && !K.cmdLine('# 蜘蛛') && !K.cmdLine('這是一般的說明文字'));
+{
+  const raw = Array.from({ length: 30 }, (_, i) => '第' + (i + 1) + '行，內容是一段說明文字，大約三十個字左右，不重複編號' + i).join('\n'), ch = K.ingest({ name: 'o', kind: 'txt', raw }).chunks;
+  check('chunks overlap by one line and still cover every line', ch.length > 2 && ch.slice(1).every((c, i) => c.line_start <= ch[i].line_end) && ch[ch.length - 1].line_end === 30 && ch[0].line_start === 1, ch.map((c) => c.line_start + '-' + c.line_end));
+}
 console.log(bad.length ? 'FAILED:\n  ' + bad.join('\n  ') : 'knowledge_core: ' + ok + ' passed');
 process.exit(bad.length ? 1 : 0);
