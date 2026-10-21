@@ -1,12 +1,12 @@
 {
   "schema": 1,
   "baseVersion": "1.1.0",
-  "generatedAt": "2026-10-21T05:21:05.865Z",
+  "generatedAt": "2026-10-21T05:40:18.771Z",
   "files": {
     "renderer/index.html": "039acc67493d2d42bae493dc9822621a",
     "renderer/bootstrap.js": "54b3afa331fb02df8b182fdd2bab6343",
-    "renderer/floating-assistant.js": "cbfe218d27ed6783d2dc8b6a8405c2cb",
-    "renderer/floating-assistant.min.js": "cbfe218d27ed6783d2dc8b6a8405c2cb",
+    "renderer/floating-assistant.js": "7868c4896ec4378f73677456b872bf43",
+    "renderer/floating-assistant.min.js": "7868c4896ec4378f73677456b872bf43",
     "local-proxy.js": "079907734ca86f14e31fb6be41b8e2ca",
     "browser-search.js": "8e9ac296eee4fa8f61b2168a631dc75a",
     "edge-tts.js": "135b186b61de5963ae2d3852fb70de5b",
@@ -21,8 +21,8 @@
   "sizes": {
     "renderer/index.html": 5741,
     "renderer/bootstrap.js": 196886,
-    "renderer/floating-assistant.js": 7471215,
-    "renderer/floating-assistant.min.js": 7471215,
+    "renderer/floating-assistant.js": 7479879,
+    "renderer/floating-assistant.min.js": 7479879,
     "local-proxy.js": 26808,
     "browser-search.js": 14724,
     "edge-tts.js": 7363,

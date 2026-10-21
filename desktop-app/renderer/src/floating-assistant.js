@@ -16828,7 +16828,7 @@ const holder = {};
 //   - 前端：files[0] 是進入點 index.html；其他 .css／.js 用 <link href="style.css">、<script src="app.js"> 引用，預覽時會被內嵌進頁面。
 //   - 後端：lang 'js'＝跟沙盒的 mock 伺服器同一套寫法（const app = router(); app.crud("/api/x","x"); app.ws("/chat", …)，env.db 持久、頁面的
 //     fetch／XMLHttpRequest／EventSource／WebSocket 都由它回應）；lang 'python'＝Flask／Bottle／FastAPI／Starlette 的 app（Pyodide）。
-//   - 兩邊都不佔埠：全部在頁面內執行；之後可以匯出成 Node／Cloudflare 的部署檔（JS 後端）。
+//   - 伺服器只是讓人體驗架設的感覺；要上線就匯出：程式、重建用的 prompt（PROMPT.md）與部署教學（README.md）。
 // 修改一律用「封閉的編輯動作」（set_file／patch_file／add_file／remove_file／rename_file／set_backend／patch_backend／remove_backend／set_title），
 // 程式逐一驗證（檔名、大小、patch 要找得到且唯一）；模型只能回這些動作，改不了其他東西。
 (function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaWebEdit = factory(); })(typeof self !== 'undefined' ? self : this, function () {
@@ -16863,6 +16863,82 @@ const holder = {};
   function pyPackages(code) {
     var known = { flask: 'flask', bottle: 'bottle', fastapi: 'fastapi', starlette: 'starlette', jinja2: 'jinja2', werkzeug: 'werkzeug', pydantic: 'pydantic', itsdangerous: 'itsdangerous', markupsafe: 'markupsafe' }, out = [], re = /^\s*(?:from|import)\s+([A-Za-z_][A-Za-z0-9_]*)/gm, m; var c = String(code || '');
     while ((m = re.exec(c))) { var p = known[m[1].toLowerCase()]; if (p && out.indexOf(p) < 0) out.push(p); } return out;
+  }
+  // ───── 匯出成真正能部署的後端（沙盒只是體驗，要上線就匯出）─────
+  function pyKind(code) { return /^\s*(?:from|import)\s+(?:fastapi|starlette)\b/m.test(String(code || '')) ? 'asgi' : 'wsgi'; }
+  var PY_WSGI_MAIN = [
+    'import os, mimetypes',
+    'from app import app as _app',
+    '',
+    'PUBLIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "public")',
+    '',
+    '# 後端沒有處理的網址（回 404），改去 public/ 找靜態頁面',
+    'def application(environ, start_response):',
+    '    status_box = {}',
+    '    def capture(status, headers, exc_info=None):',
+    '        status_box["s"] = (status, headers)',
+    '        return lambda data: None',
+    '    body = b"".join(_app(environ, capture))',
+    '    status, headers = status_box["s"]',
+    '    if status.startswith("404") and environ.get("REQUEST_METHOD") in ("GET", "HEAD"):',
+    '        rel = environ.get("PATH_INFO", "/").lstrip("/") or "index.html"',
+    '        path = os.path.normpath(os.path.join(PUBLIC, rel))',
+    '        if os.path.isdir(path): path = os.path.join(path, "index.html")',
+    '        if path.startswith(PUBLIC) and os.path.isfile(path):',
+    '            data = open(path, "rb").read()',
+    '            start_response("200 OK", [("Content-Type", mimetypes.guess_type(path)[0] or "application/octet-stream"), ("Content-Length", str(len(data)))])',
+    '            return [data]',
+    '    start_response(status, headers)',
+    '    return [body]',
+    '',
+    'if __name__ == "__main__":',
+    '    from wsgiref.simple_server import make_server',
+    '    port = int(os.environ.get("PORT", 8000))',
+    '    print("http://localhost:%d" % port)',
+    '    make_server("0.0.0.0", port, application).serve_forever()',
+    ''
+  ].join('\n');
+  var PY_ASGI_MAIN = [
+    'import os',
+    'from app import app as api',
+    'from starlette.applications import Starlette',
+    'from starlette.routing import Mount',
+    'from starlette.staticfiles import StaticFiles',
+    '',
+    'PUBLIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "public")',
+    '',
+    '# 後端的路由優先，其餘網址去 public/ 找靜態頁面',
+    'application = Starlette(routes=[Mount("/", app=api)])',
+    'try:',
+    '    api.mount("/", StaticFiles(directory=PUBLIC, html=True), name="public")',
+    'except Exception:',
+    '    pass',
+    'app = api',
+    '',
+    'if __name__ == "__main__":',
+    '    import uvicorn',
+    '    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))',
+    ''
+  ].join('\n');
+  function deployGuide(target, title) {
+    var T = String(title || '我的網站'), L = ['# ' + T + '：部署教學', '', '這包檔案是從編輯器的「模擬後端」匯出的：後端程式跟你在編輯器裡測試的是同一份，頁面放在 `public/`。編輯器裡的伺服器只是讓你體驗架設的感覺，要讓別人連得到，就照下面部署到真正的主機。', ''];
+    if (target === 'python') L.push('## 一、先在自己電腦跑跑看', '', '```bash', 'python -m venv .venv', '.venv\\Scripts\\activate        # macOS／Linux：source .venv/bin/activate', 'pip install -r requirements.txt', 'python main.py', '```', '', '打開 http://localhost:8000 。', '', '## 二、放上網路（任選一種）', '', '### Render（最省事，有免費方案）', '1. 把這個資料夾推到 GitHub。', '2. Render → New → Web Service，選那個 repo。', '3. Build Command：`pip install -r requirements.txt`；Start Command：見 `Procfile` 那一行。', '4. 部署完成會給你一個 https 網址。', '', '### Railway／Fly.io', '- Railway：New Project → Deploy from GitHub，會讀 `Procfile`。', '- Fly.io：`fly launch`，它會用資料夾裡的 `Dockerfile`。', '', '### 自己的主機（VPS）', '```bash', 'docker build -t mysite .', 'docker run -d -p 80:8000 --restart unless-stopped mysite', '```', '', '## 三、注意', '- 編輯器裡的資料只存在記憶體；真正部署後要存資料請用資料庫（SQLite 檔、Postgres 等），並放在會保留的磁碟。', '- 前端的 `fetch("/api/...")` 不用改，因為頁面和後端在同一個網址。', '- 密碼、金鑰一律用環境變數，不要寫進程式碼。');
+    else if (target === 'node') L.push('## 一、先在自己電腦跑跑看', '', '```bash', 'npm install', 'npm start', '```', '', '預設在 http://localhost:8787 ，頁面放在 `public/index.html`。環境變數：`PORT`、`DATA_DIR`（資料存放的資料夾）、`PUBLIC_DIR`。', '', '## 二、放上網路（任選一種）', '', '### Render／Railway／Fly.io', '1. 推到 GitHub。', '2. 建立 Web Service，Build：`npm install`，Start：`npm start`。', '3. 要保留資料，掛一個持久磁碟，並把 `DATA_DIR` 指到它。', '', '### 自己的主機（VPS）', '```bash', 'npm install --omit=dev', 'npm install -g pm2', 'pm2 start npm --name mysite -- start', 'pm2 save && pm2 startup', '```', '前面再放 Nginx 或 Caddy 做 https。', '', '## 三、注意', '- 資料存成 `DATA_DIR` 裡的 JSON 檔，適合小型專案；用戶多了請改成真正的資料庫。', '- 密碼、金鑰一律用環境變數。');
+    else L.push('## 一、先在自己電腦跑跑看', '', '```bash', 'npm install', 'npx wrangler dev', '```', '', '## 二、部署到 Cloudflare', '', '```bash', 'npx wrangler login', 'npx wrangler deploy', '```', '', '部署完成會給你一個 `*.workers.dev` 的網址，之後可以在 Cloudflare 後台綁自己的網域。', '', '## 三、注意', '- 即時通訊（WebSocket）在 Cloudflare 需要 Durable Objects，匯出的只有骨架，要自己補完。', '- 資料請改存 Workers KV、D1 或 Durable Objects；匯出檔的儲存只是示範。');
+    return L.join('\n') + '\n';
+  }
+  // Python 後端匯出：app.py 就是編輯器裡的程式，main.py 負責把 public/ 的頁面一起服務
+  function exportPython(spec) {
+    var s = validate(spec).spec, be = s.backend; if (!be || be.lang !== 'python') return null;
+    var kind = pyKind(be.code), pk = pyPackages(be.code); var reqs = pk.slice(); if (kind === 'asgi') { ['starlette', 'uvicorn', 'aiofiles'].forEach(function (p) { if (reqs.indexOf(p) < 0) reqs.push(p); }); } else if (reqs.indexOf('gunicorn') < 0) reqs.push('gunicorn');
+    var files = [{ name: 'app.py', content: be.code }, { name: 'main.py', content: kind === 'asgi' ? PY_ASGI_MAIN : PY_WSGI_MAIN }, { name: 'requirements.txt', content: reqs.join('\n') + '\n' }];
+    var start = kind === 'asgi' ? 'uvicorn main:app --host 0.0.0.0 --port $PORT' : 'gunicorn main:application --bind 0.0.0.0:$PORT';
+    files.push({ name: 'Procfile', content: 'web: ' + start + '\n' });
+    files.push({ name: 'Dockerfile', content: ['FROM python:3.12-slim', 'WORKDIR /app', 'COPY requirements.txt .', 'RUN pip install --no-cache-dir -r requirements.txt', 'COPY . .', 'ENV PORT=8000', 'EXPOSE 8000', 'CMD ' + JSON.stringify(start.replace('$PORT', '8000').split(' ')), ''].join('\n') });
+    files.push({ name: 'public/index.html', content: buildHtml(s) });
+    (s.files || []).forEach(function (f) { if (f.name !== 'index.html') files.push({ name: 'public/' + f.name, content: f.content }); });
+    files.push({ name: 'README.md', content: deployGuide('python', s.title) });
+    return { files: files, kind: kind };
   }
   function routesOf(code, lang) {
     var out = [], c = String(code || ''), m, re;
@@ -16996,10 +17072,10 @@ const holder = {};
   var TOPICS = {
     format: '網頁描述（JSON）：{title, files:[{name,content}], backend:{lang:"js"|"python", code}|null}。files[0] 是 index.html，其他檔案用 <link rel="stylesheet" href="style.css">、<script src="app.js"></script> 引用（預覽時內嵌）。後端 lang js＝沙盒 mock 伺服器的寫法（router／app.crud／app.ws／env.db），python＝Flask／FastAPI。',
     edits: '編輯動作：{op:"patch_file",name,find,replace,all?}、{op:"set_file",name,content}、{op:"add_file",name,content}、{op:"remove_file",name}、{op:"rename_file",name,to}、{op:"set_title",text}、{op:"set_backend",lang,code}、{op:"patch_backend",find,replace,all?}、{op:"remove_backend"}。patch 的 find 要跟現有內容一字不差、而且只出現一次。',
-    backend: '模擬後端：全部在頁面內執行、不佔埠。JS 後端（Node 風格）：const app = router(); app.crud("/api/x","x"); app.get("/api/ping", () => ({ok:true})); app.post(...); app.ws("/chat", (ws,req,env)=>{...}); 資料用 env.db（持久）；可以匯出成 Node 或 Cloudflare 的部署檔。Python 後端：Flask／Bottle／FastAPI／Starlette，用 Pyodide 跑（每個請求重新載入 app，資料請存 /tmp 的檔案或 sqlite3；不支援 WebSocket）。PHP：瀏覽器裡沒有 PHP 執行環境，目前不能跑。',
+    backend: '模擬後端：只是體驗架設的感覺，要上線請匯出部署檔（含部署教學）。JS 後端（Node 風格）：const app = router(); app.crud("/api/x","x"); app.get("/api/ping", () => ({ok:true})); app.post(...); app.ws("/chat", (ws,req,env)=>{...}); 資料用 env.db（持久）；可以匯出成 Node 或 Cloudflare 的部署檔。Python 後端：Flask／Bottle／FastAPI／Starlette，用 Pyodide 跑（每個請求重新載入 app，資料請存 /tmp 的檔案或 sqlite3；不支援 WebSocket）。PHP：瀏覽器裡沒有 PHP 執行環境，目前不能跑。',
     starters: '起手式：' + STARTERS.map(function (t) { return t.id + '（' + t.label + '）'; }).join('、') + '。'
   };
-  return { LIMITS: LIMITS, OPS: OPS, TOPICS: TOPICS, STARTERS: listStarters(), defaults: defaults, validate: validate, buildHtml: buildHtml, routesOf: routesOf, pyPackages: pyPackages, starter: starter, listStarters: listStarters, applyEdits: applyEdits, editWords: editWords, describe: describe, specToPrompt: specToPrompt, parseEditRequest: parseEditRequest, classify: classify, editPrompt: editPrompt, parseEditsReply: parseEditsReply, backendTask: backendTask, extractCode: extractCode, refPrompt: refPrompt, okName: okName };
+  return { LIMITS: LIMITS, OPS: OPS, TOPICS: TOPICS, STARTERS: listStarters(), defaults: defaults, validate: validate, buildHtml: buildHtml, routesOf: routesOf, pyPackages: pyPackages, pyKind: pyKind, deployGuide: deployGuide, exportPython: exportPython, starter: starter, listStarters: listStarters, applyEdits: applyEdits, editWords: editWords, describe: describe, specToPrompt: specToPrompt, parseEditRequest: parseEditRequest, classify: classify, editPrompt: editPrompt, parseEditsReply: parseEditsReply, backendTask: backendTask, extractCode: extractCode, refPrompt: refPrompt, okName: okName };
 });
 
 }).call(null, undefined, holder);
@@ -17079,10 +17155,10 @@ const holder = {};
     var pvBar = h('div', 'row'), bReload = h('button', null, '↻ 重新載入'), vw = h('select'), pvStat = h('span', 'st'), frame = h('iframe', 'frame'); frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-modals allow-popups');
     [['', '桌面'], ['t', '平板 768'], ['m', '手機 390']].forEach(function (o) { var op = h('option', null, o[1]); op.value = o[0]; vw.appendChild(op); }); vw.onchange = function () { frame.className = 'frame' + (vw.value ? ' ' + vw.value : ''); };
     [bReload, vw, pvStat].forEach(function (x) { pvBar.appendChild(x); }); lp.preview.appendChild(pvBar); lp.preview.appendChild(frame);
-    function startPreview(force) {
+    function startPreview(force, opts) {
       clearTimeout(previewT); previewT = setTimeout(function () {
         var sp = cur(), key = JSON.stringify([sp.files, sp.backend]); if (!force && key === lastRun) return; lastRun = key; if (!host.start) { frame.srcdoc = W.buildHtml(sp); pvStat.textContent = '（這個環境沒有沙盒，只顯示頁面）'; return; }
-        pvStat.textContent = '啟動中…'; Promise.resolve(host.start(frame, sp)).then(function (r) { r = r || {}; if (r.ok === false) { pvStat.textContent = '⚠ ' + (r.error || '啟動失敗'); pvStat.className = 'st bad'; } else { pvStat.className = 'st'; pvStat.textContent = r.kind ? '● 後端已啟動（' + (r.kind === 'python' ? 'Python' : 'JS') + '，' + ((r.routes || []).length + (r.wsRoutes || []).length) + ' 個路由）' : '● 純前端（沒有後端）'; } if (leftTab === 'backend') refreshBackend(); }, function (e) { pvStat.className = 'st bad'; pvStat.textContent = '⚠ ' + String((e && e.message) || e).slice(0, 100); });
+        pvStat.textContent = '啟動中…'; Promise.resolve(host.start(frame, sp, opts)).then(function (r) { r = r || {}; if (r.ok === false) { pvStat.textContent = '⚠ ' + (r.error || '啟動失敗'); pvStat.className = 'st bad'; } else { pvStat.className = 'st'; pvStat.textContent = r.kind ? '● 後端已啟動（' + (r.kind === 'python' ? 'Python' : 'JS') + '，' + ((r.routes || []).length + (r.wsRoutes || []).length) + ' 個路由）' : '● 純前端（沒有後端）'; } if (leftTab === 'backend') refreshBackend(); }, function (e) { pvStat.className = 'st bad'; pvStat.textContent = '⚠ ' + String((e && e.message) || e).slice(0, 100); });
       }, 250);
     }
     bReload.onclick = function () { startPreview(true); };
@@ -17099,12 +17175,14 @@ const holder = {};
     function renderCode() { var sp = cur(); if (!sp.files.some(function (f) { return f.name === curFile; })) curFile = 'index.html'; fileBar.textContent = ''; sp.files.forEach(function (f) { var s = h('span', f.name === curFile ? 'on' : '', f.name); s.onclick = function () { curFile = f.name; renderCode(); }; fileBar.appendChild(s); }); var f0 = sp.files.filter(function (f) { return f.name === curFile; })[0]; codeTa.value = f0 ? f0.content : ''; bDel.disabled = curFile === 'index.html'; bRen.disabled = curFile === 'index.html'; }
 
     // ───── 後端（模擬後端編輯器）─────
-    var beBar = h('div', 'row'), lang = h('select'), bApply = h('button', 'pri', '▶ 套用並重啟'), bBeX = h('button', null, '✕ 移除後端'), beStat = h('span', 'st'), beTa = h('textarea', 'code'); beTa.rows = 14; beTa.spellcheck = false;
+    var beBar = h('div', 'row'), lang = h('select'), bApply = h('button', 'pri', '▶ 套用並重啟'), bBeX = h('button', null, '✕ 移除後端'), bRefresh = h('button', null, '🔄 重整後端'), beStat = h('span', 'st'), beTa = h('textarea', 'code'); beTa.rows = 14; beTa.spellcheck = false;
     [['none', '沒有後端'], ['js', 'JS（Node 風格）'], ['python', 'Python（Flask／FastAPI）'], ['php', 'PHP（目前不能執行）']].forEach(function (o) { var op = h('option', null, o[1]); op.value = o[0]; if (o[0] === 'php') op.disabled = true; lang.appendChild(op); });
-    [h('label', null, '語言'), lang, bApply, bBeX, beStat].forEach(function (x) { beBar.appendChild(x); }); lp.backend.appendChild(beBar); lp.backend.appendChild(beTa);
+    bRefresh.title = '這會讓套件重裝'; bRefresh.setAttribute('aria-label', '重整後端：這會讓套件重裝');
+    [h('label', null, '語言'), lang, bApply, bRefresh, bBeX, beStat].forEach(function (x) { beBar.appendChild(x); }); lp.backend.appendChild(beBar); lp.backend.appendChild(beTa);
     beTa.addEventListener('keydown', function (ev) { if (ev.key === 'Tab' && !ev.shiftKey) { ev.preventDefault(); var s = beTa.selectionStart; beTa.value = beTa.value.slice(0, s) + (lang.value === 'python' ? '    ' : '  ') + beTa.value.slice(beTa.selectionEnd); beTa.selectionStart = beTa.selectionEnd = s + (lang.value === 'python' ? 4 : 2); } });
     lang.onchange = function () { if (lang.value === 'none') return; if (!beTa.value.trim()) beTa.value = lang.value === 'python' ? 'from flask import Flask, jsonify\n\napp = Flask(__name__)\n\n@app.get("/api/ping")\ndef ping():\n    return jsonify({"ok": True})\n' : '// 模擬後端（Node 風格）\nconst app = router();\napp.get("/api/ping", () => ({ ok: true }));\n'; };
     bApply.onclick = function () { if (lang.value === 'none') { if (cur().backend) apply([{ op: 'remove_backend' }], '移除後端', '', 'panel'); return; } var r = apply([{ op: 'set_backend', lang: lang.value, code: beTa.value }], '手動修改後端（' + (lang.value === 'python' ? 'Python' : 'JS') + '）', '', 'panel'); if (r.rejected && r.rejected.length) { beStat.className = 'st bad'; beStat.textContent = r.rejected[0].error; } else if (!r.applied.length) { startPreview(true); } };
+    bRefresh.onclick = function () { if (!cur().backend) return; startPreview(true, { refresh: true }); };
     bBeX.onclick = function () { if (cur().backend) apply([{ op: 'remove_backend' }], '移除後端', '', 'panel'); };
     var routesBox = h('div', 'st'), tester = h('div', 'row'), tm = h('select'), tu = h('input'), tb = h('textarea'), tgo = h('button', 'pri', '送出'), tout = h('pre', 'out'); tb.rows = 2; tb.placeholder = '請求內容（JSON 或文字，沒有就留空）'; tu.placeholder = '/api/ping'; tu.style.flex = '1'; tout.textContent = '（測試請求的回應會顯示在這裡）';
     ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].forEach(function (m) { var op = h('option', null, m); tm.appendChild(op); }); [tm, tu, tgo].forEach(function (x) { tester.appendChild(x); });
@@ -17115,16 +17193,16 @@ const holder = {};
     var callsBox = h('div', 'calls'), dbBar = h('div', 'row'), bDb = h('button', null, '🗂 看持久資料'), bDbClear = h('button', null, '🧹 清除資料'), dbOut = h('pre', 'out'); dbOut.style.display = 'none'; [bDb, bDbClear].forEach(function (x) { dbBar.appendChild(x); });
     bDb.onclick = function () { if (!host.db) return; dbOut.style.display = ''; dbOut.textContent = '讀取中…'; Promise.resolve(host.db('list', [''])).then(function (r) { var rows = Array.isArray(r) ? r : (r && r.entries) || []; dbOut.textContent = rows.length ? rows.slice(0, 60).map(function (x) { return (x.key || x[0]) + ' = ' + JSON.stringify(x.value != null ? x.value : x[1]); }).join('\n').slice(0, 4000) : '（沒有資料）'; }, function (e) { dbOut.textContent = '失敗：' + String((e && e.message) || e); }); };
     bDbClear.onclick = function () { if (!host.db) return; Promise.resolve(host.db('clear', [])).then(function () { dbOut.style.display = ''; dbOut.textContent = '已清除資料'; startPreview(true); }); };
-    var expBar = h('div', 'row'); var bE1 = h('button', null, '⬇ Node 部署檔'), bE2 = h('button', null, '⬇ Cloudflare 部署檔'); [bE1, bE2].forEach(function (x) { expBar.appendChild(x); });
+    var expBar = h('div', 'row'); var bE1 = h('button', null, '⬇ Node 部署檔'), bE2 = h('button', null, '⬇ Cloudflare 部署檔'), bE3 = h('button', null, '⬇ Python 部署檔（含教學）'); [bE1, bE2, bE3].forEach(function (x) { expBar.appendChild(x); });
     [routesBox, h('div', 'st', '測試請求（直接送給模擬後端，不經過頁面）：'), tester, tb, tout, h('div', 'st', '請求紀錄（頁面與測試請求；最近 30 筆）：'), callsBox, dbBar, dbOut, expBar].forEach(function (x) { lp.backend.appendChild(x); });
     function refreshBackend(keep) {
       var b = cur().backend; if (!keep || document.activeElement !== beTa) { lang.value = b ? b.lang : 'none'; if (document.activeElement !== beTa) beTa.value = b ? b.code : ''; }
       beTa.disabled = false; beStat.className = 'st'; beStat.textContent = b ? '' : '目前沒有後端：頁面的 fetch 會直接走瀏覽器網路'; var rs = b ? W.routesOf(b.code, b.lang) : []; routesBox.textContent = rs.length ? '路由：' + rs.join('　') : (b ? '（程式裡讀不到路由）' : '');
-      [tm, tu, tgo, tb, bDb, bDbClear].forEach(function (x) { x.disabled = !b || !host.request; }); bDb.disabled = !b || b.lang !== 'js' || !host.db; bDbClear.disabled = bDb.disabled; bE1.disabled = bE2.disabled = !b || b.lang !== 'js' || !host.exportBackend; bBeX.disabled = !b;
+      [tm, tu, tgo, tb, bDb, bDbClear].forEach(function (x) { x.disabled = !b || !host.request; }); bDb.disabled = !b || b.lang !== 'js' || !host.db; bDbClear.disabled = bDb.disabled; bE1.disabled = bE2.disabled = !b || b.lang !== 'js' || !host.exportBackend; bE3.disabled = !b || b.lang !== 'python' || !host.exportBackend; bBeX.disabled = !b;
       var lg = host.log ? host.log() : null; callsBox.textContent = ''; var calls = (lg && lg.calls || []).slice(-30); calls.forEach(function (c) { var d = h('div', c.status >= 400 || c.error ? 'bad' : 'good', (c.kind === 'ws' ? 'WS  ' + (c.ev || '') + ' ' + (c.path || '') + (c.data ? '  ' + c.data : '') : (c.method || '') + ' ' + (c.path || '') + ' → ' + (c.status || '?') + (c.ms != null ? '（' + c.ms + ' ms）' : '') + (c.error ? ' ' + c.error : ''))); callsBox.appendChild(d); }); if (!calls.length) callsBox.appendChild(h('div', 'st', '（還沒有請求）')); (lg && lg.console || []).slice(-6).forEach(function (c) { callsBox.appendChild(h('div', c.l === 'error' ? 'bad' : 'st', '[console.' + (c.l || 'log') + '] ' + String(c.m != null ? c.m : JSON.stringify(c)).slice(0, 160))); });
     }
     function doExport(target) { if (!host.exportBackend) return; stat.textContent = '產生部署檔…'; Promise.resolve(host.exportBackend(target)).then(function (r) { (r.files || []).forEach(function (f) { host.download(new Blob([f.content], { type: 'text/plain' }), f.name.replace(/\//g, '_'), 'text/plain'); }); stat.textContent = (r.files || []).length + ' 個檔案已匯出' + (r.note ? '：' + r.note : ''); setTimeout(function () { stat.textContent = ''; }, 5000); }, function (e) { stat.textContent = '匯出失敗：' + String((e && e.message) || e).slice(0, 80); }); }
-    bE1.onclick = function () { doExport('node'); }; bE2.onclick = function () { doExport('cloudflare'); };
+    bE1.onclick = function () { doExport('node'); }; bE2.onclick = function () { doExport('cloudflare'); }; bE3.onclick = function () { doExport('python'); };
 
     // ───── 記錄 ─────
     function renderHist() { var p = rp.hist; p.textContent = ''; p.appendChild(h('div', 'st', '點一步就回到那一步（之後的步驟還在，可以重做）：')); S.states.forEach(function (s, i) { var d = h('div', i === S.ptr ? 'cur' : (i > S.ptr ? 'fut' : ''), (i + 1) + '. ' + (s.summary || '（沒有說明）') + (s.text ? '　— 「' + s.text.slice(0, 30) + '」' : '')); d.onclick = function () { S.ptr = i; render(); persist(); }; p.appendChild(d); }); }
@@ -46155,19 +46233,30 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const script = [
             'import json, sys, io, asyncio, inspect',
             'async def _fa_main():',
-            '    pk = json.loads(__fa_packages_json)',
-            '    if pk:',
-            '        import micropip',
-            '        await micropip.install(pk)',
-            '    ns = {"__name__": "sandbox_app"}',
-            '    exec(compile(__fa_user_code, "app.py", "exec"), ns)',
-            '    app = ns.get("app") or ns.get("application")',
-            '    if app is None:',
-            '        raise RuntimeError("程式裡要定義一個叫 app 的物件（Flask/Bottle/Starlette/FastAPI 的 app，或 WSGI 的 application）")',
-            '    kind = __fa_kind',
-            '    if kind == "auto":',
-            '        call = app if (inspect.isfunction(app) or inspect.ismethod(app)) else getattr(app, "__call__", app)',
-            '        kind = "asgi" if inspect.iscoroutinefunction(call) else "wsgi"',
+            '    import builtins',
+            '    SS = builtins.__dict__.setdefault("_fa_py_sessions", {})',
+            '    sk = __fa_session',
+            '    sess = SS.get(sk) if sk else None',
+            '    if sess is not None and (__fa_reset or sess["code"] != __fa_user_code): sess = None',
+            '    fresh = sess is None',
+            '    if fresh:',
+            '        pk = json.loads(__fa_packages_json)',
+            '        if pk:',
+            '            import micropip',
+            '            try: await micropip.install(pk, reinstall=bool(__fa_reset))',
+            '            except TypeError: await micropip.install(pk)',
+            '        ns = {"__name__": "sandbox_app"}',
+            '        exec(compile(__fa_user_code, "app.py", "exec"), ns)',
+            '        app = ns.get("app") or ns.get("application")',
+            '        if app is None:',
+            '            raise RuntimeError("程式裡要定義一個叫 app 的物件（Flask/Bottle/Starlette/FastAPI 的 app，或 WSGI 的 application）")',
+            '        kind = __fa_kind',
+            '        if kind == "auto":',
+            '            call = app if (inspect.isfunction(app) or inspect.ismethod(app)) else getattr(app, "__call__", app)',
+            '            kind = "asgi" if inspect.iscoroutinefunction(call) else "wsgi"',
+            '        sess = {"app": app, "kind": kind, "code": __fa_user_code}',
+            '        if sk: SS[sk] = sess',
+            '    app = sess["app"]; kind = sess["kind"]',
             '    def prep(r):',
             '        method = (r.get("method") or "GET").upper(); path = r.get("path") or "/"; q = ""',
             '        if "?" in path: path, q = path.split("?", 1)',
@@ -46212,7 +46301,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             '            results.append(res)',
             '        except Exception as e:',
             '            results.append({"request": label, "error": type(e).__name__ + ": " + str(e)})',
-            '    return {"kind": kind, "responses": results}',
+            '    return {"kind": kind, "responses": results, "fresh": fresh}',
             '_fa_res = await _fa_main()',
             'print("__FA_PYAPP__" + json.dumps(_fa_res))',
         ].join('\n');
@@ -46222,6 +46311,8 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             pyodide.globals.set('__fa_requests_json', JSON.stringify(requests));
             pyodide.globals.set('__fa_packages_json', JSON.stringify(packages));
             pyodide.globals.set('__fa_kind', kind);
+            pyodide.globals.set('__fa_session', a.session ? String(a.session).slice(0, 80) : '');
+            pyodide.globals.set('__fa_reset', !!a.reset);
             pyodide.globals.set('__fa_body_limit', Math.max(500, Math.min(2000000, Number(a.body_limit) || 3000)));
             const t0 = Date.now();
             const r = await Promise.race([
@@ -46231,11 +46322,11 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             const m = /__FA_PYAPP__(.*)/.exec(r.stdout || '');
             if (!m) return { ok: false, error: (r.stderr || '').split('\n').filter(Boolean).slice(-6).join('\n') || '沒有取得結果', stdout: (r.stdout || '').slice(-1500), duration_ms: Date.now() - t0 };
             const parsed = JSON.parse(m[1]);
-            return { ok: true, kind: parsed.kind, responses: parsed.responses, stdout: (r.stdout || '').replace(/__FA_PYAPP__.*/, '').trim().slice(-1500), stderr: (r.stderr || '').slice(-800), packages_installed: packages, duration_ms: Date.now() - t0 };
+            return { ok: true, kind: parsed.kind, fresh: parsed.fresh, responses: parsed.responses, stdout: (r.stdout || '').replace(/__FA_PYAPP__.*/, '').trim().slice(-1500), stderr: (r.stderr || '').slice(-800), packages_installed: packages, duration_ms: Date.now() - t0 };
         } catch (err) {
             return { ok: false, error: String((err && err.message) || err).split('\n').slice(-6).join('\n') };
         } finally {
-            for (const k of ['__fa_user_code', '__fa_requests_json', '__fa_packages_json', '__fa_kind']) { try { pyodide.globals.delete(k); } catch (_) {} }
+            for (const k of ['__fa_user_code', '__fa_requests_json', '__fa_packages_json', '__fa_kind', '__fa_session', '__fa_reset']) { try { pyodide.globals.delete(k); } catch (_) {} }
         }
     }
 
@@ -48227,15 +48318,15 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     }
     _weMockName(id) { return 'we_' + String(id || 'x').replace(/[^A-Za-z0-9_-]/g, '').replace(/^we_/, '').slice(-30); }
     // Python 後端的假 hub：跟 JS 的 mock hub 同一套介面，請求交給 Pyodide 裡的 Flask／Bottle／FastAPI／Starlette（每個請求重新載入 app；不支援 WebSocket）
-    async _webeditPyHub(name, code) {
-        const me = this; const hub = { name, kind: 'python', code, calls: [], consoleLogs: [], closed: false, routes: FaWebEdit.routesOf(code, 'python'), wsRoutes: [], listeners: [], sinks: new Map(), streams: new Map(), restarts: 0 };
+    async _webeditPyHub(name, code, reset) {
+        const me = this; const sess = 'webedit_' + name; const hub = { name, kind: 'python', code, calls: [], consoleLogs: [], closed: false, routes: FaWebEdit.routesOf(code, 'python'), wsRoutes: [], listeners: [], sinks: new Map(), streams: new Map(), restarts: 0 };
         const enc = (o) => new TextEncoder().encode(JSON.stringify(o)).buffer; const rec = (e) => { e.t = Date.now(); hub.calls.push(e); if (hub.calls.length > 300) hub.calls.shift(); };
-        const probe = await this._sandboxPyAppRun({ code, packages: FaWebEdit.pyPackages(code), requests: [], body_limit: 10 }); if (!probe || probe.ok === false) return { ok: false, error: 'Python 後端載入失敗：' + String((probe && probe.error) || '未知錯誤').slice(0, 400) };
+        const probe = await this._sandboxPyAppRun({ code, packages: FaWebEdit.pyPackages(code), session: sess, reset: !!reset, requests: [], body_limit: 10 }); if (!probe || probe.ok === false) return { ok: false, error: 'Python 後端載入失敗：' + String((probe && probe.error) || '未知錯誤').slice(0, 400) };
         hub.http = async (req) => {
             const t0 = performance.now(); let u = null; try { u = new URL(req.url); } catch (_) { /* */ } const path = u ? u.pathname + u.search : String(req.url); const label = { kind: 'http', method: req.method, path };
             if (hub.closed) return { status: 503, statusText: 'Service Unavailable', headers: [['content-type', 'application/json']], body: enc({ error: '後端已關閉' }) };
             const headers = {}; (req.headers || []).forEach((kv) => { headers[kv[0]] = kv[1]; }); const body = req.body ? new TextDecoder().decode(req.body) : null;
-            let r; try { r = await me._sandboxPyAppRun({ code, packages: FaWebEdit.pyPackages(code), requests: [{ method: req.method, path, headers, body }], body_limit: 2000000 }); } catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+            let r; try { r = await me._sandboxPyAppRun({ code, packages: FaWebEdit.pyPackages(code), session: sess, requests: [{ method: req.method, path, headers, body }], body_limit: 2000000 }); } catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
             const x = r && r.ok && r.responses && r.responses[0]; let out;
             if (x && !x.error) { out = { status: x.status, statusText: '', headers: Object.entries(x.headers || {}), body: new TextEncoder().encode(String(x.body == null ? '' : x.body)).buffer }; rec(Object.assign(label, { status: x.status, ms: Math.round(performance.now() - t0) })); }
             else { const msg = String((x && x.error) || (r && r.error) || 'Python 後端錯誤'); out = { status: 500, statusText: 'Internal Server Error', headers: [['content-type', 'application/json']], body: enc({ error: msg.slice(0, 500) }) }; rec(Object.assign(label, { status: 500, ms: Math.round(performance.now() - t0), error: msg.slice(0, 120) })); hub.consoleLogs.push({ l: 'error', m: msg.slice(0, 300) }); }
@@ -48243,25 +48334,25 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         };
         hub.wsOpen = (sink, urlStr) => { let path = '/'; try { path = new URL(urlStr).pathname; } catch (_) { /* */ } sink.path = path; rec({ kind: 'ws', ev: 'rejected', path, error: 'Python 後端還不支援 WebSocket' }); setTimeout(() => sink.onReject('Python 後端還不支援 WebSocket（要即時通訊請用 JS 後端）'), 0); return 0; };
         hub.wsSend = () => {}; hub.wsClose = () => {}; hub.cancelStream = () => {};
-        hub.close = () => { if (hub.closed) return; hub.closed = true; hub.listeners.forEach((f) => { try { f(); } catch (_) { /* */ } }); };
+        hub.close = () => { if (hub.closed) return; hub.closed = true; try { const P = me._pyodideInstance; if (P && P.globals) P.runPython('import builtins; builtins.__dict__.get("_fa_py_sessions", {}).pop(' + JSON.stringify(sess) + ', None)'); } catch (_) { /* */ } hub.listeners.forEach((f) => { try { f(); } catch (_) { /* */ } }); };
         hub.summary = () => ({ server: name, routes: hub.routes, ws_routes: [], http_calls: hub.calls.filter((c) => c.kind === 'http').length, calls: hub.calls.slice(-60) });
         this._mockPageMethods(hub); return { ok: true, hub };
     }
     // 啟動（或重啟）預覽與後端：後端程式沒變就沿用同一個 hub（持久資料不受影響）；iframe 重新載入時重新接上
-    async _webeditStart(id, iframe, spec) {
+    async _webeditStart(id, iframe, spec, opts) {
         this._weRuns = this._weRuns || new Map(); const run = this._weRuns.get(id) || { id }; this._weRuns.set(id, run); run.iframe = iframe; const be = spec.backend; const bkey = be ? be.lang + '\n' + be.code : '';
         let err = '';
         if (!be) { if (run.hub) { try { run.hub.close(); } catch (_) { /* */ } } run.hub = null; run.bkey = ''; }
-        else if (!run.hub || run.hub.closed || run.bkey !== bkey) {
+        else if (!run.hub || run.hub.closed || run.bkey !== bkey || (opts && opts.refresh)) {
             const name = this._weMockName(id);
             try {
                 // 先用暫時的名字載入檢查：載不進來就保留前一版繼續跑（頁面不會因為改壞後端就整個連不上）
-                const chk = be.lang === 'python' ? await this._sandboxPyAppRun({ code: be.code, packages: FaWebEdit.pyPackages(be.code), requests: [], body_limit: 10 }) : await this._mockOpen({ name: this._weMockName('chk_' + id), code: be.code });
+                const chk = be.lang === 'python' ? await this._sandboxPyAppRun({ code: be.code, packages: FaWebEdit.pyPackages(be.code), reset: !!(opts && opts.refresh), requests: [], body_limit: 10 }) : await this._mockOpen({ name: this._weMockName('chk_' + id), code: be.code });
                 if (be.lang !== 'python') { if (chk && chk.ok && chk.hub) chk.hub.close(); }
                 if (!chk || chk.ok === false) err = String((chk && chk.error) || '後端載入失敗').slice(0, 400) + (run.hub && !run.hub.closed ? '（還在跑前一版）' : '');
                 else {
                     if (run.hub) { try { run.hub.close(); } catch (_) { /* */ } run.hub = null; }
-                    const o = be.lang === 'python' ? await this._webeditPyHub(name, be.code) : await this._mockOpen({ name, code: be.code });
+                    const o = be.lang === 'python' ? await this._webeditPyHub(name, be.code, !!(opts && opts.refresh)) : await this._mockOpen({ name, code: be.code });
                     if (o && o.ok) { run.hub = o.hub; run.bkey = bkey; run.attached = false; } else err = (o && o.error) || '後端啟動失敗';
                 }
             } catch (e) { err = String((e && e.message) || e); }
@@ -48302,12 +48393,18 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const self = this; const run = () => (self._weRuns && self._weRuns.get(id)) || null; const dec = (b) => { try { return new TextDecoder().decode(b); } catch (_) { return ''; } };
         return {
             palette: () => ({ dark: !self._isLightTheme() }),
-            start: (iframe, spec) => self._webeditStart(id, iframe, spec),
+            start: (iframe, spec, opts) => self._webeditStart(id, iframe, spec, opts),
             stop: () => self._webeditStop(id),
             request: async (rq) => { const r = run(); if (!r || !r.hub) throw new Error('目前沒有後端在執行'); let url; try { url = new URL(rq.url || '/', 'http://mock.local').href; } catch (_) { url = 'http://mock.local/'; } const res = await r.hub.http({ method: String(rq.method || 'GET').toUpperCase(), url, headers: rq.headers || [], body: rq.body != null ? new TextEncoder().encode(String(rq.body)).buffer : null }); return { status: res.status, statusText: res.statusText, headers: res.headers, body: dec(res.body) }; },
             log: () => { const r = run(); return r && r.hub ? { calls: r.hub.calls || [], console: r.hub.consoleLogs || [] } : { calls: [], console: [] }; },
             db: async (op, args) => { const r = run(); const name = r && r.hub ? r.hub.name : self._weMockName(id); if (!['list', 'get', 'set', 'delete', 'clear'].includes(op)) throw new Error('不支援的操作'); return await self._mockStoreOp(name, 'db.' + op, args || []); },
-            exportBackend: async (target) => { const st = await self._weLoad(id); const be = st && (self._weSpecs.get(id) || st).spec && (self._weSpecs.get(id) || st).spec.backend; if (!be || be.lang !== 'js') throw new Error('只有 JS 後端可以匯出部署檔'); const files = __faMockBuildExport(target, be.code, self._weMockName(id)); return { files: Object.keys(files).map((p) => ({ name: target + '/' + p, content: files[p] })), note: '匯出的檔案沒有在真實的 ' + (target === 'node' ? 'Node' : 'Cloudflare') + ' 執行過；Cloudflare 的 WebSocket 需要 Durable Objects，只提供骨架' }; },
+            exportBackend: async (target) => { const st = await self._weLoad(id); const be = st && (self._weSpecs.get(id) || st).spec && (self._weSpecs.get(id) || st).spec.backend; if (!be) throw new Error('目前沒有後端可以匯出'); const sp = (self._weSpecs.get(id) || st).spec;
+                const hist = ((self._weSpecs.get(id) || st).state && (self._weSpecs.get(id) || st).state.states || []).filter((x) => x && x.kind !== 'start'); const promptFile = { name: (target === 'python' ? 'python' : target) + '/PROMPT.md', content: FaWebEdit.specToPrompt(sp, hist) + '\n\n---\n\n' + FaWebEdit.deployGuide(target, sp.title) };
+                if (be.lang === 'python') { const ex = FaWebEdit.exportPython(sp); return { files: ex.files.map((f) => ({ name: 'python/' + f.name, content: f.content })).concat([promptFile]), note: '照 README.md 的步驟部署；沒有在真實的主機上執行過，請先在自己電腦跑一次' }; }
+                if (be.lang !== 'js') throw new Error('這個語言還不能匯出部署檔'); const files = __faMockBuildExport(target, be.code, self._weMockName(id)); const out = Object.keys(files).map((p) => ({ name: target + '/' + p, content: files[p] }));
+                if (target === 'node') { out.push({ name: 'node/public/index.html', content: FaWebEdit.buildHtml(sp) }); (sp.files || []).forEach((f) => { if (f.name !== 'index.html') out.push({ name: 'node/public/' + f.name, content: f.content }); }); }
+                const ri = out.findIndex((f) => /(^|\/)README\.md$/i.test(f.name)); const guide = { name: target + '/README.md', content: FaWebEdit.deployGuide(target, sp.title) }; if (ri >= 0) out[ri] = guide; else out.push(guide); out.push(promptFile);
+                return { files: out, note: '照 README.md 的步驟部署；匯出的檔案沒有在真實的 ' + (target === 'node' ? 'Node' : 'Cloudflare') + ' 執行過；Cloudflare 的 WebSocket 需要 Durable Objects，只提供骨架' }; },
             save: (state) => { try { const sp = state.states[state.ptr].spec; self._weStore(id, sp, state); } catch (_) { /* 狀態壞了就不存 */ } },
             ask: (rq) => self._webeditAsk(rq),
             download: (blob, name, mime) => self.generateAndDeliverFile(blob, name, mime || blob.type),

@@ -5,7 +5,7 @@
 //   - 前端：files[0] 是進入點 index.html；其他 .css／.js 用 <link href="style.css">、<script src="app.js"> 引用，預覽時會被內嵌進頁面。
 //   - 後端：lang 'js'＝跟沙盒的 mock 伺服器同一套寫法（const app = router(); app.crud("/api/x","x"); app.ws("/chat", …)，env.db 持久、頁面的
 //     fetch／XMLHttpRequest／EventSource／WebSocket 都由它回應）；lang 'python'＝Flask／Bottle／FastAPI／Starlette 的 app（Pyodide）。
-//   - 兩邊都不佔埠：全部在頁面內執行；之後可以匯出成 Node／Cloudflare 的部署檔（JS 後端）。
+//   - 伺服器只是讓人體驗架設的感覺；要上線就匯出：程式、重建用的 prompt（PROMPT.md）與部署教學（README.md）。
 // 修改一律用「封閉的編輯動作」（set_file／patch_file／add_file／remove_file／rename_file／set_backend／patch_backend／remove_backend／set_title），
 // 程式逐一驗證（檔名、大小、patch 要找得到且唯一）；模型只能回這些動作，改不了其他東西。
 (function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaWebEdit = factory(); })(typeof self !== 'undefined' ? self : this, function () {
@@ -40,6 +40,82 @@
   function pyPackages(code) {
     var known = { flask: 'flask', bottle: 'bottle', fastapi: 'fastapi', starlette: 'starlette', jinja2: 'jinja2', werkzeug: 'werkzeug', pydantic: 'pydantic', itsdangerous: 'itsdangerous', markupsafe: 'markupsafe' }, out = [], re = /^\s*(?:from|import)\s+([A-Za-z_][A-Za-z0-9_]*)/gm, m; var c = String(code || '');
     while ((m = re.exec(c))) { var p = known[m[1].toLowerCase()]; if (p && out.indexOf(p) < 0) out.push(p); } return out;
+  }
+  // ───── 匯出成真正能部署的後端（沙盒只是體驗，要上線就匯出）─────
+  function pyKind(code) { return /^\s*(?:from|import)\s+(?:fastapi|starlette)\b/m.test(String(code || '')) ? 'asgi' : 'wsgi'; }
+  var PY_WSGI_MAIN = [
+    'import os, mimetypes',
+    'from app import app as _app',
+    '',
+    'PUBLIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "public")',
+    '',
+    '# 後端沒有處理的網址（回 404），改去 public/ 找靜態頁面',
+    'def application(environ, start_response):',
+    '    status_box = {}',
+    '    def capture(status, headers, exc_info=None):',
+    '        status_box["s"] = (status, headers)',
+    '        return lambda data: None',
+    '    body = b"".join(_app(environ, capture))',
+    '    status, headers = status_box["s"]',
+    '    if status.startswith("404") and environ.get("REQUEST_METHOD") in ("GET", "HEAD"):',
+    '        rel = environ.get("PATH_INFO", "/").lstrip("/") or "index.html"',
+    '        path = os.path.normpath(os.path.join(PUBLIC, rel))',
+    '        if os.path.isdir(path): path = os.path.join(path, "index.html")',
+    '        if path.startswith(PUBLIC) and os.path.isfile(path):',
+    '            data = open(path, "rb").read()',
+    '            start_response("200 OK", [("Content-Type", mimetypes.guess_type(path)[0] or "application/octet-stream"), ("Content-Length", str(len(data)))])',
+    '            return [data]',
+    '    start_response(status, headers)',
+    '    return [body]',
+    '',
+    'if __name__ == "__main__":',
+    '    from wsgiref.simple_server import make_server',
+    '    port = int(os.environ.get("PORT", 8000))',
+    '    print("http://localhost:%d" % port)',
+    '    make_server("0.0.0.0", port, application).serve_forever()',
+    ''
+  ].join('\n');
+  var PY_ASGI_MAIN = [
+    'import os',
+    'from app import app as api',
+    'from starlette.applications import Starlette',
+    'from starlette.routing import Mount',
+    'from starlette.staticfiles import StaticFiles',
+    '',
+    'PUBLIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "public")',
+    '',
+    '# 後端的路由優先，其餘網址去 public/ 找靜態頁面',
+    'application = Starlette(routes=[Mount("/", app=api)])',
+    'try:',
+    '    api.mount("/", StaticFiles(directory=PUBLIC, html=True), name="public")',
+    'except Exception:',
+    '    pass',
+    'app = api',
+    '',
+    'if __name__ == "__main__":',
+    '    import uvicorn',
+    '    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))',
+    ''
+  ].join('\n');
+  function deployGuide(target, title) {
+    var T = String(title || '我的網站'), L = ['# ' + T + '：部署教學', '', '這包檔案是從編輯器的「模擬後端」匯出的：後端程式跟你在編輯器裡測試的是同一份，頁面放在 `public/`。編輯器裡的伺服器只是讓你體驗架設的感覺，要讓別人連得到，就照下面部署到真正的主機。', ''];
+    if (target === 'python') L.push('## 一、先在自己電腦跑跑看', '', '```bash', 'python -m venv .venv', '.venv\\Scripts\\activate        # macOS／Linux：source .venv/bin/activate', 'pip install -r requirements.txt', 'python main.py', '```', '', '打開 http://localhost:8000 。', '', '## 二、放上網路（任選一種）', '', '### Render（最省事，有免費方案）', '1. 把這個資料夾推到 GitHub。', '2. Render → New → Web Service，選那個 repo。', '3. Build Command：`pip install -r requirements.txt`；Start Command：見 `Procfile` 那一行。', '4. 部署完成會給你一個 https 網址。', '', '### Railway／Fly.io', '- Railway：New Project → Deploy from GitHub，會讀 `Procfile`。', '- Fly.io：`fly launch`，它會用資料夾裡的 `Dockerfile`。', '', '### 自己的主機（VPS）', '```bash', 'docker build -t mysite .', 'docker run -d -p 80:8000 --restart unless-stopped mysite', '```', '', '## 三、注意', '- 編輯器裡的資料只存在記憶體；真正部署後要存資料請用資料庫（SQLite 檔、Postgres 等），並放在會保留的磁碟。', '- 前端的 `fetch("/api/...")` 不用改，因為頁面和後端在同一個網址。', '- 密碼、金鑰一律用環境變數，不要寫進程式碼。');
+    else if (target === 'node') L.push('## 一、先在自己電腦跑跑看', '', '```bash', 'npm install', 'npm start', '```', '', '預設在 http://localhost:8787 ，頁面放在 `public/index.html`。環境變數：`PORT`、`DATA_DIR`（資料存放的資料夾）、`PUBLIC_DIR`。', '', '## 二、放上網路（任選一種）', '', '### Render／Railway／Fly.io', '1. 推到 GitHub。', '2. 建立 Web Service，Build：`npm install`，Start：`npm start`。', '3. 要保留資料，掛一個持久磁碟，並把 `DATA_DIR` 指到它。', '', '### 自己的主機（VPS）', '```bash', 'npm install --omit=dev', 'npm install -g pm2', 'pm2 start npm --name mysite -- start', 'pm2 save && pm2 startup', '```', '前面再放 Nginx 或 Caddy 做 https。', '', '## 三、注意', '- 資料存成 `DATA_DIR` 裡的 JSON 檔，適合小型專案；用戶多了請改成真正的資料庫。', '- 密碼、金鑰一律用環境變數。');
+    else L.push('## 一、先在自己電腦跑跑看', '', '```bash', 'npm install', 'npx wrangler dev', '```', '', '## 二、部署到 Cloudflare', '', '```bash', 'npx wrangler login', 'npx wrangler deploy', '```', '', '部署完成會給你一個 `*.workers.dev` 的網址，之後可以在 Cloudflare 後台綁自己的網域。', '', '## 三、注意', '- 即時通訊（WebSocket）在 Cloudflare 需要 Durable Objects，匯出的只有骨架，要自己補完。', '- 資料請改存 Workers KV、D1 或 Durable Objects；匯出檔的儲存只是示範。');
+    return L.join('\n') + '\n';
+  }
+  // Python 後端匯出：app.py 就是編輯器裡的程式，main.py 負責把 public/ 的頁面一起服務
+  function exportPython(spec) {
+    var s = validate(spec).spec, be = s.backend; if (!be || be.lang !== 'python') return null;
+    var kind = pyKind(be.code), pk = pyPackages(be.code); var reqs = pk.slice(); if (kind === 'asgi') { ['starlette', 'uvicorn', 'aiofiles'].forEach(function (p) { if (reqs.indexOf(p) < 0) reqs.push(p); }); } else if (reqs.indexOf('gunicorn') < 0) reqs.push('gunicorn');
+    var files = [{ name: 'app.py', content: be.code }, { name: 'main.py', content: kind === 'asgi' ? PY_ASGI_MAIN : PY_WSGI_MAIN }, { name: 'requirements.txt', content: reqs.join('\n') + '\n' }];
+    var start = kind === 'asgi' ? 'uvicorn main:app --host 0.0.0.0 --port $PORT' : 'gunicorn main:application --bind 0.0.0.0:$PORT';
+    files.push({ name: 'Procfile', content: 'web: ' + start + '\n' });
+    files.push({ name: 'Dockerfile', content: ['FROM python:3.12-slim', 'WORKDIR /app', 'COPY requirements.txt .', 'RUN pip install --no-cache-dir -r requirements.txt', 'COPY . .', 'ENV PORT=8000', 'EXPOSE 8000', 'CMD ' + JSON.stringify(start.replace('$PORT', '8000').split(' ')), ''].join('\n') });
+    files.push({ name: 'public/index.html', content: buildHtml(s) });
+    (s.files || []).forEach(function (f) { if (f.name !== 'index.html') files.push({ name: 'public/' + f.name, content: f.content }); });
+    files.push({ name: 'README.md', content: deployGuide('python', s.title) });
+    return { files: files, kind: kind };
   }
   function routesOf(code, lang) {
     var out = [], c = String(code || ''), m, re;
@@ -173,8 +249,8 @@
   var TOPICS = {
     format: '網頁描述（JSON）：{title, files:[{name,content}], backend:{lang:"js"|"python", code}|null}。files[0] 是 index.html，其他檔案用 <link rel="stylesheet" href="style.css">、<script src="app.js"></script> 引用（預覽時內嵌）。後端 lang js＝沙盒 mock 伺服器的寫法（router／app.crud／app.ws／env.db），python＝Flask／FastAPI。',
     edits: '編輯動作：{op:"patch_file",name,find,replace,all?}、{op:"set_file",name,content}、{op:"add_file",name,content}、{op:"remove_file",name}、{op:"rename_file",name,to}、{op:"set_title",text}、{op:"set_backend",lang,code}、{op:"patch_backend",find,replace,all?}、{op:"remove_backend"}。patch 的 find 要跟現有內容一字不差、而且只出現一次。',
-    backend: '模擬後端：全部在頁面內執行、不佔埠。JS 後端（Node 風格）：const app = router(); app.crud("/api/x","x"); app.get("/api/ping", () => ({ok:true})); app.post(...); app.ws("/chat", (ws,req,env)=>{...}); 資料用 env.db（持久）；可以匯出成 Node 或 Cloudflare 的部署檔。Python 後端：Flask／Bottle／FastAPI／Starlette，用 Pyodide 跑（每個請求重新載入 app，資料請存 /tmp 的檔案或 sqlite3；不支援 WebSocket）。PHP：瀏覽器裡沒有 PHP 執行環境，目前不能跑。',
+    backend: '模擬後端：只是體驗架設的感覺，要上線請匯出部署檔（含部署教學）。JS 後端（Node 風格）：const app = router(); app.crud("/api/x","x"); app.get("/api/ping", () => ({ok:true})); app.post(...); app.ws("/chat", (ws,req,env)=>{...}); 資料用 env.db（持久）；可以匯出成 Node 或 Cloudflare 的部署檔。Python 後端：Flask／Bottle／FastAPI／Starlette，用 Pyodide 跑（每個請求重新載入 app，資料請存 /tmp 的檔案或 sqlite3；不支援 WebSocket）。PHP：瀏覽器裡沒有 PHP 執行環境，目前不能跑。',
     starters: '起手式：' + STARTERS.map(function (t) { return t.id + '（' + t.label + '）'; }).join('、') + '。'
   };
-  return { LIMITS: LIMITS, OPS: OPS, TOPICS: TOPICS, STARTERS: listStarters(), defaults: defaults, validate: validate, buildHtml: buildHtml, routesOf: routesOf, pyPackages: pyPackages, starter: starter, listStarters: listStarters, applyEdits: applyEdits, editWords: editWords, describe: describe, specToPrompt: specToPrompt, parseEditRequest: parseEditRequest, classify: classify, editPrompt: editPrompt, parseEditsReply: parseEditsReply, backendTask: backendTask, extractCode: extractCode, refPrompt: refPrompt, okName: okName };
+  return { LIMITS: LIMITS, OPS: OPS, TOPICS: TOPICS, STARTERS: listStarters(), defaults: defaults, validate: validate, buildHtml: buildHtml, routesOf: routesOf, pyPackages: pyPackages, pyKind: pyKind, deployGuide: deployGuide, exportPython: exportPython, starter: starter, listStarters: listStarters, applyEdits: applyEdits, editWords: editWords, describe: describe, specToPrompt: specToPrompt, parseEditRequest: parseEditRequest, classify: classify, editPrompt: editPrompt, parseEditsReply: parseEditsReply, backendTask: backendTask, extractCode: extractCode, refPrompt: refPrompt, okName: okName };
 });
