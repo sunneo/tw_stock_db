@@ -114,7 +114,7 @@
   // ───── 檢索：FTS5（關鍵字，BM25）＋向量（語意），RRF 合併；只回原文與出處 ─────
   // opts: { limit, sources:[id], queryVec, model, minDense, minCoverage }
   Store.prototype.search = async function (query, opts) {
-    opts = opts || {}; var limit = opts.limit || 5, qt = Array.from(new Set(K.tokenize(query))), k = 60;
+    opts = opts || {}; var limit = opts.limit || 5, qt = Array.from(new Set(K.queryTokens(query))), k = 60;
     var allowed = opts.sources ? new Set(opts.sources.map(Number)) : null, fused = {};
     var addHit = function (id, how, r) { var f = fused[id] = fused[id] || { rrf: 0, how: [], sim: null }; f.rrf += 1 / (k + r + 1); if (f.how.indexOf(how) < 0) f.how.push(how); };
     var covOf = {};

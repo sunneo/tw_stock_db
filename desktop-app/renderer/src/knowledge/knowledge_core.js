@@ -10,7 +10,7 @@
   if (typeof module === 'object' && module.exports) module.exports = factory(require('../tools/article_outline.js')); else root.FaKnowledge = factory(root.FaArticleOutline || (typeof FaArticleOutline !== 'undefined' ? FaArticleOutline : undefined));
 })(typeof self !== 'undefined' ? self : this, function (Outline) {
   'use strict';
-  var CHUNK_CHARS = 1200;
+  var CHUNK_CHARS = 400; // 片段要小：向量一條代表的內容越少，越對得上具體的問題（使用手冊裡一個指令一段話）；1200 時整頁混在一起，問法稍微換個說法就對不上
 
   // ───── 斷詞：英文數字用整個字（小寫），中日韓用相鄰兩字（bigram）＋單字，檢索與建索引用同一套 ─────
   var CJK = /[㐀-鿿豈-﫿぀-ヿ가-힯]/;
@@ -23,6 +23,16 @@
       else i++;
     }
     return out;
+  }
+
+  // 問句的詞：「怎麼」「如何」「請問」這類每個問題都有的字，不能拿來比對（會讓毫不相關的片段也命中）
+  var Q_STOP = ['為什麼', '為甚麼', '能不能', '有沒有', '是不是', '請問', '告訴我', '怎麼樣', '怎麼', '怎樣', '如何', '什麼', '甚麼', '為何', '哪裡', '哪個', '哪些', '哪邊', '是否', '可以', '一下', '嗎', '呢', '吧', '的', '了', '我', '你', '要', '請', '是', '有', '在', '從', '和', '跟', '與'];
+  var Q_STOP_RE = new RegExp(Q_STOP.join('|'), 'g');
+  // 查詢用的詞：去掉問句的詞後，連續中文只留兩字詞（單字太常見，會到處命中）；英文照常
+  function queryTokens(text) {
+    var s = String(text == null ? '' : text).replace(Q_STOP_RE, ' '), all = tokenize(s), runs = s.toLowerCase().match(new RegExp('(?:' + CJK.source + ')+', 'g')) || [], single = {};
+    runs.forEach(function (r) { if (r.length === 1) single[r] = true; });
+    return all.filter(function (t) { return !(t.length === 1 && CJK.test(t) && !single[t]); });
   }
 
   // ───── 各種格式 → 純文字行（含每一行的位置資訊 locator）─────
@@ -138,6 +148,11 @@
   //   其餘一律不算。寧可漏掉也不要把無關的片段交出去（回傳的是原文，但「看起來有關」的無關片段仍然會誤導）。
   function denseKeep(pool, opts) {
     opts = opts || {}; var strict = opts.minDense == null ? 0.85 : opts.minDense, floor = opts.floorDense == null ? 0.75 : opts.floorDense, gap = opts.minGap == null ? 0.045 : opts.minGap;
+    // 池子夠大（8 個片段以上）時，用「比整體平均高出幾個標準差」判斷，不寫死數字——不同文件、不同語言的相似度分布差很多
+    if (pool.length >= 8) {
+      var mean = pool.reduce(function (a, x) { return a + x.sim; }, 0) / pool.length, sd = Math.sqrt(pool.reduce(function (a, x) { return a + (x.sim - mean) * (x.sim - mean); }, 0) / pool.length) || 1e-6, zMin = opts.minZ == null ? 1.5 : opts.minZ;
+      return pool.filter(function (x) { return x.sim >= strict + 0.03 || (x.sim >= 0.7 && (x.sim - mean) / sd >= zMin); });
+    }
     var med = null; if (pool.length >= 5) { var s = pool.map(function (x) { return x.sim; }).sort(function (a, b) { return a - b; }); med = s[s.length >> 1]; }
     return pool.filter(function (x) { return x.sim >= strict || (med != null && x.sim >= floor && x.sim - med >= gap); });
   }
@@ -230,5 +245,5 @@
     return { ok: true, found: true, hits: hits.map(function (h) { return { label: h.label, source: h.source, line_start: h.line_start, line_end: h.line_end, section: h.section, loc: h.loc, quote: h.quote, score: h.score, found_by: h.found_by || '關鍵字' }; }) };
   }
 
-  return { denseKeep: denseKeep, pinpoint: pinpoint, tokenize: tokenize, normalize: normalize, ingest: ingest, cite: cite, buildIndex: buildIndex, search: search, searchHybrid: searchHybrid, summarize: summarize, verifyQuote: verifyQuote, verifyAll: verifyAll, detail: detail, links: links, answer: answer, locLabel: locLabel };
+  return { denseKeep: denseKeep, pinpoint: pinpoint, tokenize: tokenize, queryTokens: queryTokens, normalize: normalize, ingest: ingest, cite: cite, buildIndex: buildIndex, search: search, searchHybrid: searchHybrid, summarize: summarize, verifyQuote: verifyQuote, verifyAll: verifyAll, detail: detail, links: links, answer: answer, locLabel: locLabel };
 });

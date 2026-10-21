@@ -90,5 +90,18 @@ check('links: every link quote is really in its source', lk.every((l) => (l.kind
 // ---- 空與壞輸入
 check('empty source does not crash and yields no chunks', K.ingest({ name: 'e.txt', kind: 'txt', raw: '' }).chunks.length === 0 && K.buildIndex([K.ingest({ name: 'e.txt', kind: 'txt', raw: '' })]).n === 0);
 check('bad json falls back to plain text with a note', /解析失敗/.test(K.ingest({ name: 'x.json', kind: 'json', raw: '{oops' }).notes.join()));
+// ---- 查詢用的詞：問句的詞不比對、連續中文只留兩字詞
+check('queryTokens drops question words', JSON.stringify(K.queryTokens('怎麼指定要播放的音樂檔案')) === JSON.stringify(['指定', '播放', '音樂', '樂檔', '檔案']), K.queryTokens('怎麼指定要播放的音樂檔案'));
+check('queryTokens: a pure chit-chat question keeps no generic single characters', K.queryTokens('今天天氣如何').indexOf('如') < 0 && K.queryTokens('今天天氣如何').indexOf('何') < 0);
+check('queryTokens keeps english words and single-char terms standing alone', K.queryTokens('How do I add a board').indexOf('board') >= 0 && K.queryTokens('蜘蛛 網').indexOf('網') >= 0);
+// ---- 向量門檻：池子夠大時依分布（高出平均幾個標準差）判斷
+{
+  const pool = []; for (let i = 0; i < 20; i++) pool.push({ id: i, sim: 0.80 + (i % 5) * 0.004 });
+  pool.push({ id: 99, sim: 0.86 }); // 明顯高出整體
+  const kept = K.denseKeep(pool, {}).map((x) => x.id);
+  check('denseKeep (large pool): a clear outlier is kept even below the old fixed 0.85 bar... and the flat rest is not', kept.indexOf(99) >= 0 && kept.length <= 2, kept);
+  check('denseKeep (large pool): a flat pool keeps nothing', K.denseKeep(pool.slice(0, 20), {}).length === 0);
+}
+check('chunks are small enough to match one specific topic', (() => { const long = Array.from({ length: 60 }, (_, i) => '第 ' + (i + 1) + ' 行：這是一行說明文字，內容不重複 ' + i).join('\n'); return K.ingest({ name: 'x', kind: 'txt', raw: long }).chunks.every((c) => c.text.length <= 520); })());
 console.log(bad.length ? 'FAILED:\n  ' + bad.join('\n  ') : 'knowledge_core: ' + ok + ' passed');
 process.exit(bad.length ? 1 : 0);

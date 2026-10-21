@@ -81,7 +81,22 @@ const FaKnowledgeHost = (function () {
                 if (!pageTexts.some((t) => String(t).trim())) return { error: '這份 PDF 沒有文字層（可能是掃描件），沒有辦法讀；Knowledge Inventory 不會用猜的補內容。' };
                 return { name, kind: 'pdf', raw: text, url, pages: numPages };
             }
-            if (ext === 'docx') return { name, kind: 'docx', raw: await this._kiDocxText(rec.blob), url };
+            if (ext === 'docx') {
+                const raw = await this._kiDocxText(rec.blob);
+                if (!String(raw).trim()) { await this._ensureJSZipLoaded(); const zf = await JSZip.loadAsync(rec.blob), n = Object.keys(zf.files).filter((f) => /^word\/media\//.test(f)).length; return { error: '這份 docx 沒有文字' + (n ? '，裡面只有 ' + n + ' 張圖片（可能是投影片截圖）' : '') + '，Knowledge Inventory 不會用猜的補內容；要用的話請先把圖片裡的字轉成文字。' }; }
+                return { name, kind: 'docx', raw, url };
+            }
+            if (ext === 'srt' || ext === 'vtt') {
+                // 字幕檔：每則字幕前面放開始時間，跟語音轉錄一樣，出處就能指到「第幾分幾秒」
+                const out = [];
+                for (const blk of String(await rec.blob.text()).replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').split(/\n\n+/)) {
+                    const ls = blk.split('\n'), ti = ls.findIndex((l) => /\d{1,2}:\d{2}(?::\d{2})?[.,]\d{1,3}\s*-->/.test(l)); if (ti < 0) continue;
+                    const m = /(\d{1,2}):(\d{2})(?::(\d{2}))?[.,]\d{1,3}/.exec(ls[ti]); const sec = m[3] != null ? Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) : Number(m[1]) * 60 + Number(m[2]);
+                    const t = ls.slice(ti + 1).join(' ').replace(/<[^>]+>/g, '').trim(); if (t) out.push('[' + hms(sec) + ']\n' + t);
+                }
+                if (!out.length) return { error: '這個字幕檔讀不出任何字幕（格式不是 srt／vtt？）' };
+                return { name, kind: ext, raw: out.join('\n'), url, note: '字幕檔；時間是該則字幕的開始時間。' };
+            }
             if (ext === 'pptx') return { name, kind: 'pptx', raw: await this._kiPptxText(rec.blob), url };
             if (ext === 'xlsx') {
                 const d = await this._dataViewHost().deps(); if (!d.JSZip) return { error: 'XLSX 讀取工具載入失敗（需要網路載入 JSZip）' };
@@ -170,8 +185,27 @@ const FaKnowledgeHost = (function () {
             const q = String((a && (a.question || a.query)) || '').trim(); if (!q) return { ok: false, error: '缺少問題（question）' };
             const ids = a.sources ? await this._kiResolveIds(a.sources) : null;
             const qv = await this._kiQueryVec(q).catch(() => ({ vec: null, why: '語意檢索出錯' }));
-            const res = await this._kiRun((store) => store.answer(q, { limit: Math.min(Math.max(Number(a.limit) || 5, 1), 12), sources: ids, queryVec: qv.vec || undefined, model: this._kiModelId() }));
-            return Object.assign(res, { semantic: !!qv.vec, semantic_note: qv.vec ? undefined : qv.why + '（只用關鍵字檢索）', how_to_answer: res.found ? '只能根據 hits 裡的 quote 回答，每個說法後面標出處（label：來源、第幾行）；quote 沒講到的就說沒有，不要補充或推測。' : '沒有找到，就照實說在知識庫裡找不到，不要用自己的知識代替。' });
+            const lim = Math.min(Math.max(Number(a.limit) || 5, 1), 12), model = this._kiModelId();
+            let res = await this._kiRun((store) => store.answer(q, { limit: lim, sources: ids, queryVec: qv.vec || undefined, model }));
+            // 問法跟文件用字對不上（中文問英文文件、換個說法）：請模型替問題想幾個「文件裡可能出現的詞」，再用這些詞多找一輪。
+            // 模型只出主意；找到的永遠是原文，詞對不上就找不到，不會因此編出內容。已經有「關鍵字與語意都命中」的結果就不必問模型。
+            const strong = (r) => (r.hits || []).some((h) => /＋/.test(h.found_by || ''));
+            let expanded = null;
+            if (!(a && a.no_expand) && !strong(res)) {
+                const terms = await this._kiExpandQuery(q).catch(() => []);
+                if (terms.length) {
+                    const q2 = q + ' ' + terms.join(' '); const qv2 = qv.vec ? await this._kiQueryVec(q2).catch(() => ({ vec: null })) : { vec: null };
+                    const r2 = await this._kiRun((store) => store.answer(q2, { minCoverage: 0.06, limit: lim, sources: ids, queryVec: qv2.vec || qv.vec || undefined, model }));
+                    if (r2.found && (!res.found || strong(r2) || (r2.hits[0] && r2.hits[0].score > ((res.hits[0] && res.hits[0].score) || 0)))) { res = r2; expanded = terms; }
+                }
+            }
+            return Object.assign(res, { expanded_terms: expanded || undefined, semantic: !!qv.vec, semantic_note: qv.vec ? undefined : qv.why + '（只用關鍵字檢索）', how_to_answer: res.found ? '只能根據 hits 裡的 quote 回答，每個說法後面標出處（label：來源、第幾行）；quote 沒講到的就說沒有，不要補充或推測。' : '沒有找到，就照實說在知識庫裡找不到，不要用自己的知識代替。' });
+        },
+        // 模型想的「可能出現在文件裡的詞」：只拿來多找一輪，不當答案。沒有模型可用就回空的（維持原本的檢索結果）。
+        async _kiExpandQuery(q) {
+            if (typeof this._callSimpleCompletion !== 'function') return [];
+            const reply = await this._callSimpleCompletion('使用者在一份文件（可能是英文的使用手冊、教學、講義）裡找答案，問題是：「' + q + '」\n請列出最多 8 個「這個問題的答案附近很可能出現的詞或短語」，中文和英文都要有（例如問題問「怎麼安裝」，可以列 install、installation、安裝、setup）。一行一個，只輸出詞本身，不要解釋。', { systemPrompt: '你是搜尋助手，只負責想關鍵詞，不回答問題。', maxTokens: 800, temperature: 0 });
+            return String(reply || '').split('\n').map((l) => l.replace(/^[\s\-*\d.、)）]+/, '').trim()).filter((l) => l && l.length <= 30).slice(0, 8);
         },
         async _kiResolveIds(list) { const arr = Array.isArray(list) ? list : String(list).split(/[,，、]/); return this._kiRun(async (store) => { const ids = []; for (const x of arr) { const s = await store.findSource(String(x).trim()); if (s) ids.push(s.id); } return ids; }); },
         async _kiWithSource(ref, fn) { return this._kiRun(async (store) => { const s = await store.findSource(ref); if (!s) return { ok: false, error: '找不到來源：' + ref + '（knowledge_sources 看清單）' }; return Object.assign({ ok: true }, await fn(store, s)); }); },
@@ -189,9 +223,9 @@ const FaKnowledgeHost = (function () {
                 if (onProgress) onProgress('整理「' + t.name + '」…');
                 const src = await this._kiRun((store) => store.getSource(t.id)); const sample = src.text.length > 6000 ? src.text.slice(0, 3000) + '\n…\n' + src.text.slice(Math.floor(src.text.length / 2) - 1000, Math.floor(src.text.length / 2) + 1000) : src.text;
                 let reply = '';
-                try { reply = await this._callSimpleCompletion('下面是一份文件的內容（可能只有節錄）。請列出最多 8 個最能代表它的關鍵詞或短語。規則：每一個都必須是文件裡「原本出現過的字詞」，原樣抄下來，不要翻譯、不要改寫、不要新創；一行一個，只輸出詞本身。\n\n' + sample, { systemPrompt: '你是文件整理助手，只做挑選，不做創作。', maxTokens: 300, temperature: 0 }); } catch (e) { report.push({ source: t.name, error: '模型沒有回應：' + String((e && e.message) || e).slice(0, 120) }); continue; }
-                const hay = src.text.toLowerCase().replace(/\s+/g, ' '); const terms = [];
-                String(reply || '').split('\n').map((l) => l.replace(/^[\s\-*\d.、)）]+/, '').trim()).filter((l) => l && l.length <= 40).forEach((l) => { if (hay.indexOf(l.toLowerCase().replace(/\s+/g, ' ')) >= 0 && terms.indexOf(l) < 0) terms.push(l); else rejected++; });
+                try { reply = await this._callSimpleCompletion('下面是一份文件的內容（可能只有節錄）。請列出最多 8 個最能代表它的關鍵詞或短語。規則：每一個都必須是文件裡「原本出現過的字詞」，原樣抄下來，不要翻譯、不要改寫、不要新創；一行一個，只輸出詞本身。\n\n' + sample, { systemPrompt: '你是文件整理助手，只做挑選，不做創作。', maxTokens: 1500, temperature: 0 }); } catch (e) { report.push({ source: t.name, error: '模型沒有回應：' + String((e && e.message) || e).slice(0, 120) }); continue; }
+                const hay = src.text.toLowerCase().replace(/\s+/g, ''); const terms = [];
+                String(reply || '').split('\n').map((l) => l.replace(/^[\s\-*\d.、)）]+/, '').trim()).filter((l) => l && l.length <= 40).forEach((l) => { if (hay.indexOf(l.toLowerCase().replace(/\s+/g, '')) >= 0 && terms.indexOf(l) < 0) terms.push(l); else rejected++; });
                 await this._kiRun((store) => store.setTags(t.id, terms.slice(0, 8), 'model'), true);
                 report.push({ source: t.name, tags: terms.slice(0, 8) });
             }
