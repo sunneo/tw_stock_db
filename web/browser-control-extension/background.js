@@ -9,7 +9,7 @@
 // 安全邊界：除了 ping，所有指令都只作用在「助理自己建立的分頁」（managedTabs），
 // 不能讀取或操作使用者原本開著的其他分頁。
 
-const VERSION = "1.6.0";
+const VERSION = "1.6.1";
 const AI_GROUP_TITLE = "AI Controlled";
 const AI_GROUP_COLOR = "purple";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -254,8 +254,9 @@ chrome.debugger.onEvent.addListener((src, method, p) => {
 });
 chrome.debugger.onDetach.addListener((src) => { if (src.tabId != null) dlBehavior.delete(src.tabId); });
 function joinPath(dir, name) { const sep = dir.includes("\\") && !dir.includes("/") ? "\\" : "/"; return String(dir).replace(/[\\/]+$/, "") + sep + name; }
-async function setDownloadBehavior(tabId, behavior, path) {
+async function setDownloadBehavior(tabId, behavior, path, limits) {
   behavior = String(behavior || "");
+  if (behavior === "capture") setCaptureLimits(limits);
   if (!["allow", "deny", "default", "capture"].includes(behavior)) throw new Error("download_behavior 要是 allow／deny／default／capture");
   if (behavior === "allow" && !/^([A-Za-z]:[\\/]|\/)/.test(String(path || ""))) throw new Error("download_behavior=allow 要附 download_path（要存到哪個資料夾，必須是絕對路徑，例如 C:\\Users\\你\\Downloads\\ai 或 /home/你/Downloads/ai）");
   await dbg(tabId);
@@ -268,7 +269,7 @@ async function setDownloadBehavior(tabId, behavior, path) {
       await send(tabId, "Page.setDownloadBehavior", { behavior: "deny" });
       await send(tabId, "Fetch.enable", { patterns: [{ urlPattern: "*", requestStage: "Response" }] });
       dlBehavior.set(tabId, { behavior: "capture", path: null });
-      return { behavior: "capture", path: null };
+      return { behavior: "capture", path: null, limits: capLimitsNow() };
     }
     await send(tabId, "Page.setDownloadBehavior", behavior === "allow" ? { behavior, downloadPath: String(path) } : { behavior });
   } catch (err) {
@@ -290,7 +291,20 @@ function pageDownloadInfo(d, ctl) {
 //  - 網路下載（GET／POST 表單都行）：用 Fetch 網域在「回應階段」攔截，讀出回應本體後讓請求中止，Chrome 完全不知道有下載。
 //  - blob:／data: 下載（沒有網路請求）：收到 Page.downloadWillBegin 後，在頁面裡 fetch 那個網址把位元組讀出來。
 const captures = new Map(); // id -> { id, tabId, url, filename, mime, source, chunks, bytes, crc, done, error, startTime }
-const CAP_MAX_FILE = 200 * 1024 * 1024, CAP_MAX_TOTAL = 400 * 1024 * 1024, CAP_KEEP_MS = 20 * 60 * 1000, CAP_SLICE = 393216;
+// 上限可以調（預設：單檔 200 MB、合計 400 MB、保存 20 分鐘）：click／set_download_behavior 帶 capture_limits:{max_file_mb, max_total_mb, keep_min}。
+// 位元組放在擴充功能的記憶體裡，調太大瀏覽器會變慢，所以有硬上限（單檔 2000 MB、合計 4000 MB、保存 240 分鐘）。
+const CAP_DEFAULTS = { maxFileMb: 200, maxTotalMb: 400, keepMin: 20 };
+let CAP_MAX_FILE = CAP_DEFAULTS.maxFileMb * 1048576, CAP_MAX_TOTAL = CAP_DEFAULTS.maxTotalMb * 1048576, CAP_KEEP_MS = CAP_DEFAULTS.keepMin * 60000;
+const CAP_SLICE = 393216;
+function setCaptureLimits(l) {
+  if (!l || typeof l !== "object") return;
+  const num = (v, lo, hi) => { const n = Number(v); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : null; };
+  const f = num(l.max_file_mb, 1, 2000), t = num(l.max_total_mb, 1, 4000), k = num(l.keep_min, 1, 240);
+  if (f != null) CAP_MAX_FILE = Math.floor(f * 1048576);
+  if (t != null) CAP_MAX_TOTAL = Math.floor(t * 1048576);
+  if (k != null) CAP_KEEP_MS = Math.floor(k * 60000);
+}
+const capLimitsNow = () => ({ max_file_mb: Math.round(CAP_MAX_FILE / 1048576), max_total_mb: Math.round(CAP_MAX_TOTAL / 1048576), keep_min: Math.round(CAP_KEEP_MS / 60000) });
 let capSeq = 0;
 const CRC_TABLE = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
 function crc32Update(crc, bytes) { let c = (crc ^ 0xFFFFFFFF) >>> 0; for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
@@ -309,7 +323,7 @@ function newCapture(tabId, meta) {
   return c;
 }
 function capAppend(c, bytes) {
-  if (c.bytes + bytes.length > CAP_MAX_FILE) throw new Error("檔案超過擷取上限 " + Math.round(CAP_MAX_FILE / 1048576) + " MB");
+  if (c.bytes + bytes.length > CAP_MAX_FILE) throw new Error("檔案超過擷取上限 " + Math.round(CAP_MAX_FILE / 1048576) + " MB（可在設定的「瀏覽器控制」調高單檔上限）");
   c.chunks.push(bytes); c.bytes += bytes.length; c.crc = crc32Update(c.crc, bytes);
 }
 function capInfo(c) { return { captured: true, capture_id: c.id, filename: c.filename, mime: c.mime || null, url: c.url, source: c.source, size_bytes: c.bytes, crc32: crcHex(c.crc) }; }
@@ -347,8 +361,9 @@ async function onFetchPaused(tabId, p) {
   const hit = p.responseStatusCode != null ? isDownloadResponse(p) : null;
   if (!hit) { await pass(); return; }
   const c = newCapture(tabId, { url: p.request && p.request.url, filename: dispositionFilename(hit.cd, p.request && p.request.url), mime: String(hit.hs["content-type"] || "").split(";")[0].trim(), source: "network" });
+  let stream = null;
   try {
-    const { stream } = await send(tabId, "Fetch.takeResponseBodyAsStream", { requestId: rid });
+    ({ stream } = await send(tabId, "Fetch.takeResponseBodyAsStream", { requestId: rid }));
     for (;;) {
       const r = await send(tabId, "IO.read", { handle: stream, size: 262144 });
       if (r.data) capAppend(c, r.base64Encoded ? b64ToBytes(r.data) : new TextEncoder().encode(r.data));
@@ -359,7 +374,10 @@ async function onFetchPaused(tabId, p) {
     await send(tabId, "Fetch.failRequest", { requestId: rid, errorReason: "Aborted" }).catch(() => {}); // 不讓 Chrome 存檔
   } catch (err) {
     c.error = String((err && err.message) || err); c.done = true;
-    await pass();
+    c.chunks = []; // 失敗的擷取不留位元組（錯誤訊息還在）
+    // 已經拿走回應本體的請求不能再放行，只能中止（Chrome 也不會存檔，因為下載行為是 deny）
+    if (stream) { await send(tabId, "IO.close", { handle: stream }).catch(() => {}); await send(tabId, "Fetch.failRequest", { requestId: rid, errorReason: "Aborted" }).catch(() => {}); }
+    else await pass();
   }
 }
 async function captureFromPage(tabId, url, filename) {
@@ -770,7 +788,7 @@ const commands = {
     if (!res) throw new Error("無法在此頁面尋找元素（可能是受保護頁面）");
     if (res.error) throw new Error(res.error);
     await sleep(250); // scrollIntoView後讓版面穩定（也讓錄影看得到捲動後的畫面），避免座標算完、畫面又reflow導致點歪
-    if (a.download_behavior) out_dl = await setDownloadBehavior(tabId, a.download_behavior, a.download_path);
+    if (a.download_behavior) out_dl = await setDownloadBehavior(tabId, a.download_behavior, a.download_path, a.capture_limits);
     const sinceTs = Date.now(); // 一定要在真正點擊「之前」記下，避免下載在我們開始等待前就已完成的race condition
     const ev = (type, extra) => send(tabId, "Input.dispatchMouseEvent", Object.assign({ type, x: res.x, y: res.y, button: "left", modifiers: 0 }, extra));
     await ev("mouseMoved", { button: "none" });
@@ -810,7 +828,7 @@ const commands = {
   // 預先設定這個分頁的下載行為（之後這個分頁觸發的下載都照它處理，直到改回 default 或分頁關掉）。
   async set_download_behavior(a, ctx) {
     const { tabId } = await needTab(a, ctx);
-    return Object.assign({ ok: true }, await setDownloadBehavior(tabId, a.behavior || a.download_behavior, a.path || a.download_path));
+    return Object.assign({ ok: true }, await setDownloadBehavior(tabId, a.behavior || a.download_behavior, a.path || a.download_path, a.capture_limits));
   },
 
   // 除錯用：列出目前記得的最近下載（service worker重啟就會清空，不是長期歷史）。

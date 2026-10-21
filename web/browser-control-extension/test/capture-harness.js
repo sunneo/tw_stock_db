@@ -6,6 +6,7 @@ const DATA = crypto.randomBytes(900000), want = crypto.createHash('sha256').upda
 const srv = http.createServer((req, res) => {
   if (req.url === '/') { const b = '<a id=a href="/file.bin">dl</a><form method=post action="/post.bin"><button id=f>post</button></form><button id=bl>blob</button><button id=dt>data</button><a id=pdf href="/doc.html">html</a><script>bl.onclick=function(){var a=document.createElement("a");a.href=URL.createObjectURL(new Blob(["blob-content-123"]));a.download="made.txt";document.body.appendChild(a);a.click();setTimeout(function(){URL.revokeObjectURL(a.href)},50)};dt.onclick=function(){var a=document.createElement("a");a.href="data:text/plain;base64,aGVsbG8gZGF0YQ==";a.download="d.txt";document.body.appendChild(a);a.click()}</script>'; res.writeHead(200, { 'Content-Type': 'text/html' }); return res.end(b); }
   if (req.url === '/doc.html') { res.writeHead(200, { 'Content-Type': 'text/html' }); return res.end('<p>normal page</p>'); }
+  if (req.url === '/big.bin') { const B = Buffer.alloc(2 * 1048576, 7); res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Disposition': 'attachment; filename="big.bin"', 'Content-Length': B.length }); return res.end(B); }
   res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Disposition': 'attachment; filename="' + (req.url.includes('post') ? 'posted' : 'data') + '.bin"', 'Content-Length': DATA.length });
   req.resume(); res.end(DATA);
 }).listen(0);
@@ -44,6 +45,16 @@ const srv = http.createServer((req, res) => {
       R[label] = { info, sizeOk: buf.length === info.size_bytes, crcOk: crc(buf) === info.crc32 && last.crc32 === info.crc32, shaOk: label === 'get' || label === 'post' ? crypto.createHash('sha256').update(buf).digest('hex') === want : undefined, text: label === 'blob' || label === 'data' ? buf.toString() : undefined };
       await run('commands.release_capture({id:' + JSON.stringify(info.capture_id) + '})');
     }
+    // 上限可以調：1 MB 擋住 2 MB 的檔案並說明，調到 5 MB 就收得下
+    console.error('step: limits'); R.limits_default = run('capLimitsNow()');
+    await run('setDownloadBehavior(1, "capture", null, {max_file_mb:1, max_total_mb:50, keep_min:5})'); R.limits_set = run('capLimitsNow()');
+    let s1 = Date.now(); await cdp('Runtime.evaluate', { expression: 'location.href="/big.bin"' }, sessionId);
+    console.error('step: small'); try { await run('waitForNewDownload(8000,' + s1 + ',1)'); R.small_limit = 'unexpectedly ok'; } catch (e) { R.small_limit = e.message.slice(0, 90); }
+    console.error('step: big'); await run('setDownloadBehavior(1, "capture", null, {max_file_mb:5})');
+    await cdp('Runtime.evaluate', { expression: 'location.href="/"' }, sessionId); await new Promise((r) => setTimeout(r, 800));
+    s1 = Date.now(); await cdp('Runtime.evaluate', { expression: 'location.href="/big.bin"' }, sessionId);
+    try { const i2 = await run('waitForNewDownload(8000,' + s1 + ',1)'); R.big_ok = i2.size_bytes; } catch (e) { R.big_ok = 'ERR ' + e.message.slice(0, 90); }
+    await run('setDownloadBehavior(1, "capture", null, {max_file_mb:999999, max_total_mb:-5})'); R.limits_clamped = run('capLimitsNow()');
     // 一般頁面連結不被當成下載
     await cdp('Runtime.evaluate', { expression: 'location.href="/doc.html"' }, sessionId); await new Promise((r) => setTimeout(r, 1200));
     const t = await cdp('Runtime.evaluate', { expression: 'document.body.innerText', returnByValue: true }, sessionId); R.normal_page = t.result.value;
