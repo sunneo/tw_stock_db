@@ -9,7 +9,7 @@
 // 安全邊界：除了 ping，所有指令都只作用在「助理自己建立的分頁」（managedTabs），
 // 不能讀取或操作使用者原本開著的其他分頁。
 
-const VERSION = "1.5.1";
+const VERSION = "1.6.0";
 const AI_GROUP_TITLE = "AI Controlled";
 const AI_GROUP_COLOR = "purple";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -201,8 +201,18 @@ async function waitForNewDownload(timeoutMs, since, tabId) {
   if (tabId == null && dlBehavior.size === 1) tabId = [...dlBehavior.keys()][0];
   const ctl = tabId != null ? dlBehavior.get(tabId) : null;
   for (;;) {
+    if (ctl && ctl.behavior === "capture") {
+      const c = [...captures.values()].filter((x) => x.tabId === tabId && x.startTime >= since).sort((x, y) => x.startTime - y.startTime)[0];
+      if (c) {
+        if (c.error) throw new Error("擷取下載失敗：" + c.error + (c.filename ? "（" + c.filename + "）" : ""));
+        if (c.done) return capInfo(c);
+      } else {
+        const pd = pageDownloads.find((d) => d.tabId === tabId && d.startTime >= since && !/^(blob|data):/i.test(d.url || ""));
+        if (pd && Date.now() - pd.startTime > 3000) return Object.assign(pageDownloadInfo(pd, ctl), { denied: true, captured: false, note: "有下載想發生，但不是可擷取的檔案回應（沒被存檔也沒被擷取）" });
+      }
+    }
     // 下載行為由助理控制的分頁：以除錯器事件為準
-    if (ctl) {
+    if (ctl && ctl.behavior !== "capture") {
       const pd = pageDownloads.find((d) => d.tabId === tabId && d.startTime >= since);
       if (pd) {
         if (ctl.behavior === "deny") return Object.assign(pageDownloadInfo(pd, ctl), { denied: true, note: "下載被擋掉了（download_behavior=deny），沒有存檔" });
@@ -246,11 +256,20 @@ chrome.debugger.onDetach.addListener((src) => { if (src.tabId != null) dlBehavio
 function joinPath(dir, name) { const sep = dir.includes("\\") && !dir.includes("/") ? "\\" : "/"; return String(dir).replace(/[\\/]+$/, "") + sep + name; }
 async function setDownloadBehavior(tabId, behavior, path) {
   behavior = String(behavior || "");
-  if (!["allow", "deny", "default"].includes(behavior)) throw new Error("download_behavior 要是 allow／deny／default");
+  if (!["allow", "deny", "default", "capture"].includes(behavior)) throw new Error("download_behavior 要是 allow／deny／default／capture");
   if (behavior === "allow" && !/^([A-Za-z]:[\\/]|\/)/.test(String(path || ""))) throw new Error("download_behavior=allow 要附 download_path（要存到哪個資料夾，必須是絕對路徑，例如 C:\\Users\\你\\Downloads\\ai 或 /home/你/Downloads/ai）");
   await dbg(tabId);
   try {
+    const prev = dlBehavior.get(tabId);
+    if (prev && prev.behavior === "capture" && behavior !== "capture") await send(tabId, "Fetch.disable").catch(() => {});
     await send(tabId, "Page.enable");
+    if (behavior === "capture") {
+      // 先擋掉 Chrome 自己的下載（擷取不到的東西也不會悄悄落地，只會被回報），再用 Fetch 在回應階段攔截檔案回應
+      await send(tabId, "Page.setDownloadBehavior", { behavior: "deny" });
+      await send(tabId, "Fetch.enable", { patterns: [{ urlPattern: "*", requestStage: "Response" }] });
+      dlBehavior.set(tabId, { behavior: "capture", path: null });
+      return { behavior: "capture", path: null };
+    }
     await send(tabId, "Page.setDownloadBehavior", behavior === "allow" ? { behavior, downloadPath: String(path) } : { behavior });
   } catch (err) {
     throw new Error("這個 Chrome 版本不接受 Page.setDownloadBehavior：" + String((err && err.message) || err));
@@ -263,6 +282,107 @@ function pageDownloadInfo(d, ctl) {
   if (ctl && ctl.behavior === "allow" && d.suggestedFilename) out.path = joinPath(ctl.path, d.suggestedFilename);
   return out;
 }
+
+// ---------- 擷取下載（capture）----------
+// 自動化期間「下載到什麼」不可控：另存新檔對話框會卡住、檔案落在哪也不知道。capture 模式把下載攔下來、
+// 不讓 Chrome 存檔，位元組留在擴充功能的記憶體裡，由網頁（助理）用 read_capture 一段一段拉走（pipeline），
+// 助理端邊收邊驗證（大小、crc32），收完再決定寫到哪（助理自己的儲存、或預設下載資料夾）。
+//  - 網路下載（GET／POST 表單都行）：用 Fetch 網域在「回應階段」攔截，讀出回應本體後讓請求中止，Chrome 完全不知道有下載。
+//  - blob:／data: 下載（沒有網路請求）：收到 Page.downloadWillBegin 後，在頁面裡 fetch 那個網址把位元組讀出來。
+const captures = new Map(); // id -> { id, tabId, url, filename, mime, source, chunks, bytes, crc, done, error, startTime }
+const CAP_MAX_FILE = 200 * 1024 * 1024, CAP_MAX_TOTAL = 400 * 1024 * 1024, CAP_KEEP_MS = 20 * 60 * 1000, CAP_SLICE = 393216;
+let capSeq = 0;
+const CRC_TABLE = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crc32Update(crc, bytes) { let c = (crc ^ 0xFFFFFFFF) >>> 0; for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+const crcHex = (n) => (n >>> 0).toString(16).padStart(8, "0");
+function capTotal() { let n = 0; for (const c of captures.values()) n += c.bytes; return n; }
+function pruneCaptures() {
+  const now = Date.now();
+  for (const [id, c] of captures) if (now - c.startTime > CAP_KEEP_MS) captures.delete(id);
+  const all = [...captures.values()].sort((a, b) => a.startTime - b.startTime);
+  while (all.length > 1 && capTotal() > CAP_MAX_TOTAL) captures.delete(all.shift().id);
+}
+function newCapture(tabId, meta) {
+  pruneCaptures();
+  const c = Object.assign({ id: "cap" + (++capSeq), tabId, url: null, filename: "download", mime: "", source: "network", chunks: [], bytes: 0, crc: 0, done: false, error: null, startTime: Date.now() }, meta);
+  captures.set(c.id, c);
+  return c;
+}
+function capAppend(c, bytes) {
+  if (c.bytes + bytes.length > CAP_MAX_FILE) throw new Error("檔案超過擷取上限 " + Math.round(CAP_MAX_FILE / 1048576) + " MB");
+  c.chunks.push(bytes); c.bytes += bytes.length; c.crc = crc32Update(c.crc, bytes);
+}
+function capInfo(c) { return { captured: true, capture_id: c.id, filename: c.filename, mime: c.mime || null, url: c.url, source: c.source, size_bytes: c.bytes, crc32: crcHex(c.crc) }; }
+function capSlice(c, off, len) {
+  const out = new Uint8Array(Math.max(0, Math.min(len, c.bytes - off)));
+  let pos = 0, w = 0;
+  for (const ch of c.chunks) {
+    if (w >= out.length) break;
+    const end = pos + ch.length;
+    if (end > off) { const from = Math.max(0, off - pos), take = Math.min(ch.length - from, out.length - w); out.set(ch.subarray(from, from + take), w); w += take; }
+    pos = end;
+  }
+  return out;
+}
+function dispositionFilename(cd, url) {
+  let n = null;
+  const m5 = /filename\*\s*=\s*[^']*'[^']*'([^;]+)/i.exec(cd || "");
+  if (m5) { try { n = decodeURIComponent(m5[1].trim()); } catch (_) { n = m5[1].trim(); } }
+  if (!n) { const m = /filename\s*=\s*"?([^";]+)"?/i.exec(cd || ""); if (m) n = m[1].trim(); }
+  if (!n) { try { const p = new URL(url).pathname.split("/").filter(Boolean).pop(); if (p) n = decodeURIComponent(p); } catch (_) { /* 沒有路徑就用預設名 */ } }
+  return (n || "download").replace(/[\\/:*?"<>|]+/g, "_").slice(0, 180);
+}
+const DOWNLOAD_MIME = /^(application\/(octet-stream|zip|x-zip-compressed|gzip|x-gzip|x-7z-compressed|x-rar-compressed|vnd\.rar|x-tar|x-msdownload|msword|force-download|x-download)|application\/vnd\.(openxmlformats|ms-)|binary\/octet-stream)/i;
+function isDownloadResponse(p) {
+  const hs = {}; for (const h of (p.responseHeaders || [])) hs[h.name.toLowerCase()] = h.value;
+  if (p.responseStatusCode >= 300 && p.responseStatusCode < 400) return null;
+  const cd = hs["content-disposition"] || "";
+  if (/^\s*attachment/i.test(cd)) return { hs, cd };
+  if (p.resourceType === "Document" && DOWNLOAD_MIME.test(hs["content-type"] || "")) return { hs, cd };
+  return null;
+}
+async function onFetchPaused(tabId, p) {
+  const rid = p.requestId;
+  const pass = () => (p.responseStatusCode == null && !p.responseErrorReason ? send(tabId, "Fetch.continueRequest", { requestId: rid }) : send(tabId, "Fetch.continueResponse", { requestId: rid })).catch(() => {});
+  const hit = p.responseStatusCode != null ? isDownloadResponse(p) : null;
+  if (!hit) { await pass(); return; }
+  const c = newCapture(tabId, { url: p.request && p.request.url, filename: dispositionFilename(hit.cd, p.request && p.request.url), mime: String(hit.hs["content-type"] || "").split(";")[0].trim(), source: "network" });
+  try {
+    const { stream } = await send(tabId, "Fetch.takeResponseBodyAsStream", { requestId: rid });
+    for (;;) {
+      const r = await send(tabId, "IO.read", { handle: stream, size: 262144 });
+      if (r.data) capAppend(c, r.base64Encoded ? b64ToBytes(r.data) : new TextEncoder().encode(r.data));
+      if (r.eof) break;
+    }
+    await send(tabId, "IO.close", { handle: stream }).catch(() => {});
+    c.done = true;
+    await send(tabId, "Fetch.failRequest", { requestId: rid, errorReason: "Aborted" }).catch(() => {}); // 不讓 Chrome 存檔
+  } catch (err) {
+    c.error = String((err && err.message) || err); c.done = true;
+    await pass();
+  }
+}
+async function captureFromPage(tabId, url, filename) {
+  const c = newCapture(tabId, { url: /^data:/i.test(url) ? "data:(內嵌)" : url, filename: String(filename || "download").replace(/[\\/:*?"<>|]+/g, "_").slice(0, 180), source: "page" });
+  try {
+    const ev = await send(tabId, "Runtime.evaluate", { awaitPromise: true, returnByValue: true, expression: "(async()=>{const r=await fetch(" + JSON.stringify(url) + ");const b=new Uint8Array(await r.arrayBuffer());window.__faCap=b;return{size:b.length,type:r.headers.get('content-type')||''}})()" });
+    if (ev.exceptionDetails) throw new Error("讀不到 " + (/^data:/i.test(url) ? "內嵌資料" : url) + "（可能已被頁面撤銷）：" + String((ev.exceptionDetails.exception && ev.exceptionDetails.exception.description) || ev.exceptionDetails.text || "").slice(0, 120));
+    const info = ev.result.value; c.mime = String(info.type || "").split(";")[0].trim();
+    if (info.size > CAP_MAX_FILE) throw new Error("檔案超過擷取上限");
+    for (let off = 0; off < info.size; off += CAP_SLICE) {
+      const r = await send(tabId, "Runtime.evaluate", { returnByValue: true, expression: "(()=>{const u=window.__faCap.subarray(" + off + "," + (off + CAP_SLICE) + ");let s='';for(let i=0;i<u.length;i+=8192)s+=String.fromCharCode.apply(null,u.subarray(i,i+8192));return btoa(s)})()" });
+      capAppend(c, b64ToBytes(r.result.value));
+    }
+    c.done = true;
+  } catch (err) { c.error = String((err && err.message) || err); c.done = true; }
+  finally { send(tabId, "Runtime.evaluate", { expression: "delete window.__faCap" }).catch(() => {}); }
+}
+chrome.debugger.onEvent.addListener((src, method, p) => {
+  const tabId = src.tabId; if (tabId == null) return;
+  const ctl = dlBehavior.get(tabId); if (!ctl || ctl.behavior !== "capture") return;
+  if (method === "Fetch.requestPaused") onFetchPaused(tabId, p);
+  else if (method === "Page.downloadWillBegin" && /^(blob|data):/i.test(p.url || "")) captureFromPage(tabId, p.url, p.suggestedFilename);
+});
 
 async function waitLoad(tabId, timeoutMs) {
   const end = Date.now() + timeoutMs;
@@ -669,6 +789,22 @@ const commands = {
     const since = Number.isFinite(Number(a.since_ms)) ? Number(a.since_ms) : Date.now();
     const tid = Number.isInteger(Number(a.tab_id)) && Number(a.tab_id) > 0 ? Number(a.tab_id) : null;
     return waitForNewDownload(a.timeout_ms, since, tid);
+  },
+
+  // capture 的位元組由網頁分段拉走：read_capture{id, offset, length}（每段最多 768 KB）→ { b64, offset, length, eof, size, crc32 }
+  async read_capture(a) {
+    const c = captures.get(String(a.id || ""));
+    if (!c) throw new Error("找不到這個擷取（可能已釋放或超過保存時間）：" + a.id);
+    if (!c.done) throw new Error("這個擷取還沒完成");
+    if (c.error) throw new Error("擷取失敗：" + c.error);
+    const off = Math.max(0, Math.floor(Number(a.offset) || 0)), len = Math.min(786432, Math.max(1, Math.floor(Number(a.length) || 786432)));
+    const bytes = capSlice(c, off, len);
+    return { id: c.id, offset: off, length: bytes.length, eof: off + bytes.length >= c.bytes, size: c.bytes, crc32: crcHex(c.crc), b64: bytesToB64(bytes) };
+  },
+  async release_capture(a) { const ok = captures.delete(String(a.id || "")); return { ok, released: String(a.id || "") }; },
+  async list_captures(a) {
+    const n = Math.max(1, Math.min(40, Number(a.max) || 10));
+    return { captures: [...captures.values()].sort((x, y) => y.startTime - x.startTime).slice(0, n).map((c) => Object.assign(capInfo(c), { done: c.done, error: c.error, tab_id: c.tabId, age_ms: Date.now() - c.startTime })), total_bytes: capTotal() };
   },
 
   // 預先設定這個分頁的下載行為（之後這個分頁觸發的下載都照它處理，直到改回 default 或分頁關掉）。

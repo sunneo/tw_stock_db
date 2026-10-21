@@ -24,6 +24,16 @@
 - 滑鼠/鍵盤/截圖使用 Chrome 的偵錯功能，操作期間瀏覽器會顯示「正在偵錯此瀏覽器」提示列，這是正常的。
 - 只接受 http(s) 網址。
 
+## 1.6.0：擷取下載（capture）
+
+自動化期間「下載到什麼」不可控（另存新檔對話框卡住、檔案落在哪不知道）。`download_behavior: "capture"` 把下載攔下來、**不讓 Chrome 存檔**，位元組留在擴充功能記憶體裡，由助理一段一段拉走，邊收邊驗證，收完再決定寫到哪：
+
+- 網路下載（GET 連結、POST 表單都行）：用 Fetch 網域在回應階段攔截（`Content-Disposition: attachment`，或頁面導覽拿到 zip／octet-stream 這類二進位檔），讀出回應本體後讓請求中止，Chrome 完全不知道有下載。
+- `blob:`／`data:` 下載：收到下載事件後在頁面裡把位元組讀出來（頁面稍後撤銷 blob 也沒關係）。
+- `wait_download` 回傳 `{captured, capture_id, filename, mime, url, source, size_bytes, crc32}`（不含位元組）；助理用 `read_capture{id, offset, length}` 每段最多 768 KB 往下拉（回傳 `b64`、`eof`、`size`、`crc32`），收完用 `release_capture{id}` 釋放。`list_captures` 列出目前保存的擷取。
+- 上限：單檔 200 MB、全部合計 400 MB、保存 20 分鐘；超過會回報錯誤，不會悄悄丟掉。擷取不到的下載（不是檔案回應也不是 blob／data）會被擋掉並回報 `denied:true`，不會偷偷落地。
+- 驗證：`test/capture-harness.js` 把真正的 `background.js` 放進 vm、除錯器指令接到真的 Chrome，實測 GET、POST、blob、data 四種都逐位元組正確（大小與 crc32 一致），一般頁面連結不會被當成下載。
+
 ## 1.5.1：下載行為由助理控制（Page.setDownloadBehavior）
 
 點擊會觸發下載時，Chrome 可能跳「另存新檔」對話框，擴充功能碰不到系統對話框。現在 `click` 可以帶：
