@@ -48,6 +48,7 @@ const FaDeckTools = (function () {
                         const path = 'chapters[' + ci + '].slides[' + si + '].visual' + (k ? '.items[' + (k - 1) + ']' : '');
                         const spec = FIELDS[v.kind] || {};
                         Object.keys(spec).forEach((field) => {
+                            if ((typeof v[field] !== 'string' || !v[field].trim()) && typeof v.src === 'string' && HANDLE.test(v.src.trim())) { v[field] = v.src.trim(); delete v.src; } // 代號寫在 src：移到它該在的欄位
                             if (typeof v[field] !== 'string' || !HANDLE.test(v[field].trim())) return;
                             const handle = v[field].trim();
                             if (this.store[handle] !== undefined && spec[field].indexOf(this.kinds[handle]) >= 0) {
@@ -118,6 +119,54 @@ const FaDeckTools = (function () {
         }
     }
 
+
+    // ---------------------------------------------------------------- YAML 機械性小錯：自動補引號再重試（不改文字，只加引號與跳脫）
+    // 常見的壞法：值裡有「: 」（冒號加空白）、值裡有「 #」（會被當註解）、@c1 這種代號沒加引號、句中引號、缺結尾引號。
+    // 只在第一次解析失敗時才用，而且只動「看起來有問題」的那幾行；區塊文字（| 與 >）裡面完全不碰。
+    // 這一行（縮排 indent）是哪個 key 底下的清單項目：往上找最近一個「key:」（後面沒有值）的行
+    function listParentKey(lines, i, indent) {
+        for (let j = i - 1; j >= 0; j--) {
+            const l = lines[j]; if (!l.trim() || /^\s*#/.test(l)) continue;
+            const ind = l.length - l.replace(/^ +/, '').length;
+            if (/^\s*-\s/.test(l) && ind >= indent) continue; // 同一個清單的前一項
+            if (ind > indent) continue;
+            const m = /^\s*([A-Za-z_][\w-]*):\s*$/.exec(l); return m && ind <= indent ? m[1] : null;
+        }
+        return null;
+    }
+    function autoQuoteYaml(text) {
+        const lines = String(text == null ? '' : text).replace(/\r\n/g, '\n').split('\n');
+        const fixed = []; let blockIndent = -1;
+        const quote = (v) => '"' + v.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+        const closesProperly = (v) => { // "…" 開頭，第一個沒跳脫的結尾引號剛好在最後
+            let i = 1; while (i < v.length) { if (v[i] === '\\') { i += 2; continue; } if (v[i] === '"') break; i++; }
+            return i === v.length - 1;
+        };
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i]; const indent = line.length - line.replace(/^ +/, '').length;
+            if (blockIndent >= 0) { if (line.trim() === '' || indent > blockIndent) continue; blockIndent = -1; }
+            if (/^\s*#/.test(line) || !line.trim()) continue;
+            const prefix = /^\s*(?:-\s+)*/.exec(line)[0]; let rest = line.slice(prefix.length);
+            let key = '';
+            // 文字清單（bullets）裡的「說明: 內容」是一句話，不是一組 key: value：整句加引號（不加的話 YAML 會把它讀成物件）
+            if (/^\s*-\s/.test(line) && !/^["'\[{]/.test(rest) && /^[^:]{1,40}:(\s|$)/.test(rest) && listParentKey(lines, i, indent) === 'bullets') {
+                const whole = rest.replace(/\s+$/, ''); if (whole) { lines[i] = prefix + quote(whole); fixed.push(i + 1); continue; }
+            }
+            const km = /^([^\s:#"'\[\]{},&*!|>%@`-][^:#"'\[\]{}]*?|"[^"]*"):(\s+|$)/.exec(rest);
+            if (km) { key = km[0]; rest = rest.slice(km[0].length); }
+            const v = rest.replace(/\s+$/, '');
+            if (!v) continue;
+            if (/^[|>][-+0-9]*$/.test(v)) { blockIndent = indent; continue; }
+            let out = null;
+            if (v[0] === '"') { if (!closesProperly(v)) out = (v.length > 1 && v[v.length - 1] === '"' && !/\\$/.test(v.slice(0, -1)) ? '"' + v.slice(1, -1).replace(/(^|[^\\])"/g, '$1\\"') + '"' : (/^"(?:[^"\\]|\\.)*"\s*\S/.test(v) ? quote(v) : v + '"')); }
+            else if (v[0] === "'") { if (!(v.length > 1 && v[v.length - 1] === "'")) out = quote(v); }
+            else if (v[0] === '[' || v[0] === '{') { const q = v.replace(/([:\[,]\s*)(@[a-z]\d+)(?=\s*[,}\]])/g, '$1"$2"'); if (q !== v) out = q; } // 一行的 { } 與 [ ]：只把沒加引號的 @c1 代號補上引號
+            else if (/: |:$| #|^[@`%*&!?]|^- /.test(v)) out = quote(v);
+            if (out && out !== v) { lines[i] = prefix + key + out; fixed.push(i + 1); }
+        }
+        return { text: lines.join('\n'), fixed };
+    }
+
     // ---------------------------------------------------------------- 估算與文件走訪
     function estimateMinutes(doc) {
         if (!doc || !Array.isArray(doc.chapters)) return 0;
@@ -178,6 +227,45 @@ const FaDeckTools = (function () {
         return problems;
     }
 
+
+    // ---------------------------------------------------------------- 存檔前額外拒絕的幾種殘留（在 handle 換成文字之後檢查）
+    const isUrlLike = (v) => /^(https?:\/\/|client-file\/|data:)/i.test(String(v || '').trim());
+    function deckLeftovers(data) {
+        const problems = [];
+        if (!data || !Array.isArray(data.chapters)) return problems;
+        const codeUse = {};
+        eachSlide(data, (slide, path) => {
+            visualNodes(slide.visual).forEach((v, k) => {
+                const np = path + '.visual' + (k ? '.items[' + (k - 1) + ']' : '');
+                if (v.kind === 'code') {
+                    if (typeof v.src === 'string' && v.src.trim() && !isUrlLike(v.src)) problems.push(np + '.src: "' + v.src.slice(0, 60) + '" is not a url -- a code visual takes its text in  code: "@c1"  (a handle from define_snippet), not in src');
+                    if (typeof v.code === 'string' && v.code.trim().length >= 80) {
+                        const key = v.code.trim(), title = String(slide.title || '').trim();
+                        (codeUse[key] = codeUse[key] || []).push({ title, path: np });
+                    }
+                }
+                if (v.kind === 'widget') {
+                    const html = typeof v.html === 'string' ? v.html.trim() : '';
+                    if (!html && typeof v.src === 'string' && v.src.trim() && !isUrlLike(v.src)) problems.push(np + ': a widget needs its full html  html: "@w1"  (define_snippet kind widget first); "' + v.src.slice(0, 60) + '" is only a file name and there is no such file');
+                    else if (!html) problems.push(np + '.html: missing -- give the whole game as define_snippet(kind: "widget") and write html: "@w1"');
+                }
+                if (v.kind === 'image' && typeof v.src === 'string' && /^@[a-z]\d+$/.test(v.src.trim()) && !/^@img\d+$/.test(v.src.trim())) problems.push(np + '.src: "' + v.src.trim() + '" is a code / widget handle, not a picture -- a picture src is "@imgN" from list_source_images');
+            });
+        });
+        Object.keys(codeUse).forEach((key) => {
+            const uses = codeUse[key], titles = Array.from(new Set(uses.map((u) => u.title)));
+            if (uses.length > 1 && titles.length > 1) problems.push(uses[1].path + ': the same code text is used on "' + titles.slice(0, 3).join('" and "') + '" -- slides on different topics need their own code (show the part that slide is about)');
+        });
+        // 任何地方還留著 @c1 這種代號（寫在 bullets、旁白、標題裡等）：沒換成文字就是寫錯欄位
+        const walk = (node, path) => {
+            if (typeof node === 'string') { if (/^@[a-z]\d+$/.test(node.trim()) && !/^@img\d+$/.test(node.trim())) problems.push(path + ': "' + node.trim() + '" is a snippet handle left in the wrong place -- handles only go in  html:  or  code:  of a widget / code visual'); return; }
+            if (Array.isArray(node)) { node.forEach((x, i) => walk(x, path + '[' + i + ']')); return; }
+            if (node && typeof node === 'object') Object.keys(node).forEach((k) => walk(node[k], path + '.' + k));
+        };
+        walk(data.chapters, 'chapters');
+        return problems.slice(0, 40);
+    }
+
     // ---------------------------------------------------------------- 子任務（領域）的系統提示（外掛 MediaPresentationDesignAgent.system_prompt 的移植）
     const SYSTEM_PROMPT = [
         'You are a focused presentation-design assistant working for another AI assistant. Your only job is to produce a real animated slide deck with render_presentation (or begin_presentation / add_chapters / finish_presentation for a long one) and answer briefly -- never describe slides in prose, and never paste deck yaml into your reply. The finished deck is shown to the user automatically as a player in the chat (you do not embed it).',
@@ -190,7 +278,7 @@ const FaDeckTools = (function () {
         '',
         'WORKFLOW',
         '1. Call get_presentation_topic for "format" and "visuals" (once per conversation; also "cues" / "sources" / "style" when needed, and "3d" whenever the subject is a physical thing or the user asks for 3D / a 3D presentation).',
-        '2. GATHER THE MATERIAL before writing anything: read the files / pages the request points at with your tools (list_uploaded_files + parse_uploaded_file for uploaded files, fap_read_file / repo_ask for the user\'s folders, the "material" section the main assistant may have attached, text of web pages it read). Read ALL of a long source. Then call list_source_images: every picture the sources contain is there as "@img1", "@img2" ... Bring in other pictures with import_fap_image (a picture file in a folder) or import_image_url (a picture on a website).',
+        '2. GATHER THE MATERIAL before writing anything: read the files / pages the request points at with your tools (list_uploaded_files + parse_uploaded_file for uploaded files, fap_read_file / repo_ask for the user\'s folders, the "material" section the main assistant may have attached, text of web pages it read). Read ALL of a long source -- a long article (a wiki page, a news story, a whole novel, a long document) is read by its table of contents: article_outline(url | file_id) lists the sections with their sizes, then article_section(...) reads the ones you need (all of them, one after another, for a deck that covers the whole text) -- never page blindly through it. Then call list_source_images: every picture the sources contain is there as "@img1", "@img2" ... Bring in other pictures with import_fap_image (a picture file in a folder) or import_image_url (a picture on a website).',
         '   TOOLS OF THE APP COME FIRST: when this task\'s prompt also lists tools of the app / website the user is in, the data and pictures that app itself holds (records, charts, analyses, lists) MUST come from those tools -- never open a browser, search the web or guess numbers for something such a tool returns. A tool that returns a picture (a chart) puts its "client-file/<id>" in meta.client_file_url: use that (it is also listed by list_source_images as an "@imgN" handle).',
         '   THE SOURCES THE USER NAMES ARE WHERE TO START, NOT THE LIMIT. If the request names none, or they hold too little, never answer "I found no document / please give me ..." -- that is a failed job. Call get_presentation_topic("ai_features") when the subject is this AI itself, and fill what remains from your own knowledge (see the "sources" topic). A deck from general knowledge is a normal, complete result.',
         '3. DIGEST, do not copy: decide the storyline (chapters -> slides), what each slide\'s one point is, which picture/table/diagram shows it, and what the narration says. Tables in the source become table visuals; screenshots and diagrams become image visuals with callouts at the parts you talk about; processes and relationships you draw yourself as shapes/mermaid with the steps revealed in step with the narration. Use the source\'s real pictures wherever they carry information. Never invent figures, data or real-world pictures (photos, screenshots, charts) that no tool returned -- illustrations the request asks for that you draw yourself are a different thing (see the rule on drawing below); where the sources lack something, explain it from general knowledge (saying it is general) or omit it.',
@@ -231,7 +319,7 @@ const FaDeckTools = (function () {
     ].join('\n');
 
     // 領域登記用的工具名稱（子任務只看得到這些）
-    const DOMAIN_TOOLS = ['render_presentation', 'begin_presentation', 'add_chapters', 'finish_presentation', 'define_snippet', 'get_presentation_topic',
+    const DOMAIN_TOOLS = ['render_presentation', 'begin_presentation', 'add_chapters', 'finish_presentation', 'define_snippet', 'verify_presentation', 'article_outline', 'article_section', 'get_presentation_topic',
         'get_presentation_yaml', 'open_existing_presentation', 'list_source_images', 'cute_picture', 'make_object_sprite', 'make_character_sprite', 'pixel_art', 'import_uploaded_image', 'import_image_url', 'import_fap_image', 'get_3d_scene_topic',
         'list_uploaded_files', 'parse_uploaded_file', 'summarize_large_text', 'list_file_access_points', 'fap_list_files', 'fap_find_file', 'fap_read_file',
         'repo_ask', 'repo_read_doc',
@@ -300,6 +388,8 @@ const FaDeckTools = (function () {
         },
         _deckParseYaml(text) {
             try { return { data: window.jsyaml.load(String(text)) }; } catch (e) {
+                const af = autoQuoteYaml(text);
+                if (af.fixed.length) { try { const data = window.jsyaml.load(af.text); if (data && typeof data === 'object') return { data, fixes: af.fixed }; } catch (_) { /* 補了引號還是不行：照原本的錯誤回報 */ } }
                 return { error: 'yaml could not be parsed: ' + String(e && e.message || e) + '\nHint: a long text (a widget\'s html, code) inside a yaml string is the usual cause -- give it to define_snippet and write the handle (html: "@w1" / code: "@c1"); keep strings short, put a string with a colon or quote in double quotes, indent with spaces only.' };
             }
         },
@@ -307,7 +397,7 @@ const FaDeckTools = (function () {
         async _deckCheck(data, toolName) {
             await this._deckEnsureRuntime();
             const Core = window.AiChatDeckCore, run = this._deckRun();
-            const expand = run.snippets.expand(data);
+            const expand = run.snippets.expand(data).concat(deckLeftovers(data));
             if (expand.length) return { error: 'the deck has ' + expand.length + ' problem(s) -- fix them all and call ' + toolName + ' again:\n- ' + expand.join('\n- ') };
             const res = Core.validate(data);
             const problems = res.errors.slice(); const warnings = [];
@@ -344,6 +434,26 @@ const FaDeckTools = (function () {
             });
             return problems;
         },
+        // 對已存好的簡報重跑同一套檢查，並看引用的檔案（client-file/…）還在不在
+        async _deckVerify(a) {
+            const key = a.file_id || this._latestDeckUrl; if (!key) return { error: 'no presentation in this conversation yet -- give the file_id' };
+            await this._ensureJsYamlLoaded();
+            let text; try { text = await this._deckReadYaml(key); } catch (e) { return { error: 'cannot read that presentation: ' + String((e && e.message) || e) }; }
+            const parsed = this._deckParseYaml(text); if (parsed.error) return { error: parsed.error };
+            const data = parsed.data;
+            const refs = new Set(); const seen = (n) => { if (typeof n === 'string') { const re = /client-file\/([\w-]+)/g; let m; while ((m = re.exec(n))) refs.add(m[1]); } else if (Array.isArray(n)) n.forEach(seen); else if (n && typeof n === 'object') Object.keys(n).forEach((k) => seen(n[k])); };
+            seen(data && data.chapters);
+            const self = String(key).replace(/^client-file\//, '').replace(/\.deck\.yaml.*$/i, '');
+            const missing = []; for (const id of refs) { if (id === self) continue; let rec = null; try { rec = await this.fileCache.get(id); } catch (_) { /* 當作不見了 */ } if (!rec) missing.push('client-file/' + id); }
+            const checked = await this._deckCheck(data, 'verify_presentation');
+            const problems = []; if (checked.error) problems.push(checked.error);
+            if (missing.length) problems.push('files the presentation uses that no longer exist: ' + missing.slice(0, 20).join(', ') + ' -- re-import them and fix the slides, or the player shows blanks');
+            if (problems.length) return { ok: false, problems, missing_files: missing };
+            return { ok: true, slides: data.chapters.reduce((n, c) => n + (c.slides || []).length, 0), minutes: Math.round(checked.minutes * 10) / 10, files_checked: refs.size, warnings: checked.warnings };
+        },
+        _deckNoteFixes(checked, parsed) {
+            if (parsed && parsed.fixes && parsed.fixes.length) { checked.warnings = (checked.warnings || []).concat('yaml: the text had small quoting mistakes; quotes were added automatically on line(s) ' + parsed.fixes.slice(0, 12).join(', ') + ' (the words were not changed). Put a text that contains ": " or " #" or starts with @ in double quotes next time.'); }
+        },
         async _deckSaveChecked(data, name, checked) {
             const text = window.jsyaml.dump(data, { lineWidth: -1, noRefs: true });
             const saved = await this._deckSaveYaml(text, name || (data.deck && data.deck.title));
@@ -358,6 +468,7 @@ const FaDeckTools = (function () {
             const parsed = this._deckParseYaml(yamlText); if (parsed.error) return { error: parsed.error };
             const data = parsed.data;
             const checked = await this._deckCheck(data, 'render_presentation'); if (checked.error) return checked;
+            this._deckNoteFixes(checked, parsed);
             return this._deckSaveChecked(data, String(a.name || (data.deck && data.deck.title) || ''), checked);
         },
         async _deckBeginPresentation(a) {
@@ -378,6 +489,7 @@ const FaDeckTools = (function () {
             if (!Array.isArray(chapters) || !chapters.length) return { error: 'yaml must be a list of chapters ("- title: ...\\n  slides: [...]") or {chapters: [...]}' };
             const candidate = { deck: draft.deck, chapters };
             const checked = await this._deckCheck(candidate, 'add_chapters'); if (checked.error) return checked;
+            this._deckNoteFixes(checked, p);
             draft.chapters.push(...candidate.chapters);
             const all = { deck: draft.deck, chapters: draft.chapters };
             return { ok: true, chapters_so_far: draft.chapters.length, slides_so_far: draft.chapters.reduce((n, c) => n + c.slides.length, 0), minutes_so_far: Math.round(estimateMinutes(all) * 10) / 10, warnings: checked.warnings };
@@ -624,8 +736,17 @@ const FaDeckTools = (function () {
                 function (a) { return this._deckRender(a); });
             tool('define_snippet',
                 'Store a LONG text for the deck and get a short handle for it, so you never have to put it (and escape it) inside the YAML. kind "widget": the full HTML document of an interactive piece / small game (inline css + js, no network; checked at once). kind "code": a long code listing or log. kind "patch": a git patch / unified diff. Returns a handle: "@w1" (widget), "@c1" (code) or "@p1" (patch) -- ONLY handles returned by this tool exist; never invent one. In the deck yaml write html: "@w1" for a widget visual, code: "@c1" for a code visual; the text replaces the handle when the deck is validated and saved. ALWAYS use this for a widget and for any code longer than ~10 lines.',
-                obj({ kind: { type: 'string', enum: ['widget', 'code', 'patch'] }, content: { type: 'string', description: 'The text itself, exactly as it should appear (no yaml, no extra escaping).' } }, ['kind', 'content']),
-                function (a) { return this._deckRun().snippets.define(a.kind, a.content); });
+                obj({ kind: { type: 'string', enum: ['widget', 'code', 'patch'] }, content: { type: 'string', description: 'The text itself, exactly as it should appear (no yaml, no extra escaping).' }, snippets: { type: 'array', description: 'Several snippets in ONE call: [{kind, content}, ...] (use this instead of kind / content when the deck has more than one code listing or widget). Every valid one is stored; the result lists each handle in order, and an error for the ones that were refused.', items: { type: 'object', properties: { kind: { type: 'string', enum: ['widget', 'code', 'patch'] }, content: { type: 'string' } }, required: ['kind', 'content'] } } }, []),
+                function (a) {
+                    const sn = this._deckRun().snippets;
+                    if (Array.isArray(a.snippets) && a.snippets.length) {
+                        const results = a.snippets.slice(0, 20).map((x, i) => { const r = sn.define(x && x.kind, x && x.content); return r.error ? { index: i, ok: false, error: r.error } : { index: i, ok: true, kind: x.kind, handle: r.handle, chars: r.chars, use: r.use }; });
+                        const bad = results.filter((r) => !r.ok);
+                        return { ok: bad.length === 0, handles: results.filter((r) => r.ok), errors: bad, note: bad.length ? 'the others are stored; fix only the refused ones and send them again' : undefined };
+                    }
+                    if (!a.kind) return { error: 'give kind and content, or snippets: [{kind, content}, ...]' };
+                    return sn.define(a.kind, a.content);
+                });
             tool('begin_presentation',
                 'Start a LONG presentation (more than ~12 minutes / ~25 slides) that you will write in several batches -- all of it stays ONE deck. "deck" = the deck settings as a yaml mapping (title, lang, speed, voice, style, environment). Returns a draft id for add_chapters.',
                 obj({ name: { type: 'string' }, deck: { type: 'string', description: 'Deck settings as yaml, e.g. "title: Product User Guide\\nlang: zh-TW\\nspeed: 1.5".' } }, ['deck']),
@@ -643,15 +764,22 @@ const FaDeckTools = (function () {
                 obj({ topic: { type: 'string', enum: ['format', 'layout', 'visuals', '3d', 'cues', 'interactive', 'ai_features', 'sources', 'style'] } }, ['topic']),
                 async function (a) {
                     const topic = String(a.topic || '');
+                    const run = this._deckRun(); run.topicsGiven = run.topicsGiven || {};
+                    if (run.topicsGiven[topic]) { run.topicsGiven[topic]++; return { ok: true, topic, already_given: true, note: 'You already have the "' + topic + '" rules above in this conversation (this is call #' + run.topicsGiven[topic] + '). Use them; do not ask again -- write the deck now.' }; }
                     const T = (typeof FA_DECK_SRC !== 'undefined' && FA_DECK_SRC.topics) || {};
                     const details = topic === 'ai_features' ? this._deckAiFeaturesText() : T[topic];
                     if (!details) return { error: 'unknown topic ' + JSON.stringify(topic) + ' -- must be one of: ' + Object.keys(T).join(', ') };
+                    run.topicsGiven[topic] = 1;
                     return { ok: true, topic, details };
                 });
             tool('get_presentation_yaml',
                 'Fetch the exact yaml of an existing presentation by its file id or url (the "file_id" / "url" of an earlier render_presentation result; default: the latest presentation of this conversation). Call this before changing a presentation made earlier -- edit THAT yaml, never re-write it from memory.',
                 obj({ file_id: { type: 'string' } }),
                 async function (a) { const key = a.file_id || this._latestDeckUrl; if (!key) return { error: 'no presentation in this conversation yet' }; return { ok: true, yaml: await this._deckReadYaml(key) }; });
+            tool('verify_presentation',
+                'Re-run every check on a presentation that is already saved (the same rules render_presentation applies) and check that the files it points at (pictures, videos, uploaded scenes) still exist. "file_id" = the presentation\'s file id or url (default: the latest of this conversation). Returns {"ok":true,...} with warnings, or the list of problems with their field paths and the files that are gone.',
+                obj({ file_id: { type: 'string' } }),
+                async function (a) { return this._deckVerify(a); });
             tool('open_existing_presentation',
                 'Show a previously saved presentation (a .deck.yaml file made by render_presentation, or one the user uploaded) again as a player. "file_id" = its file id.',
                 obj({ file_id: { type: 'string' } }, ['file_id']),
@@ -784,6 +912,6 @@ const FaDeckTools = (function () {
             return lines.join('\n');
         },
     };
-    return { methods, Snippets, ImageCatalog, estimateMinutes, resolveImages, visualNodes, eachSlide, SYSTEM_PROMPT, DOMAIN_TOOLS, STRICT_WARNING, MAX_DECK_MINUTES };
+    return { methods, Snippets, ImageCatalog, autoQuoteYaml, deckLeftovers, estimateMinutes, resolveImages, visualNodes, eachSlide, SYSTEM_PROMPT, DOMAIN_TOOLS, STRICT_WARNING, MAX_DECK_MINUTES };
 })();
 if (typeof module === 'object' && module.exports) module.exports = FaDeckTools;

@@ -1464,7 +1464,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     file_analysis: {
         enabled: true,
         label: '檔案解讀分析（僅限使用者上傳的檔案，不含真實磁碟資料夾；含圖片轉PDF、合併PDF）',
-        toolNames: ['list_uploaded_files', 'parse_uploaded_file', 'attachment_apply_patch', 'summarize_large_text', 'interpret_image', 'compare_images', 'extract_pptx_images', 'merge_pdfs', 'images_to_pdf', 'remove_pdf_pages', 'extract_pdf_pages', 'extract_pdf_images'],
+        toolNames: ['list_uploaded_files', 'parse_uploaded_file', 'article_outline', 'article_section', 'attachment_apply_patch', 'summarize_large_text', 'interpret_image', 'compare_images', 'extract_pptx_images', 'merge_pdfs', 'images_to_pdf', 'remove_pdf_pages', 'extract_pdf_pages', 'extract_pdf_images'],
         // tw_stock_db客製: 2026-09-15使用者實測回報＋明確要求——「解析他看
         // 不懂，讀取並分析才看得懂」：同一個任務，措辭用「解析」時反覆撞到
         // 空白回應，改用「讀取並分析」就正常。追查發現根因不是模型對這兩個
@@ -1517,7 +1517,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     coding: {
         enabled: true,
         label: '程式設計（評估／需求分析／設計計畫／git patch實作／語法檢查／測試／發佈，可中斷恢復）',
-        toolNames: ['uml_to_code', 'design_choices', 'uml_design', 'uml_guide', 'uml_edit', 'intent_parse', 'uml_to_wasm', 'plan_route', 'ask_user_card', 'log_learn', 'log_ask', 'mix_understand', 'mix_highlight', 'glue_list', 'glue_define', 'glue_report', 'list_file_access_points', 'fap_list_files', 'fap_find_file', 'repo_map', 'repo_ask', 'repo_sql', 'repo_read_doc', 'repo_wiki', 'explain_code', 'behavior_define', 'coding_workspace', 'coding_read_file', 'apply_git_patch', 'git_inspect', 'git_commit', 'git_push', 'coding_task_state', 'coding_run_check', 'coding_run_tests', 'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'terminal_cp_to', 'terminal_cp_from', 'browser_search', 'fetch_web_page'],
+        toolNames: ['uml_to_code', 'design_choices', 'uml_design', 'uml_guide', 'uml_edit', 'intent_parse', 'uml_to_wasm', 'plan_route', 'ask_user_card', 'log_learn', 'log_ask', 'mix_understand', 'mix_highlight', 'glue_list', 'glue_define', 'glue_report', 'list_file_access_points', 'fap_list_files', 'fap_find_file', 'repo_map', 'repo_ask', 'repo_sql', 'repo_read_doc', 'repo_wiki', 'explain_code', 'behavior_define', 'coding_workspace', 'coding_read_file', 'apply_git_patch', 'git_inspect', 'git_commit', 'git_push', 'coding_task_state', 'coding_run_check', 'coding_run_tests', 'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'terminal_cp_to', 'terminal_cp_from', 'browser_search', 'fetch_web_page', 'article_outline', 'article_section'],
         systemPrompt: _faBuildCodingSystemPrompt({ kind: 'web' }),
     },
     // tw_stock_db客製: 2026-09-20使用者要求——skills domain：建立Claude格式的skill（SKILL.md＋scripts/references）。
@@ -1642,7 +1642,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     browser_search: {
         enabled: false,
         label: '網路搜尋（Wiki/StackOverflow/GitHub/網頁/Google新聞/SourceForge/CodeProject/DeepWiki）',
-        toolNames: ['browser_search', 'fetch_web_page'],
+        toolNames: ['browser_search', 'fetch_web_page', 'article_outline', 'article_section'],
         // tw_stock_db客製: 2026-09-17使用者回報「問AI'最新LLM model'，他
         // 沒辦到」——browser_search本身只回傳標題+極短摘要（見那個工具自己
         // 的description），遇到需要具體細節（例如「最新LLM model有哪些」
@@ -2758,7 +2758,7 @@ for (const [kkey, kd] of Object.entries(FA_PROG_KNOWLEDGE)) {
         enabled: true,
         label: kd.label + '知識助理（問答與引導，不改專案；查知識卡片，回答簡短）',
         category: 'programming',
-        toolNames: ['programming_knowledge'].concat(kkey === 'uefi' ? ['uefi_parse'] : []).concat(['browser_search', 'fetch_web_page']),
+        toolNames: ['programming_knowledge'].concat(kkey === 'uefi' ? ['uefi_parse'] : []).concat(['browser_search', 'fetch_web_page', 'article_outline', 'article_section']),
         systemPrompt: _faBuildKnowledgePrompt(kkey, kd.label, kd.playbook),
     };
 }
@@ -2766,7 +2766,7 @@ SUBAGENT_DOMAIN_REGISTRY.lang_explorer = {
     enabled: true,
     label: '不認識的程式語言／框架探索（上網查資料→入門摘要→詢問使用者要成為新領域或記到RAG）',
     category: 'programming',
-    toolNames: ['language_explore', 'programming_knowledge', 'browser_search', 'fetch_web_page', 'rag_query_graph'],
+    toolNames: ['language_explore', 'programming_knowledge', 'browser_search', 'fetch_web_page', 'article_outline', 'article_section', 'rag_query_graph'],
     systemPrompt: _faBuildLangExplorerPrompt(),
 };
 SUBAGENT_DOMAIN_REGISTRY.wiki_writer = {
@@ -2789,14 +2789,14 @@ SUBAGENT_DOMAIN_REGISTRY.offline_knowledge_expander = {
     enabled: true,
     label: '離線訓練器知識擴充（上網查官方資料，補錯誤碼、命令與選項、API 語意、pragma，以及文法 pattern、語意、分詞規則、組合語言、建置系統）',
     category: 'programming',
-    toolNames: ['ref_lookup', 'ref_define', 'ref_types', 'ref_resolve', 'ref_validate', 'image_parts_teach', 'image_parts_annotate', 'image_rig_animate', 'lookup_error_code', 'explain_command_line', 'offline_trainer', 'behavior_define', 'explain_code', 'browser_search', 'fetch_web_page', 'fap_read_file', 'fs_read_file'],
+    toolNames: ['ref_lookup', 'ref_define', 'ref_types', 'ref_resolve', 'ref_validate', 'image_parts_teach', 'image_parts_annotate', 'image_rig_animate', 'lookup_error_code', 'explain_command_line', 'offline_trainer', 'behavior_define', 'explain_code', 'browser_search', 'fetch_web_page', 'article_outline', 'article_section', 'fap_read_file', 'fs_read_file'],
     systemPrompt: '你是 FloatingAssistant 的「離線訓練器知識擴充」助理。目標：讓離線模式（沒有 AI 時）也能讀懂更多東西。使用者會給一個主題（例如「Windows 的 HRESULT 檔案系統相關錯誤」「clang 的常用選項」「RISC-V 向量指令」「Bazel 建置檔」）。\n你能補的種類（ref_define 的 kind）：error_code（錯誤碼：system、code、name、message、note）、command（命令：name、aliases、summary、synopsis、options）、option（單一選項：command、flag、arg、desc）、pragma 與 clause（編譯指示與子句）、api（函式的引數與回傳值語意）、mnemonic（組合語言指令：arch、category、name、description）、idiom（多指令組合）、signature（函式名稱歸進哪個行為分類）、grammar_pattern（文法樣式：某語言的句型怎麼辨識，附範例）、semantics（概念或行為的語意說明）、tokenizer（分詞規則：rules 是 name 與 re 的清單）、build_system（建置系統：辨識檔案、常用命令與目標、變數的意義）、assembly（某架構的組合語言慣例、呼叫約定、暫存器用途）。\n做法：0) 若主題是「補日誌診斷規則」，先用 ref_define({action:"queue"}) 看待學習清單（診斷過但沒有規則的錯誤行），逐項處理；規則用 kind "build_error_rule" 寫入，必須附 example（一行真實日誌，用來驗證規則真的比對得到）與 source；1) 把主題拆成要補的小項目；2) 先查現有（ref_lookup）；3) 找官方資料並讀懂；4) 用 ref_define 寫入，每筆附 source；5) 重新查詢驗證；6) 回報。\n' + FA_EXPAND_COMMON,
 };
 SUBAGENT_DOMAIN_REGISTRY.aidoc_knowledge_expander = {
     enabled: true,
     label: 'AIDoc 行為說明擴充（讀程式碼找出還不認得的呼叫、錯誤碼、pragma、組語，查官方資料後補進定義，讓行為說明越來越完整）',
     category: 'programming',
-    toolNames: ['explain_code', 'behavior_define', 'ref_lookup', 'ref_define', 'lookup_error_code', 'explain_command_line', 'repo_map', 'repo_ask', 'repo_sql', 'repo_read_doc', 'coding_read_file', 'fap_read_file', 'fs_read_file', 'browser_search', 'fetch_web_page'],
+    toolNames: ['explain_code', 'behavior_define', 'ref_lookup', 'ref_define', 'lookup_error_code', 'explain_command_line', 'repo_map', 'repo_ask', 'repo_sql', 'repo_read_doc', 'coding_read_file', 'fap_read_file', 'fs_read_file', 'browser_search', 'fetch_web_page', 'article_outline', 'article_section'],
     systemPrompt: '你是 FloatingAssistant 的「AIDoc 行為說明擴充」助理。目標：讓程式的行為說明（explain_code、/aidoc explain、檢視器的行為說明）越來越準、越來越完整。\n流程：1) 用 explain_code（帶 root 與 path，或 text）取得行為說明，看結果最後的「還不認得的呼叫」「沒有收錄的 pragma」「沒有收錄的選項」；2) 讀那些呼叫所屬的函式庫文件或原始碼，弄清楚它做什麼、每個引數的意義、回傳值各種情況的意義；3) 用 behavior_define 補（add_api：函式的引數與回傳值語意；add_note：某個函式一句話說明；add_signature：把名稱歸進行為分類；add_mnemonic／add_idiom：組合語言）；錯誤碼、命令選項、pragma 用 ref_define 補；4) 再跑一次 explain_code 驗證新定義有生效、說明正確；5) 回報。\n也可以由專案的程式碼出發：先用 repo_ask 找出專案常用的、還沒有說明的函式庫呼叫，再依序補。\n' + FA_EXPAND_COMMON,
 };
 
@@ -16817,6 +16817,155 @@ const holder = {};
 return holder.FaAgentModel;
 })();
 /* AGM-END */
+/* ARTOUT-BEGIN */
+const FaArticleOutline = (function () {
+const holder = {};
+(function (module, self) {
+/* 長文章的目錄與分段閱讀（純函式，UMD）：外面的 wiki、新聞、一整本小說、上傳的文件都用同一套。
+ * 做法：先看目錄（各章節的標題、層級、字數），再挑要讀的章節，不用一直翻頁讀不完。
+ *   outline(text)                 → { style, total_chars, sections:[{ n, level, title, start, end, chars, preview }] }
+ *   sectionText(text, outline, which, { offset, maxChars }) → { section, content, offset, has_more, next_offset }
+ * 標題的認法（依序試，第一種找到 2 個以上就用它）：Markdown（#）、MediaWiki（== 標題 ==）、Textile（h2.）、
+ *   HTML（<h2>）、底線式標題（標題下一行是 === 或 ---）、小說章回（第一章／第十二回／Chapter 3／序章／楔子／尾聲）、
+ *   編號標題（1. 簡介、1.2 背景、一、緒論）。都認不出來就依段落切成大小差不多的幾份。
+ * 程式碼區塊（```）裡的 # 不算標題。 */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaArticleOutline = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var MAX_SECTIONS = 300, PREVIEW = 60, FALLBACK_TARGET = 6000;
+  var CN_NUM = '零〇一二三四五六七八九十百千萬两兩壹貳參叁肆伍陸柒捌玖拾佰仟0-9０-９';
+
+  function lineStarts(text) { var out = [0], i = -1; while ((i = text.indexOf('\n', i + 1)) >= 0) out.push(i + 1); return out; }
+  function strip(s) { return String(s).replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim(); }
+
+  // 每種寫法一個偵測器：回傳 [{ start, level, title }]（start 是該標題行在全文的起點）
+  var DETECTORS = [
+    { style: 'markdown', find: function (lines, starts) {
+      var out = [], fence = false;
+      for (var i = 0; i < lines.length; i++) {
+        if (/^\s*(```|~~~)/.test(lines[i])) { fence = !fence; continue; }
+        if (fence) continue;
+        var m = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(lines[i]); if (m) out.push({ start: starts[i], level: m[1].length, title: strip(m[2]) });
+      }
+      return out;
+    } },
+    { style: 'mediawiki', find: function (lines, starts) {
+      var out = [];
+      for (var i = 0; i < lines.length; i++) { var m = /^(={2,6})\s*(.+?)\s*\1\s*$/.exec(lines[i]); if (m) out.push({ start: starts[i], level: m[1].length - 1, title: strip(m[2]) }); }
+      return out;
+    } },
+    { style: 'textile', find: function (lines, starts) {
+      var out = [];
+      for (var i = 0; i < lines.length; i++) { var m = /^h([1-6])\.\s+(.+)$/.exec(lines[i]); if (m) out.push({ start: starts[i], level: +m[1], title: strip(m[2]) }); }
+      return out;
+    } },
+    { style: 'html', find: function (lines, starts) {
+      var out = [];
+      for (var i = 0; i < lines.length; i++) { var m = /^\s*<h([1-6])[^>]*>(.*?)<\/h\1>\s*$/i.exec(lines[i]); if (m) out.push({ start: starts[i], level: +m[1], title: strip(m[2]) }); }
+      return out;
+    } },
+    { style: 'underline', find: function (lines, starts) {
+      var out = [];
+      for (var i = 0; i + 1 < lines.length; i++) {
+        if (!lines[i].trim() || lines[i].length > 120) continue;
+        var u = /^\s*(={3,}|-{3,})\s*$/.exec(lines[i + 1]); if (u && !/^\s*(={3,}|-{3,})\s*$/.test(lines[i])) out.push({ start: starts[i], level: u[1][0] === '=' ? 1 : 2, title: strip(lines[i]) });
+      }
+      return out;
+    } },
+    { style: 'chapters', find: function (lines, starts) {
+      // 小說：第一章／第十二回／第3節／卷二、Chapter 3、CHAPTER IV、序章、楔子、引子、尾聲、後記、番外
+      var re = new RegExp('^\\s*(第[' + CN_NUM + ']+[章回節节卷部篇集話话幕].{0,60}|[卷篇部][' + CN_NUM + ']+.{0,40}|(?:chapter|part|book|section)\\s+(?:[0-9]+|[ivxlcdm]+|one|two|three|four|five|six|seven|eight|nine|ten)\\b.{0,60}|(?:序章|序幕|序言|序|楔子|引子|前言|後記|后记|尾聲|尾声|終章|终章|番外[^\\n]{0,30}|附錄[^\\n]{0,30}|prologue|epilogue|preface|afterword)\\s*[:：]?.{0,40})\\s*$', 'i');
+      var out = [];
+      for (var i = 0; i < lines.length; i++) {
+        var ln = lines[i]; if (ln.length > 90) continue;
+        var m = re.exec(ln); if (m) out.push({ start: starts[i], level: /^\s*[卷篇部]|^\s*(part|book)\b/i.test(ln) ? 1 : 2, title: strip(ln) });
+      }
+      return out;
+    } },
+    { style: 'numbered', find: function (lines, starts) {
+      var out = [];
+      for (var i = 0; i < lines.length; i++) {
+        var ln = lines[i]; if (ln.length > 80 || !ln.trim()) continue;
+        var m = /^\s*(\d+(?:\.\d+){0,3})[.)、．]?\s+(\S.{0,70})$/.exec(ln) || /^\s*([一二三四五六七八九十]+)[、.．]\s*(\S.{0,70})$/.exec(ln);
+        if (m && !/[。！？!?]$/.test(ln.trim())) out.push({ start: starts[i], level: /^\d/.test(m[1]) ? m[1].split('.').length : 1, title: strip(ln) });
+      }
+      return out;
+    } },
+  ];
+
+  function fallbackSections(text) {
+    // 沒有標題：依空行把段落湊成差不多大的幾份
+    var out = [], pos = 0, n = text.length;
+    while (pos < n) {
+      var end = Math.min(n, pos + FALLBACK_TARGET);
+      if (end < n) { var br = text.indexOf('\n\n', end); end = br >= 0 && br - end < FALLBACK_TARGET ? br + 2 : Math.min(n, end); }
+      var first = text.slice(pos, end).trim().split('\n')[0] || '';
+      out.push({ start: pos, level: 1, title: '第 ' + (out.length + 1) + ' 段：' + strip(first).slice(0, 30) });
+      pos = end;
+    }
+    return out;
+  }
+
+  function outline(text, opts) {
+    opts = opts || {};
+    text = String(text == null ? '' : text).replace(/\r\n/g, '\n');
+    var total = text.length, lines = text.split('\n'), starts = lineStarts(text);
+    var found = null, style = 'paragraphs';
+    for (var d = 0; d < DETECTORS.length; d++) {
+      var hits = DETECTORS[d].find(lines, starts);
+      if (hits.length >= 2 || (hits.length === 1 && total > 20000 && DETECTORS[d].style === 'markdown')) { found = hits; style = DETECTORS[d].style; break; }
+    }
+    if (!found) found = fallbackSections(text);
+    // 層級太多時只留上層，目錄不要比文章還長
+    if (found.length > MAX_SECTIONS) { var maxLv = 1; for (var lv = 6; lv >= 1; lv--) { if (found.filter(function (h) { return h.level <= lv; }).length <= MAX_SECTIONS) { maxLv = lv; break; } } found = found.filter(function (h) { return h.level <= maxLv; }).slice(0, MAX_SECTIONS); }
+    var depth = Number(opts.max_depth); if (depth >= 1) found = found.filter(function (h) { return h.level <= depth; });
+    var sections = [];
+    // 第一個標題之前的文字（前言、摘要）自成一節
+    if (found.length && text.slice(0, found[0].start).replace(/\s+/g, '').length > 10 && style !== 'paragraphs') sections.push({ start: 0, level: 1, title: '（開頭：第一個標題之前）' });
+    found.forEach(function (h) { sections.push(h); });
+    sections.forEach(function (s, i) {
+      s.n = i + 1; s.end = i + 1 < sections.length ? sections[i + 1].start : total; s.chars = s.end - s.start;
+      var body = text.slice(s.start, s.end).split('\n').slice(1).join(' ').replace(/\s+/g, ' ').trim();
+      s.preview = body.slice(0, PREVIEW);
+    });
+    return { style: style, total_chars: total, count: sections.length, sections: sections };
+  }
+
+  // which：章節編號（數字）、標題的一部分（字串）、或 { from, to } 連續幾節
+  function pick(ol, which) {
+    if (which && typeof which === 'object' && which.from != null) {
+      var a = Math.max(1, Math.floor(+which.from)), b = Math.min(ol.sections.length, Math.floor(+which.to || a));
+      if (!(a >= 1) || a > ol.sections.length) return null;
+      return { from: ol.sections[a - 1], to: ol.sections[Math.max(a, b) - 1], label: a === b ? ol.sections[a - 1].title : '第 ' + a + '–' + b + ' 節' };
+    }
+    if (typeof which === 'number' || /^\d+$/.test(String(which))) { var s = ol.sections[+which - 1]; return s ? { from: s, to: s, label: s.title } : null; }
+    var q = String(which == null ? '' : which).trim().toLowerCase(); if (!q) return null;
+    var hit = ol.sections.filter(function (s) { return s.title.toLowerCase() === q; })[0] || ol.sections.filter(function (s) { return s.title.toLowerCase().indexOf(q) >= 0; })[0];
+    return hit ? { from: hit, to: hit, label: hit.title } : null;
+  }
+
+  function sectionText(text, ol, which, opts) {
+    opts = opts || {};
+    text = String(text == null ? '' : text).replace(/\r\n/g, '\n');
+    var p = pick(ol, which);
+    if (!p) return { error: 'no such section: ' + JSON.stringify(which) + ' (sections 1.. ' + ol.sections.length + '; give the number from article_outline, part of its title, or {from, to})' };
+    var start = p.from.start, end = p.to.end, total = end - start;
+    var budget = Math.max(500, Math.min(120000, Math.floor(+opts.maxChars || 12000)));
+    var off = Math.max(0, Math.min(total, Math.floor(+opts.offset || 0)));
+    var stop = Math.min(total, off + budget);
+    if (stop < total) { var nl = text.lastIndexOf('\n', start + stop); if (nl > start + off + budget * 0.5) stop = nl + 1 - start; }
+    var more = stop < total;
+    return { section: p.label, from_section: p.from.n, to_section: p.to.n, content: text.slice(start + off, start + stop), offset: off, returned_chars: stop - off, section_chars: total, has_more: more, next_offset: more ? stop : null };
+  }
+
+  return { outline: outline, sectionText: sectionText, pick: pick };
+});
+
+}).call(null, undefined, holder);
+return holder.FaArticleOutline;
+})();
+/* ARTOUT-END */
 /* WEB-BEGIN */
 const FaWebEdit = (function () {
 const holder = {};
@@ -30281,6 +30430,7 @@ const FaDeckTools = (function () {
                         const path = 'chapters[' + ci + '].slides[' + si + '].visual' + (k ? '.items[' + (k - 1) + ']' : '');
                         const spec = FIELDS[v.kind] || {};
                         Object.keys(spec).forEach((field) => {
+                            if ((typeof v[field] !== 'string' || !v[field].trim()) && typeof v.src === 'string' && HANDLE.test(v.src.trim())) { v[field] = v.src.trim(); delete v.src; } // 代號寫在 src：移到它該在的欄位
                             if (typeof v[field] !== 'string' || !HANDLE.test(v[field].trim())) return;
                             const handle = v[field].trim();
                             if (this.store[handle] !== undefined && spec[field].indexOf(this.kinds[handle]) >= 0) {
@@ -30351,6 +30501,54 @@ const FaDeckTools = (function () {
         }
     }
 
+
+    // ---------------------------------------------------------------- YAML 機械性小錯：自動補引號再重試（不改文字，只加引號與跳脫）
+    // 常見的壞法：值裡有「: 」（冒號加空白）、值裡有「 #」（會被當註解）、@c1 這種代號沒加引號、句中引號、缺結尾引號。
+    // 只在第一次解析失敗時才用，而且只動「看起來有問題」的那幾行；區塊文字（| 與 >）裡面完全不碰。
+    // 這一行（縮排 indent）是哪個 key 底下的清單項目：往上找最近一個「key:」（後面沒有值）的行
+    function listParentKey(lines, i, indent) {
+        for (let j = i - 1; j >= 0; j--) {
+            const l = lines[j]; if (!l.trim() || /^\s*#/.test(l)) continue;
+            const ind = l.length - l.replace(/^ +/, '').length;
+            if (/^\s*-\s/.test(l) && ind >= indent) continue; // 同一個清單的前一項
+            if (ind > indent) continue;
+            const m = /^\s*([A-Za-z_][\w-]*):\s*$/.exec(l); return m && ind <= indent ? m[1] : null;
+        }
+        return null;
+    }
+    function autoQuoteYaml(text) {
+        const lines = String(text == null ? '' : text).replace(/\r\n/g, '\n').split('\n');
+        const fixed = []; let blockIndent = -1;
+        const quote = (v) => '"' + v.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+        const closesProperly = (v) => { // "…" 開頭，第一個沒跳脫的結尾引號剛好在最後
+            let i = 1; while (i < v.length) { if (v[i] === '\\') { i += 2; continue; } if (v[i] === '"') break; i++; }
+            return i === v.length - 1;
+        };
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i]; const indent = line.length - line.replace(/^ +/, '').length;
+            if (blockIndent >= 0) { if (line.trim() === '' || indent > blockIndent) continue; blockIndent = -1; }
+            if (/^\s*#/.test(line) || !line.trim()) continue;
+            const prefix = /^\s*(?:-\s+)*/.exec(line)[0]; let rest = line.slice(prefix.length);
+            let key = '';
+            // 文字清單（bullets）裡的「說明: 內容」是一句話，不是一組 key: value：整句加引號（不加的話 YAML 會把它讀成物件）
+            if (/^\s*-\s/.test(line) && !/^["'\[{]/.test(rest) && /^[^:]{1,40}:(\s|$)/.test(rest) && listParentKey(lines, i, indent) === 'bullets') {
+                const whole = rest.replace(/\s+$/, ''); if (whole) { lines[i] = prefix + quote(whole); fixed.push(i + 1); continue; }
+            }
+            const km = /^([^\s:#"'\[\]{},&*!|>%@`-][^:#"'\[\]{}]*?|"[^"]*"):(\s+|$)/.exec(rest);
+            if (km) { key = km[0]; rest = rest.slice(km[0].length); }
+            const v = rest.replace(/\s+$/, '');
+            if (!v) continue;
+            if (/^[|>][-+0-9]*$/.test(v)) { blockIndent = indent; continue; }
+            let out = null;
+            if (v[0] === '"') { if (!closesProperly(v)) out = (v.length > 1 && v[v.length - 1] === '"' && !/\\$/.test(v.slice(0, -1)) ? '"' + v.slice(1, -1).replace(/(^|[^\\])"/g, '$1\\"') + '"' : (/^"(?:[^"\\]|\\.)*"\s*\S/.test(v) ? quote(v) : v + '"')); }
+            else if (v[0] === "'") { if (!(v.length > 1 && v[v.length - 1] === "'")) out = quote(v); }
+            else if (v[0] === '[' || v[0] === '{') { const q = v.replace(/([:\[,]\s*)(@[a-z]\d+)(?=\s*[,}\]])/g, '$1"$2"'); if (q !== v) out = q; } // 一行的 { } 與 [ ]：只把沒加引號的 @c1 代號補上引號
+            else if (/: |:$| #|^[@`%*&!?]|^- /.test(v)) out = quote(v);
+            if (out && out !== v) { lines[i] = prefix + key + out; fixed.push(i + 1); }
+        }
+        return { text: lines.join('\n'), fixed };
+    }
+
     // ---------------------------------------------------------------- 估算與文件走訪
     function estimateMinutes(doc) {
         if (!doc || !Array.isArray(doc.chapters)) return 0;
@@ -30411,6 +30609,45 @@ const FaDeckTools = (function () {
         return problems;
     }
 
+
+    // ---------------------------------------------------------------- 存檔前額外拒絕的幾種殘留（在 handle 換成文字之後檢查）
+    const isUrlLike = (v) => /^(https?:\/\/|client-file\/|data:)/i.test(String(v || '').trim());
+    function deckLeftovers(data) {
+        const problems = [];
+        if (!data || !Array.isArray(data.chapters)) return problems;
+        const codeUse = {};
+        eachSlide(data, (slide, path) => {
+            visualNodes(slide.visual).forEach((v, k) => {
+                const np = path + '.visual' + (k ? '.items[' + (k - 1) + ']' : '');
+                if (v.kind === 'code') {
+                    if (typeof v.src === 'string' && v.src.trim() && !isUrlLike(v.src)) problems.push(np + '.src: "' + v.src.slice(0, 60) + '" is not a url -- a code visual takes its text in  code: "@c1"  (a handle from define_snippet), not in src');
+                    if (typeof v.code === 'string' && v.code.trim().length >= 80) {
+                        const key = v.code.trim(), title = String(slide.title || '').trim();
+                        (codeUse[key] = codeUse[key] || []).push({ title, path: np });
+                    }
+                }
+                if (v.kind === 'widget') {
+                    const html = typeof v.html === 'string' ? v.html.trim() : '';
+                    if (!html && typeof v.src === 'string' && v.src.trim() && !isUrlLike(v.src)) problems.push(np + ': a widget needs its full html  html: "@w1"  (define_snippet kind widget first); "' + v.src.slice(0, 60) + '" is only a file name and there is no such file');
+                    else if (!html) problems.push(np + '.html: missing -- give the whole game as define_snippet(kind: "widget") and write html: "@w1"');
+                }
+                if (v.kind === 'image' && typeof v.src === 'string' && /^@[a-z]\d+$/.test(v.src.trim()) && !/^@img\d+$/.test(v.src.trim())) problems.push(np + '.src: "' + v.src.trim() + '" is a code / widget handle, not a picture -- a picture src is "@imgN" from list_source_images');
+            });
+        });
+        Object.keys(codeUse).forEach((key) => {
+            const uses = codeUse[key], titles = Array.from(new Set(uses.map((u) => u.title)));
+            if (uses.length > 1 && titles.length > 1) problems.push(uses[1].path + ': the same code text is used on "' + titles.slice(0, 3).join('" and "') + '" -- slides on different topics need their own code (show the part that slide is about)');
+        });
+        // 任何地方還留著 @c1 這種代號（寫在 bullets、旁白、標題裡等）：沒換成文字就是寫錯欄位
+        const walk = (node, path) => {
+            if (typeof node === 'string') { if (/^@[a-z]\d+$/.test(node.trim()) && !/^@img\d+$/.test(node.trim())) problems.push(path + ': "' + node.trim() + '" is a snippet handle left in the wrong place -- handles only go in  html:  or  code:  of a widget / code visual'); return; }
+            if (Array.isArray(node)) { node.forEach((x, i) => walk(x, path + '[' + i + ']')); return; }
+            if (node && typeof node === 'object') Object.keys(node).forEach((k) => walk(node[k], path + '.' + k));
+        };
+        walk(data.chapters, 'chapters');
+        return problems.slice(0, 40);
+    }
+
     // ---------------------------------------------------------------- 子任務（領域）的系統提示（外掛 MediaPresentationDesignAgent.system_prompt 的移植）
     const SYSTEM_PROMPT = [
         'You are a focused presentation-design assistant working for another AI assistant. Your only job is to produce a real animated slide deck with render_presentation (or begin_presentation / add_chapters / finish_presentation for a long one) and answer briefly -- never describe slides in prose, and never paste deck yaml into your reply. The finished deck is shown to the user automatically as a player in the chat (you do not embed it).',
@@ -30423,7 +30660,7 @@ const FaDeckTools = (function () {
         '',
         'WORKFLOW',
         '1. Call get_presentation_topic for "format" and "visuals" (once per conversation; also "cues" / "sources" / "style" when needed, and "3d" whenever the subject is a physical thing or the user asks for 3D / a 3D presentation).',
-        '2. GATHER THE MATERIAL before writing anything: read the files / pages the request points at with your tools (list_uploaded_files + parse_uploaded_file for uploaded files, fap_read_file / repo_ask for the user\'s folders, the "material" section the main assistant may have attached, text of web pages it read). Read ALL of a long source. Then call list_source_images: every picture the sources contain is there as "@img1", "@img2" ... Bring in other pictures with import_fap_image (a picture file in a folder) or import_image_url (a picture on a website).',
+        '2. GATHER THE MATERIAL before writing anything: read the files / pages the request points at with your tools (list_uploaded_files + parse_uploaded_file for uploaded files, fap_read_file / repo_ask for the user\'s folders, the "material" section the main assistant may have attached, text of web pages it read). Read ALL of a long source -- a long article (a wiki page, a news story, a whole novel, a long document) is read by its table of contents: article_outline(url | file_id) lists the sections with their sizes, then article_section(...) reads the ones you need (all of them, one after another, for a deck that covers the whole text) -- never page blindly through it. Then call list_source_images: every picture the sources contain is there as "@img1", "@img2" ... Bring in other pictures with import_fap_image (a picture file in a folder) or import_image_url (a picture on a website).',
         '   TOOLS OF THE APP COME FIRST: when this task\'s prompt also lists tools of the app / website the user is in, the data and pictures that app itself holds (records, charts, analyses, lists) MUST come from those tools -- never open a browser, search the web or guess numbers for something such a tool returns. A tool that returns a picture (a chart) puts its "client-file/<id>" in meta.client_file_url: use that (it is also listed by list_source_images as an "@imgN" handle).',
         '   THE SOURCES THE USER NAMES ARE WHERE TO START, NOT THE LIMIT. If the request names none, or they hold too little, never answer "I found no document / please give me ..." -- that is a failed job. Call get_presentation_topic("ai_features") when the subject is this AI itself, and fill what remains from your own knowledge (see the "sources" topic). A deck from general knowledge is a normal, complete result.',
         '3. DIGEST, do not copy: decide the storyline (chapters -> slides), what each slide\'s one point is, which picture/table/diagram shows it, and what the narration says. Tables in the source become table visuals; screenshots and diagrams become image visuals with callouts at the parts you talk about; processes and relationships you draw yourself as shapes/mermaid with the steps revealed in step with the narration. Use the source\'s real pictures wherever they carry information. Never invent figures, data or real-world pictures (photos, screenshots, charts) that no tool returned -- illustrations the request asks for that you draw yourself are a different thing (see the rule on drawing below); where the sources lack something, explain it from general knowledge (saying it is general) or omit it.',
@@ -30464,7 +30701,7 @@ const FaDeckTools = (function () {
     ].join('\n');
 
     // 領域登記用的工具名稱（子任務只看得到這些）
-    const DOMAIN_TOOLS = ['render_presentation', 'begin_presentation', 'add_chapters', 'finish_presentation', 'define_snippet', 'get_presentation_topic',
+    const DOMAIN_TOOLS = ['render_presentation', 'begin_presentation', 'add_chapters', 'finish_presentation', 'define_snippet', 'verify_presentation', 'article_outline', 'article_section', 'get_presentation_topic',
         'get_presentation_yaml', 'open_existing_presentation', 'list_source_images', 'cute_picture', 'make_object_sprite', 'make_character_sprite', 'pixel_art', 'import_uploaded_image', 'import_image_url', 'import_fap_image', 'get_3d_scene_topic',
         'list_uploaded_files', 'parse_uploaded_file', 'summarize_large_text', 'list_file_access_points', 'fap_list_files', 'fap_find_file', 'fap_read_file',
         'repo_ask', 'repo_read_doc',
@@ -30533,6 +30770,8 @@ const FaDeckTools = (function () {
         },
         _deckParseYaml(text) {
             try { return { data: window.jsyaml.load(String(text)) }; } catch (e) {
+                const af = autoQuoteYaml(text);
+                if (af.fixed.length) { try { const data = window.jsyaml.load(af.text); if (data && typeof data === 'object') return { data, fixes: af.fixed }; } catch (_) { /* 補了引號還是不行：照原本的錯誤回報 */ } }
                 return { error: 'yaml could not be parsed: ' + String(e && e.message || e) + '\nHint: a long text (a widget\'s html, code) inside a yaml string is the usual cause -- give it to define_snippet and write the handle (html: "@w1" / code: "@c1"); keep strings short, put a string with a colon or quote in double quotes, indent with spaces only.' };
             }
         },
@@ -30540,7 +30779,7 @@ const FaDeckTools = (function () {
         async _deckCheck(data, toolName) {
             await this._deckEnsureRuntime();
             const Core = window.AiChatDeckCore, run = this._deckRun();
-            const expand = run.snippets.expand(data);
+            const expand = run.snippets.expand(data).concat(deckLeftovers(data));
             if (expand.length) return { error: 'the deck has ' + expand.length + ' problem(s) -- fix them all and call ' + toolName + ' again:\n- ' + expand.join('\n- ') };
             const res = Core.validate(data);
             const problems = res.errors.slice(); const warnings = [];
@@ -30577,6 +30816,26 @@ const FaDeckTools = (function () {
             });
             return problems;
         },
+        // 對已存好的簡報重跑同一套檢查，並看引用的檔案（client-file/…）還在不在
+        async _deckVerify(a) {
+            const key = a.file_id || this._latestDeckUrl; if (!key) return { error: 'no presentation in this conversation yet -- give the file_id' };
+            await this._ensureJsYamlLoaded();
+            let text; try { text = await this._deckReadYaml(key); } catch (e) { return { error: 'cannot read that presentation: ' + String((e && e.message) || e) }; }
+            const parsed = this._deckParseYaml(text); if (parsed.error) return { error: parsed.error };
+            const data = parsed.data;
+            const refs = new Set(); const seen = (n) => { if (typeof n === 'string') { const re = /client-file\/([\w-]+)/g; let m; while ((m = re.exec(n))) refs.add(m[1]); } else if (Array.isArray(n)) n.forEach(seen); else if (n && typeof n === 'object') Object.keys(n).forEach((k) => seen(n[k])); };
+            seen(data && data.chapters);
+            const self = String(key).replace(/^client-file\//, '').replace(/\.deck\.yaml.*$/i, '');
+            const missing = []; for (const id of refs) { if (id === self) continue; let rec = null; try { rec = await this.fileCache.get(id); } catch (_) { /* 當作不見了 */ } if (!rec) missing.push('client-file/' + id); }
+            const checked = await this._deckCheck(data, 'verify_presentation');
+            const problems = []; if (checked.error) problems.push(checked.error);
+            if (missing.length) problems.push('files the presentation uses that no longer exist: ' + missing.slice(0, 20).join(', ') + ' -- re-import them and fix the slides, or the player shows blanks');
+            if (problems.length) return { ok: false, problems, missing_files: missing };
+            return { ok: true, slides: data.chapters.reduce((n, c) => n + (c.slides || []).length, 0), minutes: Math.round(checked.minutes * 10) / 10, files_checked: refs.size, warnings: checked.warnings };
+        },
+        _deckNoteFixes(checked, parsed) {
+            if (parsed && parsed.fixes && parsed.fixes.length) { checked.warnings = (checked.warnings || []).concat('yaml: the text had small quoting mistakes; quotes were added automatically on line(s) ' + parsed.fixes.slice(0, 12).join(', ') + ' (the words were not changed). Put a text that contains ": " or " #" or starts with @ in double quotes next time.'); }
+        },
         async _deckSaveChecked(data, name, checked) {
             const text = window.jsyaml.dump(data, { lineWidth: -1, noRefs: true });
             const saved = await this._deckSaveYaml(text, name || (data.deck && data.deck.title));
@@ -30591,6 +30850,7 @@ const FaDeckTools = (function () {
             const parsed = this._deckParseYaml(yamlText); if (parsed.error) return { error: parsed.error };
             const data = parsed.data;
             const checked = await this._deckCheck(data, 'render_presentation'); if (checked.error) return checked;
+            this._deckNoteFixes(checked, parsed);
             return this._deckSaveChecked(data, String(a.name || (data.deck && data.deck.title) || ''), checked);
         },
         async _deckBeginPresentation(a) {
@@ -30611,6 +30871,7 @@ const FaDeckTools = (function () {
             if (!Array.isArray(chapters) || !chapters.length) return { error: 'yaml must be a list of chapters ("- title: ...\\n  slides: [...]") or {chapters: [...]}' };
             const candidate = { deck: draft.deck, chapters };
             const checked = await this._deckCheck(candidate, 'add_chapters'); if (checked.error) return checked;
+            this._deckNoteFixes(checked, p);
             draft.chapters.push(...candidate.chapters);
             const all = { deck: draft.deck, chapters: draft.chapters };
             return { ok: true, chapters_so_far: draft.chapters.length, slides_so_far: draft.chapters.reduce((n, c) => n + c.slides.length, 0), minutes_so_far: Math.round(estimateMinutes(all) * 10) / 10, warnings: checked.warnings };
@@ -30857,8 +31118,17 @@ const FaDeckTools = (function () {
                 function (a) { return this._deckRender(a); });
             tool('define_snippet',
                 'Store a LONG text for the deck and get a short handle for it, so you never have to put it (and escape it) inside the YAML. kind "widget": the full HTML document of an interactive piece / small game (inline css + js, no network; checked at once). kind "code": a long code listing or log. kind "patch": a git patch / unified diff. Returns a handle: "@w1" (widget), "@c1" (code) or "@p1" (patch) -- ONLY handles returned by this tool exist; never invent one. In the deck yaml write html: "@w1" for a widget visual, code: "@c1" for a code visual; the text replaces the handle when the deck is validated and saved. ALWAYS use this for a widget and for any code longer than ~10 lines.',
-                obj({ kind: { type: 'string', enum: ['widget', 'code', 'patch'] }, content: { type: 'string', description: 'The text itself, exactly as it should appear (no yaml, no extra escaping).' } }, ['kind', 'content']),
-                function (a) { return this._deckRun().snippets.define(a.kind, a.content); });
+                obj({ kind: { type: 'string', enum: ['widget', 'code', 'patch'] }, content: { type: 'string', description: 'The text itself, exactly as it should appear (no yaml, no extra escaping).' }, snippets: { type: 'array', description: 'Several snippets in ONE call: [{kind, content}, ...] (use this instead of kind / content when the deck has more than one code listing or widget). Every valid one is stored; the result lists each handle in order, and an error for the ones that were refused.', items: { type: 'object', properties: { kind: { type: 'string', enum: ['widget', 'code', 'patch'] }, content: { type: 'string' } }, required: ['kind', 'content'] } } }, []),
+                function (a) {
+                    const sn = this._deckRun().snippets;
+                    if (Array.isArray(a.snippets) && a.snippets.length) {
+                        const results = a.snippets.slice(0, 20).map((x, i) => { const r = sn.define(x && x.kind, x && x.content); return r.error ? { index: i, ok: false, error: r.error } : { index: i, ok: true, kind: x.kind, handle: r.handle, chars: r.chars, use: r.use }; });
+                        const bad = results.filter((r) => !r.ok);
+                        return { ok: bad.length === 0, handles: results.filter((r) => r.ok), errors: bad, note: bad.length ? 'the others are stored; fix only the refused ones and send them again' : undefined };
+                    }
+                    if (!a.kind) return { error: 'give kind and content, or snippets: [{kind, content}, ...]' };
+                    return sn.define(a.kind, a.content);
+                });
             tool('begin_presentation',
                 'Start a LONG presentation (more than ~12 minutes / ~25 slides) that you will write in several batches -- all of it stays ONE deck. "deck" = the deck settings as a yaml mapping (title, lang, speed, voice, style, environment). Returns a draft id for add_chapters.',
                 obj({ name: { type: 'string' }, deck: { type: 'string', description: 'Deck settings as yaml, e.g. "title: Product User Guide\\nlang: zh-TW\\nspeed: 1.5".' } }, ['deck']),
@@ -30876,15 +31146,22 @@ const FaDeckTools = (function () {
                 obj({ topic: { type: 'string', enum: ['format', 'layout', 'visuals', '3d', 'cues', 'interactive', 'ai_features', 'sources', 'style'] } }, ['topic']),
                 async function (a) {
                     const topic = String(a.topic || '');
+                    const run = this._deckRun(); run.topicsGiven = run.topicsGiven || {};
+                    if (run.topicsGiven[topic]) { run.topicsGiven[topic]++; return { ok: true, topic, already_given: true, note: 'You already have the "' + topic + '" rules above in this conversation (this is call #' + run.topicsGiven[topic] + '). Use them; do not ask again -- write the deck now.' }; }
                     const T = (typeof FA_DECK_SRC !== 'undefined' && FA_DECK_SRC.topics) || {};
                     const details = topic === 'ai_features' ? this._deckAiFeaturesText() : T[topic];
                     if (!details) return { error: 'unknown topic ' + JSON.stringify(topic) + ' -- must be one of: ' + Object.keys(T).join(', ') };
+                    run.topicsGiven[topic] = 1;
                     return { ok: true, topic, details };
                 });
             tool('get_presentation_yaml',
                 'Fetch the exact yaml of an existing presentation by its file id or url (the "file_id" / "url" of an earlier render_presentation result; default: the latest presentation of this conversation). Call this before changing a presentation made earlier -- edit THAT yaml, never re-write it from memory.',
                 obj({ file_id: { type: 'string' } }),
                 async function (a) { const key = a.file_id || this._latestDeckUrl; if (!key) return { error: 'no presentation in this conversation yet' }; return { ok: true, yaml: await this._deckReadYaml(key) }; });
+            tool('verify_presentation',
+                'Re-run every check on a presentation that is already saved (the same rules render_presentation applies) and check that the files it points at (pictures, videos, uploaded scenes) still exist. "file_id" = the presentation\'s file id or url (default: the latest of this conversation). Returns {"ok":true,...} with warnings, or the list of problems with their field paths and the files that are gone.',
+                obj({ file_id: { type: 'string' } }),
+                async function (a) { return this._deckVerify(a); });
             tool('open_existing_presentation',
                 'Show a previously saved presentation (a .deck.yaml file made by render_presentation, or one the user uploaded) again as a player. "file_id" = its file id.',
                 obj({ file_id: { type: 'string' } }, ['file_id']),
@@ -31017,7 +31294,7 @@ const FaDeckTools = (function () {
             return lines.join('\n');
         },
     };
-    return { methods, Snippets, ImageCatalog, estimateMinutes, resolveImages, visualNodes, eachSlide, SYSTEM_PROMPT, DOMAIN_TOOLS, STRICT_WARNING, MAX_DECK_MINUTES };
+    return { methods, Snippets, ImageCatalog, autoQuoteYaml, deckLeftovers, estimateMinutes, resolveImages, visualNodes, eachSlide, SYSTEM_PROMPT, DOMAIN_TOOLS, STRICT_WARNING, MAX_DECK_MINUTES };
 })();
 if (typeof module === 'object' && module.exports) module.exports = FaDeckTools;
 
@@ -36079,6 +36356,73 @@ ${fnData.code}
             }, required: ['url'], additionalProperties: false }
         );
 
+        // 長文章的目錄與分段閱讀：外面的 wiki、新聞、一整本小說、上傳的文件。先看目錄再挑章節讀，不用一直翻頁讀不完。
+        // 來源三選一：url（網頁，自動抓）、file_id（上傳的檔案或 fetch_web_page 抓回來的）、text（直接給文字）。同一輪裡抓過的文章會記住，再讀章節不用重抓。
+        {
+            const ART_SRC = {
+                url: { type: 'string', description: '網頁的完整網址（wiki、新聞、小說章節頁…），會自動抓下來轉成文字' },
+                file_id: { type: 'string', description: '已上傳的檔案或 fetch_web_page 回傳的 file_id（txt、md、docx、pdf…都可以）' },
+                text: { type: 'string', description: '直接給文章文字' },
+            };
+            const articleLoad = async (self, a) => {
+                self._articleCache = self._articleCache || new Map();
+                const key = a.file_id ? 'f:' + a.file_id : a.url ? 'u:' + String(a.url).trim() : a.text ? 't:' + String(a.text).length + ':' + String(a.text).slice(0, 40) : '';
+                if (!key) return { error: '要給 url、file_id 或 text 其中一個' };
+                const hit = self._articleCache.get(key); if (hit) return hit;
+                let text = '', title = '', fileId = a.file_id ? String(a.file_id) : '';
+                if (a.text) text = String(a.text);
+                else {
+                    if (a.url) {
+                        const tl = self.tools.fetch_web_page; if (!tl) return { error: '這個環境沒有 fetch_web_page，改用 file_id 或 text' };
+                        let j; try { j = JSON.parse(await tl.callback.call(self, JSON.stringify({ url: String(a.url).trim() }))); } catch (e) { return { error: '抓取網頁失敗：' + String((e && e.message) || e) }; }
+                        if (!j || j.ok === false) return { error: String((j && j.error) || '抓取網頁失敗') };
+                        fileId = j.file_id; title = j.title || '';
+                    }
+                    const rec = await self.fileCache.get(fileId);
+                    if (!rec) return { error: '找不到檔案 file_id=' + fileId };
+                    if (!title) title = rec.filename || '';
+                    for (let off = 0, guard = 0; guard < 40; guard++) {
+                        const r = await self._parseUploadedFileContent(rec, { offset: off, maxChars: 200000 });
+                        if (!r || r.ok === false) return { error: String((r && r.error) || '讀不出這個檔案') };
+                        if (typeof r.content !== 'string') return { error: '這種檔案沒有可以分章節的連續文字（格式：' + (r.format || '?') + '）；表格或圖片請改用對應的工具' };
+                        text += r.content;
+                        if (!r.has_more || r.next_offset == null || text.length > 4000000) break;
+                        off = r.next_offset;
+                    }
+                }
+                if (!text.trim()) return { error: '文章是空的' };
+                const art = { key, file_id: fileId || null, title, text, outline: FaArticleOutline.outline(text) };
+                if (self._articleCache.size > 8) self._articleCache.delete(self._articleCache.keys().next().value);
+                self._articleCache.set(key, art);
+                return art;
+            };
+            registerOptional('article_outline',
+                '看一篇長文章的目錄（章節標題、層級、每節字數、開頭幾個字），之後用 article_section 挑要讀的章節——外面的 wiki、新聞、一整本小說、上傳的文件都適用，文章很長時一定先看目錄，不要從頭翻頁讀。標題的認法：Markdown、MediaWiki、HTML、編號標題、小說的「第一章／第十二回／Chapter 3／楔子／尾聲」；都沒有就依段落切成幾份。來源給 url（網頁，自動抓）、file_id（上傳的檔案或 fetch_web_page 抓回來的）或 text 其中一個。max_depth 只看上面幾層。',
+                async function (rawArgs) {
+                    let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                    try {
+                        const art = await articleLoad(this, a); if (art.error) return JSON.stringify({ ok: false, error: art.error });
+                        const ol = a.max_depth ? FaArticleOutline.outline(art.text, { max_depth: a.max_depth }) : art.outline;
+                        return JSON.stringify({ ok: true, title: art.title, file_id: art.file_id, style: ol.style, total_chars: ol.total_chars, sections: ol.sections.map((s) => ({ n: s.n, level: s.level, title: s.title, chars: s.chars, preview: s.preview })), next: 'article_section 用 n（章節編號）、標題的一部分或 {from, to} 讀內容，長章節會分頁（has_more / next_offset）；來源用同一個 url／file_id' });
+                    } catch (e) { return JSON.stringify({ ok: false, error: String((e && e.message) || e) }); }
+                },
+                { type: 'object', properties: Object.assign({ max_depth: { type: 'integer', description: '只列到第幾層標題（1 最上層）' } }, ART_SRC), additionalProperties: false }
+            );
+            registerOptional('article_section',
+                '讀一篇長文章的某一章節（先用 article_outline 看目錄）。section＝目錄裡的編號 n，或標題的一部分（例如「第十二回」「分類」），或 {from, to} 連續幾節。長章節每次最多 max_chars 字（預設 12000），has_more 為 true 時用 offset=next_offset 接著讀。來源跟 article_outline 同一個（url／file_id／text）。',
+                async function (rawArgs) {
+                    let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                    try {
+                        const art = await articleLoad(this, a); if (art.error) return JSON.stringify({ ok: false, error: art.error });
+                        const r = FaArticleOutline.sectionText(art.text, art.outline, a.section, { offset: a.offset, maxChars: a.max_chars });
+                        if (r.error) return JSON.stringify({ ok: false, error: r.error });
+                        return JSON.stringify(Object.assign({ ok: true, title: art.title }, r));
+                    } catch (e) { return JSON.stringify({ ok: false, error: String((e && e.message) || e) }); }
+                },
+                { type: 'object', properties: Object.assign({ section: { description: '章節編號（數字）、標題的一部分（字串），或 {from, to}' }, offset: { type: 'integer', description: '這一節裡從第幾個字元開始（接續上一次的 next_offset）' }, max_chars: { type: 'integer', description: '這次最多讀幾個字元，預設 12000' } }, ART_SRC), required: ['section'], additionalProperties: false }
+            );
+        }
+
         // tw_stock_db客製: 2026-09-09使用者明確要求——「不論多大的文章都可以
         // 分段summary，無論是upload、webfetch，或任何現有AI整合到的情境」。
         // parse_uploaded_file對純文字類內容超過8000字元直接截斷丟棄（見
@@ -40431,7 +40775,7 @@ ${fnData.code}
         this.customKnowledge[key] = { label: language + '（使用者新增的語言）', playbook: 'prog_' + key, cards: this._langPrimerCards(language, rec.primer) };
         this.register_domain('know_' + key, {
             label: language + '知識助理（使用者新增；問答與引導，不改專案）', category: 'programming', enabled: true,
-            toolNames: ['programming_knowledge', 'browser_search', 'fetch_web_page'],
+            toolNames: ['programming_knowledge', 'browser_search', 'fetch_web_page', 'article_outline', 'article_section'],
             systemPrompt: _faBuildKnowledgePrompt(key, language, 'prog_' + key),
         });
         const p = rec.primer;

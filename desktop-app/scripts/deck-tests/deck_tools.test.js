@@ -48,5 +48,34 @@ check('estimate: narration by reading speed + lead/tail, a silent slide lasts 4 
 check('estimate: speed 2 halves the speaking time', T.estimateMinutes({ deck: { speed: 2 }, chapters: [{ slides: [{ narration: 'word '.repeat(260) }] }] }) < T.estimateMinutes({ deck: { speed: 1 }, chapters: [{ slides: [{ narration: 'word '.repeat(260) }] }] }));
 check('strict warnings recognised', ['x.narration: mentions the speaking speed -- that is', 'p: the patch removes and adds the identical line "x"', 'a: "@p1" is a snippet handle that was never defined -- give', 'q: this question refers to code / a patch on an earlier slide, but'].every((w) => T.STRICT_WARNING.test(w)) && !T.STRICT_WARNING.test('a slide without a title looks unfinished'));
 check('domain tools are all named, no duplicates', new Set(T.DOMAIN_TOOLS).size === T.DOMAIN_TOOLS.length && T.DOMAIN_TOOLS.includes('render_presentation'));
+// ---- autoQuoteYaml：機械性小錯自動補引號（只加引號與跳脫，不改字）
+const jy = require('js-yaml');
+const tryLoad = (t) => { try { return jy.load(t); } catch (e) { return undefined; } };
+const q1 = 'title: 注意: 這裡有冒號\nchapters:\n  - title: 第一章\n    slides:\n      - title: s1\n        bullets:\n          - 步驟一: 先做這個: 再做那個\n          - 結果 # 不是註解\n          - "他說 "你好" 然後離開"\n          - "缺結尾引號\n        visual: { kind: widget, html: @w1 }\n';
+check('the broken yaml really does not parse', tryLoad(q1) === undefined);
+const f1 = T.autoQuoteYaml(q1);
+const d1 = tryLoad(f1.text);
+check('autoQuoteYaml: the repaired yaml parses and every fixed line is reported', d1 !== undefined && f1.fixed.length >= 3, f1);
+check('autoQuoteYaml: words are unchanged (colon text, # text, inner quotes, missing closing quote)', d1 && d1.title === '注意: 這裡有冒號' && d1.chapters[0].slides[0].bullets[1] === '結果 # 不是註解' && d1.chapters[0].slides[0].bullets[2] === '他說 "你好" 然後離開' && d1.chapters[0].slides[0].bullets[3] === '缺結尾引號', d1 && d1.chapters[0].slides[0].bullets);
+check('autoQuoteYaml: a bullet like "說明: 內容" stays one sentence (not a mapping)', d1 && typeof d1.chapters[0].slides[0].bullets[0] === 'string' && /先做這個: 再做那個/.test(d1.chapters[0].slides[0].bullets[0]), d1 && d1.chapters[0].slides[0].bullets);
+check('autoQuoteYaml: an @handle is quoted so it stays text', d1 && d1.chapters[0].slides[0].visual.html === '@w1');
+const ok2 = 'a: 1\nb:\n  - x\n  - "y"\nblock: |\n  text: with colon\n  # not a comment here\nc: plain\n';
+check('autoQuoteYaml: valid yaml and block scalars are left alone', T.autoQuoteYaml(ok2).fixed.length === 0 && T.autoQuoteYaml(ok2).text === ok2);
+
+// ---- deckLeftovers：存檔前拒絕的殘留
+const lo = (visual, extra) => ({ chapters: [{ slides: [Object.assign({ title: 't', visual }, extra || {})] }] });
+check('leftovers: a code visual with src that is not a url is refused', T.deckLeftovers(lo({ kind: 'code', src: 'assets/a.c' })).some((p) => /code.*src|\.src/.test(p)));
+check('leftovers: a widget with only a file name is refused; with html it is fine', T.deckLeftovers(lo({ kind: 'widget', src: 'game.html' })).length === 1 && T.deckLeftovers(lo({ kind: 'widget', html: '<p>x</p>' })).length === 0);
+check('leftovers: a handle left in bullets / narration is reported with its path', T.deckLeftovers(lo({ kind: 'text' }, { bullets: ['@c1'], narration: 'x' })).some((p) => /bullets\[0\]/.test(p)));
+const same = { chapters: [{ slides: [{ title: '甲', visual: { kind: 'code', code: 'int main() {\n'.repeat(10) } }, { title: '乙', visual: { kind: 'code', code: 'int main() {\n'.repeat(10) } }] }] };
+check('leftovers: the same code on two slides about different topics is reported', T.deckLeftovers(same).some((p) => /same code/.test(p)));
+check('leftovers: @img handles are not touched here (resolveImages owns them)', T.deckLeftovers(lo({ kind: 'image', src: '@img1' })).length === 0);
+// 代號寫在 src → 自動移到 code／html
+const sn2 = new T.Snippets((h) => Widget.problems(h)); const c2 = sn2.define('code', 'int y;').handle;
+const mv = { chapters: [{ slides: [{ visual: { kind: 'code', src: c2 } }] }] };
+check('expand: a handle written in src is moved to code', sn2.expand(mv).length === 0 && mv.chapters[0].slides[0].visual.code === 'int y;' && !('src' in mv.chapters[0].slides[0].visual));
+const mv2 = { chapters: [{ slides: [{ visual: { kind: 'code', src: '@c9' } }] }] };
+check('expand: an undefined handle in src is still an error', sn2.expand(mv2).length === 1);
+
 console.log(bad.length ? 'FAILED:\n  ' + bad.join('\n  ') : 'deck_tools: ' + ok + ' passed');
 process.exit(bad.length ? 1 : 0);
