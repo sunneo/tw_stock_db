@@ -24,6 +24,12 @@
 - 滑鼠/鍵盤/截圖使用 Chrome 的偵錯功能，操作期間瀏覽器會顯示「正在偵錯此瀏覽器」提示列，這是正常的。
 - 只接受 http(s) 網址。
 
+## 1.5.0：互動前先捲到元件、補回 selector／文字點擊與下載追蹤
+
+- **互動前先捲進畫面**：`click`（selector 或文字）找到元件後先捲到畫面中央、等版面穩定，再送點擊；`type_text` 有 selector 就先把那個元件捲到畫面中央，沒有 selector 就捲到目前拿到焦點的元件。原因：(1) 中間有錄影時看得到在做什麼；(2) 有的網頁會擋畫面外的事件。
+- `mouse` 用的是畫面座標，座標在可視區外時不再默默打空，而是回報「在可視區外」並建議先 `scroll` 或改用 `click`。
+- **補回** `click`、`wait_download`、`list_downloads` 與 `downloads` 權限（1.1.0 同步時被覆蓋掉了）：`click` 可用 `selector`／`text`／`index` 找元件，`wait_download:true` 會等這次點擊觸發的下載完成並回傳存檔路徑。升級後請在 `chrome://extensions` 重新載入，並接受新增的「下載」權限。
+
 ## 1.4.0：區域截圖
 
 `screenshot` 支援 `region:{x,y,width,height}`（只截指定範圍，像素，左上角 0,0；`full_page` 時用整頁座標）與 `scale`（1~3 放大），回傳 `region_applied`。助理這邊如果遇到沒有這個功能的舊版擴充功能，會在本機把整張截圖裁成指定範圍，所以舊版也能用，只是多傳一張整頁圖。
