@@ -32476,6 +32476,7 @@ class FloatingAssistant {
             // 端點只會讓根模型/路由子agent誤以為有這個能力可用卻每次都失敗）。
             browserSearchEnabled: true, // 2026-10-13使用者要求：預設啟用網路搜尋（browser_search）
             browserControlEnabled: false,
+            bcCapture: { maxFileMB: 200, maxTotalMB: 400, keepMinutes: 20 }, // 擷取下載的上限（擴充功能記憶體）：單檔、合計、保存分鐘
             browserSearchProxyUrl: '',
             // tw_stock_db客製: 2026-09-17使用者明確要求——RAG（rag_lookup
             // domain的rag_query_graph、以及主對話迴圈每一輪自動觸發的
@@ -33815,6 +33816,7 @@ class FloatingAssistant {
             roundExtend: { mode: raw.roundExtend && raw.roundExtend.mode === 'auto' ? 'auto' : 'ask', cap: Math.max(10, Math.min(200, Math.round(Number(raw.roundExtend && raw.roundExtend.cap)) || 60)) },
             browserSearchEnabled: raw.browserSearchEnabled !== false,
             browserControlEnabled: raw.browserControlEnabled === true,
+            bcCapture: (() => { const c = raw.bcCapture || {}; const f = (v, d, lo, hi) => { const n = Math.floor(Number(v)); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; }; return { maxFileMB: f(c.maxFileMB, 200, 1, 2000), maxTotalMB: f(c.maxTotalMB, 400, 1, 4000), keepMinutes: f(c.keepMinutes, 20, 1, 240) }; })(),
             browserSearchProxyUrl: String(raw.browserSearchProxyUrl || '').trim(),
             // tw_stock_db客製: 2026-09-17——見_createDefaultAdvancedSettings()
             // 的ragEnabled說明。舊使用者localStorage裡完全沒有這個欄位時
@@ -35194,6 +35196,10 @@ ${fnData.code}
                 try {
                     // 要等這次點擊的下載、又沒指定下載行為：預設擷取（不跳另存新檔對話框，也知道抓到了什麼）
                     if (cmd === 'click' && parsed.wait_download && !parsed.download_behavior) parsed.download_behavior = 'capture';
+                    if ((cmd === 'click' && parsed.download_behavior === 'capture') || (cmd === 'set_download_behavior' && (parsed.behavior || parsed.download_behavior) === 'capture')) {
+                        const cc = this.advancedSettings.bcCapture || {};
+                        if (!parsed.capture_limits) parsed.capture_limits = { max_file_mb: cc.maxFileMB, max_total_mb: cc.maxTotalMB, keep_min: cc.keepMinutes };
+                    }
                     return JSON.stringify(this._bcShapeResult(cmd, await this._bcPostprocess(cmd, parsed, await this._bcCall(cmd, parsed, timeoutMs || 30000))));
                 }
                 catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
@@ -53988,6 +53994,7 @@ ${sourceTool.handlerScript}
         if (browserSearchEnabledChk) browserSearchEnabledChk.checked = this.advancedSettings.browserSearchEnabled === true;
         const bcEnabledChkR = document.getElementById('ai-bc-enabled-chk');
         if (bcEnabledChkR) bcEnabledChkR.checked = this.advancedSettings.browserControlEnabled === true;
+        { const cc = this.advancedSettings.bcCapture || {}; const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; }; set('ai-bc-cap-file', cc.maxFileMB || 200); set('ai-bc-cap-total', cc.maxTotalMB || 400); set('ai-bc-cap-keep', cc.keepMinutes || 20); }
         const browserSearchProxyUrlInput = document.getElementById('ai-browser-search-proxy-url');
         if (browserSearchProxyUrlInput) browserSearchProxyUrlInput.value = this.advancedSettings.browserSearchProxyUrl || '';
         const gitCorsProxyUrlInput = document.getElementById('ai-git-cors-proxy-url');
@@ -77217,6 +77224,15 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                     </div>
                                     <div id="ai-bc-test-result" class="ai-advanced-hint" style="margin-top:8px;"></div>
                                 </div>
+                                <div class="ai-advanced-stack" id="ai-bc-cap-box">
+                                    <label class="ai-advanced-label">擷取下載的上限</label>
+                                    <p class="ai-advanced-hint">瀏覽器自動化點到下載時，檔案會先被攔在擴充功能的記憶體（不讓 Chrome 存檔、不跳另存新檔），再一段一段傳回來驗證後寫出去。位元組放在瀏覽器記憶體裡，調太大瀏覽器會變慢；超過上限會回報錯誤，不會悄悄丟掉。</p>
+                                    <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+                                        <label title="單一檔案最大多少 MB（1–2000）">單檔 <input type="number" id="ai-bc-cap-file" class="ai-advanced-input" min="1" max="2000" step="10" style="width:90px;"> MB</label>
+                                        <label title="同時留在記憶體裡的擷取合計最大多少 MB（1–4000）">合計 <input type="number" id="ai-bc-cap-total" class="ai-advanced-input" min="1" max="4000" step="50" style="width:90px;"> MB</label>
+                                        <label title="擷取到的檔案在擴充功能裡最多保存幾分鐘（1–240），超過會自動清掉">保存 <input type="number" id="ai-bc-cap-keep" class="ai-advanced-input" min="1" max="240" step="5" style="width:80px;"> 分鐘</label>
+                                    </div>
+                                </div>
                                 <div class="ai-advanced-stack" id="ai-bc-desktop-box" style="display:none;">
                                     <label class="ai-advanced-label">桌面版連線（配對碼）</label>
                                     <p class="ai-advanced-hint">把下面的配對碼貼到擴充功能彈出視窗的「配對碼」欄位並儲存，擴充功能就會連上這個桌面版（本機 127.0.0.1，只有知道配對碼的擴充功能能連）。</p>
@@ -80288,6 +80304,14 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             this._saveAdvancedSettings();
             if (this._bcTransport && typeof this._bcTransport.setEnabled === 'function') this._bcTransport.setEnabled(bcEnabledChk.checked);
         });
+        for (const [id, key, lo, hi, d] of [['ai-bc-cap-file', 'maxFileMB', 1, 2000, 200], ['ai-bc-cap-total', 'maxTotalMB', 1, 4000, 400], ['ai-bc-cap-keep', 'keepMinutes', 1, 240, 20]]) {
+            const el = document.getElementById(id);
+            if (el) el.addEventListener('change', () => {
+                const n = Math.floor(Number(el.value)); const v = Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d;
+                this.advancedSettings.bcCapture = Object.assign({ maxFileMB: 200, maxTotalMB: 400, keepMinutes: 20 }, this.advancedSettings.bcCapture, { [key]: v });
+                el.value = v; this._saveAdvancedSettings();
+            });
+        }
         const bcTestBtn = document.getElementById('ai-bc-test-btn');
         const bcGetBtn = document.getElementById('ai-bc-get-btn');
         const bcResultEl = document.getElementById('ai-bc-test-result');
