@@ -1,6 +1,6 @@
 // 用 Node 24 以上跑（要 node:sqlite）：<Playwright 附的 node.exe> scripts/knowledge-tests/knowledge_store.test.js
 // 真的 SQLite（含 FTS5）：來源進出、全文檢索（中英文）、向量、出處行號、摘要核對、關聯、關掉重開資料還在。
-let DatabaseSync; try { ({ DatabaseSync } = require('node:sqlite')); } catch (e) { console.log('knowledge_store: skipped（沒有 node:sqlite，要 Node 22.5 以上）'); process.exit(0); }
+let DatabaseSync; try { ({ DatabaseSync } = require('node:sqlite')); } catch (e) { console.log('knowledge_store: skipped（沒有 node:sqlite，要 Node 22.5 以上才會跑）0 failed'); process.exit(0); }
 const fs = require('fs'), os = require('os'), path = require('path');
 const K = require('../../renderer/src/knowledge/knowledge_core.js');
 const S = require('../../renderer/src/knowledge/knowledge_store.js');
