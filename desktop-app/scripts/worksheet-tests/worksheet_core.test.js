@@ -110,6 +110,21 @@ check('bond: reference image of a number bond page (VLM json) is merged: cube co
 check('bond: describe / prompt mention the tree, cubes and cells', /數的組成/.test(W.specToPrompt(nb2.spec)) && /紅圈/.test(W.specToPrompt(nb2.spec)) && W.describe(nb2.spec).join('').includes('number_bond'));
 check('bond: set_block patches cells/total and set_answer toggles the teacher version', (() => { const r = W.applyEdits(nb1.spec, [{ op: 'set_block', index: 0, patch: { cells: [{ a: 2, b: 3 }] } }, { op: 'set_answer', show: true }]); return r.spec.blocks[0].cells.length === 1 && r.spec.blocks[0].fill === true && r.applied.length === 2; })());
 
+// ---------- 自由繪圖 draw：現成區塊做不到的時候自己畫（座標是區塊寬高的百分比）----------
+const treeItems = [];
+for (let j = 0; j < 5; j++) treeItems.push({ shape: 'rect', x: 6, y: 20 + j * 12, w: 14, h: 11, fill: '#FFFFFF', stroke: '#555555', rx: 1 });
+treeItems.push({ shape: 'line', x1: 62, y1: 34, x2: 48, y2: 66, stroke: '#888888' }, { shape: 'line', x1: 62, y1: 34, x2: 76, y2: 66, stroke: '#888888' },
+  { shape: 'circle', x: 62, y: 28, r: 9, fill: 'none', stroke: 'red', sw: 0.9 }, { shape: 'circle', x: 48, y: 72, r: 9, fill: '#FFFFFF', stroke: 'blue', sw: 0.9 }, { shape: 'circle', x: 76, y: 72, r: 9, fill: '#FFFFFF', stroke: 'blue', sw: 0.9 },
+  { shape: 'text', x: 48, y: 76, text: '1', size: 9, color: 'blue', bold: true }, { shape: 'text', x: 76, y: 76, text: '4', size: 9, color: 'blue', bold: true });
+const DR = W.validate({ title: '自訂圖形', blocks: [{ type: 'draw', height: 80, items: treeItems.concat([{ shape: 'blob' }, null, { shape: 'poly', pts: [[1, 1]] }]) }] });
+check('draw: valid shapes are kept (5 cubes, 2 lines, 3 circles, 2 texts); unknown shapes, nulls and 1-point polygons are dropped', DR.spec.blocks[0].items.length === 12 && DR.spec.blocks[0].items.filter((x) => x.shape === 'rect').length === 5, DR.spec.blocks[0].items.length);
+check('draw: colour words and "none" are understood (red -> hex, none stays none)', DR.spec.blocks[0].items.find((x) => x.shape === 'circle').fill === 'none' && DR.spec.blocks[0].items.find((x) => x.shape === 'circle').stroke === '#C8174F');
+check('draw: a block with no valid shape is dropped with a problem; the item count is capped', W.validate({ blocks: [{ type: 'draw', items: [{ shape: 'nope' }] }] }).problems.length === 1 && W.validate({ blocks: [{ type: 'draw', items: Array.from({ length: 500 }, () => ({ shape: 'circle' })) }] }).spec.blocks[0].items.length === 300);
+const DL = W.layout(DR.spec); const dc = DL.prims.filter((p) => p.t === 'circle'), dr = DL.prims.filter((p) => p.t === 'rect');
+check('draw layout: shapes are placed inside the block (percent of its width/height) and the whole sheet stays on the page', dc.length === 3 && dr.length === 5 && dc.every((c) => c.cx >= 0 && c.cx <= DL.w && c.cy >= 0 && c.cy <= DL.h) && DL.prims.some((p) => p.t === 'text' && p.s === '4'));
+check('draw: svg, html and pdf outputs all contain the drawing', W.toSvg(DL).split('<circle').length - 1 === 3 && W.toPdfmake(DL).content[0].canvas.filter((c) => c.type === 'ellipse').length === 3);
+check('draw: edits and descriptions know it; the topic text exists', W.describe(DR.spec).join('').includes('自由繪圖') && !!W.TOPICS.draw && /百分比/.test(W.TOPICS.draw) && W.applyEdits(DR.spec, [{ op: 'set_block', index: 0, patch: { height: 40 } }]).spec.blocks[0].height === 40);
+
 // ---------- 封閉題：弱模型只選字母，選不出來就用預設 ----------
 (async () => {
   const asked = []; const a = await W.resolveQuestions(W.parseRequest('串珠 10又1'), async (q, opts) => { asked.push({ q, opts }); return 2; });

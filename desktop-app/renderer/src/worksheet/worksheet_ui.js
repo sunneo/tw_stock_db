@@ -28,7 +28,7 @@
     + '.fwk.full{position:fixed;inset:8px;z-index:100000;margin:0;display:flex;flex-direction:column;max-width:none;box-shadow:0 8px 40px rgba(0,0,0,.5)}.fwk.full .main{flex:1;min-height:0}.fwk.full .pv,.fwk.full .side{max-height:none}.fwk.full .pv svg{max-width:760px}';
   function h(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
-  var TYPE_NAME = { bead_rows: '串珠', number_bond: '數的組成', count_rows: '數一數', equations: '算式', ten_frames: '十格框', number_line: '數線', text: '文字', spacer: '空白' };
+  var TYPE_NAME = { bead_rows: '串珠', number_bond: '數的組成', draw: '自由繪圖', count_rows: '數一數', equations: '算式', ten_frames: '十格框', number_line: '數線', text: '文字', spacer: '空白' };
   var SUGGEST = ['附上答案', '改成橫式', '做成5串', '珠子大一點', '把第3串改成粉紅色'];
 
   function mount(opt) {
@@ -106,6 +106,10 @@
         w.appendChild(field('樹根圈顏色', colorInput(b.rootColor, patch('rootColor')))); w.appendChild(field('兒子圈顏色', colorInput(b.childColor, patch('childColor'))));
         w.appendChild(field('積木上色', (function () { var r = h('span'); r.appendChild(colorInput(b.cubeColors[0], function (v) { patch('cubeColors')([v, b.cubeColors[1]]); })); r.appendChild(colorInput(b.cubeColors[1], function (v) { patch('cubeColors')([b.cubeColors[0], v]); })); return r; })()));
       }
+      else if (b.type === 'draw') {
+        w.appendChild(field('高度(mm)', numInput(b.height, 10, 400, patch('height')))); w.appendChild(h('div', 'st', '自由繪圖：' + b.items.length + ' 個圖形（座標是區塊寬高的百分比）。可以直接改下面的 JSON：'));
+        var dj = h('textarea'); dj.rows = 8; dj.value = JSON.stringify(b.items); dj.onchange = function () { try { var arr = JSON.parse(dj.value); if (Array.isArray(arr)) patch('items')(arr); } catch (e) { dj.style.borderColor = 'var(--bad)'; } }; w.appendChild(dj);
+      }
       else if (b.type === 'ten_frames') { w.appendChild(h('div', 'st', '每個十格框的點數：')); w.appendChild(countsEditor(b, bi)); w.appendChild(field('顏色', colorInput(b.color, patch('color')))); w.appendChild(field('每列', numInput(b.columns, 1, 3, patch('columns')))); w.appendChild(answerEditor(b, bi)); }
       else if (b.type === 'equations') { w.appendChild(field('種類', selectInput(b.items.join('').indexOf('−') >= 0 ? 'sub' : 'add', [['add', '加法'], ['sub', '減法']], function (v) { apply([{ op: 'set_block', index: bi, patch: { items: W.makeEquations(v, 10 * Math.max(1, Math.round(b.items.length / 5)), b.items.length || 10, Date.now() % 1000) } }]); }))); w.appendChild(field('欄數', numInput(b.columns, 1, 4, patch('columns')))); var re = h('button', null, '🎲 重新出題'); re.onclick = function () { var sub = b.items.join('').indexOf('−') >= 0; apply([{ op: 'set_block', index: bi, patch: { items: W.makeEquations(sub ? 'sub' : 'add', 20, b.items.length || 10, Date.now() % 100000) } }]); }; w.appendChild(re); var ta = h('textarea'); ta.rows = Math.min(8, b.items.length + 1); ta.value = b.items.join('\n'); ta.onchange = function () { patch('items')(ta.value.split('\n').map(function (x) { return x.trim(); }).filter(Boolean)); }; w.appendChild(ta); }
       else if (b.type === 'number_line') { w.appendChild(field('從', numInput(b.from, -50, 50, patch('from')))); w.appendChild(field('到', numInput(b.to, -50, 90, patch('to')))); var bl = h('input'); bl.value = b.blanks.join(','); bl.placeholder = '空格的數字，用逗號分開'; bl.onchange = function () { patch('blanks')(bl.value.split(/[,，\s]+/).filter(Boolean).map(Number)); }; w.appendChild(field('空格', bl)); }
@@ -121,7 +125,7 @@
       [['name', '姓名'], ['date', '日期'], ['score', '分數']].forEach(function (f) { var c = h('input'); c.type = 'checkbox'; c.checked = !!sp.header[f[0]]; c.onchange = function () { var o = { op: 'set_header' }; o[f[0]] = c.checked; apply([o]); }; var lb = h('label'); lb.appendChild(c); lb.appendChild(document.createTextNode(' ' + f[1])); pr.appendChild(lb); }); p.appendChild(pr);
       sp.blocks.forEach(function (b, i) { p.appendChild(blockEditor(b, i)); });
       var addr = h('div', 'row'), sa = selectInput('bead_rows', Object.keys(TYPE_NAME).map(function (k) { return [k, TYPE_NAME[k]]; }), function () { }), ab = h('button', null, '＋ 新增區塊');
-      ab.onclick = function () { var ty = sa.value; var d = { bead_rows: { type: 'bead_rows' }, number_bond: { type: 'number_bond' }, count_rows: { type: 'count_rows' }, equations: { type: 'equations' }, ten_frames: { type: 'ten_frames' }, number_line: { type: 'number_line' }, text: { type: 'text', lines: ['在這裡寫說明'] }, spacer: { type: 'spacer' } }[ty]; apply([{ op: 'add_block', block: d }]); };
+      ab.onclick = function () { var ty = sa.value; var d = { bead_rows: { type: 'bead_rows' }, number_bond: { type: 'number_bond' }, draw: { type: 'draw', items: [{ shape: 'circle', x: 50, y: 50, r: 20, fill: '#FFFFFF', stroke: '#D93025' }] }, count_rows: { type: 'count_rows' }, equations: { type: 'equations' }, ten_frames: { type: 'ten_frames' }, number_line: { type: 'number_line' }, text: { type: 'text', lines: ['在這裡寫說明'] }, spacer: { type: 'spacer' } }[ty]; apply([{ op: 'add_block', block: d }]); };
       addr.appendChild(sa); addr.appendChild(ab); p.appendChild(addr);
     }
     // ───── 記錄 ─────

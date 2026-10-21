@@ -84,6 +84,19 @@
       var cc = Array.isArray(b.cubeColors) ? b.cubeColors : [];
       return { type: 'number_bond', total: tot, cells: cells, cols: clamp(int(b.cols, cells.length <= 2 ? 1 : (cells.length <= 8 ? 2 : 3)), 1, 3), showNumbers: b.showNumbers !== false, fill: b.fill === true, rootColor: hex(b.rootColor, '#D93025'), childColor: hex(b.childColor, '#2F6FD0'), cubeColors: [hex(cc[0], '#F6A33B'), hex(cc[1], '#E5383B')] };
     }
+    if (t === 'draw') {
+      var items2 = (Array.isArray(b.items) ? b.items : []).slice(0, 300).map(function (it) {
+        if (!it || typeof it !== 'object') return null; var sh = String(it.shape || ''), n1 = function (v, d) { v = Number(v); return isFinite(v) ? Math.max(-20, Math.min(120, v)) : d; };
+        var col = hex(it.fill, null), st = hex(it.stroke, null);
+        if (sh === 'circle') return { shape: 'circle', x: n1(it.x, 50), y: n1(it.y, 50), r: clamp(it.r == null ? 5 : it.r, 0.3, 60), fill: it.fill === 'none' ? 'none' : (col || '#FFFFFF'), stroke: it.stroke === 'none' ? 'none' : (st || '#222222'), sw: clamp(it.sw == null ? 0.4 : it.sw, 0.05, 3) };
+        if (sh === 'rect') return { shape: 'rect', x: n1(it.x, 0), y: n1(it.y, 0), w: clamp(it.w == null ? 10 : it.w, 0.2, 140), h: clamp(it.h == null ? 10 : it.h, 0.2, 140), fill: it.fill === 'none' ? 'none' : (col || '#FFFFFF'), stroke: it.stroke === 'none' ? 'none' : (st || '#222222'), sw: clamp(it.sw == null ? 0.4 : it.sw, 0.05, 3), rx: clamp(it.rx == null ? 0 : it.rx, 0, 30) };
+        if (sh === 'line') return { shape: 'line', x1: n1(it.x1, 0), y1: n1(it.y1, 0), x2: n1(it.x2, 100), y2: n1(it.y2, 0), stroke: st || '#222222', sw: clamp(it.sw == null ? 0.4 : it.sw, 0.05, 3), dash: it.dash === true };
+        if (sh === 'poly') { var pts = (Array.isArray(it.pts) ? it.pts : []).slice(0, 40).map(function (q) { return Array.isArray(q) ? [n1(q[0], 0), n1(q[1], 0)] : null; }).filter(Boolean); return pts.length >= 3 ? { shape: 'poly', pts: pts, fill: it.fill === 'none' ? 'none' : (col || '#FFFFFF'), stroke: it.stroke === 'none' ? 'none' : (st || '#222222'), sw: clamp(it.sw == null ? 0.4 : it.sw, 0.05, 3) } : null; }
+        if (sh === 'text') return { shape: 'text', x: n1(it.x, 50), y: n1(it.y, 50), text: str(it.text, 80), size: clamp(it.size == null ? 4 : it.size, 1, 30), anchor: it.anchor === 'start' || it.anchor === 'end' ? it.anchor : 'middle', color: hex(it.color, '#222222'), bold: it.bold === true };
+        return null; }).filter(Boolean);
+      if (!items2.length) { problems.push('自由繪圖區塊（第 ' + n + ' 個）沒有任何有效的圖形，略過'); return null; }
+      return { type: 'draw', items: items2, height: clamp(b.height == null ? 60 : b.height, 10, 400) };
+    }
     if (t === 'spacer') return { type: 'spacer', mm: clamp(b.mm == null ? 10 : b.mm, 1, 80) };
     problems.push('不認得的區塊種類「' + t + '」（第 ' + n + ' 個），略過'); return null;
   }
@@ -131,6 +144,7 @@
     if (b.type === 'spacer') return Math.max(0.05, b.mm / 200);
     if (b.type === 'text') return Math.max(0.12, b.lines.length * 0.05 * b.size);
     if (b.type === 'number_line') return 0.3;
+    if (b.type === 'draw') return Math.max(0.3, b.height / 100);
     if (b.type === 'number_bond') return Math.max(0.9, Math.ceil(b.cells.length / b.cols) * 0.34);
     if (b.type === 'equations') return Math.max(0.4, Math.ceil(b.items.length / b.columns) * 0.09 * b.size);
     if (b.type === 'ten_frames') return Math.max(0.5, Math.ceil(b.counts.length / b.columns) * 0.28);
@@ -171,6 +185,17 @@
     if (b.type === 'equations') {
       var rowsN = Math.ceil(b.items.length / b.columns), rh = Math.min(h / rowsN, 18), fs = Math.min(rh * 0.5, 7.5) * b.size, cw = w / b.columns;
       b.items.forEach(function (q, i) { var rr = Math.floor(i / b.columns), cc = i % b.columns; g.text(x0 + cc * cw + 4, y0 + rh * rr + rh * 0.7, (i + 1) + '.  ' + q, fs); });
+      return;
+    }
+    if (b.type === 'draw') {
+      var bw = w, bh = h, X = function (v) { return x0 + v / 100 * bw; }, Y = function (v) { return y0 + v / 100 * bh; }, U = Math.min(bw, bh) / 100;
+      b.items.forEach(function (it) {
+        if (it.shape === 'circle') P.push({ t: 'circle', cx: X(it.x), cy: Y(it.y), r: it.r * U, fill: it.fill, stroke: it.stroke, sw: it.sw });
+        else if (it.shape === 'rect') P.push({ t: 'rect', x: X(it.x), y: Y(it.y), w: it.w / 100 * bw, h: it.h / 100 * bh, fill: it.fill, stroke: it.stroke, sw: it.sw, rx: it.rx * U });
+        else if (it.shape === 'line') g.line(X(it.x1), Y(it.y1), X(it.x2), Y(it.y2), { stroke: it.stroke, sw: it.sw, dash: it.dash ? '2 1.5' : undefined });
+        else if (it.shape === 'poly') P.push({ t: 'poly', pts: it.pts.map(function (q) { return [X(q[0]), Y(q[1])]; }), fill: it.fill, stroke: it.stroke, sw: it.sw });
+        else if (it.shape === 'text') g.text(X(it.x), Y(it.y), it.text, it.size * U * 1.4, { anchor: it.anchor, fill: it.color, bold: it.bold });
+      });
       return;
     }
     if (b.type === 'number_bond') {
@@ -280,7 +305,7 @@
   function cnNum(s) { var m = { 零: 0, 〇: 0, 一: 1, 二: 2, 兩: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 }; if (/^\d+$/.test(s)) return parseInt(s, 10); if (s === '十') return 10; if (s.length === 1) return m[s]; if (s[0] === '十') return 10 + (m[s[1]] || 0); if (s[1] === '十') return (m[s[0]] || 0) * 10 + (m[s[2]] || 0); return NaN; }
   function detectTemplate(t) {
     if (/串珠|金色珠|彩色珠|\d+\s*又\s*\d*|又\s*幾|bead/i.test(t)) return 'bead_rows';
-    if (/二元樹|樹狀|樹根|兒子|數的組成|分解|number\s*bond|組成.*積木|積木.*組成|(?:積木|方塊|cubes?)[\s\S]{0,80}\d+\s*[+＋]\s*\d+|\d+\s*[+＋]\s*\d+[\s\S]{0,80}(?:積木|方塊|cubes?)/i.test(t)) return 'number_bond';
+    if (/二元樹|樹狀|樹根|兒子|數的組成|分解|number\s*bond|組成.*積木|積木.*組成|(?:積木|方塊|方框|cubes?)[\s\S]{0,80}\d+\s*[+＋]\s*\d+|\d+\s*[+＋]\s*\d+[\s\S]{0,120}(?:積木|方塊|方框|cubes?)|\d+\s*=\s*\d+\s*[+＋]\s*\d+[\s\S]{0,120}(?:格子|圈|樹)/i.test(t)) return 'number_bond';
     if (/十格|ten[\s-]?frame/i.test(t)) return 'ten_frames';
     if (/數線|number[\s-]?line/i.test(t)) return 'number_line';
     if (/數一數|數數看|幾個|count(ing)?\b/i.test(t)) return 'count_rows';
@@ -313,7 +338,7 @@
       spec.blocks.push({ type: 'bead_rows', base: base, counts: counts, colors: colors, baseColor: baseColor, answer: answer, size: 1 });
     } else if (tpl === 'number_bond') {
       var pairsB = [], rp = /(\d+)\s*[+＋]\s*(\d+)/g, mp; while ((mp = rp.exec(t))) pairsB.push([parseInt(mp[1], 10), parseInt(mp[2], 10)]);
-      var tm = /每\s*(?:個|一個)?\s*格子?\s*(?:都)?\s*(?:是|有)\s*(\d+|[一二兩三四五六七八九十]{1,3})\s*(?:個)?\s*(?:積木|方塊)/.exec(t) || /(\d+|[一二兩三四五六七八九十]{1,3})\s*(?:個)?\s*(?:積木|方塊)/.exec(t) || /(?:分解|組成)\s*(\d+|[一二兩三四五六七八九十]{1,3})/.exec(t);
+      var tm = /每\s*(?:個|一個)?\s*格子?\s*(?:都)?\s*(?:是|有)\s*(\d+|[一二兩三四五六七八九十]{1,3})\s*(?:個)?\s*(?:積木|方塊|方框)/.exec(t) || /(\d+|[一二兩三四五六七八九十]{1,3})\s*(?:個)?\s*(?:積木|方塊|方框)/.exec(t) || /(?:分解|組成)\s*(\d+|[一二兩三四五六七八九十]{1,3})/.exec(t);
       var total = tm ? cnNum(tm[1]) : (pairsB.length ? pairsB[0][0] + pairsB[0][1] : 5); if (!(total >= 2 && total <= 12)) { notes.push('積木數不合理，改用 5'); total = 5; }
       var refB = ctx.reference && ctx.reference.kind === 'number_bond' ? ctx.reference : null; // 參考圖片只補「請求裡沒說」的部分，請求裡明講的優先
       if (refB) { if (!tm && refB.total) total = refB.total; if (!pairsB.length) pairsB = refB.cells.filter(function (c) { return c.a != null && c.b != null; }).map(function (c) { return [c.a, c.b]; }); if (refB.total || pairsB.length) notes.push('參考圖片：' + (refB.total ? '每格 ' + refB.total + ' 個積木' : '') + (refB.cellCount ? '、' + refB.cellCount + ' 格' : '')); }
@@ -405,7 +430,7 @@
   }
   function describe(spec) {
     var s = validate(spec).spec, out = [(s.title || '（沒有標題）') + '：' + s.page.size + (s.page.orient === 'landscape' ? ' 橫式' : ' 直式')];
-    s.blocks.forEach(function (b, i) { var d = (i) + '. ' + b.type; if (b.type === 'number_bond') d += '（' + b.total + ' 的組成，' + b.cells.length + ' 格：' + b.cells.map(function (c) { return c.a == null ? '空白' : c.a + '+' + c.b; }).join('、') + '）' + (b.fill ? '，教師版' : ''); else if (b.counts) d += '（' + b.counts.length + ' 筆：' + b.counts.join('、') + '）'; if (b.items) d += '（' + b.items.length + ' 題）'; if (b.answer) d += b.answer.show ? '，附答案' : '，答案留白'; out.push(d); });
+    s.blocks.forEach(function (b, i) { var d = (i) + '. ' + b.type; if (b.type === 'draw') d += '（自由繪圖，' + b.items.length + ' 個圖形）'; else if (b.type === 'number_bond') d += '（' + b.total + ' 的組成，' + b.cells.length + ' 格：' + b.cells.map(function (c) { return c.a == null ? '空白' : c.a + '+' + c.b; }).join('、') + '）' + (b.fill ? '，教師版' : ''); else if (b.counts) d += '（' + b.counts.length + ' 筆：' + b.counts.join('、') + '）'; if (b.items) d += '（' + b.items.length + ' 題）'; if (b.answer) d += b.answer.show ? '，附答案' : '，答案留白'; out.push(d); });
     return out;
   }
 
@@ -461,6 +486,7 @@
     s.blocks.forEach(function (b, i) {
       var d = '第 ' + (i + 1) + ' 區：';
       if (b.type === 'bead_rows') { var names = {}; d += b.base + ' 又幾串珠，共 ' + b.counts.length + ' 串（' + b.base + '又' + b.counts.join('、' + b.base + '又') + '）；前面一整串 ' + b.base + ' 顆金珠（' + b.baseColor + '），後面的彩色珠顏色：' + b.counts.map(function (c) { return c + '顆' + (hex(b.colors[c], BEAD_COLORS[c] || '#999999')); }).join('、') + '；' + answerWords(b.answer) + (b.size !== 1 ? '；珠子大小 ' + Math.round(b.size * 100) + '%' : ''); }
+      else if (b.type === 'draw') d += '自由繪圖：' + b.items.length + ' 個圖形（' + b.items.map(function (x) { return x.shape; }).filter(function (v, i, a) { return a.indexOf(v) === i; }).join('、') + '），高 ' + b.height + ' 毫米';
       else if (b.type === 'number_bond') d += '數的組成（二元樹）：每格 ' + b.total + ' 個積木排成一直排，旁邊一棵樹——樹根紅圈、兩個藍圈兒子；共 ' + b.cells.length + ' 格（' + b.cols + ' 欄）：' + b.cells.map(function (c) { return c.a == null ? '空白' : c.a + '+' + c.b; }).join('、') + (b.showNumbers ? '，兒子圈裡寫出數字' : '，圈裡留空') + (b.fill ? '；教師版（積木塗色、樹根寫 ' + b.total + '）' : '；學生版');
       else if (b.type === 'count_rows') d += '數一數，' + b.counts.length + ' 排，數量 ' + b.counts.join('、') + '，用' + ({ circle: '圓', square: '方塊', star: '星星' }[b.shape]) + '（' + b.color + '）；' + answerWords(b.answer);
       else if (b.type === 'equations') d += (b.items.length) + ' 題算式，分 ' + b.columns + ' 欄：' + b.items.slice(0, 6).join('、') + (b.items.length > 6 ? '…' : '');
@@ -481,7 +507,8 @@
     return t[o] ? t[o]() : String(o || '');
   }
   var TOPICS = {
-    format: '學習單描述（JSON）：{title, subtitle, header:{name,date,school,score}, page:{size:"A4|A5|Letter", orient:"portrait|landscape", margin:mm}, blocks:[區塊…]}。區塊 type：bead_rows｛base:10, counts:[1..8], colors:{顆數:"#RRGGBB"}, baseColor, answer:{side:"right|below|none", line, show}, size｝、count_rows｛counts, shape:"circle|square|star", color, answer｝、equations｛kind:"add|sub", max, count, columns 或 items:["3 + 4 = ____"]｝、ten_frames｛counts:[0..10], color, answer, columns｝、number_line｛from, to, blanks:[數字]｝、text｛lines:[…], size, align, bold｝、spacer｛mm｝。座標與文字大小程式自己排，不要寫座標。',
+    draw: '自由繪圖區塊 draw（沒有現成的區塊種類時用它自己畫）：{type:"draw", height:毫米（預設 60）, items:[…]}；座標一律是區塊寬高的百分比（0～100），半徑／寬高也是百分比（以寬高較小的一邊為準）。items 的 shape：circle{x,y,r,fill,stroke,sw}、rect{x,y,w,h,fill,stroke,sw,rx}、line{x1,y1,x2,y2,stroke,sw,dash}、poly{pts:[[x,y],…],fill,stroke}、text{x,y,text,size,anchor:start|middle|end,color,bold}。fill／stroke 可以是 #RRGGBB、顏色名稱或 none。一個區塊最多 300 個圖形；重複的東西（一排方框、一棵樹）請排成多個 draw 區塊或用現成區塊。有現成的就優先用現成的（見 format）。',
+    format: '學習單描述（JSON）：{title, subtitle, header:{name,date,school,score}, page:{size:"A4|A5|Letter", orient:"portrait|landscape", margin:mm}, blocks:[區塊…]}。區塊 type：bead_rows｛base:10, counts:[1..8], colors:{顆數:"#RRGGBB"}, baseColor, answer:{side:"right|below|none", line, show}, size｝、count_rows｛counts, shape:"circle|square|star", color, answer｝、equations｛kind:"add|sub", max, count, columns 或 items:["3 + 4 = ____"]｝、ten_frames｛counts:[0..10], color, answer, columns｝、number_line｛from, to, blanks:[數字]｝、text｛lines:[…], size, align, bold｝、number_bond｛total, cells:[{a,b}], cols, showNumbers, fill｝（數的組成：每格一直排積木＋二元樹）、draw｛height, items｝（自由繪圖，座標是百分比，見 topic=draw）、spacer｛mm｝。現成區塊的座標與文字大小程式自己排，不要寫座標。',
     edits: '調整用 worksheet_adjust 的 edits（一次可以多個）：{op:"set_title",text}、{op:"set_subtitle",text}、{op:"set_counts",counts:[…]}、{op:"set_rows",n}、{op:"set_color",count:3,color:"#F2D4CF"}、{op:"set_base_color",color}、{op:"set_answer",show:true|false,side:"right|below|none",line:true|false}、{op:"set_page",size,orient,margin}、{op:"set_size",scale:0.4~1.4}、{op:"set_header",name,date,score}、{op:"add_block",block:{…},index}、{op:"remove_block",index}、{op:"set_block",index,patch:{…該區塊的欄位，例如 base、counts、shape、kind、max、count、columns、from、to、blanks、lines}}、{op:"move_block",index,to}。',
     reference: '有參考圖片時：worksheet_make 帶 reference_file_id（上傳圖片的 file_id）。視覺模型只被問一小段 JSON（每串的顆數與顏色、標題、金色珠的顏色），程式檢查後合併進學習單；看不出來的欄位用預設，不會亂猜。顏色不對就用 set_color 一個一個改。',
     number_bond: '數的組成（二元樹）區塊 number_bond：{type:"number_bond", total:5（每格幾個積木，2～12）, cells:[{a:1,b:4},{a:2,b:3},{a:null,b:null}（空白格）], cols:1～3, showNumbers:true（兒子圈裡寫數字）, fill:false（教師版：積木上色、樹根寫總數）, rootColor:"#D93025", childColor:"#2F6FD0", cubeColors:["#F6A33B","#E5383B"]}。每格是一直排積木＋一棵樹（上面紅圈、下面左右兩個藍圈）。調整用 set_block 的 patch（例如 patch:{cells:[…]}）。',
