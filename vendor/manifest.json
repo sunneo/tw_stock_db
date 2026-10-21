@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "kind": "vendor-models",
-  "createdAt": "2026-10-17T12:58:30.136Z",
+  "createdAt": "2026-10-21T14:31:21.625Z",
   "partBytes": 41943040,
   "note": "大檔案切成 partBytes 大小的片（.partNNN），依序接起來再核對 sha256；小檔案原樣放。版本以 revision（Hugging Face 的 commit）釘住，內容不會變。",
   "models": {
@@ -182,6 +182,59 @@
           "path": "vocab.json",
           "size": 1747795,
           "sha256": "22c957348eed495ee925afc40a36da3e387c8a34a734c8486967c2dca271613e"
+        }
+      ]
+    },
+    "multilingual-e5-small": {
+      "repo": "Xenova/multilingual-e5-small",
+      "revision": "761b726dd34fb83930e26aab4e9ac3899aa1fa78",
+      "base": "intfloat/multilingual-e5-small",
+      "license": "MIT",
+      "task": "feature-extraction",
+      "dtype": "q8",
+      "dim": 384,
+      "files": [
+        {
+          "path": "config.json",
+          "size": 658,
+          "sha256": "cb99455288675345e1a4f411438d5d0adbba5fbd3a67ea4fb03c015433b996c1"
+        },
+        {
+          "path": "tokenizer.json",
+          "size": 17082730,
+          "sha256": "0b44a9d7b51c3c62626640cda0e2c2f70fdacdc25bbbd68038369d14ebdf4c39"
+        },
+        {
+          "path": "tokenizer_config.json",
+          "size": 443,
+          "sha256": "a1d6bc8734a6f635dc158508bef000f8e2e5a759c7d92f984b2c86e5ff53425b"
+        },
+        {
+          "path": "special_tokens_map.json",
+          "size": 167,
+          "sha256": "d05497f1da52c5e09554c0cd874037a083e1dc1b9cfd48034d1c717f1afc07a7"
+        },
+        {
+          "path": "onnx/model_quantized.onnx",
+          "size": 118308185,
+          "sha256": "f80102d3f2a1229f387d3c81909990d8945513e347b0eab049f7de3c6f98c193",
+          "parts": [
+            {
+              "name": "onnx/model_quantized.onnx.part000",
+              "size": 41943040,
+              "sha256": "16831d4f91f64c9fe9a39982166566c442c3852ab36436cb18ed852aab660825"
+            },
+            {
+              "name": "onnx/model_quantized.onnx.part001",
+              "size": 41943040,
+              "sha256": "0d66f29076b2ab92b7f01f32edda0f0af1518c43457ab94e88cee88010afe6f0"
+            },
+            {
+              "name": "onnx/model_quantized.onnx.part002",
+              "size": 34422105,
+              "sha256": "a2bcfe0ab3288414ca78788cd438ab83dee85d5666bf71f304f32f783e4b146b"
+            }
+          ]
         }
       ]
     }
