@@ -12,7 +12,7 @@
   if (typeof module === 'object' && module.exports) module.exports = factory(require('../ui/win_shell.js')); else root.FaKnowledgeUI = factory(root.FaWin || (typeof FaWin !== 'undefined' ? FaWin : undefined));
 })(typeof self !== 'undefined' ? self : this, function (WIN) {
   'use strict';
-  var CSS = '.fki{--bg:#fff;--fg:#1f2328;--bd:#d0d7de;--hd:#f6f8fa;--mut:#59636e;--acc:#0969da;--ok:#1a7f37;--bad:#cf222e;--hl:#fff3b0;border:1px solid var(--bd);border-radius:8px;background:var(--bg);color:var(--fg);font:13px system-ui,"Microsoft JhengHei",sans-serif;margin:6px 0;overflow:hidden;max-width:100%;display:flex;flex-direction:column;height:560px}'
+  var CSS = '.fki{--bg:#fff;--fg:#1f2328;--bd:#d0d7de;--hd:#f6f8fa;--mut:#59636e;--acc:#0969da;--ok:#1a7f37;--bad:#cf222e;--hl:#fff3b0;position:relative;border:1px solid var(--bd);border-radius:8px;background:var(--bg);color:var(--fg);font:13px system-ui,"Microsoft JhengHei",sans-serif;margin:6px 0;overflow:hidden;max-width:100%;display:flex;flex-direction:column;height:560px}'
     + '.fki.dark{--bg:#161b22;--fg:#e6edf3;--bd:#30363d;--hd:#21262d;--mut:#8b949e;--acc:#58a6ff;--ok:#3fb950;--bad:#f85149;--hl:#5a4a00}.fki *{box-sizing:border-box}'
     + '.fki button{background:var(--hd);color:inherit;border:1px solid var(--bd);border-radius:5px;padding:3px 9px;cursor:pointer;font:inherit}.fki button:hover:not(:disabled){border-color:var(--acc)}.fki button:disabled{opacity:.4;cursor:default}.fki button.pri{background:var(--acc);border-color:var(--acc);color:#fff}.fki button.ic{padding:1px 6px;background:transparent;border-color:transparent}.fki button.ic:hover{border-color:var(--bd)}'
     + '.fki input[type=text],.fki input[type=number],.fki select,.fki textarea{background:var(--bg);color:inherit;border:1px solid var(--bd);border-radius:5px;padding:4px 6px;font:inherit;max-width:100%}.fki textarea{width:100%;resize:none}'
@@ -29,7 +29,7 @@
     + '.fki .src{flex-wrap:wrap}.fki .pg{flex-basis:100%;display:flex;flex-direction:column;gap:2px;padding:0 2px 2px 24px}.fki .pgb{height:5px;border-radius:3px;background:var(--bd);overflow:hidden}.fki .pgb i{display:block;height:100%;background:var(--acc);width:0;transition:width .25s}.fki .pgb.run i{background:var(--acc)}.fki .pgb.full i{background:var(--ok)}.fki .pgt{font-size:11px;color:var(--mut)}'
     + '.fki .opl{padding:4px 8px;font-size:12px;color:var(--acc);border-bottom:1px solid var(--bd);background:var(--hd);display:none;white-space:pre-wrap;word-break:break-word}.fki .opl.on{display:block}'
     + '.fki details.tr{border:1px dashed var(--bd);border-radius:6px;padding:2px 8px;font-size:12px;color:var(--mut)}.fki details.tr summary{cursor:pointer}.fki .trl{padding:1px 0;white-space:pre-wrap;word-break:break-word}.fki .trl.bad{color:var(--bad)}.fki .trl.ok{color:var(--ok)}'
-    + '.fki details.dim{border:1px solid var(--bd);border-radius:6px;padding:2px 8px;font-size:11px;color:var(--mut);opacity:.85}.fki details.dim summary{cursor:pointer}.fki details.dim .hit{font-size:11px;filter:grayscale(1)}.fki details.dim blockquote{border-left-color:var(--bd)}.fki .ans{border:1px solid var(--acc);border-radius:8px;padding:6px 8px;display:flex;flex-direction:column;gap:4px}.fki .ans .cite{font-size:11px;color:var(--acc);margin-left:2px}.fki .ask select{max-width:110px}';
+    + '.fki details.dim{border:1px solid var(--bd);border-radius:6px;padding:2px 8px;font-size:11px;color:var(--mut);opacity:.85}.fki details.dim summary{cursor:pointer}.fki details.dim .hit{font-size:11px;filter:grayscale(1)}.fki details.dim blockquote{border-left-color:var(--bd)}.fki button.cite{padding:0 6px;margin-left:3px;font-size:11px;border-radius:9px;color:var(--acc);background:transparent}.fki .dlgbg{position:absolute;inset:0;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;z-index:5}.fki .dlg{background:var(--bg);border:1px solid var(--bd);border-radius:8px;width:min(640px,92%);max-height:86%;overflow:auto;padding:8px 10px;display:flex;flex-direction:column;gap:6px;box-shadow:0 6px 24px rgba(0,0,0,.35)}.fki .dlg h4{margin:0;font-size:13px;display:flex;gap:6px;align-items:center}.fki .ans{border:1px solid var(--acc);border-radius:8px;padding:6px 8px;display:flex;flex-direction:column;gap:4px}.fki .ans .cite{font-size:11px;color:var(--acc);margin-left:2px}.fki .ask select{max-width:110px}';
   function h(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
   function esc(s) { return String(s == null ? '' : s); }
   // 把查詢的詞在原文裡標起來（只是顯示，不改內容）
@@ -154,7 +154,8 @@
         tr.step('找到 ' + res.hits.length + ' 筆　' + (res.semantic ? '關鍵字＋語意' : (res.semantic_note || '只用關鍵字')), 'ok');
         // 回答用到的原文照常顯示；沒用到的（模型沒引用、或沒找到答案）變灰階、小字，收在可展開的區塊裡，預設收合
         var showHits = function (cited) {
-          var used = [], rest = []; res.hits.forEach(function (hit, i) { (!cited || cited.indexOf(i + 1) >= 0 ? used : rest).push([hit, i]); });
+          if (cited) { var all = h('details', 'dim'); all.appendChild(h('summary', null, '找到的原文（' + res.hits.length + ' 筆；點答案裡的 [編號] 看出處）')); res.hits.forEach(function (hit, i) { all.appendChild(hitCard(hit, i, q)); }); c.appendChild(all); scroll(); return; }
+          var used = [], rest = []; res.hits.forEach(function (hit, i) { used.push([hit, i]); });
           if (used.length) { c.appendChild(h('div', 'st', '原文出處（' + used.length + ' 筆）')); used.forEach(function (x) { c.appendChild(hitCard(x[0], x[1], q)); }); }
           if (rest.length) { var dm = h('details', 'dim'); dm.appendChild(h('summary', null, (used.length ? '其他找到的原文（' : '找到的原文，但沒有對上問題的答案（') + rest.length + ' 筆，沒有採用）')); rest.forEach(function (x) { dm.appendChild(hitCard(x[0], x[1], q)); }); c.appendChild(dm); }
           scroll();
@@ -166,7 +167,7 @@
           if (!ai.ok) { note(c, '⚠️ AI 整理失敗：' + ai.error + '\n下面是原文。', 'st bad'); showHits(); return; }
           var citedList = ai.cited || [];
           if (!ai.sentences.length) { var nf = h('details', 'dim'); nf.appendChild(h('summary', null, '沒有找到能回答的內容（' + (ai.dropped.length ? '丟掉了 ' + ai.dropped.length + ' 句對不上原文的' : '模型說找不到') + '）')); c.appendChild(nf); }
-          else { var box = h('div', 'ans'); ai.sentences.forEach(function (x) { var p = h('div'); p.appendChild(document.createTextNode(x.text)); x.cites.forEach(function (n) { p.appendChild(h('span', 'cite', '[' + n + ']')); }); box.appendChild(p); }); c.appendChild(box); }
+          else { var box = h('div', 'ans'); ai.sentences.forEach(function (x) { var p = h('div'); p.appendChild(document.createTextNode(x.text)); x.cites.forEach(function (n) { var b = h('button', 'cite', '[' + n + ']'), sr = (ai.sources || [])[n - 1]; b.title = sr ? sr.label : ''; b.onclick = function () { if (sr) openSource(sr); }; p.appendChild(b); }); box.appendChild(p); }); c.appendChild(box); }
           if (ai.dropped.length) { var dd = h('details', 'dim'); dd.appendChild(h('summary', null, '丟掉了 ' + ai.dropped.length + ' 句（對不上原文，沒有採用）')); ai.dropped.forEach(function (x) { dd.appendChild(h('div', 'trl', x.text + '　← ' + x.why)); }); c.appendChild(dd); }
           showHits(citedList);
         });
@@ -180,6 +181,14 @@
       cp.onclick = function () { var t = hit.label + '\n' + hit.quote; try { navigator.clipboard.writeText(t); cp.textContent = '已複製'; setTimeout(function () { cp.textContent = '複製出處'; }, 1200); } catch (e) { cp.textContent = '複製不了'; } };
       ctx.onclick = guard(function () { if (box.firstChild) { box.textContent = ''; ctx.textContent = '看上下文'; return; } return host.detail(hit.source_id || hit.source, { line_start: Math.max(1, hit.line_start - 4), line_end: hit.line_end + 4 }, { maxLines: 40 }).then(function (d) { box.appendChild(lineView(d.lines || [], hit.line_start, hit.line_end)); ctx.textContent = '收起'; }); });
       return c;
+    }
+    // 點答案裡的 [編號]：開一個對話框，顯示那段原始資料（標明來源、行號，命中的行標起來），可以看更多上下文、複製出處
+    function openSource(sr) {
+      var bg = h('div', 'dlgbg'), dlg = h('div', 'dlg'), hd = h('h4', null, '[' + sr.n + '] ' + sr.label), x = h('button', 'ic', '✕'), body = h('div'), row = h('div', 'row'), more = h('button', null, '看更多上下文'), cp = h('button', null, '複製出處');
+      x.style.marginLeft = 'auto'; hd.appendChild(x); var close = function () { bg.remove(); }; x.onclick = close; bg.onclick = function (e) { if (e.target === bg) close(); };
+      var pad = 3; function load() { return host.detail(sr.source_id || sr.source, { line_start: Math.max(1, sr.line_start - pad), line_end: sr.line_end + pad + 6 }, { maxLines: 60 }).then(function (d) { body.textContent = ''; body.appendChild(lineView(d.lines || [], sr.line_start, sr.line_end)); }).catch(function () { body.textContent = String(sr.ctx || sr.quote || ''); }); }
+      more.onclick = function () { pad += 6; load(); }; cp.onclick = function () { try { navigator.clipboard.writeText(sr.label + '\n' + (sr.quote || '')); cp.textContent = '已複製'; setTimeout(function () { cp.textContent = '複製出處'; }, 1200); } catch (e) { cp.textContent = '複製不了'; } };
+      [more, cp].forEach(function (b) { row.appendChild(b); }); [hd, body, row].forEach(function (n) { dlg.appendChild(n); }); bg.appendChild(dlg); el.appendChild(bg); load();
     }
     function lineView(lines, hotA, hotB) { var pre = h('pre', 'code'); lines.forEach(function (l) { pre.appendChild(h('span', 'ln' + (l.line >= hotA && l.line <= hotB ? ' hot' : ''), String(l.line))); pre.appendChild(document.createTextNode(l.text + '\n')); }); return pre; }
     function showOutline(s) {
