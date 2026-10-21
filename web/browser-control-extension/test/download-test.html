@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>下載與捲動測試頁</title>
+<style>body{font:16px system-ui;margin:0;padding:16px}.gap{height:2400px;background:linear-gradient(#eef,#fee)}button,a.btn{font:inherit;padding:10px 16px;margin:8px 0;display:inline-block}</style></head>
+<body>
+<h1>下載與捲動測試頁</h1>
+<p>給 browser-control-extension 的 <code>click</code>、<code>download_behavior</code>、<code>type_text</code> 手動／自動驗證用。</p>
+<input id="top-input" placeholder="畫面內的輸入框"><br>
+<div class="gap">（很長的空白，用來測「元件在畫面外時先捲進來」）</div>
+<button id="dl-blob" type="button">下載文字檔（blob）</button>
+<a id="dl-data" class="btn" download="hello.txt" href="data:text/plain;charset=utf-8,hello">下載文字檔（data 連結）</a>
+<br><input id="far-input" placeholder="畫面外的輸入框"><span id="state"></span>
+<script>
+document.getElementById('dl-blob').onclick = function () {
+  var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['blob content'], { type: 'text/plain' })); a.download = 'blob.txt'; document.body.appendChild(a); a.click(); a.remove();
+};
+// 擋畫面外事件的網頁：按鈕不在可視區時，點擊會被忽略（驗證有先捲進畫面）
+var btn = document.getElementById('dl-blob'), real = btn.onclick;
+btn.onclick = function (e) { var r = btn.getBoundingClientRect(); if (r.bottom < 0 || r.top > innerHeight) { document.getElementById('state').textContent = '被擋：按鈕不在畫面內'; return; } real(e); };
+</script></body></html>

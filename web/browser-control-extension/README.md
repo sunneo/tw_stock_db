@@ -24,6 +24,18 @@
 - 滑鼠/鍵盤/截圖使用 Chrome 的偵錯功能，操作期間瀏覽器會顯示「正在偵錯此瀏覽器」提示列，這是正常的。
 - 只接受 http(s) 網址。
 
+## 1.5.1：下載行為由助理控制（Page.setDownloadBehavior）
+
+點擊會觸發下載時，Chrome 可能跳「另存新檔」對話框，擴充功能碰不到系統對話框。現在 `click` 可以帶：
+
+- `download_behavior: "allow"` ＋ `download_path`（存檔資料夾的**絕對路徑**）：下載直接存進去，不跳對話框。
+- `download_behavior: "deny"`：擋掉下載，只回報「有下載想發生」（`denied:true`、檔名、網址）。
+- `download_behavior: "default"`：還給 Chrome 自己處理。
+
+設定是「這個分頁」的，會一直生效到改成 `default`、分頁關掉或除錯器中斷。也可以先用 `set_download_behavior`（`behavior`、`path`）單獨設定。`wait_download` 在行為由助理控制時改看除錯器事件（`Page.downloadWillBegin`／`downloadProgress`），回傳 `path`（資料夾加建議檔名）、`url`、`size_bytes`；沒設定時照舊看 `chrome.downloads`。
+
+**注意**：`Page.setDownloadBehavior` 在 Chrome 裡已標為過時，行為以實際測試為準；若這個版本不接受會直接回報原因。手動驗證用 `test/download-test.html`（有畫面外的下載按鈕與輸入框，順便驗證 1.5.0 的先捲進畫面）。
+
 ## 1.5.0：互動前先捲到元件、補回 selector／文字點擊與下載追蹤
 
 - **互動前先捲進畫面**：`click`（selector 或文字）找到元件後先捲到畫面中央、等版面穩定，再送點擊；`type_text` 有 selector 就先把那個元件捲到畫面中央，沒有 selector 就捲到目前拿到焦點的元件。原因：(1) 中間有錄影時看得到在做什麼；(2) 有的網頁會擋畫面外的事件。

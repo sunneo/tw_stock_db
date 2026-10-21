@@ -9,7 +9,7 @@
 // 安全邊界：除了 ping，所有指令都只作用在「助理自己建立的分頁」（managedTabs），
 // 不能讀取或操作使用者原本開著的其他分頁。
 
-const VERSION = "1.5.0";
+const VERSION = "1.5.1";
 const AI_GROUP_TITLE = "AI Controlled";
 const AI_GROUP_COLOR = "purple";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -195,24 +195,73 @@ function downloadInfo(d) {
 }
 // since：只認「startTime >= since」的下載項目為「這次操作觸發的」；用「呼叫時的Date.now()」
 // 當since、不是「點擊後才記」，避免下載快到在我們開始等待之前就已經進了onCreated的race condition。
-async function waitForNewDownload(timeoutMs, since) {
+async function waitForNewDownload(timeoutMs, since, tabId) {
   const budget = Math.max(1000, Math.min(180000, Number(timeoutMs) || 20000));
   const end = Date.now() + budget;
+  if (tabId == null && dlBehavior.size === 1) tabId = [...dlBehavior.keys()][0];
+  const ctl = tabId != null ? dlBehavior.get(tabId) : null;
   for (;;) {
+    // 下載行為由助理控制的分頁：以除錯器事件為準
+    if (ctl) {
+      const pd = pageDownloads.find((d) => d.tabId === tabId && d.startTime >= since);
+      if (pd) {
+        if (ctl.behavior === "deny") return Object.assign(pageDownloadInfo(pd, ctl), { denied: true, note: "下載被擋掉了（download_behavior=deny），沒有存檔" });
+        if (pd.state === "completed") return pageDownloadInfo(pd, ctl);
+        if (pd.state === "canceled") throw new Error("下載被取消：" + (pd.suggestedFilename || pd.url || ""));
+      }
+    }
     const cand = recentDownloads.find((d) => d.startTime >= since);
-    if (cand) {
+    if (cand && !(ctl && ctl.behavior === "deny")) {
       if (cand.state === "complete") return downloadInfo(cand);
       if (cand.state === "interrupted") throw new Error("下載被中斷/失敗：" + (cand.error || "未知原因") + (cand.filename ? "（" + cand.filename + "）" : ""));
     }
     if (Date.now() >= end) {
       throw new Error(
-        cand
-          ? "下載還沒完成就逾時了（目前狀態：" + cand.state + "，可能是大檔案或網路慢，可以再呼叫一次wait_download繼續等）"
-          : "等不到新的下載開始——可能是：(1)這個網站彈出了「另存新檔」對話框卡住（擴充功能無法操作系統原生對話框，需要使用者手動到Chrome設定關閉「下載前詢問每個檔案的儲存位置」）(2)剛才點的元素其實不是觸發下載的按鈕 (3)網站改成在新分頁開啟PDF而不是下載，改用browser_navigate或browser_list_tabs確認"
+        cand || (ctl && pageDownloads.find((d) => d.tabId === tabId && d.startTime >= since))
+          ? "下載還沒完成就逾時了（可能是大檔案或網路慢，可以再呼叫一次wait_download繼續等）"
+          : "等不到新的下載開始——可能是：(1)跳出了「另存新檔」對話框卡住（擴充功能碰不到系統對話框；請在 click 或 set_download_behavior 帶 download_behavior=allow 與 download_path，讓下載不跳對話框）(2)這次點擊根本沒有觸發下載(3)網站要求登入或有擋下載"
       );
     }
     await sleep(300);
   }
+}
+
+// ---------- 下載行為（Page.setDownloadBehavior）----------
+// 點擊會觸發下載時，Chrome 可能跳「另存新檔」對話框（擴充功能碰不到系統對話框）。這裡用除錯器對「那個分頁」
+// 送 Page.setDownloadBehavior，由助理決定：allow（直接存到指定資料夾，不跳對話框）、deny（擋掉，只回報有下載想發生）、
+// default（還給 Chrome 自己處理）。並開啟 Page.downloadWillBegin／downloadProgress 事件，不用等 chrome.downloads。
+const dlBehavior = new Map(); // tabId -> { behavior, path }
+const pageDownloads = []; // 最近的下載事件（記憶體內）：{ guid, tabId, url, suggestedFilename, state, receivedBytes, totalBytes, startTime }
+chrome.debugger.onEvent.addListener((src, method, p) => {
+  if (src.tabId == null) return;
+  if (method === "Page.downloadWillBegin") {
+    pageDownloads.unshift({ guid: p.guid, tabId: src.tabId, url: p.url || null, suggestedFilename: p.suggestedFilename || null, state: "inProgress", receivedBytes: 0, totalBytes: 0, startTime: Date.now() });
+    if (pageDownloads.length > 40) pageDownloads.pop();
+  } else if (method === "Page.downloadProgress") {
+    const d = pageDownloads.find((x) => x.guid === p.guid);
+    if (d) { d.state = p.state; d.receivedBytes = p.receivedBytes; d.totalBytes = p.totalBytes; }
+  }
+});
+chrome.debugger.onDetach.addListener((src) => { if (src.tabId != null) dlBehavior.delete(src.tabId); });
+function joinPath(dir, name) { const sep = dir.includes("\\") && !dir.includes("/") ? "\\" : "/"; return String(dir).replace(/[\\/]+$/, "") + sep + name; }
+async function setDownloadBehavior(tabId, behavior, path) {
+  behavior = String(behavior || "");
+  if (!["allow", "deny", "default"].includes(behavior)) throw new Error("download_behavior 要是 allow／deny／default");
+  if (behavior === "allow" && !/^([A-Za-z]:[\\/]|\/)/.test(String(path || ""))) throw new Error("download_behavior=allow 要附 download_path（要存到哪個資料夾，必須是絕對路徑，例如 C:\\Users\\你\\Downloads\\ai 或 /home/你/Downloads/ai）");
+  await dbg(tabId);
+  try {
+    await send(tabId, "Page.enable");
+    await send(tabId, "Page.setDownloadBehavior", behavior === "allow" ? { behavior, downloadPath: String(path) } : { behavior });
+  } catch (err) {
+    throw new Error("這個 Chrome 版本不接受 Page.setDownloadBehavior：" + String((err && err.message) || err));
+  }
+  if (behavior === "default") dlBehavior.delete(tabId); else dlBehavior.set(tabId, { behavior, path: behavior === "allow" ? String(path) : null });
+  return { behavior, path: behavior === "allow" ? String(path) : null };
+}
+function pageDownloadInfo(d, ctl) {
+  const out = { guid: d.guid, url: d.url, filename: d.suggestedFilename, size_bytes: d.totalBytes || d.receivedBytes || null };
+  if (ctl && ctl.behavior === "allow" && d.suggestedFilename) out.path = joinPath(ctl.path, d.suggestedFilename);
+  return out;
 }
 
 async function waitLoad(tabId, timeoutMs) {
@@ -564,6 +613,7 @@ const commands = {
   async click(a, ctx) {
     const { tabId } = await needTab(a, ctx);
     await keepPageFocused(tabId);
+    let out_dl = null;
     const selector = a.selector ? String(a.selector) : null;
     const text = a.text != null && a.text !== "" ? String(a.text) : null;
     const index = Number.isInteger(Number(a.index)) && Number(a.index) >= 0 ? Number(a.index) : 0;
@@ -600,6 +650,7 @@ const commands = {
     if (!res) throw new Error("無法在此頁面尋找元素（可能是受保護頁面）");
     if (res.error) throw new Error(res.error);
     await sleep(250); // scrollIntoView後讓版面穩定（也讓錄影看得到捲動後的畫面），避免座標算完、畫面又reflow導致點歪
+    if (a.download_behavior) out_dl = await setDownloadBehavior(tabId, a.download_behavior, a.download_path);
     const sinceTs = Date.now(); // 一定要在真正點擊「之前」記下，避免下載在我們開始等待前就已完成的race condition
     const ev = (type, extra) => send(tabId, "Input.dispatchMouseEvent", Object.assign({ type, x: res.x, y: res.y, button: "left", modifiers: 0 }, extra));
     await ev("mouseMoved", { button: "none" });
@@ -607,7 +658,8 @@ const commands = {
     await ev("mouseReleased", { clickCount: 1 });
     await sleep(150);
     const out = { ok: true, x: res.x, y: res.y, tag: res.tag, clicked_text: res.matched_text, visible_count: res.visible_count };
-    if (a.wait_download) out.download = await waitForNewDownload(a.download_timeout_ms, sinceTs);
+    if (out_dl) out.download_behavior = out_dl;
+    if (a.wait_download) out.download = await waitForNewDownload(a.download_timeout_ms, sinceTs, tabId);
     return out;
   },
 
@@ -615,7 +667,14 @@ const commands = {
   // since_ms選填：預設用「這次呼叫當下」當分界線，只等這之後才新建立的下載。
   async wait_download(a) {
     const since = Number.isFinite(Number(a.since_ms)) ? Number(a.since_ms) : Date.now();
-    return waitForNewDownload(a.timeout_ms, since);
+    const tid = Number.isInteger(Number(a.tab_id)) && Number(a.tab_id) > 0 ? Number(a.tab_id) : null;
+    return waitForNewDownload(a.timeout_ms, since, tid);
+  },
+
+  // 預先設定這個分頁的下載行為（之後這個分頁觸發的下載都照它處理，直到改回 default 或分頁關掉）。
+  async set_download_behavior(a, ctx) {
+    const { tabId } = await needTab(a, ctx);
+    return Object.assign({ ok: true }, await setDownloadBehavior(tabId, a.behavior || a.download_behavior, a.path || a.download_path));
   },
 
   // 除錯用：列出目前記得的最近下載（service worker重啟就會清空，不是長期歷史）。
