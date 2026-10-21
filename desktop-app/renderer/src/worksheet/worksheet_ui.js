@@ -53,16 +53,27 @@
     function redo() { if (S.ptr < S.states.length - 1) { S.ptr++; sel = null; render(); persist(); } }
 
     // ───── 版面骨架 ─────
-    var bar = h('div', 'bar'), ttl = h('span', 'ttl', '📐 學習單編輯器'), bUndo = h('button', null, '↶ 復原'), bRedo = h('button', null, '↷ 重做'), bSum = h('button', null, '📝 摘要成 prompt'), bExp = h('select'), bFull = h('button', null, '⛶'), stat = h('span', 'st');
+    var bar = h('div', 'bar'), ttl = h('span', 'ttl', '📐 學習單編輯器'), bUndo = h('button', null, '↶ 復原'), bRedo = h('button', null, '↷ 重做'), bSum = h('button', null, '📝 摘要成 prompt'), bTpl = h('button', null, '📋 範本'), bExp = h('select'), bFull = h('button', null, '⛶'), stat = h('span', 'st');
     bUndo.title = 'Ctrl+Z'; bRedo.title = 'Ctrl+Y'; bFull.title = '放大／還原';
     [['', '⬇ 匯出…'], ['pdf', 'PDF（向量）'], ['png', 'PNG 預覽圖'], ['html', 'HTML（可列印）'], ['json', '描述（JSON）']].forEach(function (o) { var op = h('option', null, o[1]); op.value = o[0]; bExp.appendChild(op); });
-    [ttl, stat, bUndo, bRedo, bSum, bExp, bFull].forEach(function (x) { bar.appendChild(x); });
+    [ttl, stat, bUndo, bRedo, bTpl, bSum, bExp, bFull].forEach(function (x) { bar.appendChild(x); });
     var sum = h('div', 'sum'), sumTa = h('textarea'); sumTa.rows = 8; var sumRow = h('div', 'row'), bCopy = h('button', null, '📋 複製'), bRegen = h('button', 'pri', '↻ 用這段重新生成'), bPol = h('button', null, '✨ 請 AI 潤飾'), bSumX = h('button', null, '✕'); [bCopy, bRegen, bPol, bSumX].forEach(function (x) { sumRow.appendChild(x); }); sumRow.insertBefore(h('span', 'st', '把目前的樣子與編輯過程整理成一段可以重用的描述'), bCopy); sum.appendChild(sumTa); sum.appendChild(sumRow);
+    // 範本：從範本開始（一步，可以復原）、把目前這份存成範本（使用者範本由 host 保管）
+    var tpl = h('div', 'sum'), tplList = h('div', 'tpls'), tplSave = h('div', 'row'), tplName = h('input'), tplBtn = h('button', null, '💾 把目前這份存成範本'), tplX = h('button', null, '✕'); tplName.placeholder = '範本名稱'; tplName.style.flex = '1'; tplName.style.minWidth = '120px';
+    [tplName, tplBtn, tplX].forEach(function (x) { tplSave.appendChild(x); }); tpl.appendChild(h('div', 'st', '從範本開始（會換掉目前的內容，但這一步可以復原）：')); tpl.appendChild(tplList); tpl.appendChild(tplSave);
+    function renderTpls() {
+      tplList.textContent = ''; var list = []; try { list = W.listTemplates(host.templates ? host.templates() : []); } catch (e) { list = W.listTemplates([]); } var group = '';
+      list.forEach(function (t) { if (t.group !== group) { group = t.group; tplList.appendChild(h('div', 'st', group)); } var row = h('div', 'row'), b = h('button', null, t.label); b.title = t.desc; b.onclick = function () { var sp = W.templateSpec(t.id, host.templates ? host.templates() : []); if (sp) { commit(sp, '從範本「' + t.label + '」開始', '', 'chat'); tpl.className = 'sum'; } }; row.appendChild(b); row.appendChild(h('span', 'st', t.desc.slice(0, 60))); if (!t.builtin && host.deleteTemplate) { var d = h('button', null, '🗑'); d.title = '刪掉這個範本'; d.onclick = function () { Promise.resolve(host.deleteTemplate(t.id)).then(renderTpls); }; row.appendChild(d); } tplList.appendChild(row); });
+    }
+    bTpl.onclick = function () { renderTpls(); tpl.className = tpl.className.indexOf(' on') >= 0 ? 'sum' : 'sum on'; };
+    tplX.onclick = function () { tpl.className = 'sum'; };
+    tplBtn.style.display = host.saveTemplate ? '' : 'none'; tplName.style.display = host.saveTemplate ? '' : 'none';
+    tplBtn.onclick = function () { var nm = tplName.value.trim() || cur().title || '我的範本'; Promise.resolve(host.saveTemplate(nm, cur())).then(function () { tplName.value = ''; renderTpls(); stat.textContent = '已存成範本「' + nm + '」'; setTimeout(function () { stat.textContent = ''; }, 2500); }); };
     var main = h('div', 'main'), pv = h('div', 'pv'), side = h('div', 'side'), tabs = h('div', 'tabs');
     var panes = { ai: h('div', 'pane'), props: h('div', 'pane'), hist: h('div', 'pane hist') };
     [['ai', '🤖 AI 助手'], ['props', '⚙ 屬性'], ['hist', '🕘 記錄']].forEach(function (t) { var s = h('span', null, t[1]); s.setAttribute('data-t', t[0]); s.onclick = function () { tab = t[0]; showTab(); }; tabs.appendChild(s); });
     side.appendChild(tabs); ['ai', 'props', 'hist'].forEach(function (k) { side.appendChild(panes[k]); }); main.appendChild(pv); main.appendChild(side);
-    el.appendChild(bar); el.appendChild(sum); el.appendChild(main);
+    el.appendChild(bar); el.appendChild(tpl); el.appendChild(sum); el.appendChild(main);
     function showTab() { Array.prototype.forEach.call(tabs.children, function (s) { s.className = s.getAttribute('data-t') === tab ? 'on' : ''; }); Object.keys(panes).forEach(function (k) { panes[k].className = 'pane' + (k === 'hist' ? ' hist' : '') + (k === tab ? ' on' : ''); }); }
 
     // ───── 預覽：點一下選取 ─────
@@ -140,7 +151,7 @@
     function addMsg(role, text, chips, rejected) {
       var m = h('div', 'msg ' + (role === 'user' ? 'u' : 'a')); m.appendChild(document.createTextNode(text || '')); (chips || []).forEach(function (c) { m.appendChild(h('span', 'chip', c)); }); (rejected || []).forEach(function (c) { m.appendChild(h('span', 'chip rej', c)); }); logEl.appendChild(m); logEl.scrollTop = logEl.scrollHeight; return m;
     }
-    function renderLog() { logEl.textContent = ''; if (!S.log.length) addMsg('ai', '我在這裡幫你改這份學習單。直接說就好（改顏色、串數、答案、紙張、標題…），改錯了可以按「復原」。附一張圖片，我會照它的串數與顏色調整。'); S.log.forEach(function (m) { addMsg(m.role, m.text, m.chips, m.rejected); }); }
+    function renderLog() { logEl.textContent = ''; if (!S.log.length) addMsg('ai', (cur().blocks.length ? '' : '這是一份空白的學習單。按上面的「📋 範本」選一個範本開始，或直接告訴我要放什麼（例如「放一個繪圖區域」「畫上三角形」「加一個數線」）。\n') + '我在這裡幫你改這份學習單。直接說就好（改顏色、串數、答案、紙張、標題…），改錯了可以按「復原」。附一張圖片，我會照它的串數與顏色調整。'); S.log.forEach(function (m) { addMsg(m.role, m.text, m.chips, m.rejected); }); }
     function readFile(f) { return new Promise(function (res) { var r = new FileReader(); r.onload = function () { res({ name: f.name || 'image', dataUrl: String(r.result) }); }; r.onerror = function () { res(null); }; r.readAsDataURL(f); }); }
     function addFiles(files) { Promise.all(Array.prototype.filter.call(files || [], function (f) { return /^image\//.test(f.type); }).slice(0, 4).map(readFile)).then(function (list) { list.filter(Boolean).forEach(function (x) { if (pending.length < 4) pending.push(x); }); renderAtt(); }); }
     function renderAtt() { attEl.textContent = ''; pending.forEach(function (x, i) { var s = h('span'), im = h('img'); im.src = x.dataUrl; im.alt = x.name; var rm = h('b', null, '×'); rm.onclick = function () { pending.splice(i, 1); renderAtt(); }; s.appendChild(im); s.appendChild(rm); attEl.appendChild(s); }); }

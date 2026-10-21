@@ -137,6 +137,16 @@ check('a draw triangle (x,y,w,h) becomes a 3-point polygon', (() => { const it =
 check('a rejected add_block says why (no type / unknown type) so the model and the user can fix it', (() => { const r = W.applyEdits(EMPTY, [{ op: 'add_block', block: { type: 'triangle' } }, { op: 'add_block', block: {} }]); return r.rejected.length === 2 && r.rejected.every((x) => /不認得|type/.test(x.error) && /draw/.test(x.error)); })());
 check('the model prompt carries the draw format and real line breaks', (() => { const P = W.editPrompt(EMPTY, '畫一個三角形'); return /draw 區塊/.test(P.system) && /triangle/.test(P.system) && P.system.indexOf(String.fromCharCode(92) + 'n') < 0; })());
 
+// ---------- 範本（template）：每一種學習單都是一個範本 ----------
+const TL = W.listTemplates([]);
+check('templates: every built-in has a label, a description and a group; ids are unique', TL.length === 8 && new Set(TL.map((t) => t.id)).size === 8 && TL.every((t) => t.label && t.desc && t.group && t.builtin));
+check('templates: every built-in turns into a valid sheet (blank/draw area/example requests); unknown id is null', TL.every((t) => { const sp = W.templateSpec(t.id, []); return sp && W.validate(sp).problems.length === 0; }) && W.templateSpec('nope', []) === null);
+check('templates: blank has no blocks; draw_area has one drawing block; the others match their type', W.templateSpec('blank', []).blocks.length === 0 && W.templateSpec('draw_area', []).blocks[0].type === 'draw' && ['bead_rows', 'number_bond', 'count_rows', 'ten_frames', 'number_line', 'equations'].every((id) => W.templateSpec(id, []).blocks[0].type === id));
+check('templates: the template examples are what the request parser would build (same detection)', TL.filter((t) => t.example).every((t) => W.parseRequest(t.example).template === t.id));
+const UT = W.makeUserTemplate('我的數的組成', W.templateSpec('number_bond', []), 1700000000000);
+check('user templates: saved from a sheet, used like built-ins, listed in their own group; the saved spec is a copy', UT.id.indexOf('user_') === 0 && UT.label === '我的數的組成' && W.templateSpec(UT.id, [UT]).blocks[0].type === 'number_bond' && W.listTemplates([UT]).slice(-1)[0].group === '我的範本' && W.listTemplates([UT]).slice(-1)[0].builtin === false);
+check('user templates: garbage entries are ignored; the topic text lists the template ids', W.listTemplates([null, { id: 'x' }, UT]).length === 9 && /number_bond/.test(W.TOPICS.templates) && /user_|存成範本/.test(W.TOPICS.templates));
+
 // ---------- 封閉題：弱模型只選字母，選不出來就用預設 ----------
 (async () => {
   const asked = []; const a = await W.resolveQuestions(W.parseRequest('串珠 10又1'), async (q, opts) => { asked.push({ q, opts }); return 2; });

@@ -1427,6 +1427,13 @@ const AI_REASONING_DEADEND_PROMPT = '[系統提示] 你剛才那一輪只完成�
 const FA_AI_FEATURES_CATALOG = /*__FA_AI_FEATURES__*/null;
 
 const SUBAGENT_DOMAIN_REGISTRY = {
+    webedit: {
+        enabled: true,
+        label: '網頁編輯器（用對話做小網站：HTML／CSS／JS＋模擬後端 Node／Python，預覽、改後端、測試、匯出）',
+        toolNames: ['webedit_open', 'webedit_topic', 'list_uploaded_files'],
+        systemPrompt: '你負責用「網頁編輯器」幫使用者做小網站（原型、前端頁面加模擬後端）。做法固定：呼叫 webedit_open——使用者要現成的類型就用 starter（blank、todo、chat、form、python_api），要別的就把一句話需求放 request（AI 會先做出第一版）；要接續之前的專案用 id。做完編輯器就放在對話裡了（預覽、程式碼、後端三個分頁，右邊有對話可以繼續改、附圖、復原重做），用幾句話告訴使用者可以直接在裡面改，**不要把程式碼貼進對話、不要自己寫 HTML 檔**。後端是模擬的：JS（Node 風格，router／app.crud／app.ws／env.db，WebSocket 與 SSE 都能用，資料持久，可匯出 Node／Cloudflare 部署檔）或 Python（Flask／FastAPI，不支援 WebSocket）；PHP 在瀏覽器裡不能執行，要如實說，不要假裝能跑。需要細節先 webedit_topic。',
+        dynamicNote: '路由建議：使用者要做網頁、小網站、前端原型、HTML 編輯器、模擬後端／假 server／mock backend（Node、Python、WebSocket、API）時委派這個領域。',
+    },
     worksheet: {
         enabled: true,
         label: '教育文書（學習單、練習卷、教材、教具：排版成 HTML、輸出 PDF；可參考圖片；有互動編輯器）',
@@ -16407,16 +16414,42 @@ const holder = {};
     var o = e && e.op; var t = { set_title: function () { return '標題改成「' + e.text + '」'; }, set_subtitle: function () { return '說明改成「' + e.text + '」'; }, set_counts: function () { return '顆數改成 ' + (e.counts || []).join('、'); }, set_rows: function () { return '串數改成 ' + e.n; }, set_color: function () { return '第 ' + e.count + ' 串的顏色改成 ' + e.color; }, set_base_color: function () { return '金珠顏色改成 ' + e.color; }, set_answer: function () { return (e.show === true ? '附上答案' : e.show === false ? '答案留白' : '') + (e.side ? '答案線放' + (e.side === 'below' ? '下方' : e.side === 'right' ? '右側' : '：無') : '') + (e.line === false ? '拿掉答案線' : ''); }, set_page: function () { return '紙張：' + [e.size, e.orient === 'landscape' ? '橫式' : (e.orient === 'portrait' ? '直式' : '')].filter(Boolean).join(' '); }, set_size: function () { return '珠子大小 ' + Math.round(e.scale * 100) + '%'; }, set_header: function () { return '抬頭欄位調整'; }, add_block: function () { return '新增一個「' + (e.block && e.block.type) + '」區塊'; }, remove_block: function () { return '刪掉第 ' + (e.index + 1) + ' 個區塊'; }, set_block: function () { return '調整第 ' + (e.index + 1) + ' 個區塊（' + Object.keys(e.patch || {}).join('、') + '）'; }, move_block: function () { return '把第 ' + (e.index + 1) + ' 個區塊移到第 ' + (e.to + 1) + ' 個'; } };
     return t[o] ? t[o]() : String(o || '');
   }
+  // ───────────────────────── 範本（template）：每一種學習單都是一個範本 ─────────────────────────
+  // 內建範本：id、名稱、說明、分類、範例請求（程式讀範例就得到一份可以直接改的學習單）、辨識用的字。
+  // 使用者自己的範本（存成範本）由呼叫端保管：{ id:'user_…', label, desc, spec, createdAt }，用法跟內建的一樣。
+  var TEMPLATES = [
+    { id: 'blank', label: '空白學習單', desc: '只有抬頭（標題、姓名、日期），從零開始用對話或屬性面板加區塊。', group: '空白', keywords: '空白|從零|自己做', example: null },
+    { id: 'draw_area', label: '自由繪圖區', desc: '一個大的繪圖區域（虛線框），用對話畫圓、方框、三角形、線、文字。', group: '空白', keywords: '繪圖|畫圖|自由畫', example: null },
+    { id: 'bead_rows', label: '串珠：10又幾', desc: '每一串一整串金珠加幾顆彩色珠（蒙特梭利標準色），右邊橫線填數字。', group: '數學', keywords: '串珠|金色珠|彩色珠|10又|又幾', example: '串珠 10又幾 做8串，右邊填數字' },
+    { id: 'number_bond', label: '數的組成（二元樹）', desc: '每格一直排積木＋一棵樹：樹根紅圈、兩個藍圈兒子寫下拆成哪兩個數。', group: '數學', keywords: '二元樹|樹狀|樹根|兒子|數的組成|分解|積木', example: '數的組成 每個格子都是5個積木，用二元樹表達，顯示1+4,2+3,3+2,4+1' },
+    { id: 'count_rows', label: '數一數', desc: '每排若干個圖形（圓、方塊、星星），數一數寫在右邊橫線上。', group: '數學', keywords: '數一數|數數看|幾個', example: '數一數 3 5 2 7 4 6 星星' },
+    { id: 'ten_frames', label: '十格框', desc: '十格框裡有幾個點，寫下數字。', group: '數學', keywords: '十格|ten frame', example: '十格框 4 7 9 3 6 8' },
+    { id: 'number_line', label: '數線', desc: '一條數線，有些數字挖空讓學生填。', group: '數學', keywords: '數線|number line', example: '數線 0到20' },
+    { id: 'equations', label: '加減法算式', desc: '一頁算式，兩欄，可以指定範圍與題數（加法或減法）。', group: '數學', keywords: '加法|減法|算式|計算題|練習題', example: '加法練習 20以內 12題' }
+  ];
+  function templateById(id, user) { var t = TEMPLATES.filter(function (x) { return x.id === id; })[0]; if (t) return t; return (user || []).filter(function (x) { return x && x.id === id; })[0] || null; }
+  // 範本 → 一份可以直接編輯的 spec（內建：讀範例請求；使用者範本：存的 spec）；找不到回 null
+  function templateSpec(id, user) {
+    var t = templateById(id, user); if (!t) return null;
+    if (t.spec) return validate(t.spec).spec;
+    if (id === 'blank') return validate({ title: '學習單', blocks: [] }).spec;
+    if (id === 'draw_area') return validate({ title: '', header: { name: true, date: true }, blocks: [{ type: 'draw', height: 200, items: [{ shape: 'rect', x: 1, y: 1, w: 98, h: 98, fill: 'none', stroke: '#9AA0A6', sw: 0.4, rx: 1 }] }] }).spec;
+    var r = parseRequest(t.example); return r.ok ? r.spec : null;
+  }
+  function listTemplates(user) { return TEMPLATES.map(function (t) { return { id: t.id, label: t.label, desc: t.desc, group: t.group, builtin: true, example: t.example }; }).concat((user || []).filter(function (x) { return x && x.id && x.spec; }).map(function (x) { return { id: x.id, label: x.label || '我的範本', desc: x.desc || '', group: '我的範本', builtin: false, example: null }; })); }
+  // 把目前這份存成使用者範本（只存描述；標題、各區塊的設定都留著，之後套用再改）
+  function makeUserTemplate(label, spec, now) { var v = validate(spec).spec; return { id: 'user_' + (now || Date.now()).toString(36) + Math.random().toString(36).slice(2, 5), label: str(label || v.title || '我的範本', 40), desc: describe(v).slice(1).join('；').slice(0, 160), spec: v, createdAt: now || Date.now() }; }
   var TOPICS = {
     draw: '自由繪圖區塊 draw（沒有現成的區塊種類時用它自己畫）：{type:"draw", height:毫米（預設 60）, items:[…]}；座標一律是區塊寬高的百分比（0～100），半徑／寬高也是百分比（以寬高較小的一邊為準）。items 的 shape：circle{x,y,r,fill,stroke,sw}、rect{x,y,w,h,fill,stroke,sw,rx}、line{x1,y1,x2,y2,stroke,sw,dash}、poly{pts:[[x,y],…],fill,stroke}、text{x,y,text,size,anchor:start|middle|end,color,bold}。fill／stroke 可以是 #RRGGBB、顏色名稱或 none。一個區塊最多 300 個圖形；重複的東西（一排方框、一棵樹）請排成多個 draw 區塊或用現成區塊。有現成的就優先用現成的（見 format）。',
     format: '學習單描述（JSON）：{title, subtitle, header:{name,date,school,score}, page:{size:"A4|A5|Letter", orient:"portrait|landscape", margin:mm}, blocks:[區塊…]}。區塊 type：bead_rows｛base:10, counts:[1..8], colors:{顆數:"#RRGGBB"}, baseColor, answer:{side:"right|below|none", line, show}, size｝、count_rows｛counts, shape:"circle|square|star", color, answer｝、equations｛kind:"add|sub", max, count, columns 或 items:["3 + 4 = ____"]｝、ten_frames｛counts:[0..10], color, answer, columns｝、number_line｛from, to, blanks:[數字]｝、text｛lines:[…], size, align, bold｝、number_bond｛total, cells:[{a,b}], cols, showNumbers, fill｝（數的組成：每格一直排積木＋二元樹）、draw｛height, items｝（自由繪圖，座標是百分比，見 topic=draw）、spacer｛mm｝。現成區塊的座標與文字大小程式自己排，不要寫座標。',
     edits: '調整用 worksheet_adjust 的 edits（一次可以多個）：{op:"set_title",text}、{op:"set_subtitle",text}、{op:"set_counts",counts:[…]}、{op:"set_rows",n}、{op:"set_color",count:3,color:"#F2D4CF"}、{op:"set_base_color",color}、{op:"set_answer",show:true|false,side:"right|below|none",line:true|false}、{op:"set_page",size,orient,margin}、{op:"set_size",scale:0.4~1.4}、{op:"set_header",name,date,score}、{op:"add_block",block:{…},index}、{op:"remove_block",index}、{op:"set_block",index,patch:{…該區塊的欄位，例如 base、counts、shape、kind、max、count、columns、from、to、blanks、lines}}、{op:"move_block",index,to}。',
     reference: '有參考圖片時：worksheet_make 帶 reference_file_id（上傳圖片的 file_id）。視覺模型只被問一小段 JSON（每串的顆數與顏色、標題、金色珠的顏色），程式檢查後合併進學習單；看不出來的欄位用預設，不會亂猜。顏色不對就用 set_color 一個一個改。',
     number_bond: '數的組成（二元樹）區塊 number_bond：{type:"number_bond", total:5（每格幾個積木，2～12）, cells:[{a:1,b:4},{a:2,b:3},{a:null,b:null}（空白格）], cols:1～3, showNumbers:true（兒子圈裡寫數字）, fill:false（教師版：積木上色、樹根寫總數）, rootColor:"#D93025", childColor:"#2F6FD0", cubeColors:["#F6A33B","#E5383B"]}。每格是一直排積木＋一棵樹（上面紅圈、下面左右兩個藍圈）。調整用 set_block 的 patch（例如 patch:{cells:[…]}）。',
+    templates: '範本：每一種學習單都是一個範本。內建：' + TEMPLATES.map(function (t) { return t.id + '（' + t.label + '）'; }).join('、') + '。用法：worksheet_make({template:"id"}) 從範本開始（可以再帶 request 改細節）；編輯器工具列的「📋 範本」可以從範本開始、把目前這份「存成範本」（之後和內建的一樣用）。現成範本做不到的，用 draw 自由繪圖區塊（見 topic=draw）。',
     colors: '串珠標準色（蒙特梭利）：1 紅 #C8174F、2 綠 #8CC63F、3 粉 #F2D4CF、4 黃 #F5E51E、5 藍 #3F87D4、6 紫 #5E2C79、7 白 #FFFFFF、8 桃紅 #E0457B、9 深藍 #274B8F，金色（10）#E9B22E。'
   };
   return { PAGES: PAGES, LIMITS: LIMITS, BEAD_COLORS: BEAD_COLORS, GOLD: GOLD, OPS: OPS, TOPICS: TOPICS, defaults: defaults, beadBlock: beadBlock, validate: validate, layout: layout, toSvg: toSvg, toHtml: toHtml, toPdfmake: toPdfmake, drawCanvas: drawCanvas, textWidth: textWidth,
-    detectTemplate: detectTemplate, parseRequest: parseRequest, resolveQuestions: resolveQuestions, refPrompt: refPrompt, refFromReply: refFromReply, mergeRef: mergeRef, applyEdits: applyEdits, describe: describe, hex: hex, makeEquations: makeEquations, bondCells: bondCells, hitTest: hitTest, parseEditRequest: parseEditRequest, editPrompt: editPrompt, parseEditsReply: parseEditsReply, specToPrompt: specToPrompt, editWords: editWords };
+    detectTemplate: detectTemplate, parseRequest: parseRequest, resolveQuestions: resolveQuestions, refPrompt: refPrompt, refFromReply: refFromReply, mergeRef: mergeRef, applyEdits: applyEdits, describe: describe, hex: hex, makeEquations: makeEquations, bondCells: bondCells, TEMPLATES: TEMPLATES, templateById: templateById, templateSpec: templateSpec, listTemplates: listTemplates, makeUserTemplate: makeUserTemplate, hitTest: hitTest, parseEditRequest: parseEditRequest, editPrompt: editPrompt, parseEditsReply: parseEditsReply, specToPrompt: specToPrompt, editWords: editWords };
 });
 
 }).call(null, undefined, holder);
@@ -16482,16 +16515,27 @@ const holder = {};
     function redo() { if (S.ptr < S.states.length - 1) { S.ptr++; sel = null; render(); persist(); } }
 
     // ───── 版面骨架 ─────
-    var bar = h('div', 'bar'), ttl = h('span', 'ttl', '📐 學習單編輯器'), bUndo = h('button', null, '↶ 復原'), bRedo = h('button', null, '↷ 重做'), bSum = h('button', null, '📝 摘要成 prompt'), bExp = h('select'), bFull = h('button', null, '⛶'), stat = h('span', 'st');
+    var bar = h('div', 'bar'), ttl = h('span', 'ttl', '📐 學習單編輯器'), bUndo = h('button', null, '↶ 復原'), bRedo = h('button', null, '↷ 重做'), bSum = h('button', null, '📝 摘要成 prompt'), bTpl = h('button', null, '📋 範本'), bExp = h('select'), bFull = h('button', null, '⛶'), stat = h('span', 'st');
     bUndo.title = 'Ctrl+Z'; bRedo.title = 'Ctrl+Y'; bFull.title = '放大／還原';
     [['', '⬇ 匯出…'], ['pdf', 'PDF（向量）'], ['png', 'PNG 預覽圖'], ['html', 'HTML（可列印）'], ['json', '描述（JSON）']].forEach(function (o) { var op = h('option', null, o[1]); op.value = o[0]; bExp.appendChild(op); });
-    [ttl, stat, bUndo, bRedo, bSum, bExp, bFull].forEach(function (x) { bar.appendChild(x); });
+    [ttl, stat, bUndo, bRedo, bTpl, bSum, bExp, bFull].forEach(function (x) { bar.appendChild(x); });
     var sum = h('div', 'sum'), sumTa = h('textarea'); sumTa.rows = 8; var sumRow = h('div', 'row'), bCopy = h('button', null, '📋 複製'), bRegen = h('button', 'pri', '↻ 用這段重新生成'), bPol = h('button', null, '✨ 請 AI 潤飾'), bSumX = h('button', null, '✕'); [bCopy, bRegen, bPol, bSumX].forEach(function (x) { sumRow.appendChild(x); }); sumRow.insertBefore(h('span', 'st', '把目前的樣子與編輯過程整理成一段可以重用的描述'), bCopy); sum.appendChild(sumTa); sum.appendChild(sumRow);
+    // 範本：從範本開始（一步，可以復原）、把目前這份存成範本（使用者範本由 host 保管）
+    var tpl = h('div', 'sum'), tplList = h('div', 'tpls'), tplSave = h('div', 'row'), tplName = h('input'), tplBtn = h('button', null, '💾 把目前這份存成範本'), tplX = h('button', null, '✕'); tplName.placeholder = '範本名稱'; tplName.style.flex = '1'; tplName.style.minWidth = '120px';
+    [tplName, tplBtn, tplX].forEach(function (x) { tplSave.appendChild(x); }); tpl.appendChild(h('div', 'st', '從範本開始（會換掉目前的內容，但這一步可以復原）：')); tpl.appendChild(tplList); tpl.appendChild(tplSave);
+    function renderTpls() {
+      tplList.textContent = ''; var list = []; try { list = W.listTemplates(host.templates ? host.templates() : []); } catch (e) { list = W.listTemplates([]); } var group = '';
+      list.forEach(function (t) { if (t.group !== group) { group = t.group; tplList.appendChild(h('div', 'st', group)); } var row = h('div', 'row'), b = h('button', null, t.label); b.title = t.desc; b.onclick = function () { var sp = W.templateSpec(t.id, host.templates ? host.templates() : []); if (sp) { commit(sp, '從範本「' + t.label + '」開始', '', 'chat'); tpl.className = 'sum'; } }; row.appendChild(b); row.appendChild(h('span', 'st', t.desc.slice(0, 60))); if (!t.builtin && host.deleteTemplate) { var d = h('button', null, '🗑'); d.title = '刪掉這個範本'; d.onclick = function () { Promise.resolve(host.deleteTemplate(t.id)).then(renderTpls); }; row.appendChild(d); } tplList.appendChild(row); });
+    }
+    bTpl.onclick = function () { renderTpls(); tpl.className = tpl.className.indexOf(' on') >= 0 ? 'sum' : 'sum on'; };
+    tplX.onclick = function () { tpl.className = 'sum'; };
+    tplBtn.style.display = host.saveTemplate ? '' : 'none'; tplName.style.display = host.saveTemplate ? '' : 'none';
+    tplBtn.onclick = function () { var nm = tplName.value.trim() || cur().title || '我的範本'; Promise.resolve(host.saveTemplate(nm, cur())).then(function () { tplName.value = ''; renderTpls(); stat.textContent = '已存成範本「' + nm + '」'; setTimeout(function () { stat.textContent = ''; }, 2500); }); };
     var main = h('div', 'main'), pv = h('div', 'pv'), side = h('div', 'side'), tabs = h('div', 'tabs');
     var panes = { ai: h('div', 'pane'), props: h('div', 'pane'), hist: h('div', 'pane hist') };
     [['ai', '🤖 AI 助手'], ['props', '⚙ 屬性'], ['hist', '🕘 記錄']].forEach(function (t) { var s = h('span', null, t[1]); s.setAttribute('data-t', t[0]); s.onclick = function () { tab = t[0]; showTab(); }; tabs.appendChild(s); });
     side.appendChild(tabs); ['ai', 'props', 'hist'].forEach(function (k) { side.appendChild(panes[k]); }); main.appendChild(pv); main.appendChild(side);
-    el.appendChild(bar); el.appendChild(sum); el.appendChild(main);
+    el.appendChild(bar); el.appendChild(tpl); el.appendChild(sum); el.appendChild(main);
     function showTab() { Array.prototype.forEach.call(tabs.children, function (s) { s.className = s.getAttribute('data-t') === tab ? 'on' : ''; }); Object.keys(panes).forEach(function (k) { panes[k].className = 'pane' + (k === 'hist' ? ' hist' : '') + (k === tab ? ' on' : ''); }); }
 
     // ───── 預覽：點一下選取 ─────
@@ -16569,7 +16613,7 @@ const holder = {};
     function addMsg(role, text, chips, rejected) {
       var m = h('div', 'msg ' + (role === 'user' ? 'u' : 'a')); m.appendChild(document.createTextNode(text || '')); (chips || []).forEach(function (c) { m.appendChild(h('span', 'chip', c)); }); (rejected || []).forEach(function (c) { m.appendChild(h('span', 'chip rej', c)); }); logEl.appendChild(m); logEl.scrollTop = logEl.scrollHeight; return m;
     }
-    function renderLog() { logEl.textContent = ''; if (!S.log.length) addMsg('ai', '我在這裡幫你改這份學習單。直接說就好（改顏色、串數、答案、紙張、標題…），改錯了可以按「復原」。附一張圖片，我會照它的串數與顏色調整。'); S.log.forEach(function (m) { addMsg(m.role, m.text, m.chips, m.rejected); }); }
+    function renderLog() { logEl.textContent = ''; if (!S.log.length) addMsg('ai', (cur().blocks.length ? '' : '這是一份空白的學習單。按上面的「📋 範本」選一個範本開始，或直接告訴我要放什麼（例如「放一個繪圖區域」「畫上三角形」「加一個數線」）。\n') + '我在這裡幫你改這份學習單。直接說就好（改顏色、串數、答案、紙張、標題…），改錯了可以按「復原」。附一張圖片，我會照它的串數與顏色調整。'); S.log.forEach(function (m) { addMsg(m.role, m.text, m.chips, m.rejected); }); }
     function readFile(f) { return new Promise(function (res) { var r = new FileReader(); r.onload = function () { res({ name: f.name || 'image', dataUrl: String(r.result) }); }; r.onerror = function () { res(null); }; r.readAsDataURL(f); }); }
     function addFiles(files) { Promise.all(Array.prototype.filter.call(files || [], function (f) { return /^image\//.test(f.type); }).slice(0, 4).map(readFile)).then(function (list) { list.filter(Boolean).forEach(function (x) { if (pending.length < 4) pending.push(x); }); renderAtt(); }); }
     function renderAtt() { attEl.textContent = ''; pending.forEach(function (x, i) { var s = h('span'), im = h('img'); im.src = x.dataUrl; im.alt = x.name; var rm = h('b', null, '×'); rm.onclick = function () { pending.splice(i, 1); renderAtt(); }; s.appendChild(im); s.appendChild(rm); attEl.appendChild(s); }); }
@@ -16773,6 +16817,371 @@ const holder = {};
 return holder.FaAgentModel;
 })();
 /* AGM-END */
+/* WEB-BEGIN */
+const FaWebEdit = (function () {
+const holder = {};
+(function (module, self) {
+// 網頁編輯器核心：一個小網站（HTML／CSS／JS 檔案）＋一個模擬後端（Node 風格的 JS 或 Python），可以用對話修改。純函式，node 與瀏覽器都能跑
+// （UMD，嵌入成 FaWebEdit，見 scripts/embed-code-ui.js）。
+//
+// 描述（spec）：{ v:1, title, files:[{name, content}], backend:{ lang:'js'|'python', code } | null }
+//   - 前端：files[0] 是進入點 index.html；其他 .css／.js 用 <link href="style.css">、<script src="app.js"> 引用，預覽時會被內嵌進頁面。
+//   - 後端：lang 'js'＝跟沙盒的 mock 伺服器同一套寫法（const app = router(); app.crud("/api/x","x"); app.ws("/chat", …)，env.db 持久、頁面的
+//     fetch／XMLHttpRequest／EventSource／WebSocket 都由它回應）；lang 'python'＝Flask／Bottle／FastAPI／Starlette 的 app（Pyodide）。
+//   - 兩邊都不佔埠：全部在頁面內執行；之後可以匯出成 Node／Cloudflare 的部署檔（JS 後端）。
+// 修改一律用「封閉的編輯動作」（set_file／patch_file／add_file／remove_file／rename_file／set_backend／patch_backend／remove_backend／set_title），
+// 程式逐一驗證（檔名、大小、patch 要找得到且唯一）；模型只能回這些動作，改不了其他東西。
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaWebEdit = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var LIMITS = { files: 10, file: 150000, total: 400000, backend: 120000, title: 80 };
+  var EXT = /\.(html|css|js|json|txt|svg|md)$/i;
+  function str(v, max) { return String(v == null ? '' : v).replace(/\u0000/g, '').slice(0, max || 200); }
+  function okName(n) { n = String(n || ''); return /^[A-Za-z0-9_\-./]{1,60}$/.test(n) && n.indexOf('..') < 0 && n.charAt(0) !== '/' && EXT.test(n); }
+  function defaults() { return { v: 1, title: '我的網頁', files: [{ name: 'index.html', content: '<!doctype html>\n<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>我的網頁</title></head>\n<body>\n<h1>Hello</h1>\n</body></html>\n' }], backend: null }; }
+  function validate(input) {
+    var problems = [], s = { v: 1, title: '', files: [], backend: null }; var r = input && typeof input === 'object' ? input : {};
+    s.title = str(r.title, LIMITS.title) || '我的網頁'; var total = 0, seen = {};
+    (Array.isArray(r.files) ? r.files : []).forEach(function (f) {
+      if (!f || typeof f !== 'object') return; if (s.files.length >= LIMITS.files) { problems.push('檔案太多，只留前 ' + LIMITS.files + ' 個'); return; }
+      if (!okName(f.name)) { problems.push('檔名不合法，略過：' + str(f.name, 40) + '（只能用英數、_ - . /，副檔名是 html／css／js／json／txt／svg／md）'); return; }
+      if (seen[f.name]) { problems.push('檔名重複，略過：' + f.name); return; } seen[f.name] = 1;
+      var c = String(f.content == null ? '' : f.content); if (c.length > LIMITS.file) { problems.push(f.name + ' 太大（超過 ' + LIMITS.file + ' 字），已截斷'); c = c.slice(0, LIMITS.file); } if (total + c.length > LIMITS.total) { problems.push('全部檔案加起來太大，略過 ' + f.name); return; } total += c.length; s.files.push({ name: f.name, content: c });
+    });
+    if (!s.files.length || s.files[0].name !== 'index.html') { var i = s.files.findIndex(function (f) { return f.name === 'index.html'; }); if (i > 0) s.files.unshift(s.files.splice(i, 1)[0]); else if (i < 0) { s.files.unshift(defaults().files[0]); problems.push('沒有 index.html，補上一個空白的'); } }
+    var b = r.backend; if (b && typeof b === 'object' && String(b.code || '').trim()) { var lang = b.lang === 'python' ? 'python' : 'js'; if (b.lang && ['js', 'python'].indexOf(b.lang) < 0) problems.push('不支援的後端語言「' + str(b.lang, 20) + '」（可以用 js 或 python），改用 js'); var code = String(b.code); if (code.length > LIMITS.backend) { problems.push('後端程式太大，已截斷'); code = code.slice(0, LIMITS.backend); } s.backend = { lang: lang, code: code }; }
+    return { ok: true, spec: s, problems: problems };
+  }
+  // 預覽用的單一 HTML：把引用的本地 .css／.js 檔內嵌進去
+  function buildHtml(spec) {
+    var s = validate(spec).spec, byName = {}; s.files.forEach(function (f) { byName[f.name] = f.content; }); var doc = byName['index.html'] || '';
+    function clean(p) { return String(p || '').replace(/^\.\//, '').replace(/[?#].*$/, ''); }
+    doc = doc.replace(/<link\b[^>]*>/gi, function (tag) { var m = /href\s*=\s*["']([^"']+)["']/i.exec(tag); if (m && /rel\s*=\s*["']?stylesheet/i.test(tag) && byName[clean(m[1])] != null) return '<style data-file="' + clean(m[1]) + '">\n' + byName[clean(m[1])].replace(/<\/style/gi, '<\\/style') + '\n</style>'; return tag; });
+    doc = doc.replace(/<script\b([^>]*?)>\s*<\/script>/gi, function (tag, attrs) { var m = /src\s*=\s*["']([^"']+)["']/i.exec(attrs); if (m && byName[clean(m[1])] != null) return '<script data-file="' + clean(m[1]) + '">\n' + byName[clean(m[1])].replace(/<\/script/gi, '<\\/script') + '\n</script>'; return tag; });
+    return doc;
+  }
+  // Python 後端要用到的套件（Pyodide 沒有預載 Flask 等網頁框架，第一次要用 micropip 安裝；安裝過的之後是空操作）
+  function pyPackages(code) {
+    var known = { flask: 'flask', bottle: 'bottle', fastapi: 'fastapi', starlette: 'starlette', jinja2: 'jinja2', werkzeug: 'werkzeug', pydantic: 'pydantic', itsdangerous: 'itsdangerous', markupsafe: 'markupsafe' }, out = [], re = /^\s*(?:from|import)\s+([A-Za-z_][A-Za-z0-9_]*)/gm, m; var c = String(code || '');
+    while ((m = re.exec(c))) { var p = known[m[1].toLowerCase()]; if (p && out.indexOf(p) < 0) out.push(p); } return out;
+  }
+  function routesOf(code, lang) {
+    var out = [], c = String(code || ''), m, re;
+    if (lang === 'python') { re = /@\w+\.(route|get|post|put|delete|patch|websocket)\(\s*["']([^"']+)["']([^)]*)\)/g; while ((m = re.exec(c))) { var meth = m[1] === 'route' ? ((/methods\s*=\s*\[([^\]]*)\]/.exec(m[3]) || [])[1] || 'GET').replace(/["'\s]/g, '').toUpperCase() : m[1].toUpperCase(); out.push(meth + ' ' + m[2]); } }
+    else { re = /\b\w+\.(get|post|put|delete|patch|crud|ws|sse)\(\s*["'`]([^"'`]+)["'`]/g; while ((m = re.exec(c))) out.push((m[1] === 'crud' ? 'CRUD' : m[1].toUpperCase()) + ' ' + m[2]); }
+    return out.filter(function (x, i) { return out.indexOf(x) === i; }).slice(0, 40);
+  }
+
+  // ───────────────────────── 起手式（範本）：都是可以直接跑的小網站 ─────────────────────────
+  var STARTERS = [
+    { id: 'blank', label: '空白網頁', desc: '只有一個標題的 HTML，從零開始用對話做。', spec: function () { return defaults(); } },
+    { id: 'todo', label: '待辦清單（HTML＋JS 後端）', desc: '新增、勾選、刪除待辦；後端用 router().crud 存在持久的 env.db。', spec: function () { return {
+      title: '待辦清單', files: [
+        { name: 'index.html', content: '<!doctype html>\n<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>待辦清單</title><link rel="stylesheet" href="style.css"></head>\n<body>\n<main>\n<h1>待辦清單</h1>\n<form id="f"><input id="t" placeholder="要做什麼？" autocomplete="off" required><button>新增</button></form>\n<ul id="list"></ul>\n<p id="msg" class="muted"></p>\n</main>\n<script src="app.js"></script>\n</body></html>\n' },
+        { name: 'style.css', content: 'body{font-family:system-ui,"Microsoft JhengHei",sans-serif;background:#f4f6f8;margin:0}\nmain{max-width:460px;margin:24px auto;background:#fff;padding:20px;border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,.08)}\nh1{margin:0 0 12px;font-size:22px}\nform{display:flex;gap:8px}\ninput{flex:1;padding:8px;border:1px solid #cbd5e1;border-radius:8px}\nbutton{padding:8px 14px;border:0;border-radius:8px;background:#2f6fd0;color:#fff;cursor:pointer}\nul{list-style:none;padding:0;margin:14px 0 0}\nli{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid #eef2f6}\nli.done span{text-decoration:line-through;color:#94a3b8}\nli span{flex:1}\n.muted{color:#64748b;font-size:12px}\n' },
+        { name: 'app.js', content: 'const list = document.getElementById("list"), msg = document.getElementById("msg");\nasync function load() {\n  const r = await fetch("/api/todos"); const items = await r.json();\n  list.innerHTML = "";\n  items.forEach((it) => {\n    const li = document.createElement("li"); if (it.done) li.className = "done";\n    const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = !!it.done; cb.onchange = async () => { await fetch("/api/todos/" + it.id, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...it, done: cb.checked }) }); load(); };\n    const sp = document.createElement("span"); sp.textContent = it.text;\n    const x = document.createElement("button"); x.textContent = "刪除"; x.onclick = async () => { await fetch("/api/todos/" + it.id, { method: "DELETE" }); load(); };\n    li.append(cb, sp, x); list.appendChild(li);\n  });\n  msg.textContent = items.length + " 項";\n}\ndocument.getElementById("f").onsubmit = async (e) => {\n  e.preventDefault(); const t = document.getElementById("t");\n  await fetch("/api/todos", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: t.value, done: false }) });\n  t.value = ""; load();\n};\nload();\n' }],
+      backend: { lang: 'js', code: '// 模擬後端（Node 風格）：資料存在持久的 env.db，重新整理不會消失\nconst app = router();\napp.crud("/api/todos", "todos");\napp.get("/api/ping", () => ({ ok: true, time: Date.now() }));\n' } }; } },
+    { id: 'chat', label: '聊天室（WebSocket）', desc: '多人聊天：頁面用 WebSocket 連 /chat，後端用 app.ws 廣播。', spec: function () { return {
+      title: '聊天室', files: [
+        { name: 'index.html', content: '<!doctype html>\n<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>聊天室</title>\n<style>body{font-family:system-ui,"Microsoft JhengHei",sans-serif;margin:0;background:#eef2f7}#w{max-width:480px;margin:20px auto;background:#fff;border-radius:12px;padding:14px}#log{height:240px;overflow:auto;border:1px solid #dbe3ec;border-radius:8px;padding:8px;margin-bottom:8px}form{display:flex;gap:6px}input{flex:1;padding:8px}</style></head>\n<body><div id="w"><h2>聊天室</h2><div id="log"></div><form id="f"><input id="m" placeholder="說點什麼" autocomplete="off"><button>送出</button></form><small id="st">連線中…</small></div>\n<script>\nconst ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/chat");\nconst log = document.getElementById("log"), st = document.getElementById("st");\nws.onopen = () => st.textContent = "已連線"; ws.onclose = () => st.textContent = "已中斷";\nws.onmessage = (e) => { const p = document.createElement("div"); p.textContent = e.data; log.appendChild(p); log.scrollTop = log.scrollHeight; };\ndocument.getElementById("f").onsubmit = (e) => { e.preventDefault(); const m = document.getElementById("m"); if (m.value) ws.send(m.value); m.value = ""; };\n</script></body></html>\n' }],
+      backend: { lang: 'js', code: '// 模擬後端：WebSocket 廣播給所有連線的人（包含自己）\nconst app = router();\napp.ws("/chat", (ws, req, env) => {\n  ws.on("message", (m) => ws.broadcast(m, { includeSelf: true }));\n});\n' } }; } },
+    { id: 'form', label: '聯絡表單（POST＋列表）', desc: '送出表單存進後端，下面列出收到的訊息。', spec: function () { return {
+      title: '聯絡表單', files: [
+        { name: 'index.html', content: '<!doctype html>\n<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>聯絡表單</title>\n<style>body{font-family:system-ui,"Microsoft JhengHei",sans-serif;background:#f6f7f9;margin:0}main{max-width:420px;margin:24px auto;background:#fff;padding:18px;border-radius:12px}label{display:block;margin:8px 0 2px}input,textarea{width:100%;box-sizing:border-box;padding:8px}button{margin-top:10px;padding:8px 16px}pre{background:#f1f5f9;padding:8px;border-radius:8px;white-space:pre-wrap}</style></head>\n<body><main><h2>聯絡我們</h2><form id="f"><label>姓名</label><input name="name" required><label>訊息</label><textarea name="msg" rows="3" required></textarea><button>送出</button></form><h3>已收到</h3><pre id="out"></pre></main>\n<script>\nasync function refresh() { const r = await fetch("/api/messages"); document.getElementById("out").textContent = JSON.stringify(await r.json(), null, 2); }\ndocument.getElementById("f").onsubmit = async (e) => { e.preventDefault(); const d = Object.fromEntries(new FormData(e.target)); await fetch("/api/messages", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(d) }); e.target.reset(); refresh(); };\nrefresh();\n</script></body></html>\n' }],
+      backend: { lang: 'js', code: '// 模擬後端：收到的訊息存進 env.db\nconst app = router();\napp.post("/api/messages", async (req, env) => {\n  const b = await req.json();\n  if (!b.name || !b.msg) return fail(400, "姓名和訊息都要填");\n  const id = await env.db.nextId("messages");\n  await env.db.set("messages/" + id, { id, name: String(b.name).slice(0, 40), msg: String(b.msg).slice(0, 500), at: new Date().toISOString() });\n  return json({ ok: true, id }, 201);\n});\napp.get("/api/messages", async (req, env) => {\n  const rows = await env.db.list("messages/");\n  return json(rows.map((r) => r.value));\n});\n' } }; } },
+    { id: 'python_api', label: 'Python（Flask）API', desc: '頁面呼叫 Python 後端（Pyodide 跑 Flask）：問候與計算。', spec: function () { return {
+      title: 'Python 後端範例', files: [
+        { name: 'index.html', content: '<!doctype html>\n<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Python 後端範例</title>\n<style>body{font-family:system-ui,"Microsoft JhengHei",sans-serif;margin:24px}input{padding:6px}</style></head>\n<body><h2>Python 後端範例</h2><p>輸入名字，由 Python（Flask）回應：</p><input id="n" value="小明"> <button id="b">打招呼</button><pre id="o"></pre>\n<script>\ndocument.getElementById("b").onclick = async () => { const r = await fetch("/api/hello?name=" + encodeURIComponent(document.getElementById("n").value)); document.getElementById("o").textContent = JSON.stringify(await r.json(), null, 2); };\n</script></body></html>\n' }],
+      backend: { lang: 'python', code: 'from flask import Flask, jsonify, request\n\napp = Flask(__name__)\n\n@app.get("/api/hello")\ndef hello():\n    name = request.args.get("name", "世界")\n    return jsonify({"message": f"哈囉，{name}！", "length": len(name)})\n' } }; } }
+  ];
+  function starter(id) { var t = STARTERS.filter(function (x) { return x.id === id; })[0]; return t ? validate(t.spec()).spec : null; }
+  function listStarters() { return STARTERS.map(function (t) { return { id: t.id, label: t.label, desc: t.desc }; }); }
+
+  // ───────────────────────── 編輯動作（封閉）─────────────────────────
+  var OPS = ['set_title', 'set_file', 'patch_file', 'add_file', 'remove_file', 'rename_file', 'set_backend', 'patch_backend', 'remove_backend'];
+  function clone(o) { return JSON.parse(JSON.stringify(o)); }
+  function count(hay, needle) { if (!needle) return 0; var n = 0, i = 0; while ((i = hay.indexOf(needle, i)) >= 0) { n++; i += needle.length; } return n; }
+  function patchText(text, e, label) {
+    var find = String(e.find == null ? '' : e.find), rep = String(e.replace == null ? '' : e.replace); if (!find) throw new Error(label + '：find 不能是空的');
+    var n = count(text, find); if (n === 0) throw new Error(label + '：找不到要取代的文字（find 要跟現在的內容一字不差，包含縮排）：' + find.slice(0, 50));
+    if (n > 1 && e.all !== true) throw new Error(label + '：要取代的文字出現 ' + n + ' 次，請多帶幾行上下文讓它唯一，或加 all:true');
+    return e.all === true ? text.split(find).join(rep) : text.replace(find, function () { return rep; });
+  }
+  function applyEdits(spec, edits) {
+    var s = clone(validate(spec).spec), applied = [], rejected = []; var list = Array.isArray(edits) ? edits : (edits ? [edits] : []);
+    function fileIx(name) { return s.files.findIndex(function (f) { return f.name === name; }); }
+    function checkSize(c, what) { if (String(c).length > LIMITS.file) throw new Error(what + ' 太大（超過 ' + LIMITS.file + ' 字）'); var t = s.files.reduce(function (a, f) { return a + f.content.length; }, 0); if (t > LIMITS.total + LIMITS.file) throw new Error('全部檔案加起來太大'); }
+    list.slice(0, 30).forEach(function (e) {
+      var op = e && e.op; try {
+        if (op === 'set_title') s.title = str(e.text, LIMITS.title) || s.title;
+        else if (op === 'set_file') { var i = fileIx(e.name); if (i < 0) throw new Error('沒有檔案 ' + e.name + '（新檔案用 add_file）'); checkSize(e.content, e.name); s.files[i].content = String(e.content == null ? '' : e.content); }
+        else if (op === 'add_file') { if (!okName(e.name)) throw new Error('檔名不合法：' + str(e.name, 40) + '（英數、_ - . /，副檔名 html／css／js／json／txt／svg／md）'); if (fileIx(e.name) >= 0) throw new Error(e.name + ' 已經存在（要改內容用 set_file／patch_file）'); if (s.files.length >= LIMITS.files) throw new Error('檔案太多（最多 ' + LIMITS.files + ' 個）'); checkSize(e.content, e.name); s.files.push({ name: e.name, content: String(e.content == null ? '' : e.content) }); }
+        else if (op === 'remove_file') { var j = fileIx(e.name); if (j < 0) throw new Error('沒有檔案 ' + e.name); if (e.name === 'index.html') throw new Error('index.html 是進入點，不能刪'); s.files.splice(j, 1); }
+        else if (op === 'rename_file') { var k = fileIx(e.name); if (k < 0) throw new Error('沒有檔案 ' + e.name); if (e.name === 'index.html') throw new Error('index.html 是進入點，不能改名'); if (!okName(e.to)) throw new Error('新檔名不合法：' + str(e.to, 40)); if (fileIx(e.to) >= 0) throw new Error(e.to + ' 已經存在'); s.files[k].name = e.to; s.files.forEach(function (f) { if (f.name === 'index.html') f.content = f.content.split('"' + e.name + '"').join('"' + e.to + '"').split("'" + e.name + "'").join("'" + e.to + "'"); }); }
+        else if (op === 'patch_file') { var p = fileIx(e.name); if (p < 0) throw new Error('沒有檔案 ' + e.name); var nt = patchText(s.files[p].content, e, e.name); checkSize(nt, e.name); s.files[p].content = nt; }
+        else if (op === 'set_backend') { var lang = e.lang === 'python' ? 'python' : (e.lang === 'js' || e.lang == null ? 'js' : null); if (!lang) throw new Error('後端語言只能是 js 或 python（PHP 目前不能在瀏覽器裡執行）'); var code = String(e.code == null ? '' : e.code); if (!code.trim()) throw new Error('code 不能是空的（要移除後端用 remove_backend）'); if (code.length > LIMITS.backend) throw new Error('後端程式太大（超過 ' + LIMITS.backend + ' 字）'); s.backend = { lang: lang, code: code }; }
+        else if (op === 'patch_backend') { if (!s.backend) throw new Error('目前沒有後端（先用 set_backend）'); var nb = patchText(s.backend.code, e, '後端'); if (nb.length > LIMITS.backend) throw new Error('後端程式太大'); s.backend.code = nb; }
+        else if (op === 'remove_backend') { if (!s.backend) throw new Error('目前沒有後端'); s.backend = null; }
+        else throw new Error('不認得的動作「' + op + '」（可用：' + OPS.join('、') + '）');
+        applied.push(op);
+      } catch (err) { rejected.push({ op: op || '?', error: String(err && err.message || err) }); }
+    });
+    return { ok: true, spec: validate(s).spec, applied: applied, rejected: rejected };
+  }
+  function editWords(e) {
+    var t = { set_title: function () { return '標題改成「' + e.text + '」'; }, set_file: function () { return '改寫 ' + e.name; }, patch_file: function () { return '修改 ' + e.name; }, add_file: function () { return '新增 ' + e.name; }, remove_file: function () { return '刪掉 ' + e.name; }, rename_file: function () { return e.name + ' 改名為 ' + e.to; }, set_backend: function () { return '改寫後端（' + (e.lang === 'python' ? 'Python' : 'JS') + '）'; }, patch_backend: function () { return '修改後端'; }, remove_backend: function () { return '移除後端'; } };
+    return t[e && e.op] ? t[e.op]() : String(e && e.op || '');
+  }
+  function describe(spec) {
+    var s = validate(spec).spec, out = [s.title + '：' + s.files.length + ' 個檔案（' + s.files.map(function (f) { return f.name; }).join('、') + '）'];
+    out.push(s.backend ? '後端：' + (s.backend.lang === 'python' ? 'Python' : 'JS（Node 風格）') + '，' + (routesOf(s.backend.code, s.backend.lang).join('、') || '沒有讀到路由') : '沒有後端'); return out;
+  }
+  function specToPrompt(spec, history) {
+    var s = validate(spec).spec, L = ['幫我做一個網頁「' + s.title + '」，檔案：' + s.files.map(function (f) { return f.name + '（' + f.content.length + ' 字）'; }).join('、') + '。'];
+    s.files.forEach(function (f) { var t = f.content.replace(/\s+/g, ' ').trim(); L.push(f.name + '：' + t.slice(0, 160) + (t.length > 160 ? '…' : '')); });
+    if (s.backend) { var rs = routesOf(s.backend.code, s.backend.lang); L.push('後端（' + (s.backend.lang === 'python' ? 'Python Flask/FastAPI' : 'Node 風格的模擬伺服器：router／app.crud／app.ws／env.db') + '）：' + (rs.join('、') || '（讀不到路由）') + '；前端用 fetch／WebSocket 呼叫同一個網域底下的這些路徑。'); }
+    var steps = (history || []).filter(function (h) { return h && h.kind !== 'undo' && h.kind !== 'start' && (h.summary || h.text); });
+    if (steps.length) { L.push('', '（編輯過程，依序）：'); steps.forEach(function (h, i) { L.push((i + 1) + '. ' + (h.text ? '我說：「' + String(h.text).slice(0, 80) + '」→ ' : '') + (h.summary || '')); }); }
+    return L.join('\n');
+  }
+  // ───────────────────────── 對話：先讀得懂的（改標題、刪檔、改名），其餘交給 AI ─────────────────────────
+  function parseEditRequest(text, spec) {
+    var out = { edits: [], matched: [], unmatched: [] }, cur = validate(spec).spec; var clauses = String(text || '').replace(/\[附件：[^\]]*\]/g, ' ').split(/[，。；;\n]+/).map(function (x) { return x.trim(); }).filter(Boolean);
+    clauses.forEach(function (c) {
+      var m, e = [];
+      if ((m = /(?:網頁|頁面|網站)?標題\s*(?:改成|換成|改為|設為|變成|叫做?|是)\s*[「"'『]?(.+?)[」"'』]?$/.exec(c))) e.push({ op: 'set_title', text: m[1] });
+      else if ((m = /(?:刪掉|刪除|移除|拿掉)\s*(?:檔案)?\s*([A-Za-z0-9_\-./]+\.(?:html|css|js|json|txt|svg|md))/.exec(c))) e.push({ op: 'remove_file', name: m[1] });
+      else if ((m = /(?:把)?\s*([A-Za-z0-9_\-./]+\.(?:html|css|js|json|txt|svg|md))\s*(?:改名(?:成|為)?|重新命名(?:成|為)?)\s*([A-Za-z0-9_\-./]+\.(?:html|css|js|json|txt|svg|md))/.exec(c))) e.push({ op: 'rename_file', name: m[1], to: m[2] });
+      else if (/(?:不要|拿掉|移除|刪掉)[^，。]{0,4}後端/.test(c) && cur.backend) e.push({ op: 'remove_backend' });
+      if (e.length) { out.edits = out.edits.concat(e); out.matched.push(c); } else out.unmatched.push(c);
+    });
+    return out;
+  }
+  // 這句話主要在改前端還是後端（後端的修改交給「程式設計」領域的子Agent，前端的修改用封閉的編輯動作）
+  function classify(text) {
+    var t = String(text || ''); var be = /後端|伺服器|server|\bAPI\b|api|端點|endpoint|路由|route|資料庫|database|\bdb\b|websocket|\bws\b|\bsse\b|crud|express|flask|fastapi|node|python|php|資料表|存進|儲存資料|登入驗證|認證|auth|token|權限|\/api\//i.test(t);
+    var fe = /頁面|畫面|按鈕|樣式|顏色|版面|字體|字型|css|html|表單|標題|圖片|響應式|手機版|動畫|文字|排版|介面|ui|背景|間距|對齊|導覽列|選單/i.test(t);
+    return { backend: be, frontend: fe || !be };
+  }
+  function trunc(t, n) { t = String(t || ''); return t.length > n ? t.slice(0, n) + '\n…（共 ' + t.length + ' 字，後面省略）' : t; }
+  // 給模型的前端編輯提示：只准回 { say, edits }，動作在封閉清單裡
+  function editPrompt(spec, text, extra) {
+    var s = validate(spec).spec;
+    var system = '你是網頁編輯助手。使用者說想怎麼改這個小網站（HTML／CSS／JS），你把它翻成「編輯動作」。只回一段 JSON，不要說明、不要 markdown 區塊：{"say":"一句話告訴使用者你改了什麼（做不到就說做不到）","edits":[…]}。\n動作只能是下面這些（不要發明新的動作）：\n'
+      + '{op:"patch_file",name:"index.html",find:"要取代的原文（要一字不差、只出現一次，多帶幾行上下文）",replace:"新的文字"}（小修改優先用這個）、{op:"set_file",name:"style.css",content:"整份新內容"}（大幅改寫）、{op:"add_file",name:"app.js",content:"…"}、{op:"remove_file",name:"x.css"}、{op:"rename_file",name:"a.js",to:"b.js"}、{op:"set_title",text:"…"}。\n'
+      + '檔名只能用英數、_ - . /，副檔名 html／css／js／json／txt／svg／md；進入點是 index.html，用 <link rel="stylesheet" href="style.css">、<script src="app.js"></script> 引用其他檔。頁面呼叫後端請用相對路徑（fetch("/api/…")）、WebSocket 用 (location.protocol==="https:"?"wss://":"ws://")+location.host+"/路徑"。不要用外部 CDN、不要在前端放金鑰。後端的程式不要在這裡改（會另外交給程式設計的專家）。看不懂或做不到：edits 給空陣列，在 say 說明。';
+    var files = s.files.map(function (f) { return '=== ' + f.name + ' ===\n' + trunc(f.content, 7000); }).join('\n\n');
+    var user = '目前的網站「' + s.title + '」：\n' + describe(s).join('\n') + '\n\n' + files + (s.backend ? '\n\n後端路由：' + (routesOf(s.backend.code, s.backend.lang).join('、') || '（無）') : '') + (extra ? '\n\n' + extra : '') + '\n\n使用者說：' + String(text || '');
+    return { system: system, user: user };
+  }
+  function parseEditsReply(text) {
+    var s = String(text || ''), a = s.indexOf('{'), b = s.lastIndexOf('}'); if (a < 0 || b <= a) return { ok: false, say: '', edits: [], error: '模型的回覆讀不成 JSON' }; var j; try { j = JSON.parse(s.slice(a, b + 1)); } catch (e) { return { ok: false, say: '', edits: [], error: '模型的回覆讀不成 JSON' }; }
+    var edits = (Array.isArray(j.edits) ? j.edits : []).filter(function (e) { return e && OPS.indexOf(e.op) >= 0; }).slice(0, 20);
+    return { ok: true, say: j.say ? str(j.say, 300) : '', edits: edits, dropped: (Array.isArray(j.edits) ? j.edits.length : 0) - edits.length };
+  }
+  // 後端的修改任務（交給程式設計領域的子Agent）：自給自足，因為子Agent看不到這段對話
+  function backendTask(spec, text, extra) {
+    var s = validate(spec).spec, lang = s.backend ? s.backend.lang : 'js';
+    var html = s.files.map(function (f) { return '--- ' + f.name + ' ---\n' + trunc(f.content, 5000); }).join('\n\n');
+    return '你要修改（或新寫）一個網頁的「模擬後端」。使用者的要求：' + String(text || '') + '\n\n'
+      + (lang === 'python' ? '後端語言：Python（Flask／Bottle／FastAPI／Starlette，要定義一個叫 app 的物件；跑在瀏覽器的 Pyodide 裡，沒有真的網路埠與資料庫，要存資料請用檔案或 sqlite3 存在 /tmp；不支援 WebSocket）。'
+        : '後端語言：JavaScript（Node 風格的模擬伺服器，跟沙盒 sandbox_mock 同一套寫法）：const app = router(); app.crud("/api/x","x")（自動存取 env.db）、app.get/post/put/delete(路徑, async (req, env) => json(資料, 狀態碼))、app.ws("/路徑", (ws, req, env) => { ws.on("message", (m) => ws.broadcast(m, { includeSelf: true })); })、env.db.get/set/delete/list(前綴)/nextId(集合名)、fail(狀態碼, 訊息)、sse(setup)。頁面的 fetch／WebSocket／EventSource 都由它回應，資料持久。')
+      + '\n\n目前的後端程式：\n```' + (lang === 'python' ? 'python' : 'js') + '\n' + (s.backend ? trunc(s.backend.code, 9000) : '（還沒有後端）') + '\n```\n\n前端頁面（它會呼叫後端，路徑要對得上）：\n' + html + (extra ? '\n\n' + extra : '')
+      + '\n\n做法：先用 sandbox_mock（JS）或 sandbox_py_app（Python）實際測試過、確認端點回應正確，再回覆。最後只用一個程式碼區塊（```' + (lang === 'python' ? 'python' : 'js') + '）給出「完整的新後端程式」，區塊後面用一兩句話說明改了什麼、有哪些路由。不要省略任何部分，也不要只給片段。';
+  }
+  function extractCode(text, lang) {
+    var t = String(text || ''), re = /```([A-Za-z0-9_+-]*)\n([\s\S]*?)```/g, m, best = null; while ((m = re.exec(t))) { var l = m[1].toLowerCase(); if (!l || /^(js|javascript|node|mjs|python|py)$/.test(l)) { if (!lang || !l || (lang === 'python') === /^(python|py)$/.test(l) || !l) best = m[2]; } }
+    return best && best.trim() ? best.replace(/\s+$/, '') + '\n' : null;
+  }
+  function refPrompt() { return '這是一張網頁（或 App 畫面）的截圖或設計圖。請用繁體中文簡潔描述它，讓工程師能照著做出來：整體版面（幾欄、頂部／側邊／內容區）、每個區塊的內容與文字、按鈕與表單欄位、主要顏色（用 #RRGGBB）、字體風格、圖示或圖片的位置。只描述看得到的，不要猜功能。'; }
+  var TOPICS = {
+    format: '網頁描述（JSON）：{title, files:[{name,content}], backend:{lang:"js"|"python", code}|null}。files[0] 是 index.html，其他檔案用 <link rel="stylesheet" href="style.css">、<script src="app.js"></script> 引用（預覽時內嵌）。後端 lang js＝沙盒 mock 伺服器的寫法（router／app.crud／app.ws／env.db），python＝Flask／FastAPI。',
+    edits: '編輯動作：{op:"patch_file",name,find,replace,all?}、{op:"set_file",name,content}、{op:"add_file",name,content}、{op:"remove_file",name}、{op:"rename_file",name,to}、{op:"set_title",text}、{op:"set_backend",lang,code}、{op:"patch_backend",find,replace,all?}、{op:"remove_backend"}。patch 的 find 要跟現有內容一字不差、而且只出現一次。',
+    backend: '模擬後端：全部在頁面內執行、不佔埠。JS 後端（Node 風格）：const app = router(); app.crud("/api/x","x"); app.get("/api/ping", () => ({ok:true})); app.post(...); app.ws("/chat", (ws,req,env)=>{...}); 資料用 env.db（持久）；可以匯出成 Node 或 Cloudflare 的部署檔。Python 後端：Flask／Bottle／FastAPI／Starlette，用 Pyodide 跑（每個請求重新載入 app，資料請存 /tmp 的檔案或 sqlite3；不支援 WebSocket）。PHP：瀏覽器裡沒有 PHP 執行環境，目前不能跑。',
+    starters: '起手式：' + STARTERS.map(function (t) { return t.id + '（' + t.label + '）'; }).join('、') + '。'
+  };
+  return { LIMITS: LIMITS, OPS: OPS, TOPICS: TOPICS, STARTERS: listStarters(), defaults: defaults, validate: validate, buildHtml: buildHtml, routesOf: routesOf, pyPackages: pyPackages, starter: starter, listStarters: listStarters, applyEdits: applyEdits, editWords: editWords, describe: describe, specToPrompt: specToPrompt, parseEditRequest: parseEditRequest, classify: classify, editPrompt: editPrompt, parseEditsReply: parseEditsReply, backendTask: backendTask, extractCode: extractCode, refPrompt: refPrompt, okName: okName };
+});
+
+}).call(null, undefined, holder);
+return holder.FaWebEdit;
+})();
+/* WEB-END */
+/* WEBUI-BEGIN */
+const FaWebEditUI = (function () {
+const holder = {};
+(function (module, self) {
+/* 網頁編輯器的畫面（對話裡的小工具）：左邊是「預覽／程式碼／後端」三個分頁，右邊是 AI 助手與編輯記錄；復原／重做、摘要成 prompt、匯出。
+ * 後端分頁就是「模擬後端編輯器」：選語言（JS 的 Node 風格或 Python）、改程式、重啟、看路由、送測試請求、看請求紀錄與持久資料。
+ * 狀態（每一步的描述、復原位置、對話紀錄）會存起來，重新開啟後接著編輯。只依賴 FaWebEdit 與 host：
+ *   host.start(iframe, spec) -> Promise<{ok, kind, routes, wsRoutes, error?}>   （啟動／重啟預覽與後端；後端程式沒變就不重啟）
+ *   host.stop()
+ *   host.request({method,url,headers,body}) -> Promise<{status, headers, body}>    （後端分頁的測試請求）
+ *   host.log() -> {calls:[…], console:[…]}                                         （請求紀錄與伺服器 console）
+ *   host.db(op, args) -> Promise                                                    （JS 後端：list／get／set／delete／clear）
+ *   host.exportBackend(target) -> Promise<{files:[{name,content}], note}>          （node／cloudflare）
+ *   host.ask({text, images, spec, onStatus}) -> Promise<{say, edits?, refs?, notes?}>   （程式讀不懂的句子／附圖／後端要改時才呼叫）
+ *   host.download(blob, name, mime)、host.save(state)、host.regenerate(promptText)?、host.polish(text)?、host.palette()? */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./webedit_core.js')); else root.FaWebEditUI = factory(root.FaWebEdit || (typeof FaWebEdit !== 'undefined' ? FaWebEdit : undefined));
+})(typeof self !== 'undefined' ? self : this, function (WE) {
+  'use strict';
+  var MAXSTATES = 25;
+  var CSS = '.fwe{--bg:#fff;--fg:#1f2328;--bd:#d0d7de;--hd:#f6f8fa;--mut:#59636e;--acc:#0969da;--ok:#1a7f37;--bad:#cf222e;border:1px solid var(--bd);border-radius:8px;background:var(--bg);color:var(--fg);font:13px system-ui,"Microsoft JhengHei",sans-serif;margin:6px 0;overflow:hidden;max-width:100%}.fwe.dark{--bg:#0d1117;--fg:#e6edf3;--bd:#30363d;--hd:#161b22;--mut:#8b949e;--acc:#2f81f7;--ok:#3fb950;--bad:#f85149}'
+    + '.fwe *{box-sizing:border-box}.fwe button{background:var(--hd);color:inherit;border:1px solid var(--bd);border-radius:5px;padding:3px 9px;cursor:pointer;font:inherit}.fwe button:hover:not(:disabled){border-color:var(--acc)}.fwe button:disabled{opacity:.4;cursor:default}.fwe button.pri{background:var(--acc);border-color:var(--acc);color:#fff}'
+    + '.fwe input,.fwe select,.fwe textarea{background:var(--bg);color:inherit;border:1px solid var(--bd);border-radius:5px;padding:3px 6px;font:inherit;max-width:100%}.fwe textarea{width:100%;resize:vertical}.fwe textarea.code{font:12px/1.45 ui-monospace,Consolas,"Courier New",monospace;tab-size:2;white-space:pre;overflow:auto}'
+    + '.fwe .bar{display:flex;align-items:center;gap:6px;padding:6px 8px;background:var(--hd);border-bottom:1px solid var(--bd);flex-wrap:wrap}.fwe .ttl{font-weight:600;margin-right:auto}.fwe .st{color:var(--mut);font-size:12px}'
+    + '.fwe .main{display:flex;flex-wrap:wrap;align-items:stretch}.fwe .left{flex:1.5 1 420px;min-width:300px;display:flex;flex-direction:column;min-height:420px}.fwe .side{flex:1 1 280px;min-width:260px;display:flex;flex-direction:column;border-left:1px solid var(--bd);max-height:600px}'
+    + '.fwe .tabs{display:flex;border-bottom:1px solid var(--bd);background:var(--hd)}.fwe .tabs span{padding:6px 12px;cursor:pointer;color:var(--mut);border-bottom:2px solid transparent}.fwe .tabs span.on{color:var(--fg);border-bottom-color:var(--acc);font-weight:600}.fwe .pane{display:none;flex:1;overflow:auto;padding:8px;min-height:240px;flex-direction:column;gap:6px}.fwe .pane.on{display:flex}'
+    + '.fwe .row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}.fwe .row label{color:var(--mut)}.fwe .frame{flex:1;min-height:320px;border:1px solid var(--bd);border-radius:6px;background:#fff;width:100%}.fwe .frame.m{max-width:390px;align-self:center}.fwe .frame.t{max-width:768px;align-self:center}'
+    + '.fwe .files{display:flex;gap:4px;flex-wrap:wrap}.fwe .files span{padding:2px 9px;border:1px solid var(--bd);border-radius:5px;cursor:pointer}.fwe .files span.on{border-color:var(--acc);background:rgba(47,129,247,.12);font-weight:600}'
+    + '.fwe .log{flex:1;overflow:auto;display:flex;flex-direction:column;gap:6px;min-height:120px}.fwe .msg{padding:5px 8px;border-radius:7px;max-width:92%;white-space:pre-wrap;word-break:break-word}.fwe .msg.u{align-self:flex-end;background:var(--acc);color:#fff}.fwe .msg.a{align-self:flex-start;background:var(--hd);border:1px solid var(--bd)}.fwe .chip{display:inline-block;margin:2px 3px 0 0;padding:0 6px;border-radius:9px;background:rgba(47,129,247,.15);font-size:11px}.fwe .chip.rej{background:rgba(248,81,73,.18)}'
+    + '.fwe .att{display:flex;gap:4px;flex-wrap:wrap}.fwe .att span{position:relative;display:inline-block}.fwe .att img{height:44px;border:1px solid var(--bd);border-radius:4px}.fwe .att b{position:absolute;top:-5px;right:-5px;background:var(--bad);color:#fff;border-radius:50%;width:15px;height:15px;font-size:10px;line-height:15px;text-align:center;cursor:pointer}'
+    + '.fwe .hist div{padding:3px 6px;border-radius:5px;cursor:pointer;border:1px solid transparent}.fwe .hist div:hover{border-color:var(--bd)}.fwe .hist div.cur{background:rgba(47,129,247,.14);font-weight:600}.fwe .hist div.fut{opacity:.45}.fwe .sum{padding:8px;border-bottom:1px solid var(--bd);background:var(--hd);display:none;flex-direction:column;gap:6px}.fwe .sum.on{display:flex}'
+    + '.fwe pre.out{margin:0;padding:6px;background:var(--hd);border:1px solid var(--bd);border-radius:6px;max-height:160px;overflow:auto;white-space:pre-wrap;word-break:break-all;font:12px ui-monospace,Consolas,monospace}.fwe .calls div{padding:1px 0;font:12px ui-monospace,Consolas,monospace}.fwe .bad{color:var(--bad)}.fwe .good{color:var(--ok)}'
+    + '.fwe.full{position:fixed;inset:8px;z-index:100000;margin:0;display:flex;flex-direction:column;max-width:none;box-shadow:0 8px 40px rgba(0,0,0,.5)}.fwe.full .main{flex:1;min-height:0}.fwe.full .side{max-height:none}';
+  function h(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+  function clone(o) { return JSON.parse(JSON.stringify(o)); }
+
+  function mount(opt) {
+    var W = opt.W || WE, host = opt.host || {}, el = h('div', 'fwe'); var dark = false; try { dark = !!(host.palette && host.palette().dark); } catch (e) { dark = false; } if (dark) el.className += ' dark';
+    if (!document.getElementById('fwe-css')) { var st0 = document.createElement('style'); st0.id = 'fwe-css'; st0.textContent = CSS; (document.head || document.documentElement).appendChild(st0); }
+    var S = { v: 1, ptr: 0, states: [], log: [] }, leftTab = 'preview', rightTab = 'ai', curFile = 'index.html', pending = [], busy = false, saveT = null, previewT = null, lastRun = '';
+    function initState(state, spec) {
+      if (state && Array.isArray(state.states) && state.states.length) { S = { v: 1, ptr: Math.max(0, Math.min(state.states.length - 1, state.ptr | 0)), states: state.states.slice(-MAXSTATES).map(function (x) { return { spec: W.validate(x.spec).spec, summary: x.summary || '', text: x.text || '', kind: x.kind || 'panel', t: x.t || 0 }; }), log: Array.isArray(state.log) ? state.log.slice(-60) : [] }; if (S.ptr >= S.states.length) S.ptr = S.states.length - 1; }
+      else S = { v: 1, ptr: 0, states: [{ spec: W.validate(spec || W.defaults()).spec, summary: '開始', text: '', kind: 'start', t: Date.now() }], log: [] };
+    }
+    function cur() { return S.states[S.ptr].spec; }
+    function getState() { var st = { v: 1, ptr: S.ptr, states: S.states, log: S.log.slice(-60) }; try { while (JSON.stringify(st).length > 2500000 && st.states.length > 2) { st.states = st.states.slice(1); st.ptr = Math.max(0, st.ptr - 1); } } catch (e) { /* 照存 */ } return st; }
+    function persist() { clearTimeout(saveT); saveT = setTimeout(function () { try { if (host.save) host.save(getState()); } catch (e) { /* 存不了這次還是有效 */ } }, 400); }
+    function commit(spec, summary, text, kind) { S.states = S.states.slice(0, S.ptr + 1); S.states.push({ spec: W.validate(spec).spec, summary: summary || '', text: text || '', kind: kind || 'panel', t: Date.now() }); if (S.states.length > MAXSTATES) S.states.shift(); S.ptr = S.states.length - 1; render(); persist(); }
+    function apply(edits, summary, text, kind) { var r = W.applyEdits(cur(), edits); if (!r.applied.length) return r; var words = summary || edits.filter(function (e) { return r.applied.indexOf(e.op) >= 0; }).map(W.editWords).filter(Boolean).join('；'); commit(r.spec, words, text, kind); return r; }
+    function undo() { if (S.ptr > 0) { S.ptr--; render(); persist(); } }
+    function redo() { if (S.ptr < S.states.length - 1) { S.ptr++; render(); persist(); } }
+
+    // ───── 骨架 ─────
+    var bar = h('div', 'bar'), ttl = h('span', 'ttl', '🌐 網頁編輯器'), stat = h('span', 'st'), bUndo = h('button', null, '↶ 復原'), bRedo = h('button', null, '↷ 重做'), bTpl = h('button', null, '📋 起手式'), bSum = h('button', null, '📝 摘要成 prompt'), bExp = h('select'), bFull = h('button', null, '⛶');
+    bUndo.title = 'Ctrl+Z'; bRedo.title = 'Ctrl+Y';
+    [['', '⬇ 匯出…'], ['html', '網頁（單一 HTML）'], ['json', '專案描述（JSON）'], ['node', '後端：Node 部署檔'], ['cloudflare', '後端：Cloudflare 部署檔']].forEach(function (o) { var op = h('option', null, o[1]); op.value = o[0]; bExp.appendChild(op); });
+    [ttl, stat, bUndo, bRedo, bTpl, bSum, bExp, bFull].forEach(function (x) { bar.appendChild(x); });
+    var tpl = h('div', 'sum'), tplList = h('div', 'row'), tplX = h('button', null, '✕'); tpl.appendChild(h('div', 'st', '從起手式開始（會換掉目前的內容，這一步可以復原）：')); tpl.appendChild(tplList); tpl.appendChild(tplX);
+    (W.listStarters ? W.listStarters() : []).forEach(function (t) { var b = h('button', null, t.label); b.title = t.desc; b.onclick = function () { var sp = W.starter(t.id); if (sp) { commit(sp, '從起手式「' + t.label + '」開始', '', 'chat'); tpl.className = 'sum'; curFile = 'index.html'; } }; tplList.appendChild(b); });
+    bTpl.onclick = function () { tpl.className = tpl.className.indexOf(' on') >= 0 ? 'sum' : 'sum on'; }; tplX.onclick = function () { tpl.className = 'sum'; };
+    var sum = h('div', 'sum'), sumTa = h('textarea'); sumTa.rows = 8; var sumRow = h('div', 'row'), bCopy = h('button', null, '📋 複製'), bRegen = h('button', 'pri', '↻ 用這段重新生成'), bPol = h('button', null, '✨ 請 AI 潤飾'), bSumX = h('button', null, '✕'); [bCopy, bRegen, bPol, bSumX].forEach(function (x) { sumRow.appendChild(x); }); sumRow.insertBefore(h('span', 'st', '把目前的網站與編輯過程整理成一段可以重用的描述'), bCopy); sum.appendChild(sumTa); sum.appendChild(sumRow);
+    var main = h('div', 'main'), left = h('div', 'left'), lTabs = h('div', 'tabs'), side = h('div', 'side'), rTabs = h('div', 'tabs');
+    var lp = { preview: h('div', 'pane'), code: h('div', 'pane'), backend: h('div', 'pane') }, rp = { ai: h('div', 'pane'), hist: h('div', 'pane hist') };
+    [['preview', '👁 預覽'], ['code', '🧩 程式碼'], ['backend', '🖥 後端']].forEach(function (t) { var s = h('span', null, t[1]); s.setAttribute('data-t', t[0]); s.onclick = function () { leftTab = t[0]; showTabs(); if (t[0] === 'backend') refreshBackend(); }; lTabs.appendChild(s); });
+    [['ai', '🤖 AI 助手'], ['hist', '🕘 記錄']].forEach(function (t) { var s = h('span', null, t[1]); s.setAttribute('data-t', t[0]); s.onclick = function () { rightTab = t[0]; showTabs(); }; rTabs.appendChild(s); });
+    left.appendChild(lTabs); ['preview', 'code', 'backend'].forEach(function (k) { left.appendChild(lp[k]); }); side.appendChild(rTabs); ['ai', 'hist'].forEach(function (k) { side.appendChild(rp[k]); }); main.appendChild(left); main.appendChild(side);
+    el.appendChild(bar); el.appendChild(tpl); el.appendChild(sum); el.appendChild(main);
+    function showTabs() { Array.prototype.forEach.call(lTabs.children, function (s) { s.className = s.getAttribute('data-t') === leftTab ? 'on' : ''; }); Array.prototype.forEach.call(rTabs.children, function (s) { s.className = s.getAttribute('data-t') === rightTab ? 'on' : ''; }); Object.keys(lp).forEach(function (k) { lp[k].className = 'pane' + (k === leftTab ? ' on' : ''); }); Object.keys(rp).forEach(function (k) { rp[k].className = 'pane' + (k === 'hist' ? ' hist' : '') + (k === rightTab ? ' on' : ''); }); }
+
+    // ───── 預覽 ─────
+    var pvBar = h('div', 'row'), bReload = h('button', null, '↻ 重新載入'), vw = h('select'), pvStat = h('span', 'st'), frame = h('iframe', 'frame'); frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-modals allow-popups');
+    [['', '桌面'], ['t', '平板 768'], ['m', '手機 390']].forEach(function (o) { var op = h('option', null, o[1]); op.value = o[0]; vw.appendChild(op); }); vw.onchange = function () { frame.className = 'frame' + (vw.value ? ' ' + vw.value : ''); };
+    [bReload, vw, pvStat].forEach(function (x) { pvBar.appendChild(x); }); lp.preview.appendChild(pvBar); lp.preview.appendChild(frame);
+    function startPreview(force) {
+      clearTimeout(previewT); previewT = setTimeout(function () {
+        var sp = cur(), key = JSON.stringify([sp.files, sp.backend]); if (!force && key === lastRun) return; lastRun = key; if (!host.start) { frame.srcdoc = W.buildHtml(sp); pvStat.textContent = '（這個環境沒有沙盒，只顯示頁面）'; return; }
+        pvStat.textContent = '啟動中…'; Promise.resolve(host.start(frame, sp)).then(function (r) { r = r || {}; if (r.ok === false) { pvStat.textContent = '⚠ ' + (r.error || '啟動失敗'); pvStat.className = 'st bad'; } else { pvStat.className = 'st'; pvStat.textContent = r.kind ? '● 後端已啟動（' + (r.kind === 'python' ? 'Python' : 'JS') + '，' + ((r.routes || []).length + (r.wsRoutes || []).length) + ' 個路由）' : '● 純前端（沒有後端）'; } if (leftTab === 'backend') refreshBackend(); }, function (e) { pvStat.className = 'st bad'; pvStat.textContent = '⚠ ' + String((e && e.message) || e).slice(0, 100); });
+      }, 250);
+    }
+    bReload.onclick = function () { startPreview(true); };
+
+    // ───── 程式碼 ─────
+    var fileBar = h('div', 'files'), fileTools = h('div', 'row'), codeTa = h('textarea', 'code'); codeTa.rows = 18; codeTa.spellcheck = false; var bAdd = h('button', null, '＋ 新增檔案'), bDel = h('button', null, '🗑 刪除這個檔'), bRen = h('button', null, '✎ 改名'), fnIn = h('input'); fnIn.placeholder = '檔名，例如 app.js'; fnIn.style.display = 'none'; fnIn.style.width = '160px'; var fnMode = '', fnOk = h('button', 'pri', '確定'); fnOk.style.display = 'none';
+    [bAdd, bRen, bDel, fnIn, fnOk].forEach(function (x) { fileTools.appendChild(x); }); lp.code.appendChild(fileBar); lp.code.appendChild(codeTa); lp.code.appendChild(fileTools);
+    codeTa.addEventListener('keydown', function (ev) { if (ev.key === 'Tab' && !ev.shiftKey) { ev.preventDefault(); var s = codeTa.selectionStart; codeTa.value = codeTa.value.slice(0, s) + '  ' + codeTa.value.slice(codeTa.selectionEnd); codeTa.selectionStart = codeTa.selectionEnd = s + 2; } });
+    codeTa.onchange = function () { var f = cur().files.filter(function (x) { return x.name === curFile; })[0]; if (f && f.content !== codeTa.value) apply([{ op: 'set_file', name: curFile, content: codeTa.value }], '手動修改 ' + curFile, '', 'panel'); };
+    function fileUi(mode) { fnMode = mode; fnIn.style.display = fnOk.style.display = ''; fnIn.value = mode === 'rename' ? curFile : ''; fnIn.focus(); }
+    bAdd.onclick = function () { fileUi('add'); }; bRen.onclick = function () { if (curFile !== 'index.html') fileUi('rename'); };
+    fnOk.onclick = function () { var n = fnIn.value.trim(); var r = fnMode === 'add' ? apply([{ op: 'add_file', name: n, content: '' }], '新增 ' + n, '', 'panel') : apply([{ op: 'rename_file', name: curFile, to: n }], curFile + ' 改名為 ' + n, '', 'panel'); if (r.rejected && r.rejected.length) { stat.textContent = r.rejected[0].error; setTimeout(function () { stat.textContent = ''; }, 3500); } else { curFile = n; fnIn.style.display = fnOk.style.display = 'none'; render(); } };
+    bDel.onclick = function () { if (curFile === 'index.html') { stat.textContent = 'index.html 是進入點，不能刪'; setTimeout(function () { stat.textContent = ''; }, 2500); return; } apply([{ op: 'remove_file', name: curFile }], '刪掉 ' + curFile, '', 'panel'); curFile = 'index.html'; render(); };
+    function renderCode() { var sp = cur(); if (!sp.files.some(function (f) { return f.name === curFile; })) curFile = 'index.html'; fileBar.textContent = ''; sp.files.forEach(function (f) { var s = h('span', f.name === curFile ? 'on' : '', f.name); s.onclick = function () { curFile = f.name; renderCode(); }; fileBar.appendChild(s); }); var f0 = sp.files.filter(function (f) { return f.name === curFile; })[0]; codeTa.value = f0 ? f0.content : ''; bDel.disabled = curFile === 'index.html'; bRen.disabled = curFile === 'index.html'; }
+
+    // ───── 後端（模擬後端編輯器）─────
+    var beBar = h('div', 'row'), lang = h('select'), bApply = h('button', 'pri', '▶ 套用並重啟'), bBeX = h('button', null, '✕ 移除後端'), beStat = h('span', 'st'), beTa = h('textarea', 'code'); beTa.rows = 14; beTa.spellcheck = false;
+    [['none', '沒有後端'], ['js', 'JS（Node 風格）'], ['python', 'Python（Flask／FastAPI）'], ['php', 'PHP（目前不能執行）']].forEach(function (o) { var op = h('option', null, o[1]); op.value = o[0]; if (o[0] === 'php') op.disabled = true; lang.appendChild(op); });
+    [h('label', null, '語言'), lang, bApply, bBeX, beStat].forEach(function (x) { beBar.appendChild(x); }); lp.backend.appendChild(beBar); lp.backend.appendChild(beTa);
+    beTa.addEventListener('keydown', function (ev) { if (ev.key === 'Tab' && !ev.shiftKey) { ev.preventDefault(); var s = beTa.selectionStart; beTa.value = beTa.value.slice(0, s) + (lang.value === 'python' ? '    ' : '  ') + beTa.value.slice(beTa.selectionEnd); beTa.selectionStart = beTa.selectionEnd = s + (lang.value === 'python' ? 4 : 2); } });
+    lang.onchange = function () { if (lang.value === 'none') return; if (!beTa.value.trim()) beTa.value = lang.value === 'python' ? 'from flask import Flask, jsonify\n\napp = Flask(__name__)\n\n@app.get("/api/ping")\ndef ping():\n    return jsonify({"ok": True})\n' : '// 模擬後端（Node 風格）\nconst app = router();\napp.get("/api/ping", () => ({ ok: true }));\n'; };
+    bApply.onclick = function () { if (lang.value === 'none') { if (cur().backend) apply([{ op: 'remove_backend' }], '移除後端', '', 'panel'); return; } var r = apply([{ op: 'set_backend', lang: lang.value, code: beTa.value }], '手動修改後端（' + (lang.value === 'python' ? 'Python' : 'JS') + '）', '', 'panel'); if (r.rejected && r.rejected.length) { beStat.className = 'st bad'; beStat.textContent = r.rejected[0].error; } else if (!r.applied.length) { startPreview(true); } };
+    bBeX.onclick = function () { if (cur().backend) apply([{ op: 'remove_backend' }], '移除後端', '', 'panel'); };
+    var routesBox = h('div', 'st'), tester = h('div', 'row'), tm = h('select'), tu = h('input'), tb = h('textarea'), tgo = h('button', 'pri', '送出'), tout = h('pre', 'out'); tb.rows = 2; tb.placeholder = '請求內容（JSON 或文字，沒有就留空）'; tu.placeholder = '/api/ping'; tu.style.flex = '1'; tout.textContent = '（測試請求的回應會顯示在這裡）';
+    ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].forEach(function (m) { var op = h('option', null, m); tm.appendChild(op); }); [tm, tu, tgo].forEach(function (x) { tester.appendChild(x); });
+    tgo.onclick = function () {
+      if (!host.request) return; tout.textContent = '送出中…'; var body = tb.value.trim(), headers = []; if (body && /^[\[{]/.test(body)) headers.push(['content-type', 'application/json']);
+      Promise.resolve(host.request({ method: tm.value, url: tu.value || '/', headers: headers, body: body && tm.value !== 'GET' ? body : null })).then(function (r) { var t = r && r.body != null ? String(r.body) : ''; try { t = JSON.stringify(JSON.parse(t), null, 2); } catch (e) { /* 純文字 */ } tout.textContent = (r.status || '') + ' ' + (r.statusText || '') + '\n' + t.slice(0, 4000); refreshBackend(true); }, function (e) { tout.textContent = '失敗：' + String((e && e.message) || e); });
+    };
+    var callsBox = h('div', 'calls'), dbBar = h('div', 'row'), bDb = h('button', null, '🗂 看持久資料'), bDbClear = h('button', null, '🧹 清除資料'), dbOut = h('pre', 'out'); dbOut.style.display = 'none'; [bDb, bDbClear].forEach(function (x) { dbBar.appendChild(x); });
+    bDb.onclick = function () { if (!host.db) return; dbOut.style.display = ''; dbOut.textContent = '讀取中…'; Promise.resolve(host.db('list', [''])).then(function (r) { var rows = Array.isArray(r) ? r : (r && r.entries) || []; dbOut.textContent = rows.length ? rows.slice(0, 60).map(function (x) { return (x.key || x[0]) + ' = ' + JSON.stringify(x.value != null ? x.value : x[1]); }).join('\n').slice(0, 4000) : '（沒有資料）'; }, function (e) { dbOut.textContent = '失敗：' + String((e && e.message) || e); }); };
+    bDbClear.onclick = function () { if (!host.db) return; Promise.resolve(host.db('clear', [])).then(function () { dbOut.style.display = ''; dbOut.textContent = '已清除資料'; startPreview(true); }); };
+    var expBar = h('div', 'row'); var bE1 = h('button', null, '⬇ Node 部署檔'), bE2 = h('button', null, '⬇ Cloudflare 部署檔'); [bE1, bE2].forEach(function (x) { expBar.appendChild(x); });
+    [routesBox, h('div', 'st', '測試請求（直接送給模擬後端，不經過頁面）：'), tester, tb, tout, h('div', 'st', '請求紀錄（頁面與測試請求；最近 30 筆）：'), callsBox, dbBar, dbOut, expBar].forEach(function (x) { lp.backend.appendChild(x); });
+    function refreshBackend(keep) {
+      var b = cur().backend; if (!keep || document.activeElement !== beTa) { lang.value = b ? b.lang : 'none'; if (document.activeElement !== beTa) beTa.value = b ? b.code : ''; }
+      beTa.disabled = false; beStat.className = 'st'; beStat.textContent = b ? '' : '目前沒有後端：頁面的 fetch 會直接走瀏覽器網路'; var rs = b ? W.routesOf(b.code, b.lang) : []; routesBox.textContent = rs.length ? '路由：' + rs.join('　') : (b ? '（程式裡讀不到路由）' : '');
+      [tm, tu, tgo, tb, bDb, bDbClear].forEach(function (x) { x.disabled = !b || !host.request; }); bDb.disabled = !b || b.lang !== 'js' || !host.db; bDbClear.disabled = bDb.disabled; bE1.disabled = bE2.disabled = !b || b.lang !== 'js' || !host.exportBackend; bBeX.disabled = !b;
+      var lg = host.log ? host.log() : null; callsBox.textContent = ''; var calls = (lg && lg.calls || []).slice(-30); calls.forEach(function (c) { var d = h('div', c.status >= 400 || c.error ? 'bad' : 'good', (c.kind === 'ws' ? 'WS  ' + (c.ev || '') + ' ' + (c.path || '') + (c.data ? '  ' + c.data : '') : (c.method || '') + ' ' + (c.path || '') + ' → ' + (c.status || '?') + (c.ms != null ? '（' + c.ms + ' ms）' : '') + (c.error ? ' ' + c.error : ''))); callsBox.appendChild(d); }); if (!calls.length) callsBox.appendChild(h('div', 'st', '（還沒有請求）')); (lg && lg.console || []).slice(-6).forEach(function (c) { callsBox.appendChild(h('div', c.l === 'error' ? 'bad' : 'st', '[console.' + (c.l || 'log') + '] ' + String(c.m != null ? c.m : JSON.stringify(c)).slice(0, 160))); });
+    }
+    function doExport(target) { if (!host.exportBackend) return; stat.textContent = '產生部署檔…'; Promise.resolve(host.exportBackend(target)).then(function (r) { (r.files || []).forEach(function (f) { host.download(new Blob([f.content], { type: 'text/plain' }), f.name.replace(/\//g, '_'), 'text/plain'); }); stat.textContent = (r.files || []).length + ' 個檔案已匯出' + (r.note ? '：' + r.note : ''); setTimeout(function () { stat.textContent = ''; }, 5000); }, function (e) { stat.textContent = '匯出失敗：' + String((e && e.message) || e).slice(0, 80); }); }
+    bE1.onclick = function () { doExport('node'); }; bE2.onclick = function () { doExport('cloudflare'); };
+
+    // ───── 記錄 ─────
+    function renderHist() { var p = rp.hist; p.textContent = ''; p.appendChild(h('div', 'st', '點一步就回到那一步（之後的步驟還在，可以重做）：')); S.states.forEach(function (s, i) { var d = h('div', i === S.ptr ? 'cur' : (i > S.ptr ? 'fut' : ''), (i + 1) + '. ' + (s.summary || '（沒有說明）') + (s.text ? '　— 「' + s.text.slice(0, 30) + '」' : '')); d.onclick = function () { S.ptr = i; render(); persist(); }; p.appendChild(d); }); }
+
+    // ───── AI 對話（可附圖）─────
+    var logEl = h('div', 'log'), attEl = h('div', 'att'), inRow = h('div', 'row'), ta = h('textarea'), bAtt = h('button', null, '📎'), bSend = h('button', 'pri', '送出'), file = h('input'); file.type = 'file'; file.accept = 'image/*'; file.multiple = true; file.style.display = 'none';
+    ta.rows = 2; ta.placeholder = '說說想怎麼改（頁面或後端都可以），例如「新增一個搜尋框」「後端加一個 /api/search」；也可以附一張設計圖叫我照著做'; bAtt.title = '附圖（也可以直接貼上、拖進來）'; inRow.appendChild(bAtt); inRow.appendChild(bSend);
+    rp.ai.appendChild(logEl); rp.ai.appendChild(attEl); rp.ai.appendChild(ta); rp.ai.appendChild(inRow); rp.ai.appendChild(file);
+    function addMsg(role, text, chips, rejected) { var m = h('div', 'msg ' + (role === 'user' ? 'u' : 'a')); m.appendChild(document.createTextNode(text || '')); (chips || []).forEach(function (c) { m.appendChild(h('span', 'chip', c)); }); (rejected || []).forEach(function (c) { m.appendChild(h('span', 'chip rej', c)); }); logEl.appendChild(m); logEl.scrollTop = logEl.scrollHeight; return m; }
+    function renderLog() { logEl.textContent = ''; if (!S.log.length) addMsg('ai', '我在這裡幫你改這個網站：頁面（HTML／CSS／JS）我直接改；後端的修改我會請「程式設計」的專家來做，並在模擬後端裡先測過。直接說就好，改錯了可以按「復原」。也可以按上面的「📋 起手式」選一個小專案開始，或附一張設計圖。'); S.log.forEach(function (m) { addMsg(m.role, m.text, m.chips, m.rejected); }); }
+    function readFile(f) { return new Promise(function (res) { var r = new FileReader(); r.onload = function () { res({ name: f.name || 'image', dataUrl: String(r.result) }); }; r.onerror = function () { res(null); }; r.readAsDataURL(f); }); }
+    function addFiles(files) { Promise.all(Array.prototype.filter.call(files || [], function (f) { return /^image\//.test(f.type); }).slice(0, 3).map(readFile)).then(function (list) { list.filter(Boolean).forEach(function (x) { if (pending.length < 3) pending.push(x); }); renderAtt(); }); }
+    function renderAtt() { attEl.textContent = ''; pending.forEach(function (x, i) { var s = h('span'), im = h('img'); im.src = x.dataUrl; im.alt = x.name; var rm = h('b', null, '×'); rm.onclick = function () { pending.splice(i, 1); renderAtt(); }; s.appendChild(im); s.appendChild(rm); attEl.appendChild(s); }); }
+    bAtt.onclick = function () { file.click(); }; file.onchange = function () { addFiles(file.files); file.value = ''; };
+    ta.addEventListener('paste', function (ev) { var items = ev.clipboardData && ev.clipboardData.files; if (items && items.length) { addFiles(items); ev.preventDefault(); } });
+    ['dragover', 'drop'].forEach(function (n) { rp.ai.addEventListener(n, function (ev) { ev.preventDefault(); if (n === 'drop' && ev.dataTransfer) addFiles(ev.dataTransfer.files); }); });
+    ta.addEventListener('keydown', function (ev) { if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); send(); } });
+    async function send() {
+      var text = ta.value.trim(), imgs = pending.slice(); if (busy || (!text && !imgs.length)) return; busy = true; bSend.disabled = true; ta.value = ''; pending = []; renderAtt(); rightTab = 'ai'; showTabs();
+      var um = { role: 'user', text: (text || '（附圖）') + (imgs.length ? '　📎×' + imgs.length : '') }; S.log.push(um); addMsg('user', um.text); var think = addMsg('ai', '…');
+      var chips = [], rej = [], say = '', spec0 = cur(), edits = [], applied = 0, words = [];
+      try {
+        var pr = text ? W.parseEditRequest(text, spec0) : { edits: [], matched: [], unmatched: [] }; edits = pr.edits.slice(); var rest = pr.unmatched.join('，');
+        if ((rest || imgs.length) && host.ask) { var ans = await host.ask({ text: rest, images: imgs, spec: spec0, onStatus: function (t) { think.textContent = t; } }); say = (ans && ans.say) || ''; if (ans && ans.edits) edits = edits.concat(ans.edits); if (ans && ans.notes) ans.notes.forEach(function (n) { chips.push(n); }); }
+        else if (rest) say = '我沒聽懂：「' + rest.slice(0, 40) + '」。這個環境沒有 AI 可以幫忙，可以直接在「程式碼」或「後端」分頁改。';
+        var r = W.applyEdits(spec0, edits); var next = spec0; if (r.applied.length) { next = r.spec; edits.forEach(function (e) { if (r.applied.indexOf(e.op) >= 0) words.push(W.editWords(e)); }); }
+        (r.rejected || []).forEach(function (x) { rej.push('✗ ' + x.op + '：' + x.error); });
+        if (JSON.stringify(next) !== JSON.stringify(spec0)) { commit(next, words.filter(Boolean).join('；'), text || '（附圖）', imgs.length ? 'image' : 'chat'); applied = words.length; words.forEach(function (w) { chips.push('✓ ' + w); }); curFile = cur().files.some(function (f) { return f.name === curFile; }) ? curFile : 'index.html'; }
+        if (!applied && (rej.length || chips.length)) say = say && !rej.length && chips.length ? say : '這次沒有改成：'; if (!say) say = applied ? '改好了：' : '這樣已經是目前的樣子了。';
+      } catch (e) { say = '這次沒成功：' + String((e && e.message) || e).slice(0, 160); }
+      think.remove(); var am = { role: 'ai', text: say, chips: chips.slice(0, 12), rejected: rej.slice(0, 6) }; S.log.push(am); addMsg('ai', am.text, am.chips, am.rejected); persist(); busy = false; bSend.disabled = false;
+    }
+    bSend.onclick = send;
+
+    // ───── 摘要、匯出、放大、鍵盤 ─────
+    bSum.onclick = function () { sumTa.value = W.specToPrompt(cur(), S.states.slice(0, S.ptr + 1).filter(function (s) { return s.kind !== 'start'; })); sum.className = 'sum on'; sumTa.focus(); }; bSumX.onclick = function () { sum.className = 'sum'; };
+    bCopy.onclick = function () { try { navigator.clipboard.writeText(sumTa.value); bCopy.textContent = '✓ 已複製'; setTimeout(function () { bCopy.textContent = '📋 複製'; }, 1500); } catch (e) { sumTa.select(); } };
+    bRegen.style.display = host.regenerate ? '' : 'none'; bRegen.onclick = function () { bRegen.disabled = true; Promise.resolve(host.regenerate(sumTa.value)).then(function () { bRegen.disabled = false; sum.className = 'sum'; }, function () { bRegen.disabled = false; }); };
+    bPol.style.display = host.polish ? '' : 'none'; bPol.onclick = function () { bPol.disabled = true; var old = bPol.textContent; bPol.textContent = '潤飾中…'; Promise.resolve(host.polish(sumTa.value)).then(function (t) { if (t) sumTa.value = t; }, function () { /* 用原本的 */ }).then(function () { bPol.disabled = false; bPol.textContent = old; }); };
+    function safeName() { return String(cur().title || '網頁').replace(/[\\/:*?"<>|｜]/g, '_').replace(/\s+/g, '').slice(0, 40) || 'webpage'; }
+    bExp.onchange = async function () { var k = bExp.value; bExp.value = ''; if (!k) return; if (k === 'node' || k === 'cloudflare') { doExport(k); return; } if (!host.download) return; try { if (k === 'html') await host.download(new Blob([W.buildHtml(cur())], { type: 'text/html' }), safeName() + '.html', 'text/html'); else await host.download(new Blob([JSON.stringify(cur(), null, 1)], { type: 'application/json' }), safeName() + '.json', 'application/json'); stat.textContent = '已匯出'; } catch (e) { stat.textContent = '匯出失敗：' + String((e && e.message) || e).slice(0, 80); } setTimeout(function () { stat.textContent = ''; }, 3000); };
+    bFull.onclick = function () { var on = el.className.indexOf(' full') >= 0; el.className = el.className.replace(' full', '') + (on ? '' : ' full'); bFull.textContent = on ? '⛶' : '🗗'; };
+    bUndo.onclick = undo; bRedo.onclick = redo;
+    el.addEventListener('keydown', function (ev) { var tag = ev.target && ev.target.tagName; if ((tag === 'TEXTAREA' || tag === 'INPUT' || tag === 'SELECT') && ev.target !== el) return; if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && ev.key.toLowerCase() === 'z') { ev.preventDefault(); undo(); } else if ((ev.ctrlKey || ev.metaKey) && (ev.key.toLowerCase() === 'y' || (ev.shiftKey && ev.key.toLowerCase() === 'z'))) { ev.preventDefault(); redo(); } else if (ev.key === 'Escape' && el.className.indexOf(' full') >= 0) bFull.onclick(); });
+    el.tabIndex = 0;
+    function render() { renderCode(); refreshBackend(); renderHist(); bUndo.disabled = S.ptr === 0; bRedo.disabled = S.ptr >= S.states.length - 1; stat.textContent = '第 ' + (S.ptr + 1) + '／' + S.states.length + ' 步'; showTabs(); startPreview(false); }
+    initState(opt.state, opt.spec); renderLog(); render();
+    el._we = { getState: getState, reload: function (state) { initState(state, null); lastRun = ''; renderLog(); render(); }, setSpec: function (spec, summary) { commit(spec, summary || '由對話修改', '', 'chat'); }, undo: undo, redo: redo, send: function (t) { ta.value = t; return send(); }, refreshBackend: refreshBackend, showTab: function (t) { leftTab = t; showTabs(); if (t === 'backend') refreshBackend(); }, restart: function () { startPreview(true); }, destroy: function () { try { if (host.stop) host.stop(); } catch (e) { /* */ } } };
+    return el;
+  }
+  return { mount: mount, CSS: CSS };
+});
+
+}).call(null, undefined, holder);
+return holder.FaWebEditUI;
+})();
+/* WEBUI-END */
 /* ARCHIVE-BEGIN */
 const FaArchive = (function () {
 const holder = {};
@@ -23751,6 +24160,13 @@ FA_TASK_TOOL_HINTS.push({
     neg: /(怎麼|如何|為什麼|為何|是什麼|能不能|可不可以|可以嗎|有沒有|支援|設定|教我)[\s\S]{0,12}(學習單|練習卷|worksheet)|解答|批改|(教材|教具|講義)(網站|平台|平臺|市場|廠商|出版|銷售|商店)|介紹文|網站/i,
     tools: ['worksheet_make', 'worksheet_adjust', 'worksheet_open', 'worksheet_topic', 'list_uploaded_files'],
     note: '【這個需求有專用工具：worksheet_make】使用者要做學習單／練習卷（教育文書 PDF）。直接呼叫 worksheet_make：request 填使用者的原話（不要改寫、不要自己編規格），有參考圖片就填 reference_file_id；排版、顏色、串數、答案線由程式決定。做完把「做出了什麼、哪些是程式用的預設」告訴使用者；要改用 worksheet_adjust，不要整份重做。不要自己寫 HTML／python 去畫。',
+});
+FA_TASK_TOOL_HINTS.push({
+    id: 'webedit_open',
+    re: /(網頁編輯器|html\s*編輯器|編輯器[\s\S]{0,12}(html|網頁|網站)|(做|製作|設計|建立|寫|幫我做)[^，。\n]{0,12}(網站|網頁|前端頁面|web\s*app)|網頁原型|(mock|模擬)\s*(backend|後端|server|伺服器)|假\s*(server|伺服器|後端)|mock\s*api)/i,
+    neg: /(怎麼|如何|為什麼|為何|是什麼|能不能|可不可以|可以嗎|有沒有|支援|設定|教我)[\s\S]{0,12}(網頁編輯器|網站|網頁)|網頁(版|搜尋|內容)|抓取網頁|爬/i,
+    tools: ['webedit_open', 'webedit_topic', 'list_uploaded_files'],
+    note: '【這個需求有專用工具：webedit_open】使用者要做網頁／小網站（可能含模擬後端）。直接呼叫 webedit_open：要現成類型用 starter（blank、todo、chat、form、python_api），否則把一句話需求放 request，AI 會先做出第一版並在對話裡放一個網頁編輯器（預覽、程式碼、後端、AI 對話、復原重做）。不要自己寫整份 HTML 貼進對話、也不要叫使用者自己存檔。後端是模擬的（JS Node 風格或 Python Flask，不佔埠）；PHP 不能執行要如實說。',
 });
 FA_TASK_TOOL_HINTS.push({
     id: 'translate_text',
@@ -30911,10 +31327,21 @@ class FloatingAssistant {
         this.register_slash_command('/translate', '[en|zh] <文字>',
             '中文與英文互譯：/translate 今天天氣很好（自動判斷方向）、/translate en 你好、/translate zh Hello。譯文會經過程式檢查；預設用線上語言模型、檢查不過換離線翻譯模型（離線模式只用離線；第一次要下載約 118MB，會先問）。',
             async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim(); const m = /^(en|zh|英文|中文)\s+([\s\S]+)$/i.exec(raw); const to = m ? (/^en|英/i.test(m[1]) ? 'en' : 'zh') : null; const text = m ? m[2] : raw; if (!text) { r._pushAssistantMessage('用法：/translate 要翻的文字（自動判斷方向）；/translate en 你好；/translate zh Hello', null); return; } r.messages.push({ role: 'user', content: '/translate ' + raw }); const res = await r.translateText({ text, to }); r._pushAssistantMessage(res.ok ? res.text + (res.engine !== 'none' ? String.fromCharCode(10, 10) + '（' + (res.engine === 'online' ? '線上語言模型' : '離線翻譯模型 OPUS-MT') + '）' + (res.warnings && res.warnings.length ? '　⚠️ ' + res.warnings.join('、') : '') : String.fromCharCode(10, 10) + '（' + res.note + '）') : '⚠️ ' + res.error, null); try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ } });
+        this.register_slash_command('/webedit', '[起手式｜一句話描述]',
+            '網頁編輯器（AI 輔助：HTML 預覽＋模擬後端編輯器）：/webedit todo（從起手式開始：blank、todo、chat、form、python_api）、/webedit 做一個記帳網站（AI 先做第一版）、不帶參數＝接著最近一個專案（沒有就開空白的）。編輯器裡有預覽／程式碼／後端三個分頁（後端可選 JS 的 Node 風格或 Python，不佔埠）、AI 對話（可附圖；後端交給程式設計專家並先測過）、復原／重做、摘要成 prompt、匯出。',
+            async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/webedit' + (raw ? ' ' + raw : '') });
+                try { const st = FaWebEdit.listStarters().find((t) => t.id === raw.toLowerCase());
+                    let res; if (!raw) { const cur = await r._weLoad(); res = cur ? await r._webeditOpen({ id: cur.id }) : await r._webeditOpen({ starter: 'blank' }); } else if (raw === '起手式' || raw === 'starters') { r._pushAssistantMessage('網頁編輯器的起手式（/webedit 名稱）：\n' + FaWebEdit.listStarters().map((t) => '・' + t.id + '：' + t.label + '——' + t.desc).join('\n'), null); res = { ok: true }; } else res = st ? await r._webeditOpen({ starter: st.id }) : await r._webeditOpen({ request: raw });
+                    if (res && res.ok === false) r._pushAssistantMessage('⚠️ ' + (res.error || '做不出來'), null);
+                } catch (e) { r._pushAssistantMessage('⚠️ 網頁編輯器失敗：' + String((e && e.message) || e), null); } try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ } });
         this.register_slash_command('/worksheet', '[學習單描述]',
-            '學習單編輯器：/worksheet 10又幾 做8串（程式讀你的描述做出一份，並在對話裡放一個編輯器）；不帶描述＝接著開最近一份（沒有就開一份空白的，直接在編輯器裡用對話做）。編輯器裡可以用對話或屬性面板改、附圖、復原／重做、把編輯過程摘要成 prompt。',
+            '學習單編輯器：/worksheet 10又幾 做8串（程式讀你的描述做出一份，並在對話裡放一個編輯器）；/worksheet 範本（列出所有範本）、/worksheet 範本 數的組成（從範本開始）；不帶描述＝接著開最近一份（沒有就開一份空白的，直接在編輯器裡用對話做）。編輯器裡可以用對話或屬性面板改、附圖、復原／重做、把編輯過程摘要成 prompt。',
             async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/worksheet' + (raw ? ' ' + raw : '') });
-                try { if (raw) { const res = await r._worksheetMake({ request: raw }); if (!res.ok) r._pushAssistantMessage('⚠️ ' + (res.error || '做不出來') + (res.hint ? '\n' + res.hint : ''), null); }
+                try { const tm = /^(?:範本|模板|template|templates)\s*(.*)$/i.exec(raw);
+                    if (tm) { const all = FaWorksheet.listTemplates(r._wsUserTemplates()), q = tm[1].trim().toLowerCase(); const hit = q ? all.filter((t) => t.id.toLowerCase() === q || t.label.toLowerCase().indexOf(q) >= 0)[0] : null;
+                        if (!hit) r._pushAssistantMessage('學習單範本（用 /worksheet 範本 名稱 開始；編輯器工具列的「📋 範本」也可以選）：\n' + all.map((t) => '・' + t.label + '（' + t.id + '）：' + t.desc).join('\n') + (q ? '\n\n⚠️ 沒有找到「' + tm[1].trim() + '」。' : ''), null);
+                        else { const res = await r._worksheetMake({ template: hit.id }); if (!res.ok) r._pushAssistantMessage('⚠️ ' + (res.error || '做不出來'), null); } }
+                    else if (raw) { const res = await r._worksheetMake({ request: raw }); if (!res.ok) r._pushAssistantMessage('⚠️ ' + (res.error || '做不出來') + (res.hint ? '\n' + res.hint : ''), null); }
                     else { let cur = await r._wsLoadSpec(); if (!cur) { const id = r._wsStoreSpec(FaWorksheet.validate({ title: '學習單', blocks: [] }).spec); cur = { id }; } r._wsPushEditor(cur.id); }
                 } catch (e) { r._pushAssistantMessage('⚠️ 學習單失敗：' + String((e && e.message) || e), null); } try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ } });
         this.register_slash_command('/rounds', '[ask|auto [總上限]]',
@@ -35034,13 +35461,29 @@ ${fnData.code}
             },
             { type: 'object', properties: { question: { type: 'string', description: '問題；省略＝摘要' }, format: { type: 'string', description: '學過的格式名稱（省略＝最近一份）' }, text: { type: 'string', description: '一行日誌或一行 key = value（問這一行是什麼）、或整份日誌／設定檔文字' }, file_id: { type: 'string' }, path: { type: 'string' }, other_text: { type: 'string', description: '（設定檔比較）另一份設定檔的文字' }, other_file_id: { type: 'string' }, other_path: { type: 'string' }, kind: { type: 'string', enum: ['log', 'config', 'grammar'] } }, additionalProperties: false }
         );
+        registerOptional('webedit_open',
+            '在對話裡放一個「網頁編輯器」（AI 輔助的小網站編輯器）：預覽、程式碼（HTML／CSS／JS 多個檔）、模擬後端（JS 的 Node 風格或 Python Flask／FastAPI；全部在頁面內執行、不佔埠，fetch／WebSocket／EventSource 都由它回應，資料持久，可匯出 Node／Cloudflare 部署檔），右邊用對話修改（頁面直接改；後端會交給程式設計專家並先在沙盒測過）、附圖、復原／重做、摘要成 prompt，進度會保留。參數：starter（起手式：blank、todo、chat、form、python_api）、或 request（一句話描述要做的網站，AI 先做出第一版）、或 spec（整份描述，格式見 webedit_topic）、或 id（重新打開之前的專案）。做完編輯器就在對話裡了，不要再把程式碼貼到對話。PHP 目前不能在瀏覽器裡執行。參數: {"starter":"todo","request":"（選填）","spec":{},"id":"（選填）"}',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try { return JSON.stringify(await this._webeditOpen(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+            },
+            { type: 'object', properties: { starter: { type: 'string', description: '起手式：blank、todo、chat、form、python_api' }, request: { type: 'string', description: '一句話描述要做的網站' }, spec: { type: 'object', description: '整份專案描述' }, id: { type: 'string', description: '重新打開之前的專案' }, title: { type: 'string' } }, additionalProperties: false }
+        );
+        registerOptional('webedit_topic',
+            '查網頁編輯器的說明：topic=format（專案描述格式）、edits（編輯動作）、backend（模擬後端怎麼寫、語言限制）、starters（起手式清單）。參數: {"topic":"backend"}',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const T = FaWebEdit.TOPICS; const k = String(a.topic || ''); return JSON.stringify(T[k] ? { ok: true, topic: k, text: T[k] } : { ok: true, topics: Object.keys(T) });
+            },
+            { type: 'object', properties: { topic: { type: 'string', enum: ['format', 'edits', 'backend', 'starters'] } }, additionalProperties: false }
+        );
         registerOptional('worksheet_make',
             '做一份學習單／練習卷（教育文書）：程式讀請求 → 排版成 SVG/HTML → 輸出 PDF（向量）＋預覽圖 PNG＋可再微調的 HTML，三個檔案都會變成下載卡片。現成的有：串珠「10又幾」（金色珠加幾顆彩色珠、右邊橫線填數字）、數的組成（二元樹：每格一直排積木、紅圈樹根、藍圈兒子寫數字）、數一數、十格框、數線、加減法算式；現成的做不到就用 draw（自由繪圖區塊，圓／方框／線／多邊形／文字，座標是百分比，見 worksheet_topic）自己畫，不要回答「模板不支援」。request＝使用者的原話（不要改寫）；有參考圖片就帶 reference_file_id（視覺模型只被問一小段 JSON：每串顆數與顏色，程式檢查後才採用）。也可以直接給 spec（描述格式見 worksheet_topic）。回傳 worksheet_id、notes（程式用了哪些預設）、questions（有歧義、已先用預設的地方）。參數: {"request":"使用者的原話","reference_file_id":"（選填）參考圖片","spec":{"（選填）整份學習單描述"}}',
             async function (rawArgs) {
                 let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 try { return JSON.stringify(await this._worksheetMake(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
             },
-            { type: 'object', properties: { request: { type: 'string', description: '使用者要的學習單（原話）' }, reference_file_id: { type: 'string', description: '（選填）參考圖片的 file_id' }, spec: { type: 'object', description: '（選填）整份學習單描述，格式見 worksheet_topic' } }, additionalProperties: true }
+            { type: 'object', properties: { request: { type: 'string', description: '使用者要的學習單（原話）' }, template: { type: 'string', description: '（選填）範本 id：blank、draw_area、bead_rows、number_bond、count_rows、ten_frames、number_line、equations，或使用者存的 user_…；見 worksheet_topic(templates)' }, reference_file_id: { type: 'string', description: '（選填）參考圖片的 file_id' }, spec: { type: 'object', description: '（選填）整份學習單描述，格式見 worksheet_topic' } }, additionalProperties: true }
         );
         registerOptional('worksheet_adjust',
             '調整剛做好的學習單（人工調整，不是重新生成）：edits 是一組封閉的編輯動作，例如改標題、改某一串的顏色、改串數、教師版附答案、換橫式、加減區塊。改完重新輸出 PDF／預覽圖／HTML。動作清單見 worksheet_topic({"topic":"edits"})。參數: {"edits":[{"op":"set_color","count":3,"color":"#F2D4CF"}],"worksheet_id":"（選填，預設最近一份）"}',
@@ -35060,12 +35503,12 @@ ${fnData.code}
             { type: 'object', properties: { worksheet_id: { type: 'string' }, blank: { type: 'boolean', description: 'true＝開一份空白的' } }, additionalProperties: false }
         );
         registerOptional('worksheet_topic',
-            '查學習單的進階說明：topic=format（描述格式與每種區塊的欄位）、draw（自由繪圖區塊）、number_bond（數的組成）、edits（調整動作清單）、reference（用參考圖片的做法）、colors（串珠標準色）。參數: {"topic":"format"}',
+            '查學習單的進階說明：topic=format（描述格式與每種區塊的欄位）、templates（範本清單）、draw（自由繪圖區塊）、number_bond（數的組成）、edits（調整動作清單）、reference（用參考圖片的做法）、colors（串珠標準色）。參數: {"topic":"format"}',
             async function (rawArgs) {
                 let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
-                const T = FaWorksheet.TOPICS; const k = String(a.topic || ''); return JSON.stringify(T[k] ? { ok: true, topic: k, text: T[k] } : { ok: true, topics: Object.keys(T), note: '用 {"topic":"format"} 等查看' });
+                const T = FaWorksheet.TOPICS; const k = String(a.topic || ''); if (k === 'templates') return JSON.stringify({ ok: true, topic: k, text: T.templates, templates: FaWorksheet.listTemplates(this._wsUserTemplates()).map((t) => ({ id: t.id, name: t.label, about: t.desc, group: t.group })) }); return JSON.stringify(T[k] ? { ok: true, topic: k, text: T[k] } : { ok: true, topics: Object.keys(T), note: '用 {"topic":"format"} 等查看' });
             },
-            { type: 'object', properties: { topic: { type: 'string', enum: ['format', 'draw', 'number_bond', 'edits', 'reference', 'colors'] } }, additionalProperties: false }
+            { type: 'object', properties: { topic: { type: 'string', enum: ['format', 'templates', 'draw', 'number_bond', 'edits', 'reference', 'colors'] } }, additionalProperties: false }
         );
         registerOptional('ask_user_card',
             '在對話裡放一張「互動卡片」讓使用者填（表單或多步驟 wizard），等使用者送出後把回應交給你。用在「需要使用者從幾個選項裡決定、或補幾個欄位」而你不該替他猜的時候，比用文字一題一題問快。使用者看到的是勾選／單選／下拉／文字框，送出後卡片變唯讀；回應只回傳給這個工具，不會變成使用者訊息。規格 spec：{title, description, questions:[…]}（單張表單）或 {title, steps:[{id,title,questions,next:[{when:{q,eq|in|has|nonEmpty},goto:步驟id|"done"}]}]}（wizard，next 沒寫就依序）。題目 {id, type, label, hint, required, default, showIf:{q,eq|in|has|nonEmpty}, media:{text,image(https或data:image),html(可互動的 widget，在沙盒 iframe，用 window.faCard.answer(值) 回傳；type 要是 widget),height}}。type：single（單選）、multi（多選，minSelect／maxSelect）、dropdown、text、textarea、number（min／max）、color、widget、info（只顯示）。single／multi 的選項 {id,label,desc,image,color(#rrggbb 色塊),extra:{kind:"text"|"select",options,required}}：extra 是選項後面的文字框或下拉（選到那個選項才能填）；題目還可以有 after:[{id,kind:"text"|"select",label,options}] 固定接在選項後面。id 一律英文字母開頭。回傳 {ok,confirmed,status,answers:{題目id:值,"題目id.選項id":後面欄位的值},summary:[…]}；confirmed=false 是使用者取消；如果回傳 skipped:true 與 supplement，代表使用者沒點選項、直接打字回答，那段文字就是他的回答與補充條件，照它做。只在計畫真的有分歧（幾條做法差很多、缺必要資訊又沒有合理預設、動作不可逆）時才問，每題要標出建議的選項，一次最多問2到3題，其餘用預設值並在計畫裡註明。需要依回應決定下一張卡片：用這個工具兩次，第二次的規格依第一次的回應來寫。',
@@ -45360,6 +45803,49 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     }
 
     // 開一個mock伺服器（Web Worker＋持久儲存）。回傳 {ok, hub}；hub.http()／hub.wsOpen()／hub.attach()／hub.summary()／hub.close()
+    // hub 的頁面端方法（makePageHandler／attach）：只靠 hub.http／wsOpen／wsSend／wsClose／cancelStream／listeners，所以 JS 的 mock hub 與 Python 的假 hub 共用
+    _mockPageMethods(hub) {
+        // 頁面送來的訊息處理（iframe與分頁輪詢共用）：reply(訊息, 可轉移物件)把回覆送回頁面
+        hub.makePageHandler = () => {
+            const conns = new Map(); // 頁面的socket id → hub的conn
+            const streamIds = new Map(); // 頁面的http id → hub的串流id
+            return (d, reply) => {
+                if (d.t === 'http') {
+                    hub.http({ method: d.method, url: d.url, headers: d.headers, body: d.body }, {
+                        onChunk: (buf) => reply({ t: 'http_chunk', id: d.id, data: buf }, [buf]),
+                        onEnd: () => { streamIds.delete(d.id); reply({ t: 'http_end', id: d.id }); },
+                    }).then((r) => {
+                        if (r.stream) streamIds.set(d.id, r.id);
+                        reply({ t: 'http_res', id: d.id, status: r.status, statusText: r.statusText, headers: r.headers, body: r.body || null, stream: r.stream || undefined }, r.body ? [r.body] : []);
+                    }).catch((e) => reply({ t: 'http_res', id: d.id, error: String((e && e.message) || e) }));
+                } else if (d.t === 'http_cancel') {
+                    const hid = streamIds.get(d.id);
+                    if (hid) { streamIds.delete(d.id); hub.cancelStream(hid); }
+                } else if (d.t === 'ws_open') {
+                    const conn = hub.wsOpen({
+                        onOpen: () => reply({ t: 'ws_opened', id: d.id }),
+                        onMessage: (data) => reply({ t: 'ws_msg', id: d.id, data }, data instanceof ArrayBuffer ? [data] : []),
+                        onClose: (code, reason) => { conns.delete(d.id); reply({ t: 'ws_close', id: d.id, code, reason }); },
+                        onReject: (reason) => { conns.delete(d.id); reply({ t: 'ws_rejected', id: d.id, reason }); },
+                    }, d.url);
+                    conns.set(d.id, conn);
+                } else if (d.t === 'ws_send') { const c = conns.get(d.id); if (c) hub.wsSend(c, d.data); }
+                else if (d.t === 'ws_close') { const c = conns.get(d.id); if (c) { conns.delete(d.id); hub.wsClose(c, d.code, d.reason); } }
+            };
+        };
+        // iframe／彈出視窗：用postMessage
+        hub.attach = (listenWin, getFrameWin) => {
+            const handle = hub.makePageHandler();
+            const onMsg = (ev) => {
+                const d = ev.data;
+                if (!d || d.__fa_mock !== 1 || ev.source !== getFrameWin()) return;
+                const src = ev.source;
+                handle(d, (m, transfer) => { try { src.postMessage(Object.assign({ __fa_mock_r: 1 }, m), '*', transfer || []); } catch (_) {} });
+            };
+            listenWin.addEventListener('message', onMsg);
+            hub.listeners.push(() => { try { listenWin.removeEventListener('message', onMsg); } catch (_) {} });
+        };
+    }
     async _mockOpen(spec) {
         if (typeof Worker === 'undefined') return { ok: false, error: '這個環境不支援Web Worker' };
         let name;
@@ -45468,46 +45954,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             if (hub.worker) hub.worker.postMessage({ __cmd: 'ws_close', conn, code: code || 1005, reason: reason || '' });
         };
         hub.cancelStream = (id) => { if (hub.streams.delete(id) && hub.worker) { try { hub.worker.postMessage({ __cmd: 'http_cancel', id }); } catch (_) {} } };
-        // 頁面送來的訊息處理（iframe與分頁輪詢共用）：reply(訊息, 可轉移物件)把回覆送回頁面
-        hub.makePageHandler = () => {
-            const conns = new Map(); // 頁面的socket id → hub的conn
-            const streamIds = new Map(); // 頁面的http id → hub的串流id
-            return (d, reply) => {
-                if (d.t === 'http') {
-                    hub.http({ method: d.method, url: d.url, headers: d.headers, body: d.body }, {
-                        onChunk: (buf) => reply({ t: 'http_chunk', id: d.id, data: buf }, [buf]),
-                        onEnd: () => { streamIds.delete(d.id); reply({ t: 'http_end', id: d.id }); },
-                    }).then((r) => {
-                        if (r.stream) streamIds.set(d.id, r.id);
-                        reply({ t: 'http_res', id: d.id, status: r.status, statusText: r.statusText, headers: r.headers, body: r.body || null, stream: r.stream || undefined }, r.body ? [r.body] : []);
-                    }).catch((e) => reply({ t: 'http_res', id: d.id, error: String((e && e.message) || e) }));
-                } else if (d.t === 'http_cancel') {
-                    const hid = streamIds.get(d.id);
-                    if (hid) { streamIds.delete(d.id); hub.cancelStream(hid); }
-                } else if (d.t === 'ws_open') {
-                    const conn = hub.wsOpen({
-                        onOpen: () => reply({ t: 'ws_opened', id: d.id }),
-                        onMessage: (data) => reply({ t: 'ws_msg', id: d.id, data }, data instanceof ArrayBuffer ? [data] : []),
-                        onClose: (code, reason) => { conns.delete(d.id); reply({ t: 'ws_close', id: d.id, code, reason }); },
-                        onReject: (reason) => { conns.delete(d.id); reply({ t: 'ws_rejected', id: d.id, reason }); },
-                    }, d.url);
-                    conns.set(d.id, conn);
-                } else if (d.t === 'ws_send') { const c = conns.get(d.id); if (c) hub.wsSend(c, d.data); }
-                else if (d.t === 'ws_close') { const c = conns.get(d.id); if (c) { conns.delete(d.id); hub.wsClose(c, d.code, d.reason); } }
-            };
-        };
-        // iframe／彈出視窗：用postMessage
-        hub.attach = (listenWin, getFrameWin) => {
-            const handle = hub.makePageHandler();
-            const onMsg = (ev) => {
-                const d = ev.data;
-                if (!d || d.__fa_mock !== 1 || ev.source !== getFrameWin()) return;
-                const src = ev.source;
-                handle(d, (m, transfer) => { try { src.postMessage(Object.assign({ __fa_mock_r: 1 }, m), '*', transfer || []); } catch (_) {} });
-            };
-            listenWin.addEventListener('message', onMsg);
-            hub.listeners.push(() => { try { listenWin.removeEventListener('message', onMsg); } catch (_) {} });
-        };
+        me._mockPageMethods(hub);
         // 瀏覽器分頁：分頁沒有父頁面，改成主頁面定時用tab_eval取出頁面佇列裡的請求、再把回覆送進去
         hub.attachPoll = (frame) => {
             const handle = hub.makePageHandler();
@@ -45738,7 +46185,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             '        chunks = app(env, start_response)',
             '        body = b"".join(chunks)',
             '        if hasattr(chunks, "close"): chunks.close()',
-            '        return {"status": int(box["status"].split()[0]), "headers": dict(box["headers"]), "body": body.decode("utf-8", "replace")[:3000]}',
+            '        return {"status": int(box["status"].split()[0]), "headers": dict(box["headers"]), "body": body.decode("utf-8", "replace")[:__fa_body_limit]}',
             '    async def asgi(r):',
             '        method, path, q, headers, data = prep(r)',
             '        scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": method, "scheme": "http", "path": path, "raw_path": path.encode(), "query_string": q.encode(), "headers": [(k.encode(), v.encode()) for k, v in headers.items()], "client": ("127.0.0.1", 0), "server": ("sandbox.local", 80)}',
@@ -45755,7 +46202,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             '            elif m["type"] == "http.response.body":',
             '                out["body"] += m.get("body", b"")',
             '        await app(scope, receive, send)',
-            '        return {"status": out["status"], "headers": out["headers"], "body": out["body"].decode("utf-8", "replace")[:3000]}',
+            '        return {"status": out["status"], "headers": out["headers"], "body": out["body"].decode("utf-8", "replace")[:__fa_body_limit]}',
             '    results = []',
             '    for r in json.loads(__fa_requests_json):',
             '        label = (r.get("method") or "GET").upper() + " " + (r.get("path") or "/")',
@@ -45775,6 +46222,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             pyodide.globals.set('__fa_requests_json', JSON.stringify(requests));
             pyodide.globals.set('__fa_packages_json', JSON.stringify(packages));
             pyodide.globals.set('__fa_kind', kind);
+            pyodide.globals.set('__fa_body_limit', Math.max(500, Math.min(2000000, Number(a.body_limit) || 3000)));
             const t0 = Date.now();
             const r = await Promise.race([
                 this._runPyodideScriptAsync(pyodide, script, null),
@@ -47763,6 +48211,144 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         return rootBuiltins;
     }
 
+    // ===== 網頁編輯器（FaWebEdit／FaWebEditUI）：HTML 預覽＋模擬後端編輯器；後端用既有的 sandbox_mock（JS）與 Pyodide（Python），不佔埠 =====
+    // 後端的修改交給「程式設計」領域（prog_webservice）的子Agent，在沙盒裡先測過；頁面的修改用封閉的編輯動作。設計見 DESIGN.webedit.md
+    _weStore(id, spec, state) {
+        this._weSpecs = this._weSpecs || new Map(); const prev = this._weSpecs.get(id); const key = id || ('we_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5));
+        this._weSpecs.set(key, { spec, state: state || (prev && prev.state) || null }); this._weLast = key;
+        try { const name = 'webedit_' + key + '.json'; const obj = { v: 1, spec, state: state || (prev && prev.state) || null }; (async () => { const old = (await this.fileCache.getAll()).filter((r) => r && r.filename === name); await this.fileCache.put(name, 'application/json', new Blob([JSON.stringify(obj)], { type: 'application/json' }), 'generated'); for (const r of old) { try { await this.fileCache.delete(r.id); } catch (_) { /* */ } } })().catch(() => {}); } catch (_) { /* 這次還是有效 */ }
+        return key;
+    }
+    async _weLoad(id) {
+        this._weSpecs = this._weSpecs || new Map(); const key = id || this._weLast; if (key && this._weSpecs.has(key)) { const v = this._weSpecs.get(key); return { id: key, spec: v.spec, state: v.state }; }
+        try { const all = await this.fileCache.getAll(); const rec = all.filter((r) => r && /^webedit_we_.*\.json$/.test(r.filename || '') && (!id || r.filename === 'webedit_' + id + '.json')).sort((x, y) => (y.createdAt || 0) - (x.createdAt || 0))[0];
+            if (rec && rec.blob) { const o = JSON.parse(await rec.blob.text()); const rid = rec.filename.replace(/^webedit_|\.json$/g, ''); this._weSpecs.set(rid, { spec: o.spec, state: o.state }); this._weLast = rid; return { id: rid, spec: o.spec, state: o.state }; } } catch (_) { /* 找不到 */ }
+        return null;
+    }
+    _weMockName(id) { return 'we_' + String(id || 'x').replace(/[^A-Za-z0-9_-]/g, '').replace(/^we_/, '').slice(-30); }
+    // Python 後端的假 hub：跟 JS 的 mock hub 同一套介面，請求交給 Pyodide 裡的 Flask／Bottle／FastAPI／Starlette（每個請求重新載入 app；不支援 WebSocket）
+    async _webeditPyHub(name, code) {
+        const me = this; const hub = { name, kind: 'python', code, calls: [], consoleLogs: [], closed: false, routes: FaWebEdit.routesOf(code, 'python'), wsRoutes: [], listeners: [], sinks: new Map(), streams: new Map(), restarts: 0 };
+        const enc = (o) => new TextEncoder().encode(JSON.stringify(o)).buffer; const rec = (e) => { e.t = Date.now(); hub.calls.push(e); if (hub.calls.length > 300) hub.calls.shift(); };
+        const probe = await this._sandboxPyAppRun({ code, packages: FaWebEdit.pyPackages(code), requests: [], body_limit: 10 }); if (!probe || probe.ok === false) return { ok: false, error: 'Python 後端載入失敗：' + String((probe && probe.error) || '未知錯誤').slice(0, 400) };
+        hub.http = async (req) => {
+            const t0 = performance.now(); let u = null; try { u = new URL(req.url); } catch (_) { /* */ } const path = u ? u.pathname + u.search : String(req.url); const label = { kind: 'http', method: req.method, path };
+            if (hub.closed) return { status: 503, statusText: 'Service Unavailable', headers: [['content-type', 'application/json']], body: enc({ error: '後端已關閉' }) };
+            const headers = {}; (req.headers || []).forEach((kv) => { headers[kv[0]] = kv[1]; }); const body = req.body ? new TextDecoder().decode(req.body) : null;
+            let r; try { r = await me._sandboxPyAppRun({ code, packages: FaWebEdit.pyPackages(code), requests: [{ method: req.method, path, headers, body }], body_limit: 2000000 }); } catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+            const x = r && r.ok && r.responses && r.responses[0]; let out;
+            if (x && !x.error) { out = { status: x.status, statusText: '', headers: Object.entries(x.headers || {}), body: new TextEncoder().encode(String(x.body == null ? '' : x.body)).buffer }; rec(Object.assign(label, { status: x.status, ms: Math.round(performance.now() - t0) })); }
+            else { const msg = String((x && x.error) || (r && r.error) || 'Python 後端錯誤'); out = { status: 500, statusText: 'Internal Server Error', headers: [['content-type', 'application/json']], body: enc({ error: msg.slice(0, 500) }) }; rec(Object.assign(label, { status: 500, ms: Math.round(performance.now() - t0), error: msg.slice(0, 120) })); hub.consoleLogs.push({ l: 'error', m: msg.slice(0, 300) }); }
+            return out;
+        };
+        hub.wsOpen = (sink, urlStr) => { let path = '/'; try { path = new URL(urlStr).pathname; } catch (_) { /* */ } sink.path = path; rec({ kind: 'ws', ev: 'rejected', path, error: 'Python 後端還不支援 WebSocket' }); setTimeout(() => sink.onReject('Python 後端還不支援 WebSocket（要即時通訊請用 JS 後端）'), 0); return 0; };
+        hub.wsSend = () => {}; hub.wsClose = () => {}; hub.cancelStream = () => {};
+        hub.close = () => { if (hub.closed) return; hub.closed = true; hub.listeners.forEach((f) => { try { f(); } catch (_) { /* */ } }); };
+        hub.summary = () => ({ server: name, routes: hub.routes, ws_routes: [], http_calls: hub.calls.filter((c) => c.kind === 'http').length, calls: hub.calls.slice(-60) });
+        this._mockPageMethods(hub); return { ok: true, hub };
+    }
+    // 啟動（或重啟）預覽與後端：後端程式沒變就沿用同一個 hub（持久資料不受影響）；iframe 重新載入時重新接上
+    async _webeditStart(id, iframe, spec) {
+        this._weRuns = this._weRuns || new Map(); const run = this._weRuns.get(id) || { id }; this._weRuns.set(id, run); run.iframe = iframe; const be = spec.backend; const bkey = be ? be.lang + '\n' + be.code : '';
+        let err = '';
+        if (!be) { if (run.hub) { try { run.hub.close(); } catch (_) { /* */ } } run.hub = null; run.bkey = ''; }
+        else if (!run.hub || run.hub.closed || run.bkey !== bkey) {
+            const name = this._weMockName(id);
+            try {
+                // 先用暫時的名字載入檢查：載不進來就保留前一版繼續跑（頁面不會因為改壞後端就整個連不上）
+                const chk = be.lang === 'python' ? await this._sandboxPyAppRun({ code: be.code, packages: FaWebEdit.pyPackages(be.code), requests: [], body_limit: 10 }) : await this._mockOpen({ name: this._weMockName('chk_' + id), code: be.code });
+                if (be.lang !== 'python') { if (chk && chk.ok && chk.hub) chk.hub.close(); }
+                if (!chk || chk.ok === false) err = String((chk && chk.error) || '後端載入失敗').slice(0, 400) + (run.hub && !run.hub.closed ? '（還在跑前一版）' : '');
+                else {
+                    if (run.hub) { try { run.hub.close(); } catch (_) { /* */ } run.hub = null; }
+                    const o = be.lang === 'python' ? await this._webeditPyHub(name, be.code) : await this._mockOpen({ name, code: be.code });
+                    if (o && o.ok) { run.hub = o.hub; run.bkey = bkey; run.attached = false; } else err = (o && o.error) || '後端啟動失敗';
+                }
+            } catch (e) { err = String((e && e.message) || e); }
+        }
+        if (run.hub && !run.attached) { run.hub.attach(window, () => (run.iframe && run.iframe.contentWindow) || null); run.attached = true; }
+        const cfg = run.hub ? { hosts: [], prefixes: null, block: false, allow_hosts: [], deny: this._sandboxDenyHosts(), backend: 'iframe' } : null;
+        const doc = this._sandboxBuildDoc({ html: FaWebEdit.buildHtml(spec), base: 'blank', __mockCfg: cfg }); iframe.srcdoc = doc;
+        if (err) return { ok: false, error: err, kind: be && be.lang };
+        return { ok: true, kind: run.hub ? (be.lang === 'python' ? 'python' : 'js') : null, routes: run.hub ? (run.hub.routes || []) : [], wsRoutes: run.hub ? (run.hub.wsRoutes || []) : [] };
+    }
+    _webeditStop(id) { const run = this._weRuns && this._weRuns.get(id); if (run && run.hub) { try { run.hub.close(); } catch (_) { /* */ } } if (this._weRuns) this._weRuns.delete(id); }
+    // 對話：程式讀不懂的句子、附圖、後端要改時才會到這裡。後端交給程式設計領域的子Agent（沙盒裡先測過），頁面用封閉的編輯動作
+    async _webeditAsk(req) {
+        req = req || {}; const spec = FaWebEdit.validate(req.spec).spec, notes = [], edits = []; let say = ''; const text = String(req.text || '').trim(); const status = typeof req.onStatus === 'function' ? req.onStatus : () => {};
+        let imgDesc = ''; for (const im of (req.images || []).slice(0, 3)) { try { status('看圖中…'); const r = await this._interpretImageWithVisionModel(im.dataUrl, FaWebEdit.refPrompt()); const d = String((r && (r.description || r.answer || r.transcription)) || '').trim(); if (d) imgDesc += (imgDesc ? '\n\n' : '') + d; else notes.push('「' + (im.name || '圖片') + '」讀不出內容'); } catch (e) { notes.push('讀不到「' + (im.name || '圖片') + '」：' + String((e && e.message) || e).slice(0, 80)); } }
+        if (this.advancedSettings && this.advancedSettings.offlineMode) return { say: '離線模式：這句話程式沒有讀懂，離線時只能改標題、刪檔、改名；要用 AI 改頁面或後端請先離開離線模式，或直接在「程式碼」「後端」分頁手動改。', edits, notes };
+        if (!text && !imgDesc) return { say: '', edits, notes };
+        const c = FaWebEdit.classify(text); const want = text || '照這張設計圖做出頁面';
+        if (c.backend && text) {
+            status('請「程式設計」專家修改後端…（會在模擬後端裡先測過，可能要一兩分鐘）'); const lang = spec.backend ? spec.backend.lang : 'js'; let out = '';
+            try { const dom = this.domains && this.domains.prog_webservice && this.domains.prog_webservice.enabled !== false ? 'prog_webservice' : 'coding'; const r = await this._delegateToSubagentDomain(dom, FaWebEdit.backendTask(spec, text, imgDesc ? '使用者附了參考圖，內容描述如下：\n' + imgDesc : '')); out = typeof r === 'string' ? r : String((r && (r.text || r.result || r.answer || r.output)) || JSON.stringify(r || '')); } catch (e) { notes.push('程式設計專家沒有回應：' + String((e && e.message) || e).slice(0, 100)); }
+            const code = out ? FaWebEdit.extractCode(out, lang) : null;
+            if (code) {
+                status('檢查新的後端能不能載入…'); let loadErr = '';
+                try { if (lang === 'python') { const pr = await this._sandboxPyAppRun({ code, packages: FaWebEdit.pyPackages(code), requests: [], body_limit: 10 }); if (!pr || pr.ok === false) loadErr = String((pr && pr.error) || '載入失敗').slice(0, 300); } else { const o = await this._mockOpen({ name: this._weMockName('check_' + Date.now().toString(36)), code }); if (o && o.ok) { o.hub.close(); } else loadErr = String((o && o.error) || '載入失敗').slice(0, 300); } } catch (e) { loadErr = String((e && e.message) || e).slice(0, 300); }
+                if (loadErr) notes.push('專家給的後端程式載入失敗，沒有套用：' + loadErr); else { edits.push({ op: 'set_backend', lang, code }); const tail = out.replace(/```[\s\S]*?```/g, '').replace(/\s+/g, ' ').trim(); if (tail) say = tail.slice(0, 220); }
+            } else if (out) { notes.push('專家沒有給出完整的後端程式（要有一個程式碼區塊）'); say = out.replace(/\s+/g, ' ').trim().slice(0, 220); }
+        }
+        if (c.frontend || imgDesc) {
+            status('修改頁面…'); const now = FaWebEdit.applyEdits(spec, edits).spec; const P = FaWebEdit.editPrompt(now, want, imgDesc ? '使用者附了參考圖，內容描述如下（請照它的版面、文字與顏色做）：\n' + imgDesc : '');
+            try { const out = await this._callSimpleCompletion(P.user, { systemPrompt: P.system, maxTokens: 8000, temperature: 0.2 }); const pr = FaWebEdit.parseEditsReply(String(out || '')); if (pr.ok) { pr.edits.forEach((e) => edits.push(e)); if (pr.say) say = say ? say + '；' + pr.say : pr.say; if (pr.dropped) notes.push('有 ' + pr.dropped + ' 個動作不在可做的清單裡，已略過'); } else if (!edits.length) say = '我沒辦法把這句話變成可以做的修改，換個說法試試，或直接在「程式碼」分頁改。'; }
+            catch (e) { if (!edits.length) say = 'AI 這次沒有回應（' + String((e && e.message) || e).slice(0, 80) + '）。可以直接在「程式碼」分頁改。'; }
+        }
+        return { say, edits, notes };
+    }
+    // 編輯器要的功能（見 webedit_ui.js 開頭的說明）
+    _webeditHost(id) {
+        const self = this; const run = () => (self._weRuns && self._weRuns.get(id)) || null; const dec = (b) => { try { return new TextDecoder().decode(b); } catch (_) { return ''; } };
+        return {
+            palette: () => ({ dark: !self._isLightTheme() }),
+            start: (iframe, spec) => self._webeditStart(id, iframe, spec),
+            stop: () => self._webeditStop(id),
+            request: async (rq) => { const r = run(); if (!r || !r.hub) throw new Error('目前沒有後端在執行'); let url; try { url = new URL(rq.url || '/', 'http://mock.local').href; } catch (_) { url = 'http://mock.local/'; } const res = await r.hub.http({ method: String(rq.method || 'GET').toUpperCase(), url, headers: rq.headers || [], body: rq.body != null ? new TextEncoder().encode(String(rq.body)).buffer : null }); return { status: res.status, statusText: res.statusText, headers: res.headers, body: dec(res.body) }; },
+            log: () => { const r = run(); return r && r.hub ? { calls: r.hub.calls || [], console: r.hub.consoleLogs || [] } : { calls: [], console: [] }; },
+            db: async (op, args) => { const r = run(); const name = r && r.hub ? r.hub.name : self._weMockName(id); if (!['list', 'get', 'set', 'delete', 'clear'].includes(op)) throw new Error('不支援的操作'); return await self._mockStoreOp(name, 'db.' + op, args || []); },
+            exportBackend: async (target) => { const st = await self._weLoad(id); const be = st && (self._weSpecs.get(id) || st).spec && (self._weSpecs.get(id) || st).spec.backend; if (!be || be.lang !== 'js') throw new Error('只有 JS 後端可以匯出部署檔'); const files = __faMockBuildExport(target, be.code, self._weMockName(id)); return { files: Object.keys(files).map((p) => ({ name: target + '/' + p, content: files[p] })), note: '匯出的檔案沒有在真實的 ' + (target === 'node' ? 'Node' : 'Cloudflare') + ' 執行過；Cloudflare 的 WebSocket 需要 Durable Objects，只提供骨架' }; },
+            save: (state) => { try { const sp = state.states[state.ptr].spec; self._weStore(id, sp, state); } catch (_) { /* 狀態壞了就不存 */ } },
+            ask: (rq) => self._webeditAsk(rq),
+            download: (blob, name, mime) => self.generateAndDeliverFile(blob, name, mime || blob.type),
+            regenerate: (prompt) => self._webeditOpen({ request: prompt }),
+            polish: (self.advancedSettings && self.advancedSettings.offlineMode) ? null : (async (text) => { const out = await self._callSimpleCompletion('把下面這段「網站專案的描述」整理成清楚、簡潔、可以直接貼給網頁編輯器重做同一個網站的指示（保留所有檔名、路由與設定，不要新增沒有的內容，只回整理後的文字）：\n\n' + text, { systemPrompt: '你是網站設計助手，只回整理後的描述文字。', maxTokens: 900, temperature: 0.2 }); return String(out || '').trim(); }),
+        };
+    }
+    // 工具／斜線指令的入口：starter（起手式）、spec（整份描述）、request（用一句話描述要做什麼，AI 先做出第一版）；回傳一個放在對話裡的編輯器
+    async _webeditOpen(a) {
+        a = a || {}; const notes = []; let spec = null; let specIn = a.spec; if (typeof specIn === 'string') { try { specIn = JSON.parse(specIn); } catch (_) { specIn = null; } }
+        if (a.starter) { spec = FaWebEdit.starter(String(a.starter)); if (!spec) return { ok: false, error: '沒有這個起手式：' + a.starter, starters: FaWebEdit.listStarters().map((t) => t.id + '（' + t.label + '）') }; notes.push('從起手式開始'); }
+        else if (specIn && typeof specIn === 'object') { const v = FaWebEdit.validate(specIn); spec = v.spec; v.problems.forEach((p) => notes.push(p)); }
+        else if (a.id) { const cur = await this._weLoad(String(a.id)); if (!cur) return { ok: false, error: '找不到這個網頁專案：' + a.id }; this._wePushEditor(cur.id); return { ok: true, id: cur.id, note: '編輯器已經放在對話裡了。' }; }
+        else spec = FaWebEdit.defaults();
+        if (a.title) spec.title = String(a.title).slice(0, 80);
+        const request = String(a.request || '').trim();
+        if (request && !a.id) { const ans = await this._webeditAsk({ text: request, images: [], spec }); const r = FaWebEdit.applyEdits(spec, ans.edits || []); spec = r.spec; (ans.notes || []).forEach((n) => notes.push(n)); (r.rejected || []).forEach((x) => notes.push('✗ ' + x.op + '：' + x.error)); if (ans.say) notes.push(ans.say); if (!r.applied.length && !a.starter && !specIn) notes.push('這次沒有做出任何內容（可以在編輯器裡用對話繼續）'); }
+        const id = this._weStore(null, spec, null); this._wePushEditor(id);
+        return { ok: true, id, summary: FaWebEdit.describe(spec), notes, next: '編輯器已經放在對話裡（有預覽、程式碼、後端三個分頁與 AI 對話），告訴使用者可以直接在裡面繼續改；不要再把程式碼貼到對話裡。' };
+    }
+    _wePushEditor(id, lead) {
+        let payload = { id }; try { const cur = this._weSpecs && this._weSpecs.get(id); const js = cur && cur.spec ? JSON.stringify(cur.spec) : ''; if (js && js.length <= 12000) payload.spec = cur.spec; } catch (_) { /* 太大就只放 id */ }
+        this._pushAssistantMessage((lead || '🌐 網頁編輯器：預覽、程式碼、模擬後端三個分頁，右邊用對話修改（頁面我直接改，後端會請程式設計專家做並先測過）；每一步都能復原，進度會保留。') + '\n\n```fa-webedit\n' + JSON.stringify(payload) + '\n```', null); try { this._persistChatHistory(); this._renderMessageHistory(); } catch (_) { /* */ }
+    }
+    _mountWebEditors(mdDiv) {
+        if (typeof FaWebEditUI === 'undefined' || !FaWebEditUI || !FaWebEditUI.mount) return; this._weEditors = this._weEditors || new Map();
+        mdDiv.querySelectorAll('pre > code.language-fa-webedit').forEach((code) => {
+            let ref = null; try { ref = JSON.parse(code.textContent); } catch (_) { /* */ } if (!ref || !ref.id) return; let el = this._weEditors.get(ref.id);
+            if (!el) {
+                el = document.createElement('div'); el.textContent = '載入網頁編輯器…'; el.style.cssText = 'padding:8px;opacity:.7'; this._weEditors.set(ref.id, el);
+                this._weLoad(ref.id).then((cur) => {
+                    if (!cur && ref.spec && typeof ref.spec === 'object') { const v = FaWebEdit.validate(ref.spec).spec; this._weStore(ref.id, v, null); cur = { id: ref.id, spec: v, state: null }; }
+                    if (!cur) { el.textContent = '⚠️ 找不到這個網頁專案的編輯進度（可能被快取清掉了），請重新做一個。'; el.style.opacity = '1'; this._weEditors.delete(ref.id); return; }
+                    const node = FaWebEditUI.mount({ id: ref.id, state: cur.state, spec: cur.spec, host: this._webeditHost(ref.id), W: FaWebEdit }); el.textContent = ''; el.style.cssText = ''; el.appendChild(node); el._we = node._we;
+                }).catch((e) => { el.textContent = '⚠️ 開啟失敗：' + String((e && e.message) || e); el.style.opacity = '1'; this._weEditors.delete(ref.id); });
+                if (this._weEditors.size > 12) { const k = this._weEditors.keys().next().value; const old = this._weEditors.get(k); try { if (old && old._we) old._we.destroy(); } catch (_) { /* */ } this._weEditors.delete(k); }
+            }
+            code.parentElement.replaceWith(el);
+        });
+    }
+
     // ===== 教育文書（學習單）：FaWorksheet 排版 → pdfmake 向量 PDF／PNG／HTML =====
     // 程式先讀請求（FaWorksheet.parseRequest）→ 有參考圖片才問視覺模型（只回一小段 JSON，程式檢查）→ 排版 → 三種輸出；調整走封閉的編輯動作。
     async _wsEnsurePdf() { await _faLoadScriptOnce(FA_ASSET_URLS.pdfmake); await _faLoadScriptOnce(FA_ASSET_URLS.pdfmakeFonts); await _faEnsureCjkFontRegistered(); }
@@ -47798,10 +48384,17 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const cur = await this._wsLoadSpec(id); let st = cur && cur.state; if (st && Array.isArray(st.states)) { st = { v: 1, ptr: st.states.length, states: st.states.slice(0, (st.ptr | 0) + 1).concat([{ spec, summary: summary || '由對話修改', text: '', kind: 'chat', t: Date.now() }]), log: st.log || [] }; st.ptr = st.states.length - 1; } else st = null;
         this._wsStoreSpec(spec, id, st);
     }
+    // 使用者自己的範本（存成範本）：localStorage 一份陣列，內建範本不在這裡
+    _wsUserTemplates() { try { const a = JSON.parse(localStorage.getItem('fa_worksheet_templates') || '[]'); return Array.isArray(a) ? a.filter((x) => x && x.id && x.spec) : []; } catch (_) { return []; } }
+    _wsSaveUserTemplate(label, spec) { const t = FaWorksheet.makeUserTemplate(label, spec); const all = this._wsUserTemplates().concat([t]).slice(-40); try { localStorage.setItem('fa_worksheet_templates', JSON.stringify(all)); } catch (_) { /* 存不了就算了 */ } return t; }
+    _wsDeleteUserTemplate(id) { try { localStorage.setItem('fa_worksheet_templates', JSON.stringify(this._wsUserTemplates().filter((x) => x.id !== id))); } catch (_) { /* */ } }
     // 編輯器要的功能（見 worksheet_ui.js 開頭的說明）
     _worksheetEditorHost(id) {
         const self = this;
         return {
+            templates: () => self._wsUserTemplates(),
+            saveTemplate: (name, spec) => self._wsSaveUserTemplate(name, spec),
+            deleteTemplate: (tid) => self._wsDeleteUserTemplate(tid),
             palette: () => ({ dark: !self._isLightTheme() }),
             download: (blob, name, mime) => self.generateAndDeliverFile(blob, name, mime || blob.type),
             pdf: async (spec) => { await self._wsEnsurePdf(); const pm = FaWorksheet.toPdfmake(FaWorksheet.layout(spec)); (function clean(n) { if (Array.isArray(n)) n.forEach(clean); else if (n && typeof n === 'object' && typeof n.text === 'string') n.text = _faSanitizePdfText(n.text); })(pm.content); return await new Promise((res, rej) => { try { window.pdfMake.createPdf(pm).getBlob(res); } catch (e) { rej(e); } }); },
@@ -47862,16 +48455,18 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         a = a || {}; const notes = []; let ref = null; const text = String(a.request || '');
         let refId = String(a.reference_file_id || '').trim(); if (!refId) { const att = FaRecipe.parseAttachments(text).filter((x) => FaRecipe.kindOf(x.filename) === 'image')[0]; if (att) refId = att.id; }
         if (refId) ref = await this._wsReference(refId, notes);
-        let res;
+        let res; const tplId = String(a.template || '').trim(); const tpl = tplId ? FaWorksheet.templateById(tplId, this._wsUserTemplates()) : null;
+        if (tplId && !tpl) return { ok: false, error: '沒有這個範本：' + tplId, templates: FaWorksheet.listTemplates(this._wsUserTemplates()).map((t) => t.id + '（' + t.label + '）') };
         let specIn = a.spec; if (typeof specIn === 'string') { try { specIn = JSON.parse(specIn); } catch (_) { specIn = null; } }
+        if (tpl && !specIn && (!text.trim() || tpl.spec || tplId === 'blank' || tplId === 'draw_area')) { const sp = FaWorksheet.templateSpec(tplId, this._wsUserTemplates()); if (sp) specIn = sp; notes.push('從範本「' + tpl.label + '」開始'); }
         if (specIn && typeof specIn === 'object') { const v = FaWorksheet.validate(specIn); res = { ok: true, spec: v.spec, notes: v.problems, questions: [] }; if (ref && ref.ok) { const m = FaWorksheet.mergeRef(res.spec, ref); res.spec = m.spec; res.notes = res.notes.concat(m.notes); } }
         else {
-            if (!text.trim()) return { ok: false, error: '需要 request（使用者要的學習單，原話）或 spec' };
-            res = FaWorksheet.parseRequest(text, { reference: ref && ref.ok ? ref : null });
+            if (!text.trim()) return { ok: false, error: '需要 request（使用者要的學習單，原話）、template（範本）或 spec' };
+            res = FaWorksheet.parseRequest(text, { reference: ref && ref.ok ? ref : null, template: tpl && tpl.example ? tplId : undefined });
             if (!res.ok) return { ok: false, error: res.error, hint: '問使用者要做哪一種；或用 worksheet_topic({"topic":"format"}) 看格式、自己組 spec 再呼叫一次' };
             if (ref && ref.ok && ref.title && !/標題|title/i.test('')) { /* 標題照範例的寫法就好，不覆蓋 */ }
         }
-        if (!res.spec.blocks.length) return { ok: false, error: '學習單裡沒有任何有效的區塊：' + (res.notes || []).join('；'), hint: '用 worksheet_topic({"topic":"format"}) 看區塊種類，或直接用 request 描述要做哪一種' };
+        if (!res.spec.blocks.length && !tpl) return { ok: false, error: '學習單裡沒有任何有效的區塊：' + (res.notes || []).join('；'), hint: '用 worksheet_topic({"topic":"format"}) 看區塊種類，或直接用 request 描述要做哪一種' };
         const id = this._wsStoreSpec(res.spec); const out = await this._wsRenderAndDeliver(res.spec, res.spec.title); this._wsPushEditor(id);
         return { ok: !!(out.files.pdf || out.files.png), worksheet_id: id, editor: '對話裡已經放了編輯器（使用者可以直接在裡面繼續改）', files: out.files, summary: FaWorksheet.describe(res.spec), notes: notes.concat(res.notes || []), questions: (res.questions || []).map((q) => ({ id: q.id, q: q.q, options: q.options, default: q.options[q.default] })), problems: out.problems.length ? out.problems : undefined, next: '把做出了什麼與哪些是預設值告訴使用者；要改就用 worksheet_adjust（edits），不要整份重做。' };
     }
@@ -78378,6 +78973,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     this._wireSendSampleLinks(mdDiv);
                     try { this._mountDataViewers(mdDiv); } catch (e) { console.warn('資料檢視器掛載失敗', e); }
                     try { this._mountWorksheetEditors(mdDiv); } catch (e) { console.warn('學習單編輯器掛載失敗', e); }
+                    try { this._mountWebEditors(mdDiv); } catch (e) { console.warn('網頁編輯器掛載失敗', e); }
                 } catch (_) {
                     mdDiv.textContent = answerText;
                 }

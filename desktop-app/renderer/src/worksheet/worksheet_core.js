@@ -518,14 +518,40 @@
     var o = e && e.op; var t = { set_title: function () { return '標題改成「' + e.text + '」'; }, set_subtitle: function () { return '說明改成「' + e.text + '」'; }, set_counts: function () { return '顆數改成 ' + (e.counts || []).join('、'); }, set_rows: function () { return '串數改成 ' + e.n; }, set_color: function () { return '第 ' + e.count + ' 串的顏色改成 ' + e.color; }, set_base_color: function () { return '金珠顏色改成 ' + e.color; }, set_answer: function () { return (e.show === true ? '附上答案' : e.show === false ? '答案留白' : '') + (e.side ? '答案線放' + (e.side === 'below' ? '下方' : e.side === 'right' ? '右側' : '：無') : '') + (e.line === false ? '拿掉答案線' : ''); }, set_page: function () { return '紙張：' + [e.size, e.orient === 'landscape' ? '橫式' : (e.orient === 'portrait' ? '直式' : '')].filter(Boolean).join(' '); }, set_size: function () { return '珠子大小 ' + Math.round(e.scale * 100) + '%'; }, set_header: function () { return '抬頭欄位調整'; }, add_block: function () { return '新增一個「' + (e.block && e.block.type) + '」區塊'; }, remove_block: function () { return '刪掉第 ' + (e.index + 1) + ' 個區塊'; }, set_block: function () { return '調整第 ' + (e.index + 1) + ' 個區塊（' + Object.keys(e.patch || {}).join('、') + '）'; }, move_block: function () { return '把第 ' + (e.index + 1) + ' 個區塊移到第 ' + (e.to + 1) + ' 個'; } };
     return t[o] ? t[o]() : String(o || '');
   }
+  // ───────────────────────── 範本（template）：每一種學習單都是一個範本 ─────────────────────────
+  // 內建範本：id、名稱、說明、分類、範例請求（程式讀範例就得到一份可以直接改的學習單）、辨識用的字。
+  // 使用者自己的範本（存成範本）由呼叫端保管：{ id:'user_…', label, desc, spec, createdAt }，用法跟內建的一樣。
+  var TEMPLATES = [
+    { id: 'blank', label: '空白學習單', desc: '只有抬頭（標題、姓名、日期），從零開始用對話或屬性面板加區塊。', group: '空白', keywords: '空白|從零|自己做', example: null },
+    { id: 'draw_area', label: '自由繪圖區', desc: '一個大的繪圖區域（虛線框），用對話畫圓、方框、三角形、線、文字。', group: '空白', keywords: '繪圖|畫圖|自由畫', example: null },
+    { id: 'bead_rows', label: '串珠：10又幾', desc: '每一串一整串金珠加幾顆彩色珠（蒙特梭利標準色），右邊橫線填數字。', group: '數學', keywords: '串珠|金色珠|彩色珠|10又|又幾', example: '串珠 10又幾 做8串，右邊填數字' },
+    { id: 'number_bond', label: '數的組成（二元樹）', desc: '每格一直排積木＋一棵樹：樹根紅圈、兩個藍圈兒子寫下拆成哪兩個數。', group: '數學', keywords: '二元樹|樹狀|樹根|兒子|數的組成|分解|積木', example: '數的組成 每個格子都是5個積木，用二元樹表達，顯示1+4,2+3,3+2,4+1' },
+    { id: 'count_rows', label: '數一數', desc: '每排若干個圖形（圓、方塊、星星），數一數寫在右邊橫線上。', group: '數學', keywords: '數一數|數數看|幾個', example: '數一數 3 5 2 7 4 6 星星' },
+    { id: 'ten_frames', label: '十格框', desc: '十格框裡有幾個點，寫下數字。', group: '數學', keywords: '十格|ten frame', example: '十格框 4 7 9 3 6 8' },
+    { id: 'number_line', label: '數線', desc: '一條數線，有些數字挖空讓學生填。', group: '數學', keywords: '數線|number line', example: '數線 0到20' },
+    { id: 'equations', label: '加減法算式', desc: '一頁算式，兩欄，可以指定範圍與題數（加法或減法）。', group: '數學', keywords: '加法|減法|算式|計算題|練習題', example: '加法練習 20以內 12題' }
+  ];
+  function templateById(id, user) { var t = TEMPLATES.filter(function (x) { return x.id === id; })[0]; if (t) return t; return (user || []).filter(function (x) { return x && x.id === id; })[0] || null; }
+  // 範本 → 一份可以直接編輯的 spec（內建：讀範例請求；使用者範本：存的 spec）；找不到回 null
+  function templateSpec(id, user) {
+    var t = templateById(id, user); if (!t) return null;
+    if (t.spec) return validate(t.spec).spec;
+    if (id === 'blank') return validate({ title: '學習單', blocks: [] }).spec;
+    if (id === 'draw_area') return validate({ title: '', header: { name: true, date: true }, blocks: [{ type: 'draw', height: 200, items: [{ shape: 'rect', x: 1, y: 1, w: 98, h: 98, fill: 'none', stroke: '#9AA0A6', sw: 0.4, rx: 1 }] }] }).spec;
+    var r = parseRequest(t.example); return r.ok ? r.spec : null;
+  }
+  function listTemplates(user) { return TEMPLATES.map(function (t) { return { id: t.id, label: t.label, desc: t.desc, group: t.group, builtin: true, example: t.example }; }).concat((user || []).filter(function (x) { return x && x.id && x.spec; }).map(function (x) { return { id: x.id, label: x.label || '我的範本', desc: x.desc || '', group: '我的範本', builtin: false, example: null }; })); }
+  // 把目前這份存成使用者範本（只存描述；標題、各區塊的設定都留著，之後套用再改）
+  function makeUserTemplate(label, spec, now) { var v = validate(spec).spec; return { id: 'user_' + (now || Date.now()).toString(36) + Math.random().toString(36).slice(2, 5), label: str(label || v.title || '我的範本', 40), desc: describe(v).slice(1).join('；').slice(0, 160), spec: v, createdAt: now || Date.now() }; }
   var TOPICS = {
     draw: '自由繪圖區塊 draw（沒有現成的區塊種類時用它自己畫）：{type:"draw", height:毫米（預設 60）, items:[…]}；座標一律是區塊寬高的百分比（0～100），半徑／寬高也是百分比（以寬高較小的一邊為準）。items 的 shape：circle{x,y,r,fill,stroke,sw}、rect{x,y,w,h,fill,stroke,sw,rx}、line{x1,y1,x2,y2,stroke,sw,dash}、poly{pts:[[x,y],…],fill,stroke}、text{x,y,text,size,anchor:start|middle|end,color,bold}。fill／stroke 可以是 #RRGGBB、顏色名稱或 none。一個區塊最多 300 個圖形；重複的東西（一排方框、一棵樹）請排成多個 draw 區塊或用現成區塊。有現成的就優先用現成的（見 format）。',
     format: '學習單描述（JSON）：{title, subtitle, header:{name,date,school,score}, page:{size:"A4|A5|Letter", orient:"portrait|landscape", margin:mm}, blocks:[區塊…]}。區塊 type：bead_rows｛base:10, counts:[1..8], colors:{顆數:"#RRGGBB"}, baseColor, answer:{side:"right|below|none", line, show}, size｝、count_rows｛counts, shape:"circle|square|star", color, answer｝、equations｛kind:"add|sub", max, count, columns 或 items:["3 + 4 = ____"]｝、ten_frames｛counts:[0..10], color, answer, columns｝、number_line｛from, to, blanks:[數字]｝、text｛lines:[…], size, align, bold｝、number_bond｛total, cells:[{a,b}], cols, showNumbers, fill｝（數的組成：每格一直排積木＋二元樹）、draw｛height, items｝（自由繪圖，座標是百分比，見 topic=draw）、spacer｛mm｝。現成區塊的座標與文字大小程式自己排，不要寫座標。',
     edits: '調整用 worksheet_adjust 的 edits（一次可以多個）：{op:"set_title",text}、{op:"set_subtitle",text}、{op:"set_counts",counts:[…]}、{op:"set_rows",n}、{op:"set_color",count:3,color:"#F2D4CF"}、{op:"set_base_color",color}、{op:"set_answer",show:true|false,side:"right|below|none",line:true|false}、{op:"set_page",size,orient,margin}、{op:"set_size",scale:0.4~1.4}、{op:"set_header",name,date,score}、{op:"add_block",block:{…},index}、{op:"remove_block",index}、{op:"set_block",index,patch:{…該區塊的欄位，例如 base、counts、shape、kind、max、count、columns、from、to、blanks、lines}}、{op:"move_block",index,to}。',
     reference: '有參考圖片時：worksheet_make 帶 reference_file_id（上傳圖片的 file_id）。視覺模型只被問一小段 JSON（每串的顆數與顏色、標題、金色珠的顏色），程式檢查後合併進學習單；看不出來的欄位用預設，不會亂猜。顏色不對就用 set_color 一個一個改。',
     number_bond: '數的組成（二元樹）區塊 number_bond：{type:"number_bond", total:5（每格幾個積木，2～12）, cells:[{a:1,b:4},{a:2,b:3},{a:null,b:null}（空白格）], cols:1～3, showNumbers:true（兒子圈裡寫數字）, fill:false（教師版：積木上色、樹根寫總數）, rootColor:"#D93025", childColor:"#2F6FD0", cubeColors:["#F6A33B","#E5383B"]}。每格是一直排積木＋一棵樹（上面紅圈、下面左右兩個藍圈）。調整用 set_block 的 patch（例如 patch:{cells:[…]}）。',
+    templates: '範本：每一種學習單都是一個範本。內建：' + TEMPLATES.map(function (t) { return t.id + '（' + t.label + '）'; }).join('、') + '。用法：worksheet_make({template:"id"}) 從範本開始（可以再帶 request 改細節）；編輯器工具列的「📋 範本」可以從範本開始、把目前這份「存成範本」（之後和內建的一樣用）。現成範本做不到的，用 draw 自由繪圖區塊（見 topic=draw）。',
     colors: '串珠標準色（蒙特梭利）：1 紅 #C8174F、2 綠 #8CC63F、3 粉 #F2D4CF、4 黃 #F5E51E、5 藍 #3F87D4、6 紫 #5E2C79、7 白 #FFFFFF、8 桃紅 #E0457B、9 深藍 #274B8F，金色（10）#E9B22E。'
   };
   return { PAGES: PAGES, LIMITS: LIMITS, BEAD_COLORS: BEAD_COLORS, GOLD: GOLD, OPS: OPS, TOPICS: TOPICS, defaults: defaults, beadBlock: beadBlock, validate: validate, layout: layout, toSvg: toSvg, toHtml: toHtml, toPdfmake: toPdfmake, drawCanvas: drawCanvas, textWidth: textWidth,
-    detectTemplate: detectTemplate, parseRequest: parseRequest, resolveQuestions: resolveQuestions, refPrompt: refPrompt, refFromReply: refFromReply, mergeRef: mergeRef, applyEdits: applyEdits, describe: describe, hex: hex, makeEquations: makeEquations, bondCells: bondCells, hitTest: hitTest, parseEditRequest: parseEditRequest, editPrompt: editPrompt, parseEditsReply: parseEditsReply, specToPrompt: specToPrompt, editWords: editWords };
+    detectTemplate: detectTemplate, parseRequest: parseRequest, resolveQuestions: resolveQuestions, refPrompt: refPrompt, refFromReply: refFromReply, mergeRef: mergeRef, applyEdits: applyEdits, describe: describe, hex: hex, makeEquations: makeEquations, bondCells: bondCells, TEMPLATES: TEMPLATES, templateById: templateById, templateSpec: templateSpec, listTemplates: listTemplates, makeUserTemplate: makeUserTemplate, hitTest: hitTest, parseEditRequest: parseEditRequest, editPrompt: editPrompt, parseEditsReply: parseEditsReply, specToPrompt: specToPrompt, editWords: editWords };
 });
