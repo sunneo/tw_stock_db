@@ -32,12 +32,12 @@
 
 ## 入口
 
-- 指令：`/user-guide`、`/design-guide`（`fap:`、`wiki:`、`format:`、`template:`、`lang:`、`level:`、`analysis`、`noai`、`version:`）。`publish:` 不支援（不發佈到 wiki，用檔案卡片取回）。
+- 指令：`/user-guide`、`/design-guide`（`fap:`、`wiki:`、`format:`、`template:`、`lang:`、`level:`、`analysis`、`noai`、`version:`）。
 - 工具：`docgen_user_guide`、`docgen_design_guide`、`docgen_list_templates`；領域 `docgen`。不做 wiki-to-pdf 工具。
 
 ## 還沒做
 
-- 使用手冊與設計文件一律不碰藏書閣（Knowledge Inventory），也沒有相關選項（使用者指示）。
+- 使用手冊與設計文件一律不碰Knowledge Inventory，也沒有相關選項（使用者指示）。
 - 透鏡共 12 種（建置、進入點、命令列、設定、路由、通訊協定、資料、硬體、效能與並行、覆寫與客製、重點項目、相依套件）；通訊協定、效能、覆寫三種只記「第一個證據＋幾個檔案提到」，不逐行列。
 - 圖只有頂層目錄的 Mermaid（箭頭關係需人工補）。
 - PDF／DOCX 的圖以原始碼文字呈現，沒有轉成圖片。
