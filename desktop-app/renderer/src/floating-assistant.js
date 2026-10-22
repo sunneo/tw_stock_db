@@ -17133,6 +17133,97 @@ const holder = {};
 return holder.FaNvidiaImage;
 })();
 /* NVIMG-END */
+/* LOCALSD-BEGIN */
+const FaLocalSd = (function () {
+const holder = {};
+(function (module, self) {
+/* 本機小模型生圖（UMD，純函式）：在使用者自己的電腦上用小型 Stable Diffusion 一步生圖，不連線上服務。
+ * 模型：SDXS-512-DreamShaper（從 DreamShaper 8 蒸餾，一步取樣、不需要 guidance，512×512，OpenRAIL++-M 授權）。兩個版本，依這台機器選：
+ *   - GPU 版（fp16，約 880 MB）：onnxruntime-web 的 WebGPU，需要顯示卡支援 shader-f16；
+ *   - CPU 版（int8，約 1.1 GB）：onnxruntime-web 的 wasm（CPU），MatMul 權重 int8、Conv 保持 fp32——沒有 WebGPU／沒有 f16 的電腦用這個。
+ * 取樣（兩版相同，一步）：sigma = 14.6146…；x = randn(1,4,64,64)×sigma；eps = unet(x/√(sigma²+1), t=999, text_encoder(tokens))；x0 = x − sigma×eps；
+ *   影像 = vae_decoder(x0)／2 + 0.5。
+ * 這個檔案只有「不碰網路、不碰模型」的部分：模型清單與檔案大小、選哪個版本、取樣的數學、亂數、張量轉圖片、錯誤白話說明。下載、載入、執行在 floating-assistant 裡。 */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaLocalSd = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var SIGMA_MAX = 14.614646911621094, TIMESTEP = 999, SIZE = 512, LATENT = 64, MAXLEN = 77, PAD_ID = 49407, BOS_ID = 49406;
+  var HF = 'https://huggingface.co/';
+  // 檔案位元組數與版本（commit）是釘住的：下載完核對大小，不一樣就不用
+  var MODELS = [
+    { id: 'sdxs-512-webgpu', device: 'webgpu', ep: 'webgpu', label: 'SDXS-512（GPU 版，fp16）', repo: 'skillsafeai/sdxs-512-dreamshaper-onnx-webgpu', rev: 'b23bf8f4f809a0beb6d095bf52b5854e0b66caef', needsF16: true,
+      files: [{ name: 'text_encoder.onnx', role: 'text', bytes: 246275486 }, { name: 'unet.onnx', role: 'unet', bytes: 631766742 }, { name: 'vae_decoder.onnx', role: 'vae', bytes: 2467568 }] },
+    { id: 'sdxs-512-cpu-int8', device: 'cpu', ep: 'wasm', label: 'SDXS-512（CPU 版，int8）', repo: 'lequangky/tipsy-sdxs-512-int8', rev: '41203dc02882252d74bb683dedc9bfde08641b55', needsF16: false,
+      files: [{ name: 'text_encoder.onnx', role: 'text', bytes: 237811651 }, { name: 'unet.onnx', role: 'unet', bytes: 873388448 }, { name: 'vae_decoder.onnx', role: 'vae', bytes: 4912820 }] }
+  ];
+  var TOKENIZER = { repo: 'Xenova/clip-vit-base-patch32', note: 'CLIP 分詞器（跟 Stable Diffusion 1.x 的文字編碼器同一套詞表）' };
+  var LICENSE = { name: 'CreativeML Open RAIL++-M', url: 'https://huggingface.co/spaces/CompVis/stable-diffusion-license',
+    note: '這個模型的授權（CreativeML Open RAIL++-M）有使用限制：不得用來產生傷害未成年人的內容、未經同意的真人影像、誹謗、騷擾或任何違法用途；這些限制也適用於你用它畫出來的圖。' };
+
+  function byId(id) { for (var i = 0; i < MODELS.length; i++) if (MODELS[i].id === id) return MODELS[i]; return null; }
+  function urlOf(model, file) { return HF + model.repo + '/resolve/' + model.rev + '/' + file; }
+  function totalBytes(model) { return model.files.reduce(function (a, f) { return a + f.bytes; }, 0); }
+  function fmtBytes(n) { n = Number(n) || 0; return n >= 1e9 ? (n / 1e9).toFixed(2) + ' GB' : Math.round(n / 1e6) + ' MB'; }
+
+  // 這台機器該用哪個版本。env: { hasGpu, f16 }（WebGPU 轉接器有沒有、支不支援 shader-f16）；pref: auto｜webgpu｜cpu
+  function pickModel(env, pref) {
+    env = env || {}; pref = pref === 'webgpu' || pref === 'cpu' ? pref : 'auto'; var notes = [], m;
+    if (pref === 'cpu') { m = byId('sdxs-512-cpu-int8'); notes.push('設定指定用 CPU 版。'); }
+    else if (pref === 'webgpu') {
+      if (!env.hasGpu) return { ok: false, reason: '設定指定用 GPU 版，但這個環境沒有 WebGPU（瀏覽器或顯示卡不支援）。改成「自動」或「CPU」就能用 CPU 版。' };
+      m = byId('sdxs-512-webgpu'); if (!env.f16) notes.push('這張顯示卡不支援 f16（shader-f16），GPU 版可能載入失敗；失敗時改用 CPU 版。');
+    } else if (env.hasGpu && env.f16) m = byId('sdxs-512-webgpu');
+    else { m = byId('sdxs-512-cpu-int8'); notes.push(env.hasGpu ? '顯示卡不支援 f16，改用 CPU 版。' : '沒有 WebGPU，改用 CPU 版。'); }
+    if (m.device === 'cpu') notes.push('CPU 版比較慢（用 CPU 一步一步算，單執行緒時可能要好幾分鐘）；第一次要下載約 ' + fmtBytes(totalBytes(m)) + '。');
+    return { ok: true, model: m, ep: m.ep, notes: notes };
+  }
+
+  // 請求整理：圖片大小、步數是這個模型固定的（512×512、一步），不照使用者給的；seed 沒給就隨機
+  function plan(a) {
+    a = a || {}; var prompt = String(a.prompt == null ? '' : a.prompt).trim(); if (!prompt) return { ok: false, error: '要畫什麼？請給 prompt（英文效果較好）。' };
+    var notes = []; var w = Number(a.width), h = Number(a.height); if ((w && w !== SIZE) || (h && h !== SIZE)) notes.push('本機小模型固定畫 ' + SIZE + '×' + SIZE + '，沒有照你給的尺寸。');
+    if (a.steps && Number(a.steps) !== 1) notes.push('本機小模型是一步取樣，沒有照你給的步數。');
+    if (a.negative || a.negative_prompt) notes.push('這個模型不用 guidance，負面提示沒有作用。');
+    var seed = a.seed != null && a.seed !== '' && isFinite(Number(a.seed)) ? (Math.floor(Number(a.seed)) >>> 0) : (Math.floor(Math.random() * 4294967296) >>> 0);
+    return { ok: true, prompt: prompt.slice(0, 600), seed: seed, size: SIZE, steps: 1, notes: notes };
+  }
+
+  // 可重現的亂數（seed 一樣、圖就一樣）
+  function rng(seed) { var s = (seed >>> 0) || 1; return function () { s = (s + 0x6D2B79F5) >>> 0; var t = s; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+  function gaussian(seed, n) { var r = rng(seed), out = new Float32Array(n); for (var i = 0; i < n; i += 2) { var u = Math.max(r(), 1e-12), v = r(), m = Math.sqrt(-2 * Math.log(u)); out[i] = m * Math.cos(2 * Math.PI * v); if (i + 1 < n) out[i + 1] = m * Math.sin(2 * Math.PI * v); } return out; }
+  function initialLatent(seed) { var x = gaussian(seed, 4 * LATENT * LATENT); for (var i = 0; i < x.length; i++) x[i] *= SIGMA_MAX; return x; }
+  function scaleInput(x, sigma) { sigma = sigma == null ? SIGMA_MAX : sigma; var k = 1 / Math.sqrt(sigma * sigma + 1), out = new Float32Array(x.length); for (var i = 0; i < x.length; i++) out[i] = x[i] * k; return out; }
+  function denoise(x, eps, sigma) { sigma = sigma == null ? SIGMA_MAX : sigma; var out = new Float32Array(x.length); for (var i = 0; i < x.length; i++) out[i] = x[i] - sigma * eps[i]; return out; }
+
+  // 分詞結果補成固定長度（77）：太長截掉但保留結尾符號，太短用 PAD 補
+  function padIds(ids, len) { len = len || MAXLEN; var a = Array.prototype.slice.call(ids || []).map(Number); if (!a.length) a = [BOS_ID, PAD_ID]; if (a.length > len) { a = a.slice(0, len); a[len - 1] = PAD_ID; } while (a.length < len) a.push(PAD_ID); return a; }
+
+  // 解碼器的輸出（CHW、範圍 [-1,1]）→ RGBA 位元組
+  function toRgba(chw, w, h) {
+    w = w || SIZE; h = h || SIZE; var plane = w * h, out = new Uint8ClampedArray(plane * 4);
+    for (var i = 0; i < plane; i++) { for (var c = 0; c < 3; c++) { var v = (chw[c * plane + i] / 2 + 0.5) * 255; out[i * 4 + c] = v < 0 ? 0 : v > 255 ? 255 : Math.round(v); } out[i * 4 + 3] = 255; }
+    return out;
+  }
+  function imageStats(rgba) { var n = rgba.length / 4, sum = 0, mn = 255, mx = 0; for (var i = 0; i < n; i++) { var g = (rgba[i * 4] + rgba[i * 4 + 1] + rgba[i * 4 + 2]) / 3; sum += g; if (g < mn) mn = g; if (g > mx) mx = g; } return { mean: sum / n, min: mn, max: mx, flat: (mx - mn) < 3 }; }
+
+  // 執行失敗的白話說明（不是丟一串 ORT 的錯誤碼）
+  function explainError(err, model, env) {
+    var msg = String((err && err.message) || err || ''); model = model || {}; env = env || {};
+    if (/float16|fp16|f16|shader-f16/i.test(msg)) return 'GPU 版需要顯示卡支援 f16，這張不支援；到設定把裝置改成「CPU」就會用 CPU 版。（' + msg.slice(0, 100) + '）';
+    if (/out of memory|oom|allocation|memory access|Array buffer allocation|RangeError/i.test(msg)) return '記憶體不夠（模型需要約 ' + fmtBytes(totalBytes(model)) + '，載入時還要再多一些）。關掉其他吃記憶體的程式，或改用比較小的版本再試。（' + msg.slice(0, 100) + '）';
+    if (/webgpu|adapter|gpu device|createBuffer/i.test(msg)) return 'WebGPU 初始化失敗（' + msg.slice(0, 100) + '）。到設定把裝置改成「CPU」就會用 CPU 版。';
+    if (/fetch|network|Failed to fetch|NetworkError|HTTP|download/i.test(msg)) return '下載模型失敗（' + msg.slice(0, 100) + '）。檢查網路能不能連到 huggingface.co 後再試，已下載的部分會保留。';
+    return '本機生圖失敗：' + msg.slice(0, 200);
+  }
+
+  return { SIGMA_MAX: SIGMA_MAX, TIMESTEP: TIMESTEP, SIZE: SIZE, LATENT: LATENT, MAXLEN: MAXLEN, PAD_ID: PAD_ID, BOS_ID: BOS_ID, MODELS: MODELS, TOKENIZER: TOKENIZER, LICENSE: LICENSE, byId: byId, urlOf: urlOf, totalBytes: totalBytes, fmtBytes: fmtBytes, pickModel: pickModel, plan: plan, rng: rng, gaussian: gaussian, initialLatent: initialLatent, scaleInput: scaleInput, denoise: denoise, padIds: padIds, toRgba: toRgba, imageStats: imageStats, explainError: explainError };
+});
+
+}).call(null, undefined, holder);
+return holder.FaLocalSd;
+})();
+/* LOCALSD-END */
 /* ARTOUT-BEGIN */
 const FaArticleOutline = (function () {
 const holder = {};
@@ -33814,10 +33905,10 @@ class FloatingAssistant {
                     if (!raw) { const c = r._imageGenConfig(); r._pushAssistantMessage('🖼 可用的圖像生成模型（/image model=…）：\n' + FaNvidiaImage.MODELS.map((m) => '- ' + m.id + '：' + m.label).join('\n') + '\n\n目前預設：' + c.model + '；金鑰：' + (c.apiKey ? (c.keyFrom === 'default' ? '用內建預設' + (c.route === 'worker' ? '（經 Worker 轉送）' : '') : '已設定自己的金鑰') : '沒有可用的金鑰（進階設定 → 影音處理）') + '\n也可以直接填別的「廠商/模型名」。', null); }
                     else {
                         const a = {}; let prompt = raw;
-                        for (let guard = 0; guard < 6; guard++) { const m = /^(model|steps|seed|size|width|height|cfg|negative)=(\S+)\s*/i.exec(prompt); if (!m) break; const k = m[1].toLowerCase(), v = m[2]; prompt = prompt.slice(m[0].length); if (k === 'size') { const z = /^(\d+)[x×](\d+)$/i.exec(v); if (z) { a.width = +z[1]; a.height = +z[2]; } } else if (k === 'model') a.model = v; else if (k === 'cfg') a.cfg_scale = +v; else if (k === 'negative') a.negative_prompt = v; else a[k] = +v; }
+                        for (let guard = 0; guard < 6; guard++) { const m = /^(model|steps|seed|size|width|height|cfg|negative|provider)=(\S+)\s*/i.exec(prompt); if (!m) break; const k = m[1].toLowerCase(), v = m[2]; prompt = prompt.slice(m[0].length); if (k === 'size') { const z = /^(\d+)[x×](\d+)$/i.exec(v); if (z) { a.width = +z[1]; a.height = +z[2]; } } else if (k === 'model') a.model = v; else if (k === 'cfg') a.cfg_scale = +v; else if (k === 'negative') a.negative_prompt = v; else a[k] = +v; }
                         a.prompt = prompt;
                         r._pushAssistantMessage('🖼 畫圖中…（' + (a.model || r._imageGenConfig().model) + '）', null);
-                        const res = await r._nvidiaGenerateImage(a);
+                        const res = await r._generateImage(a);
                         if (!res.ok) r._pushAssistantMessage('⚠️ ' + res.error, null);
                         else r._pushAssistantMessage('✅ 畫好了（' + res.model + '，' + res.size + '，' + res.steps + ' 步，seed ' + res.images[0].seed + '，' + Math.round(res.duration_ms / 100) / 10 + ' 秒）' + (res.adjusted ? '\n參數調整：' + res.adjusted.join('；') : '') + '\n檔案：' + res.images[0].filename + '（可在簡報裡當圖片來源：' + res.client_file_url + '）', null);
                     }
@@ -34996,7 +35087,7 @@ class FloatingAssistant {
             // tw_stock_db客製: 2026-09-12——extract_audio輸出格式，預設mp3
             // （省persistentStorage空間，使用者要求）；改成'wav'要無損。
             extractAudioFormat: 'mp3',
-            imageGen: { apiKey: '', model: 'black-forest-labs/flux.1-schnell', customModel: '' }, // 圖像生成（NVIDIA 線上模型）：金鑰、選的模型、自己填的模型路徑
+            imageGen: { apiKey: '', model: 'black-forest-labs/flux.1-schnell', customModel: '', provider: 'auto', localDevice: 'auto' }, // 圖像生成（NVIDIA 線上模型）：金鑰、選的模型、自己填的模型路徑
             // tw_stock_db客製: 2026-09-12——text_to_speech預設語音代號（見
             // TTS_VOICES）。
             ttsDefaultVoice: TTS_DEFAULT_VOICE,
@@ -36383,7 +36474,7 @@ class FloatingAssistant {
             offlineToolBench: (() => { const out = {}; const src = raw.offlineToolBench && typeof raw.offlineToolBench === 'object' ? raw.offlineToolBench : {}; for (const m of FaVlm.textModels()) { const b = src[m.id]; if (!b || typeof b !== 'object' || !['good', 'fair', 'poor'].includes(b.rating)) continue; out[m.id] = { passed: Math.max(0, Math.floor(Number(b.passed) || 0)), total: Math.max(0, Math.floor(Number(b.total) || 0)), formatOk: Math.max(0, Math.floor(Number(b.formatOk) || 0)), rating: b.rating, label: String(b.label || '').slice(0, 80), at: Number(b.at) || 0, device: b.device === 'gpu' ? 'gpu' : 'cpu', ms: Math.max(0, Math.floor(Number(b.ms) || 0)), details: Array.isArray(b.details) ? b.details.slice(0, 12).map((d) => ({ id: String(d && d.id || '').slice(0, 24), ok: !!(d && d.ok), reason: String(d && d.reason || '').slice(0, 120) })) : [] }; } return out; })(),
             visionBackendPolicy: ['llm-first', 'offline-first', 'llm', 'offline'].includes(raw.visionBackendPolicy) ? raw.visionBackendPolicy : (raw.offlineVisionFallback === false ? 'llm' : 'llm-first'),
             extractAudioFormat: raw.extractAudioFormat === 'wav' ? 'wav' : 'mp3',
-            imageGen: (() => { const g = raw.imageGen || {}; return { apiKey: String(g.apiKey || '').trim().slice(0, 300), model: String(g.model || 'black-forest-labs/flux.1-schnell').trim().slice(0, 120), customModel: String(g.customModel || '').trim().slice(0, 120) }; })(),
+            imageGen: (() => { const g = raw.imageGen || {}; return { apiKey: String(g.apiKey || '').trim().slice(0, 300), model: String(g.model || 'black-forest-labs/flux.1-schnell').trim().slice(0, 120), customModel: String(g.customModel || '').trim().slice(0, 120), provider: ['online', 'local'].indexOf(g.provider) >= 0 ? g.provider : 'auto', localDevice: ['webgpu', 'cpu'].indexOf(g.localDevice) >= 0 ? g.localDevice : 'auto' }; })(),
             ttsDefaultVoice: TTS_VOICES.some(v => v.id === raw.ttsDefaultVoice) ? raw.ttsDefaultVoice : TTS_DEFAULT_VOICE,
             // tw_stock_db客製: 2026-09-14——這裡改成`!== false`（不是
             // `=== true`）：舊版settings沒有ttsApiEnabled這個欄位時
@@ -38499,10 +38590,10 @@ ${fnData.code}
             '用 NVIDIA 線上的圖像生成模型畫一張圖（FLUX.1 schnell 最快、FLUX.1 dev 品質高、FLUX.2 klein 小而快、Stable Diffusion 3 Medium…）。參數：prompt（要畫什麼，英文通常效果較好；中文需求請先自己翻成英文描述）、model（選填，預設用設定裡選的；格式「廠商/模型名」，例如 black-forest-labs/flux.1-schnell）、width／height（FLUX 要是 64 的倍數、256–2048，預設 1024；SD3 只收固定比例，會自動挑最接近的）、steps（schnell 最多 4；超出範圍會自動調整並在結果裡說明）、seed（同樣的 seed 可重現）、negative_prompt（只有 SD3 有）。回傳 file_id 與 client_file_url（可以直接當簡報的圖片來源 client-file/…），圖片已顯示在對話裡。沒有設定金鑰時會告訴使用者去哪裡填，不要自己編金鑰。',
             async function (rawArgs) {
                 let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
-                try { return JSON.stringify(await this._nvidiaGenerateImage(a)); }
+                try { return JSON.stringify(await this._generateImage(a)); }
                 catch (e) { return JSON.stringify({ ok: false, error: String((e && e.message) || e) }); }
             },
-            { type: 'object', properties: { prompt: { type: 'string', description: '要畫什麼（英文效果較好）' }, model: { type: 'string', description: '選填：廠商/模型名，例如 black-forest-labs/flux.1-schnell' }, width: { type: 'integer' }, height: { type: 'integer' }, steps: { type: 'integer' }, seed: { type: 'integer' }, cfg_scale: { type: 'number' }, negative_prompt: { type: 'string' } }, required: ['prompt'], additionalProperties: false }
+            { type: 'object', properties: { prompt: { type: 'string', description: '要畫什麼（英文效果較好）' }, provider: { type: 'string', enum: ['auto', 'online', 'local'], description: '選填：auto（預設，線上優先，失敗時用已下載的本機小模型）、online 只用線上、local 只用本機小模型（SDXS-512，固定 512×512，第一次要下載約 0.9–1.1 GB）' }, model: { type: 'string', description: '選填：廠商/模型名，例如 black-forest-labs/flux.1-schnell' }, width: { type: 'integer' }, height: { type: 'integer' }, steps: { type: 'integer' }, seed: { type: 'integer' }, cfg_scale: { type: 'number' }, negative_prompt: { type: 'string' } }, required: ['prompt'], additionalProperties: false }
         );
 
         // 長文章的目錄與分段閱讀：外面的 wiki、新聞、一整本小說、上傳的文件。先看目錄再挑章節讀，不用一直翻頁讀不完。
@@ -51937,6 +52028,125 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         if (/nvidia\.com/i.test(url)) return { apiKey: key, keyFrom: 'default', route: 'direct', base: FaNvidiaImage.BASE, model };
         return { apiKey: key, keyFrom: 'default', route: 'worker', base: url.replace(/\/v1$/i, '') + '/genai/', model };
     }
+    // ───── 本機小模型生圖（SDXS-512，一步取樣）：GPU 版（WebGPU，fp16）與 CPU 版（wasm，int8）；純函式在 FaLocalSd ─────
+    // 流程：判斷這台機器該用哪一版 → 沒下載就先說明大小與授權、問同意再下載（存瀏覽器的 Cache Storage，下載完核對大小）→ 載入（onnxruntime-web，閒置 5 分鐘釋放）→ 一步取樣 → 轉成 PNG。
+    // 還沒在真機上量過速度；CPU 版在單執行緒時可能要好幾分鐘，GPU 版在不支援 f16 的顯示卡上可能載入失敗（失敗時自動試 CPU 版）。
+    async _localSdEnv() {
+        const env = { hasGpu: false, f16: false, cores: (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 1, isolated: !!self.crossOriginIsolated };
+        try { const ad = navigator.gpu && await navigator.gpu.requestAdapter(); if (ad) { env.hasGpu = true; env.f16 = !!(ad.features && ad.features.has('shader-f16')); } } catch (_) { /* 沒有 WebGPU */ }
+        return env;
+    }
+    async _localSdFileState(model) {
+        const out = []; let c = null; try { c = await caches.open('fa-localsd'); } catch (_) { /* 沒有 Cache Storage */ }
+        for (const f of model.files) { let have = false; if (c) { const r = await c.match(FaLocalSd.urlOf(model, f.name)); have = !!r && Number(r.headers.get('x-fa-bytes')) === f.bytes; } out.push({ name: f.name, bytes: f.bytes, ok: have }); }
+        return out;
+    }
+    async _localSdStatusText() {
+        const g = (this.advancedSettings && this.advancedSettings.imageGen) || {}, env = await this._localSdEnv(), pick = FaLocalSd.pickModel(env, g.localDevice);
+        if (!pick.ok) return '⚠️ ' + pick.reason;
+        const st = await this._localSdFileState(pick.model), have = st.filter((x) => x.ok).length;
+        return '這台目前會用：' + pick.model.label + '（' + FaLocalSd.fmtBytes(FaLocalSd.totalBytes(pick.model)) + '）。狀態：' + (have === st.length ? '✅ 已下載' : have ? '部分已下載（' + have + '/' + st.length + ' 個檔）' : '還沒下載') + '。' + (pick.notes.length ? ' ' + pick.notes.join(' ') : '');
+    }
+    async _localSdRefreshStatusUI() { const el = document.getElementById('ai-imggen-local-status'); if (!el) return; try { el.textContent = await this._localSdStatusText(); } catch (e) { el.textContent = '（看不出本機模型的狀態：' + String((e && e.message) || e).slice(0, 80) + '）'; } }
+    async _localSdDelete() { await this._localSdUnload(); try { await caches.delete('fa-localsd'); } catch (_) { /* */ } return { ok: true }; }
+    async _localSdDownload(model, onProgress) {
+        const c = await caches.open('fa-localsd'), total = FaLocalSd.totalBytes(model), states = await this._localSdFileState(model); let done = 0;
+        for (const f of model.files) {
+            const st = states.find((x) => x.name === f.name); if (st && st.ok) { done += f.bytes; onProgress && onProgress(done, total, f.name + '（已經有了）'); continue; }
+            const url = FaLocalSd.urlOf(model, f.name), resp = await fetch(url); if (!resp.ok || !resp.body) throw new Error('download ' + f.name + ' HTTP ' + resp.status);
+            const pair = resp.body.tee(); let counted = 0;
+            const putP = c.put(url, new Response(pair[0], { headers: { 'x-fa-bytes': String(f.bytes), 'content-type': 'application/octet-stream' } }));
+            const reader = pair[1].getReader(); for (;;) { const r = await reader.read(); if (r.done) break; counted += r.value.length; onProgress && onProgress(done + counted, total, f.name); }
+            await putP; if (counted !== f.bytes) { await c.delete(url); throw new Error('download ' + f.name + ' 大小不對（' + counted + ' ≠ ' + f.bytes + '）'); }
+            done += f.bytes;
+        }
+        return true;
+    }
+    // 確認模型在快取裡；不在就說明大小與授權、問同意、下載。opts.noAsk＝不問也不下載（只檢查）
+    async _localSdPrepare(opts) {
+        opts = opts || {}; const g = (this.advancedSettings && this.advancedSettings.imageGen) || {}, env = await this._localSdEnv(), pick = FaLocalSd.pickModel(env, g.localDevice);
+        if (!pick.ok) return { ok: false, error: pick.reason };
+        const model = pick.model, st = await this._localSdFileState(model), missing = st.filter((x) => !x.ok);
+        if (!missing.length) return { ok: true, model, ep: pick.ep, env, notes: pick.notes };
+        if (opts.noAsk) return { ok: false, error: '本機生圖模型還沒下載。', needs_download: true, model };
+        const need = missing.reduce((a, x) => a + x.bytes, 0);
+        const okDl = await this._omAskDownload('要下載本機生圖模型嗎？', '「' + model.label + '」\n來源：huggingface.co/' + model.repo + '\n要下載：約 ' + FaLocalSd.fmtBytes(need) + '（只下載一次，存在瀏覽器的快取，可以在設定裡刪除）\n' + (pick.notes.length ? pick.notes.join(' ') + '\n' : '') + '\n' + FaLocalSd.LICENSE.note, '下載');
+        if (!okDl) return { ok: false, cancelled: true, error: '沒有下載本機生圖模型（你取消了）' };
+        try { await this._localSdDownload(model, (d, t, n) => { if (opts.onProgress) opts.onProgress('下載 ' + n + '：' + FaLocalSd.fmtBytes(d) + ' / ' + FaLocalSd.fmtBytes(t) + '（' + Math.round(d / t * 100) + '%）'); }); }
+        catch (e) { return { ok: false, error: FaLocalSd.explainError(e, model, env) }; }
+        return { ok: true, model, ep: pick.ep, env, notes: pick.notes };
+    }
+    _localSdTouch() { if (this._localSdTimer) clearTimeout(this._localSdTimer); this._localSdTimer = setTimeout(() => { this._localSdUnload().catch(() => { /* */ }); }, 5 * 60 * 1000); }
+    async _localSdUnload() { const s = this._localSdSess; this._localSdSess = null; if (this._localSdTimer) { clearTimeout(this._localSdTimer); this._localSdTimer = null; } if (s) for (const k of Object.keys(s.sess)) { try { await s.sess[k].release(); } catch (_) { /* */ } } }
+    async _localSdLoad(model, ep, onProgress) {
+        const key = model.id + '|' + ep; if (this._localSdSess && this._localSdSess.key === key) { this._localSdTouch(); return this._localSdSess; }
+        await this._localSdUnload();
+        const ORT = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/', imp = async (url) => { try { return await import(/* webpackIgnore: true */ url); } catch (e1) { try { return await import(/* webpackIgnore: true */ this._viaAssetProxy(url)); } catch (_) { throw e1; } } };
+        onProgress && onProgress('載入執行環境（onnxruntime-web）…'); const ort = await imp(ORT + 'ort.webgpu.min.mjs'); ort.env.wasm.wasmPaths = ORT; ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.min(8, navigator.hardwareConcurrency || 4) : 1;
+        const c = await caches.open('fa-localsd'), sess = {};
+        for (const f of model.files) {
+            const r = await c.match(FaLocalSd.urlOf(model, f.name)); if (!r) throw new Error('模型檔 ' + f.name + ' 不在快取裡，要先下載');
+            onProgress && onProgress('載入 ' + f.name + '（' + FaLocalSd.fmtBytes(f.bytes) + '）…'); const buf = new Uint8Array(await r.arrayBuffer());
+            sess[f.role] = await ort.InferenceSession.create(buf, { executionProviders: [ep], graphOptimizationLevel: 'all' });
+        }
+        this._localSdSess = { key, ort, sess }; this._localSdTouch(); return this._localSdSess;
+    }
+    async _localSdTokenize(prompt) {
+        if (!this._localSdTok) { const imp = async (url) => { try { return await import(/* webpackIgnore: true */ url); } catch (e1) { try { return await import(/* webpackIgnore: true */ this._viaAssetProxy(url)); } catch (_) { throw e1; } } }; const L = await imp('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.5/+esm'); L.env.allowLocalModels = false; L.env.useBrowserCache = true; this._localSdTok = await L.AutoTokenizer.from_pretrained(FaLocalSd.TOKENIZER.repo); }
+        const enc = await this._localSdTok(prompt, { padding: 'max_length', max_length: FaLocalSd.MAXLEN, truncation: true });
+        return FaLocalSd.padIds(Array.from(enc.input_ids.data));
+    }
+    async _localSdRun(model, ep, p, onProgress) {
+        const S = await this._localSdLoad(model, ep, onProgress), ort = S.ort, sess = S.sess; const metaType = (se, name) => { try { const m = se.inputMetadata; const e = Array.isArray(m) ? m.find((x) => x.name === name) : m && m[name]; return e && e.type; } catch (_) { return null; } };
+        onProgress && onProgress('把文字變成向量…'); const ids = await this._localSdTokenize(p.prompt), tIn = sess.text.inputNames[0], tType = metaType(sess.text, tIn) || (model.device === 'cpu' ? 'int32' : 'int64');
+        const idT = tType === 'int64' ? new ort.Tensor('int64', BigInt64Array.from(ids.map((x) => BigInt(x))), [1, FaLocalSd.MAXLEN]) : new ort.Tensor('int32', Int32Array.from(ids), [1, FaLocalSd.MAXLEN]);
+        const te = await sess.text.run({ [tIn]: idT }), hs = te[sess.text.outputNames[0]];
+        const names = sess.unet.inputNames, nS = names.find((n) => /sample/i.test(n)) || names[0], nT = names.find((n) => /time/i.test(n)) || names[1], nC = names.find((n) => /encoder|hidden|context/i.test(n)) || names[2], tsType = metaType(sess.unet, nT) || 'float32';
+        const ts = tsType === 'int64' ? new ort.Tensor('int64', BigInt64Array.from([BigInt(FaLocalSd.TIMESTEP)]), [1]) : new ort.Tensor('float32', Float32Array.from([FaLocalSd.TIMESTEP]), [1]);
+        const L = FaLocalSd.LATENT, x = FaLocalSd.initialLatent(p.seed); onProgress && onProgress('畫圖中（一步；CPU 版要等一下）…');
+        const uo = await sess.unet.run({ [nS]: new ort.Tensor('float32', FaLocalSd.scaleInput(x), [1, 4, L, L]), [nT]: ts, [nC]: hs }), eps = uo[sess.unet.outputNames[0]].data;
+        const x0 = FaLocalSd.denoise(x, eps); onProgress && onProgress('解碼成圖片…');
+        const vo = await sess.vae.run({ [sess.vae.inputNames[0]]: new ort.Tensor('float32', x0, [1, 4, L, L]) }), img = vo[sess.vae.outputNames[0]].data;
+        if (!(img instanceof Float32Array)) throw new Error('解碼器輸出的型別不是 float32（' + (img && img.constructor && img.constructor.name) + '）');
+        const rgba = FaLocalSd.toRgba(img, FaLocalSd.SIZE, FaLocalSd.SIZE), cv = document.createElement('canvas'); cv.width = cv.height = FaLocalSd.SIZE; cv.getContext('2d').putImageData(new ImageData(rgba, FaLocalSd.SIZE, FaLocalSd.SIZE), 0, 0);
+        const blob = await new Promise((res) => cv.toBlob(res, 'image/png')); return { blob, dataUrl: cv.toDataURL('image/png'), stats: FaLocalSd.imageStats(rgba) };
+    }
+    async _localSdGenerate(a) {
+        const plan = FaLocalSd.plan(a); if (!plan.ok) return { ok: false, error: plan.error };
+        const t0 = Date.now(), prog = this._createProgressWidget('🖼 本機生圖'); const say = (t) => { try { prog.update({ status: t }); } catch (_) { /* */ } };
+        try {
+            let prep = await this._localSdPrepare({ onProgress: say }); if (!prep.ok) { try { prog.finish && prog.finish('沒有畫'); } catch (_) { /* */ } return prep; }
+            let res = null, model = prep.model, ep = prep.ep, usedNote = null;
+            try { res = await this._localSdRun(model, ep, plan, say); }
+            catch (e1) {
+                // GPU 版失敗（常見是顯示卡沒有 f16）：自動改用 CPU 版（沒指定只用 GPU 時）
+                const g = (this.advancedSettings && this.advancedSettings.imageGen) || {};
+                if (model.device === 'webgpu' && g.localDevice !== 'webgpu') {
+                    const cpu = FaLocalSd.byId('sdxs-512-cpu-int8'); const stc = await this._localSdFileState(cpu);
+                    if (stc.every((x) => x.ok)) { await this._localSdUnload(); say('GPU 版沒跑起來（' + String((e1 && e1.message) || e1).slice(0, 60) + '），改用 CPU 版…'); model = cpu; ep = cpu.ep; usedNote = 'GPU 版沒跑起來，改用 CPU 版。'; res = await this._localSdRun(model, ep, plan, say); }
+                    else throw e1;
+                } else throw e1;
+            }
+            const ms = Date.now() - t0, name = 'image-sdxs-' + Date.now().toString(36) + '.png', id = await this.fileCache.put(name, 'image/png', res.blob, 'generated');
+            let ref = null; try { if (this._deckRunState && this._deckInDomainRun) { const e = this._deckRun().catalog.add('client-file/' + id, { alt: plan.prompt.slice(0, 100), from: 'generate_image' }); ref = e && e.ref; } } catch (_) { /* 目錄只是方便 */ }
+            try { const msg = { role: 'tool', content: '[generate_image 已用本機小模型（' + model.label + '）產生一張圖片（seed ' + plan.seed + '），已直接顯示給使用者看，圖片內容不列入對話上下文。file_id=' + id + ']' }; Object.defineProperty(msg, '_displayDataUrl', { value: res.dataUrl, enumerable: false, configurable: true }); this.messages.push(msg); this._persistChatHistory(); this._renderMessageHistory(); } catch (_) { /* 顯示失敗不影響檔案 */ }
+            try { prog.finish && prog.finish('完成：' + (ms / 1000).toFixed(1) + ' 秒'); } catch (_) { /* */ }
+            const warn = res.stats.flat ? '這張圖幾乎是一片空白（模型輸出沒有變化），可能是這台機器的運算有問題；換個 seed 或換 CPU／GPU 版再試。' : null;
+            const img = { file_id: id, client_file_url: 'client-file/' + id, filename: name, mime: 'image/png', size_bytes: res.blob.size, seed: plan.seed, deck_ref: ref || undefined };
+            return { ok: true, provider: 'local', model: model.label, images: [img], file_id: id, client_file_url: 'client-file/' + id, size: FaLocalSd.SIZE + 'x' + FaLocalSd.SIZE, steps: 1, duration_ms: ms, adjusted: plan.notes.length ? plan.notes : undefined, note: [usedNote, warn].filter(Boolean).join(' ') || undefined };
+        } catch (e) { try { prog.finish && prog.finish('失敗'); } catch (_) { /* */ } return { ok: false, error: FaLocalSd.explainError(e, null, null) }; }
+    }
+    // 統一入口：自動＝線上優先，線上失敗而且本機模型已經下載好了，就接著用本機的（不會自動下載幾百 MB）；離線模式直接用本機
+    async _generateImage(a) {
+        a = a || {}; const g = (this.advancedSettings && this.advancedSettings.imageGen) || {};
+        let provider = ['online', 'local'].indexOf(a.provider) >= 0 ? a.provider : (['online', 'local'].indexOf(g.provider) >= 0 ? g.provider : 'auto');
+        if (provider === 'auto' && this.advancedSettings && this.advancedSettings.offlineMode) provider = 'local';
+        if (provider === 'local') return this._localSdGenerate(a);
+        const r = await this._nvidiaGenerateImage(a);
+        if (r.ok || provider === 'online' || r.filtered) return r;
+        try { const prep = await this._localSdPrepare({ noAsk: true }); if (prep.ok) { const l = await this._localSdGenerate(a); if (l.ok) l.note = ['線上生圖沒成功（' + String(r.error).slice(0, 80) + '），改用本機小模型畫的。', l.note].filter(Boolean).join(' '); return l; } } catch (_) { /* 本機也不行就回線上的錯誤 */ }
+        return r;
+    }
     async _nvidiaGenerateImage(a) {
         const cfg = this._imageGenConfig();
         if (!cfg.apiKey) return { ok: false, error: '還沒有可用的圖像生成金鑰：內建預設沒有金鑰可用，請到「進階設定 → 影音處理」的「圖像生成」填入 NVIDIA API 金鑰（nvapi- 開頭）。' };
@@ -56605,7 +56815,7 @@ ${sourceTool.handlerScript}
         { const g = this.advancedSettings.imageGen || {}; const kEl = document.getElementById('ai-imggen-key'), mEl = document.getElementById('ai-imggen-model'), cEl = document.getElementById('ai-imggen-custom');
           if (kEl) kEl.value = g.apiKey || '';
           if (mEl) { mEl.innerHTML = FaNvidiaImage.MODELS.map((m) => '<option value="' + m.id + '">' + this._escapeHtml(m.label) + '</option>').join(''); mEl.value = FaNvidiaImage.info(g.model) ? g.model : FaNvidiaImage.DEFAULT_MODEL; }
-          if (cEl) cEl.value = g.customModel || ''; }
+          if (cEl) cEl.value = g.customModel || ''; const pEl = document.getElementById('ai-imggen-provider'), dEl = document.getElementById('ai-imggen-device'); if (pEl) pEl.value = ['online', 'local'].indexOf(g.provider) >= 0 ? g.provider : 'auto'; if (dEl) dEl.value = ['webgpu', 'cpu'].indexOf(g.localDevice) >= 0 ? g.localDevice : 'auto'; this._localSdRefreshStatusUI(); }
         const subtitleSizeInput = document.getElementById('ai-subtitle-size');
         if (subtitleSizeInput) subtitleSizeInput.value = this._getSubtitleStyle().fontScale;
         const subtitlePosSelect = document.getElementById('ai-subtitle-position');
@@ -79835,6 +80045,13 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                     <select id="ai-imggen-model" class="ai-advanced-input"></select>
                                     <label class="ai-advanced-label" for="ai-imggen-custom" style="font-weight:normal; margin-top:8px;">自己填模型路徑（選填，填了就用它，格式「廠商/模型名」）</label>
                                     <input type="text" id="ai-imggen-custom" class="ai-advanced-input" placeholder="例如 black-forest-labs/flux.2-klein-4b">
+                                    <label class="ai-advanced-label" for="ai-imggen-provider" style="font-weight:normal; margin-top:12px;">畫圖用哪裡的模型</label>
+                                    <select id="ai-imggen-provider" class="ai-advanced-input"><option value="auto">自動（線上優先；線上失敗而且本機模型已下載時，改用本機）</option><option value="online">只用線上（NVIDIA）</option><option value="local">只用本機小模型（離線也能畫）</option></select>
+                                    <label class="ai-advanced-label" for="ai-imggen-device" style="font-weight:normal; margin-top:8px;">本機小模型用什麼算</label>
+                                    <select id="ai-imggen-device" class="ai-advanced-input"><option value="auto">自動（有支援 f16 的 WebGPU 就用 GPU 版，否則 CPU 版）</option><option value="webgpu">GPU（WebGPU，約 880 MB）</option><option value="cpu">CPU（約 1.1 GB，比較慢）</option></select>
+                                    <p id="ai-imggen-local-status" class="ai-advanced-hint"></p>
+                                    <div style="display:flex; gap:8px; margin-top:4px;"><button type="button" id="ai-imggen-local-dl" class="ai-advanced-btn">下載本機模型</button><button type="button" id="ai-imggen-local-del" class="ai-advanced-btn">刪除已下載的模型</button></div>
+                                    <p class="ai-advanced-hint">本機小模型是 SDXS-512（一步取樣、固定 512×512），完全在這台電腦上算，不連線上服務；第一次要下載模型（存在瀏覽器的快取，可以在這裡刪除）。授權（CreativeML Open RAIL++-M）有使用限制，不得用於傷害未成年人、未經同意的真人影像、誹謗、騷擾或違法用途。</p>
                                 </div>
                                 <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label" for="ai-perf-max-mesh-triangles">匯入3D模型三角形數量上限</label>
@@ -83282,15 +83499,22 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 this._refreshWhisperCacheSizeDisplay();
             });
         }
-        for (const id of ['ai-imggen-key', 'ai-imggen-model', 'ai-imggen-custom']) {
+        for (const id of ['ai-imggen-key', 'ai-imggen-model', 'ai-imggen-custom', 'ai-imggen-provider', 'ai-imggen-device']) {
             const el = document.getElementById(id);
             if (el) el.addEventListener('change', () => {
-                const g = Object.assign({ apiKey: '', model: FaNvidiaImage.DEFAULT_MODEL, customModel: '' }, this.advancedSettings.imageGen);
+                const g = Object.assign({ apiKey: '', model: FaNvidiaImage.DEFAULT_MODEL, customModel: '', provider: 'auto', localDevice: 'auto' }, this.advancedSettings.imageGen);
                 if (id === 'ai-imggen-key') g.apiKey = el.value.trim();
                 else if (id === 'ai-imggen-model') g.model = el.value;
+                else if (id === 'ai-imggen-provider') g.provider = el.value;
+                else if (id === 'ai-imggen-device') g.localDevice = el.value;
                 else { const v = el.value.trim(); if (v && !FaNvidiaImage.validModelPath(v)) { el.value = g.customModel || ''; this._pushAssistantMessage('⚠️ 模型路徑要是「廠商/模型名」，例如 black-forest-labs/flux.2-klein-4b', null); return; } g.customModel = v; }
-                this.advancedSettings.imageGen = g; this._saveAdvancedSettings();
+                this.advancedSettings.imageGen = g; this._saveAdvancedSettings(); this._localSdRefreshStatusUI();
             });
+        }
+        { // 本機生圖模型：下載與刪除
+            const dl = document.getElementById('ai-imggen-local-dl'), del = document.getElementById('ai-imggen-local-del');
+            if (dl) dl.addEventListener('click', async () => { dl.disabled = true; const st = document.getElementById('ai-imggen-local-status'); try { const r = await this._localSdPrepare({ onProgress: (t) => { if (st) st.textContent = t; } }); if (st && r && !r.ok) st.textContent = '⚠️ ' + r.error; } catch (e) { if (st) st.textContent = '⚠️ ' + String((e && e.message) || e); } dl.disabled = false; this._localSdRefreshStatusUI(); });
+            if (del) del.addEventListener('click', async () => { if (!window.confirm('刪除已下載的本機生圖模型？（下次畫圖要再下載）')) return; await this._localSdDelete(); this._localSdRefreshStatusUI(); });
         }
         const extractAudioFormatSelect = document.getElementById('ai-extract-audio-format');
         if (extractAudioFormatSelect) {

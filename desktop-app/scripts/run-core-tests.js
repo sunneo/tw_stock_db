@@ -96,6 +96,7 @@ const suites = [
     ['網頁編輯器：描述驗證、預覽內嵌、起手式、編輯動作、後端分流', 'scripts/webedit-tests/webedit_core.test.js'],
     ['長文章目錄：wiki、新聞、小說章回、分段閱讀', 'scripts/article-tests/article_outline.test.js'],
     ['NVIDIA 線上圖像生成：請求整理、參數夾範圍、回應解析', 'scripts/imagegen-tests/nvidia_image.test.js'],
+    ['本機小模型生圖（SDXS-512 GPU／CPU 版）：選版本、取樣的數學、亂數、張量轉圖片、錯誤說明', 'scripts/imagegen-tests/local_sd.test.js'],
     ['YAML 用途標記（#!fa:deck 這類開頭／結尾宣告）：偵測、檢查、加標記', 'scripts/yamlkind-tests/yamlkind_core.test.js'],
     ['Knowledge Inventory 核心：各格式帶行號的來源、出處、關鍵字＋向量檢索、原句摘要、核對、關聯', 'scripts/knowledge-tests/knowledge_core.test.js'],
     ['Knowledge Inventory 儲存層（真的 SQLite＋FTS5；沒有 node:sqlite 的 Node 會略過）', 'scripts/knowledge-tests/knowledge_store.test.js'],

@@ -249,7 +249,8 @@ xterm.js跟Emscripten/WASI終端機程式」的現成bridge），概念上是真
 - 待決定：向量檢索用哪個小模型、片段大小、容量上限與淘汰、是否能匯出／匯入成一包。
 
 ## 2. WebGPU／CPU＋transformers.js 的圖像生成（模型要夠小）
-- 待決定：候選小模型與實測的大小、速度（WebGPU 與純 CPU 各一組數字）、第一次下載的提示與快取；先做「能不能在這台機器跑起來」的實測。
+- 已整合（2026-10-22）：SDXS-512 一步取樣，GPU 版約 880 MB（fp16，WebGPU）、CPU 版約 1.12 GB（int8，wasm）；第一次下載的同意與授權提示、快取、設定、`generate_image`／`/image` 的 `provider` 都做好了，見 DESIGN.image-generation.md。
+- [ ] 還沒做：在真機上實測載入與生圖（WebGPU 與 CPU 各一組速度與記憶體數字）；Electron 開 crossOriginIsolated 讓 CPU 版能多執行緒；更小的 CPU 模型（目前 CPU 版 1.1 GB）；對話裡以圖生圖／多張。
 
 ## 3. 桌面版專用功能 `computer use`（給弱模型用）
 - 動作層：Windows 用類似 nircmd 的小工具，Linux 用 xdotool＋wmctrl；Windows 的視窗／控制項清單用 UI Automation（類似 Spy++）。
