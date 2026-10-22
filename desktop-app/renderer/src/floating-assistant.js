@@ -17912,11 +17912,12 @@ const holder = {};
     function refreshSourcesOnly() { return host.sources().then(function (r) { sources = (r && r.sources) || sources; renderList(); }).catch(function () { /* */ }); }
     // ───── 骨架 ─────
     var bar = h('div', 'bar'), ttl = h('span', 'ttl', '📚 Knowledge Inventory'), stat = h('span', 'st'), spacer = h('span', 'spacer');
-    var bRef = h('button', null, '🔄 更新'), bPause = h('button', null, '⏸ 暫停處理'), bSet = h('button', null, '⚙ 設定');
+    var bRef = h('button', null, '🔄 更新'), bPause = h('button', null, '⏸ 暫停處理'), bGraph = h('button', null, '🕸 關聯圖'), bSet = h('button', null, '⚙ 設定');
     bRef.title = '更新網址來源（內容有變才更新），然後背景自動補齊語意向量、逐層摘要、關聯'; bPause.title = '背景處理（語意向量、逐層摘要、關聯）：處理中可以暫停，做好的保留，繼續時接著做'; bPause.style.display = 'none'; bSet.title = '.keeplookup 放哪裡、搬家、容量上限、圖片讀取、自動處理';
     var bSide = h('button', null, '☰'); bSide.title = '隱藏／顯示左邊的來源清單';
     var bClr = h('button', null, '🗑'); bClr.title = '清除這個庫的對話紀錄（按兩下確認）';
-    [bSide, ttl, stat, spacer, bPause, bRef, bClr, bSet].forEach(function (x) { bar.appendChild(x); });
+    bGraph.title = '知識關聯圖：哪些文件之間有關聯（點線看證據、點文件看它的關聯）';
+    [bSide, ttl, stat, spacer, bPause, bRef, bGraph, bClr, bSet].forEach(function (x) { bar.appendChild(x); });
     var body = h('div', 'body'), side = h('div', 'side'), sash = h('div', 'sash'), main = h('div', 'main');
     var sidehd = h('div', 'sidehd'), sidetitle = h('b', null, '來源'), bAdd = h('button', 'pri', '＋ 加入'), fileIn = h('input'), list = h('div', 'list'), dropov = h('div', 'dropov', '放開滑鼠，把檔案加入知識庫');
     var selAll = h('button', 'ic', '全選'), selNone = h('button', 'ic', '全不選'); selAll.title = '全部來源都勾選（都用來回答）'; selNone.title = '全部取消勾選，之後再只勾你要用來回答的來源'; bAdd.title = '加入來源：檔案、網址、貼上的文字（也可以直接把檔案拖進來）'; fileIn.type = 'file'; fileIn.multiple = true; fileIn.style.display = 'none';
@@ -18123,7 +18124,7 @@ const holder = {};
     }
     // 點答案裡的 [編號]：開一個對話框，顯示那段原始資料（標明來源、行號，命中的行標起來），可以看更多上下文、複製出處
     function openSource(sr) {
-      var bg = h('div', 'dlgbg'), dlg = h('div', 'dlg'), hd = h('h4', null, '[' + sr.n + '] ' + sr.label), x = h('button', 'ic', '✕'), body = h('div'), row = h('div', 'row'), more = h('button', null, '看更多上下文'), cp = h('button', null, '複製出處');
+      var bg = h('div', 'dlgbg'), dlg = h('div', 'dlg'), hd = h('h4', null, (sr.n ? '[' + sr.n + '] ' : '') + sr.label), x = h('button', 'ic', '✕'), body = h('div'), row = h('div', 'row'), more = h('button', null, '看更多上下文'), cp = h('button', null, '複製出處');
       x.style.marginLeft = 'auto'; hd.appendChild(x); var close = function () { bg.remove(); }; x.onclick = close; bg.onclick = function (e) { if (e.target === bg) close(); };
       var pad = 3; function load() { return host.detail(sr.source_id || sr.source, { line_start: Math.max(1, sr.line_start - pad), line_end: sr.line_end + pad + 6 }, { maxLines: 60 }).then(function (d) { body.textContent = ''; body.appendChild(lineView(d.lines || [], sr.line_start, sr.line_end)); }).catch(function () { body.textContent = String(sr.ctx || sr.quote || ''); }); }
       more.onclick = function () { pad += 6; load(); }; cp.onclick = function () { try { navigator.clipboard.writeText(sr.label + '\n' + (sr.quote || '')); cp.textContent = '已複製'; setTimeout(function () { cp.textContent = '複製出處'; }, 1200); } catch (e) { cp.textContent = '複製不了'; } };
@@ -18143,6 +18144,59 @@ const holder = {};
     function setPipe(on) { pipeRunning = on; updatePause(); }
     function updatePause() { var pend = statusInfo.pending || {}, has = (pend.vectors || 0) > 0 || (pend.digests || 0) > 0; if (pipeRunning) { bPause.style.display = ''; bPause.textContent = '⏸ 暫停處理'; } else if (has && statusInfo.pipeline_on !== false) { bPause.style.display = ''; bPause.textContent = '▶ 繼續處理'; } else bPause.style.display = 'none'; }
     bPause.onclick = function () { if (pipeRunning) { if (host.pipelineStop) host.pipelineStop(); bPause.textContent = '暫停中…'; } else if (host.pipelineStart) { host.pipelineStart(); setPipe(true); } };
+    // ───── 關聯圖：文件之間有哪些關聯（每一條都附證據）；線的粗細＝關聯條數，顏色＝最多的那種關聯；點線看證據、點文件看它的關聯 ─────
+    var KCOLOR = { mentions: '#6c8ebf', identifier: '#d6a21f', same_quote: '#2e9e5b', heading_match: '#8a5bd6', issue_ref: '#d6584f', wiki_link: '#2ea7a7', url_link: '#c06c9b', shared_term: '#8b949e', model: '#e08a2f' };
+    function layoutGraph(nodes, edges, W, H) {
+      var n = nodes.length, i, j, it, kf = Math.sqrt(W * H / Math.max(1, n)) * 0.8;
+      nodes.forEach(function (nd, k) { var a = 2 * Math.PI * k / Math.max(1, n); nd.x = W / 2 + Math.cos(a) * W * 0.3; nd.y = H / 2 + Math.sin(a) * H * 0.3; });
+      for (it = 0; it < 250; it++) {
+        var temp = (1 - it / 250) * 12; nodes.forEach(function (a) { a.dx = 0; a.dy = 0; });
+        for (i = 0; i < n; i++) for (j = i + 1; j < n; j++) { var A = nodes[i], B = nodes[j], dx = A.x - B.x, dy = A.y - B.y, d = Math.sqrt(dx * dx + dy * dy) || 0.01, f = kf * kf / d; A.dx += dx / d * f; A.dy += dy / d * f; B.dx -= dx / d * f; B.dy -= dy / d * f; }
+        edges.forEach(function (e) { var A = e.a, B = e.b, dx = A.x - B.x, dy = A.y - B.y, d = Math.sqrt(dx * dx + dy * dy) || 0.01, f = d * d / kf * (1 + Math.min(3, e.count) * 0.15); A.dx -= dx / d * f; A.dy -= dy / d * f; B.dx += dx / d * f; B.dy += dy / d * f; });
+        nodes.forEach(function (a) { a.dx += (W / 2 - a.x) * 0.02; a.dy += (H / 2 - a.y) * 0.02; var d = Math.sqrt(a.dx * a.dx + a.dy * a.dy) || 0.01, m = Math.min(d, temp); a.x = Math.max(70, Math.min(W - 70, a.x + a.dx / d * m)); a.y = Math.max(34, Math.min(H - 34, a.y + a.dy / d * m)); });
+      }
+    }
+    function showGraph() {
+      var bg = h('div', 'dlgbg'), dlg = h('div', 'dlg'), hd = h('h4', null, '🕸 知識關聯圖'), x = h('button', 'ic', '✕'), info = h('div', 'st'), svgBox = h('div'), legend = h('div', 'row'), evid = h('div');
+      dlg.style.width = 'min(780px, 96%)'; x.style.marginLeft = 'auto'; hd.appendChild(x); var close = function () { bg.remove(); }; x.onclick = close; bg.onclick = function (e) { if (e.target === bg) close(); };
+      [hd, info, svgBox, legend, evid].forEach(function (n) { dlg.appendChild(n); }); bg.appendChild(dlg); el.appendChild(bg); info.textContent = '載入中…';
+      Promise.all([host.sources(), host.links()]).then(function (r) {
+        var srcs = ((r[0] && r[0].sources) || []), ls = ((r[1] && r[1].links) || []).filter(function (l) { return l.status !== 'rejected'; });
+        if (!ls.length) { info.textContent = '還沒有關聯。文件之間要有「同一個識別字、同一句話、同樣的章節標題、互相引用（議題／wiki／網址）、提到對方名稱」才會有關聯；至少放兩份文件，處理流程做完就會出現。'; return; }
+        var byId = {}, edges = {}, kindCount = {}; srcs.forEach(function (sc) { byId[sc.id] = { id: sc.id, name: sc.name, enabled: sc.enabled, deg: 0 }; });
+        ls.forEach(function (l) { var a = byId[l.from.source_id], b = byId[l.to.source_id]; if (!a || !b || a === b) return; var key = Math.min(a.id, b.id) + '-' + Math.max(a.id, b.id); var e = edges[key] || (edges[key] = { a: a, b: b, count: 0, kinds: {}, links: [] }); e.count++; e.kinds[l.kind] = (e.kinds[l.kind] || 0) + 1; e.links.push(l); kindCount[l.kind] = (kindCount[l.kind] || 0) + 1; });
+        var eList = Object.keys(edges).map(function (k) { return edges[k]; }); eList.forEach(function (e) { e.a.deg++; e.b.deg++; });
+        var nodes = Object.keys(byId).map(function (k) { return byId[k]; }).filter(function (nd) { return nd.deg > 0; }).sort(function (p, q) { return q.deg - p.deg; }).slice(0, 40), keep = {}; nodes.forEach(function (nd) { keep[nd.id] = 1; }); eList = eList.filter(function (e) { return keep[e.a.id] && keep[e.b.id]; });
+        var W = 740, H = Math.max(300, Math.min(520, 220 + nodes.length * 14)); layoutGraph(nodes, eList, W, H);
+        info.textContent = nodes.length + ' 份文件、' + eList.length + ' 組關聯（共 ' + ls.length + ' 條證據）。點一條線看證據，點一份文件看它的所有關聯。';
+        var NS = 'http://www.w3.org/2000/svg', svg = document.createElementNS(NS, 'svg'); svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H); svg.style.cssText = 'width:100%;height:auto;border:1px solid var(--bd);border-radius:6px;background:var(--bg)'; var gE = document.createElementNS(NS, 'g'), gN = document.createElementNS(NS, 'g'); svg.appendChild(gE); svg.appendChild(gN); svgBox.appendChild(svg);
+        function dominant(e) { var best = null; Object.keys(e.kinds).forEach(function (k) { if (!best || e.kinds[k] > e.kinds[best]) best = k; }); return best; }
+        var focus = null, edgeEls = [], nodeEls = [];
+        function evidItem(l) {
+          var box = h('div', 'hit'), top = h('div'); top.appendChild(h('span', 'lb', (LKIND[l.kind] || l.kind) + (l.term ? '「' + String(l.term).slice(0, 40) + '」' : ''))); if (l.status === 'confirmed') top.appendChild(h('span', 'by ok', '已確認')); if (l.status === 'stale') top.appendChild(h('span', 'by bad', '失效')); box.appendChild(top);
+          [l.from, l.to].forEach(function (sd) { if (!sd.line_start) { box.appendChild(h('div', 'st', '《' + sd.source + '》（整份文件）')); return; } var b = h('button', 'cite', '《' + sd.source + '》第 ' + sd.line_start + (sd.line_end && sd.line_end !== sd.line_start ? '–' + sd.line_end : '') + ' 行'); b.onclick = function () { openSource({ n: 0, label: '「' + sd.source + '」第 ' + sd.line_start + ' 行', source: sd.source, source_id: sd.source_id, line_start: sd.line_start, line_end: sd.line_end || sd.line_start, quote: sd.quote }); }; box.appendChild(b); box.appendChild(h('blockquote', null, String(sd.quote || ''))); });
+          return box;
+        }
+        function showEdge(e) { evid.textContent = ''; evid.appendChild(h('div', 'st', '《' + e.a.name + '》⇄《' + e.b.name + '》：' + e.count + ' 條關聯（' + Object.keys(e.kinds).map(function (k) { return (LKIND[k] || k) + ' ' + e.kinds[k]; }).join('、') + '）')); e.links.slice(0, 30).forEach(function (l) { evid.appendChild(evidItem(l)); }); if (e.links.length > 30) evid.appendChild(h('div', 'st', '（只列前 30 條）')); }
+        function showNode(nd) {
+          focus = focus === nd ? null : nd; paint(); evid.textContent = ''; if (!focus) return;
+          evid.appendChild(h('div', 'st', '《' + nd.name + '》的關聯：')); eList.filter(function (e) { return e.a === nd || e.b === nd; }).sort(function (p, q) { return q.count - p.count; }).forEach(function (e) { var other = e.a === nd ? e.b : e.a, b = h('button', null, '《' + other.name + '》　' + e.count + ' 條（' + Object.keys(e.kinds).map(function (k) { return (LKIND[k] || k) + ' ' + e.kinds[k]; }).join('、') + '）'); b.style.display = 'block'; b.style.textAlign = 'left'; b.style.margin = '2px 0'; b.onclick = function () { showEdge(e); }; evid.appendChild(b); });
+        }
+        function paint() { edgeEls.forEach(function (o) { var on = !focus || o.e.a === focus || o.e.b === focus; o.line.style.opacity = on ? '.85' : '.12'; }); nodeEls.forEach(function (o) { var on = !focus || o.nd === focus || eList.some(function (e) { return (e.a === focus && e.b === o.nd) || (e.b === focus && e.a === o.nd); }); o.g.style.opacity = on ? (o.nd.enabled ? '1' : '.5') : '.2'; o.c.setAttribute('stroke-width', o.nd === focus ? '3' : '1.5'); }); }
+        eList.forEach(function (e) {
+          var line = document.createElementNS(NS, 'line'); line.setAttribute('x1', e.a.x); line.setAttribute('y1', e.a.y); line.setAttribute('x2', e.b.x); line.setAttribute('y2', e.b.y); line.setAttribute('stroke', KCOLOR[dominant(e)] || '#8b949e'); line.setAttribute('stroke-width', 1.5 + Math.min(6, e.count)); line.setAttribute('stroke-linecap', 'round'); line.style.cursor = 'pointer';
+          var tt = document.createElementNS(NS, 'title'); tt.textContent = e.a.name + ' ⇄ ' + e.b.name + '：' + e.count + ' 條（' + Object.keys(e.kinds).map(function (k) { return (LKIND[k] || k) + ' ' + e.kinds[k]; }).join('、') + '）'; line.appendChild(tt); line.onclick = function () { showEdge(e); }; gE.appendChild(line); edgeEls.push({ e: e, line: line });
+        });
+        nodes.forEach(function (nd) {
+          var g = document.createElementNS(NS, 'g'), c = document.createElementNS(NS, 'circle'), t = document.createElementNS(NS, 'text'), r = 9 + Math.min(10, nd.deg * 2); c.setAttribute('cx', nd.x); c.setAttribute('cy', nd.y); c.setAttribute('r', r); c.setAttribute('fill', 'var(--acc)'); c.setAttribute('fill-opacity', '.25'); c.setAttribute('stroke', 'var(--acc)'); c.setAttribute('stroke-width', '1.5');
+          t.setAttribute('x', nd.x); t.setAttribute('y', nd.y + r + 12); t.setAttribute('text-anchor', 'middle'); t.setAttribute('font-size', '11'); t.setAttribute('fill', 'currentColor'); t.textContent = nd.name.length > 20 ? nd.name.slice(0, 19) + '…' : nd.name;
+          var tt = document.createElementNS(NS, 'title'); tt.textContent = nd.name + '（' + nd.deg + ' 組關聯' + (nd.enabled ? '' : '，沒勾選') + '）'; g.appendChild(tt); g.appendChild(c); g.appendChild(t); g.style.cursor = 'pointer'; g.onclick = function () { showNode(nd); }; gN.appendChild(g); nodeEls.push({ nd: nd, g: g, c: c });
+        });
+        paint();
+        Object.keys(kindCount).sort(function (p, q) { return kindCount[q] - kindCount[p]; }).forEach(function (k) { var sp = h('span', 'by', (LKIND[k] || k) + ' ' + kindCount[k]); sp.style.borderColor = KCOLOR[k] || '#8b949e'; sp.style.color = KCOLOR[k] || 'inherit'; legend.appendChild(sp); });
+      }).catch(function (e) { info.textContent = '⚠️ ' + String((e && e.message) || e).slice(0, 160); });
+    }
+    bGraph.onclick = showGraph;
     bSet.onclick = function () {
       var c = card('⚙ 設定'), locSt = note(c, '載入中…'); var kind = h('select'); [['idb', '瀏覽器 IndexedDB'], ['file', '磁碟檔案（桌面版）'], ['fap', 'FAP 資料夾']].forEach(function (k) { var o = h('option', null, k[1]); o.value = k[0]; kind.appendChild(o); });
       var path = h('input'); path.type = 'text'; path.style.flex = '1 1 220px'; path.placeholder = '磁碟：完整路徑；FAP：<名稱>/<路徑>'; var keep = h('input'); keep.type = 'checkbox'; keep.checked = true; var kl = h('label', null, '保留舊檔'), mv = h('button', null, '搬過去'), r5 = h('div', 'row'); [h('label', null, '.keeplookup 放在'), kind, path, keep, kl, mv].forEach(function (x) { r5.appendChild(x); }); c.appendChild(r5);
