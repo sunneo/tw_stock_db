@@ -366,54 +366,204 @@ const FaKnowledgeHost = (function () {
             if (lastChat && !lookup) { const rp = lastChat.replace(/^CHAT\s*[:：]\s*/i, '').trim(); if (rp) return { route: 'chat', reply: rp }; }
             return { route: 'search', query: t };
         },
-        // ───── 創作：請 AI 設計／寫出「知識庫裡沒有的東西」（例如看完 C 和 C++ 的 programming guide 之後設計一個程式） ─────
-        // 做法：1) 請模型列出要先查的東西 → 程式用每一條去查知識庫，收集素材；2) 把素材（編號）交給模型，允許它創作；用到素材裡的語法／API／規則要標 [編號]，
-        // 素材沒講、憑它自己知識補的標 [外]；3) 程式做「依據檢查」：程式碼裡用到的函式／標頭／名稱，哪些在素材裡找得到（附出處編號）、哪些素材沒提到。創作內容不丟棄，但明講哪些有依據、哪些沒有。
-        async _kiCreate(request, onStep, ctl, sources) {
-            const step = (t) => { try { if (onStep) onStep(t); } catch (_) { /* */ } }, t0 = Date.now(); const req = String(request || '').trim(); if (!req) return { ok: false, error: '請說要創作什麼' };
-            step('✨ 創作：先決定要從知識庫查哪些資料…');
-            let queries = []; try {
-                const rp = await this._kiLlm('使用者想請你創作（設計、寫程式、規劃…）：「' + req + '」\n他有一個知識庫（裡面是他放進去的手冊、文件）。為了做好這件事，需要先從知識庫查哪些資料（語法規則、函式用法、設計規範…）？請列出最多 8 個查詢，一行一個，每個只有 1 到 3 個詞，像搜尋引擎的關鍵詞（例如：struct、vector sort、scanf、class 建構），中英文都可以，不要解釋、不要寫完整句子。', { systemPrompt: '你只負責列出要查什麼，不回答。', maxTokens: 500, temperature: 0 }, { label: '決定要查什麼', timeoutMs: 45000, onStep, ctl });
-                queries = String(rp || '').split('\n').map((l) => l.replace(/^[\s\-*\d.、)）]+/, '').trim()).filter((l) => l && l.length <= 40).slice(0, 8);
-            } catch (e) { if (/已略過/.test(String((e && e.message) || e))) throw e; }
-            if (!queries.length) queries = [req.slice(0, 120)]; step('　要查：' + queries.join('；'));
-            const mats = [], seen = new Set();
-            for (const q of queries) {
-                const r = await this._kiAsk({ question: q, limit: 4, no_expand: true, sources }).catch(() => null); let n = 0;
-                for (const h of ((r && r.hits) || [])) { const k = h.source_id + ':' + h.line_start; if (seen.has(k) || mats.length >= 12) continue; seen.add(k); mats.push(h); n++; }
-                step('　「' + q.slice(0, 30) + '」→ ' + (n ? '新增 ' + n + ' 段素材' : '沒有找到'));
+        // ───── 記憶式對話：放進藏書閣的文件就是 AI 的記憶——回答、解釋、整合、甚至創作都可以基於這些知識，但不會把整個知識庫塞進上下文 ─────
+        // 做法（程式主導，模型只負責理解與寫）：
+        //   ① 知識庫概覽（每份文件一兩句＋關鍵詞，永遠放進去，很小）；② 跟問題相關的章節摘要（模型事先讀完整理的「理解」）；③ 檢索到的原文片段（要細節時看）；
+        //   ④ 前幾輪對話。份量依模型的上下文大小按比例分配，放不下的就不放；模型還想看更多，可以在答案最後說 NEED: 查詢，程式再查一輪補進去。
+        // 模型用自己的話整合成自然的段落回答（不是逐條抄原文）；有依據的地方標資料編號，資料沒講、憑它自己知識補的標 [外]；程式再核對：編號要存在、
+        // 指令／數字／英文名稱要真的在給它的資料裡（核對不過的句子丟掉並列出）；程式碼用到的函式、標頭，哪些在資料裡找得到、哪些沒有，另外列出「依據檢查」。
+        _kiBudgetChars(offline) {
+            if (offline) return 3500; let cw = 0; try { const rows = this._getModelRows(); cw = Number(rows && rows[0] && rows[0].contextWindowTokens) || 0; } catch (_) { /* */ }
+            const tokens = Math.max(2000, Math.min(cw > 0 ? cw * 0.25 : 8000, 9000)); return Math.round(tokens * 1.8);
+        },
+        async _kiMapText(ids, maxChars) {
+            const data = await this._kiRun(async (store) => { const list = (await store.listSources()).filter((x) => x.enabled && (!ids || ids.indexOf(x.id) >= 0)); const docs = await store.getDigests(list.map((x) => x.id), 'doc'); const titles = {}; for (const x of list) { if (!docs.some((d) => d.source_id === x.id)) titles[x.id] = await store.topTitles(x.id, 8); } return { list, docs, titles }; });
+            if (!data.list.length) return '（知識庫是空的）'; const per = Math.max(90, Math.floor(maxChars / data.list.length)); const lines = [];
+            for (const x of data.list) { const d = data.docs.find((y) => y.source_id === x.id); const tags = x.tags ? (() => { try { return JSON.parse(x.tags).terms || []; } catch (_) { return []; } })() : []; let body = d ? d.text.replace(/\s+/g, ' ') : '章節：' + ((data.titles[x.id] || []).join('、') || '（無章節）') + '（還沒有整理摘要）'; const kw = d && d.terms && d.terms.length ? d.terms : tags; if (kw && kw.length) body += '｜關鍵詞：' + kw.slice(0, 6).join('、'); lines.push('《' + x.name + '》' + body.slice(0, per)); }
+            return lines.join('\n').slice(0, maxChars);
+        },
+        // 由上往下展開：每份文件從最精簡的整份概覽開始（概覽已經在「知識庫概覽」裡），哪個分支跟問題有關（自己或底下的任何一段摘要有問題裡的詞）就展開成下一層比較詳細的摘要，
+        // 在預算內盡量往下，沒關係的分支留在上層、不放進去。回傳選出的摘要節點（每個附 sc＝相關度、行範圍），之後原文片段另外查。
+        async _kiPickDigests(q, ids, mats, budget) {
+            const rows = await this._kiRun((store) => store.getDigests(ids && ids.length ? ids : null)); if (!rows.length) return [];
+            const qt = new Set(FaKnowledge.queryTokens(q)), relMemo = new Map(), rel = (d) => { if (relMemo.has(d)) return relMemo.get(d); const toks = FaKnowledge.tokenize(d.title + ' ' + d.text + ' ' + (d.terms || []).join(' ')); let m = 0; toks.forEach((t) => { if (qt.has(t)) m++; }); const v = toks.length ? m / Math.sqrt(toks.length) : 0; relMemo.set(d, v); return v; };
+            const bySrc = new Map(); rows.forEach((d) => { if (!bySrc.has(d.source_id)) bySrc.set(d.source_id, []); bySrc.get(d.source_id).push(d); });
+            const lvOf = (d) => (d.kind === 'doc' ? 99 : Number(String(d.kind).slice(1)) || 1), kidsMemo = new Map(), prioMemo = new Map(); let frontier = [], used = 0;
+            const mk = (list) => {
+                const maxLv = Math.max(0, ...list.filter((d) => d.kind !== 'doc').map(lvOf));
+                const kidsOf = (d) => { if (kidsMemo.has(d)) return kidsMemo.get(d); const lv = d.kind === 'doc' ? maxLv : lvOf(d) - 1; const ks = lv < 1 ? [] : list.filter((x) => x.kind !== 'doc' && lvOf(x) === lv && x.line_start >= d.line_start && x.line_end <= d.line_end).sort((a, b) => a.line_start - b.line_start); kidsMemo.set(d, ks); return ks; };
+                const prio = (d) => { if (prioMemo.has(d)) return prioMemo.get(d); let m = rel(d); kidsOf(d).forEach((k) => { m = Math.max(m, prio(k)); }); prioMemo.set(d, m); return m; };
+                return { kidsOf, prio, maxLv, doc: list.find((d) => d.kind === 'doc') };
+            };
+            const ctxs = new Map(); bySrc.forEach((list, sid) => { const c = mk(list); ctxs.set(sid, c); if (c.doc) frontier.push(c.doc); else list.filter((d) => lvOf(d) === c.maxLv).forEach((d) => { frontier.push(d); used += d.text.length; }); });
+            const blocked = new Set(); const cost = (d, kids) => kids.reduce((a, k) => a + k.text.length, 0) - (d.kind === 'doc' ? 0 : d.text.length);
+            for (let guard = 0; guard < 400; guard++) {
+                const cands = frontier.filter((d) => !blocked.has(d)).map((d) => ({ d, c: ctxs.get(d.source_id), p: ctxs.get(d.source_id).prio(d) })).filter((x) => x.p > 0 && x.c.kidsOf(x.d).length).sort((a, b) => b.p - a.p); if (!cands.length) break;
+                const top = cands[0], kids = top.c.kidsOf(top.d), cs = cost(top.d, kids); if (used + cs > budget) { blocked.add(top.d); continue; }
+                frontier = frontier.filter((d) => d !== top.d).concat(kids); used += cs;
             }
-            // 每個勾選的來源至少再用整個需求查一輪（限定那個來源），避免只撈到其中一份手冊
-            try { const srcList = (await this._kiRun((store) => store.listSources())).filter((x) => x.enabled).slice(0, 8); for (const sc of srcList) { if (mats.some((h) => h.source_id === sc.id) || mats.length >= 12) continue; const r = await this._kiAsk({ question: queries.join(' ') + ' ' + req.slice(0, 60), limit: 2, no_expand: true, sources: [sc.id] }).catch(() => null); let n = 0; for (const h of ((r && r.hits) || [])) { const k = h.source_id + ':' + h.line_start; if (seen.has(k) || mats.length >= 12) continue; seen.add(k); mats.push(h); n++; } if (n) step('　再從《' + sc.name + '》補 ' + n + ' 段素材'); } } catch (_) { /* */ }
-            if (!mats.length) return { ok: false, error: '知識庫裡找不到跟這件事相關的資料，沒有素材可以參考。（要憑 AI 自己的知識創作的話，請直接問一般的 AI 對話。）', queries };
-            for (const h of mats) { h.ctx = String(h.quote); if (h.ctx.length < 200 && h.source_id) { try { const d = await this._kiRun((store) => store.detail(h.source_id, { line_start: h.line_start, line_end: h.line_end + 10 }, { maxLines: 14 })); const tx = ((d && d.lines) || []).map((l) => l.text).join('\n'); if (tx.length > h.ctx.length) h.ctx = tx; } catch (_) { /* */ } } }
-            step('📚 收集到 ' + mats.length + ' 段素材，交給模型創作…');
-            const mkCtx = (per, n) => mats.slice(0, n).map((h, i) => '[' + (i + 1) + '] 《' + h.source + '》' + h.ctx.slice(0, per)).join('\n\n'), ctx = mkCtx(700, 12);
-            const prompt = ('要創作的事：' + req + '\n\n下面是從使用者知識庫找到的參考素材（有編號）：\n\n' + ctx + '\n\n請完成創作（例如設計、寫程式、規劃）。規則：1) 用到素材裡的語法、函式、API、規則、數字時，一定要照素材寫，並在那一句（或程式碼的那一行註解）標上素材編號，例如 [2]；2) 素材沒有講、但你憑自己的知識補上的用法，在那一句（或那行註解）標 [外]，讓使用者知道要自己確認；3) 結構、構想、演算法是你自己創作的，不用標；4) 不要假裝素材裡有它沒有的東西；5) 先用幾句話說明設計，再給成品；程式碼放在 ``` 圍起來的區塊裡。回答使用者用的語言。');
-            let text = ''; try { text = await this._kiLlm(prompt, { systemPrompt: '你是依據參考素材創作的助手：素材有的照素材，素材沒有的標 [外]。', maxTokens: 3800, temperature: 0.4 }, { label: '創作', timeoutMs: 240000, onStep, ctl, offlinePrompt: () => prompt.replace(ctx, () => mkCtx(300, 5)) }); } catch (e) { return { ok: false, error: '模型沒有回應：' + String((e && e.message) || e).slice(0, 160), queries, sources: mats }; }
-            text = String(text || '').trim(); if (!text) return { ok: false, error: '模型回了空白', queries };
-            let truncated = false; if ((text.match(/```/g) || []).length % 2 === 1) { text += '\n```'; truncated = true; } // 輸出被截斷時，程式碼區塊沒關起來
-            // 依據檢查
-            const corpus = mats.map((h) => FaKnowledge.fold(h.ctx)); const refs = new Map(); let invalid = 0;
-            const fixRef = (m, d) => { const k = Number(d); if (k >= 1 && k <= mats.length) { refs.set(k, true); return m; } invalid++; return '[?]'; };
-            const fixed = text.split(/(```[^\n]*\n[\s\S]*?```)/g).map((part) => /^```/.test(part) ? part.split('\n').map((ln) => { const ci = ln.search(/\/\/|\/\*|(^|\s)#(?!include|define|if|endif|else|pragma)|--\s/); return ci < 0 ? ln : ln.slice(0, ci) + ln.slice(ci).replace(/\[(\d+)\]/g, fixRef); }).join('\n') : part.replace(/\[(\d+)\]/g, fixRef)).join('');
-            const code = Array.from(fixed.matchAll(/```[^\n]*\n([\s\S]*?)```/g)).map((m) => m[1]).join('\n'), defined = new Set(Array.from(code.matchAll(/\b(?:int|void|char|float|double|auto|bool|long|short|unsigned|class|struct|enum|def|function|func|fn)\s+\**([A-Za-z_]\w*)\s*[(\{:<=]/g)).map((m) => m[1]).concat(Array.from(code.matchAll(/\b([A-Za-z_]\w*)\s*(?:=\s*(?:\(|function|lambda)|\(\s*[^)]*\)\s*\{)/g)).map((m) => m[1])));
-            const KW = new Set(['if', 'for', 'while', 'switch', 'return', 'sizeof', 'main', 'catch', 'else', 'do', 'case', 'new', 'delete', 'throw', 'print', 'range', 'len', 'typeof', 'defined', 'elif', 'and', 'or', 'not']);
-            const names = []; const add = (x) => { if (x && x.length >= 3 && !KW.has(x) && !defined.has(x.split(/::|\.|->/).pop()) && names.indexOf(x) < 0) names.push(x); };
-            Array.from(code.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*(?:(?:::|\.|->)[A-Za-z_][A-Za-z0-9_]*)*)\s*\(/g)).forEach((m) => add(m[1])); Array.from(code.matchAll(/#include\s*[<"]([^>"]+)[>"]/g)).forEach((m) => add(m[1])); Array.from(code.matchAll(/\bstd::[A-Za-z_]\w*/g)).forEach((m) => add(m[0]));
-            const inKb = [], notInKb = [];
-            for (const nm of names.slice(0, 40)) { const probe = [nm, nm.split(/::|\.|->/).pop()].filter((x) => x && x.length >= 3); let at = -1; for (const pr of probe) { at = corpus.findIndex((c) => c.indexOf(FaKnowledge.fold(pr)) >= 0); if (at >= 0) break; } if (at >= 0) inKb.push({ name: nm, n: at + 1 }); else notInKb.push(nm); }
-            step('🔍 依據檢查：程式碼用到 ' + names.length + ' 個名稱，素材裡找得到 ' + inKb.length + ' 個，素材沒提到 ' + notInKb.length + ' 個');
-            return { ok: true, text: fixed, queries, sources: mats.map((h, i) => ({ n: i + 1, label: h.label, source: h.source, source_id: h.source_id, line_start: h.line_start, line_end: h.line_end, quote: h.quote, ctx: h.ctx })), report: { inKb, notInKb, invalid_refs: invalid, cited: Array.from(refs.keys()), truncated }, ms: Date.now() - t0 };
+            return frontier.filter((d) => d.kind !== 'doc').map((d) => Object.assign({}, d, { sc: ctxs.get(d.source_id).prio(d) })).filter((d) => d.sc > 0).sort((a, b) => a.source_id - b.source_id || a.line_start - b.line_start);
+        },
+        // 檢索到的片段太短（只是標題）時，把後面幾行一起拿來
+        async _kiWidenHits(mats) { for (const h of mats) { if (h.ctx) continue; h.ctx = String(h.quote); if (h.ctx.length < 200 && h.source_id) { try { const d = await this._kiRun((store) => store.detail(h.source_id, { line_start: h.line_start, line_end: h.line_end + 10 }, { maxLines: 14 })); const tx = ((d && d.lines) || []).map((l) => l.text).join('\n'); if (tx.length > h.ctx.length) h.ctx = tx; } catch (_) { /* */ } } } },
+        // 要設計／寫程式這類請求：請模型列出要查的短關鍵詞，每條都查，每個來源至少再查一輪（避免只撈到其中一份手冊）
+        async _kiGatherPlanned(request, onStep, ctl, sources, addHit, mats) {
+            const step = (t) => { try { if (onStep) onStep(t); } catch (_) { /* */ } }; let queries = [];
+            step('🧭 這是要創作／設計的請求，先決定要從知識庫查哪些資料…');
+            try { const rp = await this._kiLlm('使用者說：「' + String(request).slice(0, 400) + '」\n他有一個知識庫（裡面是他放進去的手冊、文件）。為了做好這件事，需要先從知識庫查哪些資料（語法規則、函式用法、設計規範…）？請列出最多 8 個查詢，一行一個，每個只有 1 到 3 個詞，像搜尋引擎的關鍵詞（例如：struct、vector sort、scanf），中英文都可以，不要解釋、不要寫完整句子。', { systemPrompt: '你只負責列出要查什麼，不回答。', maxTokens: 500, temperature: 0 }, { label: '決定要查什麼', timeoutMs: 45000, onStep, ctl }); queries = String(rp || '').split('\n').map((l) => l.replace(/^[\s\-*\d.、)）]+/, '').trim()).filter((l) => l && l.length <= 40).slice(0, 8); } catch (e) { if (/已略過/.test(String((e && e.message) || e))) throw e; }
+            if (!queries.length) return; step('　要查：' + queries.join('；'));
+            for (const q of queries) { const r = await this._kiAsk({ question: q, limit: 3, no_expand: true, sources }).catch(() => null); let n = 0; for (const h of ((r && r.hits) || [])) if (mats.length < 14 && addHit(h)) n++; if (n) step('　「' + q.slice(0, 30) + '」→ 新增 ' + n + ' 段'); }
+            try { const srcList = (await this._kiRun((store) => store.listSources())).filter((x) => x.enabled).slice(0, 8); for (const sc of srcList) { if (mats.some((h) => h.source_id === sc.id) || mats.length >= 14) continue; const r = await this._kiAsk({ question: queries.join(' ') + ' ' + String(request).slice(0, 60), limit: 2, no_expand: true, sources: [sc.id] }).catch(() => null); let n = 0; for (const h of ((r && r.hits) || [])) if (mats.length < 14 && addHit(h)) n++; if (n) step('　再從《' + sc.name + '》補 ' + n + ' 段'); } } catch (_) { /* */ }
+        },
+        async _kiRespond(question, history, onStep, ctl, sources) {
+            const step = (t) => { try { if (onStep) onStep(t); } catch (_) { /* */ } }, t0 = Date.now(), q = String(question || '').trim(); if (!q) return { ok: false, error: '請說要問什麼' };
+            const creative = /設計|寫(一個|個|出)?(程式|程序|腳本|code)|實作|實現|幫我(寫|做|設計|規劃)|規劃|產生|生成|範例|\b(design|implement|write|create|build|generate)\b/i.test(q);
+            const ids = sources ? await this._kiResolveIds(sources) : null; const mats = [], seen = new Set();
+            const addHit = (h) => { const k = h.source_id + ':' + h.line_start; if (seen.has(k)) return false; seen.add(k); mats.push(h); return true; };
+            step('🔎 從知識庫找相關資料…'); const r0 = await this._kiAsk({ question: q, limit: 8, sources, onStep: step, ctl }).catch(() => ({ found: false, hits: [] })); (r0.hits || []).forEach(addHit);
+            if (creative) await this._kiGatherPlanned(q, step, ctl, sources, addHit, mats);
+            const hist = (Array.isArray(history) ? history : []).slice(-4).map((h) => '使用者：' + String(h.q).slice(0, 100) + '\n你：' + String(h.a || '').slice(0, 220)).join('\n');
+            let attempts = 0, needed = [], used = null, reply = '';
+            for (;;) {
+                attempts++; await this._kiWidenHits(mats); const digs = await this._kiPickDigests(q, ids, mats, Math.floor(this._kiBudgetChars(false) * 0.28));
+                // 組提示詞（同步版）：先概覽、再摘要、其餘給原文片段
+                const mapCache = {}; const getMap = async (offline) => { const k = offline ? 'o' : 'n'; if (!mapCache[k]) mapCache[k] = await this._kiMapText(ids, Math.floor(this._kiBudgetChars(offline) * 0.18)); return mapCache[k]; };
+                const composeFor = (offline, mapText) => {
+                    const bud = this._kiBudgetChars(offline), digMax = Math.floor(bud * 0.28), items = []; let used2 = 0;
+                    const passMax = bud - Math.floor(bud * 0.18) - digMax;
+                    mats.forEach((h) => { const per = offline ? 350 : 900, txt = String(h.ctx || h.quote).slice(0, per); if (used2 + txt.length > passMax && items.length) return; used2 += txt.length; items.push({ n: items.length + 1, label: h.label, source: h.source, source_id: h.source_id, line_start: h.line_start, line_end: h.line_end, quote: h.quote, ctx: txt }); });
+                    let du = 0; digs.slice().sort((x, y) => y.sc - x.sc).forEach((d) => { if (du + d.text.length > digMax) return; du += d.text.length; items.push({ n: 0, digest: true, label: '《' + d.name + '》第 ' + d.line_start + '–' + d.line_end + ' 行的摘要（模型整理，不是原文）', source: d.name, source_id: d.source_id, line_start: d.line_start || 1, line_end: d.line_end || 1, quote: d.text, ctx: d.text }); });
+                    items.sort((x, y) => (x.digest ? 1 : 0) - (y.digest ? 1 : 0)); items.forEach((x, k) => { x.n = k + 1; });
+                    const refs = items.map((x) => '[' + x.n + '] ' + (x.digest ? '（摘要）' : '《' + x.source + '》') + x.ctx).join('\n\n');
+                    const prompt = '【知識庫概覽】（使用者放進來的所有文件，一份一兩句）\n' + mapText + '\n\n' + (hist ? '【對話前文】\n' + hist + '\n\n' : '') + '【參考資料】（有編號；標「摘要」的是事先讀過整理的大意，其餘是原文片段）\n' + (refs || '（這次沒有檢索到相關片段，只有上面的概覽）') + '\n\n【使用者說】\n' + q + '\n\n請像一個讀懂了這些文件的人那樣回答：\n1) 用自己的話理解、整合之後，以自然流暢的段落說明（需要時可以用少量條列），不要把原文一條一條照抄列出來；\n2) 有具體依據的地方，在句末標資料編號 [n]（整段的結尾標也可以）；指令、數字、名稱照資料原樣寫；\n3) 使用者要你設計、寫程式或創作時，直接創作：用到資料裡的語法、API、規則要照資料寫並標編號；資料沒講、憑你自己的知識補的，在那一句（程式碼是那一行的註解）標 [外]；結構與構想是你的，不用標；程式碼放在 ``` 圍起來的區塊裡；\n4) 資料不足以回答時，明講「知識庫裡沒有足夠的資料」，說明有什麼、缺什麼，再視情況用一般知識補充並標 [外]；\n5) 如果還需要看更多細節才答得好，答案寫完後最後一行輸出 NEED: 查詢1; 查詢2（只在真的需要時，每個查詢 1 到 3 個詞）。\n回答使用者用的語言。';
+                    return { prompt, items };
+                };
+                const online = composeFor(false, await getMap(false)); let cur = online;
+                step('📚 交給模型：概覽 ' + (await getMap(false)).split('\n').length + ' 份文件、章節摘要 ' + digs.length + ' 則、原文片段 ' + online.items.filter((x) => !x.digest).length + ' 段，提示詞共約 ' + online.prompt.length + ' 字' + (attempts > 1 ? '（補查之後第 ' + attempts + ' 次）' : '') + '…');
+                const offMap = await getMap(true); let off = null;
+                try {
+                    reply = await this._kiLlm(online.prompt, { systemPrompt: '你是使用者的藏書閣：他放進來的文件就是你的記憶。依資料理解後用自己的話回答，有依據的標編號，資料沒有的標 [外]。', maxTokens: 3500, temperature: 0.3 }, { label: '回答', timeoutMs: 240000, onStep: step, ctl, onAttempt: (kind) => { if (kind === 'offline') { off = off || composeFor(true, offMap); cur = off; } else cur = online; }, offlinePrompt: () => (off = off || composeFor(true, offMap)).prompt });
+                } catch (e) { return { ok: false, error: '模型沒有回應：' + String((e && e.message) || e).slice(0, 160), sources: online.items }; }
+                used = cur;
+                const nm = String(reply).match(/(?:^|\n)\s*NEED\s*[:：]\s*(.+)\s*$/i);
+                if (nm && attempts < 2) { needed = nm[1].split(/[;；]/).map((x) => x.trim()).filter(Boolean).slice(0, 4); step('🔁 模型想看更多：' + needed.join('；') + '，再查一輪…'); let n = 0; for (const nq of needed) { const rr = await this._kiAsk({ question: nq, limit: 3, no_expand: true, sources }).catch(() => null); for (const h of ((rr && rr.hits) || [])) if (mats.length < 16 && addHit(h)) n++; } step('　補了 ' + n + ' 段'); if (n) continue; }
+                break;
+            }
+            // 核對
+            let text = String(reply || '').replace(/(?:^|\n)\s*NEED\s*[:：].*$/i, '').trim(); if (!text) return { ok: false, error: '模型回了空白', sources: used.items };
+            if ((text.match(/```/g) || []).length % 2 === 1) text += '\n```';
+            // 模型常把編號寫成 [2, 4]：統一成 [2][4]（程式碼區塊本身不動，只處理註解與說明文字）
+            const normList = (t) => t.replace(/\[(\d+(?:\s*[,，、]\s*\d+)+)\]/g, (m, g) => g.split(/\s*[,，、]\s*/).map((y) => '[' + y + ']').join(''));
+            text = text.split(/(```[^\n]*\n[\s\S]*?```)/g).map((part) => (/^```/.test(part) ? part.split('\n').map((ln) => { const ci = ln.search(/\/\/|\/\*|(^|\s)#(?!include|define|if|endif|else|pragma)|--\s/); return ci < 0 ? ln : ln.slice(0, ci) + normList(ln.slice(ci)); }).join('\n') : part.split(/(`[^`]*`)/g).map((x, i) => (i % 2 ? x : normList(x))).join(''))).join('');
+            const items = used.items, corpus = FaKnowledge.fold(items.map((x) => x.ctx).join('\n') + '\n' + (await this._kiMapText(ids, 6000))).toLowerCase().replace(/\s+/g, '');
+            const dropped = [], cited = new Set(); let invalid = 0;
+            const fixRef = (m, d) => { const k = Number(d); if (k >= 1 && k <= items.length) { cited.add(k); return m; } invalid++; return '[?]'; };
+            const cmdBad = (c) => { if (corpus.indexOf(FaKnowledge.fold(c).toLowerCase().replace(/\s+/g, '')) >= 0) return false; const toks = c.match(/[A-Za-z][A-Za-z0-9_]{2,}/g) || []; return toks.some((w) => corpus.indexOf(w.toLowerCase()) < 0); };
+            const fixOutside = (t) => t.split(/(`[^`]*`)/g).map((x, i) => (i % 2 ? x : x.replace(/\[(\d+)\]/g, fixRef))).join('');
+            const splitP = (text, re) => { const sp = []; const pr = text.replace(/`[^`]*`/g, (m) => { sp.push(m); return '\u0001' + (sp.length - 1) + '\u0002'; }); return pr.split(re).map((x) => x.replace(/\u0001(\d+)\u0002/g, (m, i) => sp[Number(i)])); };
+            const outParts = text.split(/(```[^\n]*\n[\s\S]*?```)/g).map((part) => {
+                if (/^```/.test(part)) return part.split('\n').map((ln) => { const ci = ln.search(/\/\/|\/\*|(^|\s)#(?!include|define|if|endif|else|pragma)|--\s/); return ci < 0 ? ln : ln.slice(0, ci) + ln.slice(ci).replace(/\[(\d+)\]/g, fixRef); }).join('\n');
+                return part.split('\n').map((line) => {
+                    const segs = splitP(line, /(?<=[。！？!?；;])/); const kept = [];
+                    for (const seg of segs) {
+                        const plain = seg.replace(/\[(?:\d+|外|\?)\]/g, '').trim(); if (!plain) { kept.push(seg); continue; }
+                        if (/\[外\]/.test(seg)) { kept.push(fixOutside(seg)); continue; }
+                        const bt = Array.from(plain.matchAll(/`([^`]+)`/g)).map((m) => m[1]); const badCmd = bt.find(cmdBad);
+                        const ids2 = (plain.replace(/`[^`]*`/g, ' ').match(/[A-Za-z][A-Za-z0-9_.\-/:]{3,}|\d+(?:\.\d+)+|\d{3,}/g) || []).map((w) => w.replace(/[.\-:/]+$/, '')); const missing = ids2.filter((w) => w.length >= 3 && corpus.indexOf(w.toLowerCase()) < 0);
+                        if (badCmd || missing.length) {
+                            // 只丟有問題的子句，同一句裡有依據的部分保留
+                            const clauses = splitP(seg, /(?<=[，,；;、：:])/), bad = (cl) => { const pl = cl.replace(/\[(?:\d+|外|\?)\]/g, ''); return bt.some((c) => pl.indexOf(c) >= 0 && cmdBad(c)) || missing.some((w) => pl.toLowerCase().indexOf(w.toLowerCase()) >= 0); };
+                            const good = clauses.filter((cl) => !bad(cl)), badOnes = clauses.filter(bad), why = badCmd ? '程式碼「' + badCmd.slice(0, 40) + '」用到的名稱在給模型的資料裡找不到（沒標 [外]）' : '「' + missing.slice(0, 3).join('、') + '」在給模型的資料裡找不到（沒標 [外]）';
+                            badOnes.forEach((cl) => dropped.push({ text: cl.replace(/\[(?:\d+|外|\?)\]/g, '').trim().slice(0, 140), why }));
+                            if (good.join('').replace(/\[(?:\d+|外|\?)\]/g, '').replace(/[，,；;、：:。！？!?\s]/g, '').length >= 14) { let t = good.join('').replace(/[，,；;、：:]\s*$/, ''); if (!/[。！？!?]\s*$/.test(t) && /[。！？!?]\s*$/.test(seg)) t += seg.match(/[。！？!?]\s*$/)[0]; kept.push(fixOutside(t)); }
+                            continue;
+                        }
+                        kept.push(fixOutside(seg));
+                    }
+                    return kept.join('');
+                }).join('\n');
+            });
+            const fixed = outParts.join('').replace(/\n{3,}/g, '\n\n').trim();
+            // 程式碼的依據檢查
+            const code = Array.from(fixed.matchAll(/```[^\n]*\n([\s\S]*?)```/g)).map((m) => m[1]).join('\n'); let report = null;
+            if (code.trim()) {
+                const defined = new Set(Array.from(code.matchAll(/\b(?:int|void|char|float|double|auto|bool|long|short|unsigned|class|struct|enum|def|function|func|fn)\s+\**([A-Za-z_]\w*)\s*[(\{:<=]/g)).map((m) => m[1]).concat(Array.from(code.matchAll(/\b([A-Za-z_]\w*)\s*(?:=\s*(?:\(|function|lambda)|\(\s*[^)]*\)\s*\{)/g)).map((m) => m[1])));
+                const KW = new Set(['if', 'for', 'while', 'switch', 'return', 'sizeof', 'main', 'catch', 'else', 'do', 'case', 'new', 'delete', 'throw', 'print', 'range', 'len', 'typeof', 'defined', 'elif', 'and', 'or', 'not']); const names = []; const add = (x) => { if (x && x.length >= 3 && !KW.has(x) && !defined.has(x.split(/::|\.|->/).pop()) && names.indexOf(x) < 0) names.push(x); };
+                Array.from(code.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*(?:(?:::|\.|->)[A-Za-z_][A-Za-z0-9_]*)*)\s*\(/g)).forEach((m) => add(m[1])); Array.from(code.matchAll(/#include\s*[<"]([^>"]+)[>"]/g)).forEach((m) => add(m[1])); Array.from(code.matchAll(/\bstd::[A-Za-z_]\w*/g)).forEach((m) => add(m[0]));
+                const inKb = [], notInKb = []; const rawCorp = items.map((x) => FaKnowledge.fold(x.ctx));
+                for (const nm of names.slice(0, 40)) { const probe = [nm, nm.split(/::|\.|->/).pop()].filter((x) => x && x.length >= 3); let at = -1; for (const pr of probe) { at = rawCorp.findIndex((c) => c.indexOf(FaKnowledge.fold(pr)) >= 0); if (at >= 0) break; } if (at >= 0) inKb.push({ name: nm, n: at + 1 }); else notInKb.push(nm); }
+                report = { inKb, notInKb }; step('🔍 依據檢查：程式碼用到 ' + names.length + ' 個名稱，資料裡找得到 ' + inKb.length + ' 個，沒提到 ' + notInKb.length + ' 個');
+            }
+            step('✅ 核對完成：' + (dropped.length ? '丟掉 ' + dropped.length + ' 句對不上資料的' : '沒有句子被丟掉') + (invalid ? '，' + invalid + ' 個編號不存在' : ''));
+            return { ok: true, text: fixed, sources: items, dropped, report, cited: Array.from(cited), needed, creative, invalid_refs: invalid, ms: Date.now() - t0 };
+        },
+        // ───── 摘要：逐層壓縮（像「分析大檔案」的 map-reduce），資訊不砍，只一層一層變精簡 ─────
+        // 整份文件依序切成小段（每段約 2400 字，不切斷行、盡量在章節邊界換段）→ 每段摘一次（第 1 層）→ 每 6 個相鄰的摘要再摘一次（第 2 層）→ … → 最後一層只剩一個，就是整份文件的概覽（doc）。
+        // 每一層都存下來（附行範圍），所以全文每一段都被讀過、沒有任何內容被截掉；回答時由上往下展開——只展開跟問題有關的分支，其他的留在上層的精簡版，上下文不會被塞爆。
+        // 程式主導：怎麼切、怎麼分組、做到哪、要不要繼續都是程式決定；摘要裡的數字、英文名稱、指令必須在它的來源（原文或下一層的子摘要）裡找得到，核對不過的句子丟掉；可以停止，已做好的不重做、下次接著做。
+        async _kiSummarize(text, mk, label, ctl) {
+            const opts = { systemPrompt: '你把一段文字概括成幾句話，只根據內容，不加內容裡沒有的東西。', maxTokens: 900, temperature: 0 };
+            const offFirst = !!(this.advancedSettings && this.advancedSettings.offlineMode);
+            if (!offFirst) { try { return await this._kiLlm(mk(text), opts, { label, timeoutMs: 120000, ctl, noOffline: true }); } catch (e) { if (/已略過/.test(String((e && e.message) || e))) throw e; } }
+            // 線上不行（或離線優先）：切成兩半各自用離線模型摘，再把兩段摘要接起來——離線模型的上下文小，但資訊不砍掉
+            const t = String(text), mid = t.length > 1600 ? (() => { const m = t.indexOf('\n', Math.floor(t.length / 2)); return m > 0 && m < t.length - 200 ? m : Math.floor(t.length / 2); })() : -1, parts = mid > 0 ? [t.slice(0, mid), t.slice(mid)] : [t], outs = [];
+            for (const part of parts) outs.push(await this._kiLlm(mk(part), opts, { label: label + '（離線）', timeoutMs: 180000, ctl, only: 'offline' }));
+            return outs.join('\n');
+        },
+        async _kiBuildDigest(srcId, onProg, ctl) {
+            const src = await this._kiRun((store) => store.getSource(srcId)); if (!src) return { ok: false, error: '找不到來源' };
+            const have = await this._kiRun((store) => store.getDigests([srcId])), haveMap = new Map(have.map((d) => [d.kind + ':' + d.n, d])), norm = (x) => FaKnowledge.fold(x).toLowerCase().replace(/\s+/g, '');
+            const parse = (reply, basis) => {
+                const lines = String(reply || '').split('\n').map((l) => l.trim()).filter(Boolean); let terms = []; const body = [];
+                for (const l of lines) { const m = /^(?:關鍵詞|关键词|關鍵字|keywords?)\s*[:：]\s*(.+)$/i.exec(l); if (m) terms = terms.concat(m[1].split(/[、,，;；]/).map((x) => x.trim()).filter((x) => x && x.length <= 30)); else body.push(l); }
+                const hay = norm(basis), kept = []; let dropped = 0;
+                body.join('').split(/(?<=[。！？!?])/).forEach((sg) => { const ids = (sg.match(/[A-Za-z][A-Za-z0-9_.\-/:]{3,}|\d+(?:\.\d+)+|\d{3,}/g) || []).map((w) => w.replace(/[.\-:/]+$/, '')); if (ids.some((w) => w.length >= 3 && hay.indexOf(w.toLowerCase()) < 0)) dropped++; else kept.push(sg); });
+                return { text: kept.join('').trim(), terms: Array.from(new Set(terms.filter((x) => hay.indexOf(norm(x)) >= 0))).slice(0, 8), dropped };
+            };
+            // 第 1 層的視窗：依序切全文，一行都不漏
+            const WIN = 2400, secStarts = new Set((src.sections || []).filter((x) => x.level <= 2).map((x) => x.line_start)), windows = []; let cur = null;
+            const flush = () => { if (cur) { windows.push({ a: cur.a, b: cur.b, text: cur.lines.join('\n') }); cur = null; } };
+            for (let li = 0; li < src.lines.length; li++) {
+                const ln = src.lines[li], l1 = li + 1;
+                if (ln.length > WIN * 1.5) { flush(); for (let o = 0; o < ln.length; o += WIN) windows.push({ a: l1, b: l1, text: ln.slice(o, o + WIN) }); continue; }
+                if (cur && (cur.len + ln.length + 1 > WIN || (secStarts.has(l1) && cur.len >= 600))) flush();
+                if (!ln.trim() && !cur) continue;
+                if (!cur) cur = { a: l1, b: l1, lines: [], len: 0 }; cur.lines.push(ln); cur.len += ln.length + 1; cur.b = l1;
+            }
+            flush(); if (!windows.length) return { ok: true, made: 0, failed: 0, dropped: 0, total: 0 };
+            let total = 0; { let c = windows.length; if (c === 1) total = 1; else { total = c; while (c > 1) { c = Math.ceil(c / 6); total += c; } } }
+            let done = 0, made = 0, failed = 0, dropped = 0, level = 1, nodes = windows.map((w) => ({ a: w.a, b: w.b, text: w.text })), levels = 0;
+            for (; level <= 12; level++) {
+                const groups = []; if (level === 1) nodes.forEach((x) => groups.push([x])); else for (let g = 0; g < nodes.length; g += 6) groups.push(nodes.slice(g, g + 6));
+                const isDoc = groups.length === 1, out = [];
+                for (let gi = 0; gi < groups.length; gi++) {
+                    const g = groups[gi], kind = isDoc ? 'doc' : 'L' + level, n = isDoc ? 0 : gi + 1, a = g[0].a, b = g[g.length - 1].b, ex = haveMap.get(kind + ':' + n);
+                    if (ex && ex.line_start === a && ex.line_end === b) { out.push({ a, b, text: ex.text }); done++; continue; }
+                    if (this._kiOrgStop) return { ok: true, stopped: true, made, failed, dropped, total, levels };
+                    onProg && onProg({ done, total, text: '摘要 ' + (done + 1) + '/' + total + '（' + (isDoc ? '整份概覽' : '第 ' + level + ' 層') + '）' });
+                    const basis = level === 1 ? g[0].text : g.map((x) => '[第 ' + x.a + '–' + x.b + ' 行] ' + x.text).join('\n');
+                    const mk = (txt) => isDoc
+                        ? '下面是文件《' + src.name + '》' + (level === 1 ? '的全文' : '各部分的摘要') + '。請用 3 到 5 句話概括這整份文件在講什麼、適合誰看、有哪些主要部分，用自己的話寫；最後另起一行寫「關鍵詞：」，接 5 到 8 個文件裡原本就有的詞，用頓號隔開。\n\n' + txt
+                        : level === 1
+                            ? '下面是文件《' + src.name + '》第 ' + a + '–' + b + ' 行的內容（依序切下來的一段）。請用 2 到 4 句話，用自己的話概括這一段在講什麼（重要的名稱、指令、數字照原樣保留，不要逐句抄）；最後另起一行寫「關鍵詞：」，接 3 到 6 個這一段裡原本就有的詞，用頓號隔開。\n\n' + txt
+                            : '下面是文件《' + src.name + '》依序排列的幾段摘要（含行範圍）。請整合成 2 到 4 句話：保留重要的名稱、指令、數字，涵蓋每一段的主要主題，不要遺漏；最後另起一行寫「關鍵詞：」，接 3 到 6 個詞，用頓號隔開。\n\n' + txt;
+                    let reply = null; try { reply = await this._kiSummarize(basis, mk, isDoc ? '整份概覽' : '摘要', ctl); } catch (e) { if (/已略過/.test(String((e && e.message) || e))) return { ok: true, stopped: true, made, failed, dropped, total, levels }; failed++; done++; if (failed >= 2 && made === 0) return { ok: false, error: '模型連續沒有回應：' + String((e && e.message) || e).slice(0, 100), made, failed, total }; continue; }
+                    const r = parse(reply, basis); dropped += r.dropped; done++;
+                    if (r.text) { await this._kiRun((store) => store.putDigest(srcId, kind, n, isDoc ? src.name : '第 ' + a + '–' + b + ' 行', a, b, r.text, r.terms, 'model'), true); made++; out.push({ a, b, text: r.text }); }
+                    else { const ext = level === 1 ? basis.split('\n').map((x) => x.trim()).filter(Boolean).slice(0, 3).join(' ').slice(0, 320) : g.map((x) => String(x.text).slice(0, 110)).join(' ').slice(0, 480); if (ext) { await this._kiRun((store) => store.putDigest(srcId, kind, n, isDoc ? src.name : '第 ' + a + '–' + b + ' 行', a, b, ext, [], 'extract'), true); out.push({ a, b, text: ext }); made++; } failed++; }
+                }
+                levels = level; if (isDoc || !out.length) break; nodes = out;
+            }
+            return { ok: true, made, failed, dropped, total, levels };
         },
         // 叫模型：先走線上；線上逾時／出錯，緊接著改用離線文字模型（使用者在 Configure 裝好的）；離線也不行，再試一次線上（節點重新上線後就接得上）。
         // 每一步都用 onStep 說出原因與秒數；使用者可以按「略過等待」（ctl.cancel）。全部失敗就丟出最後一個錯誤，呼叫端退回「只給原文」，不會卡住。
         // 離線小模型的上下文小，所以呼叫端可以給 offlinePrompt（較短的提示詞）。離線模型寫出來的東西一樣要過逐句核對。
         async _kiLlm(prompt, opts, o) {
             o = o || {}; const tm = o.timeoutMs || 60000, step = o.onStep || (() => {}), offFirst = !!(this.advancedSettings && this.advancedSettings.offlineMode);
-            const plan = offFirst ? ['offline', 'online'] : ['online', 'offline', 'online']; let lastErr = null, offlineGone = false;
+            const plan = o.only === 'offline' ? ['offline'] : offFirst ? ['offline', 'online'] : o.noOffline ? ['online', 'online'] : ['online', 'offline', 'online']; let lastErr = null, offlineGone = false;
             for (let i = 0; i < plan.length; i++) {
-                const kind = plan[i]; if (kind === 'offline' && offlineGone) continue;
+                const kind = plan[i]; if (kind === 'offline' && offlineGone) continue; if (o.onAttempt) { try { o.onAttempt(kind); } catch (_) { /* */ } }
                 let timer = null; const t0 = Date.now(), label = (o.label || '模型') + (kind === 'offline' ? '（離線模型）' : '');
                 if (kind === 'offline') step('🔌 ' + (i === 0 ? '離線模式：' : '線上沒成功，緊接著') + '改用離線文字模型…（第一次要載入模型，會比較慢；小模型的品質有限，寫出來的一樣會逐句核對）');
                 try {
@@ -465,7 +615,7 @@ const FaKnowledgeHost = (function () {
         async _kiOrganize(ref, onProgress) {
             const list = await this._kiRun((store) => store.listSources()); const one = ref ? await this._kiRun((store) => store.findSource(ref)) : null; const targets = ref ? (one ? list.filter((s) => s.id === one.id) : []) : list.filter((s) => s.enabled);
             if (!targets.length) return { ok: false, error: ref ? '找不到來源：' + ref : '知識庫是空的' };
-            const report = []; let rejected = 0;
+            const report = []; let rejected = 0; this._kiOrgStop = false;
             for (const t of targets) {
                 if (onProgress) onProgress('整理「' + t.name + '」…'); this._kiEmit({ op: 'organize', source_id: t.id, name: t.name, done: report.length, total: targets.length, text: '模型整理 ' + (report.length + 1) + '/' + targets.length + '：' + t.name });
                 const src = await this._kiRun((store) => store.getSource(t.id)); const sample = src.text.length > 6000 ? src.text.slice(0, 3000) + '\n…\n' + src.text.slice(Math.floor(src.text.length / 2) - 1000, Math.floor(src.text.length / 2) + 1000) : src.text;
@@ -474,7 +624,9 @@ const FaKnowledgeHost = (function () {
                 const hay = src.text.toLowerCase().replace(/\s+/g, ''); const terms = [];
                 String(reply || '').split('\n').map((l) => l.replace(/^[\s\-*\d.、)）]+/, '').trim()).filter((l) => l && l.length <= 40).forEach((l) => { if (hay.indexOf(l.toLowerCase().replace(/\s+/g, '')) >= 0 && terms.indexOf(l) < 0) terms.push(l); else rejected++; });
                 await this._kiRun((store) => store.setTags(t.id, terms.slice(0, 8), 'model'), true);
-                report.push({ source: t.name, tags: terms.slice(0, 8) });
+                const dg = await this._kiBuildDigest(t.id, (e) => this._kiEmit({ op: 'organize', source_id: t.id, name: t.name, done: e.done, total: e.total, text: '模型整理 ' + (report.length + 1) + '/' + targets.length + '：' + t.name.slice(0, 20) + '　' + e.text }), null).catch((e) => ({ ok: false, error: String((e && e.message) || e).slice(0, 100) }));
+                report.push({ source: t.name, tags: terms.slice(0, 8), digest: dg });
+                if (this._kiOrgStop) { this._kiOrgStop = false; this._kiEmit({ op: 'organize', end: true }); return { ok: true, organized: report, links: 0, rejected_terms: rejected, stopped: true, note: '已停止；做好的摘要保留，下次接著做。' }; }
             }
             this._kiEmit({ op: 'organize', done: targets.length, total: targets.length, text: '重算關聯…' });
             const lk = await this._kiRun((store) => store.rebuildLinks(), true); this._kiEmit({ op: 'organize', end: true, done: targets.length, total: targets.length });
@@ -495,7 +647,7 @@ const FaKnowledgeHost = (function () {
         },
         async _kiStatus() {
             const st = await this._kiRun((store) => store.stats()); const k = this._kiSettings();
-            return { ok: true, location: k.location, location_label: this._kiLocationLabel(), ref: this._kiRef(), capacity_mb: k.maxMB || 0, images: k.images, stats: st, semantic: !!(k.embedConsent && st.vectors > 0) };
+            return { ok: true, location: k.location, location_label: this._kiLocationLabel(), ref: this._kiRef(), capacity_mb: k.maxMB || 0, images: k.images, digests: await this._kiRun((store) => store.digestCounts()).catch(() => null), stats: st, semantic: !!(k.embedConsent && st.vectors > 0) };
         },
         // ───── 面板（對話裡的小工具：查詢／管理／關聯）─────
         _kiPanelHost() {
@@ -503,7 +655,7 @@ const FaKnowledgeHost = (function () {
             return {
                 palette: () => ({ dark: !self._isLightTheme() }),
                 status: () => self._kiStatus(), sources: () => self._kiSources(),
-                ask: (a) => self._kiAsk(a), proposeLinks: (onStep) => self._kiProposeLinks(onStep), chatLoad: () => self._kiChatLoad(), chatSave: (l) => self._kiChatSave(l), chatClear: () => self._kiChatClear(), route: (q, h, onStep, ctl) => self._kiRoute(q, h, onStep, ctl), create: (req, onStep, ctl) => self._kiCreate(req, onStep, ctl), answerAI: (q, hits, onStep, ctl) => self._kiAnswerAI(q, hits, onStep, ctl), onProgress: (fn) => self._kiOn(fn),
+                ask: (a) => self._kiAsk(a), proposeLinks: (onStep) => self._kiProposeLinks(onStep), respond: (q, h, onStep, ctl) => self._kiRespond(q, h, onStep, ctl), stopOrganize: () => { self._kiOrgStop = true; }, chatLoad: () => self._kiChatLoad(), chatSave: (l) => self._kiChatSave(l), chatClear: () => self._kiChatClear(), route: (q, h, onStep, ctl) => self._kiRoute(q, h, onStep, ctl), answerAI: (q, hits, onStep, ctl) => self._kiAnswerAI(q, hits, onStep, ctl), onProgress: (fn) => self._kiOn(fn),
                 outline: (ref) => self._kiWithSource(ref, (store, s) => store.outline(s.id)),
                 detail: (ref, which, o) => self._kiWithSource(ref, (store, s) => store.detail(s.id, which, o)),
                 summary: (ref) => self._kiWithSource(ref, (store, s) => store.summary(s.id)),

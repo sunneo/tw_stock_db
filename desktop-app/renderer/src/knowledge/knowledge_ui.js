@@ -44,7 +44,7 @@
   function mount(opt) {
     var host = opt.host || {}, el = h('div', 'fki'), dark = false; try { dark = !!(host.palette && host.palette().dark); } catch (e) { dark = false; } if (dark) el.className += ' dark';
     if (!document.getElementById('fki-css')) { var st0 = document.createElement('style'); st0.id = 'fki-css'; st0.textContent = CSS; (document.head || document.documentElement).appendChild(st0); }
-    var sources = [], busy = false, lastQuery = '', statusInfo = {}, orgNow = null, orgDone = {}, embActive = false, embText = '', refreshT = 0;
+    var sources = [], busy = false, lastQuery = '', statusInfo = {}, orgNow = null, orgDone = {}, orgProg = {}, orgRunning = false, embActive = false, embText = '', refreshT = 0;
     // 進度事件（建立語意向量、模型整理）：上面的進度列說明現在做到哪，每個來源下面的進度條跟著動
     function setOpl(t) { opl.textContent = t || ''; opl.className = 'opl' + (t ? ' on' : ''); }
     var offProg = host.onProgress ? host.onProgress(function (ev) {
@@ -56,7 +56,7 @@
         setOpl(ev.end ? '' : ev.text || '🖼 讀圖片中…');
       } else if (ev.op === 'organize') {
         if (ev.end) { orgNow = null; setOpl(''); renderList(); return; }
-        if (ev.source_id != null) { if (orgNow != null) orgDone[orgNow] = true; orgNow = ev.source_id; } setOpl('🧹 ' + (ev.text || '模型整理中…')); renderList();
+        if (ev.source_id != null) { if (orgNow != null && orgNow !== ev.source_id) orgDone[orgNow] = true; orgNow = ev.source_id; orgProg[ev.source_id] = { done: ev.done || 0, total: ev.total || 0, text: ev.text || '' }; } setOpl('🧹 ' + (ev.text || '模型整理中…')); renderList();
       }
     }) : null;
     function refreshSourcesOnly() { return host.sources().then(function (r) { sources = (r && r.sources) || sources; renderList(); }).catch(function () { /* */ }); }
@@ -72,7 +72,7 @@
     bAll.type = 'checkbox'; bAll.title = '全選／全不選'; bAdd.title = '加入來源：檔案、網址、貼上的文字（也可以直接把檔案拖進來）'; fileIn.type = 'file'; fileIn.multiple = true; fileIn.style.display = 'none';
     [bAll, sidetitle, bAdd, fileIn].forEach(function (x) { sidehd.appendChild(x); }); var opl = h('div', 'opl'); [sidehd, opl, list, dropov].forEach(function (x) { side.appendChild(x); });
     var msgs = h('div', 'msgs'), askbox = h('div', 'ask'), askrow = h('div', 'r'), ta = h('textarea'), go = h('button', 'pri', '問'), scope = h('div', 'st');
-    var mode = h('select'); [['quote', '原文'], ['ai', '🤖 AI 整理'], ['create', '✨ 創作']].forEach(function (k) { var o = h('option', null, k[1]); o.value = k[0]; mode.appendChild(o); }); mode.title = '原文：只給原文片段與出處。AI 整理：閒聊直接聊，問資料才查；模型只用找到的原文回答，每句標編號，程式逐句核對（對不上原文的句子會被丟掉）。創作：請 AI 依知識庫裡的資料設計／寫出知識庫裡沒有的東西（例如看完手冊後設計程式），用到資料的地方標編號，AI 自己補的標 [外]，並做依據檢查'; try { var mv = localStorage.getItem('fa.ki.mode'); mode.value = mv === 'ai' || mv === 'create' ? mv : 'quote'; } catch (e) { /* */ } mode.onchange = function () { try { localStorage.setItem('fa.ki.mode', mode.value); } catch (e) { /* */ } };
+    var mode = h('select'); [['quote', '原文'], ['ai', '🤖 AI 對話']].forEach(function (k) { var o = h('option', null, k[1]); o.value = k[0]; mode.appendChild(o); }); mode.title = '原文：只給原文片段與出處。AI 對話：放進來的文件就是 AI 的記憶——閒聊直接聊，問問題、要它解釋、整合、甚至設計／寫程式，都會基於知識庫回答；用自己的話說明，不是一條一條抄原文；有依據的地方標編號（點開看原始資料），知識庫沒有、AI 憑自己知識補的標 [外]；程式會核對編號與指令、數字、名稱'; try { var mv = localStorage.getItem('fa.ki.mode'); mode.value = mv === 'ai' || mv === 'create' || mv === 'strict' ? 'ai' : 'quote'; } catch (e) { /* */ } mode.onchange = function () { try { localStorage.setItem('fa.ki.mode', mode.value); } catch (e) { /* */ } };
     ta.rows = 2; ta.placeholder = '問你放進知識庫的資料（Enter 送出，Shift+Enter 換行）——回答只會是原文，附出處'; askrow.appendChild(mode); askrow.appendChild(ta); askrow.appendChild(go); askbox.appendChild(askrow); askbox.appendChild(scope);
     main.appendChild(msgs); main.appendChild(askbox); [side, sash, main].forEach(function (x) { body.appendChild(x); }); el.appendChild(bar); el.appendChild(body);
     // sash：拖曳調整左邊寬度（會記住）
@@ -92,7 +92,7 @@
     function refreshStatus() {
       return Promise.all([host.status(), host.sources()]).then(function (r) {
         statusInfo = r[0] || {}; var st = statusInfo.stats || {}; sources = (r[1] && r[1].sources) || [];
-        stat.className = 'st'; stat.textContent = '來源 ' + (st.sources || 0) + '（用 ' + (st.enabled || 0) + '）・片段 ' + (st.chunks || 0) + '・向量 ' + (st.vectors || 0) + '・關聯 ' + (st.links || 0);
+        stat.className = 'st'; stat.textContent = '來源 ' + (st.sources || 0) + '（用 ' + (st.enabled || 0) + '）・片段 ' + (st.chunks || 0) + '・向量 ' + (st.vectors || 0) + '・摘要 ' + ((statusInfo.digests && statusInfo.digests.docs) || 0) + ' 份・關聯 ' + (st.links || 0);
         scope.textContent = '回答範圍：左邊勾選的 ' + (st.enabled || 0) + ' 個來源　語意：' + (statusInfo.semantic ? '開（關鍵字＋語意）' : '關（只用關鍵字；🧠 可以啟用）') + '　位置：' + (statusInfo.location_label || '');
         renderList(); return statusInfo;
       }).catch(function (e) { stat.className = 'st bad'; stat.textContent = '⚠️ ' + String((e && e.message) || e).slice(0, 160); });
@@ -112,7 +112,7 @@
         var vtotal = s.chunks || 0, vdone = s.vectors || 0, pend = !!statusInfo.semantic && vtotal > 0 && vdone < vtotal;
         if (orgNow === s.id || pend || (embActive && vtotal > 0 && vdone < vtotal)) {
           var pg = h('div', 'pg'), bar2 = h('div', 'pgb' + (orgNow === s.id ? ' run' : '')), fill = h('i'), tx = h('div', 'pgt');
-          if (orgNow === s.id) { fill.style.width = '100%'; fill.style.opacity = '.5'; tx.textContent = '模型整理中…'; } else { fill.style.width = Math.round(vdone / vtotal * 100) + '%'; tx.textContent = '語意向量 ' + vdone + '/' + vtotal; }
+          if (orgNow === s.id) { var op = orgProg[s.id] || {}; fill.style.width = op.total ? Math.max(4, Math.round(op.done / op.total * 100)) + '%' : '100%'; if (!op.total) fill.style.opacity = '.5'; tx.textContent = (op.text || '模型整理中…').replace(/^模型整理 \d+\/\d+：[^　]*　?/, ''); } else { fill.style.width = Math.round(vdone / vtotal * 100) + '%'; tx.textContent = '語意向量 ' + vdone + '/' + vtotal; }
           bar2.appendChild(fill); pg.appendChild(bar2); pg.appendChild(tx); r.appendChild(pg);
         } else if (orgDone[s.id] && s.tags && s.tags.length) { var pg2 = h('div', 'pg'); pg2.appendChild(h('div', 'pgt', '已整理：' + s.tags.slice(0, 4).join('、'))); r.appendChild(pg2); }
         list.appendChild(r);
@@ -167,6 +167,7 @@
     function copyText(t, btn, label) { try { navigator.clipboard.writeText(t); btn.textContent = '已複製'; } catch (e) { btn.textContent = '複製不了'; } setTimeout(function () { btn.textContent = label; }, 1200); }
     // 文字裡的 [編號] 變成可點的小標籤（點開才是原始資料），[外] 是「知識庫沒有、AI 憑自己的知識補的」
     function addInline(p, text, sources) {
+      if (text.indexOf('`') >= 0) { text.split(/(`[^`]*`)/g).forEach(function (part, i) { if (i % 2) { var cd = h('code', null, part.slice(1, -1)); cd.style.background = 'var(--hd)'; cd.style.padding = '0 3px'; cd.style.borderRadius = '3px'; p.appendChild(cd); } else if (part) addInline(p, part, sources); }); return; }
       var re = /\[(\d+|外|\?)\]/g, last = 0, m;
       while ((m = re.exec(text))) {
         p.appendChild(document.createTextNode(text.slice(last, m.index)));
@@ -183,13 +184,15 @@
     }
     // 創作的成品：說明文字＋程式碼區塊（可複製）、依據檢查、參考的素材
     function renderCreate(c, cr) {
-      c.appendChild(h('div', 'st', '✨ AI 創作——設計與寫法是 AI 自己的，不是知識庫原文。用到知識庫的語法／API 標 [編號]（點開看原始資料）；標 [外] 的是知識庫沒有、AI 憑自己的知識補的，請自己確認。'));
+      if (cr.creative) c.appendChild(h('div', 'st', '✨ 這是 AI 依知識庫資料創作的內容——設計與寫法是 AI 自己的，不是知識庫原文。用到知識庫的語法／API 標 [編號]（點開看原始資料）；標 [外] 的是知識庫沒有、AI 憑自己的知識補的，請自己確認。'));
       var box = h('div', 'ans'); String(cr.text).split(/(```[^\n]*\n[\s\S]*?```)/g).forEach(function (pt) {
         var m = /^```([^\n]*)\n([\s\S]*?)```$/.exec(pt);
         if (m) { var pre = h('pre', 'code'), cb = h('button', 'ic', '複製'); pre.textContent = m[2].replace(/\n$/, ''); cb.onclick = function () { copyText(m[2], cb, '複製'); }; box.appendChild(h('div', 'st', m[1].trim() || '程式碼')); box.appendChild(pre); box.appendChild(cb); }
         else pt.split(/\n{2,}/).forEach(function (para) { if (!para.trim()) return; var p = h('div'); p.style.whiteSpace = 'pre-wrap'; addInline(p, para.trim(), cr.sources); box.appendChild(p); });
       }); c.appendChild(box);
       var row = h('div', 'row'), cpAll = h('button', null, '複製全部'), dl = h('button', null, '下載 .md'); cpAll.onclick = function () { copyText(cr.text, cpAll, '複製全部'); }; dl.onclick = function () { try { var a = document.createElement('a'), u = URL.createObjectURL(new Blob([cr.text], { type: 'text/markdown' })); a.href = u; a.download = '創作.md'; a.click(); setTimeout(function () { URL.revokeObjectURL(u); }, 2000); } catch (e) { /* */ } }; row.appendChild(cpAll); row.appendChild(dl); c.appendChild(row);
+      if (cr.dropped && cr.dropped.length) { var dd0 = h('details', 'dim'); dd0.appendChild(h('summary', null, '丟掉了 ' + cr.dropped.length + ' 句（指令、數字或名稱在給 AI 的資料裡找不到，沒有採用）')); cr.dropped.forEach(function (x) { dd0.appendChild(h('div', 'trl', x.text + '　← ' + x.why)); }); c.appendChild(dd0); }
+      if (!cr.report) { var srcOnly = h('details', 'dim'); srcOnly.appendChild(h('summary', null, '參考的資料（' + (cr.sources || []).length + ' 段，點答案裡的 [編號] 或這裡看出處）')); (cr.sources || []).forEach(function (sr) { var b0 = h('button', 'cite', '[' + sr.n + '] ' + sr.label); b0.style.display = 'block'; b0.style.textAlign = 'left'; b0.onclick = function () { openSource(sr); }; srcOnly.appendChild(b0); }); c.appendChild(srcOnly); scroll(); return; }
       var rp = cr.report || {}, dt = h('details', 'tr'); dt.open = true; dt.appendChild(h('summary', null, '🔍 依據檢查：程式碼用到的名稱，' + (rp.inKb || []).length + ' 個在知識庫素材裡找得到、' + (rp.notInKb || []).length + ' 個素材沒提到' + (rp.invalid_refs ? '、' + rp.invalid_refs + ' 個編號不存在' : '')));
       if ((rp.inKb || []).length) { var d1 = h('div', 'trl'); d1.appendChild(document.createTextNode('素材裡找得到：')); rp.inKb.forEach(function (x) { d1.appendChild(document.createTextNode(x.name + ' ')); var b = h('button', 'cite', '[' + x.n + ']'), sr = (cr.sources || [])[x.n - 1]; b.title = sr ? sr.label : ''; b.onclick = function () { if (sr) openSource(sr); }; d1.appendChild(b); d1.appendChild(document.createTextNode('　')); }); dt.appendChild(d1); }
       if ((rp.notInKb || []).length) dt.appendChild(h('div', 'trl', '素材沒提到（AI 憑自己的知識用的，請自己確認）：' + rp.notInKb.join('、')));
@@ -203,6 +206,7 @@
       if (rec.k === 'chat') { var tx = h('div'); tx.style.whiteSpace = 'pre-wrap'; tx.textContent = rec.reply; c.appendChild(tx); return; }
       if (rec.err && rec.err !== '已停止') note(c, '⚠️ ' + rec.err, 'st bad');
       if (rec.k === 'create') { if (rec.cr) renderCreate(c, rec.cr); return; }
+      if (rec.pr) { renderCreate(c, rec.pr); return; }
       var res = rec.res; if (!res) return;
       if (!res.found) { var nf0 = h('details', 'dim'); nf0.appendChild(h('summary', null, '沒有找到相關內容')); nf0.appendChild(h('div', null, (res.message || '在目前勾選的來源裡找不到相關內容。') + (res.semantic === false ? '（' + (res.semantic_note || '只用關鍵字檢索') + '）' : ''))); c.appendChild(nf0); return; }
       var ai = rec.ai; if (!ai) { showHits(c, res, q); return; }
@@ -228,15 +232,14 @@
       function aborted() { if (me.aborted) { stopWait(); tr.step('⏹ 已停止', 'bad'); tr.end('🧾 過程（已停止）'); rec.err = '已停止'; saveConv(); return true; } return false; }
       function finish(label) { stopWait(); tr.end('🧾 過程（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒' + (label ? '，' + label : '') + '）'); saveConv(); scroll(); }
       function onErr(e) { stopWait(); if (me.aborted) { aborted(); return; } rec.err = String((e && e.message) || e).slice(0, 200); tr.step('⚠️ ' + rec.err, 'bad'); tr.end('🧾 過程（出錯）'); saveConv(); }
-      if (kindMode === 'create' && host.create) {
-        rec.k = 'create'; setTitle('✨ 創作');
-        return host.create(q, onStep, ctl).then(function (cr) { stopWait(); if (aborted()) return; if (!cr.ok) { rec.err = cr.error; fillRec(c, rec); finish('沒完成'); return; } rec.cr = cr; fillRec(c, rec); finish(); }).catch(onErr);
-      }
       var routeP = (kindMode === 'ai' && host.route) ? host.route(q, hist0, onStep, ctl) : Promise.resolve({ route: 'search', query: q });
       return routeP.then(function (rt) {
         if (aborted()) return;
         if (rt.route === 'chat') { rec.k = 'chat'; rec.reply = rt.reply; setTitle('💬 對話'); stopWait(); fillRec(c, rec); finish(); return; }
         var qq = rt.query || q; rec.query = qq;
+        if (kindMode === 'ai' && host.respond) {
+          return host.respond(qq, hist0, onStep, ctl).then(function (pr) { stopWait(); if (aborted()) return; if (!pr.ok) { rec.err = pr.error; rec.pr = null; fillRec(c, rec); finish('沒完成'); return; } rec.pr = pr; fillRec(c, rec); finish(); });
+        }
         return host.ask({ question: qq, limit: 6, ctl: ctl, onStep: onStep }).then(function (res) {
           stopWait(); if (aborted()) return; rec.res = res;
           if (!res.found) { tr.step('沒有找到相關內容', 'bad'); fillRec(c, rec); finish('沒找到'); return; }
@@ -264,7 +267,7 @@
       x.style.marginLeft = 'auto'; hd.appendChild(x); var close = function () { bg.remove(); }; x.onclick = close; bg.onclick = function (e) { if (e.target === bg) close(); };
       var pad = 3; function load() { return host.detail(sr.source_id || sr.source, { line_start: Math.max(1, sr.line_start - pad), line_end: sr.line_end + pad + 6 }, { maxLines: 60 }).then(function (d) { body.textContent = ''; body.appendChild(lineView(d.lines || [], sr.line_start, sr.line_end)); }).catch(function () { body.textContent = String(sr.ctx || sr.quote || ''); }); }
       more.onclick = function () { pad += 6; load(); }; cp.onclick = function () { try { navigator.clipboard.writeText(sr.label + '\n' + (sr.quote || '')); cp.textContent = '已複製'; setTimeout(function () { cp.textContent = '複製出處'; }, 1200); } catch (e) { cp.textContent = '複製不了'; } };
-      [more, cp].forEach(function (b) { row.appendChild(b); }); [hd, body, row].forEach(function (n) { dlg.appendChild(n); }); bg.appendChild(dlg); el.appendChild(bg); load();
+      [more, cp].forEach(function (b) { row.appendChild(b); }); [hd, body, row].forEach(function (n) { dlg.appendChild(n); }); if (sr.digest) { var dg = h('div', 'st', '🧠 這是模型事先讀過整理的摘要（不是原文），原文章節在下面：' + String(sr.quote || '')); dg.style.whiteSpace = 'pre-wrap'; dlg.insertBefore(dg, body); } bg.appendChild(dlg); el.appendChild(bg); load();
     }
     function lineView(lines, hotA, hotB) { var pre = h('pre', 'code'); lines.forEach(function (l) { pre.appendChild(h('span', 'ln' + (l.line >= hotA && l.line <= hotB ? ' hot' : ''), String(l.line))); pre.appendChild(document.createTextNode(l.text + '\n')); }); return pre; }
     function showOutline(s) {
@@ -276,7 +279,11 @@
     }
     // ───── 工具列 ─────
     bRef.onclick = guard(function () { var c = card('🔄 更新知識庫'), p = note(c, '更新中…'); return host.refresh().then(function (r) { p.textContent = '✅ 更新完成\n' + ((r.refreshed || []).map(function (x) { return '- ' + x.source + '：' + (x.error ? '⚠️ ' + x.error : x.status); }).join('\n') || '（沒有網址來源需要重抓）') + '\n語意索引：' + (r.embedding && r.embedding.embedded != null ? '新增 ' + r.embedding.embedded + ' 個向量' : (r.embedding && (r.embedding.note || r.embedding.error)) || '—') + '\n關聯：' + r.links + ' 筆'; return refreshStatus(); }); });
-    bOrg.onclick = guard(function () { var c = card('🧹 模型整理'), p = note(c, '整理中…（線上模型用不了會自動改用離線模型）'); return host.organize().then(function (r) { p.textContent = r.ok ? '✅ 整理好了\n' + (r.organized || []).map(function (x) { return '- ' + x.source + '：' + (x.error ? '⚠️ ' + x.error : (x.tags.length ? x.tags.join('、') : '（沒有挑出可以核對的關鍵詞）')); }).join('\n') + '\n' + (r.note || '') : '⚠️ ' + r.error; return refreshStatus(); }); });
+    bOrg.onclick = function () {
+      if (orgRunning) { if (host.stopOrganize) host.stopOrganize(); bOrg.textContent = '停止中…'; return; }
+      orgRunning = true; bOrg.textContent = '■ 停止整理'; var c = card('🧹 模型整理（關鍵詞＋摘要＝讓 AI 讀懂每份文件，對話時當記憶用）'), p = note(c, '整理中…（線上模型用不了會自動改用離線模型；可以按 ■ 停止，做好的會保留，下次接著做）');
+      host.organize().then(function (r) { p.textContent = r.ok ? (r.stopped ? '⏹ ' : '✅ ') + '整理' + (r.stopped ? '到一半停止了' : '好了') + '\n' + (r.organized || []).map(function (x) { var dg = x.digest || {}; return '- ' + x.source + '：' + (x.error ? '⚠️ ' + x.error : (x.tags && x.tags.length ? x.tags.join('、') : '（沒有挑出可以核對的關鍵詞）')) + (dg.ok === false ? '　摘要：⚠️ ' + dg.error : dg.ok ? '　摘要：新做 ' + (dg.made || 0) + ' 則' + (dg.failed ? '、' + dg.failed + ' 則沒成功' : '') + (dg.dropped ? '、丟掉 ' + dg.dropped + ' 句對不上原文的' : '') : ''); }).join('\n') + '\n' + (r.note || '') : '⚠️ ' + r.error; return refreshStatus(); }).catch(function (e) { p.textContent = '⚠️ ' + String((e && e.message) || e).slice(0, 160); }).then(function () { orgRunning = false; orgNow = null; bOrg.textContent = '🧹 整理'; setOpl(''); renderList(); });
+    };
     bEmb.onclick = guard(function () { var c = card('🧠 語意索引'), p = note(c, '檢查中…'); return host.embedStatus().then(function (s) { if (s.enabled && !s.pending) { p.textContent = '語意索引已啟用：向量 ' + s.vectors + '/' + s.chunks + '，沒有待補的片段。'; return; } p.textContent = s.enabled ? '補算語意向量…' : '啟用語意索引（第一次要下載約 ' + s.approx_mb + ' MB 的小型模型）…'; return host.embedRun().then(function (r) { p.textContent = r.ok === false ? '⚠️ ' + r.error : '✅ 建立了 ' + (r.embedded || 0) + ' 個片段的向量'; return refreshStatus(); }); }); });
     bLk.onclick = guard(function () { var c = card('🔗 關聯（每一條都附證據）'), p = note(c, '載入中…'); if (host.proposeLinks) { var pb = h('button', null, '🤖 請模型找更多關聯'), po = h('div', 'st'); pb.title = '用語意向量找「不同來源、意思接近」的段落，請模型說共同點；片語由程式核對過才收，要你接受才會用在回答裡'; pb.onclick = guard(function () { po.textContent = '找關聯中…'; return host.proposeLinks(function (t) { po.textContent = t; }).then(function (r) { po.textContent = r.ok ? '✅ 看了 ' + r.checked + ' 組，提出 ' + r.proposed + ' 條' + (r.dropped ? '，丟掉 ' + r.dropped + ' 條對不上原文的' : '') + (r.failed ? '，' + r.failed + ' 組模型沒回應' : '') + (r.note ? '\n' + r.note : '') : '⚠️ ' + r.error; return refreshStatus(); }); }); c.insertBefore(pb, p); c.insertBefore(po, p); } return host.links().then(function (res) {
       var ls = res.links || [], cnt = {}; ls.forEach(function (l) { cnt[LKIND[l.kind] || l.kind] = (cnt[LKIND[l.kind] || l.kind] || 0) + 1; }); p.textContent = ls.length ? ls.length + ' 筆關聯（' + Object.keys(cnt).map(function (k) { return k + ' ' + cnt[k]; }).join('、') + '），每一條都附證據與行號' : '目前沒有找到關聯（來源互相提到、同一個識別字、同一句話、同樣的章節標題、議題／wiki／網址引用才算）。';

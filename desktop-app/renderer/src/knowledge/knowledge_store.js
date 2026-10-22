@@ -19,6 +19,7 @@
     'CREATE TABLE IF NOT EXISTS vectors (chunk_id INTEGER PRIMARY KEY, model TEXT, dim INTEGER, vec BLOB)',
     'CREATE TABLE IF NOT EXISTS links (id INTEGER PRIMARY KEY, kind TEXT, term TEXT, from_source INTEGER, from_start INTEGER, from_end INTEGER, from_quote TEXT, to_source INTEGER, to_start INTEGER, to_end INTEGER, to_quote TEXT, status TEXT DEFAULT \'auto\')',
     'CREATE TABLE IF NOT EXISTS summaries (source_id INTEGER, section TEXT, line_start INTEGER, line_end INTEGER, quote TEXT)',
+    'CREATE TABLE IF NOT EXISTS digests (source_id INTEGER, kind TEXT, n INTEGER, title TEXT, line_start INTEGER, line_end INTEGER, text TEXT, terms TEXT, method TEXT, at INTEGER)',
   ];
 
   // ───── 小工具 ─────
@@ -78,7 +79,7 @@
     for (var i = 0; i < ids.length; i++) { await this.exec("INSERT INTO chunks_fts(chunks_fts, rowid, toks) VALUES('delete', ?, (SELECT toks FROM chunks WHERE id=?))", [ids[i], ids[i]]); }
     await this.exec('DELETE FROM vectors WHERE chunk_id IN (SELECT id FROM chunks WHERE source_id=?)', [id]);
     await this.exec('DELETE FROM chunks WHERE source_id=?', [id]); await this.exec('DELETE FROM sections WHERE source_id=?', [id]);
-    await this.exec('DELETE FROM summaries WHERE source_id=?', [id]); await this.exec('DELETE FROM links WHERE from_source=? OR to_source=?', [id, id]);
+    await this.exec('DELETE FROM digests WHERE source_id=?', [id]); await this.exec('DELETE FROM summaries WHERE source_id=?', [id]); await this.exec('DELETE FROM links WHERE from_source=? OR to_source=?', [id, id]);
     this.denseCache = null;
   };
   Store.prototype.removeSource = async function (id) { await this._dropContent(id); await this.exec('DELETE FROM sources WHERE id=?', [id]); return { ok: true }; };
@@ -220,6 +221,19 @@
     var rows = rowsOf(await this.exec("SELECT l.*, s.name AS to_name FROM links l JOIN sources s ON s.id=l.to_source WHERE l.from_source=? AND l.status IN ('auto','confirmed') AND l.from_start<=? AND l.from_end>=? AND l.to_start IS NOT NULL LIMIT 3", [sourceId, b, a]));
     return rows.map(function (r) { return { kind: r.kind, evidence: r.term, status: r.status, source: r.to_name, source_id: r.to_source, line_start: r.to_start, line_end: r.to_end, quote: r.to_quote }; });
   };
+  // ───── 摘要（模型整理的理解）：kind='doc' 整份文件的概覽，kind='section' 各章節的摘要 ─────
+  Store.prototype.putDigest = async function (id, kind, n, title, ls, le, text, terms, method) {
+    await this.exec('DELETE FROM digests WHERE source_id=? AND kind=? AND n=?', [id, kind, n]);
+    await this.exec('INSERT INTO digests(source_id, kind, n, title, line_start, line_end, text, terms, method, at) VALUES(?,?,?,?,?,?,?,?,?,?)', [id, kind, n, title || '', ls || null, le || null, text, JSON.stringify(terms || []), method || 'model', Date.now()]);
+  };
+  Store.prototype.clearDigests = async function (id) { await this.exec('DELETE FROM digests WHERE source_id=?', [id]); };
+  Store.prototype.getDigests = async function (ids, kind) {
+    var where = [], bind = []; if (ids && ids.length) { where.push('d.source_id IN (' + ids.map(function () { return '?'; }).join(',') + ')'); ids.forEach(function (x) { bind.push(Number(x)); }); } if (kind) { where.push('d.kind=?'); bind.push(kind); }
+    var rows = rowsOf(await this.exec('SELECT d.*, s.name AS name FROM digests d JOIN sources s ON s.id=d.source_id' + (where.length ? ' WHERE ' + where.join(' AND ') : '') + ' ORDER BY d.source_id, d.kind, d.n LIMIT 2000', bind));
+    return rows.map(function (r) { var tm = []; try { tm = JSON.parse(r.terms || '[]'); } catch (_) { tm = []; } return { source_id: r.source_id, name: r.name, kind: r.kind, n: r.n, title: r.title, line_start: r.line_start, line_end: r.line_end, text: r.text, terms: tm, method: r.method }; });
+  };
+  Store.prototype.digestCounts = async function () { var r = rowsOf(await this.exec("SELECT COUNT(DISTINCT source_id) AS docs FROM digests WHERE kind='doc'"))[0] || {}, t = rowsOf(await this.exec("SELECT COUNT(*) AS n FROM digests WHERE kind='section'"))[0] || {}; return { docs: Number(r.docs || 0), sections: Number(t.n || 0) }; };
+  Store.prototype.topTitles = async function (id, n) { return rowsOf(await this.exec('SELECT title FROM sections WHERE source_id=? AND level<=2 ORDER BY n LIMIT ?', [id, n || 8])).map(function (r) { return r.title; }); };
   Store.prototype.setLinkStatus = async function (id, status) { await this.exec('UPDATE links SET status=? WHERE id=?', [status, id]); };
   // 關鍵詞（模型整理挑的，或使用者自己加的）：存成 {terms, by, at}；之後關聯會用到
   Store.prototype.setTags = async function (id, terms, by) { await this.exec('UPDATE sources SET tags=? WHERE id=?', [JSON.stringify({ terms: terms, by: by || 'user', at: Date.now() }), id]); };
