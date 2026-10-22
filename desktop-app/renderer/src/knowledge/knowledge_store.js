@@ -218,7 +218,7 @@
   };
   // 命中的片段旁邊的關聯（程式建立的與使用者確認過的，一跳）：回答時顯示「這裡還有相關的」
   Store.prototype.relatedOf = async function (sourceId, a, b) {
-    var rows = rowsOf(await this.exec("SELECT l.*, s.name AS to_name FROM links l JOIN sources s ON s.id=l.to_source WHERE l.from_source=? AND l.status IN ('auto','confirmed') AND l.from_start<=? AND l.from_end>=? AND l.to_start IS NOT NULL LIMIT 3", [sourceId, b, a]));
+    var rows = rowsOf(await this.exec("SELECT l.*, s.name AS to_name FROM links l JOIN sources s ON s.id=l.to_source WHERE s.enabled=1 AND l.from_source=? AND l.status IN ('auto','confirmed') AND l.from_start<=? AND l.from_end>=? AND l.to_start IS NOT NULL LIMIT 3", [sourceId, b, a]));
     return rows.map(function (r) { return { kind: r.kind, evidence: r.term, status: r.status, source: r.to_name, source_id: r.to_source, line_start: r.to_start, line_end: r.to_end, quote: r.to_quote }; });
   };
   // ───── 摘要（模型整理的理解）：kind='doc' 整份文件的概覽，kind='section' 各章節的摘要 ─────
