@@ -17438,7 +17438,7 @@ const holder = {};
  * 文件撰寫器核心（/user-guide、/design-guide）：把一包原始檔「掃描 → 取出事實 → 比對架構 → 選範本 → 組成文件模型 → 驗證」。
  * 純函式，不碰檔案系統、網路、DOM；來源檔由呼叫端讀好交進來（桌面版與網頁版共用）。
  *
- *   parseOptions(argsText)                    斜線指令的參數（fap:／wiki:／format:／template:／lang:／level:／analysis／nokb／noai／version:）
+ *   parseOptions(argsText)                    斜線指令的參數（fap:／wiki:／format:／template:／lang:／level:／analysis／noai／version:）
  *   analyze(files, opts)                      files = [{path, text}] → 事實（透鏡：build／entry／cli／config／routes／data／hardware／special／deps）
  *   matchArchitecture(facts)                  加權訊號比對，回 [{id, label, score, reasons}]
  *   selectTemplate(kind, facts, opts)         範本選擇：分數 ≥28 且贏過通用（20）才用專用的；使用者指定或自訂範本優先
@@ -17458,8 +17458,8 @@ const holder = {};
 
   // ───── 指令參數 ─────
   function parseOptions(argsText) {
-    var s = String(argsText || ''), o = { fap: '', wiki: [], format: ['md'], template: '', lang: 'zh-TW', level: 'standard', analysis: false, nokb: false, noai: false, version: '', rest: '', unknown: [] };
-    var rest = [], re = /(?:^|\s)([a-z]+):(?:"([^"]*)"|'([^']*)'|(\S+))|(?:^|\s)(analysis|nokb|noai)(?=\s|$)/gi, last = 0, m;
+    var s = String(argsText || ''), o = { fap: '', wiki: [], format: ['md'], template: '', lang: 'zh-TW', level: 'standard', analysis: false, noai: false, version: '', rest: '', unknown: [] };
+    var rest = [], re = /(?:^|\s)([a-z]+):(?:"([^"]*)"|'([^']*)'|(\S+))|(?:^|\s)(analysis|noai)(?=\s|$)/gi, last = 0, m;
     while ((m = re.exec(s))) {
       rest.push(s.slice(last, m.index)); last = m.index + m[0].length;
       if (m[5]) { o[m[5].toLowerCase()] = true; continue; }
@@ -17536,6 +17536,29 @@ const holder = {};
     ['special', /\.(js|ts|py|go)$/, /(?:registerPlugin|register_plugin|loadPlugin|plugins\.register)\(\s*['"`]?([\w.-]+)/, function (m) { return { group: '外掛', name: m[1], detail: '外掛註冊處' }; }]
   ];
 
+  // ───── 整檔訊號透鏡：通訊協定、效能（並行／快取／事件迴圈）、覆寫（BitBake 附加、patch、衍生類別）─────
+  // [透鏡, 名稱, 規則, 說明, 比對對象]；每種只記第一個證據與有幾個檔案提到，不逐行列
+  var PATTERN_LENSES = [
+    ['protocol', 'IPMI', /\bipmi\b|ipmitool|\bipmb\b/i, 'BMC 管理協定', 'text'], ['protocol', 'Redfish', /redfish/i, 'REST 管理介面', 'text'], ['protocol', 'D-Bus', /\bdbus\b|sdbusplus|sd_bus/i, '行程間訊息匯流排', 'text'],
+    ['protocol', 'MCTP／PLDM', /\bmctp\b|\bpldm\b/i, '平台管理元件協定', 'text'], ['protocol', 'PMBus', /pmbus/i, '電源管理匯流排', 'text'], ['protocol', 'I2C／SMBus', /\bi2c\b|smbus/i, '序列匯流排', 'text'],
+    ['protocol', 'SPI', /\bspidev\b|\bspi_[a-z]+\(/i, 'SPI 匯流排', 'text'], ['protocol', 'UART／序列埠', /\bttyS\d|\btermios\b|\buart\b/i, '序列通訊', 'text'], ['protocol', 'SNMP', /\bsnmp\b/i, '網路管理協定', 'text'],
+    ['protocol', 'Modbus', /modbus/i, '工業通訊協定', 'text'], ['protocol', 'MQTT', /\bmqtt\b/i, '發佈／訂閱訊息', 'text'], ['protocol', 'WebSocket', /websocket|\bwss?:\/\//i, '雙向即時通訊', 'text'],
+    ['protocol', 'gRPC／Protobuf', /\bgrpc\b|syntax\s*=\s*"proto3"/i, '遠端程序呼叫', 'text'], ['protocol', 'GraphQL', /graphql/i, '查詢式 API', 'text'],
+    ['protocol', 'HTTP／REST', /https?\.createServer|net\/http|requests\.(?:get|post)|\bfetch\(|XMLHttpRequest|curl_easy/, 'HTTP 呼叫或服務', 'text'], ['protocol', 'TLS／SSH', /ssl_ctx|tls\.connect|openssl|\bssh2?\b|libssh/i, '加密通道', 'text'],
+    ['protocol', 'USB／HID', /libusb|\bhidapi?\b|usb_[a-z]+\(/i, 'USB 裝置通訊', 'text'], ['protocol', 'CAN', /socketcan|\bcan_frame\b|canopen/i, 'CAN 匯流排', 'text'],
+    ['performance', '多執行緒', /pthread_create|std::thread|new Worker\(|threading\.Thread|ThreadPool|\bgo\s+func\s*\(/, '並行執行', 'text'], ['performance', '多行程', /multiprocessing|\bfork\s*\(|child_process|subprocess\./, '子行程', 'text'],
+    ['performance', '非同步 I/O', /asyncio|async\s+def|epoll_|io_uring|\bpoll\s*\(/, '事件迴圈／非阻塞 I/O', 'text'], ['performance', '快取', /lru_cache|\bLRU\b|memoize|\bcache\b/i, '快取機制', 'text'],
+    ['performance', '佇列與批次', /queue\.Queue|BlockingQueue|message queue|\bbatch(?:ing|Size|_size)\b/i, '佇列、批次處理', 'text'], ['performance', '定時工作', /setInterval|timer_create|\bticker\b|\bcron\b/i, '週期性工作', 'text'],
+    ['performance', '記憶體管理', /\bmmap\(|\bmlock\(|memory pool|\bmempool\b|SharedArrayBuffer/i, '記憶體配置與共用', 'text'], ['performance', '鎖與同步', /\bmutex\b|semaphore|Atomics\.|std::atomic|sync\.Mutex|\bRLock\b/i, '同步原語', 'text'],
+    ['performance', '效能量測', /performance\.now|clock_gettime|perf_counter|\bbenchmark\b|\bprofil(?:e|er|ing)\b/i, '計時與剖析', 'text'],
+    ['override', 'BitBake 附加（.bbappend）', /\.bbappend$/, '對上游配方的附加覆寫', 'path'], ['override', 'patch 檔', /\.(patch|diff)$/, '對上游原始碼的修補', 'path'],
+    ['override', 'PREFERRED_PROVIDER／VERSION', /PREFERRED_(?:PROVIDER|VERSION)/, '指定使用哪個提供者或版本', 'text'], ['override', 'FILESEXTRAPATHS', /FILESEXTRAPATHS/, '覆寫檔案搜尋路徑', 'text'],
+    ['override', '變數附加／移除（_append、_remove）', /\b[A-Z][A-Z0-9_]+[:_](?:append|remove|prepend)\b/, 'BitBake 變數覆寫', 'text'], ['override', 'BBMASK', /\bBBMASK\b/, '屏蔽上游配方', 'text'],
+    ['override', '設定覆寫檔', /(^|\/)(?:local|site|override)[\w.-]*\.(?:conf|json|ya?ml)$/i, '覆寫預設設定', 'path'], ['override', '衍生類別覆寫', /@Override\b|\)\s*override\s*[{;]/, '子類別覆寫父類別方法', 'text']
+  ];
+  var LENS_KEYS = ['build', 'entry', 'cli', 'config', 'routes', 'protocol', 'data', 'hardware', 'performance', 'override', 'special', 'deps'];
+  var LENS_LABEL = { build: '建置', entry: '進入點', cli: '命令列選項', config: '設定', routes: '路由／介面', protocol: '通訊協定', data: '資料模型', hardware: '硬體存取', performance: '效能與並行', override: '覆寫與客製', special: '重點項目', deps: '相依套件' };
+
   // ───── 整檔規則（建置檔、設定檔）─────
   function jsonSafe(t) { try { return JSON.parse(t); } catch (_) { return null; } }
   function scanBuildFile(f, out) {
@@ -17594,9 +17617,9 @@ const holder = {};
   // ───── 掃描 ─────
   function analyze(files, opts) {
     opts = opts || {}; var maxFiles = opts.maxFiles || 3000, maxText = opts.maxTextBytes || 400000;
-    var out = { docs: [], fileCount: 0, lineCount: 0, langs: {}, tops: {}, tests: 0, build: [], entry: [], cli: [], config: [], routes: [], data: [], hardware: [], special: [], deps: [], readme: null, paths: {}, truncated: false, skipped: 0 };
+    var out = { docs: [], fileCount: 0, lineCount: 0, langs: {}, tops: {}, tests: 0, build: [], entry: [], cli: [], config: [], routes: [], data: [], hardware: [], protocol: [], performance: [], override: [], special: [], deps: [], readme: null, paths: {}, truncated: false, skipped: 0 };
     var list = (files || []).filter(function (f) { return f && typeof f.path === 'string'; }); if (list.length > maxFiles) { out.truncated = true; list = list.slice(0, maxFiles); }
-    var archHit = {}; ARCH.forEach(function (a) { archHit[a.id] = {}; });
+    var archHit = {}, pat = {}; ARCH.forEach(function (a) { archHit[a.id] = {}; });
     list.forEach(function (f) {
       var p = String(f.path).replace(/\\/g, '/').replace(/^\.\//, ''), text = String(f.text == null ? '' : f.text); f = { path: p, text: text.length > maxText ? text.slice(0, maxText) : text };
       if (isVendor(p)) { out.skipped++; return; }
@@ -17617,12 +17640,20 @@ const holder = {};
       // 內容訊號只看原始碼與專案設定檔：文件、資料檔、測試、以及這個模組自己（裡面寫著各種關鍵字）都不算證據
       var textSignalOk = !isTest(p) && (SOURCE_LANG.test(lang) || /\.(service|inf|dec|dsc|proto|ya?ml|bb|bbappend|ld)$/.test(p) || /^Dockerfile/.test(baseOf(p))) && !/root\.FaDocgen|root\.FaDocRender/.test(f.text);
       ARCH.forEach(function (a) { a.sig.forEach(function (s, si) { if (archHit[a.id][si]) return; if (s[1] === 'path') { if (s[2].test(p)) archHit[a.id][si] = p + ':1'; } else if (textSignalOk && s[2].test(f.text)) { var mm = s[2].exec(f.text); archHit[a.id][si] = p + ':' + lineOf(f.text, mm.index); } }); });
+      PATTERN_LENSES.forEach(function (pl, pi) {
+        var hit = false, at = 1;
+        if (pl[4] === 'path') hit = pl[2].test(p);
+        else if (textSignalOk || (/\.(bb|bbappend|conf|inc)$/.test(p) && !isTest(p))) { var pm = pl[2].exec(f.text); if (pm) { hit = true; at = lineOf(f.text, pm.index); } }
+        if (!hit) return; var rec = pat[pi] || (pat[pi] = { n: 0, ev: p + ':' + at }); rec.n++;
+      });
     });
     ['entry', 'cli', 'config', 'routes', 'data', 'hardware', 'special', 'deps', 'build'].forEach(function (k) { out[k] = uniqBy(out[k], function (x) { return (x.group || '') + '|' + x.name + '|' + (k === 'config' ? '' : x.ev); }); });
     out.config = uniqBy(out.config, function (x) { return x.name; }); out.routes = uniqBy(out.routes, function (x) { return x.name; }); out.cli = uniqBy(out.cli, function (x) { return x.name; });
     // wiki 頁面等「專案外的說明文件」：不當原始碼，只拿來補 README（沒有 README 時用第一頁），並列在概述裡
     out.docs = (Array.isArray(opts.docs) ? opts.docs : []).filter(function (d) { return d && d.text; }).slice(0, 20).map(function (d) { var r = parseReadme({ path: d.path, text: String(d.text).slice(0, 200000) }); return { path: d.path, title: r.title || d.title || d.path, rec: r, url: d.url || '' }; });
     if (!out.readme && out.docs.length) out.readme = out.docs[0].rec;
+    Object.keys(pat).forEach(function (pi) { var pl = PATTERN_LENSES[pi]; out[pl[0]].push({ name: pl[1], detail: pl[3] + '（' + pat[pi].n + ' 個檔案）', ev: pat[pi].ev, n: pat[pi].n }); });
+    ['protocol', 'performance', 'override'].forEach(function (k) { out[k].sort(function (a, b) { return b.n - a.n; }); });
     out.archHit = archHit; out.arch = matchArchitecture(out);
     return out;
   }
@@ -17649,8 +17680,8 @@ const holder = {};
 
   // ───── 文字（繁中／英文）─────
   var TXT = {
-    'zh-TW': { overview: '概述', architecture: '系統架構', modules: '目錄與模組', build: '建置與部署', entry: '進入點與執行流程', interfaces: '對外介面', config: '設定', data: '資料模型', hardware: '硬體與系統存取', deps: '相依套件', special: '重點項目', risks: '待確認與風險', verify: '驗證與測試', intro: '簡介', install: '安裝', start: '啟動', usage: '使用方式', cli: '命令列選項', api: 'API 與路由', trouble: '疑難排解', evidence: '證據', name: '名稱', desc: '說明', item: '項目', kind: '類型', see: '見', lang: '語言', files: '檔案數', lines: '行數', dir: '目錄', share: '占比', none: '（沒有找到）', docinfo: '文件資訊', source: '來源', scanned: '掃描', title_design: '設計文件', title_user: '使用手冊' },
-    en: { overview: 'Overview', architecture: 'Architecture', modules: 'Directories and Modules', build: 'Build and Deployment', entry: 'Entry Points and Flow', interfaces: 'External Interfaces', config: 'Configuration', data: 'Data Model', hardware: 'Hardware and System Access', deps: 'Dependencies', special: 'Key Items', risks: 'Open Questions and Risks', verify: 'Verification and Tests', intro: 'Introduction', install: 'Installation', start: 'Getting Started', usage: 'Usage', cli: 'Command-line Options', api: 'API and Routes', trouble: 'Troubleshooting', evidence: 'Evidence', name: 'Name', desc: 'Description', item: 'Item', kind: 'Kind', see: 'see', lang: 'Language', files: 'Files', lines: 'Lines', dir: 'Directory', share: 'Share', none: '(none found)', docinfo: 'Document Info', source: 'Source', scanned: 'Scanned', title_design: 'Design Document', title_user: 'User Guide' }
+    'zh-TW': { overview: '概述', architecture: '系統架構', modules: '目錄與模組', build: '建置與部署', entry: '進入點與執行流程', interfaces: '對外介面', config: '設定', data: '資料模型', hardware: '硬體與系統存取', protocol: '通訊協定', performance: '效能與並行', override: '覆寫與客製', deps: '相依套件', special: '重點項目', risks: '待確認與風險', verify: '驗證與測試', intro: '簡介', install: '安裝', start: '啟動', usage: '使用方式', cli: '命令列選項', api: 'API 與路由', trouble: '疑難排解', evidence: '證據', name: '名稱', desc: '說明', item: '項目', kind: '類型', see: '見', lang: '語言', files: '檔案數', lines: '行數', dir: '目錄', share: '占比', none: '（沒有找到）', docinfo: '文件資訊', source: '來源', scanned: '掃描', title_design: '設計文件', title_user: '使用手冊' },
+    en: { overview: 'Overview', architecture: 'Architecture', modules: 'Directories and Modules', build: 'Build and Deployment', entry: 'Entry Points and Flow', interfaces: 'External Interfaces', config: 'Configuration', data: 'Data Model', hardware: 'Hardware and System Access', protocol: 'Protocols', performance: 'Performance and Concurrency', override: 'Overrides and Customization', deps: 'Dependencies', special: 'Key Items', risks: 'Open Questions and Risks', verify: 'Verification and Tests', intro: 'Introduction', install: 'Installation', start: 'Getting Started', usage: 'Usage', cli: 'Command-line Options', api: 'API and Routes', trouble: 'Troubleshooting', evidence: 'Evidence', name: 'Name', desc: 'Description', item: 'Item', kind: 'Kind', see: 'see', lang: 'Language', files: 'Files', lines: 'Lines', dir: 'Directory', share: 'Share', none: '(none found)', docinfo: 'Document Info', source: 'Source', scanned: 'Scanned', title_design: 'Design Document', title_user: 'User Guide' }
   };
 
   // ───── 章節：每個章節從事實產生區塊；沒有素材就回空陣列（該章節不出現，並進「待確認」）─────
@@ -17698,6 +17729,9 @@ const holder = {};
     config: function (c) { var tx = c.tx; return tableOf(c, [tx.name, tx.desc, tx.evidence], c.facts.config, function (x) { return ['`' + x.name + '`', x.detail, evCell(x.ev)]; }, 60) || []; },
     data: function (c) { var tx = c.tx; return tableOf(c, [tx.name, tx.kind, tx.evidence], c.facts.data, function (x) { return ['`' + x.name + '`', x.detail, evCell(x.ev)]; }, 40) || []; },
     hardware: function (c) { var tx = c.tx; return tableOf(c, [tx.name, tx.desc, tx.evidence], c.facts.hardware, function (x) { return ['`' + x.name + '`', x.detail, evCell(x.ev)]; }, 40) || []; },
+    protocol: function (c) { var tx = c.tx; return tableOf(c, [tx.name, tx.desc, tx.evidence], c.facts.protocol, function (x) { return ['`' + x.name + '`', x.detail, evCell(x.ev)]; }, 30) || []; },
+    performance: function (c) { var tx = c.tx; return tableOf(c, [tx.name, tx.desc, tx.evidence], c.facts.performance, function (x) { return ['`' + x.name + '`', x.detail, evCell(x.ev)]; }, 30) || []; },
+    override: function (c) { var tx = c.tx; return tableOf(c, [tx.name, tx.desc, tx.evidence], c.facts.override, function (x) { return ['`' + x.name + '`', x.detail, evCell(x.ev)]; }, 30) || []; },
     deps: function (c) { var tx = c.tx; return tableOf(c, [tx.name, tx.desc, tx.evidence], c.facts.deps, function (x) { return ['`' + x.name + '`', x.detail, evCell(x.ev)]; }, 50) || []; },
     special: function (c) {
       var tx = c.tx, groups = {}, b = []; c.facts.special.forEach(function (x) { (groups[x.group] = groups[x.group] || []).push(x); });
@@ -17750,19 +17784,19 @@ const holder = {};
   var TITLE_KEY = { u_intro: 'intro', u_install: 'install', u_start: 'start', u_cli: 'cli', u_api: 'api', u_config: 'config', u_trouble: 'trouble' };
 
   // ───── 範本目錄 ─────
-  var D = ['overview', 'architecture', 'modules', 'build', 'entry', 'interfaces', 'config', 'data', 'hardware', 'deps', 'risks', 'verify'];
+  var D = ['overview', 'architecture', 'modules', 'build', 'entry', 'interfaces', 'config', 'data', 'hardware', 'protocol', 'performance', 'override', 'deps', 'risks', 'verify'];
   function mk(id, kind, label, arch, sections, lead) { return { id: id, kind: kind, label: label, arch: arch, sections: sections, lead: lead || '', builtin: true }; }
   var TEMPLATES = [
     mk('design-generic', 'design', '通用設計文件', '*', D),
-    mk('openbmc', 'design', 'OpenBMC 設計文件', 'openbmc', ['overview', 'architecture', 'special', 'modules', 'build', 'interfaces', 'config', 'data', 'hardware', 'deps', 'entry', 'risks', 'verify'], 'BMC 韌體的重點在 Yocto 配方（建置）、D-Bus 服務（對外介面）與 Redfish 資源（管理介面）。'),
-    mk('rtos', 'design', 'RTOS 韌體設計文件', 'rtos', ['overview', 'architecture', 'special', 'hardware', 'modules', 'build', 'entry', 'config', 'deps', 'risks', 'verify'], 'RTOS 韌體的重點在任務（優先權與堆疊）、中斷與周邊存取，以及連結配置。'),
-    mk('bios', 'design', 'BIOS／UEFI 設計文件', 'bios', ['overview', 'architecture', 'special', 'modules', 'build', 'config', 'deps', 'hardware', 'risks', 'verify'], 'UEFI 韌體以模組（.inf）為單位，重點是模組型態、進入點與 PCD 設定。'),
-    mk('kernel-driver', 'design', 'Linux 核心驅動設計文件', 'kernel-driver', ['overview', 'architecture', 'special', 'hardware', 'interfaces', 'config', 'build', 'modules', 'risks', 'verify'], '核心驅動的重點在裝置註冊、file_operations 處理函式、模組參數與硬體存取。'),
-    mk('web-service', 'design', 'Web 服務設計文件', 'web-service', ['overview', 'architecture', 'interfaces', 'data', 'config', 'build', 'entry', 'modules', 'deps', 'risks', 'verify'], 'Web 服務的重點在路由與資料模型，其次是設定（環境變數）與部署。'),
+    mk('openbmc', 'design', 'OpenBMC 設計文件', 'openbmc', ['overview', 'architecture', 'special', 'modules', 'build', 'interfaces', 'protocol', 'override', 'config', 'data', 'hardware', 'deps', 'entry', 'risks', 'verify'], 'BMC 韌體的重點在 Yocto 配方（建置）、D-Bus 服務（對外介面）與 Redfish 資源（管理介面）。'),
+    mk('rtos', 'design', 'RTOS 韌體設計文件', 'rtos', ['overview', 'architecture', 'special', 'hardware', 'performance', 'modules', 'build', 'entry', 'config', 'deps', 'risks', 'verify'], 'RTOS 韌體的重點在任務（優先權與堆疊）、中斷與周邊存取，以及連結配置。'),
+    mk('bios', 'design', 'BIOS／UEFI 設計文件', 'bios', ['overview', 'architecture', 'special', 'modules', 'build', 'config', 'deps', 'hardware', 'override', 'risks', 'verify'], 'UEFI 韌體以模組（.inf）為單位，重點是模組型態、進入點與 PCD 設定。'),
+    mk('kernel-driver', 'design', 'Linux 核心驅動設計文件', 'kernel-driver', ['overview', 'architecture', 'special', 'hardware', 'interfaces', 'protocol', 'override', 'config', 'build', 'modules', 'risks', 'verify'], '核心驅動的重點在裝置註冊、file_operations 處理函式、模組參數與硬體存取。'),
+    mk('web-service', 'design', 'Web 服務設計文件', 'web-service', ['overview', 'architecture', 'interfaces', 'protocol', 'data', 'performance', 'config', 'build', 'entry', 'modules', 'deps', 'risks', 'verify'], 'Web 服務的重點在路由與資料模型，其次是設定（環境變數）與部署。'),
     mk('cgi', 'design', 'CGI 程式設計文件', 'cgi', ['overview', 'architecture', 'interfaces', 'config', 'build', 'modules', 'risks', 'verify'], 'CGI 程式由伺服器逐次呼叫，輸入來自環境變數與標準輸入。'),
-    mk('system-service', 'design', '系統服務設計文件', 'system-service', ['overview', 'architecture', 'entry', 'build', 'config', 'interfaces', 'hardware', 'modules', 'deps', 'risks', 'verify'], '常駐程式的重點在啟動方式（systemd 單元）、訊號處理與對外介面。'),
-    mk('gui', 'design', 'GUI 應用程式設計文件', 'gui', ['overview', 'architecture', 'special', 'modules', 'entry', 'build', 'config', 'deps', 'risks', 'verify'], '桌面應用程式的重點在視窗、主行程與介面行程之間的溝通（IPC），以及打包與更新。'),
-    mk('distributed', 'design', '分散式系統設計文件', 'distributed', ['overview', 'architecture', 'interfaces', 'data', 'config', 'build', 'deps', 'modules', 'risks', 'verify'], '分散式系統的重點在服務之間的介面（gRPC／訊息主題）、資料模型與部署。'),
+    mk('system-service', 'design', '系統服務設計文件', 'system-service', ['overview', 'architecture', 'entry', 'build', 'config', 'interfaces', 'protocol', 'hardware', 'performance', 'modules', 'deps', 'risks', 'verify'], '常駐程式的重點在啟動方式（systemd 單元）、訊號處理與對外介面。'),
+    mk('gui', 'design', 'GUI 應用程式設計文件', 'gui', ['overview', 'architecture', 'special', 'modules', 'entry', 'build', 'config', 'performance', 'deps', 'risks', 'verify'], '桌面應用程式的重點在視窗、主行程與介面行程之間的溝通（IPC），以及打包與更新。'),
+    mk('distributed', 'design', '分散式系統設計文件', 'distributed', ['overview', 'architecture', 'interfaces', 'protocol', 'data', 'performance', 'config', 'build', 'deps', 'modules', 'risks', 'verify'], '分散式系統的重點在服務之間的介面（gRPC／訊息主題）、資料模型與部署。'),
     mk('plugin-cli', 'design', '外掛式命令列工具設計文件', 'plugin-cli', ['overview', 'architecture', 'special', 'interfaces', 'config', 'build', 'modules', 'deps', 'risks', 'verify'], '外掛式工具的重點在子命令、外掛的註冊與載入方式。'),
     mk('user-generic', 'user', '通用使用手冊', '*', ['u_intro', 'u_install', 'u_start', 'u_cli', 'u_api', 'u_config', 'u_trouble']),
     mk('user-bmc', 'user', 'BMC 管理使用手冊', 'openbmc', ['u_intro', 'u_start', 'u_api', 'u_config', 'u_trouble'], '管理介面主要是 Redfish 與 D-Bus；下列路徑都取自原始碼。'),
@@ -17804,7 +17838,7 @@ const holder = {};
     opts = opts || {}; var lang = opts.lang === 'en' ? 'en' : 'zh-TW', tx = TXT[lang], steps = [];
     var ctx = { facts: facts, arch: facts.arch, tx: tx, level: opts.level || 'standard', gaps: [] };
     steps.push({ id: 'scan', text: '掃描 ' + facts.fileCount + ' 個檔案、約 ' + facts.lineCount + ' 行原始碼' + (facts.skipped ? '（略過 ' + facts.skipped + ' 個第三方／建置檔）' : '') + '。' });
-    var found = ['build', 'entry', 'cli', 'config', 'routes', 'data', 'hardware', 'special', 'deps'].filter(function (k) { return facts[k].length; }).map(function (k) { return ({ build: '建置', entry: '進入點', cli: '命令列選項', config: '設定', routes: '路由／介面', data: '資料模型', hardware: '硬體存取', special: '重點項目', deps: '相依套件' })[k] + ' ' + facts[k].length; });
+    var found = LENS_KEYS.filter(function (k) { return facts[k].length; }).map(function (k) { return LENS_LABEL[k] + ' ' + facts[k].length; });
     steps.push({ id: 'extract', text: '取出事實：' + (found.join('、') || '沒有找到可條列的事實') + '。每一筆都記下檔案與行號。' });
     var top = facts.arch[0]; steps.push({ id: 'match', text: '架構比對：最高的是「' + top.label + '」' + top.score + ' 分' + (top.score >= THRESHOLD ? '，過門檻。' : '，沒過門檻（' + THRESHOLD + '）。') });
     var title = (facts.readme && facts.readme.title) || opts.title || opts.name || '專案'; title = String(title).slice(0, 80);
@@ -17831,7 +17865,7 @@ const holder = {};
   function analysisAppendix(facts, tx) {
     var b = [{ t: 'pb' }, { t: 'h', l: 1, x: '分析附錄' }, { t: 'p', x: '這一節列出程式比對架構時用到的所有訊號與分數，方便人工複查。' }];
     b.push({ t: 'table', head: ['架構', '分數', '依據'], rows: facts.arch.map(function (a) { return [a.label, String(a.score), a.reasons.slice(0, 4).join('；') || '（沒有命中任何訊號）']; }) });
-    b.push({ t: 'table', head: ['事實類別', '筆數'], rows: ['build', 'entry', 'cli', 'config', 'routes', 'data', 'hardware', 'special', 'deps'].map(function (k) { return [k, String(facts[k].length)]; }) });
+    b.push({ t: 'table', head: ['事實類別', '筆數'], rows: LENS_KEYS.map(function (k) { return [LENS_LABEL[k], String(facts[k].length)]; }) });
     return b;
   }
 

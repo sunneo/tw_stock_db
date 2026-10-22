@@ -4,8 +4,8 @@ let ok = 0; const bad = [];
 function check(name, cond, extra) { if (cond) ok++; else bad.push(name + (extra !== undefined ? ' ' + JSON.stringify(extra).slice(0, 400) : '')); }
 
 // ---- 指令參數
-const o = D.parseOptions('fap:myproj wiki:http://w/a,http://w/b format:pdf,docx template:openbmc lang:en level:detailed analysis nokb noai version:1.2 給維護人員看的');
-check('options: all keys', o.fap === 'myproj' && o.wiki.length === 2 && o.format.join() === 'pdf,docx' && o.template === 'openbmc' && o.lang === 'en' && o.level === 'detailed' && o.analysis && o.nokb && o.noai && o.version === '1.2', o);
+const o = D.parseOptions('fap:myproj wiki:http://w/a,http://w/b format:pdf,docx template:openbmc lang:en level:detailed analysis noai version:1.2 給維護人員看的');
+check('options: all keys', o.fap === 'myproj' && o.wiki.length === 2 && o.format.join() === 'pdf,docx' && o.template === 'openbmc' && o.lang === 'en' && o.level === 'detailed' && o.analysis && o.noai && o.version === '1.2', o);
 check('options: free text stays as the request', o.rest === '給維護人員看的', o.rest);
 check('options: defaults', (() => { const d = D.parseOptions(''); return d.format.join() === 'md' && d.lang === 'zh-TW' && d.level === 'standard' && !d.analysis; })());
 check('options: wiki/markdown aliases and bad values are reported', (() => { const d = D.parseOptions('format:wiki,markdown,exe level:huge'); return d.format.join() === 'mediawiki,md' && d.unknown.indexOf('level:huge') >= 0; })(), D.parseOptions('format:wiki,markdown,exe level:huge'));
@@ -90,5 +90,21 @@ const dx = R.toDocxParts(doc);
 check('docx: required parts, escaped text, heading styles, table, page break', ['[Content_Types].xml', '_rels/.rels', 'word/document.xml', 'word/styles.xml', 'word/_rels/document.xml.rels'].every((k) => dx[k]) && /Heading1/.test(dx['word/document.xml']) && /<w:tbl>/.test(dx['word/document.xml']) && /1 &lt; 2/.test(dx['word/document.xml']) && /w:br w:type="page"/.test(dx['word/document.xml']) && /heading 1/.test(dx['word/styles.xml']));
 check('docx: tags are balanced', Object.keys(dx).every((k) => { const t = dx[k].replace(/<\?xml[^>]*\?>/, ''); const open = (t.match(/<[A-Za-z][^>]*[^/]>/g) || []).length, close = (t.match(/<\/[A-Za-z:]+>/g) || []).length; return open === close; }));
 check('control characters never reach the xml', !/[\u0000-\u0008]/.test(R.toDocxParts({ title: 'a\u0001b', blocks: [{ t: 'p', x: 'x\u0002y' }] })['word/document.xml']));
+// ---- 通訊協定、效能、覆寫透鏡
+const lensFiles = [
+  { path: 'meta-x/recipes/fan/fan_%.bbappend', text: 'FILESEXTRAPATHS:prepend := "${THISDIR}/files:"\nSRC_URI += "file://0001-fix.patch"\nPACKAGECONFIG:append = " ipmi"\n' },
+  { path: 'meta-x/recipes/fan/files/0001-fix.patch', text: '--- a\n+++ b\n' },
+  { path: 'meta-x/conf/local.conf', text: 'PREFERRED_PROVIDER_virtual/kernel = "linux-x"\n' },
+  { path: 'src/ipmi.cpp', text: '#include <ipmid/api.hpp>\n// ipmitool raw 0x06 0x01\nstd::thread t(run);\nstd::mutex m;\nint fd = open("/dev/i2c-3", 0);\n' },
+  { path: 'src/net.py', text: 'import asyncio\nimport paho.mqtt.client as mqtt\nfrom functools import lru_cache\n' },
+  { path: 'test/t.cpp', text: 'std::thread ignored; // snmp modbus\n' }
+];
+const fl = D.analyze(lensFiles);
+check('lens protocol: IPMI／I2C／MQTT found with a file count and evidence, test files ignored', ['IPMI', 'I2C／SMBus', 'MQTT'].every((n) => fl.protocol.some((p) => p.name === n && /個檔案/.test(p.detail) && /:\d+$/.test(p.ev))) && !fl.protocol.some((p) => p.name === 'SNMP' || p.name === 'Modbus'), fl.protocol);
+check('lens performance: threads, locks, async, cache', ['多執行緒', '鎖與同步', '非同步 I/O', '快取'].every((n) => fl.performance.some((p) => p.name === n)), fl.performance.map((p) => p.name));
+check('lens override: bbappend, patch, FILESEXTRAPATHS, PREFERRED_PROVIDER, _append', ['BitBake 附加（.bbappend）', 'patch 檔', 'FILESEXTRAPATHS', 'PREFERRED_PROVIDER／VERSION', '變數附加／移除（_append、_remove）'].every((n) => fl.override.some((p) => p.name === n)), fl.override.map((p) => p.name));
+check('lens: openbmc design document has protocol and override chapters', (() => { const b = D.build('design', fl, D.selectTemplate('design', fl, { template: 'openbmc' }).template, {}); const h = b.doc.blocks.filter((x) => x.t === 'h' && x.l === 1).map((x) => x.x); return h.indexOf('通訊協定') >= 0 && h.indexOf('覆寫與客製') >= 0; })());
+check('lens: analysis appendix lists every lens', D.build('design', fl, D.selectTemplate('design', fl, {}).template, { analysis: true }).doc.blocks.some((b) => b.t === 'table' && b.head[0] === '事實類別' && b.rows.length === 12));
+
 console.log(bad.length ? 'FAILED:\n  ' + bad.join('\n  ') : 'docgen: ' + ok + ' passed');
 process.exit(bad.length ? 1 : 0);
