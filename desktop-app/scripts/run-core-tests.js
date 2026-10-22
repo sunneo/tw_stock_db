@@ -98,6 +98,7 @@ const suites = [
     ['NVIDIA 線上圖像生成：請求整理、參數夾範圍、回應解析', 'scripts/imagegen-tests/nvidia_image.test.js'],
     ['本機小模型生圖（SDXS-512 GPU／CPU 版）：選版本、取樣的數學、亂數、張量轉圖片、錯誤說明', 'scripts/imagegen-tests/local_sd.test.js'],
     ['圖像生成分流：形狀圖（SVG／Mermaid 純文字）或擴散模型、提示詞範本（SD／FLUX／SD3）、圖片描述轉欄位', 'scripts/imagegen-tests/image_route.test.js'],
+    ['文件撰寫器（/user-guide、/design-guide）：掃描與證據、架構比對、範本選擇、組文件、驗證、潤飾驗收、md／wiki／html／pdf／docx 輸出', 'scripts/docgen-tests/docgen.test.js'],
     ['YAML 用途標記（#!fa:deck 這類開頭／結尾宣告）：偵測、檢查、加標記', 'scripts/yamlkind-tests/yamlkind_core.test.js'],
     ['Knowledge Inventory 核心：各格式帶行號的來源、出處、關鍵字＋向量檢索、原句摘要、核對、關聯', 'scripts/knowledge-tests/knowledge_core.test.js'],
     ['Knowledge Inventory 儲存層（真的 SQLite＋FTS5；沒有 node:sqlite 的 Node 會略過）', 'scripts/knowledge-tests/knowledge_store.test.js'],

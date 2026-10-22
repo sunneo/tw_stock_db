@@ -1567,6 +1567,13 @@ const SUBAGENT_DOMAIN_REGISTRY = {
         toolNames: ['list_file_access_points', 'fap_list_files', 'fap_read_file', 'fap_find_file', 'repo_map', 'repo_ask', 'repo_sql', 'repo_read_doc', 'repo_wiki', 'explain_code', 'behavior_define', 'list_uploaded_files', 'parse_uploaded_file', 'summarize_large_text', 'log_learn', 'log_ask', 'mix_understand', 'mix_highlight'],
         systemPrompt: '你是一個專門做「研究/分析」的子任務助理——讀懂一批檔案（原始碼、文件、設定檔）並產出理解/報告，刻意不給任何寫入/執行類工具（不能寫入File Access Point、不能執行程式）。**收到任務的第一件事：判斷使用者真正想要的是「修改/實作」還是「分析/理解」**。如果任務明顯是要新增功能、修bug、改程式碼、寫新檔案，那不是這個domain該做的事——直接在回應裡明確指出「這個任務需要實際修改/執行，不是單純分析」，讓委派端知道應該改委派給有寫入能力的domain（File Access Point用file_access_points，桌面版真實磁碟用desktop_ops），不要自己勉強上，也不要因為手上沒有寫入工具就直接放棄不回答。如果任務是要看懂/摘要/抓出設計脈絡/找出可能的問題點，才是這個domain的範圍：先用list_file_access_points/fap_list_files摸清楚有哪些檔案跟目錄結構，再用fap_read_file/fap_find_file實際讀取內容——大檔案改用summarize_large_text，不要自己手動分段閱讀；使用者上傳的檔案用list_uploaded_files/parse_uploaded_file。花時間多讀、多思考再給出有條理的分析結論，不要只憑檔名/目錄結構猜測內容、也不要看了一兩個檔案就倉促下結論。',
     },
+    docgen: {
+        enabled: true,
+        label: '文件撰寫（為專案寫設計文件、使用手冊：掃描原始檔取證據、比對架構、選範本，輸出 md／wiki／html／pdf／docx）',
+        toolNames: ['docgen_design_guide', 'docgen_user_guide', 'docgen_list_templates', 'list_file_access_points', 'fap_list_files', 'list_uploaded_files', 'fetch_web_page'],
+        systemPrompt: '你負責為專案寫文件。設計文件用 docgen_design_guide，使用手冊用 docgen_user_guide；兩個工具都會自己掃描、取事實、比對架構、選範本、驗證，你不要自己讀原始碼再寫。來源：使用者給的資料夾（fap:名稱；先用 list_file_access_points 確認有哪些已授權的）或他 📎 上傳的檔案；沒有來源就問他。使用者說了格式（pdf、docx、wiki、html、md）就帶 format；說了讀者或要求就放 request。要換範本先 docgen_list_templates。結果是檔案卡片，工具回傳裡的 sections 與 omitted 要照實告訴使用者（哪些章節沒有素材所以沒寫），不要自己補內容。',
+        dynamicNote: '路由建議：使用者要寫設計文件、設計書、使用手冊、操作手冊、user guide、design guide，或要把專案整理成文件時，委派這個領域。',
+    },
     image: {
         enabled: true,
         label: '圖像生成（畫圖：單純形狀的圖用 SVG／Mermaid 純文字畫，要畫面的圖用擴散模型；可以看懂使用者貼的圖、先畫工程圖基底、交給遠端機器畫）',
@@ -17423,6 +17430,639 @@ const holder = {};
 return holder.FaImageRoute;
 })();
 /* IMGROUTE-END */
+/* DOCGEN-BEGIN */
+const FaDocgen = (function () {
+const holder = {};
+(function (module, self) {
+/*
+ * 文件撰寫器核心（/user-guide、/design-guide）：把一包原始檔「掃描 → 取出事實 → 比對架構 → 選範本 → 組成文件模型 → 驗證」。
+ * 純函式，不碰檔案系統、網路、DOM；來源檔由呼叫端讀好交進來（桌面版與網頁版共用）。
+ *
+ *   parseOptions(argsText)                    斜線指令的參數（fap:／wiki:／format:／template:／lang:／level:／analysis／nokb／noai／version:）
+ *   analyze(files, opts)                      files = [{path, text}] → 事實（透鏡：build／entry／cli／config／routes／data／hardware／special／deps）
+ *   matchArchitecture(facts)                  加權訊號比對，回 [{id, label, score, reasons}]
+ *   selectTemplate(kind, facts, opts)         範本選擇：分數 ≥28 且贏過通用（20）才用專用的；使用者指定或自訂範本優先
+ *   build(kind, facts, template, opts)        → { doc, steps }（steps＝程式寫的過程敘述，不是給 AI 看的）
+ *   verify(doc, facts)                        每個 path:line 引用都要真的有那個檔案；回 issues
+ *   rewritePlan(doc) / acceptRewrite(a, b)    給「線上模型潤飾」用：只動說明段落，並檢查識別字、路徑、數字有沒有被改掉
+ *
+ * 每個事實都帶證據 path:line，文件裡寫成「（見 path:line）」。找不到的東西不編，寫進「待確認」。
+ */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaDocgen = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  var FORMATS = ['md', 'mediawiki', 'html', 'pdf', 'docx'];
+  var LEVELS = { brief: 8, standard: 25, detailed: 60 };
+
+  // ───── 指令參數 ─────
+  function parseOptions(argsText) {
+    var s = String(argsText || ''), o = { fap: '', wiki: [], format: ['md'], template: '', lang: 'zh-TW', level: 'standard', analysis: false, nokb: false, noai: false, version: '', rest: '', unknown: [] };
+    var rest = [], re = /(?:^|\s)([a-z]+):(?:"([^"]*)"|'([^']*)'|(\S+))|(?:^|\s)(analysis|nokb|noai)(?=\s|$)/gi, last = 0, m;
+    while ((m = re.exec(s))) {
+      rest.push(s.slice(last, m.index)); last = m.index + m[0].length;
+      if (m[5]) { o[m[5].toLowerCase()] = true; continue; }
+      var k = m[1].toLowerCase(), v = m[2] != null ? m[2] : m[3] != null ? m[3] : m[4];
+      if (k === 'fap') o.fap = v; else if (k === 'wiki') o.wiki = v.split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+      else if (k === 'format') { var f = v.toLowerCase().split(',').map(function (x) { x = x.trim(); return x === 'wiki' ? 'mediawiki' : x === 'markdown' ? 'md' : x; }).filter(function (x) { return FORMATS.indexOf(x) >= 0; }); if (f.length) o.format = f.filter(function (x, i) { return f.indexOf(x) === i; }); else o.unknown.push('format:' + v); }
+      else if (k === 'template') o.template = v; else if (k === 'lang') o.lang = /^en/i.test(v) ? 'en' : 'zh-TW';
+      else if (k === 'level') { if (LEVELS[v.toLowerCase()]) o.level = v.toLowerCase(); else o.unknown.push('level:' + v); }
+      else if (k === 'version') o.version = v.slice(0, 40); else if (k === 'publish') o.unknown.push('publish:（桌面版與網頁版不發佈到 wiki；用檔案卡片取回）');
+      else o.rest += ' ' + m[0].trim();
+    }
+    rest.push(s.slice(last)); o.rest = (rest.join(' ') + ' ' + o.rest).replace(/\s+/g, ' ').trim();
+    return o;
+  }
+
+  // ───── 檔案分類 ─────
+  var LANG = { js: 'JavaScript', mjs: 'JavaScript', cjs: 'JavaScript', jsx: 'JavaScript', ts: 'TypeScript', tsx: 'TypeScript', py: 'Python', c: 'C', h: 'C/C++ 標頭', cc: 'C++', cpp: 'C++', cxx: 'C++', hpp: 'C++ 標頭', go: 'Go', rs: 'Rust', java: 'Java', kt: 'Kotlin', cs: 'C#', rb: 'Ruby', php: 'PHP', sh: 'Shell', bash: 'Shell', ps1: 'PowerShell', lua: 'Lua', swift: 'Swift', html: 'HTML', css: 'CSS', sql: 'SQL', proto: 'Protobuf', yaml: 'YAML', yml: 'YAML', json: 'JSON', toml: 'TOML', ini: 'INI', md: 'Markdown', bb: 'BitBake', bbappend: 'BitBake', inf: 'EDK2 INF', dec: 'EDK2 DEC', dsc: 'EDK2 DSC', s: '組合語言', ld: '連結腳本', service: 'systemd', cmake: 'CMake', gradle: 'Gradle' };
+  var SOURCE_LANG = /^(JavaScript|TypeScript|Python|C|C\+\+|C\/C\+\+ 標頭|C\+\+ 標頭|Go|Rust|Java|Kotlin|C#|Ruby|PHP|Shell|PowerShell|Lua|Swift|組合語言)$/;
+  function extOf(p) { var b = String(p).split('/').pop(); var i = b.lastIndexOf('.'); return i > 0 ? b.slice(i + 1).toLowerCase() : ''; }
+  function baseOf(p) { return String(p).split('/').pop(); }
+  function langOf(p) { var b = baseOf(p).toLowerCase(); if (b === 'makefile' || b === 'gnumakefile') return 'Makefile'; if (b === 'dockerfile' || /^dockerfile\./.test(b)) return 'Dockerfile'; if (b === 'cmakelists.txt') return 'CMake'; return LANG[extOf(p)] || ''; }
+  function isTest(p) { return /(^|\/)(tests?|__tests__|spec|e2e)(\/|$)|[._-](test|spec)\.[a-z]+$|^test_.*\.py$/i.test(p); }
+  function isVendor(p) { return /(^|\/)(node_modules|vendor|third_party|3rdparty|dist|build|out|\.git|__pycache__|\.venv|venv|target|bower_components)(\/|$)/.test(p); }
+  function lineOf(text, index) { var n = 1; for (var i = 0; i < index && i < text.length; i++) if (text.charCodeAt(i) === 10) n++; return n; }
+  function uniqBy(a, f) { var seen = {}, o = []; a.forEach(function (x) { var k = f(x); if (!seen[k]) { seen[k] = 1; o.push(x); } }); return o; }
+
+  function helpOf(line) { var h = /help\s*=\s*['"]([^'"]*)['"]/.exec(line); return h ? h[1] : ''; }
+  // ───── 透鏡：逐行規則（每筆都帶 path:line 證據）─────
+  // [透鏡, 路徑條件, 行規則, (m, line) → {name, detail}]
+  var LINE_RULES = [
+    ['entry', /\.(c|cc|cpp|cxx)$/, /^\s*(?:int|void)\s+main\s*\(/, function () { return { name: 'main()', detail: 'C／C++ 程式進入點' }; }],
+    ['entry', /\.go$/, /^\s*func\s+main\s*\(\s*\)/, function () { return { name: 'main()', detail: 'Go 程式進入點' }; }],
+    ['entry', /\.java$/, /public\s+static\s+void\s+main\s*\(/, function () { return { name: 'main()', detail: 'Java 程式進入點' }; }],
+    ['entry', /\.py$/, /^if\s+__name__\s*==\s*['"]__main__['"]/, function () { return { name: '__main__', detail: 'Python 腳本進入點' }; }],
+    ['entry', /\.rs$/, /^\s*fn\s+main\s*\(\s*\)/, function () { return { name: 'main()', detail: 'Rust 程式進入點' }; }],
+    ['entry', /\.(js|mjs|cjs|ts)$/, /new\s+BrowserWindow\s*\(/, function () { return { name: 'BrowserWindow', detail: 'Electron 主視窗建立處' }; }],
+    ['entry', /\.(js|mjs|cjs|ts)$/, /\b(?:app|server)\.listen\s*\(\s*([^,)]*)/, function (m) { return { name: 'listen(' + m[1].trim().slice(0, 30) + ')', detail: '網路服務開始接受連線' }; }],
+    ['entry', /\.service$/, /^\s*ExecStart\s*=\s*(.+)$/, function (m) { return { name: 'ExecStart', detail: m[1].trim().slice(0, 80) }; }],
+    ['entry', /(^|\/)Dockerfile[^/]*$/, /^\s*(?:CMD|ENTRYPOINT)\s+(.+)$/i, function (m) { return { name: 'Docker 啟動命令', detail: m[1].trim().slice(0, 80) }; }],
+    ['cli', /\.py$/, /add_argument\(\s*['"](-{1,2}[\w-]+)['"](?:\s*,\s*['"](-{1,2}[\w-]+)['"])?/, function (m, line) { return { name: m[1] + (m[2] ? ', ' + m[2] : ''), detail: helpOf(line) }; }],
+    ['cli', /\.py$/, /click\.option\(\s*['"](-{1,2}[\w-]+)['"](?:\s*,\s*['"](-{1,2}[\w-]+)['"])?/, function (m, line) { return { name: m[1] + (m[2] ? ', ' + m[2] : ''), detail: helpOf(line) }; }],
+    ['cli', /\.(js|mjs|cjs|ts)$/, /\.(?:option|requiredOption)\(\s*['"`](-[^'"`]+)['"`](?:\s*,\s*['"`]([^'"`]*)['"`])?/, function (m) { return { name: m[1].trim(), detail: m[2] || '' }; }],
+    ['cli', /\.go$/, /flag\.(String|Int|Bool|Duration|Float64)\(\s*"([\w-]+)"\s*,\s*[^,]+,\s*"([^"]*)"/, function (m) { return { name: '-' + m[2], detail: m[3] + '（' + m[1].toLowerCase() + '）' }; }],
+    ['cli', /\.(c|cc|cpp|cxx|h)$/, /^\s*\{\s*"([\w-]{2,})"\s*,\s*(?:no_argument|required_argument|optional_argument)/, function (m) { return { name: '--' + m[1], detail: 'getopt_long 長選項' }; }],
+    ['cli', /\.(sh|bash)$/, /^\s*(--?[\w-]+)(?:\|(--?[\w-]+))?\)\s*$/, function (m) { return { name: m[1] + (m[2] ? ', ' + m[2] : ''), detail: 'Shell case 分支' }; }],
+    ['config', /\.(js|mjs|cjs|ts|jsx|tsx)$/, /process\.env\.([A-Z][A-Z0-9_]{2,})/, function (m) { return { name: m[1], detail: '環境變數' }; }],
+    ['config', /\.py$/, /os\.(?:environ(?:\.get)?\s*[\[(]|getenv\s*\()\s*['"]([A-Za-z][\w]{2,})['"]/, function (m) { return { name: m[1], detail: '環境變數' }; }],
+    ['config', /\.(c|cc|cpp|cxx|go)$/, /(?:getenv|Getenv)\s*\(\s*"([A-Za-z][\w]{2,})"/, function (m) { return { name: m[1], detail: '環境變數' }; }],
+    ['config', /(^|\/)\.env[^/]*$/, /^\s*([A-Z][A-Z0-9_]{2,})\s*=\s*(.*)$/, function (m) { return { name: m[1], detail: '.env 設定（預設值：' + (/(KEY|SECRET|TOKEN|PASSWORD)/.test(m[1]) ? '（已隱藏）' : m[2].trim().slice(0, 30) || '空') + '）' }; }],
+    ['routes', /\.(js|mjs|cjs|ts)$/, /\b(app|router|server|api)\.(get|post|put|delete|patch|all)\(\s*['"`]([^'"`]+)['"`]/, function (m) { return { name: m[2].toUpperCase() + ' ' + m[3], detail: 'HTTP 路由' }; }],
+    ['routes', /\.py$/, /@(?:\w+)\.route\(\s*['"]([^'"]+)['"](?:[^)]*methods\s*=\s*\[([^\]]*)\])?/, function (m) { return { name: (m[2] ? m[2].replace(/['"\s]/g, '').toUpperCase() : 'GET') + ' ' + m[1], detail: 'Flask 路由' }; }],
+    ['routes', /\.py$/, /@(?:app|router|\w+)\.(get|post|put|delete|patch)\(\s*['"]([^'"]+)['"]/, function (m) { return { name: m[1].toUpperCase() + ' ' + m[2], detail: 'FastAPI 路由' }; }],
+    ['routes', /\.(java|kt)$/, /@(Get|Post|Put|Delete|Patch|Request)Mapping\(\s*(?:value\s*=\s*)?\{?\s*"([^"]*)"/, function (m) { return { name: m[1].toUpperCase() + ' ' + m[2], detail: 'Spring 路由' }; }],
+    ['routes', /\.go$/, /(?:HandleFunc|Handle|GET|POST|PUT|DELETE)\(\s*"([^"]+)"/, function (m) { return { name: m[1], detail: 'Go HTTP 路由' }; }],
+    ['routes', /\.(c|cc|cpp|cxx|js|ts|py|json|go)$/, /(\/redfish\/v1[\w\/{}.$-]*)/, function (m) { return { name: m[1].slice(0, 80), detail: 'Redfish 資源路徑' }; }],
+    ['routes', /\.(c|cc|cpp|cxx|h|hpp|py|js)$/, /["'](xyz\.openbmc_project\.[A-Za-z0-9_.]+|org\.freedesktop\.[A-Za-z0-9_.]+)["']/, function (m) { return { name: m[1], detail: 'D-Bus 介面／服務名稱' }; }],
+    ['routes', /\.proto$/, /^\s*rpc\s+(\w+)\s*\(\s*(\w+)\s*\)\s*returns\s*\(\s*(?:stream\s+)?(\w+)\s*\)/, function (m) { return { name: m[1], detail: 'gRPC：' + m[2] + ' → ' + m[3] }; }],
+    ['routes', /\.(js|ts|py|go|java)$/, /\.subscribe\(\s*['"`]([\w\/+#.${}-]+)['"`]/, function (m) { return { name: m[1], detail: '訂閱主題（MQTT／訊息佇列）' }; }],
+    ['data', /\.sql$|\.(py|js|ts|sh|java|go)$/, /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"\[]?(\w+)/i, function (m) { return { name: m[1], detail: 'SQL 資料表' }; }],
+    ['data', /\.py$/, /^class\s+(\w+)\(\s*(?:db\.Model|Base|models\.Model|SQLModel|BaseModel)\b/, function (m) { return { name: m[1], detail: 'ORM／資料模型類別' }; }],
+    ['data', /\.(js|ts)$/, /mongoose\.model\(\s*['"](\w+)['"]/, function (m) { return { name: m[1], detail: 'Mongoose 模型' }; }],
+    ['data', /\.proto$/, /^\s*message\s+(\w+)\s*\{/, function (m) { return { name: m[1], detail: 'Protobuf 訊息' }; }],
+    ['data', /\.(ts|tsx)$/, /^export\s+(?:interface|type)\s+(\w+)/, function (m) { return { name: m[1], detail: 'TypeScript 型別' }; }],
+    ['hardware', /\.(c|cc|cpp|cxx|h|hpp|py|go|rs|sh)$/, /["'](\/dev\/[\w\/%d.-]+|\/sys\/[\w\/.%d-]+)["']/, function (m) { return { name: m[1], detail: '裝置／sysfs 路徑' }; }],
+    ['hardware', /\.(c|cc|cpp|cxx|h|hpp)$/, /\b(ioctl|mmap|i2c_smbus_\w+|spi_sync|gpio_\w+|request_irq)\s*\(/, function (m) { return { name: m[1] + '()', detail: '硬體／核心介面呼叫' }; }],
+    ['special', /\.(c|cc|cpp|h)$/, /xTaskCreate(?:Static)?\s*\(\s*(\w+)\s*,\s*"([^"]*)"\s*,\s*[^,]+,\s*[^,]+,\s*([^,]+)/, function (m) { return { group: 'RTOS 任務', name: m[2] || m[1], detail: '函式 ' + m[1] + '，優先權 ' + m[3].trim() }; }],
+    ['special', /\.(c|cc|cpp|h)$/, /K_THREAD_DEFINE\s*\(\s*\w+\s*,\s*[^,]+,\s*(\w+)\s*,[^,]+,[^,]+,[^,]+,\s*(\d+)/, function (m) { return { group: 'RTOS 任務', name: m[1], detail: 'Zephyr 執行緒，優先權 ' + m[2] }; }],
+    ['special', /\.(c|cc)$/, /module_param\(\s*(\w+)\s*,\s*(\w+)/, function (m) { return { group: '模組參數', name: m[1], detail: '型別 ' + m[2] }; }],
+    ['special', /\.(c|cc)$/, /\.(open|read|write|unlocked_ioctl|release|mmap|poll)\s*=\s*(\w+)/, function (m) { return { group: 'file_operations 處理函式', name: m[1], detail: m[2] }; }],
+    ['special', /\.inf$/, /^\s*(BASE_NAME|MODULE_TYPE|ENTRY_POINT)\s*=\s*(\S+)/, function (m) { return { group: 'EDK2 模組定義', name: m[1], detail: m[2] }; }],
+    ['special', /\.(js|ts|mjs)$/, /ipcMain\.(?:handle|on)\(\s*['"`]([^'"`]+)['"`]/, function (m) { return { group: 'IPC 頻道', name: m[1], detail: '主行程處理的訊息' }; }],
+    ['special', /\.(js|ts|mjs|cjs)$/, /\.command\(\s*['"`]([^'"`\s<\[]+)/, function (m) { return { group: '子命令', name: m[1], detail: '命令列子命令' }; }],
+    ['special', /\.py$/, /add_parser\(\s*['"]([\w-]+)['"]/, function (m) { return { group: '子命令', name: m[1], detail: '命令列子命令' }; }],
+    ['special', /\.(js|ts|py|go)$/, /(?:registerPlugin|register_plugin|loadPlugin|plugins\.register)\(\s*['"`]?([\w.-]+)/, function (m) { return { group: '外掛', name: m[1], detail: '外掛註冊處' }; }]
+  ];
+
+  // ───── 整檔規則（建置檔、設定檔）─────
+  function jsonSafe(t) { try { return JSON.parse(t); } catch (_) { return null; } }
+  function scanBuildFile(f, out) {
+    var b = baseOf(f.path), t = f.text, ev = function (i) { return f.path + ':' + (i || 1); };
+    if (b === 'package.json' && !isVendor(f.path)) {
+      var j = jsonSafe(t); if (!j) return;
+      var at = function (key) { var i = t.indexOf('"' + key + '"'); return i < 0 ? 1 : lineOf(t, i); };
+      if (j.name) out.build.push({ name: '套件', detail: j.name + (j.version ? ' ' + j.version : ''), ev: ev(at('name')) });
+      if (j.main) out.entry.push({ name: 'main', detail: String(j.main), ev: ev(at('main')) });
+      if (j.bin) out.entry.push({ name: 'bin', detail: typeof j.bin === 'string' ? j.bin : Object.keys(j.bin).join('、'), ev: ev(at('bin')) });
+      Object.keys(j.scripts || {}).slice(0, 30).forEach(function (k) { out.build.push({ name: 'npm run ' + k, detail: String(j.scripts[k]).slice(0, 100), ev: ev(at(k)) }); });
+      ['dependencies', 'devDependencies'].forEach(function (g) { Object.keys(j[g] || {}).slice(0, 60).forEach(function (k) { out.deps.push({ name: k, detail: j[g][k] + (g === 'devDependencies' ? '（開發用）' : ''), ev: ev(at(k)) }); }); });
+    } else if (/^requirements[\w.-]*\.txt$/.test(b)) {
+      t.split('\n').forEach(function (l, i) { var m = /^\s*([A-Za-z0-9_.-]+)\s*([<>=!~]=?.*)?$/.exec(l); if (m && !/^#/.test(l)) out.deps.push({ name: m[1], detail: (m[2] || '').trim() || '（未指定版本）', ev: ev(i + 1) }); });
+    } else if (b === 'go.mod') {
+      t.split('\n').forEach(function (l, i) { var m = /^\s*(?:require\s+)?([\w.\/-]+\.[\w.\/-]+)\s+(v[\w.+-]+)/.exec(l); if (m) out.deps.push({ name: m[1], detail: m[2], ev: ev(i + 1) }); });
+    } else if (b === 'Cargo.toml') {
+      var sec = ''; t.split('\n').forEach(function (l, i) { var h = /^\[([^\]]+)\]/.exec(l); if (h) { sec = h[1]; return; } var m = /^([\w-]+)\s*=\s*(.+)$/.exec(l); if (m && /dependencies/.test(sec)) out.deps.push({ name: m[1], detail: m[2].slice(0, 40), ev: ev(i + 1) }); });
+    } else if (b === 'CMakeLists.txt') {
+      t.split('\n').forEach(function (l, i) { var m = /^\s*(project|add_executable|add_library|find_package|add_subdirectory)\s*\(\s*([\w.${}-]+)/i.exec(l); if (m) (/find_package/i.test(m[1]) ? out.deps : out.build).push({ name: m[1].toLowerCase(), detail: m[2], ev: ev(i + 1) }); });
+    } else if (/^(GNU)?[Mm]akefile$/.test(b)) {
+      t.split('\n').forEach(function (l, i) { var m = /^([A-Za-z][\w.-]*)\s*:(?!=)/.exec(l); if (m && out.build.length < 400) out.build.push({ name: 'make ' + m[1], detail: '', ev: ev(i + 1) }); });
+    } else if (/^Dockerfile/.test(b)) {
+      t.split('\n').forEach(function (l, i) { var m = /^\s*(FROM|EXPOSE|WORKDIR|ENV)\s+(.+)$/i.exec(l); if (m) out.build.push({ name: m[1].toUpperCase(), detail: m[2].trim().slice(0, 80), ev: ev(i + 1) }); });
+    } else if (/\.(bb|bbappend)$/.test(b)) {
+      t.split('\n').forEach(function (l, i) { var m = /^\s*(SUMMARY|DESCRIPTION|LICENSE|DEPENDS|inherit|SRC_URI)\b\s*[:+?]*=?\s*(.*)$/.exec(l); if (m) out.build.push({ name: 'BitBake ' + m[1], detail: m[2].replace(/["\\]/g, '').trim().slice(0, 80), ev: ev(i + 1) }); });
+    } else if (/(^|\/)docker-compose[\w.-]*\.ya?ml$/.test(f.path)) {
+      var inSvc = false; t.split('\n').forEach(function (l, i) { if (/^services\s*:/.test(l)) { inSvc = true; return; } if (inSvc && /^\S/.test(l)) inSvc = false; var m = /^  ([\w-]+)\s*:\s*$/.exec(l); if (inSvc && m) out.build.push({ name: 'compose 服務', detail: m[1], ev: ev(i + 1) }); });
+    } else if (/\.service$/.test(b)) {
+      t.split('\n').forEach(function (l, i) { var m = /^\s*(Description|After|Requires|User|Restart)\s*=\s*(.+)$/.exec(l); if (m) out.build.push({ name: 'systemd ' + m[1], detail: m[2].trim().slice(0, 80), ev: ev(i + 1) }); });
+    }
+    if (/(^|\/)(config|settings|conf)[\w.-]*\.(json|ya?ml|toml|ini|conf|cfg)$/i.test(f.path) && !isVendor(f.path) && !/package(-lock)?\.json$/.test(b)) {
+      var keys = [];
+      if (/\.json$/i.test(b)) { var cj = jsonSafe(t); if (cj && typeof cj === 'object' && !Array.isArray(cj)) Object.keys(cj).slice(0, 40).forEach(function (k) { keys.push([k, lineOf(t, Math.max(0, t.indexOf('"' + k + '"')))]); }); }
+      else t.split('\n').forEach(function (l, i) { var m = /^([A-Za-z_][\w.-]*)\s*[:=]\s*(.*)$/.exec(l); if (m && !/^\s*#/.test(l)) keys.push([m[1], i + 1]); });
+      keys.slice(0, 40).forEach(function (k) { out.config.push({ name: k[0], detail: '設定檔 ' + b + ' 的欄位', ev: ev(k[1]) }); });
+    }
+  }
+
+  // ───── 架構訊號（加權）─────
+  // 每個訊號：[說明, 比對路徑或內容, 權重]；內容訊號只要某個檔案出現一次就算；同一個架構的分數上限 100
+  var ARCH = [
+    { id: 'openbmc', label: 'OpenBMC／BMC 韌體', sig: [['BitBake 配方（.bb／.bbappend）', 'path', /\.(bb|bbappend)$/, 30], ['sdbusplus', 'text', /sdbusplus/, 25], ['xyz.openbmc_project 介面', 'text', /xyz\.openbmc_project/, 25], ['phosphor- 套件', 'text', /phosphor-[a-z-]+/, 15], ['bmcweb／Redfish', 'text', /bmcweb|\/redfish\/v1/, 15]] },
+    { id: 'rtos', label: '即時作業系統（RTOS）韌體', sig: [['FreeRTOS 任務', 'text', /xTaskCreate|vTaskDelay|FreeRTOS\.h/, 30], ['Zephyr 執行緒', 'text', /K_THREAD_DEFINE|k_thread_create|<zephyr\//, 30], ['ThreadX／CMSIS-RTOS', 'text', /tx_thread_create|osThreadNew|cmsis_os/, 28], ['連結腳本（.ld）', 'path', /\.ld$/, 12], ['啟動組語（startup_*.s）', 'path', /startup_[\w]+\.s$/i, 15], ['STM32 HAL', 'text', /HAL_[A-Z]\w+\(|stm32\w*xx/i, 10]] },
+    { id: 'bios', label: 'BIOS／UEFI 韌體', sig: [['EFI 狀態與服務', 'text', /EFI_STATUS|gBS->|UefiBootServicesTableLib/, 30], ['EDK2 模組檔（.inf／.dec／.dsc）', 'path', /\.(inf|dec|dsc)$/, 22], ['EDK2／PCD', 'text', /PcdGet|edk2|EDK2/, 15], ['coreboot', 'text', /coreboot|romstage|ramstage/, 30]] },
+    { id: 'kernel-driver', label: 'Linux 核心驅動', sig: [['module_init／MODULE_LICENSE', 'text', /module_init|module_exit|MODULE_LICENSE/, 35], ['linux/module.h', 'text', /<linux\/module\.h>/, 25], ['platform_driver／of_match_table', 'text', /platform_driver|of_match_table/, 20], ['字元裝置註冊', 'text', /file_operations|cdev_add|misc_register/, 20], ['Kconfig／Kbuild', 'path', /(^|\/)(Kconfig|Kbuild)$/, 10]] },
+    { id: 'cgi', label: 'CGI／FastCGI 程式', sig: [['cgi-bin 目錄', 'path', /(^|\/)cgi-bin(\/|$)/, 30], ['CGI 環境變數', 'text', /QUERY_STRING|REQUEST_METHOD|CONTENT_LENGTH/, 25], ['Python cgi 模組', 'text', /import cgi|cgitb/, 25], ['FastCGI', 'text', /FCGI_Accept|fcgi_stdio/, 25]] },
+    { id: 'web-service', label: '網路服務／Web API', sig: [['Express／Koa', 'text', /require\(['"](?:express|koa)['"]\)|from ['"](?:express|koa)['"]/, 30], ['Flask／FastAPI／Django', 'text', /from flask|import flask|FastAPI\(|django\.urls/, 30], ['Spring', 'text', /@RestController|@SpringBootApplication/, 30], ['Go net/http', 'text', /"net\/http"|gin-gonic/, 24], ['listen 開埠', 'text', /\.listen\s*\(|ListenAndServe/, 12], ['Dockerfile EXPOSE', 'text', /^\s*EXPOSE\s+\d+/m, 10]] },
+    { id: 'system-service', label: '系統服務（常駐程式）', sig: [['systemd 單元（.service）', 'path', /\.service$/, 22], ['[Service]／ExecStart', 'text', /^\[Service\]|^\s*ExecStart\s*=/m, 25], ['sd_notify／sd_bus／sd_event', 'text', /sd_notify|sd_bus_|sd_event_/, 25], ['daemon 化', 'text', /\bdaemon\s*\(|\bsetsid\s*\(/, 20], ['訊號處理', 'text', /sigaction\s*\(|\bsignal\s*\(\s*SIG/, 8]] },
+    { id: 'gui', label: '桌面／圖形介面應用程式', sig: [['Electron', 'text', /BrowserWindow|ipcMain|ipcRenderer/, 50], ['Qt', 'text', /QApplication|QWidget|QML|QMainWindow/, 30], ['Tkinter／wx／GTK', 'text', /import tkinter|from tkinter|wx\.App|wxFrame|GtkWindow|gtk_init/, 26], ['WinForms／WPF', 'text', /System\.Windows\.Forms|\.xaml/, 26], ['SwiftUI／UIKit', 'text', /SwiftUI|UIKit|NSWindow/, 26], ['React／Vue 介面', 'text', /ReactDOM|createRoot\(|createApp\(/, 14]] },
+    { id: 'distributed', label: '分散式系統', sig: [['gRPC／Protobuf 服務', 'text', /^\s*service\s+\w+\s*\{/m, 22], ['訊息佇列', 'text', /kafka|rabbitmq|amqp|nats\.|zeromq|\bzmq\b/i, 24], ['共識／協調', 'text', /\braft\b|paxos|etcd|zookeeper|consul/i, 26], ['Kubernetes／Helm', 'text', /kind:\s*(Deployment|StatefulSet)|helm/i, 14], ['MQTT', 'text', /mqtt/i, 12]] },
+    { id: 'plugin-cli', label: '外掛式命令列工具', sig: [['子命令', 'text', /\.command\(\s*['"`]|add_subparsers|cobra\.Command/, 28], ['外掛註冊／載入', 'text', /registerPlugin|register_plugin|loadPlugin|entry_points|plugins?[\\/]\w+/, 24], ['bin 進入點', 'text', /"bin"\s*:/, 10]] }
+  ];
+  var GENERIC = 20, THRESHOLD = 28;
+
+  // ───── 掃描 ─────
+  function analyze(files, opts) {
+    opts = opts || {}; var maxFiles = opts.maxFiles || 3000, maxText = opts.maxTextBytes || 400000;
+    var out = { docs: [], fileCount: 0, lineCount: 0, langs: {}, tops: {}, tests: 0, build: [], entry: [], cli: [], config: [], routes: [], data: [], hardware: [], special: [], deps: [], readme: null, paths: {}, truncated: false, skipped: 0 };
+    var list = (files || []).filter(function (f) { return f && typeof f.path === 'string'; }); if (list.length > maxFiles) { out.truncated = true; list = list.slice(0, maxFiles); }
+    var archHit = {}; ARCH.forEach(function (a) { archHit[a.id] = {}; });
+    list.forEach(function (f) {
+      var p = String(f.path).replace(/\\/g, '/').replace(/^\.\//, ''), text = String(f.text == null ? '' : f.text); f = { path: p, text: text.length > maxText ? text.slice(0, maxText) : text };
+      if (isVendor(p)) { out.skipped++; return; }
+      out.fileCount++; out.paths[p] = 1; var lang = langOf(p), lines = f.text ? f.text.split('\n') : [];
+      if (lang) { var L = out.langs[lang] || (out.langs[lang] = { files: 0, lines: 0 }); L.files++; L.lines += lines.length; }
+      if (SOURCE_LANG.test(lang)) out.lineCount += lines.length;
+      var top = p.indexOf('/') > 0 ? p.split('/')[0] : '（根目錄）'; var T = out.tops[top] || (out.tops[top] = { files: 0, lines: 0, langs: {} }); T.files++; if (SOURCE_LANG.test(lang)) { T.lines += lines.length; T.langs[lang] = (T.langs[lang] || 0) + lines.length; }
+      if (isTest(p)) out.tests++;
+      if (/^readme(\.\w+)?$/i.test(baseOf(p)) && p.split('/').length <= 2 && (!out.readme || p.split('/').length < out.readme.path.split('/').length)) out.readme = parseReadme(f);
+      scanBuildFile(f, out);
+      // 逐行規則：測試檔與標頭以外的說明文字也掃（測試檔裡的路由、參數不算產品的介面）
+      if (!isTest(p) && lines.length <= 20000) {
+        for (var li = 0; li < lines.length && li < 8000; li++) {
+          var line = lines[li]; if (line.length > 400) continue;
+          for (var r = 0; r < LINE_RULES.length; r++) { var R = LINE_RULES[r]; if (!R[1].test(p)) continue; var m = R[2].exec(line); if (!m) continue; var item = R[3](m, line); item.ev = p + ':' + (li + 1); out[R[0]].push(item); }
+        }
+      }
+      // 內容訊號只看原始碼與專案設定檔：文件、資料檔、測試、以及這個模組自己（裡面寫著各種關鍵字）都不算證據
+      var textSignalOk = !isTest(p) && (SOURCE_LANG.test(lang) || /\.(service|inf|dec|dsc|proto|ya?ml|bb|bbappend|ld)$/.test(p) || /^Dockerfile/.test(baseOf(p))) && !/root\.FaDocgen|root\.FaDocRender/.test(f.text);
+      ARCH.forEach(function (a) { a.sig.forEach(function (s, si) { if (archHit[a.id][si]) return; if (s[1] === 'path') { if (s[2].test(p)) archHit[a.id][si] = p + ':1'; } else if (textSignalOk && s[2].test(f.text)) { var mm = s[2].exec(f.text); archHit[a.id][si] = p + ':' + lineOf(f.text, mm.index); } }); });
+    });
+    ['entry', 'cli', 'config', 'routes', 'data', 'hardware', 'special', 'deps', 'build'].forEach(function (k) { out[k] = uniqBy(out[k], function (x) { return (x.group || '') + '|' + x.name + '|' + (k === 'config' ? '' : x.ev); }); });
+    out.config = uniqBy(out.config, function (x) { return x.name; }); out.routes = uniqBy(out.routes, function (x) { return x.name; }); out.cli = uniqBy(out.cli, function (x) { return x.name; });
+    // wiki 頁面等「專案外的說明文件」：不當原始碼，只拿來補 README（沒有 README 時用第一頁），並列在概述裡
+    out.docs = (Array.isArray(opts.docs) ? opts.docs : []).filter(function (d) { return d && d.text; }).slice(0, 20).map(function (d) { var r = parseReadme({ path: d.path, text: String(d.text).slice(0, 200000) }); return { path: d.path, title: r.title || d.title || d.path, rec: r, url: d.url || '' }; });
+    if (!out.readme && out.docs.length) out.readme = out.docs[0].rec;
+    out.archHit = archHit; out.arch = matchArchitecture(out);
+    return out;
+  }
+  function parseReadme(f) {
+    var lines = f.text.split('\n'), title = '', intro = [], sections = {}, cur = '', fenced = false;
+    lines.forEach(function (l) {
+      if (/^\s*```/.test(l)) fenced = !fenced;
+      var h = !fenced && /^(#{1,3})\s+(.+?)\s*#*\s*$/.exec(l);
+      if (h) { if (!title && h[1] === '#') { title = h[2]; cur = '__intro'; return; } cur = h[2].toLowerCase(); sections[cur] = sections[cur] || []; return; }
+      if (cur === '__intro' || (!cur && title === '')) { if (l.trim()) intro.push(l.trim()); } else if (cur) sections[cur].push(l);
+    });
+    var secOut = {}; Object.keys(sections).forEach(function (k) { secOut[k] = sections[k].join('\n').trim(); });
+    return { path: f.path, title: title.replace(/[*_`]/g, ''), intro: intro.join(' ').replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/<[^>]+>/g, '').slice(0, 700), sections: secOut };
+  }
+
+  function matchArchitecture(facts) {
+    var res = ARCH.map(function (a) {
+      var score = 0, reasons = []; a.sig.forEach(function (s, i) { var hit = facts.archHit && facts.archHit[a.id][i]; if (hit) { score += s[3]; reasons.push(s[0] + '（見 ' + hit + '）'); } });
+      return { id: a.id, label: a.label, score: Math.min(100, score), raw: score, reasons: reasons };
+    });
+    var cliScore = Math.min(100, facts.cli.length * 8 + (facts.entry.length ? 10 : 0)); res.push({ id: 'cli', label: '命令列工具', score: cliScore, raw: cliScore * 0.9, reasons: facts.cli.slice(0, 3).map(function (c) { return '選項 ' + c.name + '（見 ' + c.ev + '）'; }) });
+    return res.sort(function (a, b) { return b.raw - a.raw; }); // 顯示分數上限 100，排序用原始分數才分得出誰更像
+  }
+
+  // ───── 文字（繁中／英文）─────
+  var TXT = {
+    'zh-TW': { overview: '概述', architecture: '系統架構', modules: '目錄與模組', build: '建置與部署', entry: '進入點與執行流程', interfaces: '對外介面', config: '設定', data: '資料模型', hardware: '硬體與系統存取', deps: '相依套件', special: '重點項目', risks: '待確認與風險', verify: '驗證與測試', intro: '簡介', install: '安裝', start: '啟動', usage: '使用方式', cli: '命令列選項', api: 'API 與路由', trouble: '疑難排解', evidence: '證據', name: '名稱', desc: '說明', item: '項目', kind: '類型', see: '見', lang: '語言', files: '檔案數', lines: '行數', dir: '目錄', share: '占比', none: '（沒有找到）', docinfo: '文件資訊', source: '來源', scanned: '掃描', title_design: '設計文件', title_user: '使用手冊' },
+    en: { overview: 'Overview', architecture: 'Architecture', modules: 'Directories and Modules', build: 'Build and Deployment', entry: 'Entry Points and Flow', interfaces: 'External Interfaces', config: 'Configuration', data: 'Data Model', hardware: 'Hardware and System Access', deps: 'Dependencies', special: 'Key Items', risks: 'Open Questions and Risks', verify: 'Verification and Tests', intro: 'Introduction', install: 'Installation', start: 'Getting Started', usage: 'Usage', cli: 'Command-line Options', api: 'API and Routes', trouble: 'Troubleshooting', evidence: 'Evidence', name: 'Name', desc: 'Description', item: 'Item', kind: 'Kind', see: 'see', lang: 'Language', files: 'Files', lines: 'Lines', dir: 'Directory', share: 'Share', none: '(none found)', docinfo: 'Document Info', source: 'Source', scanned: 'Scanned', title_design: 'Design Document', title_user: 'User Guide' }
+  };
+
+  // ───── 章節：每個章節從事實產生區塊；沒有素材就回空陣列（該章節不出現，並進「待確認」）─────
+  function lim(ctx, n) { return Math.min(n || 999, LEVELS[ctx.level] || LEVELS.standard); }
+  function evCell(e) { return e ? '`' + e + '`' : ''; }
+  function tableOf(ctx, head, items, rowFn, max) { if (!items.length) return null; var shown = items.slice(0, lim(ctx, max)); var t = { t: 'table', head: head, rows: shown.map(rowFn) }; return [t].concat(items.length > shown.length ? [{ t: 'p', x: '（另有 ' + (items.length - shown.length) + ' 筆未列出；用 level:detailed 可以列更多）' }] : []); }
+  function sentenceCount(s) { return (String(s).match(/[。.!?！？]/g) || []).length; }
+
+  var SECTIONS = {
+    overview: function (c) {
+      var f = c.facts, b = [], r = f.readme, a = c.arch[0];
+      if (r && r.intro) b.push({ t: 'p', x: r.intro + '（見 ' + r.path + '）' });
+      else b.push({ t: 'p', x: '專案裡沒有 README 說明，以下內容完全由原始檔推得。' });
+      var langs = Object.keys(f.langs).filter(function (k) { return SOURCE_LANG.test(k); }).sort(function (x, y) { return f.langs[y].lines - f.langs[x].lines; }), tot = langs.reduce(function (s, k) { return s + f.langs[k].lines; }, 0) || 1;
+      b.push({ t: 'p', x: '共掃描 **' + f.fileCount + '** 個檔案，原始碼約 **' + f.lineCount + '** 行' + (langs.length ? '；主要語言：' + langs.slice(0, 4).map(function (k) { return k + ' ' + Math.round(f.langs[k].lines * 100 / tot) + '%'; }).join('、') : '') + '。' });
+      if (f.docs.length) b.push({ t: 'p', x: '參考的說明文件：' + f.docs.slice(0, 8).map(function (d) { return d.title + (d.url ? '（' + d.url + '）' : ''); }).join('、') + '。' });
+      if (a && a.score >= THRESHOLD) b.push({ t: 'p', x: '依程式內容判斷，這是 **' + a.label + '**（把握度 ' + a.score + '／100）。' });
+      return b;
+    },
+    architecture: function (c) {
+      var f = c.facts, b = [], a = c.arch.filter(function (x) { return x.score >= THRESHOLD; });
+      if (a.length) { b.push({ t: 'p', x: '架構判斷依下列訊號加權而來，每一項都能回到原始檔查證：' }); a.slice(0, 2).forEach(function (x) { b.push({ t: 'h', l: 2, x: x.label + '（' + x.score + '）' }); b.push({ t: 'ul', items: x.reasons.slice(0, lim(c, 8)) }); }); }
+      var tops = Object.keys(f.tops).filter(function (k) { return f.tops[k].files > 0; }).sort(function (x, y) { return f.tops[y].lines - f.tops[x].lines; }).slice(0, 8);
+      if (tops.length > 1) {
+        var id = function (k) { return 'M' + tops.indexOf(k); };
+        var src = 'flowchart LR\n' + tops.map(function (k) { return '  ' + id(k) + '["' + k.replace(/"/g, '') + '<br/>' + f.tops[k].files + ' 個檔案"]'; }).join('\n');
+        b.push({ t: 'fig', kind: 'mermaid', src: src, caption: '頂層目錄（依原始碼行數排序；箭頭關係需人工補上）' });
+      }
+      return b;
+    },
+    modules: function (c) {
+      var f = c.facts, tx = c.tx, tops = Object.keys(f.tops).sort(function (x, y) { return f.tops[y].lines - f.tops[x].lines || f.tops[y].files - f.tops[x].files; });
+      return tableOf(c, [tx.dir, tx.files, tx.lines, tx.lang], tops, function (k) { var T = f.tops[k], l = Object.keys(T.langs).sort(function (x, y) { return T.langs[y] - T.langs[x]; })[0] || ''; return ['`' + k + '`', String(T.files), String(T.lines), l]; }, 40) || [];
+    },
+    build: function (c) {
+      var tx = c.tx; return tableOf(c, [tx.item, tx.desc, tx.evidence], c.facts.build, function (x) { return ['`' + x.name + '`', x.detail, evCell(x.ev)]; }, 40) || [];
+    },
+    entry: function (c) { var tx = c.tx; return tableOf(c, [tx.item, tx.desc, tx.evidence], c.facts.entry, function (x) { return ['`' + x.name + '`', x.detail, evCell(x.ev)]; }, 20) || []; },
+    interfaces: function (c) {
+      var f = c.facts, tx = c.tx, b = [];
+      var t1 = tableOf(c, [tx.name, tx.desc, tx.evidence], f.cli, function (x) { return ['`' + x.name + '`', x.detail, evCell(x.ev)]; }, 40); if (t1) { b.push({ t: 'h', l: 2, x: tx.cli }); b = b.concat(t1); }
+      var t2 = tableOf(c, [tx.name, tx.desc, tx.evidence], f.routes, function (x) { return ['`' + x.name + '`', x.detail, evCell(x.ev)]; }, 60); if (t2) { b.push({ t: 'h', l: 2, x: tx.api }); b = b.concat(t2); }
+      return b;
+    },
+    config: function (c) { var tx = c.tx; return tableOf(c, [tx.name, tx.desc, tx.evidence], c.facts.config, function (x) { return ['`' + x.name + '`', x.detail, evCell(x.ev)]; }, 60) || []; },
+    data: function (c) { var tx = c.tx; return tableOf(c, [tx.name, tx.kind, tx.evidence], c.facts.data, function (x) { return ['`' + x.name + '`', x.detail, evCell(x.ev)]; }, 40) || []; },
+    hardware: function (c) { var tx = c.tx; return tableOf(c, [tx.name, tx.desc, tx.evidence], c.facts.hardware, function (x) { return ['`' + x.name + '`', x.detail, evCell(x.ev)]; }, 40) || []; },
+    deps: function (c) { var tx = c.tx; return tableOf(c, [tx.name, tx.desc, tx.evidence], c.facts.deps, function (x) { return ['`' + x.name + '`', x.detail, evCell(x.ev)]; }, 50) || []; },
+    special: function (c) {
+      var tx = c.tx, groups = {}, b = []; c.facts.special.forEach(function (x) { (groups[x.group] = groups[x.group] || []).push(x); });
+      Object.keys(groups).forEach(function (g) { var t = tableOf(c, [tx.name, tx.desc, tx.evidence], groups[g], function (x) { return ['`' + x.name + '`', x.detail, evCell(x.ev)]; }, 30); if (t) { b.push({ t: 'h', l: 2, x: g }); b = b.concat(t); } });
+      return b;
+    },
+    risks: function (c) {
+      var f = c.facts, items = c.gaps.slice();
+      if (!f.readme) items.push('沒有 README，目的與使用情境無法從專案本身確認。');
+      if (!f.tests) items.push('沒有找到測試檔（tests／spec／*.test.*），行為正確性沒有自動驗證的依據。');
+      if (f.truncated) items.push('檔案數超過掃描上限，只分析了前面一部分。');
+      if (f.skipped) items.push('已略過 ' + f.skipped + ' 個第三方或建置產物檔案（node_modules、dist、build 等）。');
+      if (!items.length) return [];
+      return [{ t: 'ul', items: items }];
+    },
+    verify: function (c) {
+      var f = c.facts, b = [], t = f.build.filter(function (x) { return /test|check|lint/.test(x.name); });
+      b.push({ t: 'p', x: f.tests ? '專案內有 **' + f.tests + '** 個測試檔。' : '專案內沒有找到測試檔。' });
+      if (t.length) b.push({ t: 'ul', items: t.slice(0, 8).map(function (x) { return '`' + x.name + '`' + (x.detail ? '：' + x.detail : '') + '（見 ' + x.ev + '）'; }) });
+      return b;
+    },
+    // 使用手冊
+    u_intro: function (c) { var r = c.facts.readme, b = []; if (r && r.intro) b.push({ t: 'p', x: r.intro }); else b.push({ t: 'p', x: '專案沒有 README，這份手冊只根據原始檔裡找得到的選項與設定寫成。' }); var a = c.arch[0]; if (a && a.score >= THRESHOLD) b.push({ t: 'p', x: '類型：' + a.label + '。' }); return b; },
+    u_install: function (c) {
+      var r = c.facts.readme, b = [], k = r ? Object.keys(r.sections).filter(function (x) { return /install|setup|安裝|環境|getting started|快速開始|prerequisite|需求/.test(x); })[0] : null;
+      if (k && r.sections[k]) b.push({ t: 'quote', x: r.sections[k].slice(0, 900) + '（摘自 ' + r.path + '）' });
+      var deps = c.facts.deps.filter(function (x) { return !/開發用/.test(x.detail); }); if (deps.length) b.push({ t: 'p', x: '執行時需要這些套件：' + deps.slice(0, lim(c, 12)).map(function (x) { return '`' + x.name + '`'; }).join('、') + (deps.length > 12 ? ' 等 ' + deps.length + ' 個' : '') + '。' });
+      var bs = c.facts.build.filter(function (x) { return /^npm run (build|install|setup)|^make |^cmake|^FROM|^EXPOSE/.test(x.name); }); if (bs.length) b.push({ t: 'ul', items: bs.slice(0, 8).map(function (x) { return '`' + x.name + '`' + (x.detail ? '：' + x.detail : '') + '（見 ' + x.ev + '）'; }) });
+      return b;
+    },
+    u_start: function (c) {
+      var b = [], r = c.facts.readme, k = r ? Object.keys(r.sections).filter(function (x) { return /usage|run|start|使用|執行|啟動|quick/.test(x); })[0] : null;
+      if (k && r.sections[k]) b.push({ t: 'quote', x: r.sections[k].slice(0, 900) + '（摘自 ' + r.path + '）' });
+      var st = c.facts.build.filter(function (x) { return /^npm run (start|dev|serve)/.test(x.name); }); if (st.length) b.push({ t: 'ul', items: st.map(function (x) { return '`' + x.name + '`：' + x.detail + '（見 ' + x.ev + '）'; }) });
+      var en = c.facts.entry.filter(function (x) { return /ExecStart|listen|Docker|bin/.test(x.name); }); if (en.length) b.push({ t: 'ul', items: en.slice(0, 6).map(function (x) { return x.name + '：' + x.detail + '（見 ' + x.ev + '）'; }) });
+      return b;
+    },
+    u_cli: function (c) { var tx = c.tx; return tableOf(c, [tx.name, tx.desc, tx.evidence], c.facts.cli, function (x) { return ['`' + x.name + '`', x.detail, evCell(x.ev)]; }, 60) || []; },
+    u_api: function (c) { var tx = c.tx; return tableOf(c, [tx.name, tx.desc, tx.evidence], c.facts.routes, function (x) { return ['`' + x.name + '`', x.detail, evCell(x.ev)]; }, 60) || []; },
+    u_config: function (c) { return SECTIONS.config(c); },
+    u_trouble: function (c) {
+      var f = c.facts, items = [], ports = f.build.filter(function (x) { return x.name === 'EXPOSE'; }).map(function (x) { return x.detail; });
+      if (ports.length) items.push('連不上服務時，先確認埠 ' + ports.join('、') + ' 沒有被其他程式佔用，也沒有被防火牆擋住。');
+      var req = f.config.filter(function (x) { return /環境變數/.test(x.detail); }); if (req.length) items.push('啟動失敗時，先檢查這些環境變數有沒有設：' + req.slice(0, 8).map(function (x) { return '`' + x.name + '`'; }).join('、') + '。');
+      if (f.cli.length) items.push('不確定可以用哪些選項時，先看「命令列選項」一節；選項名稱要照原樣輸入。');
+      if (!items.length) return [];
+      return [{ t: 'ul', items: items }];
+    }
+  };
+  var TITLE_KEY = { u_intro: 'intro', u_install: 'install', u_start: 'start', u_cli: 'cli', u_api: 'api', u_config: 'config', u_trouble: 'trouble' };
+
+  // ───── 範本目錄 ─────
+  var D = ['overview', 'architecture', 'modules', 'build', 'entry', 'interfaces', 'config', 'data', 'hardware', 'deps', 'risks', 'verify'];
+  function mk(id, kind, label, arch, sections, lead) { return { id: id, kind: kind, label: label, arch: arch, sections: sections, lead: lead || '', builtin: true }; }
+  var TEMPLATES = [
+    mk('design-generic', 'design', '通用設計文件', '*', D),
+    mk('openbmc', 'design', 'OpenBMC 設計文件', 'openbmc', ['overview', 'architecture', 'special', 'modules', 'build', 'interfaces', 'config', 'data', 'hardware', 'deps', 'entry', 'risks', 'verify'], 'BMC 韌體的重點在 Yocto 配方（建置）、D-Bus 服務（對外介面）與 Redfish 資源（管理介面）。'),
+    mk('rtos', 'design', 'RTOS 韌體設計文件', 'rtos', ['overview', 'architecture', 'special', 'hardware', 'modules', 'build', 'entry', 'config', 'deps', 'risks', 'verify'], 'RTOS 韌體的重點在任務（優先權與堆疊）、中斷與周邊存取，以及連結配置。'),
+    mk('bios', 'design', 'BIOS／UEFI 設計文件', 'bios', ['overview', 'architecture', 'special', 'modules', 'build', 'config', 'deps', 'hardware', 'risks', 'verify'], 'UEFI 韌體以模組（.inf）為單位，重點是模組型態、進入點與 PCD 設定。'),
+    mk('kernel-driver', 'design', 'Linux 核心驅動設計文件', 'kernel-driver', ['overview', 'architecture', 'special', 'hardware', 'interfaces', 'config', 'build', 'modules', 'risks', 'verify'], '核心驅動的重點在裝置註冊、file_operations 處理函式、模組參數與硬體存取。'),
+    mk('web-service', 'design', 'Web 服務設計文件', 'web-service', ['overview', 'architecture', 'interfaces', 'data', 'config', 'build', 'entry', 'modules', 'deps', 'risks', 'verify'], 'Web 服務的重點在路由與資料模型，其次是設定（環境變數）與部署。'),
+    mk('cgi', 'design', 'CGI 程式設計文件', 'cgi', ['overview', 'architecture', 'interfaces', 'config', 'build', 'modules', 'risks', 'verify'], 'CGI 程式由伺服器逐次呼叫，輸入來自環境變數與標準輸入。'),
+    mk('system-service', 'design', '系統服務設計文件', 'system-service', ['overview', 'architecture', 'entry', 'build', 'config', 'interfaces', 'hardware', 'modules', 'deps', 'risks', 'verify'], '常駐程式的重點在啟動方式（systemd 單元）、訊號處理與對外介面。'),
+    mk('gui', 'design', 'GUI 應用程式設計文件', 'gui', ['overview', 'architecture', 'special', 'modules', 'entry', 'build', 'config', 'deps', 'risks', 'verify'], '桌面應用程式的重點在視窗、主行程與介面行程之間的溝通（IPC），以及打包與更新。'),
+    mk('distributed', 'design', '分散式系統設計文件', 'distributed', ['overview', 'architecture', 'interfaces', 'data', 'config', 'build', 'deps', 'modules', 'risks', 'verify'], '分散式系統的重點在服務之間的介面（gRPC／訊息主題）、資料模型與部署。'),
+    mk('plugin-cli', 'design', '外掛式命令列工具設計文件', 'plugin-cli', ['overview', 'architecture', 'special', 'interfaces', 'config', 'build', 'modules', 'deps', 'risks', 'verify'], '外掛式工具的重點在子命令、外掛的註冊與載入方式。'),
+    mk('user-generic', 'user', '通用使用手冊', '*', ['u_intro', 'u_install', 'u_start', 'u_cli', 'u_api', 'u_config', 'u_trouble']),
+    mk('user-bmc', 'user', 'BMC 管理使用手冊', 'openbmc', ['u_intro', 'u_start', 'u_api', 'u_config', 'u_trouble'], '管理介面主要是 Redfish 與 D-Bus；下列路徑都取自原始碼。'),
+    mk('user-gui', 'user', 'GUI 使用手冊', 'gui', ['u_intro', 'u_install', 'u_start', 'u_config', 'u_trouble']),
+    mk('user-service', 'user', '系統服務使用手冊', 'system-service', ['u_intro', 'u_install', 'u_start', 'u_config', 'u_cli', 'u_trouble']),
+    mk('user-cli', 'user', '命令列工具使用手冊', 'cli', ['u_intro', 'u_install', 'u_cli', 'u_config', 'u_trouble']),
+    mk('user-web-api', 'user', 'Web API 使用手冊', 'web-service', ['u_intro', 'u_install', 'u_start', 'u_api', 'u_config', 'u_trouble']),
+    mk('user-driver', 'user', '驅動程式使用手冊', 'kernel-driver', ['u_intro', 'u_install', 'u_config', 'u_trouble']),
+    mk('user-plugin-cli', 'user', '外掛式命令列工具使用手冊', 'plugin-cli', ['u_intro', 'u_install', 'u_cli', 'u_config', 'u_trouble'])
+  ];
+  function listTemplates(userTemplates) {
+    var ut = (Array.isArray(userTemplates) ? userTemplates : []).map(sanitizeTemplate).filter(Boolean);
+    return TEMPLATES.map(function (t) { return Object.assign({}, t); }).concat(ut);
+  }
+  // 使用者自訂的範本：{id, kind, label, arch, sections:[章節代號｜「自訂:標題|內文」], lead}
+  function sanitizeTemplate(t) {
+    if (!t || typeof t !== 'object') return null; var id = String(t.id || '').toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 30); if (!id || TEMPLATES.some(function (b) { return b.id === id; })) return null;
+    var kind = t.kind === 'user' ? 'user' : 'design', arch = String(t.arch || '*'); if (arch !== '*' && !ARCH.some(function (a) { return a.id === arch; }) && arch !== 'cli') arch = '*';
+    var secs = (Array.isArray(t.sections) ? t.sections : String(t.sections || '').split('\n')).map(function (s) { return String(s).trim(); }).filter(Boolean).slice(0, 30).map(function (s) { return s.slice(0, 600); });
+    if (!secs.length) return null;
+    return { id: id, kind: kind, label: String(t.label || id).slice(0, 60), arch: arch, sections: secs, lead: String(t.lead || '').slice(0, 400), builtin: false };
+  }
+  function sectionIds() { return Object.keys(SECTIONS); }
+
+  // ───── 範本選擇 ─────
+  function selectTemplate(kind, facts, opts) {
+    opts = opts || {}; var all = listTemplates(opts.userTemplates).filter(function (t) { return t.kind === kind; });
+    if (opts.template) { var forced = all.filter(function (t) { return t.id === String(opts.template).toLowerCase(); })[0]; if (forced) return { template: forced, scores: [], reason: '依你指定的範本 ' + forced.id }; }
+    var archScore = {}; facts.arch.forEach(function (a) { archScore[a.id] = a; });
+    // 使用手冊沒有專屬的 rtos／bios／cgi／distributed 範本，這幾類退回通用或最接近的
+    var scored = all.map(function (t) { var s = t.arch === '*' ? GENERIC : (archScore[t.arch] ? archScore[t.arch].raw : 0); if (!t.builtin && t.arch !== '*') s += 2; return { id: t.id, score: s, t: t }; }).sort(function (a, b) { return b.score - a.score; });
+    var best = scored[0], generic = scored.filter(function (x) { return x.t.arch === '*'; })[0];
+    if (best.t.arch !== '*' && best.score >= THRESHOLD && best.score > GENERIC) return { template: best.t, scores: scored.map(function (x) { return { id: x.id, score: x.score }; }), reason: '架構比對 ' + (archScore[best.t.arch] ? archScore[best.t.arch].label : best.t.arch) + '（' + best.score + ' 分，門檻 ' + THRESHOLD + '）' };
+    return { template: generic ? generic.t : all[0], scores: scored.map(function (x) { return { id: x.id, score: x.score }; }), reason: '沒有哪一種架構的分數過門檻（' + THRESHOLD + '），用通用範本' };
+  }
+
+  // ───── 組文件 ─────
+  function build(kind, facts, template, opts) {
+    opts = opts || {}; var lang = opts.lang === 'en' ? 'en' : 'zh-TW', tx = TXT[lang], steps = [];
+    var ctx = { facts: facts, arch: facts.arch, tx: tx, level: opts.level || 'standard', gaps: [] };
+    steps.push({ id: 'scan', text: '掃描 ' + facts.fileCount + ' 個檔案、約 ' + facts.lineCount + ' 行原始碼' + (facts.skipped ? '（略過 ' + facts.skipped + ' 個第三方／建置檔）' : '') + '。' });
+    var found = ['build', 'entry', 'cli', 'config', 'routes', 'data', 'hardware', 'special', 'deps'].filter(function (k) { return facts[k].length; }).map(function (k) { return ({ build: '建置', entry: '進入點', cli: '命令列選項', config: '設定', routes: '路由／介面', data: '資料模型', hardware: '硬體存取', special: '重點項目', deps: '相依套件' })[k] + ' ' + facts[k].length; });
+    steps.push({ id: 'extract', text: '取出事實：' + (found.join('、') || '沒有找到可條列的事實') + '。每一筆都記下檔案與行號。' });
+    var top = facts.arch[0]; steps.push({ id: 'match', text: '架構比對：最高的是「' + top.label + '」' + top.score + ' 分' + (top.score >= THRESHOLD ? '，過門檻。' : '，沒過門檻（' + THRESHOLD + '）。') });
+    var title = (facts.readme && facts.readme.title) || opts.title || opts.name || '專案'; title = String(title).slice(0, 80);
+    var doc = { title: title + (lang === 'en' ? ' ' : '　') + (kind === 'design' ? tx.title_design : tx.title_user), subtitle: opts.rest || '', meta: { version: opts.version || '0.1', date: opts.date || '', lang: lang, template: template.label, source: opts.source || '' }, blocks: [] };
+    if (template.lead) doc.blocks.push({ t: 'quote', x: template.lead });
+    var used = [], omitted = [], parts = [];
+    template.sections.forEach(function (sid) {
+      var custom = /^自訂[:：]/.exec(sid), blocks, head;
+      if (custom) { var seg = sid.slice(custom[0].length).split('|'); head = (seg[0] || '').trim(); blocks = seg.slice(1).join('|').trim() ? [{ t: 'p', x: seg.slice(1).join('|').trim() }] : []; }
+      else if (SECTIONS[sid]) { head = tx[TITLE_KEY[sid] || sid] || sid; blocks = sid === 'risks' ? null : (SECTIONS[sid](ctx) || []); }
+      else { omitted.push(sid + '（不認得的章節）'); return; }
+      if (blocks && !blocks.length) { if (!custom) { omitted.push(head); ctx.gaps.push('「' + head + '」一節沒有可寫的素材：原始檔裡沒有找到對應的內容。'); } return; }
+      parts.push({ head: head, blocks: blocks }); // 「待確認與風險」要看得到其他章節留下的缺口，所以最後才算
+    });
+    parts.forEach(function (pt) {
+      if (!pt.blocks) pt.blocks = SECTIONS.risks(ctx); if (!pt.blocks.length) return;
+      doc.blocks.push({ t: 'h', l: 1, x: pt.head }); pt.blocks.forEach(function (bk) { doc.blocks.push(bk); }); used.push(pt.head);
+    });
+    steps.push({ id: 'synth', text: '用「' + template.label + '」組成文件：' + used.length + ' 章（' + used.join('、') + '）' + (omitted.length ? '；沒有素材所以略過：' + omitted.join('、') : '') + '。' });
+    if (opts.analysis) doc.blocks = doc.blocks.concat(analysisAppendix(facts, tx));
+    var issues = verify(doc, facts); steps.push({ id: 'verify', text: issues.length ? '驗證：' + issues.length + ' 個問題（' + issues.slice(0, 3).join('；') + '）。' : '驗證：所有引用的檔案都存在，沒有重複的章節標題。' });
+    return { doc: doc, steps: steps, issues: issues, used: used, omitted: omitted };
+  }
+  function analysisAppendix(facts, tx) {
+    var b = [{ t: 'pb' }, { t: 'h', l: 1, x: '分析附錄' }, { t: 'p', x: '這一節列出程式比對架構時用到的所有訊號與分數，方便人工複查。' }];
+    b.push({ t: 'table', head: ['架構', '分數', '依據'], rows: facts.arch.map(function (a) { return [a.label, String(a.score), a.reasons.slice(0, 4).join('；') || '（沒有命中任何訊號）']; }) });
+    b.push({ t: 'table', head: ['事實類別', '筆數'], rows: ['build', 'entry', 'cli', 'config', 'routes', 'data', 'hardware', 'special', 'deps'].map(function (k) { return [k, String(facts[k].length)]; }) });
+    return b;
+  }
+
+  // ───── 驗證：每個「見 path:line」都要有那個檔案；章節標題不重複；表格不空 ─────
+  function verify(doc, facts) {
+    var issues = [], heads = {}, cite = /`?([\w.\/-]+\.[A-Za-z0-9]+):(\d+)`?/g;
+    function chk(s) { var m; cite.lastIndex = 0; while ((m = cite.exec(String(s)))) { if (/^\d+\.\d+/.test(m[1])) continue; if (!facts.paths[m[1]]) issues.push('引用了不存在的檔案 ' + m[1]); } }
+    (doc.blocks || []).forEach(function (b) {
+      if (b.t === 'h' && b.l === 1) { if (heads[b.x]) issues.push('章節標題重複：' + b.x); heads[b.x] = 1; }
+      if (b.t === 'table') { if (!b.rows.length) issues.push('有空的表格'); b.rows.forEach(function (r) { r.forEach(chk); }); }
+      if (b.t === 'p' || b.t === 'quote') chk(b.x); if (b.t === 'ul' || b.t === 'ol') b.items.forEach(chk);
+    });
+    return uniqBy(issues, function (x) { return x; });
+  }
+
+  // ───── 線上模型潤飾：只動說明段落；識別字、路徑、數字不能被改 ─────
+  function rewritePlan(doc) { var o = []; (doc.blocks || []).forEach(function (b, i) { if (b.t === 'p' && String(b.x).length >= 30) o.push({ index: i, text: b.x }); }); return o; }
+  function protectedTokens(s) { var t = []; String(s).replace(/`[^`]+`|[\w.\/-]+\.[A-Za-z0-9]+:\d+|\d+(?:\.\d+)?/g, function (m) { t.push(m); return m; }); return uniqBy(t, function (x) { return x; }); }
+  function acceptRewrite(orig, rewritten) {
+    var a = String(orig || ''), b = String(rewritten == null ? '' : rewritten).trim();
+    if (!b) return { ok: false, why: '空白' };
+    if (/\n\s*([#>*-]|\d+\.)\s/.test('\n' + b) || /\n\n/.test(b)) return { ok: false, why: '多了標題、清單或分段' };
+    if (b.length < a.length * 0.5 || b.length > a.length * 1.8) return { ok: false, why: '長度差太多（' + b.length + ' 對 ' + a.length + '）' };
+    var miss = protectedTokens(a).filter(function (tk) { return b.indexOf(tk) < 0; }); if (miss.length) return { ok: false, why: '少了：' + miss.slice(0, 3).join('、') };
+    var urlsB = b.match(/https?:\/\/\S+/g) || [], urlsA = a.match(/https?:\/\/\S+/g) || []; if (urlsB.some(function (u) { return urlsA.indexOf(u) < 0; })) return { ok: false, why: '多了網址' };
+    return { ok: true };
+  }
+
+  // ───── 計畫（給過程記錄看的四個階段）─────
+  function plan(kind) { return [{ id: 'analyze', text: '蒐集來源並掃描' }, { id: 'extract', text: '取出事實與證據' }, { id: 'synthesize', text: kind === 'design' ? '比對架構、選範本、組成設計文件' : '選範本、組成使用手冊' }, { id: 'verify', text: '驗證引用並輸出檔案' }]; }
+
+  return { FORMATS: FORMATS, LEVELS: LEVELS, THRESHOLD: THRESHOLD, GENERIC: GENERIC, parseOptions: parseOptions, analyze: analyze, matchArchitecture: matchArchitecture, selectTemplate: selectTemplate, listTemplates: listTemplates, sanitizeTemplate: sanitizeTemplate, sectionIds: sectionIds, build: build, verify: verify, rewritePlan: rewritePlan, acceptRewrite: acceptRewrite, plan: plan, TXT: TXT };
+});
+
+}).call(null, undefined, holder);
+return holder.FaDocgen;
+})();
+/* DOCGEN-END */
+/* DOCREND-BEGIN */
+const FaDocRender = (function () {
+const holder = {};
+(function (module, self) {
+/*
+ * 文件撰寫器的輸出層：把「文件模型」轉成各種格式的內容。純函式，不碰 DOM、Electron、網路，桌面版與網頁版共用。
+ *
+ * 文件模型：{ title, subtitle?, meta: { version, date, lang, template, source }, blocks: [...] }
+ *   區塊：{t:'h', l:1-4, x} {t:'p', x} {t:'ul'|'ol', items:[x]} {t:'table', head:[x], rows:[[x]]}
+ *         {t:'code', lang?, x} {t:'fig', src, kind:'mermaid'|'dot', caption?} {t:'quote', x} {t:'pb'}
+ *   行內：**粗體**、`程式碼`（其餘一律當純文字）
+ *
+ * 輸出：toMarkdown／toMediaWiki／toHtml 回傳字串；toPdfmake 回傳 pdfmake 的 docDefinition（字型由呼叫端註冊）；
+ *       toDocxParts 回傳 { 路徑: XML 字串 }，由呼叫端用 JSZip 打包。
+ */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaDocRender = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  function runs(text) {
+    var out = [], s = String(text == null ? '' : text), re = /(\*\*[^*]+\*\*|`[^`]+`)/g, last = 0, m;
+    while ((m = re.exec(s))) {
+      if (m.index > last) out.push({ x: s.slice(last, m.index) });
+      var tok = m[0]; if (tok.charAt(0) === '`') out.push({ x: tok.slice(1, -1), c: true }); else out.push({ x: tok.slice(2, -2), b: true });
+      last = m.index + tok.length;
+    }
+    if (last < s.length) out.push({ x: s.slice(last) });
+    return out;
+  }
+  function plain(text) { return runs(text).map(function (r) { return r.x; }).join(''); }
+  function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+  function cell(x) { return String(x == null ? '' : x).replace(/\r?\n/g, ' '); }
+  function slug(t) { return plain(t).toLowerCase().replace(/[^\w一-鿿]+/g, '-').replace(/^-+|-+$/g, '') || 'sec'; }
+  function headings(doc) { return (doc.blocks || []).filter(function (b) { return b.t === 'h' && b.l <= 2; }); }
+
+  // ───── Markdown ─────
+  function toMarkdown(doc) {
+    var o = ['# ' + plain(doc.title), ''];
+    if (doc.subtitle) o.push('*' + plain(doc.subtitle) + '*', '');
+    if (doc.meta) { var mm = []; if (doc.meta.version) mm.push('版本：' + doc.meta.version); if (doc.meta.date) mm.push('日期：' + doc.meta.date); if (doc.meta.template) mm.push('範本：' + doc.meta.template); if (mm.length) o.push('> ' + mm.join('　｜　'), ''); }
+    (doc.blocks || []).forEach(function (b) {
+      if (b.t === 'h') o.push(new Array(Math.min(6, (b.l || 1) + 1) + 1).join('#') + ' ' + b.x, '');
+      else if (b.t === 'p') o.push(b.x, '');
+      else if (b.t === 'ul') { b.items.forEach(function (i) { o.push('- ' + i); }); o.push(''); }
+      else if (b.t === 'ol') { b.items.forEach(function (i, n) { o.push((n + 1) + '. ' + i); }); o.push(''); }
+      else if (b.t === 'table') { o.push('| ' + b.head.map(cell).join(' | ') + ' |', '| ' + b.head.map(function () { return '---'; }).join(' | ') + ' |'); b.rows.forEach(function (r) { o.push('| ' + b.head.map(function (_, i) { return cell(r[i]).replace(/\|/g, '\\|'); }).join(' | ') + ' |'); }); o.push(''); }
+      else if (b.t === 'code') o.push('```' + (b.lang || ''), String(b.x).replace(/\s+$/, ''), '```', '');
+      else if (b.t === 'fig') { o.push('```' + (b.kind === 'dot' ? 'dot' : 'mermaid'), String(b.src).replace(/\s+$/, ''), '```'); if (b.caption) o.push('*圖：' + b.caption + '*'); o.push(''); }
+      else if (b.t === 'quote') { String(b.x).split('\n').forEach(function (l) { o.push('> ' + l); }); o.push(''); }
+      else if (b.t === 'pb') o.push('---', '');
+    });
+    return o.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\s+$/, '') + '\n';
+  }
+
+  // ───── MediaWiki ─────
+  function wikiInline(text) { return runs(text).map(function (r) { var x = r.x.replace(/\|/g, '&#124;'); return r.c ? '<code>' + esc(r.x) + '</code>' : r.b ? "'''" + x + "'''" : x; }).join(''); }
+  function toMediaWiki(doc) {
+    var o = ['= ' + plain(doc.title) + ' =', ''];
+    if (doc.subtitle) o.push("''" + plain(doc.subtitle) + "''", '');
+    if (doc.meta && doc.meta.version) o.push(': 版本：' + doc.meta.version + (doc.meta.date ? '　日期：' + doc.meta.date : ''), '');
+    o.push('__TOC__', '');
+    (doc.blocks || []).forEach(function (b) {
+      if (b.t === 'h') { var eq = new Array(Math.min(6, (b.l || 1) + 1) + 1).join('='); o.push(eq + ' ' + plain(b.x) + ' ' + eq, ''); }
+      else if (b.t === 'p') o.push(wikiInline(b.x), '');
+      else if (b.t === 'ul') { b.items.forEach(function (i) { o.push('* ' + wikiInline(i)); }); o.push(''); }
+      else if (b.t === 'ol') { b.items.forEach(function (i) { o.push('# ' + wikiInline(i)); }); o.push(''); }
+      else if (b.t === 'table') { o.push('{| class="wikitable"', '|-'); o.push(b.head.map(function (h) { return '! ' + wikiInline(h); }).join('\n')); b.rows.forEach(function (r) { o.push('|-'); o.push(b.head.map(function (_, i) { return '| ' + wikiInline(cell(r[i])); }).join('\n')); }); o.push('|}', ''); }
+      else if (b.t === 'code') o.push('<pre>' + esc(String(b.x).replace(/\s+$/, '')) + '</pre>', '');
+      else if (b.t === 'fig') { o.push('<pre>' + esc(String(b.src).replace(/\s+$/, '')) + '</pre>'); if (b.caption) o.push("''圖：" + b.caption + "''"); o.push(''); }
+      else if (b.t === 'quote') o.push('<blockquote>' + wikiInline(b.x) + '</blockquote>', '');
+      else if (b.t === 'pb') o.push('----', '');
+    });
+    return o.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\s+$/, '') + '\n';
+  }
+
+  // ───── HTML（獨立一個檔案；圖用 Mermaid，離線時顯示原始碼）─────
+  function htmlInline(text) { return runs(text).map(function (r) { return r.c ? '<code>' + esc(r.x) + '</code>' : r.b ? '<strong>' + esc(r.x) + '</strong>' : esc(r.x); }).join(''); }
+  var CSS = ':root{--bg:#fff;--fg:#1f2937;--mut:#6b7280;--line:#e5e7eb;--code:#f3f4f6;--acc:#1d4ed8}@media (prefers-color-scheme:dark){:root{--bg:#0f172a;--fg:#e5e7eb;--mut:#94a3b8;--line:#334155;--code:#1e293b;--acc:#93c5fd}}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.7 -apple-system,"Segoe UI","Noto Sans TC","Microsoft JhengHei",sans-serif}main{max-width:880px;margin:0 auto;padding:24px 16px 64px}h1{font-size:28px;margin:.2em 0}h2{font-size:21px;margin:1.6em 0 .4em;border-bottom:1px solid var(--line);padding-bottom:4px}h3{font-size:17px}h4{font-size:15px}.sub{color:var(--mut)}.meta{color:var(--mut);font-size:13px}nav.toc{border:1px solid var(--line);border-radius:8px;padding:8px 16px;margin:16px 0}nav.toc a{color:var(--acc);text-decoration:none}nav.toc ol{margin:4px 0;padding-left:20px}table{border-collapse:collapse;width:100%;margin:10px 0;font-size:14px}th,td{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}th{background:var(--code)}code{background:var(--code);padding:1px 5px;border-radius:4px;font-family:Consolas,monospace;font-size:13px}pre{background:var(--code);padding:10px 14px;border-radius:8px;overflow:auto}pre code{padding:0;background:none}blockquote{border-left:3px solid var(--acc);margin:10px 0;padding:2px 14px;color:var(--mut)}figure{margin:12px 0;text-align:center}figcaption{color:var(--mut);font-size:13px}hr.pb{border:none;border-top:2px dashed var(--line);margin:28px 0}@media print{hr.pb{page-break-after:always;border:none}nav.toc{display:none}}';
+  function toHtml(doc) {
+    var o = [], hs = headings(doc), hasFig = (doc.blocks || []).some(function (b) { return b.t === 'fig'; });
+    o.push('<!doctype html><html lang="' + esc((doc.meta && doc.meta.lang) || 'zh-TW') + '"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>' + esc(plain(doc.title)) + '</title><style>' + CSS + '</style></head><body><main>');
+    o.push('<h1>' + htmlInline(doc.title) + '</h1>'); if (doc.subtitle) o.push('<p class="sub">' + htmlInline(doc.subtitle) + '</p>');
+    if (doc.meta) { var mm = []; if (doc.meta.version) mm.push('版本 ' + esc(doc.meta.version)); if (doc.meta.date) mm.push(esc(doc.meta.date)); if (doc.meta.template) mm.push('範本：' + esc(doc.meta.template)); if (mm.length) o.push('<p class="meta">' + mm.join('　｜　') + '</p>'); }
+    if (hs.length > 2) o.push('<nav class="toc"><strong>目錄</strong><ol>' + hs.filter(function (h) { return h.l === 1; }).map(function (h) { return '<li><a href="#' + slug(h.x) + '">' + esc(plain(h.x)) + '</a></li>'; }).join('') + '</ol></nav>');
+    (doc.blocks || []).forEach(function (b) {
+      if (b.t === 'h') { var l = Math.min(4, (b.l || 1) + 1); o.push('<h' + l + ' id="' + slug(b.x) + '">' + htmlInline(b.x) + '</h' + l + '>'); }
+      else if (b.t === 'p') o.push('<p>' + htmlInline(b.x) + '</p>');
+      else if (b.t === 'ul' || b.t === 'ol') o.push('<' + b.t + '>' + b.items.map(function (i) { return '<li>' + htmlInline(i) + '</li>'; }).join('') + '</' + b.t + '>');
+      else if (b.t === 'table') o.push('<table><thead><tr>' + b.head.map(function (h) { return '<th>' + htmlInline(h) + '</th>'; }).join('') + '</tr></thead><tbody>' + b.rows.map(function (r) { return '<tr>' + b.head.map(function (_, i) { return '<td>' + htmlInline(cell(r[i])) + '</td>'; }).join('') + '</tr>'; }).join('') + '</tbody></table>');
+      else if (b.t === 'code') o.push('<pre><code>' + esc(String(b.x).replace(/\s+$/, '')) + '</code></pre>');
+      else if (b.t === 'fig') o.push('<figure><pre class="mermaid">' + esc(String(b.src).replace(/\s+$/, '')) + '</pre>' + (b.caption ? '<figcaption>圖：' + esc(b.caption) + '</figcaption>' : '') + '</figure>');
+      else if (b.t === 'quote') o.push('<blockquote>' + htmlInline(b.x) + '</blockquote>');
+      else if (b.t === 'pb') o.push('<hr class="pb">');
+    });
+    o.push('</main>');
+    if (hasFig) o.push('<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script><script>try{mermaid.initialize({startOnLoad:true,securityLevel:"strict"})}catch(e){}</script>');
+    o.push('</body></html>');
+    return o.join('\n');
+  }
+
+  // ───── pdfmake ─────
+  var PAL = { navy: '#1e3a5f', txt: '#1f2937', mut: '#6b7280', code: '#f3f4f6', line: '#d1d5db' };
+  function pdfRuns(text) { return runs(text).map(function (r) { var n = { text: r.x }; if (r.b) n.bold = true; if (r.c) { n.background = '#eef0f3'; n.fontSize = 9.5; } return n; }); }
+  function toPdfmake(doc) {
+    var c = [];
+    c.push({ text: plain(doc.title), style: 'title' }); if (doc.subtitle) c.push({ text: plain(doc.subtitle), style: 'sub' });
+    if (doc.meta) { var mm = []; if (doc.meta.version) mm.push('版本 ' + doc.meta.version); if (doc.meta.date) mm.push(doc.meta.date); if (doc.meta.template) mm.push('範本：' + doc.meta.template); if (mm.length) c.push({ text: mm.join('　|　'), style: 'sub', margin: [0, 0, 0, 10] }); }
+    (doc.blocks || []).forEach(function (b) {
+      if (b.t === 'h') c.push({ text: pdfRuns(b.x), style: 'h' + Math.min(4, b.l || 1), tocItem: b.l === 1 });
+      else if (b.t === 'p') c.push({ text: pdfRuns(b.x), style: 'body' });
+      else if (b.t === 'ul') c.push({ ul: b.items.map(pdfRuns), style: 'body', margin: [0, 0, 0, 6] });
+      else if (b.t === 'ol') c.push({ ol: b.items.map(pdfRuns), style: 'body', margin: [0, 0, 0, 6] });
+      else if (b.t === 'table') {
+        var head = b.head.map(function (h) { return { text: plain(h), style: 'th' }; });
+        var body = [head].concat(b.rows.map(function (r) { return b.head.map(function (_, i) { return { text: pdfRuns(cell(r[i])), style: 'td' }; }); }));
+        c.push({ table: { headerRows: 1, widths: b.head.map(function () { return '*'; }), body: body }, layout: { hLineColor: PAL.line, vLineColor: PAL.line }, margin: [0, 2, 0, 10] });
+      } else if (b.t === 'code' || b.t === 'fig') {
+        var src = String(b.t === 'fig' ? b.src : b.x).replace(/\s+$/, '');
+        c.push({ table: { widths: ['*'], body: [[{ text: src, style: 'code', fillColor: PAL.code }]] }, layout: 'noBorders', margin: [0, 2, 0, b.t === 'fig' && b.caption ? 2 : 10] });
+        if (b.t === 'fig' && b.caption) c.push({ text: '圖：' + b.caption, style: 'sub', margin: [0, 0, 0, 10] });
+      } else if (b.t === 'quote') c.push({ text: pdfRuns(b.x), style: 'quote' });
+      else if (b.t === 'pb') c.push({ text: '', pageBreak: 'after' });
+    });
+    return {
+      pageSize: 'A4', pageMargins: [48, 56, 48, 56], content: c, defaultStyle: { font: 'NotoSansTC' },
+      footer: function (cur, total) { return { text: '第 ' + cur + ' / ' + total + ' 頁', alignment: 'center', fontSize: 8, color: PAL.mut, margin: [0, 8, 0, 0] }; },
+      styles: {
+        title: { fontSize: 24, bold: true, color: PAL.navy, margin: [0, 0, 0, 4] }, sub: { fontSize: 10.5, color: PAL.mut, italics: true },
+        h1: { fontSize: 17, bold: true, color: PAL.navy, margin: [0, 14, 0, 6] }, h2: { fontSize: 13.5, bold: true, color: PAL.navy, margin: [0, 10, 0, 4] },
+        h3: { fontSize: 11.5, bold: true, margin: [0, 8, 0, 3] }, h4: { fontSize: 10.5, bold: true, margin: [0, 6, 0, 2] },
+        body: { fontSize: 10.5, color: PAL.txt, lineHeight: 1.35, margin: [0, 0, 0, 6] }, quote: { fontSize: 10, color: PAL.mut, italics: true, margin: [14, 2, 0, 8] },
+        th: { fontSize: 9.5, bold: true, color: '#ffffff', fillColor: PAL.navy, margin: [3, 3, 3, 3] }, td: { fontSize: 9.5, color: PAL.txt, margin: [3, 3, 3, 3] },
+        code: { fontSize: 8.5, color: PAL.txt, margin: [6, 5, 6, 5], preserveLeadingSpaces: true }
+      }
+    };
+  }
+
+  // ───── DOCX（最小可開的 OOXML；清單用縮排加符號，不另做編號定義）─────
+  function x(s) { return String(s == null ? '' : s).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+  function wr(text, o) {
+    o = o || {}; var pr = '<w:rFonts w:ascii="' + (o.c ? 'Consolas' : 'Calibri') + '" w:hAnsi="' + (o.c ? 'Consolas' : 'Calibri') + '" w:eastAsia="Microsoft JhengHei"/>' + (o.b ? '<w:b/>' : '') + (o.color ? '<w:color w:val="' + o.color + '"/>' : '') + (o.sz ? '<w:sz w:val="' + o.sz + '"/>' : '') + (o.c ? '<w:shd w:val="clear" w:color="auto" w:fill="EEF0F3"/>' : '');
+    return '<w:r><w:rPr>' + pr + '</w:rPr><w:t xml:space="preserve">' + x(text) + '</w:t></w:r>';
+  }
+  function wruns(text, base) { return runs(text).map(function (r) { return wr(r.x, { b: r.b || (base && base.b), c: r.c, sz: base && base.sz, color: base && base.color }); }).join(''); }
+  function wp(inner, o) { o = o || {}; return '<w:p><w:pPr>' + (o.style ? '<w:pStyle w:val="' + o.style + '"/>' : '') + (o.ind ? '<w:ind w:left="' + o.ind + '" w:hanging="' + (o.hang || 0) + '"/>' : '') + (o.shade ? '<w:shd w:val="clear" w:color="auto" w:fill="' + o.shade + '"/>' : '') + (o.after != null ? '<w:spacing w:after="' + o.after + '"/>' : '') + '</w:pPr>' + inner + '</w:p>'; }
+  function wtable(b) {
+    var n = Math.max(1, b.head.length), w = Math.floor(9000 / n), grid = ''; for (var i = 0; i < n; i++) grid += '<w:gridCol w:w="' + w + '"/>';
+    function tc(content, head) { return '<w:tc><w:tcPr><w:tcW w:w="' + w + '" w:type="dxa"/>' + (head ? '<w:shd w:val="clear" w:color="auto" w:fill="1E3A5F"/>' : '') + '</w:tcPr>' + wp(content, { after: 0 }) + '</w:tc>'; }
+    return '<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="0" w:type="auto"/></w:tblPr><w:tblGrid>' + grid + '</w:tblGrid>'
+      + '<w:tr><w:trPr><w:tblHeader/></w:trPr>' + b.head.map(function (h) { return tc(wruns(plain(h), { b: true, color: 'FFFFFF', sz: 19 }), true); }).join('') + '</w:tr>'
+      + b.rows.map(function (r) { return '<w:tr>' + b.head.map(function (_, i) { return tc(wruns(cell(r[i]), { sz: 19 })); }).join('') + '</w:tr>'; }).join('') + '</w:tbl>' + wp('', { after: 120 });
+  }
+  function toDocxParts(doc) {
+    var body = [];
+    body.push(wp(wr(plain(doc.title), { b: true, sz: 48, color: '1E3A5F' }), { style: 'Title' }));
+    if (doc.subtitle) body.push(wp(wr(plain(doc.subtitle), { sz: 21, color: '6B7280' })));
+    if (doc.meta) { var mm = []; if (doc.meta.version) mm.push('版本 ' + doc.meta.version); if (doc.meta.date) mm.push(doc.meta.date); if (doc.meta.template) mm.push('範本：' + doc.meta.template); if (mm.length) body.push(wp(wr(mm.join('　|　'), { sz: 19, color: '6B7280' }))); }
+    (doc.blocks || []).forEach(function (b) {
+      if (b.t === 'h') body.push(wp(wruns(b.x), { style: 'Heading' + Math.min(4, b.l || 1) }));
+      else if (b.t === 'p') body.push(wp(wruns(b.x)));
+      else if (b.t === 'ul') b.items.forEach(function (i) { body.push(wp(wr('• ') + wruns(i), { ind: 480, hang: 240, after: 40 })); });
+      else if (b.t === 'ol') b.items.forEach(function (i, n) { body.push(wp(wr((n + 1) + '. ') + wruns(i), { ind: 480, hang: 300, after: 40 })); });
+      else if (b.t === 'table') body.push(wtable(b));
+      else if (b.t === 'code' || b.t === 'fig') {
+        String(b.t === 'fig' ? b.src : b.x).replace(/\s+$/, '').split('\n').forEach(function (l) { body.push(wp(wr(l, { c: true, sz: 18 }), { shade: 'F3F4F6', after: 0 })); });
+        if (b.t === 'fig' && b.caption) body.push(wp(wr('圖：' + b.caption, { sz: 19, color: '6B7280' }))); else body.push(wp('', { after: 80 }));
+      } else if (b.t === 'quote') body.push(wp(wruns(b.x, { color: '6B7280' }), { ind: 360 }));
+      else if (b.t === 'pb') body.push('<w:p><w:r><w:br w:type="page"/></w:r></w:p>');
+    });
+    var NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+    var hstyle = function (id, name, sz, color) { return '<w:style w:type="paragraph" w:styleId="' + id + '"><w:name w:val="' + name + '"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="240" w:after="80"/><w:outlineLvl w:val="' + (parseInt(id.slice(-1), 10) - 1) + '"/></w:pPr><w:rPr><w:b/><w:color w:val="' + color + '"/><w:sz w:val="' + sz + '"/></w:rPr></w:style>'; };
+    var styles = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles ' + NS + '><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:eastAsia="Microsoft JhengHei"/><w:sz w:val="22"/><w:lang w:val="en-US" w:eastAsia="zh-TW"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="120" w:line="300" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults>'
+      + '<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style><w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:after="120"/></w:pPr></w:style>'
+      + hstyle('Heading1', 'heading 1', 34, '1E3A5F') + hstyle('Heading2', 'heading 2', 28, '1E3A5F') + hstyle('Heading3', 'heading 3', 24, '111827') + hstyle('Heading4', 'heading 4', 22, '111827')
+      + '<w:style w:type="table" w:default="1" w:styleId="TableNormal"><w:name w:val="Normal Table"/><w:tblPr><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="108" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="108" w:type="dxa"/></w:tblCellMar></w:tblPr></w:style>'
+      + '<w:style w:type="table" w:styleId="TableGrid"><w:name w:val="Table Grid"/><w:basedOn w:val="TableNormal"/><w:tblPr><w:tblBorders><w:top w:val="single" w:sz="4" w:space="0" w:color="D1D5DB"/><w:left w:val="single" w:sz="4" w:space="0" w:color="D1D5DB"/><w:bottom w:val="single" w:sz="4" w:space="0" w:color="D1D5DB"/><w:right w:val="single" w:sz="4" w:space="0" w:color="D1D5DB"/><w:insideH w:val="single" w:sz="4" w:space="0" w:color="D1D5DB"/><w:insideV w:val="single" w:sz="4" w:space="0" w:color="D1D5DB"/></w:tblBorders></w:tblPr></w:style></w:styles>';
+    var parts = {};
+    parts['[Content_Types].xml'] = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>';
+    parts['_rels/.rels'] = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>';
+    parts['word/_rels/document.xml.rels'] = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>';
+    parts['word/styles.xml'] = styles;
+    parts['word/document.xml'] = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document ' + NS + '><w:body>' + body.join('') + '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr></w:body></w:document>';
+    return parts;
+  }
+
+  return { runs: runs, plain: plain, toMarkdown: toMarkdown, toMediaWiki: toMediaWiki, toHtml: toHtml, toPdfmake: toPdfmake, toDocxParts: toDocxParts, FORMATS: ['md', 'mediawiki', 'html', 'pdf', 'docx'] };
+});
+
+}).call(null, undefined, holder);
+return holder.FaDocRender;
+})();
+/* DOCREND-END */
 /* ARTOUT-BEGIN */
 const FaArticleOutline = (function () {
 const holder = {};
@@ -25937,6 +26577,13 @@ const FA_TASK_TOOL_HINTS = [
         note: '【這個需求有專用工具：knowledge_ask】使用者問的是他自己放進 Knowledge Inventory 的資料。先 knowledge_ask 查，回答只根據回傳的原文片段（quote），每個說法標出處（label）；找不到就照實說知識庫裡沒有，不要用自己的知識補。要加資料用 knowledge_add（附件 file_id、網頁 url）。',
     },
     {
+        id: 'docgen',
+        re: /(user|design)[\s-]?guide|(使用|操作|使用者)手冊|設計(文件|書)|(寫|產生|整理|製作|生成)[\s\S]{0,12}(手冊|設計文件|設計書)/i,
+        neg: /學習單|教案|簡報|投影片/,
+        tools: ['docgen_design_guide', 'docgen_user_guide', 'docgen_list_templates', 'list_file_access_points', 'list_uploaded_files'],
+        note: '【這個需求有專用工具：docgen_design_guide／docgen_user_guide】使用者要為專案寫設計文件或使用手冊。直接呼叫對應的工具，來源用他給的資料夾（fap:）或上傳的檔案；工具會掃描、取事實、比對架構、選範本、驗證並輸出檔案卡片。不要自己讀原始碼寫；回傳的 omitted 是沒有素材所以沒寫的章節，要照實告訴使用者。',
+    },
+    {
         id: 'generate_image',
         re: /(畫|生成|產生|製作|做|繪製|generate|create|draw|make)[\s\S]{0,12}(一張|一幅|張|幅|個)?[\s\S]{0,12}(圖片|圖像|插圖|插畫|照片|海報|封面|圖|image|picture|illustration|photo|poster|artwork)|text[- ]?to[- ]?image|文字生圖|AI\s*(畫圖|繪圖|生圖)|flux|stable diffusion/i,
         neg: /圖片轉|轉成?圖片|匯出成?圖片|pdf/i,
@@ -28214,10 +28861,10 @@ async function _faEnsureCjkFontRegistered() {
 // charToGlyphIndex()確認缺這10個全形標點的字圖（.notdef），pdfmake找不到
 // 字圖時畫出豆腐字方塊，轉成對應半形符號保證能顯示；其餘全形標點
 // （。、「」『』【】—）這個子集有涵蓋，不轉換。
-const FA_PDF_MISSING_PUNCT = { '！': '!', '％': '%', '（': '(', '）': ')', '－': '-', '：': ':', '；': ';', '？': '?', '～': '~', '，': ',' };
+const FA_PDF_MISSING_PUNCT = { '！': '!', '％': '%', '（': '(', '）': ')', '－': '-', '：': ':', '；': ';', '？': '?', '～': '~', '，': ',', '／': '/' };
 function _faSanitizePdfText(s) {
     if (s == null) return s;
-    return String(s).replace(/[！％（）－：；？～，]/g, ch => FA_PDF_MISSING_PUNCT[ch] || ch);
+    return String(s).replace(/[！％（）－：；？～，／]/g, ch => FA_PDF_MISSING_PUNCT[ch] || ch);
 }
 
 function _faSplitMarkdownSections(text) {
@@ -34115,6 +34762,22 @@ class FloatingAssistant {
                         else r._pushAssistantMessage('✅ 畫好了（' + [res.model, res.size, res.steps ? res.steps + ' 步' : '', res.images && res.images[0] && res.images[0].seed != null ? 'seed ' + res.images[0].seed : '', res.duration_ms ? Math.round(res.duration_ms / 100) / 10 + ' 秒' : ''].filter(Boolean).join('，') + '）' + (res.route ? '\n路線：' + res.route_note : '') + (res.prompt_used ? '\n提示詞：' + res.prompt_used : '') + (res.note ? '\n' + res.note : ''), null, { _actions: [{ kind: 'image-config', label: '⚙ 設定' }] });
                     }
                 } catch (e) { r._pushAssistantMessage('⚠️ 畫圖失敗：' + String((e && e.message) || e), null); } try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ } });
+        [['/user-guide', 'user', '使用手冊'], ['/design-guide', 'design', '設計文件']].forEach(([cmd, kind, label]) => {
+            this.register_slash_command(cmd, '[fap:專案資料夾] [wiki:網址,…] [format:pdf,docx,md,mediawiki,html] [template:代號] [lang:zh-TW|en] [level:brief|standard|detailed] [analysis] [noai] [version:1.0] [給誰看／補充要求]',
+                '為專案寫' + label + '：程式掃描原始檔取出事實（每筆附 檔案:行號）、比對架構、選範本、組文件並驗證引用，輸出成檔案卡片。來源：fap:資料夾（網頁版用已授權資料夾，桌面版也可以是絕對路徑）、📎 上傳的檔案（zip 會展開）、wiki:網址。不帶參數且沒有上傳檔案時，說明用法。範本與預設值在 ⚙ 設定。',
+                async (argsText, run) => {
+                    const r = run || this; const raw = String(argsText || '').trim(); r.messages.push({ role: 'user', content: cmd + (raw ? ' ' + raw : '') });
+                    const gear = { _actions: [{ kind: 'docgen-config', label: '⚙ 設定' }] };
+                    try {
+                        const o = FaDocgen.parseOptions(raw); if (!/format:/i.test(raw)) o.format = r._docgenSettings().format;
+                        if (o.unknown.length) r._pushAssistantMessage('ℹ️ 這些選項沒有採用：' + o.unknown.join('、'), null);
+                        const hasUp = (await r.fileCache.getAll()).some((x) => x.kind === 'uploaded');
+                        if (!o.fap && !o.wiki.length && !hasUp) { r._pushAssistantMessage('📘 ' + cmd + ' 要有來源才寫得出來：\n- fap:<已授權的資料夾名稱>（用 list_file_access_points 查看有哪些；桌面版也可以是絕對路徑）\n- 或先 📎 上傳程式碼（zip 也可以）\n- 或 wiki:<說明文件網址>（可以多個，逗號分隔）\n\n例：' + cmd + ' fap:myproj format:pdf,docx level:detailed\n其他選項：template:代號、lang:en、analysis（附分析附錄）、noai（全部由程式寫成）、version:1.0。範本與預設值在 ⚙ 設定。', null, gear); }
+                        else { const res = await r._docgenRun(kind, o); if (!res.ok) r._pushAssistantMessage('⚠️ ' + res.error, null, gear); else if (res.issues && res.issues.length) r._pushAssistantMessage('ℹ️ 驗證有 ' + res.issues.length + ' 個提醒：' + res.issues.slice(0, 4).join('；'), null, gear); }
+                    } catch (e) { r._pushAssistantMessage('⚠️ ' + cmd + ' 失敗：' + String((e && e.message) || e), null, gear); }
+                    try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ }
+                });
+        });
         this.register_slash_command('/worksheet', '[學習單描述]',
             '學習單編輯器：/worksheet 10又幾 做8串（程式讀你的描述做出一份，並在對話裡放一個編輯器）；/worksheet 範本（列出所有範本）、/worksheet 範本 數的組成（從範本開始）；不帶描述＝接著開最近一份（沒有就開一份空白的，直接在編輯器裡用對話做）。編輯器裡可以用對話或屬性面板改、附圖、復原／重做、把編輯過程摘要成 prompt。',
             async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/worksheet' + (raw ? ' ' + raw : '') });
@@ -35290,6 +35953,7 @@ class FloatingAssistant {
             // tw_stock_db客製: 2026-09-12——extract_audio輸出格式，預設mp3
             // （省persistentStorage空間，使用者要求）；改成'wav'要無損。
             extractAudioFormat: 'mp3',
+            docgen: { templates: [], format: ['md'], lang: 'zh-TW', level: 'standard', rewrite: true }, // 文件撰寫器（/user-guide、/design-guide）：自訂範本與預設值
             imageGen: { apiKey: '', model: 'black-forest-labs/flux.1-schnell', customModel: '', provider: 'auto', localDevice: 'auto', templates: {} }, // 圖像生成（NVIDIA 線上模型）：金鑰、選的模型、自己填的模型路徑
             // tw_stock_db客製: 2026-09-12——text_to_speech預設語音代號（見
             // TTS_VOICES）。
@@ -36677,6 +37341,7 @@ class FloatingAssistant {
             offlineToolBench: (() => { const out = {}; const src = raw.offlineToolBench && typeof raw.offlineToolBench === 'object' ? raw.offlineToolBench : {}; for (const m of FaVlm.textModels()) { const b = src[m.id]; if (!b || typeof b !== 'object' || !['good', 'fair', 'poor'].includes(b.rating)) continue; out[m.id] = { passed: Math.max(0, Math.floor(Number(b.passed) || 0)), total: Math.max(0, Math.floor(Number(b.total) || 0)), formatOk: Math.max(0, Math.floor(Number(b.formatOk) || 0)), rating: b.rating, label: String(b.label || '').slice(0, 80), at: Number(b.at) || 0, device: b.device === 'gpu' ? 'gpu' : 'cpu', ms: Math.max(0, Math.floor(Number(b.ms) || 0)), details: Array.isArray(b.details) ? b.details.slice(0, 12).map((d) => ({ id: String(d && d.id || '').slice(0, 24), ok: !!(d && d.ok), reason: String(d && d.reason || '').slice(0, 120) })) : [] }; } return out; })(),
             visionBackendPolicy: ['llm-first', 'offline-first', 'llm', 'offline'].includes(raw.visionBackendPolicy) ? raw.visionBackendPolicy : (raw.offlineVisionFallback === false ? 'llm' : 'llm-first'),
             extractAudioFormat: raw.extractAudioFormat === 'wav' ? 'wav' : 'mp3',
+            docgen: (() => { const g = raw.docgen || {}; return { templates: (Array.isArray(g.templates) ? g.templates : []).slice(0, 30).map((t) => FaDocgen.sanitizeTemplate(t)).filter(Boolean), format: (Array.isArray(g.format) ? g.format : ['md']).filter((x, i, a) => FaDocgen.FORMATS.indexOf(x) >= 0 && a.indexOf(x) === i), lang: g.lang === 'en' ? 'en' : 'zh-TW', level: FaDocgen.LEVELS[g.level] ? g.level : 'standard', rewrite: g.rewrite !== false }; })(),
             imageGen: (() => { const g = raw.imageGen || {}; return { apiKey: String(g.apiKey || '').trim().slice(0, 300), model: String(g.model || 'black-forest-labs/flux.1-schnell').trim().slice(0, 120), customModel: String(g.customModel || '').trim().slice(0, 120), provider: ['online', 'local'].indexOf(g.provider) >= 0 ? g.provider : 'auto', localDevice: ['webgpu', 'cpu'].indexOf(g.localDevice) >= 0 ? g.localDevice : 'auto', templates: (() => { const t = g.templates || {}, q = t.quality || {}; return { styles: (Array.isArray(t.styles) ? t.styles : []).slice(0, 30).map((x) => ({ id: /^[a-z][a-z0-9_]{0,20}$/.test(String((x && x.id) || '')) ? x.id : undefined, zh: Array.isArray(x && x.zh) ? x.zh.map(String).join('，').slice(0, 80) : String((x && x.zh) || '').slice(0, 80), tags: Array.isArray(x && x.tags) ? x.tags.map(String).join(', ').slice(0, 200) : String((x && x.tags) || '').slice(0, 200), phrase: String((x && x.phrase) || '').slice(0, 80) })), quality: { sd15: String(q.sd15 || '').slice(0, 160), sd3: String(q.sd3 || '').slice(0, 160) }, negative: String(t.negative || '').slice(0, 160) }; })() }; })(),
             ttsDefaultVoice: TTS_VOICES.some(v => v.id === raw.ttsDefaultVoice) ? raw.ttsDefaultVoice : TTS_DEFAULT_VOICE,
             // tw_stock_db客製: 2026-09-14——這裡改成`!== false`（不是
@@ -38789,6 +39454,37 @@ ${fnData.code}
 
         // 圖像生成（NVIDIA 線上模型）：FLUX.1 schnell／dev、FLUX.2 klein、FLUX klein、Stable Diffusion 3，也可以填自己的 廠商/模型名 路徑。
         // 金鑰在「進階設定 → 影音處理」填（沒填且目前的語言模型也是 NVIDIA 的話，沿用那把）。結果直接顯示在對話裡，並存成檔案（可下載、可給簡報用）。
+        // 文件撰寫器：專案 → 設計文件／使用手冊（掃描取證據、比對架構、選範本、組文件、驗證，輸出 md／wiki／html／pdf／docx 檔案卡片）
+        const docgenProps = {
+            fap: { type: 'string', description: '專案資料夾：已授權資料夾的參照 fap:<名稱>[/子路徑]（用 list_file_access_points 查），桌面版也可以是絕對路徑。不給就用使用者 📎 上傳的檔案（zip 會展開）' },
+            wiki: { type: 'array', items: { type: 'string' }, description: '選填，說明文件的網址（會抓下來當背景資料；沒有 README 時拿第一頁當簡介）' },
+            format: { type: 'array', items: { type: 'string', enum: ['md', 'mediawiki', 'html', 'pdf', 'docx'] }, description: '輸出格式，可多個；不給就用 ⚙ 設定裡的預設' },
+            template: { type: 'string', description: '選填，範本代號（用 docgen_list_templates 查）；不給由程式依架構比對挑' },
+            lang: { type: 'string', enum: ['zh-TW', 'en'], description: '文件語言，預設繁體中文' },
+            level: { type: 'string', enum: ['brief', 'standard', 'detailed'], description: '詳細程度（表格列數）' },
+            analysis: { type: 'boolean', description: '文件最後附上分析附錄（架構比對的所有訊號與分數）' },
+            noai: { type: 'boolean', description: 'true＝全部由程式寫成，不呼叫模型潤飾' },
+            version: { type: 'string', description: '文件版本，例如 1.0' },
+            request: { type: 'string', description: '使用者對這份文件的補充要求或讀者（會寫在副標題）' }
+        };
+        const docgenRun = (kind) => async function (rawArgs) {
+            let parsed = {}; try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+            try { return JSON.stringify(await this._docgenRun(kind, this._docgenArgsFromTool(parsed))); } catch (e) { return JSON.stringify({ ok: false, error: String((e && e.message) || e) }); }
+        };
+        registerOptional('docgen_design_guide',
+            '為一個專案寫「設計文件」：程式掃描原始檔取出建置、進入點、命令列、設定、路由、資料模型、硬體存取等事實（每筆都附檔案:行號），加權比對架構（OpenBMC、RTOS、BIOS、核心驅動、Web 服務、CGI、系統服務、GUI、分散式、外掛式命令列）、挑範本、組成文件並驗證所有引用，輸出成檔案卡片（md／mediawiki／html／pdf／docx）。找不到的東西不編，寫進「待確認與風險」。來源用 fap 資料夾或使用者上傳的程式碼。',
+            docgenRun('design'), { type: 'object', properties: docgenProps, additionalProperties: false });
+        registerOptional('docgen_user_guide',
+            '為一個專案寫「使用手冊」：同樣先掃描取事實，再依專案類型（命令列、GUI、Web API、系統服務、驅動、BMC…）選範本，寫簡介、安裝、啟動、命令列選項、API、設定、疑難排解；內容只來自 README 與原始檔，附檔案:行號。輸出成檔案卡片。',
+            docgenRun('user'), { type: 'object', properties: docgenProps, additionalProperties: false });
+        registerOptional('docgen_list_templates',
+            '列出文件範本（內建與使用者在 ⚙ 設定裡自訂的）：代號、類型（design／user）、適用架構、章節。',
+            async function (rawArgs) {
+                let parsed = {}; try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const all = FaDocgen.listTemplates(this._docgenSettings().templates).filter((t) => !parsed.kind || t.kind === parsed.kind);
+                return JSON.stringify({ ok: true, templates: all.map((t) => ({ id: t.id, kind: t.kind, label: t.label, arch: t.arch, builtin: !!t.builtin, sections: t.sections })) });
+            }, { type: 'object', properties: { kind: { type: 'string', enum: ['design', 'user'] } }, additionalProperties: false });
+
         registerOptional('generate_image',
             '畫圖的唯一入口（程式會先分流，不用你自己挑路線）：單純形狀的組合圖（流程圖、架構圖、圖表、幾何圖形、圖示…）由程式要求寫成 SVG／Mermaid 純文字再畫出來；要畫面的圖（照片、插畫、人物、風景、畫風…）由程式把需求拆成欄位（主體、動作、場景、畫風、光線、鏡頭、氣氛、色調）、依模型的吃法（SD／SDXS 逗號關鍵詞、FLUX 自然語句、SD3 混合）組成提示詞，再交給擴散模型（線上 NVIDIA 或本機小模型）。所以 prompt 直接給使用者的需求（中文也可以），不要自己改寫成英文咒語。可選參數：image（使用者貼的圖的 file_id：會先用視覺模型看懂，轉成描述當依據）、base_request（要先用純文字畫出一張工程圖／示意圖當基底，視覺模型看懂它之後再生成）、route（auto｜shapes｜diffusion，預設 auto）、style（畫風：photo｜cinematic｜anime｜watercolor｜oil｜sketch｜ink｜render3d｜pixel｜flat｜cyberpunk｜fantasy｜lowpoly｜clay｜illustration）、where（local｜remote：remote＝交給遠端群組裡的機器畫，圖會取回本機使用）、machine（where=remote 時的機器名稱或 auto）、provider（auto｜online｜local）、model、seed。回傳 file_id 與 client_file_url（可以直接用在簡報等地方）；圖已顯示在對話裡。',
             async function (rawArgs) {
@@ -52219,6 +52915,160 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     //   - 自己填了金鑰（進階設定 → 影音處理）：直接打 NVIDIA（ai.api.nvidia.com/v1/genai/…）。
     //   - 沒填：用預設的網址與金鑰。預設是 NVIDIA 官方端點（nvidia.com）就直接打；是 Cloudflare Worker（訪客的預設）就打 {Worker}/genai/{廠商/模型名}，
     //     金鑰由 Worker 那端解析（跟 /openrouter 同一種作法；Worker 要有這條路由，見 DESIGN.image-generation.md）。
+    // ───── 文件撰寫器（/user-guide、/design-guide）─────
+    // 掃描、事實、架構比對、範本、組文件都在 FaDocgen／FaDocRender（純函式）；這裡只做：讀來源、叫模型潤飾、輸出檔案、畫面。桌面版與網頁版共用，不用任何 Electron 專屬功能。
+    _docgenSettings() { const g = (this.advancedSettings && this.advancedSettings.docgen) || {}; return { templates: Array.isArray(g.templates) ? g.templates : [], format: Array.isArray(g.format) && g.format.length ? g.format : ['md'], lang: g.lang === 'en' ? 'en' : 'zh-TW', level: FaDocgen.LEVELS[g.level] ? g.level : 'standard', rewrite: g.rewrite !== false }; }
+    _docgenSave(patch) { const g = Object.assign({}, this._docgenSettings(), patch || {}); this.advancedSettings.docgen = g; this._saveAdvancedSettings(); }
+    async _docgenFetchPage(url) {
+        const proxyBase = this._resolveWebFetchProxyUrl(); const resp = await fetch(proxyBase + url, { headers: { Accept: 'text/html' } });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status); const ct = resp.headers.get('content-type') || ''; if (ct && !/text\/html|application\/xhtml|text\/(plain|markdown)/i.test(ct)) throw new Error('不是網頁內容（' + ct + '）');
+        const raw = await resp.text(); if (/text\/(plain|markdown)/i.test(ct)) return { title: url, text: raw };
+        const r = this._extractReadableContentFromHtml(raw); if (!String(r.markdown || '').trim()) throw new Error('沒有擷取到可讀文字（可能是靠 JavaScript 動態渲染的頁面）'); return { title: r.title || url, text: r.markdown };
+    }
+    // 讀來源：資料夾（fap:名稱，桌面版也可以是絕對路徑）、📎 上傳的檔案（zip 會展開）、wiki 網頁。回傳 { files, docs, source, notes }
+    async _docgenCollect(o, say) {
+        const TEXT = /\.(js|mjs|cjs|ts|tsx|jsx|py|c|h|cc|cpp|cxx|hpp|go|rs|java|kt|cs|rb|php|sh|bash|ps1|lua|swift|html|css|sql|proto|ya?ml|json|toml|ini|conf|cfg|md|txt|bb|bbappend|inf|dec|dsc|s|ld|service|cmake|gradle|env)$/i, NAMES = /^(makefile|gnumakefile|dockerfile[\w.-]*|cmakelists\.txt|kconfig|kbuild|readme[\w.-]*|\.env[\w.-]*|go\.mod|requirements[\w.-]*\.txt)$/i;
+        const SKIP = /^(node_modules|\.git|dist|build|out|vendor|third_party|__pycache__|\.venv|venv|target|bower_components|\.idea|\.vscode)$/;
+        const files = [], docs = [], notes = []; let source = '', bytes = 0; const BUDGET = 40e6, MAXF = 3000;
+        const take = (path, text) => { if (files.length >= MAXF || bytes > BUDGET) return false; bytes += text.length; files.push({ path, text }); return true; };
+        if (o.fap) {
+            const root = /^(fap:|[A-Za-z]:[\\/]|\/)/.test(o.fap) ? o.fap : 'fap:' + o.fap; const io = await this._repoMapIo(root); source = root; say('讀取資料夾 ' + root + '…');
+            const q = ['']; let depth = 0, seen = 0;
+            while (q.length && files.length < MAXF && bytes <= BUDGET) {
+                const dir = q.shift(); depth = dir ? dir.split('/').length : 0; if (depth > 12) continue;
+                let ents = null; try { ents = await io.listEntries(dir); } catch (e) { notes.push('讀不到資料夾 ' + (dir || '/') + '：' + String((e && e.message) || e).slice(0, 80)); continue; } if (!ents) continue;
+                for (const e of ents) {
+                    const rel = dir ? dir + '/' + e.name : e.name;
+                    if (e.kind === 'directory') { if (!SKIP.test(e.name)) q.push(rel); continue; }
+                    if (!TEXT.test(e.name) && !NAMES.test(e.name)) continue;
+                    try { const t = await io.readText(rel); if (t != null && t.indexOf('\u0000') < 0) take(rel, t.length > 600000 ? t.slice(0, 600000) : t); } catch (_) { /* 讀不了的檔案略過 */ }
+                    if (++seen % 200 === 0) say('已讀 ' + seen + ' 個檔案…');
+                }
+            }
+            if (files.length >= MAXF) notes.push('檔案超過 ' + MAXF + ' 個，只讀了前面一部分。');
+        } else {
+            const all = await this.fileCache.getAll(); const ups = all.filter((r) => r.kind === 'uploaded' && !/^https?:/.test(r.filename || '')); const names = [];
+            for (const r of ups) {
+                const fn = String(r.filename || ''); const blob = r.blob || (await this.fileCache.get(r.id) || {}).blob; if (!blob) continue;
+                try {
+                if (/\.zip$/i.test(fn)) {
+                    await this._ensureJSZipLoaded(); const zip = await JSZip.loadAsync(blob); const ents = Object.keys(zip.files).filter((k) => !zip.files[k].dir);
+                    const prefix = (() => { const first = ents.map((k) => k.split('/')[0]); return first.length && first.every((x) => x === first[0]) && ents.every((k) => k.indexOf('/') > 0) ? first[0] + '/' : ''; })();
+                    for (const k of ents) { const rel = prefix ? k.slice(prefix.length) : k; if (!rel || (!TEXT.test(rel) && !NAMES.test(rel.split('/').pop())) || rel.split('/').some((p) => SKIP.test(p))) continue; const t = await zip.files[k].async('string'); if (t.indexOf('\u0000') < 0) take(rel, t.length > 600000 ? t.slice(0, 600000) : t); }
+                    names.push(fn);
+                } else if (TEXT.test(fn) || NAMES.test(fn)) { const t = await blob.text(); if (t.indexOf('\u0000') < 0) { take(fn, t); names.push(fn); } }
+                } catch (e) { notes.push('上傳的檔案讀不了：' + fn + '（' + String((e && e.message) || e).slice(0, 80) + '）'); }
+            }
+            source = names.length ? '上傳的檔案：' + names.slice(0, 5).join('、') + (names.length > 5 ? ' 等 ' + names.length + ' 個' : '') : '';
+        }
+        for (const url of o.wiki || []) {
+            try { say('讀取網頁 ' + url + '…'); const p = await this._docgenFetchPage(url); docs.push({ path: 'wiki/' + docs.length + '.md', title: p.title, text: p.text, url }); }
+            catch (e) { notes.push('網頁讀不到：' + url + '（' + String((e && e.message) || e).slice(0, 80) + '）'); }
+        }
+        if (o.wiki && o.wiki.length && !files.length && docs.length) source = source || '網頁：' + o.wiki.join('、');
+        return { files, docs, source, notes };
+    }
+    // 線上模型只潤飾「說明段落」，而且逐段驗收：識別字、路徑、數字、網址有被動到就用程式寫的原文
+    async _docgenRewrite(doc, step) {
+        const plan = FaDocgen.rewritePlan(doc).slice(0, 12); if (!plan.length) return { tried: 0, accepted: 0 };
+        let acc = 0, tried = 0, fails = 0;
+        for (const it of plan) {
+            tried++;
+            try {
+                const out = await this._kiLlm('把下面這段說明改得更通順自然，意思不變。規則：`反引號` 裡的字、檔案路徑、行號、數字、網址一個字都不能改；不加新資訊；只輸出改寫後的那一段，不要標題、清單或前後說明。\n\n' + it.text, { systemPrompt: '你是技術文件編輯，只做語句潤飾。', maxTokens: 700, temperature: 0.2 }, { label: '潤飾', timeoutMs: 60000, noOffline: true, onStep: step });
+                const r = FaDocgen.acceptRewrite(it.text, out);
+                if (r.ok) { doc.blocks[it.index].x = String(out).trim(); acc++; } else step('　第 ' + tried + ' 段潤飾沒通過驗收（' + r.why + '），保留程式寫的原文。');
+            } catch (e) { fails++; step('　第 ' + tried + ' 段潤飾失敗（' + String((e && e.message) || e).slice(0, 80) + '），保留原文。'); if (fails >= 2) { step('線上模型連續失敗，剩下的段落不再潤飾（文件內容不受影響）。'); break; } }
+        }
+        return { tried, accepted: acc };
+    }
+    async _docgenBlob(fmt, doc) {
+        if (fmt === 'md') return { blob: new Blob([FaDocRender.toMarkdown(doc)], { type: 'text/markdown;charset=utf-8' }), ext: 'md', mime: 'text/markdown' };
+        if (fmt === 'mediawiki') return { blob: new Blob([FaDocRender.toMediaWiki(doc)], { type: 'text/plain;charset=utf-8' }), ext: 'wiki.txt', mime: 'text/plain' };
+        if (fmt === 'html') return { blob: new Blob([FaDocRender.toHtml(doc)], { type: 'text/html;charset=utf-8' }), ext: 'html', mime: 'text/html' };
+        if (fmt === 'pdf') {
+            await this._wsEnsurePdf(); const def = FaDocRender.toPdfmake(doc);
+            (function clean(n) { if (Array.isArray(n)) n.forEach(clean); else if (n && typeof n === 'object') { if (typeof n.text === 'string') n.text = _faSanitizePdfText(n.text); Object.keys(n).forEach((k) => { if (n[k] && typeof n[k] === 'object') clean(n[k]); }); } })(def.content);
+            const blob = await new Promise((res, rej) => { try { window.pdfMake.createPdf(def).getBlob(res); } catch (e) { rej(e); } }); return { blob, ext: 'pdf', mime: 'application/pdf' };
+        }
+        if (fmt === 'docx') {
+            await this._ensureJSZipLoaded(); const zip = new JSZip(), parts = FaDocRender.toDocxParts(doc); Object.keys(parts).forEach((k) => zip.file(k, parts[k]));
+            const mime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'; return { blob: await zip.generateAsync({ type: 'blob', mimeType: mime, compression: 'DEFLATE' }), ext: 'docx', mime };
+        }
+        throw new Error('不支援的格式：' + fmt);
+    }
+    // 主流程：計畫（分析→取事實→組文件→驗證輸出）→ 過程記錄（程式寫的敘述）→ 檔案卡片。回傳摘要給工具與指令共用
+    async _docgenRun(kind, o) {
+        const s = this._docgenSettings(); o = Object.assign({ fap: '', wiki: [], format: s.format, template: '', lang: s.lang, level: s.level, analysis: false, noai: false, version: '', rest: '' }, o || {});
+        const prog = this._createProgressWidget(kind === 'design' ? '📐 設計文件' : '📘 使用手冊'); const say = (t) => prog.log(t); const pl = FaDocgen.plan(kind);
+        try {
+            say('計畫：' + pl.map((p, i) => (i + 1) + '. ' + p.text).join('　'));
+            prog.update({ pct: 5, status: pl[0].text + '…' });
+            const src = await this._docgenCollect(o, (t) => { say(t); });
+            if (!src.files.length && !src.docs.length) throw new Error('沒有讀到任何來源。請用 fap:<資料夾名稱> 指定專案資料夾（用 list_file_access_points 看有哪些已授權的），或先 📎 上傳程式碼（zip 也可以），或給 wiki:<網址>。' + (src.notes.length ? '（' + src.notes.join('；') + '）' : ''));
+            src.notes.forEach((n) => say('⚠️ ' + n));
+            prog.update({ pct: 30, status: pl[1].text + '…' });
+            const facts = FaDocgen.analyze(src.files, { docs: src.docs });
+            prog.update({ pct: 50, status: pl[2].text + '…' });
+            const sel = FaDocgen.selectTemplate(kind, facts, { template: o.template, userTemplates: s.templates }); say('範本：' + sel.template.label + '（' + sel.reason + '）');
+            const built = FaDocgen.build(kind, facts, sel.template, { lang: o.lang, level: o.level, analysis: o.analysis, version: o.version, rest: o.rest, source: src.source, date: new Date().toISOString().slice(0, 10) });
+            built.steps.forEach((st) => say(st.text));
+            const doc = built.doc;
+            if (!o.noai && s.rewrite) { prog.update({ pct: 60, status: '用線上模型潤飾說明段落…' }); const r = await this._docgenRewrite(doc, (t) => say(t)); say(r.tried ? '潤飾：' + r.tried + ' 段裡 ' + r.accepted + ' 段通過驗收。' : '沒有需要潤飾的說明段落。'); }
+            else say(o.noai ? '依 noai 選項，全部由程式寫成，不呼叫模型。' : '設定關閉了模型潤飾，全部由程式寫成。');
+            prog.update({ pct: 80, status: pl[3].text + '…' });
+            const base = String((facts.readme && facts.readme.title) || 'project').replace(/[\\/:*?"<>|\s]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'project', out = [];
+            for (const fmt of o.format) {
+                try { const b = await this._docgenBlob(fmt, doc); const name = base + '-' + (kind === 'design' ? 'design-guide' : 'user-guide') + '-v' + (o.version || '0.1') + '.' + b.ext; await this.generateAndDeliverFile(b.blob, name, b.mime); out.push({ format: fmt, filename: name, bytes: b.blob.size }); say('輸出 ' + fmt + '：' + name + '（' + Math.round(b.blob.size / 1024) + ' KB）'); }
+                catch (e) { say('⚠️ ' + fmt + ' 輸出失敗：' + String((e && e.message) || e).slice(0, 120)); out.push({ format: fmt, error: String((e && e.message) || e) }); }
+            }
+            const okN = out.filter((x) => x.filename).length; if (!okN) throw new Error('所有格式都輸出失敗：' + out.map((x) => x.format + '：' + x.error).join('；'));
+            prog.finish('完成：' + sel.template.label + '，' + built.used.length + ' 章，' + okN + ' 個檔案', [{ kind: 'docgen-config', label: '⚙ 設定' }]);
+            return { ok: true, kind, template: sel.template.id, template_reason: sel.reason, sections: built.used, omitted: built.omitted, issues: built.issues, files: out, source: src.source, notes: src.notes, steps: built.steps.map((x) => x.text) };
+        } catch (e) { prog.fail(String((e && e.message) || e)); return { ok: false, error: String((e && e.message) || e) }; }
+    }
+    _docgenArgsFromTool(a) {
+        a = a || {}; const o = FaDocgen.parseOptions(''); if (a.fap) o.fap = String(a.fap); o.wiki = (Array.isArray(a.wiki) ? a.wiki : a.wiki ? [a.wiki] : []).map(String);
+        if (a.format) { const f = FaDocgen.parseOptions('format:' + (Array.isArray(a.format) ? a.format.join(',') : String(a.format))); if (f.format.length) o.format = f.format; } else o.format = this._docgenSettings().format;
+        ['template', 'version'].forEach((k) => { if (a[k]) o[k] = String(a[k]); }); if (a.lang) o.lang = /^en/i.test(a.lang) ? 'en' : 'zh-TW'; if (FaDocgen.LEVELS[a.level]) o.level = a.level; o.analysis = !!a.analysis; o.noai = !!a.noai; o.rest = String(a.request || '');
+        return o;
+    }
+    // 設定視窗：預設輸出、內建範本一覽、自己的範本（章節順序與自訂章節）
+    _docgenConfigOpen() {
+        const esc = (s) => this._escapeHtml(String(s == null ? '' : s)); const P = this._domainConfigPopup('ai-docgen-modal', '⚙ 文件撰寫設定（/user-guide、/design-guide）', { width: 760 }); const body = P.body, pal = P.pal;
+        const inp = 'width:100%; box-sizing:border-box; padding:5px 8px; border-radius:6px; border:1px solid ' + (pal.inputBorder || '#475569') + '; background:transparent; color:inherit; font-size:13px;';
+        const btn = 'padding:5px 12px; border-radius:6px; cursor:pointer; border:1px solid ' + (pal.inputBorder || '#475569') + '; background:transparent; color:inherit; font-size:12px;';
+        const sec = (t) => '<div style="font-weight:bold; margin:14px 0 4px;">' + t + '</div>', hint = (t) => '<div style="opacity:.7; font-size:12px; margin-top:4px; white-space:pre-wrap;">' + t + '</div>', lab = (t) => '<div style="margin:8px 0 2px; opacity:.85;">' + t + '</div>';
+        const arches = [['*', '不限（通用）'], ['openbmc', 'OpenBMC'], ['rtos', 'RTOS 韌體'], ['bios', 'BIOS／UEFI'], ['kernel-driver', '核心驅動'], ['cgi', 'CGI'], ['web-service', 'Web 服務'], ['system-service', '系統服務'], ['gui', 'GUI 應用程式'], ['distributed', '分散式系統'], ['plugin-cli', '外掛式命令列'], ['cli', '命令列工具']];
+        const s0 = this._docgenSettings(); const secIds = FaDocgen.sectionIds().join('、');
+        body.innerHTML = sec('預設輸出') + '<div id="ai-dg-fmts" style="display:flex; flex-wrap:wrap; gap:12px;">' + FaDocgen.FORMATS.map((f) => '<label><input type="checkbox" data-f="' + f + '"' + (s0.format.indexOf(f) >= 0 ? ' checked' : '') + '> ' + ({ md: 'Markdown', mediawiki: 'MediaWiki', html: 'HTML', pdf: 'PDF', docx: 'Word（docx）' })[f] + '</label>').join('') + '</div>'
+            + '<div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;"><div>' + lab('語言') + '<select id="ai-dg-lang" style="' + inp + '"><option value="zh-TW">繁體中文</option><option value="en">English</option></select></div><div>' + lab('詳細程度（表格列數）') + '<select id="ai-dg-level" style="' + inp + '"><option value="brief">精簡（每表 8 列）</option><option value="standard">標準（25 列）</option><option value="detailed">詳細（60 列）</option></select></div></div>'
+            + '<label style="display:block; margin-top:10px;"><input type="checkbox" id="ai-dg-rewrite"> 用線上模型潤飾說明段落（每段都驗收：識別字、路徑、數字被動到就用程式寫的原文）</label>'
+            + sec('內建範本') + '<div id="ai-dg-builtin"></div>' + sec('我的範本') + hint('範本決定「有哪些章節、什麼順序」。「適用架構」有填的話，專案被判斷成那種架構時會自動選它；也可以用 template:代號 指定。章節每行一個：可用代號 ' + secIds + '；自訂章節寫成「自訂:標題|內文」。')
+            + '<div id="ai-dg-custom"></div><div style="display:flex; gap:8px; margin-top:8px; align-items:center;"><select id="ai-dg-base" style="' + inp + '; width:auto;"></select><button type="button" id="ai-dg-add" style="' + btn + '">＋ 以這個為底新增範本</button></div><div id="ai-dg-msg" style="margin-top:8px; font-size:12px; color:#e5a44b;"></div>';
+        const $ = (id) => body.querySelector('#' + id); $('ai-dg-lang').value = s0.lang; $('ai-dg-level').value = s0.level; $('ai-dg-rewrite').checked = s0.rewrite;
+        $('ai-dg-fmts').onchange = () => { const f = Array.from(body.querySelectorAll('#ai-dg-fmts input:checked')).map((e) => e.dataset.f); if (!f.length) { $('ai-dg-msg').textContent = '至少要選一種輸出格式。'; body.querySelector('#ai-dg-fmts input[data-f="md"]').checked = true; f.push('md'); } else $('ai-dg-msg').textContent = ''; this._docgenSave({ format: f }); };
+        $('ai-dg-lang').onchange = () => this._docgenSave({ lang: $('ai-dg-lang').value }); $('ai-dg-level').onchange = () => this._docgenSave({ level: $('ai-dg-level').value }); $('ai-dg-rewrite').onchange = () => this._docgenSave({ rewrite: $('ai-dg-rewrite').checked });
+        const builtin = FaDocgen.listTemplates([]); $('ai-dg-builtin').innerHTML = '<table style="width:100%; border-collapse:collapse; font-size:12px;"><tr style="text-align:left; opacity:.7;"><th>代號</th><th>類型</th><th>適用架構</th><th>章節</th></tr>' + builtin.map((t) => '<tr style="border-top:1px solid ' + (pal.inputBorder || '#475569') + ';"><td><code>' + esc(t.id) + '</code></td><td>' + (t.kind === 'user' ? '使用手冊' : '設計文件') + '</td><td>' + esc((arches.filter((a) => a[0] === t.arch)[0] || [0, t.arch])[1]) + '</td><td>' + esc(t.sections.join('、')) + '</td></tr>').join('') + '</table>';
+        $('ai-dg-base').innerHTML = builtin.map((t) => '<option value="' + esc(t.id) + '">' + esc(t.label) + '（' + esc(t.id) + '）</option>').join('');
+        const mine = () => (this._docgenSettings().templates || []);
+        const saveMine = (list) => { this._docgenSave({ templates: list.map(FaDocgen.sanitizeTemplate).filter(Boolean) }); };
+        const draw = () => {
+            const host = $('ai-dg-custom'); host.innerHTML = ''; const list = mine();
+            if (!list.length) host.innerHTML = hint('（還沒有自己的範本）');
+            list.forEach((t, i) => {
+                const card = document.createElement('div'); card.style.cssText = 'border:1px solid ' + (pal.inputBorder || '#475569') + '; border-radius:8px; padding:8px 10px; margin-top:8px;';
+                card.innerHTML = '<div style="display:grid; grid-template-columns:1fr 1fr 1fr 1fr auto; gap:6px; align-items:end;"><div>' + lab('代號') + '<input data-k="id" style="' + inp + '" value="' + esc(t.id) + '"></div><div>' + lab('名稱') + '<input data-k="label" style="' + inp + '" value="' + esc(t.label) + '"></div><div>' + lab('類型') + '<select data-k="kind" style="' + inp + '"><option value="design">設計文件</option><option value="user">使用手冊</option></select></div><div>' + lab('適用架構') + '<select data-k="arch" style="' + inp + '">' + arches.map((a) => '<option value="' + a[0] + '">' + a[1] + '</option>').join('') + '</select></div><button type="button" data-del style="' + btn + '">🗑</button></div>'
+                    + lab('開頭說明（選填）') + '<input data-k="lead" style="' + inp + '" value="' + esc(t.lead) + '">' + lab('章節（每行一個）') + '<textarea data-k="sections" rows="6" style="' + inp + '; font-family:Consolas,monospace;">' + esc((t.sections || []).join('\n')) + '</textarea>';
+                card.querySelector('[data-k="kind"]').value = t.kind; card.querySelector('[data-k="arch"]').value = t.arch;
+                card.querySelectorAll('[data-k]').forEach((e) => { e.onchange = () => { const l = mine().slice(); const cur = Object.assign({}, l[i]); cur[e.dataset.k] = e.value; const ok = FaDocgen.sanitizeTemplate(cur); if (!ok) { $('ai-dg-msg').textContent = '這個範本不能存：代號要是英數字（不能跟內建的相同）、章節至少一個。'; return; } $('ai-dg-msg').textContent = ''; l[i] = ok; saveMine(l); }; });
+                card.querySelector('[data-del]').onclick = () => { const l = mine().slice(); l.splice(i, 1); saveMine(l); draw(); };
+                host.appendChild(card);
+            });
+        };
+        $('ai-dg-add').onclick = () => { const b = builtin.filter((t) => t.id === $('ai-dg-base').value)[0]; const l = mine().slice(); let n = 1; while (l.some((x) => x.id === 'mine' + n) || builtin.some((x) => x.id === 'mine' + n)) n++; const t = FaDocgen.sanitizeTemplate({ id: 'mine' + n, kind: b.kind, label: '我的' + b.label, arch: b.arch, sections: b.sections.slice(), lead: b.lead }); if (!t) return; l.push(t); saveMine(l); draw(); };
+        draw(); return P;
+    }
     _imageGenConfig() {
         const g = (this.advancedSettings && this.advancedSettings.imageGen) || {};
         const custom = String(g.customModel || '').trim();
@@ -53403,6 +54253,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     async _runMessageAction(a) {
         const root = String((a && a.root) || '');
         if (a.kind === 'image-config') { this._imageConfigOpen(); return { ok: true }; }
+        if (a.kind === 'docgen-config') { this._docgenConfigOpen(); return { ok: true }; }
         if (a.kind === 'aidoc-view') { const r = await this._aidocViewerOpen(root); return r; }
         if (a.kind === 'aidoc-sqlite' || a.kind === 'aidoc-qa') { await this._codeExport(root, a.kind === 'aidoc-sqlite' ? 'sqlite_html' : 'qa_html', { deliver: true }); return { ok: true }; }
         return { ok: false, error: '不認得的動作：' + a.kind };
@@ -80429,6 +81280,11 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                     <p class="ai-advanced-hint">線上金鑰與模型、本機小模型（下載／刪除）、提示詞範本（自己的畫風、品質詞、負面詞）都在這個設定視窗裡；在對話裡打 /image 也有同一個 ⚙ 按鈕。</p>
                                 </div>
                                 <div class="ai-advanced-stack">
+                                    <label class="ai-advanced-label">文件撰寫（/user-guide、/design-guide）</label>
+                                    <button type="button" id="ai-docgen-open" class="ai-advanced-btn">⚙ 開啟文件撰寫設定</button>
+                                    <p class="ai-advanced-hint">預設輸出格式與語言、內建範本一覽、自己的範本（章節順序、自訂章節）都在這個設定視窗裡；在對話裡打 /user-guide 或 /design-guide 也有同一個 ⚙ 按鈕。</p>
+                                </div>
+                                <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label" for="ai-perf-max-mesh-triangles">匯入3D模型三角形數量上限</label>
                                     <input type="number" id="ai-perf-max-mesh-triangles" class="ai-advanced-input" min="0" step="1">
                                     <p class="ai-advanced-hint">STL/OBJ/3MF/FBX匯入時的三角形數量上限，超過會被拒絕；填 0 代表不限制（掃描級/CAD高面數模型也會嘗試匯入，可能拖慢畫面）。</p>
@@ -83875,6 +84731,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             });
         }
         { const ob = document.getElementById('ai-imggen-open'); if (ob) ob.addEventListener('click', () => this._imageConfigOpen()); }
+        { const ob = document.getElementById('ai-docgen-open'); if (ob) ob.addEventListener('click', () => this._docgenConfigOpen()); }
         const extractAudioFormatSelect = document.getElementById('ai-extract-audio-format');
         if (extractAudioFormatSelect) {
             extractAudioFormatSelect.addEventListener('change', () => {
