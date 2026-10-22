@@ -583,14 +583,14 @@ const FaKnowledgeHost = (function () {
         // 每一步都用 onStep 說出原因與秒數；使用者可以按「略過等待」（ctl.cancel）。全部失敗就丟出最後一個錯誤，呼叫端退回「只給原文」，不會卡住。
         // 離線小模型的上下文小，所以呼叫端可以給 offlinePrompt（較短的提示詞）。離線模型寫出來的東西一樣要過逐句核對。
         async _kiLlm(prompt, opts, o) {
-            o = o || {}; const tm = o.timeoutMs || 60000, step = o.onStep || (() => {}), offFirst = !!(this.advancedSettings && this.advancedSettings.offlineMode);
-            const plan = o.only === 'offline' ? ['offline'] : offFirst ? ['offline', 'online'] : o.noOffline ? ['online', 'online'] : ['online', 'offline', 'online']; let lastErr = null, offlineGone = false;
+            o = o || {}; const tm = Math.max(o.timeoutMs || 60000, 60000), step = o.onStep || (() => {}), offFirst = !!(this.advancedSettings && this.advancedSettings.offlineMode);
+            const plan = o.only === 'offline' ? ['offline'] : offFirst ? ['offline', 'online'] : o.noOffline ? ['online', 'online'] : ['online', 'online', 'offline', 'online']; let lastErr = null, offlineGone = false, skipRetry = false;
             for (let i = 0; i < plan.length; i++) {
-                const kind = plan[i]; if (kind === 'offline' && offlineGone) continue; if (o.onAttempt) { try { o.onAttempt(kind); } catch (_) { /* */ } }
+                const kind = plan[i]; if (kind === 'offline' && offlineGone) continue; if (skipRetry && kind === 'online' && i === 1) continue; if (o.onAttempt) { try { o.onAttempt(kind); } catch (_) { /* */ } }
                 let timer = null; const t0 = Date.now(), label = (o.label || '模型') + (kind === 'offline' ? '（離線模型）' : '');
-                if (kind === 'offline') step('🔌 ' + (i === 0 ? '離線模式：' : '線上沒成功，緊接著') + '改用離線文字模型…（第一次要載入模型，會比較慢；小模型的品質有限，寫出來的一樣會逐句核對）');
+                if (kind === 'offline') step('🔌 ' + (i === 0 ? '離線模式：' : '線上試了兩次都沒成功，') + '改用離線文字模型…（第一次要載入模型，會比較慢；小模型的品質有限，寫出來的一樣會逐句核對）');
                 try {
-                    const lim = kind === 'offline' ? Math.max(tm, 180000) : tm;
+                    const lim = kind === 'offline' ? Math.max(tm, 180000) : (i > 0 ? Math.round(tm * 1.5) : tm); // 線上重試時多給一點耐心：一次慢回應不代表離線
                     const call = kind === 'offline' ? this._kiOfflineComplete(o.offlinePrompt ? o.offlinePrompt() : prompt, opts) : this._callSimpleCompletion(prompt, opts);
                     const reply = await Promise.race([
                         call,
@@ -605,7 +605,9 @@ const FaKnowledgeHost = (function () {
                     clearTimeout(timer); lastErr = e; const msg = String((e && e.message) || e);
                     if (/已略過/.test(msg)) throw e;
                     if (kind === 'offline' && /還沒下載|沒有已下載|NOT_SUPPORTED|關掉|使用者取消/.test(msg)) offlineGone = true;
-                    const next = plan.slice(i + 1).find((k) => !(k === 'offline' && offlineGone));
+                    // 判斷「線上不行」要有憑據：逾時、5xx、429、網路錯誤才值得多試一次線上（節點可能只是忙或剛重連）；金鑰錯誤、404 這類試幾次都一樣，直接換離線
+                    const transient = /逾時|沒有回應|timeout|network|Failed to fetch|網路|空白|HTTP 5\d\d|API錯誤\(5\d\d\)|API錯誤\(429\)|API錯誤\(408\)|429/i.test(msg); if (kind === 'online' && i === 0 && !transient) skipRetry = true;
+                    const next = plan.slice(i + 1).find((k, j) => !(k === 'offline' && offlineGone) && !(skipRetry && k === 'online' && i + 1 + j === 1));
                     step('　⚠️ ' + label + '沒成功（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）：' + msg.slice(0, 140) + (next === 'offline' ? '。緊接著改用離線模型' : next === 'online' ? '。3 秒後再試線上（節點重新上線後就接得上）' : ''));
                     if (next === 'online') await new Promise((r) => setTimeout(r, 3000));
                 }
