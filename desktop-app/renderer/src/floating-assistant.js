@@ -17289,6 +17289,7 @@ const holder = {};
     clay: { zh: ['黏土'], en: ['clay'], tags: ['claymation', 'soft clay texture', 'studio lighting'], phrase: 'a claymation-style scene' },
     illustration: { zh: ['插畫', '繪本', '童書'], en: ['illustration'], tags: ['digital illustration', 'detailed', 'colorful'], phrase: 'a digital illustration' }
   };
+  var BUILTIN_STYLES = JSON.parse(JSON.stringify(STYLES)), BUILTIN_QUALITY = null, extraNegative = '';
   var LIGHTING = [{ zh: ['夕陽', '黃昏', '黃金時刻'], tag: 'golden hour', phrase: 'bathed in warm golden-hour light' }, { zh: ['夜晚', '夜景', '夜裡'], tag: 'night, moonlight', phrase: 'at night under moonlight' }, { zh: ['霓虹'], tag: 'neon lights', phrase: 'lit by neon lights' }, { zh: ['柔光', '柔和'], tag: 'soft light', phrase: 'in soft diffused light' }, { zh: ['逆光'], tag: 'backlit, rim light', phrase: 'backlit with a glowing rim light' }, { zh: ['晨光', '清晨', '日出'], tag: 'morning light, sunrise', phrase: 'in gentle morning light' }, { zh: ['陰天', '霧'], tag: 'overcast, fog', phrase: 'on a misty overcast day' }];
   var CAMERA = [{ zh: ['特寫'], tag: 'close-up', phrase: 'in a close-up shot' }, { zh: ['俯視', '鳥瞰', '空拍'], tag: 'top-down view, aerial view', phrase: 'seen from above' }, { zh: ['廣角', '遠景', '全景'], tag: 'wide angle, wide shot', phrase: 'in a wide-angle shot' }, { zh: ['全身'], tag: 'full body', phrase: 'full body' }, { zh: ['半身', '胸像'], tag: 'upper body portrait', phrase: 'in a half-length portrait' }, { zh: ['仰視'], tag: 'low angle', phrase: 'from a low angle' }];
   var MOOD = [{ zh: ['溫馨', '溫暖'], tag: 'warm, cozy', phrase: 'a warm and cozy mood' }, { zh: ['神秘'], tag: 'mysterious', phrase: 'a mysterious mood' }, { zh: ['寧靜', '平靜', '安靜'], tag: 'serene, peaceful', phrase: 'a serene, peaceful mood' }, { zh: ['史詩', '壯觀', '壯闊'], tag: 'epic, grand', phrase: 'an epic, grand atmosphere' }, { zh: ['可愛'], tag: 'cute', phrase: 'cute and charming' }, { zh: ['恐怖', '陰森'], tag: 'eerie, dark', phrase: 'an eerie, dark atmosphere' }, { zh: ['歡樂', '快樂', '開心'], tag: 'joyful, cheerful', phrase: 'a joyful, cheerful mood' }];
@@ -17330,6 +17331,27 @@ const holder = {};
   // 粗估 token 數（CLIP：英文字約 1.2 個、逗號各 1 個）；只是用來守上限，寧可高估
   function estimateTokens(s) { var words = (String(s).match(/[A-Za-z0-9']+/g) || []).length, commas = (String(s).match(/[,.;:]/g) || []).length; return Math.ceil(words * 1.25 + commas); }
   var QUALITY = { sd15: ['highly detailed', 'sharp focus', 'masterpiece'], sd3: ['highly detailed', 'professional'], flux: [] };
+  BUILTIN_QUALITY = JSON.parse(JSON.stringify(QUALITY));
+  // 使用者自訂的範本：自己的畫風（中文關鍵字→英文標籤）、各模型族的品質詞、額外的負面詞。每次都從內建重來，所以改完直接生效、清空就回到預設
+  function configure(cfg) {
+    cfg = cfg || {};
+    Object.keys(STYLES).forEach(function (k) { delete STYLES[k]; });
+    Object.keys(BUILTIN_STYLES).forEach(function (k) { STYLES[k] = JSON.parse(JSON.stringify(BUILTIN_STYLES[k])); });
+    var added = 0, skipped = [];
+    (Array.isArray(cfg.styles) ? cfg.styles : []).slice(0, 30).forEach(function (u, i) {
+      var zh = (Array.isArray(u && u.zh) ? u.zh : String((u && u.zh) || '').split(/[,，、\s]+/)).map(function (x) { return String(x).trim().toLowerCase().slice(0, 12); }).filter(Boolean).slice(0, 8);
+      var tags = (Array.isArray(u && u.tags) ? u.tags : String((u && u.tags) || '').split(',')).map(function (x) { return ascii(x, 40); }).filter(Boolean).slice(0, 6);
+      var phrase = ascii(u && u.phrase, 60) || (tags[0] ? 'an image in ' + tags[0] + ' style' : '');
+      var id = /^[a-z][a-z0-9_]{0,20}$/.test(String((u && u.id) || '')) ? u.id : 'u' + i;
+      if (!zh.length || !tags.length) { skipped.push(String((u && (u.id || u.zh)) || i)); return; }
+      STYLES[id] = { zh: zh, en: [], tags: tags, phrase: phrase }; added++;
+    });
+    QUALITY = JSON.parse(JSON.stringify(BUILTIN_QUALITY));
+    var q = cfg.quality || {};
+    ['sd15', 'sd3'].forEach(function (f) { if (typeof q[f] === 'string' && q[f].trim()) QUALITY[f] = q[f].split(',').map(function (x) { return ascii(x, 30); }).filter(Boolean).slice(0, 6); });
+    extraNegative = ascii(cfg.negative, 120);
+    return { added: added, skipped: skipped };
+  }
   function join(a) { return a.filter(Boolean).join(', '); }
   function article(w) { w = String(w).trim(); if (!w || /^(a|an|the|some|two|three|many)/i.test(w) || (/s$/i.test(w) && !/ss$/i.test(w))) return w; return (/^[aeiou]/i.test(w) ? 'an ' : 'a ') + w; }
   // 欄位 → 提示詞。優先順序（由重到輕）：主體、畫風、動作、場景、光線、鏡頭、氣氛、色調、其他、品質詞；超過上限就從最輕的開始丟
@@ -17346,7 +17368,7 @@ const holder = {};
     var items = [{ k: 'subject', v: join([subj, act, set]) }, { k: 'style', v: st ? st.tags.slice(0, 2).join(', ') : '' }, { k: 'lighting', v: slots.lighting && slots.lighting.tag }, { k: 'camera', v: slots.camera && slots.camera.tag }, { k: 'mood', v: slots.mood && slots.mood.tag }, { k: 'colors', v: slots.colors.length ? slots.colors.join(', ') + ' tones' : '' }, { k: 'extras', v: slots.extras.slice(0, 3).join(', ') }, { k: 'style_more', v: st ? st.tags.slice(2).join(', ') : '' }, { k: 'quality', v: (QUALITY[fam.id] || []).join(', ') }].filter(function (x) { return x.v; });
     var out = [], max = opts.maxTokens || fam.maxTokens;
     items.forEach(function (it) { var cand = join(out.concat([it.v])); if (estimateTokens(cand) <= max) out.push(it.v); else dropped.push(it.k); });
-    var neg = fam.negative ? 'blurry, low quality, deformed, watermark, text' : ''; if (!fam.negative) notes.push('這個模型不用負面提示（沒有 guidance）。');
+    var neg = fam.negative ? 'blurry, low quality, deformed, watermark, text' + (extraNegative ? ', ' + extraNegative : '') : ''; if (!fam.negative) notes.push('這個模型不用負面提示（沒有 guidance）。');
     var prompt = join(out); return { prompt: prompt, family: fam.id, tokens: estimateTokens(prompt), dropped: dropped, negative: neg, notes: notes };
   }
 
@@ -17394,7 +17416,7 @@ const holder = {};
     return out;
   }
 
-  return { classify: classify, diagramType: diagramType, STYLES: STYLES, FAMILIES: FAMILIES, extractSlots: extractSlots, mergeSlots: mergeSlots, familyOf: familyOf, estimateTokens: estimateTokens, buildPrompt: buildPrompt, slotsFromCaption: slotsFromCaption, svgBrief: svgBrief, mermaidBrief: mermaidBrief, extractSvg: extractSvg, extractMermaid: extractMermaid, validateSvg: validateSvg, validateMermaid: validateMermaid, plan: plan, ascii: ascii };
+  return { configure: configure, classify: classify, diagramType: diagramType, STYLES: STYLES, FAMILIES: FAMILIES, extractSlots: extractSlots, mergeSlots: mergeSlots, familyOf: familyOf, estimateTokens: estimateTokens, buildPrompt: buildPrompt, slotsFromCaption: slotsFromCaption, svgBrief: svgBrief, mermaidBrief: mermaidBrief, extractSvg: extractSvg, extractMermaid: extractMermaid, validateSvg: validateSvg, validateMermaid: validateMermaid, plan: plan, ascii: ascii };
 });
 
 }).call(null, undefined, holder);
@@ -34081,7 +34103,7 @@ class FloatingAssistant {
             '用 NVIDIA 線上圖像生成模型畫圖（FLUX.1 schnell／dev、FLUX.2 klein、FLUX klein、Stable Diffusion 3，或自己填的 廠商/模型名）。例：/image a macro photo of a green frog in a rainforest pond、/image model=black-forest-labs/flux.1-dev steps=30 size=1344x768 a quiet harbor at dawn。不帶參數會列出可用的模型。金鑰在「進階設定 → 影音處理」填。',
             async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/image' + (raw ? ' ' + raw : '') });
                 try {
-                    if (!raw) { const c = r._imageGenConfig(); r._pushAssistantMessage('🖼 可用的圖像生成模型（/image model=…）：\n' + FaNvidiaImage.MODELS.map((m) => '- ' + m.id + '：' + m.label).join('\n') + '\n\n目前預設：' + c.model + '；金鑰：' + (c.apiKey ? (c.keyFrom === 'default' ? '用內建預設' + (c.route === 'worker' ? '（經 Worker 轉送）' : '') : '已設定自己的金鑰') : '沒有可用的金鑰（進階設定 → 影音處理）') + '\n也可以直接填別的「廠商/模型名」。', null); }
+                    if (!raw) { const c = r._imageGenConfig(); r._pushAssistantMessage('🖼 可用的圖像生成模型（/image model=…）：\n' + FaNvidiaImage.MODELS.map((m) => '- ' + m.id + '：' + m.label).join('\n') + '\n\n目前預設：' + c.model + '；金鑰：' + (c.apiKey ? (c.keyFrom === 'default' ? '用內建預設' + (c.route === 'worker' ? '（經 Worker 轉送）' : '') : '已設定自己的金鑰') : '沒有可用的金鑰（進階設定 → 影音處理）') + '\n也可以直接填別的「廠商/模型名」。', null, { _actions: [{ kind: 'image-config', label: '⚙ 設定' }] }); }
                     else {
                         const a = {}; let prompt = raw;
                         for (let guard = 0; guard < 6; guard++) { const m = /^(model|steps|seed|size|width|height|cfg|negative|provider|route|style|where|machine|image|base)=(\S+)\s*/i.exec(prompt); if (!m) break; const k = m[1].toLowerCase(), v = m[2]; prompt = prompt.slice(m[0].length); if (k === 'size') { const z = /^(\d+)[x×](\d+)$/i.exec(v); if (z) { a.width = +z[1]; a.height = +z[2]; } } else if (k === 'model') a.model = v; else if (k === 'cfg') a.cfg_scale = +v; else if (k === 'negative') a.negative_prompt = v; else a[k] = +v; }
@@ -34089,8 +34111,8 @@ class FloatingAssistant {
                         r._pushAssistantMessage('🖼 畫圖中…（' + (a.model || r._imageGenConfig().model) + '）', null);
                         if (a.base !== undefined) { a.base_request = a.base === '1' || a.base === 'true' ? prompt : a.base; delete a.base; }
                         const res = await r._imageMake(a);
-                        if (!res.ok) r._pushAssistantMessage('⚠️ ' + res.error, null);
-                        else r._pushAssistantMessage('✅ 畫好了（' + [res.model, res.size, res.steps ? res.steps + ' 步' : '', res.images && res.images[0] && res.images[0].seed != null ? 'seed ' + res.images[0].seed : '', res.duration_ms ? Math.round(res.duration_ms / 100) / 10 + ' 秒' : ''].filter(Boolean).join('，') + '）' + (res.route ? '\n路線：' + res.route_note : '') + (res.prompt_used ? '\n提示詞：' + res.prompt_used : '') + (res.note ? '\n' + res.note : ''), null);
+                        if (!res.ok) r._pushAssistantMessage('⚠️ ' + res.error, null, { _actions: [{ kind: 'image-config', label: '⚙ 設定' }] });
+                        else r._pushAssistantMessage('✅ 畫好了（' + [res.model, res.size, res.steps ? res.steps + ' 步' : '', res.images && res.images[0] && res.images[0].seed != null ? 'seed ' + res.images[0].seed : '', res.duration_ms ? Math.round(res.duration_ms / 100) / 10 + ' 秒' : ''].filter(Boolean).join('，') + '）' + (res.route ? '\n路線：' + res.route_note : '') + (res.prompt_used ? '\n提示詞：' + res.prompt_used : '') + (res.note ? '\n' + res.note : ''), null, { _actions: [{ kind: 'image-config', label: '⚙ 設定' }] });
                     }
                 } catch (e) { r._pushAssistantMessage('⚠️ 畫圖失敗：' + String((e && e.message) || e), null); } try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ } });
         this.register_slash_command('/worksheet', '[學習單描述]',
@@ -34522,6 +34544,7 @@ class FloatingAssistant {
         this.environmentNote = '';
 
         this.advancedSettings = this._loadAdvancedSettings();
+        try { this._imageApplyTemplates(); } catch (_) { /* 範本壞了也不能擋住啟動 */ }
         // tw_stock_db客製: 2026-09-15使用者實測回報「一切都是瞎猜」——
         // lastRoundDiag（見_loopFetch/_loopFetchNative）原本只在單一fleeting
         // 的ai-status-log那一行文字裡出現過一次，下一輪請求就被蓋掉，使用者
@@ -35267,7 +35290,7 @@ class FloatingAssistant {
             // tw_stock_db客製: 2026-09-12——extract_audio輸出格式，預設mp3
             // （省persistentStorage空間，使用者要求）；改成'wav'要無損。
             extractAudioFormat: 'mp3',
-            imageGen: { apiKey: '', model: 'black-forest-labs/flux.1-schnell', customModel: '', provider: 'auto', localDevice: 'auto' }, // 圖像生成（NVIDIA 線上模型）：金鑰、選的模型、自己填的模型路徑
+            imageGen: { apiKey: '', model: 'black-forest-labs/flux.1-schnell', customModel: '', provider: 'auto', localDevice: 'auto', templates: {} }, // 圖像生成（NVIDIA 線上模型）：金鑰、選的模型、自己填的模型路徑
             // tw_stock_db客製: 2026-09-12——text_to_speech預設語音代號（見
             // TTS_VOICES）。
             ttsDefaultVoice: TTS_DEFAULT_VOICE,
@@ -36654,7 +36677,7 @@ class FloatingAssistant {
             offlineToolBench: (() => { const out = {}; const src = raw.offlineToolBench && typeof raw.offlineToolBench === 'object' ? raw.offlineToolBench : {}; for (const m of FaVlm.textModels()) { const b = src[m.id]; if (!b || typeof b !== 'object' || !['good', 'fair', 'poor'].includes(b.rating)) continue; out[m.id] = { passed: Math.max(0, Math.floor(Number(b.passed) || 0)), total: Math.max(0, Math.floor(Number(b.total) || 0)), formatOk: Math.max(0, Math.floor(Number(b.formatOk) || 0)), rating: b.rating, label: String(b.label || '').slice(0, 80), at: Number(b.at) || 0, device: b.device === 'gpu' ? 'gpu' : 'cpu', ms: Math.max(0, Math.floor(Number(b.ms) || 0)), details: Array.isArray(b.details) ? b.details.slice(0, 12).map((d) => ({ id: String(d && d.id || '').slice(0, 24), ok: !!(d && d.ok), reason: String(d && d.reason || '').slice(0, 120) })) : [] }; } return out; })(),
             visionBackendPolicy: ['llm-first', 'offline-first', 'llm', 'offline'].includes(raw.visionBackendPolicy) ? raw.visionBackendPolicy : (raw.offlineVisionFallback === false ? 'llm' : 'llm-first'),
             extractAudioFormat: raw.extractAudioFormat === 'wav' ? 'wav' : 'mp3',
-            imageGen: (() => { const g = raw.imageGen || {}; return { apiKey: String(g.apiKey || '').trim().slice(0, 300), model: String(g.model || 'black-forest-labs/flux.1-schnell').trim().slice(0, 120), customModel: String(g.customModel || '').trim().slice(0, 120), provider: ['online', 'local'].indexOf(g.provider) >= 0 ? g.provider : 'auto', localDevice: ['webgpu', 'cpu'].indexOf(g.localDevice) >= 0 ? g.localDevice : 'auto' }; })(),
+            imageGen: (() => { const g = raw.imageGen || {}; return { apiKey: String(g.apiKey || '').trim().slice(0, 300), model: String(g.model || 'black-forest-labs/flux.1-schnell').trim().slice(0, 120), customModel: String(g.customModel || '').trim().slice(0, 120), provider: ['online', 'local'].indexOf(g.provider) >= 0 ? g.provider : 'auto', localDevice: ['webgpu', 'cpu'].indexOf(g.localDevice) >= 0 ? g.localDevice : 'auto', templates: (() => { const t = g.templates || {}, q = t.quality || {}; return { styles: (Array.isArray(t.styles) ? t.styles : []).slice(0, 30).map((x) => ({ id: /^[a-z][a-z0-9_]{0,20}$/.test(String((x && x.id) || '')) ? x.id : undefined, zh: Array.isArray(x && x.zh) ? x.zh.map(String).join('，').slice(0, 80) : String((x && x.zh) || '').slice(0, 80), tags: Array.isArray(x && x.tags) ? x.tags.map(String).join(', ').slice(0, 200) : String((x && x.tags) || '').slice(0, 200), phrase: String((x && x.phrase) || '').slice(0, 80) })), quality: { sd15: String(q.sd15 || '').slice(0, 160), sd3: String(q.sd3 || '').slice(0, 160) }, negative: String(t.negative || '').slice(0, 160) }; })() }; })(),
             ttsDefaultVoice: TTS_VOICES.some(v => v.id === raw.ttsDefaultVoice) ? raw.ttsDefaultVoice : TTS_DEFAULT_VOICE,
             // tw_stock_db客製: 2026-09-14——這裡改成`!== false`（不是
             // `=== true`）：舊版settings沒有ttsApiEnabled這個欄位時
@@ -52227,7 +52250,92 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const st = await this._localSdFileState(pick.model), have = st.filter((x) => x.ok).length;
         return '這台目前會用：' + pick.model.label + '（' + FaLocalSd.fmtBytes(FaLocalSd.totalBytes(pick.model)) + '）。狀態：' + (have === st.length ? '✅ 已下載' : have ? '部分已下載（' + have + '/' + st.length + ' 個檔）' : '還沒下載') + '。' + (pick.notes.length ? ' ' + pick.notes.join(' ') : '');
     }
-    async _localSdRefreshStatusUI() { const el = document.getElementById('ai-imggen-local-status'); if (!el) return; try { el.textContent = await this._localSdStatusText(); } catch (e) { el.textContent = '（看不出本機模型的狀態：' + String((e && e.message) || e).slice(0, 80) + '）'; } }
+    async _localSdRefreshStatusUI() { const els = ['ai-imggen-local-status', 'ai-imgcfg-status'].map((i) => document.getElementById(i)).filter(Boolean); if (!els.length) return; let t; try { t = await this._localSdStatusText(); } catch (e) { t = '（看不出本機模型的狀態：' + String((e && e.message) || e).slice(0, 80) + '）'; } els.forEach((el) => { el.textContent = t; }); }
+    // ───── 領域的 ⚙ 設定視窗（共用外殼）：範本與設定的畫面放在擁有該工具的領域，按 ⚙ 設定彈出，不另開頁面 ─────
+    // 回傳 { box, body, close }；呼叫端把內容畫進 body。同一個 id 已開著就不重開。
+    _domainConfigPopup(id, title, opts) {
+        opts = opts || {}; const old = document.getElementById(id); if (old) { try { old.remove(); } catch (_) { /* */ } }
+        const pal = this._getThemePalette();
+        const ov = document.createElement('div'); ov.id = id; ov.className = 'ai-userform-overlay';
+        ov.style.cssText = 'position:fixed; inset:0; z-index:2147483100; background:rgba(0,0,0,.6); display:flex; align-items:center; justify-content:center; padding:16px; box-sizing:border-box;';
+        const box = document.createElement('div'); box.setAttribute('role', 'dialog'); box.setAttribute('aria-modal', 'true');
+        box.style.cssText = 'width:min(' + (opts.width || 640) + 'px,100%); max-height:90vh; display:flex; flex-direction:column; box-sizing:border-box; border-radius:12px; background:' + (pal.chatBg || '#111827') + '; color:' + (pal.chatText || '#e5e7eb') + '; border:1px solid ' + (pal.inputBorder || '#475569') + '; font-size:13px;';
+        const head = document.createElement('div'); head.style.cssText = 'display:flex; align-items:center; justify-content:space-between; padding:12px 16px; border-bottom:1px solid ' + (pal.inputBorder || '#475569') + ';';
+        const t = document.createElement('div'); t.style.cssText = 'font-weight:bold; font-size:15px;'; t.textContent = title;
+        const x = document.createElement('button'); x.type = 'button'; x.textContent = '✕'; x.title = '關閉'; x.style.cssText = 'background:transparent; border:none; color:inherit; font-size:16px; cursor:pointer;';
+        const body = document.createElement('div'); body.style.cssText = 'padding:12px 16px; overflow:auto;';
+        head.appendChild(t); head.appendChild(x); box.appendChild(head); box.appendChild(body); ov.appendChild(box); document.body.appendChild(ov);
+        const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+        const close = () => { document.removeEventListener('keydown', onKey, true); try { ov.remove(); } catch (_) { /* */ } if (opts.onClose) try { opts.onClose(); } catch (_) { /* */ } };
+        document.addEventListener('keydown', onKey, true); x.onclick = close;
+        let down = false; ov.addEventListener('mousedown', (e) => { down = e.target === ov; }); ov.addEventListener('click', (e) => { if (e.target === ov && down) close(); });
+        return { box, body, close, pal };
+    }
+    // 把使用者自訂的範本套進分流模組（開啟程式、改完設定都要呼叫）
+    _imageApplyTemplates() { try { const g = (this.advancedSettings && this.advancedSettings.imageGen) || {}; return FaImageRoute.configure(g.templates || {}); } catch (_) { return null; } }
+    _imageGenSave(patch) { const g = Object.assign({ apiKey: '', model: FaNvidiaImage.DEFAULT_MODEL, customModel: '', provider: 'auto', localDevice: 'auto', templates: {} }, this.advancedSettings.imageGen, patch || {}); this.advancedSettings.imageGen = g; this._saveAdvancedSettings(); this._imageApplyTemplates(); this._localSdRefreshStatusUI(); }
+    // 圖像領域的 ⚙ 設定：線上模型與金鑰、本機小模型、提示詞範本（自己的畫風、品質詞、負面詞）
+    _imageConfigOpen() {
+        const esc = (s) => this._escapeHtml(String(s == null ? '' : s)); const P = this._domainConfigPopup('ai-imgcfg-modal', '⚙ 圖像生成設定', { width: 680 }); const body = P.body, pal = P.pal;
+        const inp = 'width:100%; box-sizing:border-box; padding:5px 8px; border-radius:6px; border:1px solid ' + (pal.inputBorder || '#475569') + '; background:transparent; color:inherit; font-size:13px;';
+        const btn = 'padding:5px 12px; border-radius:6px; cursor:pointer; border:1px solid ' + (pal.inputBorder || '#475569') + '; background:transparent; color:inherit; font-size:12px;';
+        const sec = (t) => '<div style="font-weight:bold; margin:14px 0 4px;">' + t + '</div>', lab = (f, t) => '<label for="' + f + '" style="display:block; margin:8px 0 2px; opacity:.85;">' + t + '</label>', hint = (t) => '<div style="opacity:.7; font-size:12px; margin-top:4px; white-space:pre-wrap;">' + t + '</div>';
+        const g0 = this.advancedSettings.imageGen || {}, tpl = () => ((this.advancedSettings.imageGen || {}).templates || {});
+        body.innerHTML = sec('線上（NVIDIA）') + hint('內建預設不需要填金鑰：留空時退回「我們預設的網址與金鑰」。自己填金鑰的話，請求會直接送到 NVIDIA（ai.api.nvidia.com），金鑰只存在這台的設定裡。')
+            + lab('ai-imgcfg-key', 'NVIDIA API 金鑰（nvapi- 開頭）') + '<input type="password" id="ai-imgcfg-key" autocomplete="off" placeholder="留空＝用內建預設" style="' + inp + '">'
+            + lab('ai-imgcfg-model', '預設模型') + '<select id="ai-imgcfg-model" style="' + inp + '"></select>'
+            + lab('ai-imgcfg-custom', '自己填模型路徑（選填，填了就用它，格式「廠商/模型名」）') + '<input type="text" id="ai-imgcfg-custom" placeholder="例如 black-forest-labs/flux.2-klein-4b" style="' + inp + '">'
+            + sec('本機小模型') + lab('ai-imgcfg-provider', '畫圖用哪裡的模型') + '<select id="ai-imgcfg-provider" style="' + inp + '"><option value="auto">自動（線上優先；線上失敗而且本機模型已下載時，改用本機）</option><option value="online">只用線上（NVIDIA）</option><option value="local">只用本機小模型（離線也能畫）</option></select>'
+            + lab('ai-imgcfg-device', '本機小模型用什麼算') + '<select id="ai-imgcfg-device" style="' + inp + '"><option value="auto">自動（有支援 f16 的 WebGPU 就用 GPU 版，否則 CPU 版）</option><option value="webgpu">GPU（WebGPU，約 880 MB）</option><option value="cpu">CPU（約 1.1 GB，比較慢）</option></select>'
+            + '<div id="ai-imgcfg-status" style="opacity:.8; font-size:12px; margin-top:6px;"></div><div style="display:flex; gap:8px; margin-top:6px;"><button type="button" id="ai-imgcfg-dl" style="' + btn + '">下載本機模型</button><button type="button" id="ai-imgcfg-del" style="' + btn + '">刪除已下載的模型</button></div>'
+            + hint('本機小模型是 SDXS-512（一步取樣、固定 512×512），完全在這台電腦上算，不連線上服務；第一次要下載模型（存在瀏覽器的快取，可以在這裡刪除）。授權（CreativeML Open RAIL++-M）有使用限制，不得用於傷害未成年人、未經同意的真人影像、誹謗、騷擾或違法用途。')
+            + sec('提示詞範本') + hint('單純形狀的圖會寫成 SVG／Mermaid；要畫面的圖由程式拆欄位，再依模型族（SD／SDXS、FLUX、SD3）套範本交給擴散模型。這裡可以加自己的畫風，並調整品質詞與負面詞；清空就回到內建。')
+            + '<div id="ai-imgcfg-styles" style="margin-top:8px;"></div><div style="display:flex; gap:8px; margin-top:6px;"><button type="button" id="ai-imgcfg-addstyle" style="' + btn + '">＋ 加一個畫風</button></div>'
+            + lab('ai-imgcfg-q15', 'SD／SDXS 的品質詞（逗號分隔，留空＝內建）') + '<input type="text" id="ai-imgcfg-q15" placeholder="highly detailed, sharp focus, masterpiece" style="' + inp + '">'
+            + lab('ai-imgcfg-q3', 'SD3 的品質詞（逗號分隔，留空＝內建）') + '<input type="text" id="ai-imgcfg-q3" placeholder="highly detailed, professional" style="' + inp + '">'
+            + lab('ai-imgcfg-neg', '額外的負面詞（只有 SD3 這類吃負面提示的模型會用，英文、逗號分隔）') + '<input type="text" id="ai-imgcfg-neg" placeholder="extra fingers, bad anatomy" style="' + inp + '">'
+            + sec('試試看') + '<input type="text" id="ai-imgcfg-try" placeholder="輸入一句話，看程式會組出什麼提示詞，例如：畫一隻貓，吉卜力風格" style="' + inp + '"><pre id="ai-imgcfg-tryout" style="white-space:pre-wrap; opacity:.9; font-size:12px; margin:6px 0 0;"></pre>'
+            + '<div id="ai-imgcfg-msg" style="margin-top:8px; font-size:12px; color:#e5a44b;"></div>';
+        const $ = (id) => body.querySelector('#' + id);
+        $('ai-imgcfg-key').value = g0.apiKey || '';
+        $('ai-imgcfg-model').innerHTML = FaNvidiaImage.MODELS.map((m) => '<option value="' + m.id + '">' + esc(m.label) + '</option>').join(''); $('ai-imgcfg-model').value = FaNvidiaImage.info(g0.model) ? g0.model : FaNvidiaImage.DEFAULT_MODEL;
+        $('ai-imgcfg-custom').value = g0.customModel || ''; $('ai-imgcfg-provider').value = ['online', 'local'].indexOf(g0.provider) >= 0 ? g0.provider : 'auto'; $('ai-imgcfg-device').value = ['webgpu', 'cpu'].indexOf(g0.localDevice) >= 0 ? g0.localDevice : 'auto';
+        const msg = (t) => { $('ai-imgcfg-msg').textContent = t || ''; };
+        $('ai-imgcfg-key').onchange = () => this._imageGenSave({ apiKey: $('ai-imgcfg-key').value.trim() });
+        $('ai-imgcfg-model').onchange = () => this._imageGenSave({ model: $('ai-imgcfg-model').value });
+        $('ai-imgcfg-custom').onchange = () => { const v = $('ai-imgcfg-custom').value.trim(); if (v && !FaNvidiaImage.validModelPath(v)) { $('ai-imgcfg-custom').value = (this.advancedSettings.imageGen || {}).customModel || ''; msg('模型路徑要是「廠商/模型名」，例如 black-forest-labs/flux.2-klein-4b'); return; } msg(''); this._imageGenSave({ customModel: v }); };
+        $('ai-imgcfg-provider').onchange = () => this._imageGenSave({ provider: $('ai-imgcfg-provider').value });
+        $('ai-imgcfg-device').onchange = () => this._imageGenSave({ localDevice: $('ai-imgcfg-device').value });
+        const dl = $('ai-imgcfg-dl'), del = $('ai-imgcfg-del'), st = $('ai-imgcfg-status');
+        dl.onclick = async () => { dl.disabled = true; try { const r = await this._localSdPrepare({ onProgress: (t) => { st.textContent = t; } }); if (r && !r.ok) st.textContent = '⚠️ ' + r.error; } catch (e) { st.textContent = '⚠️ ' + String((e && e.message) || e); } dl.disabled = false; this._localSdRefreshStatusUI(); };
+        del.onclick = async () => { if (!window.confirm('刪除已下載的本機生圖模型？（下次畫圖要再下載）')) return; await this._localSdDelete(); this._localSdRefreshStatusUI(); };
+        // 範本：每個自訂畫風一列（中文關鍵字、英文標籤、FLUX 用的片語）
+        const saveTpl = (patch) => { const t = Object.assign({ styles: [], quality: {}, negative: '' }, tpl(), patch || {}); this._imageGenSave({ templates: t }); refreshTry(); };
+        const styleRows = () => {
+            const list = tpl().styles || [], host = $('ai-imgcfg-styles'); host.innerHTML = '';
+            if (!list.length) host.innerHTML = hint('（還沒有自己的畫風。內建有：' + Object.keys(FaImageRoute.STYLES).length + ' 種）');
+            list.forEach((s, i) => {
+                const row = document.createElement('div'); row.style.cssText = 'display:grid; grid-template-columns: 1fr 1.4fr 1.2fr auto; gap:6px; margin-top:6px;';
+                const mk = (ph, val, key) => { const e = document.createElement('input'); e.type = 'text'; e.placeholder = ph; e.value = val || ''; e.style.cssText = inp; e.onchange = () => { const l = (tpl().styles || []).slice(); l[i] = Object.assign({}, l[i], { [key]: e.value.trim() }); saveTpl({ styles: l }); }; return e; };
+                const rm = document.createElement('button'); rm.type = 'button'; rm.textContent = '🗑'; rm.title = '刪掉這個畫風'; rm.style.cssText = btn; rm.onclick = () => { const l = (tpl().styles || []).slice(); l.splice(i, 1); saveTpl({ styles: l }); styleRows(); };
+                row.appendChild(mk('中文關鍵字（逗號分隔）', Array.isArray(s.zh) ? s.zh.join('，') : s.zh, 'zh')); row.appendChild(mk('英文標籤（逗號分隔）', Array.isArray(s.tags) ? s.tags.join(', ') : s.tags, 'tags')); row.appendChild(mk('FLUX 用的片語（選填）', s.phrase, 'phrase')); row.appendChild(rm); host.appendChild(row);
+            });
+        };
+        $('ai-imgcfg-addstyle').onclick = () => { const l = (tpl().styles || []).slice(); l.push({ zh: '', tags: '', phrase: '' }); saveTpl({ styles: l }); styleRows(); };
+        const q = tpl().quality || {}; $('ai-imgcfg-q15').value = q.sd15 || ''; $('ai-imgcfg-q3').value = q.sd3 || ''; $('ai-imgcfg-neg').value = tpl().negative || '';
+        $('ai-imgcfg-q15').onchange = () => saveTpl({ quality: Object.assign({}, tpl().quality, { sd15: $('ai-imgcfg-q15').value.trim() }) });
+        $('ai-imgcfg-q3').onchange = () => saveTpl({ quality: Object.assign({}, tpl().quality, { sd3: $('ai-imgcfg-q3').value.trim() }) });
+        $('ai-imgcfg-neg').onchange = () => saveTpl({ negative: $('ai-imgcfg-neg').value.trim() });
+        const refreshTry = () => {
+            const text = $('ai-imgcfg-try').value.trim(); const out = $('ai-imgcfg-tryout'); if (!text) { out.textContent = ''; return; }
+            const c = FaImageRoute.classify(text), slots = FaImageRoute.extractSlots(text);
+            out.textContent = '路線：' + (c.route === 'shapes' ? '單純形狀 → ' + (c.format || 'svg') + ' 純文字' : '擴散模型') + (slots.style ? '　畫風：' + slots.style : '') + (slots.untranslated.length ? '　待翻譯：' + slots.untranslated.join('、') : '')
+                + (c.route === 'shapes' ? '' : ['sd15', 'flux', 'sd3'].map((f) => { const b = FaImageRoute.buildPrompt(slots, f); return '\n[' + f + '] ' + b.prompt + (b.negative ? '\n    負面：' + b.negative : ''); }).join(''));
+        };
+        $('ai-imgcfg-try').oninput = refreshTry;
+        styleRows(); this._localSdRefreshStatusUI(); return P;
+    }
+
     async _localSdDelete() { await this._localSdUnload(); try { await caches.delete('fa-localsd'); } catch (_) { /* */ } return { ok: true }; }
     async _localSdDownload(model, onProgress) {
         const c = await caches.open('fa-localsd'), total = FaLocalSd.totalBytes(model), states = await this._localSdFileState(model); let done = 0;
@@ -53294,6 +53402,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     // 訊息自帶按鈕（msg._actions）的動作分派；新增種類在這裡加一個 kind 就好
     async _runMessageAction(a) {
         const root = String((a && a.root) || '');
+        if (a.kind === 'image-config') { this._imageConfigOpen(); return { ok: true }; }
         if (a.kind === 'aidoc-view') { const r = await this._aidocViewerOpen(root); return r; }
         if (a.kind === 'aidoc-sqlite' || a.kind === 'aidoc-qa') { await this._codeExport(root, a.kind === 'aidoc-sqlite' ? 'sqlite_html' : 'qa_html', { deliver: true }); return { ok: true }; }
         return { ok: false, error: '不認得的動作：' + a.kind };
@@ -57094,10 +57203,6 @@ ${sourceTool.handlerScript}
         if (whisperThreadsInput) whisperThreadsInput.value = this._omSettings().maxCores || this._omCores().hardware;
         const extractAudioFormatSelect = document.getElementById('ai-extract-audio-format');
         if (extractAudioFormatSelect) extractAudioFormatSelect.value = this.advancedSettings.extractAudioFormat === 'wav' ? 'wav' : 'mp3';
-        { const g = this.advancedSettings.imageGen || {}; const kEl = document.getElementById('ai-imggen-key'), mEl = document.getElementById('ai-imggen-model'), cEl = document.getElementById('ai-imggen-custom');
-          if (kEl) kEl.value = g.apiKey || '';
-          if (mEl) { mEl.innerHTML = FaNvidiaImage.MODELS.map((m) => '<option value="' + m.id + '">' + this._escapeHtml(m.label) + '</option>').join(''); mEl.value = FaNvidiaImage.info(g.model) ? g.model : FaNvidiaImage.DEFAULT_MODEL; }
-          if (cEl) cEl.value = g.customModel || ''; const pEl = document.getElementById('ai-imggen-provider'), dEl = document.getElementById('ai-imggen-device'); if (pEl) pEl.value = ['online', 'local'].indexOf(g.provider) >= 0 ? g.provider : 'auto'; if (dEl) dEl.value = ['webgpu', 'cpu'].indexOf(g.localDevice) >= 0 ? g.localDevice : 'auto'; this._localSdRefreshStatusUI(); }
         const subtitleSizeInput = document.getElementById('ai-subtitle-size');
         if (subtitleSizeInput) subtitleSizeInput.value = this._getSubtitleStyle().fontScale;
         const subtitlePosSelect = document.getElementById('ai-subtitle-position');
@@ -80319,21 +80424,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                     <p class="ai-advanced-hint">字級 0.052 大約是常見影片字幕的大小；1080p 影片就是約 56px。其餘外觀（白字黑邊、半透明底、置中換行）用內建預設。</p>
                                 </div>
                                 <div class="ai-advanced-stack">
-                                    <label class="ai-advanced-label">圖像生成（generate_image／/image，NVIDIA 線上模型）</label>
-                                    <p class="ai-advanced-hint">內建預設不需要填金鑰：留空時跟內建的 NVIDIA 模型一樣，退回「我們預設的網址與金鑰」。自己填金鑰的話，請求會直接送到 NVIDIA（ai.api.nvidia.com），金鑰只存在這台的設定裡。</p>
-                                    <label class="ai-advanced-label" for="ai-imggen-key" style="font-weight:normal;">NVIDIA API 金鑰（nvapi- 開頭）</label>
-                                    <input type="password" id="ai-imggen-key" class="ai-advanced-input" autocomplete="off" placeholder="留空＝用內建預設（nvapi-…）">
-                                    <label class="ai-advanced-label" for="ai-imggen-model" style="font-weight:normal; margin-top:8px;">預設模型</label>
-                                    <select id="ai-imggen-model" class="ai-advanced-input"></select>
-                                    <label class="ai-advanced-label" for="ai-imggen-custom" style="font-weight:normal; margin-top:8px;">自己填模型路徑（選填，填了就用它，格式「廠商/模型名」）</label>
-                                    <input type="text" id="ai-imggen-custom" class="ai-advanced-input" placeholder="例如 black-forest-labs/flux.2-klein-4b">
-                                    <label class="ai-advanced-label" for="ai-imggen-provider" style="font-weight:normal; margin-top:12px;">畫圖用哪裡的模型</label>
-                                    <select id="ai-imggen-provider" class="ai-advanced-input"><option value="auto">自動（線上優先；線上失敗而且本機模型已下載時，改用本機）</option><option value="online">只用線上（NVIDIA）</option><option value="local">只用本機小模型（離線也能畫）</option></select>
-                                    <label class="ai-advanced-label" for="ai-imggen-device" style="font-weight:normal; margin-top:8px;">本機小模型用什麼算</label>
-                                    <select id="ai-imggen-device" class="ai-advanced-input"><option value="auto">自動（有支援 f16 的 WebGPU 就用 GPU 版，否則 CPU 版）</option><option value="webgpu">GPU（WebGPU，約 880 MB）</option><option value="cpu">CPU（約 1.1 GB，比較慢）</option></select>
-                                    <p id="ai-imggen-local-status" class="ai-advanced-hint"></p>
-                                    <div style="display:flex; gap:8px; margin-top:4px;"><button type="button" id="ai-imggen-local-dl" class="ai-advanced-btn">下載本機模型</button><button type="button" id="ai-imggen-local-del" class="ai-advanced-btn">刪除已下載的模型</button></div>
-                                    <p class="ai-advanced-hint">本機小模型是 SDXS-512（一步取樣、固定 512×512），完全在這台電腦上算，不連線上服務；第一次要下載模型（存在瀏覽器的快取，可以在這裡刪除）。授權（CreativeML Open RAIL++-M）有使用限制，不得用於傷害未成年人、未經同意的真人影像、誹謗、騷擾或違法用途。</p>
+                                    <label class="ai-advanced-label">圖像生成（generate_image／/image）</label>
+                                    <button type="button" id="ai-imggen-open" class="ai-advanced-btn">⚙ 開啟圖像生成設定</button>
+                                    <p class="ai-advanced-hint">線上金鑰與模型、本機小模型（下載／刪除）、提示詞範本（自己的畫風、品質詞、負面詞）都在這個設定視窗裡；在對話裡打 /image 也有同一個 ⚙ 按鈕。</p>
                                 </div>
                                 <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label" for="ai-perf-max-mesh-triangles">匯入3D模型三角形數量上限</label>
@@ -83781,23 +83874,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 this._refreshWhisperCacheSizeDisplay();
             });
         }
-        for (const id of ['ai-imggen-key', 'ai-imggen-model', 'ai-imggen-custom', 'ai-imggen-provider', 'ai-imggen-device']) {
-            const el = document.getElementById(id);
-            if (el) el.addEventListener('change', () => {
-                const g = Object.assign({ apiKey: '', model: FaNvidiaImage.DEFAULT_MODEL, customModel: '', provider: 'auto', localDevice: 'auto' }, this.advancedSettings.imageGen);
-                if (id === 'ai-imggen-key') g.apiKey = el.value.trim();
-                else if (id === 'ai-imggen-model') g.model = el.value;
-                else if (id === 'ai-imggen-provider') g.provider = el.value;
-                else if (id === 'ai-imggen-device') g.localDevice = el.value;
-                else { const v = el.value.trim(); if (v && !FaNvidiaImage.validModelPath(v)) { el.value = g.customModel || ''; this._pushAssistantMessage('⚠️ 模型路徑要是「廠商/模型名」，例如 black-forest-labs/flux.2-klein-4b', null); return; } g.customModel = v; }
-                this.advancedSettings.imageGen = g; this._saveAdvancedSettings(); this._localSdRefreshStatusUI();
-            });
-        }
-        { // 本機生圖模型：下載與刪除
-            const dl = document.getElementById('ai-imggen-local-dl'), del = document.getElementById('ai-imggen-local-del');
-            if (dl) dl.addEventListener('click', async () => { dl.disabled = true; const st = document.getElementById('ai-imggen-local-status'); try { const r = await this._localSdPrepare({ onProgress: (t) => { if (st) st.textContent = t; } }); if (st && r && !r.ok) st.textContent = '⚠️ ' + r.error; } catch (e) { if (st) st.textContent = '⚠️ ' + String((e && e.message) || e); } dl.disabled = false; this._localSdRefreshStatusUI(); });
-            if (del) del.addEventListener('click', async () => { if (!window.confirm('刪除已下載的本機生圖模型？（下次畫圖要再下載）')) return; await this._localSdDelete(); this._localSdRefreshStatusUI(); });
-        }
+        { const ob = document.getElementById('ai-imggen-open'); if (ob) ob.addEventListener('click', () => this._imageConfigOpen()); }
         const extractAudioFormatSelect = document.getElementById('ai-extract-audio-format');
         if (extractAudioFormatSelect) {
             extractAudioFormatSelect.addEventListener('change', () => {

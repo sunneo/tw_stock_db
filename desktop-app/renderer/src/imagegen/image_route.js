@@ -52,6 +52,7 @@
     clay: { zh: ['黏土'], en: ['clay'], tags: ['claymation', 'soft clay texture', 'studio lighting'], phrase: 'a claymation-style scene' },
     illustration: { zh: ['插畫', '繪本', '童書'], en: ['illustration'], tags: ['digital illustration', 'detailed', 'colorful'], phrase: 'a digital illustration' }
   };
+  var BUILTIN_STYLES = JSON.parse(JSON.stringify(STYLES)), BUILTIN_QUALITY = null, extraNegative = '';
   var LIGHTING = [{ zh: ['夕陽', '黃昏', '黃金時刻'], tag: 'golden hour', phrase: 'bathed in warm golden-hour light' }, { zh: ['夜晚', '夜景', '夜裡'], tag: 'night, moonlight', phrase: 'at night under moonlight' }, { zh: ['霓虹'], tag: 'neon lights', phrase: 'lit by neon lights' }, { zh: ['柔光', '柔和'], tag: 'soft light', phrase: 'in soft diffused light' }, { zh: ['逆光'], tag: 'backlit, rim light', phrase: 'backlit with a glowing rim light' }, { zh: ['晨光', '清晨', '日出'], tag: 'morning light, sunrise', phrase: 'in gentle morning light' }, { zh: ['陰天', '霧'], tag: 'overcast, fog', phrase: 'on a misty overcast day' }];
   var CAMERA = [{ zh: ['特寫'], tag: 'close-up', phrase: 'in a close-up shot' }, { zh: ['俯視', '鳥瞰', '空拍'], tag: 'top-down view, aerial view', phrase: 'seen from above' }, { zh: ['廣角', '遠景', '全景'], tag: 'wide angle, wide shot', phrase: 'in a wide-angle shot' }, { zh: ['全身'], tag: 'full body', phrase: 'full body' }, { zh: ['半身', '胸像'], tag: 'upper body portrait', phrase: 'in a half-length portrait' }, { zh: ['仰視'], tag: 'low angle', phrase: 'from a low angle' }];
   var MOOD = [{ zh: ['溫馨', '溫暖'], tag: 'warm, cozy', phrase: 'a warm and cozy mood' }, { zh: ['神秘'], tag: 'mysterious', phrase: 'a mysterious mood' }, { zh: ['寧靜', '平靜', '安靜'], tag: 'serene, peaceful', phrase: 'a serene, peaceful mood' }, { zh: ['史詩', '壯觀', '壯闊'], tag: 'epic, grand', phrase: 'an epic, grand atmosphere' }, { zh: ['可愛'], tag: 'cute', phrase: 'cute and charming' }, { zh: ['恐怖', '陰森'], tag: 'eerie, dark', phrase: 'an eerie, dark atmosphere' }, { zh: ['歡樂', '快樂', '開心'], tag: 'joyful, cheerful', phrase: 'a joyful, cheerful mood' }];
@@ -93,6 +94,27 @@
   // 粗估 token 數（CLIP：英文字約 1.2 個、逗號各 1 個）；只是用來守上限，寧可高估
   function estimateTokens(s) { var words = (String(s).match(/[A-Za-z0-9']+/g) || []).length, commas = (String(s).match(/[,.;:]/g) || []).length; return Math.ceil(words * 1.25 + commas); }
   var QUALITY = { sd15: ['highly detailed', 'sharp focus', 'masterpiece'], sd3: ['highly detailed', 'professional'], flux: [] };
+  BUILTIN_QUALITY = JSON.parse(JSON.stringify(QUALITY));
+  // 使用者自訂的範本：自己的畫風（中文關鍵字→英文標籤）、各模型族的品質詞、額外的負面詞。每次都從內建重來，所以改完直接生效、清空就回到預設
+  function configure(cfg) {
+    cfg = cfg || {};
+    Object.keys(STYLES).forEach(function (k) { delete STYLES[k]; });
+    Object.keys(BUILTIN_STYLES).forEach(function (k) { STYLES[k] = JSON.parse(JSON.stringify(BUILTIN_STYLES[k])); });
+    var added = 0, skipped = [];
+    (Array.isArray(cfg.styles) ? cfg.styles : []).slice(0, 30).forEach(function (u, i) {
+      var zh = (Array.isArray(u && u.zh) ? u.zh : String((u && u.zh) || '').split(/[,，、\s]+/)).map(function (x) { return String(x).trim().toLowerCase().slice(0, 12); }).filter(Boolean).slice(0, 8);
+      var tags = (Array.isArray(u && u.tags) ? u.tags : String((u && u.tags) || '').split(',')).map(function (x) { return ascii(x, 40); }).filter(Boolean).slice(0, 6);
+      var phrase = ascii(u && u.phrase, 60) || (tags[0] ? 'an image in ' + tags[0] + ' style' : '');
+      var id = /^[a-z][a-z0-9_]{0,20}$/.test(String((u && u.id) || '')) ? u.id : 'u' + i;
+      if (!zh.length || !tags.length) { skipped.push(String((u && (u.id || u.zh)) || i)); return; }
+      STYLES[id] = { zh: zh, en: [], tags: tags, phrase: phrase }; added++;
+    });
+    QUALITY = JSON.parse(JSON.stringify(BUILTIN_QUALITY));
+    var q = cfg.quality || {};
+    ['sd15', 'sd3'].forEach(function (f) { if (typeof q[f] === 'string' && q[f].trim()) QUALITY[f] = q[f].split(',').map(function (x) { return ascii(x, 30); }).filter(Boolean).slice(0, 6); });
+    extraNegative = ascii(cfg.negative, 120);
+    return { added: added, skipped: skipped };
+  }
   function join(a) { return a.filter(Boolean).join(', '); }
   function article(w) { w = String(w).trim(); if (!w || /^(a|an|the|some|two|three|many)/i.test(w) || (/s$/i.test(w) && !/ss$/i.test(w))) return w; return (/^[aeiou]/i.test(w) ? 'an ' : 'a ') + w; }
   // 欄位 → 提示詞。優先順序（由重到輕）：主體、畫風、動作、場景、光線、鏡頭、氣氛、色調、其他、品質詞；超過上限就從最輕的開始丟
@@ -109,7 +131,7 @@
     var items = [{ k: 'subject', v: join([subj, act, set]) }, { k: 'style', v: st ? st.tags.slice(0, 2).join(', ') : '' }, { k: 'lighting', v: slots.lighting && slots.lighting.tag }, { k: 'camera', v: slots.camera && slots.camera.tag }, { k: 'mood', v: slots.mood && slots.mood.tag }, { k: 'colors', v: slots.colors.length ? slots.colors.join(', ') + ' tones' : '' }, { k: 'extras', v: slots.extras.slice(0, 3).join(', ') }, { k: 'style_more', v: st ? st.tags.slice(2).join(', ') : '' }, { k: 'quality', v: (QUALITY[fam.id] || []).join(', ') }].filter(function (x) { return x.v; });
     var out = [], max = opts.maxTokens || fam.maxTokens;
     items.forEach(function (it) { var cand = join(out.concat([it.v])); if (estimateTokens(cand) <= max) out.push(it.v); else dropped.push(it.k); });
-    var neg = fam.negative ? 'blurry, low quality, deformed, watermark, text' : ''; if (!fam.negative) notes.push('這個模型不用負面提示（沒有 guidance）。');
+    var neg = fam.negative ? 'blurry, low quality, deformed, watermark, text' + (extraNegative ? ', ' + extraNegative : '') : ''; if (!fam.negative) notes.push('這個模型不用負面提示（沒有 guidance）。');
     var prompt = join(out); return { prompt: prompt, family: fam.id, tokens: estimateTokens(prompt), dropped: dropped, negative: neg, notes: notes };
   }
 
@@ -157,5 +179,5 @@
     return out;
   }
 
-  return { classify: classify, diagramType: diagramType, STYLES: STYLES, FAMILIES: FAMILIES, extractSlots: extractSlots, mergeSlots: mergeSlots, familyOf: familyOf, estimateTokens: estimateTokens, buildPrompt: buildPrompt, slotsFromCaption: slotsFromCaption, svgBrief: svgBrief, mermaidBrief: mermaidBrief, extractSvg: extractSvg, extractMermaid: extractMermaid, validateSvg: validateSvg, validateMermaid: validateMermaid, plan: plan, ascii: ascii };
+  return { configure: configure, classify: classify, diagramType: diagramType, STYLES: STYLES, FAMILIES: FAMILIES, extractSlots: extractSlots, mergeSlots: mergeSlots, familyOf: familyOf, estimateTokens: estimateTokens, buildPrompt: buildPrompt, slotsFromCaption: slotsFromCaption, svgBrief: svgBrief, mermaidBrief: mermaidBrief, extractSvg: extractSvg, extractMermaid: extractMermaid, validateSvg: validateSvg, validateMermaid: validateMermaid, plan: plan, ascii: ascii };
 });

@@ -64,5 +64,11 @@ check('validateMermaid', R.validateMermaid('flowchart TD\nA-->B').ok && R.valida
 // ---- 整體計畫
 check('plan: shapes request yields a format and no diffusion slots', (() => { const p = R.plan('畫登入流程的流程圖'); return p.route === 'shapes' && p.format === 'mermaid' && !p.slots; })());
 check('plan: diffusion request yields slots; an unknown subject asks for translation', (() => { const p = R.plan('畫一隻饕餮，水彩'); return p.route === 'diffusion' && p.slots.style === 'watercolor' && p.needsTranslate === true; })());
+
+// ---- 使用者自訂範本
+check('configure: a custom style is found by its Chinese keyword and shows up in the prompt', (() => { R.configure({ styles: [{ id: 'ghibli', zh: '吉卜力，宮崎駿', tags: 'ghibli style, soft pastel, hand painted', phrase: 'a Ghibli-style painting' }] }); const s = R.extractSlots('畫一隻貓，吉卜力風格'); return s.style === 'ghibli' && /ghibli style/.test(R.buildPrompt(s, 'sd15').prompt) && /^a Ghibli-style painting of a cat/.test(R.buildPrompt(s, 'flux').prompt); })());
+check('configure: styles with no keyword or no tags are skipped and reported; non-ASCII tags are stripped', (() => { const r = R.configure({ styles: [{ zh: '甲', tags: '' }, { zh: '', tags: 'x' }, { id: 'ok', zh: '乙', tags: '漂亮 neon glow' }] }); return r.added === 1 && r.skipped.length === 2 && R.STYLES.ok.tags.join() === 'neon glow'; })());
+check('configure: extra negative words and quality words apply to the families that use them', (() => { R.configure({ negative: 'extra fingers', quality: { sd3: 'award winning, 8k' } }); const s = R.extractSlots('貓'); return /extra fingers/.test(R.buildPrompt(s, 'sd3').negative) && /8k/.test(R.buildPrompt(s, 'sd3').prompt); })());
+check('configure({}) goes back to the built-in templates', (() => { R.configure({}); const s = R.extractSlots('畫一隻貓，水彩'); return !R.STYLES.ghibli && !R.STYLES.ok && !/extra fingers/.test(R.buildPrompt(s, 'sd3').negative) && /highly detailed/.test(R.buildPrompt(s, 'sd3').prompt); })());
 console.log(bad.length ? 'FAILED:\n  ' + bad.join('\n  ') : 'image_route: ' + ok + ' passed');
 process.exit(bad.length ? 1 : 0);
