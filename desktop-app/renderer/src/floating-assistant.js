@@ -17310,7 +17310,7 @@ const holder = {};
     Object.keys(ACTIONS).forEach(function (k) { if (rest.indexOf(k) >= 0) { slots.action.push(ACTIONS[k]); rest = rest.split(k).join(' '); } });
     Object.keys(NOUNS).sort(function (a, b) { return b.length - a.length; }).forEach(function (k) { if (rest.indexOf(k) >= 0) { var en = NOUNS[k]; if (slots.subject.indexOf(en) < 0 && slots.setting.indexOf(en) < 0) slots.subject.push(en); rest = rest.split(k).join(' '); } });
     (rest.match(/[A-Za-z][A-Za-z' \-]{1,40}/g) || []).forEach(function (w) { w = w.trim(); if (w.length > 1 && !/^(photo|anime|manga|cinematic|painting|watercolor|style|render|oil|and|the|a|an)$/i.test(w)) slots.extras.push(w.toLowerCase()); });
-    var zh = rest.replace(/[A-Za-z' \-]+/g, ' ').replace(Object.keys(STYLES).map(function (k) { return STYLES[k].zh.join('|'); }).join('|'), ' ').replace(STOP, ' ').replace(/[，。、！？,.!?；：:「」『』（）()\s]+/g, ' ').trim();
+    var zh = rest.replace(/[A-Za-z' \-]+/g, ' ').replace(new RegExp(Object.keys(STYLES).map(function (k) { return STYLES[k].zh.join('|'); }).join('|').replace(/[.*+?^${}()]/g, '\$&'), 'g'), ' ').replace(STOP, ' ').replace(/[，。、！？,.!?；：:「」『』（）()\s]+/g, ' ').trim();
     slots.untranslated = zh ? zh.split(/\s+/).filter(function (w) { return w && w.length >= 2 && !/^[0-9]+$/.test(w) && !has(w, [].concat(LIGHTING.map(function (x) { return x.zh[0]; })).concat(CAMERA.map(function (x) { return x.zh[0]; })).concat(MOOD.map(function (x) { return x.zh[0]; }))); }).slice(0, 8) : [];
     return slots;
   }
