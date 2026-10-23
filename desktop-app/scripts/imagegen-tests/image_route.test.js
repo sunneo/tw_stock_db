@@ -10,7 +10,9 @@ shapes.forEach((t) => check('shapes: ' + t, R.classify(t).route === 'shapes', R.
 photos.forEach((t) => check('diffusion: ' + t, R.classify(t).route === 'diffusion', R.classify(t)));
 check('flowchart wording picks mermaid; a plain geometric request picks svg', R.classify('畫登入流程的流程圖').format === 'mermaid' && R.classify('用圓形和三角形組成圖示').format === 'svg');
 check('diagram types', R.diagramType('時序圖') === 'sequenceDiagram' && R.diagramType('甘特圖') === 'gantt' && R.diagramType('心智圖') === 'mindmap' && R.diagramType('流程圖') === 'flowchart' && R.diagramType('一隻貓') === null);
-check('no cue at all -> asks (low confidence), defaults to diffusion', (() => { const c = R.classify('給我一張圖'); return c.ask === true && c.route === 'diffusion'; })());
+check('no cue at all -> diffusion without asking a model (no shape words means not a shape drawing)', (() => { const c = R.classify('給我一張圖'); return c.ask === false && c.route === 'diffusion'; })());
+check('scene requests go to diffusion without asking', ['產生一個音樂會的場景', '產生音樂會場景', '畫一個熱鬧的夜市'].every((t) => { const c = R.classify(t); return c.route === 'diffusion' && c.ask === false; }));
+check('mixed or weak shape cues still ask', R.classify('畫一個圖示風格的貓').ask === true || R.classify('畫一個圖示風格的貓').route === 'diffusion');
 check('a pasted image without shape words leans to diffusion', R.classify('畫成類似這張的', { hasImage: true }).route === 'diffusion');
 check('classification explains itself', R.classify('畫流程圖').reasons.length > 0);
 

@@ -12,7 +12,7 @@
 
   // ───── ① 分流 ─────
   var SHAPE_WORDS = ['流程圖', '架構圖', '組織圖', '時序圖', '序列圖', '類別圖', '狀態圖', '甘特圖', '心智圖', '關聯圖', '示意圖', '拓撲', '電路圖', '網路圖', '拓樸', '圖表', '長條圖', '折線圖', '圓餅圖', '雷達圖', '散佈圖', '幾何', '圖示', '圖標', '箭頭', '方塊', '方框', '圓形', '三角形', '矩形', '正方形', '線條', '座標', '九宮格', '時間軸', '工程圖', '平面圖', '線框', 'er圖', 'uml', 'mermaid', 'flowchart', 'diagram', 'chart', 'graph', 'wireframe', 'infographic', 'svg', 'vector', 'flat icon', 'geometric', 'sequence diagram', 'gantt', 'mindmap', 'icon', 'logo', 'schematic', 'blueprint'];
-  var PHOTO_WORDS = ['照片', '相片', '寫實', '攝影', '風景', '人物', '肖像', '動物', '插畫', '漫畫', '動漫', '油畫', '水彩', '素描', '賽博', '奇幻', '科幻', '海報', '封面', '壁紙', '概念圖', '渲染', '電影感', '貓', '狗', '女孩', '男孩', '少女', '城市', '森林', '海邊', '夕陽', '星空', 'photo', 'photograph', 'portrait', 'landscape', 'painting', 'illustration', 'anime', 'cinematic', 'realistic', 'artwork', 'wallpaper', 'render', 'oil painting', 'watercolor'];
+  var PHOTO_WORDS = ['照片', '相片', '寫實', '攝影', '風景', '人物', '肖像', '動物', '插畫', '漫畫', '動漫', '油畫', '水彩', '素描', '賽博', '奇幻', '科幻', '海報', '封面', '壁紙', '概念圖', '渲染', '電影感', '貓', '狗', '女孩', '男孩', '少女', '城市', '森林', '海邊', '場景', '現場', '音樂會', '演唱會', '舞台', '夜景', '街景', '街道', '派對', '咖啡廳', '教室', '房間', '廚房', '沙灘', '山', '日落', '日出', '雪景', '花園', '市集', '夕陽', '星空', 'photo', 'photograph', 'portrait', 'landscape', 'painting', 'illustration', 'anime', 'cinematic', 'realistic', 'artwork', 'wallpaper', 'render', 'oil painting', 'watercolor'];
   var MERMAID_TYPES = [
     { type: 'sequenceDiagram', re: /時序圖|序列圖|sequence/i }, { type: 'classDiagram', re: /類別圖|class diagram|uml 類別/i }, { type: 'stateDiagram-v2', re: /狀態圖|state diagram|狀態機/i },
     { type: 'gantt', re: /甘特|gantt|時程|排程圖/i }, { type: 'mindmap', re: /心智圖|mindmap|思維導圖/i }, { type: 'erDiagram', re: /\ber\b|er圖|實體關聯|entity/i }, { type: 'pie', re: /圓餅圖|pie chart/i },
@@ -30,7 +30,7 @@
     if (s.hit.length) reasons.push('形狀／圖表用詞：' + s.hit.slice(0, 4).join('、')); if (p.hit.length) reasons.push('畫面／畫風用詞：' + p.hit.slice(0, 4).join('、'));
     var total = shape + photo, route = shape > photo ? 'shapes' : 'diffusion', conf = total ? Math.abs(shape - photo) / total : 0;
     var type = route === 'shapes' ? diagramType(t) : null;
-    return { route: route, format: route === 'shapes' ? (type ? 'mermaid' : 'svg') : null, diagram: type, confidence: Math.round(conf * 100) / 100, ask: total === 0 || conf < 0.34, scores: { shapes: shape, diffusion: photo }, reasons: reasons };
+    return { route: route, format: route === 'shapes' ? (type ? 'mermaid' : 'svg') : null, diagram: type, confidence: Math.round(conf * 100) / 100, ask: shape > 0 && conf < 0.34, scores: { shapes: shape, diffusion: photo }, reasons: reasons };
   }
 
   // ───── ② 欄位與範本 ─────
