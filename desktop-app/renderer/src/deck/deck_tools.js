@@ -539,6 +539,7 @@ const FaDeckTools = (function () {
             }
             // 搜尋結果依「標題裡有幾個關鍵字」排序（相關的先試）；一個關鍵字都對不上的排最後
             const qw = q.toLowerCase().split(' ').filter((w) => w.length > 3), sc = (c) => qw.filter((w) => c.title.toLowerCase().indexOf(w.slice(0, Math.max(4, w.length - 2))) >= 0).length; cands.forEach((c, i) => { c.i = i; }); cands.sort((x, y) => sc(y) - sc(x) || x.i - y.i);
+            if (a && a.candidates) return { ok: true, candidates: cands.slice(0, Math.max(1, Math.min(12, Number(a.candidates) || 6))) }; // 只搜尋、不匯入（先看過縮圖再挑）
             const photos = [], tried = [];
             for (const c of cands) {
                 if (photos.length >= want || tried.length >= 8) break; if (!c.url || run.photoUrls[c.url]) continue; tried.push(c.title);
@@ -548,6 +549,12 @@ const FaDeckTools = (function () {
             if (photos.length) return { ok: true, photos, note: 'use "ref" as the picture src; keep the credit if the user wants sources' };
             return { error: 'no usable photo for "' + q + '"' + (errs.length ? '（' + errs.slice(0, 3).join('；') + '）' : '（搜尋沒有符合的圖片）') + ' -- try other English keywords once; if still nothing, draw it yourself (cute_picture / svg) and go on with the other slides' };
         },
+        // 匯入搜尋到的一張照片（c＝_deckFindPhoto 的 candidates 其中一個）
+        async _deckPhotoImport(c) {
+            let blob = null; try { const r = await fetch(c.url, { headers: { Accept: 'image/*' } }); if (!r.ok) throw new Error('HTTP ' + r.status); blob = await r.blob(); } catch (e1) { try { const { resp } = await this._terminalHttpFetch('GET', c.url, { headers: { Accept: 'image/*' }, timeoutMs: 25000 }); if (!resp.ok) throw new Error('HTTP ' + resp.status); blob = await resp.blob(); } catch (e2) { return { error: String((e2 && e2.message) || e2) }; } }
+            const r = await this._deckImportImageBlob(blob, 'photo: ' + c.title + ' (' + c.source + (c.license ? ', ' + c.license : '') + ')', 'find_photo'); if (r.error) return { error: r.error };
+            return { ref: r.ref, title: c.title, credit: c.credit, license: c.license, source: c.source, page: c.page };
+        },
         async _deckImportImageBlob(blob, label, tool, opt) {
             if (!blob || !/^image\//.test(blob.type || '')) return { error: 'that is not a picture (' + ((blob && blob.type) || 'unknown type') + ')' };
             if (blob.size > 8 * 1024 * 1024) return { error: 'the picture is larger than 8 MB' };
@@ -555,7 +562,8 @@ const FaDeckTools = (function () {
             const ext = ({ 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/bmp': 'bmp', 'image/svg+xml': 'svg' })[blob.type] || 'img';
             const id = await this.fileCache.put('deck-image-' + Date.now().toString(36) + '.' + ext, blob.type, blob, 'uploaded');
             const entry = this._deckRun().catalog.add('client-file/' + id, { alt: label, from: tool });
-            return { ok: true, ref: entry ? entry.ref : null, url: 'client-file/' + id, source: label };
+            if (!entry) return { error: 'this presentation already holds the maximum number of pictures (60): reuse a handle you already have (list_source_images) instead of importing another' };
+            return { ok: true, ref: entry.ref, url: 'client-file/' + id, source: label };
         },
         // 只有圖片／圖表的投影片：真的用視覺模型去讀（走 _visionDescribe：線上視覺模型、離線模型的優先順序與備援，跟 interpret_image 同一條路），
         // 並如實回報有沒有讀成功（status: ok｜unconfirmed｜failed｜empty）——讀不到就是讀不到，不能讓模型用檔名編一段話
