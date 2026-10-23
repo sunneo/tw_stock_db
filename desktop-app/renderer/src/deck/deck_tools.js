@@ -7,7 +7,8 @@ const FaDeckTools = (function () {
     const HANDLE = /^@([a-z])(\d+)$/;
     const MAX_DECK_MINUTES = 75;
     const MAX_ERRORS_SHOWN = 25;
-    const MAX_IMAGES = 60;
+    // 圖片數量不設上限（2026-10-23 使用者要求取消；原本是 60，用光後匯入會靜默失敗）
+    const MAX_IMAGES = Infinity;
     const MAX_DATA_URI_BYTES = 150000;
     const CJK = /[㐀-鿿豈-﫿぀-ヿ가-힯]/g;
     // 伺服器端才是錯誤、瀏覽器端只是警告的規則（見 DESIGN.media-presentation.md §1 原則 6）：生成當下就退回，模型可以馬上修
@@ -562,7 +563,7 @@ const FaDeckTools = (function () {
             const ext = ({ 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/bmp': 'bmp', 'image/svg+xml': 'svg' })[blob.type] || 'img';
             const id = await this.fileCache.put('deck-image-' + Date.now().toString(36) + '.' + ext, blob.type, blob, 'uploaded');
             const entry = this._deckRun().catalog.add('client-file/' + id, { alt: label, from: tool });
-            if (!entry) return { error: 'this presentation already holds the maximum number of pictures (60): reuse a handle you already have (list_source_images) instead of importing another' };
+            if (!entry) return { error: 'the picture could not be added to the catalogue (empty url)' };
             return { ok: true, ref: entry.ref, url: 'client-file/' + id, source: label };
         },
         // 只有圖片／圖表的投影片：真的用視覺模型去讀（走 _visionDescribe：線上視覺模型、離線模型的優先順序與備援，跟 interpret_image 同一條路），
