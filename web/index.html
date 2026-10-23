@@ -1747,7 +1747,7 @@ select:focus { outline: 2px solid var(--acc); }
      floating-assistant.js`——已實測驗證`curl`拿掉其中一個`desktop-app`
      會是404，兩個都要保留。 -->
 <script>
-  window.__floatingAssistantJsReady = fetch('https://raw.githubusercontent.com/sunneo/tw_stock_db/8525a454478ce70ec77f5998ea87ae31251fb858/desktop-app/renderer/floating-assistant.js')
+  window.__floatingAssistantJsReady = fetch('https://raw.githubusercontent.com/sunneo/tw_stock_db/57b372d463900ddcbc2926f91ba7d20cb11ea94d/desktop-app/renderer/floating-assistant.js')
     .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
     .then(text => new Promise((resolve, reject) => {
       const blob = new Blob([text], { type: 'application/javascript' });
