@@ -40,4 +40,17 @@ check('deck: bullets are short fragments (max 3, each short); every slide has na
 const bad1 = T.buildDeck(req, tpl, null, photos); const err = '- chapters[0].slides[2].visual.kind: must be one of shapes, anim2d\n- chapters[0].slides[1].bullets[0]: too long\n- chapters[9].slides[9].visual: must be a mapping';
 const rp = T.repair(bad1, err);
 check('repair: only the slide named by the error loses its visual; unknown paths are ignored; nothing else changes', !rp.doc.chapters[0].slides[2].visual && rp.doc.chapters[0].slides[0].layout === 'title' && rp.changes.length === 2 && rp.doc.chapters[1].slides[0] && T.dropAllVisuals(T.buildDeck(req, tpl, null, photos)) === photos.filter(Boolean).length, rp.changes);
+
+// ---- 圖示模式
+const ireq = T.parseRequest('用幼兒教育的方式，介紹飛機怎麼飛，圖示就好，字可以少一點，加上動畫。繁體中文，語速1.0。');
+check('icons: asked by wording (圖示、字少、動畫); a request that wants photos is not icon mode by itself', ireq.icons && !ireq.wantPhotos && !T.parseRequest('介紹股票，要上網找照片').icons && T.parseRequest('介紹股票，要上網找照片').wantPhotos);
+check('icons: a page gets up to 4 icons in the order they appear in its text; labels are short names', (() => { const ic = T.iconsFor('在機場 先拿出護照，行李交給櫃台，換登機證'); return ic.length === 3 && ic[0].emoji === '🏢' || ic.map((x) => x.emoji).join('') === '🏢🛂🧳🎫'.replace(/(.)(?=.)/gu, '$1'); })(), T.iconsFor('在機場 先拿出護照，行李交給櫃台，換登機證'));
+check('icons: the lookup function fills pages the table does not know; unknown with no lookup gives none', T.iconsFor('貓咪玩毛線', (t) => ({ emoji: '🐱', zh: '貓' }))[0].emoji === '🐱' && T.iconsFor('貓咪玩毛線').length === 0);
+const refs = {}; ['✈️', '🏢', '🛂', '🧳', '🎫', '🗾', '☁️', '☀️', '🍱', '🍎', '🧃', '🚗', '🏠', '⭐', '🛄', '🚶'].forEach((e, i) => { refs[e] = '@img' + (i + 1); });
+const full = T.parseRequest(TASK + '圖示就好，字可以少一點，加上動畫。'); const tpl2 = T.templateOutline(full); const idoc = T.buildIconDeck(full, tpl2, null, refs);
+check('icon deck: deck mapping with colours that the validator accepts (rgba with the fixed regex), lang and speed', idoc.deck.lang === 'zh-TW' && idoc.deck.speed === 1 && /^rgba\(\d+,\d+,\d+,0\.\d+\)$/.test(idoc.deck.colors.subtitleBar) && idoc.chapters.length >= 2);
+check('icon deck: every slide is a collage with at least one item that has a picture handle; items pop by sentence number within the narration', idoc.chapters.every((c) => c.slides.every((s) => s.visual.kind === 'collage' && s.visual.items.length >= 1 && s.visual.items.every((it) => /^@img\d+$/.test(it.src) && it.at.sentence >= 1 && it.at.sentence <= Math.max(1, (s.narration.match(/[。！？]/g) || []).length || 1)))), idoc.chapters[0].slides[1]);
+check('icon deck: pages that talk about flying get a plane that moves (keys) and a whoosh; pages about a car move the car; the cover has a big title text', (() => { const all = idoc.chapters.flatMap((c) => c.slides); const fly = all.find((s) => /起飛|飛到/.test(s.title + s.narration)); const mv = fly && fly.visual.items.find((it) => it.keys && it.src === refs['✈️']); return mv && fly.visual.sounds && all[0].visual.texts[0].style === 'title'; })());
+check('icon deck: text is minimal — no bullets, titles up to 12 characters', idoc.chapters.every((c) => c.slides.every((s) => !s.bullets && s.title.length <= 12)));
+check('icon list: unique emoji for the whole deck, with the defaults included', (() => { const l = T.iconList(tpl2); return new Set(l).size === l.length && l.indexOf('✈️') >= 0 && l.indexOf('⭐') >= 0; })());
 console.log(bad.length ? 'FAILED:\n  ' + bad.join('\n  ') : 'deck_topic: ' + ok + ' passed'); process.exit(bad.length ? 1 : 0);

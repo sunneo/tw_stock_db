@@ -3,7 +3,7 @@
  * 模型只回答封閉的小問題（每頁的標題／重點／找圖關鍵字、每頁的旁白），簡報的 yaml 由程式寫、由程式驗證；模型不可用或答不出來時，
  * 退回「樣板」（把使用者的需求句拆成子句，一個子句一頁）。設計見 DESIGN.deck-topic.md。
  *
- *   parseRequest(task)               → { body, lang, speed, voice, kids, wantPhotos, title }
+ *   parseRequest(task)               → { body, lang, speed, voice, kids, wantPhotos, icons, title }（icons＝圖示模式：每頁用圖示（emoji）加動畫、字很少）
  *   outlinePrompt(req) / parseOutline(text)   模型規劃：一行一頁「標題｜重點｜英文關鍵字」，每行都驗證
  *   templateOutline(req, kwFn)       樣板：需求句拆成子句，一個子句一頁（沒有模型也做得出來）
  *   narrationPrompt(slide, req) / acceptNarration(text, slide)   每頁旁白（封閉格式）
@@ -24,7 +24,7 @@
     var wantEn = /英文|english/i.test(body) && !/(繁體|簡體|國語|華語)?中文/.test(body.replace(/英文/g, ''));
     var voice = (/\b([ab][fm]_[a-z]+|z[fm]_[a-z]+|zh-[A-Za-z]+-[A-Za-z]+)\b/i.exec(body) || [])[1] || '';
     var tm = /《([^》]{1,24})》/.exec(body), title = tm ? tm[1] : '';
-    return { body: body, lang: wantEn ? 'en' : 'zh-TW', speed: sp >= 0.5 && sp <= 2 ? sp : 0, voice: voice, kids: /幼兒|幼童|小朋友|兒童|繪本|活潑|可愛|寶寶|孩子/.test(body), wantPhotos: /照片|圖片|圖文|找圖|實拍|上網找/.test(body), title: title };
+    return { body: body, lang: wantEn ? 'en' : 'zh-TW', speed: sp >= 0.5 && sp <= 2 ? sp : 0, voice: voice, kids: /幼兒|幼童|小朋友|兒童|繪本|活潑|可愛|寶寶|孩子/.test(body), wantPhotos: /照片|實拍|上網找/.test(body) || /找圖/.test(body), icons: /圖示|icon|字可以少|少字|字少|不要太多字|貼圖|卡通圖|動畫/i.test(body), title: title };
   }
 
   var ascii = function (s, n) { return String(s == null ? '' : s).replace(/[^A-Za-z0-9 \-']/g, ' ').replace(/\s+/g, ' ').trim().slice(0, n || 40); };
@@ -83,6 +83,53 @@
     return { deck: deck, chapters: chapters };
   }
 
+
+  // ───── 圖示模式：每頁用幾個圖示（emoji）加動畫，字很少（設計見 DESIGN.deck-topic.md「圖示模式」）─────
+  // [關鍵字（正規表示式）, emoji, 名字標籤]；比對頁標題＋重點，依出現的先後挑最多 4 個
+  var ICONS = [
+    ['華航|長榮|航空公司', '✈️', '華航'], ['飛機|航班|起飛|降落|飛行', '✈️', '飛機'], ['機場', '🏢', '機場'], ['護照|證件', '🛂', '護照'], ['行李轉盤', '🛄', '行李轉盤'], ['行李|箱子', '🧳', '行李'], ['登機證|機票', '🎫', '登機證'], ['登機門', '🚪', '登機門'],
+    ['北海道|日本', '🗾', '北海道'], ['長城|城牆', '🏯', '長城'], ['中國', '🏮', '中國'], ['熊貓', '🐼', '大熊貓'], ['平流層', '☀️', '平流層'], ['雲', '☁️', '雲'], ['太陽', '☀️', '太陽'], ['下雪|雪', '❄️', '雪'], ['冰淇淋', '🍦', '冰淇淋'], ['牛奶|牛', '🐄', '牛'],
+    ['跑道', '🛣️', '跑道'], ['車子|汽車|坐車', '🚗', '車子'], ['安全帶|座位', '💺', '安全帶'], ['耳朵|吞口水', '👂', '耳朵'], ['空姐|空服|空中小姐', '👩‍✈️', '空服員'], ['電影|電視|螢幕', '📺', '電影'], ['音樂|耳機', '🎧', '音樂'], ['毯子', '🧣', '毯子'],
+    ['餐點|吃|飯|餓', '🍱', '餐點'], ['水果', '🍎', '水果'], ['飲料|喝', '🧃', '飲料'], ['麵包', '🍞', '麵包'], ['地球|世界', '🌍', '地球'], ['小鳥|鳥', '🐦', '小鳥'], ['風', '💨', '風'], ['山', '🏔️', '山'], ['海|海邊', '🌊', '海'], ['家|房子', '🏠', '家'], ['走|往前', '🚶', ''], ['開心|快樂|笑', '😊', '']
+  ];
+  // 動作：看頁面文字決定誰要動（飛機飛過去、車子開過去、人走過去、行李在轉盤上移動）
+  var MOVE_PLANE = /起飛|飛到|飛向|降落|出發|飛上|飛下|飛過|旅行|飛機.{0,3}飛|飛去/;
+  function iconsFor(text, lookup) {
+    var t = String(text || ''), hits = [];
+    ICONS.forEach(function (ic) { var m = new RegExp(ic[0]).exec(t); if (m && !hits.some(function (h) { return h.emoji === ic[1]; })) hits.push({ emoji: ic[1], label: ic[2], at: m.index }); });
+    hits.sort(function (a, b) { return a.at - b.at; });
+    if (!hits.length && lookup) { var f = lookup(t.slice(0, 6)); if (f && f.emoji) hits.push({ emoji: f.emoji, label: f.zh || '', at: 0 }); }
+    return hits.slice(0, 4);
+  }
+  function sentencesOf(text) { var a = String(text || '').split(/(?<=[。！？!?])/).map(function (x) { return x.trim(); }).filter(Boolean); return a.length ? a : [String(text || '')]; }
+  // refs：emoji → "@imgN"；回傳 { deck, chapters }；沒有圖示的頁用一個預設的（不留空白頁）
+  function buildIconDeck(req, outline, narr, refs, lookup) {
+    var deck = { title: (outline[0] && outline[0].title) || '簡報', lang: req.lang, colors: { contentBg: '#EAF6FF', dark: '#1F6FB2', heading: '#1F6FB2', body: '#35506B', accent: '#FF8A3D', soft: '#CFE8FA', stripe: '#EAF6FF', subtitleBar: 'rgba(31,111,178,0.85)' } };
+    if (req.speed) deck.speed = req.speed; if (req.voice) deck.voice = req.voice;
+    var slides = outline.map(function (o, i) {
+      var text = o.title + ' ' + o.point, nar = (narr && narr[i]) || (o.point + '。'), n = sentencesOf(nar).length, ic = iconsFor(text, lookup), items = [], moving = MOVE_PLANE.test(text);
+      if (!ic.length) ic = [{ emoji: i === 0 ? '✈️' : '⭐', label: '' }];
+      var plane = moving && ic.filter(function (x) { return x.emoji === '✈️'; })[0] || (moving ? { emoji: '✈️', label: '' } : null);
+      var rest = ic.filter(function (x) { return !plane || x.emoji !== '✈️'; }).slice(0, plane ? 3 : 4), cnt = rest.length, W = { 1: 0.3, 2: 0.24, 3: 0.2, 4: 0.17 }[cnt] || 0.2, X = { 1: [0.35], 2: [0.2, 0.56], 3: [0.1, 0.4, 0.7], 4: [0.05, 0.28, 0.51, 0.74] }[cnt] || [];
+      var base = plane ? 0.46 : 0.26, sent = function (k, total) { return Math.min(n, Math.floor(k * n / Math.max(1, total)) + 1); };
+      if (plane && refs[plane.emoji]) { items.push({ src: refs[plane.emoji], x: 0.02, y: 0.1, w: 0.2, at: { sentence: 1 }, card: false, label: plane.label || undefined, keys: [{ at: { sentence: 1 }, sec: Math.max(2.5, 2 * n), x: 0.62, y: 0.06, rot: -10 }] }); }
+      rest.forEach(function (x, k) {
+        if (!refs[x.emoji]) return; var it = { src: refs[x.emoji], x: X[k], y: base, w: W, at: { sentence: sent(k + (plane ? 1 : 0), cnt + (plane ? 1 : 0)) }, card: false };
+        if (x.label) it.label = x.label;
+        if (/🚗|🚶/.test(x.emoji)) { it.x = 0.04; it.keys = [{ at: { sentence: it.at.sentence }, sec: 3, x: 0.6 + (k % 2) * 0.1, y: base }]; it.bob = x.emoji === '🚶' ? 10 : undefined; }
+        else if (/🐼|🐄|🐦|😊/.test(x.emoji)) it.bob = 8; else it.swing = 6;
+        if (x.emoji === '🧳' && /轉盤/.test(text)) { it.keys = [{ at: { sentence: it.at.sentence }, sec: 3, x: Math.min(0.75, X[k] + 0.3), y: base }]; }
+        items.push(it);
+      });
+      var visual = { kind: 'collage', items: items, sounds: moving ? [{ sfx: 'whoosh', sentence: 1 }] : undefined };
+      if (i === 0) visual.texts = [{ text: o.title.slice(0, 12), style: 'title', at: 0.3, pos: 'top' }];
+      return { title: o.title.slice(0, 12), layout: 'visual', narration: nar, visual: visual };
+    });
+    var chapters = [], size = 4; for (var c = 0; c < slides.length; c += size) chapters.push({ title: c === 0 ? '開始囉' : (slides[c].title || '接著'), slides: slides.slice(c, c + size) });
+    return { deck: deck, chapters: chapters };
+  }
+  function iconList(outline, lookup) { var seen = {}, out = []; outline.forEach(function (o) { iconsFor(o.title + ' ' + o.point, lookup).concat([{ emoji: '✈️' }, { emoji: '⭐' }]).forEach(function (x) { if (!seen[x.emoji]) { seen[x.emoji] = 1; out.push(x.emoji); } }); }); return out; }
+
   // render_presentation 的錯誤是一行一個「欄位路徑: 原因」；只動有問題的投影片：壞的圖拿掉、太長的字截短、其他原因只回報
   function repair(doc, errorText) {
     var changes = [], lines = String(errorText || '').split('\n'), slideAt = function (ci, si) { var c = doc.chapters[ci]; return c && c.slides[si]; };
@@ -97,5 +144,5 @@
   }
   function dropAllVisuals(doc) { var n = 0; doc.chapters.forEach(function (c) { c.slides.forEach(function (s) { if (s.visual) { delete s.visual; n++; } if (s.layout === 'split') s.layout = 'content'; }); }); return n; }
 
-  return { parseRequest: parseRequest, outlinePrompt: outlinePrompt, parseOutline: parseOutline, templateOutline: templateOutline, narrationPrompt: narrationPrompt, acceptNarration: acceptNarration, buildDeck: buildDeck, repair: repair, dropAllVisuals: dropAllVisuals, TRAVEL: TRAVEL };
+  return { parseRequest: parseRequest, outlinePrompt: outlinePrompt, parseOutline: parseOutline, templateOutline: templateOutline, narrationPrompt: narrationPrompt, acceptNarration: acceptNarration, buildDeck: buildDeck, ICONS: ICONS, iconsFor: iconsFor, buildIconDeck: buildIconDeck, iconList: iconList, repair: repair, dropAllVisuals: dropAllVisuals, TRAVEL: TRAVEL };
 });
