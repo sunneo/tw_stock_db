@@ -89,6 +89,79 @@
     return s;
   }
 
+  // ───── ②之二 反思（構想）：擴散模型對某些概念可能不熟，先請模型像插畫家、2D 動畫師、SVG 美術、3D 場景設計師那樣想「要布置出這個畫面，需要哪些主體、場景元素與素材、各放在哪裡」，
+  // 想出來的是英文欄位（過 mergeSlots 的檢查才收），最後還是交給擴散模型畫；其他工具（純文字畫圖、工程圖基底）在這裡只是幫忙想，不是畫最後的圖。
+  var SCENE_RE = /場景|現場|情境|景象|畫面|佈置|布置|氛圍|\bscene\b|\bsetting\b/i;
+  function reflectNeeded(request, slots, opts) {
+    opts = opts || {}; if (opts.reflect === false) return { need: false, why: '已關閉' }; if (opts.reflect === true) return { need: true, why: '你要求先想一想' };
+    var why = []; var cat = !!opts.catalogHit; if (slots.untranslated.length) why.push('有程式沒收錄的詞：' + slots.untranslated.slice(0, 3).join('、')); if (!cat && SCENE_RE.test(String(request || ''))) why.push('是在描述一個場景');
+    if (!cat && !slots.subject.length && !slots.extras.length) why.push('抓不到明確的主體'); if (slots.subject.length + slots.untranslated.length >= 2) why.push('有多個主體要放進同一個構圖');
+    return { need: why.length > 0, why: why.join('；') };
+  }
+  // 主體之間的關係（封閉清單；像 UML 的「實體與關聯」：誰騎著誰、誰在誰上面），模型只能從清單裡挑
+  var RELATIONS = ['riding', 'holding', 'carrying', 'standing on', 'sitting on', 'walking on', 'flying over', 'next to', 'in front of', 'behind', 'playing', 'looking at', 'wearing', 'hugging', 'chasing', 'sailing on', 'floating above', 'sleeping on', 'pointing at', 'surrounded by'];
+  function reflectBrief(request, hintText) {
+    return { system: '你是插畫家、2D 動畫師、SVG 美術與 3D 場景設計師，只輸出 JSON。', user: '使用者想畫：「' + String(request || '').slice(0, 300) + '」\n' + (hintText ? '程式的場景素材目錄裡有近似的參考（缺的再補，不合的不要用）：\n' + hintText + '\n' : '') + '畫圖用的擴散模型可能對這個概念不熟。請你想一遍：如果要用 2D 動畫、SVG 或 3D 建模把這個畫面布置出來，需要準備哪些「主體」、「場景元素」與「道具素材」？各自放在畫面的哪裡（前景、中景、背景）？\n只輸出一個 JSON，不要其他文字：\n{"subject":["英文名詞短語，最多 3 個"],"setting":["英文場景短語，最多 2 個"],"extras":["道具與素材的英文短語，最多 5 個"],"relations":[{"a":"英文名詞","rel":"從這些挑一個：' + RELATIONS.join('、') + '","b":"英文名詞"}],"layout":"一句英文，描述構圖，例如 Columbus on a horse in the foreground, a huge moon behind"}\n英文只用英文字母，每個短語不超過 6 個字。' };
+  }
+  // 場景素材目錄的條目（程式查到的背景知識）→ 欄位
+  function applyScene(slots, sc, covered) { var out = mergeSlots(slots, { subject: sc.subject, setting: (sc.setting || []).concat(sc.layout ? [sc.layout] : []), extras: sc.extras }); out.untranslated = slots.untranslated.filter(function (u) { return !/^(場景|景象|情境|畫面|現場)$/.test(u) && !(covered || []).some(function (c) { return u.indexOf(c) >= 0 || c.indexOf(u) >= 0; }); }); return { slots: out, got: (out.subject.length - slots.subject.length) + (out.setting.length - slots.setting.length) + (out.extras.length - slots.extras.length) }; }
+  function applyReflection(slots, text) {
+    var m = /\{[\s\S]*\}/.exec(String(text || '')), o = null; if (m) { try { o = JSON.parse(m[0]); } catch (_) { o = null; } } if (!o || typeof o !== 'object') return { slots: slots, ok: false, got: 0 };
+    var rels = []; (Array.isArray(o.relations) ? o.relations : []).slice(0, 4).forEach(function (r) { if (!r || RELATIONS.indexOf(String(r.rel || '').toLowerCase().trim()) < 0) return; var a = ascii(r.a, 30).toLowerCase(), b = ascii(r.b, 30).toLowerCase(); if (a && b) rels.push(a + ' ' + String(r.rel).toLowerCase().trim() + ' ' + b); });
+    var llm = { subject: rels.concat(Array.isArray(o.subject) ? o.subject : []), setting: (Array.isArray(o.setting) ? o.setting : typeof o.setting === 'string' ? [o.setting] : []).concat(typeof o.layout === 'string' ? [o.layout] : []), extras: o.extras };
+    var out = mergeSlots(slots, llm), got = (out.subject.length - slots.subject.length) + (out.setting.length - slots.setting.length) + (out.extras.length - slots.extras.length);
+    return { slots: out, ok: got > 0, got: got, layout: typeof o.layout === 'string' ? ascii(o.layout, 90) : '' };
+  }
+
+
+  // ───── ②之三 細節：畫風、光線、鏡頭、氣氛還沒定的，請模型從封閉清單裡挑（挑出來的必須在清單裡才收）─────
+  function detailMissing(slots) { var m = []; if (!slots.style) m.push('style'); if (!slots.lighting) m.push('lighting'); if (!slots.camera) m.push('camera'); if (!slots.mood) m.push('mood'); return m; }
+  function detailBrief(request, slots, miss) {
+    var L = { style: Object.keys(STYLES).join('、'), lighting: LIGHTING.map(function (x) { return x.tag; }).join('｜'), camera: CAMERA.map(function (x) { return x.tag; }).join('｜'), mood: MOOD.map(function (x) { return x.tag; }).join('｜') }, name = { style: '畫風', lighting: '光線', camera: '鏡頭', mood: '氣氛' };
+    var lines = miss.map(function (k) { return name[k] + '（' + k + '）從這些挑一個，都不適合就填 none：' + L[k]; });
+    return { system: '你是插畫的美術指導，只輸出 JSON。', user: '使用者想畫：「' + String(request || '').slice(0, 300) + '」\n請替這張圖決定下面幾個細節，只能從清單裡挑：\n' + lines.join('\n') + '\n只輸出一個 JSON，鍵是 ' + miss.join('、') + '，不要其他文字。' };
+  }
+  function applyDetails(slots, text) {
+    var m = /\{[\s\S]*\}/.exec(String(text || '')), o = null; if (m) { try { o = JSON.parse(m[0]); } catch (_) { o = null; } } if (!o || typeof o !== 'object') return { slots: slots, got: [] };
+    var out = JSON.parse(JSON.stringify(slots)), got = [], pick = function (list, v) { v = String(v || '').toLowerCase().trim(); for (var i = 0; i < list.length; i++) if (list[i].tag.toLowerCase() === v) return list[i]; return null; };
+    if (!out.style && o.style && STYLES[String(o.style).trim()]) { out.style = String(o.style).trim(); got.push('style'); }
+    if (!out.lighting) { var l = pick(LIGHTING, o.lighting); if (l) { out.lighting = l; got.push('lighting'); } }
+    if (!out.camera) { var c = pick(CAMERA, o.camera); if (c) { out.camera = c; got.push('camera'); } }
+    if (!out.mood) { var md = pick(MOOD, o.mood); if (md) { out.mood = md; got.push('mood'); } }
+    return { slots: out, got: got };
+  }
+
+  // ───── ⑤ 修圖：先用程式量一量（亮度、對比、飽和度），再決定要做哪些後製（操作名稱沿用 imgproc 的 op）；語意上的問題（缺了什麼東西）由視覺模型看 ─────
+  function imageStats(img) {
+    var d = img.data, n = 0, sum = 0, sq = 0, sat = 0, dark = 0, light = 0, step = Math.max(1, Math.floor((img.width * img.height) / 40000));
+    for (var p = 0; p < img.width * img.height; p += step) { var i = p * 4, r = d[i], g = d[i + 1], b = d[i + 2], y = 0.299 * r + 0.587 * g + 0.114 * b, mx = Math.max(r, g, b), mn = Math.min(r, g, b); n++; sum += y; sq += y * y; sat += mx ? (mx - mn) / mx : 0; if (y < 12) dark++; if (y > 243) light++; }
+    if (!n) return { mean: 0, std: 0, sat: 0, dark: 0, light: 0 }; var mean = sum / n; return { mean: Math.round(mean * 10) / 10, std: Math.round(Math.sqrt(Math.max(0, sq / n - mean * mean)) * 10) / 10, sat: Math.round(sat / n * 1000) / 1000, dark: Math.round(dark / n * 1000) / 1000, light: Math.round(light / n * 1000) / 1000 };
+  }
+  function retouchPlan(st) {
+    var ops = [], why = [];
+    if (st.std < 38) { ops.push({ op: 'auto_contrast', clip: 0.5 }); why.push('對比偏低（標準差 ' + st.std + '）→ 自動對比'); }
+    if (st.mean < 75) { ops.push({ op: 'brightness', amount: Math.min(25, Math.round((95 - st.mean) / 2)) }); why.push('整體偏暗（平均亮度 ' + st.mean + '）→ 提亮'); }
+    else if (st.mean > 195) { ops.push({ op: 'brightness', amount: -Math.min(18, Math.round((st.mean - 175) / 2)) }); why.push('整體偏亮（平均亮度 ' + st.mean + '）→ 壓暗'); }
+    if (st.sat < 0.16) { ops.push({ op: 'saturation', amount: 18 }); why.push('顏色偏灰（飽和度 ' + st.sat + '）→ 提高飽和度'); }
+    else if (st.sat > 0.7) { ops.push({ op: 'saturation', amount: -12 }); why.push('顏色過飽和（' + st.sat + '）→ 降低飽和度'); }
+    if (ops.length || st.std >= 38) { ops.push({ op: 'sharpen', amount: 0.5, radius: 1.2, threshold: 2 }); why.push('輕微銳化'); }
+    return { ops: ops, why: why, flat: st.std < 8 };
+  }
+  function checkBrief(request, items) {
+    return 'Look at this image. The request was: ' + String(request || '').slice(0, 200) + '\nWhich of these required elements are NOT clearly visible? ' + items.slice(0, 8).join('; ') + '\nAnswer only with JSON: {"missing":["element",...],"ok":true|false}';
+  }
+  function parseCheck(text, items) {
+    var m = /\{[\s\S]*\}/.exec(String(text || '')), o = null; if (m) { try { o = JSON.parse(m[0]); } catch (_) { o = null; } } if (!o) return null;
+    var low = items.map(function (x) { return x.toLowerCase(); }), miss = (Array.isArray(o.missing) ? o.missing : []).map(function (x) { return ascii(x, 40).toLowerCase(); }).filter(function (x) { return x && low.some(function (y) { return y.indexOf(x) >= 0 || x.indexOf(y) >= 0; }); }).slice(0, 4);
+    return { missing: miss, ok: o.ok === true && !miss.length };
+  }
+  // 草稿：視覺模型看完草稿的描述 vs. 想要的元素 → 看不到的元素（程式比對字面，不靠模型再判斷一次）
+  function draftGaps(caption, items) { var c = String(caption || '').toLowerCase(); return items.filter(function (it) { var w = String(it).toLowerCase().split(/[^a-z]+/).filter(function (x) { return x.length > 3; }); return w.length && !w.some(function (x) { return c.indexOf(x.slice(0, Math.max(4, x.length - 2))) >= 0; }); }); }
+  // 草稿要畫什麼：用主體與場景元素排成簡單的版面說明，交給「純文字畫圖」去畫（形狀加文字標籤）
+  function draftRequest(request, slots) {
+    var parts = slots.subject.concat(slots.extras).slice(0, 8); return '構圖草稿（只用簡單形狀與英文文字標籤，標出各元素的位置，不用細節）：' + String(request || '').slice(0, 120) + '。元素：' + parts.join('、') + (slots.setting.length ? '。場景與構圖：' + slots.setting.join('；') : '') + '。';
+  }
+
   var FAMILIES = { sd15: { id: 'sd15', label: 'SD 1.x／SDXS（CLIP，逗號分隔的關鍵詞）', maxTokens: 70, negative: false }, flux: { id: 'flux', label: 'FLUX（自然語句）', maxChars: 320, negative: false }, sd3: { id: 'sd3', label: 'Stable Diffusion 3（語句加關鍵詞）', maxTokens: 150, negative: true } };
   function familyOf(modelId) { var m = String(modelId || '').toLowerCase(); if (/sdxs|sd-turbo|sd15|stable-diffusion-1|bk-sdm|tipsy/.test(m)) return 'sd15'; if (/flux/.test(m)) return 'flux'; if (/stable-diffusion-3|sd3/.test(m)) return 'sd3'; return 'flux'; }
   // 粗估 token 數（CLIP：英文字約 1.2 個、逗號各 1 個）；只是用來守上限，寧可高估
@@ -179,5 +252,5 @@
     return out;
   }
 
-  return { configure: configure, classify: classify, diagramType: diagramType, STYLES: STYLES, FAMILIES: FAMILIES, extractSlots: extractSlots, mergeSlots: mergeSlots, familyOf: familyOf, estimateTokens: estimateTokens, buildPrompt: buildPrompt, slotsFromCaption: slotsFromCaption, svgBrief: svgBrief, mermaidBrief: mermaidBrief, extractSvg: extractSvg, extractMermaid: extractMermaid, validateSvg: validateSvg, validateMermaid: validateMermaid, plan: plan, ascii: ascii };
+  return { detailMissing: detailMissing, detailBrief: detailBrief, applyDetails: applyDetails, imageStats: imageStats, retouchPlan: retouchPlan, checkBrief: checkBrief, parseCheck: parseCheck, draftGaps: draftGaps, draftRequest: draftRequest, RELATIONS: RELATIONS, applyScene: applyScene, reflectNeeded: reflectNeeded, reflectBrief: reflectBrief, applyReflection: applyReflection, configure: configure, classify: classify, diagramType: diagramType, STYLES: STYLES, FAMILIES: FAMILIES, extractSlots: extractSlots, mergeSlots: mergeSlots, familyOf: familyOf, estimateTokens: estimateTokens, buildPrompt: buildPrompt, slotsFromCaption: slotsFromCaption, svgBrief: svgBrief, mermaidBrief: mermaidBrief, extractSvg: extractSvg, extractMermaid: extractMermaid, validateSvg: validateSvg, validateMermaid: validateMermaid, plan: plan, ascii: ascii };
 });
