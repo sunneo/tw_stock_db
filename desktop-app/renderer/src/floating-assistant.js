@@ -1441,6 +1441,13 @@ const SUBAGENT_DOMAIN_REGISTRY = {
         systemPrompt: '你負責用「網頁編輯器」幫使用者做小網站（原型、前端頁面加模擬後端）。做法固定：呼叫 webedit_open——使用者要現成的類型就用 starter（blank、todo、chat、form、python_api），要別的就把一句話需求放 request（AI 會先做出第一版）；要接續之前的專案用 id。做完編輯器就放在對話裡了（預覽、程式碼、後端三個分頁，右邊有對話可以繼續改、附圖、復原重做），用幾句話告訴使用者可以直接在裡面改，**不要把程式碼貼進對話、不要自己寫 HTML 檔**。後端是模擬的：JS（Node 風格，router／app.crud／app.ws／env.db，WebSocket 與 SSE 都能用，資料持久，可匯出 Node／Cloudflare 部署檔）或 Python（Flask／FastAPI，不支援 WebSocket）；PHP 在瀏覽器裡不能執行，要如實說，不要假裝能跑。需要細節先 webedit_topic。',
         dynamicNote: '路由建議：使用者要做網頁、小網站、前端原型、HTML 編輯器、模擬後端／假 server／mock backend（Node、Python、WebSocket、API）時委派這個領域。',
     },
+    editors: {
+        enabled: true,
+        label: '圖形編輯器（用對話主導的 SVG 編輯器、圖片編輯器與 3D 場景編輯器：物件放置、風格濾鏡與修復、描圖、貼圖、匯出）',
+        toolNames: ['edit_svg_open', 'edit_picture_open', 'edit_3d_open', 'list_uploaded_files'],
+        systemPrompt: '你負責用「圖形編輯器」幫使用者畫圖、修圖、擺 3D 場景。做法固定：向量圖／圖示／插圖／流程圖／把圖片描成 SVG → edit_svg_open；修照片、換風格（水彩、油畫、素描…）、去污點、合成圖片、加濾鏡 → edit_picture_open；3D 場景、擺放 3D 物件、貼圖、做模型 → edit_3d_open。要現成的類型就用 starter，要別的就把一句話需求放 request（編輯器自己的 AI 會做）；使用者附了圖片就帶 file_id；要接續之前的專案用 id。做完編輯器就放在對話裡了（物件欄、屬性面板、AI 對話、復原重做、匯出），用幾句話告訴使用者可以直接在裡面說要怎麼改，**不要把 SVG／程式碼貼進對話、不要自己處理圖片**。',
+        dynamicNote: '路由建議：使用者要畫向量圖／SVG、修圖、換圖片風格、去污點、圖片後製、貼圖合成、或擺放編輯 3D 場景與模型時委派這個領域。',
+    },
     worksheet: {
         enabled: true,
         label: '教育文書（學習單、練習卷、教材、教具：排版成 HTML、輸出 PDF；可參考圖片；有互動編輯器）',
@@ -24959,6 +24966,3492 @@ const holder = {};
 return holder.FaImgProc;
 })();
 /* IMGPROC-END */
+/* EDOBJ-BEGIN */
+const FaEditObjects = (function () {
+const holder = {};
+(function (module, self) {
+// There is NO real boundary: an object can be anywhere (any coordinates; the user can ask the chat to add something far away). The "canvas" is only the export frame { x, y, w, h, bg } (what PNG / SVG export
+// show; fit_canvas wraps it around the content), not a wall. The viewer is an endless plane (edit_viewport.js).
+// PLACEMENT IS RELATIVE (the idea of a "concept painter led by language"): the AI says WHERE in words -- to the right of the sun, above the house, centred on the picture, inside the canvas at the
+// bottom -- and the program works the coordinates out from the boxes of the objects, so nobody has to guess numbers and nothing is held back by a canvas size:
+//   place:{ of:<id|name>|'selection'|'canvas'|'view'|'content', rel:'right'|'left'|'above'|'below'|'inside'|'center', gap?:16, align?:'start'|'center'|'end', at?:'center'|'top-left'|'top'|'top-right'|'left'|'right'|'bottom-left'|'bottom'|'bottom-right', dx?, dy? }
+//   in add_object (the new object is moved there) and in place_object{id, place} (an existing one is). 'view' is the part of the plane the user is looking at, 'content' the box around everything.
+// The object (layer) model shared by /edit-svg and /edit-picture (pure functions; node and the browser). A document is
+//   { v:1, title, canvas:{ x, y, w, h, bg }, seq, objects:[ { id, name, type, visible, locked, ...props of the type } ] }       objects[0] is the BOTTOM, the last one is on top
+// Everything the AI adds through the editor's own chat becomes ONE NEW OBJECT with a name (never a change of the whole document), so the user sees it in the objects view and can hide, move, rename,
+// lock, duplicate or delete it, and undo it. The AI can only answer with the CLOSED set of actions below; the program checks every one of them (ids, sizes, types) and says what it refused.
+//
+//   FaEditObjects.make({ types:{ <type>:{ label, defaults:{…}, validate(obj)->{obj, problems[]} } }, types[t].move(obj,dx,dy) (default: x and y), limits:{ objects, canvas } (canvas = the largest size of the export frame), types[t].bbox(obj) -> {x,y,w,h} for fit_canvas / bounds, extraOps:{ <op>:{ words(e), apply(spec, e, helpers)->{spec}|{error} } }, defaultSpec })
+//     -> { OPS, validate(spec), applyEdits(spec, edits) -> { spec, applied:[op], rejected:[{op,error}] }, editWords(e), list(spec) -> text, byId(spec,id), parseObjectCommand(text, spec) -> { edits, matched, unmatched } }
+//
+// closed actions:  set_title{text}  set_canvas{w,h,bg}  add_object{object:{type,name?,…}, at?:'top'|'bottom'|<index>|{above:id}}  update_object{id, props:{…}}  remove_object{id}  rename_object{id,name}
+//                  move_object{id, to:'front'|'back'|'up'|'down'|<index>}  set_visible{id,visible}  set_locked{id,locked}  duplicate_object{id}  clear_objects{}  fit_canvas{margin?}  place_object{id,place}   (+ the editor's extraOps)
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaEditObjects = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var OPS = ['set_title', 'set_canvas', 'add_object', 'update_object', 'remove_object', 'rename_object', 'move_object', 'set_visible', 'set_locked', 'duplicate_object', 'clear_objects', 'fit_canvas', 'place_object'];
+  function str(v, max) { return String(v == null ? '' : v).replace(/\u0000/g, '').slice(0, max || 200); }
+  function clone(o) { return JSON.parse(JSON.stringify(o)); }
+  function num(v, lo, hi, d) { var n = Number(v); if (!isFinite(n)) { return d; } return Math.max(lo, Math.min(hi, n)); }
+  var COLOR = /^(#[0-9a-fA-F]{3,8}|[a-zA-Z]{3,20}|rgba?\([\d\s.,%]+\)|hsla?\([\d\s.,%deg]+\)|transparent|none)$/;
+
+  function make(cfg) {
+    var types = cfg.types || {}, LIM = Object.assign({ objects: 500, canvas: 16384, name: 60 }, cfg.limits || {}), extra = cfg.extraOps || {};
+    var ALL_OPS = OPS.concat(Object.keys(extra));
+    function defaultSpec() { return cfg.defaultSpec ? clone(cfg.defaultSpec()) : { v: 1, title: 'Untitled', canvas: { x: 0, y: 0, w: 800, h: 600, bg: '#ffffff' }, seq: 0, objects: [] }; }
+    function canvasOf(c, d) { c = c && typeof c === 'object' ? c : {}; d = d || { x: 0, y: 0, w: 800, h: 600, bg: '#ffffff' }; return { x: Math.round(num(c.x, -1e7, 1e7, d.x || 0)), y: Math.round(num(c.y, -1e7, 1e7, d.y || 0)), w: Math.round(num(c.w, 16, LIM.canvas, d.w)), h: Math.round(num(c.h, 16, LIM.canvas, d.h)), bg: COLOR.test(String(c.bg || '')) ? String(c.bg) : d.bg }; }
+    function validateObject(o, problems, ids) {
+      if (!o || typeof o !== 'object') { return null; }
+      var t = types[o.type]; if (!t) { problems.push('unknown object type "' + str(o.type, 30) + '" skipped'); return null; }
+      var r = t.validate(Object.assign({}, t.defaults || {}, o)); (r.problems || []).forEach(function (p) { problems.push(p); }); if (!r.obj) { return null; }
+      var out = r.obj; out.type = o.type; out.id = /^[A-Za-z][A-Za-z0-9_-]{0,30}$/.test(String(o.id || '')) && !ids[o.id] ? String(o.id) : null; out.name = str(o.name, LIM.name).trim() || (t.label || o.type);
+      out.visible = o.visible !== false; out.locked = !!o.locked; return out;
+    }
+    function validate(input) {
+      var problems = [], d = defaultSpec(), r = input && typeof input === 'object' ? input : {}, s = { v: 1, title: str(r.title, 80) || d.title, canvas: canvasOf(r.canvas, d.canvas), seq: 0, objects: [] }, ids = {};
+      (Array.isArray(r.objects) ? r.objects : []).forEach(function (o) {
+        if (s.objects.length >= LIM.objects) { if (!ids.__full) { problems.push('too many objects, only the first ' + LIM.objects + ' are kept'); ids.__full = 1; } return; }
+        var v = validateObject(o, problems, ids); if (!v) { return; }
+        s.objects.push(v); if (v.id) { ids[v.id] = 1; }
+      });
+      var maxSeq = Number(r.seq) || 0; s.objects.forEach(function (o) { var m = /^o(\d+)$/.exec(o.id || ''); if (m) { maxSeq = Math.max(maxSeq, Number(m[1])); } });
+      s.objects.forEach(function (o) { if (!o.id) { do { maxSeq++; } while (ids['o' + maxSeq]); o.id = 'o' + maxSeq; ids[o.id] = 1; } });
+      s.seq = maxSeq;
+      return { ok: true, spec: s, problems: problems };
+    }
+    function byId(spec, id) { for (var i = 0; i < spec.objects.length; i++) { if (spec.objects[i].id === id) { return i; } } return -1; }
+    // an id the AI wrote may be the object's id or its name ("the circle")
+    function find(spec, ref) { var i = byId(spec, ref); if (i >= 0) { return i; } var low = String(ref == null ? '' : ref).trim().toLowerCase(); if (!low) { return -1; } for (var k = spec.objects.length - 1; k >= 0; k--) { if (spec.objects[k].name.toLowerCase() === low) { return k; } } return -1; }
+    // the box around everything that is shown (the objects' own boxes: types[t].bbox), or null; the viewer and fit_canvas use it
+    function boundsOf(spec) {
+      var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, any = false;
+      (spec.objects || []).forEach(function (o) { var t = types[o.type]; if (!o.visible || !t || !t.bbox) { return; } var b; try { b = t.bbox(o); } catch (e) { b = null; } if (!b || !isFinite(b.x + b.y + b.w + b.h)) { return; } any = true; x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y); x1 = Math.max(x1, b.x + b.w); y1 = Math.max(y1, b.y + b.h); });
+      return any ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : null;
+    }
+    function bboxOf(o) { var t = types[o.type]; var b; try { b = t && t.bbox ? t.bbox(o) : null; } catch (e) { b = null; } return b && isFinite(b.x + b.y + b.w + b.h) ? b : null; }
+    function moveObj(o, dx, dy) { var t = types[o.type]; if (t && t.move) { t.move(o, dx, dy); } else { if ('x' in o) { o.x = Math.round((o.x + dx) * 100) / 100; } if ('y' in o) { o.y = Math.round((o.y + dy) * 100) / 100; } } }
+    // where a box has to move so that it sits at `place`: -> { dx, dy } or { error }
+    function resolvePlace(spec, box, place, env, selfId) {
+      env = env || {}; place = place && typeof place === 'object' ? place : {}; var ref = place.of, anchor = null, c = spec.canvas;
+      function rectOf(o) { return { x: o.x, y: o.y, w: o.w, h: o.h }; }
+      if (ref == null || ref === '') { ref = env.selection && byId(spec, env.selection) >= 0 && env.selection !== selfId ? env.selection : null; if (ref == null) { for (var k = spec.objects.length - 1; k >= 0; k--) { if (spec.objects[k].id !== selfId && spec.objects[k].visible) { ref = spec.objects[k].id; break; } } } if (ref == null) { ref = env.view ? 'view' : 'canvas'; } }
+      if (ref === 'selection') { ref = env.selection; if (!ref || byId(spec, ref) < 0) { return { error: 'nothing is selected' }; } }
+      if (ref === 'canvas') { anchor = rectOf(c); } else if (ref === 'view') { anchor = env.view ? rectOf(env.view) : rectOf(c); } else if (ref === 'content') { anchor = boundsOf(spec) || rectOf(c); }
+      else { var i = find(spec, ref); if (i < 0) { return { error: 'there is no object "' + str(ref, 30) + '" to place it relative to' }; } anchor = bboxOf(spec.objects[i]); if (!anchor) { return { error: 'the object "' + spec.objects[i].name + '" has no size to place relative to' }; } }
+      var rel = String(place.rel || 'center').toLowerCase(), gap = num(place.gap, -1e5, 1e5, 16), al = String(place.align || 'center').toLowerCase(), at = String(place.at || 'center').toLowerCase(), tx, ty;
+      function cross(aStart, aSize, bSize) { return al === 'start' ? aStart : al === 'end' ? aStart + aSize - bSize : aStart + (aSize - bSize) / 2; }
+      if (rel === 'right') { tx = anchor.x + anchor.w + gap; ty = cross(anchor.y, anchor.h, box.h); }
+      else if (rel === 'left') { tx = anchor.x - gap - box.w; ty = cross(anchor.y, anchor.h, box.h); }
+      else if (rel === 'above' || rel === 'on-top') { tx = cross(anchor.x, anchor.w, box.w); ty = anchor.y - gap - box.h; }
+      else if (rel === 'below') { tx = cross(anchor.x, anchor.w, box.w); ty = anchor.y + anchor.h + gap; }
+      else if (rel === 'inside' || rel === 'center') {
+        var pad = rel === 'center' ? 0 : Math.max(0, gap), cx = anchor.x + (anchor.w - box.w) / 2, cy = anchor.y + (anchor.h - box.h) / 2;
+        tx = /left/.test(at) ? anchor.x + pad : /right/.test(at) ? anchor.x + anchor.w - box.w - pad : cx; ty = /top/.test(at) ? anchor.y + pad : /bottom/.test(at) ? anchor.y + anchor.h - box.h - pad : cy;
+        if (at === 'top' || at === 'bottom') { tx = cx; } if (at === 'left' || at === 'right') { ty = cy; } if (rel === 'center') { tx = cx; ty = cy; }
+      } else { return { error: 'rel must be right, left, above, below, inside or center' }; }
+      return { dx: tx - box.x + (Number(place.dx) || 0), dy: ty - box.y + (Number(place.dy) || 0) };
+    }
+    // an object made by an editor's own action goes on top like add_object does (a new id, checked, counted as added); -> { error } or { id }
+    function addTop(s, obj) {
+      if (s.objects.length >= LIM.objects) { return { error: 'too many objects (at most ' + LIM.objects + ')' }; }
+      var probs = []; s.seq++; var v = validateObject(Object.assign({}, obj, { id: 'o' + s.seq }), probs, {}); if (!v) { return { error: probs[0] || 'the object is not valid' }; }
+      v.id = 'o' + s.seq; s.objects.push(v); s._added = (s._added || []).concat([v.id]); return { id: v.id };
+    }
+    function helpers() { return { find: find, byId: byId, validateObject: validateObject, clone: clone, str: str, num: num, bbox: bboxOf, move: moveObj, resolvePlace: resolvePlace, addTop: addTop }; }
+    function applyOne(s, e, env) {
+      if (!e || typeof e !== 'object') { return { error: 'not an action' }; }
+      var i, o, t;
+      switch (e.op) {
+        case 'set_title': { var tt = str(e.text, 80).trim(); if (!tt) { return { error: 'the title must not be empty' }; } s.title = tt; return {}; }
+        case 'set_canvas': { var c0 = s.canvas, c = canvasOf({ x: e.x != null ? e.x : c0.x, y: e.y != null ? e.y : c0.y, w: e.w != null ? e.w : c0.w, h: e.h != null ? e.h : c0.h, bg: e.bg != null ? e.bg : c0.bg }, c0); if (e.bg != null && !COLOR.test(String(e.bg))) { return { error: 'the background is not a colour' }; } s.canvas = c; return {}; }
+        case 'add_object': {
+          if (s.objects.length >= LIM.objects) { return { error: 'too many objects (at most ' + LIM.objects + ')' }; }
+          var probs = []; s.seq++; var cand = Object.assign({}, e.object || {}, { id: 'o' + s.seq }); var v = validateObject(cand, probs, {}); if (!v) { return { error: (probs[0] || 'the object is not valid') }; }
+          v.id = 'o' + s.seq; var at = e.at, idx = s.objects.length;
+          if (at === 'bottom') { idx = 0; } else if (typeof at === 'number') { idx = Math.max(0, Math.min(s.objects.length, Math.round(at))); } else if (at && typeof at === 'object' && at.above) { var a = find(s, at.above); if (a >= 0) { idx = a + 1; } }
+          if (e.place) { var bx = bboxOf(v); if (!bx) { return { error: 'the new object has no size to place' }; } var pr = resolvePlace(s, bx, e.place, env, null); if (pr.error) { return { error: pr.error }; } moveObj(v, pr.dx, pr.dy); }
+          else if (s.objects.length === 0 && env && env.view && !('place' in e)) { /* the first object stays where it was written */ }
+          s.objects.splice(idx, 0, v); s._added = (s._added || []).concat([v.id]); return {};
+        }
+        case 'place_object': {
+          i = find(s, e.id); if (i < 0) { return { error: 'there is no object "' + str(e.id, 30) + '"' }; } o = s.objects[i]; if (o.locked) { return { error: '"' + o.name + '" is locked' }; }
+          var bo = bboxOf(o); if (!bo) { return { error: '"' + o.name + '" has no size to place' }; } var pp = resolvePlace(s, bo, e.place, env, o.id); if (pp.error) { return { error: pp.error }; } var moved = clone(o); moveObj(moved, pp.dx, pp.dy); s.objects[i] = moved; return {};
+        }
+        case 'update_object': {
+          i = find(s, e.id); if (i < 0) { return { error: 'there is no object "' + str(e.id, 30) + '"' }; } o = s.objects[i]; if (o.locked) { return { error: '"' + o.name + '" is locked' }; }
+          var props = e.props && typeof e.props === 'object' ? e.props : null; if (!props || !Object.keys(props).length) { return { error: 'props is empty' }; }
+          var next = Object.assign({}, o, props, { id: o.id, type: o.type }), p2 = [], v2 = validateObject(next, p2, {}); if (!v2) { return { error: p2[0] || 'the new values are not valid' }; }
+          v2.id = o.id; s.objects[i] = v2; return {};
+        }
+        case 'remove_object': { i = find(s, e.id); if (i < 0) { return { error: 'there is no object "' + str(e.id, 30) + '"' }; } if (s.objects[i].locked) { return { error: '"' + s.objects[i].name + '" is locked' }; } s.objects.splice(i, 1); return {}; }
+        case 'rename_object': { i = find(s, e.id); if (i < 0) { return { error: 'there is no object "' + str(e.id, 30) + '"' }; } var nm = str(e.name, LIM.name).trim(); if (!nm) { return { error: 'the name must not be empty' }; } s.objects[i].name = nm; return {}; }
+        case 'move_object': {
+          i = find(s, e.id); if (i < 0) { return { error: 'there is no object "' + str(e.id, 30) + '"' }; } o = s.objects.splice(i, 1)[0]; var to = e.to, n = s.objects.length, j;
+          if (to === 'front' || to === 'top') { j = n; } else if (to === 'back' || to === 'bottom') { j = 0; } else if (to === 'up') { j = Math.min(n, i + 1); } else if (to === 'down') { j = Math.max(0, i - 1); } else if (typeof to === 'number') { j = Math.max(0, Math.min(n, Math.round(to))); } else { s.objects.splice(i, 0, o); return { error: 'to must be front, back, up, down or a position' }; }
+          s.objects.splice(j, 0, o); return {};
+        }
+        case 'set_visible': { i = find(s, e.id); if (i < 0) { return { error: 'there is no object "' + str(e.id, 30) + '"' }; } s.objects[i].visible = e.visible !== false; return {}; }
+        case 'set_locked': { i = find(s, e.id); if (i < 0) { return { error: 'there is no object "' + str(e.id, 30) + '"' }; } s.objects[i].locked = !!e.locked; return {}; }
+        case 'duplicate_object': {
+          i = find(s, e.id); if (i < 0) { return { error: 'there is no object "' + str(e.id, 30) + '"' }; } if (s.objects.length >= LIM.objects) { return { error: 'too many objects' }; }
+          s.seq++; t = clone(s.objects[i]); t.id = 'o' + s.seq; t.name = str(t.name + ' copy', LIM.name); s.objects.splice(i + 1, 0, t); s._added = (s._added || []).concat([t.id]); return {};
+        }
+        case 'fit_canvas': { var bb = boundsOf(s); if (!bb) { return { error: 'there is nothing to fit the canvas around' }; } var mg = num(e.margin, 0, 2000, 20); s.canvas = canvasOf({ x: bb.x - mg, y: bb.y - mg, w: bb.w + 2 * mg, h: bb.h + 2 * mg, bg: s.canvas.bg }, s.canvas); return {}; }
+        case 'clear_objects': { s.objects = s.objects.filter(function (x) { return x.locked; }); return {}; }
+        default:
+          if (extra[e.op]) { var r = extra[e.op].apply(s, e, helpers(), env || {}); return r || {}; }
+          return { error: 'unknown action "' + str(e.op, 30) + '" (allowed: ' + ALL_OPS.join(', ') + ')' };
+      }
+    }
+    function applyEdits(spec, edits, env) {
+      var s = clone(validate(spec).spec), applied = [], rejected = [], appliedEdits = [], added = [];
+      (Array.isArray(edits) ? edits : []).forEach(function (e) {
+        var work = clone(s), r; try { r = applyOne(work, e, env); } catch (err) { r = { error: String((err && err.message) || err) }; }
+        if (r && r.error) { rejected.push({ op: e && e.op, error: r.error }); return; }
+        if (work._added) { added = added.concat(work._added); delete work._added; }
+        s = work; applied.push(e.op); appliedEdits.push(e);
+      });
+      var out = validate(s); return { spec: out.spec, applied: applied, appliedEdits: appliedEdits, rejected: rejected, added: added, problems: out.problems };
+    }
+    var REL = { right: '右邊', left: '左邊', above: '上面', 'on-top': '上面', below: '下面', inside: '裡面', center: '中央' };
+    function placeWords(p) { return (p.of ? p.of + ' 的' : '') + (REL[p.rel] || p.rel || ''); }
+    function editWords(e) {
+      var t = {
+        set_title: function () { return '標題改成「' + e.text + '」'; }, set_canvas: function () { return '畫布 ' + (e.w || '') + '×' + (e.h || '') + (e.bg ? ' ' + e.bg : ''); }, fit_canvas: function () { return '畫布貼合內容'; }, place_object: function () { return '放置物件 ' + e.id; },
+        add_object: function () { var o = e.object || {}; return '新增物件「' + (o.name || (types[o.type] && types[o.type].label) || o.type) + '」' + (e.place ? '（' + placeWords(e.place) + '）' : ''); }, update_object: function () { return '修改物件 ' + e.id; },
+        remove_object: function () { return '刪掉物件 ' + e.id; }, rename_object: function () { return e.id + ' 改名為 ' + e.name; }, move_object: function () { return '移動物件 ' + e.id + '（' + e.to + '）'; },
+        set_visible: function () { return (e.visible === false ? '隱藏 ' : '顯示 ') + e.id; }, set_locked: function () { return (e.locked ? '鎖定 ' : '解鎖 ') + e.id; },
+        duplicate_object: function () { return '複製物件 ' + e.id; }, clear_objects: function () { return '清空所有物件'; }
+      };
+      if (e && extra[e.op] && extra[e.op].words) { return extra[e.op].words(e); }
+      return t[e && e.op] ? t[e.op]() : String(e && e.op || '');
+    }
+    // the object list as text for a model (and for the summary)
+    function list(spec) {
+      var s = validate(spec).spec;
+      if (!s.objects.length) { return '(no objects)'; }
+      return s.objects.map(function (o, i) { return (s.objects.length - i) + '. [' + o.id + '] ' + o.name + ' (' + o.type + (o.visible ? '' : ', hidden') + (o.locked ? ', locked' : '') + ')' + (cfg.describeObject ? ' ' + cfg.describeObject(o) : ''); }).reverse().join('\n');
+    }
+    // what the program can read itself (no model): delete / rename / hide / lock / move an object by its name or number
+    function parseObjectCommand(text, spec) {
+      var out = { edits: [], matched: [], unmatched: [] }, s = validate(spec).spec, clauses = String(text || '').split(/[，。；;\n]+/).map(function (x) { return x.trim(); }).filter(Boolean);
+      function ref(r) { r = String(r || '').trim().replace(/^[「"'『]|[」"'』]$/g, ''); var m = /^(?:第\s*)?(\d+)(?:\s*個|\s*號)?$/.exec(r); if (m) { var k = s.objects.length - Number(m[1]); return k >= 0 && k < s.objects.length ? s.objects[k].id : null; } var i = find(s, r); return i >= 0 ? s.objects[i].id : null; }
+      clauses.forEach(function (c) {
+        var m, e = null, id;
+        if ((m = /^(?:把)?\s*(.+?)\s*(?:刪掉|刪除|移除|拿掉)$/.exec(c)) || (m = /^(?:刪掉|刪除|移除|拿掉)\s*(?:物件|圖層)?\s*(.+)$/.exec(c))) { id = ref(m[1].replace(/^(?:物件|圖層)\s*/, '')); if (id) { e = { op: 'remove_object', id: id }; } }
+        else if ((m = /^(?:把)?\s*(.+?)\s*(?:隱藏|藏起來)$/.exec(c)) || (m = /^(?:隱藏)\s*(.+)$/.exec(c))) { id = ref(m[1]); if (id) { e = { op: 'set_visible', id: id, visible: false }; } }
+        else if ((m = /^(?:把)?\s*(.+?)\s*(?:顯示出來|顯示)$/.exec(c)) || (m = /^(?:顯示)\s*(.+)$/.exec(c))) { id = ref(m[1]); if (id) { e = { op: 'set_visible', id: id, visible: true }; } }
+        else if ((m = /^(?:鎖定)\s*(.+)$/.exec(c)) || (m = /^(?:把)?\s*(.+?)\s*鎖定$/.exec(c))) { id = ref(m[1]); if (id) { e = { op: 'set_locked', id: id, locked: true }; } }
+        else if ((m = /^(?:解鎖)\s*(.+)$/.exec(c)) || (m = /^(?:把)?\s*(.+?)\s*解鎖$/.exec(c))) { id = ref(m[1]); if (id) { e = { op: 'set_locked', id: id, locked: false }; } }
+        else if ((m = /^(?:把)?\s*(.+?)\s*(?:改名(?:成|為)?|重新命名(?:成|為)?)\s*[「"'『]?(.+?)[」"'』]?$/.exec(c))) { id = ref(m[1]); if (id) { e = { op: 'rename_object', id: id, name: m[2] }; } }
+        else if ((m = /^(?:把)?\s*(.+?)\s*(移到最上面|移到最上層|放到最上面|移到最下面|移到最下層|放到最下面|往上一層|上移|往下一層|下移)$/.exec(c))) { id = ref(m[1]); if (id) { var w = m[2]; e = { op: 'move_object', id: id, to: /最上|上移|往上/.test(w) ? (/一層|上移/.test(w) ? 'up' : 'front') : (/一層|下移/.test(w) ? 'down' : 'back') }; } }
+        else if ((m = /^(?:把)?\s*(.+?)\s*(?:放到|移到|放在|擺到|搬到)\s*(.+?)\s*的?\s*(右邊|右側|左邊|左側|上面|上方|下面|下方|中間|中央|裡面)$/.exec(c))) { id = ref(m[1]); var anchorId = ref(m[2]); if (id && anchorId && id !== anchorId) { var w2 = m[3]; e = { op: 'place_object', id: id, place: { of: anchorId, rel: /右/.test(w2) ? 'right' : /左/.test(w2) ? 'left' : /上/.test(w2) ? 'above' : /下/.test(w2) ? 'below' : /裡面/.test(w2) ? 'inside' : 'center' } }; } }
+        else if ((m = /^(?:複製)\s*(.+)$/.exec(c))) { id = ref(m[1]); if (id) { e = { op: 'duplicate_object', id: id }; } }
+        else if ((m = /(?:標題)\s*(?:改成|換成|改為|設為|叫做?|是)\s*[「"'『]?(.+?)[」"'』]?$/.exec(c))) { e = { op: 'set_title', text: m[1] }; }
+        if (e) { out.edits.push(e); out.matched.push(c); } else { out.unmatched.push(c); }
+      });
+      return out;
+    }
+    return { OPS: ALL_OPS, bounds: boundsOf, validate: validate, applyEdits: applyEdits, editWords: editWords, list: list, byId: byId, find: find, parseObjectCommand: parseObjectCommand, clone: clone };
+  }
+  // the JSON an editor's AI may answer with: only { say, edits:[…] }, every action in the list
+  function parseEditsReply(text, ops) {
+    var s = String(text || ''), a = s.indexOf('{'), b = s.lastIndexOf('}'); if (a < 0 || b <= a) { return { ok: false, say: '', edits: [], error: 'the answer is not JSON' }; }
+    var j; try { j = JSON.parse(s.slice(a, b + 1)); } catch (e) { return { ok: false, say: '', edits: [], error: 'the answer is not JSON' }; }
+    var all = Array.isArray(j.edits) ? j.edits : [], edits = all.filter(function (e) { return e && ops.indexOf(e.op) >= 0; }).slice(0, 30);
+    return { ok: true, say: j.say ? str(j.say, 300) : '', edits: edits, dropped: all.length - edits.length };
+  }
+  return { make: make, parseEditsReply: parseEditsReply, OPS: OPS, COLOR: COLOR, str: str, num: num, clone: clone };
+});
+
+}).call(null, undefined, holder);
+return holder.FaEditObjects;
+})();
+/* EDOBJ-END */
+/* EDVP-BEGIN */
+const FaEditViewport = (function () {
+const holder = {};
+(function (module, self) {
+// The middle viewer of the editors (/edit-svg, /edit-picture): an ENDLESS plane for the user to look at -- real scrollbars, drag the view (hand tool, Space + drag, middle button, or a drag on the empty
+// background), zoom (Ctrl/Cmd + wheel around the pointer, buttons, 100 %, fit). There is no boundary: the scrollable area grows when the user scrolls near an edge, and fit() / center() can bring
+// any far-away content into view, because the chat may add content anywhere.
+//
+// Only the VISIBLE part is ever drawn: the editor draws into `vp.layer` (a sticky layer the size of the visible area) from the rectangle in WORLD units that the viewport reports, so a huge
+// coordinate or a high zoom never makes a huge element.
+//
+//   var vp = FaEditViewport.create({ onView(view), handle(ev) -> true when the editor took the pointer (an object drag), background:'#eef' });
+//   vp.el (put it somewhere)   vp.layer (draw here)   vp.view() -> { x, y, w, h, z, cw, ch }   world rectangle that is visible, zoom, and the size of the visible area in px
+//   vp.setBounds({x,y,w,h}|null)  the content box (the plane is at least this big, plus a margin)    vp.zoomTo(z, clientX?, clientY?)    vp.fit(rect, pad, maxZoom?)    vp.center(x, y)    vp.toWorld(clientX, clientY)
+//   vp.setHome({x,y,w,h}|null)  the HOME of the view: the first object (the picture); the ⌖ button and goHome() bring the view back to its middle with all of it in sight, wherever the user dragged to
+//   vp.setTool('hand'|'select')   vp.refresh()   vp.destroy()
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaEditViewport = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var MARGIN = 1500, GROW = 1500, EDGE = 160, MAXPX = 8e6, MINZ = 0.02, MAXZ = 64;
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+  var CSS = '.tw-vp-wrap{position:relative;flex:1;min-height:0;min-width:0;display:flex;overflow:hidden}.tw-vp{position:relative;flex:1;min-height:0;min-width:0;overflow:auto;background:var(--vp-bg,#eef0f3);outline:none}'
+    + '.tw-vp.hand,.tw-vp.hand *{cursor:grab!important}.tw-vp.panning,.tw-vp.panning *{cursor:grabbing!important;user-select:none}'
+    + '.tw-vp-inner{position:relative}.tw-vp-layer{position:sticky;top:0;left:0;overflow:hidden}'
+    + '.tw-vp-bar{position:absolute;right:14px;bottom:14px;display:flex;gap:4px;align-items:center;background:rgba(255,255,255,.92);border:1px solid #c8ccd2;border-radius:7px;padding:3px 5px;font:12px system-ui,sans-serif;color:#333;box-shadow:0 1px 5px rgba(0,0,0,.18)}'
+    + '.tw-vp-bar button{background:#fff;border:1px solid #c8ccd2;border-radius:4px;padding:1px 7px;cursor:pointer;font:inherit;color:#333}.tw-vp-bar button.on{background:#dbe8ff;border-color:#5b8def}.tw-vp-bar span{min-width:44px;text-align:center}'
+    + '@media (prefers-color-scheme: dark){.tw-vp{--vp-bg:#1b1f26}}';
+  function css() { if (typeof document === 'undefined' || document.getElementById('tw-vp-css')) { return; } var s = document.createElement('style'); s.id = 'tw-vp-css'; s.textContent = CSS; document.head.appendChild(s); }
+  function el(tag, cls, text) { var e = document.createElement(tag); if (cls) { e.className = cls; } if (text != null) { e.textContent = text; } return e; }
+
+  function create(opt) {
+    opt = opt || {}; css();
+    var wrap = el('div', 'tw-vp-wrap'), sc = el('div', 'tw-vp'), inner = el('div', 'tw-vp-inner'), layer = el('div', 'tw-vp-layer'), bar = el('div', 'tw-vp-bar');
+    sc.tabIndex = 0; if (opt.background) { sc.style.setProperty('--vp-bg', opt.background); }
+    inner.appendChild(layer); sc.appendChild(inner); wrap.appendChild(sc); wrap.appendChild(bar);
+    var home = null, z = 1, ext = { minX: -MARGIN, minY: -MARGIN, maxX: MARGIN, maxY: MARGIN }, bounds = null, tool = 'select', space = false, guard = false, raf = 0, dead = false;
+    var bMinus = el('button', '', '−'), lbl = el('span', '', '100%'), bPlus = el('button', '', '+'), bOne = el('button', '', '1:1'), bFit = el('button', '', '⤢'), bHand = el('button', '', '✋'), bHome = el('button', '', '⌖');
+    bMinus.title = 'Zoom out'; bPlus.title = 'Zoom in'; bOne.title = '100%'; bFit.title = 'Fit the content'; bHand.title = 'Hand: drag the view (or hold Space, or use the middle button)'; bHome.title = 'Back to the middle of the picture (the first object)';
+    [bHand, bMinus, lbl, bPlus, bOne, bFit, bHome].forEach(function (b) { bar.appendChild(b); });
+
+    function cw() { return Math.max(1, sc.clientWidth); } function ch() { return Math.max(1, sc.clientHeight); }
+    function sizeInner() {
+      var w = Math.max((ext.maxX - ext.minX) * z, cw() + 1), h = Math.max((ext.maxY - ext.minY) * z, ch() + 1);
+      inner.style.width = Math.round(w) + 'px'; inner.style.height = Math.round(h) + 'px';
+      layer.style.width = cw() + 'px'; layer.style.height = ch() + 'px'; layer.style.marginBottom = -ch() + 'px';
+    }
+    function view() { return { x: ext.minX + sc.scrollLeft / z, y: ext.minY + sc.scrollTop / z, w: cw() / z, h: ch() / z, z: z, cw: cw(), ch: ch() }; }
+    function notify() { lbl.textContent = Math.round(z * 100) + '%'; if (opt.onView) { opt.onView(view()); } }
+    function schedule() { if (raf || dead) { return; } raf = (typeof requestAnimationFrame === 'function' ? requestAnimationFrame : function (f) { return setTimeout(f, 16); })(function () { raf = 0; if (!dead) { notify(); } }); }
+    // the plane always covers the content, what is shown, and a margin around both; it only ever grows (no jumps)
+    function include(x0, y0, x1, y1) {
+      var dl = 0, dt = 0;
+      if (x0 - MARGIN < ext.minX) { dl = (ext.minX - (x0 - MARGIN)); ext.minX = x0 - MARGIN; }
+      if (y0 - MARGIN < ext.minY) { dt = (ext.minY - (y0 - MARGIN)); ext.minY = y0 - MARGIN; }
+      if (x1 + MARGIN > ext.maxX) { ext.maxX = x1 + MARGIN; } if (y1 + MARGIN > ext.maxY) { ext.maxY = y1 + MARGIN; }
+      return { dl: dl * z, dt: dt * z };
+    }
+    function limitZoom(v) { var span = Math.max(ext.maxX - ext.minX, ext.maxY - ext.minY, 1); return clamp(v, MINZ, Math.min(MAXZ, MAXPX / span)); }
+    function setBounds(b) {
+      bounds = b && isFinite(b.x + b.y + b.w + b.h) ? { x: b.x, y: b.y, w: b.w, h: b.h } : null;
+      if (bounds) { var g = include(bounds.x, bounds.y, bounds.x + bounds.w, bounds.y + bounds.h); sizeInner(); if (g.dl || g.dt) { guard = true; sc.scrollLeft += g.dl; sc.scrollTop += g.dt; guard = false; } }
+      schedule();
+    }
+    function zoomTo(nz, cx, cy) {
+      nz = limitZoom(nz); if (!isFinite(nz) || nz === z) { return; }
+      if (cx == null) { cx = cw() / 2; cy = ch() / 2; }
+      var wx = ext.minX + (sc.scrollLeft + cx) / z, wy = ext.minY + (sc.scrollTop + cy) / z;
+      z = nz; sizeInner(); guard = true; sc.scrollLeft = (wx - ext.minX) * z - cx; sc.scrollTop = (wy - ext.minY) * z - cy; guard = false; schedule();
+    }
+    function center(x, y) {
+      var g = include(x, y, x, y); sizeInner(); guard = true; sc.scrollLeft += g.dl; sc.scrollTop += g.dt; sc.scrollLeft = (x - ext.minX) * z - cw() / 2; sc.scrollTop = (y - ext.minY) * z - ch() / 2; guard = false; schedule();
+    }
+    function fit(rect, pad, maxZoom) {
+      rect = rect || bounds || { x: 0, y: 0, w: 800, h: 600 }; pad = pad == null ? 40 : pad;
+      include(rect.x, rect.y, rect.x + rect.w, rect.y + rect.h); z = limitZoom(Math.min(cw() / (rect.w + 2 * pad), ch() / (rect.h + 2 * pad), maxZoom || 8)); sizeInner(); center(rect.x + rect.w / 2, rect.y + rect.h / 2);
+    }
+    function setHome(r) { home = r && isFinite(r.x + r.y + r.w + r.h) ? { x: r.x, y: r.y, w: Math.max(1, r.w), h: Math.max(1, r.h) } : null; }
+    function goHome() { if (home) { fit(home, 40, 2); } else { var b = bounds || { x: 0, y: 0, w: 800, h: 600 }; fit(b, 40, 2); } }
+    function toWorld(clientX, clientY) { var r = sc.getBoundingClientRect(); return { x: ext.minX + (sc.scrollLeft + clientX - r.left) / z, y: ext.minY + (sc.scrollTop + clientY - r.top) / z }; }
+    // the endless part: scrolling close to an edge makes more plane on that side
+    sc.addEventListener('scroll', function () {
+      if (guard) { return; }
+      var grew = false;
+      if (sc.scrollLeft < EDGE) { ext.minX -= GROW; sizeInner(); guard = true; sc.scrollLeft += GROW * z; guard = false; grew = true; }
+      if (sc.scrollTop < EDGE) { ext.minY -= GROW; sizeInner(); guard = true; sc.scrollTop += GROW * z; guard = false; grew = true; }
+      if (sc.scrollWidth - sc.scrollLeft - sc.clientWidth < EDGE) { ext.maxX += GROW; grew = true; }
+      if (sc.scrollHeight - sc.scrollTop - sc.clientHeight < EDGE) { ext.maxY += GROW; grew = true; }
+      if (grew) { sizeInner(); }
+      schedule();
+    });
+    sc.addEventListener('wheel', function (ev) {
+      if (!(ev.ctrlKey || ev.metaKey)) { return; }
+      ev.preventDefault(); var r = sc.getBoundingClientRect(); zoomTo(z * Math.exp(-ev.deltaY * 0.0018), ev.clientX - r.left, ev.clientY - r.top);
+    }, { passive: false });
+    // dragging the view
+    var pan = null;
+    layer.addEventListener('pointerdown', function (ev) {
+      var hand = tool === 'hand' || space || ev.button === 1;
+      if (!hand && opt.handle && opt.handle(ev) === true) { return; }
+      if (ev.button !== 0 && ev.button !== 1) { return; }
+      pan = { x: ev.clientX, y: ev.clientY, l: sc.scrollLeft, t: sc.scrollTop, moved: false, id: ev.pointerId }; sc.classList.add('panning');
+      try { layer.setPointerCapture(ev.pointerId); } catch (e) { /* no capture */ }
+      ev.preventDefault();
+    });
+    layer.addEventListener('pointermove', function (ev) { if (!pan) { return; } var dx = ev.clientX - pan.x, dy = ev.clientY - pan.y; if (Math.abs(dx) + Math.abs(dy) > 2) { pan.moved = true; } sc.scrollLeft = pan.l - dx; sc.scrollTop = pan.t - dy; });
+    function endPan(ev) { if (!pan) { return; } var moved = pan.moved; pan = null; sc.classList.remove('panning'); try { layer.releasePointerCapture(ev.pointerId); } catch (e) { /* none */ } if (!moved && opt.onBackgroundClick) { opt.onBackgroundClick(ev); } }
+    layer.addEventListener('pointerup', endPan); layer.addEventListener('pointercancel', endPan);
+    function key(down) { return function (ev) { if (ev.code === 'Space' && (ev.target === sc || sc.contains(ev.target)) && !/^(input|textarea|select)$/i.test(ev.target.tagName)) { space = down; sc.classList.toggle('hand', down || tool === 'hand'); if (down) { ev.preventDefault(); } } }; }
+    var kd = key(true), ku = key(false); sc.addEventListener('keydown', kd); sc.addEventListener('keyup', ku);
+    function setTool(t) { tool = t === 'hand' ? 'hand' : 'select'; bHand.classList.toggle('on', tool === 'hand'); sc.classList.toggle('hand', tool === 'hand'); }
+    bHand.onclick = function () { setTool(tool === 'hand' ? 'select' : 'hand'); };
+    bMinus.onclick = function () { zoomTo(z / 1.25); }; bPlus.onclick = function () { zoomTo(z * 1.25); }; bOne.onclick = function () { zoomTo(1); };
+    bFit.onclick = function () { fit(bounds || null); }; bHome.onclick = goHome;
+    var ro = typeof ResizeObserver === 'function' ? new ResizeObserver(function () { sizeInner(); schedule(); }) : null; if (ro) { ro.observe(sc); }
+    sizeInner();
+    // centre on the origin region at first
+    (typeof setTimeout === 'function' ? setTimeout : function (f) { f(); })(function () { if (dead) { return; } sizeInner(); if (home || bounds) { goHome(); } else { guard = true; sc.scrollLeft = (0 - ext.minX) * z - cw() / 4; sc.scrollTop = (0 - ext.minY) * z - ch() / 4; guard = false; } notify(); }, 0);
+    return {
+      el: wrap, layer: layer, scroller: sc, view: view, setBounds: setBounds, setHome: setHome, goHome: goHome, zoomTo: zoomTo, fit: fit, center: center, toWorld: toWorld, setTool: setTool, refresh: function () { sizeInner(); notify(); },
+      zoom: function () { return z; }, panning: function () { return !!pan; }, extent: function () { return { x: ext.minX, y: ext.minY, w: ext.maxX - ext.minX, h: ext.maxY - ext.minY }; },
+      destroy: function () { dead = true; if (ro) { ro.disconnect(); } sc.removeEventListener('keydown', kd); sc.removeEventListener('keyup', ku); }
+    };
+  }
+  return { create: create };
+});
+
+}).call(null, undefined, holder);
+return holder.FaEditViewport;
+})();
+/* EDVP-END */
+/* EDSTORE-BEGIN */
+const FaEditStore = (function () {
+const holder = {};
+(function (module, self) {
+// Where /edit-svg and /edit-picture keep their projects (IndexedDB of THIS browser; nothing on the server): the project (document + the editor's own steps and talk) under  project/<kind>/<id>,
+// and every PICTURE once under  img/<ref>  as a Blob -- the document only holds the short ref, so forty undo steps do not hold forty copies of a photo.
+//   FaEditStore.saveProject(kind, id, obj)   loadProject(kind, id)   putImage(blob) -> Promise<ref>   getImage(ref) -> Promise<Blob|null>   imageUrl(ref) -> data URL once loaded (sync)   preload(refs) -> Promise
+//   dataUrl(blob) -> Promise<string>      newId(prefix)
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaEditStore = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var DB = null, urls = {}, blobs = {};
+  function idb() {
+    if (!DB) { DB = new Promise(function (res, rej) { var rq = indexedDB.open('tw_edit', 1); rq.onupgradeneeded = function () { rq.result.createObjectStore('kv'); }; rq.onsuccess = function () { res(rq.result); }; rq.onerror = function () { rej(rq.error || new Error('IndexedDB is not available')); }; }); }
+    return DB;
+  }
+  function tx(mode, fn) { return idb().then(function (db) { return new Promise(function (res, rej) { var t = db.transaction('kv', mode), rq = fn(t.objectStore('kv')); t.oncomplete = function () { res(rq && rq.result !== undefined ? rq.result : undefined); }; t.onerror = function () { rej(t.error); }; t.onabort = function () { rej(t.error); }; }); }); }
+  function dataUrl(blob) { return new Promise(function (res, rej) { var fr = new FileReader(); fr.onload = function () { res(String(fr.result)); }; fr.onerror = function () { rej(fr.error); }; fr.readAsDataURL(blob); }); }
+  function newId(p) { return (p || 'e') + Date.now().toString(36) + Math.random().toString(36).slice(2, 5); }
+  function saveProject(kind, id, obj) { return tx('readwrite', function (s) { return s.put(JSON.stringify(obj), 'project/' + kind + '/' + id); }); }
+  function loadProject(kind, id) { return tx('readonly', function (s) { return s.get('project/' + kind + '/' + id); }).then(function (t) { if (t == null) { return null; } try { return JSON.parse(t); } catch (e) { return null; } }); }
+  function putImage(blob) {
+    var ref = newId('img'); blobs[ref] = blob;
+    return tx('readwrite', function (s) { return s.put(blob, 'img/' + ref); }).then(function () { return dataUrl(blob); }).then(function (u) { urls[ref] = u; return ref; });
+  }
+  function getImage(ref) { if (blobs[ref]) { return Promise.resolve(blobs[ref]); } return tx('readonly', function (s) { return s.get('img/' + ref); }).then(function (b) { if (b) { blobs[ref] = b; } return b || null; }); }
+  function preload(refs) { return Promise.all((refs || []).filter(function (r) { return !urls[r]; }).map(function (r) { return getImage(r).then(function (b) { return b ? dataUrl(b).then(function (u) { urls[r] = u; }) : null; }); })); }
+  function imageUrl(ref) { return urls[ref] || ''; }
+  return { saveProject: saveProject, loadProject: loadProject, putImage: putImage, getImage: getImage, preload: preload, imageUrl: imageUrl, dataUrl: dataUrl, newId: newId };
+});
+
+}).call(null, undefined, holder);
+return holder.FaEditStore;
+})();
+/* EDSTORE-END */
+/* EDPSRC-BEGIN */
+const FaPictureSource = (function () {
+const holder = {};
+(function (module, self) {
+// Where the picture editors (/edit-svg, /edit-picture) get pictures from the WEB, for the chat ("add this address", "find a picture of …"). Same sources and rules as the desktop assistant's find_photo
+// (DESIGN.deck-topic.md): Wikimedia Commons first, Openverse as the second try -- both free licences, no key, and they allow the browser to talk to them directly; the result carries its
+// licence and author so the credit stays with the object.
+//
+//   var PS = FaPictureSource.make({ fetch, relayUrl, timeoutMs })
+//   PS.search(query, { limit }) -> Promise<{ ok, results:[{ title, thumb, full, width, height, source, license, creator, page, score }], error?, tried:[{source, ok, error?}] }>
+//   PS.load(urlOrResult)        -> Promise<{ blob, mime, via:'browser'|'server' }>      the browser first (works for sites that allow it); else the server relays the bytes (a public site only,
+//                                                                                        8 MB, checked to be a picture: AiChatPictureFetchController); data: URLs work as they are
+//   PS.rank(query, results)     the order the results are in (words of the query found in the title, bigger pictures a little better)       PS.urls(text) -> the http(s) addresses in a sentence
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaPictureSource = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var IMG = /^image\/(png|jpe?g|gif|webp|bmp|svg\+xml)$/i;
+  function strip(html) { return String(html == null ? '' : html).replace(/<[^>]*>/g, ' ').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/\s+/g, ' ').trim(); }
+  function words(q) { return String(q || '').toLowerCase().split(/[^a-z0-9一-鿿]+/).filter(function (w) { return w.length > 1 || /[一-鿿]/.test(w); }); }
+  function rank(query, results) {
+    var ws = words(query);
+    results.forEach(function (r) {
+      var t = String(r.title || '').toLowerCase(), hit = 0; ws.forEach(function (w) { if (t.indexOf(w) >= 0) { hit++; } });
+      r.score = hit * 10 + (r.width >= 800 ? 2 : r.width >= 400 ? 1 : 0) - (r.width && r.width < 200 ? 5 : 0) - (/logo|icon|map of|flag of|diagram|chart|stamp/i.test(r.title || '') && !/logo|icon|map|flag|diagram|chart|stamp/i.test(query) ? 3 : 0);
+    });
+    return results.slice().sort(function (a, b) { return b.score - a.score; });
+  }
+  function urls(text) { return (String(text || '').match(/https?:\/\/[^\s"'<>）)」』，。；：！？、]+/gi) || []).map(function (u) { return u.replace(/[.,;:!?。，；：！？]+$/, ''); }); }
+
+  function make(cfg) {
+    cfg = cfg || {};
+    var F = cfg.fetch || (typeof fetch === 'function' ? fetch.bind(typeof window !== 'undefined' ? window : globalThis) : null), timeoutMs = cfg.timeoutMs || 15000;
+    function get(url, opts) {
+      if (!F) { return Promise.reject(new Error('no fetch here')); }
+      var ctl = typeof AbortController === 'function' ? new AbortController() : null, timer = ctl ? setTimeout(function () { try { ctl.abort(); } catch (e) { /* done */ } }, timeoutMs) : null;
+      return Promise.resolve(F(url, Object.assign({ signal: ctl ? ctl.signal : undefined }, opts || {}))).then(function (r) { if (timer) { clearTimeout(timer); } return r; }, function (e) { if (timer) { clearTimeout(timer); } throw e; });
+    }
+    function json(url) { return get(url).then(function (r) { if (!r.ok) { throw new Error('HTTP ' + r.status); } return r.json(); }); }
+    var SOURCES = {
+      commons: function (q, n) {
+        var u = 'https://commons.wikimedia.org/w/api.php?action=query&format=json&origin=*&generator=search&gsrnamespace=6&gsrlimit=' + n + '&gsrsearch=' + encodeURIComponent(q + ' filetype:bitmap') + '&prop=imageinfo&iiprop=url%7Csize%7Cmime%7Cextmetadata&iiurlwidth=1024';
+        return json(u).then(function (d) {
+          var pages = (d && d.query && d.query.pages) || {};
+          return Object.keys(pages).map(function (k) {
+            var p = pages[k], ii = p.imageinfo && p.imageinfo[0]; if (!ii || !IMG.test(ii.mime || '')) { return null; } var em = ii.extmetadata || {};
+            return { title: String(p.title || '').replace(/^File:/, '').replace(/\.[a-z0-9]+$/i, '').replace(/_/g, ' '), thumb: ii.thumburl || ii.url, full: ii.url, width: ii.width, height: ii.height, source: 'commons', license: strip(em.LicenseShortName && em.LicenseShortName.value) || '', creator: strip(em.Artist && em.Artist.value).slice(0, 80), page: ii.descriptionurl || '' };
+          }).filter(Boolean);
+        });
+      },
+      openverse: function (q, n) {
+        return json('https://api.openverse.org/v1/images/?q=' + encodeURIComponent(q) + '&page_size=' + Math.max(n, 6)).then(function (d) {
+          return ((d && d.results) || []).map(function (r) { return { title: String(r.title || ''), thumb: r.thumbnail || r.url, full: r.url, width: r.width, height: r.height, source: 'openverse', license: ((r.license || '') + ' ' + (r.license_version || '')).trim().toUpperCase(), creator: String(r.creator || '').slice(0, 80), page: r.foreign_landing_url || '' }; });
+        });
+      }
+    };
+    function search(query, opts) {
+      opts = opts || {}; var q = String(query || '').trim(), n = Math.max(1, Math.min(12, opts.limit || 6)), tried = [], order = opts.sources || ['commons', 'openverse'];
+      if (!q) { return Promise.resolve({ ok: false, error: 'what should it look for?', results: [], tried: tried }); }
+      var i = 0;
+      function next() {
+        if (i >= order.length) { return Promise.resolve({ ok: false, error: 'no picture was found (' + tried.map(function (t) { return t.source + ': ' + (t.ok ? 'nothing' : t.error); }).join('; ') + ')', results: [], tried: tried }); }
+        var name = order[i++];
+        return SOURCES[name](q, n).then(function (res) {
+          res = res.filter(function (r) { return r.thumb || r.full; }); tried.push({ source: name, ok: true, count: res.length });
+          if (!res.length) { return next(); }
+          var ranked = rank(q, res); return { ok: true, results: ranked.slice(0, n), tried: tried };
+        }, function (e) { tried.push({ source: name, ok: false, error: String((e && e.message) || e).slice(0, 80) }); return next(); });
+      }
+      return next();
+    }
+    function blobOf(r) { return r.blob().then(function (b) { return { blob: b, mime: (b.type || '').toLowerCase() }; }); }
+    function load(target) {
+      var url = typeof target === 'string' ? target : (target.full || target.thumb);
+      if (/^data:image\//i.test(url)) { return get(url).then(blobOf).then(function (o) { o.via = 'browser'; return o; }); }
+      if (!/^https?:\/\//i.test(url)) { return Promise.reject(new Error('that is not a web address')); }
+      var viaServer = function (why) {
+        if (!cfg.relayUrl) { throw new Error('the picture cannot be read by the browser (' + why + ') and no server relay is configured'); }
+        return get(cfg.relayUrl + (cfg.relayUrl.indexOf('?') < 0 ? '?' : '&') + 'url=' + encodeURIComponent(url), { credentials: 'same-origin' }).then(function (r) {
+          if (!r.ok) { return r.json().then(function (j) { throw new Error((j && j.error) || 'the server answered HTTP ' + r.status); }, function () { throw new Error('the server answered HTTP ' + r.status); }); }
+          return blobOf(r).then(function (o) { if (!IMG.test(o.mime)) { throw new Error('that address is not a picture'); } o.via = 'server'; return o; });
+        });
+      };
+      return get(url, { mode: 'cors' }).then(function (r) { if (!r.ok) { throw new Error('HTTP ' + r.status); } return blobOf(r); }).then(function (o) {
+        if (!IMG.test(o.mime)) { throw new Error('not a picture (' + (o.mime || 'unknown type') + ')'); } o.via = 'browser'; return o;
+      }).then(null, function (e) { return viaServer(String((e && e.message) || e).slice(0, 60)); });
+    }
+    return { search: search, load: load, rank: rank, urls: urls, _sources: SOURCES };
+  }
+  return { make: make, rank: rank, urls: urls, strip: strip };
+});
+
+}).call(null, undefined, holder);
+return holder.FaPictureSource;
+})();
+/* EDPSRC-END */
+/* EDPICS-BEGIN */
+const FaEditPictures = (function () {
+const holder = {};
+(function (module, self) {
+// The pictures of the web and of the chat for BOTH picture editors (/edit-svg, /edit-picture): keep a picture for the project, read an address, find a picture ("find a picture of an airplane"), say "another one".
+// It does not know what an editor makes of a picture: the editor passes `C` (its document core: validate / applyEdits / bounds) and gets back edits (add_object image ... with the licence and the
+// address kept as the credit). Sources and rules: picture_source.js (Wikimedia Commons, then Openverse; the browser first, the server relay when the site does not allow it).
+//   var P = FaEditPictures.make({ C, store, ai:{ have(), chat(system,user,o) }, T, relayUrl, ask? })
+//   P.keep(blob) -> { ref, mime, w, h, dataUrl }        P.decode(blob, maxSide)        P.addImageEdits(spec, kept, name, credit) -> edits (the first object of an empty document sets the frame)
+//   P.fromText({ text, spec, editorId, status, onBlob? }) -> Promise<{ edits, notes, say, handled }>      addresses in the text, "find …", "another one"; onBlob(blob, name, credit) may take over a picture (e.g. to trace it)
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaEditPictures = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  function make(cfg) {
+    var C = cfg.C, store = cfg.store, ai = cfg.ai || { have: function () { return false; } }, T = cfg.T || function (a, b) { return a; }, lastFound = {};
+    function PS() { var M = cfg.PS || (typeof FaPictureSource !== 'undefined' ? FaPictureSource : (typeof self !== 'undefined' ? self : window).FaPictureSource); return M.make({ relayUrl: cfg.relayUrl, fetch: cfg.fetch, timeoutMs: 20000 }); }
+    function canvasBlob(cv, type, q) { return new Promise(function (res) { cv.toBlob(res, type || 'image/png', q); }); }
+    async function decode(blob, maxSide) {
+      var bmp = await createImageBitmap(blob), s = Math.min(1, maxSide / Math.max(bmp.width, bmp.height)), w = Math.max(1, Math.round(bmp.width * s)), h = Math.max(1, Math.round(bmp.height * s));
+      var cv = document.createElement('canvas'); cv.width = w; cv.height = h; var g = cv.getContext('2d', { willReadFrequently: true }); g.fillStyle = '#fff'; g.fillRect(0, 0, w, h); g.drawImage(bmp, 0, 0, w, h);
+      var id = g.getImageData(0, 0, w, h); return { width: w, height: h, data: id.data, canvas: cv, natural: { w: bmp.width, h: bmp.height } };
+    }
+    // kept for the project: at most 1600 px on the longest side (a photo of 6000 px is not kept as it is)
+    async function keep(blob) {
+      var d = await decode(blob, 1600), kept = blob;
+      if (d.natural.w > 1600 || d.natural.h > 1600 || blob.size > 1500000) { kept = await canvasBlob(d.canvas, /png/.test(blob.type) && blob.size < 3e6 ? 'image/png' : 'image/jpeg', 0.88); }
+      var ref = await store.putImage(kept); return { ref: ref, mime: kept.type || 'image/png', w: d.width, h: d.height, dataUrl: store.imageUrl(ref) };
+    }
+    function placementFor(spec) { var b = C.bounds(spec); return b ? { x: Math.round(b.x + b.w + 60), y: Math.round(b.y), empty: false } : { x: 0, y: 0, empty: true }; }
+    function addImageEdits(spec, k, name, credit) {
+      var maxW = 480, sc = Math.min(1, maxW / k.w), p = placementFor(spec), edits = [], obj = { type: 'image', name: name, ref: k.ref, mime: k.mime, x: p.x, y: p.y, w: Math.round(k.w * sc), h: Math.round(k.h * sc), credit: credit || '' };
+      if (p.empty) { var sc2 = Math.min(1, 900 / Math.max(k.w, k.h)); obj.w = Math.round(k.w * sc2); obj.h = Math.round(k.h * sc2); edits.push({ op: 'set_canvas', x: 0, y: 0, w: obj.w, h: obj.h }); edits.push({ op: 'add_object', object: obj }); }
+      else { edits.push({ op: 'add_object', object: obj, place: { of: 'view', rel: 'center' } }); }
+      return edits;
+    }
+    async function searchQuery(text) {
+      var q = String(text || '').replace(/^(?:請|麻煩|幫我|可以)?\s*(?:上網|到網路上|在網路上)?\s*(?:幫我)?\s*(?:找|搜尋|搜|尋找|find|search(?: for)?)\s*(?:一|幾|兩)?\s*(?:張|些|個|a|an|some|the)?\s*/i, '').replace(/\s*(?:的)?\s*(?:圖片|圖|照片|相片|picture|photo|image)s?\s*(?:來|吧|給我)?[。.!！]*$/i, '').trim();
+      q = q.replace(/^(?:of|for)\s+/i, '').trim() || String(text || '').trim();
+      if (/[一-鿿]/.test(q) && ai.have()) { try { var en = (await ai.chat('Give 1 to 3 English keywords for searching a photo of this on Wikimedia Commons. Answer with the keywords only, separated by spaces.', q, { maxTokens: 40, timeoutMs: 30000 })).replace(/[^A-Za-z0-9 \-]/g, ' ').replace(/\s+/g, ' ').trim(); if (en) { return { shown: q, query: en }; } } catch (e) { /* the words as they are */ } }
+      return { shown: q, query: q };
+    }
+    function creditOf(r) { return r.title + (r.creator ? ' — ' + r.creator : '') + (r.license ? ' — ' + r.license : '') + ' (' + r.source + ') ' + (r.page || ''); }
+    // returns { handled, edits, notes, say }: handled = this module did something with the text (so the language step is for what is left)
+    async function fromText(req) {
+      var text = String(req.text || '').trim(), spec = req.spec, status = req.status || function () {}, id = req.editorId, notes = [], edits = [], say = '', ps = PS(), handled = false;
+      var next = function () { return C.applyEdits(spec, edits).spec; };
+      var urls = ps.urls(text).slice(0, 3);
+      for (var u = 0; u < urls.length; u++) {
+        handled = true;
+        try {
+          status(T('下載圖片：', 'Downloading the picture: ') + urls[u].slice(0, 60)); var got = await ps.load(urls[u]), nm = urls[u].split('/').pop().split('?')[0].replace(/\.[a-z0-9]+$/i, '') || 'picture';
+          if (req.onBlob && await req.onBlob(got.blob, nm, urls[u], edits, next())) { /* taken over */ }
+          else { var k = await keep(got.blob); addImageEdits(next(), k, nm, urls[u]).forEach(function (e) { edits.push(e); }); }
+          notes.push(T('（' + (got.via === 'server' ? '經伺服器中繼' : '瀏覽器直接') + '下載）', '(' + (got.via === 'server' ? 'through the server relay' : 'straight by the browser') + ')')); say = say || T('把網址的圖片放進來了。', 'Added the picture from the address.');
+        } catch (e) { notes.push(T('抓不到 ', 'could not get ') + urls[u].slice(0, 50) + '：' + String((e && e.message) || e).slice(0, 80)); }
+      }
+      var again = /^(?:換一張|換一個|再找一張|別的|另一張|another(?: one)?|next(?: one)?)/i.test(text), find = /(找|搜尋|搜|尋找|find|search).*(圖|照片|picture|photo|image)/i.test(text) && !urls.length;
+      if (again && lastFound[id] && lastFound[id].results.length > lastFound[id].idx + 1) {
+        handled = true; var lf = lastFound[id]; lf.idx++; var r = lf.results[lf.idx];
+        try {
+          status(T('換一張：', 'Another: ') + r.title.slice(0, 40)); var g2 = await ps.load(r), k3 = await keep(g2.blob), prev = spec.objects.filter(function (o) { return o.type === 'image' && o.ref === lf.ref; })[0];
+          if (prev) { var sc = Math.min(prev.w / k3.w, prev.h / k3.h); edits.push({ op: 'remove_object', id: prev.id }); edits.push({ op: 'add_object', object: { type: 'image', name: lf.shown, ref: k3.ref, mime: k3.mime, x: prev.x, y: prev.y, w: Math.round(k3.w * sc), h: Math.round(k3.h * sc), credit: creditOf(r) } }); }
+          else { addImageEdits(spec, k3, lf.shown, creditOf(r)).forEach(function (e) { edits.push(e); }); }
+          lf.ref = k3.ref; say = T('換了一張（' + (lf.idx + 1) + '／' + lf.results.length + '）：' + r.title.slice(0, 40), 'Another one (' + (lf.idx + 1) + ' of ' + lf.results.length + '): ' + r.title.slice(0, 40));
+        } catch (e) { notes.push(T('換圖失敗：', 'could not change it: ') + String((e && e.message) || e).slice(0, 80)); }
+      } else if (find) {
+        handled = true; var qq = await searchQuery(text); status(T('上網找圖：', 'Searching for pictures: ') + qq.query); var sr = await ps.search(qq.query, { limit: 6 });
+        if (!sr.ok) { notes.push(sr.error); say = say || T('找不到圖。', 'No picture was found.'); }
+        else {
+          var top = sr.results[0];
+          try {
+            var g3 = await ps.load(top), k4 = await keep(g3.blob);
+            lastFound[id] = { query: qq.query, shown: qq.shown, results: sr.results, idx: 0, ref: k4.ref };
+            addImageEdits(next(), k4, qq.shown, creditOf(top)).forEach(function (e) { edits.push(e); });
+            say = T('找到「' + top.title.slice(0, 40) + '」（' + top.source + '，' + (top.license || '授權未標示') + '）；還有 ' + (sr.results.length - 1) + ' 張候選，說「換一張」可以換。', 'Found "' + top.title.slice(0, 40) + '" (' + top.source + ', ' + (top.license || 'no licence given') + '); ' + (sr.results.length - 1) + ' more candidates: say "another one".');
+          } catch (e) { notes.push(T('下載找到的圖失敗：', 'could not download it: ') + String((e && e.message) || e).slice(0, 80)); }
+        }
+      }
+      return { handled: handled, edits: edits, notes: notes, say: say };
+    }
+    return { keep: keep, decode: decode, addImageEdits: addImageEdits, placementFor: placementFor, fromText: fromText, canvasBlob: canvasBlob, _lastFound: lastFound };
+  }
+  return { make: make };
+});
+
+}).call(null, undefined, holder);
+return holder.FaEditPictures;
+})();
+/* EDPICS-END */
+/* EDI18N-BEGIN */
+const FaEditI18n = (function () {
+const holder = {};
+(function (module, self) {
+// English for the screens of /edit-svg and /edit-picture (the shared frame and the two editors). The source strings are Traditional Chinese; on a page whose language is not zh* they are shown in
+// English: FaEditI18n.localize(el) translates every text node, title, placeholder and aria-label under el now and whenever the editor changes them. Texts with numbers or names in them are matched
+// by RULES; a text with no entry stays as it is. <html lang> decides (window.FaUiLocale.locale = 'zh' | 'en' overrides it); the user's own texts (object names, code) are never touched.
+//   FaEditI18n.extend(EN, RULES)   FaEditI18n.localize(el)   FaEditI18n.tr(text)
+(function (root, factory) { var api = factory(root); if (typeof module !== 'undefined' && module.exports) { module.exports = api; } else { (typeof self !== 'undefined' ? self : root).FaEditI18n = api; } })(typeof window !== 'undefined' ? window : globalThis, function (root) {
+  'use strict';
+  var EN = {
+    '↶ 復原': '↶ Undo', '↷ 重做': '↷ Redo', '📝 整理成 prompt': '📝 Make a prompt', '📤 輸出…': '📤 Export…', '📋 複製': '📋 Copy', '✓ 已複製': '✓ Copied', '✨ 請 AI 潤飾': '✨ Ask the AI to polish it', '潤飾中…': 'Polishing…',
+    '只收沒被復原、而且真的改變了成品的那幾輪對話；可以貼到別處重現': 'Only the steps that were not undone and really changed the result; paste it elsewhere to rebuild it',
+    '🗂 物件': '🗂 Objects', '（還沒有物件：對 AI 說要加什麼，或從上面的起手式開始）': '(no objects yet: tell the AI what to add)', '顯示／隱藏': 'Show / hide', '鎖定／解鎖': 'Lock / unlock', '往上一層': 'Up one layer', '往下一層': 'Down one layer', '複製': 'Duplicate', '刪除': 'Delete',
+    '🤖 AI 助手': '🤖 AI assistant', '🕘 記錄': '🕘 History', '送出': 'Send', '附圖（也可以直接貼上、拖進來）': 'Attach a picture (or paste / drop it)', '點一步就回到那一步（之後的步驟還在，可以重做）：': 'Click a step to go back to it (later steps stay and can be redone):', '（沒有說明）': '(no description)', '開始': 'Start',
+    '這樣已經是目前的樣子了。': 'It already looks like that.', '改好了：': 'Done:', '這次沒有改成：': 'Nothing was changed:', '這次沒成功：': 'That did not work: ', '（附圖）': '(picture)', '產生中…': 'Making it…', '已放進對話': 'Put into the conversation', '已匯出': 'Exported',
+    '⬇ 下載 PNG 圖片': '⬇ Download PNG picture', '💬 放進對話 PNG 圖片': '💬 Put the PNG picture into the conversation', '⬇ 下載 SVG 檔': '⬇ Download SVG file', '💬 放進對話 SVG 檔': '💬 Put the SVG file into the conversation', '⬇ 下載 專案（JSON）': '⬇ Download project (JSON)',
+    '🖍 SVG 編輯器': '🖍 SVG editor', '🖼 畫面': '🖼 Canvas', '🧩 原始碼': '🧩 Source', '▶ 套用原始碼': '▶ Apply the source', '↻ 重新產生': '↻ Regenerate', '沒有改動': 'No changes', '已套用': 'Applied',
+    '整張圖的 SVG。改完按「套用原始碼」：最上層的每個元素會變成一個物件（名字從 data-name／id 來；用形狀工具畫的形狀會變成「圖形」物件）。': 'The whole drawing as one SVG. Press "Apply the source": every top-level element becomes an object (names come from data-name / id; shapes become "drawing" objects).',
+    '畫布（匯出的範圍框，不是邊界）': 'Canvas (the frame that is exported, not a boundary)', '寬': 'Width', '高': 'Height', '背景': 'Background', '貼合內容': 'Fit to the content', '填色': 'Fill', '邊框': 'Stroke', '邊框粗細': 'Stroke width', '文字': 'Text', '字級': 'Font size', '邊數': 'Sides', '圓角': 'Corner', '旋轉': 'Rotate', '透明度': 'Opacity', '縮放': 'Scale',
+    'SVG 內容（改完離開輸入框就會套用）': 'SVG content (applied when you leave the box)', '✨ 把這張圖變成 SVG': '✨ Turn this picture into SVG',
+    '用說的畫：「在中間畫一個紅色的圓」「在太陽的右邊加一朵雲」「把煙囪放到房子上面」「找一張飛機的照片」；也可以貼一張圖進來，我試著把它變成 SVG（向量圖）': 'Draw by talking: "a red circle in the middle", "a cloud to the right of the sun", "put the chimney above the house", "find a photo of an airplane"; or paste a picture and I will try to turn it into SVG (a vector drawing)',
+    '我是用語言來畫的概念畫家：你說要畫什麼、放在哪個東西的哪一邊，我就加一個新的物件（形狀、手繪的圖、網路上找的圖片都是物件），可以隨時隱藏、改名、鎖定、移動或刪掉，改錯了按「復原」。畫面沒有邊界，可以加在任何地方；中間的畫面可以拖曳、縮放，⌖ 回到第一個物件（圖片）的中間。貼一張圖進來，我會試著把它變成 SVG：先用程式描出每個顏色的輪廓，再用視覺模型看過、比對，不夠像就重來。也可以直接給網址，或說「找一張…的圖」。':
+      'I am a concept painter led by language: say what to draw and where, relative to which object, and I add a new object (shapes, drawings and pictures found on the web are all objects) that you can hide, rename, lock, move or delete any time; if I got it wrong press Undo. There is no boundary: add anything anywhere; drag and zoom the middle view, ⌖ goes back to the middle of the first object (the picture). Paste a picture and I try to turn it into SVG: the program traces the outline of every colour, the vision model looks at it and compares, and it starts again if it is not close enough. You can also give an address, or say "find a picture of …".'
+  };
+  var RULES = [
+    [/^第 (\d+)／(\d+) 步$/, 'Step $1 of $2'], [/^🗂 物件（(\d+)）$/, '🗂 Objects ($1)'], [/^新增物件「(.*)」$/, 'Added the object "$1"'], [/^新增物件「(.*)」（(.*)）$/, 'Added the object "$1" ($2)'], [/^刪掉物件 (.+)$/, 'Deleted the object $1'], [/^(.+) 改名為 (.+)$/, 'Renamed $1 to $2'],
+    [/^隱藏 (.+)$/, 'Hid $1'], [/^顯示 (.+)$/, 'Showed $1'], [/^鎖定 (.+)$/, 'Locked $1'], [/^解鎖 (.+)$/, 'Unlocked $1'], [/^複製 (.+)$/, 'Duplicated $1'], [/^(.+) 往上一層$/, '$1 up one layer'], [/^(.+) 往下一層$/, '$1 down one layer'], [/^移動 (.+)$/, 'Moved $1'], [/^改 (.+)$/, 'Changed $1'],
+    [/^畫布貼合內容$/, 'Canvas fitted to the content'], [/^標題改成「(.*)」$/, 'Title changed to "$1"'], [/^清空所有物件$/, 'Cleared all objects'], [/^放置物件 (.+)$/, 'Placed $1'], [/^移動物件 (.+?)（(.+)）$/, 'Moved the object $1 ($2)'], [/^變形物件 (.+)$/, 'Transformed $1'], [/^修改圖形 (.+)$/, 'Changed the drawing $1'], [/^修改物件 (.+)$/, 'Changed the object $1'],
+    [/^(.+) 的右邊$/, 'right of $1'], [/^(.+) 的左邊$/, 'left of $1'], [/^(.+) 的上面$/, 'above $1'], [/^(.+) 的下面$/, 'below $1'], [/^(.+) 的裡面$/, 'inside $1'], [/^(.+) 的中央$/, 'the centre of $1'],
+    [/^改寫原始碼（(\d+) 個物件）$/, 'Rewrote the source ($1 objects)'], [/^把「(.+)」描成 SVG$/, 'Traced "$1" into SVG'], [/^✗ (.+)：(.*)$/, '✗ $1: $2'], [/^✓ (.+)$/, '✓ $1'],
+    [/^(\d+)\. (.*)$/, '$1. $2'], [/^畫布 (.+)=(.+)$/, 'Canvas $1 = $2'], [/^背景 (.+)$/, 'Background $1'], [/^出處：(.*)$/, 'Source: $1']
+  ];
+  function isZh() { if (root.FaUiLocale && root.FaUiLocale.locale) { return /^zh/i.test(root.FaUiLocale.locale); } var l = (root.document && root.document.documentElement && root.document.documentElement.lang) || ''; return !l || /^zh/i.test(l); }
+  function extend(en, rules) { Object.keys(en || {}).forEach(function (k) { EN[k] = en[k]; }); (rules || []).forEach(function (r) { RULES.push(r); }); }
+  function tr(s) {
+    var m = /^(\s*)([\s\S]*?)(\s*)$/.exec(String(s)), core = m[2]; if (!core || !/[　-鿿＀-￯]/.test(core)) { return s; }
+    var out = EN[core];
+    if (out === undefined) { for (var i = 0; i < RULES.length; i++) { var r = RULES[i][0].exec(core); if (r) { out = core.replace(RULES[i][0], RULES[i][1].replace(/\$(\d)/g, function (_, n) { return tr(r[+n] === undefined ? '' : r[+n]); })); break; } } }
+    return out === undefined ? s : m[1] + out + m[3];
+  }
+  var ATTRS = ['title', 'placeholder', 'aria-label'];
+  function walk(node) {
+    if (node.nodeType === 3) { var t = tr(node.nodeValue); if (t !== node.nodeValue) { node.nodeValue = t; } return; }
+    if (node.nodeType !== 1) { return; }
+    if (/^(script|style|svg|iframe)$/i.test(node.tagName)) { return; }   // the picture itself is the user's; the object names are in <span class="nm"> and are translated only when they match a text of the program
+    ATTRS.forEach(function (a) { if (node.hasAttribute && node.hasAttribute(a)) { var v = node.getAttribute(a), t = tr(v); if (t !== v) { node.setAttribute(a, t); } } });
+    if (node.tagName === 'TEXTAREA' || node.tagName === 'INPUT') { return; }
+    for (var c = node.firstChild; c; c = c.nextSibling) { walk(c); }
+  }
+  function localize(el) {
+    if (!el || isZh()) { return el; } walk(el);
+    if (typeof MutationObserver === 'function' && !el._i18n) { el._i18n = new MutationObserver(function (list) { list.forEach(function (m) { if (m.type === 'childList') { Array.prototype.forEach.call(m.addedNodes, walk); } else { walk(m.target); } }); }); el._i18n.observe(el, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ATTRS }); }
+    return el;
+  }
+  return { localize: localize, tr: tr, extend: extend, EN: EN, isZh: isZh };
+});
+
+}).call(null, undefined, holder);
+return holder.FaEditI18n;
+})();
+/* EDI18N-END */
+/* EDSHELL-BEGIN */
+const FaEditShell = (function () {
+const holder = {};
+(function (module, self) {
+// The frame that /edit-svg and /edit-picture share (the screen of /edit-web is its own, ported from the desktop assistant): a title bar (undo / redo, export, prompt), the OBJECTS view (layers: show / hide,
+// lock, rename, reorder, duplicate, delete, select) with the editor's properties panel under it, the middle viewer tabs of the editor, and on the right the AI chat (pictures can be pasted or dropped into
+// it) and the history of steps. Every state of the document is a step (undo / redo, click a step to go back); the project is saved by the host after each change; the whole thing is a window
+// (AiChatWindow: pop out, maximise) and a message of the conversation.
+//
+//   FaEditShell.mount({ id, kind, title, W, spec, state, host, container, restoring, tabs:[{id,label}], build(ctx) -> { tabs:{id:element}, properties?:element, refresh(spec, selectedId), bar?:[elements] },
+//                       objectInfo?(obj) -> small text, objectIcon?(obj) -> glyph, parseCommands?(text, spec) -> { edits, unmatched }, exports:[{id,label,chat?:true}], runExport(id, spec) -> Promise<{blob,name}>,
+//                       build's result may have env() -> { view:{x,y,w,h} } (where the user is looking: 'place relative to the view'),
+//                       promptOf?(spec, steps) -> text, placeholder, intro, extraPrompt?, windowKey?,
+//                       treeRows?(spec, collapsed) -> [{obj, depth}] (a TREE in the objects view, parents before children; groups fold), onObjectOpen?(obj) (double click on a row: the editor opens the object by itself instead of renaming it) }) -> element with el._ed = { getState, reload, setSpec, undo, redo, send(text), select(id), getSpec, ctx }
+//   host: { ask({text, images, spec, selection, onStatus}) -> Promise<{say, edits, notes}>, save(state), download(blob,name), toChat?(blob, name, {title, prompt}), polish?(text) -> Promise<text>, palette?() }
+//   W (the document core, from FaEditObjects.make): validate, applyEdits, editWords, list, find, bounds?
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaEditShell = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var MAXSTATES = 40;
+  var CSS = '.few{--bg:#fff;--fg:#1f2328;--bd:#d0d7de;--hd:#f6f8fa;--mut:#59636e;--acc:#0969da;--ok:#1a7f37;--bad:#cf222e;border:1px solid var(--bd);border-radius:8px;background:var(--bg);color:var(--fg);font:13px system-ui,"Microsoft JhengHei",sans-serif;margin:6px 0;overflow:hidden;max-width:100%;display:flex;flex-direction:column}.few.dark{--bg:#0d1117;--fg:#e6edf3;--bd:#30363d;--hd:#161b22;--mut:#8b949e;--acc:#2f81f7;--ok:#3fb950;--bad:#f85149}'
+    + '.few *{box-sizing:border-box}.few button{background:var(--hd);color:inherit;border:1px solid var(--bd);border-radius:5px;padding:3px 9px;cursor:pointer;font:inherit}.few button:hover:not(:disabled){border-color:var(--acc)}.few button:disabled{opacity:.4;cursor:default}.few button.pri{background:var(--acc);border-color:var(--acc);color:#fff}'
+    + '.few input,.few select,.few textarea{background:var(--bg);color:inherit;border:1px solid var(--bd);border-radius:5px;padding:3px 6px;font:inherit;max-width:100%}.few textarea{width:100%;resize:vertical}.few textarea.code{font:12px/1.45 ui-monospace,Consolas,monospace;tab-size:2;white-space:pre;overflow:auto}'
+    + '.few .bar{display:flex;align-items:center;gap:6px;padding:6px 8px;background:var(--hd);border-bottom:1px solid var(--bd);flex-wrap:wrap}.few .ttl{font-weight:600;margin-right:auto}.few .st{color:var(--mut);font-size:12px}.few .bad{color:var(--bad)}.few .good{color:var(--ok)}'
+    + '.few .main{display:flex;flex-wrap:wrap;align-items:stretch;flex:1;min-height:0}.few .dock{border-top:1px solid var(--bd);padding:6px 8px;display:flex;flex-direction:column;gap:4px;background:var(--hd)}.few .dock .say{font-size:12px;color:var(--mut);max-height:3.4em;overflow:auto;white-space:pre-wrap;word-break:break-word}.few .dock .say:empty{display:none}.few .dock .in{display:flex;gap:6px;align-items:flex-end}.few .dock textarea{flex:1;min-width:0;resize:vertical;min-height:2.6em;max-height:9em}.few .objs{flex:0 0 224px;min-width:200px;display:flex;flex-direction:column;border-right:1px solid var(--bd);max-height:640px;overflow:auto}.few .mid{flex:1.6 1 380px;min-width:300px;display:flex;flex-direction:column;min-height:420px}.few .side{flex:1 1 300px;min-width:260px;min-height:200px;display:flex;flex-direction:column;border-left:1px solid var(--bd);max-height:640px}'
+    + '.few .tabs{display:flex;border-bottom:1px solid var(--bd);background:var(--hd)}.few .tabs span{padding:6px 12px;cursor:pointer;color:var(--mut);border-bottom:2px solid transparent}.few .tabs span.on{color:var(--fg);border-bottom-color:var(--acc);font-weight:600}.few .pane{display:none;flex:1;overflow:auto;padding:8px;min-height:240px;flex-direction:column;gap:6px}.few .pane.on{display:flex}.few .pane.vp{padding:0;overflow:hidden;height:460px;flex:0 0 auto;min-height:0}.few.fwin-pop .pane.vp,.few.fwin-max .pane.vp{height:auto;flex:1 1 0}.few.fwin-pop .main,.few.fwin-max .main{flex:1;min-height:0;overflow:hidden}.few.fwin-pop .mid,.few.fwin-max .mid{min-height:0;overflow:hidden}.few .dock{flex:0 0 auto}.few.fwin-pop .objs,.few.fwin-max .objs,.few.fwin-pop .side,.few.fwin-max .side{max-height:none}'
+    + '.few .oh{display:flex;align-items:center;gap:6px;padding:6px 8px;border-bottom:1px solid var(--bd);background:var(--hd);font-weight:600}.few .ol{display:flex;flex-direction:column}.few .ob{display:flex;align-items:center;gap:4px;padding:3px 6px;border-bottom:1px solid transparent;cursor:pointer}.few .ob:hover{background:rgba(120,140,200,.10)}.few .ob.sel{background:rgba(47,129,247,.18)}.few .ob.hid .nm{opacity:.45;text-decoration:line-through}.few .ob.new{animation:fewnew 1.6s ease-out}@keyframes fewnew{from{background:rgba(26,127,55,.35)}to{background:transparent}}'
+    + '.few .ob .ic{width:20px;text-align:center}.few .ob .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.few .ob .nm small{color:var(--mut);margin-left:4px}.few .ob .tb{display:none;gap:2px}.few .ob:hover .tb,.few .ob.sel .tb{display:inline-flex}.few .ob .tb button{padding:0 4px;font-size:12px;line-height:18px}.few .ob input.rn{flex:1;min-width:0}'
+    + '.few .prop{border-top:1px solid var(--bd);padding:8px;display:flex;flex-direction:column;gap:6px;background:var(--bg)}.few .prop label{display:flex;align-items:center;gap:6px;color:var(--mut)}.few .prop label input[type=number]{width:72px}.few .prop label input[type=text]{flex:1}.few .row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}'
+    + '.few .log{flex:1;overflow:auto;display:flex;flex-direction:column;gap:6px;min-height:120px}.few .msg{padding:5px 8px;border-radius:7px;max-width:92%;white-space:pre-wrap;word-break:break-word}.few .msg.u{align-self:flex-end;background:var(--acc);color:#fff}.few .msg.a{align-self:flex-start;background:var(--hd);border:1px solid var(--bd)}.few .chip{display:inline-block;margin:2px 3px 0 0;padding:0 6px;border-radius:9px;background:rgba(47,129,247,.15);font-size:11px}.few .chip.rej{background:rgba(248,81,73,.18)}'
+    + '.few .att{display:flex;gap:4px;flex-wrap:wrap}.few .att span{position:relative;display:inline-block}.few .att img{height:44px;border:1px solid var(--bd);border-radius:4px}.few .att b{position:absolute;top:-5px;right:-5px;background:var(--bad);color:#fff;border-radius:50%;width:15px;height:15px;font-size:10px;line-height:15px;text-align:center;cursor:pointer}'
+    + '.few .hist div{padding:3px 6px;border-radius:5px;cursor:pointer;border:1px solid transparent}.few .hist div:hover{border-color:var(--bd)}.few .hist div.cur{background:rgba(47,129,247,.14);font-weight:600}.few .hist div.fut{opacity:.45}.few .sum{padding:8px;border-bottom:1px solid var(--bd);background:var(--hd);display:none;flex-direction:column;gap:6px}.few .sum.on{display:flex}';
+  function h(tag, cls, text) { var e = document.createElement(tag); if (cls) { e.className = cls; } if (text != null) { e.textContent = text; } return e; }
+  function clone(o) { return JSON.parse(JSON.stringify(o)); }
+
+  function mount(opt) {
+    var W = opt.W, host = opt.host || {}, el = h('div', 'few'), dark = false;
+    try { dark = !!(host.palette && host.palette().dark); } catch (e) { dark = false; }
+    if (dark) { el.className += ' dark'; }
+    if (!document.getElementById('few-css')) { var st0 = document.createElement('style'); st0.id = 'few-css'; st0.textContent = CSS; (document.head || document.documentElement).appendChild(st0); }
+    var S = { v: 1, ptr: 0, states: [], log: [] }, midTab = (opt.tabs[0] || {}).id, rightTab = 'ai', selected = null, pending = [], busy = false, saveT = null, newIds = {}, editor = null, selFns = [];
+    function initState(state, spec) {
+      if (state && Array.isArray(state.states) && state.states.length) {
+        S = { v: 1, ptr: Math.max(0, Math.min(state.states.length - 1, state.ptr | 0)), states: state.states.slice(-MAXSTATES).map(function (x) { return { spec: W.validate(x.spec).spec, summary: x.summary || '', text: x.text || '', kind: x.kind || 'panel', t: x.t || 0 }; }), log: Array.isArray(state.log) ? state.log.slice(-60) : [] };
+        if (S.ptr >= S.states.length) { S.ptr = S.states.length - 1; }
+      } else { S = { v: 1, ptr: 0, states: [{ spec: W.validate(spec || {}).spec, summary: '開始', text: '', kind: 'start', t: Date.now() }], log: [] }; }
+    }
+    function cur() { return S.states[S.ptr].spec; }
+    function getState() { var st = { v: 1, ptr: S.ptr, states: S.states, log: S.log.slice(-60) }; try { while (JSON.stringify(st).length > 3000000 && st.states.length > 2) { st.states = st.states.slice(1); st.ptr = Math.max(0, st.ptr - 1); } } catch (e) { /* keep */ } return st; }
+    function persist() { clearTimeout(saveT); saveT = setTimeout(function () { try { if (host.save) { host.save(getState()); } } catch (e) { /* this change still counts */ } }, 400); }
+    function commit(spec, summary, text, kind) { S.states = S.states.slice(0, S.ptr + 1); S.states.push({ spec: W.validate(spec).spec, summary: summary || '', text: text || '', kind: kind || 'panel', t: Date.now() }); if (S.states.length > MAXSTATES) { S.states.shift(); } S.ptr = S.states.length - 1; render(); persist(); }
+    function env() { var e = {}; try { e = editor && editor.env ? (editor.env() || {}) : {}; } catch (x) { e = {}; } e.selection = selected; return e; }
+    function apply(edits, summary, text, kind) {
+      var r = W.applyEdits(cur(), edits, env()); if (!r.applied.length) { return r; }
+      var words = summary || r.appliedEdits.map(W.editWords).filter(Boolean).join('；');
+      (r.added || []).forEach(function (id) { newIds[id] = 1; });
+      commit(r.spec, words, text, kind); if (r.added && r.added.length) { select(r.added[r.added.length - 1]); }
+      return r;
+    }
+    function undo() { if (S.ptr > 0) { S.ptr--; render(); persist(); } }
+    function redo() { if (S.ptr < S.states.length - 1) { S.ptr++; render(); persist(); } }
+    function select(id) { selected = id || null; renderObjects(); if (editor && editor.refresh) { editor.refresh(cur(), selected); } selFns.forEach(function (f) { try { f(selected); } catch (e) { /* editor's problem */ } }); }
+
+    // ───── frame ─────
+    var bar = h('div', 'bar'), ttl = h('span', 'ttl', opt.title), stat = h('span', 'st'), bUndo = h('button', null, '↶ 復原'), bRedo = h('button', null, '↷ 重做'), bSum = h('button', null, '📝 整理成 prompt'), bExp = h('select');
+    bUndo.title = 'Ctrl+Z'; bRedo.title = 'Ctrl+Y';
+    var eo = h('option', null, '📤 輸出…'); eo.value = ''; bExp.appendChild(eo);
+    (opt.exports || []).forEach(function (x) { var o1 = h('option', null, '⬇ 下載 ' + x.label); o1.value = 'dl:' + x.id; bExp.appendChild(o1); if (x.chat !== false && host.toChat) { var o2 = h('option', null, '💬 放進對話 ' + x.label); o2.value = 'chat:' + x.id; bExp.appendChild(o2); } });
+    [ttl, stat, bUndo, bRedo, bSum, bExp].forEach(function (x) { bar.appendChild(x); });
+    var sum = h('div', 'sum'), sumTa = h('textarea'); sumTa.rows = 9; var sumRow = h('div', 'row'), bCopy = h('button', null, '📋 複製'), bPol = h('button', null, '✨ 請 AI 潤飾'), bSumX = h('button', null, '✕');
+    sumRow.appendChild(h('span', 'st', '只收沒被復原、而且真的改變了成品的那幾輪對話；可以貼到別處重現')); [bCopy, bPol, bSumX].forEach(function (x) { sumRow.appendChild(x); }); sum.appendChild(sumTa); sum.appendChild(sumRow);
+    var main = h('div', 'main'), objs = h('div', 'objs'), mid = h('div', 'mid'), mTabs = h('div', 'tabs'), side = h('div', 'side'), rTabs = h('div', 'tabs');
+    var oh = h('div', 'oh', '🗂 物件'), ol = h('div', 'ol'), prop = h('div', 'prop'); objs.appendChild(oh); objs.appendChild(ol); objs.appendChild(prop);
+    var mp = {}, rp = { ai: h('div', 'pane'), hist: h('div', 'pane hist') };
+    opt.tabs.forEach(function (t) { var s = h('span', null, t.label); s.setAttribute('data-t', t.id); s.onclick = function () { midTab = t.id; showTabs(); if (editor && editor.showTab) { editor.showTab(t.id); } }; mTabs.appendChild(s); mp[t.id] = h('div', 'pane' + (t.viewer ? ' vp' : '')); });
+    [['ai', '🤖 AI 助手'], ['hist', '🕘 記錄']].forEach(function (t) { var s = h('span', null, t[1]); s.setAttribute('data-t', t[0]); s.onclick = function () { rightTab = t[0]; showTabs(); }; rTabs.appendChild(s); });
+    mid.appendChild(mTabs); opt.tabs.forEach(function (t) { mid.appendChild(mp[t.id]); }); side.appendChild(rTabs); ['ai', 'hist'].forEach(function (k) { side.appendChild(rp[k]); });
+    main.appendChild(objs); main.appendChild(mid); main.appendChild(side); el.appendChild(bar); el.appendChild(sum); el.appendChild(main);
+    function showTabs() {
+      Array.prototype.forEach.call(mTabs.children, function (s) { s.className = s.getAttribute('data-t') === midTab ? 'on' : ''; }); Array.prototype.forEach.call(rTabs.children, function (s) { s.className = s.getAttribute('data-t') === rightTab ? 'on' : ''; });
+      Object.keys(mp).forEach(function (k) { mp[k].className = mp[k].className.replace(/ on\b/, '') + (k === midTab ? ' on' : ''); }); Object.keys(rp).forEach(function (k) { rp[k].className = 'pane' + (k === 'hist' ? ' hist' : '') + (k === rightTab ? ' on' : ''); });
+    }
+
+    // ───── objects view (layers) ─────
+    var rnId = null, collapsed = {};
+    function renderObjects() {
+      var s = cur(), sp = W.validate(s).spec; ol.textContent = ''; oh.textContent = '🗂 物件（' + sp.objects.length + '）';
+      if (!sp.objects.length) { ol.appendChild(h('div', 'st', '（還沒有物件：對 AI 說要加什麼，或從上面的起手式開始）')); ol.lastChild.style.padding = '8px'; }
+      var treeRows = opt.treeRows ? opt.treeRows(sp, collapsed) : null, rowsList = treeRows || sp.objects.slice().reverse().map(function (x) { return { obj: x, depth: 0 }; });
+      rowsList.forEach(function (rr, k) {
+        var o = rr.obj;
+        var row = h('div', 'ob' + (o.id === selected ? ' sel' : '') + (o.visible ? '' : ' hid') + (newIds[o.id] ? ' new' : '')), ic = h('span', 'ic', opt.objectIcon ? opt.objectIcon(o) : '◻'), nm = h('span', 'nm');
+        row.setAttribute('data-id', o.id); nm.appendChild(document.createTextNode(o.name)); var info = opt.objectInfo ? opt.objectInfo(o) : o.type; if (info) { nm.appendChild(h('small', null, info)); }
+        var eye = h('button', null, o.visible ? '👁' : '—'), lock = h('button', null, o.locked ? '🔒' : '🔓'), tb = h('span', 'tb'), up = h('button', null, '▲'), dn = h('button', null, '▼'), dup = h('button', null, '⧉'), del = h('button', null, '🗑');
+        eye.title = '顯示／隱藏'; lock.title = '鎖定／解鎖'; up.title = treeRows ? '往上移' : '往上一層'; dn.title = treeRows ? '往下移' : '往下一層'; dup.title = '複製'; del.title = '刪除';
+        if (treeRows) { row.style.paddingLeft = (6 + rr.depth * 14) + 'px'; if (o.type === 'group') { ic.textContent = collapsed[o.id] ? '▸' : '▾'; ic.style.cursor = 'pointer'; ic.title = '收合／展開'; ic.onclick = function (ev) { ev.stopPropagation(); collapsed[o.id] = !collapsed[o.id]; renderObjects(); }; } }
+        function act(e, fn) { return function (ev) { ev.stopPropagation(); fn(); }; }
+        eye.onclick = act(0, function () { apply([{ op: 'set_visible', id: o.id, visible: !o.visible }], (o.visible ? '隱藏 ' : '顯示 ') + o.name, '', 'panel'); });
+        lock.onclick = act(0, function () { apply([{ op: 'set_locked', id: o.id, locked: !o.locked }], (o.locked ? '解鎖 ' : '鎖定 ') + o.name, '', 'panel'); });
+        up.onclick = act(0, function () { apply([{ op: 'move_object', id: o.id, to: treeRows ? 'earlier' : 'up' }], o.name + ' 往上一層', '', 'panel'); });
+        dn.onclick = act(0, function () { apply([{ op: 'move_object', id: o.id, to: treeRows ? 'later' : 'down' }], o.name + ' 往下一層', '', 'panel'); });
+        dup.onclick = act(0, function () { apply([{ op: 'duplicate_object', id: o.id }], '複製 ' + o.name, '', 'panel'); });
+        del.onclick = act(0, function () { var r = apply([{ op: 'remove_object', id: o.id }], '刪掉 ' + o.name, '', 'panel'); if (r.rejected && r.rejected.length) { stat.textContent = r.rejected[0].error; setTimeout(function () { stat.textContent = ''; }, 3000); } else if (selected === o.id) { selected = null; } });
+        [up, dn, dup, del].forEach(function (b) { tb.appendChild(b); });
+        row.onclick = function () { select(o.id === selected ? null : o.id); };
+        row.ondblclick = function (ev) { ev.stopPropagation(); if (opt.onObjectOpen) { opt.onObjectOpen(o); return; } rnId = o.id; var inp = h('input', 'rn'); inp.value = o.name; nm.textContent = ''; nm.appendChild(inp); inp.focus(); inp.select(); var done = function (ok) { var v = inp.value.trim(); rnId = null; if (ok && v && v !== o.name) { apply([{ op: 'rename_object', id: o.id, name: v }], o.name + ' 改名為 ' + v, '', 'panel'); } else { renderObjects(); } }; inp.onkeydown = function (e2) { e2.stopPropagation(); if (e2.key === 'Enter') { done(true); } else if (e2.key === 'Escape') { done(false); } }; inp.onblur = function () { done(true); }; inp.onclick = function (e3) { e3.stopPropagation(); }; };
+        [ic, nm, tb, eye, lock].forEach(function (x) { row.appendChild(x); }); ol.appendChild(row);
+      });
+      newIds = {};
+    }
+
+    // ───── history ─────
+    function renderHist() { var p = rp.hist; p.textContent = ''; p.appendChild(h('div', 'st', '點一步就回到那一步（之後的步驟還在，可以重做）：')); S.states.forEach(function (s, i) { var d = h('div', i === S.ptr ? 'cur' : (i > S.ptr ? 'fut' : ''), (i + 1) + '. ' + (s.summary || '（沒有說明）') + (s.text ? '　— 「' + s.text.slice(0, 30) + '」' : '')); d.onclick = function () { S.ptr = i; render(); persist(); }; p.appendChild(d); }); }
+
+    // ───── AI chat (pictures can be pasted / dropped in) ─────
+    var logEl = h('div', 'log'), attEl = h('div', 'att'), inRow = h('div', 'row'), ta = h('textarea'), bAtt = h('button', null, '📎'), bSend = h('button', 'pri', '送出'), file = h('input'); file.type = 'file'; file.accept = 'image/*'; file.multiple = true; file.style.display = 'none';
+    ta.rows = 2; ta.placeholder = opt.placeholder || ''; bAtt.title = '附圖（也可以直接貼上、拖進來）'; inRow.appendChild(bAtt); inRow.appendChild(bSend);
+    var dock = h('div', 'dock'), dockSay = h('div', 'say'), dockIn = h('div', 'in');   // the AI chat box: always at the bottom of the editor, whatever the width, so it is always in sight
+    rp.ai.appendChild(logEl); dockIn.appendChild(ta); dockIn.appendChild(inRow); inRow.style.flexDirection = 'column'; inRow.style.alignItems = 'stretch'; dock.appendChild(dockSay); dock.appendChild(attEl); dock.appendChild(dockIn); dock.appendChild(file); el.appendChild(dock);
+    function addMsg(role, text, chips, rejected) { var m = h('div', 'msg ' + (role === 'user' ? 'u' : 'a')); m.appendChild(document.createTextNode(text || '')); (chips || []).forEach(function (c) { m.appendChild(h('span', 'chip', c)); }); (rejected || []).forEach(function (c) { m.appendChild(h('span', 'chip rej', c)); }); logEl.appendChild(m); logEl.scrollTop = logEl.scrollHeight; return m; }
+    function renderLog() { logEl.textContent = ''; if (!S.log.length && opt.intro) { addMsg('ai', opt.intro); } var lastAi = S.log.slice().reverse().filter(function (m) { return m.role === 'ai'; })[0]; dockSay.textContent = lastAi ? lastAi.text : ''; S.log.forEach(function (m) { addMsg(m.role, m.text, m.chips, m.rejected); }); }
+    function readFile(f) { return new Promise(function (res) { var r = new FileReader(); r.onload = function () { res({ name: f.name || 'image', dataUrl: String(r.result) }); }; r.onerror = function () { res(null); }; r.readAsDataURL(f); }); }
+    function addFiles(files) { Promise.all(Array.prototype.filter.call(files || [], function (f) { return /^image\//.test(f.type); }).slice(0, 3).map(readFile)).then(function (list) { list.filter(Boolean).forEach(function (x) { if (pending.length < 3) { pending.push(x); } }); renderAtt(); }); }
+    function renderAtt() { attEl.textContent = ''; pending.forEach(function (x, i) { var s = h('span'), im = h('img'); im.src = x.dataUrl; im.alt = x.name; var rm = h('b', null, '×'); rm.onclick = function () { pending.splice(i, 1); renderAtt(); }; s.appendChild(im); s.appendChild(rm); attEl.appendChild(s); }); }
+    bAtt.onclick = function () { file.click(); }; file.onchange = function () { addFiles(file.files); file.value = ''; };
+    ta.addEventListener('paste', function (ev) { var items = ev.clipboardData && ev.clipboardData.files; if (items && items.length) { addFiles(items); ev.preventDefault(); } });
+    [rp.ai, dock].forEach(function (zone) { ['dragover', 'drop'].forEach(function (n) { zone.addEventListener(n, function (ev) { ev.preventDefault(); if (n === 'drop' && ev.dataTransfer) { addFiles(ev.dataTransfer.files); } }); }); });
+    ta.addEventListener('keydown', function (ev) { if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); send(); } });
+    async function send() {
+      var text = ta.value.trim(), imgs = pending.slice(); if (busy || (!text && !imgs.length)) { return; }
+      busy = true; bSend.disabled = true; ta.value = ''; pending = []; renderAtt(); rightTab = 'ai'; showTabs();
+      var um = { role: 'user', text: (text || '（附圖）') + (imgs.length ? '　📎×' + imgs.length : '') }; S.log.push(um); addMsg('user', um.text, imgs.length ? [] : []); var think = addMsg('ai', '…'); dockSay.textContent = '…';
+      var chips = [], rej = [], say = '', spec0 = cur(), edits = [], applied = 0, words = [];
+      try {
+        var pr = text && opt.parseCommands ? opt.parseCommands(text, spec0) : { edits: [], unmatched: text ? [text] : [] }; edits = pr.edits.slice(); var rest = pr.unmatched.join('，');
+        if ((rest || imgs.length) && host.ask) {
+          var ans = await host.ask({ text: rest, images: imgs, spec: spec0, selection: selected, onStatus: function (t) { think.textContent = t; dockSay.textContent = t; } });
+          say = (ans && ans.say) || ''; if (ans && ans.edits) { edits = edits.concat(ans.edits); } if (ans && ans.notes) { ans.notes.forEach(function (n) { chips.push(n); }); }
+        } else if (rest) { say = '我沒聽懂：「' + rest.slice(0, 40) + '」。這個環境沒有 AI 可以幫忙，可以直接在物件欄與屬性面板改。'; }
+        var r = W.applyEdits(spec0, edits, env()), next = spec0;
+        if (r.applied.length) { next = r.spec; r.appliedEdits.forEach(function (e) { words.push(W.editWords(e)); }); }
+        (r.rejected || []).forEach(function (x) { rej.push('✗ ' + x.op + '：' + x.error); });
+        if (JSON.stringify(next) !== JSON.stringify(spec0)) {
+          (r.added || []).forEach(function (id) { newIds[id] = 1; }); commit(next, words.filter(Boolean).join('；'), text || '（附圖）', imgs.length ? 'image' : 'chat'); applied = words.length; words.forEach(function (w) { chips.push('✓ ' + w); });
+          if (r.added && r.added.length) { select(r.added[r.added.length - 1]); } else if (selected && W.find(cur(), selected) < 0) { select(null); }
+        }
+        if (!applied && (rej.length || chips.length)) { say = say && !rej.length && chips.length ? say : '這次沒有改成：'; }
+        if (!say) { say = applied ? '改好了：' : '這樣已經是目前的樣子了。'; }
+      } catch (e) { say = '這次沒成功：' + String((e && e.message) || e).slice(0, 160); }
+      think.remove(); var am = { role: 'ai', text: say, chips: chips.slice(0, 14), rejected: rej.slice(0, 6) }; S.log.push(am); addMsg('ai', am.text, am.chips, am.rejected); dockSay.textContent = am.text + (am.chips.length ? '  ' + am.chips.slice(0, 4).join('  ') : '') + (am.rejected.length ? '  ' + am.rejected.slice(0, 2).join('  ') : ''); persist(); busy = false; bSend.disabled = false;
+    }
+    bSend.onclick = send;
+
+    // ───── prompt, export ─────
+    // the steps that count: the ones up to the current position (an undone step is never in it) that really changed the document and carry what the user said
+    function effectiveSteps() { return S.states.slice(0, S.ptr + 1).filter(function (s) { return s.kind !== 'start' && s.kind !== 'undo' && (s.text || s.summary); }); }
+    function defaultPrompt(spec, steps) {
+      var L = ['請做一份「' + spec.title + '」，畫布 ' + spec.canvas.w + '×' + spec.canvas.h + '，背景 ' + spec.canvas.bg + '。', '', '物件（由下到上）：'];
+      spec.objects.forEach(function (o, i) { L.push((i + 1) + '. ' + o.name + '（' + o.type + '）' + (opt.objectInfo ? ' ' + opt.objectInfo(o) : '')); });
+      var texts = steps.filter(function (s) { return s.text; });
+      if (texts.length) { L.push('', '（有效的指示，依序）：'); texts.forEach(function (s, i) { L.push((i + 1) + '. ' + s.text + (s.summary ? ' → ' + s.summary : '')); }); }
+      return L.join('\n');
+    }
+    bSum.onclick = function () { var sp = W.validate(cur()).spec, steps = effectiveSteps(); sumTa.value = opt.promptOf ? opt.promptOf(sp, steps) : defaultPrompt(sp, steps); sum.className = 'sum on'; sumTa.focus(); }; bSumX.onclick = function () { sum.className = 'sum'; };
+    bCopy.onclick = function () { try { navigator.clipboard.writeText(sumTa.value); bCopy.textContent = '✓ 已複製'; setTimeout(function () { bCopy.textContent = '📋 複製'; }, 1500); } catch (e) { sumTa.select(); } };
+    bPol.style.display = host.polish ? '' : 'none'; bPol.onclick = function () { bPol.disabled = true; var old = bPol.textContent; bPol.textContent = '潤飾中…'; Promise.resolve(host.polish(sumTa.value)).then(function (t) { if (t) { sumTa.value = t; } }, function () { /* keep */ }).then(function () { bPol.disabled = false; bPol.textContent = old; }); };
+    bExp.onchange = async function () {
+      var v = bExp.value; bExp.value = ''; if (!v) { return; } var p = v.split(':'), kind = p[0], id = p[1]; stat.textContent = '產生中…';
+      try {
+        var out = await opt.runExport(id, W.validate(cur()).spec); if (!out) { stat.textContent = ''; return; }
+        var steps = effectiveSteps(), spec = W.validate(cur()).spec;
+        if (kind === 'chat') { await host.toChat(out.blob, out.name, { title: spec.title, prompt: opt.promptOf ? opt.promptOf(spec, steps) : defaultPrompt(spec, steps) }); stat.textContent = '已放進對話'; }
+        else { host.download(out.blob, out.name, out.mime); stat.textContent = '已匯出'; }
+      } catch (e) { stat.textContent = '匯出失敗：' + String((e && e.message) || e).slice(0, 80); }
+      setTimeout(function () { stat.textContent = ''; }, 4000);
+    };
+    bUndo.onclick = undo; bRedo.onclick = redo;
+    el.addEventListener('keydown', function (ev) { var tag = ev.target && ev.target.tagName; if ((tag === 'TEXTAREA' || tag === 'INPUT' || tag === 'SELECT') && ev.target !== el) { return; } if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && ev.key.toLowerCase() === 'z') { ev.preventDefault(); undo(); } else if ((ev.ctrlKey || ev.metaKey) && (ev.key.toLowerCase() === 'y' || (ev.shiftKey && ev.key.toLowerCase() === 'z'))) { ev.preventDefault(); redo(); } else if ((ev.key === 'Delete' || ev.key === 'Backspace') && selected && tag !== 'TEXTAREA' && tag !== 'INPUT') { ev.preventDefault(); apply([{ op: 'remove_object', id: selected }], '刪掉物件 ' + selected, '', 'panel'); } });
+    el.tabIndex = 0;
+    function render() {
+      renderObjects(); renderHist(); bUndo.disabled = S.ptr === 0; bRedo.disabled = S.ptr >= S.states.length - 1; stat.textContent = '第 ' + (S.ptr + 1) + '／' + S.states.length + ' 步';
+      if (selected && W.find(cur(), selected) < 0) { selected = null; renderObjects(); }
+      showTabs(); if (editor && editor.refresh) { editor.refresh(cur(), selected); }
+    }
+    var ctx = { el: el, W: W, host: host, getSpec: function () { return cur(); }, commit: commit, apply: apply, select: select, selected: function () { return selected; }, onSelect: function (f) { selFns.push(f); }, say: function (t) { stat.textContent = t; setTimeout(function () { if (stat.textContent === t) { stat.textContent = ''; } }, 3500); }, undo: undo, redo: redo, bar: bar, setTab: function (id) { midTab = id; showTabs(); }, setProps: function (e) { prop.textContent = ''; if (e) { prop.appendChild(e); } prop.style.display = e ? '' : 'none'; } };
+    initState(opt.state, opt.spec); renderLog();
+    editor = opt.build(ctx) || {}; opt.tabs.forEach(function (t) { if (editor.tabs && editor.tabs[t.id]) { mp[t.id].appendChild(editor.tabs[t.id]); } }); (editor.bar || []).forEach(function (x) { bar.insertBefore(x, bUndo); });
+    if (opt.container) { opt.container.appendChild(el); }
+    var WIN = opt.windowApi || (typeof FaWin !== 'undefined' ? FaWin : null), win = WIN && WIN.decorate ? WIN.decorate(el, { id: opt.kind + ':' + (opt.id || ''), title: opt.title, bar: bar, minW: 720, minH: 460 }) : null; el._win = win;
+    render();
+    el._ed = { editor: editor, getState: getState, reload: function (state) { initState(state, null); renderLog(); render(); }, setSpec: function (spec, summary) { commit(spec, summary || '由對話修改', '', 'chat'); }, undo: undo, redo: redo, send: function (t) { ta.value = t; return send(); }, select: select, getSpec: function () { return cur(); }, env: env, ctx: ctx, effectiveSteps: effectiveSteps, addImages: function (list) { list.forEach(function (x) { if (pending.length < 3) { pending.push(x); } }); renderAtt(); }, destroy: function () { try { if (editor && editor.destroy) { editor.destroy(); } } catch (e) { /* gone */ } } };
+    return el;
+  }
+  return { mount: mount, CSS: CSS };
+});
+
+}).call(null, undefined, holder);
+return holder.FaEditShell;
+})();
+/* EDSHELL-END */
+/* EDSVG-BEGIN */
+const FaEditSvg = (function () {
+const holder = {};
+(function (module, self) {
+// /edit-svg: the document core (pure functions; node and the browser). A drawing is a list of OBJECTS on an endless plane (see edit_objects_core.js); the user and the AI add, change, hide, lock, move and
+// delete objects, and the whole thing is composed into ONE SVG for export. Object types:
+//   shape   { shape:'rect'|'ellipse'|'line'|'arrow'|'triangle'|'polygon'|'star'|'path'|'text', x, y, w, h, fill, stroke, sw, opacity, rotate, rx, text, size, sides, d }
+//   svg     { markup, x, y, w, h, scale, rotate, opacity }       free SVG elements (what the AI draws, what a traced picture becomes): coordinates inside `markup` are the object's own, x / y move it
+//   image   { ref, mime, x, y, w, h, opacity, credit }             a raster picture (from the web, pasted into the chat, ...); the pixels are kept apart (ref) so the history stays small
+// Everything the AI adds through the chat is a NEW OBJECT with a name; it answers only with the closed actions of edit_objects_core.js plus  transform_object{id,dx,dy,scale,rotate}  patch_markup{id,find,replace}.
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(require('./edit_objects_core.js')); else root.FaEditSvg = factory((root.FaEditObjects || (typeof FaEditObjects !== 'undefined' ? FaEditObjects : undefined))); })(typeof self !== 'undefined' ? self : this, function (O) {
+  'use strict';
+  var num = O.num, str = O.str, COLOR = O.COLOR;
+  var SHAPES = ['rect', 'ellipse', 'line', 'arrow', 'triangle', 'polygon', 'star', 'path', 'text'];
+  var PATH_OK = /^[MmLlHhVvCcSsQqTtAaZz0-9eE.,\s+-]{1,20000}$/;
+  var NAMED = { 紅: '#e53935', 紅色: '#e53935', 橘: '#fb8c00', 橘色: '#fb8c00', 橙色: '#fb8c00', 黃: '#fdd835', 黃色: '#fdd835', 綠: '#43a047', 綠色: '#43a047', 藍: '#1e88e5', 藍色: '#1e88e5', 紫: '#8e24aa', 紫色: '#8e24aa', 粉紅: '#ec407a', 粉紅色: '#ec407a', 粉色: '#ec407a', 黑: '#111111', 黑色: '#111111', 白: '#ffffff', 白色: '#ffffff', 灰: '#9e9e9e', 灰色: '#9e9e9e', 棕: '#6d4c41', 棕色: '#6d4c41', 咖啡色: '#6d4c41', 天藍: '#4fc3f7', 天藍色: '#4fc3f7', 金色: '#ffc107', 銀色: '#b0bec5',
+    red: '#e53935', orange: '#fb8c00', yellow: '#fdd835', green: '#43a047', blue: '#1e88e5', purple: '#8e24aa', pink: '#ec407a', black: '#111111', white: '#ffffff', gray: '#9e9e9e', grey: '#9e9e9e', brown: '#6d4c41' };
+  function colorOf(v, d) { var s = String(v == null ? '' : v).trim(); if (NAMED[s.toLowerCase()] || NAMED[s]) { return NAMED[s.toLowerCase()] || NAMED[s]; } return COLOR.test(s) ? s : d; }
+  function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+  function r2(n) { return Math.round(n * 100) / 100; }
+
+  // what in a piece of SVG is never allowed: scripts, foreign objects, event handlers, links that leave the picture (the browser also runs DOMPurify over it before showing)
+  function checkMarkup(m) {
+    var s = String(m == null ? '' : m), problems = [];
+    if (!s.trim()) { return { ok: false, problems: ['the drawing is empty'] }; }
+    if (s.length > 400000) { problems.push('the drawing is too big (more than 400000 characters)'); }
+    if (/<\s*(script|foreignObject|iframe|object|embed|audio|video|style\b[^>]*>[\s\S]*?@import)/i.test(s)) { problems.push('script / foreignObject / iframe / @import are not allowed'); }
+    if (/\son[a-z]+\s*=/i.test(s)) { problems.push('event attributes (onclick ...) are not allowed'); }
+    if (/(?:xlink:)?href\s*=\s*["']\s*(?!#|data:image\/(?:png|jpe?g|gif|webp|svg\+xml))[^"']*["']/i.test(s)) { problems.push('links to other addresses are not allowed (only #id and embedded pictures)'); }
+    if (/javascript:|vbscript:/i.test(s)) { problems.push('javascript: addresses are not allowed'); }
+    if (!/<\s*(?:g|rect|circle|ellipse|line|polyline|polygon|path|text|image|use|defs|linearGradient|radialGradient)\b/i.test(s)) { problems.push('there is no drawing element in it (rect, circle, path, text ...)'); }
+    return { ok: problems.length === 0, problems: problems };
+  }
+  function unwrap(markup) {   // a whole <svg>...</svg> given as markup: keep its content (the AI often writes the wrapper)
+    var s = String(markup || '').trim().replace(/^<\?xml[\s\S]*?\?>/i, '').replace(/<!doctype[^>]*>/i, '').trim(), m = /^<svg\b[^>]*>([\s\S]*)<\/svg>\s*$/i.exec(s); return m ? m[1].trim() : s;
+  }
+
+  var types = {
+    shape: {
+      label: '形狀', defaults: { shape: 'rect', x: 0, y: 0, w: 120, h: 80, fill: '#4f8ef7', stroke: 'none', sw: 2, opacity: 1, rotate: 0, rx: 0, text: '', size: 24, sides: 5, d: '' },
+      validate: function (o) {
+        var p = [], sh = SHAPES.indexOf(o.shape) >= 0 ? o.shape : 'rect'; if (SHAPES.indexOf(o.shape) < 0) { p.push('unknown shape "' + str(o.shape, 20) + '", a rectangle was used'); }
+        var out = { shape: sh, x: r2(num(o.x, -1e6, 1e6, 0)), y: r2(num(o.y, -1e6, 1e6, 0)), w: r2(num(o.w, 1, 1e5, 120)), h: r2(num(o.h, 1, 1e5, 80)), fill: colorOf(o.fill, sh === 'line' || sh === 'arrow' ? 'none' : '#4f8ef7'), stroke: colorOf(o.stroke, 'none'), sw: r2(num(o.sw, 0, 200, 2)), opacity: r2(num(o.opacity, 0, 1, 1)), rotate: r2(num(o.rotate, -3600, 3600, 0)), rx: r2(num(o.rx, 0, 1e4, 0)), text: str(o.text, 400), size: r2(num(o.size, 1, 2000, 24)), sides: Math.round(num(o.sides, 3, 60, 5)), d: '' };
+        if (sh === 'line' || sh === 'arrow') { out.w = r2(num(o.w, -1e5, 1e5, 120)); out.h = r2(num(o.h, -1e5, 1e5, 0)); if (out.stroke === 'none') { out.stroke = colorOf(o.fill, '#333333'); if (out.stroke === 'none') { out.stroke = '#333333'; } } out.fill = 'none'; }
+        if (sh === 'path') { var d = String(o.d == null ? '' : o.d).trim(); if (!PATH_OK.test(d)) { p.push('the path data is empty or has characters a path may not have'); out.d = 'M0 0'; } else { out.d = d; } }
+        if (sh === 'text') { out.w = r2(num(o.w, 1, 1e5, Math.max(20, out.size * 0.6 * Math.max(1, out.text.length)))); out.h = r2(out.size * 1.2); if (!out.text) { p.push('the text is empty'); out.text = 'Text'; } }
+        return { obj: out, problems: p };
+      },
+      bbox: function (o) {
+        if (o.shape === 'line' || o.shape === 'arrow') { return { x: Math.min(o.x, o.x + o.w), y: Math.min(o.y, o.y + o.h), w: Math.abs(o.w) || 1, h: Math.abs(o.h) || 1 }; }
+        if (o.shape === 'text') { return { x: o.x, y: o.y - o.size, w: o.w, h: o.h }; }
+        if (o.shape === 'path') { var nums = (o.d.match(/-?\d*\.?\d+(?:e[+-]?\d+)?/gi) || []).map(Number), xs = [], ys = []; nums.forEach(function (n, i) { (i % 2 ? ys : xs).push(n); }); if (xs.length && ys.length) { var x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs), y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys); return { x: o.x + x0, y: o.y + y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0) }; } }
+        return { x: o.x, y: o.y, w: o.w, h: o.h };
+      }
+    },
+    svg: {
+      label: '圖形', defaults: { markup: '', x: 0, y: 0, w: 100, h: 100, scale: 1, rotate: 0, opacity: 1 },
+      validate: function (o) {
+        var m = unwrap(o.markup), c = checkMarkup(m); if (!c.ok) { return { obj: null, problems: c.problems }; }
+        return { obj: { markup: m, x: r2(num(o.x, -1e6, 1e6, 0)), y: r2(num(o.y, -1e6, 1e6, 0)), w: r2(num(o.w, 1, 1e5, 100)), h: r2(num(o.h, 1, 1e5, 100)), scale: r2(num(o.scale, 0.01, 1000, 1)), rotate: r2(num(o.rotate, -3600, 3600, 0)), opacity: r2(num(o.opacity, 0, 1, 1)) }, problems: [] };
+      },
+      bbox: function (o) { return { x: o.x, y: o.y, w: o.w * o.scale, h: o.h * o.scale }; }
+    },
+    image: {
+      label: '圖片', defaults: { ref: '', mime: 'image/png', x: 0, y: 0, w: 200, h: 150, opacity: 1, credit: '' },
+      validate: function (o) {
+        if (!/^[A-Za-z0-9_-]{1,64}$/.test(String(o.ref || ''))) { return { obj: null, problems: ['the picture has no reference'] }; }
+        return { obj: { ref: String(o.ref), mime: /^image\/(png|jpeg|gif|webp|svg\+xml)$/.test(o.mime) ? o.mime : 'image/png', x: r2(num(o.x, -1e6, 1e6, 0)), y: r2(num(o.y, -1e6, 1e6, 0)), w: r2(num(o.w, 1, 1e5, 200)), h: r2(num(o.h, 1, 1e5, 150)), opacity: r2(num(o.opacity, 0, 1, 1)), credit: str(o.credit, 300) }, problems: [] };
+      },
+      bbox: function (o) { return { x: o.x, y: o.y, w: o.w, h: o.h }; }
+    }
+  };
+
+  var extraOps = {
+    transform_object: {
+      words: function (e) { return '變形物件 ' + e.id; },
+      apply: function (s, e, H) {
+        var i = H.find(s, e.id); if (i < 0) { return { error: 'there is no object "' + str(e.id, 30) + '"' } } var o = s.objects[i]; if (o.locked) { return { error: '"' + o.name + '" is locked' }; }
+        var n = H.clone(o), dx = Number(e.dx) || 0, dy = Number(e.dy) || 0;
+        if (o.type === 'shape' && (o.shape === 'line' || o.shape === 'arrow')) { n.x += dx; n.y += dy; if (e.scale) { n.w *= Number(e.scale); n.h *= Number(e.scale); } }
+        else if (o.type === 'svg') { n.x += dx; n.y += dy; if (e.scale) { n.scale = n.scale * Number(e.scale); } }
+        else { n.x += dx; n.y += dy; if (e.scale) { var k = Number(e.scale), cx = n.x + n.w / 2, cy = n.y + n.h / 2; n.w *= k; n.h *= k; if (n.size) { n.size *= k; } n.x = cx - n.w / 2; n.y = cy - n.h / 2; } }
+        if (e.rotate != null && 'rotate' in n) { n.rotate = (Number(n.rotate) || 0) + Number(e.rotate); }
+        var p = [], v = H.validateObject(n, p, {}); if (!v) { return { error: p[0] || 'the new values are not valid' }; } v.id = o.id; s.objects[i] = v; return {};
+      }
+    },
+    patch_markup: {
+      words: function (e) { return '修改圖形 ' + e.id; },
+      apply: function (s, e, H) {
+        var i = H.find(s, e.id); if (i < 0) { return { error: 'there is no object "' + str(e.id, 30) + '"' }; } var o = s.objects[i]; if (o.locked) { return { error: '"' + o.name + '" is locked' }; } if (o.type !== 'svg') { return { error: 'patch_markup works on svg objects only' }; }
+        var find = String(e.find == null ? '' : e.find); if (!find) { return { error: 'find must not be empty' }; } var n = 0, at = 0; while ((at = o.markup.indexOf(find, at)) >= 0) { n++; at += find.length; }
+        if (!n) { return { error: 'the text to replace was not found (it has to be exactly as in the markup)' }; } if (n > 1 && !e.all) { return { error: 'the text to replace appears ' + n + ' times: take more context so it is unique, or add all:true' }; }
+        var next = H.clone(o); next.markup = e.all ? o.markup.split(find).join(String(e.replace == null ? '' : e.replace)) : o.markup.replace(find, function () { return String(e.replace == null ? '' : e.replace); });
+        var p = [], v = H.validateObject(next, p, {}); if (!v) { return { error: p[0] || 'the new markup is not valid' }; } v.id = o.id; s.objects[i] = v; return {};
+      }
+    }
+  };
+
+  var E = O.make({
+    types: types, extraOps: extraOps, limits: { objects: 500, canvas: 16384 },
+    defaultSpec: function () { return { v: 1, title: '我的圖', canvas: { x: 0, y: 0, w: 800, h: 600, bg: '#ffffff' }, seq: 0, objects: [] }; },
+    describeObject: function (o) { var b = types[o.type].bbox(o); return '@(' + Math.round(b.x) + ',' + Math.round(b.y) + ' ' + Math.round(b.w) + '×' + Math.round(b.h) + ')' + (o.type === 'shape' ? ' ' + o.shape + ' ' + o.fill : ''); }
+  });
+
+  // ───────────────────────── composing: object -> markup, document -> one SVG ─────────────────────────
+  function starPoints(cx, cy, rx, ry, n) { var pts = []; for (var i = 0; i < n * 2; i++) { var a = -Math.PI / 2 + i * Math.PI / n, k = i % 2 ? 0.42 : 1; pts.push(r2(cx + Math.cos(a) * rx * k) + ',' + r2(cy + Math.sin(a) * ry * k)); } return pts.join(' '); }
+  function polyPoints(cx, cy, rx, ry, n) { var pts = []; for (var i = 0; i < n; i++) { var a = -Math.PI / 2 + i * 2 * Math.PI / n; pts.push(r2(cx + Math.cos(a) * rx) + ',' + r2(cy + Math.sin(a) * ry)); } return pts.join(' '); }
+  function shapeMarkup(o) {
+    var st = ' fill="' + esc(o.fill) + '" stroke="' + esc(o.stroke) + '" stroke-width="' + o.sw + '"', cx = o.x + o.w / 2, cy = o.y + o.h / 2;
+    switch (o.shape) {
+      case 'rect': return '<rect x="' + o.x + '" y="' + o.y + '" width="' + o.w + '" height="' + o.h + '" rx="' + o.rx + '"' + st + '/>';
+      case 'ellipse': return '<ellipse cx="' + r2(cx) + '" cy="' + r2(cy) + '" rx="' + r2(o.w / 2) + '" ry="' + r2(o.h / 2) + '"' + st + '/>';
+      case 'triangle': return '<polygon points="' + r2(cx) + ',' + o.y + ' ' + r2(o.x + o.w) + ',' + r2(o.y + o.h) + ' ' + o.x + ',' + r2(o.y + o.h) + '"' + st + '/>';
+      case 'polygon': return '<polygon points="' + polyPoints(cx, cy, o.w / 2, o.h / 2, o.sides) + '"' + st + '/>';
+      case 'star': return '<polygon points="' + starPoints(cx, cy, o.w / 2, o.h / 2, Math.max(3, o.sides)) + '"' + st + '/>';
+      case 'line': return '<line x1="' + o.x + '" y1="' + o.y + '" x2="' + r2(o.x + o.w) + '" y2="' + r2(o.y + o.h) + '" stroke="' + esc(o.stroke) + '" stroke-width="' + o.sw + '" stroke-linecap="round"/>';
+      case 'arrow': { var x2 = o.x + o.w, y2 = o.y + o.h, a = Math.atan2(o.h, o.w), L = Math.max(8, o.sw * 4), p1 = [x2 - L * Math.cos(a - 0.45), y2 - L * Math.sin(a - 0.45)], p2 = [x2 - L * Math.cos(a + 0.45), y2 - L * Math.sin(a + 0.45)]; return '<line x1="' + o.x + '" y1="' + o.y + '" x2="' + r2(x2) + '" y2="' + r2(y2) + '" stroke="' + esc(o.stroke) + '" stroke-width="' + o.sw + '" stroke-linecap="round"/><polygon points="' + r2(x2) + ',' + r2(y2) + ' ' + r2(p1[0]) + ',' + r2(p1[1]) + ' ' + r2(p2[0]) + ',' + r2(p2[1]) + '" fill="' + esc(o.stroke) + '"/>'; }
+      case 'path': return '<path transform="translate(' + o.x + ' ' + o.y + ')" d="' + esc(o.d) + '"' + st + '/>';
+      case 'text': return '<text x="' + o.x + '" y="' + o.y + '" font-size="' + o.size + '" font-family="sans-serif"' + (o.fill === 'none' ? '' : ' fill="' + esc(o.fill) + '"') + (o.stroke !== 'none' ? ' stroke="' + esc(o.stroke) + '" stroke-width="' + o.sw + '"' : '') + '>' + esc(o.text) + '</text>';
+      default: return '';
+    }
+  }
+  function objectMarkup(o, resolve) {
+    var inner, tr = '', b = types[o.type].bbox(o), cx = r2(b.x + b.w / 2), cy = r2(b.y + b.h / 2);
+    if (o.type === 'shape') { inner = shapeMarkup(o); if (o.rotate) { tr = ' transform="rotate(' + o.rotate + ' ' + cx + ' ' + cy + ')"'; } }
+    else if (o.type === 'svg') { inner = o.markup; tr = ' transform="translate(' + o.x + ' ' + o.y + ')' + (o.rotate ? ' rotate(' + o.rotate + ' ' + r2(o.w * o.scale / 2) + ' ' + r2(o.h * o.scale / 2) + ')' : '') + (o.scale !== 1 ? ' scale(' + o.scale + ')' : '') + '"'; }
+    else if (o.type === 'image') { var href = resolve ? resolve(o.ref) : ''; inner = href ? '<image x="' + o.x + '" y="' + o.y + '" width="' + o.w + '" height="' + o.h + '" preserveAspectRatio="none" href="' + esc(href) + '"/>' : '<rect x="' + o.x + '" y="' + o.y + '" width="' + o.w + '" height="' + o.h + '" fill="#cccccc" stroke="#999"/>'; }
+    else { inner = ''; }
+    return '<g id="' + esc(o.id) + '" data-name="' + esc(o.name) + '"' + (o.opacity != null && o.opacity !== 1 ? ' opacity="' + o.opacity + '"' : '') + tr + '>' + inner + '</g>';
+  }
+  // the exported / shown SVG. opts: { resolve(ref)->data URL, region:{x,y,w,h} (what to show; default the canvas frame), frame:true (draw the frame's background) }
+  function compose(spec, opts) {
+    opts = opts || {}; var s = E.validate(spec).spec, c = s.canvas, reg = opts.region || { x: c.x, y: c.y, w: c.w, h: c.h }, out = [];
+    out.push('<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + r2(reg.x) + ' ' + r2(reg.y) + ' ' + r2(reg.w) + ' ' + r2(reg.h) + '" width="' + Math.round(opts.width || reg.w) + '" height="' + Math.round(opts.height || reg.h) + '">');
+    if (opts.frame !== false) { out.push('<rect x="' + c.x + '" y="' + c.y + '" width="' + c.w + '" height="' + c.h + '" fill="' + esc(c.bg) + '"/>'); }
+    s.objects.forEach(function (o) { if (o.visible) { out.push(objectMarkup(o, opts.resolve)); } });
+    out.push('</svg>'); return out.join('\n');
+  }
+  // an SVG given as text (typed in the source tab, pasted, a file): every top-level element becomes an object; the viewBox / size becomes the frame
+  function decompose(svgText, base) {
+    var s = String(svgText || ''), m = /<svg\b([^>]*)>([\s\S]*)<\/svg>/i.exec(s); if (!m) { return { ok: false, error: 'this is not an SVG (no <svg> element)' }; }
+    var attrs = m[1], body = m[2], vb = /viewBox\s*=\s*["']([^"']+)["']/i.exec(attrs), box = vb ? vb[1].trim().split(/[\s,]+/).map(Number) : null, w = /\swidth\s*=\s*["']([\d.]+)/i.exec(attrs), h = /\sheight\s*=\s*["']([\d.]+)/i.exec(attrs);
+    var canvas = box && box.length === 4 && box[2] > 0 && box[3] > 0 ? { x: box[0], y: box[1], w: box[2], h: box[3] } : { x: 0, y: 0, w: w ? Number(w[1]) : 800, h: h ? Number(h[1]) : 600 };
+    var parts = [], depth = 0, cur = '', i = 0, re = /<(\/?)([a-zA-Z][\w:-]*)([^>]*?)(\/?)>|<!--[\s\S]*?-->|[^<]+/g, t;
+    var defs = '';
+    while ((t = re.exec(body))) {
+      var tok = t[0]; if (/^<!--/.test(tok)) { continue; }
+      if (!t[2]) { if (depth > 0) { cur += tok; } continue; }
+      var closing = !!t[1], selfc = !!t[4] || /^(path|rect|circle|ellipse|line|polyline|polygon|image|use|stop)$/i.test(t[2]) && !closing && /\/$/.test(tok.replace(/>$/, ''));
+      if (!closing) { if (selfc) { if (depth === 0) { parts.push(tok); } else { cur += tok; } } else { depth++; cur += tok; } }
+      else { depth--; cur += tok; if (depth === 0) { parts.push(cur); cur = ''; } }
+    }
+    var drawable = [];
+    parts.forEach(function (p) { var tag = /^<\s*([a-zA-Z][\w:-]*)/.exec(p); if (!tag) { return; } if (/^(defs|style|title|desc|metadata)$/i.test(tag[1])) { if (/^defs$/i.test(tag[1])) { defs += p; } return; } drawable.push(p); });
+    var objects = drawable.slice(0, 400).map(function (p, k) {
+      var id = /\sid\s*=\s*["']([^"']+)["']/i.exec(p), nm = /\sdata-name\s*=\s*["']([^"']+)["']/i.exec(p) || id, tag = /^<\s*([a-zA-Z][\w:-]*)/.exec(p)[1];
+      return { type: 'svg', name: nm ? nm[1] : tag + ' ' + (k + 1), markup: defs ? defs + p : p, x: 0, y: 0, w: canvas.w, h: canvas.h };
+    });
+    return { ok: true, canvas: Object.assign({ bg: (base && base.bg) || '#ffffff' }, canvas), objects: objects, dropped: Math.max(0, drawable.length - 400) };
+  }
+
+  // ───────────────────────── what the program reads itself ─────────────────────────
+  function parseCommands(text, spec) {
+    var s = E.validate(spec).spec, rest = [], edits = [], matched = [], clauses = String(text || '').split(/[，。；;\n]+/).map(function (x) { return x.trim(); }).filter(Boolean);   // in the order the user said them
+    function ref(r) { r = String(r || '').trim().replace(/^[「"'『]|[」"'』]$/g, '').replace(/^(?:物件|圖層)\s*/, ''); var i = E.find(s, r); if (i >= 0) { return s.objects[i].id; } var m = /^(?:第\s*)?(\d+)(?:\s*個|\s*號)?$/.exec(r); if (m) { var k = s.objects.length - Number(m[1]); return k >= 0 && k < s.objects.length ? s.objects[k].id : null; } return null; }
+    clauses.forEach(function (c) {
+      var oc = E.parseObjectCommand(c, spec); if (oc.edits.length) { edits = edits.concat(oc.edits); matched.push(c); return; }
+      var m, id, e = null, colorWord = '(紅色?|橘色?|橙色|黃色?|綠色?|藍色?|天藍色?|紫色?|粉紅色?|粉色|黑色?|白色?|灰色?|棕色?|咖啡色|金色|銀色|#[0-9a-fA-F]{3,8})';
+      if ((m = new RegExp('^(?:把)?\\s*(.+?)\\s*(?:的)?\\s*(填色|顏色|邊框|外框|線條)\\s*(?:改成|換成|改為|設為|變成)\\s*' + colorWord + '$').exec(c)) && (id = ref(m[1]))) { var which = m[2], col = colorOf(m[3], null); if (col) { e = { op: 'update_object', id: id, props: /邊框|外框|線條/.test(which) ? { stroke: col } : { fill: col } }; } }
+      else if ((m = /^(?:把)?\s*(.+?)\s*(?:移到|搬到|放到)\s*\(?\s*(?:x\s*=\s*)?(-?\d+(?:\.\d+)?)\s*[,，\s]\s*(?:y\s*=\s*)?(-?\d+(?:\.\d+)?)\s*\)?$/i.exec(c)) && (id = ref(m[1]))) { var i = E.find(s, id), o = s.objects[i]; e = { op: 'transform_object', id: id, dx: Number(m[2]) - o.x, dy: Number(m[3]) - o.y }; }
+      else if ((m = /^(?:把)?\s*(.+?)\s*往(右|左|上|下)(?:移動?|移)?\s*(\d+(?:\.\d+)?)$/.exec(c)) && (id = ref(m[1]))) { var n = Number(m[3]); e = { op: 'transform_object', id: id, dx: m[2] === '右' ? n : m[2] === '左' ? -n : 0, dy: m[2] === '下' ? n : m[2] === '上' ? -n : 0 }; }
+      else if ((m = /^(?:把)?\s*(.+?)\s*(放大|縮小)\s*(\d+(?:\.\d+)?)\s*倍$/.exec(c)) && (id = ref(m[1]))) { var k2 = Number(m[3]) || 1; e = { op: 'transform_object', id: id, scale: m[2] === '放大' ? k2 : 1 / k2 }; }
+      else if ((m = /^(?:把)?\s*(.+?)\s*(?:旋轉|轉)\s*(-?\d+(?:\.\d+)?)\s*度$/.exec(c)) && (id = ref(m[1]))) { e = { op: 'transform_object', id: id, rotate: Number(m[2]) }; }
+      else if ((m = /^畫布\s*(?:改成|設為|設成)?\s*(\d+)\s*[x×*]\s*(\d+)$/i.exec(c))) { e = { op: 'set_canvas', w: Number(m[1]), h: Number(m[2]) }; }
+      else if (/^(?:畫布)?(?:貼合|符合|包住)內容$/.test(c)) { e = { op: 'fit_canvas' }; }
+      if (e) { edits.push(e); matched.push(c); } else { rest.push(c); }
+    });
+    return { edits: edits, matched: matched, unmatched: rest };
+  }
+
+  // ───────────────────────── for the AI ─────────────────────────
+  var ACTIONS = '{op:"add_object",object:{type:"shape",name:"太陽",shape:"ellipse",w:120,h:120,fill:"#fdd835",stroke:"none"},place:{of:"房子",rel:"above",gap:20}}（place＝放在哪裡：of 是某個物件的 id 或名字（或 selection 目前選取的、canvas 畫布、view 使用者正在看的範圍、content 全部內容），rel 是 right／left／above／below／inside／center，gap 是間距，align 是 start／center／end，inside 時用 at：top-left、top、top-right、left、right、bottom-left、bottom、bottom-right，還可以加 dx、dy 微調；程式會算座標。**優先用 place，不要自己猜座標**；沒有 place 才用 x、y）、'
+    + '{op:"place_object",id:"o3",place:{of:"o5",rel:"right",gap:12}}（把既有的物件放到另一個物件的旁邊）、'
+    + 'shape 可以是 rect、ellipse、line、arrow、triangle、polygon、star、path、text；text 用 text 與 size；line／arrow 的 w、h 是終點相對起點的位移；path 用 d；polygon／star 用 sides）、'
+    + '{op:"add_object",object:{type:"svg",name:"小房子",markup:"<g>…SVG 元素…</g>",x:0,y:0,w:120,h:100}}（自由畫法：markup 只放 SVG 元素，不要 <svg> 外框，座標是這個物件自己的，x、y 把它放到畫面上；w、h 是它大約的大小）、'
+    + '{op:"update_object",id:"o3",props:{fill:"#e53935",x:300}}、{op:"transform_object",id:"o3",dx:50,dy:0,scale:1.5,rotate:15}、{op:"patch_markup",id:"o4",find:"原文",replace:"新文"}、{op:"remove_object",id:"o3"}、{op:"rename_object",id:"o3",name:"…"}、'
+    + '{op:"move_object",id:"o3",to:"front"|"back"|"up"|"down"}、{op:"set_visible",id:"o3",visible:false}、{op:"set_locked",id:"o3",locked:true}、{op:"duplicate_object",id:"o3"}、{op:"set_canvas",x:0,y:0,w:800,h:600,bg:"#ffffff"}、{op:"fit_canvas"}、{op:"set_title",text:"…"}';
+  function editPrompt(spec, text, extra, selection) {
+    var s = E.validate(spec).spec, b = E.bounds(s);
+    var system = '你是向量圖編輯助手。使用者說想怎麼畫或怎麼改，你把它翻成「編輯動作」。只回一段 JSON，不要說明、不要 markdown 區塊：{"say":"一句話告訴使用者你做了什麼（做不到就說做不到）","edits":[…]}。\n'
+      + '**你新增的每一樣東西都是一個新的物件**（add_object，要取一個看得懂的 name），不要用 set 整張圖覆蓋；改既有的東西用物件的 id（或 name）。畫面是一個沒有邊界的平面，座標可以是任何數字（含負數與很遠的地方）；「畫布」只是匯出用的範圍框。y 往下增加。\n'
+      + '動作只能是下面這些（不要發明新的動作）：\n' + ACTIONS + '\n顏色用 #RRGGBB 或常見英文色名。不要 script、不要外部連結、不要事件屬性。一次最多 25 個動作；複雜的畫（例如一棟房子、一隻動物）用一個 svg 物件把它畫完整，或拆成幾個有名字的形狀物件。\n使用者是用說話在畫：「在太陽右邊加一朵雲」＝一個新物件加 place:{of:"太陽",rel:"right"}；「把煙囪放到房子上面」＝place_object；沒說位置就放在使用者正在看的地方（place:{of:"view",rel:"center"}）。';
+    var user = '目前的圖「' + s.title + '」，畫布範圍框 x=' + s.canvas.x + ' y=' + s.canvas.y + ' ' + s.canvas.w + '×' + s.canvas.h + '，背景 ' + s.canvas.bg + (b ? '；所有內容的範圍 x=' + Math.round(b.x) + ' y=' + Math.round(b.y) + ' ' + Math.round(b.w) + '×' + Math.round(b.h) : '；目前沒有內容') + '。\n物件（最上層是 1）：\n' + E.list(s) + (selection ? '\n\n使用者目前選取的是 ' + selection + '（說「它」「這個」就是指它）。' : '') + (extra ? '\n\n' + extra : '') + '\n\n使用者說：' + String(text || '');
+    return { system: system, user: user };
+  }
+  function refPrompt() { return 'Describe this picture for someone who has to redraw it as a vector drawing: the main subject, every distinct object and where it is (left / right / top / bottom / centre), its colour (give #RRGGBB when you can), the background, and the style (flat, photo, sketch ...). Only what you can see; short sentences.'; }
+  // the picture was turned into vector objects: compare the description of the original with the description of the result (the words that name things)
+  function specToPrompt(spec, steps) {
+    var s = E.validate(spec).spec, L = ['請畫一張向量圖（SVG）「' + s.title + '」，畫布 ' + s.canvas.w + '×' + s.canvas.h + '，背景 ' + s.canvas.bg + '。', '', '物件（由下到上）：'];
+    s.objects.forEach(function (o, i) { L.push((i + 1) + '. ' + o.name + '（' + (o.type === 'shape' ? o.shape : o.type) + '，' + E.list({ canvas: s.canvas, objects: [o] }).replace(/^\d+\.\s*\[[^\]]*\]\s*/, '').replace(/^.*?\)\s*/, '') + (o.type === 'image' && o.credit ? '，出處：' + o.credit : '') + '）'); });
+    var texts = (steps || []).filter(function (x) { return x.text; });
+    if (texts.length) { L.push('', '（有效的指示，依序）：'); texts.forEach(function (x, i) { L.push((i + 1) + '. ' + x.text + (x.summary ? ' → ' + x.summary : '')); }); }
+    return L.join('\n');
+  }
+
+  var STARTERS = [
+    { id: 'blank', label: '空白畫布', desc: '一張空的畫布，從零開始用對話畫。', spec: function () { return { title: '我的圖', objects: [] }; } },
+    { id: 'shapes', label: '形狀範例', desc: '幾種基本形狀，每一個都是一個物件。', spec: function () { return { title: '形狀範例', objects: [
+      { type: 'shape', name: '藍色方塊', shape: 'rect', x: 60, y: 60, w: 160, h: 110, rx: 12, fill: '#4f8ef7' }, { type: 'shape', name: '黃色圓', shape: 'ellipse', x: 280, y: 60, w: 120, h: 120, fill: '#fdd835' },
+      { type: 'shape', name: '紅色三角', shape: 'triangle', x: 460, y: 60, w: 130, h: 110, fill: '#e53935' }, { type: 'shape', name: '綠色星星', shape: 'star', x: 90, y: 240, w: 130, h: 130, fill: '#43a047', sides: 5 },
+      { type: 'shape', name: '紫色六邊形', shape: 'polygon', x: 290, y: 240, w: 120, h: 120, fill: '#8e24aa', sides: 6 }, { type: 'shape', name: '箭頭', shape: 'arrow', x: 460, y: 300, w: 150, h: 0, stroke: '#333333', sw: 5 },
+      { type: 'shape', name: '標題', shape: 'text', x: 60, y: 450, text: '形狀範例', size: 40, fill: '#222222' }] }; } },
+    { id: 'flow', label: '流程圖', desc: '三個步驟與箭頭，可以接著請 AI 加分支。', spec: function () { return { title: '流程圖', canvas: { w: 760, h: 260 }, objects: [
+      { type: 'shape', name: '開始', shape: 'rect', x: 40, y: 90, w: 170, h: 80, rx: 40, fill: '#43a047' }, { type: 'shape', name: '開始文字', shape: 'text', x: 92, y: 138, text: '開始', size: 26, fill: '#ffffff' },
+      { type: 'shape', name: '箭頭一', shape: 'arrow', x: 214, y: 130, w: 70, h: 0, stroke: '#555555', sw: 4 }, { type: 'shape', name: '處理', shape: 'rect', x: 290, y: 90, w: 170, h: 80, rx: 8, fill: '#4f8ef7' },
+      { type: 'shape', name: '處理文字', shape: 'text', x: 346, y: 138, text: '處理', size: 26, fill: '#ffffff' }, { type: 'shape', name: '箭頭二', shape: 'arrow', x: 464, y: 130, w: 70, h: 0, stroke: '#555555', sw: 4 },
+      { type: 'shape', name: '結束', shape: 'rect', x: 540, y: 90, w: 170, h: 80, rx: 40, fill: '#e53935' }, { type: 'shape', name: '結束文字', shape: 'text', x: 592, y: 138, text: '結束', size: 26, fill: '#ffffff' }] }; } }
+  ];
+  function starter(id) { var t = STARTERS.filter(function (x) { return x.id === id; })[0]; return t ? E.validate(t.spec()).spec : null; }
+  function listStarters() { return STARTERS.map(function (t) { return { id: t.id, label: t.label, desc: t.desc }; }); }
+
+  return { E: E, types: types, extraOps: extraOps, OPS: E.OPS, validate: E.validate, applyEdits: E.applyEdits, editWords: E.editWords, list: E.list, find: E.find, bounds: E.bounds, compose: compose, decompose: decompose, objectMarkup: objectMarkup, shapeMarkup: shapeMarkup,
+    checkMarkup: checkMarkup, unwrap: unwrap, parseCommands: parseCommands, editPrompt: editPrompt, parseEditsReply: function (t) { return O.parseEditsReply(t, E.OPS); }, refPrompt: refPrompt, specToPrompt: specToPrompt, colorOf: colorOf, starter: starter, listStarters: listStarters, STARTERS: listStarters(), SHAPES: SHAPES };
+});
+
+}).call(null, undefined, holder);
+return holder.FaEditSvg;
+})();
+/* EDSVG-END */
+/* EDTRACE-BEGIN */
+const FaSvgTrace = (function () {
+const holder = {};
+(function (module, self) {
+// A picture -> vector objects, made by the PROGRAM (pure functions on {width, height, data:RGBA}; node and the browser): colours are quantised (median cut + a few k-means steps), every colour's pixels are
+// traced into closed outlines (pixel edges linked into loops, holes included), simplified (Douglas-Peucker) and written as one SVG path per colour. So the result is a real tracing of THIS picture, not
+// something a model made up; the vision model and the language model only help around it (describing, naming, judging) and the numbers decide when it is close enough (compare()).
+//   trace(img, { colors, maxSide, minArea, epsilon, smooth }) -> { w, h, scale, layers:[{ color, name, area, bbox, d, loops }] }      the biggest colour is the background (a plain rectangle: no gaps)
+//   toObjects(result, { x, y, width, namePrefix }) -> [ add_object-ready { type:'svg', name, markup, x, y, w, h, scale } ]    one object per colour layer, bottom first
+//   compare(a, b) -> { score 0..1, mae }       similarity of two pictures (any size; both are looked at in 48 × 48): the closer the better
+//   colorName(hex), where(bbox, w, h)          short words for the layer names
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaSvgTrace = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  function hex(r, g, b) { function h(n) { n = Math.max(0, Math.min(255, Math.round(n))); return (n < 16 ? '0' : '') + n.toString(16); } return '#' + h(r) + h(g) + h(b); }
+  var NAMES = [['紅色', 229, 57, 53], ['橘色', 251, 140, 0], ['黃色', 253, 216, 53], ['綠色', 67, 160, 71], ['藍色', 30, 136, 229], ['天藍色', 79, 195, 247], ['紫色', 142, 36, 170], ['粉紅色', 236, 64, 122], ['黑色', 20, 20, 20], ['白色', 245, 245, 245], ['灰色', 150, 150, 150], ['棕色', 109, 76, 65], ['深綠色', 27, 94, 32], ['深藍色', 21, 40, 120], ['米色', 230, 215, 180]];
+  function colorName(h) { var r = parseInt(h.substr(1, 2), 16), g = parseInt(h.substr(3, 2), 16), b = parseInt(h.substr(5, 2), 16), best = null, bd = 1e9; NAMES.forEach(function (n) { var d = (n[1] - r) * (n[1] - r) + (n[2] - g) * (n[2] - g) + (n[3] - b) * (n[3] - b); if (d < bd) { bd = d; best = n[0]; } }); return best; }
+  function where(b, w, h) { var cx = (b.x + b.w / 2) / w, cy = (b.y + b.h / 2) / h, big = b.w * b.h > w * h * 0.25; var hz = cx < 0.34 ? '左' : cx > 0.66 ? '右' : '中', vt = cy < 0.34 ? '上' : cy > 0.66 ? '下' : '中'; var s = hz === '中' && vt === '中' ? '中間' : (vt === '中' ? '' : vt) + (hz === '中' ? '' : hz); return (big ? '大面積' : '') + s; }
+
+  // shrink to at most maxSide with a box average (the tracing works on this small picture; the objects are scaled back up)
+  function shrink(img, maxSide) {
+    var s = Math.min(1, maxSide / Math.max(img.width, img.height)), w = Math.max(1, Math.round(img.width * s)), h = Math.max(1, Math.round(img.height * s)), out = new Uint8ClampedArray(w * h * 4);
+    for (var y = 0; y < h; y++) { for (var x = 0; x < w; x++) {
+      var x0 = Math.floor(x / s), x1 = Math.max(x0 + 1, Math.floor((x + 1) / s)), y0 = Math.floor(y / s), y1 = Math.max(y0 + 1, Math.floor((y + 1) / s)), r = 0, g = 0, b = 0, a = 0, n = 0;
+      for (var yy = y0; yy < Math.min(y1, img.height); yy++) { for (var xx = x0; xx < Math.min(x1, img.width); xx++) { var i = (yy * img.width + xx) * 4, al = img.data[i + 3] / 255; r += img.data[i] * al + 255 * (1 - al); g += img.data[i + 1] * al + 255 * (1 - al); b += img.data[i + 2] * al + 255 * (1 - al); a += al; n++; } }
+      n = n || 1; var o = (y * w + x) * 4; out[o] = r / n; out[o + 1] = g / n; out[o + 2] = b / n; out[o + 3] = 255;
+    } }
+    return { width: w, height: h, data: out, scale: s };
+  }
+  function medianCut(px, k) {
+    var boxes = [px.slice()];
+    while (boxes.length < k) {
+      var bi = -1, br = -1; boxes.forEach(function (b, i) { if (b.length < 2) { return; } var mn = [255, 255, 255], mx = [0, 0, 0]; b.forEach(function (p) { for (var c = 0; c < 3; c++) { if (p[c] < mn[c]) { mn[c] = p[c]; } if (p[c] > mx[c]) { mx[c] = p[c]; } } }); var rg = Math.max(mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]) * Math.sqrt(b.length); if (rg > br) { br = rg; bi = i; } });
+      if (bi < 0 || br <= 0) { break; }
+      var b0 = boxes[bi], mn2 = [255, 255, 255], mx2 = [0, 0, 0]; b0.forEach(function (p) { for (var c = 0; c < 3; c++) { if (p[c] < mn2[c]) { mn2[c] = p[c]; } if (p[c] > mx2[c]) { mx2[c] = p[c]; } } });
+      var ch = 0; if (mx2[1] - mn2[1] > mx2[ch] - mn2[ch]) { ch = 1; } if (mx2[2] - mn2[2] > mx2[ch] - mn2[ch]) { ch = 2; }
+      b0.sort(function (p, q) { return p[ch] - q[ch]; });
+      // split where the colour CHANGES, nearest to the middle: a cut inside a run of identical colours would waste a box (a big plain sky would be cut in two and a small yellow dot never get its own colour)
+      var m = b0.length >> 1, lo = m, hi = m; while (lo > 0 && b0[lo][ch] === b0[lo - 1][ch]) { lo--; } while (hi < b0.length && hi > 0 && b0[hi][ch] === b0[hi - 1][ch]) { hi++; }
+      m = lo > 0 && (hi >= b0.length || m - lo <= hi - m) ? lo : (hi < b0.length ? hi : lo); if (m <= 0 || m >= b0.length) { b0.splice(0); continue; }
+      boxes.splice(bi, 1, b0.slice(0, m), b0.slice(m));
+    }
+    return boxes.filter(function (b) { return b.length; }).map(function (b) { var s = [0, 0, 0]; b.forEach(function (p) { s[0] += p[0]; s[1] += p[1]; s[2] += p[2]; }); return [s[0] / b.length, s[1] / b.length, s[2] / b.length]; });
+  }
+  function quantize(img, k) {
+    var px = [], step = Math.max(1, Math.floor(img.width * img.height / 20000)); for (var i = 0; i < img.width * img.height; i += step) { px.push([img.data[i * 4], img.data[i * 4 + 1], img.data[i * 4 + 2]]); }
+    var pal = medianCut(px, k);
+    for (var it = 0; it < 3; it++) {   // a few k-means steps: the palette follows the colours that are really there
+      var sum = pal.map(function () { return [0, 0, 0, 0]; });
+      px.forEach(function (p) { var bi = 0, bd = 1e9; pal.forEach(function (c, j) { var d = (c[0] - p[0]) * (c[0] - p[0]) + (c[1] - p[1]) * (c[1] - p[1]) + (c[2] - p[2]) * (c[2] - p[2]); if (d < bd) { bd = d; bi = j; } }); sum[bi][0] += p[0]; sum[bi][1] += p[1]; sum[bi][2] += p[2]; sum[bi][3]++; });
+      pal = pal.map(function (c, j) { return sum[j][3] ? [sum[j][0] / sum[j][3], sum[j][1] / sum[j][3], sum[j][2] / sum[j][3]] : c; });
+    }
+    return pal;
+  }
+  function label(img, pal) {
+    var n = img.width * img.height, lab = new Uint8Array(n);
+    for (var i = 0; i < n; i++) { var r = img.data[i * 4], g = img.data[i * 4 + 1], b = img.data[i * 4 + 2], bi = 0, bd = 1e9; for (var j = 0; j < pal.length; j++) { var c = pal[j], d = (c[0] - r) * (c[0] - r) + (c[1] - g) * (c[1] - g) + (c[2] - b) * (c[2] - b); if (d < bd) { bd = d; bi = j; } } lab[i] = bi; }
+    // one pass of a 3 × 3 majority: single noisy pixels do not become tiny islands
+    var out = new Uint8Array(n), W = img.width, H = img.height;
+    for (var y = 0; y < H; y++) { for (var x = 0; x < W; x++) { var cnt = {}, best = lab[y * W + x], bc = 0; for (var dy = -1; dy <= 1; dy++) { for (var dx = -1; dx <= 1; dx++) { var xx = x + dx, yy = y + dy; if (xx < 0 || yy < 0 || xx >= W || yy >= H) { continue; } var v = lab[yy * W + xx]; cnt[v] = (cnt[v] || 0) + 1; if (cnt[v] > bc) { bc = cnt[v]; best = v; } } } out[y * W + x] = bc >= 5 ? best : lab[y * W + x]; } }
+    return out;
+  }
+  // the outlines of a binary mask: every pixel edge between a filled and an empty pixel is a directed segment (the filled pixel on the right); the segments are linked into closed loops
+  function loopsOf(mask, W, H) {
+    var V = W + 1, out = {}, edges = 0;
+    function add(x0, y0, x1, y1) { var k = y0 * V + x0; (out[k] || (out[k] = [])).push([x1, y1]); edges++; }
+    for (var y = 0; y < H; y++) { for (var x = 0; x < W; x++) { if (!mask[y * W + x]) { continue; }
+      if (y === 0 || !mask[(y - 1) * W + x]) { add(x, y, x + 1, y); } if (x === W - 1 || !mask[y * W + x + 1]) { add(x + 1, y, x + 1, y + 1); }
+      if (y === H - 1 || !mask[(y + 1) * W + x]) { add(x + 1, y + 1, x, y + 1); } if (x === 0 || !mask[y * W + x - 1]) { add(x, y + 1, x, y); } } }
+    var loops = [];
+    Object.keys(out).forEach(function (k0) {
+      while (out[k0] && out[k0].length) {
+        var kx = Number(k0) % V, ky = Math.floor(Number(k0) / V), loop = [[kx, ky]], cx = kx, cy = ky, px = null, py = null, guard = 0;
+        for (;;) {
+          var key = cy * V + cx, list = out[key]; if (!list || !list.length) { break; }
+          var pick = 0; if (list.length > 1 && px !== null) {   // a point where two outlines touch: turn right (keeps the two apart)
+            var dxp = cx - px, dyp = cy - py, bestTurn = -9; list.forEach(function (e, i) { var dx = e[0] - cx, dy = e[1] - cy, cross = dxp * dy - dyp * dx; if (cross > bestTurn) { bestTurn = cross; pick = i; } });
+          }
+          var e2 = list.splice(pick, 1)[0]; px = cx; py = cy; cx = e2[0]; cy = e2[1]; if (cx === kx && cy === ky) { break; } loop.push([cx, cy]); if (++guard > 4 * W * H + 10) { break; }
+        }
+        loops.push(loop);
+      }
+    });
+    return loops;
+  }
+  function dropCollinear(loop) { var out = [], n = loop.length; for (var i = 0; i < n; i++) { var a = loop[(i + n - 1) % n], b = loop[i], c = loop[(i + 1) % n]; if ((b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]) !== 0) { out.push(b); } } return out; }
+  function dp(pts, eps) {
+    if (pts.length < 3) { return pts; } var keep = new Array(pts.length), stack = [[0, pts.length - 1]]; keep[0] = keep[pts.length - 1] = true;
+    while (stack.length) { var s = stack.pop(), a = pts[s[0]], b = pts[s[1]], md = -1, mi = -1, dx = b[0] - a[0], dy = b[1] - a[1], L = Math.sqrt(dx * dx + dy * dy) || 1;
+      for (var i = s[0] + 1; i < s[1]; i++) { var d = Math.abs(dy * (pts[i][0] - a[0]) - dx * (pts[i][1] - a[1])) / L; if (d > md) { md = d; mi = i; } }
+      if (md > eps && mi > 0) { keep[mi] = true; stack.push([s[0], mi], [mi, s[1]]); } }
+    return pts.filter(function (p, i) { return keep[i]; });
+  }
+  function simplify(loop, eps) { var c = dropCollinear(loop); if (c.length < 4) { return c; } var half = c.length >> 1, a = dp(c.slice(0, half + 1), eps), b = dp(c.slice(half).concat([c[0]]), eps); var out = a.slice(0, -1).concat(b.slice(0, -1)); return out.length >= 3 ? out : c; }
+  function r1(n) { return Math.round(n * 10) / 10; }
+  function pathOf(loops, smooth) {
+    return loops.map(function (l) {
+      if (l.length < 3) { return ''; }
+      if (!smooth || l.length < 6) { return 'M' + l.map(function (p) { return r1(p[0]) + ' ' + r1(p[1]); }).join('L') + 'Z'; }
+      var n = l.length, mid = function (a, b) { return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]; }, m0 = mid(l[n - 1], l[0]), d = 'M' + r1(m0[0]) + ' ' + r1(m0[1]);
+      for (var i = 0; i < n; i++) { var m = mid(l[i], l[(i + 1) % n]); d += 'Q' + r1(l[i][0]) + ' ' + r1(l[i][1]) + ' ' + r1(m[0]) + ' ' + r1(m[1]); } return d + 'Z';
+    }).join('');
+  }
+  function area(loop) { var a = 0; for (var i = 0; i < loop.length; i++) { var p = loop[i], q = loop[(i + 1) % loop.length]; a += p[0] * q[1] - q[0] * p[1]; } return a / 2; }
+
+  function trace(img, o) {
+    o = o || {}; var k = Math.max(2, Math.min(40, o.colors || 12)), small = shrink(img, o.maxSide || 256), W = small.width, H = small.height, pal = quantize(small, k), lab = label(small, pal);
+    var count = pal.map(function () { return 0; }); for (var i = 0; i < lab.length; i++) { count[lab[i]]++; }
+    var order = pal.map(function (c, j) { return j; }).filter(function (j) { return count[j] > 0; }).sort(function (a, b) { return count[b] - count[a]; }), minArea = o.minArea != null ? o.minArea : Math.max(3, W * H * 0.0006), eps = o.epsilon != null ? o.epsilon : 0.8, layers = [];
+    order.forEach(function (j, rank) {
+      var c = pal[j], col = hex(c[0], c[1], c[2]);
+      if (rank === 0) { layers.push({ color: col, name: colorName(col) + '背景', area: count[j], bbox: { x: 0, y: 0, w: W, h: H }, d: 'M0 0H' + W + 'V' + H + 'H0Z', loops: [], background: true }); return; }
+      if (count[j] < minArea) { return; }
+      var mask = new Uint8Array(W * H); for (var q = 0; q < mask.length; q++) { if (lab[q] === j) { mask[q] = 1; } }
+      var loops = loopsOf(mask, W, H).map(function (l) { return simplify(l, eps); }).filter(function (l) { return l.length >= 3 && Math.abs(area(l)) >= Math.max(2, minArea / 3); });
+      if (!loops.length) { return; }
+      var x0 = 1e9, y0 = 1e9, x1 = -1, y1 = -1; loops.forEach(function (l) { l.forEach(function (p) { if (p[0] < x0) { x0 = p[0]; } if (p[0] > x1) { x1 = p[0]; } if (p[1] < y0) { y0 = p[1]; } if (p[1] > y1) { y1 = p[1]; } }); });
+      var bb = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+      layers.push({ color: col, name: colorName(col) + where(bb, W, H), area: count[j], bbox: bb, d: pathOf(loops, o.smooth !== false), loops: loops });
+    });
+    return { w: W, h: H, scale: small.scale, layers: layers, colors: pal.length };
+  }
+  // the layers as objects (bottom first), placed so the picture's top-left corner is at (x, y) and it is `width` wide
+  function toObjects(res, o) {
+    o = o || {}; var x = o.x || 0, y = o.y || 0, sc = (o.width || res.w) / res.w, names = {};
+    return res.layers.map(function (l, i) {
+      var base = (o.namePrefix || '') + l.name, n = (names[base] = (names[base] || 0) + 1); var nm = n > 1 ? base + ' ' + n : base;
+      var markup = '<path d="' + l.d + '" fill="' + l.color + '"' + (l.background ? '' : ' fill-rule="evenodd" stroke="' + l.color + '" stroke-width="0.6" stroke-linejoin="round"') + '/>';
+      return { type: 'svg', name: nm, markup: markup, x: x, y: y, w: res.w, h: res.h, scale: Math.round(sc * 10000) / 10000 };
+    });
+  }
+  // how alike two pictures are: both are looked at as 48 x 48 averages; mae = mean absolute colour difference (0..255), score = 1 - mae / 160 (a plain mismatch is about 0.3 or less)
+  function grid(img, n) {
+    var out = new Float32Array(n * n * 3);
+    for (var y = 0; y < n; y++) { for (var x = 0; x < n; x++) { var x0 = Math.floor(x * img.width / n), x1 = Math.max(x0 + 1, Math.floor((x + 1) * img.width / n)), y0 = Math.floor(y * img.height / n), y1 = Math.max(y0 + 1, Math.floor((y + 1) * img.height / n)), r = 0, g = 0, b = 0, c = 0;
+      for (var yy = y0; yy < y1 && yy < img.height; yy++) { for (var xx = x0; xx < x1 && xx < img.width; xx++) { var i = (yy * img.width + xx) * 4, al = img.data[i + 3] / 255; r += img.data[i] * al + 255 * (1 - al); g += img.data[i + 1] * al + 255 * (1 - al); b += img.data[i + 2] * al + 255 * (1 - al); c++; } }
+      c = c || 1; var o = (y * n + x) * 3; out[o] = r / c; out[o + 1] = g / c; out[o + 2] = b / c; } }
+    return out;
+  }
+  function compare(a, b) { var n = 48, ga = grid(a, n), gb = grid(b, n), s = 0; for (var i = 0; i < ga.length; i++) { s += Math.abs(ga[i] - gb[i]); } var mae = s / ga.length; return { mae: Math.round(mae * 100) / 100, score: Math.max(0, Math.min(1, Math.round((1 - mae / 160) * 1000) / 1000)) }; }
+  return { trace: trace, toObjects: toObjects, compare: compare, colorName: colorName, where: where, shrink: shrink, quantize: quantize, loopsOf: loopsOf, simplify: simplify, area: area };
+});
+
+}).call(null, undefined, holder);
+return holder.FaSvgTrace;
+})();
+/* EDTRACE-END */
+/* EDSVGUI-BEGIN */
+const FaEditSvgUI = (function () {
+const holder = {};
+(function (module, self) {
+// The screen of /edit-svg, built on the shared frame (edit_shell.js): the middle viewer is an ENDLESS plane (edit_viewport.js: scrollbars, drag the view, zoom; only the visible part is drawn), click an
+// object to select it, drag it to move it (one undo step), the objects view and the properties panel are the frame's / this file's, the source tab shows the whole drawing as one SVG.
+//   FaEditSvgUI.mount({ id, state, spec, host, container, restoring, store }) -> element (see FaEditShell: el._ed)
+//   host: { ask, save, download, toChat?, polish?, palette?, windowApi? }  as the frame wants;  store = FaEditStore (pictures)
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaEditSvgUI = factory((root.FaEditSvg || (typeof FaEditSvg !== 'undefined' ? FaEditSvg : undefined)), (root.FaEditShell || (typeof FaEditShell !== 'undefined' ? FaEditShell : undefined)), (root.FaEditViewport || (typeof FaEditViewport !== 'undefined' ? FaEditViewport : undefined))); })(typeof self !== 'undefined' ? self : this, function (C, Shell, VP) {
+  'use strict';
+  var NS = 'http://www.w3.org/2000/svg';
+  function h(tag, cls, text) { var e = document.createElement(tag); if (cls) { e.className = cls; } if (text != null) { e.textContent = text; } return e; }
+  var ICON = { rect: '▭', ellipse: '⬭', line: '╱', arrow: '➜', triangle: '△', polygon: '⬡', star: '★', path: '✎', text: 'T' };
+  function slug(s) { return String(s || 'drawing').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ').replace(/\s+/g, '_').replace(/^_+|_+$/g, '').slice(0, 50) || 'drawing'; }
+  function rasterize(svgText, w, h, scale) {
+    return new Promise(function (resolve, reject) {
+      var url = URL.createObjectURL(new Blob([svgText], { type: 'image/svg+xml;charset=utf-8' })), img = new Image();
+      img.onload = function () { try { var cv = document.createElement('canvas'); cv.width = Math.max(1, Math.round(w * scale)); cv.height = Math.max(1, Math.round(h * scale)); var g = cv.getContext('2d'); g.drawImage(img, 0, 0, cv.width, cv.height); URL.revokeObjectURL(url); cv.toBlob(function (b) { b ? resolve(b) : reject(new Error('could not make the picture')); }, 'image/png'); } catch (e) { URL.revokeObjectURL(url); reject(e); } };
+      img.onerror = function () { URL.revokeObjectURL(url); reject(new Error('the drawing could not be drawn as a picture')); }; img.src = url;
+    });
+  }
+
+  function mount(opt) {
+    var store = opt.store, host = opt.host || {};
+    var W = { validate: C.validate, applyEdits: C.applyEdits, editWords: C.editWords, list: C.list, find: C.find };
+    var resolve = function (ref) { return store ? store.imageUrl(ref) : ''; };
+    return Shell.mount({
+      id: opt.id, kind: 'edit-svg', title: '🖍 SVG 編輯器', W: W, spec: opt.spec, state: opt.state, host: host, container: opt.container, restoring: opt.restoring, windowApi: opt.windowApi,
+      tabs: [{ id: 'canvas', label: '🖼 畫面', viewer: true }, { id: 'source', label: '🧩 原始碼' }],
+      placeholder: '用說的畫：「在中間畫一個紅色的圓」「在太陽的右邊加一朵雲」「把煙囪放到房子上面」「找一張飛機的照片」；也可以貼一張圖進來，我試著把它變成 SVG（向量圖）',
+      intro: '我是用語言來畫的概念畫家：你說要畫什麼、放在哪個東西的哪一邊，我就加一個新的物件（形狀、手繪的圖、網路上找的圖片都是物件），可以隨時隱藏、改名、鎖定、移動或刪掉，改錯了按「復原」。畫面沒有邊界，可以加在任何地方；中間的畫面可以拖曳、縮放，⌖ 回到第一個物件（圖片）的中間。貼一張圖進來，我會試著把它變成 SVG：先用程式描出每個顏色的輪廓，再用視覺模型看過、比對，不夠像就重來。也可以直接給網址，或說「找一張…的圖」。',
+      objectIcon: function (o) { return o.type === 'shape' ? (ICON[o.shape] || '◻') : o.type === 'svg' ? '🖍' : '🖼'; },
+      objectInfo: function (o) { return o.type === 'shape' ? o.shape : o.type === 'image' ? (o.credit ? '圖片・' + o.credit.split('—')[0].trim().slice(0, 14) : '圖片') : 'svg'; },
+      parseCommands: C.parseCommands, promptOf: C.specToPrompt,
+      exports: [{ id: 'png', label: 'PNG 圖片' }, { id: 'svg', label: 'SVG 檔' }, { id: 'json', label: '專案（JSON）', chat: false }],
+      runExport: async function (id, spec) {
+        var name = slug(spec.title);
+        if (id === 'json') { return { blob: new Blob([JSON.stringify(spec, null, 1)], { type: 'application/json' }), name: name + '.json', mime: 'application/json' }; }
+        var svg = C.compose(spec, { resolve: resolve });
+        if (id === 'svg') { return { blob: new Blob([svg], { type: 'image/svg+xml' }), name: name + '.svg', mime: 'image/svg+xml' }; }
+        var sc = Math.min(2, 4096 / Math.max(spec.canvas.w, spec.canvas.h)); return { blob: await rasterize(svg, spec.canvas.w, spec.canvas.h, sc), name: name + '.png', mime: 'image/png' };
+      },
+      build: function (ctx) {
+        var spec = null, sel = null, drag = null, viewEl = h('div'), srcWrap = h('div'), vp = null;
+        viewEl.style.cssText = 'display:flex;flex:1;min-height:0;min-width:0'; srcWrap.style.cssText = 'display:flex;flex-direction:column;gap:6px;flex:1';
+        // ───── the endless plane: draw only what is in view ─────
+        function pattern(z) { var s = Math.max(8, 16 / z); return '<defs><pattern id="few-chk" width="' + (2 * s) + '" height="' + (2 * s) + '" patternUnits="userSpaceOnUse"><rect width="' + (2 * s) + '" height="' + (2 * s) + '" fill="#e9ebef"/><rect width="' + s + '" height="' + s + '" fill="#dfe2e7"/><rect x="' + s + '" y="' + s + '" width="' + s + '" height="' + s + '" fill="#dfe2e7"/></pattern></defs>'; }
+        function draw() {
+          if (!vp || !spec) { return; }
+          var v = vp.view(), c = spec.canvas, z = v.z, parts = ['<svg xmlns="' + NS + '" width="' + v.cw + '" height="' + v.ch + '" viewBox="' + v.x + ' ' + v.y + ' ' + v.w + ' ' + v.h + '">'];
+          parts.push(pattern(z), '<rect x="' + v.x + '" y="' + v.y + '" width="' + v.w + '" height="' + v.h + '" fill="url(#few-chk)"/>');
+          parts.push('<rect x="' + c.x + '" y="' + c.y + '" width="' + c.w + '" height="' + c.h + '" fill="' + c.bg + '"/>');
+          spec.objects.forEach(function (o) { if (o.visible) { parts.push(C.objectMarkup(o, resolve).replace(/^<g id="/, '<g data-oid="')); } });
+          parts.push('<rect x="' + c.x + '" y="' + c.y + '" width="' + c.w + '" height="' + c.h + '" fill="none" stroke="#8a93a3" stroke-width="' + (1 / z) + '" stroke-dasharray="' + (6 / z) + ' ' + (4 / z) + '" pointer-events="none"/>');
+          var so = sel ? spec.objects.filter(function (o) { return o.id === sel; })[0] : null;
+          if (so && so.visible) { var b = C.types[so.type].bbox(so), k = 1 / z; parts.push('<g pointer-events="none"><rect x="' + b.x + '" y="' + b.y + '" width="' + b.w + '" height="' + b.h + '" fill="none" stroke="#2f81f7" stroke-width="' + (1.5 * k) + '" stroke-dasharray="' + (5 * k) + ' ' + (3 * k) + '"/>' + [[b.x, b.y], [b.x + b.w, b.y], [b.x, b.y + b.h], [b.x + b.w, b.y + b.h]].map(function (p) { return '<rect x="' + (p[0] - 3 * k) + '" y="' + (p[1] - 3 * k) + '" width="' + (6 * k) + '" height="' + (6 * k) + '" fill="#fff" stroke="#2f81f7" stroke-width="' + k + '"/>'; }).join('') + '</g>'); }
+          parts.push('</svg>');
+          var markup = parts.join('');
+          var DP = typeof window !== 'undefined' ? window.DOMPurify : null; if (DP) { markup = DP.sanitize(markup, { USE_PROFILES: { svg: true, svgFilters: true }, ADD_ATTR: ['data-oid', 'data-name'] }); }
+          vp.layer.innerHTML = markup;
+        }
+        vp = VP.create({
+          onView: draw, background: '#eef0f3',
+          handle: function (ev) {
+            var t = ev.target && ev.target.closest ? ev.target.closest('[data-oid]') : null; if (!t) { return false; }
+            var id = t.getAttribute('data-oid'), o = spec.objects.filter(function (x) { return x.id === id; })[0]; if (!o) { return false; }
+            ctx.select(id); ev.preventDefault();
+            if (o.locked) { return true; }
+            var w0 = vp.toWorld(ev.clientX, ev.clientY); drag = { id: id, w0: w0, dx: 0, dy: 0, moved: false, el: vp.layer.querySelector('[data-oid="' + id + '"]') };
+            var mv = function (e) { if (!drag) { return; } var w1 = vp.toWorld(e.clientX, e.clientY); drag.dx = w1.x - drag.w0.x; drag.dy = w1.y - drag.w0.y; if (Math.abs(drag.dx) + Math.abs(drag.dy) > 2 / vp.zoom()) { drag.moved = true; } if (drag.el) { drag.el.style.transform = 'translate(' + drag.dx + 'px,' + drag.dy + 'px)'; } };
+            var up = function () { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up); var d = drag; drag = null; if (d && d.moved) { var o2 = spec.objects.filter(function (x) { return x.id === d.id; })[0]; ctx.apply([{ op: 'transform_object', id: d.id, dx: Math.round(d.dx * 100) / 100, dy: Math.round(d.dy * 100) / 100 }], '移動 ' + (o2 ? o2.name : d.id), '', 'panel'); } };
+            window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up); return true;
+          },
+          onBackgroundClick: function () { ctx.select(null); }
+        });
+        viewEl.appendChild(vp.el);
+        // ───── properties of the selected object (or of the canvas frame) ─────
+        function field(label, type, value, onChange, extra) {
+          var l = h('label'), i = h('input'); i.type = type; i.value = value == null ? '' : value; if (extra && extra.step) { i.step = extra.step; } if (extra && extra.min != null) { i.min = extra.min; } l.appendChild(document.createTextNode(label)); l.appendChild(i);
+          i.onchange = function () { onChange(type === 'number' ? Number(i.value) : i.value); }; return l;
+        }
+        function props() {
+          var box = h('div'); box.style.cssText = 'display:flex;flex-direction:column;gap:6px';
+          var o = sel ? spec.objects.filter(function (x) { return x.id === sel; })[0] : null;
+          function upd(p, words) { ctx.apply([{ op: 'update_object', id: o.id, props: p }], words || ('改 ' + o.name), '', 'panel'); }
+          if (!o) {
+            var c = spec.canvas; box.appendChild(h('div', 'st', '畫布（匯出的範圍框，不是邊界）'));
+            [['x', c.x], ['y', c.y], ['寬', c.w], ['高', c.h]].forEach(function (f, i) { box.appendChild(field(f[0], 'number', f[1], function (v) { var e = { op: 'set_canvas' }; e[['x', 'y', 'w', 'h'][i]] = v; ctx.apply([e], '畫布 ' + f[0] + '=' + v, '', 'panel'); })); });
+            box.appendChild(field('背景', 'color', /^#[0-9a-f]{6}$/i.test(c.bg) ? c.bg : '#ffffff', function (v) { ctx.apply([{ op: 'set_canvas', bg: v }], '背景 ' + v, '', 'panel'); }));
+            var fit = h('button', null, '貼合內容'); fit.onclick = function () { ctx.apply([{ op: 'fit_canvas' }], '畫布貼合內容', '', 'panel'); box.appendChild(h('span')); }; box.appendChild(fit);
+            return box;
+          }
+          box.appendChild(h('div', 'st', o.name + '（' + (o.type === 'shape' ? o.shape : o.type) + '，' + o.id + '）'));
+          if (o.type === 'shape') {
+            ['x', 'y', 'w', 'h'].forEach(function (k) { box.appendChild(field(k === 'w' ? '寬' : k === 'h' ? '高' : k, 'number', o[k], function (v) { var p = {}; p[k] = v; upd(p); }, { step: 1 })); });
+            if (o.shape !== 'line' && o.shape !== 'arrow') { box.appendChild(field('填色', 'color', /^#[0-9a-f]{6}$/i.test(o.fill) ? o.fill : '#4f8ef7', function (v) { upd({ fill: v }, o.name + ' 填色 ' + v); })); }
+            box.appendChild(field('邊框', 'color', /^#[0-9a-f]{6}$/i.test(o.stroke) ? o.stroke : '#333333', function (v) { upd({ stroke: v }, o.name + ' 邊框 ' + v); })); box.appendChild(field('邊框粗細', 'number', o.sw, function (v) { upd({ sw: v }); }, { step: 1, min: 0 }));
+            if (o.shape === 'text') { box.appendChild(field('文字', 'text', o.text, function (v) { upd({ text: v }); })); box.appendChild(field('字級', 'number', o.size, function (v) { upd({ size: v }); })); }
+            if (o.shape === 'polygon' || o.shape === 'star') { box.appendChild(field('邊數', 'number', o.sides, function (v) { upd({ sides: v }); })); }
+            if (o.shape === 'rect') { box.appendChild(field('圓角', 'number', o.rx, function (v) { upd({ rx: v }); }, { min: 0 })); }
+            box.appendChild(field('旋轉', 'number', o.rotate, function (v) { upd({ rotate: v }); })); box.appendChild(field('透明度', 'number', o.opacity, function (v) { upd({ opacity: v }); }, { step: 0.1, min: 0 }));
+          } else if (o.type === 'svg') {
+            ['x', 'y'].forEach(function (k) { box.appendChild(field(k, 'number', o[k], function (v) { var p = {}; p[k] = v; upd(p); }, { step: 1 })); });
+            box.appendChild(field('縮放', 'number', o.scale, function (v) { upd({ scale: v }); }, { step: 0.1, min: 0.01 })); box.appendChild(field('旋轉', 'number', o.rotate, function (v) { upd({ rotate: v }); })); box.appendChild(field('透明度', 'number', o.opacity, function (v) { upd({ opacity: v }); }, { step: 0.1, min: 0 }));
+            var ta = h('textarea', 'code'); ta.rows = 6; ta.value = o.markup; ta.spellcheck = false; ta.onchange = function () { upd({ markup: ta.value }, o.name + ' 的圖形內容'); }; box.appendChild(h('div', 'st', 'SVG 內容（改完離開輸入框就會套用）')); box.appendChild(ta);
+          } else if (o.type === 'image') {
+            ['x', 'y', 'w', 'h'].forEach(function (k) { box.appendChild(field(k === 'w' ? '寬' : k === 'h' ? '高' : k, 'number', o[k], function (v) { var p = {}; p[k] = v; upd(p); }, { step: 1 })); }); box.appendChild(field('透明度', 'number', o.opacity, function (v) { upd({ opacity: v }); }, { step: 0.1, min: 0 }));
+            if (o.credit) { box.appendChild(h('div', 'st', '出處：' + o.credit)); }
+            var vec = h('button', null, '✨ 把這張圖變成 SVG'); vec.onclick = function () { if (ctx.el._ed && opt.onVectorize) { opt.onVectorize(o); } }; if (opt.onVectorize) { box.appendChild(vec); }
+          }
+          return box;
+        }
+        // ───── source: the whole drawing as one SVG; applying it makes objects again ─────
+        var srcTa = h('textarea', 'code'); srcTa.rows = 18; srcTa.spellcheck = false; srcTa.style.flex = '1'; var srcRow = h('div', 'row'), bApply = h('button', 'pri', '▶ 套用原始碼'), bRe = h('button', null, '↻ 重新產生'), srcSt = h('span', 'st'); [bApply, bRe, srcSt].forEach(function (x) { srcRow.appendChild(x); });
+        srcWrap.appendChild(h('div', 'st', '整張圖的 SVG。改完按「套用原始碼」：最上層的每個元素會變成一個物件（名字從 data-name／id 來；用形狀工具畫的形狀會變成「圖形」物件）。'));
+        srcWrap.appendChild(srcTa); srcWrap.appendChild(srcRow);
+        function composeForSource() { return C.compose(spec, { resolve: function (r) { return 'ref:' + r; } }); }
+        function refreshSource() { if (document.activeElement !== srcTa) { srcTa.value = composeForSource(); } }
+        bRe.onclick = function () { srcTa.value = composeForSource(); srcSt.textContent = ''; };
+        bApply.onclick = function () {
+          var text = srcTa.value; if (text === composeForSource()) { srcSt.textContent = '沒有改動'; return; }
+          var d = C.decompose(text, spec.canvas); if (!d.ok) { srcSt.className = 'st bad'; srcSt.textContent = d.error; return; }
+          var objs = d.objects.map(function (o) { var m = /^<g[^>]*>\s*<image x="(-?[\d.]+)" y="(-?[\d.]+)" width="([\d.]+)" height="([\d.]+)"[^>]*href="ref:([A-Za-z0-9_-]+)"/.exec(o.markup); return m ? { type: 'image', name: o.name, ref: m[5], x: Number(m[1]), y: Number(m[2]), w: Number(m[3]), h: Number(m[4]) } : o; });
+          var r = C.validate({ title: spec.title, canvas: d.canvas, objects: objs });
+          if (!r.spec.objects.length) { srcSt.className = 'st bad'; srcSt.textContent = '沒有可用的物件：' + (r.problems[0] || ''); return; }
+          ctx.commit(r.spec, '改寫原始碼（' + r.spec.objects.length + ' 個物件）', '', 'panel'); srcSt.className = 'st'; srcSt.textContent = '已套用' + (r.problems.length ? '（略過 ' + r.problems.length + ' 個不能用的元素）' : '');
+        };
+        return {
+          tabs: { canvas: viewEl, source: srcWrap },
+          env: function () { var v = vp.view(); return { view: { x: v.x, y: v.y, w: v.w, h: v.h } }; },
+          refresh: function (s, selId) {
+            spec = s; sel = selId;
+            var b = C.bounds(s), c = s.canvas; var all = b ? { x: Math.min(b.x, c.x), y: Math.min(b.y, c.y), w: Math.max(b.x + b.w, c.x + c.w) - Math.min(b.x, c.x), h: Math.max(b.y + b.h, c.y + c.h) - Math.min(b.y, c.y) } : { x: c.x, y: c.y, w: c.w, h: c.h };
+            vp.setBounds(all); var first = s.objects[0] ? C.types[s.objects[0].type].bbox(s.objects[0]) : null; vp.setHome(first || { x: c.x, y: c.y, w: c.w, h: c.h });
+            draw(); ctx.setProps(props()); refreshSource();
+          },
+          showTab: function (t) { if (t === 'source') { srcTa.value = composeForSource(); } else { draw(); } },
+          vp: vp, destroy: function () { vp.destroy(); }
+        };
+      }
+    });
+  }
+  return { mount: mount, rasterize: rasterize };
+});
+
+}).call(null, undefined, holder);
+return holder.FaEditSvgUI;
+})();
+/* EDSVGUI-END */
+/* EDPFX-BEGIN */
+const FaPicFx = (function () {
+const holder = {};
+(function (module, self) {
+// What /edit-picture adds to imgproc (the 28 operations of /image: brightness, blur, grade, vignette ...): GIMP-like STYLE filters and REPAIR, all pure JS on {width, height, data: RGBA} so they run in the
+// browser, in a worker, and in node tests (the same result everywhere). No model is needed for any of them; the vision model only helps to choose and to judge.
+//   style filters   oil (oil paint) · sketch (pencil) · cartoon · watercolor · emboss · halftone · neon (glowing edges)
+//   repair          denoise · despeckle (dust and scratches) · inpaint(mask) (fill a marked spot from what is around it)
+//   FaPicFx.run(img, ops, { imgproc }) -> { img, applied }     ops as {op:'oil', radius:3}; any op that is not one of these goes to FaImgProc (brightness, blur, grade, ...)
+//   FaPicFx.STYLES  { oil:{ label, words:[...], ops:[...] }, ... }   named looks (what "make it watercolor" means); FaPicFx.styleFor(text) -> id | null
+//   FaPicFx.inpaint(img, mask) / marksToMask(marks, region, W, H)
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaPicFx = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
+  function num(v, lo, hi, d) { var n = Number(v); return isFinite(n) ? clamp(n, lo, hi) : d; }
+  function make(w, h) { return { width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }; }
+  function clone(img) { return { width: img.width, height: img.height, data: new Uint8ClampedArray(img.data) }; }
+  function lum(r, g, b) { return 0.299 * r + 0.587 * g + 0.114 * b; }
+  function gray(img) { var n = img.width * img.height, g = new Float32Array(n); for (var i = 0; i < n; i++) { g[i] = lum(img.data[i * 4], img.data[i * 4 + 1], img.data[i * 4 + 2]); } return g; }
+  // a box blur on one float plane (repeated 3 times it is close to a gaussian); r in pixels
+  function boxBlur(plane, w, h, r) {
+    r = Math.max(1, Math.round(r)); var tmp = new Float32Array(plane.length), out = new Float32Array(plane.length), k = 2 * r + 1;
+    for (var y = 0; y < h; y++) { var acc = 0, row = y * w; for (var x = -r; x <= r; x++) { acc += plane[row + clamp(x, 0, w - 1)]; } for (x = 0; x < w; x++) { tmp[row + x] = acc / k; acc += plane[row + clamp(x + r + 1, 0, w - 1)] - plane[row + clamp(x - r, 0, w - 1)]; } }
+    for (var x2 = 0; x2 < w; x2++) { var acc2 = 0; for (var yy = -r; yy <= r; yy++) { acc2 += tmp[clamp(yy, 0, h - 1) * w + x2]; } for (y = 0; y < h; y++) { out[y * w + x2] = acc2 / k; acc2 += tmp[clamp(y + r + 1, 0, h - 1) * w + x2] - tmp[clamp(y - r, 0, h - 1) * w + x2]; } }
+    return out;
+  }
+  function blur3(plane, w, h, r) { return boxBlur(boxBlur(boxBlur(plane, w, h, r), w, h, r), w, h, r); }
+  function sobel(g, w, h) {
+    var mag = new Float32Array(w * h), ang = new Float32Array(w * h);
+    for (var y = 1; y < h - 1; y++) { for (var x = 1; x < w - 1; x++) { var i = y * w + x, gx = -g[i - w - 1] - 2 * g[i - 1] - g[i + w - 1] + g[i - w + 1] + 2 * g[i + 1] + g[i + w + 1], gy = -g[i - w - 1] - 2 * g[i - w] - g[i - w + 1] + g[i + w - 1] + 2 * g[i + w] + g[i + w + 1]; mag[i] = Math.sqrt(gx * gx + gy * gy); ang[i] = Math.atan2(gy, gx); } }
+    return { mag: mag, ang: ang };
+  }
+  function hash(x, y) { var n = (x * 374761393 + y * 668265263) | 0; n = (n ^ (n >>> 13)) * 1274126177; return ((n ^ (n >>> 16)) >>> 0) / 4294967296; }
+
+  // ───────────── style filters ─────────────
+  function oil(img, o) {   // the classic oil-paint filter: in a window, the most common brightness bin decides the colour
+    o = o || {}; var R = Math.round(num(o.radius, 1, 8, 3)), L = Math.round(num(o.levels, 4, 64, 20)), w = img.width, h = img.height, out = make(w, h), d = img.data, bins = new Int32Array(L), sr = new Int32Array(L), sg = new Int32Array(L), sb = new Int32Array(L);
+    for (var y = 0; y < h; y++) { for (var x = 0; x < w; x++) {
+      bins.fill(0); sr.fill(0); sg.fill(0); sb.fill(0);
+      for (var yy = Math.max(0, y - R); yy <= Math.min(h - 1, y + R); yy++) { for (var xx = Math.max(0, x - R); xx <= Math.min(w - 1, x + R); xx++) { var j = (yy * w + xx) * 4, b = Math.min(L - 1, (lum(d[j], d[j + 1], d[j + 2]) * L / 256) | 0); bins[b]++; sr[b] += d[j]; sg[b] += d[j + 1]; sb[b] += d[j + 2]; } }
+      var best = 0; for (var k = 1; k < L; k++) { if (bins[k] > bins[best]) { best = k; } }
+      var p = (y * w + x) * 4, c = bins[best] || 1; out.data[p] = sr[best] / c; out.data[p + 1] = sg[best] / c; out.data[p + 2] = sb[best] / c; out.data[p + 3] = d[p + 3];
+    } }
+    return out;
+  }
+  function sketch(img, o) {   // pencil: grey, inverted, blurred, colour-dodged (the lines are where the picture changes)
+    o = o || {}; var w = img.width, h = img.height, g = gray(img), inv = new Float32Array(g.length); for (var i = 0; i < g.length; i++) { inv[i] = 255 - g[i]; }
+    var bl = blur3(inv, w, h, Math.max(2, Math.round(num(o.radius, 1, 30, 6) * Math.max(1, Math.min(w, h) / 600)))), out = make(w, h), k = num(o.strength, 0.3, 3, 1);
+    for (i = 0; i < g.length; i++) { var v = clamp(g[i] * 255 / Math.max(1, 255 - bl[i]), 0, 255); v = clamp(255 - (255 - v) * k, 0, 255); out.data[i * 4] = out.data[i * 4 + 1] = out.data[i * 4 + 2] = v; out.data[i * 4 + 3] = img.data[i * 4 + 3]; }
+    return out;
+  }
+  function smoothColor(img, r, times) {   // edge-keeping-ish smoothing: blur each channel, but keep the original where the local change is big
+    var w = img.width, h = img.height, n = w * h, ch = [new Float32Array(n), new Float32Array(n), new Float32Array(n)], g = gray(img);
+    for (var i = 0; i < n; i++) { ch[0][i] = img.data[i * 4]; ch[1][i] = img.data[i * 4 + 1]; ch[2][i] = img.data[i * 4 + 2]; }
+    for (var t = 0; t < times; t++) { var bl = ch.map(function (p) { return boxBlur(p, w, h, r); }); for (i = 0; i < n; i++) { var dv = Math.abs(ch[0][i] - bl[0][i]) + Math.abs(ch[1][i] - bl[1][i]) + Math.abs(ch[2][i] - bl[2][i]), keep = clamp((dv - 30) / 60, 0, 1); for (var c = 0; c < 3; c++) { ch[c][i] = ch[c][i] * keep + bl[c][i] * (1 - keep); } } }
+    var out = make(w, h); for (i = 0; i < n; i++) { out.data[i * 4] = ch[0][i]; out.data[i * 4 + 1] = ch[1][i]; out.data[i * 4 + 2] = ch[2][i]; out.data[i * 4 + 3] = img.data[i * 4 + 3]; } return out;
+  }
+  function cartoon(img, o) {
+    o = o || {}; var w = img.width, h = img.height, lv = Math.round(num(o.levels, 3, 12, 6)), sm = smoothColor(img, Math.max(1, Math.round(Math.min(w, h) / 300)), 3), g = gray(sm), e = sobel(blur3(g, w, h, 1), w, h), out = make(w, h), step = 255 / (lv - 1), th = num(o.edge, 20, 400, 90);
+    for (var i = 0; i < w * h; i++) { var dark = e.mag[i] > th, p = i * 4; for (var c = 0; c < 3; c++) { var v = Math.round(sm.data[p + c] / step) * step; out.data[p + c] = dark ? 20 : clamp(v, 0, 255); } out.data[p + 3] = img.data[p + 3]; }
+    return out;
+  }
+  function watercolor(img, o) {
+    o = o || {}; var w = img.width, h = img.height, sm = smoothColor(img, Math.max(2, Math.round(Math.min(w, h) / 160)), 4), g = gray(sm), e = sobel(boxBlur(g, w, h, 1), w, h), out = make(w, h), paper = num(o.paper, 0, 1, 0.5);
+    for (var y = 0; y < h; y++) { for (var x = 0; x < w; x++) { var i = y * w + x, p = i * 4, edge = clamp(e.mag[i] / 400, 0, 0.35), tex = (hash(x >> 1, y >> 1) - 0.5) * 22 * paper, wash = 0.9; var m = (sm.data[p] + sm.data[p + 1] + sm.data[p + 2]) / 3;
+      for (var c = 0; c < 3; c++) { var v = m + (sm.data[p + c] - m) * 0.85; v = 255 - (255 - v) * wash; v = v * (1 - edge) + tex; out.data[p + c] = clamp(v, 0, 255); } out.data[p + 3] = img.data[p + 3]; } }
+    return out;
+  }
+  function emboss(img, o) {
+    o = o || {}; var w = img.width, h = img.height, g = gray(img), out = make(w, h), k = num(o.strength, 0.3, 4, 1);
+    for (var q = 0; q < w * h; q++) { out.data[q * 4] = out.data[q * 4 + 1] = out.data[q * 4 + 2] = 128; out.data[q * 4 + 3] = img.data[q * 4 + 3]; }   // the border pixels are plain grey
+    for (var y = 1; y < h - 1; y++) { for (var x = 1; x < w - 1; x++) { var i = y * w + x, v = clamp(128 + k * (g[i - w - 1] * -2 - g[i - w] - g[i - 1] + g[i + 1] + g[i + w] + g[i + w + 1] * 2) / 2, 0, 255), p = i * 4; out.data[p] = out.data[p + 1] = out.data[p + 2] = v; out.data[p + 3] = img.data[p + 3]; } }
+    return out;
+  }
+  function halftone(img, o) {
+    o = o || {}; var w = img.width, h = img.height, cell = Math.round(num(o.size, 3, 40, Math.max(4, Math.round(Math.min(w, h) / 90)))), out = make(w, h);
+    for (var i = 0; i < w * h; i++) { out.data[i * 4] = out.data[i * 4 + 1] = out.data[i * 4 + 2] = 250; out.data[i * 4 + 3] = 255; }
+    for (var cy = 0; cy < h; cy += cell) { for (var cx = 0; cx < w; cx += cell) {
+      var r = 0, g = 0, b = 0, n = 0; for (var y = cy; y < Math.min(h, cy + cell); y++) { for (var x = cx; x < Math.min(w, cx + cell); x++) { var j = (y * w + x) * 4; r += img.data[j]; g += img.data[j + 1]; b += img.data[j + 2]; n++; } }
+      r /= n; g /= n; b /= n; var dark = 1 - lum(r, g, b) / 255, rad = Math.sqrt(dark) * cell * 0.75, mx = cx + cell / 2, my = cy + cell / 2;
+      for (y = Math.max(0, Math.floor(my - rad)); y <= Math.min(h - 1, Math.ceil(my + rad)); y++) { for (x = Math.max(0, Math.floor(mx - rad)); x <= Math.min(w - 1, Math.ceil(mx + rad)); x++) { if ((x - mx) * (x - mx) + (y - my) * (y - my) <= rad * rad) { var q = (y * w + x) * 4; out.data[q] = r * 0.85; out.data[q + 1] = g * 0.85; out.data[q + 2] = b * 0.85; } } }
+    } }
+    return out;
+  }
+  function neon(img) {
+    var w = img.width, h = img.height, g = gray(img), e = sobel(boxBlur(g, w, h, 1), w, h), out = make(w, h);
+    for (var i = 0; i < w * h; i++) { var m = clamp(e.mag[i] / 160, 0, 1), a = e.ang[i], p = i * 4; out.data[p] = 10 + 245 * m * (0.5 + 0.5 * Math.cos(a)); out.data[p + 1] = 8 + 230 * m * (0.5 + 0.5 * Math.cos(a + 2.1)); out.data[p + 2] = 20 + 235 * m * (0.5 + 0.5 * Math.cos(a + 4.2)); out.data[p + 3] = img.data[p + 3]; }
+    return out;
+  }
+
+  // ───────────── repair ─────────────
+  function median3(img, thresholdOnly, th) {
+    var w = img.width, h = img.height, out = clone(img), d = img.data, buf = new Array(9);
+    for (var y = 1; y < h - 1; y++) { for (var x = 1; x < w - 1; x++) { var p = (y * w + x) * 4;
+      for (var c = 0; c < 3; c++) { var k = 0; for (var dy = -1; dy <= 1; dy++) { for (var dx = -1; dx <= 1; dx++) { buf[k++] = d[((y + dy) * w + x + dx) * 4 + c]; } } buf.sort(function (a, b) { return a - b; }); var med = buf[4]; if (!thresholdOnly || Math.abs(d[p + c] - med) > th) { out.data[p + c] = med; } } } }
+    return out;
+  }
+  function denoise(img, o) { o = o || {}; var s = num(o.strength, 0.1, 1, 0.6), m = median3(img, false, 0), sm = smoothColor(m, 1, 1), out = clone(img); for (var i = 0; i < out.data.length; i += 4) { for (var c = 0; c < 3; c++) { out.data[i + c] = img.data[i + c] * (1 - s) + sm.data[i + c] * s; } } return out; }
+  function despeckle(img, o) { o = o || {}; return median3(img, true, num(o.threshold, 8, 120, 40)); }
+  // fill the marked pixels from what is around them: from the edge of the mark inwards, each pixel takes the (distance weighted) average of the known pixels near it, then a little smoothing inside the mark
+  function inpaint(img, mask, o) {
+    o = o || {}; var w = img.width, h = img.height, out = clone(img), d = out.data, todo = new Uint8Array(mask), left = 0, R = Math.round(num(o.radius, 1, 12, 3));
+    for (var i = 0; i < todo.length; i++) { if (todo[i]) { left++; } }
+    if (!left) { return out; } if (left === w * h) { return out; }
+    var rounds = 0;
+    while (left > 0 && rounds++ < 400) {
+      var fill = [];
+      for (var y = 0; y < h; y++) { for (var x = 0; x < w; x++) { var q = y * w + x; if (!todo[q]) { continue; } var sr = 0, sg = 0, sb = 0, sw = 0;
+        for (var dy = -R; dy <= R; dy++) { var yy = y + dy; if (yy < 0 || yy >= h) { continue; } for (var dx = -R; dx <= R; dx++) { var xx = x + dx; if (xx < 0 || xx >= w) { continue; } var q2 = yy * w + xx; if (todo[q2]) { continue; } var wt = 1 / (dx * dx + dy * dy + 0.5); sr += d[q2 * 4] * wt; sg += d[q2 * 4 + 1] * wt; sb += d[q2 * 4 + 2] * wt; sw += wt; } }
+        if (sw > 0) { fill.push([q, sr / sw, sg / sw, sb / sw]); } } }
+      if (!fill.length) { break; }
+      fill.forEach(function (f) { d[f[0] * 4] = f[1]; d[f[0] * 4 + 1] = f[2]; d[f[0] * 4 + 2] = f[3]; todo[f[0]] = 0; left--; });
+    }
+    // smooth inside the marked area so the fill does not show bands
+    for (var pass = 0; pass < 2; pass++) { var src = new Uint8ClampedArray(d); for (y = 1; y < h - 1; y++) { for (x = 1; x < w - 1; x++) { var m = y * w + x; if (!mask[m]) { continue; } for (var c = 0; c < 3; c++) { var s2 = 0; for (dy = -1; dy <= 1; dy++) { for (dx = -1; dx <= 1; dx++) { s2 += src[((y + dy) * w + x + dx) * 4 + c]; } } d[m * 4 + c] = s2 / 9; } } } }
+    return out;
+  }
+  // the marks (world units) -> a mask on a region of the picture; marks: {x,y,r} a round spot, {x,y,w,h} a box, {points:[[x,y],...], r} a brush stroke
+  function marksToMask(marks, region, W, H) {
+    var mask = new Uint8Array(W * H), sx = W / region.w, sy = H / region.h;
+    function disc(cx, cy, r) { var x0 = Math.floor(cx - r), x1 = Math.ceil(cx + r), y0 = Math.floor(cy - r), y1 = Math.ceil(cy + r); for (var y = Math.max(0, y0); y <= Math.min(H - 1, y1); y++) { for (var x = Math.max(0, x0); x <= Math.min(W - 1, x1); x++) { if ((x + 0.5 - cx) * (x + 0.5 - cx) + (y + 0.5 - cy) * (y + 0.5 - cy) <= r * r) { mask[y * W + x] = 1; } } } }
+    (marks || []).forEach(function (m) {
+      if (m.points) { var r = Math.max(1, (m.r || 8) * sx), pts = m.points; for (var i = 0; i < pts.length; i++) { var a = pts[i], b = pts[i + 1] || pts[i], n = Math.max(1, Math.ceil(Math.hypot((b[0] - a[0]) * sx, (b[1] - a[1]) * sy) / Math.max(1, r / 2))); for (var k = 0; k <= n; k++) { disc((a[0] + (b[0] - a[0]) * k / n - region.x) * sx, (a[1] + (b[1] - a[1]) * k / n - region.y) * sy, r); } } }
+      else if (m.w != null && m.h != null) { var x0 = Math.round((m.x - region.x) * sx), y0 = Math.round((m.y - region.y) * sy), x1 = Math.round((m.x + m.w - region.x) * sx), y1 = Math.round((m.y + m.h - region.y) * sy); for (var y = Math.max(0, y0); y < Math.min(H, y1); y++) { for (var x = Math.max(0, x0); x < Math.min(W, x1); x++) { mask[y * W + x] = 1; } } }
+      else { disc((m.x - region.x) * sx, (m.y - region.y) * sy, Math.max(1, (m.r || 10) * sx)); }
+    });
+    return mask;
+  }
+
+  var FX = { oil: oil, sketch: sketch, cartoon: cartoon, watercolor: watercolor, emboss: emboss, halftone: halftone, neon: neon, denoise: denoise, despeckle: despeckle };
+  var FX_NAMES = Object.keys(FX);
+  var FX_WORDS = { oil: ['oil', '油畫'], sketch: ['sketch', 'pencil', '素描', '鉛筆'], cartoon: ['cartoon', 'comic', '卡通', '漫畫'], watercolor: ['watercolor', 'watercolour', '水彩'], emboss: ['emboss', '浮雕'], halftone: ['halftone', '網點', '半色調'], neon: ['neon', '霓虹'], denoise: ['denoise', 'noise_reduction', '降噪', '去噪', '去雜訊'], despeckle: ['despeckle', 'dust', 'scratches', '去雜點', '去污點', '去刮痕'] };
+  var NAME_OF = {}; Object.keys(FX_WORDS).forEach(function (k) { FX_WORDS[k].forEach(function (a) { NAME_OF[a.toLowerCase()] = k; }); });
+  function fxName(op) { return NAME_OF[String(op || '').trim().toLowerCase()] || null; }
+  // ops: [{op:'oil', ...}, {op:'brightness', amount:10}, ...]; the ones that are not here go to imgproc
+  function run(img, ops, hooks) {
+    hooks = hooks || {}; var cur = img, applied = [], list = Array.isArray(ops) ? ops : [], batch = [];
+    function flush() { if (batch.length && hooks.imgproc) { var n = hooks.imgproc.normalizeOps(batch); if (n.ok && n.ops.length) { var r = hooks.imgproc.run(cur, n.ops); cur = r.img; r.applied.forEach(function (a) { applied.push(a); }); } } batch = []; }
+    list.forEach(function (o) { var f = fxName(o && o.op); if (f) { flush(); var t0 = Date.now(); cur = FX[f](cur, o); applied.push({ op: f, ms: Date.now() - t0 }); } else { batch.push(o); } });
+    flush(); return { img: cur, applied: applied };
+  }
+  // named looks: what "make it watercolor" means as operations; words are what the user may say
+  var STYLES = {
+    oil: { en: 'an oil painting', label: '油畫', words: ['油畫', 'oil'], ops: [{ op: 'oil', radius: 3 }, { op: 'saturation', amount: 15 }, { op: 'contrast', amount: 8 }] },
+    watercolor: { en: 'a watercolor painting', label: '水彩', words: ['水彩', 'watercolor', 'watercolour'], ops: [{ op: 'watercolor' }, { op: 'saturation', amount: -8 }, { op: 'brightness', amount: 6 }] },
+    sketch: { en: 'a pencil sketch', label: '鉛筆素描', words: ['素描', '鉛筆', 'sketch', 'pencil'], ops: [{ op: 'sketch' }] },
+    ink: { en: 'an ink wash drawing', label: '水墨', words: ['水墨', '墨', 'ink'], ops: [{ op: 'grayscale' }, { op: 'contrast', amount: 35 }, { op: 'sketch', strength: 0.8 }, { op: 'blur', radius: 1 }] },
+    cartoon: { en: 'a cartoon drawing', label: '卡通', words: ['卡通', '漫畫', 'cartoon', 'comic', 'anime'], ops: [{ op: 'cartoon' }, { op: 'saturation', amount: 25 }] },
+    pixel: { en: 'pixel art', label: '像素', words: ['像素', 'pixel', '馬賽克', 'mosaic'], ops: [{ op: 'mosaic', block: 8 }, { op: 'reduce_colors', colors: 24 }] },
+    poster: { en: 'a poster print with flat colours', label: '海報／版畫', words: ['海報', '版畫', 'poster', 'posterize'], ops: [{ op: 'posterize', levels: 4 }, { op: 'saturation', amount: 25 }, { op: 'contrast', amount: 15 }] },
+    vintage: { en: 'an old vintage photograph', label: '復古', words: ['復古', '懷舊', '老照片', 'vintage', 'retro'], ops: [{ op: 'grade', preset: 'sepia' }, { op: 'vignette', strength: 0.5 }, { op: 'contrast', amount: -8 }] },
+    neon: { en: 'a picture made of glowing neon lines', label: '霓虹', words: ['霓虹', 'neon', '賽博', 'cyberpunk'], ops: [{ op: 'neon' }] },
+    emboss: { en: 'an embossed relief', label: '浮雕', words: ['浮雕', 'emboss'], ops: [{ op: 'emboss' }] },
+    halftone: { en: 'a halftone dot print', label: '網點', words: ['網點', '半色調', 'halftone'], ops: [{ op: 'halftone' }] },
+    dreamy: { en: 'a soft dreamy glowing picture', label: '夢幻', words: ['夢幻', '柔焦', 'dreamy', 'soft'], ops: [{ op: 'glow', amount: 0.6 }, { op: 'saturation', amount: 12 }, { op: 'brightness', amount: 8 }] },
+    mono: { en: 'a black and white picture', label: '黑白', words: ['黑白', '灰階', 'grayscale', 'black and white', 'monochrome'], ops: [{ op: 'grayscale' }, { op: 'contrast', amount: 10 }] },
+    warm: { en: 'a picture with warm colours', label: '暖色', words: ['暖色', '暖', 'warm'], ops: [{ op: 'grade', preset: 'warm' }] },
+    cool: { en: 'a picture with cool blue colours', label: '冷色', words: ['冷色', '冷', 'cool'], ops: [{ op: 'grade', preset: 'cool' }] },
+    night: { en: 'a dark night scene', label: '夜晚', words: ['夜晚', '夜景', 'night'], ops: [{ op: 'grade', preset: 'night' }, { op: 'vignette', strength: 0.5 }] }
+  };
+  function styleFor(text) {
+    var t = String(text || '').toLowerCase(), best = null, bl = 0;
+    Object.keys(STYLES).forEach(function (id) { STYLES[id].words.forEach(function (w) { if (t.indexOf(w.toLowerCase()) >= 0 && w.length > bl) { best = id; bl = w.length; } }); });
+    return best;
+  }
+  return { run: run, oil: oil, sketch: sketch, cartoon: cartoon, watercolor: watercolor, emboss: emboss, halftone: halftone, neon: neon, denoise: denoise, despeckle: despeckle, inpaint: inpaint, marksToMask: marksToMask, FX_NAMES: FX_NAMES, fxName: fxName, STYLES: STYLES, styleFor: styleFor, boxBlur: boxBlur };
+});
+
+}).call(null, undefined, holder);
+return holder.FaPicFx;
+})();
+/* EDPFX-END */
+/* EDPIC-BEGIN */
+const FaEditPicture = (function () {
+const holder = {};
+(function (module, self) {
+// /edit-picture: the document core (pure functions; node and the browser). A picture is a stack of OBJECTS (layers) on an endless plane, like /edit-svg, but the result is a raster picture and there is
+// GIMP-like after-work. Object types:
+//   image    { ref, mime, x, y, w, h, opacity, rotate, blend, flipX, flipY, credit, prompt, seed }      a raster picture (pasted, from the web, made by the local model)
+//   shape    as in /edit-svg (rect, ellipse, line, arrow, triangle, polygon, star, path, text) + blend
+//   svg      as in /edit-svg (free SVG elements: what the AI draws) + blend
+//   adjust   { ops:[ {op:'brightness',amount:10}, {op:'oil',radius:3}, ... ], target:'all'|<object id>, region?:{x,y,w,h}, opacity }   a FILTER layer: it changes everything below it (or one object), without
+//            touching the pixels of the pictures below; hide it and the picture is as before
+//   heal     { marks:[ {x,y,r} | {x,y,w,h} | {points:[[x,y],...], r} ], method:'inpaint'|'denoise'|'despeckle', radius, target }   a REPAIR layer: the marked spots are filled from what is around them
+// Everything the AI adds through the chat is a new object. Actions: the closed ones of edit_objects_core.js, transform_object (as in /edit-svg), and
+//   apply_style{style, strength?, target?}   a named look as one filter layer (oil, watercolor, sketch, ink, cartoon, pixel, poster, vintage, neon, emboss, halftone, dreamy, mono, warm, cool, night)
+//   add_heal{of?, at?, r?, method?}           repair a spot of a picture, said in words: the corner / the middle of an object
+// and two actions the HOST carries out (they need the network or the local model): find_picture{query}, generate_image{prompt, style?}.
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(require('./edit_objects_core.js'), require('./edit_svg_core.js'), require('./pic_fx.js'), require('../imgproc/imgproc_core.js')); else root.FaEditPicture = factory((root.FaEditObjects || (typeof FaEditObjects !== 'undefined' ? FaEditObjects : undefined)), (root.FaEditSvg || (typeof FaEditSvg !== 'undefined' ? FaEditSvg : undefined)), (root.FaPicFx || (typeof FaPicFx !== 'undefined' ? FaPicFx : undefined)), (root.FaImgProc || (typeof FaImgProc !== 'undefined' ? FaImgProc : undefined))); })(typeof self !== 'undefined' ? self : this, function (O, S, F, IP) {
+  'use strict';
+  var num = O.num, str = O.str;
+  var BLENDS = ['normal', 'multiply', 'screen', 'overlay', 'darken', 'lighten', 'color-dodge', 'color-burn', 'hard-light', 'soft-light', 'difference', 'exclusion'];
+  var GEOM = { rotate: 1, scale: 1, crop: 1, flip: 1 };
+  function r2(n) { return Math.round(n * 100) / 100; }
+  function withBlend(t, extraDefaults) {
+    return Object.assign({}, t, { defaults: Object.assign({}, t.defaults, { blend: 'normal' }, extraDefaults || {}), validate: function (o) { var r = t.validate(o); if (r.obj) { r.obj.blend = BLENDS.indexOf(o.blend) >= 0 ? o.blend : 'normal'; } return r; } });
+  }
+  var NUM_PARAMS = { radius: [1, 12], levels: [3, 64], strength: [0.1, 4], size: [3, 60], edge: [20, 400], paper: [0, 1], threshold: [5, 150] };
+  function normOps(list, problems) {
+    var out = [], arr = Array.isArray(list) ? list : [];
+    arr.slice(0, 12).forEach(function (o) {
+      if (typeof o === 'string') { o = { op: o }; }   // 'oil' / '油畫' as a short form
+      if (!o || typeof o !== 'object') { return; }
+      var fx = F.fxName(o.op);
+      if (fx) { var c = { op: fx }; Object.keys(NUM_PARAMS).forEach(function (k) { if (o[k] != null && isFinite(Number(o[k]))) { c[k] = r2(num(o[k], NUM_PARAMS[k][0], NUM_PARAMS[k][1], NUM_PARAMS[k][0])); } }); out.push(c); return; }
+      var n = IP.normalizeOps([o]);
+      if (!n.ok) { problems.push(n.errors[0]); return; }
+      if (GEOM[n.ops[0].op]) { problems.push('"' + n.ops[0].op + '" changes the size: use the object\'s rotate / flip, or the canvas frame, instead of a filter layer'); return; }
+      out.push(n.ops[0]);
+    });
+    return out;
+  }
+  function idOk(v) { return v === 'all' || /^[A-Za-z][A-Za-z0-9_-]{0,30}$/.test(String(v || '')); }
+  function regionOf(r) { if (!r || typeof r !== 'object') { return null; } var w = Number(r.w), h = Number(r.h); if (!(w > 0 && h > 0)) { return null; } return { x: r2(num(r.x, -1e6, 1e6, 0)), y: r2(num(r.y, -1e6, 1e6, 0)), w: r2(num(w, 1, 1e5, 100)), h: r2(num(h, 1, 1e5, 100)) }; }
+  function markBox(m) {
+    if (m.points && m.points.length) { var xs = m.points.map(function (p) { return p[0]; }), ys = m.points.map(function (p) { return p[1]; }), r = m.r || 8; return { x: Math.min.apply(null, xs) - r, y: Math.min.apply(null, ys) - r, w: Math.max.apply(null, xs) - Math.min.apply(null, xs) + 2 * r, h: Math.max.apply(null, ys) - Math.min.apply(null, ys) + 2 * r }; }
+    if (m.w != null) { return { x: m.x, y: m.y, w: m.w, h: m.h }; }
+    var rr = m.r || 10; return { x: m.x - rr, y: m.y - rr, w: 2 * rr, h: 2 * rr };
+  }
+
+  var types = {
+    image: {
+      label: '圖片', defaults: { ref: '', mime: 'image/png', x: 0, y: 0, w: 200, h: 150, opacity: 1, rotate: 0, blend: 'normal', flipX: false, flipY: false, credit: '', prompt: '', seed: null },
+      validate: function (o) {
+        if (!/^[A-Za-z0-9_-]{1,64}$/.test(String(o.ref || ''))) { return { obj: null, problems: ['the picture has no reference'] }; }
+        return { obj: { ref: String(o.ref), mime: /^image\/(png|jpeg|gif|webp|svg\+xml)$/.test(o.mime) ? o.mime : 'image/png', x: r2(num(o.x, -1e6, 1e6, 0)), y: r2(num(o.y, -1e6, 1e6, 0)), w: r2(num(o.w, 1, 1e5, 200)), h: r2(num(o.h, 1, 1e5, 150)), opacity: r2(num(o.opacity, 0, 1, 1)), rotate: r2(num(o.rotate, -3600, 3600, 0)), blend: BLENDS.indexOf(o.blend) >= 0 ? o.blend : 'normal', flipX: !!o.flipX, flipY: !!o.flipY, credit: str(o.credit, 300), prompt: str(o.prompt, 600), seed: o.seed == null || o.seed === '' ? null : Math.round(num(o.seed, 0, 4294967295, 0)) }, problems: [] };
+      },
+      bbox: function (o) { return { x: o.x, y: o.y, w: o.w, h: o.h }; }
+    },
+    shape: withBlend(S.types.shape), svg: withBlend(S.types.svg),
+    adjust: {
+      label: '濾鏡', defaults: { ops: [], target: 'all', region: null, opacity: 1 },
+      validate: function (o) {
+        var p = [], ops = normOps(o.ops, p); if (!ops.length) { return { obj: null, problems: p.length ? p : ['a filter layer needs at least one operation'] }; }
+        var t = o.target == null || o.target === '' ? 'all' : String(o.target); if (!idOk(t)) { p.push('target must be all or an object id'); t = 'all'; }
+        return { obj: { ops: ops, target: t, region: regionOf(o.region), opacity: r2(num(o.opacity, 0, 1, 1)) }, problems: p };
+      },
+      bbox: function (o) { return o.region ? { x: o.region.x, y: o.region.y, w: o.region.w, h: o.region.h } : null; },
+      move: function (o, dx, dy) { if (o.region) { o.region.x = r2(o.region.x + dx); o.region.y = r2(o.region.y + dy); } }
+    },
+    heal: {
+      label: '修復', defaults: { marks: [], method: 'inpaint', radius: 3, target: 'all' },
+      validate: function (o) {
+        var p = [], marks = [];
+        (Array.isArray(o.marks) ? o.marks : []).slice(0, 200).forEach(function (m) {
+          if (!m || typeof m !== 'object') { return; }
+          if (Array.isArray(m.points)) { var pts = m.points.slice(0, 2000).filter(function (q) { return Array.isArray(q) && isFinite(q[0]) && isFinite(q[1]); }).map(function (q) { return [r2(Number(q[0])), r2(Number(q[1]))]; }); if (pts.length) { marks.push({ points: pts, r: r2(num(m.r, 1, 500, 8)) }); } }
+          else if (m.w != null && m.h != null && Number(m.w) > 0 && Number(m.h) > 0) { marks.push({ x: r2(num(m.x, -1e6, 1e6, 0)), y: r2(num(m.y, -1e6, 1e6, 0)), w: r2(num(m.w, 1, 1e5, 10)), h: r2(num(m.h, 1, 1e5, 10)) }); }
+          else if (isFinite(Number(m.x)) && isFinite(Number(m.y))) { marks.push({ x: r2(num(m.x, -1e6, 1e6, 0)), y: r2(num(m.y, -1e6, 1e6, 0)), r: r2(num(m.r, 1, 500, 10)) }); }
+        });
+        if (!marks.length && ['denoise', 'despeckle'].indexOf(o.method) < 0) { return { obj: null, problems: ['mark the spots to repair (a spot, a box or a stroke)'] }; }
+        var t = o.target == null || o.target === '' ? 'all' : String(o.target); if (!idOk(t)) { p.push('target must be all or an object id'); t = 'all'; }
+        return { obj: { marks: marks, method: ['inpaint', 'denoise', 'despeckle'].indexOf(o.method) >= 0 ? o.method : 'inpaint', radius: Math.round(num(o.radius, 1, 12, 3)), target: t }, problems: p };
+      },
+      bbox: function (o) { if (!o.marks.length) { return null; } var x0 = 1e18, y0 = 1e18, x1 = -1e18, y1 = -1e18; o.marks.forEach(function (m) { var b = markBox(m); x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y); x1 = Math.max(x1, b.x + b.w); y1 = Math.max(y1, b.y + b.h); }); return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }; },
+      move: function (o, dx, dy) { o.marks.forEach(function (m) { if (m.points) { m.points = m.points.map(function (q) { return [r2(q[0] + dx), r2(q[1] + dy)]; }); } else { m.x = r2(m.x + dx); m.y = r2(m.y + dy); } }); }
+    }
+  };
+  // intensity: the numbers that say "how much" are scaled (a stronger look for the second and third try)
+  function scaleOps(ops, k) {
+    if (!k || k === 1) { return ops.map(function (o) { return Object.assign({}, o); }); }
+    var more = { radius: 1, strength: 1, size: 1, block: 1, amount: 1, paper: 1 }, less = { levels: 1 };
+    return ops.map(function (o) { var c = Object.assign({}, o); Object.keys(c).forEach(function (key) { if (typeof c[key] !== 'number') { return; } if (more[key] && key !== 'amount') { c[key] = r2(c[key] * k); } else if (key === 'amount' && (c.op === 'saturation' || c.op === 'contrast' || c.op === 'glow')) { c[key] = r2(c[key] * k); } else if (less[key]) { c[key] = Math.max(3, Math.round(c[key] / k)); } }); return c; });
+  }
+  // a point of an object in words: the middle, or a corner / side
+  var AT = { center: [0.5, 0.5], top: [0.5, 0.12], bottom: [0.5, 0.88], left: [0.12, 0.5], right: [0.88, 0.5], 'top-left': [0.12, 0.12], 'top-right': [0.88, 0.12], 'bottom-left': [0.12, 0.88], 'bottom-right': [0.88, 0.88] };
+
+  var extraOps = {
+    transform_object: {   // as in /edit-svg; a filter / repair layer has no x / y: its region or marks move
+      words: S.extraOps.transform_object.words,
+      apply: function (s, e, H, env) {
+        var i = H.find(s, e.id); if (i >= 0 && (s.objects[i].type === 'adjust' || s.objects[i].type === 'heal')) {
+          var o = s.objects[i]; if (o.locked) { return { error: '"' + o.name + '" is locked' }; } var n = H.clone(o); H.move(n, Number(e.dx) || 0, Number(e.dy) || 0); var p = [], v = H.validateObject(n, p, {}); if (!v) { return { error: p[0] || 'the new values are not valid' }; } v.id = o.id; s.objects[i] = v; return {};
+        }
+        return S.extraOps.transform_object.apply(s, e, H, env);
+      }
+    },
+    apply_style: {
+      words: function (e) { var st = F.STYLES[e.style]; return '套用風格「' + (st ? st.label : e.style) + '」'; },
+      apply: function (s, e, H, env) {
+        var st = F.STYLES[String(e.style || '').toLowerCase()] || F.STYLES[F.styleFor(e.style)]; if (!st) { return { error: 'unknown style "' + str(e.style, 30) + '" (' + Object.keys(F.STYLES).join(', ') + ')' }; }
+        var target = 'all', ref = e.target != null && e.target !== '' ? e.target : (env && env.selection && env.selection !== 'none' ? env.selection : null);
+        if (ref != null && ref !== 'all') { var i = H.find(s, ref); if (i < 0) { return { error: 'there is no object "' + str(ref, 30) + '" to apply the style to' }; } if (['adjust', 'heal'].indexOf(s.objects[i].type) < 0) { target = s.objects[i].id; } }
+        var k = num(e.strength, 0.3, 3, 1), r = H.addTop(s, { type: 'adjust', name: st.label + (target === 'all' ? '' : '（' + s.objects[H.find(s, target)].name + '）'), ops: scaleOps(st.ops, k), target: target, opacity: 1 });
+        return r.error ? { error: r.error } : {};
+      }
+    },
+    add_heal: {
+      words: function (e) { return '修復 ' + (e.of || '') + (e.at ? ' ' + e.at : ''); },
+      apply: function (s, e, H, env) {
+        var ref = e.of != null && e.of !== '' ? e.of : null, anchor = null, anchorId = 'all';
+        if (ref == null && env && env.selection) { var si = H.find(s, env.selection); if (si >= 0 && ['image', 'shape', 'svg'].indexOf(s.objects[si].type) >= 0) { ref = env.selection; } }
+        if (ref == null) { for (var k = s.objects.length - 1; k >= 0 && ref == null; k--) { if (s.objects[k].type === 'image') { ref = s.objects[k].id; } } }
+        if (ref == null) { for (var k2 = s.objects.length - 1; k2 >= 0 && ref == null; k2--) { if (s.objects[k2].type === 'shape' || s.objects[k2].type === 'svg') { ref = s.objects[k2].id; } } }
+        if (ref == null) { return { error: 'there is no picture to repair' }; }
+        var i = H.find(s, ref); if (i < 0) { return { error: 'there is no object "' + str(ref, 30) + '" to repair' }; } anchor = H.bbox(s.objects[i]); if (!anchor) { return { error: 'that object has no size' }; } if (['image', 'shape', 'svg'].indexOf(s.objects[i].type) >= 0) { anchorId = s.objects[i].id; }
+        var f = AT[String(e.at || 'center').toLowerCase()]; if (!f) { return { error: 'at must be one of ' + Object.keys(AT).join(', ') }; }
+        var r = num(e.r, 1, 500, Math.max(6, Math.round(Math.min(anchor.w, anchor.h) * 0.06))), mark = { x: anchor.x + anchor.w * f[0], y: anchor.y + anchor.h * f[1], r: r };
+        var res = H.addTop(s, { type: 'heal', name: '修復', marks: [mark], method: e.method || 'inpaint', radius: 3, target: anchorId }); return res.error ? { error: res.error } : {};
+      }
+    }
+  };
+  var HOST_OPS = ['find_picture', 'generate_image'];
+  var E = O.make({
+    types: types, extraOps: extraOps, limits: { objects: 400, canvas: 16384 },
+    defaultSpec: function () { return { v: 1, title: '我的圖片', canvas: { x: 0, y: 0, w: 800, h: 600, bg: '#ffffff' }, seq: 0, objects: [] }; },
+    describeObject: function (o) { var b = types[o.type].bbox(o); return (b ? '@(' + Math.round(b.x) + ',' + Math.round(b.y) + ' ' + Math.round(b.w) + '×' + Math.round(b.h) + ')' : '') + (o.type === 'adjust' ? ' ' + o.ops.map(function (x) { return x.op; }).join('+') + (o.target !== 'all' ? ' on ' + o.target : '') : o.type === 'heal' ? ' ' + o.method + ' ×' + o.marks.length : o.type === 'shape' ? ' ' + o.shape : ''); }
+  });
+  var ALL_OPS = E.OPS.concat(HOST_OPS);
+
+  // ───────────────────────── what the program reads itself ─────────────────────────
+  var QUICK = [
+    [/^(?:把)?(?:它|圖片|這張圖|這張|整張圖)?\s*(?:調亮|變亮|亮一點|亮一些)$/, { op: 'brightness', amount: 18 }, '調亮'], [/^(?:把)?(?:它|圖片|這張圖|這張|整張圖)?\s*(?:調暗|變暗|暗一點|暗一些)$/, { op: 'brightness', amount: -18 }, '調暗'],
+    [/^(?:把)?(?:它|圖片|這張圖|這張|整張圖)?\s*(?:增加對比|對比高一點|提高對比|對比強一點)$/, { op: 'contrast', amount: 20 }, '提高對比'], [/^(?:把)?(?:它|圖片|這張圖|這張|整張圖)?\s*(?:降低對比|對比低一點)$/, { op: 'contrast', amount: -20 }, '降低對比'],
+    [/^(?:把)?(?:它|圖片|這張圖|這張|整張圖)?\s*(?:更鮮豔|飽和度高一點|提高飽和度|增加飽和度)$/, { op: 'saturation', amount: 25 }, '提高飽和度'], [/^(?:把)?(?:它|圖片|這張圖|這張|整張圖)?\s*(?:淡一點|飽和度低一點|降低飽和度)$/, { op: 'saturation', amount: -25 }, '降低飽和度'],
+    [/^(?:把)?(?:它|圖片|這張圖|這張|整張圖)?\s*(?:模糊|模糊一點|柔化)$/, { op: 'blur', radius: 3 }, '模糊'], [/^(?:把)?(?:它|圖片|這張圖|這張|整張圖)?\s*(?:銳利一點|銳化|更清晰|清楚一點)$/, { op: 'sharpen', amount: 1 }, '銳化'],
+    [/^(?:把)?(?:它|圖片|這張圖|這張|整張圖)?\s*(?:反相|負片)$/, { op: 'invert' }, '反相'], [/^(?:把)?(?:它|圖片|這張圖|這張|整張圖)?\s*(?:自動調整|自動對比|自動色階|一鍵修正)$/, { op: 'auto_contrast' }, '自動對比'],
+    [/^(?:把)?(?:它|圖片|這張圖|這張|整張圖)?\s*(?:去雜訊|去噪|降噪|去除雜訊)$/, { op: 'denoise' }, '去雜訊'], [/^(?:把)?(?:它|圖片|這張圖|這張|整張圖)?\s*(?:去污點|去雜點|去刮痕|去灰塵|去除污點|去除刮痕)$/, { op: 'despeckle' }, '去污點與刮痕']
+  ];
+  function parseCommands(text, spec, opts) {
+    var s = E.validate(spec).spec, edits = [], matched = [], rest = [], clauses = String(text || '').split(/[，。；;\n]+/).map(function (x) { return x.trim(); }).filter(Boolean);
+    clauses.forEach(function (c) {
+      var oc = E.parseObjectCommand(c, spec); if (oc.edits.length) { edits = edits.concat(oc.edits); matched.push(c); return; }
+      var sv = S.parseCommands(c, spec); if (sv.edits.length && sv.edits.every(function (e) { return ['update_object', 'transform_object', 'set_canvas', 'fit_canvas'].indexOf(e.op) >= 0; })) { edits = edits.concat(sv.edits); matched.push(c); return; }
+      for (var i = 0; i < QUICK.length; i++) { if (QUICK[i][0].test(c)) { edits.push({ op: 'add_object', object: { type: 'adjust', name: QUICK[i][2], ops: [QUICK[i][1]], target: 'all' } }); matched.push(c); return; } }
+      var m = /^(?:把)?\s*(?:它|圖片|這張圖|這張|整張圖)?\s*(?:變成|轉成|改成|換成|做成|弄成|套用|加上|加)\s*(.+?)\s*(?:風格|風|效果|濾鏡|的樣子|樣式)?$/.exec(c), st = m ? F.styleFor(m[1]) : null;
+      if (st && m[1].length <= 12 && !(opts && opts.styleToHost)) { edits.push({ op: 'apply_style', style: st }); matched.push(c); return; }
+      rest.push(c);
+    });
+    return { edits: edits, matched: matched, unmatched: rest };
+  }
+
+  // ───────────────────────── for the AI ─────────────────────────
+  var OPNAMES = 'brightness、contrast、saturation（amount −100～100）、gamma（value）、auto_contrast、enhance、tone、grade（preset: warm cool dusk night noon teal_orange sepia fade）、vignette（strength）、hue、shadows_highlights、blur（radius）、sharpen（amount）、glow（amount）、grayscale、invert、posterize（levels）、reduce_colors（colors）、mosaic（block）、lens_blur、bokeh、motion_blur、chroma_shift、threshold；油畫 oil（radius）、素描 sketch、卡通 cartoon、水彩 watercolor、浮雕 emboss、網點 halftone、霓虹 neon、降噪 denoise、去污點 despeckle';
+  var ACTIONS = '{op:"apply_style",style:"watercolor",target:"o2"}（一句話套用風格：' + Object.keys(F.STYLES).join('、') + '；target 是某個圖片物件，不寫就是整張；strength 1～3 越大越強）、'
+    + '{op:"add_object",object:{type:"adjust",name:"調亮",ops:[{op:"brightness",amount:20},{op:"contrast",amount:10}],target:"all"}}（濾鏡層：ops 可用 ' + OPNAMES + '；它改變它下面的所有東西或 target 指定的那個物件，原圖不動，隱藏它就回到原樣；不能用旋轉、縮放、裁切）、'
+    + '{op:"add_heal",of:"o2",at:"bottom-right",r:30,method:"inpaint"}（修復某個圖片物件的某個位置：at 是 center、top、bottom、left、right、top-left、top-right、bottom-left、bottom-right；method 是 inpaint 補洞、denoise、despeckle）、'
+    + '{op:"add_object",object:{type:"shape",name:"太陽",shape:"ellipse",w:120,h:120,fill:"#fdd835"},place:{of:"o2",rel:"above",gap:20}}（形狀與 svg 物件的寫法同 SVG 編輯器：shape 可以是 rect、ellipse、line、arrow、triangle、polygon、star、path、text；place 說在哪個物件的哪一邊）、'
+    + '{op:"add_object",object:{type:"svg",name:"小房子",markup:"<g>…</g>",w:120,h:100},place:{of:"view",rel:"center"}}、{op:"update_object",id:"o3",props:{opacity:0.5,blend:"multiply",rotate:10,flipX:true}}（blend：' + BLENDS.join('、') + '）、{op:"transform_object",id:"o3",dx:50,dy:0,scale:1.5,rotate:15}、{op:"place_object",id:"o3",place:{of:"o5",rel:"right"}}、'
+    + '{op:"remove_object",id:"o3"}、{op:"rename_object",id:"o3",name:"…"}、{op:"move_object",id:"o3",to:"front"|"back"|"up"|"down"}、{op:"set_visible",id:"o3",visible:false}、{op:"set_locked",id:"o3",locked:true}、{op:"duplicate_object",id:"o3"}、{op:"set_canvas",x:0,y:0,w:800,h:600,bg:"#ffffff"}（畫布就是裁切／輸出的範圍）、{op:"fit_canvas"}、{op:"set_title",text:"…"}、'
+    + '{op:"find_picture",query:"airplane wing"}（程式上網找一張照片放進來，英文關鍵字）、{op:"generate_image",prompt:"一隻貓坐在窗邊",style:"watercolor"}（用生圖模型（線上或本機）畫一張新圖放進來）';
+  function editPrompt(spec, text, extra, selection) {
+    var s = E.validate(spec).spec, b = E.bounds(s);
+    var system = '你是圖片編輯助手（像 GIMP，但用說話操作）。使用者說想怎麼改這張圖，你把它翻成「編輯動作」。只回一段 JSON，不要說明、不要 markdown 區塊：{"say":"一句話告訴使用者你做了什麼（做不到就說做不到）","edits":[…]}。\n'
+      + '**你新增的每一樣東西都是一個新的物件（圖層）**，要取一個看得懂的 name；後製（調色、風格、修復）用濾鏡層與修復層，**不要動原圖**。畫面是一個沒有邊界的平面，座標可以是任何數字；「畫布」只是裁切／輸出的範圍框。y 往下增加。\n'
+      + '動作只能是下面這些（不要發明新的動作）：\n' + ACTIONS + '\n優先用 place／at 這種相對位置，不要自己猜座標。一次最多 25 個動作。\n使用者要「把這張圖變成某某風格」：用 apply_style，不要自己拼一堆 ops；想要完全重畫成那個風格才用 generate_image。';
+    var user = '目前的圖片「' + s.title + '」，畫布範圍框 x=' + s.canvas.x + ' y=' + s.canvas.y + ' ' + s.canvas.w + '×' + s.canvas.h + (b ? '；內容範圍 x=' + Math.round(b.x) + ' y=' + Math.round(b.y) + ' ' + Math.round(b.w) + '×' + Math.round(b.h) : '；目前沒有內容') + '。\n圖層（最上層是 1）：\n' + E.list(s) + (selection ? '\n\n使用者目前選取的是 ' + selection + '（說「它」「這個」就是指它）。' : '') + (extra ? '\n\n' + extra : '') + '\n\n使用者說：' + String(text || '');
+    return { system: system, user: user };
+  }
+  function refPrompt() { return 'Describe this picture in two or three short sentences: the subject, the style (photo, painting, drawing, 3D, pixel ...), the main colours and the mood. Only what you can see.'; }
+  function specToPrompt(spec, steps) {
+    var s = E.validate(spec).spec, L = ['請做一張圖片「' + s.title + '」，範圍 ' + s.canvas.w + '×' + s.canvas.h + '，背景 ' + s.canvas.bg + '。', '', '圖層（由下到上）：'];
+    s.objects.forEach(function (o, i) { L.push((i + 1) + '. ' + o.name + '（' + o.type + (o.type === 'image' && o.prompt ? '，用「' + o.prompt + '」畫的' : '') + (o.type === 'image' && o.credit ? '，出處：' + o.credit : '') + (o.type === 'adjust' ? '：' + o.ops.map(function (x) { return x.op; }).join('、') : '') + '）'); });
+    var texts = (steps || []).filter(function (x) { return x.text; });
+    if (texts.length) { L.push('', '（有效的指示，依序）：'); texts.forEach(function (x, i) { L.push((i + 1) + '. ' + x.text + (x.summary ? ' → ' + x.summary : '')); }); }
+    return L.join('\n');
+  }
+  function parseEditsReply(t) { return O.parseEditsReply(t, ALL_OPS); }
+  var STARTERS = [
+    { id: 'blank', label: '空白畫布', desc: '一張空的畫布，貼圖進來、找圖或用說的畫。', spec: function () { return { title: '我的圖片', objects: [] }; } },
+    { id: 'poster', label: '海報底稿', desc: '一張海報的底稿：背景、標題、形狀，可以再請 AI 加圖與風格。', spec: function () { return { title: '海報', canvas: { w: 600, h: 800, bg: '#fff8e1' }, objects: [{ type: 'shape', name: '色塊', shape: 'rect', x: 0, y: 0, w: 600, h: 280, fill: '#ffb300' }, { type: 'shape', name: '標題', shape: 'text', x: 40, y: 150, text: '標題在這裡', size: 64, fill: '#3e2723' }, { type: 'shape', name: '圓', shape: 'ellipse', x: 400, y: 500, w: 160, h: 160, fill: '#e53935' }] }; } }
+  ];
+  function starter(id) { var t = STARTERS.filter(function (x) { return x.id === id; })[0]; return t ? E.validate(t.spec()).spec : null; }
+  function listStarters() { return STARTERS.map(function (t) { return { id: t.id, label: t.label, desc: t.desc }; }); }
+
+  return { E: E, types: types, OPS: ALL_OPS, CORE_OPS: E.OPS, HOST_OPS: HOST_OPS, BLENDS: BLENDS, validate: E.validate, applyEdits: E.applyEdits, editWords: E.editWords, list: E.list, find: E.find, bounds: E.bounds, parseCommands: parseCommands, editPrompt: editPrompt, parseEditsReply: parseEditsReply,
+    refPrompt: refPrompt, specToPrompt: specToPrompt, scaleOps: scaleOps, markBox: markBox, starter: starter, listStarters: listStarters, STARTERS: listStarters(), STYLES: F.STYLES, AT: AT };
+});
+
+}).call(null, undefined, holder);
+return holder.FaEditPicture;
+})();
+/* EDPIC-END */
+/* EDPICUI-BEGIN */
+const FaEditPictureUI = (function () {
+const holder = {};
+(function (module, self) {
+// The screen of /edit-picture, built on the shared frame (edit_shell.js). The middle viewer is an endless plane (edit_viewport.js): the layers are put together into ONE picture (the compositor below:
+// pictures, shapes and drawings are drawn in order; a filter layer changes what is under it; a repair layer fills the marked spots from what is around them) and only the part in view is shown.
+// The pixels of the pictures are never changed: filter and repair layers are replayed from the document, so hiding one brings the picture back.
+//   FaEditPictureUI.mount({ id, state, spec, host, container, restoring, store }) -> element (el._ed)      FaEditPictureUI.render(spec, opts) -> Promise<{ canvas, region, scale }>
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaEditPictureUI = factory((root.FaEditPicture || (typeof FaEditPicture !== 'undefined' ? FaEditPicture : undefined)), (root.FaEditSvg || (typeof FaEditSvg !== 'undefined' ? FaEditSvg : undefined)), (root.FaEditShell || (typeof FaEditShell !== 'undefined' ? FaEditShell : undefined)), (root.FaEditViewport || (typeof FaEditViewport !== 'undefined' ? FaEditViewport : undefined)), (root.FaPicFx || (typeof FaPicFx !== 'undefined' ? FaPicFx : undefined)), (root.FaImgProc || (typeof FaImgProc !== 'undefined' ? FaImgProc : undefined))); })(typeof self !== 'undefined' ? self : this, function (C, SV, Shell, VP, F, IP) {
+  'use strict';
+  function h(tag, cls, text) { var e = document.createElement(tag); if (cls) { e.className = cls; } if (text != null) { e.textContent = text; } return e; }
+  var ICON = { image: '🖼', svg: '🖍', adjust: '✨', heal: '🩹' }, SHAPE_ICON = { rect: '▭', ellipse: '⬭', line: '╱', arrow: '➜', triangle: '△', polygon: '⬡', star: '★', path: '✎', text: 'T' };
+  var BLEND = { normal: 'source-over' };
+  function slug(s) { return String(s || 'picture').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ').replace(/\s+/g, '_').replace(/^_+|_+$/g, '').slice(0, 50) || 'picture'; }
+
+  // ───────────────────────── the compositor ─────────────────────────
+  var bmpCache = {}, vecCache = {};
+  function bitmapOf(store, ref) {
+    if (bmpCache[ref]) { return bmpCache[ref]; }
+    bmpCache[ref] = store.getImage(ref).then(function (b) { return b ? createImageBitmap(b) : null; });
+    return bmpCache[ref];
+  }
+  function vectorBitmap(o, scale, resolve) {
+    var b = C.types[o.type].bbox(o), m = Math.max(8, (o.sw || 0) * 2 + (o.rotate ? Math.max(b.w, b.h) * 0.5 : 0)), x = b.x - m, y = b.y - m, w = b.w + 2 * m, h = b.h + 2 * m, key = JSON.stringify([o, scale]);
+    if (vecCache[key]) { return vecCache[key].then(function (img) { return { img: img, x: x, y: y, w: w, h: h }; }); }
+    var pw = Math.max(1, Math.min(4096, Math.round(w * scale))), ph = Math.max(1, Math.min(4096, Math.round(h * scale)));
+    var svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + x + ' ' + y + ' ' + w + ' ' + h + '" width="' + pw + '" height="' + ph + '">' + SV.objectMarkup(Object.assign({}, o, { visible: true }), resolve) + '</svg>';
+    var keys = Object.keys(vecCache); if (keys.length > 60) { delete vecCache[keys[0]]; }
+    vecCache[key] = new Promise(function (res, rej) { var url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' })), img = new Image(); img.onload = function () { URL.revokeObjectURL(url); res(img); }; img.onerror = function () { URL.revokeObjectURL(url); rej(new Error('could not draw the shape "' + o.name + '"')); }; img.src = url; });
+    return vecCache[key].then(function (img) { return { img: img, x: x, y: y, w: w, h: h }; });
+  }
+  // the area of the document and the scale it is drawn at (at most 4096 px on a side and 16 million pixels: a larger plane is drawn smaller, never refused)
+  function docRegion(spec, frameOnly, maxSide) {
+    var c = spec.canvas, r = { x: c.x, y: c.y, w: c.w, h: c.h };
+    if (!frameOnly) { spec.objects.forEach(function (o) { if (!o.visible || (o.type !== 'image' && o.type !== 'shape' && o.type !== 'svg')) { return; } var b = C.types[o.type].bbox(o); if (!b) { return; } var x0 = Math.min(r.x, b.x), y0 = Math.min(r.y, b.y), x1 = Math.max(r.x + r.w, b.x + b.w), y1 = Math.max(r.y + r.h, b.y + b.h); r = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }; }); }
+    var ms = maxSide || 4096, sc = Math.min(1, ms / Math.max(r.w, r.h), Math.sqrt(16e6 / (r.w * r.h))); return { region: r, scale: sc };
+  }
+  async function render(spec, opts) {
+    opts = opts || {}; var store = opts.store, resolve = opts.resolve || function () { return ''; }, dr = docRegion(spec, !!opts.frameOnly, opts.maxSide), region = dr.region, sc = dr.scale;
+    var W = Math.max(1, Math.round(region.w * sc)), H = Math.max(1, Math.round(region.h * sc)), cv = document.createElement('canvas'); cv.width = W; cv.height = H; var ctx = cv.getContext('2d', { willReadFrequently: true });
+    var c = spec.canvas; if (c.bg && c.bg !== 'transparent') { ctx.fillStyle = c.bg; ctx.fillRect((c.x - region.x) * sc, (c.y - region.y) * sc, c.w * sc, c.h * sc); }
+    function px(wx, wy) { return [(wx - region.x) * sc, (wy - region.y) * sc]; }
+    for (var i = 0; i < spec.objects.length; i++) {
+      var o = spec.objects[i]; if (!o.visible) { continue; }
+      if (opts.isCancelled && opts.isCancelled()) { return null; }
+      if (o.type === 'image') {
+        var bmp = await bitmapOf(store, o.ref); if (!bmp) { continue; }
+        var p = px(o.x + o.w / 2, o.y + o.h / 2); ctx.save(); ctx.globalAlpha = o.opacity; ctx.globalCompositeOperation = BLEND[o.blend] || o.blend || 'source-over'; ctx.translate(p[0], p[1]); if (o.rotate) { ctx.rotate(o.rotate * Math.PI / 180); } ctx.scale(o.flipX ? -1 : 1, o.flipY ? -1 : 1);
+        ctx.imageSmoothingQuality = 'high'; ctx.drawImage(bmp, -o.w * sc / 2, -o.h * sc / 2, o.w * sc, o.h * sc); ctx.restore();
+      } else if (o.type === 'shape' || o.type === 'svg') {
+        var vb = await vectorBitmap(o, sc, resolve), q = px(vb.x, vb.y); ctx.save(); ctx.globalCompositeOperation = BLEND[o.blend] || o.blend || 'source-over'; ctx.drawImage(vb.img, q[0], q[1], vb.w * sc, vb.h * sc); ctx.restore();
+      } else if (o.type === 'adjust' || o.type === 'heal') {
+        var wr = region; if (o.target && o.target !== 'all') { var t = spec.objects.filter(function (x) { return x.id === o.target; })[0], tb = t && C.types[t.type].bbox(t); if (tb) { wr = { x: tb.x, y: tb.y, w: tb.w, h: tb.h }; } else { continue; } }
+        else if (o.type === 'adjust' && o.region) { wr = o.region; }
+        else if (o.type === 'heal' && o.marks.length) { var hb = C.types.heal.bbox(o), pad = 24 / sc; wr = { x: hb.x - pad, y: hb.y - pad, w: hb.w + 2 * pad, h: hb.h + 2 * pad }; }
+        else if (o.type === 'adjust') { var cc = spec.canvas; wr = { x: cc.x, y: cc.y, w: cc.w, h: cc.h }; }
+        var a = px(wr.x, wr.y), rx = Math.max(0, Math.floor(a[0])), ry = Math.max(0, Math.floor(a[1])), rw = Math.min(W, Math.ceil(a[0] + wr.w * sc)) - rx, rh = Math.min(H, Math.ceil(a[1] + wr.h * sc)) - ry;
+        if (rw < 1 || rh < 1) { continue; }
+        var id = ctx.getImageData(rx, ry, rw, rh), src = { width: rw, height: rh, data: id.data }, out;
+        if (o.type === 'adjust') { out = F.run(src, o.ops, { imgproc: IP }).img; if (o.opacity < 1) { var d0 = src.data, d1 = out.data; for (var k = 0; k < d1.length; k += 4) { for (var cch = 0; cch < 3; cch++) { d1[k + cch] = d0[k + cch] * (1 - o.opacity) + d1[k + cch] * o.opacity; } } } }
+        else {
+          var world = { x: region.x + rx / sc, y: region.y + ry / sc, w: rw / sc, h: rh / sc }, mask = F.marksToMask(o.marks, world, rw, rh);
+          if (o.method === 'inpaint') { out = F.inpaint(src, mask, { radius: o.radius }); }
+          else { var f = o.method === 'denoise' ? F.denoise(src, { strength: 0.9 }) : F.despeckle(src, {}); out = { width: rw, height: rh, data: new Uint8ClampedArray(src.data) }; var any = o.marks.length > 0; for (var m = 0; m < mask.length; m++) { if (!any || mask[m]) { out.data[m * 4] = f.data[m * 4]; out.data[m * 4 + 1] = f.data[m * 4 + 1]; out.data[m * 4 + 2] = f.data[m * 4 + 2]; } } }
+        }
+        ctx.putImageData(new ImageData(new Uint8ClampedArray(out.data), rw, rh), rx, ry);
+      }
+    }
+    return { canvas: cv, region: region, scale: sc };
+  }
+  function blobOf(cv, type, q) { return new Promise(function (res) { cv.toBlob(res, type, q); }); }
+
+  // ───────────────────────── the screen ─────────────────────────
+  function mount(opt) {
+    var store = opt.store, host = opt.host || {}, resolve = function (r) { return store ? store.imageUrl(r) : ''; };
+    var W = { validate: C.validate, applyEdits: C.applyEdits, editWords: C.editWords, list: C.list, find: C.find };
+    return Shell.mount({
+      id: opt.id, kind: 'edit-picture', title: '🎨 圖片編輯器', W: W, spec: opt.spec, state: opt.state, host: host, container: opt.container, restoring: opt.restoring, windowApi: opt.windowApi,
+      tabs: [{ id: 'canvas', label: '🖼 畫面', viewer: true }, { id: 'data', label: '🧩 圖層資料' }],
+      placeholder: '用說的修：「把它變成水彩風格」「調亮一點」「修掉右下角的污點」「在左邊加一隻貓」「找一張飛機的照片」；也可以貼圖進來、給網址',
+      intro: '我是用語言主導的概念畫家，也有像 GIMP 的後製：你說要畫什麼、放在哪裡，或要怎麼修，我就加一個新的圖層（圖片、形狀、濾鏡、修復都是圖層），原圖不動，隨時可以隱藏、調整、復原。畫面沒有邊界，可以加在任何地方；中間的畫面可以拖曳、縮放，⌖ 回到第一個圖層（圖片）的中間。「把這張圖變成油畫／水彩／素描／卡通…」會加一個風格濾鏡，並請視覺模型看過、不像就加強；說「用 AI 重畫成…」則用生圖模型（線上或本機，同 /image）依這張圖的內容重新畫一張。「修復畫筆」可以在畫面上塗出要修的地方。可以貼圖、給網址、或說「找一張…的圖」。',
+      objectIcon: function (o) { return o.type === 'shape' ? (SHAPE_ICON[o.shape] || '◻') : (ICON[o.type] || '◻'); },
+      objectInfo: function (o) { return o.type === 'adjust' ? o.ops.map(function (x) { return x.op; }).slice(0, 3).join('+') : o.type === 'heal' ? o.method : o.type === 'image' ? (o.prompt ? 'AI 畫的' : o.credit ? '圖片・' + o.credit.split('—')[0].trim().slice(0, 12) : '圖片') : o.type === 'shape' ? o.shape : 'svg'; },
+      parseCommands: function (t, s) { return C.parseCommands(t, s, { styleToHost: true }); }, promptOf: C.specToPrompt,
+      exports: [{ id: 'png', label: 'PNG 圖片' }, { id: 'jpg', label: 'JPEG 圖片' }, { id: 'json', label: '專案（JSON）', chat: false }],
+      runExport: async function (id, spec) {
+        var name = slug(spec.title);
+        if (id === 'json') { return { blob: new Blob([JSON.stringify(spec, null, 1)], { type: 'application/json' }), name: name + '.json', mime: 'application/json' }; }
+        var r = await render(spec, { store: store, resolve: resolve, frameOnly: true, maxSide: 8192 }); if (!r) { return null; }
+        if (id === 'jpg') { var f = document.createElement('canvas'); f.width = r.canvas.width; f.height = r.canvas.height; var g = f.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, f.width, f.height); g.drawImage(r.canvas, 0, 0); return { blob: await blobOf(f, 'image/jpeg', 0.92), name: name + '.jpg', mime: 'image/jpeg' }; }
+        return { blob: await blobOf(r.canvas, 'image/png'), name: name + '.png', mime: 'image/png' };
+      },
+      build: function (ctx) {
+        var spec = null, sel = null, vp = null, docR = null, rid = 0, rt = null, brush = false, brushR = 12, stroke = null, drag = null, viewEl = h('div'), dataWrap = h('div');
+        viewEl.style.cssText = 'display:flex;flex:1;min-height:0;min-width:0'; dataWrap.style.cssText = 'display:flex;flex-direction:column;gap:6px;flex:1';
+        var cv = h('canvas'), cx = cv.getContext('2d'); cv.style.cssText = 'display:block;width:100%;height:100%;touch-action:none'; var chk = (function () { var p = h('canvas'); p.width = p.height = 16; var g = p.getContext('2d'); g.fillStyle = '#e9ebef'; g.fillRect(0, 0, 16, 16); g.fillStyle = '#dfe2e7'; g.fillRect(0, 0, 8, 8); g.fillRect(8, 8, 8, 8); return cx.createPattern(p, 'repeat'); })();
+        var status = h('span', 'st');
+        function draw() {
+          if (!vp || !spec) { return; }
+          var v = vp.view(), dpr = Math.min(2, window.devicePixelRatio || 1); if (cv.width !== Math.round(v.cw * dpr) || cv.height !== Math.round(v.ch * dpr)) { cv.width = Math.round(v.cw * dpr); cv.height = Math.round(v.ch * dpr); }
+          cx.setTransform(dpr, 0, 0, dpr, 0, 0); cx.fillStyle = chk || '#eee'; cx.fillRect(0, 0, v.cw, v.ch);
+          function scr(wx, wy) { return [(wx - v.x) * v.z, (wy - v.y) * v.z]; }
+          if (docR) { var r = docR.region, sc = docR.scale, ix0 = Math.max(r.x, v.x), iy0 = Math.max(r.y, v.y), ix1 = Math.min(r.x + r.w, v.x + v.w), iy1 = Math.min(r.y + r.h, v.y + v.h); if (ix1 > ix0 && iy1 > iy0) { var a = scr(ix0, iy0), b = scr(ix1, iy1); cx.imageSmoothingEnabled = v.z * sc < 1 ? true : false; cx.imageSmoothingQuality = 'high'; cx.drawImage(docR.canvas, (ix0 - r.x) * sc, (iy0 - r.y) * sc, (ix1 - ix0) * sc, (iy1 - iy0) * sc, a[0], a[1], b[0] - a[0], b[1] - a[1]); } }
+          var c = spec.canvas, p0 = scr(c.x, c.y); cx.save(); cx.strokeStyle = '#8a93a3'; cx.lineWidth = 1; cx.setLineDash([6, 4]); cx.strokeRect(p0[0] + 0.5, p0[1] + 0.5, c.w * v.z, c.h * v.z); cx.restore();
+          var so = sel ? spec.objects.filter(function (o) { return o.id === sel; })[0] : null;
+          if (so && so.visible) { var bb = C.types[so.type].bbox(so); if (bb) { var q = scr(bb.x + (drag && drag.id === so.id ? drag.dx : 0), bb.y + (drag && drag.id === so.id ? drag.dy : 0)); cx.save(); cx.strokeStyle = '#2f81f7'; cx.lineWidth = 1.5; cx.setLineDash([5, 3]); cx.strokeRect(q[0], q[1], bb.w * v.z, bb.h * v.z); cx.setLineDash([]); cx.fillStyle = '#fff'; [[0, 0], [1, 0], [0, 1], [1, 1]].forEach(function (k) { cx.fillRect(q[0] + k[0] * bb.w * v.z - 3, q[1] + k[1] * bb.h * v.z - 3, 6, 6); cx.strokeRect(q[0] + k[0] * bb.w * v.z - 3, q[1] + k[1] * bb.h * v.z - 3, 6, 6); }); cx.restore(); } }
+          // the marks of a repair layer that is selected, and the stroke being painted
+          function marksOf(o) { return o && o.type === 'heal' ? o.marks : []; }
+          cx.save(); cx.fillStyle = 'rgba(229,57,53,.35)'; cx.strokeStyle = 'rgba(229,57,53,.9)'; cx.lineWidth = 1;
+          marksOf(so).forEach(function (m) { if (m.points) { m.points.forEach(function (pt) { var s2 = scr(pt[0], pt[1]); cx.beginPath(); cx.arc(s2[0], s2[1], m.r * v.z, 0, 6.2832); cx.fill(); }); } else if (m.w != null) { var s3 = scr(m.x, m.y); cx.fillRect(s3[0], s3[1], m.w * v.z, m.h * v.z); cx.strokeRect(s3[0], s3[1], m.w * v.z, m.h * v.z); } else { var s4 = scr(m.x, m.y); cx.beginPath(); cx.arc(s4[0], s4[1], m.r * v.z, 0, 6.2832); cx.fill(); cx.stroke(); } });
+          if (stroke) { stroke.points.forEach(function (pt) { var s5 = scr(pt[0], pt[1]); cx.beginPath(); cx.arc(s5[0], s5[1], brushR * v.z, 0, 6.2832); cx.fill(); }); }
+          cx.restore();
+        }
+        function schedule() { clearTimeout(rt); var my = ++rid; rt = setTimeout(function () { status.textContent = '合成中…'; render(spec, { store: store, resolve: resolve, isCancelled: function () { return my !== rid; } }).then(function (r) { if (r && my === rid) { docR = r; status.textContent = ''; draw(); } }, function (e) { status.className = 'st bad'; status.textContent = String((e && e.message) || e).slice(0, 100); }); }, 90); }
+        vp = VP.create({
+          onView: draw, background: '#eef0f3',
+          handle: function (ev) {
+            var w0 = vp.toWorld(ev.clientX, ev.clientY);
+            if (brush) { stroke = { points: [[w0.x, w0.y]] }; ev.preventDefault(); var mv = function (e) { var w1 = vp.toWorld(e.clientX, e.clientY), last = stroke.points[stroke.points.length - 1]; if (Math.hypot(w1.x - last[0], w1.y - last[1]) * vp.zoom() > 3) { stroke.points.push([Math.round(w1.x * 10) / 10, Math.round(w1.y * 10) / 10]); draw(); } };
+              var up = function () { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up); var st = stroke; stroke = null; draw(); if (!st || !st.points.length) { return; } var so = sel ? spec.objects.filter(function (o) { return o.id === sel; })[0] : null, mark = { points: st.points, r: brushR };
+                if (so && so.type === 'heal' && !so.locked) { ctx.apply([{ op: 'update_object', id: so.id, props: { marks: so.marks.concat([mark]) } }], '補畫修復標記', '', 'panel'); }
+                else { var tgt = so && (so.type === 'image' || so.type === 'shape' || so.type === 'svg') ? so.id : 'all'; ctx.apply([{ op: 'add_object', object: { type: 'heal', name: '修復', marks: [mark], method: 'inpaint', target: tgt } }], '用畫筆標出要修復的地方', '', 'panel'); } };
+              window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up); return true; }
+            var hit = null; for (var i = spec.objects.length - 1; i >= 0; i--) { var o = spec.objects[i]; if (!o.visible || (o.type !== 'image' && o.type !== 'shape' && o.type !== 'svg')) { continue; } var bb = C.types[o.type].bbox(o); if (bb && w0.x >= bb.x && w0.x <= bb.x + bb.w && w0.y >= bb.y && w0.y <= bb.y + bb.h) { hit = o; break; } }
+            if (!hit) { return false; }
+            ctx.select(hit.id); ev.preventDefault(); if (hit.locked) { return true; }
+            drag = { id: hit.id, w0: w0, dx: 0, dy: 0, moved: false };
+            var mv2 = function (e) { if (!drag) { return; } var w1 = vp.toWorld(e.clientX, e.clientY); drag.dx = w1.x - drag.w0.x; drag.dy = w1.y - drag.w0.y; if (Math.abs(drag.dx) + Math.abs(drag.dy) > 2 / vp.zoom()) { drag.moved = true; } draw(); };
+            var up2 = function () { window.removeEventListener('pointermove', mv2); window.removeEventListener('pointerup', up2); var d = drag; drag = null; if (d && d.moved) { var o2 = spec.objects.filter(function (x) { return x.id === d.id; })[0]; ctx.apply([{ op: 'transform_object', id: d.id, dx: Math.round(d.dx * 100) / 100, dy: Math.round(d.dy * 100) / 100 }], '移動 ' + (o2 ? o2.name : d.id), '', 'panel'); } else { draw(); } };
+            window.addEventListener('pointermove', mv2); window.addEventListener('pointerup', up2); return true;
+          },
+          onBackgroundClick: function () { ctx.select(null); }
+        });
+        vp.layer.appendChild(cv); viewEl.appendChild(vp.el);
+        // ───── the bar: the repair brush ─────
+        var bBrush = h('button', null, '🩹 修復畫筆'), bSize = h('input'); bSize.type = 'number'; bSize.value = brushR; bSize.min = 1; bSize.max = 200; bSize.style.width = '58px'; bSize.title = '畫筆大小（畫面上的單位）'; bSize.style.display = 'none';
+        bBrush.title = '在畫面上塗出要修復的地方（會變成一個修復圖層）'; bBrush.onclick = function () { brush = !brush; bBrush.className = brush ? 'pri' : ''; bSize.style.display = brush ? '' : 'none'; vp.scroller.style.cursor = brush ? 'crosshair' : ''; }; bSize.onchange = function () { brushR = Math.max(1, Number(bSize.value) || 12); };
+        // ───── properties ─────
+        function field(label, type, value, onChange, extra) { var l = h('label'), i = h('input'); i.type = type; i.value = value == null ? '' : value; if (extra && extra.step) { i.step = extra.step; } if (extra && extra.min != null) { i.min = extra.min; } if (type === 'checkbox') { i.checked = !!value; } l.appendChild(document.createTextNode(label)); l.appendChild(i); i.onchange = function () { onChange(type === 'number' ? Number(i.value) : type === 'checkbox' ? i.checked : i.value); }; return l; }
+        function selectBox(label, options, value, onChange) { var l = h('label'), s = h('select'); options.forEach(function (o) { var op = h('option', null, o[1]); op.value = o[0]; s.appendChild(op); }); s.value = value; l.appendChild(document.createTextNode(label)); l.appendChild(s); s.onchange = function () { onChange(s.value); }; return l; }
+        var STYLE_OPTS = [['', '套用風格…']].concat(Object.keys(C.STYLES).map(function (k) { return [k, C.STYLES[k].label]; }));
+        function styleRow(targetId) { var r = h('div', 'row'), s = h('select'); STYLE_OPTS.forEach(function (o) { var op = h('option', null, o[1]); op.value = o[0]; s.appendChild(op); }); s.onchange = function () { if (s.value) { ctx.apply([{ op: 'apply_style', style: s.value, target: targetId || 'all' }], '套用風格「' + C.STYLES[s.value].label + '」', '', 'panel'); s.value = ''; } }; r.appendChild(s); return r; }
+        function props() {
+          var box = h('div'); box.style.cssText = 'display:flex;flex-direction:column;gap:6px'; var o = sel ? spec.objects.filter(function (x) { return x.id === sel; })[0] : null;
+          function upd(p, words) { ctx.apply([{ op: 'update_object', id: o.id, props: p }], words || ('改 ' + o.name), '', 'panel'); }
+          if (!o) {
+            var c = spec.canvas; box.appendChild(h('div', 'st', '畫布（裁切與輸出的範圍框，不是邊界）'));
+            [['x', c.x], ['y', c.y], ['寬', c.w], ['高', c.h]].forEach(function (f, i) { box.appendChild(field(f[0], 'number', f[1], function (v) { var e = { op: 'set_canvas' }; e[['x', 'y', 'w', 'h'][i]] = v; ctx.apply([e], '畫布 ' + f[0] + '=' + v, '', 'panel'); })); });
+            box.appendChild(field('背景', 'color', /^#[0-9a-f]{6}$/i.test(c.bg) ? c.bg : '#ffffff', function (v) { ctx.apply([{ op: 'set_canvas', bg: v }], '背景 ' + v, '', 'panel'); }));
+            var fit = h('button', null, '畫布貼合內容'); fit.onclick = function () { ctx.apply([{ op: 'fit_canvas' }], '畫布貼合內容', '', 'panel'); }; box.appendChild(fit);
+            box.appendChild(h('div', 'st', '對整張圖：')); box.appendChild(styleRow('all'));
+            var fx = h('div', 'row'); [['自動對比', { op: 'auto_contrast' }], ['去雜訊', { op: 'denoise' }], ['去污點', { op: 'despeckle' }], ['銳化', { op: 'sharpen', amount: 1 }]].forEach(function (b) { var bt = h('button', null, b[0]); bt.onclick = function () { ctx.apply([{ op: 'add_object', object: { type: 'adjust', name: b[0], ops: [b[1]], target: 'all' } }], b[0], '', 'panel'); }; fx.appendChild(bt); }); box.appendChild(fx);
+            return box;
+          }
+          box.appendChild(h('div', 'st', o.name + '（' + (o.type === 'shape' ? o.shape : o.type) + '，' + o.id + '）'));
+          if (o.type === 'image' || o.type === 'shape' || o.type === 'svg') {
+            if (o.type === 'image' || o.type === 'shape') { ['x', 'y', 'w', 'h'].forEach(function (k) { box.appendChild(field(k === 'w' ? '寬' : k === 'h' ? '高' : k, 'number', o[k], function (v) { var p = {}; p[k] = v; upd(p); }, { step: 1 })); }); }
+            else { ['x', 'y'].forEach(function (k) { box.appendChild(field(k, 'number', o[k], function (v) { var p = {}; p[k] = v; upd(p); }, { step: 1 })); }); box.appendChild(field('縮放', 'number', o.scale, function (v) { upd({ scale: v }); }, { step: 0.1, min: 0.01 })); }
+            box.appendChild(field('旋轉', 'number', o.rotate, function (v) { upd({ rotate: v }); })); box.appendChild(field('透明度', 'number', o.opacity, function (v) { upd({ opacity: v }); }, { step: 0.1, min: 0 }));
+            box.appendChild(selectBox('混合', C.BLENDS.map(function (b) { return [b, b]; }), o.blend || 'normal', function (v) { upd({ blend: v }); }));
+            if (o.type === 'image') { box.appendChild(field('水平翻轉', 'checkbox', o.flipX, function (v) { upd({ flipX: v }); })); box.appendChild(field('垂直翻轉', 'checkbox', o.flipY, function (v) { upd({ flipY: v }); })); if (o.credit) { box.appendChild(h('div', 'st', '出處：' + o.credit)); } if (o.prompt) { box.appendChild(h('div', 'st', '提示詞：' + o.prompt)); } box.appendChild(h('div', 'st', '對這張圖：')); box.appendChild(styleRow(o.id)); var hb = h('button', null, '🩹 修復這張圖的中央'); hb.onclick = function () { ctx.apply([{ op: 'add_heal', of: o.id, at: 'center' }], '修復 ' + o.name, '', 'panel'); }; box.appendChild(hb); }
+            if (o.type === 'shape') { if (o.shape !== 'line' && o.shape !== 'arrow') { box.appendChild(field('填色', 'color', /^#[0-9a-f]{6}$/i.test(o.fill) ? o.fill : '#4f8ef7', function (v) { upd({ fill: v }); })); } box.appendChild(field('邊框', 'color', /^#[0-9a-f]{6}$/i.test(o.stroke) ? o.stroke : '#333333', function (v) { upd({ stroke: v }); })); if (o.shape === 'text') { box.appendChild(field('文字', 'text', o.text, function (v) { upd({ text: v }); })); box.appendChild(field('字級', 'number', o.size, function (v) { upd({ size: v }); })); } }
+          } else if (o.type === 'adjust') {
+            box.appendChild(field('強度', 'number', o.opacity, function (v) { upd({ opacity: v }); }, { step: 0.1, min: 0 }));
+            var tOpts = [['all', '整張圖']].concat(spec.objects.filter(function (x) { return x.type === 'image' || x.type === 'shape' || x.type === 'svg'; }).map(function (x) { return [x.id, x.name]; })); box.appendChild(selectBox('作用在', tOpts, o.target, function (v) { upd({ target: v }, o.name + ' 作用在 ' + v); }));
+            o.ops.forEach(function (op, i) { var r = h('div', 'row'); r.appendChild(h('span', null, op.op + (Object.keys(op).filter(function (k) { return k !== 'op'; }).map(function (k) { return ' ' + k + '=' + op[k]; }).join('')))); var rm = h('button', null, '✕'); rm.onclick = function () { var ops = o.ops.slice(); ops.splice(i, 1); if (!ops.length) { ctx.apply([{ op: 'remove_object', id: o.id }], '刪掉 ' + o.name, '', 'panel'); } else { upd({ ops: ops }, o.name + ' 拿掉 ' + op.op); } }; r.appendChild(rm); box.appendChild(r); });
+            var add = h('div', 'row'), sel2 = h('select'); [['brightness', '亮度'], ['contrast', '對比'], ['saturation', '飽和度'], ['blur', '模糊'], ['sharpen', '銳化'], ['grayscale', '黑白'], ['oil', '油畫'], ['watercolor', '水彩'], ['sketch', '素描'], ['cartoon', '卡通'], ['denoise', '降噪'], ['despeckle', '去污點']].forEach(function (x) { var op = h('option', null, x[1]); op.value = x[0]; sel2.appendChild(op); });
+            var val = h('input'); val.type = 'number'; val.placeholder = '數值'; val.style.width = '64px'; var ab = h('button', null, '＋ 加一個處理'); ab.onclick = function () { var n = { op: sel2.value }; if (val.value !== '') { var key = { brightness: 'amount', contrast: 'amount', saturation: 'amount', blur: 'radius', sharpen: 'amount', oil: 'radius' }[sel2.value]; if (key) { n[key] = Number(val.value); } } upd({ ops: o.ops.concat([n]) }, o.name + ' 加 ' + sel2.value); };
+            [sel2, val, ab].forEach(function (x) { add.appendChild(x); }); box.appendChild(add);
+          } else if (o.type === 'heal') {
+            box.appendChild(selectBox('方法', [['inpaint', '補洞（從周圍填入）'], ['denoise', '降噪'], ['despeckle', '去污點']], o.method, function (v) { upd({ method: v }); })); box.appendChild(field('半徑', 'number', o.radius, function (v) { upd({ radius: v }); }, { min: 1 }));
+            box.appendChild(h('div', 'st', '標記 ' + o.marks.length + ' 處（用「🩹 修復畫筆」可以再塗）')); var clr = h('button', null, '清除標記'); clr.onclick = function () { ctx.apply([{ op: 'remove_object', id: o.id }], '刪掉 ' + o.name, '', 'panel'); }; box.appendChild(clr);
+          }
+          return box;
+        }
+        // ───── the layers as data ─────
+        var jta = h('textarea', 'code'); jta.rows = 18; jta.readOnly = true; jta.style.flex = '1'; var jrow = h('div', 'row'), jcopy = h('button', null, '📋 複製'); jcopy.onclick = function () { try { navigator.clipboard.writeText(jta.value); jcopy.textContent = '✓ 已複製'; setTimeout(function () { jcopy.textContent = '📋 複製'; }, 1500); } catch (e) { jta.select(); } }; jrow.appendChild(jcopy);
+        dataWrap.appendChild(h('div', 'st', '所有圖層與它們的設定（唯讀）。圖片的像素另外存在這個瀏覽器裡，這裡只有代號。')); dataWrap.appendChild(jta); dataWrap.appendChild(jrow);
+        return {
+          tabs: { canvas: viewEl, data: dataWrap }, bar: [bBrush, bSize, status],
+          env: function () { var v = vp.view(); return { view: { x: v.x, y: v.y, w: v.w, h: v.h } }; },
+          refresh: function (s, selId) {
+            spec = s; sel = selId; var b = C.bounds(s), c = s.canvas, all = b ? { x: Math.min(b.x, c.x), y: Math.min(b.y, c.y), w: Math.max(b.x + b.w, c.x + c.w) - Math.min(b.x, c.x), h: Math.max(b.y + b.h, c.y + c.h) - Math.min(b.y, c.y) } : { x: c.x, y: c.y, w: c.w, h: c.h };
+            vp.setBounds(all); var first = s.objects[0] && s.objects[0].type !== 'adjust' && s.objects[0].type !== 'heal' ? C.types[s.objects[0].type].bbox(s.objects[0]) : null; vp.setHome(first || { x: c.x, y: c.y, w: c.w, h: c.h });
+            ctx.setProps(props()); jta.value = JSON.stringify(s, null, 1); draw(); schedule();
+          },
+          showTab: function (t) { if (t === 'canvas') { draw(); } else { jta.value = JSON.stringify(spec, null, 1); } },
+          vp: vp, render: function () { return render(spec, { store: store, resolve: resolve }); }, destroy: function () { vp.destroy(); }
+        };
+      }
+    });
+  }
+  return { mount: mount, render: render, docRegion: docRegion };
+});
+
+}).call(null, undefined, holder);
+return holder.FaEditPictureUI;
+})();
+/* EDPICUI-END */
+/* EDPICI18N-BEGIN */
+const FaEditPictureI18n = (function () {
+const holder = {};
+(function (module, self) {
+// English for the picture editor (/edit-picture): the texts the editor shows; the shared ones are in edit_shell/edit_i18n.js. Loaded after it; FaEditI18n.localize(el) does the rest.
+(function (root, I18N, FX) {
+  'use strict';
+  if (!I18N) { return; }
+  var EN = {
+    '🎨 圖片編輯器': '🎨 Picture editor', '🧩 圖層資料': '🧩 Layer data',
+    '用說的修：「把它變成水彩風格」「調亮一點」「修掉右下角的污點」「在左邊加一隻貓」「找一張飛機的照片」；也可以貼圖進來、給網址': 'Talk to edit: "make it watercolor", "a bit brighter", "remove the speck at the bottom right", "add a cat on the left", "find a photo of an airplane"; or paste a picture or give an address',
+    '我是用語言主導的概念畫家，也有像 GIMP 的後製：你說要畫什麼、放在哪裡，或要怎麼修，我就加一個新的圖層（圖片、形狀、濾鏡、修復都是圖層），原圖不動，隨時可以隱藏、調整、復原。畫面沒有邊界，可以加在任何地方；中間的畫面可以拖曳、縮放，⌖ 回到第一個圖層（圖片）的中間。「把這張圖變成油畫／水彩／素描／卡通…」會加一個風格濾鏡，並請視覺模型看過、不像就加強；說「用 AI 重畫成…」則用生圖模型（線上或本機，同 /image）依這張圖的內容重新畫一張。「修復畫筆」可以在畫面上塗出要修的地方。可以貼圖、給網址、或說「找一張…的圖」。': 'I am a concept painter led by language, with GIMP-like after-work: say what to draw, where, or how to fix it, and I add a new layer (pictures, shapes, filters and repairs are all layers); the original is untouched and you can hide, adjust or undo any time. The plane has no boundary: add anywhere; drag and zoom the view, ⌖ goes back to the middle of the first layer (the picture). "Make it an oil painting / watercolor / sketch / cartoon…" adds a style filter and asks the vision model whether it looks like it, a stronger one if not; "repaint it as…" paints a new picture of what is in it with the image model (online or local, as in /image). The "repair brush" paints the places to fix. Paste a picture, give an address, or say "find a picture of …".',
+    'AI 畫的': 'Painted by the AI', '圖片・': 'Picture · ', '圖片': 'Picture', 'PNG 圖片': 'PNG picture', 'JPEG 圖片': 'JPEG picture', '專案（JSON）': 'Project (JSON)', '合成中…': 'Compositing…',
+    '補畫修復標記': 'Add repair marks', '修復': 'Repair', '用畫筆標出要修復的地方': 'Mark the places to repair with the brush', '移動 ': 'Move ', '🩹 修復畫筆': '🩹 Repair brush',
+    '畫筆大小（畫面上的單位）': 'Brush size (units on the plane)', '在畫面上塗出要修復的地方（會變成一個修復圖層）': 'Paint the places to repair (it becomes a repair layer)', '套用風格…': 'Apply a style…', '套用風格「': 'Applied the style "', '改 ': 'Change ',
+    '畫布（裁切與輸出的範圍框，不是邊界）': 'Canvas (the frame that is cropped and exported, not a boundary)', '畫布 ': 'Canvas ', '背景 ': 'Background ', '畫布貼合內容': 'Canvas fitted to the content',
+    '對整張圖：': 'For the whole picture: ', '自動對比': 'Auto contrast', '去雜訊': 'Denoise', '去污點': 'Remove specks', '銳化': 'Sharpen', '混合': 'Blend', '水平翻轉': 'Flip horizontally', '垂直翻轉': 'Flip vertically',
+    '出處：': 'Source: ', '提示詞：': 'Prompt: ', '對這張圖：': 'For this picture: ', '🩹 修復這張圖的中央': '🩹 Repair the middle of this picture', '修復 ': 'Repair ', '強度': 'Strength', '整張圖': 'The whole picture', '作用在': 'Acts on', ' 作用在 ': ' acts on ',
+    '刪掉 ': 'Deleted ', ' 拿掉 ': ' removed ', '亮度': 'Brightness', '對比': 'Contrast', '飽和度': 'Saturation', '模糊': 'Blur', '黑白': 'Black and white', '油畫': 'Oil painting', '水彩': 'Watercolor', '素描': 'Sketch', '卡通': 'Cartoon', '降噪': 'Denoise',
+    '數值': 'Value', '＋ 加一個處理': '+ Add a process', ' 加 ': ' add ', '方法': 'Method', '補洞（從周圍填入）': 'Fill the hole (from around it)', '半徑': 'Radius', '標記 ': 'Marks ', ' 處（用「🩹 修復畫筆」可以再塗）': ' places (use the "🩹 repair brush" to paint more)', '清除標記': 'Clear the marks',
+    '所有圖層與它們的設定（唯讀）。圖片的像素另外存在這個瀏覽器裡，這裡只有代號。': 'All layers and their settings (read only). The pixels of the pictures are kept apart in this browser; only a reference is here.'
+  };
+  root.FaEditPictureI18n = true;
+  if (FX && FX.STYLES) { Object.keys(FX.STYLES).forEach(function (k) { var st = FX.STYLES[k]; if (st.label && !EN[st.label]) { EN[st.label] = String(st.en || k).replace(/^(an?|the) /, ''); } }); }
+  EN['⬇ 下載 JPEG 圖片'] = '⬇ Download JPEG picture'; EN['💬 放進對話 JPEG 圖片'] = '💬 Put the JPEG picture into the conversation';
+  I18N.extend(EN, [
+    [/^套用風格「(.+)」$/, 'Applied the style "$1"'], [/^修復 (.*)$/, 'Repair $1'], [/^標記 (\d+) 處.*$/, '$1 marks (use the "🩹 repair brush" to paint more)'], [/^移動 (.*)$/, 'Move $1'], [/^畫布 (.+)$/, 'Canvas $1'], [/^修復（(.+)）$/, 'Repair ($1)'], [/^(.+?)；(.+)$/, '$1; $2'], [/^(.+?)\u3000— (.+)$/, '$1 — $2']
+  ]);
+})(typeof self !== 'undefined' ? self : this, (typeof self !== 'undefined' && self.FaEditI18n) || (typeof FaEditI18n !== 'undefined' ? FaEditI18n : undefined), (typeof self !== 'undefined' && self.FaPicFx) || (typeof FaPicFx !== 'undefined' ? FaPicFx : undefined));
+
+}).call(null, undefined, holder);
+return holder.FaEditPictureI18n;
+})();
+/* EDPICI18N-END */
+/* ED3D-BEGIN */
+const FaEdit3d = (function () {
+const holder = {};
+(function (module, self) {
+// /edit-3d-model:3D 場景編輯器的文件核心(純函式,node 與瀏覽器都能跑)。設計見 DESIGN.edit-3d.md。
+// 一個場景是一串「物件」(跟 /edit-svg 同一套外框 FaEditShell):
+//   mesh   { mesh:'box'|'sphere'|'cylinder'|'cone'|'plane'|'torus'|'polygon'|'particles'|'line', position, rotation(弧度), size|radius|height|tube_radius, material:{color,metalness,roughness,opacity,emissive,texture,texture_repeat,side}, skins:[…], extra:{…} }
+//   group  { position, rotation, scale }   把一些物件綁在一起(樹狀);子物件的座標是相對於群組
+//   light  { light:'directional'|'point'|'ambient', position, intensity, color }
+//   每個物件另有 id、name、parent(群組的 id 或 null)、visible、locked。物件順序就是物件欄的樹狀順序。
+// 「完全基於使用者的相對視角」:AI 用說的位置(在我的左前方、畫面中間、桌子的上面、桌子的右邊…),由程式用「目前相機」算座標——
+//   我的「前方」=相機看過去的方向(投影在地面)、「右」=前方的右手邊;不讓模型猜座標。place:{ of:'me'|'view'|'origin'|<id|名字>|'selection', rel:'front'|'back'|'left'|'right'|'left-front'|'right-front'|'left-back'|'right-back'|'above'|'on'|'below'|'inside'|'center'|'beside', dist?, gap?, dx?, dy?, dz? }
+//   (dx 往我的右、dy 往上、dz 往我的前方,最後加上去)。座標系:右手、y 向上、單位是場景單位(跟 render_3d_scene 一樣)。
+// 編輯動作是封閉集合(模型只填 JSON,程式驗證、拒絕不合法的):
+//   set_title set_background set_camera add_object update_object remove_object rename_object move_object set_visible set_locked duplicate_object clear_objects place_object transform_object
+//   group_objects ungroup set_parent set_material add_skin update_skin remove_skin clear_skins set_skins drop_to_ground align_objects;宿主執行的:find_picture generate_image
+// 輸出:toScene(spec) 展平成 render_3d_scene 可以直接播放的場景(群組攤開、貼皮變成貼在面上的薄平面、整面貼圖烘成材質),toYaml 給「原始碼」分頁(多了 id/name/parent/group/hidden/locked/skins),fromYaml 兩種都讀得進來。
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaEdit3d = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var PI = Math.PI, LIM = { objects: 400, name: 60, title: 80, coord: 10000, skins: 24, extra: 3000000 };
+  var MESHES = { box: '方塊', sphere: '球', cylinder: '圓柱', cone: '圓錐', plane: '平面', torus: '圓環', polygon: '自訂形狀', particles: '粒子', line: '線' };
+  var OPS = ['set_title', 'set_background', 'set_camera', 'add_object', 'update_object', 'remove_object', 'rename_object', 'move_object', 'set_visible', 'set_locked', 'duplicate_object', 'clear_objects', 'place_object', 'transform_object', 'group_objects', 'ungroup', 'set_parent', 'set_material', 'add_skin', 'update_skin', 'remove_skin', 'clear_skins', 'set_skins', 'drop_to_ground', 'align_objects'];
+  var HOST_OPS = ['find_picture', 'generate_image'];
+  function str(v, max) { return String(v == null ? '' : v).replace(/\u0000/g, '').slice(0, max || 200); }
+  function clone(o) { return JSON.parse(JSON.stringify(o)); }
+  function num(v, lo, hi, d) { var n = Number(v); if (!isFinite(n)) { return d; } return Math.max(lo, Math.min(hi, n)); }
+  function r3(n) { return Math.round(n * 1000) / 1000; }
+  function vec(v, d, lo, hi) { if (!Array.isArray(v) || v.length < 3) { return d.slice(); } return [r3(num(v[0], lo == null ? -LIM.coord : lo, hi == null ? LIM.coord : hi, d[0])), r3(num(v[1], lo == null ? -LIM.coord : lo, hi == null ? LIM.coord : hi, d[1])), r3(num(v[2], lo == null ? -LIM.coord : lo, hi == null ? LIM.coord : hi, d[2]))]; }
+  var COLOR = /^(#[0-9a-fA-F]{3,8}|[a-zA-Z]{3,20}|rgba?\([\d\s.,%]+\)|hsla?\([\d\s.,%deg]+\))$/;
+  function color(v, d) { v = String(v == null ? '' : v).trim(); return COLOR.test(v) ? v : d; }
+  var TEX_BUILTIN = ['water', 'grass', 'sand', 'wood', 'brick'];
+  function texture(v) { v = v == null ? '' : String(v).trim(); if (!v) { return ''; } if (/^ref:[A-Za-z0-9_-]{1,40}$/.test(v) || /^data:image\/(png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(v) && v.length < 2500000 || /^https?:\/\/[^\s]{3,500}$/i.test(v)) { return v; } return TEX_BUILTIN.indexOf(v.toLowerCase()) >= 0 ? v.toLowerCase() : ''; }
+
+  // ───────────────────────── math (right-handed, y up; Euler 'XYZ' as in three.js: M = Rx · Ry · Rz) ─────────────────────────
+  function mmul(a, b) { var o = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], i, j, k; for (i = 0; i < 3; i++) { for (j = 0; j < 3; j++) { for (k = 0; k < 3; k++) { o[i][j] += a[i][k] * b[k][j]; } } } return o; }
+  function rotMat(r) { var cx = Math.cos(r[0]), sx = Math.sin(r[0]), cy = Math.cos(r[1]), sy = Math.sin(r[1]), cz = Math.cos(r[2]), sz = Math.sin(r[2]); return mmul(mmul([[1, 0, 0], [0, cx, -sx], [0, sx, cx]], [[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]]), [[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]]); }
+  function mvec(m, v) { return [m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2], m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2], m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2]]; }
+  function mT(m) { return [[m[0][0], m[1][0], m[2][0]], [m[0][1], m[1][1], m[2][1]], [m[0][2], m[1][2], m[2][2]]]; }
+  function matEuler(m) { var m13 = m[0][2], y = Math.asin(Math.max(-1, Math.min(1, m13))), x, z; if (Math.abs(m13) < 0.9999999) { x = Math.atan2(-m[1][2], m[2][2]); z = Math.atan2(-m[0][1], m[0][0]); } else { x = Math.atan2(m[2][1], m[1][1]); z = 0; } return [r3(x), r3(y), r3(z)]; }
+  function vadd(a, b) { return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]; }
+  function vsub(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
+  function vmul(a, s) { return [a[0] * s, a[1] * s, a[2] * s]; }
+  function vlen(a) { return Math.sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]); }
+  function vnorm(a) { var l = vlen(a); return l > 1e-9 ? [a[0] / l, a[1] / l, a[2] / l] : [0, 0, 0]; }
+  var IDENT = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+
+  // ───────────────────────── objects ─────────────────────────
+  var DEFAULTS = {
+    box: { size: [1, 1, 1] }, sphere: { radius: 0.5 }, cylinder: { radius: 0.4, height: 1 }, cone: { radius: 0.5, height: 1 }, plane: { size: [4, 4], rotation: [-PI / 2, 0, 0] }, torus: { radius: 0.5, tube_radius: 0.15 }, polygon: {}, particles: {}, line: {}
+  };
+  var MATERIAL_KEYS = ['color', 'metalness', 'roughness', 'opacity', 'emissive', 'emissive_intensity', 'texture', 'texture_repeat', 'side'];
+  function material(m, d) {
+    m = m && typeof m === 'object' ? m : {}; d = d || {}; var out = {};
+    out.color = color(m.color, d.color || '#4E79A7'); out.metalness = r3(num(m.metalness, 0, 1, d.metalness == null ? 0.2 : d.metalness)); out.roughness = r3(num(m.roughness, 0, 1, d.roughness == null ? 0.7 : d.roughness));
+    if (m.opacity != null && Number(m.opacity) < 1) { out.opacity = r3(num(m.opacity, 0.05, 1, 1)); }
+    if (m.emissive && color(m.emissive, '')) { out.emissive = color(m.emissive, '#000000'); out.emissive_intensity = r3(num(m.emissive_intensity, 0, 20, 1)); }
+    var t = texture(m.texture); if (t) { out.texture = t; var rp = Array.isArray(m.texture_repeat) && m.texture_repeat.length >= 2 ? [r3(num(m.texture_repeat[0], 0.01, 1000, 1)), r3(num(m.texture_repeat[1], 0.01, 1000, 1))] : null; if (rp) { out.texture_repeat = rp; } }
+    if (m.side === 'back' || m.side === 'double') { out.side = m.side; }
+    return out;
+  }
+  var ZONE_LABEL = { '+x': '右面', '-x': '左面', '+y': '上面', '-y': '下面', '+z': '前面', '-z': '後面', side: '側面', top: '頂面', bottom: '底面', wrap: '整個表面', front: '正面' };
+  function zonesOf(meshType) { return ({ box: ['+z', '-z', '-x', '+x', '+y', '-y'], cylinder: ['side', 'top', 'bottom'], cone: ['side', 'bottom'], sphere: ['wrap'], torus: ['wrap'], plane: ['front'] })[meshType] || []; }
+  function defaultZone(meshType) { return zonesOf(meshType)[0] || ''; }
+  function skin(s, meshType, seq) {
+    s = s && typeof s === 'object' ? s : {}; var zones = zonesOf(meshType); if (!zones.length) { return null; }
+    var zone = zones.indexOf(String(s.zone)) >= 0 ? String(s.zone) : defaultZone(meshType), img = s.image == null || s.image === '' ? '' : texture(s.image), col = s.color ? color(s.color, '') : '';
+    if (!img && !col) { return null; }
+    var id = /^k[0-9]{1,5}$/.test(String(s.id || '')) ? String(s.id) : 'k' + seq;
+    return { id: id, name: str(s.name, 40) || (ZONE_LABEL[zone] + (img ? '貼圖' : '上色')), zone: zone, image: img, color: col, u: r3(num(s.u, -2, 3, 0.5)), v: r3(num(s.v, -2, 3, 0.5)), w: r3(num(s.w, 0.01, 4, 1)), h: r3(num(s.h, 0.01, 4, 1)), rotate: r3(num(s.rotate, -3600, 3600, 0)), opacity: r3(num(s.opacity, 0.05, 1, 1)) };
+  }
+  function skins(list, meshType) { var out = [], seq = 0; (Array.isArray(list) ? list : []).forEach(function (s) { if (out.length >= LIM.skins) { return; } seq++; var k = skin(s, meshType, seq); if (k) { if (out.some(function (x) { return x.id === k.id; })) { k.id = 'k' + (seq + 100); } out.push(k); } }); return out; }
+  var KNOWN = { id: 1, name: 1, type: 1, parent: 1, visible: 1, locked: 1, mesh: 1, position: 1, rotation: 1, size: 1, radius: 1, height: 1, tube_radius: 1, material: 1, skins: 1, extra: 1, scale: 1, light: 1, intensity: 1, color: 1, group: 1, hidden: 1, rotation_deg: 1 };
+  function validateObject(o, problems) {
+    if (!o || typeof o !== 'object') { return null; }
+    var type = o.type, out = {};
+    if (!type) { type = o.group === true || o.mesh === 'group' ? 'group' : (o.light && !o.mesh ? 'light' : 'mesh'); }
+    if (type === 'group') { out = { type: 'group', position: vec(o.position, [0, 0, 0]), rotation: vec(o.rotation, [0, 0, 0], -100, 100), scale: r3(num(o.scale, 0.001, 1000, 1)) }; }
+    else if (type === 'light') { var lt = ['directional', 'point', 'ambient'].indexOf(o.light) >= 0 ? o.light : 'point'; out = { type: 'light', light: lt, position: vec(o.position, lt === 'directional' ? [5, 8, 5] : [0, 3, 0]), intensity: r3(num(o.intensity, 0, 100, lt === 'ambient' ? 0.5 : 1)), color: color(o.color, '#ffffff') }; }
+    else if (type === 'mesh') {
+      if (!MESHES[o.mesh]) { problems.push('未知的形狀 "' + str(o.mesh, 20) + '",略過'); return null; }
+      var D = DEFAULTS[o.mesh] || {}, rot = Array.isArray(o.rotation) ? vec(o.rotation, [0, 0, 0], -100, 100) : (Array.isArray(o.rotation_deg) ? vec(o.rotation_deg.map(function (d) { return Number(d) * PI / 180; }), [0, 0, 0], -100, 100) : (D.rotation ? D.rotation.slice() : [0, 0, 0]));
+      out = { type: 'mesh', mesh: o.mesh, position: vec(o.position, [0, 0, 0]), rotation: rot, material: material(o.material, {}) };
+      if (o.mesh === 'box') { out.size = vec(o.size, D.size, 0.001, 5000); }
+      else if (o.mesh === 'plane') { var sz = Array.isArray(o.size) ? o.size : D.size; out.size = [r3(num(sz[0], 0.001, 5000, 4)), r3(num(sz.length >= 3 ? sz[2] : sz[1], 0.001, 5000, 4))]; }
+      else if (o.mesh === 'sphere') { out.radius = r3(num(o.radius, 0.001, 5000, D.radius)); }
+      else if (o.mesh === 'cylinder' || o.mesh === 'cone') { out.radius = r3(num(o.radius, 0.001, 5000, D.radius)); out.height = r3(num(o.height, 0.001, 5000, D.height)); }
+      else if (o.mesh === 'torus') { out.radius = r3(num(o.radius, 0.001, 5000, D.radius)); out.tube_radius = r3(num(o.tube_radius, 0.001, 5000, D.tube_radius)); }
+      var sk = skins(o.skins, o.mesh); if (sk.length) { out.skins = sk; }
+      var ex = {}, any = false; if (o.extra && typeof o.extra === 'object') { Object.keys(o.extra).forEach(function (k) { ex[k] = o.extra[k]; any = true; }); } Object.keys(o).forEach(function (k) { if (!KNOWN[k] && !/^_/.test(k)) { ex[k] = o[k]; any = true; } });
+      if (any) { try { if (JSON.stringify(ex).length > LIM.extra) { problems.push('「' + str(o.name, 20) + '」的資料太大,略過'); return null; } out.extra = clone(ex); } catch (e) { /* skip */ } }
+      if ((o.mesh === 'polygon') && !(out.extra && Array.isArray(out.extra.vertices) && out.extra.vertices.length >= 3)) { problems.push('自訂形狀沒有 vertices,略過'); return null; }
+      if (o.mesh === 'line' && !(out.extra && (Array.isArray(out.extra.points) || out.extra.shape === 'circle'))) { problems.push('線沒有 points,略過'); return null; }
+    } else { problems.push('未知的物件類型 "' + str(type, 20) + '",略過'); return null; }
+    out.id = /^[A-Za-z][A-Za-z0-9_-]{0,30}$/.test(String(o.id || '')) ? String(o.id) : null; out.name = str(o.name, LIM.name).trim() || (type === 'group' ? '群組' : type === 'light' ? '燈光' : MESHES[o.mesh]);
+    out.parent = o.parent ? String(o.parent) : null; out.visible = o.visible !== false && o.hidden !== true; out.locked = !!o.locked;
+    return out;
+  }
+  function defaultSpec() { return { v: 1, title: '3D 場景', background: '#1a1d24', camera: { position: [5, 4, 7], look_at: [0, 0.5, 0], fov: 50 }, seq: 0, objects: [] }; }
+  function cameraOf(c, d) { c = c && typeof c === 'object' ? c : {}; d = d || defaultSpec().camera; var p = vec(c.position, d.position, -5000, 5000), l = vec(c.look_at, d.look_at, -5000, 5000); if (vlen(vsub(p, l)) < 0.01) { p = vadd(l, [0, 1, 4]); } return { position: p, look_at: l, fov: r3(num(c.fov, 10, 120, d.fov || 50)) }; }
+  function validate(input) {
+    var problems = [], d = defaultSpec(), r = input && typeof input === 'object' ? input : {}, s = { v: 1, title: str(r.title, LIM.title) || d.title, background: color(r.background, d.background), camera: cameraOf(r.camera, d.camera), seq: 0, objects: [] }, ids = {};
+    (Array.isArray(r.objects) ? r.objects : []).forEach(function (o) {
+      if (s.objects.length >= LIM.objects) { if (!ids.__full) { problems.push('物件太多,只留前 ' + LIM.objects + ' 個'); ids.__full = 1; } return; }
+      var v = validateObject(o, problems); if (!v) { return; }
+      if (v.id && ids[v.id]) { v.id = null; } s.objects.push(v); if (v.id) { ids[v.id] = 1; }
+    });
+    var maxSeq = Number(r.seq) || 0; s.objects.forEach(function (o) { var m = /^o(\d+)$/.exec(o.id || ''); if (m) { maxSeq = Math.max(maxSeq, Number(m[1])); } });
+    s.objects.forEach(function (o) { if (!o.id) { do { maxSeq++; } while (ids['o' + maxSeq]); o.id = 'o' + maxSeq; ids[o.id] = 1; } });
+    s.seq = maxSeq;
+    // parents must be existing groups, no cycles
+    var byid = {}; s.objects.forEach(function (o) { byid[o.id] = o; });
+    s.objects.forEach(function (o) { if (o.parent && (!byid[o.parent] || byid[o.parent].type !== 'group' || o.parent === o.id)) { o.parent = null; } });
+    s.objects.forEach(function (o) { var seen = {}, p = o; while (p && p.parent) { if (seen[p.id]) { o.parent = null; break; } seen[p.id] = 1; p = byid[p.parent]; } });
+    return { ok: true, spec: s, problems: problems };
+  }
+  function byId(spec, id) { for (var i = 0; i < spec.objects.length; i++) { if (spec.objects[i].id === id) { return i; } } return -1; }
+  function find(spec, ref) { var i = byId(spec, ref); if (i >= 0) { return i; } var low = String(ref == null ? '' : ref).trim().toLowerCase(); if (!low) { return -1; } for (var k = spec.objects.length - 1; k >= 0; k--) { if (spec.objects[k].name.toLowerCase() === low) { return k; } } return -1; }
+  function childrenOf(spec, id) { return spec.objects.filter(function (o) { return o.parent === id; }); }
+  function descendants(spec, id) { var out = [], stack = [id]; while (stack.length) { var cur = stack.pop(); childrenOf(spec, cur).forEach(function (c) { out.push(c); stack.push(c.id); }); } return out; }
+  function depthOf(spec, o) { var d = 0, p = o, guard = 0; while (p && p.parent && guard++ < 60) { p = spec.objects[byId(spec, p.parent)]; d++; } return d; }
+  // the tree in the order the objects view shows it: a parent, then its children (in the order of the list)
+  function tree(spec) { var rows = []; function walk(parent, depth) { spec.objects.forEach(function (o) { if ((o.parent || null) === parent) { rows.push({ obj: o, depth: depth }); if (o.type === 'group') { walk(o.id, depth + 1); } } }); } walk(null, 0); return rows; }
+
+  // ───────────────────────── world transforms and boxes ─────────────────────────
+  function localT(o) { return { R: rotMat(o.rotation || [0, 0, 0]), t: o.position || [0, 0, 0], s: o.type === 'group' ? (o.scale || 1) : 1 }; }
+  function worldT(spec, o) {
+    var chain = [], p = o, guard = 0; while (p && guard++ < 60) { chain.unshift(p); p = p.parent ? spec.objects[byId(spec, p.parent)] : null; }
+    var W = { R: IDENT, t: [0, 0, 0], s: 1 };
+    chain.forEach(function (c) { var L = localT(c); W = { R: mmul(W.R, L.R), t: vadd(mvec(W.R, vmul(L.t, W.s)), W.t), s: W.s * L.s }; });
+    return W;
+  }
+  function parentWorld(spec, o) { return o.parent ? worldT(spec, spec.objects[byId(spec, o.parent)]) : { R: IDENT, t: [0, 0, 0], s: 1 }; }
+  // the box of a mesh in its own axes: { c:[x,y,z], h:[hx,hy,hz] }
+  function localBox(o) {
+    var s;
+    switch (o.mesh) {
+      case 'box': s = o.size; return { c: [0, 0, 0], h: [s[0] / 2, s[1] / 2, s[2] / 2] };
+      case 'sphere': return { c: [0, 0, 0], h: [o.radius, o.radius, o.radius] };
+      case 'cylinder': case 'cone': return { c: [0, 0, 0], h: [o.radius, o.height / 2, o.radius] };
+      case 'plane': return { c: [0, 0, 0], h: [o.size[0] / 2, o.size[1] / 2, 0.0005] };
+      case 'torus': return { c: [0, 0, 0], h: [o.radius + o.tube_radius, o.radius + o.tube_radius, o.tube_radius] };
+      case 'polygon': return pointsBox((o.extra && o.extra.vertices) || []);
+      case 'line': return o.extra && Array.isArray(o.extra.points) ? pointsBox(o.extra.points) : (o.extra && o.extra.radius ? { c: [0, 0, 0], h: [o.extra.radius, 0.01, o.extra.radius] } : { c: [0, 0, 0], h: [0.1, 0.1, 0.1] });
+      default: return { c: [0, 0, 0], h: [0.5, 0.5, 0.5] };
+    }
+  }
+  function pointsBox(pts) { var mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity]; pts.forEach(function (p) { for (var i = 0; i < 3; i++) { var v = Number(p[i]) || 0; mn[i] = Math.min(mn[i], v); mx[i] = Math.max(mx[i], v); } }); if (mn[0] === Infinity) { return { c: [0, 0, 0], h: [0.1, 0.1, 0.1] }; } return { c: [(mn[0] + mx[0]) / 2, (mn[1] + mx[1]) / 2, (mn[2] + mx[2]) / 2], h: [(mx[0] - mn[0]) / 2, (mx[1] - mn[1]) / 2, (mx[2] - mn[2]) / 2] }; }
+  function boxOfCorners(corners) { var mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity]; corners.forEach(function (p) { for (var i = 0; i < 3; i++) { mn[i] = Math.min(mn[i], p[i]); mx[i] = Math.max(mx[i], p[i]); } }); return { min: mn, max: mx, center: [(mn[0] + mx[0]) / 2, (mn[1] + mx[1]) / 2, (mn[2] + mx[2]) / 2], half: [(mx[0] - mn[0]) / 2, (mx[1] - mn[1]) / 2, (mx[2] - mn[2]) / 2] }; }
+  function cornersOf(lb) { var out = [], a, b, c; for (a = -1; a <= 1; a += 2) { for (b = -1; b <= 1; b += 2) { for (c = -1; c <= 1; c += 2) { out.push([lb.c[0] + a * lb.h[0], lb.c[1] + b * lb.h[1], lb.c[2] + c * lb.h[2]]); } } } return out; }
+  // the box of an object (a group: of everything in it) in the world: { min, max, center, half } or null
+  function worldBox(spec, o) {
+    if (o.type === 'light') { var wl = worldT(spec, o); return boxOfCorners([wl.t]); }
+    if (o.type === 'group') { var kids = descendants(spec, o.id).filter(function (c) { return c.type === 'mesh' && c.visible; }), pts = []; kids.forEach(function (c) { var b = worldBox(spec, c); if (b) { pts.push(b.min, b.max); } }); return pts.length ? boxOfCorners(pts) : boxOfCorners([worldT(spec, o).t]); }
+    var W = worldT(spec, o), lb = localBox(o); return boxOfCorners(cornersOf(lb).map(function (p) { return vadd(mvec(W.R, vmul(p, W.s)), W.t); }));
+  }
+  function bounds(spec) { var pts = []; spec.objects.forEach(function (o) { if (o.type === 'mesh' && o.visible) { var b = worldBox(spec, o); if (b) { pts.push(b.min, b.max); } } }); return pts.length ? boxOfCorners(pts) : null; }
+
+  // ───────────────────────── the user's view: "me", forward, right ─────────────────────────
+  function frameOf(spec, env) {
+    var v = env && env.view && Array.isArray(env.view.position) && Array.isArray(env.view.target) ? env.view : { position: spec.camera.position, target: spec.camera.look_at };
+    var pos = vec(v.position, [5, 4, 7], -1e6, 1e6), tgt = vec(v.target, [0, 0, 0], -1e6, 1e6), f = vnorm([tgt[0] - pos[0], 0, tgt[2] - pos[2]]);
+    if (vlen(f) < 1e-6) { f = vnorm([-pos[0] + 0.0001, 0, -pos[2] - 1]); if (vlen(f) < 1e-6) { f = [0, 0, -1]; } }
+    var right = [-f[2], 0, f[0]], hd = Math.sqrt((tgt[0] - pos[0]) * (tgt[0] - pos[0]) + (tgt[2] - pos[2]) * (tgt[2] - pos[2]));
+    return { pos: pos, target: tgt, forward: f, right: right, hdist: hd < 0.01 ? 5 : hd };
+  }
+  var DIRS = { front: [1, 0], back: [-1, 0], left: [0, -1], right: [0, 1], 'left-front': [1, -1], 'right-front': [1, 1], 'left-back': [-1, -1], 'right-back': [-1, 1], beside: [0, 1] };   // [forward, right]
+  function dirVec(F, rel) { var d = DIRS[rel]; if (!d) { return null; } return vnorm(vadd(vmul(F.forward, d[0]), vmul(F.right, d[1]))); }
+  var REL_ALIASES = { ahead: 'front', forward: 'front', behind: 'back', 'front-left': 'left-front', 'front-right': 'right-front', 'back-left': 'left-back', 'back-right': 'right-back', up: 'above', top: 'above', over: 'above', down: 'below', under: 'below', next: 'beside', near: 'beside', middle: 'center', in: 'inside' };
+  function refBox(spec, ref, env) {
+    if (ref === 'selection') { ref = env && env.selection; if (!ref) { return { error: '沒有選取任何物件' }; } }
+    var i = find(spec, ref); if (i < 0) { return { error: '找不到物件 "' + str(ref, 30) + '"' }; } var b = worldBox(spec, spec.objects[i]); return b ? { box: b, obj: spec.objects[i] } : { error: '物件 "' + str(ref, 30) + '" 沒有位置' };
+  }
+  // where the box (half extents `half`, centre now at `cur`) has to be to sit at `place` -> { center } | { error }; `skipId` = the object itself (it does not block its own place)
+  function resolvePlace(spec, half, place, env, skipId) {
+    place = place && typeof place === 'object' ? place : {}; var F = frameOf(spec, env), rel = String(place.rel || '').toLowerCase(); rel = REL_ALIASES[rel] || rel; if (rel && !DIRS[rel] && ['above', 'on', 'below', 'inside', 'center'].indexOf(rel) < 0) { return { error: '不認得的位置 "' + str(place.rel, 20) + '"(front/back/left/right/left-front/right-front/left-back/right-back/above/on/below/inside/center/beside)' }; } var of = place.of == null || place.of === '' ? null : String(place.of), gap = place.gap == null ? 0.05 : num(place.gap, 0, 1000, 0.05), c;
+    if (!of) { of = (rel === 'center' || !rel) ? 'view' : (DIRS[rel] ? 'me' : null); if (!of && (rel === 'above' || rel === 'on' || rel === 'below' || rel === 'inside')) { of = 'selection'; } if (!of) { of = 'view'; } }
+    var ofl = of.toLowerCase();
+    if (ofl === 'me' || ofl === 'view' || ofl === 'origin' || ofl === 'ground' || ofl === 'scene') {
+      var base, grounded = true;
+      if (ofl === 'me') { base = [F.pos[0], 0, F.pos[2]]; } else if (ofl === 'view') { base = [F.target[0], 0, F.target[2]]; } else if (ofl === 'scene') { var bb = bounds(spec); base = bb ? [bb.center[0], 0, bb.center[2]] : [0, 0, 0]; } else { base = [0, 0, 0]; }
+      var dist = place.dist != null ? num(place.dist, 0, 5000, 2) : (ofl === 'me' ? Math.max(1.5, Math.min(10, 0.6 * F.hdist)) : (ofl === 'view' ? (DIRS[rel] ? Math.max(1.2, Math.min(6, 0.25 * F.hdist)) : 0) : 0)), dv = DIRS[rel] ? dirVec(F, rel) : [0, 0, 0];
+      if (rel === 'above' || rel === 'below') { dv = [0, 0, 0]; }
+      c = [base[0] + dv[0] * dist, grounded ? half[1] : 0, base[2] + dv[2] * dist];
+      if (rel === 'above') { c[1] = half[1] + (place.dist != null ? num(place.dist, 0, 5000, 2) : 2); }
+      if (place.auto && ofl === 'view') {   // the middle of the view: do not stack on what is already there, step to the user's right
+        for (var tries = 0; tries < 8; tries++) { var blocked = spec.objects.some(function (o) { if (o.type !== 'mesh' || !o.visible || o.id === skipId) { return false; } var b = worldBox(spec, o); return b && Math.abs(b.center[0] - c[0]) < b.half[0] + half[0] - 1e-6 && Math.abs(b.center[2] - c[2]) < b.half[2] + half[2] - 1e-6 && b.min[1] < c[1] + half[1] - 1e-6 && b.max[1] > c[1] - half[1] + 1e-6; }); if (!blocked) { break; } c = vadd(c, vmul(F.right, half[0] * 2 + 0.2)); }
+      }
+    } else {
+      var rb = refBox(spec, of, env); if (rb.error) { return { error: rb.error }; } var B = rb.box;
+      if (rel === 'above' || rel === 'on') { c = [B.center[0], B.max[1] + half[1] + (place.gap == null ? 0 : gap), B.center[2]]; }
+      else if (rel === 'below') { c = [B.center[0], B.min[1] - half[1] - gap, B.center[2]]; }
+      else if (rel === 'inside' || rel === 'center' || !rel) { c = B.center.slice(); }
+      else if (DIRS[rel]) { var d = dirVec(F, rel), ext = Math.abs(d[0]) * B.half[0] + Math.abs(d[2]) * B.half[2], mine = Math.abs(d[0]) * half[0] + Math.abs(d[2]) * half[2], dd = ext + mine + gap + (place.dist != null ? num(place.dist, 0, 5000, 0) : 0); c = [B.center[0] + d[0] * dd, B.min[1] + half[1], B.center[2] + d[2] * dd]; }
+      else { return { error: '不認得的位置 "' + str(place.rel, 20) + '"' }; }
+    }
+    if (place.dx || place.dy || place.dz) { c = vadd(c, vadd(vadd(vmul(F.right, num(place.dx, -1e5, 1e5, 0)), [0, num(place.dy, -1e5, 1e5, 0), 0]), vmul(F.forward, num(place.dz, -1e5, 1e5, 0)))); }
+    return { center: [r3(c[0]), r3(c[1]), r3(c[2])] };
+  }
+
+  // ───────────────────────── applying edits ─────────────────────────
+  function nameFor(spec, base) { var names = {}; spec.objects.forEach(function (o) { names[o.name] = 1; }); if (!names[base]) { return base; } for (var n = 2; n < 500; n++) { if (!names[base + ' ' + n]) { return base + ' ' + n; } } return base; }
+  function nextId(spec) { var id; do { spec.seq++; id = 'o' + spec.seq; } while (byId(spec, id) >= 0); return id; }
+  function moveBy(spec, o, delta) { if (o.parent) { var P = parentWorld(spec, o), l = mvec(mT(P.R), vmul(delta, 1 / P.s)); o.position = [r3(o.position[0] + l[0]), r3(o.position[1] + l[1]), r3(o.position[2] + l[2])]; } else { o.position = [r3(o.position[0] + delta[0]), r3(o.position[1] + delta[1]), r3(o.position[2] + delta[2])]; } }
+  function moveToCenter(spec, o, center) { var b = worldBox(spec, o); if (!b) { return; } moveBy(spec, o, vsub(center, b.center)); }
+  function placeOf(spec, o, place, env) { var b = worldBox(spec, o), half = b ? b.half : [0.5, 0.5, 0.5], r = resolvePlace(spec, half, place, env, o.id); if (r.error) { return r; } moveToCenter(spec, o, r.center); return {}; }
+  function meshesIn(spec, o) { return o.type === 'mesh' ? [o] : o.type === 'group' ? descendants(spec, o.id).filter(function (c) { return c.type === 'mesh'; }) : []; }
+  function scaleMesh(o, f) { if (o.size) { o.size = o.size.map(function (v) { return r3(Math.max(0.001, v * f)); }); } ['radius', 'height', 'tube_radius'].forEach(function (k) { if (o[k] != null) { o[k] = r3(Math.max(0.001, o[k] * f)); } }); if (o.extra && Array.isArray(o.extra.vertices)) { o.extra.vertices = o.extra.vertices.map(function (v) { return [r3(v[0] * f), r3(v[1] * f), r3(v[2] * f)]; }); } if (o.extra && Array.isArray(o.extra.points)) { o.extra.points = o.extra.points.map(function (v) { return v.map(function (x) { return r3(Number(x) * f); }); }); } if (o.extra && o.extra.radius) { o.extra.radius = r3(o.extra.radius * f); } }
+  function resolveId(spec, ref, env) { if (ref === 'selection' || ref === 'it' || ref === 'selected') { ref = env && env.selection; } if (ref == null || ref === '') { ref = env && env.selection; } var i = find(spec, ref); return i; }
+  function hasName(o) { return o && typeof o.name === 'string'; }
+  function newObjectFrom(spec, raw, problems) {
+    var v = validateObject(raw, problems); if (!v) { return null; }
+    var shape = v.type === 'mesh' ? v.mesh : v.type; v.id = nextId(spec); if (!raw.name) { var cw = v.type === 'mesh' && v.material && raw.material && raw.material.color ? colorWord(v.material.color) : ''; v.name = nameFor(spec, (cw ? cw : '') + (v.type === 'mesh' ? MESHES[v.mesh] : v.type === 'group' ? '群組' : '燈光')); } else { v.name = nameFor(spec, v.name); }
+    return v;
+  }
+  var COLOR_WORDS = [['紅', '#e53935'], ['橙', '#fb8c00'], ['黃', '#fdd835'], ['綠', '#43a047'], ['藍', '#1e88e5'], ['紫', '#8e24aa'], ['粉紅', '#f48fb1'], ['白', '#f5f5f5'], ['黑', '#212121'], ['灰', '#9e9e9e'], ['棕', '#795548'], ['金', '#d4af37'], ['銀', '#c0c0c0']];
+  function hexRgb(h) { h = String(h || '').replace('#', ''); if (h.length === 3) { h = h.replace(/(.)/g, '$1$1'); } if (!/^[0-9a-fA-F]{6}/.test(h)) { return null; } return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)]; }
+  function colorWord(hex) { var rgb = hexRgb(hex); if (!rgb) { return ''; } var best = '', bd = 1e9; COLOR_WORDS.forEach(function (c) { var q = hexRgb(c[1]), d = (rgb[0] - q[0]) * (rgb[0] - q[0]) + (rgb[1] - q[1]) * (rgb[1] - q[1]) + (rgb[2] - q[2]) * (rgb[2] - q[2]); if (d < bd) { bd = d; best = c[0]; } }); return bd < 9000 ? best + '色' : ''; }
+
+  var OPFN = {
+    set_title: function (s, e) { s.title = str(e.text, LIM.title).trim() || s.title; return {}; },
+    set_background: function (s, e) { var c = color(e.color || e.background, ''); if (!c) { return { error: '不認得這個顏色' }; } s.background = c; return {}; },
+    set_camera: function (s, e) {
+      var cam = clone(s.camera);
+      if (e.preset) {
+        var b = bounds(s) || { center: [0, 0.5, 0], half: [1, 1, 1] }, R = Math.max(1.5, vlen(b.half)) * 2.6, c = b.center, p = ({ front: [0, 0.3, 1], back: [0, 0.3, -1], left: [-1, 0.3, 0], right: [1, 0.3, 0], top: [0.001, 1, 0.001], iso: [0.7, 0.6, 0.9] })[String(e.preset)];
+        if (!p) { return { error: '視角 "' + str(e.preset, 20) + '" 不認得(front/back/left/right/top/iso)' }; } var pv = vmul(vnorm(p), R); cam.position = [r3(c[0] + pv[0]), r3(c[1] + pv[1]), r3(c[2] + pv[2])]; cam.look_at = [r3(c[0]), r3(c[1]), r3(c[2])];
+      }
+      if (e.position) { cam.position = vec(e.position, cam.position, -5000, 5000); } if (e.look_at) { cam.look_at = vec(e.look_at, cam.look_at, -5000, 5000); } if (e.fov != null) { cam.fov = num(e.fov, 10, 120, cam.fov); }
+      if (e.zoom != null) { var k = num(e.zoom, 0.05, 20, 1), dv = vsub(cam.position, cam.look_at); cam.position = vadd(cam.look_at, vmul(dv, 1 / k)); cam.position = [r3(cam.position[0]), r3(cam.position[1]), r3(cam.position[2])]; }
+      s.camera = cameraOf(cam, s.camera); return {};
+    },
+    add_object: function (s, e, env, st) {
+      if (s.objects.length >= LIM.objects) { return { error: '物件太多了' }; } var raw = e.object && typeof e.object === 'object' ? clone(e.object) : null; if (!raw) { return { error: 'add_object 要有 object' }; }
+      if (e.parent != null && !raw.parent) { raw.parent = e.parent; } if (raw.parent) { var pi = find(s, raw.parent); raw.parent = pi >= 0 && s.objects[pi].type === 'group' ? s.objects[pi].id : null; }
+      var probs = [], o = newObjectFrom(s, raw, probs); if (!o) { return { error: probs[0] || '這個物件不合法' }; } o.parent = raw.parent || null; s.objects.push(o);
+      var hasPos = Array.isArray(raw.position), place = e.place || (raw.place && typeof raw.place === 'object' ? raw.place : null);
+      if (place || !hasPos) { var pr = placeOf(s, o, place || { of: 'view', rel: 'center', auto: true }, env); if (pr.error) { s.objects.pop(); s.seq--; return pr; } if (o.type === 'light' && !(place && place.dy != null)) { var lb = worldBox(s, o); if (lb && o.light !== 'ambient' && lb.center[1] < 1) { moveBy(s, o, [0, 3 - lb.center[1], 0]); } } }
+      st.added.push(o.id); return {};
+    },
+    update_object: function (s, e, env) {
+      var i = resolveId(s, e.id, env); if (i < 0) { return { error: '找不到物件 "' + str(e.id, 30) + '"' }; } var o = s.objects[i], p = e.props && typeof e.props === 'object' ? e.props : {}, raw = clone(o);
+      Object.keys(p).forEach(function (k) {
+        if (k === 'material' && p.material && typeof p.material === 'object') { raw.material = Object.assign({}, raw.material || {}, p.material); }
+        else if (k === 'color' && o.type === 'mesh') { raw.material = Object.assign({}, raw.material || {}, { color: p.color }); }
+        else if (k === 'rotation_deg' && Array.isArray(p.rotation_deg)) { raw.rotation = p.rotation_deg.map(function (d) { return Number(d) * PI / 180; }); }
+        else if (k !== 'id' && k !== 'type' && k !== 'mesh' && k !== 'parent' && k !== 'skins') { raw[k] = p[k]; }
+      });
+      var probs = [], v = validateObject(raw, probs); if (!v) { return { error: probs[0] || '改完之後物件不合法' }; } v.id = o.id; v.parent = o.parent; s.objects[i] = v; return {};
+    },
+    remove_object: function (s, e, env) { var i = resolveId(s, e.id, env); if (i < 0) { return { error: '找不到物件 "' + str(e.id, 30) + '"' }; } var gone = {}; gone[s.objects[i].id] = 1; descendants(s, s.objects[i].id).forEach(function (c) { gone[c.id] = 1; }); s.objects = s.objects.filter(function (o) { return !gone[o.id]; }); return {}; },
+    rename_object: function (s, e, env) { var i = resolveId(s, e.id, env); if (i < 0) { return { error: '找不到物件 "' + str(e.id, 30) + '"' }; } var n = str(e.name, LIM.name).trim(); if (!n) { return { error: '名字是空的' }; } s.objects[i].name = n; return {}; },
+    move_object: function (s, e, env) {
+      var i = resolveId(s, e.id, env); if (i < 0) { return { error: '找不到物件 "' + str(e.id, 30) + '"' }; } var o = s.objects[i], to = e.to, sib = s.objects.filter(function (x) { return (x.parent || null) === (o.parent || null); }), k = sib.indexOf(o), nk;
+      if (to === 'up' || to === 'earlier') { nk = k - 1; } else if (to === 'down' || to === 'later') { nk = k + 1; } else if (to === 'front' || to === 'first') { nk = 0; } else if (to === 'back' || to === 'last') { nk = sib.length - 1; } else if (isFinite(Number(to))) { nk = Math.round(Number(to)); } else { return { error: 'to 要是 up/down/earlier/later/first/last 或數字' }; }
+      nk = Math.max(0, Math.min(sib.length - 1, nk)); if (nk === k) { return { error: '已經在最' + (nk === 0 ? '前' : '後') + '面了' }; }
+      var tgt = sib[nk], cut = s.objects.indexOf(o); s.objects.splice(cut, 1); var at = s.objects.indexOf(tgt); if (nk > k) { var tail = [tgt].concat(descendants(s, tgt.id)), last = tail.reduce(function (m, x) { return Math.max(m, s.objects.indexOf(x)); }, at); at = last + 1; } s.objects.splice(at, 0, o); var kids = descendants(s, o.id); if (kids.length) { s.objects = s.objects.filter(function (x) { return kids.indexOf(x) < 0; }); s.objects.splice.apply(s.objects, [s.objects.indexOf(o) + 1, 0].concat(kids)); } return {};
+    },
+    set_visible: function (s, e, env) { var i = resolveId(s, e.id, env); if (i < 0) { return { error: '找不到物件 "' + str(e.id, 30) + '"' }; } s.objects[i].visible = e.visible !== false; return {}; },
+    set_locked: function (s, e, env) { var i = resolveId(s, e.id, env); if (i < 0) { return { error: '找不到物件 "' + str(e.id, 30) + '"' }; } s.objects[i].locked = !!e.locked; return {}; },
+    duplicate_object: function (s, e, env, st) {
+      var i = resolveId(s, e.id, env); if (i < 0) { return { error: '找不到物件 "' + str(e.id, 30) + '"' }; } var o = s.objects[i], list = [o].concat(descendants(s, o.id)), map = {};
+      if (s.objects.length + list.length > LIM.objects) { return { error: '物件太多了' }; } var copies = [];
+      list.forEach(function (x) { var c = clone(x); map[x.id] = nextId(s); c.id = map[x.id]; c.name = x === o ? nameFor(s, x.name) : x.name; copies.push(c); });
+      copies.forEach(function (c) { if (c.parent && map[c.parent]) { c.parent = map[c.parent]; } }); var at = s.objects.indexOf(list[list.length - 1]) + 1; s.objects.splice.apply(s.objects, [at, 0].concat(copies));
+      var F = frameOf(s, env), b = worldBox(s, o), w = b ? 2 * Math.abs(F.right[0]) * b.half[0] + 2 * Math.abs(F.right[2]) * b.half[2] : 1; moveBy(s, copies[0], e.place ? [0, 0, 0] : vmul(F.right, w + 0.15)); if (e.place) { var pr = placeOf(s, copies[0], e.place, env); if (pr.error) { return pr; } } st.added.push(copies[0].id); return {};
+    },
+    clear_objects: function (s) { s.objects = []; return {}; },
+    place_object: function (s, e, env) { var i = resolveId(s, e.id, env); if (i < 0) { return { error: '找不到物件 "' + str(e.id, 30) + '"' }; } if (!e.place) { return { error: 'place_object 要有 place' }; } return placeOf(s, s.objects[i], e.place, env); },
+    transform_object: function (s, e, env) {
+      var i = resolveId(s, e.id, env); if (i < 0) { return { error: '找不到物件 "' + str(e.id, 30) + '"' }; } var o = s.objects[i], F = frameOf(s, env), done = false;
+      if (Array.isArray(e.move)) { var m = vec(e.move, [0, 0, 0], -1e5, 1e5); moveBy(s, o, vadd(vadd(vmul(F.right, m[0]), [0, m[1], 0]), vmul(F.forward, m[2]))); done = true; }
+      if (Array.isArray(e.move_world)) { moveBy(s, o, vec(e.move_world, [0, 0, 0], -1e5, 1e5)); done = true; }
+      if (e.turn != null || e.tilt != null || e.roll != null) { var rot = (o.rotation || [0, 0, 0]).slice(); rot[1] = r3(rot[1] + num(e.turn, -3600, 3600, 0) * PI / 180); rot[0] = r3(rot[0] + num(e.tilt, -3600, 3600, 0) * PI / 180); rot[2] = r3(rot[2] + num(e.roll, -3600, 3600, 0) * PI / 180); if (o.type !== 'light') { o.rotation = rot; done = true; } }
+      if (Array.isArray(e.rotate_deg)) { if (o.type !== 'light') { o.rotation = vec(e.rotate_deg.map(function (d) { return Number(d) * PI / 180; }), [0, 0, 0], -100, 100); done = true; } }
+      if (e.scale != null) { var f = num(e.scale, 0.01, 100, 1); if (o.type === 'group') { o.scale = r3(Math.max(0.001, o.scale * f)); } else if (o.type === 'mesh') { var b0 = worldBox(s, o), bot = b0 ? b0.min[1] : null; scaleMesh(o, f); if (e.keep_bottom !== false && b0 && bot != null && Math.abs(bot) < 1e-6) { var b1 = worldBox(s, o); if (b1) { moveBy(s, o, [0, bot - b1.min[1], 0]); } } } else if (o.type === 'light') { o.intensity = r3(num(o.intensity * f, 0, 100, o.intensity)); } done = true; }
+      return done ? {} : { error: 'transform_object 要有 move/move_world/turn/tilt/roll/rotate_deg/scale 其中之一' };
+    },
+    ungroup: function (s, e, env) {
+      var i = resolveId(s, e.id, env); if (i < 0) { return { error: '找不到物件 "' + str(e.id, 30) + '"' }; } var g = s.objects[i]; if (g.type !== 'group') { return { error: '「' + g.name + '」不是群組' }; }
+      var P = worldT(s, g), parentId = g.parent || null; childrenOf(s, g.id).forEach(function (c) { var L = localT(c), R = mmul(P.R, L.R), pos = vadd(mvec(P.R, vmul(c.position, g.scale)), g.position); if (c.type === 'mesh') { scaleMesh(c, g.scale); } if (c.type === 'group') { c.scale = r3(c.scale * g.scale); } c.position = vec(pos, [0, 0, 0]); c.rotation = matEuler(R); c.parent = parentId; });
+      s.objects.splice(i, 1); return {};
+    },
+    set_parent: function (s, e, env) {
+      var i = resolveId(s, e.id, env); if (i < 0) { return { error: '找不到物件 "' + str(e.id, 30) + '"' }; } var o = s.objects[i], np = null;
+      if (e.parent != null && e.parent !== '') { var pi = find(s, e.parent); if (pi < 0 || s.objects[pi].type !== 'group') { return { error: '找不到群組 "' + str(e.parent, 30) + '"' }; } if (s.objects[pi] === o || descendants(s, o.id).indexOf(s.objects[pi]) >= 0) { return { error: '不能放進自己裡面' }; } np = s.objects[pi].id; }
+      var W = worldT(s, o); o.parent = np; var P = np ? worldT(s, s.objects[byId(s, np)]) : { R: IDENT, t: [0, 0, 0], s: 1 };
+      if (o.type !== 'light' || true) { o.position = vec(mvec(mT(P.R), vmul(vsub(W.t, P.t), 1 / P.s)), [0, 0, 0]); } if (o.type !== 'light') { o.rotation = matEuler(mmul(mT(P.R), W.R)); }
+      if (o.type === 'mesh' && Math.abs(W.s / P.s - 1) > 1e-6) { /* a mesh's own size already includes everything above it */ scaleMesh(o, (W.s / P.s)); } if (o.type === 'group') { o.scale = r3(Math.max(0.001, W.s / P.s)); }
+      var kids = [o].concat(descendants(s, o.id)); s.objects = s.objects.filter(function (x) { return kids.indexOf(x) < 0; }); var at = np ? s.objects.indexOf(s.objects[byId(s, np)]) + 1 + descendants(s, np).length : s.objects.length; s.objects.splice.apply(s.objects, [at, 0].concat(kids)); return {};
+    },
+    set_material: function (s, e, env) {
+      var targets = []; if (e.id === 'all') { targets = s.objects.filter(function (o) { return o.type === 'mesh'; }); } else { var i = resolveId(s, e.id, env); if (i < 0) { return { error: '找不到物件 "' + str(e.id, 30) + '"' }; } targets = meshesIn(s, s.objects[i]); }
+      if (!targets.length) { return { error: '這個物件沒有表面可以上色' }; } var m = {}; MATERIAL_KEYS.forEach(function (k) { if (e[k] !== undefined) { m[k] = e[k]; } }); if (e.material && typeof e.material === 'object') { Object.assign(m, e.material); }
+      if (!Object.keys(m).length) { return { error: 'set_material 要有 color/metalness/roughness/opacity/emissive/texture/texture_repeat/side 其中之一' }; }
+      if (m.color != null && !color(m.color, '')) { return { error: '不認得這個顏色 "' + str(m.color, 20) + '"' }; } if (m.texture != null && m.texture !== '' && !texture(m.texture)) { return { error: '貼圖要是 water/grass/sand/wood/brick、ref:… 或圖片網址' }; }
+      targets.forEach(function (o) { var cur = Object.assign({}, o.material); Object.keys(m).forEach(function (k) { if ((k === 'texture' && (m[k] === '' || m[k] === null)) || (k === 'texture_repeat' && m[k] === null)) { delete cur[k]; } else if (k === 'opacity' && Number(m[k]) >= 1) { delete cur.opacity; } else if (k === 'emissive' && !m[k]) { delete cur.emissive; delete cur.emissive_intensity; } else { cur[k] = m[k]; } }); o.material = material(cur, {}); }); return {};
+    },
+    add_skin: function (s, e, env, st) { var i = resolveId(s, e.id, env); if (i < 0) { return { error: '找不到物件 "' + str(e.id, 30) + '"' }; } var o = s.objects[i]; if (o.type !== 'mesh' || !zonesOf(o.mesh).length) { return { error: '「' + o.name + '」這種形狀不能貼皮(要是方塊、圓柱、圓錐、球、圓環或平面)' }; } var cur = o.skins || [], seq = 1; cur.forEach(function (k) { seq = Math.max(seq, Number(String(k.id).slice(1)) + 1); }); var k = skin(Object.assign({}, e.skin || {}, { id: 'k' + seq }), o.mesh, seq); if (!k) { return { error: '貼皮要有 image(貼圖)或 color(顏色)' }; } if (cur.length >= LIM.skins) { return { error: '貼皮太多了' }; } o.skins = cur.concat([k]); st.skin = k.id; return {}; },
+    update_skin: function (s, e, env) { var i = resolveId(s, e.id, env); if (i < 0) { return { error: '找不到物件 "' + str(e.id, 30) + '"' }; } var o = s.objects[i], list = o.skins || [], j = -1; list.forEach(function (k, n) { if (k.id === e.skin_id) { j = n; } }); if (j < 0) { return { error: '找不到貼皮 "' + str(e.skin_id, 20) + '"' }; } var k = skin(Object.assign({}, list[j], e.props || {}, { id: list[j].id }), o.mesh, 1); if (!k) { return { error: '貼皮要有 image(貼圖)或 color(顏色)' }; } list[j] = k; o.skins = list; return {}; },
+    remove_skin: function (s, e, env) { var i = resolveId(s, e.id, env); if (i < 0) { return { error: '找不到物件 "' + str(e.id, 30) + '"' }; } var o = s.objects[i], n0 = (o.skins || []).length; o.skins = (o.skins || []).filter(function (k) { return k.id !== e.skin_id; }); if (o.skins.length === n0) { return { error: '找不到貼皮 "' + str(e.skin_id, 20) + '"' }; } if (!o.skins.length) { delete o.skins; } return {}; },
+    clear_skins: function (s, e, env) { var i = resolveId(s, e.id, env); if (i < 0) { return { error: '找不到物件 "' + str(e.id, 30) + '"' }; } delete s.objects[i].skins; return {}; },
+    set_skins: function (s, e, env) { var i = resolveId(s, e.id, env); if (i < 0) { return { error: '找不到物件 "' + str(e.id, 30) + '"' }; } var o = s.objects[i]; if (o.type !== 'mesh') { return { error: '只有形狀可以貼皮' }; } var list = skins(e.skins, o.mesh); if (list.length) { o.skins = list; } else { delete o.skins; } if (e.material && typeof e.material === 'object') { o.material = material(Object.assign({}, o.material, e.material), {}); } return {}; },
+    drop_to_ground: function (s, e, env) { var i = resolveId(s, e.id, env); if (i < 0) { return { error: '找不到物件 "' + str(e.id, 30) + '"' }; } var b = worldBox(s, s.objects[i]); if (!b) { return { error: '沒有位置' }; } moveBy(s, s.objects[i], [0, -b.min[1], 0]); return {}; },
+    align_objects: function (s, e, env) {
+      var objs = (Array.isArray(e.ids) ? e.ids : []).map(function (x) { return resolveId(s, x, env); }).filter(function (i) { return i >= 0; }).map(function (i) { return s.objects[i]; }), ax = { x: 0, y: 1, z: 2 }[String(e.axis || '').toLowerCase()], to = String(e.to || 'center');
+      if (objs.length < 2 || ax == null) { return { error: 'align_objects 要有 2 個以上的 ids 與 axis(x/y/z)' }; } var boxes = objs.map(function (o) { return worldBox(s, o); });
+      var key = function (b) { return to === 'min' ? b.min[ax] : to === 'max' ? b.max[ax] : b.center[ax]; }, target = to === 'min' ? Math.min.apply(null, boxes.map(key)) : to === 'max' ? Math.max.apply(null, boxes.map(key)) : (Math.min.apply(null, boxes.map(function (b) { return b.min[ax]; })) + Math.max.apply(null, boxes.map(function (b) { return b.max[ax]; }))) / 2;
+      objs.forEach(function (o, k) { var d = [0, 0, 0]; d[ax] = target - key(boxes[k]); moveBy(s, o, d); }); return {};
+    }
+  };
+  function applyEdits(spec, edits, env) {
+    var s = validate(clone(spec)).spec, applied = [], appliedEdits = [], rejected = [], st = { added: [] }; env = env || {};
+    (Array.isArray(edits) ? edits : []).forEach(function (e) {
+      if (!e || typeof e !== 'object' || OPS.indexOf(e.op) < 0) { rejected.push({ op: str(e && e.op, 30) || '?', error: HOST_OPS.indexOf(e && e.op) >= 0 ? '這個動作要由宿主執行(找圖、生圖)' : '不是可以做的動作' }); return; }
+      var before = clone(s), r;
+      try { r = e.op === 'group_objects' ? groupImpl(s, e, env) : OPFN[e.op](s, e, env, st); } catch (x) { r = { error: String((x && x.message) || x) }; }
+      if (r && r.error) { s.objects = before.objects; s.seq = Math.max(s.seq, before.seq); s.title = before.title; s.background = before.background; s.camera = before.camera; rejected.push({ op: e.op, error: r.error }); return; }
+      applied.push(e.op); appliedEdits.push(e);
+    });
+    var res = validate(s); return { spec: res.spec, applied: applied, appliedEdits: appliedEdits, rejected: rejected, added: st.added.filter(function (id) { return byId(res.spec, id) >= 0; }) };
+  }
+  // group_objects needs the whole list (the grouped objects keep their world places): done here, on the spec itself
+  function groupImpl(s, e, env) {
+    var ids = (Array.isArray(e.ids) ? e.ids : []).map(function (x) { return resolveId(s, x, env); }).filter(function (i) { return i >= 0; }), uniq = []; ids.forEach(function (i) { if (uniq.indexOf(i) < 0) { uniq.push(i); } });
+    if (!uniq.length) { return { error: 'group_objects 要有 ids(要綁在一起的物件)' }; } var objs = uniq.map(function (i) { return s.objects[i]; }), par = objs[0].parent || null;
+    if (objs.some(function (o) { return (o.parent || null) !== par; })) { return { error: '要綁在一起的物件必須在同一層' }; } if (objs.some(function (o) { return objs.some(function (q) { return q !== o && descendants(s, q.id).indexOf(o) >= 0; }); })) { return { error: '不能把群組跟它裡面的東西一起綁' }; }
+    var pts = []; objs.forEach(function (o) { var b = worldBox(s, o); if (b) { pts.push(b.min, b.max); } }); var bb = pts.length ? boxOfCorners(pts) : { center: [0, 0, 0], min: [0, 0, 0] }, pivotW = [bb.center[0], bb.min[1], bb.center[2]];
+    var P = par ? worldT(s, s.objects[byId(s, par)]) : { R: IDENT, t: [0, 0, 0], s: 1 }, pivotL = par ? mvec(mT(P.R), vmul(vsub(pivotW, P.t), 1 / P.s)) : pivotW;
+    var g = { type: 'group', id: nextId(s), name: nameFor(s, str(e.name, LIM.name).trim() || '群組'), parent: par, visible: true, locked: false, position: [r3(pivotL[0]), r3(pivotL[1]), r3(pivotL[2])], rotation: [0, 0, 0], scale: 1 };
+    var block = []; objs.forEach(function (o) { block.push(o); descendants(s, o.id).forEach(function (c) { block.push(c); }); });
+    var at = Math.min.apply(null, block.map(function (o) { return s.objects.indexOf(o); })); s.objects = s.objects.filter(function (o) { return block.indexOf(o) < 0; });
+    // the children now live under g (no rotation, scale 1): their local positions are relative to its pivot
+    objs.forEach(function (o) { o.parent = g.id; o.position = [r3(o.position[0] - g.position[0]), r3(o.position[1] - g.position[1]), r3(o.position[2] - g.position[2])]; });
+    s.objects.splice.apply(s.objects, [Math.min(at, s.objects.length), 0, g].concat(block)); return {};
+  }
+  OPFN.group_objects = function (s, e, env) { return groupImpl(s, e, env); };
+
+  function editWords(e) {
+    if (!e) { return ''; } var id = e.id ? (' ' + str(e.id, 30)) : '';
+    switch (e.op) {
+      case 'set_title': return '標題改成「' + str(e.text, 40) + '」'; case 'set_background': return '背景 ' + str(e.color || e.background, 20); case 'set_camera': return '調整視角';
+      case 'add_object': { var o = e.object || {}; return '新增' + (o.name ? ' ' + str(o.name, 30) : (o.type === 'light' ? '燈光' : o.type === 'group' ? '群組' : (MESHES[o.mesh] || '物件'))) + (e.place ? '（' + placeWords(e.place) + '）' : ''); }
+      case 'update_object': return '修改物件' + id; case 'remove_object': return '刪掉物件' + id; case 'rename_object': return str(e.id, 30) + ' 改名為 ' + str(e.name, 30);
+      case 'move_object': return '調整' + id + ' 的順序'; case 'set_visible': return (e.visible === false ? '隱藏' : '顯示') + id; case 'set_locked': return (e.locked ? '鎖定' : '解鎖') + id; case 'duplicate_object': return '複製' + id;
+      case 'clear_objects': return '清空場景'; case 'place_object': return '把' + id + ' 放到（' + placeWords(e.place) + '）'; case 'transform_object': return '變形' + id;
+      case 'group_objects': return '把 ' + (e.ids || []).join('、') + ' 綁成群組'; case 'ungroup': return '解散群組' + id; case 'set_parent': return str(e.id, 30) + ' 放進群組 ' + str(e.parent, 30);
+      case 'set_material': return '改' + id + ' 的材質'; case 'add_skin': return '替' + id + ' 貼皮'; case 'update_skin': return '修改' + id + ' 的貼皮'; case 'remove_skin': return '拿掉' + id + ' 的貼皮'; case 'clear_skins': return '清掉' + id + ' 的貼皮'; case 'set_skins': return '編輯' + id + ' 的貼皮';
+      case 'drop_to_ground': return id + ' 放到地上'; case 'align_objects': return '對齊物件'; default: return e.op;
+    }
+  }
+  var REL_WORDS = { front: '前方', back: '後方', left: '左邊', right: '右邊', 'left-front': '左前方', 'right-front': '右前方', 'left-back': '左後方', 'right-back': '右後方', above: '上面', on: '上面', below: '下面', inside: '裡面', center: '中間', beside: '旁邊' };
+  function placeWords(p) { p = p || {}; var rel = REL_ALIASES[String(p.rel || '').toLowerCase()] || p.rel || 'center', of = p.of == null ? '' : String(p.of), who = of === 'me' || !of && DIRS[rel] ? '我的' : of === 'view' || !of ? '畫面' : of === 'selection' ? '選取的物件' : str(of, 20); return who + (REL_WORDS[rel] || str(rel, 12)); }
+  function describeObject(o) {
+    var f = function (v) { return '[' + v.map(function (x) { return Math.round(x * 100) / 100; }).join(',') + ']'; };
+    if (o.type === 'group') { return '群組 @' + f(o.position) + (o.scale !== 1 ? ' ×' + o.scale : ''); } if (o.type === 'light') { return o.light + '燈 ' + (o.light === 'ambient' ? '' : '@' + f(o.position) + ' ') + '強度' + o.intensity; }
+    var dim = o.size ? ' ' + f(o.size) : (o.radius != null ? ' r' + o.radius + (o.height != null ? ' h' + o.height : '') : ''); return o.mesh + dim + ' @' + f(o.position) + ' ' + (o.material && o.material.color || '') + (o.material && o.material.texture ? ' 貼圖' : '') + (o.skins ? ' 貼皮×' + o.skins.length : '');
+  }
+  function list(spec) { return tree(validate(spec).spec).map(function (r) { return new Array(r.depth + 1).join('  ') + r.obj.id + ' ' + r.obj.name + '：' + describeObject(r.obj); }).join('\n'); }
+
+  // ───────────────────────── words the program reads itself (no model) ─────────────────────────
+  var SHAPE_WORDS = [['mesh:sphere', /(球體|圓球|球|sphere|ball)/i], ['mesh:box', /(立方體|方塊|方形|盒子|箱子|積木|cube|box|block)/i], ['mesh:cylinder', /(圓柱體|圓柱|柱子|cylinder|pillar)/i], ['mesh:cone', /(圓錐體|圓錐|錐體|cone)/i], ['mesh:plane', /(平面|地板|地面|桌面|plane|floor)/i], ['mesh:torus', /(甜甜圈|圓環|環|torus|donut|ring)/i], ['light:point', /(點光源|燈泡|燈|point\s*light|lamp|light)/i], ['group:group', /(群組|group)/i]];
+  var COLOR_RE = [['#e53935', /(紅|red)/i], ['#fb8c00', /(橙|橘|orange)/i], ['#fdd835', /(黃|yellow)/i], ['#43a047', /(綠|green)/i], ['#1e88e5', /(藍|blue)/i], ['#8e24aa', /(紫|purple|violet)/i], ['#f48fb1', /(粉紅|粉|pink)/i], ['#f5f5f5', /(白|white)/i], ['#212121', /(黑|black)/i], ['#9e9e9e', /(灰|gr[ae]y)/i], ['#795548', /(棕|咖啡|褐|brown)/i], ['#d4af37', /(金|gold)/i], ['#c0c0c0', /(銀|silver)/i]];
+  function colorIn(t) { var m = /#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b/.exec(t); if (m) { return m[0]; } var best = null, at = 1e9; COLOR_RE.forEach(function (c) { var mm = c[1].exec(t); if (mm && mm.index < at - (c[0] === '#f48fb1' ? 1 : 0)) { at = mm.index; best = c[0]; } }); if (/粉紅|pink/i.test(t)) { return '#f48fb1'; } if (/天藍|淺藍/.test(t)) { return '#4fc3f7'; } if (/深藍|藏青/.test(t)) { return '#1a237e'; } if (/草綠|淺綠/.test(t)) { return '#8bc34a'; } if (/深綠/.test(t)) { return '#1b5e20'; } return best; }
+  var NUMW = { '一': 1, '二': 2, '兩': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10 };
+  function nnum(s) { if (s == null || s === '') { return null; } if (/^\d+(\.\d+)?$/.test(s)) { return Number(s); } return NUMW[s] != null ? NUMW[s] : null; }
+  var REL_RE = [['left-front', /(左前方?|前左|左前側)/], ['right-front', /(右前方?|前右|右前側)/], ['left-back', /(左後方?|後左|左後側|左後面)/], ['right-back', /(右後方?|後右|右後側|右後面)/], ['above', /(上面|上方|頂上|上頭|上)(?![^，。]*[左右前後])/], ['below', /(下面|下方|底下|下頭)/], ['inside', /(裡面|裡頭|內部|其中)/], ['center', /(正中間|中央|中間|中心|畫面中)/], ['front', /(前方|前面|正前|前側|面前|前)/], ['back', /(後方|後面|後側|背後|後)/], ['left', /(左邊|左側|左方|左手邊|左)/], ['right', /(右邊|右側|右方|右手邊|右)/], ['beside', /(旁邊|旁|附近|身邊)/]];
+  function relIn(t) { for (var i = 0; i < REL_RE.length; i++) { var m = REL_RE[i][1].exec(t); if (m) { return { rel: REL_RE[i][0], at: m.index, text: m[0] }; } } return null; }
+  // the object an expression names: the longest name found in the text, or an id
+  function objectIn(spec, t) { var best = -1, bl = 0; spec.objects.forEach(function (o, i) { var n = o.name.toLowerCase(); if (n && t.toLowerCase().indexOf(n) >= 0 && n.length > bl) { best = i; bl = n.length; } }); if (best >= 0) { return spec.objects[best]; } var m = /\b(o\d+)\b/.exec(t); if (m) { var k = byId(spec, m[1]); if (k >= 0) { return spec.objects[k]; } } return null; }
+  function parsePlace(spec, t) {
+    var r = relIn(t); var ob = objectIn(spec, t), p = {};
+    if (/(我的|我身|我左|我右|我前|我後|我旁|在我|離我|我這)/.test(t) || /^我/.test(t)) { p.of = 'me'; }
+    else if (ob) { p.of = ob.id; } else if (/(畫面|視野|螢幕|眼前)/.test(t)) { p.of = 'view'; } else if (/(地上|地面|地板上)/.test(t)) { p.of = 'view'; if (!r) { r = { rel: 'center' }; } } else if (/(這裡|這邊|此處)/.test(t)) { p.of = 'view'; }
+    if (r) { p.rel = r.rel; } else if (ob) { p.rel = 'beside'; } else if (p.of === 'me') { p.rel = 'front'; }
+    var d = /(\d+(?:\.\d+)?)\s*(?:公尺|米|格|單位|m\b)/.exec(t); if (d) { p.dist = Number(d[1]); }
+    return p.of || p.rel ? p : null;
+  }
+  function parseObjectPhrase(spec, t) {
+    var shape = null; SHAPE_WORDS.forEach(function (s) { if (!shape && s[1].test(t)) { shape = s[0]; } }); if (!shape) { return null; }
+    var col = colorIn(t.replace(/(顏色|色的|色)/, '')), cnt = 1, cm = /(\d+|[一二兩三四五六七八九十])\s*(?:個|顆|塊|張|座|盞|根|片|只|組)/.exec(t); if (cm) { cnt = Math.max(1, Math.min(10, nnum(cm[1]) || 1)); }
+    var kind = shape.split(':'), o = kind[0] === 'mesh' ? { type: 'mesh', mesh: kind[1] } : kind[0] === 'light' ? { type: 'light', light: 'point' } : { type: 'group' }; if (o.type === 'group') { return null; }
+    if (col && o.type === 'mesh') { o.material = { color: col }; } if (col && o.type === 'light') { o.color = col; }
+    var big = /(超大|巨大|很大|特大|大型|大的|大)/.test(t.replace(/大小/g, '')) ? (/(超大|巨大|特大)/.test(t) ? 3 : 2) : 1, small = /(迷你|很小|小型|小的|小)/.test(t) ? (/(迷你)/.test(t) ? 0.35 : 0.5) : 1, f = big > 1 ? big : small;
+    var sizeN = /(?:邊長|寬|大小為?|尺寸)\s*(\d+(?:\.\d+)?)/.exec(t), radN = /(?:半徑|r=?)\s*(\d+(?:\.\d+)?)/i.exec(t), hN = /(?:高度?|height)\s*(\d+(?:\.\d+)?)/i.exec(t);
+    if (o.mesh === 'box') { var side = sizeN ? Number(sizeN[1]) : f; o.size = [side, hN ? Number(hN[1]) : side, side]; } else if (o.mesh === 'sphere') { o.radius = radN ? Number(radN[1]) : 0.5 * f; } else if (o.mesh === 'cylinder' || o.mesh === 'cone') { o.radius = radN ? Number(radN[1]) : (o.mesh === 'cone' ? 0.5 : 0.4) * f; o.height = hN ? Number(hN[1]) : f; } else if (o.mesh === 'plane') { var ps = sizeN ? Number(sizeN[1]) : 4 * f; o.size = [ps, ps]; } else if (o.mesh === 'torus') { o.radius = radN ? Number(radN[1]) : 0.5 * f; o.tube_radius = o.radius * 0.3; } else if (o.type === 'light') { o.intensity = 1.2 * (big > 1 ? 1.5 : small < 1 ? 0.6 : 1); }
+    return { object: o, count: cnt, shape: shape };
+  }
+  // one clause at a time; what no rule reads goes back as `unmatched` (the AI gets it)
+  function parseCommands(text, spec) {
+    var s = validate(spec).spec, edits = [], matched = [], unmatched = [];
+    String(text || '').split(/[，,。；;\n]+|(?:然後|接著|之後再|再來|並且)/).map(function (c) { return c.trim(); }).filter(Boolean).forEach(function (c0) {
+      var c = c0.replace(/^(?:請你?|幫我|請幫我|麻煩|可以|我要|我想要?|給我)\s*/, ''), m, e = null;
+      if ((m = /^把\s*(.+?)\s*(?:改名|重新命名|命名)\s*(?:為|成)\s*[「"]?(.+?)[」"]?$/.exec(c))) { var o1 = objectIn(s, m[1]); if (o1) { e = [{ op: 'rename_object', id: o1.id, name: m[2] }]; } }
+      else if ((m = /^(?:刪除|刪掉|移除|拿掉|去掉|清除|delete|remove)\s*(?:掉)?\s*(.+)$/i.exec(c))) { if (/^(所有|全部|整個場景|場景)/.test(m[1])) { e = [{ op: 'clear_objects' }]; } else { var o2 = objectIn(s, m[1]); if (o2) { e = [{ op: 'remove_object', id: o2.id }]; } else if (/^(它|這個|選取的?|選中的?)/.test(m[1])) { e = [{ op: 'remove_object', id: 'selection' }]; } } }
+      else if ((m = /^(?:把\s*)?(.+?)\s*(隱藏|藏起來|顯示|顯現|鎖定|解鎖|解除鎖定)$/.exec(c)) || (m = /^(隱藏|顯示|鎖定|解鎖)\s*(.+)$/.exec(c))) { var w = /^(隱藏|藏起來|顯示|顯現|鎖定|解鎖|解除鎖定)$/.test(m[2]) ? m[2] : m[1], tx = w === m[2] ? m[1] : m[2], o3 = /^(它|這個|選取的?)$/.test(tx) ? { id: 'selection' } : objectIn(s, tx); if (o3) { e = [{ op: /隱藏|藏起來|顯示|顯現/.test(w) ? 'set_visible' : 'set_locked', id: o3.id }]; if (e[0].op === 'set_visible') { e[0].visible = /顯/.test(w); } else { e[0].locked = /^鎖定$/.test(w); } } }
+      else if ((m = /^(?:複製|再來一個|再做一個|再加一個)\s*(.+)$/.exec(c))) { var o4 = objectIn(s, m[1]); if (o4) { e = [{ op: 'duplicate_object', id: o4.id }]; } else if (/^(它|這個|選取的?)/.test(m[1])) { e = [{ op: 'duplicate_object', id: 'selection' }]; } }
+      else if ((m = /^把\s*(.+?)\s*(?:的)?(?:顏色)?\s*(?:改成|換成|變成|塗成|漆成|染成|上色成|換)\s*(.+?)\s*(?:色)?$/.exec(c)) && !/^(?:場景的?)?背景/.test(m[1]) && colorIn(m[2])) { var tgt = /^(它|這個|選取的?|選中的?)$/.test(m[1].trim()) ? { id: 'selection' } : objectIn(s, m[1]); if (tgt) { e = [{ op: 'set_material', id: tgt.id, color: colorIn(m[2]) }]; } }
+      else if ((m = /^把\s*(.+?)\s*(?:移到|放到|放在|搬到|擺到|移動到|挪到|移去|放去)\s*(.+)$/.exec(c))) { var o5 = /^(它|這個|選取的?|選中的?)$/.test(m[1].trim()) ? { id: 'selection' } : objectIn(s, m[1]), pl = parsePlace(s, m[2]); if (o5 && pl) { if (pl.of === o5.id) { pl = null; } if (pl) { e = [{ op: 'place_object', id: o5.id, place: pl }]; } } }
+      else if ((m = /^把\s*(.+?)\s*(?:往|向)\s*(左前|右前|左後|右後|左|右|前|後|上|下)\s*(?:方)?\s*(?:移動|移|挪|推|拉|平移)?\s*(\d+(?:\.\d+)?)?\s*(?:公尺|米|格|單位)?$/.exec(c))) { var o6 = /^(它|這個|選取的?|選中的?)$/.test(m[1].trim()) ? { id: 'selection' } : objectIn(s, m[1]), dist = m[3] ? Number(m[3]) : 1, dirs = { '左': [-1, 0, 0], '右': [1, 0, 0], '前': [0, 0, 1], '後': [0, 0, -1], '上': [0, 1, 0], '下': [0, -1, 0], '左前': [-1, 0, 0.7], '右前': [1, 0, 0.7], '左後': [-1, 0, -0.7], '右後': [1, 0, -0.7] }, dv = dirs[m[2]]; if (o6 && dv) { e = [{ op: 'transform_object', id: o6.id, move: [dv[0] * dist, dv[1] * dist, dv[2] * dist] }]; } }
+      else if ((m = /^把\s*(.+?)\s*(?:向|往)?(?:左|右)?(?:旋轉|轉|轉動|轉向)\s*(-?\d+(?:\.\d+)?)\s*度$/.exec(c))) { var o7 = /^(它|這個|選取的?|選中的?)$/.test(m[1].trim()) ? { id: 'selection' } : objectIn(s, m[1]); if (o7) { var ang = Number(m[2]) * (/往右|向右/.test(c) ? -1 : 1); e = [{ op: 'transform_object', id: o7.id, turn: ang }]; } }
+      else if ((m = /^把\s*(.+?)\s*(放大|縮小)\s*(?:到)?\s*(一倍|兩倍|二倍|三倍|\d+(?:\.\d+)?\s*倍|一半|一點|一些|些|點)?$/.exec(c))) { var o8 = /^(它|這個|選取的?|選中的?)$/.test(m[1].trim()) ? { id: 'selection' } : objectIn(s, m[1]); if (o8) { var amt = m[3] || '', fac = /一半/.test(amt) ? 0.5 : /(一倍|兩倍|二倍)/.test(amt) ? 2 : /三倍/.test(amt) ? 3 : /(\d+(?:\.\d+)?)\s*倍/.test(amt) ? Number(/(\d+(?:\.\d+)?)/.exec(amt)[1]) : 1.5; if (m[2] === '縮小') { fac = fac > 1.4 && fac !== 1.5 ? 1 / fac : (fac === 1.5 ? 0.7 : fac); } e = [{ op: 'transform_object', id: o8.id, scale: fac }]; } }
+      else if ((m = /^(?:把\s*)?(.+?)\s*(?:放到地上|放在地上|落地|貼地|放到地面)$/.exec(c))) { var o9 = /^(它|這個|選取的?)$/.test(m[1].trim()) ? { id: 'selection' } : objectIn(s, m[1]); if (o9) { e = [{ op: 'drop_to_ground', id: o9.id }]; } }
+      else if ((m = /^(?:把)?(?:背景)\s*(?:改成|換成|變成|設成|設為)?\s*(.+?)\s*(?:色)?$/.exec(c)) && colorIn(m[1])) { e = [{ op: 'set_background', color: colorIn(m[1]) }]; }
+      else if ((m = /^(?:把)?(?:視角|鏡頭|相機)\s*(?:切到|換到|轉到|改成|切換到)?\s*(正面|前面|背面|後面|左邊|左面|右邊|右面|上面|俯視|頂視|斜角|等角|斜視)/.exec(c))) { var pre = { '正面': 'front', '前面': 'front', '背面': 'back', '後面': 'back', '左邊': 'left', '左面': 'left', '右邊': 'right', '右面': 'right', '上面': 'top', '俯視': 'top', '頂視': 'top', '斜角': 'iso', '等角': 'iso', '斜視': 'iso' }; e = [{ op: 'set_camera', preset: pre[m[1]] }]; }
+      else if ((m = /^(?:把)?(?:視角|鏡頭|相機)\s*(拉遠|拉近|放大|縮小|靠近|遠離)/.exec(c))) { e = [{ op: 'set_camera', zoom: /拉遠|縮小|遠離/.test(m[1]) ? 0.6 : 1.6 }]; }
+      else if ((m = /^(?:把)?\s*(.+?)\s*(?:綁成|組成|做成|變成)\s*(?:一個)?\s*(?:群組|一組)$/.exec(c))) { var names = m[1].split(/[和與跟、及]/).map(function (x) { return objectIn(s, x.trim()); }).filter(Boolean); if (names.length) { e = [{ op: 'group_objects', ids: names.map(function (o) { return o.id; }) }]; } }
+      else {
+        // creating: "在我的左前方放一個紅色的球"  /  "放一個藍色方塊在桌子上面"  /  "加一個球"
+        var cm1 = /^(?:在|於|到)\s*(.+?)\s*(?:放|擺|加|新增|做|畫|建立|生成|放置|加上|加入|弄|擺放)\s*(?:上|入)?\s*(.+)$/.exec(c), cm2 = /^(?:放|擺|加|新增|做|畫|建立|生成|放置|加上|加入|弄|擺放)\s*(?:上|入)?\s*(.+?)\s*(?:在|於|到|放在|放到)\s*(.+)$/.exec(c), cm3 = /^(?:放|擺|加|新增|做|畫|建立|生成|放置|加上|加入|弄|擺放)\s*(?:上|入)?\s*(.+)$/.exec(c), objText = null, placeText = null;
+        if (cm1) { placeText = cm1[1]; objText = cm1[2]; } else if (cm2) { objText = cm2[1]; placeText = cm2[2]; } else if (cm3) { objText = cm3[1]; }
+        if (objText) { var op = parseObjectPhrase(s, objText); if (op) { var place = placeText ? parsePlace(s, placeText) : null; if (placeText && !place) { op = null; } if (op) { e = []; for (var n = 0; n < op.count; n++) { var ed = { op: 'add_object', object: clone(op.object) }; if (place) { ed.place = clone(place); if (n > 0) { ed.place = { of: 'selection', rel: 'right' }; } } else if (n > 0) { ed.place = { of: 'selection', rel: 'right' }; } e.push(ed); } } } }
+      }
+      if (e && e.length) { e.forEach(function (x) { edits.push(x); }); matched.push(c0); } else { unmatched.push(c0); }
+    });
+    return { edits: edits, matched: matched, unmatched: unmatched };
+  }
+
+  // ───────────────────────── the AI: the closed actions it may answer with ─────────────────────────
+  function viewWords(spec, env) { var F = frameOf(spec, env), f = function (v) { return '(' + v.map(function (x) { return Math.round(x * 100) / 100; }).join(', ') + ')'; }; return '使用者現在的視角：相機在 ' + f(F.pos) + '，看向 ' + f(F.target) + '；「前方」在世界座標是 ' + f(F.forward) + '、「右邊」是 ' + f(F.right) + '（y 向上）。'; }
+  var ACTIONS = '封閉的動作(只能用這些,JSON):'
+    + '{op:"add_object",object:{type:"mesh",mesh:"box|sphere|cylinder|cone|plane|torus",name?,size:[w,h,d](box)|size:[w,l](plane)|radius|height|tube_radius,material:{color:"#rrggbb",metalness?,roughness?,opacity?,emissive?,texture?:"water|grass|sand|wood|brick",texture_repeat?:[rx,ry]},rotation_deg?:[x,y,z]},place:{of:"me|view|origin|selection|<物件 id 或名字>",rel:"front|back|left|right|left-front|right-front|left-back|right-back|above|on|below|inside|center|beside",dist?,gap?,dx?,dy?,dz?}}(也可以加 type:"light"+light:"point|directional|ambient"+intensity+color,或 type:"group")、'
+    + '{op:"place_object",id,place}、{op:"transform_object",id,move?:[右,上,前](我的視角,單位)|move_world?:[x,y,z]|turn?:度(繞垂直軸)|tilt?|roll?|rotate_deg?:[x,y,z]|scale?:倍數}、{op:"update_object",id,props:{name?,size?,radius?,height?,position?,rotation_deg?,visible?,locked?,material?:{…},intensity?,color?}}、'
+    + '{op:"set_material",id|"all",color?,metalness?,roughness?,opacity?,emissive?,texture?,texture_repeat?,side?}、{op:"remove_object",id}、{op:"rename_object",id,name}、{op:"duplicate_object",id,place?}、{op:"set_visible",id,visible}、{op:"set_locked",id,locked}、{op:"drop_to_ground",id}、{op:"align_objects",ids:[…],axis:"x|y|z",to:"min|center|max"}、'
+    + '{op:"group_objects",ids:[…],name?}、{op:"ungroup",id}、{op:"set_parent",id,parent}、{op:"move_object",id,to:"earlier|later|first|last"}、{op:"set_camera",preset?:"front|back|left|right|top|iso",position?,look_at?,fov?,zoom?}、{op:"set_background",color}、{op:"set_title",text}、{op:"clear_objects"}、'
+    + '{op:"add_skin",id,skin:{zone:"+z前面|-z後面|-x左面|+x右面|+y上面|-y下面(方塊);side|top|bottom(圓柱);side|bottom(圓錐);wrap(球、圓環);front(平面)",color?|image?,u,v(中心 0..1),w,h(佔該面的比例),rotate,opacity}}、{op:"update_skin",id,skin_id,props}、{op:"remove_skin",id,skin_id}、'
+    + '{op:"find_picture",query:"英文關鍵字"}、{op:"generate_image",prompt}(兩個是宿主做的:上網找圖／生圖,結果會當成貼圖)';
+  function editPrompt(spec, request, extra, selection, env) {
+    var sp = validate(spec).spec;
+    var system = '你是 3D 場景編輯器的助手。使用者用說的來擺放與修改 3D 場景;你只能回一個 JSON 物件 {"say":"一句話說明","edits":[動作…]},不要回別的字。' + ACTIONS + '。\n規則:1) 位置一律用 place(以使用者的視角:我的左前方=of "me" rel "left-front"、畫面中間=of "view" rel "center"、桌子的上面=of "<桌子>" rel "above"、桌子的右邊=of "<桌子>" rel "right"),不要自己算座標;「它／這個」就是選取的物件(id 用 "selection")。2) 座標單位跟場景一樣,y 向上;球半徑 0.5、方塊邊長 1 大約一個人的小物件。3) 每個新東西獨立成一個物件並取有意義的名字(例如「桌子」「紅色球」);桌子之類的組合物先逐個零件 add_object 再 group_objects。4) 顏色用 #rrggbb。5) 不確定就少做,說明理由,不要編造不存在的 id。';
+    var user = viewWords(sp, env) + '\n場景「' + sp.title + '」目前的物件(樹狀,每行:id 名字:類型 尺寸 @位置 顏色):\n' + (sp.objects.length ? list(sp) : '(空的)') + (selection ? '\n選取的物件:' + selection : '') + (extra ? '\n' + extra : '') + '\n\n使用者說:' + String(request || '');
+    return { system: system, user: user };
+  }
+  function parseEditsReply(text) {
+    var t = String(text || ''), a = t.indexOf('{'), b = t.lastIndexOf('}'); if (a < 0 || b <= a) { return { ok: false, error: '沒有 JSON' }; }
+    var obj; try { obj = JSON.parse(t.slice(a, b + 1)); } catch (e) { try { obj = JSON.parse(t.slice(a, b + 1).replace(/,\s*([}\]])/g, '$1')); } catch (e2) { return { ok: false, error: 'JSON 讀不懂' }; } }
+    var arr = Array.isArray(obj) ? obj : (Array.isArray(obj.edits) ? obj.edits : (obj.op ? [obj] : null)); if (!arr) { return { ok: false, error: '沒有 edits' }; }
+    var edits = [], dropped = 0; arr.forEach(function (e) { if (e && typeof e === 'object' && (OPS.indexOf(e.op) >= 0 || HOST_OPS.indexOf(e.op) >= 0)) { edits.push(e); } else { dropped++; } });
+    return { ok: true, say: str(obj.say, 400), edits: edits, dropped: dropped };
+  }
+  function refPrompt() { return 'Describe the 3D objects in this picture for someone who will rebuild them from boxes, spheres, cylinders and cones: what each thing is, its colours, and where it is relative to the others. Short.'; }
+
+  // ───────────────────────── skins on the faces: what each one covers (a face of an object, in the object's own axes) ─────────────────────────
+  // frame of a planar zone: { n: outward normal, rot: Euler that turns a plane (its normal is +z, its x to the right, its y up) onto the face as seen from outside, w, h (the face), c: its centre }
+  var ZONE_ROT = { '+z': [0, 0, 0], '-z': [0, PI, 0], '+x': [0, PI / 2, 0], '-x': [0, -PI / 2, 0], '+y': [-PI / 2, 0, 0], '-y': [PI / 2, 0, 0], front: [0, 0, 0] };
+  var ZONE_N = { '+z': [0, 0, 1], '-z': [0, 0, -1], '+x': [1, 0, 0], '-x': [-1, 0, 0], '+y': [0, 1, 0], '-y': [0, -1, 0], front: [0, 0, 1], top: [0, 1, 0], bottom: [0, -1, 0] };
+  function zoneFrame(o, zone) {
+    var n = ZONE_N[zone]; if (!n) { return null; }
+    if (o.mesh === 'box') { var s = o.size, ax = zone.charAt(1), sgn = zone.charAt(0) === '+' ? 1 : -1, w = ax === 'x' ? s[2] : s[0], h = ax === 'y' ? s[2] : s[1], d = ax === 'x' ? s[0] : ax === 'y' ? s[1] : s[2]; return { n: n, rot: ZONE_ROT[zone], w: w, h: h, c: vmul(n, d / 2), planar: true }; }
+    if (o.mesh === 'cylinder' || o.mesh === 'cone') { if (zone === 'top' && o.mesh === 'cylinder') { return { n: n, rot: ZONE_ROT['+y'], w: o.radius * 2, h: o.radius * 2, c: [0, o.height / 2, 0], planar: true }; } if (zone === 'bottom') { return { n: n, rot: ZONE_ROT['-y'], w: o.radius * 2, h: o.radius * 2, c: [0, -o.height / 2, 0], planar: true }; } return null; }
+    if (o.mesh === 'plane' && zone === 'front') { return { n: n, rot: [0, 0, 0], w: o.size[0], h: o.size[1], c: [0, 0, 0], planar: true }; }
+    return null;
+  }
+  // which zone of the object a point on its surface (object axes) belongs to, and where in it (u, v: 0..1, v up as seen from outside)
+  function zoneAt(o, p, normal) {
+    var n = normal || [0, 0, 1], ax = Math.abs(n[0]) > Math.abs(n[1]) && Math.abs(n[0]) >= Math.abs(n[2]) ? 0 : Math.abs(n[1]) >= Math.abs(n[2]) ? 1 : 2;
+    if (o.mesh === 'box') { var zone = (n[ax] >= 0 ? '+' : '-') + 'xyz'.charAt(ax), F = zoneFrame(o, zone), q = mvec(mT(rotMat(F.rot)), vsub(p, F.c)); return { zone: zone, u: r3(0.5 + q[0] / F.w), v: r3(0.5 + q[1] / F.h) }; }
+    if (o.mesh === 'cylinder') { if (ax === 1 && Math.abs(n[1]) > 0.7) { var top = n[1] > 0, F2 = zoneFrame(o, top ? 'top' : 'bottom'), q2 = mvec(mT(rotMat(F2.rot)), vsub(p, F2.c)); return { zone: top ? 'top' : 'bottom', u: r3(0.5 + q2[0] / F2.w), v: r3(0.5 + q2[1] / F2.h) }; } return { zone: 'side', u: r3((Math.atan2(p[0], p[2]) / (2 * PI) + 1) % 1), v: r3(0.5 + p[1] / o.height) }; }
+    if (o.mesh === 'cone') { if (Math.abs(n[1]) > 0.7 && n[1] < 0) { var F3 = zoneFrame(o, 'bottom'), q3 = mvec(mT(rotMat(F3.rot)), vsub(p, F3.c)); return { zone: 'bottom', u: r3(0.5 + q3[0] / F3.w), v: r3(0.5 + q3[1] / F3.h) }; } return { zone: 'side', u: r3((Math.atan2(p[0], p[2]) / (2 * PI) + 1) % 1), v: r3(0.5 + p[1] / o.height) }; }
+    if (o.mesh === 'plane') { return { zone: 'front', u: r3(0.5 + p[0] / o.size[0]), v: r3(0.5 + p[1] / o.size[1]) }; }
+    if (o.mesh === 'sphere' || o.mesh === 'torus') { return { zone: 'wrap', u: r3((Math.atan2(p[0], p[2]) / (2 * PI) + 1) % 1), v: r3(0.5 + Math.asin(Math.max(-1, Math.min(1, p[1] / (o.radius || 1)))) / PI) }; }
+    return null;
+  }
+  function Rz(a) { var c = Math.cos(a), s = Math.sin(a); return [[c, -s, 0], [s, c, 0], [0, 0, 1]]; }
+  // a skin on a planar face -> a thin plane node (render_3d_scene format) in the object's own axes; { position, rotation, size, material }
+  function skinPlane(o, k, index, resolve) {
+    var F = zoneFrame(o, k.zone); if (!F) { return null; } var eps = 0.0015 * Math.max(0.5, Math.max(F.w, F.h)) * (index + 1) + 0.0008, cu = (k.u - 0.5) * F.w, cv = (k.v - 0.5) * F.h, R = rotMat(F.rot), centre = vadd(vadd(F.c, vmul(F.n, eps)), mvec(R, [cu, cv, 0])), rot = matEuler(mmul(R, Rz(k.rotate * PI / 180)));
+    var m = { color: k.image ? '#ffffff' : (k.color || '#ffffff'), metalness: 0.1, roughness: 0.8, side: 'double' }; if (k.opacity < 1) { m.opacity = k.opacity; }
+    if (k.image) { var tex = /^ref:/.test(k.image) ? (resolve ? resolve(k.image) : null) : k.image; if (!tex) { return null; } m.texture = tex; }
+    return { position: centre, rotation: rot, size: [r3(F.w * k.w), r3(F.h * k.h)], material: m };
+  }
+
+  // ───────────────────────── out: one scene that render_3d_scene can play ─────────────────────────
+  // opts: resolve(ref) -> data URL | null (textures kept by the project), bake(obj, wrapSkins, resolve) -> { texture, color? } | null (skins on a curved surface are painted into the texture; needs a canvas),
+  //       tags:true -> every node carries `_src` (the object it came from; the viewer picks with it), hidden:true -> hidden objects stay in
+  function toScene(spec, opts) {
+    opts = opts || {}; var s = validate(spec).spec, nodes = [], lights = [], resolve = opts.resolve || null;
+    function visibleChain(o) { var p = o, g = 0; while (p && g++ < 60) { if (!p.visible && !opts.hidden) { return false; } p = p.parent ? s.objects[byId(s, p.parent)] : null; } return true; }
+    s.objects.forEach(function (o) {
+      if (o.type === 'group' || !visibleChain(o)) { return; } var W = worldT(s, o);
+      if (o.type === 'light') { var L = { type: o.light, intensity: o.intensity, color: o.color }; if (o.light !== 'ambient') { L.position = vec(W.t, [0, 0, 0]); } if (opts.tags) { L._src = o.id; } lights.push(L); return; }
+      var n = { mesh: o.mesh, position: vec(W.t, [0, 0, 0]), rotation: matEuler(W.R) };   // worldT already folds in the groups above and the mesh's own place and rotation
+      var f = W.s, mm = clone(o.material || {}); if (mm.texture && /^ref:/.test(mm.texture)) { var tx = resolve ? resolve(mm.texture) : null; if (tx) { mm.texture = tx; } else { delete mm.texture; delete mm.texture_repeat; } }
+      var wrap = (o.skins || []).filter(function (k) { return !zoneFrame(o, k.zone); }), planar = (o.skins || []).filter(function (k) { return zoneFrame(o, k.zone); });
+      if (wrap.length && opts.bake) { var bk = opts.bake(o, wrap, resolve, mm); if (bk && bk.texture) { mm.texture = bk.texture; if (bk.color) { mm.color = bk.color; } delete mm.texture_repeat; } }
+      n.material = mm;
+      if (o.size) { n.size = o.size.map(function (v) { return r3(v * f); }); } ['radius', 'height', 'tube_radius'].forEach(function (k) { if (o[k] != null) { n[k] = r3(o[k] * f); } });
+      if (o.extra) { Object.keys(o.extra).forEach(function (k) { n[k] = o.extra[k]; }); if (f !== 1) { if (Array.isArray(n.vertices)) { n.vertices = n.vertices.map(function (v) { return [r3(v[0] * f), r3(v[1] * f), r3(v[2] * f)]; }); } if (Array.isArray(n.points)) { n.points = n.points.map(function (v) { return v.map(function (x) { return r3(Number(x) * f); }); }); } if (n.radius && o.mesh === 'line') { n.radius = r3(n.radius * f); } } }
+      if (o.mesh === 'plane') { n.size = [n.size[0], n.size[1]]; }
+      if (opts.tags) { n._src = o.id; } nodes.push(n);
+      planar.forEach(function (k, idx) {
+        var pl = skinPlane(o, k, idx, resolve); if (!pl) { return; }
+        var wp = vadd(mvec(W.R, vmul(pl.position, f)), W.t), wr = matEuler(mmul(W.R, rotMat(pl.rotation)));
+        var dn = { mesh: 'plane', position: vec(wp, [0, 0, 0]), rotation: wr, size: [r3(pl.size[0] * f), r3(pl.size[1] * f)], material: pl.material }; if (opts.tags) { dn._src = o.id; dn._skin = k.id; } nodes.push(dn);
+      });
+    });
+    var out = { title: s.title, background: s.background, camera: { position: s.camera.position.slice(), look_at: s.camera.look_at.slice(), fov: s.camera.fov }, lights: lights.length ? lights : [{ type: 'ambient', intensity: 0.5 }, { type: 'directional', position: [5, 8, 5], intensity: 0.9 }], nodes: nodes };
+    return out;
+  }
+
+  // ───────────────────────── YAML ─────────────────────────
+  function yamlLib() { if (typeof jsyaml !== 'undefined') { return jsyaml; } try { return typeof require === 'function' ? require('js-yaml') : null; } catch (e) { return null; } }
+  var PLAIN = /^[A-Za-z0-9_一-鿿][A-Za-z0-9_\-. 一-鿿]*$/;
+  function scalar(v) { if (typeof v === 'string') { return PLAIN.test(v) && !/^(true|false|null|yes|no|on|off|~|[-+]?\d[\d.eE+-]*)$/i.test(v) && !/\s$/.test(v) ? v : JSON.stringify(v); } if (typeof v === 'number') { return String(v); } if (typeof v === 'boolean') { return v ? 'true' : 'false'; } return 'null'; }
+  function flow(v) { if (Array.isArray(v)) { return '[' + v.map(flow).join(', ') + ']'; } if (v && typeof v === 'object') { return '{' + Object.keys(v).map(function (k) { return scalar(k) + ': ' + flow(v[k]); }).join(', ') + '}'; } return scalar(v); }
+  function dump(v, ind) {
+    ind = ind || ''; var L = [];
+    if (Array.isArray(v)) { v.forEach(function (x) { if (x && typeof x === 'object' && !(Array.isArray(x) && x.every(function (y) { return typeof y !== 'object'; }))) { var sub = dump(x, ind + '  ').split('\n'); L.push(ind + '- ' + sub[0].slice(ind.length + 2)); sub.slice(1).forEach(function (l) { L.push(l); }); } else { L.push(ind + '- ' + flow(x)); } }); return L.join('\n'); }
+    Object.keys(v).forEach(function (k) { var x = v[k]; if (x === undefined) { return; } if (x && typeof x === 'object' && !Array.isArray(x) && Object.keys(x).length && JSON.stringify(x).length > 90) { L.push(ind + scalar(k) + ':'); L.push(dump(x, ind + '  ')); } else if (Array.isArray(x) && x.length && x.some(function (y) { return y && typeof y === 'object' && !Array.isArray(y); }) || (Array.isArray(x) && JSON.stringify(x).length > 120 && x.some(function (y) { return Array.isArray(y); }) && x.length > 4)) { L.push(ind + scalar(k) + ':'); L.push(dump(x, ind + '  ')); } else { L.push(ind + scalar(k) + ': ' + flow(x)); } });
+    return L.join('\n');
+  }
+  // the editor's own YAML (render_3d_scene's format + id, name, parent, mesh:group, hidden, locked, skins): the "source" tab and the project file
+  function toYaml(spec) {
+    var s = validate(spec).spec, nodes = [], lights = [];
+    s.objects.forEach(function (o) {
+      var n = { id: o.id, name: o.name }; if (o.parent) { n.parent = o.parent; }
+      if (o.type === 'light') { var L = { id: o.id, name: o.name, type: o.light, intensity: o.intensity, color: o.color }; if (o.light !== 'ambient') { L.position = o.position; } if (o.parent) { L.parent = o.parent; } if (!o.visible) { L.hidden = true; } if (o.locked) { L.locked = true; } lights.push(L); return; }
+      if (o.type === 'group') { n.mesh = 'group'; n.position = o.position; n.rotation = o.rotation; if (o.scale !== 1) { n.scale = o.scale; } }
+      else { n.mesh = o.mesh; n.position = o.position; n.rotation = o.rotation; if (o.size) { n.size = o.size; } ['radius', 'height', 'tube_radius'].forEach(function (k) { if (o[k] != null) { n[k] = o[k]; } }); n.material = o.material; if (o.skins) { n.skins = o.skins.map(function (k) { var x = { id: k.id, name: k.name, zone: k.zone }; if (k.image) { x.image = k.image; } if (k.color) { x.color = k.color; } x.u = k.u; x.v = k.v; x.w = k.w; x.h = k.h; if (k.rotate) { x.rotate = k.rotate; } if (k.opacity < 1) { x.opacity = k.opacity; } return x; }); } if (o.extra) { Object.keys(o.extra).forEach(function (k) { n[k] = o.extra[k]; }); } }
+      if (!o.visible) { n.hidden = true; } if (o.locked) { n.locked = true; } nodes.push(n);
+    });
+    var doc = { title: s.title, background: s.background, camera: { position: s.camera.position, look_at: s.camera.look_at, fov: s.camera.fov }, lights: lights, nodes: nodes }; if (!lights.length) { delete doc.lights; }
+    return '# /edit-3d-model 的場景(render_3d_scene 格式,多了 id、name、parent、mesh: group、hidden、locked、skins;匯出「場景 YAML」時會展平成 render_3d_scene 可以直接播放的樣子)\n' + dump(doc) + '\n';
+  }
+  function fromYaml(text) {
+    var Y = yamlLib(); if (!Y) { return { ok: false, error: '沒有 YAML 讀取器' }; } var doc;
+    try { doc = Y.load(String(text || '')); } catch (e) { return { ok: false, error: 'YAML 語法錯誤:' + String((e && e.message) || e).split('\n')[0].slice(0, 160) }; }
+    if (!doc || typeof doc !== 'object' || Array.isArray(doc)) { return { ok: false, error: '場景要是一個物件(有 nodes)' }; }
+    var objects = [], defs = doc.defs && typeof doc.defs === 'object' ? doc.defs : {};
+    (Array.isArray(doc.nodes) ? doc.nodes : []).forEach(function (n) {
+      if (!n || typeof n !== 'object') { return; }
+      if (n.use) { var def = defs[n.use]; if (def && Array.isArray(def.nodes)) { var off = Array.isArray(n.position) ? n.position : [0, 0, 0], sc = n.scale != null ? Number(n.scale) || 1 : 1; def.nodes.forEach(function (c0) { var c = clone(c0), p = Array.isArray(c.position) ? c.position : [0, 0, 0]; c.position = [off[0] + p[0] * sc, off[1] + p[1] * sc, off[2] + p[2] * sc]; if (sc !== 1) { if (c.size) { c.size = c.size.map(function (v) { return v * sc; }); } if (c.radius != null) { c.radius *= sc; } if (c.height != null) { c.height *= sc; } } c.name = c.name || String(n.use); objects.push(c); }); } return; }
+      var o = clone(n); if (o.mesh === 'group') { o.type = 'group'; delete o.mesh; } objects.push(o);
+    });
+    (Array.isArray(doc.lights) ? doc.lights : []).forEach(function (l) { if (l && typeof l === 'object') { var o = clone(l); o.light = o.type; o.type = 'light'; objects.push(o); } });
+    var cam = doc.camera && typeof doc.camera === 'object' ? doc.camera : {};
+    var r = validate({ title: doc.title, background: doc.background, camera: { position: cam.position, look_at: cam.look_at, fov: cam.fov }, objects: objects });
+    // lights of a plain scene come last; the object order of a project is the order of the file: keep the lights where the file had them only when it said so (editor YAML has ids on both)
+    return { ok: true, spec: r.spec, problems: r.problems };
+  }
+  function toSceneYaml(spec, opts) { var sc = toScene(spec, opts), Y = yamlLib(); var clean = clone(sc); return (Y && Y.dump ? Y.dump(clean, { lineWidth: 140, noRefs: true }) : dump(clean)); }
+
+  // ───────────────────────── starters ─────────────────────────
+  function table() { return [{ type: 'group', id: 'table', name: '桌子', position: [0, 0, 0] }, { type: 'mesh', mesh: 'box', parent: 'table', name: '桌面', size: [2.4, 0.12, 1.2], position: [0, 0.76, 0], material: { color: '#a1744a', roughness: 0.6 } }].concat([[-1.1, -0.5], [1.1, -0.5], [-1.1, 0.5], [1.1, 0.5]].map(function (p, i) { return { type: 'mesh', mesh: 'box', parent: 'table', name: '桌腳 ' + (i + 1), size: [0.1, 0.7, 0.1], position: [p[0], 0.35, p[1]], material: { color: '#7d5a38', roughness: 0.7 } }; })); }
+  var STARTERS = {
+    blank: { label: '空白', desc: '只有燈光', spec: function () { return { title: '3D 場景', objects: [{ type: 'light', light: 'ambient', name: '環境光', intensity: 0.55 }, { type: 'light', light: 'directional', name: '主光', position: [5, 8, 5], intensity: 0.95 }] }; } },
+    room: { label: '房間', desc: '地板、一張桌子、一盞燈', spec: function () { return { title: '房間', background: '#20242c', objects: [{ type: 'light', light: 'ambient', name: '環境光', intensity: 0.5 }, { type: 'light', light: 'directional', name: '主光', position: [4, 8, 5], intensity: 0.9 }, { type: 'mesh', mesh: 'plane', name: '地板', size: [10, 10], position: [0, 0, 0], material: { color: '#8c8f99', roughness: 0.9 } }].concat(table()) }; } },
+    model: { label: '模型台', desc: '一個方塊與圓柱底座,給「貼皮」用(像塑膠模型)', spec: function () { return { title: '模型', background: '#23262f', objects: [{ type: 'light', light: 'ambient', name: '環境光', intensity: 0.55 }, { type: 'light', light: 'directional', name: '主光', position: [4, 7, 6], intensity: 0.95 }, { type: 'mesh', mesh: 'cylinder', name: '底座', radius: 1.4, height: 0.15, position: [0, 0.075, 0], material: { color: '#3a3f4b', roughness: 0.5 } }, { type: 'mesh', mesh: 'box', name: '模型', size: [1.2, 1.6, 1.2], position: [0, 0.95, 0], material: { color: '#c9ccd6', roughness: 0.6 } }] }; } },
+    studio: { label: '攝影棚', desc: '地板加三盞燈', spec: function () { return { title: '攝影棚', background: '#15171c', objects: [{ type: 'light', light: 'ambient', name: '環境光', intensity: 0.35 }, { type: 'light', light: 'directional', name: '主光', position: [5, 8, 4], intensity: 0.9 }, { type: 'light', light: 'point', name: '補光', position: [-4, 3, 3], intensity: 0.7, color: '#aac8ff' }, { type: 'light', light: 'point', name: '輪廓光', position: [0, 4, -5], intensity: 0.8, color: '#ffd7a8' }, { type: 'mesh', mesh: 'plane', name: '地板', size: [14, 14], position: [0, 0, 0], material: { color: '#2a2d36', roughness: 0.4, metalness: 0.2 } }] }; } }
+  };
+  function listStarters() { return Object.keys(STARTERS).map(function (k) { return { id: k, label: STARTERS[k].label, desc: STARTERS[k].desc }; }); }
+  function starter(id) { var st = STARTERS[String(id || '')]; return st ? validate(st.spec()).spec : null; }
+  function promptOf(spec, steps) {
+    var sp = validate(spec).spec, L = ['請做一個 3D 場景「' + sp.title + '」(右手座標、y 向上、單位同 render_3d_scene),背景 ' + sp.background + '。', '', '物件(樹狀):', list(sp)];
+    var texts = (steps || []).filter(function (x) { return x.text; }); if (texts.length) { L.push('', '(有效的指示,依序;位置都是以當時的視角說的):'); texts.forEach(function (x, i) { L.push((i + 1) + '. ' + x.text + (x.summary ? ' → ' + x.summary : '')); }); } return L.join('\n');
+  }
+
+  var api = { OPS: OPS, HOST_OPS: HOST_OPS, MESHES: MESHES, LIMITS: LIM, ZONE_LABEL: ZONE_LABEL, validate: validate, applyEdits: applyEdits, editWords: editWords, list: list, find: find, byId: byId, tree: tree, childrenOf: childrenOf, descendants: descendants, depthOf: depthOf, worldBox: worldBox, worldT: worldT, bounds: bounds, frameOf: frameOf, resolvePlace: resolvePlace, parseCommands: parseCommands, editPrompt: editPrompt, parseEditsReply: parseEditsReply, refPrompt: refPrompt,
+    toScene: toScene, toSceneYaml: toSceneYaml, toYaml: toYaml, fromYaml: fromYaml, dump: dump, starter: starter, listStarters: listStarters, promptOf: promptOf, describeObject: describeObject, normSkin: skin, skins: skins, zonesOf: zonesOf, zoneFrame: zoneFrame, zoneAt: zoneAt, skinPlane: skinPlane, defaultZone: defaultZone, colorWord: colorWord, colorIn: colorIn, matEuler: matEuler, rotMat: rotMat, texture: texture, material: material, MATERIAL_KEYS: MATERIAL_KEYS, ACTIONS: ACTIONS };
+  return api;
+});
+
+}).call(null, undefined, holder);
+return holder.FaEdit3d;
+})();
+/* ED3D-END */
+/* ED3DP-BEGIN */
+const FaEdit3dPart = (function () {
+const holder = {};
+(function (module, self) {
+// /edit-3d-model 的「單一物件編輯」核心(純函式):像在做一個塑膠模型(GK)——一個物件、它的底色與材質、以及一層一層的「貼皮」:
+// 每一層貼皮說明「貼在哪個面(zone)、貼什麼(圖或顏色)、貼在那個面的哪裡(u、v 是中心,0..1,v 往上;w、h 是佔那個面的比例;rotate 度數;opacity)」。
+// 跟場景編輯器同一套外框(FaEditShell):貼皮就是這個編輯器的「圖層」(物件欄、屬性、復原重做、AI 對話、整理成 prompt 都一樣);按「完成」才把結果交回場景的那個物件(場景的一步)。
+//   spec: { v:1, title, base:{ mesh, size|radius|height|tube_radius, material:{color,metalness,roughness,opacity,texture,texture_repeat…} }, seq, objects:[ { id:'s1', name, type:'skin', zone, image, color, u, v, w, h, rotate, opacity, visible, locked } ] }   objects[0] 在最下面
+//   封閉的動作:set_title set_base add_object(skin) update_object remove_object rename_object move_object set_visible set_locked duplicate_object clear_objects place_object transform_object set_zone;宿主執行的:find_picture generate_image
+//   用說的位置(place_object / add_object 的 place):{ at:'center|top|bottom|left|right|top-left|top-right|bottom-left|bottom-right', size?:0.1..1 },相對於那個面(從外面看過去的左右上下)。
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(require('./edit3d_core.js')); else root.FaEdit3dPart = factory((root.FaEdit3d || (typeof FaEdit3d !== 'undefined' ? FaEdit3d : undefined))); })(typeof self !== 'undefined' ? self : this, function (C) {
+  'use strict';
+  var OPS = ['set_title', 'set_base', 'add_object', 'update_object', 'remove_object', 'rename_object', 'move_object', 'set_visible', 'set_locked', 'duplicate_object', 'clear_objects', 'place_object', 'transform_object', 'set_zone'];
+  var HOST_OPS = ['find_picture', 'generate_image'];
+  var LIM = { objects: 40 };
+  function str(v, max) { return String(v == null ? '' : v).replace(/\u0000/g, '').slice(0, max || 200); }
+  function clone(o) { return JSON.parse(JSON.stringify(o)); }
+  function num(v, lo, hi, d) { var n = Number(v); if (!isFinite(n)) { return d; } return Math.max(lo, Math.min(hi, n)); }
+  function r3(n) { return Math.round(n * 1000) / 1000; }
+  var BASE_KEYS = ['size', 'radius', 'height', 'tube_radius'];
+  function validBase(b, problems) {
+    var v = C.validate({ objects: [Object.assign({ type: 'mesh', mesh: 'box' }, b || {})] }); var o = v.spec.objects[0];
+    if (!o || o.type !== 'mesh' || !C.zonesOf(o.mesh).length) { problems.push('這種形狀不能貼皮,改用方塊'); o = C.validate({ objects: [{ type: 'mesh', mesh: 'box' }] }).spec.objects[0]; }
+    var out = { mesh: o.mesh, material: o.material }; BASE_KEYS.forEach(function (k) { if (o[k] != null) { out[k] = o[k]; } }); return out;
+  }
+  function layer(s, mesh, id, problems) {
+    var k = C.normSkin(Object.assign({}, s, { id: 'k1' }), mesh, 1); if (!k) { return null; }
+    return { id: id, name: str(s.name, 40).trim() || k.name, type: 'skin', zone: k.zone, image: k.image, color: k.color, u: k.u, v: k.v, w: k.w, h: k.h, rotate: k.rotate, opacity: k.opacity, visible: s.visible !== false, locked: !!s.locked };
+  }
+  function defaultSpec() { return { v: 1, title: '貼皮', base: validBase({ mesh: 'box', size: [1.2, 1.6, 1.2], material: { color: '#c9ccd6', roughness: 0.6 } }, []), seq: 0, objects: [] }; }
+  function validate(input) {
+    var problems = [], r = input && typeof input === 'object' ? input : {}, d = defaultSpec(), s = { v: 1, title: str(r.title, 80) || d.title, base: r.base ? validBase(r.base, problems) : d.base, seq: 0, objects: [] }, ids = {};
+    (Array.isArray(r.objects) ? r.objects : []).forEach(function (o) {
+      if (s.objects.length >= LIM.objects) { return; } var id = /^s\d{1,5}$/.test(String(o && o.id || '')) && !ids[o.id] ? String(o.id) : null; var l = o && typeof o === 'object' ? layer(o, s.base.mesh, id || 's0', problems) : null; if (!l) { return; }
+      if (!id) { l.id = null; } else { ids[id] = 1; } s.objects.push(l);
+    });
+    var maxSeq = Number(r.seq) || 0; s.objects.forEach(function (o) { var m = /^s(\d+)$/.exec(o.id || ''); if (m) { maxSeq = Math.max(maxSeq, Number(m[1])); } });
+    s.objects.forEach(function (o) { if (!o.id) { do { maxSeq++; } while (ids['s' + maxSeq]); o.id = 's' + maxSeq; ids[o.id] = 1; } }); s.seq = maxSeq;
+    return { ok: true, spec: s, problems: problems };
+  }
+  function byId(spec, id) { for (var i = 0; i < spec.objects.length; i++) { if (spec.objects[i].id === id) { return i; } } return -1; }
+  function find(spec, ref) { var i = byId(spec, ref); if (i >= 0) { return i; } var low = String(ref == null ? '' : ref).trim().toLowerCase(); if (!low) { return -1; } for (var k = spec.objects.length - 1; k >= 0; k--) { if (spec.objects[k].name.toLowerCase() === low) { return k; } } return -1; }
+  function resolveId(s, ref, env) { if (ref == null || ref === '' || ref === 'selection' || ref === 'it' || ref === 'selected') { ref = env && env.selection; } return find(s, ref); }
+  function zoneLabel(mesh, zone) { return C.ZONE_LABEL[zone] || zone; }
+  function describe(spec) { var b = spec.base; return b.mesh + ' ' + (b.size ? '[' + b.size.join(',') + ']' : 'r' + b.radius + (b.height != null ? ' h' + b.height : '')) + ' 底色 ' + b.material.color + (b.material.texture ? ' 材質貼圖' : ''); }
+  function list(spec) { var s = validate(spec).spec; return '底:' + describe(s) + '\n' + (s.objects.length ? s.objects.map(function (o) { return o.id + ' ' + o.name + '：' + zoneLabel(s.base.mesh, o.zone) + ' ' + (o.image ? '圖' : o.color) + ' 中心(' + o.u + ',' + o.v + ') 大小(' + o.w + '×' + o.h + ')' + (o.rotate ? ' 轉' + o.rotate + '度' : ''); }).join('\n') : '(還沒有貼皮)'); }
+  // "at" words -> the centre of the skin on a face (u, v) given its size
+  var AT = { center: [0.5, 0.5], top: [0.5, 'T'], bottom: [0.5, 'B'], left: ['L', 0.5], right: ['R', 0.5], 'top-left': ['L', 'T'], 'top-right': ['R', 'T'], 'bottom-left': ['L', 'B'], 'bottom-right': ['R', 'B'] };
+  function atUV(at, w, h) { var a = AT[String(at || 'center').toLowerCase()]; if (!a) { return null; } function f(x, size) { return x === 'L' || x === 'B' ? size / 2 + 0.04 : x === 'R' || x === 'T' ? 1 - size / 2 - 0.04 : x; } return { u: r3(f(a[0], w)), v: r3(f(a[1], h)) }; }
+  function opsFor(s, e, env, st) {
+    switch (e.op) {
+      case 'set_title': s.title = str(e.text, 80).trim() || s.title; return {};
+      case 'set_base': { var m = {}; C.MATERIAL_KEYS.forEach(function (k) { if (e[k] !== undefined) { m[k] = e[k]; } }); if (e.material && typeof e.material === 'object') { Object.assign(m, e.material); } if (!Object.keys(m).length) { return { error: 'set_base 要有 color/metalness/roughness/opacity/emissive/texture/texture_repeat 其中之一' }; } if (m.color != null && C.material({ color: m.color }).color !== String(m.color).trim()) { return { error: '不認得這個顏色 "' + str(m.color, 20) + '"' }; } if (m.texture != null && m.texture !== '' && !C.texture(m.texture)) { return { error: '材質貼圖要是 water/grass/sand/wood/brick、ref:… 或圖片網址' }; } var cur = Object.assign({}, s.base.material); Object.keys(m).forEach(function (k) { if (m[k] === '' || m[k] === null) { delete cur[k]; } else { cur[k] = m[k]; } }); s.base.material = C.material(cur, {}); return {}; }
+      case 'add_object': {
+        if (s.objects.length >= LIM.objects) { return { error: '貼皮太多了' } } var raw = e.object && typeof e.object === 'object' ? clone(e.object) : null; if (!raw) { return { error: 'add_object 要有 object' } } var place = e.place || raw.place; if (place && typeof place === 'object') { var uv = atUV(place.at, num(raw.w == null ? place.size : raw.w, 0.01, 4, 0.5), num(raw.h == null ? place.size : raw.h, 0.01, 4, 0.5)); if (!uv) { return { error: '不認得的位置 "' + str(place.at, 20) + '"' }; } raw.u = uv.u; raw.v = uv.v; if (raw.w == null && place.size != null) { raw.w = num(place.size, 0.01, 4, 0.5); } if (raw.h == null && place.size != null) { raw.h = num(place.size, 0.01, 4, 0.5); } }
+        s.seq++; var l = layer(raw, s.base.mesh, 's' + s.seq, []); if (!l) { s.seq--; return { error: '貼皮要有 image(貼圖)或 color(顏色)' }; } if (raw.zone && C.zonesOf(s.base.mesh).indexOf(String(raw.zone)) < 0) { s.seq--; return { error: '這個形狀沒有 "' + str(raw.zone, 12) + '" 這一面(有:' + C.zonesOf(s.base.mesh).join('、') + ')' }; }
+        var names = {}; s.objects.forEach(function (o) { names[o.name] = 1; }); if (names[l.name]) { for (var n = 2; n < 99; n++) { if (!names[l.name + ' ' + n]) { l.name = l.name + ' ' + n; break; } } }
+        var at = e.at === 'bottom' ? 0 : s.objects.length; s.objects.splice(at, 0, l); st.added.push(l.id); return {};
+      }
+      case 'update_object': { var i = resolveId(s, e.id, env); if (i < 0) { return { error: '找不到貼皮 "' + str(e.id, 20) + '"' }; } var o = s.objects[i], p = e.props && typeof e.props === 'object' ? e.props : {}, raw2 = Object.assign({}, o, p); if (p.zone && C.zonesOf(s.base.mesh).indexOf(String(p.zone)) < 0) { return { error: '這個形狀沒有 "' + str(p.zone, 12) + '" 這一面' }; } var l2 = layer(raw2, s.base.mesh, o.id, []); if (!l2) { return { error: '改完之後貼皮沒有圖也沒有顏色' }; } s.objects[i] = l2; return {}; }
+      case 'remove_object': { var j = resolveId(s, e.id, env); if (j < 0) { return { error: '找不到貼皮 "' + str(e.id, 20) + '"' }; } s.objects.splice(j, 1); return {}; }
+      case 'rename_object': { var k = resolveId(s, e.id, env); if (k < 0) { return { error: '找不到貼皮 "' + str(e.id, 20) + '"' }; } var nm = str(e.name, 40).trim(); if (!nm) { return { error: '名字是空的' }; } s.objects[k].name = nm; return {}; }
+      case 'move_object': { var q = resolveId(s, e.id, env); if (q < 0) { return { error: '找不到貼皮 "' + str(e.id, 20) + '"' }; } var to = e.to, nq = to === 'up' || to === 'front' || to === 'later' ? (to === 'front' ? s.objects.length - 1 : q + 1) : to === 'down' || to === 'back' || to === 'earlier' ? (to === 'back' ? 0 : q - 1) : Math.round(Number(to)); if (!isFinite(nq)) { return { error: 'to 要是 up/down/front/back 或數字' }; } nq = Math.max(0, Math.min(s.objects.length - 1, nq)); if (nq === q) { return { error: '已經在最' + (nq === 0 ? '下' : '上') + '面了' }; } var it = s.objects.splice(q, 1)[0]; s.objects.splice(nq, 0, it); return {}; }
+      case 'set_visible': { var a = resolveId(s, e.id, env); if (a < 0) { return { error: '找不到貼皮 "' + str(e.id, 20) + '"' }; } s.objects[a].visible = e.visible !== false; return {}; }
+      case 'set_locked': { var b = resolveId(s, e.id, env); if (b < 0) { return { error: '找不到貼皮 "' + str(e.id, 20) + '"' }; } s.objects[b].locked = !!e.locked; return {}; }
+      case 'duplicate_object': { var c = resolveId(s, e.id, env); if (c < 0) { return { error: '找不到貼皮 "' + str(e.id, 20) + '"' }; } if (s.objects.length >= LIM.objects) { return { error: '貼皮太多了' }; } var cp = clone(s.objects[c]); s.seq++; cp.id = 's' + s.seq; cp.name = cp.name + ' 2'; cp.u = r3(cp.u + 0.1); cp.v = r3(cp.v - 0.1); s.objects.splice(c + 1, 0, cp); st.added.push(cp.id); return {}; }
+      case 'clear_objects': s.objects = []; return {};
+      case 'place_object': { var d = resolveId(s, e.id, env); if (d < 0) { return { error: '找不到貼皮 "' + str(e.id, 20) + '"' }; } var pl = e.place || {}, o4 = s.objects[d], w = pl.size != null ? num(pl.size, 0.01, 4, o4.w) : o4.w, h = pl.size != null ? num(pl.size, 0.01, 4, o4.h) : o4.h, uv2 = atUV(pl.at, w, h); if (!uv2) { return { error: '不認得的位置 "' + str(pl.at, 20) + '"(center/top/bottom/left/right/top-left/top-right/bottom-left/bottom-right)' }; } o4.u = uv2.u; o4.v = uv2.v; if (pl.size != null) { o4.w = r3(w); o4.h = r3(h); } return {}; }
+      case 'transform_object': { var f = resolveId(s, e.id, env); if (f < 0) { return { error: '找不到貼皮 "' + str(e.id, 20) + '"' }; } var o5 = s.objects[f], did = false; if (e.du != null || e.dv != null) { o5.u = r3(num(o5.u + num(e.du, -3, 3, 0), -2, 3, o5.u)); o5.v = r3(num(o5.v + num(e.dv, -3, 3, 0), -2, 3, o5.v)); did = true; } if (e.scale != null) { var sc = num(e.scale, 0.05, 20, 1); o5.w = r3(num(o5.w * sc, 0.01, 4, o5.w)); o5.h = r3(num(o5.h * sc, 0.01, 4, o5.h)); did = true; } if (e.scale_w != null) { o5.w = r3(num(o5.w * num(e.scale_w, 0.05, 20, 1), 0.01, 4, o5.w)); did = true; } if (e.scale_h != null) { o5.h = r3(num(o5.h * num(e.scale_h, 0.05, 20, 1), 0.01, 4, o5.h)); did = true; } if (e.turn != null) { o5.rotate = r3(num(o5.rotate + num(e.turn, -3600, 3600, 0), -3600, 3600, 0)); did = true; } if (e.opacity != null) { o5.opacity = r3(num(e.opacity, 0.05, 1, 1)); did = true; } return did ? {} : { error: 'transform_object 要有 du/dv/scale/scale_w/scale_h/turn/opacity 其中之一' }; }
+      case 'set_zone': { var g = resolveId(s, e.id, env); if (g < 0) { return { error: '找不到貼皮 "' + str(e.id, 20) + '"' }; } if (C.zonesOf(s.base.mesh).indexOf(String(e.zone)) < 0) { return { error: '這個形狀沒有 "' + str(e.zone, 12) + '" 這一面(有:' + C.zonesOf(s.base.mesh).join('、') + ')' }; } s.objects[g].zone = String(e.zone); return {}; }
+      default: return { error: '不是可以做的動作' };
+    }
+  }
+  function applyEdits(spec, edits, env) {
+    var s = validate(clone(spec)).spec, applied = [], appliedEdits = [], rejected = [], st = { added: [] }; env = env || {};
+    (Array.isArray(edits) ? edits : []).forEach(function (e) {
+      if (!e || typeof e !== 'object' || OPS.indexOf(e.op) < 0) { rejected.push({ op: str(e && e.op, 30) || '?', error: HOST_OPS.indexOf(e && e.op) >= 0 ? '這個動作要由宿主執行(找圖、生圖)' : '不是可以做的動作' }); return; }
+      var before = clone(s), r; try { r = opsFor(s, e, env, st); } catch (x) { r = { error: String((x && x.message) || x) }; }
+      if (r && r.error) { s.objects = before.objects; s.base = before.base; s.title = before.title; s.seq = Math.max(s.seq, before.seq); rejected.push({ op: e.op, error: r.error }); return; }
+      applied.push(e.op); appliedEdits.push(e);
+    });
+    var res = validate(s); return { spec: res.spec, applied: applied, appliedEdits: appliedEdits, rejected: rejected, added: st.added.filter(function (id) { return byId(res.spec, id) >= 0; }) };
+  }
+  function editWords(e) {
+    if (!e) { return ''; } var id = e.id ? ' ' + str(e.id, 20) : '';
+    switch (e.op) {
+      case 'set_title': return '標題改成「' + str(e.text, 40) + '」'; case 'set_base': return '改底色／材質'; case 'add_object': { var o = e.object || {}; return '新增貼皮' + (o.name ? ' ' + str(o.name, 30) : '') + (o.zone ? '（' + (C.ZONE_LABEL[o.zone] || o.zone) + '）' : ''); }
+      case 'update_object': return '修改貼皮' + id; case 'remove_object': return '拿掉貼皮' + id; case 'rename_object': return str(e.id, 20) + ' 改名為 ' + str(e.name, 30); case 'move_object': return '調整' + id + ' 的上下順序'; case 'set_visible': return (e.visible === false ? '隱藏' : '顯示') + id; case 'set_locked': return (e.locked ? '鎖定' : '解鎖') + id;
+      case 'duplicate_object': return '複製' + id; case 'clear_objects': return '清掉所有貼皮'; case 'place_object': return '把' + id + ' 放到' + str(e.place && e.place.at, 20); case 'transform_object': return '調整' + id; case 'set_zone': return id + ' 換到' + (C.ZONE_LABEL[e.zone] || e.zone); default: return e.op;
+    }
+  }
+  // ───────────────────────── the words the program reads itself ─────────────────────────
+  var ZONE_RE = { box: [['+z', /(正面|前面|前方|前側|前|正前)/], ['-z', /(背面|後面|後方|後側|後背|後)/], ['-x', /(左面|左邊|左側|左方|左)/], ['+x', /(右面|右邊|右側|右方|右)/], ['+y', /(頂面|上面|上方|頂部|頂|上)/], ['-y', /(底面|下面|下方|底部|底|下)/]], cylinder: [['top', /(頂面|上面|上方|頂部|頂|蓋子|上)/], ['bottom', /(底面|下面|下方|底部|底|下)/], ['side', /(側面|周圍|四周|圍|外面|側)/]], cone: [['bottom', /(底面|下面|底部|底|下)/], ['side', /(側面|周圍|四周|外面|側)/]], sphere: [['wrap', /(整個|全部|表面|球面)/]], torus: [['wrap', /(整個|全部|表面)/]], plane: [['front', /(正面|表面|整個|全部)/]] };
+  function zoneIn(mesh, t) { var l = ZONE_RE[mesh] || [], best = null, at = 1e9; l.forEach(function (z) { var m = z[1].exec(t); if (m && m.index < at) { at = m.index; best = z[0]; } }); return best; }
+  function atIn(t) { var h = /(左上)/.test(t) ? 'top-left' : /(右上)/.test(t) ? 'top-right' : /(左下)/.test(t) ? 'bottom-left' : /(右下)/.test(t) ? 'bottom-right' : null; if (h) { return h; } if (/(正中|中間|中央|中心)/.test(t)) { return 'center'; } if (/(偏上|上緣|上方|頂端)/.test(t)) { return 'top'; } if (/(偏下|下緣|下方|底端)/.test(t)) { return 'bottom'; } if (/(偏左|左側|左邊)/.test(t)) { return 'left'; } if (/(偏右|右側|右邊)/.test(t)) { return 'right'; } return null; }
+  function colorOf(t) { return C.colorIn(String(t || '').replace(/色$/, '')); }
+  function parseCommands(text, spec) {
+    var s = validate(spec).spec, mesh = s.base.mesh, edits = [], matched = [], unmatched = [];
+    String(text || '').split(/[，,。；;\n]+|(?:然後|接著|再來|並且)/).map(function (c) { return c.trim(); }).filter(Boolean).forEach(function (c0) {
+      var c = c0.replace(/^(?:請你?|幫我|請幫我|麻煩|可以|我要|給我)\s*/, ''), m, e = null, z;
+      if ((m = /^(?:把)?\s*(?:底色|基本顏色|整體顏色|本體|整個(?:物件|模型)?)\s*(?:的顏色)?\s*(?:改成|換成|變成|塗成|漆成|設成)?\s*(.+?)\s*(?:色)?$/.exec(c)) && colorOf(m[1])) { e = [{ op: 'set_base', color: colorOf(m[1]) }]; }
+      else if ((m = /^(?:把)?\s*(.+?)\s*(?:塗成|漆成|染成|上色成|塗上|漆上|上色|改成|換成)\s*(.+?)\s*(?:色)?$/.exec(c)) && (z = zoneIn(mesh, m[1])) && colorOf(m[2])) { e = [{ op: 'add_object', object: { type: 'skin', zone: z, color: colorOf(m[2]), name: C.ZONE_LABEL[z] + '上色' } }]; }
+      else if ((m = /^(?:把)?\s*(.+?)\s*(?:的)?(?:貼圖|貼皮|顏色)\s*(?:拿掉|移除|刪掉|刪除|清掉|去掉)$/.exec(c)) && (z = zoneIn(mesh, m[1]))) { var ids = s.objects.filter(function (o) { return o.zone === z; }).map(function (o) { return o.id; }); if (ids.length) { e = ids.map(function (id) { return { op: 'remove_object', id: id }; }); } }
+      else if ((m = /^(?:拿掉|移除|刪掉|刪除|清掉|去掉)\s*(?:所有|全部|每個)\s*(?:貼皮|貼圖)$/.exec(c))) { e = [{ op: 'clear_objects' }]; }
+      else if ((m = /^(?:把)?\s*(?:(?:它|這個|選取的?|選中的?|貼皮)\s*)?(?:移到|放到|放在|挪到|移動到)\s*(?:該面的?|這面的?)?\s*(.+)$/.exec(c)) && atIn(m[1])) { e = [{ op: 'place_object', id: 'selection', place: { at: atIn(m[1]) } }]; }
+      else if ((m = /^(?:把)?\s*(?:它|這個|選取的?|選中的?|貼皮)?\s*(放大|縮小)\s*(一倍|兩倍|一半|一點|一些)?$/.exec(c))) { var amt = m[2] || '', fac = /一半/.test(amt) ? 0.5 : /(一倍|兩倍)/.test(amt) ? 2 : 1.3; if (m[1] === '縮小' && fac > 1) { fac = 0.7; } e = [{ op: 'transform_object', id: 'selection', scale: fac }]; }
+      else if ((m = /^(?:把)?\s*(?:它|這個|選取的?|選中的?|貼皮)?\s*(?:往|向)?\s*(左|右|上|下)\s*(?:移動|移|挪|推)\s*(\d+(?:\.\d+)?)?\s*(?:%|％)?$/.exec(c))) { var step = m[2] ? (Number(m[2]) > 1 ? Number(m[2]) / 100 : Number(m[2])) : 0.1; e = [{ op: 'transform_object', id: 'selection', du: m[1] === '右' ? step : m[1] === '左' ? -step : 0, dv: m[1] === '上' ? step : m[1] === '下' ? -step : 0 }]; }
+      else if ((m = /^(?:把)?\s*(?:它|這個|選取的?|選中的?|貼皮)?\s*(?:旋轉|轉)\s*(-?\d+(?:\.\d+)?)\s*度$/.exec(c))) { e = [{ op: 'transform_object', id: 'selection', turn: Number(m[1]) }]; }
+      else if ((m = /^(?:把)?\s*(?:它|這個|選取的?|選中的?|貼皮)?\s*(?:變|設成|設為)?\s*(半透明|透明一點|不透明)$/.exec(c))) { e = [{ op: 'transform_object', id: 'selection', opacity: /不透明/.test(m[1]) ? 1 : 0.5 }]; }
+      if (e && e.length) { e.forEach(function (x) { edits.push(x); }); matched.push(c0); } else { unmatched.push(c0); }
+    });
+    return { edits: edits, matched: matched, unmatched: unmatched };
+  }
+  var ACTIONS = '封閉的動作(只能用這些,JSON):{op:"set_base",color?,metalness?,roughness?,opacity?,texture?:"water|grass|sand|wood|brick",texture_repeat?:[rx,ry]}(整個物件的底色與材質)、'
+    + '{op:"add_object",object:{type:"skin",zone,color?|image?:"attached"(使用者貼的圖)|"ref:…",u?,v?(中心 0..1,v 往上),w?,h?(佔該面的比例 0.01..1),rotate?:度,opacity?:0.05..1,name?},place?:{at:"center|top|bottom|left|right|top-left|top-right|bottom-left|bottom-right",size?}}、{op:"update_object",id,props:{zone?,color?,image?,u?,v?,w?,h?,rotate?,opacity?,name?}}、{op:"place_object",id,place:{at,size?}}、{op:"transform_object",id,du?,dv?,scale?,scale_w?,scale_h?,turn?,opacity?}、'
+    + '{op:"set_zone",id,zone}、{op:"remove_object",id}、{op:"rename_object",id,name}、{op:"move_object",id,to:"up|down|front|back"}、{op:"set_visible",id,visible}、{op:"duplicate_object",id}、{op:"clear_objects"}、{op:"find_picture",query:"英文關鍵字"}、{op:"generate_image",prompt}(宿主做的:上網找圖／生圖,會變成一層貼皮)';
+  function editPrompt(spec, request, extra, selection) {
+    var sp = validate(spec).spec, zones = C.zonesOf(sp.base.mesh).map(function (z) { return z + '=' + (C.ZONE_LABEL[z] || z); }).join('、');
+    var system = '你是「模型貼皮」編輯器的助手(像在做塑膠模型:決定哪個面貼什麼圖、塗什麼顏色)。使用者用說的;你只能回一個 JSON 物件 {"say":"一句話說明","edits":[動作…]},不要回別的字。' + ACTIONS + '。\n規則:1) zone 只能是這個形狀有的面:' + zones + '(方塊的左右上下前後都是「從外面看那一面」的位置,前面=+z)。2) 位置用 place.at 這種說法或 u、v、w、h 的比例,不要編座標。3) 使用者貼了圖,圖就是 image:"attached"。4) 「它／這個」就是選取的貼皮(id 用 "selection")。5) 不確定就少做並說明。';
+    return { system: system, user: '物件:' + describe(sp) + '\n貼皮(由下到上,每行:id 名字:面 內容 中心 大小):\n' + list(sp) + (selection ? '\n選取的貼皮:' + selection : '') + (extra ? '\n' + extra : '') + '\n\n使用者說:' + String(request || '') };
+  }
+  function parseEditsReply(text) {
+    var t = String(text || ''), a = t.indexOf('{'), b = t.lastIndexOf('}'); if (a < 0 || b <= a) { return { ok: false, error: '沒有 JSON' }; } var obj; try { obj = JSON.parse(t.slice(a, b + 1)); } catch (e) { try { obj = JSON.parse(t.slice(a, b + 1).replace(/,\s*([}\]])/g, '$1')); } catch (e2) { return { ok: false, error: 'JSON 讀不懂' }; } }
+    var arr = Array.isArray(obj) ? obj : (Array.isArray(obj.edits) ? obj.edits : (obj.op ? [obj] : null)); if (!arr) { return { ok: false, error: '沒有 edits' }; } var edits = [], dropped = 0; arr.forEach(function (e) { if (e && typeof e === 'object' && (OPS.indexOf(e.op) >= 0 || HOST_OPS.indexOf(e.op) >= 0)) { edits.push(e); } else { dropped++; } });
+    return { ok: true, say: str(obj.say, 400), edits: edits, dropped: dropped };
+  }
+  // from a scene object to this editor, and what goes back
+  function fromObject(obj, title) {
+    var base = { mesh: obj.mesh, material: obj.material }; BASE_KEYS.forEach(function (k) { if (obj[k] != null) { base[k] = obj[k]; } });
+    return validate({ title: title || (obj.name + ' 的貼皮'), base: base, objects: (obj.skins || []).map(function (k, i) { return Object.assign({}, k, { id: 's' + (i + 1), type: 'skin' }); }) }).spec;
+  }
+  function toObjectPatch(spec) { var s = validate(spec).spec; return { skins: s.objects.filter(function (o) { return o.visible; }).map(function (o) { var k = { zone: o.zone, name: o.name, u: o.u, v: o.v, w: o.w, h: o.h, rotate: o.rotate, opacity: o.opacity }; if (o.image) { k.image = o.image; } if (o.color) { k.color = o.color; } return k; }), material: s.base.material }; }
+  function promptOf(spec, steps) { var sp = validate(spec).spec, L = ['請替這個物件貼皮(像做塑膠模型:每個面貼什麼、塗什麼顏色)。', '', list(sp)]; var t = (steps || []).filter(function (x) { return x.text; }); if (t.length) { L.push('', '(有效的指示,依序):'); t.forEach(function (x, i) { L.push((i + 1) + '. ' + x.text + (x.summary ? ' → ' + x.summary : '')); }); } return L.join('\n'); }
+  return { OPS: OPS, HOST_OPS: HOST_OPS, validate: validate, applyEdits: applyEdits, editWords: editWords, list: list, find: find, byId: byId, parseCommands: parseCommands, editPrompt: editPrompt, parseEditsReply: parseEditsReply, fromObject: fromObject, toObjectPatch: toObjectPatch, promptOf: promptOf, zoneLabel: zoneLabel, zoneIn: zoneIn, atUV: atUV, defaultSpec: defaultSpec };
+});
+
+}).call(null, undefined, holder);
+return holder.FaEdit3dPart;
+})();
+/* ED3DP-END */
+/* ED3DUI-BEGIN */
+const FaEdit3dUI = (function () {
+const holder = {};
+(function (module, self) {
+// The screens of /edit-3d-model, built on the shared frame (edit_shell.js): the SCENE editor (a 3D viewer in the middle, the objects as a TREE on the left with the properties under it, the YAML source as a second tab that is
+// editable and shown again the moment you go back to the viewer, the AI chat at the bottom) and the PART editor (one object alone, like a plastic kit: which face gets which picture or colour; opened by a double click on the object).
+// Needs three.js (THREE, OrbitControls) on the page; the host passes buildNode(node) -> THREE.Object3D (the one render_3d_scene uses, so textures and shapes are the same everywhere).
+//   FaEdit3dUI.mount({ id, state, spec, host, restoring, store, buildNode, keepTexture(blob)->Promise<ref>, openPart(obj), windowApi }) -> element (el._ed, see FaEditShell)
+//   FaEdit3dUI.mountPart({ id, state, spec, host, buildNode, keepTexture, onDone(partSpec), onCancel() }) -> element
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaEdit3dUI = factory((root.FaEdit3d || (typeof FaEdit3d !== 'undefined' ? FaEdit3d : undefined)), (root.FaEdit3dPart || (typeof FaEdit3dPart !== 'undefined' ? FaEdit3dPart : undefined)), (root.FaEditShell || (typeof FaEditShell !== 'undefined' ? FaEditShell : undefined)), (root.FaEditStore || (typeof FaEditStore !== 'undefined' ? FaEditStore : undefined))); })(typeof self !== 'undefined' ? self : this, function (C, PC, Shell, Store) {
+  'use strict';
+  function h(tag, cls, text) { var e = document.createElement(tag); if (cls) { e.className = cls; } if (text != null) { e.textContent = text; } return e; }
+  var ICON = { box: '🧊', sphere: '⚽', cylinder: '🥫', cone: '🔺', plane: '▭', torus: '🍩', polygon: '🔷', particles: '✨', line: '〰', group: '📁', light: '💡' };
+  function slug(s) { return String(s || 'scene').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ').replace(/\s+/g, '_').replace(/^_+|_+$/g, '').slice(0, 50) || 'scene'; }
+  var deg = function (r) { return Math.round(r * 180 / Math.PI * 10) / 10; };
+  var HEX = /^#[0-9a-fA-F]{6}$/;
+  function hex(c, d) { c = String(c || ''); if (HEX.test(c)) { return c; } if (/^#[0-9a-fA-F]{3}$/.test(c)) { return '#' + c.slice(1).replace(/(.)/g, '$1$1'); } return d || '#888888'; }
+
+  // ───────────────────────── the 3D stage: one canvas, orbit, picking, a highlight box ─────────────────────────
+  // buildNode(node, presets) -> Object3D | null.   stage.rebuild(sceneDef) sceneDef = FaEdit3d.toScene(spec, { tags: true })
+  function makeStage(opt) {
+    var el = h('div', 'e3-stage'), canvas = h('canvas'), dirty = true, burst = 0, dead = false;
+    el.style.cssText = 'position:relative;flex:1;min-height:340px;min-width:260px;background:#14171d;overflow:hidden'; canvas.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;display:block;touch-action:none'; el.appendChild(canvas);
+    var renderer = null, webgl = true;
+    try { renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true, preserveDrawingBuffer: true }); } catch (e) { webgl = false; }
+    var ctx2d = !webgl && opt.raster ? canvas.getContext('2d') : null;   // no WebGL: the assistant's own software rasteriser draws the same scene (slower, no textures)
+    if (!webgl && !ctx2d) { var msg = h('div', 'st', '這台機器的 WebGL 開不起來，3D 畫面無法顯示（還是可以用物件欄、屬性面板與 YAML 原始碼編輯）。'); msg.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:20px;text-align:center;color:#c9d1d9'; el.appendChild(msg); }
+    var scene = new THREE.Scene(), camera = new THREE.PerspectiveCamera(50, 1, 0.05, 6000), content = new THREE.Group(), helpers = new THREE.Group(), selGroup = new THREE.Group(); scene.add(content); scene.add(helpers); scene.add(selGroup);
+    var controls = webgl || ctx2d ? new THREE.OrbitControls(camera, canvas) : null; if (controls) { controls.addEventListener('change', function () { dirty = true; if (opt.onView) { opt.onView(); } }); controls.screenSpacePanning = true; }
+    var grid = null, showGrid = opt.grid !== false;
+    function size() { var w = Math.max(40, el.clientWidth), hh = Math.max(40, el.clientHeight); if (renderer) { renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1)); renderer.setSize(w, hh, false); } else if (ctx2d) { canvas.width = w; canvas.height = hh; } camera.aspect = w / hh; camera.updateProjectionMatrix(); dirty = true; }
+    var ro = typeof ResizeObserver === 'function' ? new ResizeObserver(function () { size(); }) : null; if (ro) { ro.observe(el); }
+    function dispose(obj) { obj.traverse(function (o) { if (o.geometry && o.geometry.dispose) { o.geometry.dispose(); } var ms = o.material ? (Array.isArray(o.material) ? o.material : [o.material]) : []; ms.forEach(function (m) { ['map', 'emissiveMap'].forEach(function (k) { if (m[k] && m[k].dispose) { m[k].dispose(); } }); if (m.dispose) { m.dispose(); } }); }); }
+    function clear(g) { while (g.children.length) { var c = g.children[0]; g.remove(c); dispose(c); } }
+    var markers = [];
+    function rebuild(def) {
+      clear(content); clear(helpers); markers = []; scene.background = new THREE.Color(def.background || '#1a1d24');
+      (def.lights || []).forEach(function (l) {
+        var col = new THREE.Color(l.color || '#ffffff'), lt, mk;
+        if (l.type === 'ambient') { lt = new THREE.AmbientLight(col, l.intensity != null ? l.intensity : 0.5); content.add(lt); if (l._src && opt.markers !== false) { mk = new THREE.Mesh(new THREE.OctahedronGeometry(0.14), new THREE.MeshBasicMaterial({ color: col })); mk.position.set(0, 3.2, 0); } }
+        else { var p = l.position || [0, 3, 0]; lt = l.type === 'directional' ? new THREE.DirectionalLight(col, l.intensity != null ? l.intensity : 1) : new THREE.PointLight(col, l.intensity != null ? l.intensity : 1); lt.position.set(p[0], p[1], p[2]); content.add(lt); if (l._src && opt.markers !== false) { mk = new THREE.Mesh(l.type === 'directional' ? new THREE.ConeGeometry(0.16, 0.34, 8) : new THREE.SphereGeometry(0.14, 12, 8), new THREE.MeshBasicMaterial({ color: col })); mk.position.set(p[0], p[1], p[2]); } }
+        if (mk) { mk.userData.src = l._src; mk.userData.marker = true; helpers.add(mk); markers.push(mk); }
+      });
+      (def.nodes || []).forEach(function (n) { var o = null; try { o = opt.buildNode(n); } catch (e) { o = null; } if (!o) { return; } o.userData.src = n._src; o.userData.skin = n._skin; content.add(o); });
+      if (grid) { helpers.remove(grid); grid = null; } if (showGrid) { grid = new THREE.GridHelper(opt.gridSize || 20, opt.gridSize || 20, 0x586174, 0x2c3340); grid.userData.grid = true; helpers.add(grid); }
+      dirty = true; burst = 90;   // textures load a moment later: draw every frame for a while
+    }
+    function applyCamera(cam, keepDist) {
+      if (!cam) { return; } camera.position.set(cam.position[0], cam.position[1], cam.position[2]); camera.fov = cam.fov || 50; camera.updateProjectionMatrix();
+      if (controls) { controls.target.set(cam.look_at[0], cam.look_at[1], cam.look_at[2]); controls.update(); } else { camera.lookAt(cam.look_at[0], cam.look_at[1], cam.look_at[2]); } dirty = true;
+    }
+    function getView() { var t = controls ? controls.target : new THREE.Vector3(0, 0, 0); return { position: [camera.position.x, camera.position.y, camera.position.z], target: [t.x, t.y, t.z], fov: camera.fov }; }
+    function srcOf(o) { while (o) { if (o.userData && o.userData.src) { return o; } o = o.parent; } return null; }
+    var ray = new THREE.Raycaster(), ptr = new THREE.Vector2();
+    function pickAt(cx, cy, pred) {
+      var r = canvas.getBoundingClientRect(); ptr.set(((cx - r.left) / r.width) * 2 - 1, -((cy - r.top) / r.height) * 2 + 1); ray.setFromCamera(ptr, camera);
+      var list = []; content.children.forEach(function (c) { c.traverse(function (o) { if (o.isMesh || o.isPoints || o.isLine) { list.push(o); } }); }); markers.forEach(function (m) { list.push(m); });
+      var hits = ray.intersectObjects(list, false); for (var i = 0; i < hits.length; i++) { var so = srcOf(hits[i].object); if (!so) { continue; } if (pred && !pred(so, hits[i])) { continue; } var nrm = hits[i].face ? hits[i].face.normal.clone().transformDirection(hits[i].object.matrixWorld) : new THREE.Vector3(0, 1, 0); return { src: so.userData.src, skin: so.userData.skin, point: hits[i].point.clone(), normal: nrm, object: so, distance: hits[i].distance }; }
+      return null;
+    }
+    function groundPoint(cx, cy, y) { var r = canvas.getBoundingClientRect(); ptr.set(((cx - r.left) / r.width) * 2 - 1, -((cy - r.top) / r.height) * 2 + 1); ray.setFromCamera(ptr, camera); var pl = new THREE.Plane(new THREE.Vector3(0, 1, 0), -y), out = new THREE.Vector3(); return ray.ray.intersectPlane(pl, out) ? out : null; }
+    function planePoint(cx, cy, point, normal) { var r = canvas.getBoundingClientRect(); ptr.set(((cx - r.left) / r.width) * 2 - 1, -((cy - r.top) / r.height) * 2 + 1); ray.setFromCamera(ptr, camera); var pl = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, point), out = new THREE.Vector3(); return ray.ray.intersectPlane(pl, out) ? out : null; }
+    // the highlight box of a set of source ids
+    function setSelection(ids) {
+      clear(selGroup); dirty = true; if (!ids || !ids.length) { return; } var set = {}, box = new THREE.Box3(), any = false; ids.forEach(function (i) { set[i] = 1; });
+      content.children.forEach(function (c) { if (set[c.userData.src] && !c.userData.skin) { box.expandByObject(c); any = true; } }); markers.forEach(function (m) { if (set[m.userData.src]) { box.expandByObject(m); any = true; } });
+      if (any && !box.isEmpty()) { var bh = new THREE.Box3Helper(box, 0x2f81f7); bh.material.depthTest = false; bh.renderOrder = 999; selGroup.add(bh); }
+    }
+    function setGrid(on) { showGrid = on; if (grid) { helpers.remove(grid); dispose(grid); grid = null; } if (on) { grid = new THREE.GridHelper(opt.gridSize || 20, opt.gridSize || 20, 0x586174, 0x2c3340); helpers.add(grid); } dirty = true; }
+    function frame(box) { if (!box || box.isEmpty()) { return; } var c = box.getCenter(new THREE.Vector3()), s = box.getSize(new THREE.Vector3()), R = Math.max(1, s.length() * 0.9), dir = camera.position.clone().sub(controls ? controls.target : c).normalize(); if (dir.lengthSq() < 0.001) { dir.set(0.5, 0.4, 1).normalize(); } camera.position.copy(c.clone().add(dir.multiplyScalar(R * 1.7))); if (controls) { controls.target.copy(c); controls.update(); } else { camera.lookAt(c); } dirty = true; }
+    function fit() { var b = new THREE.Box3(); content.children.forEach(function (c) { if (!c.isLight) { b.expandByObject(c); } }); frame(b); }
+    function draw() { if (renderer) { renderer.render(scene, camera); } else if (ctx2d) { try { opt.raster(scene, camera, ctx2d, canvas.width, canvas.height); } catch (e) { /* the next frame */ } } }
+    function shot(type, q) { return new Promise(function (res) { var hv = helpers.visible, sv = selGroup.visible; helpers.visible = false; selGroup.visible = false; draw(); canvas.toBlob(function (b) { helpers.visible = hv; selGroup.visible = sv; dirty = true; res(b); }, type || 'image/png', q); }); }
+    function tick() { if (dead) { return; } if (el.isConnected && (renderer || ctx2d) && el.clientWidth > 0 && (dirty || burst > 0)) { if (burst > 0) { burst--; } dirty = false; draw(); } requestAnimationFrame(tick); }
+    function destroy() { dead = true; if (ro) { ro.disconnect(); } clear(content); clear(helpers); clear(selGroup); if (controls) { controls.dispose(); } if (renderer) { renderer.dispose(); } }
+    setTimeout(size, 0); requestAnimationFrame(tick);
+    return { el: el, canvas: canvas, camera: camera, controls: controls, scene: scene, content: content, rebuild: rebuild, applyCamera: applyCamera, getView: getView, pickAt: pickAt, groundPoint: groundPoint, planePoint: planePoint, setSelection: setSelection, setGrid: setGrid, fit: fit, frame: frame, shot: shot, destroy: destroy, size: size, dirty: function () { dirty = true; }, burst: function (n) { burst = n || 60; }, THREE: THREE };
+  }
+
+  // wrap skins (on a sphere, a cylinder side…) are painted into one texture: the base colour, then every skin at its place (u, v, w, h) of the 0..1 square
+  function makeBaker(resolve) {
+    var cache = {};
+    function imgFor(url) { if (!url) { return null; } var c = cache[url]; if (c) { return c.ok ? c.img : null; } var rec = { ok: false, img: new Image() }; cache[url] = rec; rec.img.onload = function () { rec.ok = true; if (rec.onload) { rec.onload(); } }; rec.img.src = url; return null; }
+    var pendingCb = null;
+    return {
+      bake: function (obj, wrap, res, mm) {
+        var R = res || resolve, W = obj.mesh === 'sphere' || obj.mesh === 'cylinder' || obj.mesh === 'cone' ? 1024 : 512, H = obj.mesh === 'sphere' || obj.mesh === 'cylinder' || obj.mesh === 'cone' ? 512 : 512, cv = document.createElement('canvas'); cv.width = W; cv.height = H; var g = cv.getContext('2d');
+        g.fillStyle = mm.color || '#cccccc'; g.fillRect(0, 0, W, H);
+        wrap.forEach(function (k) {
+          var w = k.w * W, hh = k.h * H, cx = k.u * W, cy = (1 - k.v) * H; g.save(); g.globalAlpha = k.opacity; g.translate(cx, cy); g.rotate(-k.rotate * Math.PI / 180);
+          if (k.image) { var url = /^ref:/.test(k.image) ? (R ? R(k.image) : null) : k.image, im = imgFor(url); if (im) { g.drawImage(im, -w / 2, -hh / 2, w, hh); } else if (pendingCb) { var rec = cache[url]; if (rec) { rec.onload = pendingCb; } } } else { g.fillStyle = k.color; g.fillRect(-w / 2, -hh / 2, w, hh); }
+          g.restore();
+        });
+        return { texture: cv.toDataURL('image/png'), color: '#ffffff' };
+      },
+      onImageReady: function (cb) { pendingCb = cb; }
+    };
+  }
+
+  // ───────────────────────── the scene editor ─────────────────────────
+  function mount(opt) {
+    var host = opt.host || {}, store = opt.store || Store, resolve = function (ref) { return store ? store.imageUrl(String(ref).replace(/^ref:/, '')) : ''; }, baker = makeBaker(resolve), self_stage = null, ctxRef = null;
+    var W = { validate: C.validate, applyEdits: C.applyEdits, editWords: C.editWords, list: C.list, find: C.find };
+    return Shell.mount({
+      id: opt.id, kind: 'edit-3d', title: '🧊 3D 場景編輯器', W: W, spec: opt.spec, state: opt.state, host: host, container: opt.container, restoring: opt.restoring, windowApi: opt.windowApi,
+      tabs: [{ id: 'view', label: '🎲 場景', viewer: true }, { id: 'source', label: '🧾 YAML 原始碼' }],
+      placeholder: '用說的擺：「在我的左前方放一個紅色的球」「把它移到桌子上面」「把桌子往右移 2 公尺」「把球貼上這張圖」（貼圖可以直接貼進來）；位置都是以你現在看的角度來說',
+      intro: '我是 3D 場景的助手：你說要放什麼、放在哪裡，我就加一個新的物件，位置是用「你現在看的角度」算的——「我的左前方」就是相機看過去的左前方，「桌子的右邊」就是從你這邊看桌子的右邊。物件欄是樹狀的（可以把東西綁成群組）；雙擊物件欄的項目（或畫面裡的物件）可以進到「單一物件編輯」，像做塑膠模型一樣決定每個面貼什麼圖、塗什麼顏色。拖曳畫面空白處轉視角、滾輪縮放、右鍵平移；點物件選取、拖曳可以移動。「🧾 YAML 原始碼」分頁可以直接改場景，回到畫面就會立刻呈現。貼一張圖進來可以當選取物件的貼圖。每一步都能復原。',
+      objectIcon: function (o) { return o.type === 'mesh' ? (ICON[o.mesh] || '◻') : (ICON[o.type] || '◻'); },
+      objectInfo: function (o) { return o.type === 'mesh' ? C.MESHES[o.mesh] + (o.skins ? '・貼皮' : '') : o.type === 'light' ? ({ directional: '平行光', point: '點光源', ambient: '環境光' })[o.light] : '群組'; },
+      treeRows: function (sp, collapsed) { var rows = C.tree(sp), out = [], hideBelow = -1; rows.forEach(function (r) { if (hideBelow >= 0) { if (r.depth > hideBelow) { return; } hideBelow = -1; } out.push(r); if (r.obj.type === 'group' && collapsed[r.obj.id]) { hideBelow = r.depth; } }); return out; },
+      onObjectOpen: function (o) { if (o.type === 'mesh' && C.zonesOf(o.mesh).length && opt.openPart) { opt.openPart(o); } else if (ctxRef) { ctxRef.say('只有方塊、圓柱、圓錐、球、圓環與平面可以進到單一物件編輯貼皮'); } },
+      parseCommands: C.parseCommands, promptOf: C.promptOf,
+      exports: [{ id: 'scene', label: '場景 YAML（可直接播放）' }, { id: 'png', label: 'PNG 截圖' }, { id: 'yaml', label: '專案 YAML（原始碼）', chat: false }],
+      runExport: async function (id, spec) {
+        var name = slug(spec.title);
+        if (id === 'png') { var b = await (self_stage && self_stage.shot ? self_stage.shot('image/png') : null); if (!b) { throw new Error('沒有畫面可以截圖'); } return { blob: b, name: name + '.png', mime: 'image/png' }; }
+        if (id === 'yaml') { return { blob: new Blob([C.toYaml(spec)], { type: 'text/yaml' }), name: name + '.edit3d.yaml', mime: 'text/yaml' }; }
+        var yml = C.toSceneYaml(spec, { resolve: resolve, bake: baker.bake }); return { blob: new Blob([yml], { type: 'text/yaml' }), name: name + '.3dscene.yaml', mime: 'text/yaml', sceneYaml: yml };
+      },
+      build: function (ctx) {
+        ctxRef = ctx; var spec = null, sel = null, lastKey = '', lastCam = '', stage = null, mode = 'move', drag = null, viewWrap = h('div'), srcWrap = h('div'), lastSource = '', self = {}, pendingSel = false;
+        viewWrap.style.cssText = 'display:flex;flex-direction:column;flex:1;min-height:0;min-width:0'; srcWrap.style.cssText = 'display:flex;flex-direction:column;gap:6px;flex:1';
+        var bar = h('div', 'row'); bar.style.cssText = 'padding:4px 6px;gap:4px;flex:none;border-bottom:1px solid var(--bd)';
+        var bOrigin = opt.origin && opt.updateOrigin ? h('button', null, '↩ 更新回原本的場景') : null; if (bOrigin) { bOrigin.title = '把目前的場景放回對話裡它原本的位置（取代那個 3D 場景）'; bOrigin.onclick = function () { var yml = C.toSceneYaml(spec, { resolve: resolve, bake: baker.bake }); opt.updateOrigin(yml).then(function (ok) { ctx.say(ok ? '已更新回原本的場景' : '找不到原本的場景'); }, function (e) { ctx.say('更新失敗：' + String((e && e.message) || e).slice(0, 60)); }); }; }
+        var bMove = h('button', null, '✥ 移動'), bRot = h('button', null, '⟳ 轉'), bScl = h('button', null, '⤢ 縮放'), bGrid = h('button', null, '▦ 格線'), bFit = h('button', null, '⌖ 看全部'), bCam = h('button', null, '📷 存成預設視角'), hint = h('span', 'st', '');
+        bMove.title = '拖曳選取的物件在地面上移動（按住 Shift 上下移）'; bRot.title = '左右拖曳：繞垂直軸轉'; bScl.title = '上下拖曳：放大縮小'; bFit.title = '把相機移到看得到所有東西'; bCam.title = '把目前的角度存成場景的視角（匯出的場景會用它）';
+        [bMove, bRot, bScl, bGrid, bFit, bCam, bOrigin, hint].forEach(function (x) { if (x) { bar.appendChild(x); } });
+        function modeBtns() { [[bMove, 'move'], [bRot, 'rot'], [bScl, 'scl']].forEach(function (p) { p[0].style.borderColor = mode === p[1] ? 'var(--acc)' : ''; }); }
+        bMove.onclick = function () { mode = 'move'; modeBtns(); }; bRot.onclick = function () { mode = 'rot'; modeBtns(); }; bScl.onclick = function () { mode = 'scl'; modeBtns(); }; modeBtns();
+        var grid = true; bGrid.onclick = function () { grid = !grid; if (stage) { stage.setGrid(grid); } };
+        stage = makeStage({ buildNode: opt.buildNode, grid: true, gridSize: 20, raster: opt.raster }); self_stage = stage; viewWrap.appendChild(bar); viewWrap.appendChild(stage.el);
+        bFit.onclick = function () { stage.fit(); }; bCam.onclick = function () { var v = stage.getView(); ctx.apply([{ op: 'set_camera', position: v.position, look_at: v.target, fov: v.fov }], '存下目前的視角', '', 'panel'); };
+        baker.onImageReady(function () { rebuildNow(); });
+        function allIds(id) { if (!id || !spec) { return []; } return [id].concat(C.descendants(spec, id).map(function (o) { return o.id; })); }
+        function rebuildNow() { if (!spec) { return; } var def = C.toScene(spec, { tags: true, resolve: resolve, bake: baker.bake, hidden: false }); stage.rebuild(def); stage.setSelection(allIds(sel)); }
+        // ───── picking and dragging in the viewer ─────
+        var downAt = null;
+        stage.canvas.addEventListener('pointerdown', function (ev) {
+          if (ev.button !== 0) { return; } downAt = { x: ev.clientX, y: ev.clientY, hit: stage.pickAt(ev.clientX, ev.clientY), moved: false }; var hit = downAt.hit; if (!hit) { return; }
+          var o = spec.objects[C.byId(spec, hit.src)]; if (!o) { return; } var target = ev.altKey && o.parent ? o.parent : o.id; if (target !== sel) { ctx.select(target); } var to = spec.objects[C.byId(spec, target)]; if (to.locked) { return; }
+          if (stage.controls) { stage.controls.enabled = false; } var ids = allIds(target), objs = stage.content.children.filter(function (c) { return ids.indexOf(c.userData.src) >= 0; });
+          var markersHit = hit.object && hit.object.userData && hit.object.userData.marker ? hit.object : null; if (markersHit) { objs = [markersHit]; }
+          var b = C.worldBox(spec, to), p0 = b ? b.center : hit.point.toArray(), y0 = hit.point.y, start = ev.shiftKey && mode === 'move' ? stage.planePoint(ev.clientX, ev.clientY, hit.point, new stage.THREE.Vector3(stage.camera.position.x - hit.point.x, 0, stage.camera.position.z - hit.point.z).normalize()) : stage.groundPoint(ev.clientX, ev.clientY, y0);
+          var pivot = C.worldT(spec, to).t, snap = objs.map(function (ob) { return { ob: ob, p: ob.position.clone(), r: ob.rotation.y, s: ob.scale.clone() }; });
+          drag = { id: target, mode: ev.shiftKey && mode === 'move' ? 'vert' : mode, start: start, sx: ev.clientX, sy: ev.clientY, snap: snap, pivot: pivot, y0: y0, hitPoint: hit.point.clone(), moved: false, delta: [0, 0, 0], turn: 0, factor: 1 };
+          try { stage.canvas.setPointerCapture(ev.pointerId); } catch (e) { /* a synthetic pointer: no capture */ } ev.stopPropagation();
+        }, true);
+        stage.canvas.addEventListener('pointermove', function (ev) {
+          if (downAt && (Math.abs(ev.clientX - downAt.x) + Math.abs(ev.clientY - downAt.y) > 4)) { downAt.moved = true; }
+          if (!drag) { return; } var T = stage.THREE;
+          if (Math.abs(ev.clientX - drag.sx) + Math.abs(ev.clientY - drag.sy) > 3) { drag.moved = true; } if (!drag.moved) { return; }
+          if (drag.mode === 'move') { var q = stage.groundPoint(ev.clientX, ev.clientY, drag.y0); if (!q || !drag.start) { return; } drag.delta = [q.x - drag.start.x, 0, q.z - drag.start.z]; drag.snap.forEach(function (s) { s.ob.position.set(s.p.x + drag.delta[0], s.p.y, s.p.z + drag.delta[2]); }); }
+          else if (drag.mode === 'vert') { var vp = stage.planePoint(ev.clientX, ev.clientY, drag.hitPoint, new T.Vector3(stage.camera.position.x - drag.hitPoint.x, 0, stage.camera.position.z - drag.hitPoint.z).normalize()); if (!vp || !drag.start) { return; } drag.delta = [0, vp.y - drag.start.y, 0]; drag.snap.forEach(function (s) { s.ob.position.set(s.p.x, s.p.y + drag.delta[1], s.p.z); }); }
+          else if (drag.mode === 'rot') { var a = (ev.clientX - drag.sx) * 0.01; drag.turn = a; drag.snap.forEach(function (s) { var dx = s.p.x - drag.pivot[0], dz = s.p.z - drag.pivot[2], c = Math.cos(a), sn = Math.sin(a); s.ob.position.set(drag.pivot[0] + dx * c + dz * sn, s.p.y, drag.pivot[2] - dx * sn + dz * c); s.ob.rotation.y = s.r + a; }); }
+          else if (drag.mode === 'scl') { var f = Math.exp(-(ev.clientY - drag.sy) * 0.006); drag.factor = f; drag.snap.forEach(function (s) { var dx = s.p.x - drag.pivot[0], dy = s.p.y - drag.pivot[1], dz = s.p.z - drag.pivot[2]; s.ob.position.set(drag.pivot[0] + dx * f, drag.pivot[1] + dy * f, drag.pivot[2] + dz * f); s.ob.scale.copy(s.s).multiplyScalar(f); }); }
+          stage.setSelection(allIds(drag.id)); stage.dirty();
+        });
+        function endDrag(ev) {
+          if (stage.controls) { stage.controls.enabled = true; } var d = drag; drag = null;
+          if (d && d.moved) {
+            var o = spec.objects[C.byId(spec, d.id)], nm = o ? o.name : d.id;
+            if (d.mode === 'move' || d.mode === 'vert') { ctx.apply([{ op: 'transform_object', id: d.id, move_world: d.delta.map(function (x) { return Math.round(x * 100) / 100; }) }], '移動 ' + nm, '', 'panel'); }
+            else if (d.mode === 'rot') { ctx.apply([{ op: 'transform_object', id: d.id, turn: Math.round(d.turn * 180 / Math.PI * 10) / 10 }], '轉動 ' + nm, '', 'panel'); }
+            else if (d.mode === 'scl') { ctx.apply([{ op: 'transform_object', id: d.id, scale: Math.round(d.factor * 1000) / 1000 }], '縮放 ' + nm, '', 'panel'); }
+          } else if (d) { rebuildNow(); }
+          else if (downAt && !downAt.moved && !downAt.hit) { ctx.select(null); }
+          downAt = null;
+        }
+        stage.canvas.addEventListener('pointerup', endDrag); stage.canvas.addEventListener('pointercancel', endDrag);
+        stage.canvas.addEventListener('dblclick', function (ev) { var hit = stage.pickAt(ev.clientX, ev.clientY); if (!hit) { return; } var o = spec.objects[C.byId(spec, hit.src)]; if (o && o.type === 'mesh' && C.zonesOf(o.mesh).length && opt.openPart) { opt.openPart(o); } });
+        // ───── properties ─────
+        function field(label, type, value, onChange, extra) {
+          var l = h('label'), i = h('input'); i.type = type; i.value = value == null ? '' : value; if (extra && extra.step) { i.step = extra.step; } if (extra && extra.min != null) { i.min = extra.min; } if (extra && extra.max != null) { i.max = extra.max; } l.appendChild(document.createTextNode(label)); l.appendChild(i);
+          i.onchange = function () { onChange(type === 'number' ? Number(i.value) : i.value); }; return l;
+        }
+        function vecRow(label, v, onChange, step, conv) { var l = h('div', 'row'); l.appendChild(h('span', 'st', label)); [0, 1, 2].forEach(function (k) { var i = h('input'); i.type = 'number'; i.step = step || 0.1; i.style.width = '64px'; i.value = conv ? conv.to(v[k]) : v[k]; i.onchange = function () { var nv = v.slice(); nv[k] = conv ? conv.from(Number(i.value)) : Number(i.value); onChange(nv); }; l.appendChild(i); }); return l; }
+        function props() {
+          var box = h('div'); box.style.cssText = 'display:flex;flex-direction:column;gap:6px';
+          var o = sel ? spec.objects.filter(function (x) { return x.id === sel; })[0] : null;
+          function upd(p, words) { ctx.apply([{ op: 'update_object', id: o.id, props: p }], words || ('改 ' + o.name), '', 'panel'); }
+          if (!o) {
+            box.appendChild(h('div', 'st', '場景'));
+            box.appendChild(field('名稱', 'text', spec.title, function (v) { ctx.apply([{ op: 'set_title', text: v }], '標題改成「' + v + '」', '', 'panel'); }));
+            box.appendChild(field('背景', 'color', hex(spec.background, '#1a1d24'), function (v) { ctx.apply([{ op: 'set_background', color: v }], '背景 ' + v, '', 'panel'); }));
+            box.appendChild(field('視角廣度', 'number', spec.camera.fov, function (v) { ctx.apply([{ op: 'set_camera', fov: v }], '視角廣度 ' + v, '', 'panel'); }, { step: 5, min: 10, max: 120 }));
+            var r = h('div', 'row'); [['正面', 'front'], ['背面', 'back'], ['左', 'left'], ['右', 'right'], ['上', 'top'], ['斜角', 'iso']].forEach(function (p) { var b = h('button', null, p[0]); b.onclick = function () { ctx.apply([{ op: 'set_camera', preset: p[1] }], '視角：' + p[0], '', 'panel'); }; r.appendChild(b); }); box.appendChild(h('div', 'st', '預設視角')); box.appendChild(r);
+            box.appendChild(h('div', 'st', '點物件選取；拖曳移動；Alt+點選取它的群組。')); return box;
+          }
+          box.appendChild(h('div', 'st', o.name + '（' + (o.type === 'mesh' ? C.MESHES[o.mesh] : o.type === 'group' ? '群組' : '燈光') + '，' + o.id + '）'));
+          box.appendChild(field('名稱', 'text', o.name, function (v) { ctx.apply([{ op: 'rename_object', id: o.id, name: v }], o.name + ' 改名為 ' + v, '', 'panel'); }));
+          if (o.parent) { var up = h('button', null, '⬆ 選它的群組'); up.onclick = function () { ctx.select(o.parent); }; box.appendChild(up); }
+          if (o.type === 'light') {
+            var sl = h('select'); [['directional', '平行光'], ['point', '點光源'], ['ambient', '環境光']].forEach(function (p) { var op = h('option', null, p[1]); op.value = p[0]; if (o.light === p[0]) { op.selected = true; } sl.appendChild(op); }); sl.onchange = function () { upd({ light: sl.value }, o.name + ' 改成' + sl.options[sl.selectedIndex].text); }; var lr = h('label'); lr.appendChild(document.createTextNode('種類')); lr.appendChild(sl); box.appendChild(lr);
+            box.appendChild(field('顏色', 'color', hex(o.color, '#ffffff'), function (v) { upd({ color: v }, o.name + ' 顏色 ' + v); })); box.appendChild(field('強度', 'number', o.intensity, function (v) { upd({ intensity: v }); }, { step: 0.1, min: 0 }));
+            if (o.light !== 'ambient') { box.appendChild(vecRow('位置', o.position, function (v) { upd({ position: v }, o.name + ' 移動'); }, 0.5)); }
+            return box;
+          }
+          box.appendChild(vecRow('位置', o.position, function (v) { upd({ position: v }, o.name + ' 移動'); }, 0.1)); box.appendChild(vecRow('旋轉°', o.rotation, function (v) { upd({ rotation: v }, o.name + ' 旋轉'); }, 5, { to: deg, from: function (d) { return d * Math.PI / 180; } }));
+          if (o.type === 'group') { box.appendChild(field('縮放', 'number', o.scale, function (v) { upd({ scale: v }); }, { step: 0.1, min: 0.01 })); var ug = h('button', null, '解散群組'); ug.onclick = function () { ctx.apply([{ op: 'ungroup', id: o.id }], '解散 ' + o.name, '', 'panel'); }; box.appendChild(ug); }
+          if (o.type === 'mesh') {
+            if (o.size) { box.appendChild(vecRow(o.mesh === 'plane' ? '大小(寬,長)' : '大小', o.mesh === 'plane' ? [o.size[0], o.size[1], 0] : o.size, function (v) { upd({ size: o.mesh === 'plane' ? [v[0], v[1]] : v }, o.name + ' 大小'); }, 0.1)); }
+            ['radius', 'height', 'tube_radius'].forEach(function (k) { if (o[k] != null) { box.appendChild(field({ radius: '半徑', height: '高度', tube_radius: '管徑' }[k], 'number', o[k], function (v) { var p = {}; p[k] = v; upd(p); }, { step: 0.1, min: 0.001 })); } });
+            var m = o.material || {};
+            box.appendChild(field('顏色', 'color', hex(m.color, '#4e79a7'), function (v) { upd({ material: { color: v } }, o.name + ' 顏色 ' + v); }));
+            box.appendChild(field('金屬感', 'number', m.metalness, function (v) { upd({ material: { metalness: v } }, o.name + ' 金屬感'); }, { step: 0.1, min: 0, max: 1 })); box.appendChild(field('粗糙度', 'number', m.roughness, function (v) { upd({ material: { roughness: v } }, o.name + ' 粗糙度'); }, { step: 0.1, min: 0, max: 1 })); box.appendChild(field('不透明度', 'number', m.opacity == null ? 1 : m.opacity, function (v) { upd({ material: { opacity: v } }, o.name + ' 透明度'); }, { step: 0.1, min: 0.05, max: 1 }));
+            var ts = h('select'); [['', '（無）'], ['water', '水'], ['grass', '草'], ['sand', '沙'], ['wood', '木'], ['brick', '磚']].forEach(function (p) { var op = h('option', null, p[1]); op.value = p[0]; ts.appendChild(op); }); var isRef = /^(ref:|data:|http)/.test(m.texture || ''); if (isRef) { var op2 = h('option', null, '我的貼圖'); op2.value = m.texture; ts.appendChild(op2); } ts.value = m.texture || ''; ts.onchange = function () { ctx.apply([{ op: 'set_material', id: o.id, texture: ts.value || '' }], o.name + ' 材質 ' + (ts.options[ts.selectedIndex].text), '', 'panel'); };
+            var tl = h('label'); tl.appendChild(document.createTextNode('整個物件的貼圖')); tl.appendChild(ts); box.appendChild(tl);
+            if (m.texture) { box.appendChild(field('重複', 'number', m.texture_repeat ? m.texture_repeat[0] : 1, function (v) { ctx.apply([{ op: 'set_material', id: o.id, texture_repeat: [v, v] }], o.name + ' 貼圖重複 ' + v, '', 'panel'); }, { step: 1, min: 0.1 })); }
+            if (opt.keepTexture) { var fb = h('button', null, '📎 用圖片檔當貼圖…'), fi = h('input'); fi.type = 'file'; fi.accept = 'image/*'; fi.style.display = 'none'; fb.onclick = function () { fi.click(); }; fi.onchange = function () { var f = fi.files && fi.files[0]; fi.value = ''; if (!f) { return; } opt.keepTexture(f).then(function (ref) { ctx.apply([{ op: 'set_material', id: o.id, texture: 'ref:' + ref }], o.name + ' 貼上圖片', '', 'panel'); }, function (e) { ctx.say('貼圖失敗：' + String((e && e.message) || e).slice(0, 60)); }); }; box.appendChild(fb); box.appendChild(fi); }
+            if (C.zonesOf(o.mesh).length && opt.openPart) { var pb = h('button', 'pri', '🎨 單一物件編輯（貼皮、上色）…'); pb.onclick = function () { opt.openPart(o); }; box.appendChild(pb); if (o.skins) { box.appendChild(h('div', 'st', '貼皮 ' + o.skins.length + ' 層：' + o.skins.map(function (k) { return C.ZONE_LABEL[k.zone]; }).join('、'))); } }
+          }
+          return box;
+        }
+        // ───── source (YAML) ─────
+        var srcTa = h('textarea', 'code'); srcTa.rows = 18; srcTa.spellcheck = false; srcTa.style.flex = '1'; var srcRow = h('div', 'row'), bApply = h('button', 'pri', '▶ 套用並看畫面'), bRe = h('button', null, '↻ 放棄修改'), srcSt = h('span', 'st'); [bApply, bRe, srcSt].forEach(function (x) { srcRow.appendChild(x); });
+        srcWrap.appendChild(h('div', 'st', '場景的 YAML（render_3d_scene 的格式，多了 id、name、parent、mesh: group、hidden、locked、skins）。可以直接改，改完按「套用並看畫面」或直接切回「場景」分頁。匯出「場景 YAML」會展平成 render_3d_scene 可以直接播放的樣子。'));
+        srcWrap.appendChild(srcTa); srcWrap.appendChild(srcRow);
+        function sourceNow() { return C.toYaml(spec); }
+        var live = null; srcTa.addEventListener('input', function () { clearTimeout(live); live = setTimeout(function () { var r = C.fromYaml(srcTa.value); srcSt.className = 'st' + (r.ok ? '' : ' bad'); srcSt.textContent = r.ok ? (srcTa.value === lastSource ? '' : '有改動，還沒套用') : r.error; }, 300); });
+        function applySource(quiet) {
+          var text = srcTa.value; if (text === lastSource) { srcSt.className = 'st'; srcSt.textContent = quiet ? '' : '沒有改動'; return true; }
+          var r = C.fromYaml(text); if (!r.ok) { srcSt.className = 'st bad'; srcSt.textContent = r.error; return false; }
+          if (!r.spec.objects.length) { srcSt.className = 'st bad'; srcSt.textContent = '沒有可用的物件' + (r.problems[0] ? '：' + r.problems[0] : ''); return false; }
+          ctx.commit(r.spec, '改寫原始碼（' + r.spec.objects.length + ' 個物件）', '', 'panel'); srcSt.className = 'st'; srcSt.textContent = '已套用' + (r.problems.length ? '（略過 ' + r.problems.length + ' 個不能用的項目：' + r.problems[0] + '）' : ''); return true;
+        }
+        bApply.onclick = function () { if (applySource(false)) { ctx.setTab('view'); rebuildNow(); } };
+        bRe.onclick = function () { srcTa.value = lastSource = sourceNow(); srcSt.className = 'st'; srcSt.textContent = ''; };
+        return {
+          tabs: { view: viewWrap, source: srcWrap },
+          env: function () { var v = stage.getView(); return { view: { position: v.position, target: v.target } }; },
+          refresh: function (s, selId) {
+            var key = JSON.stringify(s), camKey = JSON.stringify(s.camera), selChanged = selId !== sel; spec = s; sel = selId;
+            if (key !== lastKey) { lastKey = key; rebuildNow(); } else if (selChanged) { stage.setSelection(allIds(sel)); }
+            if (camKey !== lastCam) { lastCam = camKey; stage.applyCamera(s.camera); }
+            ctx.setProps(props());
+            if (document.activeElement !== srcTa) { srcTa.value = lastSource = sourceNow(); }
+          },
+          showTab: function (t) {
+            if (t === 'source') { srcTa.value = lastSource = sourceNow(); srcSt.textContent = ''; srcSt.className = 'st'; }
+            else { if (srcTa.value !== lastSource && !applySource(true)) { ctx.setTab('source'); return; } stage.size(); stage.dirty(); }
+          },
+          stage: stage, destroy: function () { stage.destroy(); }
+        };
+      }
+    });
+  }
+
+  // ───────────────────────── the part editor: one object, its skins ─────────────────────────
+  function mountPart(opt) {
+    var host = opt.host || {}, store = opt.store || Store, resolve = function (ref) { return store ? store.imageUrl(String(ref).replace(/^ref:/, '')) : ''; }, baker = makeBaker(resolve), done = false;
+    var W = { validate: PC.validate, applyEdits: PC.applyEdits, editWords: PC.editWords, list: PC.list, find: PC.find };
+    var stageRef = null;
+    var el = Shell.mount({
+      id: opt.id, kind: 'edit-3d-part', title: '🎨 單一物件編輯', W: W, spec: opt.spec, state: opt.state, host: host, restoring: true, windowApi: opt.windowApi,
+      tabs: [{ id: 'view', label: '🧩 模型', viewer: true }],
+      placeholder: '用說的貼：「把正面貼上這張圖」（圖直接貼進來）「上面塗成藍色」「貼在右上角、小一點」「底色改成白色」「把它轉 45 度」；或在模型上點一下，選取的貼皮就移到那裡',
+      intro: '這裡像在做塑膠模型：選一個面，貼上圖或塗上顏色，決定貼在那個面的哪裡、多大、轉幾度。在模型上點一下，選取的那一層貼皮就會移到你點的地方（也會換到那一面）；沒有選取貼皮時，點一下會告訴你點到哪一面。圖可以直接貼進對話框。做好按上面的「✔ 完成」就會把結果交回場景。',
+      objectIcon: function (o) { return o.image ? '🖼' : '🎨'; }, objectInfo: function (o) { return PC.zoneLabel('', o.zone); },
+      parseCommands: PC.parseCommands, promptOf: PC.promptOf,
+      exports: [{ id: 'png', label: 'PNG 截圖' }],
+      runExport: async function () { var b = stageRef ? await stageRef.shot('image/png') : null; if (!b) { throw new Error('沒有畫面可以截圖'); } return { blob: b, name: 'skin.png', mime: 'image/png' }; },
+      build: function (ctx) {
+        var spec = null, sel = null, stage = null, lastKey = '', viewWrap = h('div'), marker = null, info = h('span', 'st', '');
+        viewWrap.style.cssText = 'display:flex;flex-direction:column;flex:1;min-height:0;min-width:0';
+        var bar = h('div', 'row'); bar.style.cssText = 'padding:4px 6px;gap:4px;flex:none;border-bottom:1px solid var(--bd)'; var bFit = h('button', null, '⌖ 看全部'), bDone = h('button', 'pri', '✔ 完成，交回場景'), bCancel = h('button', null, '✕ 放棄修改'); [bFit, info].forEach(function (x) { bar.appendChild(x); });
+        stage = makeStage({ buildNode: opt.buildNode, grid: false, markers: false, raster: opt.raster }); stageRef = stage; viewWrap.appendChild(bar); viewWrap.appendChild(stage.el);
+        bFit.onclick = function () { stage.fit(); };
+        bDone.onclick = function () { if (done) { return; } done = true; opt.onDone && opt.onDone(PC.validate(ctx.getSpec()).spec); }; bCancel.onclick = function () { if (done) { return; } done = true; opt.onCancel && opt.onCancel(); };
+        baker.onImageReady(function () { rebuildNow(); });
+        function objOf(s) { var b = s.base, o = { type: 'mesh', mesh: b.mesh, name: '模型', position: [0, 0, 0], rotation: [0, 0, 0], material: b.material, skins: s.objects.filter(function (k) { return k.visible; }).map(function (k) { return { id: 'k' + k.id.slice(1), name: k.name, zone: k.zone, image: k.image, color: k.color, u: k.u, v: k.v, w: k.w, h: k.h, rotate: k.rotate, opacity: k.opacity }; }) }; ['size', 'radius', 'height', 'tube_radius'].forEach(function (k) { if (b[k] != null) { o[k] = b[k]; } }); return C.validate({ objects: [o, { type: 'light', light: 'ambient', intensity: 0.65 }, { type: 'light', light: 'directional', position: [4, 7, 6], intensity: 0.95 }, { type: 'light', light: 'directional', position: [-5, 3, -4], intensity: 0.35 }] }).spec; }
+        function rebuildNow() { if (!spec) { return; } var sc = objOf(spec); stage.rebuild(C.toScene(sc, { tags: true, resolve: resolve, bake: baker.bake })); drawOutline(); }
+        var outline = null;
+        function drawOutline() {
+          var T = stage.THREE; if (outline) { stage.scene.remove(outline); outline = null; } var k = sel ? spec.objects.filter(function (x) { return x.id === sel; })[0] : null; if (!k) { stage.dirty(); return; }
+          var sc = objOf(spec), o = sc.objects[0], F = C.zoneFrame(o, k.zone); if (!F) { stage.dirty(); return; } var R = C.rotMat(F.rot), w = F.w * k.w / 2, hh = F.h * k.h / 2, cu = (k.u - 0.5) * F.w, cv = (k.v - 0.5) * F.h, a = k.rotate * Math.PI / 180, ca = Math.cos(a), sa = Math.sin(a);
+          var pts = [[-w, -hh], [w, -hh], [w, hh], [-w, hh]].map(function (p) { var lx = p[0] * ca - p[1] * sa + cu, ly = p[0] * sa + p[1] * ca + cv, wv = [R[0][0] * lx + R[0][1] * ly + F.c[0] + F.n[0] * 0.02, R[1][0] * lx + R[1][1] * ly + F.c[1] + F.n[1] * 0.02, R[2][0] * lx + R[2][1] * ly + F.c[2] + F.n[2] * 0.02]; return new T.Vector3(wv[0], wv[1], wv[2]); });
+          var g = new T.BufferGeometry().setFromPoints(pts), ln = new T.LineLoop(g, new T.LineBasicMaterial({ color: 0x2f81f7, depthTest: false })); ln.renderOrder = 999; stage.scene.add(ln); outline = ln; stage.dirty();
+        }
+        // click on the model: the selected skin goes there (and to that face); nothing selected: say which face it is
+        var downAt = null;
+        stage.canvas.addEventListener('pointerdown', function (ev) { if (ev.button === 0) { downAt = { x: ev.clientX, y: ev.clientY }; } });
+        stage.canvas.addEventListener('pointerup', function (ev) {
+          if (!downAt || Math.abs(ev.clientX - downAt.x) + Math.abs(ev.clientY - downAt.y) > 4) { downAt = null; return; } downAt = null; var hit = stage.pickAt(ev.clientX, ev.clientY); if (!hit) { return; }
+          var o = objOf(spec).objects[0], z = C.zoneAt(o, hit.point.toArray(), hit.normal.toArray()); if (!z) { return; } info.textContent = PC.zoneLabel('', z.zone) + '（' + z.u.toFixed(2) + '，' + z.v.toFixed(2) + '）';
+          var k = sel ? spec.objects.filter(function (x) { return x.id === sel; })[0] : null; if (!k || k.locked) { return; }
+          ctx.apply([{ op: 'update_object', id: k.id, props: { zone: z.zone, u: z.u, v: z.v } }], '把 ' + k.name + ' 移到' + PC.zoneLabel('', z.zone) + '（' + z.u.toFixed(2) + '，' + z.v.toFixed(2) + '）', '', 'panel');
+        });
+        function field(label, type, value, onChange, extra) { var l = h('label'), i = h('input'); i.type = type; i.value = value == null ? '' : value; if (extra && extra.step) { i.step = extra.step; } if (extra && extra.min != null) { i.min = extra.min; } if (extra && extra.max != null) { i.max = extra.max; } l.appendChild(document.createTextNode(label)); l.appendChild(i); i.onchange = function () { onChange(type === 'number' ? Number(i.value) : i.value); }; return l; }
+        function props() {
+          var box = h('div'); box.style.cssText = 'display:flex;flex-direction:column;gap:6px'; var k = sel ? spec.objects.filter(function (x) { return x.id === sel; })[0] : null;
+          if (!k) {
+            var m = spec.base.material; box.appendChild(h('div', 'st', '整個物件（底）'));
+            box.appendChild(field('底色', 'color', hex(m.color, '#cccccc'), function (v) { ctx.apply([{ op: 'set_base', color: v }], '底色 ' + v, '', 'panel'); })); box.appendChild(field('金屬感', 'number', m.metalness, function (v) { ctx.apply([{ op: 'set_base', metalness: v }], '金屬感', '', 'panel'); }, { step: 0.1, min: 0, max: 1 })); box.appendChild(field('粗糙度', 'number', m.roughness, function (v) { ctx.apply([{ op: 'set_base', roughness: v }], '粗糙度', '', 'panel'); }, { step: 0.1, min: 0, max: 1 }));
+            var ts = h('select'); [['', '（無）'], ['water', '水'], ['grass', '草'], ['sand', '沙'], ['wood', '木'], ['brick', '磚']].forEach(function (p) { var op = h('option', null, p[1]); op.value = p[0]; ts.appendChild(op); }); ts.value = /^(water|grass|sand|wood|brick)$/.test(m.texture || '') ? m.texture : ''; ts.onchange = function () { ctx.apply([{ op: 'set_base', texture: ts.value || '' }], '材質 ' + ts.options[ts.selectedIndex].text, '', 'panel'); }; var tl = h('label'); tl.appendChild(document.createTextNode('整個表面的材質')); tl.appendChild(ts); box.appendChild(tl);
+            var zr = h('div', 'row'); C.zonesOf(spec.base.mesh).forEach(function (z) { var b = h('button', null, '＋ ' + C.ZONE_LABEL[z]); b.title = '在這一面新增一層上色貼皮'; b.onclick = function () { ctx.apply([{ op: 'add_object', object: { type: 'skin', zone: z, color: '#e53935', w: 0.6, h: 0.6 } }], '新增 ' + C.ZONE_LABEL[z] + ' 的貼皮', '', 'panel'); }; zr.appendChild(b); }); box.appendChild(h('div', 'st', '新增貼皮（選一個面）')); box.appendChild(zr); box.appendChild(h('div', 'st', '圖片：直接貼進下面的對話框，或把圖拖進來；說「貼在正面」就會貼到那一面。')); return box;
+          }
+          box.appendChild(h('div', 'st', k.name + '（' + k.id + '）'));
+          box.appendChild(field('名稱', 'text', k.name, function (v) { ctx.apply([{ op: 'rename_object', id: k.id, name: v }], k.name + ' 改名為 ' + v, '', 'panel'); }));
+          var zs = h('select'); C.zonesOf(spec.base.mesh).forEach(function (z) { var op = h('option', null, C.ZONE_LABEL[z]); op.value = z; if (z === k.zone) { op.selected = true; } zs.appendChild(op); }); zs.onchange = function () { ctx.apply([{ op: 'set_zone', id: k.id, zone: zs.value }], k.name + ' 換到' + C.ZONE_LABEL[zs.value], '', 'panel'); }; var zl = h('label'); zl.appendChild(document.createTextNode('貼在')); zl.appendChild(zs); box.appendChild(zl);
+          if (k.image) { box.appendChild(h('div', 'st', '貼圖：' + (/^ref:/.test(k.image) ? '我的圖片' : k.image.slice(0, 30)))); var rm = h('button', null, '改成純色'); rm.onclick = function () { ctx.apply([{ op: 'update_object', id: k.id, props: { image: '', color: k.color || '#cccccc' } }], k.name + ' 改成純色', '', 'panel'); }; box.appendChild(rm); }
+          box.appendChild(field('顏色' + (k.image ? '（沒有圖時）' : ''), 'color', hex(k.color, '#cccccc'), function (v) { ctx.apply([{ op: 'update_object', id: k.id, props: { color: v, image: '' } }], k.name + ' 顏色 ' + v, '', 'panel'); }));
+          if (opt.keepTexture) { var fb = h('button', null, '📎 換成圖片檔…'), fi = h('input'); fi.type = 'file'; fi.accept = 'image/*'; fi.style.display = 'none'; fb.onclick = function () { fi.click(); }; fi.onchange = function () { var f = fi.files && fi.files[0]; fi.value = ''; if (!f) { return; } opt.keepTexture(f).then(function (ref) { ctx.apply([{ op: 'update_object', id: k.id, props: { image: 'ref:' + ref } }], k.name + ' 貼上圖片', '', 'panel'); }, function (e) { ctx.say('貼圖失敗：' + String((e && e.message) || e).slice(0, 60)); }); }; box.appendChild(fb); box.appendChild(fi); }
+          [['中心 左右 u', 'u'], ['中心 上下 v', 'v'], ['寬（占那一面）', 'w'], ['高（占那一面）', 'h']].forEach(function (p) { box.appendChild(field(p[0], 'number', k[p[1]], function (v) { var pr = {}; pr[p[1]] = v; ctx.apply([{ op: 'update_object', id: k.id, props: pr }], k.name + ' ' + p[1] + '=' + v, '', 'panel'); }, { step: 0.05 })); });
+          box.appendChild(field('旋轉°', 'number', k.rotate, function (v) { ctx.apply([{ op: 'update_object', id: k.id, props: { rotate: v } }], k.name + ' 旋轉', '', 'panel'); }, { step: 5 })); box.appendChild(field('不透明度', 'number', k.opacity, function (v) { ctx.apply([{ op: 'update_object', id: k.id, props: { opacity: v } }], k.name + ' 透明度', '', 'panel'); }, { step: 0.1, min: 0.05, max: 1 }));
+          box.appendChild(h('div', 'st', '在模型上點一下，這一層就會移到那裡。')); return box;
+        }
+        return {
+          tabs: { view: viewWrap }, bar: [bCancel, bDone],
+          env: function () { return {}; },
+          refresh: function (s, selId) { var key = JSON.stringify(s), changed = selId !== sel; spec = s; sel = selId; if (key !== lastKey) { lastKey = key; rebuildNow(); if (!outline && !stage._framed) { stage._framed = true; stage.fit(); } } else if (changed) { drawOutline(); } ctx.setProps(props()); },
+          stage: stage, destroy: function () { stage.destroy(); }
+        };
+      }
+    });
+    return el;
+  }
+  return { mount: mount, mountPart: mountPart, makeStage: makeStage, makeBaker: makeBaker };
+});
+
+}).call(null, undefined, holder);
+return holder.FaEdit3dUI;
+})();
+/* ED3DUI-END */
+/* EDITHOST-BEGIN */
+/* /edit-svg、/edit-picture（以及之後同一套外框的 /edit-3d-model）的主機轉接層。
+ * 編輯器本體（edit_objects_core／edit_shell／edit_svg_*／edit_picture_*／pic_fx…）是從 redmine_ai_chat 外掛移植的，純函式加 DOM，
+ * 不認識這個助理；這裡把它們接到助理自己的零件：模型（_kiLlm：線上優先、失敗改離線）、視覺模型（_interpretImageWithVisionModel）、
+ * 生圖（_generateImage：線上 NVIDIA 或本機 SDXS）、檔案（fileCache／generateAndDeliverFile）、網路（fetch，不行再走 _terminalHttpFetch）、
+ * 視窗（FaWin）。專案存在這個瀏覽器的 IndexedDB（FaEditStore，tw_edit）；圖片的像素只存一份，每一步只記短代號。
+ * 對話裡的編輯器是一則訊息裡的 ```fa-edit-svg {"id":…}``` ／ ```fa-edit-picture {"id":…}``` 區塊（重新整理後由 _mountEditEditors 重建）。
+ * 全部以方法的形式掛到 FloatingAssistant.prototype（見 embed-code-ui.js 的 EDITHOST 標記）。設計見 DESIGN.edit-svg.md、DESIGN.edit-picture.md。 */
+const FaEditHost = (function () {
+    'use strict';
+    const zh = () => { const l = String((document.documentElement && document.documentElement.lang) || (typeof window !== 'undefined' && window.FaUiLocale && window.FaUiLocale.locale) || ''); return !l || /^zh/i.test(l); };
+    const T = (a, b) => (zh() ? a : b);
+    const words = (t) => String(t || '').toLowerCase().split(/[^a-z0-9一-鿿]+/).filter((w) => w.length > 2 || /[一-鿿]/.test(w));
+    const overlap = (a, b) => { const A = {}, B = {}; let n = 0, u = 0; words(a).forEach((w) => { A[w] = 1; }); words(b).forEach((w) => { B[w] = 1; }); Object.keys(A).forEach((w) => { u++; if (B[w]) n++; }); Object.keys(B).forEach((w) => { if (!A[w]) u++; }); return u ? n / u : 0; };
+    const VECTOR_WORDS = /(svg|向量|描摹|描圖|trace|vector|轉成?圖形|變成?圖形|畫成)/i, PLACE_WORDS = /(放進|放入|放到|貼上|貼到|加入|加進|插入|擺|place|insert|put|add)/i;
+    const RESTYLE_WORDS = /(變成|轉成|改成|換成|做成|弄成|風格|畫風|style|looks? like|像.{0,6}一樣|in the style)/i, REPAINT_WORDS = /(重畫|重新畫|重繪|重新生成|用\s*ai\s*(?:重)?畫|regenerate|redraw|re-?imagine|repaint|paint it again)/i;
+    const STYLE_FOR_SD = { oil: 'oil', watercolor: 'watercolor', sketch: 'sketch', ink: 'ink', cartoon: 'anime', pixel: 'pixel', poster: 'flat', vintage: 'photo', neon: 'cyberpunk', night: 'cinematic', dreamy: 'fantasy' };
+    const yes = (t) => /^\s*(yes|yeah|y\b|是|對|像|有)/i.test(String(t || '')), no = (t) => /^\s*(no\b|nope|不|沒|否)/i.test(String(t || ''));
+
+    // 每一種編輯器的差異都在這張表；方法本身共用。core／ui 用函式取（模組是 const，embed 順序在這個檔案之前，但保險起見到用的時候才讀）
+    const KINDS = {
+        'edit-svg': { fence: 'fa-edit-svg', icon: '🖍', cmd: '/edit-svg', prefix: 'sv', label: () => T('SVG 編輯器', 'SVG editor'), core: () => FaEditSvg, ui: () => FaEditSvgUI, lead: '🖍 SVG 編輯器：用語言主導的概念畫家——說要畫什麼、放在哪個東西的哪一邊，就加一個新的物件；畫面沒有邊界。貼圖進去可以描成 SVG。每一步都能復原，進度會保留。' },
+        'edit-picture': { fence: 'fa-edit-picture', icon: '🎨', cmd: '/edit-picture', prefix: 'pc', label: () => T('圖片編輯器', 'Picture editor'), core: () => FaEditPicture, ui: () => FaEditPictureUI, lead: '🎨 圖片編輯器：圖層式的後製與修復——貼圖、給網址或說「找一張…的圖」就有第一個圖層；然後用說的：「變成水彩風格」「調亮」「修掉右下角的污點」。濾鏡與修復都是圖層，原圖不動；每一步都能復原，進度會保留。' },
+    };
+    const register = (kind, def) => { KINDS[kind] = def; };
+
+    const methods = {
+        // ───── 模型、視覺、網路 ─────
+        _edAi() {
+            const self = this;
+            return {
+                have() { try { const c = self._getApiConfig(); return !!(c && c.apiKey) || !!(self.advancedSettings && self.advancedSettings.offlineMode); } catch (_) { return false; } },
+                async chat(system, user, o) { o = o || {}; return String(await self._kiLlm(user, { systemPrompt: system || '', maxTokens: o.maxTokens || 8000, temperature: o.temperature == null ? 0.2 : o.temperature }, { timeoutMs: o.timeoutMs || 180000, label: o.label || 'AI' })); },
+                async vision(dataUrl, question) { const r = await self._interpretImageWithVisionModel(dataUrl, question); return String(typeof r === 'string' ? r : (r && (r.description || r.answer || r.transcription)) || ''); },
+            };
+        },
+        _edFetchFn() {
+            const self = this;
+            return async function (url, opts) {
+                try { return await fetch(url, opts); } catch (e1) {
+                    if (!/^https?:/i.test(String(url)) || typeof self._terminalHttpFetch !== 'function') throw e1;
+                    const hdr = Object.assign({}, (opts && opts.headers) || {}); const { resp } = await self._terminalHttpFetch('GET', String(url), { headers: hdr, timeoutMs: 25000 }); return resp;
+                }
+            };
+        },
+        _edPics(kind) {
+            this._edPicsCache = this._edPicsCache || {};
+            if (!this._edPicsCache[kind]) { const ai = this._edAi(); this._edPicsCache[kind] = FaEditPictures.make({ C: KINDS[kind].core(), store: FaEditStore, ai: { have: ai.have, chat: ai.chat }, T, fetch: this._edFetchFn() }); }
+            return this._edPicsCache[kind];
+        },
+
+        // ───── /edit-svg：圖 → SVG 物件（程式描、視覺模型看、數字量、最多三輪） ─────
+        async _edVectorize(blob, o) {
+            const self = this, A = this._edAi(), C = FaEditSvg, Tr = FaSvgTrace, P = this._edPics('edit-svg'), say = o.status || (() => {}), notes = [];
+            const img = await P.decode(blob, 1024), want = img.canvas.toDataURL('image/jpeg', 0.8); let d0 = '';
+            if (A.have()) { try { say(T('視覺模型先看原圖…', 'The vision model looks at the picture first…')); d0 = (await A.vision(want, C.refPrompt())).trim(); if (d0) notes.push(T('視覺模型看到：', 'The vision model sees: ') + d0.replace(/\s+/g, ' ').slice(0, 180)); } catch (e) { notes.push(T('（視覺模型沒有回應，只用數字確認）', '(no answer from the vision model: only the numbers check it)')); } }
+            const ROUNDS = [{ colors: 10, maxSide: 160 }, { colors: 18, maxSide: 256 }, { colors: 30, maxSide: 384 }], targetW = o.targetWidth || Math.min(img.width, 800); let best = null;
+            for (let n = 0; n < ROUNDS.length; n++) {
+                say(T('第 ' + (n + 1) + ' 輪：用 ' + ROUNDS[n].colors + ' 種顏色描出輪廓…', 'Round ' + (n + 1) + ': tracing with ' + ROUNDS[n].colors + ' colours…'));
+                await new Promise((r) => setTimeout(r, 0));
+                const res = Tr.trace(img, ROUNDS[n]), objs = Tr.toObjects(res, { x: 0, y: 0, width: targetW }), sc = targetW / res.w;
+                const sp = C.validate({ canvas: { x: 0, y: 0, w: res.w * sc, h: res.h * sc }, objects: objs }).spec, svgText = C.compose(sp, { region: { x: 0, y: 0, w: res.w * sc, h: res.h * sc } });
+                const rb = await FaEditSvgUI.rasterize(svgText, res.w * sc, res.h * sc, 1 / sc), rd = await P.decode(rb, 512), score = Tr.compare(img, rd).score;
+                say(T('第 ' + (n + 1) + ' 輪：' + res.layers.length + ' 個色塊，和原圖的相似度 ' + Math.round(score * 100) + '%', 'Round ' + (n + 1) + ': ' + res.layers.length + ' colour regions, ' + Math.round(score * 100) + '% like the original'));
+                if (!best || score > best.score) best = { res, objs, score, round: n + 1, raster: rd };
+                if (score >= 0.93) break;
+            }
+            let d1 = '', ov = null;
+            if (d0 && A.have()) { try { say(T('視覺模型再看一次畫出來的 SVG…', 'The vision model looks at the SVG that was made…')); d1 = (await A.vision(best.raster.canvas.toDataURL('image/jpeg', 0.8), C.refPrompt())).trim(); ov = overlap(d0, d1); notes.push(T('再看一次：', 'Again: ') + d1.replace(/\s+/g, ' ').slice(0, 140)); } catch (e) { /* 數字還在 */ } }
+            const ok = best.score >= 0.85 && (ov == null || ov >= 0.12 || best.score >= 0.93);
+            notes.push(T('結果：第 ' + best.round + ' 輪，' + best.res.layers.length + ' 個物件，相似度 ' + Math.round(best.score * 100) + '%' + (ov != null ? '，視覺模型兩次描述的相同度 ' + Math.round(ov * 100) + '%' : '') + (ok ? '。' : '。不太像原圖：可以請我「用更多顏色」重做。'), 'Result: round ' + best.round + ', ' + best.res.layers.length + ' objects, ' + Math.round(best.score * 100) + '% like the original' + (ov != null ? ', the two descriptions of the vision model are ' + Math.round(ov * 100) + '% alike' : '') + (ok ? '.' : '. It is not very close: ask me to "use more colours" to try again.')));
+            if (d0 && A.have() && best.objs.length > 1) {
+                try {
+                    say(T('請模型替每個色塊取名…', 'Asking the model to name the regions…'));
+                    const list = best.objs.map((ob, i) => (i + 1) + '=' + ob.name).join('\n');
+                    const reply = await A.chat('You name the colour regions of a traced picture. Answer with one line per region: number=short name (at most 8 characters, in the language of the user\'s picture description). Nothing else.', 'The picture: ' + d0.replace(/\s+/g, ' ').slice(0, 600) + '\nRegions (number=colour and place):\n' + list, { maxTokens: 400, timeoutMs: 60000 }); let got = 0;
+                    String(reply).split('\n').forEach((ln) => { const m = /^\s*(\d{1,3})\s*[=:：]\s*(.{1,12}?)\s*$/.exec(ln); if (m && best.objs[Number(m[1]) - 1] && !/[<>{}]/.test(m[2])) { best.objs[Number(m[1]) - 1].name = m[2]; got++; } });
+                    if (got) notes.push(T('取了 ' + got + ' 個名字', 'named ' + got + ' regions'));
+                } catch (e) { /* 程式取的名字還在 */ }
+            }
+            return { objects: best.objs, score: best.score, size: { w: targetW, h: best.res.h * targetW / best.res.w }, notes, ok };
+        },
+        _edVectorEdits(spec, vec) {
+            const p = this._edPics('edit-svg').placementFor(spec), edits = [], b = vec.size; if (p.empty) edits.push({ op: 'set_canvas', x: 0, y: 0, w: Math.round(b.w), h: Math.round(b.h) });
+            vec.objects.forEach((o) => { edits.push({ op: 'add_object', object: Object.assign({}, o, { x: p.x, y: p.y }) }); }); return edits;
+        },
+        async _edAskSvg(req, ed) {
+            req = req || {}; const self = this, A = this._edAi(), C = FaEditSvg, P = this._edPics('edit-svg'); const spec = C.validate(req.spec).spec, notes = [], edits = []; let say = ''; const text = String(req.text || '').trim(), status = typeof req.onStatus === 'function' ? req.onStatus : () => {};
+            const wantVector = VECTOR_WORDS.test(text) || (!text && req.images && req.images.length); let refText = '';
+            for (let i = 0; i < Math.min(2, (req.images || []).length); i++) {
+                const im = req.images[i];
+                try {
+                    const blob = await (await fetch(im.dataUrl)).blob();
+                    if (wantVector) { const vec = await this._edVectorize(blob, { status }); vec.notes.forEach((n) => notes.push(n)); this._edVectorEdits(spec, vec).forEach((e) => edits.push(e)); say = say || T('把「' + (im.name || '圖片') + '」描成 SVG 了。', 'Traced "' + (im.name || 'picture') + '" into SVG.'); }
+                    else if (PLACE_WORDS.test(text) && /(圖|照片|picture|image|photo)/i.test(text)) { const k = await P.keep(blob); P.addImageEdits(C.applyEdits(spec, edits).spec, k, (im.name || 'picture').replace(/\.[a-z0-9]+$/i, ''), '').forEach((e) => edits.push(e)); say = say || T('把圖片放進來了。', 'Added the picture.'); }
+                    else if (A.have()) { try { refText += (refText ? '\n\n' : '') + (await A.vision(im.dataUrl, C.refPrompt())).trim(); } catch (e0) { notes.push(T('看不懂「' + (im.name || '圖片') + '」', 'could not read the picture')); } }
+                } catch (e) { notes.push(T('「' + (im.name || '圖片') + '」處理失敗：', 'the picture failed: ') + String((e && e.message) || e).slice(0, 80)); }
+            }
+            const fr = await P.fromText({ text, spec: C.applyEdits(spec, edits).spec, editorId: ed.id, status, onBlob: wantVector ? async (blob, name, credit, editsArr, spec2) => { const v2 = await self._edVectorize(blob, { status }); v2.notes.forEach((n) => notes.push(n)); self._edVectorEdits(spec2, v2).forEach((e) => editsArr.push(e)); return true; } : null });
+            fr.edits.forEach((e) => edits.push(e)); fr.notes.forEach((n) => notes.push(n)); if (fr.say) say = say || fr.say;
+            if (edits.length) return { say, edits, notes };
+            if (!A.have()) return { say: T('這句話程式沒有讀懂，而且目前沒有可用的 AI；可以用物件欄與屬性面板自己改，或用「找一張…的圖」、貼網址。', 'The program did not understand this and there is no AI; use the objects view and the properties, or "find a picture of …", or paste an address.'), edits, notes };
+            if (!text && !refText) return { say, edits, notes };
+            status(T('畫…', 'Painting…'));
+            const Pm = C.editPrompt(C.applyEdits(spec, edits).spec, text || T('照這張圖的樣子畫', 'draw it like this picture'), refText ? T('使用者附了參考圖，內容描述如下（請照它的構圖、物件與顏色畫，每個物件獨立成一個新物件）：\n', 'The user attached a reference picture, described as (draw its layout, objects and colours; each thing its own new object):\n') + refText : '', req.selection);
+            try { const rep = await A.chat(Pm.system, Pm.user), pr = C.parseEditsReply(rep); if (pr.ok) { pr.edits.forEach((e) => edits.push(e)); if (pr.say) say = say ? say + '；' + pr.say : pr.say; if (pr.dropped) notes.push(T('有 ' + pr.dropped + ' 個動作不在可做的清單裡，已略過', pr.dropped + ' actions were not in the allowed list and were skipped')); } else if (!edits.length) say = T('AI 的回覆我讀不懂（要是 JSON 動作）。換個說法再試一次。', 'I could not read the AI\'s answer (it has to be JSON actions). Say it differently.'); }
+            catch (e5) { if (!edits.length) say = T('AI 這次沒有回應（', 'The AI did not answer (') + String((e5 && e5.message) || e5).slice(0, 80) + '）。'; }
+            return { say, edits, notes };
+        },
+        async _edVectorizeObject(el, obj) {
+            const ed = el._ed, blob = await FaEditStore.getImage(obj.ref); if (!blob) { ed.ctx.say(T('找不到這張圖的內容', 'the picture is gone')); return; }
+            ed.ctx.say(T('描成 SVG 中…', 'Tracing…'));
+            try {
+                const vec = await this._edVectorize(blob, { status: (t) => ed.ctx.say(t), targetWidth: obj.w }), x0 = obj.x + obj.w + 40, y0 = obj.y;
+                ed.ctx.apply(vec.objects.map((o) => ({ op: 'add_object', object: Object.assign({}, o, { x: x0, y: y0 }) })), T('把「' + obj.name + '」描成 SVG', 'Traced "' + obj.name + '" into SVG'), '', 'panel'); ed.ctx.say(vec.notes[vec.notes.length - 1] || '');
+            } catch (e) { ed.ctx.say(T('描成 SVG 失敗：', 'Tracing failed: ') + String((e && e.message) || e).slice(0, 80)); }
+        },
+
+        // ───── /edit-picture：風格（濾鏡層＋視覺模型確認）、重畫（視覺描述＋生圖）、修復、找圖 ─────
+        async _edSnapshot(spec, size) {
+            const r = await FaEditPictureUI.render(spec, { store: FaEditStore, resolve: (ref) => FaEditStore.imageUrl(ref), frameOnly: true, maxSide: size || 512 });
+            return r ? r.canvas.toDataURL('image/jpeg', 0.82) : null;
+        },
+        async _edRestyle(spec, styleId, target, status, notes) {
+            const A = this._edAi(), C = FaEditPicture, st = C.STYLES[styleId], tries = [1, 1.8, 2.8]; let chosen = 1, verdict = null;
+            for (let i = 0; i < tries.length; i++) {
+                const cand = C.applyEdits(spec, [{ op: 'apply_style', style: styleId, target, strength: tries[i] }]); if (!cand.applied.length) { notes.push(cand.rejected[0] ? cand.rejected[0].error : 'no layer'); return null; }
+                chosen = tries[i];
+                if (!A.have()) { notes.push(T('（沒有視覺模型，沒有確認像不像）', '(no vision model: not checked whether it looks like it)')); break; }
+                status(T('第 ' + (i + 1) + ' 次：做出「' + st.label + '」，請視覺模型看像不像…', 'Try ' + (i + 1) + ': made "' + st.en.replace(/^(an?|the) /, '') + '", asking the vision model whether it looks like it…'));
+                const url = await this._edSnapshot(cand.spec, 448); if (!url) break;
+                try { verdict = (await A.vision(url, 'Does this picture look like ' + st.en + '? Answer yes or no first, then give one short reason.')).trim(); } catch (e) { notes.push(T('（視覺模型沒有回應，沒有確認）', '(the vision model did not answer: not checked)')); break; }
+                notes.push(T('視覺模型說：', 'The vision model says: ') + verdict.replace(/\s+/g, ' ').slice(0, 110));
+                if (yes(verdict) && !no(verdict)) break;
+                if (i < tries.length - 1) notes.push(T('不太像，加強一點再試', 'Not very close: a stronger one'));
+            }
+            return { edit: { op: 'apply_style', style: styleId, target, strength: chosen }, verdict };
+        },
+        // 生圖統一走 _generateImage（線上或本機），再把檔案快取裡的圖拿回來當圖層
+        async _edGenerate(a, status) {
+            const g = await this._generateImage(a); if (!g || !g.ok) return { ok: false, error: (g && g.error) || 'no image', needs_download: !!(g && g.needs_download) };
+            const im = (g.images && g.images[0]) || null; const rec = im && im.file_id ? await this.fileCache.get(im.file_id) : null;
+            if (!rec || !rec.blob) return { ok: false, error: T('生圖完成了但取不回圖片', 'the image was made but could not be read back') };
+            return { ok: true, image: { blob: rec.blob, prompt_used: a.prompt, seed: im.seed } };
+        },
+        async _edRepaint(spec, srcObj, styleId, extraText, status, notes) {
+            const A = this._edAi(), C = FaEditPicture, st = styleId ? C.STYLES[styleId] : null; let desc = '';
+            if (A.have() && srcObj) { try { status(T('視覺模型描述這張圖的內容…', 'The vision model describes what is in the picture…')); const blob = await FaEditStore.getImage(srcObj.ref), du = await FaEditStore.dataUrl(blob); desc = (await A.vision(du, 'Describe the content of this picture for a painter in one or two short sentences: the subjects, where they are, the colours, the scene. Only what you see.')).trim().replace(/\s+/g, ' '); notes.push(T('看到：', 'Sees: ') + desc.slice(0, 140)); } catch (e) { notes.push(T('（視覺模型沒有回應，只用名字與你的描述）', '(no answer from the vision model: only the name and your words)')); } }
+            const prompt = (desc || (srcObj && srcObj.prompt) || (srcObj && srcObj.name) || extraText || '').slice(0, 400) + (st ? ', ' + st.en : '') + (extraText && desc ? ', ' + extraText.slice(0, 120) : '');
+            status(T('生圖模型重畫中…（要等一下）', 'The image model is painting… (this takes a moment)'));
+            const res = await this._edGenerate({ prompt, style: STYLE_FOR_SD[styleId] || undefined }, status);
+            if (!res.ok) { notes.push(res.needs_download ? T('本機生圖模型還沒下載：先輸入 /image download（只下載一次）', 'The local image model is not downloaded: type /image download first (once)') : res.error); return null; }
+            const k = await this._edPics('edit-picture').keep(res.image.blob), b = srcObj ? FaEditPicture.types.image.bbox(srcObj) : null, w = b ? b.w : 480, h = b ? Math.round(b.w * k.h / k.w) : 480;
+            const obj = { type: 'image', name: T('AI 重畫', 'AI repaint') + (st ? '：' + st.label : ''), ref: k.ref, mime: k.mime, x: b ? b.x + b.w + 40 : 0, y: b ? b.y : 0, w, h, prompt: res.image.prompt_used || prompt, seed: res.image.seed };
+            return { edits: [{ op: 'add_object', object: obj }], prompt: obj.prompt };
+        },
+        async _edAskPicture(req, ed) {
+            req = req || {}; const A = this._edAi(), C = FaEditPicture, P = this._edPics('edit-picture'); const spec = C.validate(req.spec).spec, notes = [], edits = []; let say = ''; const text = String(req.text || '').trim(), status = typeof req.onStatus === 'function' ? req.onStatus : () => {}, sel = req.selection; let refText = '';
+            const cur = () => C.applyEdits(spec, edits).spec;
+            const imageTarget = (s) => { const o = sel ? s.objects.filter((x) => x.id === sel)[0] : null; if (o && (o.type === 'image' || o.type === 'shape' || o.type === 'svg')) return o; for (let i = s.objects.length - 1; i >= 0; i--) if (s.objects[i].type === 'image' && s.objects[i].visible) return s.objects[i]; return null; };
+            let lastAdded = null;
+            for (let i = 0; i < Math.min(3, (req.images || []).length); i++) {
+                const im = req.images[i];
+                try { const blob = await (await fetch(im.dataUrl)).blob(), k = await P.keep(blob), nm = (im.name || 'picture').replace(/\.[a-z0-9]+$/i, ''); P.addImageEdits(cur(), k, nm, '').forEach((e) => edits.push(e)); lastAdded = nm; say = say || T('把圖片放進來了。', 'Added the picture.'); }
+                catch (e) { notes.push(T('「' + (im.name || '圖片') + '」處理失敗：', 'the picture failed: ') + String((e && e.message) || e).slice(0, 80)); }
+            }
+            const fr = await P.fromText({ text, spec: cur(), editorId: ed.id, status });
+            fr.edits.forEach((e) => edits.push(e)); fr.notes.forEach((n) => notes.push(n)); if (fr.say) say = say || fr.say;
+            if (fr.handled && fr.edits.length) { const last = fr.edits.filter((e) => e.op === 'add_object' && e.object.type === 'image').pop(); if (last) lastAdded = last.object.name; }
+            const styleId = FaPicFx.styleFor(text), wantsRepaint = REPAINT_WORDS.test(text);
+            if (styleId && (RESTYLE_WORDS.test(text) || wantsRepaint) && !fr.handled) {
+                const s1 = cur(), so = imageTarget(s1), targetRef = lastAdded || (so && so.type === 'image' ? so.id : 'all');
+                if (wantsRepaint) { const rsrc = so && so.type === 'image' ? so : s1.objects.filter((x) => x.type === 'image' && x.visible).pop() || null; const swords = (C.STYLES[styleId].words || []).concat([C.STYLES[styleId].label]).filter(Boolean).sort((x, y) => y.length - x.length).map((w) => String(w).replace(/[.*+?^${}()|[\]\\]/g, (ch) => '\\' + ch)); const extra = text.replace(REPAINT_WORDS, ' ').replace(new RegExp('(?:成|為|變成|轉成)?(?:' + swords.join('|') + ')(?:風格|風)?', 'gi'), ' ').replace(/[，。,.]/g, ' ').replace(/\s+/g, ' ').trim(); const rp = await this._edRepaint(s1, rsrc, styleId, extra.slice(0, 80), status, notes); if (rp) { rp.edits.forEach((e) => edits.push(e)); say = say || T('用生圖模型照這張圖的內容重畫了一張。（這不是把原圖轉成那個風格，是重新畫的）', 'Painted a new picture of what is in it with the image model (it is a new painting, not a conversion of the original).'); } }
+                else { const rs = await this._edRestyle(s1, styleId, targetRef, status, notes); if (rs) { edits.push(rs.edit); say = say || T('套用了「' + C.STYLES[styleId].label + '」風格（濾鏡層，原圖沒動，可以隱藏）。想要依內容重新畫成這個風格，說「用 AI 重畫成…」。', 'Applied the "' + C.STYLES[styleId].en.replace(/^(an?|the) /, '') + '" look (a filter layer; the picture itself is untouched). To paint it again in that style, say "repaint it as …".'); } }
+            }
+            if (edits.length && (styleId || fr.handled || (req.images && req.images.length && !text))) return { say, edits, notes };
+            if (req.images && req.images.length && text && A.have() && !edits.length) { for (let j = 0; j < Math.min(2, req.images.length); j++) { try { refText += (refText ? '\n\n' : '') + (await A.vision(req.images[j].dataUrl, C.refPrompt())).trim(); } catch (e) { /* 只用文字 */ } } }
+            if (!A.have()) return { say: edits.length ? say : T('這句話程式沒有讀懂，而且目前沒有可用的 AI；可以用圖層欄與屬性面板自己改，或說「變成水彩風格」「調亮」「去污點」這類簡單的指令，或貼網址、「找一張…的圖」。', 'The program did not understand this and there is no AI; use the layers and the properties, or simple commands like "make it watercolor", "brighter", "remove specks", or paste an address / "find a picture of …".'), edits, notes };
+            if (!text && !refText) return { say, edits, notes };
+            status(T('想一想怎麼改…', 'Working out the changes…'));
+            const Pm = C.editPrompt(cur(), text, refText ? T('使用者附了參考圖，內容描述如下：\n', 'The user attached a picture, described as:\n') + refText : '', sel);
+            try {
+                const rep = await A.chat(Pm.system, Pm.user), pr = C.parseEditsReply(rep);
+                if (pr.ok) {
+                    for (let q = 0; q < pr.edits.length; q++) {
+                        const e = pr.edits[q];
+                        if (e.op === 'find_picture') { const f2 = await P.fromText({ text: 'find a picture of ' + String(e.query || ''), spec: cur(), editorId: ed.id, status }); f2.edits.forEach((x) => edits.push(x)); f2.notes.forEach((n) => notes.push(n)); say = say || f2.say; }
+                        else if (e.op === 'generate_image') { const g = await this._edGenerate({ prompt: String(e.prompt || ''), style: e.style }, status); if (g.ok) { const kk = await P.keep(g.image.blob); P.addImageEdits(cur(), kk, String(e.prompt || 'AI').slice(0, 24), '').forEach((x) => { if (x.op === 'add_object') { x.object.prompt = g.image.prompt_used; x.object.seed = g.image.seed; } edits.push(x); }); } else notes.push(g.needs_download ? T('本機生圖模型還沒下載：先輸入 /image download', 'The local image model is not downloaded: type /image download first') : g.error); }
+                        else edits.push(e);
+                    }
+                    if (pr.say) say = say ? say + '；' + pr.say : pr.say; if (pr.dropped) notes.push(T('有 ' + pr.dropped + ' 個動作不在可做的清單裡，已略過', pr.dropped + ' actions were not in the allowed list and were skipped'));
+                } else if (!edits.length) say = T('AI 的回覆我讀不懂（要是 JSON 動作）。換個說法再試一次。', 'I could not read the AI\'s answer (it has to be JSON actions). Say it differently.');
+            } catch (e5) { if (!edits.length) say = T('AI 這次沒有回應（', 'The AI did not answer (') + String((e5 && e5.message) || e5).slice(0, 80) + '）。'; }
+            return { say, edits, notes };
+        },
+
+        // ───── 共用：外框要的 host、開啟、掛載、斜線指令、工具 ─────
+        // 成品放進對話：下載卡片＋（圖片時）直接顯示＋整理好的 prompt
+        async _edToChat(kind, blob, name, info) {
+            info = info || {}; const K = KINDS[kind]; this.messages.push({ role: 'user', content: K.cmd + ' ' + T('輸出', 'export') });
+            await this.generateAndDeliverFile(blob, name, blob.type || 'application/octet-stream');
+            if (/\.3dscene\.yaml$/i.test(name) && this._ed3dToChatScene) { try { await this._ed3dToChatScene(null, await blob.text(), info.title); } catch (_) { /* the file card is there */ } }
+            if (/^image\/(png|jpeg|webp)/.test(blob.type)) { try { const du = await FaEditStore.dataUrl(blob); const msg = { role: 'tool', content: '[' + K.label() + ' 的成品圖，已直接顯示給使用者看：' + String(info.title || name) + ']' }; Object.defineProperty(msg, '_displayDataUrl', { value: du, enumerable: false, configurable: true }); this.messages.push(msg); } catch (_) { /* 顯示不了就只有下載卡片 */ } }
+            if (info.prompt) this._pushAssistantMessage('**' + T('成品', 'Result') + '：' + (info.title || name) + '**\n\n' + T('整理出來的 prompt（只收有效的那幾輪）：', 'The prompt that rebuilds it (only the steps that count):') + '\n\n```text\n' + info.prompt + '\n```', null);
+            try { this._persistChatHistory(); this._renderMessageHistory(); } catch (_) { /* */ }
+        },
+        _edHost(kind, id, getSpecState) {
+            const self = this, K = KINDS[kind], ai = this._edAi();
+            const ask = kind === 'edit-svg' ? (req) => self._edAskSvg(req, { id }) : kind === 'edit-picture' ? (req) => self._edAskPicture(req, { id }) : (req) => K.ask.call(self, req, { id });
+            return {
+                palette: () => ({ dark: !self._isLightTheme() }),
+                ask,
+                save: async (state) => { const c = getSpecState(); let old = null; try { old = await FaEditStore.loadProject(kind, id); } catch (_) { /* a new project */ } return FaEditStore.saveProject(kind, id, Object.assign({}, old && old.origin ? { origin: old.origin } : {}, { v: 1, spec: c.spec, state })); },
+                download: (blob, name, mime) => self.generateAndDeliverFile(blob, name, mime || blob.type),
+                toChat: (blob, name, info) => self._edToChat(kind, blob, name, info),
+                polish: (self.advancedSettings && self.advancedSettings.offlineMode) ? undefined : (async (text) => String(await ai.chat(K.polishSystem || ('You tidy a prompt that rebuilds ' + (kind === 'edit-svg' ? 'a drawing' : 'an edited picture') + '. Keep every fact (objects, colours, places, texts); make it one clear, reusable prompt. Answer with the prompt only.'), text, { maxTokens: 1200, timeoutMs: 90000 })).trim()),
+            };
+        },
+        _edPush(kind, id, lead) {
+            const K = KINDS[kind];
+            this._pushAssistantMessage((lead || K.lead) + '\n\n```' + K.fence + '\n' + JSON.stringify({ id }) + '\n```', null);
+            try { this._persistChatHistory(); this._renderMessageHistory(); } catch (_) { /* */ }
+        },
+        // 開一個編輯器（斜線指令與工具的入口）：o.id＝接著原本的專案；否則 starter／spec 開新的；request 開起來之後交給編輯器自己的 AI 去做；files＝[{name, dataUrl}] 當第一個（些）圖
+        async _edOpen(kind, o) {
+            o = o || {}; const K = KINDS[kind]; if (!K) return { ok: false, error: 'unknown editor ' + kind };
+            const C = K.core(); let id = o.id ? String(o.id) : '';
+            if (id) { const proj = await FaEditStore.loadProject(kind, id); if (!proj) return { ok: false, error: T('找不到這個專案：', 'no such project: ') + id }; this._edPush(kind, id, null); return { ok: true, id, note: 'the editor is in the conversation' }; }
+            const spec = o.spec ? C.validate(typeof o.spec === 'string' ? (() => { try { return JSON.parse(o.spec); } catch (_) { return {}; } })() : o.spec).spec : ((o.starter && C.starter(String(o.starter))) || C.starter('blank'));
+            id = FaEditStore.newId(K.prefix); await FaEditStore.saveProject(kind, id, Object.assign({ v: 1, spec, state: null }, o.origin ? { origin: o.origin } : {}));
+            this._edFresh = this._edFresh || new Map(); this._edFresh.set(id, { request: String(o.request || '').trim(), style: String(o.style || '').trim(), images: o.images || [] });
+            this._edPush(kind, id, null);
+            return { ok: true, id, note: 'the ' + K.label() + ' is open in the conversation; the user works by talking to it. Do not paste the content into the conversation.' };
+        },
+        async _edMount(kind, id, holder) {
+            const K = KINDS[kind], key = kind + ':' + id; let proj = null;
+            try { proj = await FaEditStore.loadProject(kind, id); } catch (_) { /* 下面處理 */ }
+            if (proj && K.prepare) { try { await K.prepare.call(this); } catch (e) { holder.textContent = '⚠️ ' + T('編輯器需要的函式庫載入失敗：', 'The libraries the editor needs could not be loaded: ') + String((e && e.message) || e).slice(0, 100); holder.style.opacity = '1'; this._edEditors.delete(key); return; } }
+            if (!proj) { holder.textContent = '⚠️ ' + T('這個編輯器的專案不在這個瀏覽器裡（可能清掉了網站資料）— 請重新開一個。', 'The project of this editor is not in this browser (the site data may have been cleared) — open a new one.'); holder.style.opacity = '1'; this._edEditors.delete(key); return; }
+            const fresh = this._edFresh && this._edFresh.get(id); if (fresh) this._edFresh.delete(id);
+            const refs = K.collectRefs ? K.collectRefs(proj) : []; if (!K.collectRefs) { [proj.spec].concat(((proj.state && proj.state.states) || []).map((x) => x.spec)).forEach((sp) => { ((sp && sp.objects) || []).forEach((ob) => { if (ob.type === 'image' && ob.ref && refs.indexOf(ob.ref) < 0) refs.push(ob.ref); }); }); }
+            await FaEditStore.preload(refs);
+            let node = null; const self = this;
+            const host = this._edHost(kind, id, () => { const st = node && node._ed ? node._ed.getState() : proj.state; const sp = st && st.states && st.states[st.ptr] ? st.states[st.ptr].spec : proj.spec; return { spec: sp, state: st }; });
+            node = K.ui().mount(Object.assign({ id, state: proj.state, spec: proj.spec, host, restoring: !fresh, store: FaEditStore, onVectorize: (obj) => self._edVectorizeObject(node, obj) }, K.mountOpts ? K.mountOpts.call(this, id, proj) : {}));
+            holder.textContent = ''; holder.style.cssText = ''; holder.appendChild(node); holder._ed = node._ed; holder._win = node._win;
+            try { FaEditI18n.localize(node); } catch (_) { /* 英文介面只是方便 */ }
+            if (fresh) {
+                if (!proj.state) { try { await FaEditStore.saveProject(kind, id, Object.assign({}, proj.origin ? { origin: proj.origin } : {}, { v: 1, spec: proj.spec, state: node._ed.getState() })); } catch (_) { /* */ } }
+                requestAnimationFrame(() => {
+                    try { if (node._win && node._win.pop) node._win.pop(); } catch (_) { /* 留在對話裡也能用 */ }
+                    try { if (fresh.images && fresh.images.length && node._ed.addImages) node._ed.addImages(fresh.images); const req = [fresh.style ? (kind === 'edit-picture' ? T('變成' + fresh.style + '風格', 'make it ' + fresh.style + ' style') : fresh.style) : '', fresh.request].filter(Boolean).join(' '); if (req || (fresh.images && fresh.images.length)) node._ed.send(req); } catch (_) { /* */ }
+                });
+            }
+        },
+        _mountEditEditors(mdDiv) {
+            if (typeof FaEditShell === 'undefined' || !FaEditShell || !FaEditShell.mount) return; this._edEditors = this._edEditors || new Map();
+            Object.keys(KINDS).forEach((kind) => {
+                const K = KINDS[kind]; if (!K.ui || !K.fence) return;
+                mdDiv.querySelectorAll('pre > code.language-' + K.fence).forEach((code) => {
+                    let ref = null; try { ref = JSON.parse(code.textContent); } catch (_) { /* */ } if (!ref || !ref.id) return; const key = kind + ':' + ref.id; let el = this._edEditors.get(key);
+                    if (!el) {
+                        el = document.createElement('div'); el.textContent = T('載入編輯器…', 'Loading the editor…'); el.style.cssText = 'padding:8px;opacity:.7'; this._edEditors.set(key, el);
+                        this._edMount(kind, ref.id, el).catch((e) => { el.textContent = '⚠️ ' + T('開啟失敗：', 'Could not open it: ') + String((e && e.message) || e); el.style.opacity = '1'; this._edEditors.delete(key); });
+                        if (this._edEditors.size > 12) { const k0 = this._edEditors.keys().next().value; const old = this._edEditors.get(k0); try { if (old && old._ed) old._ed.destroy(); } catch (_) { /* */ } this._edEditors.delete(k0); }
+                    }
+                    code.parentElement.replaceWith(el);
+                });
+            });
+        },
+        // 斜線指令：不帶參數＝說明與起手式；起手式名稱＝從它開始；其他文字／網址＝開空白、交給編輯器自己的 AI
+        async _edCommand(kind, argsText, run) {
+            const r = run || this, K = KINDS[kind], a = String(argsText || '').trim(); r.messages.push({ role: 'user', content: K.cmd + (a ? ' ' + a : '') });
+            try {
+                const C = K.core(), starters = C.listStarters();
+                if (!a) { r._pushAssistantMessage(K.help ? K.help(starters) : ('**' + K.label() + '**\n\n' + K.lead + '\n\n' + T('起手式：', 'Starters:') + '\n' + starters.map((s) => '- `' + K.cmd + ' ' + s.id + '` — ' + s.label + '：' + s.desc).join('\n')), null); }
+                else { const st = starters.filter((s) => s.id === a.toLowerCase())[0]; const res = await r._edOpen(kind, st ? { starter: st.id } : { starter: 'blank', request: a }); if (res && res.ok === false) r._pushAssistantMessage('⚠️ ' + (res.error || T('開不起來', 'could not open it')), null); }
+            } catch (e) { r._pushAssistantMessage('⚠️ ' + T('開不起來：', 'Could not open it: ') + String((e && e.message) || e), null); }
+            try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ }
+        },
+        _registerEditCommands() {
+            const hint = '[起手式｜一句話描述｜圖片網址]';
+            this.register_slash_command('/edit-svg', hint,
+                'SVG 編輯器（用語言主導的概念畫家）：你說要畫什麼、放在哪個東西的哪一邊，AI 就加一個新物件；畫面沒有邊界，可以加在任何地方。可以貼圖讓 AI 描成 SVG、給網址或說「找一張…的圖」。物件欄、屬性面板、復原／重做、整理成 prompt、匯出 SVG／PNG。/edit-svg shapes 從起手式開始、/edit-svg 畫一隻紅色的小鳥站在樹枝上。',
+                (argsText, run) => (run || this)._edCommand('edit-svg', argsText, run));
+            this._registerEdit3dCommands && this._registerEdit3dCommands();
+            this.register_slash_command('/edit-picture', hint,
+                '圖片編輯器（圖層式、語言主導、像 GIMP 的後製與修復）：貼圖、給網址或說「找一張…的圖」就有第一個圖層；然後用說的：「變成水彩風格」（視覺模型會看像不像）、「調亮」、「修掉右下角的污點」、「在左邊加一隻貓」。濾鏡與修復都是圖層，原圖不動；「🩹 修復畫筆」可以直接塗；說「用 AI 重畫成油畫」會用生圖模型依內容重畫。匯出 PNG／JPEG。',
+                (argsText, run) => (run || this)._edCommand('edit-picture', argsText, run));
+        },
+        _registerEditTools(registerOptional) {
+            const parse = async (self, raw) => { let a = {}; try { a = await self.repairJsonPayload(String(raw || '{}')); } catch (_) { /* */ } return a || {}; };
+            const filesOf = async (self, a) => { const out = []; const ids = [].concat(a.file_id || [], a.file_ids || []).filter(Boolean).slice(0, 3); for (const fid of ids) { try { const rec = await self.fileCache.get(String(fid)); if (rec && rec.blob && /^image\//.test(rec.blob.type || '')) out.push({ name: rec.filename || 'picture', dataUrl: await FaEditStore.dataUrl(rec.blob) }); } catch (_) { /* 少一張而已 */ } } return out; };
+            registerOptional('edit_svg_open',
+                '在對話裡放一個「SVG 編輯器」（用語言主導的概念畫家）：一堆物件在沒有邊界的平面上，使用者說要畫什麼、放在哪個東西的哪一邊，編輯器自己的 AI 就加一個物件；可貼圖描成 SVG、給網址、找圖；有物件欄、屬性面板、復原／重做、整理成 prompt、匯出 SVG／PNG。參數：starter（blank、shapes、flow）、request（一句話：開起來後編輯器自己的 AI 去做）、file_id（使用者附的圖片，當作第一個要描的圖）、id（接著原本的專案）。做完編輯器就在對話裡，不要把 SVG 貼到對話。參數: {"starter":"blank","request":"（選填）","file_id":"（選填）","id":"（選填）"}',
+                async function (rawArgs) { const a = await parse(this, rawArgs); try { return JSON.stringify(await this._edOpen('edit-svg', { starter: a.starter, request: a.request, spec: a.spec, id: a.id, images: await filesOf(this, a) })); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); } },
+                { type: 'object', properties: { starter: { type: 'string', description: '起手式：blank、shapes、flow' }, request: { type: 'string', description: '一句話要畫什麼' }, file_id: { type: 'string', description: '使用者附的圖片（會當第一個要描成 SVG 的圖）' }, id: { type: 'string', description: '接著原本的專案' } }, additionalProperties: false }
+            );
+            if (this._registerEdit3dTools) this._registerEdit3dTools(registerOptional);
+            registerOptional('edit_picture_open',
+                '在對話裡放一個「圖片編輯器」（圖層式、語言主導、像 GIMP 的後製與修復）：圖片、形狀、濾鏡層、修復層疊在沒有邊界的平面上；使用者用說的改（變成水彩風格、調亮、修掉右下角的污點、在左邊加一隻貓、找一張飛機的照片、用 AI 重畫成油畫），濾鏡與修復都是圖層，原圖不動。參數：starter（blank、poster）、request（一句話：開起來後編輯器自己的 AI 去做）、style（先套用的風格：oil、watercolor、sketch、ink、cartoon、pixel、poster、vintage、neon…）、file_id（使用者附的圖片，當作第一個圖層）、id。做完編輯器就在對話裡，不要自己處理圖片。參數: {"starter":"blank","request":"（選填）","style":"watercolor","file_id":"（選填）","id":"（選填）"}',
+                async function (rawArgs) { const a = await parse(this, rawArgs); try { return JSON.stringify(await this._edOpen('edit-picture', { starter: a.starter, request: a.request, style: a.style, spec: a.spec, id: a.id, images: await filesOf(this, a) })); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); } },
+                { type: 'object', properties: { starter: { type: 'string', description: '起手式：blank、poster' }, request: { type: 'string', description: '一句話要怎麼處理或畫什麼' }, style: { type: 'string', description: '先套用的風格' }, file_id: { type: 'string', description: '使用者附的圖片（第一個圖層）' }, id: { type: 'string', description: '接著原本的專案' } }, additionalProperties: false }
+            );
+        },
+    };
+    return { methods, KINDS, register, T, zh };
+})();
+
+/* /edit-3d-model 的主機轉接層(接在 edit_host.js 後面,同一個 FaEditHost):3D 場景編輯器與「單一物件編輯」(貼皮)。
+ * 場景用助理既有的 3D 零件建出來(_build3DMeshObject:跟 render_3d_scene 同一套形狀與材質),所以編輯器裡看到的跟匯出的場景、對話裡播放的一樣。
+ * 位置「以使用者的相對視角」:編輯器把目前的相機(位置與看向的點)交給核心(env.view),核心算出我的前方／右邊再放東西(見 edit3d_core.js)。
+ * 貼圖:貼進編輯器對話框的圖、網址、「找一張…的圖」→ 縮成 512 px 存在這個瀏覽器(FaEditStore)→ 場景裡只記 ref:… 短代號,匯出時才展開成 data URL。
+ * 單一物件編輯是另一個小視窗(FaWin),有自己的復原重做與 AI 對話;按「完成」把結果交回場景的那個物件(場景的一步)。設計見 DESIGN.edit-3d.md。 */
+(function () {
+    'use strict';
+    const H = FaEditHost, T = H.T;
+    const ZONE_WORDS = (mesh, text) => (typeof FaEdit3dPart !== 'undefined' ? FaEdit3dPart.zoneIn(mesh, text) : null);
+    const PLACE_WORDS = /(放|加|擺|貼|掛|放進|放到|新增)/;
+    const FIND = /(找|搜尋|搜|尋找|find|search).*(圖|照片|picture|photo|image)/i;
+
+    H.register('edit-3d', {
+        fence: 'fa-edit-3d', icon: '🧊', cmd: '/edit-3d-model', prefix: 'sd', label: () => T('3D 場景編輯器', '3D scene editor'), core: () => FaEdit3d, ui: () => FaEdit3dUI,
+        lead: '🧊 3D 場景編輯器：用說的擺東西，位置是以你現在看的角度算的（「我的左前方」「桌子的右邊」）。物件欄是樹狀的；雙擊物件進到「單一物件編輯」，像做塑膠模型一樣決定每個面貼什麼圖、塗什麼顏色。「🧾 YAML 原始碼」分頁可以直接改。每一步都能復原，進度會保留。',
+        polishSystem: 'You tidy a prompt that rebuilds a 3D scene. Keep every fact (objects, sizes, colours, textures, and WHERE things are relative to the viewer or to other objects); make it one clear, reusable prompt. Answer with the prompt only.',
+        prepare: async function () { await this._ensureThreeJsLoaded(); await this._ensureJsYamlLoaded(); },
+        collectRefs: (proj) => { const out = []; try { (JSON.stringify([proj.spec, ((proj.state && proj.state.states) || []).map((x) => x.spec)]).match(/ref:[A-Za-z0-9_-]+/g) || []).forEach((r) => { const k = r.slice(4); if (out.indexOf(k) < 0) out.push(k); }); } catch (_) { /* */ } return out; },
+        mountOpts: function (id, proj) { const self = this; return { buildNode: (n) => self._ed3dBuildNode(n), raster: (sc, cam, g, w, h) => self._raster3DFrame(sc, cam, g, w, h), keepTexture: (blob) => self._ed3dKeepTexture(blob), openPart: (o) => self._ed3dOpenPart(id, o), origin: !!(proj && proj.origin), updateOrigin: (yml) => self._ed3dUpdateOrigin(id, yml) }; },
+        ask: function (req, ed) { return this._edAsk3d(req, ed); },
+        help: (starters) => '**' + T('3D 場景編輯器', '3D scene editor') + '**\n\n' + T('像 /edit-svg 那樣用說的，不過是 3D：「在我的左前方放一個紅色的球」「把它移到桌子上面」「把桌子往右移 2 公尺」。位置是以**你現在看的角度**算的（相機的前方、左右）；拖曳畫面轉視角，位置就跟著變。物件欄是樹狀的（可以綁成群組），雙擊物件進到「單一物件編輯」（貼皮、上色，像做塑膠模型）；「🧾 YAML 原始碼」分頁可以直接改場景，回到畫面立刻呈現。圖可以貼進對話框當貼圖。匯出：場景 YAML（可直接播放）、PNG、專案 YAML；也可以把成品放進對話、或更新回原本的場景。', 'Talk to it like /edit-svg, but in 3D: "put a red ball in front-left of me", "move it onto the table". Places are worked out from the way YOU are looking now. The objects view is a tree; double click an object for the single-object (skin) editor; the YAML tab is editable.') + '\n\n' + T('起手式：', 'Starters:') + '\n' + starters.map((s) => '- `/edit-3d-model ' + s.id + '` — ' + s.label + '：' + s.desc).join('\n') + '\n\n' + T('接著上一個 3D 場景：`/edit-3d-model last`（把對話裡最近的 3D 場景當起點）。', 'Continue the last 3D scene of the conversation: `/edit-3d-model last`.'),
+    });
+
+    const M = H.methods;
+    // ───── the scene: nodes are built by the assistant's own 3D builder ─────
+    M._ed3dBuildNode = function (n) {
+        const o = this._build3DMeshObject(n, {}); if (!o) return null;
+        if (o.isParticleSystem) return o.object || null;
+        return o;
+    };
+    // a picture for a texture: at most 512 px, kept once in the browser (FaEditStore); returns the short ref
+    M._ed3dKeepTexture = async function (blob) {
+        const P = this._edPics('edit-3d'); const d = await P.decode(blob, 512); const png = /png|gif/i.test(blob.type) && blob.size < 400000;
+        const kept = await P.canvasBlob(d.canvas, png ? 'image/png' : 'image/jpeg', 0.86); return FaEditStore.putImage(kept);
+    };
+    M._ed3dPictureFromText = async function (text, status, notes) {
+        const ps = FaPictureSource.make({ fetch: this._edFetchFn(), timeoutMs: 20000 }), A = this._edAi(), urls = ps.urls(text).slice(0, 1);
+        if (urls.length) { status(T('下載圖片：', 'Downloading: ') + urls[0].slice(0, 60)); try { const got = await ps.load(urls[0]); return { blob: got.blob, name: urls[0].split('/').pop().split('?')[0].replace(/\.[a-z0-9]+$/i, '') || 'picture', credit: urls[0] }; } catch (e) { notes.push(T('抓不到 ', 'could not get ') + urls[0].slice(0, 50) + '：' + String((e && e.message) || e).slice(0, 80)); return null; } }
+        if (FIND.test(text)) {
+            let q = String(text).replace(/^(?:請|麻煩|幫我|可以)?\s*(?:上網|到網路上|在網路上)?\s*(?:幫我)?\s*(?:找|搜尋|搜|尋找|find|search(?: for)?)\s*(?:一|幾|兩)?\s*(?:張|些|個|a|an|some|the)?\s*/i, '').replace(/\s*(?:的)?\s*(?:圖片|圖|照片|相片|picture|photo|image)s?.*$/i, '').trim() || String(text).trim();
+            if (/[一-鿿]/.test(q) && A.have()) { try { const en = (await A.chat('Give 1 to 3 English keywords for searching a photo of this on Wikimedia Commons. Answer with the keywords only, separated by spaces.', q, { maxTokens: 40, timeoutMs: 30000 })).replace(/[^A-Za-z0-9 \-]/g, ' ').replace(/\s+/g, ' ').trim(); if (en) q = en; } catch (_) { /* the words as they are */ } }
+            status(T('上網找圖：', 'Searching: ') + q); const sr = await ps.search(q, { limit: 5 }); if (!sr.ok) { notes.push(sr.error); return null; }
+            const top = sr.results[0]; try { const got = await ps.load(top); return { blob: got.blob, name: q, credit: top.title + (top.license ? ' — ' + top.license : '') + ' (' + top.source + ')' }; } catch (e) { notes.push(T('下載找到的圖失敗：', 'could not download it: ') + String((e && e.message) || e).slice(0, 80)); return null; }
+        }
+        return null;
+    };
+    // a picture goes where the user says: a face of the selected (or named) object, the whole object, or a new upright picture frame
+    M._ed3dTextureEdits = async function (spec, blobInfo, text, selection, edits, notes) {
+        const C = FaEdit3d, ref = await this._ed3dKeepTexture(blobInfo.blob), tex = 'ref:' + ref;
+        let target = selection && C.find(spec, selection) >= 0 ? spec.objects[C.find(spec, selection)] : null;
+        if (!target) { const m = spec.objects.filter((o) => o.type === 'mesh' && text.toLowerCase().indexOf(o.name.toLowerCase()) >= 0).sort((a, b) => b.name.length - a.name.length)[0]; if (m) target = m; }
+        if (target && target.type === 'group') { target = null; }
+        if (target && target.type === 'mesh') {
+            const zone = ZONE_WORDS(target.mesh, text);
+            if (zone && C.zonesOf(target.mesh).length) { edits.push({ op: 'add_skin', id: target.id, skin: { zone, image: tex, w: 1, h: 1, name: (C.ZONE_LABEL[zone] || zone) + '貼圖' } }); return T('把圖貼在「' + target.name + '」的' + (C.ZONE_LABEL[zone] || zone) + '。', 'Put the picture on a face of "' + target.name + '".'); }
+            edits.push({ op: 'set_material', id: target.id, texture: tex, color: '#ffffff' }); return T('把圖貼在「' + target.name + '」上。', 'Put the picture on "' + target.name + '".');
+        }
+        const im = await createImageBitmap(blobInfo.blob), asp = im.width / Math.max(1, im.height), hgt = 2, wid = Math.round(hgt * asp * 100) / 100;
+        edits.push({ op: 'add_object', object: { type: 'mesh', mesh: 'plane', name: blobInfo.name ? String(blobInfo.name).slice(0, 24) : '圖片', size: [wid, hgt], rotation_deg: [0, 0, 0], material: { color: '#ffffff', texture: tex, side: 'double', roughness: 0.9, metalness: 0 } }, place: { of: 'view', rel: 'center', dy: hgt / 2 } });
+        return T('沒有選取物件，把圖做成一張立在畫面中間的圖片（想貼在物件上，先選一個物件再貼）。', 'Nothing is selected: made it an upright picture in the middle (select an object first to put it on).');
+    };
+    M._edAsk3d = async function (req, ed) {
+        req = req || {}; const A = this._edAi(), C = FaEdit3d, spec = C.validate(req.spec).spec, notes = [], edits = [], text = String(req.text || '').trim(), status = typeof req.onStatus === 'function' ? req.onStatus : () => {}; let say = '', refText = '';
+        const holder = this._edEditors && this._edEditors.get('edit-3d:' + ed.id), env = holder && holder._ed && holder._ed.env ? holder._ed.env() : { selection: req.selection };
+        // 1) pictures pasted into the chat
+        for (let i = 0; i < Math.min(3, (req.images || []).length); i++) {
+            const im = req.images[i];
+            try { const blob = await (await fetch(im.dataUrl)).blob(); const s = await this._ed3dTextureEdits(C.applyEdits(spec, edits, env).spec, { blob, name: (im.name || 'picture').replace(/\.[a-z0-9]+$/i, '') }, text, req.selection, edits, notes); say = say || s; }
+            catch (e) { notes.push(T('「' + (im.name || '圖片') + '」處理失敗：', 'the picture failed: ') + String((e && e.message) || e).slice(0, 80)); }
+        }
+        // 2) an address or "find a picture of …" -> a texture
+        if (!edits.length && (/https?:\/\//i.test(text) || FIND.test(text))) {
+            const got = await this._ed3dPictureFromText(text, status, notes);
+            if (got) { try { const s = await this._ed3dTextureEdits(spec, got, text, req.selection, edits, notes); say = say || s; if (got.credit && edits.length) { notes.push(T('出處：', 'Source: ') + String(got.credit).slice(0, 100)); } } catch (e) { notes.push(String((e && e.message) || e).slice(0, 80)); } }
+        }
+        if (edits.length) return { say, edits, notes };   // the picture was the request
+        // 3) the language of the scene: the AI turns it into closed actions
+        if (!A.have()) return { say: edits.length ? say : T('這句話程式沒有讀懂，而且目前沒有可用的 AI；可以用物件欄與屬性面板自己改，或說「在我的左前方放一個紅色的球」「把它移到桌子上面」這類程式讀得懂的句子。', 'The program did not understand this and there is no AI; use the objects view and the properties, or say things like "put a red ball in front-left of me".'), edits, notes };
+        if (!text) return { say, edits, notes };
+        status(T('想一想怎麼擺…', 'Working out the changes…'));
+        const Pm = C.editPrompt(C.applyEdits(spec, edits, env).spec, text, refText, req.selection, env);
+        try {
+            const rep = await A.chat(Pm.system, Pm.user), pr = C.parseEditsReply(rep);
+            if (pr.ok) {
+                for (const e of pr.edits) {
+                    if (e.op === 'find_picture' || e.op === 'generate_image') {
+                        const tgt = e.id || req.selection || ''; let blobInfo = null;
+                        if (e.op === 'find_picture') { blobInfo = await this._ed3dPictureFromText(T('找一張 ', 'find a picture of ') + String(e.query || '') + T('的圖', ''), status, notes); }
+                        else { const g = await this._edGenerate({ prompt: String(e.prompt || '') }, status); if (g.ok) blobInfo = { blob: g.image.blob, name: String(e.prompt || 'AI').slice(0, 24) }; else notes.push(g.needs_download ? T('本機生圖模型還沒下載：先輸入 /image download', 'The local image model is not downloaded: type /image download first') : g.error); }
+                        if (blobInfo) { const s = await this._ed3dTextureEdits(C.applyEdits(spec, edits, env).spec, blobInfo, [text, e.zone ? String(e.zone) : ''].join(' '), tgt, edits, notes); say = say || s; }
+                    } else edits.push(e);
+                }
+                if (pr.say) say = say ? say + '；' + pr.say : pr.say; if (pr.dropped) notes.push(T('有 ' + pr.dropped + ' 個動作不在可做的清單裡，已略過', pr.dropped + ' actions were not in the allowed list and were skipped'));
+            } else if (!edits.length) say = T('AI 的回覆我讀不懂（要是 JSON 動作）。換個說法再試一次。', 'I could not read the AI\'s answer (it has to be JSON actions). Say it differently.');
+        } catch (e5) { if (!edits.length) say = T('AI 這次沒有回應（', 'The AI did not answer (') + String((e5 && e5.message) || e5).slice(0, 80) + '）。'; }
+        return { say, edits, notes };
+    };
+
+    // ───── the single-object editor (skins), in its own window ─────
+    M._edAskPart = async function (req, ed) {
+        req = req || {}; const A = this._edAi(), PC = FaEdit3dPart, spec = PC.validate(req.spec).spec, notes = [], edits = [], text = String(req.text || '').trim(), status = typeof req.onStatus === 'function' ? req.onStatus : () => {}; let say = '', lastRef = null;
+        const zoneOf = () => ZONE_WORDS(spec.base.mesh, text) || (req.selection && PC.find(spec, req.selection) >= 0 ? spec.objects[PC.find(spec, req.selection)].zone : null);
+        const addPic = async (blobInfo) => { const ref = await this._ed3dKeepTexture(blobInfo.blob); lastRef = 'ref:' + ref; const z = zoneOf(); const at = /(左上|右上|左下|右下|正中|中間|中央|偏上|偏下|偏左|偏右)/.exec(text); edits.push({ op: 'add_object', object: { type: 'skin', zone: z || undefined, image: lastRef, w: at ? 0.5 : 1, h: at ? 0.5 : 1, name: blobInfo.name ? String(blobInfo.name).slice(0, 24) : undefined }, place: at ? { at: ({ '左上': 'top-left', '右上': 'top-right', '左下': 'bottom-left', '右下': 'bottom-right', '正中': 'center', '中間': 'center', '中央': 'center', '偏上': 'top', '偏下': 'bottom', '偏左': 'left', '偏右': 'right' })[at[1]] } : undefined }); };
+        for (let i = 0; i < Math.min(3, (req.images || []).length); i++) { const im = req.images[i]; try { await addPic({ blob: await (await fetch(im.dataUrl)).blob(), name: (im.name || 'picture').replace(/\.[a-z0-9]+$/i, '') }); say = say || T('把圖貼上去了。', 'Put the picture on.'); } catch (e) { notes.push(T('「' + (im.name || '圖片') + '」處理失敗：', 'the picture failed: ') + String((e && e.message) || e).slice(0, 80)); } }
+        if (!edits.length && (/https?:\/\//i.test(text) || FIND.test(text))) { const got = await this._ed3dPictureFromText(text, status, notes); if (got) { try { await addPic(got); say = say || T('把圖貼上去了。', 'Put the picture on.'); } catch (e) { notes.push(String((e && e.message) || e).slice(0, 80)); } } }
+        if (edits.length) return { say, edits, notes };
+        if (!A.have()) return { say: T('這句話程式沒有讀懂，而且目前沒有可用的 AI；可以說「把正面塗成紅色」「底色改成白色」這類程式讀得懂的句子，或用屬性面板。', 'The program did not understand this and there is no AI; say things like "paint the front red", or use the properties.'), edits, notes };
+        if (!text) return { say, edits, notes };
+        status(T('想一想怎麼貼…', 'Working out the skins…'));
+        const Pm = PC.editPrompt(spec, text, '', req.selection);
+        try {
+            const rep = await A.chat(Pm.system, Pm.user), pr = PC.parseEditsReply(rep);
+            if (pr.ok) {
+                for (const e of pr.edits) {
+                    if (e.op === 'find_picture' || e.op === 'generate_image') { let bi = null; if (e.op === 'find_picture') bi = await this._ed3dPictureFromText(T('找一張 ', 'find a picture of ') + String(e.query || '') + T('的圖', ''), status, notes); else { const g = await this._edGenerate({ prompt: String(e.prompt || '') }, status); if (g.ok) bi = { blob: g.image.blob, name: String(e.prompt || 'AI').slice(0, 24) }; else notes.push(g.error); } if (bi) await addPic(bi); }
+                    else { if (e.op === 'add_object' && e.object && e.object.image === 'attached') { if (lastRef) e.object.image = lastRef; else { notes.push(T('要貼的圖沒有附上來', 'there is no attached picture')); continue; } } if (e.op === 'update_object' && e.props && e.props.image === 'attached') { if (lastRef) e.props.image = lastRef; else { notes.push(T('要貼的圖沒有附上來', 'there is no attached picture')); continue; } } edits.push(e); }
+                }
+                if (pr.say) say = say ? say + '；' + pr.say : pr.say; if (pr.dropped) notes.push(T('有 ' + pr.dropped + ' 個動作不在可做的清單裡，已略過', pr.dropped + ' actions were not in the allowed list and were skipped'));
+            } else say = T('AI 的回覆我讀不懂（要是 JSON 動作）。換個說法再試一次。', 'I could not read the AI\'s answer (it has to be JSON actions). Say it differently.');
+        } catch (e5) { say = T('AI 這次沒有回應（', 'The AI did not answer (') + String((e5 && e5.message) || e5).slice(0, 80) + '）。'; }
+        return { say, edits, notes };
+    };
+    const sigOf = (o) => JSON.stringify([o.skins || [], o.material || {}]);
+    M._ed3dOpenPart = async function (sceneId, obj) {
+        const C = FaEdit3d, PC = FaEdit3dPart, pid = sceneId + '__' + obj.id; this._edParts = this._edParts || new Map();
+        if (this._edParts.has(pid)) { const w = this._edParts.get(pid); try { if (w.node._win && w.node._win.pop) w.node._win.pop(); w.node.scrollIntoView && w.node.scrollIntoView(); } catch (_) { /* */ } return; }
+        const holder = this._edEditors && this._edEditors.get('edit-3d:' + sceneId); if (!holder || !holder._ed) throw new Error(T('找不到場景編輯器', 'the scene editor is not here'));
+        const cur = holder._ed.getSpec(), o = cur.objects[C.byId(cur, obj.id)]; if (!o || o.type !== 'mesh') return;
+        let proj = null; try { proj = await FaEditStore.loadProject('edit-3d-part', pid); } catch (_) { /* fresh */ }
+        const sig = sigOf(o); let spec, state = null;
+        if (proj && !proj.discard && proj.sig === sig && proj.spec) { spec = PC.validate(proj.spec).spec; state = proj.state || null; } else { spec = PC.fromObject(o, o.name + ' 的貼皮'); }
+        const refs = (JSON.stringify([spec, state]).match(/ref:[A-Za-z0-9_-]+/g) || []).map((r) => r.slice(4)); await FaEditStore.preload(refs);
+        await this._ensureThreeJsLoaded();
+        const self = this; let node = null, curSig = sig; const wrapper = document.createElement('div'); wrapper.style.cssText = 'position:absolute;width:0;height:0;overflow:hidden';
+        const close = () => { try { if (node._ed) node._ed.destroy(); } catch (_) { /* */ } try { node.remove(); } catch (_) { /* */ } try { wrapper.remove(); } catch (_) { /* */ } self._edParts.delete(pid); };
+        const ai = this._edAi();
+        const host = {
+            palette: () => ({ dark: !self._isLightTheme() }),
+            ask: (rq) => self._edAskPart(rq, { id: pid }),
+            save: (st) => { try { const sp = st.states[st.ptr].spec; return FaEditStore.saveProject('edit-3d-part', pid, { v: 1, spec: sp, state: st, sig: curSig }); } catch (_) { return null; } },
+            download: (blob, name, mime) => self.generateAndDeliverFile(blob, name, mime || blob.type),
+            toChat: (blob, name, info) => self._edToChat('edit-3d', blob, name, info),
+            polish: (self.advancedSettings && self.advancedSettings.offlineMode) ? undefined : (async (text) => String(await ai.chat('You tidy a prompt that rebuilds the skins (which picture or colour goes on which face, and where) of one 3D object. Keep every fact; answer with the prompt only.', text, { maxTokens: 900, timeoutMs: 90000 })).trim()),
+        };
+        node = FaEdit3dUI.mountPart({
+            id: pid, state, spec, host, store: FaEditStore, buildNode: (n) => self._ed3dBuildNode(n), raster: (sc, cam, g, w, h) => self._raster3DFrame(sc, cam, g, w, h), keepTexture: (blob) => self._ed3dKeepTexture(blob),
+            onDone: (partSpec) => {
+                const live = self._edEditors && self._edEditors.get('edit-3d:' + sceneId); if (!live || !live._ed) { try { node._ed.ctx.say(T('找不到場景編輯器，沒有交回去', 'the scene editor is gone')); } catch (_) { /* */ } return; }
+                const patch = PC.toObjectPatch(partSpec), r = live._ed.ctx.apply([{ op: 'set_skins', id: obj.id, skins: patch.skins, material: patch.material }], '編輯「' + o.name + '」的貼皮', '', 'panel');
+                if (r && r.rejected && r.rejected.length) { try { node._ed.ctx.say(r.rejected[0].error); } catch (_) { /* */ } return; }
+                const after = live._ed.getSpec(), o2 = after.objects[C.byId(after, obj.id)]; curSig = o2 ? sigOf(o2) : sig; try { FaEditStore.saveProject('edit-3d-part', pid, { v: 1, spec: partSpec, state: node._ed.getState(), sig: curSig }); } catch (_) { /* */ }
+                close();
+            },
+            onCancel: () => { try { FaEditStore.saveProject('edit-3d-part', pid, { v: 1, discard: true }); } catch (_) { /* */ } close(); },
+        });
+        document.body.appendChild(wrapper); wrapper.appendChild(node); this._edParts.set(pid, { node });
+        try { FaEditI18n.localize(node); } catch (_) { /* */ }
+        requestAnimationFrame(() => { try { if (node._win && node._win.pop) node._win.pop(); } catch (_) { /* */ } });
+    };
+
+    // ───── the way in: a scene already in the conversation, a model file, a YAML ─────
+    M._ed3dLastScene = function () { for (let i = this.messages.length - 1; i >= 0; i--) { const m = this.messages[i]; if (m && m._displayScene3DYaml) return { yaml: m._displayScene3DYaml, index: i }; } return null; };
+    M._ed3dFromYaml = async function (yaml, notes) {
+        await this._ensureJsYamlLoaded(); const r = FaEdit3d.fromYaml(yaml); if (!r.ok) throw new Error(r.error); (r.problems || []).slice(0, 3).forEach((p) => notes.push(p)); return r.spec;
+    };
+    // everything above, and the common ways: yaml (text), file_id (a .3dscene.yaml or a model: STL / OBJ / 3MF / FBX), last (the latest scene of the conversation)
+    M._ed3dOpen = async function (a) {
+        a = a || {}; const notes = []; let spec = null, origin = null;
+        try {
+            if (a.yaml) { spec = await this._ed3dFromYaml(String(a.yaml), notes); if (a.originIndex != null && a.originIndex >= 0) origin = { index: a.originIndex }; }
+            else if (a.file_id) {
+                const rec = await this.fileCache.get(String(a.file_id)); if (!rec) return { ok: false, error: T('找不到這個檔案：', 'no such file: ') + a.file_id };
+                const name = String(rec.filename || ''); if (/\.ya?ml$/i.test(name)) spec = await this._ed3dFromYaml(await rec.blob.text(), notes);
+                else { const conv = await this._convertModelFileToSceneYaml(rec, (stage) => { try { this._setResponseIndicatorLabel('⏳ ' + this._3dImportStageLabel(stage)); } catch (_) { /* */ } }); if (!conv.ok) return conv; spec = await this._ed3dFromYaml(conv.yaml, notes); spec.title = name.replace(/\.[a-z0-9]+$/i, '') || spec.title; notes.push(T('匯入的模型只有形狀與單一顏色（沒有原始貼圖與動畫）', 'the imported model keeps its shape and one colour (no textures or animation)')); }
+            } else if (a.last) { const ls = this._ed3dLastScene(); if (!ls) return { ok: false, error: T('對話裡還沒有 3D 場景', 'there is no 3D scene in the conversation yet') }; spec = await this._ed3dFromYaml(ls.yaml, notes); origin = { index: ls.index }; }
+        } catch (e) { return { ok: false, error: T('讀不進這個場景：', 'could not read the scene: ') + String((e && e.message) || e) }; }
+        const r = await this._edOpen('edit-3d', { starter: spec ? undefined : a.starter, spec: spec || undefined, request: a.request, id: a.id, images: a.images, origin: origin || undefined });
+        if (r && r.ok) r.notes = notes; return r;
+    };
+    M._registerEdit3dCommands = function () {
+        const hint = '[起手式｜last｜一句話描述]';
+        const run = async (argsText, run0) => {
+            const r = run0 || this, a = String(argsText || '').trim();
+            if (/^(last|最近|上一個|剛剛的)$/i.test(a)) { r.messages.push({ role: 'user', content: '/edit-3d-model ' + a }); const res = await r._ed3dOpen({ last: true }); if (res && res.ok === false) r._pushAssistantMessage('⚠️ ' + (res.error || T('開不起來', 'could not open it')), null); try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ } return; }
+            return r._edCommand('edit-3d', argsText, run0);
+        };
+        this.register_slash_command('/edit-3d-model', hint,
+            '3D 場景編輯器（用語言主導，位置完全以你現在看的角度算）：「在我的左前方放一個紅色的球」「把它移到桌子上面」；物件欄是樹狀的、屬性面板、雙擊物件進「單一物件編輯」（像做塑膠模型：每個面貼什麼圖、塗什麼顏色）、🧾 YAML 原始碼分頁可以直接改、圖可以貼進對話框當貼圖、復原／重做、整理成 prompt、匯出場景 YAML／PNG。/edit-3d-model room 從起手式開始、/edit-3d-model last 接著對話裡最近的 3D 場景。',
+            run);
+        this.register_slash_command('/edit-3d', hint, '3D 場景編輯器：/edit-3d-model 的別名。', (argsText, run0) => (this.slashCommands.get('/edit-3d-model') || { handler: run }).handler(argsText, run0));
+    };
+    M._registerEdit3dTools = function (registerOptional) {
+        const parse = async (self, raw) => { let a = {}; try { a = await self.repairJsonPayload(String(raw || '{}')); } catch (_) { /* */ } return a || {}; };
+        registerOptional('edit_3d_open',
+            '在對話裡放一個「3D 場景編輯器」（用語言主導；位置完全以使用者現在看的角度算：「我的左前方」「桌子的右邊」）：物件欄（樹狀、群組）、屬性面板、3D 畫面（拖曳轉視角、點物件選取、拖曳移動）、🧾 YAML 原始碼分頁（可直接改）、雙擊物件進「單一物件編輯」（像做塑膠模型：每個面貼什麼圖、塗什麼顏色）、貼圖（貼進編輯器對話框、網址、找圖）、復原／重做、匯出場景 YAML（render_3d_scene 可直接播放）／PNG／整理成 prompt。參數：starter（blank、room、model、studio）、request（一句話：開起來後編輯器自己的 AI 去做）、yaml（一份場景 YAML 當起點）、file_id（使用者上傳的 .3dscene.yaml 或 STL／OBJ／3MF／FBX 模型）、last（true＝接著對話裡最近的 3D 場景）、id（接著原本的專案）。做完編輯器就在對話裡，不要把場景 YAML 貼進對話。參數: {"starter":"room","request":"（選填）","yaml":"（選填）","file_id":"（選填）","last":false,"id":"（選填）"}',
+            async function (rawArgs) { const a = await parse(this, rawArgs); try { return JSON.stringify(await this._ed3dOpen({ starter: a.starter, request: a.request, yaml: a.yaml, file_id: a.file_id, last: !!a.last, id: a.id })); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); } },
+            { type: 'object', properties: { starter: { type: 'string', description: '起手式：blank、room、model、studio' }, request: { type: 'string', description: '一句話要擺什麼' }, yaml: { type: 'string', description: '場景 YAML 當起點' }, file_id: { type: 'string', description: '使用者上傳的 .3dscene.yaml 或 3D 模型檔' }, last: { type: 'boolean', description: '接著對話裡最近的 3D 場景' }, id: { type: 'string', description: '接著原本的專案' } }, additionalProperties: false }
+        );
+    };
+    // "put it back into the conversation": the playable scene, and the original scene updated when the project came from one
+    M._ed3dToChatScene = async function (editorId, yamlText, title) {
+        const msg = { role: 'tool', content: '[3D 場景編輯器的成品場景「' + String(title || '').slice(0, 40) + '」，已直接顯示給使用者看]' }; Object.defineProperty(msg, '_displayScene3DYaml', { value: yamlText, enumerable: false, configurable: true }); this.messages.push(msg);
+        try { this._persistChatHistory(); this._renderMessageHistory(); } catch (_) { /* */ }
+    };
+    M._ed3dUpdateOrigin = async function (editorId, yamlText) {
+        const proj = await FaEditStore.loadProject('edit-3d', editorId), idx = proj && proj.origin && proj.origin.index; const m = idx != null ? this.messages[idx] : null;
+        if (!m || !m._displayScene3DYaml) return false; Object.defineProperty(m, '_displayScene3DYaml', { value: yamlText, enumerable: false, configurable: true, writable: true }); try { this._persistChatHistory(); this._renderMessageHistory(); } catch (_) { /* */ } return true;
+    };
+})();
+
+/* EDITHOST-END */
 /* EXPLAIN-BEGIN */
 const FaExplain = (function () {
 const holder = {};
@@ -27211,6 +30704,27 @@ FA_TASK_TOOL_HINTS.push({
     neg: /(怎麼|如何|為什麼|為何|是什麼|能不能|可不可以|可以嗎|有沒有|支援|設定|教我)[\s\S]{0,12}(網頁編輯器|網站|網頁)|網頁(版|搜尋|內容)|抓取網頁|爬/i,
     tools: ['webedit_open', 'webedit_topic', 'list_uploaded_files'],
     note: '【這個需求有專用工具：webedit_open】使用者要做網頁／小網站（可能含模擬後端）。直接呼叫 webedit_open：要現成類型用 starter（blank、todo、chat、form、python_api），否則把一句話需求放 request，AI 會先做出第一版並在對話裡放一個網頁編輯器（預覽、程式碼、後端、AI 對話、復原重做）。不要自己寫整份 HTML 貼進對話、也不要叫使用者自己存檔。後端是模擬的（JS Node 風格或 Python Flask，不佔埠）；PHP 不能執行要如實說。',
+});
+FA_TASK_TOOL_HINTS.push({
+    id: 'edit_svg_open',
+    re: /(svg\s*編輯器|向量(圖|編輯)|(畫|做|設計|繪製)[^，。\n]{0,10}(svg|向量圖|圖示|icon|logo|插圖|流程圖)|(描成|轉成|變成|轉換成|描摹成?)\s*svg|image\s*to\s*svg|trace[^，。\n]{0,10}svg)/i,
+    neg: /(怎麼|如何|為什麼|為何|是什麼|能不能|可不可以|可以嗎|有沒有|支援|設定|教我)[\s\S]{0,12}(svg|向量)|svg\s*(格式|規格|標籤|語法)|讀取|解析|svg\s*檔(案)?(內容)?[\s\S]{0,6}(是什麼|哪裡)/i,
+    tools: ['edit_svg_open', 'list_uploaded_files'],
+    note: '【這個需求有專用工具：edit_svg_open】使用者要畫向量圖／SVG、或把圖片描成 SVG。直接呼叫 edit_svg_open：要現成類型用 starter（blank、shapes、flow），否則把一句話需求放 request，有附圖就帶 file_id；編輯器會放在對話裡（無邊界平面、物件欄、屬性面板、AI 對話、復原重做、匯出 SVG／PNG）。不要自己把 SVG 貼進對話。',
+});
+FA_TASK_TOOL_HINTS.push({
+    id: 'edit_picture_open',
+    re: /(圖片編輯器|修圖|(把|將)[^，。\n]{0,12}(圖|照片|相片)[^，。\n]{0,10}(變成|轉成|改成|換成)[^，。\n]{0,10}(風格|水彩|油畫|素描|漫畫|像素|版畫)|(水彩|油畫|素描|漫畫|像素|版畫|霓虹)[^，。\n]{0,6}(風格|風)|(去|修掉|修復|移除)[^，。\n]{0,8}(污點|髒點|刮痕|雜訊|雜點)|圖片(後製|合成)|photo\s*edit|retouch)/i,
+    neg: /(怎麼|如何|為什麼|為何|是什麼|能不能|可不可以|可以嗎|有沒有|支援|設定|教我)[\s\S]{0,12}(修圖|圖片編輯|風格)|簡報|投影片|生成.{0,4}(圖|畫)|畫一(張|個)/i,
+    tools: ['edit_picture_open', 'list_uploaded_files'],
+    note: '【這個需求有專用工具：edit_picture_open】使用者要修圖／換圖片風格／去污點／圖片後製合成。直接呼叫 edit_picture_open：有附圖就帶 file_id，風格放 style（oil、watercolor、sketch、ink、cartoon、pixel、poster、vintage、neon…），其他一句話放 request；編輯器會放在對話裡（圖層、濾鏡層、修復層、AI 對話、復原重做、匯出 PNG／JPEG），原圖不會被改動。',
+});
+FA_TASK_TOOL_HINTS.push({
+    id: 'edit_3d_open',
+    re: /(3d|三維|立體)\s*(場景|模型|物件)?\s*編輯器|(編輯|擺放|佈置|布置|設計)[^，。\n]{0,8}(3d|三維|立體)?\s*(場景|房間|模型)|(在我的?|在畫面)[^，。\n]{0,6}(左|右|前|後|上)[^，。\n]{0,6}(放|擺|加)[^，。\n]{0,10}(球|方塊|盒子|圓柱|圓錐|桌|椅|燈)|(3d|三維|立體)[^，。\n]{0,10}(貼皮|貼圖|上色)|edit-3d|edit_3d/i,
+    neg: /(怎麼|如何|為什麼|為何|是什麼|能不能|可不可以|可以嗎|有沒有|支援|設定|教我)[\s\S]{0,12}(3d|三維|立體|場景編輯)|列印|stl\s*(檔|匯出)|簡報|投影片/i,
+    tools: ['edit_3d_open', 'render_3d_scene', 'list_uploaded_files'],
+    note: '【這個需求有專用工具：edit_3d_open】使用者要用說的擺放／編輯 3D 場景（位置以他現在看的角度說：我的左前方、桌子的右邊）、替物件貼皮上色、或進編輯器改場景。直接呼叫 edit_3d_open：現成類型用 starter（blank、room、model、studio），一句話需求放 request，有 3D 模型檔或場景 YAML 就帶 file_id、要接續對話裡最近的場景用 last:true；編輯器會放在對話裡（3D 畫面、樹狀物件欄、YAML 原始碼、單一物件編輯、AI 對話、復原重做）。只是要「看」一個 3D 場景不需要編輯時用 render_3d_scene。',
 });
 FA_TASK_TOOL_HINTS.push({
     id: 'translate_text',
@@ -35456,6 +38970,7 @@ class FloatingAssistant {
         this.register_slash_command('/edit-html', '[起手式｜一句話描述]', '網頁編輯器（HTML 編輯器）：/webedit 的別名。不帶參數＝接著開最近一份；/edit-html todo 從起手式開始；/edit-html 做一個記帳網站 由 AI 做出第一版。',
             async (argsText, run) => { const base = this.slashCommands.get('/webedit'); if (!base) return; return base.handler(argsText, run); });
         this._registerKnowledgeCommand();
+        this._registerEditCommands();
         this.register_slash_command('/image', '[model=廠商/模型名] [steps=N] [size=寬x高] 要畫什麼（英文效果較好）',
             '用 NVIDIA 線上圖像生成模型畫圖（FLUX.1 schnell／dev、FLUX.2 klein、FLUX klein、Stable Diffusion 3，或自己填的 廠商/模型名）。例：/image a macro photo of a green frog in a rainforest pond、/image model=black-forest-labs/flux.1-dev steps=30 size=1344x768 a quiet harbor at dawn。不帶參數會列出可用的模型。金鑰在「進階設定 → 影音處理」填。',
             async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/image' + (raw ? ' ' + raw : '') });
@@ -41322,6 +44837,7 @@ ${fnData.code}
         // /media-presentation：動畫簡報的工具與領域（renderer/src/deck/deck_tools.js）
         this._registerDeckTools(registerOptional);
         this._registerKnowledgeTools(registerOptional);
+        this._registerEditTools(registerOptional);
         this._rgRegisterTools(); // 遠端群組：list_remote_machines、delegate_to_machine
 
         // tw_stock_db客製: 2026-09-09使用者要求新增的網路搜尋工具（browser_search
@@ -83849,6 +87365,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 // tw_stock_db客製: 2026-09-05使用者要求——除了匯出PPTX/PDF，
                 // 也要能直接下載/檢視這個場景的原始YAML（不經過任何轉檔）。
                 this._appendCardSourceButtons(btnGroup, sceneWrap, () => msg._displayScene3DYaml, '3D場景', '3dscene.yaml');
+                // /edit-3d-model：用編輯器開啟這個場景；編輯完可以「更新回原本的場景」（見 renderer/src/edit/edit3d_host.js）
+                if (typeof this._ed3dOpen === 'function') { const editBtn = document.createElement('button'); editBtn.type = 'button'; editBtn.title = '用 3D 場景編輯器開啟這個場景（編輯完可以更新回這裡）'; editBtn.textContent = '✏️ 編輯'; editBtn.style.cssText = 'border:none; background:rgba(0,0,0,0.08); border-radius:6px; cursor:pointer; font-size:12px; padding:3px 8px; line-height:1.4;'; editBtn.addEventListener('click', async (e) => { e.stopPropagation(); editBtn.disabled = true; try { const r = await this._ed3dOpen({ yaml: msg._displayScene3DYaml, originIndex: this.messages.indexOf(msg) }); if (r && r.ok === false) alert(r.error || '開不起來'); } catch (err) { alert(String((err && err.message) || err)); } editBtn.disabled = false; }); btnGroup.appendChild(editBtn); }
                 this._appendCardExportButton(btnGroup, async () => {
                     if (!msg._scene3DHandle || typeof msg._scene3DHandle.snapshotDataUri !== 'function') return null;
                     try { return { dataUrl: msg._scene3DHandle.snapshotDataUri(), kind: 'scene3d' }; } catch (_) { return null; }
@@ -84295,6 +87813,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     try { this._mountDataViewers(mdDiv); } catch (e) { console.warn('資料檢視器掛載失敗', e); }
                     try { this._mountWorksheetEditors(mdDiv); } catch (e) { console.warn('學習單編輯器掛載失敗', e); }
                     try { this._mountWebEditors(mdDiv); } catch (e) { console.warn('網頁編輯器掛載失敗', e); }
+                    try { this._mountEditEditors(mdDiv); } catch (e) { console.warn('SVG／圖片／3D 編輯器掛載失敗', e); }
                     try { this._mountKnowledgePanels(mdDiv); } catch (e) { console.warn('知識庫面板掛載失敗', e); }
                     try { this._mountWidgets(mdDiv); } catch (e) { console.warn('專屬視窗掛載失敗', e); }
                 } catch (_) {
@@ -86108,6 +89627,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
 
 // /media-presentation：簡報播放器的主機轉接層（renderer/src/deck/deck_host.js）
 Object.assign(FloatingAssistant.prototype, FaDeckHost.methods, FaDeckTools.methods, FaKnowledgeHost.methods);
+// /edit-svg、/edit-picture、/edit-3d-model（renderer/src/edit/，設計見 DESIGN.edit-svg.md、DESIGN.edit-picture.md、DESIGN.edit-3d.md）
+Object.assign(FloatingAssistant.prototype, FaEditHost.methods);
 // 遠端群組（renderer/src/remote/，設計見 DESIGN.remote-group.md）
 Object.assign(FloatingAssistant.prototype, FaRemoteHost.methods, FaRemoteDispatch.methods);
 FaRemoteDispatch.installTracking(FloatingAssistant); // 追蹤這台機器正在跑的子任務（給在線名單的數字與清單）

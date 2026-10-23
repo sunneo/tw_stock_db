@@ -1,0 +1,220 @@
+# `/edit-game-2d`、`/edit-game-3d`:遊戲編輯器(規劃,還沒開始做)
+
+> 2026-10-23,使用者提出。**這份是規劃,不是實作。** 先寫清楚「重用什麼、新增什麼、格式長怎樣、分幾階段、哪些要先問使用者」,確認方向後再依階段做(每一階段都可以單獨驗證)。
+> 範圍:**GUI 加斜線指令,暫時不設計成給 AI 使用的工具**(沒有 `edit_game_open`);編輯器裡的 AI 對話框照常用(跟 `/edit-svg`、`/edit-picture`、`/edit-3d-model` 一樣是「用語言主導」)。
+
+## 1. 想做到的事(使用者原話整理 → 對應章節)
+| 需求 | 章節 |
+|---|---|
+| 基於 AI 溝通、物件放置(跟 edit-svg／edit-3d 一樣用說的、相對位置) | §3、§4 |
+| **物件行為**(會動、會反應) | §5 |
+| **配音**:背景音、遊戲音、特效聲、對話框人物聲 | §8 |
+| **物件碰撞邏輯** | §6 |
+| **路線設計** | §7 |
+| **常見範本**:捲軸、縱向捲軸、橫向捲軸、自由地圖、強制捲軸、格鬥遊戲、RPG… | §9 |
+| **不同場景切換**,**邊進入某場景、邊延伸設計**(在裡面覺得缺什麼就加什麼) | §10 |
+| 中間格式是 **UML、YAML**;最終格式是**壓縮的遊戲包**,**可以持續編輯** | §11、§12 |
+| 最終輸出時,由 AI 產生**目標原始碼**:nodejs、web JavaScript、three.js、FC、SFC、X68000、Xbox、PC、Android、Java(Swing／SWT／AWT)、SDL2／SDL3、Qt、C# WinForms、Electron、Python | §13 |
+
+## 2. 原則(從前面三個編輯器學到的,照做)
+1. **YAML 是唯一的權威文件**;畫面、UML、遊戲包、目標碼都是從它推出來的。編輯＝對 YAML 做「封閉動作」(程式驗證、拒絕不合法的,同 `FaEditObjects` 的精神),模型只填 JSON。
+2. **程式先讀,模型後補**:位置、碰撞、路線、數值、範本的展開、資產轉換、遊戲包打包都是程式;模型只回答封閉的小問題(要放什麼、規則怎麼說、對白寫什麼、把一段邏輯翻成某個目標語言)。
+3. **行為是資料,不是程式碼**:試玩時執行的是一組封閉詞彙的規則與狀態機(跟 `render_3d_scene` 不能嵌 JS 是同一條界線)。只有「匯出目標碼」那一步才有程式碼,而且是產出物、不在助理裡執行。
+4. **一個模擬核心,到處跑**:固定步長、確定性亂數的純函式模擬(`game_sim`)同時是 (a) 編輯器內的試玩、(b) 匯出 web 版的引擎、(c) 其他目標碼的**參考實作與行為測試向量的來源**。
+5. **誠實**:每個目標有可行性等級(§13),沒在真機或模擬器跑過的就寫沒驗證。
+
+## 3. 重用什麼、新增什麼
+**重用(都已經在 `renderer/src/`)**
+| 用途 | 現成 |
+|---|---|
+| 外框(物件欄、屬性、對話框、記錄、復原重做、整理成 prompt、視窗化) | `edit/edit_shell.js`(`FaEditShell`;已支援樹狀物件欄、雙擊開單一物件編輯) |
+| 2D 無邊界平面、物件模型、相對放置 | `edit/edit_viewport.js`、`edit/edit_objects_core.js` |
+| 3D 檢視、相對視角放置、群組、貼皮、YAML 往返 | `edit/edit3d_core.js`、`edit3d_part_core.js`、`edit3d_ui.js`、`edit3d_host.js` |
+| 圖片來源(找圖、網址、貼圖)、儲存 | `edit/picture_source.js`、`edit_pictures.js`、`edit_store.js`(再加一個音訊的 store) |
+| 精靈／像素素材製作 | `deck/sprite_pixel.js`、`pixel_art.js`、`rpg_art.js`(程序化地圖、人物、頭像)、`sprite_raster.js`、`char_model.js`(3D 人形骨架)、`imgproc/imgproc_core.js`、生圖 `imagegen/` |
+| RPG 式舞台、格子地圖、A* 繞路、對話框、聚光、黑幕轉場 | `deck/rpg_art.js`(`findPath`)、`stage_core.js`、`rpg_plan.js`(口語→動作 `describeToScript`)、DESIGN.deck-rpg.md |
+| 音效合成(嘴音、blip、各種 sfx)與語音 | `deck/deck_sfx.js`、本地 Kokoro／線上 Edge TTS(`tts/`、`_ttsSynthesize…`)、`ai_chat_audio_*` |
+| UML(類別／狀態／循序圖的文字 DSL、Mermaid、編修、骨架展開) | `uml/uml_core.js`、`design_core.js`、`uml_edit_core.js`、`glue_core.js`(DESIGN.uml-framework.md) |
+| 壓縮封包(zip、含素材與作答紀錄、可再開啟) | `.deckpack` 的做法(`deck/deck_pack.js`、JSZip) |
+| UML→LLVM IR→wasm 的工具鏈(執行小程式驗證) | `uml/llvm_core.js`、`lli`／`llc`／`wasmrun`(DESIGN.uml-framework.md 後半) |
+
+**新增(預計的檔案,都放 `renderer/src/game/`,同樣用 `embed-code-ui.js` 內嵌)**
+| 檔案 | 內容 |
+|---|---|
+| `game_core.js`(`FaGame`) | 專案模型、驗證、封閉動作、範本展開、相對放置(2D 與 3D 兩套)、YAML 往返、場景圖、整理成 prompt |
+| `game_sim.js`(`FaGameSim`) | 模擬核心:固定步長、輸入、物理與碰撞、行為(規則＋狀態機)、路線、音訊事件、場景切換、存讀檔(snapshot) |
+| `game_rules.js` | 行為詞彙:事件、條件、動作的表與驗證;口語→規則的程式讀法(`parseCommands`)與模型提示詞 |
+| `game_uml.js` | YAML → UML(類別、狀態機、循序、場景活動圖)與 UML 編修回寫 YAML |
+| `game_pack.js` | `.fagame` 打包與開啟、版本與 migration |
+| `game_ui.js`、`game_host.js` | 畫面(場景編輯＋試玩、場景圖、音訊、行為、YAML、套件分頁)與主機轉接層 |
+| `gen/`(`game_gen.js` 與每個目標一個 profile) | 目標碼生成管線(§13) |
+
+## 4. 專案長什麼樣(YAML,權威文件)
+一個遊戲是一組檔案(打包時各自一個 YAML,編輯時是同一份文件的幾個區塊):
+```yaml
+game:                       # game.yaml
+  id: forest-run
+  title: 森林快跑
+  template: platformer-side # §9 的範本名;決定預設原型、控制、相機、規則集
+  dimension: 2d             # 2d | 3d
+  view: { width: 320, height: 180, scale: pixel }   # 邏輯解析度(復古主機目標時會被它限制)
+  input: { left: [ArrowLeft, a, pad.left], right: [...], jump: [Space, pad.a], attack: [x, pad.b] }
+  vars: { score: 0, lives: 3 }
+  audio: { buses: { bgm: 0.6, sfx: 0.9, fx: 0.9, voice: 1.0 } }
+  start: scene.forest-1
+prefabs:                    # 原型:做一次、放很多次(玩家、敵人、道具、可破壞的牆…)
+  player:
+    sprite: asset.sprite.hero            # 圖或單一物件編輯做的貼皮／精靈
+    body: { shape: box, w: 12, h: 16, layer: player, mask: [ground, enemy, item, trigger] }
+    physics: { gravity: 600, max_fall: 300 }
+    behavior: player-platformer          # 用名字引用 behaviors 裡的狀態機
+  slime:
+    sprite: asset.sprite.slime
+    body: { shape: circle, r: 6, layer: enemy, mask: [ground, player] }
+    behavior: patrol-bounce
+behaviors:                  # §5:狀態機＋規則,全是封閉詞彙
+  patrol-bounce:
+    states:
+      walk: { on_enter: [{ set_velocity: { x: 40 } }], on: [{ event: hit_wall, do: [{ flip: x }] }, { event: collide, with: player, if: { player.falling: true }, do: [{ destroy: self }, { add: { score: 100 } }, { play: fx.stomp }] }] }
+    start: walk
+scenes:
+  forest-1:
+    kind: side-scroll                    # §9;決定相機與捲動
+    size: [2400, 180]
+    camera: { follow: player, deadzone: [40, 20], bounds: scene }
+    layers: [ { id: bg, parallax: 0.4 }, { id: tiles }, { id: actors } ]
+    tilemap: { tileset: asset.tiles.forest, cell: 16, data: [...] }     # 或 rle 壓縮
+    objects:
+      - { id: p1, prefab: player, at: [40, 100] }
+      - { id: s1, prefab: slime, at: [300, 120], path: path.s1 }
+    paths: { s1: { points: [[300,120],[420,120]], mode: pingpong, speed: 30 } }   # §7
+    zones: [ { id: exit, rect: [2360, 0, 40, 180], on_enter: [{ goto: scene.cave-1 }] } ]
+    audio: { bgm: asset.audio.forest-theme }
+    dialog: { npc-old: [ { who: elder, text: "小心前面的洞。", voice: elder } ] }
+  cave-1: { ... }
+```
+- 物件放置跟其他編輯器一樣是**相對的**:2D 用 `of／rel／gap／dx／dy`(`of: player, rel: right, gap: 24`、`of: view, rel: center`、`of: ground, rel: on`),3D 用 edit-3d 的**使用者視角**(`of: me`/`player`、前後左右);程式用邊界框算,不讓模型算座標。
+- 資產用 `asset.<種類>.<名>` 引用;資產本體(圖、模型、音檔)在套件的 `assets/`,文件裡只有短名,不內嵌 data URL。
+
+## 5. 物件行為(封閉詞彙:事件 → 條件 → 動作,加狀態機)
+- **狀態機**(UML 的狀態圖就是它):每個有行為的物件引用一個 `behavior`,有 `states`、每個狀態的 `on_enter／on_exit／on`(事件→動作)、`start`;轉移 `to: <state>`。
+- **事件**:`start`、`tick`(每步)、`timer`(N 秒後／每 N 秒)、`input`(`jump pressed`)、`collide`(`with: <tag|prefab>`、`enter／stay／exit`)、`hit_wall／on_ground`、`enter_zone／exit_zone`、`hp_zero`、`dialog_end`、`scene_enter／scene_exit`、`var_changed`、`path_end`、`animation_end`、`message`(物件之間發訊息)。
+- **條件**(`if`):比較變數／屬性(`score >= 10`、`self.hp < 3`)、`has_item`、`tag`、`random < 0.3`、`facing`、`player.falling`。只有比較與布林,沒有迴圈與任意運算式(沿用粒子 preset 的「安全運算式」白名單做法,最多加簡單算術)。
+- **動作**:`move／set_velocity／set_position／flip／face／jump／dash`、`play_anim`、`play(sound)／stop／fade`、`say(dialog)`、`spawn(prefab, at)／destroy／hide／show`、`set／add(var)`、`goto(scene)`、`camera(follow|shake|zoom|pan)`、`start_path／stop_path／follow(target)／flee(target)`、`damage／heal`、`give／take(item)`、`wait`、`emit(message)`。
+- **口語→規則(程式先讀)**:「讓敵人碰到玩家就扣一滴血」「玩家按空白鍵跳起來」「跳到史萊姆頭上就把它踩扁加 100 分」「走到右邊的門就切到洞穴」→ 規則;讀不懂的才叫模型,模型只准回這份詞彙(`FaGame.OPS`／`RULE_VOCAB`)。
+- 進階:行為編輯器是「規則表＋狀態機圖(Mermaid 由 UML 推出來)」,可以在表上直接改,也可以說話改。
+
+## 6. 碰撞邏輯
+- **形狀**:2D 圓、軸對齊盒、(旋轉盒)、多邊形(凸);3D 球、軸對齊盒、膠囊。每個物件的 `body` 有 `layer`(我是誰)與 `mask`(我跟誰會碰),圖塊(tile)有 `solid／one_way／hazard／water／ice／slope` 這類屬性。
+- **回應**:`solid`(擋住並貼齊)、`trigger`(只發事件)、`one_way`(平台:只從上面站得住)、`bounce`(反彈係數)、`damage`(接觸傷害與無敵時間)、`push`(推得動)。回應用資料描述,事件交給規則處理(§5)。
+- **平台物理**(2D 預設):重力、地面判定(coyote time、跳躍緩衝)、最大下墜速度;**自由地圖**:無重力、格子或自由移動、斜向速度正規化;**格鬥**:兩個身體加受擊盒／攻擊盒(每個動作每一格動畫有 hitbox 與有效格數)。**3D**:軸對齊盒加重力、角色控制器(爬坡、台階)、射線檢測;不做真正的剛體物理。
+- 編輯:畫面上用半透明顯示碰撞盒(可開關)、碰撞矩陣表(layer×layer)、說話改(「玩家碰到火就受傷」)。模擬核心用掃掠式(swept AABB)避免高速穿牆,所有碰撞順序固定 → 確定性。
+
+## 7. 路線設計
+- 路線是場景裡的**具名物件**(`path`):`points`(2D／3D)、`mode`(once／loop／pingpong)、`speed`、`ease`、可帶 `wait`(每個點停多久)、`on_point`(到點觸發事件)。曲線用折線＋可選的 Catmull-Rom 平滑;畫面上可以**直接點出路線**(多點線),也可以說「讓史萊姆沿著這條路來回巡邏」「讓敵人從畫面右邊走到玩家前面」。
+- **行為式移動**(不是固定路線):`patrol(path)`、`follow(target, keep_distance)`、`chase(target, speed, sight)`、`flee`、`wander(radius)`、`orbit`;格子地圖(自由地圖／RPG)用現成的 A*(`rpg_art.js:findPath`)繞障礙,3D 用簡單的格子或路點導航(第一版不做 navmesh)。
+- 路線也是 UML 活動圖的來源之一(§11)。
+
+## 8. 配音與音訊
+- **四條 bus**:`bgm`(背景音樂,循環、淡入淡出、場景切換時交叉淡化)、`sfx`(遊戲音:跳、撿、打中)、`fx`(特效聲:爆炸、環境、UI)、`voice`(對話框人物聲)。每條可調音量、靜音;事件綁定在規則的 `play`。
+- **來源**:① 程序化合成(現有 `deck_sfx.js` 的合成器,再補遊戲常用的:跳、金幣、爆炸、受傷、選單;背景音樂用簡單的合成旋律／chiptune 模式,小模型也能「說一段風格」就生成音符序列);② **TTS**(本地 Kokoro 國語聲音、線上 Edge TTS;每個角色一個 `voice`:聲線、音高、速度;對白逐句合成,存成音檔放進套件,所以離線也能玩);③ 使用者上傳的音檔(wav／mp3／ogg,轉成 ogg 或 wav 放進 `assets/audio/`)。
+- 對話框:`dialog` 有 `who／text／voice／portrait／style(box|bubble|subtitle)／choices`,逐字顯示(沿用 `rpg_art` 的對話框)、人物聲=該角色的 TTS 或「嘴音」(`deck_sfx.blip` 那種)。
+- 編輯:音訊分頁(資源清單、試聽、每個場景的 bgm、事件→聲音對照表)、說話改(「這個場景放輕快的背景音樂」「撿到金幣要有叮的一聲」)。復古主機目標會把音訊降成該機器的音源(§13)。
+
+## 9. 範本(類型 preset = 原型＋控制＋相機＋規則集＋起手場景)
+一個範本是一份 YAML 資料(也可以使用者自己存、匯入),選了之後程式展開成「能玩的起手場景」,再用說的延伸。
+| 範本 | 相機／捲動 | 重點 |
+|---|---|---|
+| `platformer-side` 橫向捲軸平台 | 跟隨玩家的水平捲動(死區、邊界) | 重力與跳、地圖磚、敵人巡邏與踩扁、金幣、終點旗 |
+| `scroller-vertical` 縱向捲軸 | 垂直捲動(跟隨或固定) | 爬塔／下墜;可選自由射擊 |
+| `shmup-forced` 強制捲軸(射擊／跑酷) | **自動捲動**(固定速度,被推出畫面外就死) | 子彈、敵人波次(`wave` 表)、道具、Boss |
+| `topdown-free` 自由地圖 | 跟隨、地圖大於畫面 | 八方向移動、碰撞牆、物件互動、NPC 對話 |
+| `fighting` 格鬥 | 固定鏡頭(或兩人距離縮放) | 兩個角色、血條、招式表(輸入序列→動作→hitbox)、回合與計時、勝負 |
+| `rpg-field` RPG 地圖 | 格子地圖跟隨 | 格子移動、A*、對話、物品與任務旗標、場景(城鎮／地下城)切換 |
+| `rpg-battle` RPG 戰鬥(回合) | 固定 | 屬性、行動表、傷害公式(資料)、道具;與 `rpg-field` 組成完整 RPG |
+| 3D:`walker-3rd` 第三人稱、`walker-1st` 第一人稱、`topdown-3d`、`runner-3d` | 跟隨／第一人稱／俯視／固定軌道 | 以使用者視角放置(edit-3d 的相對視角,多了 `of: player`)、簡易重力與碰撞 |
+- 每個範本定義:預設原型(player／enemy／ground／item／trigger)、輸入映射、相機模式與參數、預設規則集、UI(血條、分數、對話框)、可調的數值表、起手場景。**混用**:一個遊戲的不同場景可以是不同範本(城鎮是 `rpg-field`、遇敵進 `rpg-battle`、小遊戲是 `platformer-side`)。
+
+## 10. 場景切換與「邊進入、邊延伸設計」
+- **場景圖**:節點＝場景,邊＝轉移(門、區域、事件、勝負、選單);有「場景圖」分頁(Mermaid 活動圖由 YAML 推出,可以點節點進場景、拖出一條線就建立轉移)。說「在這個門後面接一個洞穴場景」＝建立新場景(用範本或複製目前的)並連上這個門。
+- **編輯與試玩是同一個畫面**:場景分頁有 ▶ 試玩／⏸ 暫停／⏹ 回到編輯。**暫停時就是編輯器**:可以用說的加東西(「在我右邊放一個寶箱」——以玩家或目前鏡頭為相對座標)、改行為、改碰撞;按 ▶ 從暫停當下的狀態繼續。實作上**編輯狀態(YAML,權威)與執行狀態(模擬的 snapshot,可丟棄)分離**:暫停時存 snapshot;每個編輯動作先改 YAML,再對執行狀態做 hot patch(新增／移除／移動物件、改規則;無法 hot patch 的改動就只重載那個物件或那個場景並保留玩家位置與變數);⏹ 回到編輯會丟掉執行狀態。
+- **「處在其中、缺什麼就加什麼」**:3D 以使用者視角(玩家／鏡頭)為座標,2D 以相機視窗為座標;每次從試玩回到編輯,畫面停在你剛才玩到的地方。所有「在裡面做的事」也是整理成 prompt 的有效步驟(同 §11 的「有效 prompt」)。
+- 全遊戲層級:變數、旗標、物品欄、存檔點(snapshot 存進瀏覽器)、場景載入時的初始化規則。
+
+## 11. 中間格式:YAML(權威)＋ UML(推導,可回寫)
+- **UML 由 YAML 推導**(程式,不叫模型):**類別圖**(原型與元件:`prefabs`、body、behavior 的關係)、**狀態圖**(每個有行為的原型一張,就是 §5 的狀態機)、**循序圖**(一段對白或一個事件流程:玩家→觸發區→規則→場景切換)、**活動圖**(場景圖、路線與波次)。用現成的 `FaUml`／Mermaid 渲染,放在「行為」分頁與套件的 `uml/`。
+- **UML 編修回寫 YAML**:`uml_edit_core.js` 的小動作(加狀態、加轉移、改事件)映射成 §5 的封閉動作 → 套用到 YAML。UML 是「設計檢視與討論」的介面,不是第二份文件。
+- **UML 是目標碼生成的藍圖**(§13):AI 生成每個檔案前,先有 UML 決定的類別／狀態／介面契約,檔案內容只填實作。
+- **有效 prompt**:同前三個編輯器——沒被復原、真的改變了遊戲的那幾輪(包含「在試玩裡做的事」),附上每輪程式整理出的結果,可以貼到別處重現整個遊戲。
+
+## 12. 遊戲包(`.fagame`,壓縮,可持續編輯)
+zip(JSZip,跟 `.deckpack` 同一種做法),內容:
+```
+manifest.yaml        格式版本、名稱、範本、解析度、引擎版本、相依的內建資產、建立／修改時間、檔案清單與 SHA-256
+game.yaml            全域:輸入映射、變數、audio bus、起始場景
+scenes/*.yaml        每個場景一檔(物件、tilemap、路線、區域、對白、場景內規則)
+prefabs/*.yaml       原型與 behaviors/*.yaml
+assets/              sprites/ tiles/ models/ audio/ fonts/ (原檔:png、ogg、glb／polygon yaml…;文件裡只用短名)
+uml/*.mmd            推導出來的 UML(唯讀,方便閱讀與生成)
+i18n/*.yaml          對白與 UI 文字(多語)
+editor/              編輯器狀態:步驟歷史、對話記錄、有效 prompt、各單一物件編輯的進度(選配,可關閉以縮小檔案)
+README.md、PROMPT.md 怎麼打開、怎麼重建的 prompt
+```
+- **持續編輯**:`/edit-game-2d <檔案>` 或把 `.fagame` 拖進對話就開啟(版本欄位＋migration,同 `DESIGN.knowledge-portability.md` 的做法);編輯器的專案同時存在 IndexedDB,匯出隨時可以再匯入;資產在包裡只存一份。
+- **大小**:圖與音檔不轉 data URL;圖用 png／webp、音訊用 ogg(瀏覽器能編 ogg 嗎?沒有的話用 wav＋ADPCM 壓縮——要驗證);超過上限時提示哪些資產最大。
+
+## 13. 最終輸出:AI 產生目標原始碼
+**管線(程式先做、AI 補、程式再驗)**
+```
+game.yaml ─(程式)→ IR(場景、實體、規則、狀態機、路線、音訊事件表:全是封閉詞彙,沒有任意程式碼)
+  ├─(程式)→ 資料檔:關卡資料表、tilemap、對白表、輸入表、參數(每個目標用自己的格式)
+  ├─(程式)→ 資產轉換:精靈→目標的圖格式(PNG／CHR／4bpp tile／PCG)、音訊→目標格式、字型
+  └─(AI,一次一個小檔)→ 邏輯程式:每個檔案有契約(簽名來自 UML)、目標 profile 的限制與慣例、參考實作(模擬核心)的對應片段
+         ↓(程式)語法／結構檢查(能在助理裡做的:node --check、tsc、wasm 工具鏈的 llc；其他給建置腳本)
+         ↓ 組成專案 + 建置說明(BUILD.md)+ 行為測試向量(模擬核心錄的「輸入序列→預期狀態」,目標碼可以重播比對)
+```
+**目標分級(誠實)**
+| 級 | 目標 | 說明 |
+|---|---|---|
+| **A:助理裡就能驗證／試跑** | web JavaScript(Canvas 單檔 HTML＝試玩引擎打包)、three.js(3D)、Electron(web 版加 main.js)、nodejs(headless 模擬＋文字／HTTP 介面;有畫面的版本用 web)、Python(pygame／arcade;語法檢查) | 模擬核心直接是 JS,A 級幾乎是「打包」,AI 只負責改寫成各框架的慣用樣子 |
+| **B:產生可建置的專案,建置在使用者機器** | SDL2／SDL3(C)、Qt(C++／QML)、C# WinForms(.csproj)、Java Swing／AWT／SWT(Gradle／Maven)、Android(Kotlin／Java＋Gradle,Canvas 或 libGDX)、PC(Windows:SDL2 或 C#) | AI 逐檔生成,助理只做結構檢查與資料／資產轉換;編譯結果沒在這裡跑過 |
+| **C:復古主機,受限子集** | FC(6502,cc65／ca65:8×8 tile、64 sprite、每行 8 個、APU 五聲道)、SFC(65816,PVSnesLib／wla-dx:4bpp、128 sprite)、X68000(68000,GCC m68k／vasm:PCG sprite、YM2151 FM＋ADPCM)、Xbox(原版 nxdk;Xbox One／Series 需要 GDK／UWP 與開發者資格,只產生專案骨架) | 每個 profile 有**硬限制表**(sprite 數、色數、RAM、音源):遊戲超出限制時**先告訴使用者哪裡超出、怎麼縮小**(不是硬做);音訊降成該機的音源;邏輯子集=平台範本+簡單規則。不保證在真機／模擬器能跑,附上模擬器測試腳本(fceux、Mesen、bsnes、XM6 等)給使用者自己跑 |
+- **為什麼可行**:規則與狀態機是封閉詞彙,翻成任何語言都是「一個詞彙表對一個語言的慣用寫法」,AI 做的是填空而不是發明;模擬核心提供標準答案;測試向量讓「翻譯得對不對」可以比對。
+
+## 14. 編輯器介面(沿用外框)
+- 左:物件欄(場景 > 層／群組 > 物件,樹狀)＋ 場景列表;屬性面板(選到什麼顯示什麼:物件、body、behavior、path、zone、dialog)。
+- 中:分頁 **🎮 場景**(2D 無邊界平面加格子吸附與 tilemap 刷、或 3D stage;▶／⏸／⏹)、**🗺 場景圖**、**🧩 行為**(規則表＋狀態圖)、**🔊 音訊**、**🧾 YAML**(可直接改,切回即套用,同 edit-3d)、**📦 套件**(匯出、目標碼生成、建置說明)。
+- 右:AI 對話與記錄;底部常駐對話框(可貼圖、貼音檔、拖進素材)。
+- **單一物件編輯**(雙擊):2D=精靈編輯(像素畫／分格動畫／碰撞盒／錨點,沿用 pixel_art 與 sprite forge 的工具),3D=貼皮(`edit3d_part`)。
+- 試玩視窗可以彈出、最大化(`FaWin`)。
+
+## 15. 分階段(每階段可以單獨驗證與使用;每階段結束前要有真實 Electron 的驗證腳本)
+| 階段 | 內容 | 驗證 |
+|---|---|---|
+| **P0** | 先問使用者(§17);決定 2D 優先 | — |
+| **P1** | `FaGame` 核心(專案模型、驗證、封閉動作、2D 相對放置、tilemap、YAML 往返)＋ 2D 編輯器骨架(場景分頁、物件欄、屬性、YAML、單一物件=精靈)＋ `.fagame` 打包與開啟(沒有行為) | 核心單元測試;Electron:開啟、放置、重新整理後還原、打包再開啟 |
+| **P2** | `FaGameSim`(固定步長、輸入、重力與碰撞、tilemap 碰撞、確定性)＋ 橫向捲軸平台範本 ＋ ▶／⏸／⏹ 與暫停時編輯(hot patch) | 單元測試(物理與碰撞的數學、確定性重播);Electron:真的玩一段(合成輸入)、暫停加物件再繼續 |
+| **P3** | 行為(事件／條件／動作、狀態機)＋ 對白 ＋ 路線 ＋ 場景切換與場景圖 ＋ 口語→規則 | 規則引擎測試;Electron:踩扁敵人、走到門切場景、巡邏 |
+| **P4** | 音訊(四條 bus、合成 sfx 與簡單 chiptune bgm、TTS 配音烘成音檔、上傳) | 音訊事件表與混音的測試;Electron:事件→聲音 |
+| **P5** | 範本集:縱向、強制捲軸、自由地圖、格鬥、RPG 地圖與戰鬥 | 每個範本一個「起手場景可以玩通」的腳本 |
+| **P6** | UML 推導與檢視、UML 編修回寫 | 推導的圖與 YAML 一致的測試 |
+| **P7** | `/edit-game-3d`:沿用 edit-3d(相對視角、player)＋ 3D 控制器與簡易物理 ＋ 3D 範本 | 同 P1～P3 的 3D 版 |
+| **P8** | 目標碼生成:先 A 級(web JS／Electron／nodejs／three.js／Python)→ B 級 → C 級(每個目標單獨做,先做 profile 與資產轉換,再做 AI 生成與測試向量) | A 級:生成的專案真的能跑並通過測試向量;B／C 級:結構檢查加建置腳本,明講沒在真機跑過 |
+
+## 16. 風險與誠實的限制
+- **範圍很大**:每個階段都是一個 `/edit-svg` 等級以上的工作;P1～P3 做完才算「能做出一個小遊戲」,不要一次承諾全部。
+- **模型的品質**決定「用說的設計遊戲」好不好用;所以規則詞彙要小、封閉、有範本打底,讓小模型也只做填空。**好不好玩**無法自動驗證(只能驗證「規則一致、能玩通、不卡死」:模擬核心可以跑自動試玩腳本檢查場景可達與終點可達)。
+- **確定性模擬**要從第一天就守住(固定步長、固定順序、自己的亂數),否則測試向量與跨目標比對全部失效。
+- **復古主機目標**的限制是硬的(sprite 數、色數、RAM、音源),很多「一般遊戲」放不進去;只承諾「受限子集＋報告超出什麼」。
+- **版權**:找圖、模型、音檔都要把授權記在資產上(沿用 `credit`);匯出時附授權清單。
+- **安全**:行為是資料,試玩時不執行任意程式碼;匯出的目標碼是產出物,由使用者自己建置與執行(`README`／`BUILD.md` 會提醒)。
+- **效能**:大地圖用 tile 分塊、只畫看得到的;3D 沿用 edit-3d 的限制(沒有 WebGL 時 CPU 光柵化很慢)。
+- **還沒決定的細節**(音訊容器、tile 壓縮、存檔格式)在 P1／P4 做之前再定,並更新這份文件。
+
+## 17. 要先問使用者的事(給建議的預設)
+1. **先做哪個、做到哪**:建議 **2D 先(P1～P3)**,橫向捲軸平台當第一個範本;3D 在 2D 的行為／音訊／套件穩了之後做(P7),因為 3D 的編輯器(edit-3d)已經有了,缺的是行為與模擬。
+2. **試玩引擎跑在哪**:建議**助理的頁面裡(Canvas 2D／three.js)**,匯出 web 版直接打包同一份引擎;不另外做原生執行檔。
+3. **第一版的目標碼範圍**:建議 **A 級五個(web JS、Electron、nodejs、three.js、Python)**先做完整,B 級挑 SDL2 與 C# WinForms 各一個當樣板,**復古主機放到最後,只做 FC 當第一個**(限制最清楚、工具鏈 cc65 最成熟)。
+4. **角色配音的來源**:建議**本地 Kokoro 國語聲音烘成音檔**(離線也能玩),線上 Edge TTS 當選項;背景音樂用程式合成的 chiptune 風格(不依賴外部曲庫與版權)。
+5. **行為語言的表達力**:建議第一版**只有事件／條件／動作＋狀態機**(沒有變數運算式與函式);不夠用時再加「安全運算式」(同粒子 preset 的白名單)。要不要允許使用者在「進階」裡寫自己的腳本(只在匯出的程式碼裡生效、試玩不執行)?
+6. **遊戲包要不要含編輯歷史**:建議預設含(才能「持續編輯」與重現),提供「精簡匯出」(不含歷史與對話記錄)。
