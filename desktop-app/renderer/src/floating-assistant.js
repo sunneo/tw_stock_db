@@ -29841,7 +29841,9 @@ const ADVANCED_SETTINGS_GROUPS = {
     // 2026-09-30使用者要求：FileAccess是一個獨立分類，Git在它底下有獨立一頁（原本這兩個加YouTube全擠在同一頁）。
     fileaccess: { label: '檔案存取', cats: ['file-access', 'git'], visible: true },
     // YouTube下載設定在「多媒體」底下有自己的一頁。
-    multimedia: { label: '多媒體', cats: ['input', 'multimedia', 'voice', 'youtube'], visible: true },
+    multimedia: { label: '多媒體', cats: ['input', 'multimedia', 'voice', 'image-gen', 'youtube'], visible: true },
+    // 辦公：文件撰寫（/user-guide、/design-guide）等辦公類功能的設定，各自獨立一頁
+    office: { label: '辦公', cats: ['office'], visible: true },
     // tw_stock_db客製: 2026-09-18使用者要求的xterm Configure分頁——獨立
     // 成一個群組（不塞進AI群組底下），因為/run-terminal是桌面/網頁共用的
     // 一個功能本身，不是「AI相關」的子設定，跟multimedia群組同一種「功能
@@ -29851,7 +29853,7 @@ const ADVANCED_SETTINGS_GROUPS = {
     desktop: { label: '桌面程式/單機', cats: [], visible: false },
 };
 // 工程模式（Configure 視窗左下角的勾選）沒打勾時藏起來的設定頁：一般使用者不需要動、預設值就夠用的那些
-const ADVANCED_ENGINEERING_CATS = new Set(['rag', 'git', 'llm-sampling', 'llm-debug', 'subagent', 'voice', 'multimedia', 'youtube', 'offline-trainer', 'offline-models', 'domains', 'functions', 'terminal', 'limits', 'ci-connections', 'designed-tools']);
+const ADVANCED_ENGINEERING_CATS = new Set(['rag', 'git', 'llm-sampling', 'llm-debug', 'subagent', 'voice', 'multimedia', 'image-gen', 'office', 'youtube', 'offline-trainer', 'offline-models', 'domains', 'functions', 'terminal', 'limits', 'ci-connections', 'designed-tools']);
 
 // tw_stock_db客製: 2026-09-20——Chrome擴充功能檔案的後備來源（網頁部署目錄抓不到、或桌面版file://時使用）。
 // tw_stock_db客製: 2026-09-20——啟用瀏覽器控制時，這些工具會被注入「所有」子agent（程式設計/研究/網路搜尋…），
@@ -58803,7 +58805,7 @@ ${sourceTool.handlerScript}
         return {
             'llm-basic': 'LLM 基礎設定', 'llm-sampling': 'LLM Model 管理', 'llm-debug': 'LLM Debug',
             'input': '輸入', 'functions': '自訂函式', 'skills': 'Skill', 'rag': 'RAG 知識庫',
-            'file-access': '檔案存取管理', 'git': 'Git 版本控制', 'youtube': 'YouTube 下載', 'subagent': '子Agent', 'multimedia': '多媒體',
+            'file-access': '檔案存取管理', 'git': 'Git 版本控制', 'youtube': 'YouTube 下載', 'image-gen': '圖像生成', 'office': '辦公（文件撰寫）', 'subagent': '子Agent', 'multimedia': '多媒體',
             'voice': '語音設定', 'limits': '效能與限制', 'terminal': 'xterm 終端機', 'domains': 'Domain 管理', 'browser-control': 'Chrome 瀏覽器控制',
             // tw_stock_db客製: 2026-09-18——host透過registerAdvancedSettingsTab()
             // 額外註冊的cat標籤（見該方法說明），跟內建cat共用同一份查詢
@@ -82144,6 +82146,20 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                     <input type="text" id="ai-git-author-email" class="ai-advanced-input" placeholder="例如：you@example.com">
                                 </div>
                             </div>
+                            <div class="ai-advanced-pane hidden" data-pane="image-gen">
+                                <div class="ai-advanced-stack">
+                                    <label class="ai-advanced-label">圖像生成（generate_image／/image）</label>
+                                    <button type="button" id="ai-imggen-open" class="ai-advanced-btn">⚙ 開啟圖像生成設定</button>
+                                    <p class="ai-advanced-hint">線上金鑰與模型、本機小模型（下載／刪除）、提示詞範本（自己的畫風、品質詞、負面詞）都在這個設定視窗裡；在對話裡打 /image 也有同一個 ⚙ 按鈕。</p>
+                                </div>
+                            </div>
+                            <div class="ai-advanced-pane hidden" data-pane="office">
+                                <div class="ai-advanced-stack">
+                                    <label class="ai-advanced-label">文件撰寫（/user-guide、/design-guide）</label>
+                                    <button type="button" id="ai-docgen-open" class="ai-advanced-btn">⚙ 開啟文件撰寫設定</button>
+                                    <p class="ai-advanced-hint">預設輸出格式與語言、內建範本一覽、自己的範本（章節順序、自訂章節）都在這個設定視窗裡；在對話裡打 /user-guide 或 /design-guide 也有同一個 ⚙ 按鈕。</p>
+                                </div>
+                            </div>
                             <div class="ai-advanced-pane hidden" data-pane="youtube">
                                 <div class="ai-advanced-stack">
                                     <div class="ai-advanced-tools-header">
@@ -82239,16 +82255,6 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                         <option value="top">畫面上方</option>
                                     </select>
                                     <p class="ai-advanced-hint">字級 0.052 大約是常見影片字幕的大小；1080p 影片就是約 56px。其餘外觀（白字黑邊、半透明底、置中換行）用內建預設。</p>
-                                </div>
-                                <div class="ai-advanced-stack">
-                                    <label class="ai-advanced-label">圖像生成（generate_image／/image）</label>
-                                    <button type="button" id="ai-imggen-open" class="ai-advanced-btn">⚙ 開啟圖像生成設定</button>
-                                    <p class="ai-advanced-hint">線上金鑰與模型、本機小模型（下載／刪除）、提示詞範本（自己的畫風、品質詞、負面詞）都在這個設定視窗裡；在對話裡打 /image 也有同一個 ⚙ 按鈕。</p>
-                                </div>
-                                <div class="ai-advanced-stack">
-                                    <label class="ai-advanced-label">文件撰寫（/user-guide、/design-guide）</label>
-                                    <button type="button" id="ai-docgen-open" class="ai-advanced-btn">⚙ 開啟文件撰寫設定</button>
-                                    <p class="ai-advanced-hint">預設輸出格式與語言、內建範本一覽、自己的範本（章節順序、自訂章節）都在這個設定視窗裡；在對話裡打 /user-guide 或 /design-guide 也有同一個 ⚙ 按鈕。</p>
                                 </div>
                                 <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label" for="ai-perf-max-mesh-triangles">匯入3D模型三角形數量上限</label>
