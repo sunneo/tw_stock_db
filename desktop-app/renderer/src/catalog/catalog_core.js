@@ -86,6 +86,7 @@
         R(/^(add|delete|define|register|store|set|learn|teach|annotate|create)_|^(skill_create|log_learn|behavior_define|ref_define|glue_define|rag_store_graph_node|rag_delete|define_snippet|image_parts_teach|image_parts_annotate)$/, 'state.write'),
         R(/^(list|get|query|lookup|read|explain|ref_lookup|ref_types|ref_resolve|ref_validate|ref_expand|log_ask|glue_list|glue_report|skill_list|skill_read|rag_query_graph|rag_chunk_document|programming_knowledge|programming_domains|language_explore|repo_|uefi_parse|diagnose_|lookup_|mix_|uml_guide|uml_design|design_choices|sandbox_capabilities|offline_trainer|big_content|get_tool_details)/, 'state.read'),
         R(/^(render_|begin_presentation|add_chapters|finish_presentation|open_existing_presentation|import_|cute_picture|make_object_sprite|make_character_sprite|pixel_art|ask_user_card|pptx_to_deck|uml_to_code|set_viewer_state|image_(decompose|rig))/, 'ui', 'state.write'),
+        R(/^image_(scene|draft|details|render|check|improve|retouch)$/, 'net', 'state.write'), R(/^image_(mood|lens)$/, 'state.write'), // /image 的規劃單元：會呼叫模型、把圖存進檔案快取
         R(/^(parse_uploaded_file|extract_|merge_pdfs|remove_pdf_pages|images_to_pdf|compare_images|office_export_slide_images|pptx_inspect|compose_video|text_to_speech|concat_audio|burn_subtitles|convert_|transcribe_media|start_dubbing_session|analyze_large_file|get_large_file_analysis_chunk|list_uploaded_files)/, 'state.read', 'state.write'),
     ];
     function effectsOf(name) {

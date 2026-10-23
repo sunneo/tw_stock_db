@@ -95,4 +95,31 @@ t('buildItemOps：rotate／scale 縮寫在前、全域 ops、頁面 ops 在後�
   const r = P.buildItemOps([{ op: 'grayscale' }], { rotate: 90, scale: 50, ops: [{ op: 'blur', radius: 2 }] }); assert.ok(r.ok); assert.deepStrictEqual(r.ops.map((o) => o.op), ['rotate', 'scale', 'grayscale', 'blur']);
   assert.deepStrictEqual(P.buildItemOps([], {}).ops, []); assert.ok(!P.buildItemOps([{ op: 'nope' }], {}).ok);
 });
+// ---- 場景色與鏡頭效果（2026-10-23）
+const mean = (im) => { let s = 0; for (let i = 0; i < im.data.length; i += 4) s += (im.data[i] + im.data[i + 1] + im.data[i + 2]) / 3; return s / (im.data.length / 4); };
+const flat = (w, h, c) => img(w, h, () => c);
+t('暗角：中心不動、角落變暗；strength 0 不動', () => { const o = run(flat(41, 41, [200, 200, 200]), [{ op: 'vignette', strength: 60 }]); assert.ok(px(o, 20, 20)[0] >= 198); assert.ok(px(o, 0, 0)[0] < 150); assert.deepStrictEqual(px(run(flat(9, 9, [200, 200, 200]), [{ op: 'vignette', strength: 0 }]), 0, 0), [200, 200, 200, 255]); });
+t('色相：旋轉 360 度回到原色；灰色不變；120 度讓紅偏向綠', () => { const red = flat(2, 2, [200, 40, 40]); const full = px(run(red, [{ op: 'hue', degrees: 360 }]), 0, 0); assert.ok(Math.abs(full[0] - 200) <= 2 && Math.abs(full[1] - 40) <= 2); const gray = px(run(flat(2, 2, [120, 120, 120]), [{ op: 'hue', degrees: 90 }]), 0, 0); assert.ok(Math.abs(gray[0] - 120) <= 1 && Math.abs(gray[2] - 120) <= 1); const g = px(run(red, [{ op: 'hue', degrees: 120 }]), 0, 0); assert.ok(g[1] > g[0]); });
+t('調色風格：warm 偏暖、cool 偏冷、night 變暗、amount 0 不動；不認得的風格報錯', () => {
+  const base = flat(4, 4, [128, 128, 128]); const w = px(run(base, [{ op: 'grade', preset: 'warm' }]), 0, 0), c = px(run(base, [{ op: 'grade', preset: 'cool' }]), 0, 0); assert.ok(w[0] > w[2]); assert.ok(c[2] > c[0]);
+  assert.ok(mean(run(base, [{ op: 'grade', preset: 'night', amount: 100 }])) < mean(base)); assert.deepStrictEqual(px(run(base, [{ op: 'grade', preset: 'warm', amount: 0 }]), 0, 0), [128, 128, 128, 255]);
+  const bad1 = P.normalizeOps([{ op: 'grade', preset: 'nope' }]); assert.ok(!bad1.ok && /不認得的調色風格/.test(bad1.errors[0])); assert.ok(P.normalizeOps(['grade:dusk']).ok);
+});
+t('陰影與亮部：提亮陰影不動亮部；壓亮部不動陰影', () => { const dark = flat(2, 2, [30, 30, 30]), bright = flat(2, 2, [240, 240, 240]); assert.ok(px(run(dark, [{ op: 'shadows_highlights', shadows: 80 }]), 0, 0)[0] > 40); assert.ok(Math.abs(px(run(bright, [{ op: 'shadows_highlights', shadows: 80 }]), 0, 0)[0] - 240) <= 1); assert.ok(px(run(bright, [{ op: 'shadows_highlights', highlights: 80 }]), 0, 0)[0] < 225); assert.ok(Math.abs(px(run(dark, [{ op: 'shadows_highlights', highlights: 80 }]), 0, 0)[0] - 30) <= 1); });
+t('景深模糊（tilt）：對焦帶清楚、遠處模糊；radial：中心清楚、四周模糊', () => {
+  const stripes = img(40, 40, (x, y) => (y % 2 ? [255, 255, 255] : [0, 0, 0])); const edge = (im, y) => Math.abs(px(im, 20, y)[0] - px(im, 20, y + 1)[0]);
+  const o = run(stripes, [{ op: 'lens_blur', radius: 4, focus: 'center', band: 0.3 }]); assert.ok(edge(o, 20) > 150, '對焦帶應保持銳利'); assert.ok(edge(o, 1) < edge(o, 20) / 2, '遠處要模糊');
+  const r = run(img(41, 41, (x, y) => ((x + y) % 2 ? [255, 255, 255] : [0, 0, 0])), [{ op: 'lens_blur', radius: 4, mode: 'radial' }]); const e = (x, y) => Math.abs(px(r, x, y)[0] - px(r, x + 1, y)[0]); assert.ok(e(20, 20) > e(1, 1));
+});
+t('散景與柔光：亮點周圍變亮、暗處不受影響；不改傳入的圖', () => {
+  const spot = img(41, 41, (x, y) => (x === 20 && y === 20 ? [255, 255, 255] : [10, 10, 10])); const before = Array.from(spot.data);
+  const b = run(spot, [{ op: 'bokeh', radius: 8, strength: 100 }]); assert.ok(px(b, 24, 20)[0] > 30, '光斑要擴散出去'); assert.ok(px(b, 2, 2)[0] <= 12);
+  const blob = img(41, 41, (x, y) => (x >= 17 && x <= 23 && y >= 17 && y <= 23 ? [255, 255, 255] : [10, 10, 10])); const g = run(blob, [{ op: 'glow', radius: 4, threshold: 200, strength: 100 }]); assert.ok(px(g, 27, 20)[0] > 14); assert.ok(px(g, 2, 2)[0] <= 11); assert.deepStrictEqual(Array.from(spot.data), before);
+});
+t('動態模糊：沿方向抹開（水平不影響垂直方向的線）；色差：邊緣出現色邊、中心不動', () => {
+  const line = img(31, 11, (x) => (x === 15 ? [255, 255, 255] : [0, 0, 0])); const m = run(line, [{ op: 'motion_blur', length: 9, angle: 0 }]); assert.ok(px(m, 13, 5)[0] > 0 && px(m, 15, 5)[0] < 255);
+  const vline = img(31, 31, (x) => (x === 15 ? [255, 255, 255] : [0, 0, 0])); const mv = run(vline, [{ op: 'motion_blur', length: 9, angle: 90 }]); assert.ok(px(mv, 15, 15)[0] >= 250 && px(mv, 13, 15)[0] === 0);
+  const bars = img(61, 61, (x) => (x % 6 < 3 ? [255, 255, 255] : [0, 0, 0])); const c = run(bars, [{ op: 'chroma_shift', amount: 4 }]); assert.deepStrictEqual(px(c, 30, 30), px(bars, 30, 30)); let diff = 0; for (let x = 50; x < 59; x++) if (px(c, x, 30)[0] !== px(c, x, 30)[2]) diff++; assert.ok(diff > 0);
+});
+t('新操作的名稱與縮寫都進了 normalizeOps（中英文別名）', () => { for (const s of ['vignette:40', '暗角', 'hue:90', '色相:30', 'grade:dusk', '景深', 'lens_blur:6', '散景', 'bokeh:8', 'glow:40', '柔光', 'motion_blur:12', '動態模糊', 'chromatic_aberration', '色差']) assert.ok(P.normalizeOps([s]).ok, s + ' ' + P.normalizeOps([s]).errors); assert.ok(!P.normalizeOps([{ op: 'vignette', strength: 500 }]).ok); });
 console.log(ok + ' passed, ' + bad.length + ' failed', bad); process.exit(bad.length ? 1 : 0);

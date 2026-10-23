@@ -11217,6 +11217,7 @@ const holder = {};
         R(/^(add|delete|define|register|store|set|learn|teach|annotate|create)_|^(skill_create|log_learn|behavior_define|ref_define|glue_define|rag_store_graph_node|rag_delete|define_snippet|image_parts_teach|image_parts_annotate)$/, 'state.write'),
         R(/^(list|get|query|lookup|read|explain|ref_lookup|ref_types|ref_resolve|ref_validate|ref_expand|log_ask|glue_list|glue_report|skill_list|skill_read|rag_query_graph|rag_chunk_document|programming_knowledge|programming_domains|language_explore|repo_|uefi_parse|diagnose_|lookup_|mix_|uml_guide|uml_design|design_choices|sandbox_capabilities|offline_trainer|big_content|get_tool_details)/, 'state.read'),
         R(/^(render_|begin_presentation|add_chapters|finish_presentation|open_existing_presentation|import_|cute_picture|make_object_sprite|make_character_sprite|pixel_art|ask_user_card|pptx_to_deck|uml_to_code|set_viewer_state|image_(decompose|rig))/, 'ui', 'state.write'),
+        R(/^image_(scene|draft|details|render|check|improve|retouch)$/, 'net', 'state.write'), R(/^image_(mood|lens)$/, 'state.write'), // /image 的規劃單元：會呼叫模型、把圖存進檔案快取
         R(/^(parse_uploaded_file|extract_|merge_pdfs|remove_pdf_pages|images_to_pdf|compare_images|office_export_slide_images|pptx_inspect|compose_video|text_to_speech|concat_audio|burn_subtitles|convert_|transcribe_media|start_dubbing_session|analyze_large_file|get_large_file_analysis_chunk|list_uploaded_files)/, 'state.read', 'state.write'),
     ];
     function effectsOf(name) {
@@ -17392,6 +17393,35 @@ const holder = {};
     if (ops.length || st.std >= 38) { ops.push({ op: 'sharpen', amount: 0.5, radius: 1.2, threshold: 2 }); why.push('輕微銳化'); }
     return { ops: ops, why: why, flat: st.std < 8 };
   }
+
+  // ───── ⑥ 後製：場景色與光影、鏡頭效果（程式查表決定，不問模型；操作名稱沿用 imgproc）─────
+  var MOOD_TABLE = [
+    [/golden hour/, [{ op: 'grade', preset: 'dusk', amount: 50 }, { op: 'vignette', strength: 25 }], '黃昏：暖色調色與暗角'],
+    [/night|moonlight/, [{ op: 'grade', preset: 'night', amount: 55 }, { op: 'vignette', strength: 35 }], '夜晚：冷暗色調色與暗角'],
+    [/neon/, [{ op: 'grade', preset: 'teal_orange', amount: 50 }, { op: 'glow', strength: 35, radius: 10, threshold: 190 }], '霓虹：青橘調色與柔光'],
+    [/morning|sunrise/, [{ op: 'grade', preset: 'warm', amount: 35 }, { op: 'glow', strength: 25, radius: 12, threshold: 200 }], '晨光：暖色與柔光'],
+    [/backlit|rim/, [{ op: 'shadows_highlights', shadows: 30, highlights: 20 }, { op: 'glow', strength: 30, radius: 10, threshold: 200 }], '逆光：提亮陰影、壓亮部、柔光'],
+    [/overcast|fog/, [{ op: 'grade', preset: 'fade', amount: 35 }], '陰天：柔和褪色'],
+    [/mysterious|eerie/, [{ op: 'grade', preset: 'night', amount: 35 }, { op: 'vignette', strength: 40 }], '神秘：偏冷暗與暗角'],
+    [/epic|grand/, [{ op: 'grade', preset: 'teal_orange', amount: 35 }, { op: 'vignette', strength: 30 }], '史詩：青橘調色與暗角'],
+    [/warm, cozy/, [{ op: 'grade', preset: 'warm', amount: 40 }], '溫馨：暖色'],
+    [/serene/, [{ op: 'grade', preset: 'cool', amount: 25 }], '寧靜：偏冷柔和']
+  ];
+  function moodOps(slots) {
+    var keys = [slots.lighting && slots.lighting.tag, slots.mood && slots.mood.tag].filter(Boolean), ops = [], why = [], used = {};
+    keys.forEach(function (k) { for (var i = 0; i < MOOD_TABLE.length; i++) if (MOOD_TABLE[i][0].test(k)) { var row = MOOD_TABLE[i], any = false; row[1].forEach(function (o) { if (used[o.op]) return; used[o.op] = true; ops.push(JSON.parse(JSON.stringify(o))); any = true; }); if (any) why.push(row[2]); break; } });
+    return { ops: ops, why: why };
+  }
+  function lensOps(slots, request) {
+    var t = String(request || ''), cam = slots.camera && slots.camera.tag || '', light = slots.lighting && slots.lighting.tag || '', ops = [], why = [];
+    if (/close-up/.test(cam)) { ops.push({ op: 'lens_blur', radius: 8, mode: 'radial', band: 0.35 }); why.push('特寫：淺景深（中心清楚、四周模糊）'); }
+    else if (/top-down|aerial/.test(cam)) { ops.push({ op: 'lens_blur', radius: 6, mode: 'tilt', focus: 'center', band: 0.25 }); why.push('俯視：移軸般的帶狀景深'); }
+    if (/散景|bokeh/i.test(t) || (/night|neon/.test(light) && /城市|街|燈|音樂會|演唱會|夜景/.test(t))) { ops.push({ op: 'bokeh', radius: 10, threshold: 205, strength: 55 }); why.push('夜間燈光：散景光斑'); }
+    if (/奔跑|賽車|速度|疾駛|飛奔|追逐|動感|motion/i.test(t)) { ops.push({ op: 'motion_blur', length: 14, angle: 0 }); why.push('有速度感：水平動態模糊'); }
+    if (/復古|老電影|懷舊|底片|film|retro/i.test(t)) { ops.push({ op: 'chroma_shift', amount: 2 }); why.push('復古：輕微色差'); }
+    return { ops: ops, why: why };
+  }
+
   function checkBrief(request, items) {
     return 'Look at this image. The request was: ' + String(request || '').slice(0, 200) + '\nWhich of these required elements are NOT clearly visible? ' + items.slice(0, 8).join('; ') + '\nAnswer only with JSON: {"missing":["element",...],"ok":true|false}';
   }
@@ -17497,13 +17527,139 @@ const holder = {};
     return out;
   }
 
-  return { detailMissing: detailMissing, detailBrief: detailBrief, applyDetails: applyDetails, imageStats: imageStats, retouchPlan: retouchPlan, checkBrief: checkBrief, parseCheck: parseCheck, draftGaps: draftGaps, draftRequest: draftRequest, RELATIONS: RELATIONS, applyScene: applyScene, reflectNeeded: reflectNeeded, reflectBrief: reflectBrief, applyReflection: applyReflection, configure: configure, classify: classify, diagramType: diagramType, STYLES: STYLES, FAMILIES: FAMILIES, extractSlots: extractSlots, mergeSlots: mergeSlots, familyOf: familyOf, estimateTokens: estimateTokens, buildPrompt: buildPrompt, slotsFromCaption: slotsFromCaption, svgBrief: svgBrief, mermaidBrief: mermaidBrief, extractSvg: extractSvg, extractMermaid: extractMermaid, validateSvg: validateSvg, validateMermaid: validateMermaid, plan: plan, ascii: ascii };
+  return { moodOps: moodOps, lensOps: lensOps, detailMissing: detailMissing, detailBrief: detailBrief, applyDetails: applyDetails, imageStats: imageStats, retouchPlan: retouchPlan, checkBrief: checkBrief, parseCheck: parseCheck, draftGaps: draftGaps, draftRequest: draftRequest, RELATIONS: RELATIONS, applyScene: applyScene, reflectNeeded: reflectNeeded, reflectBrief: reflectBrief, applyReflection: applyReflection, configure: configure, classify: classify, diagramType: diagramType, STYLES: STYLES, FAMILIES: FAMILIES, extractSlots: extractSlots, mergeSlots: mergeSlots, familyOf: familyOf, estimateTokens: estimateTokens, buildPrompt: buildPrompt, slotsFromCaption: slotsFromCaption, svgBrief: svgBrief, mermaidBrief: mermaidBrief, extractSvg: extractSvg, extractMermaid: extractMermaid, validateSvg: validateSvg, validateMermaid: validateMermaid, plan: plan, ascii: ascii };
 });
 
 }).call(null, undefined, holder);
 return holder.FaImageRoute;
 })();
 /* IMGROUTE-END */
+/* IMGPLAN-BEGIN */
+const FaImagePlan = (function () {
+const holder = {};
+(function (module, self) {
+/*
+ * /image 的規劃（UML design 的做法）：不論模型大小，面對任意任務都可能誤解，所以不寫死流程，而是由上而下一直細切——
+ * 目標 → 步驟 → 更小的步驟 …… 切到每一步都剛好是一個「單元」（不可再切）為止；再把單元依型別接線，變成可以靜態檢查、直譯執行的程式（IR，格式同單元目錄的 catalog_run）。
+ * 弱到連規劃都做不到時（沒有模型、模型答不出來、答案不合格），就退回「樣板」（離線訓練器的概念：同類題目的現成做法）。
+ *
+ *   UNITS                         圖像單元（每個單元是一個註冊的工具：image_scene、image_draft…；輸入輸出的欄位名稱就是接線的型別）
+ *   chooseTemplate(signals)       樣板：簡單題目（direct）、場景類（scene）
+ *   normalize(names)              整理單元清單：補上缺的前置單元、依接線順序排好、一定要有生成；回報補了什麼、丟了什麼
+ *   cut({request, ask})           用模型由上而下細切（ask 是注入的；每一問都是封閉的小問題，答案都被驗證）→ { units, tree, calls, gaps }
+ *   toProgram(units)              依單元宣告的輸入輸出欄位接線 → IR 程式（{ version, inputs, steps:[{id, call, args}], return }）
+ *   toText(units, tree)           給人看的規劃（過程記錄用）
+ * 純函式（UMD）；模型（ask）與執行（直譯器）都是注入的。
+ */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaImagePlan = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  // 輸入：request 是使用者的需求（程式的輸入）；其餘欄位名稱（scene、image、verdict）是前面單元的輸出，由接線自動接上。
+  // 順序（order）＝接線上合理的先後：後面的單元要用前面單元的輸出。
+  var UNITS = [
+    { name: 'image_scene', label: '場景', order: 1, needs: ['request'], gives: 'scene', zh: ['場景', '素材', '布置', '佈置', '構想', '反思', '想一想', '理解', '元素', '主體', '道具', '關係'], hint: '查場景素材目錄、請模型想要準備哪些主體與道具、各放哪裡' },
+    { name: 'image_draft', label: '草稿', order: 2, needs: ['request', 'scene'], gives: 'scene', zh: ['草稿', '構圖', '草圖', '佈局', '版面', '位置'], hint: '用通用繪圖畫構圖草稿，給視覺模型看它看到什麼' },
+    { name: 'image_details', label: '細節', order: 3, needs: ['request', 'scene'], gives: 'scene', zh: ['細節', '畫風', '風格', '光線', '光影', '鏡頭', '氣氛', '色調'], hint: '畫風、光線、鏡頭、氣氛還沒定的，從封閉清單裡挑' },
+    { name: 'image_render', label: '生成', order: 4, needs: ['request'], opt: ['scene'], gives: 'image', zh: ['生成', '繪製', '畫出', '產生', '出圖', '擴散', '渲染', '提示詞'], hint: '依模型族套提示詞範本，交給擴散模型畫出圖' },
+    { name: 'image_check', label: '檢查', order: 5, needs: ['request', 'image'], opt: ['scene'], gives: 'verdict', zh: ['檢查', '驗證', '確認', '缺少', '缺漏', '比對', '看看'], hint: '請視覺模型看成品，缺了哪些要的元素' },
+    { name: 'image_improve', label: '補強', order: 6, needs: ['request', 'image', 'verdict'], opt: ['scene'], gives: 'image', zh: ['補強', '補上', '重畫', '改善', '補足'], hint: '成品缺了元素就加強後重畫一次（沒缺就不動）' },
+    { name: 'image_mood', label: '場景色', order: 7, needs: ['image'], opt: ['scene'], gives: 'image', zh: ['場景色', '調色', '色調', '氛圍', '光影', '暗角', '柔光', '色溫', '冷暖', '氣氛色'], hint: '依光線與氣氛調場景色與光影（調色風格、暗角、柔光、陰影與亮部），程式查表決定' },
+    { name: 'image_lens', label: '鏡頭', order: 8, needs: ['image'], opt: ['scene'], gives: 'image', zh: ['鏡頭效果', '景深', '散景', '動態模糊', '模糊', '色差', '鏡頭'], hint: '依鏡頭與題材加鏡頭效果（景深模糊、散景、動態模糊、色差），程式查表決定' },
+    { name: 'image_retouch', label: '修圖', order: 9, needs: ['image'], gives: 'image', zh: ['修圖', '後製', '微調', '調色', '亮度', '對比', '銳化', '整合', '潤飾'], hint: '程式量亮度、對比、飽和度，需要時用圖片後製修一次（原圖留著）' }
+  ];
+  var BY_NAME = {}; UNITS.forEach(function (u) { BY_NAME[u.name] = u; });
+  // 前置：某單元要用的欄位，一定要有人給（除了 request）
+  function providerOf(field) { for (var i = 0; i < UNITS.length; i++) if (UNITS[i].gives === field) return UNITS[i]; return null; }
+
+  // 樣板（離線訓練器的概念）：沒有模型、模型不可靠時的現成做法
+  var TEMPLATES = {
+    direct: { id: 'direct', label: '簡單題目：直接生成再修圖', units: ['image_render', 'image_retouch'] },
+    scene: { id: 'scene', label: '場景類：場景→草稿→細節→生成→檢查→補強→場景色→鏡頭→修圖', units: ['image_scene', 'image_draft', 'image_details', 'image_render', 'image_check', 'image_improve', 'image_mood', 'image_lens', 'image_retouch'] }
+  };
+  // signals: { complex（目錄命中、需要反思、多個主體…）, draft（明確要草稿）, check: false 等 }
+  function chooseTemplate(sig) {
+    sig = sig || {}; var t = sig.complex || sig.draft ? TEMPLATES.scene : TEMPLATES.direct, u = t.units.slice();
+    if (sig.draft === false) u = u.filter(function (x) { return x !== 'image_draft'; });
+    if (sig.check === false) u = u.filter(function (x) { return x !== 'image_check' && x !== 'image_improve'; });
+    if (sig.retouch === false) u = u.filter(function (x) { return x !== 'image_retouch'; });
+    return { id: t.id, label: t.label, units: normalize(u).units };
+  }
+
+  // 整理：丟掉不認得的與重複的、補上缺的前置、依接線順序排好、一定要有 image_render
+  function normalize(names) {
+    var dropped = [], added = [], set = {};
+    (names || []).forEach(function (n) { if (BY_NAME[n]) set[n] = true; else dropped.push(String(n)); });
+    set.image_render = set.image_render || (added.push('image_render'), true);
+    var changed = true; while (changed) { changed = false; Object.keys(set).forEach(function (n) { BY_NAME[n].needs.forEach(function (f) { if (f === 'request') return; var have = Object.keys(set).some(function (m) { return m !== n && BY_NAME[m].gives === f && BY_NAME[m].order < BY_NAME[n].order; }); if (!have) { var p = providerOf(f); if (p && !set[p.name]) { set[p.name] = true; added.push(p.name); changed = true; } } }); }); }
+    var units = Object.keys(set).sort(function (a, b) { return BY_NAME[a].order - BY_NAME[b].order; });
+    return { units: units, added: added, dropped: dropped, reordered: false };
+  }
+
+  // 一句話對到哪個單元：用中文用詞比對（程式先做，不用問模型）；分數是命中字數
+  function pickUnit(text) {
+    var t = String(text || ''), best = null, bs = 0, tie = false;
+    UNITS.forEach(function (u) { var s = 0; u.zh.concat([u.label]).forEach(function (w) { if (t.indexOf(w) >= 0) s += w.length; }); if (s > bs) { best = u; bs = s; tie = false; } else if (s === bs && s > 0) tie = true; });
+    return { unit: tie ? null : best, score: bs, tie: tie };
+  }
+
+  // ───── 由上而下細切（模型 ask：prompt → 文字）─────
+  function unitMenu() { return UNITS.map(function (u) { return '- ' + u.label + '：' + u.hint; }).join('\n'); }
+  function rootPrompt(request) {
+    return '要做的事：把使用者要的圖畫出來。使用者要的是：「' + String(request || '').slice(0, 300) + '」\n這個系統有下面這些步驟單元（每個單元是一個不能再切的動作）：\n' + unitMenu() + '\n請把這件事切成需要的步驟，每一行一個，格式「單元名稱：這一步要做什麼（一句話）」。單元名稱只能是上面列的；用不到的不用寫，簡單的事可以只寫兩三步。只輸出這幾行。';
+  }
+  function subPrompt(step, request) {
+    return '使用者要的是：「' + String(request || '').slice(0, 200) + '」\n其中一步是：「' + String(step || '').slice(0, 120) + '」，它不是單一單元。可用的單元：\n' + unitMenu() + '\n請說這一步要用哪幾個單元完成（依先後順序），只輸出單元名稱，用逗號分隔。';
+  }
+  function parseUnits(text) { var out = []; String(text || '').split(/[,，、\n]/).forEach(function (x) { var p = pickUnit(x); if (p.unit && out.indexOf(p.unit.name) < 0) out.push(p.unit.name); }); return out; }
+  // ask: (prompt) → Promise<string>。maxCalls：最多問幾次（含根）；depth 最多 2 層（根 → 步驟 → 子步驟）
+  async function cut(o) {
+    var ask = o.ask, request = o.request, maxCalls = o.maxCalls || 6, calls = 0, tree = [], units = [], gaps = [];
+    var reply = ''; try { calls++; reply = await ask(rootPrompt(request)); } catch (e) { return { ok: false, error: '規劃時模型沒有回應：' + String((e && e.message) || e).slice(0, 100), units: [], tree: [], calls: calls, gaps: gaps }; }
+    var lines = String(reply || '').split('\n').map(function (l) { return l.replace(/^[\s\-*\d.、)）]+/, '').trim(); }).filter(Boolean).slice(0, 8);
+    if (!lines.length) return { ok: false, error: '模型的規劃是空的', units: [], tree: [], calls: calls, gaps: gaps };
+    for (var i = 0; i < lines.length; i++) {
+      var ln = lines[i], m = /^([^：:]{1,12})[：:]\s*(.*)$/.exec(ln), head = m ? m[1] : ln, desc = m ? m[2] : ln, p = pickUnit(head);
+      if (p.unit) { tree.push({ goal: desc || ln, unit: p.unit.name }); units.push(p.unit.name); continue; }
+      var q = pickUnit(ln); if (q.unit) { tree.push({ goal: ln, unit: q.unit.name }); units.push(q.unit.name); continue; }
+      // 不是單一單元：再細切一層
+      if (calls >= maxCalls) { gaps.push(ln.slice(0, 40)); tree.push({ goal: ln, gap: true }); continue; }
+      var sub = []; try { calls++; sub = parseUnits(await ask(subPrompt(ln, request))); } catch (_) { sub = []; }
+      if (sub.length) { tree.push({ goal: ln, children: sub.map(function (n) { return { goal: BY_NAME[n].label, unit: n }; }) }); sub.forEach(function (n) { units.push(n); }); } else { gaps.push(ln.slice(0, 40)); tree.push({ goal: ln, gap: true }); }
+    }
+    var n = normalize(units);
+    return { ok: n.units.length > 0 && gaps.length < lines.length, units: n.units, added: n.added, dropped: n.dropped, tree: tree, calls: calls, gaps: gaps };
+  }
+
+  // ───── 接線：依單元宣告的輸入輸出欄位，把 request 與前面單元的輸出接到後面的單元 → IR 程式 ─────
+  // 單元的回傳值是 { ok, <gives>: {…} }（例如 image_scene 回 { ok, scene }）；引用寫成 $ref:"步驟.欄位"。
+  function toProgram(names) {
+    var n = normalize(names).units, program = { version: 1, inputs: { request: { type: 'text' } }, steps: [] }, made = {};
+    n.forEach(function (name, i) {
+      var u = BY_NAME[name], id = 's' + (i + 1), args = {};
+      u.needs.concat(u.opt || []).forEach(function (f) {
+        if (f === 'request') { args.request = { $in: 'request' }; return; }
+        var src = made[f]; if (src) args[f] = { $ref: src + '.' + f };
+      });
+      program.steps.push({ id: id, call: 'tool:' + name, args: args }); made[u.gives] = id;
+    });
+    program.return = { $ref: made.image + '.image' };
+    return program;
+  }
+  function toText(units, tree) {
+    var lines = (units || []).map(function (n, i) { var u = BY_NAME[n]; return (i + 1) + '. ' + u.label + '（' + n + '）— ' + u.hint; });
+    if (tree && tree.length) lines.push('（細切的過程：' + tree.map(function (t) { return t.gap ? '「' + t.goal.slice(0, 20) + '」切不下去' : (t.children ? '「' + t.goal.slice(0, 20) + '」→ ' + t.children.map(function (c) { return c.goal; }).join('＋') : '「' + (t.goal || '').slice(0, 20) + '」＝' + BY_NAME[t.unit].label); }).join('；') + '）');
+    return lines.join('\n');
+  }
+
+  return { UNITS: UNITS, TEMPLATES: TEMPLATES, chooseTemplate: chooseTemplate, normalize: normalize, pickUnit: pickUnit, rootPrompt: rootPrompt, subPrompt: subPrompt, parseUnits: parseUnits, cut: cut, toProgram: toProgram, toText: toText };
+});
+
+}).call(null, undefined, holder);
+return holder.FaImagePlan;
+})();
+/* IMGPLAN-END */
 /* SCENECAT-BEGIN */
 const FaSceneCatalog = (function () {
 const holder = {};
@@ -24176,6 +24332,8 @@ const holder = {};
  *   影像強化 enhance（自動對比＋輕微銳化＋飽和度）、色調強化 tone（自動白平衡＋對比＋飽和度＋色溫）、減少色彩 reduce_colors（中位切割，可抖色）、
  *   色階分離 posterize、二值化 threshold（預設 Otsu）、反相 invert、高斯模糊 blur、銳化 sharpen、馬賽克 mosaic（可只蓋一個區域）、
  *   旋轉 rotate（任意角度，順時針）、縮放 scale、裁切 crop、翻轉 flip。
+ *   場景色與鏡頭效果（2026-10-23）：暗角 vignette、色相 hue、調色風格 grade（warm／cool／dusk／night／noon／teal_orange／sepia／fade）、陰影與亮部 shadows_highlights、
+ *   景深模糊 lens_blur（tilt／radial）、散景 bokeh、柔光 glow、動態模糊 motion_blur、色差 chroma_shift。
  * 為什麼全部用純 JS 寫（不用 canvas filter）：可以在 Node 裡單元測試、結果可重現（不看瀏覽器版本）、可以放進 worker。
  * normalizeOps 先驗證整串操作（名稱、參數範圍）再開始處理——有一個錯就整串不跑，不會做到一半才失敗。 */
 (function (root, factory) {
@@ -24195,6 +24353,9 @@ const holder = {};
         posterize: ['posterize', '色階分離'], threshold: ['threshold', 'binarize', 'binary', '二值化', '黑白二值'], invert: ['invert', 'negative', '反相', '負片'],
         blur: ['blur', 'gaussian_blur', 'gaussian', 'gauss', '高斯模糊', '模糊'], sharpen: ['sharpen', 'unsharp', '銳化', '銳利化'],
         mosaic: ['mosaic', 'pixelate', 'pixelize', '馬賽克', '像素化'],
+        vignette: ['vignette', 'vignetting', '暗角', '周邊暗角', '暈影'], hue: ['hue', 'hue_rotate', 'hue_shift', '色相', '色相旋轉'], grade: ['grade', 'color_grade', 'colour_grade', 'grading', '調色風格', '場景色', '色調風格', '電影調色'],
+        shadows_highlights: ['shadows_highlights', 'shadow_highlight', 'shadows', 'highlights', '陰影亮部', '陰影與亮部', '光影'], lens_blur: ['lens_blur', 'depth_of_field', 'dof', 'tilt_shift', '鏡頭模糊', '景深', '景深模糊'], bokeh: ['bokeh', '散景', '光斑'],
+        glow: ['glow', 'bloom', 'soft_glow', '柔光', '光暈', '泛光'], motion_blur: ['motion_blur', 'motion', '動態模糊', '移動模糊', '動感模糊'], chroma_shift: ['chroma_shift', 'chromatic_aberration', 'aberration', '色差', '色散'],
         rotate: ['rotate', 'rotation', '旋轉'], scale: ['scale', 'resize', 'zoom', '縮放', '調整大小', '縮小', '放大'], crop: ['crop', 'trim', '裁切', '裁剪'], flip: ['flip', 'mirror', '翻轉', '鏡像'],
     };
     const NAME_OF = Object.create(null);
@@ -24447,11 +24608,96 @@ const holder = {};
     }
 
     // ───────────────────────── 操作清單的驗證與執行 ─────────────────────────
-    const PIXEL_FN = { grayscale, brightness, contrast, saturation, gamma, auto_contrast: autoContrast, enhance, tone, reduce_colors: reduceColors, posterize, threshold, invert, blur, sharpen, mosaic };
+    // ───── 場景色、光影、鏡頭效果（2026-10-23 新增：暗角、色相、調色風格、陰影與亮部、景深模糊、散景、動態模糊、色差、柔光）─────
+    const smooth = (a, b, x) => { const t = clampN((x - a) / ((b - a) || 1), 0, 1); return t * t * (3 - 2 * t); };
+    // 暗角：由中心往外變暗；strength 0..100（預設 35），radius 0.3..1.2（預設 0.75，亮區到畫面對角線一半的幾分之幾）
+    function vignette(img, p) {
+        const s = clampN(num(p.strength, 35), 0, 100) / 100, r = clampN(num(p.radius, 0.75), 0.3, 1.2), w = img.width, h = img.height, d = img.data, cx = (w - 1) / 2, cy = (h - 1) / 2, rmax = Math.sqrt(cx * cx + cy * cy) || 1;
+        for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const dist = Math.sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy)) / rmax, k = 1 - s * smooth(r * 0.55, r * 1.25, dist), i = (y * w + x) * 4; d[i] *= k; d[i + 1] *= k; d[i + 2] *= k; }
+        return img;
+    }
+    // 色相旋轉（度）：用 YIQ 空間的旋轉矩陣，亮度不變
+    function hue(img, p) {
+        const a = (num(p.degrees != null ? p.degrees : p.amount, 0) % 360) * Math.PI / 180, c = Math.cos(a), s = Math.sin(a), d = img.data;
+        const m = [0.299 + 0.701 * c + 0.168 * s, 0.587 - 0.587 * c + 0.330 * s, 0.114 - 0.114 * c - 0.497 * s, 0.299 - 0.299 * c - 0.328 * s, 0.587 + 0.413 * c + 0.035 * s, 0.114 - 0.114 * c + 0.292 * s, 0.299 - 0.300 * c + 1.250 * s, 0.587 - 0.588 * c - 1.050 * s, 0.114 + 0.886 * c - 0.203 * s];
+        for (let i = 0; i < d.length; i += 4) { const r = d[i], g = d[i + 1], b = d[i + 2]; d[i] = m[0] * r + m[1] * g + m[2] * b; d[i + 1] = m[3] * r + m[4] * g + m[5] * b; d[i + 2] = m[6] * r + m[7] * g + m[8] * b; }
+        return img;
+    }
+    // 調色風格（場景色）：每個預設是「暗部色、亮部色、整體增益」，依 amount（0..100，預設 60）跟原圖混合
+    const GRADES = {
+        warm: { shadow: [20, 6, 0], light: [30, 14, -10], gain: [1.06, 1.0, 0.92] }, cool: { shadow: [-6, 2, 16], light: [-10, 0, 14], gain: [0.94, 1.0, 1.08] },
+        dusk: { shadow: [24, -4, 22], light: [34, 12, -14], gain: [1.08, 0.96, 0.96] }, night: { shadow: [-12, -4, 22], light: [-18, -2, 16], gain: [0.78, 0.86, 1.1], dim: 0.82 },
+        noon: { shadow: [0, 0, 0], light: [6, 6, 0], gain: [1.04, 1.04, 1.0], boost: 1.08 }, teal_orange: { shadow: [-14, 6, 14], light: [26, 10, -18], gain: [1.02, 1.0, 1.0] },
+        sepia: { sepia: true }, fade: { fade: 28 }
+    };
+    function grade(img, p) {
+        const g = GRADES[String(p.preset || 'warm').toLowerCase()] || GRADES.warm, amt = clampN(num(p.amount, 60), 0, 100) / 100, d = img.data;
+        for (let i = 0; i < d.length; i += 4) {
+            const r = d[i], gg = d[i + 1], b = d[i + 2], y = luma(r, gg, b) / 255; let nr, ng, nb;
+            if (g.sepia) { nr = 0.393 * r + 0.769 * gg + 0.189 * b; ng = 0.349 * r + 0.686 * gg + 0.168 * b; nb = 0.272 * r + 0.534 * gg + 0.131 * b; }
+            else if (g.fade) { nr = r * 0.88 + g.fade; ng = gg * 0.88 + g.fade; nb = b * 0.88 + g.fade; }
+            else { const t = smooth(0.15, 0.85, y); nr = (r + g.shadow[0] * (1 - t) + g.light[0] * t) * g.gain[0]; ng = (gg + g.shadow[1] * (1 - t) + g.light[1] * t) * g.gain[1]; nb = (b + g.shadow[2] * (1 - t) + g.light[2] * t) * g.gain[2]; if (g.dim) { nr *= g.dim; ng *= g.dim; nb *= g.dim; } if (g.boost) { nr *= g.boost; ng *= g.boost; nb *= g.boost; } }
+            d[i] = r + (nr - r) * amt; d[i + 1] = gg + (ng - gg) * amt; d[i + 2] = b + (nb - b) * amt;
+        }
+        return img;
+    }
+    // 陰影與亮部：shadows／highlights −100..100（正＝提亮陰影、壓低亮部細節）
+    function shadowsHighlights(img, p) {
+        const sh = clampN(num(p.shadows, 0), -100, 100) / 100 * 60, hl = clampN(num(p.highlights, 0), -100, 100) / 100 * 60, d = img.data;
+        for (let i = 0; i < d.length; i += 4) { const y = luma(d[i], d[i + 1], d[i + 2]) / 255, add = sh * (1 - smooth(0.05, 0.55, y)) - hl * smooth(0.5, 0.95, y); d[i] += add; d[i + 1] += add; d[i + 2] += add; }
+        return img;
+    }
+    // 景深（鏡頭）模糊：離對焦位置越遠越模糊。focus：'center' | 'top' | 'bottom' | 0..100（對焦位置，百分比）；band：清楚的範圍（0.05..0.9，預設 0.3）；mode：'tilt'（水平帶狀，預設）或 'radial'（中心清楚、四周模糊）
+    function lensBlur(img, p) {
+        const rad = clampN(num(p.radius, 8), 0.5, 60), band = clampN(num(p.band, 0.3), 0.05, 0.9), mode = String(p.mode || 'tilt').toLowerCase(), w = img.width, h = img.height;
+        let f = p.focus; const fy = f === 'top' ? 0.1 : f === 'bottom' ? 0.9 : (f == null || f === 'center') ? 0.5 : clampN(num(f, 50) / 100, 0, 1);
+        const sharp = clone(img), bl = blur(clone(img), { sigma: rad }), d = img.data, a = sharp.data, b = bl.data;
+        for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+            const dist = mode === 'radial' ? Math.sqrt(((x - w / 2) / (w / 2)) ** 2 + ((y - h * fy) / (h / 2)) ** 2) / 1.2 : Math.abs(y / h - fy) * 2, k = smooth(band * 0.5, band * 0.5 + 0.55, dist), i = (y * w + x) * 4;
+            d[i] = a[i] + (b[i] - a[i]) * k; d[i + 1] = a[i + 1] + (b[i + 1] - a[i + 1]) * k; d[i + 2] = a[i + 2] + (b[i + 2] - a[i + 2]) * k;
+        }
+        return img;
+    }
+    // 圓盤模糊的亮部光斑（散景）：只取亮部（亮度 ≥ threshold），用圓盤核模糊後用「濾色」疊回去；為了不慢，在縮小的圖上算
+    function bokeh(img, p) {
+        const rad = clampN(num(p.radius, 10), 2, 40), thr = clampN(num(p.threshold, 200), 100, 254), strength = clampN(num(p.strength, 60), 0, 100) / 100, w = img.width, h = img.height, f = Math.max(1, Math.ceil(rad / 5)), sw = Math.max(1, Math.round(w / f)), sh = Math.max(1, Math.round(h / f)), sr = Math.max(1, Math.round(rad / f));
+        const small = make(sw, sh), sd = small.data, d = img.data;
+        for (let y = 0; y < sh; y++) for (let x = 0; x < sw; x++) { const si = (Math.min(h - 1, y * f) * w + Math.min(w - 1, x * f)) * 4, o = (y * sw + x) * 4, yy = luma(d[si], d[si + 1], d[si + 2]); if (yy >= thr) { sd[o] = d[si]; sd[o + 1] = d[si + 1]; sd[o + 2] = d[si + 2]; } sd[o + 3] = 255; }
+        const out = new Float32Array(sw * sh * 3), offs = []; for (let dy = -sr; dy <= sr; dy++) for (let dx = -sr; dx <= sr; dx++) if (dx * dx + dy * dy <= sr * sr) offs.push([dx, dy]);
+        for (let y = 0; y < sh; y++) for (let x = 0; x < sw; x++) { let r = 0, g = 0, b = 0, n = 0; for (const [dx, dy] of offs) { const xx = x + dx, yy2 = y + dy; if (xx < 0 || yy2 < 0 || xx >= sw || yy2 >= sh) continue; const o = (yy2 * sw + xx) * 4; r += sd[o]; g += sd[o + 1]; b += sd[o + 2]; n++; } const o2 = (y * sw + x) * 3; const nrm = (offs.length * 0.2) || 1; /* 光斑要亮得看得見：不照能量守恆平均（那樣單一亮點會暗到看不見） */ out[o2] = r / nrm; out[o2 + 1] = g / nrm; out[o2 + 2] = b / nrm; }
+        for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const sx = Math.min(sw - 1, Math.floor(x / f)), sy = Math.min(sh - 1, Math.floor(y / f)), o = (sy * sw + sx) * 3, i = (y * w + x) * 4; for (let c = 0; c < 3; c++) { const add = out[o + c] * strength * 1.6; d[i + c] = 255 - (255 - d[i + c]) * (255 - clampN(add, 0, 255)) / 255; } }
+        return img;
+    }
+    // 柔光（bloom）：亮部模糊後濾色疊回
+    function glow(img, p) {
+        const rad = clampN(num(p.radius, 12), 1, 80), thr = clampN(num(p.threshold, 190), 80, 254), strength = clampN(num(p.strength, 50), 0, 100) / 100, hl = clone(img), hd = hl.data;
+        for (let i = 0; i < hd.length; i += 4) if (luma(hd[i], hd[i + 1], hd[i + 2]) < thr) { hd[i] = hd[i + 1] = hd[i + 2] = 0; }
+        blur(hl, { sigma: rad }); const d = img.data;
+        for (let i = 0; i < d.length; i += 4) for (let c = 0; c < 3; c++) { const add = hd[i + c] * strength; d[i + c] = 255 - (255 - d[i + c]) * (255 - add) / 255; }
+        return img;
+    }
+    // 動態模糊：沿 angle（度，0＝水平）方向平均 length 個取樣點
+    function motionBlur(img, p) {
+        const len = Math.round(clampN(num(p.length, 15), 2, 100)), ang = num(p.angle, 0) * Math.PI / 180, w = img.width, h = img.height, src = new Uint8ClampedArray(img.data), d = img.data, dx = Math.cos(ang), dy = Math.sin(ang), half = (len - 1) / 2;
+        for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { let r = 0, g = 0, b = 0; for (let k = 0; k < len; k++) { const t = k - half, xx = Math.min(w - 1, Math.max(0, Math.round(x + dx * t))), yy = Math.min(h - 1, Math.max(0, Math.round(y + dy * t))), o = (yy * w + xx) * 4; r += src[o]; g += src[o + 1]; b += src[o + 2]; } const i = (y * w + x) * 4; d[i] = r / len; d[i + 1] = g / len; d[i + 2] = b / len; }
+        return img;
+    }
+    // 色差：紅色通道往外、藍色通道往內做放射狀位移（amount＝邊緣位移的像素數，1..20）
+    function chromaShift(img, p) {
+        const amt = clampN(num(p.amount, 3), 1, 20), w = img.width, h = img.height, src = new Uint8ClampedArray(img.data), d = img.data, cx = (w - 1) / 2, cy = (h - 1) / 2, rmax = Math.sqrt(cx * cx + cy * cy) || 1;
+        const cl = (v, hi) => Math.min(hi, Math.max(0, Math.round(v)));
+        for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+            const vx = x - cx, vy = y - cy, dist = Math.sqrt(vx * vx + vy * vy) || 1, sh = amt * dist / rmax, ux = vx / dist, uy = vy / dist, i = (y * w + x) * 4;
+            d[i] = src[(cl(y - uy * sh, h - 1) * w + cl(x - ux * sh, w - 1)) * 4]; d[i + 2] = src[(cl(y + uy * sh, h - 1) * w + cl(x + ux * sh, w - 1)) * 4 + 2];
+        }
+        return img;
+    }
+
+    const PIXEL_FN = { grayscale, brightness, contrast, saturation, gamma, auto_contrast: autoContrast, enhance, tone, reduce_colors: reduceColors, posterize, threshold, invert, blur, sharpen, mosaic, vignette, hue, grade, shadows_highlights: shadowsHighlights, lens_blur: lensBlur, bokeh, glow, motion_blur: motionBlur, chroma_shift: chromaShift };
     const GEO_FN = { rotate, scale, crop, flip };
-    const RANGE = { brightness: ['amount', -100, 100], contrast: ['amount', -100, 100], saturation: ['amount', -100, 100], gamma: ['value', 0.1, 10], reduce_colors: ['colors', 2, 256], posterize: ['levels', 2, 64], blur: ['radius', 0, 200], sharpen: ['amount', 0, 5] };
+    const RANGE = { brightness: ['amount', -100, 100], contrast: ['amount', -100, 100], saturation: ['amount', -100, 100], gamma: ['value', 0.1, 10], reduce_colors: ['colors', 2, 256], posterize: ['levels', 2, 64], blur: ['radius', 0, 200], sharpen: ['amount', 0, 5], vignette: ['strength', 0, 100], hue: ['degrees', -360, 360], lens_blur: ['radius', 0.5, 60], bokeh: ['radius', 2, 40], glow: ['strength', 0, 100], motion_blur: ['length', 2, 100], chroma_shift: ['amount', 1, 20] };
     // 縮寫：{op:'blur', radius:3}、"grayscale"、{grayscale:true}、{blur:3}、{rotate:90}、{scale:50}（單一數值的縮寫）
-    const SHORT_ARG = { brightness: 'amount', contrast: 'amount', saturation: 'amount', gamma: 'value', reduce_colors: 'colors', posterize: 'levels', blur: 'radius', sharpen: 'amount', mosaic: 'block', rotate: 'degrees', scale: 'percent', threshold: 'level', enhance: 'strength', flip: 'direction', tone: 'contrast' };
+    const SHORT_ARG = { brightness: 'amount', contrast: 'amount', saturation: 'amount', gamma: 'value', reduce_colors: 'colors', posterize: 'levels', blur: 'radius', sharpen: 'amount', mosaic: 'block', rotate: 'degrees', scale: 'percent', threshold: 'level', enhance: 'strength', flip: 'direction', tone: 'contrast', vignette: 'strength', hue: 'degrees', grade: 'preset', lens_blur: 'radius', bokeh: 'radius', glow: 'strength', motion_blur: 'length', chroma_shift: 'amount' };
     function normalizeOps(list) {
         const ops = [], errors = [];
         const arr = list == null || list === '' ? [] : (Array.isArray(list) ? list : [list]);
@@ -24469,6 +24715,7 @@ const holder = {};
             if (name === 'rotate') { const dv = p.degrees != null ? p.degrees : (p.angle != null ? p.angle : p.deg); if (dv == null || !Number.isFinite(Number(dv))) { errors.push(at + '（rotate）：要給 degrees（順時針角度，例如 90、-90、180、15）'); return; } p.degrees = Number(dv); }
             if (name === 'scale' && ['percent', 'factor', 'width', 'height', 'max_side'].every((k) => p[k] == null)) { errors.push(at + '（scale）：要給 percent（百分比）、factor（倍率）、width／height（像素）或 max_side（長邊上限）其中之一'); return; }
             if (name === 'scale') for (const k of ['percent', 'factor', 'width', 'height', 'max_side']) if (p[k] != null) { const nv = Number(p[k]); if (!(nv > 0)) { errors.push(at + '（scale）：' + k + ' 要大於 0'); return; } p[k] = nv; }
+            if (name === 'grade' && p.preset != null && !GRADES[String(p.preset).toLowerCase()]) { errors.push(at + '（grade）：不認得的調色風格「' + p.preset + '」。可用：' + Object.keys(GRADES).join('、')); return; }
             if (name === 'crop' && ['x', 'y', 'w', 'h', 'width', 'height'].every((k) => p[k] == null)) { errors.push(at + '（crop）：要給 x、y、w、h（預設單位百分比 0～100；unit:"px" 用像素）'); return; }
             ops.push(Object.assign({ op: name }, p));
         });
@@ -34959,6 +35206,9 @@ class FloatingAssistant {
                     let res; if (!raw) { const cur = await r._weLoad(); res = cur ? await r._webeditOpen({ id: cur.id }) : await r._webeditOpen({ starter: 'blank' }); } else if (raw === '起手式' || raw === 'starters') { r._pushAssistantMessage('網頁編輯器的起手式（/webedit 名稱）：\n' + FaWebEdit.listStarters().map((t) => '・' + t.id + '：' + t.label + '——' + t.desc).join('\n'), null); res = { ok: true }; } else res = st ? await r._webeditOpen({ starter: st.id }) : await r._webeditOpen({ request: raw });
                     if (res && res.ok === false) r._pushAssistantMessage('⚠️ ' + (res.error || '做不出來'), null);
                 } catch (e) { r._pushAssistantMessage('⚠️ 網頁編輯器失敗：' + String((e && e.message) || e), null); } try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ } });
+        // /edit-html：網頁編輯器（HTML 編輯＋預覽＋模擬後端、AI 對話修改）的好記名字；跟 /webedit 是同一個
+        this.register_slash_command('/edit-html', '[起手式｜一句話描述]', '網頁編輯器（HTML 編輯器）：/webedit 的別名。不帶參數＝接著開最近一份；/edit-html todo 從起手式開始；/edit-html 做一個記帳網站 由 AI 做出第一版。',
+            async (argsText, run) => { const base = this.slashCommands.get('/webedit'); if (!base) return; return base.handler(argsText, run); });
         this._registerKnowledgeCommand();
         this.register_slash_command('/image', '[model=廠商/模型名] [steps=N] [size=寬x高] 要畫什麼（英文效果較好）',
             '用 NVIDIA 線上圖像生成模型畫圖（FLUX.1 schnell／dev、FLUX.2 klein、FLUX klein、Stable Diffusion 3，或自己填的 廠商/模型名）。例：/image a macro photo of a green frog in a rainforest pond、/image model=black-forest-labs/flux.1-dev steps=30 size=1344x768 a quiet harbor at dawn。不帶參數會列出可用的模型。金鑰在「進階設定 → 影音處理」填。',
@@ -39699,6 +39949,7 @@ ${fnData.code}
                 return JSON.stringify({ ok: true, templates: all.map((t) => ({ id: t.id, kind: t.kind, label: t.label, arch: t.arch, builtin: !!t.builtin, sections: t.sections })) });
             }, { type: 'object', properties: { kind: { type: 'string', enum: ['design', 'user'] } }, additionalProperties: false });
 
+        this._imageRegisterUnits(registerOptional); // /image 的規劃用的圖像單元（image_scene、image_draft…）
         registerOptional('generate_image',
             '畫圖的唯一入口（程式會先分流，不用你自己挑路線）：單純形狀的組合圖（流程圖、架構圖、圖表、幾何圖形、圖示…）由程式要求寫成 SVG／Mermaid 純文字再畫出來；要畫面的圖（照片、插畫、人物、風景、畫風…）由程式把需求拆成欄位（主體、動作、場景、畫風、光線、鏡頭、氣氛、色調）、依模型的吃法（SD／SDXS 逗號關鍵詞、FLUX 自然語句、SD3 混合）組成提示詞，再交給擴散模型（線上 NVIDIA 或本機小模型）。所以 prompt 直接給使用者的需求（中文也可以），不要自己改寫成英文咒語。可選參數：image（使用者貼的圖的 file_id：會先用視覺模型看懂，轉成描述當依據）、base_request（要先用純文字畫出一張工程圖／示意圖當基底，視覺模型看懂它之後再生成）、route（auto｜shapes｜diffusion，預設 auto）、style（畫風：photo｜cinematic｜anime｜watercolor｜oil｜sketch｜ink｜render3d｜pixel｜flat｜cyberpunk｜fantasy｜lowpoly｜clay｜illustration）、where（local｜remote：remote＝交給遠端群組裡的機器畫，圖會取回本機使用）、machine（where=remote 時的機器名稱或 auto）、provider（auto｜online｜local）、model、seed。回傳 file_id 與 client_file_url（可以直接用在簡報等地方）；圖已顯示在對話裡。',
             async function (rawArgs) {
@@ -53553,9 +53804,117 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const blob = await new Promise((res) => cv.toBlob(res, 'image/png')); return { blob, dataUrl: cv.toDataURL('image/png'), w: cw, h: ch };
     }
     // 要畫面的圖：欄位 → 範本 → 擴散模型。贴的圖的描述當底，文字需求蓋過它；工程圖基底（base_request）先畫出來、看懂之後當場景依據
+    // ───── /image 的規劃執行（設計見 DESIGN.image.md）─────
+    // 由上而下細切（模型）→ 單元（image_scene、image_draft…，每個都是註冊的工具）→ 依輸入輸出欄位接線 → IR 程式 → 單元目錄的直譯器執行。
+    // 模型規劃不了（沒有模型、答不出、切不下去）就用樣板；連單元目錄的直譯器都不能用，才退回寫死的流程（_imageDiffusionLegacy）。
+    _imageRoute(a) {
+        const FM = FaImageRoute, g = (this.advancedSettings && this.advancedSettings.imageGen) || {};
+        let provider = ['online', 'local'].indexOf(a.provider) >= 0 ? a.provider : (['online', 'local'].indexOf(g.provider) >= 0 ? g.provider : 'auto'); if (provider === 'auto' && this.advancedSettings && this.advancedSettings.offlineMode) provider = 'local';
+        const modelId = provider === 'local' ? 'sdxs' : (a.model || (this._imageGenConfig().model)); return { provider, modelId, family: FM.familyOf(modelId) };
+    }
+    // 起點的欄位：程式能決定的（需求裡的畫風、光線、名詞…、貼圖的描述、指定畫風、工程圖基底）
+    async _imageSeedSlots(c) {
+        const FM = FaImageRoute, a = c.a, note = c.note; let slots = FM.extractSlots(c.request); const cap = c.capSlots;
+        if (cap) { if (!slots.style) slots.style = cap.style; if (!slots.subject.length && !slots.untranslated.length) slots.subject = cap.subject.slice(); else if (!slots.subject.length) slots.setting = slots.setting.concat(cap.subject); cap.colors.forEach((x) => { if (slots.colors.indexOf(x) < 0 && slots.colors.length < 3) slots.colors.push(x); }); if (!slots.lighting) slots.lighting = cap.lighting; if (!slots.camera) slots.camera = cap.camera; }
+        if (a.style && FM.STYLES[a.style]) slots.style = a.style;
+        if (a.base_request) {
+            note('🧩 先畫工程圖基底（純文字）…'); const bp = FM.plan(String(a.base_request)), base = await this._imageShapes({ request: String(a.base_request), format: bp.route === 'shapes' ? bp.format : 'svg', diagram: bp.diagram, note, show: true });
+            if (base.ok) { let r = null; try { r = JSON.parse(await this.tools.interpret_image.callback.call(this, JSON.stringify({ file_id: String(base.png_file_id || base.file_id), question: 'Describe the layout and the main elements of this diagram in one English sentence.' }))); } catch (_) { /* */ } if (r && r.ok && r.description) { const sl = FM.slotsFromCaption(r.description); if (sl.subject[0]) { slots.setting.push('layout of ' + sl.subject[0].slice(0, 70)); note('　基底看起來是：' + sl.subject[0].slice(0, 100)); } } }
+            else note('　⚠️ 基底沒畫成（' + String(base.error).slice(0, 80) + '），只用文字需求。');
+        }
+        return slots;
+    }
+    async _imageTranslate(slots, note) {
+        const FM = FaImageRoute; if (!slots.untranslated.length) return slots;
+        note('🔤 有 ' + slots.untranslated.length + ' 個詞程式沒收錄（' + slots.untranslated.slice(0, 4).join('、') + '），請模型翻成英文…');
+        try { const tr = await this._kiLlm('把下列中文詞各翻成最常用的英文（名詞或短語），一行一個，格式「原詞=English」，不要解釋：\n' + slots.untranslated.join('\n'), { systemPrompt: '你只負責翻譯單詞。', maxTokens: 200, temperature: 0 }, { label: '翻譯', timeoutMs: 30000, onStep: note }); const got = []; String(tr || '').split('\n').forEach((ln) => { const m = /^(.+?)\s*[=＝:：]\s*(.+)$/.exec(ln.trim()); if (m && slots.untranslated.indexOf(m[1].trim()) >= 0) got.push(m[2].trim()); }); if (got.length) { slots = FM.mergeSlots(slots, { subject: got }); note('　翻成：' + got.join('、')); } } catch (_) { note('　（翻不了，這幾個詞沒有放進提示詞）'); }
+        return slots;
+    }
+    // 生成：依模型族套範本、交給擴散模型；本機與線上都畫不了而且已加入遠端群組，交給群組裡的機器
+    async _imageGen(c, slots, over) {
+        const FM = FaImageRoute, a = c.a, note = c.note, R = this._imageRoute(a); over = over || {};
+        const built = FM.buildPrompt(slots, R.family); note('📝 提示詞（' + FM.FAMILIES[R.family].label + '，約 ' + built.tokens + ' token）：' + built.prompt);
+        let res = await this._generateImage(Object.assign({}, a, over, { prompt: built.prompt, negative_prompt: built.negative || undefined, provider: R.provider === 'auto' ? a.provider : R.provider }));
+        if (res && res.ok === false && !res.cancelled && !res.filtered && this._rg && this._rgTargets().some((x) => x.sub === true)) { note('🌐 本機畫不了，改交給遠端群組裡的機器…'); const rr = await this._imageRemote(a, c.request); if (rr.ok) { rr.note = ['本機沒畫成（' + String(res.error).slice(0, 80) + '），改由 ' + rr.machine + ' 畫的。', rr.note].filter(Boolean).join(' '); res = rr; } }
+        if (res && res.ok !== false) { res.prompt_used = built.prompt; res.prompt_family = R.family; if (built.dropped.length) res.prompt_dropped = built.dropped; }
+        return res;
+    }
+    async _imageUnit(name, rawArgs, fn) {
+        const c = this._imageCtx; if (!c) return JSON.stringify({ ok: false, error: '圖像單元只能在 /image 的規劃裡執行（沒有目前的畫圖工作）' });
+        let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) { /* */ }
+        const u = FaImagePlan.UNITS.filter((x) => x.name === name)[0]; try { c.note('━━ ' + (u ? u.label : name) + '（' + name + '） ━━'); } catch (_) { /* */ }
+        try { return JSON.stringify(await fn(c, a)); } catch (e) { return JSON.stringify({ ok: false, error: String((e && e.message) || e) }); }
+    }
+    _imageRegisterUnits(registerOptional) {
+        const sceneP = { type: 'object', description: '場景（前一個單元的輸出）' }, imgP = { type: 'object', description: '圖（前一個單元的輸出）' };
+        const schema = (props, req) => ({ type: 'object', properties: props, required: req, additionalProperties: false });
+        registerOptional('image_scene', '圖像單元「場景」：查場景素材目錄、請模型想要準備哪些主體與道具、各放哪裡。回傳 {ok, scene}。只在 /image 的規劃裡使用。',
+            async function (raw) { return this._imageUnit('image_scene', raw, async (c) => { const note = c.note; let slots = await this._imageSeedSlots(c); const sc = await this._imageReflect({ a: c.a, slots, request: c.request, note }); c.fancy = sc.hit || sc.reflected || c.a.draft === true || c.a.draft === 'true' || c.a.draft === '1'; return { ok: true, scene: { slots: sc.slots, hit: sc.hit, reflected: sc.reflected } }; }); },
+            schema({ request: { type: 'string', description: '使用者要畫的需求' } }, ['request']));
+        registerOptional('image_draft', '圖像單元「草稿」：用通用繪圖（純文字畫圖）畫構圖草稿，給視覺模型看它看到什麼，缺元素補畫一次。回傳 {ok, scene}。只在 /image 的規劃裡使用。',
+            async function (raw) { return this._imageUnit('image_draft', raw, async (c, a) => { const sc = a.scene || {}; if (!sc.slots) return { ok: false, error: '缺少場景' }; if ((sc.slots.subject.length + sc.slots.extras.length) < 2) { c.note('　主體與元素不到兩個，不需要草稿。'); return { ok: true, scene: sc }; } const dr = await this._imageDraft({ request: c.request, slots: sc.slots, note: c.note }); c.draftId = dr.fileId || ''; return { ok: true, scene: Object.assign({}, sc, { slots: dr.slots, draft_file_id: dr.fileId || undefined }) }; }); },
+            schema({ request: { type: 'string' }, scene: sceneP }, ['request', 'scene']));
+        registerOptional('image_details', '圖像單元「細節」：畫風、光線、鏡頭、氣氛還沒定的，請模型從封閉清單裡挑。回傳 {ok, scene}。只在 /image 的規劃裡使用。',
+            async function (raw) { return this._imageUnit('image_details', raw, async (c, a) => { const sc = a.scene || {}; if (!sc.slots) return { ok: false, error: '缺少場景' }; const slots = await this._imageDetails({ request: c.request, slots: sc.slots, note: c.note }); return { ok: true, scene: Object.assign({}, sc, { slots }) }; }); },
+            schema({ request: { type: 'string' }, scene: sceneP }, ['request', 'scene']));
+        registerOptional('image_render', '圖像單元「生成」：依模型族套提示詞範本，交給擴散模型畫出圖（沒有場景就直接用需求）。回傳 {ok, image}。只在 /image 的規劃裡使用。',
+            async function (raw) { return this._imageUnit('image_render', raw, async (c, a) => { let slots = a.scene && a.scene.slots ? a.scene.slots : await this._imageSeedSlots(c); slots = await this._imageTranslate(slots, c.note); c.slots = slots; const res = await this._imageGen(c, slots); if (!res || res.ok === false) return { ok: false, error: (res && res.error) || '沒畫成' }; return { ok: true, image: res }; }); },
+            schema({ request: { type: 'string' }, scene: sceneP }, ['request']));
+        registerOptional('image_check', '圖像單元「檢查」：請視覺模型看成品，缺了哪些要的元素。回傳 {ok, verdict}。只在 /image 的規劃裡使用。',
+            async function (raw) { return this._imageUnit('image_check', raw, async (c, a) => { const slots = (a.scene && a.scene.slots) || c.slots; const items = slots ? slots.subject.concat(slots.extras).slice(0, 8) : []; if (!items.length || !a.image || !a.image.file_id) { c.note('　沒有要檢查的元素，略過。'); return { ok: true, verdict: { missing: [] } }; } const miss = await this._imageCheck({ res: a.image, request: c.request, items, note: c.note }); return { ok: true, verdict: { missing: miss } }; }); },
+            schema({ request: { type: 'string' }, scene: sceneP, image: imgP }, ['request', 'image']));
+        registerOptional('image_improve', '圖像單元「補強」：成品缺了元素就加強提示詞、換個 seed 重畫一次（沒缺就不動）。回傳 {ok, image}。只在 /image 的規劃裡使用。',
+            async function (raw) { return this._imageUnit('image_improve', raw, async (c, a) => { const miss = (a.verdict && a.verdict.missing) || []; if (!miss.length || c.regenDone) return { ok: true, image: a.image }; c.regenDone = true; const FM = FaImageRoute, slots = (a.scene && a.scene.slots) || c.slots; if (!slots) return { ok: true, image: a.image }; c.note('🔁 補上缺的元素（' + miss.join('、') + '），換個 seed 重畫一次…'); const s2 = FM.mergeSlots(slots, { subject: miss.slice(0, 2), extras: miss }); s2.extras = miss.concat(s2.extras.filter((x) => miss.indexOf(x) < 0)); const r2 = await this._imageGen(c, s2, { seed: undefined }); if (r2 && r2.ok !== false) { r2.first_try_file_id = a.image && a.image.file_id; return { ok: true, image: r2 }; } c.note('　（重畫沒成功，保留第一張。）'); return { ok: true, image: a.image }; }); },
+            schema({ request: { type: 'string' }, scene: sceneP, image: imgP, verdict: { type: 'object', description: '檢查的結果' } }, ['request', 'image', 'verdict']));
+        registerOptional('image_mood', '圖像單元「場景色」：依光線與氣氛調場景色與光影（調色風格、暗角、柔光、陰影與亮部），程式查表決定、不問模型。回傳 {ok, image}。只在 /image 的規劃裡使用。',
+            async function (raw) { return this._imageUnit('image_mood', raw, async (c, a) => { if (!a.image || !a.image.file_id) return { ok: false, error: '缺少圖' }; if (a.image.provider === 'remote') return { ok: true, image: a.image }; const slots = (a.scene && a.scene.slots) || c.slots; if (!slots) { c.note('　沒有光線與氣氛的資訊，不調。'); return { ok: true, image: a.image }; } const m = FaImageRoute.moodOps(slots); if (!m.ops.length) { c.note('　光線與氣氛沒有對應的調色，不調。'); return { ok: true, image: a.image }; } return { ok: true, image: await this._imageApplyOps({ res: a.image, ops: m.ops, why: m.why, note: c.note }) }; }); },
+            schema({ request: { type: 'string' }, scene: sceneP, image: imgP }, ['image']));
+        registerOptional('image_lens', '圖像單元「鏡頭」：依鏡頭與題材加鏡頭效果（景深模糊、散景、動態模糊、色差），程式查表決定、不問模型。回傳 {ok, image}。只在 /image 的規劃裡使用。',
+            async function (raw) { return this._imageUnit('image_lens', raw, async (c, a) => { if (!a.image || !a.image.file_id) return { ok: false, error: '缺少圖' }; if (a.image.provider === 'remote') return { ok: true, image: a.image }; const slots = (a.scene && a.scene.slots) || c.slots || FaImageRoute.extractSlots(c.request); const m = FaImageRoute.lensOps(slots, c.request); if (!m.ops.length) { c.note('　這個鏡頭與題材不需要鏡頭效果。'); return { ok: true, image: a.image }; } return { ok: true, image: await this._imageApplyOps({ res: a.image, ops: m.ops, why: m.why, note: c.note }) }; }); },
+            schema({ request: { type: 'string' }, scene: sceneP, image: imgP }, ['image']));
+        registerOptional('image_retouch', '圖像單元「修圖」：程式量亮度、對比、飽和度，需要時用圖片後製（自動對比、亮度、飽和度、銳化）修一次，原圖留著。回傳 {ok, image}。只在 /image 的規劃裡使用。',
+            async function (raw) { return this._imageUnit('image_retouch', raw, async (c, a) => { if (!a.image || !a.image.file_id) return { ok: false, error: '缺少圖' }; if (a.image.provider === 'remote') return { ok: true, image: a.image }; const res = await this._imageRetouch({ res: a.image, note: c.note }); return { ok: true, image: res }; }); },
+            schema({ image: imgP }, ['image']));
+    }
+    // 規劃：簡單題目由程式決定（樣板，不問模型）；複雜的請模型由上而下細切；切不出來退回樣板
+    async _imagePlan(c) {
+        const FM = FaImageRoute, Pl = FaImagePlan, a = c.a, note = c.note, off = (v) => v === false || v === 'false' || v === '0' || v === 0;
+        const sig = { draft: off(a.draft) ? false : undefined, check: off(a.check) ? false : undefined, retouch: off(a.retouch) ? false : undefined };
+        const slots0 = FM.extractSlots(c.request), cat = FaSceneCatalog.match(c.request), need = off(a.reflect) ? { need: false } : FM.reflectNeeded(c.request, slots0, { catalogHit: cat.length > 0 });
+        const complex = cat.length > 0 || need.need || a.draft === true || a.draft === 'true' || a.draft === '1'; sig.complex = complex;
+        note('━━ 規劃 ━━');
+        if (!complex || a.plan === 'template') { const t = Pl.chooseTemplate(sig); note('📐 ' + (complex ? '指定用樣板' : '簡單題目（沒有場景用詞、程式抓得到主體）：程式直接決定，不問模型') + '：' + t.label); return { units: t.units, how: 'template', template: t.id }; }
+        note('📐 這題需要想一想（' + (cat.length ? '場景素材目錄有「' + cat[0].label + '」' : need.why) + '）：請模型由上而下細切成步驟…');
+        const M = await this._umlModel('auto');
+        if (M.error) { const t = Pl.chooseTemplate(sig); note('　（規劃的模型不能用：' + String(M.error).slice(0, 80) + '）→ 用樣板：' + t.label); return { units: t.units, how: 'template', template: t.id, why: 'no-model' }; }
+        note('　規劃用 ' + M.label + '。');
+        const r = await Pl.cut({ request: c.request, maxCalls: 5, ask: (prompt) => M.gen({ messages: [{ role: 'system', content: '你是圖像製作的規劃者，只依指定格式回答，不要多說。' }, { role: 'user', content: prompt }] }) });
+        if (!r.ok) { const t = Pl.chooseTemplate(sig); note('　（規劃沒成功：' + (r.error || ('有 ' + r.gaps.length + ' 步切不下去：' + r.gaps.join('、'))) + '）→ 用樣板：' + t.label); return { units: t.units, how: 'template', template: t.id, why: 'cut-failed', gaps: r.gaps }; }
+        let units = r.units.slice(); if (sig.draft === false) units = units.filter((x) => x !== 'image_draft'); if (sig.check === false) units = units.filter((x) => x !== 'image_check' && x !== 'image_improve'); if (sig.retouch === false) units = units.filter((x) => x !== 'image_retouch'); units = Pl.normalize(units).units;
+        if (r.added && r.added.length) note('　程式補上缺的前置：' + r.added.map((n) => n.replace('image_', '')).join('、')); if (r.gaps.length) note('　有 ' + r.gaps.length + ' 步切不下去（' + r.gaps.join('、') + '），略過。');
+        return { units, how: 'model', tree: r.tree, calls: r.calls };
+    }
+    async _imageDiffusion(o) {
+        const note = o.note, Pl = FaImagePlan; const c = { a: o.a, request: o.request, capSlots: o.capSlots, caption: o.caption, note, fancy: false, regenDone: false };
+        let plan; try { plan = await this._imagePlan(c); } catch (e) { note('⚠️ 規劃出錯（' + String((e && e.message) || e).slice(0, 80) + '），退回寫死的流程。'); return this._imageDiffusionLegacy(o); }
+        const program = Pl.toProgram(plan.units); note(Pl.toText(plan.units, plan.tree).split('\n').map((l) => '　' + l).join('\n'));
+        this._imageCtx = c; let r;
+        try { await this._unitCatalogStoreLoad(); r = await this._unitCatalogRunProgram(program, { request: o.request }, { approve: false }); }
+        catch (e) { r = { ok: false, stage: 'exception', errors: [String((e && e.message) || e)] }; } finally { this._imageCtx = null; }
+        if (!r || !r.ok) {
+            const stage = r && r.stage, errs = (r && r.errors || []).join('；'), failedStep = (r && r.trace || []).filter((t) => t.error).slice(-1)[0];
+            if (stage === 'step' && failedStep) { return { ok: false, error: failedStep.error }; } // 單元自己回報的失敗（例如畫不出圖）就是失敗，不再重畫一次
+            if (stage === 'cancelled') return { ok: false, error: '已停止', cancelled: true };
+            note('⚠️ 單元目錄的直譯器不能執行這份規劃（' + (stage || '?') + '：' + errs.slice(0, 120) + '），退回寫死的流程。'); return this._imageDiffusionLegacy(o);
+        }
+        const res = r.result; if (!res || res.ok === false) return { ok: false, error: (res && res.error) || '沒有畫出圖' };
+        res.pipeline = { how: plan.how, template: plan.template, units: plan.units, draft_file_id: c.draftId || undefined, original_file_id: res.original_file_id, final_file_id: res.file_id };
+        note('📦 完成：最後的圖 file_id=' + res.file_id + (res.original_file_id ? '（修圖前的原圖 ' + res.original_file_id + '）' : '') + (c.draftId ? '；構圖草稿 ' + c.draftId : '') + '。');
+        return res;
+    }
     // /image 的主線：場景 → 草稿 → 細節 → 生成 → 整合 → 修圖。最後的圖一定是擴散模型畫的；其他工具（場景素材目錄、通用繪圖的純文字畫圖、視覺模型、圖片後製）只在前後幫忙想、幫忙看、幫忙修。
     // 每一段都用 note() 說出做了什麼、看到什麼、為什麼（會進進度卡片的記錄，結束後仍保留）。簡單的題目（一隻貓、水彩風格）直接生成，不走這些段落。
-    async _imageDiffusion(o) {
+    async _imageDiffusionLegacy(o) {
         const a = o.a, note = o.note, FM = FaImageRoute, g = (this.advancedSettings && this.advancedSettings.imageGen) || {}, off = (v) => v === false || v === 'false' || v === '0' || v === 0;
         let provider = ['online', 'local'].indexOf(a.provider) >= 0 ? a.provider : (['online', 'local'].indexOf(g.provider) >= 0 ? g.provider : 'auto'); if (provider === 'auto' && this.advancedSettings && this.advancedSettings.offlineMode) provider = 'local';
         let modelId = provider === 'local' ? 'sdxs' : (a.model || (this._imageGenConfig().model)); const family = FM.familyOf(modelId);
@@ -53569,12 +53928,12 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             else note('　⚠️ 基底沒畫成（' + String(base.error).slice(0, 80) + '），只用文字需求。');
         }
         // ① 場景（反思）：場景素材目錄 → 不夠再請模型想
-        const sc = await this._imageReflect({ a, slots, request: o.request, note }); slots = sc.slots; const fancy = sc.hit || sc.reflected || a.draft === true || a.draft === 'true' || a.draft === '1';
+        note('━━ ① 場景 ━━'); const sc = await this._imageReflect({ a, slots, request: o.request, note }); slots = sc.slots; const fancy = sc.hit || sc.reflected || a.draft === true || a.draft === 'true' || a.draft === '1';
         // ② 草稿：用通用繪圖（純文字畫圖）畫構圖草稿，給視覺模型看它看到什麼；缺了什麼元素就補畫一次
         let draftId = '';
-        if (fancy && !off(a.draft) && (slots.subject.length + slots.extras.length) >= 2) { const dr = await this._imageDraft({ request: o.request, slots, note }); slots = dr.slots; draftId = dr.fileId || ''; }
+        if (fancy && !off(a.draft) && (slots.subject.length + slots.extras.length) >= 2) { note('━━ ② 草稿 ━━'); const dr = await this._imageDraft({ request: o.request, slots, note }); slots = dr.slots; draftId = dr.fileId || ''; }
         // ③ 細節：畫風、光線、鏡頭、氣氛還沒定的，請模型從封閉清單裡挑
-        if (fancy) slots = await this._imageDetails({ request: o.request, slots, note });
+        if (fancy) { note('━━ ③ 細節 ━━'); slots = await this._imageDetails({ request: o.request, slots, note }); }
         // 程式翻不出來的中文詞：請模型只做「翻成英文」（格式固定，翻回來的字要通過英文字母檢查才收）
         if (slots.untranslated.length) {
             note('🔤 有 ' + slots.untranslated.length + ' 個詞程式沒收錄（' + slots.untranslated.slice(0, 4).join('、') + '），請模型翻成英文…');
@@ -53591,7 +53950,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             // ⑥ 修圖：程式量亮度、對比、飽和度，該修的修；視覺模型看缺了什麼元素，缺了就加強後重畫一次
             if (res.provider !== 'remote' && !off(a.retouch)) {
                 const items = slots.subject.concat(slots.extras).slice(0, 8);
-                if (fancy && items.length && !off(a.check)) { const miss = await this._imageCheck({ res, request: o.request, items, note }); if (miss.length && !a._regen) { note('🔁 補上缺的元素（' + miss.join('、') + '），換個 seed 重畫一次…'); const slots2 = FM.mergeSlots(slots, { subject: miss.slice(0, 2), extras: miss }); slots2.extras = miss.concat(slots2.extras.filter((x) => miss.indexOf(x) < 0)); const b2 = FM.buildPrompt(slots2, family); note('📝 新的提示詞：' + b2.prompt); const r2 = await this._generateImage(Object.assign({}, a, { seed: undefined, prompt: b2.prompt, negative_prompt: b2.negative || undefined, provider: provider === 'auto' ? a.provider : provider })); if (r2 && r2.ok !== false) { r2.prompt_used = b2.prompt; r2.prompt_family = family; r2.first_try_file_id = res.file_id; res = r2; } else note('　（重畫沒成功，保留第一張。）'); } }
+                if (fancy && items.length && !off(a.check)) { note('━━ ⑥ 修圖 ━━'); const miss = await this._imageCheck({ res, request: o.request, items, note }); if (miss.length && !a._regen) { note('🔁 補上缺的元素（' + miss.join('、') + '），換個 seed 重畫一次…'); const slots2 = FM.mergeSlots(slots, { subject: miss.slice(0, 2), extras: miss }); slots2.extras = miss.concat(slots2.extras.filter((x) => miss.indexOf(x) < 0)); const b2 = FM.buildPrompt(slots2, family); note('📝 新的提示詞：' + b2.prompt); const r2 = await this._generateImage(Object.assign({}, a, { seed: undefined, prompt: b2.prompt, negative_prompt: b2.negative || undefined, provider: provider === 'auto' ? a.provider : provider })); if (r2 && r2.ok !== false) { r2.prompt_used = b2.prompt; r2.prompt_family = family; r2.first_try_file_id = res.file_id; res = r2; } else note('　（重畫沒成功，保留第一張。）'); } }
                 res = await this._imageRetouch({ res, note });
             }
             // ⑤ 整合：把這次用到的東西收成一份結果（最後的圖、草稿、原圖與提示詞都留在檔案快取，之後的工具與簡報能直接用）
@@ -53602,7 +53961,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     // ② 草稿
     async _imageDraft(o) {
         const FM = FaImageRoute, note = o.note; let slots = o.slots, fileId = ''; const items = slots.subject.concat(slots.extras).slice(0, 8);
-        note('━━ ② 草稿 ━━'); note('✏️ 請通用繪圖（純文字畫圖）畫一張構圖草稿：用簡單形狀與文字標籤標出 ' + items.slice(0, 5).join('、') + (items.length > 5 ? ' 等' : '') + ' 的位置。');
+        note('✏️ 請通用繪圖（純文字畫圖）畫一張構圖草稿：用簡單形狀與文字標籤標出 ' + items.slice(0, 5).join('、') + (items.length > 5 ? ' 等' : '') + ' 的位置。');
         let want = FM.draftRequest(o.request, slots), caption = '';
         for (let round = 0; round < 2; round++) {
             const d = await this._imageShapes({ request: want, format: 'svg', note, show: true }); if (!d.ok) { note('　⚠️ 草稿沒畫成（' + String(d.error).slice(0, 80) + '），不影響後面。'); return { slots, fileId }; } fileId = d.png_file_id || d.file_id;
@@ -53618,7 +53977,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     }
     // ③ 細節
     async _imageDetails(o) {
-        const FM = FaImageRoute, note = o.note, miss = FM.detailMissing(o.slots); note('━━ ③ 細節 ━━');
+        const FM = FaImageRoute, note = o.note, miss = FM.detailMissing(o.slots);
         if (!miss.length) { note('　畫風、光線、鏡頭、氣氛都已經定了。'); return o.slots; }
         note('🎛 還沒定：' + miss.map((k) => ({ style: '畫風', lighting: '光線', camera: '鏡頭', mood: '氣氛' })[k]).join('、') + '，請模型從清單裡挑…');
         try { const b = FM.detailBrief(o.request, o.slots, miss), reply = await this._kiLlm(b.user, { systemPrompt: b.system, maxTokens: 200, temperature: 0.2 }, { label: '細節', timeoutMs: 45000, noOffline: true, onStep: note }), r = FM.applyDetails(o.slots, reply); note(r.got.length ? '　決定了：' + r.got.map((k) => k + '＝' + (k === 'style' ? r.slots.style : r.slots[k].tag)).join('、') : '　（模型的選擇不在清單裡，這幾項留空。）'); return r.slots; }
@@ -53626,28 +53985,40 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     }
     // ⑥ 修圖之一：視覺模型看生成的圖，缺了哪些要的元素
     async _imageCheck(o) {
-        const FM = FaImageRoute, note = o.note; note('━━ ⑥ 修圖 ━━'); note('🔎 請視覺模型檢查成品，看缺不缺：' + o.items.slice(0, 5).join('、') + '…');
+        const FM = FaImageRoute, note = o.note; note('🔎 請視覺模型檢查成品，看缺不缺：' + o.items.slice(0, 5).join('、') + '…');
         let r = null; try { r = JSON.parse(await this.tools.interpret_image.callback.call(this, JSON.stringify({ file_id: String(o.res.file_id), question: FM.checkBrief(o.request, o.items) }))); } catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
         if (!r || !r.ok || !r.description) { note('　（視覺模型沒回應，跳過檢查：' + String((r && r.error) || '').slice(0, 60) + '）'); return []; }
         const c = FM.parseCheck(r.description, o.items); if (!c) { note('　（視覺模型的回答格式不對，跳過檢查。）'); return []; }
         note(c.missing.length ? '　它說看不到：' + c.missing.join('、') : '　它說要的元素都在。'); return c.missing;
     }
-    // ⑥ 修圖之二：程式量亮度／對比／飽和度，需要的話用圖片後製（imgproc 的操作：自動對比、亮度、飽和度、銳化…）修一次；原圖留著
+    // ⑥ 修圖之二：程式量亮度／對比／飽和度，需要的話用圖片後製（imgproc 的操作）修一次；原圖留著
     async _imageRetouch(o) {
         const FM = FaImageRoute, note = o.note; let res = o.res;
         try {
-            const rec = await this.fileCache.get(res.file_id); if (!rec || !rec.blob || !/^image\/(png|jpeg|webp)/.test(rec.mimeType || '')) { return res; }
-            const bmp = await createImageBitmap(rec.blob); if (bmp.width * bmp.height > 4e6) { note('　（圖太大，跳過後製。）'); return res; }
-            const cv = document.createElement('canvas'); cv.width = bmp.width; cv.height = bmp.height; const cx = cv.getContext('2d'); cx.drawImage(bmp, 0, 0); const id = cx.getImageData(0, 0, cv.width, cv.height), img = { width: id.width, height: id.height, data: id.data };
-            const st = FM.imageStats(img); const plan = FM.retouchPlan(st); note('📊 成品量測：平均亮度 ' + st.mean + '、對比 ' + st.std + '、飽和度 ' + st.sat);
+            const rec = await this.fileCache.get(res.file_id); if (!rec || !rec.blob || !/^image\/(png|jpeg|webp)/.test(rec.mimeType || '')) return res;
+            const im = await this._imageDecode(rec.blob); if (!im) { note('　（圖太大，跳過後製。）'); return res; }
+            const st = FM.imageStats(im.img); const plan = FM.retouchPlan(st); note('📊 成品量測：平均亮度 ' + st.mean + '、對比 ' + st.std + '、飽和度 ' + st.sat);
             if (plan.flat) { note('⚠️ 這張圖幾乎是一片空白（模型輸出沒有變化），後製救不了；換個 seed 或換 CPU／GPU 版再試。'); res.note = [res.note, '成品幾乎是一片空白'].filter(Boolean).join(' '); return res; }
-            const norm = FaImgProc.normalizeOps(plan.ops); if (!norm.ok || !norm.ops.length) { note('　不需要後製。'); return res; }
-            const out = FaImgProc.run(img, norm.ops); const dst = cx.createImageData(out.img.width, out.img.height); dst.data.set(out.img.data); cx.putImageData(dst, 0, 0);
-            const blob = await new Promise((resolve) => cv.toBlob(resolve, 'image/png')); if (!blob) return res;
+            return await this._imageApplyOps({ res, ops: plan.ops, why: plan.why, note, decoded: im });
+        } catch (e) { note('　（後製沒成功：' + String((e && e.message) || e).slice(0, 80) + '，用原圖。）'); return res; }
+    }
+    async _imageDecode(blob) {
+        const bmp = await createImageBitmap(blob); if (bmp.width * bmp.height > 4e6) return null;
+        const cv = document.createElement('canvas'); cv.width = bmp.width; cv.height = bmp.height; const cx = cv.getContext('2d'); cx.drawImage(bmp, 0, 0); const id = cx.getImageData(0, 0, cv.width, cv.height);
+        return { cv, cx, img: { width: id.width, height: id.height, data: id.data } };
+    }
+    // 套一串圖片後製操作（imgproc）：結果存成新檔、顯示在對話裡，原圖的 file_id 記在 original_file_id
+    async _imageApplyOps(o) {
+        const note = o.note; let res = o.res;
+        try {
+            const norm = FaImgProc.normalizeOps(o.ops); if (!norm.ok || !norm.ops.length) { note('　不需要後製。'); return res; }
+            const im = o.decoded || await (async () => { const rec = await this.fileCache.get(res.file_id); return rec && rec.blob ? this._imageDecode(rec.blob) : null; })(); if (!im) { note('　（圖太大或讀不到，跳過後製。）'); return res; }
+            const out = FaImgProc.run(im.img, norm.ops); const dst = im.cx.createImageData(out.img.width, out.img.height); dst.data.set(out.img.data); im.cx.putImageData(dst, 0, 0);
+            const blob = await new Promise((resolve) => im.cv.toBlob(resolve, 'image/png')); if (!blob) return res;
             const name = 'retouched-' + Date.now().toString(36) + '.png', nid = await this.fileCache.put(name, 'image/png', blob, 'generated');
-            note('🖌 後製：' + plan.why.join('；') + '（' + out.applied.map((x) => x.op).join('→') + '）'); const dataUrl = await new Promise((resolve) => { const fr = new FileReader(); fr.onload = () => resolve(fr.result); fr.readAsDataURL(blob); });
-            const msg = { role: 'tool', content: '[generate_image 修圖後的成品，已直接顯示給使用者看，圖片內容不列入對話上下文。file_id=' + nid + '（修圖前的原圖 file_id=' + res.file_id + '）]' }; Object.defineProperty(msg, '_displayDataUrl', { value: dataUrl, enumerable: false, configurable: true }); this.messages.push(msg); this._persistChatHistory(); this._renderMessageHistory();
-            const old = res.file_id; res = Object.assign({}, res, { original_file_id: old, file_id: nid, client_file_url: 'client-file/' + nid, retouch: plan.why }); if (Array.isArray(res.images) && res.images[0]) res.images = [Object.assign({}, res.images[0], { file_id: nid, client_file_url: 'client-file/' + nid, filename: name, original_file_id: old })].concat(res.images.slice(1));
+            note('🖌 後製：' + o.why.join('；') + '（' + out.applied.map((x) => x.op).join('→') + '）'); const dataUrl = await new Promise((resolve) => { const fr = new FileReader(); fr.onload = () => resolve(fr.result); fr.readAsDataURL(blob); });
+            const msg = { role: 'tool', content: '[generate_image 後製後的成品，已直接顯示給使用者看，圖片內容不列入對話上下文。file_id=' + nid + '（後製前 file_id=' + res.file_id + '）]' }; Object.defineProperty(msg, '_displayDataUrl', { value: dataUrl, enumerable: false, configurable: true }); this.messages.push(msg); this._persistChatHistory(); this._renderMessageHistory();
+            const old = res.file_id, first = res.original_file_id || old; res = Object.assign({}, res, { original_file_id: first, file_id: nid, client_file_url: 'client-file/' + nid, retouch: (res.retouch || []).concat(o.why) }); if (Array.isArray(res.images) && res.images[0]) res.images = [Object.assign({}, res.images[0], { file_id: nid, client_file_url: 'client-file/' + nid, filename: name, original_file_id: first })].concat(res.images.slice(1));
         } catch (e) { note('　（後製沒成功：' + String((e && e.message) || e).slice(0, 80) + '，用原圖。）'); }
         return res;
     }
@@ -53655,10 +54026,8 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const FM = FaImageRoute, a = o.a, note = o.note; let slots = o.slots, hit = false, reflected = false; const opt = a.reflect === false || a.reflect === 'false' || a.reflect === '0' ? { reflect: false } : (a.reflect === true || a.reflect === 'true' || a.reflect === '1' ? { reflect: true } : {});
         if (opt.reflect === false) return { slots, hit: false, reflected: false };
         const cat = FaSceneCatalog.match(o.request);
-        if (cat.length) note('━━ ① 場景 ━━');
         if (cat.length) { const r = FM.applyScene(slots, FaSceneCatalog.toLlmSlots(cat[0].entry), cat[0].hit); if (r.got) { slots = r.slots; hit = true; note('📚 場景素材目錄：「' + cat[0].label + '」→ 補上 ' + r.got + ' 項元素與構圖（' + cat[0].hit.join('、') + '）。'); } }
         const need = FM.reflectNeeded(o.request, slots, Object.assign({ catalogHit: hit }, opt));
-        if (!cat.length && need.need) note('━━ ① 場景 ━━');
         if (!need.need) return { slots, hit, reflected: false };
         note('🧠 先想一想要準備什麼（' + need.why + '）…');
         try {

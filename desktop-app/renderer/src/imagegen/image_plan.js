@@ -25,7 +25,9 @@
     { name: 'image_render', label: '生成', order: 4, needs: ['request'], opt: ['scene'], gives: 'image', zh: ['生成', '繪製', '畫出', '產生', '出圖', '擴散', '渲染', '提示詞'], hint: '依模型族套提示詞範本，交給擴散模型畫出圖' },
     { name: 'image_check', label: '檢查', order: 5, needs: ['request', 'image'], opt: ['scene'], gives: 'verdict', zh: ['檢查', '驗證', '確認', '缺少', '缺漏', '比對', '看看'], hint: '請視覺模型看成品，缺了哪些要的元素' },
     { name: 'image_improve', label: '補強', order: 6, needs: ['request', 'image', 'verdict'], opt: ['scene'], gives: 'image', zh: ['補強', '補上', '重畫', '改善', '補足'], hint: '成品缺了元素就加強後重畫一次（沒缺就不動）' },
-    { name: 'image_retouch', label: '修圖', order: 7, needs: ['image'], gives: 'image', zh: ['修圖', '後製', '微調', '調色', '亮度', '對比', '銳化', '整合', '潤飾'], hint: '程式量亮度、對比、飽和度，需要時用圖片後製修一次（原圖留著）' }
+    { name: 'image_mood', label: '場景色', order: 7, needs: ['image'], opt: ['scene'], gives: 'image', zh: ['場景色', '調色', '色調', '氛圍', '光影', '暗角', '柔光', '色溫', '冷暖', '氣氛色'], hint: '依光線與氣氛調場景色與光影（調色風格、暗角、柔光、陰影與亮部），程式查表決定' },
+    { name: 'image_lens', label: '鏡頭', order: 8, needs: ['image'], opt: ['scene'], gives: 'image', zh: ['鏡頭效果', '景深', '散景', '動態模糊', '模糊', '色差', '鏡頭'], hint: '依鏡頭與題材加鏡頭效果（景深模糊、散景、動態模糊、色差），程式查表決定' },
+    { name: 'image_retouch', label: '修圖', order: 9, needs: ['image'], gives: 'image', zh: ['修圖', '後製', '微調', '調色', '亮度', '對比', '銳化', '整合', '潤飾'], hint: '程式量亮度、對比、飽和度，需要時用圖片後製修一次（原圖留著）' }
   ];
   var BY_NAME = {}; UNITS.forEach(function (u) { BY_NAME[u.name] = u; });
   // 前置：某單元要用的欄位，一定要有人給（除了 request）
@@ -34,7 +36,7 @@
   // 樣板（離線訓練器的概念）：沒有模型、模型不可靠時的現成做法
   var TEMPLATES = {
     direct: { id: 'direct', label: '簡單題目：直接生成再修圖', units: ['image_render', 'image_retouch'] },
-    scene: { id: 'scene', label: '場景類：場景→草稿→細節→生成→檢查→補強→修圖', units: ['image_scene', 'image_draft', 'image_details', 'image_render', 'image_check', 'image_improve', 'image_retouch'] }
+    scene: { id: 'scene', label: '場景類：場景→草稿→細節→生成→檢查→補強→場景色→鏡頭→修圖', units: ['image_scene', 'image_draft', 'image_details', 'image_render', 'image_check', 'image_improve', 'image_mood', 'image_lens', 'image_retouch'] }
   };
   // signals: { complex（目錄命中、需要反思、多個主體…）, draft（明確要草稿）, check: false 等 }
   function chooseTemplate(sig) {
@@ -102,7 +104,7 @@
       });
       program.steps.push({ id: id, call: 'tool:' + name, args: args }); made[u.gives] = id;
     });
-    program.return = { $ref: made.image };
+    program.return = { $ref: made.image + '.image' };
     return program;
   }
   function toText(units, tree) {

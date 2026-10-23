@@ -148,6 +148,35 @@
     if (ops.length || st.std >= 38) { ops.push({ op: 'sharpen', amount: 0.5, radius: 1.2, threshold: 2 }); why.push('輕微銳化'); }
     return { ops: ops, why: why, flat: st.std < 8 };
   }
+
+  // ───── ⑥ 後製：場景色與光影、鏡頭效果（程式查表決定，不問模型；操作名稱沿用 imgproc）─────
+  var MOOD_TABLE = [
+    [/golden hour/, [{ op: 'grade', preset: 'dusk', amount: 50 }, { op: 'vignette', strength: 25 }], '黃昏：暖色調色與暗角'],
+    [/night|moonlight/, [{ op: 'grade', preset: 'night', amount: 55 }, { op: 'vignette', strength: 35 }], '夜晚：冷暗色調色與暗角'],
+    [/neon/, [{ op: 'grade', preset: 'teal_orange', amount: 50 }, { op: 'glow', strength: 35, radius: 10, threshold: 190 }], '霓虹：青橘調色與柔光'],
+    [/morning|sunrise/, [{ op: 'grade', preset: 'warm', amount: 35 }, { op: 'glow', strength: 25, radius: 12, threshold: 200 }], '晨光：暖色與柔光'],
+    [/backlit|rim/, [{ op: 'shadows_highlights', shadows: 30, highlights: 20 }, { op: 'glow', strength: 30, radius: 10, threshold: 200 }], '逆光：提亮陰影、壓亮部、柔光'],
+    [/overcast|fog/, [{ op: 'grade', preset: 'fade', amount: 35 }], '陰天：柔和褪色'],
+    [/mysterious|eerie/, [{ op: 'grade', preset: 'night', amount: 35 }, { op: 'vignette', strength: 40 }], '神秘：偏冷暗與暗角'],
+    [/epic|grand/, [{ op: 'grade', preset: 'teal_orange', amount: 35 }, { op: 'vignette', strength: 30 }], '史詩：青橘調色與暗角'],
+    [/warm, cozy/, [{ op: 'grade', preset: 'warm', amount: 40 }], '溫馨：暖色'],
+    [/serene/, [{ op: 'grade', preset: 'cool', amount: 25 }], '寧靜：偏冷柔和']
+  ];
+  function moodOps(slots) {
+    var keys = [slots.lighting && slots.lighting.tag, slots.mood && slots.mood.tag].filter(Boolean), ops = [], why = [], used = {};
+    keys.forEach(function (k) { for (var i = 0; i < MOOD_TABLE.length; i++) if (MOOD_TABLE[i][0].test(k)) { var row = MOOD_TABLE[i], any = false; row[1].forEach(function (o) { if (used[o.op]) return; used[o.op] = true; ops.push(JSON.parse(JSON.stringify(o))); any = true; }); if (any) why.push(row[2]); break; } });
+    return { ops: ops, why: why };
+  }
+  function lensOps(slots, request) {
+    var t = String(request || ''), cam = slots.camera && slots.camera.tag || '', light = slots.lighting && slots.lighting.tag || '', ops = [], why = [];
+    if (/close-up/.test(cam)) { ops.push({ op: 'lens_blur', radius: 8, mode: 'radial', band: 0.35 }); why.push('特寫：淺景深（中心清楚、四周模糊）'); }
+    else if (/top-down|aerial/.test(cam)) { ops.push({ op: 'lens_blur', radius: 6, mode: 'tilt', focus: 'center', band: 0.25 }); why.push('俯視：移軸般的帶狀景深'); }
+    if (/散景|bokeh/i.test(t) || (/night|neon/.test(light) && /城市|街|燈|音樂會|演唱會|夜景/.test(t))) { ops.push({ op: 'bokeh', radius: 10, threshold: 205, strength: 55 }); why.push('夜間燈光：散景光斑'); }
+    if (/奔跑|賽車|速度|疾駛|飛奔|追逐|動感|motion/i.test(t)) { ops.push({ op: 'motion_blur', length: 14, angle: 0 }); why.push('有速度感：水平動態模糊'); }
+    if (/復古|老電影|懷舊|底片|film|retro/i.test(t)) { ops.push({ op: 'chroma_shift', amount: 2 }); why.push('復古：輕微色差'); }
+    return { ops: ops, why: why };
+  }
+
   function checkBrief(request, items) {
     return 'Look at this image. The request was: ' + String(request || '').slice(0, 200) + '\nWhich of these required elements are NOT clearly visible? ' + items.slice(0, 8).join('; ') + '\nAnswer only with JSON: {"missing":["element",...],"ok":true|false}';
   }
@@ -253,5 +282,5 @@
     return out;
   }
 
-  return { detailMissing: detailMissing, detailBrief: detailBrief, applyDetails: applyDetails, imageStats: imageStats, retouchPlan: retouchPlan, checkBrief: checkBrief, parseCheck: parseCheck, draftGaps: draftGaps, draftRequest: draftRequest, RELATIONS: RELATIONS, applyScene: applyScene, reflectNeeded: reflectNeeded, reflectBrief: reflectBrief, applyReflection: applyReflection, configure: configure, classify: classify, diagramType: diagramType, STYLES: STYLES, FAMILIES: FAMILIES, extractSlots: extractSlots, mergeSlots: mergeSlots, familyOf: familyOf, estimateTokens: estimateTokens, buildPrompt: buildPrompt, slotsFromCaption: slotsFromCaption, svgBrief: svgBrief, mermaidBrief: mermaidBrief, extractSvg: extractSvg, extractMermaid: extractMermaid, validateSvg: validateSvg, validateMermaid: validateMermaid, plan: plan, ascii: ascii };
+  return { moodOps: moodOps, lensOps: lensOps, detailMissing: detailMissing, detailBrief: detailBrief, applyDetails: applyDetails, imageStats: imageStats, retouchPlan: retouchPlan, checkBrief: checkBrief, parseCheck: parseCheck, draftGaps: draftGaps, draftRequest: draftRequest, RELATIONS: RELATIONS, applyScene: applyScene, reflectNeeded: reflectNeeded, reflectBrief: reflectBrief, applyReflection: applyReflection, configure: configure, classify: classify, diagramType: diagramType, STYLES: STYLES, FAMILIES: FAMILIES, extractSlots: extractSlots, mergeSlots: mergeSlots, familyOf: familyOf, estimateTokens: estimateTokens, buildPrompt: buildPrompt, slotsFromCaption: slotsFromCaption, svgBrief: svgBrief, mermaidBrief: mermaidBrief, extractSvg: extractSvg, extractMermaid: extractMermaid, validateSvg: validateSvg, validateMermaid: validateMermaid, plan: plan, ascii: ascii };
 });

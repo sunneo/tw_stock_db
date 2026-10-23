@@ -4,6 +4,8 @@
  *   影像強化 enhance（自動對比＋輕微銳化＋飽和度）、色調強化 tone（自動白平衡＋對比＋飽和度＋色溫）、減少色彩 reduce_colors（中位切割，可抖色）、
  *   色階分離 posterize、二值化 threshold（預設 Otsu）、反相 invert、高斯模糊 blur、銳化 sharpen、馬賽克 mosaic（可只蓋一個區域）、
  *   旋轉 rotate（任意角度，順時針）、縮放 scale、裁切 crop、翻轉 flip。
+ *   場景色與鏡頭效果（2026-10-23）：暗角 vignette、色相 hue、調色風格 grade（warm／cool／dusk／night／noon／teal_orange／sepia／fade）、陰影與亮部 shadows_highlights、
+ *   景深模糊 lens_blur（tilt／radial）、散景 bokeh、柔光 glow、動態模糊 motion_blur、色差 chroma_shift。
  * 為什麼全部用純 JS 寫（不用 canvas filter）：可以在 Node 裡單元測試、結果可重現（不看瀏覽器版本）、可以放進 worker。
  * normalizeOps 先驗證整串操作（名稱、參數範圍）再開始處理——有一個錯就整串不跑，不會做到一半才失敗。 */
 (function (root, factory) {
@@ -23,6 +25,9 @@
         posterize: ['posterize', '色階分離'], threshold: ['threshold', 'binarize', 'binary', '二值化', '黑白二值'], invert: ['invert', 'negative', '反相', '負片'],
         blur: ['blur', 'gaussian_blur', 'gaussian', 'gauss', '高斯模糊', '模糊'], sharpen: ['sharpen', 'unsharp', '銳化', '銳利化'],
         mosaic: ['mosaic', 'pixelate', 'pixelize', '馬賽克', '像素化'],
+        vignette: ['vignette', 'vignetting', '暗角', '周邊暗角', '暈影'], hue: ['hue', 'hue_rotate', 'hue_shift', '色相', '色相旋轉'], grade: ['grade', 'color_grade', 'colour_grade', 'grading', '調色風格', '場景色', '色調風格', '電影調色'],
+        shadows_highlights: ['shadows_highlights', 'shadow_highlight', 'shadows', 'highlights', '陰影亮部', '陰影與亮部', '光影'], lens_blur: ['lens_blur', 'depth_of_field', 'dof', 'tilt_shift', '鏡頭模糊', '景深', '景深模糊'], bokeh: ['bokeh', '散景', '光斑'],
+        glow: ['glow', 'bloom', 'soft_glow', '柔光', '光暈', '泛光'], motion_blur: ['motion_blur', 'motion', '動態模糊', '移動模糊', '動感模糊'], chroma_shift: ['chroma_shift', 'chromatic_aberration', 'aberration', '色差', '色散'],
         rotate: ['rotate', 'rotation', '旋轉'], scale: ['scale', 'resize', 'zoom', '縮放', '調整大小', '縮小', '放大'], crop: ['crop', 'trim', '裁切', '裁剪'], flip: ['flip', 'mirror', '翻轉', '鏡像'],
     };
     const NAME_OF = Object.create(null);
@@ -275,11 +280,96 @@
     }
 
     // ───────────────────────── 操作清單的驗證與執行 ─────────────────────────
-    const PIXEL_FN = { grayscale, brightness, contrast, saturation, gamma, auto_contrast: autoContrast, enhance, tone, reduce_colors: reduceColors, posterize, threshold, invert, blur, sharpen, mosaic };
+    // ───── 場景色、光影、鏡頭效果（2026-10-23 新增：暗角、色相、調色風格、陰影與亮部、景深模糊、散景、動態模糊、色差、柔光）─────
+    const smooth = (a, b, x) => { const t = clampN((x - a) / ((b - a) || 1), 0, 1); return t * t * (3 - 2 * t); };
+    // 暗角：由中心往外變暗；strength 0..100（預設 35），radius 0.3..1.2（預設 0.75，亮區到畫面對角線一半的幾分之幾）
+    function vignette(img, p) {
+        const s = clampN(num(p.strength, 35), 0, 100) / 100, r = clampN(num(p.radius, 0.75), 0.3, 1.2), w = img.width, h = img.height, d = img.data, cx = (w - 1) / 2, cy = (h - 1) / 2, rmax = Math.sqrt(cx * cx + cy * cy) || 1;
+        for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const dist = Math.sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy)) / rmax, k = 1 - s * smooth(r * 0.55, r * 1.25, dist), i = (y * w + x) * 4; d[i] *= k; d[i + 1] *= k; d[i + 2] *= k; }
+        return img;
+    }
+    // 色相旋轉（度）：用 YIQ 空間的旋轉矩陣，亮度不變
+    function hue(img, p) {
+        const a = (num(p.degrees != null ? p.degrees : p.amount, 0) % 360) * Math.PI / 180, c = Math.cos(a), s = Math.sin(a), d = img.data;
+        const m = [0.299 + 0.701 * c + 0.168 * s, 0.587 - 0.587 * c + 0.330 * s, 0.114 - 0.114 * c - 0.497 * s, 0.299 - 0.299 * c - 0.328 * s, 0.587 + 0.413 * c + 0.035 * s, 0.114 - 0.114 * c + 0.292 * s, 0.299 - 0.300 * c + 1.250 * s, 0.587 - 0.588 * c - 1.050 * s, 0.114 + 0.886 * c - 0.203 * s];
+        for (let i = 0; i < d.length; i += 4) { const r = d[i], g = d[i + 1], b = d[i + 2]; d[i] = m[0] * r + m[1] * g + m[2] * b; d[i + 1] = m[3] * r + m[4] * g + m[5] * b; d[i + 2] = m[6] * r + m[7] * g + m[8] * b; }
+        return img;
+    }
+    // 調色風格（場景色）：每個預設是「暗部色、亮部色、整體增益」，依 amount（0..100，預設 60）跟原圖混合
+    const GRADES = {
+        warm: { shadow: [20, 6, 0], light: [30, 14, -10], gain: [1.06, 1.0, 0.92] }, cool: { shadow: [-6, 2, 16], light: [-10, 0, 14], gain: [0.94, 1.0, 1.08] },
+        dusk: { shadow: [24, -4, 22], light: [34, 12, -14], gain: [1.08, 0.96, 0.96] }, night: { shadow: [-12, -4, 22], light: [-18, -2, 16], gain: [0.78, 0.86, 1.1], dim: 0.82 },
+        noon: { shadow: [0, 0, 0], light: [6, 6, 0], gain: [1.04, 1.04, 1.0], boost: 1.08 }, teal_orange: { shadow: [-14, 6, 14], light: [26, 10, -18], gain: [1.02, 1.0, 1.0] },
+        sepia: { sepia: true }, fade: { fade: 28 }
+    };
+    function grade(img, p) {
+        const g = GRADES[String(p.preset || 'warm').toLowerCase()] || GRADES.warm, amt = clampN(num(p.amount, 60), 0, 100) / 100, d = img.data;
+        for (let i = 0; i < d.length; i += 4) {
+            const r = d[i], gg = d[i + 1], b = d[i + 2], y = luma(r, gg, b) / 255; let nr, ng, nb;
+            if (g.sepia) { nr = 0.393 * r + 0.769 * gg + 0.189 * b; ng = 0.349 * r + 0.686 * gg + 0.168 * b; nb = 0.272 * r + 0.534 * gg + 0.131 * b; }
+            else if (g.fade) { nr = r * 0.88 + g.fade; ng = gg * 0.88 + g.fade; nb = b * 0.88 + g.fade; }
+            else { const t = smooth(0.15, 0.85, y); nr = (r + g.shadow[0] * (1 - t) + g.light[0] * t) * g.gain[0]; ng = (gg + g.shadow[1] * (1 - t) + g.light[1] * t) * g.gain[1]; nb = (b + g.shadow[2] * (1 - t) + g.light[2] * t) * g.gain[2]; if (g.dim) { nr *= g.dim; ng *= g.dim; nb *= g.dim; } if (g.boost) { nr *= g.boost; ng *= g.boost; nb *= g.boost; } }
+            d[i] = r + (nr - r) * amt; d[i + 1] = gg + (ng - gg) * amt; d[i + 2] = b + (nb - b) * amt;
+        }
+        return img;
+    }
+    // 陰影與亮部：shadows／highlights −100..100（正＝提亮陰影、壓低亮部細節）
+    function shadowsHighlights(img, p) {
+        const sh = clampN(num(p.shadows, 0), -100, 100) / 100 * 60, hl = clampN(num(p.highlights, 0), -100, 100) / 100 * 60, d = img.data;
+        for (let i = 0; i < d.length; i += 4) { const y = luma(d[i], d[i + 1], d[i + 2]) / 255, add = sh * (1 - smooth(0.05, 0.55, y)) - hl * smooth(0.5, 0.95, y); d[i] += add; d[i + 1] += add; d[i + 2] += add; }
+        return img;
+    }
+    // 景深（鏡頭）模糊：離對焦位置越遠越模糊。focus：'center' | 'top' | 'bottom' | 0..100（對焦位置，百分比）；band：清楚的範圍（0.05..0.9，預設 0.3）；mode：'tilt'（水平帶狀，預設）或 'radial'（中心清楚、四周模糊）
+    function lensBlur(img, p) {
+        const rad = clampN(num(p.radius, 8), 0.5, 60), band = clampN(num(p.band, 0.3), 0.05, 0.9), mode = String(p.mode || 'tilt').toLowerCase(), w = img.width, h = img.height;
+        let f = p.focus; const fy = f === 'top' ? 0.1 : f === 'bottom' ? 0.9 : (f == null || f === 'center') ? 0.5 : clampN(num(f, 50) / 100, 0, 1);
+        const sharp = clone(img), bl = blur(clone(img), { sigma: rad }), d = img.data, a = sharp.data, b = bl.data;
+        for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+            const dist = mode === 'radial' ? Math.sqrt(((x - w / 2) / (w / 2)) ** 2 + ((y - h * fy) / (h / 2)) ** 2) / 1.2 : Math.abs(y / h - fy) * 2, k = smooth(band * 0.5, band * 0.5 + 0.55, dist), i = (y * w + x) * 4;
+            d[i] = a[i] + (b[i] - a[i]) * k; d[i + 1] = a[i + 1] + (b[i + 1] - a[i + 1]) * k; d[i + 2] = a[i + 2] + (b[i + 2] - a[i + 2]) * k;
+        }
+        return img;
+    }
+    // 圓盤模糊的亮部光斑（散景）：只取亮部（亮度 ≥ threshold），用圓盤核模糊後用「濾色」疊回去；為了不慢，在縮小的圖上算
+    function bokeh(img, p) {
+        const rad = clampN(num(p.radius, 10), 2, 40), thr = clampN(num(p.threshold, 200), 100, 254), strength = clampN(num(p.strength, 60), 0, 100) / 100, w = img.width, h = img.height, f = Math.max(1, Math.ceil(rad / 5)), sw = Math.max(1, Math.round(w / f)), sh = Math.max(1, Math.round(h / f)), sr = Math.max(1, Math.round(rad / f));
+        const small = make(sw, sh), sd = small.data, d = img.data;
+        for (let y = 0; y < sh; y++) for (let x = 0; x < sw; x++) { const si = (Math.min(h - 1, y * f) * w + Math.min(w - 1, x * f)) * 4, o = (y * sw + x) * 4, yy = luma(d[si], d[si + 1], d[si + 2]); if (yy >= thr) { sd[o] = d[si]; sd[o + 1] = d[si + 1]; sd[o + 2] = d[si + 2]; } sd[o + 3] = 255; }
+        const out = new Float32Array(sw * sh * 3), offs = []; for (let dy = -sr; dy <= sr; dy++) for (let dx = -sr; dx <= sr; dx++) if (dx * dx + dy * dy <= sr * sr) offs.push([dx, dy]);
+        for (let y = 0; y < sh; y++) for (let x = 0; x < sw; x++) { let r = 0, g = 0, b = 0, n = 0; for (const [dx, dy] of offs) { const xx = x + dx, yy2 = y + dy; if (xx < 0 || yy2 < 0 || xx >= sw || yy2 >= sh) continue; const o = (yy2 * sw + xx) * 4; r += sd[o]; g += sd[o + 1]; b += sd[o + 2]; n++; } const o2 = (y * sw + x) * 3; const nrm = (offs.length * 0.2) || 1; /* 光斑要亮得看得見：不照能量守恆平均（那樣單一亮點會暗到看不見） */ out[o2] = r / nrm; out[o2 + 1] = g / nrm; out[o2 + 2] = b / nrm; }
+        for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const sx = Math.min(sw - 1, Math.floor(x / f)), sy = Math.min(sh - 1, Math.floor(y / f)), o = (sy * sw + sx) * 3, i = (y * w + x) * 4; for (let c = 0; c < 3; c++) { const add = out[o + c] * strength * 1.6; d[i + c] = 255 - (255 - d[i + c]) * (255 - clampN(add, 0, 255)) / 255; } }
+        return img;
+    }
+    // 柔光（bloom）：亮部模糊後濾色疊回
+    function glow(img, p) {
+        const rad = clampN(num(p.radius, 12), 1, 80), thr = clampN(num(p.threshold, 190), 80, 254), strength = clampN(num(p.strength, 50), 0, 100) / 100, hl = clone(img), hd = hl.data;
+        for (let i = 0; i < hd.length; i += 4) if (luma(hd[i], hd[i + 1], hd[i + 2]) < thr) { hd[i] = hd[i + 1] = hd[i + 2] = 0; }
+        blur(hl, { sigma: rad }); const d = img.data;
+        for (let i = 0; i < d.length; i += 4) for (let c = 0; c < 3; c++) { const add = hd[i + c] * strength; d[i + c] = 255 - (255 - d[i + c]) * (255 - add) / 255; }
+        return img;
+    }
+    // 動態模糊：沿 angle（度，0＝水平）方向平均 length 個取樣點
+    function motionBlur(img, p) {
+        const len = Math.round(clampN(num(p.length, 15), 2, 100)), ang = num(p.angle, 0) * Math.PI / 180, w = img.width, h = img.height, src = new Uint8ClampedArray(img.data), d = img.data, dx = Math.cos(ang), dy = Math.sin(ang), half = (len - 1) / 2;
+        for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { let r = 0, g = 0, b = 0; for (let k = 0; k < len; k++) { const t = k - half, xx = Math.min(w - 1, Math.max(0, Math.round(x + dx * t))), yy = Math.min(h - 1, Math.max(0, Math.round(y + dy * t))), o = (yy * w + xx) * 4; r += src[o]; g += src[o + 1]; b += src[o + 2]; } const i = (y * w + x) * 4; d[i] = r / len; d[i + 1] = g / len; d[i + 2] = b / len; }
+        return img;
+    }
+    // 色差：紅色通道往外、藍色通道往內做放射狀位移（amount＝邊緣位移的像素數，1..20）
+    function chromaShift(img, p) {
+        const amt = clampN(num(p.amount, 3), 1, 20), w = img.width, h = img.height, src = new Uint8ClampedArray(img.data), d = img.data, cx = (w - 1) / 2, cy = (h - 1) / 2, rmax = Math.sqrt(cx * cx + cy * cy) || 1;
+        const cl = (v, hi) => Math.min(hi, Math.max(0, Math.round(v)));
+        for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+            const vx = x - cx, vy = y - cy, dist = Math.sqrt(vx * vx + vy * vy) || 1, sh = amt * dist / rmax, ux = vx / dist, uy = vy / dist, i = (y * w + x) * 4;
+            d[i] = src[(cl(y - uy * sh, h - 1) * w + cl(x - ux * sh, w - 1)) * 4]; d[i + 2] = src[(cl(y + uy * sh, h - 1) * w + cl(x + ux * sh, w - 1)) * 4 + 2];
+        }
+        return img;
+    }
+
+    const PIXEL_FN = { grayscale, brightness, contrast, saturation, gamma, auto_contrast: autoContrast, enhance, tone, reduce_colors: reduceColors, posterize, threshold, invert, blur, sharpen, mosaic, vignette, hue, grade, shadows_highlights: shadowsHighlights, lens_blur: lensBlur, bokeh, glow, motion_blur: motionBlur, chroma_shift: chromaShift };
     const GEO_FN = { rotate, scale, crop, flip };
-    const RANGE = { brightness: ['amount', -100, 100], contrast: ['amount', -100, 100], saturation: ['amount', -100, 100], gamma: ['value', 0.1, 10], reduce_colors: ['colors', 2, 256], posterize: ['levels', 2, 64], blur: ['radius', 0, 200], sharpen: ['amount', 0, 5] };
+    const RANGE = { brightness: ['amount', -100, 100], contrast: ['amount', -100, 100], saturation: ['amount', -100, 100], gamma: ['value', 0.1, 10], reduce_colors: ['colors', 2, 256], posterize: ['levels', 2, 64], blur: ['radius', 0, 200], sharpen: ['amount', 0, 5], vignette: ['strength', 0, 100], hue: ['degrees', -360, 360], lens_blur: ['radius', 0.5, 60], bokeh: ['radius', 2, 40], glow: ['strength', 0, 100], motion_blur: ['length', 2, 100], chroma_shift: ['amount', 1, 20] };
     // 縮寫：{op:'blur', radius:3}、"grayscale"、{grayscale:true}、{blur:3}、{rotate:90}、{scale:50}（單一數值的縮寫）
-    const SHORT_ARG = { brightness: 'amount', contrast: 'amount', saturation: 'amount', gamma: 'value', reduce_colors: 'colors', posterize: 'levels', blur: 'radius', sharpen: 'amount', mosaic: 'block', rotate: 'degrees', scale: 'percent', threshold: 'level', enhance: 'strength', flip: 'direction', tone: 'contrast' };
+    const SHORT_ARG = { brightness: 'amount', contrast: 'amount', saturation: 'amount', gamma: 'value', reduce_colors: 'colors', posterize: 'levels', blur: 'radius', sharpen: 'amount', mosaic: 'block', rotate: 'degrees', scale: 'percent', threshold: 'level', enhance: 'strength', flip: 'direction', tone: 'contrast', vignette: 'strength', hue: 'degrees', grade: 'preset', lens_blur: 'radius', bokeh: 'radius', glow: 'strength', motion_blur: 'length', chroma_shift: 'amount' };
     function normalizeOps(list) {
         const ops = [], errors = [];
         const arr = list == null || list === '' ? [] : (Array.isArray(list) ? list : [list]);
@@ -297,6 +387,7 @@
             if (name === 'rotate') { const dv = p.degrees != null ? p.degrees : (p.angle != null ? p.angle : p.deg); if (dv == null || !Number.isFinite(Number(dv))) { errors.push(at + '（rotate）：要給 degrees（順時針角度，例如 90、-90、180、15）'); return; } p.degrees = Number(dv); }
             if (name === 'scale' && ['percent', 'factor', 'width', 'height', 'max_side'].every((k) => p[k] == null)) { errors.push(at + '（scale）：要給 percent（百分比）、factor（倍率）、width／height（像素）或 max_side（長邊上限）其中之一'); return; }
             if (name === 'scale') for (const k of ['percent', 'factor', 'width', 'height', 'max_side']) if (p[k] != null) { const nv = Number(p[k]); if (!(nv > 0)) { errors.push(at + '（scale）：' + k + ' 要大於 0'); return; } p[k] = nv; }
+            if (name === 'grade' && p.preset != null && !GRADES[String(p.preset).toLowerCase()]) { errors.push(at + '（grade）：不認得的調色風格「' + p.preset + '」。可用：' + Object.keys(GRADES).join('、')); return; }
             if (name === 'crop' && ['x', 'y', 'w', 'h', 'width', 'height'].every((k) => p[k] == null)) { errors.push(at + '（crop）：要給 x、y、w、h（預設單位百分比 0～100；unit:"px" 用像素）'); return; }
             ops.push(Object.assign({ op: name }, p));
         });
