@@ -505,6 +505,16 @@ const FaDeckTools = (function () {
             const checked = await this._deckCheck(data, 'finish_presentation'); if (checked.error) return checked;
             return this._deckSaveChecked(data, draft.name, checked);
         },
+        // 一個主題的規則（get_presentation_topic 的本體）；給過的主題第二次只回提醒，不重複塞一大段文字
+        async _deckTopicOne(topic) {
+            const run = this._deckRun(); run.topicsGiven = run.topicsGiven || {};
+            if (run.topicsGiven[topic]) { run.topicsGiven[topic]++; return { ok: true, topic, already_given: true, note: 'You already have the "' + topic + '" rules above in this conversation (this is call #' + run.topicsGiven[topic] + '). Use them; do not ask again -- write the deck now.' }; }
+            const T = (typeof FA_DECK_SRC !== 'undefined' && FA_DECK_SRC.topics) || {};
+            const details = topic === 'ai_features' ? this._deckAiFeaturesText() : T[topic];
+            if (!details) return { error: 'unknown topic ' + JSON.stringify(topic) + ' -- must be one of: ' + Object.keys(T).join(', ') };
+            run.topicsGiven[topic] = 1;
+            return { ok: true, topic, details };
+        },
         // 在網路上找真正的照片（免費授權：Wikimedia Commons 先、Openverse 備援），匯入成這次簡報的圖片（@imgN）。
         // 為什麼自己做、不靠模型猜網址：模型會編網址或用佔位圖；這裡只收「搜尋 API 回來的檔案」，下載後檢查是圖片、夠大、不是壞圖，並回報出處與授權。
         async _deckFindPhoto(a) {
@@ -525,6 +535,8 @@ const FaDeckTools = (function () {
                     for (const r of (j.results || [])) { if (!r.url || !/^(jpe?g|png|webp)$/i.test(String(r.filetype || r.url.split('.').pop() || ''))) continue; cands.push({ url: r.thumbnail && !r.url ? r.thumbnail : r.url, title: String(r.title || q).slice(0, 90), credit: strip(r.creator), license: strip(String(r.license || '').toUpperCase() + (r.license_version ? ' ' + r.license_version : '')), page: r.foreign_landing_url || '', source: 'Openverse' }); }
                 } catch (e) { errs.push('Openverse：' + String((e && e.message) || e).slice(0, 120)); }
             }
+            // 搜尋結果依「標題裡有幾個關鍵字」排序（相關的先試）；一個關鍵字都對不上的排最後
+            const qw = q.toLowerCase().split(' ').filter((w) => w.length > 3), sc = (c) => qw.filter((w) => c.title.toLowerCase().indexOf(w.slice(0, Math.max(4, w.length - 2))) >= 0).length; cands.forEach((c, i) => { c.i = i; }); cands.sort((x, y) => sc(y) - sc(x) || x.i - y.i);
             const photos = [], tried = [];
             for (const c of cands) {
                 if (photos.length >= want || tried.length >= 8) break; if (!c.url || run.photoUrls[c.url]) continue; tried.push(c.title);
@@ -794,14 +806,10 @@ const FaDeckTools = (function () {
                 'Fetch the exact rules for one part of the deck format: "format" (overall shape, slide fields, transitions), "layout" (which layout to pick, pacing), "visuals" (every visual kind with its fields), "cues" (syncing pictures with narration), "sources" (turning files/folders/websites/screenshots/tables into slides), "interactive" (answer cards with scores, a live terminal, and widgets: small games / simulators you write yourself), "3d" (3D models, cameras) or "style" (writing and house style), "ai_features" (what this AI itself can do). Call "format" and "visuals" before writing your first deck.',
                 obj({ topic: { type: 'string', enum: ['format', 'layout', 'visuals', '3d', 'cues', 'interactive', 'ai_features', 'sources', 'style'] } }, ['topic']),
                 async function (a) {
-                    const topic = String(a.topic || '');
-                    const run = this._deckRun(); run.topicsGiven = run.topicsGiven || {};
-                    if (run.topicsGiven[topic]) { run.topicsGiven[topic]++; return { ok: true, topic, already_given: true, note: 'You already have the "' + topic + '" rules above in this conversation (this is call #' + run.topicsGiven[topic] + '). Use them; do not ask again -- write the deck now.' }; }
-                    const T = (typeof FA_DECK_SRC !== 'undefined' && FA_DECK_SRC.topics) || {};
-                    const details = topic === 'ai_features' ? this._deckAiFeaturesText() : T[topic];
-                    if (!details) return { error: 'unknown topic ' + JSON.stringify(topic) + ' -- must be one of: ' + Object.keys(T).join(', ') };
-                    run.topicsGiven[topic] = 1;
-                    return { ok: true, topic, details };
+                    // 弱模型常把參數寫成 names／topics 陣列，或整個沒給：陣列就一次回多個主題，沒給就回最重要的 format，不丟錯讓它繞一圈
+                    const list = [].concat(Array.isArray(a.names) ? a.names : [], Array.isArray(a.topics) ? a.topics : [], a.topic ? [a.topic] : []).map((x) => String(x || '').trim()).filter(Boolean);
+                    if (list.length > 1) { const out = []; for (const tp of list.slice(0, 3)) { const r1 = await this._deckTopicOne(tp); out.push(r1.error ? { topic: tp, error: r1.error } : { topic: tp, details: r1.already_given ? r1.note : r1.details }); } return { ok: true, topics: out }; }
+                    return this._deckTopicOne(list[0] || 'format');
                 });
             tool('get_presentation_yaml',
                 'Fetch the exact yaml of an existing presentation by its file id or url (the "file_id" / "url" of an earlier render_presentation result; default: the latest presentation of this conversation). Call this before changing a presentation made earlier -- edit THAT yaml, never re-write it from memory.',

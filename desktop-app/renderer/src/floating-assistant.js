@@ -17534,6 +17534,116 @@ const holder = {};
 return holder.FaImageRoute;
 })();
 /* IMGROUTE-END */
+/* DECKTOPIC-BEGIN */
+const FaDeckTopic = (function () {
+const holder = {};
+(function (module, self) {
+/*
+ * 主題簡報食譜的核心（UMD，純函式，不碰 DOM、網路、模型）：/media-presentation 只給主題（沒有檔案、網址）時，程式自己組出整份簡報——
+ * 模型只回答封閉的小問題（每頁的標題／重點／找圖關鍵字、每頁的旁白），簡報的 yaml 由程式寫、由程式驗證；模型不可用或答不出來時，
+ * 退回「樣板」（把使用者的需求句拆成子句，一個子句一頁）。設計見 DESIGN.deck-topic.md。
+ *
+ *   parseRequest(task)               → { body, lang, speed, voice, kids, wantPhotos, title }
+ *   outlinePrompt(req) / parseOutline(text)   模型規劃：一行一頁「標題｜重點｜英文關鍵字」，每行都驗證
+ *   templateOutline(req, kwFn)       樣板：需求句拆成子句，一個子句一頁（沒有模型也做得出來）
+ *   narrationPrompt(slide, req) / acceptNarration(text, slide)   每頁旁白（封閉格式）
+ *   buildDeck(req, outline, narr, photos)   → { deck, chapters }（物件，可以直接 JSON 當 yaml）
+ *   repair(doc, errorText)           render_presentation 回報的問題 → 只動有問題的地方（拿掉壞的圖、截短太長的字），回報改了什麼
+ */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaDeckTopic = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  var TRAVEL = [['機場', 'airport terminal'], ['起飛', 'airplane takeoff'], ['降落', 'airplane landing'], ['北海道', 'Hokkaido Japan landscape'], ['日本', 'Japan'], ['中國', 'China'], ['台灣', 'Taiwan'], ['雲層', 'clouds from airplane window'], ['平流層', 'stratosphere atmosphere layer earth horizon'], ['華航', 'China Airlines Taiwan airplane'], ['長榮', 'EVA Air airplane'], ['機上餐', 'airline meal tray'], ['餐點', 'airline meal tray'], ['行李', 'baggage claim carousel'], ['海關', 'customs airport'], ['登機', 'boarding gate airport'], ['護照', 'passport'], ['安檢', 'airport security'], ['服務', 'airline cabin crew serving passengers'], ['空服', 'flight attendant'], ['空姐', 'flight attendant'], ['機艙', 'airplane cabin'], ['窗外', 'airplane window view'], ['跑道', 'airport runway'], ['塔台', 'airport control tower'], ['翅膀', 'airplane wing'], ['機翼', 'airplane wing'], ['下飛機', 'passengers leaving airplane airport'], ['飛機', 'airplane in flight']];
+  var META = /繁體中文|簡體中文|英文|語速|速度|圖文並茂|可以上網找照片|上網找|找照片|旁白|字幕|簡報|投影片|幼兒教育|小朋友|兒童|的方式|要有|請|幫我|麻煩/;
+
+  function clean(s) { return String(s == null ? '' : s).replace(/\[附件：[^\]]*\]/g, ' ').replace(/^\s*\/\S+\s*/, '').replace(/\s+/g, ' ').trim(); }
+  function parseRequest(task) {
+    var body = clean(task), sp = Number((/(?:語速|速度|speed)\s*[:：=]?\s*([0-9]*\.?[0-9]+)/i.exec(body) || [])[1]);
+    var wantEn = /英文|english/i.test(body) && !/(繁體|簡體|國語|華語)?中文/.test(body.replace(/英文/g, ''));
+    var voice = (/\b([ab][fm]_[a-z]+|z[fm]_[a-z]+|zh-[A-Za-z]+-[A-Za-z]+)\b/i.exec(body) || [])[1] || '';
+    var tm = /《([^》]{1,24})》/.exec(body), title = tm ? tm[1] : '';
+    return { body: body, lang: wantEn ? 'en' : 'zh-TW', speed: sp >= 0.5 && sp <= 2 ? sp : 0, voice: voice, kids: /幼兒|幼童|小朋友|兒童|繪本|活潑|可愛|寶寶|孩子/.test(body), wantPhotos: /照片|圖片|圖文|找圖|實拍|上網找/.test(body), title: title };
+  }
+
+  var ascii = function (s, n) { return String(s == null ? '' : s).replace(/[^A-Za-z0-9 \-']/g, ' ').replace(/\s+/g, ' ').trim().slice(0, n || 40); };
+  function outlinePrompt(req) {
+    return '使用者的簡報需求：「' + req.body.slice(0, 700) + '」\n請把它規劃成 8 到 12 頁，每行一頁，格式：\n頁標題｜這一頁要講的重點（一句話）｜找照片用的英文關鍵字（2 到 4 個英文字，不需要照片就寫 none）\n第一頁是封面，最後一頁是總結。需求裡點名的每一件事都要有一頁。只輸出這幾行，不要編號、不要其他說明。';
+  }
+  function parseOutline(text) {
+    var out = [];
+    String(text || '').split('\n').forEach(function (ln) {
+      var p = ln.replace(/^[\s\-*\d.、)）]+/, '').split(/[｜|]/).map(function (x) { return x.trim(); }); if (p.length < 2) return;
+      var title = p[0].replace(/^[「『"]|[」』"]$/g, '').slice(0, 24), point = p[1].slice(0, 90), kw = p[2] ? ascii(p[2], 40) : '';
+      if (/^none$/i.test(p[2] || '')) kw = ''; if (title.length < 2 || point.length < 2) return; out.push({ title: title, point: point, kw: kw });
+    });
+    return out.length >= 5 && out.length <= 16 ? out : null;
+  }
+  // 樣板：把需求句拆成子句，一個子句一頁；關鍵字由程式查表（kwFn 可以再補：例如圖像分流的名詞表）
+  function templateOutline(req, kwFn) {
+    var body = req.body.replace(/用[^，。]{0,12}的方式[，,]?/g, '').replace(/(?:繁體中文|簡體中文)[，,。]?/g, '').replace(/語速\s*[0-9.]+[，,。]?/g, '');
+    var parts = body.split(/[，,。；;、]|像是|例如|為例子|為例/).map(function (x) { return x.trim().replace(/^(?:以|還有|以及|可以|另外|最後)/, '').trim(); });
+    var known = function (t) { for (var i = 0; i < TRAVEL.length; i++) if (t.indexOf(TRAVEL[i][0]) >= 0) return true; return false; };
+    var clauses = []; parts.forEach(function (x) { if (x.length < 2) return; if (META.test(x) && x.length < 14) return; if (x.length < 4 && !known(x)) return; if (/^(?:有什麼|會有什麼|什麼)/.test(x) && x.length < 8) return; clauses.push(x); });
+    clauses = clauses.slice(0, 12);
+    var kw = function (t) { for (var i = 0; i < TRAVEL.length; i++) if (t.indexOf(TRAVEL[i][0]) >= 0) return TRAVEL[i][1]; return kwFn ? ascii(kwFn(t), 40) : ''; };
+    var topic = (clauses[0] || req.body).replace(/^介紹|^講解|^說明/, '').slice(0, 14) || '簡報';
+    var outline = [{ title: req.title || topic, point: '一起來認識：' + (clauses[0] || topic).slice(0, 40), kw: kw(clauses[0] || '') }];
+    clauses.forEach(function (c, i) { if (i === 0 && clauses.length > 1) return; var t = c.replace(/^(?:介紹|講解|說明|還有|以及|可以|要|會有)/, '').trim(); outline.push({ title: t.slice(0, 14) || c.slice(0, 14), point: c.slice(0, 60), kw: kw(c) }); });
+    outline.push({ title: '總結', point: '今天學到的事再說一遍', kw: '' });
+    return outline.slice(0, 14);
+  }
+
+  function narrationPrompt(slide, req) {
+    return (req.kids ? '用幼兒聽得懂的繁體中文' : '用清楚簡短的' + (req.lang === 'en' ? 'English' : '繁體中文')) + '，替簡報這一頁寫 2 到 3 句旁白。簡報主題：「' + req.body.slice(0, 120) + '」\n這一頁的標題：' + slide.title + '\n這一頁的重點：' + slide.point + '\n每句不超過 25 個字，' + (req.lang === 'en' ? '' : '不要用英文、') + '不要編號，只輸出旁白。';
+  }
+  function acceptNarration(text, slide, req) {
+    var t = String(text == null ? '' : text).replace(/^[「『"\s]+|[」』"\s]+$/g, '').replace(/\n+/g, ' ').trim();
+    if (t.length < 6 || t.length > 160) return null; if (/^(以下|好的|當然|旁白[:：])/.test(t)) t = t.replace(/^(以下[^：:]*[：:]|好的[，,]?|當然[，,]?|旁白[:：])/, '').trim();
+    if (req && req.lang !== 'en' && (t.match(/[A-Za-z]/g) || []).length > t.length * 0.3) return null;
+    var n = (t.match(/[。！？!?]/g) || []).length; if (n > 5) return null; return t;
+  }
+
+  function bulletsOf(point) { var b = String(point || '').split(/[，,；;]/).map(function (x) { return x.trim(); }).filter(function (x) { return x.length >= 2; }).slice(0, 3); return b.length ? b.map(function (x) { return x.slice(0, 18); }) : [String(point || '').slice(0, 18)]; }
+  // narr：每頁旁白（陣列，缺的用重點）；photos：每頁 { ref, credit, license, source } 或 null
+  function buildDeck(req, outline, narr, photos) {
+    var deck = { title: (outline[0] && outline[0].title) || '簡報', lang: req.lang }; if (req.speed) deck.speed = req.speed; if (req.voice) deck.voice = req.voice;
+    var slides = outline.map(function (o, i) {
+      var s = { title: o.title, bullets: bulletsOf(o.point), narration: (narr && narr[i]) || (o.point + '。') }, ph = photos && photos[i];
+      if (i === 0) { s.layout = 'title'; s.subtitle = o.point.slice(0, 30); delete s.bullets; }
+      if (ph && ph.ref) {
+        s.visual = req.kids ? { kind: 'collage', items: [{ src: ph.ref, x: 0.1, y: 0.05, w: 0.8, label: o.title.slice(0, 10) }] } : { kind: 'image', src: ph.ref, fit: 'cover', motion: 'kenburns' };
+        if (i !== 0) s.layout = 'split';
+        if (ph.credit || ph.source) s.notes = '圖片來源：' + [ph.source, ph.credit, ph.license].filter(Boolean).join('，');
+      }
+      return s;
+    });
+    var chapters = [], size = 4; for (var i = 0; i < slides.length; i += size) chapters.push({ title: i === 0 ? '開始囉' : (slides[i].title || '接著'), slides: slides.slice(i, i + size) });
+    return { deck: deck, chapters: chapters };
+  }
+
+  // render_presentation 的錯誤是一行一個「欄位路徑: 原因」；只動有問題的投影片：壞的圖拿掉、太長的字截短、其他原因只回報
+  function repair(doc, errorText) {
+    var changes = [], lines = String(errorText || '').split('\n'), slideAt = function (ci, si) { var c = doc.chapters[ci]; return c && c.slides[si]; };
+    lines.forEach(function (ln) {
+      var m = /chapters\[(\d+)\]\.slides\[(\d+)\]\.([A-Za-z_.\[\]0-9]+)\s*:\s*(.*)$/.exec(ln); if (!m) return; var s = slideAt(+m[1], +m[2]); if (!s) return; var field = m[3];
+      if (/^visual/.test(field)) { if (s.visual) { delete s.visual; if (s.layout === 'split') s.layout = 'content'; changes.push('第 ' + (+m[1] + 1) + ' 章第 ' + (+m[2] + 1) + ' 頁：拿掉有問題的圖（' + m[4].slice(0, 50) + '）'); } }
+      else if (/^bullets/.test(field)) { s.bullets = (s.bullets || []).slice(0, 4).map(function (b) { return String(b).slice(0, 14); }); changes.push('第 ' + (+m[1] + 1) + ' 章第 ' + (+m[2] + 1) + ' 頁：截短條列'); }
+      else if (/^title/.test(field)) { s.title = String(s.title || '').slice(0, 14) || '這一頁'; changes.push('截短標題'); }
+      else if (/^narration|^caption/.test(field)) { s.narration = String(s.narration || '').slice(0, 120); changes.push('截短旁白'); }
+    });
+    return { doc: doc, changes: changes };
+  }
+  function dropAllVisuals(doc) { var n = 0; doc.chapters.forEach(function (c) { c.slides.forEach(function (s) { if (s.visual) { delete s.visual; n++; } if (s.layout === 'split') s.layout = 'content'; }); }); return n; }
+
+  return { parseRequest: parseRequest, outlinePrompt: outlinePrompt, parseOutline: parseOutline, templateOutline: templateOutline, narrationPrompt: narrationPrompt, acceptNarration: acceptNarration, buildDeck: buildDeck, repair: repair, dropAllVisuals: dropAllVisuals, TRAVEL: TRAVEL };
+});
+
+}).call(null, undefined, holder);
+return holder.FaDeckTopic;
+})();
+/* DECKTOPIC-END */
 /* IMGPLAN-BEGIN */
 const FaImagePlan = (function () {
 const holder = {};
@@ -33332,6 +33442,7 @@ const FaDeckTools = (function () {
     const SYSTEM_PROMPT = [
         'You are a focused presentation-design assistant working for another AI assistant. Your only job is to produce a real animated slide deck with render_presentation (or begin_presentation / add_chapters / finish_presentation for a long one) and answer briefly -- never describe slides in prose, and never paste deck yaml into your reply. The finished deck is shown to the user automatically as a player in the chat (you do not embed it).',
         '',
+        'REAL PHOTOS FROM THE INTERNET ("可以上網找照片", "要真實照片"): call find_photo(query: 2-5 ENGLISH keywords of what the picture shows, e.g. "Hokkaido snow field", "airport baggage claim carousel") once per slide that needs one -> "@imgN" (+ credit / licence: put it in the slide notes). NEVER write a picture url yourself and never browse for pictures by hand: find_photo is the tool. If it finds nothing, try other keywords once, then draw that picture yourself (cute_picture / svg) -- one missing photo never stops the deck. Do not call list_uploaded_files when the task has no "[附件：…]" part: there is no attachment. When the user asks to speak at a speed ("語速1.0") set deck.speed.',
         'ATTACHED FILES ARE THE MATERIAL. When the task text contains "[附件：name（file_id=…）、…]" the user attached those files to THIS request: they are the source, in that order. Do NOT call list_uploaded_files to guess among older uploads, never ask which file, and never make up content when files were attached. Pictures: import_uploaded_image(file_id) for each -> "@imgN", one slide per picture (layout visual, or split with the text beside it) in the attached order. A picture with text on it (English captions, a page of a book, a slide): read it with interpret_image(file_id, "transcribe every word on this picture exactly, keep line breaks") and use THAT text -- never invent what is written. A video (mp4): visual kind video with src "client-file/<file_id>" (see get_presentation_topic("visuals")). A PDF / pptx / document: parse_uploaded_file / pptx_to_deck. Your final answer lists which attached file became which slide and says plainly which could not be used.',
         'CHINESE SUBTITLES UNDER AN ENGLISH VOICE ("中文字幕、英語發音", "字幕用中文，聲音念英文"): ONE slide, narration = the English text that is SPOKEN (voice af_* or deck.lang/slide.lang en), caption = the Chinese subtitle shown on screen (same number of sentences, same order; the viewer sees the Chinese while hearing the English). Do NOT make two slides for this. If you only have Chinese text, write narration in Chinese and set the voice to an English one: the app translates it for the voice and keeps your Chinese as the subtitle (deck.captions: original, the default). Both languages on screen at once (Chinese big, English smaller under it): deck.captions: bilingual (or a list of up to 3 tracks, top to bottom: [zh, en]). Every slide still has ONE spoken language.',
         'LIVELY / CHILDREN\'S TEACHING SLIDES ("活潑", "小朋友", "繪本", a story, characters that talk): use ONE visual of kind collage per slide (get_presentation_topic("visuals") has the format): the pictures pop in as the narration names them ("this is a spider, this is a monkey"), circled (ring), swinging (swing), with a name tag (label) and speech bubbles (say) for dialogue; a story can have scenes (going into the house = camera zoom, or scenes with effect zoom), a character that runs in (keys + bob), story text (texts) and sound effects (sounds / sfx) -- describe the slide like a small game scene: stage, characters, what each does and when, what is said, which sound goes with it. Pictures: cute_picture first, then your own svg drawings; a collage item needs a picture handle. RPG / VISUAL-NOVEL STORY SCENES ("RPG對話", "人物走路", "頭像", a story with a map): the same collage, with DRAWN pictures that need no picture file -- src map:house_interior | map:village | map:peach_orchard (a 16 x 9 tile map, z 0, w 1), actor:<preset> (a walking pixel character; presets liu_bei, guan_yu, zhang_fei, mother, villager_m, villager_f, elder, soldier, child, or any name with a look {skin fair|tan|dark|red, hair black|gray|brown|white, hairStyle topknot|long|short|bun|wild, beard none|short|long|bushy, robe green|red|blue|black|brown|gray|yellow|white, head none|headband|hat}), bust:<preset> (a big half-length portrait for a close-up scene), cg:peach_oath | cg:dusk_hall (a big picture background), fx:petals; place an actor on the map grid with tx, ty (tile 0..15 across, 0..8 down; it stands at the bottom centre of that tile; tw = width in tiles, default 1.3) and make it walk with keys [{at:{sentence:N}, sec:2, tx, ty}] -- it turns toward where it walks and swings its legs by itself, and each step sounds; a line of dialogue is say:[{text, sentence:N, style:box}] on the speaker (style box = an RPG dialogue box with its portrait and name, text typed out, blinking arrow; style subtitle = film subtitles with its name; name: gives the name of the speaker); visual spotlight:true lights the speaker and dims the others; scenes [{scene, at:{sentence:N}, effect:black}] with items scene: <name> change the map by going through black; curtain:[{at, sec, alpha}] is a black curtain (alpha 1 = black) for a fade out at the end. One narration sentence per story beat (a line, a walk, a scene change) -- at:{sentence:N} ties it to the voice. DIALOGUE AND VOICES: a line need not be tied to the narration -- say: [{id: "l1", text, style: box, at: {sentence: 2, edge: end, offset: 0.5}}, {id: "l2", text, at: {line: "l1", edge: end, offset: 0.3}}]: it starts when narration sentence 2 has been read, or after another line (the length comes from the text), and the slide lasts until the last line and walk are done; so the narration can tell a story (or be missing) and then the characters speak with voices of their own: voice: calm | deep | rough | elder | old_woman | young | child | narrator | none (a blip for every character typed; a drawn character has a default voice) or numbers {pitch, wave, jitter, vibrato, noise, len, rate, vol}. Any key, scene or curtain can wait for a line the same way: at: {line: "l2", edge: end, offset: 1}. STATES, FRAMES AND TRIGGERS of a character picture: sheet: {cols, rows, dirs?} makes a sprite sheet (a row for each direction); states: {walk: {frames: [0,1,2,3], fps: 6}, idle: {frames: [1]}, bow: {src: "@img2", sheet: {cols: 3, rows: 1}, frames: [0,1,2,2], fps: 4, loop: false}, wave: {frames: {down: [8,9], up: [12,13]}}, nod: {pose: bow}} (a list of frames = the columns of the row of the direction it faces; facing: false = cell numbers counted row by row; a frame can be a picture handle; pose = a drawn character bows / jumps / shakes / surprises); auto: {moving: walk, still: idle} says which state it is in while it moves / stands; keys: [{at, state: bow, hold: 1.5}, {at, src: "@img9"}] switch the state (hold = seconds, then back) or swap the picture at a time; triggers: [{when: {tile: [11,5]}, state: bow, hold: 1.5}, {when: {near: [10,5], r: 1.2, item: "liu"}, src: "@door_open"}] switch when it (or the picture with that id) stands on a tile / gets near a place -- a door that opens when somebody comes. DEPTH, HEIGHT AND SHADOWS (2.5D): visual depth: y draws the objects of a map (trees, houses, tables) and the pictures on the map grid (tx, ty) in the order of their feet, so a character walking behind a tree is hidden by it and in front of it hides it (without depth: y characters are always on top of the map); tz: <tiles> (also in keys: [{at, sec, tz: 1.5}, {at, sec, tz: 0}] for a jump) lifts a picture above the ground, its shadow stays on the ground and shrinks; shadow: true | false is the soft shadow under a picture (default: on for characters with depth: y or a height); parallax: 0..1 (1 = moves with the world, 0 = stays on the screen when the camera moves: far scenery). PICTURES THE APP MAKES: make_character_sprite (a walking character as pixel art: real, anime or cute style) and make_object_sprite (a tree, house, table...) return handles for tx, ty, tw, pixel: true items; pixel_art draws a small picture from your own palette and rows of letters. The offline recipe plan_rpg_story builds all of this from a story text. For a story or a list of things the app can build the stage by itself (the offline recipe deck_from_story: characters and places found in the text become pictures that pop in, quotes become speech bubbles, running / blowing / knocking become movement and sounds).',
@@ -33382,7 +33493,7 @@ const FaDeckTools = (function () {
 
     // 領域登記用的工具名稱（子任務只看得到這些）
     const DOMAIN_TOOLS = ['render_presentation', 'begin_presentation', 'add_chapters', 'finish_presentation', 'define_snippet', 'verify_presentation', 'article_outline', 'article_section', 'get_presentation_topic',
-        'get_presentation_yaml', 'open_existing_presentation', 'list_source_images', 'cute_picture', 'make_object_sprite', 'make_character_sprite', 'pixel_art', 'import_uploaded_image', 'import_image_url', 'import_fap_image', 'get_3d_scene_topic',
+        'get_presentation_yaml', 'open_existing_presentation', 'list_source_images', 'cute_picture', 'make_object_sprite', 'make_character_sprite', 'pixel_art', 'import_uploaded_image', 'import_image_url', 'find_photo', 'import_fap_image', 'get_3d_scene_topic',
         'list_uploaded_files', 'parse_uploaded_file', 'summarize_large_text', 'list_file_access_points', 'fap_list_files', 'fap_find_file', 'fap_read_file',
         'repo_ask', 'repo_read_doc',
         // 讀懂 pptx 與其他技能、照著做：pptx 轉草稿、抽圖、看圖、讀技能；要蒐集網頁畫面時用瀏覽器工具（有連線才可用）
@@ -33565,6 +33676,47 @@ const FaDeckTools = (function () {
             const data = { deck: draft.deck, chapters: draft.chapters };
             const checked = await this._deckCheck(data, 'finish_presentation'); if (checked.error) return checked;
             return this._deckSaveChecked(data, draft.name, checked);
+        },
+        // 一個主題的規則（get_presentation_topic 的本體）；給過的主題第二次只回提醒，不重複塞一大段文字
+        async _deckTopicOne(topic) {
+            const run = this._deckRun(); run.topicsGiven = run.topicsGiven || {};
+            if (run.topicsGiven[topic]) { run.topicsGiven[topic]++; return { ok: true, topic, already_given: true, note: 'You already have the "' + topic + '" rules above in this conversation (this is call #' + run.topicsGiven[topic] + '). Use them; do not ask again -- write the deck now.' }; }
+            const T = (typeof FA_DECK_SRC !== 'undefined' && FA_DECK_SRC.topics) || {};
+            const details = topic === 'ai_features' ? this._deckAiFeaturesText() : T[topic];
+            if (!details) return { error: 'unknown topic ' + JSON.stringify(topic) + ' -- must be one of: ' + Object.keys(T).join(', ') };
+            run.topicsGiven[topic] = 1;
+            return { ok: true, topic, details };
+        },
+        // 在網路上找真正的照片（免費授權：Wikimedia Commons 先、Openverse 備援），匯入成這次簡報的圖片（@imgN）。
+        // 為什麼自己做、不靠模型猜網址：模型會編網址或用佔位圖；這裡只收「搜尋 API 回來的檔案」，下載後檢查是圖片、夠大、不是壞圖，並回報出處與授權。
+        async _deckFindPhoto(a) {
+            const q = String((a && a.query) || '').replace(/\s+/g, ' ').trim().slice(0, 80); if (!q) return { error: 'give query: 2-5 English keywords for what the picture shows' };
+            const want = Math.max(1, Math.min(3, Math.round(Number(a && a.count)) || 1)); const run = this._deckRun(); run.photoUrls = run.photoUrls || {};
+            const strip = (s) => String(s || '').replace(/<[^>]*>/g, ' ').replace(/&[a-z#0-9]+;/gi, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
+            const getJson = async (url) => { let e1 = null; try { const r = await fetch(url, { headers: { Accept: 'application/json' } }); if (!r.ok) throw new Error('HTTP ' + r.status); return await r.json(); } catch (e) { e1 = e; } try { const { resp } = await this._terminalHttpFetch('GET', url, { headers: { Accept: 'application/json' }, timeoutMs: 20000 }); if (!resp.ok) throw new Error('HTTP ' + resp.status); return await resp.json(); } catch (e2) { throw new Error(String((e2 && e2.message) || e2) + (e1 ? '（直接連線：' + String(e1.message || e1) + '）' : '')); } };
+            const getBlob = async (url) => { let e1 = null; try { const r = await fetch(url, { headers: { Accept: 'image/*' } }); if (!r.ok) throw new Error('HTTP ' + r.status); return await r.blob(); } catch (e) { e1 = e; } const { resp } = await this._terminalHttpFetch('GET', url, { headers: { Accept: 'image/*' }, timeoutMs: 25000 }); if (!resp.ok) throw new Error('HTTP ' + resp.status); return await resp.blob(); };
+            const cands = [], errs = [];
+            try {
+                const j = await getJson('https://commons.wikimedia.org/w/api.php?action=query&format=json&origin=*&generator=search&gsrnamespace=6&gsrlimit=15&gsrsearch=' + encodeURIComponent(q + ' filetype:bitmap') + '&prop=imageinfo&iiprop=url|mime|size|extmetadata&iiurlwidth=1100');
+                const pages = Object.values((j.query && j.query.pages) || {}).sort((x, y) => (x.index || 0) - (y.index || 0));
+                for (const p of pages) { const ii = (p.imageinfo || [])[0]; if (!ii || !/^image\/(jpeg|png|webp)$/.test(ii.mime || '') || (ii.width || 0) < 600 || (ii.height || 0) < 400) continue; const em = ii.extmetadata || {}; cands.push({ url: ii.thumburl || ii.url, title: String(p.title || '').replace(/^File:/, '').replace(/\.[a-z0-9]+$/i, '').slice(0, 90), credit: strip(em.Artist && em.Artist.value), license: strip(em.LicenseShortName && em.LicenseShortName.value), page: ii.descriptionurl || '', source: 'Wikimedia Commons' }); }
+            } catch (e) { errs.push('Wikimedia Commons：' + String((e && e.message) || e).slice(0, 120)); }
+            if (cands.length < want * 2) {
+                try {
+                    const j = await getJson('https://api.openverse.org/v1/images/?q=' + encodeURIComponent(q) + '&page_size=12&mature=false');
+                    for (const r of (j.results || [])) { if (!r.url || !/^(jpe?g|png|webp)$/i.test(String(r.filetype || r.url.split('.').pop() || ''))) continue; cands.push({ url: r.thumbnail && !r.url ? r.thumbnail : r.url, title: String(r.title || q).slice(0, 90), credit: strip(r.creator), license: strip(String(r.license || '').toUpperCase() + (r.license_version ? ' ' + r.license_version : '')), page: r.foreign_landing_url || '', source: 'Openverse' }); }
+                } catch (e) { errs.push('Openverse：' + String((e && e.message) || e).slice(0, 120)); }
+            }
+            // 搜尋結果依「標題裡有幾個關鍵字」排序（相關的先試）；一個關鍵字都對不上的排最後
+            const qw = q.toLowerCase().split(' ').filter((w) => w.length > 3), sc = (c) => qw.filter((w) => c.title.toLowerCase().indexOf(w.slice(0, Math.max(4, w.length - 2))) >= 0).length; cands.forEach((c, i) => { c.i = i; }); cands.sort((x, y) => sc(y) - sc(x) || x.i - y.i);
+            const photos = [], tried = [];
+            for (const c of cands) {
+                if (photos.length >= want || tried.length >= 8) break; if (!c.url || run.photoUrls[c.url]) continue; tried.push(c.title);
+                try { const blob = await getBlob(c.url); const r = await this._deckImportImageBlob(blob, 'photo: ' + c.title + ' (' + c.source + (c.license ? ', ' + c.license : '') + ')', 'find_photo'); if (r && r.ok && r.ref) { run.photoUrls[c.url] = r.ref; photos.push({ ref: r.ref, title: c.title, credit: c.credit, license: c.license, source: c.source, page: c.page }); } else errs.push(c.title.slice(0, 30) + '：' + String((r && r.error) || '').slice(0, 80)); }
+                catch (e) { errs.push(c.title.slice(0, 30) + '：' + String((e && e.message) || e).slice(0, 80)); }
+            }
+            if (photos.length) return { ok: true, photos, note: 'use "ref" as the picture src; keep the credit if the user wants sources' };
+            return { error: 'no usable photo for "' + q + '"' + (errs.length ? '（' + errs.slice(0, 3).join('；') + '）' : '（搜尋沒有符合的圖片）') + ' -- try other English keywords once; if still nothing, draw it yourself (cute_picture / svg) and go on with the other slides' };
         },
         async _deckImportImageBlob(blob, label, tool, opt) {
             if (!blob || !/^image\//.test(blob.type || '')) return { error: 'that is not a picture (' + ((blob && blob.type) || 'unknown type') + ')' };
@@ -33826,14 +33978,10 @@ const FaDeckTools = (function () {
                 'Fetch the exact rules for one part of the deck format: "format" (overall shape, slide fields, transitions), "layout" (which layout to pick, pacing), "visuals" (every visual kind with its fields), "cues" (syncing pictures with narration), "sources" (turning files/folders/websites/screenshots/tables into slides), "interactive" (answer cards with scores, a live terminal, and widgets: small games / simulators you write yourself), "3d" (3D models, cameras) or "style" (writing and house style), "ai_features" (what this AI itself can do). Call "format" and "visuals" before writing your first deck.',
                 obj({ topic: { type: 'string', enum: ['format', 'layout', 'visuals', '3d', 'cues', 'interactive', 'ai_features', 'sources', 'style'] } }, ['topic']),
                 async function (a) {
-                    const topic = String(a.topic || '');
-                    const run = this._deckRun(); run.topicsGiven = run.topicsGiven || {};
-                    if (run.topicsGiven[topic]) { run.topicsGiven[topic]++; return { ok: true, topic, already_given: true, note: 'You already have the "' + topic + '" rules above in this conversation (this is call #' + run.topicsGiven[topic] + '). Use them; do not ask again -- write the deck now.' }; }
-                    const T = (typeof FA_DECK_SRC !== 'undefined' && FA_DECK_SRC.topics) || {};
-                    const details = topic === 'ai_features' ? this._deckAiFeaturesText() : T[topic];
-                    if (!details) return { error: 'unknown topic ' + JSON.stringify(topic) + ' -- must be one of: ' + Object.keys(T).join(', ') };
-                    run.topicsGiven[topic] = 1;
-                    return { ok: true, topic, details };
+                    // 弱模型常把參數寫成 names／topics 陣列，或整個沒給：陣列就一次回多個主題，沒給就回最重要的 format，不丟錯讓它繞一圈
+                    const list = [].concat(Array.isArray(a.names) ? a.names : [], Array.isArray(a.topics) ? a.topics : [], a.topic ? [a.topic] : []).map((x) => String(x || '').trim()).filter(Boolean);
+                    if (list.length > 1) { const out = []; for (const tp of list.slice(0, 3)) { const r1 = await this._deckTopicOne(tp); out.push(r1.error ? { topic: tp, error: r1.error } : { topic: tp, details: r1.already_given ? r1.note : r1.details }); } return { ok: true, topics: out }; }
+                    return this._deckTopicOne(list[0] || 'format');
                 });
             tool('get_presentation_yaml',
                 'Fetch the exact yaml of an existing presentation by its file id or url (the "file_id" / "url" of an earlier render_presentation result; default: the latest presentation of this conversation). Call this before changing a presentation made earlier -- edit THAT yaml, never re-write it from memory.',
@@ -33896,6 +34044,10 @@ const FaDeckTools = (function () {
                     const blob = await resp.blob(); let type = (resp.headers.get('content-type') || blob.type || '').split(';')[0].trim().toLowerCase();
                     return this._deckImportImageBlob(type && blob.type !== type ? new Blob([blob], { type }) : blob, 'web: ' + u.slice(0, 100), 'import_image_url');
                 });
+            tool('find_photo',
+                'Find a REAL photo on the web by keywords and bring the best match into the task (free-licence pictures: Wikimedia Commons first, then Openverse). Give 2-5 ENGLISH keywords for what the picture shows ("Hokkaido snow field", "China Airlines meal tray", "airport baggage claim carousel", "airplane stratosphere clouds"). Returns {ok, photos:[{ref:"@imgN", title, credit, license, source, page}]}: use the ref as the picture src. Never guess a picture url: use this tool whenever the user wants real photos / pictures from the internet. If it finds nothing for one slide, try other keywords once, then draw the thing yourself (cute_picture / svg) -- do not give up on the whole deck.',
+                obj({ query: { type: 'string', description: 'English keywords, 2-5 words, what the picture shows.' }, count: { type: 'number', description: 'How many pictures (1-3, default 1).' } }, ['query']),
+                async function (a) { return this._deckFindPhoto(a); });
             tool('import_fap_image',
                 'Bring a picture file from one of the user\'s authorised folders (or an uploaded file / a real path on the desktop) into the task: "ref" = fap:<name>/<path> (see list_file_access_points / fap_find_file). Returns its "@imgN" handle.',
                 obj({ ref: { type: 'string' } }, ['ref']),
@@ -71959,6 +72111,49 @@ _result
         }
         return null;
     }
+    // ===== 主題簡報食譜：只給主題（沒有檔案、網址）時，程式自己組整份簡報（設計見 DESIGN.deck-topic.md）=====
+    // 子agent（模型）一次寫完整份 yaml 常常失敗（欄位寫錯、不呼叫 render_presentation、找不到照片就放棄）。這裡把整件事拆成封閉的小步驟：
+    // 規劃每頁（標題｜重點｜找圖關鍵字）→ 每頁旁白 → 每頁找照片（find_photo）→ 程式寫 yaml → render_presentation 驗證，有問題只修有問題的那一頁。
+    // 模型不可用或答不出來，每一步都有程式的退路（樣板、重點當旁白、沒有照片就不放圖），所以一定做得出一份簡報。
+    async _deckTopicRecipe(task, log) {
+        log = log || (() => {}); const T = FaDeckTopic, req = T.parseRequest(task); if (req.body.length < 6) return { error: '需求太短，看不出要講什麼' };
+        log('📐 程式自己組簡報（模型只回答小問題，yaml 由程式寫並驗證）：' + [req.kids ? '幼兒風' : '', req.wantPhotos ? '要找網路照片' : '', req.lang, req.speed ? '語速 ' + req.speed : ''].filter(Boolean).join('、'));
+        let outline = null, how = '', modelDead = false;
+        try { const reply = await this._kiLlm(T.outlinePrompt(req), { systemPrompt: '你是簡報規劃者，只依指定格式輸出。', maxTokens: 900, temperature: 0.3 }, { label: '規劃簡報', timeoutMs: 90000, onStep: log, noOffline: true }); outline = T.parseOutline(reply); if (outline) how = '模型規劃'; else log('　（模型的規劃格式不對，改用樣板）'); }
+        catch (e) { modelDead = true; log('　（規劃的模型沒回應：' + String((e && e.message) || e).slice(0, 80) + '；改用樣板，旁白也不再問模型）'); }
+        if (!outline) { outline = T.templateOutline(req, (t) => { try { const s = FaImageRoute.extractSlots(t); return s.subject[0] || ''; } catch (_) { return ''; } }); how = '樣板（把需求拆成子句，一個子句一頁）'; }
+        log('📋 ' + how + '：' + outline.length + ' 頁——' + outline.map((o) => o.title).join('、'));
+        // 每頁旁白：一個封閉的小問題；格式不對就用重點當旁白；模型整個不通就不再問
+        const narr = new Array(outline.length).fill(''); let nOk = 0, nFail = 0;
+        for (let i = 0; i < outline.length && !modelDead; i += 3) {
+            await Promise.all(outline.slice(i, i + 3).map(async (o, k) => {
+                if (modelDead) return; try { const r = await this._kiLlm(T.narrationPrompt(o, req), { systemPrompt: '你只寫簡報的旁白。', maxTokens: 300, temperature: 0.5 }, { label: '旁白', timeoutMs: 60000, noOffline: true }); const t = T.acceptNarration(r, o, req); if (t) { narr[i + k] = t; nOk++; } else nFail++; }
+                catch (e) { nFail++; if (nFail >= 2 && !nOk) modelDead = true; }
+            }));
+        }
+        log('🗣 旁白：' + nOk + ' 頁由模型寫' + (outline.length - nOk ? '、' + (outline.length - nOk) + ' 頁用重點當旁白' : ''));
+        // 照片：每頁一次 find_photo（真的照片，附出處與授權）；找不到就換更短的關鍵字再試一次，還是沒有就這頁不放圖
+        const photos = new Array(outline.length).fill(null); const credits = []; let pOk = 0; const pErr = [];
+        if (req.wantPhotos) {
+            for (let i = 0; i < outline.length; i++) {
+                const o = outline[i]; if (!o.kw) continue; let r = null;
+                for (const q of [o.kw, o.kw.split(' ').slice(0, 2).join(' ')].filter((x, j, a) => x && a.indexOf(x) === j)) { try { r = await this._deckFindPhoto({ query: q }); } catch (e) { r = { error: String((e && e.message) || e) }; } if (r && r.ok) break; }
+                if (r && r.ok && r.photos && r.photos[0]) { photos[i] = r.photos[0]; pOk++; credits.push(o.title + '：' + [r.photos[0].source, r.photos[0].credit, r.photos[0].license].filter(Boolean).join('，')); log('📷 「' + o.title + '」找到照片：' + String(r.photos[0].title).slice(0, 40) + '（' + r.photos[0].source + (r.photos[0].license ? '，' + r.photos[0].license : '') + '）'); }
+                else { pErr.push(o.title + '：' + String((r && r.error) || '').slice(0, 100)); log('📷 「' + o.title + '」沒找到照片（' + String((r && r.error) || '').slice(0, 80) + '），這頁不放圖'); }
+            }
+        }
+        const doc = T.buildDeck(req, outline, narr, photos); let res = null, last = '';
+        for (let round = 0; round < 5; round++) {
+            res = await this._deckRender({ name: doc.deck.title, yaml: JSON.stringify(doc) }); if (res && !res.error) break;
+            last = String((res && res.error) || '沒有回應'); log('🔍 render_presentation 回報問題：' + last.split('\n').slice(0, 3).join('；').slice(0, 200));
+            if (round < 3) { const rp = T.repair(doc, last); if (rp.changes.length) { log('🔧 ' + rp.changes.join('；')); continue; } }
+            if (round === 3) { const n = T.dropAllVisuals(doc); if (n) { log('🔧 圖片還是有問題：先去掉所有圖片，保證簡報做得出來（' + n + ' 張）'); continue; } }
+            break;
+        }
+        if (!res || res.error) return { error: '程式組出來的簡報沒通過檢查：' + last.slice(0, 300) };
+        const summary = '做好了「' + doc.deck.title + '」：' + outline.length + ' 頁、' + doc.chapters.length + ' 章（' + how + '）。' + (req.wantPhotos ? '照片 ' + pOk + ' 張' + (pOk ? '（出處與授權寫在各頁的備註）' : '') + (pErr.length ? '；有 ' + pErr.length + ' 頁沒找到照片：' + pErr.slice(0, 3).join('；') : '') + '。' : '');
+        return { ok: true, deck: res, text: summary, credits, how, photos: pOk, photoErrors: pErr };
+    }
     async _deckStoryRecipe(task, log) {
         log = log || (() => {}); const t = String(task || ''); const Stage = window.AiChatDeckStage; if (!Stage) return { error: '舞台模組沒有載入' };
         { const rpg = await this._deckRpgRecipe(t, log); if (rpg) return rpg; } // RPG 式對話場景優先（有對話、或點名 RPG／頭像／地圖）
@@ -79973,15 +80168,23 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             const asksMaterial = (t) => /(source material|please attach|attach (the )?(file|image|picture)s?|provide (the )?(files?|material|url)|need (the )?(source|material|files?)|請(提供|附上|上傳|附)|需要.{0,12}(素材|附件|檔案|來源)|沒有(收到|看到).{0,8}(附件|檔案|素材))/i.test(String(t || ''));
             const askedForMaterial = (r) => isDeck && r && !r.visual && !hasMaterial(task) && asksMaterial(r.text);
             if (askedForMaterial(subResult)) { if (progress) progress.finish('需要素材'); return { ok: true, domain: domainKey, result: String(subResult.text || '') + String.fromCharCode(10, 10) + '（這次的任務沒有附上檔案或網址，所以沒有產生簡報。請附上素材（例如要解讀的圖片）再送一次。）' }; }
+            // 沒有檔案或網址、只給主題，而模型沒有真的做出簡報：不再叫同一個模型從頭再寫一次（它會犯一樣的錯），由程式自己組（食譜：主題簡報）——
+            // 規劃、旁白、找照片、組 yaml、驗證都是封閉的小步驟，每一步都有退路，所以一定做得出來；過程都寫進記錄
+            if (isDeck && !(subResult && subResult.visual) && !askedForMaterial(subResult) && !hasMaterial(task) && !(extra.shouldStop && extra.shouldStop())) {
+                const line0 = '⚠️ 模型這次沒有真的做出簡報（沒有成功呼叫 render_presentation）——改由程式自己組：規劃每頁 → 旁白 → 找照片 → 寫 yaml → 驗證';
+                if (progress) progress.log(line0); if (extra.onTrace) extra.onTrace(line0);
+                try { const tr = await this._deckTopicRecipe(task0, (x) => { if (progress) progress.log(x); if (extra.onTrace) extra.onTrace(x); }); if (tr && tr.ok) subResult = { text: tr.text, visual: tr.deck }; else { const l = '✗ 程式組簡報沒成功：' + String((tr && tr.error) || '').slice(0, 200); if (progress) progress.log(l); if (extra.onTrace) extra.onTrace(l); this._deckTopicError = (tr && tr.error) || ''; } }
+                catch (e) { const l = '✗ 程式組簡報出錯：' + String((e && e.message) || e).slice(0, 200); if (progress) progress.log(l); this._deckTopicError = String((e && e.message) || e); }
+            }
             // 簡報領域：模型只用文字說「已完成」、實際沒有成功產生簡報（沒有播放器可以顯示）時不能信——自己重來，最多再兩次；
             // 還是沒有就老實回報失敗，不把空話當成結果交出去
-            for (let attempt = 1; isDeck && attempt <= 2 && !(subResult && subResult.visual) && !askedForMaterial(subResult) && !(extra.shouldStop && extra.shouldStop()); attempt++) {
+            for (let attempt = 1; isDeck && attempt <= 1 && !(subResult && subResult.visual) && !askedForMaterial(subResult) && !(extra.shouldStop && extra.shouldStop()); attempt++) {
                 const line = '⚠️ 子agent說做完了，但實際沒有產生簡報（沒有成功呼叫 render_presentation）——自動重來（第 ' + attempt + ' 次）';
                 if (progress) progress.log(line); if (extra.onTrace) extra.onTrace(line);
                 subResult = await runOnce(task + '\n\n【上一次嘗試沒有成功產生簡報：你只用文字說明、沒有真的呼叫 render_presentation 並得到成功結果。這次直接寫出完整的簡報 yaml 並呼叫 render_presentation；它回報問題就修正後再呼叫，成功之後才回答。不要再只用文字描述。如果這個任務沒有給你任何素材或主題（沒有附件、網址、檔案，也沒有說要講什麼），不要編造內容、也不要做示範簡報，直接用文字說明需要什麼素材。】');
             }
             if (askedForMaterial(subResult)) { if (progress) progress.finish('需要素材'); return { ok: true, domain: domainKey, result: String(subResult.text || '') + String.fromCharCode(10, 10) + '（這次的任務沒有附上檔案或網址，所以沒有產生簡報。請附上素材再送一次。）' }; }
-            if (isDeck && !(subResult && subResult.visual)) { const mk = /\[附件：[^\]]*\]/.exec(task); this._deckLastFailure = { at: Date.now(), task: task0, marker: mk ? mk[0] : '' }; if (progress) progress.fail('沒有產生簡報'); return { ok: false, error: '子agent重試了 3 次，仍然沒有真正產生簡報（它只回了文字說明）。這個模型可能不夠穩，可以換較強的模型，或把需求拆小一點再試。', model_said: String((subResult && subResult.text) || '').slice(0, 600) }; }
+            if (isDeck && !(subResult && subResult.visual)) { const mk = /\[附件：[^\]]*\]/.exec(task); this._deckLastFailure = { at: Date.now(), task: task0, marker: mk ? mk[0] : '' }; if (progress) progress.fail('沒有產生簡報'); return { ok: false, error: '沒有做出簡報。模型寫的簡報沒通過檢查或沒有真的呼叫 render_presentation；程式自己組也沒成功（' + (this._deckTopicError || '主題簡報食譜不適用：任務帶有檔案或網址，或需求太短') + '）。過程記錄裡有每一步的結果；補一句具體要講哪幾件事，或附上素材（照片、文件）再送一次。', model_said: String((subResult && subResult.text) || '').slice(0, 600) }; }
             if (isDeck) this._deckLastFailure = null; // 做成了，下一次不是接續
             if (progress) progress.finish('完成');
             return this._mergeSubAgentResultForDisplay({ domain: domainKey }, subResult);
