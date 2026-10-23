@@ -839,7 +839,7 @@
   }
   // deck.colors: this deck's own page-frame colours over the template (heading, body, accent, soft, dark, stripe, contentBg, titleText, subtitleBar, subtitleText).
   var COLOR_KEYS = ['heading', 'body', 'accent', 'soft', 'dark', 'stripe', 'contentBg', 'titleText', 'subtitleBar', 'subtitleText', 'white'];
-  var COLOR_RE = /^(#[0-9a-fA-F]{3}|#[0-9a-fA-F]{6}|#[0-9a-fA-F]{8}|rgba?(s*d{1,3}s*,s*d{1,3}s*,s*d{1,3}s*(,s*(0|1|0?.d+)s*)?))$/;
+  var COLOR_RE = /^(#[0-9a-fA-F]{3}|#[0-9a-fA-F]{6}|#[0-9a-fA-F]{8}|rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*(,\s*(0|1|0?\.\d+)\s*)?\))$/;
   function checkDeckColors(c, err) {
     if (!isObj(c)) { err('deck.colors', 'must be a mapping like {accent: "#FF8A65", contentBg: "#FFF4E6"}'); return; }
     Object.keys(c).forEach(function (k) {
