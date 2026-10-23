@@ -13,3 +13,4 @@
 | 之後的計畫：四個方向（2026-10-21）：Knowledge Inventory、WebGPU 圖像生成、computer use、安全自我升級 | [DESIGN.TODO.four-directions.md](DESIGN.TODO.four-directions.md) | 尚未開始 |
 | /edit-svg、/edit-picture、/edit-3d-model 已實作後還沒做／沒驗證的 | [DESIGN.TODO.edit-svg-picture-3d.md](DESIGN.TODO.edit-svg-picture-3d.md) | 設計見 DESIGN.edit-svg／edit-picture／edit-3d.md |
 | /edit-game-2d、/edit-game-3d（遊戲編輯器） | [DESIGN.TODO.edit-game.md](DESIGN.TODO.edit-game.md) | 只有規劃（§17 六個問題、§18 現場編修） |
+| `/edit-picture` 的擴散細化層（只重畫一小塊、羽化蓋回、啟用項） | [DESIGN.TODO.edit-picture-diffusion.md](DESIGN.TODO.edit-picture-diffusion.md) | 只有規劃（§5 要先做最小實測） |
