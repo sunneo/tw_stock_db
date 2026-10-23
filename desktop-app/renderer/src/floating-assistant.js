@@ -17361,15 +17361,25 @@ const holder = {};
 
   // ───── ②之三 細節：畫風、光線、鏡頭、氣氛還沒定的，請模型從封閉清單裡挑（挑出來的必須在清單裡才收）─────
   function detailMissing(slots) { var m = []; if (!slots.style) m.push('style'); if (!slots.lighting) m.push('lighting'); if (!slots.camera) m.push('camera'); if (!slots.mood) m.push('mood'); return m; }
+  // 有人名或歷史題材：畫風偏向寫實（照片、電影感、油畫、素描），不要挑動漫、奇幻這類（程式判斷，不問模型）
+  var REAL_STYLES = ['photo', 'cinematic', 'oil', 'sketch'];
+  var HISTORY_RE = /歷史|古代|古人|中世紀|文藝復興|王朝|皇帝|國王|女王|將軍|總統|首相|探險家|發明家|科學家|哲學家|畫家|音樂家|名人|偉人|戰爭|革命|登陸|航海|大航海|哥倫布|拿破崙|愛因斯坦|牛頓|達文西|孔子|秦始皇|成吉思汗|林肯|華盛頓|莎士比亞|貝多芬|莫札特|甘地|居禮|特斯拉|愛迪生|凱撒|克麗奧佩脫拉|亞歷山大|鄭成功|孫中山|蔣中正|history|historical|ancient|medieval|renaissance|emperor|king |queen |general |president|explorer/i;
+  function realisticTopic(request, slots) {
+    var t = String(request || ''); if (HISTORY_RE.test(t)) return true;
+    if (/[A-Z][a-z]+ [A-Z][a-z]+/.test(t)) return true; // 英文人名（兩個字首大寫的字）
+    var subj = (slots && slots.subject || []).join(' '); return /[A-Z][a-z]+ [A-Z][a-z]+/.test(subj) || HISTORY_RE.test(subj);
+  }
   function detailBrief(request, slots, miss) {
     var L = { style: Object.keys(STYLES).join('、'), lighting: LIGHTING.map(function (x) { return x.tag; }).join('｜'), camera: CAMERA.map(function (x) { return x.tag; }).join('｜'), mood: MOOD.map(function (x) { return x.tag; }).join('｜') }, name = { style: '畫風', lighting: '光線', camera: '鏡頭', mood: '氣氛' };
-    var lines = miss.map(function (k) { return name[k] + '（' + k + '）從這些挑一個，都不適合就填 none：' + L[k]; });
+    var real = miss.indexOf('style') >= 0 && realisticTopic(request, slots); if (real) L.style = REAL_STYLES.join('、');
+    var lines = miss.map(function (k) { return name[k] + '（' + k + '）從這些挑一個，都不適合就填 none：' + L[k] + (k === 'style' && real ? '（這是人物或歷史題材，畫風只能選寫實類的）' : ''); });
     return { system: '你是插畫的美術指導，只輸出 JSON。', user: '使用者想畫：「' + String(request || '').slice(0, 300) + '」\n請替這張圖決定下面幾個細節，只能從清單裡挑：\n' + lines.join('\n') + '\n只輸出一個 JSON，鍵是 ' + miss.join('、') + '，不要其他文字。' };
   }
-  function applyDetails(slots, text) {
+  function applyDetails(slots, text, request) {
     var m = /\{[\s\S]*\}/.exec(String(text || '')), o = null; if (m) { try { o = JSON.parse(m[0]); } catch (_) { o = null; } } if (!o || typeof o !== 'object') return { slots: slots, got: [] };
     var out = JSON.parse(JSON.stringify(slots)), got = [], pick = function (list, v) { v = String(v || '').toLowerCase().trim(); for (var i = 0; i < list.length; i++) if (list[i].tag.toLowerCase() === v) return list[i]; return null; };
     if (!out.style && o.style && STYLES[String(o.style).trim()]) { out.style = String(o.style).trim(); got.push('style'); }
+    if (!slots.style && request !== undefined && realisticTopic(request, out) && REAL_STYLES.indexOf(out.style) < 0) { out.style = 'cinematic'; if (got.indexOf('style') < 0) got.push('style'); } // 模型挑了動漫、奇幻之類，或沒挑：人物與歷史題材一律改成寫實
     if (!out.lighting) { var l = pick(LIGHTING, o.lighting); if (l) { out.lighting = l; got.push('lighting'); } }
     if (!out.camera) { var c = pick(CAMERA, o.camera); if (c) { out.camera = c; got.push('camera'); } }
     if (!out.mood) { var md = pick(MOOD, o.mood); if (md) { out.mood = md; got.push('mood'); } }
@@ -17464,7 +17474,7 @@ const holder = {};
     return { added: added, skipped: skipped };
   }
   function join(a) { return a.filter(Boolean).join(', '); }
-  function article(w) { w = String(w).trim(); if (!w || /^(a|an|the|some|two|three|many)/i.test(w) || (/s$/i.test(w) && !/ss$/i.test(w))) return w; return (/^[aeiou]/i.test(w) ? 'an ' : 'a ') + w; }
+  function article(w) { w = String(w).trim(); if (!w || /^(a|an|the|some|two|three|many)/i.test(w) || (/s$/i.test(w) && !/ss$/i.test(w))) return w; return (/^[aeiou]/i.test(w) ? 'an ' : 'a ') + w; }
   // 欄位 → 提示詞。優先順序（由重到輕）：主體、畫風、動作、場景、光線、鏡頭、氣氛、色調、其他、品質詞；超過上限就從最輕的開始丟
   function buildPrompt(slots, family, opts) {
     opts = opts || {}; var fam = FAMILIES[family] || FAMILIES.flux, st = slots.style ? STYLES[slots.style] : null, subj = slots.subject.slice(0, 3).join(' and ') || (slots.extras[0] || 'scene'), act = slots.action.slice(0, 2).join(', '), set = slots.setting.slice(0, 2).join(', ');
@@ -17527,7 +17537,7 @@ const holder = {};
     return out;
   }
 
-  return { moodOps: moodOps, lensOps: lensOps, detailMissing: detailMissing, detailBrief: detailBrief, applyDetails: applyDetails, imageStats: imageStats, retouchPlan: retouchPlan, checkBrief: checkBrief, parseCheck: parseCheck, draftGaps: draftGaps, draftRequest: draftRequest, RELATIONS: RELATIONS, applyScene: applyScene, reflectNeeded: reflectNeeded, reflectBrief: reflectBrief, applyReflection: applyReflection, configure: configure, classify: classify, diagramType: diagramType, STYLES: STYLES, FAMILIES: FAMILIES, extractSlots: extractSlots, mergeSlots: mergeSlots, familyOf: familyOf, estimateTokens: estimateTokens, buildPrompt: buildPrompt, slotsFromCaption: slotsFromCaption, svgBrief: svgBrief, mermaidBrief: mermaidBrief, extractSvg: extractSvg, extractMermaid: extractMermaid, validateSvg: validateSvg, validateMermaid: validateMermaid, plan: plan, ascii: ascii };
+  return { moodOps: moodOps, lensOps: lensOps, detailMissing: detailMissing, realisticTopic: realisticTopic, detailBrief: detailBrief, applyDetails: applyDetails, imageStats: imageStats, retouchPlan: retouchPlan, checkBrief: checkBrief, parseCheck: parseCheck, draftGaps: draftGaps, draftRequest: draftRequest, RELATIONS: RELATIONS, applyScene: applyScene, reflectNeeded: reflectNeeded, reflectBrief: reflectBrief, applyReflection: applyReflection, configure: configure, classify: classify, diagramType: diagramType, STYLES: STYLES, FAMILIES: FAMILIES, extractSlots: extractSlots, mergeSlots: mergeSlots, familyOf: familyOf, estimateTokens: estimateTokens, buildPrompt: buildPrompt, slotsFromCaption: slotsFromCaption, svgBrief: svgBrief, mermaidBrief: mermaidBrief, extractSvg: extractSvg, extractMermaid: extractMermaid, validateSvg: validateSvg, validateMermaid: validateMermaid, plan: plan, ascii: ascii };
 });
 
 }).call(null, undefined, holder);
@@ -54071,7 +54081,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const FM = FaImageRoute, a = c.a, note = c.note, R = this._imageRoute(a); over = over || {};
         const built = FM.buildPrompt(slots, R.family); note('📝 提示詞（' + FM.FAMILIES[R.family].label + '，約 ' + built.tokens + ' token）：' + built.prompt);
         let res = await this._generateImage(Object.assign({}, a, over, { prompt: built.prompt, negative_prompt: built.negative || undefined, provider: R.provider === 'auto' ? a.provider : R.provider }));
-        if (res && res.ok === false && !res.cancelled && !res.filtered && this._rg && this._rgTargets().some((x) => x.sub === true)) { note('🌐 本機畫不了，改交給遠端群組裡的機器…'); const rr = await this._imageRemote(a, c.request); if (rr.ok) { rr.note = ['本機沒畫成（' + String(res.error).slice(0, 80) + '），改由 ' + rr.machine + ' 畫的。', rr.note].filter(Boolean).join(' '); res = rr; } }
+        if (res && res.ok === false && !res.cancelled && !res.filtered && this._rg && this._rgTargets().some((x) => x.sub === true)) { note('🌐 本機畫不了，改交給遠端群組裡的機器…'); const rr = await this._imageRemote(a, c.request, built.prompt); if (rr.ok) { rr.note = ['本機沒畫成（' + String(res.error).slice(0, 80) + '），改由 ' + rr.machine + ' 畫的。', rr.note].filter(Boolean).join(' '); res = rr; } }
         if (res && res.ok !== false) { res.prompt_used = built.prompt; res.prompt_family = R.family; if (built.dropped.length) res.prompt_dropped = built.dropped; }
         return res;
     }
@@ -54135,7 +54145,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         let plan; try { plan = await this._imagePlan(c); } catch (e) { note('⚠️ 規劃出錯（' + String((e && e.message) || e).slice(0, 80) + '），退回寫死的流程。'); return this._imageDiffusionLegacy(o); }
         const program = Pl.toProgram(plan.units); note(Pl.toText(plan.units, plan.tree).split('\n').map((l) => '　' + l).join('\n'));
         this._imageCtx = c; let r;
-        try { await this._unitCatalogStoreLoad(); r = await this._unitCatalogRunProgram(program, { request: o.request }, { approve: false }); }
+        try { await this._unitCatalogStoreLoad(); r = await this._unitCatalogRunProgram(program, { request: o.request }, { approve: false, stepMs: 21600000, wallMs: 21600000 }); } // 慢的電腦一步可能要很久：實際上不設逾時（6 小時），要停用停止鈕；真的逾時也只是退回寫死流程重來，不當成失敗
         catch (e) { r = { ok: false, stage: 'exception', errors: [String((e && e.message) || e)] }; } finally { this._imageCtx = null; }
         if (!r || !r.ok) {
             const stage = r && r.stage, errs = (r && r.errors || []).join('；'), failedStep = (r && r.trace || []).filter((t) => t.error).slice(-1)[0];
@@ -54180,7 +54190,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const built = FM.buildPrompt(slots, family); note('📝 提示詞（' + FM.FAMILIES[family].label + '，約 ' + built.tokens + ' token）：' + built.prompt);
         let res = await this._generateImage(Object.assign({}, a, { prompt: built.prompt, negative_prompt: built.negative || undefined, provider: provider === 'auto' ? a.provider : provider }));
         // 本機與線上都畫不了，而且已經加入遠端群組：交給群組裡的機器畫（圖取回本機）
-        if (res && res.ok === false && !res.cancelled && !res.filtered && this._rg && this._rgTargets().some((x) => x.sub === true)) { note('🌐 本機畫不了，改交給遠端群組裡的機器…'); const rr = await this._imageRemote(a, o.request); if (rr.ok) { rr.note = ['本機沒畫成（' + String(res.error).slice(0, 80) + '），改由 ' + rr.machine + ' 畫的。', rr.note].filter(Boolean).join(' '); res = rr; } }
+        if (res && res.ok === false && !res.cancelled && !res.filtered && this._rg && this._rgTargets().some((x) => x.sub === true)) { note('🌐 本機畫不了，改交給遠端群組裡的機器…'); const rr = await this._imageRemote(a, o.request, built.prompt); if (rr.ok) { rr.note = ['本機沒畫成（' + String(res.error).slice(0, 80) + '），改由 ' + rr.machine + ' 畫的。', rr.note].filter(Boolean).join(' '); res = rr; } }
         if (res && res.ok !== false) {
             res.prompt_used = built.prompt; res.prompt_family = family; if (built.dropped.length) res.prompt_dropped = built.dropped;
             // ⑥ 修圖：程式量亮度、對比、飽和度，該修的修；視覺模型看缺了什麼元素，缺了就加強後重畫一次
@@ -54200,7 +54210,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         note('✏️ 請通用繪圖（純文字畫圖）畫一張構圖草稿：用簡單形狀與文字標籤標出 ' + items.slice(0, 5).join('、') + (items.length > 5 ? ' 等' : '') + ' 的位置。');
         let want = FM.draftRequest(o.request, slots), caption = '';
         for (let round = 0; round < 2; round++) {
-            const d = await this._imageShapes({ request: want, format: 'svg', note, show: true }); if (!d.ok) { note('　⚠️ 草稿沒畫成（' + String(d.error).slice(0, 80) + '），不影響後面。'); return { slots, fileId }; } fileId = d.png_file_id || d.file_id;
+            const d = await this._imageShapes({ request: want, format: 'svg', note, show: false }); // 草稿只放進執行紀錄，不當成畫好的圖貼進對話 if (!d.ok) { note('　⚠️ 草稿沒畫成（' + String(d.error).slice(0, 80) + '），不影響後面。'); return { slots, fileId }; } fileId = d.png_file_id || d.file_id;
             let r = null; try { r = JSON.parse(await this.tools.interpret_image.callback.call(this, JSON.stringify({ file_id: String(fileId), question: 'This is a rough layout draft. Describe in one or two English sentences what elements you can see and where each one is.' }))); } catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
             if (!r || !r.ok || !r.description) { note('　（視覺模型沒看，草稿只當構圖參考：' + String((r && r.error) || '').slice(0, 60) + '）'); return { slots, fileId }; }
             caption = String(r.description).trim(); note('👁 視覺模型看草稿，看到：' + caption.slice(0, 160));
@@ -54216,7 +54226,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const FM = FaImageRoute, note = o.note, miss = FM.detailMissing(o.slots);
         if (!miss.length) { note('　畫風、光線、鏡頭、氣氛都已經定了。'); return o.slots; }
         note('🎛 還沒定：' + miss.map((k) => ({ style: '畫風', lighting: '光線', camera: '鏡頭', mood: '氣氛' })[k]).join('、') + '，請模型從清單裡挑…');
-        try { const b = FM.detailBrief(o.request, o.slots, miss), reply = await this._kiLlm(b.user, { systemPrompt: b.system, maxTokens: 200, temperature: 0.2 }, { label: '細節', timeoutMs: 45000, noOffline: true, onStep: note }), r = FM.applyDetails(o.slots, reply); note(r.got.length ? '　決定了：' + r.got.map((k) => k + '＝' + (k === 'style' ? r.slots.style : r.slots[k].tag)).join('、') : '　（模型的選擇不在清單裡，這幾項留空。）'); return r.slots; }
+        try { const b = FM.detailBrief(o.request, o.slots, miss), reply = await this._kiLlm(b.user, { systemPrompt: b.system, maxTokens: 200, temperature: 0.2 }, { label: '細節', timeoutMs: 45000, noOffline: true, onStep: note }), r = FM.applyDetails(o.slots, reply, o.request); note(r.got.length ? '　決定了：' + r.got.map((k) => k + '＝' + (k === 'style' ? r.slots.style : r.slots[k].tag)).join('、') : '　（模型的選擇不在清單裡，這幾項留空。）'); return r.slots; }
         catch (e) { note('　（這次沒挑成：' + String((e && e.message) || e).slice(0, 80) + '，留空。）'); return o.slots; }
     }
     // ⑥ 修圖之一：視覺模型看生成的圖，缺了哪些要的元素
@@ -54275,10 +54285,10 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         return { slots, hit, reflected };
     }
     // 交給遠端群組裡的機器畫：對方用自己的模型與工具畫，產生的圖取回本機檔案快取（之後本機的工具、簡報都能直接用）
-    async _imageRemote(a, request) {
+    async _imageRemote(a, request, prompt) {
         if (!this._rg) return { ok: false, error: '還沒加入遠端群組（右上角「🌐 遠端」建立或加入），沒辦法交給別台機器畫。' };
         const extra = [a.style ? '畫風：' + a.style : '', a.route ? '路線：' + a.route : '', a.base_request ? '要先畫的工程圖基底：' + a.base_request : ''].filter(Boolean).join('；');
-        const task = '請用 generate_image 工具畫這張圖，圖片要留在檔案快取（不要再轉交給別台機器）：' + request + (extra ? '\n（' + extra + '）' : '') + '\n畫完只回報畫了什麼、用了哪個模型。';
+        const task = '請用 generate_image 工具畫這張圖，圖片要留在檔案快取（不要再轉交給別台機器）：' + (prompt ? '提示詞（英文，一個字都不要改、不要翻譯或改寫，直接填進 generate_image 的 prompt）：' + prompt + '\n（使用者原本的說法：' + request + '）' : request) + (extra ? '\n（' + extra + '）' : '') + '\n畫完只回報畫了什麼、用了哪個模型。';
         const r = await this._rgDelegate(task, a.machine || 'auto'); if (!r.ok) return { ok: false, error: r.error || '遠端沒有畫成', machine: r.machine };
         const imgs = (r.images || []).filter((x) => x && x.url); if (!imgs.length) return { ok: false, machine: r.machine, error: (r.machine || '對方') + ' 沒有產生圖片（' + String(r.result || '').slice(0, 120) + '）' + (r.not_fetched ? '；沒取回：' + r.not_fetched.join('、') : '') };
         const out = [];
@@ -73823,7 +73833,7 @@ ${existingNodeSummaries}
             const a = await this.requestUserForm({ title: '▶️ 要執行這個程式嗎？', description: IR.toText(program) + '\n\n副作用：' + v.effects.join('、') + '\n其中需要你同意的：' + risky.join('、') + (v.warnings.length ? '\n\n警告：\n' + v.warnings.slice(0, 5).join('\n') : ''), choices: ['執行', '取消'] });
             if (!a || !a.confirmed || a.answer !== '執行') return { ok: false, stage: 'denied', errors: ['使用者沒有同意執行'] };
         }
-        return IR.run(program, inputs || {}, cat, { invoke: (u, args) => this._unitCatalogInvoke(u, args) }, { dryRun: !!opts.dryRun, isCancelled: () => this.stopRequested, stepMs: opts.stepMs });
+        return IR.run(program, inputs || {}, cat, { invoke: (u, args) => this._unitCatalogInvoke(u, args) }, { dryRun: !!opts.dryRun, isCancelled: () => this.stopRequested, stepMs: opts.stepMs, wallMs: opts.wallMs });
     }
     // 從「起點型別 → 終點型別（或單元）」找接線並產生程式（不執行）
     _unitCatalogPlan(from, to, opts) {

@@ -116,15 +116,25 @@
 
   // ───── ②之三 細節：畫風、光線、鏡頭、氣氛還沒定的，請模型從封閉清單裡挑（挑出來的必須在清單裡才收）─────
   function detailMissing(slots) { var m = []; if (!slots.style) m.push('style'); if (!slots.lighting) m.push('lighting'); if (!slots.camera) m.push('camera'); if (!slots.mood) m.push('mood'); return m; }
+  // 有人名或歷史題材：畫風偏向寫實（照片、電影感、油畫、素描），不要挑動漫、奇幻這類（程式判斷，不問模型）
+  var REAL_STYLES = ['photo', 'cinematic', 'oil', 'sketch'];
+  var HISTORY_RE = /歷史|古代|古人|中世紀|文藝復興|王朝|皇帝|國王|女王|將軍|總統|首相|探險家|發明家|科學家|哲學家|畫家|音樂家|名人|偉人|戰爭|革命|登陸|航海|大航海|哥倫布|拿破崙|愛因斯坦|牛頓|達文西|孔子|秦始皇|成吉思汗|林肯|華盛頓|莎士比亞|貝多芬|莫札特|甘地|居禮|特斯拉|愛迪生|凱撒|克麗奧佩脫拉|亞歷山大|鄭成功|孫中山|蔣中正|history|historical|ancient|medieval|renaissance|emperor|king |queen |general |president|explorer/i;
+  function realisticTopic(request, slots) {
+    var t = String(request || ''); if (HISTORY_RE.test(t)) return true;
+    if (/[A-Z][a-z]+ [A-Z][a-z]+/.test(t)) return true; // 英文人名（兩個字首大寫的字）
+    var subj = (slots && slots.subject || []).join(' '); return /[A-Z][a-z]+ [A-Z][a-z]+/.test(subj) || HISTORY_RE.test(subj);
+  }
   function detailBrief(request, slots, miss) {
     var L = { style: Object.keys(STYLES).join('、'), lighting: LIGHTING.map(function (x) { return x.tag; }).join('｜'), camera: CAMERA.map(function (x) { return x.tag; }).join('｜'), mood: MOOD.map(function (x) { return x.tag; }).join('｜') }, name = { style: '畫風', lighting: '光線', camera: '鏡頭', mood: '氣氛' };
-    var lines = miss.map(function (k) { return name[k] + '（' + k + '）從這些挑一個，都不適合就填 none：' + L[k]; });
+    var real = miss.indexOf('style') >= 0 && realisticTopic(request, slots); if (real) L.style = REAL_STYLES.join('、');
+    var lines = miss.map(function (k) { return name[k] + '（' + k + '）從這些挑一個，都不適合就填 none：' + L[k] + (k === 'style' && real ? '（這是人物或歷史題材，畫風只能選寫實類的）' : ''); });
     return { system: '你是插畫的美術指導，只輸出 JSON。', user: '使用者想畫：「' + String(request || '').slice(0, 300) + '」\n請替這張圖決定下面幾個細節，只能從清單裡挑：\n' + lines.join('\n') + '\n只輸出一個 JSON，鍵是 ' + miss.join('、') + '，不要其他文字。' };
   }
-  function applyDetails(slots, text) {
+  function applyDetails(slots, text, request) {
     var m = /\{[\s\S]*\}/.exec(String(text || '')), o = null; if (m) { try { o = JSON.parse(m[0]); } catch (_) { o = null; } } if (!o || typeof o !== 'object') return { slots: slots, got: [] };
     var out = JSON.parse(JSON.stringify(slots)), got = [], pick = function (list, v) { v = String(v || '').toLowerCase().trim(); for (var i = 0; i < list.length; i++) if (list[i].tag.toLowerCase() === v) return list[i]; return null; };
     if (!out.style && o.style && STYLES[String(o.style).trim()]) { out.style = String(o.style).trim(); got.push('style'); }
+    if (!slots.style && request !== undefined && realisticTopic(request, out) && REAL_STYLES.indexOf(out.style) < 0) { out.style = 'cinematic'; if (got.indexOf('style') < 0) got.push('style'); } // 模型挑了動漫、奇幻之類，或沒挑：人物與歷史題材一律改成寫實
     if (!out.lighting) { var l = pick(LIGHTING, o.lighting); if (l) { out.lighting = l; got.push('lighting'); } }
     if (!out.camera) { var c = pick(CAMERA, o.camera); if (c) { out.camera = c; got.push('camera'); } }
     if (!out.mood) { var md = pick(MOOD, o.mood); if (md) { out.mood = md; got.push('mood'); } }
@@ -219,7 +229,7 @@
     return { added: added, skipped: skipped };
   }
   function join(a) { return a.filter(Boolean).join(', '); }
-  function article(w) { w = String(w).trim(); if (!w || /^(a|an|the|some|two|three|many)/i.test(w) || (/s$/i.test(w) && !/ss$/i.test(w))) return w; return (/^[aeiou]/i.test(w) ? 'an ' : 'a ') + w; }
+  function article(w) { w = String(w).trim(); if (!w || /^(a|an|the|some|two|three|many)/i.test(w) || (/s$/i.test(w) && !/ss$/i.test(w))) return w; return (/^[aeiou]/i.test(w) ? 'an ' : 'a ') + w; }
   // 欄位 → 提示詞。優先順序（由重到輕）：主體、畫風、動作、場景、光線、鏡頭、氣氛、色調、其他、品質詞；超過上限就從最輕的開始丟
   function buildPrompt(slots, family, opts) {
     opts = opts || {}; var fam = FAMILIES[family] || FAMILIES.flux, st = slots.style ? STYLES[slots.style] : null, subj = slots.subject.slice(0, 3).join(' and ') || (slots.extras[0] || 'scene'), act = slots.action.slice(0, 2).join(', '), set = slots.setting.slice(0, 2).join(', ');
@@ -282,5 +292,5 @@
     return out;
   }
 
-  return { moodOps: moodOps, lensOps: lensOps, detailMissing: detailMissing, detailBrief: detailBrief, applyDetails: applyDetails, imageStats: imageStats, retouchPlan: retouchPlan, checkBrief: checkBrief, parseCheck: parseCheck, draftGaps: draftGaps, draftRequest: draftRequest, RELATIONS: RELATIONS, applyScene: applyScene, reflectNeeded: reflectNeeded, reflectBrief: reflectBrief, applyReflection: applyReflection, configure: configure, classify: classify, diagramType: diagramType, STYLES: STYLES, FAMILIES: FAMILIES, extractSlots: extractSlots, mergeSlots: mergeSlots, familyOf: familyOf, estimateTokens: estimateTokens, buildPrompt: buildPrompt, slotsFromCaption: slotsFromCaption, svgBrief: svgBrief, mermaidBrief: mermaidBrief, extractSvg: extractSvg, extractMermaid: extractMermaid, validateSvg: validateSvg, validateMermaid: validateMermaid, plan: plan, ascii: ascii };
+  return { moodOps: moodOps, lensOps: lensOps, detailMissing: detailMissing, realisticTopic: realisticTopic, detailBrief: detailBrief, applyDetails: applyDetails, imageStats: imageStats, retouchPlan: retouchPlan, checkBrief: checkBrief, parseCheck: parseCheck, draftGaps: draftGaps, draftRequest: draftRequest, RELATIONS: RELATIONS, applyScene: applyScene, reflectNeeded: reflectNeeded, reflectBrief: reflectBrief, applyReflection: applyReflection, configure: configure, classify: classify, diagramType: diagramType, STYLES: STYLES, FAMILIES: FAMILIES, extractSlots: extractSlots, mergeSlots: mergeSlots, familyOf: familyOf, estimateTokens: estimateTokens, buildPrompt: buildPrompt, slotsFromCaption: slotsFromCaption, svgBrief: svgBrief, mermaidBrief: mermaidBrief, extractSvg: extractSvg, extractMermaid: extractMermaid, validateSvg: validateSvg, validateMermaid: validateMermaid, plan: plan, ascii: ascii };
 });
