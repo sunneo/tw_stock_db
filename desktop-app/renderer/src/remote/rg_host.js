@@ -570,7 +570,7 @@ const FaRemoteHost = (function () {
                 + '<div data-rv="chips" style="display:none; padding:4px 10px; font-size:12px; gap:6px; flex-wrap:wrap; border-top:1px solid ' + pal.windowBorder + ';"></div>'
                 + '<div data-rv="notice" style="display:none; padding:6px 10px; font-size:12px; background:rgba(226,160,63,.2);"></div>'
                 + '<div data-rv="body" style="flex:1; overflow-y:auto; padding:12px;"></div>'
-                + '<div style="padding:8px; border-top:1px solid ' + pal.windowBorder + '; display:flex; gap:6px;"><input type="file" data-rv="file" multiple style="display:none;"><button type="button" data-rv="attach" title="附加檔案（圖片、影片、文件…會一起傳給對方）" style="' + btn + '">📎</button><textarea data-rv="input" rows="2" placeholder="在對方的這個對話裡接著說（Enter 送出，Shift+Enter 換行，↑↓ 叫出之前送過的）…" style="flex:1; resize:none; padding:6px; border-radius:6px; border:1px solid ' + pal.inputBorder + '; background:' + pal.inputBg + '; color:' + pal.inputText + ';"></textarea><button type="button" data-rv="send" style="' + btn + ' background:#76b900; color:#fff; border:none; font-weight:bold;">送出</button></div>';
+                + '<div style="position:relative; padding:8px; border-top:1px solid ' + pal.windowBorder + '; display:flex; gap:6px;"><div data-rv="slash" style="display:none; position:absolute; left:8px; right:8px; bottom:100%; margin-bottom:4px; max-height:40vh; overflow-y:auto; z-index:5; border-radius:8px; border:1px solid ' + pal.inputBorder + '; background:' + pal.chatBg + ';"></div><div data-rv="histpanel" style="display:none; position:absolute; left:8px; right:8px; bottom:100%; margin-bottom:4px; max-height:40vh; overflow-y:auto; z-index:5; border-radius:8px; border:1px solid ' + pal.inputBorder + '; background:' + pal.chatBg + ';"></div><input type="file" data-rv="file" multiple style="display:none;"><button type="button" data-rv="hist" title="歷史訊息（挑選之前輸入過的內容；跟主輸入框同一份）" style="' + btn + '">🕘</button><button type="button" data-rv="attach" title="附加檔案（圖片、影片、文件…會一起傳給對方）" style="' + btn + '">📎</button><textarea data-rv="input" rows="2" placeholder="在對方的這個對話裡接著說（Enter 送出，Shift+Enter 換行，↑↓ 叫出之前送過的）…" style="flex:1; resize:none; padding:6px; border-radius:6px; border:1px solid ' + pal.inputBorder + '; background:' + pal.inputBg + '; color:' + pal.inputText + ';"></textarea><button type="button" data-rv="send" style="' + btn + ' background:#76b900; color:#fff; border:none; font-weight:bold;">送出</button></div>';
             main.appendChild(el); const q = (n) => el.querySelector('[data-rv="' + n + '"]'), rv = this._rgRv = { el, nodeId, chatId, ver: '', timer: null, closed: false, fails: 0, running: false };
             const notice = (txt) => { const n = q('notice'); n.style.display = txt ? '' : 'none'; n.textContent = txt || ''; };
             const paint = (msgs) => {
@@ -604,7 +604,34 @@ const FaRemoteHost = (function () {
             el.addEventListener('click', async (ev) => { const a = ev.target.closest('[data-rv]'); if (!a) return; const act = a.dataset.rv; if (act === 'back') this._rgCloseRemoteView(); else if (act === 'send') send(); else if (act === 'attach') q('file').click(); else if (act === 'rm') { const it = (this._pendingAttachments || [])[Number(a.dataset.i)]; if (it) { it.cancelled = true; this._pendingAttachments = this._pendingAttachments.filter((x) => x !== it); chips(); } } else if (act === 'stop') { try { await this._rgAsk(nodeId, 'chat_stop', { id: chatId }, 'chat_ack', 8000); notice('已要求對方停止'); } catch (err) { notice('停止要求沒有送達：' + String((err && err.message) || err)); } } });
             this._wirePasteAttachment(q('input')); // 剪貼簿的圖片（截圖）也能直接貼成附件；拖曳檔案是整頁都收的
             q('file').addEventListener('change', () => { const f = Array.from(q('file').files || []); q('file').value = ''; if (f.length) { this._ingestFilesAsAttachments(f); chips(); } });
+            // 斜線指令選單與歷史訊息：跟主輸入框同一份指令清單與同一份歷史（在對方的對話裡打 /image、/user-guide… 也會自動完成）
+            const slashBox = q('slash'), histBox = q('histpanel'), inpEl = q('input'); let slashSel = 0;
+            const slashItems = () => Array.from(slashBox.querySelectorAll('[data-cmd]'));
+            const slashPaint = () => slashItems().forEach((x, i) => { x.style.background = i === slashSel ? pal.detailBg : 'transparent'; });
+            const slashHide = () => { slashBox.style.display = 'none'; slashBox.innerHTML = ''; slashSel = 0; };
+            const slashRender = () => {
+                const v = inpEl.value; if (this.advancedSettings.slashCommandMenuEnabled === false || !v.startsWith('/') || /\s/.test(v)) { slashHide(); return; }
+                const ms = [...this.slashCommands.values()].filter((c) => c.cmd.startsWith(v.toLowerCase())); if (!ms.length) { slashHide(); return; }
+                histBox.style.display = 'none';
+                slashBox.innerHTML = ms.map((c) => '<div data-cmd="' + this._escapeAttr(c.cmd) + '" style="padding:7px 10px; cursor:pointer; border-bottom:1px solid ' + pal.windowBorder + ';"><div style="font-size:13px; font-weight:bold; color:#76b900;">' + e(c.cmd) + (c.hint ? ' <span style="font-weight:normal; opacity:.7;">' + e(c.hint) + '</span>' : '') + '</div>' + (c.desc ? '<div style="font-size:11px; opacity:.7; margin-top:2px;">' + e(String(c.desc).slice(0, 160)) + '</div>' : '') + '</div>').join('');
+                slashBox.style.display = 'block'; slashSel = 0; slashPaint();
+            };
+            const slashApply = (it) => { if (!it) return; inpEl.value = it.dataset.cmd + ' '; slashHide(); inpEl.focus(); };
+            slashBox.addEventListener('mousedown', (ev) => { const it = ev.target.closest('[data-cmd]'); if (!it) return; ev.preventDefault(); slashApply(it); });
+            inpEl.addEventListener('input', slashRender); inpEl.addEventListener('focus', slashRender);
+            const histRender = () => {
+                const h = (this.commandHistory || []).slice(0, 50); slashHide();
+                histBox.innerHTML = h.length ? h.map((t, i) => '<div data-h="' + i + '" style="padding:7px 10px; cursor:pointer; border-bottom:1px solid ' + pal.windowBorder + '; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="' + this._escapeAttr(t) + '">' + e(t) + '</div>').join('') : '<div style="padding:8px 10px; opacity:.6; font-size:12px;">（還沒有歷史訊息）</div>';
+            };
+            q('hist').addEventListener('click', () => { if (histBox.style.display === 'block') { histBox.style.display = 'none'; return; } histRender(); histBox.style.display = 'block'; });
+            histBox.addEventListener('mousedown', (ev) => { const it = ev.target.closest('[data-h]'); if (!it) return; ev.preventDefault(); inpEl.value = (this.commandHistory || [])[Number(it.dataset.h)] || ''; histBox.style.display = 'none'; inpEl.focus(); });
             q('input').addEventListener('keydown', (ev) => {
+                if (slashBox.style.display === 'block') {
+                    const n = slashItems().length;
+                    if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') { ev.preventDefault(); slashSel = Math.max(0, Math.min(n - 1, slashSel + (ev.key === 'ArrowDown' ? 1 : -1))); slashPaint(); const el2 = slashItems()[slashSel]; if (el2) el2.scrollIntoView({ block: 'nearest' }); return; }
+                    if ((ev.key === 'Enter' || ev.key === 'Tab') && !ev.isComposing) { ev.preventDefault(); slashApply(slashItems()[slashSel]); return; }
+                    if (ev.key === 'Escape') { slashHide(); return; }
+                }
                 if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); send(); return; }
                 // ↑↓ 叫出之前送過的內容（跟主輸入框同一份歷史）
                 const inp = q('input'), h = this.commandHistory || [];

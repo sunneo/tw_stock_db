@@ -32173,6 +32173,8 @@ const FaRemoteDispatch = (function () {
             const rg = this._rg; if (!rg) return null; const fc = this.fileCache; let cap = [], machine = rg.room.self.name;
             if (m._displayDeckUrl) { const mm = /client-file\/([\w-]+)/.exec(String(m._displayDeckUrl)); if (mm) cap.push({ id: mm[1], name: '簡報.deck.yaml' }); }
             if (m._displayRemoteFiles && Array.isArray(m._displayRemoteFiles.items)) for (const it of m._displayRemoteFiles.items) { const id = it.localId || (m._displayRemoteFiles.nodeId === rg.room.self.nodeId ? it.id : ''); if (id) cap.push({ id, name: it.name, mime: it.mime }); }
+            // 畫圖工具直接顯示在對話裡的圖（role:'tool'、_displayDataUrl）：圖在檔案快取裡（file_id=…），也一併交給看的人
+            if (m._displayDataUrl) { const ids = []; String(m.content || '').replace(/file_id=([\w-]+)/g, (_, id) => { ids.push(id); return ''; }); for (const id of ids.slice(0, 4)) { let rec = null; try { rec = await fc.get(id); } catch (_) { /* */ } if (rec) cap.push({ id, name: rec.filename || ('image-' + id), mime: rec.mimeType || 'image/png' }); } }
             if (!cap.length) return null;
             let refs = []; try { refs = await this._rgBuildRefs(cap, null, to); } catch (_) { return null; }
             return refs.length ? { machine, refs } : null;
@@ -32180,7 +32182,7 @@ const FaRemoteDispatch = (function () {
         async _rgSerChat(ctx, to) {
             const out = [];
             for (const m of ctx.messages) {
-                if (m && (m._displayDeckUrl || m._displayRemoteFiles)) { const g = await this._rgChatFileGroups(m, to); if (g) out.push({ r: 'files', t: '', machine: g.machine, refs: g.refs }); continue; }
+                if (m && (m._displayDeckUrl || m._displayRemoteFiles || m._displayDataUrl)) { const g = await this._rgChatFileGroups(m, to); if (g) out.push({ r: 'files', t: '', machine: g.machine, refs: g.refs }); continue; }
                 if (!m || m._suggestionChips || (m.role !== 'user' && m.role !== 'assistant')) continue;
                 let text = typeof m.content === 'string' ? m.content : Array.isArray(m.content) ? m.content.map((p) => p && p.type === 'text' ? p.text : p && p.type === 'image_url' ? '[圖片]' : '').filter(Boolean).join('\n') : '';
                 if (!String(text).trim()) continue; out.push({ r: m.role, t: String(text).slice(0, 12000) });
