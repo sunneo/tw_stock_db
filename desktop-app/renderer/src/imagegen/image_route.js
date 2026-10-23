@@ -140,7 +140,8 @@
   function retouchPlan(st) {
     var ops = [], why = [];
     if (st.std < 38) { ops.push({ op: 'auto_contrast', clip: 0.5 }); why.push('對比偏低（標準差 ' + st.std + '）→ 自動對比'); }
-    if (st.mean < 75) { ops.push({ op: 'brightness', amount: Math.min(25, Math.round((95 - st.mean) / 2)) }); why.push('整體偏暗（平均亮度 ' + st.mean + '）→ 提亮'); }
+    var stretched = ops.length > 0; // 自動對比已經把亮度範圍拉開，再提亮容易過頭：只有真的很暗才補一點
+    if (st.mean < 75 && (!stretched || st.mean < 45)) { ops.push({ op: 'brightness', amount: stretched ? 8 : Math.min(25, Math.round((95 - st.mean) / 2)) }); why.push('整體偏暗（平均亮度 ' + st.mean + '）→ 提亮'); }
     else if (st.mean > 195) { ops.push({ op: 'brightness', amount: -Math.min(18, Math.round((st.mean - 175) / 2)) }); why.push('整體偏亮（平均亮度 ' + st.mean + '）→ 壓暗'); }
     if (st.sat < 0.16) { ops.push({ op: 'saturation', amount: 18 }); why.push('顏色偏灰（飽和度 ' + st.sat + '）→ 提高飽和度'); }
     else if (st.sat > 0.7) { ops.push({ op: 'saturation', amount: -12 }); why.push('顏色過飽和（' + st.sat + '）→ 降低飽和度'); }

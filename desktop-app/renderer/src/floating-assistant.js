@@ -17348,13 +17348,63 @@ const holder = {};
     return { system: '你是插畫家、2D 動畫師、SVG 美術與 3D 場景設計師，只輸出 JSON。', user: '使用者想畫：「' + String(request || '').slice(0, 300) + '」\n' + (hintText ? '程式的場景素材目錄裡有近似的參考（缺的再補，不合的不要用）：\n' + hintText + '\n' : '') + '畫圖用的擴散模型可能對這個概念不熟。請你想一遍：如果要用 2D 動畫、SVG 或 3D 建模把這個畫面布置出來，需要準備哪些「主體」、「場景元素」與「道具素材」？各自放在畫面的哪裡（前景、中景、背景）？\n只輸出一個 JSON，不要其他文字：\n{"subject":["英文名詞短語，最多 3 個"],"setting":["英文場景短語，最多 2 個"],"extras":["道具與素材的英文短語，最多 5 個"],"relations":[{"a":"英文名詞","rel":"從這些挑一個：' + RELATIONS.join('、') + '","b":"英文名詞"}],"layout":"一句英文，描述構圖，例如 Columbus on a horse in the foreground, a huge moon behind"}\n英文只用英文字母，每個短語不超過 6 個字。' };
   }
   // 場景素材目錄的條目（程式查到的背景知識）→ 欄位
-  function applyScene(slots, sc) { var out = mergeSlots(slots, { subject: sc.subject, setting: (sc.setting || []).concat(sc.layout ? [sc.layout] : []), extras: sc.extras }); return { slots: out, got: (out.subject.length - slots.subject.length) + (out.setting.length - slots.setting.length) + (out.extras.length - slots.extras.length) }; }
+  function applyScene(slots, sc, covered) { var out = mergeSlots(slots, { subject: sc.subject, setting: (sc.setting || []).concat(sc.layout ? [sc.layout] : []), extras: sc.extras }); out.untranslated = slots.untranslated.filter(function (u) { return !/^(場景|景象|情境|畫面|現場)$/.test(u) && !(covered || []).some(function (c) { return u.indexOf(c) >= 0 || c.indexOf(u) >= 0; }); }); return { slots: out, got: (out.subject.length - slots.subject.length) + (out.setting.length - slots.setting.length) + (out.extras.length - slots.extras.length) }; }
   function applyReflection(slots, text) {
     var m = /\{[\s\S]*\}/.exec(String(text || '')), o = null; if (m) { try { o = JSON.parse(m[0]); } catch (_) { o = null; } } if (!o || typeof o !== 'object') return { slots: slots, ok: false, got: 0 };
     var rels = []; (Array.isArray(o.relations) ? o.relations : []).slice(0, 4).forEach(function (r) { if (!r || RELATIONS.indexOf(String(r.rel || '').toLowerCase().trim()) < 0) return; var a = ascii(r.a, 30).toLowerCase(), b = ascii(r.b, 30).toLowerCase(); if (a && b) rels.push(a + ' ' + String(r.rel).toLowerCase().trim() + ' ' + b); });
     var llm = { subject: rels.concat(Array.isArray(o.subject) ? o.subject : []), setting: (Array.isArray(o.setting) ? o.setting : typeof o.setting === 'string' ? [o.setting] : []).concat(typeof o.layout === 'string' ? [o.layout] : []), extras: o.extras };
     var out = mergeSlots(slots, llm), got = (out.subject.length - slots.subject.length) + (out.setting.length - slots.setting.length) + (out.extras.length - slots.extras.length);
     return { slots: out, ok: got > 0, got: got, layout: typeof o.layout === 'string' ? ascii(o.layout, 90) : '' };
+  }
+
+
+  // ───── ②之三 細節：畫風、光線、鏡頭、氣氛還沒定的，請模型從封閉清單裡挑（挑出來的必須在清單裡才收）─────
+  function detailMissing(slots) { var m = []; if (!slots.style) m.push('style'); if (!slots.lighting) m.push('lighting'); if (!slots.camera) m.push('camera'); if (!slots.mood) m.push('mood'); return m; }
+  function detailBrief(request, slots, miss) {
+    var L = { style: Object.keys(STYLES).join('、'), lighting: LIGHTING.map(function (x) { return x.tag; }).join('｜'), camera: CAMERA.map(function (x) { return x.tag; }).join('｜'), mood: MOOD.map(function (x) { return x.tag; }).join('｜') }, name = { style: '畫風', lighting: '光線', camera: '鏡頭', mood: '氣氛' };
+    var lines = miss.map(function (k) { return name[k] + '（' + k + '）從這些挑一個，都不適合就填 none：' + L[k]; });
+    return { system: '你是插畫的美術指導，只輸出 JSON。', user: '使用者想畫：「' + String(request || '').slice(0, 300) + '」\n請替這張圖決定下面幾個細節，只能從清單裡挑：\n' + lines.join('\n') + '\n只輸出一個 JSON，鍵是 ' + miss.join('、') + '，不要其他文字。' };
+  }
+  function applyDetails(slots, text) {
+    var m = /\{[\s\S]*\}/.exec(String(text || '')), o = null; if (m) { try { o = JSON.parse(m[0]); } catch (_) { o = null; } } if (!o || typeof o !== 'object') return { slots: slots, got: [] };
+    var out = JSON.parse(JSON.stringify(slots)), got = [], pick = function (list, v) { v = String(v || '').toLowerCase().trim(); for (var i = 0; i < list.length; i++) if (list[i].tag.toLowerCase() === v) return list[i]; return null; };
+    if (!out.style && o.style && STYLES[String(o.style).trim()]) { out.style = String(o.style).trim(); got.push('style'); }
+    if (!out.lighting) { var l = pick(LIGHTING, o.lighting); if (l) { out.lighting = l; got.push('lighting'); } }
+    if (!out.camera) { var c = pick(CAMERA, o.camera); if (c) { out.camera = c; got.push('camera'); } }
+    if (!out.mood) { var md = pick(MOOD, o.mood); if (md) { out.mood = md; got.push('mood'); } }
+    return { slots: out, got: got };
+  }
+
+  // ───── ⑤ 修圖：先用程式量一量（亮度、對比、飽和度），再決定要做哪些後製（操作名稱沿用 imgproc 的 op）；語意上的問題（缺了什麼東西）由視覺模型看 ─────
+  function imageStats(img) {
+    var d = img.data, n = 0, sum = 0, sq = 0, sat = 0, dark = 0, light = 0, step = Math.max(1, Math.floor((img.width * img.height) / 40000));
+    for (var p = 0; p < img.width * img.height; p += step) { var i = p * 4, r = d[i], g = d[i + 1], b = d[i + 2], y = 0.299 * r + 0.587 * g + 0.114 * b, mx = Math.max(r, g, b), mn = Math.min(r, g, b); n++; sum += y; sq += y * y; sat += mx ? (mx - mn) / mx : 0; if (y < 12) dark++; if (y > 243) light++; }
+    if (!n) return { mean: 0, std: 0, sat: 0, dark: 0, light: 0 }; var mean = sum / n; return { mean: Math.round(mean * 10) / 10, std: Math.round(Math.sqrt(Math.max(0, sq / n - mean * mean)) * 10) / 10, sat: Math.round(sat / n * 1000) / 1000, dark: Math.round(dark / n * 1000) / 1000, light: Math.round(light / n * 1000) / 1000 };
+  }
+  function retouchPlan(st) {
+    var ops = [], why = [];
+    if (st.std < 38) { ops.push({ op: 'auto_contrast', clip: 0.5 }); why.push('對比偏低（標準差 ' + st.std + '）→ 自動對比'); }
+    var stretched = ops.length > 0; // 自動對比已經把亮度範圍拉開，再提亮容易過頭：只有真的很暗才補一點
+    if (st.mean < 75 && (!stretched || st.mean < 45)) { ops.push({ op: 'brightness', amount: stretched ? 8 : Math.min(25, Math.round((95 - st.mean) / 2)) }); why.push('整體偏暗（平均亮度 ' + st.mean + '）→ 提亮'); }
+    else if (st.mean > 195) { ops.push({ op: 'brightness', amount: -Math.min(18, Math.round((st.mean - 175) / 2)) }); why.push('整體偏亮（平均亮度 ' + st.mean + '）→ 壓暗'); }
+    if (st.sat < 0.16) { ops.push({ op: 'saturation', amount: 18 }); why.push('顏色偏灰（飽和度 ' + st.sat + '）→ 提高飽和度'); }
+    else if (st.sat > 0.7) { ops.push({ op: 'saturation', amount: -12 }); why.push('顏色過飽和（' + st.sat + '）→ 降低飽和度'); }
+    if (ops.length || st.std >= 38) { ops.push({ op: 'sharpen', amount: 0.5, radius: 1.2, threshold: 2 }); why.push('輕微銳化'); }
+    return { ops: ops, why: why, flat: st.std < 8 };
+  }
+  function checkBrief(request, items) {
+    return 'Look at this image. The request was: ' + String(request || '').slice(0, 200) + '\nWhich of these required elements are NOT clearly visible? ' + items.slice(0, 8).join('; ') + '\nAnswer only with JSON: {"missing":["element",...],"ok":true|false}';
+  }
+  function parseCheck(text, items) {
+    var m = /\{[\s\S]*\}/.exec(String(text || '')), o = null; if (m) { try { o = JSON.parse(m[0]); } catch (_) { o = null; } } if (!o) return null;
+    var low = items.map(function (x) { return x.toLowerCase(); }), miss = (Array.isArray(o.missing) ? o.missing : []).map(function (x) { return ascii(x, 40).toLowerCase(); }).filter(function (x) { return x && low.some(function (y) { return y.indexOf(x) >= 0 || x.indexOf(y) >= 0; }); }).slice(0, 4);
+    return { missing: miss, ok: o.ok === true && !miss.length };
+  }
+  // 草稿：視覺模型看完草稿的描述 vs. 想要的元素 → 看不到的元素（程式比對字面，不靠模型再判斷一次）
+  function draftGaps(caption, items) { var c = String(caption || '').toLowerCase(); return items.filter(function (it) { var w = String(it).toLowerCase().split(/[^a-z]+/).filter(function (x) { return x.length > 3; }); return w.length && !w.some(function (x) { return c.indexOf(x.slice(0, Math.max(4, x.length - 2))) >= 0; }); }); }
+  // 草稿要畫什麼：用主體與場景元素排成簡單的版面說明，交給「純文字畫圖」去畫（形狀加文字標籤）
+  function draftRequest(request, slots) {
+    var parts = slots.subject.concat(slots.extras).slice(0, 8); return '構圖草稿（只用簡單形狀與英文文字標籤，標出各元素的位置，不用細節）：' + String(request || '').slice(0, 120) + '。元素：' + parts.join('、') + (slots.setting.length ? '。場景與構圖：' + slots.setting.join('；') : '') + '。';
   }
 
   var FAMILIES = { sd15: { id: 'sd15', label: 'SD 1.x／SDXS（CLIP，逗號分隔的關鍵詞）', maxTokens: 70, negative: false }, flux: { id: 'flux', label: 'FLUX（自然語句）', maxChars: 320, negative: false }, sd3: { id: 'sd3', label: 'Stable Diffusion 3（語句加關鍵詞）', maxTokens: 150, negative: true } };
@@ -17447,7 +17497,7 @@ const holder = {};
     return out;
   }
 
-  return { RELATIONS: RELATIONS, applyScene: applyScene, reflectNeeded: reflectNeeded, reflectBrief: reflectBrief, applyReflection: applyReflection, configure: configure, classify: classify, diagramType: diagramType, STYLES: STYLES, FAMILIES: FAMILIES, extractSlots: extractSlots, mergeSlots: mergeSlots, familyOf: familyOf, estimateTokens: estimateTokens, buildPrompt: buildPrompt, slotsFromCaption: slotsFromCaption, svgBrief: svgBrief, mermaidBrief: mermaidBrief, extractSvg: extractSvg, extractMermaid: extractMermaid, validateSvg: validateSvg, validateMermaid: validateMermaid, plan: plan, ascii: ascii };
+  return { detailMissing: detailMissing, detailBrief: detailBrief, applyDetails: applyDetails, imageStats: imageStats, retouchPlan: retouchPlan, checkBrief: checkBrief, parseCheck: parseCheck, draftGaps: draftGaps, draftRequest: draftRequest, RELATIONS: RELATIONS, applyScene: applyScene, reflectNeeded: reflectNeeded, reflectBrief: reflectBrief, applyReflection: applyReflection, configure: configure, classify: classify, diagramType: diagramType, STYLES: STYLES, FAMILIES: FAMILIES, extractSlots: extractSlots, mergeSlots: mergeSlots, familyOf: familyOf, estimateTokens: estimateTokens, buildPrompt: buildPrompt, slotsFromCaption: slotsFromCaption, svgBrief: svgBrief, mermaidBrief: mermaidBrief, extractSvg: extractSvg, extractMermaid: extractMermaid, validateSvg: validateSvg, validateMermaid: validateMermaid, plan: plan, ascii: ascii };
 });
 
 }).call(null, undefined, holder);
@@ -34917,7 +34967,7 @@ class FloatingAssistant {
                     if (!raw) { const c = r._imageGenConfig(); r._pushAssistantMessage('🖼 可用的圖像生成模型（/image model=…）：\n' + FaNvidiaImage.MODELS.map((m) => '- ' + m.id + '：' + m.label).join('\n') + '\n\n目前預設：' + c.model + '；金鑰：' + (c.apiKey ? (c.keyFrom === 'default' ? '用內建預設' + (c.route === 'worker' ? '（經 Worker 轉送）' : '') : '已設定自己的金鑰') : '沒有可用的金鑰（進階設定 → 影音處理）') + '\n也可以直接填別的「廠商/模型名」。', null, { _actions: [{ kind: 'image-config', label: '⚙ 設定' }] }); }
                     else {
                         const a = {}; let prompt = raw;
-                        for (let guard = 0; guard < 6; guard++) { const m = /^(model|steps|seed|size|width|height|cfg|negative|provider|route|style|where|machine|image|base|reflect)=(\S+)\s*/i.exec(prompt); if (!m) break; const k = m[1].toLowerCase(), v = m[2]; prompt = prompt.slice(m[0].length); if (k === 'size') { const z = /^(\d+)[x×](\d+)$/i.exec(v); if (z) { a.width = +z[1]; a.height = +z[2]; } } else if (k === 'model') a.model = v; else if (k === 'cfg') a.cfg_scale = +v; else if (k === 'negative') a.negative_prompt = v; else a[k] = +v; }
+                        for (let guard = 0; guard < 6; guard++) { const m = /^(model|steps|seed|size|width|height|cfg|negative|provider|route|style|where|machine|image|base|reflect|draft|check|retouch)=(\S+)\s*/i.exec(prompt); if (!m) break; const k = m[1].toLowerCase(), v = m[2]; prompt = prompt.slice(m[0].length); if (k === 'size') { const z = /^(\d+)[x×](\d+)$/i.exec(v); if (z) { a.width = +z[1]; a.height = +z[2]; } } else if (k === 'model') a.model = v; else if (k === 'cfg') a.cfg_scale = +v; else if (k === 'negative') a.negative_prompt = v; else a[k] = +v; }
                         a.prompt = prompt; if (!a.route) a.route = 'diffusion'; // 明確下 /image＝要擴散模型畫；其他工具只用在畫之前的「構想」
                         r._pushAssistantMessage('🖼 畫圖中…（' + (a.model || r._imageGenConfig().model) + '）', null);
                         if (a.base !== undefined) { a.base_request = a.base === '1' || a.base === 'true' ? prompt : a.base; delete a.base; }
@@ -39656,7 +39706,7 @@ ${fnData.code}
                 try { return JSON.stringify(await this._imageMake(a)); }
                 catch (e) { return JSON.stringify({ ok: false, error: String((e && e.message) || e) }); }
             },
-            { type: 'object', properties: { reflect: { type: 'boolean', description: '選填：畫之前先「構想」——查場景素材目錄、請模型想要準備哪些主體與素材、各放哪裡（預設：場景類或不熟的概念才會想；false＝不想）' }, prompt: { type: 'string', description: '要畫什麼（使用者的需求，中文英文都可以）' }, image: { type: 'string', description: '選填：使用者貼的圖片的 file_id（會先看懂再生成）' }, base_request: { type: 'string', description: '選填：要先用純文字畫出的工程圖／示意圖基底的描述' }, route: { type: 'string', enum: ['auto', 'shapes', 'diffusion'], description: '選填：auto（預設）、shapes（強制用 SVG／Mermaid 純文字畫）、diffusion（強制用擴散模型）' }, style: { type: 'string', enum: ['photo', 'cinematic', 'anime', 'watercolor', 'oil', 'sketch', 'ink', 'render3d', 'pixel', 'flat', 'cyberpunk', 'fantasy', 'lowpoly', 'clay', 'illustration'], description: '選填：畫風' }, where: { type: 'string', enum: ['local', 'remote'], description: '選填：remote＝交給遠端群組的機器畫，圖取回本機' }, machine: { type: 'string', description: 'where=remote 時的機器名稱，或 auto' }, provider: { type: 'string', enum: ['auto', 'online', 'local'], description: '選填：擴散模型用線上、本機小模型，或自動' }, model: { type: 'string', description: '選填：線上模型 廠商/模型名' }, width: { type: 'integer' }, height: { type: 'integer' }, steps: { type: 'integer' }, seed: { type: 'integer' }, cfg_scale: { type: 'number' } }, required: ['prompt'], additionalProperties: false }
+            { type: 'object', properties: { draft: { type: 'boolean', description: '選填：false＝不畫構圖草稿（預設：場景類的圖會先用通用繪圖畫草稿、給視覺模型看）' }, check: { type: 'boolean', description: '選填：false＝不請視覺模型檢查成品缺不缺元素' }, retouch: { type: 'boolean', description: '選填：false＝不做成品後製（自動對比、亮度、飽和度、銳化）' }, reflect: { type: 'boolean', description: '選填：畫之前先「構想」——查場景素材目錄、請模型想要準備哪些主體與素材、各放哪裡（預設：場景類或不熟的概念才會想；false＝不想）' }, prompt: { type: 'string', description: '要畫什麼（使用者的需求，中文英文都可以）' }, image: { type: 'string', description: '選填：使用者貼的圖片的 file_id（會先看懂再生成）' }, base_request: { type: 'string', description: '選填：要先用純文字畫出的工程圖／示意圖基底的描述' }, route: { type: 'string', enum: ['auto', 'shapes', 'diffusion'], description: '選填：auto（預設）、shapes（強制用 SVG／Mermaid 純文字畫）、diffusion（強制用擴散模型）' }, style: { type: 'string', enum: ['photo', 'cinematic', 'anime', 'watercolor', 'oil', 'sketch', 'ink', 'render3d', 'pixel', 'flat', 'cyberpunk', 'fantasy', 'lowpoly', 'clay', 'illustration'], description: '選填：畫風' }, where: { type: 'string', enum: ['local', 'remote'], description: '選填：remote＝交給遠端群組的機器畫，圖取回本機' }, machine: { type: 'string', description: 'where=remote 時的機器名稱，或 auto' }, provider: { type: 'string', enum: ['auto', 'online', 'local'], description: '選填：擴散模型用線上、本機小模型，或自動' }, model: { type: 'string', description: '選填：線上模型 廠商/模型名' }, width: { type: 'integer' }, height: { type: 'integer' }, steps: { type: 'integer' }, seed: { type: 'integer' }, cfg_scale: { type: 'number' } }, required: ['prompt'], additionalProperties: false }
         );
 
         // 長文章的目錄與分段閱讀：外面的 wiki、新聞、一整本小說、上傳的文件。先看目錄再挑章節讀，不用一直翻頁讀不完。
@@ -53442,7 +53492,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     // 分流：單純形狀的組合圖 → 寫成 SVG／Mermaid 純文字再畫；要畫面的圖 → 程式拆欄位、依模型族套範本（SD／SDXS 逗號關鍵詞、FLUX 自然語句、SD3 混合），再交給擴散模型。
     // 模型只做兩件封閉的事（分不出來時 A／B 選一個；把沒翻到的中文詞翻成英文），其餘全由程式決定並驗證。可以先看懂使用者貼的圖、先畫工程圖基底、交給遠端機器畫。
     async _imageMake(a) {
-        a = a || {}; const t0 = Date.now(), log = [], note = (t) => { log.push(t); try { if (this._imageProg) this._imageProg.update({ status: t }); } catch (_) { /* */ } };
+        a = a || {}; const t0 = Date.now(), log = [], note = (t) => { log.push(t); try { if (this._imageProg) { this._imageProg.log(t); if (!/^━━/.test(t)) this._imageProg.update({ status: t }); } } catch (_) { /* */ } };
         const request = String(a.prompt || a.request || '').trim(); if (!request && !a.image) return { ok: false, error: '要畫什麼？請給 prompt（中文或英文都可以）。' };
         if (a.where === 'remote') return this._imageRemote(a, request);
         const prog = this._createProgressWidget('🎨 畫圖'); this._imageProg = prog;
@@ -53503,49 +53553,121 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const blob = await new Promise((res) => cv.toBlob(res, 'image/png')); return { blob, dataUrl: cv.toDataURL('image/png'), w: cw, h: ch };
     }
     // 要畫面的圖：欄位 → 範本 → 擴散模型。贴的圖的描述當底，文字需求蓋過它；工程圖基底（base_request）先畫出來、看懂之後當場景依據
+    // /image 的主線：場景 → 草稿 → 細節 → 生成 → 整合 → 修圖。最後的圖一定是擴散模型畫的；其他工具（場景素材目錄、通用繪圖的純文字畫圖、視覺模型、圖片後製）只在前後幫忙想、幫忙看、幫忙修。
+    // 每一段都用 note() 說出做了什麼、看到什麼、為什麼（會進進度卡片的記錄，結束後仍保留）。簡單的題目（一隻貓、水彩風格）直接生成，不走這些段落。
     async _imageDiffusion(o) {
-        const a = o.a, note = o.note, FM = FaImageRoute, g = (this.advancedSettings && this.advancedSettings.imageGen) || {};
+        const a = o.a, note = o.note, FM = FaImageRoute, g = (this.advancedSettings && this.advancedSettings.imageGen) || {}, off = (v) => v === false || v === 'false' || v === '0' || v === 0;
         let provider = ['online', 'local'].indexOf(a.provider) >= 0 ? a.provider : (['online', 'local'].indexOf(g.provider) >= 0 ? g.provider : 'auto'); if (provider === 'auto' && this.advancedSettings && this.advancedSettings.offlineMode) provider = 'local';
         let modelId = provider === 'local' ? 'sdxs' : (a.model || (this._imageGenConfig().model)); const family = FM.familyOf(modelId);
         let slots = FM.extractSlots(o.request); const cap = o.capSlots;
         if (cap) { if (!slots.style) slots.style = cap.style; if (!slots.subject.length && !slots.untranslated.length) slots.subject = cap.subject.slice(); else if (!slots.subject.length) slots.setting = slots.setting.concat(cap.subject); cap.colors.forEach((c) => { if (slots.colors.indexOf(c) < 0 && slots.colors.length < 3) slots.colors.push(c); }); if (!slots.lighting) slots.lighting = cap.lighting; if (!slots.camera) slots.camera = cap.camera; }
         if (a.style && FM.STYLES[a.style]) slots.style = a.style;
-        // 工程圖基底：先用純文字畫出來，視覺模型看懂它（版面、有哪些東西），當作場景依據
+        // 工程圖基底（呼叫端指定）：先用純文字畫出來，視覺模型看懂它（版面、有哪些東西），當作場景依據
         if (a.base_request) {
             note('🧩 先畫工程圖基底（純文字）…'); const bp = FM.plan(String(a.base_request)), base = await this._imageShapes({ request: String(a.base_request), format: bp.route === 'shapes' ? bp.format : 'svg', diagram: bp.diagram, note, show: true });
             if (base.ok) { let r = null; try { r = JSON.parse(await this.tools.interpret_image.callback.call(this, JSON.stringify({ file_id: String(base.png_file_id || base.file_id), question: 'Describe the layout and the main elements of this diagram in one English sentence.' }))); } catch (_) { /* */ } if (r && r.ok && r.description) { const sl = FM.slotsFromCaption(r.description); if (sl.subject[0]) { slots.setting.push('layout of ' + sl.subject[0].slice(0, 70)); note('　基底看起來是：' + sl.subject[0].slice(0, 100)); } } }
             else note('　⚠️ 基底沒畫成（' + String(base.error).slice(0, 80) + '），只用文字需求。');
         }
-        // 反思（構想）：擴散模型不熟的概念，先查「場景素材目錄」（背景知識，程式比對）；目錄沒有或還不夠，再請模型像動畫師／SVG 美術／3D 場景設計師那樣想要準備哪些主體與素材、各放哪裡。
-        // 其他工具在這裡只是幫忙想，最後的圖一定是擴散模型畫的。
-        slots = await this._imageReflect({ a, slots, request: o.request, note });
+        // ① 場景（反思）：場景素材目錄 → 不夠再請模型想
+        const sc = await this._imageReflect({ a, slots, request: o.request, note }); slots = sc.slots; const fancy = sc.hit || sc.reflected || a.draft === true || a.draft === 'true' || a.draft === '1';
+        // ② 草稿：用通用繪圖（純文字畫圖）畫構圖草稿，給視覺模型看它看到什麼；缺了什麼元素就補畫一次
+        let draftId = '';
+        if (fancy && !off(a.draft) && (slots.subject.length + slots.extras.length) >= 2) { const dr = await this._imageDraft({ request: o.request, slots, note }); slots = dr.slots; draftId = dr.fileId || ''; }
+        // ③ 細節：畫風、光線、鏡頭、氣氛還沒定的，請模型從封閉清單裡挑
+        if (fancy) slots = await this._imageDetails({ request: o.request, slots, note });
         // 程式翻不出來的中文詞：請模型只做「翻成英文」（格式固定，翻回來的字要通過英文字母檢查才收）
         if (slots.untranslated.length) {
             note('🔤 有 ' + slots.untranslated.length + ' 個詞程式沒收錄（' + slots.untranslated.slice(0, 4).join('、') + '），請模型翻成英文…');
-            try { const tr = await this._kiLlm('把下列中文詞各翻成最常用的英文（名詞或短語），一行一個，格式「原詞=English」，不要解釋：\n' + slots.untranslated.join('\n'), { systemPrompt: '你只負責翻譯單詞。', maxTokens: 200, temperature: 0 }, { label: '翻譯', timeoutMs: 30000, onStep: note }); const got = []; String(tr || '').split('\n').forEach((ln) => { const m = /^(.+?)\s*[=＝:：]\s*(.+)$/.exec(ln.trim()); if (m && slots.untranslated.indexOf(m[1].trim()) >= 0) got.push(m[2].trim()); }); if (got.length) slots = FM.mergeSlots(slots, { subject: got }); } catch (_) { note('　（翻不了，這幾個詞沒有放進提示詞）'); }
+            try { const tr = await this._kiLlm('把下列中文詞各翻成最常用的英文（名詞或短語），一行一個，格式「原詞=English」，不要解釋：\n' + slots.untranslated.join('\n'), { systemPrompt: '你只負責翻譯單詞。', maxTokens: 200, temperature: 0 }, { label: '翻譯', timeoutMs: 30000, onStep: note }); const got = []; String(tr || '').split('\n').forEach((ln) => { const m = /^(.+?)\s*[=＝:：]\s*(.+)$/.exec(ln.trim()); if (m && slots.untranslated.indexOf(m[1].trim()) >= 0) got.push(m[2].trim()); }); if (got.length) { slots = FM.mergeSlots(slots, { subject: got }); note('　翻成：' + got.join('、')); } } catch (_) { note('　（翻不了，這幾個詞沒有放進提示詞）'); }
         }
+        // ④ 生成
+        note('━━ ④ 生成 ━━');
         const built = FM.buildPrompt(slots, family); note('📝 提示詞（' + FM.FAMILIES[family].label + '，約 ' + built.tokens + ' token）：' + built.prompt);
         let res = await this._generateImage(Object.assign({}, a, { prompt: built.prompt, negative_prompt: built.negative || undefined, provider: provider === 'auto' ? a.provider : provider }));
         // 本機與線上都畫不了，而且已經加入遠端群組：交給群組裡的機器畫（圖取回本機）
         if (res && res.ok === false && !res.cancelled && !res.filtered && this._rg && this._rgTargets().some((x) => x.sub === true)) { note('🌐 本機畫不了，改交給遠端群組裡的機器…'); const rr = await this._imageRemote(a, o.request); if (rr.ok) { rr.note = ['本機沒畫成（' + String(res.error).slice(0, 80) + '），改由 ' + rr.machine + ' 畫的。', rr.note].filter(Boolean).join(' '); res = rr; } }
-        if (res && res.ok !== false) { res.prompt_used = built.prompt; res.prompt_family = family; if (built.dropped.length) res.prompt_dropped = built.dropped; }
+        if (res && res.ok !== false) {
+            res.prompt_used = built.prompt; res.prompt_family = family; if (built.dropped.length) res.prompt_dropped = built.dropped;
+            // ⑥ 修圖：程式量亮度、對比、飽和度，該修的修；視覺模型看缺了什麼元素，缺了就加強後重畫一次
+            if (res.provider !== 'remote' && !off(a.retouch)) {
+                const items = slots.subject.concat(slots.extras).slice(0, 8);
+                if (fancy && items.length && !off(a.check)) { const miss = await this._imageCheck({ res, request: o.request, items, note }); if (miss.length && !a._regen) { note('🔁 補上缺的元素（' + miss.join('、') + '），換個 seed 重畫一次…'); const slots2 = FM.mergeSlots(slots, { subject: miss.slice(0, 2), extras: miss }); slots2.extras = miss.concat(slots2.extras.filter((x) => miss.indexOf(x) < 0)); const b2 = FM.buildPrompt(slots2, family); note('📝 新的提示詞：' + b2.prompt); const r2 = await this._generateImage(Object.assign({}, a, { seed: undefined, prompt: b2.prompt, negative_prompt: b2.negative || undefined, provider: provider === 'auto' ? a.provider : provider })); if (r2 && r2.ok !== false) { r2.prompt_used = b2.prompt; r2.prompt_family = family; r2.first_try_file_id = res.file_id; res = r2; } else note('　（重畫沒成功，保留第一張。）'); } }
+                res = await this._imageRetouch({ res, note });
+            }
+            // ⑤ 整合：把這次用到的東西收成一份結果（最後的圖、草稿、原圖與提示詞都留在檔案快取，之後的工具與簡報能直接用）
+            if (fancy) { res.pipeline = { scene: sc.hit ? 'catalog' : (sc.reflected ? 'model' : ''), draft_file_id: draftId || undefined, original_file_id: res.original_file_id, final_file_id: res.file_id }; note('━━ ⑤ 整合 ━━'); note('📦 最後的圖 file_id=' + res.file_id + (res.original_file_id ? '（修圖前的原圖 ' + res.original_file_id + '）' : '') + (draftId ? '；構圖草稿 ' + draftId : '') + '；各段的結果都留在檔案快取。'); }
+        }
+        return res;
+    }
+    // ② 草稿
+    async _imageDraft(o) {
+        const FM = FaImageRoute, note = o.note; let slots = o.slots, fileId = ''; const items = slots.subject.concat(slots.extras).slice(0, 8);
+        note('━━ ② 草稿 ━━'); note('✏️ 請通用繪圖（純文字畫圖）畫一張構圖草稿：用簡單形狀與文字標籤標出 ' + items.slice(0, 5).join('、') + (items.length > 5 ? ' 等' : '') + ' 的位置。');
+        let want = FM.draftRequest(o.request, slots), caption = '';
+        for (let round = 0; round < 2; round++) {
+            const d = await this._imageShapes({ request: want, format: 'svg', note, show: true }); if (!d.ok) { note('　⚠️ 草稿沒畫成（' + String(d.error).slice(0, 80) + '），不影響後面。'); return { slots, fileId }; } fileId = d.png_file_id || d.file_id;
+            let r = null; try { r = JSON.parse(await this.tools.interpret_image.callback.call(this, JSON.stringify({ file_id: String(fileId), question: 'This is a rough layout draft. Describe in one or two English sentences what elements you can see and where each one is.' }))); } catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+            if (!r || !r.ok || !r.description) { note('　（視覺模型沒看，草稿只當構圖參考：' + String((r && r.error) || '').slice(0, 60) + '）'); return { slots, fileId }; }
+            caption = String(r.description).trim(); note('👁 視覺模型看草稿，看到：' + caption.slice(0, 160));
+            const gaps = FM.draftGaps(caption, items); if (!gaps.length) { note('　草稿裡要的元素都看得到。'); break; }
+            if (round === 1) { note('　補畫後還是看不到：' + gaps.slice(0, 4).join('、') + '；提示詞照常把它們寫進去。'); break; }
+            note('　草稿裡看不出：' + gaps.slice(0, 4).join('、') + '，請它補畫一次。'); want = FM.draftRequest(o.request, slots) + ' 一定要畫出並標示：' + gaps.join(', ') + '。';
+        }
+        const sl = FM.slotsFromCaption(caption); if (sl.subject[0]) { slots = JSON.parse(JSON.stringify(slots)); slots.setting.push('layout of ' + sl.subject[0].slice(0, 70)); note('　把草稿的構圖寫進場景。'); }
+        return { slots, fileId };
+    }
+    // ③ 細節
+    async _imageDetails(o) {
+        const FM = FaImageRoute, note = o.note, miss = FM.detailMissing(o.slots); note('━━ ③ 細節 ━━');
+        if (!miss.length) { note('　畫風、光線、鏡頭、氣氛都已經定了。'); return o.slots; }
+        note('🎛 還沒定：' + miss.map((k) => ({ style: '畫風', lighting: '光線', camera: '鏡頭', mood: '氣氛' })[k]).join('、') + '，請模型從清單裡挑…');
+        try { const b = FM.detailBrief(o.request, o.slots, miss), reply = await this._kiLlm(b.user, { systemPrompt: b.system, maxTokens: 200, temperature: 0.2 }, { label: '細節', timeoutMs: 45000, noOffline: true, onStep: note }), r = FM.applyDetails(o.slots, reply); note(r.got.length ? '　決定了：' + r.got.map((k) => k + '＝' + (k === 'style' ? r.slots.style : r.slots[k].tag)).join('、') : '　（模型的選擇不在清單裡，這幾項留空。）'); return r.slots; }
+        catch (e) { note('　（這次沒挑成：' + String((e && e.message) || e).slice(0, 80) + '，留空。）'); return o.slots; }
+    }
+    // ⑥ 修圖之一：視覺模型看生成的圖，缺了哪些要的元素
+    async _imageCheck(o) {
+        const FM = FaImageRoute, note = o.note; note('━━ ⑥ 修圖 ━━'); note('🔎 請視覺模型檢查成品，看缺不缺：' + o.items.slice(0, 5).join('、') + '…');
+        let r = null; try { r = JSON.parse(await this.tools.interpret_image.callback.call(this, JSON.stringify({ file_id: String(o.res.file_id), question: FM.checkBrief(o.request, o.items) }))); } catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+        if (!r || !r.ok || !r.description) { note('　（視覺模型沒回應，跳過檢查：' + String((r && r.error) || '').slice(0, 60) + '）'); return []; }
+        const c = FM.parseCheck(r.description, o.items); if (!c) { note('　（視覺模型的回答格式不對，跳過檢查。）'); return []; }
+        note(c.missing.length ? '　它說看不到：' + c.missing.join('、') : '　它說要的元素都在。'); return c.missing;
+    }
+    // ⑥ 修圖之二：程式量亮度／對比／飽和度，需要的話用圖片後製（imgproc 的操作：自動對比、亮度、飽和度、銳化…）修一次；原圖留著
+    async _imageRetouch(o) {
+        const FM = FaImageRoute, note = o.note; let res = o.res;
+        try {
+            const rec = await this.fileCache.get(res.file_id); if (!rec || !rec.blob || !/^image\/(png|jpeg|webp)/.test(rec.mimeType || '')) { return res; }
+            const bmp = await createImageBitmap(rec.blob); if (bmp.width * bmp.height > 4e6) { note('　（圖太大，跳過後製。）'); return res; }
+            const cv = document.createElement('canvas'); cv.width = bmp.width; cv.height = bmp.height; const cx = cv.getContext('2d'); cx.drawImage(bmp, 0, 0); const id = cx.getImageData(0, 0, cv.width, cv.height), img = { width: id.width, height: id.height, data: id.data };
+            const st = FM.imageStats(img); const plan = FM.retouchPlan(st); note('📊 成品量測：平均亮度 ' + st.mean + '、對比 ' + st.std + '、飽和度 ' + st.sat);
+            if (plan.flat) { note('⚠️ 這張圖幾乎是一片空白（模型輸出沒有變化），後製救不了；換個 seed 或換 CPU／GPU 版再試。'); res.note = [res.note, '成品幾乎是一片空白'].filter(Boolean).join(' '); return res; }
+            const norm = FaImgProc.normalizeOps(plan.ops); if (!norm.ok || !norm.ops.length) { note('　不需要後製。'); return res; }
+            const out = FaImgProc.run(img, norm.ops); const dst = cx.createImageData(out.img.width, out.img.height); dst.data.set(out.img.data); cx.putImageData(dst, 0, 0);
+            const blob = await new Promise((resolve) => cv.toBlob(resolve, 'image/png')); if (!blob) return res;
+            const name = 'retouched-' + Date.now().toString(36) + '.png', nid = await this.fileCache.put(name, 'image/png', blob, 'generated');
+            note('🖌 後製：' + plan.why.join('；') + '（' + out.applied.map((x) => x.op).join('→') + '）'); const dataUrl = await new Promise((resolve) => { const fr = new FileReader(); fr.onload = () => resolve(fr.result); fr.readAsDataURL(blob); });
+            const msg = { role: 'tool', content: '[generate_image 修圖後的成品，已直接顯示給使用者看，圖片內容不列入對話上下文。file_id=' + nid + '（修圖前的原圖 file_id=' + res.file_id + '）]' }; Object.defineProperty(msg, '_displayDataUrl', { value: dataUrl, enumerable: false, configurable: true }); this.messages.push(msg); this._persistChatHistory(); this._renderMessageHistory();
+            const old = res.file_id; res = Object.assign({}, res, { original_file_id: old, file_id: nid, client_file_url: 'client-file/' + nid, retouch: plan.why }); if (Array.isArray(res.images) && res.images[0]) res.images = [Object.assign({}, res.images[0], { file_id: nid, client_file_url: 'client-file/' + nid, filename: name, original_file_id: old })].concat(res.images.slice(1));
+        } catch (e) { note('　（後製沒成功：' + String((e && e.message) || e).slice(0, 80) + '，用原圖。）'); }
         return res;
     }
     async _imageReflect(o) {
-        const FM = FaImageRoute, a = o.a, note = o.note; let slots = o.slots, hit = false; const opt = a.reflect === false || a.reflect === 'false' || a.reflect === '0' ? { reflect: false } : (a.reflect === true || a.reflect === 'true' || a.reflect === '1' ? { reflect: true } : {});
-        if (opt.reflect === false) return slots;
+        const FM = FaImageRoute, a = o.a, note = o.note; let slots = o.slots, hit = false, reflected = false; const opt = a.reflect === false || a.reflect === 'false' || a.reflect === '0' ? { reflect: false } : (a.reflect === true || a.reflect === 'true' || a.reflect === '1' ? { reflect: true } : {});
+        if (opt.reflect === false) return { slots, hit: false, reflected: false };
         const cat = FaSceneCatalog.match(o.request);
-        if (cat.length) { const r = FM.applyScene(slots, FaSceneCatalog.toLlmSlots(cat[0].entry)); if (r.got) { slots = r.slots; hit = true; note('📚 場景素材目錄：「' + cat[0].label + '」→ 補上 ' + r.got + ' 項元素與構圖（' + cat[0].hit.join('、') + '）。'); } }
+        if (cat.length) note('━━ ① 場景 ━━');
+        if (cat.length) { const r = FM.applyScene(slots, FaSceneCatalog.toLlmSlots(cat[0].entry), cat[0].hit); if (r.got) { slots = r.slots; hit = true; note('📚 場景素材目錄：「' + cat[0].label + '」→ 補上 ' + r.got + ' 項元素與構圖（' + cat[0].hit.join('、') + '）。'); } }
         const need = FM.reflectNeeded(o.request, slots, Object.assign({ catalogHit: hit }, opt));
-        if (!need.need) return slots;
+        if (!cat.length && need.need) note('━━ ① 場景 ━━');
+        if (!need.need) return { slots, hit, reflected: false };
         note('🧠 先想一想要準備什麼（' + need.why + '）…');
         try {
             const brief = FM.reflectBrief(o.request, cat.length ? FaSceneCatalog.hints(cat) : '');
             const reply = await this._kiLlm(brief.user, { systemPrompt: brief.system, maxTokens: 700, temperature: 0.3 }, { label: '構想', timeoutMs: 60000, onStep: note });
             const r = FM.applyReflection(slots, reply);
-            if (r.ok) { slots = r.slots; note('　想到了 ' + r.got + ' 項主體／場景／素材' + (r.layout ? '；構圖：' + r.layout : '') + '。'); } else note('　（模型的回答沒有可用的內容，照原需求畫。）');
+            if (r.ok) { slots = r.slots; reflected = true; note('　想到了 ' + r.got + ' 項主體／場景／素材' + (r.layout ? '；構圖：' + r.layout : '') + '。'); } else note('　（模型的回答沒有可用的內容，照原需求畫。）');
         } catch (e) { note('　（這次沒想成：' + String((e && e.message) || e).slice(0, 80) + '，照原需求畫。）'); }
-        return slots;
+        return { slots, hit, reflected };
     }
     // 交給遠端群組裡的機器畫：對方用自己的模型與工具畫，產生的圖取回本機檔案快取（之後本機的工具、簡報都能直接用）
     async _imageRemote(a, request) {
