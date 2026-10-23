@@ -1582,7 +1582,7 @@ sleep/curl/date/ask-floating-ai-assistant各自踩過的坑。
 出現在虛擬指令的參數裡（例如`sleep $(compute_delay)`不會被正確展開，會
 原樣當成字面文字，這是實務上極少見的用法）。
 
-| `desktop-app/TODO.md` | 這個子系統各次功能加入/修正的完整歷史紀錄與驗證方式（Phase 5起陸續累加） |
+| `desktop-app/DESIGN.TODO.nvim-wasm.md` | 這個子系統各次功能加入/修正的完整歷史紀錄與驗證方式（Phase 5起陸續累加） |
 
 ---
 

@@ -271,7 +271,7 @@ AI 端工具：`repo_map`（結構、`annotate`、`dive_targets`、`save_index`�
 
 ### 17.4 匯出頁自帶 File Access Point：讀寫原始碼與說明
 
-對應 `TODO.md`「匯出的 HTML 要能自己讀寫、自己問答」。
+對應 `DESIGN.TODO.project-index-html.md`「匯出的 HTML 要能自己讀寫、自己問答」。
 
 - 匯出頁用 `showDirectoryPicker({mode:'readwrite'})` 取得專案資料夾；handle 存在**這個頁面自己的 IndexedDB**（`aidoc-export-fap`），下次開啟先用不需要手勢的 `queryPermission` 靜默檢查，狀態列顯示「尚未授權／已授權」。
 - `ensureProjectRoot()` 需要使用者手勢，**必須在載入離線模型之前呼叫**——模型下載動輒數十秒，手勢早過期了。流程固定：點「問」或「AI 解釋」→ 先 `ensureProjectRoot()` → 再載模型。
