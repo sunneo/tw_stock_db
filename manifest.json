@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "version": "179",
+  "publishedAt": "2026-10-23T16:23:20.957Z",
+  "notes": "設定彈窗（圖像生成設定等）下拉選單的選項顏色：背景與文字跟著深色或淺色主題，不再是白底配淺灰字",
+  "files": {
+    "renderer/index.html": {
+      "md5": "039acc67493d2d42bae493dc9822621a"
+    },
+    "renderer/bootstrap.js": {
+      "md5": "54b3afa331fb02df8b182fdd2bab6343"
+    },
+    "renderer/floating-assistant.js": {
+      "md5": "1855a9b49a094e9b4968f809d160d3a8"
+    },
+    "renderer/floating-assistant.min.js": {
+      "md5": "1855a9b49a094e9b4968f809d160d3a8"
+    },
+    "local-proxy.js": {
+      "md5": "079907734ca86f14e31fb6be41b8e2ca"
+    },
+    "browser-search.js": {
+      "md5": "8e9ac296eee4fa8f61b2168a631dc75a"
+    },
+    "edge-tts.js": {
+      "md5": "135b186b61de5963ae2d3852fb70de5b"
+    },
+    "cli-format.js": {
+      "md5": "d46fea05645d9de9dbd32dd04225872c"
+    },
+    "coding-workspace.js": {
+      "md5": "b5d608933d2b95bd042adff14f774b53"
+    },
+    "browser-control-server.js": {
+      "md5": "8babb3ebf7c056f0d1e88b41409b34ed"
+    },
+    "sqlite-engine.js": {
+      "md5": "ff9d39366459c465271e617b00abb76e"
+    },
+    "fsx-sync.js": {
+      "md5": "f14777175ba4a3b4d3197c00befc7e82"
+    },
+    "main-ext.js": {
+      "md5": "9d4000d66603682cdee55cf95e654462"
+    },
+    "preload.js": {
+      "md5": "357c8eaf54ed98b078555cb7d84ec5f6"
+    }
+  }
+}
