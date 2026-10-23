@@ -17556,7 +17556,7 @@ const holder = {};
   'use strict';
 
   var TRAVEL = [['機場', 'airport terminal'], ['起飛', 'airplane takeoff'], ['降落', 'airplane landing'], ['北海道', 'Hokkaido Japan landscape'], ['日本', 'Japan'], ['中國', 'China'], ['台灣', 'Taiwan'], ['雲層', 'clouds from airplane window'], ['平流層', 'stratosphere atmosphere layer earth horizon'], ['華航', 'China Airlines Taiwan airplane'], ['長榮', 'EVA Air airplane'], ['機上餐', 'airline meal tray'], ['餐點', 'airline meal tray'], ['行李', 'baggage claim carousel'], ['海關', 'customs airport'], ['登機', 'boarding gate airport'], ['護照', 'passport'], ['安檢', 'airport security'], ['服務', 'airline cabin crew serving passengers'], ['空服', 'flight attendant'], ['空姐', 'flight attendant'], ['機艙', 'airplane cabin'], ['窗外', 'airplane window view'], ['跑道', 'airport runway'], ['塔台', 'airport control tower'], ['翅膀', 'airplane wing'], ['機翼', 'airplane wing'], ['下飛機', 'passengers leaving airplane airport'], ['飛機', 'airplane in flight']];
-  var META = /繁體中文|簡體中文|英文|語速|速度|圖文並茂|可以上網找照片|上網找|找照片|旁白|字幕|簡報|投影片|幼兒教育|小朋友|兒童|的方式|要有|請|幫我|麻煩/;
+  var META = /繁體中文|簡體中文|英文|語速|速度|圖文並茂|可以上網找照片|上網找|找照片|旁白|字幕|簡報|投影片|幼兒教育|小朋友|兒童|的方式|要有|請|幫我|麻煩|圖示|字可以|少一點|加上動畫|動畫|我覺得|直接用|就好/;
 
   function clean(s) { return String(s == null ? '' : s).replace(/\[附件：[^\]]*\]/g, ' ').replace(/^\s*\/\S+\s*/, '').replace(/\s+/g, ' ').trim(); }
   function parseRequest(task) {
