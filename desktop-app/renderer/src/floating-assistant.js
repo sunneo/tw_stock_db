@@ -57337,6 +57337,11 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         ov.style.cssText = 'position:fixed; inset:0; z-index:2147483100; background:rgba(0,0,0,.6); display:flex; align-items:center; justify-content:center; padding:16px; box-sizing:border-box;';
         const box = document.createElement('div'); box.setAttribute('role', 'dialog'); box.setAttribute('aria-modal', 'true');
         box.style.cssText = 'width:min(' + (opts.width || 640) + 'px,100%); max-height:90vh; display:flex; flex-direction:column; box-sizing:border-box; border-radius:12px; background:' + (pal.chatBg || '#111827') + '; color:' + (pal.chatText || '#e5e7eb') + '; border:1px solid ' + (pal.inputBorder || '#475569') + '; font-size:13px;';
+        // 下拉選單的選項清單是瀏覽器／系統畫的，不會繼承透明的背景：只有 color:inherit 時就變成「白底配淺灰／白字」。
+        // 這裡讓輸入框、下拉選單與選項都明講背景與文字顏色（跟對話視窗同一組），並告訴瀏覽器目前是深色或淺色（原生元件才會跟著變）。
+        { const st = document.createElement('style'); const sel = '#' + id; const bg = pal.chatBg || '#111827', fg = pal.chatText || '#e5e7eb';
+          st.textContent = sel + ' { color-scheme: ' + (this._isLightTheme() ? 'light' : 'dark') + '; } ' + sel + ' select, ' + sel + ' select option, ' + sel + ' select optgroup, ' + sel + ' input, ' + sel + ' textarea { background-color: ' + bg + '; color: ' + fg + '; } ' + sel + ' input::placeholder, ' + sel + ' textarea::placeholder { color: ' + fg + '; opacity: .5; }';
+          ov.appendChild(st); }
         const head = document.createElement('div'); head.style.cssText = 'display:flex; align-items:center; justify-content:space-between; padding:12px 16px; border-bottom:1px solid ' + (pal.inputBorder || '#475569') + ';';
         const t = document.createElement('div'); t.style.cssText = 'font-weight:bold; font-size:15px;'; t.textContent = title;
         const x = document.createElement('button'); x.type = 'button'; x.textContent = '✕'; x.title = '關閉'; x.style.cssText = 'background:transparent; border:none; color:inherit; font-size:16px; cursor:pointer;';
