@@ -1,0 +1,104 @@
+{
+  "schema": 1,
+  "version": "188",
+  "publishedAt": "2026-10-24T19:43:39.808Z",
+  "notes": "舊版主程式上模組覆蓋／更新處理／缺模組補回失效的修正（自己 require electron）；主行程記錄長期保存；更新來源固定 commit；互換版重新凍結",
+  "files": {
+    "renderer/index.html": {
+      "md5": "fdbce1d7a20b5fa5702f5ac408c01ea9"
+    },
+    "renderer/bootstrap.js": {
+      "md5": "c27e4b6163413e96c3d738876559e972"
+    },
+    "renderer/floating-assistant.js": {
+      "md5": "a03a0799850047850bf4a4100647b5c8"
+    },
+    "renderer/floating-assistant.min.js": {
+      "md5": "6c9f31f21a7e33327d92a6876b087e49"
+    },
+    "browser-control-server.js": {
+      "md5": "8babb3ebf7c056f0d1e88b41409b34ed"
+    },
+    "browser-search.js": {
+      "md5": "8e9ac296eee4fa8f61b2168a631dc75a"
+    },
+    "ci-fetch.js": {
+      "md5": "959c90918baaf57e599069dc03bea526"
+    },
+    "cli-format.js": {
+      "md5": "d46fea05645d9de9dbd32dd04225872c"
+    },
+    "coding-edit.js": {
+      "md5": "d74fe48f9bc94a1af740f1bcfa1fdab8"
+    },
+    "coding-tools.js": {
+      "md5": "239cbb92b2a1ec4eb3070eeeed4b4e6e"
+    },
+    "coding-workspace.js": {
+      "md5": "b5d608933d2b95bd042adff14f774b53"
+    },
+    "computer-png.js": {
+      "md5": "1ba4b721fc9cb3d3bb02920d2dfc6fee"
+    },
+    "computer-remote.js": {
+      "md5": "c2eec722c13752a87183ad24d6dcec83"
+    },
+    "computer-use-atspi.js": {
+      "md5": "853ebd07fc29d418d68878aedc21609d"
+    },
+    "computer-use-elements.js": {
+      "md5": "7d1c69f625380f0ca3d1da2404c2bba9"
+    },
+    "computer-use-ipc.js": {
+      "md5": "76a20f1ba268f7b86e2d425b6b9fb4a1"
+    },
+    "computer-use-linux-parse.js": {
+      "md5": "3043510974d92d0e0dce90a41ab21d6b"
+    },
+    "computer-use-linux.js": {
+      "md5": "8bfe40c9e328e424a4a5d318ed2689a3"
+    },
+    "computer-use-safety.js": {
+      "md5": "e4692e079b30c1d241e43ce1df996b97"
+    },
+    "computer-use-uia.js": {
+      "md5": "51e1c0b2f744866be4703af8799c2b42"
+    },
+    "computer-use-win-cs.js": {
+      "md5": "a37a312d0224a2f57eaf12782233ebdf"
+    },
+    "computer-use-windows.js": {
+      "md5": "973156674025724e247045d8bcfa07b7"
+    },
+    "computer-use.js": {
+      "md5": "c3921fbbd2cb159988fe0da0877c0fe1"
+    },
+    "computer-ws.js": {
+      "md5": "1b25bb55f5f1334fa5f041408f3009af"
+    },
+    "edge-tts.js": {
+      "md5": "135b186b61de5963ae2d3852fb70de5b"
+    },
+    "fsx-sync.js": {
+      "md5": "f14777175ba4a3b4d3197c00befc7e82"
+    },
+    "local-proxy.js": {
+      "md5": "079907734ca86f14e31fb6be41b8e2ca"
+    },
+    "main-ext.js": {
+      "md5": "e05128df450503ca24f70bc40c19970a"
+    },
+    "rfb-client.js": {
+      "md5": "1ad7d8a545166f0e965d3f5008b94ccb"
+    },
+    "rfb-codec.js": {
+      "md5": "08f2ada7bc710642e7d29fbff63ee4f1"
+    },
+    "sqlite-engine.js": {
+      "md5": "ff9d39366459c465271e617b00abb76e"
+    },
+    "preload.js": {
+      "md5": "e00808b64414d61c9b91809109ac8f07"
+    }
+  }
+}
