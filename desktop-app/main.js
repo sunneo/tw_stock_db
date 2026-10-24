@@ -1518,6 +1518,26 @@ async function resolveIndexHtmlPath() {
   return path.join(__dirname, "renderer", "index.html");
 }
 
+// 大檔分段下載：manifest 的 files[路徑].parts 是 [{path, md5}]（發佈時切成數 MB 一段），
+// 逐段下載、各自驗 md5 後依序接回原檔；沒有 parts（舊格式、小檔）就直接抓整個檔案。
+// 整個檔案的 md5 仍由呼叫端驗證，所以切段不影響完整性把關。
+async function fetchLivePatchFile(relPath, info) {
+  const parts = info && Array.isArray(info.parts) ? info.parts : null;
+  if (!parts || !parts.length) return fetchUpdateResource(`${FA_UPDATE_BRANCH_BASE}/${relPath}`, { maxBytes: LIVE_PATCH_MAX_FILE_BYTES });
+  const bufs = [];
+  for (const part of parts) {
+    if (!part || typeof part.path !== "string" || !/^[\w./-]+$/.test(part.path) || part.path.includes("..")) throw new Error(`${relPath} 的分段路徑不正確`);
+    let buf = null, lastErr = null;
+    for (let attempt = 0; attempt < 3 && !buf; attempt++) { // 單段重試：網路不穩時只重抓這一段，不用整個檔案重來
+      try { const got = await fetchUpdateResource(`${FA_UPDATE_BRANCH_BASE}/${part.path}`, { maxBytes: LIVE_PATCH_MAX_FILE_BYTES }); if (part.md5 && md5Hex(got) !== part.md5) throw new Error(`${part.path} 的md5不符`); buf = got; }
+      catch (e) { lastErr = e; }
+    }
+    if (!buf) throw new Error(`${relPath} 分段下載失敗：${String((lastErr && lastErr.message) || lastErr)}`);
+    bufs.push(buf);
+  }
+  return Buffer.concat(bufs);
+}
+
 async function fetchRemoteUpdateManifest() {
   const buf = await fetchUpdateResource(`${FA_UPDATE_BRANCH_BASE}/manifest.json`, { maxBytes: LIVE_PATCH_MANIFEST_MAX_BYTES });
   const remote = JSON.parse(buf.toString("utf8"));
@@ -1570,7 +1590,7 @@ ipcMain.handle("fa:update:apply", async () => {
 
     const downloaded = {};
     for (const relPath of toFetch) {
-      const buf = await fetchUpdateResource(`${FA_UPDATE_BRANCH_BASE}/${relPath}`, { maxBytes: LIVE_PATCH_MAX_FILE_BYTES });
+      const buf = await fetchLivePatchFile(relPath, remote.files[relPath]);
       const md5 = md5Hex(buf);
       if (md5 !== remote.files[relPath].md5) throw new Error(`${relPath} 下載內容跟manifest.json宣告的md5不符，已中止這次更新（沒有寫入任何檔案）`);
       // 主行程模組：套用前先確認語法正確，避免一個壞掉的patch讓app下次啟動載入失敗
