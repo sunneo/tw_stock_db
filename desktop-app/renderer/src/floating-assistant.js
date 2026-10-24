@@ -31771,16 +31771,7 @@ const FaComputerHost = (function () {
                 else if (parsed.cmd === 'secret') { const s = C().parseSecretCommand(parsed.args); if (s.error) say(s.error); else if (s.sub === 'list') { const l = await a.listRemoteSecrets(); say('已設定的機密（只有名稱）：' + ((l.names || []).join('、') || '（沒有）') + '\n' + (l.env || '')); } else if (s.sub === 'delete') { await a.deleteRemoteSecret(s.name); say('已刪除機密 ' + s.name); } else { const x = await a.setRemoteSecret(s.name, s.password); say(x.ok ? '已儲存機密「' + x.name + '」（只存在主行程，不會回傳給畫面）。⚠️ 剛才輸入的密碼還留在這則對話紀錄裡，建議清掉這則訊息。' : '⛔ ' + x.error); } }
                 else if (parsed.cmd === 'deny') { const x = await a.addDeny(parsed.args.join(' ')); say(x.ok ? '已加入拒絕規則（標題／類別／行程符合就不碰）。' : '⛔ ' + x.error); }
                 else if (parsed.cmd === 'calibrate') { const x = await V().calibrate(this._cuVisionDeps()); say(x.ok ? '座標校準：' + x.advice + '（比例 ' + x.scale.x + '×' + x.scale.y + '，移動延遲約 ' + (x.moveMs || '?') + ' ms，方法 ' + x.method + '）' : '⛔ ' + x.error); }
-            } catch (e) {
-                const msg = String((e && e.message) || e);
-                // 主行程沒有電腦操作的處理常式：通常是模組沒載入（新版會在啟動時自動補回缺的模組，需要連網）。說明原因，不丟技術錯誤
-                if (/No handler registered for 'fa:computer:/.test(msg)) {
-                    // 把主行程模組目前的實際狀態一併印出來（失敗原因、自動補回結果；不含機密），不用使用者去開終端機
-                    let diag = '';
-                    try { const D = window.desktopAPI && window.desktopAPI.diag; if (!D) throw new Error('no diag'); const d = await D.mainExt(); diag = '\n\n診斷（主行程模組的實際狀態，請整段貼給開發者）：\n```json\n' + JSON.stringify(d, null, 1) + '\n```'; } catch (_) { diag = '\n\n（主行程模組是舊版，沒有診斷資訊：請先按「檢查更新」更新並重新啟動一次）'; }
-                    say('⚠️ 電腦操作的主行程模組還沒載入。更新後重新啟動一次應用程式即可（缺的模組會在啟動時自動補回，需要連網）。' + diag);
-                } else say('⚠️ ' + msg);
-            }
+            } catch (e) { say('⚠️ ' + String((e && e.message) || e)); }
             try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ }
         },
         _registerComputerCommands() {
