@@ -62,6 +62,13 @@ function collectMainModules() {
   seen.delete("main.js"); seen.delete("preload.js");
   return [...seen].sort();
 }
+// 打包清單必須涵蓋所有會被載入的主行程模組（package.json build.files）：沒打包進安裝包的模組，舊安裝只能靠熱更新補，建置時就擋下來
+(function checkPackaged() {
+  const files = ((require("./package.json").build || {}).files) || [];
+  if (files.includes("*.js")) return;
+  const missing = collectMainModules().concat(["preload.js"]).filter((m) => !files.includes(m));
+  if (missing.length) throw new Error("package.json build.files 沒有包含這些主行程模組：" + missing.join("、") + "（加進去，或改用 *.js）");
+})();
 const LIVE_PATCH_ALLOWED_FILES = [
   "renderer/index.html",
   "renderer/bootstrap.js",

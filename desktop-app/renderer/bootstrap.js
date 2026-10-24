@@ -564,7 +564,7 @@ function patchCloudflareWording(root) {
         setUpdateBtnLabel("⬆️ 發現新版本", { highlight: true });
         if (updateDot) updateDot.style.display = "block";
         console.log(`[live-update] 發現新版本 ${info.remoteVersion || "?"}（目前 ${info.currentVersion || "?"}），變動檔案：${info.changedFiles.join("、")}`);
-        if (!silent) showUpdateDialog(info);
+        if (!silent || info.autoPrompt) showUpdateDialog(info); // autoPrompt：新的更新處理第一次啟動，有更新就自動跳出視窗（只一次，見 main-ext.js）
       } else {
         pendingUpdateInfo = null;
         if (updateDot) updateDot.style.display = "none";

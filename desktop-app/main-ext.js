@@ -5,7 +5,7 @@
 "use strict";
 
 function register(ipcMain, ctx) {
-  installModuleOverlay(ctx); // 必須最先做：後面的 require("./computer-use-ipc.js") 之類要靠它
+  const overlay = installModuleOverlay(ctx); // 必須最先做：後面的 require("./computer-use-ipc.js") 之類要靠它
   const { fs, path } = ctx;
   const electron = ctx.electron || null;
   // ---------- IPC: raw filesystem（完全不做root範圍檢查，2026-09-15使用者 ----------
@@ -275,11 +275,20 @@ function register(ipcMain, ctx) {
     if (electron && electron.app) electron.app.on("before-quit", () => { for (const r of procs.values()) { try { r.child.kill(); } catch (_) { /* */ } } });
   } catch (e) { console.warn("[main-ext] MCP 載入失敗：", e && e.message); }
 
-  // computer use（桌面版限定、預設關閉）：IPC、原生核准視窗、中止快捷鍵都在 computer-use-ipc.js；載入失敗不影響其他功能
-  try { require("./computer-use-ipc.js").register(ipcMain, ctx); } catch (e) { console.warn("[main-ext] computer use 載入失敗：", e && e.message); }
+  // 熱更新的「檢查／套用」處理（分檔下載、逐段驗證、接回）與缺模組自動補回（ctx.healMissingModules），要在載入可選模組之前準備好
+  try { installChunkedUpdater(ipcMain, ctx, overlay); } catch (e) { console.warn("[main-ext] 分檔下載更新處理載入失敗：", e && e.message); }
 
-  // 熱更新的「套用」處理：分檔下載、逐段驗證、接回（長期方案，見 installChunkedUpdater）
-  try { installChunkedUpdater(ipcMain, ctx); } catch (e) { console.warn("[main-ext] 分檔下載更新處理載入失敗：", e && e.message); }
+  // 載入「可選模組」：找不到模組（舊安裝沒有打包它們）時，從熱更新來源自動補回、立刻重新載入，不需要重啟。載入失敗不影響其他功能
+  const loadWithHeal = (label, load) => {
+    try { load(); } catch (e) {
+      if (e && e.code === "MODULE_NOT_FOUND" && ctx.healMissingModules) {
+        console.warn("[main-ext] " + label + " 缺模組（" + String(e.message).split(String.fromCharCode(10))[0] + "），自動補回中…");
+        Promise.resolve(ctx.healMissingModules()).then((names) => { load(); console.log("[main-ext] " + label + " 已自動補回 " + names.length + " 個模組並載入"); }).catch((err) => console.warn("[main-ext] " + label + " 自動補回失敗（離線時下次啟動再試）：", err && err.message));
+      } else console.warn("[main-ext] " + label + " 載入失敗：", e && e.message);
+    }
+  };
+  // computer use（桌面版限定、預設關閉）：IPC、原生核准視窗、中止快捷鍵都在 computer-use-ipc.js
+  loadWithHeal("computer use", () => require("./computer-use-ipc.js").register(ipcMain, ctx));
 
   return { rawFsPath, detectLikelyBinary };
 }
@@ -293,42 +302,51 @@ function register(ipcMain, ctx) {
 //      由上面第 1 個攔截供應內容，所以模組裡的相對 require、__dirname 都跟新安裝完全一樣。
 // 範圍是「頂層的 *.js」（main.js、preload.js 除外）；驗證規則跟 main.js 的覆蓋一樣，FA_DISABLE_MAIN_OVERLAY=1 可整個停用。
 function installModuleOverlay(ctx) {
-  if (process.env.FA_DISABLE_MAIN_OVERLAY === "1") return;
+  const ctl = { sources: new Map(), refresh() { /* 沒有覆蓋目錄時什麼都不做 */ } };
+  if (process.env.FA_DISABLE_MAIN_OVERLAY === "1") return ctl;
   const fsSync = require("fs"), path = ctx.path, crypto = require("crypto"), Module = require("module");
   const electron = ctx.electron || null;
-  try {
-    const userData = ctx.userDataDir ? ctx.userDataDir() : (electron && electron.app ? electron.app.getPath("userData") : null); if (!userData) return;
-    const live = path.join(userData, "live-patch"), installDir = __dirname;
-    const state = JSON.parse(fsSync.readFileSync(path.join(live, "state.json"), "utf8"));
-    const baseline = JSON.parse(fsSync.readFileSync(path.join(installDir, "renderer", "update-manifest.json"), "utf8"));
-    if (!state || !state.files || state.baselineVersion !== (baseline.baseVersion || (electron && electron.app ? electron.app.getVersion() : undefined))) return;
-    const sources = new Map();
-    for (const rel of Object.keys(state.files)) {
-      if (!/^[\w.-]+\.js$/.test(rel) || rel === "main.js" || rel === "preload.js") continue;
-      if (state.files[rel] === (baseline.files || {})[rel]) continue; // 跟內建一樣：沒有覆蓋
-      let buf; try { buf = fsSync.readFileSync(path.join(live, rel)); } catch (_) { continue; }
-      if (crypto.createHash("md5").update(buf).digest("hex") !== state.files[rel]) continue; // 沒通過驗證：不用
-      sources.set(rel, buf.toString("utf8"));
+  const userData = (() => { try { return ctx.userDataDir ? ctx.userDataDir() : (electron && electron.app ? electron.app.getPath("userData") : null); } catch (_) { return null; } })();
+  if (!userData) return ctl;
+  const live = path.join(userData, "live-patch"), installDir = __dirname;
+  // 讀 state.json、逐檔驗證 md5，重建「可以用熱更新版本」的名單；自動補回模組（healMissingModules）下載完會再呼叫一次
+  ctl.refresh = function () {
+    const next = new Map();
+    try {
+      const state = JSON.parse(fsSync.readFileSync(path.join(live, "state.json"), "utf8"));
+      const baseline = JSON.parse(fsSync.readFileSync(path.join(installDir, "renderer", "update-manifest.json"), "utf8"));
+      if (state && state.files && state.baselineVersion === (baseline.baseVersion || (electron && electron.app ? electron.app.getVersion() : undefined))) {
+        for (const rel of Object.keys(state.files)) {
+          if (!/^[\w.-]+\.js$/.test(rel) || rel === "main.js" || rel === "preload.js") continue;
+          if (state.files[rel] === (baseline.files || {})[rel]) continue; // 跟內建一樣：沒有覆蓋
+          let buf; try { buf = fsSync.readFileSync(path.join(live, rel)); } catch (_) { continue; }
+          if (crypto.createHash("md5").update(buf).digest("hex") !== state.files[rel]) continue; // 沒通過驗證：不用
+          next.set(rel, buf.toString("utf8"));
+        }
+      }
+    } catch (_) { /* 沒有覆蓋目錄或 state.json：用內建版本 */ }
+    ctl.sources.clear(); for (const [k, v] of next) ctl.sources.set(k, v);
+  };
+  ctl.refresh();
+  // 攔截一律裝上（名單可能之後才補齊）
+  const orig = Module._extensions[".js"];
+  Module._extensions[".js"] = function (mod, filename) {
+    if (path.dirname(filename) === installDir) {
+      const src = ctl.sources.get(path.basename(filename));
+      if (src != null) { try { return mod._compile(src, filename); } catch (err) { console.error("[main-ext] 覆蓋版本 " + path.basename(filename) + " 載入失敗，退回內建版本：", err); } }
     }
-    if (!sources.size) return;
-    const orig = Module._extensions[".js"];
-    Module._extensions[".js"] = function (mod, filename) {
-      if (path.dirname(filename) === installDir) {
-        const src = sources.get(path.basename(filename));
-        if (src != null) { try { return mod._compile(src, filename); } catch (err) { console.error("[main-ext] 覆蓋版本 " + path.basename(filename) + " 載入失敗，退回內建版本：", err); } }
-      }
-      return orig(mod, filename);
-    };
-    const origResolve = Module._resolveFilename;
-    Module._resolveFilename = function (request, parent, ...rest) {
-      try { return origResolve.call(this, request, parent, ...rest); } catch (err) {
-        const m = err && err.code === "MODULE_NOT_FOUND" && /^\.\/([\w.-]+?)(\.js)?$/.exec(String(request));
-        if (m && sources.has(m[1] + ".js")) return path.join(installDir, m[1] + ".js");
-        throw err;
-      }
-    };
-    console.log("[main-ext] 主行程模組覆蓋（名單以 live-patch 的 state.json 為準）：" + [...sources.keys()].join("、"));
-  } catch (_) { /* 沒有覆蓋目錄或 state.json：用內建版本 */ }
+    return orig(mod, filename);
+  };
+  const origResolve = Module._resolveFilename;
+  Module._resolveFilename = function (request, parent, ...rest) {
+    try { return origResolve.call(this, request, parent, ...rest); } catch (err) {
+      const m = err && err.code === "MODULE_NOT_FOUND" && /^\.\/([\w.-]+?)(\.js)?$/.exec(String(request));
+      if (m && ctl.sources.has(m[1] + ".js")) return path.join(installDir, m[1] + ".js");
+      throw err;
+    }
+  };
+  if (ctl.sources.size) console.log("[main-ext] 主行程模組覆蓋（名單以 live-patch 的 state.json 為準）：" + [...ctl.sources.keys()].join("、"));
+  return ctl;
 }
 
 // 熱更新套用處理的覆寫（長期方案）。
@@ -339,11 +357,20 @@ function installModuleOverlay(ctx) {
 //   - 有 parts 的檔案逐段下載（每段最多重試 3 次、各自驗 md5），接回後再驗整個檔案的 md5
 //   - 其餘行為跟 main.js 的版本一致（先全部下載驗證完才落地、覆蓋目錄／state.json 格式相同、主行程模組先做語法檢查）
 // fa:update:check 也一併換掉（要讀同一份 manifest.v2.json 才比得對）。兩份 manifest 的格式見 scripts/make-live-patch.js。
-function installChunkedUpdater(ipcMain, ctx) {
+function installChunkedUpdater(ipcMain, ctx, overlay) {
   const electron = ctx.electron; if (!electron || !electron.app) return;
   const { fs, path } = ctx; const crypto = require("crypto"); const { app } = electron;
   const BASE = process.env.FA_UPDATE_BASE || "https://raw.githubusercontent.com/sunneo/tw_stock_db/desktop-app-patch"; // FA_UPDATE_BASE：測試時指向本機
   const md5Hex = (b) => crypto.createHash("md5").update(b).digest("hex");
+  // 這個更新處理「第一次啟動」時（包含剛從舊版更新、重啟後的那一次），檢查到有更新就請畫面自動跳出更新視窗（只一次）：
+  // 舊安裝要分兩輪才能補齊（先換上這個更新處理、重啟，再下載它才知道要收的新模組），不能要使用者自己記得再按一次「檢查更新」。
+  // REV 是這個行為的版本戳記；之後想讓所有人再補檢查一次時，把它改成新字串即可。
+  const REV = "2026-10-25-auto-recheck"; let autoPrompt = false;
+  try {
+    const seenFile = path.join(ctx.userDataDir ? ctx.userDataDir() : app.getPath("userData"), "main-ext-rev.txt"), fsSync = require("fs");
+    let seen = ""; try { seen = fsSync.readFileSync(seenFile, "utf8").trim(); } catch (_) { /* 第一次 */ }
+    if (seen !== REV) { autoPrompt = true; try { fsSync.writeFileSync(seenFile, REV); } catch (_) { /* */ } }
+  } catch (_) { /* */ }
   const mainDir = () => (require.main && require.main.filename ? path.dirname(require.main.filename) : __dirname);
   const patchDir = () => path.join(ctx.userDataDir ? ctx.userDataDir() : app.getPath("userData"), "live-patch");
   const readJson = async (file, fb) => { try { return JSON.parse(await fs.readFile(file, "utf8")); } catch (_) { return fb; } };
@@ -416,7 +443,8 @@ function installChunkedUpdater(ipcMain, ctx) {
   const changedFiles = (baseline, local, remote) => Object.keys(remote.files).filter((rel) => allowedRel(rel, baseline) && remote.files[rel] && typeof remote.files[rel].md5 === "string" && local.files[rel] !== remote.files[rel].md5);
   async function check() {
     const { baseline, local } = await loadLocal(); const remote = await loadRemote(); const files = changedFiles(baseline, local, remote);
-    return { ok: true, currentVersion: local.version, remoteVersion: remote.version || null, notes: remote.notes || "", publishedAt: remote.publishedAt || null, hasUpdate: files.length > 0, changedFiles: files };
+    const prompt = autoPrompt && files.length > 0; if (prompt) autoPrompt = false; // 只提示一次
+    return { ok: true, currentVersion: local.version, remoteVersion: remote.version || null, notes: remote.notes || "", publishedAt: remote.publishedAt || null, hasUpdate: files.length > 0, changedFiles: files, autoPrompt: prompt };
   }
   async function apply() {
     const { baseline, baselineVersion, stateFile, local } = await loadLocal();
@@ -444,6 +472,31 @@ function installChunkedUpdater(ipcMain, ctx) {
     const requiresRestart = toFetch.some((f) => !f.startsWith("renderer/"));
     return { ok: true, appliedVersion: remote.version || local.version, changedFiles: toFetch, requiresRestart };
   }
+  // 自動補回缺的模組：舊安裝（打包時沒有 computer-use-*.js 這類後來新增的模組）載入失敗時由 register() 呼叫——
+  // 從遠端 manifest 下載「安裝目錄沒有、熱更新目錄也沒有」的頂層模組，寫進 live-patch 並登記進 state.json（逐檔驗 md5），
+  // 呼叫端接著重新 require 就能用，不需要使用者重啟或再按一次檢查更新。離線時失敗，下次啟動再試。
+  const fsSync = require("fs");
+  async function healMissingModules() {
+    const { baselineVersion, stateFile, local } = await loadLocal();
+    const remote = await loadRemote();
+    const installDir = __dirname;
+    const want = Object.keys(remote.files).filter((rel) => /^[\w.-]+\.js$/.test(rel) && rel !== "main.js" && rel !== "preload.js" && !fsSync.existsSync(path.join(installDir, rel)) && !overlay.sources.has(rel) && remote.files[rel] && typeof remote.files[rel].md5 === "string");
+    if (!want.length) return [];
+    const got = {};
+    for (const rel of want) {
+      const buf = await fetchFile(rel, remote.files[rel]);
+      if (md5Hex(buf) !== remote.files[rel].md5) throw new Error(rel + " 下載內容跟manifest宣告的md5不符，沒有寫入");
+      try { new (require("vm").Script)(require("module").wrap(buf.toString("utf8")), { filename: rel }); } catch (e) { throw new Error(rel + " 語法檢查失敗，沒有寫入：" + String((e && e.message) || e)); }
+      got[rel] = buf;
+    }
+    for (const rel of want) { const dest = path.join(patchDir(), rel); await fs.mkdir(path.dirname(dest), { recursive: true }); await fs.writeFile(dest, got[rel]); }
+    const prev = await readJson(stateFile, null), valid = prev && prev.files && prev.baselineVersion === baselineVersion;
+    const files = valid ? { ...prev.files } : {}; for (const rel of want) files[rel] = remote.files[rel].md5;
+    await writeJson(stateFile, { schema: 1, appliedVersion: valid ? (prev.appliedVersion || local.version) : (remote.version || local.version), appliedAt: new Date().toISOString(), baselineVersion, files });
+    overlay.refresh();
+    return want;
+  }
+  ctx.healMissingModules = healMissingModules;
   app.whenReady().then(() => { // main.js 的 handler 在模組載入時就註冊好了，ready 之後再換
     try { ipcMain.removeHandler("fa:update:apply"); } catch (_) { /* */ }
     try { ipcMain.removeHandler("fa:update:check"); } catch (_) { /* */ }
