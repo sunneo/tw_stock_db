@@ -1394,7 +1394,7 @@ const LIVE_PATCH_ALLOWED_FILES = [
 ];
 // floating-assistant.js壓縮後實測約1~2MB，這裡抓寬鬆一點的上限，manifest.json
 // 本身另外用更小的上限（見fetchUpdateResource呼叫端）。
-const LIVE_PATCH_MAX_FILE_BYTES = 8 * 1024 * 1024;
+const LIVE_PATCH_MAX_FILE_BYTES = Infinity; // 熱更新的檔案不設大小上限（floating-assistant.js 已超過 8MB）；完整性靠 manifest 的 md5 把關
 const LIVE_PATCH_MANIFEST_MAX_BYTES = 256 * 1024;
 const LIVE_PATCH_FETCH_TIMEOUT_MS = 15000;
 const LIVE_PATCH_DIR = () => path.join(USER_DATA_DIR(), "live-patch");
@@ -1468,6 +1468,8 @@ async function fetchUpdateResource(url, { maxBytes = LIVE_PATCH_MAX_FILE_BYTES }
   try {
     const resp = await fetch(withCacheBuster(url), { signal: controller.signal, cache: "no-store" });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    // 連得上伺服器就不再計時：大檔在慢網路上下載要多久都可以（逾時只管「連不上」）
+    if (Number.isFinite(maxBytes)) { /* 有上限的（manifest）維持原本的整體逾時 */ } else { clearTimeout(timer); }
     const buf = Buffer.from(await resp.arrayBuffer());
     if (buf.byteLength > maxBytes) throw new Error(`回應超過上限（${maxBytes} bytes）：${url}`);
     return buf;

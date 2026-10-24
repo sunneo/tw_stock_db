@@ -101,10 +101,30 @@ async function main() {
   // 用function當replacement，避免JSON裡的$字元被當成replace的特殊樣式
   code = code.replace(PLACEHOLDER, () => JSON.stringify(slimCatalog));
 
+  // 內嵌成字串的模組原始碼（簡報元件 FA_DECK_SRC、匯出元件 FA_EXPORT_SRC）：terser 不會動字串裡的內容，連註解都留著，
+  // 約佔 1.3MB。已安裝的舊版主程式把熱更新的單檔上限卡在 8MB，這裡先各自壓縮再放進去（只改區域變數名稱，行為不變；壓不動的那一份維持原樣）。
+  for (const [name, begin, end] of [["FA_DECK_SRC", "/* DECKSRC-BEGIN */", "/* DECKSRC-END */"], ["FA_EXPORT_SRC", null, null], ["FAGAME_SRC", null, null]]) {
+    const mk = "const " + name + " = ", m0 = begin ? code.indexOf(begin) : 0; // 原始碼可能是 CRLF
+    const a = m0 >= 0 ? code.indexOf(mk, m0) : -1; if (a < 0) continue;
+    const b = end ? code.lastIndexOf(";", code.indexOf(end)) : code.lastIndexOf(";", code.indexOf("\n", a)); // 沒有結束標記的，就是同一行最後的分號
+    if (b <= a) continue;
+    let map; try { map = (0, eval)("(" + code.slice(a + mk.length, b) + ")"); } catch (e) { console.log(`[build-assistant] ${name} 讀不懂，不壓縮：${e.message}`); continue; }
+    let before = 0, after = 0;
+    for (const k of Object.keys(map)) {
+      if (typeof map[k] !== "string" || k === "css" || !/\S/.test(map[k])) continue;
+      let r = null; try { r = await minify(map[k], { compress: { drop_debugger: true }, mangle: true, format: { comments: false } }); } catch (_) { r = null; }
+      if (!r || !r.code) continue; // 不是 JS（例如 CSS、文字）或壓不動：維持原樣
+      before += map[k].length; after += r.code.length; map[k] = r.code;
+    }
+    code = code.slice(0, a + mk.length) + JSON.stringify(map).split(String.fromCharCode(0x2028)).join("\\u2028").split(String.fromCharCode(0x2029)).join("\\u2029") + code.slice(b);
+    console.log(`[build-assistant] ${name} 內嵌原始碼壓縮：${before} → ${after} 字元`);
+  }
+
   const result = await minify(code, {
     compress: {
       drop_console: false,
       drop_debugger: true,
+      passes: 2, // 單檔上限（舊版主程式 8MB）的餘裕，多壓一輪省約 50KB
     },
     mangle: true, // 預設不含toplevel，頂層class/const名稱維持原樣（見上方說明）
     format: {
