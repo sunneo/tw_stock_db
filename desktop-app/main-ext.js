@@ -277,7 +277,110 @@ function register(ipcMain, ctx) {
   // computer use（桌面版限定、預設關閉）：IPC、原生核准視窗、中止快捷鍵都在 computer-use-ipc.js；載入失敗不影響其他功能
   try { require("./computer-use-ipc.js").register(ipcMain, ctx); } catch (e) { console.warn("[main-ext] computer use 載入失敗：", e && e.message); }
 
+  // 熱更新的「套用」處理：分檔下載、逐段驗證、接回（長期方案，見 installChunkedUpdater）
+  try { installChunkedUpdater(ipcMain, ctx); } catch (e) { console.warn("[main-ext] 分檔下載更新處理載入失敗：", e && e.message); }
+
   return { rawFsPath, detectLikelyBinary };
+}
+
+// 熱更新套用處理的覆寫（長期方案）。
+// 為什麼放在這裡：main.js 是入口，只能靠重新安裝更新，但 main-ext.js 在熱更新清單裡、啟動時載入。
+// 已安裝的舊版主程式 fa:update:apply 有單檔 8MB 上限、也不認得 manifest 的 parts（分段）；這裡在 app ready 之後
+// （main.js 的 handler 這時已經註冊完）把 fa:update:apply 換成：
+//   - 沒有大小上限，連上伺服器之後不計時（慢網路也能下載大檔）
+//   - 有 parts 的檔案逐段下載（每段最多重試 3 次、各自驗 md5），接回後再驗整個檔案的 md5
+//   - 其餘行為跟 main.js 的版本一致（先全部下載驗證完才落地、覆蓋目錄／state.json 格式相同、主行程模組先做語法檢查）
+// fa:update:check（只比對 md5）不需要換。manifest.json 的格式見 scripts/make-live-patch.js。
+function installChunkedUpdater(ipcMain, ctx) {
+  const electron = ctx.electron; if (!electron || !electron.app) return;
+  const { fs, path } = ctx; const crypto = require("crypto"); const { app } = electron;
+  const BASE = process.env.FA_UPDATE_BASE || "https://raw.githubusercontent.com/sunneo/tw_stock_db/desktop-app-patch"; // FA_UPDATE_BASE：測試時指向本機
+  const md5Hex = (b) => crypto.createHash("md5").update(b).digest("hex");
+  const mainDir = () => (require.main && require.main.filename ? path.dirname(require.main.filename) : __dirname);
+  const patchDir = () => path.join(ctx.userDataDir ? ctx.userDataDir() : app.getPath("userData"), "live-patch");
+  const readJson = async (file, fb) => { try { return JSON.parse(await fs.readFile(file, "utf8")); } catch (_) { return fb; } };
+  const writeJson = async (file, data) => { await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, JSON.stringify(data, null, 2), "utf8"); };
+  async function copyDir(src, dest) { // 只用 readdir／readFile／writeFile（asar 內也能讀）
+    await fs.mkdir(dest, { recursive: true });
+    for (const e of await fs.readdir(src, { withFileTypes: true })) {
+      const s = path.join(src, e.name), d = path.join(dest, e.name);
+      if (e.isDirectory()) await copyDir(s, d); else if (e.isFile()) await fs.writeFile(d, await fs.readFile(s));
+    }
+  }
+  async function md5Either(file) { // 工作目錄可能是 CRLF，基準 md5 是 LF 版本：兩種都算
+    try { const buf = await fs.readFile(file), raw = md5Hex(buf); if (buf.indexOf(13) < 0) return [raw]; return [raw, md5Hex(Buffer.from(buf.toString("latin1").replace(/\r\n/g, "\n"), "latin1"))]; } catch (_) { return null; }
+  }
+  async function getBuf(url, { timeoutMs = 0 } = {}) { // timeoutMs 只管「連得上」；連上之後不再計時
+    const ctl = new AbortController(); const timer = timeoutMs ? setTimeout(() => ctl.abort(), timeoutMs) : null;
+    try {
+      const sep = url.includes("?") ? "&" : "?";
+      const resp = await fetch(url + sep + "_cb=" + Date.now() + "-" + Math.random().toString(36).slice(2), { signal: ctl.signal, cache: "no-store" });
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      if (timer) clearTimeout(timer);
+      return Buffer.from(await resp.arrayBuffer());
+    } finally { if (timer) clearTimeout(timer); }
+  }
+  async function fetchFile(rel, info) {
+    const parts = info && Array.isArray(info.parts) ? info.parts : null;
+    if (!parts || !parts.length) return getBuf(BASE + "/" + rel, { timeoutMs: 30000 });
+    const bufs = [];
+    for (const p of parts) {
+      if (!p || typeof p.path !== "string" || !/^[\w./-]+$/.test(p.path) || p.path.includes("..")) throw new Error(rel + " 的分段路徑不正確");
+      let got = null, last = null;
+      for (let i = 0; i < 3 && !got; i++) { // 單段重試：網路不穩時只重抓這一段
+        try { const b = await getBuf(BASE + "/" + p.path, { timeoutMs: 30000 }); if (p.md5 && md5Hex(b) !== p.md5) throw new Error(p.path + " 的 md5 不符"); got = b; } catch (e) { last = e; }
+      }
+      if (!got) throw new Error(rel + " 分段下載失敗：" + String((last && last.message) || last));
+      bufs.push(got);
+    }
+    return Buffer.concat(bufs);
+  }
+  async function apply() {
+    const baselineFile = path.join(mainDir(), "renderer", "update-manifest.json");
+    const baseline = (await readJson(baselineFile, null)) || { schema: 1, baseVersion: app.getVersion(), files: {} };
+    const baselineVersion = baseline.baseVersion || app.getVersion();
+    const stateFile = path.join(patchDir(), "state.json");
+    // 目前實際生效的本機 manifest（覆蓋目錄完整可信才採用 state.json）
+    let local = { version: baselineVersion, files: { ...baseline.files }, overrideActive: false };
+    const state = await readJson(stateFile, null);
+    if (state && state.files && typeof state.files === "object" && state.baselineVersion === baselineVersion) {
+      let intact = true;
+      for (const rel of Object.keys(state.files)) {
+        if (!(rel in baseline.files)) continue;
+        const actual = await md5Either(path.join(patchDir(), rel));
+        if (actual === null && baseline.files[rel] === state.files[rel]) continue;
+        if (actual === null || actual.indexOf(state.files[rel]) < 0) { intact = false; break; }
+      }
+      if (intact) local = { version: state.appliedVersion || baselineVersion, files: { ...baseline.files, ...state.files }, overrideActive: true };
+    }
+    const remote = JSON.parse((await getBuf(BASE + "/manifest.json", { timeoutMs: 15000 })).toString("utf8"));
+    if (!remote || typeof remote.files !== "object") throw new Error("manifest.json格式不正確（缺少files欄位）");
+    const toFetch = Object.keys(remote.files).filter((rel) => rel in baseline.files && !rel.includes("..") && remote.files[rel] && typeof remote.files[rel].md5 === "string" && local.files[rel] !== remote.files[rel].md5);
+    if (!toFetch.length) return { ok: true, appliedVersion: local.version, changedFiles: [] };
+    const downloaded = {};
+    for (const rel of toFetch) {
+      const buf = await fetchFile(rel, remote.files[rel]);
+      if (md5Hex(buf) !== remote.files[rel].md5) throw new Error(rel + " 下載內容跟manifest.json宣告的md5不符，已中止這次更新（沒有寫入任何檔案）");
+      if (!rel.startsWith("renderer/") && /\.js$/.test(rel)) { // 主行程模組：套用前先確認語法
+        try { new (require("vm").Script)(require("module").wrap(buf.toString("utf8")), { filename: rel }); } catch (e) { throw new Error(rel + " 語法檢查失敗，已中止這次更新（沒有寫入任何檔案）：" + String((e && e.message) || e)); }
+      }
+      downloaded[rel] = buf;
+    }
+    if (!local.overrideActive) { // 覆蓋目錄不存在、被改壞或建立在別的基準版本上：整個重建
+      await fs.rm(patchDir(), { recursive: true, force: true }).catch(() => {});
+      await fs.mkdir(patchDir(), { recursive: true });
+      await copyDir(path.join(mainDir(), "renderer"), path.join(patchDir(), "renderer"));
+    }
+    for (const rel of toFetch) { const dest = path.join(patchDir(), rel); await fs.mkdir(path.dirname(dest), { recursive: true }); await fs.writeFile(dest, downloaded[rel]); }
+    const next = { ...local.files }; for (const rel of toFetch) next[rel] = remote.files[rel].md5;
+    await writeJson(stateFile, { schema: 1, appliedVersion: remote.version || local.version, appliedAt: new Date().toISOString(), baselineVersion, files: next });
+    const requiresRestart = toFetch.some((f) => !f.startsWith("renderer/"));
+    return { ok: true, appliedVersion: remote.version || local.version, changedFiles: toFetch, requiresRestart };
+  }
+  app.whenReady().then(() => { // main.js 的 handler 在模組載入時就註冊好了，ready 之後再換
+    try { ipcMain.removeHandler("fa:update:apply"); } catch (_) { /* */ }
+    ipcMain.handle("fa:update:apply", async () => { try { return await apply(); } catch (err) { return { ok: false, error: String((err && err.message) || err) }; } });
+  });
 }
 
 module.exports = { register };

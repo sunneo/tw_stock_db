@@ -14,7 +14,7 @@ const crypto = require('crypto');
 
 const root = path.join(__dirname, '..');
 const PART_BYTES = 4 * 1024 * 1024;
-const SPLIT_ABOVE = 7 * 1000 * 1000; // 超過這個大小（bytes）就切成兩份，每份都在舊版 8MB 上限（8,388,608）內
+const SPLIT_ABOVE = process.env.LIVE_PATCH_NO_SPLIT === '1' ? Infinity : 7 * 1000 * 1000; // LIVE_PATCH_NO_SPLIT=1：不切雙 script，只靠分段（所有機器都換成新更新邏輯之後的正式做法） // 超過這個大小（bytes）就切成兩份，每份都在舊版 8MB 上限（8,388,608）內
 const md5 = (b) => crypto.createHash('md5').update(b).digest('hex');
 
 function splitScript(text) {

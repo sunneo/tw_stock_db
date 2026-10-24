@@ -7,6 +7,14 @@ description: 修改desktop-app的renderer前端檔案（floating-assistant.js／
 
 這份技能只管「怎麼把renderer前端的改動送到已安裝使用者手上」。live-update機制本身的完整設計（manifest-diff比對、userData/live-patch覆蓋目錄、md5驗證）在`desktop-app/README.FloatingAssitant.md`的「🔄 Live Update」章節，第一次做這件事建議先讀那份，這裡只給**操作流程＋踩過的坑**。
 
+## 鐵則（使用者講過很多次，不要再讓他重複）
+
+- **不准要求使用者重新建置／重新安裝**。已安裝的舊版主程式也必須收得到 patch；舊版主程式的限制（例如單檔下載上限 8,388,608 bytes）要靠 live patch 自己解掉（main.js 不能熱更新，但 `main-ext.js` 可以，啟動時載入，可以覆寫更新的處理）。
+- **大檔用「分檔下載再合併」**（manifest 的 `files[路徑].parts`，逐段驗 md5 再接回；`main.js` 的 `fetchLivePatchFile`），不是壓縮、不是改建置參數。使用者指定了做法就照做，做不到先說明、問怎麼辦，不要悄悄換別的做法。
+- **版本號單調遞增**：發之前先看遠端 manifest 的版本（別的 session 也會發）；過渡版也不能讓標籤倒退。
+- **manifest 的檔案清單以 `renderer/update-manifest.json` 為準**（含 main-ext.js、preload.js 等主行程模組，共 29 個），一律用 `scripts/make-live-patch.js`（`scripts/publish.sh` 內部也走它）組 patch 目錄，不要手動只複製 renderer 四個檔案（否則其他檔案 HTTP 404）。
+- 目前過渡做法：`floating-assistant.js` 超過 7MB 時 `make-live-patch.js` 會切成兩份放進 `floating-assistant.js` 與 `floating-assistant.min.js`、`index.html` 依序載入（舊版主程式也收得到）。等舊版主程式都換成有分檔下載的更新邏輯後，才移除這個切法。
+
 ## 一鍵腳本（優先用這個）
 
 `scripts/publish.sh` 把下面的標準流程寫成可重複執行的指令（建置 → 語法檢查 → 提交推到 desktop-app → 組 desktop-app-patch（單一 commit、強制推）→ 驗證版本與每個檔案的檢查碼 → 網頁版釘新的 commit SHA 並推到 main）：
