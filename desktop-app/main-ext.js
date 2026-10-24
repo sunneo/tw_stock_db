@@ -290,7 +290,7 @@ function register(ipcMain, ctx) {
 //   - 沒有大小上限，連上伺服器之後不計時（慢網路也能下載大檔）
 //   - 有 parts 的檔案逐段下載（每段最多重試 3 次、各自驗 md5），接回後再驗整個檔案的 md5
 //   - 其餘行為跟 main.js 的版本一致（先全部下載驗證完才落地、覆蓋目錄／state.json 格式相同、主行程模組先做語法檢查）
-// fa:update:check（只比對 md5）不需要換。manifest.json 的格式見 scripts/make-live-patch.js。
+// fa:update:check 也一併換掉（要讀同一份 manifest.v2.json 才比得對）。兩份 manifest 的格式見 scripts/make-live-patch.js。
 function installChunkedUpdater(ipcMain, ctx) {
   const electron = ctx.electron; if (!electron || !electron.app) return;
   const { fs, path } = ctx; const crypto = require("crypto"); const { app } = electron;
@@ -322,7 +322,7 @@ function installChunkedUpdater(ipcMain, ctx) {
   }
   async function fetchFile(rel, info) {
     const parts = info && Array.isArray(info.parts) ? info.parts : null;
-    if (!parts || !parts.length) return getBuf(BASE + "/" + rel, { timeoutMs: 30000 });
+    if (!parts || !parts.length) return getBuf(BASE + "/" + ((info && typeof info.path === "string" && /^[w./-]+$/.test(info.path) && !info.path.includes("..")) ? info.path : rel), { timeoutMs: 30000 });
     const bufs = [];
     for (const p of parts) {
       if (!p || typeof p.path !== "string" || !/^[\w./-]+$/.test(p.path) || p.path.includes("..")) throw new Error(rel + " 的分段路徑不正確");
@@ -335,12 +335,12 @@ function installChunkedUpdater(ipcMain, ctx) {
     }
     return Buffer.concat(bufs);
   }
-  async function apply() {
+  // 本機目前實際生效的 manifest（覆蓋目錄完整可信才採用 state.json，否則退回內建基準）
+  async function loadLocal() {
     const baselineFile = path.join(mainDir(), "renderer", "update-manifest.json");
     const baseline = (await readJson(baselineFile, null)) || { schema: 1, baseVersion: app.getVersion(), files: {} };
     const baselineVersion = baseline.baseVersion || app.getVersion();
     const stateFile = path.join(patchDir(), "state.json");
-    // 目前實際生效的本機 manifest（覆蓋目錄完整可信才採用 state.json）
     let local = { version: baselineVersion, files: { ...baseline.files }, overrideActive: false };
     const state = await readJson(stateFile, null);
     if (state && state.files && typeof state.files === "object" && state.baselineVersion === baselineVersion) {
@@ -353,10 +353,27 @@ function installChunkedUpdater(ipcMain, ctx) {
       }
       if (intact) local = { version: state.appliedVersion || baselineVersion, files: { ...baseline.files, ...state.files }, overrideActive: true };
     }
-    const remote = JSON.parse((await getBuf(BASE + "/manifest.json", { timeoutMs: 15000 })).toString("utf8"));
-    if (!remote || typeof remote.files !== "object") throw new Error("manifest.json格式不正確（缺少files欄位）");
-    const toFetch = Object.keys(remote.files).filter((rel) => rel in baseline.files && !rel.includes("..") && remote.files[rel] && typeof remote.files[rel].md5 === "string" && local.files[rel] !== remote.files[rel].md5);
+    return { baseline, baselineVersion, stateFile, local };
+  }
+  // 遠端 manifest：先讀新版格式 manifest.v2.json（單一大檔 + 分段），沒有就用 manifest.json（舊版主程式也看得懂的互換版）
+  async function loadRemote() {
+    let remote = null;
+    try { remote = JSON.parse((await getBuf(BASE + "/manifest.v2.json", { timeoutMs: 15000 })).toString("utf8")); } catch (_) { remote = null; }
+    if (!remote || typeof remote.files !== "object") remote = JSON.parse((await getBuf(BASE + "/manifest.json", { timeoutMs: 15000 })).toString("utf8"));
+    if (!remote || typeof remote.files !== "object") throw new Error("manifest格式不正確（缺少files欄位）");
+    return remote;
+  }
+  const changedFiles = (baseline, local, remote) => Object.keys(remote.files).filter((rel) => rel in baseline.files && !rel.includes("..") && remote.files[rel] && typeof remote.files[rel].md5 === "string" && local.files[rel] !== remote.files[rel].md5);
+  async function check() {
+    const { baseline, local } = await loadLocal(); const remote = await loadRemote(); const files = changedFiles(baseline, local, remote);
+    return { ok: true, currentVersion: local.version, remoteVersion: remote.version || null, notes: remote.notes || "", publishedAt: remote.publishedAt || null, hasUpdate: files.length > 0, changedFiles: files };
+  }
+  async function apply() {
+    const { baseline, baselineVersion, stateFile, local } = await loadLocal();
+    const remote = await loadRemote();
+    const toFetch = changedFiles(baseline, local, remote);
     if (!toFetch.length) return { ok: true, appliedVersion: local.version, changedFiles: [] };
+
     const downloaded = {};
     for (const rel of toFetch) {
       const buf = await fetchFile(rel, remote.files[rel]);
@@ -379,6 +396,8 @@ function installChunkedUpdater(ipcMain, ctx) {
   }
   app.whenReady().then(() => { // main.js 的 handler 在模組載入時就註冊好了，ready 之後再換
     try { ipcMain.removeHandler("fa:update:apply"); } catch (_) { /* */ }
+    try { ipcMain.removeHandler("fa:update:check"); } catch (_) { /* */ }
+    ipcMain.handle("fa:update:check", async () => { try { return await check(); } catch (err) { return { ok: false, error: String((err && err.message) || err) }; } });
     ipcMain.handle("fa:update:apply", async () => { try { return await apply(); } catch (err) { return { ok: false, error: String((err && err.message) || err) }; } });
   });
 }

@@ -13,7 +13,7 @@ description: 修改desktop-app的renderer前端檔案（floating-assistant.js／
 - **大檔用「分檔下載再合併」**（manifest 的 `files[路徑].parts`，逐段驗 md5 再接回；`main.js` 的 `fetchLivePatchFile`），不是壓縮、不是改建置參數。使用者指定了做法就照做，做不到先說明、問怎麼辦，不要悄悄換別的做法。
 - **版本號單調遞增**：發之前先看遠端 manifest 的版本（別的 session 也會發）；過渡版也不能讓標籤倒退。
 - **manifest 的檔案清單以 `renderer/update-manifest.json` 為準**（含 main-ext.js、preload.js 等主行程模組，共 29 個），一律用 `scripts/make-live-patch.js`（`scripts/publish.sh` 內部也走它）組 patch 目錄，不要手動只複製 renderer 四個檔案（否則其他檔案 HTTP 404）。
-- 目前過渡做法：`floating-assistant.js` 超過 7MB 時 `make-live-patch.js` 會切成兩份放進 `floating-assistant.js` 與 `floating-assistant.min.js`、`index.html` 依序載入（舊版主程式也收得到）。等舊版主程式都換成有分檔下載的更新邏輯後，才移除這個切法。
+- **兩份 manifest 永遠同時發佈，不要假設「大家都更新了」**（這是公開的產品，舊版會一直存在）：`manifest.json` 是互換版，舊版主程式（單檔 8MB 上限、不認得 parts）永遠收得到——`floating-assistant.js` 超過 7MB 時 `make-live-patch.js` 會切成兩份放進 `floating-assistant.js` 與 `floating-assistant.min.js`、`index.html` 依序載入兩個 script；`manifest.v2.json` 是新版用的（單一大檔 + 分段，檔案放在 `v2/` 底下），新的更新處理（`main-ext.js` 的 `installChunkedUpdater`，覆寫 `fa:update:check`／`fa:update:apply`）優先讀它。熱更新本身是「最新快照 + 逐檔 md5 比對」，不是一版一版往上升；所以舊機器看得懂的那份 manifest 必須一直維持可用。互換版的容量上限約 16MB（兩個 script），再大就要把大模組改成需要時才下載。
 
 ## 一鍵腳本（優先用這個）
 

@@ -36,12 +36,13 @@ fs.rmSync(out, { recursive: true, force: true });
 fs.mkdirSync(path.join(out, 'renderer'), { recursive: true });
 const local = JSON.parse(fs.readFileSync(path.join(root, 'renderer/update-manifest.json'), 'utf8'));
 const FILES = Object.keys(local.files); // 發佈的檔案清單以 build-assistant.js 產生的 update-manifest.json 為準（不只 renderer 四個檔案，主行程模組也在內）
-const files = {}; let splitInfo = null;
+const files = {}, filesV2 = {}; let splitInfo = null;
 const willSplit = fs.statSync(path.join(root, 'renderer/floating-assistant.js')).size > SPLIT_ABOVE; // index.html 排在前面，先判斷
 for (const rel of FILES) {
-  let buf = fs.readFileSync(path.join(root, rel));
+  let buf = fs.readFileSync(path.join(root, rel)), full = null;
   if (md5(buf) !== local.files[rel] && buf.includes(13)) buf = Buffer.from(buf.toString('utf8').split(String.fromCharCode(13, 10)).join(String.fromCharCode(10)), 'utf8'); // 工作目錄是 CRLF、發佈的是 LF（git 會正規化）
   if (md5(buf) !== local.files[rel]) throw new Error(rel + ' 的 md5 跟 update-manifest.json 不符：先跑 node build-assistant.js');
+  full = buf; // 驗證過的完整檔案（新版用）
   // 超過舊版單檔上限的 floating-assistant.js：切兩份，第二份放進 floating-assistant.min.js，index.html 依序載入兩個 script
   if (rel === 'renderer/floating-assistant.js' && buf.length > SPLIT_ABOVE) { splitInfo = splitScript(buf.toString('utf8')); buf = Buffer.from(splitInfo[0], 'utf8'); }
   else if (rel === 'renderer/floating-assistant.min.js' && splitInfo) buf = Buffer.from(splitInfo[1], 'utf8');
@@ -50,20 +51,22 @@ for (const rel of FILES) {
     if (html.split(tag).length !== 2) throw new Error('index.html 裡找不到唯一的 ' + tag);
     buf = Buffer.from(html.replace(tag, () => tag + String.fromCharCode(10) + '  <script src="floating-assistant.min.js"></script>'), 'utf8');
   }
+  // 互換版（manifest.json）：舊版主程式只認這個，每個檔案都要在 8MB 內
   fs.mkdirSync(path.dirname(path.join(out, rel)), { recursive: true }); fs.writeFileSync(path.join(out, rel), buf);
-  const info = { md5: md5(buf) };
-  if (buf.length > PART_BYTES) {
-    info.parts = [];
-    for (let i = 0, n = 0; i < buf.length; i += PART_BYTES, n++) {
-      const slice = buf.subarray(i, i + PART_BYTES), p = 'parts/' + path.basename(rel) + '.' + String(n).padStart(3, '0');
-      fs.mkdirSync(path.join(out, 'parts'), { recursive: true });
-      fs.writeFileSync(path.join(out, p), slice);
-      info.parts.push({ path: p, md5: md5(slice), size: slice.length });
-    }
-    const joined = Buffer.concat(info.parts.map((x) => fs.readFileSync(path.join(out, x.path))));
-    if (md5(joined) !== info.md5) throw new Error(rel + ' 分段接回來的 md5 不符');
+  files[rel] = { md5: md5(buf) };
+  // 新版（manifest.v2.json）：新的更新處理（main-ext.js）優先讀這個——原本的單一大檔 + 分段，不需要切雙 script；沒有差別的檔案沿用互換版的項目
+  if (buf.equals(full)) { filesV2[rel] = files[rel]; continue; }
+  const vp = 'v2/' + rel; fs.mkdirSync(path.dirname(path.join(out, vp)), { recursive: true }); fs.writeFileSync(path.join(out, vp), full);
+  const info = { md5: md5(full), path: vp, parts: [] };
+  for (let k = 0, n = 0; k < full.length; k += PART_BYTES, n++) {
+    const slice = full.subarray(k, k + PART_BYTES), p = 'v2/parts/' + path.basename(rel) + '.' + String(n).padStart(3, '0');
+    fs.mkdirSync(path.join(out, 'v2/parts'), { recursive: true }); fs.writeFileSync(path.join(out, p), slice);
+    info.parts.push({ path: p, md5: md5(slice), size: slice.length });
   }
-  files[rel] = info;
+  if (md5(Buffer.concat(info.parts.map((x) => fs.readFileSync(path.join(out, x.path))))) !== info.md5) throw new Error(rel + ' 分段接回來的 md5 不符');
+  filesV2[rel] = info;
 }
-fs.writeFileSync(path.join(out, 'manifest.json'), JSON.stringify({ schema: 1, version: String(version), publishedAt: new Date().toISOString(), notes: notes || '', files }, null, 2) + '\n');
+const head = { schema: 1, version: String(version), publishedAt: new Date().toISOString(), notes: notes || '' };
+fs.writeFileSync(path.join(out, 'manifest.v2.json'), JSON.stringify({ ...head, files: filesV2 }, null, 2) + '\n');
+fs.writeFileSync(path.join(out, 'manifest.json'), JSON.stringify({ ...head, files }, null, 2) + '\n');
 console.log('已組好 ' + out + '：' + Object.entries(files).map(([k, v]) => k.split('/').pop() + (v.parts ? '（' + v.parts.length + ' 段）' : '')).join('、'));
