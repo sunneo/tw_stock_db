@@ -14,3 +14,4 @@
 | /edit-game-2d、/edit-game-3d（遊戲編輯器） | [DESIGN.edit-game.md](DESIGN.edit-game.md) | 已實作（2026-10-25）；AI 逐檔移植的目標碼沒在這裡編譯過、舊機種只做適配檢查，見文件的「實作狀態」 |
 | /edit-media-presentation（簡報播放器旁邊的 AI 對話框，每一頁都能插入內容、代理人上網找圖與資料） | [DESIGN.edit-media-presentation.md](DESIGN.edit-media-presentation.md) | 已實作（2026-10-25）；代理人那條路用假的子代理驗證過，真的連模型與網路的端到端沒測 |
 | `/edit-picture` 的擴散細化層（只重畫一小塊、羽化蓋回、啟用項） | [DESIGN.TODO.edit-picture-diffusion.md](DESIGN.TODO.edit-picture-diffusion.md) | 只有規劃（§5 要先做最小實測） |
+| 熱更新（live-update）：發佈腳本驗證分段版、狀態自我修復、各平台驗證 | [DESIGN.TODO.live-update.md](DESIGN.TODO.live-update.md) | 主體已完成（v188）；只剩驗證與小項目 |
