@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "baseVersion": "1.1.0",
-  "generatedAt": "2026-10-24T18:45:20.810Z",
+  "generatedAt": "2026-10-24T18:54:14.657Z",
   "files": {
     "renderer/index.html": "039acc67493d2d42bae493dc9822621a",
     "renderer/bootstrap.js": "54b3afa331fb02df8b182fdd2bab6343",
@@ -15,7 +15,7 @@
     "browser-control-server.js": "8babb3ebf7c056f0d1e88b41409b34ed",
     "sqlite-engine.js": "ff9d39366459c465271e617b00abb76e",
     "fsx-sync.js": "f14777175ba4a3b4d3197c00befc7e82",
-    "main-ext.js": "2e826d3d8688ce34cfddc99456618657",
+    "main-ext.js": "4dee4d19f649682283254255ec569697",
     "computer-png.js": "1ba4b721fc9cb3d3bb02920d2dfc6fee",
     "computer-use-elements.js": "7d1c69f625380f0ca3d1da2404c2bba9",
     "computer-use-safety.js": "e4692e079b30c1d241e43ce1df996b97",
@@ -46,7 +46,7 @@
     "browser-control-server.js": 10138,
     "sqlite-engine.js": 22797,
     "fsx-sync.js": 5425,
-    "main-ext.js": 32255,
+    "main-ext.js": 32256,
     "computer-png.js": 14075,
     "computer-use-elements.js": 13261,
     "computer-use-safety.js": 31132,

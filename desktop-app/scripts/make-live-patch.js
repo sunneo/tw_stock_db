@@ -36,6 +36,31 @@ fs.rmSync(out, { recursive: true, force: true });
 fs.mkdirSync(path.join(out, 'renderer'), { recursive: true });
 const local = JSON.parse(fs.readFileSync(path.join(root, 'renderer/update-manifest.json'), 'utf8'));
 const FILES = Object.keys(local.files); // 發佈的檔案清單以 build-assistant.js 產生的 update-manifest.json 為準（不只 renderer 四個檔案，主行程模組也在內）
+// ── 凍結的互換版（舊版主程式 EOL）──
+// 舊版主程式（單檔 8MB 上限、不認得 parts）的升級路線已經收尾：它們只會停在凍結的互換版（git 標籤 live-patch-compat，
+// 內容是 v182：內含新的更新處理 main-ext.js），套用後重啟、再檢查更新，就改走 manifest.v2.json。所以互換版不再跟著新內容走；
+// 之後所有新內容只出現在 v2/ 底下與 manifest.v2.json（沒有大小限制）。沒有這個標籤時（第一次）才會產生互換版（見下方原本的流程）。
+const COMPAT_REF = process.env.LIVE_PATCH_COMPAT_REF || 'live-patch-compat';
+const { execFileSync } = require('child_process');
+let frozen = false; try { execFileSync('git', ['rev-parse', '--verify', '-q', COMPAT_REF + '^{commit}'], { cwd: root, stdio: 'pipe' }); frozen = true; } catch (_) { frozen = false; }
+if (frozen) {
+  const gitShow = (n) => execFileSync('git', ['show', COMPAT_REF + ':' + n], { cwd: root, maxBuffer: 1 << 30 });
+  const names = execFileSync('git', ['ls-tree', '-r', '--full-tree', '--name-only', COMPAT_REF], { cwd: root, maxBuffer: 1 << 28 }).toString().split(String.fromCharCode(10)).filter((n) => n && !n.startsWith('v2/') && n !== 'manifest.v2.json');
+  for (const n of names) { fs.mkdirSync(path.dirname(path.join(out, n)), { recursive: true }); fs.writeFileSync(path.join(out, n), gitShow(n)); }
+  const compat = JSON.parse(fs.readFileSync(path.join(out, 'manifest.json'), 'utf8')), v2files = {};
+  for (const rel of FILES) {
+    let buf = fs.readFileSync(path.join(root, rel));
+    if (md5(buf) !== local.files[rel] && buf.includes(13)) buf = Buffer.from(buf.toString('utf8').split(String.fromCharCode(13, 10)).join(String.fromCharCode(10)), 'utf8');
+    if (md5(buf) !== local.files[rel]) throw new Error(rel + ' 的 md5 跟 update-manifest.json 不符：先跑 node build-assistant.js');
+    const c = compat.files[rel]; if (c && c.md5 === md5(buf)) { v2files[rel] = { md5: c.md5 }; continue; } // 跟凍結的互換版一樣：沿用根目錄那份
+    const vp = 'v2/' + rel; fs.mkdirSync(path.dirname(path.join(out, vp)), { recursive: true }); fs.writeFileSync(path.join(out, vp), buf);
+    const info = { md5: md5(buf), path: vp }; if (buf.length > PART_BYTES) { info.parts = []; for (let k = 0, n = 0; k < buf.length; k += PART_BYTES, n++) { const slice = buf.subarray(k, k + PART_BYTES), p = 'v2/parts/' + path.basename(rel) + '.' + String(n).padStart(3, '0'); fs.mkdirSync(path.join(out, 'v2/parts'), { recursive: true }); fs.writeFileSync(path.join(out, p), slice); info.parts.push({ path: p, md5: md5(slice), size: slice.length }); } if (md5(Buffer.concat(info.parts.map((x) => fs.readFileSync(path.join(out, x.path))))) !== info.md5) throw new Error(rel + ' 分段接回來的 md5 不符'); }
+    v2files[rel] = info;
+  }
+  fs.writeFileSync(path.join(out, 'manifest.v2.json'), JSON.stringify({ schema: 1, version: String(version), publishedAt: new Date().toISOString(), notes: notes || '', files: v2files }, null, 2) + String.fromCharCode(10));
+  console.log('已組好 ' + out + '：互換版凍結在 v' + compat.version + '（' + COMPAT_REF + '），新內容 ' + Object.values(v2files).filter((x) => x.path).length + ' 個檔案放在 v2/' + '，版本 ' + version);
+  process.exit(0);
+}
 const files = {}, filesV2 = {}; let splitInfo = null;
 const willSplit = fs.statSync(path.join(root, 'renderer/floating-assistant.js')).size > SPLIT_ABOVE; // index.html 排在前面，先判斷
 for (const rel of FILES) {

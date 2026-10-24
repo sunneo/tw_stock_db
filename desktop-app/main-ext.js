@@ -322,7 +322,7 @@ function installChunkedUpdater(ipcMain, ctx) {
   }
   async function fetchFile(rel, info) {
     const parts = info && Array.isArray(info.parts) ? info.parts : null;
-    if (!parts || !parts.length) return getBuf(BASE + "/" + ((info && typeof info.path === "string" && /^[w./-]+$/.test(info.path) && !info.path.includes("..")) ? info.path : rel), { timeoutMs: 30000 });
+    if (!parts || !parts.length) return getBuf(BASE + "/" + ((info && typeof info.path === "string" && /^[\w./-]+$/.test(info.path) && !info.path.includes("..")) ? info.path : rel), { timeoutMs: 30000 });
     const bufs = [];
     for (const p of parts) {
       if (!p || typeof p.path !== "string" || !/^[\w./-]+$/.test(p.path) || p.path.includes("..")) throw new Error(rel + " 的分段路徑不正確");
