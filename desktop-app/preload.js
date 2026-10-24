@@ -182,6 +182,10 @@ contextBridge.exposeInMainWorld("desktopAPI", {
     reload: () => ipcRenderer.invoke("fa:update:reload"),
     relaunch: () => ipcRenderer.invoke("fa:update:relaunch"),
   },
+  // 診斷（不含機密）：主行程模組（main-ext.js）目前的實際狀態，電腦操作載入失敗時畫面會顯示這份資訊
+  diag: {
+    mainExt: () => ipcRenderer.invoke("fa:diag:mainext"),
+  },
   // tw_stock_db客製: 2026-09-16使用者要求桌面版「在不同資料夾執行」時
   // 各自獨立的對話+設定——見main.js fa:workspace:*系列handler的說明。
   // init()只在app啟動、bootstrap.js建構FloatingAssistant之前呼叫一次；

@@ -31774,8 +31774,12 @@ const FaComputerHost = (function () {
             } catch (e) {
                 const msg = String((e && e.message) || e);
                 // 主行程沒有電腦操作的處理常式：通常是模組沒載入（新版會在啟動時自動補回缺的模組，需要連網）。說明原因，不丟技術錯誤
-                if (/No handler registered for 'fa:computer:/.test(msg)) say('⚠️ 電腦操作的主行程模組還沒載入。更新後重新啟動一次應用程式即可（缺的模組會在啟動時自動補回，需要連網）。\n\n如果重新啟動後還是這個訊息，請在終端機啟動應用程式，把開頭的 [main-ext] 那幾行貼給我。');
-                else say('⚠️ ' + msg);
+                if (/No handler registered for 'fa:computer:/.test(msg)) {
+                    // 把主行程模組目前的實際狀態一併印出來（失敗原因、自動補回結果；不含機密），不用使用者去開終端機
+                    let diag = '';
+                    try { const D = window.desktopAPI && window.desktopAPI.diag; if (!D) throw new Error('no diag'); const d = await D.mainExt(); diag = '\n\n診斷（主行程模組的實際狀態，請整段貼給開發者）：\n```json\n' + JSON.stringify(d, null, 1) + '\n```'; } catch (_) { diag = '\n\n（主行程模組是舊版，沒有診斷資訊：請先按「檢查更新」更新並重新啟動一次）'; }
+                    say('⚠️ 電腦操作的主行程模組還沒載入。更新後重新啟動一次應用程式即可（缺的模組會在啟動時自動補回，需要連網）。' + diag);
+                } else say('⚠️ ' + msg);
             }
             try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ }
         },

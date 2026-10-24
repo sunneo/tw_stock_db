@@ -5,6 +5,17 @@
 "use strict";
 
 function register(ipcMain, ctx) {
+  // 舊版主程式呼叫 register 時只傳 { fs, path, execConfirmGate, net, dialog, BrowserWindow }：沒有 electron、userDataDir、getMainWindow 等。
+  // 後面所有「自己更新自己」的功能（模組覆蓋、更新處理、缺模組自動補回、電腦操作）都靠這些，缺了就補上，不依賴主程式傳進來什麼。
+  try {
+    ctx = ctx || {};
+    if (!ctx.electron) { try { ctx.electron = require("electron"); } catch (_) { /* 不在 Electron 裡（測試）：維持沒有 */ } }
+    const E = ctx.electron;
+    if (!ctx.BrowserWindow && E) ctx.BrowserWindow = E.BrowserWindow;
+    if (!ctx.userDataDir && E && E.app) ctx.userDataDir = () => E.app.getPath("userData");
+    if (!ctx.getMainWindow && E && E.BrowserWindow) ctx.getMainWindow = () => { try { const all = E.BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed()); return all.find((w) => w.isVisible()) || all[0] || null; } catch (_) { return null; } };
+  } catch (_) { /* */ }
+  const plog = installPersistentLog(ctx); // 要在其他東西之前：後面的 console 訊息才會被記下來
   const overlay = installModuleOverlay(ctx); // 必須最先做：後面的 require("./computer-use-ipc.js") 之類要靠它
   const { fs, path } = ctx;
   const electron = ctx.electron || null;
@@ -279,11 +290,18 @@ function register(ipcMain, ctx) {
   try { installChunkedUpdater(ipcMain, ctx, overlay); } catch (e) { console.warn("[main-ext] 分檔下載更新處理載入失敗：", e && e.message); }
 
   // 載入「可選模組」：找不到模組（舊安裝沒有打包它們）時，從熱更新來源自動補回、立刻重新載入，不需要重啟。載入失敗不影響其他功能
+  const loadInfo = { errors: {}, healed: {}, loaded: {} };
+  ipcMain.handle("fa:diag:mainext", async () => { // 給畫面的診斷：這個主行程模組目前的實際狀態（不含任何機密）
+    const fsSync = require("fs"), installDir = __dirname; let live = []; try { live = fsSync.readdirSync(path.join(ctx.userDataDir ? ctx.userDataDir() : "", "live-patch")).filter((n) => /^(computer|rfb)-.*\.js$/.test(n)); } catch (_) { /* */ }
+    let installHas = []; try { installHas = fsSync.readdirSync(installDir).filter((n) => /^(computer|rfb)-.*\.js$/.test(n)); } catch (_) { /* */ }
+    return { ok: true, rev: ctx.mainExtRev || null, platform: process.platform, installDir, installHasComputerModules: installHas.length, liveHasComputerModules: live.length, overlay: [...overlay.sources.keys()].length, loaded: loadInfo.loaded, errors: loadInfo.errors, healed: loadInfo.healed, logFile: plog.file, logTail: plog.tail(40) };
+  });
   const loadWithHeal = (label, load) => {
-    try { load(); } catch (e) {
+    try { load(); loadInfo.loaded[label] = true; } catch (e) {
+      loadInfo.errors[label] = { code: (e && e.code) || null, message: String((e && e.message) || e).split(String.fromCharCode(10))[0].slice(0, 200) };
       if (e && e.code === "MODULE_NOT_FOUND" && ctx.healMissingModules) {
         console.warn("[main-ext] " + label + " 缺模組（" + String(e.message).split(String.fromCharCode(10))[0] + "），自動補回中…");
-        Promise.resolve(ctx.healMissingModules()).then((names) => { load(); console.log("[main-ext] " + label + " 已自動補回 " + names.length + " 個模組並載入"); }).catch((err) => console.warn("[main-ext] " + label + " 自動補回失敗（離線時下次啟動再試）：", err && err.message));
+        Promise.resolve(ctx.healMissingModules()).then((names) => { load(); loadInfo.loaded[label] = true; loadInfo.healed[label] = names; delete loadInfo.errors[label]; console.log("[main-ext] " + label + " 已自動補回 " + names.length + " 個模組並載入"); }).catch((err) => { loadInfo.errors[label + "（自動補回）"] = { message: String((err && err.message) || err).slice(0, 200) }; console.warn("[main-ext] " + label + " 自動補回失敗（離線時下次啟動再試）：", err && err.message); });
       } else console.warn("[main-ext] " + label + " 載入失敗：", e && e.message);
     }
   };
@@ -291,6 +309,27 @@ function register(ipcMain, ctx) {
   loadWithHeal("computer use", () => require("./computer-use-ipc.js").register(ipcMain, ctx));
 
   return { rawFsPath, detectLikelyBinary };
+}
+
+// 主行程記錄長期保存：以 "[main-ext]"、"[live-patch]"、"[live-update]" 開頭的 console 訊息，同時寫進 userData/logs/main-ext.log。
+// 以前這些只印在終端機，使用者沒開終端機就完全看不到，出問題時無從查起。單檔超過 1MB 就輪替，保留最近 8 份（約 8MB，幾個月的量）；
+// 檔案裡只有這些前綴的訊息，不含對話內容或機密。診斷 IPC（fa:diag:mainext）會附上最後幾十行。
+function installPersistentLog(ctx) {
+  const ctl = { file: null, tail(n) { return []; } };
+  try {
+    const fsSync = require("fs"), path = ctx.path; const userData = ctx.userDataDir ? ctx.userDataDir() : (ctx.electron && ctx.electron.app ? ctx.electron.app.getPath("userData") : null); if (!userData) return ctl;
+    const dir = path.join(userData, "logs"), file = path.join(dir, "main-ext.log"), KEEP = 8, MAX = 1024 * 1024;
+    fsSync.mkdirSync(dir, { recursive: true }); ctl.file = file;
+    const rotate = () => { try { if (fsSync.statSync(file).size < MAX) return; for (let i = KEEP - 1; i >= 1; i--) { try { fsSync.renameSync(file + "." + i, file + "." + (i + 1)); } catch (_) { /* */ } } try { fsSync.unlinkSync(file + "." + KEEP); } catch (_) { /* */ } fsSync.renameSync(file, file + ".1"); } catch (_) { /* 檔案還不存在 */ } };
+    const write = (level, args) => { try { const text = args.map((a) => (a && a.stack) ? String(a.stack).split(String.fromCharCode(10)).slice(0, 4).join(" | ") : (typeof a === "string" ? a : JSON.stringify(a))).join(" "); rotate(); fsSync.appendFileSync(file, new Date().toISOString() + " " + level + " " + text.slice(0, 2000) + String.fromCharCode(10)); } catch (_) { /* 記錄失敗不影響功能 */ } };
+    for (const level of ["log", "warn", "error"]) {
+      const orig = console[level].bind(console);
+      console[level] = (...args) => { try { if (typeof args[0] === "string" && /^\[(main-ext|live-patch|live-update)\]/.test(args[0])) write(level, args); } catch (_) { /* */ } return orig(...args); };
+    }
+    ctl.tail = (n) => { try { return String(fsSync.readFileSync(file, "utf8")).split(String.fromCharCode(10)).filter(Boolean).slice(-n); } catch (_) { return []; } };
+    console.log("[main-ext] 啟動 platform=" + process.platform + " electron=" + (process.versions.electron || "?") + " app=" + (ctx.electron && ctx.electron.app ? ctx.electron.app.getVersion() : "?") + " installDir=" + __dirname);
+  } catch (_) { /* 沒有記錄就沒有，不影響功能 */ }
+  return ctl;
 }
 
 // 主行程模組的熱更新覆蓋（長期方案，不依賴 main.js 裡那份名單）。
@@ -360,12 +399,24 @@ function installModuleOverlay(ctx) {
 function installChunkedUpdater(ipcMain, ctx, overlay) {
   const electron = ctx.electron; if (!electron || !electron.app) return;
   const { fs, path } = ctx; const crypto = require("crypto"); const { app } = electron;
-  const BASE = process.env.FA_UPDATE_BASE || "https://raw.githubusercontent.com/sunneo/tw_stock_db/desktop-app-patch"; // FA_UPDATE_BASE：測試時指向本機
+  const BRANCH_BASE = process.env.FA_UPDATE_BASE || "https://raw.githubusercontent.com/sunneo/tw_stock_db/desktop-app-patch"; // FA_UPDATE_BASE：測試時指向本機
+  let BASE = BRANCH_BASE;
+  // raw.githubusercontent.com 的分支網址會被各地的快取分別保存，同一個分支的 manifest.json、manifest.v2.json、各檔案可能停在不同版本
+  // （實測：分支是 187，v2 manifest 還回 186）。所以每次檢查／套用先用 GitHub API（沒有這個快取）問出最新 commit，之後一律用固定 commit 的網址；
+  // API 失敗（沒網路、被限流）就退回分支網址。
+  async function refreshBase() {
+    if (process.env.FA_UPDATE_BASE) { BASE = BRANCH_BASE; return BASE; }
+    try {
+      const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 8000);
+      try { const r = await fetch("https://api.github.com/repos/sunneo/tw_stock_db/git/ref/heads/desktop-app-patch", { signal: ctl.signal, headers: { Accept: "application/vnd.github+json" } }); if (r.ok) { const j = await r.json(); const sha = j && j.object && j.object.sha; if (/^[0-9a-f]{40}$/.test(sha || "")) { BASE = "https://raw.githubusercontent.com/sunneo/tw_stock_db/" + sha; return BASE; } } } finally { clearTimeout(timer); }
+    } catch (_) { /* 退回分支網址 */ }
+    BASE = BRANCH_BASE; return BASE;
+  }
   const md5Hex = (b) => crypto.createHash("md5").update(b).digest("hex");
   // 這個更新處理「第一次啟動」時（包含剛從舊版更新、重啟後的那一次），檢查到有更新就請畫面自動跳出更新視窗（只一次）：
   // 舊安裝要分兩輪才能補齊（先換上這個更新處理、重啟，再下載它才知道要收的新模組），不能要使用者自己記得再按一次「檢查更新」。
   // REV 是這個行為的版本戳記；之後想讓所有人再補檢查一次時，把它改成新字串即可。
-  const REV = "2026-10-25-auto-recheck"; let autoPrompt = false;
+  const REV = "2026-10-25-diag"; ctx.mainExtRev = REV; let autoPrompt = false;
   try {
     const seenFile = path.join(ctx.userDataDir ? ctx.userDataDir() : app.getPath("userData"), "main-ext-rev.txt"), fsSync = require("fs");
     let seen = ""; try { seen = fsSync.readFileSync(seenFile, "utf8").trim(); } catch (_) { /* 第一次 */ }
@@ -442,11 +493,14 @@ function installChunkedUpdater(ipcMain, ctx, overlay) {
   const allowedRel = (rel, baseline) => rel in (baseline.files || {}) || (/^(renderer\/[\w./-]+|[\w.-]+\.js)$/.test(rel) && !rel.includes("..") && rel !== "main.js");
   const changedFiles = (baseline, local, remote) => Object.keys(remote.files).filter((rel) => allowedRel(rel, baseline) && remote.files[rel] && typeof remote.files[rel].md5 === "string" && local.files[rel] !== remote.files[rel].md5);
   async function check() {
+    await refreshBase();
     const { baseline, local } = await loadLocal(); const remote = await loadRemote(); const files = changedFiles(baseline, local, remote);
+    console.log("[main-ext] 檢查更新：目前 " + local.version + "，遠端 " + (remote.version || "?") + "，來源 " + BASE.slice(-12) + "，要更新 " + files.length + " 個檔案" + (files.length ? "：" + files.slice(0, 8).join("、") : ""));
     const prompt = autoPrompt && files.length > 0; if (prompt) autoPrompt = false; // 只提示一次
     return { ok: true, currentVersion: local.version, remoteVersion: remote.version || null, notes: remote.notes || "", publishedAt: remote.publishedAt || null, hasUpdate: files.length > 0, changedFiles: files, autoPrompt: prompt };
   }
   async function apply() {
+    await refreshBase();
     const { baseline, baselineVersion, stateFile, local } = await loadLocal();
     const remote = await loadRemote();
     const toFetch = changedFiles(baseline, local, remote);
@@ -469,6 +523,7 @@ function installChunkedUpdater(ipcMain, ctx, overlay) {
     for (const rel of toFetch) { const dest = path.join(patchDir(), rel); await fs.mkdir(path.dirname(dest), { recursive: true }); await fs.writeFile(dest, downloaded[rel]); }
     const next = { ...local.files }; for (const rel of toFetch) next[rel] = remote.files[rel].md5;
     await writeJson(stateFile, { schema: 1, appliedVersion: remote.version || local.version, appliedAt: new Date().toISOString(), baselineVersion, files: next });
+    console.log("[main-ext] 套用更新：" + (remote.version || "?") + "，" + toFetch.length + " 個檔案：" + toFetch.slice(0, 12).join("、"));
     const requiresRestart = toFetch.some((f) => !f.startsWith("renderer/"));
     return { ok: true, appliedVersion: remote.version || local.version, changedFiles: toFetch, requiresRestart };
   }
@@ -477,6 +532,7 @@ function installChunkedUpdater(ipcMain, ctx, overlay) {
   // 呼叫端接著重新 require 就能用，不需要使用者重啟或再按一次檢查更新。離線時失敗，下次啟動再試。
   const fsSync = require("fs");
   async function healMissingModules() {
+    await refreshBase();
     const { baselineVersion, stateFile, local } = await loadLocal();
     const remote = await loadRemote();
     const installDir = __dirname;
