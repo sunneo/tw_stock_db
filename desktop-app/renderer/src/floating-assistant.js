@@ -31771,7 +31771,12 @@ const FaComputerHost = (function () {
                 else if (parsed.cmd === 'secret') { const s = C().parseSecretCommand(parsed.args); if (s.error) say(s.error); else if (s.sub === 'list') { const l = await a.listRemoteSecrets(); say('已設定的機密（只有名稱）：' + ((l.names || []).join('、') || '（沒有）') + '\n' + (l.env || '')); } else if (s.sub === 'delete') { await a.deleteRemoteSecret(s.name); say('已刪除機密 ' + s.name); } else { const x = await a.setRemoteSecret(s.name, s.password); say(x.ok ? '已儲存機密「' + x.name + '」（只存在主行程，不會回傳給畫面）。⚠️ 剛才輸入的密碼還留在這則對話紀錄裡，建議清掉這則訊息。' : '⛔ ' + x.error); } }
                 else if (parsed.cmd === 'deny') { const x = await a.addDeny(parsed.args.join(' ')); say(x.ok ? '已加入拒絕規則（標題／類別／行程符合就不碰）。' : '⛔ ' + x.error); }
                 else if (parsed.cmd === 'calibrate') { const x = await V().calibrate(this._cuVisionDeps()); say(x.ok ? '座標校準：' + x.advice + '（比例 ' + x.scale.x + '×' + x.scale.y + '，移動延遲約 ' + (x.moveMs || '?') + ' ms，方法 ' + x.method + '）' : '⛔ ' + x.error); }
-            } catch (e) { say('⚠️ ' + String((e && e.message) || e)); }
+            } catch (e) {
+                const msg = String((e && e.message) || e);
+                // 主行程還是舊的（更新後還沒重新啟動，電腦操作的處理常式在 main-ext.js，啟動時才載入）：說明原因，不要丟出一長串技術錯誤
+                if (/No handler registered for 'fa:computer:/.test(msg)) say('⚠️ 電腦操作需要重新啟動應用程式才會生效：剛剛的更新換了主行程的模組，要重新啟動後才會載入。請關閉並重新開啟應用程式，再輸入一次 /computer enable。\n\n（如果重新啟動後還是這個訊息，代表主行程模組載入失敗，請到終端機看啟動時的 [main-ext] 警告。）');
+                else say('⚠️ ' + msg);
+            }
             try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ }
         },
         _registerComputerCommands() {
@@ -54718,7 +54723,12 @@ ${fnData.code}
                 else if (act === 'bundle') { const r = await this._repoIndexExportBundle(rootKey, { include_map: true }); if (!r.ok) say('⚠️ ' + r.error); }
                 else if (act === 'import-idx') { this._riImportRoot = rootKey; const fi = root.querySelector('#ai-ri-import-file'); if (fi) fi.click(); return; }
                 else if (act === 'reset') { if (!window.confirm('清除這個專案的索引與地圖？（專案檔案不會動）')) return; await this._repoMapRun({ action: 'reset', root: rootKey }); }
-            } catch (e) { say('⚠️ ' + String((e && e.message) || e)); }
+            } catch (e) {
+                const msg = String((e && e.message) || e);
+                // 主行程還是舊的（更新後還沒重新啟動，電腦操作的處理常式在 main-ext.js，啟動時才載入）：說明原因，不要丟出一長串技術錯誤
+                if (/No handler registered for 'fa:computer:/.test(msg)) say('⚠️ 電腦操作需要重新啟動應用程式才會生效：剛剛的更新換了主行程的模組，要重新啟動後才會載入。請關閉並重新開啟應用程式，再輸入一次 /computer enable。\n\n（如果重新啟動後還是這個訊息，代表主行程模組載入失敗，請到終端機看啟動時的 [main-ext] 警告。）');
+                else say('⚠️ ' + msg);
+            }
             refresh();
         });
         const side = document.getElementById('ai-advanced-sidebar');
