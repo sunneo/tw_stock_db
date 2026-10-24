@@ -13,7 +13,7 @@ description: 修改desktop-app的renderer前端檔案（floating-assistant.js／
 - **大檔用「分檔下載再合併」**（manifest 的 `files[路徑].parts`，逐段驗 md5 再接回；`main.js` 的 `fetchLivePatchFile`），不是壓縮、不是改建置參數。使用者指定了做法就照做，做不到先說明、問怎麼辦，不要悄悄換別的做法。
 - **版本號單調遞增**：發之前先看遠端 manifest 的版本（別的 session 也會發）；過渡版也不能讓標籤倒退。
 - **manifest 的檔案清單以 `renderer/update-manifest.json` 為準**（含 main-ext.js、preload.js 等主行程模組，共 29 個），一律用 `scripts/make-live-patch.js`（`scripts/publish.sh` 內部也走它）組 patch 目錄，不要手動只複製 renderer 四個檔案（否則其他檔案 HTTP 404）。
-- **互換版已凍結（舊版主程式 EOL），不要再更新它**：舊版主程式（單檔 8MB 上限、不認得 parts）的升級路線已經收尾——它們只會停在凍結的互換版（git 標籤 `live-patch-compat`，目前是 v183，內含新的更新處理 `main-ext.js` 與切成兩個 script 的 `floating-assistant.js`／`.min.js`），套用後重啟、再檢查更新，就改走 `manifest.v2.json`（單一大檔 + 分段，沒有大小限制）。`scripts/make-live-patch.js` 有 `live-patch-compat` 標籤時，根目錄的互換版原封不動沿用，新內容只放進 `v2/` 與 `manifest.v2.json`。新的更新處理在 `main-ext.js` 的 `installChunkedUpdater`（覆寫 `fa:update:check`／`fa:update:apply`）。**不要因為「大家應該都更新了」就動這個設計，這是公開產品。** 只有 `main-ext.js` 的更新處理本身要改（舊版機器必須靠互換版拿到新的處理）時，才重新凍結：`LIVE_PATCH_COMPAT_REF=__none__ scripts/publish.sh ...` 發佈後，把標籤移到新的 `desktop-app-patch` commit 並 push（`git tag -f live-patch-compat <commit>; git push -f origin live-patch-compat`）；改完要用「舊 main.js + 互換版 → 重啟 → 再檢查」的兩步流程在測試版驗證。熱更新本身是「最新快照 + 逐檔 md5 比對」，不是一版一版往上升。
+- **互換版已凍結在 v188（git 標籤 `live-patch-compat`），使用者指示「放在那邊不用管他了」：之後不要再重新凍結、不要再動它，一律只發新版（`manifest.v2.json`，內容放 `v2/`）。** 舊主程式（單檔 8MB 上限、不認得 parts、呼叫 main-ext 時不傳 electron）只會停在這份互換版；它帶著新的更新處理（`main-ext.js` 的 `installChunkedUpdater`、`installModuleOverlay`、`loadWithHeal`），舊機器套用、重啟後就改走新版。`scripts/make-live-patch.js` 看到 `live-patch-compat` 標籤就沿用根目錄那份互換版原封不動。**不要因為「大家應該都更新了」就動這個設計，這是公開產品。** 熱更新本身是「最新快照 + 逐檔 md5 比對」，不是一版一版往上升。
 
 ## 一鍵腳本（優先用這個）
 
