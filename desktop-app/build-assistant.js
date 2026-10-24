@@ -49,37 +49,26 @@ const INDEX_HTML_PATH = path.join(__dirname, "renderer", "index.html");
 // 執行期現算，執行期只在需要「自我完整性檢查」時才對覆蓋目錄裡的檔案
 // 現算md5，基準本身固定用這份建置時的快照。
 const UPDATE_MANIFEST_PATH = path.join(__dirname, "renderer", "update-manifest.json");
+// 可以被熱更新覆蓋的檔案：renderer 四個檔案 + 主行程「會載入到的所有本地模組」（從 main.js、main-ext.js 順著 require("./xxx.js") 一路找出來）+ preload.js。
+// 不再手動維護名單：以前新增模組要記得同步兩份名單（main.js 與這裡），忘了就會發生「模組存在、卻被當成不能覆蓋」。main.js 本身是入口，不在其中（只能靠重新安裝）。
+function collectMainModules() {
+  const seen = new Set(), queue = ["main.js", "main-ext.js", "preload.js"];
+  const re = /require\(\s*["']\.\/([\w.-]+\.js)["']\s*\)/g;
+  while (queue.length) {
+    const f = queue.shift(); if (seen.has(f)) continue; seen.add(f);
+    let src = ""; try { src = fs.readFileSync(path.join(__dirname, f), "utf8"); } catch (_) { continue; }
+    let m; re.lastIndex = 0; while ((m = re.exec(src))) { if (fs.existsSync(path.join(__dirname, m[1]))) queue.push(m[1]); }
+  }
+  seen.delete("main.js"); seen.delete("preload.js");
+  return [...seen].sort();
+}
 const LIVE_PATCH_ALLOWED_FILES = [
   "renderer/index.html",
   "renderer/bootstrap.js",
   "renderer/floating-assistant.js",
   "renderer/floating-assistant.min.js",
-  // 主行程啟動時require()的模組（跟main.js的LIVE_PATCH_MAIN_FILES必須同步）
-  "local-proxy.js",
-  "browser-search.js",
-  "edge-tts.js",
-  "cli-format.js",
-  "coding-workspace.js",
-  "browser-control-server.js",
-  "sqlite-engine.js",
-  "fsx-sync.js",
-  "main-ext.js",
-  "computer-png.js",
-  "computer-use-elements.js",
-  "computer-use-safety.js",
-  "computer-use-linux-parse.js",
-  "computer-use-linux.js",
-  "computer-use-atspi.js",
-  "computer-use-win-cs.js",
-  "computer-use-windows.js",
-  "computer-use-uia.js",
-  "computer-ws.js",
-  "rfb-codec.js",
-  "rfb-client.js",
-  "computer-remote.js",
-  "computer-use.js",
-  "computer-use-ipc.js",
-  "preload.js", // 預載腳本（跟 main.js 的 LIVE_PATCH_ALLOWED_FILES 同步）
+  ...collectMainModules(),
+  "preload.js", // 預載腳本
 ];
 
 async function main() {

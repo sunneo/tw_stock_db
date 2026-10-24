@@ -56,7 +56,9 @@ const { execFile, spawn } = require("child_process");
 // 退回安裝包內建版本；環境變數FA_DISABLE_MAIN_OVERLAY=1可以整個停用覆蓋。
 // ⚠️信任模型：這代表desktop-app-patch分支的內容會在主行程（完整Node權限）
 // 裡執行，等同信任那個repo分支不被竄改，使用者已明確接受這個取捨。
-const LIVE_PATCH_MAIN_FILES = [
+// 這份寫死的名單只是「最少要有的」：實際的名單 = 這份 + 建置時從 require 關係自動找出來、寫進 renderer/update-manifest.json 的所有主行程模組
+// （見 build-assistant.js 的 collectMainModules），所以新增模組不用再手動同步。
+const LIVE_PATCH_MAIN_FILES_BASE = [
   "local-proxy.js",
   "browser-search.js",
   "edge-tts.js",
@@ -86,6 +88,14 @@ const LIVE_PATCH_MAIN_FILES = [
   "computer-use.js",
   "computer-use-ipc.js",
 ];
+const LIVE_PATCH_MAIN_FILES = (() => {
+  const list = LIVE_PATCH_MAIN_FILES_BASE.slice();
+  try {
+    const m = JSON.parse(require("fs").readFileSync(path.join(__dirname, "renderer", "update-manifest.json"), "utf8"));
+    for (const k of Object.keys((m && m.files) || {})) if (!k.startsWith("renderer/") && k !== "preload.js" && /^[\w.-]+\.js$/.test(k) && !list.includes(k)) list.push(k);
+  } catch (_) { /* 沒有基準清單：用寫死的名單 */ }
+  return list;
+})();
 const mainOverlaySources = (() => {
   const overlays = new Map();
   if (process.env.FA_DISABLE_MAIN_OVERLAY === "1") return overlays;

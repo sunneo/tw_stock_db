@@ -5,6 +5,7 @@
 "use strict";
 
 function register(ipcMain, ctx) {
+  installModuleOverlay(ctx); // 必須最先做：後面的 require("./computer-use-ipc.js") 之類要靠它
   const { fs, path } = ctx;
   const electron = ctx.electron || null;
   // ---------- IPC: raw filesystem（完全不做root範圍檢查，2026-09-15使用者 ----------
@@ -283,6 +284,53 @@ function register(ipcMain, ctx) {
   return { rawFsPath, detectLikelyBinary };
 }
 
+// 主行程模組的熱更新覆蓋（長期方案，不依賴 main.js 裡那份名單）。
+// main.js（只能靠重新安裝更新）自己有一份「哪些模組可以被覆蓋」的名單，舊版安裝的名單比較短：後來新增的模組（例如 computer-use-*.js）
+// 即使熱更新已經下載到 userData/live-patch/，主程式也不會用，而且安裝目錄根本沒有這些檔案，require 直接找不到。
+// 這裡在 main-ext.js 載入時（main.js 的名單管不到的地方）補上兩個攔截：
+//   1. Module._extensions[".js"]：安裝目錄裡的 xxx.js，只要 live-patch 有通過驗證的版本（state.json 記的 md5 對得上、跟內建不同），就用那個版本編譯。
+//   2. Module._resolveFilename：相對路徑 ./xxx.js 找不到（舊安裝沒有這個檔案）而 live-patch 有驗證過的版本時，指到「安裝目錄裡的虛擬路徑」，
+//      由上面第 1 個攔截供應內容，所以模組裡的相對 require、__dirname 都跟新安裝完全一樣。
+// 範圍是「頂層的 *.js」（main.js、preload.js 除外）；驗證規則跟 main.js 的覆蓋一樣，FA_DISABLE_MAIN_OVERLAY=1 可整個停用。
+function installModuleOverlay(ctx) {
+  if (process.env.FA_DISABLE_MAIN_OVERLAY === "1") return;
+  const fsSync = require("fs"), path = ctx.path, crypto = require("crypto"), Module = require("module");
+  const electron = ctx.electron || null;
+  try {
+    const userData = ctx.userDataDir ? ctx.userDataDir() : (electron && electron.app ? electron.app.getPath("userData") : null); if (!userData) return;
+    const live = path.join(userData, "live-patch"), installDir = __dirname;
+    const state = JSON.parse(fsSync.readFileSync(path.join(live, "state.json"), "utf8"));
+    const baseline = JSON.parse(fsSync.readFileSync(path.join(installDir, "renderer", "update-manifest.json"), "utf8"));
+    if (!state || !state.files || state.baselineVersion !== (baseline.baseVersion || (electron && electron.app ? electron.app.getVersion() : undefined))) return;
+    const sources = new Map();
+    for (const rel of Object.keys(state.files)) {
+      if (!/^[\w.-]+\.js$/.test(rel) || rel === "main.js" || rel === "preload.js") continue;
+      if (state.files[rel] === (baseline.files || {})[rel]) continue; // 跟內建一樣：沒有覆蓋
+      let buf; try { buf = fsSync.readFileSync(path.join(live, rel)); } catch (_) { continue; }
+      if (crypto.createHash("md5").update(buf).digest("hex") !== state.files[rel]) continue; // 沒通過驗證：不用
+      sources.set(rel, buf.toString("utf8"));
+    }
+    if (!sources.size) return;
+    const orig = Module._extensions[".js"];
+    Module._extensions[".js"] = function (mod, filename) {
+      if (path.dirname(filename) === installDir) {
+        const src = sources.get(path.basename(filename));
+        if (src != null) { try { return mod._compile(src, filename); } catch (err) { console.error("[main-ext] 覆蓋版本 " + path.basename(filename) + " 載入失敗，退回內建版本：", err); } }
+      }
+      return orig(mod, filename);
+    };
+    const origResolve = Module._resolveFilename;
+    Module._resolveFilename = function (request, parent, ...rest) {
+      try { return origResolve.call(this, request, parent, ...rest); } catch (err) {
+        const m = err && err.code === "MODULE_NOT_FOUND" && /^\.\/([\w.-]+?)(\.js)?$/.exec(String(request));
+        if (m && sources.has(m[1] + ".js")) return path.join(installDir, m[1] + ".js");
+        throw err;
+      }
+    };
+    console.log("[main-ext] 主行程模組覆蓋（名單以 live-patch 的 state.json 為準）：" + [...sources.keys()].join("、"));
+  } catch (_) { /* 沒有覆蓋目錄或 state.json：用內建版本 */ }
+}
+
 // 熱更新套用處理的覆寫（長期方案）。
 // 為什麼放在這裡：main.js 是入口，只能靠重新安裝更新，但 main-ext.js 在熱更新清單裡、啟動時載入。
 // 已安裝的舊版主程式 fa:update:apply 有單檔 8MB 上限、也不認得 manifest 的 parts（分段）；這裡在 app ready 之後
@@ -346,7 +394,7 @@ function installChunkedUpdater(ipcMain, ctx) {
     if (state && state.files && typeof state.files === "object" && state.baselineVersion === baselineVersion) {
       let intact = true;
       for (const rel of Object.keys(state.files)) {
-        if (!(rel in baseline.files)) continue;
+        if (!allowedRel(rel, baseline)) continue;
         const actual = await md5Either(path.join(patchDir(), rel));
         if (actual === null && baseline.files[rel] === state.files[rel]) continue;
         if (actual === null || actual.indexOf(state.files[rel]) < 0) { intact = false; break; }
@@ -363,7 +411,9 @@ function installChunkedUpdater(ipcMain, ctx) {
     if (!remote || typeof remote.files !== "object") throw new Error("manifest格式不正確（缺少files欄位）");
     return remote;
   }
-  const changedFiles = (baseline, local, remote) => Object.keys(remote.files).filter((rel) => rel in baseline.files && !rel.includes("..") && remote.files[rel] && typeof remote.files[rel].md5 === "string" && local.files[rel] !== remote.files[rel].md5);
+  // 可以被熱更新的路徑：renderer 底下的檔案、頂層的 *.js（main.js 除外，它只能靠重新安裝）。不再要求「安裝時就在內建清單裡」：新增的模組也收得到
+  const allowedRel = (rel, baseline) => rel in (baseline.files || {}) || (/^(renderer\/[\w./-]+|[\w.-]+\.js)$/.test(rel) && !rel.includes("..") && rel !== "main.js");
+  const changedFiles = (baseline, local, remote) => Object.keys(remote.files).filter((rel) => allowedRel(rel, baseline) && remote.files[rel] && typeof remote.files[rel].md5 === "string" && local.files[rel] !== remote.files[rel].md5);
   async function check() {
     const { baseline, local } = await loadLocal(); const remote = await loadRemote(); const files = changedFiles(baseline, local, remote);
     return { ok: true, currentVersion: local.version, remoteVersion: remote.version || null, notes: remote.notes || "", publishedAt: remote.publishedAt || null, hasUpdate: files.length > 0, changedFiles: files };
