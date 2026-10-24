@@ -943,7 +943,9 @@
     var floatBtn = this.btn('⧉', '視窗化(可拖曳、可縮放)', function () { self.toggleFloat(); });
     var maxBtn = this.btn('⛶', '最大化 (F)', function () { self.toggleFullscreen(); });
     var expBtn = this.btn('⤓ 匯出', '匯出 MP4 / PPTX / 原始檔 / 字幕', function (e) { self.exportMenu(e.currentTarget); }); expBtn.classList.add('ai-chat-deck-export-btn');
-    [floatBtn, maxBtn, expBtn].forEach(function (x) { bar.appendChild(x); });
+    var editBtn = null;   // ✏️ 編輯:交給宿主開「簡報編輯器」(/edit-media-presentation);已經在編輯器裡的播放器不放
+    if (typeof window.AiChatDeckEditHook === 'function' && /^client-file\/[\w-]+\.deck\.yaml/.test(String(this.s.url || '')) && !(this.box.closest && this.box.closest('.few'))) { editBtn = this.btn('✏️ 編輯', '用說的改這份簡報(AI 對話框、每一頁都能插入內容)', function () { try { window.AiChatDeckEditHook(String(self.s.url), self); } catch (e) { self.toast('開不了簡報編輯器:' + (e && e.message || e), 4000); } }); }
+    [editBtn, floatBtn, maxBtn, expBtn].forEach(function (x) { if (x) { bar.appendChild(x); } });
     this.bar = bar;
     b.appendChild(bar);
 

@@ -139,6 +139,23 @@ contextBridge.exposeInMainWorld("desktopAPI", {
     list: () => ipcRenderer.invoke("fa:tmux:list"),
     kill: (name) => ipcRenderer.invoke("fa:tmux:kill", { name }),
   },
+  // computer use（桌面版限定、預設關閉）：全部經主行程的 fa:computer:*（computer-use-ipc.js）。預覽、核准、範圍選擇、中止都是主行程的原生視窗，
+  // renderer 這邊只能「請求」；所有提高權限的事（啟用、自動核准、指定範圍、連線）都要使用者在原生視窗確認。機密只能設定、不能讀回。
+  computer: (() => {
+    const c = (name, args) => ipcRenderer.invoke("fa:computer:" + name, args || {});
+    return {
+      status: () => c("status"), capabilities: () => c("capabilities"),
+      setEnabled: (on) => c("setEnabled", { on: !!on }), setAuto: (on) => c("setAuto", { on: !!on }), pickScope: () => c("pickScope"), setScope: (scope) => c("setScope", scope),
+      abort: (reason) => c("abort", { reason }), resume: () => c("resume"), addDeny: (pattern) => c("addDeny", { pattern }),
+      listWindows: (o) => c("listWindows", o), screenshot: (o) => c("screenshot", o), cropShot: (shotId, rect, o) => c("cropShot", Object.assign({}, o, { shotId, rect })), diffShots: (a, b, o) => c("diffShots", Object.assign({}, o, { a, b })),
+      uiTree: (o) => c("uiTree", o), findElements: (o) => c("findElements", o), elementAt: (o) => c("elementAt", o), elementInfo: (id) => c("elementInfo", { id }),
+      wait: (o) => c("wait", o), sample: (o) => c("sample", o), calibrate: (o) => c("calibrate", o),
+      plan: (steps) => c("plan", { steps }), execute: (planId, o) => c("execute", Object.assign({}, o, { planId })), run: (steps, o) => c("run", Object.assign({}, o, { steps })),
+      remoteProbe: (target) => c("remoteProbe", { target }), remoteConnect: (o) => c("remoteConnect", o), remoteDisconnect: (id) => c("remoteDisconnect", { id }), remoteList: () => c("remoteList"), remoteObjects: (id, o) => c("remoteObjects", Object.assign({}, o, { id })),
+      setRemoteSecret: (name, password) => c("setRemoteSecret", { name, password }), deleteRemoteSecret: (name) => c("deleteRemoteSecret", { name }), listRemoteSecrets: () => c("listRemoteSecrets"),
+      onEvent: (cb) => { const h = (_e, m) => { try { cb(m); } catch (_) { /* */ } }; ipcRenderer.on("fa:computer:event", h); return () => ipcRenderer.removeListener("fa:computer:event", h); },
+    };
+  })(),
   config: {
     getLocalProxyPort: () => ipcRenderer.invoke("fa:config:getLocalProxyPort"),
     getLocalProxyBase: () => ipcRenderer.invoke("fa:config:getLocalProxyBase"),

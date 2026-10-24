@@ -270,5 +270,48 @@ function embedEdit() {
 }
 embedEdit();
 
+// /edit-game-2d、/edit-game-3d：遊戲編輯器的各模組（純函式核心＋畫面）與主機轉接層，放在 FaEditHost 之後；FAGAME_SRC 是匯出網頁版要打包的引擎原始碼（字串）
+const GAME_MODULES = [['game_vocab', 'FaGameVocab'], ['game_templates', 'FaGameTemplates'], ['game_core', 'FaGame'], ['game_sim', 'FaGameSim'], ['game_render2d', 'FaGameRender2d'], ['game_audio', 'FaGameAudio'], ['game_uml', 'FaGameUml'], ['game_pack', 'FaGamePack'], ['game_gen', 'FaGameGen'], ['game_ui', 'FaGameUI']];
+function embedGame() {
+    const dir = path.join(root, 'renderer/src/game'); if (!fs.existsSync(dir)) return;
+    const rd = (n) => fs.readFileSync(path.join(dir, n + '.js'), 'utf8').replace(/\r\n/g, '\n'); const parts = [];
+    const map = {}; for (const [fn, nm] of [['game_vocab', 'vocab'], ['game_sim', 'sim'], ['game_render2d', 'render2d'], ['game_audio', 'audio']]) map[nm] = rd(fn);
+    parts.push('const FAGAME_SRC = ' + JSON.stringify(map) + ';');
+    for (const [fn, name] of GAME_MODULES) { if (!fs.existsSync(path.join(dir, fn + '.js'))) continue; parts.push('const ' + name + ' = (function () {\nconst holder = {};\n(function (module, self) {\n' + rd(fn) + '\n}).call(null, undefined, holder);\nreturn holder.' + name + ';\n})();'); }
+    parts.push(rd('game_host'));
+    let a = src.indexOf('/* GAME-BEGIN */'), b = src.indexOf('/* GAME-END */');
+    if (a < 0 || b < 0) { const e = src.indexOf('/* EDITHOST-END */'); if (e < 0) throw new Error('找不到 EDITHOST-END 標記'); const at = e + '/* EDITHOST-END */'.length; src = src.slice(0, at) + '\n/* GAME-BEGIN */\n/* GAME-END */' + src.slice(at); a = src.indexOf('/* GAME-BEGIN */'); b = src.indexOf('/* GAME-END */'); }
+    src = src.slice(0, a) + '/* GAME-BEGIN */\n' + parts.join('\n') + '\n' + src.slice(b);
+    console.log('已更新遊戲編輯器（' + parts.join('').length + ' 字元）');
+}
+embedGame();
+
+// /edit-media-presentation：簡報編輯器（簡報檔的物件模型、畫面、主機轉接層），放在 GAME 區塊之後（要用 FaEditShell 與 FaEditHost）
+function embedDeckEdit() {
+    const dir = path.join(root, 'renderer/src/deck'); if (!fs.existsSync(path.join(dir, 'deck_edit_core.js'))) return;
+    const rd = (n) => fs.readFileSync(path.join(dir, n + '.js'), 'utf8').replace(/\r\n/g, '\n'); const parts = [];
+    for (const [fn, name] of [['deck_edit_core', 'FaDeckEdit'], ['deck_edit_ui', 'FaDeckEditUI']]) parts.push('const ' + name + ' = (function () {\nconst holder = {};\n(function (module, self) {\n' + rd(fn) + '\n}).call(null, undefined, holder);\nreturn holder.' + name + ';\n})();');
+    parts.push(rd('deck_edit_host'));
+    let a = src.indexOf('/* DECKEDIT-BEGIN */'), b = src.indexOf('/* DECKEDIT-END */');
+    if (a < 0 || b < 0) { const e = src.indexOf('/* GAME-END */'); if (e < 0) throw new Error('找不到 GAME-END 標記'); const at = e + '/* GAME-END */'.length; src = src.slice(0, at) + '\n/* DECKEDIT-BEGIN */\n/* DECKEDIT-END */' + src.slice(at); a = src.indexOf('/* DECKEDIT-BEGIN */'); b = src.indexOf('/* DECKEDIT-END */'); }
+    src = src.slice(0, a) + '/* DECKEDIT-BEGIN */\n' + parts.join('\n') + '\n' + src.slice(b);
+    console.log('已更新簡報編輯器（' + parts.join('').length + ' 字元）');
+}
+embedDeckEdit();
+
+// computer use 的渲染端（工具、/computer、視覺模型慢路徑）：整個檔案本身就定義 const FaComputerHost，放在 DECKEDIT 區塊之後
+function embedComputer() {
+    const dir = path.join(root, 'renderer/src/computer'); if (!fs.existsSync(path.join(dir, 'computer_host.js'))) return;
+    const rd = (n) => fs.readFileSync(path.join(dir, n + '.js'), 'utf8').replace(/\r\n/g, '\n'); const parts = [];
+    for (const [fn, name] of [['computer_core', 'FaComputerCore'], ['computer_vision', 'FaComputerVision']]) parts.push('const ' + name + ' = (function () {\nconst holder = {};\n(function (module, self) {\n' + rd(fn) + '\n}).call(null, undefined, holder);\nreturn holder.' + name + ';\n})();');
+    parts.push(rd('computer_host'));
+    const code = parts.join('\n');
+    let a = src.indexOf('/* COMPUTER-BEGIN */'), b = src.indexOf('/* COMPUTER-END */');
+    if (a < 0 || b < 0) { const e = src.indexOf('/* DECKEDIT-END */'); if (e < 0) throw new Error('找不到 DECKEDIT-END 標記'); const at = e + '/* DECKEDIT-END */'.length; src = src.slice(0, at) + '\n/* COMPUTER-BEGIN */\n/* COMPUTER-END */' + src.slice(at); a = src.indexOf('/* COMPUTER-BEGIN */'); b = src.indexOf('/* COMPUTER-END */'); }
+    src = src.slice(0, a) + '/* COMPUTER-BEGIN */\n' + code + '\n' + src.slice(b);
+    console.log('已更新 FaComputerHost（' + code.length + ' 字元）');
+}
+embedComputer();
+
 if (crlf) src = src.replace(/\n/g, '\r\n');
 fs.writeFileSync(file, src);

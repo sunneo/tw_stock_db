@@ -7,6 +7,7 @@
 //                       objectInfo?(obj) -> small text, objectIcon?(obj) -> glyph, parseCommands?(text, spec) -> { edits, unmatched }, exports:[{id,label,chat?:true}], runExport(id, spec) -> Promise<{blob,name}>,
 //                       build's result may have env() -> { view:{x,y,w,h} } (where the user is looking: 'place relative to the view'),
 //                       promptOf?(spec, steps) -> text, placeholder, intro, extraPrompt?, windowKey?,
+//                       previewEdits?({spec0, next, edits, words, rejected}) -> Promise<boolean> (what the AI changed is shown first; true = apply, false = take it back), confirmRemove?(obj, spec) -> boolean,
 //                       treeRows?(spec, collapsed) -> [{obj, depth}] (a TREE in the objects view, parents before children; groups fold), onObjectOpen?(obj) (double click on a row: the editor opens the object by itself instead of renaming it) }) -> element with el._ed = { getState, reload, setSpec, undo, redo, send(text), select(id), getSpec, ctx }
 //   host: { ask({text, images, spec, selection, onStatus}) -> Promise<{say, edits, notes}>, save(state), download(blob,name), toChat?(blob, name, {title, prompt}), polish?(text) -> Promise<text>, palette?() }
 //   W (the document core, from FaEditObjects.make): validate, applyEdits, editWords, list, find, bounds?
@@ -95,7 +96,7 @@
         up.onclick = act(0, function () { apply([{ op: 'move_object', id: o.id, to: treeRows ? 'earlier' : 'up' }], o.name + ' 往上一層', '', 'panel'); });
         dn.onclick = act(0, function () { apply([{ op: 'move_object', id: o.id, to: treeRows ? 'later' : 'down' }], o.name + ' 往下一層', '', 'panel'); });
         dup.onclick = act(0, function () { apply([{ op: 'duplicate_object', id: o.id }], '複製 ' + o.name, '', 'panel'); });
-        del.onclick = act(0, function () { var r = apply([{ op: 'remove_object', id: o.id }], '刪掉 ' + o.name, '', 'panel'); if (r.rejected && r.rejected.length) { stat.textContent = r.rejected[0].error; setTimeout(function () { stat.textContent = ''; }, 3000); } else if (selected === o.id) { selected = null; } });
+        del.onclick = act(0, function () { if (opt.confirmRemove && !opt.confirmRemove(o, cur())) { return; } var r = apply([{ op: 'remove_object', id: o.id }], '刪掉 ' + o.name, '', 'panel'); if (r.rejected && r.rejected.length) { stat.textContent = r.rejected[0].error; setTimeout(function () { stat.textContent = ''; }, 3000); } else if (selected === o.id) { selected = null; } });
         [up, dn, dup, del].forEach(function (b) { tb.appendChild(b); });
         row.onclick = function () { select(o.id === selected ? null : o.id); };
         row.ondblclick = function (ev) { ev.stopPropagation(); if (opt.onObjectOpen) { opt.onObjectOpen(o); return; } rnId = o.id; var inp = h('input', 'rn'); inp.value = o.name; nm.textContent = ''; nm.appendChild(inp); inp.focus(); inp.select(); var done = function (ok) { var v = inp.value.trim(); rnId = null; if (ok && v && v !== o.name) { apply([{ op: 'rename_object', id: o.id, name: v }], o.name + ' 改名為 ' + v, '', 'panel'); } else { renderObjects(); } }; inp.onkeydown = function (e2) { e2.stopPropagation(); if (e2.key === 'Enter') { done(true); } else if (e2.key === 'Escape') { done(false); } }; inp.onblur = function () { done(true); }; inp.onclick = function (e3) { e3.stopPropagation(); }; };
@@ -125,16 +126,18 @@
       var text = ta.value.trim(), imgs = pending.slice(); if (busy || (!text && !imgs.length)) { return; }
       busy = true; bSend.disabled = true; ta.value = ''; pending = []; renderAtt(); rightTab = 'ai'; showTabs();
       var um = { role: 'user', text: (text || '（附圖）') + (imgs.length ? '　📎×' + imgs.length : '') }; S.log.push(um); addMsg('user', um.text, imgs.length ? [] : []); var think = addMsg('ai', '…'); dockSay.textContent = '…';
-      var chips = [], rej = [], say = '', spec0 = cur(), edits = [], applied = 0, words = [];
+      var chips = [], rej = [], say = '', spec0 = cur(), edits = [], applied = 0, words = [], ans0 = null;
       try {
         var pr = text && opt.parseCommands ? opt.parseCommands(text, spec0) : { edits: [], unmatched: text ? [text] : [] }; edits = pr.edits.slice(); var rest = pr.unmatched.join('，');
         if ((rest || imgs.length) && host.ask) {
-          var ans = await host.ask({ text: rest, images: imgs, spec: spec0, selection: selected, onStatus: function (t) { think.textContent = t; dockSay.textContent = t; } });
+          var ans = ans0 = await host.ask({ text: rest, images: imgs, spec: spec0, selection: selected, onStatus: function (t) { think.textContent = t; dockSay.textContent = t; } });
           say = (ans && ans.say) || ''; if (ans && ans.edits) { edits = edits.concat(ans.edits); } if (ans && ans.notes) { ans.notes.forEach(function (n) { chips.push(n); }); }
         } else if (rest) { say = '我沒聽懂：「' + rest.slice(0, 40) + '」。這個環境沒有 AI 可以幫忙，可以直接在物件欄與屬性面板改。'; }
         var r = W.applyEdits(spec0, edits, env()), next = spec0;
         if (r.applied.length) { next = r.spec; r.appliedEdits.forEach(function (e) { words.push(W.editWords(e)); }); }
         (r.rejected || []).forEach(function (x) { rej.push('✗ ' + x.op + '：' + x.error); });
+        var aiMade = !!(rest && ans0 && ans0.edits && ans0.edits.length), accepted = true;
+        if (opt.previewEdits && aiMade && JSON.stringify(next) !== JSON.stringify(spec0)) { think.textContent = '改動先放在預覽(綠＝新增、黃＝修改、紅虛線＝刪除),按「接受」才套用…'; dockSay.textContent = think.textContent; try { accepted = await opt.previewEdits({ spec0: spec0, next: next, edits: r.appliedEdits || [], words: words.slice(), rejected: r.rejected || [] }); } catch (pe) { accepted = true; } if (!accepted) { next = spec0; say = '已退回這一輪的改動(沒有套用)。'; words = []; chips = []; } }
         if (JSON.stringify(next) !== JSON.stringify(spec0)) {
           (r.added || []).forEach(function (id) { newIds[id] = 1; }); commit(next, words.filter(Boolean).join('；'), text || '（附圖）', imgs.length ? 'image' : 'chat'); applied = words.length; words.forEach(function (w) { chips.push('✓ ' + w); });
           if (r.added && r.added.length) { select(r.added[r.added.length - 1]); } else if (selected && W.find(cur(), selected) < 0) { select(null); }

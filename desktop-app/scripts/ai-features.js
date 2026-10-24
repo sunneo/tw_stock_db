@@ -49,6 +49,8 @@ function collectSourceNames() {
   const slash = new Set();
   const domains = new Set();
   for (const m of src.matchAll(/(?:registerOptional|register_openai_tool)\(\s*['"]([a-z_0-9]+)['"]/g)) tools.add(m[1]);
+  // computer use 的主機轉接層用區域函式 reg('computer_…', …) 包 registerOptional（見 renderer/src/computer/computer_host.js）
+  for (const m of src.matchAll(/\breg\(\s*['"](computer_[a-z_0-9]+)['"]/g)) tools.add(m[1]);
   for (const m of boot.matchAll(/register_openai_tool\(\s*['"]([a-z_0-9]+)['"]/g)) tools.add(m[1]);
   // 斜線指令：引擎裡是 register_slash_command 的第一個參數（換行後才出現）
   for (const m of src.matchAll(/register_slash_command\(\s*['"](\/[a-z0-9-]+)['"]/g)) slash.add(m[1]);

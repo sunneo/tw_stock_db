@@ -1,0 +1,96 @@
+--- a/main.js	2026-10-25 01:01:16.019901191 +0800
++++ b/main.js	2026-10-25 01:01:16.031901455 +0800
+@@ -69,6 +69,22 @@
+   "sqlite-engine.js",
+   "fsx-sync.js",
+   "main-ext.js",
++  // computer use（桌面版限定，預設關閉；見 DESIGN.computer-use.md）
++  "computer-png.js",
++  "computer-use-elements.js",
++  "computer-use-safety.js",
++  "computer-use-linux-parse.js",
++  "computer-use-linux.js",
++  "computer-use-atspi.js",
++  "computer-use-win-cs.js",
++  "computer-use-windows.js",
++  "computer-use-uia.js",
++  "computer-ws.js",
++  "rfb-codec.js",
++  "rfb-client.js",
++  "computer-remote.js",
++  "computer-use.js",
++  "computer-use-ipc.js",
+ ];
+ const mainOverlaySources = (() => {
+   const overlays = new Map();
+@@ -608,7 +624,7 @@
+ require("./fsx-sync.js").register(ipcMain, { find: (id) => { try { if (Date.now() - fsxRootsCache.at > 1500) fsxRootsCache = { at: Date.now(), list: JSON.parse(require("fs").readFileSync(ROOTS_FILE(), "utf8")) }; return fsxRootsCache.list.find((r) => r.id === id) || null; } catch (_) { return null; } } });
+ // 「桌面版無限制」的 raw filesystem IPC（fa:rawfs:*）與 rawFsPath 在 main-ext.js：它在 live-update 白名單裡，
+ // 之後要新增或修改這類 IPC 只要發 patch（下次啟動生效），不用重新安裝。main.js 本身（入口）仍然只能靠重新安裝更新，所以新的 IPC 一律寫進 main-ext.js。
+-const { rawFsPath } = require("./main-ext.js").register(ipcMain, { fs, path, execConfirmGate, net, dialog, BrowserWindow, electron: require("electron") });
++const { rawFsPath } = require("./main-ext.js").register(ipcMain, { fs, path, execConfirmGate, net, dialog, BrowserWindow, electron: require("electron"), getMainWindow: () => mainWindow, getDesktopSettings, patchDesktopSettings, userDataDir: USER_DATA_DIR, secretsFile: SECRETS_FILE });
+ const sqliteEngine = require("./sqlite-engine.js").register(ipcMain, { resolvePath: (p) => path.resolve(rawFsPath(p)) });
+ app.on("before-quit", () => { try { sqliteEngine.closeAll(); } catch (_) { /* 退出時盡力關閉 */ } });
+ 
+--- a/main-ext.js	2026-10-25 01:01:16.019901191 +0800
++++ b/main-ext.js	2026-10-25 01:01:16.031901455 +0800
+@@ -274,6 +274,9 @@
+     if (electron && electron.app) electron.app.on("before-quit", () => { for (const r of procs.values()) { try { r.child.kill(); } catch (_) { /* */ } } });
+   } catch (e) { console.warn("[main-ext] MCP 載入失敗：", e && e.message); }
+ 
++  // computer use（桌面版限定、預設關閉）：IPC、原生核准視窗、中止快捷鍵都在 computer-use-ipc.js；載入失敗不影響其他功能
++  try { require("./computer-use-ipc.js").register(ipcMain, ctx); } catch (e) { console.warn("[main-ext] computer use 載入失敗：", e && e.message); }
++
+   return { rawFsPath, detectLikelyBinary };
+ }
+ 
+--- a/preload.js	2026-10-25 01:01:16.019901191 +0800
++++ b/preload.js	2026-10-25 01:01:16.031901455 +0800
+@@ -139,6 +139,23 @@
+     list: () => ipcRenderer.invoke("fa:tmux:list"),
+     kill: (name) => ipcRenderer.invoke("fa:tmux:kill", { name }),
+   },
++  // computer use（桌面版限定、預設關閉）：全部經主行程的 fa:computer:*（computer-use-ipc.js）。預覽、核准、範圍選擇、中止都是主行程的原生視窗，
++  // renderer 這邊只能「請求」；所有提高權限的事（啟用、自動核准、指定範圍、連線）都要使用者在原生視窗確認。機密只能設定、不能讀回。
++  computer: (() => {
++    const c = (name, args) => ipcRenderer.invoke("fa:computer:" + name, args || {});
++    return {
++      status: () => c("status"), capabilities: () => c("capabilities"),
++      setEnabled: (on) => c("setEnabled", { on: !!on }), setAuto: (on) => c("setAuto", { on: !!on }), pickScope: () => c("pickScope"), setScope: (scope) => c("setScope", scope),
++      abort: (reason) => c("abort", { reason }), resume: () => c("resume"), addDeny: (pattern) => c("addDeny", { pattern }),
++      listWindows: (o) => c("listWindows", o), screenshot: (o) => c("screenshot", o), cropShot: (shotId, rect, o) => c("cropShot", Object.assign({}, o, { shotId, rect })), diffShots: (a, b, o) => c("diffShots", Object.assign({}, o, { a, b })),
++      uiTree: (o) => c("uiTree", o), findElements: (o) => c("findElements", o), elementAt: (o) => c("elementAt", o), elementInfo: (id) => c("elementInfo", { id }),
++      wait: (o) => c("wait", o), sample: (o) => c("sample", o), calibrate: (o) => c("calibrate", o),
++      plan: (steps) => c("plan", { steps }), execute: (planId, o) => c("execute", Object.assign({}, o, { planId })), run: (steps, o) => c("run", Object.assign({}, o, { steps })),
++      remoteProbe: (target) => c("remoteProbe", { target }), remoteConnect: (o) => c("remoteConnect", o), remoteDisconnect: (id) => c("remoteDisconnect", { id }), remoteList: () => c("remoteList"), remoteObjects: (id, o) => c("remoteObjects", Object.assign({}, o, { id })),
++      setRemoteSecret: (name, password) => c("setRemoteSecret", { name, password }), deleteRemoteSecret: (name) => c("deleteRemoteSecret", { name }), listRemoteSecrets: () => c("listRemoteSecrets"),
++      onEvent: (cb) => { const h = (_e, m) => { try { cb(m); } catch (_) { /* */ } }; ipcRenderer.on("fa:computer:event", h); return () => ipcRenderer.removeListener("fa:computer:event", h); },
++    };
++  })(),
+   config: {
+     getLocalProxyPort: () => ipcRenderer.invoke("fa:config:getLocalProxyPort"),
+     getLocalProxyBase: () => ipcRenderer.invoke("fa:config:getLocalProxyBase"),
+--- a/package.json	2026-10-25 01:01:16.023901279 +0800
++++ b/package.json	2026-10-25 01:01:16.031901455 +0800
+@@ -41,6 +41,21 @@
+       "sqlite-engine.js",
+       "fsx-sync.js",
+       "main-ext.js",
++      "computer-png.js",
++      "computer-use-elements.js",
++      "computer-use-safety.js",
++      "computer-use-linux-parse.js",
++      "computer-use-linux.js",
++      "computer-use-atspi.js",
++      "computer-use-win-cs.js",
++      "computer-use-windows.js",
++      "computer-use-uia.js",
++      "computer-ws.js",
++      "rfb-codec.js",
++      "rfb-client.js",
++      "computer-remote.js",
++      "computer-use.js",
++      "computer-use-ipc.js",
+       "coding-workspace.js",
+       "coding-edit.js",
+       "coding-tools.js",

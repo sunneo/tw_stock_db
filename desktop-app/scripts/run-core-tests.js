@@ -102,6 +102,11 @@ const suites = [
     ['圖片編輯器：圖層（濾鏡層、修復層）、風格、相對放置、程式先讀的指令', 'scripts/edit-tests/edit_picture_core.test.js'],
     ['3D 場景編輯器：以使用者視角的相對放置、封閉動作、群組、貼皮、YAML 往返、程式先讀的指令', 'scripts/edit-tests/edit3d_core.test.js'],
     ['3D 單一物件編輯（貼皮）：面、位置、顏色、圖、程式先讀的指令', 'scripts/edit-tests/edit3d_part_core.test.js'],
+    ['遊戲編輯器：模擬核心（固定步長、碰撞、規則與狀態機、場景切換、對話、戰鬥、確定性重播、現場熱修補）', 'scripts/game-tests/game_sim.test.js'],
+    ['遊戲編輯器：封閉動作、相對放置、影響範圍、YAML 往返、脈絡包、程式先讀的指令、範本', 'scripts/game-tests/game_core.test.js'],
+    ['遊戲編輯器：畫法、聲音合成、UML、遊戲包 .fagame', 'scripts/game-tests/game_parts.test.js'],
+    ['遊戲編輯器：目標原始碼（網頁／Electron／Node.js 由程式產生、AI 逐檔計畫、舊機種適配檢查、測試向量）', 'scripts/game-tests/game_gen.test.js'],
+    ['簡報編輯器：簡報檔的物件模型、封閉動作（加頁、改旁白、搬動、隱藏、鎖定、整份替換）、程式先讀的白話、前後版本差異', 'scripts/deck-tests/deck_edit_core.test.js'],
     ['長文章目錄：wiki、新聞、小說章回、分段閱讀', 'scripts/article-tests/article_outline.test.js'],
     ['NVIDIA 線上圖像生成：請求整理、參數夾範圍、回應解析', 'scripts/imagegen-tests/nvidia_image.test.js'],
     ['本機小模型生圖（SDXS-512 GPU／CPU 版）：選版本、取樣的數學、亂數、張量轉圖片、錯誤說明', 'scripts/imagegen-tests/local_sd.test.js'],
@@ -124,6 +129,18 @@ const suites = [
     ['動畫簡報：工具（長文字 handle、圖片目錄、長度估算）', 'scripts/deck-tests/deck_tools.test.js'],
     ['動畫簡報：樣板（預設值、複寫會改變繪製）', 'scripts/deck-tests/deck_template.test.js'],
     ...(() => { try { require.resolve('jszip'); return [['動畫簡報：簡報封包（開啟新舊格式、拒絕不合法）', 'scripts/deck-tests/deck_pack.test.js']]; } catch (_) { console.log('略過 簡報封包測試：沒有安裝 jszip（npm install --no-save jszip）'); return []; } })(),
+    // ===== 電腦操作（computer use，桌面版；DESIGN.computer-use.md）：純解析／腳本產生／協定解碼／安全閘門／IPC（假 Electron）／renderer 工具層。真實 X11／VNC／Electron 的整合測試是 *.itest.js，不在這裡（見文件）=====
+    ['電腦操作：PNG 編解碼、裁切縮放、差異、格線', 'scripts/computer-tests/png.test.js'],
+    ['電腦操作：安全閘門（範圍、被蓋住、拒絕清單、密碼欄、按鍵、速率、中止、預覽）', 'scripts/computer-tests/safety.test.js'],
+    ['電腦操作：RFB 編解碼（DES、持續狀態 inflate、ZRLE 磁磚）', 'scripts/computer-tests/rfb_codec.test.js'],
+    ['電腦操作：RFB 用戶端（假伺服器：Raw／RRE／Hextile／ZRLE／CopyRect／游標／驗證／輸入／WebSocket／候選物件）', 'scripts/computer-tests/rfb_client.test.js'],
+    ['電腦操作：遠端協定探測（RDP／SPICE／NX／SSH／HTTP／RFB）、畫布視窗偵測、WebSocket 用戶端', 'scripts/computer-tests/remote.test.js'],
+    ['電腦操作：Windows 後端（PowerShell 腳本產生、C# 編譯檢查、nircmd、UI Automation 轉換；Windows 實跑未實測）', 'scripts/computer-tests/windows.test.js'],
+    ['電腦操作：主行程 IPC（假 Electron：原生核准、權限提升、全域中止鍵、機密）', 'scripts/computer-tests/ipc.test.js'],
+    ['電腦操作：renderer 核心（詞彙與主行程一致、動作整理、座標換算、視覺答案解析、驗證評分、/computer 指令）', 'scripts/computer-tests/computer_core.test.js'],
+    ['電腦操作：視覺慢路徑（切磚、定位、驗證、探索；假視覺模型）', 'scripts/computer-tests/computer_vision.test.js'],
+    ['電腦操作：renderer 工具層（19 個 computer_* 工具、/computer 指令、網頁版不註冊）', 'scripts/computer-tests/computer_host.test.js'],
+    ['電腦操作：INTEGRATION.md 的貼上用區塊（領域、任務提示 regex、YAML、embed 片段、接線補丁）', 'scripts/computer-tests/integration_doc.test.js'],
 ];
 let failed = 0;
 for (const [name, file] of suites) {

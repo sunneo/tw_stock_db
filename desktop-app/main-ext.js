@@ -274,6 +274,9 @@ function register(ipcMain, ctx) {
     if (electron && electron.app) electron.app.on("before-quit", () => { for (const r of procs.values()) { try { r.child.kill(); } catch (_) { /* */ } } });
   } catch (e) { console.warn("[main-ext] MCP 載入失敗：", e && e.message); }
 
+  // computer use（桌面版限定、預設關閉）：IPC、原生核准視窗、中止快捷鍵都在 computer-use-ipc.js；載入失敗不影響其他功能
+  try { require("./computer-use-ipc.js").register(ipcMain, ctx); } catch (e) { console.warn("[main-ext] computer use 載入失敗：", e && e.message); }
+
   return { rawFsPath, detectLikelyBinary };
 }
 

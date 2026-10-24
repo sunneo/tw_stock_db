@@ -1,7 +1,16 @@
-# `/edit-game-2d`、`/edit-game-3d`:遊戲編輯器(規劃,還沒開始做)
+# `/edit-game-2d`、`/edit-game-3d`:遊戲編輯器
 
-> 2026-10-23,使用者提出。**這份是規劃,不是實作。** 先寫清楚「重用什麼、新增什麼、格式長怎樣、分幾階段、哪些要先問使用者」,確認方向後再依階段做(每一階段都可以單獨驗證)。
+> 2026-10-23,使用者提出;2026-10-25 實作完成(下面「實作狀態」)。原本寫的是規劃: 先寫清楚「重用什麼、新增什麼、格式長怎樣、分幾階段、哪些要先問使用者」,確認方向後再依階段做(每一階段都可以單獨驗證)。
 > 範圍:**GUI 加斜線指令,暫時不設計成給 AI 使用的工具**(沒有 `edit_game_open`);編輯器裡的 AI 對話框照常用(跟 `/edit-svg`、`/edit-picture`、`/edit-3d-model` 一樣是「用語言主導」)。
+
+## 實作狀態(2026-10-25)
+
+程式:`renderer/src/game/`(`game_vocab`、`game_templates`、`game_core`、`game_sim`、`game_render2d`、`game_audio`、`game_uml`、`game_pack`、`game_gen`、`game_ui`、`game_host`);測試 `scripts/game-tests/*`(節點,134 項)與 `scripts/eval/game.eval.js`(真實 Electron:2D 全部範本、3D、點選拖曳、試玩、暫停規則、預覽接受／退回、熱修補、遊戲包往返、網頁版在 iframe 裡跑得到同一個雜湊、AI 逐檔移植〔假模型〕)。沒有給 AI 的工具(只有 GUI 與 `/edit-game-2d`、`/edit-game-3d`)。
+
+已做:§18 現場編修(焦點／選取、暫停規則、脈絡包、封閉動作、預覽再套用、`rev` 版本)、10 個範本(2D 六個、3D 四個)、確定性模擬與重播、WebAudio 合成音效與四條 bus、UML(Mermaid)、`.fagame` 遊戲包;目標原始碼:網頁／Electron／Node.js／three.js 由程式產生(可測),Python、SDL2／3、Qt、C# WinForms、Java Swing／AWT／SWT、Android、PC、Xbox(MonoGame)、FC、SFC、X68000 由 AI 逐檔移植(附測試向量與適配檢查)。
+
+如實的限制:AI 逐檔寫出來的程式**沒有在這裡編譯執行過**(輸出裡寫明,測試向量是給你在目標平台上比對用的);舊機種只做適配檢查,放不下的會列出來;人物聲 TTS 第一次要載入語音模型,等不及就退回嘴音;3D 只有簡單造型(方塊、球、柱、錐)與相機模式,沒有骨架動畫。
+
 
 ## 1. 想做到的事(使用者原話整理 → 對應章節)
 | 需求 | 章節 |

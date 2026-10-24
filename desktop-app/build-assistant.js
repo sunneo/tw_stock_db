@@ -64,6 +64,21 @@ const LIVE_PATCH_ALLOWED_FILES = [
   "sqlite-engine.js",
   "fsx-sync.js",
   "main-ext.js",
+  "computer-png.js",
+  "computer-use-elements.js",
+  "computer-use-safety.js",
+  "computer-use-linux-parse.js",
+  "computer-use-linux.js",
+  "computer-use-atspi.js",
+  "computer-use-win-cs.js",
+  "computer-use-windows.js",
+  "computer-use-uia.js",
+  "computer-ws.js",
+  "rfb-codec.js",
+  "rfb-client.js",
+  "computer-remote.js",
+  "computer-use.js",
+  "computer-use-ipc.js",
   "preload.js", // 預載腳本（跟 main.js 的 LIVE_PATCH_ALLOWED_FILES 同步）
 ];
 

@@ -263,6 +263,21 @@
   - `列出這個資料夾最大的 10 個檔案`
   - `在背景開一個 tmux 跑這個腳本`
 
+### 電腦操作（看與操作這台電腦的視窗、元件、畫面；遠端桌面）（`computer-use`）
+
+桌面版限定、預設關閉。Linux 用 xdotool／wmctrl 與 AT-SPI（GNOME／KDE／XFCE，Wayland 下的 XWayland 視窗走 X11），Windows 用 UI Automation／Win32（類似 Spy++）列出視窗與所有元件（角色、名字、文字內容、矩形）；用視覺模型讀畫面；落在 canvas 的遠端桌面先試著讀協定（RFB／VNC／noVNC 的繪圖更新、游標與變化區塊→物件；RDP、NoMachine 辨識得出來但沒有內建用戶端），沒有再走視覺模型慢路徑。啟用、自動核准、範圍、遠端連線都要你在原生視窗確認，每一批動作先預覽再核准，Ctrl+Alt+Shift+Esc 隨時中止；不碰密碼欄、系統設定、付款、驗證視窗。
+
+- 可用平台：桌面版
+- 斜線指令：`/computer`
+- 子代理人領域：`computer_use`
+- AI 工具：`computer_capabilities`、`computer_list_windows`、`computer_window_action`、`computer_ui_tree`、`computer_find_element`、`computer_element_action`、`computer_screenshot`、`computer_describe`、`computer_click`、`computer_type`、`computer_key`、`computer_scroll`、`computer_drag`、`computer_actions`、`computer_wait`、`computer_remote_probe`、`computer_remote_connect`、`computer_remote_disconnect`、`computer_abort`
+- 範例：
+  - `/computer enable`
+  - `/computer scope`
+  - `看一下我現在螢幕上有什麼`
+  - `把 gedit 視窗裡的存檔按鈕點一下`
+  - `連到 192.168.1.20:5900 的 VNC 看畫面`
+
 ## 程式設計與版本控制
 
 流程化寫程式、git 操作、Skill 建立、沙盒內執行程式
@@ -637,6 +652,40 @@ clone、pull、status、log、commit、push（網頁版透過 worker 中繼）�
   - `在我的左前方放一個紅色的球`
   - `把它移到桌子上面`
   - `/edit-3d-model last`
+
+### 2D 遊戲編輯器（用說的設計、邊玩邊改、輸出遊戲包與各平台原始碼）（`edit-game-2d`）
+
+用說的做 2D 遊戲：東西、行為（規則與狀態機）、碰撞、路線、場景切換、對白、背景音樂與音效、常見範本（橫向／縱向／強制捲軸、自由地圖、格鬥、RPG）。中間的畫面可以直接試玩，玩到一半暫停就是編輯器（「🎯 焦點」點一個東西再說「讓它變快」）；AI 改的先用疊層預覽（綠新增、黃修改、紅刪除）再套用；中間格式 YAML 與 UML，輸出可再編輯的遊戲包 .fagame、網頁、Electron、Node.js，其他平台（SDL2／3、Qt、C# WinForms、Java、Android、Python、FC…）由 AI 逐檔移植並附測試向量。
+
+- 可用平台：桌面版
+- 斜線指令：`/edit-game-2d`
+- 範例：
+  - `/edit-game-2d platformer-side`
+  - `/edit-game-2d 做一個太空射擊`
+  - `在玩家右邊放一個史萊姆`
+  - `讓史萊姆碰到玩家就扣血`
+
+### 3D 遊戲編輯器（第三人稱／第一人稱／俯視／跑酷）（`edit-game-3d`）
+
+同 2D 遊戲編輯器，3D 版：用說的放東西（位置以相對方式算）、行為與規則、碰撞、場景切換、背景音樂與音效；中間的 3D 畫面可以試玩與暫停編輯；輸出遊戲包 .fagame、three.js 網頁、Electron、Node.js。
+
+- 可用平台：桌面版
+- 斜線指令：`/edit-game-3d`
+- 範例：
+  - `/edit-game-3d walker-3rd`
+  - `在玩家前面放一個寶石`
+
+### 簡報編輯器（簡報播放器旁邊的 AI 對話框，每一頁都能插入內容）（`edit-media-presentation`）
+
+在簡報播放器旁邊用說的改簡報：你現在看的那一頁就是「這頁」——「這頁加一張飛機的照片」「在這頁後面插入一頁講風險」「每一頁都配一張照片」「旁白講短一點」。要上網找圖與資料、讀檔、畫圖表，會請簡報代理人（跟 /media-presentation 同一組工具）去做；改的先在播放器預覽、按「接受」才套用，每一步都能復原；左邊是章與頁的大綱（搬動、複製、隱藏、鎖定）、可直接改的 YAML。播放器上也有「✏️ 編輯」鈕。
+
+- 可用平台：桌面版
+- 斜線指令：`/edit-media-presentation`
+- 範例：
+  - `/edit-media-presentation`
+  - `/edit-media-presentation 在第 2 頁後面加一頁講風險`
+  - `這頁加一張飛機的照片`
+  - `上網查最新規格再加一章`
 
 ## 影音處理
 
