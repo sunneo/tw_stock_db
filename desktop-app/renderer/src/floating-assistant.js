@@ -7726,6 +7726,138 @@ const holder = {};
 return holder.FaZhTts;
 })();
 /* ZHTTS-END */
+/* VSAMPLE-BEGIN */
+const FaVoiceSample = (function () {
+const holder = {};
+(function (module, self) {
+/* 聲音樣本（Kokoro 語音向量）的核心（UMD，純函式，不碰 DOM、網路、模型，桌面版與網頁版共用）。
+ *
+ * 「聲音樣本」＝一個 Kokoro 語音包（voices/<id>.bin）：510 × 1 × 256 個 float32（522,240 bytes）。模型每念一小段，依這段的 token 數
+ * 從裡面取一列 256 維的「風格向量」。所以：
+ *   - 建立：把現有的聲音依比例混合（加權平均），或用隨機種子挑幾個聲音、隨機配比（同一個種子永遠得到同一個聲音）；
+ *   - 匯入：讀一個 .bin（大小必須剛好 522,240 bytes）或本程式匯出的 .voice.json（含向量與配方）；
+ *   - 匯出：.bin（Kokoro 系的工具都能讀，例如 kokoro-js、Kokoro-FastAPI）與 .voice.json（含配方、可以再匯入）。
+ * ChatTTS 的說話人向量是另一個空間（768 維），這裡的向量不能直接給 ChatTTS 用。
+ *
+ * 語音代號規則：英文以 a（美式）開頭、中文以 z 開頭，第二個字母 f／m 是性別，之後是底線與只含小寫英文字母的名字（Kokoro 的快取清單只認
+ * [a-z]+_[a-z]+）。自訂聲音一律是「我的」＝名字以 my 開頭，例如 af_myvoice、zf_mylaoshi，跟內建聲音分得開。 */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaVoiceSample = factory();
+}(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var DIM = 256, ROWS = 510, FLOATS = DIM * ROWS, BYTES = FLOATS * 4;
+  var SAMPLE_RATE = 24000;
+  var FORMAT = 'fa-voice-sample', BASE_MODEL = 'kokoro-82m-v1.0';
+
+  // ---- 位元組 ↔ 向量（一律小端）
+  function toBytes(vec) { var b = new Uint8Array(vec.length * 4), dv = new DataView(b.buffer); for (var i = 0; i < vec.length; i++) dv.setFloat32(i * 4, vec[i], true); return b; }
+  function fromBytes(buf) {
+    var u8 = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+    if (u8.length !== BYTES) return { ok: false, error: '這不是 Kokoro 語音包：大小應該剛好 ' + BYTES + ' bytes（510 列 × 256 維 × 4 bytes），這個檔案是 ' + u8.length + ' bytes' };
+    var dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength), v = new Float32Array(FLOATS);
+    for (var i = 0; i < FLOATS; i++) { var x = dv.getFloat32(i * 4, true); if (!isFinite(x) || Math.abs(x) > 1000) return { ok: false, error: '語音包裡有不合理的數值（第 ' + i + ' 個）：不是 Kokoro 語音向量' }; v[i] = x; }
+    return { ok: true, vec: v };
+  }
+  function b64Encode(bytes) {
+    if (typeof Buffer !== 'undefined') return Buffer.from(bytes).toString('base64');
+    var s = ''; for (var i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(s);
+  }
+  function b64Decode(str) {
+    if (typeof Buffer !== 'undefined') return new Uint8Array(Buffer.from(String(str), 'base64'));
+    var s = atob(String(str)), b = new Uint8Array(s.length); for (var i = 0; i < s.length; i++) b[i] = s.charCodeAt(i); return b;
+  }
+
+  // ---- 混合：items = [{ vec, weight }]；權重只取正的並正規化；spread＝離平均聲音多遠（1＝照配比，>1 往外推更有個性，<1 往中間收）
+  function mix(items, spread) {
+    var use = (items || []).filter(function (it) { return it && it.vec && it.vec.length === FLOATS && it.weight > 0; });
+    if (!use.length) return { ok: false, error: '沒有可以混合的聲音（至少要有一個權重大於 0 的聲音）' };
+    var total = 0; use.forEach(function (it) { total += it.weight; });
+    var sp = spread === undefined || spread === null || spread === '' ? 1 : Number(spread); if (!isFinite(sp) || sp <= 0 || sp > 3) return { ok: false, error: 'spread 要在 0 到 3 之間（1＝照配比混合）' };
+    var out = new Float32Array(FLOATS), avg = new Float32Array(FLOATS), n = use.length;
+    for (var k = 0; k < n; k++) { var w = use[k].weight / total, v = use[k].vec; for (var i = 0; i < FLOATS; i++) { out[i] += v[i] * w; avg[i] += v[i] / n; } }
+    if (sp !== 1) for (var j = 0; j < FLOATS; j++) out[j] = avg[j] + sp * (out[j] - avg[j]);
+    return { ok: true, vec: out, parts: use.map(function (it) { return { id: it.id, weight: Math.round(it.weight / total * 1000) / 1000 }; }), spread: sp };
+  }
+
+  // ---- 可重現的亂數（同一個種子永遠同一串）
+  function rng(seed) { var a = (Number(seed) >>> 0) || 1; return function () { a |= 0; a = a + 0x6D2B79F5 | 0; var t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+  // 用種子挑 count 個聲音、隨機配比：回 { seed, parts:[{id,weight}] }（weight 已正規化、至少 0.1，不會有「其實沒混進去」的聲音）
+  function randomRecipe(seed, candidateIds, count) {
+    var ids = (candidateIds || []).slice(), n = Math.max(1, Math.min(ids.length, count || 3)); if (!ids.length) return { ok: false, error: '沒有候選聲音可以挑' };
+    var r = rng(seed); for (var i = ids.length - 1; i > 0; i--) { var j = Math.floor(r() * (i + 1)), t = ids[i]; ids[i] = ids[j]; ids[j] = t; }
+    var picks = ids.slice(0, n), raw = picks.map(function () { return 0.25 + r(); }), sum = raw.reduce(function (a, b) { return a + b; }, 0);
+    return { ok: true, seed: Number(seed) >>> 0, parts: picks.map(function (id, k) { return { id: id, weight: Math.round(raw[k] / sum * 1000) / 1000 }; }) };
+  }
+
+  // ---- 語音代號
+  function langOf(lang) { return /^(zh|cn|中文|國語|chinese|mandarin)/i.test(String(lang || '')) ? 'zh' : 'en'; }
+  function genderOf(g) { return /^(m|male|男)/i.test(String(g || '')) ? 'm' : 'f'; }
+  function lettersOnly(name) { return String(name || '').toLowerCase().replace(/[^a-z]/g, ''); }
+  // 用名字做代號：中文名字（沒有英文字母）用 voice＋序號字母，保證唯一；existing 是目前已有的所有代號
+  function makeId(lang, gender, name, existing) {
+    var used = {}; (existing || []).forEach(function (x) { used[x] = true; });
+    var head = (langOf(lang) === 'zh' ? 'z' : 'a') + genderOf(gender) + '_', base = 'my' + (lettersOnly(name).slice(0, 14) || 'voice'), id = head + base;
+    for (var n = 0; used[id]; n++) id = head + base + String.fromCharCode(97 + (n % 26)) + (n >= 26 ? String.fromCharCode(97 + Math.floor(n / 26) % 26) : '');
+    return id;
+  }
+  function isCustomId(id) { return /^[az][fm]_my[a-z]*$/.test(String(id || '')); }
+  function idOk(id) { return /^[az][fm]_[a-z]+$/.test(String(id || '')); }
+
+  // ---- 匯出入的 JSON 包（.voice.json）
+  function makePackage(o) {
+    return { format: FORMAT, version: 1, model: BASE_MODEL, name: String(o.name || '').slice(0, 60), lang: langOf(o.lang), gender: genderOf(o.gender), id: o.id || undefined,
+      recipe: o.recipe || null, createdAt: o.createdAt || new Date().toISOString(), bytes: BYTES, vector_b64: b64Encode(toBytes(o.vec)),
+      note: 'Kokoro-82M v1.0 的語音包（510×256 float32，小端）。vector_b64 解開就是 voices/<id>.bin；不是 ChatTTS 的說話人向量。' };
+  }
+  function readPackage(obj) {
+    if (!obj || typeof obj !== 'object' || obj.format !== FORMAT) return { ok: false, error: '這不是聲音樣本檔（沒有 format: ' + FORMAT + '）' };
+    if (obj.model && obj.model !== BASE_MODEL) return { ok: false, error: '這個聲音樣本是給 ' + obj.model + ' 的，這裡只支援 ' + BASE_MODEL };
+    var raw; try { raw = b64Decode(obj.vector_b64); } catch (e) { return { ok: false, error: '聲音樣本檔的向量資料解不開' }; }
+    var p = fromBytes(raw); if (!p.ok) return p;
+    return { ok: true, vec: p.vec, name: String(obj.name || '').slice(0, 60), lang: langOf(obj.lang), gender: genderOf(obj.gender), recipe: obj.recipe || null, createdAt: obj.createdAt || null };
+  }
+
+  // ---- 試聽用的句子與 WAV 輸出
+  function sampleText(lang) { return langOf(lang) === 'zh' ? '你好，這是我的新聲音。今天天氣很好，我們一起去散步吧。' : 'Hello, this is my new voice. The weather is lovely today, shall we go for a walk?'; }
+  function wav(samples, sampleRate) {
+    var sr = sampleRate || SAMPLE_RATE, n = samples.length, buf = new ArrayBuffer(44 + n * 2), dv = new DataView(buf);
+    var w = function (o, s) { for (var i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
+    w(0, 'RIFF'); dv.setUint32(4, 36 + n * 2, true); w(8, 'WAVE'); w(12, 'fmt '); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+    dv.setUint32(24, sr, true); dv.setUint32(28, sr * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true); w(36, 'data'); dv.setUint32(40, n * 2, true);
+    for (var i = 0; i < n; i++) { var x = Math.max(-1, Math.min(1, samples[i])); dv.setInt16(44 + i * 2, x < 0 ? x * 0x8000 : x * 0x7FFF, true); }
+    return new Uint8Array(buf);
+  }
+
+  // ---- 斜線指令的參數：/voice-create 名字 lang=zh gender=f mix=zf_xiaoxiao:0.7,zf_xiaoyi:0.3 seed=42 spread=1.2 ／ /voice-create 名字 random lang=en
+  function tokens(text) { var out = [], re = /"([^"]*)"|'([^']*)'|(\S+)/g, m; while ((m = re.exec(String(text || '')))) out.push(m[1] !== undefined ? m[1] : m[2] !== undefined ? m[2] : m[3]); return out; }
+  function parseCreateArgs(text) {
+    var r = { name: '', lang: '', gender: '', mix: [], seed: null, spread: null, random: false, count: null, play: true, errors: [] }, rest = [];
+    tokens(text).forEach(function (t) {
+      var m = /^(\w+)=(.*)$/.exec(t);
+      if (!m) { if (/^(random|隨機)$/i.test(t)) r.random = true; else rest.push(t); return; }
+      var k = m[1].toLowerCase(), v = m[2];
+      if (k === 'name' || k === '名字') r.name = v; else if (k === 'lang' || k === '語言') r.lang = langOf(v); else if (k === 'gender' || k === '性別') r.gender = genderOf(v);
+      else if (k === 'seed' || k === '種子') { var s = Number(v); if (isFinite(s)) r.seed = s >>> 0; else r.errors.push('seed 要是數字'); }
+      else if (k === 'spread' || k === '個性') { var sp = Number(v); if (isFinite(sp)) r.spread = sp; else r.errors.push('spread 要是數字'); }
+      else if (k === 'count' || k === '數量') { var c = Math.round(Number(v)); if (c >= 1 && c <= 6) r.count = c; else r.errors.push('count 要是 1 到 6'); }
+      else if (k === 'mix' || k === '混合') v.split(',').forEach(function (p) { var q = /^([a-z]+_[a-z]+)(?::([\d.]+))?$/.exec(p.trim()); if (!q) { if (p.trim()) r.errors.push('mix 的格式是 代號:比例，例如 af_heart:0.6,af_sky:0.4（看到「' + p.trim() + '」）'); return; } r.mix.push({ id: q[1], weight: q[2] === undefined ? 1 : Number(q[2]) }); });
+      else if (k === 'play' || k === '試聽') r.play = !/^(0|false|no|否|不)$/i.test(v);
+      else r.errors.push('不認得的參數「' + k + '」');
+    });
+    if (!r.name) r.name = rest.join(' ');
+    return r;
+  }
+
+  return { DIM: DIM, ROWS: ROWS, FLOATS: FLOATS, BYTES: BYTES, SAMPLE_RATE: SAMPLE_RATE, FORMAT: FORMAT, BASE_MODEL: BASE_MODEL,
+    toBytes: toBytes, fromBytes: fromBytes, b64Encode: b64Encode, b64Decode: b64Decode, mix: mix, rng: rng, randomRecipe: randomRecipe,
+    langOf: langOf, genderOf: genderOf, makeId: makeId, isCustomId: isCustomId, idOk: idOk, makePackage: makePackage, readPackage: readPackage,
+    sampleText: sampleText, wav: wav, parseCreateArgs: parseCreateArgs };
+}));
+
+}).call(null, undefined, holder);
+return holder.FaVoiceSample;
+})();
+/* VSAMPLE-END */
 /* RECIPE-BEGIN */
 const FaRecipe = (function () {
 const holder = {};
@@ -33939,6 +34071,30 @@ const TTS_DEFAULT_ZH_VOICE = 'zf_xiaoxiao';
 const TTS_VOICE_CACHE_NAME = 'kokoro-voices'; // kokoro-js自己固定用這個名稱
 const TTS_VOICE_DATA_URL_BASE = `https://huggingface.co/${TTS_MODEL_ID}/resolve/main/voices/`;
 
+// ───── 我的聲音（匯入／建立的聲音樣本，核心見 renderer/src/tts/voice_sample.js）─────
+// 一個「聲音樣本」是一個 Kokoro 語音包（voices/<代號>.bin），放在跟內建語音包同一個 "kokoro-voices" Cache（kokoro-js 找語音包就是找這裡），
+// 所以合成走的是跟內建聲音完全一樣的路線；清單（代號、名字、語言、性別、配方）放在 advancedSettings.ttsCustomVoices。
+// 自訂聲音會被塞進 TTS_VOICES（英文）／TTS_ZH_VOICES（中文）的最前面並帶 custom:true，所以所有下拉選單、text_to_speech 的語音代號、
+// /media-text-to-speech、/media-list-voices 都不用另外處理就看得到。
+function ttsNormalizeCustomVoices(arr) {
+    const out = [], seen = new Set();
+    for (const c of Array.isArray(arr) ? arr : []) {
+        if (!c || typeof c !== 'object' || !FaVoiceSample.isCustomId(c.id) || seen.has(c.id)) continue;
+        seen.add(c.id);
+        out.push({ id: c.id, name: String(c.name || c.id).slice(0, 60), lang: c.lang === 'zh' ? 'zh' : 'en', gender: c.gender === 'm' ? 'm' : 'f', source: c.source === 'imported' ? 'imported' : 'created', recipe: c.recipe && typeof c.recipe === 'object' ? c.recipe : null, createdAt: String(c.createdAt || '').slice(0, 40) });
+    }
+    return out.slice(0, 100);
+}
+function ttsRegisterCustomVoices(list) {
+    for (const arr of [TTS_VOICES, TTS_ZH_VOICES]) for (let i = arr.length - 1; i >= 0; i--) if (arr[i].custom) arr.splice(i, 1);
+    // 新的排在前面：下拉選單最上面、「沒指定聲音就用第一個」的退路也會先選到自己的聲音
+    for (const c of list.slice().reverse()) {
+        const zh = c.lang === 'zh';
+        (zh ? TTS_ZH_VOICES : TTS_VOICES).unshift({ id: c.id, name: c.name, lang: zh ? '我的聲音（中文）' : '我的聲音（英文）', gender: c.gender === 'm' ? '男' : '女', engine: zh ? 'local-zh' : 'local', custom: true });
+    }
+}
+
+
 // tw_stock_db客製: 2026-09-12——中文（及其他Kokoro本地不支援的語言）走API
 // 轉接（見上方大段說明＋tw_stock_db_code私有repo的code/cloudflare-worker/worker.js的/edge-tts路由）。
 // 精選常用的Microsoft Edge神經網路語音（voice代號格式固定是
@@ -34649,6 +34805,10 @@ self.onmessage = async (e) => {
                     }
                 },
             });
+        }
+        if (d.customVoice) { // kokoro-js 的聲音名單是凍結的（不能新增）：改成覆寫這個引擎的 _validate_voice，自己的聲音代號直接放行（回傳語言字母，跟原本一樣）
+            if (!_ttsEngine._faCustomIds) { _ttsEngine._faCustomIds = new Set(); const orig = _ttsEngine._validate_voice.bind(_ttsEngine); _ttsEngine._validate_voice = (v) => (_ttsEngine._faCustomIds.has(v) ? v.at(0) : orig(v)); }
+            _ttsEngine._faCustomIds.add(d.customVoice.id);
         }
         let audio;
         if (d.phonemes) { const ids = _ttsEngine.tokenizer(d.phonemes, { truncation: true }).input_ids; audio = await _ttsEngine.generate_from_ids(ids, { voice: d.voiceId, speed: d.speed || 1.0 }); } // 中文：呼叫端已轉成音素
@@ -42677,6 +42837,11 @@ class FloatingAssistant {
             '列出 /media-text-to-speech 可用的全部語音代號',
             () => this._handleMediaListVoicesCommand()
         );
+        // 聲音樣本（我的聲音）：建立／匯入／匯出／刪除；不帶參數的 /voice-create、/voice-import 會開啟同一個視窗（設定頁「語音設定」也有按鈕）
+        this.register_slash_command('/voice-create', '[<名字>] [lang=zh|en] [gender=f|m] [mix=代號:比例,…] [random] [seed=N] [count=N] [spread=X] [play=0]', '建立聲音樣本（我的聲音）：把現有的中文或英文聲音依比例混合成新聲音（Kokoro 語音包，在本機做、不上傳），或用種子隨機配出一個（同一個種子永遠同一個聲音）。做完自動試聽，並加進語音下拉選單與 /media-list-voices。不帶參數會開啟建立視窗。', (argsText) => this._handleVoiceCreateCommand(argsText));
+        this.register_slash_command('/voice-import', '', '匯入聲音樣本：選一個 Kokoro 語音包（.bin）或本程式匯出的 .voice.json，匯入成「我的聲音」（中文或英文），之後可以用語音代號給 /media-text-to-speech 使用。', (argsText) => this._handleVoiceImportCommand(argsText));
+        this.register_slash_command('/voice-export', '[<語音代號>]', '匯出自己的聲音（我的聲音）：下載 .bin（Kokoro 語音包，別人的 Kokoro 系工具直接能用）與 .voice.json（含配方，可以再匯入）。不帶代號會列出你的聲音。', (argsText) => this._handleVoiceExportCommand(argsText));
+        this.register_slash_command('/voice-delete', '<語音代號>', '刪除自己的聲音（我的聲音）。', (argsText) => this._handleVoiceDeleteCommand(argsText));
         // tw_stock_db客製: 2026-09-12使用者要求——配音也要能用/media-開頭的
         // 指令直接觸發（不經過LLM），走跟start_dubbing_session工具同一條路徑。
         this.register_slash_command(
@@ -43652,6 +43817,8 @@ class FloatingAssistant {
             // tw_stock_db客製: 2026-09-12——text_to_speech預設語音代號（見
             // TTS_VOICES）。
             ttsDefaultVoice: TTS_DEFAULT_VOICE,
+            ttsCustomVoices: [], // 我的聲音（匯入／建立的聲音樣本）清單；語音包本身在 "kokoro-voices" Cache
+            ttsPreferCustomVoice: true, // 沒指定聲音時，優先使用我的聲音
             // tw_stock_db客製: 2026-09-14使用者要求——預設開啟中文語音API
             // （原本因為「文字會離開瀏覽器送到Worker/Microsoft、需要Worker
             // 部署對應路由」這個理由預設關閉，跟browserSearchEnabled同一個
@@ -44870,6 +45037,7 @@ class FloatingAssistant {
 
     _normalizeAdvancedSettings(raw) {
         const defaults = this._createDefaultAdvancedSettings();
+        ttsRegisterCustomVoices(ttsNormalizeCustomVoices(raw && raw.ttsCustomVoices)); // 要在下面檢查「預設語音是不是存在」之前註冊好
         if (!raw || typeof raw !== 'object') {
             // tw_stock_db客製: 2026-09-14——raw完全不存在通常代表「使用者
             // 從來沒有動過Advance Settings的任何欄位」（不是真的第一次
@@ -45037,6 +45205,8 @@ class FloatingAssistant {
             extractAudioFormat: raw.extractAudioFormat === 'wav' ? 'wav' : 'mp3',
             docgen: (() => { const g = raw.docgen || {}; return { templates: (Array.isArray(g.templates) ? g.templates : []).slice(0, 30).map((t) => FaDocgen.sanitizeTemplate(t)).filter(Boolean), format: (Array.isArray(g.format) ? g.format : ['md']).filter((x, i, a) => FaDocgen.FORMATS.indexOf(x) >= 0 && a.indexOf(x) === i), lang: g.lang === 'en' ? 'en' : 'zh-TW', level: FaDocgen.LEVELS[g.level] ? g.level : 'standard', rewrite: g.rewrite !== false }; })(),
             imageGen: (() => { const g = raw.imageGen || {}; return { apiKey: String(g.apiKey || '').trim().slice(0, 300), model: String(g.model || 'black-forest-labs/flux.1-schnell').trim().slice(0, 120), customModel: String(g.customModel || '').trim().slice(0, 120), provider: ['online', 'local'].indexOf(g.provider) >= 0 ? g.provider : 'auto', localDevice: ['webgpu', 'cpu'].indexOf(g.localDevice) >= 0 ? g.localDevice : 'auto', templates: (() => { const t = g.templates || {}, q = t.quality || {}; return { styles: (Array.isArray(t.styles) ? t.styles : []).slice(0, 30).map((x) => ({ id: /^[a-z][a-z0-9_]{0,20}$/.test(String((x && x.id) || '')) ? x.id : undefined, zh: Array.isArray(x && x.zh) ? x.zh.map(String).join('，').slice(0, 80) : String((x && x.zh) || '').slice(0, 80), tags: Array.isArray(x && x.tags) ? x.tags.map(String).join(', ').slice(0, 200) : String((x && x.tags) || '').slice(0, 200), phrase: String((x && x.phrase) || '').slice(0, 80) })), quality: { sd15: String(q.sd15 || '').slice(0, 160), sd3: String(q.sd3 || '').slice(0, 160) }, negative: String(t.negative || '').slice(0, 160) }; })() }; })(),
+            ttsCustomVoices: ttsNormalizeCustomVoices(raw.ttsCustomVoices),
+            ttsPreferCustomVoice: raw.ttsPreferCustomVoice !== false,
             ttsDefaultVoice: TTS_VOICES.some(v => v.id === raw.ttsDefaultVoice) ? raw.ttsDefaultVoice : TTS_DEFAULT_VOICE,
             // tw_stock_db客製: 2026-09-14——這裡改成`!== false`（不是
             // `=== true`）：舊版settings沒有ttsApiEnabled這個欄位時
@@ -48770,7 +48940,7 @@ ${fnData.code}
             },
             { type: 'object', properties: {
                 text: { type: 'string', description: '要念的文字' },
-                voice: { type: 'string', enum: TTS_VOICES.concat(TTS_ZH_VOICES, TTS_API_VOICES).map(v => v.id), description: '（選填）語音代號，留空依文字語言自動判斷' },
+                voice: { type: 'string', description: '（選填）語音代號（用 /media-list-voices 查完整清單，包含使用者自己匯入／建立的聲音，沒指定時會優先用使用者自己的聲音）；留空依文字語言自動判斷' },
                 speed: { type: 'number', minimum: 0.5, maximum: 2.0, description: '（選填）語速倍數，0.5~2.0，留空用使用者設定的預設語速（通常是1.0）' },
             }, additionalProperties: false }
         );
@@ -49240,6 +49410,7 @@ ${fnData.code}
                     text,
                     phonemes: phonemes || undefined,
                     voiceId,
+                    customVoice: (() => { const cv = TTS_VOICES.find((v) => v.id === voiceId && v.custom); return cv ? { id: cv.id, name: cv.name, gender: cv.gender === '男' ? 'Male' : 'Female' } : null; })(),
                     speed: speed || 1.0,
                     kokoroJsUrl: FA_ASSET_URLS.kokoroJs,
                     modelId: TTS_MODEL_ID,
@@ -49357,6 +49528,8 @@ ${fnData.code}
         if (voiceId) {
             voice = TTS_VOICES.find(v => v.id === voiceId) || TTS_ZH_VOICES.find(v => v.id === voiceId) || TTS_API_VOICES.find(v => v.id === voiceId);
             if (!voice) return { ok: false, error: `不認得的語音代號「${voiceId}」` };
+        } else if (isCjk && this._ttsPreferredCustom('zh')) {
+            voice = this._ttsPreferredCustom('zh'); // 我的中文聲音優先
         } else if (isCjk && !this.advancedSettings.ttsApiEnabled && this.advancedSettings.ttsZhLocalFallback !== false) {
             voice = this._pickZhLocalVoice(null); // 線上中文語音關著，又開了「失效時改用本地」：直接用本地國語聲音
         } else if (isCjk) {
@@ -49365,7 +49538,7 @@ ${fnData.code}
             }
             voice = TTS_API_VOICES.find(v => v.id === this.advancedSettings.ttsDefaultApiVoice) || TTS_API_VOICES[0];
         } else {
-            voice = TTS_VOICES.find(v => v.id === this.advancedSettings.ttsDefaultVoice) || TTS_VOICES[0];
+            voice = this._ttsPreferredCustom('en') || TTS_VOICES.find(v => v.id === this.advancedSettings.ttsDefaultVoice) || TTS_VOICES[0];
         }
         if (voice.engine === 'api') {
             let r;
@@ -49399,6 +49572,7 @@ ${fnData.code}
             this._log('⚠️ TTS worker無法使用，改回主執行緒合成（可能會讓畫面短暫卡頓）：' + String(err.message || err));
         }
         const engine = await this._getTtsEngine(onProgress);
+        { const cv = TTS_VOICES.find((v) => v.id === voice.id && v.custom); if (cv) { if (!engine._faCustomIds) { engine._faCustomIds = new Set(); const orig = engine._validate_voice.bind(engine); engine._validate_voice = (v) => (engine._faCustomIds.has(v) ? v.at(0) : orig(v)); } engine._faCustomIds.add(cv.id); } } // 凍結的聲音名單不能新增：覆寫這個引擎的 _validate_voice
         const audio = phonemes
             ? await engine.generate_from_ids(engine.tokenizer(phonemes, { truncation: true }).input_ids, { voice: voice.id, speed: speed || 1.0 })
             : await engine.generate(text, { voice: voice.id, speed: speed || 1.0 });
@@ -49420,7 +49594,7 @@ ${fnData.code}
     async _zhPhonemeChunks(text, onProgress) { const deps = await this._zhLoadLibs(onProgress); return FaZhTts.textToChunks(text, deps, 440); }
     // 要退到本地中文時挑聲音：原本要的線上聲音是男聲就用男聲，不然用設定裡的本地國語聲音
     _pickZhLocalVoice(apiVoice) {
-        const pref = TTS_ZH_VOICES.find((v) => v.id === this.advancedSettings.ttsDefaultZhVoice) || TTS_ZH_VOICES[0];
+        const pref = this._ttsPreferredCustom('zh') || TTS_ZH_VOICES.find((v) => v.id === this.advancedSettings.ttsDefaultZhVoice) || TTS_ZH_VOICES[0];
         if (apiVoice && apiVoice.gender && apiVoice.gender !== pref.gender) { const alt = TTS_ZH_VOICES.find((v) => v.gender === apiVoice.gender); if (alt) return alt; }
         return pref;
     }
@@ -49444,11 +49618,12 @@ ${fnData.code}
         return out;
     }
     async _synthesizeSpeechLocal(t, voice, onProgress, speed, opts) {
+        { const ev = await this._ttsEnsureCustomVoice(voice); if (!ev.ok) return { ok: false, error: ev.error }; } // 自己的聲音：語音包不見了就照配方重算
         let chunks;
         if (voice.engine === 'local-zh') {
             // 中文句子裡的英文（BIOS、Boot Mode、UEFI、v1.2.3…）：拼音轉音素的路線會把英文一個字母一個字母「拼」出來（ABC → 欸、比、西），不對。
             // 改成：英文片段交給英文聲音照英文念（espeak 會自己判斷：一般單字照字念、全大寫的縮寫才逐字母），中文片段照原本的拼音路線，最後接起來。
-            const enVoice = TTS_VOICES.find((v) => v.id === this.advancedSettings.ttsDefaultVoice) || TTS_VOICES[0];
+            const enVoice = this._ttsPreferredCustom('en') || TTS_VOICES.find((v) => v.id === this.advancedSettings.ttsDefaultVoice) || TTS_VOICES[0];
             const segs = this._splitZhEn(t); const hasEn = segs.some((x) => x.en);
             if (!hasEn) {
                 let ph; try { ph = await this._zhPhonemeChunks(t, onProgress); } catch (err) { return { ok: false, error: '中文語音的文字轉拼音失敗：' + String((err && err.message) || err) }; }
@@ -49669,6 +49844,173 @@ ${fnData.code}
             return await cache.delete(TTS_VOICE_DATA_URL_BASE + voiceId + '.bin');
         } catch (_) { return false; }
     }
+
+    // ───── 我的聲音（匯入／建立的聲音樣本）─────
+    _ttsCustomList() { return ttsNormalizeCustomVoices(this.advancedSettings && this.advancedSettings.ttsCustomVoices); }
+    _ttsCustomSet(list) {
+        this.advancedSettings.ttsCustomVoices = ttsNormalizeCustomVoices(list);
+        ttsRegisterCustomVoices(this.advancedSettings.ttsCustomVoices);
+        try { this._saveAdvancedSettings(); } catch (_) { /* */ }
+        try { this._renderTtsVoicePanel(); } catch (_) { /* */ }
+    }
+    // 沒指定聲音、又開著「優先使用我的聲音」：回第一個（最新的）該語言的自訂聲音；沒有就回 null
+    _ttsPreferredCustom(lang) {
+        if (this.advancedSettings.ttsPreferCustomVoice === false) return null;
+        return (lang === 'zh' ? TTS_ZH_VOICES : TTS_VOICES).find((v) => v.custom) || null;
+    }
+    _ttsVoiceUrl(id) { return TTS_VOICE_DATA_URL_BASE + id + '.bin'; }
+    async _ttsCustomVoicePut(id, vec) {
+        if (typeof caches === 'undefined') throw new Error('這個環境沒有 Cache API，沒辦法保存聲音樣本');
+        const cache = await caches.open(TTS_VOICE_CACHE_NAME);
+        await cache.put(this._ttsVoiceUrl(id), new Response(FaVoiceSample.toBytes(vec), { status: 200, headers: { 'content-type': 'application/octet-stream' } }));
+        this._ttsResetEngines(); // kokoro-js 在記憶體裡也快取了每個代號的語音向量：換掉內容後要讓它重讀
+    }
+    async _ttsVoiceVector(id) {
+        if (typeof caches === 'undefined') return { ok: false, error: '這個環境沒有 Cache API' };
+        const cache = await caches.open(TTS_VOICE_CACHE_NAME);
+        const r = await cache.match(this._ttsVoiceUrl(id));
+        if (!r) return { ok: false, error: `語音包「${id}」還沒有安裝（或快取被清掉了）` };
+        return FaVoiceSample.fromBytes(await r.arrayBuffer());
+    }
+    // 混合用的底聲音：沒裝就先下載（跟「安裝語音包」同一條路）
+    async _ttsBaseVector(id, onProgress) {
+        let v = await this._ttsVoiceVector(id);
+        if (v.ok) return v;
+        const inst = await this._installTtsVoice(id, onProgress);
+        if (!inst.ok) return { ok: false, error: `取不到底聲音「${id}」：${inst.error}` };
+        return this._ttsVoiceVector(id);
+    }
+    _ttsResetEngines() {
+        try { if (this._ttsWorker) { this._ttsWorker.terminate(); this._ttsWorker = null; } } catch (_) { /* */ }
+        this._ttsEngine = null;
+    }
+    // 自訂聲音的語音包不見了（瀏覽器清掉快取）：建立出來的有配方，照配方重新算（同樣的種子與比例＝同一個聲音）；匯入的沒有辦法，請使用者重新匯入
+    async _ttsEnsureCustomVoice(voice) {
+        if (!voice || !voice.custom) return { ok: true };
+        const have = await this._ttsVoiceVector(voice.id);
+        if (have.ok) return have;
+        const c = this._ttsCustomList().find((x) => x.id === voice.id);
+        if (c && c.recipe && Array.isArray(c.recipe.parts) && c.recipe.parts.length) {
+            const items = [];
+            for (const p of c.recipe.parts) { const b = await this._ttsBaseVector(p.id); if (!b.ok) return b; items.push({ id: p.id, vec: b.vec, weight: p.weight }); }
+            const m = FaVoiceSample.mix(items, c.recipe.spread);
+            if (!m.ok) return m;
+            await this._ttsCustomVoicePut(voice.id, m.vec);
+            return { ok: true, vec: m.vec, rebuilt: true };
+        }
+        return { ok: false, error: `聲音「${voice.name}」的語音包不見了（瀏覽器清掉了快取），而且它是匯入的、沒有配方可以重算：請用「匯入聲音樣本」重新匯入（你匯出過的 .bin 或 .voice.json）` };
+    }
+
+    // 建立聲音樣本。spec：{ name, lang:'zh'|'en', gender:'f'|'m', mix:[{id,weight}], random, seed, count, spread }
+    // mix 有給就照配比混合；沒有（或 random）就用種子挑同語言的內建聲音隨機配比（沒給種子就用時間，並把種子寫進配方，之後可以重現）
+    async _ttsCreateVoiceSample(spec, onProgress) {
+        const lang = FaVoiceSample.langOf(spec.lang), gender = FaVoiceSample.genderOf(spec.gender);
+        const name = String(spec.name || '').trim() || (lang === 'zh' ? '我的聲音' : 'My voice');
+        const builtin = (lang === 'zh' ? TTS_ZH_VOICES : TTS_VOICES).filter((v) => !v.custom);
+        let parts = (spec.mix || []).filter((p) => p && p.weight > 0), seed = spec.seed;
+        if (parts.length) {
+            const bad = parts.find((p) => !builtin.some((v) => v.id === p.id) && !FaVoiceSample.isCustomId(p.id));
+            if (bad) return { ok: false, error: `不認得的底聲音「${bad.id}」：${lang === 'zh' ? '中文' : '英文'}可以混合的內建聲音有 ${builtin.map((v) => v.id).join('、')}（也可以用自己的聲音代號）` };
+        } else {
+            if (seed === null || seed === undefined) seed = Math.floor(Math.random() * 4294967296) >>> 0;
+            const r = FaVoiceSample.randomRecipe(seed, builtin.filter((v) => gender === 'm' ? v.gender === '男' : v.gender === '女').map((v) => v.id).concat(builtin.map((v) => v.id)).filter((x, i, a) => a.indexOf(x) === i).slice(0, 40), spec.count || 3);
+            if (!r.ok) return r;
+            parts = r.parts;
+        }
+        const items = [];
+        for (const p of parts) { if (onProgress) onProgress(`準備底聲音 ${p.id}…`); const b = await this._ttsBaseVector(p.id, onProgress); if (!b.ok) return b; items.push({ id: p.id, vec: b.vec, weight: p.weight }); }
+        const m = FaVoiceSample.mix(items, spec.spread);
+        if (!m.ok) return m;
+        const existing = TTS_VOICES.concat(TTS_ZH_VOICES).map((v) => v.id);
+        const id = FaVoiceSample.makeId(lang, gender, name, existing);
+        await this._ttsCustomVoicePut(id, m.vec);
+        const entry = { id, name, lang, gender, source: 'created', recipe: { parts: m.parts, spread: m.spread, seed: seed === undefined ? null : seed }, createdAt: new Date().toISOString() };
+        this._ttsCustomSet([entry].concat(this._ttsCustomList()));
+        return { ok: true, voice: entry };
+    }
+    // 匯入聲音樣本：.bin（Kokoro 語音包）或 .voice.json（本程式匯出的）。opts：{ name, lang, gender }（.bin 沒有這些資訊，要使用者給；.voice.json 裡有）
+    async _ttsImportVoiceSample(file, opts) {
+        opts = opts || {};
+        let parsed;
+        try {
+            if (/\.json$/i.test(file.name) || /json/i.test(file.type || '')) { parsed = FaVoiceSample.readPackage(JSON.parse(await file.text())); }
+            else { const r = FaVoiceSample.fromBytes(await file.arrayBuffer()); parsed = r.ok ? { ok: true, vec: r.vec, name: '', lang: '', gender: '', recipe: null } : r; }
+        } catch (err) { return { ok: false, error: '讀不懂這個檔案：' + String((err && err.message) || err) }; }
+        if (!parsed.ok) return parsed;
+        const lang = FaVoiceSample.langOf(opts.lang || parsed.lang || 'en'), gender = FaVoiceSample.genderOf(opts.gender || parsed.gender || 'f');
+        const name = String(opts.name || parsed.name || file.name.replace(/\.(voice\.json|json|bin)$/i, '')).trim() || (lang === 'zh' ? '匯入的聲音' : 'Imported voice');
+        const id = FaVoiceSample.makeId(lang, gender, name, TTS_VOICES.concat(TTS_ZH_VOICES).map((v) => v.id));
+        await this._ttsCustomVoicePut(id, parsed.vec);
+        const entry = { id, name, lang, gender, source: 'imported', recipe: parsed.recipe && Array.isArray(parsed.recipe.parts) ? parsed.recipe : null, createdAt: new Date().toISOString() };
+        this._ttsCustomSet([entry].concat(this._ttsCustomList()));
+        return { ok: true, voice: entry };
+    }
+    // 匯出：.bin（Kokoro 語音包，別人的 Kokoro 系工具直接能用）＋ .voice.json（含配方，可以再匯入）。兩個檔案各自下載。
+    async _ttsExportVoiceSample(id) {
+        const c = this._ttsCustomList().find((x) => x.id === id);
+        if (!c) return { ok: false, error: `「${id}」不是自己匯入或建立的聲音（內建聲音不用匯出，可以直接從 Kokoro 下載）` };
+        const e = await this._ttsEnsureCustomVoice({ id, name: c.name, custom: true });
+        if (!e.ok) return e;
+        const v = e.vec ? { ok: true, vec: e.vec } : await this._ttsVoiceVector(id);
+        if (!v.ok) return v;
+        const save = (blob, filename) => { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000); };
+        const pkg = FaVoiceSample.makePackage({ name: c.name, lang: c.lang, gender: c.gender, id, vec: v.vec, recipe: c.recipe, createdAt: c.createdAt });
+        save(new Blob([FaVoiceSample.toBytes(v.vec)], { type: 'application/octet-stream' }), id + '.bin');
+        await new Promise((r) => setTimeout(r, 400)); // 兩個下載之間隔一下，瀏覽器才不會把第二個當成重複而擋掉
+        save(new Blob([JSON.stringify(pkg, null, 2)], { type: 'application/json' }), id + '.voice.json');
+        return { ok: true, files: [id + '.bin', id + '.voice.json'] };
+    }
+    async _ttsDeleteCustomVoice(id) {
+        const list = this._ttsCustomList(); if (!list.some((x) => x.id === id)) return { ok: false, error: `沒有這個自己的聲音：${id}` };
+        await this._deleteTtsVoice(id);
+        this._ttsCustomSet(list.filter((x) => x.id !== id));
+        for (const k of ['ttsDefaultVoice', 'ttsDefaultZhVoice']) if (this.advancedSettings[k] === id) this.advancedSettings[k] = k === 'ttsDefaultVoice' ? TTS_DEFAULT_VOICE : TTS_DEFAULT_ZH_VOICE;
+        try { this._saveAdvancedSettings(); } catch (_) { /* */ }
+        this._ttsResetEngines();
+        return { ok: true };
+    }
+    // 合成一句試聽（語言對應的示範句），回 { ok, blob } 或 { ok:false, error }
+    async _ttsSampleBlob(voiceId, onProgress) {
+        const v = TTS_VOICES.concat(TTS_ZH_VOICES).find((x) => x.id === voiceId); if (!v) return { ok: false, error: `不認得聲音「${voiceId}」` };
+        const r = await this._synthesizeSpeech(FaVoiceSample.sampleText(v.engine === 'local-zh' ? 'zh' : 'en'), voiceId, onProgress);
+        if (!r.ok) return r;
+        const rec = await this.fileCache.get(r.audio_file_id); if (!rec) return { ok: false, error: '找不到剛合成的試聽音檔' };
+        return { ok: true, blob: rec.blob, fileId: r.audio_file_id };
+    }
+
+    // /voice-create <名字> [lang=zh|en] [gender=f|m] [mix=代號:比例,…] [random] [seed=N] [count=N] [spread=X] [play=0]
+    async _handleVoiceCreateCommand(argsText) {
+        const a = FaVoiceSample.parseCreateArgs(argsText);
+        if (!String(argsText || '').trim()) { this._voiceCreateDialog(); return; }
+        if (a.errors.length) { this._pushAssistantMessage('⚠️ /voice-create：' + a.errors.join('；') + '\n\n用法：`/voice-create 名字 lang=zh gender=f mix=zf_xiaoxiao:0.7,zf_xiaoyi:0.3 spread=1.2`，或 `/voice-create 名字 random lang=en seed=42`。不帶參數會開啟「建立聲音樣本」視窗。', null); this._persistChatHistory(); this._renderMessageHistory(); return; }
+        this.messages.push({ role: 'user', content: '/voice-create ' + String(argsText).trim() });
+        const prog = this._createProgressWidget('建立聲音樣本');
+        let res;
+        try { res = await this._ttsCreateVoiceSample({ name: a.name, lang: a.lang || (/[一-鿿]/.test(a.name) ? 'zh' : 'en'), gender: a.gender, mix: a.random ? [] : a.mix, seed: a.seed, count: a.count, spread: a.spread }, (m) => prog.update({ status: m })); } catch (err) { res = { ok: false, error: String((err && err.message) || err) }; }
+        if (!res.ok) { prog.fail(res.error); return; }
+        prog.finish('完成：' + res.voice.id);
+        const v = res.voice, recipe = (v.recipe && v.recipe.parts || []).map((p) => `${p.id}×${p.weight}`).join(' + ');
+        this._pushAssistantMessage(`✅ 已建立聲音樣本「${v.name}」\n\n- 語音代號：\`${v.id}\`（${v.lang === 'zh' ? '中文' : '英文'}／${v.gender === 'm' ? '男' : '女'}）\n- 配方：${recipe}${v.recipe && v.recipe.spread !== 1 ? `（個性 ${v.recipe.spread}）` : ''}${v.recipe && v.recipe.seed !== null && v.recipe.seed !== undefined ? `，種子 ${v.recipe.seed}（同一個種子會得到同一個聲音）` : ''}\n- 用法：\`/media-text-to-speech 要念的文字 ${v.id}\`，語音設定的下拉選單也選得到；匯出：\`/voice-export ${v.id}\``, null);
+        this._persistChatHistory(); this._renderMessageHistory();
+        if (a.play) {
+            try { const s = await this._ttsSampleBlob(v.id); if (s.ok) await this._deliverExistingCacheFile(s.fileId, `📎 試聽「${v.name}」`); else this._pushAssistantMessage('（試聽合成失敗：' + s.error + '）', null); } catch (_) { /* 試聽失敗不影響聲音本身 */ }
+            this._persistChatHistory(); this._renderMessageHistory();
+        }
+    }
+    // /voice-import：開啟檔案選擇（.bin 或 .voice.json），再問名字與語言
+    async _handleVoiceImportCommand(argsText) { this._voiceImportDialog(String(argsText || '').trim()); }
+    async _handleVoiceExportCommand(argsText) {
+        const id = String(argsText || '').trim().split(/\s+/)[0];
+        if (!id) { const l = this._ttsCustomList(); this._pushAssistantMessage(l.length ? '用法：`/voice-export <語音代號>`。你的聲音：\n' + l.map((c) => `- \`${c.id}\`　${c.name}`).join('\n') : '還沒有自己的聲音：先 `/voice-create` 或 `/voice-import`。', null); this._persistChatHistory(); this._renderMessageHistory(); return; }
+        const r = await this._ttsExportVoiceSample(id);
+        this._pushAssistantMessage(r.ok ? `✅ 已匯出：${r.files.join('、')}（.bin 是 Kokoro 語音包，別人的 Kokoro 系工具直接能用；.voice.json 含配方，可以用 /voice-import 再匯入）` : '⚠️ ' + r.error, null); this._persistChatHistory(); this._renderMessageHistory();
+    }
+    async _handleVoiceDeleteCommand(argsText) {
+        const id = String(argsText || '').trim().split(/\s+/)[0];
+        const r = id ? await this._ttsDeleteCustomVoice(id) : { ok: false, error: '用法：/voice-delete <語音代號>' };
+        this._pushAssistantMessage(r.ok ? `🗑 已刪除聲音「${id}」` : '⚠️ ' + r.error, null); this._persistChatHistory(); this._renderMessageHistory();
+    }
+
 
     // 跟_getWhisperCacheInfo同一個模式——但這裡篩'transformers-cache'裡
     // URL含'Kokoro'的項目（TTS模型本體，跟Whisper模型共用同一個Cache物件、
@@ -58378,7 +58720,8 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     async _renderTtsVoicePanel() {
         const listEl = document.getElementById('ai-tts-voice-list');
         const defaultSelect = document.getElementById('ai-tts-default-voice');
-        if (defaultSelect && !defaultSelect.options.length) {
+        try { this._renderTtsCustomList(); } catch (_) { /* */ }
+        if (defaultSelect) {
             defaultSelect.innerHTML = TTS_VOICES.map(v => `<option value="${v.id}">${v.name}（${v.lang}／${v.gender}）— ${v.id}</option>`).join('');
         }
         if (defaultSelect) defaultSelect.value = this.advancedSettings.ttsDefaultVoice;
@@ -58392,7 +58735,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const zhFallbackChk = document.getElementById('ai-tts-zh-fallback-chk');
         if (zhFallbackChk) zhFallbackChk.checked = this.advancedSettings.ttsZhLocalFallback !== false;
         const zhLocalSelect = document.getElementById('ai-tts-zh-local-voice');
-        if (zhLocalSelect) { if (!zhLocalSelect.options.length) zhLocalSelect.innerHTML = TTS_ZH_VOICES.map(v => `<option value="${v.id}">${v.name}（${v.gender}）— ${v.id}</option>`).join(''); zhLocalSelect.value = this.advancedSettings.ttsDefaultZhVoice; }
+        if (zhLocalSelect) { zhLocalSelect.innerHTML = TTS_ZH_VOICES.map(v => `<option value="${v.id}">${v.name}（${v.gender}）— ${v.id}</option>`).join(''); zhLocalSelect.value = this.advancedSettings.ttsDefaultZhVoice; }
         const apiProxyUrlInput = document.getElementById('ai-tts-api-proxy-url');
         if (apiProxyUrlInput) apiProxyUrlInput.value = this.advancedSettings.ttsApiProxyUrl || '';
         const speedSlider = document.getElementById('ai-tts-default-speed');
@@ -58406,11 +58749,119 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             listEl.innerHTML = '<span>尚未安裝任何語音包（選好上面的預設語音後，第一次試聽/合成時會自動下載）。</span>';
             return;
         }
-        listEl.innerHTML = [...installed].sort().map(id => {
+        listEl.innerHTML = [...installed].filter((id) => !FaVoiceSample.isCustomId(id)).sort().map(id => {
             const v = TTS_VOICES.find(x => x.id === id) || TTS_ZH_VOICES.find(x => x.id === id);
             const label = v ? `${v.name}（${v.lang}／${v.gender}）— ${id}` : id;
             return `<span style="display:flex; align-items:center; gap:8px;">✅ ${label}<button type="button" class="ai-advanced-btn danger" data-tts-delete-voice="${id}" style="padding:1px 8px; margin-left:auto;">刪除</button></span>`;
         }).join('');
+    }
+
+
+    // ───── 我的聲音：視窗與設定頁清單 ─────
+    // 設定頁「我的聲音」清單：每個自己的聲音一行（試聽／設為預設／匯出／刪除），重繪時由 _renderTtsVoicePanel 呼叫
+    _renderTtsCustomList() {
+        const el = document.getElementById('ai-tts-custom-list'); if (!el) return;
+        const esc = (s) => this._escapeHtml(String(s == null ? '' : s)), list = this._ttsCustomList();
+        const chk = document.getElementById('ai-tts-prefer-custom-chk'); if (chk) chk.checked = this.advancedSettings.ttsPreferCustomVoice !== false;
+        if (!list.length) { el.innerHTML = '<span class="ai-advanced-hint">還沒有自己的聲音。按上面的「建立聲音樣本」做一個，或「匯入聲音樣本」匯入別人給你的（.bin 或 .voice.json）。</span>'; return; }
+        el.innerHTML = list.map((c) => {
+            const isDef = (c.lang === 'zh' ? this.advancedSettings.ttsDefaultZhVoice : this.advancedSettings.ttsDefaultVoice) === c.id;
+            return `<div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; padding:4px 0; border-top:1px solid rgba(128,128,128,.25);">`
+                + `<span style="flex:1 1 180px; min-width:0;">${c.source === 'imported' ? '📥' : '🎙'} <b>${esc(c.name)}</b>　<code>${esc(c.id)}</code>　${c.lang === 'zh' ? '中文' : '英文'}／${c.gender === 'm' ? '男' : '女'}${isDef ? '　✅ 預設' : ''}</span>`
+                + `<button type="button" class="ai-advanced-btn" data-tts-custom-act="play" data-id="${esc(c.id)}" style="padding:1px 8px;">🔊 試聽</button>`
+                + (isDef ? '' : `<button type="button" class="ai-advanced-btn" data-tts-custom-act="default" data-id="${esc(c.id)}" style="padding:1px 8px;">設為預設</button>`)
+                + `<button type="button" class="ai-advanced-btn" data-tts-custom-act="export" data-id="${esc(c.id)}" style="padding:1px 8px;">匯出</button>`
+                + `<button type="button" class="ai-advanced-btn danger" data-tts-custom-act="delete" data-id="${esc(c.id)}" style="padding:1px 8px;">刪除</button></div>`;
+        }).join('') + '<div id="ai-tts-custom-player-slot"></div>';
+    }
+    async _ttsCustomListAction(act, id, btn) {
+        const c = this._ttsCustomList().find((x) => x.id === id); if (!c) return;
+        if (act === 'default') { this.advancedSettings[c.lang === 'zh' ? 'ttsDefaultZhVoice' : 'ttsDefaultVoice'] = id; this._saveAdvancedSettings(); this._renderTtsVoicePanel(); return; }
+        if (act === 'delete') { if (!window.confirm(`刪除聲音「${c.name}」（${id}）？\n\n${c.source === 'imported' ? '這是匯入的，刪除後只能重新匯入。' : '這是建立的，刪除後要重新建立（有配方的聲音可以做出一樣的）。'}`)) return; const r = await this._ttsDeleteCustomVoice(id); if (!r.ok) window.alert(r.error); return; }
+        if (act === 'export') { btn.disabled = true; const r = await this._ttsExportVoiceSample(id); btn.disabled = false; if (!r.ok) window.alert(r.error); return; }
+        if (act === 'play') {
+            const slot = document.getElementById('ai-tts-custom-player-slot'); const label = btn.textContent; btn.disabled = true; btn.textContent = '合成中…';
+            try { const s = await this._ttsSampleBlob(id, (m) => { btn.textContent = m; }); if (!s.ok) throw new Error(s.error); if (slot) { slot.innerHTML = ''; this._mountAudioPlayer(slot, s.blob); } }
+            catch (err) { if (slot) slot.innerHTML = `<span class="ai-advanced-hint" style="color:#c0392b;">試聽失敗：${this._escapeHtml(String(err.message || err))}</span>`; }
+            finally { btn.disabled = false; btn.textContent = label; }
+        }
+    }
+
+    // 「建立聲音樣本」視窗（設定頁的按鈕與 /voice-create 不帶參數都開這個）
+    _voiceCreateDialog() {
+        const P = this._domainConfigPopup('ai-voice-create-modal', '🎙 建立聲音樣本', { width: 600 }), body = P.body;
+        const esc = (s) => this._escapeHtml(String(s == null ? '' : s));
+        body.innerHTML = `<p class="ai-advanced-hint" style="margin-top:0;">把現有的聲音混合成一個新聲音（Kokoro 語音包，在這台電腦上做，不上傳）。可以做中文（國語）或英文，做完可以試聽、匯出給別人用。</p>
+          <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:8px;">
+            <label>名字 <input type="text" id="vc-name" class="ai-advanced-input" style="width:170px;" placeholder="例如 溫柔老師"></label>
+            <label>語言 <select id="vc-lang" class="ai-advanced-input"><option value="zh">中文（國語）</option><option value="en">英文</option></select></label>
+            <label>性別 <select id="vc-gender" class="ai-advanced-input"><option value="f">女</option><option value="m">男</option></select></label>
+          </div>
+          <div style="margin-bottom:6px;"><label><input type="radio" name="vc-mode" value="mix" checked> 自己指定混合比例</label>　<label><input type="radio" name="vc-mode" value="random"> 用種子隨機配出一個（同一個種子永遠同一個聲音）</label></div>
+          <div id="vc-mix"></div>
+          <div id="vc-random" style="display:none; gap:8px; align-items:center; flex-wrap:wrap;"><label>種子 <input type="number" id="vc-seed" class="ai-advanced-input" style="width:140px;" min="0" step="1"></label><button type="button" id="vc-dice" class="ai-advanced-btn">🎲 換一個</button><label>混合幾個聲音 <select id="vc-count" class="ai-advanced-input"><option>2</option><option selected>3</option><option>4</option></select></label></div>
+          <div style="margin:8px 0;"><label>個性（1＝照比例混合；大於 1 更有個性、小於 1 更中性） <input type="range" id="vc-spread" min="0.5" max="1.8" step="0.1" value="1" style="vertical-align:middle;"> <b id="vc-spread-v">1.0</b></label></div>
+          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;"><button type="button" id="vc-make" class="ai-advanced-btn" style="font-weight:bold;">建立並試聽</button><span id="vc-status" class="ai-advanced-hint" style="margin:0;"></span></div>
+          <div id="vc-result" style="margin-top:8px;"></div>`;
+        const $ = (s) => body.querySelector(s); const langSel = $('#vc-lang');
+        const voices = () => (langSel.value === 'zh' ? TTS_ZH_VOICES : TTS_VOICES);
+        const renderMix = () => { const opts = voices().map((v) => `<option value="${esc(v.id)}">${esc(v.name)}（${esc(v.gender)}）${v.custom ? ' ★我的' : ''} — ${esc(v.id)}</option>`).join(''); const pick = (i) => voices().filter((v) => !v.custom)[i] || voices()[0]; $('#vc-mix').innerHTML = [0, 1, 2].map((i) => `<div style="display:flex; gap:8px; align-items:center; margin:3px 0;"><select class="ai-advanced-input vc-base" style="flex:1; min-width:0;"><option value="">（不用）</option>${opts}</select><input type="range" class="vc-w" min="0" max="100" value="${i === 0 ? 60 : i === 1 ? 40 : 0}" style="width:130px;"><b class="vc-wv" style="width:38px; text-align:right;"></b></div>`).join(''); [...body.querySelectorAll('.vc-base')].forEach((s, i) => { s.value = i < 2 ? pick(i).id : ''; }); sync(); };
+        const sync = () => { [...body.querySelectorAll('.vc-w')].forEach((r) => { r.nextElementSibling.textContent = r.value + '%'; }); };
+        body.addEventListener('input', (e) => { if (e.target.classList.contains('vc-w')) sync(); if (e.target.id === 'vc-spread') $('#vc-spread-v').textContent = Number(e.target.value).toFixed(1); });
+        langSel.addEventListener('change', renderMix);
+        const modeOf = () => (body.querySelector('input[name="vc-mode"]:checked') || {}).value;
+        body.querySelectorAll('input[name="vc-mode"]').forEach((r) => r.addEventListener('change', () => { $('#vc-mix').style.display = modeOf() === 'mix' ? '' : 'none'; $('#vc-random').style.display = modeOf() === 'random' ? 'flex' : 'none'; }));
+        const dice = () => { $('#vc-seed').value = String(Math.floor(Math.random() * 1000000)); }; $('#vc-dice').onclick = dice; dice(); renderMix();
+        $('#vc-make').onclick = async () => {
+            const btn = $('#vc-make'), st = $('#vc-status'), res = $('#vc-result'); const name = $('#vc-name').value.trim();
+            if (!name) { st.textContent = '請先幫這個聲音取個名字'; return; }
+            const spec = { name, lang: langSel.value, gender: $('#vc-gender').value, spread: Number($('#vc-spread').value) };
+            if (modeOf() === 'mix') { spec.mix = [...body.querySelectorAll('.vc-base')].map((s, i) => ({ id: s.value, weight: Number(body.querySelectorAll('.vc-w')[i].value) / 100 })).filter((p) => p.id && p.weight > 0); if (!spec.mix.length) { st.textContent = '至少選一個聲音、比例大於 0'; return; } }
+            else { spec.seed = Number($('#vc-seed').value) >>> 0; spec.count = Number($('#vc-count').value); }
+            btn.disabled = true; res.innerHTML = '';
+            try {
+                const r = await this._ttsCreateVoiceSample(spec, (m) => { st.textContent = m; }); if (!r.ok) throw new Error(r.error);
+                st.textContent = '合成試聽中…'; const s = await this._ttsSampleBlob(r.voice.id, (m) => { st.textContent = m; });
+                st.textContent = `✅ 已建立「${r.voice.name}」，語音代號 ${r.voice.id}（已加進語音下拉選單與 /media-list-voices）`;
+                res.innerHTML = '<div id="vc-player"></div><div style="margin-top:6px;"><button type="button" id="vc-export" class="ai-advanced-btn">匯出（.bin ＋ .voice.json）</button>　<button type="button" id="vc-default" class="ai-advanced-btn">設為預設語音</button></div>';
+                if (s.ok) this._mountAudioPlayer(res.querySelector('#vc-player'), s.blob); else res.querySelector('#vc-player').innerHTML = `<span class="ai-advanced-hint" style="color:#c0392b;">試聽失敗：${esc(s.error)}</span>`;
+                res.querySelector('#vc-export').onclick = async () => { const e = await this._ttsExportVoiceSample(r.voice.id); if (!e.ok) window.alert(e.error); };
+                res.querySelector('#vc-default').onclick = () => { this.advancedSettings[r.voice.lang === 'zh' ? 'ttsDefaultZhVoice' : 'ttsDefaultVoice'] = r.voice.id; this._saveAdvancedSettings(); this._renderTtsVoicePanel(); st.textContent = '已設為預設語音'; };
+            } catch (err) { st.textContent = '⚠️ ' + String((err && err.message) || err); }
+            finally { btn.disabled = false; }
+        };
+    }
+
+    // 「匯入聲音樣本」視窗：選 .bin（Kokoro 語音包）或 .voice.json（本程式匯出的，名字／語言／性別會自動帶入）
+    _voiceImportDialog() {
+        const P = this._domainConfigPopup('ai-voice-import-modal', '📥 匯入聲音樣本', { width: 520 }), body = P.body;
+        body.innerHTML = `<p class="ai-advanced-hint" style="margin-top:0;">匯入 Kokoro 語音包（.bin，大小剛好 522,240 bytes）或這個程式匯出的 .voice.json。匯入後會出現在語音設定的下拉選單，也能用語音代號給 /media-text-to-speech 與 text_to_speech 用。（ChatTTS 的說話人向量是另一種格式，不能匯入。）</p>
+          <div style="margin-bottom:8px;"><input type="file" id="vi-file" accept=".bin,.json,application/json,application/octet-stream"></div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:8px;">
+            <label>名字 <input type="text" id="vi-name" class="ai-advanced-input" style="width:170px;"></label>
+            <label>語言 <select id="vi-lang" class="ai-advanced-input"><option value="zh">中文（國語）</option><option value="en">英文</option></select></label>
+            <label>性別 <select id="vi-gender" class="ai-advanced-input"><option value="f">女</option><option value="m">男</option></select></label>
+          </div>
+          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;"><button type="button" id="vi-go" class="ai-advanced-btn" style="font-weight:bold;">匯入</button><span id="vi-status" class="ai-advanced-hint" style="margin:0;"></span></div>
+          <div id="vi-result" style="margin-top:8px;"></div>`;
+        const $ = (s) => body.querySelector(s); let picked = null;
+        $('#vi-file').onchange = async (e) => {
+            picked = e.target.files && e.target.files[0]; if (!picked) return;
+            if (!$('#vi-name').value) $('#vi-name').value = picked.name.replace(/\.(voice\.json|json|bin)$/i, '');
+            if (/\.json$/i.test(picked.name)) { try { const j = JSON.parse(await picked.text()); if (j && j.format === FaVoiceSample.FORMAT) { if (j.name) $('#vi-name').value = j.name; if (j.lang) $('#vi-lang').value = FaVoiceSample.langOf(j.lang); if (j.gender) $('#vi-gender').value = FaVoiceSample.genderOf(j.gender); } } catch (_) { /* 匯入時會報錯 */ } }
+        };
+        $('#vi-go').onclick = async () => {
+            const st = $('#vi-status'), res = $('#vi-result'); if (!picked) { st.textContent = '請先選一個檔案'; return; }
+            $('#vi-go').disabled = true; res.innerHTML = '';
+            try {
+                const r = await this._ttsImportVoiceSample(picked, { name: $('#vi-name').value.trim(), lang: $('#vi-lang').value, gender: $('#vi-gender').value }); if (!r.ok) throw new Error(r.error);
+                st.textContent = `✅ 已匯入「${r.voice.name}」，語音代號 ${r.voice.id}（已加進語音下拉選單與 /media-list-voices）`;
+                res.innerHTML = '<div id="vi-player"></div><div style="margin-top:6px;"><button type="button" id="vi-play" class="ai-advanced-btn">🔊 試聽</button>　<button type="button" id="vi-default" class="ai-advanced-btn">設為預設語音</button></div>';
+                res.querySelector('#vi-play').onclick = async () => { const s = await this._ttsSampleBlob(r.voice.id, (m) => { st.textContent = m; }); if (s.ok) { res.querySelector('#vi-player').innerHTML = ''; this._mountAudioPlayer(res.querySelector('#vi-player'), s.blob); st.textContent = ''; } else st.textContent = '⚠️ 試聽失敗：' + s.error; };
+                res.querySelector('#vi-default').onclick = () => { this.advancedSettings[r.voice.lang === 'zh' ? 'ttsDefaultZhVoice' : 'ttsDefaultVoice'] = r.voice.id; this._saveAdvancedSettings(); this._renderTtsVoicePanel(); st.textContent = '已設為預設語音'; };
+            } catch (err) { st.textContent = '⚠️ ' + String((err && err.message) || err); }
+            finally { $('#vi-go').disabled = false; }
+        };
     }
 
     // tw_stock_db客製: 2026-09-14——語音試聽：依選定語音的語言挑一句簡短示範文字，
@@ -84691,9 +85142,11 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             return `### ${title}${note ? `　${note}` : ''}\n\n${body}`;
         };
         const apiNote = this.advancedSettings.ttsApiEnabled ? '（已啟用）' : '（⚠️尚未啟用，見設定「子Agent」分頁）';
-        const msg = section('本地語音（純瀏覽器、不上傳，只支援英文）', TTS_VOICES)
+        const mine = TTS_VOICES.concat(TTS_ZH_VOICES).filter((v) => v.custom);
+        const msg = (mine.length ? section('我的聲音（匯入／建立，優先使用）', mine, '（/voice-create、/voice-import；匯出用 /voice-export <代號>）') + '\n\n' : '')
+            + section('本地語音（純瀏覽器、不上傳，英文）', TTS_VOICES.filter((v) => !v.custom)) + '\n\n' + section('本地中文語音（Kokoro 國語，不上傳）', TTS_ZH_VOICES.filter((v) => !v.custom))
             + '\n\n' + section('API語音（中文／粵語／日文／韓文…，需要啟用）', TTS_API_VOICES, apiNote);
-        this._pushAssistantMessage(`**可用語音代號**（共 ${TTS_VOICES.length + TTS_API_VOICES.length} 個）\n\n${msg}`, null);
+        this._pushAssistantMessage(`**可用語音代號**（共 ${TTS_VOICES.length + TTS_ZH_VOICES.length + TTS_API_VOICES.length} 個）\n\n${msg}`, null);
         this._persistChatHistory();
         this._renderMessageHistory();
     }
@@ -89297,6 +89750,19 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                     <div id="ai-tts-voice-list" class="ai-advanced-hint" style="margin-top:6px; display:flex; flex-direction:column; gap:4px;"></div>
                                 </div>
                                 <div class="ai-advanced-stack">
+                                    <label class="ai-advanced-label">我的聲音（聲音樣本）—— 中文與英文</label>
+                                    <p class="ai-advanced-hint">用現有聲音混合出自己的聲音（建立聲音樣本），或匯入別人給你的 Kokoro 語音包（.bin 或 .voice.json）。做好的聲音會排在所有語音下拉選單的最前面，也能在 /media-list-voices 看到、用語音代號給 /media-text-to-speech 與 text_to_speech 用。可以匯出給別人（.bin 是 Kokoro 語音包，Kokoro 系的工具直接能用；ChatTTS 的說話人向量是另一種格式，不能互通）。指令：/voice-create、/voice-import、/voice-export、/voice-delete。</p>
+                                    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:6px;">
+                                        <button type="button" id="ai-tts-voice-create-btn" class="ai-advanced-btn">🎙 建立聲音樣本</button>
+                                        <button type="button" id="ai-tts-voice-import-btn" class="ai-advanced-btn">📥 匯入聲音樣本</button>
+                                    </div>
+                                    <div style="display:flex; align-items:center; gap:6px;">
+                                        <input type="checkbox" id="ai-tts-prefer-custom-chk" style="cursor:pointer;">
+                                        <label for="ai-tts-prefer-custom-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">優先使用我的聲音（沒指定聲音時，有自己的聲音就用最新的那個，中文與英文各自挑）</label>
+                                    </div>
+                                    <div id="ai-tts-custom-list" style="margin-top:6px; display:flex; flex-direction:column; gap:2px;"></div>
+                                </div>
+                                                                <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label">語音合成子Agent —— 中文語音（API 轉接）</label>
                                     <p class="ai-advanced-hint">中文/粵語/日文/韓文語音走 Microsoft Edge 免費神經網路語音，透過你部署的 Cloudflare Worker 的 /edge-tts 路由轉接（見你自己部署的Cloudflare Worker原始碼的README說明）。⚠️跟上面的本地英文語音不同——啟用後，text_to_speech 念中文時文字會離開瀏覽器、送到你設定的 Worker（再送到 Microsoft），不是純本機處理。</p>
                                     <div style="display:flex; align-items:center; gap:6px;">
@@ -92721,6 +93187,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             });
         }
         // tw_stock_db客製: 2026-09-12——語音合成（text_to_speech）設定區塊。
+        { const cb = document.getElementById('ai-tts-voice-create-btn'); if (cb) cb.addEventListener('click', () => this._voiceCreateDialog()); const ib = document.getElementById('ai-tts-voice-import-btn'); if (ib) ib.addEventListener('click', () => this._voiceImportDialog()); const pc = document.getElementById('ai-tts-prefer-custom-chk'); if (pc) pc.addEventListener('change', () => { this.advancedSettings.ttsPreferCustomVoice = pc.checked; this._saveAdvancedSettings(); }); const cl = document.getElementById('ai-tts-custom-list'); if (cl) cl.addEventListener('click', (e) => { const b = e.target.closest && e.target.closest('[data-tts-custom-act]'); if (b) this._ttsCustomListAction(b.getAttribute('data-tts-custom-act'), b.getAttribute('data-id'), b); }); }
         const ttsDefaultVoiceSelect = document.getElementById('ai-tts-default-voice');
         if (ttsDefaultVoiceSelect) {
             ttsDefaultVoiceSelect.addEventListener('change', () => {

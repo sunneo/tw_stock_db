@@ -107,6 +107,14 @@ function embedZhTts() {
     console.log('已更新 FaZhTts（' + core.length + ' 字元）');
 }
 embedZhTts();
+function embedVoiceSample() {
+    const core = fs.readFileSync(path.join(root, 'renderer/src/tts/voice_sample.js'), 'utf8').replace(/\r\n/g, '\n');
+    const a = src.indexOf('/* VSAMPLE-BEGIN */'), b = src.indexOf('/* VSAMPLE-END */');
+    if (a < 0 || b < 0) throw new Error('找不到 VSAMPLE 標記');
+    src = src.slice(0, a) + '/* VSAMPLE-BEGIN */\nconst FaVoiceSample = (function () {\nconst holder = {};\n(function (module, self) {\n' + core + '\n}).call(null, undefined, holder);\nreturn holder.FaVoiceSample;\n})();\n' + src.slice(b);
+    console.log('已更新 FaVoiceSample（' + core.length + ' 字元）');
+}
+embedVoiceSample();
 function embedRecipe() {
     const core = fs.readFileSync(path.join(root, 'renderer/src/recipe/recipe_core.js'), 'utf8').replace(/\r\n/g, '\n');
     const a = src.indexOf('/* RECIPE-BEGIN */'), b = src.indexOf('/* RECIPE-END */');
