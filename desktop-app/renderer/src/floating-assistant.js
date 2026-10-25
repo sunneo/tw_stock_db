@@ -25503,7 +25503,7 @@ const holder = {};
           var probs = []; s.seq++; var cand = Object.assign({}, e.object || {}, { id: 'o' + s.seq }); var v = validateObject(cand, probs, {}); if (!v) { return { error: (probs[0] || 'the object is not valid') }; }
           v.id = 'o' + s.seq; var at = e.at, idx = s.objects.length;
           if (at === 'bottom') { idx = 0; } else if (typeof at === 'number') { idx = Math.max(0, Math.min(s.objects.length, Math.round(at))); } else if (at && typeof at === 'object' && at.above) { var a = find(s, at.above); if (a >= 0) { idx = a + 1; } }
-          if (e.place) { var bx = bboxOf(v); if (!bx) { return { error: 'the new object has no size to place' }; } var pr = resolvePlace(s, bx, e.place, env, null); if (pr.error) { return { error: pr.error }; } moveObj(v, pr.dx, pr.dy); }
+          if (e.place && bboxOf(v)) { var bx = bboxOf(v); var pr = resolvePlace(s, bx, e.place, env, null); if (pr.error) { return { error: pr.error }; } moveObj(v, pr.dx, pr.dy); }
           else if (s.objects.length === 0 && env && env.view && !('place' in e)) { /* the first object stays where it was written */ }
           s.objects.splice(idx, 0, v); s._added = (s._added || []).concat([v.id]); return {};
         }
@@ -27047,7 +27047,7 @@ const holder = {};
 
   // ───────────────────────── what the program reads itself ─────────────────────────
   var QUICK = [
-    [/^(?:把)?(?:它|圖片|這張圖|這張|整張圖)?\s*(?:調亮|變亮|亮一點|亮一些)$/, { op: 'brightness', amount: 18 }, '調亮'], [/^(?:把)?(?:它|圖片|這張圖|這張|整張圖)?\s*(?:調暗|變暗|暗一點|暗一些)$/, { op: 'brightness', amount: -18 }, '調暗'],
+    [/^(?:把)?(?:它|圖片|這張圖|這張|整張圖)?\s*(?:調亮|變亮|亮一點|亮一些|調亮一點|調亮一些|提高亮度|增加亮度|亮度高一點|亮度提高|亮度增加)$/, { op: 'brightness', amount: 18 }, '調亮'], [/^(?:把)?(?:它|圖片|這張圖|這張|整張圖)?\s*(?:調暗|變暗|暗一點|暗一些|調暗一點|調暗一些|降低亮度|減少亮度|亮度低一點|亮度降低|亮度減少)$/, { op: 'brightness', amount: -18 }, '調暗'],
     [/^(?:把)?(?:它|圖片|這張圖|這張|整張圖)?\s*(?:增加對比|對比高一點|提高對比|對比強一點)$/, { op: 'contrast', amount: 20 }, '提高對比'], [/^(?:把)?(?:它|圖片|這張圖|這張|整張圖)?\s*(?:降低對比|對比低一點)$/, { op: 'contrast', amount: -20 }, '降低對比'],
     [/^(?:把)?(?:它|圖片|這張圖|這張|整張圖)?\s*(?:更鮮豔|飽和度高一點|提高飽和度|增加飽和度)$/, { op: 'saturation', amount: 25 }, '提高飽和度'], [/^(?:把)?(?:它|圖片|這張圖|這張|整張圖)?\s*(?:淡一點|飽和度低一點|降低飽和度)$/, { op: 'saturation', amount: -25 }, '降低飽和度'],
     [/^(?:把)?(?:它|圖片|這張圖|這張|整張圖)?\s*(?:模糊|模糊一點|柔化)$/, { op: 'blur', radius: 3 }, '模糊'], [/^(?:把)?(?:它|圖片|這張圖|這張|整張圖)?\s*(?:銳利一點|銳化|更清晰|清楚一點)$/, { op: 'sharpen', amount: 1 }, '銳化'],
@@ -30830,7 +30830,7 @@ const holder = {};
         if (id === 'yaml') { return { blob: new Blob([G.toYaml(spec)], { type: 'text/yaml' }), name: name + '.game.yaml', mime: 'text/yaml' }; }
         if (id === 'uml') { const u = Uml.all(spec); return { blob: new Blob([Object.keys(u).map((f) => '%% ' + f + '\n' + u[f]).join('\n\n')], { type: 'text/plain' }), name: name + '.uml.mmd.txt', mime: 'text/plain' }; }
         if (id === 'fagame') { if (!opt.pack) { throw new Error('這個環境不能打包'); } const bytes = await opt.pack(spec, { editor: ctxRef && ctxRef.el && ctxRef.el._ed ? { state: ctxRef.el._ed.getState(), log: [], prompt: G.promptOf(spec, ctxRef.el._ed.effectiveSteps()) } : null }); return { blob: new Blob([bytes], { type: 'application/zip' }), name: name + '.fagame', mime: 'application/zip' }; }
-        if (id === 'html') { if (!opt.gen) { throw new Error('這個環境不能產生網頁版'); } const out = await opt.gen.build('web', spec); return { blob: new Blob([out.files[0].content], { type: 'text/html' }), name: name + '.html', mime: 'text/html' }; }
+        if (id === 'html') { if (!opt.gen) { throw new Error('這個環境不能產生網頁版'); } const out = await opt.gen.run('web', spec); if (!out || !out.download) { throw new Error('網頁版沒有產生出來'); } return { blob: out.download.blob, name: name + '.html', mime: 'text/html' }; }
         throw new Error('不認得的輸出 ' + id);
       },
       build: (ctx) => {

@@ -53,7 +53,7 @@
         if (id === 'yaml') { return { blob: new Blob([G.toYaml(spec)], { type: 'text/yaml' }), name: name + '.game.yaml', mime: 'text/yaml' }; }
         if (id === 'uml') { const u = Uml.all(spec); return { blob: new Blob([Object.keys(u).map((f) => '%% ' + f + '\n' + u[f]).join('\n\n')], { type: 'text/plain' }), name: name + '.uml.mmd.txt', mime: 'text/plain' }; }
         if (id === 'fagame') { if (!opt.pack) { throw new Error('這個環境不能打包'); } const bytes = await opt.pack(spec, { editor: ctxRef && ctxRef.el && ctxRef.el._ed ? { state: ctxRef.el._ed.getState(), log: [], prompt: G.promptOf(spec, ctxRef.el._ed.effectiveSteps()) } : null }); return { blob: new Blob([bytes], { type: 'application/zip' }), name: name + '.fagame', mime: 'application/zip' }; }
-        if (id === 'html') { if (!opt.gen) { throw new Error('這個環境不能產生網頁版'); } const out = await opt.gen.build('web', spec); return { blob: new Blob([out.files[0].content], { type: 'text/html' }), name: name + '.html', mime: 'text/html' }; }
+        if (id === 'html') { if (!opt.gen) { throw new Error('這個環境不能產生網頁版'); } const out = await opt.gen.run('web', spec); if (!out || !out.download) { throw new Error('網頁版沒有產生出來'); } return { blob: out.download.blob, name: name + '.html', mime: 'text/html' }; }
         throw new Error('不認得的輸出 ' + id);
       },
       build: (ctx) => {

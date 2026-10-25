@@ -96,7 +96,7 @@
           var probs = []; s.seq++; var cand = Object.assign({}, e.object || {}, { id: 'o' + s.seq }); var v = validateObject(cand, probs, {}); if (!v) { return { error: (probs[0] || 'the object is not valid') }; }
           v.id = 'o' + s.seq; var at = e.at, idx = s.objects.length;
           if (at === 'bottom') { idx = 0; } else if (typeof at === 'number') { idx = Math.max(0, Math.min(s.objects.length, Math.round(at))); } else if (at && typeof at === 'object' && at.above) { var a = find(s, at.above); if (a >= 0) { idx = a + 1; } }
-          if (e.place) { var bx = bboxOf(v); if (!bx) { return { error: 'the new object has no size to place' }; } var pr = resolvePlace(s, bx, e.place, env, null); if (pr.error) { return { error: pr.error }; } moveObj(v, pr.dx, pr.dy); }
+          if (e.place && bboxOf(v)) { var bx = bboxOf(v); var pr = resolvePlace(s, bx, e.place, env, null); if (pr.error) { return { error: pr.error }; } moveObj(v, pr.dx, pr.dy); }
           else if (s.objects.length === 0 && env && env.view && !('place' in e)) { /* the first object stays where it was written */ }
           s.objects.splice(idx, 0, v); s._added = (s._added || []).concat([v.id]); return {};
         }
