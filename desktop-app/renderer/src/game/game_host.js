@@ -111,6 +111,7 @@
             const im = req.images[i]; try { const blob = await (await fetch(im.dataUrl)).blob(); if (await this._gameImageEdits(C.applyEdits(spec, edits, env).spec, { blob, name: (im.name || 'picture').replace(/\.[a-z0-9]+$/i, '') }, req.selection, edits, notes)) say = say || T('把圖貼成它的外觀了。', 'Used the picture as its look.'); } catch (e) { notes.push(T('「' + (im.name || '圖片') + '」處理失敗:', 'the picture failed: ') + String((e && e.message) || e).slice(0, 80)); }
         }
         if (edits.length) return { say, edits, notes };
+        if (this._edIsOffline() && text) { const off = await this._edOfflineTry('edit-game-' + dim, text, C.applyEdits(spec, edits, env).spec, env, status); if (off && off.edits.length) return { say: off.say, edits: edits.concat(off.edits), notes: notes.concat(off.notes) }; }
         if (!A.have()) return { say: T('這句話程式沒有讀懂,而且目前沒有可用的 AI;可以用物件欄與屬性面板自己改,或說「在玩家右邊放一個史萊姆」「讓它變快」這類程式讀得懂的句子。', 'The program did not understand this and there is no AI; use the objects view and the properties.'), edits, notes };
         if (!text) return { say, edits, notes };
         status(T('想一想怎麼改…', 'Working out the changes…'));

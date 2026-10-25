@@ -111,6 +111,7 @@
             if (edits.length) return { say, edits, notes };
         }
         // 4) 語言:AI 轉成封閉動作(含 find_picture／generate_image／agent)
+        if (this._edIsOffline() && text) { const off = await this._edOfflineTry('edit-media-presentation', text, D0.applyEdits(spec, edits, env).spec, env, status); if (off && off.edits.length) return { say: off.say, edits: edits.concat(off.edits), notes: notes.concat(off.notes) }; }
         if (!A.have()) return { say: edits.length ? say : T('這句話程式沒有讀懂,而且目前沒有可用的 AI;可以用大綱與屬性面板自己改,或說「第 3 頁標題改成…」「在這頁後面加一頁」「把第 2 頁移到最後」這類程式讀得懂的句子。', 'The program did not understand this and there is no AI.'), edits, notes };
         status(T('想一想怎麼改…', 'Working out the changes…'));
         const Pm = D0.editPrompt(spec, text, EVERY_RE.test(text) ? '使用者要的是「每一頁」都做:對大綱裡每一頁各給一個動作(要放照片就每頁各一個 find_picture,query 用那頁主題的英文關鍵字);最多 15 頁,超過就只做前 15 頁並在 say 說明。' : '', req.selection, env);

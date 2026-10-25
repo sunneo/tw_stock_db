@@ -30,8 +30,23 @@ const FaEditHost = (function () {
             return {
                 have() { try { const c = self._getApiConfig(); return !!(c && c.apiKey) || !!(self.advancedSettings && self.advancedSettings.offlineMode); } catch (_) { return false; } },
                 async chat(system, user, o) { o = o || {}; return String(await self._kiLlm(user, { systemPrompt: system || '', maxTokens: o.maxTokens || 8000, temperature: o.temperature == null ? 0.2 : o.temperature }, { timeoutMs: o.timeoutMs || 180000, label: o.label || 'AI' })); },
+                // 離線小模型用的封閉題：只回答一個字母（題目與解析見 edit_offline.js）；答不出來回傳 null，由程式用預設
+                async pick(question, options) { const r = await self._kiLlm(FaEditOffline.letterPrompt(question, options), { systemPrompt: '你是選擇題的回答者。只回答一個大寫字母，不要解釋。', maxTokens: 16, temperature: 0 }, { timeoutMs: 60000, label: '選擇題' }); return FaEditOffline.parseLetter(r, options.length); },
+                // 只有「把一段字改寫得更短／更長」這種真的要寫字的事才請模型自由寫
+                async rewrite(text, how) { return String(await self._kiLlm('原文：\n' + text + '\n\n請' + how + '。只輸出改寫後的文字，不要加說明、不要加引號。', { systemPrompt: '你是文字編輯，只輸出改寫後的文字。', maxTokens: 1200, temperature: 0.3 }, { timeoutMs: 90000, label: '改寫' })).trim(); },
                 async vision(dataUrl, question) { const r = await self._interpretImageWithVisionModel(dataUrl, question); return String(typeof r === 'string' ? r : (r && (r.description || r.answer || r.transcription)) || ''); },
             };
+        },
+        // ───── 離線 AI：程式讀出顏色／數字／物件，只在有歧義時問模型一個字母選擇題（見 DESIGN.edit-offline.md）。離線模式開著時，程式讀不懂的話先走這條，再不行才請模型自由寫 JSON
+        _edIsOffline() { return !!(this.advancedSettings && this.advancedSettings.offlineMode) && typeof FaEditOffline !== 'undefined'; },
+        async _edOfflineTry(kind, text, spec, env, status) {
+            if (typeof FaEditOffline === 'undefined' || !String(text || '').trim()) return null;
+            const adapters = { 'edit-svg': () => FaEditOffline.drawAdapter(FaEditSvg), 'edit-picture': () => FaEditOffline.drawAdapter(FaEditPicture), 'edit-3d': () => FaEditOffline.sceneAdapter(FaEdit3d), 'edit-media-presentation': () => FaEditOffline.deckAdapter(FaDeckEdit), 'edit-game-2d': () => FaEditOffline.gameAdapter(FaGame), 'edit-game-3d': () => FaEditOffline.gameAdapter(FaGame) };
+            if (!adapters[kind]) return null; const A = this._edAi(); if (typeof status === 'function') status(T('用程式讀這句話…', 'Reading the sentence with the program…'));
+            const e2 = Object.assign({}, env || {}); if (!e2.selection && e2.slide) e2.selection = e2.slide;
+            let r; try { r = await FaEditOffline.make(adapters[kind]()).run(String(text), spec, e2, (q, opts) => A.pick(q, opts), (t, how) => A.rewrite(t, how)); } catch (e) { return { edits: [], notes: [String((e && e.message) || e).slice(0, 80)], unmatched: [String(text)], asked: [] }; }
+            const asked = r.asked.filter((a) => a.by === 'model').length;
+            return { edits: r.edits, notes: r.notes.concat(asked ? [T('問了模型 ' + asked + ' 個選擇題', 'asked the model ' + asked + ' multiple-choice questions')] : []), unmatched: r.unmatched, asked: r.asked, say: r.edits.length ? T('離線：程式讀懂了 ' + r.matched.length + ' 句', 'Offline: the program understood ' + r.matched.length + ' sentence(s)') : '' };
         },
         _edFetchFn() {
             const self = this;
@@ -98,6 +113,7 @@ const FaEditHost = (function () {
             const fr = await P.fromText({ text, spec: C.applyEdits(spec, edits).spec, editorId: ed.id, status, onBlob: wantVector ? async (blob, name, credit, editsArr, spec2) => { const v2 = await self._edVectorize(blob, { status }); v2.notes.forEach((n) => notes.push(n)); self._edVectorEdits(spec2, v2).forEach((e) => editsArr.push(e)); return true; } : null });
             fr.edits.forEach((e) => edits.push(e)); fr.notes.forEach((n) => notes.push(n)); if (fr.say) say = say || fr.say;
             if (edits.length) return { say, edits, notes };
+            if (this._edIsOffline() && text) { const off = await this._edOfflineTry('edit-svg', text, C.applyEdits(spec, edits).spec, { selection: req.selection }, status); if (off && off.edits.length) return { say: off.say, edits: off.edits, notes: notes.concat(off.notes) }; }
             if (!A.have()) return { say: T('這句話程式沒有讀懂，而且目前沒有可用的 AI；可以用物件欄與屬性面板自己改，或用「找一張…的圖」、貼網址。', 'The program did not understand this and there is no AI; use the objects view and the properties, or "find a picture of …", or paste an address.'), edits, notes };
             if (!text && !refText) return { say, edits, notes };
             status(T('畫…', 'Painting…'));
@@ -174,6 +190,7 @@ const FaEditHost = (function () {
             }
             if (edits.length && (styleId || fr.handled || (req.images && req.images.length && !text))) return { say, edits, notes };
             if (req.images && req.images.length && text && A.have() && !edits.length) { for (let j = 0; j < Math.min(2, req.images.length); j++) { try { refText += (refText ? '\n\n' : '') + (await A.vision(req.images[j].dataUrl, C.refPrompt())).trim(); } catch (e) { /* 只用文字 */ } } }
+            if (this._edIsOffline() && text) { const off = await this._edOfflineTry('edit-picture', text, cur(), { selection: sel }, status); if (off && off.edits.length) return { say: off.say, edits: edits.concat(off.edits), notes: notes.concat(off.notes) }; }
             if (!A.have()) return { say: edits.length ? say : T('這句話程式沒有讀懂，而且目前沒有可用的 AI；可以用圖層欄與屬性面板自己改，或說「變成水彩風格」「調亮」「去污點」這類簡單的指令，或貼網址、「找一張…的圖」。', 'The program did not understand this and there is no AI; use the layers and the properties, or simple commands like "make it watercolor", "brighter", "remove specks", or paste an address / "find a picture of …".'), edits, notes };
             if (!text && !refText) return { say, edits, notes };
             status(T('想一想怎麼改…', 'Working out the changes…'));

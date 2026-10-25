@@ -75,6 +75,7 @@
         }
         if (edits.length) return { say, edits, notes };   // the picture was the request
         // 3) the language of the scene: the AI turns it into closed actions
+        if (this._edIsOffline() && text) { const off = await this._edOfflineTry('edit-3d', text, C.applyEdits(spec, edits, env).spec, env, status); if (off && off.edits.length) return { say: off.say, edits: edits.concat(off.edits), notes: notes.concat(off.notes) }; }
         if (!A.have()) return { say: edits.length ? say : T('這句話程式沒有讀懂，而且目前沒有可用的 AI；可以用物件欄與屬性面板自己改，或說「在我的左前方放一個紅色的球」「把它移到桌子上面」這類程式讀得懂的句子。', 'The program did not understand this and there is no AI; use the objects view and the properties, or say things like "put a red ball in front-left of me".'), edits, notes };
         if (!text) return { say, edits, notes };
         status(T('想一想怎麼擺…', 'Working out the changes…'));
