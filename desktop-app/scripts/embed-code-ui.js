@@ -278,7 +278,7 @@ embedRemote();
 
 // /edit-svg、/edit-picture（與 /edit-3d-model）：共用外框、編輯器本體（外掛移植，純函式加 DOM）與主機轉接層。順序＝相依順序（依賴的 const 要先定義）
 const EDIT_MODULES = [['edit_objects_core', 'EDOBJ', 'FaEditObjects'], ['edit_viewport', 'EDVP', 'FaEditViewport'], ['edit_store', 'EDSTORE', 'FaEditStore'], ['picture_source', 'EDPSRC', 'FaPictureSource'], ['edit_pictures', 'EDPICS', 'FaEditPictures'], ['edit_i18n', 'EDI18N', 'FaEditI18n'], ['edit_shell', 'EDSHELL', 'FaEditShell'],
-    ['edit_offline', 'EDOFF', 'FaEditOffline'], ['parts_sheet', 'PSHEET', 'FaPartsSheet'], ['edit_svg_core', 'EDSVG', 'FaEditSvg'], ['svg_trace', 'EDTRACE', 'FaSvgTrace'], ['edit_svg_ui', 'EDSVGUI', 'FaEditSvgUI'], ['pic_fx', 'EDPFX', 'FaPicFx'], ['edit_picture_core', 'EDPIC', 'FaEditPicture'], ['edit_picture_ui', 'EDPICUI', 'FaEditPictureUI'], ['edit_picture_i18n', 'EDPICI18N', 'FaEditPictureI18n'],
+    ['edit_offline', 'EDOFF', 'FaEditOffline'], ['parts_sheet', 'PSHEET', 'FaPartsSheet'], ['cad_sheet', 'CADSHEET', 'FaCadSheet'], ['edit_svg_core', 'EDSVG', 'FaEditSvg'], ['svg_trace', 'EDTRACE', 'FaSvgTrace'], ['edit_svg_ui', 'EDSVGUI', 'FaEditSvgUI'], ['pic_fx', 'EDPFX', 'FaPicFx'], ['edit_picture_core', 'EDPIC', 'FaEditPicture'], ['edit_picture_ui', 'EDPICUI', 'FaEditPictureUI'], ['edit_picture_i18n', 'EDPICI18N', 'FaEditPictureI18n'],
     ['edit3d_core', 'ED3D', 'FaEdit3d'], ['edit3d_part_core', 'ED3DP', 'FaEdit3dPart'], ['edit3d_ui', 'ED3DUI', 'FaEdit3dUI']];
 function embedEdit() {
     const dir = path.join(root, 'renderer/src/edit');

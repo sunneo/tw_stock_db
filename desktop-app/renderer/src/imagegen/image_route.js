@@ -30,7 +30,7 @@
     if (s.hit.length) reasons.push('形狀／圖表用詞：' + s.hit.slice(0, 4).join('、')); if (p.hit.length) reasons.push('畫面／畫風用詞：' + p.hit.slice(0, 4).join('、'));
     var total = shape + photo, route = shape > photo ? 'shapes' : 'diffusion', conf = total ? Math.abs(shape - photo) / total : 0;
     // 工程圖、零件尺寸圖、組裝圖是「照尺寸畫的 SVG」，不是流程圖：只有明明白白寫了圖種（流程圖、時序圖…）才用 Mermaid（句子裡的「流程」「組裝流程」不算）
-    var eng = /工程圖|零件圖|尺寸圖|裁切圖|裁剪圖|組裝圖|三視圖|展開圖|施工圖|樣板|blueprint/i.test(t), type = route === 'shapes' ? (eng && !/流程圖|時序圖|序列圖|類別圖|狀態圖|甘特|心智圖|圓餅圖|flowchart|sequence|gantt|mindmap/i.test(t) ? null : diagramType(t)) : null;
+    var eng = /工程圖|零件圖|尺寸圖|裁切圖|裁剪圖|組裝圖|三視圖|展開圖|施工圖|樣板|blueprint|CAD|engineering\s+drawing|technical\s+drawing|exploded\s+view|assembly\s+drawing|dimension/i.test(t), type = route === 'shapes' ? (eng && !/流程圖|時序圖|序列圖|類別圖|狀態圖|甘特|心智圖|圓餅圖|flowchart|sequence|gantt|mindmap/i.test(t) ? null : diagramType(t)) : null;
     return { route: route, format: route === 'shapes' ? (type ? 'mermaid' : 'svg') : null, diagram: type, confidence: Math.round(conf * 100) / 100, ask: shape > 0 && conf < 0.34, scores: { shapes: shape, diffusion: photo }, reasons: reasons };
   }
 
