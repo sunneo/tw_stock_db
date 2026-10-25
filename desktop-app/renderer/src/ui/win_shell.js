@@ -38,7 +38,7 @@
     var tools = null;
     if (bar) { bar.appendChild(bMax); bar.appendChild(bPop); } else { tools = h('div', 'fwin-tools'); tools.appendChild(bMax); tools.appendChild(bPop); el.insertBefore(tools, el.firstChild); }
     function notify() { if (typeof opts.onChange === 'function') { try { opts.onChange({ popped: popped, maximized: maxed }); } catch (e) { /* */ } } }
-    function front() { zTop += 1; el.style.zIndex = String(zTop); }
+    function front() { if (el.style.zIndex === String(zTop)) { return; } zTop += 1; el.style.zIndex = String(zTop); }
     function persist() { if (popped && rect) save(id, { rect: rect, maxed: maxed }); }
     function apply(r) { rect = r; el.style.left = r.left + 'px'; el.style.top = r.top + 'px'; el.style.width = r.width + 'px'; el.style.height = r.height + 'px'; }
     function clamp(r) { var W = window.innerWidth, H = window.innerHeight; var w = Math.max(Math.min(MINW, W), Math.min(r.width, W)), hh = Math.max(Math.min(MINH, H), Math.min(r.height, H)); return { left: Math.max(0, Math.min(W - w, r.left)), top: Math.max(0, Math.min(H - hh, r.top)), width: w, height: hh }; }
@@ -55,7 +55,10 @@
       homeParent = el.parentNode; homeNext = el.nextSibling; if (homeParent) homeParent.insertBefore(ph, el);
       el.classList.add('fwin-pop'); if (!bar) el.classList.add('fwin-notitle'); el.style.height = ''; popped = true; maxed = false; apply(start); front();
       // position:fixed 被祖先（transform／filter…）改成相對於祖先時，位置會不對：改搬到 document.body
-      var chk = el.getBoundingClientRect(); if (Math.abs(chk.left - start.left) > 3 || Math.abs(chk.top - start.top) > 3) { reparent = true; document.body.appendChild(el); apply(start); }
+      // 一律搬到 document.body：留在對話裡的話，後面的訊息（下載卡片、圖片）各自的疊放環境會蓋住視窗，z-index 比不過；搬到最外層才能跟其他視窗互相比高低
+      reparent = true; document.body.appendChild(el); apply(start);
+      // 點到哪個視窗（或裡面的輸入框取得焦點）就把它拉到最上層
+      if (!el._faFront) { el._faFront = true; el.addEventListener('mousedown', function () { if (popped) front(); }, true); el.addEventListener('focusin', function () { if (popped) front(); }); }
       if (!bar) { titleEl = h('div', 'fwin-title'); titleEl.appendChild(h('b', null, titleText || '')); titleEl.appendChild(bMax); titleEl.appendChild(bPop); el.insertBefore(titleEl, el.firstChild); if (tools) tools.style.display = 'none'; }
       bPop.textContent = '⤓'; bPop.title = '收回對話裡'; var dragEl = bar || titleEl; if (dragEl) { dragEl.style.cursor = 'move'; }
       ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'].forEach(function (d) { var x = h('div', 'fwin-rz ' + d); x.onmousedown = function (e) { if (maxed) return; mode = 'rz'; rzDir = d; sx = e.clientX; sy = e.clientY; rects = null; el._r0 = { l: rect.left, t: rect.top, w: rect.width, h: rect.height }; front(); e.preventDefault(); e.stopPropagation(); }; el.appendChild(x); handles.push(x); });
