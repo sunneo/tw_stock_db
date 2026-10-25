@@ -137,7 +137,7 @@
         const ai = this._edAi();
         const host = {
             palette: () => ({ dark: !self._isLightTheme() }),
-            ask: (rq) => self._edAskPart(rq, { id: pid }),
+            ask: (rq) => self._edQuietRun((line) => { try { if (rq && typeof rq.onStatus === 'function') rq.onStatus(line); } catch (_) { /* */ } }, () => self._edAskPart(rq, { id: pid })),
             save: (st) => { try { const sp = st.states[st.ptr].spec; return FaEditStore.saveProject('edit-3d-part', pid, { v: 1, spec: sp, state: st, sig: curSig }); } catch (_) { return null; } },
             download: (blob, name, mime) => self.generateAndDeliverFile(blob, name, mime || blob.type),
             toChat: (blob, name, info) => self._edToChat('edit-3d', blob, name, info),

@@ -28642,15 +28642,17 @@ const FaEditHost = (function () {
 
     const methods = {
         // ───── 模型、視覺、網路 ─────
+        // 在編輯器裡做的事（離線模型、視覺模型的卡片與步驟）全部送進編輯器自己的記錄，不在主對話裡冒出一堆卡片
+        async _edQuietRun(sink, fn) { const prev = this._edQuiet; this._edQuiet = { sink }; try { return await fn(); } finally { this._edQuiet = prev; } },
         _edAi() {
-            const self = this;
+            const self = this, stepOf = () => (self._edQuiet && self._edQuiet.sink) || undefined;
             return {
                 have() { try { const c = self._getApiConfig(); return !!(c && c.apiKey) || !!(self.advancedSettings && self.advancedSettings.offlineMode); } catch (_) { return false; } },
-                async chat(system, user, o) { o = o || {}; return String(await self._kiLlm(user, { systemPrompt: system || '', maxTokens: o.maxTokens || 8000, temperature: o.temperature == null ? 0.2 : o.temperature }, { timeoutMs: o.timeoutMs || 180000, label: o.label || 'AI' })); },
+                async chat(system, user, o) { o = o || {}; return String(await self._kiLlm(user, { systemPrompt: system || '', maxTokens: o.maxTokens || 8000, temperature: o.temperature == null ? 0.2 : o.temperature }, { timeoutMs: o.timeoutMs || 180000, label: o.label || 'AI', onStep: stepOf() })); },
                 // 離線小模型用的封閉題：只回答一個字母（題目與解析見 edit_offline.js）；答不出來回傳 null，由程式用預設
-                async pick(question, options) { const r = await self._kiLlm(FaEditOffline.letterPrompt(question, options), { systemPrompt: '你是選擇題的回答者。只回答一個大寫字母，不要解釋。', maxTokens: 16, temperature: 0 }, { timeoutMs: 60000, label: '選擇題' }); return FaEditOffline.parseLetter(r, options.length); },
+                async pick(question, options) { const r = await self._kiLlm(FaEditOffline.letterPrompt(question, options), { systemPrompt: '你是選擇題的回答者。只回答一個大寫字母，不要解釋。', maxTokens: 16, temperature: 0 }, { timeoutMs: 60000, label: '選擇題', onStep: stepOf() }); return FaEditOffline.parseLetter(r, options.length); },
                 // 只有「把一段字改寫得更短／更長」這種真的要寫字的事才請模型自由寫
-                async rewrite(text, how) { return String(await self._kiLlm('原文：\n' + text + '\n\n請' + how + '。只輸出改寫後的文字，不要加說明、不要加引號。', { systemPrompt: '你是文字編輯，只輸出改寫後的文字。', maxTokens: 1200, temperature: 0.3 }, { timeoutMs: 90000, label: '改寫' })).trim(); },
+                async rewrite(text, how) { return String(await self._kiLlm('原文：\n' + text + '\n\n請' + how + '。只輸出改寫後的文字，不要加說明、不要加引號。', { systemPrompt: '你是文字編輯，只輸出改寫後的文字。', maxTokens: 1200, temperature: 0.3 }, { timeoutMs: 90000, label: '改寫', onStep: stepOf() })).trim(); },
                 async vision(dataUrl, question) { const r = await self._interpretImageWithVisionModel(dataUrl, question); return String(typeof r === 'string' ? r : (r && (r.description || r.answer || r.transcription)) || ''); },
             };
         },
@@ -28742,6 +28744,9 @@ const FaEditHost = (function () {
         async _edVectorizeObject(el, obj) {
             const ed = el._ed, blob = await FaEditStore.getImage(obj.ref); if (!blob) { ed.ctx.say(T('找不到這張圖的內容', 'the picture is gone')); return; }
             ed.ctx.say(T('描成 SVG 中…', 'Tracing…'));
+            return this._edQuietRun((line) => { try { ed.ctx.say(line); } catch (_) { /* */ } }, () => this._edVectorizeObject2(el, obj, ed, blob));
+        },
+        async _edVectorizeObject2(el, obj, ed, blob) {
             try {
                 const vec = await this._edVectorize(blob, { status: (t) => ed.ctx.say(t), targetWidth: obj.w }), x0 = obj.x + obj.w + 40, y0 = obj.y;
                 ed.ctx.apply(vec.objects.map((o) => ({ op: 'add_object', object: Object.assign({}, o, { x: x0, y: y0 }) })), T('把「' + obj.name + '」描成 SVG', 'Traced "' + obj.name + '" into SVG'), '', 'panel'); ed.ctx.say(vec.notes[vec.notes.length - 1] || '');
@@ -28839,7 +28844,8 @@ const FaEditHost = (function () {
         },
         _edHost(kind, id, getSpecState) {
             const self = this, K = KINDS[kind], ai = this._edAi();
-            const ask = kind === 'edit-svg' ? (req) => self._edAskSvg(req, { id }) : kind === 'edit-picture' ? (req) => self._edAskPicture(req, { id }) : (req) => K.ask.call(self, req, { id });
+            const ask0 = kind === 'edit-svg' ? (req) => self._edAskSvg(req, { id }) : kind === 'edit-picture' ? (req) => self._edAskPicture(req, { id }) : (req) => K.ask.call(self, req, { id });
+            const ask = (req) => self._edQuietRun((line) => { try { if (req && typeof req.onStatus === 'function') req.onStatus(line); } catch (_) { /* */ } }, () => ask0(req));
             return {
                 palette: () => ({ dark: !self._isLightTheme() }),
                 ask,
@@ -29079,7 +29085,7 @@ const FaEditHost = (function () {
         const ai = this._edAi();
         const host = {
             palette: () => ({ dark: !self._isLightTheme() }),
-            ask: (rq) => self._edAskPart(rq, { id: pid }),
+            ask: (rq) => self._edQuietRun((line) => { try { if (rq && typeof rq.onStatus === 'function') rq.onStatus(line); } catch (_) { /* */ } }, () => self._edAskPart(rq, { id: pid })),
             save: (st) => { try { const sp = st.states[st.ptr].spec; return FaEditStore.saveProject('edit-3d-part', pid, { v: 1, spec: sp, state: st, sig: curSig }); } catch (_) { return null; } },
             download: (blob, name, mime) => self.generateAndDeliverFile(blob, name, mime || blob.type),
             toChat: (blob, name, info) => self._edToChat('edit-3d', blob, name, info),
@@ -63774,6 +63780,12 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     // _progressWidget是非可枚舉的，JSON.stringify不會序列化它，重新整理
     // 頁面後這則訊息會變成空的tool訊息（等於消失），符合「純過渡UI」語意。
     _createProgressWidget(title) {
+        // 編輯器（/edit-*）在做事的時候，離線模型、視覺模型這類卡片不要塞進主對話：把進度與紀錄轉成一行一行送進編輯器自己的記錄（_edQuiet.sink）
+        const q = this._edQuiet;
+        if (q && typeof q.sink === 'function') {
+            let last = ''; const say = (t) => { t = String(t == null ? '' : t).replace(/\s+/g, ' ').trim(); if (!t || t === last) return; last = t; try { q.sink(String(title || '') + '：' + t.slice(0, 160)); } catch (_) { /* 記錄送不出去也不影響工作 */ } };
+            return { msg: { role: 'tool', content: '' }, update: (p = {}) => { if (p.status != null) say(p.status); }, log: (line) => say(line), finish: (s) => say(s), fail: (e) => say('⚠️ ' + (e || '失敗')), remove: () => {} };
+        }
         const state = { title: String(title || '處理中'), pct: null, status: '準備中…', done: false, error: null, startedAt: Date.now(), trace: [], traceOpen: true };
         const msg = { role: 'tool', content: '' };
         Object.defineProperty(msg, '_progressWidget', { value: state, enumerable: false, configurable: true });
