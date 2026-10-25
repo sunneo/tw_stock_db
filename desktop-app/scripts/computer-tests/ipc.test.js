@@ -63,9 +63,19 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   r = await call('addDeny', { pattern: '記事' }); t.check('addDeny：使用者追加拒絕規則（只會更嚴格）並寫進設定', r.ok && settings.computerUseExtraDeny.includes('記事'));
   r = await call('addDeny', { pattern: '(' }); t.check('addDeny：壞的正規表示式拒絕', !r.ok);
   r = await call('setEnabled', { on: false }); st = await call('status'); t.check('停用：不需要確認、立刻生效、寫設定、清掉範圍與自動', r.ok && !st.enabled && st.scope.mode === 'none' && !st.auto && settings.computerUseEnabled === false);
-  // 重啟後的狀態：設定檔 true → 啟用但沒有範圍
-  settings = { computerUseEnabled: true }; handlers.clear(); const reg2 = register(ipcMain, { electron: { globalShortcut, app: { getPath: () => tmp, on: () => {} } }, BrowserWindow: FakeWin, getMainWindow: () => mainWindow, userDataDir: () => tmp, secretsFile: () => secretsPath, getDesktopSettings: async () => settings, patchDesktopSettings: async () => settings, cuOptions: { platform: 'linux', backend, atspi: null } });
-  st = await call('status'); t.check('重新啟動：設定檔 computerUseEnabled=true → 啟用，但範圍與自動不會保留', st.enabled === true && st.scope.mode === 'none' && st.auto === false);
+  // 重啟後的狀態：設定檔 true ＋保存的範圍 → 啟用，範圍對回現有視窗
+  const savedNow = (patched.filter((x) => x.computerUseScope).slice(-1)[0] || {}).computerUseScope; settings = { computerUseEnabled: true, computerUseScope: savedNow }; handlers.clear(); const reg2 = register(ipcMain, { electron: { globalShortcut, app: { getPath: () => tmp, on: () => {} } }, BrowserWindow: FakeWin, getMainWindow: () => mainWindow, userDataDir: () => tmp, secretsFile: () => secretsPath, getDesktopSettings: async () => settings, patchDesktopSettings: async () => settings, cuOptions: { platform: 'linux', backend, atspi: null } });
+  st = await call('status'); t.check('重新啟動：設定檔 computerUseEnabled=true → 啟用，範圍從保存的「標題＋行程」對回現有視窗（自動核准不會保留）', st.enabled === true && st.scope.mode === 'windows' && st.scope.windows.length === 1 && st.scope.windows[0].title === '記事本' && st.auto === false, st.scope);
+  t.check('保存的範圍只有標題／行程／類別，沒有視窗代號與行程號碼', savedNow && savedNow.mode === 'windows' && Object.keys(savedNow.windows[0]).sort().join() === 'class,process,title', savedNow);
+  // 範圍視窗還沒開（開機後才開）：先沒有範圍，視窗出現後下一次呼叫自動對回去
+  const keep = wins.slice(); wins.length = 0; settings = { computerUseEnabled: true, computerUseScope: savedNow }; handlers.clear(); register(ipcMain, { electron: { globalShortcut, app: { getPath: () => tmp, on: () => {} } }, BrowserWindow: FakeWin, getMainWindow: () => mainWindow, userDataDir: () => tmp, secretsFile: () => secretsPath, getDesktopSettings: async () => settings, patchDesktopSettings: async (p) => { patched.push(p); settings = Object.assign({}, settings, p); return settings; }, cuOptions: { platform: 'linux', backend, atspi: null } });
+  st = await call('status'); t.check('重新啟動時範圍視窗還沒開：啟用、暫時沒有範圍', st.enabled && st.scope.mode === 'none', st.scope);
+  wins.push(...keep); await sleep(4100); st = await call('status'); t.check('視窗開了之後（隔幾秒的下一次呼叫）範圍自動回來', st.scope.mode === 'windows' && st.scope.windows[0].title === '記事本', st.scope);
+  // 停用會清掉保存的範圍
+  patched.length = 0; await call('setEnabled', { on: false }); t.check('/computer disable：保存的範圍一併清掉', patched.some((x) => x.computerUseEnabled === false) && patched.some((x) => 'computerUseScope' in x && x.computerUseScope === null), patched);
+  const IPC = require('../../computer-use-ipc.js');
+  t.check('matchSavedWindows：標題相同優先；同行程同類別只有一個時退而求其次；受保護與自己的不選', JSON.stringify(IPC.matchSavedWindows([{ title: 'a.txt', process: 'gedit', class: 'G' }, { title: '改過的標題', process: 'gedit2', class: 'H' }, { title: 'x', process: 'polkit', class: 'p' }], [{ id: '1', title: 'a.txt', process: 'gedit', class: 'G' }, { id: '2', title: 'b.txt', process: 'gedit', class: 'G' }, { id: '3', title: '別的', process: 'gedit2', class: 'H' }, { id: '4', title: 'x', process: 'polkit', class: 'p', denied: { label: 'p' } }])) === JSON.stringify(['1', '3']));
+  t.check('sanitizeSavedScope：壞資料變成 null、欄位被截短', IPC.sanitizeSavedScope('x') === null && IPC.sanitizeSavedScope({ mode: 'windows', windows: [] }) === null && IPC.sanitizeSavedScope({ mode: 'screen', junk: 1 }).mode === 'screen' && IPC.sanitizeSavedScope({ mode: 'windows', windows: [{ title: 't'.repeat(500) }] }).windows[0].title.length === 200);
   fs.rmSync(tmp, { recursive: true, force: true });
   t.done();
 })();

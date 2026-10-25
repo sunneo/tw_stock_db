@@ -97,6 +97,11 @@ const call = async (self, name, args) => JSON.parse(await self.tools[name].cb.ca
   t.check('/computer auto on／abort／windows／probe／connect', /自動核准/.test(await cmd('auto on')) && /中止/.test(await cmd('abort')) && /記事本/.test(await cmd('windows')) && /受保護/.test(await cmd('windows')) && /rfb/.test(await cmd('probe h:5901')) && /rfb:1/.test(await cmd('connect h:5901 vnc1')) && calls.filter((c) => c[0] === 'remoteConnect').pop()[1].secretName === 'vnc1');
   t.check('/computer secret set：密碼只送到 setRemoteSecret，並提醒對話紀錄裡還有明文', (await cmd('secret set vnc1 pa55'), calls.filter((c) => c[0] === 'setRemoteSecret').pop()[1] === 'vnc1' && calls.filter((c) => c[0] === 'setRemoteSecret').pop()[2] === 'pa55') && /建議清掉/.test(A.pushed.join('')));
   t.check('/computer calibrate、deny、不認得的子指令（help）', /校準/.test(await cmd('calibrate')) && /拒絕規則/.test(await cmd('deny foo')) && /不認得的子指令/.test(await cmd('xyz')));
+  // 遠端的人（分享對話、遠端需求）打的設定類指令一律拒絕；狀態與說明仍然能看
+  const remoteCmd = async (a) => { A.pushed.length = 0; const n0 = calls.length; await A.slash['/computer'].fn(a, A, { remoteOrigin: '某人' }); return { text: A.pushed.join(String.fromCharCode(10)), calls: calls.slice(n0) }; };
+  const rr = []; for (const c of ['enable', 'disable', 'scope', 'scope screen', 'auto on', 'deny foo', 'secret set v p']) rr.push(await remoteCmd(c));
+  t.check('遠端來源：enable／disable／scope／auto／deny／secret 全部被拒絕，而且沒有碰到 desktopAPI', rr.every((x) => /只有在這台電腦上/.test(x.text) && x.calls.length === 0), rr.map((x) => x.text.slice(0, 40)));
+  t.check('遠端來源：status 與 help 仍然可以看', /已啟用/.test((await remoteCmd('status')).text) && /scope/.test((await remoteCmd('help')).text));
   t.check('每個 /computer 指令都會把使用者輸入記進對話（messages）', A.messages.length >= 10 && A.messages[0].content === '/computer');
 
   // ---- 網頁版

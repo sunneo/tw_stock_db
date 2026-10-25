@@ -83,11 +83,14 @@ const FaComputerHost = (function () {
         },
 
         // ───── /computer ─────
-        async _computerCommand(argsText, run) {
+        async _computerCommand(argsText, run, meta) {
             const r = run || this, parsed = C().parseCommand(argsText); r.messages.push({ role: 'user', content: '/computer' + (String(argsText || '').trim() ? ' ' + String(argsText).trim() : '') });
             const say = (t) => r._pushAssistantMessage(t, null); const a = api();
+            // 「啟用／停用／範圍／自動核准／拒絕清單／機密」只有坐在這台電腦前的使用者本人能設定：遠端的人（分享對話、遠端需求）打的一律拒絕，狀態（status）與說明仍然可以看
+            const SETTINGS_CMDS = ['enable', 'disable', 'scope', 'auto', 'deny', 'secret', 'connect', 'disconnect', 'calibrate'];
             try {
-                if (!a) say(NO_DESKTOP);
+                if (a && meta && meta.remoteOrigin && SETTINGS_CMDS.indexOf(parsed.cmd) >= 0) say('⛔ 「/computer ' + parsed.cmd + '」只有在這台電腦上、由使用者本人才能下（遠端的人不能啟用、停用或指定範圍）。請在這台電腦的助理視窗輸入。');
+                else if (!a) say(NO_DESKTOP);
                 else if (parsed.cmd === 'help') say((parsed.unknown ? '不認得的子指令「' + parsed.unknown + '」。\n\n' : '') + C().helpText());
                 else if (parsed.cmd === 'status') { const st = await a.status(), cap = st.enabled ? await a.capabilities() : null; say(C().statusText(st, cap)); }
                 else if (parsed.cmd === 'enable') { const x = await a.setEnabled(true); say(x.ok ? '✅ 已啟用。接著用 `/computer scope` 選擇 AI 可以操作的視窗。' : '⛔ ' + (x.error || '沒有啟用')); }
@@ -109,7 +112,7 @@ const FaComputerHost = (function () {
         _registerComputerCommands() {
             this.register_slash_command('/computer', '[status|enable|disable|scope|auto|abort|resume|windows|probe|connect|secret|deny|calibrate|help]',
                 '讓 AI 操作這台電腦（桌面版限定，預設關閉）。每一批動作先預覽、你在原生視窗核准才執行；只在你指定的視窗範圍內；不會在密碼欄打字、不碰系統設定／付款／驗證視窗；隨時可以用 Esc 或 Ctrl+Alt+Shift+Esc 中止。/computer enable 啟用、/computer scope 選視窗、/computer auto on 本次自動核准、/computer abort 中止、/computer probe host:5900 探測遠端桌面協定、/computer connect host:5900 [機密名稱] 用內建 VNC 用戶端連線。',
-                (argsText, run) => (run || this)._computerCommand(argsText, run));
+                (argsText, run, meta) => (run || this)._computerCommand(argsText, run, meta));
         },
 
         // ───── 工具 ─────

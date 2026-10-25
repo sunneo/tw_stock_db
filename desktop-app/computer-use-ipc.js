@@ -19,6 +19,28 @@ const CSS = `body{font-family:-apple-system,"Segoe UI","Noto Sans CJK TC",sans-s
 #deny{background:#21262d;color:#e5e7eb;border:1px solid #30363d}#allow{background:#c0392b;color:#fff;border:none}#auto{background:#7a4a00;color:#fff;border:none}
 .row{display:flex;gap:8px;align-items:center;padding:4px 2px;font-size:13px}.row.off{opacity:.45}.dim{color:#9ca3af;font-size:11px}`;
 
+// 範圍的保存格式：{ mode:'screen' } | { mode:'windows', windows:[{ title, process, class }] }（沒有視窗代號、沒有行程號碼：那些每次開機都不一樣）
+function scopeToSaved(scope) {
+  if (!scope) return null; if (scope.mode === "screen") return { mode: "screen" };
+  if (scope.mode === "windows" && Array.isArray(scope.windows) && scope.windows.length) return { mode: "windows", windows: scope.windows.map((w) => ({ title: String(w.title || ""), process: String(w.process || ""), class: String(w.class || "") })) };
+  return null;
+}
+function sanitizeSavedScope(x) {
+  if (!x || typeof x !== "object") return null; if (x.mode === "screen") return { mode: "screen" };
+  if (x.mode === "windows" && Array.isArray(x.windows)) { const ws = x.windows.slice(0, 20).filter((w) => w && typeof w === "object").map((w) => ({ title: String(w.title || "").slice(0, 200), process: String(w.process || "").slice(0, 100), class: String(w.class || "").slice(0, 100) })); return ws.length ? { mode: "windows", windows: ws } : null; }
+  return null;
+}
+// 用保存的描述在現有視窗裡找：標題完全相同優先；否則同行程＋同類別而且只有一個。受保護的與助理自己的視窗不會被選（setScope 還會再擋一次）
+function matchSavedWindows(saved, wins) {
+  const ids = [], low = (v) => String(v || "").toLowerCase();
+  for (const d of saved || []) {
+    const same = (wins || []).filter((w) => !w.denied && !w.self && low(w.process) === low(d.process) && (!d.class || low(w.class) === low(d.class)));
+    const exact = same.filter((w) => String(w.title) === d.title), pick = exact.length ? exact[0] : (same.length === 1 ? same[0] : null);
+    if (pick && !ids.includes(String(pick.id))) ids.push(String(pick.id));
+  }
+  return ids;
+}
+
 function register(ipcMain, ctx) {
   ctx = ctx || {};
   const electron = ctx.electron || {};
@@ -27,7 +49,7 @@ function register(ipcMain, ctx) {
   const userDataDir = ctx.userDataDir || (() => (electron.app ? electron.app.getPath("userData") : require("os").tmpdir()));
   const secretsFile = ctx.secretsFile || (() => path.join(userDataDir(), "secrets.json"));
   const fsSync = require("fs");
-  let cu = null, initPromise = null, hotkeyOn = false;
+  let cu = null, initPromise = null, hotkeyOn = false, savedScope = null, scopeTriedAt = 0;
   const mainWin = () => (ctx.getMainWindow ? ctx.getMainWindow() : null);
   const emit = (type, extra) => { try { const w = mainWin(); if (w && !w.isDestroyed()) w.webContents.send("fa:computer:event", Object.assign({ type }, extra || {})); } catch (_) { /* */ } };
 
@@ -94,17 +116,29 @@ function register(ipcMain, ctx) {
     if (!initPromise) initPromise = (async () => {
       loadRemoteSecrets();
       let enabled = false, extraDeny = [];
-      try { const st = ctx.getDesktopSettings ? await ctx.getDesktopSettings() : {}; enabled = st && st.computerUseEnabled === true; extraDeny = ((st && st.computerUseExtraDeny) || []).filter((x) => typeof x === "string" && x.length < 200).map((x) => { try { return new RegExp(x, "i"); } catch (_) { return null; } }).filter(Boolean); } catch (_) { /* 沒有設定就是預設關閉 */ }
+      try { const st = ctx.getDesktopSettings ? await ctx.getDesktopSettings() : {}; enabled = st && st.computerUseEnabled === true; savedScope = enabled ? sanitizeSavedScope(st && st.computerUseScope) : null; extraDeny = ((st && st.computerUseExtraDeny) || []).filter((x) => typeof x === "string" && x.length < 200).map((x) => { try { return new RegExp(x, "i"); } catch (_) { return null; } }).filter(Boolean); } catch (_) { /* 沒有設定就是預設關閉 */ }
       cu = require("./computer-use.js").create(Object.assign({ platform: process.platform, enabled, selfPids: [process.pid], safety: { extraDeny: SELF_DENY.concat(extraDeny) }, secrets, confirm: (info) => nativeConfirm({ preview: info.preview, allowAuto: !info.forceAsk && info.source !== "remote_connect", okLabel: info.source === "remote_connect" ? "連線" : info.forceAsk ? "我確認，執行" : "執行這批動作", note: info.forceAsk ? "這一步需要你親自確認（看不出焦點是不是密碼欄／遠端畫面／連線）；自動模式也一樣。" : "", tall: true }) }, ctx.cuOptions || {})); // cuOptions：測試用（注入假後端）
+      if (enabled && savedScope) { try { await restoreScope(cu); } catch (_) { /* 還原不了就維持沒有範圍，使用者再選一次 */ } }
       return cu;
     })();
     return initPromise;
   }
+  // ---------- 範圍的保存與還原：視窗代號每次開機都會變，所以存「標題＋行程＋類別」，開機後與之後的每次呼叫再用現有視窗對回去 ----------
+  const persistScope = async (scope) => { savedScope = sanitizeSavedScope(scopeToSaved(scope)); try { if (ctx.patchDesktopSettings) await ctx.patchDesktopSettings({ computerUseScope: savedScope }); } catch (_) { /* */ } };
+  async function restoreScope(c) {
+    if (!savedScope || !c.state().enabled) return false; scopeTriedAt = Date.now();
+    if (savedScope.mode === "screen") { await c.setScope({ mode: "screen" }); return true; }
+    const l = await c.listWindows({ all: true }); if (!l.ok) return false;
+    const ids = matchSavedWindows(savedScope.windows, l.windows); if (!ids.length) return false;
+    const r = await c.setScope({ windowIds: ids }); return !!(r && r.ok);
+  }
+  // 範圍是「有保存、但現在是空的」（視窗還沒開、或剛開機）→ 每隔幾秒再對一次；使用者按 /computer disable 之後 savedScope 會被清掉
+  async function refreshScope(c) { try { if (savedScope && c.state().enabled && c.state().scope.mode === "none" && Date.now() - scopeTriedAt > 4000) { await restoreScope(c); emit("state"); } } catch (_) { /* */ } }
   const persistEnabled = async (on) => { try { if (ctx.patchDesktopSettings) await ctx.patchDesktopSettings({ computerUseEnabled: !!on }); } catch (_) { /* */ } };
   const registerHotkey = (c) => { if (!globalShortcut || hotkeyOn) return; try { hotkeyOn = globalShortcut.register(ABORT_HOTKEY, () => { c.abort("使用者按下全域中止快捷鍵"); emit("abort", { by: "hotkey" }); }); } catch (_) { hotkeyOn = false; } };
   const unregisterHotkey = () => { if (globalShortcut && hotkeyOn) { try { globalShortcut.unregister(ABORT_HOTKEY); } catch (_) { /* */ } } hotkeyOn = false; };
   async function withRun(fn) { const c = await getCu(); emit("run-start"); registerHotkey(c); try { return await fn(c); } finally { unregisterHotkey(); emit("run-end", { aborted: c.safety.isAborted() }); } }
-  const handle = (name, fn) => ipcMain.handle("fa:computer:" + name, async (evt, args) => { try { return await fn(await getCu(), args || {}, evt); } catch (e) { return { ok: false, error: String((e && e.message) || e) }; } });
+  const handle = (name, fn) => ipcMain.handle("fa:computer:" + name, async (evt, args) => { try { const c0 = await getCu(); if (!/^(setEnabled|setScope|pickScope|abort)$/.test(name)) await refreshScope(c0); return await fn(c0, args || {}, evt); } catch (e) { return { ok: false, error: String((e && e.message) || e) }; } });
 
   // ----- 狀態與權限 -----
   handle("status", async (c) => Object.assign({ ok: true, platform: process.platform, abortHotkey: ABORT_HOTKEY, supported: process.platform === "win32" || process.platform === "linux" }, c.state()));
@@ -115,7 +149,7 @@ function register(ipcMain, ctx) {
       if (!ok.approved) return { ok: false, error: "使用者沒有啟用", refused: true };
       await persistEnabled(true); c.setEnabled(true); emit("state"); return Object.assign({ ok: true }, c.state());
     }
-    c.setEnabled(false); await persistEnabled(false); unregisterHotkey(); emit("state"); return Object.assign({ ok: true }, c.state());
+    c.setEnabled(false); await persistEnabled(false); await persistScope(null); unregisterHotkey(); emit("state"); return Object.assign({ ok: true }, c.state());
   });
   handle("setAuto", async (c, a) => {
     if (!c.state().enabled) return { ok: false, error: "先啟用電腦操作功能" };
@@ -126,14 +160,14 @@ function register(ipcMain, ctx) {
     if (!c.state().enabled) return { ok: false, error: "先啟用電腦操作功能（/computer enable）" };
     const l = await c.listWindows({ all: false }); if (!l.ok) return l;
     const pick = await pickScope(l.windows); if (!pick) return { ok: false, error: "使用者沒有選擇範圍", refused: true };
-    const r = await c.setScope(pick.mode === "screen" ? { mode: "screen" } : { windowIds: pick.windowIds }); emit("state"); return r;
+    const r = await c.setScope(pick.mode === "screen" ? { mode: "screen" } : { windowIds: pick.windowIds }); if (r && r.ok) await persistScope(c.state().scope); emit("state"); return r;
   });
   handle("setScope", async (c, a) => {
     if (!c.state().enabled) return { ok: false, error: "先啟用電腦操作功能（/computer enable）" };
     let desc = "整個螢幕（AI 可以看到所有視窗）"; if (a.mode !== "screen") { const l = await c.listWindows({ all: true }); desc = (a.windowIds || []).map((id) => { const w = l.ok && l.windows.find((x) => String(x.id) === String(id)); return "• " + (w ? (w.denied ? "（受保護的視窗）" : w.title) + "（" + w.process + "）" : id); }).join("\n"); }
     const ok = await nativeConfirm({ title: "AI 要求操作電腦：指定範圍", okLabel: "允許這些視窗", preview: "AI 想把操作範圍設成：\n" + desc });
     if (!ok.approved) return { ok: false, error: "使用者拒絕了這個範圍", refused: true };
-    const r = await c.setScope(a.mode === "screen" ? { mode: "screen" } : { windowIds: a.windowIds || [] }); emit("state"); return r;
+    const r = await c.setScope(a.mode === "screen" ? { mode: "screen" } : { windowIds: a.windowIds || [] }); if (r && r.ok) await persistScope(c.state().scope); emit("state"); return r;
   });
   handle("abort", async (c, a) => { const r = await c.abort(a.reason || "使用者中止"); emit("abort", { by: "renderer" }); return r; });
   handle("resume", async (c) => { if (!c.state().enabled) return { ok: false, error: "尚未啟用" }; c.resume(); emit("state"); return Object.assign({ ok: true }, c.state()); });
@@ -170,4 +204,4 @@ function register(ipcMain, ctx) {
   return { getCu, nativeConfirm, secrets, ABORT_HOTKEY };
 }
 
-module.exports = { register, ABORT_HOTKEY, SELF_DENY };
+module.exports = { register, ABORT_HOTKEY, SELF_DENY, scopeToSaved, sanitizeSavedScope, matchSavedWindows };
