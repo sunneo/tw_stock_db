@@ -71,7 +71,9 @@ if [ -n "$(git status --porcelain -- renderer scripts)" ]; then echo "注意：r
 say "組 desktop-app-patch"
 git fetch -q "$REMOTE" desktop-app-patch 2>/dev/null || true
 if [ -z "$VERSION" ]; then
-  CUR="$(git show "$REMOTE/desktop-app-patch:manifest.json" 2>/dev/null | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{console.log(parseInt(JSON.parse(s).version,10)||0)}catch(e){console.log(0)}})")"
+  # 互換版 manifest.json 凍結在 188，真正的最新版本在 manifest.v2.json（兩份取大的，版本號才會單調遞增）
+  CUR="$( { git show "$REMOTE/desktop-app-patch:manifest.v2.json" 2>/dev/null; echo; echo '@@'; git show "$REMOTE/desktop-app-patch:manifest.json" 2>/dev/null; } | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{let m=0;for(const part of s.split('@@')){try{m=Math.max(m,parseInt(JSON.parse(part).version,10)||0)}catch(e){}}console.log(m)})")"
+  CUR_OLD="$(git show "$REMOTE/desktop-app-patch:manifest.json" 2>/dev/null | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{console.log(parseInt(JSON.parse(s).version,10)||0)}catch(e){console.log(0)}})")"
   VERSION=$((CUR + 1))
 fi
 echo "版本 $VERSION"
