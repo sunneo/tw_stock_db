@@ -5,7 +5,8 @@
   'use strict';
   var NUM = '(\\d+(?:\\.\\d+)?)', SEP = '\\s*[×xX＊*]\\s*', NOTE = '(?:\\s*[（(][^）)]*[）)])?';
   var DIM_RE = new RegExp(NUM + NOTE + SEP + NUM + NOTE + '(?:' + SEP + NUM + NOTE + ')?');
-  var ENGINEERING_RE = /工程圖|零件圖|尺寸圖|裁切圖|裁剪圖|樣板|三視圖|展開圖|組裝圖|施工圖|設計圖|blueprint|cad|零件尺寸/i;
+  // 只用來決定「要不要去對話裡找零件表」：放寬沒關係，因為真的找不到「名稱＋長×寬×厚」的表就什麼都不做。助理常把使用者的話改寫成英文或別的說法（graph、svg、parts、dimensions…），所以英文也算
+  var ENGINEERING_RE = /工程|零件|元件|尺寸|長度|組裝|裝配|裁切|裁剪|樣板|三視圖|展開圖|施工圖|設計圖|blueprint|cad|dimension|component|part list|parts|assembl|technical drawing|engineering|schematic/i;
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function clean(s) { return String(s == null ? '' : s).replace(/[*`_]/g, '').replace(/\s+/g, ' ').trim(); }
   function fmt(n) { return (Math.round(n * 10) / 10).toFixed(Math.abs(n % 1) < 0.05 ? 0 : 1).replace(/\.0$/, '') + ''; }

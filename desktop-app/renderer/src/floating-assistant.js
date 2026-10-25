@@ -26226,7 +26226,8 @@ const holder = {};
   'use strict';
   var NUM = '(\\d+(?:\\.\\d+)?)', SEP = '\\s*[×xX＊*]\\s*', NOTE = '(?:\\s*[（(][^）)]*[）)])?';
   var DIM_RE = new RegExp(NUM + NOTE + SEP + NUM + NOTE + '(?:' + SEP + NUM + NOTE + ')?');
-  var ENGINEERING_RE = /工程圖|零件圖|尺寸圖|裁切圖|裁剪圖|樣板|三視圖|展開圖|組裝圖|施工圖|設計圖|blueprint|cad|零件尺寸/i;
+  // 只用來決定「要不要去對話裡找零件表」：放寬沒關係，因為真的找不到「名稱＋長×寬×厚」的表就什麼都不做。助理常把使用者的話改寫成英文或別的說法（graph、svg、parts、dimensions…），所以英文也算
+  var ENGINEERING_RE = /工程|零件|元件|尺寸|長度|組裝|裝配|裁切|裁剪|樣板|三視圖|展開圖|施工圖|設計圖|blueprint|cad|dimension|component|part list|parts|assembl|technical drawing|engineering|schematic/i;
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function clean(s) { return String(s == null ? '' : s).replace(/[*`_]/g, '').replace(/\s+/g, ' ').trim(); }
   function fmt(n) { return (Math.round(n * 10) / 10).toFixed(Math.abs(n % 1) < 0.05 ? 0 : 1).replace(/\.0$/, '') + ''; }
@@ -42664,11 +42665,12 @@ const FaKnowledgeHost = (function () {
                 let timer = null; const t0 = Date.now(), label = (o.label || '模型') + (kind === 'offline' ? '（離線模型）' : '');
                 if (kind === 'offline') step('🔌 ' + (i === 0 ? '離線模式：' : '線上試了兩次都沒成功，') + '改用離線文字模型…（第一次要載入模型，會比較慢；小模型的品質有限，寫出來的一樣會逐句核對）');
                 try {
-                    const lim = kind === 'offline' ? Math.max(tm, 180000) : (i > 0 ? Math.round(tm * 1.5) : tm); // 線上重試時多給一點耐心：一次慢回應不代表離線
-                    const call = kind === 'offline' ? this._kiOfflineComplete(o.offlinePrompt ? o.offlinePrompt() : prompt, opts) : this._callSimpleCompletion(prompt, opts);
+                    const lim0 = kind === 'offline' ? Math.max(tm, 180000) : (i > 0 ? Math.round(tm * 1.5) : tm), lim = kind === 'offline' ? lim0 : lim0 * 4; // 線上：最多輪過 4 個模型，每個各自有 lim0 的耐心 // 線上重試時多給一點耐心：一次慢回應不代表離線
+                    let lastActive = Date.now(); const touch = () => { lastActive = Date.now(); }; // 離線模型：有在吐字（或載入進度有在動）就不算沒回應，只有「安靜」超過上限才放棄；整體另有 20 分鐘的絕對上限
+                    const call = kind === 'offline' ? this._kiOfflineComplete(o.offlinePrompt ? o.offlinePrompt() : prompt, Object.assign({}, opts, { onActive: touch })) : this._kiOnlineAcrossRows(prompt, opts, step, lim);
                     const reply = await Promise.race([
                         call,
-                        new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('等了 ' + Math.round(lim / 1000) + ' 秒沒有回應' + (kind === 'online' ? '（AI 節點可能斷線了）' : ''))), lim); }),
+                        new Promise((_, rej) => { const t00 = Date.now(), quiet = () => rej(new Error('等了 ' + Math.round(lim / 1000) + ' 秒沒有回應' + (kind === 'online' ? '（AI 節點可能斷線了）' : '（離線模型安靜太久，可能卡住了）'))); if (kind !== 'offline') { timer = setTimeout(quiet, lim); return; } const tick = () => { if (Date.now() - lastActive > lim || Date.now() - t00 > 20 * 60 * 1000) quiet(); else timer = setTimeout(tick, 4000); }; timer = setTimeout(tick, 4000); }),
                         new Promise((_, rej) => { if (o.ctl) o.ctl.cancel = () => rej(new Error('已略過等待')); }),
                     ]);
                     clearTimeout(timer);
@@ -42689,12 +42691,33 @@ const FaKnowledgeHost = (function () {
             throw lastErr;
         },
         // 離線文字模型（Configure 裡選好、已下載的）：只拿「文字生成」，不經過離線訓練器與工具
+        // 線上：先試第一組，這個節點本身有問題（5xx、連線被重置、逾時、404、金鑰被拒）就換下一個線上模型，最多 4 個，才輪到離線。
+        // 429（太密集）與 400（內容有問題）換節點沒有用，直接丟出去讓上層等一等再重試。每次換模型都寫進過程記錄（哪個模型、為什麼、花多久）。
+        async _kiOnlineAcrossRows(prompt, opts, step, totalMs) {
+            step = step || (() => {}); const perMs = Math.max(20000, Math.round((totalMs || 240000) / 4)); let order = [];
+            try { const seen = new Set(); this._computeModelRowGroups().forEach((g) => { const first = this._pickRowFromGroup(g); [first].concat(g.rows.filter((r) => r !== first).slice(0, 1)).forEach((r) => { const c = this._resolveModelRowConfig(r); const key = c.apiUrl + '|' + c.apiModel + '|' + c.apiKey; if (c.apiKey && c.apiUrl && !seen.has(key)) { seen.add(key); order.push(c); } }); }); } catch (_) { order = []; }
+            if (!order.length) { return this._callSimpleCompletion(prompt, opts); }
+            order = order.slice(0, 4); let lastErr = null; const tried = [];
+            for (let i = 0; i < order.length; i++) {
+                const c = order[i], t0 = Date.now(); let timer = null;
+                try {
+                    const reply = await Promise.race([this._callSimpleCompletion(prompt, Object.assign({}, opts, { cfg: { apiKey: c.apiKey, apiUrl: c.apiUrl, apiModel: c.apiModel } })), new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('逾時：等了 ' + Math.round(perMs / 1000) + ' 秒沒有回應')), perMs); })]);
+                    clearTimeout(timer); if (i > 0) step('　✅ 改用「' + c.apiModel + '」成功了（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）'); return reply;
+                } catch (e) {
+                    clearTimeout(timer); lastErr = e; const msg = String((e && e.message) || e); tried.push(c.apiModel + '：' + msg.slice(0, 60));
+                    const endpointProblem = /API錯誤\((?:5\d\d|404|401|403)\)|網路錯誤|Failed to fetch|ECONNRESET|ECONNREFUSED|ETIMEDOUT|逾時|等了/.test(msg);
+                    if (!endpointProblem || i === order.length - 1) { if (i > 0 && lastErr) { lastErr.message = msg + '（已輪過 ' + (i + 1) + ' 個線上模型：' + tried.join('；') + '）'; } throw lastErr; }
+                    step('　⚠️ 線上模型「' + c.apiModel + '」這個節點有問題（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）：' + msg.slice(0, 100) + '。改試下一個線上模型');
+                }
+            }
+            throw lastErr;
+        },
         async _kiOfflineComplete(prompt, opts) {
             opts = opts || {}; const S = this._omSettings(), inst = await this._omInstalled();
             const route = FaVlm.routeStages({ config: S.roles, bench: S.bench, installed: inst.set, requireInstalled: true, defaultId: S.textModel, hasTools: false });
             const model = route && route.answer; if (!model) throw new Error('還沒有下載離線文字模型（Configure → 離線模型 裡可以下載）');
             const msgs = []; if (opts.systemPrompt) msgs.push({ role: 'system', content: opts.systemPrompt }); msgs.push({ role: 'user', content: String(prompt) });
-            const r = await this._llmGenerate(model, { messages: msgs, maxTokens: Math.min(Number(opts.maxTokens) || 512, 700), deterministic: true }, { update() { /* */ }, log() { /* */ }, onToken() { /* */ } });
+            const r = await this._llmGenerate(model, { messages: msgs, maxTokens: Math.min(Number(opts.maxTokens) || 512, 700), deterministic: true }, { update() { if (opts.onActive) opts.onActive(); }, log() { if (opts.onActive) opts.onActive(); }, onToken() { if (opts.onActive) opts.onActive(); } });
             return String(r == null ? '' : r).trim();
         },
         // 模型想的「可能出現在文件裡的詞」：只拿來多找一輪，不當答案。沒有模型可用就回空的（維持原本的檢索結果）。
@@ -62558,16 +62581,19 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     // 零件表→工程圖：對話裡（使用者貼的、或助理剛列的）有「名稱＋長×寬×厚」的零件表時，工程圖由程式照尺寸等比例畫，不用模型（模型常常斷線或太慢）
     _imagePartsSvg(o) {
         try {
-            const PS = typeof FaPartsSheet !== 'undefined' ? FaPartsSheet : null; if (!PS || !PS.isEngineeringRequest(o.request)) return ''; // 只有「要工程圖／尺寸圖」的需求才用零件表，別的圖不要亂套
+            const PS = typeof FaPartsSheet !== 'undefined' ? FaPartsSheet : null; if (!PS) return '';
             const texts = [String(o.request || '')]; const ms = this.messages || []; for (let i = ms.length - 1; i >= 0 && texts.length < 14; i--) { const c = ms[i] && ms[i].content; if (typeof c === 'string' && c.length > 20 && ms[i].role !== 'tool') texts.push(c); }
             const all = texts.join(String.fromCharCode(10)), parts = PS.parseParts(all); if (!parts.length) return '';
+            // 只有「要工程圖／尺寸圖」的需求才用零件表（別的圖不要亂套）：看這次的需求，也看對話裡使用者最近說的話（助理常把需求改寫過，原話裡才有「工程圖」）
+            const said = []; for (let i = ms.length - 1; i >= 0 && said.length < 6; i--) { if (ms[i] && ms[i].role === 'user' && typeof ms[i].content === 'string') said.push(ms[i].content); }
+            if (!PS.isEngineeringRequest(String(o.request || '') + ' ' + said.join(' '))) return '';
             const tm = /(?:準備|畫|做|製作|產生)\s*(.{2,40}?)\s*(?:的)?(?:工程圖|零件圖|尺寸圖|組裝圖|裁切圖|樣板)/.exec(String(o.request || '')); const title = (tm ? tm[1].replace(/^[「『"(（\s]+|[」』")）\s]+$/g, '') + ' 工程圖' : '零件工程圖');
             return PS.svg(parts, { title, steps: PS.parseSteps(all) });
         } catch (_) { return ''; }
     }
     async _imageShapes(o) {
         const note = o.note || (() => {}), FM = FaImageRoute; let svg = '', err = '', kind = o.format === 'mermaid' ? 'mermaid' : 'svg', mer = '';
-        if (kind === 'svg' && typeof FaPartsSheet !== 'undefined' && FaPartsSheet.isEngineeringRequest(o.request)) { const ps = this._imagePartsSvg(o); if (ps) { svg = ps; note('🛠 對話裡有零件表：程式直接照尺寸畫工程圖（不用模型）'); } }
+        if (kind === 'svg' && typeof FaPartsSheet !== 'undefined') { const ps = this._imagePartsSvg(o); if (ps) { svg = ps; note('🛠 對話裡有零件表：程式直接照尺寸畫工程圖（不用模型）'); } }
         for (let attempt = 0; attempt < 2 && !svg; attempt++) {
             const brief = kind === 'mermaid' ? FM.mermaidBrief(o.request, o.diagram) : FM.svgBrief(o.request, {}); const fix = attempt ? '\n上一次的結果有問題：' + err + '。請重寫，只輸出修正後的內容。' : '';
             note('✍️ 請模型寫 ' + (kind === 'mermaid' ? 'Mermaid' : 'SVG') + ' 純文字…' + (attempt ? '（第 2 次）' : ''));
@@ -88887,8 +88913,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     // 內部那次路由呼叫是同一種「單次分類/摘要用途、不需要完整agentic loop」
     // 的呼叫模式，抽出來避免重複程式碼。失敗時丟出例外，呼叫端自行決定要
     // 整段失敗還是（像summarize_large_text那樣）用佔位文字讓其他區塊繼續。
-    async _callSimpleCompletion(userPrompt, { systemPrompt = '', maxTokens = 800, temperature = 0.2 } = {}) {
-        const { apiKey, apiUrl, apiModel } = this._getApiConfig();
+    async _callSimpleCompletion(userPrompt, { systemPrompt = '', maxTokens = 800, temperature = 0.2, cfg = null } = {}) {
+        const { apiKey, apiUrl, apiModel } = cfg || this._getApiConfig();
         const messages = [];
         if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
         messages.push({ role: 'user', content: userPrompt });

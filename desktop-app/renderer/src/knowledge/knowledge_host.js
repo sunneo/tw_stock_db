@@ -590,11 +590,12 @@ const FaKnowledgeHost = (function () {
                 let timer = null; const t0 = Date.now(), label = (o.label || '模型') + (kind === 'offline' ? '（離線模型）' : '');
                 if (kind === 'offline') step('🔌 ' + (i === 0 ? '離線模式：' : '線上試了兩次都沒成功，') + '改用離線文字模型…（第一次要載入模型，會比較慢；小模型的品質有限，寫出來的一樣會逐句核對）');
                 try {
-                    const lim = kind === 'offline' ? Math.max(tm, 180000) : (i > 0 ? Math.round(tm * 1.5) : tm); // 線上重試時多給一點耐心：一次慢回應不代表離線
-                    const call = kind === 'offline' ? this._kiOfflineComplete(o.offlinePrompt ? o.offlinePrompt() : prompt, opts) : this._callSimpleCompletion(prompt, opts);
+                    const lim0 = kind === 'offline' ? Math.max(tm, 180000) : (i > 0 ? Math.round(tm * 1.5) : tm), lim = kind === 'offline' ? lim0 : lim0 * 4; // 線上：最多輪過 4 個模型，每個各自有 lim0 的耐心 // 線上重試時多給一點耐心：一次慢回應不代表離線
+                    let lastActive = Date.now(); const touch = () => { lastActive = Date.now(); }; // 離線模型：有在吐字（或載入進度有在動）就不算沒回應，只有「安靜」超過上限才放棄；整體另有 20 分鐘的絕對上限
+                    const call = kind === 'offline' ? this._kiOfflineComplete(o.offlinePrompt ? o.offlinePrompt() : prompt, Object.assign({}, opts, { onActive: touch })) : this._kiOnlineAcrossRows(prompt, opts, step, lim);
                     const reply = await Promise.race([
                         call,
-                        new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('等了 ' + Math.round(lim / 1000) + ' 秒沒有回應' + (kind === 'online' ? '（AI 節點可能斷線了）' : ''))), lim); }),
+                        new Promise((_, rej) => { const t00 = Date.now(), quiet = () => rej(new Error('等了 ' + Math.round(lim / 1000) + ' 秒沒有回應' + (kind === 'online' ? '（AI 節點可能斷線了）' : '（離線模型安靜太久，可能卡住了）'))); if (kind !== 'offline') { timer = setTimeout(quiet, lim); return; } const tick = () => { if (Date.now() - lastActive > lim || Date.now() - t00 > 20 * 60 * 1000) quiet(); else timer = setTimeout(tick, 4000); }; timer = setTimeout(tick, 4000); }),
                         new Promise((_, rej) => { if (o.ctl) o.ctl.cancel = () => rej(new Error('已略過等待')); }),
                     ]);
                     clearTimeout(timer);
@@ -615,12 +616,33 @@ const FaKnowledgeHost = (function () {
             throw lastErr;
         },
         // 離線文字模型（Configure 裡選好、已下載的）：只拿「文字生成」，不經過離線訓練器與工具
+        // 線上：先試第一組，這個節點本身有問題（5xx、連線被重置、逾時、404、金鑰被拒）就換下一個線上模型，最多 4 個，才輪到離線。
+        // 429（太密集）與 400（內容有問題）換節點沒有用，直接丟出去讓上層等一等再重試。每次換模型都寫進過程記錄（哪個模型、為什麼、花多久）。
+        async _kiOnlineAcrossRows(prompt, opts, step, totalMs) {
+            step = step || (() => {}); const perMs = Math.max(20000, Math.round((totalMs || 240000) / 4)); let order = [];
+            try { const seen = new Set(); this._computeModelRowGroups().forEach((g) => { const first = this._pickRowFromGroup(g); [first].concat(g.rows.filter((r) => r !== first).slice(0, 1)).forEach((r) => { const c = this._resolveModelRowConfig(r); const key = c.apiUrl + '|' + c.apiModel + '|' + c.apiKey; if (c.apiKey && c.apiUrl && !seen.has(key)) { seen.add(key); order.push(c); } }); }); } catch (_) { order = []; }
+            if (!order.length) { return this._callSimpleCompletion(prompt, opts); }
+            order = order.slice(0, 4); let lastErr = null; const tried = [];
+            for (let i = 0; i < order.length; i++) {
+                const c = order[i], t0 = Date.now(); let timer = null;
+                try {
+                    const reply = await Promise.race([this._callSimpleCompletion(prompt, Object.assign({}, opts, { cfg: { apiKey: c.apiKey, apiUrl: c.apiUrl, apiModel: c.apiModel } })), new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('逾時：等了 ' + Math.round(perMs / 1000) + ' 秒沒有回應')), perMs); })]);
+                    clearTimeout(timer); if (i > 0) step('　✅ 改用「' + c.apiModel + '」成功了（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）'); return reply;
+                } catch (e) {
+                    clearTimeout(timer); lastErr = e; const msg = String((e && e.message) || e); tried.push(c.apiModel + '：' + msg.slice(0, 60));
+                    const endpointProblem = /API錯誤\((?:5\d\d|404|401|403)\)|網路錯誤|Failed to fetch|ECONNRESET|ECONNREFUSED|ETIMEDOUT|逾時|等了/.test(msg);
+                    if (!endpointProblem || i === order.length - 1) { if (i > 0 && lastErr) { lastErr.message = msg + '（已輪過 ' + (i + 1) + ' 個線上模型：' + tried.join('；') + '）'; } throw lastErr; }
+                    step('　⚠️ 線上模型「' + c.apiModel + '」這個節點有問題（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）：' + msg.slice(0, 100) + '。改試下一個線上模型');
+                }
+            }
+            throw lastErr;
+        },
         async _kiOfflineComplete(prompt, opts) {
             opts = opts || {}; const S = this._omSettings(), inst = await this._omInstalled();
             const route = FaVlm.routeStages({ config: S.roles, bench: S.bench, installed: inst.set, requireInstalled: true, defaultId: S.textModel, hasTools: false });
             const model = route && route.answer; if (!model) throw new Error('還沒有下載離線文字模型（Configure → 離線模型 裡可以下載）');
             const msgs = []; if (opts.systemPrompt) msgs.push({ role: 'system', content: opts.systemPrompt }); msgs.push({ role: 'user', content: String(prompt) });
-            const r = await this._llmGenerate(model, { messages: msgs, maxTokens: Math.min(Number(opts.maxTokens) || 512, 700), deterministic: true }, { update() { /* */ }, log() { /* */ }, onToken() { /* */ } });
+            const r = await this._llmGenerate(model, { messages: msgs, maxTokens: Math.min(Number(opts.maxTokens) || 512, 700), deterministic: true }, { update() { if (opts.onActive) opts.onActive(); }, log() { if (opts.onActive) opts.onActive(); }, onToken() { if (opts.onActive) opts.onActive(); } });
             return String(r == null ? '' : r).trim();
         },
         // 模型想的「可能出現在文件裡的詞」：只拿來多找一輪，不當答案。沒有模型可用就回空的（維持原本的檢索結果）。
