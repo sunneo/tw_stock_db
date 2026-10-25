@@ -623,16 +623,22 @@ const FaKnowledgeHost = (function () {
             try { const seen = new Set(); this._computeModelRowGroups().forEach((g) => { const first = this._pickRowFromGroup(g); [first].concat(g.rows.filter((r) => r !== first).slice(0, 1)).forEach((r) => { const c = this._resolveModelRowConfig(r); const key = c.apiUrl + '|' + c.apiModel + '|' + c.apiKey; if (c.apiKey && c.apiUrl && !seen.has(key)) { seen.add(key); order.push(c); } }); }); } catch (_) { order = []; }
             if (!order.length) { return this._callSimpleCompletion(prompt, opts); }
             order = order.slice(0, 4); let lastErr = null; const tried = [];
+            // 暫時性的斷線（連線被重置、串流提早結束、5xx）：同一個節點先再試一次（隔一下），還是不行才換下一個線上模型；逾時（已經等夠久了）與 404／金鑰被拒不重試同一個節點
+            const flaky = (m) => /ECONNRESET|串流提早結束|串流中斷|API錯誤\(5\d\d\)|網路錯誤|Failed to fetch/.test(m) && !/逾時|等了/.test(m);
+            const endpointProblem = (m) => /API錯誤\((?:5\d\d|404|401|403)\)|網路錯誤|Failed to fetch|ECONNRESET|ECONNREFUSED|ETIMEDOUT|逾時|等了|串流/.test(m);
             for (let i = 0; i < order.length; i++) {
-                const c = order[i], t0 = Date.now(); let timer = null;
-                try {
-                    const reply = await Promise.race([this._callSimpleCompletion(prompt, Object.assign({}, opts, { cfg: { apiKey: c.apiKey, apiUrl: c.apiUrl, apiModel: c.apiModel } })), new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('逾時：等了 ' + Math.round(perMs / 1000) + ' 秒沒有回應')), perMs); })]);
-                    clearTimeout(timer); if (i > 0) step('　✅ 改用「' + c.apiModel + '」成功了（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）'); return reply;
-                } catch (e) {
-                    clearTimeout(timer); lastErr = e; const msg = String((e && e.message) || e); tried.push(c.apiModel + '：' + msg.slice(0, 60));
-                    const endpointProblem = /API錯誤\((?:5\d\d|404|401|403)\)|網路錯誤|Failed to fetch|ECONNRESET|ECONNREFUSED|ETIMEDOUT|逾時|等了/.test(msg);
-                    if (!endpointProblem || i === order.length - 1) { if (i > 0 && lastErr) { lastErr.message = msg + '（已輪過 ' + (i + 1) + ' 個線上模型：' + tried.join('；') + '）'; } throw lastErr; }
-                    step('　⚠️ 線上模型「' + c.apiModel + '」這個節點有問題（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）：' + msg.slice(0, 100) + '。改試下一個線上模型');
+                const c = order[i]; let again = 0;
+                for (;;) {
+                    const t0 = Date.now(); let timer = null;
+                    try {
+                        const reply = await Promise.race([this._callSimpleCompletion(prompt, Object.assign({}, opts, { cfg: { apiKey: c.apiKey, apiUrl: c.apiUrl, apiModel: c.apiModel } })), new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('逾時：等了 ' + Math.round(perMs / 1000) + ' 秒沒有回應')), perMs); })]);
+                        clearTimeout(timer); if (i > 0 || again) step('　✅ ' + (again ? '同一個節點再試一次成功了' : '改用「' + c.apiModel + '」成功了') + '（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）'); return reply;
+                    } catch (e) {
+                        clearTimeout(timer); lastErr = e; const msg = String((e && e.message) || e); tried.push(c.apiModel + '：' + msg.slice(0, 60));
+                        if (flaky(msg) && again < 1) { again++; step('　⚠️ 線上模型「' + c.apiModel + '」斷線了（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）：' + msg.slice(0, 90) + '。同一個節點再試一次…'); await new Promise((r) => setTimeout(r, 1500)); continue; }
+                        if (!endpointProblem(msg) || i === order.length - 1) { if (i > 0 && lastErr) { lastErr.message = msg + '（已輪過 ' + (i + 1) + ' 個線上模型：' + tried.join('；') + '）'; } throw lastErr; }
+                        step('　⚠️ 線上模型「' + c.apiModel + '」這個節點有問題（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）：' + msg.slice(0, 100) + '。改試下一個線上模型'); break;
+                    }
                 }
             }
             throw lastErr;
