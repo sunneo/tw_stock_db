@@ -17701,7 +17701,7 @@ const holder = {};
   'use strict';
 
   // ───── ① 分流 ─────
-  var SHAPE_WORDS = ['流程圖', '架構圖', '組織圖', '時序圖', '序列圖', '類別圖', '狀態圖', '甘特圖', '心智圖', '關聯圖', '示意圖', '拓撲', '電路圖', '網路圖', '拓樸', '圖表', '長條圖', '折線圖', '圓餅圖', '雷達圖', '散佈圖', '幾何', '圖示', '圖標', '箭頭', '方塊', '方框', '圓形', '三角形', '矩形', '正方形', '線條', '座標', '九宮格', '時間軸', '工程圖', '平面圖', '線框', 'er圖', 'uml', 'mermaid', 'flowchart', 'diagram', 'chart', 'graph', 'wireframe', 'infographic', 'svg', 'vector', 'flat icon', 'geometric', 'sequence diagram', 'gantt', 'mindmap', 'icon', 'logo', 'schematic', 'blueprint'];
+  var SHAPE_WORDS = ['流程圖', '架構圖', '組織圖', '時序圖', '序列圖', '類別圖', '狀態圖', '甘特圖', '心智圖', '關聯圖', '示意圖', '拓撲', '電路圖', '網路圖', '拓樸', '圖表', '長條圖', '折線圖', '圓餅圖', '雷達圖', '散佈圖', '幾何', '圖示', '圖標', '箭頭', '方塊', '方框', '圓形', '三角形', '矩形', '正方形', '線條', '座標', '九宮格', '時間軸', '工程圖', '零件圖', '尺寸圖', '裁切圖', '裁剪圖', '組裝圖', '三視圖', '展開圖', '施工圖', '平面圖', '線框', 'er圖', 'uml', 'mermaid', 'flowchart', 'diagram', 'chart', 'graph', 'wireframe', 'infographic', 'svg', 'vector', 'flat icon', 'geometric', 'sequence diagram', 'gantt', 'mindmap', 'icon', 'logo', 'schematic', 'blueprint'];
   var PHOTO_WORDS = ['照片', '相片', '寫實', '攝影', '風景', '人物', '肖像', '動物', '插畫', '漫畫', '動漫', '油畫', '水彩', '素描', '賽博', '奇幻', '科幻', '海報', '封面', '壁紙', '概念圖', '渲染', '電影感', '貓', '狗', '女孩', '男孩', '少女', '城市', '森林', '海邊', '場景', '現場', '音樂會', '演唱會', '舞台', '夜景', '街景', '街道', '派對', '咖啡廳', '教室', '房間', '廚房', '沙灘', '山', '日落', '日出', '雪景', '花園', '市集', '夕陽', '星空', 'photo', 'photograph', 'portrait', 'landscape', 'painting', 'illustration', 'anime', 'cinematic', 'realistic', 'artwork', 'wallpaper', 'render', 'oil painting', 'watercolor'];
   var MERMAID_TYPES = [
     { type: 'sequenceDiagram', re: /時序圖|序列圖|sequence/i }, { type: 'classDiagram', re: /類別圖|class diagram|uml 類別/i }, { type: 'stateDiagram-v2', re: /狀態圖|state diagram|狀態機/i },
@@ -17719,7 +17719,8 @@ const holder = {};
     if (opts.hasImage && !s.n) photo += 1; // 貼了圖要「畫成類似的」：多半是擴散模型
     if (s.hit.length) reasons.push('形狀／圖表用詞：' + s.hit.slice(0, 4).join('、')); if (p.hit.length) reasons.push('畫面／畫風用詞：' + p.hit.slice(0, 4).join('、'));
     var total = shape + photo, route = shape > photo ? 'shapes' : 'diffusion', conf = total ? Math.abs(shape - photo) / total : 0;
-    var type = route === 'shapes' ? diagramType(t) : null;
+    // 工程圖、零件尺寸圖、組裝圖是「照尺寸畫的 SVG」，不是流程圖：只有明明白白寫了圖種（流程圖、時序圖…）才用 Mermaid（句子裡的「流程」「組裝流程」不算）
+    var eng = /工程圖|零件圖|尺寸圖|裁切圖|裁剪圖|組裝圖|三視圖|展開圖|施工圖|樣板|blueprint/i.test(t), type = route === 'shapes' ? (eng && !/流程圖|時序圖|序列圖|類別圖|狀態圖|甘特|心智圖|圓餅圖|flowchart|sequence|gantt|mindmap/i.test(t) ? null : diagramType(t)) : null;
     return { route: route, format: route === 'shapes' ? (type ? 'mermaid' : 'svg') : null, diagram: type, confidence: Math.round(conf * 100) / 100, ask: shape > 0 && conf < 0.34, scores: { shapes: shape, diffusion: photo }, reasons: reasons };
   }
 
@@ -26214,6 +26215,96 @@ const holder = {};
 return holder.FaEditShell;
 })();
 /* EDSHELL-END */
+/* PSHEET-BEGIN */
+const FaPartsSheet = (function () {
+const holder = {};
+(function (module, self) {
+// 零件表 → 工程圖（SVG 純文字，程式直接畫，不用模型）。純函式，node 與瀏覽器都能跑；測試 scripts/edit-tests/parts_sheet.test.js。
+// 為什麼有這個：「幫我準備某某的工程圖，要有每個零件的長度、怎麼組裝」這種需求，零件表（名稱、長×寬×厚、數量）通常已經在對話裡了；
+// 模型寫 SVG 常常失敗（線上節點斷線、離線小模型太慢），而這張圖其實是「照尺寸等比例畫矩形、標尺寸線、列出組裝步驟」，程式做得比模型穩。
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaPartsSheet = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var NUM = '(\\d+(?:\\.\\d+)?)', SEP = '\\s*[×xX＊*]\\s*', NOTE = '(?:\\s*[（(][^）)]*[）)])?';
+  var DIM_RE = new RegExp(NUM + NOTE + SEP + NUM + NOTE + '(?:' + SEP + NUM + NOTE + ')?');
+  var ENGINEERING_RE = /工程圖|零件圖|尺寸圖|裁切圖|裁剪圖|樣板|三視圖|展開圖|組裝圖|施工圖|設計圖|blueprint|cad|零件尺寸/i;
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function clean(s) { return String(s == null ? '' : s).replace(/[*`_]/g, '').replace(/\s+/g, ' ').trim(); }
+  function fmt(n) { return (Math.round(n * 10) / 10).toFixed(Math.abs(n % 1) < 0.05 ? 0 : 1).replace(/\.0$/, '') + ''; }
+
+  // ───── 從文字裡讀零件表：markdown 表格（| 分隔）或用 Tab 分隔的列；每列要有「長×寬(×厚)」。欄位：代號、名稱、數量、尺寸、備註（順序不限，程式依內容判斷）
+  function parseParts(text) {
+    var parts = [], lines = String(text || '').split(/\r?\n/);
+    for (var i = 0; i < lines.length; i++) {
+      var ln = lines[i]; if (!DIM_RE.test(ln) || /^\s*[-|:\s]+$/.test(ln)) { continue; }
+      var cells = (ln.indexOf('|') >= 0 ? ln.split('|') : ln.split(/\t+/)).map(clean).filter(function (c) { return c !== ''; });
+      if (cells.length < 2) { continue; }
+      var dimIdx = -1, m = null; for (var k = 0; k < cells.length; k++) { m = DIM_RE.exec(cells[k]); if (m) { dimIdx = k; break; } }
+      if (dimIdx < 0) { continue; }
+      var a = Number(m[1]), b = Number(m[2]), c = m[3] != null ? Number(m[3]) : null; if (!(a > 0 && b > 0)) { continue; }
+      var id = '', name = '', qty = 1, note = '', rest = cells.filter(function (_, j) { return j !== dimIdx; });
+      rest.forEach(function (cell) {
+        var q = /^(?:[x×＊*]\s*)?(\d{1,3})\s*(?:個|片|條|支|件|組|pcs)?$/i.exec(cell);
+        if (!id && /^[A-Za-z]{1,2}\d{0,2}$/.test(cell)) { id = cell.toUpperCase(); }
+        else if (q && Number(q[1]) <= 200) { qty = Number(q[1]); }
+        else if (!name) { name = cell; }
+        else if (!note) { note = cell; }
+      });
+      // 名稱裡帶「×2」之類：也當數量
+      var qm = /[x×＊*]\s*(\d{1,3})\s*$/i.exec(name); if (qm) { qty = Number(qm[1]); name = name.replace(/\s*[x×＊*]\s*\d{1,3}\s*$/i, ''); }
+      if (!name) { name = id || ('零件 ' + (parts.length + 1)); }
+      if (/^(零件|名稱|代號|part|name|項目)$/i.test(name) && !id) { continue; }
+      parts.push({ id: id || String.fromCharCode(65 + (parts.length % 26)), name: name, qty: qty, w: a, h: b, t: c, note: note, dimText: cells[dimIdx] });
+    }
+    return parts.slice(0, 40);
+  }
+  // 組裝步驟：「1. …」「1、…」「步驟 1：…」這種編號列
+  function parseSteps(text) {
+    var out = [], lines = String(text || '').split(/\r?\n/);
+    lines.forEach(function (ln) { var m = /^\s*(?:步驟\s*)?(\d{1,2})\s*[.、:：)）]\s*(.{2,160})$/.exec(ln); if (m && !DIM_RE.test(m[2])) { out.push(clean(m[2])); } });
+    return out.slice(0, 20);
+  }
+  function isEngineeringRequest(text) { return ENGINEERING_RE.test(String(text || '')); }
+
+  // ───── 畫：每個零件按同一個比例畫成矩形（長在上、寬在右），標尺寸線與數字；底下列組裝步驟與材料說明
+  function svg(parts, o) {
+    o = o || {}; var title = clean(o.title || '零件工程圖'), steps = o.steps || [], unit = o.unit || 'cm';
+    if (!parts || !parts.length) { return ''; }
+    var W = 1100, M = 40, maxLen = Math.max.apply(null, parts.map(function (p) { return Math.max(p.w, p.h); })), scale = Math.max(2, Math.min(18, 330 / maxLen));
+    var x = M, y = 120, rowH = 0, out = [], gap = 70;
+    parts.forEach(function (p) {
+      var pw = Math.max(14, p.w * scale), ph = Math.max(10, p.h * scale), cardW = pw + 110, cardH = ph + 110;
+      if (x + cardW > W - M && x > M) { x = M; y += rowH + 30; rowH = 0; }
+      var ox = x + 10, oy = y + 54;
+      out.push('<g>');
+      out.push('<text x="' + ox + '" y="' + (y + 18) + '" class="id">' + esc(p.id) + ' · ' + esc(p.name) + '</text>');
+      out.push('<text x="' + ox + '" y="' + (y + 36) + '" class="sub">數量 ' + p.qty + (p.t != null ? '　厚 ' + fmt(p.t) + ' ' + unit : '') + (p.note ? '　' + esc(p.note.slice(0, 24)) : '') + '</text>');
+      out.push('<rect x="' + ox + '" y="' + oy + '" width="' + pw.toFixed(1) + '" height="' + ph.toFixed(1) + '" class="part" rx="3"/>');
+      // 上方：長度尺寸線
+      var ly = oy - 8; out.push('<line x1="' + ox + '" y1="' + ly + '" x2="' + (ox + pw).toFixed(1) + '" y2="' + ly + '" class="dimline" marker-start="url(#ar0)" marker-end="url(#ar1)"/>');
+      out.push('<text x="' + (ox + pw / 2).toFixed(1) + '" y="' + (ly - 4) + '" text-anchor="middle" class="dim">' + fmt(p.w) + ' ' + unit + '</text>');
+      // 右方：寬度尺寸線
+      var lx = ox + pw + 12; out.push('<line x1="' + lx.toFixed(1) + '" y1="' + oy + '" x2="' + lx.toFixed(1) + '" y2="' + (oy + ph).toFixed(1) + '" class="dimline" marker-start="url(#ar0)" marker-end="url(#ar1)"/>');
+      out.push('<text x="' + (lx + 6).toFixed(1) + '" y="' + (oy + ph / 2 + 4).toFixed(1) + '" class="dim">' + fmt(p.h) + ' ' + unit + '</text>');
+      out.push('</g>');
+      x += cardW + gap / 2; rowH = Math.max(rowH, cardH);
+    });
+    var yEnd = y + rowH + 30, body = out.join('\n');
+    var notes = [];
+    if (steps.length) { notes.push('<text x="' + M + '" y="' + (yEnd + 24) + '" class="h2">組裝步驟</text>'); steps.forEach(function (s, i) { notes.push('<text x="' + (M + 8) + '" y="' + (yEnd + 50 + i * 24) + '" class="step">' + (i + 1) + '. ' + esc(s.slice(0, 80)) + '</text>'); }); yEnd += 50 + steps.length * 24; }
+    notes.push('<text x="' + M + '" y="' + (yEnd + 30) + '" class="sub">尺寸單位：' + unit + '。所有零件按同一個比例縮放（1 ' + unit + ' ≈ ' + scale.toFixed(1) + ' px）；列印當裁剪樣板時，以標註的尺寸為準。</text>');
+    var H = yEnd + 60;
+    return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + W + ' ' + H + '" width="' + W + '" height="' + H + '">'
+      + '<defs><style>.t{font:bold 24px sans-serif;fill:#1a1a2e}.id{font:bold 14px sans-serif;fill:#1a1a2e}.sub{font:12px sans-serif;fill:#555}.h2{font:bold 16px sans-serif;fill:#16213e}.step{font:14px sans-serif;fill:#1a1a2e}.dim{font:bold 12px sans-serif;fill:#c0392b}.part{fill:#f3e3c3;stroke:#7a5c2e;stroke-width:2}.dimline{stroke:#c0392b;stroke-width:1.2;fill:none}</style>'
+      + '<marker id="ar0" markerWidth="8" markerHeight="8" refX="1" refY="4" orient="auto"><path d="M8 0 L0 4 L8 8 z" fill="#c0392b"/></marker><marker id="ar1" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 z" fill="#c0392b"/></marker></defs>'
+      + '<rect width="100%" height="100%" fill="#fff"/><text x="' + M + '" y="46" class="t">' + esc(title) + '</text><text x="' + M + '" y="72" class="sub">零件尺寸圖（依零件表自動繪製）</text>\n' + body + '\n' + notes.join('\n') + '</svg>';
+  }
+  return { parseParts: parseParts, parseSteps: parseSteps, svg: svg, isEngineeringRequest: isEngineeringRequest, ENGINEERING_RE: ENGINEERING_RE };
+});
+
+}).call(null, undefined, holder);
+return holder.FaPartsSheet;
+})();
+/* PSHEET-END */
 /* EDOFF-BEGIN */
 const FaEditOffline = (function () {
 const holder = {};
@@ -62464,12 +62555,23 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         finally { this._imageProg = null; }
     }
     // 單純形狀的組合圖：請模型寫 SVG 或 Mermaid（純文字），程式驗證、消毒、渲染成圖；寫壞了把原因告訴模型重寫一次
+    // 零件表→工程圖：對話裡（使用者貼的、或助理剛列的）有「名稱＋長×寬×厚」的零件表時，工程圖由程式照尺寸等比例畫，不用模型（模型常常斷線或太慢）
+    _imagePartsSvg(o) {
+        try {
+            const PS = typeof FaPartsSheet !== 'undefined' ? FaPartsSheet : null; if (!PS) return '';
+            const texts = [String(o.request || '')]; const ms = this.messages || []; for (let i = ms.length - 1; i >= 0 && texts.length < 14; i--) { const c = ms[i] && ms[i].content; if (typeof c === 'string' && c.length > 20 && ms[i].role !== 'tool') texts.push(c); }
+            const all = texts.join(String.fromCharCode(10)), parts = PS.parseParts(all); if (!parts.length) return '';
+            const tm = /(?:準備|畫|做|製作|產生)\s*(.{2,40}?)\s*(?:的)?(?:工程圖|零件圖|尺寸圖|組裝圖|裁切圖|樣板)/.exec(String(o.request || '')); const title = (tm ? tm[1].replace(/^[「『"(（\s]+|[」』")）\s]+$/g, '') + ' 工程圖' : '零件工程圖');
+            return PS.svg(parts, { title, steps: PS.parseSteps(all) });
+        } catch (_) { return ''; }
+    }
     async _imageShapes(o) {
         const note = o.note || (() => {}), FM = FaImageRoute; let svg = '', err = '', kind = o.format === 'mermaid' ? 'mermaid' : 'svg', mer = '';
-        for (let attempt = 0; attempt < 2; attempt++) {
+        if (kind === 'svg' && typeof FaPartsSheet !== 'undefined' && FaPartsSheet.isEngineeringRequest(o.request)) { const ps = this._imagePartsSvg(o); if (ps) { svg = ps; note('🛠 對話裡有零件表：程式直接照尺寸畫工程圖（不用模型）'); } }
+        for (let attempt = 0; attempt < 2 && !svg; attempt++) {
             const brief = kind === 'mermaid' ? FM.mermaidBrief(o.request, o.diagram) : FM.svgBrief(o.request, {}); const fix = attempt ? '\n上一次的結果有問題：' + err + '。請重寫，只輸出修正後的內容。' : '';
             note('✍️ 請模型寫 ' + (kind === 'mermaid' ? 'Mermaid' : 'SVG') + ' 純文字…' + (attempt ? '（第 2 次）' : ''));
-            let reply = ''; try { reply = await this._kiLlm(brief.user + fix, { systemPrompt: brief.system, maxTokens: 3500, temperature: 0.3 }, { label: '畫形狀圖', timeoutMs: 180000, onStep: note }); } catch (e) { return { ok: false, error: '模型沒有回應：' + String((e && e.message) || e).slice(0, 140) }; }
+            let reply = ''; try { reply = await this._kiLlm(brief.user + fix, { systemPrompt: brief.system, maxTokens: 3500, temperature: 0.3 }, { label: '畫形狀圖', timeoutMs: 180000, onStep: note }); } catch (e) { const ps2 = kind === 'svg' ? this._imagePartsSvg(o) : ''; if (ps2) { note('🛠 模型沒有回應：改由程式依對話裡的零件表直接畫'); svg = ps2; break; } return { ok: false, error: '模型沒有回應：' + String((e && e.message) || e).slice(0, 140) }; }
             if (kind === 'mermaid') {
                 mer = FM.extractMermaid(reply); const v = FM.validateMermaid(mer); if (!v.ok) { err = v.error; continue; }
                 let rr = null; try { rr = JSON.parse(await this.tools.render_uml_diagram.callback.call(this, JSON.stringify({ mermaid: mer }))); } catch (e) { rr = { ok: false, error: String((e && e.message) || e) }; }
@@ -62478,6 +62580,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             const cand = FM.extractSvg(reply); const v = FM.validateSvg(cand); if (!v.ok) { err = v.error; continue; }
             svg = DOMPurify.sanitize(cand, { USE_PROFILES: { svg: true, svgFilters: true } }); if (!String(svg).trim()) { err = '消毒後變成空的'; svg = ''; continue; } break;
         }
+        if (!svg && kind === 'svg') { svg = this._imagePartsSvg(o); if (svg) note('🛠 模型寫的 SVG 不合格：改由程式依對話裡的零件表直接畫'); }
         if (!svg) return { ok: false, error: '畫不出來（' + err + '）。換個說法，或加 route=diffusion 改用擴散模型。' };
         note('🖌 渲染成圖片…'); let png = null; try { png = await this._imageRasterizeSvg(svg, 1024); } catch (_) { /* 轉不成點陣圖就只給 SVG */ }
         const stamp = Date.now().toString(36), svgBlob = new Blob([svg], { type: 'image/svg+xml' }), svgId = await this.fileCache.put('drawing-' + stamp + '.svg', 'image/svg+xml', svgBlob, 'generated'); let pngId = null;
