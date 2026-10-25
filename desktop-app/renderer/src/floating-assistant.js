@@ -7858,6 +7858,137 @@ const holder = {};
 return holder.FaVoiceSample;
 })();
 /* VSAMPLE-END */
+/* VREC-BEGIN */
+const FaVoiceRecording = (function () {
+const holder = {};
+(function (module, self) {
+/* 錄音聲音樣本的核心（UMD，純函式，不碰 DOM、麥克風、網路）。
+ *
+ * 「聲音樣本」＝一段自己的聲音錄音：24kHz 單聲道 16-bit WAV ＋ 你念的文字稿 ＋ 名字與語言（中文／英文）。
+ * ChatTTS（sample_audio_speaker）、XTTS、F5-TTS 這類吃「參考音檔」的引擎，都是拿這種樣本取得說話人；所以匯出的就是這個 WAV 與一份說明 JSON。
+ * 這裡負責：念稿、品質檢查（音量、爆音、靜音比例、長度、底噪）、修剪頭尾靜音、音量正規化、重採樣成 24kHz 單聲道、WAV 編碼、匯出包。
+ * 錄音本身（麥克風、AudioContext）與存放（IndexedDB）在 floating-assistant.js 裡。 */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaVoiceRecording = factory();
+}(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var TARGET_RATE = 24000, FORMAT = 'fa-voice-recording';
+  var MIN_SEC = 5, GOOD_SEC = 10, MAX_SEC = 120;
+
+  // ---- 念稿：涵蓋各種母音／子音、有疑問句與停頓，念起來自然。每種語言三段，合起來約 20 到 30 秒
+  var SCRIPTS = {
+    zh: ['今天天氣真好，我想趁著早晨出門散步，順便買一杯熱咖啡。', '你知道嗎？人的聲音就像指紋一樣，每個人都不一樣，所以我要用自己的聲音，慢慢地、清楚地念完這幾句話。', '最後，請記得，無論明天遇到什麼困難，都要深呼吸，然後一步一步往前走。'],
+    en: ['The weather is lovely this morning, so I decided to take a walk and pick up a hot cup of coffee.', 'Did you know that every voice is as unique as a fingerprint? I will read these sentences slowly and clearly, in my own natural voice.', 'Finally, remember this: whatever tomorrow brings, take a deep breath, and keep moving forward, one step at a time.']
+  };
+  function langOf(l) { return /^(zh|cn|中文|國語|chinese|mandarin)/i.test(String(l || '')) ? 'zh' : 'en'; }
+  function script(lang) { return SCRIPTS[langOf(lang)].slice(); }
+
+  // ---- 取樣處理
+  function peakOf(a) { var p = 0; for (var i = 0; i < a.length; i++) { var x = Math.abs(a[i]); if (x > p) p = x; } return p; }
+  function rms(a, s, e) { s = s || 0; e = e === undefined ? a.length : e; var n = Math.max(1, e - s), t = 0; for (var i = s; i < e; i++) t += a[i] * a[i]; return Math.sqrt(t / n); }
+  function db(x) { return 20 * Math.log10(Math.max(x, 1e-9)); }
+  // 每 20ms 一個視窗的音量（RMS），回 Float32Array
+  function frames(a, sr) { var w = Math.max(1, Math.round(sr * 0.02)), n = Math.floor(a.length / w), out = new Float32Array(n); for (var k = 0; k < n; k++) out[k] = rms(a, k * w, (k + 1) * w); return out; }
+  // 合併多聲道成單聲道
+  function toMono(chans) { if (!chans || !chans.length) return new Float32Array(0); if (chans.length === 1) return chans[0]; var n = chans[0].length, out = new Float32Array(n); for (var c = 0; c < chans.length; c++) for (var i = 0; i < n; i++) out[i] += chans[c][i] / chans.length; return out; }
+  // 線性內插重採樣（瀏覽器端有 OfflineAudioContext 時用它，品質較好；這個給測試與沒有它的環境）
+  function resample(a, from, to) {
+    if (from === to) return a; var n = Math.max(1, Math.round(a.length * to / from)), out = new Float32Array(n), r = from / to;
+    for (var i = 0; i < n; i++) { var p = i * r, i0 = Math.floor(p), f = p - i0, x0 = a[Math.min(i0, a.length - 1)], x1 = a[Math.min(i0 + 1, a.length - 1)]; out[i] = x0 + (x1 - x0) * f; }
+    return out;
+  }
+  // 修剪頭尾靜音：門檻跟著這段錄音的音量走（最大視窗音量的 4%，至少 0.003），頭尾各留 0.15 秒
+  function trim(a, sr) {
+    var f = frames(a, sr); if (!f.length) return a; var mx = 0; for (var i = 0; i < f.length; i++) if (f[i] > mx) mx = f[i];
+    if (!(mx > 0)) return a; var th = Math.max(0.003, mx * 0.04), s = 0, e = f.length;
+    while (s < e && f[s] < th) s++; while (e > s && f[e - 1] < th) e--;
+    var pad = Math.round(sr * 0.15), w = Math.round(sr * 0.02);
+    return a.subarray(Math.max(0, s * w - pad), Math.min(a.length, e * w + pad));
+  }
+  // 音量正規化到目標峰值（預設 0.89，約 -1 dBFS）；太小聲的錄音被放大時底噪也會變大，所以上限 12 倍
+  function normalize(a, target) {
+    var p = peakOf(a); if (!(p > 0)) return a; var g = Math.min(12, (target || 0.89) / p), out = new Float32Array(a.length); for (var i = 0; i < a.length; i++) out[i] = a[i] * g; return out;
+  }
+
+  // ---- 品質檢查：回 { ok, durationSec, peak, rmsDb, clippedPct, silencePct, noiseDb, snrDb, issues:[{level:'bad'|'warn', text}], advice }
+  // 規則（單聲道、原始取樣率的樣本）：
+  //  - 長度：少於 5 秒不合格，少於 10 秒提醒；超過 120 秒提醒（引擎只會用前面一小段）
+  //  - 爆音：絕對值 ≥ 0.99 的樣本超過 0.5% → 太大聲、聲音爆掉
+  //  - 太小聲：講話時（音量最大的 20% 視窗）平均低於 -35 dBFS
+  //  - 靜音比例：低於 4% 最大音量的視窗超過 60% → 講太少話
+  //  - 底噪：最安靜的 10% 視窗的平均音量；訊噪比（講話視窗／底噪）低於 20 dB 提醒、低於 12 dB 不合格
+  function analyze(a, sr) {
+    var dur = a.length / sr, peak = peakOf(a), f = frames(a, sr), issues = [];
+    var clipped = 0; for (var i = 0; i < a.length; i++) if (Math.abs(a[i]) >= 0.99) clipped++;
+    var clippedPct = a.length ? clipped / a.length * 100 : 0;
+    var sorted = Array.prototype.slice.call(f).sort(function (x, y) { return x - y; }), nq = Math.max(1, Math.floor(sorted.length * 0.1)), tq = Math.max(1, Math.floor(sorted.length * 0.2));
+    var noise = 0, talk = 0, k; for (k = 0; k < nq; k++) noise += sorted[k]; noise /= nq; for (k = sorted.length - tq; k < sorted.length; k++) talk += sorted[k]; talk /= tq;
+    var mx = sorted.length ? sorted[sorted.length - 1] : 0, quiet = 0; for (k = 0; k < f.length; k++) if (f[k] < Math.max(0.003, mx * 0.04)) quiet++;
+    var silencePct = f.length ? quiet / f.length * 100 : 100, talkDb = db(talk), noiseDb = db(noise), snr = talkDb - noiseDb;
+    if (dur < MIN_SEC) issues.push({ level: 'bad', text: '太短了：只有 ' + dur.toFixed(1) + ' 秒，至少要 ' + MIN_SEC + ' 秒（建議 ' + GOOD_SEC + ' 秒以上）' });
+    else if (dur < GOOD_SEC) issues.push({ level: 'warn', text: '偏短（' + dur.toFixed(1) + ' 秒）：建議 ' + GOOD_SEC + ' 秒以上，聲音特徵比較完整' });
+    if (dur > MAX_SEC) issues.push({ level: 'warn', text: '很長（' + Math.round(dur) + ' 秒）：多數引擎只會用前面一小段，剪到 ' + MAX_SEC + ' 秒內就夠了' });
+    if (clippedPct > 0.5) issues.push({ level: 'bad', text: '聲音爆掉了（' + clippedPct.toFixed(1) + '% 的取樣到頂）：離麥克風遠一點、或把輸入音量調小再錄' });
+    if (peak > 0 && talkDb < -35) issues.push({ level: 'warn', text: '講話音量偏小（約 ' + talkDb.toFixed(0) + ' dBFS）：靠近麥克風或調大輸入音量；匯出時會自動放大，但底噪也會跟著變大' });
+    if (silencePct > 60) issues.push({ level: 'bad', text: '幾乎都是靜音（' + silencePct.toFixed(0) + '%）：確認有選對麥克風、而且有在念稿' });
+    if (snr < 12) issues.push({ level: 'bad', text: '背景噪音太大（訊噪比只有 ' + snr.toFixed(0) + ' dB）：換個安靜的地方、關掉風扇或冷氣再錄' });
+    else if (snr < 20) issues.push({ level: 'warn', text: '背景有點吵（訊噪比 ' + snr.toFixed(0) + ' dB）：能再安靜一點會更好' });
+    var bad = issues.some(function (x) { return x.level === 'bad'; });
+    return { ok: !bad, durationSec: Math.round(dur * 10) / 10, peak: Math.round(peak * 1000) / 1000, talkDb: Math.round(talkDb), noiseDb: Math.round(noiseDb), snrDb: Math.round(snr), clippedPct: Math.round(clippedPct * 100) / 100, silencePct: Math.round(silencePct), issues: issues,
+      advice: bad ? '這段錄音有問題，建議重錄。' : (issues.length ? '可以用，但上面的提醒處理掉會更好。' : '品質很好。') };
+  }
+
+  // 錄音處理總流程：單聲道樣本 → 修剪 → 重採樣 24kHz → 正規化 → 回 { samples, rate, report }（品質檢查看「處理前（只修剪）」的樣本，才抓得到爆音與底噪）
+  function prepare(mono, sr) {
+    var trimmed = trim(mono, sr), report = analyze(trimmed, sr), out = normalize(resample(trimmed, sr, TARGET_RATE));
+    return { samples: out, rate: TARGET_RATE, report: report };
+  }
+
+  // ---- WAV（16-bit PCM 單聲道）編碼與解碼（解碼只認自己編的這種與常見的 PCM16/float32 WAV）
+  function wav(samples, rate) {
+    var sr = rate || TARGET_RATE, n = samples.length, buf = new ArrayBuffer(44 + n * 2), dv = new DataView(buf);
+    var w = function (o, s) { for (var i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
+    w(0, 'RIFF'); dv.setUint32(4, 36 + n * 2, true); w(8, 'WAVE'); w(12, 'fmt '); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+    dv.setUint32(24, sr, true); dv.setUint32(28, sr * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true); w(36, 'data'); dv.setUint32(40, n * 2, true);
+    for (var i = 0; i < n; i++) { var x = Math.max(-1, Math.min(1, samples[i])); dv.setInt16(44 + i * 2, Math.round(x < 0 ? x * 0x8000 : x * 0x7FFF), true); }
+    return new Uint8Array(buf);
+  }
+  function parseWav(bytes) {
+    var u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    var tag = function (o) { return String.fromCharCode(u8[o], u8[o + 1], u8[o + 2], u8[o + 3]); };
+    if (u8.length < 44 || tag(0) !== 'RIFF' || tag(8) !== 'WAVE') return { ok: false, error: '這不是 WAV 檔' };
+    var pos = 12, fmt = null, data = null;
+    while (pos + 8 <= u8.length) { var id = tag(pos), len = dv.getUint32(pos + 4, true); if (id === 'fmt ') fmt = { code: dv.getUint16(pos + 8, true), ch: dv.getUint16(pos + 10, true), rate: dv.getUint32(pos + 12, true), bits: dv.getUint16(pos + 22, true) }; else if (id === 'data') { data = { off: pos + 8, len: Math.min(len, u8.length - pos - 8) }; break; } pos += 8 + len + (len & 1); }
+    if (!fmt || !data) return { ok: false, error: 'WAV 檔缺少 fmt 或 data 區塊' };
+    var bytesPer = fmt.bits / 8, n = Math.floor(data.len / (bytesPer * fmt.ch)), chans = []; if (!(fmt.ch >= 1 && fmt.ch <= 8)) return { ok: false, error: '不支援的聲道數：' + fmt.ch };
+    if (!((fmt.code === 1 && (fmt.bits === 16 || fmt.bits === 8)) || (fmt.code === 3 && fmt.bits === 32))) return { ok: false, error: '不支援的 WAV 格式（編碼 ' + fmt.code + '、' + fmt.bits + ' 位元）；請用 16 位元 PCM 的 WAV，或直接匯入 mp3／m4a' };
+    for (var c = 0; c < fmt.ch; c++) chans.push(new Float32Array(n));
+    for (var i = 0; i < n; i++) for (var c2 = 0; c2 < fmt.ch; c2++) { var o = data.off + (i * fmt.ch + c2) * bytesPer; chans[c2][i] = fmt.code === 3 ? dv.getFloat32(o, true) : fmt.bits === 16 ? dv.getInt16(o, true) / 32768 : (u8[o] - 128) / 128; }
+    return { ok: true, rate: fmt.rate, channels: chans };
+  }
+
+  // ---- 匯出包的說明 JSON（跟 WAV 一起給別人）
+  function meta(o) {
+    return { format: FORMAT, version: 1, name: String(o.name || '').slice(0, 60), lang: langOf(o.lang), transcript: String(o.transcript || ''), sampleRate: TARGET_RATE, channels: 1, bits: 16, durationSec: o.durationSec || 0,
+      createdAt: o.createdAt || new Date().toISOString(), file: o.file || undefined,
+      usage: {
+        ChatTTS: 'speaker = chat.sample_audio_speaker(wav_24k_mono)  # 或 torchaudio.load 後取單聲道 24kHz；再放進 InferCodeParams(spk_smp=speaker, txt_smp=transcript)',
+        XTTS: 'tts.tts_to_file(text=..., speaker_wav="<這個 WAV>", language="zh-cn" 或 "en")',
+        'F5-TTS': 'ref_audio=<這個 WAV>, ref_text=<transcript>',
+        note: '這是一段「參考音檔」：音檔本身就是樣本，不是某個引擎專用的向量。transcript 是錄音時念的文字，ChatTTS 的 txt_smp 與 F5-TTS 的 ref_text 要用。'
+      } };
+  }
+  function safeFilename(name) { return (String(name || 'voice').replace(/[\\/:*?"<>|\s]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40)) || 'voice'; }
+
+  return { TARGET_RATE: TARGET_RATE, FORMAT: FORMAT, MIN_SEC: MIN_SEC, GOOD_SEC: GOOD_SEC, MAX_SEC: MAX_SEC, SCRIPTS: SCRIPTS, langOf: langOf, script: script,
+    peakOf: peakOf, rms: rms, frames: frames, toMono: toMono, resample: resample, trim: trim, normalize: normalize, analyze: analyze, prepare: prepare,
+    wav: wav, parseWav: parseWav, meta: meta, safeFilename: safeFilename };
+}));
+
+}).call(null, undefined, holder);
+return holder.FaVoiceRecording;
+})();
+/* VREC-END */
 /* RECIPE-BEGIN */
 const FaRecipe = (function () {
 const holder = {};
@@ -42838,9 +42969,10 @@ class FloatingAssistant {
             () => this._handleMediaListVoicesCommand()
         );
         // 聲音樣本（我的聲音）：建立／匯入／匯出／刪除；不帶參數的 /voice-create、/voice-import 會開啟同一個視窗（設定頁「語音設定」也有按鈕）
-        this.register_slash_command('/voice-create', '[<名字>] [lang=zh|en] [gender=f|m] [mix=代號:比例,…] [random] [seed=N] [count=N] [spread=X] [play=0]', '建立聲音樣本（我的聲音）：把現有的中文或英文聲音依比例混合成新聲音（Kokoro 語音包，在本機做、不上傳），或用種子隨機配出一個（同一個種子永遠同一個聲音）。做完自動試聽，並加進語音下拉選單與 /media-list-voices。不帶參數會開啟建立視窗。', (argsText) => this._handleVoiceCreateCommand(argsText));
-        this.register_slash_command('/voice-import', '', '匯入聲音樣本：選一個 Kokoro 語音包（.bin）或本程式匯出的 .voice.json，匯入成「我的聲音」（中文或英文），之後可以用語音代號給 /media-text-to-speech 使用。', (argsText) => this._handleVoiceImportCommand(argsText));
-        this.register_slash_command('/voice-export', '[<語音代號>]', '匯出自己的聲音（我的聲音）：下載 .bin（Kokoro 語音包，別人的 Kokoro 系工具直接能用）與 .voice.json（含配方，可以再匯入）。不帶代號會列出你的聲音。', (argsText) => this._handleVoiceExportCommand(argsText));
+        this.register_slash_command('/voice-create', '[<名字>] [lang=zh|en] [gender=f|m] [mix=代號:比例,…] [random] [seed=N] [count=N] [spread=X] [play=0]', '建立聲音樣本（我的聲音）：不帶參數會開啟建立視窗——預設用麥克風錄自己的聲音（有念稿、品質檢查，存成 24kHz 單聲道 WAV，可匯出給 ChatTTS／XTTS／F5-TTS），另一個分頁是混合現有聲音。帶參數（名字、mix=…、random、seed=…）是直接做 Kokoro 混合聲音，做完自動試聽。', (argsText) => this._handleVoiceCreateCommand(argsText));
+        this.register_slash_command('/voice-import', '', '匯入聲音樣本：選一個音檔（wav、mp3、m4a、ogg…，會轉成 24kHz 單聲道 WAV 並檢查品質）當自己的錄音樣本，或 Kokoro 語音包（.bin）／本程式匯出的 .voice.json（中文或英文）。', (argsText) => this._handleVoiceImportCommand(argsText));
+        this.register_slash_command('/voice-export', '[<語音代號>]', '匯出自己的聲音：錄音樣本下載 .wav（24kHz 單聲道參考音檔）與 .voice-sample.json（念的文字、各引擎的用法）；Kokoro 混合聲音下載 .bin 與 .voice.json。不帶代號會列出你的聲音。', (argsText) => this._handleVoiceExportCommand(argsText));
+        this.register_slash_command('/voice-record', '', '開啟「建立聲音樣本」視窗，用麥克風錄自己的聲音（等同不帶參數的 /voice-create）。', () => this._voiceCreateDialog('record'));
         this.register_slash_command('/voice-delete', '<語音代號>', '刪除自己的聲音（我的聲音）。', (argsText) => this._handleVoiceDeleteCommand(argsText));
         // tw_stock_db客製: 2026-09-12使用者要求——配音也要能用/media-開頭的
         // 指令直接觸發（不經過LLM），走跟start_dubbing_session工具同一條路徑。
@@ -48925,7 +49057,7 @@ ${fnData.code}
                 const text = String(parsed.text || '').trim();
                 if (!text) return JSON.stringify({ ok: false, error: '缺少text參數' });
                 const voiceArg = String(parsed.voice || '').trim();
-                if (voiceArg && !TTS_VOICES.some(v => v.id === voiceArg) && !TTS_ZH_VOICES.some(v => v.id === voiceArg) && !TTS_API_VOICES.some(v => v.id === voiceArg)) {
+                if (voiceArg && !/^vs_/.test(voiceArg) && !TTS_VOICES.some(v => v.id === voiceArg) && !TTS_ZH_VOICES.some(v => v.id === voiceArg) && !TTS_API_VOICES.some(v => v.id === voiceArg)) {
                     return JSON.stringify({ ok: false, error: `不認得的語音代號「${voiceArg}」，用 /media-list-voices 查完整清單` });
                 }
                 try {
@@ -49523,6 +49655,7 @@ ${fnData.code}
         if (/<[a-zA-Z][\w:-]*(\s[^<>]*)?\/?>/.test(t)) {
             return { ok: false, error: '文字裡偵測到看起來像XML/SSML標記（例如<speak>、<phoneme>）——這個語音合成功能不支援SSML，只接受純文字，標記會被逐字唸出來造成錯誤的語音內容。請移除所有標記，只保留真正要念的純文字（需要控制特定發音時，改用同音近似的英文拼寫方式，不要用XML/SSML語法）。' };
         }
+        if (voiceId && /^vs_/.test(voiceId)) { const vr = await this._vsGet(voiceId).catch(() => null); return { ok: false, error: vr ? this._vsNoEngineMessage(vr) : `不認得的語音代號「${voiceId}」` }; } // 錄音樣本是參考音檔，Kokoro 不能用
         const isCjk = this._looksLikeCjkText(t);
         let voice = null;
         if (voiceId) {
@@ -50001,13 +50134,18 @@ ${fnData.code}
     async _handleVoiceImportCommand(argsText) { this._voiceImportDialog(String(argsText || '').trim()); }
     async _handleVoiceExportCommand(argsText) {
         const id = String(argsText || '').trim().split(/\s+/)[0];
-        if (!id) { const l = this._ttsCustomList(); this._pushAssistantMessage(l.length ? '用法：`/voice-export <語音代號>`。你的聲音：\n' + l.map((c) => `- \`${c.id}\`　${c.name}`).join('\n') : '還沒有自己的聲音：先 `/voice-create` 或 `/voice-import`。', null); this._persistChatHistory(); this._renderMessageHistory(); return; }
-        const r = await this._ttsExportVoiceSample(id);
-        this._pushAssistantMessage(r.ok ? `✅ 已匯出：${r.files.join('、')}（.bin 是 Kokoro 語音包，別人的 Kokoro 系工具直接能用；.voice.json 含配方，可以用 /voice-import 再匯入）` : '⚠️ ' + r.error, null); this._persistChatHistory(); this._renderMessageHistory();
+        if (!id) {
+            const l = this._ttsCustomList(); let vs = []; try { vs = await this._vsList(); } catch (_) { /* */ }
+            this._pushAssistantMessage(l.length || vs.length ? '用法：`/voice-export <語音代號>`。你的聲音：\n' + vs.map((c) => `- \`${c.id}\`　🎤 ${c.name}（錄音樣本，${c.durationSec} 秒）`).concat(l.map((c) => `- \`${c.id}\`　🧪 ${c.name}（Kokoro 混合聲音）`)).join('\n') : '還沒有自己的聲音：先 `/voice-create`（錄音）或 `/voice-import`。', null);
+            this._persistChatHistory(); this._renderMessageHistory(); return;
+        }
+        const isVs = /^vs_/.test(id), r = isVs ? await this._vsExport(id) : await this._ttsExportVoiceSample(id);
+        this._pushAssistantMessage(r.ok ? (isVs ? `✅ 已匯出：${r.files.join('、')}（.wav 是 24kHz 單聲道參考音檔，.voice-sample.json 有你念的文字與 ChatTTS、XTTS、F5-TTS 的用法）` : `✅ 已匯出：${r.files.join('、')}（.bin 是 Kokoro 語音包，別人的 Kokoro 系工具直接能用；.voice.json 含配方，可以用 /voice-import 再匯入）`) : '⚠️ ' + r.error, null);
+        this._persistChatHistory(); this._renderMessageHistory();
     }
     async _handleVoiceDeleteCommand(argsText) {
         const id = String(argsText || '').trim().split(/\s+/)[0];
-        const r = id ? await this._ttsDeleteCustomVoice(id) : { ok: false, error: '用法：/voice-delete <語音代號>' };
+        const r = !id ? { ok: false, error: '用法：/voice-delete <語音代號>' } : /^vs_/.test(id) ? await this._vsDeleteSample(id) : await this._ttsDeleteCustomVoice(id);
         this._pushAssistantMessage(r.ok ? `🗑 已刪除聲音「${id}」` : '⚠️ ' + r.error, null); this._persistChatHistory(); this._renderMessageHistory();
     }
 
@@ -58724,6 +58862,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         if (defaultSelect) {
             defaultSelect.innerHTML = TTS_VOICES.map(v => `<option value="${v.id}">${v.name}（${v.lang}／${v.gender}）— ${v.id}</option>`).join('');
         }
+        if (defaultSelect) { try { const vsl = await this._vsList(); if (vsl.length) defaultSelect.insertAdjacentHTML('beforeend', '<optgroup label="我的錄音樣本（參考音檔：需要支援的引擎才能念，可匯出）">' + vsl.map((v) => `<option value="${this._escapeHtml(v.id)}" disabled>🎤 ${this._escapeHtml(v.name)}（${v.lang === 'zh' ? '中文' : '英文'}／${v.durationSec} 秒）— ${this._escapeHtml(v.id)}</option>`).join('') + '</optgroup>'); } catch (_) { /* */ } }
         if (defaultSelect) defaultSelect.value = this.advancedSettings.ttsDefaultVoice;
         const defaultApiSelect = document.getElementById('ai-tts-default-api-voice');
         if (defaultApiSelect && !defaultApiSelect.options.length) {
@@ -58757,9 +58896,83 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     }
 
 
+
+    // ───── 錄音聲音樣本（自己的聲音：24kHz 單聲道 WAV ＋ 念的文字；核心見 renderer/src/tts/voice_recording.js）─────
+    // 放在自己的 IndexedDB（FloatingAssistantVoiceSamples），不跟檔案快取放在一起：檔案快取超過容量上限會自動刪最久沒用的檔案，聲音樣本要長期保存。
+    _vsDb() {
+        if (this._vsDbPromise) return this._vsDbPromise;
+        this._vsDbPromise = new Promise((resolve, reject) => {
+            if (typeof indexedDB === 'undefined') { reject(new Error('這個環境沒有 IndexedDB，沒辦法保存聲音樣本')); return; }
+            const rq = indexedDB.open('FloatingAssistantVoiceSamples', 1);
+            rq.onupgradeneeded = () => { const db = rq.result; if (!db.objectStoreNames.contains('samples')) db.createObjectStore('samples', { keyPath: 'id' }); };
+            rq.onsuccess = () => resolve(rq.result); rq.onerror = () => { this._vsDbPromise = null; reject(rq.error || new Error('打不開聲音樣本資料庫')); };
+        });
+        return this._vsDbPromise;
+    }
+    async _vsTx(mode, fn) { const db = await this._vsDb(); return new Promise((resolve, reject) => { const tx = db.transaction('samples', mode), st = tx.objectStore('samples'); let out; try { out = fn(st); } catch (e) { reject(e); return; } tx.oncomplete = () => resolve(out && out.result !== undefined ? out.result : out); tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error); }); }
+    async _vsList() { const all = await this._vsTx('readonly', (st) => st.getAll()); return (all || []).map((r) => ({ id: r.id, name: r.name, lang: r.lang, transcript: r.transcript, durationSec: r.durationSec, createdAt: r.createdAt, source: r.source, bytes: r.wav ? r.wav.byteLength : 0 })).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))); }
+    async _vsGet(id) { return this._vsTx('readonly', (st) => st.get(id)); }
+    async _vsPut(rec) { return this._vsTx('readwrite', (st) => st.put(rec)); }
+    async _vsDelete(id) { return this._vsTx('readwrite', (st) => st.delete(id)); }
+    _vsNewId() { return 'vs_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+    // 麥克風錄音：關掉回音消除、降噪、自動增益（這些處理會改變聲音特徵）；用 ScriptProcessor 收原始樣本（不經過 MediaRecorder 的有損壓縮）。回 { stop(): Promise<{mono,rate}>, cancel() }
+    async _vsRecordStart(onLevel) {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('這個瀏覽器不支援麥克風錄音');
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+        const AC = window.AudioContext || window.webkitAudioContext, ctx = new AC(), src = ctx.createMediaStreamSource(stream), proc = ctx.createScriptProcessor(4096, 1, 1), mute = ctx.createGain(); mute.gain.value = 0;
+        const chunks = []; let n = 0, live = true;
+        proc.onaudioprocess = (e) => { if (!live) return; const d = e.inputBuffer.getChannelData(0), c = new Float32Array(d); chunks.push(c); n += c.length; if (onLevel) { let m = 0; for (let i = 0; i < c.length; i++) { const x = Math.abs(c[i]); if (x > m) m = x; } onLevel(m, n / ctx.sampleRate); } };
+        src.connect(proc); proc.connect(mute); mute.connect(ctx.destination);
+        const close = async () => { live = false; try { proc.disconnect(); src.disconnect(); } catch (_) { /* */ } stream.getTracks().forEach((t) => t.stop()); const rate = ctx.sampleRate; try { await ctx.close(); } catch (_) { /* */ } return rate; };
+        return {
+            stop: async () => { const rate = await close(); const mono = new Float32Array(n); let o = 0; for (const c of chunks) { mono.set(c, o); o += c.length; } return { mono, rate }; },
+            cancel: async () => { await close(); },
+        };
+    }
+    // 音檔 → 單聲道樣本：WAV 自己解（PCM16／float32），其他（mp3、m4a、ogg、webm、mp4、flac）交給瀏覽器的 decodeAudioData
+    async _vsDecodeFile(file) {
+        const buf = await file.arrayBuffer();
+        if (/\.wav$/i.test(file.name) || /wav/i.test(file.type || '')) { const w = FaVoiceRecording.parseWav(new Uint8Array(buf)); if (w.ok) return { mono: FaVoiceRecording.toMono(w.channels), rate: w.rate }; }
+        const AC = window.AudioContext || window.webkitAudioContext; if (!AC) throw new Error('這個瀏覽器不支援音訊解碼');
+        const ctx = new AC(); try { const ab = await ctx.decodeAudioData(buf.slice(0)); const ch = []; for (let i = 0; i < ab.numberOfChannels; i++) ch.push(new Float32Array(ab.getChannelData(i))); return { mono: FaVoiceRecording.toMono(ch), rate: ab.sampleRate }; }
+        catch (e) { throw new Error('這個音檔解不開（' + String((e && e.message) || e) + '）：試試轉成 WAV 或 mp3 再匯入'); } finally { try { await ctx.close(); } catch (_) { /* */ } }
+    }
+    // 處理＋存檔。force＝品質檢查沒過也要存。回 { ok, rec, report }；沒過且沒 force 時回 { ok:false, needForce:true, report }
+    async _vsSave(o) {
+        const VR = FaVoiceRecording, p = VR.prepare(o.mono, o.rate);
+        if (!p.report.ok && !o.force) return { ok: false, needForce: true, report: p.report, error: '錄音品質不合格：' + p.report.issues.filter((x) => x.level === 'bad').map((x) => x.text).join('；') };
+        const wavBytes = VR.wav(p.samples, p.rate), lang = VR.langOf(o.lang);
+        const rec = { id: this._vsNewId(), name: String(o.name || '').trim().slice(0, 60) || (lang === 'zh' ? '我的聲音' : 'My voice'), lang, transcript: String(o.transcript || '').trim(), durationSec: p.report.durationSec, rate: p.rate, createdAt: new Date().toISOString(), source: o.source === 'imported' ? 'imported' : 'recorded', report: p.report, wav: wavBytes.buffer.slice(wavBytes.byteOffset, wavBytes.byteOffset + wavBytes.byteLength) };
+        await this._vsPut(rec);
+        try { this._renderTtsVoicePanel(); } catch (_) { /* */ }
+        return { ok: true, rec, report: p.report };
+    }
+    async _vsBlob(id) { const r = await this._vsGet(id); return r && r.wav ? new Blob([r.wav], { type: 'audio/wav' }) : null; }
+    _vsSaveFile(blob, filename) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000); }
+    // 匯出：<名字>.wav（24kHz 單聲道 16-bit，直接當參考音檔）＋ <名字>.voice-sample.json（念的文字、語言、各引擎的用法）
+    async _vsExport(id) {
+        const r = await this._vsGet(id); if (!r) return { ok: false, error: `找不到聲音樣本 ${id}` };
+        const VR = FaVoiceRecording, base = VR.safeFilename(r.name);
+        this._vsSaveFile(new Blob([r.wav], { type: 'audio/wav' }), base + '.wav');
+        await new Promise((res) => setTimeout(res, 400)); // 兩個下載之間隔一下，瀏覽器才不會把第二個當成重複而擋掉
+        this._vsSaveFile(new Blob([JSON.stringify(VR.meta({ name: r.name, lang: r.lang, transcript: r.transcript, durationSec: r.durationSec, createdAt: r.createdAt, file: base + '.wav' }), null, 2)], { type: 'application/json' }), base + '.voice-sample.json');
+        return { ok: true, files: [base + '.wav', base + '.voice-sample.json'] };
+    }
+    async _vsDeleteSample(id) { const r = await this._vsGet(id); if (!r) return { ok: false, error: `沒有這個聲音樣本：${id}` }; await this._vsDelete(id); try { this._renderTtsVoicePanel(); } catch (_) { /* */ } return { ok: true, name: r.name }; }
+    // 匯入音檔：解碼、處理、存檔（opts：{ name, lang, transcript, force }）
+    async _vsImportAudio(file, opts) {
+        let d; try { d = await this._vsDecodeFile(file); } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+        const name = String((opts && opts.name) || file.name.replace(/\.[^.]+$/, '')).trim();
+        return this._vsSave({ name, lang: (opts && opts.lang) || 'en', transcript: (opts && opts.transcript) || '', mono: d.mono, rate: d.rate, source: 'imported', force: !!(opts && opts.force) });
+    }
+    // 要不要把錄音樣本當成「這個聲音念字」用：目前沒有內建的引擎能用參考音檔（Kokoro 只能用自己的語音向量），要交給支援的引擎（ChatTTS、XTTS、F5-TTS…）；
+    // 這裡先回明確的說明，不假裝合成成功。
+    _vsNoEngineMessage(r) { return `「${r.name}」是一段錄音樣本（參考音檔）：本機內建的 Kokoro 引擎不能用參考音檔念字。請先匯出（/voice-export ${r.id}），在 ChatTTS、XTTS、F5-TTS 這類支援參考音檔的引擎使用；匯出的說明檔裡有各引擎的用法。`; }
+
     // ───── 我的聲音：視窗與設定頁清單 ─────
     // 設定頁「我的聲音」清單：每個自己的聲音一行（試聽／設為預設／匯出／刪除），重繪時由 _renderTtsVoicePanel 呼叫
     _renderTtsCustomList() {
+        try { this._renderVsList(); } catch (_) { /* */ }
         const el = document.getElementById('ai-tts-custom-list'); if (!el) return;
         const esc = (s) => this._escapeHtml(String(s == null ? '' : s)), list = this._ttsCustomList();
         const chk = document.getElementById('ai-tts-prefer-custom-chk'); if (chk) chk.checked = this.advancedSettings.ttsPreferCustomVoice !== false;
@@ -58787,9 +59000,75 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         }
     }
 
-    // 「建立聲音樣本」視窗（設定頁的按鈕與 /voice-create 不帶參數都開這個）
-    _voiceCreateDialog() {
-        const P = this._domainConfigPopup('ai-voice-create-modal', '🎙 建立聲音樣本', { width: 600 }), body = P.body;
+
+    // 「建立聲音樣本」視窗：預設是麥克風錄音；另一個分頁是「混合現有聲音」（Kokoro 語音向量，原本做的）
+    _voiceCreateDialog(tab) {
+        const P = this._domainConfigPopup('ai-voice-create-modal', '🎙 建立聲音樣本', { width: 640, onClose: () => { try { if (this._vsActiveRec) { this._vsActiveRec.cancel(); this._vsActiveRec = null; } } catch (_) { /* */ } } }), body = P.body;
+        body.innerHTML = '<div style="display:flex; gap:6px; margin-bottom:10px;"><button type="button" class="ai-advanced-btn vs-tab" data-tab="record">🎤 用麥克風錄音</button><button type="button" class="ai-advanced-btn vs-tab" data-tab="mix">🧪 混合現有聲音（Kokoro）</button></div><div id="vs-pane-record"></div><div id="vs-pane-mix" style="display:none;"></div>';
+        const show = (t) => { body.querySelector('#vs-pane-record').style.display = t === 'mix' ? 'none' : ''; body.querySelector('#vs-pane-mix').style.display = t === 'mix' ? '' : 'none'; body.querySelectorAll('.vs-tab').forEach((b) => { b.style.fontWeight = b.dataset.tab === (t === 'mix' ? 'mix' : 'record') ? 'bold' : 'normal'; }); };
+        body.querySelectorAll('.vs-tab').forEach((b) => { b.onclick = () => show(b.dataset.tab); });
+        this._voiceRecordInto(body.querySelector('#vs-pane-record')); this._voiceMixInto(body.querySelector('#vs-pane-mix')); show(tab === 'mix' ? 'mix' : 'record');
+    }
+    // 錄音分頁：念稿 → 開始／停止 → 品質檢查與試聽 → 儲存
+    _voiceRecordInto(body) {
+        const esc = (s) => this._escapeHtml(String(s == null ? '' : s)), VR = FaVoiceRecording;
+        body.innerHTML = `<p class="ai-advanced-hint" style="margin-top:0;">錄一段自己的聲音當「聲音樣本」：在安靜的地方，離麥克風一個拳頭遠，用平常說話的語氣把下面的稿念完（約 ${VR.GOOD_SEC} 秒以上）。錄音只存在這台電腦，不上傳。做好的樣本可以匯出成 24kHz 單聲道 WAV，給 ChatTTS、XTTS、F5-TTS 這類吃參考音檔的引擎用。</p>
+          <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:8px;">
+            <label>名字 <input type="text" id="vr-name" class="ai-advanced-input" style="width:170px;" placeholder="例如 我的聲音"></label>
+            <label>語言 <select id="vr-lang" class="ai-advanced-input"><option value="zh">中文</option><option value="en">英文</option></select></label>
+          </div>
+          <div id="vr-script" style="border:1px solid rgba(128,128,128,.4); border-radius:8px; padding:10px 12px; line-height:1.7; font-size:15px; margin-bottom:8px;"></div>
+          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <button type="button" id="vr-rec" class="ai-advanced-btn" style="font-weight:bold;">● 開始錄音</button>
+            <span id="vr-time" style="min-width:48px;">0:00</span>
+            <div style="flex:1 1 140px; height:10px; border-radius:5px; background:rgba(128,128,128,.25); overflow:hidden;"><div id="vr-level" style="height:100%; width:0%; background:#2ecc71;"></div></div>
+          </div>
+          <div id="vr-status" class="ai-advanced-hint" style="margin-top:6px;"></div>
+          <div id="vr-result" style="margin-top:8px;"></div>`;
+        const $ = (s) => body.querySelector(s); let rec = null, taken = null;
+        const renderScript = () => { $('#vr-script').innerHTML = VR.script($('#vr-lang').value).map((l) => '<div>' + esc(l) + '</div>').join(''); };
+        $('#vr-lang').addEventListener('change', renderScript); renderScript();
+        const fmt = (s) => Math.floor(s / 60) + ':' + String(Math.floor(s % 60)).padStart(2, '0');
+        const showResult = (t) => {
+            const r = t.report, color = (lv) => lv === 'bad' ? '#c0392b' : '#b9770e';
+            $('#vr-result').innerHTML = `<div style="margin-bottom:6px;">${r.ok ? (r.issues.length ? '⚠️' : '✅') : '❌'} ${esc(r.advice)}　<span class="ai-advanced-hint" style="margin:0;">長度 ${r.durationSec} 秒、訊噪比 ${r.snrDb} dB、講話音量 ${r.talkDb} dBFS</span></div>`
+              + r.issues.map((x) => `<div style="color:${color(x.level)}; font-size:13px;">• ${esc(x.text)}</div>`).join('')
+              + '<div id="vr-player" style="margin:8px 0;"></div>'
+              + '<label>你念的文字（ChatTTS 的 txt_smp、F5-TTS 的 ref_text 要用，可以改成你實際念的）<textarea id="vr-text" class="ai-advanced-input" rows="3" style="width:100%; box-sizing:border-box;"></textarea></label>'
+              + '<div style="margin-top:6px; display:flex; gap:8px; flex-wrap:wrap;"><button type="button" id="vr-save" class="ai-advanced-btn" style="font-weight:bold;">儲存聲音樣本</button><button type="button" id="vr-again" class="ai-advanced-btn">重錄</button></div>';
+            $('#vr-text').value = VR.script($('#vr-lang').value).join(' ');
+            const wavBytes = VR.wav(t.samples, t.rate); this._mountAudioPlayer($('#vr-player'), new Blob([wavBytes], { type: 'audio/wav' }));
+            $('#vr-again').onclick = () => { taken = null; $('#vr-result').innerHTML = ''; $('#vr-status').textContent = ''; };
+            $('#vr-save').onclick = async () => {
+                const name = $('#vr-name').value.trim(); if (!name) { $('#vr-status').textContent = '請先幫這個聲音取個名字'; return; }
+                if (!r.ok && !window.confirm('這段錄音品質不合格（' + r.issues.filter((x) => x.level === 'bad').map((x) => x.text).join('；') + '）。仍要儲存嗎？建議重錄。')) return;
+                $('#vr-save').disabled = true;
+                try {
+                    const s = await this._vsSave({ name, lang: $('#vr-lang').value, transcript: $('#vr-text').value, mono: taken.mono, rate: taken.rate, source: 'recorded', force: true }); if (!s.ok) throw new Error(s.error);
+                    $('#vr-status').innerHTML = `✅ 已儲存「${esc(s.rec.name)}」（語音樣本代號 <code>${esc(s.rec.id)}</code>，已加進語音設定的「我的聲音」清單與 /media-list-voices）`;
+                    $('#vr-result').innerHTML = '<button type="button" id="vr-export" class="ai-advanced-btn">匯出（.wav ＋ .voice-sample.json）</button>';
+                    $('#vr-export').onclick = async () => { const e = await this._vsExport(s.rec.id); if (!e.ok) window.alert(e.error); };
+                } catch (err) { $('#vr-status').textContent = '⚠️ ' + String((err && err.message) || err); $('#vr-save').disabled = false; }
+            };
+        };
+        $('#vr-rec').onclick = async () => {
+            const btn = $('#vr-rec');
+            if (rec) { // 停止
+                btn.disabled = true; const raw = await rec.stop(); rec = null; this._vsActiveRec = null; btn.disabled = false; btn.textContent = '● 開始錄音'; $('#vr-level').style.width = '0%';
+                if (!raw.mono.length) { $('#vr-status').textContent = '沒有錄到聲音'; return; }
+                const p = FaVoiceRecording.prepare(raw.mono, raw.rate); taken = { mono: raw.mono, rate: raw.rate }; // 存檔時用原始錄音重新處理一次（處理流程只有一份）
+                $('#vr-status').textContent = ''; showResult({ samples: p.samples, rate: p.rate, report: p.report }); return;
+            }
+            $('#vr-result').innerHTML = ''; taken = null;
+            try {
+                rec = await this._vsRecordStart((lv, sec) => { $('#vr-level').style.width = Math.min(100, Math.round(lv * 140)) + '%'; $('#vr-level').style.background = lv > 0.95 ? '#e74c3c' : '#2ecc71'; $('#vr-time').textContent = fmt(sec); });
+                this._vsActiveRec = rec; btn.textContent = '■ 停止'; $('#vr-status').textContent = '錄音中…念完稿就按停止';
+            } catch (err) { rec = null; $('#vr-status').textContent = '⚠️ 沒辦法開始錄音：' + String((err && err.message) || err) + '（要允許這個應用程式使用麥克風）'; }
+        };
+    }
+
+    // 「混合現有聲音」分頁（Kokoro 語音向量）：填進傳進來的容器
+    _voiceMixInto(body) {
         const esc = (s) => this._escapeHtml(String(s == null ? '' : s));
         body.innerHTML = `<p class="ai-advanced-hint" style="margin-top:0;">把現有的聲音混合成一個新聲音（Kokoro 語音包，在這台電腦上做，不上傳）。可以做中文（國語）或英文，做完可以試聽、匯出給別人用。</p>
           <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:8px;">
@@ -58832,27 +59111,61 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         };
     }
 
+
+    // 設定頁「我的錄音樣本」清單：播放／匯出／刪除
+    async _renderVsList() {
+        const el = document.getElementById('ai-tts-sample-list'); if (!el) return;
+        const esc = (s) => this._escapeHtml(String(s == null ? '' : s)); let list = []; try { list = await this._vsList(); } catch (err) { el.innerHTML = `<span class="ai-advanced-hint" style="color:#c0392b;">讀不到聲音樣本：${esc(String((err && err.message) || err))}</span>`; return; }
+        if (!list.length) { el.innerHTML = ''; return; }
+        el.innerHTML = '<div class="ai-advanced-hint" style="margin:6px 0 2px;">我的錄音樣本（參考音檔；本機的 Kokoro 不能用它念字，要匯出給 ChatTTS、XTTS、F5-TTS 這類引擎）</div>' + list.map((s) =>
+            `<div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; padding:4px 0; border-top:1px solid rgba(128,128,128,.25);">`
+            + `<span style="flex:1 1 200px; min-width:0;">${s.source === 'imported' ? '📥' : '🎤'} <b>${esc(s.name)}</b>　<code>${esc(s.id)}</code>　${s.lang === 'zh' ? '中文' : '英文'}／${esc(s.durationSec)} 秒</span>`
+            + `<button type="button" class="ai-advanced-btn" data-vs-act="play" data-id="${esc(s.id)}" style="padding:1px 8px;">▶ 播放</button>`
+            + `<button type="button" class="ai-advanced-btn" data-vs-act="export" data-id="${esc(s.id)}" style="padding:1px 8px;">匯出</button>`
+            + `<button type="button" class="ai-advanced-btn danger" data-vs-act="delete" data-id="${esc(s.id)}" style="padding:1px 8px;">刪除</button></div>`).join('') + '<div id="ai-tts-sample-player-slot"></div>';
+    }
+    async _vsListAction(act, id, btn) {
+        if (act === 'delete') { const r = await this._vsGet(id); if (!r) return; if (!window.confirm(`刪除錄音樣本「${r.name}」（${id}）？這是你錄的原始聲音，刪除後無法復原（建議先匯出備份）。`)) return; const d = await this._vsDeleteSample(id); if (!d.ok) window.alert(d.error); return; }
+        if (act === 'export') { btn.disabled = true; const r = await this._vsExport(id); btn.disabled = false; if (!r.ok) window.alert(r.error); return; }
+        if (act === 'play') { const blob = await this._vsBlob(id); const slot = document.getElementById('ai-tts-sample-player-slot'); if (blob && slot) { slot.innerHTML = ''; this._mountAudioPlayer(slot, blob); } }
+    }
+    // 匯入音檔分支（wav、mp3、m4a、ogg、webm、mp4、flac）：名字、語言、念的文字由使用者填；品質檢查沒過會先問
+    async _voiceImportAudioFlow(file, $, st, res) {
+        const esc = (s) => this._escapeHtml(String(s == null ? '' : s));
+        const spec = { name: $('#vi-name').value.trim(), lang: $('#vi-lang').value, transcript: ($('#vi-text') || {}).value || '' };
+        st.textContent = '解碼與處理中…';
+        let r = await this._vsImportAudio(file, spec);
+        if (!r.ok && r.needForce) { if (!window.confirm(r.error + '\n\n仍要匯入嗎？（建議換一段品質好的錄音）')) { st.textContent = '已取消：' + r.error; return; } r = await this._vsImportAudio(file, Object.assign({ force: true }, spec)); }
+        if (!r.ok) { st.textContent = '⚠️ ' + r.error; return; }
+        st.innerHTML = `✅ 已匯入「${esc(r.rec.name)}」（${r.rec.lang === 'zh' ? '中文' : '英文'}、${esc(r.rec.durationSec)} 秒、24kHz 單聲道），樣本代號 <code>${esc(r.rec.id)}</code>。${r.report.issues.length ? '<br>提醒：' + r.report.issues.map((x) => esc(x.text)).join('；') : ''}`;
+        res.innerHTML = '<div id="vi-player"></div><div style="margin-top:6px;"><button type="button" id="vi-export" class="ai-advanced-btn">匯出（.wav ＋ .voice-sample.json）</button></div>';
+        const blob = await this._vsBlob(r.rec.id); if (blob) this._mountAudioPlayer(res.querySelector('#vi-player'), blob);
+        res.querySelector('#vi-export').onclick = async () => { const e = await this._vsExport(r.rec.id); if (!e.ok) window.alert(e.error); };
+    }
     // 「匯入聲音樣本」視窗：選 .bin（Kokoro 語音包）或 .voice.json（本程式匯出的，名字／語言／性別會自動帶入）
     _voiceImportDialog() {
         const P = this._domainConfigPopup('ai-voice-import-modal', '📥 匯入聲音樣本', { width: 520 }), body = P.body;
-        body.innerHTML = `<p class="ai-advanced-hint" style="margin-top:0;">匯入 Kokoro 語音包（.bin，大小剛好 522,240 bytes）或這個程式匯出的 .voice.json。匯入後會出現在語音設定的下拉選單，也能用語音代號給 /media-text-to-speech 與 text_to_speech 用。（ChatTTS 的說話人向量是另一種格式，不能匯入。）</p>
-          <div style="margin-bottom:8px;"><input type="file" id="vi-file" accept=".bin,.json,application/json,application/octet-stream"></div>
+        body.innerHTML = `<p class="ai-advanced-hint" style="margin-top:0;">匯入<b>音檔</b>（wav、mp3、m4a、ogg、webm、flac…）當自己的聲音樣本：會轉成 24kHz 單聲道 WAV、檢查品質，之後可以匯出給 ChatTTS、XTTS、F5-TTS 這類引擎。也能匯入 Kokoro 語音包（.bin，522,240 bytes）或這個程式匯出的 .voice.json。</p>
+          <div style="margin-bottom:8px;"><input type="file" id="vi-file" accept=".wav,.mp3,.m4a,.aac,.ogg,.oga,.opus,.webm,.mp4,.flac,.bin,.json,audio/*,application/json,application/octet-stream"></div>
           <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:8px;">
             <label>名字 <input type="text" id="vi-name" class="ai-advanced-input" style="width:170px;"></label>
             <label>語言 <select id="vi-lang" class="ai-advanced-input"><option value="zh">中文（國語）</option><option value="en">英文</option></select></label>
             <label>性別 <select id="vi-gender" class="ai-advanced-input"><option value="f">女</option><option value="m">男</option></select></label>
           </div>
+          <label id="vi-text-row" style="display:none; margin-bottom:8px;">這段音檔裡念的文字（選填；ChatTTS 的 txt_smp、F5-TTS 的 ref_text 要用）<textarea id="vi-text" class="ai-advanced-input" rows="2" style="width:100%; box-sizing:border-box;"></textarea></label>
           <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;"><button type="button" id="vi-go" class="ai-advanced-btn" style="font-weight:bold;">匯入</button><span id="vi-status" class="ai-advanced-hint" style="margin:0;"></span></div>
           <div id="vi-result" style="margin-top:8px;"></div>`;
         const $ = (s) => body.querySelector(s); let picked = null;
         $('#vi-file').onchange = async (e) => {
             picked = e.target.files && e.target.files[0]; if (!picked) return;
+            { const au = /\.(wav|mp3|m4a|aac|ogg|oga|opus|webm|mp4|flac)$/i.test(picked.name) || /^audio\//.test(picked.type || ''); $('#vi-text-row').style.display = au ? '' : 'none'; }
             if (!$('#vi-name').value) $('#vi-name').value = picked.name.replace(/\.(voice\.json|json|bin)$/i, '');
             if (/\.json$/i.test(picked.name)) { try { const j = JSON.parse(await picked.text()); if (j && j.format === FaVoiceSample.FORMAT) { if (j.name) $('#vi-name').value = j.name; if (j.lang) $('#vi-lang').value = FaVoiceSample.langOf(j.lang); if (j.gender) $('#vi-gender').value = FaVoiceSample.genderOf(j.gender); } } catch (_) { /* 匯入時會報錯 */ } }
         };
         $('#vi-go').onclick = async () => {
             const st = $('#vi-status'), res = $('#vi-result'); if (!picked) { st.textContent = '請先選一個檔案'; return; }
             $('#vi-go').disabled = true; res.innerHTML = '';
+            if (/\.(wav|mp3|m4a|aac|ogg|oga|opus|webm|mp4|flac)$/i.test(picked.name) || /^audio\//.test(picked.type || '')) { try { await this._voiceImportAudioFlow(picked, $, st, res); } catch (err) { st.textContent = '⚠️ ' + String((err && err.message) || err); } finally { $('#vi-go').disabled = false; } return; }
             try {
                 const r = await this._ttsImportVoiceSample(picked, { name: $('#vi-name').value.trim(), lang: $('#vi-lang').value, gender: $('#vi-gender').value }); if (!r.ok) throw new Error(r.error);
                 st.textContent = `✅ 已匯入「${r.voice.name}」，語音代號 ${r.voice.id}（已加進語音下拉選單與 /media-list-voices）`;
@@ -85106,7 +85419,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         let voiceId = '';
         let text = raw;
         const allVoices = TTS_VOICES.concat(TTS_ZH_VOICES, TTS_API_VOICES);
-        if (tokens.length > 1 && allVoices.some(v => v.id === tokens[tokens.length - 1])) {
+        if (tokens.length > 1 && (allVoices.some(v => v.id === tokens[tokens.length - 1]) || /^vs_[a-z0-9]+$/.test(tokens[tokens.length - 1]))) {
             voiceId = tokens.pop();
             text = tokens.join(' ');
         }
@@ -85143,7 +85456,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         };
         const apiNote = this.advancedSettings.ttsApiEnabled ? '（已啟用）' : '（⚠️尚未啟用，見設定「子Agent」分頁）';
         const mine = TTS_VOICES.concat(TTS_ZH_VOICES).filter((v) => v.custom);
-        const msg = (mine.length ? section('我的聲音（匯入／建立，優先使用）', mine, '（/voice-create、/voice-import；匯出用 /voice-export <代號>）') + '\n\n' : '')
+        const vsl = await this._vsList().catch(() => []);
+        const vsSec = vsl.length ? '### 我的錄音樣本　（參考音檔：本機 Kokoro 不能用它念字，要匯出給 ChatTTS、XTTS、F5-TTS 這類引擎；/voice-export <代號>）\n\n' + vsl.map((v) => `- \`${v.id}\`　🎤 ${v.name}（${v.lang === 'zh' ? '中文' : '英文'}、${v.durationSec} 秒）`).join('\n') + '\n\n' : '';
+        const msg = vsSec + (mine.length ? section('我的聲音（匯入／建立，優先使用）', mine, '（/voice-create、/voice-import；匯出用 /voice-export <代號>）') + '\n\n' : '')
             + section('本地語音（純瀏覽器、不上傳，英文）', TTS_VOICES.filter((v) => !v.custom)) + '\n\n' + section('本地中文語音（Kokoro 國語，不上傳）', TTS_ZH_VOICES.filter((v) => !v.custom))
             + '\n\n' + section('API語音（中文／粵語／日文／韓文…，需要啟用）', TTS_API_VOICES, apiNote);
         this._pushAssistantMessage(`**可用語音代號**（共 ${TTS_VOICES.length + TTS_ZH_VOICES.length + TTS_API_VOICES.length} 個）\n\n${msg}`, null);
@@ -89751,7 +90066,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                 </div>
                                 <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label">我的聲音（聲音樣本）—— 中文與英文</label>
-                                    <p class="ai-advanced-hint">用現有聲音混合出自己的聲音（建立聲音樣本），或匯入別人給你的 Kokoro 語音包（.bin 或 .voice.json）。做好的聲音會排在所有語音下拉選單的最前面，也能在 /media-list-voices 看到、用語音代號給 /media-text-to-speech 與 text_to_speech 用。可以匯出給別人（.bin 是 Kokoro 語音包，Kokoro 系的工具直接能用；ChatTTS 的說話人向量是另一種格式，不能互通）。指令：/voice-create、/voice-import、/voice-export、/voice-delete。</p>
+                                    <p class="ai-advanced-hint">用麥克風錄自己的聲音當聲音樣本（建立聲音樣本）、或匯入音檔（wav、mp3、m4a…）；樣本可以匯出成 24kHz 單聲道 WAV，給 ChatTTS、XTTS、F5-TTS 這類吃參考音檔的引擎用。也可以混合現有聲音做出新的 Kokoro 聲音，或匯入 Kokoro 語音包（.bin、.voice.json）。做好的聲音會排在所有語音下拉選單的最前面，也能在 /media-list-voices 看到、用語音代號給 /media-text-to-speech 與 text_to_speech 用。可以匯出給別人（.bin 是 Kokoro 語音包，Kokoro 系的工具直接能用；ChatTTS 的說話人向量是另一種格式，不能互通）。指令：/voice-create、/voice-import、/voice-export、/voice-delete。</p>
                                     <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:6px;">
                                         <button type="button" id="ai-tts-voice-create-btn" class="ai-advanced-btn">🎙 建立聲音樣本</button>
                                         <button type="button" id="ai-tts-voice-import-btn" class="ai-advanced-btn">📥 匯入聲音樣本</button>
@@ -89761,6 +90076,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                         <label for="ai-tts-prefer-custom-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">優先使用我的聲音（沒指定聲音時，有自己的聲音就用最新的那個，中文與英文各自挑）</label>
                                     </div>
                                     <div id="ai-tts-custom-list" style="margin-top:6px; display:flex; flex-direction:column; gap:2px;"></div>
+                                    <div id="ai-tts-sample-list" style="display:flex; flex-direction:column; gap:2px;"></div>
                                 </div>
                                                                 <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label">語音合成子Agent —— 中文語音（API 轉接）</label>
@@ -93187,7 +93503,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             });
         }
         // tw_stock_db客製: 2026-09-12——語音合成（text_to_speech）設定區塊。
-        { const cb = document.getElementById('ai-tts-voice-create-btn'); if (cb) cb.addEventListener('click', () => this._voiceCreateDialog()); const ib = document.getElementById('ai-tts-voice-import-btn'); if (ib) ib.addEventListener('click', () => this._voiceImportDialog()); const pc = document.getElementById('ai-tts-prefer-custom-chk'); if (pc) pc.addEventListener('change', () => { this.advancedSettings.ttsPreferCustomVoice = pc.checked; this._saveAdvancedSettings(); }); const cl = document.getElementById('ai-tts-custom-list'); if (cl) cl.addEventListener('click', (e) => { const b = e.target.closest && e.target.closest('[data-tts-custom-act]'); if (b) this._ttsCustomListAction(b.getAttribute('data-tts-custom-act'), b.getAttribute('data-id'), b); }); }
+        { const cb = document.getElementById('ai-tts-voice-create-btn'); if (cb) cb.addEventListener('click', () => this._voiceCreateDialog()); const ib = document.getElementById('ai-tts-voice-import-btn'); if (ib) ib.addEventListener('click', () => this._voiceImportDialog()); const pc = document.getElementById('ai-tts-prefer-custom-chk'); if (pc) pc.addEventListener('change', () => { this.advancedSettings.ttsPreferCustomVoice = pc.checked; this._saveAdvancedSettings(); }); const sl = document.getElementById('ai-tts-sample-list'); if (sl) sl.addEventListener('click', (e) => { const b = e.target.closest && e.target.closest('[data-vs-act]'); if (b) this._vsListAction(b.getAttribute('data-vs-act'), b.getAttribute('data-id'), b); }); const cl = document.getElementById('ai-tts-custom-list'); if (cl) cl.addEventListener('click', (e) => { const b = e.target.closest && e.target.closest('[data-tts-custom-act]'); if (b) this._ttsCustomListAction(b.getAttribute('data-tts-custom-act'), b.getAttribute('data-id'), b); }); }
         const ttsDefaultVoiceSelect = document.getElementById('ai-tts-default-voice');
         if (ttsDefaultVoiceSelect) {
             ttsDefaultVoiceSelect.addEventListener('change', () => {

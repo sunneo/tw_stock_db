@@ -115,6 +115,14 @@ function embedVoiceSample() {
     console.log('已更新 FaVoiceSample（' + core.length + ' 字元）');
 }
 embedVoiceSample();
+function embedVoiceRecording() {
+    const core = fs.readFileSync(path.join(root, 'renderer/src/tts/voice_recording.js'), 'utf8').replace(/\r\n/g, '\n');
+    const a = src.indexOf('/* VREC-BEGIN */'), b = src.indexOf('/* VREC-END */');
+    if (a < 0 || b < 0) throw new Error('找不到 VREC 標記');
+    src = src.slice(0, a) + '/* VREC-BEGIN */\nconst FaVoiceRecording = (function () {\nconst holder = {};\n(function (module, self) {\n' + core + '\n}).call(null, undefined, holder);\nreturn holder.FaVoiceRecording;\n})();\n' + src.slice(b);
+    console.log('已更新 FaVoiceRecording（' + core.length + ' 字元）');
+}
+embedVoiceRecording();
 function embedRecipe() {
     const core = fs.readFileSync(path.join(root, 'renderer/src/recipe/recipe_core.js'), 'utf8').replace(/\r\n/g, '\n');
     const a = src.indexOf('/* RECIPE-BEGIN */'), b = src.indexOf('/* RECIPE-END */');
