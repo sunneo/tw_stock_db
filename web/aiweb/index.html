@@ -150,7 +150,7 @@ try {
 // 完整40字元SHA，且必須跟 web/index.html 的一模一樣（兩頁共用同一個 floating-assistant.js，
 // 改了 desktop-app 分支的檔案後兩邊一起調）。
 function loadAssistantScript() {
-  return fetch(RAW + '/556363371b62b4eebc8ac5fbc3df2110acec188a/desktop-app/renderer/floating-assistant.js')
+  return fetch(RAW + '/1fc19de154aca97c995bf9858dccd524436fb19c/desktop-app/renderer/floating-assistant.js')
     .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
     .then(text => new Promise((resolve, reject) => {
       const url = URL.createObjectURL(new Blob([text], { type: 'application/javascript' }));
