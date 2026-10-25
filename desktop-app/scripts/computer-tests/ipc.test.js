@@ -76,6 +76,14 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const IPC = require('../../computer-use-ipc.js');
   t.check('matchSavedWindows：標題相同優先；同行程同類別只有一個時退而求其次；受保護與自己的不選', JSON.stringify(IPC.matchSavedWindows([{ title: 'a.txt', process: 'gedit', class: 'G' }, { title: '改過的標題', process: 'gedit2', class: 'H' }, { title: 'x', process: 'polkit', class: 'p' }], [{ id: '1', title: 'a.txt', process: 'gedit', class: 'G' }, { id: '2', title: 'b.txt', process: 'gedit', class: 'G' }, { id: '3', title: '別的', process: 'gedit2', class: 'H' }, { id: '4', title: 'x', process: 'polkit', class: 'p', denied: { label: 'p' } }])) === JSON.stringify(['1', '3']));
   t.check('sanitizeSavedScope：壞資料變成 null、欄位被截短', IPC.sanitizeSavedScope('x') === null && IPC.sanitizeSavedScope({ mode: 'windows', windows: [] }) === null && IPC.sanitizeSavedScope({ mode: 'screen', junk: 1 }).mode === 'screen' && IPC.sanitizeSavedScope({ mode: 'windows', windows: [{ title: 't'.repeat(500) }] }).windows[0].title.length === 200);
+  // 舊版入口檔沒有傳 getDesktopSettings／patchDesktopSettings（Linux 版回報：啟用重開就沒了）：自己讀寫 userData/desktop-settings.json
+  { const tmp2 = fs.mkdtempSync(path.join(os.tmpdir(), 'fa-ipc2-')); fs.writeFileSync(path.join(tmp2, 'desktop-settings.json'), JSON.stringify({ execEnabled: true, keep: 'me' }));
+    const mk = () => { handlers.clear(); register(ipcMain, { electron: { globalShortcut, app: { getPath: () => tmp2, on: () => {} } }, BrowserWindow: FakeWin, getMainWindow: () => mainWindow, userDataDir: () => tmp2, secretsFile: () => path.join(tmp2, 'secrets.json'), cuOptions: { platform: 'linux', backend, atspi: null } }); };
+    mk(); script = [{ approved: true }]; await call('setEnabled', { on: true }); script = [{ mode: 'windows', windowIds: ['0x1'] }]; await call('pickScope');
+    const file = JSON.parse(fs.readFileSync(path.join(tmp2, 'desktop-settings.json'), 'utf8')); t.check('沒有 patchDesktopSettings 也能存：啟用旗標與範圍寫進 desktop-settings.json，別的欄位不被洗掉', file.computerUseEnabled === true && file.computerUseScope && file.computerUseScope.mode === 'windows' && file.keep === 'me' && file.execEnabled === true, file);
+    mk(); const st2 = await call('status'); t.check('重開（舊版入口檔）：仍然啟用，範圍也回來', st2.enabled === true && st2.scope.mode === 'windows', st2.scope);
+    await call('setEnabled', { on: false }); const f2 = JSON.parse(fs.readFileSync(path.join(tmp2, 'desktop-settings.json'), 'utf8')); t.check('停用：旗標與範圍一併清掉', f2.computerUseEnabled === false && f2.computerUseScope === null, f2);
+    fs.rmSync(tmp2, { recursive: true, force: true }); }
   fs.rmSync(tmp, { recursive: true, force: true });
   t.done();
 })();

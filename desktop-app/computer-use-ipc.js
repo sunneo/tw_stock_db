@@ -50,6 +50,15 @@ function register(ipcMain, ctx) {
   const secretsFile = ctx.secretsFile || (() => path.join(userDataDir(), "secrets.json"));
   const fsSync = require("fs");
   let cu = null, initPromise = null, hotkeyOn = false, savedScope = null, scopeTriedAt = 0;
+  // 設定檔（desktop-settings.json）的讀寫：舊版安裝的 main.js 沒有把 getDesktopSettings／patchDesktopSettings 傳進來（那個接線在入口檔，只能靠重新安裝更新），
+  // 結果「啟用」只存在記憶體，重開就沒了（Linux 版回報過）。所以沒有傳進來時，這裡直接讀寫 userData 底下同一份檔案（淺層合併，不洗掉別的欄位）。
+  const settingsPath = () => path.join(userDataDir(), "desktop-settings.json");
+  const readSettings = async () => { if (ctx.getDesktopSettings) return ctx.getDesktopSettings(); try { return JSON.parse(String(fsSync.readFileSync(settingsPath(), "utf8")).replace(/^﻿/, "")) || {}; } catch (_) { return {}; } };
+  const patchSettings = async (patch) => {
+    if (ctx.patchDesktopSettings) return ctx.patchDesktopSettings(patch);
+    const cur = await readSettings(), next = Object.assign({}, cur, patch), f = settingsPath(); fsSync.mkdirSync(path.dirname(f), { recursive: true });
+    const tmp = f + ".tmp"; fsSync.writeFileSync(tmp, JSON.stringify(next, null, 2), "utf8"); fsSync.renameSync(tmp, f); return next;
+  };
   const mainWin = () => (ctx.getMainWindow ? ctx.getMainWindow() : null);
   const emit = (type, extra) => { try { const w = mainWin(); if (w && !w.isDestroyed()) w.webContents.send("fa:computer:event", Object.assign({ type }, extra || {})); } catch (_) { /* */ } };
 
@@ -116,7 +125,7 @@ function register(ipcMain, ctx) {
     if (!initPromise) initPromise = (async () => {
       loadRemoteSecrets();
       let enabled = false, extraDeny = [];
-      try { const st = ctx.getDesktopSettings ? await ctx.getDesktopSettings() : {}; enabled = st && st.computerUseEnabled === true; savedScope = enabled ? sanitizeSavedScope(st && st.computerUseScope) : null; extraDeny = ((st && st.computerUseExtraDeny) || []).filter((x) => typeof x === "string" && x.length < 200).map((x) => { try { return new RegExp(x, "i"); } catch (_) { return null; } }).filter(Boolean); } catch (_) { /* 沒有設定就是預設關閉 */ }
+      try { const st = await readSettings(); enabled = st && st.computerUseEnabled === true; savedScope = enabled ? sanitizeSavedScope(st && st.computerUseScope) : null; extraDeny = ((st && st.computerUseExtraDeny) || []).filter((x) => typeof x === "string" && x.length < 200).map((x) => { try { return new RegExp(x, "i"); } catch (_) { return null; } }).filter(Boolean); } catch (_) { /* 沒有設定就是預設關閉 */ }
       cu = require("./computer-use.js").create(Object.assign({ platform: process.platform, enabled, selfPids: [process.pid], safety: { extraDeny: SELF_DENY.concat(extraDeny) }, secrets, confirm: (info) => nativeConfirm({ preview: info.preview, allowAuto: !info.forceAsk && info.source !== "remote_connect", okLabel: info.source === "remote_connect" ? "連線" : info.forceAsk ? "我確認，執行" : "執行這批動作", note: info.forceAsk ? "這一步需要你親自確認（看不出焦點是不是密碼欄／遠端畫面／連線）；自動模式也一樣。" : "", tall: true }) }, ctx.cuOptions || {})); // cuOptions：測試用（注入假後端）
       if (enabled && savedScope) { try { await restoreScope(cu); } catch (_) { /* 還原不了就維持沒有範圍，使用者再選一次 */ } }
       return cu;
@@ -124,7 +133,7 @@ function register(ipcMain, ctx) {
     return initPromise;
   }
   // ---------- 範圍的保存與還原：視窗代號每次開機都會變，所以存「標題＋行程＋類別」，開機後與之後的每次呼叫再用現有視窗對回去 ----------
-  const persistScope = async (scope) => { savedScope = sanitizeSavedScope(scopeToSaved(scope)); try { if (ctx.patchDesktopSettings) await ctx.patchDesktopSettings({ computerUseScope: savedScope }); } catch (_) { /* */ } };
+  const persistScope = async (scope) => { savedScope = sanitizeSavedScope(scopeToSaved(scope)); try { await patchSettings({ computerUseScope: savedScope }); } catch (e) { console.warn("[computer-use] 存不下範圍設定：" + ((e && e.message) || e)); } };
   async function restoreScope(c) {
     if (!savedScope || !c.state().enabled) return false; scopeTriedAt = Date.now();
     if (savedScope.mode === "screen") { await c.setScope({ mode: "screen" }); return true; }
@@ -134,7 +143,7 @@ function register(ipcMain, ctx) {
   }
   // 範圍是「有保存、但現在是空的」（視窗還沒開、或剛開機）→ 每隔幾秒再對一次；使用者按 /computer disable 之後 savedScope 會被清掉
   async function refreshScope(c) { try { if (savedScope && c.state().enabled && c.state().scope.mode === "none" && Date.now() - scopeTriedAt > 4000) { await restoreScope(c); emit("state"); } } catch (_) { /* */ } }
-  const persistEnabled = async (on) => { try { if (ctx.patchDesktopSettings) await ctx.patchDesktopSettings({ computerUseEnabled: !!on }); } catch (_) { /* */ } };
+  const persistEnabled = async (on) => { try { await patchSettings({ computerUseEnabled: !!on }); } catch (e) { console.warn("[computer-use] 存不下啟用設定：" + ((e && e.message) || e)); } };
   const registerHotkey = (c) => { if (!globalShortcut || hotkeyOn) return; try { hotkeyOn = globalShortcut.register(ABORT_HOTKEY, () => { c.abort("使用者按下全域中止快捷鍵"); emit("abort", { by: "hotkey" }); }); } catch (_) { hotkeyOn = false; } };
   const unregisterHotkey = () => { if (globalShortcut && hotkeyOn) { try { globalShortcut.unregister(ABORT_HOTKEY); } catch (_) { /* */ } } hotkeyOn = false; };
   async function withRun(fn) { const c = await getCu(); emit("run-start"); registerHotkey(c); try { return await fn(c); } finally { unregisterHotkey(); emit("run-end", { aborted: c.safety.isAborted() }); } }
@@ -171,7 +180,7 @@ function register(ipcMain, ctx) {
   });
   handle("abort", async (c, a) => { const r = await c.abort(a.reason || "使用者中止"); emit("abort", { by: "renderer" }); return r; });
   handle("resume", async (c) => { if (!c.state().enabled) return { ok: false, error: "尚未啟用" }; c.resume(); emit("state"); return Object.assign({ ok: true }, c.state()); });
-  handle("addDeny", async (c, a) => { const pat = String(a.pattern || "").slice(0, 200); if (!pat) return { ok: false, error: "缺少 pattern" }; try { new RegExp(pat, "i"); } catch (e) { return { ok: false, error: "不是合法的正規表示式" }; } c.safety.addDeny(pat); try { const st = ctx.getDesktopSettings ? await ctx.getDesktopSettings() : {}; const list = Array.from(new Set(((st && st.computerUseExtraDeny) || []).concat(pat))); if (ctx.patchDesktopSettings) await ctx.patchDesktopSettings({ computerUseExtraDeny: list }); } catch (_) { /* */ } return { ok: true }; });
+  handle("addDeny", async (c, a) => { const pat = String(a.pattern || "").slice(0, 200); if (!pat) return { ok: false, error: "缺少 pattern" }; try { new RegExp(pat, "i"); } catch (e) { return { ok: false, error: "不是合法的正規表示式" }; } c.safety.addDeny(pat); try { const st = await readSettings(); const list = Array.from(new Set(((st && st.computerUseExtraDeny) || []).concat(pat))); await patchSettings({ computerUseExtraDeny: list }); } catch (_) { /* */ } return { ok: true }; });
 
   // ----- 唯讀 -----
   handle("listWindows", (c, a) => c.listWindows(a));

@@ -13,6 +13,12 @@ function register(ipcMain, ctx) {
     const E = ctx.electron;
     if (!ctx.BrowserWindow && E) ctx.BrowserWindow = E.BrowserWindow;
     if (!ctx.userDataDir && E && E.app) ctx.userDataDir = () => E.app.getPath("userData");
+    // 舊版入口檔沒有把設定檔的讀寫傳進來（Linux 版回報：電腦操作「啟用」重開就沒了）：缺的話在這裡補上，讀寫的是入口檔同一份 userData/desktop-settings.json（淺層合併、不洗掉別的欄位）
+    if (!ctx.getDesktopSettings && ctx.userDataDir) {
+      const nodeFs = require("fs"), nodePath = require("path"), sf = () => nodePath.join(ctx.userDataDir(), "desktop-settings.json");
+      ctx.getDesktopSettings = async () => { try { return JSON.parse(String(nodeFs.readFileSync(sf(), "utf8")).replace(/^﻿/, "")) || {}; } catch (_) { return { execConfirmRequired: true, execEnabled: false }; } };
+      if (!ctx.patchDesktopSettings) ctx.patchDesktopSettings = async (patch) => { const next = Object.assign({}, await ctx.getDesktopSettings(), patch), f = sf(); nodeFs.mkdirSync(nodePath.dirname(f), { recursive: true }); const tmp = f + ".tmp"; nodeFs.writeFileSync(tmp, JSON.stringify(next, null, 2), "utf8"); nodeFs.renameSync(tmp, f); return next; };
+    }
     if (!ctx.getMainWindow && E && E.BrowserWindow) ctx.getMainWindow = () => { try { const all = E.BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed()); return all.find((w) => w.isVisible()) || all[0] || null; } catch (_) { return null; } };
   } catch (_) { /* */ }
   const plog = installPersistentLog(ctx); // 要在其他東西之前：後面的 console 訊息才會被記下來
