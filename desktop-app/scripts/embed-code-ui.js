@@ -123,6 +123,16 @@ function embedVoiceRecording() {
     console.log('已更新 FaVoiceRecording（' + core.length + ' 字元）');
 }
 embedVoiceRecording();
+function embedMoss() {
+    const rd = (p) => fs.readFileSync(path.join(root, p), 'utf8').replace(/\r\n/g, '\n');
+    const core = rd('renderer/src/tts/moss_core.js'), worker = rd('renderer/src/tts/moss_worker.js');
+    let a = src.indexOf('/* MOSS-BEGIN */'), b = src.indexOf('/* MOSS-END */'); if (a < 0 || b < 0) throw new Error('找不到 MOSS 標記');
+    src = src.slice(0, a) + '/* MOSS-BEGIN */\nconst FaMossTts = (function () {\nconst holder = {};\n(function (module, self) {\n' + core + '\n}).call(null, undefined, holder);\nreturn holder.FaMossTts;\n})();\n' + src.slice(b);
+    a = src.indexOf('/* MOSSWORKER-BEGIN */'); b = src.indexOf('/* MOSSWORKER-END */'); if (a < 0 || b < 0) throw new Error('找不到 MOSSWORKER 標記');
+    src = src.slice(0, a) + '/* MOSSWORKER-BEGIN */\nconst FA_MOSS_WORKER_SRC = ' + JSON.stringify(core + '\n' + worker).split(String.fromCharCode(0x2028)).join('\\u2028').split(String.fromCharCode(0x2029)).join('\\u2029') + ';\n' + src.slice(b);
+    console.log('已更新 FaMossTts 與 MOSS worker（' + (core.length + worker.length) + ' 字元）');
+}
+embedMoss();
 function embedRecipe() {
     const core = fs.readFileSync(path.join(root, 'renderer/src/recipe/recipe_core.js'), 'utf8').replace(/\r\n/g, '\n');
     const a = src.indexOf('/* RECIPE-BEGIN */'), b = src.indexOf('/* RECIPE-END */');

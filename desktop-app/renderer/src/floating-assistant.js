@@ -7989,6 +7989,171 @@ const holder = {};
 return holder.FaVoiceRecording;
 })();
 /* VREC-END */
+/* MOSS-BEGIN */
+const FaMossTts = (function () {
+const holder = {};
+(function (module, self) {
+/* MOSS-TTS-Nano 的推論核心（UMD，純函式，不碰 DOM、網路、onnxruntime；桌面版與網頁版共用，也嵌進 worker）。
+ *
+ * MOSS-TTS-Nano（OpenMOSS，Apache-2.0）是 0.1B 的多語言零樣本語音合成：給一段參考音檔（不需要逐字稿）與要念的文字，就用那個聲音念，支援中文與英文。
+ * 模型是五個 ONNX 圖（prefill、decode_step、local_fixed_sampled_frame…）加一個 SentencePiece 切詞器，外加 MOSS-Audio-Tokenizer-Nano 的編碼器／解碼器（波形 ↔ 16 通道聲碼）。
+ * 這個檔案是照模型儲存庫（Apache-2.0）附的說明檔（tts_browser_onnx_meta.json、browser_poc_manifest.json）自己寫的推論流程，沒有複製官方瀏覽器專案的程式碼。
+ * 流程：
+ *   1. 文字 → 切詞（BPE，位元組後備；中文要先轉簡體，模型沒看過繁體字）
+ *   2. 提示：每一列 17 個整數＝[文字通道, 16 個聲碼通道]。排法：<|im_start|>、user 前綴、<|audio_start|>、參考音檔的聲碼列（文字通道填 audio_user_slot）、<|audio_end|>、
+ *      後綴（到 "Text:" 為止）、目標文字、assistant 前綴、<|audio_start|>。
+ *   3. prefill 一次吃整個提示，之後每一幀：local_fixed_sampled_frame 取樣出 16 個聲碼（附 should_continue），再把 [audio_assistant_slot, 16 聲碼] 當一列丟進 decode_step。
+ *   4. 全部聲碼丟給解碼器得到 48kHz 立體聲。
+ * 推論本身（onnxruntime）由呼叫端提供 runners，這裡只有流程與資料處理，所以可以用假的 runners 測試。 */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaMossTts = factory();
+}(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var NQ = 16, ROW = 17, CODEBOOK = 1024, HIDDEN = 768, LAYERS = 12, OUT_RATE = 48000, FRAME_RATE = 12.5;
+
+  // ───────────────────────── SentencePiece（BPE）─────────────────────────
+  // 只做這個模型需要的部分：讀 .model 的 pieces（字串、分數、類型），NFKC 正規化，BPE 合併，位元組後備。
+  function readVarint(b, st) { var r = 0, sh = 0, x; do { x = b[st.p++]; r += (x & 0x7f) * Math.pow(2, sh); sh += 7; } while (x & 0x80); return r; }
+  function parseModel(bytes) {
+    var b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), st = { p: 0 }, pieces = [], dec = new TextDecoder('utf-8');
+    while (st.p < b.length) {
+      var tag = readVarint(b, st), field = tag >> 3, wire = tag & 7;
+      if (wire === 2) {
+        var len = readVarint(b, st), end = st.p + len;
+        if (field === 1) { // SentencePiece 子訊息
+          var piece = '', score = 0, type = 1; var sub = { p: st.p };
+          while (sub.p < end) { var t2 = readVarint(b, sub), f2 = t2 >> 3, w2 = t2 & 7; if (w2 === 2) { var l2 = readVarint(b, sub); if (f2 === 1) piece = dec.decode(b.subarray(sub.p, sub.p + l2)); sub.p += l2; } else if (w2 === 5) { if (f2 === 2) score = new DataView(b.buffer, b.byteOffset + sub.p, 4).getFloat32(0, true); sub.p += 4; } else if (w2 === 0) { var v = readVarint(b, sub); if (f2 === 3) type = v; } else if (w2 === 1) sub.p += 8; else throw new Error('切詞模型格式不認得'); }
+          pieces.push({ piece: piece, score: score, type: type });
+        }
+        st.p = end;
+      } else if (wire === 0) readVarint(b, st); else if (wire === 5) st.p += 4; else if (wire === 1) st.p += 8; else throw new Error('切詞模型格式不認得');
+    }
+    var map = new Map(), byteId = new Array(256).fill(-1), unk = 0;
+    for (var i = 0; i < pieces.length; i++) {
+      var p = pieces[i]; if (p.type === 2) unk = i;
+      if (p.type === 6) { var m = /^<0x([0-9A-Fa-f]{2})>$/.exec(p.piece); if (m) byteId[parseInt(m[1], 16)] = i; }
+      else if (p.type === 1 || p.type === 4) map.set(p.piece, i);
+    }
+    return { pieces: pieces, map: map, byteId: byteId, unk: unk };
+  }
+  // nmt_nfkc 的近似：NFKC，控制字元拿掉、各種空白變一般空白、連續空白合併、頭尾空白拿掉
+  // 正規化：NFKC 之後，照 python sentencepiece 逐字元量出來的對照表處理（不是猜的）：
+  //   刪除：0001-0008、000b、000e-001f、007f、008f、009f；
+  //   當空白：0009-000a、000c-000d、00a0、1680、2000-200c、200e-200f、2028-2029、202f、205f、2581（▁）、3000、feff、fffd；
+  //   其他字元照舊。連續空白合併、頭尾空白拿掉。
+  function normalize(text) {
+    var s = String(text == null ? '' : text); try { s = s.normalize('NFKC'); } catch (_) { /* */ }
+    var LS = String.fromCharCode(0x2028), PS = String.fromCharCode(0x2029);  // 這兩個字元不能寫在正規式字面值裡（會被當成換行）
+    s = s.replace(new RegExp('[\u0001-\u0008\u000b\u000e-\u001f\u007f\u008f\u009f]', 'g'), '');
+    s = s.replace(new RegExp('[\t\n\f\r\u00a0\u1680\u2000-\u200c\u200e\u200f' + LS + PS + '\u202f\u205f\u2581\u3000\ufeff\ufffd]', 'g'), ' ');
+    return s.replace(/ +/g, ' ').replace(/^ | $/g, '');
+  }
+  function utf8(ch) { return typeof Buffer !== 'undefined' ? Array.prototype.slice.call(Buffer.from(ch, 'utf8')) : Array.prototype.slice.call(new TextEncoder().encode(ch)); }
+  function bpeWord(model, word, out) {
+    var syms = Array.from(word).map(function (c) { return { s: c, alive: true }; });
+    for (;;) { // 每輪找「相鄰兩個合起來還在字彙裡」之中分數最高的（同分取最左邊）
+      var best = -1, bestScore = -Infinity, prev = -1;
+      for (var i = 0; i < syms.length; i++) { if (!syms[i].alive) continue; if (prev >= 0) { var id = model.map.get(syms[prev].s + syms[i].s); if (id !== undefined) { var sc = model.pieces[id].score; if (sc > bestScore) { bestScore = sc; best = prev; } } } prev = i; }
+      if (best < 0) break;
+      var j = best + 1; while (!syms[j].alive) j++; syms[best].s += syms[j].s; syms[j].alive = false;
+    }
+    syms.forEach(function (x) {
+      if (!x.alive) return; var id = model.map.get(x.s); if (id !== undefined) { out.push(id); return; }
+      var bytes = utf8(x.s), ok = bytes.every(function (v) { return model.byteId[v] >= 0; });
+      if (ok) bytes.forEach(function (v) { out.push(model.byteId[v]); }); else out.push(model.unk);
+    });
+  }
+  function encode(model, text) {
+    var norm = normalize(text); if (!norm) return [];
+    var s = '▁' + norm.replace(/ /g, '▁'), words = s.split(/(?=▁)/), out = [];
+    for (var i = 0; i < words.length; i++) if (words[i]) bpeWord(model, words[i], out);
+    return out;
+  }
+
+  // ───────────────────────── 提示 ─────────────────────────
+  // cfg：manifest.tts_config；tpl：manifest.prompt_templates；promptCodes：參考音檔的聲碼 [[16]…]（沒有就不放參考，用模型預設的聲音）；textIds：目標文字的切詞結果
+  function buildPrompt(cfg, tpl, promptCodes, textIds) {
+    var pad = cfg.audio_pad_token_id, rows = [];
+    var t = function (id) { var r = new Array(ROW).fill(pad); r[0] = id; rows.push(r); };
+    t(cfg.im_start_token_id); tpl.user_prompt_prefix_token_ids.forEach(t);
+    if (promptCodes && promptCodes.length) {
+      t(cfg.audio_start_token_id);
+      promptCodes.forEach(function (c) { rows.push([cfg.audio_user_slot_token_id].concat(Array.prototype.slice.call(c, 0, NQ))); });
+      t(cfg.audio_end_token_id);
+    }
+    tpl.user_prompt_after_reference_token_ids.forEach(t); textIds.forEach(t); tpl.assistant_prompt_prefix_token_ids.forEach(t); t(cfg.audio_start_token_id);
+    var flat = new Int32Array(rows.length * ROW); for (var i = 0; i < rows.length; i++) for (var k = 0; k < ROW; k++) flat[i * ROW + k] = rows[i][k];
+    return { ids: flat, rows: rows.length };
+  }
+
+  // ───────────────────────── 生成迴圈 ─────────────────────────
+  // 可重現的亂數（同一個 seed 同一串）
+  function rng(seed) { var a = (Number(seed) >>> 0) || 1; return function () { a |= 0; a = a + 0x6D2B79F5 | 0; var t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+  // runners：{ prefill(ids Int32Array, rows) → Promise<{hidden: Float32Array(768), past}>, decode(row Int32Array(17), pastLength, past) → Promise<{hidden, past}>,
+  //            sample(hidden, seen Int32Array(16*1024), u1 Float32Array(1), u2 Float32Array(16)) → Promise<{cont:boolean, frame: Int32Array(16)}> }
+  // opts：{ maxFrames=375, seed, onFrame(n), isCancelled() }。回 { frames: Int32Array[T*16], count, stopped:'end'|'max'|'cancel' }
+  async function generate(runners, cfg, prompt, opts) {
+    opts = opts || {}; var maxFrames = opts.maxFrames || 375, rnd = opts.seed === undefined || opts.seed === null ? Math.random : rng(opts.seed);
+    var pre = await runners.prefill(prompt.ids, prompt.rows), hidden = pre.hidden, past = pre.past, length = prompt.rows;
+    var seen = new Int32Array(NQ * CODEBOOK), frames = [], stopped = 'max';
+    for (var step = 0; step < maxFrames; step++) {
+      if (opts.isCancelled && opts.isCancelled()) { stopped = 'cancel'; break; }
+      var u2 = new Float32Array(NQ); for (var q = 0; q < NQ; q++) u2[q] = rnd();
+      var s = await runners.sample(hidden, seen, new Float32Array([rnd()]), u2);
+      if (!s.cont) { stopped = 'end'; break; }
+      var f = Int32Array.from(s.frame); frames.push(f); for (var k = 0; k < NQ; k++) seen[k * CODEBOOK + f[k]] = 1;
+      if (opts.onFrame) opts.onFrame(frames.length);
+      if (step === maxFrames - 1) break;
+      var row = new Int32Array(ROW); row[0] = cfg.audio_assistant_slot_token_id; row.set(f, 1);
+      var d = await runners.decode(row, length, past); hidden = d.hidden; past = d.past; length++;
+    }
+    var flat = new Int32Array(frames.length * NQ); for (var i = 0; i < frames.length; i++) flat.set(frames[i], i * NQ);
+    return { frames: flat, count: frames.length, stopped: stopped };
+  }
+
+  // ───────────────────────── 文字切段 ─────────────────────────
+  // 一次最多念約 30 秒（375 幀），長文字依句子切成幾段：中文一段約 70 字以內，英文一段約 220 字元以內；盡量在句尾標點斷開
+  function splitText(text, maxLatin, maxCjk) {
+    var t = String(text || '').replace(/\r\n/g, '\n').trim(); if (!t) return [];
+    var sents = t.split(/(?<=[。！？!?；;…\n]|[.]\s)/).map(function (x) { return x.trim(); }).filter(Boolean), out = [], cur = '';
+    var limit = function (s) { var cjk = (s.match(/[㐀-鿿぀-ヿ가-힯]/g) || []).length; return cjk > s.length * 0.3 ? (maxCjk || 70) : (maxLatin || 220); };
+    sents.forEach(function (s) {
+      while (s.length > limit(s)) { var cut = limit(s), k = s.lastIndexOf(' ', cut); if (k < cut * 0.5) k = s.search(/[，,、]/) > 0 ? s.slice(0, cut).search(/[，,、][^，,、]*$/) : -1; if (k < cut * 0.4) k = cut; if (cur) { out.push(cur); cur = ''; } out.push(s.slice(0, k + (s[k] === ' ' ? 0 : 1)).trim()); s = s.slice(k + (s[k] === ' ' ? 1 : 1)).trim(); if (!s) break; }
+      if (!s) return; if (cur && (cur + s).length + 1 > limit(cur + s)) { out.push(cur); cur = s; } else cur = cur ? cur + (/[　-〿＀-￯㐀-鿿]$/.test(cur) ? '' : ' ') + s : s;
+    });
+    if (cur) out.push(cur); return out.filter(Boolean);
+  }
+
+  // ───────────────────────── 波形處理 ─────────────────────────
+  // 加窗 sinc（Lanczos，a=8）重採樣：參考音檔 24kHz → 48kHz 與輸出 48kHz → 24kHz 都用這個，比線性內插乾淨（編碼器對高頻很敏感）
+  function resample(a, from, to) {
+    if (from === to) return a; var ratio = to / from, n = Math.max(1, Math.round(a.length * ratio)), out = new Float32Array(n), A = 8, scale = Math.min(1, ratio), len = a.length;
+    for (var i = 0; i < n; i++) {
+      var c = i / ratio, i0 = Math.floor(c), s = 0, ws = 0;
+      for (var k = i0 - Math.ceil(A / scale) + 1; k <= i0 + Math.ceil(A / scale); k++) { var x = (c - k) * scale; if (x <= -A || x >= A) continue; var w = x === 0 ? 1 : (Math.sin(Math.PI * x) / (Math.PI * x)) * (Math.sin(Math.PI * x / A) / (Math.PI * x / A)); var v = k < 0 ? a[0] : k >= len ? a[len - 1] : a[k]; s += v * w; ws += w; }
+      out[i] = ws ? s / ws : 0;
+    }
+    return out;
+  }
+  // 參考音檔 → 編碼器要的 [1,2,L]（48kHz 立體聲，單聲道複製成兩個聲道）
+  function toCodecInput(mono, rate) { var m = resample(mono, rate, OUT_RATE), w = new Float32Array(2 * m.length); w.set(m, 0); w.set(m, m.length); return { data: w, length: m.length }; }
+  // 解碼器輸出 [2,L] 48kHz → 單聲道，再轉成要的取樣率
+  function fromCodecOutput(stereo, L, toRate) { var m = new Float32Array(L); for (var i = 0; i < L; i++) m[i] = (stereo[i] + stereo[L + i]) / 2; return toRate && toRate !== OUT_RATE ? resample(m, OUT_RATE, toRate) : m; }
+  // 參考聲碼的長度上限：每幀 80 毫秒，提示越長越慢；超過 20 秒的樣本只取前面 20 秒（250 幀）
+  function trimPromptCodes(codes, maxFrames) { var max = maxFrames || 250; return codes.length > max ? codes.slice(0, max) : codes; }
+
+  return { NQ: NQ, ROW: ROW, CODEBOOK: CODEBOOK, HIDDEN: HIDDEN, LAYERS: LAYERS, OUT_RATE: OUT_RATE, FRAME_RATE: FRAME_RATE,
+    parseModel: parseModel, normalize: normalize, encode: encode, buildPrompt: buildPrompt, rng: rng, generate: generate, splitText: splitText,
+    resample: resample, toCodecInput: toCodecInput, fromCodecOutput: fromCodecOutput, trimPromptCodes: trimPromptCodes };
+}));
+
+}).call(null, undefined, holder);
+return holder.FaMossTts;
+})();
+/* MOSS-END */
+/* MOSSWORKER-BEGIN */
+const FA_MOSS_WORKER_SRC = "/* MOSS-TTS-Nano 的推論核心（UMD，純函式，不碰 DOM、網路、onnxruntime；桌面版與網頁版共用，也嵌進 worker）。\n *\n * MOSS-TTS-Nano（OpenMOSS，Apache-2.0）是 0.1B 的多語言零樣本語音合成：給一段參考音檔（不需要逐字稿）與要念的文字，就用那個聲音念，支援中文與英文。\n * 模型是五個 ONNX 圖（prefill、decode_step、local_fixed_sampled_frame…）加一個 SentencePiece 切詞器，外加 MOSS-Audio-Tokenizer-Nano 的編碼器／解碼器（波形 ↔ 16 通道聲碼）。\n * 這個檔案是照模型儲存庫（Apache-2.0）附的說明檔（tts_browser_onnx_meta.json、browser_poc_manifest.json）自己寫的推論流程，沒有複製官方瀏覽器專案的程式碼。\n * 流程：\n *   1. 文字 → 切詞（BPE，位元組後備；中文要先轉簡體，模型沒看過繁體字）\n *   2. 提示：每一列 17 個整數＝[文字通道, 16 個聲碼通道]。排法：<|im_start|>、user 前綴、<|audio_start|>、參考音檔的聲碼列（文字通道填 audio_user_slot）、<|audio_end|>、\n *      後綴（到 \"Text:\" 為止）、目標文字、assistant 前綴、<|audio_start|>。\n *   3. prefill 一次吃整個提示，之後每一幀：local_fixed_sampled_frame 取樣出 16 個聲碼（附 should_continue），再把 [audio_assistant_slot, 16 聲碼] 當一列丟進 decode_step。\n *   4. 全部聲碼丟給解碼器得到 48kHz 立體聲。\n * 推論本身（onnxruntime）由呼叫端提供 runners，這裡只有流程與資料處理，所以可以用假的 runners 測試。 */\n(function (root, factory) {\n  if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaMossTts = factory();\n}(typeof self !== 'undefined' ? self : this, function () {\n  'use strict';\n  var NQ = 16, ROW = 17, CODEBOOK = 1024, HIDDEN = 768, LAYERS = 12, OUT_RATE = 48000, FRAME_RATE = 12.5;\n\n  // ───────────────────────── SentencePiece（BPE）─────────────────────────\n  // 只做這個模型需要的部分：讀 .model 的 pieces（字串、分數、類型），NFKC 正規化，BPE 合併，位元組後備。\n  function readVarint(b, st) { var r = 0, sh = 0, x; do { x = b[st.p++]; r += (x & 0x7f) * Math.pow(2, sh); sh += 7; } while (x & 0x80); return r; }\n  function parseModel(bytes) {\n    var b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), st = { p: 0 }, pieces = [], dec = new TextDecoder('utf-8');\n    while (st.p < b.length) {\n      var tag = readVarint(b, st), field = tag >> 3, wire = tag & 7;\n      if (wire === 2) {\n        var len = readVarint(b, st), end = st.p + len;\n        if (field === 1) { // SentencePiece 子訊息\n          var piece = '', score = 0, type = 1; var sub = { p: st.p };\n          while (sub.p < end) { var t2 = readVarint(b, sub), f2 = t2 >> 3, w2 = t2 & 7; if (w2 === 2) { var l2 = readVarint(b, sub); if (f2 === 1) piece = dec.decode(b.subarray(sub.p, sub.p + l2)); sub.p += l2; } else if (w2 === 5) { if (f2 === 2) score = new DataView(b.buffer, b.byteOffset + sub.p, 4).getFloat32(0, true); sub.p += 4; } else if (w2 === 0) { var v = readVarint(b, sub); if (f2 === 3) type = v; } else if (w2 === 1) sub.p += 8; else throw new Error('切詞模型格式不認得'); }\n          pieces.push({ piece: piece, score: score, type: type });\n        }\n        st.p = end;\n      } else if (wire === 0) readVarint(b, st); else if (wire === 5) st.p += 4; else if (wire === 1) st.p += 8; else throw new Error('切詞模型格式不認得');\n    }\n    var map = new Map(), byteId = new Array(256).fill(-1), unk = 0;\n    for (var i = 0; i < pieces.length; i++) {\n      var p = pieces[i]; if (p.type === 2) unk = i;\n      if (p.type === 6) { var m = /^<0x([0-9A-Fa-f]{2})>$/.exec(p.piece); if (m) byteId[parseInt(m[1], 16)] = i; }\n      else if (p.type === 1 || p.type === 4) map.set(p.piece, i);\n    }\n    return { pieces: pieces, map: map, byteId: byteId, unk: unk };\n  }\n  // nmt_nfkc 的近似：NFKC，控制字元拿掉、各種空白變一般空白、連續空白合併、頭尾空白拿掉\n  // 正規化：NFKC 之後，照 python sentencepiece 逐字元量出來的對照表處理（不是猜的）：\n  //   刪除：0001-0008、000b、000e-001f、007f、008f、009f；\n  //   當空白：0009-000a、000c-000d、00a0、1680、2000-200c、200e-200f、2028-2029、202f、205f、2581（▁）、3000、feff、fffd；\n  //   其他字元照舊。連續空白合併、頭尾空白拿掉。\n  function normalize(text) {\n    var s = String(text == null ? '' : text); try { s = s.normalize('NFKC'); } catch (_) { /* */ }\n    var LS = String.fromCharCode(0x2028), PS = String.fromCharCode(0x2029);  // 這兩個字元不能寫在正規式字面值裡（會被當成換行）\n    s = s.replace(new RegExp('[\\u0001-\\u0008\\u000b\\u000e-\\u001f\\u007f\\u008f\\u009f]', 'g'), '');\n    s = s.replace(new RegExp('[\\t\\n\\f\\r\\u00a0\\u1680\\u2000-\\u200c\\u200e\\u200f' + LS + PS + '\\u202f\\u205f\\u2581\\u3000\\ufeff\\ufffd]', 'g'), ' ');\n    return s.replace(/ +/g, ' ').replace(/^ | $/g, '');\n  }\n  function utf8(ch) { return typeof Buffer !== 'undefined' ? Array.prototype.slice.call(Buffer.from(ch, 'utf8')) : Array.prototype.slice.call(new TextEncoder().encode(ch)); }\n  function bpeWord(model, word, out) {\n    var syms = Array.from(word).map(function (c) { return { s: c, alive: true }; });\n    for (;;) { // 每輪找「相鄰兩個合起來還在字彙裡」之中分數最高的（同分取最左邊）\n      var best = -1, bestScore = -Infinity, prev = -1;\n      for (var i = 0; i < syms.length; i++) { if (!syms[i].alive) continue; if (prev >= 0) { var id = model.map.get(syms[prev].s + syms[i].s); if (id !== undefined) { var sc = model.pieces[id].score; if (sc > bestScore) { bestScore = sc; best = prev; } } } prev = i; }\n      if (best < 0) break;\n      var j = best + 1; while (!syms[j].alive) j++; syms[best].s += syms[j].s; syms[j].alive = false;\n    }\n    syms.forEach(function (x) {\n      if (!x.alive) return; var id = model.map.get(x.s); if (id !== undefined) { out.push(id); return; }\n      var bytes = utf8(x.s), ok = bytes.every(function (v) { return model.byteId[v] >= 0; });\n      if (ok) bytes.forEach(function (v) { out.push(model.byteId[v]); }); else out.push(model.unk);\n    });\n  }\n  function encode(model, text) {\n    var norm = normalize(text); if (!norm) return [];\n    var s = '▁' + norm.replace(/ /g, '▁'), words = s.split(/(?=▁)/), out = [];\n    for (var i = 0; i < words.length; i++) if (words[i]) bpeWord(model, words[i], out);\n    return out;\n  }\n\n  // ───────────────────────── 提示 ─────────────────────────\n  // cfg：manifest.tts_config；tpl：manifest.prompt_templates；promptCodes：參考音檔的聲碼 [[16]…]（沒有就不放參考，用模型預設的聲音）；textIds：目標文字的切詞結果\n  function buildPrompt(cfg, tpl, promptCodes, textIds) {\n    var pad = cfg.audio_pad_token_id, rows = [];\n    var t = function (id) { var r = new Array(ROW).fill(pad); r[0] = id; rows.push(r); };\n    t(cfg.im_start_token_id); tpl.user_prompt_prefix_token_ids.forEach(t);\n    if (promptCodes && promptCodes.length) {\n      t(cfg.audio_start_token_id);\n      promptCodes.forEach(function (c) { rows.push([cfg.audio_user_slot_token_id].concat(Array.prototype.slice.call(c, 0, NQ))); });\n      t(cfg.audio_end_token_id);\n    }\n    tpl.user_prompt_after_reference_token_ids.forEach(t); textIds.forEach(t); tpl.assistant_prompt_prefix_token_ids.forEach(t); t(cfg.audio_start_token_id);\n    var flat = new Int32Array(rows.length * ROW); for (var i = 0; i < rows.length; i++) for (var k = 0; k < ROW; k++) flat[i * ROW + k] = rows[i][k];\n    return { ids: flat, rows: rows.length };\n  }\n\n  // ───────────────────────── 生成迴圈 ─────────────────────────\n  // 可重現的亂數（同一個 seed 同一串）\n  function rng(seed) { var a = (Number(seed) >>> 0) || 1; return function () { a |= 0; a = a + 0x6D2B79F5 | 0; var t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }\n  // runners：{ prefill(ids Int32Array, rows) → Promise<{hidden: Float32Array(768), past}>, decode(row Int32Array(17), pastLength, past) → Promise<{hidden, past}>,\n  //            sample(hidden, seen Int32Array(16*1024), u1 Float32Array(1), u2 Float32Array(16)) → Promise<{cont:boolean, frame: Int32Array(16)}> }\n  // opts：{ maxFrames=375, seed, onFrame(n), isCancelled() }。回 { frames: Int32Array[T*16], count, stopped:'end'|'max'|'cancel' }\n  async function generate(runners, cfg, prompt, opts) {\n    opts = opts || {}; var maxFrames = opts.maxFrames || 375, rnd = opts.seed === undefined || opts.seed === null ? Math.random : rng(opts.seed);\n    var pre = await runners.prefill(prompt.ids, prompt.rows), hidden = pre.hidden, past = pre.past, length = prompt.rows;\n    var seen = new Int32Array(NQ * CODEBOOK), frames = [], stopped = 'max';\n    for (var step = 0; step < maxFrames; step++) {\n      if (opts.isCancelled && opts.isCancelled()) { stopped = 'cancel'; break; }\n      var u2 = new Float32Array(NQ); for (var q = 0; q < NQ; q++) u2[q] = rnd();\n      var s = await runners.sample(hidden, seen, new Float32Array([rnd()]), u2);\n      if (!s.cont) { stopped = 'end'; break; }\n      var f = Int32Array.from(s.frame); frames.push(f); for (var k = 0; k < NQ; k++) seen[k * CODEBOOK + f[k]] = 1;\n      if (opts.onFrame) opts.onFrame(frames.length);\n      if (step === maxFrames - 1) break;\n      var row = new Int32Array(ROW); row[0] = cfg.audio_assistant_slot_token_id; row.set(f, 1);\n      var d = await runners.decode(row, length, past); hidden = d.hidden; past = d.past; length++;\n    }\n    var flat = new Int32Array(frames.length * NQ); for (var i = 0; i < frames.length; i++) flat.set(frames[i], i * NQ);\n    return { frames: flat, count: frames.length, stopped: stopped };\n  }\n\n  // ───────────────────────── 文字切段 ─────────────────────────\n  // 一次最多念約 30 秒（375 幀），長文字依句子切成幾段：中文一段約 70 字以內，英文一段約 220 字元以內；盡量在句尾標點斷開\n  function splitText(text, maxLatin, maxCjk) {\n    var t = String(text || '').replace(/\\r\\n/g, '\\n').trim(); if (!t) return [];\n    var sents = t.split(/(?<=[。！？!?；;…\\n]|[.]\\s)/).map(function (x) { return x.trim(); }).filter(Boolean), out = [], cur = '';\n    var limit = function (s) { var cjk = (s.match(/[㐀-鿿぀-ヿ가-힯]/g) || []).length; return cjk > s.length * 0.3 ? (maxCjk || 70) : (maxLatin || 220); };\n    sents.forEach(function (s) {\n      while (s.length > limit(s)) { var cut = limit(s), k = s.lastIndexOf(' ', cut); if (k < cut * 0.5) k = s.search(/[，,、]/) > 0 ? s.slice(0, cut).search(/[，,、][^，,、]*$/) : -1; if (k < cut * 0.4) k = cut; if (cur) { out.push(cur); cur = ''; } out.push(s.slice(0, k + (s[k] === ' ' ? 0 : 1)).trim()); s = s.slice(k + (s[k] === ' ' ? 1 : 1)).trim(); if (!s) break; }\n      if (!s) return; if (cur && (cur + s).length + 1 > limit(cur + s)) { out.push(cur); cur = s; } else cur = cur ? cur + (/[　-〿＀-￯㐀-鿿]$/.test(cur) ? '' : ' ') + s : s;\n    });\n    if (cur) out.push(cur); return out.filter(Boolean);\n  }\n\n  // ───────────────────────── 波形處理 ─────────────────────────\n  // 加窗 sinc（Lanczos，a=8）重採樣：參考音檔 24kHz → 48kHz 與輸出 48kHz → 24kHz 都用這個，比線性內插乾淨（編碼器對高頻很敏感）\n  function resample(a, from, to) {\n    if (from === to) return a; var ratio = to / from, n = Math.max(1, Math.round(a.length * ratio)), out = new Float32Array(n), A = 8, scale = Math.min(1, ratio), len = a.length;\n    for (var i = 0; i < n; i++) {\n      var c = i / ratio, i0 = Math.floor(c), s = 0, ws = 0;\n      for (var k = i0 - Math.ceil(A / scale) + 1; k <= i0 + Math.ceil(A / scale); k++) { var x = (c - k) * scale; if (x <= -A || x >= A) continue; var w = x === 0 ? 1 : (Math.sin(Math.PI * x) / (Math.PI * x)) * (Math.sin(Math.PI * x / A) / (Math.PI * x / A)); var v = k < 0 ? a[0] : k >= len ? a[len - 1] : a[k]; s += v * w; ws += w; }\n      out[i] = ws ? s / ws : 0;\n    }\n    return out;\n  }\n  // 參考音檔 → 編碼器要的 [1,2,L]（48kHz 立體聲，單聲道複製成兩個聲道）\n  function toCodecInput(mono, rate) { var m = resample(mono, rate, OUT_RATE), w = new Float32Array(2 * m.length); w.set(m, 0); w.set(m, m.length); return { data: w, length: m.length }; }\n  // 解碼器輸出 [2,L] 48kHz → 單聲道，再轉成要的取樣率\n  function fromCodecOutput(stereo, L, toRate) { var m = new Float32Array(L); for (var i = 0; i < L; i++) m[i] = (stereo[i] + stereo[L + i]) / 2; return toRate && toRate !== OUT_RATE ? resample(m, OUT_RATE, toRate) : m; }\n  // 參考聲碼的長度上限：每幀 80 毫秒，提示越長越慢；超過 20 秒的樣本只取前面 20 秒（250 幀）\n  function trimPromptCodes(codes, maxFrames) { var max = maxFrames || 250; return codes.length > max ? codes.slice(0, max) : codes; }\n\n  return { NQ: NQ, ROW: ROW, CODEBOOK: CODEBOOK, HIDDEN: HIDDEN, LAYERS: LAYERS, OUT_RATE: OUT_RATE, FRAME_RATE: FRAME_RATE,\n    parseModel: parseModel, normalize: normalize, encode: encode, buildPrompt: buildPrompt, rng: rng, generate: generate, splitText: splitText,\n    resample: resample, toCodecInput: toCodecInput, fromCodecOutput: fromCodecOutput, trimPromptCodes: trimPromptCodes };\n}));\n\n// MOSS-TTS-Nano 的推論 worker（module worker；執行時會在最前面接上 moss_core.js 的內容，所以這裡直接用全域的 FaMossTts）。\n// 訊息：\n//   { type:'init', jobId, ortUrl, wasmBase, threads, files:{ 檔名: blob 網址 }, manifestText, tokenizerBytes }\n//   { type:'generate', jobId, text, codes|null, seed, maxFrames }   → progress {frames}… → result { audio: Float32Array（單聲道 48kHz）, frames, stopped }\n//   { type:'encode', jobId, mono, rate }                             → result { codes: Int32Array(T*16), frames }\n//   { type:'cancel', jobId }、{ type:'dispose', jobId }\n// 回：{ jobId, type:'progress', message } 多次，最後 { jobId, type:'result', ok, ... } 或 { ok:false, error }。\nlet ort = null, M = self.FaMossTts, manifest = null, tokModel = null, files = null, ttsMeta = null, codecMeta = null;\nconst sessions = {}; let cancelled = new Set();\nconst post = (jobId, type, extra) => self.postMessage(Object.assign({ jobId, type }, extra || {}));\n\nasync function getSession(key, graph, externals) {\n  if (sessions[key]) return sessions[key];\n  const url = files[graph]; if (!url) throw new Error('缺少模型檔 ' + graph);\n  const opts = { executionProviders: ['wasm'], graphOptimizationLevel: 'all' };\n  if (externals && externals.length) opts.externalData = externals.map((p) => ({ path: p, data: files[p] }));\n  sessions[key] = await ort.InferenceSession.create(url, opts);\n  return sessions[key];\n}\nconst ttsExt = (g) => (ttsMeta.external_data_files && ttsMeta.external_data_files[g]) || [];\nconst codecExt = (g) => (codecMeta.external_data_files && codecMeta.external_data_files[g]) || [];\nconst T = (type, data, dims) => new ort.Tensor(type, data, dims);\n\nasync function loadMeta(d) {\n  manifest = JSON.parse(d.manifestText); tokModel = M.parseModel(new Uint8Array(d.tokenizerBytes));\n  ttsMeta = JSON.parse(d.ttsMetaText); codecMeta = JSON.parse(d.codecMetaText);\n}\nasync function codecDecode(frames, count, jobId) {\n  const s = await getSession('codecDecode', codecMeta.files.decode_full || 'moss_audio_tokenizer_decode_full.onnx', codecExt(codecMeta.files.decode_full || 'moss_audio_tokenizer_decode_full.onnx'));\n  const out = await s.run({ audio_codes: T('int32', frames, [1, count, M.NQ]), audio_code_lengths: T('int32', new Int32Array([count]), [1]) });\n  const a = out.audio, dims = a.dims, L = Number(out.audio_lengths.data[0]) || dims[2], ch = dims[1], data = a.data;\n  const mono = new Float32Array(L); // [1, ch, Ltotal]：多聲道平均成單聲道\n  for (let i = 0; i < L; i++) { let sum = 0; for (let c = 0; c < ch; c++) sum += data[c * dims[2] + i]; mono[i] = sum / ch; }\n  return mono;\n}\nasync function codecEncode(mono, rate) {\n  const s = await getSession('codecEncode', codecMeta.files.encode || 'moss_audio_tokenizer_encode.onnx', codecExt(codecMeta.files.encode || 'moss_audio_tokenizer_encode.onnx'));\n  const w = M.toCodecInput(mono, rate), out = await s.run({ waveform: T('float32', w.data, [1, 2, w.length]), input_lengths: T('int32', new Int32Array([w.length]), [1]) });\n  const n = Number(out.audio_code_lengths.data[0]) || out.audio_codes.dims[1], all = out.audio_codes.data, codes = new Int32Array(n * M.NQ); codes.set(all.subarray(0, n * M.NQ));\n  return { codes, frames: n };\n}\nfunction makeRunners(prefillS, decodeS, sampleS) {\n  const pn = ttsMeta.onnx.prefill_output_names, dn = ttsMeta.onnx.decode_output_names;\n  const lastHidden = (t) => { const d = t.data, rows = t.dims[1], h = t.dims[2]; return Float32Array.from(d.subarray((rows - 1) * h, rows * h)); };\n  return {\n    prefill: async (ids, rows) => {\n      const o = await prefillS.run({ input_ids: T('int32', ids, [1, rows, M.ROW]), attention_mask: T('int32', new Int32Array(rows).fill(1), [1, rows]) });\n      const past = []; for (let i = 0; i < M.LAYERS; i++) { past.push(o['present_key_' + i], o['present_value_' + i]); }\n      return { hidden: lastHidden(o[pn[0]]), past };\n    },\n    decode: async (row, len, past) => {\n      const feeds = { input_ids: T('int32', row, [1, 1, M.ROW]), past_valid_lengths: T('int32', new Int32Array([len]), [1]) };\n      for (let i = 0; i < M.LAYERS; i++) { feeds['past_key_' + i] = past[2 * i]; feeds['past_value_' + i] = past[2 * i + 1]; }\n      const o = await decodeS.run(feeds), next = []; for (let i = 0; i < M.LAYERS; i++) { next.push(o['present_key_' + i], o['present_value_' + i]); }\n      return { hidden: lastHidden(o[dn[0]]), past: next };\n    },\n    sample: async (hidden, seen, u1, u2) => {\n      const o = await sampleS.run({ global_hidden: T('float32', hidden, [1, M.HIDDEN]), repetition_seen_mask: T('int32', seen, [1, M.NQ, M.CODEBOOK]), assistant_random_u: T('float32', u1, [1]), audio_random_u: T('float32', u2, [1, M.NQ]) });\n      return { cont: Number(o.should_continue.data[0]) !== 0, frame: Int32Array.from(o.frame_token_ids.data) };\n    },\n  };\n}\n\nself.onmessage = async (e) => {\n  const d = e.data || {}, jobId = d.jobId;\n  try {\n    if (d.type === 'cancel') { cancelled.add(jobId); return; }\n    if (d.type === 'dispose') { for (const k of Object.keys(sessions)) { try { await sessions[k].release(); } catch (_) { /* */ } delete sessions[k]; } post(jobId, 'result', { ok: true }); return; }\n    if (d.type === 'init') {\n      if (!ort) ort = await import(d.ortUrl);\n      ort.env.wasm.wasmPaths = d.wasmBase; ort.env.wasm.numThreads = d.threads || 1; ort.env.wasm.proxy = false;\n      files = d.files; await loadMeta(d); post(jobId, 'result', { ok: true }); return;\n    }\n    if (d.type === 'encode') { post(jobId, 'progress', { message: '分析參考聲音…' }); const r = await codecEncode(d.mono, d.rate); post(jobId, 'result', { ok: true, codes: r.codes, frames: r.frames }, undefined); return; }\n    if (d.type === 'generate') {\n      const cfg = manifest.tts_config, tpl = manifest.prompt_templates, ids = M.encode(tokModel, d.text);\n      if (!ids.length) { post(jobId, 'result', { ok: false, error: '這段文字切不出可以念的內容' }); return; }\n      const codes = d.codes && d.codes.length ? M.trimPromptCodes(d.codes, d.maxPromptFrames || 250) : null, prompt = M.buildPrompt(cfg, tpl, codes, ids);\n      post(jobId, 'progress', { message: '載入語言模型（第一次較慢）…' });\n      const prefillS = await getSession('prefill', ttsMeta.files.prefill, ttsExt(ttsMeta.files.prefill));\n      const decodeS = await getSession('decode', ttsMeta.files.decode_step, ttsExt(ttsMeta.files.decode_step));\n      const sampleS = await getSession('sample', ttsMeta.files.local_fixed_sampled_frame, ttsExt(ttsMeta.files.local_fixed_sampled_frame));\n      post(jobId, 'progress', { message: '合成中…' });\n      const g = await M.generate(makeRunners(prefillS, decodeS, sampleS), cfg, prompt, { maxFrames: d.maxFrames || 375, seed: d.seed, isCancelled: () => cancelled.has(jobId), onFrame: (n) => { if (n % 4 === 0) post(jobId, 'progress', { frames: n, message: '合成中… 已生成 ' + (n / M.FRAME_RATE).toFixed(1) + ' 秒' }); } });\n      cancelled.delete(jobId);\n      if (g.stopped === 'cancel') { post(jobId, 'result', { ok: false, error: '已取消' }); return; }\n      if (!g.count) { post(jobId, 'result', { ok: false, error: '模型沒有產生任何聲音（文字可能太短或無法念出）' }); return; }\n      post(jobId, 'progress', { message: '轉成聲音…' });\n      const mono = await codecDecode(g.frames, g.count, jobId);\n      self.postMessage({ jobId, type: 'result', ok: true, audio: mono, frames: g.count, stopped: g.stopped }, [mono.buffer]);\n      return;\n    }\n    post(jobId, 'result', { ok: false, error: '未知的 job 類型：' + d.type });\n  } catch (err) { post(jobId, 'result', { ok: false, error: String((err && err.message) || err) }); }\n};\n";
+/* MOSSWORKER-END */
 /* RECIPE-BEGIN */
 const FaRecipe = (function () {
 const holder = {};
@@ -34202,6 +34367,46 @@ const TTS_DEFAULT_ZH_VOICE = 'zf_xiaoxiao';
 const TTS_VOICE_CACHE_NAME = 'kokoro-voices'; // kokoro-js自己固定用這個名稱
 const TTS_VOICE_DATA_URL_BASE = `https://huggingface.co/${TTS_MODEL_ID}/resolve/main/voices/`;
 
+
+// ───── 零樣本聲音複製引擎（MOSS-TTS-Nano，OpenMOSS，Apache-2.0）─────
+// 拿一段自己的錄音（參考音檔，不需要逐字稿）當聲音樣本，用那個聲音念中文或英文。模型是 ONNX（約 727MB，下載一次存在瀏覽器的 Cache，之後離線可用），
+// 用 onnxruntime-web 在背景 worker 跑（推論流程見 renderer/src/tts/moss_core.js、moss_worker.js）。
+// 這些聲音（我的錄音樣本與官方內建的示範聲音）會被塞進 TTS_VOICES（英文）／TTS_ZH_VOICES（中文）的最後面並帶 clone:true、engine:'clone'，
+// 所以所有下拉選單、text_to_speech、/media-text-to-speech、/media-list-voices、簡報旁白都不用另外處理就看得到。
+const MOSS_ORT_VERSION = '1.22.0';
+const MOSS_ORT_URL = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${MOSS_ORT_VERSION}/dist/ort.wasm.min.mjs`;
+const MOSS_WASM_BASE = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${MOSS_ORT_VERSION}/dist/`;
+const MOSS_CACHE_NAME = 'fa-moss-tts-v1';
+const MOSS_REPO_URL = { tts: 'https://huggingface.co/OpenMOSS-Team/MOSS-TTS-Nano-100M-ONNX/resolve/main/', codec: 'https://huggingface.co/OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano-ONNX/resolve/main/' };
+// [repo, 檔名, bytes]：大小用來顯示進度與檢查下載有沒有完整
+const MOSS_FILES = [
+    ['tts', 'tts_browser_onnx_meta.json', 4487], ['tts', 'browser_poc_manifest.json', 503354], ['tts', 'tokenizer.model', 470897],
+    ['tts', 'moss_tts_prefill.onnx', 283305], ['tts', 'moss_tts_decode_step.onnx', 291483], ['tts', 'moss_tts_local_fixed_sampled_frame.onnx', 471262],
+    ['tts', 'moss_tts_local_cached_step.onnx', 53685], ['tts', 'moss_tts_local_decoder.onnx', 49231],
+    ['codec', 'codec_browser_onnx_meta.json', 17036], ['codec', 'moss_audio_tokenizer_encode.onnx', 815775], ['codec', 'moss_audio_tokenizer_decode_full.onnx', 681902],
+    ['codec', 'moss_audio_tokenizer_decode_shared.data', 44198912], ['codec', 'moss_audio_tokenizer_encode.data', 44507136],
+    ['tts', 'moss_tts_local_shared.data', 229678080], ['tts', 'moss_tts_global_shared.data', 440813568],
+];
+const MOSS_TOTAL_BYTES = MOSS_FILES.reduce((a, f) => a + f[2], 0);
+function mossUrl(f) { return MOSS_REPO_URL[f[0]] + f[1]; }
+// 我的錄音樣本索引（advancedSettings.voiceSamples：只有代號、名字、語言、長度，聲音本身在 IndexedDB）與官方內建示範聲音（advancedSettings.mossBuiltinVoices）
+function ttsNormalizeSampleIndex(arr) {
+    const out = [], seen = new Set();
+    for (const s of Array.isArray(arr) ? arr : []) { if (!s || typeof s.id !== 'string' || !/^vs_[a-z0-9]+$/.test(s.id) || seen.has(s.id)) continue; seen.add(s.id); out.push({ id: s.id, name: String(s.name || s.id).slice(0, 60), lang: s.lang === 'zh' ? 'zh' : 'en', durationSec: Number(s.durationSec) || 0, source: s.source === 'imported' ? 'imported' : 'recorded' }); }
+    return out.slice(0, 200);
+}
+function ttsNormalizeBuiltinClone(arr) {
+    const out = [], seen = new Set();
+    for (const s of Array.isArray(arr) ? arr : []) { if (!s || typeof s.id !== 'string' || !/^moss_[a-z0-9]+$/.test(s.id) || seen.has(s.id)) continue; seen.add(s.id); out.push({ id: s.id, name: String(s.name || s.id).slice(0, 60), lang: s.lang === 'zh' ? 'zh' : 'en', gender: s.gender === 'm' || s.gender === 'f' ? s.gender : '', voice: String(s.voice || '').slice(0, 40) }); }
+    return out.slice(0, 40);
+}
+function ttsRegisterCloneVoices(samples, builtin) {
+    for (const arr of [TTS_VOICES, TTS_ZH_VOICES]) for (let i = arr.length - 1; i >= 0; i--) if (arr[i].clone) arr.splice(i, 1);
+    const add = (v, zh) => { (zh ? TTS_ZH_VOICES : TTS_VOICES).push(v); };
+    for (const s of samples) add({ id: s.id, name: s.name, lang: s.lang === 'zh' ? '我的錄音樣本（中文）' : '我的錄音樣本（英文）', gender: '', engine: 'clone', clone: true, sample: true }, s.lang === 'zh');
+    for (const b of builtin) add({ id: b.id, name: b.name, lang: b.lang === 'zh' ? '複製引擎內建聲音（中文）' : '複製引擎內建聲音（英文）', gender: b.gender === 'm' ? '男' : b.gender === 'f' ? '女' : '', engine: 'clone', clone: true, sample: false, builtinVoice: b.voice }, b.lang === 'zh');
+}
+
 // ───── 我的聲音（匯入／建立的聲音樣本，核心見 renderer/src/tts/voice_sample.js）─────
 // 一個「聲音樣本」是一個 Kokoro 語音包（voices/<代號>.bin），放在跟內建語音包同一個 "kokoro-voices" Cache（kokoro-js 找語音包就是找這裡），
 // 所以合成走的是跟內建聲音完全一樣的路線；清單（代號、名字、語言、性別、配方）放在 advancedSettings.ttsCustomVoices。
@@ -40323,7 +40528,7 @@ const FaDeckHost = (function () {
         // 旁白：文字 → mp3 的位元組（用助理既有的語音合成：英文走本機 Kokoro，中文走設定好的語音轉接）
         // 同時做幾段旁白：語音服務的聲音（中文）可以一次做 4 段；本機模型（英文）一次一段（一次只能跑一個推論）
         _deckTtsGate(kind) {
-            this._deckTtsQ = this._deckTtsQ || { api: { n: 0, max: 4, wait: [] }, local: { n: 0, max: 1, wait: [] } };
+            this._deckTtsQ = this._deckTtsQ || { api: { n: 0, max: 4, wait: [] }, local: { n: 0, max: 1, wait: [] }, clone: { n: 0, max: 1, wait: [] } };
             const g = this._deckTtsQ[kind];
             return new Promise((resolve) => {
                 const go = () => { g.n++; resolve(() => { g.n--; const nx = g.wait.shift(); if (nx) nx(); }); };
@@ -40337,6 +40542,7 @@ const FaDeckHost = (function () {
         async _deckPrepareSpeech(text, voice, lang) {
             const s = String(text || ''), CJK = /[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/;
             if (!CJK.test(s)) return { text: s, voice };
+            if (voice && this._ttsFindVoice && (this._ttsFindVoice(voice) || {}).clone) return { text: s, voice }; // 複製引擎的聲音中英文都能念：不用翻成英文、也不用改成中文聲音
             const local = typeof TTS_VOICES !== 'undefined' ? TTS_VOICES : [], api = typeof TTS_API_VOICES !== 'undefined' ? TTS_API_VOICES : [];
             const isLocal = !!voice && local.some((v) => v.id === voice), isApi = !!voice && api.some((v) => v.id === voice);
             const zh = () => { const d = (this.advancedSettings && this.advancedSettings.ttsDefaultApiVoice) || ''; const v = api.find((x) => x.id === d) || api[0]; return v ? v.id : null; };
@@ -40366,7 +40572,7 @@ const FaDeckHost = (function () {
         async _deckSynthesize(text, voice, speed, lang) {
             const isApiVoice = (v) => (v ? (typeof TTS_API_VOICES !== 'undefined' && TTS_API_VOICES.some((x) => x.id === v)) : this._looksLikeCjkText(String(text)));
             const attempt = async (v) => {
-                const release = await this._deckTtsGate(isApiVoice(v) ? 'api' : 'local');
+                const release = await this._deckTtsGate((this._ttsGateOf && this._ttsGateOf(v)) || (isApiVoice(v) ? 'api' : 'local'));
                 let timer; try { return await Promise.race([this._deckSynthesizeNow(text, v, speed, lang), new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('語音合成 240 秒內沒有回應')), 240000); })]); } finally { clearTimeout(timer); release(); }
             };
             try { return await attempt(voice); }
@@ -40395,7 +40601,7 @@ const FaDeckHost = (function () {
         },
         // 播放器 🎙 面板的聲音清單：本地英文、本地中文、線上中文（有啟用才列）
         _deckVoiceList() {
-            const out = []; const add = (list, tag) => (list || []).forEach((v) => out.push({ id: v.id, label: v.name + '（' + tag + (v.gender ? '，' + v.gender : '') + '）' }));
+            const out = []; const add = (list, tag) => (list || []).forEach((v) => out.push({ id: v.id, label: v.name + '（' + (v.clone ? (v.sample ? '我的錄音樣本' : '複製引擎內建') : tag) + (v.gender ? '，' + v.gender : '') + '）' }));
             try { add(typeof TTS_VOICES !== 'undefined' ? TTS_VOICES : [], '離線英文'); add(typeof TTS_ZH_VOICES !== 'undefined' ? TTS_ZH_VOICES : [], '離線中文'); if (this.advancedSettings && this.advancedSettings.ttsApiEnabled) add(typeof TTS_API_VOICES !== 'undefined' ? TTS_API_VOICES : [], '線上中文'); } catch (_) { /* 清單拿不到就不列 */ }
             return out;
         },
@@ -42972,6 +43178,8 @@ class FloatingAssistant {
         this.register_slash_command('/voice-create', '[<名字>] [lang=zh|en] [gender=f|m] [mix=代號:比例,…] [random] [seed=N] [count=N] [spread=X] [play=0]', '建立聲音樣本（我的聲音）：不帶參數會開啟建立視窗——預設用麥克風錄自己的聲音（有念稿、品質檢查，存成 24kHz 單聲道 WAV，可匯出給 ChatTTS／XTTS／F5-TTS），另一個分頁是混合現有聲音。帶參數（名字、mix=…、random、seed=…）是直接做 Kokoro 混合聲音，做完自動試聽。', (argsText) => this._handleVoiceCreateCommand(argsText));
         this.register_slash_command('/voice-import', '', '匯入聲音樣本：選一個音檔（wav、mp3、m4a、ogg…，會轉成 24kHz 單聲道 WAV 並檢查品質）當自己的錄音樣本，或 Kokoro 語音包（.bin）／本程式匯出的 .voice.json（中文或英文）。', (argsText) => this._handleVoiceImportCommand(argsText));
         this.register_slash_command('/voice-export', '[<語音代號>]', '匯出自己的聲音：錄音樣本下載 .wav（24kHz 單聲道參考音檔）與 .voice-sample.json（念的文字、各引擎的用法）；Kokoro 混合聲音下載 .bin 與 .voice.json。不帶代號會列出你的聲音。', (argsText) => this._handleVoiceExportCommand(argsText));
+        this.register_slash_command('/voice-install', '[remove]', '安裝（或 remove 移除）零樣本聲音複製引擎（MOSS-TTS-Nano，約 727 MB，下載一次、之後離線可用）：裝好後，自己的錄音樣本與官方內建示範聲音就能念中文與英文，簡報旁白也能選。', (argsText) => this._handleVoiceInstallCommand(argsText));
+        setTimeout(() => { try { this._vsReconcile().catch(() => {}); this._mossStatus().catch(() => {}); } catch (_) { /* */ } }, 2000);
         this.register_slash_command('/voice-record', '', '開啟「建立聲音樣本」視窗，用麥克風錄自己的聲音（等同不帶參數的 /voice-create）。', () => this._voiceCreateDialog('record'));
         this.register_slash_command('/voice-delete', '<語音代號>', '刪除自己的聲音（我的聲音）。', (argsText) => this._handleVoiceDeleteCommand(argsText));
         // tw_stock_db客製: 2026-09-12使用者要求——配音也要能用/media-開頭的
@@ -43951,6 +44159,8 @@ class FloatingAssistant {
             ttsDefaultVoice: TTS_DEFAULT_VOICE,
             ttsCustomVoices: [], // 我的聲音（匯入／建立的聲音樣本）清單；語音包本身在 "kokoro-voices" Cache
             ttsPreferCustomVoice: true, // 沒指定聲音時，優先使用我的聲音
+            voiceSamples: [], // 我的錄音樣本索引（代號、名字、語言、長度；聲音本身在 IndexedDB FloatingAssistantVoiceSamples）
+            mossBuiltinVoices: [], // 零樣本聲音複製引擎安裝後，官方內建示範聲音的清單（中文、英文）
             // tw_stock_db客製: 2026-09-14使用者要求——預設開啟中文語音API
             // （原本因為「文字會離開瀏覽器送到Worker/Microsoft、需要Worker
             // 部署對應路由」這個理由預設關閉，跟browserSearchEnabled同一個
@@ -45170,6 +45380,7 @@ class FloatingAssistant {
     _normalizeAdvancedSettings(raw) {
         const defaults = this._createDefaultAdvancedSettings();
         ttsRegisterCustomVoices(ttsNormalizeCustomVoices(raw && raw.ttsCustomVoices)); // 要在下面檢查「預設語音是不是存在」之前註冊好
+        ttsRegisterCloneVoices(ttsNormalizeSampleIndex(raw && raw.voiceSamples), ttsNormalizeBuiltinClone(raw && raw.mossBuiltinVoices));
         if (!raw || typeof raw !== 'object') {
             // tw_stock_db客製: 2026-09-14——raw完全不存在通常代表「使用者
             // 從來沒有動過Advance Settings的任何欄位」（不是真的第一次
@@ -45339,6 +45550,8 @@ class FloatingAssistant {
             imageGen: (() => { const g = raw.imageGen || {}; return { apiKey: String(g.apiKey || '').trim().slice(0, 300), model: String(g.model || 'black-forest-labs/flux.1-schnell').trim().slice(0, 120), customModel: String(g.customModel || '').trim().slice(0, 120), provider: ['online', 'local'].indexOf(g.provider) >= 0 ? g.provider : 'auto', localDevice: ['webgpu', 'cpu'].indexOf(g.localDevice) >= 0 ? g.localDevice : 'auto', templates: (() => { const t = g.templates || {}, q = t.quality || {}; return { styles: (Array.isArray(t.styles) ? t.styles : []).slice(0, 30).map((x) => ({ id: /^[a-z][a-z0-9_]{0,20}$/.test(String((x && x.id) || '')) ? x.id : undefined, zh: Array.isArray(x && x.zh) ? x.zh.map(String).join('，').slice(0, 80) : String((x && x.zh) || '').slice(0, 80), tags: Array.isArray(x && x.tags) ? x.tags.map(String).join(', ').slice(0, 200) : String((x && x.tags) || '').slice(0, 200), phrase: String((x && x.phrase) || '').slice(0, 80) })), quality: { sd15: String(q.sd15 || '').slice(0, 160), sd3: String(q.sd3 || '').slice(0, 160) }, negative: String(t.negative || '').slice(0, 160) }; })() }; })(),
             ttsCustomVoices: ttsNormalizeCustomVoices(raw.ttsCustomVoices),
             ttsPreferCustomVoice: raw.ttsPreferCustomVoice !== false,
+            voiceSamples: ttsNormalizeSampleIndex(raw.voiceSamples),
+            mossBuiltinVoices: ttsNormalizeBuiltinClone(raw.mossBuiltinVoices),
             ttsDefaultVoice: TTS_VOICES.some(v => v.id === raw.ttsDefaultVoice) ? raw.ttsDefaultVoice : TTS_DEFAULT_VOICE,
             // tw_stock_db客製: 2026-09-14——這裡改成`!== false`（不是
             // `=== true`）：舊版settings沒有ttsApiEnabled這個欄位時
@@ -49057,7 +49270,7 @@ ${fnData.code}
                 const text = String(parsed.text || '').trim();
                 if (!text) return JSON.stringify({ ok: false, error: '缺少text參數' });
                 const voiceArg = String(parsed.voice || '').trim();
-                if (voiceArg && !/^vs_/.test(voiceArg) && !TTS_VOICES.some(v => v.id === voiceArg) && !TTS_ZH_VOICES.some(v => v.id === voiceArg) && !TTS_API_VOICES.some(v => v.id === voiceArg)) {
+                if (voiceArg && !TTS_VOICES.some(v => v.id === voiceArg) && !TTS_ZH_VOICES.some(v => v.id === voiceArg) && !TTS_API_VOICES.some(v => v.id === voiceArg)) {
                     return JSON.stringify({ ok: false, error: `不認得的語音代號「${voiceArg}」，用 /media-list-voices 查完整清單` });
                 }
                 try {
@@ -49655,12 +49868,13 @@ ${fnData.code}
         if (/<[a-zA-Z][\w:-]*(\s[^<>]*)?\/?>/.test(t)) {
             return { ok: false, error: '文字裡偵測到看起來像XML/SSML標記（例如<speak>、<phoneme>）——這個語音合成功能不支援SSML，只接受純文字，標記會被逐字唸出來造成錯誤的語音內容。請移除所有標記，只保留真正要念的純文字（需要控制特定發音時，改用同音近似的英文拼寫方式，不要用XML/SSML語法）。' };
         }
-        if (voiceId && /^vs_/.test(voiceId)) { const vr = await this._vsGet(voiceId).catch(() => null); return { ok: false, error: vr ? this._vsNoEngineMessage(vr) : `不認得的語音代號「${voiceId}」` }; } // 錄音樣本是參考音檔，Kokoro 不能用
         const isCjk = this._looksLikeCjkText(t);
         let voice = null;
         if (voiceId) {
             voice = TTS_VOICES.find(v => v.id === voiceId) || TTS_ZH_VOICES.find(v => v.id === voiceId) || TTS_API_VOICES.find(v => v.id === voiceId);
             if (!voice) return { ok: false, error: `不認得的語音代號「${voiceId}」` };
+        } else if (this._ttsPreferredClone(isCjk ? 'zh' : 'en')) {
+            voice = this._ttsPreferredClone(isCjk ? 'zh' : 'en'); // 我的錄音樣本優先（引擎裝好了才會用）
         } else if (isCjk && this._ttsPreferredCustom('zh')) {
             voice = this._ttsPreferredCustom('zh'); // 我的中文聲音優先
         } else if (isCjk && !this.advancedSettings.ttsApiEnabled && this.advancedSettings.ttsZhLocalFallback !== false) {
@@ -49673,6 +49887,7 @@ ${fnData.code}
         } else {
             voice = this._ttsPreferredCustom('en') || TTS_VOICES.find(v => v.id === this.advancedSettings.ttsDefaultVoice) || TTS_VOICES[0];
         }
+        if (voice.engine === 'clone') return this._synthesizeSpeechClone(t, voice, onProgress, effectiveSpeed, opts); // 零樣本聲音複製引擎（中英文都能念，不用先分語言）
         if (voice.engine === 'api') {
             let r;
             if (!this.advancedSettings.ttsApiEnabled) r = { ok: false, error: `語音「${voice.id}」需要啟用中文語音API（Advance Settings「子Agent」分頁的「語音合成子Agent」區塊），目前是關閉的。` };
@@ -49807,47 +50022,7 @@ ${fnData.code}
         let off = 0;
         parts.forEach((p, k) => { off -= ov[k]; for (let n = 0; n < p.length; n++) merged[off + n] += p[n]; off += p.length; });
 
-        const wantMp3 = this.advancedSettings.extractAudioFormat !== 'wav'; // 沿用同一個「要不要壓縮」偏好
-        let blob, ext, mimeType;
-        if (wantMp3) {
-            try {
-                await this._ensureLamejsLoaded();
-                blob = await _faLamejsEncode([_faFloat32ToInt16(merged)], TTS_SAMPLE_RATE, 128);
-                ext = 'mp3'; mimeType = 'audio/mpeg';
-            } catch (err) {
-                this._log('⚠️ MP3編碼失敗，改用WAV：' + String(err && err.message || err));
-            }
-        }
-        if (!blob) {
-            const int16 = _faFloat32ToInt16(merged);
-            const buf = new ArrayBuffer(44 + int16.length * 2);
-            const dv = new DataView(buf);
-            const ws = (o, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
-            ws(0, 'RIFF'); dv.setUint32(4, 36 + int16.length * 2, true); ws(8, 'WAVE'); ws(12, 'fmt ');
-            dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
-            dv.setUint32(24, TTS_SAMPLE_RATE, true); dv.setUint32(28, TTS_SAMPLE_RATE * 2, true);
-            dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
-            ws(36, 'data'); dv.setUint32(40, int16.length * 2, true);
-            for (let i = 0; i < int16.length; i++) dv.setInt16(44 + i * 2, int16[i], true);
-            blob = new Blob([buf], { type: 'audio/wav' });
-            ext = 'wav'; mimeType = 'audio/wav';
-        }
-        const durationSeconds = totalLen / TTS_SAMPLE_RATE;
-        const name = `語音_${voice.id}_${Date.now()}.${ext}`;
-        let audioFileId;
-        try {
-            audioFileId = await this.fileCache.put(name, mimeType, blob, 'uploaded');
-        } catch (err) {
-            return { ok: false, error: '語音檔存檔失敗：' + String(err.message || err) };
-        }
-        return {
-            ok: true,
-            audio_file_id: audioFileId,
-            filename: name,
-            durationSeconds: Math.round(durationSeconds * 10) / 10,
-            voice: voice.id,
-            sizeBytes: blob.size,
-        };
+        return this._ttsPackageAudio(merged, totalLen, voice);
     }
 
     // tw_stock_db客製: 2026-09-12——透過Cloudflare Worker的/edge-tts路由轉接
@@ -58859,10 +59034,10 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const listEl = document.getElementById('ai-tts-voice-list');
         const defaultSelect = document.getElementById('ai-tts-default-voice');
         try { this._renderTtsCustomList(); } catch (_) { /* */ }
+        try { this._renderMossPanel(); } catch (_) { /* */ }
         if (defaultSelect) {
-            defaultSelect.innerHTML = TTS_VOICES.map(v => `<option value="${v.id}">${v.name}（${v.lang}／${v.gender}）— ${v.id}</option>`).join('');
+            defaultSelect.innerHTML = (() => { const opt = (v) => `<option value="${v.id}">${v.name}（${v.lang}${v.gender ? '／' + v.gender : ''}）— ${v.id}</option>`, mine = TTS_VOICES.filter((v) => v.custom || v.clone), rest = TTS_VOICES.filter((v) => !v.custom && !v.clone); return (mine.length ? '<optgroup label="我的聲音（優先使用）">' + mine.map(opt).join('') + '</optgroup>' : '') + '<optgroup label="內建聲音">' + rest.map(opt).join('') + '</optgroup>'; })();
         }
-        if (defaultSelect) { try { const vsl = await this._vsList(); if (vsl.length) defaultSelect.insertAdjacentHTML('beforeend', '<optgroup label="我的錄音樣本（參考音檔：需要支援的引擎才能念，可匯出）">' + vsl.map((v) => `<option value="${this._escapeHtml(v.id)}" disabled>🎤 ${this._escapeHtml(v.name)}（${v.lang === 'zh' ? '中文' : '英文'}／${v.durationSec} 秒）— ${this._escapeHtml(v.id)}</option>`).join('') + '</optgroup>'); } catch (_) { /* */ } }
         if (defaultSelect) defaultSelect.value = this.advancedSettings.ttsDefaultVoice;
         const defaultApiSelect = document.getElementById('ai-tts-default-api-voice');
         if (defaultApiSelect && !defaultApiSelect.options.length) {
@@ -58944,7 +59119,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const wavBytes = VR.wav(p.samples, p.rate), lang = VR.langOf(o.lang);
         const rec = { id: this._vsNewId(), name: String(o.name || '').trim().slice(0, 60) || (lang === 'zh' ? '我的聲音' : 'My voice'), lang, transcript: String(o.transcript || '').trim(), durationSec: p.report.durationSec, rate: p.rate, createdAt: new Date().toISOString(), source: o.source === 'imported' ? 'imported' : 'recorded', report: p.report, wav: wavBytes.buffer.slice(wavBytes.byteOffset, wavBytes.byteOffset + wavBytes.byteLength) };
         await this._vsPut(rec);
-        try { this._renderTtsVoicePanel(); } catch (_) { /* */ }
+        await this._vsReconcile().catch(() => {}); try { this._renderTtsVoicePanel(); } catch (_) { /* */ }
         return { ok: true, rec, report: p.report };
     }
     async _vsBlob(id) { const r = await this._vsGet(id); return r && r.wav ? new Blob([r.wav], { type: 'audio/wav' }) : null; }
@@ -58958,16 +59133,241 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         this._vsSaveFile(new Blob([JSON.stringify(VR.meta({ name: r.name, lang: r.lang, transcript: r.transcript, durationSec: r.durationSec, createdAt: r.createdAt, file: base + '.wav' }), null, 2)], { type: 'application/json' }), base + '.voice-sample.json');
         return { ok: true, files: [base + '.wav', base + '.voice-sample.json'] };
     }
-    async _vsDeleteSample(id) { const r = await this._vsGet(id); if (!r) return { ok: false, error: `沒有這個聲音樣本：${id}` }; await this._vsDelete(id); try { this._renderTtsVoicePanel(); } catch (_) { /* */ } return { ok: true, name: r.name }; }
+    async _vsDeleteSample(id) { const r = await this._vsGet(id); if (!r) return { ok: false, error: `沒有這個聲音樣本：${id}` }; await this._vsDelete(id); await this._vsReconcile().catch(() => {}); try { this._renderTtsVoicePanel(); } catch (_) { /* */ } return { ok: true, name: r.name }; }
     // 匯入音檔：解碼、處理、存檔（opts：{ name, lang, transcript, force }）
     async _vsImportAudio(file, opts) {
         let d; try { d = await this._vsDecodeFile(file); } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
         const name = String((opts && opts.name) || file.name.replace(/\.[^.]+$/, '')).trim();
         return this._vsSave({ name, lang: (opts && opts.lang) || 'en', transcript: (opts && opts.transcript) || '', mono: d.mono, rate: d.rate, source: 'imported', force: !!(opts && opts.force) });
     }
-    // 要不要把錄音樣本當成「這個聲音念字」用：目前沒有內建的引擎能用參考音檔（Kokoro 只能用自己的語音向量），要交給支援的引擎（ChatTTS、XTTS、F5-TTS…）；
-    // 這裡先回明確的說明，不假裝合成成功。
-    _vsNoEngineMessage(r) { return `「${r.name}」是一段錄音樣本（參考音檔）：本機內建的 Kokoro 引擎不能用參考音檔念字。請先匯出（/voice-export ${r.id}），在 ChatTTS、XTTS、F5-TTS 這類支援參考音檔的引擎使用；匯出的說明檔裡有各引擎的用法。`; }
+
+
+    // ───── 語音引擎抽象層 ─────
+    // 每個「聲音」都有 engine 欄位，由對應的「引擎」負責念：
+    //   kokoro（engine 'local' 英文、'local-zh' 國語）：本機 Kokoro-82M，內建聲音與「混合聲音」，英文與中文都不上傳
+    //   edge（engine 'api'）：Microsoft Edge 線上語音（經自己的 Cloudflare Worker），中文／粵語／日文／韓文…
+    //   clone（engine 'clone'）：零樣本聲音複製（MOSS-TTS-Nano，onnxruntime-web），用自己的錄音樣本念中文與英文
+    // 引擎介面：{ id, label, test(voice), gate（簡報同時合成的排隊類別）, synth(text, voice, onProgress, speed, opts) → Promise<{ok, audio_file_id,…}>, status()?, install(onProgress)?, remove()? }
+    // _synthesizeSpeech 依聲音的 engine 分派；簡報（media-presentation）的旁白、text_to_speech、/media-text-to-speech 都走同一個入口，所以新引擎的聲音哪裡都能用。
+    _ttsEngines() {
+        return [
+            { id: 'kokoro', label: 'Kokoro（本機，不上傳）', test: (v) => v.engine === 'local' || v.engine === 'local-zh', gate: 'local', synth: (t, v, p, s, o) => this._synthesizeSpeechLocal(t, v, p, s, o) },
+            { id: 'edge', label: 'Microsoft Edge 線上語音（經你的 Worker）', test: (v) => v.engine === 'api', gate: 'api', synth: (t, v, p, s) => this._synthesizeSpeechViaApi(t, v, p, s) },
+            { id: 'clone', label: '零樣本聲音複製（MOSS-TTS-Nano，本機）', test: (v) => v.engine === 'clone', gate: 'clone', synth: (t, v, p, s, o) => this._synthesizeSpeechClone(t, v, p, s, o), status: () => this._mossStatus(), install: (p) => this._mossInstall(p), remove: () => this._mossRemove() },
+        ];
+    }
+    _ttsEngineFor(voice) { return voice ? this._ttsEngines().find((e) => e.test(voice)) || null : null; }
+    _ttsFindVoice(id) { return TTS_VOICES.find((v) => v.id === id) || TTS_ZH_VOICES.find((v) => v.id === id) || TTS_API_VOICES.find((v) => v.id === id) || null; }
+    // 簡報同時合成的排隊類別（見 _deckTtsGate）：本機模型一次一段、線上一次四段、複製引擎一次一段（很吃記憶體）
+    _ttsGateOf(voiceId) { const v = voiceId ? this._ttsFindVoice(voiceId) : null; const e = v ? this._ttsEngineFor(v) : null; return e ? e.gate : null; }
+
+    // ───── 零樣本聲音複製引擎：模型的下載與管理 ─────
+    async _mossStatus() {
+        if (typeof caches === 'undefined') return { installed: false, supported: false, error: '這個環境沒有 Cache API，沒辦法保存模型', missing: MOSS_FILES.slice(), missingBytes: MOSS_TOTAL_BYTES, totalBytes: MOSS_TOTAL_BYTES };
+        const cache = await caches.open(MOSS_CACHE_NAME), missing = [];
+        for (const f of MOSS_FILES) { if (!(await cache.match(mossUrl(f)))) missing.push(f); }
+        this._mossReady = !missing.length;
+        return { installed: !missing.length, supported: true, missing, missingBytes: missing.reduce((a, f) => a + f[2], 0), totalBytes: MOSS_TOTAL_BYTES };
+    }
+    // 下載缺的檔案（逐檔、有進度；每個檔案下載完驗大小才存）。onProgress({ file, loaded, total, doneBytes, totalBytes, message })
+    async _mossInstall(onProgress) {
+        const st = await this._mossStatus(); if (!st.supported) return { ok: false, error: st.error };
+        if (st.installed) return { ok: true, already: true };
+        const cache = await caches.open(MOSS_CACHE_NAME); let done = MOSS_TOTAL_BYTES - st.missingBytes;
+        for (const f of st.missing) {
+            const url = mossUrl(f); let loaded = 0;
+            try {
+                const resp = await fetch(url); if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                const total = Number(resp.headers.get('content-length')) || f[2], chunks = [], reader = resp.body.getReader();
+                for (;;) { const { done: end, value } = await reader.read(); if (end) break; chunks.push(value); loaded += value.length; if (onProgress) onProgress({ file: f[1], loaded, total, doneBytes: done + loaded, totalBytes: MOSS_TOTAL_BYTES, message: `下載 ${f[1]}：${Math.round(loaded / Math.max(1, total) * 100)}%（總共 ${Math.round((done + loaded) / 1048576)}／${Math.round(MOSS_TOTAL_BYTES / 1048576)} MB）` }); }
+                const blob = new Blob(chunks); if (Math.abs(blob.size - f[2]) > 64) throw new Error(`大小不對（${blob.size}，應該是 ${f[2]}）`);
+                await cache.put(url, new Response(blob, { status: 200, headers: { 'content-type': 'application/octet-stream', 'content-length': String(blob.size) } }));
+                done += f[2];
+            } catch (err) { return { ok: false, error: `下載 ${f[1]} 失敗：${String((err && err.message) || err)}（已下載好的檔案會保留，再按一次安裝會接著下載）` }; }
+        }
+        this._mossReady = true; await this._mossLoadBuiltin().catch(() => {}); try { this._renderMossPanel(); } catch (_) { /* */ }
+        return { ok: true };
+    }
+    async _mossRemove() {
+        this._mossDispose(); try { await caches.delete(MOSS_CACHE_NAME); } catch (_) { /* */ }
+        this._mossReady = false; this.advancedSettings.mossBuiltinVoices = []; this._mossRegisterVoices(); try { this._saveAdvancedSettings(); this._renderTtsVoicePanel(); } catch (_) { /* */ }
+        return { ok: true };
+    }
+    // 要用到引擎但還沒安裝：說明大小與來源、問使用者同意再下載（對話裡的指令與設定頁的按鈕共用）
+    async _mossInstallInteractive(setStatus) {
+        const st = await this._mossStatus(); if (st.installed) return { ok: true };
+        if (!window.confirm(`要安裝「零樣本聲音複製引擎」（MOSS-TTS-Nano，OpenMOSS，Apache-2.0）嗎？\n\n要下載約 ${Math.round(st.missingBytes / 1048576)} MB，來源 huggingface.co，存在這台電腦的瀏覽器快取，之後離線可用（可以在語音設定移除）。\n用錄音樣本的聲音念中文與英文，全部在本機運算、不上傳。`)) return { ok: false, error: '已取消安裝' };
+        return this._mossInstall(setStatus ? (p) => setStatus(p.message) : null);
+    }
+    // 內建示範聲音：官方附的 18 個（中文、英文、日文…），聲碼在 manifest 裡；只列中文與英文的。安裝完才有
+    async _mossManifest() { if (typeof caches === 'undefined') return null; const cache = await caches.open(MOSS_CACHE_NAME), r = await cache.match(mossUrl(MOSS_FILES[1])); return r ? JSON.parse(await r.text()) : null; }
+    async _mossLoadBuiltin() {
+        const m = await this._mossManifest(); if (!m) return;
+        const list = (m.builtin_voices || []).map((b) => { const g = String(b.group || ''), lang = /chinese/i.test(g) ? 'zh' : /english/i.test(g) ? 'en' : null; return lang ? { id: 'moss_' + String(b.voice || '').toLowerCase().replace(/[^a-z0-9]/g, ''), name: String(b.voice) + '（' + String(b.display_name || '').replace(/^(CN|EN)\s*/, '') + '）', lang, gender: /female/i.test(g) ? 'f' : /male/i.test(g) ? 'm' : '', voice: b.voice } : null; }).filter(Boolean);
+        this.advancedSettings.mossBuiltinVoices = ttsNormalizeBuiltinClone(list); this._mossRegisterVoices(); try { this._saveAdvancedSettings(); this._renderTtsVoicePanel(); } catch (_) { /* */ }
+    }
+
+    // ───── 零樣本聲音複製引擎：背景 worker ─────
+    _mossRegisterVoices() { ttsRegisterCloneVoices(ttsNormalizeSampleIndex(this.advancedSettings && this.advancedSettings.voiceSamples), ttsNormalizeBuiltinClone(this.advancedSettings && this.advancedSettings.mossBuiltinVoices)); }
+    // 設定裡的樣本索引（同步註冊聲音用）跟 IndexedDB 對齊；有差就以 IndexedDB 為準
+    async _vsReconcile() {
+        let list; try { list = await this._vsList(); } catch (_) { return; }
+        const idx = list.map((s) => ({ id: s.id, name: s.name, lang: s.lang, durationSec: s.durationSec, source: s.source })), cur = ttsNormalizeSampleIndex(this.advancedSettings.voiceSamples);
+        if (JSON.stringify(idx) === JSON.stringify(cur)) return;
+        this.advancedSettings.voiceSamples = ttsNormalizeSampleIndex(idx); this._mossRegisterVoices();
+        for (const k of ['ttsDefaultVoice', 'ttsDefaultZhVoice']) { const id = this.advancedSettings[k]; if (/^vs_/.test(id) && !this.advancedSettings.voiceSamples.some((s) => s.id === id)) this.advancedSettings[k] = k === 'ttsDefaultVoice' ? TTS_DEFAULT_VOICE : TTS_DEFAULT_ZH_VOICE; }
+        try { this._saveAdvancedSettings(); this._renderTtsVoicePanel(); } catch (_) { /* */ }
+    }
+    async _mossEnsureWorker(onProgress) {
+        if (this._mossW && this._mossWReady) return this._mossW;
+        if (this._mossWInit) return this._mossWInit;
+        this._mossWInit = (async () => {
+            if (typeof Worker === 'undefined') throw new Error('這個環境不支援 Web Worker');
+            const st = await this._mossStatus(); if (!st.installed) throw new Error('零樣本聲音複製引擎還沒安裝');
+            if (onProgress) onProgress('準備引擎…');
+            const cache = await caches.open(MOSS_CACHE_NAME), files = {}, urls = [], text = {}; let tokBytes = null;
+            for (const f of MOSS_FILES) {
+                const r = await cache.match(mossUrl(f)), blob = await r.blob();
+                if (/\.json$/.test(f[1])) text[f[1]] = await blob.text(); else if (f[1] === 'tokenizer.model') tokBytes = await blob.arrayBuffer(); else { const u = URL.createObjectURL(blob); urls.push(u); files[f[1]] = u; }
+            }
+            const wurl = URL.createObjectURL(new Blob([FA_MOSS_WORKER_SRC], { type: 'application/javascript' })); urls.push(wurl);
+            const worker = new Worker(wurl, { type: 'module' }); worker._faJobs = new Map(); worker._faUrls = urls;
+            worker.onmessage = (e) => { const d = e.data || {}, job = worker._faJobs.get(d.jobId); if (!job) return; if (d.type === 'progress') { if (job.onProgress) job.onProgress(d); return; } worker._faJobs.delete(d.jobId); job.resolve(d); };
+            worker.onerror = (e) => { for (const j of worker._faJobs.values()) j.resolve({ ok: false, error: 'worker 錯誤：' + String(e && e.message || e) }); worker._faJobs.clear(); this._mossWReady = false; };
+            this._mossW = worker;
+            const threads = (typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated) ? Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1)) : 1;
+            const r = await this._mossCallOn(worker, 'init', { ortUrl: MOSS_ORT_URL, wasmBase: MOSS_WASM_BASE, threads, files, manifestText: text['browser_poc_manifest.json'], ttsMetaText: text['tts_browser_onnx_meta.json'], codecMetaText: text['codec_browser_onnx_meta.json'], tokenizerBytes: tokBytes }, onProgress);
+            if (!r.ok) { this._mossDispose(); throw new Error(r.error || '引擎載入失敗'); }
+            this._mossWReady = true; return worker;
+        })();
+        try { return await this._mossWInit; } finally { this._mossWInit = null; }
+    }
+    _mossCallOn(worker, type, payload, onProgress, transfer) {
+        const jobId = 'moss_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+        return new Promise((resolve) => { worker._faJobs.set(jobId, { resolve, onProgress }); try { worker.postMessage(Object.assign({ type, jobId }, payload), transfer || []); } catch (err) { worker._faJobs.delete(jobId); resolve({ ok: false, error: '傳送給引擎失敗：' + String(err.message || err) }); } });
+    }
+    async _mossCall(type, payload, onProgress, transfer) {
+        const w = await this._mossEnsureWorker(onProgress); this._mossTouch();
+        if (this.stopRequested && type === 'generate') return { ok: false, error: '已取消' };
+        return this._mossCallOn(w, type, payload, onProgress, transfer);
+    }
+    // 引擎很吃記憶體（模型載進去約 1～1.5GB）：閒置 5 分鐘就關掉 worker，下次用再載入（模型在快取裡，幾秒鐘）
+    _mossTouch() { clearTimeout(this._mossIdle); this._mossIdle = setTimeout(() => this._mossDispose(), 5 * 60 * 1000); }
+    _mossDispose() {
+        clearTimeout(this._mossIdle); const w = this._mossW; this._mossW = null; this._mossWReady = false;
+        if (w) { try { w.terminate(); } catch (_) { /* */ } (w._faUrls || []).forEach((u) => { try { URL.revokeObjectURL(u); } catch (_) { /* */ } }); for (const j of w._faJobs.values()) j.resolve({ ok: false, error: '引擎已關閉' }); w._faJobs.clear(); }
+    }
+    // 這個聲音的參考聲碼：我的錄音樣本——第一次用時編碼（編碼器約 44MB），結果存回 IndexedDB 之後直接用；內建聲音——manifest 裡預先編好的
+    async _mossVoiceCodes(voice, onProgress) {
+        const toFrames = (flat, n) => Array.from({ length: n }, (_, i) => flat.subarray(i * 16, (i + 1) * 16));
+        if (voice.sample) {
+            const rec = await this._vsGet(voice.id); if (!rec) throw new Error(`找不到聲音樣本「${voice.name}」的錄音（可能被刪掉了）`);
+            if (rec.codes && rec.codeFrames) return toFrames(rec.codes, rec.codeFrames);
+            const wr = FaVoiceRecording.parseWav(new Uint8Array(rec.wav)); if (!wr.ok) throw new Error('錄音檔讀不出來：' + wr.error);
+            const mono = FaVoiceRecording.toMono(wr.channels), r = await this._mossCall('encode', { mono, rate: wr.rate }, (p) => { if (onProgress && p.message) onProgress(p.message); });
+            if (!r.ok) throw new Error(r.error || '分析參考聲音失敗'); rec.codes = r.codes; rec.codeFrames = r.frames; await this._vsPut(rec).catch(() => {});
+            return toFrames(r.codes, r.frames);
+        }
+        const m = await this._mossManifest(), b = m && (m.builtin_voices || []).find((x) => x.voice === voice.builtinVoice); if (!b) throw new Error(`找不到內建聲音「${voice.name}」的資料`);
+        return b.prompt_audio_codes.map((c) => Int32Array.from(c));
+    }
+
+    // 零樣本複製引擎的合成：文字（中文先轉簡體）切段 → 每段交給 worker → 48kHz 轉成 24kHz、修掉前後靜音、段與段之間補停頓 → 跟其他引擎同一個打包（mp3／wav 存進檔案快取）
+    async _synthesizeSpeechClone(t, voice, onProgress, speed, opts) {
+        const st = await this._mossStatus();
+        if (!st.installed) return { ok: false, error: `聲音「${voice.name}」要用零樣本聲音複製引擎（MOSS-TTS-Nano，約 ${Math.round(MOSS_TOTAL_BYTES / 1048576)} MB，下載一次、之後離線可用）：請到「語音設定 → 零樣本聲音複製引擎」按「安裝」，或在對話輸入 /voice-install。` };
+        try {
+            const codes = await this._mossVoiceCodes(voice, onProgress); let text = String(t);
+            if (/[㐀-鿿]/.test(text)) { try { text = (await this._zhLoadLibs(onProgress)).toSimplified(text); } catch (_) { /* 轉不了就照原文 */ } } // 模型沒看過繁體字（會被拆成位元組、念不準）
+            // 中文為主的文字：阿拉伯數字先轉成中文念法（官方流程有文字正規化，這裡用應用程式本來就有的轉換）：2026年→二零二六年、23.5→二十三點五、12%→百分之十二、1,234→一千二百三十四、3:30→三點三十分；英文為主的文字模型自己會念，不動
+            { const cjk = (text.match(/[㐀-鿿]/g) || []).length; if (cjk > text.length * 0.3) text = FaZhTts.normalizeNumbers(text.replace(/(d),(?=d{3}(?!d))/g, '$1').replace(/(d{1,2}):(d{2})(?!d)/g, (m, h, mi) => h + '點' + (mi === '00' ? '整' : mi + '分'))); }
+            const pieces = FaMossTts.splitText(text, 220, 70); if (!pieces.length) return { ok: false, error: '沒有要念的文字' };
+            const parts = [], gap = Math.round(TTS_SAMPLE_RATE * ((opts && opts.sentencePause) ? 0.35 : 0.25)); let frames = 0, t0 = Date.now();
+            for (let i = 0; i < pieces.length; i++) {
+                const label = pieces.length > 1 ? `第 ${i + 1}/${pieces.length} 段：` : '';
+                const r = await this._mossCall('generate', { text: pieces[i], codes, seed: opts && opts.seed }, (p) => { if (onProgress && p.message) onProgress(label + p.message); });
+                if (!r.ok) return { ok: false, error: '語音合成失敗：' + r.error };
+                frames += r.frames; parts.push(this._trimEdgeSilence(FaMossTts.resample(r.audio, FaMossTts.OUT_RATE, TTS_SAMPLE_RATE))); if (i < pieces.length - 1) parts.push(new Float32Array(gap));
+            }
+            let total = 0; parts.forEach((p) => { total += p.length; }); const merged = new Float32Array(total); let o = 0; parts.forEach((p) => { merged.set(p, o); o += p.length; });
+            const res = await this._ttsPackageAudio(merged, total, voice);
+            if (res.ok) { res.engine = 'clone'; res.synthSeconds = Math.round((Date.now() - t0) / 100) / 10; if (Number(speed) && Math.abs(Number(speed) - 1) > 0.05) res.note = '複製聲音引擎目前不支援調整語速，用原本的速度念。'; }
+            return res;
+        } catch (err) { return { ok: false, error: '語音合成失敗：' + String((err && err.message) || err) }; }
+    }
+    // 沒指定聲音、又開著「優先使用我的聲音」：引擎裝好了就用最新的錄音樣本（中文、英文各自挑）；引擎沒裝就不用（不能在使用者沒同意下下載七百多 MB）
+    _ttsPreferredClone(lang) {
+        if (this.advancedSettings.ttsPreferCustomVoice === false || !this._mossReady) return null;
+        return (lang === 'zh' ? TTS_ZH_VOICES : TTS_VOICES).find((v) => v.clone && v.sample) || null;
+    }
+    // 設定頁「零樣本聲音複製引擎」區塊：狀態、安裝（有進度）、移除
+    async _renderMossPanel() {
+        const el = document.getElementById('ai-moss-panel'); if (!el) return;
+        const st = await this._mossStatus().catch(() => ({ installed: false, supported: false }));
+        const stat = document.getElementById('ai-moss-status'), ins = document.getElementById('ai-moss-install'), rem = document.getElementById('ai-moss-remove');
+        if (stat) stat.textContent = !st.supported ? '⚠️ ' + (st.error || '這個環境不能用') : st.installed ? `✅ 已安裝（${Math.round(MOSS_TOTAL_BYTES / 1048576)} MB）。錄音樣本與內建示範聲音可以用來念中文與英文。` : `尚未安裝（要下載約 ${Math.round(st.missingBytes / 1048576)} MB）。`;
+        if (ins) { ins.style.display = st.supported && !st.installed ? '' : 'none'; } if (rem) rem.style.display = st.installed ? '' : 'none';
+    }
+    async _mossPanelInstall() {
+        const bar = document.getElementById('ai-moss-progress'), stat = document.getElementById('ai-moss-status'), ins = document.getElementById('ai-moss-install');
+        const st = await this._mossStatus(); if (st.installed) { this._renderMossPanel(); return; }
+        if (!window.confirm(`要安裝「零樣本聲音複製引擎」（MOSS-TTS-Nano，OpenMOSS，Apache-2.0）嗎？\n\n要下載約 ${Math.round(st.missingBytes / 1048576)} MB，來源 huggingface.co，存在這台電腦的瀏覽器快取，之後離線可用（可以在這裡移除）。`)) return;
+        if (ins) ins.disabled = true; if (bar) { bar.style.display = ''; bar.value = 0; }
+        const r = await this._mossInstall((p) => { if (bar) bar.value = Math.round(p.doneBytes / p.totalBytes * 100); if (stat) stat.textContent = p.message; });
+        if (ins) ins.disabled = false; if (bar) bar.style.display = 'none';
+        if (!r.ok && stat) stat.textContent = '⚠️ ' + r.error; else this._renderMossPanel();
+    }
+    async _handleVoiceInstallCommand(argsText) {
+        const remove = /^(remove|uninstall|移除|刪除)/i.test(String(argsText || '').trim());
+        if (remove) { await this._mossRemove(); this._pushAssistantMessage('🗑 已移除零樣本聲音複製引擎的模型（錄音樣本還在，要用時再安裝）。', null); this._persistChatHistory(); this._renderMessageHistory(); return; }
+        const prog = this._createProgressWidget('安裝零樣本聲音複製引擎'); const r = await this._mossInstallInteractive((m) => prog.update({ status: m }));
+        if (!r.ok) { prog.fail(r.error); return; } prog.finish('完成');
+        this._pushAssistantMessage('✅ 零樣本聲音複製引擎已安裝。現在可以用自己的錄音樣本與內建示範聲音念中文與英文：`/media-text-to-speech 要念的文字 <語音代號>`（代號用 /media-list-voices 查），簡報旁白也可以選這些聲音。', null); this._persistChatHistory(); this._renderMessageHistory();
+    }
+    // 把合成好的 Float32（TTS_SAMPLE_RATE、單聲道）包成 mp3／wav 存進檔案快取，回傳跟 Kokoro 一樣的結果物件
+    async _ttsPackageAudio(merged, totalLen, voice) {
+        const wantMp3 = this.advancedSettings.extractAudioFormat !== 'wav'; // 沿用同一個「要不要壓縮」偏好
+        let blob, ext, mimeType;
+        if (wantMp3) {
+            try {
+                await this._ensureLamejsLoaded();
+                blob = await _faLamejsEncode([_faFloat32ToInt16(merged)], TTS_SAMPLE_RATE, 128);
+                ext = 'mp3'; mimeType = 'audio/mpeg';
+            } catch (err) {
+                this._log('⚠️ MP3編碼失敗，改用WAV：' + String(err && err.message || err));
+            }
+        }
+        if (!blob) {
+            const int16 = _faFloat32ToInt16(merged);
+            const buf = new ArrayBuffer(44 + int16.length * 2);
+            const dv = new DataView(buf);
+            const ws = (o, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
+            ws(0, 'RIFF'); dv.setUint32(4, 36 + int16.length * 2, true); ws(8, 'WAVE'); ws(12, 'fmt ');
+            dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+            dv.setUint32(24, TTS_SAMPLE_RATE, true); dv.setUint32(28, TTS_SAMPLE_RATE * 2, true);
+            dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+            ws(36, 'data'); dv.setUint32(40, int16.length * 2, true);
+            for (let i = 0; i < int16.length; i++) dv.setInt16(44 + i * 2, int16[i], true);
+            blob = new Blob([buf], { type: 'audio/wav' });
+            ext = 'wav'; mimeType = 'audio/wav';
+        }
+        const durationSeconds = totalLen / TTS_SAMPLE_RATE;
+        const name = `語音_${voice.id}_${Date.now()}.${ext}`;
+        let audioFileId;
+        try {
+            audioFileId = await this.fileCache.put(name, mimeType, blob, 'uploaded');
+        } catch (err) {
+            return { ok: false, error: '語音檔存檔失敗：' + String(err.message || err) };
+        }
+        return {
+            ok: true,
+            audio_file_id: audioFileId,
+            filename: name,
+            durationSeconds: Math.round(durationSeconds * 10) / 10,
+            voice: voice.id,
+            sizeBytes: blob.size,
+        };
+    }
 
     // ───── 我的聲音：視窗與設定頁清單 ─────
     // 設定頁「我的聲音」清單：每個自己的聲音一行（試聽／設為預設／匯出／刪除），重繪時由 _renderTtsVoicePanel 呼叫
@@ -59046,7 +59446,8 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
                 try {
                     const s = await this._vsSave({ name, lang: $('#vr-lang').value, transcript: $('#vr-text').value, mono: taken.mono, rate: taken.rate, source: 'recorded', force: true }); if (!s.ok) throw new Error(s.error);
                     $('#vr-status').innerHTML = `✅ 已儲存「${esc(s.rec.name)}」（語音樣本代號 <code>${esc(s.rec.id)}</code>，已加進語音設定的「我的聲音」清單與 /media-list-voices）`;
-                    $('#vr-result').innerHTML = '<button type="button" id="vr-export" class="ai-advanced-btn">匯出（.wav ＋ .voice-sample.json）</button>';
+                    $('#vr-result').innerHTML = '<button type="button" id="vr-speak" class="ai-advanced-btn">🔊 用這個聲音念一句</button>　<button type="button" id="vr-export" class="ai-advanced-btn">匯出（.wav ＋ .voice-sample.json）</button><div id="vr-speak-player" style="margin-top:6px;"></div>';
+                    $('#vr-speak').onclick = async () => { const b = $('#vr-speak'), st = $('#vr-status'); b.disabled = true; try { const inst = await this._mossInstallInteractive((m) => { st.textContent = m; }); if (!inst.ok) throw new Error(inst.error); st.textContent = '合成中…'; const x = await this._ttsSampleBlob(s.rec.id, (m) => { st.textContent = String(m); }); if (!x.ok) throw new Error(x.error); st.textContent = ''; $('#vr-speak-player').innerHTML = ''; this._mountAudioPlayer($('#vr-speak-player'), x.blob); } catch (err) { st.textContent = '⚠️ ' + String((err && err.message) || err); } finally { b.disabled = false; } };
                     $('#vr-export').onclick = async () => { const e = await this._vsExport(s.rec.id); if (!e.ok) window.alert(e.error); };
                 } catch (err) { $('#vr-status').textContent = '⚠️ ' + String((err && err.message) || err); $('#vr-save').disabled = false; }
             };
@@ -59117,16 +59518,26 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const el = document.getElementById('ai-tts-sample-list'); if (!el) return;
         const esc = (s) => this._escapeHtml(String(s == null ? '' : s)); let list = []; try { list = await this._vsList(); } catch (err) { el.innerHTML = `<span class="ai-advanced-hint" style="color:#c0392b;">讀不到聲音樣本：${esc(String((err && err.message) || err))}</span>`; return; }
         if (!list.length) { el.innerHTML = ''; return; }
-        el.innerHTML = '<div class="ai-advanced-hint" style="margin:6px 0 2px;">我的錄音樣本（參考音檔；本機的 Kokoro 不能用它念字，要匯出給 ChatTTS、XTTS、F5-TTS 這類引擎）</div>' + list.map((s) =>
+        el.innerHTML = '<div class="ai-advanced-hint" style="margin:6px 0 2px;">我的錄音樣本（用零樣本聲音複製引擎念中文與英文；也可以匯出給 ChatTTS、XTTS、F5-TTS 這類引擎）</div>' + list.map((s) =>
             `<div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; padding:4px 0; border-top:1px solid rgba(128,128,128,.25);">`
             + `<span style="flex:1 1 200px; min-width:0;">${s.source === 'imported' ? '📥' : '🎤'} <b>${esc(s.name)}</b>　<code>${esc(s.id)}</code>　${s.lang === 'zh' ? '中文' : '英文'}／${esc(s.durationSec)} 秒</span>`
-            + `<button type="button" class="ai-advanced-btn" data-vs-act="play" data-id="${esc(s.id)}" style="padding:1px 8px;">▶ 播放</button>`
+            + `<button type="button" class="ai-advanced-btn" data-vs-act="play" data-id="${esc(s.id)}" style="padding:1px 8px;">▶ 原始錄音</button>`
+            + `<button type="button" class="ai-advanced-btn" data-vs-act="speak" data-id="${esc(s.id)}" style="padding:1px 8px;">🔊 用這個聲音念一句</button>`
+            + `<button type="button" class="ai-advanced-btn" data-vs-act="default" data-id="${esc(s.id)}" style="padding:1px 8px;">設為預設</button>`
             + `<button type="button" class="ai-advanced-btn" data-vs-act="export" data-id="${esc(s.id)}" style="padding:1px 8px;">匯出</button>`
             + `<button type="button" class="ai-advanced-btn danger" data-vs-act="delete" data-id="${esc(s.id)}" style="padding:1px 8px;">刪除</button></div>`).join('') + '<div id="ai-tts-sample-player-slot"></div>';
     }
     async _vsListAction(act, id, btn) {
         if (act === 'delete') { const r = await this._vsGet(id); if (!r) return; if (!window.confirm(`刪除錄音樣本「${r.name}」（${id}）？這是你錄的原始聲音，刪除後無法復原（建議先匯出備份）。`)) return; const d = await this._vsDeleteSample(id); if (!d.ok) window.alert(d.error); return; }
         if (act === 'export') { btn.disabled = true; const r = await this._vsExport(id); btn.disabled = false; if (!r.ok) window.alert(r.error); return; }
+        if (act === 'default') { const r = await this._vsGet(id); if (!r) return; this.advancedSettings[r.lang === 'zh' ? 'ttsDefaultZhVoice' : 'ttsDefaultVoice'] = id; this._saveAdvancedSettings(); this._renderTtsVoicePanel(); return; }
+        if (act === 'speak') {
+            const slot = document.getElementById('ai-tts-sample-player-slot'), label = btn.textContent; btn.disabled = true;
+            try { const inst = await this._mossInstallInteractive((m) => { btn.textContent = m.slice(0, 40); }); if (!inst.ok) throw new Error(inst.error); btn.textContent = '合成中…'; const s = await this._ttsSampleBlob(id, (m) => { btn.textContent = String(m).slice(0, 40); }); if (!s.ok) throw new Error(s.error); if (slot) { slot.innerHTML = ''; this._mountAudioPlayer(slot, s.blob); } }
+            catch (err) { if (slot) slot.innerHTML = `<span class="ai-advanced-hint" style="color:#c0392b;">合成失敗：${this._escapeHtml(String((err && err.message) || err))}</span>`; }
+            finally { btn.disabled = false; btn.textContent = label; }
+            return;
+        }
         if (act === 'play') { const blob = await this._vsBlob(id); const slot = document.getElementById('ai-tts-sample-player-slot'); if (blob && slot) { slot.innerHTML = ''; this._mountAudioPlayer(slot, blob); } }
     }
     // 匯入音檔分支（wav、mp3、m4a、ogg、webm、mp4、flac）：名字、語言、念的文字由使用者填；品質檢查沒過會先問
@@ -85419,7 +85830,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         let voiceId = '';
         let text = raw;
         const allVoices = TTS_VOICES.concat(TTS_ZH_VOICES, TTS_API_VOICES);
-        if (tokens.length > 1 && (allVoices.some(v => v.id === tokens[tokens.length - 1]) || /^vs_[a-z0-9]+$/.test(tokens[tokens.length - 1]))) {
+        if (tokens.length > 1 && allVoices.some(v => v.id === tokens[tokens.length - 1])) {
             voiceId = tokens.pop();
             text = tokens.join(' ');
         }
@@ -85455,11 +85866,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             return `### ${title}${note ? `　${note}` : ''}\n\n${body}`;
         };
         const apiNote = this.advancedSettings.ttsApiEnabled ? '（已啟用）' : '（⚠️尚未啟用，見設定「子Agent」分頁）';
-        const mine = TTS_VOICES.concat(TTS_ZH_VOICES).filter((v) => v.custom);
-        const vsl = await this._vsList().catch(() => []);
-        const vsSec = vsl.length ? '### 我的錄音樣本　（參考音檔：本機 Kokoro 不能用它念字，要匯出給 ChatTTS、XTTS、F5-TTS 這類引擎；/voice-export <代號>）\n\n' + vsl.map((v) => `- \`${v.id}\`　🎤 ${v.name}（${v.lang === 'zh' ? '中文' : '英文'}、${v.durationSec} 秒）`).join('\n') + '\n\n' : '';
-        const msg = vsSec + (mine.length ? section('我的聲音（匯入／建立，優先使用）', mine, '（/voice-create、/voice-import；匯出用 /voice-export <代號>）') + '\n\n' : '')
-            + section('本地語音（純瀏覽器、不上傳，英文）', TTS_VOICES.filter((v) => !v.custom)) + '\n\n' + section('本地中文語音（Kokoro 國語，不上傳）', TTS_ZH_VOICES.filter((v) => !v.custom))
+        const mine = TTS_VOICES.concat(TTS_ZH_VOICES).filter((v) => v.custom || v.clone);
+        const msg = (mine.length ? section('我的聲音（錄音樣本、混合聲音、複製引擎內建聲音；優先使用）', mine, '（/voice-create、/voice-import；匯出 /voice-export <代號>；複製引擎要先 /voice-install）') + '\n\n' : '')
+            + section('本地語音（純瀏覽器、不上傳，英文）', TTS_VOICES.filter((v) => !v.custom && !v.clone)) + '\n\n' + section('本地中文語音（Kokoro 國語，不上傳）', TTS_ZH_VOICES.filter((v) => !v.custom && !v.clone))
             + '\n\n' + section('API語音（中文／粵語／日文／韓文…，需要啟用）', TTS_API_VOICES, apiNote);
         this._pushAssistantMessage(`**可用語音代號**（共 ${TTS_VOICES.length + TTS_ZH_VOICES.length + TTS_API_VOICES.length} 個）\n\n${msg}`, null);
         this._persistChatHistory();
@@ -90064,7 +90473,13 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                     </div>
                                     <div id="ai-tts-voice-list" class="ai-advanced-hint" style="margin-top:6px; display:flex; flex-direction:column; gap:4px;"></div>
                                 </div>
-                                <div class="ai-advanced-stack">
+                                <div class="ai-advanced-stack" id="ai-moss-panel">
+                                    <label class="ai-advanced-label">零樣本聲音複製引擎（用自己的錄音念中文與英文）</label>
+                                    <p class="ai-advanced-hint">用「我的錄音樣本」的聲音念字：模型是 MOSS-TTS-Nano（OpenMOSS，Apache-2.0，約 0.1B 參數），支援中文與英文，只要一段參考錄音、不用逐字稿。要下載約 727 MB（來源 huggingface.co，存在瀏覽器快取、之後離線可用），在這台電腦上運算、不上傳；念一段話大約是聲音長度的 1.5 到 3 倍時間（簡報旁白合成後會快取）。裝好後，錄音樣本與官方內建的示範聲音會出現在所有語音下拉選單、/media-list-voices 與簡報旁白的聲音清單。</p>
+                                    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;"><span id="ai-moss-status" class="ai-advanced-hint" style="margin:0;"></span><button type="button" id="ai-moss-install" class="ai-advanced-btn">安裝引擎</button><button type="button" id="ai-moss-remove" class="ai-advanced-btn danger" style="display:none;">移除</button></div>
+                                    <progress id="ai-moss-progress" max="100" value="0" style="width:100%; display:none; margin-top:6px;"></progress>
+                                </div>
+                                                                <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label">我的聲音（聲音樣本）—— 中文與英文</label>
                                     <p class="ai-advanced-hint">用麥克風錄自己的聲音當聲音樣本（建立聲音樣本）、或匯入音檔（wav、mp3、m4a…）；樣本可以匯出成 24kHz 單聲道 WAV，給 ChatTTS、XTTS、F5-TTS 這類吃參考音檔的引擎用。也可以混合現有聲音做出新的 Kokoro 聲音，或匯入 Kokoro 語音包（.bin、.voice.json）。做好的聲音會排在所有語音下拉選單的最前面，也能在 /media-list-voices 看到、用語音代號給 /media-text-to-speech 與 text_to_speech 用。可以匯出給別人（.bin 是 Kokoro 語音包，Kokoro 系的工具直接能用；ChatTTS 的說話人向量是另一種格式，不能互通）。指令：/voice-create、/voice-import、/voice-export、/voice-delete。</p>
                                     <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:6px;">
@@ -93503,6 +93918,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             });
         }
         // tw_stock_db客製: 2026-09-12——語音合成（text_to_speech）設定區塊。
+        { const mi = document.getElementById('ai-moss-install'); if (mi) mi.addEventListener('click', () => this._mossPanelInstall()); const mr = document.getElementById('ai-moss-remove'); if (mr) mr.addEventListener('click', async () => { if (window.confirm('移除零樣本聲音複製引擎的模型？（錄音樣本還在，要用時再安裝）')) { await this._mossRemove(); this._renderMossPanel(); } }); }
         { const cb = document.getElementById('ai-tts-voice-create-btn'); if (cb) cb.addEventListener('click', () => this._voiceCreateDialog()); const ib = document.getElementById('ai-tts-voice-import-btn'); if (ib) ib.addEventListener('click', () => this._voiceImportDialog()); const pc = document.getElementById('ai-tts-prefer-custom-chk'); if (pc) pc.addEventListener('change', () => { this.advancedSettings.ttsPreferCustomVoice = pc.checked; this._saveAdvancedSettings(); }); const sl = document.getElementById('ai-tts-sample-list'); if (sl) sl.addEventListener('click', (e) => { const b = e.target.closest && e.target.closest('[data-vs-act]'); if (b) this._vsListAction(b.getAttribute('data-vs-act'), b.getAttribute('data-id'), b); }); const cl = document.getElementById('ai-tts-custom-list'); if (cl) cl.addEventListener('click', (e) => { const b = e.target.closest && e.target.closest('[data-tts-custom-act]'); if (b) this._ttsCustomListAction(b.getAttribute('data-tts-custom-act'), b.getAttribute('data-id'), b); }); }
         const ttsDefaultVoiceSelect = document.getElementById('ai-tts-default-voice');
         if (ttsDefaultVoiceSelect) {

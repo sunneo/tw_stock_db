@@ -76,6 +76,18 @@ function fake(overrides) {
     const list = M._deckVoiceList.call(fake());
     check('voice list: offline English + offline Chinese + online Chinese (when enabled)', list.length === 4 && list.some((v) => /離線英文/.test(v.label)) && list.some((v) => /離線中文/.test(v.label)) && list.some((v) => /線上中文/.test(v.label)), list);
     check('voice list: online Chinese is hidden when the service is not enabled', M._deckVoiceList.call(fake({ advancedSettings: { ttsApiEnabled: false } })).length === 3);
+    // 複製引擎的聲音（我的錄音樣本、官方內建示範聲音）：自己的排隊類別、中英文都能念所以不翻譯、聲音清單標得出來
+    global.TTS_VOICES.push({ id: 'vs_abc', name: '我的聲音', lang: '我的錄音樣本（英文）', gender: '', engine: 'clone', clone: true, sample: true });
+    global.TTS_ZH_VOICES.push({ id: 'moss_junhao', name: 'Junhao', lang: '複製引擎內建聲音（中文）', gender: '男', engine: 'clone', clone: true, sample: false });
+    const cl = fake({ _ttsGateOf: (v) => (v === 'vs_abc' ? 'clone' : null), _ttsFindVoice: (id) => global.TTS_VOICES.concat(global.TTS_ZH_VOICES).find((x) => x.id === id) || null });
+    await M._deckSynthesize.call(cl, 'Hello there', 'vs_abc', 1, 'en');
+    check('clone voice: has its own gate class (one at a time, it is heavy)', cl.order.join() === 'gate:clone,synth:vs_abc,release:clone', cl.order);
+    check('clone voice: other voices keep their own gate classes', await (async () => { const o = fake({ _ttsGateOf: () => null }); await M._deckSynthesize.call(o, 'Hi', 'af_heart', 1, 'en'); return o.order[0] === 'gate:local'; })());
+    const pr = await M._deckPrepareSpeech.call(cl, '這是中文旁白 with English', 'vs_abc', 'en');
+    check('clone voice: a Chinese narration is not translated to English or moved to a Chinese voice (it reads both languages)', pr.text === '這是中文旁白 with English' && pr.voice === 'vs_abc', pr);
+    const lst = M._deckVoiceList.call(cl);
+    check('voice list: recorded samples and built-in clone voices are labelled', lst.some((v) => v.id === 'vs_abc' && /我的錄音樣本/.test(v.label)) && lst.some((v) => v.id === 'moss_junhao' && /複製引擎內建/.test(v.label) && /男/.test(v.label)), lst.map((v) => v.label));
+    check('no gate helper on the host (old hosts): falls back to the api/local classes', await (async () => { const o = fake({ _ttsGateOf: undefined }); await M._deckSynthesize.call(o, 'Hi', 'af_heart', 1, 'en'); return o.order[0] === 'gate:local'; })());
     console.log((bad.length ? 'FAIL' : 'PASS') + ' 簡報字幕與配音備援：' + ok + ' passed, ' + bad.length + ' failed', bad);
     process.exit(bad.length ? 1 : 0);
 })();

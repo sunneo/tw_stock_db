@@ -201,7 +201,7 @@ const FaDeckHost = (function () {
         // 旁白：文字 → mp3 的位元組（用助理既有的語音合成：英文走本機 Kokoro，中文走設定好的語音轉接）
         // 同時做幾段旁白：語音服務的聲音（中文）可以一次做 4 段；本機模型（英文）一次一段（一次只能跑一個推論）
         _deckTtsGate(kind) {
-            this._deckTtsQ = this._deckTtsQ || { api: { n: 0, max: 4, wait: [] }, local: { n: 0, max: 1, wait: [] } };
+            this._deckTtsQ = this._deckTtsQ || { api: { n: 0, max: 4, wait: [] }, local: { n: 0, max: 1, wait: [] }, clone: { n: 0, max: 1, wait: [] } };
             const g = this._deckTtsQ[kind];
             return new Promise((resolve) => {
                 const go = () => { g.n++; resolve(() => { g.n--; const nx = g.wait.shift(); if (nx) nx(); }); };
@@ -215,6 +215,7 @@ const FaDeckHost = (function () {
         async _deckPrepareSpeech(text, voice, lang) {
             const s = String(text || ''), CJK = /[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/;
             if (!CJK.test(s)) return { text: s, voice };
+            if (voice && this._ttsFindVoice && (this._ttsFindVoice(voice) || {}).clone) return { text: s, voice }; // 複製引擎的聲音中英文都能念：不用翻成英文、也不用改成中文聲音
             const local = typeof TTS_VOICES !== 'undefined' ? TTS_VOICES : [], api = typeof TTS_API_VOICES !== 'undefined' ? TTS_API_VOICES : [];
             const isLocal = !!voice && local.some((v) => v.id === voice), isApi = !!voice && api.some((v) => v.id === voice);
             const zh = () => { const d = (this.advancedSettings && this.advancedSettings.ttsDefaultApiVoice) || ''; const v = api.find((x) => x.id === d) || api[0]; return v ? v.id : null; };
@@ -244,7 +245,7 @@ const FaDeckHost = (function () {
         async _deckSynthesize(text, voice, speed, lang) {
             const isApiVoice = (v) => (v ? (typeof TTS_API_VOICES !== 'undefined' && TTS_API_VOICES.some((x) => x.id === v)) : this._looksLikeCjkText(String(text)));
             const attempt = async (v) => {
-                const release = await this._deckTtsGate(isApiVoice(v) ? 'api' : 'local');
+                const release = await this._deckTtsGate((this._ttsGateOf && this._ttsGateOf(v)) || (isApiVoice(v) ? 'api' : 'local'));
                 let timer; try { return await Promise.race([this._deckSynthesizeNow(text, v, speed, lang), new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('語音合成 240 秒內沒有回應')), 240000); })]); } finally { clearTimeout(timer); release(); }
             };
             try { return await attempt(voice); }
@@ -273,7 +274,7 @@ const FaDeckHost = (function () {
         },
         // 播放器 🎙 面板的聲音清單：本地英文、本地中文、線上中文（有啟用才列）
         _deckVoiceList() {
-            const out = []; const add = (list, tag) => (list || []).forEach((v) => out.push({ id: v.id, label: v.name + '（' + tag + (v.gender ? '，' + v.gender : '') + '）' }));
+            const out = []; const add = (list, tag) => (list || []).forEach((v) => out.push({ id: v.id, label: v.name + '（' + (v.clone ? (v.sample ? '我的錄音樣本' : '複製引擎內建') : tag) + (v.gender ? '，' + v.gender : '') + '）' }));
             try { add(typeof TTS_VOICES !== 'undefined' ? TTS_VOICES : [], '離線英文'); add(typeof TTS_ZH_VOICES !== 'undefined' ? TTS_ZH_VOICES : [], '離線中文'); if (this.advancedSettings && this.advancedSettings.ttsApiEnabled) add(typeof TTS_API_VOICES !== 'undefined' ? TTS_API_VOICES : [], '線上中文'); } catch (_) { /* 清單拿不到就不列 */ }
             return out;
         },

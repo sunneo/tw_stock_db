@@ -33,6 +33,7 @@ MIT 只涵蓋**這個專案自己的原始碼與文件**。以下元件不是由
 | wasi-sh、busybox（wasm 版） | 終端機的 shell 與指令 | wasi-sh 為 ISC；busybox 為 GPL-2.0 |
 | yt-dlp | YouTube 下載 | Unlicense |
 | kokoro-js、Kokoro-82M 模型 | 本機英文語音 | Apache-2.0 |
+| MOSS-TTS-Nano（OpenMOSS-Team/MOSS-TTS-Nano-100M-ONNX）、MOSS-Audio-Tokenizer-Nano（OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano-ONNX） | 零樣本聲音複製（用自己的錄音念中文與英文）；使用者同意後才從 huggingface.co 下載（約 728 MB），不隨安裝包散布 | Apache-2.0 |
 | transformers.js、Florence-2／SmolVLM／LLaVA 等離線模型 | 離線圖像與文字模型 | transformers.js 為 Apache-2.0；各模型授權不同，下載前請看模型頁面 |
 | Whisper 模型 | 語音轉文字 | MIT |
 

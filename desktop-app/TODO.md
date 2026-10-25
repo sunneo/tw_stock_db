@@ -14,4 +14,3 @@
 | /edit-game-2d、/edit-game-3d（遊戲編輯器） | [DESIGN.edit-game.md](DESIGN.edit-game.md) | 已實作（2026-10-25）；AI 逐檔移植的目標碼沒在這裡編譯過、舊機種只做適配檢查，見文件的「實作狀態」 |
 | /edit-media-presentation（簡報播放器旁邊的 AI 對話框，每一頁都能插入內容、代理人上網找圖與資料） | [DESIGN.edit-media-presentation.md](DESIGN.edit-media-presentation.md) | 已實作（2026-10-25）；代理人那條路用假的子代理驗證過，真的連模型與網路的端到端沒測 |
 | `/edit-picture` 的擴散細化層（只重畫一小塊、羽化蓋回、啟用項） | [DESIGN.TODO.edit-picture-diffusion.md](DESIGN.TODO.edit-picture-diffusion.md) | 只有規劃（§5 要先做最小實測） |
-| 錄音聲音樣本：選了錄音樣本，應用程式直接用自己的聲音念（需要支援參考音檔的引擎） | [DESIGN.TODO.voice-sample-engine.md](DESIGN.TODO.voice-sample-engine.md) | 錄音、匯入、匯出已完成；引擎與樣本怎麼送過去還沒決定 |
