@@ -11,11 +11,11 @@
 //   set_title set_background set_camera add_object update_object remove_object rename_object move_object set_visible set_locked duplicate_object clear_objects place_object transform_object
 //   group_objects ungroup set_parent set_material add_skin update_skin remove_skin clear_skins set_skins drop_to_ground align_objects;宿主執行的:find_picture generate_image
 // 輸出:toScene(spec) 展平成 render_3d_scene 可以直接播放的場景(群組攤開、貼皮變成貼在面上的薄平面、整面貼圖烘成材質),toYaml 給「原始碼」分頁(多了 id/name/parent/group/hidden/locked/skins),fromYaml 兩種都讀得進來。
-(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaEdit3d = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(require('./mesh_gen.js')); else root.FaEdit3d = factory(root.FaMeshGen || (typeof FaMeshGen !== 'undefined' ? FaMeshGen : null)); })(typeof self !== 'undefined' ? self : this, function (MG) {
   'use strict';
   var PI = Math.PI, LIM = { objects: 400, name: 60, title: 80, coord: 10000, skins: 24, extra: 3000000 };
   var MESHES = { box: '方塊', sphere: '球', cylinder: '圓柱', cone: '圓錐', plane: '平面', torus: '圓環', polygon: '自訂形狀', particles: '粒子', line: '線' };
-  var OPS = ['set_title', 'set_background', 'set_camera', 'add_object', 'update_object', 'remove_object', 'rename_object', 'move_object', 'set_visible', 'set_locked', 'duplicate_object', 'clear_objects', 'place_object', 'transform_object', 'group_objects', 'ungroup', 'set_parent', 'set_material', 'add_skin', 'update_skin', 'remove_skin', 'clear_skins', 'set_skins', 'drop_to_ground', 'align_objects'];
+  var OPS = ['set_title', 'set_background', 'set_camera', 'add_model', 'add_object', 'update_object', 'remove_object', 'rename_object', 'move_object', 'set_visible', 'set_locked', 'duplicate_object', 'clear_objects', 'place_object', 'transform_object', 'group_objects', 'ungroup', 'set_parent', 'set_material', 'add_skin', 'update_skin', 'remove_skin', 'clear_skins', 'set_skins', 'drop_to_ground', 'align_objects'];
   var HOST_OPS = ['find_picture', 'generate_image'];
   function str(v, max) { return String(v == null ? '' : v).replace(/\u0000/g, '').slice(0, max || 200); }
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
@@ -225,6 +225,12 @@
       if (e.zoom != null) { var k = num(e.zoom, 0.05, 20, 1), dv = vsub(cam.position, cam.look_at); cam.position = vadd(cam.look_at, vmul(dv, 1 / k)); cam.position = [r3(cam.position[0]), r3(cam.position[1]), r3(cam.position[2])]; }
       s.camera = cameraOf(cam, s.camera); return {};
     },
+    // 內建模型庫的東西：{op:'add_model', model:'teapot', name?, height?, color?, place?}（沒有這個模型就回錯誤，說明有哪些）
+    add_model: function (s, e, env, st) {
+      var id = String(e.model || e.name || '').toLowerCase(), hit = (MG && (MG.info(id) || MG.find(id))) || null; if (!hit) { return { error: '沒有內建模型「' + str(id, 20) + '」（有：' + (MG ? MG.CATALOG.map(function (c) { return c.id + '=' + c.label; }).join('、') : '無') + '）；改用基本圖元組合，或 mesh:"polygon" 自己給 vertices／faces' }; }
+      var obj = modelObject(hit.id, { name: e.name && e.name !== e.model ? str(e.name, 40) : '', color: e.color || (e.material && e.material.color), height: e.height }); if (!obj) { return { error: '產生不出模型' }; }
+      return OPFN.add_object(s, { op: 'add_object', object: obj, place: e.place, parent: e.parent }, env, st);
+    },
     add_object: function (s, e, env, st) {
       if (s.objects.length >= LIM.objects) { return { error: '物件太多了' }; } var raw = e.object && typeof e.object === 'object' ? clone(e.object) : null; if (!raw) { return { error: 'add_object 要有 object' }; }
       if (e.parent != null && !raw.parent) { raw.parent = e.parent; } if (raw.parent) { var pi = find(s, raw.parent); raw.parent = pi >= 0 && s.objects[pi].type === 'group' ? s.objects[pi].id : null; }
@@ -335,6 +341,7 @@
     if (!e) { return ''; } var id = e.id ? (' ' + str(e.id, 30)) : '';
     switch (e.op) {
       case 'set_title': return '標題改成「' + str(e.text, 40) + '」'; case 'set_background': return '背景 ' + str(e.color || e.background, 20); case 'set_camera': return '調整視角';
+      case 'add_model': { var mi = MG && (MG.info(String(e.model || '').toLowerCase()) || MG.find(String(e.model || ''))); return '新增模型「' + (e.name || (mi && mi.label) || str(e.model, 20)) + '」' + (e.place ? '（' + placeWords(e.place) + '）' : ''); }
       case 'add_object': { var o = e.object || {}; return '新增' + (o.name ? ' ' + str(o.name, 30) : (o.type === 'light' ? '燈光' : o.type === 'group' ? '群組' : (MESHES[o.mesh] || '物件'))) + (e.place ? '（' + placeWords(e.place) + '）' : ''); }
       case 'update_object': return '修改物件' + id; case 'remove_object': return '刪掉物件' + id; case 'rename_object': return str(e.id, 30) + ' 改名為 ' + str(e.name, 30);
       case 'move_object': return '調整' + id + ' 的順序'; case 'set_visible': return (e.visible === false ? '隱藏' : '顯示') + id; case 'set_locked': return (e.locked ? '鎖定' : '解鎖') + id; case 'duplicate_object': return '複製' + id;
@@ -371,7 +378,18 @@
     var d = /(\d+(?:\.\d+)?)\s*(?:公尺|米|格|單位|m\b)/.exec(t); if (d) { p.dist = Number(d[1]); }
     return p.of || p.rel ? p : null;
   }
+  // 沒有內建圖元的東西（茶壺、花瓶、杯子…）：程式產生一個「自訂形狀」物件（mesh:'polygon'，extra:{vertices,faces}），跟匯入 OBJ 是同一種東西
+  function modelObject(id, opt) {
+    opt = opt || {}; var m = MG && MG.build(id, { height: opt.height }); if (!m) { return null; }
+    return { type: 'mesh', mesh: 'polygon', name: opt.name || m.label, material: { color: opt.color || m.color, roughness: m.roughness, metalness: m.metalness }, extra: { vertices: m.vertices, faces: m.faces, uvs: m.uvs, generated: m.id } };
+  }
   function parseObjectPhrase(spec, t) {
+    var mdl = MG && MG.find(t);
+    if (mdl) {
+      var colM = colorIn(t.replace(/(顏色|色的|色)/, '')), cntM = 1, cmM = /(\d+|[一二兩三四五六七八九十])\s*(?:個|顆|塊|張|座|隻|把|只|組)/.exec(t); if (cmM) { cntM = Math.max(1, Math.min(10, nnum(cmM[1]) || 1)); }
+      var hM = /(?:高度?|height)\s*(\d+(?:\.\d+)?)/i.exec(t), bigM = /(超大|巨大|特大)/.test(t) ? 3 : /(很大|大型|大的|大)/.test(t.replace(/大小/g, '')) ? 2 : /(迷你)/.test(t) ? 0.35 : /(很小|小型|小的|小)/.test(t) ? 0.5 : 1;
+      return { object: modelObject(mdl.id, { color: colM, height: hM ? Number(hM[1]) : mdl.height * bigM }), count: cntM, shape: 'model:' + mdl.id };
+    }
     var shape = null; SHAPE_WORDS.forEach(function (s) { if (!shape && s[1].test(t)) { shape = s[0]; } }); if (!shape) { return null; }
     var col = colorIn(t.replace(/(顏色|色的|色)/, '')), cnt = 1, cm = /(\d+|[一二兩三四五六七八九十])\s*(?:個|顆|塊|張|座|盞|根|片|只|組)/.exec(t); if (cm) { cnt = Math.max(1, Math.min(10, nnum(cm[1]) || 1)); }
     var kind = shape.split(':'), o = kind[0] === 'mesh' ? { type: 'mesh', mesh: kind[1] } : kind[0] === 'light' ? { type: 'light', light: 'point' } : { type: 'group' }; if (o.type === 'group') { return null; }
@@ -402,7 +420,7 @@
       else if ((m = /^(?:把)?\s*(.+?)\s*(?:綁成|組成|做成|變成)\s*(?:一個)?\s*(?:群組|一組)$/.exec(c))) { var names = m[1].split(/[和與跟、及]/).map(function (x) { return objectIn(s, x.trim()); }).filter(Boolean); if (names.length) { e = [{ op: 'group_objects', ids: names.map(function (o) { return o.id; }) }]; } }
       else {
         // creating: "在我的左前方放一個紅色的球"  /  "放一個藍色方塊在桌子上面"  /  "加一個球"
-        var cm1 = /^(?:在|於|到)\s*(.+?)\s*(?:放|擺|加|新增|做|畫|建立|生成|放置|加上|加入|弄|擺放)\s*(?:上|入)?\s*(.+)$/.exec(c), cm2 = /^(?:放|擺|加|新增|做|畫|建立|生成|放置|加上|加入|弄|擺放)\s*(?:上|入)?\s*(.+?)\s*(?:在|於|到|放在|放到)\s*(.+)$/.exec(c), cm3 = /^(?:放|擺|加|新增|做|畫|建立|生成|放置|加上|加入|弄|擺放)\s*(?:上|入)?\s*(.+)$/.exec(c), objText = null, placeText = null;
+        var cm1 = /^(?:在|於|到)\s*(.+?)\s*(?:放|擺|加|新增|做|畫|建立|生成|產生|產出|製作|創造|變出|生出|放置|加上|加入|弄|擺放|來一個|給我一個)\s*(?:上|入)?\s*(.+)$/.exec(c), cm2 = /^(?:放|擺|加|新增|做|畫|建立|生成|產生|產出|製作|創造|變出|生出|放置|加上|加入|弄|擺放|來一個|給我一個)\s*(?:上|入)?\s*(.+?)\s*(?:在|於|到|放在|放到)\s*(.+)$/.exec(c), cm3 = /^(?:放|擺|加|新增|做|畫|建立|生成|產生|產出|製作|創造|變出|生出|放置|加上|加入|弄|擺放|來一個|給我一個)\s*(?:上|入)?\s*(.+)$/.exec(c), objText = null, placeText = null;
         if (cm1) { placeText = cm1[1]; objText = cm1[2]; } else if (cm2) { objText = cm2[1]; placeText = cm2[2]; } else if (cm3) { objText = cm3[1]; }
         if (objText) { var op = parseObjectPhrase(s, objText); if (op) { var place = placeText ? parsePlace(s, placeText) : null; if (placeText && !place) { op = null; } if (op) { e = []; for (var n = 0; n < op.count; n++) { var ed = { op: 'add_object', object: clone(op.object) }; if (place) { ed.place = clone(place); if (n > 0) { ed.place = { of: 'selection', rel: 'right' }; } } else if (n > 0) { ed.place = { of: 'selection', rel: 'right' }; } e.push(ed); } } } }
       }
@@ -414,6 +432,7 @@
   // ───────────────────────── the AI: the closed actions it may answer with ─────────────────────────
   function viewWords(spec, env) { var F = frameOf(spec, env), f = function (v) { return '(' + v.map(function (x) { return Math.round(x * 100) / 100; }).join(', ') + ')'; }; return '使用者現在的視角：相機在 ' + f(F.pos) + '，看向 ' + f(F.target) + '；「前方」在世界座標是 ' + f(F.forward) + '、「右邊」是 ' + f(F.right) + '（y 向上）。'; }
   var ACTIONS = '封閉的動作(只能用這些,JSON):'
+    + '{op:"add_model",model:"' + (MG ? MG.CATALOG.map(function (c) { return c.id; }).join('|') : '') + '",name?,height?:公尺,color?:"#rrggbb",place?}(內建模型庫,有「' + (MG ? MG.CATALOG.map(function (c) { return c.label; }).join('、') : '') + '」;基本圖元沒有的形狀先找這個,place 同 add_object)、'
     + '{op:"add_object",object:{type:"mesh",mesh:"box|sphere|cylinder|cone|plane|torus",name?,size:[w,h,d](box)|size:[w,l](plane)|radius|height|tube_radius,material:{color:"#rrggbb",metalness?,roughness?,opacity?,emissive?,texture?:"water|grass|sand|wood|brick",texture_repeat?:[rx,ry]},rotation_deg?:[x,y,z]},place:{of:"me|view|origin|selection|<物件 id 或名字>",rel:"front|back|left|right|left-front|right-front|left-back|right-back|above|on|below|inside|center|beside",dist?,gap?,dx?,dy?,dz?}}(也可以加 type:"light"+light:"point|directional|ambient"+intensity+color,或 type:"group")、'
     + '{op:"place_object",id,place}、{op:"transform_object",id,move?:[右,上,前](我的視角,單位)|move_world?:[x,y,z]|turn?:度(繞垂直軸)|tilt?|roll?|rotate_deg?:[x,y,z]|scale?:倍數}、{op:"update_object",id,props:{name?,size?,radius?,height?,position?,rotation_deg?,visible?,locked?,material?:{…},intensity?,color?}}、'
     + '{op:"set_material",id|"all",color?,metalness?,roughness?,opacity?,emissive?,texture?,texture_repeat?,side?}、{op:"remove_object",id}、{op:"rename_object",id,name}、{op:"duplicate_object",id,place?}、{op:"set_visible",id,visible}、{op:"set_locked",id,locked}、{op:"drop_to_ground",id}、{op:"align_objects",ids:[…],axis:"x|y|z",to:"min|center|max"}、'
@@ -422,7 +441,7 @@
     + '{op:"find_picture",query:"英文關鍵字"}、{op:"generate_image",prompt}(兩個是宿主做的:上網找圖／生圖,結果會當成貼圖)';
   function editPrompt(spec, request, extra, selection, env) {
     var sp = validate(spec).spec;
-    var system = '你是 3D 場景編輯器的助手。使用者用說的來擺放與修改 3D 場景;你只能回一個 JSON 物件 {"say":"一句話說明","edits":[動作…]},不要回別的字。' + ACTIONS + '。\n規則:1) 位置一律用 place(以使用者的視角:我的左前方=of "me" rel "left-front"、畫面中間=of "view" rel "center"、桌子的上面=of "<桌子>" rel "above"、桌子的右邊=of "<桌子>" rel "right"),不要自己算座標;「它／這個」就是選取的物件(id 用 "selection")。2) 座標單位跟場景一樣,y 向上;球半徑 0.5、方塊邊長 1 大約一個人的小物件。3) 每個新東西獨立成一個物件並取有意義的名字(例如「桌子」「紅色球」);桌子之類的組合物先逐個零件 add_object 再 group_objects。4) 顏色用 #rrggbb。5) 不確定就少做,說明理由,不要編造不存在的 id。';
+    var system = '你是 3D 場景編輯器的助手。使用者用說的來擺放與修改 3D 場景;你只能回一個 JSON 物件 {"say":"一句話說明","edits":[動作…]},不要回別的字。' + ACTIONS + '。\n規則:1) 位置一律用 place(以使用者的視角:我的左前方=of "me" rel "left-front"、畫面中間=of "view" rel "center"、桌子的上面=of "<桌子>" rel "above"、桌子的右邊=of "<桌子>" rel "right"),不要自己算座標;「它／這個」就是選取的物件(id 用 "selection")。2) 座標單位跟場景一樣,y 向上;球半徑 0.5、方塊邊長 1 大約一個人的小物件。3) 每個新東西獨立成一個物件並取有意義的名字(例如「桌子」「紅色球」);桌子之類的組合物先逐個零件 add_object 再 group_objects。4) 顏色用 #rrggbb。5) 不確定就少做,說明理由,不要編造不存在的 id。6) 使用者要的東西不在基本圖元裡(茶壺、花瓶、杯子、瓶子…):**不要拒絕、也不要反問要不要做**——先用 add_model(模型庫有就用);沒有就用基本圖元逐個零件 add_object 再 group_objects 組出來;真的需要特殊外形才用 mesh:"polygon"、extra:{vertices:[[x,y,z],…],faces:[[a,b,c],…],uvs?:[[u,v],…]}(三角形,最多幾百個頂點,y 向上、底面在 y=0)。想貼圖的話 material.texture 用 wood|brick|grass|sand|water 或使用者貼的圖,模型庫的東西已經有貼圖座標。';
     var user = viewWords(sp, env) + '\n場景「' + sp.title + '」目前的物件(樹狀,每行:id 名字:類型 尺寸 @位置 顏色):\n' + (sp.objects.length ? list(sp) : '(空的)') + (selection ? '\n選取的物件:' + selection : '') + (extra ? '\n' + extra : '') + '\n\n使用者說:' + String(request || '');
     return { system: system, user: user };
   }

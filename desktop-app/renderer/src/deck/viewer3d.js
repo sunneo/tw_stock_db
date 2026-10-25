@@ -94,6 +94,11 @@
       n.faces.forEach(function (f) { indices.push(f[0], f[1], f[2]); });
       geometry.setIndex(indices);
       geometry.computeVertexNormals();
+      // 貼圖座標：節點有 uvs（每個頂點一組 [u,v]）就用；沒有（匯入的 OBJ、自己給 vertices 的形狀）就用繞垂直軸的圓柱投影補上，不然貼圖沒有座標可以貼
+      var uvArr = new Float32Array(n.vertices.length * 2), hasUv = Array.isArray(n.uvs) && n.uvs.length === n.vertices.length;
+      if (hasUv) { n.uvs.forEach(function (t, i) { uvArr[i * 2] = Number(t[0]) || 0; uvArr[i * 2 + 1] = Number(t[1]) || 0; }); }
+      else { var lo = Infinity, hi = -Infinity; n.vertices.forEach(function (v) { lo = Math.min(lo, v[1]); hi = Math.max(hi, v[1]); }); var span = (hi - lo) || 1; n.vertices.forEach(function (v, i) { uvArr[i * 2] = Math.atan2(v[2], v[0]) / (2 * Math.PI) + 0.5; uvArr[i * 2 + 1] = (v[1] - lo) / span; }); }
+      geometry.setAttribute('uv', new THREE.BufferAttribute(uvArr, 2));
       return geometry;
     }
   };
