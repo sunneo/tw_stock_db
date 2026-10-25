@@ -51,9 +51,9 @@
     var W = 1100, M = 40, maxLen = Math.max.apply(null, parts.map(function (p) { return Math.max(p.w, p.h); })), scale = Math.max(2, Math.min(18, 330 / maxLen));
     var x = M, y = 120, rowH = 0, out = [], gap = 70;
     parts.forEach(function (p) {
-      var pw = Math.max(14, p.w * scale), ph = Math.max(10, p.h * scale), cardW = pw + 110, cardH = ph + 110;
+      var pw = Math.max(14, p.w * scale), ph = Math.max(10, p.h * scale), cardW = pw + 110, cardH = ph + 130;
       if (x + cardW > W - M && x > M) { x = M; y += rowH + 30; rowH = 0; }
-      var ox = x + 10, oy = y + 54;
+      var ox = x + 10, oy = y + 76;
       out.push('<g>');
       out.push('<text x="' + ox + '" y="' + (y + 18) + '" class="id">' + esc(p.id) + ' · ' + esc(p.name) + '</text>');
       out.push('<text x="' + ox + '" y="' + (y + 36) + '" class="sub">數量 ' + p.qty + (p.t != null ? '　厚 ' + fmt(p.t) + ' ' + unit : '') + (p.note ? '　' + esc(p.note.slice(0, 24)) : '') + '</text>');

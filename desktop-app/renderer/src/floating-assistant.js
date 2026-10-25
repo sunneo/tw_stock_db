@@ -26272,9 +26272,9 @@ const holder = {};
     var W = 1100, M = 40, maxLen = Math.max.apply(null, parts.map(function (p) { return Math.max(p.w, p.h); })), scale = Math.max(2, Math.min(18, 330 / maxLen));
     var x = M, y = 120, rowH = 0, out = [], gap = 70;
     parts.forEach(function (p) {
-      var pw = Math.max(14, p.w * scale), ph = Math.max(10, p.h * scale), cardW = pw + 110, cardH = ph + 110;
+      var pw = Math.max(14, p.w * scale), ph = Math.max(10, p.h * scale), cardW = pw + 110, cardH = ph + 130;
       if (x + cardW > W - M && x > M) { x = M; y += rowH + 30; rowH = 0; }
-      var ox = x + 10, oy = y + 54;
+      var ox = x + 10, oy = y + 76;
       out.push('<g>');
       out.push('<text x="' + ox + '" y="' + (y + 18) + '" class="id">' + esc(p.id) + ' · ' + esc(p.name) + '</text>');
       out.push('<text x="' + ox + '" y="' + (y + 36) + '" class="sub">數量 ' + p.qty + (p.t != null ? '　厚 ' + fmt(p.t) + ' ' + unit : '') + (p.note ? '　' + esc(p.note.slice(0, 24)) : '') + '</text>');
@@ -62558,7 +62558,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     // 零件表→工程圖：對話裡（使用者貼的、或助理剛列的）有「名稱＋長×寬×厚」的零件表時，工程圖由程式照尺寸等比例畫，不用模型（模型常常斷線或太慢）
     _imagePartsSvg(o) {
         try {
-            const PS = typeof FaPartsSheet !== 'undefined' ? FaPartsSheet : null; if (!PS) return '';
+            const PS = typeof FaPartsSheet !== 'undefined' ? FaPartsSheet : null; if (!PS || !PS.isEngineeringRequest(o.request)) return ''; // 只有「要工程圖／尺寸圖」的需求才用零件表，別的圖不要亂套
             const texts = [String(o.request || '')]; const ms = this.messages || []; for (let i = ms.length - 1; i >= 0 && texts.length < 14; i--) { const c = ms[i] && ms[i].content; if (typeof c === 'string' && c.length > 20 && ms[i].role !== 'tool') texts.push(c); }
             const all = texts.join(String.fromCharCode(10)), parts = PS.parseParts(all); if (!parts.length) return '';
             const tm = /(?:準備|畫|做|製作|產生)\s*(.{2,40}?)\s*(?:的)?(?:工程圖|零件圖|尺寸圖|組裝圖|裁切圖|樣板)/.exec(String(o.request || '')); const title = (tm ? tm[1].replace(/^[「『"(（\s]+|[」』")）\s]+$/g, '') + ' 工程圖' : '零件工程圖');
