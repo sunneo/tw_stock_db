@@ -42970,6 +42970,31 @@ const FaLlm = {
         const data = { id, object: 'chat.completion', created, model, _faOffline: true, choices: [{ index: 0, message, finish_reason: finishReason }], usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 } };
         return new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } });
     },
+    // ---- 長的「一次回完」請求在底層改用串流（呼叫端不用改）----
+    // 為什麼：stream:false 的長回答（寫整張 SVG、長摘要、子代理人的長輸出）會有幾十秒完全沒有位元組在流，中間的網路設備／閘道常把這種靜默的連線重置
+    // （read ECONNRESET → 502）或在 100 秒左右切斷（Cloudflare 524）；串流從第一個字開始就一直有資料，不會被當成閒置。
+    // 收齊之後還原成一次回完的 JSON（content、reasoning_content、tool_calls、finish_reason、usage 都在），所以所有呼叫端照舊讀 response.json()。
+    wantsBuffered(u, body, h) {
+        if (!body || body.stream !== false || !/\/chat\/completions/.test(u)) return false;
+        if (h && h.advancedSettings && h.advancedSettings.bufferedStreaming === false) return false;
+        const mt = Number(body.max_tokens != null ? body.max_tokens : body.max_completion_tokens); return !(mt > 0) || mt >= 1500;
+    },
+    async assembleStream(res) {
+        const rd = res.body.getReader(), td = new TextDecoder(), NL = String.fromCharCode(10); let buf = '', content = '', reasoning = '', finish = null, usage = null, model = null, id = null, err = null, done = false; const calls = [];
+        const eat = (line) => {
+            line = line.trim(); if (line.indexOf('data:') !== 0) return; const d = line.slice(5).trim(); if (d === '[DONE]') { done = true; return; } if (!d) return; let j; try { j = JSON.parse(d); } catch (_) { return; }
+            if (j.error) { err = j.error; return; } if (j.id) id = j.id; if (j.model) model = j.model; if (j.usage) usage = j.usage; const c = j.choices && j.choices[0]; if (!c) return; if (c.finish_reason) { finish = c.finish_reason; done = true; }
+            const dl = c.delta || {}; if (typeof dl.content === 'string') content += dl.content; if (typeof dl.reasoning_content === 'string') reasoning += dl.reasoning_content; else if (typeof dl.reasoning === 'string') reasoning += dl.reasoning;
+            (dl.tool_calls || []).forEach((t) => { const n = t.index != null ? t.index : calls.length; const cur = calls[n] || (calls[n] = { id: '', type: 'function', function: { name: '', arguments: '' } }); if (t.id) cur.id = t.id; if (t.type) cur.type = t.type; if (t.function) { if (t.function.name) cur.function.name += t.function.name; if (t.function.arguments) cur.function.arguments += t.function.arguments; } });
+        };
+        try { for (;;) { const r = await rd.read(); if (r.done) break; buf += td.decode(r.value, { stream: true }); let i; while ((i = buf.indexOf(NL)) >= 0) { eat(buf.slice(0, i)); buf = buf.slice(i + 1); } } buf += td.decode(); if (buf) eat(buf); }
+        catch (e) { throw new Error('串流中斷（已收到 ' + content.length + ' 字）：' + ((e && e.message) || e)); }
+        if (err && !content && !calls.length) return new Response(JSON.stringify({ error: err }), { status: 502, headers: { 'Content-Type': 'application/json' } });
+        if (!done) throw new Error('串流提早結束（只收到 ' + content.length + ' 字，沒有結束標記）');
+        const message = { role: 'assistant', content: content || (calls.length ? null : '') }; if (reasoning) message.reasoning_content = reasoning; const tcs = calls.filter(Boolean); if (tcs.length) message.tool_calls = tcs;
+        const data = { id: id || ('chatcmpl-buf-' + Date.now()), object: 'chat.completion', created: Math.floor(Date.now() / 1000), model: model || undefined, choices: [{ index: 0, message, finish_reason: finish || 'stop' }] }; if (usage) data.usage = usage;
+        return new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json', 'x-fa-buffered-stream': '1' } });
+    },
     textResponse(body, text, model) { return this.wrap(body, { role: 'assistant', content: text }, 'stop', model || 'offline'); },
     // 工具呼叫是橋接的：食譜／CoLU 決定「用哪個工具、填什麼」，這裡回標準的 tool_calls，由呼叫端自己執行（它的確認、紀錄、重試都照常）
     toolCallResponse(body, name, args, model) {
@@ -43122,7 +43147,13 @@ const FaLlm = {
         // 線上：弱模型外殼（程式先試）→ 照常連線；每一個模型列都失敗後，這一次交給離線流程
         { const sh = await this.weakShell(this.parseBody(init)); if (sh) return sh; }
         let res = null, netErr = null;
-        try { res = await real(input, init); } catch (e) { netErr = e; }
+        try {
+            const b0 = this.parseBody(init);
+            if (this.wantsBuffered(u, b0, h)) {
+                res = await real(input, Object.assign({}, init, { body: JSON.stringify(Object.assign({}, b0, { stream: true })) }));
+                if (res && res.ok && res.body && /event-stream/i.test(String((res.headers && res.headers.get && res.headers.get('content-type')) || ''))) res = await this.assembleStream(res);
+            } else res = await real(input, init);
+        } catch (e) { netErr = e; }
         if (!netErr && !this.isFailure(res)) { this.streak = 0; try { const b = this.parseBody(init); if (b && !b.stream && /openrouter\.ai/i.test(u) && res.clone) res.clone().json().then((d) => { if (d && d.model && b.model) { this.served = this.served || {}; this.served[b.model] = { served: String(d.model), at: Date.now() }; } }).catch(() => {}); } catch (_) { /* 只是記錄 */ } return res; }
         const now = Date.now(); this.streak = (now - this.streakAt < 120000 ? this.streak : 0) + 1; this.streakAt = now;
         let rows = 1; try { rows = Math.max(1, (h._getModelRows() || []).length); } catch (_) { rows = 1; }
@@ -88920,6 +88951,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         messages.push({ role: 'user', content: userPrompt });
         let response;
         try {
+            // stream:false 是呼叫端的寫法；長的回答由 FaLlm.fetch 在底層改用串流收齊再還原成一次回完的格式（見 FaLlm.assembleStream）
             response = await FaLlm.fetch(`${apiUrl}/chat/completions`, {
                 method: 'POST',
                 headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
