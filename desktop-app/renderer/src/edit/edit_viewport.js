@@ -40,7 +40,7 @@
       layer.style.width = cw() + 'px'; layer.style.height = ch() + 'px'; layer.style.marginBottom = -ch() + 'px';
     }
     function view() { return { x: ext.minX + sc.scrollLeft / z, y: ext.minY + sc.scrollTop / z, w: cw() / z, h: ch() / z, z: z, cw: cw(), ch: ch() }; }
-    function notify() { lbl.textContent = Math.round(z * 100) + '%'; if (opt.onView) { opt.onView(view()); } }
+    function notify() { lbl.textContent = Math.round(z * 100) + '%'; remember(); if (opt.onView) { opt.onView(view()); } }
     function schedule() { if (raf || dead) { return; } raf = (typeof requestAnimationFrame === 'function' ? requestAnimationFrame : function (f) { return setTimeout(f, 16); })(function () { raf = 0; if (!dead) { notify(); } }); }
     // the plane always covers the content, what is shown, and a margin around both; it only ever grows (no jumps)
     function include(x0, y0, x1, y1) {
@@ -106,7 +106,10 @@
     bHand.onclick = function () { setTool(tool === 'hand' ? 'select' : 'hand'); };
     bMinus.onclick = function () { zoomTo(z / 1.25); }; bPlus.onclick = function () { zoomTo(z * 1.25); }; bOne.onclick = function () { zoomTo(1); };
     bFit.onclick = function () { fit(bounds || null); }; bHome.onclick = goHome;
-    var ro = typeof ResizeObserver === 'function' ? new ResizeObserver(function () { sizeInner(); schedule(); }) : null; if (ro) { ro.observe(sc); }
+    // the view keeps its CENTRE when the panel changes size (maximise, drag a splitter, hide a side panel): without this the content slides off to one side and the middle of the picture can not be reached
+    var lastC = null; function remember() { lastC = { x: ext.minX + (sc.scrollLeft + cw() / 2) / z, y: ext.minY + (sc.scrollTop + ch() / 2) / z }; }
+    sc.addEventListener('scroll', function () { if (!guard) { remember(); } });
+    var ro = typeof ResizeObserver === 'function' ? new ResizeObserver(function () { sizeInner(); if (lastC) { guard = true; sc.scrollLeft = (lastC.x - ext.minX) * z - cw() / 2; sc.scrollTop = (lastC.y - ext.minY) * z - ch() / 2; guard = false; } schedule(); }) : null; if (ro) { ro.observe(sc); }
     sizeInner();
     // centre on the origin region at first
     (typeof setTimeout === 'function' ? setTimeout : function (f) { f(); })(function () { if (dead) { return; } sizeInner(); if (home || bounds) { goHome(); } else { guard = true; sc.scrollLeft = (0 - ext.minX) * z - cw() / 4; sc.scrollTop = (0 - ext.minY) * z - ch() / 4; guard = false; } notify(); }, 0);

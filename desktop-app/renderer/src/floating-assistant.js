@@ -25652,7 +25652,7 @@ const holder = {};
       layer.style.width = cw() + 'px'; layer.style.height = ch() + 'px'; layer.style.marginBottom = -ch() + 'px';
     }
     function view() { return { x: ext.minX + sc.scrollLeft / z, y: ext.minY + sc.scrollTop / z, w: cw() / z, h: ch() / z, z: z, cw: cw(), ch: ch() }; }
-    function notify() { lbl.textContent = Math.round(z * 100) + '%'; if (opt.onView) { opt.onView(view()); } }
+    function notify() { lbl.textContent = Math.round(z * 100) + '%'; remember(); if (opt.onView) { opt.onView(view()); } }
     function schedule() { if (raf || dead) { return; } raf = (typeof requestAnimationFrame === 'function' ? requestAnimationFrame : function (f) { return setTimeout(f, 16); })(function () { raf = 0; if (!dead) { notify(); } }); }
     // the plane always covers the content, what is shown, and a margin around both; it only ever grows (no jumps)
     function include(x0, y0, x1, y1) {
@@ -25718,7 +25718,10 @@ const holder = {};
     bHand.onclick = function () { setTool(tool === 'hand' ? 'select' : 'hand'); };
     bMinus.onclick = function () { zoomTo(z / 1.25); }; bPlus.onclick = function () { zoomTo(z * 1.25); }; bOne.onclick = function () { zoomTo(1); };
     bFit.onclick = function () { fit(bounds || null); }; bHome.onclick = goHome;
-    var ro = typeof ResizeObserver === 'function' ? new ResizeObserver(function () { sizeInner(); schedule(); }) : null; if (ro) { ro.observe(sc); }
+    // the view keeps its CENTRE when the panel changes size (maximise, drag a splitter, hide a side panel): without this the content slides off to one side and the middle of the picture can not be reached
+    var lastC = null; function remember() { lastC = { x: ext.minX + (sc.scrollLeft + cw() / 2) / z, y: ext.minY + (sc.scrollTop + ch() / 2) / z }; }
+    sc.addEventListener('scroll', function () { if (!guard) { remember(); } });
+    var ro = typeof ResizeObserver === 'function' ? new ResizeObserver(function () { sizeInner(); if (lastC) { guard = true; sc.scrollLeft = (lastC.x - ext.minX) * z - cw() / 2; sc.scrollTop = (lastC.y - ext.minY) * z - ch() / 2; guard = false; } schedule(); }) : null; if (ro) { ro.observe(sc); }
     sizeInner();
     // centre on the origin region at first
     (typeof setTimeout === 'function' ? setTimeout : function (f) { f(); })(function () { if (dead) { return; } sizeInner(); if (home || bounds) { goHome(); } else { guard = true; sc.scrollLeft = (0 - ext.minX) * z - cw() / 4; sc.scrollTop = (0 - ext.minY) * z - ch() / 4; guard = false; } notify(); }, 0);
@@ -26038,6 +26041,7 @@ const holder = {};
     + '.few input,.few select,.few textarea{background:var(--bg);color:inherit;border:1px solid var(--bd);border-radius:5px;padding:3px 6px;font:inherit;max-width:100%}.few textarea{width:100%;resize:vertical}.few textarea.code{font:12px/1.45 ui-monospace,Consolas,monospace;tab-size:2;white-space:pre;overflow:auto}'
     + '.few .bar{display:flex;align-items:center;gap:6px;padding:6px 8px;background:var(--hd);border-bottom:1px solid var(--bd);flex-wrap:wrap}.few .ttl{font-weight:600;margin-right:auto}.few .st{color:var(--mut);font-size:12px}.few .bad{color:var(--bad)}.few .good{color:var(--ok)}'
     + '.few .main{display:flex;flex-wrap:wrap;align-items:stretch;flex:1;min-height:0}.few .dock{border-top:1px solid var(--bd);padding:6px 8px;display:flex;flex-direction:column;gap:4px;background:var(--hd)}.few .dock .say{font-size:12px;color:var(--mut);max-height:3.4em;overflow:auto;white-space:pre-wrap;word-break:break-word}.few .dock .say:empty{display:none}.few .dock .in{display:flex;gap:6px;align-items:flex-end}.few .dock textarea{flex:1;min-width:0;resize:vertical;min-height:2.6em;max-height:9em}.few .objs{flex:0 0 224px;min-width:200px;display:flex;flex-direction:column;border-right:1px solid var(--bd);max-height:640px;overflow:auto}.few .mid{flex:1.6 1 380px;min-width:300px;display:flex;flex-direction:column;min-height:420px}.few .side{flex:1 1 300px;min-width:260px;min-height:200px;display:flex;flex-direction:column;border-left:1px solid var(--bd);max-height:640px}'
+    + '.few .sp{flex:0 0 6px;background:transparent;position:relative;z-index:2;touch-action:none}.few .sp.v{cursor:col-resize;border-left:1px solid transparent}.few .sp.h{cursor:row-resize;flex:0 0 6px;border-top:1px solid var(--bd)}.few .sp:hover,.few .sp.drag{background:var(--acc);opacity:.45}.few .main:not(.nw) .sp.v{display:none}.few .main.nw{flex-wrap:nowrap}.few .main.nw .objs{flex:0 0 var(--lw,224px);width:var(--lw,224px);min-width:0}.few .main.nw .side{flex:0 0 var(--rw,321px);width:var(--rw,321px);min-width:0}.few .main.nw .mid{flex:1 1 0;min-width:160px}.few .hidden-p{display:none!important}'
     + '.few .tabs{display:flex;border-bottom:1px solid var(--bd);background:var(--hd)}.few .tabs span{padding:6px 12px;cursor:pointer;color:var(--mut);border-bottom:2px solid transparent}.few .tabs span.on{color:var(--fg);border-bottom-color:var(--acc);font-weight:600}.few .pane{display:none;flex:1;overflow:auto;padding:8px;min-height:240px;flex-direction:column;gap:6px}.few .pane.on{display:flex}.few .pane.vp{padding:0;overflow:hidden;height:460px;flex:0 0 auto;min-height:0}.few.fwin-pop .pane.vp,.few.fwin-max .pane.vp{height:auto;flex:1 1 0}.few.fwin-pop .main,.few.fwin-max .main{flex:1;min-height:0;overflow:hidden}.few.fwin-pop .mid,.few.fwin-max .mid{min-height:0;overflow:hidden}.few .dock{flex:0 0 auto}.few.fwin-pop .objs,.few.fwin-max .objs,.few.fwin-pop .side,.few.fwin-max .side{max-height:none}'
     + '.few .oh{display:flex;align-items:center;gap:6px;padding:6px 8px;border-bottom:1px solid var(--bd);background:var(--hd);font-weight:600}.few .ol{display:flex;flex-direction:column}.few .ob{display:flex;align-items:center;gap:4px;padding:3px 6px;border-bottom:1px solid transparent;cursor:pointer}.few .ob:hover{background:rgba(120,140,200,.10)}.few .ob.sel{background:rgba(47,129,247,.18)}.few .ob.hid .nm{opacity:.45;text-decoration:line-through}.few .ob.new{animation:fewnew 1.6s ease-out}@keyframes fewnew{from{background:rgba(26,127,55,.35)}to{background:transparent}}'
     + '.few .ob .ic{width:20px;text-align:center}.few .ob .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.few .ob .nm small{color:var(--mut);margin-left:4px}.few .ob .tb{display:none;gap:2px}.few .ob:hover .tb,.few .ob.sel .tb{display:inline-flex}.few .ob .tb button{padding:0 4px;font-size:12px;line-height:18px}.few .ob input.rn{flex:1;min-width:0}'
@@ -26091,6 +26095,34 @@ const holder = {};
     [['ai', '🤖 AI 助手'], ['hist', '🕘 記錄']].forEach(function (t) { var s = h('span', null, t[1]); s.setAttribute('data-t', t[0]); s.onclick = function () { rightTab = t[0]; showTabs(); }; rTabs.appendChild(s); });
     mid.appendChild(mTabs); opt.tabs.forEach(function (t) { mid.appendChild(mp[t.id]); }); side.appendChild(rTabs); ['ai', 'hist'].forEach(function (k) { side.appendChild(rp[k]); });
     main.appendChild(objs); main.appendChild(mid); main.appendChild(side); el.appendChild(bar); el.appendChild(sum); el.appendChild(main);
+    // ───── layout: left / right panels and the chat box at the bottom can be dragged to any size, and the left and right panels can be hidden (the choice is remembered per editor kind) ─────
+    var spL = h('div', 'sp v'), spR = h('div', 'sp v'), spD = h('div', 'sp h'), LAY = { lw: 224, rw: 321, dh: 0, lc: false, rc: false }, layKey = 'fa_few_layout:' + (opt.kind || 'x');
+    try { var savedLay = JSON.parse(localStorage.getItem(layKey) || 'null'); if (savedLay && typeof savedLay === 'object') { ['lw', 'rw', 'dh'].forEach(function (k) { if (isFinite(savedLay[k])) { LAY[k] = Number(savedLay[k]); } }); LAY.lc = !!savedLay.lc; LAY.rc = !!savedLay.rc; } } catch (e) { /* no storage: defaults */ }
+    spL.title = '拖曳調整左邊寬度（連點兩下＝隱藏）'; spR.title = '拖曳調整右邊寬度（連點兩下＝隱藏）'; spD.title = '拖曳調整下面輸入框的高度';
+    var bL = h('button', null, '◧'), bR = h('button', null, '◨'); bL.title = '隱藏／顯示左邊的物件欄'; bR.title = '隱藏／顯示右邊的 AI 助手'; bar.insertBefore(bR, bar.firstChild); bar.insertBefore(bL, bar.firstChild);
+    function clampN(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+    function saveLay() { try { localStorage.setItem(layKey, JSON.stringify(LAY)); } catch (e) { /* not saved */ } }
+    function applyLay() {
+      var wide = el.clientWidth >= 760; main.classList.toggle('nw', wide);
+      main.style.setProperty('--lw', clampN(LAY.lw, 120, Math.max(160, el.clientWidth * 0.5)) + 'px'); main.style.setProperty('--rw', clampN(LAY.rw, 160, Math.max(200, el.clientWidth * 0.6)) + 'px');
+      [objs, spL].forEach(function (x) { x.classList.toggle('hidden-p', LAY.lc); }); [side, spR].forEach(function (x) { x.classList.toggle('hidden-p', LAY.rc); });
+      bL.classList.toggle('on', !LAY.lc); bR.classList.toggle('on', !LAY.rc); bL.style.opacity = LAY.lc ? '.55' : ''; bR.style.opacity = LAY.rc ? '.55' : '';
+      if (LAY.dh > 0) { ta.style.height = LAY.dh + 'px'; ta.style.maxHeight = 'none'; } else { ta.style.height = ''; ta.style.maxHeight = ''; }
+    }
+    function dragSp(sp, which) {
+      sp.addEventListener('pointerdown', function (ev) {
+        if (ev.button !== 0) { return; } ev.preventDefault();
+        var x0 = ev.clientX, y0 = ev.clientY, w0 = which === 'L' ? objs.getBoundingClientRect().width : which === 'R' ? side.getBoundingClientRect().width : ta.getBoundingClientRect().height; sp.classList.add('drag'); try { sp.setPointerCapture(ev.pointerId); } catch (e) { /* no capture */ }
+        function mv(e) { var dx = e.clientX - x0, dy = e.clientY - y0; if (which === 'L') { LAY.lw = clampN(w0 + dx, 120, Math.max(160, el.clientWidth * 0.5)); } else if (which === 'R') { LAY.rw = clampN(w0 - dx, 160, Math.max(200, el.clientWidth * 0.6)); } else { LAY.dh = clampN(w0 - dy, 40, Math.max(120, (window.innerHeight || 800) * 0.6)); } applyLay(); }
+        function up() { sp.classList.remove('drag'); sp.removeEventListener('pointermove', mv); sp.removeEventListener('pointerup', up); sp.removeEventListener('pointercancel', up); saveLay(); }
+        sp.addEventListener('pointermove', mv); sp.addEventListener('pointerup', up); sp.addEventListener('pointercancel', up);
+      });
+    }
+    dragSp(spL, 'L'); dragSp(spR, 'R'); dragSp(spD, 'D');
+    bL.onclick = function () { LAY.lc = !LAY.lc; applyLay(); saveLay(); }; bR.onclick = function () { LAY.rc = !LAY.rc; applyLay(); saveLay(); };
+    spL.addEventListener('dblclick', function () { LAY.lc = true; applyLay(); saveLay(); }); spR.addEventListener('dblclick', function () { LAY.rc = true; applyLay(); saveLay(); }); spD.addEventListener('dblclick', function () { LAY.dh = 0; applyLay(); saveLay(); });
+    if (typeof ResizeObserver === 'function') { new ResizeObserver(function () { applyLay(); }).observe(el); }
+    main.insertBefore(spL, mid); main.insertBefore(spR, side);
     function showTabs() {
       Array.prototype.forEach.call(mTabs.children, function (s) { s.className = s.getAttribute('data-t') === midTab ? 'on' : ''; }); Array.prototype.forEach.call(rTabs.children, function (s) { s.className = s.getAttribute('data-t') === rightTab ? 'on' : ''; });
       Object.keys(mp).forEach(function (k) { mp[k].className = mp[k].className.replace(/ on\b/, '') + (k === midTab ? ' on' : ''); }); Object.keys(rp).forEach(function (k) { rp[k].className = 'pane' + (k === 'hist' ? ' hist' : '') + (k === rightTab ? ' on' : ''); });
@@ -26131,7 +26163,7 @@ const holder = {};
     var logEl = h('div', 'log'), attEl = h('div', 'att'), inRow = h('div', 'row'), ta = h('textarea'), bAtt = h('button', null, '📎'), bSend = h('button', 'pri', '送出'), file = h('input'); file.type = 'file'; file.accept = 'image/*'; file.multiple = true; file.style.display = 'none';
     ta.rows = 2; ta.placeholder = opt.placeholder || ''; bAtt.title = '附圖（也可以直接貼上、拖進來）'; inRow.appendChild(bAtt); inRow.appendChild(bSend);
     var dock = h('div', 'dock'), dockSay = h('div', 'say'), dockIn = h('div', 'in');   // the AI chat box: always at the bottom of the editor, whatever the width, so it is always in sight
-    rp.ai.appendChild(logEl); dockIn.appendChild(ta); dockIn.appendChild(inRow); inRow.style.flexDirection = 'column'; inRow.style.alignItems = 'stretch'; dock.appendChild(dockSay); dock.appendChild(attEl); dock.appendChild(dockIn); dock.appendChild(file); el.appendChild(dock);
+    rp.ai.appendChild(logEl); dockIn.appendChild(ta); dockIn.appendChild(inRow); inRow.style.flexDirection = 'column'; inRow.style.alignItems = 'stretch'; dock.appendChild(dockSay); dock.appendChild(attEl); dock.appendChild(dockIn); dock.appendChild(file); el.appendChild(spD); el.appendChild(dock); applyLay();
     function addMsg(role, text, chips, rejected) { var m = h('div', 'msg ' + (role === 'user' ? 'u' : 'a')); m.appendChild(document.createTextNode(text || '')); (chips || []).forEach(function (c) { m.appendChild(h('span', 'chip', c)); }); (rejected || []).forEach(function (c) { m.appendChild(h('span', 'chip rej', c)); }); logEl.appendChild(m); logEl.scrollTop = logEl.scrollHeight; return m; }
     function renderLog() { logEl.textContent = ''; if (!S.log.length && opt.intro) { addMsg('ai', opt.intro); } var lastAi = S.log.slice().reverse().filter(function (m) { return m.role === 'ai'; })[0]; dockSay.textContent = lastAi ? lastAi.text : ''; S.log.forEach(function (m) { addMsg(m.role, m.text, m.chips, m.rejected); }); }
     function readFile(f) { return new Promise(function (res) { var r = new FileReader(); r.onload = function () { res({ name: f.name || 'image', dataUrl: String(r.result) }); }; r.onerror = function () { res(null); }; r.readAsDataURL(f); }); }
