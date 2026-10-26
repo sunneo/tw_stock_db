@@ -1,6 +1,6 @@
 # `/edit-picture` 的擴散細化層（`detail`）：只重畫一小塊的細節，再羽化蓋回去（已實作，2026-10-26）
 
-> 規劃時的設計寫在 `DESIGN.TODO.edit-picture-diffusion.md`（那份可以刪了）；這份是**實作後**的樣子，以及規劃時沒料到的地方。
+> 這份是**實作後**的樣子，以及規劃時沒料到的地方（規劃稿 `DESIGN.TODO.edit-picture-diffusion.md` 已刪，要看可從 git 歷史找）。
 
 ## 做了什麼
 - **新的圖層型別 `detail`**（`edit_picture_core.js`）：`region`（框）或 `marks`（塗抹）、`target`、`prompt`、`strength`、`feather`、`context`、`model`（auto／online／local）、`seed`，生成後多 `crop`（裁片在世界座標的位置）、`result`（生出來的圖）、`refine`（edit／texture）、`state`（pending 待細化／preview 預覽中／applied 已接受）、`opacity`。跟修復層一樣是圖層：可以隱藏、刪除、調透明度、復原，**原圖不動**。
