@@ -215,6 +215,7 @@ const FaDeckHost = (function () {
         async _deckPrepareSpeech(text, voice, lang) {
             const s = String(text || ''), CJK = /[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/;
             if (!CJK.test(s)) return { text: s, voice };
+            if (!voice && this._ttsPreferredClone) { const mine = this._ttsPreferredClone('zh'); if (mine) return { text: s, voice: mine.id }; }   // 沒指定聲音、又開著「優先使用我的聲音」：用我的錄音樣本（以前這裡會改成預設的線上中文語音）
             if (voice && this._ttsFindVoice && (this._ttsFindVoice(voice) || {}).clone) return { text: s, voice }; // 複製引擎的聲音中英文都能念：不用翻成英文、也不用改成中文聲音
             const local = typeof TTS_VOICES !== 'undefined' ? TTS_VOICES : [], api = typeof TTS_API_VOICES !== 'undefined' ? TTS_API_VOICES : [];
             const isLocal = !!voice && local.some((v) => v.id === voice), isApi = !!voice && api.some((v) => v.id === voice);
@@ -251,7 +252,9 @@ const FaDeckHost = (function () {
             try { return await attempt(voice); }
             catch (e1) {
                 const fb = this._deckFallbackVoice(text, voice); const why1 = String((e1 && e1.message) || e1).slice(0, 160);
-                if (!fb) throw e1;
+                // 用的是複製引擎的聲音（我的錄音樣本）：失敗要讓使用者看到原因，不能默默換成別人的聲音然後說是「用你的聲音」
+                const mineVoice = voice ? ((this._ttsFindVoice && this._ttsFindVoice(voice)) || {}).clone : !!(this._ttsPreferredClone && this._ttsPreferredClone(this._looksLikeCjkText(String(text)) ? 'zh' : 'en'));
+                if (!fb || mineVoice) throw new Error('用我的聲音合成失敗：' + why1);
                 try { this._log('⚠️ 簡報旁白用「' + (voice || '自動') + '」失敗（' + why1 + '），改用' + fb.label); } catch (_) { /* */ }
                 try { const buf = await attempt(fb.id); try { buf.fa_note = '原本的語音失敗（' + why1 + '），這一頁改用' + fb.label + '。可以按 🎙 換聲音或重試。'; } catch (_) { /* */ } return buf; }
                 catch (e2) { throw new Error(why1 + '；改用' + fb.label + '也失敗：' + String((e2 && e2.message) || e2).slice(0, 160)); }

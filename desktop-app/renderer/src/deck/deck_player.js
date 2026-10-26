@@ -1060,11 +1060,15 @@
     if (voices.length) { p.appendChild(sel); }
     var row = el('div', null); row.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;';
     function act(label, fn) { var b = el('button', null, label); b.type = 'button'; b.style.cssText = 'background:#2d6da3;color:#fff;border:0;border-radius:6px;padding:4px 10px;cursor:pointer;'; b.addEventListener('click', fn); row.appendChild(b); return b; }
-    function chain(list) { return list.reduce(function (pp, k) { return pp.then(function () { return s.resynth(k, {}); }); }, Promise.resolve()); }
+    function chain(list, voice) { return list.reduce(function (pp, k) { return pp.then(function () { return s.resynth(k, voice ? { voice: voice } : {}); }); }, Promise.resolve()); }
     var hasNarr = function (k) { var sl = s.deck.slides[k]; return !!(sl.narration || sl.narrationOriginal); };
     if (hasNarr(i)) { act('重做這一頁', function () { var v = voices.length ? sel.value : undefined; self.closeVoicePanel(); s.resynth(i, v === undefined ? {} : { voice: v }); }); }
     var all = []; s.deck.slides.forEach(function (_sl, k) { if (hasNarr(k)) { all.push(k); } });
-    if (all.length > 1) { act('全部重做（' + all.length + ' 頁）', function () { self.closeVoicePanel(); chain(all); }); }
+    if (all.length > 1) {
+      var allBtn = act('全部重做（' + all.length + ' 頁）', function () { var v = voices.length ? sel.value : ''; self.closeVoicePanel(); chain(all, v); });   // 上面選了聲音，全部就都用那個聲音（以前只有「重做這一頁」會用）
+      var allLabel = function () { var o = voices.length ? sel.options[sel.selectedIndex] : null; allBtn.textContent = sel.value && o ? '全部用「' + o.textContent.replace(/（.*$/, '') + '」重做（' + all.length + ' 頁）' : '全部重做（' + all.length + ' 頁）'; };
+      sel.addEventListener('change', allLabel); allLabel();
+    }
     var failed = []; s.preps.forEach(function (q, k) { if (q.error) { failed.push(k); } });
     if (failed.length) { act('重試失敗的頁（' + failed.length + '）', function () { self.closeVoicePanel(); chain(failed); }); }
     var silent = []; s.preps.forEach(function (q, k) { if (q.noVoice) { silent.push(k); } });
