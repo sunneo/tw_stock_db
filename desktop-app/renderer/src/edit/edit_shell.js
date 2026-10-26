@@ -63,7 +63,8 @@
     bUndo.title = 'Ctrl+Z'; bRedo.title = 'Ctrl+Y';
     var eo = h('option', null, '📤 輸出…'); eo.value = ''; bExp.appendChild(eo);
     (opt.exports || []).forEach(function (x) { var o1 = h('option', null, '⬇ 下載 ' + x.label); o1.value = 'dl:' + x.id; bExp.appendChild(o1); if (x.chat !== false && host.toChat) { var o2 = h('option', null, '💬 放進對話 ' + x.label); o2.value = 'chat:' + x.id; bExp.appendChild(o2); } });
-    [ttl, stat, bUndo, bRedo, bSum, bExp].forEach(function (x) { bar.appendChild(x); });
+    var bStar = h('button', null, '⭐ 存成案例'); bStar.title = '把這次做好的結果存成案例（進離線訓練器的知識）：下次相似的需求會拿它當參考，弱模型與離線模型會直接用它當起點；/edit-svg、/edit-3d、/edit-game-2d 後面接一句話也會用到'; if (!host.saveCase) { bStar.style.display = 'none'; }
+    [ttl, stat, bUndo, bRedo, bSum, bStar, bExp].forEach(function (x) { bar.appendChild(x); });
     var sum = h('div', 'sum'), sumTa = h('textarea'); sumTa.rows = 9; var sumRow = h('div', 'row'), bCopy = h('button', null, '📋 複製'), bPol = h('button', null, '✨ 請 AI 潤飾'), bSumX = h('button', null, '✕');
     sumRow.appendChild(h('span', 'st', '只收沒被復原、而且真的改變了成品的那幾輪對話；可以貼到別處重現')); [bCopy, bPol, bSumX].forEach(function (x) { sumRow.appendChild(x); }); sum.appendChild(sumTa); sum.appendChild(sumRow);
     var main = h('div', 'main'), objs = h('div', 'objs'), mid = h('div', 'mid'), mTabs = h('div', 'tabs'), side = h('div', 'side'), rTabs = h('div', 'tabs');
@@ -159,7 +160,7 @@
       try {
         var pr = text && opt.parseCommands ? opt.parseCommands(text, spec0) : { edits: [], unmatched: text ? [text] : [] }; edits = pr.edits.slice(); var rest = pr.unmatched.join('，');
         if ((rest || imgs.length) && host.ask) {
-          var ans = ans0 = await host.ask({ text: rest, images: imgs, spec: spec0, selection: selected, onStatus: function (t) { think.textContent = t; dockSay.textContent = t; } });
+          var ans = ans0 = await host.ask({ text: rest, images: imgs, spec: spec0, selection: selected, fresh: effectiveSteps().length === 0, onStatus: function (t) { think.textContent = t; dockSay.textContent = t; } });
           say = (ans && ans.say) || ''; if (ans && ans.edits) { edits = edits.concat(ans.edits); } if (ans && ans.notes) { ans.notes.forEach(function (n) { chips.push(n); }); }
         } else if (rest) { say = '我沒聽懂：「' + rest.slice(0, 40) + '」。這個環境沒有 AI 可以幫忙，可以直接在物件欄與屬性面板改。'; }
         var r = W.applyEdits(spec0, edits, env()), next = spec0;
@@ -198,10 +199,13 @@
         var steps = effectiveSteps(), spec = W.validate(cur()).spec;
         if (kind === 'chat') { await host.toChat(out.blob, out.name, { title: spec.title, prompt: opt.promptOf ? opt.promptOf(spec, steps) : defaultPrompt(spec, steps) }); stat.textContent = '已放進對話'; }
         else { host.download(out.blob, out.name, out.mime); stat.textContent = '已匯出'; }
+        if (host.saveCase && host.autoCase !== false && steps.length) { try { host.saveCase(caseInfo(), { auto: true }).catch(function () { /* 自動存不到不影響匯出 */ }); } catch (e2) { /* same */ } }
       } catch (e) { stat.textContent = '匯出失敗：' + String((e && e.message) || e).slice(0, 80); }
       setTimeout(function () { stat.textContent = ''; }, 4000);
     };
     bUndo.onclick = undo; bRedo.onclick = redo;
+    function caseInfo() { var sp = W.validate(cur()).spec, steps = effectiveSteps(); return { spec: sp, prompt: opt.promptOf ? opt.promptOf(sp, steps) : defaultPrompt(sp, steps), title: sp.title, requests: steps.filter(function (x) { return x.kind === 'chat' && x.text; }).map(function (x) { return x.text; }) }; }
+    bStar.onclick = async function () { if (!host.saveCase) { return; } stat.textContent = '存成案例…'; try { var r = await host.saveCase(caseInfo(), { auto: false }); stat.textContent = r && r.ok ? '⭐ 已存成案例「' + (r.title || r.kept || '') + '」' + (r.updated ? '（更新了舊的）' : '') : '存不了：' + ((r && r.error) || ''); } catch (e) { stat.textContent = '存不了：' + String((e && e.message) || e).slice(0, 60); } };
     el.addEventListener('keydown', function (ev) { var tag = ev.target && ev.target.tagName; if ((tag === 'TEXTAREA' || tag === 'INPUT' || tag === 'SELECT') && ev.target !== el) { return; } if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && ev.key.toLowerCase() === 'z') { ev.preventDefault(); undo(); } else if ((ev.ctrlKey || ev.metaKey) && (ev.key.toLowerCase() === 'y' || (ev.shiftKey && ev.key.toLowerCase() === 'z'))) { ev.preventDefault(); redo(); } else if ((ev.key === 'Delete' || ev.key === 'Backspace') && selected && tag !== 'TEXTAREA' && tag !== 'INPUT') { ev.preventDefault(); apply([{ op: 'remove_object', id: selected }], '刪掉物件 ' + selected, '', 'panel'); } });
     el.tabIndex = 0;
     function render() {

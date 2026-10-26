@@ -25,6 +25,7 @@ AI 模型全部連不上（或使用者開啟離線模式）時，助理仍能**
 | 狀態機 FSM | 狀態、`on_success`／`on_failure` 轉移，終止狀態 `report_success／report_unresolved／split_and_escalate`（`FA_OT_TERMINAL`）；`_faOtFsmRun` 以步數上限防迴圈 |
 | JS 工具 | AI 寫的 JavaScript，在沙盒 worker 執行（無 fetch／XHR／WebSocket／indexedDB，以 `ctx.call` 橋接已登記的工具），有版本歷史與 `rollback_tool` |
 | 同義詞、解法 | 使用者詞彙與已解決的案例 |
+| 編輯器成功案例 | 領域 `editor_cases` 裡的 semantic pattern（範例語句、參考 prompt、開編輯器的工具與參數）；成品另存在獨立資料表，不佔訓練器記憶體；見 DESIGN.edit-cases.md |
 
 候選選擇：同時有「功能卡（answer-only）」與可執行候選時，**優先可執行的**（分數差 0.1 內）。
 

@@ -226,7 +226,7 @@
   const OPS = ['set_game', 'set_title', 'set_interaction', 'set_input', 'set_var', 'remove_var', 'set_audio_bus', 'set_start', 'add_scene', 'remove_scene', 'update_scene', 'set_tilemap', 'paint_tiles', 'fill_tiles', 'set_bgm',
     'add_object', 'update_object', 'remove_object', 'rename_object', 'move_object', 'set_visible', 'set_locked', 'duplicate_object', 'place_object', 'transform_object', 'set_prop',
     'add_prefab', 'update_prefab', 'remove_prefab', 'set_behavior', 'add_behavior', 'remove_behavior', 'add_state', 'remove_state', 'add_rule', 'edit_rule', 'delete_rule',
-    'add_path', 'update_path', 'add_zone', 'update_zone', 'remove_entity', 'add_dialog', 'update_dialog', 'add_transition', 'add_asset', 'remove_asset', 'apply_template', 'clear_scene'];
+    'add_path', 'update_path', 'add_zone', 'update_zone', 'remove_entity', 'add_dialog', 'update_dialog', 'add_transition', 'add_asset', 'remove_asset', 'apply_template', 'clear_scene', 'replace_game'];
   const HOST_OPS = ['find_picture', 'generate_image', 'make_sprite', 'make_voice'];
   const nameFor = (spec, base, type) => { const names = {}; spec.objects.forEach((o) => { if (!type || o.type === type) { names[o.name] = 1; } }); if (!names[base]) { return base; } for (let n = 2; n < 999; n++) { if (!names[base + ' ' + n]) { return base + ' ' + n; } } return base; };
   const nextId = (spec, type) => { const p = { scene: 's', object: 'o', zone: 'z', path: 'p', dialog: 'd', prefab: 'f', behavior: 'b' }[type]; let id; do { spec.seq++; id = p + spec.seq; } while (byId(spec, id) >= 0); return id; };
@@ -315,6 +315,8 @@
     },
     add_asset: (s, e) => { const id = String(e.id || '').replace(/^asset\./, ''); if (!/^[A-Za-z0-9_-]{1,40}$/.test(id)) { return { error: 'id 不合法' }; } const a = normAssets({ [id]: e.asset })[id]; if (!a) { return { error: '素材不合法(kind 要是 sound/song/voice/image)' }; } if (Object.keys(s.assets).length >= LIM.assets) { return { error: '素材太多了' }; } s.assets[id] = a; return {}; },
     remove_asset: (s, e) => { if (!s.assets[e.id]) { return { error: '沒有素材 ' + str(e.id, 30) }; } delete s.assets[e.id]; s.objects.forEach((o) => { if (o.type === 'scene' && o.bgm === e.id) { delete o.bgm; } }); return {}; },
+    // 整個遊戲換成另一份（成功案例當起點用）：{op:'replace_game', spec}；spec 先過檢查，編修次數（rev）保留目前的
+    replace_game: (s, e) => { if (!e.spec || typeof e.spec !== 'object') { return { error: 'replace_game 要有 spec' }; } const v = validate(e.spec); const n = v.spec || v; if (!n.objects || !n.objects.length) { return { error: '案例是空的' }; } s.game = n.game; s.assets = n.assets; s.objects = n.objects; s.seq = n.seq; return {}; },
     clear_scene: (s, e, env) => { const sc = currentScene(s, env, e); if (!sc) { return { error: '沒有場景' }; } s.objects = s.objects.filter((o) => !(o.parent === sc.id && o.type !== 'scene')); return {}; },
     apply_template: (s, e, env, st) => {
       const T = templates(); if (!T) { return { error: '範本模組沒載入' }; } const t = T.build(String(e.template || ''), { name: e.name }, { LIB, BEHAVIOR_LIB }); if (!t) { return { error: '沒有這個範本 "' + str(e.template, 30) + '"(有:' + T.list().map((x) => x.id).join('、') + ')' }; }

@@ -26085,7 +26085,8 @@ const holder = {};
     bUndo.title = 'Ctrl+Z'; bRedo.title = 'Ctrl+Y';
     var eo = h('option', null, '📤 輸出…'); eo.value = ''; bExp.appendChild(eo);
     (opt.exports || []).forEach(function (x) { var o1 = h('option', null, '⬇ 下載 ' + x.label); o1.value = 'dl:' + x.id; bExp.appendChild(o1); if (x.chat !== false && host.toChat) { var o2 = h('option', null, '💬 放進對話 ' + x.label); o2.value = 'chat:' + x.id; bExp.appendChild(o2); } });
-    [ttl, stat, bUndo, bRedo, bSum, bExp].forEach(function (x) { bar.appendChild(x); });
+    var bStar = h('button', null, '⭐ 存成案例'); bStar.title = '把這次做好的結果存成案例（進離線訓練器的知識）：下次相似的需求會拿它當參考，弱模型與離線模型會直接用它當起點；/edit-svg、/edit-3d、/edit-game-2d 後面接一句話也會用到'; if (!host.saveCase) { bStar.style.display = 'none'; }
+    [ttl, stat, bUndo, bRedo, bSum, bStar, bExp].forEach(function (x) { bar.appendChild(x); });
     var sum = h('div', 'sum'), sumTa = h('textarea'); sumTa.rows = 9; var sumRow = h('div', 'row'), bCopy = h('button', null, '📋 複製'), bPol = h('button', null, '✨ 請 AI 潤飾'), bSumX = h('button', null, '✕');
     sumRow.appendChild(h('span', 'st', '只收沒被復原、而且真的改變了成品的那幾輪對話；可以貼到別處重現')); [bCopy, bPol, bSumX].forEach(function (x) { sumRow.appendChild(x); }); sum.appendChild(sumTa); sum.appendChild(sumRow);
     var main = h('div', 'main'), objs = h('div', 'objs'), mid = h('div', 'mid'), mTabs = h('div', 'tabs'), side = h('div', 'side'), rTabs = h('div', 'tabs');
@@ -26181,7 +26182,7 @@ const holder = {};
       try {
         var pr = text && opt.parseCommands ? opt.parseCommands(text, spec0) : { edits: [], unmatched: text ? [text] : [] }; edits = pr.edits.slice(); var rest = pr.unmatched.join('，');
         if ((rest || imgs.length) && host.ask) {
-          var ans = ans0 = await host.ask({ text: rest, images: imgs, spec: spec0, selection: selected, onStatus: function (t) { think.textContent = t; dockSay.textContent = t; } });
+          var ans = ans0 = await host.ask({ text: rest, images: imgs, spec: spec0, selection: selected, fresh: effectiveSteps().length === 0, onStatus: function (t) { think.textContent = t; dockSay.textContent = t; } });
           say = (ans && ans.say) || ''; if (ans && ans.edits) { edits = edits.concat(ans.edits); } if (ans && ans.notes) { ans.notes.forEach(function (n) { chips.push(n); }); }
         } else if (rest) { say = '我沒聽懂：「' + rest.slice(0, 40) + '」。這個環境沒有 AI 可以幫忙，可以直接在物件欄與屬性面板改。'; }
         var r = W.applyEdits(spec0, edits, env()), next = spec0;
@@ -26220,10 +26221,13 @@ const holder = {};
         var steps = effectiveSteps(), spec = W.validate(cur()).spec;
         if (kind === 'chat') { await host.toChat(out.blob, out.name, { title: spec.title, prompt: opt.promptOf ? opt.promptOf(spec, steps) : defaultPrompt(spec, steps) }); stat.textContent = '已放進對話'; }
         else { host.download(out.blob, out.name, out.mime); stat.textContent = '已匯出'; }
+        if (host.saveCase && host.autoCase !== false && steps.length) { try { host.saveCase(caseInfo(), { auto: true }).catch(function () { /* 自動存不到不影響匯出 */ }); } catch (e2) { /* same */ } }
       } catch (e) { stat.textContent = '匯出失敗：' + String((e && e.message) || e).slice(0, 80); }
       setTimeout(function () { stat.textContent = ''; }, 4000);
     };
     bUndo.onclick = undo; bRedo.onclick = redo;
+    function caseInfo() { var sp = W.validate(cur()).spec, steps = effectiveSteps(); return { spec: sp, prompt: opt.promptOf ? opt.promptOf(sp, steps) : defaultPrompt(sp, steps), title: sp.title, requests: steps.filter(function (x) { return x.kind === 'chat' && x.text; }).map(function (x) { return x.text; }) }; }
+    bStar.onclick = async function () { if (!host.saveCase) { return; } stat.textContent = '存成案例…'; try { var r = await host.saveCase(caseInfo(), { auto: false }); stat.textContent = r && r.ok ? '⭐ 已存成案例「' + (r.title || r.kept || '') + '」' + (r.updated ? '（更新了舊的）' : '') : '存不了：' + ((r && r.error) || ''); } catch (e) { stat.textContent = '存不了：' + String((e && e.message) || e).slice(0, 60); } };
     el.addEventListener('keydown', function (ev) { var tag = ev.target && ev.target.tagName; if ((tag === 'TEXTAREA' || tag === 'INPUT' || tag === 'SELECT') && ev.target !== el) { return; } if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && ev.key.toLowerCase() === 'z') { ev.preventDefault(); undo(); } else if ((ev.ctrlKey || ev.metaKey) && (ev.key.toLowerCase() === 'y' || (ev.shiftKey && ev.key.toLowerCase() === 'z'))) { ev.preventDefault(); redo(); } else if ((ev.key === 'Delete' || ev.key === 'Backspace') && selected && tag !== 'TEXTAREA' && tag !== 'INPUT') { ev.preventDefault(); apply([{ op: 'remove_object', id: selected }], '刪掉物件 ' + selected, '', 'panel'); } });
     el.tabIndex = 0;
     function render() {
@@ -27936,6 +27940,100 @@ const holder = {};
 return holder.FaEditPictureI18n;
 })();
 /* EDPICI18N-END */
+/* EDCASES-BEGIN */
+const FaEditCases = (function () {
+const holder = {};
+(function (module, self) {
+// 編輯器的「成功案例」→ 離線訓練器的知識（純函式，沒有 DOM、沒有儲存；node 與瀏覽器都能跑）。測試 scripts/edit-tests/edit_cases.test.js；設計見 DESIGN.edit-cases.md。
+// 想法：使用者跟 AI 來回幾輪、終於做出一張好的小提琴（或好的 3D 場景、簡報、遊戲），這個過程有價值——
+//   ① 當時「整理成 prompt」那一段（只收有效的幾輪）是一個已知有效的做法；② 最後的成品（規格）本身可以直接當下次的起點。
+// 存進離線訓練器（它自己的領域 editor_cases；一個案例＝一個 semantic pattern：範例語句、意圖、參考 prompt、開對應編輯器的工具與參數樣板），
+// 所以案例跟訓練器其他知識一樣：用同一套語意比對與同義詞、在訓練器裡看得到／可以停用／可以刪、離線也能用。
+// 下次相似的需求（不論是在編輯器裡說，還是 /edit-svg、/edit-3d、/edit-game-2d 後面接一句話）：
+//   強模型：只多一小段參考（範例的 prompt 摘要＋物件清單，字數依模型上下文大小縮放）；
+//   弱模型／離線：程式直接把範例的成品放進去當起點（不經過模型），模型只負責後面的微調。
+// 成品（大）不放在訓練器的記憶體裡：只有 pattern（小）在訓練器，成品在獨立的資料表，用到才讀；每個案例有大小上限、整體有數量與容量上限。
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaEditCases = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var KINDS = ['edit-svg', 'edit-picture', 'edit-3d', 'edit-media-presentation', 'edit-game-2d', 'edit-game-3d'];
+  var DOMAIN = 'editor_cases', PREFIX = 'case_';
+  var TOOL_OF = { 'edit-svg': 'edit_svg_open', 'edit-picture': 'edit_picture_open', 'edit-3d': 'edit_3d_open' };
+  var LIM = { specBytes: 600000, prompt: 6000, title: 60, request: 200, requests: 4, entries: 300, totalBytes: 48 * 1024 * 1024, names: 40, minSim: 0.5, replaySim: 0.62, strongReplaySim: 0.86 };
+  function str(v, n) { return String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, n); }
+  function nameList(kind, spec) {
+    var objs = (spec && spec.objects) || [], out = [];
+    if (kind === 'edit-media-presentation') { objs = objs.filter(function (o) { return o.type === 'slide'; }); }
+    if (kind === 'edit-game-2d' || kind === 'edit-game-3d') { objs = objs.filter(function (o) { return o.type === 'prefab' || o.type === 'scene'; }); }
+    objs.forEach(function (o) { if (o && o.name && out.length < LIM.names) { out.push(String(o.name).slice(0, 24)); } });
+    return out;
+  }
+  // 把目前的編輯器狀態變成一個案例：{ pattern（小，進訓練器）, body（大，用到才讀）}；太大／太空就回 { error }
+  function makeEntry(o) {
+    o = o || {}; var kind = o.kind; if (KINDS.indexOf(kind) < 0) { return { error: '不認得的編輯器種類' }; }
+    var spec = o.spec; if (!spec || !Array.isArray(spec.objects) || !spec.objects.length) { return { error: '場景是空的，沒有可以存的成品' }; }
+    var specText = JSON.stringify(spec); if (specText.length > LIM.specBytes) { return { error: '成品太大（' + Math.round(specText.length / 1024) + ' KB，上限 ' + Math.round(LIM.specBytes / 1024) + ' KB）' }; }
+    var prompt = String(o.prompt || '').slice(0, LIM.prompt), names = nameList(kind, spec), title = str(o.title || spec.title || (names[0] || ''), LIM.title) || '未命名案例';
+    var reqs = (Array.isArray(o.requests) ? o.requests : []).map(function (x) { return str(x, LIM.request); }).filter(function (x) { return x.length >= 2; }).slice(0, LIM.requests);
+    var now = o.now || Date.now(), id = o.id || (PREFIX + now.toString(36) + Math.random().toString(36).slice(2, 6));
+    // 訓練器是拿「範例語句」做語意比對的：標題、使用者當時說的話、有效 prompt 的開頭
+    // 標題＋物件名字也當一個範例語句：使用者這次說的話通常是「畫一把小提琴，棕色的琴身、黑色的指板」這種長句，跟只有標題比對不上，跟「標題＋零件名」才比得上
+    var examples = [title]; if (names.length) { examples.push(str(title + ' ' + names.slice(0, 8).join(' '), 120)); } examples = examples.concat(reqs); if (prompt) { examples.push(str(prompt, 180)); }
+    var seen = {}; examples = examples.filter(function (x) { var k = x.toLowerCase(); if (!x || seen[k]) { return false; } seen[k] = 1; return true; });
+    var pattern = { id: id, type: 'semantic', examples: examples, intent: '編輯器成功案例：' + title, description: str(prompt, 300), tool: TOOL_OF[kind] || '', args: TOOL_OF[kind] ? { request: str(prompt || reqs[0] || title, 600) } : {}, risk: 'safe', confidence: 0.7, source: 'editor-case', enabled: true, hits: 0,
+      stats: { kind: kind, title: title, objects: spec.objects.length, bytes: specText.length + prompt.length, savedAt: now, lastUsed: now, uses: 0, auto: !!o.auto, names: names.slice(0, 12) } };
+    return { pattern: pattern, body: { id: id, spec: spec, prompt: prompt, names: names } };
+  }
+  function isCase(p) { return !!p && p.source === 'editor-case' && p.stats && KINDS.indexOf(p.stats.kind) >= 0; }
+  // 語意比對對「長句」不公平（使用者說「畫一把小提琴，棕色的琴身和黑色的指板」，案例的範例語句是「小提琴」「小提琴 琴身 指板」）：
+  // 再用字面對一次——案例的標題出現在這句話裡就是強訊號，案例的零件名也出現越多越像（只在這句話裡有出現才算，不會把不相干的案例拉上來）
+  function lexical(text, p) {
+    var t = String(text || ''); if (!t || !p || !p.stats) { return 0; } var title = String(p.stats.title || ''), titleHit = title.length >= 2 && t.indexOf(title) >= 0; if (!titleHit) { return 0; }
+    var names = p.stats.names || [], hit = names.filter(function (n) { return n && t.indexOf(n) >= 0; }).length, cover = names.length ? hit / names.length : 0; return 0.66 + 0.2 * cover;
+  }
+  // 訓練器比對出來的結果（[{ p: pattern, sim }]）→ 這個編輯器種類、相似度夠高的案例，由好到壞；使用者自己存的比自動存的優先，用過的略微加分，被停用的不算
+  function rank(hits, kind, opt) {
+    opt = opt || {}; var minSim = opt.minSim != null ? opt.minSim : LIM.minSim, out = [];
+    (hits || []).forEach(function (h) {
+      var p = h.p; if (!isCase(p) || p.enabled === false || p.stats.kind !== kind) { return; } var sim = Math.max(h.sim || 0, lexical(opt.text, p));
+      if (!(sim >= minSim)) { return; } out.push({ p: p, sim: sim, score: sim * (p.stats.auto ? 0.93 : 1) * (1 + Math.min(p.stats.uses || 0, 5) * 0.01) });
+    });
+    out.sort(function (a, b) { return b.score - a.score; });
+    var seen = {}; return out.filter(function (x) { if (seen[x.p.id]) { return false; } seen[x.p.id] = 1; return true; }).slice(0, opt.top || 2);
+  }
+  // 給強模型的一小段參考；budgetChars 依模型上下文大小決定（呼叫端算），這裡再夾在 200～1500 字
+  function refBlock(body, title, sim, budgetChars) {
+    var budget = Math.max(200, Math.min(1500, Math.round(budgetChars || 600))), head = '【成功案例（相似度 ' + Math.round(sim * 100) / 100 + '）：' + title + '】', names = (body.names || []).join('、');
+    var tail = names ? '\n這個案例做出來的物件：' + names : '', room = Math.max(60, budget - head.length - tail.length - 40), pr = str(body.prompt, 100000);
+    if (pr.length > room) { pr = pr.slice(0, room - 1) + '…'; }
+    var out = head + (pr ? '\n當時有效的做法：' + pr : '') + tail; if (out.length > budget - 30) { out = out.slice(0, budget - 31) + '…'; }
+    return out + '\n（只當參考，照使用者這一次的要求做；案例的座標與細節可以不同。）';
+  }
+  // 案例的成品 → 動作（弱模型／離線時程式直接用，不經過模型）。deps.deckToDoc：簡報的規格轉文件（簡報核心提供）
+  function replayEdits(kind, spec, deps) {
+    if (!spec || !Array.isArray(spec.objects)) { return null; } var copy = JSON.parse(JSON.stringify(spec));
+    if (kind === 'edit-3d') { return [{ op: 'replace_scene', spec: copy }]; }
+    if (kind === 'edit-game-2d' || kind === 'edit-game-3d') { return [{ op: 'replace_game', spec: copy }]; }
+    if (kind === 'edit-media-presentation') { return deps && deps.deckToDoc ? [{ op: 'replace_deck', doc: deps.deckToDoc(copy) }] : null; }
+    if (kind === 'edit-svg' || kind === 'edit-picture') { return [{ op: 'clear_objects' }].concat(copy.objects.map(function (o) { delete o.id; return { op: 'add_object', object: o }; })); }
+    return null;
+  }
+  // 這次要不要直接放案例的成品：還沒開始做（場景幾乎是空的，或根本沒改過）、而且相似度夠高；弱模型門檻低、強模型要幾乎一樣
+  // fresh＝這個編輯器還沒有任何有效的修改（遊戲一開就是整套範本、有二十幾個物件，也算「還沒開始做」）
+  function shouldReplay(sceneObjectCount, sim, weak, fresh) { if (!fresh && sceneObjectCount > 3) { return false; } return sim >= (weak ? LIM.replaySim : LIM.strongReplaySim); }
+  // 超過數量或容量時要淘汰哪些（傳 pattern 的 stats 清單）：自動存的先、最久沒用的先；使用者自己存的盡量留
+  function evictPlan(list, caps) {
+    caps = caps || {}; var maxN = caps.entries || LIM.entries, maxB = caps.totalBytes || LIM.totalBytes, items = (list || []).map(function (p) { return { id: p.id, bytes: p.stats.bytes || 0, lastUsed: p.stats.lastUsed || 0, auto: !!p.stats.auto }; }), total = items.reduce(function (a, m) { return a + m.bytes; }, 0), drop = [];
+    items.sort(function (a, b) { return (b.auto ? 1 : 0) - (a.auto ? 1 : 0) || a.lastUsed - b.lastUsed; });
+    while (items.length && (items.length > maxN || total > maxB)) { var m = items.shift(); drop.push(m.id); total -= m.bytes; }
+    return drop;
+  }
+  return { KINDS: KINDS, DOMAIN: DOMAIN, PREFIX: PREFIX, TOOL_OF: TOOL_OF, LIM: LIM, makeEntry: makeEntry, isCase: isCase, rank: rank, refBlock: refBlock, replayEdits: replayEdits, shouldReplay: shouldReplay, evictPlan: evictPlan, nameList: nameList };
+});
+
+}).call(null, undefined, holder);
+return holder.FaEditCases;
+})();
+/* EDCASES-END */
 /* MESHGEN-BEGIN */
 const FaMeshGen = (function () {
 const holder = {};
@@ -28073,7 +28171,7 @@ const holder = {};
   'use strict';
   var PI = Math.PI, LIM = { objects: 400, name: 60, title: 80, coord: 10000, skins: 24, extra: 3000000 };
   var MESHES = { box: '方塊', sphere: '球', cylinder: '圓柱', cone: '圓錐', plane: '平面', torus: '圓環', polygon: '自訂形狀', particles: '粒子', line: '線' };
-  var OPS = ['set_title', 'set_background', 'set_camera', 'add_model', 'add_object', 'update_object', 'remove_object', 'rename_object', 'move_object', 'set_visible', 'set_locked', 'duplicate_object', 'clear_objects', 'place_object', 'transform_object', 'group_objects', 'ungroup', 'set_parent', 'set_material', 'add_skin', 'update_skin', 'remove_skin', 'clear_skins', 'set_skins', 'drop_to_ground', 'align_objects'];
+  var OPS = ['set_title', 'set_background', 'set_camera', 'replace_scene', 'add_model', 'add_object', 'update_object', 'remove_object', 'rename_object', 'move_object', 'set_visible', 'set_locked', 'duplicate_object', 'clear_objects', 'place_object', 'transform_object', 'group_objects', 'ungroup', 'set_parent', 'set_material', 'add_skin', 'update_skin', 'remove_skin', 'clear_skins', 'set_skins', 'drop_to_ground', 'align_objects'];
   var HOST_OPS = ['find_picture', 'generate_image'];
   function str(v, max) { return String(v == null ? '' : v).replace(/\u0000/g, '').slice(0, max || 200); }
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
@@ -28283,6 +28381,11 @@ const holder = {};
       if (e.zoom != null) { var k = num(e.zoom, 0.05, 20, 1), dv = vsub(cam.position, cam.look_at); cam.position = vadd(cam.look_at, vmul(dv, 1 / k)); cam.position = [r3(cam.position[0]), r3(cam.position[1]), r3(cam.position[2])]; }
       s.camera = cameraOf(cam, s.camera); return {};
     },
+    // 整個場景換成另一份（成功範例當起點用）：{op:'replace_scene', spec}，spec 要先過檢查；標題保留目前的
+    replace_scene: function (s, e) {
+      if (!e.spec || typeof e.spec !== 'object') { return { error: 'replace_scene 要有 spec' }; } var v = validate(e.spec).spec; if (!v.objects.length) { return { error: '範例是空的' }; }
+      s.objects = v.objects; s.background = v.background; s.camera = v.camera; s.seq = v.seq; return {};
+    },
     // 內建模型庫的東西：{op:'add_model', model:'teapot', name?, height?, color?, place?}（沒有這個模型就回錯誤，說明有哪些）
     add_model: function (s, e, env, st) {
       var id = String(e.model || e.name || '').toLowerCase(), hit = (MG && (MG.info(id) || MG.find(id))) || null; if (!hit) { return { error: '沒有內建模型「' + str(id, 20) + '」（有：' + (MG ? MG.CATALOG.map(function (c) { return c.id + '=' + c.label; }).join('、') : '無') + '）；改用基本圖元組合，或 mesh:"polygon" 自己給 vertices／faces' }; }
@@ -28399,6 +28502,7 @@ const holder = {};
     if (!e) { return ''; } var id = e.id ? (' ' + str(e.id, 30)) : '';
     switch (e.op) {
       case 'set_title': return '標題改成「' + str(e.text, 40) + '」'; case 'set_background': return '背景 ' + str(e.color || e.background, 20); case 'set_camera': return '調整視角';
+      case 'replace_scene': return '用範例的場景當起點（' + ((e.spec && e.spec.objects && e.spec.objects.length) || 0) + ' 個物件）';
       case 'add_model': { var mi = MG && (MG.info(String(e.model || '').toLowerCase()) || MG.find(String(e.model || ''))); return '新增模型「' + (e.name || (mi && mi.label) || str(e.model, 20)) + '」' + (e.place ? '（' + placeWords(e.place) + '）' : ''); }
       case 'add_object': { var o = e.object || {}; return '新增' + (o.name ? ' ' + str(o.name, 30) : (o.type === 'light' ? '燈光' : o.type === 'group' ? '群組' : (MESHES[o.mesh] || '物件'))) + (e.place ? '（' + placeWords(e.place) + '）' : ''); }
       case 'update_object': return '修改物件' + id; case 'remove_object': return '刪掉物件' + id; case 'rename_object': return str(e.id, 30) + ' 改名為 ' + str(e.name, 30);
@@ -29112,6 +29216,7 @@ const FaEditHost = (function () {
     'use strict';
     const zh = () => { const l = String((document.documentElement && document.documentElement.lang) || (typeof window !== 'undefined' && window.FaUiLocale && window.FaUiLocale.locale) || ''); return !l || /^zh/i.test(l); };
     const T = (a, b) => (zh() ? a : b);
+    const str0 = (v, n) => String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, n);
     const words = (t) => String(t || '').toLowerCase().split(/[^a-z0-9一-鿿]+/).filter((w) => w.length > 2 || /[一-鿿]/.test(w));
     const overlap = (a, b) => { const A = {}, B = {}; let n = 0, u = 0; words(a).forEach((w) => { A[w] = 1; }); words(b).forEach((w) => { B[w] = 1; }); Object.keys(A).forEach((w) => { u++; if (B[w]) n++; }); Object.keys(B).forEach((w) => { if (!A[w]) u++; }); return u ? n / u : 0; };
     const VECTOR_WORDS = /(svg|向量|描摹|描圖|trace|vector|轉成?圖形|變成?圖形|畫成)/i, PLACE_WORDS = /(放進|放入|放到|貼上|貼到|加入|加進|插入|擺|place|insert|put|add)/i;
@@ -29134,7 +29239,7 @@ const FaEditHost = (function () {
             const self = this, stepOf = () => (self._edQuiet && self._edQuiet.sink) || undefined;
             return {
                 have() { try { const c = self._getApiConfig(); return !!(c && c.apiKey) || !!(self.advancedSettings && self.advancedSettings.offlineMode); } catch (_) { return false; } },
-                async chat(system, user, o) { o = o || {}; return String(await self._kiLlm(user, { systemPrompt: system || '', maxTokens: o.maxTokens || 8000, temperature: o.temperature == null ? 0.2 : o.temperature }, { timeoutMs: o.timeoutMs || 180000, label: o.label || 'AI', onStep: stepOf() })); },
+                async chat(system, user, o) { o = o || {}; const refB = self._edQuiet && self._edQuiet.ref; if (refB) user = String(user) + String.fromCharCode(10, 10) + refB; return String(await self._kiLlm(user, { systemPrompt: system || '', maxTokens: o.maxTokens || 8000, temperature: o.temperature == null ? 0.2 : o.temperature }, { timeoutMs: o.timeoutMs || 180000, label: o.label || 'AI', onStep: stepOf() })); },
                 // 離線小模型用的封閉題：只回答一個字母（題目與解析見 edit_offline.js）；答不出來回傳 null，由程式用預設
                 async pick(question, options) { const r = await self._kiLlm(FaEditOffline.letterPrompt(question, options), { systemPrompt: '你是選擇題的回答者。只回答一個大寫字母，不要解釋。', maxTokens: 16, temperature: 0 }, { timeoutMs: 60000, label: '選擇題', onStep: stepOf() }); return FaEditOffline.parseLetter(r, options.length); },
                 // 只有「把一段字改寫得更短／更長」這種真的要寫字的事才請模型自由寫
@@ -29152,6 +29257,64 @@ const FaEditHost = (function () {
             let r; try { r = await FaEditOffline.make(adapters[kind]()).run(String(text), spec, e2, (q, opts) => A.pick(q, opts), (t, how) => A.rewrite(t, how)); } catch (e) { return { edits: [], notes: [String((e && e.message) || e).slice(0, 80)], unmatched: [String(text)], asked: [] }; }
             const asked = r.asked.filter((a) => a.by === 'model').length;
             return { edits: r.edits, notes: r.notes.concat(asked ? [T('問了模型 ' + asked + ' 個選擇題', 'asked the model ' + asked + ' multiple-choice questions')] : []), unmatched: r.unmatched, asked: r.asked, say: r.edits.length ? T('離線：程式讀懂了 ' + r.matched.length + ' 句', 'Offline: the program understood ' + r.matched.length + ' sentence(s)') : '' };
+        },
+        // ───── 成功案例 → 離線訓練器的知識（設計見 DESIGN.edit-cases.md）：做出好結果 → 存成訓練器的案例 → 下次相似的需求拿來參考（強模型）或直接當起點（弱模型／離線） ─────
+        // 案例是訓練器領域 editor_cases 裡的一個 semantic pattern（範例語句、意圖、參考 prompt、開編輯器的工具與參數樣板）：用訓練器自己的語意比對與同義詞、在訓練器裡看得到／可以停用／可以刪。
+        // 成品（大）不放訓練器的記憶體：存在獨立的資料表（FloatingAssistantEditCases/body），用到才讀；訓練器裡只有小小的 pattern，所以不吃記憶體、也不進對話上下文。
+        _edCasesOn() { return typeof FaEditCases !== 'undefined' && typeof this._otLoad === 'function' && !(this.advancedSettings && this.advancedSettings.editorCasesOff === true); },
+        _edCasesDb() {
+            if (this._edCasesDbP) return this._edCasesDbP;
+            this._edCasesDbP = new Promise((resolve, reject) => { const rq = indexedDB.open('FloatingAssistantEditCases', 2); rq.onupgradeneeded = () => { const db = rq.result; if (db.objectStoreNames.contains('meta')) db.deleteObjectStore('meta'); if (!db.objectStoreNames.contains('body')) db.createObjectStore('body', { keyPath: 'id' }); }; rq.onsuccess = () => resolve(rq.result); rq.onerror = () => reject(rq.error); });
+            this._edCasesDbP.catch(() => { this._edCasesDbP = null; }); return this._edCasesDbP;
+        },
+        async _edCasesTx(mode, fn) { const db = await this._edCasesDb(); return new Promise((resolve, reject) => { const tx = db.transaction(['body'], mode); let out; Promise.resolve(fn(tx.objectStore('body'))).then((v) => { out = v; }, reject); tx.oncomplete = () => resolve(out); tx.onerror = tx.onabort = () => reject(tx.error); }); },
+        _edReq(rq) { return new Promise((resolve, reject) => { rq.onsuccess = () => resolve(rq.result); rq.onerror = () => reject(rq.error); }); },
+        async _edCaseDomain(create) { const st = await this._otLoad(); let dom = st.domains.get(FaEditCases.DOMAIN); if (!dom && create) { dom = { name: FaEditCases.DOMAIN, description: '編輯器的成功案例（在編輯器裡做出好結果，按「⭐ 存成案例」或匯出時自動存；下次相似的需求會拿來參考，弱模型與離線時直接當起點）', enabled: true, source: 'editor', patterns: [], tools: [], states: { initial: null, states: {} } }; } return dom || null; },
+        // 目前所有案例（訓練器裡的 pattern）；順便清掉「pattern 已經被刪（例如在訓練器裡刪掉）但成品還留著」的孤兒
+        async _edCaseList() { const dom = await this._edCaseDomain(false); return dom ? dom.patterns.filter(FaEditCases.isCase) : []; },
+        async _edCasesGc() {
+            if (this._edCasesGcDone) return; this._edCasesGcDone = true; try { const live = new Set((await this._edCaseList()).map((p) => p.id)); const ids = await this._edCasesTx('readonly', (os) => this._edReq(os.getAllKeys())); const orphan = ids.filter((id) => !live.has(id)); if (orphan.length) await this._edCasesTx('readwrite', (os) => { orphan.forEach((id) => os.delete(id)); }); } catch (_) { /* 下次再清 */ }
+        },
+        // 存一個案例：info＝{ spec, prompt, title, requests }；opt.auto＝自動存的（排序略低、最先被淘汰）。相似度很高的舊案例直接更新，不重複存
+        async _edCaseSave(kind, info, opt) {
+            opt = opt || {}; if (!this._edCasesOn()) return { ok: false, error: '案例庫關閉了（Advance Settings 的 editorCasesOff）' };
+            const ent = FaEditCases.makeEntry({ kind, title: info.title, prompt: info.prompt, requests: info.requests, spec: info.spec, auto: !!opt.auto }); if (ent.error) return { ok: false, error: ent.error };
+            const dom = await this._edCaseDomain(true), p = ent.pattern, same = this._edCaseHits(kind, p.examples.join('。'), 1, 0.94)[0];
+            if (same) { if (opt.auto && !same.p.stats.auto) return { ok: true, kept: same.p.stats.title, duplicate: true }; p.id = same.p.id; ent.body.id = same.p.id; p.stats.uses = same.p.stats.uses || 0; p.hits = same.p.hits || 0; p.stats.auto = same.p.stats.auto && !!opt.auto; }
+            dom.patterns = dom.patterns.filter((x) => x.id !== p.id).concat([p]); await this._otSaveDomain(dom); await this._otSyncPatternExamples(dom, p);
+            await this._edCasesTx('readwrite', (os) => { os.put(ent.body); });
+            try { const drop = FaEditCases.evictPlan(await this._edCaseList()); if (drop.length) await this._edCaseDelete(drop); } catch (_) { /* 淘汰失敗下次再說 */ }
+            return { ok: true, id: p.id, title: p.stats.title, updated: !!same };
+        },
+        async _edCaseDelete(ids) { const dom = await this._edCaseDomain(false); if (!dom) return 0; const set = new Set(ids); dom.patterns = dom.patterns.filter((p) => !set.has(p.id)); await this._otSaveDomain(dom); for (const id of ids) { await this._otVecDelete('ot_examples', (eid) => eid.indexOf(dom.name + '/' + id + '#') === 0); } await this._edCasesTx('readwrite', (os) => { ids.forEach((id) => os.delete(id)); }); return ids.length; },
+        // 用訓練器的語意比對找案例（只看領域 editor_cases、同一種編輯器）
+        _edCaseHits(kind, text, top, minSim) {
+            const st = this._ot; if (!st || !st.loaded) return []; const dom = st.domains.get(FaEditCases.DOMAIN); if (!dom || !dom.patterns.length) return [];
+            const byId = new Map(dom.patterns.map((p) => [p.id, p])), raw = this._otVecQuery('ot_examples', text, 12, (m) => m && m.domain === FaEditCases.DOMAIN);
+            const cand = raw.map((h) => ({ p: byId.get(h.meta.pattern), sim: h.sim })), seen = new Set(cand.map((x) => x.p && x.p.id));
+            dom.patterns.forEach((p) => { if (FaEditCases.isCase(p) && !seen.has(p.id) && p.stats.title && String(text).indexOf(p.stats.title) >= 0) cand.push({ p, sim: 0 }); });   // 標題直接出現在這句話裡：就算語意比對沒排進前面也算候選
+            return FaEditCases.rank(cand, kind, { top: top || 2, minSim, text });
+        },
+        // 平常的對話（不在編輯器裡）：這句話跟某個成功案例很像 → 在這一輪的提示裡多一小段「有這個案例，可以直接用」。同步的（只用已經載入的訓練器），沒有相似的案例就什麼都不加。
+        _edCaseTaskHint(text) {
+            try {
+                if (!this._edCasesOn() || !this._ot || !this._ot.loaded) return ''; text = String(text || '').replace(/\[附件：[^\]]*\]/g, ' ').trim(); if (text.length < 4 || text.length > 600) return '';
+                let best = null; FaEditCases.KINDS.forEach((k) => { const h = this._edCaseHits(k, text, 1, 0.6)[0]; if (h && (!best || h.score > best.score)) best = Object.assign({ kind: k }, h); }); if (!best) return '';
+                const tool = FaEditCases.TOOL_OF[best.kind], label = { 'edit-svg': 'SVG 編輯器', 'edit-picture': '圖片編輯器', 'edit-3d': '3D 場景編輯器', 'edit-media-presentation': '簡報編輯器', 'edit-game-2d': '2D 遊戲編輯器', 'edit-game-3d': '3D 遊戲編輯器' }[best.kind], offline = !!(this.advancedSettings && this.advancedSettings.offlineMode), budget = Math.max(300, Math.min(1200, Math.round(this._kiBudgetChars(offline) * 0.1)));
+                const how = str0(best.p.description, Math.max(120, budget - 260)), use = tool ? '用法：這句話跟這個案例很像——直接呼叫 ' + tool + '（request 給上面這段做法），會用這個案例當起點，不用從頭畫；也可以照這個做法自己畫。' : '用法：這句話跟這個案例很像——請使用者輸入 /' + best.kind + ' 後面接這句話（會用這個案例當起點），或照這個做法自己做。';
+                return '【你之前存的成功案例（相似度 ' + Math.round(best.sim * 100) / 100 + '）：' + best.p.stats.title + '（' + label + '）】' + String.fromCharCode(10) + '當時有效的做法：' + how + String.fromCharCode(10) + use;
+            } catch (_) { return ''; }
+        },
+        // 這次的需求有沒有相似的成功案例？回傳 { title, sim, block（給模型的小段參考）, replay（弱模型／離線：程式直接放進去的結果） } 或 null
+        async _edCaseFor(kind, req) {
+            if (!this._edCasesOn() || !req) return null; const text = String(req.text || '').trim(); if (text.length < 4) return null;
+            await this._otLoad(); this._edCasesGc(); const hit = this._edCaseHits(kind, text, 1)[0]; if (!hit) return null;
+            const body = await this._edCasesTx('readonly', (os) => this._edReq(os.get(hit.p.id))); if (!body) return null;
+            hit.p.stats.uses = (hit.p.stats.uses || 0) + 1; hit.p.hits = (hit.p.hits || 0) + 1; hit.p.stats.lastUsed = Date.now(); this._edCaseDomain(false).then((dom) => dom && this._otSaveDomain(dom)).catch(() => { /* 用過幾次只是加分 */ });
+            const offline = !!(this.advancedSettings && this.advancedSettings.offlineMode), weak = offline || (this.advancedSettings && this.advancedSettings.editorCasesWeak === true), budget = Math.max(300, Math.min(1500, Math.round(this._kiBudgetChars(offline) * 0.12))), title = hit.p.stats.title;
+            const nObj = req.spec && Array.isArray(req.spec.objects) ? req.spec.objects.length : 0, out = { title, sim: hit.sim, block: FaEditCases.refBlock(body, title, hit.sim, budget) };
+            if (FaEditCases.shouldReplay(nObj, hit.sim, weak, !!req.fresh)) { const edits = FaEditCases.replayEdits(kind, body.spec, { deckToDoc: typeof FaDeckEdit !== 'undefined' ? FaDeckEdit.toDoc : null }); if (edits) out.replay = { say: T('用你之前存的案例「' + title + '」當起點（相似度 ' + Math.round(hit.sim * 100) + '%），可以再用說的調整。', 'Started from your saved case "' + title + '" (' + Math.round(hit.sim * 100) + '% alike); keep talking to adjust it.'), edits, notes: [T('案例不經過模型，直接放進去', 'the case is placed by the program, not the model')] }; }
+            return out;
         },
         _edFetchFn() {
             const self = this;
@@ -29331,13 +29494,19 @@ const FaEditHost = (function () {
         _edHost(kind, id, getSpecState) {
             const self = this, K = KINDS[kind], ai = this._edAi();
             const ask0 = kind === 'edit-svg' ? (req) => self._edAskSvg(req, { id }) : kind === 'edit-picture' ? (req) => self._edAskPicture(req, { id }) : (req) => K.ask.call(self, req, { id });
-            const ask = (req) => self._edQuietRun((line) => { try { if (req && typeof req.onStatus === 'function') req.onStatus(line); } catch (_) { /* */ } }, () => ask0(req));
+            const ask = (req) => self._edQuietRun((line) => { try { if (req && typeof req.onStatus === 'function') req.onStatus(line); } catch (_) { /* */ } }, async () => {
+                let hit = null; try { hit = await self._edCaseFor(kind, req); } catch (_) { hit = null; }   // 範例庫壞了不影響編輯
+                if (hit && hit.replay) return hit.replay;                                                  // 弱模型／離線：程式直接放範例的成品，不經過模型
+                if (hit && self._edQuiet) self._edQuiet.ref = hit.block;                                    // 強模型：只多一小段參考
+                return ask0(req);
+            });
             return {
                 palette: () => ({ dark: !self._isLightTheme() }),
                 ask,
                 save: async (state) => { const c = getSpecState(); let old = null; try { old = await FaEditStore.loadProject(kind, id); } catch (_) { /* a new project */ } return FaEditStore.saveProject(kind, id, Object.assign({}, old && old.origin ? { origin: old.origin } : {}, { v: 1, spec: c.spec, state })); },
                 download: (blob, name, mime) => self.generateAndDeliverFile(blob, name, mime || blob.type),
                 toChat: (blob, name, info) => self._edToChat(kind, blob, name, info),
+                saveCase: (info, o) => self._edCaseSave(kind, info, o),
                 polish: (self.advancedSettings && self.advancedSettings.offlineMode) ? undefined : (async (text) => String(await ai.chat(K.polishSystem || ('You tidy a prompt that rebuilds ' + (kind === 'edit-svg' ? 'a drawing' : 'an edited picture') + '. Keep every fact (objects, colours, places, texts); make it one clear, reusable prompt. Answer with the prompt only.'), text, { maxTokens: 1200, timeoutMs: 90000 })).trim()),
             };
         },
@@ -30265,7 +30434,7 @@ const holder = {};
   const OPS = ['set_game', 'set_title', 'set_interaction', 'set_input', 'set_var', 'remove_var', 'set_audio_bus', 'set_start', 'add_scene', 'remove_scene', 'update_scene', 'set_tilemap', 'paint_tiles', 'fill_tiles', 'set_bgm',
     'add_object', 'update_object', 'remove_object', 'rename_object', 'move_object', 'set_visible', 'set_locked', 'duplicate_object', 'place_object', 'transform_object', 'set_prop',
     'add_prefab', 'update_prefab', 'remove_prefab', 'set_behavior', 'add_behavior', 'remove_behavior', 'add_state', 'remove_state', 'add_rule', 'edit_rule', 'delete_rule',
-    'add_path', 'update_path', 'add_zone', 'update_zone', 'remove_entity', 'add_dialog', 'update_dialog', 'add_transition', 'add_asset', 'remove_asset', 'apply_template', 'clear_scene'];
+    'add_path', 'update_path', 'add_zone', 'update_zone', 'remove_entity', 'add_dialog', 'update_dialog', 'add_transition', 'add_asset', 'remove_asset', 'apply_template', 'clear_scene', 'replace_game'];
   const HOST_OPS = ['find_picture', 'generate_image', 'make_sprite', 'make_voice'];
   const nameFor = (spec, base, type) => { const names = {}; spec.objects.forEach((o) => { if (!type || o.type === type) { names[o.name] = 1; } }); if (!names[base]) { return base; } for (let n = 2; n < 999; n++) { if (!names[base + ' ' + n]) { return base + ' ' + n; } } return base; };
   const nextId = (spec, type) => { const p = { scene: 's', object: 'o', zone: 'z', path: 'p', dialog: 'd', prefab: 'f', behavior: 'b' }[type]; let id; do { spec.seq++; id = p + spec.seq; } while (byId(spec, id) >= 0); return id; };
@@ -30354,6 +30523,8 @@ const holder = {};
     },
     add_asset: (s, e) => { const id = String(e.id || '').replace(/^asset\./, ''); if (!/^[A-Za-z0-9_-]{1,40}$/.test(id)) { return { error: 'id 不合法' }; } const a = normAssets({ [id]: e.asset })[id]; if (!a) { return { error: '素材不合法(kind 要是 sound/song/voice/image)' }; } if (Object.keys(s.assets).length >= LIM.assets) { return { error: '素材太多了' }; } s.assets[id] = a; return {}; },
     remove_asset: (s, e) => { if (!s.assets[e.id]) { return { error: '沒有素材 ' + str(e.id, 30) }; } delete s.assets[e.id]; s.objects.forEach((o) => { if (o.type === 'scene' && o.bgm === e.id) { delete o.bgm; } }); return {}; },
+    // 整個遊戲換成另一份（成功案例當起點用）：{op:'replace_game', spec}；spec 先過檢查，編修次數（rev）保留目前的
+    replace_game: (s, e) => { if (!e.spec || typeof e.spec !== 'object') { return { error: 'replace_game 要有 spec' }; } const v = validate(e.spec); const n = v.spec || v; if (!n.objects || !n.objects.length) { return { error: '案例是空的' }; } s.game = n.game; s.assets = n.assets; s.objects = n.objects; s.seq = n.seq; return {}; },
     clear_scene: (s, e, env) => { const sc = currentScene(s, env, e); if (!sc) { return { error: '沒有場景' }; } s.objects = s.objects.filter((o) => !(o.parent === sc.id && o.type !== 'scene')); return {}; },
     apply_template: (s, e, env, st) => {
       const T = templates(); if (!T) { return { error: '範本模組沒載入' }; } const t = T.build(String(e.template || ''), { name: e.name }, { LIB, BEHAVIOR_LIB }); if (!t) { return { error: '沒有這個範本 "' + str(e.template, 30) + '"(有:' + T.list().map((x) => x.id).join('、') + ')' }; }
@@ -62223,7 +62394,8 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             for (let i = ms.length - 1; i >= 0; i--) {
                 const m = ms[i]; if (!m || m.role !== 'user') continue;
                 const c = typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.map((x) => (x && x.text) || '').join('\n') : '');
-                return _faTaskToolHints(c);
+                const hints = _faTaskToolHints(c); try { const eh = this._edCaseTaskHint && this._edCaseTaskHint(c); if (eh) hints.push({ note: eh }); } catch (_) { /* 案例提示只是加分 */ }
+                return hints;
             }
         } catch (_) { /* 取不到就不補 */ }
         return [];
@@ -63000,10 +63172,25 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             if ((!a.route || a.route === 'auto') && plan.ask) {
                 try { const rp = await this._kiLlm('使用者想要的圖：「' + (request || caption).slice(0, 300) + '」\n這張圖該怎麼畫？只回答一個字母：\nA = 單純形狀的組合（流程圖、架構圖、圖表、幾何圖形、圖示，用 SVG 或 Mermaid 純文字就能畫）\nB = 要畫面的圖（照片、插畫、人物、風景、畫風，要用擴散模型畫）', { systemPrompt: '你只負責分流，只回答 A 或 B。', maxTokens: 40, temperature: 0 }, { label: '分流', timeoutMs: 30000, onStep: note }); const m = /[AB]/i.exec(String(rp || '')); if (m) route = m[0].toUpperCase() === 'A' ? 'shapes' : 'diffusion'; } catch (_) { /* 用程式的預設 */ }
             }
+            // 2b) 平常的畫圖：有相似的 SVG 成功案例 → 弱模型／離線／幾乎一樣的需求直接用案例的成品畫（不經過模型）；其餘多帶一小段參考給模型
+            let caseRef = '';
+            if (route === 'shapes' && (plan.format || 'svg') !== 'mermaid' && typeof FaEditCases !== 'undefined' && typeof FaEditSvg !== 'undefined') {
+                try {
+                    const ch = await this._edCaseFor('edit-svg', { text: request || caption, spec: { objects: [] }, fresh: true });
+                    if (ch && ch.replay) {
+                        const sp = FaEditSvg.applyEdits(FaEditSvg.starter('blank'), ch.replay.edits).spec, svg0 = FaEditSvg.compose(sp, {});
+                        if (svg0) {
+                            note('📚 用你之前存的成功案例「' + ch.title + '」（相似度 ' + Math.round(ch.sim * 100) + '%）直接畫，不經過模型');
+                            const rc2 = await this._imageDeliverSvg(svg0, { note, show: true, request }, 'svg', '', { px: 1400, deliverSvg: true, fileName: String(ch.title).replace(/[^A-Za-z0-9_\u4e00-\u9fff-]+/g, '_') });
+                            if (rc2 && rc2.ok) { rc2.route = 'case'; rc2.route_note = '成功案例：' + ch.title; rc2.duration_ms = Date.now() - t0; rc2.steps_log = log; try { prog.finish && prog.finish('完成：' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒'); } catch (_) { /* */ } return rc2; }
+                        }
+                    } else if (ch) { caseRef = ch.block; note('📚 找到相似的成功案例「' + ch.title + '」（' + Math.round(ch.sim * 100) + '%），多帶一小段參考給模型'); }
+                } catch (_) { /* 案例庫壞了不影響畫圖 */ }
+            }
             const fmt = route === 'shapes' ? (plan.route === 'shapes' && plan.format ? plan.format : 'svg') : null, routeNote = route === 'shapes' ? '單純形狀的組合圖 → 用 ' + (fmt === 'mermaid' ? 'Mermaid' : 'SVG') + ' 純文字畫' + (plan.reasons.length ? '（' + plan.reasons[0] + '）' : '') : '要畫面的圖 → 擴散模型' + (plan.reasons.length ? '（' + plan.reasons[plan.reasons.length - 1] + '）' : '');
             note('🧭 分流：' + routeNote);
             let res;
-            if (route === 'shapes') res = await this._imageShapes({ request: request || caption, format: fmt, diagram: plan.diagram, note, show: true });
+            if (route === 'shapes') res = await this._imageShapes({ request: request || caption, format: fmt, diagram: plan.diagram, note, show: true, caseRef });
             else res = await this._imageDiffusion({ a, request: request || caption, capSlots, caption, note });
             if (res && res.ok !== false) { res.route = route; res.route_note = routeNote; res.duration_ms = res.duration_ms || (Date.now() - t0); res.steps_log = log; }
             try { prog.finish && prog.finish(res && res.ok === false ? '沒畫成' : '完成：' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒'); } catch (_) { /* */ }
@@ -63047,7 +63234,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const note = o.note || (() => {}), FM = FaImageRoute; let svg = '', err = '', kind = o.format === 'mermaid' ? 'mermaid' : 'svg', mer = '';
         if (kind === 'svg' && typeof FaPartsSheet !== 'undefined') { const ps = this._imagePartsSvg(o); if (ps) { svg = ps; note('🛠 對話裡有零件表：程式直接照尺寸畫工程圖（不用模型）'); } }
         for (let attempt = 0; attempt < 2 && !svg; attempt++) {
-            const brief = kind === 'mermaid' ? FM.mermaidBrief(o.request, o.diagram) : FM.svgBrief(o.request, {}); const fix = attempt ? '\n上一次的結果有問題：' + err + '。請重寫，只輸出修正後的內容。' : '';
+            const brief = kind === 'mermaid' ? FM.mermaidBrief(o.request, o.diagram) : FM.svgBrief(o.request, {}); if (o.caseRef && kind !== 'mermaid') brief.user = brief.user + String.fromCharCode(10, 10) + o.caseRef; const fix = attempt ? '\n上一次的結果有問題：' + err + '。請重寫，只輸出修正後的內容。' : '';
             note('✍️ 請模型寫 ' + (kind === 'mermaid' ? 'Mermaid' : 'SVG') + ' 純文字…' + (attempt ? '（第 2 次）' : ''));
             let reply = ''; try { reply = await this._kiLlm(brief.user + fix, { systemPrompt: brief.system, maxTokens: 3500, temperature: 0.3 }, { label: '畫形狀圖', timeoutMs: 180000, onStep: note }); } catch (e) { const ps2 = kind === 'svg' ? this._imagePartsSvg(o) : ''; if (ps2) { note('🛠 模型沒有回應：改由程式依對話裡的零件表直接畫'); svg = ps2; break; } return { ok: false, error: '模型沒有回應：' + String((e && e.message) || e).slice(0, 140) }; }
             if (kind === 'mermaid') {

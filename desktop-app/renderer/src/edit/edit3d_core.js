@@ -15,7 +15,7 @@
   'use strict';
   var PI = Math.PI, LIM = { objects: 400, name: 60, title: 80, coord: 10000, skins: 24, extra: 3000000 };
   var MESHES = { box: '方塊', sphere: '球', cylinder: '圓柱', cone: '圓錐', plane: '平面', torus: '圓環', polygon: '自訂形狀', particles: '粒子', line: '線' };
-  var OPS = ['set_title', 'set_background', 'set_camera', 'add_model', 'add_object', 'update_object', 'remove_object', 'rename_object', 'move_object', 'set_visible', 'set_locked', 'duplicate_object', 'clear_objects', 'place_object', 'transform_object', 'group_objects', 'ungroup', 'set_parent', 'set_material', 'add_skin', 'update_skin', 'remove_skin', 'clear_skins', 'set_skins', 'drop_to_ground', 'align_objects'];
+  var OPS = ['set_title', 'set_background', 'set_camera', 'replace_scene', 'add_model', 'add_object', 'update_object', 'remove_object', 'rename_object', 'move_object', 'set_visible', 'set_locked', 'duplicate_object', 'clear_objects', 'place_object', 'transform_object', 'group_objects', 'ungroup', 'set_parent', 'set_material', 'add_skin', 'update_skin', 'remove_skin', 'clear_skins', 'set_skins', 'drop_to_ground', 'align_objects'];
   var HOST_OPS = ['find_picture', 'generate_image'];
   function str(v, max) { return String(v == null ? '' : v).replace(/\u0000/g, '').slice(0, max || 200); }
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
@@ -225,6 +225,11 @@
       if (e.zoom != null) { var k = num(e.zoom, 0.05, 20, 1), dv = vsub(cam.position, cam.look_at); cam.position = vadd(cam.look_at, vmul(dv, 1 / k)); cam.position = [r3(cam.position[0]), r3(cam.position[1]), r3(cam.position[2])]; }
       s.camera = cameraOf(cam, s.camera); return {};
     },
+    // 整個場景換成另一份（成功範例當起點用）：{op:'replace_scene', spec}，spec 要先過檢查；標題保留目前的
+    replace_scene: function (s, e) {
+      if (!e.spec || typeof e.spec !== 'object') { return { error: 'replace_scene 要有 spec' }; } var v = validate(e.spec).spec; if (!v.objects.length) { return { error: '範例是空的' }; }
+      s.objects = v.objects; s.background = v.background; s.camera = v.camera; s.seq = v.seq; return {};
+    },
     // 內建模型庫的東西：{op:'add_model', model:'teapot', name?, height?, color?, place?}（沒有這個模型就回錯誤，說明有哪些）
     add_model: function (s, e, env, st) {
       var id = String(e.model || e.name || '').toLowerCase(), hit = (MG && (MG.info(id) || MG.find(id))) || null; if (!hit) { return { error: '沒有內建模型「' + str(id, 20) + '」（有：' + (MG ? MG.CATALOG.map(function (c) { return c.id + '=' + c.label; }).join('、') : '無') + '）；改用基本圖元組合，或 mesh:"polygon" 自己給 vertices／faces' }; }
@@ -341,6 +346,7 @@
     if (!e) { return ''; } var id = e.id ? (' ' + str(e.id, 30)) : '';
     switch (e.op) {
       case 'set_title': return '標題改成「' + str(e.text, 40) + '」'; case 'set_background': return '背景 ' + str(e.color || e.background, 20); case 'set_camera': return '調整視角';
+      case 'replace_scene': return '用範例的場景當起點（' + ((e.spec && e.spec.objects && e.spec.objects.length) || 0) + ' 個物件）';
       case 'add_model': { var mi = MG && (MG.info(String(e.model || '').toLowerCase()) || MG.find(String(e.model || ''))); return '新增模型「' + (e.name || (mi && mi.label) || str(e.model, 20)) + '」' + (e.place ? '（' + placeWords(e.place) + '）' : ''); }
       case 'add_object': { var o = e.object || {}; return '新增' + (o.name ? ' ' + str(o.name, 30) : (o.type === 'light' ? '燈光' : o.type === 'group' ? '群組' : (MESHES[o.mesh] || '物件'))) + (e.place ? '（' + placeWords(e.place) + '）' : ''); }
       case 'update_object': return '修改物件' + id; case 'remove_object': return '刪掉物件' + id; case 'rename_object': return str(e.id, 30) + ' 改名為 ' + str(e.name, 30);

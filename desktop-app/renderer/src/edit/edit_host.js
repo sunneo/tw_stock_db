@@ -9,6 +9,7 @@ const FaEditHost = (function () {
     'use strict';
     const zh = () => { const l = String((document.documentElement && document.documentElement.lang) || (typeof window !== 'undefined' && window.FaUiLocale && window.FaUiLocale.locale) || ''); return !l || /^zh/i.test(l); };
     const T = (a, b) => (zh() ? a : b);
+    const str0 = (v, n) => String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, n);
     const words = (t) => String(t || '').toLowerCase().split(/[^a-z0-9一-鿿]+/).filter((w) => w.length > 2 || /[一-鿿]/.test(w));
     const overlap = (a, b) => { const A = {}, B = {}; let n = 0, u = 0; words(a).forEach((w) => { A[w] = 1; }); words(b).forEach((w) => { B[w] = 1; }); Object.keys(A).forEach((w) => { u++; if (B[w]) n++; }); Object.keys(B).forEach((w) => { if (!A[w]) u++; }); return u ? n / u : 0; };
     const VECTOR_WORDS = /(svg|向量|描摹|描圖|trace|vector|轉成?圖形|變成?圖形|畫成)/i, PLACE_WORDS = /(放進|放入|放到|貼上|貼到|加入|加進|插入|擺|place|insert|put|add)/i;
@@ -31,7 +32,7 @@ const FaEditHost = (function () {
             const self = this, stepOf = () => (self._edQuiet && self._edQuiet.sink) || undefined;
             return {
                 have() { try { const c = self._getApiConfig(); return !!(c && c.apiKey) || !!(self.advancedSettings && self.advancedSettings.offlineMode); } catch (_) { return false; } },
-                async chat(system, user, o) { o = o || {}; return String(await self._kiLlm(user, { systemPrompt: system || '', maxTokens: o.maxTokens || 8000, temperature: o.temperature == null ? 0.2 : o.temperature }, { timeoutMs: o.timeoutMs || 180000, label: o.label || 'AI', onStep: stepOf() })); },
+                async chat(system, user, o) { o = o || {}; const refB = self._edQuiet && self._edQuiet.ref; if (refB) user = String(user) + String.fromCharCode(10, 10) + refB; return String(await self._kiLlm(user, { systemPrompt: system || '', maxTokens: o.maxTokens || 8000, temperature: o.temperature == null ? 0.2 : o.temperature }, { timeoutMs: o.timeoutMs || 180000, label: o.label || 'AI', onStep: stepOf() })); },
                 // 離線小模型用的封閉題：只回答一個字母（題目與解析見 edit_offline.js）；答不出來回傳 null，由程式用預設
                 async pick(question, options) { const r = await self._kiLlm(FaEditOffline.letterPrompt(question, options), { systemPrompt: '你是選擇題的回答者。只回答一個大寫字母，不要解釋。', maxTokens: 16, temperature: 0 }, { timeoutMs: 60000, label: '選擇題', onStep: stepOf() }); return FaEditOffline.parseLetter(r, options.length); },
                 // 只有「把一段字改寫得更短／更長」這種真的要寫字的事才請模型自由寫
@@ -49,6 +50,64 @@ const FaEditHost = (function () {
             let r; try { r = await FaEditOffline.make(adapters[kind]()).run(String(text), spec, e2, (q, opts) => A.pick(q, opts), (t, how) => A.rewrite(t, how)); } catch (e) { return { edits: [], notes: [String((e && e.message) || e).slice(0, 80)], unmatched: [String(text)], asked: [] }; }
             const asked = r.asked.filter((a) => a.by === 'model').length;
             return { edits: r.edits, notes: r.notes.concat(asked ? [T('問了模型 ' + asked + ' 個選擇題', 'asked the model ' + asked + ' multiple-choice questions')] : []), unmatched: r.unmatched, asked: r.asked, say: r.edits.length ? T('離線：程式讀懂了 ' + r.matched.length + ' 句', 'Offline: the program understood ' + r.matched.length + ' sentence(s)') : '' };
+        },
+        // ───── 成功案例 → 離線訓練器的知識（設計見 DESIGN.edit-cases.md）：做出好結果 → 存成訓練器的案例 → 下次相似的需求拿來參考（強模型）或直接當起點（弱模型／離線） ─────
+        // 案例是訓練器領域 editor_cases 裡的一個 semantic pattern（範例語句、意圖、參考 prompt、開編輯器的工具與參數樣板）：用訓練器自己的語意比對與同義詞、在訓練器裡看得到／可以停用／可以刪。
+        // 成品（大）不放訓練器的記憶體：存在獨立的資料表（FloatingAssistantEditCases/body），用到才讀；訓練器裡只有小小的 pattern，所以不吃記憶體、也不進對話上下文。
+        _edCasesOn() { return typeof FaEditCases !== 'undefined' && typeof this._otLoad === 'function' && !(this.advancedSettings && this.advancedSettings.editorCasesOff === true); },
+        _edCasesDb() {
+            if (this._edCasesDbP) return this._edCasesDbP;
+            this._edCasesDbP = new Promise((resolve, reject) => { const rq = indexedDB.open('FloatingAssistantEditCases', 2); rq.onupgradeneeded = () => { const db = rq.result; if (db.objectStoreNames.contains('meta')) db.deleteObjectStore('meta'); if (!db.objectStoreNames.contains('body')) db.createObjectStore('body', { keyPath: 'id' }); }; rq.onsuccess = () => resolve(rq.result); rq.onerror = () => reject(rq.error); });
+            this._edCasesDbP.catch(() => { this._edCasesDbP = null; }); return this._edCasesDbP;
+        },
+        async _edCasesTx(mode, fn) { const db = await this._edCasesDb(); return new Promise((resolve, reject) => { const tx = db.transaction(['body'], mode); let out; Promise.resolve(fn(tx.objectStore('body'))).then((v) => { out = v; }, reject); tx.oncomplete = () => resolve(out); tx.onerror = tx.onabort = () => reject(tx.error); }); },
+        _edReq(rq) { return new Promise((resolve, reject) => { rq.onsuccess = () => resolve(rq.result); rq.onerror = () => reject(rq.error); }); },
+        async _edCaseDomain(create) { const st = await this._otLoad(); let dom = st.domains.get(FaEditCases.DOMAIN); if (!dom && create) { dom = { name: FaEditCases.DOMAIN, description: '編輯器的成功案例（在編輯器裡做出好結果，按「⭐ 存成案例」或匯出時自動存；下次相似的需求會拿來參考，弱模型與離線時直接當起點）', enabled: true, source: 'editor', patterns: [], tools: [], states: { initial: null, states: {} } }; } return dom || null; },
+        // 目前所有案例（訓練器裡的 pattern）；順便清掉「pattern 已經被刪（例如在訓練器裡刪掉）但成品還留著」的孤兒
+        async _edCaseList() { const dom = await this._edCaseDomain(false); return dom ? dom.patterns.filter(FaEditCases.isCase) : []; },
+        async _edCasesGc() {
+            if (this._edCasesGcDone) return; this._edCasesGcDone = true; try { const live = new Set((await this._edCaseList()).map((p) => p.id)); const ids = await this._edCasesTx('readonly', (os) => this._edReq(os.getAllKeys())); const orphan = ids.filter((id) => !live.has(id)); if (orphan.length) await this._edCasesTx('readwrite', (os) => { orphan.forEach((id) => os.delete(id)); }); } catch (_) { /* 下次再清 */ }
+        },
+        // 存一個案例：info＝{ spec, prompt, title, requests }；opt.auto＝自動存的（排序略低、最先被淘汰）。相似度很高的舊案例直接更新，不重複存
+        async _edCaseSave(kind, info, opt) {
+            opt = opt || {}; if (!this._edCasesOn()) return { ok: false, error: '案例庫關閉了（Advance Settings 的 editorCasesOff）' };
+            const ent = FaEditCases.makeEntry({ kind, title: info.title, prompt: info.prompt, requests: info.requests, spec: info.spec, auto: !!opt.auto }); if (ent.error) return { ok: false, error: ent.error };
+            const dom = await this._edCaseDomain(true), p = ent.pattern, same = this._edCaseHits(kind, p.examples.join('。'), 1, 0.94)[0];
+            if (same) { if (opt.auto && !same.p.stats.auto) return { ok: true, kept: same.p.stats.title, duplicate: true }; p.id = same.p.id; ent.body.id = same.p.id; p.stats.uses = same.p.stats.uses || 0; p.hits = same.p.hits || 0; p.stats.auto = same.p.stats.auto && !!opt.auto; }
+            dom.patterns = dom.patterns.filter((x) => x.id !== p.id).concat([p]); await this._otSaveDomain(dom); await this._otSyncPatternExamples(dom, p);
+            await this._edCasesTx('readwrite', (os) => { os.put(ent.body); });
+            try { const drop = FaEditCases.evictPlan(await this._edCaseList()); if (drop.length) await this._edCaseDelete(drop); } catch (_) { /* 淘汰失敗下次再說 */ }
+            return { ok: true, id: p.id, title: p.stats.title, updated: !!same };
+        },
+        async _edCaseDelete(ids) { const dom = await this._edCaseDomain(false); if (!dom) return 0; const set = new Set(ids); dom.patterns = dom.patterns.filter((p) => !set.has(p.id)); await this._otSaveDomain(dom); for (const id of ids) { await this._otVecDelete('ot_examples', (eid) => eid.indexOf(dom.name + '/' + id + '#') === 0); } await this._edCasesTx('readwrite', (os) => { ids.forEach((id) => os.delete(id)); }); return ids.length; },
+        // 用訓練器的語意比對找案例（只看領域 editor_cases、同一種編輯器）
+        _edCaseHits(kind, text, top, minSim) {
+            const st = this._ot; if (!st || !st.loaded) return []; const dom = st.domains.get(FaEditCases.DOMAIN); if (!dom || !dom.patterns.length) return [];
+            const byId = new Map(dom.patterns.map((p) => [p.id, p])), raw = this._otVecQuery('ot_examples', text, 12, (m) => m && m.domain === FaEditCases.DOMAIN);
+            const cand = raw.map((h) => ({ p: byId.get(h.meta.pattern), sim: h.sim })), seen = new Set(cand.map((x) => x.p && x.p.id));
+            dom.patterns.forEach((p) => { if (FaEditCases.isCase(p) && !seen.has(p.id) && p.stats.title && String(text).indexOf(p.stats.title) >= 0) cand.push({ p, sim: 0 }); });   // 標題直接出現在這句話裡：就算語意比對沒排進前面也算候選
+            return FaEditCases.rank(cand, kind, { top: top || 2, minSim, text });
+        },
+        // 平常的對話（不在編輯器裡）：這句話跟某個成功案例很像 → 在這一輪的提示裡多一小段「有這個案例，可以直接用」。同步的（只用已經載入的訓練器），沒有相似的案例就什麼都不加。
+        _edCaseTaskHint(text) {
+            try {
+                if (!this._edCasesOn() || !this._ot || !this._ot.loaded) return ''; text = String(text || '').replace(/\[附件：[^\]]*\]/g, ' ').trim(); if (text.length < 4 || text.length > 600) return '';
+                let best = null; FaEditCases.KINDS.forEach((k) => { const h = this._edCaseHits(k, text, 1, 0.6)[0]; if (h && (!best || h.score > best.score)) best = Object.assign({ kind: k }, h); }); if (!best) return '';
+                const tool = FaEditCases.TOOL_OF[best.kind], label = { 'edit-svg': 'SVG 編輯器', 'edit-picture': '圖片編輯器', 'edit-3d': '3D 場景編輯器', 'edit-media-presentation': '簡報編輯器', 'edit-game-2d': '2D 遊戲編輯器', 'edit-game-3d': '3D 遊戲編輯器' }[best.kind], offline = !!(this.advancedSettings && this.advancedSettings.offlineMode), budget = Math.max(300, Math.min(1200, Math.round(this._kiBudgetChars(offline) * 0.1)));
+                const how = str0(best.p.description, Math.max(120, budget - 260)), use = tool ? '用法：這句話跟這個案例很像——直接呼叫 ' + tool + '（request 給上面這段做法），會用這個案例當起點，不用從頭畫；也可以照這個做法自己畫。' : '用法：這句話跟這個案例很像——請使用者輸入 /' + best.kind + ' 後面接這句話（會用這個案例當起點），或照這個做法自己做。';
+                return '【你之前存的成功案例（相似度 ' + Math.round(best.sim * 100) / 100 + '）：' + best.p.stats.title + '（' + label + '）】' + String.fromCharCode(10) + '當時有效的做法：' + how + String.fromCharCode(10) + use;
+            } catch (_) { return ''; }
+        },
+        // 這次的需求有沒有相似的成功案例？回傳 { title, sim, block（給模型的小段參考）, replay（弱模型／離線：程式直接放進去的結果） } 或 null
+        async _edCaseFor(kind, req) {
+            if (!this._edCasesOn() || !req) return null; const text = String(req.text || '').trim(); if (text.length < 4) return null;
+            await this._otLoad(); this._edCasesGc(); const hit = this._edCaseHits(kind, text, 1)[0]; if (!hit) return null;
+            const body = await this._edCasesTx('readonly', (os) => this._edReq(os.get(hit.p.id))); if (!body) return null;
+            hit.p.stats.uses = (hit.p.stats.uses || 0) + 1; hit.p.hits = (hit.p.hits || 0) + 1; hit.p.stats.lastUsed = Date.now(); this._edCaseDomain(false).then((dom) => dom && this._otSaveDomain(dom)).catch(() => { /* 用過幾次只是加分 */ });
+            const offline = !!(this.advancedSettings && this.advancedSettings.offlineMode), weak = offline || (this.advancedSettings && this.advancedSettings.editorCasesWeak === true), budget = Math.max(300, Math.min(1500, Math.round(this._kiBudgetChars(offline) * 0.12))), title = hit.p.stats.title;
+            const nObj = req.spec && Array.isArray(req.spec.objects) ? req.spec.objects.length : 0, out = { title, sim: hit.sim, block: FaEditCases.refBlock(body, title, hit.sim, budget) };
+            if (FaEditCases.shouldReplay(nObj, hit.sim, weak, !!req.fresh)) { const edits = FaEditCases.replayEdits(kind, body.spec, { deckToDoc: typeof FaDeckEdit !== 'undefined' ? FaDeckEdit.toDoc : null }); if (edits) out.replay = { say: T('用你之前存的案例「' + title + '」當起點（相似度 ' + Math.round(hit.sim * 100) + '%），可以再用說的調整。', 'Started from your saved case "' + title + '" (' + Math.round(hit.sim * 100) + '% alike); keep talking to adjust it.'), edits, notes: [T('案例不經過模型，直接放進去', 'the case is placed by the program, not the model')] }; }
+            return out;
         },
         _edFetchFn() {
             const self = this;
@@ -228,13 +287,19 @@ const FaEditHost = (function () {
         _edHost(kind, id, getSpecState) {
             const self = this, K = KINDS[kind], ai = this._edAi();
             const ask0 = kind === 'edit-svg' ? (req) => self._edAskSvg(req, { id }) : kind === 'edit-picture' ? (req) => self._edAskPicture(req, { id }) : (req) => K.ask.call(self, req, { id });
-            const ask = (req) => self._edQuietRun((line) => { try { if (req && typeof req.onStatus === 'function') req.onStatus(line); } catch (_) { /* */ } }, () => ask0(req));
+            const ask = (req) => self._edQuietRun((line) => { try { if (req && typeof req.onStatus === 'function') req.onStatus(line); } catch (_) { /* */ } }, async () => {
+                let hit = null; try { hit = await self._edCaseFor(kind, req); } catch (_) { hit = null; }   // 範例庫壞了不影響編輯
+                if (hit && hit.replay) return hit.replay;                                                  // 弱模型／離線：程式直接放範例的成品，不經過模型
+                if (hit && self._edQuiet) self._edQuiet.ref = hit.block;                                    // 強模型：只多一小段參考
+                return ask0(req);
+            });
             return {
                 palette: () => ({ dark: !self._isLightTheme() }),
                 ask,
                 save: async (state) => { const c = getSpecState(); let old = null; try { old = await FaEditStore.loadProject(kind, id); } catch (_) { /* a new project */ } return FaEditStore.saveProject(kind, id, Object.assign({}, old && old.origin ? { origin: old.origin } : {}, { v: 1, spec: c.spec, state })); },
                 download: (blob, name, mime) => self.generateAndDeliverFile(blob, name, mime || blob.type),
                 toChat: (blob, name, info) => self._edToChat(kind, blob, name, info),
+                saveCase: (info, o) => self._edCaseSave(kind, info, o),
                 polish: (self.advancedSettings && self.advancedSettings.offlineMode) ? undefined : (async (text) => String(await ai.chat(K.polishSystem || ('You tidy a prompt that rebuilds ' + (kind === 'edit-svg' ? 'a drawing' : 'an edited picture') + '. Keep every fact (objects, colours, places, texts); make it one clear, reusable prompt. Answer with the prompt only.'), text, { maxTokens: 1200, timeoutMs: 90000 })).trim()),
             };
         },
