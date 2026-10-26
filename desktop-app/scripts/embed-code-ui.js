@@ -123,6 +123,14 @@ function embedVoiceRecording() {
     console.log('已更新 FaVoiceRecording（' + core.length + ' 字元）');
 }
 embedVoiceRecording();
+function embedVoiceClean() {
+    const core = fs.readFileSync(path.join(root, 'renderer/src/tts/voice_clean.js'), 'utf8').replace(/\r\n/g, '\n');
+    const a = src.indexOf('/* VCLEAN-BEGIN */'), b = src.indexOf('/* VCLEAN-END */');
+    if (a < 0 || b < 0) throw new Error('找不到 VCLEAN 標記');
+    src = src.slice(0, a) + '/* VCLEAN-BEGIN */\nconst FaVoiceClean = (function () {\nconst holder = {};\n(function (module, self) {\n' + core + '\n}).call(null, undefined, holder);\nreturn holder.FaVoiceClean;\n})();\n' + src.slice(b);
+    console.log('已更新 FaVoiceClean（' + core.length + ' 字元）');
+}
+embedVoiceClean();
 function embedMoss() {
     const rd = (p) => fs.readFileSync(path.join(root, p), 'utf8').replace(/\r\n/g, '\n');
     const core = rd('renderer/src/tts/moss_core.js'), worker = rd('renderer/src/tts/moss_worker.js');
