@@ -372,26 +372,87 @@ const FaEditHost = (function () {
             }
             return null;
         },
+
+        // ───── 3D 第一階：GitHub 公開專案裡找現成的 OBJ（使用者定的順序：有 OBJ 就不用再查描述）─────
+        async _subjObjAsset(subject) {
+            const M = FaSubject3d; if (!subject.en) return null;
+            let repos = []; try { repos = M.pickRepos(await this._subjGetJson(M.repoSearchUrl(subject)), subject); } catch (_) { return null; }   // 沒網路或超過 GitHub 的次數限制：往下一階
+            for (const repo of repos.slice(0, M.LIM.trees)) {
+                let pick = null; try { pick = M.pickObj(await this._subjGetJson(M.treeUrl(repo)), subject, repo); } catch (_) { continue; } if (!pick) continue;
+                let text = ''; try { text = await this._subjGetText(M.rawUrl(repo, pick.path)); } catch (_) { continue; } if (text.length > M.LIM.objBytes + 1024) continue;
+                const parsed = M.parseObj(text); if (!parsed.ok) continue;
+                return { mesh: parsed.mesh, repo: repo.full, path: pick.path, license: repo.license, faces: parsed.faces, originalFaces: parsed.original.faces };
+            }
+            return null;
+        },
+
+        // ───── 3D 第三階：找一張圖 → 切掉背景 → 現有的圖片分解（2.5D 充氣）→ 帶貼圖的自訂形狀。全部只放記憶體，不存成檔案 ─────
+        // 圖片來源：維基共享資源與 Openverse（免金鑰）；有填 imgurClientId 就加 imgur；有填 googleSearchKey＋googleSearchCx 就加 Google 圖片（兩者都要使用者自己的金鑰）
+        async _subjImageCandidates(subject) {
+            const q = subject.en || subject.name, out = [], adv = this.advancedSettings || {};
+            try { const ps = FaPictureSource.make({ fetch: this._edFetchFn(), timeoutMs: 20000 }), sr = await ps.search(q, { limit: 8 }); if (sr && sr.ok) (sr.results || []).forEach((r) => out.push({ ref: r, title: r.title, source: r.source, license: r.license || '', creator: r.creator || '' })); } catch (_) { /* 這個來源不通就看下一個 */ }
+            if (adv.imgurClientId) { try { const r = await fetch('https://api.imgur.com/3/gallery/search/top/all/1?q=' + encodeURIComponent(q + ' ext:png'), { headers: { Authorization: 'Client-ID ' + adv.imgurClientId } }); if (r.ok) { const j = await r.json(); (j.data || []).forEach((g) => { const im = (g.images && g.images[0]) || g; if (im && im.link && /\.(png|jpe?g|webp)$/i.test(im.link) && !im.animated) out.push({ ref: im.link, title: g.title || q, source: 'imgur', license: '', creator: g.account_url || '' }); }); } } catch (_) { /* */ } }
+            if (adv.googleSearchKey && adv.googleSearchCx) { try { const r = await fetch('https://www.googleapis.com/customsearch/v1?searchType=image&num=8&imgType=clipart&key=' + encodeURIComponent(adv.googleSearchKey) + '&cx=' + encodeURIComponent(adv.googleSearchCx) + '&q=' + encodeURIComponent(q)); if (r.ok) { const j = await r.json(); (j.items || []).forEach((it) => { if (it.link) out.push({ ref: it.link, title: it.title || q, source: 'google', license: '', creator: (it.displayLink || '') }); }); } } catch (_) { /* */ } }
+            return out;
+        },
+        // 圖片的位元組 → 縮到長邊 360 以內的 RGBA 與 PNG 位元組（分解不需要大圖）
+        async _subjDecodeImage(blob, maxSide) {
+            const bmp = await createImageBitmap(blob), s = Math.min(1, (maxSide || 360) / Math.max(bmp.width, bmp.height)), w = Math.max(8, Math.round(bmp.width * s)), h = Math.max(8, Math.round(bmp.height * s));
+            const cv = document.createElement('canvas'); cv.width = w; cv.height = h; const g = cv.getContext('2d', { willReadFrequently: true }); g.drawImage(bmp, 0, 0, w, h); try { bmp.close(); } catch (_) { /* */ }
+            const img = g.getImageData(0, 0, w, h), png = await new Promise((res) => cv.toBlob(res, 'image/png')); return { img, png: new Uint8Array(await png.arrayBuffer()) };
+        },
+        // 圖片分解（Pyodide 裡跑 image-decompose-redraw 的腳本），全程在記憶體裡：輸入寫進 Pyodide 的暫存區、輸出讀回字串、用完就清掉；回 scene3d 的文字或 null
+        async _subjDecompose(pngBytes) {
+            if (typeof FA_IDR_SKILL_FILES === 'undefined' || !FA_IDR_SKILL_FILES['scripts/run_geometric.py']) return null;
+            let pyodide; try { pyodide = await this._ensurePyodideLoaded(); } catch (_) { return null; }
+            try {
+                pyodide.FS.mkdirTree('/work/in'); pyodide.FS.mkdirTree('/work/out');
+                for (const [k, v] of Object.entries(FA_IDR_SKILL_FILES)) { if (k === 'SKILL.md') continue; const abs = '/work/idr/' + k; pyodide.FS.mkdirTree(abs.slice(0, abs.lastIndexOf('/'))); pyodide.FS.writeFile(abs, v); }
+                pyodide.FS.writeFile('/work/in/input.png', pngBytes);
+                const args = ['/work/in/input.png', '--out', '/work/out', '--vision', 'off', '--max-side', '320', '--max-leaves', '2500'];
+                const script = ['import sys, json', 'import pyodide_js', "await pyodide_js.loadPackage(['numpy', 'pillow'])", 'sys.dont_write_bytecode = True', "sys.path.insert(0, '/work/idr/scripts')", 'import run_geometric', 'run_geometric.main(' + JSON.stringify(args) + ')'].join('\n');
+                const r = await this._runPyodideScriptAsync(pyodide, script, null); if (r.returncode !== 0) return null;
+                const f = this._walkPyodideFsDir(pyodide, '/work/out').find((x) => /\.scene3d\.yaml$/i.test(x.absPath)); if (!f) return null;
+                return pyodide.FS.readFile(f.absPath, { encoding: 'utf8' });
+            } finally { try { for (const f of this._walkPyodideFsDir(pyodide, '/work')) pyodide.FS.unlink(f.absPath); } catch (_) { /* */ } }
+        },
+        async _subjImage3d(subject) {
+            const M = FaSubject3d, cands = await this._subjImageCandidates(subject); if (!cands.length) return null;
+            const ps = FaPictureSource.make({ fetch: this._edFetchFn(), timeoutMs: 20000 }); let tried = 0;
+            for (const c of cands) {
+                if (tried >= 4) break; tried++;
+                try {
+                    const { blob } = await ps.load(c.ref), dec = await this._subjDecodeImage(blob, 360), bm = M.bgMask(dec.img);
+                    if (bm.fg < 0.1 || bm.fg > 0.85) continue;   // 背景切不乾淨（整張都是東西，或東西跟背景同色）：換下一張
+                    const txt = await this._subjDecompose(dec.png); const sc = txt && M.parseScene(txt); if (!sc) continue;
+                    const cut = M.cutBackground(sc.mesh, bm.mask, dec.img.width, dec.img.height); if (cut.kept < 40) continue;
+                    return { mesh: { vertices: cut.vertices, faces: cut.faces, uvs: cut.uvs }, texture: sc.texture, from: c.title, source: c.source, license: c.license, creator: c.creator, fg: Math.round(bm.fg * 100) };
+                } catch (_) { /* 這張不行就換下一張 */ }
+            }
+            return null;
+        },
         // 這個東西的外形資料：快取 → 2D 先找現成 SVG → 維基百科（中文、英文）→（2D 沒有描述時）參考圖＋視覺模型 → 模型整理。回 { brief, asset, from } 或 null
         async _subjBrief(subject, kind) {
             const R = FaSubjectResearch, key = R.cacheKey(subject.name), ai = this._edAi(), want2D = kind === 'edit-svg' || kind === 'image';
-            try { const hit = await this._subjTx('readonly', (os) => new Promise((res, rej) => { const rq = os.get(key); rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error); })); if (hit && (hit.brief || (hit.asset && want2D))) return { brief: hit.brief || null, asset: want2D ? hit.asset || null : null, from: 'cache' }; } catch (_) { /* 沒有快取就查 */ }
+            try { const hit = await this._subjTx('readonly', (os) => new Promise((res, rej) => { const rq = os.get(key); rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error); })); if (hit && (hit.brief || (hit.asset && want2D) || (hit.asset3d && kind === 'edit-3d'))) return { brief: hit.brief || null, asset: want2D ? hit.asset || null : null, asset3d: kind === 'edit-3d' ? hit.asset3d || null : null, from: 'cache' }; } catch (_) { /* 沒有快取就查 */ }
             // 2D：先找現成的 SVG；找到就是它（不用再整理外形）
-            let asset = null;
+            let asset = null, asset3d = null;
+            if (kind === 'edit-3d') { try { asset3d = await this._subjObjAsset(subject); } catch (_) { asset3d = null; } }   // 3D：先找現成的 OBJ
             if (want2D) { try { const f = await this._subjSvgAsset(subject); if (f) asset = { inner: f.svg.inner, w: f.svg.w, h: f.svg.h, title: f.pick.title, license: f.pick.license, creator: f.pick.creator, page: f.pick.page }; } catch (_) { /* 找不到就往下 */ } }
             let brief = null, ev = null;
-            if (!asset) {
+            if (!asset && !asset3d) {
                 for (const [lang, q] of [['zh', subject.name], ['en', subject.en]]) { if (!q || ev) continue; try { const x = R.pickExtract(await this._subjGetJson(R.wikiUrl(lang, q)), q); if (x) ev = x; } catch (_) { /* 這個來源不通就換下一個 */ } }
-                if (!ev && (want2D || kind === 'edit-picture')) { try { brief = await this._subjImageBrief(subject, kind); } catch (_) { brief = null; } }   // 沒有文字描述：找一張參考圖，請視覺模型看圖整理
-                if (!brief) {
+                if (!ev && kind === 'edit-3d') { try { asset3d = await this._subjImage3d(subject); } catch (_) { asset3d = null; } }   // 3D 沒有文字描述：找一張圖，切掉背景，用現有的圖片分解做成 3D
+                if (!asset3d && !ev && (want2D || kind === 'edit-picture')) { try { brief = await this._subjImageBrief(subject, kind); } catch (_) { brief = null; } }   // 2D 沒有文字描述：找一張參考圖，請視覺模型看圖整理
+                if (!brief && !asset3d) {
                     const bp = R.briefPrompt(subject, ev ? ev.title + '：' + ev.text : '', kind);
                     let reply = ''; try { reply = await ai.chat(bp.system, bp.user, { maxTokens: 1500, temperature: 0.2 }); } catch (_) { return null; }
                     brief = R.parseBrief(reply, subject, ev ? 'web' : 'model'); if (brief && ev) brief.page = ev.title;
                 }
-                if (!brief) return null; brief.at = Date.now();
+                if (!brief && !asset3d) return null; if (brief) brief.at = Date.now();
             }
-            try { await this._subjTx('readwrite', (os) => { os.put({ key, at: Date.now(), brief, asset }); }); const all = await this._subjTx('readonly', (os) => new Promise((res, rej) => { const rq = os.getAll(); rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error); })); const drop = R.evictPlan(all); if (drop.length) await this._subjTx('readwrite', (os) => { drop.forEach((k) => os.delete(k)); }); } catch (_) { /* 存不了下次再查 */ }
-            return { brief, asset, from: asset ? 'svg' : brief.source === 'image' ? 'image' : ev ? 'web' : 'model' };
+            try { await this._subjTx('readwrite', (os) => { os.put({ key, at: Date.now(), brief, asset, asset3d }); }); const all = await this._subjTx('readonly', (os) => new Promise((res, rej) => { const rq = os.getAll(); rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error); })); const drop = R.evictPlan(all); if (drop.length) await this._subjTx('readwrite', (os) => { drop.forEach((k) => os.delete(k)); }); } catch (_) { /* 存不了下次再查 */ }
+            return { brief, asset, asset3d, from: asset ? 'svg' : asset3d ? (asset3d.mesh && asset3d.repo ? 'obj' : 'picture3d') : brief.source === 'image' ? 'image' : ev ? 'web' : 'model' };
         },
         // 這句話裡不認識的東西 → { block: 給模型的一小段參考, assets: [svg 物件], subjects }（沒有就 block 為 ''）。status：顯示進度的函式
         async _subjResolve(kind, text, status) {
@@ -406,13 +467,19 @@ const FaEditHost = (function () {
                 if (typeof status === 'function') status(T('查「' + s.name + '」長怎樣…', 'Looking up what "' + s.name + '" looks like…'));
                 let r = null; try { r = await this._subjBrief(s, kind); } catch (_) { r = null; }
                 if (!r) continue; used.push(s);
-                if (r.asset) { const a = R.assetObject(s, r.asset, { inner: r.asset.inner, w: r.asset.w, h: r.asset.h }, 300); assets.push(a); notes.push(s.name + T('（找到現成的向量圖：' + r.asset.title + (r.asset.license ? '，' + r.asset.license : '') + (r.asset.creator ? '，' + r.asset.creator : '') + '）', ' (found a ready-made vector: ' + r.asset.title + ')')); }
+                if (r.asset && kind !== 'edit-3d') { const a = R.assetObject(s, r.asset, { inner: r.asset.inner, w: r.asset.w, h: r.asset.h }, 300); assets.push(a); notes.push(s.name + T('（找到現成的向量圖：' + r.asset.title + (r.asset.license ? '，' + r.asset.license : '') + (r.asset.creator ? '，' + r.asset.creator : '') + '）', ' (found a ready-made vector: ' + r.asset.title + ')')); }
+                if (r.asset3d) {
+                    const a3 = r.asset3d, fitted = FaSubject3d.fit(a3.mesh, (s.cm || 30) / 100, a3.texture ? { depthRatio: 0.4 } : null), obj = FaSubject3d.toObject(s, fitted, { texture: a3.texture || '', color: a3.texture ? '#ffffff' : '' });
+                    if (a3.repo) { const lic = a3.license === 'none' ? T('未標示授權，僅供個人使用', 'no licence stated, personal use only') : a3.license; obj.credit = 'GitHub ' + a3.repo + '（' + lic + '）' + a3.path; notes.push(s.name + T('（找到現成的 3D 模型：GitHub ' + a3.repo + '，' + lic + '）', ' (found a 3D model on GitHub: ' + a3.repo + ')')); }
+                    else { obj.credit = [a3.source, a3.from, a3.creator, a3.license].filter(Boolean).join(' / '); notes.push(s.name + T('（沒有現成模型，用網路上找到的圖做成立體的：' + (a3.from || a3.source) + '）', ' (built in 3D from a picture found online)')); }
+                    assets.push(obj);
+                }
                 if (r.brief) { briefs.push(r.brief); notes.push(s.name + (r.from === 'cache' ? T('（記得）', ' (remembered)') : r.from === 'web' ? T('（查了網路）', ' (web)') : r.from === 'image' ? T('（看了參考圖）', ' (from a reference picture)') : T('（沒查到網路資料）', ' (nothing found online)'))); }
             }
             if (!briefs.length && !assets.length) return none;
             if (typeof status === 'function') status(T('找到外形資料：' + notes.join('、'), 'Found the shape: ' + notes.join(', ')));
             const offline = !!(this.advancedSettings && this.advancedSettings.offlineMode), budget = Math.max(400, Math.min(1600, Math.round(this._kiBudgetChars(offline) * 0.15)));
-            const block = (briefs.length ? R.refBlock(briefs, budget, kind) : '') + (assets.length ? (briefs.length ? '\n' : '') + R.assetNote(assets) : '');
+            const block = (briefs.length ? R.refBlock(briefs, budget, kind) : '') + (assets.length ? (briefs.length ? '\n' : '') + (kind === 'edit-3d' ? FaSubject3d.assetNote(assets) : R.assetNote(assets)) : '');
             return { block, assets, subjects: used, notes };
         },
         async _subjRefFor(kind, text, status) { const r = await this._subjResolve(kind, text, status); return r.block; },
@@ -438,7 +505,7 @@ const FaEditHost = (function () {
                     if (sres.block && self._edQuiet) self._edQuiet.ref = (self._edQuiet.ref ? self._edQuiet.ref + String.fromCharCode(10, 10) : '') + sres.block;
                     const ans = await ask0(req);
                     // 找到現成的向量圖：由程式先放進畫面（模型之後的動作用名字安排它的位置與大小）
-                    if (kind === 'edit-svg' && sres.assets.length && ans && Array.isArray(ans.edits)) { ans.edits = sres.assets.map((a) => ({ op: 'add_object', object: a })).concat(ans.edits); ans.notes = (ans.notes || []).concat(sres.assets.map((a) => T('素材來源：', 'Source: ') + (a.credit || a.name))); }
+                    if ((kind === 'edit-svg' || kind === 'edit-3d') && sres.assets.length && ans && Array.isArray(ans.edits)) { ans.edits = sres.assets.map((a) => ({ op: 'add_object', object: a })).concat(ans.edits); ans.notes = (ans.notes || []).concat(sres.assets.map((a) => T('素材來源：', 'Source: ') + (a.credit || a.name))); }
                     return ans;
                 }
                 return ask0(req);

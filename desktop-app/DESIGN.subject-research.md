@@ -11,9 +11,10 @@
 | 0 | 自己已經會的：模型庫（茶壺、花瓶…）、成功案例（`DESIGN.edit-cases.md`） | 已有 |
 | 1 | **查外形描述**：維基百科（先中文、再英文）取摘要 → 模型整理成「由哪幾塊基本形狀組成、多大（公分）、什麼顏色、在哪裡」→ 存起來 → 給編輯器的模型一小段參考 | **已做（這份文件）** |
 | 2D | **找現成的 SVG（已做）**：維基共享資源 `filetype:drawing`（免費授權，不用金鑰）→ 標題要含名字、不要標誌／旗幟／地圖、不要太大 → 清理（`sanitizeSvg`：去腳本／外部連結／編輯器屬性，viewBox 移到 0,0）→ 變成編輯器的 `svg` 物件，附來源與授權。**沒有描述時，找參考圖請視覺模型整理成部位（已做）**（`FaPictureSource` 找圖，`imageBriefPrompt`，答案同樣由程式驗證） |
-| 2 | **查參考圖 → 3D 化**：維基共享資源／Openverse（免費授權，`FaPictureSource` 已有）找一張圖 → `image_decompose_redraw` 充氣成 2.5D 帶貼圖的多邊形物件 | 未做，見 `DESIGN.TODO.subject-research.md` |
-| 3 | **查現成的 OBJ**：下載並匯入 | 未做，見同一份 TODO |
-圖像設計（SVG／圖片）的階 2 不用 3D 化：參考圖直接給視覺模型描述、或描摹成向量（`FaSvgTrace` 已有），也記在 TODO。
+| 3D-1 | **GitHub 公開專案的 OBJ（已做，3D 的第一階）**：`api.github.com` 搜專案 → 檔案樹找名字對得上的 `.obj` → 抓 `raw.githubusercontent.com` → 解析、縮減面數、擺正、縮到合理大小 | 已做 |
+| 3D-2 | 查外形描述（上面的階 1） | 已做 |
+| 3D-3 | **找圖 → 3D 化（已做，3D 的最後一階）**：沒有 OBJ、也沒有文字描述才走：找一張圖 → 切掉背景 → 現有的圖片分解（`image-decompose-redraw`：四叉樹三角網格＋距離變換充氣成 2.5D，Pyodide）→ 帶貼圖的自訂形狀 | 已做 |
+3D 的順序是使用者定的：**有 OBJ 就不查描述；沒有描述才找圖 3D 化**（因為專案本來就有「多邊形擬合 2D 再建立 3D」的基礎）。2D 的順序：現成 SVG → 描述 → 參考圖加視覺模型。
 
 ## 階 1 怎麼運作
 1. 編輯器的 AI 入口（`_edHost` 的 `ask`）在案例比對之後、呼叫編輯器自己的模型之前：`_subjRefFor(kind, 這句話)`。畫圖的形狀圖路線（`_imageMake` 步驟 2c）同一個函式（kind＝`image`）。
@@ -32,3 +33,9 @@
 - 沒找到 SVG：描述（維基百科）→ 沒有描述就找一張圖給視覺模型 → 都沒有才用模型自己的印象（參考文字標明）。
 - **下載與儲存（使用者決定，2026-10-26）**：預設直接下載、不問；只放記憶體與 IndexedDB（`FloatingAssistantSubjects`，200 個上限、最舊先淘汰），**不存成檔案**（不進檔案快取、不出下載卡片；畫圖的成品本身另當別論）。
 - 驗證：純函式 22 項；測試版實測——維基共享資源找到 CC0 的小提琴 SVG、清理後 406×424、編輯器加進畫面並套用模型的移動縮放（rejected 0）、平常畫圖直接交付（route=asset）；找不到的東西退回描述。
+
+## 3D 怎麼運作（`subject_3d.js`，`FaSubject3d`，測試 `subject_3d.test.js` 22 項）
+- **GitHub OBJ**：`repoSearchUrl`（`<英文名> obj in:name,description,topics`，不用金鑰，未登入每分鐘 10 次搜尋）→ `pickRepos`（授權寬鬆的先、再來是**沒標示授權的公開專案**——使用者決定「公開的就可以」；GPL 與太大的專案不收；專案名稱／描述／主題要含這個東西的名字）→ `treeUrl`/`pickObj`（檔案樹裡 1.5KB～6MB 的 `.obj`，路徑要含名字；編譯產生的 `Debug/main.obj` 這類二進位檔因為名字對不上、也解析不出面而被擋掉）→ `parseObj`（v、vt、f 各種寫法、負索引、多邊形三角化；超過 1.2 萬面用頂點叢集縮減）→ `fit`（x、z 置中、底面貼地、縮到 `cm`——問模型時順便估的一般大小；Z 軸向上的模型自動轉正）→ `toObject`（`mesh:'polygon'`，跟內建模型庫、匯入 OBJ 同一種）。放進場景的是**程式先加的 `add_object`**，模型之後用名字安排位置；備註欄附出處與授權（「未標示授權，僅供個人使用」）。
+- **找圖 → 3D**：圖片來源 `_subjImageCandidates`：維基共享資源與 Openverse（免金鑰）；`advancedSettings.imgurClientId` 有填就加 imgur；`googleSearchKey`＋`googleSearchCx` 有填就加 Google 圖片（兩者都要使用者自己的金鑰，沒填就略過）。每張圖：縮到長邊 360 → `bgMask`（用圖的邊緣估背景色，從邊緣填色；前景比例要在 10%～85%，否則換下一張）→ `_subjDecompose`（Pyodide，全程記憶體，輸出讀回字串、用完清掉）→ `parseScene` → `cutBackground`（三角形中心落在背景就丟）→ `fit(…, {depthRatio:0.4})`（浮雕很薄，前後深度至少是寬高較小邊的 40%）→ 貼圖物件（兩面都畫）。最多試 4 張。
+- **實測（測試版，真網路）**：「bunny」→ GitHub `KunKunaa/Bunny` 的 `Bunny/bunny.obj`（5001 面、縮到 30 公分、編輯器接受）；「apple」→ 維基共享資源 `Red Apple`（CC BY 2.0，前景 55%、8311 面、貼圖 27KB、約 14 秒含 Pyodide 載入）；完整對話流程：說「在右邊放一隻兔子」，程式先把 OBJ 放進場景。
+- **已知限制**：GitHub 上的 OBJ 命中率看東西而定（「violin」搜不到專案；多數專案沒有授權標示）；圖片 3D 化只有單面浮雕（背面是同一張圖），背景複雜或東西跟背景同色就換下一張或放棄；未登入的 GitHub 搜尋有次數限制，用完會直接往下一階走。

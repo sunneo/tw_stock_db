@@ -15,7 +15,7 @@
     var what = kind === 'edit-3d' ? '3D 場景' : '圖';
     return { system: '你只回 JSON，不要說明。', user: '使用者要編輯一張' + what + '，需求是：\n「' + str(text, 400) + '」\n\n請找出需求裡「真實世界的具體東西」之中，外形不是簡單幾何體（方塊、球、圓柱、圓錐）、而且你不確定能不能畫對的（例如雞翅、小提琴、吉他、消防栓、水母）。'
       + '常見而且簡單的東西（桌子、盤子、杯子、球、樹、房子）、抽象的東西、顏色位置動作都不要列。\n已經內建、不用查的東西：' + (known && known.length ? known.slice(0, 40).join('、') : '（無）') + '。\n'
-      + '回 {"subjects":[{"name":"原文名稱","en":"英文名稱"}]}，最多 ' + LIM.subjects + ' 個；沒有就回 {"subjects":[]}。' };
+      + '回 {"subjects":[{"name":"原文名稱","en":"英文名稱","cm":真實東西最長邊的一般大小(公分,數字)}]}，最多 ' + LIM.subjects + ' 個；沒有就回 {"subjects":[]}。' };
   }
   function parseJson(text) {
     var s = String(text == null ? '' : text), a = s.indexOf('{'), b = s.lastIndexOf('}'); if (a < 0 || b <= a) return null; try { return JSON.parse(s.slice(a, b + 1)); } catch (e) { return null; }
@@ -23,7 +23,7 @@
   function parseSubjects(reply, known) {
     var j = parseJson(reply), list = j && Array.isArray(j.subjects) ? j.subjects : [], seen = {}, out = [], knownKeys = {};
     (known || []).forEach(function (k) { knownKeys[key(k)] = 1; });
-    list.forEach(function (x) { if (!x) return; var name = str(typeof x === 'string' ? x : x.name, LIM.name), en = str(typeof x === 'string' ? '' : x.en, LIM.en); if (name.length < 1 || seen[key(name)] || knownKeys[key(name)]) return; seen[key(name)] = 1; out.push({ name: name, en: /^[\x20-\x7e]+$/.test(en) ? en : '' }); });
+    list.forEach(function (x) { if (!x) return; var name = str(typeof x === 'string' ? x : x.name, LIM.name), en = str(typeof x === 'string' ? '' : x.en, LIM.en); if (name.length < 1 || seen[key(name)] || knownKeys[key(name)]) return; seen[key(name)] = 1; var cm = Number(typeof x === 'string' ? 0 : x.cm); out.push({ name: name, en: /^[\x20-\x7e]+$/.test(en) ? en : '', cm: isFinite(cm) && cm >= 0.5 && cm <= 20000 ? Math.round(cm * 10) / 10 : 0 }); });
     return out.slice(0, LIM.subjects);
   }
 
