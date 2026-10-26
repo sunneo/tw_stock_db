@@ -15,3 +15,4 @@
 | /edit-game-2d、/edit-game-3d（遊戲編輯器） | [DESIGN.edit-game.md](DESIGN.edit-game.md) | 已實作（2026-10-25）；AI 逐檔移植的目標碼沒在這裡編譯過、舊機種只做適配檢查，見文件的「實作狀態」 |
 | /edit-media-presentation（簡報播放器旁邊的 AI 對話框，每一頁都能插入內容、代理人上網找圖與資料） | [DESIGN.edit-media-presentation.md](DESIGN.edit-media-presentation.md) | 已實作（2026-10-25）；代理人那條路用假的子代理驗證過，真的連模型與網路的端到端沒測 |
 | `/edit-picture` 的擴散細化層（已實作；規劃裡「SDXS 做 img2img」不可行，見文件） | [DESIGN.edit-picture-diffusion.md](DESIGN.edit-picture-diffusion.md) | 已實作（2026-10-26）；真實生圖模型沒驗證 |
+| 不認識的東西先去查（階 1 已做；階 2 參考圖 3D 化、階 3 查現成 OBJ 還沒做） | [DESIGN.TODO.subject-research.md](DESIGN.TODO.subject-research.md) | 設計見 DESIGN.subject-research.md |

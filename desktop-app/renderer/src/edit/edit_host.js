@@ -332,6 +332,52 @@ const FaEditHost = (function () {
             return { say, edits, notes };
         },
 
+
+        // ───── 不認識的東西，先去查（設計見 DESIGN.subject-research.md）─────
+        // 「放一個盤子、把雞翅放到盤子」→ 模型不知道雞翅長怎樣就放了兩個圓錐。做法：先問模型這句話裡有哪些東西它不確定 → 上網查外形描述（維基百科）→ 模型整理成「由哪幾塊基本形狀組成」→ 存起來 → 給編輯器的模型一小段參考。
+        // 網路或模型不通、離線模式、查不到：什麼都不加，不影響原本的編輯。
+        _subjOn() { return typeof FaSubjectResearch !== 'undefined' && !(this.advancedSettings && (this.advancedSettings.subjectResearchOff === true || this.advancedSettings.offlineMode)); },
+        _subjDb() {
+            if (this._subjDbP) return this._subjDbP;
+            this._subjDbP = new Promise((resolve, reject) => { const rq = indexedDB.open('FloatingAssistantSubjects', 1); rq.onupgradeneeded = () => { if (!rq.result.objectStoreNames.contains('brief')) rq.result.createObjectStore('brief', { keyPath: 'key' }); }; rq.onsuccess = () => resolve(rq.result); rq.onerror = () => reject(rq.error); });
+            this._subjDbP.catch(() => { this._subjDbP = null; }); return this._subjDbP;
+        },
+        async _subjTx(mode, fn) { const db = await this._subjDb(); return new Promise((resolve, reject) => { const tx = db.transaction(['brief'], mode); let out; Promise.resolve(fn(tx.objectStore('brief'))).then((v) => { out = v; }, reject); tx.oncomplete = () => resolve(out); tx.onerror = tx.onabort = () => reject(tx.error); }); },
+        // 查一個地方的網址（直接連線，不行再走程式的網路轉接）
+        async _subjGetJson(url) {
+            let e1 = null; try { const r = await fetch(url, { headers: { Accept: 'application/json' } }); if (!r.ok) throw new Error('HTTP ' + r.status); return await r.json(); } catch (e) { e1 = e; }
+            try { const { resp } = await this._terminalHttpFetch('GET', url, { headers: { Accept: 'application/json' }, timeoutMs: 20000 }); if (!resp.ok) throw new Error('HTTP ' + resp.status); return await resp.json(); } catch (e2) { throw new Error(String((e2 && e2.message) || e2) + (e1 ? '（直接連線：' + String(e1.message || e1) + '）' : '')); }
+        },
+        // 這個東西的外形資料：快取 → 維基百科（中文、英文）→ 模型整理。回 { brief, from:'cache'|'web'|'model' } 或 null
+        async _subjBrief(subject, kind) {
+            const R = FaSubjectResearch, key = R.cacheKey(subject.name), ai = this._edAi();
+            try { const hit = await this._subjTx('readonly', (os) => new Promise((res, rej) => { const rq = os.get(key); rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error); })); if (hit && hit.brief) return { brief: hit.brief, from: 'cache' }; } catch (_) { /* 沒有快取就查 */ }
+            let ev = null;
+            for (const [lang, q] of [['zh', subject.name], ['en', subject.en]]) { if (!q || ev) continue; try { const x = R.pickExtract(await this._subjGetJson(R.wikiUrl(lang, q)), q); if (x) ev = x; } catch (_) { /* 這個來源不通就換下一個 */ } }
+            const bp = R.briefPrompt(subject, ev ? ev.title + '：' + ev.text : '', kind);
+            let reply = ''; try { reply = await ai.chat(bp.system, bp.user, { maxTokens: 1500, temperature: 0.2 }); } catch (_) { return null; }
+            const brief = R.parseBrief(reply, subject, ev ? 'web' : 'model'); if (!brief) return null; brief.at = Date.now(); if (ev) brief.page = ev.title;
+            try { await this._subjTx('readwrite', (os) => { os.put({ key, at: brief.at, brief }); }); const all = await this._subjTx('readonly', (os) => new Promise((res, rej) => { const rq = os.getAll(); rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error); })); const drop = R.evictPlan(all); if (drop.length) await this._subjTx('readwrite', (os) => { drop.forEach((k) => os.delete(k)); }); } catch (_) { /* 存不了下次再查 */ }
+            return { brief, from: ev ? 'web' : 'model' };
+        },
+        // 這句話裡不認識的東西 → 一小段參考文字（沒有就回 ''）。status：顯示進度的函式
+        async _subjRefFor(kind, text, status) {
+            if (!this._subjOn() || (kind !== 'edit-3d' && kind !== 'edit-svg' && kind !== 'edit-picture' && kind !== 'image')) return '';
+            const R = FaSubjectResearch; if (!R.worthAsking(text)) return '';
+            const known = kind === 'edit-3d' && typeof FaMeshGen !== 'undefined' ? FaMeshGen.CATALOG.map((c) => c.label || c.id) : [], ai = this._edAi();
+            let subs = []; try { const q = R.subjectsPrompt(text, known, kind); subs = R.parseSubjects(await ai.chat(q.system, q.user, { maxTokens: 300, temperature: 0 }), known); } catch (_) { return ''; }
+            if (!subs.length) return '';
+            const briefs = [], notes = [];
+            for (const s of subs) {
+                if (typeof status === 'function') status(T('查「' + s.name + '」長怎樣…', 'Looking up what "' + s.name + '" looks like…'));
+                let r = null; try { r = await this._subjBrief(s, kind); } catch (_) { r = null; }
+                if (r && r.brief) { briefs.push(r.brief); notes.push(s.name + (r.from === 'cache' ? '（記得）' : r.from === 'web' ? '（查了網路）' : '（沒查到網路資料）')); }
+            }
+            if (!briefs.length) return '';
+            if (typeof status === 'function') status(T('找到外形資料：' + notes.join('、'), 'Found the shape: ' + notes.join(', ')));
+            const offline = !!(this.advancedSettings && this.advancedSettings.offlineMode);
+            return R.refBlock(briefs, Math.max(400, Math.min(1600, Math.round(this._kiBudgetChars(offline) * 0.15))), kind);
+        },
         // ───── 共用：外框要的 host、開啟、掛載、斜線指令、工具 ─────
         // 成品放進對話：下載卡片＋（圖片時）直接顯示＋整理好的 prompt
         async _edToChat(kind, blob, name, info) {
@@ -349,6 +395,10 @@ const FaEditHost = (function () {
                 let hit = null; try { hit = await self._edCaseFor(kind, req); } catch (_) { hit = null; }   // 範例庫壞了不影響編輯
                 if (hit && hit.replay) return hit.replay;                                                  // 弱模型／離線：程式直接放範例的成品，不經過模型
                 if (hit && self._edQuiet) self._edQuiet.ref = hit.block;                                    // 強模型：只多一小段參考
+                if ((!hit || !hit.replay) && (kind === 'edit-3d' || kind === 'edit-svg' || kind === 'edit-picture') && req && req.text) {   // 不認識的東西先去查，結果也只是一小段參考
+                    let sref = ''; try { sref = await self._subjRefFor(kind, String(req.text), (line) => { try { if (typeof req.onStatus === 'function') req.onStatus(line); } catch (_) { /* */ } }); } catch (_) { sref = ''; }
+                    if (sref && self._edQuiet) self._edQuiet.ref = (self._edQuiet.ref ? self._edQuiet.ref + String.fromCharCode(10, 10) : '') + sref;
+                }
                 return ask0(req);
             });
             return {
