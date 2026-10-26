@@ -292,6 +292,16 @@ function register(ipcMain, ctx) {
     if (electron && electron.app) electron.app.on("before-quit", () => { for (const r of procs.values()) { try { r.child.kill(); } catch (_) { /* */ } } });
   } catch (e) { console.warn("[main-ext] MCP 載入失敗：", e && e.message); }
 
+  // 熱更新後頁面是從 userData/live-patch/renderer/ 載入的，旁邊沒有安裝包內的 renderer/vendor/（three.js 等自己 pin 的程式庫），主控台會一直出現 ERR_FILE_NOT_FOUND、離線時 3D 也載不到：
+  // 啟動時把安裝目錄的 vendor 補一份進去（只補缺的檔案；只用 readdir／readFile／writeFile，安裝包是 asar 時 fs.cp 不能用）
+  try {
+    const fsx = require("fs"), udir = ctx.userDataDir ? ctx.userDataDir() : "", dst = udir ? path.join(udir, "live-patch", "renderer") : "";
+    if (dst && fsx.existsSync(dst)) {
+      const copyMissing = (from, to) => { fsx.mkdirSync(to, { recursive: true }); for (const ent of fsx.readdirSync(from, { withFileTypes: true })) { const a = path.join(from, ent.name), b = path.join(to, ent.name); if (ent.isDirectory()) copyMissing(a, b); else if (!fsx.existsSync(b)) fsx.writeFileSync(b, fsx.readFileSync(a)); } };
+      const src = path.join(__dirname, "renderer", "vendor"); if (fsx.existsSync(src)) copyMissing(src, path.join(dst, "vendor"));
+    }
+  } catch (e) { console.warn("[main-ext] 補 vendor 資料夾失敗：", e && e.message); }
+
   // 熱更新的「檢查／套用」處理（分檔下載、逐段驗證、接回）與缺模組自動補回（ctx.healMissingModules），要在載入可選模組之前準備好
   try { installChunkedUpdater(ipcMain, ctx, overlay); } catch (e) { console.warn("[main-ext] 分檔下載更新處理載入失敗：", e && e.message); }
 
@@ -422,7 +432,7 @@ function installChunkedUpdater(ipcMain, ctx, overlay) {
   // 這個更新處理「第一次啟動」時（包含剛從舊版更新、重啟後的那一次），檢查到有更新就請畫面自動跳出更新視窗（只一次）：
   // 舊安裝要分兩輪才能補齊（先換上這個更新處理、重啟，再下載它才知道要收的新模組），不能要使用者自己記得再按一次「檢查更新」。
   // REV 是這個行為的版本戳記；之後想讓所有人再補檢查一次時，把它改成新字串即可。
-  const REV = "2026-10-25-diag"; ctx.mainExtRev = REV; let autoPrompt = false;
+  const REV = "2026-10-26-vendor"; ctx.mainExtRev = REV; let autoPrompt = false;
   try {
     const seenFile = path.join(ctx.userDataDir ? ctx.userDataDir() : app.getPath("userData"), "main-ext-rev.txt"), fsSync = require("fs");
     let seen = ""; try { seen = fsSync.readFileSync(seenFile, "utf8").trim(); } catch (_) { /* 第一次 */ }
