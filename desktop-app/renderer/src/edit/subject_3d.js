@@ -111,6 +111,29 @@
     keep.forEach(function (tri) { tri.forEach(function (vi) { if (remap[vi] === undefined) { remap[vi] = nv.length; nv.push(mesh.vertices[vi]); nu.push(mesh.uvs[vi]); } }); });
     return { vertices: nv, faces: keep.map(function (tri) { return [remap[tri[0]], remap[tri[1]], remap[tri[2]]]; }), uvs: nu, kept: keep.length, total: mesh.faces.length };
   }
+  // ───── 用「瀏覽器控制」（使用者的 Chrome）搜尋：GitHub 程式碼搜尋（要登入，用使用者登入的 Chrome）、Google 圖片、imgur。網址、在頁面裡跑的抽取腳本（回 JSON 字串）與解析都在這裡，抓取由宿主端做
+  function githubCodeSearchUrl(subject) { var en = words(subject.en || subject.name).join(' ') || str(subject.name, 40); return 'https://github.com/search?type=code&q=' + encodeURIComponent(en + ' extension:obj'); }
+  var GH_EXTRACT_JS = '(()=>{const out={hrefs:[],login:false};const t=document.body?document.body.innerText:"";if(/Sign in to search code/i.test(t))out.login=true;' +
+    'document.querySelectorAll(\'a[href*="/blob/"]\').forEach(a=>out.hrefs.push(a.getAttribute("href")));' +
+    'try{const e=document.querySelector(\'script[data-target="react-app.embeddedData"]\');const j=JSON.parse(e.textContent);const rs=(j.payload&&j.payload.results)||[];rs.forEach(r=>{const repo=r.repo_nwo||(r.repo&&(r.repo.name_with_owner||(r.repo.repository&&r.repo.repository.name_with_owner)))||"";const ref=r.ref_name||r.commit_sha||"HEAD";if(repo&&r.path)out.hrefs.push("/"+repo+"/blob/"+ref+"/"+r.path);});}catch(e){}' +
+    'out.ready=!!(out.hrefs.length||out.login||/did not match|No results/i.test(t));return JSON.stringify(out);})()';
+  // 抽取結果 → { login, hits:[{ full, path, raw }] }：.obj 檔、路徑或專案名要含這個東西的名字、不重複；raw＝raw.githubusercontent.com 的網址（blob 後面的 ref/路徑原樣接上）
+  function parseCodeHits(json, subject) {
+    var j = json && typeof json === 'object' ? json : null; if (typeof json === 'string') { try { j = JSON.parse(json); } catch (e) { j = null; } } if (!j) return { login: false, hits: [] };
+    var ws = words(subject.en), seen = {}, hits = [];
+    (j.hrefs || []).forEach(function (h) { var m = /^(?:https:\/\/github\.com)?\/([^\/]+\/[^\/]+)\/blob\/(.+?)(?:[?#].*)?$/.exec(String(h || '')); if (!m) return; var rest = m[2], full = m[1]; if (!/\.obj$/i.test(rest)) return; var key = full + '/' + rest; if (seen[key]) return; if (!hasWords(full + ' ' + rest, ws)) return; seen[key] = 1; hits.push({ full: full, path: rest.slice(rest.indexOf('/') + 1), raw: 'https://raw.githubusercontent.com/' + full + '/' + rest.split('/').map(encodeURIComponent).join('/') }); });
+    return { login: !!j.login, hits: hits.slice(0, 6) };
+  }
+  function googleImagesUrl(subject) { return 'https://www.google.com/search?tbm=isch&hl=en&safe=active&q=' + encodeURIComponent(str(subject.en || subject.name, 60) + ' png'); }
+  var GOOGLE_EXTRACT_JS = '(()=>{const l=[...document.querySelectorAll("img")].filter(i=>i.naturalWidth>=120&&i.naturalHeight>=120&&i.alt&&i.src&&i.src.length<400000).slice(0,16).map(i=>({src:i.src,alt:i.alt.slice(0,80),w:i.naturalWidth,h:i.naturalHeight}));return JSON.stringify({imgs:l,ready:l.length>=4});})()';
+  function parseImageList(json, source) {
+    var j = json && typeof json === 'object' ? json : null; if (typeof json === 'string') { try { j = JSON.parse(json); } catch (e) { j = null; } } var out = [];
+    ((j && j.imgs) || []).forEach(function (i) { if (i && /^(data:image\/(?:jpeg|png|webp);base64,|https:\/\/)/.test(String(i.src || ''))) out.push({ ref: i.src, title: str(i.alt, 80), source: source, license: '', creator: '' }); }); return out;
+  }
+  function imgurSearchUrl(subject) { return 'https://imgur.com/search?q=' + encodeURIComponent(str(subject.en || subject.name, 60)); }
+  var IMGUR_EXTRACT_JS = '(()=>{const l=[...document.querySelectorAll("img")].filter(i=>/^https:\\/\\/i\\.imgur\\.com\\/[A-Za-z0-9]+[a-z]?\\.(?:jpg|png)/.test(i.src)&&i.naturalWidth>=90).slice(0,16).map(i=>({src:i.src,alt:i.alt.slice(0,80)}));return JSON.stringify({imgs:l,ready:l.length>=4});})()';
+  // imgur 的縮圖是 <id>b.jpg（160 像素）；改成 <id>l.jpg（640 像素）
+  function imgurLarge(list) { return list.map(function (x) { return Object.assign({}, x, { ref: String(x.ref).replace(/^(https:\/\/i\.imgur\.com\/[A-Za-z0-9]{7})[a-z]?(\.(?:jpg|png)).*$/, '$1l$2') }); }); }
   // 編輯器的物件（跟內建模型庫、匯入 OBJ 同一種：mesh:'polygon'）
   function toObject(subject, mesh, opt) {
     opt = opt || {}; var o = { type: 'mesh', mesh: 'polygon', name: str(subject.name, 24), material: { color: opt.color || '#c9c9c9', roughness: 0.6, metalness: 0.05 }, extra: { vertices: mesh.vertices, faces: mesh.faces } };
@@ -118,5 +141,5 @@
   }
   function assetNote(assets) { return assets && assets.length ? '已經找到現成的 3D 模型並由程式放進場景了：' + assets.map(function (a) { return '「' + a.name + '」'; }).join('、') + '（放在原點、底面貼地）。請用移動、旋轉、縮放、顏色（set_material）等動作安排它，不要再用圖元拼一個。' : ''; }
 
-  return { LIM: LIM, LICENSES: LICENSES, repoSearchUrl: repoSearchUrl, pickRepos: pickRepos, treeUrl: treeUrl, pickObj: pickObj, rawUrl: rawUrl, parseObj: parseObj, decimate: decimate, fit: fit, toObject: toObject, bbox: bbox, bgMask: bgMask, parseScene: parseScene, cutBackground: cutBackground, assetNote: assetNote };
+  return { LIM: LIM, LICENSES: LICENSES, repoSearchUrl: repoSearchUrl, pickRepos: pickRepos, treeUrl: treeUrl, pickObj: pickObj, rawUrl: rawUrl, parseObj: parseObj, decimate: decimate, fit: fit, toObject: toObject, bbox: bbox, githubCodeSearchUrl: githubCodeSearchUrl, GH_EXTRACT_JS: GH_EXTRACT_JS, parseCodeHits: parseCodeHits, googleImagesUrl: googleImagesUrl, GOOGLE_EXTRACT_JS: GOOGLE_EXTRACT_JS, parseImageList: parseImageList, imgurSearchUrl: imgurSearchUrl, IMGUR_EXTRACT_JS: IMGUR_EXTRACT_JS, imgurLarge: imgurLarge, bgMask: bgMask, parseScene: parseScene, cutBackground: cutBackground, assetNote: assetNote };
 });

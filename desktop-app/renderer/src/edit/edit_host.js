@@ -373,9 +373,42 @@ const FaEditHost = (function () {
             return null;
         },
 
+
+        // ───── 用瀏覽器控制（使用者的 Chrome，要在設定開啟並裝好擴充功能）搜尋：GitHub 程式碼搜尋（要登入 GitHub）、Google 圖片、imgur。沒開、沒連上、沒登入都不是錯誤，往下一個來源 ─────
+        async _subjBcReady() {
+            if (!(this.advancedSettings && this.advancedSettings.browserControlEnabled)) return false;
+            if (this._subjBcOk && Date.now() - this._subjBcOk.at < 30000) return this._subjBcOk.ok;
+            let ok = false; try { const r = await this._bcCall('ping', {}, 4000); ok = !!(r && r.ok && r.allowed !== false); } catch (_) { ok = false; }
+            this._subjBcOk = { at: Date.now(), ok }; return ok;
+        },
+        // 開一個背景分頁（不搶畫面）、等頁面準備好（抽取腳本回 ready:true）、取結果、關掉分頁
+        async _subjBcRead(url, js, timeoutMs) {
+            const created = await this._bcCall('tab_create', { url, active: false }, 20000); if (!created || !created.ok) return null;
+            const tabId = created.tab_id, t0 = Date.now(); let last = null;
+            try {
+                while (Date.now() - t0 < (timeoutMs || 25000)) {
+                    await new Promise((r) => setTimeout(r, 1200));
+                    const r = await this._bcCall('tab_eval', { tab_id: tabId, js, timeout_ms: 8000 }, 11000);
+                    if (r && r.ok) { let v = r.value; if (typeof v === 'string') { try { v = JSON.parse(v); } catch (_) { /* 照原樣 */ } } last = v; if (v && v.ready) return v; }
+                }
+                return last;
+            } finally { try { await this._bcCall('tab_close', { tab_id: tabId }, 8000); } catch (_) { /* 擴充功能回合結束會自己關 */ } }
+        },
+        async _subjObjViaBc(subject) {
+            if (!(await this._subjBcReady())) return null; const M = FaSubject3d;
+            const v = await this._subjBcRead(M.githubCodeSearchUrl(subject), M.GH_EXTRACT_JS, 22000), ph = M.parseCodeHits(v, subject);
+            if (ph.login) { this._subjLoginHint = true; return null; }   // GitHub 的程式碼搜尋要登入：請使用者在 Chrome 登入，這次改用公開專案搜尋
+            for (const h of ph.hits.slice(0, 4)) {
+                let text = ''; try { text = await this._subjGetText(h.raw); } catch (_) { continue; } if (text.length > M.LIM.objBytes + 1024) continue;
+                const parsed = M.parseObj(text); if (!parsed.ok) continue;
+                return { mesh: parsed.mesh, repo: h.full, path: h.path, license: 'none', faces: parsed.faces, originalFaces: parsed.original.faces, via: 'browser' };
+            }
+            return null;
+        },
         // ───── 3D 第一階：GitHub 公開專案裡找現成的 OBJ（使用者定的順序：有 OBJ 就不用再查描述）─────
         async _subjObjAsset(subject) {
             const M = FaSubject3d; if (!subject.en) return null;
+            try { const viaBc = await this._subjObjViaBc(subject); if (viaBc) return viaBc; } catch (_) { /* 瀏覽器控制不通：用公開專案搜尋 */ }
             let repos = []; try { repos = M.pickRepos(await this._subjGetJson(M.repoSearchUrl(subject)), subject); } catch (_) { return null; }   // 沒網路或超過 GitHub 的次數限制：往下一階
             for (const repo of repos.slice(0, M.LIM.trees)) {
                 let pick = null; try { pick = M.pickObj(await this._subjGetJson(M.treeUrl(repo)), subject, repo); } catch (_) { continue; } if (!pick) continue;
@@ -389,10 +422,13 @@ const FaEditHost = (function () {
         // ───── 3D 第三階：找一張圖 → 切掉背景 → 現有的圖片分解（2.5D 充氣）→ 帶貼圖的自訂形狀。全部只放記憶體，不存成檔案 ─────
         // 圖片來源：維基共享資源與 Openverse（免金鑰）；有填 imgurClientId 就加 imgur；有填 googleSearchKey＋googleSearchCx 就加 Google 圖片（兩者都要使用者自己的金鑰）
         async _subjImageCandidates(subject) {
-            const q = subject.en || subject.name, out = [], adv = this.advancedSettings || {};
+            const q = subject.en || subject.name, out = [], adv = this.advancedSettings || {}, M = FaSubject3d; let bcOk = false;
+            try { bcOk = await this._subjBcReady(); } catch (_) { bcOk = false; }
+            if (bcOk) { try { const v = await this._subjBcRead(M.googleImagesUrl(subject), M.GOOGLE_EXTRACT_JS, 22000); M.parseImageList(v, 'google').forEach((c) => out.push(c)); } catch (_) { /* 下一個來源 */ } }
             try { const ps = FaPictureSource.make({ fetch: this._edFetchFn(), timeoutMs: 20000 }), sr = await ps.search(q, { limit: 8 }); if (sr && sr.ok) (sr.results || []).forEach((r) => out.push({ ref: r, title: r.title, source: r.source, license: r.license || '', creator: r.creator || '' })); } catch (_) { /* 這個來源不通就看下一個 */ }
-            if (adv.imgurClientId) { try { const r = await fetch('https://api.imgur.com/3/gallery/search/top/all/1?q=' + encodeURIComponent(q + ' ext:png'), { headers: { Authorization: 'Client-ID ' + adv.imgurClientId } }); if (r.ok) { const j = await r.json(); (j.data || []).forEach((g) => { const im = (g.images && g.images[0]) || g; if (im && im.link && /\.(png|jpe?g|webp)$/i.test(im.link) && !im.animated) out.push({ ref: im.link, title: g.title || q, source: 'imgur', license: '', creator: g.account_url || '' }); }); } } catch (_) { /* */ } }
-            if (adv.googleSearchKey && adv.googleSearchCx) { try { const r = await fetch('https://www.googleapis.com/customsearch/v1?searchType=image&num=8&imgType=clipart&key=' + encodeURIComponent(adv.googleSearchKey) + '&cx=' + encodeURIComponent(adv.googleSearchCx) + '&q=' + encodeURIComponent(q)); if (r.ok) { const j = await r.json(); (j.items || []).forEach((it) => { if (it.link) out.push({ ref: it.link, title: it.title || q, source: 'google', license: '', creator: (it.displayLink || '') }); }); } } catch (_) { /* */ } }
+            if (bcOk) { try { const v = await this._subjBcRead(M.imgurSearchUrl(subject), M.IMGUR_EXTRACT_JS, 22000); M.imgurLarge(M.parseImageList(v, 'imgur')).forEach((c) => out.push(c)); } catch (_) { /* 下一個來源 */ } }
+            if (!bcOk && adv.imgurClientId) { try { const r = await fetch('https://api.imgur.com/3/gallery/search/top/all/1?q=' + encodeURIComponent(q + ' ext:png'), { headers: { Authorization: 'Client-ID ' + adv.imgurClientId } }); if (r.ok) { const j = await r.json(); (j.data || []).forEach((g) => { const im = (g.images && g.images[0]) || g; if (im && im.link && /\.(png|jpe?g|webp)$/i.test(im.link) && !im.animated) out.push({ ref: im.link, title: g.title || q, source: 'imgur', license: '', creator: g.account_url || '' }); }); } } catch (_) { /* */ } }
+            if (!bcOk && adv.googleSearchKey && adv.googleSearchCx) { try { const r = await fetch('https://www.googleapis.com/customsearch/v1?searchType=image&num=8&imgType=clipart&key=' + encodeURIComponent(adv.googleSearchKey) + '&cx=' + encodeURIComponent(adv.googleSearchCx) + '&q=' + encodeURIComponent(q)); if (r.ok) { const j = await r.json(); (j.items || []).forEach((it) => { if (it.link) out.push({ ref: it.link, title: it.title || q, source: 'google', license: '', creator: (it.displayLink || '') }); }); } } catch (_) { /* */ } }
             return out;
         },
         // 圖片的位元組 → 縮到長邊 360 以內的 RGBA 與 PNG 位元組（分解不需要大圖）
@@ -476,6 +512,7 @@ const FaEditHost = (function () {
                 }
                 if (r.brief) { briefs.push(r.brief); notes.push(s.name + (r.from === 'cache' ? T('（記得）', ' (remembered)') : r.from === 'web' ? T('（查了網路）', ' (web)') : r.from === 'image' ? T('（看了參考圖）', ' (from a reference picture)') : T('（沒查到網路資料）', ' (nothing found online)'))); }
             }
+            if (this._subjLoginHint) { this._subjLoginHint = false; if (typeof status === 'function') status(T('GitHub 的程式碼搜尋要先在 Chrome 登入 GitHub；這次改用公開專案搜尋', 'GitHub code search needs you to sign in to GitHub in Chrome; used the public repository search this time')); }
             if (!briefs.length && !assets.length) return none;
             if (typeof status === 'function') status(T('找到外形資料：' + notes.join('、'), 'Found the shape: ' + notes.join(', ')));
             const offline = !!(this.advancedSettings && this.advancedSettings.offlineMode), budget = Math.max(400, Math.min(1600, Math.round(this._kiBudgetChars(offline) * 0.15)));

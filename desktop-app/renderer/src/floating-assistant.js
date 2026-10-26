@@ -28657,6 +28657,29 @@ const holder = {};
     keep.forEach(function (tri) { tri.forEach(function (vi) { if (remap[vi] === undefined) { remap[vi] = nv.length; nv.push(mesh.vertices[vi]); nu.push(mesh.uvs[vi]); } }); });
     return { vertices: nv, faces: keep.map(function (tri) { return [remap[tri[0]], remap[tri[1]], remap[tri[2]]]; }), uvs: nu, kept: keep.length, total: mesh.faces.length };
   }
+  // ───── 用「瀏覽器控制」（使用者的 Chrome）搜尋：GitHub 程式碼搜尋（要登入，用使用者登入的 Chrome）、Google 圖片、imgur。網址、在頁面裡跑的抽取腳本（回 JSON 字串）與解析都在這裡，抓取由宿主端做
+  function githubCodeSearchUrl(subject) { var en = words(subject.en || subject.name).join(' ') || str(subject.name, 40); return 'https://github.com/search?type=code&q=' + encodeURIComponent(en + ' extension:obj'); }
+  var GH_EXTRACT_JS = '(()=>{const out={hrefs:[],login:false};const t=document.body?document.body.innerText:"";if(/Sign in to search code/i.test(t))out.login=true;' +
+    'document.querySelectorAll(\'a[href*="/blob/"]\').forEach(a=>out.hrefs.push(a.getAttribute("href")));' +
+    'try{const e=document.querySelector(\'script[data-target="react-app.embeddedData"]\');const j=JSON.parse(e.textContent);const rs=(j.payload&&j.payload.results)||[];rs.forEach(r=>{const repo=r.repo_nwo||(r.repo&&(r.repo.name_with_owner||(r.repo.repository&&r.repo.repository.name_with_owner)))||"";const ref=r.ref_name||r.commit_sha||"HEAD";if(repo&&r.path)out.hrefs.push("/"+repo+"/blob/"+ref+"/"+r.path);});}catch(e){}' +
+    'out.ready=!!(out.hrefs.length||out.login||/did not match|No results/i.test(t));return JSON.stringify(out);})()';
+  // 抽取結果 → { login, hits:[{ full, path, raw }] }：.obj 檔、路徑或專案名要含這個東西的名字、不重複；raw＝raw.githubusercontent.com 的網址（blob 後面的 ref/路徑原樣接上）
+  function parseCodeHits(json, subject) {
+    var j = json && typeof json === 'object' ? json : null; if (typeof json === 'string') { try { j = JSON.parse(json); } catch (e) { j = null; } } if (!j) return { login: false, hits: [] };
+    var ws = words(subject.en), seen = {}, hits = [];
+    (j.hrefs || []).forEach(function (h) { var m = /^(?:https:\/\/github\.com)?\/([^\/]+\/[^\/]+)\/blob\/(.+?)(?:[?#].*)?$/.exec(String(h || '')); if (!m) return; var rest = m[2], full = m[1]; if (!/\.obj$/i.test(rest)) return; var key = full + '/' + rest; if (seen[key]) return; if (!hasWords(full + ' ' + rest, ws)) return; seen[key] = 1; hits.push({ full: full, path: rest.slice(rest.indexOf('/') + 1), raw: 'https://raw.githubusercontent.com/' + full + '/' + rest.split('/').map(encodeURIComponent).join('/') }); });
+    return { login: !!j.login, hits: hits.slice(0, 6) };
+  }
+  function googleImagesUrl(subject) { return 'https://www.google.com/search?tbm=isch&hl=en&safe=active&q=' + encodeURIComponent(str(subject.en || subject.name, 60) + ' png'); }
+  var GOOGLE_EXTRACT_JS = '(()=>{const l=[...document.querySelectorAll("img")].filter(i=>i.naturalWidth>=120&&i.naturalHeight>=120&&i.alt&&i.src&&i.src.length<400000).slice(0,16).map(i=>({src:i.src,alt:i.alt.slice(0,80),w:i.naturalWidth,h:i.naturalHeight}));return JSON.stringify({imgs:l,ready:l.length>=4});})()';
+  function parseImageList(json, source) {
+    var j = json && typeof json === 'object' ? json : null; if (typeof json === 'string') { try { j = JSON.parse(json); } catch (e) { j = null; } } var out = [];
+    ((j && j.imgs) || []).forEach(function (i) { if (i && /^(data:image\/(?:jpeg|png|webp);base64,|https:\/\/)/.test(String(i.src || ''))) out.push({ ref: i.src, title: str(i.alt, 80), source: source, license: '', creator: '' }); }); return out;
+  }
+  function imgurSearchUrl(subject) { return 'https://imgur.com/search?q=' + encodeURIComponent(str(subject.en || subject.name, 60)); }
+  var IMGUR_EXTRACT_JS = '(()=>{const l=[...document.querySelectorAll("img")].filter(i=>/^https:\\/\\/i\\.imgur\\.com\\/[A-Za-z0-9]+[a-z]?\\.(?:jpg|png)/.test(i.src)&&i.naturalWidth>=90).slice(0,16).map(i=>({src:i.src,alt:i.alt.slice(0,80)}));return JSON.stringify({imgs:l,ready:l.length>=4});})()';
+  // imgur 的縮圖是 <id>b.jpg（160 像素）；改成 <id>l.jpg（640 像素）
+  function imgurLarge(list) { return list.map(function (x) { return Object.assign({}, x, { ref: String(x.ref).replace(/^(https:\/\/i\.imgur\.com\/[A-Za-z0-9]{7})[a-z]?(\.(?:jpg|png)).*$/, '$1l$2') }); }); }
   // 編輯器的物件（跟內建模型庫、匯入 OBJ 同一種：mesh:'polygon'）
   function toObject(subject, mesh, opt) {
     opt = opt || {}; var o = { type: 'mesh', mesh: 'polygon', name: str(subject.name, 24), material: { color: opt.color || '#c9c9c9', roughness: 0.6, metalness: 0.05 }, extra: { vertices: mesh.vertices, faces: mesh.faces } };
@@ -28664,7 +28687,7 @@ const holder = {};
   }
   function assetNote(assets) { return assets && assets.length ? '已經找到現成的 3D 模型並由程式放進場景了：' + assets.map(function (a) { return '「' + a.name + '」'; }).join('、') + '（放在原點、底面貼地）。請用移動、旋轉、縮放、顏色（set_material）等動作安排它，不要再用圖元拼一個。' : ''; }
 
-  return { LIM: LIM, LICENSES: LICENSES, repoSearchUrl: repoSearchUrl, pickRepos: pickRepos, treeUrl: treeUrl, pickObj: pickObj, rawUrl: rawUrl, parseObj: parseObj, decimate: decimate, fit: fit, toObject: toObject, bbox: bbox, bgMask: bgMask, parseScene: parseScene, cutBackground: cutBackground, assetNote: assetNote };
+  return { LIM: LIM, LICENSES: LICENSES, repoSearchUrl: repoSearchUrl, pickRepos: pickRepos, treeUrl: treeUrl, pickObj: pickObj, rawUrl: rawUrl, parseObj: parseObj, decimate: decimate, fit: fit, toObject: toObject, bbox: bbox, githubCodeSearchUrl: githubCodeSearchUrl, GH_EXTRACT_JS: GH_EXTRACT_JS, parseCodeHits: parseCodeHits, googleImagesUrl: googleImagesUrl, GOOGLE_EXTRACT_JS: GOOGLE_EXTRACT_JS, parseImageList: parseImageList, imgurSearchUrl: imgurSearchUrl, IMGUR_EXTRACT_JS: IMGUR_EXTRACT_JS, imgurLarge: imgurLarge, bgMask: bgMask, parseScene: parseScene, cutBackground: cutBackground, assetNote: assetNote };
 });
 
 }).call(null, undefined, holder);
@@ -30217,9 +30240,42 @@ const FaEditHost = (function () {
             return null;
         },
 
+
+        // ───── 用瀏覽器控制（使用者的 Chrome，要在設定開啟並裝好擴充功能）搜尋：GitHub 程式碼搜尋（要登入 GitHub）、Google 圖片、imgur。沒開、沒連上、沒登入都不是錯誤，往下一個來源 ─────
+        async _subjBcReady() {
+            if (!(this.advancedSettings && this.advancedSettings.browserControlEnabled)) return false;
+            if (this._subjBcOk && Date.now() - this._subjBcOk.at < 30000) return this._subjBcOk.ok;
+            let ok = false; try { const r = await this._bcCall('ping', {}, 4000); ok = !!(r && r.ok && r.allowed !== false); } catch (_) { ok = false; }
+            this._subjBcOk = { at: Date.now(), ok }; return ok;
+        },
+        // 開一個背景分頁（不搶畫面）、等頁面準備好（抽取腳本回 ready:true）、取結果、關掉分頁
+        async _subjBcRead(url, js, timeoutMs) {
+            const created = await this._bcCall('tab_create', { url, active: false }, 20000); if (!created || !created.ok) return null;
+            const tabId = created.tab_id, t0 = Date.now(); let last = null;
+            try {
+                while (Date.now() - t0 < (timeoutMs || 25000)) {
+                    await new Promise((r) => setTimeout(r, 1200));
+                    const r = await this._bcCall('tab_eval', { tab_id: tabId, js, timeout_ms: 8000 }, 11000);
+                    if (r && r.ok) { let v = r.value; if (typeof v === 'string') { try { v = JSON.parse(v); } catch (_) { /* 照原樣 */ } } last = v; if (v && v.ready) return v; }
+                }
+                return last;
+            } finally { try { await this._bcCall('tab_close', { tab_id: tabId }, 8000); } catch (_) { /* 擴充功能回合結束會自己關 */ } }
+        },
+        async _subjObjViaBc(subject) {
+            if (!(await this._subjBcReady())) return null; const M = FaSubject3d;
+            const v = await this._subjBcRead(M.githubCodeSearchUrl(subject), M.GH_EXTRACT_JS, 22000), ph = M.parseCodeHits(v, subject);
+            if (ph.login) { this._subjLoginHint = true; return null; }   // GitHub 的程式碼搜尋要登入：請使用者在 Chrome 登入，這次改用公開專案搜尋
+            for (const h of ph.hits.slice(0, 4)) {
+                let text = ''; try { text = await this._subjGetText(h.raw); } catch (_) { continue; } if (text.length > M.LIM.objBytes + 1024) continue;
+                const parsed = M.parseObj(text); if (!parsed.ok) continue;
+                return { mesh: parsed.mesh, repo: h.full, path: h.path, license: 'none', faces: parsed.faces, originalFaces: parsed.original.faces, via: 'browser' };
+            }
+            return null;
+        },
         // ───── 3D 第一階：GitHub 公開專案裡找現成的 OBJ（使用者定的順序：有 OBJ 就不用再查描述）─────
         async _subjObjAsset(subject) {
             const M = FaSubject3d; if (!subject.en) return null;
+            try { const viaBc = await this._subjObjViaBc(subject); if (viaBc) return viaBc; } catch (_) { /* 瀏覽器控制不通：用公開專案搜尋 */ }
             let repos = []; try { repos = M.pickRepos(await this._subjGetJson(M.repoSearchUrl(subject)), subject); } catch (_) { return null; }   // 沒網路或超過 GitHub 的次數限制：往下一階
             for (const repo of repos.slice(0, M.LIM.trees)) {
                 let pick = null; try { pick = M.pickObj(await this._subjGetJson(M.treeUrl(repo)), subject, repo); } catch (_) { continue; } if (!pick) continue;
@@ -30233,10 +30289,13 @@ const FaEditHost = (function () {
         // ───── 3D 第三階：找一張圖 → 切掉背景 → 現有的圖片分解（2.5D 充氣）→ 帶貼圖的自訂形狀。全部只放記憶體，不存成檔案 ─────
         // 圖片來源：維基共享資源與 Openverse（免金鑰）；有填 imgurClientId 就加 imgur；有填 googleSearchKey＋googleSearchCx 就加 Google 圖片（兩者都要使用者自己的金鑰）
         async _subjImageCandidates(subject) {
-            const q = subject.en || subject.name, out = [], adv = this.advancedSettings || {};
+            const q = subject.en || subject.name, out = [], adv = this.advancedSettings || {}, M = FaSubject3d; let bcOk = false;
+            try { bcOk = await this._subjBcReady(); } catch (_) { bcOk = false; }
+            if (bcOk) { try { const v = await this._subjBcRead(M.googleImagesUrl(subject), M.GOOGLE_EXTRACT_JS, 22000); M.parseImageList(v, 'google').forEach((c) => out.push(c)); } catch (_) { /* 下一個來源 */ } }
             try { const ps = FaPictureSource.make({ fetch: this._edFetchFn(), timeoutMs: 20000 }), sr = await ps.search(q, { limit: 8 }); if (sr && sr.ok) (sr.results || []).forEach((r) => out.push({ ref: r, title: r.title, source: r.source, license: r.license || '', creator: r.creator || '' })); } catch (_) { /* 這個來源不通就看下一個 */ }
-            if (adv.imgurClientId) { try { const r = await fetch('https://api.imgur.com/3/gallery/search/top/all/1?q=' + encodeURIComponent(q + ' ext:png'), { headers: { Authorization: 'Client-ID ' + adv.imgurClientId } }); if (r.ok) { const j = await r.json(); (j.data || []).forEach((g) => { const im = (g.images && g.images[0]) || g; if (im && im.link && /\.(png|jpe?g|webp)$/i.test(im.link) && !im.animated) out.push({ ref: im.link, title: g.title || q, source: 'imgur', license: '', creator: g.account_url || '' }); }); } } catch (_) { /* */ } }
-            if (adv.googleSearchKey && adv.googleSearchCx) { try { const r = await fetch('https://www.googleapis.com/customsearch/v1?searchType=image&num=8&imgType=clipart&key=' + encodeURIComponent(adv.googleSearchKey) + '&cx=' + encodeURIComponent(adv.googleSearchCx) + '&q=' + encodeURIComponent(q)); if (r.ok) { const j = await r.json(); (j.items || []).forEach((it) => { if (it.link) out.push({ ref: it.link, title: it.title || q, source: 'google', license: '', creator: (it.displayLink || '') }); }); } } catch (_) { /* */ } }
+            if (bcOk) { try { const v = await this._subjBcRead(M.imgurSearchUrl(subject), M.IMGUR_EXTRACT_JS, 22000); M.imgurLarge(M.parseImageList(v, 'imgur')).forEach((c) => out.push(c)); } catch (_) { /* 下一個來源 */ } }
+            if (!bcOk && adv.imgurClientId) { try { const r = await fetch('https://api.imgur.com/3/gallery/search/top/all/1?q=' + encodeURIComponent(q + ' ext:png'), { headers: { Authorization: 'Client-ID ' + adv.imgurClientId } }); if (r.ok) { const j = await r.json(); (j.data || []).forEach((g) => { const im = (g.images && g.images[0]) || g; if (im && im.link && /\.(png|jpe?g|webp)$/i.test(im.link) && !im.animated) out.push({ ref: im.link, title: g.title || q, source: 'imgur', license: '', creator: g.account_url || '' }); }); } } catch (_) { /* */ } }
+            if (!bcOk && adv.googleSearchKey && adv.googleSearchCx) { try { const r = await fetch('https://www.googleapis.com/customsearch/v1?searchType=image&num=8&imgType=clipart&key=' + encodeURIComponent(adv.googleSearchKey) + '&cx=' + encodeURIComponent(adv.googleSearchCx) + '&q=' + encodeURIComponent(q)); if (r.ok) { const j = await r.json(); (j.items || []).forEach((it) => { if (it.link) out.push({ ref: it.link, title: it.title || q, source: 'google', license: '', creator: (it.displayLink || '') }); }); } } catch (_) { /* */ } }
             return out;
         },
         // 圖片的位元組 → 縮到長邊 360 以內的 RGBA 與 PNG 位元組（分解不需要大圖）
@@ -30320,6 +30379,7 @@ const FaEditHost = (function () {
                 }
                 if (r.brief) { briefs.push(r.brief); notes.push(s.name + (r.from === 'cache' ? T('（記得）', ' (remembered)') : r.from === 'web' ? T('（查了網路）', ' (web)') : r.from === 'image' ? T('（看了參考圖）', ' (from a reference picture)') : T('（沒查到網路資料）', ' (nothing found online)'))); }
             }
+            if (this._subjLoginHint) { this._subjLoginHint = false; if (typeof status === 'function') status(T('GitHub 的程式碼搜尋要先在 Chrome 登入 GitHub；這次改用公開專案搜尋', 'GitHub code search needs you to sign in to GitHub in Chrome; used the public repository search this time')); }
             if (!briefs.length && !assets.length) return none;
             if (typeof status === 'function') status(T('找到外形資料：' + notes.join('、'), 'Found the shape: ' + notes.join(', ')));
             const offline = !!(this.advancedSettings && this.advancedSettings.offlineMode), budget = Math.max(400, Math.min(1600, Math.round(this._kiBudgetChars(offline) * 0.15)));

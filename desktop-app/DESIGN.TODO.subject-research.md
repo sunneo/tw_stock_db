@@ -2,7 +2,7 @@
 
 設計與已做的見 DESIGN.subject-research.md。使用者的決定（2026-10-26）：找現成 OBJ 用 GitHub 公開的；找圖再 3D 化的圖片來源用 imgur、Google 圖片、維基；預設直接下載、不問，只放記憶體與 IndexedDB，不存成檔案。
 
-- **imgur、Google 圖片的搜尋沒有實測過**：程式支援（`imgurClientId`、`googleSearchKey`＋`googleSearchCx` 設定），但兩者都要使用者自己的金鑰，沒有金鑰無法驗證；設定畫面也還沒有填這三個值的欄位（現在要改 `advancedSettings`）。
+- **瀏覽器控制搜尋沒有連上真正的擴充功能測過**：三個抽取腳本在真實頁面驗證過、流程用假的擴充功能驗證過；GitHub 程式碼搜尋登入後的頁面結構沒看過（抽取同時看 `/blob/` 連結與內嵌 JSON）。沒開瀏覽器控制時的備援：imgur／Google 要使用者自己的金鑰（`imgurClientId`、`googleSearchKey`＋`googleSearchCx`），設定畫面還沒有填這三個值的欄位（現在要改 `advancedSettings`）。
 - **圖片 3D 化是單面浮雕**：沒有背面的真實貼圖、沒有側面厚度的牆（`wall_faces` 為 0）；要做真的立體需要多視角或鏡射補背面。
 - **2D 還沒做的**：找到的平面圖用程式描摹成向量（`FaSvgTrace`，視覺模型只負責命名與評分），目前只做了「視覺模型整理成部位」；`/edit-picture` 只用文字外形資料（它的物件是點陣圖層，放不進 SVG 素材）。
 - **沒有用真實線上模型量過改善多少**：只驗證了接線（資料確實送進編輯器的模型、快取、離線略過、畫圖路線共用）。

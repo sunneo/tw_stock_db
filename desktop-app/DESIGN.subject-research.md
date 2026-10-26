@@ -39,3 +39,11 @@
 - **找圖 → 3D**：圖片來源 `_subjImageCandidates`：維基共享資源與 Openverse（免金鑰）；`advancedSettings.imgurClientId` 有填就加 imgur；`googleSearchKey`＋`googleSearchCx` 有填就加 Google 圖片（兩者都要使用者自己的金鑰，沒填就略過）。每張圖：縮到長邊 360 → `bgMask`（用圖的邊緣估背景色，從邊緣填色；前景比例要在 10%～85%，否則換下一張）→ `_subjDecompose`（Pyodide，全程記憶體，輸出讀回字串、用完清掉）→ `parseScene` → `cutBackground`（三角形中心落在背景就丟）→ `fit(…, {depthRatio:0.4})`（浮雕很薄，前後深度至少是寬高較小邊的 40%）→ 貼圖物件（兩面都畫）。最多試 4 張。
 - **實測（測試版，真網路）**：「bunny」→ GitHub `KunKunaa/Bunny` 的 `Bunny/bunny.obj`（5001 面、縮到 30 公分、編輯器接受）；「apple」→ 維基共享資源 `Red Apple`（CC BY 2.0，前景 55%、8311 面、貼圖 27KB、約 14 秒含 Pyodide 載入）；完整對話流程：說「在右邊放一隻兔子」，程式先把 OBJ 放進場景。
 - **已知限制**：GitHub 上的 OBJ 命中率看東西而定（「violin」搜不到專案；多數專案沒有授權標示）；圖片 3D 化只有單面浮雕（背面是同一張圖），背景複雜或東西跟背景同色就換下一張或放棄；未登入的 GitHub 搜尋有次數限制，用完會直接往下一階走。
+
+## 用瀏覽器控制搜尋（2026-10-26，使用者：Google、GitHub 也可以用瀏覽器控制）
+設定「瀏覽器控制」開著、擴充功能連上時（`_subjBcReady`：`browserControlEnabled` 加 `ping`，30 秒快取），搜尋改走使用者的 Chrome；沒開、沒連上、沒登入都不是錯誤，往下一個來源。每次搜尋開一個背景分頁（`tab_create`，不搶畫面）→ 輪詢在頁面裡跑的抽取腳本（`tab_eval`，回 JSON 字串，`ready:true` 才算頁面好了，最多 22 秒）→ `tab_close`。
+- **GitHub 程式碼搜尋**（`https://github.com/search?type=code&q=<英文名> extension:obj`）：程式碼搜尋要登入，所以用使用者登入的 Chrome。抽取 `a[href*="/blob/"]` 與頁面內嵌 JSON（`react-app.embeddedData`）的結果 → `parseCodeHits`（.obj、路徑或專案名要含名字、去重）→ 用 `raw.githubusercontent.com` 抓檔。**沒登入**時頁面是「Sign in to search code」，抽取腳本回 `login:true`：狀態列提示「要先在 Chrome 登入 GitHub」，這次退回公開專案搜尋（API）。
+- **Google 圖片**（`tbm=isch`，查詢字加 `png`）：頁面的縮圖直接內嵌成 `data:image/jpeg`（約 225 像素，有描述文字），抽取後直接拿來做 3D，不用另外下載。
+- **imgur**（`imgur.com/search?q=`）：縮圖是 `<id>b.jpg`，`imgurLarge` 改成 `<id>l.jpg`（640 像素）。
+- 圖片候選的順序：Google → 維基共享資源／Openverse → imgur；沒有瀏覽器控制才用使用者自己填的金鑰（`imgurClientId`、`googleSearchKey`＋`googleSearchCx`）。
+- **驗證**：三個抽取腳本都在真實頁面上跑過（瀏覽器窗格：imgur 16 張、Google 16 張縮圖、GitHub 沒登入回 `login:true`）；整條流程用假的擴充功能（回傳跟真實頁面一樣形狀的資料）在測試版跑過：登入時找到 `KunKunaa/Bunny` 的 OBJ（`via: browser`）、沒登入時有提示並退回 API。**沒驗證**：真的連上擴充功能、GitHub 程式碼搜尋登入後的頁面結構（抽取同時看連結與內嵌 JSON，但沒看過登入後的實際內容）。
