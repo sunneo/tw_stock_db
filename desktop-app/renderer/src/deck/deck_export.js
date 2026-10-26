@@ -11,6 +11,11 @@
 
   var Core = window.AiChatDeckCore;
 
+  // narration kept as WAV is squeezed to mp3 only for the files that leave the app: one array of bytes per slide (null = no audio)
+  function withZipAudio(session) {
+    var D = window.AiChatDeck;
+    return Promise.all(session.preps.map(function (p) { if (!p.audio) { return Promise.resolve(null); } return (D && D.compressAudio ? D.compressAudio(p.audio.mp3) : Promise.resolve(p.audio.mp3)).catch(function () { return p.audio.mp3; }); })).then(function (au) { session.__zipAudio = au; });
+  }
   function safeName(s) { return String(s || 'presentation').replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 60) || 'presentation'; }
   function download(blob, name) {
     var url = URL.createObjectURL(blob), a = document.createElement('a');
@@ -320,14 +325,14 @@
   function exportZip(session, P) {
     var kit = window.AiChatMarkdown && window.AiChatMarkdown.pptxKit;
     if (!kit) { return Promise.reject(new Error('the zip library loader is not available')); }
-    return prepareAll(session, P).then(function () { P.step(1, '正在載入壓縮元件…'); return kit.ensureLibs(); }).then(function () {
+    return prepareAll(session, P).then(function () { P.step(1, '正在載入壓縮元件…'); return Promise.all([kit.ensureLibs(), withZipAudio(session)]); }).then(function () {
       P.step(1, '正在加入描述檔、字幕與每頁旁白音檔…');
       var zip = new window.JSZip(), name = safeName(session.deck.deck.title);
       zip.file(name + '.deck.yaml', session.raw);
       var timings = session.preps.map(function (p) { return p.timing; });
       zip.file(name + '.srt', Core.buildSubtitleFile(session.deck, session.tl, timings, 'srt'));
       zip.file(name + '.vtt', Core.buildSubtitleFile(session.deck, session.tl, timings, 'vtt'));
-      session.preps.forEach(function (p, i) { if (p.audio) { zip.file('audio/' + (i < 9 ? '0' : '') + (i + 1) + '-' + session.deck.slides[i].id + '.mp3', p.audio.mp3); } });
+      session.preps.forEach(function (p, i) { if (p.audio) { zip.file('audio/' + (i < 9 ? '0' : '') + (i + 1) + '-' + session.deck.slides[i].id + '.mp3', (session.__zipAudio && session.__zipAudio[i]) || p.audio.mp3); } });
       zip.file('README.txt', 'media-presentation bundle\n' + name + '.deck.yaml is the source description (open it again in the chat to replay / re-export).\naudio/*.mp3 is the narration of each slide; the .srt/.vtt are the subtitles on the same timeline.\n');
       P.step(2, '正在壓縮…');
       return zip.generateAsync({ type: 'blob' }, function (meta) { P.frac(meta.percent / 100, '壓縮 ' + Math.round(meta.percent) + '%'); });
@@ -342,7 +347,7 @@
     var name = safeName(session.deck.deck.title), collected;
     return prepareAll(session, P).then(function () {
       P.step(1, '正在收集簡報用到的圖片與檔案…');
-      return Promise.all([kit.ensureLibs(), window.AiChat2D.ensureJsYamlLoaded()]);
+      return Promise.all([kit.ensureLibs(), window.AiChat2D.ensureJsYamlLoaded(), withZipAudio(session)]);
     }).then(function () {
       return Pack.collectAssets(window.jsyaml.load(session.raw), window.AiChatDeck._internal.fetchBlob, function (done, total) { P.frac(done / Math.max(total, 1), '檔案 ' + done + ' / ' + total); });
     }).then(function (col) {
@@ -350,7 +355,7 @@
       var zip = new window.JSZip(), timings = session.preps.map(function (p) { return p.timing; });
       zip.file('deck.yaml', window.jsyaml.dump(col.doc, { lineWidth: -1 }));
       col.files.forEach(function (f) { zip.file(f.path, f.blob); });
-      session.preps.forEach(function (p, i) { if (p.audio) { zip.file('audio/' + (i < 9 ? '0' : '') + (i + 1) + '-' + session.deck.slides[i].id + '.mp3', p.audio.mp3); } });
+      session.preps.forEach(function (p, i) { if (p.audio) { zip.file('audio/' + (i < 9 ? '0' : '') + (i + 1) + '-' + session.deck.slides[i].id + '.mp3', (session.__zipAudio && session.__zipAudio[i]) || p.audio.mp3); } });
       zip.file('subtitles.srt', Core.buildSubtitleFile(session.deck, session.tl, timings, 'srt'));
       zip.file('subtitles.vtt', Core.buildSubtitleFile(session.deck, session.tl, timings, 'vtt'));
       // what the viewer answered: restored when the pack is opened, and readable as it is ("你的回答" / "我們回應:")

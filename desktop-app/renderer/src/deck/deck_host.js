@@ -44,6 +44,7 @@ const FaDeckHost = (function () {
                 if (!w.AiChatDeck || !w.AiChatDeckCore) throw new Error('簡報元件載入後找不到 AiChatDeck');
                 w.AiChatDeck.setTtsProvider((text, voice, speed, lang) => this._deckSynthesize(text, voice, speed, lang), { concurrent: true });
                 w.AiChatDeck.setSpeechPreparer((text, voice, lang) => this._deckPrepareSpeech(text, voice, lang));
+                w.AiChatDeck.setAudioCompressor((buf) => this._deckCompressAudio(buf));
                 if (w.AiChatDeck.setVoiceLister) w.AiChatDeck.setVoiceLister(() => this._deckVoiceList());
                 if (w.AiChatDeck.setCaptionTranslator) w.AiChatDeck.setCaptionTranslator((text, to) => this._deckTranslateCaption(text, to));
                 w.AiChatDeck.setGradeProvider((system, user) => this._deckGrade(system, user));
@@ -281,13 +282,30 @@ const FaDeckHost = (function () {
             try { add(typeof TTS_VOICES !== 'undefined' ? TTS_VOICES : [], '離線英文'); add(typeof TTS_ZH_VOICES !== 'undefined' ? TTS_ZH_VOICES : [], '離線中文'); if (this.advancedSettings && this.advancedSettings.ttsApiEnabled) add(typeof TTS_API_VOICES !== 'undefined' ? TTS_API_VOICES : [], '線上中文'); } catch (_) { /* 清單拿不到就不列 */ }
             return out;
         },
+        // 簡報旁白的音檔格式（兩種都支援，播放器靠內容認格式）：設定 deckAudioFormat＝'wav'｜'mp3'｜'auto'（預設）。
+        //  auto：WAV 的好處是長度精確（MP3 開頭多約 46 毫秒、總長多約 64 毫秒）、省 0.8～1.1 秒的編碼，壞處是大 3 倍；所以這個頁面累計的 WAV 在預算內用 WAV
+        //  （裝置記憶體 ≤ 4GB 是 24MB，其餘 96MB，大約 8～32 分鐘的旁白），超過預算的頁面改用 MP3。匯出封包時 WAV 才壓成 MP3。
+        _deckAudioFormat() {
+            const pref = String((this.advancedSettings && this.advancedSettings.deckAudioFormat) || 'auto').toLowerCase();
+            if (pref === 'wav' || pref === 'mp3') return pref;
+            const lowMem = typeof navigator !== 'undefined' && navigator.deviceMemory && navigator.deviceMemory <= 4, budget = (lowMem ? 24 : 96) * 1024 * 1024;
+            return (this._deckWavBytes || 0) < budget ? 'wav' : 'mp3';
+        },
+        _deckIsWav(buf) { const u = new Uint8Array(buf, 0, Math.min(12, buf.byteLength)); return u.length >= 12 && u[0] === 82 && u[1] === 73 && u[2] === 70 && u[3] === 70 && u[8] === 87 && u[9] === 65 && u[10] === 86 && u[11] === 69; },
+        // WAV（16 位元單聲道）→ MP3 128kbps：只有匯出封包時用
+        async _deckCompressAudio(buf) {
+            const dv = new DataView(buf), rate = dv.getUint32(24, true), n = (buf.byteLength - 44) >> 1, pcm = new Int16Array(buf.slice(44, 44 + n * 2));
+            await this._ensureLamejsLoaded(); const blob = await _faLamejsEncode([pcm], rate, 128); return await blob.arrayBuffer();
+        },
         async _deckSynthesizeNow(text, voice, speed, lang) {
-            const r = await this._synthesizeSpeech(String(text), voice || null, null, speed, { sentencePause: true });
+            const fmt = this._deckAudioFormat();
+            const r = await this._synthesizeSpeech(String(text), voice || null, null, speed, { sentencePause: true, format: fmt });
             if (!r || !r.ok) throw new Error((r && r.error) || '語音合成失敗');
             const rec = await this.fileCache.get(r.audio_file_id);
             if (!rec) throw new Error('語音合成的結果檔不見了');
             const buf = await rec.blob.arrayBuffer();
             try { await this.fileCache.delete(r.audio_file_id); } catch (_) { /* 留著也無妨 */ }
+            if (fmt === 'wav' && this._deckIsWav(buf)) { this._deckWavBytes = (this._deckWavBytes || 0) + buf.byteLength; }   // 記下 WAV 用了多少，超過預算就改 MP3
             return buf;
         },
         // 問答卡的 AI 評分：單次呼叫模型，要求回 JSON

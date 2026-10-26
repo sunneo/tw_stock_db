@@ -11,7 +11,7 @@
   var DECK_URL_RE = /\.deck\.yaml(\?.*)?$/i;
   var PREHEAT = 3;      // slides that must be ready before the play button appears
   var LOOKAHEAD = 3;    // slides prepared ahead of the one being shown
-  var ttsProvider = null, ttsConcurrent = false, speechPreparer = null, voiceLister = null, captionTranslator = null;
+  var audioCompressor = null, ttsProvider = null, ttsConcurrent = false, speechPreparer = null, voiceLister = null, captionTranslator = null;
   var audioCtx = null;
 
   // ------------------------------------------------------------------ small utilities
@@ -1752,6 +1752,9 @@
     // fn(text, voiceId|null, lang) -> Promise<{text, voice}>: last look at a slide's narration before it is spoken (translate it for an English voice, pick the
     // Chinese voice for Chinese text). The returned text replaces the narration (so the subtitles match what is heard).
     setSpeechPreparer: function (fn) { speechPreparer = fn; },
+    // the narration is kept as WAV while it is played (exact length, no encoder delay, no encode time); only a file that leaves the app (the bundle zips) is squeezed to mp3: fn(ArrayBuffer wav) -> Promise<ArrayBuffer mp3>
+    setAudioCompressor: function (fn) { audioCompressor = fn; },
+    compressAudio: function (bytes) { var u = new Uint8Array(bytes, 0, Math.min(12, bytes.byteLength)); var wav = u.length >= 12 && u[0] === 82 && u[1] === 73 && u[2] === 70 && u[3] === 70 && u[8] === 87 && u[9] === 65 && u[10] === 86 && u[11] === 69; return wav && audioCompressor ? audioCompressor(bytes) : Promise.resolve(bytes); },
     setVoiceLister: function (fn) { voiceLister = fn; },
     setCaptionTranslator: function (fn) { captionTranslator = fn; },
     hasTts: function () { return !!ttsProvider; },

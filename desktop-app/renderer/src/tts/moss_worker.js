@@ -6,13 +6,15 @@
 //   { type:'cancel', jobId }、{ type:'dispose', jobId }
 // 回：{ jobId, type:'progress', message } 多次，最後 { jobId, type:'result', ok, ... } 或 { ok:false, error }。
 let ort = null, M = self.FaMossTts, manifest = null, tokModel = null, files = null, ttsMeta = null, codecMeta = null;
-const sessions = {}; let cancelled = new Set();
+const sessions = {}; let cancelled = new Set(); const timing = { prefill: 0, decode: 0, sample: 0, codec: 0 }; const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 const post = (jobId, type, extra) => self.postMessage(Object.assign({ jobId, type }, extra || {}));
 
+// 逐幀的小運算（decode_step、取樣）用多執行緒反而更慢（量過：92 幀 21 秒 → 27 秒，執行緒同步的成本比運算還大）；預填與解碼器是大運算，多執行緒快 1.4～2.4 倍。所以執行緒池開 N 個，小模型的 session 只用 1 個
+const SMALL = { decode: 1, sample: 1 };
 async function getSession(key, graph, externals) {
   if (sessions[key]) return sessions[key];
   const url = files[graph]; if (!url) throw new Error('缺少模型檔 ' + graph);
-  const opts = { executionProviders: ['wasm'], graphOptimizationLevel: 'all' };
+  const opts = { executionProviders: ['wasm'], graphOptimizationLevel: 'all' }; if (SMALL[key]) opts.intraOpNumThreads = SMALL[key];
   if (externals && externals.length) opts.externalData = externals.map((p) => ({ path: p, data: files[p] }));
   sessions[key] = await ort.InferenceSession.create(url, opts);
   return sessions[key];
@@ -27,7 +29,7 @@ async function loadMeta(d) {
 }
 async function codecDecode(frames, count, jobId) {
   const s = await getSession('codecDecode', codecMeta.files.decode_full || 'moss_audio_tokenizer_decode_full.onnx', codecExt(codecMeta.files.decode_full || 'moss_audio_tokenizer_decode_full.onnx'));
-  const out = await s.run({ audio_codes: T('int32', frames, [1, count, M.NQ]), audio_code_lengths: T('int32', new Int32Array([count]), [1]) });
+  const tc = now(); const out = await s.run({ audio_codes: T('int32', frames, [1, count, M.NQ]), audio_code_lengths: T('int32', new Int32Array([count]), [1]) }); timing.codec += now() - tc;
   const a = out.audio, dims = a.dims, L = Number(out.audio_lengths.data[0]) || dims[2], ch = dims[1], data = a.data;
   const mono = new Float32Array(L); // [1, ch, Ltotal]：多聲道平均成單聲道
   for (let i = 0; i < L; i++) { let sum = 0; for (let c = 0; c < ch; c++) sum += data[c * dims[2] + i]; mono[i] = sum / ch; }
@@ -44,18 +46,18 @@ function makeRunners(prefillS, decodeS, sampleS) {
   const lastHidden = (t) => { const d = t.data, rows = t.dims[1], h = t.dims[2]; return Float32Array.from(d.subarray((rows - 1) * h, rows * h)); };
   return {
     prefill: async (ids, rows) => {
-      const o = await prefillS.run({ input_ids: T('int32', ids, [1, rows, M.ROW]), attention_mask: T('int32', new Int32Array(rows).fill(1), [1, rows]) });
+      const t0 = now(); const o = await prefillS.run({ input_ids: T('int32', ids, [1, rows, M.ROW]), attention_mask: T('int32', new Int32Array(rows).fill(1), [1, rows]) }); timing.prefill += now() - t0;
       const past = []; for (let i = 0; i < M.LAYERS; i++) { past.push(o['present_key_' + i], o['present_value_' + i]); }
       return { hidden: lastHidden(o[pn[0]]), past };
     },
     decode: async (row, len, past) => {
       const feeds = { input_ids: T('int32', row, [1, 1, M.ROW]), past_valid_lengths: T('int32', new Int32Array([len]), [1]) };
       for (let i = 0; i < M.LAYERS; i++) { feeds['past_key_' + i] = past[2 * i]; feeds['past_value_' + i] = past[2 * i + 1]; }
-      const o = await decodeS.run(feeds), next = []; for (let i = 0; i < M.LAYERS; i++) { next.push(o['present_key_' + i], o['present_value_' + i]); }
+      const t0 = now(); const o = await decodeS.run(feeds), next = []; timing.decode += now() - t0; for (let i = 0; i < M.LAYERS; i++) { next.push(o['present_key_' + i], o['present_value_' + i]); }
       return { hidden: lastHidden(o[dn[0]]), past: next };
     },
     sample: async (hidden, seen, u1, u2) => {
-      const o = await sampleS.run({ global_hidden: T('float32', hidden, [1, M.HIDDEN]), repetition_seen_mask: T('int32', seen, [1, M.NQ, M.CODEBOOK]), assistant_random_u: T('float32', u1, [1]), audio_random_u: T('float32', u2, [1, M.NQ]) });
+      const t0 = now(); const o = await sampleS.run({ global_hidden: T('float32', hidden, [1, M.HIDDEN]), repetition_seen_mask: T('int32', seen, [1, M.NQ, M.CODEBOOK]), assistant_random_u: T('float32', u1, [1]), audio_random_u: T('float32', u2, [1, M.NQ]) }); timing.sample += now() - t0;
       return { cont: Number(o.should_continue.data[0]) !== 0, frame: Int32Array.from(o.frame_token_ids.data) };
     },
   };
@@ -81,13 +83,14 @@ self.onmessage = async (e) => {
       const decodeS = await getSession('decode', ttsMeta.files.decode_step, ttsExt(ttsMeta.files.decode_step));
       const sampleS = await getSession('sample', ttsMeta.files.local_fixed_sampled_frame, ttsExt(ttsMeta.files.local_fixed_sampled_frame));
       post(jobId, 'progress', { message: '合成中…' });
+      timing.prefill = timing.decode = timing.sample = timing.codec = 0;
       const g = await M.generate(makeRunners(prefillS, decodeS, sampleS), cfg, prompt, { maxFrames: d.maxFrames || 375, seed: d.seed, isCancelled: () => cancelled.has(jobId), onFrame: (n) => { if (n % 4 === 0) post(jobId, 'progress', { frames: n, message: '合成中… 已生成 ' + (n / M.FRAME_RATE).toFixed(1) + ' 秒' }); } });
       cancelled.delete(jobId);
       if (g.stopped === 'cancel') { post(jobId, 'result', { ok: false, error: '已取消' }); return; }
       if (!g.count) { post(jobId, 'result', { ok: false, error: '模型沒有產生任何聲音（文字可能太短或無法念出）' }); return; }
       post(jobId, 'progress', { message: '轉成聲音…' });
       const mono = await codecDecode(g.frames, g.count, jobId);
-      self.postMessage({ jobId, type: 'result', ok: true, audio: mono, frames: g.count, stopped: g.stopped }, [mono.buffer]);
+      self.postMessage({ jobId, type: 'result', ok: true, audio: mono, frames: g.count, stopped: g.stopped, timing: { prefill: Math.round(timing.prefill), decode: Math.round(timing.decode), sample: Math.round(timing.sample), codec: Math.round(timing.codec) } }, [mono.buffer]);
       return;
     }
     post(jobId, 'result', { ok: false, error: '未知的 job 類型：' + d.type });
