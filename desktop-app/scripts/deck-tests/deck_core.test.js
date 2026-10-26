@@ -271,4 +271,13 @@ check('mermaid: a label starting with / or holding parentheses is quoted, real s
   C.fixMermaidSource('A[設定 (選填)] --> B[/ok/] --> C["x (y)"] --> D[\\\\path]') === 'A["設定 (選填)"] --> B[/ok/] --> C["x (y)"] --> D["\\\\path"]' &&
   C.fixMermaidSource('flowchart LR; A[Start]-->B[Next]') === 'flowchart LR; A[Start]-->B[Next]');
 
+
+// ---- 念的字和字幕的字不一樣:行內 {顯示|讀音},或自己寫 caption
+{
+  const mk = (slide) => C.normalize(yaml.load('deck: { title: t, lang: zh-TW }\nchapters:\n  - title: c\n    slides:\n      - ' + slide)).slides[0];
+  const a = mk('{ id: a, narration: "這個孩子{長|掌}高高了，真是{好|號}事。" }'), b = mk('{ id: b, narration: "這個孩子{長|掌}高高了。", caption: "他又長高了。" }'), c = mk('{ id: c, narration: "沒有標記的旁白。" }'), d = mk('{ id: d, narration: "念這句。", caption: "字幕是另一句。" }');
+  check('inline {shown|spoken}: the voice says the second, the subtitle shows the first (no caption written)', a.narration === '這個孩子掌高高了，真是號事。' && a.caption === '這個孩子長高高了，真是好事。' && a.captionYaml === a.caption, [a.narration, a.caption]);
+  check('inline {shown|spoken}: a caption that is written wins over the shown text of the narration', b.narration === '這個孩子掌高高了。' && b.caption === '他又長高了。');
+  check('a narration without marks is unchanged and has no caption of its own; a plain caption is kept (the format already lets narration and caption differ)', c.narration === '沒有標記的旁白。' && !c.caption && d.narration === '念這句。' && d.caption === '字幕是另一句。');
+}
 console.log(`deck_core: ${ok} passed, ${bad.length} failed`); if (bad.length) { console.log(bad.map(b => ' - ' + b).join('\n')); process.exit(1); }

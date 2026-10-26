@@ -131,6 +131,14 @@ function embedVoiceClean() {
     console.log('已更新 FaVoiceClean（' + core.length + ' 字元）');
 }
 embedVoiceClean();
+function embedTtsPron() {
+    const core = fs.readFileSync(path.join(root, 'renderer/src/tts/pronunciation.js'), 'utf8').replace(/\r\n/g, '\n');
+    const a = src.indexOf('/* TTSPRON-BEGIN */'), b = src.indexOf('/* TTSPRON-END */');
+    if (a < 0 || b < 0) throw new Error('找不到 TTSPRON 標記');
+    src = src.slice(0, a) + '/* TTSPRON-BEGIN */\nconst FaTtsPron = (function () {\nconst holder = {};\n(function (module, self) {\n' + core + '\n}).call(null, undefined, holder);\nreturn holder.FaTtsPron;\n})();\n' + src.slice(b);
+    console.log('已更新 FaTtsPron（' + core.length + ' 字元）');
+}
+embedTtsPron();
 function embedMoss() {
     const rd = (p) => fs.readFileSync(path.join(root, p), 'utf8').replace(/\r\n/g, '\n');
     const core = rd('renderer/src/tts/moss_core.js'), worker = rd('renderer/src/tts/moss_worker.js');

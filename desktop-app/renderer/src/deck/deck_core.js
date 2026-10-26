@@ -794,6 +794,9 @@
 
   // Narration is spoken and shown as subtitles, so markup a model sometimes writes into it ("<code>ls</code>", `ls`, **bold**) is removed: the text-to-speech
   // service refuses HTML (422) and a subtitle must not show tags.
+  // {顯示|讀音}: the subtitle shows the first, the voice says the second ({長|掌}高高 -> subtitle 長高高, spoken 掌高高; a polyphonic character the voice reads wrongly is replaced by a homophone only in what is HEARD)
+  var PRON_INLINE = /\{([^{}|\n]{1,24})\|([^{}|\n]{1,24})\}/g;
+  function pronInline(text) { var s = String(text == null ? '' : text), changed = false; var shown = s.replace(PRON_INLINE, function (_m, a) { changed = true; return a; }); return { shown: shown, spoken: s.replace(PRON_INLINE, function (_m, _a, b) { return b; }), changed: changed }; }
   function speakable(text) {
     return str(text).replace(/<\/?(?:code|kbd|b|i|em|strong|tt|pre|span)[^>]*>/gi, '').replace(/`([^`\n]+)`/g, '$1').replace(/\*\*([^*\n]+)\*\*/g, '$1');
   }
@@ -889,7 +892,7 @@
         if (visual) { visual = normalizeVisual(visual, 0); }
         var tr = s.transition ? Object.assign({ ms: 500 }, s.transition) : { type: n === 0 ? 'none' : (deck.style === '3d' ? 'fly' : 'fade'), ms: deck.style === '3d' ? 1400 : 500 };
         slides.push({ id: s.id || ('s' + (n + 1)), index: n, chapter: ci, chapterTitle: str(ch.title), layout: layout, title: str(s.title),
-          subtitle: str(s.subtitle), voice: str(s.voice), lang: str(s.lang), bullets: bullets, bulletMode: deck.bullets === 'preview' || deck.bullets === 'legacy' ? deck.bullets : 'highlight', narration: speakable(s.narration), caption: speakable(s.caption), captionYaml: speakable(s.caption), notes: str(s.notes), visual: visual, cues: Array.isArray(s.cues) ? s.cues : [],
+          subtitle: str(s.subtitle), voice: str(s.voice), lang: str(s.lang), bullets: bullets, bulletMode: deck.bullets === 'preview' || deck.bullets === 'legacy' ? deck.bullets : 'highlight', narration: speakable(pronInline(s.narration).spoken), caption: speakable(s.caption != null && String(s.caption) !== '' ? pronInline(s.caption).shown : (pronInline(s.narration).changed ? pronInline(s.narration).shown : s.caption)), captionYaml: speakable(s.caption != null && String(s.caption) !== '' ? pronInline(s.caption).shown : (pronInline(s.narration).changed ? pronInline(s.narration).shown : s.caption)), notes: str(s.notes), visual: visual, cues: Array.isArray(s.cues) ? s.cues : [],
           transition: tr, duration: typeof s.duration === 'number' ? s.duration : 0, stage: s.stage || deck.style,
           camera: s.camera == null ? null : (Array.isArray(s.camera) ? s.camera : [s.camera]).map(function (c) { return typeof c === 'string' ? { preset: c } : Object.assign({}, c); }) });
       });
