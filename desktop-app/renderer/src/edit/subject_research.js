@@ -69,11 +69,60 @@
   }
   function vec3(a, lo, hi) { if (!Array.isArray(a) || a.length < 3) return null; var o = [num(a[0], lo, hi), num(a[1], lo, hi), num(a[2], lo, hi)]; return o.some(function (x) { return x === null; }) ? null : o.map(function (x) { return Math.round(x * 10) / 10; }); }
 
+  // ───── 2D（SVG／畫圖）的第 1 階：找現成的 SVG（維基共享資源，免費授權，不用金鑰）。找到就當素材放進畫面，不用重畫
+  function svgSearchUrl(query) {
+    return 'https://commons.wikimedia.org/w/api.php?action=query&format=json&origin=*&generator=search&gsrnamespace=6&gsrlimit=12&gsrsearch=' + encodeURIComponent(str(query, 80) + ' filetype:drawing') + '&prop=imageinfo&iiprop=url%7Csize%7Cmime%7Cextmetadata';
+  }
+  var BAD_TITLE = /logo|icon|flag of|coat of arms|map of|locator|emblem|banner|stamp|template|diagram|chart|symbol|button|ribbon|seal of|signature/i;
+  function stripTags(h) { return str(String(h == null ? '' : h).replace(/<[^>]*>/g, ' ').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>'), 120); }
+  // 搜尋結果裡挑一個 SVG：標題要含這個東西的名字（英文：每個字都在標題裡；中文：整個名字），不要標誌／旗幟／地圖這類，不要太大；多個就挑標題最短的（通常是單純的那一張）
+  function pickSvg(json, subject) {
+    var pages = json && json.query && json.query.pages ? Object.keys(json.query.pages).map(function (k) { return json.query.pages[k]; }) : [], words = String(subject.en || '').toLowerCase().split(/[^a-z0-9]+/).filter(function (w) { return w.length > 1; }), zh = str(subject.name, LIM.name), cands = [];
+    pages.forEach(function (p) {
+      var ii = p.imageinfo && p.imageinfo[0]; if (!ii || !/^image\/svg\+xml/.test(ii.mime || '')) return; var title = String(p.title || '').replace(/^File:/, '').replace(/\.svg$/i, '').replace(/_/g, ' '), t = title.toLowerCase();
+      if (BAD_TITLE.test(title) && !BAD_TITLE.test(subject.name + ' ' + (subject.en || ''))) return; if (ii.size && ii.size > 400000) return;
+      var hitEn = words.length && words.every(function (w) { return t.replace(/s\b/g, '').indexOf(w.replace(/s$/, '')) >= 0; }), hitZh = zh.length >= 2 && title.indexOf(zh) >= 0; if (!hitEn && !hitZh) return;
+      var em = ii.extmetadata || {}, lic = stripTags(em.LicenseShortName && em.LicenseShortName.value), who = stripTags(em.Artist && em.Artist.value);
+      cands.push({ title: title, url: ii.url, size: ii.size || 0, license: lic, creator: who, page: ii.descriptionurl || '' });
+    });
+    cands.sort(function (a, b) { return a.title.length - b.title.length; }); return cands[0] || null;
+  }
+  // 把抓到的 SVG 文字清乾淨：去掉腳本／外部連結／編輯器自己的屬性，取出內容與大小。回 { inner, w, h } 或 null。viewBox 不從 0,0 開始時，內容包一層平移，讓編輯器的物件座標從 0 開始
+  function sanitizeSvg(text) {
+    var s = String(text == null ? '' : text); if (s.length > 400000 || s.length < 40) return null;
+    s = s.replace(/^<\?xml[\s\S]*?\?>/i, '').replace(/<!doctype[\s\S]*?>/i, '').replace(/<!--[\s\S]*?-->/g, '');
+    var m = /<svg\b([^>]*)>([\s\S]*)<\/svg>\s*$/i.exec(s.trim()); if (!m) return null; var attrs = m[1], inner = m[2];
+    inner = inner.replace(/<(script|foreignObject|iframe|object|embed|audio|video|metadata|sodipodi:namedview|title|desc)\b[\s\S]*?<\/\1\s*>/gi, '').replace(/<(script|foreignObject|iframe|object|embed|audio|video)\b[^>]*\/>/gi, '');
+    inner = inner.replace(/\s(?:inkscape|sodipodi|xml|xmlns:[a-z]+|rdf|cc|dc):[a-z\-]+\s*=\s*("[^"]*"|'[^']*')/gi, '').replace(/\son[a-z]+\s*=\s*("[^"]*"|'[^']*')/gi, '').replace(/javascript:|vbscript:/gi, '');
+    inner = inner.replace(/((?:xlink:)?href)\s*=\s*("([^"]*)"|'([^']*)')/gi, function (all, name, q, d, sgl) { var v = (d != null ? d : sgl) || ''; return /^\s*(#|data:image\/(?:png|jpe?g|gif|webp|svg\+xml))/i.test(v) ? all : ''; });
+    inner = inner.replace(/@import[^;]*;/gi, '').replace(/url\(\s*["']?\s*https?:[^)]*\)/gi, 'none').trim();
+    if (!/<\s*(?:g|rect|circle|ellipse|line|polyline|polygon|path|text|use|defs)\b/i.test(inner)) return null;
+    var vb = /viewBox\s*=\s*["']\s*(-?[\d.]+)[\s,]+(-?[\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)\s*["']/i.exec(attrs), w, h, x0 = 0, y0 = 0;
+    if (vb) { x0 = Number(vb[1]); y0 = Number(vb[2]); w = Number(vb[3]); h = Number(vb[4]); } else { var aw = /\swidth\s*=\s*["']\s*([\d.]+)/i.exec(attrs), ah = /\sheight\s*=\s*["']\s*([\d.]+)/i.exec(attrs); w = aw ? Number(aw[1]) : 0; h = ah ? Number(ah[1]) : 0; }
+    if (!(w > 0 && h > 0 && w <= 1e5 && h <= 1e5)) return null; if (x0 || y0) inner = '<g transform="translate(' + (-x0) + ' ' + (-y0) + ')">' + inner + '</g>';
+    return { inner: inner, w: Math.round(w * 100) / 100, h: Math.round(h * 100) / 100 };
+  }
+  // 素材 → SVG 編輯器的 svg 物件（最長邊約 target 單位，位置交給之後的動作安排）
+  function assetObject(subject, asset, svg, target) {
+    var t = target || 300, sc = Math.round(Math.min(10, t / Math.max(svg.w, svg.h)) * 10000) / 10000; return { type: 'svg', name: str(subject.name, LIM.name), markup: svg.inner, x: 40, y: 40, w: svg.w, h: svg.h, scale: sc, credit: asset ? str(((asset.creator ? String(asset.creator).replace(/https?:\/\/([^\/\s]+)[^\s)]*/g, '$1') + ' / ' : '')) + (asset.license || '') + (asset.title ? '（' + asset.title + '）' : ''), 160) : '' };
+  }
+  // 2D 的第 3 階：找一張平面的圖，請視覺模型看圖，整理成跟查資料一樣格式的「由哪幾塊組成」（答案同樣由程式驗證）
+  function imageBriefPrompt(subject, kind) {
+    var b = briefPrompt(subject, '', kind).user; return '看這張圖裡的「' + subject.name + '」，' + b.replace(/^請把[^\n]*\n/, '').replace(/^沒有查到網路資料[^\n]*\n/, '');
+  }
+  // 使用者要的是不是「就只是這個東西」（畫一隻雞翅、幫我畫小提琴）：把名字與常見的客套字去掉，剩下不超過 3 個字
+  function isJustSubject(text, subjects) {
+    var t = String(text || ''); (subjects || []).forEach(function (s) { [s.name, s.en].forEach(function (n) { if (n) t = t.split(n).join(' '); }); });
+    t = t.replace(/please|draw|an?\b|the\b|svg|vector|picture|image/gi, ' ').replace(/幫我|請|麻煩|給我|我要|我想要|想要|畫|繪製|繪|一個|一隻|一張|一把|一顆|一片|一塊|向量|圖片|圖案|圖|的|吧|喔|啊|[\s,，。.!！?？、]/g, '');
+    return t.length <= 3;
+  }
+  function assetNote(assets) { return assets && assets.length ? '已經找到現成的向量素材並由程式放進畫面了：' + assets.map(function (a) { return '「' + a.name + '」'; }).join('、') + '。請用移動、縮放、旋轉等動作安排它的位置與大小，不要再重畫一個。' : ''; }
+
   // ───── ④ 給模型的一小段參考（budgetChars 由呼叫端依模型上下文算；夾在 300～1600）
   function refBlock(briefs, budgetChars, kind) {
     var budget = Math.max(300, Math.min(1600, Math.round(budgetChars || 800))), per = Math.floor(budget / Math.max(1, briefs.length)), d3 = kind === 'edit-3d', out = [];
     briefs.forEach(function (b) {
-      var head = '【物件資料：' + b.name + (b.source === 'web' ? '（網路資料整理）' : '（沒查到網路資料，模型憑印象整理，僅供參考）') + '】' + (b.look ? b.look : '') + (b.size_cm ? '；整體約 ' + b.size_cm.join('×') + ' 公分' : ''), lines = [];
+      var head = '【物件資料：' + b.name + (b.source === 'web' ? '（網路資料整理）' : b.source === 'image' ? '（參考圖整理）' : '（沒查到網路資料，模型憑印象整理，僅供參考）') + '】' + (b.look ? b.look : '') + (b.size_cm ? '；整體約 ' + b.size_cm.join('×') + ' 公分' : ''), lines = [];
       b.parts.forEach(function (p) { lines.push('・' + p.name + ' ' + p.shape + ' ' + p.size_cm.join('×') + 'cm' + (p.offset_cm && p.offset_cm.some(function (x) { return x; }) ? ' 位置' + p.offset_cm.join(',') : '') + (p.color ? ' ' + p.color : '') + (p.rot_deg ? ' 轉' + p.rot_deg.join(',') : '')); });
       var text = head + '\n' + lines.join('\n') + (b.notes ? '\n注意：' + b.notes : ''); if (text.length > per) text = text.slice(0, per - 1) + '…'; out.push(text);
     });
@@ -86,5 +135,5 @@
   // 這句話值不值得問模型「有沒有不認識的東西」：太短、純數字顏色位置動作的指令就不用
   function worthAsking(text) { var t = str(text, 600); if (t.length < LIM.minText) return false; return /[一-鿿A-Za-z]{2,}/.test(t); }
 
-  return { LIM: LIM, SHAPES: SHAPES, subjectsPrompt: subjectsPrompt, parseSubjects: parseSubjects, wikiUrl: wikiUrl, pickExtract: pickExtract, briefPrompt: briefPrompt, parseBrief: parseBrief, refBlock: refBlock, cacheKey: cacheKey, evictPlan: evictPlan, worthAsking: worthAsking, parseJson: parseJson };
+  return { LIM: LIM, SHAPES: SHAPES, subjectsPrompt: subjectsPrompt, parseSubjects: parseSubjects, wikiUrl: wikiUrl, pickExtract: pickExtract, briefPrompt: briefPrompt, parseBrief: parseBrief, refBlock: refBlock, cacheKey: cacheKey, svgSearchUrl: svgSearchUrl, pickSvg: pickSvg, sanitizeSvg: sanitizeSvg, assetObject: assetObject, imageBriefPrompt: imageBriefPrompt, assetNote: assetNote, isJustSubject: isJustSubject, evictPlan: evictPlan, worthAsking: worthAsking, parseJson: parseJson };
 });

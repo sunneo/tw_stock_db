@@ -121,10 +121,13 @@
         eye.title = '顯示／隱藏'; lock.title = '鎖定／解鎖'; up.title = treeRows ? '往上移' : '往上一層'; dn.title = treeRows ? '往下移' : '往下一層'; dup.title = '複製'; del.title = '刪除';
         if (treeRows) { row.style.paddingLeft = (6 + rr.depth * 14) + 'px'; if (o.type === 'group') { ic.textContent = collapsed[o.id] ? '▸' : '▾'; ic.style.cursor = 'pointer'; ic.title = '收合／展開'; ic.onclick = function (ev) { ev.stopPropagation(); collapsed[o.id] = !collapsed[o.id]; renderObjects(); }; } }
         function act(e, fn) { return function (ev) { ev.stopPropagation(); fn(); }; }
-        eye.onclick = act(0, function () { apply([{ op: 'set_visible', id: o.id, visible: !o.visible }], (o.visible ? '隱藏 ' : '顯示 ') + o.name, '', 'panel'); });
+        function moved(r, o) { if (r && r.applied && r.applied.length && opt.orderNote) { var n = ''; try { n = opt.orderNote(o, cur()) || ''; } catch (e) { n = ''; } if (n) { stat.textContent = n; setTimeout(function () { stat.textContent = ''; }, 5000); } } return r; }
+        // 面板上的按鈕沒做成（例如已經在最前面）要說原因，不能默默沒反應
+        function said(r) { if (r && !(r.applied && r.applied.length) && r.rejected && r.rejected.length) { stat.textContent = r.rejected[0].error || '這個動作沒有做成'; setTimeout(function () { stat.textContent = ''; }, 3000); } return r; }
+        eye.onclick = act(0, function () { said(apply([{ op: 'set_visible', id: o.id, visible: !o.visible }], (o.visible ? '隱藏 ' : '顯示 ') + o.name, '', 'panel')); });
         lock.onclick = act(0, function () { apply([{ op: 'set_locked', id: o.id, locked: !o.locked }], (o.locked ? '解鎖 ' : '鎖定 ') + o.name, '', 'panel'); });
-        up.onclick = act(0, function () { apply([{ op: 'move_object', id: o.id, to: treeRows ? 'earlier' : 'up' }], o.name + ' 往上一層', '', 'panel'); });
-        dn.onclick = act(0, function () { apply([{ op: 'move_object', id: o.id, to: treeRows ? 'later' : 'down' }], o.name + ' 往下一層', '', 'panel'); });
+        up.onclick = act(0, function () { moved(said(apply([{ op: 'move_object', id: o.id, to: treeRows ? 'earlier' : 'up' }], o.name + ' 往上一層', '', 'panel')), o); });
+        dn.onclick = act(0, function () { moved(said(apply([{ op: 'move_object', id: o.id, to: treeRows ? 'later' : 'down' }], o.name + ' 往下一層', '', 'panel')), o); });
         dup.onclick = act(0, function () { apply([{ op: 'duplicate_object', id: o.id }], '複製 ' + o.name, '', 'panel'); });
         del.onclick = act(0, function () { if (opt.confirmRemove && !opt.confirmRemove(o, cur())) { return; } var r = apply([{ op: 'remove_object', id: o.id }], '刪掉 ' + o.name, '', 'panel'); if (r.rejected && r.rejected.length) { stat.textContent = r.rejected[0].error; setTimeout(function () { stat.textContent = ''; }, 3000); } else if (selected === o.id) { selected = null; } });
         [up, dn, dup, del].forEach(function (b) { tb.appendChild(b); });

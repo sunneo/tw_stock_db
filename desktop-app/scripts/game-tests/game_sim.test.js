@@ -136,5 +136,11 @@ const ent = (sim, id) => sim.state.entities.find((e) => e.id === id);
   check('hot patch: new objects appear, the others keep their runtime state, an edited object is moved', !r.reloaded && !!ent(sim, 'e9') && near(ent(sim, 'p').pos[0], x, 0.01) && near(ent(sim, 'c1').pos[0], 210, 0.01));
   const w3 = world([lib('player'), obj('player', [40, 152], { id: 'p' })]); sim.applyPatch(w3.game); check('hot patch: objects removed in the editor disappear from the running game', !ent(sim, 'c1') || !ent(sim, 'c1').alive);
 }
+{ // 物件欄的「隱藏」要真的讓東西從畫面消失(編譯出來的是 hidden:true,模擬器以前只看 visible)
+  const sp0 = G.starter('platformer-side'), oid = sp0.objects.find((o) => o.type === 'object').id, shown = S.create(G.compile(sp0), { seed: 1, edit: true }), hid = S.create(G.compile(G.applyEdits(sp0, [{ op: 'set_visible', id: oid, visible: false }], {}).spec), { seed: 1, edit: true });
+  check('a hidden object is not visible in the simulation (editor view and play), a shown one is', shown.state.entities.find((e) => e.id === oid).visible === true && hid.state.entities.find((e) => e.id === oid).visible === false);
+  const sp2 = G.applyEdits(sp0, [{ op: 'move_object', id: oid, to: 'later' }], {}).spec, order = (sim) => sim.state.entities.map((e) => e.id).slice(0, 3).join();
+  check('moving an object down the list changes the order the simulation (and the drawing) uses', order(S.create(G.compile(sp0), { seed: 1, edit: true })) !== order(S.create(G.compile(sp2), { seed: 1, edit: true })));
+}
 console.log('game_sim: ' + ok + ' passed' + (bad.length ? ', ' + bad.length + ' FAILED:\n  ' + bad.join('\n  ') : ''));
 process.exit(bad.length ? 1 : 0);

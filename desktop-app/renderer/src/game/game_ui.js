@@ -41,6 +41,8 @@
       placeholder: dim === 3 ? '用說的設計:「在玩家前面放一個寶石」「讓守衛碰到玩家就扣血」「新增一個洞穴場景接在終點柱後面」;按「🎯 焦點」點一個東西再說「把它變大」' : '用說的設計:「在玩家右邊放一個史萊姆」「讓史萊姆碰到玩家就扣血」「新增一個洞穴場景」「這個場景放緊張的背景音樂」;按「🎯 焦點」點一個東西再說「讓它變快」',
       intro: (dim === 3 ? '我是 3D 遊戲的助手' : '我是 2D 遊戲的助手') + ':你說要什麼我就加進遊戲裡——東西、行為(規則與狀態機)、碰撞、路線、場景切換、對白、背景音樂與音效。位置是相對的(玩家右邊、畫面中間、地上、桌子上面);中間的畫面可以直接玩(▶),玩到一半按 ⏸ 就是編輯器,缺什麼說一聲就加(這時「這個」「這裡」指的是你選取的東西,按「🎯 焦點」點物件或拖出一個範圍)。\n第一件事:這個遊戲要怎麼玩?(鍵盤、滑鼠、手把或觸控:在左下角「遊戲」屬性裡選,或直接說「改成滑鼠點哪走到哪」;邊玩邊改也可以)。我改的東西會先用疊層預覽(綠＝新增、黃＝修改、紅虛線＝刪除),你按「接受」才套用。',
       objectIcon: (o) => G.ICON[o.type] || '◻',
+      // 上移／下移之後的提醒：俯視角與 RPG 場景的前後遮擋是依 y 座標算的（靠下的在前面），列表順序不影響畫面
+      orderNote: (o, sp) => { const sc = sp.objects.find((x) => x.id === o.parent), k = sc && sc.kind; return o.type === 'object' && (k === 'topdown' || k === 'rpg-field') ? '這個場景的前後遮擋依 y 座標決定（靠下的在前面），上移下移只改列表順序' : ''; },
       objectInfo: (o) => (o.type === 'scene' ? ((V.KINDS[o.kind] || {}).label || o.kind) : o.type === 'object' ? o.prefab : o.type === 'prefab' ? (o.control || o.sprite.kind) : o.type === 'zone' ? '區域' : o.type === 'path' ? '路線' : o.type === 'dialog' ? '對白' : '行為'),
       treeRows: (sp, collapsed) => { const rows = G.tree(sp), out = []; let hide = -1; rows.forEach((r) => { if (hide >= 0) { if (r.depth > hide) { return; } hide = -1; } out.push(r); if (r.obj.type === 'scene' && collapsed[r.obj.id]) { hide = r.depth; } }); return out; },
       onObjectOpen: (o) => { if (o.type === 'prefab' || o.type === 'object') { openSprite(o.type === 'prefab' ? o.id : o.prefab); } else if (ctxRef) { ctxRef.select(o.id); } },

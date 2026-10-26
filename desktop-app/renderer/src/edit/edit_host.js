@@ -348,36 +348,74 @@ const FaEditHost = (function () {
             let e1 = null; try { const r = await fetch(url, { headers: { Accept: 'application/json' } }); if (!r.ok) throw new Error('HTTP ' + r.status); return await r.json(); } catch (e) { e1 = e; }
             try { const { resp } = await this._terminalHttpFetch('GET', url, { headers: { Accept: 'application/json' }, timeoutMs: 20000 }); if (!resp.ok) throw new Error('HTTP ' + resp.status); return await resp.json(); } catch (e2) { throw new Error(String((e2 && e2.message) || e2) + (e1 ? '（直接連線：' + String(e1.message || e1) + '）' : '')); }
         },
-        // 這個東西的外形資料：快取 → 維基百科（中文、英文）→ 模型整理。回 { brief, from:'cache'|'web'|'model' } 或 null
-        async _subjBrief(subject, kind) {
-            const R = FaSubjectResearch, key = R.cacheKey(subject.name), ai = this._edAi();
-            try { const hit = await this._subjTx('readonly', (os) => new Promise((res, rej) => { const rq = os.get(key); rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error); })); if (hit && hit.brief) return { brief: hit.brief, from: 'cache' }; } catch (_) { /* 沒有快取就查 */ }
-            let ev = null;
-            for (const [lang, q] of [['zh', subject.name], ['en', subject.en]]) { if (!q || ev) continue; try { const x = R.pickExtract(await this._subjGetJson(R.wikiUrl(lang, q)), q); if (x) ev = x; } catch (_) { /* 這個來源不通就換下一個 */ } }
-            const bp = R.briefPrompt(subject, ev ? ev.title + '：' + ev.text : '', kind);
-            let reply = ''; try { reply = await ai.chat(bp.system, bp.user, { maxTokens: 1500, temperature: 0.2 }); } catch (_) { return null; }
-            const brief = R.parseBrief(reply, subject, ev ? 'web' : 'model'); if (!brief) return null; brief.at = Date.now(); if (ev) brief.page = ev.title;
-            try { await this._subjTx('readwrite', (os) => { os.put({ key, at: brief.at, brief }); }); const all = await this._subjTx('readonly', (os) => new Promise((res, rej) => { const rq = os.getAll(); rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error); })); const drop = R.evictPlan(all); if (drop.length) await this._subjTx('readwrite', (os) => { drop.forEach((k) => os.delete(k)); }); } catch (_) { /* 存不了下次再查 */ }
-            return { brief, from: ev ? 'web' : 'model' };
+
+        // ───── 2D（SVG、畫圖）多兩階：先找現成的 SVG（維基共享資源）→ 沒有描述時，找一張參考圖請視覺模型整理成部位 ─────
+        async _subjGetText(url) {
+            let e1 = null; try { const r = await fetch(url); if (!r.ok) throw new Error('HTTP ' + r.status); return await r.text(); } catch (e) { e1 = e; }
+            try { const { resp } = await this._terminalHttpFetch('GET', url, { timeoutMs: 25000 }); if (!resp.ok) throw new Error('HTTP ' + resp.status); return await resp.text(); } catch (e2) { throw new Error(String((e2 && e2.message) || e2) + (e1 ? '（直接連線：' + String(e1.message || e1) + '）' : '')); }
         },
-        // 這句話裡不認識的東西 → 一小段參考文字（沒有就回 ''）。status：顯示進度的函式
-        async _subjRefFor(kind, text, status) {
-            if (!this._subjOn() || (kind !== 'edit-3d' && kind !== 'edit-svg' && kind !== 'edit-picture' && kind !== 'image')) return '';
-            const R = FaSubjectResearch; if (!R.worthAsking(text)) return '';
+        async _subjSvgAsset(subject) {
+            const R = FaSubjectResearch;
+            for (const q of [subject.en, subject.name]) {
+                if (!q) continue; let j = null; try { j = await this._subjGetJson(R.svgSearchUrl(q)); } catch (_) { continue; }
+                const pick = R.pickSvg(j, subject); if (!pick) continue; let text = ''; try { text = await this._subjGetText(pick.url); } catch (_) { continue; }
+                const svg = R.sanitizeSvg(text); if (svg) return { pick, svg };
+            }
+            return null;
+        },
+        async _subjImageBrief(subject, kind) {
+            const R = FaSubjectResearch, ai = this._edAi(); if (!ai.have()) return null;
+            const ps = FaPictureSource.make({ fetch: this._edFetchFn(), timeoutMs: 20000 }); let sr = null; try { sr = await ps.search(subject.en || subject.name, { limit: 6 }); } catch (_) { return null; }
+            if (!sr || !sr.ok || !sr.results || !sr.results.length) return null;
+            for (const r of sr.results.slice(0, 3)) {
+                try { const { blob } = await ps.load(r), du = await FaEditStore.dataUrl(blob), brief = R.parseBrief(await ai.vision(du, R.imageBriefPrompt(subject, kind)), subject, 'image'); if (brief) { brief.page = r.title; brief.credit = [r.creator, r.license].filter(Boolean).join(' / '); return brief; } } catch (_) { /* 這張不行就換下一張 */ }
+            }
+            return null;
+        },
+        // 這個東西的外形資料：快取 → 2D 先找現成 SVG → 維基百科（中文、英文）→（2D 沒有描述時）參考圖＋視覺模型 → 模型整理。回 { brief, asset, from } 或 null
+        async _subjBrief(subject, kind) {
+            const R = FaSubjectResearch, key = R.cacheKey(subject.name), ai = this._edAi(), want2D = kind === 'edit-svg' || kind === 'image';
+            try { const hit = await this._subjTx('readonly', (os) => new Promise((res, rej) => { const rq = os.get(key); rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error); })); if (hit && (hit.brief || (hit.asset && want2D))) return { brief: hit.brief || null, asset: want2D ? hit.asset || null : null, from: 'cache' }; } catch (_) { /* 沒有快取就查 */ }
+            // 2D：先找現成的 SVG；找到就是它（不用再整理外形）
+            let asset = null;
+            if (want2D) { try { const f = await this._subjSvgAsset(subject); if (f) asset = { inner: f.svg.inner, w: f.svg.w, h: f.svg.h, title: f.pick.title, license: f.pick.license, creator: f.pick.creator, page: f.pick.page }; } catch (_) { /* 找不到就往下 */ } }
+            let brief = null, ev = null;
+            if (!asset) {
+                for (const [lang, q] of [['zh', subject.name], ['en', subject.en]]) { if (!q || ev) continue; try { const x = R.pickExtract(await this._subjGetJson(R.wikiUrl(lang, q)), q); if (x) ev = x; } catch (_) { /* 這個來源不通就換下一個 */ } }
+                if (!ev && (want2D || kind === 'edit-picture')) { try { brief = await this._subjImageBrief(subject, kind); } catch (_) { brief = null; } }   // 沒有文字描述：找一張參考圖，請視覺模型看圖整理
+                if (!brief) {
+                    const bp = R.briefPrompt(subject, ev ? ev.title + '：' + ev.text : '', kind);
+                    let reply = ''; try { reply = await ai.chat(bp.system, bp.user, { maxTokens: 1500, temperature: 0.2 }); } catch (_) { return null; }
+                    brief = R.parseBrief(reply, subject, ev ? 'web' : 'model'); if (brief && ev) brief.page = ev.title;
+                }
+                if (!brief) return null; brief.at = Date.now();
+            }
+            try { await this._subjTx('readwrite', (os) => { os.put({ key, at: Date.now(), brief, asset }); }); const all = await this._subjTx('readonly', (os) => new Promise((res, rej) => { const rq = os.getAll(); rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error); })); const drop = R.evictPlan(all); if (drop.length) await this._subjTx('readwrite', (os) => { drop.forEach((k) => os.delete(k)); }); } catch (_) { /* 存不了下次再查 */ }
+            return { brief, asset, from: asset ? 'svg' : brief.source === 'image' ? 'image' : ev ? 'web' : 'model' };
+        },
+        // 這句話裡不認識的東西 → { block: 給模型的一小段參考, assets: [svg 物件], subjects }（沒有就 block 為 ''）。status：顯示進度的函式
+        async _subjResolve(kind, text, status) {
+            const none = { block: '', assets: [], subjects: [] };
+            if (!this._subjOn() || (kind !== 'edit-3d' && kind !== 'edit-svg' && kind !== 'edit-picture' && kind !== 'image')) return none;
+            const R = FaSubjectResearch; if (!R.worthAsking(text)) return none;
             const known = kind === 'edit-3d' && typeof FaMeshGen !== 'undefined' ? FaMeshGen.CATALOG.map((c) => c.label || c.id) : [], ai = this._edAi();
-            let subs = []; try { const q = R.subjectsPrompt(text, known, kind); subs = R.parseSubjects(await ai.chat(q.system, q.user, { maxTokens: 300, temperature: 0 }), known); } catch (_) { return ''; }
-            if (!subs.length) return '';
-            const briefs = [], notes = [];
+            let subs = []; try { const q = R.subjectsPrompt(text, known, kind); subs = R.parseSubjects(await ai.chat(q.system, q.user, { maxTokens: 300, temperature: 0 }), known); } catch (_) { return none; }
+            if (!subs.length) return none;
+            const briefs = [], notes = [], assets = [], used = [];
             for (const s of subs) {
                 if (typeof status === 'function') status(T('查「' + s.name + '」長怎樣…', 'Looking up what "' + s.name + '" looks like…'));
                 let r = null; try { r = await this._subjBrief(s, kind); } catch (_) { r = null; }
-                if (r && r.brief) { briefs.push(r.brief); notes.push(s.name + (r.from === 'cache' ? '（記得）' : r.from === 'web' ? '（查了網路）' : '（沒查到網路資料）')); }
+                if (!r) continue; used.push(s);
+                if (r.asset) { const a = R.assetObject(s, r.asset, { inner: r.asset.inner, w: r.asset.w, h: r.asset.h }, 300); assets.push(a); notes.push(s.name + T('（找到現成的向量圖：' + r.asset.title + (r.asset.license ? '，' + r.asset.license : '') + (r.asset.creator ? '，' + r.asset.creator : '') + '）', ' (found a ready-made vector: ' + r.asset.title + ')')); }
+                if (r.brief) { briefs.push(r.brief); notes.push(s.name + (r.from === 'cache' ? T('（記得）', ' (remembered)') : r.from === 'web' ? T('（查了網路）', ' (web)') : r.from === 'image' ? T('（看了參考圖）', ' (from a reference picture)') : T('（沒查到網路資料）', ' (nothing found online)'))); }
             }
-            if (!briefs.length) return '';
+            if (!briefs.length && !assets.length) return none;
             if (typeof status === 'function') status(T('找到外形資料：' + notes.join('、'), 'Found the shape: ' + notes.join(', ')));
-            const offline = !!(this.advancedSettings && this.advancedSettings.offlineMode);
-            return R.refBlock(briefs, Math.max(400, Math.min(1600, Math.round(this._kiBudgetChars(offline) * 0.15))), kind);
+            const offline = !!(this.advancedSettings && this.advancedSettings.offlineMode), budget = Math.max(400, Math.min(1600, Math.round(this._kiBudgetChars(offline) * 0.15)));
+            const block = (briefs.length ? R.refBlock(briefs, budget, kind) : '') + (assets.length ? (briefs.length ? '\n' : '') + R.assetNote(assets) : '');
+            return { block, assets, subjects: used, notes };
         },
+        async _subjRefFor(kind, text, status) { const r = await this._subjResolve(kind, text, status); return r.block; },
         // ───── 共用：外框要的 host、開啟、掛載、斜線指令、工具 ─────
         // 成品放進對話：下載卡片＋（圖片時）直接顯示＋整理好的 prompt
         async _edToChat(kind, blob, name, info) {
@@ -396,8 +434,12 @@ const FaEditHost = (function () {
                 if (hit && hit.replay) return hit.replay;                                                  // 弱模型／離線：程式直接放範例的成品，不經過模型
                 if (hit && self._edQuiet) self._edQuiet.ref = hit.block;                                    // 強模型：只多一小段參考
                 if ((!hit || !hit.replay) && (kind === 'edit-3d' || kind === 'edit-svg' || kind === 'edit-picture') && req && req.text) {   // 不認識的東西先去查，結果也只是一小段參考
-                    let sref = ''; try { sref = await self._subjRefFor(kind, String(req.text), (line) => { try { if (typeof req.onStatus === 'function') req.onStatus(line); } catch (_) { /* */ } }); } catch (_) { sref = ''; }
-                    if (sref && self._edQuiet) self._edQuiet.ref = (self._edQuiet.ref ? self._edQuiet.ref + String.fromCharCode(10, 10) : '') + sref;
+                    let sres = { block: '', assets: [] }; try { sres = await self._subjResolve(kind, String(req.text), (line) => { try { if (typeof req.onStatus === 'function') req.onStatus(line); } catch (_) { /* */ } }); } catch (_) { sres = { block: '', assets: [] }; }
+                    if (sres.block && self._edQuiet) self._edQuiet.ref = (self._edQuiet.ref ? self._edQuiet.ref + String.fromCharCode(10, 10) : '') + sres.block;
+                    const ans = await ask0(req);
+                    // 找到現成的向量圖：由程式先放進畫面（模型之後的動作用名字安排它的位置與大小）
+                    if (kind === 'edit-svg' && sres.assets.length && ans && Array.isArray(ans.edits)) { ans.edits = sres.assets.map((a) => ({ op: 'add_object', object: a })).concat(ans.edits); ans.notes = (ans.notes || []).concat(sres.assets.map((a) => T('素材來源：', 'Source: ') + (a.credit || a.name))); }
+                    return ans;
                 }
                 return ask0(req);
             });
