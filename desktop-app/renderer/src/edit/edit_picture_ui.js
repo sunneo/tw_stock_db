@@ -2,10 +2,10 @@
 // pictures, shapes and drawings are drawn in order; a filter layer changes what is under it; a repair layer fills the marked spots from what is around them) and only the part in view is shown.
 // The pixels of the pictures are never changed: filter and repair layers are replayed from the document, so hiding one brings the picture back.
 //   FaEditPictureUI.mount({ id, state, spec, host, container, restoring, store }) -> element (el._ed)      FaEditPictureUI.render(spec, opts) -> Promise<{ canvas, region, scale }>
-(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaEditPictureUI = factory((root.FaEditPicture || (typeof FaEditPicture !== 'undefined' ? FaEditPicture : undefined)), (root.FaEditSvg || (typeof FaEditSvg !== 'undefined' ? FaEditSvg : undefined)), (root.FaEditShell || (typeof FaEditShell !== 'undefined' ? FaEditShell : undefined)), (root.FaEditViewport || (typeof FaEditViewport !== 'undefined' ? FaEditViewport : undefined)), (root.FaPicFx || (typeof FaPicFx !== 'undefined' ? FaPicFx : undefined)), (root.FaImgProc || (typeof FaImgProc !== 'undefined' ? FaImgProc : undefined))); })(typeof self !== 'undefined' ? self : this, function (C, SV, Shell, VP, F, IP) {
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaEditPictureUI = factory((root.FaEditPicture || (typeof FaEditPicture !== 'undefined' ? FaEditPicture : undefined)), (root.FaEditSvg || (typeof FaEditSvg !== 'undefined' ? FaEditSvg : undefined)), (root.FaEditShell || (typeof FaEditShell !== 'undefined' ? FaEditShell : undefined)), (root.FaEditViewport || (typeof FaEditViewport !== 'undefined' ? FaEditViewport : undefined)), (root.FaPicFx || (typeof FaPicFx !== 'undefined' ? FaPicFx : undefined)), (root.FaImgProc || (typeof FaImgProc !== 'undefined' ? FaImgProc : undefined)), (root.FaPicDetail || (typeof FaPicDetail !== 'undefined' ? FaPicDetail : undefined))); })(typeof self !== 'undefined' ? self : this, function (C, SV, Shell, VP, F, IP, PD) {
   'use strict';
   function h(tag, cls, text) { var e = document.createElement(tag); if (cls) { e.className = cls; } if (text != null) { e.textContent = text; } return e; }
-  var ICON = { image: '🖼', svg: '🖍', adjust: '✨', heal: '🩹' }, SHAPE_ICON = { rect: '▭', ellipse: '⬭', line: '╱', arrow: '➜', triangle: '△', polygon: '⬡', star: '★', path: '✎', text: 'T' };
+  var ICON = { image: '🖼', svg: '🖍', adjust: '✨', heal: '🩹', detail: '🔍' }, SHAPE_ICON = { rect: '▭', ellipse: '⬭', line: '╱', arrow: '➜', triangle: '△', polygon: '⬡', star: '★', path: '✎', text: 'T' };
   var BLEND = { normal: 'source-over' };
   function slug(s) { return String(s || 'picture').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ').replace(/\s+/g, '_').replace(/^_+|_+$/g, '').slice(0, 50) || 'picture'; }
 
@@ -45,6 +45,17 @@
         ctx.imageSmoothingQuality = 'high'; ctx.drawImage(bmp, -o.w * sc / 2, -o.h * sc / 2, o.w * sc, o.h * sc); ctx.restore();
       } else if (o.type === 'shape' || o.type === 'svg') {
         var vb = await vectorBitmap(o, sc, resolve), q = px(vb.x, vb.y); ctx.save(); ctx.globalCompositeOperation = BLEND[o.blend] || o.blend || 'source-over'; ctx.drawImage(vb.img, q[0], q[1], vb.w * sc, vb.h * sc); ctx.restore();
+      } else if (o.type === 'detail') {
+        // 擴散細化層:把生出來的圖(result)蓋回它下面的合成結果——只蓋 region(或標記)那一塊,邊緣羽化,蓋之前把色調對齊。下面的圖不動,隱藏這層就回到原樣
+        if (!o.result || !o.crop) { continue; }
+        var gb = await bitmapOf(store, o.result); if (!gb) { continue; }
+        var cb = o.crop, ca = px(cb.x, cb.y), dx = Math.round(ca[0]), dy = Math.round(ca[1]), dw = Math.round(cb.w * sc), dh = Math.round(cb.h * sc); if (dx < 0 || dy < 0 || dx + dw > W || dy + dh > H || dw < 2 || dh < 2) { continue; }
+        var baseI = ctx.getImageData(dx, dy, dw, dh), tmp = document.createElement('canvas'); tmp.width = dw; tmp.height = dh; var tg = tmp.getContext('2d', { willReadFrequently: true }); tg.imageSmoothingQuality = 'high';
+        var bw = gb.width, bh = gb.height, cover = o.refine === 'texture' ? Math.max(dw / bw, dh / bh) : null; if (cover) { tg.drawImage(gb, (dw - bw * cover) / 2, (dh - bh * cover) / 2, bw * cover, bh * cover); } else { tg.drawImage(gb, 0, 0, dw, dh); }
+        var genI = tg.getImageData(0, 0, dw, dh), reg = o.region || PD.regionOfMarks(o.marks, 0), inner = { x: (reg.x - cb.x) * sc, y: (reg.y - cb.y) * sc, w: reg.w * sc, h: reg.h * sc }, fe = Math.max(2, Math.round(Math.min(inner.w, inner.h) * o.feather)), mask;
+        if (o.region) { mask = PD.rectMask(dw, dh, inner, fe, PD.featherEdges({ region: o.region, crop: cb })); } else { mask = PD.softMask(F.marksToMask(o.marks, { x: cb.x, y: cb.y, w: cb.w, h: cb.h }, dw, dh), dw, dh, fe); }
+        var gsrc = { width: dw, height: dh, data: genI.data }, bsrc = { width: dw, height: dh, data: baseI.data }, blend = o.refine === 'texture' ? PD.detailTransfer(bsrc, PD.toneMatch(gsrc, bsrc, mask, 1), 0.4 + o.strength * 1.6, Math.max(1, Math.round(2 * sc))) : PD.toneMatch(gsrc, bsrc, mask, 1);
+        var outI = PD.composite(bsrc, blend, mask, o.opacity); ctx.putImageData(new ImageData(new Uint8ClampedArray(outI.data), dw, dh), dx, dy);
       } else if (o.type === 'adjust' || o.type === 'heal') {
         var wr = region; if (o.target && o.target !== 'all') { var t = spec.objects.filter(function (x) { return x.id === o.target; })[0], tb = t && C.types[t.type].bbox(t); if (tb) { wr = { x: tb.x, y: tb.y, w: tb.w, h: tb.h }; } else { continue; } }
         else if (o.type === 'adjust' && o.region) { wr = o.region; }
@@ -76,7 +87,7 @@
       placeholder: '用說的修：「把它變成水彩風格」「調亮一點」「修掉右下角的污點」「在左邊加一隻貓」「找一張飛機的照片」；也可以貼圖進來、給網址',
       intro: '我是用語言主導的概念畫家，也有像 GIMP 的後製：你說要畫什麼、放在哪裡，或要怎麼修，我就加一個新的圖層（圖片、形狀、濾鏡、修復都是圖層），原圖不動，隨時可以隱藏、調整、復原。畫面沒有邊界，可以加在任何地方；中間的畫面可以拖曳、縮放，⌖ 回到第一個圖層（圖片）的中間。「把這張圖變成油畫／水彩／素描／卡通…」會加一個風格濾鏡，並請視覺模型看過、不像就加強；說「用 AI 重畫成…」則用生圖模型（線上或本機，同 /image）依這張圖的內容重新畫一張。「修復畫筆」可以在畫面上塗出要修的地方。可以貼圖、給網址、或說「找一張…的圖」。',
       objectIcon: function (o) { return o.type === 'shape' ? (SHAPE_ICON[o.shape] || '◻') : (ICON[o.type] || '◻'); },
-      objectInfo: function (o) { return o.type === 'adjust' ? o.ops.map(function (x) { return x.op; }).slice(0, 3).join('+') : o.type === 'heal' ? o.method : o.type === 'image' ? (o.prompt ? 'AI 畫的' : o.credit ? '圖片・' + o.credit.split('—')[0].trim().slice(0, 12) : '圖片') : o.type === 'shape' ? o.shape : 'svg'; },
+      objectInfo: function (o) { return o.type === 'adjust' ? o.ops.map(function (x) { return x.op; }).slice(0, 3).join('+') : o.type === 'heal' ? o.method : o.type === 'detail' ? (o.result ? (o.state === 'preview' ? '預覽中' : '已細化') : '待細化') : o.type === 'image' ? (o.prompt ? 'AI 畫的' : o.credit ? '圖片・' + o.credit.split('—')[0].trim().slice(0, 12) : '圖片') : o.type === 'shape' ? o.shape : 'svg'; },
       parseCommands: function (t, s) { return C.parseCommands(t, s, { styleToHost: true }); }, promptOf: C.specToPrompt,
       exports: [{ id: 'png', label: 'PNG 圖片' }, { id: 'jpg', label: 'JPEG 圖片' }, { id: 'json', label: '專案（JSON）', chat: false }],
       runExport: async function (id, spec) {
@@ -87,7 +98,7 @@
         return { blob: await blobOf(r.canvas, 'image/png'), name: name + '.png', mime: 'image/png' };
       },
       build: function (ctx) {
-        var spec = null, sel = null, vp = null, docR = null, rid = 0, rt = null, brush = false, brushR = 12, stroke = null, drag = null, viewEl = h('div'), dataWrap = h('div');
+        var spec = null, sel = null, vp = null, docR = null, rid = 0, rt = null, brush = false, brushR = 12, stroke = null, drag = null, detailMode = false, dbox = null, dState = null, viewEl = h('div'), dataWrap = h('div');
         viewEl.style.cssText = 'display:flex;flex:1;min-height:0;min-width:0'; dataWrap.style.cssText = 'display:flex;flex-direction:column;gap:6px;flex:1';
         var cv = h('canvas'), cx = cv.getContext('2d'); cv.style.cssText = 'display:block;width:100%;height:100%;touch-action:none'; var chk = (function () { var p = h('canvas'); p.width = p.height = 16; var g = p.getContext('2d'); g.fillStyle = '#e9ebef'; g.fillRect(0, 0, 16, 16); g.fillStyle = '#dfe2e7'; g.fillRect(0, 0, 8, 8); g.fillRect(8, 8, 8, 8); return cx.createPattern(p, 'repeat'); })();
         var status = h('span', 'st');
@@ -105,6 +116,14 @@
           cx.save(); cx.fillStyle = 'rgba(229,57,53,.35)'; cx.strokeStyle = 'rgba(229,57,53,.9)'; cx.lineWidth = 1;
           marksOf(so).forEach(function (m) { if (m.points) { m.points.forEach(function (pt) { var s2 = scr(pt[0], pt[1]); cx.beginPath(); cx.arc(s2[0], s2[1], m.r * v.z, 0, 6.2832); cx.fill(); }); } else if (m.w != null) { var s3 = scr(m.x, m.y); cx.fillRect(s3[0], s3[1], m.w * v.z, m.h * v.z); cx.strokeRect(s3[0], s3[1], m.w * v.z, m.h * v.z); } else { var s4 = scr(m.x, m.y); cx.beginPath(); cx.arc(s4[0], s4[1], m.r * v.z, 0, 6.2832); cx.fill(); cx.stroke(); } });
           if (stroke) { stroke.points.forEach(function (pt) { var s5 = scr(pt[0], pt[1]); cx.beginPath(); cx.arc(s5[0], s5[1], brushR * v.z, 0, 6.2832); cx.fill(); }); }
+          cx.restore(); overlayDetail(scr);
+        }
+        // 擴散細化:選到的細化層、還沒有結果的(待細化)、正在框選的區域——綠色虛線框(跟修復的紅色標記分開)
+        function overlayDetail(scr) {
+          var boxes = []; spec.objects.forEach(function (o) { if (o.type !== 'detail' || !o.visible) { return; } var b = C.types.detail.bbox(o); if (b && (o.id === sel || !o.result)) { boxes.push({ b: b, label: o.result ? (o.state === 'preview' ? '🔍 預覽中' : '🔍 已細化') : '🔍 待細化', sel: o.id === sel }); } });
+          if (dbox) { boxes.push({ b: { x: Math.min(dbox.x0, dbox.x1), y: Math.min(dbox.y0, dbox.y1), w: Math.abs(dbox.x1 - dbox.x0), h: Math.abs(dbox.y1 - dbox.y0) }, label: '', sel: true }); }
+          if (!boxes.length) { return; } cx.save(); cx.lineWidth = 1.5; cx.setLineDash([6, 4]); cx.font = '12px sans-serif';
+          boxes.forEach(function (k) { var q = scr(k.b.x, k.b.y), w = k.b.w * vp.view().z, hh = k.b.h * vp.view().z; cx.strokeStyle = k.sel ? '#2ea043' : 'rgba(46,160,67,.7)'; cx.fillStyle = 'rgba(46,160,67,.10)'; cx.fillRect(q[0], q[1], w, hh); cx.strokeRect(q[0], q[1], w, hh); if (k.label) { cx.setLineDash([]); cx.fillStyle = '#2ea043'; cx.fillText(k.label, q[0] + 4, q[1] - 5); cx.setLineDash([6, 4]); } });
           cx.restore();
         }
         function schedule() { clearTimeout(rt); var my = ++rid; rt = setTimeout(function () { status.textContent = '合成中…'; render(spec, { store: store, resolve: resolve, isCancelled: function () { return my !== rid; } }).then(function (r) { if (r && my === rid) { docR = r; status.textContent = ''; draw(); } }, function (e) { status.className = 'st bad'; status.textContent = String((e && e.message) || e).slice(0, 100); }); }, 90); }
@@ -112,6 +131,14 @@
           onView: draw, background: '#eef0f3',
           handle: function (ev) {
             var w0 = vp.toWorld(ev.clientX, ev.clientY);
+            if (detailMode) {
+              dbox = { x0: w0.x, y0: w0.y, x1: w0.x, y1: w0.y }; ev.preventDefault();
+              var mvd = function (e) { var w1 = vp.toWorld(e.clientX, e.clientY); dbox.x1 = w1.x; dbox.y1 = w1.y; draw(); };
+              var upd2 = function () { window.removeEventListener('pointermove', mvd); window.removeEventListener('pointerup', upd2); var bx = dbox; dbox = null; draw(); if (!bx) { return; } var rg = { x: Math.round(Math.min(bx.x0, bx.x1)), y: Math.round(Math.min(bx.y0, bx.y1)), w: Math.round(Math.abs(bx.x1 - bx.x0)), h: Math.round(Math.abs(bx.y1 - bx.y0)) }; if (rg.w < 8 || rg.h < 8) { status.className = 'st bad'; status.textContent = '框太小了:拖出一個比較大的區域'; return; }
+                var so = sel ? spec.objects.filter(function (o) { return o.id === sel; })[0] : null, tgt = so && (so.type === 'image' || so.type === 'shape' || so.type === 'svg') ? so.id : 'all', r = ctx.apply([{ op: 'add_object', object: { type: 'detail', name: '細化', region: rg, target: tgt } }], '框出要細化的地方', '', 'panel');
+                setDetailMode(false); if (r && r.added && r.added.length) { runDetail(r.added[r.added.length - 1]); } };
+              window.addEventListener('pointermove', mvd); window.addEventListener('pointerup', upd2); return true;
+            }
             if (brush) { stroke = { points: [[w0.x, w0.y]] }; ev.preventDefault(); var mv = function (e) { var w1 = vp.toWorld(e.clientX, e.clientY), last = stroke.points[stroke.points.length - 1]; if (Math.hypot(w1.x - last[0], w1.y - last[1]) * vp.zoom() > 3) { stroke.points.push([Math.round(w1.x * 10) / 10, Math.round(w1.y * 10) / 10]); draw(); } };
               var up = function () { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up); var st = stroke; stroke = null; draw(); if (!st || !st.points.length) { return; } var so = sel ? spec.objects.filter(function (o) { return o.id === sel; })[0] : null, mark = { points: st.points, r: brushR };
                 if (so && so.type === 'heal' && !so.locked) { ctx.apply([{ op: 'update_object', id: so.id, props: { marks: so.marks.concat([mark]) } }], '補畫修復標記', '', 'panel'); }
@@ -130,7 +157,18 @@
         vp.layer.appendChild(cv); viewEl.appendChild(vp.el);
         // ───── the bar: the repair brush ─────
         var bBrush = h('button', null, '🩹 修復畫筆'), bSize = h('input'); bSize.type = 'number'; bSize.value = brushR; bSize.min = 1; bSize.max = 200; bSize.style.width = '58px'; bSize.title = '畫筆大小（畫面上的單位）'; bSize.style.display = 'none';
-        bBrush.title = '在畫面上塗出要修復的地方（會變成一個修復圖層）'; bBrush.onclick = function () { brush = !brush; bBrush.className = brush ? 'pri' : ''; bSize.style.display = brush ? '' : 'none'; vp.scroller.style.cursor = brush ? 'crosshair' : ''; }; bSize.onchange = function () { brushR = Math.max(1, Number(bSize.value) || 12); };
+        bBrush.title = '在畫面上塗出要修復的地方（會變成一個修復圖層）'; bBrush.onclick = function () { brush = !brush; if (brush) { setDetailMode(false); } bBrush.className = brush ? 'pri' : ''; bSize.style.display = brush ? '' : 'none'; vp.scroller.style.cursor = brush ? 'crosshair' : ''; }; bSize.onchange = function () { brushR = Math.max(1, Number(bSize.value) || 12); };
+        // ───── 擴散細化:啟用項、框選、產生 ─────
+        var bDetail = h('button', null, '✨ 擴散細化'), dCk = h('input'), dLab = h('label', null, ''); dCk.type = 'checkbox'; dLab.style.cssText = 'display:inline-flex;align-items:center;gap:3px;font-size:12px;cursor:pointer'; dLab.appendChild(dCk); dLab.appendChild(document.createTextNode('啟用擴散編修')); dLab.title = '預設關閉。啟用後可以只針對一小塊重畫細節、再羽化蓋回去（要有生圖模型：線上金鑰或本機模型）';
+        function refreshDiffusion() { if (!host.diffusion) { dLab.style.display = 'none'; bDetail.style.display = 'none'; return Promise.resolve(); } return Promise.resolve(host.diffusion.get()).then(function (st) { dState = st; dCk.checked = !!st.enabled; bDetail.disabled = !st.ready; bDetail.title = st.ready ? '在畫面上框出要細化的地方（只重畫那一小塊，再羽化蓋回去；原圖不動）' : (st.reason || '還不能用'); }, function () { /* 沒有就不顯示 */ }); }
+        dCk.onchange = function () { Promise.resolve(host.diffusion.set(dCk.checked)).then(refreshDiffusion); }; refreshDiffusion();
+        function setDetailMode(on) { detailMode = !!on; bDetail.className = detailMode ? 'pri' : ''; vp.scroller.style.cursor = detailMode ? 'crosshair' : ''; if (detailMode) { brush = false; bBrush.className = ''; bSize.style.display = 'none'; } }
+        bDetail.onclick = function () { if (!detailMode) { refreshDiffusion().then(function () { if (!dState || !dState.ready) { status.className = 'st bad'; status.textContent = (dState && dState.reason) || '還不能用'; return; } status.className = 'st'; status.textContent = '在畫面上拖出要細化的區域'; setDetailMode(true); }); } else { setDetailMode(false); status.textContent = ''; } };
+        var runningDetail = {};
+        function runDetail(id) {
+          var o = spec.objects.filter(function (x) { return x.id === id && x.type === 'detail'; })[0]; if (!o || !host.detail || runningDetail[id]) { return; } runningDetail[id] = true; status.className = 'st'; status.textContent = '細化中…（要等一下）';
+          Promise.resolve(host.detail({ spec: spec, id: id, onStatus: function (t) { status.textContent = String(t).slice(0, 90); } })).then(function (r) { delete runningDetail[id]; if (!r || !r.ok) { status.className = 'st bad'; status.textContent = String((r && r.error) || '沒有成功').slice(0, 120); return; } status.textContent = r.note ? String(r.note).slice(0, 100) : ''; ctx.apply([{ op: 'update_object', id: id, props: r.props }], '擴散細化「' + (o.prompt || o.name) + '」', '', 'panel'); }, function (e) { delete runningDetail[id]; status.className = 'st bad'; status.textContent = String((e && e.message) || e).slice(0, 120); });
+        }
         // ───── properties ─────
         function field(label, type, value, onChange, extra) { var l = h('label'), i = h('input'); i.type = type; i.value = value == null ? '' : value; if (extra && extra.step) { i.step = extra.step; } if (extra && extra.min != null) { i.min = extra.min; } if (type === 'checkbox') { i.checked = !!value; } l.appendChild(document.createTextNode(label)); l.appendChild(i); i.onchange = function () { onChange(type === 'number' ? Number(i.value) : type === 'checkbox' ? i.checked : i.value); }; return l; }
         function selectBox(label, options, value, onChange) { var l = h('label'), s = h('select'); options.forEach(function (o) { var op = h('option', null, o[1]); op.value = o[0]; s.appendChild(op); }); s.value = value; l.appendChild(document.createTextNode(label)); l.appendChild(s); s.onchange = function () { onChange(s.value); }; return l; }
@@ -163,6 +201,15 @@
             var add = h('div', 'row'), sel2 = h('select'); [['brightness', '亮度'], ['contrast', '對比'], ['saturation', '飽和度'], ['blur', '模糊'], ['sharpen', '銳化'], ['grayscale', '黑白'], ['oil', '油畫'], ['watercolor', '水彩'], ['sketch', '素描'], ['cartoon', '卡通'], ['denoise', '降噪'], ['despeckle', '去污點']].forEach(function (x) { var op = h('option', null, x[1]); op.value = x[0]; sel2.appendChild(op); });
             var val = h('input'); val.type = 'number'; val.placeholder = '數值'; val.style.width = '64px'; var ab = h('button', null, '＋ 加一個處理'); ab.onclick = function () { var n = { op: sel2.value }; if (val.value !== '') { var key = { brightness: 'amount', contrast: 'amount', saturation: 'amount', blur: 'radius', sharpen: 'amount', oil: 'radius' }[sel2.value]; if (key) { n[key] = Number(val.value); } } upd({ ops: o.ops.concat([n]) }, o.name + ' 加 ' + sel2.value); };
             [sel2, val, ab].forEach(function (x) { add.appendChild(x); }); box.appendChild(add);
+          } else if (o.type === 'detail') {
+            box.appendChild(h('div', 'st', o.result ? (o.state === 'preview' ? '預覽中：滿意就按「接受」，不滿意可以重畫或退回' : '已細化（' + (o.refine === 'texture' ? '借重畫的細節紋理' : '依原圖改') + '）') : '待細化：按「✨ 細化」開始'));
+            box.appendChild(field('提示詞', 'text', o.prompt, function (v) { upd({ prompt: v }, '細化提示詞'); })); box.appendChild(field('強度', 'number', o.strength, function (v) { upd({ strength: v }, '細化強度'); }, { step: 0.1, min: 0.1 }));
+            box.appendChild(field('羽化', 'number', o.feather, function (v) { upd({ feather: v }, '細化羽化'); }, { step: 0.02, min: 0 })); box.appendChild(field('脈絡', 'number', o.context, function (v) { upd({ context: v }, '細化脈絡'); }, { step: 0.1, min: 0 }));
+            box.appendChild(selectBox('模型', [['auto', '自動'], ['online', '線上（能改圖的模型）'], ['local', '本機（重畫細節紋理）']], o.model, function (v) { upd({ model: v }, '細化模型'); })); box.appendChild(field('透明度', 'number', o.opacity, function (v) { upd({ opacity: v }); }, { step: 0.1, min: 0 }));
+            var drow = h('div', 'row'), go = h('button', null, o.result ? '🎲 重畫' : '✨ 細化'); go.onclick = function () { if (o.result) { upd({ seed: Math.floor(Math.random() * 4294967296), state: 'pending', result: '' }, '重畫細化'); setTimeout(function () { runDetail(o.id); }, 0); } else { runDetail(o.id); } }; drow.appendChild(go);
+            if (o.result && o.state === 'preview') { var okb = h('button', 'pri', '✔ 接受'); okb.onclick = function () { upd({ state: 'applied' }, '接受細化'); }; drow.appendChild(okb); }
+            var nob = h('button', null, '↩ 退回'); nob.onclick = function () { ctx.apply([{ op: 'remove_object', id: o.id }], '退回細化', '', 'panel'); }; drow.appendChild(nob); box.appendChild(drow);
+            if (o.seed != null) { box.appendChild(h('div', 'st', 'seed ' + o.seed)); }
           } else if (o.type === 'heal') {
             box.appendChild(selectBox('方法', [['inpaint', '補洞（從周圍填入）'], ['denoise', '降噪'], ['despeckle', '去污點']], o.method, function (v) { upd({ method: v }); })); box.appendChild(field('半徑', 'number', o.radius, function (v) { upd({ radius: v }); }, { min: 1 }));
             box.appendChild(h('div', 'st', '標記 ' + o.marks.length + ' 處（用「🩹 修復畫筆」可以再塗）')); var clr = h('button', null, '清除標記'); clr.onclick = function () { ctx.apply([{ op: 'remove_object', id: o.id }], '刪掉 ' + o.name, '', 'panel'); }; box.appendChild(clr);
@@ -173,7 +220,7 @@
         var jta = h('textarea', 'code'); jta.rows = 18; jta.readOnly = true; jta.style.flex = '1'; var jrow = h('div', 'row'), jcopy = h('button', null, '📋 複製'); jcopy.onclick = function () { try { navigator.clipboard.writeText(jta.value); jcopy.textContent = '✓ 已複製'; setTimeout(function () { jcopy.textContent = '📋 複製'; }, 1500); } catch (e) { jta.select(); } }; jrow.appendChild(jcopy);
         dataWrap.appendChild(h('div', 'st', '所有圖層與它們的設定（唯讀）。圖片的像素另外存在這個瀏覽器裡，這裡只有代號。')); dataWrap.appendChild(jta); dataWrap.appendChild(jrow);
         return {
-          tabs: { canvas: viewEl, data: dataWrap }, bar: [bBrush, bSize, status],
+          tabs: { canvas: viewEl, data: dataWrap }, bar: [bBrush, bSize, bDetail, dLab, status],
           env: function () { var v = vp.view(); return { view: { x: v.x, y: v.y, w: v.w, h: v.h } }; },
           refresh: function (s, selId) {
             spec = s; sel = selId; var b = C.bounds(s), c = s.canvas, all = b ? { x: Math.min(b.x, c.x), y: Math.min(b.y, c.y), w: Math.max(b.x + b.w, c.x + c.w) - Math.min(b.x, c.x), h: Math.max(b.y + b.h, c.y + c.h) - Math.min(b.y, c.y) } : { x: c.x, y: c.y, w: c.w, h: c.h };

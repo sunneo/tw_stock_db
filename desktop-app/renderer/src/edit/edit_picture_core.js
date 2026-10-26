@@ -6,9 +6,12 @@
 //   adjust   { ops:[ {op:'brightness',amount:10}, {op:'oil',radius:3}, ... ], target:'all'|<object id>, region?:{x,y,w,h}, opacity }   a FILTER layer: it changes everything below it (or one object), without
 //            touching the pixels of the pictures below; hide it and the picture is as before
 //   heal     { marks:[ {x,y,r} | {x,y,w,h} | {points:[[x,y],...], r} ], method:'inpaint'|'denoise'|'despeckle', radius, target }   a REPAIR layer: the marked spots are filled from what is around them
+//   detail   { region:{x,y,w,h} | marks, target, prompt, strength, feather, context, model:'auto'|'online'|'local', seed, crop, result, refine, state:'pending'|'preview'|'applied', opacity }   a DETAIL layer (diffusion): the model redraws ONE small
+//            region (with a ring of context around it) and the result is laid back over the picture with a feathered edge and matched tones (pic_detail.js); the picture below is never changed, hide the layer and it is as before
 // Everything the AI adds through the chat is a new object. Actions: the closed ones of edit_objects_core.js, transform_object (as in /edit-svg), and
 //   apply_style{style, strength?, target?}   a named look as one filter layer (oil, watercolor, sketch, ink, cartoon, pixel, poster, vintage, neon, emboss, halftone, dreamy, mono, warm, cool, night)
 //   add_heal{of?, at?, r?, method?}           repair a spot of a picture, said in words: the corner / the middle of an object
+//   add_detail{of?, at?, r?, prompt?, strength?}  a detail layer on a spot of a picture, said in words (the host then redraws that region: generate_detail)
 // and two actions the HOST carries out (they need the network or the local model): find_picture{query}, generate_image{prompt, style?}.
 (function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(require('./edit_objects_core.js'), require('./edit_svg_core.js'), require('./pic_fx.js'), require('../imgproc/imgproc_core.js')); else root.FaEditPicture = factory((root.FaEditObjects || (typeof FaEditObjects !== 'undefined' ? FaEditObjects : undefined)), (root.FaEditSvg || (typeof FaEditSvg !== 'undefined' ? FaEditSvg : undefined)), (root.FaPicFx || (typeof FaPicFx !== 'undefined' ? FaPicFx : undefined)), (root.FaImgProc || (typeof FaImgProc !== 'undefined' ? FaImgProc : undefined))); })(typeof self !== 'undefined' ? self : this, function (O, S, F, IP) {
   'use strict';
@@ -62,6 +65,23 @@
       bbox: function (o) { return o.region ? { x: o.region.x, y: o.region.y, w: o.region.w, h: o.region.h } : null; },
       move: function (o, dx, dy) { if (o.region) { o.region.x = r2(o.region.x + dx); o.region.y = r2(o.region.y + dy); } }
     },
+    detail: {
+      label: '細化', defaults: { region: null, marks: [], target: 'all', prompt: '', strength: 0.5, feather: 0.08, context: 0.5, model: 'auto', seed: null, crop: null, result: '', refine: '', state: 'pending', opacity: 1 },
+      validate: function (o) {
+        var p = [], region = regionOf(o.region), marks = [];
+        (Array.isArray(o.marks) ? o.marks : []).slice(0, 200).forEach(function (m) {
+          if (!m || typeof m !== 'object') { return; }
+          if (Array.isArray(m.points)) { var pts = m.points.slice(0, 2000).filter(function (q) { return Array.isArray(q) && isFinite(q[0]) && isFinite(q[1]); }).map(function (q) { return [r2(Number(q[0])), r2(Number(q[1]))]; }); if (pts.length) { marks.push({ points: pts, r: r2(num(m.r, 1, 500, 8)) }); } }
+          else if (m.w != null && m.h != null && Number(m.w) > 0 && Number(m.h) > 0) { marks.push({ x: r2(num(m.x, -1e6, 1e6, 0)), y: r2(num(m.y, -1e6, 1e6, 0)), w: r2(num(m.w, 1, 1e5, 10)), h: r2(num(m.h, 1, 1e5, 10)) }); }
+        });
+        if (!region && !marks.length) { return { obj: null, problems: ['say or mark which part to refine (a box or a stroke)'] }; }
+        var t = o.target == null || o.target === '' ? 'all' : String(o.target); if (!idOk(t)) { p.push('target must be all or an object id'); t = 'all'; }
+        var result = /^[A-Za-z0-9_-]{1,64}$/.test(String(o.result || '')) ? String(o.result) : '', st = ['pending', 'preview', 'applied'].indexOf(o.state) >= 0 ? o.state : 'pending'; if (!result) { st = 'pending'; } else if (st === 'pending') { st = 'preview'; }
+        return { obj: { region: region, marks: region ? [] : marks, target: t, prompt: str(o.prompt, 600), strength: r2(num(o.strength, 0.1, 1, 0.5)), feather: r2(num(o.feather, 0, 0.5, 0.08)), context: r2(num(o.context, 0, 2, 0.5)), model: ['auto', 'online', 'local'].indexOf(o.model) >= 0 ? o.model : 'auto', seed: o.seed == null || o.seed === '' ? null : Math.round(num(o.seed, 0, 4294967295, 0)), crop: regionOf(o.crop), result: result, refine: ['edit', 'texture'].indexOf(o.refine) >= 0 ? o.refine : '', state: st, opacity: r2(num(o.opacity, 0, 1, 1)) }, problems: p };
+      },
+      bbox: function (o) { if (o.region) { return { x: o.region.x, y: o.region.y, w: o.region.w, h: o.region.h }; } if (!o.marks.length) { return null; } var x0 = 1e18, y0 = 1e18, x1 = -1e18, y1 = -1e18; o.marks.forEach(function (m) { var b = markBox(m); x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y); x1 = Math.max(x1, b.x + b.w); y1 = Math.max(y1, b.y + b.h); }); return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }; },
+      move: function (o, dx, dy) { if (o.region) { o.region.x = r2(o.region.x + dx); o.region.y = r2(o.region.y + dy); } if (o.crop) { o.crop.x = r2(o.crop.x + dx); o.crop.y = r2(o.crop.y + dy); } o.marks.forEach(function (m) { if (m.points) { m.points = m.points.map(function (q) { return [r2(q[0] + dx), r2(q[1] + dy)]; }); } else { m.x = r2(m.x + dx); m.y = r2(m.y + dy); } }); }
+    },
     heal: {
       label: '修復', defaults: { marks: [], method: 'inpaint', radius: 3, target: 'all' },
       validate: function (o) {
@@ -93,7 +113,7 @@
     transform_object: {   // as in /edit-svg; a filter / repair layer has no x / y: its region or marks move
       words: S.extraOps.transform_object.words,
       apply: function (s, e, H, env) {
-        var i = H.find(s, e.id); if (i >= 0 && (s.objects[i].type === 'adjust' || s.objects[i].type === 'heal')) {
+        var i = H.find(s, e.id); if (i >= 0 && (s.objects[i].type === 'adjust' || s.objects[i].type === 'heal' || s.objects[i].type === 'detail')) {
           var o = s.objects[i]; if (o.locked) { return { error: '"' + o.name + '" is locked' }; } var n = H.clone(o); H.move(n, Number(e.dx) || 0, Number(e.dy) || 0); var p = [], v = H.validateObject(n, p, {}); if (!v) { return { error: p[0] || 'the new values are not valid' }; } v.id = o.id; s.objects[i] = v; return {};
         }
         return S.extraOps.transform_object.apply(s, e, H, env);
@@ -124,11 +144,24 @@
       }
     }
   };
-  var HOST_OPS = ['find_picture', 'generate_image'];
+  extraOps.add_detail = {
+    words: function (e) { return '細化 ' + (e.of || '') + (e.at ? ' ' + e.at : ''); },
+    apply: function (s, e, H, env) {
+      var ref = e.of != null && e.of !== '' ? e.of : null, anchorId = 'all';
+      if (ref == null && env && env.selection) { var si = H.find(s, env.selection); if (si >= 0 && ['image', 'shape', 'svg'].indexOf(s.objects[si].type) >= 0) { ref = env.selection; } }
+      if (ref == null) { for (var k = s.objects.length - 1; k >= 0 && ref == null; k--) { if (s.objects[k].type === 'image') { ref = s.objects[k].id; } } }
+      if (ref == null) { return { error: 'there is no picture to refine' }; }
+      var i = H.find(s, ref); if (i < 0) { return { error: 'there is no object "' + str(ref, 30) + '" to refine' }; } var anchor = H.bbox(s.objects[i]); if (!anchor) { return { error: 'that object has no size' }; } if (['image', 'shape', 'svg'].indexOf(s.objects[i].type) >= 0) { anchorId = s.objects[i].id; }
+      var f = AT[String(e.at || 'center').toLowerCase()]; if (!f) { return { error: 'at must be one of ' + Object.keys(AT).join(', ') }; }
+      var r = num(e.r, 4, 2000, Math.max(16, Math.round(Math.min(anchor.w, anchor.h) * 0.18))), cx = anchor.x + anchor.w * f[0], cy = anchor.y + anchor.h * f[1];
+      var res = H.addTop(s, { type: 'detail', name: '細化', region: { x: cx - r, y: cy - r, w: 2 * r, h: 2 * r }, target: anchorId, prompt: str(e.prompt, 600), strength: e.strength }); return res.error ? { error: res.error } : {};
+    }
+  };
+  var HOST_OPS = ['find_picture', 'generate_image', 'generate_detail'];
   var E = O.make({
     types: types, extraOps: extraOps, limits: { objects: 400, canvas: 16384 },
     defaultSpec: function () { return { v: 1, title: '我的圖片', canvas: { x: 0, y: 0, w: 800, h: 600, bg: '#ffffff' }, seq: 0, objects: [] }; },
-    describeObject: function (o) { var b = types[o.type].bbox(o); return (b ? '@(' + Math.round(b.x) + ',' + Math.round(b.y) + ' ' + Math.round(b.w) + '×' + Math.round(b.h) + ')' : '') + (o.type === 'adjust' ? ' ' + o.ops.map(function (x) { return x.op; }).join('+') + (o.target !== 'all' ? ' on ' + o.target : '') : o.type === 'heal' ? ' ' + o.method + ' ×' + o.marks.length : o.type === 'shape' ? ' ' + o.shape : ''); }
+    describeObject: function (o) { var b = types[o.type].bbox(o); return (b ? '@(' + Math.round(b.x) + ',' + Math.round(b.y) + ' ' + Math.round(b.w) + '×' + Math.round(b.h) + ')' : '') + (o.type === 'adjust' ? ' ' + o.ops.map(function (x) { return x.op; }).join('+') + (o.target !== 'all' ? ' on ' + o.target : '') : o.type === 'heal' ? ' ' + o.method + ' ×' + o.marks.length : o.type === 'detail' ? ' ' + o.state + (o.prompt ? ' "' + o.prompt.slice(0, 20) + '"' : '') : o.type === 'shape' ? ' ' + o.shape : ''); }
   });
   var ALL_OPS = E.OPS.concat(HOST_OPS);
 
@@ -159,6 +192,7 @@
   var ACTIONS = '{op:"apply_style",style:"watercolor",target:"o2"}（一句話套用風格：' + Object.keys(F.STYLES).join('、') + '；target 是某個圖片物件，不寫就是整張；strength 1～3 越大越強）、'
     + '{op:"add_object",object:{type:"adjust",name:"調亮",ops:[{op:"brightness",amount:20},{op:"contrast",amount:10}],target:"all"}}（濾鏡層：ops 可用 ' + OPNAMES + '；它改變它下面的所有東西或 target 指定的那個物件，原圖不動，隱藏它就回到原樣；不能用旋轉、縮放、裁切）、'
     + '{op:"add_heal",of:"o2",at:"bottom-right",r:30,method:"inpaint"}（修復某個圖片物件的某個位置：at 是 center、top、bottom、left、right、top-left、top-right、bottom-left、bottom-right；method 是 inpaint 補洞、denoise、despeckle）、'
+    + '{op:"add_detail",of:"o2",at:"top",r:60,prompt:"臉的細節"}（擴散細化：只針對圖片物件的某一小塊，請生圖模型重畫細節再羽化蓋回去；at 同 add_heal；要使用者啟用「擴散編修」才做得到，之後由程式執行 generate_detail）、'
     + '{op:"add_object",object:{type:"shape",name:"太陽",shape:"ellipse",w:120,h:120,fill:"#fdd835"},place:{of:"o2",rel:"above",gap:20}}（形狀與 svg 物件的寫法同 SVG 編輯器：shape 可以是 rect、ellipse、line、arrow、triangle、polygon、star、path、text；place 說在哪個物件的哪一邊）、'
     + '{op:"add_object",object:{type:"svg",name:"小房子",markup:"<g>…</g>",w:120,h:100},place:{of:"view",rel:"center"}}、{op:"update_object",id:"o3",props:{opacity:0.5,blend:"multiply",rotate:10,flipX:true}}（blend：' + BLENDS.join('、') + '）、{op:"transform_object",id:"o3",dx:50,dy:0,scale:1.5,rotate:15}、{op:"place_object",id:"o3",place:{of:"o5",rel:"right"}}、'
     + '{op:"remove_object",id:"o3"}、{op:"rename_object",id:"o3",name:"…"}、{op:"move_object",id:"o3",to:"front"|"back"|"up"|"down"}、{op:"set_visible",id:"o3",visible:false}、{op:"set_locked",id:"o3",locked:true}、{op:"duplicate_object",id:"o3"}、{op:"set_canvas",x:0,y:0,w:800,h:600,bg:"#ffffff"}（畫布就是裁切／輸出的範圍）、{op:"fit_canvas"}、{op:"set_title",text:"…"}、'
@@ -179,6 +213,9 @@
     if (texts.length) { L.push('', '（有效的指示，依序）：'); texts.forEach(function (x, i) { L.push((i + 1) + '. ' + x.text + (x.summary ? ' → ' + x.summary : '')); }); }
     return L.join('\n');
   }
+  // the program reads "refine this part" itself (the host does the drawing)
+  var DETAIL_WORDS = /(細化|加細節|多一點細節|更多細節|補細節|更精細|精細一點|refine|more detail|add (?:more )?detail)/i;
+  function detailIntent(text) { return DETAIL_WORDS.test(String(text || '')); }
   function parseEditsReply(t) { return O.parseEditsReply(t, ALL_OPS); }
   var STARTERS = [
     { id: 'blank', label: '空白畫布', desc: '一張空的畫布，貼圖進來、找圖或用說的畫。', spec: function () { return { title: '我的圖片', objects: [] }; } },
@@ -188,5 +225,5 @@
   function listStarters() { return STARTERS.map(function (t) { return { id: t.id, label: t.label, desc: t.desc }; }); }
 
   return { E: E, types: types, OPS: ALL_OPS, CORE_OPS: E.OPS, HOST_OPS: HOST_OPS, BLENDS: BLENDS, validate: E.validate, applyEdits: E.applyEdits, editWords: E.editWords, list: E.list, find: E.find, bounds: E.bounds, parseCommands: parseCommands, editPrompt: editPrompt, parseEditsReply: parseEditsReply,
-    refPrompt: refPrompt, specToPrompt: specToPrompt, scaleOps: scaleOps, markBox: markBox, starter: starter, listStarters: listStarters, STARTERS: listStarters(), STYLES: F.STYLES, AT: AT };
+    refPrompt: refPrompt, specToPrompt: specToPrompt, scaleOps: scaleOps, markBox: markBox, detailIntent: detailIntent, starter: starter, listStarters: listStarters, STARTERS: listStarters(), STYLES: F.STYLES, AT: AT };
 });

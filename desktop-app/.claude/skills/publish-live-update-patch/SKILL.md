@@ -15,6 +15,9 @@ description: 修改desktop-app的renderer前端檔案（floating-assistant.js／
 - **manifest 的檔案清單以 `renderer/update-manifest.json` 為準**（含 main-ext.js、preload.js 等主行程模組，共 29 個），一律用 `scripts/make-live-patch.js`（`scripts/publish.sh` 內部也走它）組 patch 目錄，不要手動只複製 renderer 四個檔案（否則其他檔案 HTTP 404）。
 - **互換版已凍結在 v188（git 標籤 `live-patch-compat`），使用者指示「放在那邊不用管他了」：之後不要再重新凍結、不要再動它，一律只發新版（`manifest.v2.json`，內容放 `v2/`）。** 舊主程式（單檔 8MB 上限、不認得 parts、呼叫 main-ext 時不傳 electron）只會停在這份互換版；它帶著新的更新處理（`main-ext.js` 的 `installChunkedUpdater`、`installModuleOverlay`、`loadWithHeal`），舊機器套用、重啟後就改走新版。`scripts/make-live-patch.js` 看到 `live-patch-compat` 標籤就沿用根目錄那份互換版原封不動。**不要因為「大家應該都更新了」就動這個設計，這是公開產品。** 熱更新本身是「最新快照 + 逐檔 md5 比對」，不是一版一版往上升。
 
+## 版號（先看這裡）
+版號只有一個維護處：`desktop-app/PATCH_VERSION`（跟發版的 commit 一起提交），並對照遠端 `manifest.v2.json`（真正的最新）、`manifest.json`（舊版互換版，**凍結在 188，別拿來算**）與 patch commit 訊息。接手發版前先跑 `node scripts/release-version.js status`；`scripts/publish.sh` 會自己取下一版並更新 `PATCH_VERSION`。細節與接手步驟：`DESIGN.release.md`。**不要手工組 patch、不要手寫版號**——發版格式（v2 manifest、分檔）由 `publish.sh`／`publish-manifest.js` 維護；下面的「標準流程」手動步驟是舊的做法，只當背景知識。
+
 ## 一鍵腳本（優先用這個）
 
 `scripts/publish.sh` 把下面的標準流程寫成可重複執行的指令（建置 → 語法檢查 → 提交推到 desktop-app → 組 desktop-app-patch（單一 commit、強制推）→ 驗證版本與每個檔案的檢查碼 → 網頁版釘新的 commit SHA 並推到 main）：

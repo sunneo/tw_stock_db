@@ -99,6 +99,7 @@ const suites = [
     ['SVG 編輯器：形狀與自由 SVG 物件、合成、拆回物件、安全檢查', 'scripts/edit-tests/edit_svg_core.test.js'],
     ['SVG 描圖：量化、輪廓追蹤、簡化、相似度', 'scripts/edit-tests/svg_trace.test.js'],
     ['圖片編輯器：風格濾鏡、修復（補洞／去雜訊／去污點）', 'scripts/edit-tests/pic_fx.test.js'],
+    ['圖片編輯器的擴散細化層：裁哪裡、羽化遮罩、色調對齊、蓋回去、借細節、縮放', 'scripts/edit-tests/pic_detail.test.js'],
     ['圖片編輯器：圖層（濾鏡層、修復層）、風格、相對放置、程式先讀的指令', 'scripts/edit-tests/edit_picture_core.test.js'],
     ['3D 場景編輯器：以使用者視角的相對放置、封閉動作、群組、貼皮、YAML 往返、程式先讀的指令', 'scripts/edit-tests/edit3d_core.test.js'],
     ['3D 單一物件編輯（貼皮）：面、位置、顏色、圖、程式先讀的指令', 'scripts/edit-tests/edit3d_part_core.test.js'],

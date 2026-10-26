@@ -16,7 +16,11 @@
     { id: 'black-forest-labs/flux.1-dev', label: 'FLUX.1 dev（品質高，步數多）', kind: 'flux', steps: { min: 5, max: 100, def: 50 }, size: { min: 256, max: 2048, step: 64, def: 1024 }, cfg: { min: 1, max: 9, def: 3.5 }, extra: { mode: 'base' } },
     { id: 'stabilityai/stable-diffusion-3-medium', label: 'Stable Diffusion 3 Medium', kind: 'sd3', steps: { min: 5, max: 100, def: 50 }, cfg: { min: 1, max: 9, def: 5 }, ratios: ['1:1', '16:9', '21:9', '3:2', '2:3', '4:5', '5:4', '9:16', '9:21'] },
   ];
+  // 能「改圖」的模型（吃一張圖片當輸入，依提示詞改它）：給 /edit-picture 的擴散細化用。請求格式照 NVIDIA 的 FLUX.1 Kontext 說明（prompt、image（data URL）、aspect_ratio、seed、steps、cfg_scale）；
+  // **沒有用真實金鑰送過**——送出後被拒絕時，錯誤白話說明會原樣給使用者。
+  MODELS.push({ id: 'black-forest-labs/flux.1-kontext-dev', label: 'FLUX.1 Kontext dev（能改圖：吃一張圖片當輸入）', kind: 'edit', edit: true, steps: { min: 4, max: 50, def: 30 }, cfg: { min: 1, max: 10, def: 2.5 } });
   var DEFAULT_MODEL = MODELS[0].id;
+  function editModel() { for (var i = 0; i < MODELS.length; i++) if (MODELS[i].edit) return MODELS[i].id; return null; }
 
   function info(id) { id = String(id || '').trim(); for (var i = 0; i < MODELS.length; i++) if (MODELS[i].id === id) return MODELS[i]; return null; }
   function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
@@ -36,12 +40,18 @@
     if (!prompt) return { ok: false, error: '缺少 prompt（要畫什麼）' };
     if (prompt.length > 4000) return { ok: false, error: 'prompt 太長（' + prompt.length + ' 字，上限 4000）' };
     var m = info(id) || { id: id, kind: 'flux', steps: { min: 1, max: 100, def: 4 }, size: { min: 256, max: 2048, step: 64, def: 1024 }, custom: true };
+    if (m.edit) {
+      var img = String(opts.init_image || '').trim(); if (!/^data:image\/(png|jpeg|webp);base64,/.test(img)) return { ok: false, error: '這個模型是用來改圖的：要給一張圖片（init_image，data URL 格式，png／jpeg／webp）。' };
+      if (img.length > 7 * 1024 * 1024) return { ok: false, error: '給的圖片太大（' + Math.round(img.length / 1048576) + ' MB）：改圖的輸入要壓小一點。' };
+    }
     var notes = [], body = { prompt: prompt };
     var num = function (v) { var n = Number(v); return isFinite(n) ? n : null; };
     var seed = num(opts.seed); body.seed = seed != null && seed >= 0 ? Math.floor(seed) : 0;
     var steps = num(opts.steps), sdef = m.steps.def;
     if (steps == null) steps = sdef; var s2 = clamp(Math.round(steps), m.steps.min, m.steps.max); if (s2 !== steps && opts.steps != null) notes.push('steps ' + opts.steps + ' → ' + s2 + '（這個模型的範圍是 ' + m.steps.min + '–' + m.steps.max + '）'); body.steps = s2;
-    if (m.kind === 'sd3') {
+    if (m.edit) {
+      body.image = String(opts.init_image).trim(); body.aspect_ratio = 'match_input_image'; var c2 = num(opts.cfg_scale); body.cfg_scale = clamp(c2 == null ? m.cfg.def : c2, m.cfg.min, m.cfg.max);
+    } else if (m.kind === 'sd3') {
       var w0 = num(opts.width) || 1024, h0 = num(opts.height) || 1024; body.aspect_ratio = ratioOf(w0, h0);
       if (opts.width && opts.height && ratioOf(w0, h0) && body.aspect_ratio !== (w0 + ':' + h0)) notes.push('Stable Diffusion 3 只收固定比例，' + w0 + '×' + h0 + ' → ' + body.aspect_ratio);
       var c0 = num(opts.cfg_scale); body.cfg_scale = clamp(c0 == null ? m.cfg.def : c0, m.cfg.min, m.cfg.max);
@@ -95,5 +105,5 @@
     return 'HTTP ' + status + (t ? '：' + t : '');
   }
 
-  return { BASE: BASE, MODELS: MODELS, DEFAULT_MODEL: DEFAULT_MODEL, info: info, validModelPath: validModelPath, buildRequest: buildRequest, parseResponse: parseResponse, sniffMime: sniffMime, explainHttpError: explainHttpError };
+  return { BASE: BASE, MODELS: MODELS, DEFAULT_MODEL: DEFAULT_MODEL, info: info, validModelPath: validModelPath, editModel: editModel, buildRequest: buildRequest, parseResponse: parseResponse, sniffMime: sniffMime, explainHttpError: explainHttpError };
 });

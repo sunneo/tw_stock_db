@@ -233,6 +233,46 @@ const FaEditHost = (function () {
             const obj = { type: 'image', name: T('AI 重畫', 'AI repaint') + (st ? '：' + st.label : ''), ref: k.ref, mime: k.mime, x: b ? b.x + b.w + 40 : 0, y: b ? b.y : 0, w, h, prompt: res.image.prompt_used || prompt, seed: res.image.seed };
             return { edits: [{ op: 'add_object', object: obj }], prompt: obj.prompt };
         },
+        // ───── /edit-picture 的擴散細化（只重畫一小塊再羽化蓋回去；設計見 DESIGN.edit-picture-diffusion.md）─────
+        // 兩條路:① 線上有能改圖的模型（NVIDIA FLUX.1 Kontext）→ 把這一小塊（含四周多裁的脈絡）當輸入、依原圖重畫細節（refine=edit）；
+        // ② 只有本機 SDXS → 它沒有 VAE 編碼器、一步取樣沒有「強度」，不能依原圖重畫；改成用提示詞重畫一張，只借它的細節紋理加到原圖上（refine=texture，實驗性）。
+        async _edDiffusionState() {
+            const enabled = !!(this.advancedSettings && this.advancedSettings.editDiffusion === true); let online = false, local = false;
+            try { const cfg = this._imageGenConfig(); online = !!(cfg && cfg.apiKey) && !!FaNvidiaImage.editModel(); } catch (_) { /* 沒有金鑰 */ }
+            try { for (const mid of ['sdxs-512-webgpu', 'sdxs-512-cpu-int8']) { const m = FaLocalSd.byId(mid); if (m && (await this._localSdFileState(m)).every((x) => x.ok)) { local = true; break; } } } catch (_) { /* 沒下載 */ }
+            const reason = !enabled ? T('先勾選「啟用擴散編修」', 'Tick "Enable diffusion editing" first') : (!online && !local ? T('沒有可用的生圖模型：要有 NVIDIA 金鑰（線上，能改圖），或先下載本機模型（/image download）', 'No image model is available: an NVIDIA key (online, can edit a picture) or the local model (/image download)') : '');
+            return { enabled, online, local, ready: enabled && (online || local), reason };
+        },
+        _edDiffusionSet(on) { this.advancedSettings.editDiffusion = !!on; try { this._saveAdvancedSettings(); } catch (_) { /* 只是存設定 */ } return this._edDiffusionState(); },
+        async _edDetail(req) {
+            req = req || {}; const C = FaEditPicture, PD = FaPicDetail, status = typeof req.onStatus === 'function' ? req.onStatus : () => {}, spec = C.validate(req.spec).spec;
+            const idx = spec.objects.findIndex((o) => o.id === req.id && o.type === 'detail'); if (idx < 0) return { ok: false, error: T('找不到這個細化層', 'that detail layer is gone') };
+            const L = spec.objects[idx], st = await this._edDiffusionState();
+            if (!st.enabled) return { ok: false, error: T('還沒啟用擴散編修：勾選畫面上的「啟用擴散編修」。', 'Diffusion editing is not enabled: tick "Enable diffusion editing".') };
+            const mode = L.model === 'online' ? (st.online ? 'edit' : null) : L.model === 'local' ? (st.local ? 'texture' : null) : (st.online ? 'edit' : (st.local ? 'texture' : null));
+            if (!mode) return { ok: false, error: L.model === 'online' ? T('線上改圖要有 NVIDIA 金鑰（進階設定 → 圖像生成）。', 'Online editing needs an NVIDIA key (Advanced settings → image generation).') : L.model === 'local' ? T('本機模型還沒下載：先輸入 /image download（只下載一次）。', 'The local model is not downloaded: type /image download (once).') : (st.reason || T('沒有可用的生圖模型：要有 NVIDIA 金鑰（線上，能改圖），或先下載本機模型（/image download）', 'No image model is available: an NVIDIA key (online, can edit a picture) or the local model (/image download)')) };
+            const region = L.region || PD.regionOfMarks(L.marks, 0), tgt = L.target !== 'all' ? spec.objects.filter((o) => o.id === L.target)[0] : null, bounds = tgt ? C.types[tgt.type].bbox(tgt) : (C.bounds(spec) || spec.canvas);
+            const plan = PD.plan(region, bounds, { context: L.context, target: mode === 'edit' ? 1024 : 512, feather: L.feather }); if (!plan.ok) return { ok: false, error: plan.error };
+            status(T('把下面的圖層合成起來…', 'Putting the layers below together…'));
+            const under = Object.assign({}, spec, { objects: spec.objects.slice(0, idx) }), rr = await FaEditPictureUI.render(under, { store: FaEditStore, resolve: (ref) => FaEditStore.imageUrl(ref), maxSide: 4096 }); if (!rr) return { ok: false, error: T('合成失敗', 'could not put the picture together') };
+            const cb = plan.crop, sc = rr.scale, cvs = document.createElement('canvas'); cvs.width = plan.out.w; cvs.height = plan.out.h; const g = cvs.getContext('2d'); g.imageSmoothingQuality = 'high';
+            g.drawImage(rr.canvas, (cb.x - rr.region.x) * sc, (cb.y - rr.region.y) * sc, cb.w * sc, cb.h * sc, 0, 0, cvs.width, cvs.height);
+            const seed = L.seed != null ? L.seed : (Math.floor(Math.random() * 4294967296) >>> 0), A = this._edAi(); let desc = '', user = L.prompt;
+            if (A.have()) { try { status(T('視覺模型看這一小塊…', 'The vision model looks at this part…')); desc = (await A.vision(cvs.toDataURL('image/jpeg', 0.85), 'In one short English sentence, say what is in the middle of this picture (subject, material, colours). Only what you can see.')).trim().replace(/\s+/g, ' ').slice(0, 200); } catch (_) { /* 沒有也行 */ } }
+            if (user && /[一-鿿]/.test(user) && A.have()) { try { user = (await A.chat('Translate to short English image keywords. Output only the translation.', user)).trim().slice(0, 200); } catch (_) { /* 用原文 */ } }
+            const focus = [/[一-鿿]/.test(user || '') ? '' : user, desc].filter(Boolean).join(', '); let res, note = '';
+            if (mode === 'edit') {
+                status(T('線上模型依原圖補細節…（要等一下）', 'The online model adds detail to the picture… (this takes a moment)'));
+                res = await this._edGenerate({ provider: 'online', model: FaNvidiaImage.editModel(), prompt: ('Add fine, realistic detail and sharpness to this picture. Keep the composition, the colours and every shape in place.' + (focus ? ' Focus: ' + focus : '')).slice(0, 900), init_image: cvs.toDataURL('image/png'), seed, steps: Math.round(10 + L.strength * 30) }, status);
+            } else {
+                status(T('本機小模型重畫細節紋理…（CPU 版要等一下）', 'The local model draws the detail texture… (the CPU version takes a while)'));
+                res = await this._edGenerate({ provider: 'local', prompt: ((focus || 'detailed texture') + ', highly detailed, sharp focus, intricate texture').slice(0, 600), seed }, status);
+                note = T('本機小模型沒有 VAE 編碼器、不能依原圖重畫，所以只借它重畫出來的細節紋理蓋在原圖上（實驗性，效果因圖而異；不滿意可以重畫或退回）。', 'The local model has no VAE encoder and cannot redraw from the picture, so only the detail texture it draws is laid over the picture (experimental; redraw or revert if it is not good).');
+            }
+            if (!res.ok) return { ok: false, error: res.needs_download ? T('本機生圖模型還沒下載：先輸入 /image download（只下載一次）', 'The local image model is not downloaded: type /image download first (once)') : String(res.error || 'no image') };
+            const k = await this._edPics('edit-picture').keep(res.image.blob);
+            return { ok: true, mode, note, props: { result: k.ref, crop: plan.crop, refine: mode, seed, state: 'preview' } };
+        },
         async _edAskPicture(req, ed) {
             req = req || {}; const A = this._edAi(), C = FaEditPicture, P = this._edPics('edit-picture'); const spec = C.validate(req.spec).spec, notes = [], edits = []; let say = ''; const text = String(req.text || '').trim(), status = typeof req.onStatus === 'function' ? req.onStatus : () => {}, sel = req.selection; let refText = '';
             const cur = () => C.applyEdits(spec, edits).spec;
@@ -254,6 +294,17 @@ const FaEditHost = (function () {
             }
             if (edits.length && (styleId || fr.handled || (req.images && req.images.length && !text))) return { say, edits, notes };
             if (req.images && req.images.length && text && A.have() && !edits.length) { for (let j = 0; j < Math.min(2, req.images.length); j++) { try { refText += (refText ? '\n\n' : '') + (await A.vision(req.images[j].dataUrl, C.refPrompt())).trim(); } catch (e) { /* 只用文字 */ } } }
+            if (C.detailIntent(text) && !fr.handled && !edits.length) {
+                const stD = await this._edDiffusionState();
+                if (!stD.enabled) return { say: T('擴散細化還沒啟用：勾選畫面上的「啟用擴散編修」再說一次（它只重畫你指的那一小塊細節，再羽化蓋回去，原圖不動）。', 'Diffusion detail is not enabled: tick "Enable diffusion editing" and say it again (it redraws only the part you mean and blends it back; the picture stays as it is).'), edits, notes };
+                const AT_WORDS = [[/左上/, 'top-left'], [/右上/, 'top-right'], [/左下/, 'bottom-left'], [/右下/, 'bottom-right'], [/(上方|上面|上半|頂)/, 'top'], [/(下方|下面|下半|底)/, 'bottom'], [/左(邊|側)?/, 'left'], [/右(邊|側)?/, 'right']], hit = AT_WORDS.filter((x) => x[0].test(text))[0], at = hit ? hit[1] : 'center';
+                const ad = C.applyEdits(cur(), [{ op: 'add_detail', at, prompt: text.replace(/(把|請|幫我|幫忙)/g, '').replace(/(細化|加細節|多一點細節|更多細節|補細節|更精細|精細一點)/g, '').trim() }], { selection: sel });
+                if (ad.rejected.length) { notes.push(ad.rejected[0].error); return { say: T('沒辦法加細化層：', 'Could not add a detail layer: ') + ad.rejected[0].error, edits, notes }; }
+                ad.appliedEdits.forEach((e) => edits.push(e)); const s2 = cur(), layer = s2.objects[s2.objects.length - 1];
+                const rs = await this._edDetail({ spec: s2, id: layer.id, onStatus: status });
+                if (rs.ok) { edits.push({ op: 'update_object', id: layer.id, props: rs.props }); if (rs.note) notes.push(rs.note); notes.push(T('區域：' + (hit ? '依你說的位置' : '圖片中央（沒說位置；要精確請按「✨ 擴散細化」在畫面上框選）'), 'Region: ' + (hit ? 'where you said' : 'the middle of the picture (no place said; use "✨ Diffusion detail" to box the part exactly)'))); return { say: T('細化好了（預覽中）：滿意就按「接受」，不滿意可以重畫或退回。', 'Refined (preview): accept it, redraw or revert.'), edits, notes }; }
+                notes.push(rs.error); return { say: T('加了一個細化層，但生成沒成功：', 'Added a detail layer, but the drawing did not work: ') + rs.error, edits, notes };
+            }
             if (this._edIsOffline() && text) { const off = await this._edOfflineTry('edit-picture', text, cur(), { selection: sel }, status); if (off && off.edits.length) return { say: off.say, edits: edits.concat(off.edits), notes: notes.concat(off.notes) }; }
             if (!A.have()) return { say: edits.length ? say : T('這句話程式沒有讀懂，而且目前沒有可用的 AI；可以用圖層欄與屬性面板自己改，或說「變成水彩風格」「調亮」「去污點」這類簡單的指令，或貼網址、「找一張…的圖」。', 'The program did not understand this and there is no AI; use the layers and the properties, or simple commands like "make it watercolor", "brighter", "remove specks", or paste an address / "find a picture of …".'), edits, notes };
             if (!text && !refText) return { say, edits, notes };
@@ -266,10 +317,17 @@ const FaEditHost = (function () {
                         const e = pr.edits[q];
                         if (e.op === 'find_picture') { const f2 = await P.fromText({ text: 'find a picture of ' + String(e.query || ''), spec: cur(), editorId: ed.id, status }); f2.edits.forEach((x) => edits.push(x)); f2.notes.forEach((n) => notes.push(n)); say = say || f2.say; }
                         else if (e.op === 'generate_image') { const g = await this._edGenerate({ prompt: String(e.prompt || ''), style: e.style }, status); if (g.ok) { const kk = await P.keep(g.image.blob); P.addImageEdits(cur(), kk, String(e.prompt || 'AI').slice(0, 24), '').forEach((x) => { if (x.op === 'add_object') { x.object.prompt = g.image.prompt_used; x.object.seed = g.image.seed; } edits.push(x); }); } else notes.push(g.needs_download ? T('本機生圖模型還沒下載：先輸入 /image download', 'The local image model is not downloaded: type /image download first') : g.error); }
+                        else if (e.op === 'generate_detail') { /* 下面統一處理待細化的層 */ }
                         else edits.push(e);
                     }
                     if (pr.say) say = say ? say + '；' + pr.say : pr.say; if (pr.dropped) notes.push(T('有 ' + pr.dropped + ' 個動作不在可做的清單裡，已略過', pr.dropped + ' actions were not in the allowed list and were skipped'));
                 } else if (!edits.length) say = T('AI 的回覆我讀不懂（要是 JSON 動作）。換個說法再試一次。', 'I could not read the AI\'s answer (it has to be JSON actions). Say it differently.');
+                for (let guard = 0; guard < 3; guard++) {
+                    const sf = cur(), pend = sf.objects.filter((o) => o.type === 'detail' && !o.result && o.state === 'pending')[0]; if (!pend) break;
+                    const rs = await this._edDetail({ spec: sf, id: pend.id, onStatus: status });
+                    if (rs.ok) { edits.push({ op: 'update_object', id: pend.id, props: rs.props }); if (rs.note) notes.push(rs.note); say = say || T('細化好了（預覽中）：滿意就按「接受」，不滿意可以重畫或退回。', 'Refined (preview): accept it, redraw or revert.'); }
+                    else { notes.push(rs.error); break; }
+                }
             } catch (e5) { if (!edits.length) say = T('AI 這次沒有回應（', 'The AI did not answer (') + String((e5 && e5.message) || e5).slice(0, 80) + '）。'; }
             return { say, edits, notes };
         },
@@ -300,6 +358,8 @@ const FaEditHost = (function () {
                 download: (blob, name, mime) => self.generateAndDeliverFile(blob, name, mime || blob.type),
                 toChat: (blob, name, info) => self._edToChat(kind, blob, name, info),
                 saveCase: (info, o) => self._edCaseSave(kind, info, o),
+                diffusion: kind === 'edit-picture' ? { get: () => self._edDiffusionState(), set: (on) => self._edDiffusionSet(on) } : undefined,
+                detail: kind === 'edit-picture' ? (req) => self._edDetail(req) : undefined,
                 polish: (self.advancedSettings && self.advancedSettings.offlineMode) ? undefined : (async (text) => String(await ai.chat(K.polishSystem || ('You tidy a prompt that rebuilds ' + (kind === 'edit-svg' ? 'a drawing' : 'an edited picture') + '. Keep every fact (objects, colours, places, texts); make it one clear, reusable prompt. Answer with the prompt only.'), text, { maxTokens: 1200, timeoutMs: 90000 })).trim()),
             };
         },

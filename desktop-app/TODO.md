@@ -14,4 +14,4 @@
 | CAD 風格工程圖（generate_image 工程圖路線）還沒做的：多視角、等角爆炸圖、更多外形、公差與角度標註 | [DESIGN.TODO.cad-sheet.md](DESIGN.TODO.cad-sheet.md) | 設計見 DESIGN.cad-sheet.md |
 | /edit-game-2d、/edit-game-3d（遊戲編輯器） | [DESIGN.edit-game.md](DESIGN.edit-game.md) | 已實作（2026-10-25）；AI 逐檔移植的目標碼沒在這裡編譯過、舊機種只做適配檢查，見文件的「實作狀態」 |
 | /edit-media-presentation（簡報播放器旁邊的 AI 對話框，每一頁都能插入內容、代理人上網找圖與資料） | [DESIGN.edit-media-presentation.md](DESIGN.edit-media-presentation.md) | 已實作（2026-10-25）；代理人那條路用假的子代理驗證過，真的連模型與網路的端到端沒測 |
-| `/edit-picture` 的擴散細化層（只重畫一小塊、羽化蓋回、啟用項） | [DESIGN.TODO.edit-picture-diffusion.md](DESIGN.TODO.edit-picture-diffusion.md) | 只有規劃（§5 要先做最小實測） |
+| `/edit-picture` 的擴散細化層（已實作；規劃裡「SDXS 做 img2img」不可行，見文件） | [DESIGN.edit-picture-diffusion.md](DESIGN.edit-picture-diffusion.md) | 已實作（2026-10-26）；真實生圖模型沒驗證 |

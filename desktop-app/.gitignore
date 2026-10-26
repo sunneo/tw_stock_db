@@ -31,3 +31,6 @@ builtin-secrets.json.*
 # FA_BUILTIN_OPENROUTER_KEY再呼叫build.ps1的捷徑腳本，裡面直接寫死真實金鑰
 # 明文，只留在本機、不進版控。
 build.bat
+# Python 位元碼（跑測試時產生）
+__pycache__/
+*.swp

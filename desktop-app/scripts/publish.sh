@@ -56,7 +56,11 @@ say "語法檢查"
 node --check renderer/src/floating-assistant.js
 node --check renderer/bootstrap.js
 
-# ---- 2. 提交並推到 desktop-app ----
+# ---- 2. 版號與提交 ----
+# 版號的唯一維護處是 desktop-app/PATCH_VERSION（對照遠端 manifest.v2.json／manifest.json／patch commit 訊息，取最大再 +1）；見 scripts/release-version.js、DESIGN.release.md
+[ -n "$VERSION" ] || VERSION="$(node scripts/release-version.js next)"
+say "版號 $VERSION（PATCH_VERSION 跟這次提交一起更新）"
+if [ "$DRY" != 1 ]; then node scripts/release-version.js claim "$VERSION" || exit 1; git add PATCH_VERSION; fi
 say "提交並推到 $REMOTE/desktop-app"
 git add -A renderer scripts
 if git diff --cached --quiet; then echo "沒有新的 renderer／scripts 變更要提交"; else
@@ -70,12 +74,6 @@ if [ -n "$(git status --porcelain -- renderer scripts)" ]; then echo "注意：r
 # ---- 3. 組 patch ----
 say "組 desktop-app-patch"
 git fetch -q "$REMOTE" desktop-app-patch 2>/dev/null || true
-if [ -z "$VERSION" ]; then
-  # 互換版 manifest.json 凍結在 188，真正的最新版本在 manifest.v2.json（兩份取大的，版本號才會單調遞增）
-  CUR="$( { git show "$REMOTE/desktop-app-patch:manifest.v2.json" 2>/dev/null; echo; echo '@@'; git show "$REMOTE/desktop-app-patch:manifest.json" 2>/dev/null; } | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{let m=0;for(const part of s.split('@@')){try{m=Math.max(m,parseInt(JSON.parse(part).version,10)||0)}catch(e){}}console.log(m)})")"
-  CUR_OLD="$(git show "$REMOTE/desktop-app-patch:manifest.json" 2>/dev/null | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{console.log(parseInt(JSON.parse(s).version,10)||0)}catch(e){console.log(0)}})")"
-  VERSION=$((CUR + 1))
-fi
 echo "版本 $VERSION"
 PATCH_DIR="$(mktemp -d)"; trap 'rm -rf "$PATCH_DIR" "${PATCH_INDEX:-}"' EXIT
 node scripts/publish-manifest.js "$(W "$PATCH_DIR")" "$VERSION" "$NOTES"
