@@ -34,16 +34,15 @@ scripts/publish.sh -m "這次改了什麼" [--dry-run] [--no-web] [--version N] 
 
 ## 什麼會被熱更新、什麼不會
 
-白名單（`main.js`裡`LIVE_PATCH_ALLOWED_FILES`＋`LIVE_PATCH_MAIN_FILES`、`build-assistant.js`裡同名常數，**兩處要保持同步**）分兩類。**renderer前端（套用後立即生效）：**
+名單由 `build-assistant.js` 的 `LIVE_PATCH_ALLOWED_FILES` 自動產生（2026-10-28 起涵蓋「一切」，不用手動維護）：
 
-- `renderer/index.html`
-- `renderer/bootstrap.js`
-- `renderer/floating-assistant.js`
-- `renderer/floating-assistant.min.js`
+- `renderer/` 底下**所有**檔案（`index.html`、`bootstrap.js`、`floating-assistant.js`／`.min.js`、`vendor/**`（three.js 等）、`terminal-programs/*.mjs`…；原始碼資料夾 `renderer/src` 與 `update-manifest.json` 除外）。往後 renderer 新增什麼檔案自動跟著走。
+- 最上層所有 `*.js`（`main-ext.js`、`computer-use-*.js`、`preload.js`…；`build-assistant.js`、`main.js`、測試檔除外），再加上順著 `require` 找到的。
+- 路徑只能是 `[\w./-]`（沒有空白與中文），更新程式只認這種。
+- **永遠不放進來**：`builtin-secrets.json`（機密）、`build-config.json`、`LICENSE` 等安裝包資產。
+- **唯一不能熱覆蓋的是 `main.js`**：它是 Electron 載入的入口，執行時覆蓋機制（`main-ext.js`）還沒建立，只能隨安裝包更新。要改行為盡量放進 `main-ext.js` 或其他模組。
 
-**主行程模組（2026-09-30起，套用後要重新啟動app才生效，更新對話框會自動改成「重新啟動」）：** `local-proxy.js`、`browser-search.js`、`edge-tts.js`、`cli-format.js`、`coding-workspace.js`、`browser-control-server.js`（路徑相對於`desktop-app/`，patch分支裡放在根目錄，不在`renderer/`底下）。啟動時`main.js`最前面會先掛Module載入攔截，有通過md5驗證的覆蓋版本就用它（語法壞掉或載入丟例外退回內建版；`FA_DISABLE_MAIN_OVERLAY=1`可整個停用）。
-
-**不能**被patch更新的只剩`main.js`／`preload.js`／`package.json`這類機制入口本身，改到它們只能靠使用者重新安裝新的installer——而且這個攔截機制本身要先有一次installer更新才會存在，舊版安裝的使用者第一次仍需重新安裝。
+主行程模組套用後要重啟才生效（更新程式會提示）；renderer 的檔案重新載入頁面就生效。
 
 ## 標準流程
 

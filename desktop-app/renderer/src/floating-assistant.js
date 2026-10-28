@@ -44272,7 +44272,17 @@ const FaKnowledgeHost = (function () {
             const route = FaVlm.routeStages({ config: S.roles, bench: S.bench, installed: inst.set, requireInstalled: true, defaultId: S.textModel, hasTools: false });
             const model = route && route.answer; if (!model) throw new Error('還沒有下載離線文字模型（Configure → 離線模型 裡可以下載）');
             const msgs = []; if (opts.systemPrompt) msgs.push({ role: 'system', content: opts.systemPrompt }); msgs.push({ role: 'user', content: String(prompt) });
-            const r = await this._llmGenerate(model, { messages: msgs, maxTokens: Math.min(Number(opts.maxTokens) || 512, 700), deterministic: true }, { update() { if (opts.onActive) opts.onActive(); }, log() { if (opts.onActive) opts.onActive(); }, onToken() { if (opts.onActive) opts.onActive(); } });
+            // 離線小模型也會把輸出上限花在「想」而沒寫到答案：回空白就把上限加倍（小模型的上下文有限，上限 1400）再試一次，還是空白才丟出有數字的錯誤
+            const first = Math.min(Number(opts.maxTokens) || 512, 700), second = Math.min(first * 2, 1400); let budget = first, out = '';
+            for (let attempt = 0; attempt < 2; attempt++) {
+                out = await this._kiOfflineGenerate(model, msgs, budget, opts);
+                if (out || second <= first) break; budget = second;
+            }
+            if (!out && budget > first) throw new Error('離線模型回了空白（輸出上限從 ' + first + ' 加倍到 ' + budget + ' 仍沒有內容）');
+            return out;
+        },
+        async _kiOfflineGenerate(model, msgs, maxTokens, opts) {
+            const r = await this._llmGenerate(model, { messages: msgs, maxTokens, deterministic: true }, { update() { if (opts.onActive) opts.onActive(); }, log() { if (opts.onActive) opts.onActive(); }, onToken() { if (opts.onActive) opts.onActive(); } });
             return String(r == null ? '' : r).trim();
         },
         // 模型想的「可能出現在文件裡的詞」：只拿來多找一輪，不當答案。沒有模型可用就回空的（維持原本的檢索結果）。
@@ -90653,29 +90663,43 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     // 內部那次路由呼叫是同一種「單次分類/摘要用途、不需要完整agentic loop」
     // 的呼叫模式，抽出來避免重複程式碼。失敗時丟出例外，呼叫端自行決定要
     // 整段失敗還是（像summarize_large_text那樣）用佔位文字讓其他區塊繼續。
-    async _callSimpleCompletion(userPrompt, { systemPrompt = '', maxTokens = 800, temperature = 0.2, cfg = null } = {}) {
+    async _callSimpleCompletion(userPrompt, { systemPrompt = '', maxTokens = 800, temperature = 0.2, cfg = null, noBudgetRetry = false } = {}) {
         const { apiKey, apiUrl, apiModel } = cfg || this._getApiConfig();
         const messages = [];
         if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
         messages.push({ role: 'user', content: userPrompt });
-        let response;
-        try {
-            // stream:false 是呼叫端的寫法；長的回答由 FaLlm.fetch 在底層改用串流收齊再還原成一次回完的格式（見 FaLlm.assembleStream）
-            response = await FaLlm.fetch(`${apiUrl}/chat/completions`, {
-                method: 'POST',
-                headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ model: apiModel, messages, temperature, max_tokens: maxTokens, stream: false }),
-            });
-        } catch (err) {
-            throw new Error(`網路錯誤: ${err.message || err}`);
+        // 答案是空的、而且 finish_reason 是 length（輸出上限在模型「思考」階段就用完了，還沒寫到答案）：不是失敗，是預算不夠——
+        // 把輸出上限加倍、同一個節點再來一次（最多加倍 3 次、上限 32768）。一般對話迴圈早就有這個處理；單次呼叫（藏書閣處理大檔案、摘要…）以前沒有，
+        // 空白就一路當失敗，最後變成 502（Redmine 那邊遇到同樣的事）。呼叫端可以用 noBudgetRetry 關掉。
+        let budget = maxTokens, lastFinish = '', first = maxTokens;
+        for (let attempt = 0; attempt < 4; attempt++) {
+            let response;
+            try {
+                // stream:false 是呼叫端的寫法；長的回答由 FaLlm.fetch 在底層改用串流收齊再還原成一次回完的格式（見 FaLlm.assembleStream）
+                response = await FaLlm.fetch(`${apiUrl}/chat/completions`, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ model: apiModel, messages, temperature, max_tokens: budget, stream: false }),
+                });
+            } catch (err) {
+                throw new Error(`網路錯誤: ${err.message || err}`);
+            }
+            if (!response.ok) {
+                const errText = await response.text().catch(() => '');
+                throw new Error(`API錯誤(${response.status}): ${errText.slice(0, 300)}`);
+            }
+            const data = await response.json();
+            const ch = data && data.choices && data.choices[0], text = String((ch && ch.message && ch.message.content) || '').trim();
+            lastFinish = String((ch && ch.finish_reason) || '');
+            if (text) return text;
+            const usedUp = lastFinish === 'length' || (data && data.usage && Number(data.usage.completion_tokens) >= budget);
+            if (!usedUp || noBudgetRetry || budget >= 32768 || attempt >= 3) {
+                if (usedUp && attempt > 0) throw new Error(`模型回了空白（finish_reason=${lastFinish || 'length'}，輸出上限從 ${first} 加倍到 ${budget} 仍被用完，多半是思考太久；請換一個不會長篇思考的模型，或把工作切小）`);
+                return '';
+            }
+            budget = Math.min(32768, budget * 2);
         }
-        if (!response.ok) {
-            const errText = await response.text().catch(() => '');
-            throw new Error(`API錯誤(${response.status}): ${errText.slice(0, 300)}`);
-        }
-        const data = await response.json();
-        const text = (data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
-        return text.trim();
+        return '';
     }
 
     // tw_stock_db客製: 2026-09-09——把任意長度的純文字切成固定大小的區塊，

@@ -69,14 +69,39 @@ function collectMainModules() {
   const missing = collectMainModules().concat(["preload.js"]).filter((m) => !files.includes(m));
   if (missing.length) throw new Error("package.json build.files 沒有包含這些主行程模組：" + missing.join("、") + "（加進去，或改用 *.js）");
 })();
-const LIVE_PATCH_ALLOWED_FILES = [
+// 「一切」都在名單裡（使用者要求，2026-10-28）：以前只有 renderer 四個檔案＋順著 require 找得到的主行程模組，所以 renderer/vendor（three.js 等）、
+// renderer/terminal-programs（*.mjs）、動態載入而沒有靜態 require 的模組都不在名單裡，改了就只能重裝。現在：
+//   ① renderer/ 底下所有檔案（原始碼資料夾 renderer/src 與本機基準 update-manifest.json 除外）——往後 renderer 新增什麼檔案自動跟著走；
+//   ② 最上層所有 *.js（跟 package.json build.files 的 "*.js" 一致；建置腳本 build-assistant.js、入口 main.js、測試檔除外）；
+//   ③ 順著 require 找得到的（保留，雙保險）與 preload.js。
+// 唯一不能熱覆蓋的是 main.js：它是 Electron 載入的入口，執行的時候覆蓋機制（main-ext.js）還沒有建立，只能隨安裝包更新。
+// 絕對不放進來的：builtin-secrets.json（機密）、build-config.json、LICENSE 等安裝包資產（不是執行期載入的程式）。
+function collectRendererFiles() {
+  const out = [], base = path.join(__dirname, "renderer");
+  (function walk(dir, rel) {
+    for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+      const r = rel ? rel + "/" + ent.name : ent.name;
+      if (ent.isDirectory()) { if (r === "src" || ent.name === "node_modules" || ent.name.startsWith(".")) continue; walk(path.join(dir, ent.name), r); continue; }
+      if (r === "update-manifest.json" || /\.(map|bak|orig|log)$/i.test(r) || ent.name.startsWith(".")) continue;
+      if (!/^[\w./-]+$/.test("renderer/" + r)) continue; // 更新程式只認這種路徑（沒有空白、中文）
+      out.push("renderer/" + r);
+    }
+  })(base, "");
+  return out;
+}
+function collectTopLevelModules() {
+  return fs.readdirSync(__dirname).filter((f) => /^[\w.-]+\.js$/.test(f) && f !== "build-assistant.js" && f !== "main.js" && !/\.test\.js$/.test(f) && !/^scratch/i.test(f));
+}
+const LIVE_PATCH_ALLOWED_FILES = [...new Set([
   "renderer/index.html",
   "renderer/bootstrap.js",
   "renderer/floating-assistant.js",
   "renderer/floating-assistant.min.js",
+  ...collectRendererFiles(),
+  ...collectTopLevelModules(),
   ...collectMainModules(),
   "preload.js", // 預載腳本
-];
+])].sort();
 
 async function main() {
   if (!fs.existsSync(SRC_PATH)) {

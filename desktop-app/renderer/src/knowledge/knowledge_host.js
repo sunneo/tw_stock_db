@@ -648,7 +648,17 @@ const FaKnowledgeHost = (function () {
             const route = FaVlm.routeStages({ config: S.roles, bench: S.bench, installed: inst.set, requireInstalled: true, defaultId: S.textModel, hasTools: false });
             const model = route && route.answer; if (!model) throw new Error('還沒有下載離線文字模型（Configure → 離線模型 裡可以下載）');
             const msgs = []; if (opts.systemPrompt) msgs.push({ role: 'system', content: opts.systemPrompt }); msgs.push({ role: 'user', content: String(prompt) });
-            const r = await this._llmGenerate(model, { messages: msgs, maxTokens: Math.min(Number(opts.maxTokens) || 512, 700), deterministic: true }, { update() { if (opts.onActive) opts.onActive(); }, log() { if (opts.onActive) opts.onActive(); }, onToken() { if (opts.onActive) opts.onActive(); } });
+            // 離線小模型也會把輸出上限花在「想」而沒寫到答案：回空白就把上限加倍（小模型的上下文有限，上限 1400）再試一次，還是空白才丟出有數字的錯誤
+            const first = Math.min(Number(opts.maxTokens) || 512, 700), second = Math.min(first * 2, 1400); let budget = first, out = '';
+            for (let attempt = 0; attempt < 2; attempt++) {
+                out = await this._kiOfflineGenerate(model, msgs, budget, opts);
+                if (out || second <= first) break; budget = second;
+            }
+            if (!out && budget > first) throw new Error('離線模型回了空白（輸出上限從 ' + first + ' 加倍到 ' + budget + ' 仍沒有內容）');
+            return out;
+        },
+        async _kiOfflineGenerate(model, msgs, maxTokens, opts) {
+            const r = await this._llmGenerate(model, { messages: msgs, maxTokens, deterministic: true }, { update() { if (opts.onActive) opts.onActive(); }, log() { if (opts.onActive) opts.onActive(); }, onToken() { if (opts.onActive) opts.onActive(); } });
             return String(r == null ? '' : r).trim();
         },
         // 模型想的「可能出現在文件裡的詞」：只拿來多找一輪，不當答案。沒有模型可用就回空的（維持原本的檢索結果）。
