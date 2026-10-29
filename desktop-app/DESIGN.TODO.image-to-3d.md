@@ -10,13 +10,14 @@ Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app
 - 已提交：核心 `renderer/src/media/image3d_core.js`（柱體／方塊封閉殼、isClosed、背景補洞、buildScene、prepareInput、labelsFromMasks、diffMask 背景差分、parseOptions、toSpec 含貼圖座標、**buildPanorama／bendCylinder／readExif／orbitKind**）＋測試 `scripts/media-tests/image3d_core.test.js`（32 項過）；深度模型登錄與 `_depthEstimate`、SlimSAM 登錄與 `_segmentObjects`（`renderer/src/vlm/vlm_core.js` ＋ `floating-assistant.js` 工作執行緒）；`/image-to-3d`、`image_to_3d`（`renderer/src/edit/edit3d_host.js`，預設貼材質）；清冊；嵌入腳本。最近提交 ec530e68（貼材質）。
 - **未提交**：`vlm_core.js` 的深度模型 CPU dtype 改 fp32（下面第 2 項實驗發現）與重新嵌入的 `floating-assistant.js`；接手第一件事先 `node scripts/embed-code-ui.js`、跑測試、`node build-assistant.js`、提交。
 
-## 3. Todo（依序，每項做完測試、提交）
-1. **（實驗發現的主要缺點）新增 `shape:'smooth'`，並讓 `auto` 優先用它。** 實驗（見第 6 節）顯示柱體殼的前表面有一條條細長三角形（ear clipping 切出來的長條，內部沒有頂點，深度只在邊界取）。做法：方塊格子的占用判斷沿用 `blocksMesh`，但頂面頂點「共用」——每個格子角落一個頂點，高度＝周圍有佔到的格子高度平均；頂面每格兩個三角形，背面平的，側牆只在外輪廓與洞邊（牆頂邊界＝頂面邊界、牆底在背面平面）。對角相接的格子沿用現有補格修正。`isClosed` 必須過；加進 `buildObject` 的層級迴圈（層級 n=4..96，取面數上限內最細且封閉的），加測試（圓形、L 形、有洞、隨機遮罩固定種子）。`--shape` 與 `parseOptions` 加 `smooth`。
-2. 實驗頁加 SlimSAM：同一張合成圖（蘋果＋藍盒＋地面橢圓）用 `--segment` 流程試，現在去背遮罩把蘋果、盒子、地面橢圓連成一個物件（只分出 1 個）。載入 `Xenova/slimsam-77-uniform`（`SamModel`、`dtype:'q8'` 或 `fp32`），照 `floating-assistant.js` 工作執行緒 `sam` 分支的流程跑，看能不能分出 2～3 個物件；按實測修 `sam` 分支與登錄的 dtype／檔案大小。
-3. **全景／轉圈照片接到主機端**（核心已做好並測過）：`/image-to-3d --panorama`；單張寬高比 ≥ 2:1 自動走全景；多張圖用 `FaImage3d.readExif` 讀 GPS／方向，`orbitKind` 回 `outward`（站在原地轉圈，依方向排序拼成一條橫幅）就走全景，`inward`（繞著物體轉）老實說明做不到、改用第一張。每張各估深度（各自正規化，說明是近似），橫向拼接後 `buildPanorama({w,h,data},{fovDeg,bands:3,radius:5})`，`toSpec` 時編輯器相機放原點（`spec.camera.position=[0,1.6,0]`，往外看）；貼材質：圓柱座標的貼圖座標（目前 `toSpec` 的 uvs 是正面投影，全景要改成 u＝角度）。結果寫明「遠景／中景／近景」三層，可匯出 glTF 給 VR 用；**VR 觀看沒驗證**要照實寫。
-4. `renderer/src/media` 新增的測試要加進 `scripts/run-core-tests.js`（若它有清單）。
-5. 重建：`node scripts/embed-code-ui.js`、`node scripts/ai-features.js check` 再 `build`、`node build-assistant.js`、提交。**不發布。**
-6. 最後把「真實 App 還沒驗證」清單更新到本檔，結束。
+## 3. Todo（handoff 2 全部做完，2026-10-30）
+全部完成並提交（9f0bb01f smooth 殼、b9420411 SlimSAM 實測、fa09b044 全景接主機端＋測試清單）。**沒有待辦了，不要再交接。**
+- smooth 殼：`shape:'smooth'`，auto 優先用；測試 37 項過。
+- SlimSAM：瀏覽器（CPU、q8）實測載入約 6 秒、編碼約 16 秒、16 點約 28 秒；合成圖分出 3 個物件（蘋果、盒子、地面）。背景大遮罩（>50% 圖面）預設丟掉（maxAreaFrac 0.5）。
+- 全景：`/image-to-3d --panorama`、單張寬高比 ≥2、多張 EXIF 方向（`_i3dPanoPlan`、`_imageToPanorama`）。
+
+### 真實 App 還沒驗證
+設定頁卡片顯示、兩張圖貼上時的指令分流、全景在真實 App 的完整流程（核心有單元測試，主機端 `_imageToPanorama` 沒跑過）、`inward` 轉圈照片只用第一張、GPU（fp16）路徑（深度與 SlimSAM）、SlimSAM 在 App 工作執行緒的 `sam` 分支（實驗頁照同流程驗證過）、VR 頭戴裝置觀看、在編輯器真的開啟 smooth 殼的外觀。發布未做。
 
 ## 4. 做法備忘（使用者的規則）
 - 繁體中文、結論先說、不要在中文裡夾英文縮寫；做完誠實說哪些沒驗證。
