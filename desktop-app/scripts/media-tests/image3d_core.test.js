@@ -186,4 +186,42 @@ t('diffMask 背景差分：主體取出、雜訊與微小光線變化不算、�
   assert.strictEqual(C.diffMask(a, { width: 5, height: 5, data: new Uint8ClampedArray(100) }, {}), null);
 });
 
+t('buildPanorama：遠中近三層，彎到圓柱後每層仍封閉，遠的半徑比近的大', () => {
+  const W = 120, H = 40, data = Float32Array.from({ length: W * H }, (_, i) => { const x = i % W, y = Math.floor(i / W); return 0.2 + 0.6 * Math.abs(Math.sin(x / 9)) * (y / H); });
+  const sc = C.buildPanorama({ w: W, h: H, data }, { bands: 3, radius: 5, fovDeg: 360, workMax: 90 });
+  assert(sc.panorama && sc.objects.length >= 2 && sc.background === null);
+  sc.objects.forEach((o) => assert(C.isClosed(o.mesh), o.name));
+  const meanR = (o) => o.mesh.vertices.reduce((a, v) => a + Math.hypot(v[0], v[2]), 0) / o.mesh.vertices.length;
+  const far = sc.objects.find((o) => o.id === 1), near = sc.objects[sc.objects.length - 1];
+  assert(meanR(far) > meanR(near), meanR(far) + ' ' + meanR(near));
+  assert.strictEqual(far.name, '遠景');
+  const E = require('../../renderer/src/edit/edit3d_core.js');
+  assert(E.validate(C.toSpec(sc, {})).problems.length === 0);
+});
+t('orbitKind：站在原地轉一圈＝outward、繞著一個點＝inward、方向資料不足＝unknown', () => {
+  const turn = [0, 60, 120, 180, 240, 300].map((h) => ({ lat: 25.0, lon: 121.5 + h * 1e-7, heading: h }));
+  const r = C.orbitKind(turn, {}); assert.strictEqual(r.kind, 'outward'); assert.strictEqual(r.order.length, 6);
+  const ring = [0, 90, 180, 270].map((a) => ({ lat: 25 + 0.0005 * Math.sin(a * Math.PI / 180), lon: 121.5 + 0.0005 * Math.cos(a * Math.PI / 180), heading: (a + 180) % 360 }));
+  assert.strictEqual(C.orbitKind(ring, {}).kind, 'inward');
+  assert.strictEqual(C.orbitKind([{ heading: 10 }, { heading: 20 }], {}).kind, 'unknown');
+  assert.strictEqual(C.orbitKind([{ heading: 10 }, { heading: 20 }, { heading: 30 }], {}).kind, 'unknown');
+});
+t('readExif：讀出 GPS 與方向（手工組一個最小的 JPEG）', () => {
+  const rat = (n, d) => [n, d];
+  const parts = []; // little-endian TIFF: IFD0 (GPS pointer) -> GPS IFD (lat, lon, direction)
+  const buf = Buffer.alloc(220); let o = 0; const w16 = (v) => { buf.writeUInt16LE(v, o); o += 2; }, w32 = (v) => { buf.writeUInt32LE(v, o); o += 4; };
+  buf.write('II', 0); o = 2; w16(42); w32(8);
+  o = 8; w16(1); w16(0x8825); w16(4); w32(1); w32(26); w32(0);          // IFD0 at 8: one entry, GPS IFD at 26
+  o = 26; w16(5); // GPS IFD: 5 entries
+  const e = (tag, type, count, val) => { w16(tag); w16(type); w32(count); w32(val); };
+  e(1, 2, 2, 0x4E); e(2, 5, 3, 100); e(3, 2, 2, 0x45); e(4, 5, 3, 148); e(17, 5, 1, 196); w32(0);
+  const putR = (at, a) => { a.forEach((r, i) => { buf.writeUInt32LE(r[0], at + i * 8); buf.writeUInt32LE(r[1], at + i * 8 + 4); }); };
+  putR(100, [rat(25, 1), rat(2, 1), rat(30, 1)]); putR(148, [rat(121, 1), rat(30, 1), rat(0, 1)]); putR(196, [rat(90, 1)]);
+  const tiff = buf.slice(0, 210), head = Buffer.from([0xFF, 0xD8, 0xFF, 0xE1, 0, 0, 0x45, 0x78, 0x69, 0x66, 0, 0]); head.writeUInt16BE(tiff.length + 8, 4);
+  const jpg = Buffer.concat([head, tiff, Buffer.from([0xFF, 0xDA, 0, 2])]);
+  const x = C.readExif(new Uint8Array(jpg));
+  assert(x && Math.abs(x.lat - (25 + 2 / 60 + 30 / 3600)) < 1e-9 && Math.abs(x.lon - 121.5) < 1e-9 && x.heading === 90, JSON.stringify(x));
+  assert.strictEqual(C.readExif(new Uint8Array([1, 2, 3])), null);
+});
+
 console.log(pass + ' passed' + (process.exitCode ? ', with failures' : ''));

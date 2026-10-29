@@ -518,6 +518,94 @@
     return { mask: m, fg: fg / n, tol: tol };
   }
 
+  // ---------- panorama / orbit photos -> near-and-far layered model for VR ----------
+  // A panorama is seen from the inside, so its depth bands (far / middle / near) are bent onto a cylinder around the viewer: each band is still a closed solid
+  // (bending moves vertices only, the faces stay the same), far bands sit at a bigger radius, near bands closer. Output goes through toSpec like any other scene.
+  function signedVolume(mesh) {
+    var V = mesh.vertices, vol = 0;
+    mesh.faces.forEach(function (f) { var a = V[f[0]], b = V[f[1]], c = V[f[2]]; vol += (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0])) / 6; });
+    return vol;
+  }
+  // scene coordinates (x 0..xSpan, y 0..ySpan, z toward the viewer) -> a cylinder of radius R around the origin; fovRad = the horizontal angle the picture covers (2*PI for a full panorama)
+  function bendCylinder(mesh, o) {
+    var fov = o.fovRad || 2 * Math.PI, R = o.radius || 5, xs = o.xSpan || 1, ys = o.ySpan || 0.5, eye = o.eye == null ? 1.6 : o.eye, zk = o.zK || 1.33, rminF = 0.2;
+    var out = { vertices: mesh.vertices.map(function (v) {
+      var th = (v[0] / xs - 0.5) * fov, r = Math.max(R * rminF, R * (1 - zk * v[2])), yy = (v[1] - ys / 2) * R * fov / xs * (xs / xs) + eye;
+      return [Math.round(r * Math.sin(th) * 1e4) / 1e4, Math.round(yy * 1e4) / 1e4, Math.round(-r * Math.cos(th) * 1e4) / 1e4];
+    }), faces: mesh.faces.map(function (f) { return f.slice(); }) };
+    if (signedVolume(out) < 0) { out.faces = out.faces.map(function (f) { return [f[0], f[2], f[1]]; }); }
+    return out;
+  }
+  // depth rows -> band labels 1..n (1 = farthest) by quantile of the depth values
+  function depthBands(depth, n) {
+    var vals = [], y, x; for (y = 0; y < depth.length; y++) { for (x = 0; x < depth[y].length; x++) { vals.push(depth[y][x]); } }
+    vals.sort(function (a, b) { return a - b; });
+    var cuts = []; for (var i = 1; i < n; i++) { cuts.push(vals[Math.min(vals.length - 1, Math.floor(vals.length * i / n))]); }
+    return depth.map(function (r) { return r.map(function (v) { var b = 1; for (var k = 0; k < cuts.length; k++) { if (v >= cuts[k]) { b = k + 2; } } return b; }); });
+  }
+  // depth {w,h,data} (the whole panorama strip) -> { objects:[{id, mesh, shape, ...}], background:null, panorama:true }
+  function buildPanorama(depth, opts) {
+    opts = opts || {};
+    var longest = Math.max(depth.w, depth.h), k = Math.min(1, (opts.workMax || 160) / longest), w = Math.max(4, Math.round(depth.w * k)), h = Math.max(2, Math.round(depth.h * k));
+    var dep = resampleGrid(depth.data, depth.w, depth.h, w, h), labels = depthBands(dep, opts.bands || 3);
+    var sc = buildScene({ labels: labels, depth: dep }, { shape: 'blocks', closeMode: 'objects', maxFaces: opts.maxFaces || 12000 });
+    var maxdim = Math.max(w, h), bend = { fovRad: (opts.fovDeg || 360) * Math.PI / 180, radius: opts.radius || 5, xSpan: w / maxdim, ySpan: h / maxdim, eye: opts.eye };
+    sc.objects.forEach(function (o) { o.mesh = bendCylinder(o.mesh, bend); o.name = ['遠景', '中景', '近景', '最近景', '最近景2', '最近景3'][o.id - 1] || ('層' + o.id); });
+    sc.background = null; sc.panorama = true; return sc;
+  }
+
+  // ---------- EXIF (JPEG APP1): GPS position, heading, camera model; just enough to tell whether photos turn around a spot ----------
+  // buf: ArrayBuffer/Uint8Array of a JPEG -> { lat, lon, heading, make } (fields missing when absent) | null
+  function readExif(buf) {
+    var u = buf instanceof Uint8Array ? buf : new Uint8Array(buf), dv = new DataView(u.buffer, u.byteOffset, u.byteLength), p = 2;
+    if (u.length < 12 || dv.getUint16(0) !== 0xFFD8) { return null; }
+    while (p + 4 < u.length) {
+      var mk = dv.getUint16(p), len = dv.getUint16(p + 2);
+      if (mk === 0xFFE1 && String.fromCharCode(u[p + 4], u[p + 5], u[p + 6], u[p + 7]) === 'Exif') { return parseTiff(dv, p + 10); }
+      if (mk === 0xFFDA || (mk & 0xFF00) !== 0xFF00) { break; }
+      p += 2 + len;
+    }
+    return null;
+  }
+  function parseTiff(dv, t) {
+    var le = dv.getUint16(t) === 0x4949, g16 = function (o) { return dv.getUint16(o, le); }, g32 = function (o) { return dv.getUint32(o, le); };
+    var TS = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 7: 1, 9: 4, 10: 8 };
+    function entries(off) { var n = g16(t + off), out = {}; for (var i = 0; i < n; i++) { var e = t + off + 2 + i * 12; out[g16(e)] = { type: g16(e + 2), count: g32(e + 4), at: e + 8 }; } return out; }
+    function valAt(e) { var sz = (TS[e.type] || 1) * e.count; return sz <= 4 ? e.at : t + g32(e.at); }
+    function str(e) { var o = valAt(e), s = ''; for (var i = 0; i < e.count - 1; i++) { s += String.fromCharCode(dv.getUint8(o + i)); } return s; }
+    function rats(e) { var o = valAt(e), r = []; for (var i = 0; i < e.count; i++) { var d = g32(o + i * 8 + 4); r.push(d ? g32(o + i * 8) / d : 0); } return r; }
+    try {
+      var ifd0 = entries(g32(t + 4)), out = {};
+      if (ifd0[0x010F]) { out.make = str(ifd0[0x010F]); }
+      if (ifd0[0x8825]) {
+        var gps = entries(g32(ifd0[0x8825].at)), lat = gps[2] && rats(gps[2]), lon = gps[4] && rats(gps[4]);
+        if (lat && lon && gps[1] && gps[3]) {
+          out.lat = (lat[0] + lat[1] / 60 + lat[2] / 3600) * (str(gps[1]) === 'S' ? -1 : 1); out.lon = (lon[0] + lon[1] / 60 + lon[2] / 3600) * (str(gps[3]) === 'W' ? -1 : 1);
+        }
+        if (gps[17]) { out.heading = rats(gps[17])[0]; }
+      }
+      return out;
+    } catch (e) { return null; }
+  }
+  // shots: [{lat, lon, heading}] (one per photo, in the order given). 'outward' = the photos are taken from about one spot while turning (headings spread over >= 240 degrees, positions within `spotM` metres):
+  // they can be laid side by side as one panorama, ordered by heading. 'inward' = positions go around a centre (not handled: needs a reconstruction we do not have). 'unknown' otherwise.
+  function orbitKind(shots, opts) {
+    opts = opts || {};
+    var s = (shots || []).filter(function (x) { return x && isFinite(x.heading); });
+    if (s.length < 3) { return { kind: 'unknown', reason: '至少要三張有方向資料的照片' }; }
+    var gps = s.filter(function (x) { return isFinite(x.lat) && isFinite(x.lon); }), spot = opts.spotM || 25, spread = 0;
+    var hs = s.map(function (x) { return ((x.heading % 360) + 360) % 360; }).sort(function (a, b) { return a - b; }), maxGap = 0;
+    for (var i = 0; i < hs.length; i++) { var gap = (i === hs.length - 1 ? hs[0] + 360 : hs[i + 1]) - hs[i]; if (gap > maxGap) { maxGap = gap; } }
+    var cover = 360 - maxGap;
+    if (gps.length >= 3) {
+      var la = gps.reduce(function (a, x) { return a + x.lat; }, 0) / gps.length, lo = gps.reduce(function (a, x) { return a + x.lon; }, 0) / gps.length;
+      gps.forEach(function (x) { var dy = (x.lat - la) * 111320, dx = (x.lon - lo) * 111320 * Math.cos(la * Math.PI / 180); spread = Math.max(spread, Math.sqrt(dx * dx + dy * dy)); });
+    }
+    if (cover >= 240 && spread <= spot) { return { kind: 'outward', coverDeg: Math.round(cover), spreadM: Math.round(spread * 10) / 10, order: s.map(function (x, i) { return i; }).sort(function (a, b) { return (((s[a].heading % 360) + 360) % 360) - (((s[b].heading % 360) + 360) % 360); }) }; }
+    if (spread > spot && cover >= 180) { return { kind: 'inward', coverDeg: Math.round(cover), spreadM: Math.round(spread * 10) / 10 }; }
+    return { kind: 'unknown', coverDeg: Math.round(cover), spreadM: Math.round(spread * 10) / 10 };
+  }
+
   // ---------- options from the user's words (the program decides; the model is only asked when this cannot) ----------
   // close: 'objects' (default; every found object is a closed solid, the backdrop is a thin closed slab) | 'all' (the user wants everything closed / printable: the backdrop is a full-thickness solid too)
   function parseOptions(text) {
@@ -553,5 +641,5 @@
     return { v: 1, title: opts.title || '圖片轉3D', objects: objects };
   }
 
-  return { diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
+  return { buildPanorama: buildPanorama, bendCylinder: bendCylinder, depthBands: depthBands, readExif: readExif, orbitKind: orbitKind, diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
 });
