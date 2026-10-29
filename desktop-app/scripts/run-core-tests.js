@@ -142,6 +142,7 @@ const suites = [
     ['電腦操作：視覺慢路徑（切磚、定位、驗證、探索；假視覺模型）', 'scripts/computer-tests/computer_vision.test.js'],
     ['電腦操作：renderer 工具層（19 個 computer_* 工具、/computer 指令、網頁版不註冊）', 'scripts/computer-tests/computer_host.test.js'],
     ['電腦操作：INTEGRATION.md 的貼上用區塊（領域、任務提示 regex、YAML、embed 片段、接線補丁）', 'scripts/computer-tests/integration_doc.test.js'],
+    ['圖片轉3D核心（封閉殼、平滑殼、背景差分、全景分層、貼材質）', 'scripts/media-tests/image3d_core.test.js'],
 ];
 let failed = 0;
 for (const [name, file] of suites) {

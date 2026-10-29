@@ -30497,6 +30497,21 @@ const holder = {};
     if (signedVolume(out) < 0) { out.faces = out.faces.map(function (f) { return [f[0], f[2], f[1]]; }); }
     return out;
   }
+  // several photos' depth maps [{w,h,data}] (already in left-to-right order) -> one strip {w,h,data}: each map is scaled to 0..1 on its own (depth models give relative depth, so this is only approximate), resampled to a common height, laid side by side
+  function stitchDepths(list, opts) {
+    opts = opts || {};
+    var H = opts.height || Math.min.apply(null, list.map(function (d) { return d.h; })), cols = [], W = 0;
+    list.forEach(function (d) {
+      var mn = Infinity, mx = -Infinity, i; for (i = 0; i < d.data.length; i++) { if (d.data[i] < mn) { mn = d.data[i]; } if (d.data[i] > mx) { mx = d.data[i]; } }
+      var rg = mx - mn, w = Math.max(2, Math.round(d.w * H / d.h)), g = resampleGrid(d.data, d.w, d.h, w, H);
+      cols.push({ w: w, g: g.map(function (r) { return r.map(function (v) { return rg > EPS ? (v - mn) / rg : 0.5; }); }) }); W += w;
+    });
+    var data = new Float32Array(W * H), x0 = 0;
+    cols.forEach(function (c) { for (var y = 0; y < H; y++) { for (var x = 0; x < c.w; x++) { data[y * W + x0 + x] = c.g[y][x]; } } x0 += c.w; });
+    return { w: W, h: H, data: data };
+  }
+  // how wide a field of view a strip covers: a ~2:1 picture is taken as a full 360 degree equirectangular panorama, otherwise about 45 degrees per unit of aspect ratio
+  function panoFov(aspect) { return Math.abs(aspect - 2) < 0.2 ? 360 : Math.min(360, Math.max(60, Math.round(aspect * 45))); }
   // depth rows -> band labels 1..n (1 = farthest) by quantile of the depth values
   function depthBands(depth, n) {
     var vals = [], y, x; for (y = 0; y < depth.length; y++) { for (x = 0; x < depth[y].length; x++) { vals.push(depth[y][x]); } }
@@ -30510,9 +30525,9 @@ const holder = {};
     var longest = Math.max(depth.w, depth.h), k = Math.min(1, (opts.workMax || 160) / longest), w = Math.max(4, Math.round(depth.w * k)), h = Math.max(2, Math.round(depth.h * k));
     var dep = resampleGrid(depth.data, depth.w, depth.h, w, h), labels = depthBands(dep, opts.bands || 3);
     var sc = buildScene({ labels: labels, depth: dep }, { shape: 'blocks', closeMode: 'objects', maxFaces: opts.maxFaces || 12000 });
-    var maxdim = Math.max(w, h), bend = { fovRad: (opts.fovDeg || 360) * Math.PI / 180, radius: opts.radius || 5, xSpan: w / maxdim, ySpan: h / maxdim, eye: opts.eye };
+    var maxdim = Math.max(w, h), bend = { fovRad: (opts.fovDeg || 360) * Math.PI / 180, radius: opts.radius || 5, xSpan: w / maxdim, ySpan: h / maxdim, eye: opts.eye == null ? 1.6 : opts.eye };
     sc.objects.forEach(function (o) { o.mesh = bendCylinder(o.mesh, bend); o.name = ['遠景', '中景', '近景', '最近景', '最近景2', '最近景3'][o.id - 1] || ('層' + o.id); });
-    sc.background = null; sc.panorama = true; return sc;
+    sc.background = null; sc.panorama = true; sc.pano = bend; return sc;
   }
 
   // ---------- EXIF (JPEG APP1): GPS position, heading, camera model; just enough to tell whether photos turn around a spot ----------
@@ -30570,7 +30585,8 @@ const holder = {};
   // ---------- options from the user's words (the program decides; the model is only asked when this cannot) ----------
   // close: 'objects' (default; every found object is a closed solid, the backdrop is a thin closed slab) | 'all' (the user wants everything closed / printable: the backdrop is a full-thickness solid too)
   function parseOptions(text) {
-    var t = String(text || ''), out = { close: 'objects', shape: 'auto', whole: false, segment: false, closeSource: 'default' }, m;
+    var t = String(text || ''), out = { close: 'objects', shape: 'auto', whole: false, segment: false, panorama: false, closeSource: 'default' }, m;
+    if (/--panorama(?![a-z])|全景|環景|轉圈|panorama/i.test(t)) { out.panorama = true; }
     if (/--segment(?![a-z])|自動(?:分割|分物件)|分割模型|segment\s+objects/i.test(t)) { out.segment = true; }
     if ((m = /--close[=\s]+(objects|all)(?![a-z])/i.exec(t))) { out.close = m[1].toLowerCase(); out.closeSource = 'flag'; }
     else if (/(?:全部|所有|整個|整張|統一|每個|一律)[^，。,.\n]{0,8}封閉|要能?(?:3d)?列印|可(?:以)?列印|print(?:able)?|watertight|everything\s+closed|close\s+all/i.test(t)) { out.close = 'all'; out.closeSource = 'phrase'; }
@@ -30592,23 +30608,33 @@ const holder = {};
     scene.objects.forEach(function (o, i) { parts.push({ name: '物件' + (i + 1), key: o.id, res: o }); });
     parts.forEach(function (p) { p.res.mesh.vertices.forEach(function (v) { for (var a = 0; a < 3; a++) { if (v[a] < mn[a]) { mn[a] = v[a]; } if (v[a] > mx[a]) { mx[a] = v[a]; } } }); });
     if (!parts.length) { return null; }
-    var k = opts.sizeM || 1.5, cx = (mn[0] + mx[0]) / 2, cz = (mn[2] + mx[2]) / 2, r = function (x) { return Math.round(x * k * 10000) / 10000; };
+    var pano = scene.pano || null;
+    var k = pano ? 1 : (opts.sizeM || 1.5), cx = pano ? 0 : (mn[0] + mx[0]) / 2, cz = pano ? 0 : (mn[2] + mx[2]) / 2, y0 = pano ? 0 : mn[1], r = function (x) { return Math.round(x * k * 10000) / 10000; };
     var palette = ['#e57373', '#64b5f6', '#81c784', '#ffd54f', '#ba68c8', '#4db6ac', '#ff8a65', '#a1887f'];
     var objects = [{ id: 'g1', type: 'group', name: opts.title || '圖片轉3D', position: [0, 0, 0], rotation: [0, 0, 0], scale: 1 }];
     parts.forEach(function (p, i) {
       var col = opts.colors && opts.colors[p.key] || (p.key === 'background' ? '#9e9e9e' : palette[i % palette.length]);
-      objects.push({ id: 'p' + (i + 1), type: 'mesh', mesh: 'polygon', name: p.name, parent: 'g1', position: [0, 0, 0], rotation: [0, 0, 0], material: { color: col, roughness: 0.7, metalness: 0.02 },
-        extra: { vertices: p.res.mesh.vertices.map(function (v) { return [r(v[0] - cx), r(v[1] - mn[1]), r(v[2] - cz)]; }), faces: p.res.mesh.faces } });
-      if (opts.texture && scene.width && scene.height) {
+      objects.push({ id: 'p' + (i + 1), type: 'mesh', mesh: 'polygon', name: (pano && p.res.name) || p.name, parent: 'g1', position: [0, 0, 0], rotation: [0, 0, 0], material: { color: col, roughness: 0.7, metalness: 0.02 },
+        extra: { vertices: p.res.mesh.vertices.map(function (v) { return [r(v[0] - cx), r(v[1] - y0), r(v[2] - cz)]; }), faces: p.res.mesh.faces } });
+      if (opts.texture && pano) {
+        var part0 = objects[objects.length - 1], sc2 = pano.radius * pano.fovRad / pano.xSpan;
+        part0.extra.uvs = p.res.mesh.vertices.map(function (v) {
+          var u = Math.atan2(v[0], -v[2]) / pano.fovRad + 0.5, vv = ((v[1] - pano.eye) / sc2 + pano.ySpan / 2) / pano.ySpan;
+          return [Math.round(Math.max(0, Math.min(1, u)) * 10000) / 10000, Math.round(Math.max(0, Math.min(1, vv)) * 10000) / 10000];
+        });
+        part0.material = { color: '#ffffff', roughness: 0.9, metalness: 0, texture: opts.texture, side: 'double' };
+      } else if (opts.texture && scene.width && scene.height) {
         var md = Math.max(scene.width, scene.height), part = objects[objects.length - 1];
         part.extra.uvs = p.res.mesh.vertices.map(function (v) { return [Math.round(Math.max(0, Math.min(1, v[0] * md / scene.width)) * 10000) / 10000, Math.round(Math.max(0, Math.min(1, v[1] * md / scene.height)) * 10000) / 10000]; });
         part.material = { color: '#ffffff', roughness: 0.8, metalness: 0, texture: opts.texture, side: 'double' };
       }
     });
-    return { v: 1, title: opts.title || '圖片轉3D', objects: objects };
+    var spec = { v: 1, title: opts.title || '圖片轉3D', objects: objects };
+    if (pano) { spec.camera = { position: [0, pano.eye == null ? 1.6 : pano.eye, 0], look_at: [0, pano.eye == null ? 1.6 : pano.eye, -1], fov: 75 }; }
+    return spec;
   }
 
-  return { buildPanorama: buildPanorama, bendCylinder: bendCylinder, depthBands: depthBands, readExif: readExif, orbitKind: orbitKind, diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
+  return { stitchDepths: stitchDepths, panoFov: panoFov, buildPanorama: buildPanorama, bendCylinder: bendCylinder, depthBands: depthBands, readExif: readExif, orbitKind: orbitKind, diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
 });
 
 }).call(null, undefined, holder);
@@ -32668,15 +32694,60 @@ const FaEditHost = (function () {
         const out = { ok: !(r && r.ok === false), error: r && r.ok === false ? r.error : undefined, objects: scene.objects.length, shapes: scene.objects.map((x) => x.shape), faces: parts.reduce((a, x) => a + x.mesh.faces.length, 0), close, all_closed: parts.every((x) => FaImage3d.isClosed(x.mesh)), fell_back: parts.filter((x) => x.fallback).length, dropped_blobs: prep.dropped, foreground_ratio: fg == null ? undefined : Math.round(fg * 1000) / 1000, depth_model: dr.model, device: dr.device, ms: Date.now() - t0 + (dr.ms || 0), notes: [T('每個物件都是封閉的立體，不是浮雕；單張圖看不到背面，背面是依輪廓寬度推測的厚度', 'every object is a closed solid, not a relief; one picture cannot show the back, so its depth is a guess from the outline width')].concat(texture ? [T('原圖已貼在模型上（從正面投影，側面與背面是邊緣顏色拉伸）', 'the picture is pasted on as the texture (projected from the front; sides and back show stretched edge colours)')] : []).concat(prep.empty ? [T('沒有找到前景（背景色抓不準），整張圖當成一個物件', 'no foreground found: the whole picture became one object')] : [], mask || segs ? [] : [T('整張圖當成一個物件', 'the whole picture is one object')], segs ? [T('物件由分割模型找出來', 'objects found by the segmentation model')] : [], segNote ? [segNote] : [], bgNote ? [bgNote] : []) };
         return out;
     };
+    // 全景／轉圈照片：決定要不要走全景。ids: [{id, filename}]；flag: 使用者說了 --panorama／全景。回傳 { pano:true, items:[{id,filename,blob}], fovDeg, note } 或 { pano:false, note? }
+    M._i3dPanoPlan = async function (ids, flag) {
+        const items = []; for (const x of ids) { let rec = null; try { rec = await this.fileCache.get(x.id); } catch (_) { /* */ } if (rec && rec.blob) items.push({ id: x.id, filename: x.filename, blob: rec.blob }); }
+        if (!items.length) return { pano: false };
+        if (items.length === 1) {
+            let bmp = null; try { bmp = await createImageBitmap(items[0].blob); } catch (_) { return { pano: false }; }
+            const aspect = bmp.width / bmp.height; try { bmp.close(); } catch (_) { /* */ }
+            if (flag || aspect >= 2) return { pano: true, items, fovDeg: FaImage3d.panoFov(aspect), note: T('單張寬圖（寬高比 ' + aspect.toFixed(1) + '）當全景處理', 'a single wide picture (aspect ' + aspect.toFixed(1) + ') treated as a panorama') };
+            return { pano: false };
+        }
+        const shots = []; for (const it of items) { let ex = null; try { ex = FaImage3d.readExif(await it.blob.slice(0, 131072).arrayBuffer()); } catch (_) { ex = null; } shots.push(ex || {}); }
+        const ok = FaImage3d.orbitKind(shots, {});
+        if (ok.kind === 'outward') { const ordered = ok.order.map((i) => items[i]); return { pano: true, items: ordered, fovDeg: ok.coverDeg >= 300 ? 360 : Math.min(360, ok.coverDeg + 65), note: T('照片的位置幾乎不動、方向轉了 ' + ok.coverDeg + ' 度：依方向排序拼成一條橫幅', 'photos from one spot turning ' + ok.coverDeg + ' degrees: sorted by heading into one strip') }; }
+        if (ok.kind === 'inward') return { pano: false, note: T('這些照片是繞著物體拍的（位置轉了約 ' + ok.spreadM + ' 公尺）；繞物體重建需要多視角重建模型，目前做不到，這次只用第一張', 'these photos circle an object (about ' + ok.spreadM + ' m); that needs multi-view reconstruction which is not available, so only the first picture is used') };
+        if (flag) return { pano: true, items, fovDeg: Math.min(360, items.length * 65), note: T('照片沒有方向資料，照你給的順序從左到右拼起來', 'no heading data in the photos: laid out left to right in the order given') };
+        return { pano: false };
+    };
+    // 全景：每張各估深度（各自正規化，所以遠近只是近似）→ 橫向拼成一條 → 依深度切遠／中／近三層，各自封閉後彎到圓柱上；相機放在圓心往外看
+    M._imageToPanorama = async function (p) {
+        const items = p.items, depths = [];
+        for (const it of items) { const dr = await this._depthEstimate({ blob: it.blob, filename: it.filename, model: p.model, device: p.device }); if (!dr.ok) return dr; depths.push(dr.depth); }
+        const strip = FaImage3d.stitchDepths(depths, {}), fovDeg = p.fovDeg || FaImage3d.panoFov(strip.w / strip.h);
+        let texture = ''; try {
+            const H = 512, bmps = []; for (const it of items) bmps.push(await createImageBitmap(it.blob));
+            const ws = bmps.map((b) => Math.round(b.width * H / b.height)), W = Math.min(4096, ws.reduce((a, b) => a + b, 0)), k = W / ws.reduce((a, b) => a + b, 0);
+            const cv = document.createElement('canvas'); cv.width = W; cv.height = H; const cx = cv.getContext('2d'); let x0 = 0; bmps.forEach((b, i) => { cx.drawImage(b, x0 * k, 0, ws[i] * k, H); x0 += ws[i]; try { b.close(); } catch (_) { /* */ } });
+            texture = cv.toDataURL('image/jpeg', 0.85);
+        } catch (_) { texture = ''; }
+        const sc = FaImage3d.buildPanorama(strip, { fovDeg, bands: 3, radius: 5 });
+        const title = T('全景轉3D：', 'Panorama to 3D: ') + String(items[0].filename || '').replace(/\.[a-z0-9]+$/i, '').slice(0, 30);
+        const raw = FaImage3d.toSpec(sc, { title, texture }); const v = FaEdit3d.validate(raw); if (!v.ok) return { ok: false, error: T('做出來的場景不合規格：', 'the scene is invalid: ') + (v.problems || []).slice(0, 3).join('；') };
+        const r = await this._edOpen('edit-3d', { spec: v.spec });
+        return { ok: !(r && r.ok === false), error: r && r.ok === false ? r.error : undefined, panorama: true, layers: sc.objects.map((o) => o.name), faces: sc.objects.reduce((a, o) => a + o.mesh.faces.length, 0), all_closed: sc.objects.every((o) => FaImage3d.isClosed(o.mesh)), fov_deg: fovDeg, photos: items.length, note: p.note || '',
+            notes: [T('每張照片各自估深度、各自縮放到 0～1，所以遠近只是近似', 'each photo has its own depth scale, so near/far is approximate'), T('分成遠景／中景／近景三層，各自是封閉的立體，彎在圓柱上，相機在圓心往外看', 'three layers (far/middle/near), each a closed solid bent around a cylinder; the camera sits at the centre looking out'), T('可以匯出 glTF 給 VR 用；在頭戴裝置裡的觀看效果還沒驗證', 'can be exported as glTF for VR; how it looks in a headset is not verified')] };
+    };
     // /image-to-3d [--close objects|all] [--shape auto|smooth|cylinder|blocks] [--whole] [說明]：先貼圖再打、或先打指令再貼圖送出都可以
     M._image3dCommand = async function (argsText) {
         argsText = String(argsText || ''); const ids = []; const mark = /\[附件：([^\]]*)\]/.exec(argsText);
         if (mark) { const re = /([^、（]+?)（file_id=([\w-]+)）/g; let x; while ((x = re.exec(mark[1]))) { let rec = null; try { rec = await this.fileCache.get(x[2]); } catch (_) { /* */ } if (rec && rec.blob && (/^image\//i.test(rec.blob.type || '') || /\.(png|jpe?g|gif|webp|bmp)$/i.test(x[1]))) ids.push({ id: x[2], filename: x[1].trim(), size: rec.blob.size }); } }
         const rest = argsText.replace(/\[附件：[^\]]*\]/g, ' ').trim() || this._i3dCmdArgs || ''; if (ids.length) this._i3dCmdArgs = '';
         if (!ids.length) { this._armedSkill = { name: 'image-to-3d', at: Date.now() }; this._i3dCmdArgs = argsText.replace(/\[附件：[^\]]*\]/g, ' ').trim(); this._pushAssistantMessage('🧊 請貼上要轉成 3D 的圖片（Ctrl+V）或用📎上傳，送出後我會直接處理（深度模型離線執行，圖片不會上傳；每個物件都會做成封閉的立體，不是浮雕）。', null); this._persistChatHistory(); this._renderMessageHistory(); return; }
-        let pick = ids[0], bgId; if (ids.length === 2 && /背景差分|差分|--bg|--diff|第二張.{0,6}背景|背景圖/i.test(rest)) bgId = ids[1].id; else if (ids.length > 1) { pick = await this._pickAttachmentInteractive(ids, '要轉哪一張圖？', '附了好幾張圖，請選一張。'); if (!pick) return; }
+        const o2 = FaImage3d.parseOptions(rest); let panoNote = '';
+        if (!(ids.length === 2 && /背景差分|差分|--bg|--diff|第二張.{0,6}背景|背景圖/i.test(rest))) {
+            const plan = await this._i3dPanoPlan(ids, o2.panorama);
+            if (plan.pano) {
+                const pr = await this._imageToPanorama({ items: plan.items, fovDeg: plan.fovDeg, note: plan.note });
+                this._pushAssistantMessage(pr.ok ? '🌐 已經放進 3D 編輯器：' + pr.photos + ' 張照片拼成全景（視野約 ' + pr.fov_deg + ' 度），分成 ' + pr.layers.join('、') + ' ' + pr.layers.length + ' 層，共 ' + pr.faces + ' 個面' + (pr.all_closed ? '（每層都通過封閉檢查）' : '（有層沒通過封閉檢查）') + '。' + pr.note + '。' + pr.notes.join('；') + '。' : '🌐 ' + (pr.error || '全景轉 3D 失敗'), null);
+                this._persistChatHistory(); this._renderMessageHistory(); return;
+            }
+            panoNote = plan.note || '';
+        }
+        let pick = ids[0], bgId; if (ids.length === 2 && /背景差分|差分|--bg|--diff|第二張.{0,6}背景|背景圖/i.test(rest)) bgId = ids[1].id; else if (ids.length > 1 && !panoNote) { pick = await this._pickAttachmentInteractive(ids, '要轉哪一張圖？', '附了好幾張圖，請選一張。'); if (!pick) return; }
         const r = await this._imageTo3d({ image: pick.id, request: rest, bg: bgId });
-        this._pushAssistantMessage(r.ok ? '🧊 已經放進 3D 編輯器：' + r.objects + ' 個物件各自封閉' + (r.all_closed ? '（全部通過封閉檢查）' : '（有物件沒通過封閉檢查，已退回較粗的殼）') + '，共 ' + r.faces + ' 個面；封閉範圍：' + (r.close === 'all' ? '全部（背景也是實心）' : '物件（背景是薄板）') + '。' + r.notes.join('；') + '。' : '🧊 ' + (r.cancelled ? '已取消' : '失敗：' + r.error), null);
+        this._pushAssistantMessage(r.ok ? '🧊 已經放進 3D 編輯器：' + r.objects + ' 個物件各自封閉' + (r.all_closed ? '（全部通過封閉檢查）' : '（有物件沒通過封閉檢查，已退回較粗的殼）') + '，共 ' + r.faces + ' 個面；封閉範圍：' + (r.close === 'all' ? '全部（背景也是實心）' : '物件（背景是薄板）') + '。' + r.notes.join('；') + '。' + (panoNote ? panoNote + '。' : '') : '🧊 ' + (r.cancelled ? '已取消' : '失敗：' + r.error), null);
         this._persistChatHistory(); this._renderMessageHistory();
     };
     M._registerEdit3dCommands = function () {
@@ -32689,7 +32760,7 @@ const FaEditHost = (function () {
         this.register_slash_command('/edit-3d-model', hint,
             '3D 場景編輯器（用語言主導，位置完全以你現在看的角度算）：「在我的左前方放一個紅色的球」「把它移到桌子上面」；物件欄是樹狀的、屬性面板、雙擊物件進「單一物件編輯」（像做塑膠模型：每個面貼什麼圖、塗什麼顏色）、🧾 YAML 原始碼分頁可以直接改、圖可以貼進對話框當貼圖、復原／重做、整理成 prompt、匯出場景 YAML／PNG。/edit-3d-model room 從起手式開始、/edit-3d-model last 接著對話裡最近的 3D 場景。',
             run);
-        this.register_slash_command('/image-to-3d', '[--close objects|all] [--shape auto|smooth|cylinder|blocks] [--whole] [--segment] [--bg 背景圖]',
+        this.register_slash_command('/image-to-3d', '[--close objects|all] [--shape auto|smooth|cylinder|blocks] [--whole] [--segment] [--panorama] [--bg 背景圖]',
             '圖片轉 3D（離線）：深度模型在這台電腦上估計深度，再把每個物件各自做成封閉的立體（不是浮雕：用物件自己的輪廓做柱體或樂高方塊的殼，再逐層細切），放進 3D 場景編輯器。--close all＝連背景都做成實心（要列印用）；--shape 選殼的種類；--whole＝整張圖當一個物件；--segment＝用分割模型（SlimSAM）自動分出多個物件，不加則用去背遮罩；貼兩張圖並說「背景差分」＝第二張是沒有主體的背景圖（同一個視角），逐像素比對取出主體。先貼圖再打指令、或先打指令再貼圖送出都可以；第一次使用要下載深度模型（會先問）。單張圖看不到背面，背面是推測的。',
             async (argsText, run0) => { await (run0 || this)._image3dCommand(argsText); });
         { const ie = this.slashCommands.get('/image-to-3d'); if (ie) ie._autoFromSkillBundle = true; }
