@@ -7223,12 +7223,17 @@ const holder = {};
         { id: 'qwen3-1.7b', label: 'Qwen3 1.7B（最大，要 GPU 才實用）', task: 'text-generation', arch: 'causal-lm', repo: 'onnx-community/Qwen3-1.7B-ONNX',
             tasks: ['chat', 'rag', 'tools'], toolCalling: 'hermes', contextTokens: 8192, lang: '中英文', license: 'Apache-2.0',
             dtype: { gpu: 'q4f16', cpu: 'q8' }, bytes: { gpu: 1360 * MB, cpu: 1662 * MB }, gpuNeedsF16: true, verified: false, notes: '約 1.7B 參數；這份清單裡品質最好，下載與記憶體需求也最大。' },
+        // 深度估計（圖片轉 3D 用，不能拿來做圖像轉文字）：每個像素一個相對深度（大＝近）。檔案大小 2026-10-29 讀自 HuggingFace 檔案清單（fp16 49.6MB、int8 27.3MB）。
+        { id: 'depth-anything-v2-small', gpuNeedsF16: true, label: 'Depth Anything V2 Small（深度估計，/image-to-3d 用）', task: 'depth-estimation', arch: 'depth', repo: 'onnx-community/depth-anything-v2-small', tasks: [], lang: '無（輸出深度圖）', license: 'Apache-2.0',
+            dtype: { gpu: 'fp16', cpu: 'int8' }, bytes: { gpu: 50 * MB, cpu: 30 * MB }, verified: false, notes: '單張圖估計相對深度（越亮越近），約 25M 參數。給 /image-to-3d 當基礎層；照 Transformers.js 的 depth-estimation 範例寫，還沒在真實環境驗證。' },
         // 管理用（不能拿來做圖像轉文字）：語音轉文字 Whisper，跟這裡共用同一個瀏覽器快取
         { id: 'whisper-base', label: 'Whisper base（語音轉文字，transcribe_media 用）', task: 'asr', arch: 'whisper', repo: 'onnx-community/whisper-base', tasks: [], bytes: { gpu: 80 * MB, cpu: 80 * MB }, managedOnly: true, verified: true, notes: '影音轉逐字稿用，跟圖像轉文字共用快取與裝置設定。' },
     ];
     const byId = (id) => MODELS.find((m) => m.id === id) || null;
     const imageModels = () => MODELS.filter((m) => m.task === 'image-to-text');
     const textModels = () => MODELS.filter((m) => m.task === 'text-generation');
+    const depthModels = () => MODELS.filter((m) => m.task === 'depth-estimation');
+    const DEFAULT_DEPTH_MODEL = 'depth-anything-v2-small';
     const DEFAULT_MODEL = 'florence-2-base-ft';          // 圖像（VLM）預設
     const DEFAULT_TEXT_MODEL = 'qwen3-0.6b';             // 文字生成預設（兩種預設分開設定）
 
@@ -7320,7 +7325,7 @@ const holder = {};
     // installed：{模型id: 已下載位元組}；gpu：{available, f16}（只能用 GPU 的模型在沒有 GPU 時不考慮）。回傳 { model, reason }
     function pickModel(task, installed, preferredId, gpu) {
         installed = installed || {}; const ok = (m) => !m.managedOnly && m.tasks.includes(task) && !(m.gpuOnly && !(gpu && gpu.available && gpu.f16 !== false));
-        const pref = byId(preferredId) && !byId(preferredId).managedOnly ? byId(preferredId) : byId(DEFAULT_MODEL);
+        const pref = byId(preferredId) && !byId(preferredId).managedOnly && byId(preferredId).task !== 'depth-estimation' ? byId(preferredId) : byId(DEFAULT_MODEL);
         if (ok(pref)) return { model: pref, reason: '預設模型支援這個任務' };
         const have = imageModels().filter((m) => ok(m) && (installed[m.id] || 0) > 0);
         if (have.length) return { model: have[0], reason: '預設模型（' + pref.id + '）不支援「' + (TASKS[task] || task) + '」，改用已下載的 ' + have[0].id };
@@ -7596,7 +7601,7 @@ const holder = {};
     // 估算這次下載量（依裝置組合）；已經在快取裡的部分不用再下載
     function estimateDownload(model, device, cachedBytes) { const total = (model.bytes && model.bytes[device === 'webgpu' ? 'gpu' : 'cpu']) || 0; return Math.max(0, total - (Number(cachedBytes) || 0)); }
 
-    return { MODELS, byId, imageModels, textModels, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
+    return { MODELS, byId, imageModels, textModels, depthModels, DEFAULT_DEPTH_MODEL, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
 });
 
 }).call(null, undefined, holder);
@@ -41281,6 +41286,8 @@ function faVlmWorkerMain() {
             o.tokenizer = await L.AutoTokenizer.from_pretrained(repo); o.model = await L.AutoModelForCausalLM.from_pretrained(repo, opts);
         } else if (m.arch === 'vit-gpt2') {
             o.pipe = await L.pipeline('image-to-text', repo, opts);
+        } else if (m.arch === 'depth') {
+            o.pipe = await L.pipeline('depth-estimation', repo, opts);
         } else throw new Error('不認得的模型架構：' + m.arch);
         cur = o;
     }
@@ -41333,6 +41340,12 @@ function faVlmWorkerMain() {
             const inputs = await cur.processor(image, m.prompt); const ids = await cur.model.generate({ ...inputs, max_new_tokens: m.maxTokens || 256 });
             raw = cur.processor.batch_decode(ids.slice(null, [inputs.input_ids.dims.at(-1), null]), { skip_special_tokens: true })[0];
         } else if (cur.arch === 'vit-gpt2') { const out = await cur.pipe(image, { max_new_tokens: m.maxTokens || 64 }); raw = out && out[0] && out[0].generated_text; }
+        else if (cur.arch === 'depth') {
+            // 深度估計：回傳每個像素一個相對深度（大＝近），尺寸是模型輸出的大小（不是原圖大小）；呼叫端再縮放到遮罩的尺寸
+            const out = await cur.pipe(image); const t = out && out.predicted_depth; if (!t || !t.data) throw new Error('深度模型沒有回傳 predicted_depth');
+            const dims = t.dims; const h = dims[dims.length - 2], w = dims[dims.length - 1];
+            return { raw: null, depth: { w, h, data: Float32Array.from(t.data), srcW: image.width, srcH: image.height }, ms: Date.now() - t0 };
+        }
         return { raw, ms: Date.now() - t0 };
     }
     self.onmessage = async (ev) => {
@@ -41341,7 +41354,7 @@ function faVlmWorkerMain() {
         try {
             if (m.type === 'chat') { const r = await chat(m); post({ type: 'result', tid: m.tid, raw: r.raw, ms: r.ms, info: r.info }); return; }
             if (m.type === 'load') { await load(m); post({ type: 'loaded', tid: m.tid, device: m.device, modelId: m.modelId }); }
-            else if (m.type === 'run') { const r = await run(m); post({ type: 'result', tid: m.tid, raw: r.raw, ms: r.ms }); }
+            else if (m.type === 'run') { const r = await run(m); post({ type: 'result', tid: m.tid, raw: r.raw, ms: r.ms, depth: r.depth }); }
             else if (m.type === 'dispose') { await disposeCur(); post({ type: 'disposed', tid: m.tid }); }
         } catch (e) { post({ type: 'error', tid: m.tid, error: errText(e) }); }
     };
@@ -87264,7 +87277,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     async _imageToText(p) {
         p = p || {}; const set = this._omSettings();
         const model = FaVlm.byId(p.model) || FaVlm.byId(set.model);
-        if (!model || model.managedOnly) return { ok: false, error: '不是圖像轉文字的模型：' + (p.model || '') + '。可用：' + FaVlm.imageModels().map((m) => m.id).join('、') };
+        if (!model || model.managedOnly || model.task !== 'image-to-text') return { ok: false, error: '不是圖像轉文字的模型：' + (p.model || '') + '。可用：' + FaVlm.imageModels().map((m) => m.id).join('、') };
         const gpu = await this._omGpuInfo(); const dev = FaVlm.resolveDevice(model, p.device || set.device, gpu.available, gpu.f16);
         if (!dev.order.length) return { ok: false, error: dev.reason, hint: '到 Configure 的「離線模型」分頁選一個能用 CPU 的模型（例如 ' + FaVlm.DEFAULT_MODEL + '）' };
         const img = await this._vlmResolveImage(p); if (!img.blob) return { ok: false, cancelled: img.cancelled, error: img.error };
@@ -87293,6 +87306,36 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             if (prog) prog.finish('完成：' + (used.device === 'webgpu' ? 'GPU' : 'CPU') + '，' + ((res.ms || 0) / 1000).toFixed(1) + ' 秒');
             if (!text) return { ok: false, error: '模型沒有產生任何文字（圖片太小或沒有可辨識的內容？）', model: model.id, device: used.device };
             return { ok: true, text, model: model.id, repo: model.repo, device: used.device === 'webgpu' ? 'gpu' : 'cpu', threads: used.device === 'webgpu' ? undefined : used.threads.effective, task: tb.task, note: tb.note, language: model.lang, ms: Date.now() - t0, fell_back_from_gpu: downgraded || (used.tried && used.tried.some((x) => x.device === 'webgpu')) ? true : undefined };
+        } catch (e) { if (prog) prog.fail(String((e && e.message) || e)); return { ok: false, error: String((e && e.message) || e), model: model.id, tried: e && e.tried }; }
+    }
+    // 離線深度估計（圖片轉 3D 的基礎層）。p：{image?, blob?, model?, device?, confirmed?, silent?}。回傳 { ok, depth:{w,h,data(Float32Array),srcW,srcH}, model, device, ms }；深度大＝近，尺寸是模型輸出的大小。
+    async _depthEstimate(p) {
+        p = p || {}; const set = this._omSettings();
+        const model = FaVlm.byId(p.model) || FaVlm.byId(FaVlm.DEFAULT_DEPTH_MODEL);
+        if (!model || model.task !== 'depth-estimation') return { ok: false, error: '不是深度估計的模型：' + (p.model || '') + '。可用：' + FaVlm.depthModels().map((m) => m.id).join('、') };
+        const gpu = await this._omGpuInfo(); const dev = FaVlm.resolveDevice(model, p.device || set.device, gpu.available, gpu.f16);
+        if (!dev.order.length) return { ok: false, error: dev.reason };
+        const img = await this._vlmResolveImage(p); if (!img.blob) return { ok: false, cancelled: img.cancelled, error: img.error };
+        const usage = await this._omUsage(); const need = FaVlm.estimateDownload(model, dev.order[0], (usage.byModel[model.id] || { bytes: 0 }).bytes);
+        if (need > 20 * 1048576 && !p.confirmed) {
+            const okDl = await this._omAskDownload('要下載深度模型嗎？', '「' + model.label + '」\n來源：huggingface.co/' + model.repo + '\n大小：約 ' + FaVlm.fmtBytes(need) + '（只下載這一次，存在瀏覽器快取，可以在 Configure →「離線模型管理」清除）。', '下載並使用');
+            if (!okDl) return { ok: false, cancelled: true, error: '使用者取消了下載' };
+        }
+        const prog = p.silent ? null : this._createProgressWidget('離線深度估計（' + model.label + '）');
+        const update = (x) => { if (prog) prog.update(x); }; const log = (s) => { if (prog) prog.log(s); };
+        try {
+            log('裝置：' + dev.reason); update({ status: '準備中…' });
+            let order = dev.order.slice(), res = null, lastErr = null, used = null;
+            for (let attempt = 0; attempt < 2 && !res; attempt++) {
+                const ld = await this._vlmEnsureLoaded(model, order, update, log); used = ld;
+                update({ pct: 99, status: '估計深度中（' + (ld.device === 'webgpu' ? 'GPU' : 'CPU') + '）…' });
+                try { res = await this._vlmRpc('run', { image: img.blob }, null, null, this._vlmSlotOf(ld.device)); }
+                catch (e) { lastErr = e; log('⚠️ ' + (ld.device === 'webgpu' ? 'GPU' : 'CPU') + ' 推論失敗：' + String((e && e.message) || e)); this._vlmTerminate(this._vlmSlotOf(ld.device)); if (ld.device === 'webgpu') { order = ['wasm']; log('降級成 CPU 重試'); } else break; }
+            }
+            if (!res || !res.depth) throw lastErr || new Error('深度模型沒有輸出');
+            this._vlmScheduleIdle(this._vlmSlotOf(used.device));
+            if (prog) prog.finish('完成：' + (used.device === 'webgpu' ? 'GPU' : 'CPU') + '，' + ((res.ms || 0) / 1000).toFixed(1) + ' 秒，深度圖 ' + res.depth.w + '×' + res.depth.h);
+            return { ok: true, depth: res.depth, model: model.id, device: used.device === 'webgpu' ? 'gpu' : 'cpu', ms: res.ms };
         } catch (e) { if (prog) prog.fail(String((e && e.message) || e)); return { ok: false, error: String((e && e.message) || e), model: model.id, tried: e && e.tried }; }
     }
     // /image-to-text [描述|詳細|文字|物件|問 …]：先貼圖再打、或先打指令再貼圖送出都可以
@@ -88131,7 +88174,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             return `<div style="margin-top:4px; font-size:12px;">角色：${chk('tools', '呼叫工具', !m.toolCalling)}${chk('answer', '寫回答')}${chk('summarize', '摘要')}　優先順序 <input type="number" data-om-prio data-id="${esc(m.id)}" value="${rc.priority}" style="${inp} width:64px;">　運算 <select data-om-dev data-id="${esc(m.id)}" style="${inp}"><option value="auto" ${dsel === 'auto' ? 'selected' : ''}>跟全域設定</option><option value="gpu" ${dsel === 'gpu' ? 'selected' : ''}>GPU</option><option value="cpu" ${dsel === 'cpu' ? 'selected' : ''}>CPU</option></select></div>
                 <div style="margin-top:4px; font-size:12px;">${badge}　${m.toolCalling ? `<button style="${btn}" data-om="toolbench" data-id="${esc(m.id)}">測試工具呼叫</button>` : ''}${bn ? `<span style="color:#64748b;"> ${bn.details.filter((d) => !d.ok).map((d) => esc(d.id + '：' + d.reason)).join('；')}</span>` : ''}</div>`;
         };
-        const textRows = FaVlm.textModels().map(cardOf).join(''); const imgRows = FaVlm.imageModels().map(cardOf).join(''); const otherRows = FaVlm.MODELS.filter((m) => m.managedOnly).map(cardOf).join('');
+        const textRows = FaVlm.textModels().map(cardOf).join(''); const imgRows = FaVlm.imageModels().map(cardOf).join(''); const otherRows = FaVlm.MODELS.filter((m) => m.managedOnly || m.task === 'depth-estimation').map(cardOf).join('');
         const other = usage.other.files ? `<div style="margin-top:4px;">其他快取：${usage.other.files} 個檔案、${FaVlm.fmtBytes(usage.other.bytes)}${usage.other.repos.length ? '（' + usage.other.repos.map(esc).join('、') + '）' : ''} ${usage.other.repos.map((r) => `<button style="${btn} color:#fca5a5;" data-om="delrepo" data-repo="${esc(r)}">刪除 ${esc(r)}</button>`).join(' ')}</div>` : '';
         root.innerHTML = `<div style="color:#94a3b8; margin-bottom:8px;">離線模型在你的電腦上執行（瀏覽器內的 WebAssembly／WebGPU），圖片不會上傳；推論在背景執行緒，不會卡住畫面。模型第一次使用時才下載，存在瀏覽器快取。</div>
             <div style="border:1px solid #334155; border-radius:8px; padding:8px; margin-bottom:10px;">

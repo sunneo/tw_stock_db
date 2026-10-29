@@ -260,6 +260,8 @@ check('loop: at most 3 calls per round', execs.length === 3 && r.ok, { execs });
   check('combine: nothing at all is empty', V.combineVision('', '') === '');
   check('the prompt asks for both markers and forbids guessing', /\[\[TRANSCRIPTION\]\][\s\S]*\[\[ANSWER\]\]/.test(V.structuredPrompt('描述', false)) && /不要猜測/.test(V.structuredPrompt('描述', false)) && /圖N/.test(V.structuredPrompt('比較', true)));
 }
+check('depth model is registered but is not an image/text/managed model', V.byId('depth-anything-v2-small') && V.depthModels().length === 1 && V.DEFAULT_DEPTH_MODEL === 'depth-anything-v2-small' && !V.imageModels().some((m) => m.task === 'depth-estimation') && !V.byId('depth-anything-v2-small').managedOnly && V.byId('depth-anything-v2-small').arch === 'depth');
+check('depth model is never picked for an image-to-text task', V.pickModel('caption', {}, 'depth-anything-v2-small', { available: true, f16: true }).model.id !== 'depth-anything-v2-small');
 console.log(ok + ' passed, ' + bad.length + ' failed', bad);
 process.exit(bad.length ? 1 : 0);
 })();
