@@ -565,6 +565,21 @@
     if (signedVolume(out) < 0) { out.faces = out.faces.map(function (f) { return [f[0], f[2], f[1]]; }); }
     return out;
   }
+  // several photos' depth maps [{w,h,data}] (already in left-to-right order) -> one strip {w,h,data}: each map is scaled to 0..1 on its own (depth models give relative depth, so this is only approximate), resampled to a common height, laid side by side
+  function stitchDepths(list, opts) {
+    opts = opts || {};
+    var H = opts.height || Math.min.apply(null, list.map(function (d) { return d.h; })), cols = [], W = 0;
+    list.forEach(function (d) {
+      var mn = Infinity, mx = -Infinity, i; for (i = 0; i < d.data.length; i++) { if (d.data[i] < mn) { mn = d.data[i]; } if (d.data[i] > mx) { mx = d.data[i]; } }
+      var rg = mx - mn, w = Math.max(2, Math.round(d.w * H / d.h)), g = resampleGrid(d.data, d.w, d.h, w, H);
+      cols.push({ w: w, g: g.map(function (r) { return r.map(function (v) { return rg > EPS ? (v - mn) / rg : 0.5; }); }) }); W += w;
+    });
+    var data = new Float32Array(W * H), x0 = 0;
+    cols.forEach(function (c) { for (var y = 0; y < H; y++) { for (var x = 0; x < c.w; x++) { data[y * W + x0 + x] = c.g[y][x]; } } x0 += c.w; });
+    return { w: W, h: H, data: data };
+  }
+  // how wide a field of view a strip covers: a ~2:1 picture is taken as a full 360 degree equirectangular panorama, otherwise about 45 degrees per unit of aspect ratio
+  function panoFov(aspect) { return Math.abs(aspect - 2) < 0.2 ? 360 : Math.min(360, Math.max(60, Math.round(aspect * 45))); }
   // depth rows -> band labels 1..n (1 = farthest) by quantile of the depth values
   function depthBands(depth, n) {
     var vals = [], y, x; for (y = 0; y < depth.length; y++) { for (x = 0; x < depth[y].length; x++) { vals.push(depth[y][x]); } }
@@ -578,9 +593,9 @@
     var longest = Math.max(depth.w, depth.h), k = Math.min(1, (opts.workMax || 160) / longest), w = Math.max(4, Math.round(depth.w * k)), h = Math.max(2, Math.round(depth.h * k));
     var dep = resampleGrid(depth.data, depth.w, depth.h, w, h), labels = depthBands(dep, opts.bands || 3);
     var sc = buildScene({ labels: labels, depth: dep }, { shape: 'blocks', closeMode: 'objects', maxFaces: opts.maxFaces || 12000 });
-    var maxdim = Math.max(w, h), bend = { fovRad: (opts.fovDeg || 360) * Math.PI / 180, radius: opts.radius || 5, xSpan: w / maxdim, ySpan: h / maxdim, eye: opts.eye };
+    var maxdim = Math.max(w, h), bend = { fovRad: (opts.fovDeg || 360) * Math.PI / 180, radius: opts.radius || 5, xSpan: w / maxdim, ySpan: h / maxdim, eye: opts.eye == null ? 1.6 : opts.eye };
     sc.objects.forEach(function (o) { o.mesh = bendCylinder(o.mesh, bend); o.name = ['遠景', '中景', '近景', '最近景', '最近景2', '最近景3'][o.id - 1] || ('層' + o.id); });
-    sc.background = null; sc.panorama = true; return sc;
+    sc.background = null; sc.panorama = true; sc.pano = bend; return sc;
   }
 
   // ---------- EXIF (JPEG APP1): GPS position, heading, camera model; just enough to tell whether photos turn around a spot ----------
@@ -638,7 +653,8 @@
   // ---------- options from the user's words (the program decides; the model is only asked when this cannot) ----------
   // close: 'objects' (default; every found object is a closed solid, the backdrop is a thin closed slab) | 'all' (the user wants everything closed / printable: the backdrop is a full-thickness solid too)
   function parseOptions(text) {
-    var t = String(text || ''), out = { close: 'objects', shape: 'auto', whole: false, segment: false, closeSource: 'default' }, m;
+    var t = String(text || ''), out = { close: 'objects', shape: 'auto', whole: false, segment: false, panorama: false, closeSource: 'default' }, m;
+    if (/--panorama(?![a-z])|全景|環景|轉圈|panorama/i.test(t)) { out.panorama = true; }
     if (/--segment(?![a-z])|自動(?:分割|分物件)|分割模型|segment\s+objects/i.test(t)) { out.segment = true; }
     if ((m = /--close[=\s]+(objects|all)(?![a-z])/i.exec(t))) { out.close = m[1].toLowerCase(); out.closeSource = 'flag'; }
     else if (/(?:全部|所有|整個|整張|統一|每個|一律)[^，。,.\n]{0,8}封閉|要能?(?:3d)?列印|可(?:以)?列印|print(?:able)?|watertight|everything\s+closed|close\s+all/i.test(t)) { out.close = 'all'; out.closeSource = 'phrase'; }
@@ -660,21 +676,31 @@
     scene.objects.forEach(function (o, i) { parts.push({ name: '物件' + (i + 1), key: o.id, res: o }); });
     parts.forEach(function (p) { p.res.mesh.vertices.forEach(function (v) { for (var a = 0; a < 3; a++) { if (v[a] < mn[a]) { mn[a] = v[a]; } if (v[a] > mx[a]) { mx[a] = v[a]; } } }); });
     if (!parts.length) { return null; }
-    var k = opts.sizeM || 1.5, cx = (mn[0] + mx[0]) / 2, cz = (mn[2] + mx[2]) / 2, r = function (x) { return Math.round(x * k * 10000) / 10000; };
+    var pano = scene.pano || null;
+    var k = pano ? 1 : (opts.sizeM || 1.5), cx = pano ? 0 : (mn[0] + mx[0]) / 2, cz = pano ? 0 : (mn[2] + mx[2]) / 2, y0 = pano ? 0 : mn[1], r = function (x) { return Math.round(x * k * 10000) / 10000; };
     var palette = ['#e57373', '#64b5f6', '#81c784', '#ffd54f', '#ba68c8', '#4db6ac', '#ff8a65', '#a1887f'];
     var objects = [{ id: 'g1', type: 'group', name: opts.title || '圖片轉3D', position: [0, 0, 0], rotation: [0, 0, 0], scale: 1 }];
     parts.forEach(function (p, i) {
       var col = opts.colors && opts.colors[p.key] || (p.key === 'background' ? '#9e9e9e' : palette[i % palette.length]);
-      objects.push({ id: 'p' + (i + 1), type: 'mesh', mesh: 'polygon', name: p.name, parent: 'g1', position: [0, 0, 0], rotation: [0, 0, 0], material: { color: col, roughness: 0.7, metalness: 0.02 },
-        extra: { vertices: p.res.mesh.vertices.map(function (v) { return [r(v[0] - cx), r(v[1] - mn[1]), r(v[2] - cz)]; }), faces: p.res.mesh.faces } });
-      if (opts.texture && scene.width && scene.height) {
+      objects.push({ id: 'p' + (i + 1), type: 'mesh', mesh: 'polygon', name: (pano && p.res.name) || p.name, parent: 'g1', position: [0, 0, 0], rotation: [0, 0, 0], material: { color: col, roughness: 0.7, metalness: 0.02 },
+        extra: { vertices: p.res.mesh.vertices.map(function (v) { return [r(v[0] - cx), r(v[1] - y0), r(v[2] - cz)]; }), faces: p.res.mesh.faces } });
+      if (opts.texture && pano) {
+        var part0 = objects[objects.length - 1], sc2 = pano.radius * pano.fovRad / pano.xSpan;
+        part0.extra.uvs = p.res.mesh.vertices.map(function (v) {
+          var u = Math.atan2(v[0], -v[2]) / pano.fovRad + 0.5, vv = ((v[1] - pano.eye) / sc2 + pano.ySpan / 2) / pano.ySpan;
+          return [Math.round(Math.max(0, Math.min(1, u)) * 10000) / 10000, Math.round(Math.max(0, Math.min(1, vv)) * 10000) / 10000];
+        });
+        part0.material = { color: '#ffffff', roughness: 0.9, metalness: 0, texture: opts.texture, side: 'double' };
+      } else if (opts.texture && scene.width && scene.height) {
         var md = Math.max(scene.width, scene.height), part = objects[objects.length - 1];
         part.extra.uvs = p.res.mesh.vertices.map(function (v) { return [Math.round(Math.max(0, Math.min(1, v[0] * md / scene.width)) * 10000) / 10000, Math.round(Math.max(0, Math.min(1, v[1] * md / scene.height)) * 10000) / 10000]; });
         part.material = { color: '#ffffff', roughness: 0.8, metalness: 0, texture: opts.texture, side: 'double' };
       }
     });
-    return { v: 1, title: opts.title || '圖片轉3D', objects: objects };
+    var spec = { v: 1, title: opts.title || '圖片轉3D', objects: objects };
+    if (pano) { spec.camera = { position: [0, pano.eye == null ? 1.6 : pano.eye, 0], look_at: [0, pano.eye == null ? 1.6 : pano.eye, -1], fov: 75 }; }
+    return spec;
   }
 
-  return { buildPanorama: buildPanorama, bendCylinder: bendCylinder, depthBands: depthBands, readExif: readExif, orbitKind: orbitKind, diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
+  return { stitchDepths: stitchDepths, panoFov: panoFov, buildPanorama: buildPanorama, bendCylinder: bendCylinder, depthBands: depthBands, readExif: readExif, orbitKind: orbitKind, diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
 });

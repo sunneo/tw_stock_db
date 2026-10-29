@@ -207,6 +207,24 @@ t('buildPanorama：遠中近三層，彎到圓柱後每層仍封閉，遠的半�
   const E = require('../../renderer/src/edit/edit3d_core.js');
   assert(E.validate(C.toSpec(sc, {})).problems.length === 0);
 });
+t('全景 toSpec：相機放在原點往外看、每個頂點有圓柱座標的貼圖座標（0..1）、物件名稱是遠景／中景／近景', () => {
+  const W = 120, H = 40, data = Float32Array.from({ length: W * H }, (_, i) => 0.2 + 0.6 * Math.abs(Math.sin((i % W) / 9)) * (Math.floor(i / W) / H));
+  const sc = C.buildPanorama({ w: W, h: H, data }, { bands: 3, radius: 5, fovDeg: 360, workMax: 90 });
+  const spec = C.toSpec(sc, { texture: 'data:image/jpeg;base64,AAAA' }), E = require('../../renderer/src/edit/edit3d_core.js'), v = E.validate(spec);
+  assert.strictEqual(v.problems.length, 0, JSON.stringify(v.problems));
+  assert.deepStrictEqual(spec.camera.position, [0, 1.6, 0]);
+  const polys = spec.objects.filter((o) => o.mesh === 'polygon');
+  assert(polys.length >= 2 && polys[0].name === '遠景');
+  polys.forEach((o) => { assert.strictEqual(o.extra.uvs.length, o.extra.vertices.length); o.extra.uvs.forEach((u) => assert(u[0] >= 0 && u[0] <= 1 && u[1] >= 0 && u[1] <= 1)); });
+  const spread = polys[0].extra.uvs.map((u) => u[0]); assert(Math.max(...spread) - Math.min(...spread) > 0.5);
+});
+t('stitchDepths：各自縮到 0..1、橫向接成一條；panoFov：2:1 是 360 度；parseOptions 認得 --panorama／全景', () => {
+  const a = { w: 4, h: 2, data: Float32Array.from([0, 10, 20, 30, 0, 10, 20, 30]) }, b = { w: 2, h: 2, data: Float32Array.from([100, 200, 100, 200]) };
+  const s = C.stitchDepths([a, b]); assert.strictEqual(s.h, 2); assert.strictEqual(s.w, 6);
+  assert(Math.abs(Math.max(...s.data) - 1) < 1e-9 && Math.min(...s.data) === 0);
+  assert.strictEqual(C.panoFov(2), 360); assert.strictEqual(C.panoFov(4), 180);
+  assert(C.parseOptions('--panorama').panorama && C.parseOptions('這是一張全景照').panorama && !C.parseOptions('蘋果').panorama);
+});
 t('orbitKind：站在原地轉一圈＝outward、繞著一個點＝inward、方向資料不足＝unknown', () => {
   const turn = [0, 60, 120, 180, 240, 300].map((h) => ({ lat: 25.0, lon: 121.5 + h * 1e-7, heading: h }));
   const r = C.orbitKind(turn, {}); assert.strictEqual(r.kind, 'outward'); assert.strictEqual(r.order.length, 6);
