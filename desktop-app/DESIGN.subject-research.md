@@ -13,7 +13,7 @@
 | 2D | **找現成的 SVG（已做）**：維基共享資源 `filetype:drawing`（免費授權，不用金鑰）→ 標題要含名字、不要標誌／旗幟／地圖、不要太大 → 清理（`sanitizeSvg`：去腳本／外部連結／編輯器屬性，viewBox 移到 0,0）→ 變成編輯器的 `svg` 物件，附來源與授權。**沒有描述時，找參考圖請視覺模型整理成部位（已做）**（`FaPictureSource` 找圖，`imageBriefPrompt`，答案同樣由程式驗證） |
 | 3D-1 | **GitHub 公開專案的 OBJ（已做，3D 的第一階）**：`api.github.com` 搜專案 → 檔案樹找名字對得上的 `.obj` → 抓 `raw.githubusercontent.com` → 解析、縮減面數、擺正、縮到合理大小 | 已做 |
 | 3D-2 | 查外形描述（上面的階 1） | 已做 |
-| 3D-3 | **找圖 → 3D 化（已做，3D 的最後一階）**：沒有 OBJ、也沒有文字描述才走：找一張圖 → 切掉背景 → 現有的圖片分解（`image-decompose-redraw`：四叉樹三角網格＋距離變換充氣成 2.5D，Pyodide）→ 帶貼圖的自訂形狀 | 已做 |
+| 3D-3 | **找圖 → 3D 化（已做，3D 的最後一階；2026-10-30 起先走 `/image-to-3d` 的封閉立體管線，失敗才退回下面的浮雕做法並註明）**：沒有 OBJ、也沒有文字描述才走：找一張圖 → 切掉背景 → 現有的圖片分解（`image-decompose-redraw`：四叉樹三角網格＋距離變換充氣成 2.5D，Pyodide）→ 帶貼圖的自訂形狀 | 已做 |
 3D 的順序是使用者定的：**有 OBJ 就不查描述；沒有描述才找圖 3D 化**（因為專案本來就有「多邊形擬合 2D 再建立 3D」的基礎）。2D 的順序：現成 SVG → 描述 → 參考圖加視覺模型。
 
 ## 階 1 怎麼運作
@@ -47,3 +47,6 @@
 - **imgur**（`imgur.com/search?q=`）：縮圖是 `<id>b.jpg`，`imgurLarge` 改成 `<id>l.jpg`（640 像素）。
 - 圖片候選的順序：Google → 維基共享資源／Openverse → imgur；沒有瀏覽器控制才用使用者自己填的金鑰（`imgurClientId`、`googleSearchKey`＋`googleSearchCx`）。
 - **驗證**：三個抽取腳本都在真實頁面上跑過（瀏覽器窗格：imgur 16 張、Google 16 張縮圖、GitHub 沒登入回 `login:true`）；整條流程用假的擴充功能（回傳跟真實頁面一樣形狀的資料）在測試版跑過：登入時找到 `KunKunaa/Bunny` 的 OBJ（`via: browser`）、沒登入時有提示並退回 API。**沒驗證**：真的連上擴充功能、GitHub 程式碼搜尋登入後的頁面結構（抽取同時看連結與內嵌 JSON，但沒看過登入後的實際內容）。
+
+## 2026-10-30 補充：找圖那一階改走圖片轉 3D
+`_subjImage3d` 取得圖片並通過去背檢查後，先呼叫 `_i3dSubjectSolid`（`edit3d_host.js`：深度模型→每個物件封閉→原圖貼圖），結果標 `solid:true`，放進場景時不再放大厚度（`depthRatio` 只給舊浮雕用）；沒有深度模型或做不出封閉物件時才用下面的舊做法，結果標 `relief:true`，說明文字寫「退回舊的浮雕做法」。限制：背面是依輪廓推測的；新舊品質並排比較沒做；真實 App 沒驗證。設計見 `DESIGN.image-to-3d.md`。
