@@ -57295,6 +57295,14 @@ ${fnData.code}
             say('📚 ' + root + '\n' + (js.running ? '⏳ 索引進行中：' + js.phase + '，' + js.percent + '%，已用 ' + js.elapsed + (js.eta ? '，預估剩 ' + js.eta : '') + '\n' : '') + (st ? '已分析 ' + st.source_files_analyzed + '／' + st.source_files_known + ' 個原始碼檔、' + st.symbols + ' 個定義、' + st.dependency_edges + ' 條依賴' + (mp.index_built ? '　✅ 索引完成' : '　（部分）') : '還沒有索引。/aidoc index 開始。'));
             return;
         }
+        if (sub === 'locate' || sub === 'callers') {
+            const body = (explicitRoot && looksRoot(firstTok) ? rest.slice(firstTok.length) : rest).trim();
+            if (!body) { say(sub === 'callers' ? '用法：/aidoc callers <函式名稱>' : '用法：/aidoc locate <貼上的堆疊或 log 全文>（要先 /aidoc index 建立資料庫索引；ELF 位址換算尚未支援）'); return; }
+            this.messages.push({ role: 'user', content: '/aidoc ' + sub + ' ' + body.slice(0, 2000) }); this._renderMessageHistory();
+            const r = await this._repoAskRun(sub === 'callers' ? { root, action: 'callers', name: body } : { root, action: 'locate', text: body });
+            say(r.ok ? r.answer : '⚠️ ' + r.error);
+            return;
+        }
         if (sub === 'ask') {
             const q = (explicitRoot && looksRoot(firstTok) ? rest.slice(firstTok.length) : rest).trim();
             if (!q) { say('用法：/aidoc ask <問題>'); return; }

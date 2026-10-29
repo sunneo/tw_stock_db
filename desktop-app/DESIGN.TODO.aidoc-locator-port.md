@@ -44,3 +44,7 @@ Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app
 - `scripts/embed-code-ui.js` 是 CRLF 檔；Edit 後要統一行尾。
 - 這台 Windows 的 Node 沒有 `node:sqlite`，資料庫整合測試要用 Electron 當 Node。
 - 使用者曾拒絕我直接執行 `FloatingAssistantApp.exe` 跑測試的指令。
+
+## 進度（handoff 3，2026-10-29，Sonnet 5.5）
+- 已完成並提交：index 測試 6 項過；建索引抽 log／呼叫邊（sv 5）與 tree_ref；repo_ask 的 locate／callers／check_citations；/aidoc locate／callers；檢視器多行提問框與先定位後說明；中文 log；log_triage 工具＋FaLogTriage 食譜（測試 13 項）＋ code_debug 子代理 domain；清冊 aidoc-locator。
+- **未驗證**：主機端 _repoLocate／檢視器端到端／log_triage 工具在桌面版實跑；ELF（/aidoc locate --elf）尚未移植（elf.js 只有純函式模組，沒接主機）；測試版驗證（deploy3.sh）未做。
