@@ -110,4 +110,26 @@ t('隨機遮罩與深度（固定種子）：每個結果都封閉，方塊殼�
   assert.strictEqual(boxes, 0);
 });
 
+t('labelComponents：兩塊、過小的雜點被丟掉、最大的是 1', () => {
+  const m = grid(30, 20, (x, y) => ((x >= 2 && x < 10 && y >= 2 && y < 10) || (x >= 15 && x < 27 && y >= 5 && y < 18) || (x === 0 && y === 19) ? 1 : 0));
+  const r = C.labelComponents(m, { minAreaFrac: 0.01 });
+  assert.strictEqual(r.count, 2); assert.strictEqual(r.dropped, 1);
+  assert.strictEqual(r.labels[10][20], 1); assert.strictEqual(r.labels[5][5], 2); assert.strictEqual(r.labels[19][0], 0);
+});
+t('resampleGrid：線性漸層縮放後仍是漸層，端點不變', () => {
+  const g = C.resampleGrid(Array.from({ length: 16 }, (_, i) => i % 4), 4, 4, 7, 7);
+  assert(Math.abs(g[0][0]) < 1e-9 && Math.abs(g[3][6] - 3) < 1e-9 && g[3][3] > g[3][2]);
+});
+t('prepareInput：深度圖與遮罩尺寸不同也能對上，輸出可直接 buildScene', () => {
+  const depth = { w: 80, h: 60, data: Float32Array.from({ length: 4800 }, (_, i) => (i % 80) / 80) };
+  const mask = { w: 160, h: 120, data: Uint8Array.from({ length: 19200 }, (_, i) => { const x = i % 160, y = Math.floor(i / 160); return ((x - 60) ** 2 + (y - 60) ** 2 < 1600 || (x > 110 && x < 150 && y > 20 && y < 90)) ? 1 : 0; }) };
+  const p = C.prepareInput(depth, mask, { workMax: 64 });
+  assert.strictEqual(p.count, 2); assert.strictEqual(p.width, 64); assert.strictEqual(p.height, 48);
+  const s = C.buildScene({ labels: p.labels, depth: p.depth }, {});
+  assert.strictEqual(s.objects.length, 2); s.objects.forEach((o) => assert(C.isClosed(o.mesh))); assert(C.isClosed(s.background.mesh));
+  const w = C.prepareInput(depth, null, {}); assert.strictEqual(w.count, 1);
+  const w2 = C.prepareInput(depth, mask, { mode: 'whole' }); assert.strictEqual(w2.count, 1);
+  const e = C.prepareInput(depth, { w: 2, h: 2, data: [0, 0, 0, 0] }, {}); assert(e.empty && e.count === 1);
+});
+
 console.log(pass + ' passed' + (process.exitCode ? ', with failures' : ''));

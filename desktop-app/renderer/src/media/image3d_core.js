@@ -401,5 +401,68 @@
     return { objects: objects, background: bg, closeMode: opts.closeMode === 'all' ? 'all' : 'objects' };
   }
 
-  return { buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
+  // ---------- input preparation: model-sized depth + foreground mask -> small grids + object labels ----------
+  // bilinear resample of a flat array (sw x sh) to rows [h][w]
+  function resampleGrid(data, sw, sh, w, h) {
+    var out = [], x, y;
+    for (y = 0; y < h; y++) {
+      var fy = h > 1 ? y * (sh - 1) / (h - 1) : 0, y0 = Math.floor(fy), y1 = Math.min(sh - 1, y0 + 1), ty = fy - y0, row = [];
+      for (x = 0; x < w; x++) {
+        var fx = w > 1 ? x * (sw - 1) / (w - 1) : 0, x0 = Math.floor(fx), x1 = Math.min(sw - 1, x0 + 1), tx = fx - x0;
+        var top = data[y0 * sw + x0] * (1 - tx) + data[y0 * sw + x1] * tx, bot = data[y1 * sw + x0] * (1 - tx) + data[y1 * sw + x1] * tx;
+        row.push(top * (1 - ty) + bot * ty);
+      }
+      out.push(row);
+    }
+    return out;
+  }
+  // nearest-neighbour resample of a flat 0/1 array; a target cell is 1 when the source cell it maps to is 1
+  function resampleMask(flat, sw, sh, w, h) {
+    var out = [], x, y;
+    for (y = 0; y < h; y++) { var row = [], sy = Math.min(sh - 1, Math.floor((y + 0.5) * sh / h)); for (x = 0; x < w; x++) { row.push(flat[sy * sw + Math.min(sw - 1, Math.floor((x + 0.5) * sw / w))] ? 1 : 0); } out.push(row); }
+    return out;
+  }
+  // 4-connected blobs of a 0/1 grid -> labels (1 = largest blob); blobs under minAreaFrac of the grid, or beyond maxObjects, are dropped (label 0)
+  function labelComponents(mask, opts) {
+    opts = opts || {};
+    var d = dims(mask), H = d.h, W = d.w, lab = [], x, y, comps = [];
+    for (y = 0; y < H; y++) { lab.push(new Array(W).fill(0)); }
+    var seen = [];
+    for (y = 0; y < H; y++) { seen.push(new Array(W).fill(false)); }
+    for (y = 0; y < H; y++) {
+      for (x = 0; x < W; x++) {
+        if (!mask[y][x] || seen[y][x]) { continue; }
+        var stack = [[y, x]], cells = []; seen[y][x] = true;
+        while (stack.length) {
+          var c = stack.pop(); cells.push(c);
+          var nb = [[c[0] - 1, c[1]], [c[0] + 1, c[1]], [c[0], c[1] - 1], [c[0], c[1] + 1]];
+          for (var k = 0; k < 4; k++) { var ny = nb[k][0], nx = nb[k][1]; if (ny >= 0 && ny < H && nx >= 0 && nx < W && mask[ny][nx] && !seen[ny][nx]) { seen[ny][nx] = true; stack.push([ny, nx]); } }
+        }
+        comps.push(cells);
+      }
+    }
+    comps.sort(function (a, b) { return b.length - a.length; });
+    var minArea = Math.max(1, Math.floor((opts.minAreaFrac == null ? 0.003 : opts.minAreaFrac) * W * H)), maxObjects = opts.maxObjects || 12, n = 0, dropped = 0;
+    comps.forEach(function (cells) {
+      if (cells.length < minArea || n >= maxObjects) { dropped++; return; }
+      n++; cells.forEach(function (c) { lab[c[0]][c[1]] = n; });
+    });
+    return { labels: lab, count: n, dropped: dropped };
+  }
+  // one call from the host: depth {w,h,data} (model-sized, larger = nearer) + optional foreground mask {w,h,data} (1 = object) -> { labels, depth, width, height, count }
+  // mode: 'whole' = the whole picture is one object; 'components' (default) = every separate foreground blob is an object (needs a mask, else falls back to 'whole')
+  function prepareInput(depth, mask, opts) {
+    opts = opts || {};
+    var longest = Math.max(depth.w, depth.h), k = Math.min(1, (opts.workMax || 96) / longest), w = Math.max(2, Math.round(depth.w * k)), h = Math.max(2, Math.round(depth.h * k));
+    var dep = resampleGrid(depth.data, depth.w, depth.h, w, h), res;
+    if (opts.mode === 'whole' || !mask) {
+      res = { labels: dep.map(function (r) { return r.map(function () { return 1; }); }), count: 1, dropped: 0 };
+    } else {
+      res = labelComponents(resampleMask(mask.data, mask.w, mask.h, w, h), opts);
+      if (!res.count) { res = { labels: dep.map(function (r) { return r.map(function () { return 1; }); }), count: 1, dropped: res.dropped, empty: true }; }
+    }
+    return { labels: res.labels, depth: dep, width: w, height: h, count: res.count, dropped: res.dropped, empty: !!res.empty };
+  }
+
+  return { prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
 });
