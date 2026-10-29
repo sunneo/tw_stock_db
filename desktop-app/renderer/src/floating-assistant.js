@@ -7228,7 +7228,7 @@ const holder = {};
             dtype: { gpu: 'fp16', cpu: 'fp32' }, bytes: { gpu: 50 * MB, cpu: 99 * MB }, verified: false, notes: '單張圖估計相對深度（越亮越近），約 25M 參數。給 /image-to-3d 當基礎層。CPU 用 fp32（約 99MB）：2026-10-30 在瀏覽器實測 int8 版在 CPU（WebAssembly）跑不起來（缺 ConvInteger），fp32 在 CPU 實測成功（512×384 約 8～10 秒）；GPU 的 fp16 版還沒驗證。' },
         // 分割（/image-to-3d 自動分物件用，不能拿來做圖像轉文字）：SAM 家族。MobileSAM 官方沒有 Transformers.js 格式的轉檔，所以用同家族、同授權友善的 SlimSAM（Xenova 轉檔）。檔案大小 2026-10-30 讀自 HuggingFace 檔案清單（q8：編碼器 8.9MB＋解碼器 4.9MB；fp16：12.2MB＋8.6MB）。
         { id: 'slimsam-77-uniform', gpuNeedsF16: true, label: 'SlimSAM 77（分割，/image-to-3d --segment 用）', task: 'segmentation', arch: 'sam', repo: 'Xenova/slimsam-77-uniform', tasks: [], lang: '無（輸出物件遮罩）', license: 'Apache-2.0',
-            dtype: { gpu: 'fp16', cpu: 'q8' }, bytes: { gpu: 22 * MB, cpu: 16 * MB }, verified: false, notes: 'Segment Anything 的瘦身版（約 1000 萬參數）：在圖上撒一組點、每個點取最好的遮罩、去掉重複與太小的，當作「圖裡有哪些物件」。照 Transformers.js 的 SAM 範例寫，還沒在真實環境驗證。' },
+            dtype: { gpu: 'fp16', cpu: 'q8' }, bytes: { gpu: 22 * MB, cpu: 16 * MB }, verified: false, notes: 'Segment Anything 的瘦身版（約 1000 萬參數）：在圖上撒一組點、每個點取最好的遮罩、去掉重複與太小的，當作「圖裡有哪些物件」。2026-10-30 在瀏覽器（CPU、q8）實測：載入約 6 秒、影像編碼約 16 秒、4×4 個點共約 28 秒，合成圖（蘋果＋盒子＋地面）分出 3 個物件；背景大遮罩（占圖 70% 以上）要丟掉，所以預設最大面積比例是 0.5。GPU 的 fp16 版還沒驗證。' },
         // 管理用（不能拿來做圖像轉文字）：語音轉文字 Whisper，跟這裡共用同一個瀏覽器快取
         { id: 'whisper-base', label: 'Whisper base（語音轉文字，transcribe_media 用）', task: 'asr', arch: 'whisper', repo: 'onnx-community/whisper-base', tasks: [], bytes: { gpu: 80 * MB, cpu: 80 * MB }, managedOnly: true, verified: true, notes: '影音轉逐字稿用，跟圖像轉文字共用快取與裝置設定。' },
     ];
@@ -30414,7 +30414,7 @@ const holder = {};
   // bigger masks are painted first so a smaller mask inside one stays its own object; labels are numbered by area, biggest = 1.
   function labelsFromMasks(masks, w, h, opts) {
     opts = opts || {};
-    var minArea = Math.max(1, Math.floor((opts.minAreaFrac == null ? 0.004 : opts.minAreaFrac) * w * h)), maxArea = (opts.maxAreaFrac || 0.9) * w * h, maxObjects = opts.maxObjects || 12;
+    var minArea = Math.max(1, Math.floor((opts.minAreaFrac == null ? 0.004 : opts.minAreaFrac) * w * h)), maxArea = (opts.maxAreaFrac || 0.5) * w * h, maxObjects = opts.maxObjects || 12;
     var rs = (masks || []).map(function (m) { var g = resampleMask(m.data, m.w, m.h, w, h), n = 0; g.forEach(function (r) { r.forEach(function (v) { n += v; }); }); return { g: g, n: n, score: m.score || 0 }; })
       .filter(function (m) { return m.n >= minArea && m.n <= maxArea; });
     rs.sort(function (a, b) { return b.score - a.score; });

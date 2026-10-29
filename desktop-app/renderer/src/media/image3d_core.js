@@ -482,7 +482,7 @@
   // bigger masks are painted first so a smaller mask inside one stays its own object; labels are numbered by area, biggest = 1.
   function labelsFromMasks(masks, w, h, opts) {
     opts = opts || {};
-    var minArea = Math.max(1, Math.floor((opts.minAreaFrac == null ? 0.004 : opts.minAreaFrac) * w * h)), maxArea = (opts.maxAreaFrac || 0.9) * w * h, maxObjects = opts.maxObjects || 12;
+    var minArea = Math.max(1, Math.floor((opts.minAreaFrac == null ? 0.004 : opts.minAreaFrac) * w * h)), maxArea = (opts.maxAreaFrac || 0.5) * w * h, maxObjects = opts.maxObjects || 12;
     var rs = (masks || []).map(function (m) { var g = resampleMask(m.data, m.w, m.h, w, h), n = 0; g.forEach(function (r) { r.forEach(function (v) { n += v; }); }); return { g: g, n: n, score: m.score || 0 }; })
       .filter(function (m) { return m.n >= minArea && m.n <= maxArea; });
     rs.sort(function (a, b) { return b.score - a.score; });
