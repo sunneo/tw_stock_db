@@ -7,7 +7,9 @@
     else root.FaIdxSql = factory();
 })(typeof self !== 'undefined' ? self : this, function () {
     'use strict';
-    const SCHEMA_VERSION = 1;
+    // 版本：1＝原本；3（2026-10-29，移植 Redmine AIDoc 的除錯定位器）＝加 logmsgs（每個 log 呼叫的訊息字串）、calls（函式層級呼叫邊）、meta.tree_ref（樹版本）。
+    // migration：開啟時讀 meta.schema；舊版索引照常能讀（問答、搜尋），但沒有 logmsgs／calls，定位器會明講「這個索引是舊版，請重新建立索引」；重新建立索引（fresh）時整個重建成新版。
+    const SCHEMA_VERSION = 3;
     const DDL = [
         'CREATE TABLE meta(k TEXT PRIMARY KEY, v TEXT)',
         'CREATE TABLE files(id INTEGER PRIMARY KEY, path TEXT NOT NULL, dir TEXT, name TEXT, lang TEXT, lines INTEGER, hash TEXT, doc TEXT, sv INTEGER, nsyms INTEGER DEFAULT 0, refs INTEGER DEFAULT 0, used INTEGER DEFAULT 0, note TEXT)',
@@ -16,10 +18,12 @@
         'CREATE TABLE uses_raw(file_id INTEGER NOT NULL, name TEXT NOT NULL)',
         'CREATE TABLE uses(file_id INTEGER NOT NULL, symbol_id INTEGER NOT NULL)',
         'CREATE TABLE sym_fts_src(id INTEGER PRIMARY KEY, toks TEXT)', 'CREATE TABLE file_fts_src(id INTEGER PRIMARY KEY, toks TEXT)',
+        'CREATE TABLE logmsgs(file_id INTEGER NOT NULL, line INTEGER, fn TEXT, fmt TEXT, key TEXT)', 'CREATE TABLE calls_raw(file_id INTEGER NOT NULL, caller TEXT, cline INTEGER, callee TEXT, line INTEGER)', 'CREATE TABLE calls(file_id INTEGER NOT NULL, caller TEXT, cline INTEGER, callee TEXT, line INTEGER)',
     ];
     const INDEXES = [
         'CREATE INDEX idx_files_dir ON files(dir)', 'CREATE INDEX idx_sym_name ON symbols(name COLLATE NOCASE)', 'CREATE INDEX idx_sym_file ON symbols(file_id)',
         'CREATE INDEX idx_imp_src ON imports(src)', 'CREATE INDEX idx_imp_dst ON imports(dst)', 'CREATE INDEX idx_use_file ON uses(file_id)', 'CREATE INDEX idx_use_sym ON uses(symbol_id)', 'CREATE INDEX idx_sym_used ON symbols(used_by DESC) WHERE used_by > 0',
+        'CREATE INDEX idx_log_file ON logmsgs(file_id)', 'CREATE INDEX idx_calls_callee ON calls(callee)',
     ];
     const splitNameDefault = (n) => String(n == null ? '' : n).replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_\-.:]+/g, ' ').toLowerCase().trim();
     const baseOf = (p) => { const i = String(p).lastIndexOf('/'); return i < 0 ? String(p) : String(p).slice(i + 1); };
@@ -38,10 +42,10 @@
     // ---- 建庫 ----
     function builder(exec, opts) {
         opts = opts || {}; const splitName = opts.splitName || splitNameDefault; const semTokens = opts.semTokens || ((text) => splitName(text)); const batch = opts.batch || 400; const macroKinds = opts.macroKinds || ['macro'];
-        const st = { pathId: new Map(), files: [], syms: [], imps: [], uses: [], fts: [], ftsf: [], nextFile: 1, nextSym: 1, nFiles: 0, nSyms: 0, nImps: 0, nUses: 0, started: false };
+        const st = { pathId: new Map(), files: [], syms: [], imps: [], uses: [], fts: [], ftsf: [], logs: [], calls: [], nextFile: 1, nextSym: 1, nFiles: 0, nSyms: 0, nImps: 0, nUses: 0, nLogs: 0, nCalls: 0, started: false };
         async function init(o) {
             o = o || {};
-            if (o.fresh !== false) { for (const t of ['sym_fts', 'file_fts', 'meta', 'files', 'symbols', 'imports', 'uses_raw', 'uses', 'sym_fts_src', 'file_fts_src']) await run(exec, 'DROP TABLE IF EXISTS ' + t); }
+            if (o.fresh !== false) { for (const t of ['sym_fts', 'file_fts', 'meta', 'files', 'symbols', 'imports', 'uses_raw', 'uses', 'sym_fts_src', 'file_fts_src', 'logmsgs', 'calls_raw', 'calls']) await run(exec, 'DROP TABLE IF EXISTS ' + t); }
             for (const d of DDL) await run(exec, d);
             await run(exec, "INSERT INTO meta(k,v) VALUES('schema', ?), ('created', ?)", [String(SCHEMA_VERSION), new Date().toISOString()]);
             await run(exec, 'BEGIN'); st.started = true;
@@ -54,18 +58,22 @@
             st.ftsf.push([id, semTokens(path + ' ' + (rec.doc || '') + ' ' + syms.slice(0, 25).map((x) => x.n).join(' '))]);
             for (const e of rec.imports || []) st.imps.push([id, e.to || null, e.kind || '', e.spec || '', e.to || null]);
             for (const n of rec.uses || []) st.uses.push([id, n]);
+            // 除錯定位器：log 呼叫的訊息字串 {l,fn,fmt,key}、函式層級呼叫邊 {c,cl,f,l}（FaAidocTrace.extractLogs／extractCalls 的輸出）
+            for (const g of rec.logs || []) st.logs.push([id, g.l || 0, g.fn || '', g.fmt || '', g.key || '']);
+            for (const c of rec.calls || []) st.calls.push([id, c.c || '', c.cl || 0, c.f || '', c.l || 0]);
             return syms.length;
         }
-        const pending = () => st.files.length + st.syms.length + st.imps.length + st.uses.length;
+        const pending = () => st.files.length + st.syms.length + st.imps.length + st.uses.length + st.logs.length + st.calls.length;
         async function flush(force) {
             if (!st.started) throw new Error('builder 還沒 init');
             if (!force && st.files.length < batch && st.syms.length < batch * 20) return;
-            const f = st.files, s = st.syms, im = st.imps, u = st.uses, ft = st.fts, ff = st.ftsf; st.files = []; st.syms = []; st.imps = []; st.uses = []; st.fts = []; st.ftsf = [];
+            const f = st.files, s = st.syms, im = st.imps, u = st.uses, ft = st.fts, ff = st.ftsf, lg = st.logs, cl = st.calls; st.files = []; st.syms = []; st.imps = []; st.uses = []; st.fts = []; st.ftsf = []; st.logs = []; st.calls = [];
             await insertMany(exec, 'files', ['id', 'path', 'dir', 'name', 'lang', 'lines', 'hash', 'doc', 'sv', 'nsyms'], f); await insertMany(exec, 'symbols', ['id', 'name', 'kind', 'file_id', 'line', 'doc', 'sig', 'note'], s);
             // imports 的目標路徑要等所有檔案都有 id 才能解析：先把目標路徑暫存在 spec 之外的欄位（dst 先放 NULL，之後用 path 對應）
             await insertMany(exec, 'imports', ['src', 'dst', 'kind', 'spec'], im.map((r) => [r[0], null, r[2], (r[4] ? '\u0001' + r[4] : r[3])]));
             await insertMany(exec, 'uses_raw', ['file_id', 'name'], u); await insertMany(exec, 'sym_fts_src', ['id', 'toks'], ft); await insertMany(exec, 'file_fts_src', ['id', 'toks'], ff);
-            st.nFiles += f.length; st.nSyms += s.length; st.nImps += im.length; st.nUses += u.length;
+            await insertMany(exec, 'logmsgs', ['file_id', 'line', 'fn', 'fmt', 'key'], lg); await insertMany(exec, 'calls_raw', ['file_id', 'caller', 'cline', 'callee', 'line'], cl);
+            st.nFiles += f.length; st.nSyms += s.length; st.nImps += im.length; st.nUses += u.length; st.nLogs += lg.length; st.nCalls += cl.length;
             await run(exec, 'COMMIT'); await run(exec, 'BEGIN');
         }
         // 完成階段：解析匯入目標、算計數、呼叫關係、索引、全文表
@@ -84,6 +92,8 @@
             await run(exec, 'CREATE TEMP TABLE defc(name TEXT PRIMARY KEY, c INTEGER) WITHOUT ROWID'); await run(exec, 'INSERT INTO defc SELECT name, count(*) FROM symbols GROUP BY name HAVING count(*) <= 8');
             await run(exec, 'INSERT INTO uses(file_id, symbol_id) SELECT DISTINCT r.file_id, s.id FROM uses_raw r JOIN defc d ON d.name = r.name JOIN symbols s ON s.name = r.name AND s.file_id <> r.file_id');
             await run(exec, 'DROP TABLE defc'); await run(exec, 'DROP TABLE uses_raw');
+            // 呼叫邊：被呼叫的名稱要有 1–8 個函式／方法定義才留（太常見的名稱沒有資訊量；與 uses 同一套做法）
+            await run(exec, "INSERT INTO calls(file_id, caller, cline, callee, line) SELECT r.file_id, r.caller, r.cline, r.callee, r.line FROM calls_raw r WHERE r.callee IN (SELECT name FROM symbols WHERE kind IN ('function','method') GROUP BY name HAVING count(*) BETWEEN 1 AND 8)"); await run(exec, 'DROP TABLE calls_raw');
             await run(exec, 'UPDATE symbols SET used_by = (SELECT count(*) FROM uses u WHERE u.symbol_id = symbols.id) WHERE id IN (SELECT DISTINCT symbol_id FROM uses)');
             await run(exec, 'COMMIT'); await run(exec, 'BEGIN');
             prog('全文索引');
@@ -93,8 +103,9 @@
             await run(exec, "CREATE VIRTUAL TABLE file_fts USING fts5(toks, content='', tokenize='unicode61')");
             await run(exec, 'INSERT INTO file_fts(rowid, toks) SELECT id, toks FROM file_fts_src');
             await run(exec, 'DROP TABLE file_fts_src');
-            const c = { files: await one(exec, 'select count(*) from files'), symbols: await one(exec, 'select count(*) from symbols'), imports: await one(exec, 'select count(*) from imports'), uses: await one(exec, 'select count(*) from uses'), macros: await one(exec, "select count(*) from symbols where kind='macro'") };
+            const c = { files: await one(exec, 'select count(*) from files'), symbols: await one(exec, 'select count(*) from symbols'), imports: await one(exec, 'select count(*) from imports'), uses: await one(exec, 'select count(*) from uses'), macros: await one(exec, "select count(*) from symbols where kind='macro'"), logmsgs: await one(exec, 'select count(*) from logmsgs'), calls: await one(exec, 'select count(*) from calls') };
             await run(exec, "INSERT OR REPLACE INTO meta(k,v) VALUES ('counts', ?), ('built', ?), ('complete', ?), ('root', ?)", [JSON.stringify(c), new Date().toISOString(), o.complete === false ? '0' : '1', String(o.root || '')]);
+            if (o.treeRef) await run(exec, "INSERT OR REPLACE INTO meta(k,v) VALUES ('tree_ref', ?)", [JSON.stringify(o.treeRef)]);
             await run(exec, 'COMMIT'); st.started = false;
             try { await run(exec, 'ANALYZE'); } catch (_) { /* 不影響結果 */ }
             return c;
@@ -125,6 +136,22 @@
             recallSymbols: async (tokens, limit) => { const q = ftsQuery(tokens); if (!q) return []; return (await rows(exec, 'select rowid from sym_fts where sym_fts match ? order by rank limit ?', [q, limit || 60])).map((r) => r[0]); },
             recallFiles: async (tokens, limit) => { const q = ftsQuery(tokens); if (!q) return []; return (await rows(exec, 'select rowid from file_fts where file_fts match ? order by rank limit ?', [q, limit || 40])).map((r) => r[0]); },
             tree: async (dir) => (await rows(exec, "select name, 'f', lang, lines from files where dir = ? union all select distinct substr(substr(dir, ?), 1, instr(substr(dir, ?) || '/', '/') - 1), 'd', null, null from files where dir like ? and dir <> ? order by 2 desc, 1", [dir, dir ? dir.length + 2 : 1, dir ? dir.length + 2 : 1, dir ? dir + '/%' : '%', dir])).map((r) => ({ name: r[0], type: r[1], lang: r[2], lines: r[3] })),
+            // ---- 除錯定位器（schema 3）：舊版索引沒有這兩張表 → available:false，由呼叫端明講「請重新建立索引」，不是回報找不到 ----
+            schemaVersion: async () => Number(await one(exec, "select v from meta where k='schema'")) || 1,
+            hasTable: async (t) => !!(await one(exec, 'select 1 from sqlite_master where name = ?', [t])),
+            treeRef: async () => { const v = await one(exec, "select v from meta where k='tree_ref'"); try { const t = v ? JSON.parse(v) : null; return t && typeof t === 'object' ? t : null; } catch (_) { return null; } },
+            filesByName: async (name, limit) => (await rows(exec, 'select path from files where name = ? collate nocase order by path limit ?', [String(name || ''), limit || 20])).map((r) => r[0]),
+            logCandidates: async (msg, limit) => {
+                if (!(await R.hasTable('logmsgs'))) return { available: false, rows: [] };
+                const total = await one(exec, 'select count(*) from logmsgs');
+                const r = await rows(exec, 'select f.path, l.line, l.fn, l.fmt from logmsgs l join files f on f.id = l.file_id where instr(?, l.key) > 0 order by length(l.key) desc limit ?', [String(msg || '').toLowerCase(), limit || 600]);
+                return { available: true, total, rows: r.map((x) => ({ path: x[0], line: x[1], fn: x[2], fmt: x[3] })) };
+            },
+            callers: async (name, limit) => {
+                if (!(await R.hasTable('calls'))) return { available: false, rows: [] };
+                const r = await rows(exec, 'select f.path, c.caller, c.cline, c.line from calls c join files f on f.id = c.file_id where c.callee = ? order by f.path, c.line limit ?', [String(name || ''), limit || 40]);
+                return { available: true, rows: r.map((x) => ({ path: x[0], caller: x[1], cline: x[2], line: x[3] })) };
+            },
             top: async (n) => (await rows(exec, 'select path, lang, lines, refs, used, nsyms from files order by used desc, nsyms desc limit ?', [n || 20])).map((r) => ({ path: r[0], lang: r[1], lines: r[2], refs: r[3], used: r[4], nsyms: r[5] })),
         };
         return R;

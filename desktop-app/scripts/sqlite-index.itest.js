@@ -34,6 +34,26 @@ t('分批寫入：批次小也一致；巨集不進符號全文表', async () =>
     assert.strictEqual((await R.macros('F3_REG_', 'prefix', 100)).length, 30);
     await E.call('close', { db });
 });
+t('除錯定位器（schema 3）：log 訊息字串、呼叫邊（只留 1–8 個定義的被呼叫名稱）、樹版本；舊版索引 available:false', async () => {
+    const { db, exec } = await open('loc.db'); const B = X.builder(exec, { batch: 2 }); await B.init();
+    B.addFile('src/exec.c', Object.assign(rec('c', [{ n: 'helper', k: 'function', l: 2 }, { n: 'run_main', k: 'function', l: 6 }]), {
+        logs: [{ l: 8, fn: 'printk', fmt: 'ipmi: BMC not responding after %d retries', key: 'ipmi: bmc not responding after' }],
+        calls: [{ c: 'run_main', cl: 6, f: 'helper', l: 8 }, { c: 'run_main', cl: 6, f: 'printk', l: 9 }] }));
+    B.addFile('src/main.c', Object.assign(rec('c', [{ n: 'main', k: 'function', l: 1 }]), { calls: [{ c: 'main', cl: 1, f: 'run_main', l: 3 }] }));
+    const c = await B.finalize({ root: 'x', treeRef: { git: 'abc123', ref: 'refs/heads/main', at: 1, v: 1 } });
+    assert.strictEqual(c.logmsgs, 1); assert.strictEqual(c.calls, 2, 'printk 沒有定義，那條邊不留');
+    const R = X.reader(exec);
+    assert.strictEqual(await R.schemaVersion(), 3);
+    const lc = await R.logCandidates('ipmid: ipmi: BMC not responding after 3 retries', 50);
+    assert.ok(lc.available && lc.total === 1 && lc.rows.length === 1 && lc.rows[0].path === 'src/exec.c' && lc.rows[0].line === 8);
+    assert.strictEqual((await R.logCandidates('something else entirely', 50)).rows.length, 0);
+    const cb = await R.callers('helper', 10); assert.ok(cb.available && cb.rows.length === 1 && cb.rows[0].caller === 'run_main' && cb.rows[0].line === 8);
+    assert.deepStrictEqual((await R.treeRef()).git, 'abc123');
+    assert.deepStrictEqual(await R.filesByName('MAIN.C', 5), ['src/main.c']);
+    // 舊版（schema 1）索引：沒有這兩張表，要回 available:false，不是「找不到」
+    await exec('DROP TABLE logmsgs'); await exec('DROP TABLE calls'); await exec("UPDATE meta SET v='1' WHERE k='schema'");
+    assert.strictEqual((await R.logCandidates('x', 5)).available, false); assert.strictEqual((await R.callers('helper', 5)).available, false); assert.strictEqual(await R.schemaVersion(), 1);
+});
 t('樹狀：目錄與檔案', async () => {
     const { db, exec } = await open('c.db'); const B = X.builder(exec, {}); await B.init(); B.addFile('a/x.c', rec('c', [], [])); B.addFile('a/b/y.c', rec('c', [], [])); B.addFile('top.c', rec('c', [], [])); await B.finalize({});
     const R = X.reader(exec); assert.deepStrictEqual((await R.tree('')).map((x) => x.type + ':' + x.name), ['f:top.c', 'd:a']); assert.deepStrictEqual((await R.tree('a')).map((x) => x.type + ':' + x.name), ['f:x.c', 'd:b']);
