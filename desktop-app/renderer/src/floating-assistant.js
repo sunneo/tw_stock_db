@@ -47160,7 +47160,23 @@ class FloatingAssistant {
             if (!p.ok) return p;
             if (p.allowed === false) return { ok: false, error: 'NOT_ALLOWED', origin: p.origin, note: p.note };
         }
-        const r = await this._bcPageCall(cmd, args, timeoutMs);
+        let r = await this._bcPageCall(cmd, args, timeoutMs);
+        // 指令逾時（NO_EXTENSION 是 _bcPageCall 對「沒收到回應」的統一標籤）：先問一次擴充功能在不在，分清楚是「沒有擴充功能」還是「擴充功能在、這個指令沒回」。
+        // 後者不能標成沒有擴充功能（AI 會被告知不要重試而放棄）；唯讀的指令自動再試一次，還是沒回就回報逾時的事實（指令、秒數、分頁）。
+        if (r && r.error === 'NO_EXTENSION' && cmd !== 'ping') {
+            const p = await this._bcPageCall('ping', {}, 2500);
+            if (p && p.ok) {
+                const READ_ONLY = /^(get_page_text|get_page_structure|get_elements|list_tabs|screenshot|status|list_downloads)$/;
+                if (READ_ONLY.test(cmd)) {
+                    this._log('⚠️ 瀏覽器控制：' + cmd + ' ' + Math.round(timeoutMs / 1000) + ' 秒沒有回應（擴充功能正常），自動再試一次');
+                    r = await this._bcPageCall(cmd, args, timeoutMs);
+                }
+                if (r && r.error === 'NO_EXTENSION') {
+                    const tab = args && args.tab_id != null ? '，分頁 ' + args.tab_id : '';
+                    r = { ok: false, error: 'TIMEOUT', note: '擴充功能正常，但「' + cmd + '」' + Math.round(timeoutMs / 1000) + ' 秒內沒有回應' + (READ_ONLY.test(cmd) ? '（已自動再試一次仍沒回）' : '') + tab + '。多半是那個分頁還在載入、卡住或在背景被瀏覽器暫停；可以用 browser_activate_tab 切到前景或 browser_navigate 重新載入後再試，或換別的分頁。' };
+                }
+            }
+        }
         if (r && r.ok) this._bcLastOkAt = Date.now();
         return r;
     }

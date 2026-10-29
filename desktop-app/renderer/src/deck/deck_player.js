@@ -1081,7 +1081,9 @@
     var cur = s.deck.deck.captions || 'original', curKey = JSON.stringify(cur);
     MODES.forEach(function (m) { var o = el('option', null, m[1]); o.value = JSON.stringify(m[0]); if (JSON.stringify(m[0]) === curKey) { o.selected = true; } cs.appendChild(o); });
     cs.addEventListener('change', function () { s.setCaptionMode(JSON.parse(cs.value)); self.draw(); }); p.appendChild(cs);
-    this.box.style.position = this.box.style.position || 'relative'; this.box.appendChild(p);
+    // 不能在這裡寫行內的 position：.ai-chat-deck 本來就是 relative（面板靠它定位），而視窗化（.floating）是 fixed——行內樣式會蓋過 class，
+    // 視窗化時一打開 🎙 就變回 relative，視窗掉到頁面最下面、擠到主畫面、拖不動。
+    this.box.appendChild(p);
   };
 
   Player.prototype.btn = function (label, title, fn) {
@@ -1672,9 +1674,11 @@
         if (e.target !== self.bar && e.target !== self.titleEl) { return; }
         var r = b.getBoundingClientRect(), dx = e.clientX - r.left, dy = e.clientY - r.top;
         b.style.right = 'auto'; b.style.bottom = 'auto'; b.style.left = r.left + 'px'; b.style.top = r.top + 'px';
+        // 抓住指標：游標移過舞台上的 iframe（小遊戲、終端機）時照樣收得到移動事件，不會拖到一半卡住；觸控／筆也不會被瀏覽器當成捲動
+        try { self.bar.setPointerCapture(e.pointerId); } catch (_) { /* 沒有也能拖 */ }
         function move(ev) { b.style.left = Math.max(0, Math.min(window.innerWidth - 120, ev.clientX - dx)) + 'px'; b.style.top = Math.max(0, Math.min(window.innerHeight - 60, ev.clientY - dy)) + 'px'; }
-        function up() { document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up); }
-        document.addEventListener('pointermove', move); document.addEventListener('pointerup', up);
+        function up() { document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up); document.removeEventListener('pointercancel', up); try { self.bar.releasePointerCapture(e.pointerId); } catch (_) { /* 已經放開 */ } }
+        document.addEventListener('pointermove', move); document.addEventListener('pointerup', up); document.addEventListener('pointercancel', up);
       };
     } else {
       b.classList.remove('floating'); this.floating = false; b.style.left = b.style.top = b.style.right = b.style.bottom = '';
