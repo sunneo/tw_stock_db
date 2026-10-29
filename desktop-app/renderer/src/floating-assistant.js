@@ -3936,6 +3936,9 @@ function extractSourceSpan(text, startLine, maxLines) {
 }
 const FA_BOILERPLATE_RE = /^\s*(?:copyright\b|\(c\)\s|spdx-|licen[sc]ed?\b|all rights reserved|permission is hereby granted|redistribution and use|this (?:program|file|software|library) is (?:free software|distributed|licensed|provided|part of)|this program is free software|unless required by applicable law|without warranty|the above copyright notice|this (?:source|code) (?:is|may)|(?:auto-?)?generated (?:by|file)|do not edit|this file was (?:auto-?)?generated)/i;
 const FA_LICENSE_WORDS_RE = /\b(?:warranty|warranties|liabilit(?:y|ies)|redistribut\w*|merchantab\w*|fitness for a particular|permitted provided|copyright (?:holder|notice|owner)|neither the name|list of conditions|disclaimer|gnu (?:lesser |affero )?general public|free software foundation|apache license|mit license|bsd[- ]?\d?[- ]?clause|creative commons|limitations under the license|you may not use this file)\b/i;
+const FA_LOC_LANGS = { c: 1, cpp: 1, cs: 1, java: 1, kt: 1, swift: 1, dart: 1, php: 1, go: 1, rs: 1, js: 1, ts: 1, py: 1, rb: 1, lua: 1, sh: 1 }; // 與 FaAidocTrace 的 LOG_LANGS 同
+const FA_EXTRACT_SV = 4;
+function _faRepoSvOf(lang) { return FA_LOC_LANGS[lang] ? FA_EXTRACT_SV : (lang === 'cs' ? 3 : undefined); }
 function _faRepoExtract(path, text, opts) {
     const lang = _faRepoLang(path);
     const tier = (opts && opts.tier) || 0; // 0完整、1精簡（>5000個原始碼檔）、2最精簡（>25000個）：限制每檔定義數、簽名長度、呼叫名稱數，控制索引大小
@@ -4102,8 +4105,17 @@ function _faRepoExtract(path, text, opts) {
             }
         });
     }
+    // 除錯定位器：log 訊息與函式呼叫邊只寫進資料庫（unlimited）；sv 4＝有這兩項（舊索引的檔案續建時重新分析）
+    const locExtra = () => {
+        const o = { sv: _faRepoSvOf(lang) };
+        if (unlimited && FA_LOC_LANGS[lang]) {
+            try { o.logs = FaAidocTrace.extractLogs(src, lang); } catch (_) { o.logs = []; }
+            try { o.calls = FaAidocTrace.extractCalls(src, lang, symbols); } catch (_) { o.calls = []; }
+        }
+        return o;
+    };
     let doc = '';
-    if (lang === 'py') { const dm = /^(?:\s*(?:#[^\n]*)?\n)*\s*[ru]?("""|''')([\s\S]*?)\1/.exec(src.slice(0, 3000)); if (dm) { const first = dm[2].split(/\n/).map((x) => x.trim()).filter((x) => x && !/^[-=*_#\s]+$/.test(x)).slice(0, 2).join(' '); if (first) return { lang, imports, symbols, doc: first.slice(0, tier >= 2 ? 80 : 200), lines: lines.length, uses: getUses() }; } }
+    if (lang === 'py') { const dm = /^(?:\s*(?:#[^\n]*)?\n)*\s*[ru]?("""|''')([\s\S]*?)\1/.exec(src.slice(0, 3000)); if (dm) { const first = dm[2].split(/\n/).map((x) => x.trim()).filter((x) => x && !/^[-=*_#\s]+$/.test(x)).slice(0, 2).join(' '); if (first) return Object.assign({ lang, imports, symbols, doc: first.slice(0, tier >= 2 ? 80 : 200), lines: lines.length, uses: getUses() }, locExtra()); } }
     const hashLang = lang === 'py' || lang === 'sh' || lang === 'rb' || lang === 'php';
     const cmtRe = hashLang ? /^(?:#+|"""|''')\s*(.*)$/ : (lang === 'lua' ? /^--+\s*(.*)$/ : /^(?:\/\/+|\*+|\/\*+)\s*(.*)$/);
     // 授權條款／版權樣板不是「這個檔案做什麼」。舊寫法只擋 copyright／license 開頭的那一行，條款第二行起就被當成檔案用途（BSD 條款開頭被複述成「轉接器」的事故）。
@@ -4124,7 +4136,7 @@ function _faRepoExtract(path, text, opts) {
         if (c && c[1] && /^[@\\](?:param|return|returns|retval|note|see|since|author|date|file|throws|tparam)\b/i.test(c[1])) { if (doc) break; continue; } // doxygen 的 @param／@return 不是檔案用途
         if (c && c[1] && !/^(eslint|tslint|-\*-|noqa|pylint|@ts-)/i.test(c[1])) { doc += (doc ? ' ' : '') + c[1].replace(/^[@\\]brief\s*/i, '').replace(/\*\/\s*$/, '').replace(/("""|''')\s*$/, '').trim(); if (doc.length > 160) break; } else if (doc) break; else if (!c) break;
     }
-    return { lang, imports, symbols, doc: doc.slice(0, tier >= 2 ? 80 : 200), lines: lines.length, uses: getUses(), sv: lang === 'cs' ? 3 : undefined }; // sv：抽取器版本（cs 3：有方法／屬性／namespace）
+    return Object.assign({ lang, imports, symbols, doc: doc.slice(0, tier >= 2 ? 80 : 200), lines: lines.length, uses: getUses() }, locExtra()); // sv：抽取器版本（cs 3：有方法／屬性／namespace；4：有 log 訊息與呼叫邊）
 }
 
 // 依語言產生「這個import可能指到哪些檔案/資料夾」的候選路徑（由呼叫端用目錄清單確認是否存在）
@@ -59058,7 +59070,7 @@ ${fnData.code}
     }
     // 一個檔案分析完：完整記錄進資料庫，記憶體只留瘦身版
     _repoMapPutFile(map, ctx, path, full) {
-        if (ctx && ctx.sqlB) { const n = ctx.sqlB.addFile(path, full); map.files[path] = { lang: full.lang, lines: full.lines, hash: full.hash, doc: full.doc, imports: full.imports || [], symbols: [], uses: [], nsyms: n, sv: full.sv || 2, sql: 1 }; }
+        if (ctx && ctx.sqlB) { const n = ctx.sqlB.addFile(path, full); map.files[path] = { lang: full.lang, lines: full.lines, hash: full.hash, doc: full.doc, imports: full.imports || [], symbols: [], uses: [], nsyms: n, sv: full.sv || 2, sql: 1 }; } // logs／calls 只進資料庫，記憶體不留
         else map.files[path] = full;
     }
     // 瘦身記錄要用到定義時：從資料庫取（沒有資料庫就是原本記憶體裡的）
@@ -59685,7 +59697,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
                 if (!_faRepoLang(c)) continue;
                 if (focus && !c.startsWith(pre)) continue;
                 const f = map.files[c];
-                if (!f || f.stale || (map.reanalyze && (f.sv || 0) < 2) || (f.lang === 'cs' && (f.sv || 2) < 3)) out.push(c); // 舊索引的 C# 檔沒有方法／屬性：接續索引時自動重新分析
+                if (!f || f.stale || (map.reanalyze && (f.sv || 0) < 2) || (FA_LOC_LANGS[f.lang] && (f.sv || 2) < FA_EXTRACT_SV)) out.push(c); // 舊索引的檔案沒有方法／屬性（C#）或 log 訊息／呼叫邊（sv 4）：接續索引時自動重新分析
             }
         }
         const rank = (p) => (FA_REPOMAP_ENTRY_NAMES.test(_faRepoBasename(p)) ? 0 : (_faRepoLang(p) === 'bb' ? 300 : (_faRepoDocKind(p) ? 200 : 100)) + p.split('/').length * 2); // 原始碼優先於BitBake配方
@@ -59900,7 +59912,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             }
             edges.push(tier >= 2 && to ? { kind, to } : { spec: imp.spec, kind, to });
         }
-        this._repoMapPutFile(map, ctx, path, { lang: ex.lang, lines: ex.lines, hash: _faRepoHash(text), doc: ex.doc, imports: edges, symbols: unl ? ex.symbols : ex.symbols.slice(0, 400), uses: ex.uses, sv: ex.sv || 2 });
+        this._repoMapPutFile(map, ctx, path, { lang: ex.lang, lines: ex.lines, hash: _faRepoHash(text), doc: ex.doc, imports: edges, symbols: unl ? ex.symbols : ex.symbols.slice(0, 400), uses: ex.uses, sv: ex.sv || 2, logs: ex.logs, calls: ex.calls });
         return { ok: true };
     }
 
