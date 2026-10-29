@@ -13,7 +13,7 @@ Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app
 
 ## 3. Todo（依序）
 0. （handoff 1 之後的狀態，2026-10-29）背景子代理接手但沒有提交任何東西就被停掉；**沒有新的進度，從第 1 項開始**。使用者已經**兩次拒絕**我直接執行 `FloatingAssistantApp.exe` 跑索引測試：接手者**不要再直接跑那條指令**，改成先問使用者怎麼跑（或請使用者自己跑並貼結果），在驗證前先把這項標成「未驗證」，不要因此卡住後面的項目。這台機器的 Claude 桌面版是 4.29.0.0、Claude Code 2.1.281，沒有 `start_session` 工具（使用者說同一帳號的另一台有）；接手者若有這個工具就依技能自動交接。
-1. 跑 `sqlite-index.itest.js` 驗證 index_core 改動 → 嵌入 → 提交。
+1. （已完成 2026-10-29：index 測試 6 項全過，已嵌入）
 2. 建索引時抽 log 與呼叫邊：`floating-assistant.js` 的 `_faRepoExtract(path, text, opts)`（約 3939–4127 行）回傳值加 `logs: FaAidocTrace.extractLogs(text, lang)`、`calls: FaAidocTrace.extractCalls(text, lang, symbols)`，`sv` 升到新抽取版本；`_repoMapPutFile` 的記憶體地圖與 `ctx.sqlB.addFile` 傳下去（約 59033、59876 行）；續建時舊 `sv` 的檔案自動重新分析（約 59661 行，比照 cs 的做法）；`tree_ref` 由 `.git/HEAD`（含 `packed-refs`）讀出，傳給 `builder.finalize({treeRef})`。
 3. 主機 `locate`（對照 Redmine `locate`／`locateChains`／`locateMessages`／`locateText`）＋ `repo_ask` 新動作 `locate`／`callers`／`check_citations`（`_repoAskRun`，約 58164 行）＋ `/aidoc locate [--elf…]`；工具說明文字用中文引號，不要反引號 code span。
 4. 檢視器自由提問：`renderer/src/aidoc-viewer.template.html` 的提問框改多行（Enter 送出、Shift+Enter 換行、Ctrl+Enter 問 AI）；兩處 `/api/ask`（約 56263、58110 行）先走 `locate`，AI 只說明（發生點／什麼問題／誰造成），回答後 `FaAidocTrace.checkCitations` 核對。可參考我在 Redmine 做的 `traceTextOf`／`runTraceAsk`（`ai_chat_aidoc_viewer.js`）。
