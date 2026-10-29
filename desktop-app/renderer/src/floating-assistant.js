@@ -7225,7 +7225,7 @@ const holder = {};
             dtype: { gpu: 'q4f16', cpu: 'q8' }, bytes: { gpu: 1360 * MB, cpu: 1662 * MB }, gpuNeedsF16: true, verified: false, notes: '約 1.7B 參數；這份清單裡品質最好，下載與記憶體需求也最大。' },
         // 深度估計（圖片轉 3D 用，不能拿來做圖像轉文字）：每個像素一個相對深度（大＝近）。檔案大小 2026-10-29 讀自 HuggingFace 檔案清單（fp16 49.6MB、int8 27.3MB）。
         { id: 'depth-anything-v2-small', gpuNeedsF16: true, label: 'Depth Anything V2 Small（深度估計，/image-to-3d 用）', task: 'depth-estimation', arch: 'depth', repo: 'onnx-community/depth-anything-v2-small', tasks: [], lang: '無（輸出深度圖）', license: 'Apache-2.0',
-            dtype: { gpu: 'fp16', cpu: 'int8' }, bytes: { gpu: 50 * MB, cpu: 30 * MB }, verified: false, notes: '單張圖估計相對深度（越亮越近），約 25M 參數。給 /image-to-3d 當基礎層；照 Transformers.js 的 depth-estimation 範例寫，還沒在真實環境驗證。' },
+            dtype: { gpu: 'fp16', cpu: 'fp32' }, bytes: { gpu: 50 * MB, cpu: 99 * MB }, verified: false, notes: '單張圖估計相對深度（越亮越近），約 25M 參數。給 /image-to-3d 當基礎層。CPU 用 fp32（約 99MB）：2026-10-30 在瀏覽器實測 int8 版在 CPU（WebAssembly）跑不起來（缺 ConvInteger），fp32 在 CPU 實測成功（512×384 約 8～10 秒）；GPU 的 fp16 版還沒驗證。' },
         // 分割（/image-to-3d 自動分物件用，不能拿來做圖像轉文字）：SAM 家族。MobileSAM 官方沒有 Transformers.js 格式的轉檔，所以用同家族、同授權友善的 SlimSAM（Xenova 轉檔）。檔案大小 2026-10-30 讀自 HuggingFace 檔案清單（q8：編碼器 8.9MB＋解碼器 4.9MB；fp16：12.2MB＋8.6MB）。
         { id: 'slimsam-77-uniform', gpuNeedsF16: true, label: 'SlimSAM 77（分割，/image-to-3d --segment 用）', task: 'segmentation', arch: 'sam', repo: 'Xenova/slimsam-77-uniform', tasks: [], lang: '無（輸出物件遮罩）', license: 'Apache-2.0',
             dtype: { gpu: 'fp16', cpu: 'q8' }, bytes: { gpu: 22 * MB, cpu: 16 * MB }, verified: false, notes: 'Segment Anything 的瘦身版（約 1000 萬參數）：在圖上撒一組點、每個點取最好的遮罩、去掉重複與太小的，當作「圖裡有哪些物件」。照 Transformers.js 的 SAM 範例寫，還沒在真實環境驗證。' },
