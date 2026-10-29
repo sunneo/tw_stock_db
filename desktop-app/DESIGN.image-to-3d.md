@@ -103,3 +103,11 @@
 - 權重大小：<https://huggingface.co/lpiccinelli/unik3d-vits/tree/main>、<https://huggingface.co/lpiccinelli/unik3d-vitl/tree/main>
 - Depth Anything V2（授權：Small 為 Apache-2.0，其餘非商業）：<https://github.com/DepthAnything/Depth-Anything-V2>；ONNX：<https://huggingface.co/onnx-community/depth-anything-v2-small>
 - SAM2 tiny 的 ONNX 匯出範例：<https://huggingface.co/ipsilondev/sam2.1-hiera-tiny-ONNX>
+
+## 實作現況與使用指南（2026-10-30，已實作）
+**入口**：`/image-to-3d`（桌面版）、工具 `image_to_3d`、3D 編輯器裡貼圖說「把這張圖變成 3D 物件」。程式：核心 `renderer/src/media/image3d_core.js`（純函式，測試 `scripts/media-tests/image3d_core.test.js` 38 項）、主機 `renderer/src/edit/edit3d_host.js`、模型登錄 `renderer/src/vlm/vlm_core.js`。
+**流程**：圖 → 深度模型（Depth Anything V2 Small；CPU 用 fp32，int8 在 CPU 跑不起來）→ 分物件（預設去背連通區；`--segment` 用 SlimSAM，實測合成圖分出 3 個；`--bg` 背景差分）→ 每個物件各自封閉 → 放進 3D 編輯器並貼原圖當材質。
+**外殼**：`smooth`（預設，頂面頂點共用、無細長三角形）、`blocks`（樂高）、`cylinder`（輪廓柱體）；每一層都過封閉檢查，不合格退回較粗的殼，最後退外框方塊。**永遠不做浮雕**。
+**全景／轉圈**：`--panorama`、單張寬高比 ≥2、或多張照片 EXIF 方向顯示站在原地轉圈 → 拼成橫幅、依深度切遠／中／近三層、各自封閉、彎在圓柱上、相機在圓心；繞著物體拍（inward）做不到，只用第一張並告知。
+**與編輯器結合**：不認識的東西 → GitHub 找 OBJ → 找圖片 → **轉 3D**，最後一階（`_subjImage3d`）先走這條管線（`_i3dSubjectSolid`），失敗才退回舊的 2.5D 浮雕並註明。edit-game-3d 尚未接。
+**驗證／限制**：測試只含核心；真實 App 的完整流程、GPU fp16、頭戴裝置 VR、新舊品質並排比較都沒驗證。單張圖看不到背面，背面是依輪廓推測。UniK3D 只有自備匯出說明，推論沒接。

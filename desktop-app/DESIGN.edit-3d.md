@@ -57,3 +57,9 @@ spec = { v:1, title, background, camera:{position, look_at, fov}, seq, objects:[
 2. **模型庫沒有的**：AI 被要求不要拒絕、也不要反問，改用基本圖元逐個零件組合再 `group_objects`（實測：「放一枝火箭」會得到群組＋圓柱＋圓錐）；真的需要特殊外形才自己給 `polygon` 的 vertices／faces。
 3. **貼圖**：整個物件貼圖走 `material.texture`（`wood|brick|grass|sand|water` 或使用者貼的圖），需要貼圖座標：模型庫的東西自帶；沒有 `uvs` 的自訂形狀（匯入的 OBJ、AI 自己給的）由檢視器（`viewer3d.js`）用繞垂直軸的圓柱投影補上。
 
+
+## 圖片轉 3D 的結合（2026-10-30）
+- 貼了圖再說「把這張圖變成 3D 物件」：`edit3d_host.js` 的 `_i3dAttachedEdits` 不經過模型，直接用 `/image-to-3d` 同一條離線管線（`_i3dSubjectSolid`：去背、深度、每個物件封閉、原圖當貼圖）做成一個自訂形狀物件放進場景（約 50 公分）；背景去不乾淨或深度模型不能用時只回註記，不新增物件。
+- 「不認識的東西」那條梯子（GitHub 找 OBJ → 找圖片 → 轉 3D）的最後一階先走同一條管線，失敗才退回舊的浮雕做法，結果文字會註明。
+- `/image-to-3d` 本身把整張圖做成一個場景放進這個編輯器（自訂形狀、同一個群組；全景時相機放在圓心）。
+- 未做／未驗證：edit-game-3d 還沒接；以上都只有核心測試，沒在真實 App 驗證。詳見 `DESIGN.image-to-3d.md` 的「實作現況與使用指南」。
