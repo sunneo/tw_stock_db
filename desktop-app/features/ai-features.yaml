@@ -573,6 +573,13 @@ categories:
         platforms: [web, desktop]
         samples: ["解析這張圖", "辨識這張圖片裡的文字", "/image-to-text 文字", "描述這張圖片裡有什麼"]
         updated: 2026-10-06
+      - id: image-to-3d
+        name: 圖片轉 3D（離線、每個物件各自封閉）
+        summary: 深度模型（Depth Anything V2 Small，跑在這台電腦上、圖片不會上傳，第一次使用才下載並先問）估計深度，再把圖裡每個物件各自做成封閉的立體（不是浮雕）：用物件自己的輪廓做柱體或樂高方塊的殼，再逐層細切到面數上限，每一層都通過封閉檢查（每條邊剛好兩個面共用），不合格的退回較粗的殼；背景另成一塊並補洞。放進 3D 場景編輯器（自訂形狀，同一個群組）。--close all 連背景都做成實心（要列印）、--shape 選外殼、--whole 整張圖當一個物件。單張圖看不到背面，背面是依輪廓寬度推測的厚度。尚未實作：MobileSAM 分物件（目前用去背遮罩的連通區分物件）、景物照片用 UniK3D（選用，不內建）。
+        how: { slash: ["/image-to-3d"], tools: [image_to_3d] }
+        platforms: [desktop]
+        samples: ["/image-to-3d", "把這張圖做成 3D，每個物件都要封閉", "圖片轉 3D，我要能列印", "/image-to-3d --close all --shape blocks"]
+        updated: 2026-10-29
       - id: image-decompose-redraw
         name: 圖片分解與向量重繪（2.5D）
         summary: 把一張圖分解成三角網格與區域、猜前後景深、用距離變換充氣成 2.5D 幾何體、重新取樣貼回原圖顏色，輸出 SVG、網格 JSON、OBJ＋貼圖。預設純幾何（不需要視覺模型），並用知識庫的部位知識（臉、五官、頭髮、動物臉）偵測並加上凸凹深度，補知識就會認得更多（顏色族群、容器）；離線也能用；vision:auto 時用助理已設定、支援讀圖的 Model 決定前後順序，沒有就退回純幾何。內建技能（skill_builtin-skill-image-decompose-redraw）。

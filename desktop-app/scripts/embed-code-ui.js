@@ -348,6 +348,22 @@ function embedAidoc() {
 }
 embedAidoc();
 
+// /image-to-3d：圖片轉 3D 的純函式核心（renderer/src/media/image3d_core.js → FaImage3d），放在 AIDTRIAGE 區塊之後
+function embedImage3d() {
+    const fp = path.join(root, 'renderer/src/media/image3d_core.js'); if (!fs.existsSync(fp)) return;
+    const core = fs.readFileSync(fp, 'utf8').replace(/\r\n/g, '\n'), mark = 'IMG3D', name = 'FaImage3d';
+    let a = src.indexOf('/* ' + mark + '-BEGIN */'), b = src.indexOf('/* ' + mark + '-END */');
+    if (a < 0 || b < 0) {
+        const at = src.indexOf('/* AIDTRIAGE-END */'); if (at < 0) throw new Error('找不到 AIDTRIAGE-END 標記');
+        const cut = at + '/* AIDTRIAGE-END */'.length;
+        src = src.slice(0, cut) + '\n/* ' + mark + '-BEGIN */\n/* ' + mark + '-END */' + src.slice(cut);
+        a = src.indexOf('/* ' + mark + '-BEGIN */'); b = src.indexOf('/* ' + mark + '-END */');
+    }
+    src = src.slice(0, a) + '/* ' + mark + '-BEGIN */\nconst ' + name + ' = (function () {\nconst holder = {};\n(function (module, self) {\n' + core + '\n}).call(null, undefined, holder);\nreturn holder.' + name + ';\n})();\n' + src.slice(b);
+    console.log('已更新 ' + name + '（' + core.length + ' 字元）');
+}
+embedImage3d();
+
 // /edit-media-presentation：簡報編輯器（簡報檔的物件模型、畫面、主機轉接層），放在 GAME 區塊之後（要用 FaEditShell 與 FaEditHost）
 function embedDeckEdit() {
     const dir = path.join(root, 'renderer/src/deck'); if (!fs.existsSync(path.join(dir, 'deck_edit_core.js'))) return;

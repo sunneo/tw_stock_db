@@ -29921,6 +29921,517 @@ const holder = {};
 return holder.FaLogTriage;
 })();
 /* AIDTRIAGE-END */
+/* IMG3D-BEGIN */
+const FaImage3d = (function () {
+const holder = {};
+(function (module, self) {
+// image-to-3d core (pure functions, no DOM, no network): object mask + relative depth map -> a CLOSED solid per object (never a relief).
+// Exposes `FaImage3d` (browser) and module.exports (node tests).
+//   buildObject(mask, depth, opts) -> { mesh:{vertices,faces}, shape, fallback, notes:[...] } | null
+//   buildScene({labels, depth}, opts) -> { objects:[{id, mesh, shape, fallback, notes}], background:{...}, closeMode }
+//   fillBackground(depth, unknown) -> depth with the unknown cells interpolated from their surroundings
+//   isClosed(mesh) -> boolean   (every edge shared by exactly two faces, opposite directions, no degenerate face, positive volume)
+// Inputs are arrays of rows, row 0 = top of the image. Depth: larger = nearer (Depth Anything convention). Output: x right, y up, z toward the viewer.
+// Two coarse shells, each refined level by level (every level is closed, so refinement can stop any time):
+//   cylinder = the mask outline extruded along the depth axis, the front cap follows the depth, the back is flat (guessed from the outline width)
+//   blocks   = Lego-like: only the grid cells the object covers, each cell a column; the grid halves each level
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaImage3d = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  var EPS = 1e-9;
+
+  // ---------- mesh helpers ----------
+  function Builder() { this.v = []; this.f = []; this.map = {}; }
+  Builder.prototype.vert = function (x, y, z) {
+    var key = Math.round(x * 1e6) + ',' + Math.round(y * 1e6) + ',' + Math.round(z * 1e6);
+    var i = this.map[key];
+    if (i === undefined) { i = this.v.length; this.v.push([x, y, z]); this.map[key] = i; }
+    return i;
+  };
+  Builder.prototype.tri = function (a, b, c) { this.f.push([a, b, c]); };
+  Builder.prototype.quad = function (a, b, c, d) { this.f.push([a, b, c]); this.f.push([a, c, d]); };
+  Builder.prototype.mesh = function () { return { vertices: this.v, faces: this.f }; };
+
+  function isClosed(mesh) {
+    if (!mesh || !mesh.faces || !mesh.vertices || mesh.faces.length < 4) { return false; }
+    var V = mesh.vertices, dir = {}, vol = 0, i, k;
+    for (i = 0; i < mesh.faces.length; i++) {
+      var f = mesh.faces[i], a = f[0], b = f[1], c = f[2];
+      if (a === b || b === c || a === c) { return false; }
+      var pa = V[a], pb = V[b], pc = V[c];
+      if (!pa || !pb || !pc) { return false; }
+      var ux = pb[0] - pa[0], uy = pb[1] - pa[1], uz = pb[2] - pa[2], vx = pc[0] - pa[0], vy = pc[1] - pa[1], vz = pc[2] - pa[2];
+      var nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+      if (nx * nx + ny * ny + nz * nz < 1e-18) { return false; }
+      vol += (pa[0] * (pb[1] * pc[2] - pb[2] * pc[1]) - pa[1] * (pb[0] * pc[2] - pb[2] * pc[0]) + pa[2] * (pb[0] * pc[1] - pb[1] * pc[0])) / 6;
+      var es = [[a, b], [b, c], [c, a]];
+      for (k = 0; k < 3; k++) { var key = es[k][0] + '>' + es[k][1]; if (dir[key]) { return false; } dir[key] = 1; }
+    }
+    for (var e in dir) { var p = e.split('>'); if (!dir[p[1] + '>' + p[0]]) { return false; } }
+    return vol > EPS;
+  }
+
+  function boxMesh(x0, y0, x1, y1, z0, z1) {
+    var b = new Builder();
+    var p = function (x, y, z) { return b.vert(x, y, z); };
+    var a = p(x0, y0, z0), bb = p(x1, y0, z0), c = p(x1, y1, z0), d = p(x0, y1, z0), e = p(x0, y0, z1), f = p(x1, y0, z1), g = p(x1, y1, z1), h = p(x0, y1, z1);
+    b.quad(a, d, c, bb); b.quad(e, f, g, h); b.quad(a, bb, f, e); b.quad(bb, c, g, f); b.quad(c, d, h, g); b.quad(d, a, e, h);
+    return b.mesh();
+  }
+
+  // ---------- grids ----------
+  function dims(a) { return { h: a.length, w: a.length ? a[0].length : 0 }; }
+  function flipY(a) { return a.slice().reverse(); }
+
+  // onion-peeling fill: unknown cells take the average of their known 4-neighbours, ring by ring (the background behind a cut-out object)
+  function fillBackground(depth, unknown) {
+    var d = dims(depth), H = d.h, W = d.w, out = [], known = [], j, i;
+    for (j = 0; j < H; j++) { out.push(depth[j].slice()); known.push([]); for (i = 0; i < W; i++) { known[j].push(!unknown[j][i]); } }
+    var any = false; for (j = 0; j < H && !any; j++) { for (i = 0; i < W; i++) { if (known[j][i]) { any = true; break; } } }
+    if (!any) { for (j = 0; j < H; j++) { for (i = 0; i < W; i++) { out[j][i] = 0; } } return out; }
+    var left = true, guard = H + W + 4;
+    while (left && guard-- > 0) {
+      left = false; var upd = [];
+      for (j = 0; j < H; j++) {
+        for (i = 0; i < W; i++) {
+          if (known[j][i]) { continue; }
+          var s = 0, n = 0;
+          if (j > 0 && known[j - 1][i]) { s += out[j - 1][i]; n++; }
+          if (j < H - 1 && known[j + 1][i]) { s += out[j + 1][i]; n++; }
+          if (i > 0 && known[j][i - 1]) { s += out[j][i - 1]; n++; }
+          if (i < W - 1 && known[j][i + 1]) { s += out[j][i + 1]; n++; }
+          if (n) { upd.push([j, i, s / n]); } else { left = true; }
+        }
+      }
+      for (var u = 0; u < upd.length; u++) { out[upd[u][0]][upd[u][1]] = upd[u][2]; known[upd[u][0]][upd[u][1]] = true; }
+    }
+    return out;
+  }
+
+  // ---------- blocks (Lego) shell ----------
+  // m, dn are y-up grids. Returns a closed mesh or null.
+  function blocksMesh(m, dn, bb, n, zp) {
+    var bw = bb.x1 - bb.x0, bh = bb.y1 - bb.y0, s = Math.max(bw, bh) / n;
+    var cols = Math.max(1, Math.ceil(bw / s - 1e-9)), rows = Math.max(1, Math.ceil(bh / s - 1e-9)), i, j, x, y;
+    var occ = [], hgt = [], best = null, bestCnt = -1;
+    for (j = 0; j < rows; j++) {
+      occ.push([]); hgt.push([]);
+      for (i = 0; i < cols; i++) {
+        var px0 = Math.floor(bb.x0 + i * s + 1e-9), px1 = Math.max(px0 + 1, Math.min(bb.x1, Math.ceil(bb.x0 + (i + 1) * s - 1e-9)));
+        var py0 = Math.floor(bb.y0 + j * s + 1e-9), py1 = Math.max(py0 + 1, Math.min(bb.y1, Math.ceil(bb.y0 + (j + 1) * s - 1e-9)));
+        var cnt = 0, tot = 0, sum = 0;
+        for (y = py0; y < py1 && y < bb.y1; y++) { for (x = px0; x < px1 && x < bb.x1; x++) { tot++; if (m[y][x]) { cnt++; sum += dn[y][x]; } } }
+        var o = tot > 0 && cnt > 0 && cnt / tot >= 0.5;
+        occ[j].push(o); hgt[j].push(cnt ? sum / cnt : 0);
+        if (cnt > bestCnt) { bestCnt = cnt; best = [j, i]; }
+      }
+    }
+    var any = false; for (j = 0; j < rows; j++) { for (i = 0; i < cols; i++) { if (occ[j][i]) { any = true; } } }
+    if (!any) { if (!best) { return null; } occ[best[0]][best[1]] = true; }
+    // two columns touching only along a corner (at any height) would make an edge shared by four faces: raise the higher of the other two cells up to the lower of the pair
+    var lvl = function (jj, ii) { return jj >= 0 && jj < rows && ii >= 0 && ii < cols && occ[jj][ii] ? hgt[jj][ii] : -Infinity; };
+    var changed = true, pass = 0;
+    while (changed && pass++ < 64) {
+      changed = false;
+      for (j = 0; j < rows - 1; j++) {
+        for (i = 0; i < cols - 1; i++) {
+          var q = [[j, i], [j, i + 1], [j + 1, i + 1], [j + 1, i]];
+          for (var r = 0; r < 2; r++) {
+            var A = q[r], C = q[r + 2], B = q[(r + 1) % 4], D = q[(r + 3) % 4];
+            var lo = Math.min(lvl(A[0], A[1]), lvl(C[0], C[1])), hb = lvl(B[0], B[1]), hd = lvl(D[0], D[1]);
+            if (lo > Math.max(hb, hd)) {
+              var T = hb >= hd ? B : D;
+              if (T[0] >= 0 && T[0] < rows && T[1] >= 0 && T[1] < cols) { occ[T[0]][T[1]] = true; hgt[T[0]][T[1]] = lo; changed = true; }
+            }
+          }
+        }
+      }
+    }
+    var H = [];
+    for (j = 0; j < rows; j++) { H.push([]); for (i = 0; i < cols; i++) { H[j].push(occ[j][i] ? Math.round((zp.zMin + zp.zRange * hgt[j][i]) * 1e6) / 1e6 : null); } }
+    var zb = Math.round(zp.zBack * 1e6) / 1e6, B = new Builder();
+    var X = function (gi) { return bb.x0 + gi * s; }, Y = function (gj) { return bb.y0 + gj * s; };
+    var has = function (jj, ii) { return jj >= 0 && jj < rows && ii >= 0 && ii < cols && H[jj][ii] !== null; };
+    // heights seen at each grid corner: a vertical wall edge there is split at all of them, so neighbouring walls of different heights meet edge to edge
+    var corner = {};
+    var addC = function (gi, gj, z) { var k = gi + ',' + gj; (corner[k] = corner[k] || {})[z] = 1; };
+    for (j = 0; j < rows; j++) { for (i = 0; i < cols; i++) { if (H[j][i] !== null) { for (var dj = 0; dj < 2; dj++) { for (var di = 0; di < 2; di++) { addC(i + di, j + dj, H[j][i]); } } } } }
+    var edgeZ = function (gi, gj, lo, hi) {
+      var zs = [lo], c = corner[gi + ',' + gj] || {}, arr = [];
+      for (var z in c) { var zv = +z; if (zv > lo + 1e-9 && zv < hi - 1e-9) { arr.push(zv); } }
+      arr.sort(function (a, b) { return a - b; }); zs = zs.concat(arr); zs.push(hi); return zs;
+    };
+    var wall = function (g0, g1, g2, g3, lo, hi) {
+      var pz = edgeZ(g0, g1, lo, hi), qz = edgeZ(g2, g3, lo, hi), pi = 0, qi = 0;
+      var P = function (n) { return B.vert(X(g0), Y(g1), pz[n]); }, Q = function (n) { return B.vert(X(g2), Y(g3), qz[n]); };
+      while (pi < pz.length - 1 || qi < qz.length - 1) {
+        var advQ = pi >= pz.length - 1 ? true : (qi >= qz.length - 1 ? false : qz[qi + 1] <= pz[pi + 1]);
+        if (advQ) { B.tri(P(pi), Q(qi), Q(qi + 1)); qi++; } else { B.tri(P(pi), Q(qi), P(pi + 1)); pi++; }
+      }
+    };
+    for (j = 0; j < rows; j++) {
+      for (i = 0; i < cols; i++) {
+        var h = H[j][i]; if (h === null) { continue; }
+        var v = function (gi, gj, z) { return B.vert(X(gi), Y(gj), z); };
+        B.quad(v(i, j, h), v(i + 1, j, h), v(i + 1, j + 1, h), v(i, j + 1, h));
+        B.quad(v(i, j, zb), v(i, j + 1, zb), v(i + 1, j + 1, zb), v(i + 1, j, zb));
+        // edges counter-clockwise around the cell (interior on the left): P -> Q, neighbour on the outside
+        var sides = [[i, j, i + 1, j, j - 1, i], [i + 1, j, i + 1, j + 1, j, i + 1], [i + 1, j + 1, i, j + 1, j + 1, i], [i, j + 1, i, j, j, i - 1]];
+        for (var k = 0; k < 4; k++) {
+          var sd = sides[k], lo = has(sd[4], sd[5]) ? H[sd[4]][sd[5]] : zb;
+          if (h - lo > 1e-9) { wall(sd[0], sd[1], sd[2], sd[3], lo, h); }
+        }
+      }
+    }
+    return B.mesh();
+  }
+
+  // ---------- cylinder (outline extrusion) shell ----------
+  function traceLoops(m, bb) {
+    var edges = [], byStart = {}, i, j;
+    var occ = function (x, y) { return x >= bb.x0 && x < bb.x1 && y >= bb.y0 && y < bb.y1 && !!m[y][x]; };
+    var add = function (ax, ay, bx, by) { edges.push([ax, ay, bx, by]); var k = ax + ',' + ay; (byStart[k] = byStart[k] || []).push(edges.length - 1); };
+    for (j = bb.y0; j < bb.y1; j++) {
+      for (i = bb.x0; i < bb.x1; i++) {
+        if (!m[j][i]) { continue; }
+        if (!occ(i, j - 1)) { add(i, j, i + 1, j); }
+        if (!occ(i + 1, j)) { add(i + 1, j, i + 1, j + 1); }
+        if (!occ(i, j + 1)) { add(i + 1, j + 1, i, j + 1); }
+        if (!occ(i - 1, j)) { add(i, j + 1, i, j); }
+      }
+    }
+    var used = [], loops = [];
+    for (var e0 = 0; e0 < edges.length; e0++) {
+      if (used[e0]) { continue; }
+      var loop = [], cur = e0, guard = edges.length + 2;
+      while (cur !== undefined && !used[cur] && guard-- > 0) {
+        used[cur] = true; var ed = edges[cur]; loop.push([ed[0], ed[1]]);
+        var cands = (byStart[ed[2] + ',' + ed[3]] || []).filter(function (c) { return !used[c]; });
+        if (!cands.length) { cur = undefined; break; }
+        var dx = ed[2] - ed[0], dy = ed[3] - ed[1], pick = cands[0], bestCross = Infinity;
+        for (var c = 0; c < cands.length; c++) {
+          var ce = edges[cands[c]], cr = dx * (ce[3] - ce[1]) - dy * (ce[2] - ce[0]);
+          if (cr < bestCross) { bestCross = cr; pick = cands[c]; }
+        }
+        cur = pick;
+      }
+      if (loop.length >= 4) { loops.push(loop); }
+    }
+    return loops;
+  }
+  function area2(p) { var a = 0; for (var i = 0; i < p.length; i++) { var q = p[(i + 1) % p.length]; a += p[i][0] * q[1] - q[0] * p[i][1]; } return a; }
+  function dropCollinear(p) {
+    var out = p.slice(), ch = true;
+    while (ch && out.length > 3) {
+      ch = false;
+      for (var i = 0; i < out.length; i++) {
+        var a = out[(i - 1 + out.length) % out.length], b = out[i], c = out[(i + 1) % out.length];
+        if (Math.abs((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])) < EPS) { out.splice(i, 1); ch = true; break; }
+      }
+    }
+    return out;
+  }
+  function distSeg(p, a, b) {
+    var dx = b[0] - a[0], dy = b[1] - a[1], l = dx * dx + dy * dy;
+    if (l < EPS) { return Math.hypot(p[0] - a[0], p[1] - a[1]); }
+    var t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l));
+    return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy);
+  }
+  function dpChain(pts, tol) {
+    var keep = []; keep[0] = true; keep[pts.length - 1] = true;
+    var stack = [[0, pts.length - 1]];
+    while (stack.length) {
+      var r = stack.pop(), a = r[0], b = r[1], md = 0, mi = -1;
+      for (var i = a + 1; i < b; i++) { var d = distSeg(pts[i], pts[a], pts[b]); if (d > md) { md = d; mi = i; } }
+      if (mi >= 0 && md > tol) { keep[mi] = true; stack.push([a, mi]); stack.push([mi, b]); }
+    }
+    var out = []; for (var k = 0; k < pts.length; k++) { if (keep[k]) { out.push(pts[k]); } }
+    return out;
+  }
+  function simplifyClosed(p, tol) {
+    if (p.length <= 4) { return p; }
+    var far = 0, fd = -1, i;
+    for (i = 1; i < p.length; i++) { var d = Math.hypot(p[i][0] - p[0][0], p[i][1] - p[0][1]); if (d > fd) { fd = d; far = i; } }
+    var c1 = dpChain(p.slice(0, far + 1), tol), c2 = dpChain(p.slice(far).concat([p[0]]), tol);
+    return c1.slice(0, -1).concat(c2.slice(0, -1));
+  }
+  function segCross(a, b, c, d) {
+    var o = function (p, q, r) { return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]); };
+    var o1 = o(a, b, c), o2 = o(a, b, d), o3 = o(c, d, a), o4 = o(c, d, b);
+    return ((o1 > EPS && o2 < -EPS) || (o1 < -EPS && o2 > EPS)) && ((o3 > EPS && o4 < -EPS) || (o3 < -EPS && o4 > EPS));
+  }
+  function isSimple(p) {
+    var n = p.length;
+    for (var i = 0; i < n; i++) {
+      for (var j = i + 2; j < n; j++) {
+        if (i === 0 && j === n - 1) { continue; }
+        if (segCross(p[i], p[(i + 1) % n], p[j], p[(j + 1) % n])) { return false; }
+      }
+    }
+    return true;
+  }
+  function earClip(p) {
+    var idx = [], i; for (i = 0; i < p.length; i++) { idx.push(i); }
+    var tris = [], guard = p.length * p.length + 10;
+    var cross = function (a, b, c) { return (p[b][0] - p[a][0]) * (p[c][1] - p[a][1]) - (p[b][1] - p[a][1]) * (p[c][0] - p[a][0]); };
+    while (idx.length > 3 && guard-- > 0) {
+      var found = false, m = idx.length;
+      for (var k = 0; k < m; k++) {
+        var a = idx[(k - 1 + m) % m], b = idx[k], c = idx[(k + 1) % m];
+        if (cross(a, b, c) <= EPS) { continue; }
+        var ok = true;
+        for (var t = 0; t < m && ok; t++) {
+          var q = idx[t]; if (q === a || q === b || q === c) { continue; }
+          var pq = p[q];
+          if ((pq[0] === p[a][0] && pq[1] === p[a][1]) || (pq[0] === p[b][0] && pq[1] === p[b][1]) || (pq[0] === p[c][0] && pq[1] === p[c][1])) { continue; }
+          if (cross(a, b, q) >= -EPS && cross(b, c, q) >= -EPS && cross(c, a, q) >= -EPS) { ok = false; }
+        }
+        if (ok) { tris.push([a, b, c]); idx.splice(k, 1); found = true; break; }
+      }
+      if (!found) { return null; }
+    }
+    if (idx.length === 3) { if (cross(idx[0], idx[1], idx[2]) <= EPS) { return null; } tris.push([idx[0], idx[1], idx[2]]); }
+    return tris;
+  }
+  function subdivide(P, T) {
+    var cache = {}, out = [];
+    var mid = function (a, b) {
+      var key = a < b ? a + '_' + b : b + '_' + a;
+      if (cache[key] === undefined) { cache[key] = P.length; P.push([(P[a][0] + P[b][0]) / 2, (P[a][1] + P[b][1]) / 2]); }
+      return cache[key];
+    };
+    T.forEach(function (t) { var ab = mid(t[0], t[1]), bc = mid(t[1], t[2]), ca = mid(t[2], t[0]); out.push([t[0], ab, ca], [ab, t[1], bc], [ca, bc, t[2]], [ab, bc, ca]); });
+    return out;
+  }
+  // m, dn: y-up grids; dnExt: dn extended outside the mask. Returns a closed mesh (several prisms if the mask has several blobs) or null.
+  function cylinderMesh(m, dn, dnExt, bb, tolFrac, sub, zp, W, H) {
+    var loops = traceLoops(m, bb).filter(function (l) { return area2(l) > 0; });
+    if (!loops.length) { return null; }
+    var maxdim = Math.max(bb.x1 - bb.x0, bb.y1 - bb.y0), tol = Math.max(0.5, maxdim * tolFrac);
+    var B = new Builder();
+    var sample = function (x, y) {
+      var s = 0, n = 0, xs = [Math.floor(x) - 1, Math.floor(x)], ys = [Math.floor(y) - 1, Math.floor(y)];
+      for (var a = 0; a < 2; a++) { for (var b = 0; b < 2; b++) { var px = xs[a], py = ys[b]; if (px >= 0 && px < W && py >= 0 && py < H && m[py][px]) { s += dn[py][px]; n++; } } }
+      if (n) { return s / n; }
+      return dnExt[Math.max(0, Math.min(H - 1, Math.floor(y)))][Math.max(0, Math.min(W - 1, Math.floor(x)))];
+    };
+    var zb = Math.round(zp.zBack * 1e6) / 1e6;
+    for (var li = 0; li < loops.length; li++) {
+      var poly = dropCollinear(simplifyClosed(dropCollinear(loops[li]), tol));
+      if (poly.length < 3 || area2(poly) <= EPS || !isSimple(poly)) { return null; }
+      var P = poly.map(function (q) { return [q[0], q[1]]; }), T = earClip(P);
+      if (!T) { return null; }
+      for (var s = 0; s < sub; s++) { T = subdivide(P, T); }
+      var fr = P.map(function (q) { return B.vert(q[0], q[1], Math.round((zp.zMin + zp.zRange * sample(q[0], q[1])) * 1e6) / 1e6); });
+      var bk = P.map(function (q) { return B.vert(q[0], q[1], zb); });
+      var cnt = {};
+      T.forEach(function (t) { B.tri(fr[t[0]], fr[t[1]], fr[t[2]]); B.tri(bk[t[0]], bk[t[2]], bk[t[1]]); for (var e = 0; e < 3; e++) { cnt[t[e] + '>' + t[(e + 1) % 3]] = 1; } });
+      for (var key in cnt) {
+        var ab = key.split('>'), a = +ab[0], b = +ab[1];
+        if (!cnt[b + '>' + a]) { B.quad(bk[a], bk[b], fr[b], fr[a]); }
+      }
+    }
+    return B.mesh();
+  }
+
+  // ---------- one object ----------
+  var CYL_LEVELS = [[0.05, 0], [0.025, 1], [0.012, 1], [0.012, 2], [0.006, 2]];
+  var BLOCK_LEVELS = [2, 4, 8, 16, 32, 64];
+
+  function buildObject(mask, depth, opts) {
+    opts = opts || {};
+    var d = dims(mask), H = d.h, W = d.w;
+    if (!H || !W || depth.length !== H || depth[0].length !== W) { return null; }
+    var m = flipY(mask), dep = flipY(depth), x, y;
+    var bb = { x0: W, y0: H, x1: 0, y1: 0 }, dmin = Infinity, dmax = -Infinity, area = 0, comps = 0;
+    for (y = 0; y < H; y++) {
+      for (x = 0; x < W; x++) {
+        if (!m[y][x]) { continue; }
+        area++; if (x < bb.x0) { bb.x0 = x; } if (x + 1 > bb.x1) { bb.x1 = x + 1; } if (y < bb.y0) { bb.y0 = y; } if (y + 1 > bb.y1) { bb.y1 = y + 1; }
+        var dv = opts.invert ? -dep[y][x] : dep[y][x]; if (dv < dmin) { dmin = dv; } if (dv > dmax) { dmax = dv; }
+      }
+    }
+    if (!area) { return null; }
+    var range = dmax - dmin, dn = [];
+    for (y = 0; y < H; y++) {
+      dn.push([]);
+      for (x = 0; x < W; x++) {
+        var raw = opts.invert ? -dep[y][x] : dep[y][x];
+        dn[y].push(opts.normalize === false ? raw : (range > EPS ? (raw - dmin) / range : 0.5));
+      }
+    }
+    var bw = bb.x1 - bb.x0, bh = bb.y1 - bb.y0, scale = opts.scale || 1, maxFaces = opts.maxFaces || 12000, notes = [];
+    var thick = opts.thickness > 0 ? opts.thickness : Math.max(1, 0.5 * Math.min(bw, bh));
+    var zp;
+    if (opts.zFront) {
+      var mn = Infinity; for (y = 0; y < H; y++) { for (x = 0; x < W; x++) { if (m[y][x] && dn[y][x] < mn) { mn = dn[y][x]; } } }
+      zp = { zMin: opts.zFront.base, zRange: opts.zFront.range, zBack: opts.zFront.base + opts.zFront.range * mn - thick };
+    } else {
+      zp = { zBack: 0, zMin: 0.4 * thick, zRange: 0.6 * thick };
+    }
+    notes.push('背面是依輪廓寬度推測的（厚度約 ' + (Math.round(thick * 10) / 10) + '），單張圖看不到背面');
+    var unknown = m.map(function (r) { return r.map(function (v) { return !v; }); });
+    var dnExt = fillBackground(dn, unknown);
+    // components / holes decide "auto": a single solid blob -> cylinder, fragmented or holed -> blocks
+    var loops = traceLoops(m, bb), outers = loops.filter(function (l) { return area2(l) > 0; }).length;
+    comps = outers; var holes = loops.length - outers;
+    var shape = opts.shape === 'cylinder' || opts.shape === 'blocks' ? opts.shape : (comps === 1 && holes === 0 ? 'cylinder' : 'blocks');
+    var order = shape === 'cylinder' ? ['cylinder', 'blocks'] : ['blocks', 'cylinder'];
+
+    var result = null;
+    for (var oi = 0; oi < order.length && !result; oi++) {
+      var kind = order[oi], best = null, level;
+      if (kind === 'cylinder') {
+        for (level = 0; level < CYL_LEVELS.length; level++) {
+          var cm = null; try { cm = cylinderMesh(m, dn, dnExt, bb, CYL_LEVELS[level][0], CYL_LEVELS[level][1], zp, W, H); } catch (e) { cm = null; }
+          if (!cm || cm.faces.length > maxFaces || !isClosed(cm)) { if (best) { break; } else { continue; } }
+          best = { mesh: cm, level: level };
+        }
+      } else {
+        for (level = 0; level < BLOCK_LEVELS.length; level++) {
+          var bm = null; try { bm = blocksMesh(m, dn, bb, BLOCK_LEVELS[level], zp); } catch (e2) { bm = null; }
+          if (!bm || bm.faces.length > maxFaces || !isClosed(bm)) { if (best) { break; } else { continue; } }
+          best = { mesh: bm, level: level };
+        }
+      }
+      if (best) { result = { mesh: best.mesh, shape: kind, level: best.level, fallback: oi > 0 }; }
+    }
+    if (!result) {
+      result = { mesh: boxMesh(bb.x0, bb.y0, bb.x1, bb.y1, zp.zBack, zp.zMin + zp.zRange * (opts.normalize === false ? 1 : 1)), shape: 'box', level: 0, fallback: true };
+      notes.push('輪廓太複雜，退回外框方塊');
+    } else if (result.fallback) { notes.push('原本選的外殼不合格，改用 ' + result.shape); }
+    if (scale !== 1) { result.mesh.vertices = result.mesh.vertices.map(function (p) { return [p[0] * scale, p[1] * scale, p[2] * scale]; }); }
+    result.notes = notes; result.area = area;
+    return result;
+  }
+
+  // ---------- scene: labels (0 = background) + depth -> one closed solid per object + a background slab ----------
+  function buildScene(input, opts) {
+    opts = opts || {};
+    var labels = input.labels, depth = input.depth, d = dims(labels), H = d.h, W = d.w, x, y;
+    var maxdim = Math.max(W, H), R = 0.4 * maxdim, total = opts.maxFaces || 12000, scale = 1 / maxdim;
+    var mn = Infinity, mx = -Infinity, ids = {}, areas = {};
+    for (y = 0; y < H; y++) { for (x = 0; x < W; x++) { var v = depth[y][x]; if (v < mn) { mn = v; } if (v > mx) { mx = v; } var l = labels[y][x]; if (l > 0) { ids[l] = true; areas[l] = (areas[l] || 0) + 1; } } }
+    var rg = mx - mn, nd = depth.map(function (r) { return r.map(function (v) { return rg > EPS ? (opts.invert ? (mx - v) : (v - mn)) / rg : 0.5; }); });
+    var idList = Object.keys(ids).map(Number).sort(function (a, b) { return a - b; });
+    var sumA = 0; idList.forEach(function (i) { sumA += areas[i]; });
+    var bgBudget = Math.max(24, Math.floor(total * 0.2)), objBudget = total - bgBudget;
+    var objects = [];
+    idList.forEach(function (id) {
+      var mask = labels.map(function (r) { return r.map(function (v) { return v === id ? 1 : 0; }); });
+      var res = buildObject(mask, nd, { shape: opts.shape, normalize: false, scale: scale, maxFaces: Math.max(24, Math.floor(objBudget * areas[id] / sumA)), zFront: { base: 0.05 * R, range: R }, thickness: opts.thickness });
+      if (res) { res.id = id; objects.push(res); }
+    });
+    var unknown = labels.map(function (r) { return r.map(function (v) { return v > 0; }); });
+    var bgDepth = fillBackground(nd, unknown), all = labels.map(function (r) { return r.map(function () { return 1; }); });
+    var bg = buildObject(all, bgDepth, { shape: 'blocks', normalize: false, scale: scale, maxFaces: bgBudget, zFront: { base: 0.05 * R, range: R }, thickness: (opts.closeMode === 'all' ? 0.25 : 0.06) * maxdim });
+    return { objects: objects, background: bg, closeMode: opts.closeMode === 'all' ? 'all' : 'objects' };
+  }
+
+  // ---------- input preparation: model-sized depth + foreground mask -> small grids + object labels ----------
+  // bilinear resample of a flat array (sw x sh) to rows [h][w]
+  function resampleGrid(data, sw, sh, w, h) {
+    var out = [], x, y;
+    for (y = 0; y < h; y++) {
+      var fy = h > 1 ? y * (sh - 1) / (h - 1) : 0, y0 = Math.floor(fy), y1 = Math.min(sh - 1, y0 + 1), ty = fy - y0, row = [];
+      for (x = 0; x < w; x++) {
+        var fx = w > 1 ? x * (sw - 1) / (w - 1) : 0, x0 = Math.floor(fx), x1 = Math.min(sw - 1, x0 + 1), tx = fx - x0;
+        var top = data[y0 * sw + x0] * (1 - tx) + data[y0 * sw + x1] * tx, bot = data[y1 * sw + x0] * (1 - tx) + data[y1 * sw + x1] * tx;
+        row.push(top * (1 - ty) + bot * ty);
+      }
+      out.push(row);
+    }
+    return out;
+  }
+  // nearest-neighbour resample of a flat 0/1 array; a target cell is 1 when the source cell it maps to is 1
+  function resampleMask(flat, sw, sh, w, h) {
+    var out = [], x, y;
+    for (y = 0; y < h; y++) { var row = [], sy = Math.min(sh - 1, Math.floor((y + 0.5) * sh / h)); for (x = 0; x < w; x++) { row.push(flat[sy * sw + Math.min(sw - 1, Math.floor((x + 0.5) * sw / w))] ? 1 : 0); } out.push(row); }
+    return out;
+  }
+  // 4-connected blobs of a 0/1 grid -> labels (1 = largest blob); blobs under minAreaFrac of the grid, or beyond maxObjects, are dropped (label 0)
+  function labelComponents(mask, opts) {
+    opts = opts || {};
+    var d = dims(mask), H = d.h, W = d.w, lab = [], x, y, comps = [];
+    for (y = 0; y < H; y++) { lab.push(new Array(W).fill(0)); }
+    var seen = [];
+    for (y = 0; y < H; y++) { seen.push(new Array(W).fill(false)); }
+    for (y = 0; y < H; y++) {
+      for (x = 0; x < W; x++) {
+        if (!mask[y][x] || seen[y][x]) { continue; }
+        var stack = [[y, x]], cells = []; seen[y][x] = true;
+        while (stack.length) {
+          var c = stack.pop(); cells.push(c);
+          var nb = [[c[0] - 1, c[1]], [c[0] + 1, c[1]], [c[0], c[1] - 1], [c[0], c[1] + 1]];
+          for (var k = 0; k < 4; k++) { var ny = nb[k][0], nx = nb[k][1]; if (ny >= 0 && ny < H && nx >= 0 && nx < W && mask[ny][nx] && !seen[ny][nx]) { seen[ny][nx] = true; stack.push([ny, nx]); } }
+        }
+        comps.push(cells);
+      }
+    }
+    comps.sort(function (a, b) { return b.length - a.length; });
+    var minArea = Math.max(1, Math.floor((opts.minAreaFrac == null ? 0.003 : opts.minAreaFrac) * W * H)), maxObjects = opts.maxObjects || 12, n = 0, dropped = 0;
+    comps.forEach(function (cells) {
+      if (cells.length < minArea || n >= maxObjects) { dropped++; return; }
+      n++; cells.forEach(function (c) { lab[c[0]][c[1]] = n; });
+    });
+    return { labels: lab, count: n, dropped: dropped };
+  }
+  // one call from the host: depth {w,h,data} (model-sized, larger = nearer) + optional foreground mask {w,h,data} (1 = object) -> { labels, depth, width, height, count }
+  // mode: 'whole' = the whole picture is one object; 'components' (default) = every separate foreground blob is an object (needs a mask, else falls back to 'whole')
+  function prepareInput(depth, mask, opts) {
+    opts = opts || {};
+    var longest = Math.max(depth.w, depth.h), k = Math.min(1, (opts.workMax || 96) / longest), w = Math.max(2, Math.round(depth.w * k)), h = Math.max(2, Math.round(depth.h * k));
+    var dep = resampleGrid(depth.data, depth.w, depth.h, w, h), res;
+    if (opts.mode === 'whole' || !mask) {
+      res = { labels: dep.map(function (r) { return r.map(function () { return 1; }); }), count: 1, dropped: 0 };
+    } else {
+      res = labelComponents(resampleMask(mask.data, mask.w, mask.h, w, h), opts);
+      if (!res.count) { res = { labels: dep.map(function (r) { return r.map(function () { return 1; }); }), count: 1, dropped: res.dropped, empty: true }; }
+    }
+    return { labels: res.labels, depth: dep, width: w, height: h, count: res.count, dropped: res.dropped, empty: !!res.empty };
+  }
+
+  // ---------- options from the user's words (the program decides; the model is only asked when this cannot) ----------
+  // close: 'objects' (default; every found object is a closed solid, the backdrop is a thin closed slab) | 'all' (the user wants everything closed / printable: the backdrop is a full-thickness solid too)
+  function parseOptions(text) {
+    var t = String(text || ''), out = { close: 'objects', shape: 'auto', whole: false, closeSource: 'default' }, m;
+    if ((m = /--close[=\s]+(objects|all)(?![a-z])/i.exec(t))) { out.close = m[1].toLowerCase(); out.closeSource = 'flag'; }
+    else if (/(?:全部|所有|整個|整張|統一|每個|一律)[^，。,.\n]{0,8}封閉|要能?(?:3d)?列印|可(?:以)?列印|print(?:able)?|watertight|everything\s+closed|close\s+all/i.test(t)) { out.close = 'all'; out.closeSource = 'phrase'; }
+    else if (/(?:物件|東西|蘋果|人物|人臉)[^，。,.\n]{0,6}(?:要|得|需要)?封閉|closed\s+objects?/i.test(t)) { out.close = 'objects'; out.closeSource = 'phrase'; }
+    if ((m = /--shape[=\s]+(auto|cylinder|blocks)(?![a-z])/i.exec(t))) { out.shape = m[1].toLowerCase(); }
+    else if (/圓柱|柱體|cylinder/i.test(t)) { out.shape = 'cylinder'; }
+    else if (/樂高|方塊|lego|blocks?/i.test(t)) { out.shape = 'blocks'; }
+    if (/--whole(?![a-z])|整張圖當一個|整張當一個|不要?分物件|whole\s+image/i.test(t)) { out.whole = true; }
+    return out;
+  }
+
+  // ---------- scene -> raw editor spec (/edit-3d-model): a group holding the background and one custom-shape (mesh:'polygon') object per found object ----------
+  // opts: { sizeM (longest side in metres, default 1.5), title, colors:{ id | 'background': '#rrggbb' } }
+  function toSpec(scene, opts) {
+    opts = opts || {};
+    var parts = [], mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
+    if (scene.background && scene.background.mesh) { parts.push({ name: '背景', key: 'background', res: scene.background }); }
+    scene.objects.forEach(function (o, i) { parts.push({ name: '物件' + (i + 1), key: o.id, res: o }); });
+    parts.forEach(function (p) { p.res.mesh.vertices.forEach(function (v) { for (var a = 0; a < 3; a++) { if (v[a] < mn[a]) { mn[a] = v[a]; } if (v[a] > mx[a]) { mx[a] = v[a]; } } }); });
+    if (!parts.length) { return null; }
+    var k = opts.sizeM || 1.5, cx = (mn[0] + mx[0]) / 2, cz = (mn[2] + mx[2]) / 2, r = function (x) { return Math.round(x * k * 10000) / 10000; };
+    var palette = ['#e57373', '#64b5f6', '#81c784', '#ffd54f', '#ba68c8', '#4db6ac', '#ff8a65', '#a1887f'];
+    var objects = [{ id: 'g1', type: 'group', name: opts.title || '圖片轉3D', position: [0, 0, 0], rotation: [0, 0, 0], scale: 1 }];
+    parts.forEach(function (p, i) {
+      var col = opts.colors && opts.colors[p.key] || (p.key === 'background' ? '#9e9e9e' : palette[i % palette.length]);
+      objects.push({ id: 'p' + (i + 1), type: 'mesh', mesh: 'polygon', name: p.name, parent: 'g1', position: [0, 0, 0], rotation: [0, 0, 0], material: { color: col, roughness: 0.7, metalness: 0.02 },
+        extra: { vertices: p.res.mesh.vertices.map(function (v) { return [r(v[0] - cx), r(v[1] - mn[1]), r(v[2] - cz)]; }), faces: p.res.mesh.faces } });
+    });
+    return { v: 1, title: opts.title || '圖片轉3D', objects: objects };
+  }
+
+  return { parseOptions: parseOptions, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
+});
+
+}).call(null, undefined, holder);
+return holder.FaImage3d;
+})();
+/* IMG3D-END */
 /* MESHGEN-BEGIN */
 const FaMeshGen = (function () {
 const holder = {};
@@ -31924,6 +32435,49 @@ const FaEditHost = (function () {
         const r = await this._edOpen('edit-3d', { starter: spec ? undefined : a.starter, spec: spec || undefined, request: a.request, id: a.id, images: a.images, origin: origin || undefined });
         if (r && r.ok) r.notes = notes; return r;
     };
+    // ───── /image-to-3d: a picture -> offline depth model -> one CLOSED solid per object (never a relief), opened in the 3D editor ─────
+    // pixels of the picture, shrunk so the longest side is `longest`: { width, height, data: RGBA }
+    M._i3dPixels = async function (blob, longest) {
+        const bmp = await createImageBitmap(blob); const k = Math.min(1, longest / Math.max(bmp.width, bmp.height)), w = Math.max(2, Math.round(bmp.width * k)), h = Math.max(2, Math.round(bmp.height * k));
+        const cv = document.createElement('canvas'); cv.width = w; cv.height = h; const cx = cv.getContext('2d', { willReadFrequently: true }); cx.drawImage(bmp, 0, 0, w, h); try { bmp.close(); } catch (_) { /* */ }
+        const d = cx.getImageData(0, 0, w, h); return { width: w, height: h, data: d.data };
+    };
+    // p: { image?|blob?, request? (the user's words: "要能列印", "用樂高方塊"…), close?: 'objects'|'all', shape?: 'auto'|'cylinder'|'blocks', whole?: bool, model?, device? }
+    M._imageTo3d = async function (p) {
+        p = p || {}; const o = FaImage3d.parseOptions(p.request || '');
+        const close = p.close === 'all' || p.close === 'objects' ? p.close : o.close, shape = ['auto', 'cylinder', 'blocks'].includes(p.shape) ? p.shape : o.shape, whole = p.whole != null ? !!p.whole : o.whole;
+        const img = await this._vlmResolveImage(p); if (!img.blob) return { ok: false, cancelled: img.cancelled, error: img.error };
+        let px; try { px = await this._i3dPixels(img.blob, 160); } catch (e) { return { ok: false, error: T('讀不了這張圖片：', 'could not read the picture: ') + String((e && e.message) || e) }; }
+        const dr = await this._depthEstimate({ blob: img.blob, filename: img.filename, model: p.model, device: p.device }); if (!dr.ok) return dr;
+        const t0 = Date.now(); let mask = null, fg = null;
+        if (!whole) { const bm = FaSubject3d.bgMask(px, 42); fg = bm.fg; if (bm.fg >= 0.02 && bm.fg <= 0.95) mask = { w: px.width, h: px.height, data: bm.mask }; }
+        const prep = FaImage3d.prepareInput(dr.depth, mask, { mode: mask ? 'components' : 'whole', workMax: 96 });
+        const scene = FaImage3d.buildScene({ labels: prep.labels, depth: prep.depth }, { shape, closeMode: close, maxFaces: 12000 });
+        if (!mask) scene.background = null; // the whole picture is the one object: a backdrop behind it would only be a copy
+        if (!scene.objects.length) return { ok: false, error: T('沒有找到可以做成立體的物件', 'no object to build') };
+        const sums = {}; for (let y = 0; y < px.height; y++) for (let x = 0; x < px.width; x++) {
+            const id = prep.labels[Math.min(prep.height - 1, Math.floor(y * prep.height / px.height))][Math.min(prep.width - 1, Math.floor(x * prep.width / px.width))] || 'background', k = (y * px.width + x) * 4, s = sums[id] || (sums[id] = [0, 0, 0, 0]);
+            s[0] += px.data[k]; s[1] += px.data[k + 1]; s[2] += px.data[k + 2]; s[3]++;
+        }
+        const colors = {}, hex = (n) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0'); for (const id in sums) { const s = sums[id]; colors[id] = '#' + hex(s[0] / s[3]) + hex(s[1] / s[3]) + hex(s[2] / s[3]); }
+        const title = T('圖片轉3D：', 'Image to 3D: ') + String(img.filename || '').replace(/\.[a-z0-9]+$/i, '').slice(0, 30);
+        const raw = FaImage3d.toSpec(scene, { colors, title }); const v = FaEdit3d.validate(raw); if (!v.ok) return { ok: false, error: T('做出來的場景不合規格：', 'the scene is invalid: ') + (v.problems || []).slice(0, 3).join('；') };
+        const r = await this._edOpen('edit-3d', { spec: v.spec });
+        const parts = scene.objects.concat(scene.background ? [scene.background] : []);
+        const out = { ok: !(r && r.ok === false), error: r && r.ok === false ? r.error : undefined, objects: scene.objects.length, shapes: scene.objects.map((x) => x.shape), faces: parts.reduce((a, x) => a + x.mesh.faces.length, 0), close, all_closed: parts.every((x) => FaImage3d.isClosed(x.mesh)), fell_back: parts.filter((x) => x.fallback).length, dropped_blobs: prep.dropped, foreground_ratio: fg == null ? undefined : Math.round(fg * 1000) / 1000, depth_model: dr.model, device: dr.device, ms: Date.now() - t0 + (dr.ms || 0), notes: [T('每個物件都是封閉的立體，不是浮雕；單張圖看不到背面，背面是依輪廓寬度推測的厚度', 'every object is a closed solid, not a relief; one picture cannot show the back, so its depth is a guess from the outline width')].concat(prep.empty ? [T('沒有找到前景（背景色抓不準），整張圖當成一個物件', 'no foreground found: the whole picture became one object')] : [], mask ? [] : [T('整張圖當成一個物件', 'the whole picture is one object')]) };
+        return out;
+    };
+    // /image-to-3d [--close objects|all] [--shape auto|cylinder|blocks] [--whole] [說明]：先貼圖再打、或先打指令再貼圖送出都可以
+    M._image3dCommand = async function (argsText) {
+        argsText = String(argsText || ''); const ids = []; const mark = /\[附件：([^\]]*)\]/.exec(argsText);
+        if (mark) { const re = /([^、（]+?)（file_id=([\w-]+)）/g; let x; while ((x = re.exec(mark[1]))) { let rec = null; try { rec = await this.fileCache.get(x[2]); } catch (_) { /* */ } if (rec && rec.blob && (/^image\//i.test(rec.blob.type || '') || /\.(png|jpe?g|gif|webp|bmp)$/i.test(x[1]))) ids.push({ id: x[2], filename: x[1].trim(), size: rec.blob.size }); } }
+        const rest = argsText.replace(/\[附件：[^\]]*\]/g, ' ').trim() || this._i3dCmdArgs || ''; if (ids.length) this._i3dCmdArgs = '';
+        if (!ids.length) { this._armedSkill = { name: 'image-to-3d', at: Date.now() }; this._i3dCmdArgs = argsText.replace(/\[附件：[^\]]*\]/g, ' ').trim(); this._pushAssistantMessage('🧊 請貼上要轉成 3D 的圖片（Ctrl+V）或用📎上傳，送出後我會直接處理（深度模型離線執行，圖片不會上傳；每個物件都會做成封閉的立體，不是浮雕）。', null); this._persistChatHistory(); this._renderMessageHistory(); return; }
+        let pick = ids[0]; if (ids.length > 1) { pick = await this._pickAttachmentInteractive(ids, '要轉哪一張圖？', '附了好幾張圖，請選一張。'); if (!pick) return; }
+        const r = await this._imageTo3d({ image: pick.id, request: rest });
+        this._pushAssistantMessage(r.ok ? '🧊 已經放進 3D 編輯器：' + r.objects + ' 個物件各自封閉' + (r.all_closed ? '（全部通過封閉檢查）' : '（有物件沒通過封閉檢查，已退回較粗的殼）') + '，共 ' + r.faces + ' 個面；封閉範圍：' + (r.close === 'all' ? '全部（背景也是實心）' : '物件（背景是薄板）') + '。' + r.notes.join('；') + '。' : '🧊 ' + (r.cancelled ? '已取消' : '失敗：' + r.error), null);
+        this._persistChatHistory(); this._renderMessageHistory();
+    };
     M._registerEdit3dCommands = function () {
         const hint = '[起手式｜last｜一句話描述]';
         const run = async (argsText, run0) => {
@@ -31934,10 +32488,19 @@ const FaEditHost = (function () {
         this.register_slash_command('/edit-3d-model', hint,
             '3D 場景編輯器（用語言主導，位置完全以你現在看的角度算）：「在我的左前方放一個紅色的球」「把它移到桌子上面」；物件欄是樹狀的、屬性面板、雙擊物件進「單一物件編輯」（像做塑膠模型：每個面貼什麼圖、塗什麼顏色）、🧾 YAML 原始碼分頁可以直接改、圖可以貼進對話框當貼圖、復原／重做、整理成 prompt、匯出場景 YAML／PNG。/edit-3d-model room 從起手式開始、/edit-3d-model last 接著對話裡最近的 3D 場景。',
             run);
+        this.register_slash_command('/image-to-3d', '[--close objects|all] [--shape auto|cylinder|blocks] [--whole]',
+            '圖片轉 3D（離線）：深度模型在這台電腦上估計深度，再把每個物件各自做成封閉的立體（不是浮雕：用物件自己的輪廓做柱體或樂高方塊的殼，再逐層細切），放進 3D 場景編輯器。--close all＝連背景都做成實心（要列印用）；--shape 選殼的種類；--whole＝整張圖當一個物件。先貼圖再打指令、或先打指令再貼圖送出都可以；第一次使用要下載深度模型（會先問）。單張圖看不到背面，背面是推測的。',
+            async (argsText, run0) => { await (run0 || this)._image3dCommand(argsText); });
+        { const ie = this.slashCommands.get('/image-to-3d'); if (ie) ie._autoFromSkillBundle = true; }
         this.register_slash_command('/edit-3d', hint, '3D 場景編輯器：/edit-3d-model 的別名。', (argsText, run0) => (this.slashCommands.get('/edit-3d-model') || { handler: run }).handler(argsText, run0));
     };
     M._registerEdit3dTools = function (registerOptional) {
         const parse = async (self, raw) => { let a = {}; try { a = await self.repairJsonPayload(String(raw || '{}')); } catch (_) { /* */ } return a || {}; };
+        registerOptional('image_to_3d',
+            '圖片轉 3D（離線、不是浮雕）：用跑在這台電腦上的深度模型（Depth Anything V2 Small）估計深度，把圖裡每個物件各自做成封閉的立體（用物件自己的輪廓做柱體或樂高方塊的殼，再逐層細切；每個物件都通過封閉檢查），背景另成一塊，全部放進 3D 場景編輯器。圖片不會上傳；第一次使用要下載深度模型。單張圖看不到背面，背面是依輪廓推測的。close=all 連背景都做成實心（要列印時用），預設 objects。',
+            async function (rawArgs) { const a = await parse(this, rawArgs); try { return JSON.stringify(await this._imageTo3d({ image: a.image, request: a.request, close: a.close, shape: a.shape, whole: a.whole })); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); } },
+            { type: 'object', properties: { image: { type: 'string', description: '選填：圖片的 file_id 或檔名；省略時用這個對話最新的圖片附件' }, request: { type: 'string', description: '使用者的原話（例如「物件要封閉」「要能列印」「用樂高方塊」），程式會從裡面解析封閉範圍與外殼種類' }, close: { type: 'string', enum: ['objects', 'all'], description: 'objects＝每個物件封閉、背景是薄板（預設）；all＝連背景都做成實心' }, shape: { type: 'string', enum: ['auto', 'cylinder', 'blocks'] }, whole: { type: 'boolean', description: 'true＝整張圖當一個物件，不分前景背景' } } }
+        );
         registerOptional('edit_3d_open',
             '在對話裡放一個「3D 場景編輯器」（用語言主導；位置完全以使用者現在看的角度算：「我的左前方」「桌子的右邊」）：物件欄（樹狀、群組）、屬性面板、3D 畫面（拖曳轉視角、點物件選取、拖曳移動）、🧾 YAML 原始碼分頁（可直接改）、雙擊物件進「單一物件編輯」（像做塑膠模型：每個面貼什麼圖、塗什麼顏色）、貼圖（貼進編輯器對話框、網址、找圖）、復原／重做、匯出場景 YAML（render_3d_scene 可直接播放）／PNG／整理成 prompt。參數：starter（blank、room、model、studio）、request（一句話：開起來後編輯器自己的 AI 去做）、yaml（一份場景 YAML 當起點）、file_id（使用者上傳的 .3dscene.yaml 或 STL／OBJ／3MF／FBX 模型）、last（true＝接著對話裡最近的 3D 場景）、id（接著原本的專案）。做完編輯器就在對話裡，不要把場景 YAML 貼進對話。參數: {"starter":"room","request":"（選填）","yaml":"（選填）","file_id":"（選填）","last":false,"id":"（選填）"}',
             async function (rawArgs) { const a = await parse(this, rawArgs); try { return JSON.stringify(await this._ed3dOpen({ starter: a.starter, request: a.request, yaml: a.yaml, file_id: a.file_id, last: !!a.last, id: a.id })); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); } },
