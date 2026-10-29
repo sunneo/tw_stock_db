@@ -19,7 +19,7 @@ button{font:inherit;padding:3px 10px;border:1px solid var(--bd);background:var(-
 #msgs{flex:1;overflow:auto;padding:8px}
 .msg{margin:8px 0;padding:8px 10px;border-radius:8px;border:1px solid var(--bd);word-break:break-word}.msg.u{background:var(--sf);margin-left:24px}.msg.a{margin-right:8px}.msg.ai{border-color:var(--ai)}
 .msg .h{font-size:11px;color:var(--mut);margin-bottom:3px}.msg .acts{margin-top:6px;display:flex;gap:6px;flex-wrap:wrap}
-#qbar{display:flex;gap:6px;padding:8px;border-top:1px solid var(--bd)}#q{flex:1;padding:6px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg)}
+#qbar{display:flex;gap:6px;padding:8px;border-top:1px solid var(--bd)}#q{flex:1;resize:vertical;min-height:34px;max-height:40vh;font:inherit;padding:6px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg)}
 details#net{border-top:1px solid var(--bd);padding:4px 8px;font-size:11px;color:var(--mut)}#netlog{max-height:90px;overflow:auto;font-family:ui-monospace,Consolas,monospace}
 h1.t{font-size:19px;margin:0 0 6px;word-break:break-all}h2{font-size:15px;margin:18px 0 6px;border-bottom:1px solid var(--bd);padding-bottom:3px}h3{font-size:14px;margin:12px 0 4px}
 .mut{color:var(--mut)}code,pre{font-family:ui-monospace,Consolas,monospace;font-size:12px}pre{background:var(--sf);border:1px solid var(--bd);border-radius:6px;padding:8px 10px;overflow:auto;margin:6px 0}:not(pre)>code{background:var(--sf);border:1px solid var(--bd);border-radius:4px;padding:0 4px}
@@ -54,7 +54,7 @@ body.hide-nav #nav,body.hide-nav #spL,body.hide-chat #chat,body.hide-chat #spR{d
 <aside id="nav"><div id="tabs"><button data-t="pages" class="on">頁面</button><button data-t="tree">檔案</button><button data-t="syms">定義</button><button data-t="notes">說明</button></div><input id="sq" placeholder="搜尋…（語意搜尋）"><div id="list"></div></aside><div class="sp" id="spL" title="拖曳調整左邊寬度（雙擊還原）"></div>
 <main id="main"><div class="mut">載入中…</div></main></div>
 <div class="sp" id="spR" title="拖曳調整右邊（雙擊還原）"></div>
-<section id="chat"><div id="msgs"></div><div id="qbar"><input id="q" placeholder="問這個專案：某函式做什麼／在哪定義／誰用到…" autofocus><button id="ask" class="p" title="離線問答（立刻回答）">問</button><button id="askai" class="ai" title="請 AI 讀程式碼後回答（依序處理，AI 在背景參與）">問 AI</button></div>
+<section id="chat"><div id="msgs"></div><div id="qbar"><textarea id="q" rows="1" placeholder="問這個專案：某函式做什麼／在哪定義／誰用到…　也可以貼上堆疊或 log 問「例外在哪發生」「這個訊息是誰印的」（Enter 送出，Shift+Enter 換行，Ctrl+Enter 問 AI）" autofocus></textarea><button id="ask" class="p" title="離線問答（立刻回答）">問</button><button id="askai" class="ai" title="請 AI 讀程式碼後回答（依序處理，AI 在背景參與）">問 AI</button></div>
 <details id="net"><summary>通訊紀錄（fetch／WebSocket）</summary><div id="netlog"></div></details></section>
 </div>
 <script id="cfg" type="application/json">__CFG__</script>
@@ -370,7 +370,7 @@ document.querySelectorAll('#tabs button').forEach(function(b){b.onclick=function
 var sqT=null;$('#sq').oninput=function(){clearTimeout(sqT);sqT=setTimeout(renderList,250)};
 $('#ask').onclick=function(){var v=$('#q').value;$('#q').value='';ask(v,cur,false)};
 $('#askai').onclick=function(){var v=$('#q').value;$('#q').value='';ask(v,cur,true)};
-$('#q').onkeydown=function(e){if(e.key==='Enter'){var v=$('#q').value;$('#q').value='';ask(v,cur,e.shiftKey)}};
+$('#q').onkeydown=function(e){if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();var v=$('#q').value;$('#q').value='';$('#q').style.height='';ask(v,cur,e.ctrlKey||e.metaKey)}};
 $('#btnNet').onclick=function(){var d=$('#net');d.open=!d.open};
 // ---- 版面：左／中／右可拖曳調整、左右可隱藏、右邊可停靠右／左／下；偏好由主程式保存（iframe 沒有自己的儲存空間） ----
 var DEF={dock:'right',navW:270,chatW:360,chatH:0,navHidden:false,chatHidden:false},PREF=Object.assign({},DEF),prefT=null;
