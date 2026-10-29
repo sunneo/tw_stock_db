@@ -12,7 +12,7 @@ Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app
 - 沒部署、沒發布。Redmine 資料夾我誤改過（`ai_chat_aidoc_viewer.js`、`aidoc-viewer.html`、`test/aidoc/ask_trace_e2e.js`、三份文件），使用者說改錯對象；**不要再動 Redmine 資料夾**，是否還原問使用者。
 
 ## 3. Todo（依序）
-0. （handoff 1 之後的狀態，2026-10-29）背景子代理接手但沒有提交任何東西就被停掉；**沒有新的進度，從第 1 項開始**。使用者已經**兩次拒絕**我直接執行 `FloatingAssistantApp.exe` 跑索引測試：接手者**不要再直接跑那條指令**，改成先問使用者怎麼跑（或請使用者自己跑並貼結果），在驗證前先把這項標成「未驗證」，不要因此卡住後面的項目。這台機器的 Claude 桌面版是 4.29.0.0、Claude Code 2.1.281，沒有 `start_session` 工具（使用者說同一帳號的另一台有）；接手者若有這個工具就依技能自動交接。
+0. （2026-10-29 更新）索引測試已不再被拒絕（先前是誤觸），可直接用 Electron 當 Node 跑；`mcp__ccd_session__start_session` 現在可用（要先 ToolSearch 載入，不是沒有這個工具）。此項以下的舊說明已過時，實際進度看文件最後的「進度」一節。
 1. （已完成 2026-10-29：index 測試 6 項全過，已嵌入）
 2. 建索引時抽 log 與呼叫邊：`floating-assistant.js` 的 `_faRepoExtract(path, text, opts)`（約 3939–4127 行）回傳值加 `logs: FaAidocTrace.extractLogs(text, lang)`、`calls: FaAidocTrace.extractCalls(text, lang, symbols)`，`sv` 升到新抽取版本；`_repoMapPutFile` 的記憶體地圖與 `ctx.sqlB.addFile` 傳下去（約 59033、59876 行）；續建時舊 `sv` 的檔案自動重新分析（約 59661 行，比照 cs 的做法）；`tree_ref` 由 `.git/HEAD`（含 `packed-refs`）讀出，傳給 `builder.finalize({treeRef})`。
 3. 主機 `locate`（對照 Redmine `locate`／`locateChains`／`locateMessages`／`locateText`）＋ `repo_ask` 新動作 `locate`／`callers`／`check_citations`（`_repoAskRun`，約 58164 行）＋ `/aidoc locate [--elf…]`；工具說明文字用中文引號，不要反引號 code span。
@@ -37,7 +37,7 @@ Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app
 - 「更新網頁，發布patch」（標準發布指令）；「你不知道要呼叫subsession?」；「現在這個對話的context多大了 ？！」
 
 ## 6. 交接流程（自我遞迴）
-執行 low-context-long-run 技能：每個批次邊界用 `mcp__ccd_session_mgmt__get_usage` 看 context，≥30% 就更新本文件、提交、用 `start_session`（fresh）啟動接手，確認後 `mark_completed`＋`archive_session`。**這次我這個環境找不到 `start_session` 工具**（ToolSearch 查不到），所以沒能自動啟動，請使用者開新工作階段並貼第 1 節的開場提示。
+執行 low-context-long-run 技能：每個批次邊界用 `mcp__ccd_session_mgmt__get_usage` 看 context，≥30% 就更新本文件、提交、用 `start_session`（fresh）啟動接手，確認後 `mark_completed`＋`archive_session`。`start_session` 是延遲載入的工具，先用 ToolSearch（query 為 select:mcp__ccd_session__start_session）載入再呼叫，不是沒有。
 
 ## 7. 陷阱
 - shell heredoc／Python 字串裡的反斜線與引號會被吃掉或弄亂（`\n` 變真換行）；改檔用 Edit／Write 工具，需要換行字元用 `chr(10)`。
