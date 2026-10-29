@@ -262,6 +262,7 @@ check('loop: at most 3 calls per round', execs.length === 3 && r.ok, { execs });
 }
 check('depth model is registered but is not an image/text/managed model', V.byId('depth-anything-v2-small') && V.depthModels().length === 1 && V.DEFAULT_DEPTH_MODEL === 'depth-anything-v2-small' && !V.imageModels().some((m) => m.task === 'depth-estimation') && !V.byId('depth-anything-v2-small').managedOnly && V.byId('depth-anything-v2-small').arch === 'depth');
 check('depth model is never picked for an image-to-text task', V.pickModel('caption', {}, 'depth-anything-v2-small', { available: true, f16: true }).model.id !== 'depth-anything-v2-small');
+check('segmentation model is registered, not an image model, never picked for captions', V.segmentModels().length === 1 && V.byId('slimsam-77-uniform').arch === 'sam' && !V.imageModels().some((m) => m.task === 'segmentation') && V.pickModel('caption', {}, 'slimsam-77-uniform', { available: true, f16: true }).model.id !== 'slimsam-77-uniform');
 console.log(ok + ' passed, ' + bad.length + ' failed', bad);
 process.exit(bad.length ? 1 : 0);
 })();

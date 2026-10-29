@@ -449,13 +449,41 @@
     });
     return { labels: lab, count: n, dropped: dropped };
   }
+  // masks from a segmentation model ([{w,h,data,score}], 1 = inside) -> labels grid (w x h). Near-duplicates (IoU over 0.7) and masks that are tiny or cover almost the whole picture are dropped;
+  // bigger masks are painted first so a smaller mask inside one stays its own object; labels are numbered by area, biggest = 1.
+  function labelsFromMasks(masks, w, h, opts) {
+    opts = opts || {};
+    var minArea = Math.max(1, Math.floor((opts.minAreaFrac == null ? 0.004 : opts.minAreaFrac) * w * h)), maxArea = (opts.maxAreaFrac || 0.9) * w * h, maxObjects = opts.maxObjects || 12;
+    var rs = (masks || []).map(function (m) { var g = resampleMask(m.data, m.w, m.h, w, h), n = 0; g.forEach(function (r) { r.forEach(function (v) { n += v; }); }); return { g: g, n: n, score: m.score || 0 }; })
+      .filter(function (m) { return m.n >= minArea && m.n <= maxArea; });
+    rs.sort(function (a, b) { return b.score - a.score; });
+    var kept = [];
+    rs.forEach(function (m) {
+      for (var i = 0; i < kept.length; i++) {
+        var inter = 0, y, x; for (y = 0; y < h; y++) { for (x = 0; x < w; x++) { if (m.g[y][x] && kept[i].g[y][x]) { inter++; } } }
+        if (inter / (m.n + kept[i].n - inter) > 0.7) { return; }
+      }
+      kept.push(m);
+    });
+    kept = kept.slice(0, maxObjects).sort(function (a, b) { return b.n - a.n; });
+    var lab = [], y2, x2; for (y2 = 0; y2 < h; y2++) { lab.push(new Array(w).fill(0)); }
+    kept.forEach(function (m, i) { for (y2 = 0; y2 < h; y2++) { for (x2 = 0; x2 < w; x2++) { if (m.g[y2][x2]) { lab[y2][x2] = i + 1; } } } });
+    // painting small-on-big can erase a big mask's label entirely or split it; count what is left
+    var left = {}; lab.forEach(function (r) { r.forEach(function (v) { if (v) { left[v] = (left[v] || 0) + 1; } }); });
+    var ids = Object.keys(left).map(Number).sort(function (a, b) { return left[b] - left[a]; }), map = {}; ids.forEach(function (id, i) { map[id] = i + 1; });
+    lab = lab.map(function (r) { return r.map(function (v) { return v ? map[v] : 0; }); });
+    return { labels: lab, count: ids.length, dropped: (masks || []).length - ids.length };
+  }
   // one call from the host: depth {w,h,data} (model-sized, larger = nearer) + optional foreground mask {w,h,data} (1 = object) -> { labels, depth, width, height, count }
   // mode: 'whole' = the whole picture is one object; 'components' (default) = every separate foreground blob is an object (needs a mask, else falls back to 'whole')
   function prepareInput(depth, mask, opts) {
     opts = opts || {};
     var longest = Math.max(depth.w, depth.h), k = Math.min(1, (opts.workMax || 96) / longest), w = Math.max(2, Math.round(depth.w * k)), h = Math.max(2, Math.round(depth.h * k));
     var dep = resampleGrid(depth.data, depth.w, depth.h, w, h), res;
-    if (opts.mode === 'whole' || !mask) {
+    if (opts.segments && opts.segments.length && opts.mode !== 'whole') {
+      res = labelsFromMasks(opts.segments, w, h, opts);
+      if (!res.count) { res = { labels: dep.map(function (r) { return r.map(function () { return 1; }); }), count: 1, dropped: res.dropped, empty: true }; }
+    } else if (opts.mode === 'whole' || !mask) {
       res = { labels: dep.map(function (r) { return r.map(function () { return 1; }); }), count: 1, dropped: 0 };
     } else {
       res = labelComponents(resampleMask(mask.data, mask.w, mask.h, w, h), opts);
@@ -464,10 +492,37 @@
     return { labels: res.labels, depth: dep, width: w, height: h, count: res.count, dropped: res.dropped, empty: !!res.empty };
   }
 
+  // ---------- background subtraction: the picture with the subject vs a picture of the empty background (same camera) ----------
+  // a, bg: { width, height, data: RGBA } of the same size. A pixel is foreground when its colour is further than `tol` (default 40, RGB distance) from the background pixel,
+  // then a 3x3 majority filter (passes, default 2) removes speckles and fills pin-holes. Returns { mask: Uint8Array (1 = foreground), fg: share of the picture, tol }.
+  function diffMask(a, bg, opts) {
+    opts = opts || {};
+    if (!a || !bg || a.width !== bg.width || a.height !== bg.height) { return null; }
+    var w = a.width, h = a.height, tol = opts.tol || 40, n = w * h, m = new Uint8Array(n), i, x, y;
+    for (i = 0; i < n; i++) {
+      var o = i * 4, dr = a.data[o] - bg.data[o], dg = a.data[o + 1] - bg.data[o + 1], db = a.data[o + 2] - bg.data[o + 2];
+      m[i] = Math.sqrt(dr * dr + dg * dg + db * db) > tol ? 1 : 0;
+    }
+    for (var pass = 0; pass < (opts.passes == null ? 2 : opts.passes); pass++) {
+      var nx = new Uint8Array(n);
+      for (y = 0; y < h; y++) {
+        for (x = 0; x < w; x++) {
+          var c = 0, t = 0;
+          for (var dy = -1; dy <= 1; dy++) { for (var dx = -1; dx <= 1; dx++) { var yy = y + dy, xx = x + dx; if (yy >= 0 && yy < h && xx >= 0 && xx < w) { t++; c += m[yy * w + xx]; } } }
+          nx[y * w + x] = c * 2 > t ? 1 : 0;
+        }
+      }
+      m = nx;
+    }
+    var fg = 0; for (i = 0; i < n; i++) { fg += m[i]; }
+    return { mask: m, fg: fg / n, tol: tol };
+  }
+
   // ---------- options from the user's words (the program decides; the model is only asked when this cannot) ----------
   // close: 'objects' (default; every found object is a closed solid, the backdrop is a thin closed slab) | 'all' (the user wants everything closed / printable: the backdrop is a full-thickness solid too)
   function parseOptions(text) {
-    var t = String(text || ''), out = { close: 'objects', shape: 'auto', whole: false, closeSource: 'default' }, m;
+    var t = String(text || ''), out = { close: 'objects', shape: 'auto', whole: false, segment: false, closeSource: 'default' }, m;
+    if (/--segment(?![a-z])|自動(?:分割|分物件)|分割模型|segment\s+objects/i.test(t)) { out.segment = true; }
     if ((m = /--close[=\s]+(objects|all)(?![a-z])/i.exec(t))) { out.close = m[1].toLowerCase(); out.closeSource = 'flag'; }
     else if (/(?:全部|所有|整個|整張|統一|每個|一律)[^，。,.\n]{0,8}封閉|要能?(?:3d)?列印|可(?:以)?列印|print(?:able)?|watertight|everything\s+closed|close\s+all/i.test(t)) { out.close = 'all'; out.closeSource = 'phrase'; }
     else if (/(?:物件|東西|蘋果|人物|人臉)[^，。,.\n]{0,6}(?:要|得|需要)?封閉|closed\s+objects?/i.test(t)) { out.close = 'objects'; out.closeSource = 'phrase'; }
@@ -498,5 +553,5 @@
     return { v: 1, title: opts.title || '圖片轉3D', objects: objects };
   }
 
-  return { parseOptions: parseOptions, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
+  return { diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
 });

@@ -7226,6 +7226,9 @@ const holder = {};
         // 深度估計（圖片轉 3D 用，不能拿來做圖像轉文字）：每個像素一個相對深度（大＝近）。檔案大小 2026-10-29 讀自 HuggingFace 檔案清單（fp16 49.6MB、int8 27.3MB）。
         { id: 'depth-anything-v2-small', gpuNeedsF16: true, label: 'Depth Anything V2 Small（深度估計，/image-to-3d 用）', task: 'depth-estimation', arch: 'depth', repo: 'onnx-community/depth-anything-v2-small', tasks: [], lang: '無（輸出深度圖）', license: 'Apache-2.0',
             dtype: { gpu: 'fp16', cpu: 'int8' }, bytes: { gpu: 50 * MB, cpu: 30 * MB }, verified: false, notes: '單張圖估計相對深度（越亮越近），約 25M 參數。給 /image-to-3d 當基礎層；照 Transformers.js 的 depth-estimation 範例寫，還沒在真實環境驗證。' },
+        // 分割（/image-to-3d 自動分物件用，不能拿來做圖像轉文字）：SAM 家族。MobileSAM 官方沒有 Transformers.js 格式的轉檔，所以用同家族、同授權友善的 SlimSAM（Xenova 轉檔）。檔案大小 2026-10-30 讀自 HuggingFace 檔案清單（q8：編碼器 8.9MB＋解碼器 4.9MB；fp16：12.2MB＋8.6MB）。
+        { id: 'slimsam-77-uniform', gpuNeedsF16: true, label: 'SlimSAM 77（分割，/image-to-3d --segment 用）', task: 'segmentation', arch: 'sam', repo: 'Xenova/slimsam-77-uniform', tasks: [], lang: '無（輸出物件遮罩）', license: 'Apache-2.0',
+            dtype: { gpu: 'fp16', cpu: 'q8' }, bytes: { gpu: 22 * MB, cpu: 16 * MB }, verified: false, notes: 'Segment Anything 的瘦身版（約 1000 萬參數）：在圖上撒一組點、每個點取最好的遮罩、去掉重複與太小的，當作「圖裡有哪些物件」。照 Transformers.js 的 SAM 範例寫，還沒在真實環境驗證。' },
         // 管理用（不能拿來做圖像轉文字）：語音轉文字 Whisper，跟這裡共用同一個瀏覽器快取
         { id: 'whisper-base', label: 'Whisper base（語音轉文字，transcribe_media 用）', task: 'asr', arch: 'whisper', repo: 'onnx-community/whisper-base', tasks: [], bytes: { gpu: 80 * MB, cpu: 80 * MB }, managedOnly: true, verified: true, notes: '影音轉逐字稿用，跟圖像轉文字共用快取與裝置設定。' },
     ];
@@ -7234,6 +7237,8 @@ const holder = {};
     const textModels = () => MODELS.filter((m) => m.task === 'text-generation');
     const depthModels = () => MODELS.filter((m) => m.task === 'depth-estimation');
     const DEFAULT_DEPTH_MODEL = 'depth-anything-v2-small';
+    const segmentModels = () => MODELS.filter((m) => m.task === 'segmentation');
+    const DEFAULT_SEGMENT_MODEL = 'slimsam-77-uniform';
     const DEFAULT_MODEL = 'florence-2-base-ft';          // 圖像（VLM）預設
     const DEFAULT_TEXT_MODEL = 'qwen3-0.6b';             // 文字生成預設（兩種預設分開設定）
 
@@ -7325,7 +7330,7 @@ const holder = {};
     // installed：{模型id: 已下載位元組}；gpu：{available, f16}（只能用 GPU 的模型在沒有 GPU 時不考慮）。回傳 { model, reason }
     function pickModel(task, installed, preferredId, gpu) {
         installed = installed || {}; const ok = (m) => !m.managedOnly && m.tasks.includes(task) && !(m.gpuOnly && !(gpu && gpu.available && gpu.f16 !== false));
-        const pref = byId(preferredId) && !byId(preferredId).managedOnly && byId(preferredId).task !== 'depth-estimation' ? byId(preferredId) : byId(DEFAULT_MODEL);
+        const pref = byId(preferredId) && !byId(preferredId).managedOnly && byId(preferredId).task === 'image-to-text' ? byId(preferredId) : byId(DEFAULT_MODEL);
         if (ok(pref)) return { model: pref, reason: '預設模型支援這個任務' };
         const have = imageModels().filter((m) => ok(m) && (installed[m.id] || 0) > 0);
         if (have.length) return { model: have[0], reason: '預設模型（' + pref.id + '）不支援「' + (TASKS[task] || task) + '」，改用已下載的 ' + have[0].id };
@@ -7601,7 +7606,7 @@ const holder = {};
     // 估算這次下載量（依裝置組合）；已經在快取裡的部分不用再下載
     function estimateDownload(model, device, cachedBytes) { const total = (model.bytes && model.bytes[device === 'webgpu' ? 'gpu' : 'cpu']) || 0; return Math.max(0, total - (Number(cachedBytes) || 0)); }
 
-    return { MODELS, byId, imageModels, textModels, depthModels, DEFAULT_DEPTH_MODEL, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
+    return { MODELS, byId, imageModels, textModels, depthModels, DEFAULT_DEPTH_MODEL, segmentModels, DEFAULT_SEGMENT_MODEL, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
 });
 
 }).call(null, undefined, holder);
@@ -30376,13 +30381,41 @@ const holder = {};
     });
     return { labels: lab, count: n, dropped: dropped };
   }
+  // masks from a segmentation model ([{w,h,data,score}], 1 = inside) -> labels grid (w x h). Near-duplicates (IoU over 0.7) and masks that are tiny or cover almost the whole picture are dropped;
+  // bigger masks are painted first so a smaller mask inside one stays its own object; labels are numbered by area, biggest = 1.
+  function labelsFromMasks(masks, w, h, opts) {
+    opts = opts || {};
+    var minArea = Math.max(1, Math.floor((opts.minAreaFrac == null ? 0.004 : opts.minAreaFrac) * w * h)), maxArea = (opts.maxAreaFrac || 0.9) * w * h, maxObjects = opts.maxObjects || 12;
+    var rs = (masks || []).map(function (m) { var g = resampleMask(m.data, m.w, m.h, w, h), n = 0; g.forEach(function (r) { r.forEach(function (v) { n += v; }); }); return { g: g, n: n, score: m.score || 0 }; })
+      .filter(function (m) { return m.n >= minArea && m.n <= maxArea; });
+    rs.sort(function (a, b) { return b.score - a.score; });
+    var kept = [];
+    rs.forEach(function (m) {
+      for (var i = 0; i < kept.length; i++) {
+        var inter = 0, y, x; for (y = 0; y < h; y++) { for (x = 0; x < w; x++) { if (m.g[y][x] && kept[i].g[y][x]) { inter++; } } }
+        if (inter / (m.n + kept[i].n - inter) > 0.7) { return; }
+      }
+      kept.push(m);
+    });
+    kept = kept.slice(0, maxObjects).sort(function (a, b) { return b.n - a.n; });
+    var lab = [], y2, x2; for (y2 = 0; y2 < h; y2++) { lab.push(new Array(w).fill(0)); }
+    kept.forEach(function (m, i) { for (y2 = 0; y2 < h; y2++) { for (x2 = 0; x2 < w; x2++) { if (m.g[y2][x2]) { lab[y2][x2] = i + 1; } } } });
+    // painting small-on-big can erase a big mask's label entirely or split it; count what is left
+    var left = {}; lab.forEach(function (r) { r.forEach(function (v) { if (v) { left[v] = (left[v] || 0) + 1; } }); });
+    var ids = Object.keys(left).map(Number).sort(function (a, b) { return left[b] - left[a]; }), map = {}; ids.forEach(function (id, i) { map[id] = i + 1; });
+    lab = lab.map(function (r) { return r.map(function (v) { return v ? map[v] : 0; }); });
+    return { labels: lab, count: ids.length, dropped: (masks || []).length - ids.length };
+  }
   // one call from the host: depth {w,h,data} (model-sized, larger = nearer) + optional foreground mask {w,h,data} (1 = object) -> { labels, depth, width, height, count }
   // mode: 'whole' = the whole picture is one object; 'components' (default) = every separate foreground blob is an object (needs a mask, else falls back to 'whole')
   function prepareInput(depth, mask, opts) {
     opts = opts || {};
     var longest = Math.max(depth.w, depth.h), k = Math.min(1, (opts.workMax || 96) / longest), w = Math.max(2, Math.round(depth.w * k)), h = Math.max(2, Math.round(depth.h * k));
     var dep = resampleGrid(depth.data, depth.w, depth.h, w, h), res;
-    if (opts.mode === 'whole' || !mask) {
+    if (opts.segments && opts.segments.length && opts.mode !== 'whole') {
+      res = labelsFromMasks(opts.segments, w, h, opts);
+      if (!res.count) { res = { labels: dep.map(function (r) { return r.map(function () { return 1; }); }), count: 1, dropped: res.dropped, empty: true }; }
+    } else if (opts.mode === 'whole' || !mask) {
       res = { labels: dep.map(function (r) { return r.map(function () { return 1; }); }), count: 1, dropped: 0 };
     } else {
       res = labelComponents(resampleMask(mask.data, mask.w, mask.h, w, h), opts);
@@ -30391,10 +30424,37 @@ const holder = {};
     return { labels: res.labels, depth: dep, width: w, height: h, count: res.count, dropped: res.dropped, empty: !!res.empty };
   }
 
+  // ---------- background subtraction: the picture with the subject vs a picture of the empty background (same camera) ----------
+  // a, bg: { width, height, data: RGBA } of the same size. A pixel is foreground when its colour is further than `tol` (default 40, RGB distance) from the background pixel,
+  // then a 3x3 majority filter (passes, default 2) removes speckles and fills pin-holes. Returns { mask: Uint8Array (1 = foreground), fg: share of the picture, tol }.
+  function diffMask(a, bg, opts) {
+    opts = opts || {};
+    if (!a || !bg || a.width !== bg.width || a.height !== bg.height) { return null; }
+    var w = a.width, h = a.height, tol = opts.tol || 40, n = w * h, m = new Uint8Array(n), i, x, y;
+    for (i = 0; i < n; i++) {
+      var o = i * 4, dr = a.data[o] - bg.data[o], dg = a.data[o + 1] - bg.data[o + 1], db = a.data[o + 2] - bg.data[o + 2];
+      m[i] = Math.sqrt(dr * dr + dg * dg + db * db) > tol ? 1 : 0;
+    }
+    for (var pass = 0; pass < (opts.passes == null ? 2 : opts.passes); pass++) {
+      var nx = new Uint8Array(n);
+      for (y = 0; y < h; y++) {
+        for (x = 0; x < w; x++) {
+          var c = 0, t = 0;
+          for (var dy = -1; dy <= 1; dy++) { for (var dx = -1; dx <= 1; dx++) { var yy = y + dy, xx = x + dx; if (yy >= 0 && yy < h && xx >= 0 && xx < w) { t++; c += m[yy * w + xx]; } } }
+          nx[y * w + x] = c * 2 > t ? 1 : 0;
+        }
+      }
+      m = nx;
+    }
+    var fg = 0; for (i = 0; i < n; i++) { fg += m[i]; }
+    return { mask: m, fg: fg / n, tol: tol };
+  }
+
   // ---------- options from the user's words (the program decides; the model is only asked when this cannot) ----------
   // close: 'objects' (default; every found object is a closed solid, the backdrop is a thin closed slab) | 'all' (the user wants everything closed / printable: the backdrop is a full-thickness solid too)
   function parseOptions(text) {
-    var t = String(text || ''), out = { close: 'objects', shape: 'auto', whole: false, closeSource: 'default' }, m;
+    var t = String(text || ''), out = { close: 'objects', shape: 'auto', whole: false, segment: false, closeSource: 'default' }, m;
+    if (/--segment(?![a-z])|自動(?:分割|分物件)|分割模型|segment\s+objects/i.test(t)) { out.segment = true; }
     if ((m = /--close[=\s]+(objects|all)(?![a-z])/i.exec(t))) { out.close = m[1].toLowerCase(); out.closeSource = 'flag'; }
     else if (/(?:全部|所有|整個|整張|統一|每個|一律)[^，。,.\n]{0,8}封閉|要能?(?:3d)?列印|可(?:以)?列印|print(?:able)?|watertight|everything\s+closed|close\s+all/i.test(t)) { out.close = 'all'; out.closeSource = 'phrase'; }
     else if (/(?:物件|東西|蘋果|人物|人臉)[^，。,.\n]{0,6}(?:要|得|需要)?封閉|closed\s+objects?/i.test(t)) { out.close = 'objects'; out.closeSource = 'phrase'; }
@@ -30425,7 +30485,7 @@ const holder = {};
     return { v: 1, title: opts.title || '圖片轉3D', objects: objects };
   }
 
-  return { parseOptions: parseOptions, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
+  return { diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
 });
 
 }).call(null, undefined, holder);
@@ -32437,8 +32497,8 @@ const FaEditHost = (function () {
     };
     // ───── /image-to-3d: a picture -> offline depth model -> one CLOSED solid per object (never a relief), opened in the 3D editor ─────
     // pixels of the picture, shrunk so the longest side is `longest`: { width, height, data: RGBA }
-    M._i3dPixels = async function (blob, longest) {
-        const bmp = await createImageBitmap(blob); const k = Math.min(1, longest / Math.max(bmp.width, bmp.height)), w = Math.max(2, Math.round(bmp.width * k)), h = Math.max(2, Math.round(bmp.height * k));
+    M._i3dPixels = async function (blob, longest, force) {
+        const bmp = await createImageBitmap(blob); const k = Math.min(1, longest / Math.max(bmp.width, bmp.height)), w = force ? force.width : Math.max(2, Math.round(bmp.width * k)), h = force ? force.height : Math.max(2, Math.round(bmp.height * k));
         const cv = document.createElement('canvas'); cv.width = w; cv.height = h; const cx = cv.getContext('2d', { willReadFrequently: true }); cx.drawImage(bmp, 0, 0, w, h); try { bmp.close(); } catch (_) { /* */ }
         const d = cx.getImageData(0, 0, w, h); return { width: w, height: h, data: d.data };
     };
@@ -32449,11 +32509,22 @@ const FaEditHost = (function () {
         const img = await this._vlmResolveImage(p); if (!img.blob) return { ok: false, cancelled: img.cancelled, error: img.error };
         let px; try { px = await this._i3dPixels(img.blob, 160); } catch (e) { return { ok: false, error: T('讀不了這張圖片：', 'could not read the picture: ') + String((e && e.message) || e) }; }
         const dr = await this._depthEstimate({ blob: img.blob, filename: img.filename, model: p.model, device: p.device }); if (!dr.ok) return dr;
-        const t0 = Date.now(); let mask = null, fg = null;
-        if (!whole) { const bm = FaSubject3d.bgMask(px, 42); fg = bm.fg; if (bm.fg >= 0.02 && bm.fg <= 0.95) mask = { w: px.width, h: px.height, data: bm.mask }; }
-        const prep = FaImage3d.prepareInput(dr.depth, mask, { mode: mask ? 'components' : 'whole', workMax: 96 });
+        const t0 = Date.now(); let mask = null, fg = null, segs = null, segNote = '';
+        const wantSeg = p.segment != null ? !!p.segment : o.segment;
+        let bgNote = '';
+        if (!whole && p.bg) { // 背景差分：另一張「沒有主體的背景圖」逐像素比對（同一個視角）
+            const bi = await this._vlmResolveImage({ image: p.bg });
+            if (bi.blob) { let bpx = null; try { bpx = await this._i3dPixels(bi.blob, 160, px); } catch (_) { /* */ } const dm = bpx ? FaImage3d.diffMask(px, bpx, {}) : null; if (dm && dm.fg >= 0.02 && dm.fg <= 0.95) { mask = { w: px.width, h: px.height, data: dm.mask }; fg = dm.fg; bgNote = T('用背景差分取出前景', 'foreground taken by background subtraction'); } else bgNote = T('背景差分沒有取出合理的前景（差異太少或太多，兩張圖要是同一個視角），改用其他方式', 'background subtraction found no sensible foreground (the two pictures must share one viewpoint); used another way'); }
+            else bgNote = T('找不到背景圖：', 'background picture not found: ') + (bi.error || '');
+        }
+        if (!whole && !mask && wantSeg) { // 分割模型自動分物件；失敗不擋住，退回去背遮罩
+            const sr = await this._segmentObjects({ blob: img.blob, filename: img.filename, device: p.device });
+            if (sr.ok && sr.segments && sr.segments.length) segs = sr.segments; else if (sr.cancelled) return sr; else segNote = T('分割模型沒成功（' + (sr.error || '') + '），改用去背遮罩', 'segmentation failed (' + (sr.error || '') + '), used the background cut-out instead');
+        }
+        if (!whole && !segs && !mask) { const bm = FaSubject3d.bgMask(px, 42); fg = bm.fg; if (bm.fg >= 0.02 && bm.fg <= 0.95) mask = { w: px.width, h: px.height, data: bm.mask }; }
+        const prep = FaImage3d.prepareInput(dr.depth, mask, { mode: (mask || segs) ? 'components' : 'whole', workMax: 96, segments: segs });
         const scene = FaImage3d.buildScene({ labels: prep.labels, depth: prep.depth }, { shape, closeMode: close, maxFaces: 12000 });
-        if (!mask) scene.background = null; // the whole picture is the one object: a backdrop behind it would only be a copy
+        if (!mask && !segs) scene.background = null; // the whole picture is the one object: a backdrop behind it would only be a copy
         if (!scene.objects.length) return { ok: false, error: T('沒有找到可以做成立體的物件', 'no object to build') };
         const sums = {}; for (let y = 0; y < px.height; y++) for (let x = 0; x < px.width; x++) {
             const id = prep.labels[Math.min(prep.height - 1, Math.floor(y * prep.height / px.height))][Math.min(prep.width - 1, Math.floor(x * prep.width / px.width))] || 'background', k = (y * px.width + x) * 4, s = sums[id] || (sums[id] = [0, 0, 0, 0]);
@@ -32464,7 +32535,7 @@ const FaEditHost = (function () {
         const raw = FaImage3d.toSpec(scene, { colors, title }); const v = FaEdit3d.validate(raw); if (!v.ok) return { ok: false, error: T('做出來的場景不合規格：', 'the scene is invalid: ') + (v.problems || []).slice(0, 3).join('；') };
         const r = await this._edOpen('edit-3d', { spec: v.spec });
         const parts = scene.objects.concat(scene.background ? [scene.background] : []);
-        const out = { ok: !(r && r.ok === false), error: r && r.ok === false ? r.error : undefined, objects: scene.objects.length, shapes: scene.objects.map((x) => x.shape), faces: parts.reduce((a, x) => a + x.mesh.faces.length, 0), close, all_closed: parts.every((x) => FaImage3d.isClosed(x.mesh)), fell_back: parts.filter((x) => x.fallback).length, dropped_blobs: prep.dropped, foreground_ratio: fg == null ? undefined : Math.round(fg * 1000) / 1000, depth_model: dr.model, device: dr.device, ms: Date.now() - t0 + (dr.ms || 0), notes: [T('每個物件都是封閉的立體，不是浮雕；單張圖看不到背面，背面是依輪廓寬度推測的厚度', 'every object is a closed solid, not a relief; one picture cannot show the back, so its depth is a guess from the outline width')].concat(prep.empty ? [T('沒有找到前景（背景色抓不準），整張圖當成一個物件', 'no foreground found: the whole picture became one object')] : [], mask ? [] : [T('整張圖當成一個物件', 'the whole picture is one object')]) };
+        const out = { ok: !(r && r.ok === false), error: r && r.ok === false ? r.error : undefined, objects: scene.objects.length, shapes: scene.objects.map((x) => x.shape), faces: parts.reduce((a, x) => a + x.mesh.faces.length, 0), close, all_closed: parts.every((x) => FaImage3d.isClosed(x.mesh)), fell_back: parts.filter((x) => x.fallback).length, dropped_blobs: prep.dropped, foreground_ratio: fg == null ? undefined : Math.round(fg * 1000) / 1000, depth_model: dr.model, device: dr.device, ms: Date.now() - t0 + (dr.ms || 0), notes: [T('每個物件都是封閉的立體，不是浮雕；單張圖看不到背面，背面是依輪廓寬度推測的厚度', 'every object is a closed solid, not a relief; one picture cannot show the back, so its depth is a guess from the outline width')].concat(prep.empty ? [T('沒有找到前景（背景色抓不準），整張圖當成一個物件', 'no foreground found: the whole picture became one object')] : [], mask || segs ? [] : [T('整張圖當成一個物件', 'the whole picture is one object')], segs ? [T('物件由分割模型找出來', 'objects found by the segmentation model')] : [], segNote ? [segNote] : [], bgNote ? [bgNote] : []) };
         return out;
     };
     // /image-to-3d [--close objects|all] [--shape auto|cylinder|blocks] [--whole] [說明]：先貼圖再打、或先打指令再貼圖送出都可以
@@ -32473,8 +32544,8 @@ const FaEditHost = (function () {
         if (mark) { const re = /([^、（]+?)（file_id=([\w-]+)）/g; let x; while ((x = re.exec(mark[1]))) { let rec = null; try { rec = await this.fileCache.get(x[2]); } catch (_) { /* */ } if (rec && rec.blob && (/^image\//i.test(rec.blob.type || '') || /\.(png|jpe?g|gif|webp|bmp)$/i.test(x[1]))) ids.push({ id: x[2], filename: x[1].trim(), size: rec.blob.size }); } }
         const rest = argsText.replace(/\[附件：[^\]]*\]/g, ' ').trim() || this._i3dCmdArgs || ''; if (ids.length) this._i3dCmdArgs = '';
         if (!ids.length) { this._armedSkill = { name: 'image-to-3d', at: Date.now() }; this._i3dCmdArgs = argsText.replace(/\[附件：[^\]]*\]/g, ' ').trim(); this._pushAssistantMessage('🧊 請貼上要轉成 3D 的圖片（Ctrl+V）或用📎上傳，送出後我會直接處理（深度模型離線執行，圖片不會上傳；每個物件都會做成封閉的立體，不是浮雕）。', null); this._persistChatHistory(); this._renderMessageHistory(); return; }
-        let pick = ids[0]; if (ids.length > 1) { pick = await this._pickAttachmentInteractive(ids, '要轉哪一張圖？', '附了好幾張圖，請選一張。'); if (!pick) return; }
-        const r = await this._imageTo3d({ image: pick.id, request: rest });
+        let pick = ids[0], bgId; if (ids.length === 2 && /背景差分|差分|--bg|--diff|第二張.{0,6}背景|背景圖/i.test(rest)) bgId = ids[1].id; else if (ids.length > 1) { pick = await this._pickAttachmentInteractive(ids, '要轉哪一張圖？', '附了好幾張圖，請選一張。'); if (!pick) return; }
+        const r = await this._imageTo3d({ image: pick.id, request: rest, bg: bgId });
         this._pushAssistantMessage(r.ok ? '🧊 已經放進 3D 編輯器：' + r.objects + ' 個物件各自封閉' + (r.all_closed ? '（全部通過封閉檢查）' : '（有物件沒通過封閉檢查，已退回較粗的殼）') + '，共 ' + r.faces + ' 個面；封閉範圍：' + (r.close === 'all' ? '全部（背景也是實心）' : '物件（背景是薄板）') + '。' + r.notes.join('；') + '。' : '🧊 ' + (r.cancelled ? '已取消' : '失敗：' + r.error), null);
         this._persistChatHistory(); this._renderMessageHistory();
     };
@@ -32488,8 +32559,8 @@ const FaEditHost = (function () {
         this.register_slash_command('/edit-3d-model', hint,
             '3D 場景編輯器（用語言主導，位置完全以你現在看的角度算）：「在我的左前方放一個紅色的球」「把它移到桌子上面」；物件欄是樹狀的、屬性面板、雙擊物件進「單一物件編輯」（像做塑膠模型：每個面貼什麼圖、塗什麼顏色）、🧾 YAML 原始碼分頁可以直接改、圖可以貼進對話框當貼圖、復原／重做、整理成 prompt、匯出場景 YAML／PNG。/edit-3d-model room 從起手式開始、/edit-3d-model last 接著對話裡最近的 3D 場景。',
             run);
-        this.register_slash_command('/image-to-3d', '[--close objects|all] [--shape auto|cylinder|blocks] [--whole]',
-            '圖片轉 3D（離線）：深度模型在這台電腦上估計深度，再把每個物件各自做成封閉的立體（不是浮雕：用物件自己的輪廓做柱體或樂高方塊的殼，再逐層細切），放進 3D 場景編輯器。--close all＝連背景都做成實心（要列印用）；--shape 選殼的種類；--whole＝整張圖當一個物件。先貼圖再打指令、或先打指令再貼圖送出都可以；第一次使用要下載深度模型（會先問）。單張圖看不到背面，背面是推測的。',
+        this.register_slash_command('/image-to-3d', '[--close objects|all] [--shape auto|cylinder|blocks] [--whole] [--segment] [--bg 背景圖]',
+            '圖片轉 3D（離線）：深度模型在這台電腦上估計深度，再把每個物件各自做成封閉的立體（不是浮雕：用物件自己的輪廓做柱體或樂高方塊的殼，再逐層細切），放進 3D 場景編輯器。--close all＝連背景都做成實心（要列印用）；--shape 選殼的種類；--whole＝整張圖當一個物件；--segment＝用分割模型（SlimSAM）自動分出多個物件，不加則用去背遮罩；貼兩張圖並說「背景差分」＝第二張是沒有主體的背景圖（同一個視角），逐像素比對取出主體。先貼圖再打指令、或先打指令再貼圖送出都可以；第一次使用要下載深度模型（會先問）。單張圖看不到背面，背面是推測的。',
             async (argsText, run0) => { await (run0 || this)._image3dCommand(argsText); });
         { const ie = this.slashCommands.get('/image-to-3d'); if (ie) ie._autoFromSkillBundle = true; }
         this.register_slash_command('/edit-3d', hint, '3D 場景編輯器：/edit-3d-model 的別名。', (argsText, run0) => (this.slashCommands.get('/edit-3d-model') || { handler: run }).handler(argsText, run0));
@@ -32498,8 +32569,8 @@ const FaEditHost = (function () {
         const parse = async (self, raw) => { let a = {}; try { a = await self.repairJsonPayload(String(raw || '{}')); } catch (_) { /* */ } return a || {}; };
         registerOptional('image_to_3d',
             '圖片轉 3D（離線、不是浮雕）：用跑在這台電腦上的深度模型（Depth Anything V2 Small）估計深度，把圖裡每個物件各自做成封閉的立體（用物件自己的輪廓做柱體或樂高方塊的殼，再逐層細切；每個物件都通過封閉檢查），背景另成一塊，全部放進 3D 場景編輯器。圖片不會上傳；第一次使用要下載深度模型。單張圖看不到背面，背面是依輪廓推測的。close=all 連背景都做成實心（要列印時用），預設 objects。',
-            async function (rawArgs) { const a = await parse(this, rawArgs); try { return JSON.stringify(await this._imageTo3d({ image: a.image, request: a.request, close: a.close, shape: a.shape, whole: a.whole })); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); } },
-            { type: 'object', properties: { image: { type: 'string', description: '選填：圖片的 file_id 或檔名；省略時用這個對話最新的圖片附件' }, request: { type: 'string', description: '使用者的原話（例如「物件要封閉」「要能列印」「用樂高方塊」），程式會從裡面解析封閉範圍與外殼種類' }, close: { type: 'string', enum: ['objects', 'all'], description: 'objects＝每個物件封閉、背景是薄板（預設）；all＝連背景都做成實心' }, shape: { type: 'string', enum: ['auto', 'cylinder', 'blocks'] }, whole: { type: 'boolean', description: 'true＝整張圖當一個物件，不分前景背景' } } }
+            async function (rawArgs) { const a = await parse(this, rawArgs); try { return JSON.stringify(await this._imageTo3d({ image: a.image, request: a.request, close: a.close, shape: a.shape, whole: a.whole, segment: a.segment, bg: a.bg })); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); } },
+            { type: 'object', properties: { image: { type: 'string', description: '選填：圖片的 file_id 或檔名；省略時用這個對話最新的圖片附件' }, request: { type: 'string', description: '使用者的原話（例如「物件要封閉」「要能列印」「用樂高方塊」），程式會從裡面解析封閉範圍與外殼種類' }, close: { type: 'string', enum: ['objects', 'all'], description: 'objects＝每個物件封閉、背景是薄板（預設）；all＝連背景都做成實心' }, shape: { type: 'string', enum: ['auto', 'cylinder', 'blocks'] }, whole: { type: 'boolean', description: 'true＝整張圖當一個物件，不分前景背景' }, bg: { type: 'string', description: '選填：沒有主體的背景圖（file_id 或檔名，要跟主體圖同一個視角），用背景差分取出前景' }, segment: { type: 'boolean', description: 'true＝用分割模型自動分出多個物件（要下載 SlimSAM）；預設用去背遮罩' } } }
         );
         registerOptional('edit_3d_open',
             '在對話裡放一個「3D 場景編輯器」（用語言主導；位置完全以使用者現在看的角度算：「我的左前方」「桌子的右邊」）：物件欄（樹狀、群組）、屬性面板、3D 畫面（拖曳轉視角、點物件選取、拖曳移動）、🧾 YAML 原始碼分頁（可直接改）、雙擊物件進「單一物件編輯」（像做塑膠模型：每個面貼什麼圖、塗什麼顏色）、貼圖（貼進編輯器對話框、網址、找圖）、復原／重做、匯出場景 YAML（render_3d_scene 可直接播放）／PNG／整理成 prompt。參數：starter（blank、room、model、studio）、request（一句話：開起來後編輯器自己的 AI 去做）、yaml（一份場景 YAML 當起點）、file_id（使用者上傳的 .3dscene.yaml 或 STL／OBJ／3MF／FBX 模型）、last（true＝接著對話裡最近的 3D 場景）、id（接著原本的專案）。做完編輯器就在對話裡，不要把場景 YAML 貼進對話。參數: {"starter":"room","request":"（選填）","yaml":"（選填）","file_id":"（選填）","last":false,"id":"（選填）"}',
@@ -41851,6 +41922,9 @@ function faVlmWorkerMain() {
             o.pipe = await L.pipeline('image-to-text', repo, opts);
         } else if (m.arch === 'depth') {
             o.pipe = await L.pipeline('depth-estimation', repo, opts);
+        } else if (m.arch === 'sam') {
+            if (!L.SamModel) throw new Error('這個版本的 transformers.js 沒有 SAM 支援');
+            o.processor = await L.AutoProcessor.from_pretrained(repo); o.model = await L.SamModel.from_pretrained(repo, opts);
         } else throw new Error('不認得的模型架構：' + m.arch);
         cur = o;
     }
@@ -41903,7 +41977,22 @@ function faVlmWorkerMain() {
             const inputs = await cur.processor(image, m.prompt); const ids = await cur.model.generate({ ...inputs, max_new_tokens: m.maxTokens || 256 });
             raw = cur.processor.batch_decode(ids.slice(null, [inputs.input_ids.dims.at(-1), null]), { skip_special_tokens: true })[0];
         } else if (cur.arch === 'vit-gpt2') { const out = await cur.pipe(image, { max_new_tokens: m.maxTokens || 64 }); raw = out && out[0] && out[0].generated_text; }
-        else if (cur.arch === 'depth') {
+        else if (cur.arch === 'sam') {
+            // 自動分物件：在圖上撒 grid×grid 個點，每個點取三個候選遮罩裡 IoU 分數最高的；去重與過濾由呼叫端的 FaImage3d.labelsFromMasks 做。遮罩縮到最長邊 maxSide 再送回主執行緒
+            const grid = Math.max(2, Math.min(8, m.grid | 0 || 4)), maxSide = m.maxSide || 128;
+            const emb = await cur.model.get_image_embeddings(await cur.processor(image)); const segs = [];
+            for (let gy = 0; gy < grid; gy++) for (let gx = 0; gx < grid; gx++) {
+                const pin = await cur.processor(image, { input_points: [[[(gx + 0.5) * image.width / grid, (gy + 0.5) * image.height / grid]]] });
+                const out = await cur.model({ ...emb, input_points: pin.input_points });
+                const masks = await cur.processor.post_process_masks(out.pred_masks, pin.original_sizes, pin.reshaped_input_sizes);
+                const mt = masks[0], dims = mt.dims, mh = dims[dims.length - 2], mw = dims[dims.length - 1], per = mh * mw, scores = out.iou_scores.data;
+                let best = 0; for (let k = 1; k < 3 && k < scores.length; k++) if (scores[k] > scores[best]) best = k;
+                const k2 = Math.min(1, maxSide / Math.max(mw, mh)), w2 = Math.max(2, Math.round(mw * k2)), h2 = Math.max(2, Math.round(mh * k2)), data = new Uint8Array(w2 * h2);
+                for (let y = 0; y < h2; y++) for (let x = 0; x < w2; x++) data[y * w2 + x] = mt.data[best * per + Math.min(mh - 1, Math.floor((y + 0.5) * mh / h2)) * mw + Math.min(mw - 1, Math.floor((x + 0.5) * mw / w2))] ? 1 : 0;
+                segs.push({ w: w2, h: h2, data, score: Number(scores[best]) || 0 });
+            }
+            return { raw: null, segments: segs, ms: Date.now() - t0 };
+        } else if (cur.arch === 'depth') {
             // 深度估計：回傳每個像素一個相對深度（大＝近），尺寸是模型輸出的大小（不是原圖大小）；呼叫端再縮放到遮罩的尺寸
             const out = await cur.pipe(image); const t = out && out.predicted_depth; if (!t || !t.data) throw new Error('深度模型沒有回傳 predicted_depth');
             const dims = t.dims; const h = dims[dims.length - 2], w = dims[dims.length - 1];
@@ -41917,7 +42006,7 @@ function faVlmWorkerMain() {
         try {
             if (m.type === 'chat') { const r = await chat(m); post({ type: 'result', tid: m.tid, raw: r.raw, ms: r.ms, info: r.info }); return; }
             if (m.type === 'load') { await load(m); post({ type: 'loaded', tid: m.tid, device: m.device, modelId: m.modelId }); }
-            else if (m.type === 'run') { const r = await run(m); post({ type: 'result', tid: m.tid, raw: r.raw, ms: r.ms, depth: r.depth }); }
+            else if (m.type === 'run') { const r = await run(m); post({ type: 'result', tid: m.tid, raw: r.raw, ms: r.ms, depth: r.depth, segments: r.segments }); }
             else if (m.type === 'dispose') { await disposeCur(); post({ type: 'disposed', tid: m.tid }); }
         } catch (e) { post({ type: 'error', tid: m.tid, error: errText(e) }); }
     };
@@ -87901,6 +87990,36 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             return { ok: true, depth: res.depth, model: model.id, device: used.device === 'webgpu' ? 'gpu' : 'cpu', ms: res.ms };
         } catch (e) { if (prog) prog.fail(String((e && e.message) || e)); return { ok: false, error: String((e && e.message) || e), model: model.id, tried: e && e.tried }; }
     }
+    // 離線分割（/image-to-3d --segment 用）。p：{image?, blob?, model?, device?, grid?}。回傳 { ok, segments:[{w,h,data(Uint8Array,1＝在裡面),score}], model, device, ms }
+    async _segmentObjects(p) {
+        p = p || {}; const set = this._omSettings();
+        const model = FaVlm.byId(p.model) || FaVlm.byId(FaVlm.DEFAULT_SEGMENT_MODEL);
+        if (!model || model.task !== 'segmentation') return { ok: false, error: '不是分割的模型：' + (p.model || '') + '。可用：' + FaVlm.segmentModels().map((m) => m.id).join('、') };
+        const gpu = await this._omGpuInfo(); const dev = FaVlm.resolveDevice(model, p.device || set.device, gpu.available, gpu.f16);
+        if (!dev.order.length) return { ok: false, error: dev.reason };
+        const img = await this._vlmResolveImage(p); if (!img.blob) return { ok: false, cancelled: img.cancelled, error: img.error };
+        const usage = await this._omUsage(); const need = FaVlm.estimateDownload(model, dev.order[0], (usage.byModel[model.id] || { bytes: 0 }).bytes);
+        if (need > 20 * 1048576 && !p.confirmed) {
+            const okDl = await this._omAskDownload('要下載分割模型嗎？', '「' + model.label + '」\n來源：huggingface.co/' + model.repo + '\n大小：約 ' + FaVlm.fmtBytes(need) + '（只下載這一次，存在瀏覽器快取，可以在 Configure →「離線模型管理」清除）。', '下載並使用');
+            if (!okDl) return { ok: false, cancelled: true, error: '使用者取消了下載' };
+        }
+        const prog = p.silent ? null : this._createProgressWidget('離線分割（' + model.label + '）');
+        const update = (x) => { if (prog) prog.update(x); }; const log = (s) => { if (prog) prog.log(s); };
+        try {
+            log('裝置：' + dev.reason); update({ status: '準備中…' });
+            let order = dev.order.slice(), res = null, lastErr = null, used = null;
+            for (let attempt = 0; attempt < 2 && !res; attempt++) {
+                const ld = await this._vlmEnsureLoaded(model, order, update, log); used = ld;
+                update({ pct: 99, status: '找物件中（' + (ld.device === 'webgpu' ? 'GPU' : 'CPU') + '）…' });
+                try { res = await this._vlmRpc('run', { image: img.blob, grid: p.grid || 4 }, null, null, this._vlmSlotOf(ld.device)); }
+                catch (e) { lastErr = e; log('⚠️ ' + (ld.device === 'webgpu' ? 'GPU' : 'CPU') + ' 推論失敗：' + String((e && e.message) || e)); this._vlmTerminate(this._vlmSlotOf(ld.device)); if (ld.device === 'webgpu') { order = ['wasm']; log('降級成 CPU 重試'); } else break; }
+            }
+            if (!res || !res.segments) throw lastErr || new Error('分割模型沒有輸出');
+            this._vlmScheduleIdle(this._vlmSlotOf(used.device));
+            if (prog) prog.finish('完成：' + (used.device === 'webgpu' ? 'GPU' : 'CPU') + '，' + ((res.ms || 0) / 1000).toFixed(1) + ' 秒，' + res.segments.length + ' 個候選遮罩');
+            return { ok: true, segments: res.segments, model: model.id, device: used.device === 'webgpu' ? 'gpu' : 'cpu', ms: res.ms };
+        } catch (e) { if (prog) prog.fail(String((e && e.message) || e)); return { ok: false, error: String((e && e.message) || e), model: model.id, tried: e && e.tried }; }
+    }
     // /image-to-text [描述|詳細|文字|物件|問 …]：先貼圖再打、或先打指令再貼圖送出都可以
     async _imageToTextCommand(argsText) {
         argsText = String(argsText || ''); const ids = []; const mark = /\[附件：([^\]]*)\]/.exec(argsText);
@@ -88737,7 +88856,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             return `<div style="margin-top:4px; font-size:12px;">角色：${chk('tools', '呼叫工具', !m.toolCalling)}${chk('answer', '寫回答')}${chk('summarize', '摘要')}　優先順序 <input type="number" data-om-prio data-id="${esc(m.id)}" value="${rc.priority}" style="${inp} width:64px;">　運算 <select data-om-dev data-id="${esc(m.id)}" style="${inp}"><option value="auto" ${dsel === 'auto' ? 'selected' : ''}>跟全域設定</option><option value="gpu" ${dsel === 'gpu' ? 'selected' : ''}>GPU</option><option value="cpu" ${dsel === 'cpu' ? 'selected' : ''}>CPU</option></select></div>
                 <div style="margin-top:4px; font-size:12px;">${badge}　${m.toolCalling ? `<button style="${btn}" data-om="toolbench" data-id="${esc(m.id)}">測試工具呼叫</button>` : ''}${bn ? `<span style="color:#64748b;"> ${bn.details.filter((d) => !d.ok).map((d) => esc(d.id + '：' + d.reason)).join('；')}</span>` : ''}</div>`;
         };
-        const textRows = FaVlm.textModels().map(cardOf).join(''); const imgRows = FaVlm.imageModels().map(cardOf).join(''); const otherRows = FaVlm.MODELS.filter((m) => m.managedOnly || m.task === 'depth-estimation').map(cardOf).join('');
+        const textRows = FaVlm.textModels().map(cardOf).join(''); const imgRows = FaVlm.imageModels().map(cardOf).join(''); const otherRows = FaVlm.MODELS.filter((m) => m.managedOnly || m.task === 'depth-estimation' || m.task === 'segmentation').map(cardOf).join('');
         const other = usage.other.files ? `<div style="margin-top:4px;">其他快取：${usage.other.files} 個檔案、${FaVlm.fmtBytes(usage.other.bytes)}${usage.other.repos.length ? '（' + usage.other.repos.map(esc).join('、') + '）' : ''} ${usage.other.repos.map((r) => `<button style="${btn} color:#fca5a5;" data-om="delrepo" data-repo="${esc(r)}">刪除 ${esc(r)}</button>`).join(' ')}</div>` : '';
         root.innerHTML = `<div style="color:#94a3b8; margin-bottom:8px;">離線模型在你的電腦上執行（瀏覽器內的 WebAssembly／WebGPU），圖片不會上傳；推論在背景執行緒，不會卡住畫面。模型第一次使用時才下載，存在瀏覽器快取。</div>
             <div style="border:1px solid #334155; border-radius:8px; padding:8px; margin-bottom:10px;">
@@ -88770,6 +88889,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             <div style="font-weight:600; margin-bottom:4px;">文字生成（聊天）模型　<span style="font-weight:400; color:#94a3b8;">預設：${esc(S.textModel)}</span></div>${textRows}
             <div style="font-weight:600; margin:10px 0 4px;">圖像（VLM）模型　<span style="font-weight:400; color:#94a3b8;">預設：${esc(S.model)}</span></div>${imgRows}
             <div style="font-weight:600; margin:10px 0 4px;">其他（只管理快取）</div>${otherRows}
+            <div style="font-weight:600; margin:10px 0 4px;">UniK3D（景物照片的度量深度，選用、自備）</div>
+            <div style="border:1px solid #334155; border-radius:8px; padding:8px; color:#94a3b8; line-height:1.6;">UniK3D 的授權是 CC BY-NC 4.0（非商業），所以<b>不內建、不下載、不散布</b>；官方也只發 PyTorch 權重，沒有現成的 .onnx。想用的話要自己匯出：<br>1. 取得官方程式碼與權重（github.com/lpiccinelli-eth/UniK3D，模型 vits）。<br>2. 在專案根目錄執行官方的 unik3d/models/export.py，輸入解析度固定為 462×630，得到 .onnx 檔。<br>3. 把檔案放在這台電腦上；目前<b>這個版本還沒有接上推論</b>（沒有驗證過它能不能在瀏覽器跑，也不知道匯出檔的輸入輸出名稱），所以 /image-to-3d 一律用上面的 Depth Anything V2 Small。</div>
             <div style="border:1px solid #334155; border-radius:8px; padding:8px; margin-top:10px;">
               <div style="font-weight:600; margin-bottom:4px;">試跑（用預設模型）</div>
               <input type="file" accept="image/*" data-om="testfile" style="${inp}"> <select data-om-set="testtask" style="${inp}">${Object.entries(FaVlm.TASKS).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('')}</select> <input type="text" placeholder="提示詞（選填，問問題用）" data-om-set="testprompt" style="${inp} width:220px;"> <button style="${btn}" data-om="test">執行</button>

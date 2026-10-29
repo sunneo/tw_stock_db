@@ -575,10 +575,10 @@ categories:
         updated: 2026-10-06
       - id: image-to-3d
         name: 圖片轉 3D（離線、每個物件各自封閉）
-        summary: 深度模型（Depth Anything V2 Small，跑在這台電腦上、圖片不會上傳，第一次使用才下載並先問）估計深度，再把圖裡每個物件各自做成封閉的立體（不是浮雕）：用物件自己的輪廓做柱體或樂高方塊的殼，再逐層細切到面數上限，每一層都通過封閉檢查（每條邊剛好兩個面共用），不合格的退回較粗的殼；背景另成一塊並補洞。放進 3D 場景編輯器（自訂形狀，同一個群組）。--close all 連背景都做成實心（要列印）、--shape 選外殼、--whole 整張圖當一個物件。單張圖看不到背面，背面是依輪廓寬度推測的厚度。尚未實作：MobileSAM 分物件（目前用去背遮罩的連通區分物件）、景物照片用 UniK3D（選用，不內建）。
+        summary: 深度模型（Depth Anything V2 Small，跑在這台電腦上、圖片不會上傳，第一次使用才下載並先問）估計深度，再把圖裡每個物件各自做成封閉的立體（不是浮雕）：用物件自己的輪廓做柱體或樂高方塊的殼，再逐層細切到面數上限，每一層都通過封閉檢查（每條邊剛好兩個面共用），不合格的退回較粗的殼；背景另成一塊並補洞。放進 3D 場景編輯器（自訂形狀，同一個群組）。--close all 連背景都做成實心（要列印）、--shape 選外殼、--whole 整張圖當一個物件。單張圖看不到背面，背面是依輪廓寬度推測的厚度。預設用去背遮罩的連通區分物件；貼兩張圖並說「背景差分」（或工具給 bg）＝第二張是沒有主體的背景圖，逐像素比對取出前景（核心 diffMask）；--segment 改用分割模型（SlimSAM，Segment Anything 的瘦身版，Apache-2.0，約 16～22MB）自動分出多個物件。景物照片的 UniK3D（CC BY-NC，不內建不下載）只在離線模型設定頁附了自行匯出的步驟說明，推論尚未接上。
         how: { slash: ["/image-to-3d"], tools: [image_to_3d] }
         platforms: [desktop]
-        samples: ["/image-to-3d", "把這張圖做成 3D，每個物件都要封閉", "圖片轉 3D，我要能列印", "/image-to-3d --close all --shape blocks"]
+        samples: ["/image-to-3d", "把這張圖做成 3D，每個物件都要封閉", "圖片轉 3D，我要能列印", "/image-to-3d --close all --shape blocks", "/image-to-3d --segment"]
         updated: 2026-10-29
       - id: image-decompose-redraw
         name: 圖片分解與向量重繪（2.5D）

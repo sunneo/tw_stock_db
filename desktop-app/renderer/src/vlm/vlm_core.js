@@ -51,6 +51,9 @@
         // 深度估計（圖片轉 3D 用，不能拿來做圖像轉文字）：每個像素一個相對深度（大＝近）。檔案大小 2026-10-29 讀自 HuggingFace 檔案清單（fp16 49.6MB、int8 27.3MB）。
         { id: 'depth-anything-v2-small', gpuNeedsF16: true, label: 'Depth Anything V2 Small（深度估計，/image-to-3d 用）', task: 'depth-estimation', arch: 'depth', repo: 'onnx-community/depth-anything-v2-small', tasks: [], lang: '無（輸出深度圖）', license: 'Apache-2.0',
             dtype: { gpu: 'fp16', cpu: 'int8' }, bytes: { gpu: 50 * MB, cpu: 30 * MB }, verified: false, notes: '單張圖估計相對深度（越亮越近），約 25M 參數。給 /image-to-3d 當基礎層；照 Transformers.js 的 depth-estimation 範例寫，還沒在真實環境驗證。' },
+        // 分割（/image-to-3d 自動分物件用，不能拿來做圖像轉文字）：SAM 家族。MobileSAM 官方沒有 Transformers.js 格式的轉檔，所以用同家族、同授權友善的 SlimSAM（Xenova 轉檔）。檔案大小 2026-10-30 讀自 HuggingFace 檔案清單（q8：編碼器 8.9MB＋解碼器 4.9MB；fp16：12.2MB＋8.6MB）。
+        { id: 'slimsam-77-uniform', gpuNeedsF16: true, label: 'SlimSAM 77（分割，/image-to-3d --segment 用）', task: 'segmentation', arch: 'sam', repo: 'Xenova/slimsam-77-uniform', tasks: [], lang: '無（輸出物件遮罩）', license: 'Apache-2.0',
+            dtype: { gpu: 'fp16', cpu: 'q8' }, bytes: { gpu: 22 * MB, cpu: 16 * MB }, verified: false, notes: 'Segment Anything 的瘦身版（約 1000 萬參數）：在圖上撒一組點、每個點取最好的遮罩、去掉重複與太小的，當作「圖裡有哪些物件」。照 Transformers.js 的 SAM 範例寫，還沒在真實環境驗證。' },
         // 管理用（不能拿來做圖像轉文字）：語音轉文字 Whisper，跟這裡共用同一個瀏覽器快取
         { id: 'whisper-base', label: 'Whisper base（語音轉文字，transcribe_media 用）', task: 'asr', arch: 'whisper', repo: 'onnx-community/whisper-base', tasks: [], bytes: { gpu: 80 * MB, cpu: 80 * MB }, managedOnly: true, verified: true, notes: '影音轉逐字稿用，跟圖像轉文字共用快取與裝置設定。' },
     ];
@@ -59,6 +62,8 @@
     const textModels = () => MODELS.filter((m) => m.task === 'text-generation');
     const depthModels = () => MODELS.filter((m) => m.task === 'depth-estimation');
     const DEFAULT_DEPTH_MODEL = 'depth-anything-v2-small';
+    const segmentModels = () => MODELS.filter((m) => m.task === 'segmentation');
+    const DEFAULT_SEGMENT_MODEL = 'slimsam-77-uniform';
     const DEFAULT_MODEL = 'florence-2-base-ft';          // 圖像（VLM）預設
     const DEFAULT_TEXT_MODEL = 'qwen3-0.6b';             // 文字生成預設（兩種預設分開設定）
 
@@ -150,7 +155,7 @@
     // installed：{模型id: 已下載位元組}；gpu：{available, f16}（只能用 GPU 的模型在沒有 GPU 時不考慮）。回傳 { model, reason }
     function pickModel(task, installed, preferredId, gpu) {
         installed = installed || {}; const ok = (m) => !m.managedOnly && m.tasks.includes(task) && !(m.gpuOnly && !(gpu && gpu.available && gpu.f16 !== false));
-        const pref = byId(preferredId) && !byId(preferredId).managedOnly && byId(preferredId).task !== 'depth-estimation' ? byId(preferredId) : byId(DEFAULT_MODEL);
+        const pref = byId(preferredId) && !byId(preferredId).managedOnly && byId(preferredId).task === 'image-to-text' ? byId(preferredId) : byId(DEFAULT_MODEL);
         if (ok(pref)) return { model: pref, reason: '預設模型支援這個任務' };
         const have = imageModels().filter((m) => ok(m) && (installed[m.id] || 0) > 0);
         if (have.length) return { model: have[0], reason: '預設模型（' + pref.id + '）不支援「' + (TASKS[task] || task) + '」，改用已下載的 ' + have[0].id };
@@ -426,5 +431,5 @@
     // 估算這次下載量（依裝置組合）；已經在快取裡的部分不用再下載
     function estimateDownload(model, device, cachedBytes) { const total = (model.bytes && model.bytes[device === 'webgpu' ? 'gpu' : 'cpu']) || 0; return Math.max(0, total - (Number(cachedBytes) || 0)); }
 
-    return { MODELS, byId, imageModels, textModels, depthModels, DEFAULT_DEPTH_MODEL, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
+    return { MODELS, byId, imageModels, textModels, depthModels, DEFAULT_DEPTH_MODEL, segmentModels, DEFAULT_SEGMENT_MODEL, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
 });

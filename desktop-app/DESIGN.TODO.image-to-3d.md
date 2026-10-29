@@ -9,6 +9,10 @@ Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app
 已完成並提交（78ed8270、af19d6ed、ebbae2d8、c299ac6c、62299721）：Todo 1（核心＋25 項測試）、2（深度模型登錄＋工作執行緒＋`_depthEstimate`）、3 的無新模型版（去背遮罩連通區分物件）、4（`/image-to-3d`、`image_to_3d`，在 `renderer/src/edit/edit3d_host.js`）、6（嵌入 FaImage3d、清冊、重建）。
 **未做**：3 的 MobileSAM 分物件、5 的 UniK3D（選用、未驗證）。**未驗證**：真實 App 內下載深度模型、跑一張真圖、在編輯器開啟（只用合成資料在 node 模擬過整條管線，全部封閉、編輯器檢查通過）。發布未做（要使用者說「發布」）。
 
+## 1.6 收尾（2026-10-30，第二輪）
+新增：分割模型登錄 `slimsam-77-uniform`（MobileSAM 官方沒有 Transformers.js 轉檔，改用同家族的 SlimSAM，Apache-2.0；工作執行緒 `sam` 架構＋`_segmentObjects`；核心 `labelsFromMasks`；`--segment`）、背景差分（核心 `diffMask`；兩張圖＋「背景差分」或 `--bg`，來自使用者 2026-10-30「可以加上背景差分法來取出背景」）。UniK3D：**只做了離線模型設定頁的自備匯出步驟說明，推論沒接**（沒驗證過瀏覽器能跑、不知道匯出檔輸入輸出名稱、授權非商業）；景物照片的選擇題判斷因此也沒做（沒有消費者）。
+**真實 App 還沒驗證**：(1) 下載並載入 depth-anything-v2-small（fp16／int8 的檔名與 dtype 對照）、`predicted_depth` 輸出形狀；(2) SlimSAM 的 `get_image_embeddings`＋逐點 `processor(image,{input_points})`＋`post_process_masks` 流程與 `iou_scores`；(3) 真圖跑完整 `/image-to-3d` 並在編輯器看到物件；(4) 背景差分在真實照片的門檻（預設 40）；(5) 設定頁新卡片的顯示；(6) 兩張圖貼上時的指令分流。發布未做。
+
 ## 2. 概況
 - 目標：新增斜線指令 `/image-to-3d` 與同名工具 `image_to_3d`：圖片 → 離線模型 → **每個物件各自封閉的立體**（不是浮雕）→ 放進 `/edit-3d-model` 的場景（自訂形狀物件，`mesh:'polygon'`，`extra:{vertices,faces,uvs?}`）。
 - 設計全在 `DESIGN.image-to-3d.md`（已提交，69998292）：封閉策略、UniK3D 評估、決定。**那份是規格，照做，不要再改方向。**

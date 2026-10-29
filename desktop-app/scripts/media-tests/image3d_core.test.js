@@ -160,4 +160,30 @@ t('toSpec：交給編輯器的檢查通過，每個物件都是自訂形狀、�
   assert.strictEqual(C.toSpec({ objects: [], background: null }, {}), null);
 });
 
+t('labelsFromMasks：重複的遮罩合併、整張圖那種遮罩丟掉、小遮罩在大遮罩裡仍是自己的物件', () => {
+  const W = 40, H = 40, mk = (f, score) => ({ w: W, h: H, score, data: Uint8Array.from({ length: W * H }, (_, i) => (f(i % W, Math.floor(i / W)) ? 1 : 0)) });
+  const big = mk((x, y) => x >= 4 && x < 30 && y >= 4 && y < 30, 0.9), dup = mk((x, y) => x >= 5 && x < 30 && y >= 4 && y < 30, 0.8);
+  const small = mk((x, y) => x >= 10 && x < 18 && y >= 10 && y < 18, 0.95), all = mk(() => true, 0.99), speck = mk((x, y) => x === 0 && y === 0, 0.9);
+  const r = C.labelsFromMasks([big, dup, small, all, speck], W, H, {});
+  assert.strictEqual(r.count, 2); assert.strictEqual(r.labels[14][14], 2); assert.strictEqual(r.labels[25][25], 1); assert.strictEqual(r.labels[38][38], 0);
+});
+t('prepareInput 用分割結果分物件，後面照樣全部封閉', () => {
+  const depth = { w: 60, h: 40, data: Float32Array.from({ length: 2400 }, (_, i) => (i % 60) / 60) };
+  const seg = [{ w: 60, h: 40, score: 0.9, data: Uint8Array.from({ length: 2400 }, (_, i) => ((i % 60) < 25 && Math.floor(i / 60) > 5 && Math.floor(i / 60) < 30 ? 1 : 0)) }, { w: 60, h: 40, score: 0.8, data: Uint8Array.from({ length: 2400 }, (_, i) => ((i % 60) > 35 && Math.floor(i / 60) > 8 ? 1 : 0)) }];
+  const p = C.prepareInput(depth, null, { segments: seg, workMax: 60 });
+  assert.strictEqual(p.count, 2);
+  C.buildScene({ labels: p.labels, depth: p.depth }, {}).objects.forEach((o) => assert(C.isClosed(o.mesh)));
+  assert(C.parseOptions('--segment').segment && C.parseOptions('自動分割').segment && !C.parseOptions('').segment);
+});
+
+t('diffMask 背景差分：主體取出、雜訊與微小光線變化不算、尺寸不同回 null', () => {
+  const W = 40, H = 30, mk = (f) => { const d = new Uint8ClampedArray(W * H * 4); for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) d.set(f(x, y), (y * W + x) * 4); return { width: W, height: H, data: d }; };
+  const bg = mk(() => [200, 200, 200, 255]);
+  const a = mk((x, y) => (x >= 10 && x < 25 && y >= 8 && y < 22 ? [30, 60, 200, 255] : (x === 3 && y === 3 ? [0, 0, 0, 255] : [205, 198, 202, 255])));
+  const r = C.diffMask(a, bg, {});
+  assert.strictEqual(r.mask[15 * W + 15], 1); assert.strictEqual(r.mask[1 * W + 1], 0); assert.strictEqual(r.mask[3 * W + 3], 0);
+  assert(r.fg > 0.15 && r.fg < 0.2, String(r.fg));
+  assert.strictEqual(C.diffMask(a, { width: 5, height: 5, data: new Uint8ClampedArray(100) }, {}), null);
+});
+
 console.log(pass + ' passed' + (process.exitCode ? ', with failures' : ''));
