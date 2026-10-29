@@ -5,6 +5,10 @@ Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app
 
 使用者的關鍵指示（逐字）：「JUST DO IT!」「不要再繼續plan了, fuck」「原本的decompose redraw已經是浮雕  請不要又推翻我現在的要求!我已經受夠了浮雕」。
 
+## 1.5 進度（handoff 1 的接手結果，2026-10-29）
+已完成並提交（78ed8270、af19d6ed、ebbae2d8、c299ac6c、62299721）：Todo 1（核心＋25 項測試）、2（深度模型登錄＋工作執行緒＋`_depthEstimate`）、3 的無新模型版（去背遮罩連通區分物件）、4（`/image-to-3d`、`image_to_3d`，在 `renderer/src/edit/edit3d_host.js`）、6（嵌入 FaImage3d、清冊、重建）。
+**未做**：3 的 MobileSAM 分物件、5 的 UniK3D（選用、未驗證）。**未驗證**：真實 App 內下載深度模型、跑一張真圖、在編輯器開啟（只用合成資料在 node 模擬過整條管線，全部封閉、編輯器檢查通過）。發布未做（要使用者說「發布」）。
+
 ## 2. 概況
 - 目標：新增斜線指令 `/image-to-3d` 與同名工具 `image_to_3d`：圖片 → 離線模型 → **每個物件各自封閉的立體**（不是浮雕）→ 放進 `/edit-3d-model` 的場景（自訂形狀物件，`mesh:'polygon'`，`extra:{vertices,faces,uvs?}`）。
 - 設計全在 `DESIGN.image-to-3d.md`（已提交，69998292）：封閉策略、UniK3D 評估、決定。**那份是規格，照做，不要再改方向。**
