@@ -59048,10 +59048,29 @@ ${fnData.code}
         ctx.sqlB = B; ctx.sqlDb = r.db; job.sqlDb = r.db; map.files = {};
         return B;
     }
+    // 索引是從哪一版的樹建的：讀 .git/HEAD（detached 就是雜湊；分支就查 refs 或 packed-refs）。讀不到＝null（定位器會明講無法確認行號對得上）
+    async _idxTreeRef(key) {
+        try {
+            const io = await this._repoMapIo(this._repoMapKey(key));
+            const head = String((await io.readText('.git/HEAD')) || '').trim();
+            if (!head) return null;
+            if (/^[0-9a-f]{40}$/i.test(head)) return { git: head.toLowerCase(), ref: 'HEAD' };
+            const m = /^ref:\s*(\S+)/.exec(head); if (!m) return null;
+            const refName = m[1];
+            let h = String((await io.readText('.git/' + refName)) || '').trim();
+            if (!/^[0-9a-f]{40}$/i.test(h)) {
+                h = '';
+                const pk = await io.readText('.git/packed-refs');
+                if (pk) for (const ln of String(pk).split(/\r?\n/)) { const q = /^([0-9a-f]{40})\s+(\S+)$/i.exec(ln.trim()); if (q && q[2] === refName) { h = q[1]; break; } }
+            }
+            return /^[0-9a-f]{40}$/i.test(h) ? { git: h.toLowerCase(), ref: refName } : null;
+        } catch (_) { return null; }
+    }
     async _idxEnd(job, map, ctx, o) {
         o = o || {}; const key = job.key; const B = ctx.sqlB; if (!B) return null;
         try {
-            const counts = await B.finalize({ root: key, complete: !!o.complete, onProgress: (p) => { job.current = p; } });
+            const treeRef = await this._idxTreeRef(key);
+            const counts = await B.finalize({ root: key, complete: !!o.complete, treeRef, onProgress: (p) => { job.current = p; } });
             if (!this._sqlDesktop()) { // 網頁版：把 OPFS 上建好的檔案串流複製進專案資料夾（原子替換；舊索引在這之前一直有效）
                 const dir = await this._idxWebDir(key, true); const target = await dir.getFileHandle('index.sqlite3', { create: true }); job.current = '複製進專案資料夾…';
                 await this._sqlCall('copyOut', { db: ctx.sqlDb, fileHandle: target, timeoutMs: 6 * 3600 * 1000 }); try { await this._sqlCall('close', { db: ctx.sqlDb }); } catch (_) { /* 已關 */ } ctx.sqlDb = null;
