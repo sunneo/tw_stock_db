@@ -3937,7 +3937,7 @@ function extractSourceSpan(text, startLine, maxLines) {
 const FA_BOILERPLATE_RE = /^\s*(?:copyright\b|\(c\)\s|spdx-|licen[sc]ed?\b|all rights reserved|permission is hereby granted|redistribution and use|this (?:program|file|software|library) is (?:free software|distributed|licensed|provided|part of)|this program is free software|unless required by applicable law|without warranty|the above copyright notice|this (?:source|code) (?:is|may)|(?:auto-?)?generated (?:by|file)|do not edit|this file was (?:auto-?)?generated)/i;
 const FA_LICENSE_WORDS_RE = /\b(?:warranty|warranties|liabilit(?:y|ies)|redistribut\w*|merchantab\w*|fitness for a particular|permitted provided|copyright (?:holder|notice|owner)|neither the name|list of conditions|disclaimer|gnu (?:lesser |affero )?general public|free software foundation|apache license|mit license|bsd[- ]?\d?[- ]?clause|creative commons|limitations under the license|you may not use this file)\b/i;
 const FA_LOC_LANGS = { c: 1, cpp: 1, cs: 1, java: 1, kt: 1, swift: 1, dart: 1, php: 1, go: 1, rs: 1, js: 1, ts: 1, py: 1, rb: 1, lua: 1, sh: 1 }; // 與 FaAidocTrace 的 LOG_LANGS 同
-const FA_EXTRACT_SV = 4;
+const FA_EXTRACT_SV = 5;
 function _faRepoSvOf(lang) { return FA_LOC_LANGS[lang] ? FA_EXTRACT_SV : (lang === 'cs' ? 3 : undefined); }
 function _faRepoExtract(path, text, opts) {
     const lang = _faRepoLang(path);
@@ -29049,7 +29049,7 @@ const holder = {};
       if (lit == null) { continue; }
       var fmt = lit.replace(/\s+$/, '').slice(0, 300);
       var pat = fmtPattern(fmt);
-      if (pat.konst < 8 || !/[A-Za-z]{3}/.test(pat.fixed) || pat.key.length < 6) { continue; }
+      if (pat.konst + cjkN(pat.fixed) < 8 || !/[A-Za-z]{3}|[一-鿿]{3}/.test(pat.fixed) || pat.key.length + cjkN(pat.key) < 6) { continue; } // Chinese fixed text counts double (a Chinese log line is short but just as specific); whether a pasted Chinese sentence is a log or the user's own words is decided by the index (verbatim match), never by the script
       out.push({ l: lineOf(m.index), fn: name.replace(/^(?:throw\s+new|raise|new)\s+/, ''), fmt: fmt, key: pat.key });
     }
     return out;
@@ -29075,6 +29075,7 @@ const holder = {};
     return { src: parts.join(''), konst: konst, key: key.toLowerCase(), fixed: runs.join(' ') };
   }
   // text after the syslog / journald / kernel prefix
+  function cjkN(s) { var m = String(s || '').match(/[一-鿿]/g); return m ? m.length : 0; }
   function messageOf(line) {
     var s = String(line || '').replace(/\r$/, ''), m;
     if ((m = /^\w{3}\s+\d+\s+\d\d:\d\d:\d\d\s+\S+\s+[^\s:]+:\s+(.*)$/.exec(s))) { return m[1]; }
@@ -29083,7 +29084,7 @@ const holder = {};
     return s.trim();
   }
   // is this line worth looking up as a log message? (not blank, not a frame, enough words)
-  function isMessageLine(msg) { return String(msg).length >= 12 && /[A-Za-z]{3,}.*[A-Za-z]{3,}/.test(msg); }
+  function isMessageLine(msg) { msg = String(msg); return (msg.length >= 12 && /[A-Za-z]{3,}.*[A-Za-z]{3,}/.test(msg)) || (msg.length >= 6 && cjkN(msg) >= 4); }
   // rows = [{path, line, fn, fmt}] from the index; returns the ones whose pattern really occurs in msg, best (most fixed text) first
   function matchLogs(msg, rows) {
     var out = [];

@@ -129,5 +129,13 @@ eq(T.chainCheck([{ caller: 'main', path: 'm.c', line: 3 }], { func: 'MAIN' }).le
 eq(T.chainCheck([{ caller: 'main', path: 'm.c', line: 3 }], { func: 'other' }).level, 'missing', 'chain: callers known, the stack frame is none of them');
 eq(T.chainCheck([], { func: 'x' }).level, 'unknown', 'chain: no caller edges');
 
+// ---- Chinese log text: the script only extracts / matches; whether it is a log is decided by the index (verbatim match)
+var ZL = T.extractLogs('void f(){\n  log_error("無法連線到伺服器，請稍後再試 %d", n);\n  log_error("失敗");\n}\n', 'c');
+eq(ZL.length, 1, 'Chinese log literal with enough fixed text is indexed; a 2-character one is not');
+eq(T.isMessageLine('無法連線到伺服器'), true, 'a Chinese message line can be looked up');
+eq(T.isMessageLine('好'), false, 'a one-character line is not');
+eq(T.judgeLogMatches(T.matchLogs('無法連線到伺服器，請稍後再試 3', [{ path: 'a.c', line: 2, fn: 'log_error', fmt: ZL[0].fmt }])).status, 'best', 'Chinese message matches the indexed Chinese format string');
+eq(T.matchLogs('今天天氣很好呢', [{ path: 'a.c', line: 2, fn: 'log_error', fmt: ZL[0].fmt }]).length, 0, 'the users own Chinese sentence does not match any log');
+
 console.log(pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

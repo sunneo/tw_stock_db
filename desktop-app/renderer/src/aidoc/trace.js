@@ -289,7 +289,7 @@
       if (lit == null) { continue; }
       var fmt = lit.replace(/\s+$/, '').slice(0, 300);
       var pat = fmtPattern(fmt);
-      if (pat.konst < 8 || !/[A-Za-z]{3}/.test(pat.fixed) || pat.key.length < 6) { continue; }
+      if (pat.konst + cjkN(pat.fixed) < 8 || !/[A-Za-z]{3}|[一-鿿]{3}/.test(pat.fixed) || pat.key.length + cjkN(pat.key) < 6) { continue; } // Chinese fixed text counts double (a Chinese log line is short but just as specific); whether a pasted Chinese sentence is a log or the user's own words is decided by the index (verbatim match), never by the script
       out.push({ l: lineOf(m.index), fn: name.replace(/^(?:throw\s+new|raise|new)\s+/, ''), fmt: fmt, key: pat.key });
     }
     return out;
@@ -315,6 +315,7 @@
     return { src: parts.join(''), konst: konst, key: key.toLowerCase(), fixed: runs.join(' ') };
   }
   // text after the syslog / journald / kernel prefix
+  function cjkN(s) { var m = String(s || '').match(/[一-鿿]/g); return m ? m.length : 0; }
   function messageOf(line) {
     var s = String(line || '').replace(/\r$/, ''), m;
     if ((m = /^\w{3}\s+\d+\s+\d\d:\d\d:\d\d\s+\S+\s+[^\s:]+:\s+(.*)$/.exec(s))) { return m[1]; }
@@ -323,7 +324,7 @@
     return s.trim();
   }
   // is this line worth looking up as a log message? (not blank, not a frame, enough words)
-  function isMessageLine(msg) { return String(msg).length >= 12 && /[A-Za-z]{3,}.*[A-Za-z]{3,}/.test(msg); }
+  function isMessageLine(msg) { msg = String(msg); return (msg.length >= 12 && /[A-Za-z]{3,}.*[A-Za-z]{3,}/.test(msg)) || (msg.length >= 6 && cjkN(msg) >= 4); }
   // rows = [{path, line, fn, fmt}] from the index; returns the ones whose pattern really occurs in msg, best (most fixed text) first
   function matchLogs(msg, rows) {
     var out = [];
