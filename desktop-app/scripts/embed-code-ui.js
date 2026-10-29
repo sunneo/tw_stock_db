@@ -328,6 +328,26 @@ function embedGame() {
 }
 embedGame();
 
+// AIDoc 除錯定位器的純函式模組（backtrace／log／位址 → 原始碼位置；移植自 Redmine 外掛的 AIDoc，見 DESIGN.aidoc-locator.md）。順序＝相依順序（elf 用 trace 的 cleanFunc）；標記不存在時自動放在 SUBJ3D-END 後面
+function embedAidoc() {
+    const dir = path.join(root, 'renderer/src/aidoc'); if (!fs.existsSync(dir)) return;
+    let prevEnd = '/* SUBJ3D-END */';
+    for (const [fn, mark, name] of [['trace', 'AIDTRACE', 'FaAidocTrace'], ['elf', 'AIDELF', 'FaAidocElf']]) {
+        const core = fs.readFileSync(path.join(dir, fn + '.js'), 'utf8').replace(/\r\n/g, '\n');
+        let a = src.indexOf('/* ' + mark + '-BEGIN */'), b = src.indexOf('/* ' + mark + '-END */');
+        if (a < 0 || b < 0) {
+            const at = src.indexOf(prevEnd); if (at < 0) throw new Error('找不到 ' + prevEnd + ' 標記');
+            const cut = at + prevEnd.length;
+            src = src.slice(0, cut) + '\n/* ' + mark + '-BEGIN */\n/* ' + mark + '-END */' + src.slice(cut);
+            a = src.indexOf('/* ' + mark + '-BEGIN */'); b = src.indexOf('/* ' + mark + '-END */');
+        }
+        src = src.slice(0, a) + '/* ' + mark + '-BEGIN */\nconst ' + name + ' = (function () {\nconst holder = {};\n(function (module, self) {\n' + core + '\n}).call(null, undefined, holder);\nreturn holder.' + name + ';\n})();\n' + src.slice(b);
+        prevEnd = '/* ' + mark + '-END */';
+        console.log('已更新 ' + name + '（' + core.length + ' 字元）');
+    }
+}
+embedAidoc();
+
 // /edit-media-presentation：簡報編輯器（簡報檔的物件模型、畫面、主機轉接層），放在 GAME 區塊之後（要用 FaEditShell 與 FaEditHost）
 function embedDeckEdit() {
     const dir = path.join(root, 'renderer/src/deck'); if (!fs.existsSync(path.join(dir, 'deck_edit_core.js'))) return;
