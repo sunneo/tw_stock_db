@@ -397,7 +397,7 @@
     });
     var unknown = labels.map(function (r) { return r.map(function (v) { return v > 0; }); });
     var bgDepth = fillBackground(nd, unknown), all = labels.map(function (r) { return r.map(function () { return 1; }); });
-    var bg = buildObject(all, bgDepth, { shape: 'blocks', normalize: false, scale: scale, maxFaces: bgBudget, zFront: { base: 0.05 * R, range: R }, thickness: 0.1 * maxdim });
+    var bg = buildObject(all, bgDepth, { shape: 'blocks', normalize: false, scale: scale, maxFaces: bgBudget, zFront: { base: 0.05 * R, range: R }, thickness: (opts.closeMode === 'all' ? 0.25 : 0.06) * maxdim });
     return { objects: objects, background: bg, closeMode: opts.closeMode === 'all' ? 'all' : 'objects' };
   }
 
@@ -464,5 +464,39 @@
     return { labels: res.labels, depth: dep, width: w, height: h, count: res.count, dropped: res.dropped, empty: !!res.empty };
   }
 
-  return { prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
+  // ---------- options from the user's words (the program decides; the model is only asked when this cannot) ----------
+  // close: 'objects' (default; every found object is a closed solid, the backdrop is a thin closed slab) | 'all' (the user wants everything closed / printable: the backdrop is a full-thickness solid too)
+  function parseOptions(text) {
+    var t = String(text || ''), out = { close: 'objects', shape: 'auto', whole: false, closeSource: 'default' }, m;
+    if ((m = /--close[=\s]+(objects|all)(?![a-z])/i.exec(t))) { out.close = m[1].toLowerCase(); out.closeSource = 'flag'; }
+    else if (/(?:全部|所有|整個|整張|統一|每個|一律)[^，。,.\n]{0,8}封閉|要能?(?:3d)?列印|可(?:以)?列印|print(?:able)?|watertight|everything\s+closed|close\s+all/i.test(t)) { out.close = 'all'; out.closeSource = 'phrase'; }
+    else if (/(?:物件|東西|蘋果|人物|人臉)[^，。,.\n]{0,6}(?:要|得|需要)?封閉|closed\s+objects?/i.test(t)) { out.close = 'objects'; out.closeSource = 'phrase'; }
+    if ((m = /--shape[=\s]+(auto|cylinder|blocks)(?![a-z])/i.exec(t))) { out.shape = m[1].toLowerCase(); }
+    else if (/圓柱|柱體|cylinder/i.test(t)) { out.shape = 'cylinder'; }
+    else if (/樂高|方塊|lego|blocks?/i.test(t)) { out.shape = 'blocks'; }
+    if (/--whole(?![a-z])|整張圖當一個|整張當一個|不要?分物件|whole\s+image/i.test(t)) { out.whole = true; }
+    return out;
+  }
+
+  // ---------- scene -> raw editor spec (/edit-3d-model): a group holding the background and one custom-shape (mesh:'polygon') object per found object ----------
+  // opts: { sizeM (longest side in metres, default 1.5), title, colors:{ id | 'background': '#rrggbb' } }
+  function toSpec(scene, opts) {
+    opts = opts || {};
+    var parts = [], mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
+    if (scene.background && scene.background.mesh) { parts.push({ name: '背景', key: 'background', res: scene.background }); }
+    scene.objects.forEach(function (o, i) { parts.push({ name: '物件' + (i + 1), key: o.id, res: o }); });
+    parts.forEach(function (p) { p.res.mesh.vertices.forEach(function (v) { for (var a = 0; a < 3; a++) { if (v[a] < mn[a]) { mn[a] = v[a]; } if (v[a] > mx[a]) { mx[a] = v[a]; } } }); });
+    if (!parts.length) { return null; }
+    var k = opts.sizeM || 1.5, cx = (mn[0] + mx[0]) / 2, cz = (mn[2] + mx[2]) / 2, r = function (x) { return Math.round(x * k * 10000) / 10000; };
+    var palette = ['#e57373', '#64b5f6', '#81c784', '#ffd54f', '#ba68c8', '#4db6ac', '#ff8a65', '#a1887f'];
+    var objects = [{ id: 'g1', type: 'group', name: opts.title || '圖片轉3D', position: [0, 0, 0], rotation: [0, 0, 0], scale: 1 }];
+    parts.forEach(function (p, i) {
+      var col = opts.colors && opts.colors[p.key] || (p.key === 'background' ? '#9e9e9e' : palette[i % palette.length]);
+      objects.push({ id: 'p' + (i + 1), type: 'mesh', mesh: 'polygon', name: p.name, parent: 'g1', position: [0, 0, 0], rotation: [0, 0, 0], material: { color: col, roughness: 0.7, metalness: 0.02 },
+        extra: { vertices: p.res.mesh.vertices.map(function (v) { return [r(v[0] - cx), r(v[1] - mn[1]), r(v[2] - cz)]; }), faces: p.res.mesh.faces } });
+    });
+    return { v: 1, title: opts.title || '圖片轉3D', objects: objects };
+  }
+
+  return { parseOptions: parseOptions, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
 });

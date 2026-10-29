@@ -132,4 +132,32 @@ t('prepareInput：深度圖與遮罩尺寸不同也能對上，輸出可直接 b
   const e = C.prepareInput(depth, { w: 2, h: 2, data: [0, 0, 0, 0] }, {}); assert(e.empty && e.count === 1);
 });
 
+t('parseOptions：旗標、中文說法、預設', () => {
+  assert.deepStrictEqual(C.parseOptions('').close, 'objects');
+  assert.strictEqual(C.parseOptions('--close all --shape blocks').close, 'all');
+  assert.strictEqual(C.parseOptions('--close all --shape blocks').shape, 'blocks');
+  assert.strictEqual(C.parseOptions('我要能列印').close, 'all');
+  assert.strictEqual(C.parseOptions('全部都要封閉').close, 'all');
+  assert.strictEqual(C.parseOptions('蘋果要封閉').close, 'objects');
+  assert.strictEqual(C.parseOptions('用樂高方塊').shape, 'blocks');
+  assert.strictEqual(C.parseOptions('用圓柱').shape, 'cylinder');
+  assert(C.parseOptions('整張圖當一個物件').whole);
+  assert.strictEqual(C.parseOptions('').closeSource, 'default');
+});
+t('toSpec：交給編輯器的檢查通過，每個物件都是自訂形狀、都在同一個群組、底面貼地', () => {
+  const E = require('../../renderer/src/edit/edit3d_core.js');
+  const W = 48, H = 32, labels = grid(W, H, (x, y) => (((x - 14) ** 2 + (y - 16) ** 2 < 64) ? 1 : (x >= 28 && x < 42 && y >= 8 && y < 24 ? 2 : 0)));
+  const s = C.buildScene({ labels, depth: grid(W, H, (x, y) => (labels[y][x] ? 0.8 : 0.2)) }, {});
+  const raw = C.toSpec(s, { colors: { 1: '#ff0000' } });
+  const v = E.validate(raw);
+  assert(v.ok && v.problems.length === 0, JSON.stringify(v.problems));
+  const polys = v.spec.objects.filter((o) => o.mesh === 'polygon');
+  assert.strictEqual(polys.length, 3); polys.forEach((o) => assert.strictEqual(o.parent, 'g1'));
+  assert.strictEqual(polys[1].material.color, '#ff0000');
+  const ys = [].concat.apply([], polys.map((o) => o.extra.vertices.map((p) => p[1])));
+  assert(Math.min.apply(null, ys) >= -1e-9 && Math.min.apply(null, ys) < 1e-3);
+  polys.forEach((o) => assert(C.isClosed({ vertices: o.extra.vertices, faces: o.extra.faces })));
+  assert.strictEqual(C.toSpec({ objects: [], background: null }, {}), null);
+});
+
 console.log(pass + ' passed' + (process.exitCode ? ', with failures' : ''));
