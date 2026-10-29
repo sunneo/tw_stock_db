@@ -30330,7 +30330,7 @@ const holder = {};
     var unknown = labels.map(function (r) { return r.map(function (v) { return v > 0; }); });
     var bgDepth = fillBackground(nd, unknown), all = labels.map(function (r) { return r.map(function () { return 1; }); });
     var bg = buildObject(all, bgDepth, { shape: 'blocks', normalize: false, scale: scale, maxFaces: bgBudget, zFront: { base: 0.05 * R, range: R }, thickness: (opts.closeMode === 'all' ? 0.25 : 0.06) * maxdim });
-    return { objects: objects, background: bg, closeMode: opts.closeMode === 'all' ? 'all' : 'objects' };
+    return { objects: objects, background: bg, closeMode: opts.closeMode === 'all' ? 'all' : 'objects', width: W, height: H };
   }
 
   // ---------- input preparation: model-sized depth + foreground mask -> small grids + object labels ----------
@@ -30450,6 +30450,94 @@ const holder = {};
     return { mask: m, fg: fg / n, tol: tol };
   }
 
+  // ---------- panorama / orbit photos -> near-and-far layered model for VR ----------
+  // A panorama is seen from the inside, so its depth bands (far / middle / near) are bent onto a cylinder around the viewer: each band is still a closed solid
+  // (bending moves vertices only, the faces stay the same), far bands sit at a bigger radius, near bands closer. Output goes through toSpec like any other scene.
+  function signedVolume(mesh) {
+    var V = mesh.vertices, vol = 0;
+    mesh.faces.forEach(function (f) { var a = V[f[0]], b = V[f[1]], c = V[f[2]]; vol += (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0])) / 6; });
+    return vol;
+  }
+  // scene coordinates (x 0..xSpan, y 0..ySpan, z toward the viewer) -> a cylinder of radius R around the origin; fovRad = the horizontal angle the picture covers (2*PI for a full panorama)
+  function bendCylinder(mesh, o) {
+    var fov = o.fovRad || 2 * Math.PI, R = o.radius || 5, xs = o.xSpan || 1, ys = o.ySpan || 0.5, eye = o.eye == null ? 1.6 : o.eye, zk = o.zK || 1.33, rminF = 0.2;
+    var out = { vertices: mesh.vertices.map(function (v) {
+      var th = (v[0] / xs - 0.5) * fov, r = Math.max(R * rminF, R * (1 - zk * v[2])), yy = (v[1] - ys / 2) * R * fov / xs * (xs / xs) + eye;
+      return [Math.round(r * Math.sin(th) * 1e4) / 1e4, Math.round(yy * 1e4) / 1e4, Math.round(-r * Math.cos(th) * 1e4) / 1e4];
+    }), faces: mesh.faces.map(function (f) { return f.slice(); }) };
+    if (signedVolume(out) < 0) { out.faces = out.faces.map(function (f) { return [f[0], f[2], f[1]]; }); }
+    return out;
+  }
+  // depth rows -> band labels 1..n (1 = farthest) by quantile of the depth values
+  function depthBands(depth, n) {
+    var vals = [], y, x; for (y = 0; y < depth.length; y++) { for (x = 0; x < depth[y].length; x++) { vals.push(depth[y][x]); } }
+    vals.sort(function (a, b) { return a - b; });
+    var cuts = []; for (var i = 1; i < n; i++) { cuts.push(vals[Math.min(vals.length - 1, Math.floor(vals.length * i / n))]); }
+    return depth.map(function (r) { return r.map(function (v) { var b = 1; for (var k = 0; k < cuts.length; k++) { if (v >= cuts[k]) { b = k + 2; } } return b; }); });
+  }
+  // depth {w,h,data} (the whole panorama strip) -> { objects:[{id, mesh, shape, ...}], background:null, panorama:true }
+  function buildPanorama(depth, opts) {
+    opts = opts || {};
+    var longest = Math.max(depth.w, depth.h), k = Math.min(1, (opts.workMax || 160) / longest), w = Math.max(4, Math.round(depth.w * k)), h = Math.max(2, Math.round(depth.h * k));
+    var dep = resampleGrid(depth.data, depth.w, depth.h, w, h), labels = depthBands(dep, opts.bands || 3);
+    var sc = buildScene({ labels: labels, depth: dep }, { shape: 'blocks', closeMode: 'objects', maxFaces: opts.maxFaces || 12000 });
+    var maxdim = Math.max(w, h), bend = { fovRad: (opts.fovDeg || 360) * Math.PI / 180, radius: opts.radius || 5, xSpan: w / maxdim, ySpan: h / maxdim, eye: opts.eye };
+    sc.objects.forEach(function (o) { o.mesh = bendCylinder(o.mesh, bend); o.name = ['遠景', '中景', '近景', '最近景', '最近景2', '最近景3'][o.id - 1] || ('層' + o.id); });
+    sc.background = null; sc.panorama = true; return sc;
+  }
+
+  // ---------- EXIF (JPEG APP1): GPS position, heading, camera model; just enough to tell whether photos turn around a spot ----------
+  // buf: ArrayBuffer/Uint8Array of a JPEG -> { lat, lon, heading, make } (fields missing when absent) | null
+  function readExif(buf) {
+    var u = buf instanceof Uint8Array ? buf : new Uint8Array(buf), dv = new DataView(u.buffer, u.byteOffset, u.byteLength), p = 2;
+    if (u.length < 12 || dv.getUint16(0) !== 0xFFD8) { return null; }
+    while (p + 4 < u.length) {
+      var mk = dv.getUint16(p), len = dv.getUint16(p + 2);
+      if (mk === 0xFFE1 && String.fromCharCode(u[p + 4], u[p + 5], u[p + 6], u[p + 7]) === 'Exif') { return parseTiff(dv, p + 10); }
+      if (mk === 0xFFDA || (mk & 0xFF00) !== 0xFF00) { break; }
+      p += 2 + len;
+    }
+    return null;
+  }
+  function parseTiff(dv, t) {
+    var le = dv.getUint16(t) === 0x4949, g16 = function (o) { return dv.getUint16(o, le); }, g32 = function (o) { return dv.getUint32(o, le); };
+    var TS = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 7: 1, 9: 4, 10: 8 };
+    function entries(off) { var n = g16(t + off), out = {}; for (var i = 0; i < n; i++) { var e = t + off + 2 + i * 12; out[g16(e)] = { type: g16(e + 2), count: g32(e + 4), at: e + 8 }; } return out; }
+    function valAt(e) { var sz = (TS[e.type] || 1) * e.count; return sz <= 4 ? e.at : t + g32(e.at); }
+    function str(e) { var o = valAt(e), s = ''; for (var i = 0; i < e.count - 1; i++) { s += String.fromCharCode(dv.getUint8(o + i)); } return s; }
+    function rats(e) { var o = valAt(e), r = []; for (var i = 0; i < e.count; i++) { var d = g32(o + i * 8 + 4); r.push(d ? g32(o + i * 8) / d : 0); } return r; }
+    try {
+      var ifd0 = entries(g32(t + 4)), out = {};
+      if (ifd0[0x010F]) { out.make = str(ifd0[0x010F]); }
+      if (ifd0[0x8825]) {
+        var gps = entries(g32(ifd0[0x8825].at)), lat = gps[2] && rats(gps[2]), lon = gps[4] && rats(gps[4]);
+        if (lat && lon && gps[1] && gps[3]) {
+          out.lat = (lat[0] + lat[1] / 60 + lat[2] / 3600) * (str(gps[1]) === 'S' ? -1 : 1); out.lon = (lon[0] + lon[1] / 60 + lon[2] / 3600) * (str(gps[3]) === 'W' ? -1 : 1);
+        }
+        if (gps[17]) { out.heading = rats(gps[17])[0]; }
+      }
+      return out;
+    } catch (e) { return null; }
+  }
+  // shots: [{lat, lon, heading}] (one per photo, in the order given). 'outward' = the photos are taken from about one spot while turning (headings spread over >= 240 degrees, positions within `spotM` metres):
+  // they can be laid side by side as one panorama, ordered by heading. 'inward' = positions go around a centre (not handled: needs a reconstruction we do not have). 'unknown' otherwise.
+  function orbitKind(shots, opts) {
+    opts = opts || {};
+    var s = (shots || []).filter(function (x) { return x && isFinite(x.heading); });
+    if (s.length < 3) { return { kind: 'unknown', reason: '至少要三張有方向資料的照片' }; }
+    var gps = s.filter(function (x) { return isFinite(x.lat) && isFinite(x.lon); }), spot = opts.spotM || 25, spread = 0;
+    var hs = s.map(function (x) { return ((x.heading % 360) + 360) % 360; }).sort(function (a, b) { return a - b; }), maxGap = 0;
+    for (var i = 0; i < hs.length; i++) { var gap = (i === hs.length - 1 ? hs[0] + 360 : hs[i + 1]) - hs[i]; if (gap > maxGap) { maxGap = gap; } }
+    var cover = 360 - maxGap;
+    if (gps.length >= 3) {
+      var la = gps.reduce(function (a, x) { return a + x.lat; }, 0) / gps.length, lo = gps.reduce(function (a, x) { return a + x.lon; }, 0) / gps.length;
+      gps.forEach(function (x) { var dy = (x.lat - la) * 111320, dx = (x.lon - lo) * 111320 * Math.cos(la * Math.PI / 180); spread = Math.max(spread, Math.sqrt(dx * dx + dy * dy)); });
+    }
+    if (cover >= 240 && spread <= spot) { return { kind: 'outward', coverDeg: Math.round(cover), spreadM: Math.round(spread * 10) / 10, order: s.map(function (x, i) { return i; }).sort(function (a, b) { return (((s[a].heading % 360) + 360) % 360) - (((s[b].heading % 360) + 360) % 360); }) }; }
+    if (spread > spot && cover >= 180) { return { kind: 'inward', coverDeg: Math.round(cover), spreadM: Math.round(spread * 10) / 10 }; }
+    return { kind: 'unknown', coverDeg: Math.round(cover), spreadM: Math.round(spread * 10) / 10 };
+  }
+
   // ---------- options from the user's words (the program decides; the model is only asked when this cannot) ----------
   // close: 'objects' (default; every found object is a closed solid, the backdrop is a thin closed slab) | 'all' (the user wants everything closed / printable: the backdrop is a full-thickness solid too)
   function parseOptions(text) {
@@ -30466,7 +30554,8 @@ const holder = {};
   }
 
   // ---------- scene -> raw editor spec (/edit-3d-model): a group holding the background and one custom-shape (mesh:'polygon') object per found object ----------
-  // opts: { sizeM (longest side in metres, default 1.5), title, colors:{ id | 'background': '#rrggbb' } }
+  // opts: { sizeM (longest side in metres, default 1.5), title, colors:{ id | 'background': '#rrggbb' }, texture: the original picture (a data: URL or ref: key) }
+  // With a texture every part gets uvs by projecting the picture straight onto the model from the front (so the front looks like the photo; the sides and back get the nearest edge colours, stretched).
   function toSpec(scene, opts) {
     opts = opts || {};
     var parts = [], mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
@@ -30481,11 +30570,16 @@ const holder = {};
       var col = opts.colors && opts.colors[p.key] || (p.key === 'background' ? '#9e9e9e' : palette[i % palette.length]);
       objects.push({ id: 'p' + (i + 1), type: 'mesh', mesh: 'polygon', name: p.name, parent: 'g1', position: [0, 0, 0], rotation: [0, 0, 0], material: { color: col, roughness: 0.7, metalness: 0.02 },
         extra: { vertices: p.res.mesh.vertices.map(function (v) { return [r(v[0] - cx), r(v[1] - mn[1]), r(v[2] - cz)]; }), faces: p.res.mesh.faces } });
+      if (opts.texture && scene.width && scene.height) {
+        var md = Math.max(scene.width, scene.height), part = objects[objects.length - 1];
+        part.extra.uvs = p.res.mesh.vertices.map(function (v) { return [Math.round(Math.max(0, Math.min(1, v[0] * md / scene.width)) * 10000) / 10000, Math.round(Math.max(0, Math.min(1, v[1] * md / scene.height)) * 10000) / 10000]; });
+        part.material = { color: '#ffffff', roughness: 0.8, metalness: 0, texture: opts.texture, side: 'double' };
+      }
     });
     return { v: 1, title: opts.title || '圖片轉3D', objects: objects };
   }
 
-  return { diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
+  return { buildPanorama: buildPanorama, bendCylinder: bendCylinder, depthBands: depthBands, readExif: readExif, orbitKind: orbitKind, diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
 });
 
 }).call(null, undefined, holder);
@@ -32502,6 +32596,12 @@ const FaEditHost = (function () {
         const cv = document.createElement('canvas'); cv.width = w; cv.height = h; const cx = cv.getContext('2d', { willReadFrequently: true }); cx.drawImage(bmp, 0, 0, w, h); try { bmp.close(); } catch (_) { /* */ }
         const d = cx.getImageData(0, 0, w, h); return { width: w, height: h, data: d.data };
     };
+    // the original picture as a JPEG data: URL (longest side 1024) to paste on the model as its texture
+    M._i3dTexture = async function (blob) {
+        const bmp = await createImageBitmap(blob); const k = Math.min(1, 1024 / Math.max(bmp.width, bmp.height)), w = Math.max(2, Math.round(bmp.width * k)), h = Math.max(2, Math.round(bmp.height * k));
+        const cv = document.createElement('canvas'); cv.width = w; cv.height = h; cv.getContext('2d').drawImage(bmp, 0, 0, w, h); try { bmp.close(); } catch (_) { /* */ }
+        return cv.toDataURL('image/jpeg', 0.85);
+    };
     // p: { image?|blob?, request? (the user's words: "要能列印", "用樂高方塊"…), close?: 'objects'|'all', shape?: 'auto'|'cylinder'|'blocks', whole?: bool, model?, device? }
     M._imageTo3d = async function (p) {
         p = p || {}; const o = FaImage3d.parseOptions(p.request || '');
@@ -32532,10 +32632,11 @@ const FaEditHost = (function () {
         }
         const colors = {}, hex = (n) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0'); for (const id in sums) { const s = sums[id]; colors[id] = '#' + hex(s[0] / s[3]) + hex(s[1] / s[3]) + hex(s[2] / s[3]); }
         const title = T('圖片轉3D：', 'Image to 3D: ') + String(img.filename || '').replace(/\.[a-z0-9]+$/i, '').slice(0, 30);
-        const raw = FaImage3d.toSpec(scene, { colors, title }); const v = FaEdit3d.validate(raw); if (!v.ok) return { ok: false, error: T('做出來的場景不合規格：', 'the scene is invalid: ') + (v.problems || []).slice(0, 3).join('；') };
+        let texture = ''; if (p.texture !== false) { try { texture = await this._i3dTexture(img.blob); } catch (_) { texture = ''; } }
+        const raw = FaImage3d.toSpec(scene, { colors, title, texture }); const v = FaEdit3d.validate(raw); if (!v.ok) return { ok: false, error: T('做出來的場景不合規格：', 'the scene is invalid: ') + (v.problems || []).slice(0, 3).join('；') };
         const r = await this._edOpen('edit-3d', { spec: v.spec });
         const parts = scene.objects.concat(scene.background ? [scene.background] : []);
-        const out = { ok: !(r && r.ok === false), error: r && r.ok === false ? r.error : undefined, objects: scene.objects.length, shapes: scene.objects.map((x) => x.shape), faces: parts.reduce((a, x) => a + x.mesh.faces.length, 0), close, all_closed: parts.every((x) => FaImage3d.isClosed(x.mesh)), fell_back: parts.filter((x) => x.fallback).length, dropped_blobs: prep.dropped, foreground_ratio: fg == null ? undefined : Math.round(fg * 1000) / 1000, depth_model: dr.model, device: dr.device, ms: Date.now() - t0 + (dr.ms || 0), notes: [T('每個物件都是封閉的立體，不是浮雕；單張圖看不到背面，背面是依輪廓寬度推測的厚度', 'every object is a closed solid, not a relief; one picture cannot show the back, so its depth is a guess from the outline width')].concat(prep.empty ? [T('沒有找到前景（背景色抓不準），整張圖當成一個物件', 'no foreground found: the whole picture became one object')] : [], mask || segs ? [] : [T('整張圖當成一個物件', 'the whole picture is one object')], segs ? [T('物件由分割模型找出來', 'objects found by the segmentation model')] : [], segNote ? [segNote] : [], bgNote ? [bgNote] : []) };
+        const out = { ok: !(r && r.ok === false), error: r && r.ok === false ? r.error : undefined, objects: scene.objects.length, shapes: scene.objects.map((x) => x.shape), faces: parts.reduce((a, x) => a + x.mesh.faces.length, 0), close, all_closed: parts.every((x) => FaImage3d.isClosed(x.mesh)), fell_back: parts.filter((x) => x.fallback).length, dropped_blobs: prep.dropped, foreground_ratio: fg == null ? undefined : Math.round(fg * 1000) / 1000, depth_model: dr.model, device: dr.device, ms: Date.now() - t0 + (dr.ms || 0), notes: [T('每個物件都是封閉的立體，不是浮雕；單張圖看不到背面，背面是依輪廓寬度推測的厚度', 'every object is a closed solid, not a relief; one picture cannot show the back, so its depth is a guess from the outline width')].concat(texture ? [T('原圖已貼在模型上（從正面投影，側面與背面是邊緣顏色拉伸）', 'the picture is pasted on as the texture (projected from the front; sides and back show stretched edge colours)')] : []).concat(prep.empty ? [T('沒有找到前景（背景色抓不準），整張圖當成一個物件', 'no foreground found: the whole picture became one object')] : [], mask || segs ? [] : [T('整張圖當成一個物件', 'the whole picture is one object')], segs ? [T('物件由分割模型找出來', 'objects found by the segmentation model')] : [], segNote ? [segNote] : [], bgNote ? [bgNote] : []) };
         return out;
     };
     // /image-to-3d [--close objects|all] [--shape auto|cylinder|blocks] [--whole] [說明]：先貼圖再打、或先打指令再貼圖送出都可以

@@ -185,6 +185,12 @@
         const cv = document.createElement('canvas'); cv.width = w; cv.height = h; const cx = cv.getContext('2d', { willReadFrequently: true }); cx.drawImage(bmp, 0, 0, w, h); try { bmp.close(); } catch (_) { /* */ }
         const d = cx.getImageData(0, 0, w, h); return { width: w, height: h, data: d.data };
     };
+    // the original picture as a JPEG data: URL (longest side 1024) to paste on the model as its texture
+    M._i3dTexture = async function (blob) {
+        const bmp = await createImageBitmap(blob); const k = Math.min(1, 1024 / Math.max(bmp.width, bmp.height)), w = Math.max(2, Math.round(bmp.width * k)), h = Math.max(2, Math.round(bmp.height * k));
+        const cv = document.createElement('canvas'); cv.width = w; cv.height = h; cv.getContext('2d').drawImage(bmp, 0, 0, w, h); try { bmp.close(); } catch (_) { /* */ }
+        return cv.toDataURL('image/jpeg', 0.85);
+    };
     // p: { image?|blob?, request? (the user's words: "要能列印", "用樂高方塊"…), close?: 'objects'|'all', shape?: 'auto'|'cylinder'|'blocks', whole?: bool, model?, device? }
     M._imageTo3d = async function (p) {
         p = p || {}; const o = FaImage3d.parseOptions(p.request || '');
@@ -215,10 +221,11 @@
         }
         const colors = {}, hex = (n) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0'); for (const id in sums) { const s = sums[id]; colors[id] = '#' + hex(s[0] / s[3]) + hex(s[1] / s[3]) + hex(s[2] / s[3]); }
         const title = T('圖片轉3D：', 'Image to 3D: ') + String(img.filename || '').replace(/\.[a-z0-9]+$/i, '').slice(0, 30);
-        const raw = FaImage3d.toSpec(scene, { colors, title }); const v = FaEdit3d.validate(raw); if (!v.ok) return { ok: false, error: T('做出來的場景不合規格：', 'the scene is invalid: ') + (v.problems || []).slice(0, 3).join('；') };
+        let texture = ''; if (p.texture !== false) { try { texture = await this._i3dTexture(img.blob); } catch (_) { texture = ''; } }
+        const raw = FaImage3d.toSpec(scene, { colors, title, texture }); const v = FaEdit3d.validate(raw); if (!v.ok) return { ok: false, error: T('做出來的場景不合規格：', 'the scene is invalid: ') + (v.problems || []).slice(0, 3).join('；') };
         const r = await this._edOpen('edit-3d', { spec: v.spec });
         const parts = scene.objects.concat(scene.background ? [scene.background] : []);
-        const out = { ok: !(r && r.ok === false), error: r && r.ok === false ? r.error : undefined, objects: scene.objects.length, shapes: scene.objects.map((x) => x.shape), faces: parts.reduce((a, x) => a + x.mesh.faces.length, 0), close, all_closed: parts.every((x) => FaImage3d.isClosed(x.mesh)), fell_back: parts.filter((x) => x.fallback).length, dropped_blobs: prep.dropped, foreground_ratio: fg == null ? undefined : Math.round(fg * 1000) / 1000, depth_model: dr.model, device: dr.device, ms: Date.now() - t0 + (dr.ms || 0), notes: [T('每個物件都是封閉的立體，不是浮雕；單張圖看不到背面，背面是依輪廓寬度推測的厚度', 'every object is a closed solid, not a relief; one picture cannot show the back, so its depth is a guess from the outline width')].concat(prep.empty ? [T('沒有找到前景（背景色抓不準），整張圖當成一個物件', 'no foreground found: the whole picture became one object')] : [], mask || segs ? [] : [T('整張圖當成一個物件', 'the whole picture is one object')], segs ? [T('物件由分割模型找出來', 'objects found by the segmentation model')] : [], segNote ? [segNote] : [], bgNote ? [bgNote] : []) };
+        const out = { ok: !(r && r.ok === false), error: r && r.ok === false ? r.error : undefined, objects: scene.objects.length, shapes: scene.objects.map((x) => x.shape), faces: parts.reduce((a, x) => a + x.mesh.faces.length, 0), close, all_closed: parts.every((x) => FaImage3d.isClosed(x.mesh)), fell_back: parts.filter((x) => x.fallback).length, dropped_blobs: prep.dropped, foreground_ratio: fg == null ? undefined : Math.round(fg * 1000) / 1000, depth_model: dr.model, device: dr.device, ms: Date.now() - t0 + (dr.ms || 0), notes: [T('每個物件都是封閉的立體，不是浮雕；單張圖看不到背面，背面是依輪廓寬度推測的厚度', 'every object is a closed solid, not a relief; one picture cannot show the back, so its depth is a guess from the outline width')].concat(texture ? [T('原圖已貼在模型上（從正面投影，側面與背面是邊緣顏色拉伸）', 'the picture is pasted on as the texture (projected from the front; sides and back show stretched edge colours)')] : []).concat(prep.empty ? [T('沒有找到前景（背景色抓不準），整張圖當成一個物件', 'no foreground found: the whole picture became one object')] : [], mask || segs ? [] : [T('整張圖當成一個物件', 'the whole picture is one object')], segs ? [T('物件由分割模型找出來', 'objects found by the segmentation model')] : [], segNote ? [segNote] : [], bgNote ? [bgNote] : []) };
         return out;
     };
     // /image-to-3d [--close objects|all] [--shape auto|cylinder|blocks] [--whole] [說明]：先貼圖再打、或先打指令再貼圖送出都可以

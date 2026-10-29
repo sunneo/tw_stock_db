@@ -224,4 +224,18 @@ t('readExif：讀出 GPS 與方向（手工組一個最小的 JPEG）', () => {
   assert.strictEqual(C.readExif(new Uint8Array([1, 2, 3])), null);
 });
 
+t('toSpec 貼材質：每個頂點一組貼圖座標（0..1）、材質帶原圖、編輯器檢查通過', () => {
+  const E = require('../../renderer/src/edit/edit3d_core.js');
+  const W = 48, H = 32, labels = grid(W, H, (x, y) => (((x - 14) ** 2 + (y - 16) ** 2 < 64) ? 1 : 0));
+  const s = C.buildScene({ labels, depth: grid(W, H, (x, y) => (labels[y][x] ? 0.8 : 0.2)) }, {});
+  const tex = 'data:image/png;base64,iVBORw0KGgo=';
+  const v = E.validate(C.toSpec(s, { texture: tex })); assert(v.ok && v.problems.length === 0, JSON.stringify(v.problems));
+  v.spec.objects.filter((o) => o.mesh === 'polygon').forEach((o) => {
+    assert.strictEqual(o.extra.uvs.length, o.extra.vertices.length); assert.strictEqual(o.material.texture, tex);
+    o.extra.uvs.forEach((t) => assert(t[0] >= 0 && t[0] <= 1 && t[1] >= 0 && t[1] <= 1));
+  });
+  const o1 = v.spec.objects.find((o) => o.name === '物件1'); const ys = o1.extra.uvs.map((t) => t[1]);
+  assert(Math.max.apply(null, ys) > 0.5 && Math.min.apply(null, ys) < 0.5);
+});
+
 console.log(pass + ' passed' + (process.exitCode ? ', with failures' : ''));

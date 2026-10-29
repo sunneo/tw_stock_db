@@ -398,7 +398,7 @@
     var unknown = labels.map(function (r) { return r.map(function (v) { return v > 0; }); });
     var bgDepth = fillBackground(nd, unknown), all = labels.map(function (r) { return r.map(function () { return 1; }); });
     var bg = buildObject(all, bgDepth, { shape: 'blocks', normalize: false, scale: scale, maxFaces: bgBudget, zFront: { base: 0.05 * R, range: R }, thickness: (opts.closeMode === 'all' ? 0.25 : 0.06) * maxdim });
-    return { objects: objects, background: bg, closeMode: opts.closeMode === 'all' ? 'all' : 'objects' };
+    return { objects: objects, background: bg, closeMode: opts.closeMode === 'all' ? 'all' : 'objects', width: W, height: H };
   }
 
   // ---------- input preparation: model-sized depth + foreground mask -> small grids + object labels ----------
@@ -622,7 +622,8 @@
   }
 
   // ---------- scene -> raw editor spec (/edit-3d-model): a group holding the background and one custom-shape (mesh:'polygon') object per found object ----------
-  // opts: { sizeM (longest side in metres, default 1.5), title, colors:{ id | 'background': '#rrggbb' } }
+  // opts: { sizeM (longest side in metres, default 1.5), title, colors:{ id | 'background': '#rrggbb' }, texture: the original picture (a data: URL or ref: key) }
+  // With a texture every part gets uvs by projecting the picture straight onto the model from the front (so the front looks like the photo; the sides and back get the nearest edge colours, stretched).
   function toSpec(scene, opts) {
     opts = opts || {};
     var parts = [], mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
@@ -637,6 +638,11 @@
       var col = opts.colors && opts.colors[p.key] || (p.key === 'background' ? '#9e9e9e' : palette[i % palette.length]);
       objects.push({ id: 'p' + (i + 1), type: 'mesh', mesh: 'polygon', name: p.name, parent: 'g1', position: [0, 0, 0], rotation: [0, 0, 0], material: { color: col, roughness: 0.7, metalness: 0.02 },
         extra: { vertices: p.res.mesh.vertices.map(function (v) { return [r(v[0] - cx), r(v[1] - mn[1]), r(v[2] - cz)]; }), faces: p.res.mesh.faces } });
+      if (opts.texture && scene.width && scene.height) {
+        var md = Math.max(scene.width, scene.height), part = objects[objects.length - 1];
+        part.extra.uvs = p.res.mesh.vertices.map(function (v) { return [Math.round(Math.max(0, Math.min(1, v[0] * md / scene.width)) * 10000) / 10000, Math.round(Math.max(0, Math.min(1, v[1] * md / scene.height)) * 10000) / 10000]; });
+        part.material = { color: '#ffffff', roughness: 0.8, metalness: 0, texture: opts.texture, side: 'double' };
+      }
     });
     return { v: 1, title: opts.title || '圖片轉3D', objects: objects };
   }
