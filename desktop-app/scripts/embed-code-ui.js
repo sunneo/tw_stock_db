@@ -332,7 +332,7 @@ embedGame();
 function embedAidoc() {
     const dir = path.join(root, 'renderer/src/aidoc'); if (!fs.existsSync(dir)) return;
     let prevEnd = '/* SUBJ3D-END */';
-    for (const [fn, mark, name] of [['trace', 'AIDTRACE', 'FaAidocTrace'], ['elf', 'AIDELF', 'FaAidocElf']]) {
+    for (const [fn, mark, name] of [['trace', 'AIDTRACE', 'FaAidocTrace'], ['elf', 'AIDELF', 'FaAidocElf'], ['triage', 'AIDTRIAGE', 'FaLogTriage']]) {
         const core = fs.readFileSync(path.join(dir, fn + '.js'), 'utf8').replace(/\r\n/g, '\n');
         let a = src.indexOf('/* ' + mark + '-BEGIN */'), b = src.indexOf('/* ' + mark + '-END */');
         if (a < 0 || b < 0) {

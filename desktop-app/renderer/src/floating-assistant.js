@@ -2827,6 +2827,15 @@ SUBAGENT_DOMAIN_REGISTRY.offline_knowledge_expander = {
     toolNames: ['ref_lookup', 'ref_define', 'ref_types', 'ref_resolve', 'ref_validate', 'image_parts_teach', 'image_parts_annotate', 'image_rig_animate', 'lookup_error_code', 'explain_command_line', 'offline_trainer', 'behavior_define', 'explain_code', 'browser_search', 'fetch_web_page', 'article_outline', 'article_section', 'fap_read_file', 'fs_read_file'],
     systemPrompt: '你是 FloatingAssistant 的「離線訓練器知識擴充」助理。目標：讓離線模式（沒有 AI 時）也能讀懂更多東西。使用者會給一個主題（例如「Windows 的 HRESULT 檔案系統相關錯誤」「clang 的常用選項」「RISC-V 向量指令」「Bazel 建置檔」）。\n你能補的種類（ref_define 的 kind）：error_code（錯誤碼：system、code、name、message、note）、command（命令：name、aliases、summary、synopsis、options）、option（單一選項：command、flag、arg、desc）、pragma 與 clause（編譯指示與子句）、api（函式的引數與回傳值語意）、mnemonic（組合語言指令：arch、category、name、description）、idiom（多指令組合）、signature（函式名稱歸進哪個行為分類）、grammar_pattern（文法樣式：某語言的句型怎麼辨識，附範例）、semantics（概念或行為的語意說明）、tokenizer（分詞規則：rules 是 name 與 re 的清單）、build_system（建置系統：辨識檔案、常用命令與目標、變數的意義）、assembly（某架構的組合語言慣例、呼叫約定、暫存器用途）。\n做法：0) 若主題是「補日誌診斷規則」，先用 ref_define({action:"queue"}) 看待學習清單（診斷過但沒有規則的錯誤行），逐項處理；規則用 kind "build_error_rule" 寫入，必須附 example（一行真實日誌，用來驗證規則真的比對得到）與 source；1) 把主題拆成要補的小項目；2) 先查現有（ref_lookup）；3) 找官方資料並讀懂；4) 用 ref_define 寫入，每筆附 source；5) 重新查詢驗證；6) 回報。\n' + FA_EXPAND_COMMON,
 };
+// 2026-10-29 使用者要求：含中文的句子也可能是 log。除錯定位（貼堆疊／log 問「例外在哪發生」「這個訊息是誰印的」）的 domain／subagent：
+// 程式用索引找，AI 只說明；分不出是使用者的話還是 log 的行，用 log_triage 的封閉選擇題（A 使用者的話／B log／C 堆疊）問，答案由程式核對。
+SUBAGENT_DOMAIN_REGISTRY.code_debug = {
+    enabled: true,
+    label: '除錯定位（貼上堆疊或 log：例外發生點在哪、是什麼問題、某個錯誤訊息是誰印的、誰呼叫誰；含中文的 log 也行）',
+    category: 'programming',
+    toolNames: ['repo_map', 'repo_ask', 'repo_sql', 'log_triage', 'coding_read_file', 'fap_read_file', 'fs_read_file', 'explain_code'],
+    systemPrompt: '你是 FloatingAssistant 的「除錯定位」助理。使用者會貼堆疊（backtrace）或 log，問例外的發生點在哪、是什麼問題、某個錯誤訊息是誰造成的。\n做法：1) 先確認專案有資料庫索引（repo_map stats／index_start）；2) 把使用者貼的全文原封不動交給 repo_ask 的 action:locate（text 放全文），由程式用索引找發生點、呼叫鏈與印出該訊息的程式行；3) 如果貼的內容裡混有使用者自己的話與 log（含中文的句子也可能是 log），先用 log_triage 分類：它會用索引核對，認不出的行給你一題 A／B／C 選擇題，你只回一個字母，程式會核對你的答案；4) 依 locate 的結果說明三件事：發生點、什麼問題、誰造成；只能引用結果裡出現的 檔案:行，需要時用 coding_read_file 多看程式碼；5) 說明完用 repo_ask 的 action:check_citations 核對引用，不在範圍內的引用要撤掉或標明沒有根據。\n規矩：定位器說索引裡沒有、不確定、樹版本對不上的，照實說，不要編造；舊索引沒有 log 字串與呼叫資料時，請使用者重新建立索引，不要猜。'
+};
 SUBAGENT_DOMAIN_REGISTRY.aidoc_knowledge_expander = {
     enabled: true,
     label: 'AIDoc 行為說明擴充（讀程式碼找出還不認得的呼叫、錯誤碼、pragma、組語，查官方資料後補進定義，讓行為說明越來越完整）',
@@ -29812,6 +29821,101 @@ const holder = {};
 return holder.FaAidocElf;
 })();
 /* AIDELF-END */
+/* AIDTRIAGE-BEGIN */
+const FaLogTriage = (function () {
+const holder = {};
+(function (module, self) {
+// AIDoc log triage (the "recipe" behind the log_triage subagent / tool): which lines of a pasted block are the user's own words, which are log lines,
+// which are stack frames. A line that contains Chinese can be any of them, so "contains CJK" is never used as a verdict.
+//   A = the user's own words / a question      B = a log line printed by the program      C = a stack frame
+// The program decides everything it can: C by the stack parser, B by the INDEX (the line must match a recorded log format string, verbatim), blank lines are skipped.
+// Only the lines the program cannot decide go to a (small) model as a closed multiple-choice question; the answer is then VERIFIED by the program
+// (a model that says B for a line the index does not know is overruled to A; a model that says C for a line that is no frame is overruled).
+// Exposes `FaLogTriage` (browser, embedded into floating-assistant.js by scripts/embed-code-ui.js) and module.exports (node tests).
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaLogTriage = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var T = (typeof FaAidocTrace !== 'undefined' && FaAidocTrace) || (typeof require === 'function' ? require('./trace.js') : null);
+
+  var QUESTION_RE = /[?？]\s*$|(?:嗎|呢|請問|怎麼|為什麼|為何|幫我|請幫|是誰|在哪|什麼問題)/;
+  // verdicts: { n, raw, cls: 'A'|'B'|'C'|'skip'|'?', by: 'parser'|'index'|'rule'|'model'|'overruled', hit? }
+  // hooks.logHit(msg) -> Promise<boolean|object>   (the index looked the message up: a recorded format string matches it)
+  function classify(text, hooks) {
+    hooks = hooks || {};
+    var parsed = T.parse(String(text || ''));
+    var frameAt = {};
+    parsed.frames.forEach(function (f) { frameAt[f.line_no] = f; });
+    var lines = String(text || '').split(/\r?\n/);
+    var items = [];
+    var chain = Promise.resolve();
+    lines.forEach(function (raw, i) {
+      chain = chain.then(function () {
+        var n = i + 1, t = raw.trim();
+        if (!t) { return; }
+        if (frameAt[n]) { items.push({ n: n, raw: raw, cls: 'C', by: 'parser' }); return; }
+        var msg = T.messageOf(raw);
+        if (!T.isMessageLine(msg)) { items.push({ n: n, raw: raw, cls: QUESTION_RE.test(t) ? 'A' : 'skip', by: 'rule' }); return; }
+        if (!hooks.logHit) { items.push({ n: n, raw: raw, cls: '?', by: 'rule', msg: msg }); return; }
+        return Promise.resolve(hooks.logHit(msg)).then(function (hit) {
+          if (hit) { items.push({ n: n, raw: raw, cls: 'B', by: 'index', msg: msg, hit: hit }); return; }
+          // not in the index: a question is the user's words; anything else stays undecided (it may be a log from code outside the tree)
+          items.push({ n: n, raw: raw, cls: QUESTION_RE.test(t) ? 'A' : '?', by: 'rule', msg: msg });
+        });
+      });
+    });
+    return chain.then(function () { return items; });
+  }
+
+  // closed multiple-choice prompt for ONE undecided line (small models answer one letter well, a paragraph badly)
+  function choicePrompt(item) {
+    return '下面這一行，是哪一種？只回一個字母。\n'
+      + '一行：' + String(item.raw).slice(0, 300) + '\n'
+      + 'A. 使用者自己說的話（問題、說明、備註）\n'
+      + 'B. 程式印出來的 log 訊息\n'
+      + 'C. 堆疊（backtrace）的一層\n'
+      + '答：';
+  }
+  function letterOf(reply) { var m = /^\s*[\(\[（]?\s*([ABCabc])\b/.exec(String(reply || '')) || /\b([ABC])\b/.exec(String(reply || '')); return m ? m[1].toUpperCase() : ''; }
+
+  // verify a model's letter against the facts. verify.isFrame(raw) -> bool, verify.logHit(msg) -> Promise<bool>
+  function applyAnswer(item, reply, verify) {
+    verify = verify || {};
+    var L = letterOf(reply);
+    if (!L) { return Promise.resolve(Object.assign({}, item, { cls: '?', by: 'model', note: 'no letter in the reply' })); }
+    if (L === 'A') { return Promise.resolve(Object.assign({}, item, { cls: 'A', by: 'model' })); }
+    if (L === 'C') {
+      var isF = verify.isFrame ? verify.isFrame(item.raw) : T.parse(item.raw).frames.length > 0;
+      return Promise.resolve(isF ? Object.assign({}, item, { cls: 'C', by: 'model' }) : Object.assign({}, item, { cls: 'A', by: 'overruled', note: 'the stack parser does not read it as a frame' }));
+    }
+    return Promise.resolve(verify.logHit ? verify.logHit(item.msg || T.messageOf(item.raw)) : false).then(function (hit) {
+      return hit ? Object.assign({}, item, { cls: 'B', by: 'model', hit: hit }) : Object.assign({}, item, { cls: 'A', by: 'overruled', note: 'the index has no log format string that matches it' });
+    });
+  }
+
+  // the whole recipe with an injected generate(prompt) -> Promise<string>; without a model the undecided lines are reported as undecided
+  function run(text, hooks, generate) {
+    return classify(text, hooks).then(function (items) {
+      if (!generate) { return items; }
+      return items.reduce(function (chain, it, i) {
+        return chain.then(function () {
+          if (it.cls !== '?') { return; }
+          return Promise.resolve(generate(choicePrompt(it))).then(function (rep) { return applyAnswer(it, rep, hooks); }).then(function (r) { items[i] = r; });
+        });
+      }, Promise.resolve()).then(function () { return items; });
+    });
+  }
+
+  function summary(items) {
+    var c = { A: 0, B: 0, C: 0, '?': 0, skip: 0 };
+    items.forEach(function (x) { c[x.cls] = (c[x.cls] || 0) + 1; });
+    return c;
+  }
+  return { classify: classify, choicePrompt: choicePrompt, letterOf: letterOf, applyAnswer: applyAnswer, run: run, summary: summary };
+});
+
+}).call(null, undefined, holder);
+return holder.FaLogTriage;
+})();
+/* AIDTRIAGE-END */
 /* MESHGEN-BEGIN */
 const FaMeshGen = (function () {
 const holder = {};
@@ -37591,6 +37695,7 @@ const FA_TOOL_SHORTS = {
     get_tool_details: '查工具的完整說明與參數（清單只給一行；第一次用或不確定參數時先查）',
     explain_command_line: '逐項解釋一行命令（gcc、gdb、qemu 等的選項）',
     log_learn: '學習一份日誌的格式與常見事件（學完用 log_ask 問答）',
+    log_triage: '把貼上的文字逐行分成使用者的話／log／堆疊（含中文的句子也可能是 log，由索引核對）',
     log_ask: '對學過的日誌做摘要與問答（哪個錯誤最多、何時第一次出現…）',
     extract_video_frames: '擷取已上傳影片在指定時間點的畫面，存成圖片',
     begin_presentation: 'Start a long presentation written in several batches (stays ONE deck)',
@@ -50375,6 +50480,14 @@ ${fnData.code}
             },
             { type: 'object', properties: { text: { type: 'string', description: '貼上的日誌文字' }, file_id: { type: 'string', description: '上傳檔案的 file_id' }, path: { type: 'string', description: '（桌面版）日誌檔的絕對路徑' }, name: { type: 'string', description: '（選填）格式名稱，之後用它指定' }, confirm: { type: 'boolean', description: '預設 true：放卡片讓使用者確認；false 直接存' }, kind: { type: 'string', enum: ['log', 'config', 'grammar'], description: '（選填）強制當日誌、章節式設定檔或自己長文法；省略＝自動判斷' }, extend: { type: 'string', description: '（選填）已存的文法名稱：讀這份新樣本，讓那份文法繼續長' }, max_lines: { type: 'integer', description: '最多分析幾行（預設 50000）' } }, additionalProperties: false }
         );
+        registerOptional('log_triage',
+            '把貼上的一段文字逐行分成三種：A＝使用者自己說的話、B＝程式印出來的 log、C＝堆疊的一層。含中文的句子也可能是 log，所以不看有沒有中文：堆疊由解析器判定，log 由專案索引核對（要跟索引記錄的 log 格式字串對得上），都不是的行才算「認不出」。action:triage（預設）回傳每行的分類與「認不出」的行，每個認不出的行附一題選擇題（A／B／C）；你回答後用 action:answer（answers 填 {"行號":"字母"}）交給程式核對——你說 B 但索引沒有這個訊息，程式會改回 A。root 是專案資料夾（要有資料庫索引，沒有索引就只做堆疊判斷）。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try { return JSON.stringify(await this._repoTriage(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+            },
+            { type: 'object', properties: { root: { type: 'string', description: '專案資料夾：fap:<名稱>，或桌面版的絕對路徑' }, text: { type: 'string', description: '貼上的全文' }, action: { type: 'string', enum: ['triage', 'answer'] }, answers: { type: 'object', description: 'answer：{"行號":"A|B|C"}' } }, required: ['text'], additionalProperties: false }
+        );
         registerOptional('log_ask',
             '對學過（或剛 log_learn 過）的日誌做摘要與問答，全是程式查詢：「摘要」「哪個錯誤最多」「錯誤什麼時候第一次出現」「有幾筆錯誤」「欄位 xxx 的值分布」「最忙的時段」「模板有哪些」「找 「xxx」在哪些行」。text 只給一行日誌＝問「這一行是什麼意思」（比對到哪個模板、欄位值、這種紀錄的統計）。開放式問題（原因、建議）程式不亂答，會回傳 kind:"open" 與精簡的模板統計脈絡（不是整份日誌），請你根據脈絡回答。要指定日誌：format（學過的格式名稱，省略＝最近一份）或直接帶 text／file_id／path 現學現問。找某個值需要原始行：同一個對話裡剛 log_learn 過的有，只存在訓練器裡的沒有（會明說需要檔案）。**設定檔**（INI／TOML／EDK2）的問法：「[database] 有哪些設定」「workers 設成多少」「哪些是布林／GUID／路徑」「有沒有重複的鍵」「Sources 有哪些原始檔」；text 給一行 key = value＝查這個鍵現在的值與型別；帶 other_text／other_file_id／other_path（另一份設定檔）＝比較兩份差在哪（改值、新增、移除）。機密欄位的值一律顯示為已遮蔽。**自己長出文法的格式**（YAML、BitBake、nginx…）：「SRC_URI 被怎麼設定」（列出所有操作與修飾，依順序）、「services.web.image 是什麼」（用路徑）、「services.web 有哪些設定」、「哪些用了 += 」、「有哪些 inherit」「有哪些函式」、「文法」（EBNF）、「antlr」（ANTLR 風格）、「bison」（遞迴的產生式，bison 風格）、「分析表」（LALR 狀態與 shift／reduce／goto）、「衝突」（shift/reduce、reduce/reduce）、「斷點」（哪幾行合成一個陳述、為什麼、續行符號與終結符號）；text 給一行＝同時回答 LALR 分析表接不接受它、卡在哪個 token、這裡本來可以接受什麼。',
             async function (rawArgs) {
@@ -59421,6 +59534,28 @@ ${fnData.code}
             if (!p.frames.length && !(r.messages && r.messages.items.some((i) => i.status !== 'none'))) return null;
             return r;
         } catch (_) { return null; }
+    }
+    // log_triage：逐行分 A 使用者的話／B log／C 堆疊。索引當裁判（含中文的句子也可能是 log），模型的字母由程式核對
+    async _repoTriage(parsed) {
+        const text = String(parsed.text || ''); if (!text.trim()) return { ok: false, error: '缺少text' };
+        const root = this._codingRefFromArgs(parsed) || String(parsed.root || '').trim();
+        let R = null;
+        if (root) { try { const c = await this._idxConn(this._repoMapKey(root)); R = c && c.R; } catch (_) { R = null; } }
+        const T = FaAidocTrace;
+        const logHit = R ? async (msg) => {
+            const cand = await R.logCandidates(msg, 600); if (!cand.available) return false;
+            const ms = T.matchLogs(msg, cand.rows); const v = T.judgeLogMatches(ms);
+            return v.status === 'none' ? false : { path: v.picks[0].path, line: v.picks[0].line };
+        } : null;
+        const hooks = { logHit };
+        let items = await FaLogTriage.classify(text, hooks);
+        if (String(parsed.action || 'triage') === 'answer') {
+            const ans = parsed.answers || {};
+            for (let i = 0; i < items.length; i++) if (items[i].cls === '?' && ans[items[i].n]) items[i] = await FaLogTriage.applyAnswer(items[i], ans[items[i].n], hooks);
+        }
+        const undecided = items.filter((x) => x.cls === '?');
+        const note = R ? undefined : '沒有資料庫索引可核對：log 行只能標「認不出」。先 repo_map index_start 建立索引。';
+        return { ok: true, summary: FaLogTriage.summary(items), lines: items.filter((x) => x.cls !== 'skip').map((x) => ({ n: x.n, cls: x.cls, by: x.by, text: x.raw.slice(0, 160), index_hit: x.hit || undefined, note: x.note })), undecided: undecided.map((x) => ({ n: x.n, question: FaLogTriage.choicePrompt(x) })), note, next_action: undecided.length ? '對每個認不出的行回一個字母（A／B／C），用 log_triage 的 action:answer 交給程式核對。' : '分類完成，把 B 類與 C 類的全文交給 repo_ask 的 action:locate。' };
     }
     async _repoCallers(key, name) {
         const c = await this._idxConn(key); const R = c && c.R; if (!R) return { ok: false, error: '這個專案沒有資料庫索引。' };
