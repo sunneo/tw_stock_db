@@ -49632,7 +49632,7 @@ ${fnData.code}
         );
 
         registerOptional('repo_ask',
-            '程式碼問答（類似doxygen＋語意搜尋）：問專案裡「某個函式／類別做什麼用」「在哪裡定義」「誰用到它」「跟什麼相關」「某功能的程式在哪」。需要先有repo_map索引（repo_map index_start，會問使用者並在背景建立；索引不完整時回答會註明）。question用自然語言，函式或檔案名稱照原樣寫，中英文都可以。回傳依索引整理的事實answer（定義位置、註解、簽名、呼叫它的檔案、依賴）與程式碼片段snippets——**用這些回答，說明用途要以snippets的程式碼為準，不要編造**。action:search只回相近的定義／檔案清單；action:stats看索引規模。**你讀過程式碼確認了某個函式／檔案在做什麼之後，用 repo_map annotate 補進資料庫**，之後問同樣的問題（你、同事、匯出的HTML）就會直接得到這份說明。範例：repo_ask({"root":"fap:我的專案","question":"parse_config 是做什麼的"})、repo_ask({"root":"C:/src/openbmc","question":"誰用到 sdbusplus::bus"})。',
+            '程式碼問答（類似doxygen＋語意搜尋）：問專案裡「某個函式／類別做什麼用」「在哪裡定義」「誰用到它」「跟什麼相關」「某功能的程式在哪」。需要先有repo_map索引（repo_map index_start，會問使用者並在背景建立；索引不完整時回答會註明）。question用自然語言，函式或檔案名稱照原樣寫，中英文都可以。回傳依索引整理的事實answer（定義位置、註解、簽名、呼叫它的檔案、依賴）與程式碼片段snippets——**用這些回答，說明用途要以snippets的程式碼為準，不要編造**。action:search只回相近的定義／檔案清單；action:stats看索引規模。使用者貼了堆疊（backtrace）或 log、問「例外在哪裡發生」「這個錯誤訊息是誰造成的」時，用 action:locate（text 放貼上的全文）：由程式用索引找出發生點、呼叫鏈、印出該訊息的程式行，你只負責依結果說明，說完用 action:check_citations 核對引用；action:callers（name 放函式名）查誰呼叫它。**你讀過程式碼確認了某個函式／檔案在做什麼之後，用 repo_map annotate 補進資料庫**，之後問同樣的問題（你、同事、匯出的HTML）就會直接得到這份說明。範例：repo_ask({"root":"fap:我的專案","question":"parse_config 是做什麼的"})、repo_ask({"root":"C:/src/openbmc","question":"誰用到 sdbusplus::bus"})。',
             async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -49641,7 +49641,7 @@ ${fnData.code}
             { type: 'object', properties: {
                 root: { type: 'string', description: '專案資料夾：fap:<名稱或id>[/<子路徑>]；桌面版也可以是絕對路徑' },
                 question: { type: 'string', description: '要問的問題（自然語言）' },
-                action: { type: 'string', enum: ['ask', 'search', 'stats'] },
+                action: { type: 'string', enum: ['ask', 'search', 'stats', 'locate', 'callers', 'check_citations'], description: 'locate：除錯定位器，text 放貼上的堆疊或 log 全文，回傳發生點、呼叫鏈、印出該訊息的程式行；callers：name 放函式名，回傳誰呼叫它；check_citations：text 放你的說明，核對引用的 檔案:行 是否都是定位器找到的' }, text: { type: 'string', description: 'locate／check_citations：全文' }, name: { type: 'string', description: 'callers：函式名稱' },
                 n: { type: 'number', description: '最多回幾筆（預設8）' }, kind: { type: 'string', enum: ['symbol', 'file'], description: 'search：只找定義或只找檔案' }, snippets: { type: 'boolean', description: '是否附程式碼片段（預設true）' },
             }, required: ['root'], additionalProperties: false }
         );
@@ -59276,6 +59276,143 @@ ${fnData.code}
         const rows = (res.rows || []).map((row) => row.map((v) => (v && typeof v === 'object' ? (v.$blob !== undefined ? '[BLOB]' : (v.$int !== undefined ? v.$int : v)) : v)));
         return { ok: true, columns: res.columns, rows, row_count: rows.length, truncated: !!res.truncated, ms: Date.now() - t0, note: res.truncated ? '只回前 ' + lim + ' 列；加上 LIMIT／WHERE 縮小範圍。' : undefined };
     }
+    // ---- AIDoc 除錯定位器（移植自 Redmine 外掛 redmine_ai_chat 的 locate）：貼上堆疊／log → 索引裡的發生點、呼叫鏈、印出該訊息的程式行 ----
+    // 全部由程式用索引核對，AI 只負責說明；找不到就明講找不到，不編造。
+    async _repoSnippet(io, path, line, before, after) {
+        const t = await io.readText(path);
+        if (t === null || t === undefined) throw new Error('unreadable');
+        const lines = String(t).split(/\r?\n/);
+        const a = Math.max(1, line - before), b = Math.min(lines.length, line + after);
+        return { path, line, from: a, to: b, text: lines.slice(a - 1, b).map((x, i) => (a + i) + ': ' + x).join('\n').slice(0, 1400) };
+    }
+    async _repoLocate(key, text, o) {
+        o = o || {};
+        const T = FaAidocTrace;
+        const parsed = T.parse(text);
+        const hasMsgs = (parsed.others || []).some((x) => T.isMessageLine(T.messageOf(x.raw)));
+        if (!parsed.frames.length && !hasMsgs) return { ok: true, frames: 0, located: [], answer: '貼上的內容裡沒有找到堆疊（gdb／kernel／Python／Java／JS／Rust／Go 等格式）或可比對的 log 訊息。' };
+        const c = await this._idxConn(key);
+        const R = c && c.R;
+        if (!R) return { ok: false, error: '這個專案沒有資料庫索引（定位器需要）：先 repo_map index_start 建立。' };
+        const io = await this._repoMapIo(key);
+        const MAXF = 40, frames = parsed.frames.slice(0, MAXF), cache = {};
+        const memo = (k, fn) => cache[k] || (cache[k] = fn());
+        const baseOf = (p) => String(p).replace(/\\/g, '/').split('/').pop();
+        const counts = await R.counts().catch(() => ({}));
+        const treeRef = await R.treeRef();
+        const schema = await R.schemaVersion();
+        const info = { files: counts.files || 0, symbols: counts.symbols || 0, complete: true };
+        const results = [];
+        for (const fr of frames) {
+            const foreign = fr.lib && !fr.file;
+            const defs = fr.func && !foreign ? await memo('s:' + fr.func, () => R.symbolsByName(fr.func, 50)) : [];
+            const files = fr.file ? await memo('f:' + baseOf(fr.file), () => R.filesByName(baseOf(fr.file), 20)) : [];
+            const rk = T.rankCandidates(fr, defs, files, { maxCandidates: 6 });
+            const res = { frame: fr, status: foreign ? 'outside' : rk.status, note: rk.note, picks: rk.picks, files: rk.files, ndefs: defs.length, snippets: [] };
+            const targets = [];
+            if (rk.status === 'exact' && fr.line) targets.push({ path: rk.picks[0].path, line: fr.line, kind: 'at' });
+            else if (rk.status === 'file' && fr.line) targets.push({ path: rk.files[0], line: fr.line, kind: 'at' });
+            else rk.picks.slice(0, 3).forEach((d) => targets.push({ path: d.path, line: d.line, kind: 'def', sig: d.sig }));
+            for (const t of targets) {
+                try { res.snippets.push(Object.assign({ kind: t.kind }, await this._repoSnippet(io, t.path, t.line, t.kind === 'at' ? 3 : 1, t.kind === 'at' ? 3 : 8))); }
+                catch (_) { res.snippets.push({ kind: t.kind, path: t.path, line: t.line, from: t.line, to: t.line, unreadable: true, text: t.sig ? t.line + ': ' + t.sig : '' }); }
+            }
+            results.push(res);
+        }
+        // 呼叫鏈：堆疊的上一層是不是索引記錄的呼叫者（Python 的 traceback 由外往內，上一層是前一個）
+        for (let i = 0; i < results.length; i++) {
+            const r = results[i], f = r.frame;
+            if ((r.status !== 'exact' && r.status !== 'unique') || !f.func || !r.picks.length) continue;
+            const cc = await R.callers(f.func, 40);
+            if (!cc.available) { r.chain = { level: 'old' }; continue; }
+            const rows = cc.rows.filter((x) => x.caller !== f.func);
+            const j = f.fmt === 'python' ? i - 1 : i + 1;
+            const other = results[j] && results[j].frame;
+            const chk = T.chainCheck(rows, other && other.fmt === f.fmt && other.fmt !== 'log' ? other : null);
+            r.chain = { level: chk.level, callers: rows.slice(0, 6), total: rows.length, sameName: r.ndefs > 1, snippets: [] };
+            if (chk.level === 'match') {
+                for (const x of chk.rows.slice(0, 2)) { try { r.chain.snippets.push(Object.assign({ kind: 'call' }, await this._repoSnippet(io, x.path, x.line, 1, 1))); } catch (_) { /* 讀不到就不附 */ } }
+                r.chain.hit = chk.rows;
+            }
+        }
+        // log 訊息 → 印出它的程式行
+        const seen = {}, mlines = [];
+        (parsed.others || []).forEach((x) => { const msg = T.messageOf(x.raw); if (!T.isMessageLine(msg) || seen[msg]) return; seen[msg] = 1; mlines.push({ line_no: x.line_no, msg }); });
+        const msgs = { checked: mlines.length, skipped: Math.max(0, mlines.length - 40), unavailable: false, total: 0, items: [] };
+        for (const ln of mlines.slice(0, 40)) {
+            if (msgs.unavailable) break;
+            const cand = await R.logCandidates(ln.msg, 600);
+            if (!cand.available) { msgs.unavailable = true; break; }
+            msgs.total = cand.total;
+            const verdict = T.judgeLogMatches(T.matchLogs(ln.msg, cand.rows));
+            const it = { line_no: ln.line_no, msg: ln.msg, status: verdict.status, weak: !!verdict.weak, picks: verdict.picks, snippets: [] };
+            for (const p of verdict.picks.slice(0, verdict.status === 'best' ? 1 : 3)) {
+                try { it.snippets.push(Object.assign({ kind: 'log' }, await this._repoSnippet(io, p.path, p.line, 1, 4))); }
+                catch (_) { it.snippets.push({ kind: 'log', path: p.path, line: p.line, from: p.line, to: p.line, unreadable: true, text: p.line + ': ' + p.fmt }); }
+            }
+            msgs.items.push(it);
+        }
+        const tree = T.treeCheck(treeRef, parsed.versions);
+        const located = [];
+        results.forEach((r) => (r.snippets || []).concat((r.chain && r.chain.snippets) || []).forEach((sn) => located.push({ path: sn.path, line: sn.line, from: sn.from, to: sn.to })));
+        msgs.items.forEach((it) => (it.snippets || []).forEach((sn) => located.push({ path: sn.path, line: sn.line, from: sn.from, to: sn.to })));
+        this._locateLast = { key, located };
+        const old = schema < 3 ? '這個索引是舊版（沒有 log 字串與呼叫資料）：請重新建立索引（repo_map index_start，reanalyze:true）。\n\n' : '';
+        return { ok: true, frames: results.length, truncated: Math.max(0, parsed.frames.length - frames.length), tree, versions: parsed.versions, located, results, messages: msgs, answer: old + this._repoLocateText(key, info, treeRef, tree, parsed, results, msgs) };
+    }
+    _repoLocateText(key, info, treeRef, tree, parsed, results, msgs) {
+        const LABEL = { exact: '✅ 對上', unique: '✅ 只有一處（名稱）', file: '📄 檔案在樹內，函式不在索引', ambiguous: '❓ 不確定（多個候選）', none: '➖ 索引裡沒有', outside: '🌐 樹外（共享函式庫／系統）' };
+        const indent = (t) => String(t).split('\n').map((x) => '  ' + x).join('\n');
+        const L = ['**範圍**：索引 ' + key + '（' + info.files + ' 個檔案、' + info.symbols + ' 個定義；樹版本 ' + (treeRef && treeRef.git ? treeRef.git.slice(0, 12) : '未記錄') + '）', '', tree.msg, ''];
+        const cnt = {}; results.forEach((r) => { cnt[r.status] = (cnt[r.status] || 0) + 1; });
+        if (results.length) L.push('共 ' + results.length + ' 個 frame：' + Object.keys(cnt).map((k) => (LABEL[k] || k) + ' ' + cnt[k]).join('、'), '');
+        for (const r of results) {
+            const f = r.frame;
+            L.push('**#' + f.n + '** ' + (f.qual ? f.qual + '::' : '') + (f.func || '?') + (f.file ? ' ← ' + f.file + (f.line ? ':' + f.line : '') : '') + (f.lib ? '（' + f.lib + '）' : '') + ' — ' + (LABEL[r.status] || r.status));
+            if (f.inexact) L.push('  （核心堆疊裡 ? 開頭的是不確定的殘留位址，可能不是真正的呼叫路徑）');
+            if (r.note) L.push('  ' + r.note);
+            if (r.status === 'ambiguous') L.push('  ⚠️ 不確定：以下每個候選都可能，請用其他線索（呼叫者、檔案路徑）判斷。');
+            const c = r.chain;
+            if (c) {
+                const nameNote = c.sameName ? '（⚠️ 索引裡有同名函式不只一個，呼叫者可能屬於別的定義）' : '';
+                if (c.level === 'old') L.push('  （這個索引沒有函式層級的呼叫資料：請重新建立索引）');
+                else if (c.level === 'unknown') L.push('  ⛓ 索引裡找不到呼叫它的函式（函式指標、樹外的呼叫者，或這個語言沒有呼叫圖）' + nameNote);
+                else if (c.level === 'match') { L.push('  ⛓ ✅ 呼叫鏈吻合：堆疊的上一層 ' + c.hit[0].caller + ' 在 ' + c.hit[0].path + ':' + c.hit[0].line + ' 呼叫它' + nameNote); (c.snippets || []).slice(0, 1).forEach((sn) => L.push(indent(sn.text))); }
+                else { L.push('  ⛓ ⚠️ 堆疊的上一層不在索引記錄的呼叫者裡（可能經由函式指標、inline、巨集，或堆疊版本不同）。索引記錄的呼叫者（' + c.total + ' 處）：' + nameNote); c.callers.forEach((x) => L.push('  - ' + x.caller + ' — ' + x.path + ':' + x.line)); }
+            }
+            (r.snippets || []).forEach((sn) => { L.push('  ' + sn.path + ':' + sn.line + (sn.kind === 'at' ? '（堆疊指到的行）' : '（定義處）') + (sn.unreadable ? '（原始檔讀不到，只有索引裡的簽名）' : '')); if (sn.text) L.push(indent(sn.text)); });
+            L.push('');
+        }
+        if (msgs && (msgs.items.length || msgs.unavailable || msgs.checked)) {
+            L.push('**log 訊息 → 印出它的程式行**（比對索引裡每個 log 呼叫的格式字串，%d、{} 當萬用字元）', '');
+            if (msgs.unavailable) L.push('這個索引是舊版（沒有記錄 log 字串）：請重新建立索引，之後才能比對 log 訊息。', '');
+            else {
+                L.push('檢查了 ' + msgs.checked + ' 行訊息（索引共 ' + msgs.total + ' 個 log 字串），對上 ' + msgs.items.filter((i) => i.status !== 'none').length + ' 行' + (msgs.skipped ? '；超過上限，後面 ' + msgs.skipped + ' 行沒處理' : '') + '。', '');
+                for (const it of msgs.items) {
+                    if (it.status === 'none') { L.push('- 「' + it.msg.slice(0, 120) + '」— ➖ 索引裡沒有符合的格式字串（可能來自樹外的程式、動態組出的字串，或字串太短沒被索引）'); continue; }
+                    L.push('- 「' + it.msg.slice(0, 120) + '」— ' + (it.status === 'best' ? '✅ 最可能' : '❓ 不確定（同樣長度的格式字串不只一處）') + (it.weak ? '（⚠️ 格式字串的固定文字很短，可能誤判）' : ''));
+                    it.picks.slice(0, 3).forEach((p) => L.push('  - ' + p.path + ':' + p.line + ' ' + p.fn + ' ← ' + p.fmt.slice(0, 100).replace(/\n/g, '\\n')));
+                    if (it.snippets[0] && it.snippets[0].text) L.push(indent(it.snippets[0].text));
+                }
+            }
+        }
+        if (parsed.frames.length > results.length) L.push('… 只處理前 ' + results.length + ' 個 frame，還有 ' + (parsed.frames.length - results.length) + ' 個沒處理。');
+        L.push('_行號僅在堆疊版本與索引的樹相同時可信；最佳化、inline、巨集可能讓實際執行位置與原始碼行有偏差。_');
+        return L.join('\n').trim();
+    }
+    // AI 的說明只能引用定位器找到的 檔案:行（上次 locate 的結果）
+    _repoLocateCheck(answerText) {
+        const last = this._locateLast; if (!last) return { ok: false, bad: [], error: '還沒有定位結果可核對' };
+        return FaAidocTrace.checkCitations(answerText, last.located);
+    }
+    async _repoCallers(key, name) {
+        const c = await this._idxConn(key); const R = c && c.R; if (!R) return { ok: false, error: '這個專案沒有資料庫索引。' };
+        const cc = await R.callers(String(name || ''), 40);
+        if (!cc.available) return { ok: true, available: false, answer: '這個索引是舊版（沒有函式層級的呼叫資料）：請重新建立索引。' };
+        const defs = await R.symbolsByName(String(name || ''), 10);
+        return { ok: true, available: true, definitions: defs.map((d) => ({ path: d.path, line: d.line, kind: d.kind })), callers: cc.rows, answer: cc.rows.length ? cc.rows.map((x) => '- ' + x.caller + '（' + x.path + ':' + x.line + '）').join('\n') : '索引裡找不到呼叫 ' + name + ' 的函式（函式指標、樹外的呼叫者，或這個語言沒有呼叫圖）。' };
+    }
+
     async _repoAskRun(parsed) {
         const root = this._codingRefFromArgs(parsed) || String(parsed.root || '').trim();
         if (!root) return { ok: false, error: '缺少root（專案資料夾：fap:名稱，或桌面版的絕對路徑）' };
@@ -59287,6 +59424,16 @@ ${fnData.code}
         const partial = !(await this._repoMapLoad(key) || {}).index_built;
         const stats = st.sql ? { files: st.counts.files, symbols: st.counts.symbols, dependency_edges: st.counts.imports, call_edges: st.counts.uses, complete: !partial } : { files: st.db.files.length, symbols: st.db.syms.length, dependency_edges: st.db.imps.length, call_edges: st.db.uses.length, complete: !partial };
         if (action === 'stats') return { ok: true, stats, index_job: job ? this._repoJobStatusObj(job) : undefined };
+        if (action === 'locate' || action === 'callers' || action === 'check_citations') {
+            if (action === 'check_citations') { const chk = this._repoLocateCheck(String(parsed.text || parsed.answer || '')); return Object.assign({ ok: true }, chk, { note: chk.bad && chk.bad.length ? '這些 檔案:行 不在定位器找到的範圍內，不能當事實：' + chk.bad.join('、') : '引用都在定位器找到的範圍內。' }); }
+            if (!st.sql) return { ok: false, error: '除錯定位器需要資料庫索引：先 repo_map({"action":"index_start","root":"' + key + '"}) 建立（舊的記憶體地圖沒有 log 字串與呼叫資料）。' };
+            if (action === 'callers') return await this._repoCallers(key, String(parsed.name || parsed.question || '').trim());
+            const body = String(parsed.text || parsed.trace || parsed.question || '');
+            if (!body.trim()) return { ok: false, error: '缺少text（貼上的堆疊或 log 全文）' };
+            const r = await this._repoLocate(key, body, {});
+            if (r.ok && r.located) r.next_action = '依上面 answer 的定位結果向使用者說明：發生點在哪、是什麼問題、誰造成。只能引用 answer 裡出現的 檔案:行；說明完用 repo_ask({action:"check_citations",text:你的說明}) 核對。索引裡沒有的就說沒有，不要編造。';
+            return r;
+        }
         const q = String(parsed.question || parsed.query || parsed.q || '').trim();
         if (!q) return { ok: false, error: '缺少question（例如「foo_bar 是做什麼的」「parse_config 在哪裡定義」「誰用到 Logger」「登入流程相關的檔案」）' };
         const mst = st.sql ? await this._idxMini(key, q) : st;
