@@ -12,7 +12,7 @@ t('isClosed: 少一個面不封閉', () => { const m = C.boxMesh(0, 0, 1, 1, 0, 
 t('isClosed: 退化面不合格', () => { const m = C.boxMesh(0, 0, 1, 1, 0, 1); m.faces[0] = [m.faces[0][0], m.faces[0][0], m.faces[0][1]]; assert(!C.isClosed(m)); });
 t('isClosed: 面反向（不一致）不合格', () => { const m = C.boxMesh(0, 0, 1, 1, 0, 1); m.faces[0] = m.faces[0].slice().reverse(); assert(!C.isClosed(m)); });
 
-for (const shape of ['cylinder', 'blocks', 'auto']) {
+for (const shape of ['cylinder', 'blocks', 'smooth', 'auto']) {
   t('圓形遮罩封閉 (' + shape + ')', () => {
     const W = 40, H = 40, mask = grid(W, H, (x, y) => ((x - 20) ** 2 + (y - 20) ** 2 < 14 * 14 ? 1 : 0));
     const r = C.buildObject(mask, ramp(W, H), { shape });
@@ -27,10 +27,10 @@ for (const shape of ['cylinder', 'blocks', 'auto']) {
   });
 }
 
-t('中間有洞的遮罩 (auto 走方塊) 封閉', () => {
+t('中間有洞的遮罩 (auto 走平滑殼) 封閉', () => {
   const W = 30, H = 30, mask = grid(W, H, (x, y) => (x >= 3 && x < 27 && y >= 3 && y < 27 && !(x >= 11 && x < 19 && y >= 11 && y < 19) ? 1 : 0));
   const r = C.buildObject(mask, ramp(W, H), {});
-  assert(r && C.isClosed(r.mesh)); assert.strictEqual(r.shape, 'blocks');
+  assert(r && C.isClosed(r.mesh)); assert.strictEqual(r.shape, 'smooth');
 });
 
 t('只靠一個角相連的兩塊 (對角) 仍封閉', () => {
@@ -48,7 +48,7 @@ t('兩個分開的塊 (柱體) 各自封閉成同一個網格', () => {
 t('面數上限', () => {
   const W = 60, H = 60, mask = grid(W, H, (x, y) => ((x - 30) ** 2 + (y - 30) ** 2 < 26 * 26 ? 1 : 0));
   const dep = grid(W, H, (x, y) => Math.sin(x / 5) * Math.cos(y / 5));
-  for (const shape of ['cylinder', 'blocks']) {
+  for (const shape of ['cylinder', 'blocks', 'smooth']) {
     const small = C.buildObject(mask, dep, { shape, maxFaces: 300 }), big = C.buildObject(mask, dep, { shape, maxFaces: 12000 });
     assert(small.mesh.faces.length <= 300, shape + ' small ' + small.mesh.faces.length);
     assert(big.mesh.faces.length <= 12000 && big.mesh.faces.length > small.mesh.faces.length, shape + ' big');
@@ -100,14 +100,23 @@ t('隨機遮罩與深度（固定種子）：每個結果都封閉，方塊殼�
     for (let b = 0; b < 4; b++) { blobs.push([rnd() * W, rnd() * H, 3 + rnd() * 9]); }
     const mask = grid(W, H, (x, y) => (blobs.some((o) => (x - o[0]) ** 2 + (y - o[1]) ** 2 < o[2] * o[2]) ? 1 : 0));
     const dep = grid(W, H, () => rnd());
-    for (const shape of ['blocks', 'cylinder', 'auto']) {
+    for (const shape of ['blocks', 'smooth', 'cylinder', 'auto']) {
       const r = C.buildObject(mask, dep, { shape });
       if (!r) { continue; }
       assert(C.isClosed(r.mesh), 'case ' + n + ' ' + shape);
-      if (shape === 'blocks' && r.shape === 'box') { boxes++; }
+      if ((shape === 'blocks' || shape === 'smooth') && r.shape === 'box') { boxes++; }
     }
   }
   assert.strictEqual(boxes, 0);
+});
+
+t('平滑殼：細網格仍封閉、parseOptions 認得 smooth', () => {
+  const W = 40, H = 40, mask = grid(W, H, (x, y) => ((x - 20) ** 2 + (y - 20) ** 2 < 14 * 14 ? 1 : 0));
+  const dep = grid(W, H, (x, y) => Math.cos((x - 20) / 9) * Math.cos((y - 20) / 9));
+  const sm = C.buildObject(mask, dep, { shape: 'smooth', maxFaces: 3000 }), bl = C.buildObject(mask, dep, { shape: 'blocks', maxFaces: 3000 });
+  assert(sm.shape === 'smooth' && !sm.fallback && C.isClosed(sm.mesh));
+  assert(sm.mesh.faces.length > 200 && bl.mesh.faces.length > 100);
+  assert.strictEqual(C.parseOptions('--shape smooth').shape, 'smooth');
 });
 
 t('labelComponents：兩塊、過小的雜點被丟掉、最大的是 1', () => {

@@ -83,7 +83,7 @@
 
   // ---------- blocks (Lego) shell ----------
   // m, dn are y-up grids. Returns a closed mesh or null.
-  function blocksMesh(m, dn, bb, n, zp) {
+  function blocksMesh(m, dn, bb, n, zp, smooth) {
     var bw = bb.x1 - bb.x0, bh = bb.y1 - bb.y0, s = Math.max(bw, bh) / n;
     var cols = Math.max(1, Math.ceil(bw / s - 1e-9)), rows = Math.max(1, Math.ceil(bh / s - 1e-9)), i, j, x, y;
     var occ = [], hgt = [], best = null, bestCnt = -1;
@@ -120,6 +120,7 @@
         }
       }
     }
+    if (smooth) { return smoothTops(occ, hgt, rows, cols, bb, s, zp); }
     var H = [];
     for (j = 0; j < rows; j++) { H.push([]); for (i = 0; i < cols; i++) { H[j].push(occ[j][i] ? Math.round((zp.zMin + zp.zRange * hgt[j][i]) * 1e6) / 1e6 : null); } }
     var zb = Math.round(zp.zBack * 1e6) / 1e6, B = new Builder();
@@ -153,6 +154,33 @@
         for (var k = 0; k < 4; k++) {
           var sd = sides[k], lo = has(sd[4], sd[5]) ? H[sd[4]][sd[5]] : zb;
           if (h - lo > 1e-9) { wall(sd[0], sd[1], sd[2], sd[3], lo, h); }
+        }
+      }
+    }
+    return B.mesh();
+  }
+
+  // smooth shell: same occupied cells as blocksMesh, but the top corners are shared (height = mean of the occupied cells around the corner), two triangles per cell, flat back, walls only on the outline and hole edges
+  function smoothTops(occ, hgt, rows, cols, bb, s, zp) {
+    var B = new Builder(), i, j, zb = Math.round(zp.zBack * 1e6) / 1e6;
+    var X = function (gi) { return bb.x0 + gi * s; }, Y = function (gj) { return bb.y0 + gj * s; };
+    var has = function (jj, ii) { return jj >= 0 && jj < rows && ii >= 0 && ii < cols && occ[jj][ii]; };
+    var cz = function (gi, gj) {
+      var sum = 0, n = 0;
+      for (var dj = -1; dj < 1; dj++) { for (var di = -1; di < 1; di++) { if (has(gj + dj, gi + di)) { sum += hgt[gj + dj][gi + di]; n++; } } }
+      return Math.round((zp.zMin + zp.zRange * (n ? sum / n : 0)) * 1e6) / 1e6;
+    };
+    var top = function (gi, gj) { return B.vert(X(gi), Y(gj), cz(gi, gj)); }, bot = function (gi, gj) { return B.vert(X(gi), Y(gj), zb); };
+    for (j = 0; j < rows; j++) {
+      for (i = 0; i < cols; i++) {
+        if (!occ[j][i]) { continue; }
+        B.quad(top(i, j), top(i + 1, j), top(i + 1, j + 1), top(i, j + 1));
+        B.quad(bot(i, j), bot(i, j + 1), bot(i + 1, j + 1), bot(i + 1, j));
+        var sides = [[i, j, i + 1, j, j - 1, i], [i + 1, j, i + 1, j + 1, j, i + 1], [i + 1, j + 1, i, j + 1, j + 1, i], [i, j + 1, i, j, j, i - 1]];
+        for (var k = 0; k < 4; k++) {
+          var sd = sides[k]; if (has(sd[4], sd[5])) { continue; }
+          var Pl = bot(sd[0], sd[1]), Ql = bot(sd[2], sd[3]), Ph = top(sd[0], sd[1]), Qh = top(sd[2], sd[3]);
+          B.tri(Pl, Ql, Qh); B.tri(Pl, Qh, Ph);
         }
       }
     }
@@ -310,6 +338,7 @@
   // ---------- one object ----------
   var CYL_LEVELS = [[0.05, 0], [0.025, 1], [0.012, 1], [0.012, 2], [0.006, 2]];
   var BLOCK_LEVELS = [2, 4, 8, 16, 32, 64];
+  var SMOOTH_LEVELS = [4, 8, 16, 24, 32, 48, 64, 96];
 
   function buildObject(mask, depth, opts) {
     opts = opts || {};
@@ -348,8 +377,8 @@
     // components / holes decide "auto": a single solid blob -> cylinder, fragmented or holed -> blocks
     var loops = traceLoops(m, bb), outers = loops.filter(function (l) { return area2(l) > 0; }).length;
     comps = outers; var holes = loops.length - outers;
-    var shape = opts.shape === 'cylinder' || opts.shape === 'blocks' ? opts.shape : (comps === 1 && holes === 0 ? 'cylinder' : 'blocks');
-    var order = shape === 'cylinder' ? ['cylinder', 'blocks'] : ['blocks', 'cylinder'];
+    var shape = opts.shape === 'cylinder' || opts.shape === 'blocks' || opts.shape === 'smooth' ? opts.shape : 'smooth';
+    var order = shape === 'cylinder' ? ['cylinder', 'smooth', 'blocks'] : (shape === 'blocks' ? ['blocks', 'smooth', 'cylinder'] : ['smooth', 'blocks', 'cylinder']);
 
     var result = null;
     for (var oi = 0; oi < order.length && !result; oi++) {
@@ -361,8 +390,8 @@
           best = { mesh: cm, level: level };
         }
       } else {
-        for (level = 0; level < BLOCK_LEVELS.length; level++) {
-          var bm = null; try { bm = blocksMesh(m, dn, bb, BLOCK_LEVELS[level], zp); } catch (e2) { bm = null; }
+        for (level = 0; level < (kind === 'smooth' ? SMOOTH_LEVELS : BLOCK_LEVELS).length; level++) {
+          var bm = null; try { bm = blocksMesh(m, dn, bb, (kind === 'smooth' ? SMOOTH_LEVELS : BLOCK_LEVELS)[level], zp, kind === 'smooth'); } catch (e2) { bm = null; }
           if (!bm || bm.faces.length > maxFaces || !isClosed(bm)) { if (best) { break; } else { continue; } }
           best = { mesh: bm, level: level };
         }
@@ -614,7 +643,7 @@
     if ((m = /--close[=\s]+(objects|all)(?![a-z])/i.exec(t))) { out.close = m[1].toLowerCase(); out.closeSource = 'flag'; }
     else if (/(?:全部|所有|整個|整張|統一|每個|一律)[^，。,.\n]{0,8}封閉|要能?(?:3d)?列印|可(?:以)?列印|print(?:able)?|watertight|everything\s+closed|close\s+all/i.test(t)) { out.close = 'all'; out.closeSource = 'phrase'; }
     else if (/(?:物件|東西|蘋果|人物|人臉)[^，。,.\n]{0,6}(?:要|得|需要)?封閉|closed\s+objects?/i.test(t)) { out.close = 'objects'; out.closeSource = 'phrase'; }
-    if ((m = /--shape[=\s]+(auto|cylinder|blocks)(?![a-z])/i.exec(t))) { out.shape = m[1].toLowerCase(); }
+    if ((m = /--shape[=\s]+(auto|cylinder|blocks|smooth)(?![a-z])/i.exec(t))) { out.shape = m[1].toLowerCase(); }
     else if (/圓柱|柱體|cylinder/i.test(t)) { out.shape = 'cylinder'; }
     else if (/樂高|方塊|lego|blocks?/i.test(t)) { out.shape = 'blocks'; }
     if (/--whole(?![a-z])|整張圖當一個|整張當一個|不要?分物件|whole\s+image/i.test(t)) { out.whole = true; }

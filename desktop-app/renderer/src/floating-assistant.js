@@ -30015,7 +30015,7 @@ const holder = {};
 
   // ---------- blocks (Lego) shell ----------
   // m, dn are y-up grids. Returns a closed mesh or null.
-  function blocksMesh(m, dn, bb, n, zp) {
+  function blocksMesh(m, dn, bb, n, zp, smooth) {
     var bw = bb.x1 - bb.x0, bh = bb.y1 - bb.y0, s = Math.max(bw, bh) / n;
     var cols = Math.max(1, Math.ceil(bw / s - 1e-9)), rows = Math.max(1, Math.ceil(bh / s - 1e-9)), i, j, x, y;
     var occ = [], hgt = [], best = null, bestCnt = -1;
@@ -30052,6 +30052,7 @@ const holder = {};
         }
       }
     }
+    if (smooth) { return smoothTops(occ, hgt, rows, cols, bb, s, zp); }
     var H = [];
     for (j = 0; j < rows; j++) { H.push([]); for (i = 0; i < cols; i++) { H[j].push(occ[j][i] ? Math.round((zp.zMin + zp.zRange * hgt[j][i]) * 1e6) / 1e6 : null); } }
     var zb = Math.round(zp.zBack * 1e6) / 1e6, B = new Builder();
@@ -30085,6 +30086,33 @@ const holder = {};
         for (var k = 0; k < 4; k++) {
           var sd = sides[k], lo = has(sd[4], sd[5]) ? H[sd[4]][sd[5]] : zb;
           if (h - lo > 1e-9) { wall(sd[0], sd[1], sd[2], sd[3], lo, h); }
+        }
+      }
+    }
+    return B.mesh();
+  }
+
+  // smooth shell: same occupied cells as blocksMesh, but the top corners are shared (height = mean of the occupied cells around the corner), two triangles per cell, flat back, walls only on the outline and hole edges
+  function smoothTops(occ, hgt, rows, cols, bb, s, zp) {
+    var B = new Builder(), i, j, zb = Math.round(zp.zBack * 1e6) / 1e6;
+    var X = function (gi) { return bb.x0 + gi * s; }, Y = function (gj) { return bb.y0 + gj * s; };
+    var has = function (jj, ii) { return jj >= 0 && jj < rows && ii >= 0 && ii < cols && occ[jj][ii]; };
+    var cz = function (gi, gj) {
+      var sum = 0, n = 0;
+      for (var dj = -1; dj < 1; dj++) { for (var di = -1; di < 1; di++) { if (has(gj + dj, gi + di)) { sum += hgt[gj + dj][gi + di]; n++; } } }
+      return Math.round((zp.zMin + zp.zRange * (n ? sum / n : 0)) * 1e6) / 1e6;
+    };
+    var top = function (gi, gj) { return B.vert(X(gi), Y(gj), cz(gi, gj)); }, bot = function (gi, gj) { return B.vert(X(gi), Y(gj), zb); };
+    for (j = 0; j < rows; j++) {
+      for (i = 0; i < cols; i++) {
+        if (!occ[j][i]) { continue; }
+        B.quad(top(i, j), top(i + 1, j), top(i + 1, j + 1), top(i, j + 1));
+        B.quad(bot(i, j), bot(i, j + 1), bot(i + 1, j + 1), bot(i + 1, j));
+        var sides = [[i, j, i + 1, j, j - 1, i], [i + 1, j, i + 1, j + 1, j, i + 1], [i + 1, j + 1, i, j + 1, j + 1, i], [i, j + 1, i, j, j, i - 1]];
+        for (var k = 0; k < 4; k++) {
+          var sd = sides[k]; if (has(sd[4], sd[5])) { continue; }
+          var Pl = bot(sd[0], sd[1]), Ql = bot(sd[2], sd[3]), Ph = top(sd[0], sd[1]), Qh = top(sd[2], sd[3]);
+          B.tri(Pl, Ql, Qh); B.tri(Pl, Qh, Ph);
         }
       }
     }
@@ -30242,6 +30270,7 @@ const holder = {};
   // ---------- one object ----------
   var CYL_LEVELS = [[0.05, 0], [0.025, 1], [0.012, 1], [0.012, 2], [0.006, 2]];
   var BLOCK_LEVELS = [2, 4, 8, 16, 32, 64];
+  var SMOOTH_LEVELS = [4, 8, 16, 24, 32, 48, 64, 96];
 
   function buildObject(mask, depth, opts) {
     opts = opts || {};
@@ -30280,8 +30309,8 @@ const holder = {};
     // components / holes decide "auto": a single solid blob -> cylinder, fragmented or holed -> blocks
     var loops = traceLoops(m, bb), outers = loops.filter(function (l) { return area2(l) > 0; }).length;
     comps = outers; var holes = loops.length - outers;
-    var shape = opts.shape === 'cylinder' || opts.shape === 'blocks' ? opts.shape : (comps === 1 && holes === 0 ? 'cylinder' : 'blocks');
-    var order = shape === 'cylinder' ? ['cylinder', 'blocks'] : ['blocks', 'cylinder'];
+    var shape = opts.shape === 'cylinder' || opts.shape === 'blocks' || opts.shape === 'smooth' ? opts.shape : 'smooth';
+    var order = shape === 'cylinder' ? ['cylinder', 'smooth', 'blocks'] : (shape === 'blocks' ? ['blocks', 'smooth', 'cylinder'] : ['smooth', 'blocks', 'cylinder']);
 
     var result = null;
     for (var oi = 0; oi < order.length && !result; oi++) {
@@ -30293,8 +30322,8 @@ const holder = {};
           best = { mesh: cm, level: level };
         }
       } else {
-        for (level = 0; level < BLOCK_LEVELS.length; level++) {
-          var bm = null; try { bm = blocksMesh(m, dn, bb, BLOCK_LEVELS[level], zp); } catch (e2) { bm = null; }
+        for (level = 0; level < (kind === 'smooth' ? SMOOTH_LEVELS : BLOCK_LEVELS).length; level++) {
+          var bm = null; try { bm = blocksMesh(m, dn, bb, (kind === 'smooth' ? SMOOTH_LEVELS : BLOCK_LEVELS)[level], zp, kind === 'smooth'); } catch (e2) { bm = null; }
           if (!bm || bm.faces.length > maxFaces || !isClosed(bm)) { if (best) { break; } else { continue; } }
           best = { mesh: bm, level: level };
         }
@@ -30546,7 +30575,7 @@ const holder = {};
     if ((m = /--close[=\s]+(objects|all)(?![a-z])/i.exec(t))) { out.close = m[1].toLowerCase(); out.closeSource = 'flag'; }
     else if (/(?:全部|所有|整個|整張|統一|每個|一律)[^，。,.\n]{0,8}封閉|要能?(?:3d)?列印|可(?:以)?列印|print(?:able)?|watertight|everything\s+closed|close\s+all/i.test(t)) { out.close = 'all'; out.closeSource = 'phrase'; }
     else if (/(?:物件|東西|蘋果|人物|人臉)[^，。,.\n]{0,6}(?:要|得|需要)?封閉|closed\s+objects?/i.test(t)) { out.close = 'objects'; out.closeSource = 'phrase'; }
-    if ((m = /--shape[=\s]+(auto|cylinder|blocks)(?![a-z])/i.exec(t))) { out.shape = m[1].toLowerCase(); }
+    if ((m = /--shape[=\s]+(auto|cylinder|blocks|smooth)(?![a-z])/i.exec(t))) { out.shape = m[1].toLowerCase(); }
     else if (/圓柱|柱體|cylinder/i.test(t)) { out.shape = 'cylinder'; }
     else if (/樂高|方塊|lego|blocks?/i.test(t)) { out.shape = 'blocks'; }
     if (/--whole(?![a-z])|整張圖當一個|整張當一個|不要?分物件|whole\s+image/i.test(t)) { out.whole = true; }
@@ -32605,7 +32634,7 @@ const FaEditHost = (function () {
     // p: { image?|blob?, request? (the user's words: "要能列印", "用樂高方塊"…), close?: 'objects'|'all', shape?: 'auto'|'cylinder'|'blocks', whole?: bool, model?, device? }
     M._imageTo3d = async function (p) {
         p = p || {}; const o = FaImage3d.parseOptions(p.request || '');
-        const close = p.close === 'all' || p.close === 'objects' ? p.close : o.close, shape = ['auto', 'cylinder', 'blocks'].includes(p.shape) ? p.shape : o.shape, whole = p.whole != null ? !!p.whole : o.whole;
+        const close = p.close === 'all' || p.close === 'objects' ? p.close : o.close, shape = ['auto', 'smooth', 'cylinder', 'blocks'].includes(p.shape) ? p.shape : o.shape, whole = p.whole != null ? !!p.whole : o.whole;
         const img = await this._vlmResolveImage(p); if (!img.blob) return { ok: false, cancelled: img.cancelled, error: img.error };
         let px; try { px = await this._i3dPixels(img.blob, 160); } catch (e) { return { ok: false, error: T('讀不了這張圖片：', 'could not read the picture: ') + String((e && e.message) || e) }; }
         const dr = await this._depthEstimate({ blob: img.blob, filename: img.filename, model: p.model, device: p.device }); if (!dr.ok) return dr;
@@ -32639,7 +32668,7 @@ const FaEditHost = (function () {
         const out = { ok: !(r && r.ok === false), error: r && r.ok === false ? r.error : undefined, objects: scene.objects.length, shapes: scene.objects.map((x) => x.shape), faces: parts.reduce((a, x) => a + x.mesh.faces.length, 0), close, all_closed: parts.every((x) => FaImage3d.isClosed(x.mesh)), fell_back: parts.filter((x) => x.fallback).length, dropped_blobs: prep.dropped, foreground_ratio: fg == null ? undefined : Math.round(fg * 1000) / 1000, depth_model: dr.model, device: dr.device, ms: Date.now() - t0 + (dr.ms || 0), notes: [T('每個物件都是封閉的立體，不是浮雕；單張圖看不到背面，背面是依輪廓寬度推測的厚度', 'every object is a closed solid, not a relief; one picture cannot show the back, so its depth is a guess from the outline width')].concat(texture ? [T('原圖已貼在模型上（從正面投影，側面與背面是邊緣顏色拉伸）', 'the picture is pasted on as the texture (projected from the front; sides and back show stretched edge colours)')] : []).concat(prep.empty ? [T('沒有找到前景（背景色抓不準），整張圖當成一個物件', 'no foreground found: the whole picture became one object')] : [], mask || segs ? [] : [T('整張圖當成一個物件', 'the whole picture is one object')], segs ? [T('物件由分割模型找出來', 'objects found by the segmentation model')] : [], segNote ? [segNote] : [], bgNote ? [bgNote] : []) };
         return out;
     };
-    // /image-to-3d [--close objects|all] [--shape auto|cylinder|blocks] [--whole] [說明]：先貼圖再打、或先打指令再貼圖送出都可以
+    // /image-to-3d [--close objects|all] [--shape auto|smooth|cylinder|blocks] [--whole] [說明]：先貼圖再打、或先打指令再貼圖送出都可以
     M._image3dCommand = async function (argsText) {
         argsText = String(argsText || ''); const ids = []; const mark = /\[附件：([^\]]*)\]/.exec(argsText);
         if (mark) { const re = /([^、（]+?)（file_id=([\w-]+)）/g; let x; while ((x = re.exec(mark[1]))) { let rec = null; try { rec = await this.fileCache.get(x[2]); } catch (_) { /* */ } if (rec && rec.blob && (/^image\//i.test(rec.blob.type || '') || /\.(png|jpe?g|gif|webp|bmp)$/i.test(x[1]))) ids.push({ id: x[2], filename: x[1].trim(), size: rec.blob.size }); } }
@@ -32660,7 +32689,7 @@ const FaEditHost = (function () {
         this.register_slash_command('/edit-3d-model', hint,
             '3D 場景編輯器（用語言主導，位置完全以你現在看的角度算）：「在我的左前方放一個紅色的球」「把它移到桌子上面」；物件欄是樹狀的、屬性面板、雙擊物件進「單一物件編輯」（像做塑膠模型：每個面貼什麼圖、塗什麼顏色）、🧾 YAML 原始碼分頁可以直接改、圖可以貼進對話框當貼圖、復原／重做、整理成 prompt、匯出場景 YAML／PNG。/edit-3d-model room 從起手式開始、/edit-3d-model last 接著對話裡最近的 3D 場景。',
             run);
-        this.register_slash_command('/image-to-3d', '[--close objects|all] [--shape auto|cylinder|blocks] [--whole] [--segment] [--bg 背景圖]',
+        this.register_slash_command('/image-to-3d', '[--close objects|all] [--shape auto|smooth|cylinder|blocks] [--whole] [--segment] [--bg 背景圖]',
             '圖片轉 3D（離線）：深度模型在這台電腦上估計深度，再把每個物件各自做成封閉的立體（不是浮雕：用物件自己的輪廓做柱體或樂高方塊的殼，再逐層細切），放進 3D 場景編輯器。--close all＝連背景都做成實心（要列印用）；--shape 選殼的種類；--whole＝整張圖當一個物件；--segment＝用分割模型（SlimSAM）自動分出多個物件，不加則用去背遮罩；貼兩張圖並說「背景差分」＝第二張是沒有主體的背景圖（同一個視角），逐像素比對取出主體。先貼圖再打指令、或先打指令再貼圖送出都可以；第一次使用要下載深度模型（會先問）。單張圖看不到背面，背面是推測的。',
             async (argsText, run0) => { await (run0 || this)._image3dCommand(argsText); });
         { const ie = this.slashCommands.get('/image-to-3d'); if (ie) ie._autoFromSkillBundle = true; }
@@ -32671,7 +32700,7 @@ const FaEditHost = (function () {
         registerOptional('image_to_3d',
             '圖片轉 3D（離線、不是浮雕）：用跑在這台電腦上的深度模型（Depth Anything V2 Small）估計深度，把圖裡每個物件各自做成封閉的立體（用物件自己的輪廓做柱體或樂高方塊的殼，再逐層細切；每個物件都通過封閉檢查），背景另成一塊，全部放進 3D 場景編輯器。圖片不會上傳；第一次使用要下載深度模型。單張圖看不到背面，背面是依輪廓推測的。close=all 連背景都做成實心（要列印時用），預設 objects。',
             async function (rawArgs) { const a = await parse(this, rawArgs); try { return JSON.stringify(await this._imageTo3d({ image: a.image, request: a.request, close: a.close, shape: a.shape, whole: a.whole, segment: a.segment, bg: a.bg })); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); } },
-            { type: 'object', properties: { image: { type: 'string', description: '選填：圖片的 file_id 或檔名；省略時用這個對話最新的圖片附件' }, request: { type: 'string', description: '使用者的原話（例如「物件要封閉」「要能列印」「用樂高方塊」），程式會從裡面解析封閉範圍與外殼種類' }, close: { type: 'string', enum: ['objects', 'all'], description: 'objects＝每個物件封閉、背景是薄板（預設）；all＝連背景都做成實心' }, shape: { type: 'string', enum: ['auto', 'cylinder', 'blocks'] }, whole: { type: 'boolean', description: 'true＝整張圖當一個物件，不分前景背景' }, bg: { type: 'string', description: '選填：沒有主體的背景圖（file_id 或檔名，要跟主體圖同一個視角），用背景差分取出前景' }, segment: { type: 'boolean', description: 'true＝用分割模型自動分出多個物件（要下載 SlimSAM）；預設用去背遮罩' } } }
+            { type: 'object', properties: { image: { type: 'string', description: '選填：圖片的 file_id 或檔名；省略時用這個對話最新的圖片附件' }, request: { type: 'string', description: '使用者的原話（例如「物件要封閉」「要能列印」「用樂高方塊」），程式會從裡面解析封閉範圍與外殼種類' }, close: { type: 'string', enum: ['objects', 'all'], description: 'objects＝每個物件封閉、背景是薄板（預設）；all＝連背景都做成實心' }, shape: { type: 'string', enum: ['auto', 'smooth', 'cylinder', 'blocks'] }, whole: { type: 'boolean', description: 'true＝整張圖當一個物件，不分前景背景' }, bg: { type: 'string', description: '選填：沒有主體的背景圖（file_id 或檔名，要跟主體圖同一個視角），用背景差分取出前景' }, segment: { type: 'boolean', description: 'true＝用分割模型自動分出多個物件（要下載 SlimSAM）；預設用去背遮罩' } } }
         );
         registerOptional('edit_3d_open',
             '在對話裡放一個「3D 場景編輯器」（用語言主導；位置完全以使用者現在看的角度算：「我的左前方」「桌子的右邊」）：物件欄（樹狀、群組）、屬性面板、3D 畫面（拖曳轉視角、點物件選取、拖曳移動）、🧾 YAML 原始碼分頁（可直接改）、雙擊物件進「單一物件編輯」（像做塑膠模型：每個面貼什麼圖、塗什麼顏色）、貼圖（貼進編輯器對話框、網址、找圖）、復原／重做、匯出場景 YAML（render_3d_scene 可直接播放）／PNG／整理成 prompt。參數：starter（blank、room、model、studio）、request（一句話：開起來後編輯器自己的 AI 去做）、yaml（一份場景 YAML 當起點）、file_id（使用者上傳的 .3dscene.yaml 或 STL／OBJ／3MF／FBX 模型）、last（true＝接著對話裡最近的 3D 場景）、id（接著原本的專案）。做完編輯器就在對話裡，不要把場景 YAML 貼進對話。參數: {"starter":"room","request":"（選填）","yaml":"（選填）","file_id":"（選填）","last":false,"id":"（選填）"}',
