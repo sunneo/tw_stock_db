@@ -650,6 +650,17 @@
     return { kind: 'unknown', coverDeg: Math.round(cover), spreadM: Math.round(spread * 10) / 10 };
   }
 
+  // a scene's objects (not the backdrop) merged into ONE mesh with front-projected texture coordinates -> { vertices, faces, uvs } | null; every object is closed, so the merge is closed too
+  function subjectMesh(scene) {
+    var vs = [], fs = [], uvs = [], md = Math.max(scene.width || 1, scene.height || 1), W = scene.width || md, H = scene.height || md;
+    (scene.objects || []).forEach(function (o) {
+      var base = vs.length;
+      o.mesh.vertices.forEach(function (v) { vs.push([v[0], v[1], v[2]]); uvs.push([Math.round(Math.max(0, Math.min(1, v[0] * md / W)) * 10000) / 10000, Math.round(Math.max(0, Math.min(1, v[1] * md / H)) * 10000) / 10000]); });
+      o.mesh.faces.forEach(function (f) { fs.push([f[0] + base, f[1] + base, f[2] + base]); });
+    });
+    return vs.length ? { vertices: vs, faces: fs, uvs: uvs } : null;
+  }
+
   // ---------- options from the user's words (the program decides; the model is only asked when this cannot) ----------
   // close: 'objects' (default; every found object is a closed solid, the backdrop is a thin closed slab) | 'all' (the user wants everything closed / printable: the backdrop is a full-thickness solid too)
   function parseOptions(text) {
@@ -702,5 +713,5 @@
     return spec;
   }
 
-  return { stitchDepths: stitchDepths, panoFov: panoFov, buildPanorama: buildPanorama, bendCylinder: bendCylinder, depthBands: depthBands, readExif: readExif, orbitKind: orbitKind, diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
+  return { subjectMesh: subjectMesh, stitchDepths: stitchDepths, panoFov: panoFov, buildPanorama: buildPanorama, bendCylinder: bendCylinder, depthBands: depthBands, readExif: readExif, orbitKind: orbitKind, diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
 });

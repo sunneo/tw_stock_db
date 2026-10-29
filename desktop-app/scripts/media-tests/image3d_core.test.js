@@ -225,6 +225,14 @@ t('stitchDepths：各自縮到 0..1、橫向接成一條；panoFov：2:1 是 360
   assert.strictEqual(C.panoFov(2), 360); assert.strictEqual(C.panoFov(4), 180);
   assert(C.parseOptions('--panorama').panorama && C.parseOptions('這是一張全景照').panorama && !C.parseOptions('蘋果').panorama);
 });
+t('subjectMesh：把前景物件併成一個網格（含貼圖座標），仍封閉', () => {
+  const W = 40, H = 40, labels = grid(W, H, (x, y) => ((x - 12) ** 2 + (y - 20) ** 2 < 49 ? 1 : ((x - 30) ** 2 + (y - 20) ** 2 < 25 ? 2 : 0)));
+  const sc = C.buildScene({ labels, depth: ramp(W, H) }, { shape: 'auto', closeMode: 'objects', maxFaces: 3000 });
+  const m = C.subjectMesh(sc); assert(m && sc.objects.length === 2);
+  assert.strictEqual(m.uvs.length, m.vertices.length); assert(C.isClosed({ vertices: m.vertices, faces: m.faces }));
+  m.uvs.forEach((u) => assert(u[0] >= 0 && u[0] <= 1 && u[1] >= 0 && u[1] <= 1));
+  assert.strictEqual(C.subjectMesh({ objects: [] }), null);
+});
 t('orbitKind：站在原地轉一圈＝outward、繞著一個點＝inward、方向資料不足＝unknown', () => {
   const turn = [0, 60, 120, 180, 240, 300].map((h) => ({ lat: 25.0, lon: 121.5 + h * 1e-7, heading: h }));
   const r = C.orbitKind(turn, {}); assert.strictEqual(r.kind, 'outward'); assert.strictEqual(r.order.length, 6);

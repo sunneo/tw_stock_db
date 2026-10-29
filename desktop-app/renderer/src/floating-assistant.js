@@ -30582,6 +30582,17 @@ const holder = {};
     return { kind: 'unknown', coverDeg: Math.round(cover), spreadM: Math.round(spread * 10) / 10 };
   }
 
+  // a scene's objects (not the backdrop) merged into ONE mesh with front-projected texture coordinates -> { vertices, faces, uvs } | null; every object is closed, so the merge is closed too
+  function subjectMesh(scene) {
+    var vs = [], fs = [], uvs = [], md = Math.max(scene.width || 1, scene.height || 1), W = scene.width || md, H = scene.height || md;
+    (scene.objects || []).forEach(function (o) {
+      var base = vs.length;
+      o.mesh.vertices.forEach(function (v) { vs.push([v[0], v[1], v[2]]); uvs.push([Math.round(Math.max(0, Math.min(1, v[0] * md / W)) * 10000) / 10000, Math.round(Math.max(0, Math.min(1, v[1] * md / H)) * 10000) / 10000]); });
+      o.mesh.faces.forEach(function (f) { fs.push([f[0] + base, f[1] + base, f[2] + base]); });
+    });
+    return vs.length ? { vertices: vs, faces: fs, uvs: uvs } : null;
+  }
+
   // ---------- options from the user's words (the program decides; the model is only asked when this cannot) ----------
   // close: 'objects' (default; every found object is a closed solid, the backdrop is a thin closed slab) | 'all' (the user wants everything closed / printable: the backdrop is a full-thickness solid too)
   function parseOptions(text) {
@@ -30634,7 +30645,7 @@ const holder = {};
     return spec;
   }
 
-  return { stitchDepths: stitchDepths, panoFov: panoFov, buildPanorama: buildPanorama, bendCylinder: bendCylinder, depthBands: depthBands, readExif: readExif, orbitKind: orbitKind, diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
+  return { subjectMesh: subjectMesh, stitchDepths: stitchDepths, panoFov: panoFov, buildPanorama: buildPanorama, bendCylinder: bendCylinder, depthBands: depthBands, readExif: readExif, orbitKind: orbitKind, diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
 });
 
 }).call(null, undefined, holder);
@@ -32274,9 +32285,10 @@ const FaEditHost = (function () {
                 try {
                     const { blob } = await ps.load(c.ref), dec = await this._subjDecodeImage(blob, 360), bm = M.bgMask(dec.img);
                     if (bm.fg < 0.1 || bm.fg > 0.85) continue;   // 背景切不乾淨（整張都是東西，或東西跟背景同色）：換下一張
+                    if (typeof this._i3dSubjectSolid === 'function') { let sol = null; try { sol = await this._i3dSubjectSolid(blob, c.title); } catch (_) { sol = null; } if (sol) return { mesh: sol.mesh, texture: sol.texture, solid: true, from: c.title, source: c.source, license: c.license, creator: c.creator, fg: Math.round(bm.fg * 100) }; }   // 先用圖片轉3D的管線（每個物件封閉）；做不出來才退回下面的浮雕做法
                     const txt = await this._subjDecompose(dec.png); const sc = txt && M.parseScene(txt); if (!sc) continue;
                     const cut = M.cutBackground(sc.mesh, bm.mask, dec.img.width, dec.img.height); if (cut.kept < 40) continue;
-                    return { mesh: { vertices: cut.vertices, faces: cut.faces, uvs: cut.uvs }, texture: sc.texture, from: c.title, source: c.source, license: c.license, creator: c.creator, fg: Math.round(bm.fg * 100) };
+                    return { mesh: { vertices: cut.vertices, faces: cut.faces, uvs: cut.uvs }, texture: sc.texture, relief: true, from: c.title, source: c.source, license: c.license, creator: c.creator, fg: Math.round(bm.fg * 100) };
                 } catch (_) { /* 這張不行就換下一張 */ }
             }
             return null;
@@ -32319,9 +32331,9 @@ const FaEditHost = (function () {
                 if (!r) continue; used.push(s);
                 if (r.asset && kind !== 'edit-3d') { const a = R.assetObject(s, r.asset, { inner: r.asset.inner, w: r.asset.w, h: r.asset.h }, 300); assets.push(a); notes.push(s.name + T('（找到現成的向量圖：' + r.asset.title + (r.asset.license ? '，' + r.asset.license : '') + (r.asset.creator ? '，' + r.asset.creator : '') + '）', ' (found a ready-made vector: ' + r.asset.title + ')')); }
                 if (r.asset3d) {
-                    const a3 = r.asset3d, fitted = FaSubject3d.fit(a3.mesh, (s.cm || 30) / 100, a3.texture ? { depthRatio: 0.4 } : null), obj = FaSubject3d.toObject(s, fitted, { texture: a3.texture || '', color: a3.texture ? '#ffffff' : '' });
+                    const a3 = r.asset3d, fitted = FaSubject3d.fit(a3.mesh, (s.cm || 30) / 100, a3.texture && !a3.solid ? { depthRatio: 0.4 } : null), obj = FaSubject3d.toObject(s, fitted, { texture: a3.texture || '', color: a3.texture ? '#ffffff' : '' });
                     if (a3.repo) { const lic = a3.license === 'none' ? T('未標示授權，僅供個人使用', 'no licence stated, personal use only') : a3.license; obj.credit = 'GitHub ' + a3.repo + '（' + lic + '）' + a3.path; notes.push(s.name + T('（找到現成的 3D 模型：GitHub ' + a3.repo + '，' + lic + '）', ' (found a 3D model on GitHub: ' + a3.repo + ')')); }
-                    else { obj.credit = [a3.source, a3.from, a3.creator, a3.license].filter(Boolean).join(' / '); notes.push(s.name + T('（沒有現成模型，用網路上找到的圖做成立體的：' + (a3.from || a3.source) + '）', ' (built in 3D from a picture found online)')); }
+                    else { obj.credit = [a3.source, a3.from, a3.creator, a3.license].filter(Boolean).join(' / '); notes.push(s.name + (a3.solid ? T('（沒有現成模型，用網路上找到的圖轉成封閉的立體：' + (a3.from || a3.source) + '）', ' (built as a closed solid from a picture found online)') : T('（沒有現成模型，用網路上找到的圖做成立體的，但圖片轉3D沒成功，退回舊的浮雕做法：' + (a3.from || a3.source) + '）', ' (built from a picture found online with the old relief method, because image-to-3d did not work)'))); }
                     assets.push(obj);
                 }
                 if (r.brief) { briefs.push(r.brief); notes.push(s.name + (r.from === 'cache' ? T('（記得）', ' (remembered)') : r.from === 'web' ? T('（查了網路）', ' (web)') : r.from === 'image' ? T('（看了參考圖）', ' (from a reference picture)') : T('（沒查到網路資料）', ' (nothing found online)'))); }
@@ -32349,6 +32361,7 @@ const FaEditHost = (function () {
             const ask0 = kind === 'edit-svg' ? (req) => self._edAskSvg(req, { id }) : kind === 'edit-picture' ? (req) => self._edAskPicture(req, { id }) : (req) => K.ask.call(self, req, { id });
             const ask = (req) => self._edQuietRun((line) => { try { if (req && typeof req.onStatus === 'function') req.onStatus(line); } catch (_) { /* */ } }, async () => {
                 let hit = null; try { hit = await self._edCaseFor(kind, req); } catch (_) { hit = null; }   // 範例庫壞了不影響編輯
+                if (kind === 'edit-3d' && req && typeof self._i3dAttachedEdits === 'function') { let ae = null; try { ae = await self._i3dAttachedEdits(req); } catch (_) { ae = null; } if (ae) return ae; }   // 貼了圖又說「把這張圖變成 3D 物件」：直接走圖片轉3D的管線，不經過模型
                 if (hit && hit.replay) return hit.replay;                                                  // 弱模型／離線：程式直接放範例的成品，不經過模型
                 if (hit && self._edQuiet) self._edQuiet.ref = hit.block;                                    // 強模型：只多一小段參考
                 if ((!hit || !hit.replay) && (kind === 'edit-3d' || kind === 'edit-svg' || kind === 'edit-picture') && req && req.text) {   // 不認識的東西先去查，結果也只是一小段參考
@@ -32693,6 +32706,33 @@ const FaEditHost = (function () {
         const parts = scene.objects.concat(scene.background ? [scene.background] : []);
         const out = { ok: !(r && r.ok === false), error: r && r.ok === false ? r.error : undefined, objects: scene.objects.length, shapes: scene.objects.map((x) => x.shape), faces: parts.reduce((a, x) => a + x.mesh.faces.length, 0), close, all_closed: parts.every((x) => FaImage3d.isClosed(x.mesh)), fell_back: parts.filter((x) => x.fallback).length, dropped_blobs: prep.dropped, foreground_ratio: fg == null ? undefined : Math.round(fg * 1000) / 1000, depth_model: dr.model, device: dr.device, ms: Date.now() - t0 + (dr.ms || 0), notes: [T('每個物件都是封閉的立體，不是浮雕；單張圖看不到背面，背面是依輪廓寬度推測的厚度', 'every object is a closed solid, not a relief; one picture cannot show the back, so its depth is a guess from the outline width')].concat(texture ? [T('原圖已貼在模型上（從正面投影，側面與背面是邊緣顏色拉伸）', 'the picture is pasted on as the texture (projected from the front; sides and back show stretched edge colours)')] : []).concat(prep.empty ? [T('沒有找到前景（背景色抓不準），整張圖當成一個物件', 'no foreground found: the whole picture became one object')] : [], mask || segs ? [] : [T('整張圖當成一個物件', 'the whole picture is one object')], segs ? [T('物件由分割模型找出來', 'objects found by the segmentation model')] : [], segNote ? [segNote] : [], bgNote ? [bgNote] : []) };
         return out;
+    };
+    // 一張圖裡的主體（去背後的前景）→ 一個封閉的立體（不是浮雕）+ 原圖當貼圖；給「查不到 3D 模型時用網路找到的圖」和編輯器裡「把這張圖變成 3D 物件」用。失敗回 null
+    // 回 { mesh:{vertices,faces,uvs}, texture, faces, all_closed }；深度模型沒下載或不能用時回 null，呼叫端退回舊做法
+    M._i3dSubjectSolid = async function (blob, filename, p) {
+        p = p || {}; let px; try { px = await this._i3dPixels(blob, 160); } catch (_) { return null; }
+        const bm = FaSubject3d.bgMask(px, 42); if (bm.fg < 0.05 || bm.fg > 0.9) return null;
+        let dr; try { dr = await this._depthEstimate({ blob, filename, model: p.model, device: p.device }); } catch (_) { return null; } if (!dr || !dr.ok) return null;
+        const prep = FaImage3d.prepareInput(dr.depth, { w: px.width, h: px.height, data: bm.mask }, { mode: 'components', workMax: 96 });
+        const scene = FaImage3d.buildScene({ labels: prep.labels, depth: prep.depth }, { shape: 'auto', closeMode: 'objects', maxFaces: 6000 });
+        if (!scene.objects.length || !scene.objects.every((o) => FaImage3d.isClosed(o.mesh))) return null;
+        const mesh = FaImage3d.subjectMesh(scene); if (!mesh) return null;
+        let texture = ''; try { texture = await this._i3dTexture(blob); } catch (_) { texture = ''; }
+        return { mesh, texture, faces: mesh.faces.length, all_closed: true };
+    };
+    // 3D 編輯器裡使用者貼了圖、說「把這張圖變成 3D 物件」：回 add_object 的編輯，沒有符合就回 null
+    M._i3dAttachedEdits = async function (req) {
+        const text = String((req && req.text) || ''), imgs = (req && req.images) || [];
+        if (!imgs.length || !/(把|將|用)?這張(圖|照片|圖片).{0,8}(變成|轉成|做成|轉).{0,6}(3D|三維|立體)|圖(片)?轉\s*3D|image.?to.?3d/i.test(text)) return null;
+        const edits = [], notes = [];
+        for (let i = 0; i < Math.min(3, imgs.length); i++) {
+            let blob = null; try { blob = await (await fetch(imgs[i].dataUrl)).blob(); } catch (_) { blob = null; } if (!blob) continue;
+            const name = String(imgs[i].name || 'picture').replace(/\.[a-z0-9]+$/i, '').slice(0, 20) || 'picture', r = await this._i3dSubjectSolid(blob, imgs[i].name);
+            if (!r) { notes.push(T('「' + name + '」沒能轉成立體（背景去不乾淨，或深度模型不能用）', '"' + name + '" could not be turned into a solid (background not separable, or the depth model is unavailable)')); continue; }
+            const fitted = FaSubject3d.fit(r.mesh, 0.5, null), obj = FaSubject3d.toObject({ name }, fitted, { texture: r.texture, color: '#ffffff' });
+            obj.credit = T('你貼的圖：' + name + '（離線深度模型轉成封閉立體；背面是推測的）', 'your picture: ' + name + ' (offline depth model, closed solid; the back is a guess)'); edits.push({ op: 'add_object', object: obj }); notes.push(T('「' + name + '」已轉成封閉的 3D 物件（' + r.faces + ' 個面）', '"' + name + '" turned into a closed 3D object (' + r.faces + ' faces)'));
+        }
+        return edits.length || notes.length ? { edits, notes } : null;
     };
     // 全景／轉圈照片：決定要不要走全景。ids: [{id, filename}]；flag: 使用者說了 --panorama／全景。回傳 { pano:true, items:[{id,filename,blob}], fovDeg, note } 或 { pano:false, note? }
     M._i3dPanoPlan = async function (ids, flag) {

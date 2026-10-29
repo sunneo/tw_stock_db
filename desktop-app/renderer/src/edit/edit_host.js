@@ -460,9 +460,10 @@ const FaEditHost = (function () {
                 try {
                     const { blob } = await ps.load(c.ref), dec = await this._subjDecodeImage(blob, 360), bm = M.bgMask(dec.img);
                     if (bm.fg < 0.1 || bm.fg > 0.85) continue;   // 背景切不乾淨（整張都是東西，或東西跟背景同色）：換下一張
+                    if (typeof this._i3dSubjectSolid === 'function') { let sol = null; try { sol = await this._i3dSubjectSolid(blob, c.title); } catch (_) { sol = null; } if (sol) return { mesh: sol.mesh, texture: sol.texture, solid: true, from: c.title, source: c.source, license: c.license, creator: c.creator, fg: Math.round(bm.fg * 100) }; }   // 先用圖片轉3D的管線（每個物件封閉）；做不出來才退回下面的浮雕做法
                     const txt = await this._subjDecompose(dec.png); const sc = txt && M.parseScene(txt); if (!sc) continue;
                     const cut = M.cutBackground(sc.mesh, bm.mask, dec.img.width, dec.img.height); if (cut.kept < 40) continue;
-                    return { mesh: { vertices: cut.vertices, faces: cut.faces, uvs: cut.uvs }, texture: sc.texture, from: c.title, source: c.source, license: c.license, creator: c.creator, fg: Math.round(bm.fg * 100) };
+                    return { mesh: { vertices: cut.vertices, faces: cut.faces, uvs: cut.uvs }, texture: sc.texture, relief: true, from: c.title, source: c.source, license: c.license, creator: c.creator, fg: Math.round(bm.fg * 100) };
                 } catch (_) { /* 這張不行就換下一張 */ }
             }
             return null;
@@ -505,9 +506,9 @@ const FaEditHost = (function () {
                 if (!r) continue; used.push(s);
                 if (r.asset && kind !== 'edit-3d') { const a = R.assetObject(s, r.asset, { inner: r.asset.inner, w: r.asset.w, h: r.asset.h }, 300); assets.push(a); notes.push(s.name + T('（找到現成的向量圖：' + r.asset.title + (r.asset.license ? '，' + r.asset.license : '') + (r.asset.creator ? '，' + r.asset.creator : '') + '）', ' (found a ready-made vector: ' + r.asset.title + ')')); }
                 if (r.asset3d) {
-                    const a3 = r.asset3d, fitted = FaSubject3d.fit(a3.mesh, (s.cm || 30) / 100, a3.texture ? { depthRatio: 0.4 } : null), obj = FaSubject3d.toObject(s, fitted, { texture: a3.texture || '', color: a3.texture ? '#ffffff' : '' });
+                    const a3 = r.asset3d, fitted = FaSubject3d.fit(a3.mesh, (s.cm || 30) / 100, a3.texture && !a3.solid ? { depthRatio: 0.4 } : null), obj = FaSubject3d.toObject(s, fitted, { texture: a3.texture || '', color: a3.texture ? '#ffffff' : '' });
                     if (a3.repo) { const lic = a3.license === 'none' ? T('未標示授權，僅供個人使用', 'no licence stated, personal use only') : a3.license; obj.credit = 'GitHub ' + a3.repo + '（' + lic + '）' + a3.path; notes.push(s.name + T('（找到現成的 3D 模型：GitHub ' + a3.repo + '，' + lic + '）', ' (found a 3D model on GitHub: ' + a3.repo + ')')); }
-                    else { obj.credit = [a3.source, a3.from, a3.creator, a3.license].filter(Boolean).join(' / '); notes.push(s.name + T('（沒有現成模型，用網路上找到的圖做成立體的：' + (a3.from || a3.source) + '）', ' (built in 3D from a picture found online)')); }
+                    else { obj.credit = [a3.source, a3.from, a3.creator, a3.license].filter(Boolean).join(' / '); notes.push(s.name + (a3.solid ? T('（沒有現成模型，用網路上找到的圖轉成封閉的立體：' + (a3.from || a3.source) + '）', ' (built as a closed solid from a picture found online)') : T('（沒有現成模型，用網路上找到的圖做成立體的，但圖片轉3D沒成功，退回舊的浮雕做法：' + (a3.from || a3.source) + '）', ' (built from a picture found online with the old relief method, because image-to-3d did not work)'))); }
                     assets.push(obj);
                 }
                 if (r.brief) { briefs.push(r.brief); notes.push(s.name + (r.from === 'cache' ? T('（記得）', ' (remembered)') : r.from === 'web' ? T('（查了網路）', ' (web)') : r.from === 'image' ? T('（看了參考圖）', ' (from a reference picture)') : T('（沒查到網路資料）', ' (nothing found online)'))); }
@@ -535,6 +536,7 @@ const FaEditHost = (function () {
             const ask0 = kind === 'edit-svg' ? (req) => self._edAskSvg(req, { id }) : kind === 'edit-picture' ? (req) => self._edAskPicture(req, { id }) : (req) => K.ask.call(self, req, { id });
             const ask = (req) => self._edQuietRun((line) => { try { if (req && typeof req.onStatus === 'function') req.onStatus(line); } catch (_) { /* */ } }, async () => {
                 let hit = null; try { hit = await self._edCaseFor(kind, req); } catch (_) { hit = null; }   // 範例庫壞了不影響編輯
+                if (kind === 'edit-3d' && req && typeof self._i3dAttachedEdits === 'function') { let ae = null; try { ae = await self._i3dAttachedEdits(req); } catch (_) { ae = null; } if (ae) return ae; }   // 貼了圖又說「把這張圖變成 3D 物件」：直接走圖片轉3D的管線，不經過模型
                 if (hit && hit.replay) return hit.replay;                                                  // 弱模型／離線：程式直接放範例的成品，不經過模型
                 if (hit && self._edQuiet) self._edQuiet.ref = hit.block;                                    // 強模型：只多一小段參考
                 if ((!hit || !hit.replay) && (kind === 'edit-3d' || kind === 'edit-svg' || kind === 'edit-picture') && req && req.text) {   // 不認識的東西先去查，結果也只是一小段參考

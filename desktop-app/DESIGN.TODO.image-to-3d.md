@@ -16,6 +16,13 @@ Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app
 - SlimSAM：瀏覽器（CPU、q8）實測載入約 6 秒、編碼約 16 秒、16 點約 28 秒；合成圖分出 3 個物件（蘋果、盒子、地面）。背景大遮罩（>50% 圖面）預設丟掉（maxAreaFrac 0.5）。
 - 全景：`/image-to-3d --panorama`、單張寬高比 ≥2、多張 EXIF 方向（`_i3dPanoPlan`、`_imageToPanorama`）。
 
+### 追加（來自上層工作階段，2026-10-30）已做
+- 使用者原話（逐字，2026-10-30）：「這個功能如果跟我們的edit-3d-model, edit-game-3d 也不錯吧? 這樣就可以把之前編輯期間提到 "不認識的物件->上網找OBJ->上網找圖片->轉3D物件 " 有更穩定的結合方式」
+- ① edit-3d-model：貼圖＋「把這張圖變成 3D 物件」→ `_i3dAttachedEdits`（edit3d_host.js）直接用離線管線做封閉物件放進場景。**edit-game-3d 還沒接**（它走遊戲編輯器自己的 host，不經 `_subjResolve`）。
+- ② 找圖那一階 `_subjImage3d` 先試 `_i3dSubjectSolid`（每個物件封閉），失敗才退回舊浮雕（結果註明）；`subjectMesh` 核心有測試。
+- ③ 新舊並排品質比較**沒做**（舊做法在 Pyodide 裡跑，沒在這裡驗證）；新做法失敗會自動退回舊的，所以不會比以前更糟，但品質是否更好未實測。
+- ④ 清冊、測試已補。
+
 ### 真實 App 還沒驗證
 設定頁卡片顯示、兩張圖貼上時的指令分流、全景在真實 App 的完整流程（核心有單元測試，主機端 `_imageToPanorama` 沒跑過）、`inward` 轉圈照片只用第一張、GPU（fp16）路徑（深度與 SlimSAM）、SlimSAM 在 App 工作執行緒的 `sam` 分支（實驗頁照同流程驗證過）、VR 頭戴裝置觀看、在編輯器真的開啟 smooth 殼的外觀。發布未做。
 

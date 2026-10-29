@@ -228,6 +228,33 @@
         const out = { ok: !(r && r.ok === false), error: r && r.ok === false ? r.error : undefined, objects: scene.objects.length, shapes: scene.objects.map((x) => x.shape), faces: parts.reduce((a, x) => a + x.mesh.faces.length, 0), close, all_closed: parts.every((x) => FaImage3d.isClosed(x.mesh)), fell_back: parts.filter((x) => x.fallback).length, dropped_blobs: prep.dropped, foreground_ratio: fg == null ? undefined : Math.round(fg * 1000) / 1000, depth_model: dr.model, device: dr.device, ms: Date.now() - t0 + (dr.ms || 0), notes: [T('每個物件都是封閉的立體，不是浮雕；單張圖看不到背面，背面是依輪廓寬度推測的厚度', 'every object is a closed solid, not a relief; one picture cannot show the back, so its depth is a guess from the outline width')].concat(texture ? [T('原圖已貼在模型上（從正面投影，側面與背面是邊緣顏色拉伸）', 'the picture is pasted on as the texture (projected from the front; sides and back show stretched edge colours)')] : []).concat(prep.empty ? [T('沒有找到前景（背景色抓不準），整張圖當成一個物件', 'no foreground found: the whole picture became one object')] : [], mask || segs ? [] : [T('整張圖當成一個物件', 'the whole picture is one object')], segs ? [T('物件由分割模型找出來', 'objects found by the segmentation model')] : [], segNote ? [segNote] : [], bgNote ? [bgNote] : []) };
         return out;
     };
+    // 一張圖裡的主體（去背後的前景）→ 一個封閉的立體（不是浮雕）+ 原圖當貼圖；給「查不到 3D 模型時用網路找到的圖」和編輯器裡「把這張圖變成 3D 物件」用。失敗回 null
+    // 回 { mesh:{vertices,faces,uvs}, texture, faces, all_closed }；深度模型沒下載或不能用時回 null，呼叫端退回舊做法
+    M._i3dSubjectSolid = async function (blob, filename, p) {
+        p = p || {}; let px; try { px = await this._i3dPixels(blob, 160); } catch (_) { return null; }
+        const bm = FaSubject3d.bgMask(px, 42); if (bm.fg < 0.05 || bm.fg > 0.9) return null;
+        let dr; try { dr = await this._depthEstimate({ blob, filename, model: p.model, device: p.device }); } catch (_) { return null; } if (!dr || !dr.ok) return null;
+        const prep = FaImage3d.prepareInput(dr.depth, { w: px.width, h: px.height, data: bm.mask }, { mode: 'components', workMax: 96 });
+        const scene = FaImage3d.buildScene({ labels: prep.labels, depth: prep.depth }, { shape: 'auto', closeMode: 'objects', maxFaces: 6000 });
+        if (!scene.objects.length || !scene.objects.every((o) => FaImage3d.isClosed(o.mesh))) return null;
+        const mesh = FaImage3d.subjectMesh(scene); if (!mesh) return null;
+        let texture = ''; try { texture = await this._i3dTexture(blob); } catch (_) { texture = ''; }
+        return { mesh, texture, faces: mesh.faces.length, all_closed: true };
+    };
+    // 3D 編輯器裡使用者貼了圖、說「把這張圖變成 3D 物件」：回 add_object 的編輯，沒有符合就回 null
+    M._i3dAttachedEdits = async function (req) {
+        const text = String((req && req.text) || ''), imgs = (req && req.images) || [];
+        if (!imgs.length || !/(把|將|用)?這張(圖|照片|圖片).{0,8}(變成|轉成|做成|轉).{0,6}(3D|三維|立體)|圖(片)?轉\s*3D|image.?to.?3d/i.test(text)) return null;
+        const edits = [], notes = [];
+        for (let i = 0; i < Math.min(3, imgs.length); i++) {
+            let blob = null; try { blob = await (await fetch(imgs[i].dataUrl)).blob(); } catch (_) { blob = null; } if (!blob) continue;
+            const name = String(imgs[i].name || 'picture').replace(/\.[a-z0-9]+$/i, '').slice(0, 20) || 'picture', r = await this._i3dSubjectSolid(blob, imgs[i].name);
+            if (!r) { notes.push(T('「' + name + '」沒能轉成立體（背景去不乾淨，或深度模型不能用）', '"' + name + '" could not be turned into a solid (background not separable, or the depth model is unavailable)')); continue; }
+            const fitted = FaSubject3d.fit(r.mesh, 0.5, null), obj = FaSubject3d.toObject({ name }, fitted, { texture: r.texture, color: '#ffffff' });
+            obj.credit = T('你貼的圖：' + name + '（離線深度模型轉成封閉立體；背面是推測的）', 'your picture: ' + name + ' (offline depth model, closed solid; the back is a guess)'); edits.push({ op: 'add_object', object: obj }); notes.push(T('「' + name + '」已轉成封閉的 3D 物件（' + r.faces + ' 個面）', '"' + name + '" turned into a closed 3D object (' + r.faces + ' faces)'));
+        }
+        return edits.length || notes.length ? { edits, notes } : null;
+    };
     // 全景／轉圈照片：決定要不要走全景。ids: [{id, filename}]；flag: 使用者說了 --panorama／全景。回傳 { pano:true, items:[{id,filename,blob}], fovDeg, note } 或 { pano:false, note? }
     M._i3dPanoPlan = async function (ids, flag) {
         const items = []; for (const x of ids) { let rec = null; try { rec = await this.fileCache.get(x.id); } catch (_) { /* */ } if (rec && rec.blob) items.push({ id: x.id, filename: x.filename, blob: rec.blob }); }
