@@ -15,6 +15,7 @@
 
     // ───────────────────────── zip ─────────────────────────
     async function inflateRaw(u8) {
+        if (typeof DecompressionStream === 'undefined' && typeof module === 'object' && module.exports && typeof require === 'function') { return new Uint8Array(require('zlib').inflateRawSync(u8)); }   // Node 18 以前沒有 DecompressionStream（只有測試會走到）
         const ds = new DecompressionStream('deflate-raw'); const w = ds.writable.getWriter(); w.write(u8); w.close();
         const buf = await new Response(ds.readable).arrayBuffer(); return new Uint8Array(buf);
     }

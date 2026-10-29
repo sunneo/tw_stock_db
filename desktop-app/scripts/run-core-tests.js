@@ -145,12 +145,14 @@ const suites = [
     ['圖片轉3D核心（封閉殼、平滑殼、背景差分、全景分層、貼材質）', 'scripts/media-tests/image3d_core.test.js'],
 ];
 let failed = 0;
+const results = [], t00 = Date.now();   // 測試報告：每組的結果、數量、失敗項目、耗時
 for (const [name, file] of suites) {
-    const r = spawnSync(process.execPath, [path.join(root, file)], { encoding: 'utf8' });
+    const t0 = Date.now(), r = spawnSync(process.execPath, [path.join(root, file)], { encoding: 'utf8' });
     const last = String(r.stdout || '').trim().split('\n').pop();
     const ok = r.status === 0 && /(0 failed|[0-9]+ passed)/.test(last) && !/FAILED/.test(last);
     if (!ok) failed++;
     console.log((ok ? 'PASS ' : 'FAIL ') + name + '：' + last);
+    results.push({ name, file, ok, summary: last, failures: ok ? [] : String(r.stdout || '').split('\n').filter((l) => /^FAIL/.test(l)).map((l) => l.slice(0, 200)), error: ok ? '' : String(r.stderr || '').slice(0, 300), ms: Date.now() - t0 });
     if (!ok) console.log(String(r.stdout || '').split('\n').filter((l) => /^FAIL/.test(l)).join('\n') + String(r.stderr || '').slice(0, 500));
 }
 // 部位偵測（Python）：有 python 與 numpy／pillow 才跑，沒有就略過並說明
@@ -167,5 +169,15 @@ if (py.status === 0) {
 const pq = spawnSync('python', [path.join(root, 'scripts/test_fa_sqlite.py')], { encoding: 'utf8' });
 if (pq.error) console.log('略過 fa_sqlite（Python）：沒有 python');
 else { const last = String(pq.stdout || '').trim().split('\n').filter(Boolean).pop() || ''; const ok = pq.status === 0 && /0 failed/.test(last); if (!ok) failed++; console.log((ok ? 'PASS ' : 'FAIL ') + 'fa_sqlite（Python 的 sqlite3 相容介面）：' + last); }
+// 報告：test-reports/core-tests-latest.md（人看）與 .json（程式比對）；每次覆寫，歷史靠 git
+try {
+    const fs = require('fs'), dir = path.join(root, 'test-reports'); fs.mkdirSync(dir, { recursive: true });
+    const stamp = new Date().toISOString(), pass = results.filter((x) => x.ok).length;
+    const md = ['# 核心測試報告', '', '產生時間：' + stamp + '　（`node scripts/run-core-tests.js`）', '', '結果：' + pass + ' / ' + results.length + ' 組通過' + (failed ? '，**' + failed + ' 組失敗**' : '，全部通過') + '；總耗時 ' + Math.round((Date.now() - t00) / 1000) + ' 秒（只含這些純函式核心，不含 Electron／瀏覽器的真實環境測試）', '', '| 結果 | 測試組 | 摘要 | 耗時 |', '|---|---|---|---|']
+        .concat(results.map((x) => '| ' + (x.ok ? '通過' : '**失敗**') + ' | ' + x.name.replace(/\|/g, '/') + ' | ' + x.summary.replace(/\|/g, '/').slice(0, 120) + ' | ' + (x.ms / 1000).toFixed(1) + ' 秒 |'));
+    const bad = results.filter((x) => !x.ok); if (bad.length) { md.push('', '## 失敗項目'); bad.forEach((x) => { md.push('', '### ' + x.name + '（`' + x.file + '`）'); x.failures.slice(0, 20).forEach((l) => md.push('- ' + l)); if (x.error) md.push('- stderr：' + x.error.replace(/\s+/g, ' ')); }); }
+    fs.writeFileSync(path.join(dir, 'core-tests-latest.md'), md.join('\n') + '\n'); fs.writeFileSync(path.join(dir, 'core-tests-latest.json'), JSON.stringify({ at: stamp, failed, results }, null, 1));
+    console.log('\n測試報告：test-reports/core-tests-latest.md');
+} catch (e) { console.log('（測試報告寫不出來：' + e.message + '）'); }
 console.log(failed ? '\n有 ' + failed + ' 組失敗' : '\n全部通過');
 process.exit(failed ? 1 : 0);
