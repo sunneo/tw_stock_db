@@ -715,6 +715,8 @@
   }
   function intentFromPick(i) { return i === 0 ? 'main' : (i === 1 ? 'all' : null); }
   // per-candidate question for the vision model (a cropped picture of one found object): A yes / B no
+  // one picture holding the n candidates side by side, tiles labelled A, B, C…: which tile is "name"? (the last option = none of them)
+  function choiceQuestion(name, n) { var o = [], i; for (i = 0; i < n; i++) { o.push('小圖 ' + String.fromCharCode(65 + i)); } o.push('都不是'); return { question: '這張圖把找到的東西排成幾張小圖（左上角標了字母）。哪一張小圖裡的主要東西是「' + String(name) + '」？', options: o }; }
   function itemQuestion(name) { return { question: '這張圖裡最主要的東西是「' + String(name) + '」嗎？', options: ['是', '不是'] }; }
   // found objects ranked as the subject: biggest and nearest the middle first. -> [{ id, area, frac, box:[x0,y0,x1,y1] (inclusive cells), cx, cy, score }]
   function rankSubjects(labels, w, h) {
@@ -783,5 +785,5 @@
     return spec;
   }
 
-  return { subjectIntent: subjectIntent, intentQuestion: intentQuestion, intentFromPick: intentFromPick, itemQuestion: itemQuestion, rankSubjects: rankSubjects, keepLabel: keepLabel, subjectMesh: subjectMesh, stitchDepths: stitchDepths, panoFov: panoFov, buildPanorama: buildPanorama, bendCylinder: bendCylinder, depthBands: depthBands, readExif: readExif, orbitKind: orbitKind, diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
+  return { subjectIntent: subjectIntent, intentQuestion: intentQuestion, intentFromPick: intentFromPick, itemQuestion: itemQuestion, choiceQuestion: choiceQuestion, rankSubjects: rankSubjects, keepLabel: keepLabel, subjectMesh: subjectMesh, stitchDepths: stitchDepths, panoFov: panoFov, buildPanorama: buildPanorama, bendCylinder: bendCylinder, depthBands: depthBands, readExif: readExif, orbitKind: orbitKind, diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
 });

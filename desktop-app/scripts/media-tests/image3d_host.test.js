@@ -7,7 +7,7 @@ function t(name, fn) { return Promise.resolve().then(fn).then(() => { pass++; co
 function grid(w, h, f) { const a = []; for (let y = 0; y < h; y++) { a.push([]); for (let x = 0; x < w; x++) { a[y].push(f(x, y)); } } return a; }
 
 // 載入主機檔：FaEditHost.methods 是 this 上的方法表
-const methods = {}, ctx = { FaEditHost: { T: (a) => a, methods, register() {} }, FaImage3d: Core, FaEditOffline: require(path.join(root, 'edit', 'edit_offline.js')), console, document: { createElement: () => ({ width: 0, height: 0, getContext: () => ({ drawImage() {} }), toDataURL: () => 'data:image/jpeg;base64,AA==' }) }, createImageBitmap: async () => ({ width: 100, height: 80, close() {} }), setTimeout, requestAnimationFrame: () => {} };
+const methods = {}, ctx = { FaEditHost: { T: (a) => a, methods, register() {} }, FaImage3d: Core, FaEditOffline: require(path.join(root, 'edit', 'edit_offline.js')), console, document: { createElement: () => ({ width: 0, height: 0, getContext: () => new Proxy({}, { get: (t, k) => (k in t ? t[k] : () => {}), set: (t, k, v) => { t[k] = v; return true; } }), toDataURL: () => 'data:image/jpeg;base64,AA==' }) }, createImageBitmap: async () => ({ width: 100, height: 80, close() {} }), setTimeout, requestAnimationFrame: () => {}, clearTimeout };
 vm.createContext(ctx); vm.runInContext(fs.readFileSync(path.join(root, 'edit', 'edit3d_host.js'), 'utf8'), ctx);
 ctx.FaSubject3d = { fit: (m) => m, toObject: (s) => ({ type: 'mesh', name: s.name, mesh: 'polygon' }) };
 const M = ctx.FaEditHost.methods;
@@ -23,11 +23,16 @@ const host = (answers) => { // answers: 視覺模型每次回答的字母
   await t('沒有名字：選最大又靠中間的，不問模型', async () => {
     const h = host(['B']); const r = await h._i3dPickSubject(labels, W, H, {}, ''); assert.strictEqual(r.id, 1); assert.strictEqual(r.how, 'central'); assert.strictEqual(h.calls.length, 0);
   });
-  await t('有名字：視覺模型答 A 的那個物件被選中（程式核對字母）', async () => {
-    const h = host(['B', 'A']); const r = await h._i3dPickSubject(labels, W, H, {}, '蘋果'); assert.strictEqual(r.how, 'asked'); assert.strictEqual(r.id, 2); assert.strictEqual(h.calls.length, 2); assert(h.calls[0].includes('蘋果'));
+  await t('有名字：只問一次（一張對照圖），答 B → 第二個候選（程式核對字母）', async () => {
+    const h = host(['B']); const r = await h._i3dPickSubject(labels, W, H, {}, '蘋果'); assert.strictEqual(r.how, 'asked'); assert.strictEqual(r.id, 2); assert.strictEqual(h.calls.length, 1); assert(h.calls[0].includes('蘋果') && h.calls[0].includes('小圖 A') && h.calls[0].includes('都不是'));
   });
-  await t('有名字但模型亂答／都說不是：退回最大又靠中間的並註明', async () => {
-    const h = host(['我不知道', 'B']); const r = await h._i3dPickSubject(labels, W, H, {}, '杯子'); assert.strictEqual(r.id, 1); assert.strictEqual(r.how, 'central'); assert(/沒能確認/.test(r.note));
+  await t('有名字：答「都不是」／亂答／出錯 → 最大又靠中間的並註明原因', async () => {
+    let r = await host(['C'])._i3dPickSubject(labels, W, H, {}, '杯子'); assert.strictEqual(r.id, 1); assert(/沒有「杯子」/.test(r.note), r.note);
+    r = await host(['我不知道'])._i3dPickSubject(labels, W, H, {}, '杯子'); assert.strictEqual(r.how, 'central'); assert(/讀不出字母/.test(r.note));
+    const bad = host(['A']); bad._visionDescribe = async () => ({ ok: false, error: '看圖失敗' }); r = await bad._i3dPickSubject(labels, W, H, {}, '杯子'); assert.strictEqual(r.how, 'central'); assert(/沒能回答/.test(r.note));
+  });
+  await t('有名字：視覺模型卡住 → 逾時後不再等，選最大又靠中間的', async () => {
+    const h = host(['A']); h._i3dPickTimeoutMs = 50; h._visionDescribe = () => new Promise(() => {}); const r = await h._i3dPickSubject(labels, W, H, {}, '杯子'); assert.strictEqual(r.how, 'central'); assert(/沒回應/.test(r.note));
   });
   await t('意圖：程式讀得出來就不問模型；讀不出來才問，答案由程式核對', async () => {
     let asked = 0; const h = Object.assign(Object.create(M), { _edAi: () => ({ have: () => true, pick: async () => { asked++; return 0; } }) });

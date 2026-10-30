@@ -30648,6 +30648,8 @@ const holder = {};
   }
   function intentFromPick(i) { return i === 0 ? 'main' : (i === 1 ? 'all' : null); }
   // per-candidate question for the vision model (a cropped picture of one found object): A yes / B no
+  // one picture holding the n candidates side by side, tiles labelled A, B, C…: which tile is "name"? (the last option = none of them)
+  function choiceQuestion(name, n) { var o = [], i; for (i = 0; i < n; i++) { o.push('小圖 ' + String.fromCharCode(65 + i)); } o.push('都不是'); return { question: '這張圖把找到的東西排成幾張小圖（左上角標了字母）。哪一張小圖裡的主要東西是「' + String(name) + '」？', options: o }; }
   function itemQuestion(name) { return { question: '這張圖裡最主要的東西是「' + String(name) + '」嗎？', options: ['是', '不是'] }; }
   // found objects ranked as the subject: biggest and nearest the middle first. -> [{ id, area, frac, box:[x0,y0,x1,y1] (inclusive cells), cx, cy, score }]
   function rankSubjects(labels, w, h) {
@@ -30716,7 +30718,7 @@ const holder = {};
     return spec;
   }
 
-  return { subjectIntent: subjectIntent, intentQuestion: intentQuestion, intentFromPick: intentFromPick, itemQuestion: itemQuestion, rankSubjects: rankSubjects, keepLabel: keepLabel, subjectMesh: subjectMesh, stitchDepths: stitchDepths, panoFov: panoFov, buildPanorama: buildPanorama, bendCylinder: bendCylinder, depthBands: depthBands, readExif: readExif, orbitKind: orbitKind, diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
+  return { subjectIntent: subjectIntent, intentQuestion: intentQuestion, intentFromPick: intentFromPick, itemQuestion: itemQuestion, choiceQuestion: choiceQuestion, rankSubjects: rankSubjects, keepLabel: keepLabel, subjectMesh: subjectMesh, stitchDepths: stitchDepths, panoFov: panoFov, buildPanorama: buildPanorama, bendCylinder: bendCylinder, depthBands: depthBands, readExif: readExif, orbitKind: orbitKind, diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
 });
 
 }).call(null, undefined, holder);
@@ -32748,28 +32750,34 @@ const FaEditHost = (function () {
         const v = FaImage3d.intentFromPick(pick);
         return Object.assign({}, si, v ? { subject: v, decided: true, source: 'model' } : { subject: 'all', decided: true, source: 'default' });
     };
-    // 在找出來的物件裡挑主體 → { id, how, note }。有名字：每個候選物件裁成小圖，問視覺模型「是不是 X」（選擇題，程式核對答案）；沒名字或沒答案：最大又最靠中間的
+    // 在找出來的物件裡挑主體 → { id, how, note }。有名字：把候選物件（最多 6 個）裁成小圖、編號拼成「一張」對照圖，只問視覺模型一次「哪一張是 X」（選擇題，程式核對字母；有逾時）；沒名字或沒答案：最大又最靠中間的
     M._i3dPickSubject = async function (labels, w, h, blob, name) {
         const rk = FaImage3d.rankSubjects(labels, w, h); if (!rk.length) return null;
-        if (!name) return { id: rk[0].id, how: 'central', note: T('沒說是哪個東西，選了最大又最靠中間的物件', 'no name given: took the biggest object nearest the middle') };
-        let bmp = null; try { bmp = await createImageBitmap(blob); } catch (_) { bmp = null; }
-        if (bmp && typeof FaEditOffline !== 'undefined') {
-            const q = FaImage3d.itemQuestion(name), prompt = FaEditOffline.letterPrompt(q.question, q.options);
-            for (const c of rk.slice(0, 4)) {
+        const say = (l) => { try { if (this._edQuiet && typeof this._edQuiet.sink === 'function') this._edQuiet.sink(l); } catch (_) { /* */ } };
+        const central = (why) => ({ id: rk[0].id, how: 'central', note: why });
+        if (!name) return central(T('沒說是哪個東西，選了最大又最靠中間的物件', 'no name given: took the biggest object nearest the middle'));
+        const cands = rk.slice(0, 6); let bmp = null; try { bmp = await createImageBitmap(blob); } catch (_) { bmp = null; }
+        if (!bmp || typeof FaEditOffline === 'undefined') return central(T('讀不到圖，選了最大又最靠中間的物件', 'could not read the picture: took the biggest object nearest the middle'));
+        try {
+            const TILE = 200, cols = Math.min(3, cands.length), rows = Math.ceil(cands.length / cols), cv = document.createElement('canvas'); cv.width = cols * TILE; cv.height = rows * TILE;
+            const cx = cv.getContext('2d'); cx.fillStyle = '#ffffff'; cx.fillRect(0, 0, cv.width, cv.height);
+            cands.forEach((c, i) => {
                 const mx = Math.round(0.08 * w), x0 = Math.max(0, c.box[0] - mx) / w, y0 = Math.max(0, c.box[1] - mx) / h, x1 = Math.min(w, c.box[2] + 1 + mx) / w, y1 = Math.min(h, c.box[3] + 1 + mx) / h;
-                const sx = Math.floor(x0 * bmp.width), sy = Math.floor(y0 * bmp.height), sw = Math.max(8, Math.ceil((x1 - x0) * bmp.width)), sh = Math.max(8, Math.ceil((y1 - y0) * bmp.height)), k = Math.min(1, 256 / Math.max(sw, sh));
-                const cv = document.createElement('canvas'); cv.width = Math.max(8, Math.round(sw * k)); cv.height = Math.max(8, Math.round(sh * k)); cv.getContext('2d').drawImage(bmp, sx, sy, sw, sh, 0, 0, cv.width, cv.height);
-                const du = cv.toDataURL('image/jpeg', 0.85); let idx = null;
-                try {
-                    const r = await this._visionDescribe({ images: [du], prompt, max_tokens: 16, runLlm: () => this._interpretImageWithVisionModel(du, prompt) });
-                    const raw = r.ok ? (r.backend === 'llm' ? (typeof r.llm === 'string' ? r.llm : (r.llm && (r.llm.answer || r.llm.description || r.llm.text)) || '') : (r.answer || r.text || '')) : '';
-                    idx = FaEditOffline.parseLetter(raw, 2);
-                } catch (_) { idx = null; }
-                if (idx === 0) { try { bmp.close(); } catch (_) { /* */ } return { id: c.id, how: 'asked', note: T('用視覺模型確認這個物件是「' + name + '」', 'the vision model confirmed this object is "' + name + '"') }; }
-            }
-            try { bmp.close(); } catch (_) { /* */ }
-        }
-        return { id: rk[0].id, how: 'central', note: T('沒能確認哪個物件是「' + name + '」（視覺模型沒回答或都說不是），選了最大又最靠中間的', 'could not confirm which object is "' + name + '": took the biggest one nearest the middle') };
+                const sx = Math.floor(x0 * bmp.width), sy = Math.floor(y0 * bmp.height), sw = Math.max(8, Math.ceil((x1 - x0) * bmp.width)), sh = Math.max(8, Math.ceil((y1 - y0) * bmp.height)), k = Math.min(1, (TILE - 8) / Math.max(sw, sh)), dw = sw * k, dh = sh * k, ox = (i % cols) * TILE, oy = Math.floor(i / cols) * TILE;
+                cx.drawImage(bmp, sx, sy, sw, sh, ox + (TILE - dw) / 2, oy + (TILE - dh) / 2, dw, dh); cx.strokeStyle = '#888888'; cx.strokeRect(ox + 1, oy + 1, TILE - 2, TILE - 2);
+                cx.fillStyle = '#ffffff'; cx.fillRect(ox + 2, oy + 2, 30, 30); cx.fillStyle = '#d00000'; cx.font = 'bold 26px sans-serif'; cx.fillText(String.fromCharCode(65 + i), ox + 8, oy + 27);
+            });
+            const du = cv.toDataURL('image/jpeg', 0.85), q = FaImage3d.choiceQuestion(name, cands.length), prompt = FaEditOffline.letterPrompt(q.question, q.options);
+            say(T('把 ' + cands.length + ' 個候選物件拼成一張對照圖，問視覺模型哪一張是「' + name + '」…', 'asking the vision model which of ' + cands.length + ' tiles is "' + name + '"…'));
+            const limit = this._i3dPickTimeoutMs || 60000; let timer = null;
+            const r = await Promise.race([this._visionDescribe({ images: [du], prompt, max_tokens: 16, step: say, runLlm: () => this._interpretImageWithVisionModel(du, prompt, null, { onStep: say }) }), new Promise((res) => { timer = setTimeout(() => res({ ok: false, error: 'timeout' }), limit); })]); if (timer) clearTimeout(timer);
+            if (!r.ok) return central(r.error === 'timeout' ? T('視覺模型 ' + Math.round(limit / 1000) + ' 秒內沒回應，選了最大又最靠中間的物件', 'the vision model did not answer in time: took the biggest object nearest the middle') : T('視覺模型沒能回答（' + String(r.error || '').slice(0, 80) + '），選了最大又最靠中間的物件', 'the vision model failed: took the biggest object nearest the middle'));
+            const raw = r.backend === 'llm' ? (typeof r.llm === 'string' ? r.llm : (r.llm && (r.llm.answer || r.llm.description || r.llm.text)) || '') : (r.answer || r.text || '');
+            const idx = FaEditOffline.parseLetter(raw, q.options.length);
+            if (idx != null && idx < cands.length) return { id: cands[idx].id, how: 'asked', note: T('用視覺模型確認小圖 ' + String.fromCharCode(65 + idx) + ' 是「' + name + '」', 'the vision model picked tile ' + String.fromCharCode(65 + idx) + ' as "' + name + '"') };
+            return central(idx === cands.length ? T('視覺模型說候選物件裡沒有「' + name + '」，選了最大又最靠中間的物件', 'the vision model found no "' + name + '" among the candidates: took the biggest central object') : T('視覺模型的回答讀不出字母，選了最大又最靠中間的物件', 'the answer had no usable letter: took the biggest central object'));
+        } catch (e) { return central(T('確認主體時出錯（' + String((e && e.message) || e).slice(0, 60) + '），選了最大又最靠中間的物件', 'error while confirming the subject: took the biggest central object')); }
+        finally { try { bmp.close(); } catch (_) { /* */ } }
     };
     // 做好的場景預設顯示成對話裡的 3D 檢視（可以用滑鼠轉、縮放），不開編輯器；要編輯再說 /edit-3d-model last（或加 --editor 直接開編輯器）
     M._i3dShow = async function (spec, title, p) {
