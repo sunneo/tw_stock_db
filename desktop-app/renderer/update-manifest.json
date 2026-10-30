@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "baseVersion": "1.1.0",
-  "generatedAt": "2026-10-30T16:42:54.356Z",
+  "generatedAt": "2026-10-30T16:57:28.880Z",
   "files": {
     "renderer/index.html": "039acc67493d2d42bae493dc9822621a",
     "renderer/bootstrap.js": "c27e4b6163413e96c3d738876559e972",
@@ -39,7 +39,7 @@
     "edge-tts.js": "135b186b61de5963ae2d3852fb70de5b",
     "fsx-sync.js": "f14777175ba4a3b4d3197c00befc7e82",
     "local-proxy.js": "079907734ca86f14e31fb6be41b8e2ca",
-    "main-ext.js": "dac419418b8daaedbede70aa6486c4cf",
+    "main-ext.js": "459a537b336df8c2b24c29b0ab92af21",
     "rfb-client.js": "1ad7d8a545166f0e965d3f5008b94ccb",
     "rfb-codec.js": "08f2ada7bc710642e7d29fbff63ee4f1",
     "sqlite-engine.js": "ff9d39366459c465271e617b00abb76e",
@@ -82,7 +82,7 @@
     "edge-tts.js": 7363,
     "fsx-sync.js": 5425,
     "local-proxy.js": 26808,
-    "main-ext.js": 49887,
+    "main-ext.js": 50577,
     "rfb-client.js": 27415,
     "rfb-codec.js": 14601,
     "sqlite-engine.js": 22797,
