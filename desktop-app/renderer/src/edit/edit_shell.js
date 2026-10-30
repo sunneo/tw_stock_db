@@ -222,7 +222,7 @@
     if (opt.container) { opt.container.appendChild(el); }
     var WIN = opt.windowApi || (typeof FaWin !== 'undefined' ? FaWin : null), win = WIN && WIN.decorate ? WIN.decorate(el, { id: opt.kind + ':' + (opt.id || ''), title: opt.title, bar: bar, minW: 720, minH: 460 }) : null; el._win = win;
     render();
-    el._ed = { editor: editor, getState: getState, reload: function (state) { initState(state, null); renderLog(); render(); }, setSpec: function (spec, summary) { commit(spec, summary || '由對話修改', '', 'chat'); }, undo: undo, redo: redo, send: function (t) { ta.value = t; return send(); }, select: select, getSpec: function () { return cur(); }, env: env, ctx: ctx, effectiveSteps: effectiveSteps, addImages: function (list) { list.forEach(function (x) { if (pending.length < 3) { pending.push(x); } }); renderAtt(); }, destroy: function () { try { if (editor && editor.destroy) { editor.destroy(); } } catch (e) { /* gone */ } } };
+    el._ed = { editor: editor, getState: getState, reload: function (state) { initState(state, null); renderLog(); render(); }, setSpec: function (spec, summary) { commit(spec, summary || '由對話修改', '', 'chat'); }, undo: undo, redo: redo, send: function (t) { ta.value = t; return send(); }, select: select, getSpec: function () { return cur(); }, env: env, ctx: ctx, effectiveSteps: effectiveSteps, addImages: function (list) { list.forEach(function (x) { if (pending.length < 3) { pending.push(x); } }); renderAtt(); }, snapshot: function () { return opt.runExport ? opt.runExport('png', W.validate(cur()).spec) : Promise.resolve(null); }, destroy: function () { try { if (editor && editor.destroy) { editor.destroy(); } } catch (e) { /* gone */ } } };
     return el;
   }
   return { mount: mount, CSS: CSS };

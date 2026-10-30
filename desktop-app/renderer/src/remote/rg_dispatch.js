@@ -658,13 +658,41 @@ const FaRemoteDispatch = (function () {
             let refs = []; try { refs = await this._rgBuildRefs(cap, null, to); } catch (_) { return null; }
             return refs.length ? { machine, refs } : null;
         },
+        // 看的人那邊沒有這個專案／場景，只會看到一個 id：改成在這邊截一張預覽圖（縮小成小 JPEG）一起送過去。每張只算一次（依訊息或專案的修改特徵快取）
+        async _rgShrink(blob, side) {
+            const bmp = await createImageBitmap(blob); const k = Math.min(1, side / Math.max(bmp.width, bmp.height)), w = Math.max(1, Math.round(bmp.width * k)), h = Math.max(1, Math.round(bmp.height * k));
+            const cv = document.createElement('canvas'); cv.width = w; cv.height = h; const g = cv.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, w, h); g.drawImage(bmp, 0, 0, w, h); try { bmp.close(); } catch (_) { /* */ }
+            let q = 0.72, du = cv.toDataURL('image/jpeg', q); while (du.length > 70000 && q > 0.35) { q -= 0.15; du = cv.toDataURL('image/jpeg', q); } cv.width = cv.height = 0; return du;
+        },
+        async _rgEditorSnap(kind, id) {
+            const key = kind + ':' + id; this._rgSnapCache = this._rgSnapCache || new Map(); const hit = this._rgSnapCache.get(key); if (hit && Date.now() - hit.at < 20000) return hit.img;
+            let el = this._edEditors && this._edEditors.get(key), temp = null, img = '';
+            try {
+                if (!el || !el._ed) { temp = document.createElement('div'); temp.style.cssText = 'position:fixed; left:-9999px; top:0; width:640px; height:480px;'; document.body.appendChild(temp); await this._edMount(kind, id, temp); el = temp; }
+                const out = el._ed && el._ed.snapshot ? await el._ed.snapshot() : null; if (out && out.blob) img = await this._rgShrink(out.blob, 480);
+            } catch (_) { img = ''; }
+            finally { if (temp) { try { if (temp._ed) temp._ed.destroy(); } catch (_) { /* */ } try { temp.remove(); } catch (_) { /* */ } } }
+            this._rgSnapCache.set(key, { at: Date.now(), img }); return img;
+        },
+        async _rgMsgSnap(m) {
+            this._rgMsgSnaps = this._rgMsgSnaps || new WeakMap(); if (this._rgMsgSnaps.has(m)) return this._rgMsgSnaps.get(m);
+            let img = ''; try { const r = await this._captureVisualSnapshot(m); if (r && r.dataUrl) img = await this._rgShrink(await this._dataUrlToBlob(r.dataUrl), 480); } catch (_) { img = ''; }
+            this._rgMsgSnaps.set(m, img); return img;
+        },
         async _rgSerChat(ctx, to) {
             const out = [];
             for (const m of ctx.messages) {
+                if (m && m.role === 'tool' && (m._displayScene3DYaml || m._displayDrawingSvg || m._displayMermaidSvg || m._displayAnim2DYaml)) { const img = await this._rgMsgSnap(m); out.push({ r: 'snap', t: '', label: m._displayScene3DYaml ? '3D 場景' : '圖形', img }); continue; }
                 if (m && (m._displayDeckUrl || m._displayRemoteFiles || m._displayDataUrl)) { const g = await this._rgChatFileGroups(m, to); if (g) out.push({ r: 'files', t: '', machine: g.machine, refs: g.refs }); continue; }
                 if (!m || m._suggestionChips || (m.role !== 'user' && m.role !== 'assistant')) continue;
                 let text = typeof m.content === 'string' ? m.content : Array.isArray(m.content) ? m.content.map((p) => p && p.type === 'text' ? p.text : p && p.type === 'image_url' ? '[圖片]' : '').filter(Boolean).join('\n') : '';
-                if (!String(text).trim()) continue; out.push({ r: m.role, t: String(text).slice(0, 12000) });
+                const snaps = [];
+                if (m.role === 'assistant' && text.indexOf('```fa-edit-') >= 0) {
+                    const KS = (typeof FaEditHost !== 'undefined' && FaEditHost.KINDS) || {}; const found = [];
+                    text = text.replace(/```(fa-edit-[\w-]+)[ \t]*\n([^\n]*)\n```/g, (all, fence, js) => { let ref = null; try { ref = JSON.parse(js); } catch (_) { /* */ } const kind = Object.keys(KS).filter((k) => KS[k].fence === fence)[0]; if (!ref || !ref.id || !kind) return all; found.push({ kind, id: String(ref.id), label: KS[kind].label() }); return '（' + KS[kind].label() + '：預覽見下方）'; });
+                    for (const f of found.slice(0, 3)) snaps.push({ r: 'snap', t: '', label: f.label, img: await this._rgEditorSnap(f.kind, f.id) });
+                }
+                if (!String(text).trim()) continue; out.push({ r: m.role, t: String(text).slice(0, 12000) }); for (const sn of snaps) out.push(sn);
             }
             return out.slice(-120);
         },
@@ -672,7 +700,7 @@ const FaRemoteDispatch = (function () {
         async _rgOnChatGet(m) {
             const rg = this._rg; if (!rg) return; const b = m.body || {}, en = this._chatEntry(b.id), reply = (o) => rg.room.send(m.from, 'chat_msgs', Object.assign({ rid: b.rid }, o)).catch(() => {});
             if (!en || !en.shared) { reply({ error: '這個對話沒有分享（或已經取消分享）' }); return; }
-            const ctx = await this._chatCtxLoad(b.id), msgs = await this._rgSerChat(ctx, m.from), last = msgs[msgs.length - 1], ver = msgs.length + ':' + (last ? last.t.length : 0) + ':' + msgs.filter((x) => x.refs).length + ':' + (ctx.isResponding ? 1 : 0);
+            const ctx = await this._chatCtxLoad(b.id), msgs = await this._rgSerChat(ctx, m.from), last = msgs[msgs.length - 1], ver = msgs.length + ':' + (last ? last.t.length : 0) + ':' + msgs.filter((x) => x.refs).length + ':' + msgs.reduce((n, x) => n + (x.img ? x.img.length : 0), 0) + ':' + (ctx.isResponding ? 1 : 0);
             if (b.ver === ver) reply({ same: true, ver, running: !!ctx.isResponding }); else reply({ ver, msgs, title: en.title || '新對話', running: !!ctx.isResponding });
         },
         // 貼上對話紀錄時常帶著說話者標籤（「You: /media-presentation …」「使用者：…」）：判斷是不是斜線指令前先去掉，否則整句被當成一般文字、指令不會執行

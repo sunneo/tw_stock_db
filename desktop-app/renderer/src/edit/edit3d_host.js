@@ -185,11 +185,27 @@
         const cv = document.createElement('canvas'); cv.width = w; cv.height = h; const cx = cv.getContext('2d', { willReadFrequently: true }); cx.drawImage(bmp, 0, 0, w, h); try { bmp.close(); } catch (_) { /* */ }
         const d = cx.getImageData(0, 0, w, h); return { width: w, height: h, data: d.data };
     };
+    // 手機：記憶體小、主執行緒慢——面數、貼圖都縮小，用完的模型馬上卸載（桌面版不變）
+    M._i3dLite = function () { try { return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '') || (navigator.deviceMemory && navigator.deviceMemory <= 4) || (navigator.maxTouchPoints > 1 && Math.min(screen.width, screen.height) < 820); } catch (_) { return false; } };
+    M._i3dFree = function () { if (this._i3dLite() && this._vlmTerminate) { try { this._vlmTerminate('gpu'); this._vlmTerminate('cpu'); } catch (_) { /* */ } } };
+    // FaImage3d 的重運算（讀深度、分物件、做網格、組場景）放在 Worker 裡跑，主執行緒只等結果，頁面才不會卡死；開不了 Worker 才退回主執行緒
+    M._i3dCall = function (fn, args) {
+        const self = this;
+        if (typeof Worker === 'undefined' || typeof FA_IMG3D_WORKER_SRC === 'undefined') return Promise.resolve().then(() => FaImage3d[fn].apply(null, args));
+        return new Promise((resolve, reject) => {
+            let url = null, w = null; const done = () => { try { if (w) w.terminate(); } catch (_) { /* */ } try { if (url) URL.revokeObjectURL(url); } catch (_) { /* */ } };
+            try { url = URL.createObjectURL(new Blob([FA_IMG3D_WORKER_SRC], { type: 'application/javascript' })); w = new Worker(url); } catch (_) { done(); resolve(FaImage3d[fn].apply(null, args)); return; }
+            const timer = setTimeout(() => { done(); reject(new Error(T('運算逾時', 'the computation timed out') + '（' + fn + '）')); }, 180000);
+            w.onmessage = (ev) => { clearTimeout(timer); done(); const m = ev.data || {}; if (m.ok) resolve(m.r); else reject(new Error(m.error || 'worker error')); };
+            w.onerror = (ev) => { clearTimeout(timer); done(); reject(new Error(String((ev && ev.message) || 'worker error'))); };
+            try { w.postMessage({ fn, args }); } catch (e) { clearTimeout(timer); done(); reject(e); }
+        });
+    };
     // the original picture as a JPEG data: URL (longest side 1024) to paste on the model as its texture
     M._i3dTexture = async function (blob) {
         const bmp = await createImageBitmap(blob); const k = Math.min(1, 1024 / Math.max(bmp.width, bmp.height)), w = Math.max(2, Math.round(bmp.width * k)), h = Math.max(2, Math.round(bmp.height * k));
         const cv = document.createElement('canvas'); cv.width = w; cv.height = h; cv.getContext('2d').drawImage(bmp, 0, 0, w, h); try { bmp.close(); } catch (_) { /* */ }
-        return cv.toDataURL('image/jpeg', 0.85);
+        const du = cv.toDataURL('image/jpeg', 0.85); cv.width = cv.height = 0; return du;
     };
     // 「只要主體」：先由程式從使用者的話判斷（FaImage3d.subjectIntent）；只有讀不出來才問模型一個選擇題，答案由程式核對（A／B 以外都當沒答）
     // 使用者的要求交給 LLM 讀（全句理解：否定、同義說法…）：回傳的每個欄位都由程式驗證（名稱要真的出現在話裡、倍數夾在範圍內），打出來的 --參數永遠優先；LLM 沒回應或讀不出來就用程式讀的結果（o）
@@ -278,18 +294,18 @@
         const am = !whole && !p.bg ? FaImage3d.alphaMask(px) : null; if (am) { mask = { w: px.width, h: px.height, data: am.mask }; fg = am.fg; bgNote = T('這張圖已經去背（透明背景），直接用透明度當前景', 'the picture is already cut out: its transparency is the foreground'); }
         if (!whole && p.bg) { // 背景差分：另一張「沒有主體的背景圖」逐像素比對（同一個視角）
             const bi = await this._vlmResolveImage({ image: p.bg });
-            if (bi.blob) { let bpx = null; try { bpx = await this._i3dPixels(bi.blob, 160, px); } catch (_) { /* */ } const dm = bpx ? FaImage3d.diffMask(px, bpx, {}) : null; if (dm && dm.fg >= 0.02 && dm.fg <= 0.95) { mask = { w: px.width, h: px.height, data: dm.mask }; fg = dm.fg; bgNote = T('用背景差分取出前景', 'foreground taken by background subtraction'); } else bgNote = T('背景差分沒有取出合理的前景（差異太少或太多，兩張圖要是同一個視角），改用其他方式', 'background subtraction found no sensible foreground (the two pictures must share one viewpoint); used another way'); }
+            if (bi.blob) { let bpx = null; try { bpx = await this._i3dPixels(bi.blob, 160, px); } catch (_) { /* */ } const dm = bpx ? await this._i3dCall('diffMask', [px, bpx, {}]) : null; if (dm && dm.fg >= 0.02 && dm.fg <= 0.95) { mask = { w: px.width, h: px.height, data: dm.mask }; fg = dm.fg; bgNote = T('用背景差分取出前景', 'foreground taken by background subtraction'); } else bgNote = T('背景差分沒有取出合理的前景（差異太少或太多，兩張圖要是同一個視角），改用其他方式', 'background subtraction found no sensible foreground (the two pictures must share one viewpoint); used another way'); }
             else bgNote = T('找不到背景圖：', 'background picture not found: ') + (bi.error || '');
         }
         if (!whole && !mask && wantSeg) { // 分割模型自動分物件；失敗不擋住，退回去背遮罩
-            this._i3dChapter('seg', T('用分割模型找出圖裡的物件', 'finding the objects')); const sr = await this._segmentObjects({ blob: img.blob, filename: img.filename, device: p.device });
+            this._i3dFree(); this._i3dChapter('seg', T('用分割模型找出圖裡的物件', 'finding the objects')); const sr = await this._segmentObjects({ blob: img.blob, filename: img.filename, device: p.device });
             if (sr.ok && sr.segments && sr.segments.length) segs = sr.segments; else if (sr.cancelled) return sr; else segNote = T('分割模型沒成功（' + (sr.error || '') + '），改用去背遮罩', 'segmentation failed (' + (sr.error || '') + '), used the background cut-out instead');
         }
         if (!whole && !segs && !mask) { const bm = FaSubject3d.bgMask(px, 42); fg = bm.fg; if (bm.fg >= 0.02 && bm.fg <= 0.95) mask = { w: px.width, h: px.height, data: bm.mask }; }
-        const prep = FaImage3d.prepareInput(dr.depth, mask, { mode: (mask || segs) ? 'components' : 'whole', workMax: 96, segments: segs });
+        this._i3dFree(); const prep = await this._i3dCall('prepareInput', [dr.depth, mask, { mode: (mask || segs) ? 'components' : 'whole', workMax: 96, segments: segs }]);
         let labels = prep.labels, subjNote = '', subjName = '';
-        if (subjectOnly && (mask || segs)) { this._i3dChapter('pick', si.name ? T('確認哪個物件是主體', 'which object is the subject') : T('選最大又最靠中間的物件', 'taking the biggest central object')); const pk = await this._i3dPickSubject(labels, prep.width, prep.height, img.blob, si.name); if (pk) { labels = FaImage3d.keepLabel(labels, pk.id); subjNote = pk.note; subjName = si.name; } }
-        this._i3dChapter('build', T('做成封閉的立體', 'building the closed solid')); const scene = FaImage3d.buildScene({ labels, depth: prep.depth }, { shape, closeMode: close, maxFaces: 12000, depthScale: p.depth_scale > 0 ? p.depth_scale : o.depthScale, thickScale: p.thickness_scale > 0 ? p.thickness_scale : o.thickScale });
+        if (subjectOnly && (mask || segs)) { this._i3dChapter('pick', si.name ? T('確認哪個物件是主體', 'which object is the subject') : T('選最大又最靠中間的物件', 'taking the biggest central object')); const pk = await this._i3dPickSubject(labels, prep.width, prep.height, img.blob, si.name); if (pk) { labels = await this._i3dCall('keepLabel', [labels, pk.id]); subjNote = pk.note; subjName = si.name; } }
+        this._i3dChapter('build', T('做成封閉的立體', 'building the closed solid')); const scene = await this._i3dCall('buildScene', [{ labels, depth: prep.depth }, { shape, closeMode: close, maxFaces: 12000, depthScale: p.depth_scale > 0 ? p.depth_scale : o.depthScale, thickScale: p.thickness_scale > 0 ? p.thickness_scale : o.thickScale }]);
         if ((!mask && !segs) || subjNote || am || o.noBackground || p.no_background) scene.background = null; // the whole picture is the one object (or only the subject was asked for): a backdrop would only be a copy / the things the user did not want
         if (!scene.objects.length) return { ok: false, error: T('沒有找到可以做成立體的物件', 'no object to build') };
         const sums = {}; for (let y = 0; y < px.height; y++) for (let x = 0; x < px.width; x++) {
@@ -299,7 +315,7 @@
         const colors = {}, hex = (n) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0'); for (const id in sums) { const s = sums[id]; colors[id] = '#' + hex(s[0] / s[3]) + hex(s[1] / s[3]) + hex(s[2] / s[3]); }
         const title = T('圖片轉3D：', 'Image to 3D: ') + String(img.filename || '').replace(/\.[a-z0-9]+$/i, '').slice(0, 30);
         let texture = ''; if (p.texture !== false) { try { texture = await this._i3dTexture(img.blob); } catch (_) { texture = ''; } }
-        const raw = FaImage3d.toSpec(scene, { colors, title, texture, heightM: p.height_cm > 0 ? p.height_cm / 100 : o.heightM, widthM: p.width_cm > 0 ? p.width_cm / 100 : o.widthM, sizeM: p.size_cm > 0 ? p.size_cm / 100 : o.sizeM, depthM: p.depth_cm > 0 ? p.depth_cm / 100 : o.depthM }); const v = FaEdit3d.validate(raw); if (!v.ok) return { ok: false, error: T('做出來的場景不合規格：', 'the scene is invalid: ') + (v.problems || []).slice(0, 3).join('；') };
+        const raw = await this._i3dCall('toSpec', [scene, { colors, title, texture, heightM: p.height_cm > 0 ? p.height_cm / 100 : o.heightM, widthM: p.width_cm > 0 ? p.width_cm / 100 : o.widthM, sizeM: p.size_cm > 0 ? p.size_cm / 100 : o.sizeM, depthM: p.depth_cm > 0 ? p.depth_cm / 100 : o.depthM }]); const v = FaEdit3d.validate(raw); if (!v.ok) return { ok: false, error: T('做出來的場景不合規格：', 'the scene is invalid: ') + (v.problems || []).slice(0, 3).join('；') };
         this._i3dChapter('show', T('放進對話的 3D 檢視', 'showing it')); const r = await this._i3dShow(v.spec, title, { editor: p.editor || o.editor });
         const ext = [[Infinity, -Infinity], [Infinity, -Infinity], [Infinity, -Infinity]]; v.spec.objects.forEach((ob) => { if (ob.extra && ob.extra.vertices) ob.extra.vertices.forEach((q) => { for (let a = 0; a < 3; a++) { if (q[a] < ext[a][0]) ext[a][0] = q[a]; if (q[a] > ext[a][1]) ext[a][1] = q[a]; } }); });
         const cm = (a) => (isFinite(ext[a][0]) ? Math.round((ext[a][1] - ext[a][0]) * 1000) / 10 : null), dimsCm = { height: cm(1), width: cm(0), depth: cm(2) };
@@ -317,10 +333,10 @@
         let segs = null;
         if (p.subject) { try { const sr = await this._segmentObjects({ blob, filename, device: p.device }); if (sr && sr.ok && sr.segments && sr.segments.length) segs = sr.segments; } catch (_) { segs = null; } }
         if (!mask && !segs) return null;
-        const prep = FaImage3d.prepareInput(dr.depth, mask, { mode: 'components', workMax: 96, segments: segs });
+        this._i3dFree(); const prep = await this._i3dCall('prepareInput', [dr.depth, mask, { mode: 'components', workMax: 96, segments: segs }]);
         let labels = prep.labels, subj = null;
-        if (p.subject) { const pk = await this._i3dPickSubject(labels, prep.width, prep.height, blob, p.subject.name || ''); if (!pk) return null; labels = FaImage3d.keepLabel(labels, pk.id); subj = { name: p.subject.name || '', how: pk.how, note: pk.note }; }
-        const scene = FaImage3d.buildScene({ labels, depth: prep.depth }, { shape: 'auto', closeMode: 'objects', maxFaces: 6000 });
+        if (p.subject) { const pk = await this._i3dPickSubject(labels, prep.width, prep.height, blob, p.subject.name || ''); if (!pk) return null; labels = await this._i3dCall('keepLabel', [labels, pk.id]); subj = { name: p.subject.name || '', how: pk.how, note: pk.note }; }
+        const scene = await this._i3dCall('buildScene', [{ labels, depth: prep.depth }, { shape: 'auto', closeMode: 'objects', maxFaces: 6000 }]);
         if (!scene.objects.length || !scene.objects.every((o) => FaImage3d.isClosed(o.mesh))) return null;
         const mesh = FaImage3d.subjectMesh(scene); if (!mesh) return null;
         let texture = ''; try { texture = await this._i3dTexture(blob); } catch (_) { texture = ''; }
@@ -369,16 +385,16 @@
     M._imageToPanorama0 = async function (p) {
         const items = p.items, depths = []; this._i3dChapter('depth', T('每張照片估計深度', 'estimating depth for each photo'), T('全景', 'panorama'));
         for (const it of items) { const dr = await this._depthEstimate({ blob: it.blob, filename: it.filename, model: p.model, device: p.device }); if (!dr.ok) return dr; depths.push(dr.depth); }
-        const strip = FaImage3d.stitchDepths(depths, {}), fovDeg = p.fovDeg || FaImage3d.panoFov(strip.w / strip.h);
+        const strip = await this._i3dCall('stitchDepths', [depths, {}]), fovDeg = p.fovDeg || FaImage3d.panoFov(strip.w / strip.h);
         let texture = ''; try {
             const H = 512, bmps = []; for (const it of items) bmps.push(await createImageBitmap(it.blob));
             const ws = bmps.map((b) => Math.round(b.width * H / b.height)), W = Math.min(4096, ws.reduce((a, b) => a + b, 0)), k = W / ws.reduce((a, b) => a + b, 0);
             const cv = document.createElement('canvas'); cv.width = W; cv.height = H; const cx = cv.getContext('2d'); let x0 = 0; bmps.forEach((b, i) => { cx.drawImage(b, x0 * k, 0, ws[i] * k, H); x0 += ws[i]; try { b.close(); } catch (_) { /* */ } });
             texture = cv.toDataURL('image/jpeg', 0.85);
         } catch (_) { texture = ''; }
-        this._i3dChapter('build', T('分成遠景／中景／近景三層', 'building the three layers')); const sc = FaImage3d.buildPanorama(strip, { fovDeg, bands: 3, radius: 5 });
+        this._i3dChapter('build', T('分成遠景／中景／近景三層', 'building the three layers')); const sc = await this._i3dCall('buildPanorama', [strip, { fovDeg, bands: 3, radius: 5 }]);
         const title = T('全景轉3D：', 'Panorama to 3D: ') + String(items[0].filename || '').replace(/\.[a-z0-9]+$/i, '').slice(0, 30);
-        const raw = FaImage3d.toSpec(sc, { title, texture }); const v = FaEdit3d.validate(raw); if (!v.ok) return { ok: false, error: T('做出來的場景不合規格：', 'the scene is invalid: ') + (v.problems || []).slice(0, 3).join('；') };
+        const raw = await this._i3dCall('toSpec', [sc, { title, texture }]); const v = FaEdit3d.validate(raw); if (!v.ok) return { ok: false, error: T('做出來的場景不合規格：', 'the scene is invalid: ') + (v.problems || []).slice(0, 3).join('；') };
         this._i3dChapter('show', T('放進對話的 3D 檢視', 'showing it')); const r = await this._i3dShow(v.spec, title, { editor: p.editor });
         return { ok: !(r && r.ok === false), error: r && r.ok === false ? r.error : undefined, panorama: true, layers: sc.objects.map((o) => o.name), faces: sc.objects.reduce((a, o) => a + o.mesh.faces.length, 0), all_closed: sc.objects.every((o) => FaImage3d.isClosed(o.mesh)), fov_deg: fovDeg, photos: items.length, note: p.note || '',
             notes: [T('每張照片各自估深度、各自縮放到 0～1，所以遠近只是近似', 'each photo has its own depth scale, so near/far is approximate'), T('分成遠景／中景／近景三層，各自是封閉的立體，彎在圓柱上，相機在圓心往外看', 'three layers (far/middle/near), each a closed solid bent around a cylinder; the camera sits at the centre looking out'), T('可以匯出 glTF 給 VR 用；在頭戴裝置裡的觀看效果還沒驗證', 'can be exported as glTF for VR; how it looks in a headset is not verified')] };

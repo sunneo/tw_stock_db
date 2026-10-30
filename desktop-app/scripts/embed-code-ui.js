@@ -360,7 +360,12 @@ function embedImage3d() {
         a = src.indexOf('/* ' + mark + '-BEGIN */'); b = src.indexOf('/* ' + mark + '-END */');
     }
     src = src.slice(0, a) + '/* ' + mark + '-BEGIN */\nconst ' + name + ' = (function () {\nconst holder = {};\n(function (module, self) {\n' + core + '\n}).call(null, undefined, holder);\nreturn holder.' + name + ';\n})();\n' + src.slice(b);
-    console.log('已更新 ' + name + '（' + core.length + ' 字元）');
+    // 同一份核心再包成 Worker 原始碼：重運算（網格、分割後處理）不佔主執行緒（手機上會卡死）
+    const wmark = 'IMG3DWORKER'; let wa = src.indexOf('/* ' + wmark + '-BEGIN */'), wb = src.indexOf('/* ' + wmark + '-END */');
+    if (wa < 0 || wb < 0) { const at = src.indexOf('/* ' + mark + '-END */') + ('/* ' + mark + '-END */').length; src = src.slice(0, at) + '\n/* ' + wmark + '-BEGIN */\n/* ' + wmark + '-END */' + src.slice(at); wa = src.indexOf('/* ' + wmark + '-BEGIN */'); wb = src.indexOf('/* ' + wmark + '-END */'); }
+    const glue = "self.onmessage = function (ev) { var m = ev.data || {}; try { self.postMessage({ ok: true, r: self.FaImage3d[m.fn].apply(null, m.args || []) }); } catch (e) { self.postMessage({ ok: false, error: String((e && e.message) || e) }); } };";
+    src = src.slice(0, wa) + '/* ' + wmark + '-BEGIN */\nconst FA_IMG3D_WORKER_SRC = ' + JSON.stringify(core + '\n' + glue).split(String.fromCharCode(0x2028)).join('\\u2028').split(String.fromCharCode(0x2029)).join('\\u2029') + ';\n' + src.slice(wb);
+    console.log('已更新 ' + name + '（' + core.length + ' 字元）與 Worker 原始碼');
 }
 embedImage3d();
 
