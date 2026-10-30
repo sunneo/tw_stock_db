@@ -745,10 +745,15 @@
     else if (/樂高|方塊|lego|blocks?/i.test(t)) { out.shape = 'blocks'; }
     if (/--whole(?![a-z])|整張圖當一個|整張當一個|不要?分物件|whole\s+image/i.test(t)) { out.whole = true; }
     if (/--editor(?![a-z])|開編輯器/i.test(t)) { out.editor = true; }
+    out.noBackground = /--no-?background|(?:去掉|去除|拿掉|移除|刪掉|刪除|不要|不用|不需要|不含|不帶|不放|沒有|無|去)掉?[^，。,.\n]{0,4}背景|背景(?:不要|去掉|拿掉|移除|不用)|去背|without\s+(?:the\s+)?background|no\s+background/i.test(t) && !/背景也要|含背景|連背景|包含背景|帶背景/.test(t);
     // 深度（正面凹凸的強度）與厚度（背面推測的厚度）：--depth 1.5／--thick 2（倍數），或用說的：「厚一點」「薄一點」「立體感強一點」「平一點」「厚度 2 倍」「深度 0.5 倍」
     var clampK = function (v) { return Math.max(0.2, Math.min(4, v)); };
     out.depthScale = 1; out.thickScale = 1;
-    if ((m = /--depth[=\s]+(\d+(?:\.\d+)?)/i.exec(t))) { out.depthScale = clampK(parseFloat(m[1])); }
+    // 實際尺寸（單位：公分、公釐、公尺）：「深度 10 公分」＝模型前後總深度；「高 30 公分」「寬 20cm」「大小 30 公分」（最長邊）；--depth 10cm
+    var UNIT = '(公分|厘米|釐米|cm|公釐|毫米|mm|公尺|米|m)(?![a-z])', toM = function (v, u) { v = parseFloat(v); u = String(u).toLowerCase(); return u === 'mm' || u === '公釐' || u === '毫米' ? v / 1000 : (u === 'm' || u === '公尺' || u === '米' ? v : v / 100); };
+    var lenOf = function (words) { var r = new RegExp('(?:' + words + ')\\s*(?:是|為|約|大約|要|=|:|：)?\\s*(\\d+(?:\\.\\d+)?)\\s*' + UNIT, 'i').exec(t); return r ? Math.max(0.002, Math.min(100, toM(r[1], r[2]))) : 0; };
+    out.depthM = lenOf('--depth[=\\s]+|深度|前後|front.to.back|depth') || 0; out.heightM = lenOf('高度|高|height') || 0; out.widthM = lenOf('寬度|寬|width') || 0; out.sizeM = lenOf('--size[=\\s]+|大小|尺寸|最長邊|整體|size') || 0;
+    if ((m = /--depth[=\s]+(\d+(?:\.\d+)?)(?!\s*(?:cm|mm|m|公|厘|釐|毫|米))/i.exec(t))) { out.depthScale = clampK(parseFloat(m[1])); }
     else if ((m = /深度\s*(?:x|×|\*|乘)?\s*(\d+(?:\.\d+)?)\s*倍/i.exec(t))) { out.depthScale = clampK(parseFloat(m[1])); }
     else if (/(?:立體感|深度|凹凸)[^，。,.\n]{0,4}(?:強|大|深|明顯|多|高)|深一點|更立體/.test(t)) { out.depthScale = 1.6; }
     else if (/(?:立體感|深度|凹凸)[^，。,.\n]{0,4}(?:弱|小|淺|少|低)|淺一點|平一點|平坦/.test(t)) { out.depthScale = 0.6; }
@@ -760,10 +765,28 @@
     return out;
   }
 
+  // a picture that was already cut out (transparent background): the alpha channel IS the foreground mask. img { width, height, data: RGBA } -> { mask: Uint8Array (1 = opaque), fg } | null when there is not enough transparency to mean it
+  function alphaMask(img) {
+    if (!img || !img.data) { return null; }
+    var n = img.width * img.height, m = new Uint8Array(n), solid = 0, i;
+    for (i = 0; i < n; i++) { if (img.data[i * 4 + 3] >= 128) { m[i] = 1; solid++; } }
+    var fg = solid / n; if (fg < 0.02 || 1 - fg < 0.02) { return null; }
+    return { mask: m, fg: fg };
+  }
+  // does the program fail to read this request? (only then the LLM is asked) = the words hint at a subject but could not be decided, or the sentence has real content and nothing in it was recognised
+  function needsLlm(text, o) {
+    var t = String(text || '').replace(/\[附件：[^\]]*\]/g, ' ').replace(/--[a-z-]+(?:[=\s]+[^\s-][^\s]*)?/gi, ' ').trim(); if (!t) { return false; }
+    if (o && o.subjectDecided === false) { return true; }
+    var rec = o && (o.subjectSource !== 'default' || o.shape !== 'auto' || o.closeSource !== 'default' || o.whole || o.segment || o.panorama || o.editor || o.noBackground || o.depthM || o.heightM || o.widthM || o.sizeM || o.depthScale !== 1 || o.thickScale !== 1);
+    if (rec) { return false; }
+    var rest = t.replace(/[\s，。,.！!？?、；;：:「」"']/g, '').replace(/請|幫我|麻煩|謝謝|可以|好嗎|一下|把|將|這張|圖片|照片|圖|變成|轉成|轉為|轉|做成|作成|3d化|3d|三維|立體|成|image-?to-?3d/gi, '');
+    return rest.length >= 4;
+  }
+
   // ---------- the user's request read by an LLM (the program checks every field; flags typed as --xxx always win; without an answer the words are read by parseOptions above) ----------
   function llmRequest(text) {
     return {
-      system: '你是「圖片轉 3D」指令的解析器。只輸出一個 JSON 物件，不要解釋、不要程式碼區塊。欄位（使用者沒提到的就省略）：{"subject":"main 或 all","subject_name":"主體的名稱（用使用者話裡的詞）","target":"要擺上去的物件名稱","shape":"auto、smooth、cylinder、blocks 其中之一","close":"objects 或 all","depth_scale":數字,"thickness_scale":數字,"whole":布林,"segment":布林,"panorama":布林}。說明：subject=main 表示使用者只要圖裡的某一個主體（例如「只要小提琴」「去掉背景」「把咖啡杯擺到桌子上」），其他東西都不要；subject=all 表示整張圖所有物件都要。close=all 表示連背景都做成實心（要列印、全部封閉）。shape：smooth 平滑、cylinder 圓柱、blocks 樂高方塊。depth_scale 大於 1 表示正面凹凸更強（立體感強）、小於 1 更平；thickness_scale 大於 1 表示背面更厚、小於 1 更薄。',
+      system: '你是「圖片轉 3D」指令的解析器。只輸出一個 JSON 物件，不要解釋、不要程式碼區塊。欄位（使用者沒提到的就省略）：{"subject":"main 或 all","subject_name":"主體的名稱（用使用者話裡的詞）","target":"要擺上去的物件名稱","shape":"auto、smooth、cylinder、blocks 其中之一","close":"objects 或 all","depth_scale":數字,"thickness_scale":數字,"whole":布林,"segment":布林,"panorama":布林,"no_background":布林,"depth_cm":數字,"height_cm":數字,"width_cm":數字,"size_cm":數字}。說明：depth_cm＝模型前後的總深度（公分）、height_cm 高、width_cm 寬、size_cm 最長邊，使用者給了實際尺寸才填（單位換算成公分）；subject=main 表示使用者只要圖裡的某一個主體（例如「只要小提琴」「去掉背景」「把咖啡杯擺到桌子上」），其他東西都不要；subject=all 表示整張圖所有物件都要。close=all 表示連背景都做成實心（要列印、全部封閉）。shape：smooth 平滑、cylinder 圓柱、blocks 樂高方塊。no_background=true 表示不要背景（去掉背景、去背）。depth_scale 大於 1 表示正面凹凸更強（立體感強）、小於 1 更平；thickness_scale 大於 1 表示背面更厚、小於 1 更薄。',
       user: '使用者的要求：「' + String(text || '').replace(/\[附件：[^\]]*\]/g, ' ').trim().slice(0, 400) + '」'
     };
   }
@@ -780,7 +803,9 @@
     if (j.close === 'objects' || j.close === 'all') { out.close = j.close; }
     if (num(j.depth_scale)) { out.depthScale = num(j.depth_scale); }
     if (num(j.thickness_scale)) { out.thickScale = num(j.thickness_scale); }
-    if (j.whole === true) { out.whole = true; } if (j.segment === true) { out.segment = true; } if (j.panorama === true) { out.panorama = true; }
+    var cm = function (v) { v = Number(v); return isFinite(v) && v > 0 ? Math.max(0.2, Math.min(10000, v)) / 100 : 0; };
+    if (cm(j.depth_cm)) { out.depthM = cm(j.depth_cm); } if (cm(j.height_cm)) { out.heightM = cm(j.height_cm); } if (cm(j.width_cm)) { out.widthM = cm(j.width_cm); } if (cm(j.size_cm)) { out.sizeM = cm(j.size_cm); }
+    if (j.no_background === true) { out.noBackground = true; } if (j.whole === true) { out.whole = true; } if (j.segment === true) { out.segment = true; } if (j.panorama === true) { out.panorama = true; }
     return Object.keys(out).length ? out : null;
   }
   // o = parseOptions(text); j = parseLlmOptions(...): the LLM reads the whole sentence, but a typed --flag is never overridden
@@ -792,6 +817,8 @@
     if (j.close && !/--close/i.test(t)) { out.close = j.close; out.closeSource = 'llm'; }
     if (j.depthScale && !/--depth/i.test(t)) { out.depthScale = j.depthScale; }
     if (j.thickScale && !/--thick/i.test(t)) { out.thickScale = j.thickScale; }
+    if (j.depthM && !/--depth/i.test(t)) { out.depthM = j.depthM; } if (j.heightM) { out.heightM = j.heightM; } if (j.widthM) { out.widthM = j.widthM; } if (j.sizeM && !/--size/i.test(t)) { out.sizeM = j.sizeM; }
+    if (j.noBackground) { out.noBackground = true; }
     if (j.whole) { out.whole = true; } if (j.segment) { out.segment = true; } if (j.panorama) { out.panorama = true; }
     return out;
   }
@@ -807,13 +834,16 @@
     parts.forEach(function (p) { p.res.mesh.vertices.forEach(function (v) { for (var a = 0; a < 3; a++) { if (v[a] < mn[a]) { mn[a] = v[a]; } if (v[a] > mx[a]) { mx[a] = v[a]; } } }); });
     if (!parts.length) { return null; }
     var pano = scene.pano || null;
-    var k = pano ? 1 : (opts.sizeM || 1.5), cx = pano ? 0 : (mn[0] + mx[0]) / 2, cz = pano ? 0 : (mn[2] + mx[2]) / 2, y0 = pano ? 0 : mn[1], r = function (x) { return Math.round(x * k * 10000) / 10000; };
+    // real size: heightM／widthM（公尺）定 x、y 的比例，沒有就用 sizeM（最長邊，預設 1.5）；depthM＝模型前後的總深度，沒有就跟 x、y 同比例
+    var k = pano ? 1 : (opts.heightM > 0 ? opts.heightM / Math.max(1e-9, mx[1] - mn[1]) : (opts.widthM > 0 ? opts.widthM / Math.max(1e-9, mx[0] - mn[0]) : (opts.sizeM || 1.5)));
+    var kz = pano ? 1 : (opts.depthM > 0 ? opts.depthM / Math.max(1e-9, mx[2] - mn[2]) : k);
+    var cx = pano ? 0 : (mn[0] + mx[0]) / 2, cz = pano ? 0 : (mn[2] + mx[2]) / 2, y0 = pano ? 0 : mn[1], r = function (x) { return Math.round(x * k * 10000) / 10000; }, rz = function (x) { return Math.round(x * kz * 10000) / 10000; };
     var palette = ['#e57373', '#64b5f6', '#81c784', '#ffd54f', '#ba68c8', '#4db6ac', '#ff8a65', '#a1887f'];
     var objects = [{ id: 'g1', type: 'group', name: opts.title || '圖片轉3D', position: [0, 0, 0], rotation: [0, 0, 0], scale: 1 }];
     parts.forEach(function (p, i) {
       var col = opts.colors && opts.colors[p.key] || (p.key === 'background' ? '#9e9e9e' : palette[i % palette.length]);
       objects.push({ id: 'p' + (i + 1), type: 'mesh', mesh: 'polygon', name: (pano && p.res.name) || p.name, parent: 'g1', position: [0, 0, 0], rotation: [0, 0, 0], material: { color: col, roughness: 0.7, metalness: 0.02 },
-        extra: { vertices: p.res.mesh.vertices.map(function (v) { return [r(v[0] - cx), r(v[1] - y0), r(v[2] - cz)]; }), faces: p.res.mesh.faces } });
+        extra: { vertices: p.res.mesh.vertices.map(function (v) { return [r(v[0] - cx), r(v[1] - y0), rz(v[2] - cz)]; }), faces: p.res.mesh.faces } });
       if (opts.texture && pano) {
         var part0 = objects[objects.length - 1], sc2 = pano.radius * pano.fovRad / pano.xSpan;
         part0.extra.uvs = p.res.mesh.vertices.map(function (v) {
@@ -832,5 +862,5 @@
     return spec;
   }
 
-  return { llmRequest: llmRequest, parseLlmOptions: parseLlmOptions, mergeOptions: mergeOptions, subjectIntent: subjectIntent, intentQuestion: intentQuestion, intentFromPick: intentFromPick, itemQuestion: itemQuestion, choiceQuestion: choiceQuestion, rankSubjects: rankSubjects, keepLabel: keepLabel, subjectMesh: subjectMesh, stitchDepths: stitchDepths, panoFov: panoFov, buildPanorama: buildPanorama, bendCylinder: bendCylinder, depthBands: depthBands, readExif: readExif, orbitKind: orbitKind, diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
+  return { alphaMask: alphaMask, needsLlm: needsLlm, llmRequest: llmRequest, parseLlmOptions: parseLlmOptions, mergeOptions: mergeOptions, subjectIntent: subjectIntent, intentQuestion: intentQuestion, intentFromPick: intentFromPick, itemQuestion: itemQuestion, choiceQuestion: choiceQuestion, rankSubjects: rankSubjects, keepLabel: keepLabel, subjectMesh: subjectMesh, stitchDepths: stitchDepths, panoFov: panoFov, buildPanorama: buildPanorama, bendCylinder: bendCylinder, depthBands: depthBands, readExif: readExif, orbitKind: orbitKind, diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
 });

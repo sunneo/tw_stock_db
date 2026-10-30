@@ -30678,10 +30678,15 @@ const holder = {};
     else if (/樂高|方塊|lego|blocks?/i.test(t)) { out.shape = 'blocks'; }
     if (/--whole(?![a-z])|整張圖當一個|整張當一個|不要?分物件|whole\s+image/i.test(t)) { out.whole = true; }
     if (/--editor(?![a-z])|開編輯器/i.test(t)) { out.editor = true; }
+    out.noBackground = /--no-?background|(?:去掉|去除|拿掉|移除|刪掉|刪除|不要|不用|不需要|不含|不帶|不放|沒有|無|去)掉?[^，。,.\n]{0,4}背景|背景(?:不要|去掉|拿掉|移除|不用)|去背|without\s+(?:the\s+)?background|no\s+background/i.test(t) && !/背景也要|含背景|連背景|包含背景|帶背景/.test(t);
     // 深度（正面凹凸的強度）與厚度（背面推測的厚度）：--depth 1.5／--thick 2（倍數），或用說的：「厚一點」「薄一點」「立體感強一點」「平一點」「厚度 2 倍」「深度 0.5 倍」
     var clampK = function (v) { return Math.max(0.2, Math.min(4, v)); };
     out.depthScale = 1; out.thickScale = 1;
-    if ((m = /--depth[=\s]+(\d+(?:\.\d+)?)/i.exec(t))) { out.depthScale = clampK(parseFloat(m[1])); }
+    // 實際尺寸（單位：公分、公釐、公尺）：「深度 10 公分」＝模型前後總深度；「高 30 公分」「寬 20cm」「大小 30 公分」（最長邊）；--depth 10cm
+    var UNIT = '(公分|厘米|釐米|cm|公釐|毫米|mm|公尺|米|m)(?![a-z])', toM = function (v, u) { v = parseFloat(v); u = String(u).toLowerCase(); return u === 'mm' || u === '公釐' || u === '毫米' ? v / 1000 : (u === 'm' || u === '公尺' || u === '米' ? v : v / 100); };
+    var lenOf = function (words) { var r = new RegExp('(?:' + words + ')\\s*(?:是|為|約|大約|要|=|:|：)?\\s*(\\d+(?:\\.\\d+)?)\\s*' + UNIT, 'i').exec(t); return r ? Math.max(0.002, Math.min(100, toM(r[1], r[2]))) : 0; };
+    out.depthM = lenOf('--depth[=\\s]+|深度|前後|front.to.back|depth') || 0; out.heightM = lenOf('高度|高|height') || 0; out.widthM = lenOf('寬度|寬|width') || 0; out.sizeM = lenOf('--size[=\\s]+|大小|尺寸|最長邊|整體|size') || 0;
+    if ((m = /--depth[=\s]+(\d+(?:\.\d+)?)(?!\s*(?:cm|mm|m|公|厘|釐|毫|米))/i.exec(t))) { out.depthScale = clampK(parseFloat(m[1])); }
     else if ((m = /深度\s*(?:x|×|\*|乘)?\s*(\d+(?:\.\d+)?)\s*倍/i.exec(t))) { out.depthScale = clampK(parseFloat(m[1])); }
     else if (/(?:立體感|深度|凹凸)[^，。,.\n]{0,4}(?:強|大|深|明顯|多|高)|深一點|更立體/.test(t)) { out.depthScale = 1.6; }
     else if (/(?:立體感|深度|凹凸)[^，。,.\n]{0,4}(?:弱|小|淺|少|低)|淺一點|平一點|平坦/.test(t)) { out.depthScale = 0.6; }
@@ -30693,10 +30698,28 @@ const holder = {};
     return out;
   }
 
+  // a picture that was already cut out (transparent background): the alpha channel IS the foreground mask. img { width, height, data: RGBA } -> { mask: Uint8Array (1 = opaque), fg } | null when there is not enough transparency to mean it
+  function alphaMask(img) {
+    if (!img || !img.data) { return null; }
+    var n = img.width * img.height, m = new Uint8Array(n), solid = 0, i;
+    for (i = 0; i < n; i++) { if (img.data[i * 4 + 3] >= 128) { m[i] = 1; solid++; } }
+    var fg = solid / n; if (fg < 0.02 || 1 - fg < 0.02) { return null; }
+    return { mask: m, fg: fg };
+  }
+  // does the program fail to read this request? (only then the LLM is asked) = the words hint at a subject but could not be decided, or the sentence has real content and nothing in it was recognised
+  function needsLlm(text, o) {
+    var t = String(text || '').replace(/\[附件：[^\]]*\]/g, ' ').replace(/--[a-z-]+(?:[=\s]+[^\s-][^\s]*)?/gi, ' ').trim(); if (!t) { return false; }
+    if (o && o.subjectDecided === false) { return true; }
+    var rec = o && (o.subjectSource !== 'default' || o.shape !== 'auto' || o.closeSource !== 'default' || o.whole || o.segment || o.panorama || o.editor || o.noBackground || o.depthM || o.heightM || o.widthM || o.sizeM || o.depthScale !== 1 || o.thickScale !== 1);
+    if (rec) { return false; }
+    var rest = t.replace(/[\s，。,.！!？?、；;：:「」"']/g, '').replace(/請|幫我|麻煩|謝謝|可以|好嗎|一下|把|將|這張|圖片|照片|圖|變成|轉成|轉為|轉|做成|作成|3d化|3d|三維|立體|成|image-?to-?3d/gi, '');
+    return rest.length >= 4;
+  }
+
   // ---------- the user's request read by an LLM (the program checks every field; flags typed as --xxx always win; without an answer the words are read by parseOptions above) ----------
   function llmRequest(text) {
     return {
-      system: '你是「圖片轉 3D」指令的解析器。只輸出一個 JSON 物件，不要解釋、不要程式碼區塊。欄位（使用者沒提到的就省略）：{"subject":"main 或 all","subject_name":"主體的名稱（用使用者話裡的詞）","target":"要擺上去的物件名稱","shape":"auto、smooth、cylinder、blocks 其中之一","close":"objects 或 all","depth_scale":數字,"thickness_scale":數字,"whole":布林,"segment":布林,"panorama":布林}。說明：subject=main 表示使用者只要圖裡的某一個主體（例如「只要小提琴」「去掉背景」「把咖啡杯擺到桌子上」），其他東西都不要；subject=all 表示整張圖所有物件都要。close=all 表示連背景都做成實心（要列印、全部封閉）。shape：smooth 平滑、cylinder 圓柱、blocks 樂高方塊。depth_scale 大於 1 表示正面凹凸更強（立體感強）、小於 1 更平；thickness_scale 大於 1 表示背面更厚、小於 1 更薄。',
+      system: '你是「圖片轉 3D」指令的解析器。只輸出一個 JSON 物件，不要解釋、不要程式碼區塊。欄位（使用者沒提到的就省略）：{"subject":"main 或 all","subject_name":"主體的名稱（用使用者話裡的詞）","target":"要擺上去的物件名稱","shape":"auto、smooth、cylinder、blocks 其中之一","close":"objects 或 all","depth_scale":數字,"thickness_scale":數字,"whole":布林,"segment":布林,"panorama":布林,"no_background":布林,"depth_cm":數字,"height_cm":數字,"width_cm":數字,"size_cm":數字}。說明：depth_cm＝模型前後的總深度（公分）、height_cm 高、width_cm 寬、size_cm 最長邊，使用者給了實際尺寸才填（單位換算成公分）；subject=main 表示使用者只要圖裡的某一個主體（例如「只要小提琴」「去掉背景」「把咖啡杯擺到桌子上」），其他東西都不要；subject=all 表示整張圖所有物件都要。close=all 表示連背景都做成實心（要列印、全部封閉）。shape：smooth 平滑、cylinder 圓柱、blocks 樂高方塊。no_background=true 表示不要背景（去掉背景、去背）。depth_scale 大於 1 表示正面凹凸更強（立體感強）、小於 1 更平；thickness_scale 大於 1 表示背面更厚、小於 1 更薄。',
       user: '使用者的要求：「' + String(text || '').replace(/\[附件：[^\]]*\]/g, ' ').trim().slice(0, 400) + '」'
     };
   }
@@ -30713,7 +30736,9 @@ const holder = {};
     if (j.close === 'objects' || j.close === 'all') { out.close = j.close; }
     if (num(j.depth_scale)) { out.depthScale = num(j.depth_scale); }
     if (num(j.thickness_scale)) { out.thickScale = num(j.thickness_scale); }
-    if (j.whole === true) { out.whole = true; } if (j.segment === true) { out.segment = true; } if (j.panorama === true) { out.panorama = true; }
+    var cm = function (v) { v = Number(v); return isFinite(v) && v > 0 ? Math.max(0.2, Math.min(10000, v)) / 100 : 0; };
+    if (cm(j.depth_cm)) { out.depthM = cm(j.depth_cm); } if (cm(j.height_cm)) { out.heightM = cm(j.height_cm); } if (cm(j.width_cm)) { out.widthM = cm(j.width_cm); } if (cm(j.size_cm)) { out.sizeM = cm(j.size_cm); }
+    if (j.no_background === true) { out.noBackground = true; } if (j.whole === true) { out.whole = true; } if (j.segment === true) { out.segment = true; } if (j.panorama === true) { out.panorama = true; }
     return Object.keys(out).length ? out : null;
   }
   // o = parseOptions(text); j = parseLlmOptions(...): the LLM reads the whole sentence, but a typed --flag is never overridden
@@ -30725,6 +30750,8 @@ const holder = {};
     if (j.close && !/--close/i.test(t)) { out.close = j.close; out.closeSource = 'llm'; }
     if (j.depthScale && !/--depth/i.test(t)) { out.depthScale = j.depthScale; }
     if (j.thickScale && !/--thick/i.test(t)) { out.thickScale = j.thickScale; }
+    if (j.depthM && !/--depth/i.test(t)) { out.depthM = j.depthM; } if (j.heightM) { out.heightM = j.heightM; } if (j.widthM) { out.widthM = j.widthM; } if (j.sizeM && !/--size/i.test(t)) { out.sizeM = j.sizeM; }
+    if (j.noBackground) { out.noBackground = true; }
     if (j.whole) { out.whole = true; } if (j.segment) { out.segment = true; } if (j.panorama) { out.panorama = true; }
     return out;
   }
@@ -30740,13 +30767,16 @@ const holder = {};
     parts.forEach(function (p) { p.res.mesh.vertices.forEach(function (v) { for (var a = 0; a < 3; a++) { if (v[a] < mn[a]) { mn[a] = v[a]; } if (v[a] > mx[a]) { mx[a] = v[a]; } } }); });
     if (!parts.length) { return null; }
     var pano = scene.pano || null;
-    var k = pano ? 1 : (opts.sizeM || 1.5), cx = pano ? 0 : (mn[0] + mx[0]) / 2, cz = pano ? 0 : (mn[2] + mx[2]) / 2, y0 = pano ? 0 : mn[1], r = function (x) { return Math.round(x * k * 10000) / 10000; };
+    // real size: heightM／widthM（公尺）定 x、y 的比例，沒有就用 sizeM（最長邊，預設 1.5）；depthM＝模型前後的總深度，沒有就跟 x、y 同比例
+    var k = pano ? 1 : (opts.heightM > 0 ? opts.heightM / Math.max(1e-9, mx[1] - mn[1]) : (opts.widthM > 0 ? opts.widthM / Math.max(1e-9, mx[0] - mn[0]) : (opts.sizeM || 1.5)));
+    var kz = pano ? 1 : (opts.depthM > 0 ? opts.depthM / Math.max(1e-9, mx[2] - mn[2]) : k);
+    var cx = pano ? 0 : (mn[0] + mx[0]) / 2, cz = pano ? 0 : (mn[2] + mx[2]) / 2, y0 = pano ? 0 : mn[1], r = function (x) { return Math.round(x * k * 10000) / 10000; }, rz = function (x) { return Math.round(x * kz * 10000) / 10000; };
     var palette = ['#e57373', '#64b5f6', '#81c784', '#ffd54f', '#ba68c8', '#4db6ac', '#ff8a65', '#a1887f'];
     var objects = [{ id: 'g1', type: 'group', name: opts.title || '圖片轉3D', position: [0, 0, 0], rotation: [0, 0, 0], scale: 1 }];
     parts.forEach(function (p, i) {
       var col = opts.colors && opts.colors[p.key] || (p.key === 'background' ? '#9e9e9e' : palette[i % palette.length]);
       objects.push({ id: 'p' + (i + 1), type: 'mesh', mesh: 'polygon', name: (pano && p.res.name) || p.name, parent: 'g1', position: [0, 0, 0], rotation: [0, 0, 0], material: { color: col, roughness: 0.7, metalness: 0.02 },
-        extra: { vertices: p.res.mesh.vertices.map(function (v) { return [r(v[0] - cx), r(v[1] - y0), r(v[2] - cz)]; }), faces: p.res.mesh.faces } });
+        extra: { vertices: p.res.mesh.vertices.map(function (v) { return [r(v[0] - cx), r(v[1] - y0), rz(v[2] - cz)]; }), faces: p.res.mesh.faces } });
       if (opts.texture && pano) {
         var part0 = objects[objects.length - 1], sc2 = pano.radius * pano.fovRad / pano.xSpan;
         part0.extra.uvs = p.res.mesh.vertices.map(function (v) {
@@ -30765,7 +30795,7 @@ const holder = {};
     return spec;
   }
 
-  return { llmRequest: llmRequest, parseLlmOptions: parseLlmOptions, mergeOptions: mergeOptions, subjectIntent: subjectIntent, intentQuestion: intentQuestion, intentFromPick: intentFromPick, itemQuestion: itemQuestion, choiceQuestion: choiceQuestion, rankSubjects: rankSubjects, keepLabel: keepLabel, subjectMesh: subjectMesh, stitchDepths: stitchDepths, panoFov: panoFov, buildPanorama: buildPanorama, bendCylinder: bendCylinder, depthBands: depthBands, readExif: readExif, orbitKind: orbitKind, diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
+  return { alphaMask: alphaMask, needsLlm: needsLlm, llmRequest: llmRequest, parseLlmOptions: parseLlmOptions, mergeOptions: mergeOptions, subjectIntent: subjectIntent, intentQuestion: intentQuestion, intentFromPick: intentFromPick, itemQuestion: itemQuestion, choiceQuestion: choiceQuestion, rankSubjects: rankSubjects, keepLabel: keepLabel, subjectMesh: subjectMesh, stitchDepths: stitchDepths, panoFov: panoFov, buildPanorama: buildPanorama, bendCylinder: bendCylinder, depthBands: depthBands, readExif: readExif, orbitKind: orbitKind, diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
 });
 
 }).call(null, undefined, holder);
@@ -32793,7 +32823,7 @@ const FaEditHost = (function () {
     // 「只要主體」：先由程式從使用者的話判斷（FaImage3d.subjectIntent）；只有讀不出來才問模型一個選擇題，答案由程式核對（A／B 以外都當沒答）
     // 使用者的要求交給 LLM 讀（全句理解：否定、同義說法…）：回傳的每個欄位都由程式驗證（名稱要真的出現在話裡、倍數夾在範圍內），打出來的 --參數永遠優先；LLM 沒回應或讀不出來就用程式讀的結果（o）
     M._i3dRequestOptions = async function (text, o) {
-        const t = String(text || '').replace(/\[附件：[^\]]*\]/g, ' ').trim(); if (!t) return o;
+        const t = String(text || '').replace(/\[附件：[^\]]*\]/g, ' ').trim(); if (!t || !FaImage3d.needsLlm(t, o)) return o;   // 程式讀得懂就不問 LLM
         let A = null; try { A = this._edAi(); } catch (_) { A = null; } if (!A || !A.have()) return o;
         const say = (l) => { try { if (this._edQuiet && typeof this._edQuiet.sink === 'function') this._edQuiet.sink(l); } catch (_) { /* */ } };
         say(T('請 LLM 讀你的要求…', 'asking the LLM to read your request…'));
@@ -32806,9 +32836,7 @@ const FaEditHost = (function () {
     M._i3dSubjectIntent = async function (text, noLlm) {
         if (!noLlm) { const o0 = FaImage3d.parseOptions(text), o1 = await this._i3dRequestOptions(text, o0); if (o1 && o1.llm) return { subject: o1.subject, name: o1.subjectName || '', target: o1.subjectTarget || '', decided: true, source: 'llm' }; }
         const si = FaImage3d.subjectIntent(text); if (si.decided) return si;
-        let pick = null; try { const A = this._edAi(); if (A.have()) { const q = FaImage3d.intentQuestion(text); pick = await A.pick(q.question, q.options); } } catch (_) { pick = null; }
-        const v = FaImage3d.intentFromPick(pick);
-        return Object.assign({}, si, v ? { subject: v, decided: true, source: 'model' } : { subject: 'all', decided: true, source: 'default' });
+        return Object.assign({}, si, { subject: 'all', decided: true, source: 'default' });   // LLM 也讀不出來：當成所有物件
     };
     // 在找出來的物件裡挑主體 → { id, how, note }。有名字：把候選物件（最多 6 個）裁成小圖、編號拼成「一張」對照圖，只問視覺模型一次「哪一張是 X」（選擇題，程式核對字母；有逾時）；沒名字或沒答案：最大又最靠中間的
     M._i3dPickSubject = async function (labels, w, h, blob, name) {
@@ -32876,6 +32904,7 @@ const FaEditHost = (function () {
         const t0 = Date.now(); let mask = null, fg = null, segs = null, segNote = '';
         const wantSeg = p.segment != null ? !!p.segment : (o.segment || subjectOnly);
         let bgNote = '';
+        const am = !whole && !p.bg ? FaImage3d.alphaMask(px) : null; if (am) { mask = { w: px.width, h: px.height, data: am.mask }; fg = am.fg; bgNote = T('這張圖已經去背（透明背景），直接用透明度當前景', 'the picture is already cut out: its transparency is the foreground'); }
         if (!whole && p.bg) { // 背景差分：另一張「沒有主體的背景圖」逐像素比對（同一個視角）
             const bi = await this._vlmResolveImage({ image: p.bg });
             if (bi.blob) { let bpx = null; try { bpx = await this._i3dPixels(bi.blob, 160, px); } catch (_) { /* */ } const dm = bpx ? FaImage3d.diffMask(px, bpx, {}) : null; if (dm && dm.fg >= 0.02 && dm.fg <= 0.95) { mask = { w: px.width, h: px.height, data: dm.mask }; fg = dm.fg; bgNote = T('用背景差分取出前景', 'foreground taken by background subtraction'); } else bgNote = T('背景差分沒有取出合理的前景（差異太少或太多，兩張圖要是同一個視角），改用其他方式', 'background subtraction found no sensible foreground (the two pictures must share one viewpoint); used another way'); }
@@ -32890,7 +32919,7 @@ const FaEditHost = (function () {
         let labels = prep.labels, subjNote = '', subjName = '';
         if (subjectOnly && (mask || segs)) { this._i3dChapter('pick', si.name ? T('確認哪個物件是主體', 'which object is the subject') : T('選最大又最靠中間的物件', 'taking the biggest central object')); const pk = await this._i3dPickSubject(labels, prep.width, prep.height, img.blob, si.name); if (pk) { labels = FaImage3d.keepLabel(labels, pk.id); subjNote = pk.note; subjName = si.name; } }
         this._i3dChapter('build', T('做成封閉的立體', 'building the closed solid')); const scene = FaImage3d.buildScene({ labels, depth: prep.depth }, { shape, closeMode: close, maxFaces: 12000, depthScale: p.depth_scale > 0 ? p.depth_scale : o.depthScale, thickScale: p.thickness_scale > 0 ? p.thickness_scale : o.thickScale });
-        if ((!mask && !segs) || subjNote) scene.background = null; // the whole picture is the one object (or only the subject was asked for): a backdrop would only be a copy / the things the user did not want
+        if ((!mask && !segs) || subjNote || am || o.noBackground || p.no_background) scene.background = null; // the whole picture is the one object (or only the subject was asked for): a backdrop would only be a copy / the things the user did not want
         if (!scene.objects.length) return { ok: false, error: T('沒有找到可以做成立體的物件', 'no object to build') };
         const sums = {}; for (let y = 0; y < px.height; y++) for (let x = 0; x < px.width; x++) {
             const id = labels[Math.min(prep.height - 1, Math.floor(y * prep.height / px.height))][Math.min(prep.width - 1, Math.floor(x * prep.width / px.width))] || 'background', k = (y * px.width + x) * 4, s = sums[id] || (sums[id] = [0, 0, 0, 0]);
@@ -32899,10 +32928,12 @@ const FaEditHost = (function () {
         const colors = {}, hex = (n) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0'); for (const id in sums) { const s = sums[id]; colors[id] = '#' + hex(s[0] / s[3]) + hex(s[1] / s[3]) + hex(s[2] / s[3]); }
         const title = T('圖片轉3D：', 'Image to 3D: ') + String(img.filename || '').replace(/\.[a-z0-9]+$/i, '').slice(0, 30);
         let texture = ''; if (p.texture !== false) { try { texture = await this._i3dTexture(img.blob); } catch (_) { texture = ''; } }
-        const raw = FaImage3d.toSpec(scene, { colors, title, texture }); const v = FaEdit3d.validate(raw); if (!v.ok) return { ok: false, error: T('做出來的場景不合規格：', 'the scene is invalid: ') + (v.problems || []).slice(0, 3).join('；') };
+        const raw = FaImage3d.toSpec(scene, { colors, title, texture, heightM: p.height_cm > 0 ? p.height_cm / 100 : o.heightM, widthM: p.width_cm > 0 ? p.width_cm / 100 : o.widthM, sizeM: p.size_cm > 0 ? p.size_cm / 100 : o.sizeM, depthM: p.depth_cm > 0 ? p.depth_cm / 100 : o.depthM }); const v = FaEdit3d.validate(raw); if (!v.ok) return { ok: false, error: T('做出來的場景不合規格：', 'the scene is invalid: ') + (v.problems || []).slice(0, 3).join('；') };
         this._i3dChapter('show', T('放進對話的 3D 檢視', 'showing it')); const r = await this._i3dShow(v.spec, title, { editor: p.editor || o.editor });
+        const ext = [[Infinity, -Infinity], [Infinity, -Infinity], [Infinity, -Infinity]]; v.spec.objects.forEach((ob) => { if (ob.extra && ob.extra.vertices) ob.extra.vertices.forEach((q) => { for (let a = 0; a < 3; a++) { if (q[a] < ext[a][0]) ext[a][0] = q[a]; if (q[a] > ext[a][1]) ext[a][1] = q[a]; } }); });
+        const cm = (a) => (isFinite(ext[a][0]) ? Math.round((ext[a][1] - ext[a][0]) * 1000) / 10 : null), dimsCm = { height: cm(1), width: cm(0), depth: cm(2) };
         const parts = scene.objects.concat(scene.background ? [scene.background] : []);
-        const out = { ok: !(r && r.ok === false), error: r && r.ok === false ? r.error : undefined, objects: scene.objects.length, shapes: scene.objects.map((x) => x.shape), faces: parts.reduce((a, x) => a + x.mesh.faces.length, 0), close, all_closed: parts.every((x) => FaImage3d.isClosed(x.mesh)), fell_back: parts.filter((x) => x.fallback).length, dropped_blobs: prep.dropped, foreground_ratio: fg == null ? undefined : Math.round(fg * 1000) / 1000, depth_model: dr.model, device: dr.device, ms: Date.now() - t0 + (dr.ms || 0), subject_only: !!subjNote, subject_name: subjName || undefined, notes: (subjNote ? [subjNote + T('；只留這一個物件，背景和其他東西不放', '; only this object is kept, the background and the rest are left out')] : []).concat([T('每個物件都是封閉的立體，不是浮雕；單張圖看不到背面，背面是依輪廓寬度推測的厚度', 'every object is a closed solid, not a relief; one picture cannot show the back, so its depth is a guess from the outline width')].concat(texture ? [T('原圖已貼在模型上（從正面投影，側面與背面是邊緣顏色拉伸）', 'the picture is pasted on as the texture (projected from the front; sides and back show stretched edge colours)')] : []).concat(prep.empty ? [T('沒有找到前景（背景色抓不準），整張圖當成一個物件', 'no foreground found: the whole picture became one object')] : [], mask || segs ? [] : [subjectOnly ? T('你要的是主體，但分割模型和去背都沒能把它切出來（整張圖太滿或模型不能用），只好整張圖當成一個物件；可以加 --segment 或換一張背景單純的圖', 'subject only was asked, but neither the segmentation model nor the cut-out could isolate it, so the whole picture became one object') : T('整張圖當成一個物件', 'the whole picture is one object')], segs ? [T('物件由分割模型找出來', 'objects found by the segmentation model')] : [], segNote ? [segNote] : [], bgNote ? [bgNote] : [])) };
+        const out = { ok: !(r && r.ok === false), error: r && r.ok === false ? r.error : undefined, objects: scene.objects.length, shapes: scene.objects.map((x) => x.shape), faces: parts.reduce((a, x) => a + x.mesh.faces.length, 0), close, all_closed: parts.every((x) => FaImage3d.isClosed(x.mesh)), fell_back: parts.filter((x) => x.fallback).length, dropped_blobs: prep.dropped, foreground_ratio: fg == null ? undefined : Math.round(fg * 1000) / 1000, depth_model: dr.model, device: dr.device, ms: Date.now() - t0 + (dr.ms || 0), size_cm: dimsCm, subject_only: !!subjNote, subject_name: subjName || undefined, notes: (dimsCm.height != null ? [T('實際大小：高 ' + dimsCm.height + ' 公分、寬 ' + dimsCm.width + ' 公分、前後深度 ' + dimsCm.depth + ' 公分（可用「深度 10 公分」「高 30 公分」這類話指定）', 'size: height ' + dimsCm.height + ' cm, width ' + dimsCm.width + ' cm, depth ' + dimsCm.depth + ' cm')] : []).concat(subjNote ? [subjNote + T('；只留這一個物件，背景和其他東西不放', '; only this object is kept, the background and the rest are left out')] : []).concat([T('每個物件都是封閉的立體，不是浮雕；單張圖看不到背面，背面是依輪廓寬度推測的厚度', 'every object is a closed solid, not a relief; one picture cannot show the back, so its depth is a guess from the outline width')].concat(texture ? [T('原圖已貼在模型上（從正面投影，側面與背面是邊緣顏色拉伸）', 'the picture is pasted on as the texture (projected from the front; sides and back show stretched edge colours)')] : []).concat(prep.empty ? [T('沒有找到前景（背景色抓不準），整張圖當成一個物件', 'no foreground found: the whole picture became one object')] : [], mask || segs ? [] : [subjectOnly ? T('你要的是主體，但分割模型和去背都沒能把它切出來（整張圖太滿或模型不能用），只好整張圖當成一個物件；可以加 --segment 或換一張背景單純的圖', 'subject only was asked, but neither the segmentation model nor the cut-out could isolate it, so the whole picture became one object') : T('整張圖當成一個物件', 'the whole picture is one object')], segs ? [T('物件由分割模型找出來', 'objects found by the segmentation model')] : [], segNote ? [segNote] : [], bgNote ? [bgNote] : [])) };
         return out;
     };
     // 一張圖裡的主體（去背後的前景）→ 一個封閉的立體（不是浮雕）+ 原圖當貼圖；給「查不到 3D 模型時用網路找到的圖」和編輯器裡「把這張圖變成 3D 物件」用。失敗回 null
@@ -33012,8 +33043,8 @@ const FaEditHost = (function () {
         this.register_slash_command('/edit-3d-model', hint,
             '3D 場景編輯器（用語言主導，位置完全以你現在看的角度算）：「在我的左前方放一個紅色的球」「把它移到桌子上面」；物件欄是樹狀的、屬性面板、雙擊物件進「單一物件編輯」（像做塑膠模型：每個面貼什麼圖、塗什麼顏色）、🧾 YAML 原始碼分頁可以直接改、圖可以貼進對話框當貼圖、復原／重做、整理成 prompt、匯出場景 YAML／PNG。/edit-3d-model room 從起手式開始、/edit-3d-model last 接著對話裡最近的 3D 場景。',
             run);
-        this.register_slash_command('/image-to-3d', '[--close objects|all] [--shape auto|smooth|cylinder|blocks] [--whole] [--segment] [--panorama] [--subject main|名稱] [--depth 倍數] [--thick 倍數] [--bg 背景圖] [--editor]',
-            '圖片轉 3D（離線）：深度模型在這台電腦上估計深度，再把每個物件各自做成封閉的立體（不是浮雕：用物件自己的輪廓做柱體或樂高方塊的殼，再逐層細切），顯示成對話裡可以用滑鼠轉動的 3D 檢視（要編輯說 /edit-3d-model last，或加 --editor 直接開編輯器）。--close all＝連背景都做成實心（要列印用）；--shape 選殼的種類；--whole＝整張圖當一個物件；--segment＝用分割模型（SlimSAM）自動分出多個物件，不加則用去背遮罩；貼兩張圖並說「背景差分」＝第二張是沒有主體的背景圖（同一個視角），逐像素比對取出主體。--depth／--thick（或直接說「厚一點」「薄一點」「立體感強一點」「平一點」「厚度 2 倍」）調整正面凹凸強度與背面厚度（倍數，預設 1）。--subject main（或「只要咖啡杯」「把咖啡杯擺到桌子上」這類話，程式會自己判斷）＝只要主體：圖裡只留一個物件（可指定名稱，例如 --subject 咖啡杯），桌子、背景和其他東西不放。先貼圖再打指令、或先打指令再貼圖送出都可以；第一次使用要下載深度模型（會先問）。單張圖看不到背面，背面是推測的。',
+        this.register_slash_command('/image-to-3d', '[--close objects|all] [--shape auto|smooth|cylinder|blocks] [--whole] [--segment] [--panorama] [--subject main|名稱] [--depth 倍數或 10cm] [--thick 倍數] [--size 30cm] [--bg 背景圖] [--editor]',
+            '圖片轉 3D（離線）：深度模型在這台電腦上估計深度，再把每個物件各自做成封閉的立體（不是浮雕：用物件自己的輪廓做柱體或樂高方塊的殼，再逐層細切），顯示成對話裡可以用滑鼠轉動的 3D 檢視（要編輯說 /edit-3d-model last，或加 --editor 直接開編輯器）。--close all＝連背景都做成實心（要列印用）；--shape 選殼的種類；--whole＝整張圖當一個物件；--segment＝用分割模型（SlimSAM）自動分出多個物件，不加則用去背遮罩；貼兩張圖並說「背景差分」＝第二張是沒有主體的背景圖（同一個視角），逐像素比對取出主體。可以指定實際大小：「深度 10 公分」「高 30 公分」「寬 20cm」「大小 30 公分」（深度＝前後總深度，預設跟大小同比例）。--depth／--thick（或直接說「厚一點」「薄一點」「立體感強一點」「平一點」「厚度 2 倍」）調整正面凹凸強度與背面厚度（倍數，預設 1）。--subject main（或「只要咖啡杯」「把咖啡杯擺到桌子上」這類話，程式會自己判斷）＝只要主體：圖裡只留一個物件（可指定名稱，例如 --subject 咖啡杯），桌子、背景和其他東西不放。先貼圖再打指令、或先打指令再貼圖送出都可以；第一次使用要下載深度模型（會先問）。單張圖看不到背面，背面是推測的。',
             async (argsText, run0) => { await (run0 || this)._image3dCommand(argsText); });
         { const ie = this.slashCommands.get('/image-to-3d'); if (ie) ie._autoFromSkillBundle = true; }
         this.register_slash_command('/edit-3d', hint, '3D 場景編輯器：/edit-3d-model 的別名。', (argsText, run0) => (this.slashCommands.get('/edit-3d-model') || { handler: run }).handler(argsText, run0));
@@ -33022,8 +33053,8 @@ const FaEditHost = (function () {
         const parse = async (self, raw) => { let a = {}; try { a = await self.repairJsonPayload(String(raw || '{}')); } catch (_) { /* */ } return a || {}; };
         registerOptional('image_to_3d',
             '圖片轉 3D（離線、不是浮雕）：用跑在這台電腦上的深度模型（Depth Anything V2 Small）估計深度，把圖裡每個物件各自做成封閉的立體（用物件自己的輪廓做柱體或樂高方塊的殼，再逐層細切；每個物件都通過封閉檢查），背景另成一塊，全部顯示成對話裡可以用滑鼠轉動的 3D 檢視（不開編輯器；要編輯再用 edit_3d_open 的 last）。圖片不會上傳；第一次使用要下載深度模型。單張圖看不到背面，背面是依輪廓推測的。close=all 連背景都做成實心（要列印時用），預設 objects。',
-            async function (rawArgs) { const a = await parse(this, rawArgs); try { return JSON.stringify(await this._imageTo3d({ image: a.image, request: a.request, close: a.close, shape: a.shape, whole: a.whole, segment: a.segment, bg: a.bg, subject: a.subject, subject_name: a.subject_name, editor: a.editor, depth_scale: a.depth_scale, thickness_scale: a.thickness_scale })); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); } },
-            { type: 'object', properties: { image: { type: 'string', description: '選填：圖片的 file_id 或檔名；省略時用這個對話最新的圖片附件' }, request: { type: 'string', description: '使用者的原話（例如「物件要封閉」「要能列印」「用樂高方塊」），程式會從裡面解析封閉範圍與外殼種類' }, close: { type: 'string', enum: ['objects', 'all'], description: 'objects＝每個物件封閉、背景是薄板（預設）；all＝連背景都做成實心' }, shape: { type: 'string', enum: ['auto', 'smooth', 'cylinder', 'blocks'] }, whole: { type: 'boolean', description: 'true＝整張圖當一個物件，不分前景背景' }, bg: { type: 'string', description: '選填：沒有主體的背景圖（file_id 或檔名，要跟主體圖同一個視角），用背景差分取出前景' }, segment: { type: 'boolean', description: 'true＝用分割模型自動分出多個物件（要下載 SlimSAM）；預設用去背遮罩' }, subject: { type: 'string', enum: ['main', 'all'], description: 'main＝只要主體（例如咖啡杯放在桌上的照片，只要咖啡杯一個封閉的立體，桌子和背景不放，之後可以擺到別的桌子上）；all（預設）＝圖裡所有物件。省略時程式會從 request（使用者的話）判斷' }, depth_scale: { type: 'number', description: '選填：正面凹凸（深度）的強度倍數，1＝預設，大於 1 更立體、小於 1 更平；使用者說「立體感強一點」「平一點」時用 1.6／0.6，程式也會從 request 解析' }, thickness_scale: { type: 'number', description: '選填：背面推測厚度的倍數，1＝預設；使用者說「厚一點」「薄一點」「厚度 2 倍」時用，程式也會從 request 解析' }, editor: { type: 'boolean', description: 'true＝直接開 3D 場景編輯器；預設只在對話裡顯示可轉動的 3D 檢視' }, subject_name: { type: 'string', description: '選填：主體是什麼（例如「咖啡杯」），程式用視覺模型從找到的物件裡挑出它；沒給就選最大又最靠中間的' } } }
+            async function (rawArgs) { const a = await parse(this, rawArgs); try { return JSON.stringify(await this._imageTo3d({ image: a.image, request: a.request, close: a.close, shape: a.shape, whole: a.whole, segment: a.segment, bg: a.bg, subject: a.subject, subject_name: a.subject_name, no_background: a.no_background, depth_cm: a.depth_cm, height_cm: a.height_cm, width_cm: a.width_cm, size_cm: a.size_cm, editor: a.editor, depth_scale: a.depth_scale, thickness_scale: a.thickness_scale })); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); } },
+            { type: 'object', properties: { image: { type: 'string', description: '選填：圖片的 file_id 或檔名；省略時用這個對話最新的圖片附件' }, request: { type: 'string', description: '使用者的原話（例如「物件要封閉」「要能列印」「用樂高方塊」），程式會從裡面解析封閉範圍與外殼種類' }, close: { type: 'string', enum: ['objects', 'all'], description: 'objects＝每個物件封閉、背景是薄板（預設）；all＝連背景都做成實心' }, shape: { type: 'string', enum: ['auto', 'smooth', 'cylinder', 'blocks'] }, whole: { type: 'boolean', description: 'true＝整張圖當一個物件，不分前景背景' }, bg: { type: 'string', description: '選填：沒有主體的背景圖（file_id 或檔名，要跟主體圖同一個視角），用背景差分取出前景' }, segment: { type: 'boolean', description: 'true＝用分割模型自動分出多個物件（要下載 SlimSAM）；預設用去背遮罩' }, subject: { type: 'string', enum: ['main', 'all'], description: 'main＝只要主體（例如咖啡杯放在桌上的照片，只要咖啡杯一個封閉的立體，桌子和背景不放，之後可以擺到別的桌子上）；all（預設）＝圖裡所有物件。省略時程式會從 request（使用者的話）判斷' }, depth_scale: { type: 'number', description: '選填：正面凹凸（深度）的強度倍數，1＝預設，大於 1 更立體、小於 1 更平；使用者說「立體感強一點」「平一點」時用 1.6／0.6，程式也會從 request 解析' }, thickness_scale: { type: 'number', description: '選填：背面推測厚度的倍數，1＝預設；使用者說「厚一點」「薄一點」「厚度 2 倍」時用，程式也會從 request 解析' }, depth_cm: { type: 'number', description: '選填：模型前後的總深度（公分），例如使用者說「深度 10 公分」；10 公分與 20 公分真的會差一倍' }, height_cm: { type: 'number', description: '選填：模型的高（公分）' }, width_cm: { type: 'number', description: '選填：模型的寬（公分）' }, size_cm: { type: 'number', description: '選填：最長邊（公分）；預設 150' }, no_background: { type: 'boolean', description: 'true＝不要背景（使用者說「去掉背景」「不要背景」）：只留物件，不放背景板；圖本身已去背（透明）時會自動這樣' }, editor: { type: 'boolean', description: 'true＝直接開 3D 場景編輯器；預設只在對話裡顯示可轉動的 3D 檢視' }, subject_name: { type: 'string', description: '選填：主體是什麼（例如「咖啡杯」），程式用視覺模型從找到的物件裡挑出它；沒給就選最大又最靠中間的' } } }
         );
         registerOptional('edit_3d_open',
             '在對話裡放一個「3D 場景編輯器」（用語言主導；位置完全以使用者現在看的角度算：「我的左前方」「桌子的右邊」）：物件欄（樹狀、群組）、屬性面板、3D 畫面（拖曳轉視角、點物件選取、拖曳移動）、🧾 YAML 原始碼分頁（可直接改）、雙擊物件進「單一物件編輯」（像做塑膠模型：每個面貼什麼圖、塗什麼顏色）、貼圖（貼進編輯器對話框、網址、找圖）、復原／重做、匯出場景 YAML（render_3d_scene 可直接播放）／PNG／整理成 prompt。參數：starter（blank、room、model、studio）、request（一句話：開起來後編輯器自己的 AI 去做）、yaml（一份場景 YAML 當起點）、file_id（使用者上傳的 .3dscene.yaml 或 STL／OBJ／3MF／FBX 模型）、last（true＝接著對話裡最近的 3D 場景）、id（接著原本的專案）。做完編輯器就在對話裡，不要把場景 YAML 貼進對話。參數: {"starter":"room","request":"（選填）","yaml":"（選填）","file_id":"（選填）","last":false,"id":"（選填）"}',

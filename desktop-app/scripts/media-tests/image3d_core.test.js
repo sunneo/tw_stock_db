@@ -349,4 +349,30 @@ t('LLM 讀要求：驗證欄位、名稱要真的在話裡、--參數優先', ()
   assert.strictEqual(C.mergeOptions(o, null, text).subject, o.subject);
   const q = C.llmRequest(text + ' [附件：a.png（file_id=1）]'); assert(q.user.includes('小提琴') && !q.user.includes('file_id') && /JSON/.test(q.system));
 });
+t('實際尺寸：深度 10 公分與 20 公分真的差一倍；高、寬、大小也行', () => {
+  const E = require('../../renderer/src/edit/edit3d_core.js');
+  assert.strictEqual(C.parseOptions('深度10公分').depthM, 0.1); assert.strictEqual(C.parseOptions('深度 20 cm').depthM, 0.2); assert.strictEqual(C.parseOptions('--depth 5mm').depthM, 0.005);
+  assert.strictEqual(C.parseOptions('--depth 10cm').depthScale, 1); assert.strictEqual(C.parseOptions('--depth 2').depthScale, 2);
+  assert.strictEqual(C.parseOptions('高 30 公分，寬 20cm').heightM, 0.3); assert.strictEqual(C.parseOptions('高 30 公分，寬 20cm').widthM, 0.2); assert.strictEqual(C.parseOptions('大小 1.2 公尺').sizeM, 1.2); assert.strictEqual(C.parseOptions('厚度 2 倍').thickScale, 2);
+  const W = 40, H = 40, labels = grid(W, H, (x, y) => (((x - 20) ** 2 + (y - 20) ** 2 < 150) ? 1 : 0)), depth = grid(W, H, (x, y) => (labels[y][x] ? 0.7 : 0.1));
+  const s = C.buildScene({ labels, depth }, { shape: 'smooth' });
+  const ext = (spec, a) => { let lo = Infinity, hi = -Infinity; spec.objects.forEach((o) => { if (o.extra) o.extra.vertices.forEach((v) => { lo = Math.min(lo, v[a]); hi = Math.max(hi, v[a]); }); }); return hi - lo; };
+  const a10 = C.toSpec(s, { depthM: 0.1, heightM: 0.3 }), a20 = C.toSpec(s, { depthM: 0.2, heightM: 0.3 });
+  assert(Math.abs(ext(a10, 2) - 0.1) < 0.001 && Math.abs(ext(a20, 2) - 0.2) < 0.001, JSON.stringify([ext(a10, 2), ext(a20, 2)])); assert(Math.abs(ext(a10, 1) - 0.3) < 0.001 && Math.abs(ext(a20, 1) - 0.3) < 0.001);
+  assert(E.validate(a10).ok);
+});
+t('已去背的圖（透明）：用透明度當前景；不夠透明就不算', () => {
+  const n = 20 * 20, data = new Uint8ClampedArray(n * 4).fill(255); for (let i = 0; i < n; i++) { if (i % 20 < 5) data[i * 4 + 3] = 0; }
+  const am = C.alphaMask({ width: 20, height: 20, data }); assert(am && Math.abs(am.fg - 0.75) < 1e-9 && am.mask[0] === 0 && am.mask[10] === 1);
+  assert.strictEqual(C.alphaMask({ width: 20, height: 20, data: new Uint8ClampedArray(n * 4).fill(255) }), null);
+});
+t('不要背景：各種說法；「背景也要」不算', () => {
+  ['去掉白色背景', '不要背景', '把背景拿掉', '背景不要', '已經去背了', 'without the background', '--no-background'].forEach((x) => assert(C.parseOptions(x).noBackground, x));
+  assert(!C.parseOptions('背景也要').noBackground); assert(!C.parseOptions('').noBackground);
+});
+t('needsLlm：讀得懂不問；讀不準或整句沒讀到東西才問', () => {
+  const q = (x) => C.needsLlm(x, C.parseOptions(x));
+  assert(!q('')); assert(!q('把小提琴3d化 只要小提琴跟琴弦，去掉白色背景')); assert(!q('用樂高方塊 --depth 2')); assert(!q('幫我轉成3D')); assert(!q('--subject 咖啡杯'));
+  assert(q('希望只有小提琴出現')); assert(q('我想讓整體看起來更有份量一些'));
+});
 console.log(pass + ' passed' + (process.exitCode ? ', with failures' : ''));

@@ -34,13 +34,6 @@ const host = (answers) => { // answers: 視覺模型每次回答的字母
   await t('有名字：視覺模型卡住 → 逾時後不再等，選最大又靠中間的', async () => {
     const h = host(['A']); h._i3dPickTimeoutMs = 50; h._visionDescribe = () => new Promise(() => {}); const r = await h._i3dPickSubject(labels, W, H, {}, '杯子'); assert.strictEqual(r.how, 'central'); assert(/沒回應/.test(r.note));
   });
-  await t('意圖：程式讀得出來就不問模型；讀不出來才問，答案由程式核對', async () => {
-    let asked = 0; const h = Object.assign(Object.create(M), { _edAi: () => ({ have: () => true, pick: async () => { asked++; return 0; } }) });
-    assert.strictEqual((await h._i3dSubjectIntent('只要咖啡杯')).name, '咖啡杯'); assert.strictEqual(asked, 0);
-    const u = await h._i3dSubjectIntent('把這張圖放到場景裡'); assert.strictEqual(asked, 1); assert.strictEqual(u.subject, 'main'); assert.strictEqual(u.source, 'model');
-    const h2 = Object.assign(Object.create(M), { _edAi: () => ({ have: () => true, pick: async () => null }) });
-    const d = await h2._i3dSubjectIntent('把這張圖放到場景裡'); assert.strictEqual(d.subject, 'all'); assert.strictEqual(d.source, 'default');
-  });
   await t('貼圖流程：話裡沒有主體意思、也不是「變成3D」→ 不處理', async () => {
     const h = Object.assign(Object.create(M), { _i3dSubjectSolid: async () => { throw new Error('不該被呼叫'); } });
     assert.strictEqual(await h._i3dAttachedEdits({ text: '把這張圖貼到桌子上當桌布', images: [{ dataUrl: 'x', name: 'a.png' }] }), null);
@@ -80,15 +73,18 @@ const host = (answers) => { // answers: 視覺模型每次回答的字母
     const r = await h._imageTo3d({}); assert(r.ok); assert.strictEqual(cards.length, 1); assert.strictEqual(lines.length, 3); assert.strictEqual(lines[0], '【估計深度】南瓜燈：估計遠近'); assert(lines[1].startsWith('　')); assert(pcts[1] > 5 && pcts[1] < 40 && pcts[pcts.length - 1] === 100);
     h._imageTo3d0 = async () => ({ ok: false, error: '壞了' }); await h._imageTo3d({}); assert.strictEqual(cards[1].err, '壞了');
   });
-  await t('LLM 讀要求：用 LLM 的結果（驗證過）；LLM 失敗／逾時就用程式讀的', async () => {
-    const lines = [], text = '把小提琴3d化 只要小提琴跟琴弦，去掉白色背景';
-    const mk = (chat) => Object.assign(Object.create(M), { _edAi: () => ({ have: () => true, chat }), _edQuiet: { sink: (l) => lines.push(l) } });
-    const o0 = Core.parseOptions(text);
-    const a = await mk(async () => '{"subject":"main","subject_name":"小提琴跟琴弦","close":"objects"}')._i3dRequestOptions(text, o0); assert(a.llm && a.subject === 'main' && a.subjectName === '小提琴跟琴弦' && a.subjectDecided); assert(lines.some((l) => /LLM 讀到/.test(l)));
+  await t('LLM 讀要求：程式讀得懂就不問；讀不懂才問，驗證後用；LLM 失敗／逾時就用程式讀的', async () => {
+    const lines = [], text = '希望只有小提琴出現';   // 只有 → 程式看得出有主體的意思但讀不準
+    let calls = 0; const mk = (chat) => Object.assign(Object.create(M), { _edAi: () => ({ have: () => true, chat: async (...a) => { calls++; return chat(...a); } }), _edQuiet: { sink: (l) => lines.push(l) } });
+    const o0 = Core.parseOptions(text); assert.strictEqual(o0.subjectDecided, false);
+    const a = await mk(async () => '{"subject":"main","subject_name":"小提琴"}')._i3dRequestOptions(text, o0); assert(a.llm && a.subject === 'main' && a.subjectName === '小提琴' && a.subjectDecided); assert(lines.some((l) => /LLM 讀到/.test(l))); assert.strictEqual(calls, 1);
+    const clear = '把小提琴3d化 只要小提琴跟琴弦，去掉白色背景'; calls = 0; const oc = Core.parseOptions(clear); assert(oc.subjectDecided && oc.noBackground);
+    const cc = await mk(async () => '{}')._i3dRequestOptions(clear, oc); assert(cc === oc); assert.strictEqual(calls, 0);   // 讀得懂：不問
     const b = await mk(async () => { throw new Error('壞了'); })._i3dRequestOptions(text, o0); assert(!b.llm && b === o0);
     const hung = mk(() => new Promise(() => {})); hung._i3dLlmTimeoutMs = 30; const c = await hung._i3dRequestOptions(text, o0); assert(!c.llm);
     const d = await mk(async () => '{"subject":"main"}')._i3dRequestOptions('', o0); assert(d === o0);   // 沒有文字就不問
-    const si = await mk(async () => '{"subject":"main","subject_name":"小提琴","target":"桌子"}')._i3dSubjectIntent('把小提琴擺到桌子上'); assert(si.source === 'llm' && si.name === '小提琴' && si.target === '桌子');
+    const si = await mk(async () => '{"subject":"main","subject_name":"小提琴"}')._i3dSubjectIntent('希望只有小提琴出現'); assert(si.source === 'llm' && si.name === '小提琴');
+    const u = await Object.assign(Object.create(M), { _edAi: () => ({ have: () => false }) })._i3dSubjectIntent('把這張圖放到場景裡'); assert(u.subject === 'all' && u.decided);
   });
   console.log(pass + ' passed' + (process.exitCode ? ', with failures' : ''));
 })();
