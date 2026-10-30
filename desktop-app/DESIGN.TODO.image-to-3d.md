@@ -1,4 +1,4 @@
-# 交接文件：`/image-to-3d`（離線模型、物件封閉，handoff 2，2026-10-30）
+# 交接文件：`/image-to-3d`（離線模型、物件封閉，handoff 3，2026-10-30）
 
 ## 1. 開場提示（給接手的工作階段）
 Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app\desktop-app\DESIGN.TODO.image-to-3d.md`. 先完整讀完（含使用者原話與做法備忘），照做。執行 low-context-long-run 技能（門檻 30%）：做 Todo 的第一項，context 到門檻就更新這份文件並啟動你的接手工作階段（`mcp__ccd_session__start_session` 是延遲載入的工具，先用 ToolSearch 載入）。第一則訊息用一行說明你讀完了、要開始哪一項。回覆一律繁體中文、不要夾英文縮寫。**不要再做規劃、不要再問，直接寫程式、測試、提交。不發布（使用者沒說發布）。**
@@ -11,6 +11,17 @@ Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app
 - **未提交**：`vlm_core.js` 的深度模型 CPU dtype 改 fp32（下面第 2 項實驗發現）與重新嵌入的 `floating-assistant.js`；接手第一件事先 `node scripts/embed-code-ui.js`、跑測試、`node build-assistant.js`、提交。
 
 ## 3. Todo（handoff 2 全部做完，2026-10-30）
+
+### 新增（handoff 3，2026-10-30，**先做這一項**，發布在完成後直接做，使用者已授權）
+**A. 「只要主體」的選用參數**：`image-to-3d`（斜線指令與工具）、`edit-3d-model`、`edit-game-3d` 都要支援。例子：照片是一個咖啡杯放在桌上，使用者說要把咖啡杯擺到桌子模組上，只要一個咖啡杯，不要桌子、背景。
+1. 純函式核心 `renderer/src/media/image3d_core.js`：`parseOptions` 增加主體選項（例如 `subject:'main'|'all'`，斜線參數 `--subject main`）；**從使用者的話判斷**：「只要／只想要／只放／把某某擺到…上」＋名詞＝只要那個主體；名詞若能從話裡取出（咖啡杯），就用它當主體名稱。程式先解析（中文關鍵字、「把…擺到／放到…」句型），解析不出再用封閉式選擇題問模型，答案由程式核對。預設不變（所有物件）。
+2. 主體怎麼選：分出物件後，若有主體名稱，用視覺模型對每個物件的裁切圖做封閉選擇題（A 是／B 不是），程式核對；沒有名稱就選「最大且最靠中間的物件」。只保留主體，背景與其他物件丟掉（主體被切走的地方不必補背景）。主體仍然是封閉立體（柱體或方塊殼，不是浮雕）。
+3. 接進 `edit-3d-model`／`edit-game-3d` 的 AI 工具與貼圖流程（`renderer/src/edit/edit3d_host.js`；遊戲 3D 的對應處自己找 `renderer/src/game/`）：使用者貼圖＋話裡有「只要主體」意思時，自動帶 `subject`；輸出一個物件（不是群組＋背景），可直接擺到場景裡的桌子等物件上（底面貼地／貼在目標物件頂面，沿用既有 `place`）。
+4. 補核心測試（`scripts/media-tests/image3d_core.test.js`）與主機端模擬測試、功能清冊（`node scripts/ai-features.js check`）、`node scripts/embed-code-ui.js && node build-assistant.js`。
+5. 完成、測試全過、提交後**直接發布**（使用者說過完成就可以更新網頁、發布 patch）：`PUBLISH_TRAILER="Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>" bash scripts/publish.sh -m "…"`，再用 curl 查遠端 `manifest.v2.json` 版本。
+注意：工作樹有一個不是你改的未提交檔 `skills/image-decompose-redraw/data/parts_builtin.json`，不要把它放進提交，也不要還原。
+
+### 先前項目（handoff 2 之前，已完成並發布 v212）
 全部完成並提交（9f0bb01f smooth 殼、b9420411 SlimSAM 實測、fa09b044 全景接主機端＋測試清單）。**沒有待辦了，不要再交接。**
 - smooth 殼：`shape:'smooth'`，auto 優先用；測試 37 項過。
 - SlimSAM：瀏覽器（CPU、q8）實測載入約 6 秒、編碼約 16 秒、16 點約 28 秒；合成圖分出 3 個物件（蘋果、盒子、地面）。背景大遮罩（>50% 圖面）預設丟掉（maxAreaFrac 0.5）。
@@ -46,6 +57,10 @@ Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app
 - 2026-10-30：「另外是如果使用者提供多張照片裡面有地理資訊，明顯是轉圈，或一張全景照片，可以實現成一個類似遠景近景的模型，可以做成類似vr能用的」
 - 2026-10-30：「可以試著用離線的image generation / diffusion生一張圖，或從svg->png->3D來實驗，我要看一下效果」
 - 2026-10-30：「可以轉換好後，用three.js 然後幫貼材質?」
+
+- 「image-to-3d 在edit-3d-model, edit-game-3d或image-to-3d要可以支援optional參數，是只放主體，例如把一個咖啡杯的照片要擺到桌子模組上，想得到一個咖啡杯，要可以從prompt知道使用者只是想要咖啡杯」（2026-10-30）
+- 「完成就可以更新網頁，發布patch」（2026-10-30）
+- 「這個功能如果跟我們的edit-3d-model, edit-game-3d 也不錯吧? 這樣就可以把之前編輯期間提到 "不認識的物件->上網找OBJ->上網找圖片->轉3D物件 " 有更穩定的結合方式」（2026-10-30，已完成）
 
 ## 6. 實驗頁（給接手者）
 - `C:\Users\sunneo\AppData\Local\Temp\claude\D--Downloads-videos-----desktop-app\acde8070-44bc-47ee-a80b-a3a0c379809e\scratchpad\exp\index.html`（同資料夾有 `image3d_core.js`、`subject_3d.js` 的複本，改核心後要重新複製）。用 `python -m http.server 8765 --bind 127.0.0.1` 在該資料夾開（可能已經死了，重開），再用內建瀏覽器開新分頁（不要用已顯示本機檔案的分頁）看 `http://127.0.0.1:8765/index.html?v=N`。流程：SVG→PNG→真的深度模型（fp32、CPU，transformers.js 3.7.5）→去背→`FaImage3d`→three.js 貼材質旋轉預覽。
