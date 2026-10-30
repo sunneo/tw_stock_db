@@ -69,11 +69,24 @@ function collectMainModules() {
   const missing = collectMainModules().concat(["preload.js"]).filter((m) => !files.includes(m));
   if (missing.length) throw new Error("package.json build.files 沒有包含這些主行程模組：" + missing.join("、") + "（加進去，或改用 *.js）");
 })();
+// renderer/vendor/ 底下的第三方檔案（three.js 等）也要進清單：沒進清單的話，打包時還沒有 vendor 的舊安裝永遠補不到，
+// 熱更新重建覆蓋目錄時（複製的是安裝包內建的 renderer/）也不會有，index.html 指向覆蓋目錄就會載入失敗。
+function collectVendorFiles(rel = "renderer/vendor") {
+  const dir = path.join(__dirname, rel);
+  if (!fs.existsSync(dir)) return [];
+  const out = [];
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const r = rel + "/" + e.name;
+    if (e.isDirectory()) out.push(...collectVendorFiles(r)); else if (e.isFile()) out.push(r);
+  }
+  return out.sort();
+}
 const LIVE_PATCH_ALLOWED_FILES = [
   "renderer/index.html",
   "renderer/bootstrap.js",
   "renderer/floating-assistant.js",
   "renderer/floating-assistant.min.js",
+  ...collectVendorFiles(),
   ...collectMainModules(),
   "preload.js", // 預載腳本
 ];
