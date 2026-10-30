@@ -45,6 +45,10 @@ check('plan: steps clamped 1..4, big strength defaults to 2 steps', S.plan({ pro
 
 check('pickModel: always sdxs; wasm without gpu or f16, webgpu with f16, forced webgpu without gpu is refused', S.pickModel({ hasGpu: false }).ep === 'wasm' && S.pickModel({ hasGpu: true, f16: false }).ep === 'wasm' && S.pickModel({ hasGpu: true, f16: true }).ep === 'webgpu' && S.pickModel({ hasGpu: true, f16: true }, 'cpu').ep === 'wasm' && S.pickModel({}, 'webgpu').ok === false && S.MODELS.length === 0);
 check('license: SDXS and TAESD only', /RAIL/.test(S.LICENSE.name) && /MIT/.test(S.LICENSE.name));
+check('splitInstruction: 把 X 改成 Y', (() => { const a = S.splitInstruction('把天空改成黃昏'), b = S.splitInstruction('把圖片左上角的人換成一隻貓'), c = S.splitInstruction('變成水彩風'); return a.target === '天空' && a.result === '黃昏' && b.target === '左上角的人' && b.result === '一隻貓' && c.target === '' && c.result === '變成水彩風'; })());
+check('regionFromWords: positions map to fractions; objects return null', (() => { const a = S.regionFromWords('左上角的人'), b = S.regionFromWords('下半部'), c = S.regionFromWords('天空'); return a.x1 === 0.5 && a.y1 === 0.5 && b.y0 === 0.5 && b.x1 === 1 && c === null; })());
+check('regionFromCells: letters give the bounding box; junk or everything gives null', (() => { const a = S.regionFromCells('B C F G', 4, 4), b = S.regionFromCells('沒有', 4, 4), c = S.regionFromCells('A B C D E F G H I J K L M N O P', 4, 4); return a.x0 === 0.25 && a.x1 === 0.75 && a.y0 === 0 && a.y1 === 0.5 && b === null && c === null; })());
+check('boxInBounds: fractions to world box', (() => { const r = S.boxInBounds({ x0: 0.5, y0: 0, x1: 1, y1: 0.5 }, { x: 10, y: 20, w: 200, h: 100 }); return r.x === 110 && r.y === 20 && r.w === 100 && r.h === 50; })());
 check('explainError: memory and download are explained', /記憶體/.test(S.explainError(new Error('Array buffer allocation failed'), null)) && /已下載的部分會保留/.test(S.explainError(new Error('Failed to fetch'), null)));
 console.log(bad.length ? 'FAILED:\n  ' + bad.join('\n  ') : 'sd_turbo: ' + ok + ' passed');
 process.exit(bad.length ? 1 : 0);

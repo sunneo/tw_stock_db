@@ -124,6 +124,27 @@
     return { ok: true, prompt: prompt.slice(0, 600), strength: strength, steps: steps, seed: seed, timesteps: timesteps(steps, strength), notes: notes };
   }
 
+  // ───── 口語說的區域（「把左上角的…改成…」「把天空改成…」）─────
+  // 「把 X 改成 Y」拆成要改的地方 X 與改成什麼 Y；沒有這個句型就整句當 Y
+  function splitInstruction(text) {
+    text = String(text || '').trim(); var m = text.match(/把(.{1,40}?)(?:改成|換成|變成|弄成|做成)(.+)$/);
+    if (m) return { target: m[1].replace(/^(這張圖|這張照片|圖片|照片|圖裡|圖中)(裡|中|上)?(的)?/, '').trim(), result: m[2].trim() };
+    return { target: '', result: text };
+  }
+  // 位置字眼 → 圖上的比例框 {x0,y0,x1,y1}（0..1）；沒有位置字眼就回 null（交給視覺模型用格子找）
+  var POS = [[/左上/, [0, 0, 0.5, 0.5]], [/右上/, [0.5, 0, 1, 0.5]], [/左下/, [0, 0.5, 0.5, 1]], [/右下/, [0.5, 0.5, 1, 1]], [/正中|中間|中央|中心/, [0.25, 0.25, 0.75, 0.75]], [/上半|上面|上方|頂部|上邊/, [0, 0, 1, 0.5]], [/下半|下面|下方|底部|下邊/, [0, 0.5, 1, 1]], [/左半|左邊|左側|左方/, [0, 0, 0.5, 1]], [/右半|右邊|右側|右方/, [0.5, 0, 1, 1]]];
+  function regionFromWords(target) { target = String(target || ''); for (var i = 0; i < POS.length; i++) if (POS[i][0].test(target)) { var b = POS[i][1]; return { x0: b[0], y0: b[1], x1: b[2], y1: b[3], by: 'words' }; } return null; }
+  // 視覺模型的格子回答（4×4，A～P 由左到右、由上到下）→ 涵蓋這些格子的比例框；讀不出來就 null
+  function gridLetters(cols, rows) { var out = [], n = (cols || 4) * (rows || 4); for (var i = 0; i < n; i++) out.push(String.fromCharCode(65 + i)); return out; }
+  function regionFromCells(answer, cols, rows) {
+    cols = cols || 4; rows = rows || 4; var ok = gridLetters(cols, rows), found = String(answer || '').toUpperCase().match(/\b[A-Z]\b/g) || [], idx = [];
+    found.forEach(function (ch) { var k = ok.indexOf(ch); if (k >= 0 && idx.indexOf(k) < 0) idx.push(k); }); if (!idx.length || idx.length > cols * rows - 1) return null;
+    var c0 = cols, c1 = -1, r0 = rows, r1 = -1; idx.forEach(function (k) { var c = k % cols, r = Math.floor(k / cols); c0 = Math.min(c0, c); c1 = Math.max(c1, c); r0 = Math.min(r0, r); r1 = Math.max(r1, r); });
+    return { x0: c0 / cols, y0: r0 / rows, x1: (c1 + 1) / cols, y1: (r1 + 1) / rows, by: 'cells', cells: idx.length };
+  }
+  // 比例框 → 世界座標框（bounds = 圖的外框）
+  function boxInBounds(f, bounds) { return { x: Math.round((bounds.x + f.x0 * bounds.w) * 100) / 100, y: Math.round((bounds.y + f.y0 * bounds.h) * 100) / 100, w: Math.round((f.x1 - f.x0) * bounds.w * 100) / 100, h: Math.round((f.y1 - f.y0) * bounds.h * 100) / 100 }; }
+
   function explainError(err, model, env) {
     var msg = String((err && err.message) || err || ''); model = model || {}; env = env || {};
     if (/float16|fp16|f16|shader-f16/i.test(msg)) return '改圖的 GPU 版需要顯示卡支援 f16，這張不支援。（' + msg.slice(0, 100) + '）';
@@ -134,5 +155,5 @@
     return '本機改圖失敗：' + msg.slice(0, 200);
   }
 
-  return { SIZE: SIZE, LATENT: LATENT, SCALE: SCALE, TRAIN_STEPS: TRAIN_STEPS, MAXLEN: MAXLEN, MODELS: MODELS, TAESD: TAESD, LICENSE: LICENSE, FALLBACK: FALLBACK, byId: byId, urlOf: urlOf, totalBytes: totalBytes, fmtBytes: fmtBytes, pickModel: pickModel, alphasCumprod: alphasCumprod, timesteps: timesteps, rng: rng, gaussian: gaussian, latentFromEncoder: latentFromEncoder, toChw: toChw, addNoise: addNoise, predictX0: predictX0, step: step, fitBox: fitBox, feather: feather, blend: blend, plan: plan, padIds: padIds, explainError: explainError };
+  return { SIZE: SIZE, LATENT: LATENT, SCALE: SCALE, TRAIN_STEPS: TRAIN_STEPS, MAXLEN: MAXLEN, MODELS: MODELS, TAESD: TAESD, LICENSE: LICENSE, FALLBACK: FALLBACK, byId: byId, urlOf: urlOf, totalBytes: totalBytes, fmtBytes: fmtBytes, pickModel: pickModel, alphasCumprod: alphasCumprod, timesteps: timesteps, rng: rng, gaussian: gaussian, latentFromEncoder: latentFromEncoder, toChw: toChw, addNoise: addNoise, predictX0: predictX0, step: step, fitBox: fitBox, feather: feather, blend: blend, plan: plan, padIds: padIds, splitInstruction: splitInstruction, regionFromWords: regionFromWords, regionFromCells: regionFromCells, gridLetters: gridLetters, boxInBounds: boxInBounds, explainError: explainError };
 });

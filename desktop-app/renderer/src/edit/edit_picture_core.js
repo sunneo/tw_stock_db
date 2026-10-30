@@ -66,7 +66,7 @@
       move: function (o, dx, dy) { if (o.region) { o.region.x = r2(o.region.x + dx); o.region.y = r2(o.region.y + dy); } }
     },
     detail: {
-      label: '細化', defaults: { region: null, marks: [], target: 'all', prompt: '', strength: 0.5, feather: 0.08, context: 0.5, model: 'auto', seed: null, crop: null, result: '', refine: '', state: 'pending', opacity: 1 },
+      label: '細化', defaults: { region: null, marks: [], target: 'all', prompt: '', strength: 0.5, feather: 0.08, context: 0.5, model: 'auto', seed: null, crop: null, result: '', refine: '', state: 'pending', opacity: 1, repaint: false },
       validate: function (o) {
         var p = [], region = regionOf(o.region), marks = [];
         (Array.isArray(o.marks) ? o.marks : []).slice(0, 200).forEach(function (m) {
@@ -77,7 +77,7 @@
         if (!region && !marks.length) { return { obj: null, problems: ['say or mark which part to refine (a box or a stroke)'] }; }
         var t = o.target == null || o.target === '' ? 'all' : String(o.target); if (!idOk(t)) { p.push('target must be all or an object id'); t = 'all'; }
         var result = /^[A-Za-z0-9_-]{1,64}$/.test(String(o.result || '')) ? String(o.result) : '', st = ['pending', 'preview', 'applied'].indexOf(o.state) >= 0 ? o.state : 'pending'; if (!result) { st = 'pending'; } else if (st === 'pending') { st = 'preview'; }
-        return { obj: { region: region, marks: region ? [] : marks, target: t, prompt: str(o.prompt, 600), strength: r2(num(o.strength, 0.1, 1, 0.5)), feather: r2(num(o.feather, 0, 0.5, 0.08)), context: r2(num(o.context, 0, 2, 0.5)), model: ['auto', 'online', 'local'].indexOf(o.model) >= 0 ? o.model : 'auto', seed: o.seed == null || o.seed === '' ? null : Math.round(num(o.seed, 0, 4294967295, 0)), crop: regionOf(o.crop), result: result, refine: ['edit', 'texture'].indexOf(o.refine) >= 0 ? o.refine : '', state: st, opacity: r2(num(o.opacity, 0, 1, 1)) }, problems: p };
+        return { obj: { region: region, marks: region ? [] : marks, target: t, prompt: str(o.prompt, 600), strength: r2(num(o.strength, 0.1, 1, 0.5)), feather: r2(num(o.feather, 0, 0.5, 0.08)), context: r2(num(o.context, 0, 2, 0.5)), model: ['auto', 'online', 'local'].indexOf(o.model) >= 0 ? o.model : 'auto', seed: o.seed == null || o.seed === '' ? null : Math.round(num(o.seed, 0, 4294967295, 0)), crop: regionOf(o.crop), result: result, refine: ['edit', 'texture'].indexOf(o.refine) >= 0 ? o.refine : '', state: st, opacity: r2(num(o.opacity, 0, 1, 1)), repaint: o.repaint === true || o.repaint === 'true' || o.repaint === 1 }, problems: p };
       },
       bbox: function (o) { if (o.region) { return { x: o.region.x, y: o.region.y, w: o.region.w, h: o.region.h }; } if (!o.marks.length) { return null; } var x0 = 1e18, y0 = 1e18, x1 = -1e18, y1 = -1e18; o.marks.forEach(function (m) { var b = markBox(m); x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y); x1 = Math.max(x1, b.x + b.w); y1 = Math.max(y1, b.y + b.h); }); return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }; },
       move: function (o, dx, dy) { if (o.region) { o.region.x = r2(o.region.x + dx); o.region.y = r2(o.region.y + dy); } if (o.crop) { o.crop.x = r2(o.crop.x + dx); o.crop.y = r2(o.crop.y + dy); } o.marks.forEach(function (m) { if (m.points) { m.points = m.points.map(function (q) { return [r2(q[0] + dx), r2(q[1] + dy)]; }); } else { m.x = r2(m.x + dx); m.y = r2(m.y + dy); } }); }
@@ -154,7 +154,7 @@
       var i = H.find(s, ref); if (i < 0) { return { error: 'there is no object "' + str(ref, 30) + '" to refine' }; } var anchor = H.bbox(s.objects[i]); if (!anchor) { return { error: 'that object has no size' }; } if (['image', 'shape', 'svg'].indexOf(s.objects[i].type) >= 0) { anchorId = s.objects[i].id; }
       var f = AT[String(e.at || 'center').toLowerCase()]; if (!f) { return { error: 'at must be one of ' + Object.keys(AT).join(', ') }; }
       var r = num(e.r, 4, 2000, Math.max(16, Math.round(Math.min(anchor.w, anchor.h) * 0.18))), cx = anchor.x + anchor.w * f[0], cy = anchor.y + anchor.h * f[1];
-      var res = H.addTop(s, { type: 'detail', name: '細化', region: { x: cx - r, y: cy - r, w: 2 * r, h: 2 * r }, target: anchorId, prompt: str(e.prompt, 600), strength: e.strength }); return res.error ? { error: res.error } : {};
+      var res = H.addTop(s, { type: 'detail', name: '細化', region: { x: cx - r, y: cy - r, w: 2 * r, h: 2 * r }, target: anchorId, prompt: str(e.prompt, 600), strength: e.strength, repaint: e.repaint === true }); return res.error ? { error: res.error } : {};
     }
   };
   var HOST_OPS = ['find_picture', 'generate_image', 'generate_detail'];

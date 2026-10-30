@@ -18042,6 +18042,27 @@ const holder = {};
     return { ok: true, prompt: prompt.slice(0, 600), strength: strength, steps: steps, seed: seed, timesteps: timesteps(steps, strength), notes: notes };
   }
 
+  // ───── 口語說的區域（「把左上角的…改成…」「把天空改成…」）─────
+  // 「把 X 改成 Y」拆成要改的地方 X 與改成什麼 Y；沒有這個句型就整句當 Y
+  function splitInstruction(text) {
+    text = String(text || '').trim(); var m = text.match(/把(.{1,40}?)(?:改成|換成|變成|弄成|做成)(.+)$/);
+    if (m) return { target: m[1].replace(/^(這張圖|這張照片|圖片|照片|圖裡|圖中)(裡|中|上)?(的)?/, '').trim(), result: m[2].trim() };
+    return { target: '', result: text };
+  }
+  // 位置字眼 → 圖上的比例框 {x0,y0,x1,y1}（0..1）；沒有位置字眼就回 null（交給視覺模型用格子找）
+  var POS = [[/左上/, [0, 0, 0.5, 0.5]], [/右上/, [0.5, 0, 1, 0.5]], [/左下/, [0, 0.5, 0.5, 1]], [/右下/, [0.5, 0.5, 1, 1]], [/正中|中間|中央|中心/, [0.25, 0.25, 0.75, 0.75]], [/上半|上面|上方|頂部|上邊/, [0, 0, 1, 0.5]], [/下半|下面|下方|底部|下邊/, [0, 0.5, 1, 1]], [/左半|左邊|左側|左方/, [0, 0, 0.5, 1]], [/右半|右邊|右側|右方/, [0.5, 0, 1, 1]]];
+  function regionFromWords(target) { target = String(target || ''); for (var i = 0; i < POS.length; i++) if (POS[i][0].test(target)) { var b = POS[i][1]; return { x0: b[0], y0: b[1], x1: b[2], y1: b[3], by: 'words' }; } return null; }
+  // 視覺模型的格子回答（4×4，A～P 由左到右、由上到下）→ 涵蓋這些格子的比例框；讀不出來就 null
+  function gridLetters(cols, rows) { var out = [], n = (cols || 4) * (rows || 4); for (var i = 0; i < n; i++) out.push(String.fromCharCode(65 + i)); return out; }
+  function regionFromCells(answer, cols, rows) {
+    cols = cols || 4; rows = rows || 4; var ok = gridLetters(cols, rows), found = String(answer || '').toUpperCase().match(/\b[A-Z]\b/g) || [], idx = [];
+    found.forEach(function (ch) { var k = ok.indexOf(ch); if (k >= 0 && idx.indexOf(k) < 0) idx.push(k); }); if (!idx.length || idx.length > cols * rows - 1) return null;
+    var c0 = cols, c1 = -1, r0 = rows, r1 = -1; idx.forEach(function (k) { var c = k % cols, r = Math.floor(k / cols); c0 = Math.min(c0, c); c1 = Math.max(c1, c); r0 = Math.min(r0, r); r1 = Math.max(r1, r); });
+    return { x0: c0 / cols, y0: r0 / rows, x1: (c1 + 1) / cols, y1: (r1 + 1) / rows, by: 'cells', cells: idx.length };
+  }
+  // 比例框 → 世界座標框（bounds = 圖的外框）
+  function boxInBounds(f, bounds) { return { x: Math.round((bounds.x + f.x0 * bounds.w) * 100) / 100, y: Math.round((bounds.y + f.y0 * bounds.h) * 100) / 100, w: Math.round((f.x1 - f.x0) * bounds.w * 100) / 100, h: Math.round((f.y1 - f.y0) * bounds.h * 100) / 100 }; }
+
   function explainError(err, model, env) {
     var msg = String((err && err.message) || err || ''); model = model || {}; env = env || {};
     if (/float16|fp16|f16|shader-f16/i.test(msg)) return '改圖的 GPU 版需要顯示卡支援 f16，這張不支援。（' + msg.slice(0, 100) + '）';
@@ -18052,7 +18073,7 @@ const holder = {};
     return '本機改圖失敗：' + msg.slice(0, 200);
   }
 
-  return { SIZE: SIZE, LATENT: LATENT, SCALE: SCALE, TRAIN_STEPS: TRAIN_STEPS, MAXLEN: MAXLEN, MODELS: MODELS, TAESD: TAESD, LICENSE: LICENSE, FALLBACK: FALLBACK, byId: byId, urlOf: urlOf, totalBytes: totalBytes, fmtBytes: fmtBytes, pickModel: pickModel, alphasCumprod: alphasCumprod, timesteps: timesteps, rng: rng, gaussian: gaussian, latentFromEncoder: latentFromEncoder, toChw: toChw, addNoise: addNoise, predictX0: predictX0, step: step, fitBox: fitBox, feather: feather, blend: blend, plan: plan, padIds: padIds, explainError: explainError };
+  return { SIZE: SIZE, LATENT: LATENT, SCALE: SCALE, TRAIN_STEPS: TRAIN_STEPS, MAXLEN: MAXLEN, MODELS: MODELS, TAESD: TAESD, LICENSE: LICENSE, FALLBACK: FALLBACK, byId: byId, urlOf: urlOf, totalBytes: totalBytes, fmtBytes: fmtBytes, pickModel: pickModel, alphasCumprod: alphasCumprod, timesteps: timesteps, rng: rng, gaussian: gaussian, latentFromEncoder: latentFromEncoder, toChw: toChw, addNoise: addNoise, predictX0: predictX0, step: step, fitBox: fitBox, feather: feather, blend: blend, plan: plan, padIds: padIds, splitInstruction: splitInstruction, regionFromWords: regionFromWords, regionFromCells: regionFromCells, gridLetters: gridLetters, boxInBounds: boxInBounds, explainError: explainError };
 });
 
 }).call(null, undefined, holder);
@@ -28079,7 +28100,7 @@ const holder = {};
       move: function (o, dx, dy) { if (o.region) { o.region.x = r2(o.region.x + dx); o.region.y = r2(o.region.y + dy); } }
     },
     detail: {
-      label: '細化', defaults: { region: null, marks: [], target: 'all', prompt: '', strength: 0.5, feather: 0.08, context: 0.5, model: 'auto', seed: null, crop: null, result: '', refine: '', state: 'pending', opacity: 1 },
+      label: '細化', defaults: { region: null, marks: [], target: 'all', prompt: '', strength: 0.5, feather: 0.08, context: 0.5, model: 'auto', seed: null, crop: null, result: '', refine: '', state: 'pending', opacity: 1, repaint: false },
       validate: function (o) {
         var p = [], region = regionOf(o.region), marks = [];
         (Array.isArray(o.marks) ? o.marks : []).slice(0, 200).forEach(function (m) {
@@ -28090,7 +28111,7 @@ const holder = {};
         if (!region && !marks.length) { return { obj: null, problems: ['say or mark which part to refine (a box or a stroke)'] }; }
         var t = o.target == null || o.target === '' ? 'all' : String(o.target); if (!idOk(t)) { p.push('target must be all or an object id'); t = 'all'; }
         var result = /^[A-Za-z0-9_-]{1,64}$/.test(String(o.result || '')) ? String(o.result) : '', st = ['pending', 'preview', 'applied'].indexOf(o.state) >= 0 ? o.state : 'pending'; if (!result) { st = 'pending'; } else if (st === 'pending') { st = 'preview'; }
-        return { obj: { region: region, marks: region ? [] : marks, target: t, prompt: str(o.prompt, 600), strength: r2(num(o.strength, 0.1, 1, 0.5)), feather: r2(num(o.feather, 0, 0.5, 0.08)), context: r2(num(o.context, 0, 2, 0.5)), model: ['auto', 'online', 'local'].indexOf(o.model) >= 0 ? o.model : 'auto', seed: o.seed == null || o.seed === '' ? null : Math.round(num(o.seed, 0, 4294967295, 0)), crop: regionOf(o.crop), result: result, refine: ['edit', 'texture'].indexOf(o.refine) >= 0 ? o.refine : '', state: st, opacity: r2(num(o.opacity, 0, 1, 1)) }, problems: p };
+        return { obj: { region: region, marks: region ? [] : marks, target: t, prompt: str(o.prompt, 600), strength: r2(num(o.strength, 0.1, 1, 0.5)), feather: r2(num(o.feather, 0, 0.5, 0.08)), context: r2(num(o.context, 0, 2, 0.5)), model: ['auto', 'online', 'local'].indexOf(o.model) >= 0 ? o.model : 'auto', seed: o.seed == null || o.seed === '' ? null : Math.round(num(o.seed, 0, 4294967295, 0)), crop: regionOf(o.crop), result: result, refine: ['edit', 'texture'].indexOf(o.refine) >= 0 ? o.refine : '', state: st, opacity: r2(num(o.opacity, 0, 1, 1)), repaint: o.repaint === true || o.repaint === 'true' || o.repaint === 1 }, problems: p };
       },
       bbox: function (o) { if (o.region) { return { x: o.region.x, y: o.region.y, w: o.region.w, h: o.region.h }; } if (!o.marks.length) { return null; } var x0 = 1e18, y0 = 1e18, x1 = -1e18, y1 = -1e18; o.marks.forEach(function (m) { var b = markBox(m); x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y); x1 = Math.max(x1, b.x + b.w); y1 = Math.max(y1, b.y + b.h); }); return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }; },
       move: function (o, dx, dy) { if (o.region) { o.region.x = r2(o.region.x + dx); o.region.y = r2(o.region.y + dy); } if (o.crop) { o.crop.x = r2(o.crop.x + dx); o.crop.y = r2(o.crop.y + dy); } o.marks.forEach(function (m) { if (m.points) { m.points = m.points.map(function (q) { return [r2(q[0] + dx), r2(q[1] + dy)]; }); } else { m.x = r2(m.x + dx); m.y = r2(m.y + dy); } }); }
@@ -28167,7 +28188,7 @@ const holder = {};
       var i = H.find(s, ref); if (i < 0) { return { error: 'there is no object "' + str(ref, 30) + '" to refine' }; } var anchor = H.bbox(s.objects[i]); if (!anchor) { return { error: 'that object has no size' }; } if (['image', 'shape', 'svg'].indexOf(s.objects[i].type) >= 0) { anchorId = s.objects[i].id; }
       var f = AT[String(e.at || 'center').toLowerCase()]; if (!f) { return { error: 'at must be one of ' + Object.keys(AT).join(', ') }; }
       var r = num(e.r, 4, 2000, Math.max(16, Math.round(Math.min(anchor.w, anchor.h) * 0.18))), cx = anchor.x + anchor.w * f[0], cy = anchor.y + anchor.h * f[1];
-      var res = H.addTop(s, { type: 'detail', name: '細化', region: { x: cx - r, y: cy - r, w: 2 * r, h: 2 * r }, target: anchorId, prompt: str(e.prompt, 600), strength: e.strength }); return res.error ? { error: res.error } : {};
+      var res = H.addTop(s, { type: 'detail', name: '細化', region: { x: cx - r, y: cy - r, w: 2 * r, h: 2 * r }, target: anchorId, prompt: str(e.prompt, 600), strength: e.strength, repaint: e.repaint === true }); return res.error ? { error: res.error } : {};
     }
   };
   var HOST_OPS = ['find_picture', 'generate_image', 'generate_detail'];
@@ -28454,7 +28475,7 @@ const holder = {};
             [sel2, val, ab].forEach(function (x) { add.appendChild(x); }); box.appendChild(add);
           } else if (o.type === 'detail') {
             box.appendChild(h('div', 'st', o.result ? (o.state === 'preview' ? '預覽中：滿意就按「接受」，不滿意可以重畫或退回' : '已細化（' + (o.refine === 'texture' ? '借重畫的細節紋理' : '依原圖改') + '）') : '待細化：按「✨ 細化」開始'));
-            box.appendChild(field('提示詞', 'text', o.prompt, function (v) { upd({ prompt: v }, '細化提示詞'); })); box.appendChild(field('強度', 'number', o.strength, function (v) { upd({ strength: v }, '細化強度'); }, { step: 0.1, min: 0.1 }));
+            box.appendChild(selectBox('用途', [['0', '補細節（保持原樣、只加精細度）'], ['1', '重畫這塊（依提示詞改成別的）']], o.repaint ? '1' : '0', function (v) { upd({ repaint: v === '1', strength: v === '1' && o.strength < 0.6 ? 0.7 : o.strength }, '細化用途'); })); box.appendChild(field('提示詞', 'text', o.prompt, function (v) { upd({ prompt: v }, '細化提示詞'); })); box.appendChild(field('強度', 'number', o.strength, function (v) { upd({ strength: v }, '細化強度'); }, { step: 0.1, min: 0.1 }));
             box.appendChild(field('羽化', 'number', o.feather, function (v) { upd({ feather: v }, '細化羽化'); }, { step: 0.02, min: 0 })); box.appendChild(field('脈絡', 'number', o.context, function (v) { upd({ context: v }, '細化脈絡'); }, { step: 0.1, min: 0 }));
             box.appendChild(selectBox('模型', [['auto', '自動'], ['online', '線上（能改圖的模型）'], ['local', '本機（重畫細節紋理）']], o.model, function (v) { upd({ model: v }, '細化模型'); })); box.appendChild(field('透明度', 'number', o.opacity, function (v) { upd({ opacity: v }); }, { step: 0.1, min: 0 }));
             var drow = h('div', 'row'), go = h('button', null, o.result ? '🎲 重畫' : '✨ 細化'); go.onclick = function () { if (o.result) { upd({ seed: Math.floor(Math.random() * 4294967296), state: 'pending', result: '' }, '重畫細化'); setTimeout(function () { runDetail(o.id); }, 0); } else { runDetail(o.id); } }; drow.appendChild(go);
@@ -32400,8 +32421,9 @@ const FaEditHost = (function () {
                 res = await this._edGenerate({ provider: 'online', model: FaNvidiaImage.editModel(), prompt: ('Add fine, realistic detail and sharpness to this picture. Keep the composition, the colours and every shape in place.' + (focus ? ' Focus: ' + focus : '')).slice(0, 900), init_image: cvs.toDataURL('image/png'), seed, steps: Math.round(10 + L.strength * 30) }, status);
             } else {
                 status(T('本機小模型依原圖補細節…（CPU 版要等一下）', 'The local model adds detail to the picture… (the CPU version takes a while)'));
-                const detailPrompt = ((focus || 'detailed texture') + ', highly detailed, sharp focus, intricate texture').slice(0, 600);
-                const ie = await this._localEditImage({ image: cvs.toDataURL('image/png'), prompt: detailPrompt, strength: Math.min(0.6, 0.25 + L.strength * 0.4), seed });
+                const detailPrompt = L.repaint ? (user || focus || 'a different version').slice(0, 600) : ((focus || 'detailed texture') + ', highly detailed, sharp focus, intricate texture').slice(0, 600);
+                const ie = await this._localEditImage({ image: cvs.toDataURL('image/png'), prompt: detailPrompt, strength: L.repaint ? Math.max(0.3, Math.min(1, L.strength)) : Math.min(0.6, 0.25 + L.strength * 0.4), seed });
+                if (L.repaint && !ie.ok) return { ok: false, error: ie.needs_download || ie.cancelled ? T('本機改圖模型還沒下載（你取消了或還沒下載）。', 'The local editing model is not downloaded.') : T('選區重畫沒成功：', 'Repainting the selection failed: ') + String(ie.error).slice(0, 160) };
                 if (ie.ok) { res = { ok: true, image: { blob: ie.blob, seed } }; refineMode = 'edit'; note = T('本機圖生圖：依原圖補細節（強度 ' + ie.strength + '，' + ie.model + '）。', 'Local image-to-image: detail added from the picture (strength ' + ie.strength + ', ' + ie.model + ').'); }
                 else if (!ie.needs_download && !ie.cancelled) status(T('圖生圖沒成功（' + String(ie.error).slice(0, 80) + '），退回只借紋理…', 'Image-to-image failed; falling back to texture only…'));
                 if (!res) res = await this._edGenerate({ provider: 'local', prompt: detailPrompt, seed }, status);
@@ -32425,6 +32447,38 @@ const FaEditHost = (function () {
             fr.edits.forEach((e) => edits.push(e)); fr.notes.forEach((n) => notes.push(n)); if (fr.say) say = say || fr.say;
             if (fr.handled && fr.edits.length) { const last = fr.edits.filter((e) => e.op === 'add_object' && e.object.type === 'image').pop(); if (last) lastAdded = last.object.name; }
             const styleId = FaPicFx.styleFor(text), wantsRepaint = REPAINT_WORDS.test(text);
+            const pendSel = cur().objects.filter((o) => o.type === 'detail' && !o.result && o.state === 'pending')[0];
+            if (!styleId && !wantsRepaint && !fr.handled && TEXTEDIT_WORDS.test(text) && pendSel) {   // 使用者已經圈好（框或塗抹）一塊：只重畫那一塊，羽化蓋回去
+                const sp = FaSdTurbo.plan({ prompt: 'x', request: text }), up = { op: 'update_object', id: pendSel.id, props: { prompt: text, repaint: true, strength: Math.max(0.6, sp.strength), model: 'local' } };
+                const rs = await this._edDetail({ spec: C.applyEdits(cur(), [up]).spec, id: pendSel.id, onStatus: status });
+                if (rs.ok) { edits.push(up, { op: 'update_object', id: pendSel.id, props: rs.props }); if (rs.note) notes.push(rs.note); say = T('只重畫了你圈的那一塊（預覽中）：滿意就按「接受」，不滿意可以重畫或退回。', 'Repainted only the area you marked (preview): accept it, redraw or revert.'); return { say, edits, notes }; }
+                notes.push(rs.error); return { say, edits, notes };
+            }
+            if (!styleId && !wantsRepaint && !fr.handled && TEXTEDIT_WORDS.test(text) && !pendSel && imageTarget(cur())) {   // 口語說的區域：「把左上角的…改成…」「把天空改成…」
+                const sx = FaSdTurbo.splitInstruction(text), img0 = imageTarget(cur());
+                if (sx.target && img0 && img0.type === 'image') {
+                    let fr0 = FaSdTurbo.regionFromWords(sx.target); const bd = FaEditPicture.types.image.bbox(img0);
+                    if (!fr0 && this._edAi().have()) {
+                        try {
+                            status(T('視覺模型在格子圖上找「' + sx.target + '」…', 'The vision model looks for it on a grid…'));
+                            const A2 = this._edAi(), en = /[一-鿿]/.test(sx.target) ? (await A2.chat('Translate to a short English noun phrase. Output only the translation.', sx.target)).trim().slice(0, 60) : sx.target;
+                            const bmp = await createImageBitmap(await FaEditStore.getImage(img0.ref)), cv = document.createElement('canvas'), W = 512, H = Math.max(64, Math.round(512 * bmp.height / bmp.width)); cv.width = W; cv.height = H; const g = cv.getContext('2d'); g.drawImage(bmp, 0, 0, W, H); g.strokeStyle = 'rgba(255,255,0,.9)'; g.fillStyle = 'rgba(255,255,0,.95)'; g.font = 'bold 22px sans-serif'; g.lineWidth = 1;
+                            FaSdTurbo.gridLetters(4, 4).forEach((ch, k) => { const c = k % 4, r = Math.floor(k / 4); g.strokeRect(c * W / 4, r * H / 4, W / 4, H / 4); g.fillText(ch, c * W / 4 + 6, r * H / 4 + 24); });
+                            const ans = await A2.vision(cv.toDataURL('image/jpeg', 0.85), 'This picture is divided into a 4x4 grid; the cells are labeled A to P from left to right, top to bottom. Which cells contain: ' + en + '? Answer with the cell letters only, for example: B C F G.');
+                            fr0 = FaSdTurbo.regionFromCells(ans, 4, 4);
+                        } catch (_) { fr0 = null; }
+                    }
+                    if (fr0) {
+                        const sp = FaSdTurbo.plan({ prompt: 'x', request: text }), box = FaSdTurbo.boxInBounds(fr0, bd), obj = { type: 'detail', name: T('選區重畫', 'Selection repaint'), region: box, target: img0.id, prompt: sx.result, repaint: true, strength: Math.max(0.6, sp.strength), model: 'local', feather: 0.12, context: 0.4 };
+                        const add = { op: 'add_object', object: obj }, sp2 = C.applyEdits(cur(), [add]).spec, added = sp2.objects[sp2.objects.length - 1];
+                        if (added && added.type === 'detail') {
+                            const rs = await this._edDetail({ spec: sp2, id: added.id, onStatus: status });
+                            if (rs.ok) { edits.push(add, { op: 'update_object', id: added.id, props: rs.props }); if (rs.note) notes.push(rs.note); say = T('依你說的「' + sx.target + '」找到區域（' + (fr0.by === 'words' ? '位置字眼' : '視覺模型在格子上找') + '），只重畫那一塊（預覽中）；框不對可以在細化層改範圍，或自己塗抹遮罩再說一次。', 'Found the area you described and repainted only that (preview); if the box is off, change it on the layer or mark it by hand.'); return { say, edits, notes }; }
+                            notes.push(rs.error); return { say, edits, notes };
+                        }
+                    } else notes.push(T('讀不出「' + sx.target + '」在哪裡：請用細化畫筆自己圈出來，再說一次。', 'Could not tell where that is: mark it by hand and say it again.'));
+                }
+            }
             if (!styleId && !wantsRepaint && !fr.handled && TEXTEDIT_WORDS.test(text) && imageTarget(cur())) {
                 const te = await this._edTextEdit(cur(), imageTarget(cur()), text, status, notes);
                 if (te) { te.edits.forEach((e) => edits.push(e)); say = T('依你的要求改好了（新圖層，原圖沒動；強度 ' + te.strength + '、' + te.steps + ' 步，' + te.model + '）。不滿意可以說「再微調」或「大改」重做，或退回。', 'Edited as asked (a new layer; the original is untouched; strength ' + te.strength + ', ' + te.steps + ' step(s), ' + te.model + '). Say "subtle" or "bigger change" to redo, or undo.'); if (te.note) notes.push(te.note); return { say, edits, notes }; }

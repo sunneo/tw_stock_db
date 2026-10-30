@@ -278,8 +278,9 @@ const FaEditHost = (function () {
                 res = await this._edGenerate({ provider: 'online', model: FaNvidiaImage.editModel(), prompt: ('Add fine, realistic detail and sharpness to this picture. Keep the composition, the colours and every shape in place.' + (focus ? ' Focus: ' + focus : '')).slice(0, 900), init_image: cvs.toDataURL('image/png'), seed, steps: Math.round(10 + L.strength * 30) }, status);
             } else {
                 status(T('本機小模型依原圖補細節…（CPU 版要等一下）', 'The local model adds detail to the picture… (the CPU version takes a while)'));
-                const detailPrompt = ((focus || 'detailed texture') + ', highly detailed, sharp focus, intricate texture').slice(0, 600);
-                const ie = await this._localEditImage({ image: cvs.toDataURL('image/png'), prompt: detailPrompt, strength: Math.min(0.6, 0.25 + L.strength * 0.4), seed });
+                const detailPrompt = L.repaint ? (user || focus || 'a different version').slice(0, 600) : ((focus || 'detailed texture') + ', highly detailed, sharp focus, intricate texture').slice(0, 600);
+                const ie = await this._localEditImage({ image: cvs.toDataURL('image/png'), prompt: detailPrompt, strength: L.repaint ? Math.max(0.3, Math.min(1, L.strength)) : Math.min(0.6, 0.25 + L.strength * 0.4), seed });
+                if (L.repaint && !ie.ok) return { ok: false, error: ie.needs_download || ie.cancelled ? T('本機改圖模型還沒下載（你取消了或還沒下載）。', 'The local editing model is not downloaded.') : T('選區重畫沒成功：', 'Repainting the selection failed: ') + String(ie.error).slice(0, 160) };
                 if (ie.ok) { res = { ok: true, image: { blob: ie.blob, seed } }; refineMode = 'edit'; note = T('本機圖生圖：依原圖補細節（強度 ' + ie.strength + '，' + ie.model + '）。', 'Local image-to-image: detail added from the picture (strength ' + ie.strength + ', ' + ie.model + ').'); }
                 else if (!ie.needs_download && !ie.cancelled) status(T('圖生圖沒成功（' + String(ie.error).slice(0, 80) + '），退回只借紋理…', 'Image-to-image failed; falling back to texture only…'));
                 if (!res) res = await this._edGenerate({ provider: 'local', prompt: detailPrompt, seed }, status);
@@ -303,6 +304,38 @@ const FaEditHost = (function () {
             fr.edits.forEach((e) => edits.push(e)); fr.notes.forEach((n) => notes.push(n)); if (fr.say) say = say || fr.say;
             if (fr.handled && fr.edits.length) { const last = fr.edits.filter((e) => e.op === 'add_object' && e.object.type === 'image').pop(); if (last) lastAdded = last.object.name; }
             const styleId = FaPicFx.styleFor(text), wantsRepaint = REPAINT_WORDS.test(text);
+            const pendSel = cur().objects.filter((o) => o.type === 'detail' && !o.result && o.state === 'pending')[0];
+            if (!styleId && !wantsRepaint && !fr.handled && TEXTEDIT_WORDS.test(text) && pendSel) {   // 使用者已經圈好（框或塗抹）一塊：只重畫那一塊，羽化蓋回去
+                const sp = FaSdTurbo.plan({ prompt: 'x', request: text }), up = { op: 'update_object', id: pendSel.id, props: { prompt: text, repaint: true, strength: Math.max(0.6, sp.strength), model: 'local' } };
+                const rs = await this._edDetail({ spec: C.applyEdits(cur(), [up]).spec, id: pendSel.id, onStatus: status });
+                if (rs.ok) { edits.push(up, { op: 'update_object', id: pendSel.id, props: rs.props }); if (rs.note) notes.push(rs.note); say = T('只重畫了你圈的那一塊（預覽中）：滿意就按「接受」，不滿意可以重畫或退回。', 'Repainted only the area you marked (preview): accept it, redraw or revert.'); return { say, edits, notes }; }
+                notes.push(rs.error); return { say, edits, notes };
+            }
+            if (!styleId && !wantsRepaint && !fr.handled && TEXTEDIT_WORDS.test(text) && !pendSel && imageTarget(cur())) {   // 口語說的區域：「把左上角的…改成…」「把天空改成…」
+                const sx = FaSdTurbo.splitInstruction(text), img0 = imageTarget(cur());
+                if (sx.target && img0 && img0.type === 'image') {
+                    let fr0 = FaSdTurbo.regionFromWords(sx.target); const bd = FaEditPicture.types.image.bbox(img0);
+                    if (!fr0 && this._edAi().have()) {
+                        try {
+                            status(T('視覺模型在格子圖上找「' + sx.target + '」…', 'The vision model looks for it on a grid…'));
+                            const A2 = this._edAi(), en = /[一-鿿]/.test(sx.target) ? (await A2.chat('Translate to a short English noun phrase. Output only the translation.', sx.target)).trim().slice(0, 60) : sx.target;
+                            const bmp = await createImageBitmap(await FaEditStore.getImage(img0.ref)), cv = document.createElement('canvas'), W = 512, H = Math.max(64, Math.round(512 * bmp.height / bmp.width)); cv.width = W; cv.height = H; const g = cv.getContext('2d'); g.drawImage(bmp, 0, 0, W, H); g.strokeStyle = 'rgba(255,255,0,.9)'; g.fillStyle = 'rgba(255,255,0,.95)'; g.font = 'bold 22px sans-serif'; g.lineWidth = 1;
+                            FaSdTurbo.gridLetters(4, 4).forEach((ch, k) => { const c = k % 4, r = Math.floor(k / 4); g.strokeRect(c * W / 4, r * H / 4, W / 4, H / 4); g.fillText(ch, c * W / 4 + 6, r * H / 4 + 24); });
+                            const ans = await A2.vision(cv.toDataURL('image/jpeg', 0.85), 'This picture is divided into a 4x4 grid; the cells are labeled A to P from left to right, top to bottom. Which cells contain: ' + en + '? Answer with the cell letters only, for example: B C F G.');
+                            fr0 = FaSdTurbo.regionFromCells(ans, 4, 4);
+                        } catch (_) { fr0 = null; }
+                    }
+                    if (fr0) {
+                        const sp = FaSdTurbo.plan({ prompt: 'x', request: text }), box = FaSdTurbo.boxInBounds(fr0, bd), obj = { type: 'detail', name: T('選區重畫', 'Selection repaint'), region: box, target: img0.id, prompt: sx.result, repaint: true, strength: Math.max(0.6, sp.strength), model: 'local', feather: 0.12, context: 0.4 };
+                        const add = { op: 'add_object', object: obj }, sp2 = C.applyEdits(cur(), [add]).spec, added = sp2.objects[sp2.objects.length - 1];
+                        if (added && added.type === 'detail') {
+                            const rs = await this._edDetail({ spec: sp2, id: added.id, onStatus: status });
+                            if (rs.ok) { edits.push(add, { op: 'update_object', id: added.id, props: rs.props }); if (rs.note) notes.push(rs.note); say = T('依你說的「' + sx.target + '」找到區域（' + (fr0.by === 'words' ? '位置字眼' : '視覺模型在格子上找') + '），只重畫那一塊（預覽中）；框不對可以在細化層改範圍，或自己塗抹遮罩再說一次。', 'Found the area you described and repainted only that (preview); if the box is off, change it on the layer or mark it by hand.'); return { say, edits, notes }; }
+                            notes.push(rs.error); return { say, edits, notes };
+                        }
+                    } else notes.push(T('讀不出「' + sx.target + '」在哪裡：請用細化畫筆自己圈出來，再說一次。', 'Could not tell where that is: mark it by hand and say it again.'));
+                }
+            }
             if (!styleId && !wantsRepaint && !fr.handled && TEXTEDIT_WORDS.test(text) && imageTarget(cur())) {
                 const te = await this._edTextEdit(cur(), imageTarget(cur()), text, status, notes);
                 if (te) { te.edits.forEach((e) => edits.push(e)); say = T('依你的要求改好了（新圖層，原圖沒動；強度 ' + te.strength + '、' + te.steps + ' 步，' + te.model + '）。不滿意可以說「再微調」或「大改」重做，或退回。', 'Edited as asked (a new layer; the original is untouched; strength ' + te.strength + ', ' + te.steps + ' step(s), ' + te.model + '). Say "subtle" or "bigger change" to redo, or undo.'); if (te.note) notes.push(te.note); return { say, edits, notes }; }

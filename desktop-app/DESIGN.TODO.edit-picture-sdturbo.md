@@ -13,6 +13,9 @@
 ## 0c. 決定（2026-10-30）：不用 sd-turbo
 - 使用者決定不要 sd-turbo（授權要商業登記）。程式已移除 sd-turbo 路徑，只留 SDXS＋TAESD（OpenRAIL++-M＋MIT）。第 5 項（成功案例）沿用編輯器既有的通用機制，不另做；設定頁已加 TAESD 狀態。剩下：遮罩選區改圖、真實 App 驗證畫質。
 
+## 0d. 遮罩與選區重畫（2026-10-30 完成）
+- 細化層加「重畫」旗標（用途下拉）；手動遮罩＝細化畫筆圈的框或塗抹；口語遮罩＝「把 X 改成 Y」拆句，位置字眼直接算比例框，其他名詞請視覺模型在 4×4 字母格上選格子（程式核對字母）。純函式在 sd_turbo_core.js（25 項測試）。真實 App 沒驗證。
+
 ## 1. 開場提示（給接手的工作階段）
 Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app\desktop-app\DESIGN.TODO.edit-picture-sdturbo.md`. 先完整讀完（含使用者原話與做法備忘），照做。執行 low-context-long-run 技能（門檻 30%）：做 Todo 的第一項，context 到門檻就更新這份文件並啟動你的接手工作階段（`mcp__ccd_session__start_session` 是延遲載入的工具，先用 ToolSearch 載入）。第一則訊息用一行說明你讀完了、要開始哪一項。回覆一律繁體中文、不要夾英文縮寫。**不要再做規劃、不要問，直接查證、寫程式、測試、提交。**
 
