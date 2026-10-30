@@ -323,4 +323,5 @@ t('subjectIntent: 將南瓜燈作成3D，只切出南瓜燈', () => {
   assert.strictEqual(C.subjectIntent('只切出南瓜燈').name, '南瓜燈'); assert.strictEqual(C.subjectIntent('幫我把主體摳出來').subject, 'main');
   assert.strictEqual(C.subjectIntent('切出主體').subject, 'main');
 });
+t('parseOptions: 外殼種類可以用說的', () => { assert.strictEqual(C.parseOptions('用平滑的殼').shape, 'smooth'); assert.strictEqual(C.parseOptions('用圓柱封閉').shape, 'cylinder'); assert.strictEqual(C.parseOptions('用樂高方塊').shape, 'blocks'); assert.strictEqual(C.parseOptions('').shape, 'auto'); });
 console.log(pass + ' passed' + (process.exitCode ? ', with failures' : ''));

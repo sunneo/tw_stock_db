@@ -738,6 +738,7 @@
     else if (/(?:全部|所有|整個|整張|統一|每個|一律)[^，。,.\n]{0,8}封閉|要能?(?:3d)?列印|可(?:以)?列印|print(?:able)?|watertight|everything\s+closed|close\s+all/i.test(t)) { out.close = 'all'; out.closeSource = 'phrase'; }
     else if (/(?:物件|東西|蘋果|人物|人臉)[^，。,.\n]{0,6}(?:要|得|需要)?封閉|closed\s+objects?/i.test(t)) { out.close = 'objects'; out.closeSource = 'phrase'; }
     if ((m = /--shape[=\s]+(auto|cylinder|blocks|smooth)(?![a-z])/i.exec(t))) { out.shape = m[1].toLowerCase(); }
+    else if (/平滑|光滑|圓潤|smooth/i.test(t)) { out.shape = 'smooth'; }
     else if (/圓柱|柱體|cylinder/i.test(t)) { out.shape = 'cylinder'; }
     else if (/樂高|方塊|lego|blocks?/i.test(t)) { out.shape = 'blocks'; }
     if (/--whole(?![a-z])|整張圖當一個|整張當一個|不要?分物件|whole\s+image/i.test(t)) { out.whole = true; }
