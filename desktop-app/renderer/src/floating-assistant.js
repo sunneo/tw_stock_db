@@ -30594,6 +30594,71 @@ const holder = {};
     return vs.length ? { vertices: vs, faces: fs, uvs: uvs } : null;
   }
 
+  // ---------- subject only: the user wants ONE thing out of the picture (a coffee cup on a table -> just the cup, to be put on a table in a scene) ----------
+  var GENERIC_NAME = /^(?:這張|那張|這幅|這個|那個|這些|這|那|它|牠|他|圖片?|照片|相片|主體|主角|物體|東西|物件|前景|整張.*|全部.*|場景|模型|3d.*|三維.*)$/i;
+  function cleanName(s) {
+    s = String(s == null ? '' : s).trim().replace(/^[「"'『《“]+|[」"'』》”]+$/g, '').trim();
+    s = s.replace(/(?:的)(?:圖片|照片|相片|圖|模型|物件)$/, '').replace(/(?:照片|相片|圖片)$/, '');
+    s = s.replace(/^(?:這張|那張|這幅)?(?:圖片|照片|相片|圖)(?:裡面|裡|裏|中|上)?的?/, '').replace(/^(?:一個|一隻|一顆|一只|一杯|一台|一張|一把|一棵|一條|一件|一盞|一支|這個|那個|這隻|那隻|1個|a\s+|an\s+|the\s+)/i, '').replace(/^的/, '').trim();
+    return GENERIC_NAME.test(s) ? '' : s;
+  }
+  function cleanTarget(s) { return String(s == null ? '' : s).trim().replace(/^[「"'『《“]+|[」"'』》”]+$/g, '').replace(/(?:模組|模型|物件)$/, '').replace(/^(?:那個|這個|那張|這張|一個|一張|the\s+|a\s+)/i, '').trim(); }
+  // text -> { subject:'main'|'all', name:'', target:'', decided:bool, source:'flag'|'phrase'|'default'|'hint' }
+  // 'main' = only the subject (name = what it is, when the words say so); decided:false = the words hint at it but the program cannot tell -> ask the model one closed question (intentQuestion / intentFromPick)
+  function subjectIntent(text) {
+    var r = subjectIntent0(text), m;
+    if (r.subject === 'main' && !r.target && (m = /(?:擺放|放置|擺|放)(?:到|在|進|於)\s*(.+?)(?:上面|上方|上|裡面|裡|旁邊|旁)(?=[，。,.！!？?；;\s]|$)/.exec(String(text || '')))) { r.target = cleanTarget(m[1]); }
+    return r;
+  }
+  function subjectIntent0(text) {
+    var t = String(text || '').replace(/\[附件：[^\]]*\]/g, ' '), m, name = '', target = '';
+    if ((m = /--subject[=\s]+(?:"([^"]+)"|'([^']+)'|([^\s]+))/i.exec(t))) {
+      var v = (m[1] || m[2] || m[3] || '').trim();
+      if (/^(?:all|全部|整張)$/i.test(v)) { return { subject: 'all', name: '', target: '', decided: true, source: 'flag' }; }
+      return { subject: 'main', name: /^(?:main|主體|auto|自動)$/i.test(v) ? '' : cleanName(v), target: '', decided: true, source: 'flag' };
+    }
+    if (/背景也要|含背景|連背景|包含背景|帶背景|整個場景|整張場景|whole\s+scene|with\s+(?:the\s+)?background/i.test(t)) { return { subject: 'all', name: '', target: '', decided: true, source: 'phrase' }; }
+    // 「把 X 擺到 Y 上」
+    if ((m = /(?:把|將|拿)\s*(.+?)\s*(?:要|想要|想|可以|能)?\s*(?:再)?(?:擺放|放置|擺|放|貼|搬|移)(?:到|在|進|入|於|去)\s*(.+?)(?:上面|上方|上|裡面|裡|旁邊|旁|前面|前|內)(?=[，。,.！!？?；;\s]|$)/.exec(t))) {
+      name = cleanName(m[1]); target = cleanTarget(m[2]);
+      if (name) { return { subject: 'main', name: name, target: target, decided: true, source: 'phrase' }; }
+      return { subject: 'main', name: '', target: target, decided: false, source: 'hint' };
+    }
+    // 「只要／只想要／只放 X」
+    if ((m = /只(?:想要|需要|要|想放|放|留|保留|取出|取|拿出|拿|轉|做|抽出)\s*(?:出)?(?:一個|一隻|一顆)?\s*(.+?)(?=[，。,.！!？?；;\n]|$|不要|就好|就可以|即可|而已|然後|並且|變成|轉成|做成|擺|放到|放在|貼|到)/.exec(t))) {
+      name = cleanName(m[1]);
+      if (name.length > 12) { return { subject: 'main', name: '', target: '', decided: false, source: 'hint' }; }
+      return { subject: 'main', name: name, target: '', decided: true, source: 'phrase' };
+    }
+    if ((m = /(?:^|[\s,.;])only\s+(?:want\s+|need\s+)?(?:the\s+|a\s+|an\s+)?([a-z][a-z ]{1,30}?)(?=[,.;]|\s+on\b|\s+onto\b|\s+in\b|\s+without\b|$)/i.exec(t)) || (m = /\bjust\s+(?:the\s+|a\s+|an\s+)([a-z][a-z ]{1,30}?)(?=[,.;]|\s+on\b|\s+onto\b|\s+in\b|\s+without\b|$)/i.exec(t))) {
+      name = cleanName(m[1]); return { subject: 'main', name: name, target: '', decided: true, source: 'phrase' };
+    }
+    if ((m = /\b(?:put|place|set)\s+(?:the\s+|a\s+|an\s+|this\s+)?([a-z][a-z ]{1,30}?)\s+(?:photo\s+|picture\s+|image\s+)?(?:on|onto)\s+(?:the\s+|a\s+)?([a-z][a-z ]{1,30})/i.exec(t))) {
+      name = cleanName(m[1]); target = cleanTarget(m[2]); if (name) { return { subject: 'main', name: name, target: target, decided: true, source: 'phrase' }; }
+    }
+    if (/去背|不要背景|沒有背景|無背景|不含背景|只要(?:前景|主體|主角)|只留主體|不要桌子|不要其他|其他不要|without\s+(?:the\s+)?background/i.test(t)) { return { subject: 'main', name: '', target: '', decided: true, source: 'phrase' }; }
+    if (/主體|主角|單一物件|只|擺到|擺在|放到|放在|放進|subject|\bonly\b|\bjust\b/i.test(t)) { return { subject: 'main', name: '', target: '', decided: false, source: 'hint' }; }
+    return { subject: 'all', name: '', target: '', decided: true, source: 'default' };
+  }
+  // the one closed question for an undecided case; the answer index goes through intentFromPick (null stays undecided -> the program keeps the default 'all')
+  function intentQuestion(text) {
+    return { question: '使用者對一張照片說：「' + String(text || '').replace(/\[附件：[^\]]*\]/g, ' ').trim().slice(0, 200) + '」。他想要得到什麼？', options: ['只要照片裡的主體（一個物件，不要桌子、背景和其他東西）', '要照片裡所有的東西（含背景）'] };
+  }
+  function intentFromPick(i) { return i === 0 ? 'main' : (i === 1 ? 'all' : null); }
+  // per-candidate question for the vision model (a cropped picture of one found object): A yes / B no
+  function itemQuestion(name) { return { question: '這張圖裡最主要的東西是「' + String(name) + '」嗎？', options: ['是', '不是'] }; }
+  // found objects ranked as the subject: biggest and nearest the middle first. -> [{ id, area, frac, box:[x0,y0,x1,y1] (inclusive cells), cx, cy, score }]
+  function rankSubjects(labels, w, h) {
+    var st = {}, y, x, id;
+    for (y = 0; y < h; y++) { for (x = 0; x < w; x++) { id = labels[y][x]; if (!id) { continue; } var s = st[id] || (st[id] = { id: id, area: 0, x0: x, y0: y, x1: x, y1: y, sx: 0, sy: 0 }); s.area++; s.sx += x; s.sy += y; if (x < s.x0) { s.x0 = x; } if (x > s.x1) { s.x1 = x; } if (y < s.y0) { s.y0 = y; } if (y > s.y1) { s.y1 = y; } } }
+    return Object.keys(st).map(function (k) {
+      var s = st[k], cx = s.sx / s.area, cy = s.sy / s.area, dist = Math.sqrt(Math.pow(cx / w - 0.5, 2) + Math.pow(cy / h - 0.5, 2)) / 0.7071;
+      return { id: s.id, area: s.area, frac: s.area / (w * h), box: [s.x0, s.y0, s.x1, s.y1], cx: cx, cy: cy, score: (s.area / (w * h)) * (1 - 0.8 * dist) };
+    }).sort(function (a, b) { return b.score - a.score; });
+  }
+  // keep one label as the only object (id 1), everything else becomes empty
+  function keepLabel(labels, id) { return labels.map(function (r) { return r.map(function (v) { return v === id ? 1 : 0; }); }); }
+
   // ---------- options from the user's words (the program decides; the model is only asked when this cannot) ----------
   // close: 'objects' (default; every found object is a closed solid, the backdrop is a thin closed slab) | 'all' (the user wants everything closed / printable: the backdrop is a full-thickness solid too)
   function parseOptions(text) {
@@ -30607,6 +30672,7 @@ const holder = {};
     else if (/圓柱|柱體|cylinder/i.test(t)) { out.shape = 'cylinder'; }
     else if (/樂高|方塊|lego|blocks?/i.test(t)) { out.shape = 'blocks'; }
     if (/--whole(?![a-z])|整張圖當一個|整張當一個|不要?分物件|whole\s+image/i.test(t)) { out.whole = true; }
+    var si = subjectIntent(t); out.subject = si.subject; out.subjectName = si.name; out.subjectTarget = si.target; out.subjectDecided = si.decided; out.subjectSource = si.source;
     return out;
   }
 
@@ -30646,7 +30712,7 @@ const holder = {};
     return spec;
   }
 
-  return { subjectMesh: subjectMesh, stitchDepths: stitchDepths, panoFov: panoFov, buildPanorama: buildPanorama, bendCylinder: bendCylinder, depthBands: depthBands, readExif: readExif, orbitKind: orbitKind, diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
+  return { subjectIntent: subjectIntent, intentQuestion: intentQuestion, intentFromPick: intentFromPick, itemQuestion: itemQuestion, rankSubjects: rankSubjects, keepLabel: keepLabel, subjectMesh: subjectMesh, stitchDepths: stitchDepths, panoFov: panoFov, buildPanorama: buildPanorama, bendCylinder: bendCylinder, depthBands: depthBands, readExif: readExif, orbitKind: orbitKind, diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
 });
 
 }).call(null, undefined, holder);
@@ -32671,15 +32737,47 @@ const FaEditHost = (function () {
         const cv = document.createElement('canvas'); cv.width = w; cv.height = h; cv.getContext('2d').drawImage(bmp, 0, 0, w, h); try { bmp.close(); } catch (_) { /* */ }
         return cv.toDataURL('image/jpeg', 0.85);
     };
+    // 「只要主體」：先由程式從使用者的話判斷（FaImage3d.subjectIntent）；只有讀不出來才問模型一個選擇題，答案由程式核對（A／B 以外都當沒答）
+    M._i3dSubjectIntent = async function (text) {
+        const si = FaImage3d.subjectIntent(text); if (si.decided) return si;
+        let pick = null; try { const A = this._edAi(); if (A.have()) { const q = FaImage3d.intentQuestion(text); pick = await A.pick(q.question, q.options); } } catch (_) { pick = null; }
+        const v = FaImage3d.intentFromPick(pick);
+        return Object.assign({}, si, v ? { subject: v, decided: true, source: 'model' } : { subject: 'all', decided: true, source: 'default' });
+    };
+    // 在找出來的物件裡挑主體 → { id, how, note }。有名字：每個候選物件裁成小圖，問視覺模型「是不是 X」（選擇題，程式核對答案）；沒名字或沒答案：最大又最靠中間的
+    M._i3dPickSubject = async function (labels, w, h, blob, name) {
+        const rk = FaImage3d.rankSubjects(labels, w, h); if (!rk.length) return null;
+        if (!name) return { id: rk[0].id, how: 'central', note: T('沒說是哪個東西，選了最大又最靠中間的物件', 'no name given: took the biggest object nearest the middle') };
+        let bmp = null; try { bmp = await createImageBitmap(blob); } catch (_) { bmp = null; }
+        if (bmp && typeof FaEditOffline !== 'undefined') {
+            const q = FaImage3d.itemQuestion(name), prompt = FaEditOffline.letterPrompt(q.question, q.options);
+            for (const c of rk.slice(0, 4)) {
+                const mx = Math.round(0.08 * w), x0 = Math.max(0, c.box[0] - mx) / w, y0 = Math.max(0, c.box[1] - mx) / h, x1 = Math.min(w, c.box[2] + 1 + mx) / w, y1 = Math.min(h, c.box[3] + 1 + mx) / h;
+                const sx = Math.floor(x0 * bmp.width), sy = Math.floor(y0 * bmp.height), sw = Math.max(8, Math.ceil((x1 - x0) * bmp.width)), sh = Math.max(8, Math.ceil((y1 - y0) * bmp.height)), k = Math.min(1, 256 / Math.max(sw, sh));
+                const cv = document.createElement('canvas'); cv.width = Math.max(8, Math.round(sw * k)); cv.height = Math.max(8, Math.round(sh * k)); cv.getContext('2d').drawImage(bmp, sx, sy, sw, sh, 0, 0, cv.width, cv.height);
+                const du = cv.toDataURL('image/jpeg', 0.85); let idx = null;
+                try {
+                    const r = await this._visionDescribe({ images: [du], prompt, max_tokens: 16, runLlm: () => this._interpretImageWithVisionModel(du, prompt) });
+                    const raw = r.ok ? (r.backend === 'llm' ? (typeof r.llm === 'string' ? r.llm : (r.llm && (r.llm.description || r.llm.answer || r.llm.text)) || '') : (r.answer || r.text || '')) : '';
+                    idx = FaEditOffline.parseLetter(raw, 2);
+                } catch (_) { idx = null; }
+                if (idx === 0) { try { bmp.close(); } catch (_) { /* */ } return { id: c.id, how: 'asked', note: T('用視覺模型確認這個物件是「' + name + '」', 'the vision model confirmed this object is "' + name + '"') }; }
+            }
+            try { bmp.close(); } catch (_) { /* */ }
+        }
+        return { id: rk[0].id, how: 'central', note: T('沒能確認哪個物件是「' + name + '」（視覺模型沒回答或都說不是），選了最大又最靠中間的', 'could not confirm which object is "' + name + '": took the biggest one nearest the middle') };
+    };
     // p: { image?|blob?, request? (the user's words: "要能列印", "用樂高方塊"…), close?: 'objects'|'all', shape?: 'auto'|'cylinder'|'blocks', whole?: bool, model?, device? }
     M._imageTo3d = async function (p) {
         p = p || {}; const o = FaImage3d.parseOptions(p.request || '');
+        const si = p.subject === 'main' || p.subject === 'all' ? { subject: p.subject, name: String(p.subject_name || '').trim(), decided: true } : (o.subjectDecided ? { subject: o.subject, name: o.subjectName } : await this._i3dSubjectIntent(p.request || '')); if (si.name === undefined) si.name = o.subjectName || '';
+        const subjectOnly = si.subject === 'main' && !p.whole;
         const close = p.close === 'all' || p.close === 'objects' ? p.close : o.close, shape = ['auto', 'smooth', 'cylinder', 'blocks'].includes(p.shape) ? p.shape : o.shape, whole = p.whole != null ? !!p.whole : o.whole;
         const img = await this._vlmResolveImage(p); if (!img.blob) return { ok: false, cancelled: img.cancelled, error: img.error };
         let px; try { px = await this._i3dPixels(img.blob, 160); } catch (e) { return { ok: false, error: T('讀不了這張圖片：', 'could not read the picture: ') + String((e && e.message) || e) }; }
         const dr = await this._depthEstimate({ blob: img.blob, filename: img.filename, model: p.model, device: p.device }); if (!dr.ok) return dr;
         const t0 = Date.now(); let mask = null, fg = null, segs = null, segNote = '';
-        const wantSeg = p.segment != null ? !!p.segment : o.segment;
+        const wantSeg = p.segment != null ? !!p.segment : (o.segment || subjectOnly);
         let bgNote = '';
         if (!whole && p.bg) { // 背景差分：另一張「沒有主體的背景圖」逐像素比對（同一個視角）
             const bi = await this._vlmResolveImage({ image: p.bg });
@@ -32692,11 +32790,13 @@ const FaEditHost = (function () {
         }
         if (!whole && !segs && !mask) { const bm = FaSubject3d.bgMask(px, 42); fg = bm.fg; if (bm.fg >= 0.02 && bm.fg <= 0.95) mask = { w: px.width, h: px.height, data: bm.mask }; }
         const prep = FaImage3d.prepareInput(dr.depth, mask, { mode: (mask || segs) ? 'components' : 'whole', workMax: 96, segments: segs });
-        const scene = FaImage3d.buildScene({ labels: prep.labels, depth: prep.depth }, { shape, closeMode: close, maxFaces: 12000 });
-        if (!mask && !segs) scene.background = null; // the whole picture is the one object: a backdrop behind it would only be a copy
+        let labels = prep.labels, subjNote = '', subjName = '';
+        if (subjectOnly && (mask || segs)) { const pk = await this._i3dPickSubject(labels, prep.width, prep.height, img.blob, si.name); if (pk) { labels = FaImage3d.keepLabel(labels, pk.id); subjNote = pk.note; subjName = si.name; } }
+        const scene = FaImage3d.buildScene({ labels, depth: prep.depth }, { shape, closeMode: close, maxFaces: 12000 });
+        if ((!mask && !segs) || subjNote) scene.background = null; // the whole picture is the one object (or only the subject was asked for): a backdrop would only be a copy / the things the user did not want
         if (!scene.objects.length) return { ok: false, error: T('沒有找到可以做成立體的物件', 'no object to build') };
         const sums = {}; for (let y = 0; y < px.height; y++) for (let x = 0; x < px.width; x++) {
-            const id = prep.labels[Math.min(prep.height - 1, Math.floor(y * prep.height / px.height))][Math.min(prep.width - 1, Math.floor(x * prep.width / px.width))] || 'background', k = (y * px.width + x) * 4, s = sums[id] || (sums[id] = [0, 0, 0, 0]);
+            const id = labels[Math.min(prep.height - 1, Math.floor(y * prep.height / px.height))][Math.min(prep.width - 1, Math.floor(x * prep.width / px.width))] || 'background', k = (y * px.width + x) * 4, s = sums[id] || (sums[id] = [0, 0, 0, 0]);
             s[0] += px.data[k]; s[1] += px.data[k + 1]; s[2] += px.data[k + 2]; s[3]++;
         }
         const colors = {}, hex = (n) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0'); for (const id in sums) { const s = sums[id]; colors[id] = '#' + hex(s[0] / s[3]) + hex(s[1] / s[3]) + hex(s[2] / s[3]); }
@@ -32705,33 +32805,45 @@ const FaEditHost = (function () {
         const raw = FaImage3d.toSpec(scene, { colors, title, texture }); const v = FaEdit3d.validate(raw); if (!v.ok) return { ok: false, error: T('做出來的場景不合規格：', 'the scene is invalid: ') + (v.problems || []).slice(0, 3).join('；') };
         const r = await this._edOpen('edit-3d', { spec: v.spec });
         const parts = scene.objects.concat(scene.background ? [scene.background] : []);
-        const out = { ok: !(r && r.ok === false), error: r && r.ok === false ? r.error : undefined, objects: scene.objects.length, shapes: scene.objects.map((x) => x.shape), faces: parts.reduce((a, x) => a + x.mesh.faces.length, 0), close, all_closed: parts.every((x) => FaImage3d.isClosed(x.mesh)), fell_back: parts.filter((x) => x.fallback).length, dropped_blobs: prep.dropped, foreground_ratio: fg == null ? undefined : Math.round(fg * 1000) / 1000, depth_model: dr.model, device: dr.device, ms: Date.now() - t0 + (dr.ms || 0), notes: [T('每個物件都是封閉的立體，不是浮雕；單張圖看不到背面，背面是依輪廓寬度推測的厚度', 'every object is a closed solid, not a relief; one picture cannot show the back, so its depth is a guess from the outline width')].concat(texture ? [T('原圖已貼在模型上（從正面投影，側面與背面是邊緣顏色拉伸）', 'the picture is pasted on as the texture (projected from the front; sides and back show stretched edge colours)')] : []).concat(prep.empty ? [T('沒有找到前景（背景色抓不準），整張圖當成一個物件', 'no foreground found: the whole picture became one object')] : [], mask || segs ? [] : [T('整張圖當成一個物件', 'the whole picture is one object')], segs ? [T('物件由分割模型找出來', 'objects found by the segmentation model')] : [], segNote ? [segNote] : [], bgNote ? [bgNote] : []) };
+        const out = { ok: !(r && r.ok === false), error: r && r.ok === false ? r.error : undefined, objects: scene.objects.length, shapes: scene.objects.map((x) => x.shape), faces: parts.reduce((a, x) => a + x.mesh.faces.length, 0), close, all_closed: parts.every((x) => FaImage3d.isClosed(x.mesh)), fell_back: parts.filter((x) => x.fallback).length, dropped_blobs: prep.dropped, foreground_ratio: fg == null ? undefined : Math.round(fg * 1000) / 1000, depth_model: dr.model, device: dr.device, ms: Date.now() - t0 + (dr.ms || 0), subject_only: !!subjNote, subject_name: subjName || undefined, notes: (subjNote ? [subjNote + T('；只留這一個物件，背景和其他東西不放', '; only this object is kept, the background and the rest are left out')] : []).concat([T('每個物件都是封閉的立體，不是浮雕；單張圖看不到背面，背面是依輪廓寬度推測的厚度', 'every object is a closed solid, not a relief; one picture cannot show the back, so its depth is a guess from the outline width')].concat(texture ? [T('原圖已貼在模型上（從正面投影，側面與背面是邊緣顏色拉伸）', 'the picture is pasted on as the texture (projected from the front; sides and back show stretched edge colours)')] : []).concat(prep.empty ? [T('沒有找到前景（背景色抓不準），整張圖當成一個物件', 'no foreground found: the whole picture became one object')] : [], mask || segs ? [] : [T('整張圖當成一個物件', 'the whole picture is one object')], segs ? [T('物件由分割模型找出來', 'objects found by the segmentation model')] : [], segNote ? [segNote] : [], bgNote ? [bgNote] : [])) };
         return out;
     };
     // 一張圖裡的主體（去背後的前景）→ 一個封閉的立體（不是浮雕）+ 原圖當貼圖；給「查不到 3D 模型時用網路找到的圖」和編輯器裡「把這張圖變成 3D 物件」用。失敗回 null
     // 回 { mesh:{vertices,faces,uvs}, texture, faces, all_closed }；深度模型沒下載或不能用時回 null，呼叫端退回舊做法
+    // p.subject = { name? }：只要主體（先用分割模型分物件，挑出那一個，其他丟掉）；回傳多一個 subject: { name, how, note }
     M._i3dSubjectSolid = async function (blob, filename, p) {
         p = p || {}; let px; try { px = await this._i3dPixels(blob, 160); } catch (_) { return null; }
-        const bm = FaSubject3d.bgMask(px, 42); if (bm.fg < 0.05 || bm.fg > 0.9) return null;
+        const bm = FaSubject3d.bgMask(px, 42), mask = bm.fg >= 0.05 && bm.fg <= 0.9 ? { w: px.width, h: px.height, data: bm.mask } : null;
         let dr; try { dr = await this._depthEstimate({ blob, filename, model: p.model, device: p.device }); } catch (_) { return null; } if (!dr || !dr.ok) return null;
-        const prep = FaImage3d.prepareInput(dr.depth, { w: px.width, h: px.height, data: bm.mask }, { mode: 'components', workMax: 96 });
-        const scene = FaImage3d.buildScene({ labels: prep.labels, depth: prep.depth }, { shape: 'auto', closeMode: 'objects', maxFaces: 6000 });
+        let segs = null;
+        if (p.subject) { try { const sr = await this._segmentObjects({ blob, filename, device: p.device }); if (sr && sr.ok && sr.segments && sr.segments.length) segs = sr.segments; } catch (_) { segs = null; } }
+        if (!mask && !segs) return null;
+        const prep = FaImage3d.prepareInput(dr.depth, mask, { mode: 'components', workMax: 96, segments: segs });
+        let labels = prep.labels, subj = null;
+        if (p.subject) { const pk = await this._i3dPickSubject(labels, prep.width, prep.height, blob, p.subject.name || ''); if (!pk) return null; labels = FaImage3d.keepLabel(labels, pk.id); subj = { name: p.subject.name || '', how: pk.how, note: pk.note }; }
+        const scene = FaImage3d.buildScene({ labels, depth: prep.depth }, { shape: 'auto', closeMode: 'objects', maxFaces: 6000 });
         if (!scene.objects.length || !scene.objects.every((o) => FaImage3d.isClosed(o.mesh))) return null;
         const mesh = FaImage3d.subjectMesh(scene); if (!mesh) return null;
         let texture = ''; try { texture = await this._i3dTexture(blob); } catch (_) { texture = ''; }
-        return { mesh, texture, faces: mesh.faces.length, all_closed: true };
+        return { mesh, texture, faces: mesh.faces.length, all_closed: true, subject: subj };
     };
     // 3D 編輯器裡使用者貼了圖、說「把這張圖變成 3D 物件」：回 add_object 的編輯，沒有符合就回 null
     M._i3dAttachedEdits = async function (req) {
         const text = String((req && req.text) || ''), imgs = (req && req.images) || [];
-        if (!imgs.length || !/(把|將|用)?這張(圖|照片|圖片).{0,8}(變成|轉成|做成|轉).{0,6}(3D|三維|立體)|圖(片)?轉\s*3D|image.?to.?3d/i.test(text)) return null;
+        const asked = /(把|將|用)?這張(圖|照片|圖片).{0,8}(變成|轉成|做成|轉).{0,6}(3D|三維|立體)|圖(片)?轉\s*3D|image.?to.?3d/i.test(text), pre = FaImage3d.subjectIntent(text);
+        if (!imgs.length || !(asked || (pre.decided && pre.subject === 'main' && (pre.source === 'phrase' || pre.source === 'flag')))) return null;
+        const si = await this._i3dSubjectIntent(text), subjectOnly = si.subject === 'main';   // 例如「把咖啡杯的照片擺到桌子上」：只要咖啡杯這一個物件，擺到桌子上
+        const sc = (req && req.spec && Array.isArray(req.spec.objects)) ? req.spec : null, tl = String(si.target || '').toLowerCase();
+        const tgt = tl && sc ? sc.objects.find((o) => o && o.type !== 'light' && o.type !== 'camera' && o.name && (String(o.name).toLowerCase().indexOf(tl) >= 0 || tl.indexOf(String(o.name).toLowerCase()) >= 0)) : null;
         const edits = [], notes = [];
-        for (let i = 0; i < Math.min(3, imgs.length); i++) {
+        for (let i = 0; i < Math.min(subjectOnly ? 1 : 3, imgs.length); i++) {
             let blob = null; try { blob = await (await fetch(imgs[i].dataUrl)).blob(); } catch (_) { blob = null; } if (!blob) continue;
-            const name = String(imgs[i].name || 'picture').replace(/\.[a-z0-9]+$/i, '').slice(0, 20) || 'picture', r = await this._i3dSubjectSolid(blob, imgs[i].name);
+            const name = String(imgs[i].name || 'picture').replace(/\.[a-z0-9]+$/i, '').slice(0, 20) || 'picture', r = await this._i3dSubjectSolid(blob, imgs[i].name, subjectOnly ? { subject: { name: si.name } } : undefined);
             if (!r) { notes.push(T('「' + name + '」沒能轉成立體（背景去不乾淨，或深度模型不能用）', '"' + name + '" could not be turned into a solid (background not separable, or the depth model is unavailable)')); continue; }
-            const fitted = FaSubject3d.fit(r.mesh, 0.5, null), obj = FaSubject3d.toObject({ name }, fitted, { texture: r.texture, color: '#ffffff' });
-            obj.credit = T('你貼的圖：' + name + '（離線深度模型轉成封閉立體；背面是推測的）', 'your picture: ' + name + ' (offline depth model, closed solid; the back is a guess)'); edits.push({ op: 'add_object', object: obj }); notes.push(T('「' + name + '」已轉成封閉的 3D 物件（' + r.faces + ' 個面）', '"' + name + '" turned into a closed 3D object (' + r.faces + ' faces)'));
+            const fitted = FaSubject3d.fit(r.mesh, tgt ? 0.3 : 0.5, null), label = subjectOnly && si.name ? si.name : name, obj = FaSubject3d.toObject({ name: label }, fitted, { texture: r.texture, color: '#ffffff' });
+            obj.credit = T('你貼的圖：' + name + '（離線深度模型轉成封閉立體；背面是推測的）', 'your picture: ' + name + ' (offline depth model, closed solid; the back is a guess)');
+            const ed = { op: 'add_object', object: obj }; if (tgt) ed.place = { of: tgt.id, rel: 'on' };   // 底面貼在目標物件的頂面
+            edits.push(ed); notes.push(T('「' + label + '」已轉成封閉的 3D 物件（' + r.faces + ' 個面）', '"' + label + '" turned into a closed 3D object (' + r.faces + ' faces)') + (r.subject ? T('；只留主體：' + r.subject.note, '; subject only: ' + r.subject.note) : '') + (tgt ? T('；擺在「' + (tgt.name || tgt.id) + '」上面', '; placed on "' + (tgt.name || tgt.id) + '"') : (si.target ? T('；場景裡沒有「' + si.target + '」，放在畫面中間', '; no "' + si.target + '" in the scene, placed in the middle') : '')));
         }
         return edits.length || notes.length ? { edits, notes } : null;
     };
@@ -32801,8 +32913,8 @@ const FaEditHost = (function () {
         this.register_slash_command('/edit-3d-model', hint,
             '3D 場景編輯器（用語言主導，位置完全以你現在看的角度算）：「在我的左前方放一個紅色的球」「把它移到桌子上面」；物件欄是樹狀的、屬性面板、雙擊物件進「單一物件編輯」（像做塑膠模型：每個面貼什麼圖、塗什麼顏色）、🧾 YAML 原始碼分頁可以直接改、圖可以貼進對話框當貼圖、復原／重做、整理成 prompt、匯出場景 YAML／PNG。/edit-3d-model room 從起手式開始、/edit-3d-model last 接著對話裡最近的 3D 場景。',
             run);
-        this.register_slash_command('/image-to-3d', '[--close objects|all] [--shape auto|smooth|cylinder|blocks] [--whole] [--segment] [--panorama] [--bg 背景圖]',
-            '圖片轉 3D（離線）：深度模型在這台電腦上估計深度，再把每個物件各自做成封閉的立體（不是浮雕：用物件自己的輪廓做柱體或樂高方塊的殼，再逐層細切），放進 3D 場景編輯器。--close all＝連背景都做成實心（要列印用）；--shape 選殼的種類；--whole＝整張圖當一個物件；--segment＝用分割模型（SlimSAM）自動分出多個物件，不加則用去背遮罩；貼兩張圖並說「背景差分」＝第二張是沒有主體的背景圖（同一個視角），逐像素比對取出主體。先貼圖再打指令、或先打指令再貼圖送出都可以；第一次使用要下載深度模型（會先問）。單張圖看不到背面，背面是推測的。',
+        this.register_slash_command('/image-to-3d', '[--close objects|all] [--shape auto|smooth|cylinder|blocks] [--whole] [--segment] [--panorama] [--subject main|名稱] [--bg 背景圖]',
+            '圖片轉 3D（離線）：深度模型在這台電腦上估計深度，再把每個物件各自做成封閉的立體（不是浮雕：用物件自己的輪廓做柱體或樂高方塊的殼，再逐層細切），放進 3D 場景編輯器。--close all＝連背景都做成實心（要列印用）；--shape 選殼的種類；--whole＝整張圖當一個物件；--segment＝用分割模型（SlimSAM）自動分出多個物件，不加則用去背遮罩；貼兩張圖並說「背景差分」＝第二張是沒有主體的背景圖（同一個視角），逐像素比對取出主體。--subject main（或「只要咖啡杯」「把咖啡杯擺到桌子上」這類話，程式會自己判斷）＝只要主體：圖裡只留一個物件（可指定名稱，例如 --subject 咖啡杯），桌子、背景和其他東西不放。先貼圖再打指令、或先打指令再貼圖送出都可以；第一次使用要下載深度模型（會先問）。單張圖看不到背面，背面是推測的。',
             async (argsText, run0) => { await (run0 || this)._image3dCommand(argsText); });
         { const ie = this.slashCommands.get('/image-to-3d'); if (ie) ie._autoFromSkillBundle = true; }
         this.register_slash_command('/edit-3d', hint, '3D 場景編輯器：/edit-3d-model 的別名。', (argsText, run0) => (this.slashCommands.get('/edit-3d-model') || { handler: run }).handler(argsText, run0));
@@ -32811,8 +32923,8 @@ const FaEditHost = (function () {
         const parse = async (self, raw) => { let a = {}; try { a = await self.repairJsonPayload(String(raw || '{}')); } catch (_) { /* */ } return a || {}; };
         registerOptional('image_to_3d',
             '圖片轉 3D（離線、不是浮雕）：用跑在這台電腦上的深度模型（Depth Anything V2 Small）估計深度，把圖裡每個物件各自做成封閉的立體（用物件自己的輪廓做柱體或樂高方塊的殼，再逐層細切；每個物件都通過封閉檢查），背景另成一塊，全部放進 3D 場景編輯器。圖片不會上傳；第一次使用要下載深度模型。單張圖看不到背面，背面是依輪廓推測的。close=all 連背景都做成實心（要列印時用），預設 objects。',
-            async function (rawArgs) { const a = await parse(this, rawArgs); try { return JSON.stringify(await this._imageTo3d({ image: a.image, request: a.request, close: a.close, shape: a.shape, whole: a.whole, segment: a.segment, bg: a.bg })); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); } },
-            { type: 'object', properties: { image: { type: 'string', description: '選填：圖片的 file_id 或檔名；省略時用這個對話最新的圖片附件' }, request: { type: 'string', description: '使用者的原話（例如「物件要封閉」「要能列印」「用樂高方塊」），程式會從裡面解析封閉範圍與外殼種類' }, close: { type: 'string', enum: ['objects', 'all'], description: 'objects＝每個物件封閉、背景是薄板（預設）；all＝連背景都做成實心' }, shape: { type: 'string', enum: ['auto', 'smooth', 'cylinder', 'blocks'] }, whole: { type: 'boolean', description: 'true＝整張圖當一個物件，不分前景背景' }, bg: { type: 'string', description: '選填：沒有主體的背景圖（file_id 或檔名，要跟主體圖同一個視角），用背景差分取出前景' }, segment: { type: 'boolean', description: 'true＝用分割模型自動分出多個物件（要下載 SlimSAM）；預設用去背遮罩' } } }
+            async function (rawArgs) { const a = await parse(this, rawArgs); try { return JSON.stringify(await this._imageTo3d({ image: a.image, request: a.request, close: a.close, shape: a.shape, whole: a.whole, segment: a.segment, bg: a.bg, subject: a.subject, subject_name: a.subject_name })); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); } },
+            { type: 'object', properties: { image: { type: 'string', description: '選填：圖片的 file_id 或檔名；省略時用這個對話最新的圖片附件' }, request: { type: 'string', description: '使用者的原話（例如「物件要封閉」「要能列印」「用樂高方塊」），程式會從裡面解析封閉範圍與外殼種類' }, close: { type: 'string', enum: ['objects', 'all'], description: 'objects＝每個物件封閉、背景是薄板（預設）；all＝連背景都做成實心' }, shape: { type: 'string', enum: ['auto', 'smooth', 'cylinder', 'blocks'] }, whole: { type: 'boolean', description: 'true＝整張圖當一個物件，不分前景背景' }, bg: { type: 'string', description: '選填：沒有主體的背景圖（file_id 或檔名，要跟主體圖同一個視角），用背景差分取出前景' }, segment: { type: 'boolean', description: 'true＝用分割模型自動分出多個物件（要下載 SlimSAM）；預設用去背遮罩' }, subject: { type: 'string', enum: ['main', 'all'], description: 'main＝只要主體（例如咖啡杯放在桌上的照片，只要咖啡杯一個封閉的立體，桌子和背景不放，之後可以擺到別的桌子上）；all（預設）＝圖裡所有物件。省略時程式會從 request（使用者的話）判斷' }, subject_name: { type: 'string', description: '選填：主體是什麼（例如「咖啡杯」），程式用視覺模型從找到的物件裡挑出它；沒給就選最大又最靠中間的' } } }
         );
         registerOptional('edit_3d_open',
             '在對話裡放一個「3D 場景編輯器」（用語言主導；位置完全以使用者現在看的角度算：「我的左前方」「桌子的右邊」）：物件欄（樹狀、群組）、屬性面板、3D 畫面（拖曳轉視角、點物件選取、拖曳移動）、🧾 YAML 原始碼分頁（可直接改）、雙擊物件進「單一物件編輯」（像做塑膠模型：每個面貼什麼圖、塗什麼顏色）、貼圖（貼進編輯器對話框、網址、找圖）、復原／重做、匯出場景 YAML（render_3d_scene 可直接播放）／PNG／整理成 prompt。參數：starter（blank、room、model、studio）、request（一句話：開起來後編輯器自己的 AI 去做）、yaml（一份場景 YAML 當起點）、file_id（使用者上傳的 .3dscene.yaml 或 STL／OBJ／3MF／FBX 模型）、last（true＝接著對話裡最近的 3D 場景）、id（接著原本的專案）。做完編輯器就在對話裡，不要把場景 YAML 貼進對話。參數: {"starter":"room","request":"（選填）","yaml":"（選填）","file_id":"（選填）","last":false,"id":"（選填）"}',

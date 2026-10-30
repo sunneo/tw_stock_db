@@ -661,6 +661,71 @@
     return vs.length ? { vertices: vs, faces: fs, uvs: uvs } : null;
   }
 
+  // ---------- subject only: the user wants ONE thing out of the picture (a coffee cup on a table -> just the cup, to be put on a table in a scene) ----------
+  var GENERIC_NAME = /^(?:這張|那張|這幅|這個|那個|這些|這|那|它|牠|他|圖片?|照片|相片|主體|主角|物體|東西|物件|前景|整張.*|全部.*|場景|模型|3d.*|三維.*)$/i;
+  function cleanName(s) {
+    s = String(s == null ? '' : s).trim().replace(/^[「"'『《“]+|[」"'』》”]+$/g, '').trim();
+    s = s.replace(/(?:的)(?:圖片|照片|相片|圖|模型|物件)$/, '').replace(/(?:照片|相片|圖片)$/, '');
+    s = s.replace(/^(?:這張|那張|這幅)?(?:圖片|照片|相片|圖)(?:裡面|裡|裏|中|上)?的?/, '').replace(/^(?:一個|一隻|一顆|一只|一杯|一台|一張|一把|一棵|一條|一件|一盞|一支|這個|那個|這隻|那隻|1個|a\s+|an\s+|the\s+)/i, '').replace(/^的/, '').trim();
+    return GENERIC_NAME.test(s) ? '' : s;
+  }
+  function cleanTarget(s) { return String(s == null ? '' : s).trim().replace(/^[「"'『《“]+|[」"'』》”]+$/g, '').replace(/(?:模組|模型|物件)$/, '').replace(/^(?:那個|這個|那張|這張|一個|一張|the\s+|a\s+)/i, '').trim(); }
+  // text -> { subject:'main'|'all', name:'', target:'', decided:bool, source:'flag'|'phrase'|'default'|'hint' }
+  // 'main' = only the subject (name = what it is, when the words say so); decided:false = the words hint at it but the program cannot tell -> ask the model one closed question (intentQuestion / intentFromPick)
+  function subjectIntent(text) {
+    var r = subjectIntent0(text), m;
+    if (r.subject === 'main' && !r.target && (m = /(?:擺放|放置|擺|放)(?:到|在|進|於)\s*(.+?)(?:上面|上方|上|裡面|裡|旁邊|旁)(?=[，。,.！!？?；;\s]|$)/.exec(String(text || '')))) { r.target = cleanTarget(m[1]); }
+    return r;
+  }
+  function subjectIntent0(text) {
+    var t = String(text || '').replace(/\[附件：[^\]]*\]/g, ' '), m, name = '', target = '';
+    if ((m = /--subject[=\s]+(?:"([^"]+)"|'([^']+)'|([^\s]+))/i.exec(t))) {
+      var v = (m[1] || m[2] || m[3] || '').trim();
+      if (/^(?:all|全部|整張)$/i.test(v)) { return { subject: 'all', name: '', target: '', decided: true, source: 'flag' }; }
+      return { subject: 'main', name: /^(?:main|主體|auto|自動)$/i.test(v) ? '' : cleanName(v), target: '', decided: true, source: 'flag' };
+    }
+    if (/背景也要|含背景|連背景|包含背景|帶背景|整個場景|整張場景|whole\s+scene|with\s+(?:the\s+)?background/i.test(t)) { return { subject: 'all', name: '', target: '', decided: true, source: 'phrase' }; }
+    // 「把 X 擺到 Y 上」
+    if ((m = /(?:把|將|拿)\s*(.+?)\s*(?:要|想要|想|可以|能)?\s*(?:再)?(?:擺放|放置|擺|放|貼|搬|移)(?:到|在|進|入|於|去)\s*(.+?)(?:上面|上方|上|裡面|裡|旁邊|旁|前面|前|內)(?=[，。,.！!？?；;\s]|$)/.exec(t))) {
+      name = cleanName(m[1]); target = cleanTarget(m[2]);
+      if (name) { return { subject: 'main', name: name, target: target, decided: true, source: 'phrase' }; }
+      return { subject: 'main', name: '', target: target, decided: false, source: 'hint' };
+    }
+    // 「只要／只想要／只放 X」
+    if ((m = /只(?:想要|需要|要|想放|放|留|保留|取出|取|拿出|拿|轉|做|抽出)\s*(?:出)?(?:一個|一隻|一顆)?\s*(.+?)(?=[，。,.！!？?；;\n]|$|不要|就好|就可以|即可|而已|然後|並且|變成|轉成|做成|擺|放到|放在|貼|到)/.exec(t))) {
+      name = cleanName(m[1]);
+      if (name.length > 12) { return { subject: 'main', name: '', target: '', decided: false, source: 'hint' }; }
+      return { subject: 'main', name: name, target: '', decided: true, source: 'phrase' };
+    }
+    if ((m = /(?:^|[\s,.;])only\s+(?:want\s+|need\s+)?(?:the\s+|a\s+|an\s+)?([a-z][a-z ]{1,30}?)(?=[,.;]|\s+on\b|\s+onto\b|\s+in\b|\s+without\b|$)/i.exec(t)) || (m = /\bjust\s+(?:the\s+|a\s+|an\s+)([a-z][a-z ]{1,30}?)(?=[,.;]|\s+on\b|\s+onto\b|\s+in\b|\s+without\b|$)/i.exec(t))) {
+      name = cleanName(m[1]); return { subject: 'main', name: name, target: '', decided: true, source: 'phrase' };
+    }
+    if ((m = /\b(?:put|place|set)\s+(?:the\s+|a\s+|an\s+|this\s+)?([a-z][a-z ]{1,30}?)\s+(?:photo\s+|picture\s+|image\s+)?(?:on|onto)\s+(?:the\s+|a\s+)?([a-z][a-z ]{1,30})/i.exec(t))) {
+      name = cleanName(m[1]); target = cleanTarget(m[2]); if (name) { return { subject: 'main', name: name, target: target, decided: true, source: 'phrase' }; }
+    }
+    if (/去背|不要背景|沒有背景|無背景|不含背景|只要(?:前景|主體|主角)|只留主體|不要桌子|不要其他|其他不要|without\s+(?:the\s+)?background/i.test(t)) { return { subject: 'main', name: '', target: '', decided: true, source: 'phrase' }; }
+    if (/主體|主角|單一物件|只|擺到|擺在|放到|放在|放進|subject|\bonly\b|\bjust\b/i.test(t)) { return { subject: 'main', name: '', target: '', decided: false, source: 'hint' }; }
+    return { subject: 'all', name: '', target: '', decided: true, source: 'default' };
+  }
+  // the one closed question for an undecided case; the answer index goes through intentFromPick (null stays undecided -> the program keeps the default 'all')
+  function intentQuestion(text) {
+    return { question: '使用者對一張照片說：「' + String(text || '').replace(/\[附件：[^\]]*\]/g, ' ').trim().slice(0, 200) + '」。他想要得到什麼？', options: ['只要照片裡的主體（一個物件，不要桌子、背景和其他東西）', '要照片裡所有的東西（含背景）'] };
+  }
+  function intentFromPick(i) { return i === 0 ? 'main' : (i === 1 ? 'all' : null); }
+  // per-candidate question for the vision model (a cropped picture of one found object): A yes / B no
+  function itemQuestion(name) { return { question: '這張圖裡最主要的東西是「' + String(name) + '」嗎？', options: ['是', '不是'] }; }
+  // found objects ranked as the subject: biggest and nearest the middle first. -> [{ id, area, frac, box:[x0,y0,x1,y1] (inclusive cells), cx, cy, score }]
+  function rankSubjects(labels, w, h) {
+    var st = {}, y, x, id;
+    for (y = 0; y < h; y++) { for (x = 0; x < w; x++) { id = labels[y][x]; if (!id) { continue; } var s = st[id] || (st[id] = { id: id, area: 0, x0: x, y0: y, x1: x, y1: y, sx: 0, sy: 0 }); s.area++; s.sx += x; s.sy += y; if (x < s.x0) { s.x0 = x; } if (x > s.x1) { s.x1 = x; } if (y < s.y0) { s.y0 = y; } if (y > s.y1) { s.y1 = y; } } }
+    return Object.keys(st).map(function (k) {
+      var s = st[k], cx = s.sx / s.area, cy = s.sy / s.area, dist = Math.sqrt(Math.pow(cx / w - 0.5, 2) + Math.pow(cy / h - 0.5, 2)) / 0.7071;
+      return { id: s.id, area: s.area, frac: s.area / (w * h), box: [s.x0, s.y0, s.x1, s.y1], cx: cx, cy: cy, score: (s.area / (w * h)) * (1 - 0.8 * dist) };
+    }).sort(function (a, b) { return b.score - a.score; });
+  }
+  // keep one label as the only object (id 1), everything else becomes empty
+  function keepLabel(labels, id) { return labels.map(function (r) { return r.map(function (v) { return v === id ? 1 : 0; }); }); }
+
   // ---------- options from the user's words (the program decides; the model is only asked when this cannot) ----------
   // close: 'objects' (default; every found object is a closed solid, the backdrop is a thin closed slab) | 'all' (the user wants everything closed / printable: the backdrop is a full-thickness solid too)
   function parseOptions(text) {
@@ -674,6 +739,7 @@
     else if (/圓柱|柱體|cylinder/i.test(t)) { out.shape = 'cylinder'; }
     else if (/樂高|方塊|lego|blocks?/i.test(t)) { out.shape = 'blocks'; }
     if (/--whole(?![a-z])|整張圖當一個|整張當一個|不要?分物件|whole\s+image/i.test(t)) { out.whole = true; }
+    var si = subjectIntent(t); out.subject = si.subject; out.subjectName = si.name; out.subjectTarget = si.target; out.subjectDecided = si.decided; out.subjectSource = si.source;
     return out;
   }
 
@@ -713,5 +779,5 @@
     return spec;
   }
 
-  return { subjectMesh: subjectMesh, stitchDepths: stitchDepths, panoFov: panoFov, buildPanorama: buildPanorama, bendCylinder: bendCylinder, depthBands: depthBands, readExif: readExif, orbitKind: orbitKind, diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
+  return { subjectIntent: subjectIntent, intentQuestion: intentQuestion, intentFromPick: intentFromPick, itemQuestion: itemQuestion, rankSubjects: rankSubjects, keepLabel: keepLabel, subjectMesh: subjectMesh, stitchDepths: stitchDepths, panoFov: panoFov, buildPanorama: buildPanorama, bendCylinder: bendCylinder, depthBands: depthBands, readExif: readExif, orbitKind: orbitKind, diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
 });

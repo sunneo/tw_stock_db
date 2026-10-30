@@ -143,6 +143,7 @@ const suites = [
     ['電腦操作：renderer 工具層（19 個 computer_* 工具、/computer 指令、網頁版不註冊）', 'scripts/computer-tests/computer_host.test.js'],
     ['電腦操作：INTEGRATION.md 的貼上用區塊（領域、任務提示 regex、YAML、embed 片段、接線補丁）', 'scripts/computer-tests/integration_doc.test.js'],
     ['圖片轉3D核心（封閉殼、平滑殼、背景差分、全景分層、貼材質）', 'scripts/media-tests/image3d_core.test.js'],
+    ['圖片轉3D主機端模擬（只要主體：挑主體、貼圖流程、擺到桌子上）', 'scripts/media-tests/image3d_host.test.js'],
 ];
 let failed = 0;
 const results = [], t00 = Date.now();   // 測試報告：每組的結果、數量、失敗項目、耗時

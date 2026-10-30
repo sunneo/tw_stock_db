@@ -273,4 +273,44 @@ t('toSpec 貼材質：每個頂點一組貼圖座標（0..1）、材質帶原圖
   assert(Math.max.apply(null, ys) > 0.5 && Math.min.apply(null, ys) < 0.5);
 });
 
+
+t('subjectIntent: 把咖啡杯的照片擺到桌子模組上 -> 只要咖啡杯、目標桌子', () => {
+  const r = C.subjectIntent('把一個咖啡杯的照片要擺到桌子模組上');
+  assert.deepStrictEqual([r.subject, r.name, r.target, r.decided], ['main', '咖啡杯', '桌子', true], JSON.stringify(r));
+});
+t('subjectIntent: 只要／只想要／只放', () => {
+  assert.strictEqual(C.subjectIntent('我只想要咖啡杯，不要桌子').name, '咖啡杯');
+  assert.strictEqual(C.subjectIntent('只放一個蘋果就好').name, '蘋果');
+  const r = C.subjectIntent('只要主體'); assert(r.subject === 'main' && r.name === '' && r.decided);
+  assert.strictEqual(C.subjectIntent('--subject 咖啡杯').name, '咖啡杯');
+  assert.strictEqual(C.subjectIntent('--subject main').name, '');
+  assert.strictEqual(C.subjectIntent('--subject all').subject, 'all');
+});
+t('subjectIntent: 英文', () => {
+  assert.strictEqual(C.subjectIntent('only the coffee cup, put it on the table').name, 'coffee cup');
+  const r = C.subjectIntent('put the coffee cup photo on the table'); assert(r.subject === 'main' && r.name === 'coffee cup' && r.target === 'table', JSON.stringify(r));
+});
+t('subjectIntent: 預設全部、背景也要＝全部、有線索但讀不懂＝未決定', () => {
+  assert.deepStrictEqual(C.subjectIntent('物件要封閉').subject, 'all'); assert(C.subjectIntent('物件要封閉').decided);
+  assert.strictEqual(C.subjectIntent('只要咖啡杯但背景也要').subject, 'all');
+  const u = C.subjectIntent('把這張圖放到場景裡'); assert(u.subject === 'main' && !u.decided, JSON.stringify(u));
+  assert.strictEqual(C.subjectIntent('把這張圖變成 3D 物件').subject, 'all');
+  assert.strictEqual(C.subjectIntent('').subject, 'all');
+});
+t('parseOptions 帶主體欄位；預設不變', () => {
+  const o = C.parseOptions('把咖啡杯的照片擺到桌子上'); assert(o.subject === 'main' && o.subjectName === '咖啡杯' && o.subjectTarget === '桌子');
+  const d = C.parseOptions('要能列印'); assert(d.subject === 'all' && d.close === 'all');
+});
+t('intentQuestion／intentFromPick', () => {
+  const q = C.intentQuestion('x'); assert.strictEqual(q.options.length, 2); assert.strictEqual(C.intentFromPick(0), 'main'); assert.strictEqual(C.intentFromPick(1), 'all'); assert.strictEqual(C.intentFromPick(null), null);
+  assert(C.itemQuestion('杯子').question.includes('杯子'));
+});
+t('rankSubjects: 又大又靠中間的先；keepLabel 只留一個且主體仍封閉', () => {
+  const W = 48, H = 36, labels = grid(W, H, (x, y) => (((x - 24) ** 2 + (y - 16) ** 2 < 81) ? 1 : (x >= 38 && y >= 28 ? 2 : 0)));
+  const rk = C.rankSubjects(labels, W, H); assert.strictEqual(rk.length, 2); assert.strictEqual(rk[0].id, 1);
+  const only = C.keepLabel(labels, 2); assert(only.every((r) => r.every((v) => v === 0 || v === 1)));
+  const s = C.buildScene({ labels: C.keepLabel(labels, 1), depth: grid(W, H, (x, y) => (labels[y][x] === 1 ? 0.8 : 0.2)) }, {});
+  assert.strictEqual(s.objects.length, 1); assert(C.isClosed(s.objects[0].mesh));
+});
+
 console.log(pass + ' passed' + (process.exitCode ? ', with failures' : ''));
