@@ -99,6 +99,11 @@ contextBridge.exposeInMainWorld("desktopAPI", {
     write: (id, text) => ipcRenderer.invoke("fa:chats:write", { id, text }),
     delete: (id) => ipcRenderer.invoke("fa:chats:delete", { id }),
   },
+  // 系統匣（見 main-ext.js installTray）：get＝目前狀態；set({trayIcon, closeToTray})
+  tray: {
+    get: () => ipcRenderer.invoke("fa:tray:get"),
+    set: (patch) => ipcRenderer.invoke("fa:tray:set", patch),
+  },
   exec: {
     getSettings: () => ipcRenderer.invoke("fa:exec:getSettings"),
     setSettings: (patch) => ipcRenderer.invoke("fa:exec:setSettings", patch),

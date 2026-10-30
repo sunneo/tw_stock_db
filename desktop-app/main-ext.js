@@ -22,6 +22,7 @@ function register(ipcMain, ctx) {
     if (!ctx.getMainWindow && E && E.BrowserWindow) ctx.getMainWindow = () => { try { const all = E.BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed()); return all.find((w) => w.isVisible()) || all[0] || null; } catch (_) { return null; } };
   } catch (_) { /* */ }
   const plog = installPersistentLog(ctx); // 要在其他東西之前：後面的 console 訊息才會被記下來
+  try { installTray(ctx, ipcMain); } catch (e) { console.warn("[main-ext] 系統匣載入失敗：", e && e.message); }
   const overlay = installModuleOverlay(ctx); // 必須最先做：後面的 require("./computer-use-ipc.js") 之類要靠它
   const { fs, path } = ctx;
   const electron = ctx.electron || null;
@@ -583,6 +584,69 @@ function installChunkedUpdater(ipcMain, ctx, overlay) {
     try { ipcMain.removeHandler("fa:update:check"); } catch (_) { /* */ }
     ipcMain.handle("fa:update:check", async () => { try { return await check(); } catch (err) { return { ok: false, error: String((err && err.message) || err) }; } });
     ipcMain.handle("fa:update:apply", async () => { try { return await apply(); } catch (err) { return { ok: false, error: String((err && err.message) || err) }; } });
+  });
+}
+
+// ---------- 系統匣（Windows／Ubuntu／XFCE）：設定「顯示系統匣圖示」「關閉視窗時縮到系統匣」，存在 desktop-settings.json 的 trayIcon／closeToTray ----------
+// 關閉＝只把主視窗藏起來（行程、遠端群組、排程都繼續跑），要從系統匣選單「結束」才真的離開。
+// Linux 的系統匣靠 StatusNotifier（DBus）；沒有人接（例如 GNOME 沒裝 AppIndicator 外掛、XFCE 面板沒加「通知區域／狀態通知」）時圖示根本不會出現，
+// 這時把視窗藏起來就找不回來了，所以偵測不到時「關閉」改成最小化到工作列，並在設定畫面說明原因。
+function installTray(ctx, ipcMain) {
+  const E = ctx.electron; if (!E || !E.app || !E.Tray || !E.Menu) return;
+  const app = E.app, nodePath = require("path"), nodeFs = require("fs"), isLinux = process.platform === "linux";
+  const st = { cfg: { trayIcon: false, closeToTray: false }, tray: null, quitting: false, linuxHost: null, error: "" };
+  app.on("before-quit", () => { st.quitting = true; });
+  // 視窗藏起來（縮到系統匣）、被別的視窗蓋住、最小化時，Chromium 預設會把頁面降速（計時器 1 秒一次、動畫幀停掉、被遮住的視窗當成背景），
+  // 匯出 mp4、錄製、長時間任務就會停擺。桌面版是會自己跑長任務的助理，所以整個關掉這些降速（要在 app ready 之前下開關）。
+  try { for (const sw of ["disable-renderer-backgrounding", "disable-background-timer-throttling", "disable-backgrounding-occluded-windows"]) app.commandLine.appendSwitch(sw); } catch (_) { /* */ }
+  try { const cur = String(app.commandLine.getSwitchValue("disable-features") || ""); const add = ["CalculateNativeWinOcclusion"].filter((f) => cur.split(",").indexOf(f) < 0); if (add.length) app.commandLine.appendSwitch("disable-features", [cur].concat(add).filter(Boolean).join(",")); } catch (_) { /* */ }
+  const mainWin = () => { try { const w = ctx.getMainWindow && ctx.getMainWindow(); return w && !w.isDestroyed() ? w : null; } catch (_) { return null; } };
+  const showWin = () => { const w = mainWin(); if (!w) return; try { if (w.isMinimized()) w.restore(); w.setSkipTaskbar(false); w.show(); w.focus(); } catch (_) { /* */ } };
+  const quit = () => { st.quitting = true; app.quit(); };
+  const iconImage = () => {
+    const cands = [nodePath.join(app.getAppPath(), "build", "icon.png"), nodePath.join(__dirname, "build", "icon.png")];
+    for (const f of cands) { try { const img = E.nativeImage.createFromPath(f); if (!img.isEmpty()) return img.resize({ width: isLinux ? 22 : 16, height: isLinux ? 22 : 16 }); } catch (_) { /* 換下一個 */ } }
+    return E.nativeImage.createEmpty();
+  };
+  const probeLinuxHost = () => new Promise((resolve) => {
+    if (!isLinux) return resolve(true);
+    try { require("child_process").execFile("busctl", ["--user", "status", "org.kde.StatusNotifierWatcher"], { timeout: 4000 }, (err) => resolve(!err)); } catch (_) { resolve(true); }   // 沒有 busctl：無法判斷，當作有
+  });
+  const destroyTray = () => { if (st.tray) { try { st.tray.destroy(); } catch (_) { /* */ } st.tray = null; } };
+  const buildTray = () => {
+    if (st.tray) return; st.error = "";
+    try {
+      const t = new E.Tray(iconImage()); t.setToolTip("FloatingAssistant");
+      t.setContextMenu(E.Menu.buildFromTemplate([{ label: "顯示視窗", click: showWin }, { type: "separator" }, { label: "結束", click: quit }]));
+      t.on("click", () => { const w = mainWin(); if (w && w.isVisible() && !w.isMinimized() && !isLinux) { try { w.hide(); w.setSkipTaskbar(true); } catch (_) { /* */ } } else showWin(); });   // Windows：點一下顯示／藏起來；Linux 的 click 常常不會送來，主要靠選單
+      t.on("double-click", showWin); st.tray = t;
+    } catch (e) { st.error = String((e && e.message) || e); st.tray = null; }
+  };
+  const apply = async () => {
+    if (st.cfg.trayIcon || st.cfg.closeToTray) { if (isLinux && st.linuxHost == null) st.linuxHost = await probeLinuxHost(); buildTray(); } else destroyTray();
+  };
+  const status = () => ({ trayIcon: !!st.cfg.trayIcon, closeToTray: !!st.cfg.closeToTray, active: !!st.tray, platform: process.platform, linuxHost: st.linuxHost, error: st.error });
+  const trayReliable = () => !!st.tray && (!isLinux || st.linuxHost !== false);
+  const hook = (win) => {
+    if (!win || win.__faTrayHooked) return; win.__faTrayHooked = true;
+    try { win.webContents.setBackgroundThrottling(false); } catch (_) { /* 舊版 Electron：只靠上面的命令列開關 */ }
+    win.on("close", (ev) => {
+      if (st.quitting || !st.cfg.closeToTray || !st.tray || win !== mainWin()) return;
+      ev.preventDefault();
+      try { if (trayReliable()) { win.hide(); win.setSkipTaskbar(true); } else win.minimize(); } catch (_) { /* */ }   // 系統匣不一定看得到：看不到就只最小化，視窗還在工作列上找得回來
+    });
+  };
+  app.on("browser-window-created", (_e, w) => hook(w)); try { E.BrowserWindow.getAllWindows().forEach(hook); } catch (_) { /* */ }
+  app.on("second-instance", showWin);
+  const load = async () => { try { const c = await ctx.getDesktopSettings(); st.cfg = { trayIcon: !!(c && c.trayIcon), closeToTray: !!(c && c.closeToTray) }; } catch (_) { /* 預設關 */ } await apply(); };
+  app.whenReady().then(load).catch(() => {});
+  ipcMain.handle("fa:tray:get", async () => status());
+  ipcMain.handle("fa:tray:set", async (_evt, patch) => {
+    patch = patch || {}; const next = {}; if (typeof patch.trayIcon === "boolean") next.trayIcon = patch.trayIcon; if (typeof patch.closeToTray === "boolean") next.closeToTray = patch.closeToTray;
+    if (next.closeToTray) next.trayIcon = true;   // 縮到系統匣一定要有圖示
+    if (next.trayIcon === false) next.closeToTray = false;
+    Object.assign(st.cfg, next); try { await ctx.patchDesktopSettings(next); } catch (_) { /* 這次還是生效，只是下次啟動不記得 */ }
+    await apply(); if (!st.cfg.closeToTray) { const w = mainWin(); if (w && !w.isVisible()) showWin(); } return status();
   });
 }
 

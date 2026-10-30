@@ -2137,6 +2137,15 @@ function patchCloudflareWording(root) {
           <p class="ai-advanced-hint">AI是否可以透過run_command在這台電腦上直接執行程式/指令——執行本身風險最高，預設每次執行前都會跳出原生確認視窗，顯示完整指令內容，由你親自按「執行」才會真的跑。</p>
           <div id="desktop-settings-exec-slot" style="display:flex; flex-direction:column; gap:8px;"></div>
         </div>
+        <div class="ai-advanced-stack" id="desktop-settings-tray-stack" style="display:none;">
+          <label class="ai-advanced-label">系統匣</label>
+          <p class="ai-advanced-hint">在系統匣（Windows 右下角、Ubuntu／XFCE 面板的通知區）放一個圖示，右鍵可以「顯示視窗」或「結束」。開了「關閉視窗時縮到系統匣」之後，按視窗的 ✕ 只會把視窗藏起來，程式、遠端群組與背景工作都繼續跑；要真的離開請用系統匣選單的「結束」。</p>
+          <div style="display:flex; flex-direction:column; gap:8px;">
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="checkbox" id="desktop-tray-icon"> 顯示系統匣圖示</label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="checkbox" id="desktop-tray-close"> 關閉視窗時縮到系統匣（不結束程式）</label>
+            <div id="desktop-tray-note" class="ai-advanced-hint" style="margin:0;"></div>
+          </div>
+        </div>
         <div class="ai-advanced-stack">
           <label class="ai-advanced-label">工作區資料夾</label>
           <p class="ai-advanced-hint">對話紀錄跟這裡的所有設定都存在這個資料夾底下的隱藏子資料夾<code>.floating-assistant</code>裡，不同資料夾各自獨立。預設是啟動當下的目錄（例如從終端機<code>cd</code>到某個專案再啟動）；GUI捷徑啟動時目錄常常不是你真正在用的資料夾，可以在這裡手動切換。切換資料夾時，目前的設定（金鑰／模型清單／偏好等）會複製過去，但目前的對話紀錄不會帶過去——新資料夾一律是全新的對話。</p>
@@ -2191,6 +2200,23 @@ function patchCloudflareWording(root) {
           }
           location.reload();
         });
+      }
+
+      // 系統匣：舊版預載腳本沒有 desktopAPI.tray（下次啟動才會有），這時整區不顯示
+      if (window.desktopAPI && window.desktopAPI.tray) {
+        const trayStack = pane.querySelector("#desktop-settings-tray-stack"), iconChk = pane.querySelector("#desktop-tray-icon"), closeChk = pane.querySelector("#desktop-tray-close"), noteEl = pane.querySelector("#desktop-tray-note");
+        const paint = (s) => {
+          iconChk.checked = !!s.trayIcon; closeChk.checked = !!s.closeToTray; closeChk.disabled = false;
+          let note = "";
+          if (s.error) note = "⚠️ 建立系統匣圖示失敗：" + s.error;
+          else if (s.platform === "linux" && s.linuxHost === false && s.active) note = "⚠️ 這個桌面環境沒有偵測到系統匣（StatusNotifier）。Ubuntu 請確認已啟用 AppIndicator 外掛；XFCE 請在面板加入「狀態通知區」（Status Tray／Notification Area）。偵測不到時，「關閉」會改成最小化到工作列，避免視窗找不回來。";
+          else if (s.platform === "linux" && s.active) note = "Linux 的圖示左鍵常常沒有反應，請用右鍵選單。";
+          noteEl.textContent = note;
+        };
+        const refresh = async () => { try { paint(await window.desktopAPI.tray.get()); trayStack.style.display = ""; } catch (_) { /* 主程式還不支援：不顯示 */ } };
+        iconChk.addEventListener("change", async () => { try { paint(await window.desktopAPI.tray.set({ trayIcon: iconChk.checked })); } catch (_) { /* */ } });
+        closeChk.addEventListener("change", async () => { try { paint(await window.desktopAPI.tray.set({ closeToTray: closeChk.checked })); } catch (_) { /* */ } });
+        refresh();
       }
 
       fa.registerAdvancedSettingsTab("desktop", "desktop-app", "桌面版設定", pane);
