@@ -32149,7 +32149,7 @@ const FaEditHost = (function () {
     const words = (t) => String(t || '').toLowerCase().split(/[^a-z0-9一-鿿]+/).filter((w) => w.length > 2 || /[一-鿿]/.test(w));
     const overlap = (a, b) => { const A = {}, B = {}; let n = 0, u = 0; words(a).forEach((w) => { A[w] = 1; }); words(b).forEach((w) => { B[w] = 1; }); Object.keys(A).forEach((w) => { u++; if (B[w]) n++; }); Object.keys(B).forEach((w) => { if (!A[w]) u++; }); return u ? n / u : 0; };
     const VECTOR_WORDS = /(svg|向量|描摹|描圖|trace|vector|轉成?圖形|變成?圖形|畫成)/i, PLACE_WORDS = /(放進|放入|放到|貼上|貼到|加入|加進|插入|擺|place|insert|put|add)/i;
-    const RESTYLE_WORDS = /(變成|轉成|改成|換成|做成|弄成|風格|畫風|style|looks? like|像.{0,6}一樣|in the style)/i, REPAINT_WORDS = /(重畫|重新畫|重繪|重新生成|用\s*ai\s*(?:重)?畫|regenerate|redraw|re-?imagine|repaint|paint it again)/i;
+    const RESTYLE_WORDS = /(變成|轉成|改成|換成|做成|弄成|風格|畫風|style|looks? like|像.{0,6}一樣|in the style)/i, TEXTEDIT_WORDS = /(把.{1,40}(改成|換成|變成|加上|加一|拿掉|去掉|換一)|改圖|修改這張圖|edit (?:this|the) (?:picture|image|photo)|change the .{1,30} to|add an? .{1,30} to (?:it|the))/i, REPAINT_WORDS = /(重畫|重新畫|重繪|重新生成|用\s*ai\s*(?:重)?畫|regenerate|redraw|re-?imagine|repaint|paint it again)/i;
     const STYLE_FOR_SD = { oil: 'oil', watercolor: 'watercolor', sketch: 'sketch', ink: 'ink', cartoon: 'anime', pixel: 'pixel', poster: 'flat', vintage: 'photo', neon: 'cyberpunk', night: 'cinematic', dreamy: 'fantasy' };
     const yes = (t) => /^\s*(yes|yeah|y\b|是|對|像|有)/i.test(String(t || '')), no = (t) => /^\s*(no\b|nope|不|沒|否)/i.test(String(t || ''));
 
@@ -32369,6 +32369,18 @@ const FaEditHost = (function () {
             const obj = { type: 'image', name: T('AI 重畫', 'AI repaint') + (st ? '：' + st.label : ''), ref: k.ref, mime: k.mime, x: b ? b.x + b.w + 40 : 0, y: b ? b.y : 0, w, h, prompt: res.image.prompt_used || prompt, seed: res.image.seed };
             return { edits: [{ op: 'add_object', object: obj }], prompt: obj.prompt };
         },
+        // 用文字改圖：整張圖（沒有遮罩）丟給本機圖生圖（sd-turbo 或 SDXS＋TAESD），結果放成新圖層，原圖不動。強度由程式從「微調／大改」字眼讀，沒有就 0.5
+        async _edTextEdit(spec, srcObj, text, status, notes) {
+            if (!srcObj || srcObj.type !== 'image') { notes.push(T('沒有可以改的圖片圖層。', 'There is no picture layer to edit.')); return null; }
+            const A = this._edAi(); let prompt = text.replace(/[，。]/g, ', ').trim();
+            if (/[一-鿿]/.test(prompt) && A.have()) { try { status(T('把要求翻成英文關鍵詞…', 'Turning the request into English keywords…')); prompt = (await A.chat('Turn this picture-editing request into short English image keywords describing the picture AFTER the change. Output only the keywords.', prompt)).trim().slice(0, 200); } catch (_) { /* 用原文 */ } }
+            status(T('本機模型依原圖改圖中…（第一次要下載；CPU 版要等一下）', 'The local model is editing the picture… (first use downloads it; the CPU version takes a while)'));
+            const blob = await FaEditStore.getImage(srcObj.ref), res = await this._localEditImage({ image: blob, prompt, request: text });
+            if (!res.ok) { notes.push(res.needs_download ? T('本機改圖模型還沒下載。', 'The local editing model is not downloaded.') : String(res.error || 'no image')); return null; }
+            const k = await this._edPics('edit-picture').keep(res.blob), b0 = FaEditPicture.types.image.bbox(srcObj), w = b0.w, h = Math.round(b0.w * k.h / k.w);
+            const obj = { type: 'image', name: T('AI 改圖', 'AI edit'), ref: k.ref, mime: k.mime, x: b0.x + b0.w + 40, y: b0.y, w, h, prompt, seed: res.seed };
+            return { edits: [{ op: 'add_object', object: obj }], prompt, strength: res.strength, steps: res.steps, model: res.model, backend: res.backend, note: res.note };
+        },
         // ───── /edit-picture 的擴散細化（只重畫一小塊再羽化蓋回去；設計見 DESIGN.edit-picture-diffusion.md）─────
         // 兩條路:① 線上有能改圖的模型（NVIDIA FLUX.1 Kontext）→ 把這一小塊（含四周多裁的脈絡）當輸入、依原圖重畫細節（refine=edit）；
         // ② 只有本機 SDXS → 它沒有 VAE 編碼器、一步取樣沒有「強度」，不能依原圖重畫；改成用提示詞重畫一張，只借它的細節紋理加到原圖上（refine=texture，實驗性）。
@@ -32393,7 +32405,7 @@ const FaEditHost = (function () {
             const under = Object.assign({}, spec, { objects: spec.objects.slice(0, idx) }), rr = await FaEditPictureUI.render(under, { store: FaEditStore, resolve: (ref) => FaEditStore.imageUrl(ref), maxSide: 4096 }); if (!rr) return { ok: false, error: T('合成失敗', 'could not put the picture together') };
             const cb = plan.crop, sc = rr.scale, cvs = document.createElement('canvas'); cvs.width = plan.out.w; cvs.height = plan.out.h; const g = cvs.getContext('2d'); g.imageSmoothingQuality = 'high';
             g.drawImage(rr.canvas, (cb.x - rr.region.x) * sc, (cb.y - rr.region.y) * sc, cb.w * sc, cb.h * sc, 0, 0, cvs.width, cvs.height);
-            const seed = L.seed != null ? L.seed : (Math.floor(Math.random() * 4294967296) >>> 0), A = this._edAi(); let desc = '', user = L.prompt;
+            const seed = L.seed != null ? L.seed : (Math.floor(Math.random() * 4294967296) >>> 0), A = this._edAi(); let desc = '', user = L.prompt, refineMode = mode;
             if (A.have()) { try { status(T('視覺模型看這一小塊…', 'The vision model looks at this part…')); desc = (await A.vision(cvs.toDataURL('image/jpeg', 0.85), 'In one short English sentence, say what is in the middle of this picture (subject, material, colours). Only what you can see.')).trim().replace(/\s+/g, ' ').slice(0, 200); } catch (_) { /* 沒有也行 */ } }
             if (user && /[一-鿿]/.test(user) && A.have()) { try { user = (await A.chat('Translate to short English image keywords. Output only the translation.', user)).trim().slice(0, 200); } catch (_) { /* 用原文 */ } }
             const focus = [/[一-鿿]/.test(user || '') ? '' : user, desc].filter(Boolean).join(', '); let res, note = '';
@@ -32401,13 +32413,17 @@ const FaEditHost = (function () {
                 status(T('線上模型依原圖補細節…（要等一下）', 'The online model adds detail to the picture… (this takes a moment)'));
                 res = await this._edGenerate({ provider: 'online', model: FaNvidiaImage.editModel(), prompt: ('Add fine, realistic detail and sharpness to this picture. Keep the composition, the colours and every shape in place.' + (focus ? ' Focus: ' + focus : '')).slice(0, 900), init_image: cvs.toDataURL('image/png'), seed, steps: Math.round(10 + L.strength * 30) }, status);
             } else {
-                status(T('本機小模型重畫細節紋理…（CPU 版要等一下）', 'The local model draws the detail texture… (the CPU version takes a while)'));
-                res = await this._edGenerate({ provider: 'local', prompt: ((focus || 'detailed texture') + ', highly detailed, sharp focus, intricate texture').slice(0, 600), seed }, status);
-                note = T('本機小模型沒有 VAE 編碼器、不能依原圖重畫，所以只借它重畫出來的細節紋理蓋在原圖上（實驗性，效果因圖而異；不滿意可以重畫或退回）。', 'The local model has no VAE encoder and cannot redraw from the picture, so only the detail texture it draws is laid over the picture (experimental; redraw or revert if it is not good).');
+                status(T('本機小模型依原圖補細節…（CPU 版要等一下）', 'The local model adds detail to the picture… (the CPU version takes a while)'));
+                const detailPrompt = ((focus || 'detailed texture') + ', highly detailed, sharp focus, intricate texture').slice(0, 600);
+                const ie = await this._localEditImage({ image: cvs.toDataURL('image/png'), prompt: detailPrompt, strength: Math.min(0.6, 0.25 + L.strength * 0.4), seed });
+                if (ie.ok) { res = { ok: true, image: { blob: ie.blob, seed } }; refineMode = 'edit'; note = T('本機圖生圖：依原圖補細節（強度 ' + ie.strength + '，' + ie.model + '）。', 'Local image-to-image: detail added from the picture (strength ' + ie.strength + ', ' + ie.model + ').'); }
+                else if (!ie.needs_download && !ie.cancelled) status(T('圖生圖沒成功（' + String(ie.error).slice(0, 80) + '），退回只借紋理…', 'Image-to-image failed; falling back to texture only…'));
+                if (!res) res = await this._edGenerate({ provider: 'local', prompt: detailPrompt, seed }, status);
+                if (!ie.ok) note = T('本機小模型沒有 VAE 編碼器、不能依原圖重畫，所以只借它重畫出來的細節紋理蓋在原圖上（實驗性，效果因圖而異；不滿意可以重畫或退回）。', 'The local model has no VAE encoder and cannot redraw from the picture, so only the detail texture it draws is laid over the picture (experimental; redraw or revert if it is not good).');
             }
             if (!res.ok) return { ok: false, error: res.needs_download ? T('本機生圖模型還沒下載：先輸入 /image download（只下載一次）', 'The local image model is not downloaded: type /image download first (once)') : String(res.error || 'no image') };
             const k = await this._edPics('edit-picture').keep(res.image.blob);
-            return { ok: true, mode, note, props: { result: k.ref, crop: plan.crop, refine: mode, seed, state: 'preview' } };
+            return { ok: true, mode, note, props: { result: k.ref, crop: plan.crop, refine: refineMode, seed, state: 'preview' } };
         },
         async _edAskPicture(req, ed) {
             req = req || {}; const A = this._edAi(), C = FaEditPicture, P = this._edPics('edit-picture'); const spec = C.validate(req.spec).spec, notes = [], edits = []; let say = ''; const text = String(req.text || '').trim(), status = typeof req.onStatus === 'function' ? req.onStatus : () => {}, sel = req.selection; let refText = '';
@@ -32423,6 +32439,10 @@ const FaEditHost = (function () {
             fr.edits.forEach((e) => edits.push(e)); fr.notes.forEach((n) => notes.push(n)); if (fr.say) say = say || fr.say;
             if (fr.handled && fr.edits.length) { const last = fr.edits.filter((e) => e.op === 'add_object' && e.object.type === 'image').pop(); if (last) lastAdded = last.object.name; }
             const styleId = FaPicFx.styleFor(text), wantsRepaint = REPAINT_WORDS.test(text);
+            if (!styleId && !wantsRepaint && !fr.handled && TEXTEDIT_WORDS.test(text) && imageTarget(cur())) {
+                const te = await this._edTextEdit(cur(), imageTarget(cur()), text, status, notes);
+                if (te) { te.edits.forEach((e) => edits.push(e)); say = T('依你的要求改好了（新圖層，原圖沒動；強度 ' + te.strength + '、' + te.steps + ' 步，' + te.model + '）。不滿意可以說「再微調」或「大改」重做，或退回。', 'Edited as asked (a new layer; the original is untouched; strength ' + te.strength + ', ' + te.steps + ' step(s), ' + te.model + '). Say "subtle" or "bigger change" to redo, or undo.'); if (te.note) notes.push(te.note); return { say, edits, notes }; }
+            }
             if (styleId && (RESTYLE_WORDS.test(text) || wantsRepaint) && !fr.handled) {
                 const s1 = cur(), so = imageTarget(s1), targetRef = lastAdded || (so && so.type === 'image' ? so.id : 'all');
                 if (wantsRepaint) { const rsrc = so && so.type === 'image' ? so : s1.objects.filter((x) => x.type === 'image' && x.visible).pop() || null; const swords = (C.STYLES[styleId].words || []).concat([C.STYLES[styleId].label]).filter(Boolean).sort((x, y) => y.length - x.length).map((w) => String(w).replace(/[.*+?^${}()|[\]\\]/g, (ch) => '\\' + ch)); const extra = text.replace(REPAINT_WORDS, ' ').replace(new RegExp('(?:成|為|變成|轉成)?(?:' + swords.join('|') + ')(?:風格|風)?', 'gi'), ' ').replace(/[，。,.]/g, ' ').replace(/\s+/g, ' ').trim(); const rp = await this._edRepaint(s1, rsrc, styleId, extra.slice(0, 80), status, notes); if (rp) { rp.edits.forEach((e) => edits.push(e)); say = say || T('用生圖模型照這張圖的內容重畫了一張。（這不是把原圖轉成那個風格，是重新畫的）', 'Painted a new picture of what is in it with the image model (it is a new painting, not a conversion of the original).'); } }
