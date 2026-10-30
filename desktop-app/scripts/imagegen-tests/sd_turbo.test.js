@@ -43,9 +43,8 @@ check('plan: strength words map (微調 / 大改), default 0.5', S.plan({ prompt
 check('plan: explicit strength wins and is clamped; seed reproducible', S.plan({ prompt: 'x', strength: 5 }).strength === 1 && S.plan({ prompt: 'x', strength: 5 }).notes.length === 1 && S.plan({ prompt: 'x', seed: 5 }).seed === 5);
 check('plan: steps clamped 1..4, big strength defaults to 2 steps', S.plan({ prompt: 'x', steps: 9 }).steps === 4 && S.plan({ prompt: 'x', strength: 0.9 }).steps === 2);
 
-check('pickModel: gpu+f16 gives sd-turbo; no gpu / no f16 / cpu fall back to sdxs with a reason', S.pickModel({ hasGpu: true, f16: true }).model.id === 'sd-turbo-webgpu' && S.pickModel({ hasGpu: false }).fallback === 'sdxs' && S.pickModel({ hasGpu: true, f16: false }).fallback === 'sdxs' && S.pickModel({ hasGpu: true, f16: true }, 'cpu').fallback === 'sdxs' && S.pickModel({}, 'webgpu').ok === false);
-check('models: all files pinned with sizes and a rev; includes the VAE encoder', S.MODELS.every((x) => /^[0-9a-f]{40}$/.test(x.rev) && x.files.every((f) => f.bytes > 0)) && S.MODELS[0].files.some((f) => f.role === 'vaeEnc'));
-check('license: mentions registration and the user-download rule', /登記/.test(S.LICENSE.note) && /不內建/.test(S.LICENSE.note) && S.MODELS[0].userDownload === true);
-check('explainError: memory and download are explained', /記憶體/.test(S.explainError(new Error('Array buffer allocation failed'), S.MODELS[0])) && /已下載的部分會保留/.test(S.explainError(new Error('Failed to fetch'), S.MODELS[0])));
+check('pickModel: always sdxs; wasm without gpu or f16, webgpu with f16, forced webgpu without gpu is refused', S.pickModel({ hasGpu: false }).ep === 'wasm' && S.pickModel({ hasGpu: true, f16: false }).ep === 'wasm' && S.pickModel({ hasGpu: true, f16: true }).ep === 'webgpu' && S.pickModel({ hasGpu: true, f16: true }, 'cpu').ep === 'wasm' && S.pickModel({}, 'webgpu').ok === false && S.MODELS.length === 0);
+check('license: SDXS and TAESD only', /RAIL/.test(S.LICENSE.name) && /MIT/.test(S.LICENSE.name));
+check('explainError: memory and download are explained', /記憶體/.test(S.explainError(new Error('Array buffer allocation failed'), null)) && /已下載的部分會保留/.test(S.explainError(new Error('Failed to fetch'), null)));
 console.log(bad.length ? 'FAILED:\n  ' + bad.join('\n  ') : 'sd_turbo: ' + ok + ' passed');
 process.exit(bad.length ? 1 : 0);

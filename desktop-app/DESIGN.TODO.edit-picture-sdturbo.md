@@ -10,6 +10,9 @@
 - 第 3、4、6、7 項完成並發布（patch v225）：主機端 _localEditImage（floating-assistant.js）、/edit-picture 用文字改圖（edit_host.js 的 _edTextEdit）、細化層本機路徑改成圖生圖、功能清冊。小型編碼器用 julienkay/taesd；madebyollin/taesd 只有 safetensors，沒有 ONNX，無法當執行時的退路。
 - 還沒做：第 5 項（edit_cases 成功案例）、設定頁列出 sd-turbo 下載狀態、遮罩選取區域改圖（目前整張）。整條路在真實 App 沒跑過（不知道 SDXS 在中途時間點畫質、sd-turbo 文字編碼器輸出層、WebGPU）。
 
+## 0c. 決定（2026-10-30）：不用 sd-turbo
+- 使用者決定不要 sd-turbo（授權要商業登記）。程式已移除 sd-turbo 路徑，只留 SDXS＋TAESD（OpenRAIL++-M＋MIT）。第 5 項（成功案例）沿用編輯器既有的通用機制，不另做；設定頁已加 TAESD 狀態。剩下：遮罩選區改圖、真實 App 驗證畫質。
+
 ## 1. 開場提示（給接手的工作階段）
 Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app\desktop-app\DESIGN.TODO.edit-picture-sdturbo.md`. 先完整讀完（含使用者原話與做法備忘），照做。執行 low-context-long-run 技能（門檻 30%）：做 Todo 的第一項，context 到門檻就更新這份文件並啟動你的接手工作階段（`mcp__ccd_session__start_session` 是延遲載入的工具，先用 ToolSearch 載入）。第一則訊息用一行說明你讀完了、要開始哪一項。回覆一律繁體中文、不要夾英文縮寫。**不要再做規劃、不要問，直接查證、寫程式、測試、提交。**
 

@@ -17916,12 +17916,12 @@ return holder.FaLocalSd;
 const FaSdTurbo = (function () {
 const holder = {};
 (function (module, self) {
-/* sd-turbo 圖生圖改圖（UMD，純函式）：使用者給一張圖＋一句話，在本機把圖改掉，不連線上服務。
+/* 本機圖生圖改圖（UMD，純函式；檔名沿用 sd_turbo，實際用 SDXS＋TAESD，不用 sd-turbo——它的社群授權要商業登記，不內建也不下載）：使用者給一張圖＋一句話，在本機把圖改掉，不連線上服務。
  * 這個檔案只有「不碰網路、不碰模型」的部分：模型清單與檔案大小、選版本、圖生圖取樣的數學、遮罩混合、尺寸對齊、錯誤白話說明。下載、載入、執行在 floating-assistant 裡。
  * 取樣（變分形式，sd-turbo 與 SDXS 共用）：ᾱ(t) 由 scaled_linear 的 beta（0.00085→0.012，1000 步）累乘；
  *   z0 = vae_encoder(影像)×0.18215；x_t = √ᾱ·z0 + √(1−ᾱ)·雜訊；每步：eps = unet(x_t, t, 文字)；x0 = (x_t − √(1−ᾱ)·eps)/√ᾱ；下一步 x = √ᾱ'·x0 + √(1−ᾱ')·新雜訊（最後一步直接用 x0）。
  *   strength 決定從哪個時間點開始：steps×strength 取整，至少一步；strength=1 就是整張重畫。
- * 授權：sd-turbo 是 Stability AI 社群授權（商業須登記、年營收超過 100 萬美元失效），所以不內建、不代下載——使用者按下載才取得。 */
+ * 授權：只用 SDXS（OpenRAIL++-M）與 TAESD（MIT），不碰 sd-turbo 的社群授權。 */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaSdTurbo = factory();
 })(typeof self !== 'undefined' ? self : this, function () {
@@ -17929,38 +17929,24 @@ const holder = {};
   var SIZE = 512, LATENT = 64, SCALE = 0.18215, TRAIN_STEPS = 1000, MAXLEN = 77;
   var HF = 'https://huggingface.co/';
   // 位元組數與版本（commit）是釘住的：下載完核對大小，不一樣就不用。sd-turbo 的 ONNX 匯出是 fp16 大小（unet 1.7 GB）。
-  var MODELS = [
-    { id: 'sd-turbo-webgpu', family: 'sd-turbo', device: 'webgpu', ep: 'webgpu', label: 'sd-turbo（GPU 版，fp16）', repo: 'jdp8/sd-turbo-onnx', rev: '4ea5d203f7def52bcf83781990f97721c98a7f22', needsF16: true, userDownload: true,
-      files: [{ name: 'text_encoder/model.onnx', role: 'text', bytes: 681552894 }, { name: 'unet/model.onnx', role: 'unet', bytes: 1737702391 }, { name: 'vae_decoder/model.onnx', role: 'vae', bytes: 99129787 }, { name: 'vae_encoder/model.onnx', role: 'vaeEnc', bytes: 136760235 }] }
-  ];
+  var MODELS = [];   // 不內建 sd-turbo（授權）；執行用 FaLocalSd 的 SDXS 模型加下面的 TAESD
   // 小型 VAE（TAESD，MIT 授權，各約 5 MB）：給 SDXS／降級路徑當編碼器與解碼器，wasm 與 WebGPU 都能跑（onnxruntime-web 1.20 wasm 實測編碼→解碼來回可還原）。
   // 輸入影像範圍 [0,1]（不是 [-1,1]）；編碼輸出已是縮放後的潛在值（不用再乘 0.18215）；解碼輸出也是 [0,1]。
   var TAESD = { id: 'taesd', label: 'TAESD（小型 VAE）', repo: 'julienkay/taesd', rev: 'c8a437fd0201c21c3bcd298fcf3181b063bcc1eb', license: 'MIT', range: '01', scale: 1,
     files: [{ name: 'vae_encoder/model.onnx', role: 'vaeEnc', bytes: 4910437 }, { name: 'vae_decoder/model.onnx', role: 'vae', bytes: 4912312 }] };
-  var LICENSE = { name: 'Stability AI 社群授權', url: 'https://huggingface.co/stabilityai/sd-turbo/blob/main/LICENSE.md',
-    note: 'sd-turbo 是 Stability AI 社群授權：研究與非商業免費；商業使用須向 Stability AI 登記（https://stability.ai/community-license），年營收超過 100 萬美元即失效。本程式不內建模型，按下載才從 Hugging Face 取得，使用即表示你同意該授權。' };
-  // 沒有可用的 sd-turbo 版本（例如沒有 WebGPU）時的降級：用已內建下載的 SDXS（同樣是 4 通道的 SD 系列，同一套數學），它的圖生圖要另配 VAE 編碼器
-  var FALLBACK = { family: 'sdxs', note: 'sd-turbo 目前沒有能在 CPU（wasm）跑的版本（fp16 的 unet 約 1.7 GB，fp32 超過 wasm 記憶體上限），沒有 WebGPU 時降級用 SDXS。' };
+  var LICENSE = { name: 'OpenRAIL++-M（SDXS）＋ MIT（TAESD）', url: 'https://huggingface.co/spaces/CompVis/stable-diffusion-license', note: '本機改圖用 SDXS（CreativeML Open RAIL++-M：不得用於傷害未成年人、未經同意的真人影像、誹謗騷擾或違法用途）與 TAESD（MIT）。' };
+  var FALLBACK = { family: 'sdxs', note: '改圖用 SDXS＋TAESD（WebGPU 或 wasm）。' };
 
   function byId(id) { for (var i = 0; i < MODELS.length; i++) if (MODELS[i].id === id) return MODELS[i]; return null; }
   function urlOf(model, file) { return HF + model.repo + '/resolve/' + model.rev + '/' + file; }
   function totalBytes(model) { return model.files.reduce(function (a, f) { return a + f.bytes; }, 0); }
   function fmtBytes(n) { n = Number(n) || 0; return n >= 1e9 ? (n / 1e9).toFixed(2) + ' GB' : Math.round(n / 1e6) + ' MB'; }
 
-  // env: { hasGpu, f16 }；pref: auto｜webgpu｜cpu。回傳 sd-turbo 版本，或說明為什麼要降級
+  // 這台機器該用哪個後端（模型一律 SDXS＋TAESD，SDXS 的版本由 FaLocalSd.pickModel 選）。env: { hasGpu, f16 }；pref: auto｜webgpu｜cpu
   function pickModel(env, pref) {
-    env = env || {}; pref = pref === 'webgpu' || pref === 'cpu' ? pref : 'auto'; var notes = [];
-    if (pref === 'cpu') return { ok: true, fallback: 'sdxs', ep: 'wasm', notes: ['設定指定用 CPU。' + FALLBACK.note] };
-    if (!env.hasGpu) {
-      if (pref === 'webgpu') return { ok: false, reason: '設定指定用 GPU 版，但這個環境沒有 WebGPU（瀏覽器或顯示卡不支援）。' };
-      return { ok: true, fallback: 'sdxs', ep: 'wasm', notes: ['沒有 WebGPU。' + FALLBACK.note] };
-    }
-    if (!env.f16) {
-      if (pref === 'webgpu') notes.push('這張顯示卡不支援 f16（shader-f16），GPU 版可能載入失敗。');
-      else return { ok: true, fallback: 'sdxs', ep: 'wasm', notes: ['顯示卡不支援 f16。' + FALLBACK.note] };
-    }
-    var m = byId('sd-turbo-webgpu'); notes.push('第一次要下載約 ' + fmtBytes(totalBytes(m)) + '。');
-    return { ok: true, model: m, ep: m.ep, notes: notes };
+    env = env || {}; pref = pref === 'webgpu' || pref === 'cpu' ? pref : 'auto';
+    if (pref === 'webgpu' && !env.hasGpu) return { ok: false, reason: '設定指定用 GPU 版，但這個環境沒有 WebGPU（瀏覽器或顯示卡不支援）。' };
+    return { ok: true, fallback: 'sdxs', ep: (pref === 'cpu' || !env.hasGpu || !env.f16) && pref !== 'webgpu' ? 'wasm' : 'webgpu', notes: [] };
   }
 
   // ᾱ：scaled_linear 的 beta 累乘
@@ -66790,7 +66776,11 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const g = (this.advancedSettings && this.advancedSettings.imageGen) || {}, env = await this._localSdEnv(), pick = FaLocalSd.pickModel(env, g.localDevice);
         if (!pick.ok) return '⚠️ ' + pick.reason;
         const st = await this._localSdFileState(pick.model), have = st.filter((x) => x.ok).length;
-        return '這台目前會用：' + pick.model.label + '（' + FaLocalSd.fmtBytes(FaLocalSd.totalBytes(pick.model)) + '）。狀態：' + (have === st.length ? '✅ 已下載' : have ? '部分已下載（' + have + '/' + st.length + ' 個檔）' : '還沒下載') + '。' + (pick.notes.length ? ' ' + pick.notes.join(' ') : '');
+        return '這台目前會用：' + pick.model.label + '（' + FaLocalSd.fmtBytes(FaLocalSd.totalBytes(pick.model)) + '）。狀態：' + (have === st.length ? '✅ 已下載' : have ? '部分已下載（' + have + '/' + st.length + ' 個檔）' : '還沒下載') + '。' + (pick.notes.length ? ' ' + pick.notes.join(' ') : '') + await this._localEditStatusText();
+    }
+    async _localEditStatusText() {
+        const st = await this._localSdFileState(FaSdTurbo.TAESD), have = st.filter((x) => x.ok).length;
+        return ' 改圖（圖生圖）另需小型編碼器 TAESD（' + FaLocalSd.fmtBytes(FaSdTurbo.totalBytes(FaSdTurbo.TAESD)) + '，MIT）：' + (have === st.length ? '✅ 已下載' : '第一次改圖時才會問你下載') + '。';
     }
     async _localSdRefreshStatusUI() { const els = ['ai-imggen-local-status', 'ai-imgcfg-status'].map((i) => document.getElementById(i)).filter(Boolean); if (!els.length) return; let t; try { t = await this._localSdStatusText(); } catch (e) { t = '（看不出本機模型的狀態：' + String((e && e.message) || e).slice(0, 80) + '）'; } els.forEach((el) => { el.textContent = t; }); }
     // ───── 領域的 ⚙ 設定視窗（共用外殼）：範本與設定的畫面放在擁有該工具的領域，按 ⚙ 設定彈出，不另開頁面 ─────
@@ -66972,12 +66962,11 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         } catch (e) { try { prog.finish && prog.finish('失敗'); } catch (_) { /* */ } return { ok: false, error: FaLocalSd.explainError(e, null, null) }; }
     }
     // ───── 本機改圖（圖生圖）：給一張圖＋一句話，用小模型在本機改（純函式在 FaSdTurbo）─────
-    // 兩條路：① sd-turbo（WebGPU＋f16，使用者自己下載，授權見 FaSdTurbo.LICENSE）；② SDXS＋TAESD 小型編碼器解碼器（WebGPU 或 wasm，各約 5 MB）。
-    // 還沒在真機上驗證畫質：SDXS 是一步蒸餾的，在中途時間點的表現未知；sd-turbo 的文字編碼器輸出層、wasm 之外的後端也未實測。
+    // 用 SDXS＋TAESD 小型編碼器解碼器（WebGPU 或 wasm，各約 5 MB）；不用 sd-turbo（社群授權要商業登記）。
+    // 還沒在真機上驗證畫質：SDXS 是一步蒸餾的，在中途時間點的表現未知；wasm 之外的後端也未實測。
     async _localEditPick() {
         const g = (this.advancedSettings && this.advancedSettings.imageGen) || {}, env = await this._localSdEnv(), pick = FaSdTurbo.pickModel(env, g.localDevice);
         if (!pick.ok) return { ok: false, error: pick.reason };
-        if (pick.model) return { ok: true, env, notes: pick.notes, models: [pick.model], text: pick.model, enc: pick.model, dec: pick.model, label: pick.model.label, ep: pick.ep, decRange: '-11', encRange: '-11', encScale: FaSdTurbo.SCALE, padId: 0 };
         const sd = FaLocalSd.pickModel(env, g.localDevice); if (!sd.ok) return { ok: false, error: sd.reason };
         return { ok: true, env, notes: pick.notes.concat(sd.notes || []), models: [sd.model, FaSdTurbo.TAESD], text: sd.model, enc: FaSdTurbo.TAESD, dec: FaSdTurbo.TAESD, label: sd.model.label + ' ＋ TAESD', ep: sd.ep, decRange: '01', encRange: '01', encScale: FaSdTurbo.TAESD.scale, padId: 49407 };
     }
