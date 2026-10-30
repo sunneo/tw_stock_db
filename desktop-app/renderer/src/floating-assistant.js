@@ -36211,10 +36211,10 @@ return holder.FaDeckEditUI;
   // what is remembered of the frame: panel width, panel hidden, active tab. Anything else is dropped; wrong values fall back.
   function layout(l) {
     l = l && typeof l === 'object' ? l : {};
-    return { panelW: clampPanelWidth(l.panelW == null ? PANEL_DEFAULT : l.panelW, 100000), panelHidden: l.panelHidden === true, subs: l.subs !== false, genScope: l.genScope === 'whole' ? 'whole' : 'playhead', burnMix: l.burnMix === 'subs' ? 'subs' : 'all', tab: TABS.indexOf(l.tab) >= 0 ? l.tab : 'transcript' };
+    return { panelW: clampPanelWidth(l.panelW == null ? PANEL_DEFAULT : l.panelW, 100000), panelHidden: l.panelHidden === true, subs: l.subs !== false, genScope: l.genScope === 'whole' ? 'whole' : l.genScope === 'custom' ? 'custom' : 'playhead', genSecs: isFinite(+l.genSecs) && +l.genSecs >= 1 && +l.genSecs <= 600 ? Math.round(+l.genSecs * 10) / 10 : 10, genLang: l.genLang === 'en' || l.genLang === 'zh' || l.genLang === '' ? l.genLang : (/^en/i.test(String((typeof document !== 'undefined' && document.documentElement && document.documentElement.lang) || '')) ? 'en' : 'zh'), burnMix: l.burnMix === 'subs' ? 'subs' : 'all', tab: TABS.indexOf(l.tab) >= 0 ? l.tab : 'transcript' };
   }
   // the saved project: the video is a client file (AiChatPersistentStorage id) -- never the bytes -- plus the frame layout; cues = the transcript; dubs come with a later step
-  function newProject(name) { return { v: 1, name: String(name || '').slice(0, 80), video: null, layout: layout(null), cues: [], dubs: [], jobs: [] }; }
+  function newProject(name) { return { v: 1, name: String(name || '').slice(0, 80), video: null, layout: layout(null), cues: [], dubs: [], jobs: [], clips: [], overlays: [] }; }
 
   // ---- the transcript: cues {id, start, end, text} in seconds, kept sorted by start. Every function returns a NEW list (the editor's undo history keeps the old ones).
   var MAX_TEXT = 500, MAX_CUES = 5000, EPS = 0.001;
@@ -36318,7 +36318,7 @@ return holder.FaDeckEditUI;
   // ---- dubs (voice-over recorded from the microphone): {id 'd<n>', start, duration, fileId (client file id of the recording), name}, sorted by start. Same style as the cues: every function returns a NEW list.
   var MAX_DUBS = 50;
   // a dub made by text-to-speech keeps what made it: {kind:'tts', text, lang, voiceId}; a microphone dub has none of these
-  function ttsInfo(o) { return o && o.kind === 'tts' ? { kind: 'tts', text: cleanText(o.text), lang: String(o.lang || '').slice(0, 12), voiceId: String(o.voiceId || '').slice(0, 60) } : {}; }
+  function ttsInfo(o) { return o && o.kind === 'file' ? { kind: 'file' } : o && o.kind === 'tts' ? { kind: 'tts', text: cleanText(o.text), lang: String(o.lang || '').slice(0, 12), voiceId: String(o.voiceId || '').slice(0, 60) } : {}; }
   function normalizeDubs(list) {
     var seen = {}, out = [], n = 0;
     (Array.isArray(list) ? list : []).forEach(function (d) {
@@ -36353,6 +36353,169 @@ return holder.FaDeckEditUI;
 
   return { clock: clock, parseT: parseT, clampPanelWidth: clampPanelWidth, layout: layout, newProject: newProject, TABS: TABS, PANEL_MIN: PANEL_MIN,
     pcmWindow: pcmWindow, CUE_SECONDS: CUE_SECONDS, normalize: normalize, addCue: addCue, updateCue: updateCue, removeCue: removeCue, activeCue: activeCue, history: history, checkTimes: checkTimes, parseSrt: parseSrt, fromSegments: fromSegments, normalizeDubs: normalizeDubs, addDub: addDub, moveDub: moveDub, removeDub: removeDub, activeDubs: activeDubs, formatSrt: formatSrt, MAX_TEXT: MAX_TEXT };
+}));
+
+}).call(window, undefined);
+(function (module) {
+// /edit-video: the TIMELINE -- clips (a range of a source video), the transitions between them, picture overlays. Pure functions (the canvas drawing of a transition takes the context as an argument), tested in Node: scripts/video-tests/video_timeline.test.js
+// Non-destructive: the project keeps a list of clips {id, fileId, name, in, out, tr} -- ranges of source files, never the bytes. The timeline time of a clip starts where the previous one ends; transcript lines, dubs and overlays are in TIMELINE time.
+//   TwVideoTimeline.normalizeClips(list)  fromVideo(fileId, name, dur)  total(clips)  starts(clips)  locate(clips, t)  splitAt(clips, t)  removeRange(clips, a, b)  append(clips, clip)  setTransition(clips, id, {type, dur})
+//   TwVideoTimeline.transitionAt(clips, t) -> {i, type, p} | null     TRANSITIONS     drawTransition(ctx, type, p, A, B, W, H)
+//   TwVideoTimeline.rippleRemove(items, a, b, opt)      normalizeOverlays(list)  addOverlay(list, o)  updateOverlay(list, id, patch)  removeOverlay(list, id)  activeOverlays(list, t)
+// A transition belongs to the clip it goes INTO (clip i, i >= 1: the cut between clip i-1 and clip i). It does not shorten the timeline: it is drawn over a window of `dur` seconds centered on the cut, from the outgoing clip's picture
+// and the incoming clip's first picture held still (before the cut) / the outgoing clip's last picture held still (after the cut), so nothing in the transcript, the dubs or the overlays moves when a transition is set.
+(function (root, factory) { if (typeof module === 'object' && module.exports) { module.exports = factory(); } else { root.TwVideoTimeline = factory(); } }(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var MAX_CLIPS = 100, MAX_OVERLAYS = 50, MIN_LEN = 0.1, EDGE = 0.05, TR_MIN = 0.2, TR_MAX = 3, TR_DEFAULT = 1;
+  // [id, zh, en]
+  var TRANSITION_LIST = [
+    ['none', '無', 'None'], ['fade', '淡入淡出(經過黑色)', 'Fade (through black)'], ['dissolve', '交叉淡化', 'Cross dissolve'], ['fade-white', '淡入淡出(經過白色)', 'Fade (through white)'],
+    ['slide-left', '從右滑入', 'Slide in from the right'], ['slide-right', '從左滑入', 'Slide in from the left'], ['slide-up', '從下滑入', 'Slide in from the bottom'], ['slide-down', '從上滑入', 'Slide in from the top'],
+    ['push-left', '向左推出', 'Push left'], ['push-right', '向右推出', 'Push right'], ['push-up', '向上推出', 'Push up'], ['push-down', '向下推出', 'Push down'],
+    ['wipe-left', '掃描線 由左到右', 'Wipe left to right'], ['wipe-right', '掃描線 由右到左', 'Wipe right to left'], ['wipe-up', '掃描線 由上到下', 'Wipe top to bottom'], ['wipe-down', '掃描線 由下到上', 'Wipe bottom to top'],
+    ['split-h', '中心向左右展開', 'Open from the center (horizontal)'], ['split-v', '中心向上下展開', 'Open from the center (vertical)'],
+    ['circle-open', '圓圈由中心展開', 'Circle opens from the center'], ['circle-close', '圓圈向中心收合', 'Circle closes to the center'],
+    ['blinds', '百葉窗', 'Blinds'], ['zoom', '放大淡入', 'Zoom in']
+  ];
+  var TRANSITIONS = TRANSITION_LIST.map(function (t) { return t[0]; });
+  function r3(n) { return Math.round(n * 1000) / 1000; }
+  function clamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
+  function nextId(list, p) { var n = 0; list.forEach(function (x) { n = Math.max(n, parseInt(String(x.id).slice(1), 10) || 0); }); return p + (n + 1); }
+  function cleanTr(t) {
+    t = t && typeof t === 'object' ? t : {}; var type = TRANSITIONS.indexOf(t.type) >= 0 ? t.type : 'none', d = +t.dur;
+    return { type: type, dur: isFinite(d) && d >= TR_MIN && d <= TR_MAX ? r3(d) : TR_DEFAULT };
+  }
+  // a list read from a saved project: bad rows dropped, ids unique, the first clip never has a transition
+  function normalizeClips(list) {
+    var seen = {}, out = [];
+    (Array.isArray(list) ? list : []).forEach(function (c) {
+      if (!c || out.length >= MAX_CLIPS) { return; } var a = +c.in, b = +c.out; if (!isFinite(a) || !isFinite(b) || a < 0 || b - a < MIN_LEN) { return; }
+      var id = typeof c.id === 'string' && /^k\d+$/.test(c.id) && !seen[c.id] ? c.id : null; if (id) { seen[id] = 1; }
+      out.push({ id: id, fileId: c.fileId == null ? null : String(c.fileId), name: String(c.name || '').slice(0, 120), in: r3(a), out: r3(b), tr: cleanTr(c.tr) });
+    });
+    out.forEach(function (c, i) { if (!c.id) { var n = 0; out.forEach(function (x) { if (x.id) { n = Math.max(n, +x.id.slice(1)); } }); do { n++; } while (seen['k' + n]); c.id = 'k' + n; seen[c.id] = 1; } if (i === 0) { c.tr = { type: 'none', dur: TR_DEFAULT }; } });
+    return out;
+  }
+  function fromVideo(fileId, name, dur) { return normalizeClips([{ fileId: fileId, name: name, in: 0, out: dur }]); }
+  function len(c) { return c.out - c.in; }
+  function total(clips) { return r3(clips.reduce(function (s, c) { return s + len(c); }, 0)); }
+  function starts(clips) { var t = 0; return clips.map(function (c) { var s = t; t += len(c); return r3(s); }); }
+  // timeline time -> { i, local (seconds into the clip), src (seconds in the source file) }; t is clamped to [0, total]; the end of the timeline is the end of the last clip
+  function locate(clips, t) {
+    if (!clips.length) { return null; } var tt = clamp(+t || 0, 0, total(clips)), s = starts(clips);
+    for (var i = clips.length - 1; i >= 0; i--) { if (tt >= s[i] - 1e-9) { var l = Math.min(len(clips[i]), tt - s[i]); return { i: i, local: r3(l), src: r3(clips[i].in + l) }; } }
+    return { i: 0, local: 0, src: clips[0].in };
+  }
+  // cut the clip under t in two (the second half starts with no transition). Not within 0.05 s of an edge.
+  function splitAt(clips, t) {
+    if (clips.length >= MAX_CLIPS) { return { ok: false, error: 'full', clips: clips }; } var loc = locate(clips, t); if (!loc) { return { ok: false, error: 'empty', clips: clips }; }
+    var c = clips[loc.i]; if (loc.local < EDGE || len(c) - loc.local < EDGE) { return { ok: false, error: 'edge', clips: clips }; }
+    var b = { id: nextId(clips, 'k'), fileId: c.fileId, name: c.name, in: loc.src, out: c.out, tr: { type: 'none', dur: TR_DEFAULT } }, a = Object.assign({}, c, { out: loc.src });
+    var next = clips.slice(); next.splice(loc.i, 1, a, b); return { ok: true, clips: next, id: b.id };
+  }
+  // take out [a, b] of the timeline (the clips after it move up). Returns the new list; error 'all' when nothing would be left.
+  function removeRange(clips, a, b) {
+    var tot = total(clips); a = clamp(+a || 0, 0, tot); b = clamp(+b || 0, 0, tot); if (b - a < EDGE) { return { ok: false, error: 'range', clips: clips }; }
+    var list = clips, r;
+    if (a > 0) { r = splitAt(list, a); if (r.ok) { list = r.clips; } else if (r.error === 'full') { return r; } }
+    if (b < tot) { r = splitAt(list, b); if (r.ok) { list = r.clips; } else if (r.error === 'full') { return r; } }
+    var s = starts(list), keep = list.filter(function (c, i) { return !(s[i] >= a - 1e-6 && s[i] + len(c) <= b + 1e-6); });
+    if (!keep.length) { return { ok: false, error: 'all', clips: clips }; }
+    keep[0] = Object.assign({}, keep[0], { tr: { type: 'none', dur: TR_DEFAULT } });
+    return { ok: true, clips: keep, a: r3(a), b: r3(b) };
+  }
+  function append(clips, c) {
+    if (clips.length >= MAX_CLIPS) { return { ok: false, error: 'full', clips: clips }; }
+    var one = normalizeClips([{ fileId: c.fileId, name: c.name, in: c.in == null ? 0 : c.in, out: c.out, tr: c.tr }]); if (!one.length) { return { ok: false, error: 'range', clips: clips }; }
+    one[0].id = nextId(clips, 'k'); return { ok: true, clips: clips.concat(one), id: one[0].id };
+  }
+  function setTransition(clips, id, tr) {
+    var i = -1; clips.forEach(function (c, k) { if (c.id === id) { i = k; } }); if (i < 0) { return { ok: false, error: 'missing', clips: clips }; } if (i === 0) { return { ok: false, error: 'first', clips: clips }; }
+    var next = clips.slice(); next[i] = Object.assign({}, clips[i], { tr: cleanTr(Object.assign({}, clips[i].tr, tr)) }); return { ok: true, clips: next };
+  }
+  // the transition window of the cut into clip i (i >= 1): dur is cut down to what both neighbours can give
+  function windowOf(clips, i) {
+    if (i < 1 || i >= clips.length) { return null; } var tr = clips[i].tr; if (!tr || tr.type === 'none') { return null; }
+    var d = Math.min(tr.dur, len(clips[i - 1]), len(clips[i])), cut = starts(clips)[i]; if (d < 0.05) { return null; }
+    return { i: i, type: tr.type, dur: d, cut: cut, from: cut - d / 2, to: cut + d / 2 };
+  }
+  // -> { i, type, p (0..1 across the window), before (true while still in the outgoing clip) } | null
+  function transitionAt(clips, t) {
+    for (var i = 1; i < clips.length; i++) { var w = windowOf(clips, i); if (w && t >= w.from && t < w.to) { return { i: i, type: w.type, p: (t - w.from) / w.dur, before: t < w.cut, window: w }; } }
+    return null;
+  }
+
+  // ---- cut a stretch out of the timeline: what lies after it moves up by (b - a); what lies inside it goes; what overlaps an edge is trimmed.
+  //   items: [{start, end}] (opt.end = 'end', the default) or [{start, <opt.end>}] with a length field (e.g. 'duration', 'dur'); opt.keepLen: do not trim an item (a dub is a recording: it is only moved, and dropped when it started inside the cut and ends inside it)
+  function rippleRemove(items, a, b, opt) {
+    opt = opt || {}; var key = opt.end || 'end', cut = b - a, out = [], dropped = 0;
+    (items || []).forEach(function (it) {
+      var s = it.start, e = key === 'end' ? it.end : it.start + it[key];
+      if (e <= a + 1e-9) { out.push(it); return; }
+      if (s >= b - 1e-9) { out.push(shift(it, s - cut, e - cut)); return; }
+      if (s >= a - 1e-9 && e <= b + 1e-9) { dropped++; return; }
+      if (opt.keepLen) { out.push(shift(it, s < a ? s : a, (s < a ? s : a) + (e - s))); return; }
+      var ns = s < a ? s : a, ne = e <= b ? a : e - cut; out.push(shift(it, ns, ne));
+    });
+    function shift(it, ns, ne) { var c = Object.assign({}, it); c.start = r3(ns); if (key === 'end') { c.end = r3(ne); } else { c[key] = r3(ne - ns); } return c; }
+    return { items: out, dropped: dropped };
+  }
+
+  // ---- picture overlays: {id, fileId, name, start, dur, x, y, w} -- x, y = the CENTER of the picture as fractions of the video frame, w = its width as a fraction of the frame width
+  function cleanOverlay(o) {
+    var s = +o.start, d = +o.dur; if (!isFinite(s) || s < 0 || !isFinite(d) || d <= 0) { return null; }
+    var x = +o.x, y = +o.y, w = +o.w;
+    return { id: o.id, fileId: o.fileId == null ? null : String(o.fileId), name: String(o.name || '').slice(0, 120), start: r3(s), dur: r3(d), x: isFinite(x) ? clamp(x, 0, 1) : 0.5, y: isFinite(y) ? clamp(y, 0, 1) : 0.5, w: isFinite(w) ? clamp(w, 0.05, 1) : 0.3 };
+  }
+  function normalizeOverlays(list) {
+    var seen = {}, out = [];
+    (Array.isArray(list) ? list : []).forEach(function (o) { if (!o || out.length >= MAX_OVERLAYS) { return; } var c = cleanOverlay(o); if (!c) { return; } if (!(typeof c.id === 'string' && /^o\d+$/.test(c.id) && !seen[c.id])) { c.id = null; } else { seen[c.id] = 1; } out.push(c); });
+    out.forEach(function (c) { if (!c.id) { var n = 0; out.forEach(function (x) { if (x.id) { n = Math.max(n, +x.id.slice(1)); } }); do { n++; } while (seen['o' + n]); c.id = 'o' + n; seen[c.id] = 1; } });
+    return out.sort(function (a, b) { return a.start - b.start; });
+  }
+  function addOverlay(list, o) {
+    if (list.length >= MAX_OVERLAYS) { return { ok: false, error: 'full', overlays: list }; }
+    var c = cleanOverlay(Object.assign({ dur: 3, x: 0.5, y: 0.5, w: 0.3 }, o || {})); if (!c) { return { ok: false, error: 'time', overlays: list }; }
+    c.id = nextId(list, 'o'); return { ok: true, id: c.id, overlays: list.concat([c]).sort(function (a, b) { return a.start - b.start; }) };
+  }
+  function updateOverlay(list, id, patch) {
+    var i = -1; list.forEach(function (o, k) { if (o.id === id) { i = k; } }); if (i < 0) { return { ok: false, error: 'missing', overlays: list }; }
+    var c = cleanOverlay(Object.assign({}, list[i], patch || {})); if (!c) { return { ok: false, error: 'time', overlays: list }; }
+    var next = list.slice(); next[i] = c; return { ok: true, overlays: next.sort(function (a, b) { return a.start - b.start; }) };
+  }
+  function removeOverlay(list, id) { var next = list.filter(function (o) { return o.id !== id; }); return { ok: next.length !== list.length, overlays: next }; }
+  function activeOverlays(list, t) { return list.filter(function (o) { return t >= o.start - 1e-9 && t < o.start + o.dur; }); }
+
+  // ---- drawing a transition: A = the outgoing picture, B = the incoming one (canvases or anything drawImage takes), p 0..1. ctx is cleared and filled here.
+  function ease(p) { return p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2; }
+  function drawTransition(ctx, type, p, A, B, W, H) {
+    p = clamp(p, 0, 1); var e = ease(p), m = type.split('-')[0], dir = type.split('-')[1];
+    ctx.save(); ctx.globalAlpha = 1; ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+    function clipTo(fn) { ctx.save(); ctx.beginPath(); fn(); ctx.clip(); ctx.drawImage(B, 0, 0, W, H); ctx.restore(); }
+    if (type === 'fade' || type === 'fade-white') {
+      if (type === 'fade-white') { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H); }
+      if (p < 0.5) { ctx.globalAlpha = 1 - 2 * p; ctx.drawImage(A, 0, 0, W, H); } else { ctx.globalAlpha = 2 * p - 1; ctx.drawImage(B, 0, 0, W, H); }
+    } else if (type === 'dissolve') { ctx.drawImage(A, 0, 0, W, H); ctx.globalAlpha = p; ctx.drawImage(B, 0, 0, W, H); }
+    else if (m === 'slide') {   // the new picture slides over the old one
+      ctx.drawImage(A, 0, 0, W, H); var dx = dir === 'left' ? W * (1 - e) : dir === 'right' ? -W * (1 - e) : 0, dy = dir === 'up' ? H * (1 - e) : dir === 'down' ? -H * (1 - e) : 0; ctx.drawImage(B, dx, dy, W, H);
+    } else if (m === 'push') {  // both move
+      var px = dir === 'left' ? -W * e : dir === 'right' ? W * e : 0, py = dir === 'up' ? -H * e : dir === 'down' ? H * e : 0; ctx.drawImage(A, px, py, W, H);
+      ctx.drawImage(B, px + (dir === 'left' ? W : dir === 'right' ? -W : 0), py + (dir === 'up' ? H : dir === 'down' ? -H : 0), W, H);
+    } else if (m === 'wipe') {  // a scan line moves across and uncovers the new picture
+      ctx.drawImage(A, 0, 0, W, H);
+      clipTo(function () { if (dir === 'left') { ctx.rect(0, 0, W * e, H); } else if (dir === 'right') { ctx.rect(W * (1 - e), 0, W * e, H); } else if (dir === 'up') { ctx.rect(0, 0, W, H * e); } else { ctx.rect(0, H * (1 - e), W, H * e); } });
+      ctx.fillStyle = 'rgba(255,255,255,.85)'; if (p > 0 && p < 1) { if (dir === 'left') { ctx.fillRect(W * e - 1, 0, 2, H); } else if (dir === 'right') { ctx.fillRect(W * (1 - e) - 1, 0, 2, H); } else if (dir === 'up') { ctx.fillRect(0, H * e - 1, W, 2); } else { ctx.fillRect(0, H * (1 - e) - 1, W, 2); } }
+    } else if (type === 'split-h') { ctx.drawImage(A, 0, 0, W, H); clipTo(function () { ctx.rect(W * (1 - e) / 2, 0, W * e, H); }); }
+    else if (type === 'split-v') { ctx.drawImage(A, 0, 0, W, H); clipTo(function () { ctx.rect(0, H * (1 - e) / 2, W, H * e); }); }
+    else if (type === 'circle-open') { var R = Math.sqrt(W * W + H * H) / 2; ctx.drawImage(A, 0, 0, W, H); clipTo(function () { ctx.arc(W / 2, H / 2, R * e, 0, Math.PI * 2); }); }
+    else if (type === 'circle-close') { var R2 = Math.sqrt(W * W + H * H) / 2; ctx.drawImage(B, 0, 0, W, H); ctx.save(); ctx.beginPath(); ctx.arc(W / 2, H / 2, R2 * (1 - e), 0, Math.PI * 2); ctx.clip(); ctx.drawImage(A, 0, 0, W, H); ctx.restore(); }
+    else if (type === 'blinds') { ctx.drawImage(A, 0, 0, W, H); var n = 8, bh = H / n; clipTo(function () { for (var k = 0; k < n; k++) { ctx.rect(0, k * bh, W, bh * e); } }); }
+    else if (type === 'zoom') { ctx.drawImage(A, 0, 0, W, H); ctx.globalAlpha = e; ctx.translate(W / 2, H / 2); var s = 0.7 + 0.3 * e; ctx.scale(s, s); ctx.translate(-W / 2, -H / 2); ctx.drawImage(B, 0, 0, W, H); }
+    else { ctx.drawImage(B, 0, 0, W, H); }
+    ctx.restore();
+  }
+
+  return { TRANSITIONS: TRANSITIONS, TRANSITION_LIST: TRANSITION_LIST, TR_MIN: TR_MIN, TR_MAX: TR_MAX, TR_DEFAULT: TR_DEFAULT, MIN_LEN: MIN_LEN, EDGE: EDGE, normalizeClips: normalizeClips, fromVideo: fromVideo, total: total, starts: starts, locate: locate, splitAt: splitAt, removeRange: removeRange, append: append, setTransition: setTransition, windowOf: windowOf, transitionAt: transitionAt, rippleRemove: rippleRemove, normalizeOverlays: normalizeOverlays, addOverlay: addOverlay, updateOverlay: updateOverlay, removeOverlay: removeOverlay, activeOverlays: activeOverlays, drawTransition: drawTransition };
 }));
 
 }).call(window, undefined);
@@ -36752,6 +36915,9 @@ return holder.FaDeckEditUI;
       '.tw-ve-stage video{max-width:100%;max-height:100%;display:block}.tw-ve-empty{color:#ccc;text-align:center;padding:10px}.tw-ve-tabs{display:flex;gap:6px;padding:4px 6px;border-top:1px solid #ccc;flex:0 0 auto}' +
       '.tw-ve-tabbody{flex:1 1 45%;min-height:60px;overflow:auto;padding:6px}.tw-ve-objrow{padding:3px 6px;border:1px solid #bbb;border-radius:6px;margin:3px 0;font-size:12px}.tw-ve-note{font-size:12px;opacity:.7}.tw-ve-tool{position:sticky;top:-6px;z-index:2;display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:-6px -6px 6px;padding:6px;background:var(--ai-win-bg,#fff);border-bottom:1px solid #ccc}.tw-ve-tool button{border:1px solid #8250df;border-radius:6px;background:transparent;color:inherit;padding:2px 9px;cursor:pointer}.tw-ve-tool button:disabled{opacity:.4;cursor:default}.tw-ve-tool button.on{background:#8250df;color:#fff}.tw-ve-err{color:#cf222e;font-size:12px}.tw-ve-job{display:flex;gap:6px;align-items:center;padding:4px 6px;border:1px solid #bbb;border-radius:6px;margin:3px 0;font-size:12px}.tw-ve-job .st{font-weight:600;min-width:64px}.tw-ve-job .pg{flex:1;opacity:.75;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tw-ve-job button{border:1px solid #8250df;border-radius:6px;background:transparent;color:inherit;padding:1px 7px;cursor:pointer}.tw-ve-tool select{padding:1px 3px}.tw-ve-dub{display:flex;gap:4px;align-items:center;flex-wrap:wrap;cursor:pointer}.tw-ve-dub input{width:62px;padding:1px 3px}.tw-ve-dub .x{border:0;background:transparent;cursor:pointer;color:#cf222e;font-size:14px;margin-left:auto}.tw-ve-bar button.rec{background:#cf222e;border-color:#cf222e;color:#fff}.tw-ve-stage:fullscreen video{width:100%;height:100%;max-width:none;max-height:none}.tw-ve-stage:fullscreen .tw-ve-sub{font-size:3vw;bottom:9%}.tw-ve-fs{position:absolute;top:6px;right:6px;z-index:3;border:1px solid #fff8;border-radius:6px;background:rgba(0,0,0,.45);color:#fff;padding:1px 7px;cursor:pointer;opacity:.7}.tw-ve-fs:hover{opacity:1}.tw-ve-menu{position:absolute;right:8px;top:34px;z-index:7;display:flex;flex-direction:column;gap:4px;padding:6px;border:1px solid #888;border-radius:8px;background:var(--ai-win-bg,#fff);color:var(--ai-win-fg,inherit);box-shadow:0 2px 8px rgba(0,0,0,.3)}.tw-ve-menu button{border:1px solid #8250df;border-radius:6px;background:transparent;color:inherit;padding:3px 10px;cursor:pointer;text-align:left}.tw-ve-cue .tts{position:absolute;right:30px;bottom:3px;border:1px solid #8250df;border-radius:50%;width:20px;height:20px;line-height:16px;padding:0;background:var(--ai-win-bg,#fff);cursor:pointer;font-size:11px}.tw-ve-ask{display:flex;flex-direction:column;gap:6px}.tw-ve-asklog>div{padding:4px 6px;border-radius:6px;margin:3px 0;font-size:12px;white-space:pre-wrap}.tw-ve-ask-me{background:rgba(130,80,223,.14);margin-left:24px!important}.tw-ve-ask-ai{border:1px solid #bbb}.tw-ve-ask-err{color:#cf222e}.tw-ve-askin{display:flex;gap:6px;align-items:flex-end}.tw-ve-askin textarea{flex:1;min-height:40px;font:inherit;padding:3px 5px}.tw-ve-askin button,.tw-ve-prop button{border:1px solid #8250df;border-radius:6px;background:transparent;color:inherit;padding:3px 12px;cursor:pointer}.tw-ve-prop{border:1px dashed #8250df;border-radius:6px;padding:6px;font-size:12px}.tw-ve-prop button.go{background:#8250df;color:#fff}.tw-ve-sub{position:absolute;left:4%;right:4%;bottom:12%;text-align:center;color:#fff;font-size:17px;line-height:1.3;white-space:pre-wrap;pointer-events:none;text-shadow:0 0 3px #000,0 0 3px #000,1px 1px 2px #000}' +
       '.tw-ve-cue{position:relative;display:flex;gap:6px;align-items:flex-start;padding:4px;border:1px solid #bbb;border-radius:6px;margin:3px 0;cursor:pointer}.tw-ve-cue.on{border-color:#8250df;background:rgba(130,80,223,.14)}.tw-ve-cue input{width:70px;padding:2px 3px}.tw-ve-cue input.bad{border-color:#cf222e;background:rgba(207,34,46,.12)}.tw-ve-cue textarea{flex:1;min-width:120px;min-height:34px;resize:vertical;padding:2px 4px;font:inherit}.tw-ve-cue .add{position:absolute;right:4px;bottom:3px;border:1px solid #8250df;border-radius:50%;width:20px;height:20px;line-height:16px;padding:0;background:var(--ai-win-bg,#fff);color:#8250df;cursor:pointer;font-size:14px}.tw-ve-cue textarea{padding-bottom:22px}.tw-ve-cue .x{border:0;background:transparent;cursor:pointer;color:#cf222e;font-size:15px}';
+    s.textContent += '.tw-ve-ctl{display:flex;align-items:center;gap:6px;padding:3px 6px;flex:0 0 auto;border-top:1px solid #333;background:rgba(0,0,0,.06)}.tw-ve-ctl input[type=range]{flex:1;min-width:60px}.tw-ve-ctl button,.tw-ve-edbar button{border:1px solid #8250df;border-radius:6px;background:transparent;color:inherit;padding:2px 8px;cursor:pointer}.tw-ve-ctl button:disabled,.tw-ve-edbar button:disabled{opacity:.4;cursor:default}.tw-ve-ctl .tm{font:12px/1 monospace;white-space:nowrap}' +
+      '.tw-ve-edbar{display:flex;gap:5px;align-items:center;flex-wrap:wrap;padding:3px 6px;flex:0 0 auto;border-top:1px solid #ccc;font-size:12px}.tw-ve-edbar input.mk{width:66px;padding:1px 3px}.tw-ve-ovl{position:absolute;pointer-events:none;overflow:hidden}.tw-ve-ovl img{position:absolute;transform:translate(-50%,-50%);max-width:none}.tw-ve-fade{position:absolute;inset:0;background:#000;opacity:0;pointer-events:none}' +
+      '.tw-ve-clip{display:flex;gap:4px;align-items:center;flex-wrap:wrap;cursor:pointer}.tw-ve-clip select{max-width:150px;font-size:11px}.tw-ve-clip input{width:52px;padding:1px 3px}.tw-ve-clip .x,.tw-ve-ov .x{border:0;background:transparent;cursor:pointer;color:#cf222e;font-size:14px;margin-left:auto}.tw-ve-ov{display:flex;gap:4px;align-items:center;flex-wrap:wrap}.tw-ve-ov input{width:52px;padding:1px 3px}';
     root.document.head.appendChild(s);
   }
   function mount(o) {
@@ -36774,9 +36940,14 @@ return holder.FaDeckEditUI;
     var tabs = el('div', 'tw-ve-tabs'), tabBody = el('div', 'tw-ve-tabbody'), tabBtn = {};
     var LABEL = { transcript: T('逐字稿', 'Transcript'), ask: T('Ask AI', 'Ask AI'), jobs: T('工作佇列', 'Job queue') };
     core.TABS.forEach(function (t) { var b = el('button', '', LABEL[t]); b.type = 'button'; b.setAttribute('data-ve-tab', t); b.addEventListener('click', function () { setTab(t); }); tabs.appendChild(b); tabBtn[t] = b; });
-    main.appendChild(stage); main.appendChild(tabs); main.appendChild(tabBody);
+    var ctlBar = el('div', 'tw-ve-ctl'), bPlay = el('button', '', '▶'), slider = el('input'), tmLabel = el('span', 'tm', '0:00 / 0:00'); bPlay.type = 'button'; bPlay.setAttribute('data-ve', 'play'); slider.type = 'range'; slider.min = '0'; slider.max = '1000'; slider.value = '0'; slider.setAttribute('data-ve', 'seek');
+    ctlBar.appendChild(bPlay); ctlBar.appendChild(slider); ctlBar.appendChild(tmLabel);
+    var edBar = el('div', 'tw-ve-edbar'); edBar.setAttribute('data-ve', 'edbar');
+    main.appendChild(stage); main.appendChild(ctlBar); main.appendChild(edBar); main.appendChild(tabs); main.appendChild(tabBody);
     body.appendChild(panel); body.appendChild(split); body.appendChild(main); box.appendChild(body);
 
+    var tl = root.TwVideoTimeline, clips = tl.normalizeClips(project.clips), ovs = tl.normalizeOverlays(project.overlays), srcs = {}, imgs = {}, pv = null, F = null, ovLayer = null, fadeEl = null, ovEls = {};
+    var curIdx = -1, playing = false, atEnd = false, switching = false, navTok = 0, tPending = 0, editHist = [];
     var cues = core.normalize(project.cues), hist = core.history(cues), errBox = null, listBox = null;
     function dur() { var v = box._ve && box._ve.video; return v && isFinite(v.duration) ? v.duration : 0; }
     function now() { var v = box._ve && box._ve.video; return v ? v.currentTime || 0 : 0; }
@@ -36789,14 +36960,20 @@ return holder.FaDeckEditUI;
     var subEl = null, curBlob = null, jobsBox = null, q = null;
     var JST = { queued: T('排隊中', 'Queued'), running: T('進行中', 'Running'), done: T('完成', 'Done'), failed: T('失敗', 'Failed'), canceled: T('已取消', 'Canceled'), interrupted: T('中斷', 'Interrupted') };
     function applyTranscript(job, res) {
-      var add = core.fromSegments(res && res.segments, job.payload && job.payload.startSec, dur());
+      if (job.payload && job.payload.fillId) {   // "fill from audio" of ONE line: the recognized words replace that line's text (its times stay)
+        var txt = ((res && res.segments) || []).map(function (s) { return String(s.text || '').trim(); }).filter(Boolean).join(zh() ? '' : ' ');
+        if (!txt) { throw new Error(T('這一列的時間範圍內沒有辨識出文字', 'No speech was recognized inside this line')); }
+        if (!cues.some(function (x) { return x.id === job.payload.fillId; })) { throw new Error(T('這一列已經不在了', 'That line no longer exists')); }
+        edit(job.payload.fillId, { text: txt }); flash(T('已從聲音填入文字(可復原)', 'Text filled from the audio (undo available)')); return { filled: 1 };
+      }
+      var add = core.fromSegments(res && res.segments, res && res.abs ? 0 : job.payload && job.payload.startSec, dur());
       if (!add.length) { throw new Error(T('沒有辨識出任何文字', 'No speech was recognized')); }
       commit(core.normalize(cues.concat(add))); flash(T('辨識完成,新增 ', 'Done: added ') + add.length + T(' 列(可復原;原有的列都保留)', ' lines (undo available; existing lines are kept)'));
       return { added: add.length };
     }
     function runJob(job, report) {
       if (job.kind !== 'transcribe' && job.kind !== 'burn') { return { promise: Promise.reject(new Error('unknown job kind ' + job.kind)) }; }
-      if (!curBlob) { return { promise: Promise.reject(new Error(T('沒有影片', 'No video loaded'))) }; }
+      if (!clips.length) { return { promise: Promise.reject(new Error(T('沒有影片', 'No video loaded'))) }; }
       if (job.kind === 'burn') {
         if (!host.burn) { return { promise: Promise.reject(new Error(T('這裡不能燒錄字幕', 'Burning subtitles is not available here'))) }; }
         var pd = job.payload.mix === 'all' ? (job.payload.dubs || []) : [], hb = null, gone = false;
@@ -36806,11 +36983,11 @@ return holder.FaDeckEditUI;
         })).then(function (l) { var got = l.filter(Boolean); if (got.length < pd.length) { report(T('有 ', '') + (pd.length - got.length) + T(' 個配音讀不到,沒有混進去', ' dubs could not be read and are left out')); } return got; }) : Promise.resolve([]);
         return { cancel: function () { gone = true; if (hb) { hb.cancel(); } }, promise: prep.then(function (list) {
           if (gone) { throw new Error('canceled'); }
-          hb = host.burn(curBlob, job.payload.segments || [], report, (project.video && project.video.name) || 'video', { dubs: list });
+          hb = host.burn((srcs[clips[0].fileId || '_local'] || {}).blob || curBlob, job.payload.segments || [], report, (project.video && project.video.name) || 'video', { dubs: list, timeline: job.payload.timeline || null });
           return hb.promise; }).then(function (res) { var cur = q.get(job.id); if (!cur || cur.status !== 'running') { return null; } q.patch(job.id, { out: res.id ? { id: res.id, name: res.name } : null }); return { name: res.name, bytes: res.bytes, id: res.id }; }) };
       }
       if (!host.transcribe) { return { promise: Promise.reject(new Error(T('這裡不能做語音辨識', 'Speech recognition is not available here'))) }; }
-      var h = host.transcribe(curBlob, { language: job.payload.language || null, startSec: job.payload.startSec || 0, lenSec: job.payload.lenSec || 0 }, report);
+      var h = transcribeTimeline(job, report);
       return { cancel: h.cancel, promise: h.promise.then(function (res) { var cur = q.get(job.id); if (!cur || cur.status !== 'running') { return null; } return applyTranscript(job, res); }) };
     }
     function jobsChanged(list) {
@@ -36835,9 +37012,10 @@ return holder.FaDeckEditUI;
       tabBody.appendChild(jobsBox);
     }
     function enqueueBurn() {
-      if (!curBlob) { flash(T('先載入影片', 'Load a video first')); return; }
-      if (!cues.length) { flash(T('沒有逐字稿可燒錄', 'No transcript to burn')); return; }
-      var mix = lay.burnMix === 'all' && dubs.length > 0, nm = (project.video && project.video.name) || '', id = q.enqueue({ kind: 'burn', label: nm + ' (' + cues.length + T(' 列', ' lines') + (mix ? ' + ' + dubs.length + T(' 配音', ' dubs') : '') + ')', payload: { segments: cues.map(function (c) { return { start: c.start, end: c.end, text: c.text }; }), mix: mix ? 'all' : 'subs', dubs: mix ? dubs.map(function (d) { return { id: d.id, start: d.start, fileId: d.fileId }; }) : [] } });   // what is on screen NOW is what gets burned
+      if (!clips.length) { flash(T('先載入影片', 'Load a video first')); return; }
+      var needTl = tlNeeded();
+      if (!cues.length && !needTl) { flash(T('沒有逐字稿可燒錄', 'No transcript to burn')); return; }
+      var mix = lay.burnMix === 'all' && dubs.length > 0, nm = (project.video && project.video.name) || '', id = q.enqueue({ kind: 'burn', label: nm + ' (' + cues.length + T(' 列', ' lines') + (mix ? ' + ' + dubs.length + T(' 配音', ' dubs') : '') + ')', payload: { segments: cues.map(function (c) { return { start: c.start, end: c.end, text: c.text }; }), mix: mix ? 'all' : 'subs', timeline: needTl ? { clips: clips, overlays: ovs } : null, dubs: mix ? dubs.map(function (d) { return { id: d.id, start: d.start, fileId: d.fileId }; }) : [] } });   // what is on screen NOW is what gets burned
       flash(id ? T('已排入工作佇列(看「工作佇列」分頁)', 'Queued (see the Job queue tab)') : T('工作佇列已滿', 'The job queue is full'));
     }
     function download(blob, name) { var url = root.URL.createObjectURL(blob), a = el('a'); a.href = url; a.download = name; root.document.body.appendChild(a); a.click(); a.remove(); setTimeout(function () { root.URL.revokeObjectURL(url); }, 4000); }
@@ -36847,15 +37025,17 @@ return holder.FaDeckEditUI;
       if (out && out.id && host.loadFile) { host.loadFile(out.id).then(function (rec) { download(new root.Blob([rec.arrayBuffer], { type: 'video/mp4' }), nm); }, function () { flash(T('輸出檔已不在這個瀏覽器的檔案儲存裡,請重新燒錄', 'The output is no longer in this browser\'s file storage; burn again')); }); return; }
       flash(T('沒有可下載的輸出(重新燒錄)', 'No output to download (burn again)'));
     }
-    function enqueueTranscribe(language, fromPlayhead) {
-      if (!curBlob) { flash(T('先載入影片', 'Load a video first')); return; }
+    // mode: 'whole' | 'playhead' (CUE_SECONDS) | 'custom' (secs seconds from the playhead)
+    function enqueueTranscribe(language, mode, secs) {
+      if (!clips.length) { flash(T('先載入影片', 'Load a video first')); return; }
+      var fromPlayhead = mode === 'playhead' || mode === 'custom', len = mode === 'custom' ? (+secs > 0 ? +secs : core.CUE_SECONDS) : core.CUE_SECONDS;
       var start = fromPlayhead ? Math.round(now() * 100) / 100 : 0, nm = (project.video && project.video.name) || '';
-      var id = q.enqueue({ kind: 'transcribe', label: nm + (start ? ' @' + core.clock(start) + ' +' + core.CUE_SECONDS + T(' 秒', ' s') : ''), payload: { language: language || null, startSec: start, lenSec: start ? core.CUE_SECONDS : 0 } });
+      var id = q.enqueue({ kind: 'transcribe', label: nm + (fromPlayhead ? ' @' + core.clock(start) + ' +' + len + T(' 秒', ' s') : ''), payload: { language: language || null, startSec: start, lenSec: fromPlayhead ? len : 0 } });
       flash(id ? T('已排入工作佇列(看「工作佇列」分頁)', 'Queued (see the Job queue tab)') : T('工作佇列已滿', 'The job queue is full'));
     }
-    function updateOverlay() { if (!subEl) { return; } var a = lay.subs ? core.activeCue(cues, now()) : null, t = a ? a.text : ''; if (subEl.textContent !== t) { subEl.textContent = t; } subEl.style.display = t ? '' : 'none'; }
+    function updateOverlay() { updateTimelineLayer(); if (!subEl) { return; } var a = lay.subs ? core.activeCue(cues, now()) : null, t = a ? a.text : ''; if (subEl.textContent !== t) { subEl.textContent = t; } subEl.style.display = t ? '' : 'none'; }
     var raf = 0;
-    function loop() { updateOverlay(); highlight(); syncDubs(); var v = box._ve && box._ve.video; raf = v && !v.paused && !v.ended ? root.requestAnimationFrame(loop) : 0; }
+    function loop() { checkBoundary(); updateOverlay(); highlight(); syncDubs(); refreshCtl(); var v = box._ve && box._ve.video; raf = v && !v.paused && !v.ended ? root.requestAnimationFrame(loop) : 0; }
     function startLoop() { if (!raf) { raf = root.requestAnimationFrame(loop); } }
     function importText(text, nm) {
       var r = core.parseSrt(text); if (!r.cues.length) { flash(T('讀不到任何字幕(支援 .srt / .vtt)', 'No subtitles could be read (.srt / .vtt)') + (r.skipped ? ' — ' + r.skipped + T(' 段時間不正確', ' blocks with bad times') : '')); return false; }
@@ -36880,12 +37060,15 @@ return holder.FaDeckEditUI;
       bExp.addEventListener('click', exportSrt);
       bSub.addEventListener('click', function () { lay.subs = !lay.subs; bSub.classList.toggle('on', lay.subs); updateOverlay(); save(); });
       var bGen = el('button', '', '🎙 ' + T('產生逐字稿', 'Generate transcript')), selL = el('select'), scope = el('select');
-      [['zh', '中文'], ['en', 'English'], ['', T('自動', 'Auto')]].forEach(function (o) { var op = el('option', '', o[1]); op.value = o[0]; selL.appendChild(op); }); selL.value = (/^en/i.test(String(root.document.documentElement.lang || '')) ? 'en' : 'zh'); selL.setAttribute('data-ve', 'gen-lang');
-      [['whole', T('整支影片', 'Whole video')], ['playhead', T('播放位置起 ', 'At playhead ') + core.CUE_SECONDS + T(' 秒', ' s')]].forEach(function (o) { var op = el('option', '', o[1]); op.value = o[0]; scope.appendChild(op); }); scope.value = lay.genScope; scope.addEventListener('change', function () { lay.genScope = scope.value === 'whole' ? 'whole' : 'playhead'; save(); }); scope.setAttribute('data-ve', 'gen-scope'); scope.title = T('辨識的範圍:只辨識播放位置起短短 ' + core.CUE_SECONDS + ' 秒(和「在播放位置新增」一樣長),或整支影片', 'What to recognize: only a few seconds (' + core.CUE_SECONDS + ' s, as long as a line added at the playhead) from the playhead, or the whole video');
+      [['zh', '中文'], ['en', 'English'], ['', T('自動', 'Auto')]].forEach(function (o) { var op = el('option', '', o[1]); op.value = o[0]; selL.appendChild(op); }); selL.value = lay.genLang; selL.addEventListener('change', function () { lay.genLang = selL.value; save(); }); selL.setAttribute('data-ve', 'gen-lang'); selL.title = T('辨識語言(會記住)', 'Recognition language (remembered)');
+      [['whole', T('整支影片', 'Whole video')], ['playhead', T('播放位置起 ', 'At playhead ') + core.CUE_SECONDS + T(' 秒', ' s')], ['custom', T('播放位置起 自訂秒數', 'At playhead, custom seconds')]].forEach(function (o) { var op = el('option', '', o[1]); op.value = o[0]; scope.appendChild(op); }); scope.value = lay.genScope;
+      var secsIn = el('input'); secsIn.type = 'number'; secsIn.min = '1'; secsIn.max = '600'; secsIn.step = '1'; secsIn.value = String(lay.genSecs); secsIn.style.cssText = 'width:60px'; secsIn.setAttribute('data-ve', 'gen-secs'); secsIn.title = T('從播放位置起要辨識幾秒(會記住)', 'Seconds to recognize from the playhead (remembered)');
+      function showSecs() { secsIn.style.display = scope.value === 'custom' ? '' : 'none'; } secsIn.addEventListener('change', function () { var n = +secsIn.value; lay.genSecs = n >= 1 && n <= 600 ? Math.round(n * 10) / 10 : 10; secsIn.value = String(lay.genSecs); save(); });
+      scope.addEventListener('change', function () { lay.genScope = scope.value === 'whole' ? 'whole' : scope.value === 'custom' ? 'custom' : 'playhead'; showSecs(); save(); }); showSecs(); scope.setAttribute('data-ve', 'gen-scope'); scope.title = T('辨識的範圍:只辨識播放位置起短短 ' + core.CUE_SECONDS + ' 秒(和「在播放位置新增」一樣長),或整支影片', 'What to recognize: only a few seconds (' + core.CUE_SECONDS + ' s, as long as a line added at the playhead) from the playhead, or the whole video');
       bGen.setAttribute('data-ve', 'gen'); bGen.title = T('在瀏覽器裡用 Whisper 辨識(第一次要下載約 77MB 模型);排進工作佇列,可繼續編輯', 'Recognize with Whisper in this browser (first use downloads a ~77 MB model); queued, you can keep editing');
-      bGen.addEventListener('click', function () { enqueueTranscribe(selL.value, scope.value === 'playhead'); });
+      bGen.addEventListener('click', function () { enqueueTranscribe(selL.value, scope.value, secsIn.value); });
       var bBurn = el('button', '', '🔥 ' + T('燒錄字幕', 'Burn subtitles')); bBurn.setAttribute('data-ve', 'burn'); bBurn.title = T('把目前的逐字稿燒進影片,輸出 <影片名>-subtitled.mp4(排進工作佇列)', 'Burn the current transcript into the video, output <name>-subtitled.mp4 (queued)'); bBurn.addEventListener('click', enqueueBurn);
-      bGen.type = 'button'; tool.appendChild(bGen); tool.appendChild(scope); tool.appendChild(selL); [bAdd, bUndo, bRedo, bImp, bExp, bSub, bBurn].forEach(function (b) { b.type = 'button'; tool.appendChild(b); });
+      bGen.type = 'button'; tool.appendChild(bGen); tool.appendChild(scope); tool.appendChild(secsIn); tool.appendChild(selL); [bAdd, bUndo, bRedo, bImp, bExp, bSub, bBurn].forEach(function (b) { b.type = 'button'; tool.appendChild(b); });
       var mixSel = el('select'); [['all', T('字幕+配音', 'Subtitles + dubs')], ['subs', T('僅字幕', 'Subtitles only')]].forEach(function (o2) { var op = el('option', '', o2[1]); op.value = o2[0]; mixSel.appendChild(op); }); mixSel.value = lay.burnMix; mixSel.setAttribute('data-ve', 'burn-mix'); mixSel.title = T('燒錄輸出要不要把配音(麥克風、TTS)混進聲音', 'Whether the burned video also gets the dubs (microphone, TTS) mixed into its audio'); mixSel.addEventListener('change', function () { lay.burnMix = mixSel.value === 'subs' ? 'subs' : 'all'; save(); }); tool.appendChild(mixSel); tool.appendChild(fin); bAdd.setAttribute('data-ve', 'cue-add'); bUndo.setAttribute('data-ve', 'undo'); bRedo.setAttribute('data-ve', 'redo'); bUndo.title = T('復原', 'Undo'); bRedo.title = T('重做', 'Redo');
       bUndo.disabled = !hist.canUndo(); bRedo.disabled = !hist.canRedo();
       bAdd.addEventListener('click', function () { addAt(now()); });
@@ -36906,7 +37089,9 @@ return holder.FaDeckEditUI;
         plus.addEventListener('click', function (e) { e.stopPropagation(); addAt(Math.max(now(), c.end)); });
         var tb = el('button', 'tts', '🔊'); tb.type = 'button'; tb.setAttribute('data-f', 'cue-tts'); tb.title = T('用 TTS 唸這一句,加成配音(從這句開始時間起)', 'Speak this line with TTS and add it as a dub (starting at this line)');
         tb.addEventListener('click', function (e) { e.stopPropagation(); openTts({ text: tx.value, start: c.start }); });
-        row.appendChild(a); row.appendChild(b); row.appendChild(tx); row.appendChild(x); row.appendChild(plus); if (canTts()) { row.appendChild(tb); } listBox.appendChild(row);
+        var sb = el('button', 'stt', '🎙'); sb.type = 'button'; sb.setAttribute('data-f', 'cue-stt'); sb.title = T('自聲音填入:辨識這一列時間範圍內的聲音,把文字填進來(排進工作佇列)', 'Fill from audio: recognize the sound inside this line\'s time range and put the text here (queued)');
+        sb.addEventListener('click', function (e) { e.stopPropagation(); if (!clips.length) { flash(T('先載入影片', 'Load a video first')); return; } var qid = q.enqueue({ kind: 'transcribe', label: T('自聲音填入 ', 'Fill from audio ') + core.clock(c.start) + ' +' + Math.round((c.end - c.start) * 10) / 10 + T(' 秒', ' s'), payload: { language: lay.genLang || null, startSec: c.start, lenSec: c.end - c.start, fillId: c.id } }); flash(qid ? T('已排入工作佇列', 'Queued') : T('工作佇列已滿', 'The job queue is full')); });
+        row.appendChild(a); row.appendChild(b); row.appendChild(tx); row.appendChild(x); row.appendChild(plus); row.appendChild(sb); if (canTts()) { row.appendChild(tb); } listBox.appendChild(row);
       });
       tabBody.appendChild(listBox); highlight();
     }
@@ -37002,7 +37187,7 @@ return holder.FaDeckEditUI;
     }
     function renderObjs() {
       objs.textContent = '';
-      var r = el('div', 'tw-ve-objrow', project.video ? '🎞 ' + project.video.name : T('(還沒有影片)', '(no video yet)')); r.setAttribute('data-ve', 'obj-video'); objs.appendChild(r);
+      var r = el('div', 'tw-ve-objrow', project.video ? '🎞 ' + project.video.name : T('(還沒有影片)', '(no video yet)')); r.setAttribute('data-ve', 'obj-video'); objs.appendChild(r); renderTimelineRows();
       if (!dubs.length) { objs.appendChild(el('div', 'tw-ve-note', T('按標題列的「🎤 配音」錄音或用 TTS 唸文字;配音會列在這裡(起始時間、時長)', 'Press "🎤 Dub" in the title bar to record or to speak a text (TTS); dubs are listed here (start time, length)'))); }
       dubs.forEach(function (d) {
         var row = el('div', 'tw-ve-objrow tw-ve-dub'); row.setAttribute('data-dub', d.id);
@@ -37011,7 +37196,7 @@ return holder.FaDeckEditUI;
         st.addEventListener('change', function () { var t = core.parseT(st.value), vd = box._ve && box._ve.video, m = t === null ? { ok: false, error: 'time' } : core.moveDub(dubs, d.id, t, vd && isFinite(vd.duration) ? vd.duration : 0); if (!m.ok) { renderObjs(); msg(DERR[m.error] || m.error); return; } msg(''); commitDubs(m.dubs); });
         x.addEventListener('click', function (e) { e.stopPropagation(); var m = core.removeDub(dubs, d.id); if (m.ok) { freeAudio(d.id); commitDubs(m.dubs); } });
         row.addEventListener('click', function (e) { if (e.target.closest('input,button')) { return; } seek(d.start); });
-        var nm = el('span', '', (d.kind === 'tts' ? '🔊 ' : '🎤 ') + d.name); if (d.kind === 'tts') { nm.title = d.text + (d.voiceId ? ' · ' + d.voiceId : ''); } row.appendChild(nm); row.appendChild(st); row.appendChild(du); row.appendChild(x); objs.appendChild(row);
+        var nm = el('span', '', (d.kind === 'tts' ? '🔊 ' : d.kind === 'file' ? '🎵 ' : '🎤 ') + d.name); if (d.kind === 'tts') { nm.title = d.text + (d.voiceId ? ' · ' + d.voiceId : ''); } row.appendChild(nm); row.appendChild(st); row.appendChild(du); row.appendChild(x); objs.appendChild(row);
       });
     }
     function micError(e) { var n = e && e.name; return n === 'NotAllowedError' || n === 'SecurityError' ? T('麥克風被拒絕(請在瀏覽器允許麥克風;需要 https 或 localhost)', 'Microphone was refused (allow it in the browser; needs https or localhost)') : n === 'NotFoundError' ? T('找不到麥克風', 'No microphone found') : T('無法錄音:', 'Cannot record: ') + ((e && e.message) || e); }
@@ -37075,18 +37260,109 @@ return holder.FaDeckEditUI;
     var fsBtn = el('button', 'tw-ve-fs', '⛶'); fsBtn.type = 'button'; fsBtn.setAttribute('data-ve', 'fullscreen'); fsBtn.title = T('全螢幕(字幕會一起顯示);Esc 離開', 'Full screen (the subtitles stay); Esc to leave');
     function toggleFs() { var d = root.document; if (d.fullscreenElement) { d.exitFullscreen(); } else if (stage.requestFullscreen) { stage.requestFullscreen().then(null, function () { msg(T('這個瀏覽器不允許全螢幕', 'Full screen is not allowed here')); }); } }
     fsBtn.addEventListener('click', toggleFs);
+    // ===== the player: ONE <video> (pv) plays the source of the clip under the playhead; F is what the rest of the editor sees as "the video": a timeline clock (currentTime / duration / paused / ended / play / pause + events)
+    function fileKey(c) { return c.fileId || '_local'; }
+    function waitFor(target, ev, ms) { return new Promise(function (res) { var done = false, to = root.setTimeout(fin, ms || 4000); function fin() { if (done) { return; } done = true; root.clearTimeout(to); target.removeEventListener(ev, fin); res(); } target.addEventListener(ev, fin); }); }
+    function probeDur(url) { return new Promise(function (res, rej) { var v = el('video'); v.preload = 'metadata'; v.onloadedmetadata = function () { res(v.duration); }; v.onerror = function () { rej(new Error(T('讀不到這個影片的長度', 'cannot read the length of this video'))); }; v.src = url; }); }
+    function loadSrc(key) {
+      var s = srcs[key]; if (s && s.blob) { return Promise.resolve(s); }
+      if (key === '_local' || !(host.loadBlob || host.loadFile)) { return Promise.reject(new Error(T('這個影片來源讀不到', 'cannot read this video source'))); }
+      var got = host.loadBlob ? host.loadBlob(key) : host.loadFile(key).then(function (r) { return new root.Blob([r.arrayBuffer], { type: r.mimeType || 'video/mp4' }); });
+      return got.then(function (b) { s = srcs[key] = srcs[key] || {}; s.blob = b; s.url = root.URL.createObjectURL(b); return s; });
+    }
+    function starts() { return tl.starts(clips); }
+    function tlTotal() { return tl.total(clips); }
+    function tlNow() {
+      if (curIdx < 0 || !pv || switching || !clips[curIdx]) { return tPending; }
+      var c = clips[curIdx], l = Math.max(0, Math.min(c.out - c.in, (pv.currentTime || 0) - c.in)); return starts()[curIdx] + l;
+    }
+    function fire(name) { if (F) { F.dispatchEvent(new root.Event(name)); } }
+    function gotoClip(i, local, thenPlay) {
+      var tok = ++navTok, c = clips[i]; if (!c) { return Promise.resolve(); } switching = true; tPending = (starts()[i] || 0) + local; refreshCtl();
+      return loadSrc(fileKey(c)).then(function (s) {
+        if (tok !== navTok) { return; }
+        var p0 = Promise.resolve(); if (pv.getAttribute('data-src') !== s.url) { pv.setAttribute('data-src', s.url); pv.src = s.url; p0 = waitFor(pv, 'loadedmetadata', 8000); }
+        return p0.then(function () {
+          if (tok !== navTok) { return; } if (isFinite(pv.duration)) { s.dur = pv.duration; } curBlob = s.blob;
+          var tgt = c.in + local, sk = Math.abs((pv.currentTime || 0) - tgt) > 0.02 ? (pv.currentTime = tgt, waitFor(pv, 'seeked', 3000)) : Promise.resolve();
+          return sk.then(function () { if (tok !== navTok) { return; } curIdx = i; switching = false; if (thenPlay) { pv.play().catch(function () { /* the user can press play */ }); } fire('seeked'); highlight(); refreshCtl(); });
+        });
+      }, function (e) { if (tok === navTok) { switching = false; } throw e; });
+    }
+    function tlSeek(t) {
+      if (!clips.length) { return; } var loc = tl.locate(clips, t); atEnd = false; tPending = t;
+      if (loc.i === curIdx && !switching && pv && pv.getAttribute('data-src') === (srcs[fileKey(clips[loc.i])] || {}).url) { pv.currentTime = loc.src; fire('seeked'); refreshCtl(); return; }
+      gotoClip(loc.i, loc.local, playing).then(null, function (e) { msg('⚠️ ' + ((e && e.message) || e)); });
+    }
+    function tlPlay() {
+      if (!clips.length || !pv) { return Promise.resolve(); } if (atEnd || tlNow() >= tlTotal() - 0.05) { tlSeek(0); } playing = true; atEnd = false; bPlay.textContent = '⏸';
+      if (!switching) { pv.play().catch(function () { /* the user can press play */ }); } fire('play'); startLoop(); return Promise.resolve();
+    }
+    function tlPause() { playing = false; bPlay.textContent = '▶'; if (pv) { pv.pause(); } fire('pause'); }
+    // the end of the clip being played: go on with the next (no seek when it continues the same source), or stop at the end of the timeline
+    function checkBoundary() {
+      if (!playing || switching || curIdx < 0 || !pv) { return; } var c = clips[curIdx]; if (!c || !(pv.currentTime >= c.out - 0.04 || pv.ended)) { return; }
+      var n = clips[curIdx + 1];
+      if (!n) { pv.currentTime = c.out; atEnd = true; tlPause(); fire('ended'); return; }
+      if (fileKey(n) === fileKey(c) && Math.abs(n.in - c.out) < 0.06) { curIdx++; return; }
+      gotoClip(curIdx + 1, 0, true).then(null, function (e) { tlPause(); msg('⚠️ ' + ((e && e.message) || e)); });
+    }
+    function refreshCtl() {
+      var tot = tlTotal(), t = Math.min(tot, tlNow()); tmLabel.textContent = core.clock(t) + ' / ' + core.clock(tot); if (root.document.activeElement !== slider) { slider.value = tot > 0 ? String(Math.round(t / tot * 1000)) : '0'; }
+      edBar.querySelectorAll('button[data-needs]').forEach(function (b) { b.disabled = !clips.length; });
+    }
+    slider.addEventListener('input', function () { tlSeek(+slider.value / 1000 * tlTotal()); });
+    bPlay.addEventListener('click', function () { if (playing) { tlPause(); } else { tlPlay(); } });
+    function imgUrl(fileId) {
+      if (imgs[fileId]) { return imgs[fileId]; } imgs[fileId] = ''; var got = host.loadBlob ? host.loadBlob(fileId) : host.loadFile(fileId).then(function (r) { return new root.Blob([r.arrayBuffer], { type: r.mimeType || 'image/png' }); });
+      got.then(function (b) { imgs[fileId] = root.URL.createObjectURL(b); updateOverlay(); }, function () { /* the overlay stays invisible */ }); return '';
+    }
+    // the picture overlays + the preview of a transition (dip to black/white: the other types show their real look only in the exported video)
+    function layoutOv() {
+      if (!ovLayer || !pv || !pv.videoWidth) { return; } var sw = stage.clientWidth, sh = stage.clientHeight, k = Math.min(sw / pv.videoWidth, sh / pv.videoHeight), w = pv.videoWidth * k, h = pv.videoHeight * k;
+      ovLayer.style.left = (sw - w) / 2 + 'px'; ovLayer.style.top = (sh - h) / 2 + 'px'; ovLayer.style.width = w + 'px'; ovLayer.style.height = h + 'px'; return { w: w, h: h };
+    }
+    function updateTimelineLayer() {
+      if (!ovLayer) { return; } var t = tlNow(), act = tl.activeOverlays(ovs, t), box2 = layoutOv(), live = {};
+      act.forEach(function (ov) {
+        live[ov.id] = 1; var im = ovEls[ov.id]; if (!im) { im = ovEls[ov.id] = el('img'); ovLayer.appendChild(im); }
+        var u = ov.fileId ? imgUrl(ov.fileId) : ''; if (u && im.getAttribute('src') !== u) { im.src = u; }
+        im.style.left = ov.x * 100 + '%'; im.style.top = ov.y * 100 + '%'; im.style.width = ov.w * 100 + '%';
+      });
+      Object.keys(ovEls).forEach(function (id) { if (!live[id]) { ovEls[id].remove(); delete ovEls[id]; } });
+      var tr = tl.transitionAt(clips, t); if (fadeEl) { fadeEl.style.opacity = tr ? String(1 - Math.abs(2 * tr.p - 1)) : '0'; fadeEl.style.background = tr && tr.type === 'fade-white' ? '#fff' : '#000'; }
+    }
+    function buildPlayer() {
+      stage.textContent = ''; pv = el('video'); pv.controls = false; pv.setAttribute('data-ve', 'video'); pv.setAttribute('playsinline', ''); pv.preload = 'auto';
+      ovLayer = el('div', 'tw-ve-ovl'); fadeEl = el('div', 'tw-ve-fade'); ovEls = {};
+      F = new root.EventTarget();
+      Object.defineProperties(F, { currentTime: { get: tlNow, set: tlSeek }, duration: { get: function () { return tlTotal() || NaN; } }, paused: { get: function () { return !playing; } }, ended: { get: function () { return atEnd; } } });
+      F.play = tlPlay; F.pause = tlPause; F.element = pv;
+      F.addEventListener('timeupdate', highlight); F.addEventListener('seeked', function () { highlight(); syncDubs(); }); F.addEventListener('play', function () { startLoop(); syncDubs(); }); F.addEventListener('pause', syncDubs); F.addEventListener('ended', syncDubs);
+      pv.addEventListener('timeupdate', function () { checkBoundary(); fire('timeupdate'); refreshCtl(); }); pv.addEventListener('ended', checkBoundary); pv.addEventListener('loadedmetadata', layoutOv); pv.addEventListener('resize', layoutOv);
+      subEl = el('div', 'tw-ve-sub'); subEl.setAttribute('data-ve', 'subtitle'); subEl.style.display = 'none'; pv.setAttribute('controlsList', 'nofullscreen');
+      stage.appendChild(pv); stage.appendChild(ovLayer); stage.appendChild(fadeEl); stage.appendChild(subEl); stage.appendChild(fsBtn); box._ve.video = F; curIdx = -1; playing = false; atEnd = false; bPlay.textContent = '▶';
+    }
+    // the FIRST video of the project: it becomes the one clip of the timeline
     function showVideo(blob, nm) {
-      curBlob = blob;
-      if (url) { root.URL.revokeObjectURL(url); } url = root.URL.createObjectURL(blob);
-      stage.textContent = ''; var v = el('video'); v.controls = true; v.src = url; v.setAttribute('data-ve', 'video'); v.addEventListener('timeupdate', highlight); v.addEventListener('seeked', highlight); v.addEventListener('play', function () { startLoop(); syncDubs(); }); v.addEventListener('pause', syncDubs); v.addEventListener('ended', syncDubs); v.addEventListener('seeked', syncDubs); subEl = el('div', 'tw-ve-sub'); subEl.setAttribute('data-ve', 'subtitle'); subEl.style.display = 'none'; v.setAttribute('controlsList', 'nofullscreen'); stage.appendChild(v); stage.appendChild(subEl); stage.appendChild(fsBtn); box._ve.video = v; name.textContent = nm || ''; renderObjs();
+      var key = (project.video && project.video.id) || '_local'; curBlob = blob;
+      Object.keys(srcs).forEach(function (k) { if (srcs[k].url) { root.URL.revokeObjectURL(srcs[k].url); } }); srcs = {}; srcs[key] = { blob: blob, url: root.URL.createObjectURL(blob), dur: 0 };
+      buildPlayer(); name.textContent = nm || '';
+      return probeDur(srcs[key].url).then(function (d) {
+        srcs[key].dur = d; clips = tl.fromVideo(project.video && project.video.id, nm, d); project.clips = clips; renderObjs(); return gotoClip(0, 0, false);
+      }).then(function () { refreshCtl(); });
+    }
+    function restorePlayer() {
+      buildPlayer(); name.textContent = (project.video && project.video.name) || ''; renderObjs();
+      return gotoClip(0, 0, false).then(function () { refreshCtl(); }, function () { stage.textContent = ''; stage.appendChild(el('div', 'tw-ve-empty', T('影片不在這個程式的檔案儲存裡了,請重新載入', 'The video is no longer in this app\'s file storage; load it again'))); });
     }
     function setVideo(src) {
       if (src && typeof src.arrayBuffer === 'function' && host.putFile) {         // a File the user picked: keep it in this browser's file storage so a refresh can load it again
-        return host.putFile(src).then(function (id) { project.video = { id: id, name: src.name }; showVideo(src, src.name); save(); return id; });
+        return host.putFile(src).then(function (id) { project.video = { id: id, name: src.name }; return showVideo(src, src.name).then(function () { save(); return id; }); });
       }
-      if (src && typeof src.arrayBuffer === 'function') { project.video = { id: null, name: src.name }; showVideo(src, src.name); save(); return Promise.resolve(null); }
+      if (src && typeof src.arrayBuffer === 'function') { project.video = { id: null, name: src.name }; return showVideo(src, src.name).then(function () { save(); return null; }); }
       if (src && src.id && host.loadFile) {
-        return host.loadFile(src.id).then(function (rec) { var b = new root.Blob([rec.arrayBuffer], { type: rec.mimeType || 'video/mp4' }); project.video = { id: src.id, name: rec.filename || src.name || '' }; showVideo(b, project.video.name); if (host.pin) { host.pin(src.id); } save(); });
+        return host.loadFile(src.id).then(function (rec) { var b = new root.Blob([rec.arrayBuffer], { type: rec.mimeType || 'video/mp4' }); project.video = { id: src.id, name: rec.filename || src.name || '' }; if (host.pin) { host.pin(src.id); } return showVideo(b, project.video.name).then(function () { save(); }); });
       }
       return Promise.reject(new Error(T('這個影片來源讀不到', 'cannot read this video source')));
     }
@@ -37107,15 +37383,127 @@ return holder.FaDeckEditUI;
     });
     root.addEventListener('resize', applyPanel);
 
+    // ===== editing the timeline: split, take a stretch out, add videos (merge), pictures, sounds, transitions. Every edit is one step of the "undo edit" list (clips + transcript + dubs + overlays together).
+    function tlNeeded() {
+      if (ovs.length || clips.length > 1) { return true; } var c = clips[0], s = c && srcs[fileKey(c)]; return !!(c && (c.in > 0.05 || (s && s.dur && c.out < s.dur - 0.1)));
+    }
+    var TLERR = { edge: T('這裡離片段的邊緣太近(要至少 0.05 秒)', 'Too close to the edge of the clip (at least 0.05 s)'), full: T('片段數已達上限', 'Too many clips'), range: T('要刪的範圍太短或不合法', 'The range is too short or not valid'), all: T('不能把整支影片都刪掉', 'You cannot remove the whole video'), time: T('時間或長度不合法', 'Invalid time or length'), missing: T('找不到', 'Not found'), first: T('第一個片段沒有轉場', 'The first clip has no transition') };
+    function snap() { editHist.push(JSON.stringify({ clips: clips, cues: cues, dubs: dubs, ovs: ovs })); if (editHist.length > 30) { editHist.shift(); } bUndoEdit.disabled = false; }
+    function dropSnap() { editHist.pop(); bUndoEdit.disabled = !editHist.length; }
+    function setClips(next, keepT) {
+      var t = keepT == null ? tlNow() : keepT; clips = next; project.clips = clips; save(); renderObjs(); refreshCtl();
+      if (!clips.length) { return; } var loc = tl.locate(clips, t);
+      tPending = t; curIdx = -1; var was = playing; gotoClip(loc.i, loc.local, was).then(null, function (e) { msg('⚠️ ' + ((e && e.message) || e)); });
+    }
+    function applyAnnotations(c2, d2, o2) { cues = core.normalize(c2); project.cues = cues; hist.push(cues); dubs = core.normalizeDubs(d2); project.dubs = dubs; ovs = tl.normalizeOverlays(o2); project.overlays = ovs; if (lay.tab === 'transcript') { renderTranscript(); } }
+    function undoEdit() {
+      var raw = editHist.pop(); bUndoEdit.disabled = !editHist.length; if (!raw) { return; } var st = JSON.parse(raw), t = tlNow();
+      applyAnnotations(st.cues, st.dubs, st.ovs); setClips(tl.normalizeClips(st.clips), t); flash(T('已復原剪輯', 'Edit undone'));
+    }
+    function doSplit() {
+      if (!clips.length) { msg(T('先載入影片', 'Load a video first')); return; } snap(); var r = tl.splitAt(clips, tlNow()); if (!r.ok) { dropSnap(); msg(TLERR[r.error] || r.error); return; } msg('');
+      var t = tlNow(); clips = r.clips; project.clips = clips; save(); renderObjs(); curIdx = tl.locate(clips, t).i; refreshCtl();   // same source, contiguous: the player does not move
+    }
+    function doRemoveRange(a, b) {
+      if (!clips.length) { msg(T('先載入影片', 'Load a video first')); return; } if (!(b > a)) { msg(TLERR.range); return; } snap(); var r = tl.removeRange(clips, a, b); if (!r.ok) { dropSnap(); msg(TLERR[r.error] || r.error); return; } msg('');
+      var rc = tl.rippleRemove(cues, r.a, r.b), rd = tl.rippleRemove(dubs, r.a, r.b, { end: 'duration', keepLen: true }), ro = tl.rippleRemove(ovs, r.a, r.b, { end: 'dur' });
+      applyAnnotations(rc.items, rd.items, ro.items); dubs.forEach(function (d) { /* kept dubs keep their audio */ }); setClips(r.clips, r.a); renderObjs();
+      flash(T('已刪除 ', 'Removed ') + core.clock(r.a) + ' – ' + core.clock(r.b) + (rc.dropped + rd.dropped + ro.dropped ? T(';同時刪掉 ', '; also removed ') + (rc.dropped + rd.dropped + ro.dropped) + T(' 個在這段裡的逐字稿/配音/圖片', ' transcript lines / dubs / pictures inside it') : '') + T('(可「復原剪輯」)', ' (undo edit available)'));
+    }
+    function putMedia(f) { return host.putFile ? host.putFile(f) : Promise.reject(new Error(T('這裡不能存檔案', 'No file storage here'))); }
+    // merge: more videos go to the END of the timeline (one after the other)
+    function addVideos(files) {
+      files = Array.prototype.slice.call(files || []); if (!files.length) { return Promise.resolve(); }
+      if (!clips.length) { var f0 = files.shift(); return setVideo(f0).then(function () { return addVideos(files); }); }
+      return files.reduce(function (p, f) {
+        return p.then(function () {
+          msg(T('加入影片… ', 'Adding… ') + f.name); var url = root.URL.createObjectURL(f), id = null;
+          return putMedia(f).then(function (fid) { id = fid; return probeDur(url); }).then(function (d) {
+            snap(); var r = tl.append(clips, { fileId: id, name: f.name, in: 0, out: d }); if (!r.ok) { dropSnap(); throw new Error(TLERR[r.error] || r.error); }
+            srcs[id] = { blob: f, url: url, dur: d }; clips = r.clips; project.clips = clips; save(); renderObjs(); refreshCtl(); msg('');
+          });
+        });
+      }, Promise.resolve()).then(null, function (e) { msg('⚠️ ' + ((e && e.message) || e)); });
+    }
+    function addImage(f) {
+      if (!clips.length) { msg(T('先載入影片', 'Load a video first')); return Promise.resolve(); }
+      return putMedia(f).then(function (id) {
+        imgs[id] = root.URL.createObjectURL(f); snap(); var r = tl.addOverlay(ovs, { fileId: id, name: f.name, start: tlNow(), dur: 3 }); if (!r.ok) { dropSnap(); throw new Error(TLERR[r.error] || r.error); }
+        ovs = r.overlays; project.overlays = ovs; save(); renderObjs(); updateOverlay(); msg(''); return r.id;
+      }).then(null, function (e) { msg('⚠️ ' + ((e && e.message) || e)); });
+    }
+    // a sound is a DUB (kind 'file'): the object list, moving it, playing with the video and the burn mix are the dubs' own
+    function addAudio(f) {
+      if (!clips.length) { msg(T('先載入影片', 'Load a video first')); return Promise.resolve(); }
+      var Ctx = root.AudioContext || root.webkitAudioContext;
+      return putMedia(f).then(function (id) {
+        return (Ctx ? f.arrayBuffer().then(function (ab) { return new Ctx().decodeAudioData(ab); }).then(function (b) { return b.duration; }) : Promise.reject(new Error(T('這個瀏覽器不能解碼音訊', 'This browser cannot decode audio')))).then(function (d) {
+          snap(); var r = core.addDub(dubs, { start: tlNow(), duration: d, fileId: id, name: f.name.replace(/\.[^.]+$/, ''), kind: 'file' }); if (!r.ok) { dropSnap(); throw new Error(DERR[r.error] || r.error); }
+          audios[r.id] = { el: null, url: null, blob: f }; commitDubs(r.dubs); msg(''); return r.id;
+        });
+      }).then(null, function (e) { msg('⚠️ ' + ((e && e.message) || e)); });
+    }
+    function setTransition(id, patch) { snap(); var r = tl.setTransition(clips, id, patch); if (!r.ok) { dropSnap(); msg(TLERR[r.error] || r.error); return false; } clips = r.clips; project.clips = clips; save(); renderObjs(); return true; }
+    // recognition runs per clip: the range of the timeline is cut along the clips, each piece is recognized in ITS source file and moved to timeline time
+    function transcribeTimeline(job, report) {
+      var P = job.payload, a = P.startSec || 0, tot = tlTotal(), b = Math.min(tot, P.lenSec > 0 ? a + P.lenSec : tot), st = starts(), pieces = [], cancelled = false, cur = null, segs = [];
+      clips.forEach(function (c, i) { var s0 = Math.max(a, st[i]), s1 = Math.min(b, st[i] + (c.out - c.in)); if (s1 - s0 > 0.05) { pieces.push({ c: c, tStart: s0, srcStart: c.in + (s0 - st[i]), len: s1 - s0 }); } });
+      if (!host.transcribe) { return { promise: Promise.reject(new Error(T('這裡不能做語音辨識', 'Speech recognition is not available here'))) }; }
+      var p = pieces.reduce(function (chain, pc, k) {
+        return chain.then(function () {
+          if (cancelled) { throw new Error('canceled'); }
+          return loadSrc(fileKey(pc.c)).then(function (s) { cur = host.transcribe(s.blob, { language: P.language || null, startSec: pc.srcStart, lenSec: pc.len }, function (m) { report((pieces.length > 1 ? (k + 1) + '/' + pieces.length + ' ' : '') + m); }); return cur.promise; })
+            .then(function (res) { ((res && res.segments) || []).forEach(function (sg) { segs.push({ start: sg.start + pc.tStart, end: sg.end == null ? null : sg.end + pc.tStart, text: sg.text }); }); });
+        });
+      }, Promise.resolve()).then(function () { return { segments: segs, abs: true }; });
+      return { cancel: function () { cancelled = true; if (cur && cur.cancel) { cur.cancel(); } }, promise: p };
+    }
+    function renderTimelineRows() {
+      if (!clips.length) { return; } var st = starts(), zhUi = zh();
+      clips.forEach(function (c, i) {
+        var row = el('div', 'tw-ve-objrow tw-ve-clip'); row.setAttribute('data-clip', c.id);
+        var nm = el('span', '', '#' + (i + 1) + ' ' + (c.name || T('片段', 'clip'))); nm.title = c.name + ' ' + core.clock(c.in) + ' – ' + core.clock(c.out); row.appendChild(nm); row.appendChild(el('span', 'tw-ve-note', core.clock(c.in) + '–' + core.clock(c.out) + ' · ' + core.clock(c.out - c.in)));
+        if (i > 0) {
+          var sel = el('select'); sel.setAttribute('data-f', 'clip-tr'); sel.title = T('進入這個片段的轉場', 'Transition into this clip'); tl.TRANSITION_LIST.forEach(function (t) { var op = el('option', '', zhUi ? t[1] : t[2]); op.value = t[0]; sel.appendChild(op); }); sel.value = c.tr.type;
+          var d = el('input'); d.type = 'number'; d.step = '0.1'; d.min = String(tl.TR_MIN); d.max = String(tl.TR_MAX); d.value = String(c.tr.dur); d.setAttribute('data-f', 'clip-trdur'); d.title = T('轉場長度(秒)', 'Transition length (s)'); d.style.display = c.tr.type === 'none' ? 'none' : '';
+          sel.addEventListener('change', function () { setTransition(c.id, { type: sel.value }); }); d.addEventListener('change', function () { setTransition(c.id, { dur: +d.value }); }); row.appendChild(sel); row.appendChild(d);
+        }
+        var x = el('button', 'x', '✕'); x.type = 'button'; x.setAttribute('data-f', 'clip-del'); x.title = T('刪除這個片段(後面的內容往前接)', 'Remove this clip (what follows moves up)'); x.disabled = clips.length < 2;
+        x.addEventListener('click', function (e) { e.stopPropagation(); doRemoveRange(st[i], st[i] + (c.out - c.in)); }); row.appendChild(x);
+        row.addEventListener('click', function (e) { if (e.target.closest('input,button,select')) { return; } seek(st[i]); }); objs.appendChild(row);
+      });
+      ovs.forEach(function (ov) {
+        var row = el('div', 'tw-ve-objrow tw-ve-ov'); row.setAttribute('data-ov', ov.id); row.appendChild(el('span', '', '🖼 ' + (ov.name || T('圖片', 'picture'))));
+        function num(tag, val, title, patch) { var i2 = el('input'); i2.type = 'number'; i2.step = '0.1'; i2.value = String(val); i2.setAttribute('data-f', tag); i2.title = title; i2.addEventListener('change', function () { snap(); var r = tl.updateOverlay(ovs, ov.id, patch(+i2.value)); if (!r.ok) { dropSnap(); renderObjs(); msg(TLERR[r.error] || r.error); return; } ovs = r.overlays; project.overlays = ovs; save(); renderObjs(); updateOverlay(); }); row.appendChild(i2); }
+        num('ostart', Math.round(ov.start * 10) / 10, T('起始(秒)', 'Start (s)'), function (v) { return { start: v }; }); num('odur', Math.round(ov.dur * 10) / 10, T('長度(秒)', 'Length (s)'), function (v) { return { dur: v }; });
+        num('ow', Math.round(ov.w * 100), T('寬度(占畫面 %)', 'Width (% of the frame)'), function (v) { return { w: v / 100 }; }); num('ox', Math.round(ov.x * 100), T('水平位置(%)', 'Horizontal position (%)'), function (v) { return { x: v / 100 }; }); num('oy', Math.round(ov.y * 100), T('垂直位置(%)', 'Vertical position (%)'), function (v) { return { y: v / 100 }; });
+        var x = el('button', 'x', '✕'); x.type = 'button'; x.setAttribute('data-f', 'odel'); x.addEventListener('click', function (e) { e.stopPropagation(); snap(); ovs = tl.removeOverlay(ovs, ov.id).overlays; project.overlays = ovs; save(); renderObjs(); updateOverlay(); }); row.appendChild(x);
+        row.addEventListener('click', function (e) { if (e.target.closest('input,button')) { return; } seek(ov.start); }); objs.appendChild(row);
+      });
+    }
+    var bSplit = el('button', '', '✂ ' + T('分割', 'Split')), mkA = el('input', 'mk'), mkB = el('input', 'mk'), bMkA = el('button', '', '['), bMkB = el('button', '', ']'), bCut = el('button', '', '🗑 ' + T('刪除這段', 'Remove range'));
+    var bAddVid = el('button', '', '➕ ' + T('加入影片', 'Add videos')), bAddImg = el('button', '', '🖼 ' + T('插入圖片', 'Insert picture')), bAddAud = el('button', '', '🎵 ' + T('插入聲音', 'Insert sound')), bUndoEdit = el('button', '', '↶ ' + T('復原剪輯', 'Undo edit'));
+    var inVid = el('input'), inImg = el('input'), inAud = el('input'); inVid.type = inImg.type = inAud.type = 'file'; inVid.multiple = true; inVid.accept = 'video/*,audio/*,.mkv,.mov'; inImg.accept = 'image/*'; inAud.accept = 'audio/*,.m4a,.flac'; [inVid, inImg, inAud].forEach(function (i2) { i2.style.display = 'none'; });
+    [bSplit, bMkA, bMkB, bCut, bAddVid, bAddImg, bAddAud, bUndoEdit].forEach(function (b) { b.type = 'button'; }); mkA.placeholder = T('起', 'from'); mkB.placeholder = T('迄', 'to'); mkA.setAttribute('data-ve', 'mark-a'); mkB.setAttribute('data-ve', 'mark-b');
+    bSplit.setAttribute('data-ve', 'split-clip'); bCut.setAttribute('data-ve', 'cut-range'); bAddVid.setAttribute('data-ve', 'add-video'); bAddImg.setAttribute('data-ve', 'add-image'); bAddAud.setAttribute('data-ve', 'add-sound'); bUndoEdit.setAttribute('data-ve', 'undo-edit'); bUndoEdit.disabled = true;
+    bSplit.title = T('在播放位置把片段切成兩段', 'Cut the clip in two at the playhead'); bMkA.title = T('把播放位置設為要刪除範圍的起點', 'Use the playhead as the start of the range to remove'); bMkB.title = T('把播放位置設為要刪除範圍的終點', 'Use the playhead as the end of the range to remove'); bCut.title = T('把起~迄之間的影片整段拿掉,後面的內容(逐字稿、配音、圖片)往前接', 'Take out everything between from and to; what follows (transcript, dubs, pictures) moves up');
+    bAddVid.title = T('選多個影片,依序接在時間軸最後面(合併)', 'Pick several videos: they are appended to the end of the timeline (merge)'); bAddImg.title = T('在播放位置疊上一張圖片(長度、位置、大小在物件列改)', 'Overlay a picture at the playhead (length, position and size in the object list)'); bAddAud.title = T('在播放位置加入一段聲音(變成物件列的配音)', 'Add a sound at the playhead (it becomes a dub in the object list)');
+    [bSplit, bCut, bAddImg, bAddAud].forEach(function (b) { b.setAttribute('data-needs', '1'); });
+    bSplit.addEventListener('click', doSplit); bMkA.addEventListener('click', function () { mkA.value = core.clock(now()); }); bMkB.addEventListener('click', function () { mkB.value = core.clock(now()); });
+    bCut.addEventListener('click', function () { var a = core.parseT(mkA.value), b = core.parseT(mkB.value); if (a === null || b === null) { msg(T('起、迄要填時間(mm:ss.s 或秒數),或按 [ ] 用播放位置', 'Fill from / to (mm:ss.s or seconds), or press [ ] to use the playhead')); return; } doRemoveRange(a, b); mkA.value = mkB.value = ''; });
+    bAddVid.addEventListener('click', function () { inVid.click(); }); bAddImg.addEventListener('click', function () { inImg.click(); }); bAddAud.addEventListener('click', function () { inAud.click(); }); bUndoEdit.addEventListener('click', undoEdit);
+    inVid.addEventListener('change', function () { var l = inVid.files; var arr = Array.prototype.slice.call(l); inVid.value = ''; addVideos(arr); }); inImg.addEventListener('change', function () { var f = inImg.files && inImg.files[0]; inImg.value = ''; if (f) { addImage(f); } }); inAud.addEventListener('change', function () { var f = inAud.files && inAud.files[0]; inAud.value = ''; if (f) { addAudio(f); } });
+    [bSplit, mkA, bMkA, mkB, bMkB, bCut, bAddVid, bAddImg, bAddAud, bUndoEdit, inVid, inImg, inAud].forEach(function (n) { edBar.appendChild(n); });
     q = root.TwVideoJobs.create({ run: runJob, onChange: jobsChanged }); q.restore(project.jobs);
-    box._ve = { project: project, say: msg, dubs: function () { return dubs; }, dubAudio: function (id) { return audios[id] && audios[id].el; }, queue: q, enqueueBurn: enqueueBurn, enqueueTranscribe: enqueueTranscribe, importText: importText, ask: submitAsk, applyAsk: applyAsk, addTtsDub: addTtsDub, cues: function () { return cues; }, addAt: addAt, edit: edit, video: null, setVideo: setVideo, tab: setTab, panel: function (hidden) { if (hidden !== undefined) { lay.panelHidden = !!hidden; applyPanel(); save(); } return !lay.panelHidden; },
+    box._ve = { project: project, say: msg, clips: function () { return clips; }, overlays: function () { return ovs; }, split: doSplit, removeRange: doRemoveRange, addVideos: addVideos, addImage: addImage, addAudio: addAudio, setTransition: setTransition, undoEdit: undoEdit, loadSrc: loadSrc, srcs: function () { return srcs; }, dubs: function () { return dubs; }, dubAudio: function (id) { return audios[id] && audios[id].el; }, queue: q, enqueueBurn: enqueueBurn, enqueueTranscribe: enqueueTranscribe, importText: importText, ask: submitAsk, applyAsk: applyAsk, addTtsDub: addTtsDub, cues: function () { return cues; }, addAt: addAt, edit: edit, video: null, setVideo: setVideo, tab: setTab, panel: function (hidden) { if (hidden !== undefined) { lay.panelHidden = !!hidden; applyPanel(); save(); } return !lay.panelHidden; },
       panelWidth: function (w) { if (w !== undefined) { lay.panelW = core.clampPanelWidth(w, box.clientWidth); applyPanel(); save(); } return lay.panelW; }, layout: function () { return lay; } };
     (o.container || root.document.body).appendChild(box);
     var FW = o.windowApi || root.FaWin || (typeof FaWin !== 'undefined' ? FaWin : null);   // desktop-app: the shared window shell (pop out / maximize / dock)
     if (FW && FW.decorate) { box._win = FW.decorate(box, { id: 'ev:' + (o.id || ''), title: T('影片逐字稿編輯器', 'Video transcript editor'), bar: bar, minW: 520, minH: 360 }); }
     else if (root.AiChatWindow) { root.AiChatWindow.attach(box, { key: 'edit-video/' + (o.id || ''), title: T('影片逐字稿編輯器', 'Video transcript editor'), bar: bar, body: body, minW: 420, minH: 300 }); }
     applyPanel(); renderObjs(); setTab(lay.tab);
-    if (project.video && project.video.id) { setVideo({ id: project.video.id, name: project.video.name }).then(null, function () { stage.textContent = ''; stage.appendChild(el('div', 'tw-ve-empty', T('影片不在這個瀏覽器的檔案儲存裡了,請重新載入', 'The video is no longer in this browser\'s file storage; load it again'))); }); }
+    if (clips.length) { restorePlayer(); }
+    else if (project.video && project.video.id) { setVideo({ id: project.video.id, name: project.video.name }).then(null, function () { stage.textContent = ''; stage.appendChild(el('div', 'tw-ve-empty', T('影片不在這個瀏覽器的檔案儲存裡了,請重新載入', 'The video is no longer in this browser\'s file storage; load it again'))); }); }
     return box;
   }
   root.TwVideoEditUI = { mount: mount };
@@ -37190,6 +37578,7 @@ return holder.FaDeckEditUI;
     };
     // videoBlob, segments, report(text), baseName, opt { dubs: [{start, blob}] } -> { promise: {id, name}, cancel() }
     M._videoBurn = function (videoBlob, segments, report, baseName, opt) {
+        if (opt && opt.timeline) return this._videoRenderTimeline(opt.timeline, segments, report, baseName, opt);
         const self = this; let canceled = false, rejectIt = null; const dubs = opt && opt.dubs && opt.dubs.length ? opt.dubs : null;
         const promise = new Promise((resolve, reject) => {
             rejectIt = reject;
@@ -37207,6 +37596,73 @@ return holder.FaDeckEditUI;
             })().catch(reject);
         });
         return { promise, cancel: () => { canceled = true; if (rejectIt) rejectIt(new Error('canceled')); } };   // 燒錄 worker 沒有取消通道:已經開始的會跑完,結果丟掉
+    };
+
+    // ───── 時間軸輸出(分割／合併／刪除／轉場／疊圖):逐格合成 → _encodeCanvasFramesToMp4(含字幕與整條混好的音軌) ─────
+    // timeline: { clips: [{id, fileId, name, in, out, tr}], overlays: [{fileId, start, dur, x, y, w}] }; opt.dubs: [{start, blob}] 在時間軸時間上
+    M._videoRenderTimeline = function (timeline, segments, report, baseName, opt) {
+        const self = this, TL = window.TwVideoTimeline, FPS = 30; let canceled = false;
+        const promise = (async () => {
+            const clips = TL.normalizeClips(timeline.clips), ovs = TL.normalizeOverlays(timeline.overlays), total = TL.total(clips), st = TL.starts(clips);
+            if (!clips.length || !(total > 0)) throw new Error(T('時間軸是空的', 'The timeline is empty'));
+            const MB = await self._ensureMediabunnyLoaded(), srcs = {};
+            const need = []; clips.forEach((c) => { if (!c.fileId) throw new Error(T('有片段的來源檔沒有存在檔案儲存裡(重新載入那個影片)', 'A clip\'s source file is not in the file storage (load that video again)')); if (need.indexOf(c.fileId) < 0) need.push(c.fileId); });
+            report(T('讀取來源影片… ', 'Reading the source videos… ') + need.length);
+            for (const fid of need) {
+                const rec = await self.fileCache.get(fid); if (!rec) throw new Error(T('來源影片不在檔案儲存裡了:', 'A source video is gone: ') + fid);
+                const input = new MB.Input({ formats: MB.ALL_FORMATS, source: new MB.BlobSource(rec.blob) }), track = await input.getPrimaryVideoTrack(); if (!track) throw new Error(T('這個檔案沒有影像軌:', 'No video track: ') + (rec.filename || fid));
+                srcs[fid] = { rec, input, track, w: track.displayWidth || 640, h: track.displayHeight || 360 };
+            }
+            const first = srcs[clips[0].fileId], W = Math.max(2, first.w & ~1), H = Math.max(2, first.h & ~1);
+            report(T('合成音軌… ', 'Mixing the audio… '));
+            const audioBuffer = await self._videoTimelineAudio(clips, st, total, srcs, opt && opt.dubs, report); if (canceled) throw new Error('canceled');
+            const bitmaps = {}; for (const ov of ovs) { if (ov.fileId && !bitmaps[ov.fileId]) { try { const r = await self.fileCache.get(ov.fileId); bitmaps[ov.fileId] = r ? await createImageBitmap(r.blob) : null; } catch (_) { bitmaps[ov.fileId] = null; } } }
+            const hold = () => { const c = document.createElement('canvas'); c.width = W; c.height = H; return c; }, sinks = {};
+            const sinkOf = (fid) => sinks[fid] || (sinks[fid] = new MB.CanvasSink(srcs[fid].track, { width: W, height: H, fit: 'fill' }));
+            const still = async (c, atEnd) => { const f = await sinkOf(c.fileId).getCanvas(atEnd ? Math.max(c.in, c.out - 0.05) : c.in), h = hold(); if (f) h.getContext('2d').drawImage(f.canvas, 0, 0, W, H); return h; };
+            let cur = null, curI = -1, last = null, frameCv = null, fx = {};   // fx[i] = { prevLast, nextFirst } of the cut into clip i
+            const openCursor = (i) => { if (cur) cur.close(); const c = clips[i]; cur = self._videoClipCursor(sinkOf(c.fileId), c.in, c.out); curI = i; last = null; };
+            let pc = 0;
+            const encode = (audio) => { const canvas = document.createElement('canvas'); canvas.width = W; canvas.height = H; const ctx = canvas.getContext('2d'); frameCv = hold(); fx = {}; cur = null; curI = -1; last = null; return self._encodeCanvasFramesToMp4(canvas, Math.max(1, Math.ceil(total * FPS)), FPS, async (n) => {
+                if (canceled) throw new Error('canceled');
+                const t = Math.min(total - 1e-6, n / FPS), loc = TL.locate(clips, t); if (loc.i !== curI) openCursor(loc.i);
+                const f = await cur.advanceTo(loc.src); if (f) last = f; const fc = frameCv.getContext('2d'); fc.clearRect(0, 0, W, H); if (last) fc.drawImage(last.canvas, 0, 0, W, H);
+                const tr = TL.transitionAt(clips, t);
+                if (tr) {
+                    if (!fx[tr.i]) fx[tr.i] = { prevLast: await still(clips[tr.i - 1], true), nextFirst: await still(clips[tr.i], false) };
+                    if (tr.before) TL.drawTransition(ctx, tr.type, tr.p, frameCv, fx[tr.i].nextFirst, W, H); else TL.drawTransition(ctx, tr.type, tr.p, fx[tr.i].prevLast, frameCv, W, H);
+                } else { ctx.clearRect(0, 0, W, H); ctx.drawImage(frameCv, 0, 0, W, H); }
+                TL.activeOverlays(ovs, t).forEach((ov) => { const bm = bitmaps[ov.fileId]; if (!bm) return; const w = ov.w * W, h = w * bm.height / bm.width; ctx.drawImage(bm, ov.x * W - w / 2, ov.y * H - h / 2, w, h); });
+            }, (c, tot) => { const p = Math.floor(c / tot * 100); if (p !== pc) { pc = p; report(T('合成畫面… ', 'Rendering… ') + p + '%'); } }, { audioBuffer: audio, captionSegments: segments && segments.length ? segments : null, captionStyle: self._getSubtitleStyle() }); };
+            let result = await encode(audioBuffer);
+            if (!(result && result.ok) && audioBuffer && /encoder|not supported|aac|audio/i.test(String((result && result.error) || ''))) { report(T('這個環境不能編碼 AAC 音軌:輸出的影片沒有聲音', 'AAC audio cannot be encoded here: the video has no sound')); pc = -1; result = await encode(null); }
+            if (cur) cur.close(); Object.keys(srcs).forEach((k) => { try { srcs[k].input.dispose && srcs[k].input.dispose(); } catch (_) { /* */ } });
+            if (canceled) throw new Error('canceled'); if (!result || !result.ok) throw new Error((result && result.error) || T('合成失敗', 'rendering failed'));
+            const name = String(baseName || 'video').replace(/\.[^.]+$/, '').replace(/-(subtitled|edited)$/, '') + (segments && segments.length ? '-subtitled' : '-edited') + '.mp4', id = await self.fileCache.put(name, 'video/mp4', result.blob, 'uploaded'); await self._videoPin(id);
+            return { id, name };
+        })();
+        return { promise, cancel: () => { canceled = true; } };
+    };
+    // a cursor over the frames of [in, out) of one source: advanceTo(srcTime) -> the frame showing at that time (the last one after the end)
+    M._videoClipCursor = function (sink, inT, outT) {
+        const it = sink.canvases(inT, outT)[Symbol.asyncIterator](); let current = null, pending = null, done = false;
+        return { async advanceTo(t) { for (;;) { if (pending === null && !done) { const r = await it.next(); if (r.done) { done = true; break; } pending = r.value; } if (pending && pending.timestamp <= t) { current = pending; pending = null; continue; } break; } return current; }, close() { try { it.return(); } catch (_) { /* */ } } };
+    };
+    // one stereo 48 kHz track for the whole timeline: each clip's own sound at its place (faded out/in around a transition), plus the dubs
+    M._videoTimelineAudio = async function (clips, st, total, srcs, dubs, report) {
+        const TL = window.TwVideoTimeline, SR = 48000, Off = window.OfflineAudioContext; if (!Off) return null;
+        const off = new Off(2, Math.max(1, Math.ceil(total * SR)), SR); let any = false; const decoded = {};
+        for (let i = 0; i < clips.length; i++) {
+            const c = clips[i]; if (decoded[c.fileId] === undefined) { try { decoded[c.fileId] = await this._decodeAudioBuffer(srcs[c.fileId].rec.blob); } catch (_) { decoded[c.fileId] = null; } }
+            const buf = decoded[c.fileId]; if (!buf) continue; any = true;
+            const src = off.createBufferSource(), g = off.createGain(); src.buffer = buf; src.connect(g); g.connect(off.destination); const len = c.out - c.in;
+            const wIn = TL.windowOf(clips, i), wOut = TL.windowOf(clips, i + 1);
+            if (wIn) { g.gain.setValueAtTime(0, st[i]); g.gain.linearRampToValueAtTime(1, st[i] + wIn.dur / 2); }
+            if (wOut) { g.gain.setValueAtTime(1, Math.max(st[i], st[i] + len - wOut.dur / 2)); g.gain.linearRampToValueAtTime(0, st[i] + len); }
+            src.start(st[i], c.in, len);
+        }
+        for (const d of (dubs || [])) { try { const b = await this._decodeAudioBuffer(d.blob), s = off.createBufferSource(); s.buffer = b; s.connect(off.destination); s.start(Math.max(0, d.start)); any = true; } catch (_) { report(T('有一個配音讀不到,略過', 'A dub could not be read: skipped')); } }
+        return any ? off.startRendering() : null;
     };
 
     M._videoPin = async function (id) { try { if (id && this.fileCache.pin) await this.fileCache.pin(id, true); } catch (_) { /* 釘不了就算了 */ } return id; };
@@ -37258,6 +37714,7 @@ return holder.FaDeckEditUI;
         return {
             save: (p) => FaEditStore.saveProject('edit-video', id, { v: 1, spec: p, state: null }),
             putFile: async (f) => self._videoPin(await self.fileCache.put(f.name || 'file', f.type || 'application/octet-stream', f, 'uploaded')),
+            loadBlob: async (fid) => { const rec = await self.fileCache.get(fid); if (!rec) throw new Error(T('檔案不在這個程式的檔案儲存裡', 'the file is not in this app\'s file storage')); return rec.blob; },
             loadFile: async (fid) => { const rec = await self.fileCache.get(fid); if (!rec) throw new Error(T('檔案不在這個程式的檔案儲存裡', 'the file is not in this app\'s file storage')); return { arrayBuffer: await rec.blob.arrayBuffer(), mimeType: rec.mimeType || rec.blob.type, filename: rec.filename }; },
             pin: (fid) => self._videoPin(fid),
             transcribe: (blob, o, report) => self._videoTranscribe(blob, o, report),
@@ -82181,6 +82638,7 @@ _result
         const paintFrame = async (i) => {
             await renderFrameFn(i);
             if (!capSegs) return;
+            frameSource();   // 沒有音軌的路徑第一幀畫字幕時 compositeCtx 還沒建好
             compositeCtx.clearRect(0, 0, compositeCanvas.width, compositeCanvas.height);
             compositeCtx.drawImage(canvas, 0, 0);
             try { _faDrawSubtitle(compositeCtx, i / fps, capSegs, capStyle); } catch (_) {}

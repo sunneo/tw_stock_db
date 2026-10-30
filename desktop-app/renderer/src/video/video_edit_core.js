@@ -23,10 +23,10 @@
   // what is remembered of the frame: panel width, panel hidden, active tab. Anything else is dropped; wrong values fall back.
   function layout(l) {
     l = l && typeof l === 'object' ? l : {};
-    return { panelW: clampPanelWidth(l.panelW == null ? PANEL_DEFAULT : l.panelW, 100000), panelHidden: l.panelHidden === true, subs: l.subs !== false, genScope: l.genScope === 'whole' ? 'whole' : 'playhead', burnMix: l.burnMix === 'subs' ? 'subs' : 'all', tab: TABS.indexOf(l.tab) >= 0 ? l.tab : 'transcript' };
+    return { panelW: clampPanelWidth(l.panelW == null ? PANEL_DEFAULT : l.panelW, 100000), panelHidden: l.panelHidden === true, subs: l.subs !== false, genScope: l.genScope === 'whole' ? 'whole' : l.genScope === 'custom' ? 'custom' : 'playhead', genSecs: isFinite(+l.genSecs) && +l.genSecs >= 1 && +l.genSecs <= 600 ? Math.round(+l.genSecs * 10) / 10 : 10, genLang: l.genLang === 'en' || l.genLang === 'zh' || l.genLang === '' ? l.genLang : (/^en/i.test(String((typeof document !== 'undefined' && document.documentElement && document.documentElement.lang) || '')) ? 'en' : 'zh'), burnMix: l.burnMix === 'subs' ? 'subs' : 'all', tab: TABS.indexOf(l.tab) >= 0 ? l.tab : 'transcript' };
   }
   // the saved project: the video is a client file (AiChatPersistentStorage id) -- never the bytes -- plus the frame layout; cues = the transcript; dubs come with a later step
-  function newProject(name) { return { v: 1, name: String(name || '').slice(0, 80), video: null, layout: layout(null), cues: [], dubs: [], jobs: [] }; }
+  function newProject(name) { return { v: 1, name: String(name || '').slice(0, 80), video: null, layout: layout(null), cues: [], dubs: [], jobs: [], clips: [], overlays: [] }; }
 
   // ---- the transcript: cues {id, start, end, text} in seconds, kept sorted by start. Every function returns a NEW list (the editor's undo history keeps the old ones).
   var MAX_TEXT = 500, MAX_CUES = 5000, EPS = 0.001;
@@ -130,7 +130,7 @@
   // ---- dubs (voice-over recorded from the microphone): {id 'd<n>', start, duration, fileId (client file id of the recording), name}, sorted by start. Same style as the cues: every function returns a NEW list.
   var MAX_DUBS = 50;
   // a dub made by text-to-speech keeps what made it: {kind:'tts', text, lang, voiceId}; a microphone dub has none of these
-  function ttsInfo(o) { return o && o.kind === 'tts' ? { kind: 'tts', text: cleanText(o.text), lang: String(o.lang || '').slice(0, 12), voiceId: String(o.voiceId || '').slice(0, 60) } : {}; }
+  function ttsInfo(o) { return o && o.kind === 'file' ? { kind: 'file' } : o && o.kind === 'tts' ? { kind: 'tts', text: cleanText(o.text), lang: String(o.lang || '').slice(0, 12), voiceId: String(o.voiceId || '').slice(0, 60) } : {}; }
   function normalizeDubs(list) {
     var seen = {}, out = [], n = 0;
     (Array.isArray(list) ? list : []).forEach(function (d) {

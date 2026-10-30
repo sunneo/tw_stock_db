@@ -1,0 +1,22 @@
+// node scripts/video-tests/video_timeline.test.js
+const T = require('../../renderer/src/video/video_timeline.js'); let fail = 0; const eq = (n, a, b) => { const ok = JSON.stringify(a) === JSON.stringify(b); if (!ok) { fail++; console.log('FAIL', n, JSON.stringify(a), '!=', JSON.stringify(b)); } else console.log('ok  ', n); };
+let c = T.fromVideo('f1', 'a.mp4', 10); eq('from', [c.length, T.total(c)], [1, 10]);
+let r = T.splitAt(c, 4); eq('split', [r.ok, r.clips.map((x) => [x.in, x.out]), T.total(r.clips)], [true, [[0, 4], [4, 10]], 10]);
+eq('split edge', T.splitAt(c, 0.01).error, 'edge'); c = r.clips;
+r = T.removeRange(c, 2, 6); eq('remove range', [r.ok, r.clips.map((x) => [x.in, x.out]), T.total(r.clips)], [true, [[0, 2], [6, 10]], 6]);
+eq('remove all', T.removeRange(c, 0, 10).error, 'all');
+eq('remove tiny', T.removeRange(c, 1, 1.01).error, 'range');
+r = T.append(c, { fileId: 'f2', name: 'b.mp4', out: 5 }); eq('append', [r.ok, T.total(r.clips), r.clips[2].id], [true, 15, 'k3']);
+let two = r.clips; eq('locate', [T.locate(two, 12).i, T.locate(two, 12).src, T.locate(two, 15).i], [2, 2, 2]);
+r = T.setTransition(two, 'k3', { type: 'circle-open', dur: 2 }); eq('set tr', [r.ok, r.clips[2].tr], [true, { type: 'circle-open', dur: 2 }]);
+eq('tr first', T.setTransition(two, 'k1', { type: 'fade' }).error, 'first'); eq('bad type', T.setTransition(two, 'k3', { type: 'bogus' }).clips[2].tr.type, 'none');
+const w = T.transitionAt(r.clips, 9.5); eq('window', [w.i, w.type, +w.p.toFixed(2), w.before], [2, 'circle-open', 0.25, true]); eq('no window', T.transitionAt(r.clips, 5), null);
+let ripple = T.rippleRemove([{ start: 1, end: 2 }, { start: 3, end: 5 }, { start: 5, end: 8 }, { start: 8, end: 9 }, { start: 1, end: 9 }], 3, 6); eq('ripple cues', ripple.items.map((x) => [x.start, x.end]), [[1, 2], [3, 5], [5, 6], [1, 6]]); eq('ripple dropped', ripple.dropped, 1);
+ripple = T.rippleRemove([{ start: 0, end: 2 }, { start: 2.5, end: 4 }, { start: 7, end: 9 }], 3, 6); eq('ripple straddle', ripple.items.map((x) => [x.start, x.end]), [[0, 2], [2.5, 3], [4, 6]]);
+ripple = T.rippleRemove([{ start: 3.5, duration: 1 }, { start: 5, duration: 3 }, { start: 8, duration: 1 }], 3, 6, { end: 'duration', keepLen: true }); eq('ripple dubs', [ripple.items.map((x) => [x.start, x.duration]), ripple.dropped], [[[3, 3], [5, 1]], 1]);
+let o = T.addOverlay([], { fileId: 'i1', name: 'p.png', start: 2 }); eq('overlay add', [o.ok, o.overlays[0].dur, o.overlays[0].w, o.id], [true, 3, 0.3, 'o1']);
+eq('overlay active', [T.activeOverlays(o.overlays, 3).length, T.activeOverlays(o.overlays, 5).length], [1, 0]);
+eq('overlay bad', T.updateOverlay(o.overlays, 'o1', { dur: -1 }).error, 'time'); eq('overlay norm', T.normalizeOverlays([{ start: 1, dur: 2, w: 9 }, { start: -1, dur: 2 }]).map((x) => x.w), [1]);
+const calls = []; const ctx = new Proxy({}, { get: (t, k) => (k === 'save' || k === 'restore' || k === 'fillRect' || k === 'drawImage' || k === 'beginPath' || k === 'rect' || k === 'arc' || k === 'clip' || k === 'translate' || k === 'scale' ? (...a) => calls.push(k) : undefined), set: () => true });
+T.TRANSITIONS.forEach((t) => { calls.length = 0; T.drawTransition(ctx, t, 0.5, {}, {}, 100, 50); if (!calls.length) { fail++; console.log('FAIL draw', t); } }); console.log('ok   draw all', T.TRANSITIONS.length);
+console.log(fail ? fail + ' failed' : 'all passed'); process.exit(fail ? 1 : 0);

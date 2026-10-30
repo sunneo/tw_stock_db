@@ -20,6 +20,15 @@ const proj0 = await FaEditStore.loadProject('edit-video', res.id); R.saved = { v
 await fa.fileCache.pin(id); R.pinned = (await fa.fileCache.get(id)).pinned === true;
 ed.querySelector('[data-ve=gen-scope]').value = 'whole'; ed.querySelector('[data-ve=gen]').click();
 R.cues = !!(await until(() => ed._ve.cues().length === 2, 15000)); R.cue_text = ed._ve.cues().map((c) => c.text);
+// custom seconds from the playhead, remembered language, fill one line from the audio
+{ const sc = ed.querySelector('[data-ve=gen-scope]'), si = ed.querySelector('[data-ve=gen-secs]'), lg = ed.querySelector('[data-ve=gen-lang]'); R.custom_ui = { opt: [...sc.options].map((o) => o.value).join(','), secs_hidden_before: si.style.display === 'none' };
+  sc.value = 'custom'; sc.dispatchEvent(new Event('change')); si.value = '7'; si.dispatchEvent(new Event('change')); lg.value = 'en'; lg.dispatchEvent(new Event('change')); await wait(400);
+  const lay = (await FaEditStore.loadProject('edit-video', res.id)).spec.layout; R.remembered = { scope: lay.genScope, secs: lay.genSecs, lang: lay.genLang };
+  const n0 = ed._ve.queue.list().length; ed.querySelector('[data-ve=gen]').click(); const jb = ed._ve.queue.list()[n0]; R.custom_job = jb && { len: jb.payload.lenSec, lang: jb.payload.language };
+  await until(() => ed._ve.queue.list().every((j) => j.status !== 'queued' && j.status !== 'running'), 15000);
+  fa._runWhisperWindowed = async () => ({ text: 'x', chunks: [{ timestamp: [0.1, 0.8], text: 'filled' }] });
+  ed._ve.tab('transcript'); await wait(200); const stt = ed.querySelector('[data-f=cue-stt]'); R.stt_btn = !!stt; if (stt) { stt.click(); R.filled = !!(await until(() => ed._ve.cues().some((c) => c.text === 'filled'), 15000)); }
+  fa._runWhisperWindowed = async () => ({ text: 'a b', chunks: [{ timestamp: [0.2, 1.2], text: 'hello' }, { timestamp: [1.5, 2.5], text: 'world' }] }); }
 ed._ve.tab('ask'); await ed._ve.ask('第1句改成「你好」');
 R.ask_proposal = !!(await until(() => ed.querySelector('[data-ve=ask-proposal]') && ed.querySelector('[data-ve=ask-apply]'), 8000));
 const ap = ed.querySelector('[data-ve=ask-apply]'); if (ap) ap.click(); await wait(300); R.ask_applied = ed._ve.cues()[0] && ed._ve.cues()[0].text;

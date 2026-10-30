@@ -66,6 +66,7 @@
     };
     // videoBlob, segments, report(text), baseName, opt { dubs: [{start, blob}] } -> { promise: {id, name}, cancel() }
     M._videoBurn = function (videoBlob, segments, report, baseName, opt) {
+        if (opt && opt.timeline) return this._videoRenderTimeline(opt.timeline, segments, report, baseName, opt);
         const self = this; let canceled = false, rejectIt = null; const dubs = opt && opt.dubs && opt.dubs.length ? opt.dubs : null;
         const promise = new Promise((resolve, reject) => {
             rejectIt = reject;
@@ -83,6 +84,73 @@
             })().catch(reject);
         });
         return { promise, cancel: () => { canceled = true; if (rejectIt) rejectIt(new Error('canceled')); } };   // 燒錄 worker 沒有取消通道:已經開始的會跑完,結果丟掉
+    };
+
+    // ───── 時間軸輸出(分割／合併／刪除／轉場／疊圖):逐格合成 → _encodeCanvasFramesToMp4(含字幕與整條混好的音軌) ─────
+    // timeline: { clips: [{id, fileId, name, in, out, tr}], overlays: [{fileId, start, dur, x, y, w}] }; opt.dubs: [{start, blob}] 在時間軸時間上
+    M._videoRenderTimeline = function (timeline, segments, report, baseName, opt) {
+        const self = this, TL = window.TwVideoTimeline, FPS = 30; let canceled = false;
+        const promise = (async () => {
+            const clips = TL.normalizeClips(timeline.clips), ovs = TL.normalizeOverlays(timeline.overlays), total = TL.total(clips), st = TL.starts(clips);
+            if (!clips.length || !(total > 0)) throw new Error(T('時間軸是空的', 'The timeline is empty'));
+            const MB = await self._ensureMediabunnyLoaded(), srcs = {};
+            const need = []; clips.forEach((c) => { if (!c.fileId) throw new Error(T('有片段的來源檔沒有存在檔案儲存裡(重新載入那個影片)', 'A clip\'s source file is not in the file storage (load that video again)')); if (need.indexOf(c.fileId) < 0) need.push(c.fileId); });
+            report(T('讀取來源影片… ', 'Reading the source videos… ') + need.length);
+            for (const fid of need) {
+                const rec = await self.fileCache.get(fid); if (!rec) throw new Error(T('來源影片不在檔案儲存裡了:', 'A source video is gone: ') + fid);
+                const input = new MB.Input({ formats: MB.ALL_FORMATS, source: new MB.BlobSource(rec.blob) }), track = await input.getPrimaryVideoTrack(); if (!track) throw new Error(T('這個檔案沒有影像軌:', 'No video track: ') + (rec.filename || fid));
+                srcs[fid] = { rec, input, track, w: track.displayWidth || 640, h: track.displayHeight || 360 };
+            }
+            const first = srcs[clips[0].fileId], W = Math.max(2, first.w & ~1), H = Math.max(2, first.h & ~1);
+            report(T('合成音軌… ', 'Mixing the audio… '));
+            const audioBuffer = await self._videoTimelineAudio(clips, st, total, srcs, opt && opt.dubs, report); if (canceled) throw new Error('canceled');
+            const bitmaps = {}; for (const ov of ovs) { if (ov.fileId && !bitmaps[ov.fileId]) { try { const r = await self.fileCache.get(ov.fileId); bitmaps[ov.fileId] = r ? await createImageBitmap(r.blob) : null; } catch (_) { bitmaps[ov.fileId] = null; } } }
+            const hold = () => { const c = document.createElement('canvas'); c.width = W; c.height = H; return c; }, sinks = {};
+            const sinkOf = (fid) => sinks[fid] || (sinks[fid] = new MB.CanvasSink(srcs[fid].track, { width: W, height: H, fit: 'fill' }));
+            const still = async (c, atEnd) => { const f = await sinkOf(c.fileId).getCanvas(atEnd ? Math.max(c.in, c.out - 0.05) : c.in), h = hold(); if (f) h.getContext('2d').drawImage(f.canvas, 0, 0, W, H); return h; };
+            let cur = null, curI = -1, last = null, frameCv = null, fx = {};   // fx[i] = { prevLast, nextFirst } of the cut into clip i
+            const openCursor = (i) => { if (cur) cur.close(); const c = clips[i]; cur = self._videoClipCursor(sinkOf(c.fileId), c.in, c.out); curI = i; last = null; };
+            let pc = 0;
+            const encode = (audio) => { const canvas = document.createElement('canvas'); canvas.width = W; canvas.height = H; const ctx = canvas.getContext('2d'); frameCv = hold(); fx = {}; cur = null; curI = -1; last = null; return self._encodeCanvasFramesToMp4(canvas, Math.max(1, Math.ceil(total * FPS)), FPS, async (n) => {
+                if (canceled) throw new Error('canceled');
+                const t = Math.min(total - 1e-6, n / FPS), loc = TL.locate(clips, t); if (loc.i !== curI) openCursor(loc.i);
+                const f = await cur.advanceTo(loc.src); if (f) last = f; const fc = frameCv.getContext('2d'); fc.clearRect(0, 0, W, H); if (last) fc.drawImage(last.canvas, 0, 0, W, H);
+                const tr = TL.transitionAt(clips, t);
+                if (tr) {
+                    if (!fx[tr.i]) fx[tr.i] = { prevLast: await still(clips[tr.i - 1], true), nextFirst: await still(clips[tr.i], false) };
+                    if (tr.before) TL.drawTransition(ctx, tr.type, tr.p, frameCv, fx[tr.i].nextFirst, W, H); else TL.drawTransition(ctx, tr.type, tr.p, fx[tr.i].prevLast, frameCv, W, H);
+                } else { ctx.clearRect(0, 0, W, H); ctx.drawImage(frameCv, 0, 0, W, H); }
+                TL.activeOverlays(ovs, t).forEach((ov) => { const bm = bitmaps[ov.fileId]; if (!bm) return; const w = ov.w * W, h = w * bm.height / bm.width; ctx.drawImage(bm, ov.x * W - w / 2, ov.y * H - h / 2, w, h); });
+            }, (c, tot) => { const p = Math.floor(c / tot * 100); if (p !== pc) { pc = p; report(T('合成畫面… ', 'Rendering… ') + p + '%'); } }, { audioBuffer: audio, captionSegments: segments && segments.length ? segments : null, captionStyle: self._getSubtitleStyle() }); };
+            let result = await encode(audioBuffer);
+            if (!(result && result.ok) && audioBuffer && /encoder|not supported|aac|audio/i.test(String((result && result.error) || ''))) { report(T('這個環境不能編碼 AAC 音軌:輸出的影片沒有聲音', 'AAC audio cannot be encoded here: the video has no sound')); pc = -1; result = await encode(null); }
+            if (cur) cur.close(); Object.keys(srcs).forEach((k) => { try { srcs[k].input.dispose && srcs[k].input.dispose(); } catch (_) { /* */ } });
+            if (canceled) throw new Error('canceled'); if (!result || !result.ok) throw new Error((result && result.error) || T('合成失敗', 'rendering failed'));
+            const name = String(baseName || 'video').replace(/\.[^.]+$/, '').replace(/-(subtitled|edited)$/, '') + (segments && segments.length ? '-subtitled' : '-edited') + '.mp4', id = await self.fileCache.put(name, 'video/mp4', result.blob, 'uploaded'); await self._videoPin(id);
+            return { id, name };
+        })();
+        return { promise, cancel: () => { canceled = true; } };
+    };
+    // a cursor over the frames of [in, out) of one source: advanceTo(srcTime) -> the frame showing at that time (the last one after the end)
+    M._videoClipCursor = function (sink, inT, outT) {
+        const it = sink.canvases(inT, outT)[Symbol.asyncIterator](); let current = null, pending = null, done = false;
+        return { async advanceTo(t) { for (;;) { if (pending === null && !done) { const r = await it.next(); if (r.done) { done = true; break; } pending = r.value; } if (pending && pending.timestamp <= t) { current = pending; pending = null; continue; } break; } return current; }, close() { try { it.return(); } catch (_) { /* */ } } };
+    };
+    // one stereo 48 kHz track for the whole timeline: each clip's own sound at its place (faded out/in around a transition), plus the dubs
+    M._videoTimelineAudio = async function (clips, st, total, srcs, dubs, report) {
+        const TL = window.TwVideoTimeline, SR = 48000, Off = window.OfflineAudioContext; if (!Off) return null;
+        const off = new Off(2, Math.max(1, Math.ceil(total * SR)), SR); let any = false; const decoded = {};
+        for (let i = 0; i < clips.length; i++) {
+            const c = clips[i]; if (decoded[c.fileId] === undefined) { try { decoded[c.fileId] = await this._decodeAudioBuffer(srcs[c.fileId].rec.blob); } catch (_) { decoded[c.fileId] = null; } }
+            const buf = decoded[c.fileId]; if (!buf) continue; any = true;
+            const src = off.createBufferSource(), g = off.createGain(); src.buffer = buf; src.connect(g); g.connect(off.destination); const len = c.out - c.in;
+            const wIn = TL.windowOf(clips, i), wOut = TL.windowOf(clips, i + 1);
+            if (wIn) { g.gain.setValueAtTime(0, st[i]); g.gain.linearRampToValueAtTime(1, st[i] + wIn.dur / 2); }
+            if (wOut) { g.gain.setValueAtTime(1, Math.max(st[i], st[i] + len - wOut.dur / 2)); g.gain.linearRampToValueAtTime(0, st[i] + len); }
+            src.start(st[i], c.in, len);
+        }
+        for (const d of (dubs || [])) { try { const b = await this._decodeAudioBuffer(d.blob), s = off.createBufferSource(); s.buffer = b; s.connect(off.destination); s.start(Math.max(0, d.start)); any = true; } catch (_) { report(T('有一個配音讀不到,略過', 'A dub could not be read: skipped')); } }
+        return any ? off.startRendering() : null;
     };
 
     M._videoPin = async function (id) { try { if (id && this.fileCache.pin) await this.fileCache.pin(id, true); } catch (_) { /* 釘不了就算了 */ } return id; };
@@ -134,6 +202,7 @@
         return {
             save: (p) => FaEditStore.saveProject('edit-video', id, { v: 1, spec: p, state: null }),
             putFile: async (f) => self._videoPin(await self.fileCache.put(f.name || 'file', f.type || 'application/octet-stream', f, 'uploaded')),
+            loadBlob: async (fid) => { const rec = await self.fileCache.get(fid); if (!rec) throw new Error(T('檔案不在這個程式的檔案儲存裡', 'the file is not in this app\'s file storage')); return rec.blob; },
             loadFile: async (fid) => { const rec = await self.fileCache.get(fid); if (!rec) throw new Error(T('檔案不在這個程式的檔案儲存裡', 'the file is not in this app\'s file storage')); return { arrayBuffer: await rec.blob.arrayBuffer(), mimeType: rec.mimeType || rec.blob.type, filename: rec.filename }; },
             pin: (fid) => self._videoPin(fid),
             transcribe: (blob, o, report) => self._videoTranscribe(blob, o, report),

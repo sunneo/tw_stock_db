@@ -382,7 +382,7 @@ function embedVideoEdit() {
     const dir = path.join(root, 'renderer/src/video'); if (!fs.existsSync(path.join(dir, 'video_host.js'))) return;
     const rd = (n) => fs.readFileSync(path.join(dir, n + '.js'), 'utf8').replace(/\r\n/g, '\n'); const parts = [];
     // 這些檔案是 UMD／(function (root) {…}(window)):module 設成 undefined,走「掛到 self(window)」那條路
-    for (const fn of ['video_edit_core', 'video_jobs', 'video_intent', 'video_source_picker', 'video_tts_dialog', 'video_edit_ai', 'video_edit_ui']) parts.push('(function (module) {\n' + rd(fn) + '\n}).call(window, undefined);');
+    for (const fn of ['video_edit_core', 'video_timeline', 'video_jobs', 'video_intent', 'video_source_picker', 'video_tts_dialog', 'video_edit_ai', 'video_edit_ui']) parts.push('(function (module) {\n' + rd(fn) + '\n}).call(window, undefined);');
     parts.push(rd('video_host'));
     let a = src.indexOf('/* VIDEOEDIT-BEGIN */'), b = src.indexOf('/* VIDEOEDIT-END */');
     if (a < 0 || b < 0) { const e = src.indexOf('/* DECKEDIT-END */'); if (e < 0) throw new Error('找不到 DECKEDIT-END 標記'); const at = e + '/* DECKEDIT-END */'.length; src = src.slice(0, at) + '\n/* VIDEOEDIT-BEGIN */\n/* VIDEOEDIT-END */' + src.slice(at); a = src.indexOf('/* VIDEOEDIT-BEGIN */'); b = src.indexOf('/* VIDEOEDIT-END */'); }
