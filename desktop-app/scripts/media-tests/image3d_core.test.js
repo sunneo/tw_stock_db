@@ -324,4 +324,18 @@ t('subjectIntent: 將南瓜燈作成3D，只切出南瓜燈', () => {
   assert.strictEqual(C.subjectIntent('切出主體').subject, 'main');
 });
 t('parseOptions: 外殼種類可以用說的', () => { assert.strictEqual(C.parseOptions('用平滑的殼').shape, 'smooth'); assert.strictEqual(C.parseOptions('用圓柱封閉').shape, 'cylinder'); assert.strictEqual(C.parseOptions('用樂高方塊').shape, 'blocks'); assert.strictEqual(C.parseOptions('').shape, 'auto'); });
+t('parseOptions: 深度與厚度可以用說的或用倍數', () => {
+  const d = C.parseOptions(''); assert.strictEqual(d.depthScale, 1); assert.strictEqual(d.thickScale, 1);
+  assert.strictEqual(C.parseOptions('厚一點').thickScale, 1.6); assert.strictEqual(C.parseOptions('薄一點').thickScale, 0.6);
+  assert.strictEqual(C.parseOptions('立體感強一點').depthScale, 1.6); assert.strictEqual(C.parseOptions('平一點').depthScale, 0.6);
+  assert.strictEqual(C.parseOptions('厚度 2 倍').thickScale, 2); assert.strictEqual(C.parseOptions('--depth 0.5 --thick 3').depthScale, 0.5); assert.strictEqual(C.parseOptions('--thick 99').thickScale, 4);
+});
+t('buildScene: 厚度倍數加厚背面、深度倍數加大正面凹凸，仍然封閉', () => {
+  const W = 40, H = 40, labels = grid(W, H, (x, y) => (((x - 20) ** 2 + (y - 20) ** 2 < 150) ? 1 : 0)), depth = grid(W, H, (x, y) => (labels[y][x] ? 0.5 + 0.4 * Math.sqrt(Math.max(0, 1 - (((x - 20) ** 2 + (y - 20) ** 2) / 150))) : 0.1));
+  const zr = (o) => { const z = o.mesh.vertices.map((v) => v[2]); return [Math.min.apply(null, z), Math.max.apply(null, z)]; };
+  const a = C.buildScene({ labels, depth }, { shape: 'smooth' }), b = C.buildScene({ labels, depth }, { shape: 'smooth', thickScale: 2 }), c = C.buildScene({ labels, depth }, { shape: 'smooth', depthScale: 2 });
+  assert(C.isClosed(b.objects[0].mesh) && C.isClosed(c.objects[0].mesh));
+  assert(zr(b.objects[0])[0] < zr(a.objects[0])[0] - 1e-6, JSON.stringify([zr(a.objects[0]), zr(b.objects[0])]));
+  assert(zr(c.objects[0])[1] > zr(a.objects[0])[1] + 1e-6, JSON.stringify([zr(a.objects[0]), zr(c.objects[0])]));
+});
 console.log(pass + ' passed' + (process.exitCode ? ', with failures' : ''));

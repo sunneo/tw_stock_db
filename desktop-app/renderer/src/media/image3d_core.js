@@ -363,7 +363,7 @@
       }
     }
     var bw = bb.x1 - bb.x0, bh = bb.y1 - bb.y0, scale = opts.scale || 1, maxFaces = opts.maxFaces || 12000, notes = [];
-    var thick = opts.thickness > 0 ? opts.thickness : Math.max(1, 0.5 * Math.min(bw, bh));
+    var thick = (opts.thickness > 0 ? opts.thickness : Math.max(1, 0.5 * Math.min(bw, bh))) * (opts.thickScale > 0 ? opts.thickScale : 1);
     var zp;
     if (opts.zFront) {
       var mn = Infinity; for (y = 0; y < H; y++) { for (x = 0; x < W; x++) { if (m[y][x] && dn[y][x] < mn) { mn = dn[y][x]; } } }
@@ -411,7 +411,7 @@
   function buildScene(input, opts) {
     opts = opts || {};
     var labels = input.labels, depth = input.depth, d = dims(labels), H = d.h, W = d.w, x, y;
-    var maxdim = Math.max(W, H), R = 0.4 * maxdim, total = opts.maxFaces || 12000, scale = 1 / maxdim;
+    var maxdim = Math.max(W, H), R = 0.4 * maxdim * (opts.depthScale > 0 ? opts.depthScale : 1), total = opts.maxFaces || 12000, scale = 1 / maxdim;
     var mn = Infinity, mx = -Infinity, ids = {}, areas = {};
     for (y = 0; y < H; y++) { for (x = 0; x < W; x++) { var v = depth[y][x]; if (v < mn) { mn = v; } if (v > mx) { mx = v; } var l = labels[y][x]; if (l > 0) { ids[l] = true; areas[l] = (areas[l] || 0) + 1; } } }
     var rg = mx - mn, nd = depth.map(function (r) { return r.map(function (v) { return rg > EPS ? (opts.invert ? (mx - v) : (v - mn)) / rg : 0.5; }); });
@@ -421,7 +421,7 @@
     var objects = [];
     idList.forEach(function (id) {
       var mask = labels.map(function (r) { return r.map(function (v) { return v === id ? 1 : 0; }); });
-      var res = buildObject(mask, nd, { shape: opts.shape, normalize: false, scale: scale, maxFaces: Math.max(24, Math.floor(objBudget * areas[id] / sumA)), zFront: { base: 0.05 * R, range: R }, thickness: opts.thickness });
+      var res = buildObject(mask, nd, { shape: opts.shape, normalize: false, scale: scale, maxFaces: Math.max(24, Math.floor(objBudget * areas[id] / sumA)), zFront: { base: 0.05 * R, range: R }, thickness: opts.thickness, thickScale: opts.thickScale });
       if (res) { res.id = id; objects.push(res); }
     });
     var unknown = labels.map(function (r) { return r.map(function (v) { return v > 0; }); });
@@ -745,6 +745,17 @@
     else if (/樂高|方塊|lego|blocks?/i.test(t)) { out.shape = 'blocks'; }
     if (/--whole(?![a-z])|整張圖當一個|整張當一個|不要?分物件|whole\s+image/i.test(t)) { out.whole = true; }
     if (/--editor(?![a-z])|開編輯器/i.test(t)) { out.editor = true; }
+    // 深度（正面凹凸的強度）與厚度（背面推測的厚度）：--depth 1.5／--thick 2（倍數），或用說的：「厚一點」「薄一點」「立體感強一點」「平一點」「厚度 2 倍」「深度 0.5 倍」
+    var clampK = function (v) { return Math.max(0.2, Math.min(4, v)); };
+    out.depthScale = 1; out.thickScale = 1;
+    if ((m = /--depth[=\s]+(\d+(?:\.\d+)?)/i.exec(t))) { out.depthScale = clampK(parseFloat(m[1])); }
+    else if ((m = /深度\s*(?:x|×|\*|乘)?\s*(\d+(?:\.\d+)?)\s*倍/i.exec(t))) { out.depthScale = clampK(parseFloat(m[1])); }
+    else if (/(?:立體感|深度|凹凸)[^，。,.\n]{0,4}(?:強|大|深|明顯|多|高)|深一點|更立體/.test(t)) { out.depthScale = 1.6; }
+    else if (/(?:立體感|深度|凹凸)[^，。,.\n]{0,4}(?:弱|小|淺|少|低)|淺一點|平一點|平坦/.test(t)) { out.depthScale = 0.6; }
+    if ((m = /--thick(?:ness)?[=\s]+(\d+(?:\.\d+)?)/i.exec(t))) { out.thickScale = clampK(parseFloat(m[1])); }
+    else if ((m = /厚度\s*(?:x|×|\*|乘)?\s*(\d+(?:\.\d+)?)\s*倍/i.exec(t))) { out.thickScale = clampK(parseFloat(m[1])); }
+    else if (/厚一點|厚一些|加厚|更厚|厚度[^，。,.\n]{0,4}(?:大|高|多|厚)/.test(t)) { out.thickScale = 1.6; }
+    else if (/薄一點|薄一些|變薄|更薄|扁一點|厚度[^，。,.\n]{0,4}(?:小|低|少|薄)/.test(t)) { out.thickScale = 0.6; }
     var si = subjectIntent(t); out.subject = si.subject; out.subjectName = si.name; out.subjectTarget = si.target; out.subjectDecided = si.decided; out.subjectSource = si.source;
     return out;
   }
