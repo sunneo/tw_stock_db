@@ -279,7 +279,8 @@
         if (!scene.objects.length || !scene.objects.every((o) => FaImage3d.isClosed(o.mesh))) return null;
         const mesh = FaImage3d.subjectMesh(scene); if (!mesh) return null;
         let texture = ''; try { texture = await this._i3dTexture(blob); } catch (_) { texture = ''; }
-        return { mesh, texture, faces: mesh.faces.length, all_closed: true, subject: subj };
+        let color = '#ffffff'; try { let r0 = 0, g0 = 0, b0 = 0, n0 = 0; for (let i = 0; i < px.width * px.height; i++) if (bm.mask[i]) { r0 += px.data[i * 4]; g0 += px.data[i * 4 + 1]; b0 += px.data[i * 4 + 2]; n0++; } if (n0) { const hx = (v) => Math.round(v / n0).toString(16).padStart(2, '0'); color = '#' + hx(r0) + hx(g0) + hx(b0); } } catch (_) { /* */ }
+        return { mesh, texture, color, faces: mesh.faces.length, all_closed: true, subject: subj };
     };
     // 3D 編輯器裡使用者貼了圖、說「把這張圖變成 3D 物件」：回 add_object 的編輯，沒有符合就回 null
     M._i3dAttachedEdits = async function (req) {

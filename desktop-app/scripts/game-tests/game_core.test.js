@@ -86,5 +86,8 @@ check('editWords / list / promptOf describe things', G.OPS.every((op) => G.editW
 // ── the context pack (§18.4)
 check('context pack: scene, focus, objects (ids, names, positions), vars, bounded and in a fixed order; relative to the player when a runtime is given', (() => { const rt = { scene: 'forest', running: true, vars: { score: 3 }, entities: [{ id: 'b', name: 'B', prefab: 'enemy', pos: [100, 150], size: [14, 14], state: 'walk', hp: 1 }, { id: 'a', name: '玩家', prefab: 'player', pos: [40, 150], size: [12, 16], player: true, vel: [0, 0], hp: 3, on_ground: true }], events: [{ text: '撞到牆' }] }; const c = G.contextPack(plat(), rt, { focus: { ids: ['b'] }, cap: 1 }); const c2 = G.contextPack(plat(), null, {}); return c.playing && c.objects.length === 1 && c.objects[0].id === 'a' && c.focus.ids[0] === 'b' && /撞到牆/.test(c.text) && c2.objects.length > 5 && !c2.playing; })());
 
+// -- a closed 3D mesh as a prefab's look (picture -> 3D, subject only)
+check('mesh asset + mesh sprite survive validation; broken faces/empty meshes are dropped; the sprite kind is in the vocabulary', (() => { const sp = G.starter('platformer-side'); const m = { kind: 'mesh', name: 'cup', vertices: [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], faces: [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3], [9, 9, 9]] }; sp.assets = { cup: m, bad: { kind: 'mesh', vertices: [], faces: [] } }; const v = G.validate(sp).spec; return V.SPRITES.indexOf('mesh') >= 0 && v.assets.cup && v.assets.cup.faces.length === 4 && v.assets.cup.vertices.length === 4 && !v.assets.bad; })());
+
 console.log('game_core: ' + ok + ' passed' + (bad.length ? ', ' + bad.length + ' FAILED:\n  ' + bad.join('\n  ') : ''));
 process.exit(bad.length ? 1 : 0);

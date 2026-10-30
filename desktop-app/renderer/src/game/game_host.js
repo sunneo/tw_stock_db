@@ -107,6 +107,25 @@
     M._edAskGame = async function (req, ed, dim) {
         req = req || {}; const A = this._edAi(), C = FaGame, spec = C.validate(req.spec).spec, notes = [], edits = [], text = String(req.text || '').trim(), status = typeof req.onStatus === 'function' ? req.onStatus : () => {}; let say = '';
         const holder = this._edEditors && this._edEditors.get('edit-game-' + dim + ':' + ed.id), env = holder && holder._ed && holder._ed.env ? holder._ed.env() : { selection: req.selection };
+        if (dim === '3d' && (req.images || []).length && typeof this._i3dSubjectSolid === 'function') {   // 3D 遊戲：貼了圖又說「只要咖啡杯」「把這張圖變成 3D 物件」→ 離線深度模型做成封閉的立體，當選到的那個原型的外觀（只留主體）
+            const pre = FaImage3d.subjectIntent(text), asked = /(把|將|用)?這張(圖|照片|圖片).{0,8}(變成|轉成|做成|轉).{0,6}(3D|三維|立體)|圖(片)?轉\s*3D|image.?to.?3d/i.test(text);
+            if (asked || (pre.decided && pre.subject === 'main' && (pre.source === 'phrase' || pre.source === 'flag'))) {
+                const si = await this._i3dSubjectIntent(text), cur0 = C.applyEdits(spec, edits, env).spec, o0 = req.selection && C.byId(cur0, req.selection) >= 0 ? cur0.objects[C.byId(cur0, req.selection)] : null, pid = o0 ? (o0.type === 'prefab' ? o0.id : (o0.type === 'object' ? o0.prefab : null)) : null;
+                if (!pid) notes.push(T('要把立體的外觀放在哪個東西上?先選一個東西(按「🎯 焦點」點它)再說一次', 'Select an object first, then say it again'));
+                else {
+                    let blob = null; try { blob = await (await fetch(req.images[0].dataUrl)).blob(); } catch (_) { blob = null; }
+                    const r = blob ? await this._i3dSubjectSolid(blob, req.images[0].name, si.subject === 'main' ? { subject: { name: si.name } } : undefined) : null;
+                    if (r) {
+                        const aid = 'mesh' + (Object.keys(spec.assets || {}).length + edits.filter((e) => e.op === 'add_asset').length + 1), rd = (v) => Math.round(v * 1000) / 1000;
+                        edits.push({ op: 'add_asset', id: aid, asset: { kind: 'mesh', name: String((si.name || req.images[0].name || '立體')).slice(0, 30), vertices: r.mesh.vertices.map((v) => [rd(v[0]), rd(v[1]), rd(v[2])]), faces: r.mesh.faces, credit: T('你貼的圖(離線深度模型轉成封閉立體;背面是推測的)', 'your picture (offline depth model, closed solid; the back is a guess)') } });
+                        edits.push({ op: 'update_prefab', id: pid, props: { sprite: { kind: 'mesh', asset: aid, color: r.color || '#ffffff' } } });
+                        notes.push(T('已把圖轉成封閉的 3D 外觀(' + r.faces + ' 個面,顏色取圖的平均色' + (r.subject ? ';只留主體:' + r.subject.note : '') + ');碰撞仍是方塊,位置用「放在…上面」這類話再安排', 'turned the picture into a closed 3D look (' + r.faces + ' faces); collision stays a box'));
+                        return { say: T('把圖做成立體的外觀了。', 'Made the 3D look from the picture.'), edits, notes };
+                    }
+                    notes.push(T('這張圖沒能轉成立體(背景去不乾淨,或深度模型不能用)', 'could not turn the picture into a solid'));
+                }
+            }
+        }
         for (let i = 0; i < Math.min(3, (req.images || []).length); i++) {
             const im = req.images[i]; try { const blob = await (await fetch(im.dataUrl)).blob(); if (await this._gameImageEdits(C.applyEdits(spec, edits, env).spec, { blob, name: (im.name || 'picture').replace(/\.[a-z0-9]+$/i, '') }, req.selection, edits, notes)) say = say || T('把圖貼成它的外觀了。', 'Used the picture as its look.'); } catch (e) { notes.push(T('「' + (im.name || '圖片') + '」處理失敗:', 'the picture failed: ') + String((e && e.message) || e).slice(0, 80)); }
         }

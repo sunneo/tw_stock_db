@@ -94,7 +94,7 @@
     fly3d: { label: '3D 飛行', defaults: { speed: 6 } },
     none: { label: '沒有(靠規則動)', defaults: {} }
   };
-  const SPRITES = ['rect', 'circle', 'emoji', 'pixels', 'image', 'box', 'sphere', 'cylinder', 'cone', 'capsule'];
+  const SPRITES = ['rect', 'circle', 'emoji', 'pixels', 'image', 'box', 'sphere', 'cylinder', 'cone', 'capsule', 'mesh'];
   // 內建磚塊(2D tilemap):id → 屬性
   const TILESETS = {
     basic: {

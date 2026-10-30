@@ -111,10 +111,11 @@
   }
   function normAssets(a) {
     const out = {}; if (!isObj(a)) { return out; } Object.keys(a).slice(0, LIM.assets).forEach((id) => {
-      if (!/^[A-Za-z0-9_-]{1,40}$/.test(id) || !isObj(a[id])) { return; } const x = a[id], kind = ['sound', 'song', 'voice', 'image'].indexOf(x.kind) >= 0 ? x.kind : null; if (!kind) { return; } const o = { kind, name: str(x.name, 40) || id };
+      if (!/^[A-Za-z0-9_-]{1,40}$/.test(id) || !isObj(a[id])) { return; } const x = a[id], kind = ['sound', 'song', 'voice', 'image', 'mesh'].indexOf(x.kind) >= 0 ? x.kind : null; if (!kind) { return; } const o = { kind, name: str(x.name, 40) || id };
       if (kind === 'sound') { o.synth = V.BUILTIN_SOUNDS.indexOf(x.synth) >= 0 ? x.synth : 'blip'; if (x.seed != null) { o.seed = Math.round(num(x.seed, 0, 1e9, 1)); } if (x.pitch != null) { o.pitch = r2(num(x.pitch, 0.25, 4, 1)); } }
       else if (kind === 'song') { o.style = ['happy', 'calm', 'tense', 'battle', 'sad', 'town', 'victory'].indexOf(x.style) >= 0 ? x.style : 'happy'; o.tempo = Math.round(num(x.tempo, 60, 220, 120)); o.seed = Math.round(num(x.seed, 0, 1e9, 1)); o.bars = Math.round(num(x.bars, 2, 32, 8)); }
       else if (kind === 'voice') { o.text = str(x.text, 300); o.voice = str(x.voice, 30) || 'narrator'; if (x.ref) { o.ref = str(x.ref, 80); } }
+      else if (kind === 'mesh') { const vs = Array.isArray(x.vertices) ? x.vertices.slice(0, 8000).filter((v) => Array.isArray(v) && v.length >= 3).map((v) => [r2(num(v[0], -1e4, 1e4, 0)), r2(num(v[1], -1e4, 1e4, 0)), r2(num(v[2], -1e4, 1e4, 0))]) : [], fs = Array.isArray(x.faces) ? x.faces.slice(0, 16000).filter((f) => Array.isArray(f) && f.length === 3 && f.every((i) => Number.isInteger(i) && i >= 0 && i < vs.length)).map((f) => [f[0], f[1], f[2]]) : []; if (!vs.length || !fs.length) { return; } o.vertices = vs; o.faces = fs; if (x.credit) { o.credit = str(x.credit, 200); } }
       else if (kind === 'image') { if (x.ref) { o.ref = str(x.ref, 80); } if (x.credit) { o.credit = str(x.credit, 200); } }
       out[id] = o;
     }); return out;
