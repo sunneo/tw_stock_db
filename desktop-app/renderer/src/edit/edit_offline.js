@@ -231,5 +231,55 @@
       firstScene: function (spec) { var o = spec2(spec).objects.filter(function (x) { return x.type === 'scene'; })[0]; return o ? o.id : null; } };
   }
 
-  return { make: make, drawAdapter: drawAdapter, sceneAdapter: sceneAdapter, deckAdapter: deckAdapter, gameAdapter: gameAdapter, drawIntents: drawIntents, sceneIntents: sceneIntents, commonIntents: commonIntents, findTargets: findTargets, letterPrompt: letterPrompt, parseLetter: parseLetter, colorsIn: colorsIn, cnNum: cnNum, numberIn: numberIn, factorIn: factorIn, shapeIn: shapeIn, relIn: relIn, quotedIn: quotedIn, COLORS: COLORS };
+  // ───── 影片逐字稿編輯器（/edit-video）：逐字稿、時間軸（分割／刪除一段／片段／轉場）、TTS 配音、加入素材。
+  //   組出來的動作是 video_edit_ai.js 的封閉動作（transcribe / split / remove_range / remove_clip / set_transition / add_tts_dub / add_video / add_picture / add_sound / set_text / shift），之後仍由 applyEdits 逐項檢查。
+  //   spec＝{ clips:[…], cues:[…], now(播放位置秒), duration }。缺的欄位（轉場種類、時間）：能用預設的用預設，真的不知道才問模型一個字母選擇題。
+  var VID_TR = [[/(?:取消|移除|不要|無|沒有|none)/, 'none', '無'], [/(?:圓(?:圈|形)?(?:收合|收縮|縮小|向中心)|circle.?close)/i, 'circle-close', '圓圈收合'], [/(?:圓(?:圈|形)?|circle)/i, 'circle-open', '圓圈展開'], [/(?:百葉窗|blinds)/i, 'blinds', '百葉窗'], [/(?:放大|zoom)/i, 'zoom', '放大淡入'], [/(?:交叉淡化|溶解|疊化|dissolve)/i, 'dissolve', '交叉淡化'],
+    [/(?:白色?淡|經過白|fade.?white)/i, 'fade-white', '淡入淡出(經過白色)'], [/(?:中心|center)[^。,]*?(?:上下|垂直)/i, 'split-v', '中心向上下展開'], [/(?:中心|center|split)/i, 'split-h', '中心向左右展開'], [/(?:推)[^。,]*?上|push.?up/i, 'push-up', '向上推出'], [/(?:推)[^。,]*?下|push.?down/i, 'push-down', '向下推出'], [/(?:推)[^。,]*?右|push.?right/i, 'push-right', '向右推出'], [/推|push/i, 'push-left', '向左推出'],
+    [/(?:掃描線?|掃過|wipe)[^。,]*?(?:由右到左|從右)/i, 'wipe-right', '掃描線 由右到左'], [/(?:掃描線?|掃過|wipe)[^。,]*?(?:由上到下|從上)/i, 'wipe-up', '掃描線 由上到下'], [/(?:掃描線?|掃過|wipe)[^。,]*?(?:由下到上|從下)/i, 'wipe-down', '掃描線 由下到上'], [/掃描線?|掃過|wipe/i, 'wipe-left', '掃描線 由左到右'],
+    [/(?:從左|左邊)[^。,]*?滑入|slide.?right/i, 'slide-right', '從左滑入'], [/(?:從下|下面|下方)[^。,]*?滑入|slide.?up/i, 'slide-up', '從下滑入'], [/(?:從上|上面|上方)[^。,]*?滑入|slide.?down/i, 'slide-down', '從上滑入'], [/滑入|slide/i, 'slide-left', '從右滑入'], [/(?:淡入淡出|淡入|淡出|fade)/i, 'fade', '淡入淡出(經過黑色)']];
+  var VID_LANG = [[/英文|英語|english/i, 'en'], [/日文|日語|japanese/i, 'ja'], [/韓文|韓語|korean/i, 'ko'], [/中文|華語|國語|普通話|廣東話/, 'zh']];
+  function vidTimes(text) {
+    var out = [], re = /(\d+(?::\d+){1,2}(?:\.\d+)?)|(\d+(?:\.\d+)?)\s*(?:分鐘|分)\s*(?:(\d+(?:\.\d+)?)\s*秒)?|(\d+(?:\.\d+)?)\s*(?:秒|s\b)/g, m, t = String(text || '');
+    while ((m = re.exec(t))) { var v; if (m[1]) { var parts = m[1].split(':').map(Number); v = parts.reduce(function (a, b) { return a * 60 + b; }, 0); } else if (m[2]) { v = Number(m[2]) * 60 + (m[3] ? Number(m[3]) : 0); } else { v = Number(m[4]); } out.push({ sec: v, at: m.index, end: m.index + m[0].length }); }
+    return out;
+  }
+  function videoIntents() {
+    var DEL = /(?:刪除|刪掉|移除|拿掉|剪掉|切掉|不要)/, CLIP = /第\s*(\d+|[一二兩三四五六七八九十]+)\s*(?:個|段)?\s*(?:片段|clip)/i, LINE = /第\s*(\d+|[一二兩三四五六七八九十]+)\s*(?:句|列|行)/;
+    function clipNo(c) { var m = CLIP.exec(c); return m ? cnNum(m[1]) : null; } function lineNo(c) { var m = LINE.exec(c); return m ? cnNum(m[1]) : null; }
+    function langOf(c) { for (var i = 0; i < VID_LANG.length; i++) { if (VID_LANG[i][0].test(c)) { return VID_LANG[i][1]; } } return ''; }
+    function trOf(c) { for (var i = 0; i < VID_TR.length; i++) { if (VID_TR[i][0].test(c)) { return VID_TR[i][1]; } } return null; }
+    return [
+      { id: 'transcribe', label: '產生逐字稿（辨識聲音，排進工作佇列）', score: function (c) { return /(?:辨識|辨认|(?:產生|生成|插入|加入|轉成?)[^，。]{0,8}逐字稿|聽寫|transcribe)/i.test(c) && !lineNo(c) ? 6 : 0; }, build: function (s, ctx) {
+        var ts = vidTimes(s.clause), e = { op: 'transcribe' }, ev = /每\s*(\d+(?:\.\d+)?)\s*(分鐘|分|秒)/.exec(s.clause), lg = langOf(s.clause), spec = ctx.spec || {};
+        if (ev) { e.every = Number(ev[1]) * (ev[2] === '秒' ? 1 : 60); ts = ts.filter(function (t) { return t.at < ev.index || t.at >= ev.index + ev[0].length; }); }
+        if (ts.length >= 2) { e.start = ts[0].sec; e.end = ts[1].sec; } else if (ts.length === 1 && /起|開始|從/.test(s.clause)) { e.start = ts[0].sec; e.secs = ev ? undefined : 2; } else if (/播放位置|這裡|目前位置|現在/.test(s.clause)) { e.start = spec.now || 0; e.secs = 2; }
+        if (lg) { e.lang = lg; } Object.keys(e).forEach(function (k) { if (e[k] === undefined) { delete e[k]; } }); return [e];
+      } },
+      { id: 'split', label: '在某個時間把影片分割成兩段', score: function (c) { return /(?:分割|切開|切成兩段|切一刀|剪開|split)/i.test(c) && !CLIP.test(c) ? 6 : 0; }, build: function (s) { var ts = vidTimes(s.clause), e = { op: 'split' }; if (ts.length) { e.at = ts[0].sec; } return [e]; } },
+      { id: 'remove_clip', label: '刪除某個片段', score: function (c) { return DEL.test(c) && clipNo(c) && !/轉場/.test(c) ? 8 : 0; }, build: function (s) { return [{ op: 'remove_clip', n: clipNo(s.clause) }]; } },
+      { id: 'remove_range', label: '刪除影片中某一段時間', score: function (c) { return DEL.test(c) && vidTimes(c).length >= 2 && !/轉場|逐字稿|字幕/.test(c) ? 7 : (DEL.test(c) && /(?:這段|那段|選取)/.test(c) ? 3 : 0); }, build: function (s) { var ts = vidTimes(s.clause); if (ts.length < 2) { return { error: '要說「從幾分幾秒到幾分幾秒」才知道刪哪一段' }; } return [{ op: 'remove_range', start: ts[0].sec, end: ts[1].sec }]; } },
+      { id: 'transition', label: '設定片段之間的轉場效果', score: function (c) { return /轉場|transition/i.test(c) ? 6 : (/(?:片段|clip)[^，。]{0,4}(?:之間|間|交界|接縫)/i.test(c) && trOf(c) ? 6 : 0); }, build: async function (s, ctx) {
+        var type = trOf(s.clause); if (!type) { var names = VID_TR.map(function (x) { return x[2]; }), i = typeof ctx.pick === 'function' ? await ctx.pick('這句話「' + s.clause + '」要哪一種轉場？', names) : null; type = typeof i === 'number' && VID_TR[i] ? VID_TR[i][1] : 'fade'; ctx.asked.push({ kind: 'transition', q: '轉場種類', options: names, answer: typeof i === 'number' ? i : -1, by: typeof i === 'number' ? 'model' : 'default' }); }
+        var e = { op: 'set_transition', type: type, n: 'all' }, n = clipNo(s.clause) || (/(?:clip|片段)\s*(\d+)/i.exec(s.clause) || [])[1]; if (n && !/(?:所有|全部|每個|每一個|all|each)/i.test(s.clause)) { e.n = Number(n); } var d = /(\d+(?:\.\d+)?)\s*秒/.exec(s.clause); if (d) { e.dur = Number(d[1]); } return [e];
+      } },
+      { id: 'tts', label: '用 TTS 配音（某一句或一段文字）', score: function (c) { return /(?:配音|朗讀|唸出來|念出來|tts|text.?to.?speech)/i.test(c) ? 5 : 0; }, build: function (s, ctx) {
+        var e = { op: 'add_tts_dub' }, n = lineNo(s.clause), lg = langOf(s.clause), ts = vidTimes(s.clause), spec = ctx.spec || {};
+        if (lg) { e.lang = lg === 'zh' ? 'zh-TW' : lg === 'en' ? 'en-US' : lg === 'ja' ? 'ja-JP' : 'ko-KR'; }
+        if (n) { e.n = n; return [e]; } if (!s.quoted) { return { error: '要配音哪一句？說「第 3 句」或把要唸的字放在「」裡' }; }
+        e.text = s.quoted; e.start = ts.length ? ts[0].sec : (spec.now || 0); return [e];
+      } },
+      { id: 'add_media', label: '加入影片、圖片或聲音（會開檔案選擇）', score: function (c) { return /(?:加入|插入|新增|合併|接上|串接|疊上)/.test(c) && /(?:影片|圖片|照片|圖|聲音|音樂|音效|音訊)/.test(c) ? 5 : 0; }, build: function (s) {
+        var c = s.clause, ts = vidTimes(c), e = /(?:圖片|照片|圖)/.test(c) ? { op: 'add_picture' } : /(?:聲音|音樂|音效|音訊)/.test(c) ? { op: 'add_sound' } : { op: 'add_video' }; if (ts.length && e.op !== 'add_video') { e.at = ts[0].sec; } return [e];
+      } },
+      { id: 'set_text', label: '改某一句逐字稿的文字', score: function (c) { return lineNo(c) && /(?:改成|改為|換成|改)/.test(c) ? 6 : 0; }, build: function (s) {
+        var n = lineNo(s.clause), t = s.quoted || (/(?:改成|改為|換成)\s*[:：]?\s*(.+)$/.exec(s.clause) || [])[1]; if (!t) { return { error: '要改成什麼字？' }; } return [{ op: 'set_text', n: n, text: t.replace(/^[「"]|[」"]$/g, '') }];
+      } },
+      { id: 'shift', label: '把逐字稿整體提早或延後幾秒', score: function (c) { return /(?:提早|提前|延後|往後|往前|延遲)/.test(c) && /秒/.test(c) && !/片段|轉場/.test(c) ? 5 : 0; }, build: function (s) { var m = /(\d+(?:\.\d+)?)\s*秒/.exec(s.clause); if (!m) { return { error: '要移幾秒？' }; } return [{ op: 'shift', seconds: (/提早|提前|往前/.test(s.clause) ? -1 : 1) * Number(m[1]) }]; } },
+      { id: 'cut_empty', label: '刪掉沒有文字的逐字稿列', score: function (c) { return DEL.test(c) && /(?:空白|空的|沒有字)/.test(c) ? 6 : 0; }, build: function (s, ctx) { var out = []; ((ctx.spec && ctx.spec.cues) || []).forEach(function (cu, i) { if (!String(cu.text || '').trim()) { out.push({ op: 'remove_cue', n: i + 1 }); } }); return out.length ? out : { error: '沒有空白的列' }; } }
+    ];
+  }
+  function videoAdapter() { return { kind: 'video', intents: videoIntents(), objects: function () { return []; } }; }
+
+  return { videoAdapter: videoAdapter, videoIntents: videoIntents, vidTimes: vidTimes, make: make, drawAdapter: drawAdapter, sceneAdapter: sceneAdapter, deckAdapter: deckAdapter, gameAdapter: gameAdapter, drawIntents: drawIntents, sceneIntents: sceneIntents, commonIntents: commonIntents, findTargets: findTargets, letterPrompt: letterPrompt, parseLetter: parseLetter, colorsIn: colorsIn, cnNum: cnNum, numberIn: numberIn, factorIn: factorIn, shapeIn: shapeIn, relIn: relIn, quotedIn: quotedIn, COLORS: COLORS };
 });

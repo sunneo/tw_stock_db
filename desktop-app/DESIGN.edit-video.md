@@ -30,3 +30,22 @@
 - **辨識**:逐字稿辨識依片段切開,每段在自己的來源檔辨識再換成時間軸時間。
 - 驗證:`node scripts/video-tests/video_timeline.test.js`(純函式)、`scripts/eval/video_timeline.eval.js`(真 Electron+真 mediabunny:分割、刪除、合併、轉場、疊圖、插聲音、播放跨片段、輸出 MP4 的長度與畫面;AAC 音軌在該環境編不起來,所以音軌混合只驗到「退回無聲」)。
 - 未做:轉場在編輯器內的真實預覽、片段排序(拖曳)、片段內縮放/速度、圖片動畫。
+
+## Ask AI 的時間軸動作
+封閉動作新增:`transcribe`{start,end|secs,every,lang}(**只產生請求**,套用時每一段在「工作佇列」排一個辨識工作,不是當場跑;`every` 把範圍切成每 N 秒一個工作,最多 40 個)、`split`{at}、`remove_range`{start,end}、`remove_clip`{n}、`set_transition`{n|'all',type,dur}、`add_video`/`add_picture`{at}/`add_sound`{at}(開檔案選擇,由使用者選檔)、以及原有的 `add_tts_dub`(可給 text+start+lang,不一定要引用某一句)。
+- `applyEdits(…, tlctx={clips, TL, now})` 逐項用 `TwVideoTimeline` 驗證:時間軸動作依序在「前面的動作做完之後的片段」上檢查(邊緣、範圍、轉場名稱、片段編號),壞的退回並說明。時間軸動作在逐字稿動作**之後**執行。
+- 套用時時間軸部分是**一個「復原剪輯」步驟**(連同逐字稿一起還原)。
+- 程式先讀的白話:「每 10 秒辨識」「從 0:30 到 1:00 產生逐字稿」「在 0:30 分割」「刪除 0:10 到 0:20」「刪掉第 2 個片段」「所有片段之間加圓圈展開轉場 1.5 秒」「在 0:05 用英文配音 說 hello」「加入影片／插入圖片／插入聲音」;讀不懂且線上才問模型(提示裡附片段清單)。
+
+## AI 的順序與離線 harness
+Ask AI 讀一句話的順序:**程式先讀**(`localParseMulti`,多子句要每句都讀懂,否則整句往下交)→ **線上模型**(`_kiLlm` 的 `noOffline`:只走線上,逾時/出錯/回覆讀不懂都算失效)→ **線上失效才接離線 harness**(`host.ai.offline` = `_videoOffline`);App 的「離線模式」開著時順序相反(harness 先,找不到才問線上)。離線小模型**不再自己寫 JSON**,只在 harness 裡答字母選擇題。`_videoOffline` 逐層做,前一層做出動作就停:
+1. **離線訓練器**:`_otPlan` 找領域 `edit_video`(及其他領域)裡學過的做法;只收 `video_*` 工具的結果,轉回封閉動作。**學回去**:線上做成功、使用者按「套用」的句子,`_videoLearn` 用 `TwVideoPlans.generalize` 把句子裡的數字換成擷取群組、引號裡的字換成 `{quoted}`,存成 `edit_video` 的 regex 規則(`steps` = `video_*` 呼叫);數字不在句子裡的(例如計畫展開出來的)不學。
+2. **計畫模板**(`video_plans.js`,`TwVideoPlans.GOALS`):剪掉片頭/片尾 N 秒、只保留 A 到 B、每 N 秒切一刀、全部逐字稿用某語言配音、整支分段辨識。目標由觸發字分類,步驟由程式展開,數字來自句子或編輯器的狀態(影片長度、逐字稿列),模型不參與。
+3. **意圖引擎**(`FaEditOffline.videoAdapter`,`edit_offline.js`):句子切子句,每個子句對到一個意圖(辨識、分割、刪除一段、刪除片段、轉場、TTS 配音、加入素材、改字、平移、刪空白列);缺轉場種類之類才問模型一個字母。
+3. **細切 + 語意推導 + UML + CoLU 接線**(通用 harness 的 `video` 領域,`video_semantics.js`;核心與擴充點見 `DESIGN.offline-harness.md`):一句話切成意圖,「前半段、最後 10 秒、第 3 句那一段、沒有字幕的地方、只保留 A 到 B、正中間」用編輯器的狀態推導成數字(每個推導都顯示在預覽的說明裡),寫成 UML 使用案例,交給 CoLU 單元目錄接線成 `video_*` 工具呼叫(UML 操作名稱 + 單元的白話說明 + 型別合約;沒接上的步驟退回該動作自己的工具,並提醒)。缺什麼(哪一種轉場、刪哪一段)變成「缺」的提示,不猜。
+4. **意圖引擎**(`FaEditOffline.videoAdapter`)是退路:語意推導讀不出來時,子句對意圖,缺轉場種類之類才問離線模型一個字母。
+最後對所有層的結果再做一次 CoLU 接線檢查(`_videoCoLU`,只提醒不擋;最後一道檢查仍是 `applyEdits`)。`video_*` 工具在單元目錄裡是 tier-1 有型別單元(`catalog_core.js` 的 EFFECT_RULES 補了 `video_*`,回傳型別由說明裡的「回傳 {…}」推出)。
+
+**agent 工具**:封閉動作原封不動變成工具 `video_split / video_cut_range / video_cut_clip / video_set_transition / video_transcribe / video_tts_dub / video_set_line / video_shift_lines / video_add_media` 與 `edit_video_open`(`TwVideoPlans.TOOLS` 是動作⇄工具的對照表,`runOps` 檢查後立刻執行),所以對話裡的 agent、離線訓練器、CoLU 單元目錄都用同一套詞彙驅動「開著的」編輯器;已加進 `editors` 領域與 `FA_TASK_TOOL_HINTS`。
+**沒做**:`FaPlan` 的 GOALS/CAPS(那套是以檔案種類倒推工具鏈,編輯器的動作不產生檔案,所以改用上面的計畫模板);離線小模型答字母題的準確度沒用真模型量過。
+驗證:`scripts/video-tests/video_plans.test.js`、`scripts/edit-tests/edit_offline_video.test.js`、`scripts/eval/video_harness.eval.js`(真 Electron:工具、單元 tier 1 與型別、CoLU 2/2 接線、學回去與換數字重放、計畫模板、意圖引擎、線上失效→離線→預覽→套用、線上成功→學回去)。

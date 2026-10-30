@@ -1454,7 +1454,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     editors: {
         enabled: true,
         label: '圖形編輯器（用對話主導的 SVG 編輯器、圖片編輯器與 3D 場景編輯器：物件放置、風格濾鏡與修復、描圖、貼圖、匯出）',
-        toolNames: ['edit_svg_open', 'edit_picture_open', 'edit_3d_open', 'list_uploaded_files'],
+        toolNames: ['edit_svg_open', 'edit_picture_open', 'edit_3d_open', 'edit_video_open', 'video_split', 'video_cut_range', 'video_cut_clip', 'video_cut_line', 'video_set_transition', 'video_transcribe', 'video_tts_dub', 'video_set_line', 'video_shift_lines', 'video_add_media', 'list_uploaded_files'],
         systemPrompt: '你負責用「圖形編輯器」幫使用者畫圖、修圖、擺 3D 場景。做法固定：向量圖／圖示／插圖／流程圖／把圖片描成 SVG → edit_svg_open；修照片、換風格（水彩、油畫、素描…）、去污點、合成圖片、加濾鏡 → edit_picture_open；3D 場景、擺放 3D 物件、貼圖、做模型 → edit_3d_open。要現成的類型就用 starter，要別的就把一句話需求放 request（編輯器自己的 AI 會做）；使用者附了圖片就帶 file_id；要接續之前的專案用 id。做完編輯器就放在對話裡了（物件欄、屬性面板、AI 對話、復原重做、匯出），用幾句話告訴使用者可以直接在裡面說要怎麼改，**不要把 SVG／程式碼貼進對話、不要自己處理圖片**。',
         dynamicNote: '路由建議：使用者要畫向量圖／SVG、修圖、換圖片風格、去污點、圖片後製、貼圖合成、或擺放編輯 3D 場景與模型時委派這個領域。',
     },
@@ -11887,6 +11887,7 @@ const holder = {};
         R(/^(gerrit|github_ci|jenkins|ci_connections|ci_triage)$/, 'net'), R(/^(pipeline_inspect|ci_guide)$/, 'state.read'),
         R(/^browser_(status|list_tabs|get_page_text|get_page_structure|get_elements|screenshot|list_downloads)$/, 'browser'), R(/^browser_(create_tab_group|create_tab|navigate|close|activate_tab|scroll|mouse|type_text|press_key|click|wait_download)$/, 'browser', 'ui'),
         R(/^delegate_to_subagent$/, 'delegate'), R(/^call_ai_function$/, 'proc', 'state.read'), R(/^playbook_state$/, 'state.read', 'state.write'), R(/^delegate_to_machine$/, 'delegate', 'net'), R(/^list_remote_machines$/, 'net'), R(/^(summarize_large_text|interpret_image|image_to_text|batch_process_items)$/, 'delegate'),
+        R(/^video_(split|cut_range|cut_clip|cut_line|set_transition|set_line|shift_lines|add_media)$/, 'state.write'), R(/^video_(transcribe|tts_dub)$/, 'state.write', 'net'), // /edit-video 的編輯動作(改開著的編輯器;辨識與 TTS 可能下載模型／走中文語音轉接)
         R(/^(add|delete|define|register|store|set|learn|teach|annotate|create)_|^(skill_create|log_learn|behavior_define|ref_define|glue_define|rag_store_graph_node|rag_delete|define_snippet|image_parts_teach|image_parts_annotate)$/, 'state.write'),
         R(/^(list|get|query|lookup|read|explain|ref_lookup|ref_types|ref_resolve|ref_validate|ref_expand|log_ask|glue_list|glue_report|skill_list|skill_read|rag_query_graph|rag_chunk_document|programming_knowledge|programming_domains|language_explore|repo_|uefi_parse|diagnose_|lookup_|mix_|uml_guide|uml_design|design_choices|sandbox_capabilities|offline_trainer|big_content|get_tool_details)/, 'state.read'),
         R(/^(render_|begin_presentation|add_chapters|finish_presentation|open_existing_presentation|import_|cute_picture|make_object_sprite|make_character_sprite|pixel_art|ask_user_card|pptx_to_deck|uml_to_code|set_viewer_state|image_(decompose|rig))/, 'ui', 'state.write'),
@@ -27213,7 +27214,57 @@ const holder = {};
       firstScene: function (spec) { var o = spec2(spec).objects.filter(function (x) { return x.type === 'scene'; })[0]; return o ? o.id : null; } };
   }
 
-  return { make: make, drawAdapter: drawAdapter, sceneAdapter: sceneAdapter, deckAdapter: deckAdapter, gameAdapter: gameAdapter, drawIntents: drawIntents, sceneIntents: sceneIntents, commonIntents: commonIntents, findTargets: findTargets, letterPrompt: letterPrompt, parseLetter: parseLetter, colorsIn: colorsIn, cnNum: cnNum, numberIn: numberIn, factorIn: factorIn, shapeIn: shapeIn, relIn: relIn, quotedIn: quotedIn, COLORS: COLORS };
+  // ───── 影片逐字稿編輯器（/edit-video）：逐字稿、時間軸（分割／刪除一段／片段／轉場）、TTS 配音、加入素材。
+  //   組出來的動作是 video_edit_ai.js 的封閉動作（transcribe / split / remove_range / remove_clip / set_transition / add_tts_dub / add_video / add_picture / add_sound / set_text / shift），之後仍由 applyEdits 逐項檢查。
+  //   spec＝{ clips:[…], cues:[…], now(播放位置秒), duration }。缺的欄位（轉場種類、時間）：能用預設的用預設，真的不知道才問模型一個字母選擇題。
+  var VID_TR = [[/(?:取消|移除|不要|無|沒有|none)/, 'none', '無'], [/(?:圓(?:圈|形)?(?:收合|收縮|縮小|向中心)|circle.?close)/i, 'circle-close', '圓圈收合'], [/(?:圓(?:圈|形)?|circle)/i, 'circle-open', '圓圈展開'], [/(?:百葉窗|blinds)/i, 'blinds', '百葉窗'], [/(?:放大|zoom)/i, 'zoom', '放大淡入'], [/(?:交叉淡化|溶解|疊化|dissolve)/i, 'dissolve', '交叉淡化'],
+    [/(?:白色?淡|經過白|fade.?white)/i, 'fade-white', '淡入淡出(經過白色)'], [/(?:中心|center)[^。,]*?(?:上下|垂直)/i, 'split-v', '中心向上下展開'], [/(?:中心|center|split)/i, 'split-h', '中心向左右展開'], [/(?:推)[^。,]*?上|push.?up/i, 'push-up', '向上推出'], [/(?:推)[^。,]*?下|push.?down/i, 'push-down', '向下推出'], [/(?:推)[^。,]*?右|push.?right/i, 'push-right', '向右推出'], [/推|push/i, 'push-left', '向左推出'],
+    [/(?:掃描線?|掃過|wipe)[^。,]*?(?:由右到左|從右)/i, 'wipe-right', '掃描線 由右到左'], [/(?:掃描線?|掃過|wipe)[^。,]*?(?:由上到下|從上)/i, 'wipe-up', '掃描線 由上到下'], [/(?:掃描線?|掃過|wipe)[^。,]*?(?:由下到上|從下)/i, 'wipe-down', '掃描線 由下到上'], [/掃描線?|掃過|wipe/i, 'wipe-left', '掃描線 由左到右'],
+    [/(?:從左|左邊)[^。,]*?滑入|slide.?right/i, 'slide-right', '從左滑入'], [/(?:從下|下面|下方)[^。,]*?滑入|slide.?up/i, 'slide-up', '從下滑入'], [/(?:從上|上面|上方)[^。,]*?滑入|slide.?down/i, 'slide-down', '從上滑入'], [/滑入|slide/i, 'slide-left', '從右滑入'], [/(?:淡入淡出|淡入|淡出|fade)/i, 'fade', '淡入淡出(經過黑色)']];
+  var VID_LANG = [[/英文|英語|english/i, 'en'], [/日文|日語|japanese/i, 'ja'], [/韓文|韓語|korean/i, 'ko'], [/中文|華語|國語|普通話|廣東話/, 'zh']];
+  function vidTimes(text) {
+    var out = [], re = /(\d+(?::\d+){1,2}(?:\.\d+)?)|(\d+(?:\.\d+)?)\s*(?:分鐘|分)\s*(?:(\d+(?:\.\d+)?)\s*秒)?|(\d+(?:\.\d+)?)\s*(?:秒|s\b)/g, m, t = String(text || '');
+    while ((m = re.exec(t))) { var v; if (m[1]) { var parts = m[1].split(':').map(Number); v = parts.reduce(function (a, b) { return a * 60 + b; }, 0); } else if (m[2]) { v = Number(m[2]) * 60 + (m[3] ? Number(m[3]) : 0); } else { v = Number(m[4]); } out.push({ sec: v, at: m.index, end: m.index + m[0].length }); }
+    return out;
+  }
+  function videoIntents() {
+    var DEL = /(?:刪除|刪掉|移除|拿掉|剪掉|切掉|不要)/, CLIP = /第\s*(\d+|[一二兩三四五六七八九十]+)\s*(?:個|段)?\s*(?:片段|clip)/i, LINE = /第\s*(\d+|[一二兩三四五六七八九十]+)\s*(?:句|列|行)/;
+    function clipNo(c) { var m = CLIP.exec(c); return m ? cnNum(m[1]) : null; } function lineNo(c) { var m = LINE.exec(c); return m ? cnNum(m[1]) : null; }
+    function langOf(c) { for (var i = 0; i < VID_LANG.length; i++) { if (VID_LANG[i][0].test(c)) { return VID_LANG[i][1]; } } return ''; }
+    function trOf(c) { for (var i = 0; i < VID_TR.length; i++) { if (VID_TR[i][0].test(c)) { return VID_TR[i][1]; } } return null; }
+    return [
+      { id: 'transcribe', label: '產生逐字稿（辨識聲音，排進工作佇列）', score: function (c) { return /(?:辨識|辨认|(?:產生|生成|插入|加入|轉成?)[^，。]{0,8}逐字稿|聽寫|transcribe)/i.test(c) && !lineNo(c) ? 6 : 0; }, build: function (s, ctx) {
+        var ts = vidTimes(s.clause), e = { op: 'transcribe' }, ev = /每\s*(\d+(?:\.\d+)?)\s*(分鐘|分|秒)/.exec(s.clause), lg = langOf(s.clause), spec = ctx.spec || {};
+        if (ev) { e.every = Number(ev[1]) * (ev[2] === '秒' ? 1 : 60); ts = ts.filter(function (t) { return t.at < ev.index || t.at >= ev.index + ev[0].length; }); }
+        if (ts.length >= 2) { e.start = ts[0].sec; e.end = ts[1].sec; } else if (ts.length === 1 && /起|開始|從/.test(s.clause)) { e.start = ts[0].sec; e.secs = ev ? undefined : 2; } else if (/播放位置|這裡|目前位置|現在/.test(s.clause)) { e.start = spec.now || 0; e.secs = 2; }
+        if (lg) { e.lang = lg; } Object.keys(e).forEach(function (k) { if (e[k] === undefined) { delete e[k]; } }); return [e];
+      } },
+      { id: 'split', label: '在某個時間把影片分割成兩段', score: function (c) { return /(?:分割|切開|切成兩段|切一刀|剪開|split)/i.test(c) && !CLIP.test(c) ? 6 : 0; }, build: function (s) { var ts = vidTimes(s.clause), e = { op: 'split' }; if (ts.length) { e.at = ts[0].sec; } return [e]; } },
+      { id: 'remove_clip', label: '刪除某個片段', score: function (c) { return DEL.test(c) && clipNo(c) && !/轉場/.test(c) ? 8 : 0; }, build: function (s) { return [{ op: 'remove_clip', n: clipNo(s.clause) }]; } },
+      { id: 'remove_range', label: '刪除影片中某一段時間', score: function (c) { return DEL.test(c) && vidTimes(c).length >= 2 && !/轉場|逐字稿|字幕/.test(c) ? 7 : (DEL.test(c) && /(?:這段|那段|選取)/.test(c) ? 3 : 0); }, build: function (s) { var ts = vidTimes(s.clause); if (ts.length < 2) { return { error: '要說「從幾分幾秒到幾分幾秒」才知道刪哪一段' }; } return [{ op: 'remove_range', start: ts[0].sec, end: ts[1].sec }]; } },
+      { id: 'transition', label: '設定片段之間的轉場效果', score: function (c) { return /轉場|transition/i.test(c) ? 6 : (/(?:片段|clip)[^，。]{0,4}(?:之間|間|交界|接縫)/i.test(c) && trOf(c) ? 6 : 0); }, build: async function (s, ctx) {
+        var type = trOf(s.clause); if (!type) { var names = VID_TR.map(function (x) { return x[2]; }), i = typeof ctx.pick === 'function' ? await ctx.pick('這句話「' + s.clause + '」要哪一種轉場？', names) : null; type = typeof i === 'number' && VID_TR[i] ? VID_TR[i][1] : 'fade'; ctx.asked.push({ kind: 'transition', q: '轉場種類', options: names, answer: typeof i === 'number' ? i : -1, by: typeof i === 'number' ? 'model' : 'default' }); }
+        var e = { op: 'set_transition', type: type, n: 'all' }, n = clipNo(s.clause) || (/(?:clip|片段)\s*(\d+)/i.exec(s.clause) || [])[1]; if (n && !/(?:所有|全部|每個|每一個|all|each)/i.test(s.clause)) { e.n = Number(n); } var d = /(\d+(?:\.\d+)?)\s*秒/.exec(s.clause); if (d) { e.dur = Number(d[1]); } return [e];
+      } },
+      { id: 'tts', label: '用 TTS 配音（某一句或一段文字）', score: function (c) { return /(?:配音|朗讀|唸出來|念出來|tts|text.?to.?speech)/i.test(c) ? 5 : 0; }, build: function (s, ctx) {
+        var e = { op: 'add_tts_dub' }, n = lineNo(s.clause), lg = langOf(s.clause), ts = vidTimes(s.clause), spec = ctx.spec || {};
+        if (lg) { e.lang = lg === 'zh' ? 'zh-TW' : lg === 'en' ? 'en-US' : lg === 'ja' ? 'ja-JP' : 'ko-KR'; }
+        if (n) { e.n = n; return [e]; } if (!s.quoted) { return { error: '要配音哪一句？說「第 3 句」或把要唸的字放在「」裡' }; }
+        e.text = s.quoted; e.start = ts.length ? ts[0].sec : (spec.now || 0); return [e];
+      } },
+      { id: 'add_media', label: '加入影片、圖片或聲音（會開檔案選擇）', score: function (c) { return /(?:加入|插入|新增|合併|接上|串接|疊上)/.test(c) && /(?:影片|圖片|照片|圖|聲音|音樂|音效|音訊)/.test(c) ? 5 : 0; }, build: function (s) {
+        var c = s.clause, ts = vidTimes(c), e = /(?:圖片|照片|圖)/.test(c) ? { op: 'add_picture' } : /(?:聲音|音樂|音效|音訊)/.test(c) ? { op: 'add_sound' } : { op: 'add_video' }; if (ts.length && e.op !== 'add_video') { e.at = ts[0].sec; } return [e];
+      } },
+      { id: 'set_text', label: '改某一句逐字稿的文字', score: function (c) { return lineNo(c) && /(?:改成|改為|換成|改)/.test(c) ? 6 : 0; }, build: function (s) {
+        var n = lineNo(s.clause), t = s.quoted || (/(?:改成|改為|換成)\s*[:：]?\s*(.+)$/.exec(s.clause) || [])[1]; if (!t) { return { error: '要改成什麼字？' }; } return [{ op: 'set_text', n: n, text: t.replace(/^[「"]|[」"]$/g, '') }];
+      } },
+      { id: 'shift', label: '把逐字稿整體提早或延後幾秒', score: function (c) { return /(?:提早|提前|延後|往後|往前|延遲)/.test(c) && /秒/.test(c) && !/片段|轉場/.test(c) ? 5 : 0; }, build: function (s) { var m = /(\d+(?:\.\d+)?)\s*秒/.exec(s.clause); if (!m) { return { error: '要移幾秒？' }; } return [{ op: 'shift', seconds: (/提早|提前|往前/.test(s.clause) ? -1 : 1) * Number(m[1]) }]; } },
+      { id: 'cut_empty', label: '刪掉沒有文字的逐字稿列', score: function (c) { return DEL.test(c) && /(?:空白|空的|沒有字)/.test(c) ? 6 : 0; }, build: function (s, ctx) { var out = []; ((ctx.spec && ctx.spec.cues) || []).forEach(function (cu, i) { if (!String(cu.text || '').trim()) { out.push({ op: 'remove_cue', n: i + 1 }); } }); return out.length ? out : { error: '沒有空白的列' }; } }
+    ];
+  }
+  function videoAdapter() { return { kind: 'video', intents: videoIntents(), objects: function () { return []; } }; }
+
+  return { videoAdapter: videoAdapter, videoIntents: videoIntents, vidTimes: vidTimes, make: make, drawAdapter: drawAdapter, sceneAdapter: sceneAdapter, deckAdapter: deckAdapter, gameAdapter: gameAdapter, drawIntents: drawIntents, sceneIntents: sceneIntents, commonIntents: commonIntents, findTargets: findTargets, letterPrompt: letterPrompt, parseLetter: parseLetter, colorsIn: colorsIn, cnNum: cnNum, numberIn: numberIn, factorIn: factorIn, shapeIn: shapeIn, relIn: relIn, quotedIn: quotedIn, COLORS: COLORS };
 });
 
 }).call(null, undefined, holder);
@@ -36184,6 +36235,110 @@ return holder.FaDeckEditUI;
 })();
 
 /* DECKEDIT-END */
+/* HARNESS-BEGIN */
+(function (module) {
+// OFFLINE HARNESS -- the domain-independent core (FaHarness, pure functions, UMD, no DOM, no model).
+// Why: a small offline model cannot be trusted with a whole request, so the program does the reading in small CLOSED steps and the model only chooses among options (DESIGN.offline-harness.md; same shape as DESIGN.colu.md):
+//   request  ->  ① DECOMPOSE   the sentence is cut into atomic intents (command + object + qualifiers); a REASONER does this (built-in: "frames"; add your own, e.g. an NLP intent reasoner)
+//            ->  ② DERIVE      what the words do not say but the state does ("the second half", "the last 10 s", "the gaps between the lines") becomes arguments, each derivation recorded (derived[]); what cannot be derived is a gap (a closed question), never a guess
+//            ->  ③ UML         the intents are written as a UML use case: User -> Editor.removeSegment(start,end) -> Editor.setTransition(...)  (toUml)
+//            ->  ④ WIRING      the CoLU unit catalog binds every UML step to a tool by name / semantics / types (host side: harness_host.js)  (callsOf fills the unit's parameters by NAME from the intent's arguments)
+//            ->  ⑤ the calls are checked by the domain's own validator before anything changes (preview first)
+// A DOMAIN plugs in: { id, label, ops: { opName: { params: 'a:str,b:int', ret: 'bool', tool: 'fallback_tool_name' } }, unitIntents: { toolName: 'plain words (zh + en)' }, frames: [{ name, test(clause), build(clause, state) -> [intent] }], clauseSplit?: RegExp, toAction?(call) }
+// an intent: { op, args, derived[], gaps[], text }.   A REASONER: { id, priority, decompose(text, state, domain) -> { intents, gaps?, derived? } | null } -- registered per domain (or '*'); the highest priority that returns intents wins (domain.mergeReasoners: the later ones can add).
+//   FaHarness.registerDomain(d)  registerReasoner(domainId, r)  decompose(domainId, text, state)  toUml(domain, intents)  callsOf(domain, intents, bindResult, catalog)  explain(result)
+(function (root, factory) { if (typeof module === 'object' && module.exports) { module.exports = factory(); } else { root.FaHarness = factory(); } }(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var domains = {}, reasoners = {};
+  function registerDomain(d) {
+    if (!d || !/^[a-z][\w-]{1,30}$/.test(String(d.id || ''))) { throw new Error('domain id'); } if (!d.ops || typeof d.ops !== 'object') { throw new Error('domain ops'); }
+    domains[d.id] = d; return d;
+  }
+  function getDomain(id) { return domains[id] || null; }
+  function registerReasoner(domainId, r) {
+    if (!r || typeof r.decompose !== 'function' || !r.id) { throw new Error('reasoner'); } var key = domainId || '*', list = reasoners[key] = (reasoners[key] || []).filter(function (x) { return x.id !== r.id; });
+    list.push({ id: r.id, priority: typeof r.priority === 'number' ? r.priority : 10, decompose: r.decompose }); list.sort(function (a, b) { return b.priority - a.priority; }); return r.id;
+  }
+  function removeReasoner(domainId, id) { var k = domainId || '*'; reasoners[k] = (reasoners[k] || []).filter(function (x) { return x.id !== id; }); }
+  var DEFAULT_SPLIT = /[，。；;\n]+|(?:然後|接著|再來|並且|而且|之後再|跟著)/, LEAD = /^(?:先|再|最後|並|也|幫我|請|麻煩)+/;
+  // the built-in reasoner: the domain's frames, clause by clause; the first frame that fits a clause decides
+  var framesReasoner = { id: 'frames', priority: 0, decompose: function (text, state, domain) {
+    var out = { intents: [], gaps: [], derived: [] }, frames = domain.frames || [];
+    String(text || '').split(domain.clauseSplit || DEFAULT_SPLIT).map(function (x) { return x.trim().replace(LEAD, ''); }).filter(Boolean).forEach(function (c) {
+      for (var i = 0; i < frames.length; i++) {
+        if (!frames[i].test(c, state)) { continue; } var made = frames[i].build(c, state) || [];
+        made.forEach(function (x) { x.text = c; x.frame = frames[i].name; x.derived = x.derived || []; x.gaps = x.gaps || []; out.intents.push(x); x.derived.forEach(function (d) { out.derived.push(d); }); x.gaps.forEach(function (g) { out.gaps.push(g); }); }); return;
+      }
+      out.gaps.push('沒讀懂這句:' + c);
+    });
+    return out;
+  } };
+  function decompose(domainId, text, state, opts) {
+    var d = domains[domainId]; if (!d) { return { ok: false, error: 'no such domain: ' + domainId, intents: [], gaps: [], derived: [], via: [] }; }
+    var list = (reasoners[domainId] || []).concat(reasoners['*'] || []).concat([framesReasoner]).sort(function (a, b) { return b.priority - a.priority; }), out = { ok: true, domain: domainId, intents: [], gaps: [], derived: [], via: [] };
+    for (var i = 0; i < list.length; i++) {
+      var r = null; try { r = list[i].decompose(text, state || {}, d); } catch (e) { out.gaps.push(list[i].id + ': ' + String((e && e.message) || e).slice(0, 80)); r = null; }
+      if (r && r.intents && r.intents.length) { out.via.push(list[i].id); r.intents.forEach(function (x) { x.by = list[i].id; x.derived = x.derived || []; x.gaps = x.gaps || []; out.intents.push(x); }); (r.gaps || []).forEach(function (g) { out.gaps.push(g); }); (r.derived || []).forEach(function (g) { out.derived.push(g); }); if (!d.mergeReasoners) { break; } }
+      else if (r && r.gaps) { r.gaps.forEach(function (g) { out.gaps.push(g); }); }
+    }
+    out.intents = out.intents.filter(function (x) { return !!d.ops[x.op]; }); out.ok = out.intents.length > 0; return out;
+  }
+  function paramNames(ps) { return String(ps || '').split(',').map(function (p) { return p.trim().split(':')[0]; }).filter(Boolean); }
+  // UML for the unit catalog's binder: one class (the domain's editor) with the operations used, the request as ONE chain of calls
+  function toUml(domain, intents) {
+    var used = {}, order = []; (intents || []).forEach(function (x) { if (domain.ops[x.op] && !used[x.op]) { used[x.op] = 1; order.push(x.op); } }); if (!order.length) { return ''; }
+    var cls = domain.className || 'Editor', L = ['model: ' + (domain.label || domain.id).replace(/[\r\n:]/g, ' ').slice(0, 40), 'actor: User', 'class ' + cls + ' { ' + order.map(function (o) { return '+' + o + '(' + (domain.ops[o].params || '') + '):' + (domain.ops[o].ret || 'bool'); }).join('; ') + ' }'];
+    L.push('usecase Request: User -> ' + intents.filter(function (x) { return domain.ops[x.op]; }).map(function (x) { return cls + '.' + x.op + '(' + paramNames(domain.ops[x.op].params).join(',') + ')'; }).join(' -> ')); return L.join('\n');
+  }
+  // the binder's answer -> tool calls. Each UML step is one intent (same order). The unit's parameters are filled by NAME from intent.args; a required parameter the intent could not give is a gap.
+  // A step the catalog could not wire falls back to the op's own tool (ops[op].tool) when the domain names one -- reported as by:'fallback', so wiring quality stays measurable.
+  function callsOf(domain, intents, bind, catalog) {
+    var steps = (bind && bind.results && bind.results[0] && bind.results[0].steps) || [], units = {}, calls = [], gaps = [];
+    ((catalog && catalog.units) || []).forEach(function (u) { units[u.id] = u; }); var list = (intents || []).filter(function (x) { return domain.ops[x.op]; });
+    list.forEach(function (it, i) {
+      var s = steps[i] || {}, uid = s.unit || (s.units && s.units[0]) || null, u = uid ? units[uid] : null, by = u ? (s.by || 'wired') : 'fallback', tool = u ? u.name : domain.ops[it.op].tool;
+      if (!tool) { gaps.push('沒有單元可以做「' + it.op + '」'); return; } var args = {}, missing = [];
+      if (u) { u.params.forEach(function (p) { if (it.args && it.args[p.name] !== undefined && it.args[p.name] !== null) { args[p.name] = it.args[p.name]; } else if (p.required) { missing.push(p.name); } }); }
+      else { Object.keys(it.args || {}).forEach(function (k) { args[k] = it.args[k]; }); }
+      if (missing.length) { gaps.push(it.op + ' 缺少:' + missing.join('、')); }
+      calls.push({ i: i, op: it.op, tool: tool, args: args, by: by, wired: !!u, missing: missing, text: it.text });
+    });
+    return { calls: calls, gaps: gaps, wired: calls.filter(function (c) { return c.wired; }).length, total: list.length };
+  }
+  function explain(res) { var L = []; (res.derived || []).forEach(function (d) { L.push('推導:' + d); }); (res.gaps || []).forEach(function (g) { L.push('缺:' + g); }); return L; }
+  return { registerDomain: registerDomain, getDomain: getDomain, registerReasoner: registerReasoner, removeReasoner: removeReasoner, decompose: decompose, toUml: toUml, callsOf: callsOf, explain: explain, framesReasoner: framesReasoner, _domains: domains };
+}));
+
+}).call(window, undefined);
+/* 離線 harness 的主機轉接層(通用,不是哪一個編輯器的):把一句需求 → 細切成意圖 → 推導參數 → UML 使用案例 → 交給 CoLU 單元目錄接線 → 回傳工具呼叫。
+ * 核心是 renderer/src/harness/intent_harness.js(FaHarness);領域(例如 /edit-video)用 FaHarness.registerDomain 掛進來,NLP 意圖推理之類的新讀法用 FaHarness.registerReasoner 掛在領域前面。設計見 DESIGN.offline-harness.md。
+ *   const r = await this._harnessRun('video', 一句話, 狀態, { onStep })  ->  { ok, calls:[{op, tool, args, by, wired}], gaps[], derived[], via[], wired, total, uml, semantic }
+ * 接線 = 單元目錄的 catalog_bind(0 次模型呼叫):UML 操作名稱 + 領域給單元的白話說明(unitIntents)做檢索(有設嵌入就加語意檢索),再用型別合約打分;沒接上的步驟退回領域自己指定的工具(by:'fallback',接線品質可以量)。 */
+(function () {
+    'use strict';
+    const M = {};
+    // 領域給單元的白話說明(中英都放)併進目錄的意圖表(只在記憶體裡,每次接線前補一次,因為 _unitCatalogIntentsLoad 會重讀存檔的)
+    M._harnessUnitIntents = function (domain) {
+        const u = this._unitCatalogUserIntents = this._unitCatalogUserIntents || {};
+        Object.keys(domain.unitIntents || {}).forEach((n) => { u['tool:' + n] = domain.unitIntents[n]; });
+    };
+    M._harnessRun = async function (domainId, text, state, opts) {
+        opts = opts || {}; const FH = window.FaHarness, d = FH && FH.getDomain(domainId); if (!d) return { ok: false, error: 'no such harness domain: ' + domainId, calls: [], gaps: [], derived: [], via: [] };
+        const say = typeof opts.onStep === 'function' ? opts.onStep : () => {};
+        const res = FH.decompose(domainId, text, state); if (!res.ok) return { ok: false, calls: [], gaps: res.gaps, derived: res.derived, via: res.via };
+        const uml = FH.toUml(d, res.intents); let bind = null, cat = null, semantic = '';
+        try {
+            await this._unitCatalogStoreLoad(); if (this._unitCatalogIntentsLoad) await this._unitCatalogIntentsLoad(); this._harnessUnitIntents(d); cat = this._unitCatalogBuild();
+            let dense = null; try { const p = FaUml.parseDsl(uml); if (!p.errors.length && p.model.usecases.length && this._unitCatalogDenseFor) { dense = await this._unitCatalogDenseFor(FaCatalogBind.queriesOf(p.model)); } } catch (_) { dense = null; }
+            bind = this._unitCatalogBind(uml, { dense }); if (bind && bind.ok === false) { say('CoLU: ' + String(bind.error || '').slice(0, 100)); bind = null; } else if (bind) { semantic = dense ? 'dense' : 'bm25'; }
+        } catch (e) { say('CoLU: ' + String((e && e.message) || e).slice(0, 100)); bind = null; }
+        const cs = FH.callsOf(d, res.intents, bind, cat);
+        return { ok: cs.calls.length > 0, calls: cs.calls, gaps: res.gaps.concat(cs.gaps), derived: res.derived, via: res.via, wired: cs.wired, total: cs.total, uml, semantic };
+    };
+    window.FaHarnessHost = { methods: M };
+})();
+
+/* HARNESS-END */
 /* VIDEOEDIT-BEGIN */
 (function (module) {
 // /edit-video: pure helpers of the video + transcript editor (no DOM, tested in Node: test/edit_video/video_edit_core.test.js). Design: DESIGN.edit-video.md.
@@ -36520,6 +36675,220 @@ return holder.FaDeckEditUI;
 
 }).call(window, undefined);
 (function (module) {
+// /edit-video: PLAN TEMPLATES for the offline AI -- a multi-step goal in one sentence ("cut the first 5 seconds", "keep only 0:10-0:40", "dub every line in English", "cut every 30 s") is expanded by the PROGRAM
+// into the editor's closed actions (video_edit_ai.js OPS). No model writes the plan; the numbers come from the sentence (or from the state: the length of the video, the transcript lines), and every action is checked later by applyEdits.
+// Same shape as DESIGN.offline-plans.md: goal classification by trigger words -> expansion into ordered steps -> the host runs them (preview first, then ONE undo step).
+//   TwVideoPlans.GOALS   expand(text, state) -> { goal, label, edits, notes } | null      state = { duration, cues:[{text}], now, clips }
+(function (root, factory) { if (typeof module === 'object' && module.exports) { module.exports = factory(); } else { root.TwVideoPlans = factory(); } }(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var NUM = '(\\d+(?:\\.\\d+)?)', T0 = '(\\d+(?::\\d+){1,2}(?:\\.\\d+)?|\\d+(?:\\.\\d+)?)\\s*(?:秒|s)?', DEL = '(?:剪掉|刪掉|刪除|去掉|拿掉|砍掉|移除|不要|cut|remove|delete)';
+  function sec(s) { var p = String(s).split(':').map(Number); return p.reduce(function (a, b) { return a * 60 + b; }, 0); }
+  var LANGS = [[/英文|英語|english/i, 'en-US'], [/日文|日語/, 'ja-JP'], [/韓文|韓語/, 'ko-KR'], [/廣東話|粵語/, 'zh-HK'], [/簡體|普通話|大陸/, 'zh-CN'], [/中文|華語|國語/, 'zh-TW']];
+  function langOf(t) { for (var i = 0; i < LANGS.length; i++) { if (LANGS[i][0].test(t)) { return LANGS[i][1]; } } return ''; }
+  // each goal: id, label, re (trigger), plan(m, text, state) -> { edits } | { error }
+  var GOALS = [
+    { id: 'trim_head', label: '剪掉片頭', re: new RegExp(DEL + '[^，。]{0,6}?(?:片頭|開頭|開始|前面|最前面|前)\\s*' + T0 + '|(?:片頭|開頭|前面|最前面|前)\\s*' + T0 + '\\s*(?:不要|剪掉|刪掉|刪除|去掉|拿掉)', 'i'), plan: function (m) { var n = Number(m[1] != null && m[1] !== undefined ? sec(m[1]) : sec(m[2])); return n > 0 ? { edits: [{ op: 'remove_range', start: 0, end: n }] } : { error: '要剪幾秒？' }; } },
+    { id: 'trim_tail', label: '剪掉片尾', re: new RegExp(DEL + '[^，。]{0,6}?(?:片尾|結尾|尾巴|最後|後面|最後面|後)\\s*' + T0 + '|(?:片尾|結尾|最後|後面)\\s*' + T0 + '\\s*(?:不要|剪掉|刪掉|刪除|去掉|拿掉)', 'i'), plan: function (m, t, st) { var n = m[1] != null ? sec(m[1]) : sec(m[2]); if (!(st.duration > n) || n <= 0) { return { error: '片尾要剪的秒數不合法' }; } return { edits: [{ op: 'remove_range', start: Math.round((st.duration - n) * 1000) / 1000, end: st.duration }] }; } },
+    { id: 'keep_range', label: '只保留一段', re: new RegExp('只(?:要|保留|留下|留)\\s*' + T0 + '\\s*(?:到|至|~|-|–)\\s*' + T0, 'i'), plan: function (m, t, st) { var a = sec(m[1]), b = sec(m[2]); if (!(b > a)) { return { error: '結束要大於開始' }; } var e = []; if (st.duration > b + 0.05) { e.push({ op: 'remove_range', start: b, end: st.duration }); } if (a > 0.05) { e.push({ op: 'remove_range', start: 0, end: a }); } return e.length ? { edits: e } : { error: '已經是這一段了' }; } },
+    { id: 'split_every', label: '每隔一段時間切一刀', re: new RegExp('每\\s*' + NUM + '\\s*(分鐘|分|秒)\\s*(?:就)?\\s*(?:切一刀|切開|分割|剪開)'), plan: function (m, t, st) { var step = Number(m[1]) * (m[2] === '秒' ? 1 : 60), e = []; if (!(step >= 1) || !(st.duration > step)) { return { error: '間隔不合法' }; } for (var p = step; p < st.duration - 0.2 && e.length < 40; p += step) { e.push({ op: 'split', at: Math.round(p * 1000) / 1000 }); } return e.length ? { edits: e } : { error: '沒有地方可以切' }; } },
+    { id: 'dub_all', label: '全部逐字稿用 TTS 配音', re: /(?:全部|所有|每一句|每句|整份|整支|整段|每一列)[^，。]{0,10}?(?:配音|唸出來|念出來|朗讀)|(?:配音|唸出來|念出來|朗讀)[^，。]{0,6}?(?:全部|所有|每一句|每句)/, plan: function (m, t, st) { var lg = langOf(t), e = []; (st.cues || []).forEach(function (c, i) { if (String(c.text || '').trim() && e.length < 50) { var o = { op: 'add_tts_dub', n: i + 1 }; if (lg) { o.lang = lg; } e.push(o); } }); return e.length ? { edits: e } : { error: '逐字稿是空的,沒有可以配音的句子' }; } },
+    { id: 'transcribe_all_chunks', label: '整支影片分段辨識', re: /(?:整支|整部|全部|整個)[^，。]{0,6}?(?:影片)?[^，。]{0,6}?(?:辨識|逐字稿|聽寫)/, plan: function (m, t, st) { var e = { op: 'transcribe' }, lg = langOf(t); if (lg) { e.lang = lg.slice(0, 2); } var ev = /每\s*(\d+(?:\.\d+)?)\s*(分鐘|分|秒)/.exec(t); if (ev) { e.every = Number(ev[1]) * (ev[2] === '秒' ? 1 : 60); } return { edits: [e] }; } }
+  ];
+  function expand(text, state) {
+    var t = String(text || '').trim(), st = state || {}; if (!t) { return null; }
+    for (var i = 0; i < GOALS.length; i++) {
+      var m = GOALS[i].re.exec(t); if (!m) { continue; } var r = GOALS[i].plan(m, t, st);
+      if (r && r.edits && r.edits.length) { return { goal: GOALS[i].id, label: GOALS[i].label, edits: r.edits, notes: [] }; }
+      if (r && r.error) { return { goal: GOALS[i].id, label: GOALS[i].label, edits: [], notes: [r.error] }; }
+    }
+    return null;
+  }
+
+  // ---- the editor's actions <-> the app's agent tools (video_*): the SAME closed actions, so the chat agent, the offline trainer, the plan templates and the CoLU catalog all drive the editor through one vocabulary
+  var STR = { type: 'string' }, TIME = { type: 'string', description: 'seconds or m:ss(.s) on the timeline' };
+  var TOOLS = {
+    video_split: { op: 'split', desc: '在影片編輯器的時間軸上,把播放位置(或指定時間 at)的片段切成兩段。回傳 {ok: true, applied: [], clips: 2, total: 12.5}', props: { at: TIME } },
+    video_cut_range: { op: 'remove_range', desc: '把影片編輯器時間軸上 start 到 end 之間的影片整段拿掉,後面的內容(逐字稿、配音、圖片)往前接。回傳 {ok: true, applied: [], clips: 2, total: 12.5}', props: { start: TIME, end: TIME }, required: ['start', 'end'] },
+    video_cut_line: { op: 'remove_cue', desc: '把影片編輯器逐字稿第 n 句整句刪掉。回傳 {ok: true, applied: [], lines: 4, total: 12.5}', props: { n: { type: 'integer', description: 'line number, 1-based' } }, required: ['n'] },
+    video_cut_clip: { op: 'remove_clip', desc: '把影片編輯器時間軸上第 n 個片段拿掉。回傳 {ok: true, applied: [], clips: 2, total: 12.5}', props: { n: { type: 'integer', description: 'clip number, 1-based' } }, required: ['n'] },
+    video_set_transition: { op: 'set_transition', desc: '設定影片編輯器裡片段之間的轉場(進入第 n 個片段,n>=2;n 不給=全部)。type: none fade fade-white dissolve slide-left slide-right slide-up slide-down push-left push-right push-up push-down wipe-left wipe-right wipe-up wipe-down split-h split-v circle-open circle-close blinds zoom。回傳 {ok: true, applied: [], clips: 3, total: 12.5}', props: { n: { type: 'string', description: 'clip number >= 2, or all' }, type: { type: 'string', enum: ['none', 'fade', 'fade-white', 'dissolve', 'slide-left', 'slide-right', 'slide-up', 'slide-down', 'push-left', 'push-right', 'push-up', 'push-down', 'wipe-left', 'wipe-right', 'wipe-up', 'wipe-down', 'split-h', 'split-v', 'circle-open', 'circle-close', 'blinds', 'zoom'] }, dur: { type: 'number', description: 'seconds, 0.2-3' } }, required: ['type'] },
+    video_transcribe: { op: 'transcribe', desc: '在影片編輯器裡把某段時間的聲音辨識成逐字稿(Whisper,排進編輯器的工作佇列,不是立刻完成)。every=每幾秒一個工作。回傳 {ok: true, applied: [], clips: 1, total: 12.5}', props: { start: TIME, end: TIME, secs: { type: 'number', description: 'length from start' }, every: { type: 'number', description: 'seconds per job' }, lang: { type: 'string', enum: ['zh', 'en', 'ja', 'ko'] } } },
+    video_tts_dub: { op: 'add_tts_dub', desc: '在影片編輯器裡把文字(或第 n 句逐字稿)用 TTS 合成成配音,放在 start 秒。回傳 {ok: true, applied: [], dubs: 1, total: 12.5}', props: { n: { type: 'integer', description: 'transcript line number' }, text: STR, start: TIME, lang: { type: 'string', description: 'zh-TW zh-CN zh-HK en-US en-GB ja-JP ko-KR' }, voice: STR } },
+    video_set_line: { op: 'set_text', desc: '把影片編輯器逐字稿第 n 句的文字改成 text。回傳 {ok: true, applied: [], lines: 5, total: 12.5}', props: { n: { type: 'integer', description: 'line number' }, text: STR }, required: ['n', 'text'] },
+    video_shift_lines: { op: 'shift', desc: '把影片編輯器的逐字稿整體提早(負數)或延後 seconds 秒。回傳 {ok: true, applied: [], lines: 5, total: 12.5}', props: { seconds: { type: 'number' } }, required: ['seconds'] },
+    video_add_media: { op: 'add_video', desc: '在影片編輯器加入素材:kind=video 接在時間軸最後(合併)、picture 在 at 秒疊一張圖、sound 在 at 秒加一段聲音;會開檔案選擇讓使用者挑檔。回傳 {ok: true, applied: [], clips: 2, total: 12.5}', props: { kind: { type: 'string', enum: ['video', 'picture', 'sound'] }, at: TIME }, required: ['kind'] }
+  };
+  var ARG_KEYS = { split: ['at'], remove_range: ['start', 'end'], remove_clip: ['n'], remove_cue: ['n'], set_transition: ['n', 'type', 'dur'], transcribe: ['start', 'end', 'secs', 'every', 'lang'], add_tts_dub: ['n', 'text', 'start', 'lang', 'voice'], set_text: ['n', 'text'], shift: ['seconds'], add_video: [], add_picture: ['at'], add_sound: ['at'] };
+  function toOp(name, args) {
+    var t = TOOLS[name]; if (!t) { return null; } var a = args || {}, op = t.op;
+    if (name === 'video_add_media') { op = a.kind === 'picture' ? 'add_picture' : a.kind === 'sound' ? 'add_sound' : 'add_video'; }
+    var e = { op: op }; (ARG_KEYS[op] || []).forEach(function (k) { if (a[k] !== undefined && a[k] !== null && a[k] !== '') { e[k] = a[k]; } });
+    if (op === 'set_transition' && e.n === undefined) { e.n = 'all'; } return e;
+  }
+  function toTool(e) {
+    if (!e || !e.op) { return null; } var name = null; Object.keys(TOOLS).forEach(function (k) { if (TOOLS[k].op === e.op) { name = k; } }); var args = {};
+    if (e.op === 'add_video' || e.op === 'add_picture' || e.op === 'add_sound') { name = 'video_add_media'; args.kind = e.op === 'add_video' ? 'video' : e.op === 'add_picture' ? 'picture' : 'sound'; if (e.at !== undefined) { args.at = e.at; } return { name: name, args: args }; }
+    if (!name) { return null; } (ARG_KEYS[e.op] || []).forEach(function (k) { if (e[k] !== undefined) { args[k] = e[k]; } }); return { name: name, args: args };
+  }
+  // ---- learn back: an ONLINE answer that worked ("在 0:30 分割" -> split at 30) becomes a general rule for the offline trainer: the numbers of the sentence turn into capture groups ("在 (\d+...) 分割"),
+  // the quoted text into the {quoted} slot. -> { expr, steps:[{tool, args}] } | null when an argument cannot be found in the sentence (then only the exact sentence can be replayed)
+  var NUMTOK = /\d+(?::\d+){1,2}(?:\.\d+)?|\d+(?:\.\d+)?/g, NUMARGS = { at: 1, start: 1, end: 1, secs: 1, every: 1, seconds: 1, dur: 1, n: 1 };
+  function tokSec(tk) { return String(tk).split(':').map(Number).reduce(function (a, b) { return a * 60 + b; }, 0); }
+  function generalize(text, edits) {
+    var t = String(text || '').trim(), calls = (edits || []).map(toTool); if (!t || !calls.length || calls.some(function (c) { return !c; })) { return null; }
+    var toks = [], m; NUMTOK.lastIndex = 0; while ((m = NUMTOK.exec(t))) { toks.push({ at: m.index, end: m.index + m[0].length, val: tokSec(m[0]), used: false }); }
+    var q = /[「『“"]([^」』”"]{1,80})[」』”"]/.exec(t), groups = [], steps = [];
+    for (var ci = 0; ci < calls.length; ci++) {
+      var args = {}, c = calls[ci];
+      for (var k in c.args) {
+        if (!Object.prototype.hasOwnProperty.call(c.args, k)) { continue; } var v = c.args[k];
+        if (NUMARGS[k] && v !== 'all' && isFinite(parseFloat(String(v).replace(/^-/, ''))) && /^-?[\d.:]+$/.test(String(v))) {
+          var want = String(v).indexOf(':') >= 0 ? tokSec(v) : Math.abs(Number(v)), hit = null; toks.forEach(function (x) { if (!hit && !x.used && Math.abs(x.val - want) < 1e-6) { hit = x; } });
+          if (!hit) { return null; } hit.used = true; groups.push(hit); args[k] = (Number(v) < 0 ? '-' : '') + '{' + 'G' + (groups.length) + '}';
+        } else if (k === 'text') { if (q && q[1] === String(v)) { args[k] = '{quoted}'; } else { return null; } }
+        else { args[k] = v; }
+      }
+      steps.push({ tool: c.name, args: args });
+    }
+    if (!groups.length && !steps.some(function (s0) { return JSON.stringify(s0.args).indexOf('{quoted}') >= 0; }) && /\d/.test(t)) { /* the sentence has numbers that no argument uses: keep them literal in the rule (an exact phrase) */ }
+    // the groups are numbered in the order they appear in the sentence (the regex's order), so renumber G<n> by position
+    var order = groups.slice().sort(function (a, b) { return a.at - b.at; }), idx = {}; order.forEach(function (g, i) { idx[groups.indexOf(g) + 1] = i + 1; });
+    steps.forEach(function (s0) { Object.keys(s0.args).forEach(function (k) { s0.args[k] = String(s0.args[k]).replace(/\{G(\d+)\}/, function (x, n) { return '{' + idx[+n] + '}'; }); }); });
+    var expr = '', pos = 0; function esc(x) { return x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s*'); }
+    order.forEach(function (g) { expr += esc(t.slice(pos, g.at)) + '(\\d+(?::\\d+){0,2}(?:\\.\\d+)?)'; pos = g.end; }); expr += esc(t.slice(pos));
+    if (q) { expr = expr.replace(esc(q[1]), '[^」』”"]{1,80}'); }
+    return { expr: '^\\s*' + expr + '\\s*$', steps: steps };
+  }
+  return { GOALS: GOALS, expand: expand, TOOLS: TOOLS, toOp: toOp, toTool: toTool, generalize: generalize };
+}));
+
+}).call(window, undefined);
+(function (module) {
+// /edit-video as a DOMAIN of the general offline harness (renderer/src/harness/intent_harness.js, DESIGN.offline-harness.md): its frames (the video-editing vocabulary), its UML operations and the plain words of its tools. Pure, tested in Node: scripts/video-tests/video_semantics.test.js.
+// INTENT DECOMPOSITION + SEMANTIC DERIVATION for the offline AI:
+// A request is cut into atomic INTENTS (clause by clause: the command = a canonical verb, the object = clip / line / segment / dub / picture ...), every intent gets its arguments by DERIVING them from the words and from the editor's state:
+//   "前半段" = 0 .. D/2, "最後 10 秒" = D-10 .. D, "第 3 句那一段" = the time range of line 3, "沒有字幕的地方" = the gaps between the lines, "只保留 A 到 B" = remove what is outside, "正中間" = D/2 ...
+// Each derivation is recorded (derived[]) so the user sees WHY a number is what it is. What the request does not say and cannot be derived becomes a gap (a closed question), never a guess.
+// The intents are then written as a UML use case (toUml: User -> VideoEditor.removeSegment(start,end) -> ...) for the CoLU unit catalog, which WIRES each step to a tool (video_* units) by name/semantics/types: the host fills the unit's parameters from intent.args by parameter NAME.
+//   TwVideoSemantics.decompose(text, state) -> { intents:[{ text, op, args, derived[], gaps[] }], gaps[], derived[] }     state = { duration, now, cues:[{start,end,text}], clips:[{in,out,name}] }
+//   TwVideoSemantics.toUml(intents) -> UML text     TwVideoSemantics.UNIT_INTENTS -> { unitName: 'synonyms (zh + en)' }     TwVideoSemantics.OPS -> the UML operations (canonical verbs) and the closed action each stands for
+(function (root, factory) { if (typeof module === 'object' && module.exports) { module.exports = factory(require('../harness/intent_harness.js')); } else { root.TwVideoSemantics = factory(root.FaHarness); } }(typeof self !== 'undefined' ? self : this, function (FH) {
+  'use strict';
+  var r3 = function (n) { return Math.round(n * 1000) / 1000; };
+  var CN = { 零: 0, 一: 1, 二: 2, 兩: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+  function cn(s) { s = String(s == null ? '' : s).trim(); if (/^\d+(?:\.\d+)?$/.test(s)) { return Number(s); } var m = /^([一二兩三四五六七八九])?十([一二三四五六七八九])?$/.exec(s); if (m) { return (m[1] ? CN[m[1]] : 1) * 10 + (m[2] ? CN[m[2]] : 0); } return s.length === 1 && CN[s] != null ? CN[s] : null; }
+  function clock(t) { t = Math.max(0, +t || 0); var m = Math.floor(t / 60), s = t - m * 60; return m + ':' + (s < 10 ? '0' : '') + (Math.round(s * 10) / 10).toFixed(1).replace(/\.0$/, ''); }
+  var TT = '(\\d+(?::\\d+){1,2}(?:\\.\\d+)?|\\d+(?:\\.\\d+)?)\\s*(?:秒|s\\b)?', NUMK = '(\\d+|[一二兩三四五六七八九十]+)';
+  function tsec(x) { var p = String(x).split(':').map(Number); return p.reduce(function (a, b) { return a * 60 + b; }, 0); }
+  var LANGS = [[/英文|英語|english/i, 'en-US'], [/日文|日語/, 'ja-JP'], [/韓文|韓語/, 'ko-KR'], [/廣東話|粵語/, 'zh-HK'], [/簡體|普通話|大陸/, 'zh-CN'], [/中文|華語|國語/, 'zh-TW']];
+  function langOf(t) { for (var i = 0; i < LANGS.length; i++) { if (LANGS[i][0].test(t)) { return LANGS[i][1]; } } return ''; }
+  var TRANS = [[/(?:取消|移除|不要|沒有|none)/, 'none'], [/(?:圓(?:圈|形)?(?:收合|收縮|縮小|向中心)|circle.?close)/i, 'circle-close'], [/(?:圓(?:圈|形)?|circle)/i, 'circle-open'], [/(?:百葉窗|blinds)/i, 'blinds'], [/(?:放大|zoom)/i, 'zoom'], [/(?:交叉淡化|溶解|疊化|dissolve)/i, 'dissolve'], [/(?:白色?淡|經過白|fade.?white)/i, 'fade-white'],
+    [/(?:中心|center)[^。,]*?(?:上下|垂直)/i, 'split-v'], [/(?:中心|center|split)/i, 'split-h'], [/推[^。,]*?上|push.?up/i, 'push-up'], [/推[^。,]*?下|push.?down/i, 'push-down'], [/推[^。,]*?右|push.?right/i, 'push-right'], [/推|push/i, 'push-left'],
+    [/(?:掃描線?|掃過|wipe)[^。,]*?(?:由右到左|從右)/i, 'wipe-right'], [/(?:掃描線?|掃過|wipe)[^。,]*?(?:由上到下|從上)/i, 'wipe-up'], [/(?:掃描線?|掃過|wipe)[^。,]*?(?:由下到上|從下)/i, 'wipe-down'], [/掃描線?|掃過|wipe/i, 'wipe-left'],
+    [/(?:從左|左邊)[^。,]*?滑入/i, 'slide-right'], [/(?:從下|下面|下方)[^。,]*?滑入/i, 'slide-up'], [/(?:從上|上面|上方)[^。,]*?滑入/i, 'slide-down'], [/滑入|slide/i, 'slide-left'], [/淡入淡出|淡入|淡出|fade/i, 'fade']];
+  function transOf(t) { for (var i = 0; i < TRANS.length; i++) { if (TRANS[i][0].test(t)) { return TRANS[i][1]; } } return null; }
+
+  // ---- the UML operations (canonical verbs) and the closed action each one means; the unit it is WIRED to is decided by the catalog, not here
+  var OPS = {
+    splitClip: { tool: 'video_split', params: 'at:str', ret: 'bool' }, removeSegment: { tool: 'video_cut_range', params: 'start:str,end:str', ret: 'bool' }, removeClip: { tool: 'video_cut_clip', params: 'n:int', ret: 'bool' }, removeLine: { tool: 'video_cut_line', params: 'n:int', ret: 'bool' },
+    setTransition: { tool: 'video_set_transition', params: 'n:str,type:str,dur:float', ret: 'bool' }, transcribeAudio: { tool: 'video_transcribe', params: 'start:str,end:str,every:float,lang:str', ret: 'bool' }, speakText: { tool: 'video_tts_dub', params: 'text:str,start:str,lang:str', ret: 'bool' },
+    dubLine: { tool: 'video_tts_dub', params: 'n:int,lang:str', ret: 'bool' }, editLine: { tool: 'video_set_line', params: 'n:int,text:str', ret: 'bool' }, shiftLines: { tool: 'video_shift_lines', params: 'seconds:float', ret: 'bool' }, addMedia: { tool: 'video_add_media', params: 'kind:str,at:str', ret: 'bool' }
+  };
+  // what the catalog's units are called in plain words (zh + en): the SEMANTIC side of the wiring (the unit index = its name + summary + these)
+  var UNIT_INTENTS = {
+    video_split: '把影片切成兩段 分割 切開 切一刀 剪開 split cut the clip in two at a time splitClip',
+    video_cut_range: '把某一段時間的影片拿掉 刪除一段 剪掉一段 去掉 移除一個區間 後面接上 remove segment delete range trim cut out removeSegment',
+    video_cut_line: '刪除某一句逐字稿 刪掉第幾句字幕 remove subtitle line delete line removeLine',
+    video_cut_clip: '刪除某一個片段 拿掉第幾個片段 remove clip delete clip removeClip',
+    video_set_transition: '設定轉場效果 片段之間的轉場 淡入淡出 滑入 掃描線 圓圈展開 溶解 transition between clips fade wipe slide dissolve setTransition',
+    video_transcribe: '辨識聲音產生逐字稿 語音辨識 聽寫 轉成文字 transcribe speech recognition subtitles from audio transcribeAudio',
+    video_tts_dub: '用 TTS 配音 合成語音 朗讀文字 唸出來 把某一句配音 text to speech dub speak line speakText dubLine',
+    video_set_line: '改某一句逐字稿的文字 修改字幕 edit line change subtitle text editLine',
+    video_shift_lines: '逐字稿整體提早或延後 平移字幕時間 shift subtitles earlier later shiftLines',
+    video_add_media: '加入影片 合併影片 插入圖片 疊上圖片 插入聲音 加入音樂 add video merge picture overlay sound addMedia'
+  };
+
+  // ---- reading a TIME SPAN out of words (and the state): -> { start, end, why } | null
+  function spanIn(c, st) {
+    var D = st.duration || 0, cues = st.cues || [], m, why;
+    if ((m = new RegExp('(?:從|由|from)?\\s*' + TT + '\\s*(?:到|至|~|-|–|to)\\s*' + TT, 'i').exec(c))) { return { start: tsec(m[1]), end: tsec(m[2]), why: '' }; }
+    if ((m = new RegExp('(?:從|由|from)\\s*' + TT + '\\s*(?:到|至|直到)?\\s*(?:結尾|最後|片尾|尾巴|end)').exec(c))) { return D ? { start: tsec(m[1]), end: D, why: '從 ' + clock(tsec(m[1])) + ' 到結尾 = 到 ' + clock(D) } : null; }
+    if ((m = new RegExp('(?:從開頭|從頭|從最前面|從片頭)\\s*(?:到|至|直到)\\s*' + TT).exec(c))) { return { start: 0, end: tsec(m[1]), why: '從開頭 = 0:00' }; }
+    if ((m = new RegExp('(?:從|由)\\s*' + TT + '\\s*(?:起|開始)?\\s*(?:往後|後|共|長)?\\s*(\\d+(?:\\.\\d+)?)\\s*秒').exec(c))) { return { start: tsec(m[1]), end: tsec(m[1]) + Number(m[2]), why: '' }; }
+    if ((m = new RegExp('(?:前|開頭|片頭|最前面|頭)\\s*' + NUMK + '\\s*(?:秒|s)').exec(c))) { var n1 = cn(m[1]); if (n1 != null) { return { start: 0, end: n1, why: '前 ' + n1 + ' 秒 = 0:00 到 ' + clock(n1) }; } }
+    if ((m = new RegExp('(?:後|最後|結尾|片尾|尾巴|最後面)\\s*' + NUMK + '\\s*(?:秒|s)').exec(c))) { var n2 = cn(m[1]); if (n2 != null && D > n2) { return { start: r3(D - n2), end: D, why: '最後 ' + n2 + ' 秒 = 影片長 ' + clock(D) + ' 往回 ' + n2 + ' 秒' }; } }
+    if (/前半(?:段|部分|部)?|上半(?:段|部分)?|first half/i.test(c) && D) { return { start: 0, end: r3(D / 2), why: '前半段 = 0:00 到 ' + clock(D / 2) + '(影片長 ' + clock(D) + ' 的一半)' }; }
+    if (/後半(?:段|部分|部)?|下半(?:段|部分)?|second half/i.test(c) && D) { return { start: r3(D / 2), end: D, why: '後半段 = ' + clock(D / 2) + ' 到結尾' }; }
+    if (/(?:中間|中段|中央)(?:段|部分|三分之一)?/.test(c) && D) { return { start: r3(D / 3), end: r3(2 * D / 3), why: '中間 = 中間三分之一(' + clock(D / 3) + ' 到 ' + clock(2 * D / 3) + ')' }; }
+    if ((m = new RegExp('第\\s*' + NUMK + '\\s*(?:句|列|行)(?:那[一]?(?:段|個地方|裡)|的(?:時間|時段|部分|範圍|畫面)|這[一]?段|所在的(?:時間|時段))').exec(c))) { var ln = cn(m[1]), cu = cues[ln - 1]; if (cu) { return { start: cu.start, end: cu.end, why: '第 ' + ln + ' 句 = 它的時間範圍 ' + clock(cu.start) + ' 到 ' + clock(cu.end) }; } return { gap: '第 ' + ln + ' 句不存在' }; }
+    if ((m = new RegExp('第\\s*' + NUMK + '\\s*(?:個|段)?\\s*(?:片段|clip)').exec(c)) && (st.clips || []).length) { var k = cn(m[1]), cl = st.clips, s0 = 0, i; for (i = 0; i < cl.length; i++) { var len = cl[i].out - cl[i].in; if (i + 1 === k) { return { start: r3(s0), end: r3(s0 + len), why: '第 ' + k + ' 個片段 = 時間軸 ' + clock(s0) + ' 到 ' + clock(s0 + len) }; } s0 += len; } return { gap: '第 ' + k + ' 個片段不存在' }; }
+    if (/(?:這段|目前這段|現在這段|播放位置起)/.test(c) && st.now != null) { return null; }
+    return null;
+  }
+  // the stretches without any transcript line (>= 1 s), including the head and the tail
+  function gapsOfCues(st, min) {
+    var D = st.duration || 0, cues = (st.cues || []).slice().sort(function (a, b) { return a.start - b.start; }), out = [], at = 0; min = min || 1;
+    cues.forEach(function (c) { if (c.start - at >= min) { out.push({ start: r3(at), end: r3(c.start) }); } at = Math.max(at, c.end); }); if (D - at >= min) { out.push({ start: r3(at), end: r3(D) }); } return out;
+  }
+  function timeIn(c) { var m = /(\d+(?::\d+){1,2}(?:\.\d+)?)|(\d+(?:\.\d+)?)\s*(?:秒|s\b)/.exec(c); return m ? tsec(m[1] || m[2]) : null; }
+  var DEL = '(?:剪掉|刪掉|刪除|去掉|拿掉|砍掉|移除|切掉|剪去|不要|cut out|remove|delete|trim off)';
+  var CLIPREF = new RegExp('第\\s*' + NUMK + '\\s*(?:個|段)?\\s*(?:片段|clip)', 'i'), LINEREF = new RegExp('第\\s*' + NUMK + '\\s*(?:句|列|行)');
+
+  // ---- frames: [name, test(c), build(c, st) -> [intent...] ]; the first frame that fits the clause decides
+  var FRAMES = [
+    ['remove_gaps', function (c) { return new RegExp(DEL).test(c) && /(?:沒有|無|沒|空的)[^，。]{0,4}(?:逐字稿|字幕|文字|講話|說話)[^，。]{0,4}(?:地方|部分|片段|時段|段落|的)/.test(c); }, function (c, st) {
+      var g = gapsOfCues(st, 1); if (!g.length) { return [{ op: 'removeSegment', args: {}, derived: [], gaps: ['沒有找到沒有逐字稿的地方(或逐字稿是空的)'] }]; }
+      return g.slice().reverse().map(function (x) { return { op: 'removeSegment', args: { start: x.start, end: x.end }, derived: ['沒有逐字稿的地方 = ' + clock(x.start) + ' 到 ' + clock(x.end)], gaps: [] }; });
+    }],
+    ['keep', function (c) { return /只(?:要|保留|留下|留)|僅(?:保留|留)|only keep|keep only/i.test(c); }, function (c, st) {
+      var sp = spanIn(c.replace(/只(?:要|保留|留下|留)|僅(?:保留|留)/, ''), st); if (!sp || sp.gap) { return [{ op: 'removeSegment', args: {}, derived: [], gaps: [(sp && sp.gap) || '只保留哪一段?(例如「只保留 0:10 到 0:40」「只留前半段」)'] }]; }
+      var D = st.duration || 0, out = [], why = (sp.why ? sp.why + ';' : '') + '只保留這段 = 刪掉它前後的部分'; if (D > sp.end + 0.05) { out.push({ op: 'removeSegment', args: { start: sp.end, end: D }, derived: [why + '(先刪後面,前面的時間才不會變)'], gaps: [] }); } if (sp.start > 0.05) { out.push({ op: 'removeSegment', args: { start: 0, end: sp.start }, derived: [why], gaps: [] }); }
+      return out.length ? out : [{ op: 'removeSegment', args: {}, derived: [], gaps: ['已經只有這一段了'] }];
+    }],
+    ['remove', function (c) { return new RegExp(DEL).test(c) && !/逐字稿|字幕/.test(c.replace(/(?:沒有|無)[^，。]{0,4}(?:逐字稿|字幕)/, '')) || (new RegExp(DEL).test(c) && (CLIPREF.test(c) || /(?:片段|影片|畫面|這段|那段)/.test(c))); }, function (c, st) {
+      var mc = CLIPREF.exec(c); if (mc) { var n = cn(mc[1]); return [{ op: 'removeClip', args: { n: n }, derived: ['第 ' + n + ' 個片段'], gaps: n ? [] : ['第幾個片段?'] }]; }
+      var ml = LINEREF.exec(c); if (ml && !/(?:那[一]?段|的時間|的時段|所在|這[一]?段)/.test(c)) { var nl = cn(ml[1]); return [{ op: 'removeLine', args: { n: nl }, derived: ['第 ' + nl + ' 句逐字稿'], gaps: [] }]; }
+      var sp = spanIn(c, st); if (sp && sp.gap) { return [{ op: 'removeSegment', args: {}, derived: [], gaps: [sp.gap] }]; }
+      if (sp) { return [{ op: 'removeSegment', args: { start: sp.start, end: sp.end }, derived: sp.why ? [sp.why] : [], gaps: [] }]; }
+      return [{ op: 'removeSegment', args: {}, derived: [], gaps: ['要刪哪一段?(例如「刪除 0:10 到 0:20」「剪掉前 5 秒」「剪掉後半段」「刪掉第 2 個片段」)'] }];
+    }],
+    ['split', function (c) { return /(?:分割|切開|切成(?:兩|二|2)段|切一刀|剪開|一分為二|split)/i.test(c); }, function (c, st) {
+      var t = timeIn(c), d = []; if (t == null) { if (/(?:正中間|一半|中間點|正中央)/.test(c) && st.duration) { t = r3(st.duration / 2); d.push('正中間 = 影片長 ' + clock(st.duration) + ' 的一半 = ' + clock(t)); } else { var ml = LINEREF.exec(c); if (ml && (st.cues || [])[cn(ml[1]) - 1]) { var cu = st.cues[cn(ml[1]) - 1]; t = /結束|後面|之後/.test(c) ? cu.end : cu.start; d.push('第 ' + cn(ml[1]) + ' 句' + (/結束|後面|之後/.test(c) ? '結束' : '開始') + '處 = ' + clock(t)); } } }
+      if (t == null) { return [{ op: 'splitClip', args: {}, derived: ['沒說時間:用播放位置'], gaps: [] }]; } return [{ op: 'splitClip', args: { at: t }, derived: d, gaps: [] }];
+    }],
+    ['transition', function (c) { return /轉場|transition/i.test(c) || (/(?:片段|clip)[^，。]{0,4}(?:之間|間|交界|接縫)/i.test(c) && transOf(c)); }, function (c) {
+      var type = transOf(c), mc = CLIPREF.exec(c) || /(?:clip|片段)\s*(\d+)/i.exec(c), a = { type: type || '' }, d = [], gaps = [];
+      if (mc && !/(?:所有|全部|每個|每一個|all|each)/i.test(c)) { a.n = cn(mc[1]); d.push('轉場進入第 ' + a.n + ' 個片段(第 ' + (a.n - 1) + ' 與第 ' + a.n + ' 個之間)'); } else { a.n = 'all'; d.push('沒指定哪一個:所有片段之間'); }
+      var du = /(\d+(?:\.\d+)?)\s*秒/.exec(c); if (du) { a.dur = Number(du[1]); } if (!type) { gaps.push('要哪一種轉場?(淡入淡出、滑入、掃描線、圓圈展開、百葉窗…)'); } return [{ op: 'setTransition', args: a, derived: d, gaps: gaps }];
+    }],
+    ['transcribe', function (c) { return /(?:辨識|辨认|(?:產生|生成|插入|加入|轉成?)[^，。]{0,8}逐字稿|聽寫|transcribe)/i.test(c) && !LINEREF.test(c); }, function (c, st) {
+      var a = {}, d = [], sp = spanIn(c, st), ev = /每\s*(\d+(?:\.\d+)?)\s*(分鐘|分|秒)/.exec(c), lg = langOf(c);
+      if (sp && !sp.gap) { a.start = sp.start; a.end = sp.end; if (sp.why) { d.push(sp.why); } } else if (/播放位置|這裡|目前位置|現在/.test(c) && st.now != null) { a.start = st.now; a.end = st.now + 2; d.push('播放位置起 2 秒'); } else { d.push('沒說範圍:整支影片'); }
+      if (ev) { a.every = Number(ev[1]) * (ev[2] === '秒' ? 1 : 60); d.push('每 ' + a.every + ' 秒一個工作'); } if (lg) { a.lang = lg.slice(0, 2); } return [{ op: 'transcribeAudio', args: a, derived: d, gaps: [] }];
+    }],
+    ['dub', function (c) { return /(?:配音|朗讀|唸出來|念出來|tts)/i.test(c); }, function (c, st) {
+      var lg = langOf(c), ml = LINEREF.exec(c), q = /[「『“"]([^」』”"]{1,80})[」』”"]/.exec(c), ts = timeIn(c), cues = st.cues || [];
+      if (q) { var a0 = { text: q[1], start: ts != null ? ts : (st.now || 0) }; if (lg) { a0.lang = lg; } return [{ op: 'speakText', args: a0, derived: ts == null ? ['沒說時間:從播放位置'] : [], gaps: [] }]; }
+      if (ml && !/(?:那[一]?段|的時間|的時段|所在|這[一]?段)/.test(c)) { var a1 = { n: cn(ml[1]) }; if (lg) { a1.lang = lg; } return [{ op: 'dubLine', args: a1, derived: [], gaps: [] }]; }
+      var sp = spanIn(c, st), pick = [];
+      if (sp && !sp.gap) { cues.forEach(function (cu, i) { if (cu.start >= sp.start - 0.05 && cu.end <= sp.end + 0.05 && String(cu.text || '').trim()) { pick.push(i + 1); } }); }
+      else if (/(?:全部|所有|每一句|每句|整份|整段|整支)/.test(c)) { cues.forEach(function (cu, i) { if (String(cu.text || '').trim()) { pick.push(i + 1); } }); }
+      if (!pick.length) { return [{ op: 'dubLine', args: {}, derived: [], gaps: [sp && sp.gap ? sp.gap : (cues.length ? '配音哪一句?(說「第 3 句」,或「全部」,或把要唸的字放在「」裡)' : '逐字稿是空的:先產生逐字稿,或把要唸的字放在「」裡')] }]; }
+      return pick.slice(0, 50).map(function (n) { var a2 = { n: n }; if (lg) { a2.lang = lg; } return { op: 'dubLine', args: a2, derived: [], gaps: [] }; }).map(function (x, i) { if (i === 0) { x.derived = [(sp && sp.why ? sp.why + ';' : '') + '範圍內的逐字稿共 ' + pick.length + ' 句']; } return x; });
+    }],
+    ['edit_line', function (c) { return LINEREF.test(c) && /(?:改成|改為|換成|改)/.test(c); }, function (c) { var ml = LINEREF.exec(c), q = /[「『“"]([^」』”"]{1,200})[」』”"]/.exec(c) || /(?:改成|改為|換成)\s*[:：]?\s*(.+)$/.exec(c); return [{ op: 'editLine', args: q ? { n: cn(ml[1]), text: String(q[1]).trim() } : { n: cn(ml[1]) }, derived: [], gaps: q ? [] : ['要改成什麼字?'] }]; }],
+    ['shift', function (c) { return /(?:提早|提前|延後|往後|往前|延遲)/.test(c) && /秒/.test(c) && !/片段|轉場/.test(c); }, function (c) { var m = /(\d+(?:\.\d+)?)\s*秒/.exec(c); return [{ op: 'shiftLines', args: m ? { seconds: (/提早|提前|往前/.test(c) ? -1 : 1) * Number(m[1]) } : {}, derived: [], gaps: m ? [] : ['要移幾秒?'] }]; }],
+    ['add_media', function (c) { return /(?:加入|插入|新增|合併|接上|串接|疊上|add|insert|merge)/i.test(c) && /(?:影片|圖片|照片|圖|聲音|音樂|音效|音訊|video|picture|image|sound|audio)/i.test(c); }, function (c) { var t = timeIn(c), k = /(?:圖片|照片|圖|picture|image)/i.test(c) ? 'picture' : /(?:聲音|音樂|音效|音訊|sound|audio)/i.test(c) ? 'sound' : 'video', a = { kind: k }; if (t != null && k !== 'video') { a.at = t; } return [{ op: 'addMedia', args: a, derived: ['會開檔案選擇讓你挑檔'], gaps: [] }]; }]
+  ];
+  var DOMAIN = { id: 'video', label: '影片編輯器', className: 'VideoEditor', ops: OPS, unitIntents: UNIT_INTENTS, frames: FRAMES.map(function (f) { return { name: f[0], test: f[1], build: f[2] }; }) };
+  if (FH) { FH.registerDomain(DOMAIN); }
+  function decompose(text, state) { return FH ? FH.decompose('video', text, state) : { ok: false, intents: [], gaps: ['no harness'], derived: [] }; }
+  function toUml(intents) { return FH ? FH.toUml(DOMAIN, intents) : ''; }
+  return { DOMAIN: DOMAIN, decompose: decompose, toUml: toUml, spanIn: spanIn, gapsOfCues: gapsOfCues, OPS: OPS, UNIT_INTENTS: UNIT_INTENTS, FRAMES: FRAMES };
+}));
+
+}).call(window, undefined);
+(function (module) {
 // /edit-video: the in-browser job queue ("enqueue"). Pure state machine, no DOM, tested in Node: test/edit_video/video_jobs.test.js. Design: DESIGN.edit-video.md "逐字稿產生與瀏覽器工作佇列".
 // ONE job runs at a time (a Whisper worker is heavy); the others wait in the order they were enqueued. A job is {id, kind, label, status, progress, error, createdAt, payload, result}.
 //   status: queued -> running -> done | failed | canceled ;  a job that was queued/running when the page went away comes back as 'interrupted' (restore()) and can be retried.
@@ -36764,7 +37133,7 @@ return holder.FaDeckEditUI;
 // Lines are named by their NUMBER in the list the model was shown (1-based, in time order) or by their id ("c3"); numbers are resolved against the list as it was BEFORE the batch, so an earlier action never renumbers a later one.
 (function (root, factory) { if (typeof module === 'object' && module.exports) { module.exports = factory(require('./video_edit_core.js')); } else { root.TwVideoEditAi = factory(root.TwVideoEdit); } }(typeof self !== 'undefined' ? self : this, function (core) {
   'use strict';
-  var OPS = ['set_text', 'set_time', 'add_cue', 'remove_cue', 'shift', 'replace_text', 'merge', 'translate', 'add_tts_dub'], MAX_EDITS = 200;
+  var OPS = ['set_text', 'set_time', 'add_cue', 'remove_cue', 'shift', 'replace_text', 'merge', 'translate', 'add_tts_dub', 'transcribe', 'split', 'remove_range', 'remove_clip', 'set_transition', 'add_video', 'add_picture', 'add_sound'], MAX_EDITS = 200, MAX_JOBS = 40;
   function isObj(x) { return x && typeof x === 'object' && !Array.isArray(x); }
   function str(x, n) { return String(x == null ? '' : x).slice(0, n || 500); }
   function num(x) { if (typeof x === 'number') { return isFinite(x) ? x : null; } var s = String(x == null ? '' : x).trim().replace(/\s*(?:秒|s|sec|seconds?)$/i, ''), neg = /^-/.test(s), t = core.parseT(s.replace(/^[-+]/, '')); return t === null ? null : neg ? -t : t; }
@@ -36782,6 +37151,12 @@ return holder.FaDeckEditUI;
     else if (op === 'merge') { o.n = ref(e.n != null ? e.n : e.id); }
     else if (op === 'translate') { o.items = (Array.isArray(e.items) ? e.items : []).slice(0, 500).map(function (it) { return isObj(it) ? { n: ref(it.n != null ? it.n : it.id), text: str(it.text) } : null; }).filter(Boolean); }
     else if (op === 'add_tts_dub') { if (e.n !== undefined) { o.n = ref(e.n); } if (e.text !== undefined) { o.text = str(e.text); } if (e.start !== undefined) { o.start = num(e.start); } o.lang = str(e.lang, 12).trim(); o.voice = str(e.voice, 60).trim(); }
+    else if (op === 'transcribe') { if (e.start !== undefined) { o.start = num(e.start); } if (e.end !== undefined) { o.end = num(e.end); } if (e.secs !== undefined) { o.secs = num(e.secs); } if (e.every !== undefined) { o.every = num(e.every); } o.lang = str(e.lang, 12).trim(); }
+    else if (op === 'split') { if (e.at !== undefined) { o.at = num(e.at); } }
+    else if (op === 'remove_range') { o.start = num(e.start); o.end = num(e.end); }
+    else if (op === 'remove_clip') { o.n = ref(e.n != null ? e.n : e.clip); }
+    else if (op === 'set_transition') { o.n = String(e.n != null ? e.n : e.clip).trim().toLowerCase() === 'all' ? 'all' : ref(e.n != null ? e.n : e.clip); o.type = str(e.type, 20).trim(); if (e.dur !== undefined) { o.dur = num(e.dur); } }
+    else if (op === 'add_picture' || op === 'add_sound') { if (e.at !== undefined) { o.at = num(e.at); } }
     return o;
   }
   function parseReply(text) {
@@ -36794,20 +37169,24 @@ return holder.FaDeckEditUI;
   }
   function cueLines(cues) { return core.normalize(cues).map(function (c, i) { return (i + 1) + '. [' + core.clock(c.start) + ' - ' + core.clock(c.end) + '] ' + String(c.text).replace(/\n/g, ' / '); }).join('\n'); }
   function editPrompt(cues, text, o) {
-    o = o || {}; var d = +o.duration > 0 ? ' (video length ' + core.clock(o.duration) + ')' : '';
+    o = o || {}; var tlInfo = o.clips ? '\n\nTimeline clips (clip number: name, timeline range, transition into it):\n' + o.clips : ''; var d = +o.duration > 0 ? ' (video length ' + core.clock(o.duration) + ')' : '';
     var system = 'You edit the transcript (subtitle lines) of a video' + d + '. Answer with ONE JSON object only: {"say":"one short sentence for the user","edits":[ ... ]}. Allowed actions (op), nothing else:\n' +
       '- {"op":"set_text","n":3,"text":"new text"}\n- {"op":"set_time","n":3,"start":"0:05.5","end":"0:08"}   (start / end optional; "m:ss.s" or seconds)\n- {"op":"add_cue","start":"0:10","end":"0:12","text":"..."}   (end optional: 2 s)\n- {"op":"remove_cue","n":3}\n' +
       '- {"op":"shift","seconds":-0.5,"from":2,"to":9}   (negative = earlier; from / to optional line numbers, default all)\n- {"op":"replace_text","find":"abc","with":"xyz","n":3}   (n optional: all lines)\n- {"op":"merge","n":3}   (line 3 and the next line become one)\n' +
       '- {"op":"translate","items":[{"n":1,"text":"..."},{"n":2,"text":"..."}]}   (rewrite many lines at once: translate, fix typos, shorten)\n' +
       '- {"op":"add_tts_dub","n":3,"lang":"en-US"}   (speak a transcript line with text-to-speech and add it as a dub starting at that line; or give "text" and "start" instead of "n"; lang optional: zh-TW zh-CN zh-HK en-US en-GB ja-JP ko-KR; "voice" optional)\n' +
+      '- {"op":"transcribe","start":"0:30","end":"1:00","every":10,"lang":"zh"}   (recognize the speech of that stretch of the video and ADD the lines; start default 0, end default the end of the video, or "secs" = how long from start; "every" optional: one separate job per N seconds; lang optional: zh en ja ko; it runs in the job queue, it is not instant)\n' +
+      '- {"op":"split","at":"0:30"}   (cut the clip at that timeline time into two)\n- {"op":"remove_range","start":"0:10","end":"0:20"}   (take that stretch OUT of the video; what follows moves up)\n- {"op":"remove_clip","n":2}   (remove clip number 2 of the timeline)\n' +
+      '- {"op":"set_transition","n":2,"type":"circle-open","dur":1}   (transition INTO clip n, n >= 2, or "all"; type: none fade fade-white dissolve slide-left slide-right slide-up slide-down push-left push-right push-up push-down wipe-left wipe-right wipe-up wipe-down split-h split-v circle-open circle-close blinds zoom; dur 0.2-3 s)\n' +
+      '- {"op":"add_video"} / {"op":"add_picture","at":"0:05"} / {"op":"add_sound","at":"0:05"}   (opens the file picker for the user to choose the file: merge another video at the end / overlay a picture / add a sound)\n' +
       'Line numbers are the numbers in the list. Do not invent actions. If the request cannot be done with these actions, return {"say":"why","edits":[]}.';
-    return { system: system, user: 'Transcript:\n' + (cueLines(cues) || '(empty)') + '\n\nRequest: ' + String(text || '') };
+    return { system: system, user: 'Transcript:\n' + (cueLines(cues) || '(empty)') + tlInfo + '\n\nRequest: ' + String(text || '') };
   }
 
   // the main entry: apply a batch of edits to a COPY; returns the new list, what was done (applied[]: {op, text}), what was refused (rejected[]: {op, error, text}) and the TTS dubs asked for (tts[]: {text, lang, voice, start, n}) -- those are made later by the host
-  var ERR = { missing: ['找不到這一列', 'line not found'], negative: ['時間不能小於 0', 'time cannot be negative'], order: ['結束時間要大於開始時間', 'end must be after start'], beyond: ['超過影片長度', 'beyond the end of the video'], time: ['時間不正確', 'bad time'], full: ['逐字稿列數已達上限', 'transcript is full'], text: ['沒有文字', 'no text'], not_found: ['找不到要取代的字', 'text to replace not found'], arg: ['參數不完整', 'missing argument'], nomerge: ['後面沒有下一列可合併', 'no next line to merge'] };
-  function applyEdits(cues, edits, duration, zh) {
-    var cur = core.normalize(cues), ids = cur.map(function (c) { return c.id; }), applied = [], rejected = [], tts = [], dur = +duration > 0 ? +duration : 0;
+  var ERR = { notl: ['這裡沒有時間軸', 'no timeline here'], edge: ['離片段的邊緣太近(要至少 0.05 秒)', 'too close to the edge of a clip (at least 0.05 s)'], type: ['不認得的轉場', 'unknown transition'], range: ['範圍太短或不合法', 'the range is too short or not valid'], all: ['不能把整支影片都刪掉', 'cannot remove the whole video'], first: ['第一個片段沒有轉場(從第 2 個起)', 'the first clip has no transition (from clip 2)'], clipno: ['沒有這個片段', 'no such clip'], many: ['一次最多排 ' + MAX_JOBS + ' 個辨識工作,請把每段拉長', 'at most ' + MAX_JOBS + ' recognition jobs at once: use longer stretches'], missing: ['找不到這一列', 'line not found'], negative: ['時間不能小於 0', 'time cannot be negative'], order: ['結束時間要大於開始時間', 'end must be after start'], beyond: ['超過影片長度', 'beyond the end of the video'], time: ['時間不正確', 'bad time'], full: ['逐字稿列數已達上限', 'transcript is full'], text: ['沒有文字', 'no text'], not_found: ['找不到要取代的字', 'text to replace not found'], arg: ['參數不完整', 'missing argument'], nomerge: ['後面沒有下一列可合併', 'no next line to merge'] };
+  function applyEdits(cues, edits, duration, zh, tlctx) {
+    var cur = core.normalize(cues), ids = cur.map(function (c) { return c.id; }), applied = [], rejected = [], tts = [], jobs = [], timeline = [], sim = tlctx && tlctx.clips ? tlctx.clips.slice() : null, TL = tlctx && tlctx.TL, dur = +duration > 0 ? +duration : 0;
     function W(a, b) { return zh ? a : b; }
     function resolve(r) { if (typeof r === 'number') { return ids[r - 1] || null; } return typeof r === 'string' && ids.indexOf(r) >= 0 ? r : null; }
     function find(id) { return cur.filter(function (c) { return c.id === id; })[0] || null; }
@@ -36851,6 +37230,39 @@ return holder.FaDeckEditUI;
         e.items.forEach(function (it) { var tid = resolve(it.n); if (!tid) { return no({ op: 'translate', n: it.n }, 'missing'); } var rr = core.updateCue(cur, tid, { text: it.text }, dur); if (!rr.ok) { return no({ op: 'translate', n: it.n }, rr.error); } cur = rr.cues; done++; });
         if (done) { ok(e, W('整批改寫 ', 'rewrote ') + done + W(' 句', ' lines')); }
       }
+      else if (e.op === 'split' || e.op === 'remove_range' || e.op === 'remove_clip' || e.op === 'set_transition' || e.op === 'add_video' || e.op === 'add_picture' || e.op === 'add_sound') {
+        // timeline actions run AFTER the transcript edits, in the order given; each is checked against the clips as the earlier ones leave them (sim)
+        if (e.op === 'add_video' || e.op === 'add_picture' || e.op === 'add_sound') {
+          if (!sim || !sim.length) { return no(e, 'notl'); } var at0 = e.at != null ? e.at : (tlctx && tlctx.now != null ? tlctx.now : 0); if (at0 < 0) { return no(e, 'negative'); }
+          timeline.push({ op: e.op, at: at0 }); ok(e, e.op === 'add_video' ? W('加入影片:會開檔案選擇(接在最後面)', 'Add videos: opens the file picker (appended at the end)') : e.op === 'add_picture' ? W('在 ', 'Insert a picture at ') + core.clock(at0) + W(' 插入圖片:會開檔案選擇', ': opens the file picker') : W('在 ', 'Insert a sound at ') + core.clock(at0) + W(' 插入聲音:會開檔案選擇', ': opens the file picker')); return;
+        }
+        if (!sim || !TL) { return no(e, 'notl'); }
+        if (e.op === 'split') {
+          var at1 = e.at != null ? e.at : (tlctx.now != null ? tlctx.now : null); if (at1 == null || !isFinite(at1)) { return no(e, 'time'); } var rs = TL.splitAt(sim, at1); if (!rs.ok) { return no(e, rs.error === 'edge' ? 'edge' : 'range'); }
+          sim = rs.clips; timeline.push({ op: 'split', at: at1 }); ok(e, W('在 ', 'Split at ') + core.clock(at1) + W(' 分割', ''));
+        } else if (e.op === 'set_transition') {
+          if (TL.TRANSITIONS.indexOf(e.type) < 0) { return no(e, 'type'); } var idx = [];
+          if (e.n === 'all') { for (var k = 1; k < sim.length; k++) { idx.push(k + 1); } if (!idx.length) { return no(e, 'first'); } }
+          else { if (typeof e.n !== 'number' || e.n < 1 || e.n > sim.length) { return no(e, 'clipno'); } if (e.n === 1) { return no(e, 'first'); } idx.push(e.n); }
+          var tr = { type: e.type }; if (e.dur != null) { tr.dur = e.dur; }
+          idx.forEach(function (ci) { var rt = TL.setTransition(sim, sim[ci - 1].id, tr); if (rt.ok) { sim = rt.clips; } });
+          timeline.push({ op: 'set_transition', n: idx, type: e.type, dur: e.dur != null ? e.dur : null }); ok(e, W('轉場 ', 'Transition ') + e.type + W(' → 片段 ', ' into clip ') + (e.n === 'all' ? W('全部(', 'all (') + idx.length + ')' : e.n) + (e.dur != null ? ' ' + e.dur + 's' : ''));
+        } else {
+          var a1, b1, st1 = TL.starts(sim);
+          if (e.op === 'remove_clip') { if (typeof e.n !== 'number' || e.n < 1 || e.n > sim.length) { return no(e, 'clipno'); } a1 = st1[e.n - 1]; b1 = a1 + (sim[e.n - 1].out - sim[e.n - 1].in); } else { a1 = e.start; b1 = e.end; }
+          if (a1 == null || b1 == null) { return no(e, 'time'); } var rr2 = TL.removeRange(sim, a1, b1); if (!rr2.ok) { return no(e, rr2.error === 'all' ? 'all' : 'range'); }
+          sim = rr2.clips; timeline.push({ op: 'remove_range', start: rr2.a, end: rr2.b }); ok(e, W('刪除 ', 'Remove ') + core.clock(rr2.a) + '–' + core.clock(rr2.b) + W(',後面往前接', '; what follows moves up'));
+        }
+      }
+      else if (e.op === 'transcribe') {   // only the REQUEST is made here: the host puts one job per stretch in the job queue
+        var a0 = e.start != null ? e.start : 0, b0 = e.end != null ? e.end : (e.secs != null ? a0 + e.secs : (dur > 0 ? dur : null));
+        if (a0 < 0) { return no(e, 'negative'); } if (dur > 0 && a0 >= dur) { return no(e, 'beyond'); } if (b0 == null) { return no(e, 'time'); } if (dur > 0) { b0 = Math.min(b0, dur); } if (!(b0 > a0)) { return no(e, 'order'); }
+        var step = e.every != null && e.every > 0 ? Math.max(1, e.every) : 0, parts = [];
+        if (step) { for (var p0 = a0; p0 < b0 - 0.05; p0 += step) { parts.push({ start: Math.round(p0 * 1000) / 1000, len: Math.round(Math.min(step, b0 - p0) * 1000) / 1000 }); } } else { parts.push({ start: Math.round(a0 * 1000) / 1000, len: Math.round((b0 - a0) * 1000) / 1000 }); }
+        if (parts.length > MAX_JOBS) { return no(e, 'many'); }
+        parts.forEach(function (pt) { jobs.push({ start: pt.start, len: pt.len, lang: e.lang || '' }); });
+        ok(e, W('排進工作佇列辨識 ', 'Queue recognition of ') + core.clock(a0) + '–' + core.clock(b0) + (step ? W(',每 ', ', every ') + step + W(' 秒一個工作(共 ', ' s, one job each (') + parts.length + W(' 個)', ')') : W(' (1 個工作)', ' (1 job)')) + (e.lang ? ' (' + e.lang + ')' : ''));
+      }
       else if (e.op === 'add_tts_dub') {
         var src = e.n != null ? find(resolve(e.n)) : null; if (e.n != null && !src) { return no(e, 'missing'); }
         var tx = String(e.text != null && e.text !== '' ? e.text : (src ? src.text : '')).trim(), st = e.start != null ? e.start : (src ? src.start : null);
@@ -36858,7 +37270,7 @@ return holder.FaDeckEditUI;
         tts.push({ text: tx.slice(0, 500), lang: e.lang || '', voice: e.voice || '', start: Math.round(st * 1000) / 1000, n: e.n != null ? e.n : null }); ok(e, W('TTS 配音 ', 'TTS dub ') + core.clock(st) + ' 「' + str(tx, 30) + '」' + (e.lang ? ' (' + e.lang + ')' : ''));
       }
     });
-    return { cues: cur, applied: applied, rejected: rejected, tts: tts };
+    return { cues: cur, applied: applied, rejected: rejected, tts: tts, jobs: jobs, timeline: timeline };
   }
 
   // ---- the user's plain sentence, read by the program (no model): the common edits that do not need one
@@ -36872,11 +37284,44 @@ return holder.FaDeckEditUI;
   function localParse(text, cues, ctx) {
     var t = String(text || '').trim().replace(/[。.!!]+$/, ''), edits = [], notes = [], m, list = core.normalize(cues);
     if (!t) { return { edits: edits, notes: notes }; }
+    // --- timeline sentences (clips are 「片段」; lines are 句/列/行/段)
+    var TT = '(\\d+(?::\\d+){0,2}(?:\\.\\d+)?)\\s*(?:秒|s)?', clipRef = /第\s*(\d+|[一二兩三四五六七八九十]+)\s*(?:個|段)?\s*(?:片段|clip)/i;
+    if ((m = clipRef.exec(t)) && /(刪除|刪掉|移除|拿掉|剪掉|不要)/.test(t) && !/轉場/.test(t)) { var nc = nnum(m[1]); if (nc) { edits.push({ op: 'remove_clip', n: nc }); return { edits: edits, notes: notes }; } }
+    if ((m = new RegExp('(?:刪除|刪掉|移除|拿掉|剪掉|不要|cut out|delete|remove)\\D{0,12}?' + TT + '\\s*(?:到|至|~|-|–|to)\\s*' + TT, 'i').exec(t)) || (m = new RegExp(TT + '\\s*(?:到|至|~|-|–)\\s*' + TT + '\\s*(?:這段|的?片段|的?部分)?\\s*(?:刪除|刪掉|移除|拿掉|剪掉|不要)').exec(t))) { edits.push({ op: 'remove_range', start: m[1], end: m[2] }); return { edits: edits, notes: notes }; }
+    if (/(?:轉場|transition)/i.test(t)) {
+      var TRW = [[/(?:取消|移除|不要|無|沒有|none)/, 'none'], [/(?:circle.?close|圓(?:圈|形)?(?:收合|收縮|縮小|向中心))/i, 'circle-close'], [/(?:circle|圓(?:圈|形)?)/i, 'circle-open'], [/(?:blinds|百葉窗)/i, 'blinds'], [/(?:zoom|放大)/i, 'zoom'], [/(?:dissolve|交叉淡化|溶解|疊化)/i, 'dissolve'],
+        [/(?:fade.?white|白色?淡|經過白)/i, 'fade-white'], [/(?:中心|center)[^。,]*?(?:上下|垂直|vertical)/i, 'split-v'], [/(?:中心|center|split)/i, 'split-h'], [/(?:push|推)[^。,]*?(?:上|up)/i, 'push-up'], [/(?:push|推)[^。,]*?(?:下|down)/i, 'push-down'], [/(?:push|推)[^。,]*?(?:右|right)/i, 'push-right'], [/(?:push|推)/i, 'push-left'],
+        [/(?:wipe|掃描線?|掃過)[^。,]*?(?:由右到左|從右|right)/i, 'wipe-right'], [/(?:wipe|掃描線?|掃過)[^。,]*?(?:由上到下|從上|top)/i, 'wipe-up'], [/(?:wipe|掃描線?|掃過)[^。,]*?(?:由下到上|從下|bottom)/i, 'wipe-down'], [/(?:wipe|掃描線?|掃過)/i, 'wipe-left'],
+        [/(?:slide|滑入)[^。,]*?(?:從左|左邊|left)|(?:從左|左邊)[^。,]*?滑入/i, 'slide-right'], [/(?:從下|下面|下方|bottom)[^。,]*?滑入|滑入[^。,]*?(?:從下|bottom)/i, 'slide-up'], [/(?:從上|上面|上方|top)[^。,]*?滑入|滑入[^。,]*?(?:從上|top)/i, 'slide-down'], [/(?:slide|滑入)/i, 'slide-left'], [/(?:淡入淡出|淡入|淡出|fade)/i, 'fade']];
+      var tt0 = null; for (var q0 = 0; q0 < TRW.length; q0++) { if (TRW[q0][0].test(t)) { tt0 = TRW[q0][1]; break; } }
+      if (tt0) {
+        var te2 = { op: 'set_transition', type: tt0, n: 'all' }, mc = clipRef.exec(t) || /(?:clip|片段)\s*(\d+)/i.exec(t); if (mc && !/(?:所有|全部|每個|每一個|all|each)/i.test(t)) { var nn = nnum(mc[1]); if (nn) { te2.n = nn; } }
+        var md = /(\d+(?:\.\d+)?)\s*秒/.exec(t); if (md) { te2.dur = parseFloat(md[1]); } edits.push(te2); return { edits: edits, notes: notes };
+      }
+    }
+    if ((m = new RegExp('(?:在|於|at)\\s*' + TT + '\\s*(?:處|的時候|時)?\\s*(?:把|將)?(?:影片|片段|畫面)?\\s*(?:分割|切開|切成兩段|切一刀|剪開|split|cut)', 'i').exec(t))) { edits.push({ op: 'split', at: m[1] }); return { edits: edits, notes: notes }; }
+    if (/(?:在播放位置|在這裡|在目前位置|從這裡|現在這裡)?\s*(?:把影片|把片段|把畫面)?\s*(?:分割|切開|切成兩段|切一刀|剪開)|^split$/i.test(t) && !clipRef.test(t)) { edits.push({ op: 'split' }); return { edits: edits, notes: notes }; }
+    if (/(?:加入|新增|再加|合併|接上|串接|append|merge|add)\s*(?:一?些|幾個|多個|另一個|其他)?\s*(?:影片|videos?)/i.test(t)) { edits.push({ op: 'add_video' }); return { edits: edits, notes: notes }; }
+    if ((m = /(?:插入|加入|疊上|疊一張|add|insert)\s*(?:一張)?\s*(?:圖片|圖|照片|picture|image)/i.exec(t))) { var ep = { op: 'add_picture' }; var mp = new RegExp('(?:在|於|at)\\s*' + TT).exec(t); if (mp) { ep.at = mp[1]; } edits.push(ep); return { edits: edits, notes: notes }; }
+    if ((m = /(?:插入|加入|新增|add|insert)\s*(?:一段)?\s*(?:聲音|音訊|音樂|音效|sound|audio|music)/i.exec(t))) { var es = { op: 'add_sound' }; var ms = new RegExp('(?:在|於|at)\\s*' + TT).exec(t); if (ms) { es.at = ms[1]; } edits.push(es); return { edits: edits, notes: notes }; }
+    // TTS dub of a free text at a time:  在 0:10 用英文配音 說 hello / 在播放位置 TTS 唸「...」
+    if ((m = new RegExp('(?:在|於|at)\\s*(?:' + TT + '|(播放位置|這裡|目前位置))\\s*(?:處|的時候|時)?\\s*(?:用\\s*([^\\s配唸念朗說]*?)\\s*)?(?:TTS\\s*)?(?:配音|唸出來|念出來|唸|念|朗讀|說|speak|dub)\\s*(?:(?:說|唸|念|讀)\\s*)?[:：]?\\s*[「"『]?([\\s\\S]+?)[」"』]?$', 'i').exec(t)) && m[4] && !/^第\s*\S+\s*(?:句|列|行|段)/.test(m[4])) {
+      var e3 = { op: 'add_tts_dub', text: m[4] }; if (m[1] != null) { e3.start = m[1]; } else if (ctx && ctx.now != null) { e3.start = ctx.now; } var lg3 = langIn(m[3] || ''); if (lg3) { e3.lang = lg3; } edits.push(e3); return { edits: edits, notes: notes };
+    }
     if ((m = new RegExp('^(?:請|麻煩|幫我)?(?:把|將)?\\s*' + LINE + '\\s*(?:的文字|的字幕)?\\s*(?:改成|改為|換成|改)\\s*[:：]?\\s*([\\s\\S]+)$').exec(t)) || (m = new RegExp('^(?:set|change)\\s+line\\s+(\\d+)\\s+(?:to|as)\\s*[:：]?\\s*([\\s\\S]+)$', 'i').exec(t))) {
       var n1 = nnum(m[1]); if (n1) { edits.push({ op: 'set_text', n: n1, text: m[2].replace(/^[「"『]|[」"』]$/g, '') }); } return { edits: edits, notes: notes };
     }
     if ((m = new RegExp('(?:把|將)?\\s*' + LINE + '\\s*(?:用\\s*([^\\s配]*?)\\s*)?(?:配音|念出來|唸出來|朗讀)').exec(t)) || (m = /(?:dub|speak|read)\s+line\s+(\d+)(?:\s+in\s+(\w+))?/i.exec(t))) {
       var n2 = nnum(m[1]); if (n2) { var e2 = { op: 'add_tts_dub', n: n2 }; var lg = langIn(m[2] || ''); if (lg) { e2.lang = lg; } edits.push(e2); } return { edits: edits, notes: notes };
+    }
+    if (/(?:辨識|辨认|產生逐字稿|生成逐字稿|轉成?逐字稿|插入逐字稿|加入逐字稿|聽寫|transcribe|recogni[sz]e)/i.test(t) && !/第\s*\S+\s*(?:句|列|行|段)/.test(t)) {
+      var T0 = '(\\d+(?::\\d+){0,2}(?:\\.\\d+)?)\\s*(?:秒|s)?', te = { op: 'transcribe' }, lg2 = langIn(t), mm;
+      if (lg2) { te.lang = lg2.slice(0, 2); }
+      if ((mm = new RegExp('每\\s*(\\d+(?:\\.\\d+)?)\\s*(分鐘|分|秒)').exec(t)) || (mm = /every\s+(\d+(?:\.\d+)?)\s*(min|s|sec|seconds?)?/i.exec(t))) { te.every = parseFloat(mm[1]) * (/分|min/i.test(mm[2] || '') ? 60 : 1); }
+      var rg = new RegExp('(?:從|由|from)\\s*' + T0 + '\\s*(?:到|至|~|-|–|to)\\s*' + T0, 'i').exec(t), from2 = new RegExp('(?:從|由|from)\\s*' + T0 + '\\s*(?:起|開始)?\\s*(?:往後|後)?\\s*(\\d+(?:\\.\\d+)?)\\s*秒', 'i').exec(t), head = new RegExp('(?:播放位置|目前位置|現在)\\s*(?:起|開始)?\\s*(\\d+(?:\\.\\d+)?)?\\s*秒?').exec(t);
+      if (rg) { te.start = rg[1]; te.end = rg[2]; } else if (from2) { te.start = from2[1]; te.secs = from2[2]; }
+      else if (head && ctx && ctx.now != null) { te.start = ctx.now; te.secs = head[1] ? parseFloat(head[1]) : core.CUE_SECONDS; }
+      edits.push(te); return { edits: edits, notes: notes };
     }
     if ((m = /(?:全部|所有|整個|整體|字幕|逐字稿)?\s*(提早|提前|往前|延後|往後|延遲|晚|早)\s*(\d+(?:\.\d+)?)\s*秒/.exec(t)) || (m = /(?:shift|move)\s+(?:all\s+)?(?:lines\s+)?(\d+(?:\.\d+)?)\s*(?:s|sec|seconds?)\s+(earlier|later)/i.exec(t))) {
       var early = /提早|提前|往前|早|earlier/i.test(m[1] + (m[2] || '')), sec = parseFloat(/^\d/.test(m[1]) ? m[1] : m[2]); edits.push({ op: 'shift', seconds: early ? -sec : sec }); return { edits: edits, notes: notes };
@@ -36889,7 +37334,15 @@ return holder.FaDeckEditUI;
     if ((m = /^(?:請|幫我)?(?:把|將)\s*[「"]?(.+?)[」"]?\s*(?:全部)?(?:換成|取代為|取代成|改成)\s*[「"]?(.+?)[」"]?$/.exec(t)) && !/第\s*\S+\s*(?:句|列|行|段)/.test(m[1])) { edits.push({ op: 'replace_text', find: m[1], with: m[2] }); return { edits: edits, notes: notes }; }
     return { edits: edits, notes: notes };
   }
-  return { OPS: OPS, editPrompt: editPrompt, parseReply: parseReply, applyEdits: applyEdits, localParse: localParse, normalizeEdit: normalizeEdit, cueLines: cueLines, nnum: nnum };
+  // a sentence with several clauses (，。；然後 接著 再): every clause is read on its own; ALL of them have to be understood, otherwise nothing is returned and the whole sentence goes to the AI
+  function localParseMulti(text, cues, ctx) {
+    var parts = String(text || '').split(/[，。；;\n]+|(?:然後|接著|再來|並且|而且|之後再|跟著)/).map(function (x) { return x.trim(); }).filter(Boolean);
+    if (parts.length <= 1) { return localParse(text, cues, ctx); }
+    var edits = [], notes = [];
+    for (var i = 0; i < parts.length; i++) { var r = localParse(parts[i].replace(/^(?:先|再|最後|並|也)/, ''), cues, ctx); if (!r.edits.length) { return { edits: [], notes: notes.concat(['unread: ' + parts[i]]) }; } r.edits.forEach(function (e) { edits.push(e); }); }
+    return { edits: edits, notes: notes };
+  }
+  return { localParseMulti: localParseMulti, OPS: OPS, editPrompt: editPrompt, parseReply: parseReply, applyEdits: applyEdits, localParse: localParse, normalizeEdit: normalizeEdit, cueLines: cueLines, nnum: nnum };
 }));
 
 }).call(window, undefined);
@@ -37099,37 +37552,76 @@ return holder.FaDeckEditUI;
     var askLog = [], askProp = null, askBusy = false, askDraft = '', Ai = function () { return root.TwVideoEditAi; };
     function askSay(kind, text, lines) { askLog.push({ k: kind, t: text, l: lines || [] }); if (lay.tab === 'ask') { renderAsk(); } }
     function lineSummary(list, bad) { return list.map(function (a) { return '• ' + a.text; }).concat(bad.map(function (x) { return '✗ ' + x.text; })); }
+    function tlCtx() { return { clips: clips, TL: tl, now: now() }; }
+    function clipSummary() { var st = starts(); return clips.map(function (c, i) { return (i + 1) + ': ' + (c.name || 'clip') + ' ' + core.clock(st[i]) + '–' + core.clock(st[i] + c.out - c.in) + (i > 0 && c.tr && c.tr.type !== 'none' ? ' [' + c.tr.type + ' ' + c.tr.dur + 's]' : ''); }).join('\n'); }
     function askModel(text, base) {
-      var P = Ai().editPrompt(base, text, { duration: dur() });
-      return host.ai.chat(P.system, P.user).then(function (rep) {
-        var pr = Ai().parseReply(rep); if (!pr.ok) { return { edits: [], say: T('AI 的回覆我讀不懂(要是 JSON 動作)。換個說法再試,或用程式讀得懂的句子,例如「第 3 句改成…」。', 'I could not read the AI\'s answer (it has to be JSON actions). Rephrase, or use a sentence the program reads, e.g. "set line 3 to …".'), dropped: [] }; }
-        var ap = Ai().applyEdits(base, pr.edits, dur(), true), problems = ap.rejected.map(function (x) { return x.op + ': ' + x.error; }).concat(pr.droppedOps.map(function (o) { return o + ': not an allowed action'; }));
+      var P = Ai().editPrompt(base, text, { duration: dur(), clips: clipSummary() });
+      var onStep = function (line) { askSay('ai', String(line).replace(/^\s+/, '')); };   // the host tries the online model first and only then the offline one: say which
+      return host.ai.chat(P.system, P.user, onStep).then(function (rep) {
+        var pr = Ai().parseReply(rep); if (!pr.ok) { return { edits: [], unreadable: true, say: T('AI 的回覆我讀不懂(要是 JSON 動作)。換個說法再試,或用程式讀得懂的句子,例如「第 3 句改成…」。', 'I could not read the AI\'s answer (it has to be JSON actions). Rephrase, or use a sentence the program reads, e.g. "set line 3 to …".'), dropped: [] }; }
+        var ap = Ai().applyEdits(base, pr.edits, dur(), true, tlCtx()), problems = ap.rejected.map(function (x) { return x.op + ': ' + x.error; }).concat(pr.droppedOps.map(function (o) { return o + ': not an allowed action'; }));
         if (!problems.length) { return { edits: pr.edits, say: pr.say, dropped: [] }; }
         // one more round: the model gets the reasons and corrects itself; what is still wrong is shown, never dropped silently
-        return host.ai.chat(P.system, P.user + '\n\nYour previous answer:\n' + String(rep).slice(0, 1800) + '\n\nProblems found (fix them, answer the complete JSON again):\n- ' + problems.join('\n- ')).then(function (rep2) {
+        return host.ai.chat(P.system, P.user + '\n\nYour previous answer:\n' + String(rep).slice(0, 1800) + '\n\nProblems found (fix them, answer the complete JSON again):\n- ' + problems.join('\n- '), onStep).then(function (rep2) {
           var p2 = Ai().parseReply(rep2); return p2.ok ? { edits: p2.edits, say: p2.say, dropped: p2.droppedOps } : { edits: pr.edits, say: pr.say, dropped: pr.droppedOps };
         }, function () { return { edits: pr.edits, say: pr.say, dropped: pr.droppedOps }; });
       });
     }
+    // The sentence the program cannot read: ONLINE model first; when it fails (error, timeout, unreadable answer) the OFFLINE harness takes over (learned cases, intent engine, plan templates, CoLU/UML units -- host.ai.offline).
+    // With the app's "offline mode" on the order is the other way round: the harness first, the online model as the way out when it finds nothing.
+    function aiState() { return { clips: clips, cues: cues, now: now(), duration: dur(), TL: tl, overlays: ovs, dubs: dubs }; }
+    function viaOffline(text) {
+      if (!host.ai || !host.ai.offline) { return Promise.resolve(null); }
+      return host.ai.offline(text, aiState(), function (line) { askSay('ai', String(line).replace(/^\s+/, '')); }).then(function (r) { return r && r.edits && r.edits.length ? { edits: r.edits, say: r.say || T('離線 AI(程式＋訓練器＋計畫＋CoLU)讀懂了。', 'The offline AI (program + trainer + plans + CoLU) understood.'), dropped: [], via: 'offline', notes: r.notes } : null; }, function () { return null; });
+    }
+    function askChain(text, base) {
+      if (!host.ai) { return Promise.resolve({ edits: [], say: T('這句話程式讀不懂,而且這裡沒有 AI。', 'The program could not read this and there is no AI here.'), dropped: [] }); }
+      var none = { edits: [], say: T('這句話程式、線上 AI、離線 AI 都讀不懂。可以說「第 3 句改成…」「在 0:30 分割」「刪除 0:10 到 0:20」「所有片段之間加淡入淡出」「每 10 秒辨識一次」「把第 3 句用英文配音」。', 'Neither the program, the online AI nor the offline AI could read this.'), dropped: [] };
+      return host.ai.mode().then(function (m) {
+        var online = function () { return askModel(text, base).then(function (r) { if (r.unreadable) { throw new Error(T('線上 AI 的回覆讀不懂', 'the online answer was not readable')); } r.via = 'online'; return r; }); };
+        if (m === 'offline') { return viaOffline(text).then(function (r) { return r || online().then(null, function () { return none; }); }); }
+        return online().then(null, function (e) { askSay('ai', T('線上 AI 沒成功(', 'The online AI did not work (') + String((e && e.message) || e).slice(0, 80) + T('),改用離線 AI。', '): using the offline AI.')); return viaOffline(text).then(function (r) { return r || none; }); });
+      });
+    }
     function submitAsk(text) {
       text = String(text || '').trim(); if (!text || askBusy) { return Promise.resolve(); }
-      askProp = null; askDraft = ''; askSay('me', text); askBusy = true; var base = cues, local = Ai().localParse(text, cues, { now: now(), duration: dur() }), p;
+      askProp = null; askDraft = ''; askSay('me', text); askBusy = true; var base = cues, local = Ai().localParseMulti(text, cues, { now: now(), duration: dur() }), p;
       if (local.edits.length) { p = Promise.resolve({ edits: local.edits, say: T('程式讀懂了你的句子。', 'Read your sentence directly.'), dropped: [] }); }
-      else { p = (host.ai ? host.ai.mode() : Promise.resolve('none')).then(function (m) { return m === 'online' ? askModel(text, base) : { edits: [], say: T('這句話程式讀不懂,而且現在沒有線上 AI 可問。可以說「第 3 句改成…」「全部提早 0.5 秒」「刪掉空白句」「把第 3 句用英文配音」「把 A 換成 B」「合併第 2 句」。', 'The program could not read this and no online AI is available. Try "set line 3 to …", "shift all 0.5 s earlier", "delete empty lines", "dub line 3 in English", "replace A with B", "merge line 2".'), dropped: [] }; }); }
+      else { p = askChain(text, base); }
       return p.then(function (res) {
-        askBusy = false; var ap = Ai().applyEdits(base, res.edits, dur(), /^zh/i.test(String(root.document.documentElement.lang || '')));
+        askBusy = false; var ap = Ai().applyEdits(base, res.edits, dur(), /^zh/i.test(String(root.document.documentElement.lang || '')), tlCtx());
         var bad = ap.rejected.concat((res.dropped || []).map(function (o) { return { text: o + T(':不在可做的清單裡,沒有執行', ': not an allowed action, not run') }; }));
-        if (ap.applied.length) { askProp = { base: base, ap: ap }; }
+        if (ap.applied.length) { askProp = { base: base, ap: ap, text: text, edits: res.edits, via: res.via || 'program' }; }
         askSay('ai', res.say || (ap.applied.length ? '' : T('沒有任何變更。', 'No change.')), lineSummary(ap.applied, bad));
       }, function (e) { askBusy = false; askSay('err', '⚠️ ' + ((e && e.message) || e)); });
     }
     function applyAsk() {
       var pr = askProp; if (!pr || askBusy) { return Promise.resolve(); } askProp = null;
       if (cues !== pr.base) { askSay('err', T('逐字稿在這之間改過了,請再說一次。', 'The transcript changed in the meantime; say it again.')); return Promise.resolve(); }
-      if (JSON.stringify(pr.ap.cues) !== JSON.stringify(cues)) { commit(pr.ap.cues); }
+      return runProposal(pr.ap, pr);
+    }
+    // carry out a checked proposal (the Ask AI "Apply" button, and runOps for the agent tools): transcript edits + timeline actions (ONE undo step) + queued recognition jobs + TTS dubs
+    function runProposal(ap, pr) {
+      pr = pr || {}; var tlOps = ap.timeline || [], editsTl = tlOps.some(function (o2) { return o2.op === 'split' || o2.op === 'remove_range' || o2.op === 'set_transition'; });
+      if (editsTl) { snap(); inBatch = true; }   // the whole timeline part of this answer is ONE step of "undo edit" (which also restores the transcript)
+      try {
+        if (JSON.stringify(ap.cues) !== JSON.stringify(cues)) { commit(ap.cues); }
+        tlOps.forEach(function (o2) {
+          if (o2.op === 'split') { doSplit(o2.at); } else if (o2.op === 'remove_range') { doRemoveRange(o2.start, o2.end); }
+          else if (o2.op === 'set_transition') { o2.n.forEach(function (ci) { if (clips[ci - 1]) { setTransition(clips[ci - 1].id, o2.dur != null ? { type: o2.type, dur: o2.dur } : { type: o2.type }); } }); }
+        });
+      } finally { inBatch = false; }
+      tlOps.filter(function (o2) { return o2.op === 'add_video' || o2.op === 'add_picture' || o2.op === 'add_sound'; }).slice(0, 1).forEach(function (o2) {   // a file has to be chosen by the user: the picker opens (the Apply click is the user gesture)
+        pickAt = o2.op === 'add_video' ? null : o2.at; (o2.op === 'add_video' ? inVid : o2.op === 'add_picture' ? inImg : inAud).click();
+      });
       askSay('ok', T('已套用(逐字稿分頁的 ↶ 可以一次復原)。', 'Applied (↶ in the Transcript tab undoes it in one step).'));
+      if (pr.via === 'online' && host.ai && host.ai.learn) { host.ai.learn({ text: pr.text, edits: pr.edits, via: pr.via }).then(null, function () { /* learning back is a bonus */ }); }   // an ONLINE answer that worked is taught to the offline trainer
+      (ap.jobs || []).forEach(function (j) {   // "recognize this stretch": one job per stretch in the JOB QUEUE (not run inline)
+        var qid = q.enqueue({ kind: 'transcribe', label: ((project.video && project.video.name) || '') + ' @' + core.clock(j.start) + ' +' + (Math.round(j.len * 10) / 10) + T(' 秒', ' s'), payload: { language: j.lang || lay.genLang || null, startSec: j.start, lenSec: j.len } });
+        askSay(qid ? 'ok' : 'err', qid ? '🎙 ' + core.clock(j.start) + T(' 已排入工作佇列(看「工作佇列」分頁)', ' queued (see the Job queue tab)') : T('工作佇列已滿', 'The job queue is full'));
+      });
       askBusy = true; var voices = host.voices ? host.voices() : [];
-      return pr.ap.tts.reduce(function (chain, t) {
+      return ap.tts.reduce(function (chain, t) {
         return chain.then(function () {
           var v = voices.filter(function (x) { return x.id === t.voice; })[0] || (host.pickVoice ? host.pickVoice(t.text, t.lang) : null), vid = v ? v.id : '', lang = t.lang || (v && v.lang) || '';
           askSay('ai', T('TTS 配音 ', 'TTS dub ') + core.clock(t.start) + T(':合成中…', ': synthesizing…'));
@@ -37137,9 +37629,14 @@ return holder.FaDeckEditUI;
         });
       }, Promise.resolve()).then(function () { askBusy = false; if (lay.tab === 'ask') { renderAsk(); } });
     }
+    // the closed actions, checked and carried out at once (no preview): the agent tools of the app (video_split, video_cut_range, ...) and the offline harness use this
+    function runOps(ops) {
+      var ap = Ai().applyEdits(cues, ops, dur(), zh(), tlCtx()); if (!ap.applied.length) { return Promise.resolve({ ok: false, applied: [], rejected: ap.rejected.map(function (r) { return r.text; }) }); }
+      return runProposal(ap, {}).then(function () { return { ok: true, applied: ap.applied.map(function (a) { return a.text; }), rejected: ap.rejected.map(function (r) { return r.text; }), clips: clips.length, lines: cues.length, dubs: dubs.length, total: tlTotal() }; });
+    }
     function renderAsk() {
       tabBody.textContent = ''; var wrap = el('div', 'tw-ve-ask'), log = el('div', 'tw-ve-asklog'); wrap.setAttribute('data-ve', 'ask'); log.setAttribute('data-ve', 'ask-log');
-      if (!askLog.length) { log.appendChild(el('div', 'tw-ve-note', T('說你要怎麼改逐字稿或加配音,例如:「第 3 句改成…」「全部提早 0.5 秒」「刪掉空白句」「把第 2 句用英文配音」「把整段翻成英文」(最後一種需要線上 AI)。先給你看會改什麼,按「套用」才生效,可復原。', 'Say how to change the transcript or add a dub, e.g. "set line 3 to …", "shift all 0.5 s earlier", "delete empty lines", "dub line 2 in English", "translate everything to English" (the last one needs the online AI). You see what would change first; "Apply" makes it happen, undo works.'))); }
+      if (!askLog.length) { log.appendChild(el('div', 'tw-ve-note', T('說你要怎麼改逐字稿、剪輯或加配音,例如:「第 3 句改成…」「每 10 秒辨識一次」「在 0:30 分割」「刪除 0:10 到 0:20」「刪掉第 2 個片段」「所有片段之間加圓圈展開轉場」「在 0:05 用英文配音 說 hello」「加入影片」「全部提早 0.5 秒」「刪掉空白句」「把第 2 句用英文配音」「把整段翻成英文」(最後一種需要線上 AI)。先給你看會改什麼,按「套用」才生效,可復原。', 'Say how to change the transcript or add a dub, e.g. "set line 3 to …", "shift all 0.5 s earlier", "delete empty lines", "dub line 2 in English", "translate everything to English" (the last one needs the online AI). You see what would change first; "Apply" makes it happen, undo works.'))); }
       askLog.forEach(function (e) { var r = el('div', 'tw-ve-ask-' + e.k, e.t); e.l.forEach(function (ln) { r.appendChild(el('div', /^✗/.test(ln) ? 'tw-ve-err' : '', ln)); }); log.appendChild(r); });
       wrap.appendChild(log);
       if (askProp) {
@@ -37388,8 +37885,9 @@ return holder.FaDeckEditUI;
       if (ovs.length || clips.length > 1) { return true; } var c = clips[0], s = c && srcs[fileKey(c)]; return !!(c && (c.in > 0.05 || (s && s.dur && c.out < s.dur - 0.1)));
     }
     var TLERR = { edge: T('這裡離片段的邊緣太近(要至少 0.05 秒)', 'Too close to the edge of the clip (at least 0.05 s)'), full: T('片段數已達上限', 'Too many clips'), range: T('要刪的範圍太短或不合法', 'The range is too short or not valid'), all: T('不能把整支影片都刪掉', 'You cannot remove the whole video'), time: T('時間或長度不合法', 'Invalid time or length'), missing: T('找不到', 'Not found'), first: T('第一個片段沒有轉場', 'The first clip has no transition') };
-    function snap() { editHist.push(JSON.stringify({ clips: clips, cues: cues, dubs: dubs, ovs: ovs })); if (editHist.length > 30) { editHist.shift(); } bUndoEdit.disabled = false; }
-    function dropSnap() { editHist.pop(); bUndoEdit.disabled = !editHist.length; }
+    var inBatch = false, pickAt = null;
+    function snap() { if (inBatch) { return; } editHist.push(JSON.stringify({ clips: clips, cues: cues, dubs: dubs, ovs: ovs })); if (editHist.length > 30) { editHist.shift(); } bUndoEdit.disabled = false; }
+    function dropSnap() { if (inBatch) { return; } editHist.pop(); bUndoEdit.disabled = !editHist.length; }
     function setClips(next, keepT) {
       var t = keepT == null ? tlNow() : keepT; clips = next; project.clips = clips; save(); renderObjs(); refreshCtl();
       if (!clips.length) { return; } var loc = tl.locate(clips, t);
@@ -37400,9 +37898,9 @@ return holder.FaDeckEditUI;
       var raw = editHist.pop(); bUndoEdit.disabled = !editHist.length; if (!raw) { return; } var st = JSON.parse(raw), t = tlNow();
       applyAnnotations(st.cues, st.dubs, st.ovs); setClips(tl.normalizeClips(st.clips), t); flash(T('已復原剪輯', 'Edit undone'));
     }
-    function doSplit() {
-      if (!clips.length) { msg(T('先載入影片', 'Load a video first')); return; } snap(); var r = tl.splitAt(clips, tlNow()); if (!r.ok) { dropSnap(); msg(TLERR[r.error] || r.error); return; } msg('');
-      var t = tlNow(); clips = r.clips; project.clips = clips; save(); renderObjs(); curIdx = tl.locate(clips, t).i; refreshCtl();   // same source, contiguous: the player does not move
+    function doSplit(at) {
+      if (!clips.length) { msg(T('先載入影片', 'Load a video first')); return; } snap(); var r = tl.splitAt(clips, typeof at === 'number' ? at : tlNow()); if (!r.ok) { dropSnap(); msg(TLERR[r.error] || r.error); return; } msg('');
+      var tp = tlNow(); clips = r.clips; project.clips = clips; save(); renderObjs(); curIdx = tl.locate(clips, tp).i; refreshCtl();   // same source, contiguous: the player does not move
     }
     function doRemoveRange(a, b) {
       if (!clips.length) { msg(T('先載入影片', 'Load a video first')); return; } if (!(b > a)) { msg(TLERR.range); return; } snap(); var r = tl.removeRange(clips, a, b); if (!r.ok) { dropSnap(); msg(TLERR[r.error] || r.error); return; } msg('');
@@ -37428,7 +37926,7 @@ return holder.FaDeckEditUI;
     function addImage(f) {
       if (!clips.length) { msg(T('先載入影片', 'Load a video first')); return Promise.resolve(); }
       return putMedia(f).then(function (id) {
-        imgs[id] = root.URL.createObjectURL(f); snap(); var r = tl.addOverlay(ovs, { fileId: id, name: f.name, start: tlNow(), dur: 3 }); if (!r.ok) { dropSnap(); throw new Error(TLERR[r.error] || r.error); }
+        imgs[id] = root.URL.createObjectURL(f); snap(); var r = tl.addOverlay(ovs, { fileId: id, name: f.name, start: pickAt != null ? pickAt : tlNow(), dur: 3 }); pickAt = null; if (!r.ok) { dropSnap(); throw new Error(TLERR[r.error] || r.error); }
         ovs = r.overlays; project.overlays = ovs; save(); renderObjs(); updateOverlay(); msg(''); return r.id;
       }).then(null, function (e) { msg('⚠️ ' + ((e && e.message) || e)); });
     }
@@ -37438,7 +37936,7 @@ return holder.FaDeckEditUI;
       var Ctx = root.AudioContext || root.webkitAudioContext;
       return putMedia(f).then(function (id) {
         return (Ctx ? f.arrayBuffer().then(function (ab) { return new Ctx().decodeAudioData(ab); }).then(function (b) { return b.duration; }) : Promise.reject(new Error(T('這個瀏覽器不能解碼音訊', 'This browser cannot decode audio')))).then(function (d) {
-          snap(); var r = core.addDub(dubs, { start: tlNow(), duration: d, fileId: id, name: f.name.replace(/\.[^.]+$/, ''), kind: 'file' }); if (!r.ok) { dropSnap(); throw new Error(DERR[r.error] || r.error); }
+          snap(); var r = core.addDub(dubs, { start: pickAt != null ? pickAt : tlNow(), duration: d, fileId: id, name: f.name.replace(/\.[^.]+$/, ''), kind: 'file' }); if (!r.ok) { dropSnap(); throw new Error(DERR[r.error] || r.error); }
           audios[r.id] = { el: null, url: null, blob: f }; commitDubs(r.dubs); msg(''); return r.id;
         });
       }).then(null, function (e) { msg('⚠️ ' + ((e && e.message) || e)); });
@@ -37489,13 +37987,13 @@ return holder.FaDeckEditUI;
     bSplit.title = T('在播放位置把片段切成兩段', 'Cut the clip in two at the playhead'); bMkA.title = T('把播放位置設為要刪除範圍的起點', 'Use the playhead as the start of the range to remove'); bMkB.title = T('把播放位置設為要刪除範圍的終點', 'Use the playhead as the end of the range to remove'); bCut.title = T('把起~迄之間的影片整段拿掉,後面的內容(逐字稿、配音、圖片)往前接', 'Take out everything between from and to; what follows (transcript, dubs, pictures) moves up');
     bAddVid.title = T('選多個影片,依序接在時間軸最後面(合併)', 'Pick several videos: they are appended to the end of the timeline (merge)'); bAddImg.title = T('在播放位置疊上一張圖片(長度、位置、大小在物件列改)', 'Overlay a picture at the playhead (length, position and size in the object list)'); bAddAud.title = T('在播放位置加入一段聲音(變成物件列的配音)', 'Add a sound at the playhead (it becomes a dub in the object list)');
     [bSplit, bCut, bAddImg, bAddAud].forEach(function (b) { b.setAttribute('data-needs', '1'); });
-    bSplit.addEventListener('click', doSplit); bMkA.addEventListener('click', function () { mkA.value = core.clock(now()); }); bMkB.addEventListener('click', function () { mkB.value = core.clock(now()); });
+    bSplit.addEventListener('click', function () { doSplit(); }); bMkA.addEventListener('click', function () { mkA.value = core.clock(now()); }); bMkB.addEventListener('click', function () { mkB.value = core.clock(now()); });
     bCut.addEventListener('click', function () { var a = core.parseT(mkA.value), b = core.parseT(mkB.value); if (a === null || b === null) { msg(T('起、迄要填時間(mm:ss.s 或秒數),或按 [ ] 用播放位置', 'Fill from / to (mm:ss.s or seconds), or press [ ] to use the playhead')); return; } doRemoveRange(a, b); mkA.value = mkB.value = ''; });
     bAddVid.addEventListener('click', function () { inVid.click(); }); bAddImg.addEventListener('click', function () { inImg.click(); }); bAddAud.addEventListener('click', function () { inAud.click(); }); bUndoEdit.addEventListener('click', undoEdit);
     inVid.addEventListener('change', function () { var l = inVid.files; var arr = Array.prototype.slice.call(l); inVid.value = ''; addVideos(arr); }); inImg.addEventListener('change', function () { var f = inImg.files && inImg.files[0]; inImg.value = ''; if (f) { addImage(f); } }); inAud.addEventListener('change', function () { var f = inAud.files && inAud.files[0]; inAud.value = ''; if (f) { addAudio(f); } });
     [bSplit, mkA, bMkA, mkB, bMkB, bCut, bAddVid, bAddImg, bAddAud, bUndoEdit, inVid, inImg, inAud].forEach(function (n) { edBar.appendChild(n); });
     q = root.TwVideoJobs.create({ run: runJob, onChange: jobsChanged }); q.restore(project.jobs);
-    box._ve = { project: project, say: msg, clips: function () { return clips; }, overlays: function () { return ovs; }, split: doSplit, removeRange: doRemoveRange, addVideos: addVideos, addImage: addImage, addAudio: addAudio, setTransition: setTransition, undoEdit: undoEdit, loadSrc: loadSrc, srcs: function () { return srcs; }, dubs: function () { return dubs; }, dubAudio: function (id) { return audios[id] && audios[id].el; }, queue: q, enqueueBurn: enqueueBurn, enqueueTranscribe: enqueueTranscribe, importText: importText, ask: submitAsk, applyAsk: applyAsk, addTtsDub: addTtsDub, cues: function () { return cues; }, addAt: addAt, edit: edit, video: null, setVideo: setVideo, tab: setTab, panel: function (hidden) { if (hidden !== undefined) { lay.panelHidden = !!hidden; applyPanel(); save(); } return !lay.panelHidden; },
+    box._ve = { project: project, say: msg, runOps: runOps, state: aiState, clips: function () { return clips; }, overlays: function () { return ovs; }, split: doSplit, removeRange: doRemoveRange, addVideos: addVideos, addImage: addImage, addAudio: addAudio, setTransition: setTransition, undoEdit: undoEdit, loadSrc: loadSrc, srcs: function () { return srcs; }, dubs: function () { return dubs; }, dubAudio: function (id) { return audios[id] && audios[id].el; }, queue: q, enqueueBurn: enqueueBurn, enqueueTranscribe: enqueueTranscribe, importText: importText, ask: submitAsk, applyAsk: applyAsk, addTtsDub: addTtsDub, cues: function () { return cues; }, addAt: addAt, edit: edit, video: null, setVideo: setVideo, tab: setTab, panel: function (hidden) { if (hidden !== undefined) { lay.panelHidden = !!hidden; applyPanel(); save(); } return !lay.panelHidden; },
       panelWidth: function (w) { if (w !== undefined) { lay.panelW = core.clampPanelWidth(w, box.clientWidth); applyPanel(); save(); } return lay.panelW; }, layout: function () { return lay; } };
     (o.container || root.document.body).appendChild(box);
     var FW = o.windowApi || root.FaWin || (typeof FaWin !== 'undefined' ? FaWin : null);   // desktop-app: the shared window shell (pop out / maximize / dock)
@@ -37703,9 +38201,95 @@ return holder.FaDeckEditUI;
     };
 
     // ───── AI:程式先讀白話(video_edit_ai.localParse,在編輯器裡),讀不懂才問模型 ─────
-    M._videoAiMode = async function () {
-        const A = this._edAi(); if (!A.have()) return 'none';
-        return this.advancedSettings && this.advancedSettings.offlineMode ? 'offline' : 'online';
+    // 一律問模型(不再因為「離線模式」或沒設金鑰就不問):_kiLlm 先走線上、線上逾時/出錯才接離線文字模型(離線模式開著時順序相反,但線上一樣是退路);都不行才回報錯誤
+    M._videoAiMode = async function () { return this.advancedSettings && this.advancedSettings.offlineMode ? 'offline' : 'online'; };
+    // 線上模型(只走線上:_kiLlm 的 noOffline);離線的部分交給 harness(_videoOffline),不讓離線小模型自己寫 JSON
+    M._videoOnlineChat = function (system, user, onStep) { return this._kiLlm(String(user), { systemPrompt: system || '', maxTokens: 4000, temperature: 0.2 }, { timeoutMs: 150000, label: '影片編輯器', noOffline: true, onStep: typeof onStep === 'function' ? onStep : undefined }).then(String); };
+
+    // ───── 對話裡的 agent 工具(video_* 與 edit_video_open):編輯器的封閉動作原封不動變成工具,所以聊天裡的 agent、離線訓練器、計畫模板與 CoLU 單元目錄都用同一套詞彙驅動開著的編輯器 ─────
+    M._videoLiveEditor = function () {
+        const m = this._edEditors; if (!m) return null; let found = null;
+        m.forEach((holder, key) => { if (/^edit-video:/.test(key) && holder && holder.querySelector) { const e = holder.querySelector('[data-tw-ve]'); if (e && e._ve && e.isConnected !== false) found = e; } });
+        return found;
+    };
+    M._registerEditVideoTools = function (registerOptional) {
+        const TOOLS = window.TwVideoPlans.TOOLS;
+        const parse = async (self, raw) => { let a = {}; try { a = await self.repairJsonPayload(String(raw || '{}')); } catch (_) { /* */ } return a || {}; };
+        Object.keys(TOOLS).forEach((name) => {
+            const t = TOOLS[name], props = {}; Object.keys(t.props).forEach((k) => { props[k] = Object.assign({}, t.props[k]); if (!props[k].description) props[k].description = k; });
+            registerOptional(name, t.desc, async function (rawArgs) {
+                const a = await parse(this, rawArgs), ed = this._videoLiveEditor(); if (!ed) return JSON.stringify({ ok: false, error: T('沒有開著的影片編輯器(先 /edit-video 或 edit_video_open)', 'No video editor is open (use /edit-video or edit_video_open first)') });
+                const op = window.TwVideoPlans.toOp(name, a); try { return JSON.stringify(await ed._ve.runOps([op])); } catch (e) { return JSON.stringify({ ok: false, error: String((e && e.message) || e) }); }
+            }, { type: 'object', properties: props, required: t.required || [], additionalProperties: false });
+        });
+        registerOptional('edit_video_open', '在對話裡放一個「影片編輯器」(播放器＋逐字稿＋時間軸:分割、刪除一段、合併、轉場、疊圖片、插入聲音、TTS 配音、燒錄字幕)。參數:file_id(使用者附的影片,選填)、request(一句話要做什麼,開起來後交給編輯器的 Ask AI,選填)。回傳 {ok: true, id: "編輯器 id"}。',
+            async function (rawArgs) { const a = await parse(this, rawArgs); try { return JSON.stringify(await this._videoOpen({ fileId: a.file_id ? String(a.file_id) : null, request: a.request ? String(a.request) : '' })); } catch (e) { return JSON.stringify({ ok: false, error: String((e && e.message) || e) }); } },
+            { type: 'object', properties: { file_id: { type: 'string', description: '使用者附的影片(file id)' }, request: { type: 'string', description: '一句話要做什麼' } }, additionalProperties: false });
+    };
+    { const prevTools = M._registerEditTools; M._registerEditTools = function (ro) { if (prevTools) prevTools.call(this, ro); this._registerEditVideoTools(ro); }; }
+
+    // ───── 離線 AI = 整套 harness(線上失效、或離線模式開著時):程式讀白話 → 離線訓練器學過的做法 → 意圖引擎(字母選擇題,模型只選不寫) → 計畫模板 → CoLU/UML 單元接線;每一層做不出來才交給下一層 ─────
+    // 回傳 { edits, say, notes, via:[哪幾層出手] };edits 是 video_edit_ai.js 的封閉動作,之後仍由 applyEdits 逐項檢查(模型答錯也弄壞不了專案)
+    M._videoOffline = async function (text, st, onStep) {
+        const say = typeof onStep === 'function' ? onStep : () => {}, TP = window.TwVideoPlans, via = [], notes = [], spec = { clips: st.clips, cues: st.cues, now: st.now, duration: st.duration };
+        let edits = [], head = '';
+        // ① 離線訓練器:線上 AI 做成功過的做法(學回去的規則)、使用者教的;只認 video_* 工具,別的領域的結果不拿來用
+        try {
+            say(T('離線 AI ①:查離線訓練器學過的做法…', 'Offline AI ①: looking up what the offline trainer has learned…'));
+            const plan = await this._otPlan(String(text), {}), ch = plan && plan.decision && plan.decision.status === 'planned' ? plan.decision.chosen : null;
+            if (ch) {
+                const arg = (c) => c.args || (c.rawArgs ? (() => { try { return JSON.parse(c.rawArgs); } catch (_) { return {}; } })() : {});
+                const calls = ch.kind === 'cache' ? (ch.calls || []).map((c) => ({ name: c.name || c.tool, args: arg(c) })) : ch.kind === 'steps' ? (ch.steps || []).map((x) => ({ name: x.tool, args: x.args || {} })) : ch.kind === 'tool' ? [{ name: ch.tool, args: ch.args || {} }] : [];
+                if (calls.length && calls.every((c) => TP.TOOLS[c.name])) { edits = calls.map((c) => TP.toOp(c.name, c.args)); via.push('trainer'); head = T('離線:離線訓練器學過這個做法', 'Offline: the offline trainer has learned this'); }
+            }
+        } catch (e) { notes.push(String((e && e.message) || e).slice(0, 80)); }
+        // ② 計畫模板:一句話的多步驟目標(剪片頭、只保留一段、每 30 秒切一刀、全部逐字稿配音…)由程式展開成動作,數字來自句子或編輯器的狀態
+        if (!edits.length) {
+            say(T('離線 AI ②:套計畫模板…', 'Offline AI ②: plan templates…'));
+            const pl = TP.expand(String(text), spec); if (pl) { if (pl.edits.length) { edits = pl.edits; via.push('plan'); head = T('離線:計畫模板「' + pl.label + '」展開成 ' + pl.edits.length + ' 個動作', 'Offline: plan template "' + pl.label + '" → ' + pl.edits.length + ' action(s)'); } else { pl.notes.forEach((n) => notes.push(pl.label + ':' + n)); } }
+        }
+        // ③ 細切 + 語意推導 + UML + CoLU 接線(通用 harness 的 video 領域):意圖切細、相對說法(前半段、最後 10 秒、第 3 句那一段、沒有字幕的地方)用編輯器的狀態推導成數字、寫成 UML 使用案例、交給單元目錄接線成 video_* 工具呼叫
+        if (!edits.length && typeof FaHarnessHost !== 'undefined') {
+            say(T('離線 AI ③:細切意圖、推導語意、UML 接線(CoLU)…', 'Offline AI ③: decompose the intents, derive the semantics, wire through UML (CoLU)…'));
+            try {
+                const h = await this._harnessRun('video', String(text), spec, { onStep: say});
+                if (h.ok && h.calls.length) {
+                    edits = h.calls.map((c) => TP.toOp(c.tool, c.args)).filter(Boolean); via.push('semantics'); head = T('離線:細切成 ' + h.total + ' 個意圖,CoLU 接上 ' + h.wired + '/' + h.total, 'Offline: ' + h.total + ' intent(s), CoLU wired ' + h.wired + '/' + h.total);
+                    h.derived.forEach((x) => notes.push(T('推導:', 'Derived: ') + x)); if (h.wired < h.total) notes.push(T('有 ' + (h.total - h.calls.filter((c) => c.wired).length) + ' 步沒接上單元,改用該動作自己的工具', 'Some steps were not wired: the action\'s own tool is used'));
+                }
+                if (h.gaps && h.gaps.length) { h.gaps.forEach((g) => notes.push(T('缺:', 'Gap: ') + g)); }
+            } catch (e) { notes.push(String((e && e.message) || e).slice(0, 80)); }
+        }
+        // ③b 意圖引擎:一句話切成子句,每個子句對到一個意圖;對不到才問離線模型一個字母(模型只選不寫)
+        if (!edits.length && typeof FaEditOffline !== 'undefined') {
+            say(T('離線 AI ③:用意圖引擎讀這句話…', 'Offline AI ③: intent engine…'));
+            const A = this._edAi(); let r = null;
+            try { r = await FaEditOffline.make(FaEditOffline.videoAdapter()).run(String(text), spec, {}, (q, opts) => A.pick(q, opts), null); } catch (e) { notes.push(String((e && e.message) || e).slice(0, 80)); }
+            if (r && r.edits.length) { edits = r.edits; via.push('intent'); r.notes.forEach((n) => notes.push(n)); if (r.unmatched.length) notes.push(T('這幾句沒讀懂:', 'Not understood: ') + r.unmatched.join('、')); head = T('離線:程式讀懂了 ' + r.matched.length + ' 句', 'Offline: the program understood ' + r.matched.length + ' sentence(s)'); }
+        }
+        if (!edits.length) return { edits: [], notes, via };
+        // ④ CoLU/UML:這些動作對到單元目錄裡的 video_* 單元(型別接線,0 次模型呼叫);沒接上的只提醒,不擋(編輯器自己的 applyEdits 才是最後一道檢查)
+        const co = this._videoCoLU(edits); if (co) { via.push('colu'); notes.push(co.ok ? T('CoLU 接線:' + co.bound + '/' + co.total + ' 個動作對到單元', 'CoLU wiring: ' + co.bound + '/' + co.total + ' actions bound to units') : T('CoLU:' + co.error, 'CoLU: ' + co.error)); }
+        return { edits, say: head, notes, via };
+    };
+    // UML 使用案例:User -> VideoEditor.video_split(at) -> …,交給單元目錄接線(catalog_bind 同一個函式);回 { ok, bound, total, valid, program } 或 null(沒有 CoLU 模組)
+    M._videoCoLU = function (edits) {
+        if (typeof FaUml === 'undefined' || typeof FaCatalogBind === 'undefined' || !this._unitCatalogBind) return null;
+        const calls = (edits || []).map((e) => window.TwVideoPlans.toTool(e)).filter(Boolean); if (!calls.length) return null;
+        const uml = 'model: VideoEdit\nactor: User\nusecase Request: User -> ' + calls.map((c) => 'VideoEditor.' + c.name + '(' + Object.keys(c.args).join(',') + ')').join(' -> ');
+        try {
+            const r = this._unitCatalogBind(uml, {}); if (!r.ok) return { ok: false, error: String(r.error || '').slice(0, 100) };
+            const res = (r.results || [])[0] || {}, steps = res.steps || []; return { ok: true, bound: steps.filter((x) => x.unit || (x.units && x.units.length)).length, total: calls.length, valid: !!res.valid, program: res.program, uml };
+        } catch (e) { return { ok: false, error: String((e && e.message) || e).slice(0, 100) }; }
+    };
+    // 線上 AI 做成功的句子 → 離線訓練器:句子裡的數字換成擷取群組、引號裡的字換成 {quoted},存成領域 edit_video 的 regex 規則(steps = video_* 工具呼叫);下次同類的句子離線也讀得懂。學不起來(數字不在句子裡)就不存。
+    M._videoLearn = async function (info) {
+        const g = window.TwVideoPlans.generalize(info && info.text, info && info.edits); if (!g) return { ok: false, learned: false };
+        const init = await this._otRun({ action: 'init_domain', domain: 'edit_video', description: '影片編輯器(/edit-video)的說法 → video_* 編輯動作;線上 AI 做成功的句子自動學回來' }); if (init && init.ok === false) return init;
+        let h = 0; for (const ch of g.expr) h = (h * 31 + ch.charCodeAt(0)) | 0; const id = 'vid_' + (h >>> 0).toString(36);
+        const pattern = { id, type: 'regex', expr: g.expr, intent: String(info.text).slice(0, 60), examples: [String(info.text).slice(0, 200)], confidence: 0.9, source: 'edit-video-learned', risk: 'safe', enabled: true, hits: 0 };
+        if (g.steps.length === 1) { pattern.tool = g.steps[0].tool; pattern.args = g.steps[0].args; } else { pattern.steps = g.steps; }
+        const r = await this._otRun({ action: 'add_pattern', domain: 'edit_video', pattern }); return Object.assign({ learned: !!(r && r.ok) }, r);
     };
 
     // ───── 掛載 ─────
@@ -37723,7 +38307,7 @@ return holder.FaDeckEditUI;
             openEditor: (fid) => self._videoOpen({ fileId: fid }),
             voices: () => self._videoVoices(), pickVoice: (text, lang) => self._videoPickVoice(text, lang),
             synthesize: (text, voiceId, lang) => self._videoSynthesize(text, voiceId, lang),
-            ai: { mode: () => self._videoAiMode(), chat: (system, user) => self._edAi().chat(system || '', user, { maxTokens: 4000, timeoutMs: 150000 }) }
+            ai: { mode: () => self._videoAiMode(), chat: (system, user, onStep) => self._videoOnlineChat(system, user, onStep), offline: (text, st, onStep) => self._videoOffline(text, st, onStep), learn: (info) => self._videoLearn(info) }
         };
     };
     M._videoMountOpts = function (id) {
@@ -37739,6 +38323,7 @@ return holder.FaDeckEditUI;
             const sc = o.fresh.source;
             Promise.resolve(sc.file ? el._ve.setVideo(sc.file) : el._ve.setVideo({ id: sc.id })).then(null, (e) => el._ve.say(T('載入影片失敗:', 'Could not load the video: ') + String((e && e.message) || e)));
         }
+        if (o.fresh && o.fresh.request) { setTimeout(() => { try { el._ve.tab('ask'); el._ve.ask(o.fresh.request); } catch (_) { /* */ } }, 900); }
         el._ed = { destroy: () => { try { el.remove(); } catch (_) { /* */ } }, getState: () => null };
         return el;
     };
@@ -37749,7 +38334,7 @@ return holder.FaDeckEditUI;
         if (o.id) { const proj = await FaEditStore.loadProject('edit-video', String(o.id)); if (!proj) return { ok: false, error: T('找不到這個專案:', 'no such project: ') + o.id }; this._edPush('edit-video', String(o.id), null); return { ok: true, id: String(o.id) }; }
         const id = FaEditStore.newId(K.prefix), proj = window.TwVideoEdit.newProject(T('影片', 'Video'));
         await FaEditStore.saveProject('edit-video', id, { v: 1, spec: proj, state: null });
-        this._videoFresh = this._videoFresh || new Map(); this._videoFresh.set(id, { source: o.file ? { file: o.file } : o.fileId ? { id: o.fileId } : null });
+        this._videoFresh = this._videoFresh || new Map(); this._videoFresh.set(id, { source: o.file ? { file: o.file } : o.fileId ? { id: o.fileId } : null, request: String(o.request || '').trim() });
         this._edPush('edit-video', id, null);
         return { ok: true, id, note: 'the video editor is open in the conversation; the user works in it. Do not paste the content into the conversation.' };
     };
@@ -40737,6 +41322,13 @@ FA_TASK_TOOL_HINTS.push({
     neg: /(怎麼|如何|為什麼|為何|是什麼|能不能|可不可以|可以嗎|有沒有|支援|設定|教我)[\s\S]{0,12}(svg|向量)|svg\s*(格式|規格|標籤|語法)|讀取|解析|svg\s*檔(案)?(內容)?[\s\S]{0,6}(是什麼|哪裡)/i,
     tools: ['edit_svg_open', 'list_uploaded_files'],
     note: '【這個需求有專用工具：edit_svg_open】使用者要畫向量圖／SVG、或把圖片描成 SVG。直接呼叫 edit_svg_open：要現成類型用 starter（blank、shapes、flow），否則把一句話需求放 request，有附圖就帶 file_id；編輯器會放在對話裡（無邊界平面、物件欄、屬性面板、AI 對話、復原重做、匯出 SVG／PNG）。不要自己把 SVG 貼進對話。',
+});
+FA_TASK_TOOL_HINTS.push({
+    id: 'edit_video_open',
+    re: /(影片編輯器|(編輯|剪輯|剪接|編修)[^，。\n]{0,6}(影片|視頻)|(分割|切開|切一刀|合併|接起來|剪掉|刪掉|拿掉)[^，。\n]{0,12}(影片|片段|片頭|片尾)|(影片|片段)[^，。\n]{0,8}(轉場|逐字稿|配音|疊圖)|video\s*editor)/i,
+    neg: /(怎麼|如何|為什麼|為何|是什麼|能不能|可不可以|可以嗎|有沒有|支援|設定|教我)[\s\S]{0,12}(影片|剪輯)|下載影片|youtube/i,
+    tools: ['edit_video_open', 'video_split', 'video_cut_range', 'video_cut_clip', 'video_cut_line', 'video_set_transition', 'video_transcribe', 'video_tts_dub', 'video_set_line', 'video_shift_lines', 'video_add_media', 'list_uploaded_files'],
+    note: '【這個需求有專用工具：edit_video_open 與 video_* 編輯動作】使用者要編輯影片(分割、刪掉某一段、合併、轉場、逐字稿、TTS 配音、疊圖片/聲音)。沒有開著的編輯器就先 edit_video_open(有附影片就帶 file_id);編輯器開著時直接用 video_split／video_cut_range／video_cut_clip／video_set_transition／video_transcribe／video_tts_dub／video_set_line／video_shift_lines／video_add_media 一個動作一個動作做,時間是時間軸上的秒數或 m:ss。',
 });
 FA_TASK_TOOL_HINTS.push({
     id: 'edit_picture_open',
@@ -101099,6 +101691,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
 Object.assign(FloatingAssistant.prototype, FaDeckHost.methods, FaDeckTools.methods, FaKnowledgeHost.methods);
 // /edit-svg、/edit-picture、/edit-3d-model（renderer/src/edit/，設計見 DESIGN.edit-svg.md、DESIGN.edit-picture.md、DESIGN.edit-3d.md）
 Object.assign(FloatingAssistant.prototype, FaEditHost.methods);
+if (typeof FaHarnessHost !== 'undefined') Object.assign(FloatingAssistant.prototype, FaHarnessHost.methods);   // 離線 harness 的主機方法(通用,見 DESIGN.offline-harness.md)
 Object.assign(FloatingAssistant.prototype, FaComputerHost.methods);   // computer use（桌面版限定；見 renderer/src/computer/computer_host.js）
 // 遠端群組（renderer/src/remote/，設計見 DESIGN.remote-group.md）
 Object.assign(FloatingAssistant.prototype, FaRemoteHost.methods, FaRemoteDispatch.methods);

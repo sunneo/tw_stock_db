@@ -33,4 +33,12 @@ if (job && job.status === 'done') {
   const px = async (t) => { v.currentTime = t; await new Promise((r) => { v.onseeked = r; setTimeout(r, 4000); }); const cv = document.createElement('canvas'); cv.width = 160; cv.height = 90; const g = cv.getContext('2d'); g.drawImage(v, 0, 0, 160, 90); return Array.from(g.getImageData(80, 45, 1, 1).data).slice(0, 3); };
   R.out.px = { start: await px(0.2), second_clip: await px(V.video.duration - 0.3) };
 }
+// Ask AI: timeline / transcript-queue / TTS sentences (read by the program, no model)
+fa._deckSynthesize = async () => wav(1).arrayBuffer();
+const ask = async (text) => { V.tab('ask'); await V.ask(text); const ok = await until(() => ed.querySelector('[data-ve=ask-apply]'), 6000); if (ok) { ok.click(); await wait(500); } return !!ok; };
+const n0 = V.clips().length; R.ask_split = { proposed: await ask('在 0.5 秒分割'), added: V.clips().length - n0 };
+R.ask_trans = { proposed: await ask('所有片段之間加圓圈展開轉場 1.5 秒'), types: V.clips().slice(1).map((c) => c.tr.type + ':' + c.tr.dur) };
+const t0 = V.video.duration; R.ask_remove = { proposed: await ask('刪除 0:01 到 0:02'), shrunk: Math.round((t0 - V.video.duration) * 10) / 10 };
+const j0 = V.queue.list().length; R.ask_jobs = { proposed: await ask('每 1 秒 辨識 從 0 到 2'), jobs: V.queue.list().slice(j0).map((j) => [j.kind, j.payload.startSec, j.payload.lenSec]) };
+const d0 = V.project.dubs.length; R.ask_tts = { proposed: await ask('在 0:01 用英文配音 說 hello world'), added: await until(() => V.project.dubs.length > d0, 15000) ? V.project.dubs.filter((d) => d.kind === 'tts').map((d) => [d.kind, d.start, d.text]) : null };
 return R;

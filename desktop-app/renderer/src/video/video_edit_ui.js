@@ -203,37 +203,76 @@
     var askLog = [], askProp = null, askBusy = false, askDraft = '', Ai = function () { return root.TwVideoEditAi; };
     function askSay(kind, text, lines) { askLog.push({ k: kind, t: text, l: lines || [] }); if (lay.tab === 'ask') { renderAsk(); } }
     function lineSummary(list, bad) { return list.map(function (a) { return '• ' + a.text; }).concat(bad.map(function (x) { return '✗ ' + x.text; })); }
+    function tlCtx() { return { clips: clips, TL: tl, now: now() }; }
+    function clipSummary() { var st = starts(); return clips.map(function (c, i) { return (i + 1) + ': ' + (c.name || 'clip') + ' ' + core.clock(st[i]) + '–' + core.clock(st[i] + c.out - c.in) + (i > 0 && c.tr && c.tr.type !== 'none' ? ' [' + c.tr.type + ' ' + c.tr.dur + 's]' : ''); }).join('\n'); }
     function askModel(text, base) {
-      var P = Ai().editPrompt(base, text, { duration: dur() });
-      return host.ai.chat(P.system, P.user).then(function (rep) {
-        var pr = Ai().parseReply(rep); if (!pr.ok) { return { edits: [], say: T('AI 的回覆我讀不懂(要是 JSON 動作)。換個說法再試,或用程式讀得懂的句子,例如「第 3 句改成…」。', 'I could not read the AI\'s answer (it has to be JSON actions). Rephrase, or use a sentence the program reads, e.g. "set line 3 to …".'), dropped: [] }; }
-        var ap = Ai().applyEdits(base, pr.edits, dur(), true), problems = ap.rejected.map(function (x) { return x.op + ': ' + x.error; }).concat(pr.droppedOps.map(function (o) { return o + ': not an allowed action'; }));
+      var P = Ai().editPrompt(base, text, { duration: dur(), clips: clipSummary() });
+      var onStep = function (line) { askSay('ai', String(line).replace(/^\s+/, '')); };   // the host tries the online model first and only then the offline one: say which
+      return host.ai.chat(P.system, P.user, onStep).then(function (rep) {
+        var pr = Ai().parseReply(rep); if (!pr.ok) { return { edits: [], unreadable: true, say: T('AI 的回覆我讀不懂(要是 JSON 動作)。換個說法再試,或用程式讀得懂的句子,例如「第 3 句改成…」。', 'I could not read the AI\'s answer (it has to be JSON actions). Rephrase, or use a sentence the program reads, e.g. "set line 3 to …".'), dropped: [] }; }
+        var ap = Ai().applyEdits(base, pr.edits, dur(), true, tlCtx()), problems = ap.rejected.map(function (x) { return x.op + ': ' + x.error; }).concat(pr.droppedOps.map(function (o) { return o + ': not an allowed action'; }));
         if (!problems.length) { return { edits: pr.edits, say: pr.say, dropped: [] }; }
         // one more round: the model gets the reasons and corrects itself; what is still wrong is shown, never dropped silently
-        return host.ai.chat(P.system, P.user + '\n\nYour previous answer:\n' + String(rep).slice(0, 1800) + '\n\nProblems found (fix them, answer the complete JSON again):\n- ' + problems.join('\n- ')).then(function (rep2) {
+        return host.ai.chat(P.system, P.user + '\n\nYour previous answer:\n' + String(rep).slice(0, 1800) + '\n\nProblems found (fix them, answer the complete JSON again):\n- ' + problems.join('\n- '), onStep).then(function (rep2) {
           var p2 = Ai().parseReply(rep2); return p2.ok ? { edits: p2.edits, say: p2.say, dropped: p2.droppedOps } : { edits: pr.edits, say: pr.say, dropped: pr.droppedOps };
         }, function () { return { edits: pr.edits, say: pr.say, dropped: pr.droppedOps }; });
       });
     }
+    // The sentence the program cannot read: ONLINE model first; when it fails (error, timeout, unreadable answer) the OFFLINE harness takes over (learned cases, intent engine, plan templates, CoLU/UML units -- host.ai.offline).
+    // With the app's "offline mode" on the order is the other way round: the harness first, the online model as the way out when it finds nothing.
+    function aiState() { return { clips: clips, cues: cues, now: now(), duration: dur(), TL: tl, overlays: ovs, dubs: dubs }; }
+    function viaOffline(text) {
+      if (!host.ai || !host.ai.offline) { return Promise.resolve(null); }
+      return host.ai.offline(text, aiState(), function (line) { askSay('ai', String(line).replace(/^\s+/, '')); }).then(function (r) { return r && r.edits && r.edits.length ? { edits: r.edits, say: r.say || T('離線 AI(程式＋訓練器＋計畫＋CoLU)讀懂了。', 'The offline AI (program + trainer + plans + CoLU) understood.'), dropped: [], via: 'offline', notes: r.notes } : null; }, function () { return null; });
+    }
+    function askChain(text, base) {
+      if (!host.ai) { return Promise.resolve({ edits: [], say: T('這句話程式讀不懂,而且這裡沒有 AI。', 'The program could not read this and there is no AI here.'), dropped: [] }); }
+      var none = { edits: [], say: T('這句話程式、線上 AI、離線 AI 都讀不懂。可以說「第 3 句改成…」「在 0:30 分割」「刪除 0:10 到 0:20」「所有片段之間加淡入淡出」「每 10 秒辨識一次」「把第 3 句用英文配音」。', 'Neither the program, the online AI nor the offline AI could read this.'), dropped: [] };
+      return host.ai.mode().then(function (m) {
+        var online = function () { return askModel(text, base).then(function (r) { if (r.unreadable) { throw new Error(T('線上 AI 的回覆讀不懂', 'the online answer was not readable')); } r.via = 'online'; return r; }); };
+        if (m === 'offline') { return viaOffline(text).then(function (r) { return r || online().then(null, function () { return none; }); }); }
+        return online().then(null, function (e) { askSay('ai', T('線上 AI 沒成功(', 'The online AI did not work (') + String((e && e.message) || e).slice(0, 80) + T('),改用離線 AI。', '): using the offline AI.')); return viaOffline(text).then(function (r) { return r || none; }); });
+      });
+    }
     function submitAsk(text) {
       text = String(text || '').trim(); if (!text || askBusy) { return Promise.resolve(); }
-      askProp = null; askDraft = ''; askSay('me', text); askBusy = true; var base = cues, local = Ai().localParse(text, cues, { now: now(), duration: dur() }), p;
+      askProp = null; askDraft = ''; askSay('me', text); askBusy = true; var base = cues, local = Ai().localParseMulti(text, cues, { now: now(), duration: dur() }), p;
       if (local.edits.length) { p = Promise.resolve({ edits: local.edits, say: T('程式讀懂了你的句子。', 'Read your sentence directly.'), dropped: [] }); }
-      else { p = (host.ai ? host.ai.mode() : Promise.resolve('none')).then(function (m) { return m === 'online' ? askModel(text, base) : { edits: [], say: T('這句話程式讀不懂,而且現在沒有線上 AI 可問。可以說「第 3 句改成…」「全部提早 0.5 秒」「刪掉空白句」「把第 3 句用英文配音」「把 A 換成 B」「合併第 2 句」。', 'The program could not read this and no online AI is available. Try "set line 3 to …", "shift all 0.5 s earlier", "delete empty lines", "dub line 3 in English", "replace A with B", "merge line 2".'), dropped: [] }; }); }
+      else { p = askChain(text, base); }
       return p.then(function (res) {
-        askBusy = false; var ap = Ai().applyEdits(base, res.edits, dur(), /^zh/i.test(String(root.document.documentElement.lang || '')));
+        askBusy = false; var ap = Ai().applyEdits(base, res.edits, dur(), /^zh/i.test(String(root.document.documentElement.lang || '')), tlCtx());
         var bad = ap.rejected.concat((res.dropped || []).map(function (o) { return { text: o + T(':不在可做的清單裡,沒有執行', ': not an allowed action, not run') }; }));
-        if (ap.applied.length) { askProp = { base: base, ap: ap }; }
+        if (ap.applied.length) { askProp = { base: base, ap: ap, text: text, edits: res.edits, via: res.via || 'program' }; }
         askSay('ai', res.say || (ap.applied.length ? '' : T('沒有任何變更。', 'No change.')), lineSummary(ap.applied, bad));
       }, function (e) { askBusy = false; askSay('err', '⚠️ ' + ((e && e.message) || e)); });
     }
     function applyAsk() {
       var pr = askProp; if (!pr || askBusy) { return Promise.resolve(); } askProp = null;
       if (cues !== pr.base) { askSay('err', T('逐字稿在這之間改過了,請再說一次。', 'The transcript changed in the meantime; say it again.')); return Promise.resolve(); }
-      if (JSON.stringify(pr.ap.cues) !== JSON.stringify(cues)) { commit(pr.ap.cues); }
+      return runProposal(pr.ap, pr);
+    }
+    // carry out a checked proposal (the Ask AI "Apply" button, and runOps for the agent tools): transcript edits + timeline actions (ONE undo step) + queued recognition jobs + TTS dubs
+    function runProposal(ap, pr) {
+      pr = pr || {}; var tlOps = ap.timeline || [], editsTl = tlOps.some(function (o2) { return o2.op === 'split' || o2.op === 'remove_range' || o2.op === 'set_transition'; });
+      if (editsTl) { snap(); inBatch = true; }   // the whole timeline part of this answer is ONE step of "undo edit" (which also restores the transcript)
+      try {
+        if (JSON.stringify(ap.cues) !== JSON.stringify(cues)) { commit(ap.cues); }
+        tlOps.forEach(function (o2) {
+          if (o2.op === 'split') { doSplit(o2.at); } else if (o2.op === 'remove_range') { doRemoveRange(o2.start, o2.end); }
+          else if (o2.op === 'set_transition') { o2.n.forEach(function (ci) { if (clips[ci - 1]) { setTransition(clips[ci - 1].id, o2.dur != null ? { type: o2.type, dur: o2.dur } : { type: o2.type }); } }); }
+        });
+      } finally { inBatch = false; }
+      tlOps.filter(function (o2) { return o2.op === 'add_video' || o2.op === 'add_picture' || o2.op === 'add_sound'; }).slice(0, 1).forEach(function (o2) {   // a file has to be chosen by the user: the picker opens (the Apply click is the user gesture)
+        pickAt = o2.op === 'add_video' ? null : o2.at; (o2.op === 'add_video' ? inVid : o2.op === 'add_picture' ? inImg : inAud).click();
+      });
       askSay('ok', T('已套用(逐字稿分頁的 ↶ 可以一次復原)。', 'Applied (↶ in the Transcript tab undoes it in one step).'));
+      if (pr.via === 'online' && host.ai && host.ai.learn) { host.ai.learn({ text: pr.text, edits: pr.edits, via: pr.via }).then(null, function () { /* learning back is a bonus */ }); }   // an ONLINE answer that worked is taught to the offline trainer
+      (ap.jobs || []).forEach(function (j) {   // "recognize this stretch": one job per stretch in the JOB QUEUE (not run inline)
+        var qid = q.enqueue({ kind: 'transcribe', label: ((project.video && project.video.name) || '') + ' @' + core.clock(j.start) + ' +' + (Math.round(j.len * 10) / 10) + T(' 秒', ' s'), payload: { language: j.lang || lay.genLang || null, startSec: j.start, lenSec: j.len } });
+        askSay(qid ? 'ok' : 'err', qid ? '🎙 ' + core.clock(j.start) + T(' 已排入工作佇列(看「工作佇列」分頁)', ' queued (see the Job queue tab)') : T('工作佇列已滿', 'The job queue is full'));
+      });
       askBusy = true; var voices = host.voices ? host.voices() : [];
-      return pr.ap.tts.reduce(function (chain, t) {
+      return ap.tts.reduce(function (chain, t) {
         return chain.then(function () {
           var v = voices.filter(function (x) { return x.id === t.voice; })[0] || (host.pickVoice ? host.pickVoice(t.text, t.lang) : null), vid = v ? v.id : '', lang = t.lang || (v && v.lang) || '';
           askSay('ai', T('TTS 配音 ', 'TTS dub ') + core.clock(t.start) + T(':合成中…', ': synthesizing…'));
@@ -241,9 +280,14 @@
         });
       }, Promise.resolve()).then(function () { askBusy = false; if (lay.tab === 'ask') { renderAsk(); } });
     }
+    // the closed actions, checked and carried out at once (no preview): the agent tools of the app (video_split, video_cut_range, ...) and the offline harness use this
+    function runOps(ops) {
+      var ap = Ai().applyEdits(cues, ops, dur(), zh(), tlCtx()); if (!ap.applied.length) { return Promise.resolve({ ok: false, applied: [], rejected: ap.rejected.map(function (r) { return r.text; }) }); }
+      return runProposal(ap, {}).then(function () { return { ok: true, applied: ap.applied.map(function (a) { return a.text; }), rejected: ap.rejected.map(function (r) { return r.text; }), clips: clips.length, lines: cues.length, dubs: dubs.length, total: tlTotal() }; });
+    }
     function renderAsk() {
       tabBody.textContent = ''; var wrap = el('div', 'tw-ve-ask'), log = el('div', 'tw-ve-asklog'); wrap.setAttribute('data-ve', 'ask'); log.setAttribute('data-ve', 'ask-log');
-      if (!askLog.length) { log.appendChild(el('div', 'tw-ve-note', T('說你要怎麼改逐字稿或加配音,例如:「第 3 句改成…」「全部提早 0.5 秒」「刪掉空白句」「把第 2 句用英文配音」「把整段翻成英文」(最後一種需要線上 AI)。先給你看會改什麼,按「套用」才生效,可復原。', 'Say how to change the transcript or add a dub, e.g. "set line 3 to …", "shift all 0.5 s earlier", "delete empty lines", "dub line 2 in English", "translate everything to English" (the last one needs the online AI). You see what would change first; "Apply" makes it happen, undo works.'))); }
+      if (!askLog.length) { log.appendChild(el('div', 'tw-ve-note', T('說你要怎麼改逐字稿、剪輯或加配音,例如:「第 3 句改成…」「每 10 秒辨識一次」「在 0:30 分割」「刪除 0:10 到 0:20」「刪掉第 2 個片段」「所有片段之間加圓圈展開轉場」「在 0:05 用英文配音 說 hello」「加入影片」「全部提早 0.5 秒」「刪掉空白句」「把第 2 句用英文配音」「把整段翻成英文」(最後一種需要線上 AI)。先給你看會改什麼,按「套用」才生效,可復原。', 'Say how to change the transcript or add a dub, e.g. "set line 3 to …", "shift all 0.5 s earlier", "delete empty lines", "dub line 2 in English", "translate everything to English" (the last one needs the online AI). You see what would change first; "Apply" makes it happen, undo works.'))); }
       askLog.forEach(function (e) { var r = el('div', 'tw-ve-ask-' + e.k, e.t); e.l.forEach(function (ln) { r.appendChild(el('div', /^✗/.test(ln) ? 'tw-ve-err' : '', ln)); }); log.appendChild(r); });
       wrap.appendChild(log);
       if (askProp) {
@@ -492,8 +536,9 @@
       if (ovs.length || clips.length > 1) { return true; } var c = clips[0], s = c && srcs[fileKey(c)]; return !!(c && (c.in > 0.05 || (s && s.dur && c.out < s.dur - 0.1)));
     }
     var TLERR = { edge: T('這裡離片段的邊緣太近(要至少 0.05 秒)', 'Too close to the edge of the clip (at least 0.05 s)'), full: T('片段數已達上限', 'Too many clips'), range: T('要刪的範圍太短或不合法', 'The range is too short or not valid'), all: T('不能把整支影片都刪掉', 'You cannot remove the whole video'), time: T('時間或長度不合法', 'Invalid time or length'), missing: T('找不到', 'Not found'), first: T('第一個片段沒有轉場', 'The first clip has no transition') };
-    function snap() { editHist.push(JSON.stringify({ clips: clips, cues: cues, dubs: dubs, ovs: ovs })); if (editHist.length > 30) { editHist.shift(); } bUndoEdit.disabled = false; }
-    function dropSnap() { editHist.pop(); bUndoEdit.disabled = !editHist.length; }
+    var inBatch = false, pickAt = null;
+    function snap() { if (inBatch) { return; } editHist.push(JSON.stringify({ clips: clips, cues: cues, dubs: dubs, ovs: ovs })); if (editHist.length > 30) { editHist.shift(); } bUndoEdit.disabled = false; }
+    function dropSnap() { if (inBatch) { return; } editHist.pop(); bUndoEdit.disabled = !editHist.length; }
     function setClips(next, keepT) {
       var t = keepT == null ? tlNow() : keepT; clips = next; project.clips = clips; save(); renderObjs(); refreshCtl();
       if (!clips.length) { return; } var loc = tl.locate(clips, t);
@@ -504,9 +549,9 @@
       var raw = editHist.pop(); bUndoEdit.disabled = !editHist.length; if (!raw) { return; } var st = JSON.parse(raw), t = tlNow();
       applyAnnotations(st.cues, st.dubs, st.ovs); setClips(tl.normalizeClips(st.clips), t); flash(T('已復原剪輯', 'Edit undone'));
     }
-    function doSplit() {
-      if (!clips.length) { msg(T('先載入影片', 'Load a video first')); return; } snap(); var r = tl.splitAt(clips, tlNow()); if (!r.ok) { dropSnap(); msg(TLERR[r.error] || r.error); return; } msg('');
-      var t = tlNow(); clips = r.clips; project.clips = clips; save(); renderObjs(); curIdx = tl.locate(clips, t).i; refreshCtl();   // same source, contiguous: the player does not move
+    function doSplit(at) {
+      if (!clips.length) { msg(T('先載入影片', 'Load a video first')); return; } snap(); var r = tl.splitAt(clips, typeof at === 'number' ? at : tlNow()); if (!r.ok) { dropSnap(); msg(TLERR[r.error] || r.error); return; } msg('');
+      var tp = tlNow(); clips = r.clips; project.clips = clips; save(); renderObjs(); curIdx = tl.locate(clips, tp).i; refreshCtl();   // same source, contiguous: the player does not move
     }
     function doRemoveRange(a, b) {
       if (!clips.length) { msg(T('先載入影片', 'Load a video first')); return; } if (!(b > a)) { msg(TLERR.range); return; } snap(); var r = tl.removeRange(clips, a, b); if (!r.ok) { dropSnap(); msg(TLERR[r.error] || r.error); return; } msg('');
@@ -532,7 +577,7 @@
     function addImage(f) {
       if (!clips.length) { msg(T('先載入影片', 'Load a video first')); return Promise.resolve(); }
       return putMedia(f).then(function (id) {
-        imgs[id] = root.URL.createObjectURL(f); snap(); var r = tl.addOverlay(ovs, { fileId: id, name: f.name, start: tlNow(), dur: 3 }); if (!r.ok) { dropSnap(); throw new Error(TLERR[r.error] || r.error); }
+        imgs[id] = root.URL.createObjectURL(f); snap(); var r = tl.addOverlay(ovs, { fileId: id, name: f.name, start: pickAt != null ? pickAt : tlNow(), dur: 3 }); pickAt = null; if (!r.ok) { dropSnap(); throw new Error(TLERR[r.error] || r.error); }
         ovs = r.overlays; project.overlays = ovs; save(); renderObjs(); updateOverlay(); msg(''); return r.id;
       }).then(null, function (e) { msg('⚠️ ' + ((e && e.message) || e)); });
     }
@@ -542,7 +587,7 @@
       var Ctx = root.AudioContext || root.webkitAudioContext;
       return putMedia(f).then(function (id) {
         return (Ctx ? f.arrayBuffer().then(function (ab) { return new Ctx().decodeAudioData(ab); }).then(function (b) { return b.duration; }) : Promise.reject(new Error(T('這個瀏覽器不能解碼音訊', 'This browser cannot decode audio')))).then(function (d) {
-          snap(); var r = core.addDub(dubs, { start: tlNow(), duration: d, fileId: id, name: f.name.replace(/\.[^.]+$/, ''), kind: 'file' }); if (!r.ok) { dropSnap(); throw new Error(DERR[r.error] || r.error); }
+          snap(); var r = core.addDub(dubs, { start: pickAt != null ? pickAt : tlNow(), duration: d, fileId: id, name: f.name.replace(/\.[^.]+$/, ''), kind: 'file' }); if (!r.ok) { dropSnap(); throw new Error(DERR[r.error] || r.error); }
           audios[r.id] = { el: null, url: null, blob: f }; commitDubs(r.dubs); msg(''); return r.id;
         });
       }).then(null, function (e) { msg('⚠️ ' + ((e && e.message) || e)); });
@@ -593,13 +638,13 @@
     bSplit.title = T('在播放位置把片段切成兩段', 'Cut the clip in two at the playhead'); bMkA.title = T('把播放位置設為要刪除範圍的起點', 'Use the playhead as the start of the range to remove'); bMkB.title = T('把播放位置設為要刪除範圍的終點', 'Use the playhead as the end of the range to remove'); bCut.title = T('把起~迄之間的影片整段拿掉,後面的內容(逐字稿、配音、圖片)往前接', 'Take out everything between from and to; what follows (transcript, dubs, pictures) moves up');
     bAddVid.title = T('選多個影片,依序接在時間軸最後面(合併)', 'Pick several videos: they are appended to the end of the timeline (merge)'); bAddImg.title = T('在播放位置疊上一張圖片(長度、位置、大小在物件列改)', 'Overlay a picture at the playhead (length, position and size in the object list)'); bAddAud.title = T('在播放位置加入一段聲音(變成物件列的配音)', 'Add a sound at the playhead (it becomes a dub in the object list)');
     [bSplit, bCut, bAddImg, bAddAud].forEach(function (b) { b.setAttribute('data-needs', '1'); });
-    bSplit.addEventListener('click', doSplit); bMkA.addEventListener('click', function () { mkA.value = core.clock(now()); }); bMkB.addEventListener('click', function () { mkB.value = core.clock(now()); });
+    bSplit.addEventListener('click', function () { doSplit(); }); bMkA.addEventListener('click', function () { mkA.value = core.clock(now()); }); bMkB.addEventListener('click', function () { mkB.value = core.clock(now()); });
     bCut.addEventListener('click', function () { var a = core.parseT(mkA.value), b = core.parseT(mkB.value); if (a === null || b === null) { msg(T('起、迄要填時間(mm:ss.s 或秒數),或按 [ ] 用播放位置', 'Fill from / to (mm:ss.s or seconds), or press [ ] to use the playhead')); return; } doRemoveRange(a, b); mkA.value = mkB.value = ''; });
     bAddVid.addEventListener('click', function () { inVid.click(); }); bAddImg.addEventListener('click', function () { inImg.click(); }); bAddAud.addEventListener('click', function () { inAud.click(); }); bUndoEdit.addEventListener('click', undoEdit);
     inVid.addEventListener('change', function () { var l = inVid.files; var arr = Array.prototype.slice.call(l); inVid.value = ''; addVideos(arr); }); inImg.addEventListener('change', function () { var f = inImg.files && inImg.files[0]; inImg.value = ''; if (f) { addImage(f); } }); inAud.addEventListener('change', function () { var f = inAud.files && inAud.files[0]; inAud.value = ''; if (f) { addAudio(f); } });
     [bSplit, mkA, bMkA, mkB, bMkB, bCut, bAddVid, bAddImg, bAddAud, bUndoEdit, inVid, inImg, inAud].forEach(function (n) { edBar.appendChild(n); });
     q = root.TwVideoJobs.create({ run: runJob, onChange: jobsChanged }); q.restore(project.jobs);
-    box._ve = { project: project, say: msg, clips: function () { return clips; }, overlays: function () { return ovs; }, split: doSplit, removeRange: doRemoveRange, addVideos: addVideos, addImage: addImage, addAudio: addAudio, setTransition: setTransition, undoEdit: undoEdit, loadSrc: loadSrc, srcs: function () { return srcs; }, dubs: function () { return dubs; }, dubAudio: function (id) { return audios[id] && audios[id].el; }, queue: q, enqueueBurn: enqueueBurn, enqueueTranscribe: enqueueTranscribe, importText: importText, ask: submitAsk, applyAsk: applyAsk, addTtsDub: addTtsDub, cues: function () { return cues; }, addAt: addAt, edit: edit, video: null, setVideo: setVideo, tab: setTab, panel: function (hidden) { if (hidden !== undefined) { lay.panelHidden = !!hidden; applyPanel(); save(); } return !lay.panelHidden; },
+    box._ve = { project: project, say: msg, runOps: runOps, state: aiState, clips: function () { return clips; }, overlays: function () { return ovs; }, split: doSplit, removeRange: doRemoveRange, addVideos: addVideos, addImage: addImage, addAudio: addAudio, setTransition: setTransition, undoEdit: undoEdit, loadSrc: loadSrc, srcs: function () { return srcs; }, dubs: function () { return dubs; }, dubAudio: function (id) { return audios[id] && audios[id].el; }, queue: q, enqueueBurn: enqueueBurn, enqueueTranscribe: enqueueTranscribe, importText: importText, ask: submitAsk, applyAsk: applyAsk, addTtsDub: addTtsDub, cues: function () { return cues; }, addAt: addAt, edit: edit, video: null, setVideo: setVideo, tab: setTab, panel: function (hidden) { if (hidden !== undefined) { lay.panelHidden = !!hidden; applyPanel(); save(); } return !lay.panelHidden; },
       panelWidth: function (w) { if (w !== undefined) { lay.panelW = core.clampPanelWidth(w, box.clientWidth); applyPanel(); save(); } return lay.panelW; }, layout: function () { return lay; } };
     (o.container || root.document.body).appendChild(box);
     var FW = o.windowApi || root.FaWin || (typeof FaWin !== 'undefined' ? FaWin : null);   // desktop-app: the shared window shell (pop out / maximize / dock)

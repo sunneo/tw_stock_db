@@ -1,0 +1,21 @@
+// node scripts/video-tests/video_plans.test.js
+const P = require('../../renderer/src/video/video_plans.js'); let fail = 0; const eq = (n, a, b) => { const ok = JSON.stringify(a) === JSON.stringify(b); if (!ok) { fail++; console.log('FAIL', n, JSON.stringify(a), '!=', JSON.stringify(b)); } else console.log('ok  ', n); };
+const st = { duration: 100, cues: [{ text: 'a' }, { text: '' }, { text: 'c' }] };
+eq('trim head', P.expand('幫我剪掉片頭 5 秒', st).edits, [{ op: 'remove_range', start: 0, end: 5 }]);
+eq('trim head 2', P.expand('前 8 秒不要', st).edits, [{ op: 'remove_range', start: 0, end: 8 }]);
+eq('trim tail', P.expand('把片尾 10 秒刪掉', st).edits, [{ op: 'remove_range', start: 90, end: 100 }]);
+eq('keep range', P.expand('只保留 0:10 到 0:40', st).edits, [{ op: 'remove_range', start: 40, end: 100 }, { op: 'remove_range', start: 0, end: 10 }]);
+eq('split every', P.expand('每 30 秒切一刀', st).edits.map((e) => e.at), [30, 60, 90]);
+eq('dub all', P.expand('把全部逐字稿用英文配音', st).edits, [{ op: 'add_tts_dub', n: 1, lang: 'en-US' }, { op: 'add_tts_dub', n: 3, lang: 'en-US' }]);
+eq('dub empty', P.expand('每一句都配音', { duration: 5, cues: [] }).notes.length, 1);
+eq('transcribe all', P.expand('整支影片產生逐字稿，每 30 秒一段', st).edits, [{ op: 'transcribe', every: 30 }]);
+eq('no goal', P.expand('今天天氣很好', st), null);
+eq('toOp', P.toOp('video_set_transition', { type: 'fade' }), { op: 'set_transition', type: 'fade', n: 'all' });
+eq('toOp media', P.toOp('video_add_media', { kind: 'picture', at: '0:05' }), { op: 'add_picture', at: '0:05' });
+eq('toTool', P.toTool({ op: 'remove_range', start: 10, end: 20 }), { name: 'video_cut_range', args: { start: 10, end: 20 } });
+eq('toTool media', P.toTool({ op: 'add_sound', at: 3 }), { name: 'video_add_media', args: { kind: 'sound', at: 3 } });
+let g = P.generalize('在 0:30 分割', [{ op: 'split', at: 30 }]); eq('generalize split', [g.steps, new RegExp(g.expr).exec('在 1:45 分割')[1], !!new RegExp(g.expr).test('在 0:30 刪除')], [[{ tool: 'video_split', args: { at: '{1}' } }], '1:45', false]);
+g = P.generalize('把 10 秒到 20 秒的部分刪除', [{ op: 'remove_range', start: 10, end: 20 }]); eq('generalize range', [g.steps[0].args, new RegExp(g.expr).exec('把 5 秒到 9 秒的部分刪除').slice(1)], [{ start: '{1}', end: '{2}' }, ['5', '9']]);
+g = P.generalize('在 5 秒念「你好嗎」', [{ op: 'add_tts_dub', text: '你好嗎', start: 5 }]); eq('generalize quoted', [g.steps[0].args, !!new RegExp(g.expr).test('在 9 秒念「別的字」')], [{ text: '{quoted}', start: '{1}' }, true]);
+eq('generalize impossible', P.generalize('剪掉開頭', [{ op: 'remove_range', start: 0, end: 5 }]), null);
+console.log(fail ? fail + ' failed' : 'all passed'); process.exit(fail ? 1 : 0);

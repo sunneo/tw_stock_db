@@ -32,6 +32,16 @@ R.cues = !!(await until(() => ed._ve.cues().length === 2, 15000)); R.cue_text = 
 ed._ve.tab('ask'); await ed._ve.ask('第1句改成「你好」');
 R.ask_proposal = !!(await until(() => ed.querySelector('[data-ve=ask-proposal]') && ed.querySelector('[data-ve=ask-apply]'), 8000));
 const ap = ed.querySelector('[data-ve=ask-apply]'); if (ap) ap.click(); await wait(300); R.ask_applied = ed._ve.cues()[0] && ed._ve.cues()[0].text;
+// the ONLINE model fails -> the offline harness reads a multi-step sentence (the program's single-sentence reader cannot)
+{ const keep = fa._kiLlm; fa.advancedSettings.offlineMode = false; let calls = 0; fa._kiLlm = async () => { calls++; throw new Error('API錯誤(500)'); };
+  ed._ve.tab('ask'); await ed._ve.ask('把逐字稿往前挪 0.1 秒'); const ap3 = await until(() => ed.querySelector('[data-ve=ask-apply]'), 8000);
+  R.ask_offline_log = ed.querySelector('[data-ve=ask-log]').textContent.slice(-300); R.ask_offline = { online_tried: calls, proposal: !!ap3, say: /離線/.test(ed.querySelector('[data-ve=ask-log]').textContent), lines: (ed.querySelector('[data-ve=ask-proposal]') ? ed.querySelector('[data-ve=ask-log]').textContent.match(/•[^•✗]*/g) : []).length };
+  const d = ed.querySelector('[data-ve=ask-discard]'); if (d) d.click(); fa._kiLlm = keep; }
+// a sentence the program cannot read goes to the MODEL even in offline mode / with no API key (the host's _kiLlm: online first, offline as the fallback)
+{ let called = 0; const keep = fa._kiLlm; fa.advancedSettings.offlineMode = true; fa._getApiConfig = () => ({});
+  fa._kiLlm = async (prompt, opts, o) => { called++; if (o && o.onStep) o.onStep('　⚠️ 線上模型沒成功:改用離線模型'); return JSON.stringify({ say: 'ok', edits: [{ op: 'set_text', n: 1, text: '由模型改的' }] }); };
+  ed._ve.tab('ask'); await ed._ve.ask('請把第一句講得更自然一點'); const ap2 = await until(() => ed.querySelector('[data-ve=ask-apply]'), 6000); R.ask_model = { asked: called, proposal: !!ap2, step_line: /離線模型/.test(ed.querySelector('[data-ve=ask-log]').textContent) }; if (ap2) { ap2.click(); await wait(300); R.ask_model.text = ed._ve.cues()[0].text; }
+  fa._kiLlm = keep; fa.advancedSettings.offlineMode = false; }
 await ed._ve.addTtsDub({ text: 'dub me', lang: 'en-US', voiceId: 'af_heart', start: 0.5 }); R.dubs = ed._ve.dubs().length;
 R.voices = fa._videoVoices().length; R.pick = (fa._videoPickVoice('hi', 'en-US') || {}).id;
 ed._ve.enqueueBurn(); R.burn = !!(await until(() => burnArgs, 20000)); R.burnArgs = burnArgs;

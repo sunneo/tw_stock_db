@@ -191,9 +191,95 @@
     };
 
     // ───── AI:程式先讀白話(video_edit_ai.localParse,在編輯器裡),讀不懂才問模型 ─────
-    M._videoAiMode = async function () {
-        const A = this._edAi(); if (!A.have()) return 'none';
-        return this.advancedSettings && this.advancedSettings.offlineMode ? 'offline' : 'online';
+    // 一律問模型(不再因為「離線模式」或沒設金鑰就不問):_kiLlm 先走線上、線上逾時/出錯才接離線文字模型(離線模式開著時順序相反,但線上一樣是退路);都不行才回報錯誤
+    M._videoAiMode = async function () { return this.advancedSettings && this.advancedSettings.offlineMode ? 'offline' : 'online'; };
+    // 線上模型(只走線上:_kiLlm 的 noOffline);離線的部分交給 harness(_videoOffline),不讓離線小模型自己寫 JSON
+    M._videoOnlineChat = function (system, user, onStep) { return this._kiLlm(String(user), { systemPrompt: system || '', maxTokens: 4000, temperature: 0.2 }, { timeoutMs: 150000, label: '影片編輯器', noOffline: true, onStep: typeof onStep === 'function' ? onStep : undefined }).then(String); };
+
+    // ───── 對話裡的 agent 工具(video_* 與 edit_video_open):編輯器的封閉動作原封不動變成工具,所以聊天裡的 agent、離線訓練器、計畫模板與 CoLU 單元目錄都用同一套詞彙驅動開著的編輯器 ─────
+    M._videoLiveEditor = function () {
+        const m = this._edEditors; if (!m) return null; let found = null;
+        m.forEach((holder, key) => { if (/^edit-video:/.test(key) && holder && holder.querySelector) { const e = holder.querySelector('[data-tw-ve]'); if (e && e._ve && e.isConnected !== false) found = e; } });
+        return found;
+    };
+    M._registerEditVideoTools = function (registerOptional) {
+        const TOOLS = window.TwVideoPlans.TOOLS;
+        const parse = async (self, raw) => { let a = {}; try { a = await self.repairJsonPayload(String(raw || '{}')); } catch (_) { /* */ } return a || {}; };
+        Object.keys(TOOLS).forEach((name) => {
+            const t = TOOLS[name], props = {}; Object.keys(t.props).forEach((k) => { props[k] = Object.assign({}, t.props[k]); if (!props[k].description) props[k].description = k; });
+            registerOptional(name, t.desc, async function (rawArgs) {
+                const a = await parse(this, rawArgs), ed = this._videoLiveEditor(); if (!ed) return JSON.stringify({ ok: false, error: T('沒有開著的影片編輯器(先 /edit-video 或 edit_video_open)', 'No video editor is open (use /edit-video or edit_video_open first)') });
+                const op = window.TwVideoPlans.toOp(name, a); try { return JSON.stringify(await ed._ve.runOps([op])); } catch (e) { return JSON.stringify({ ok: false, error: String((e && e.message) || e) }); }
+            }, { type: 'object', properties: props, required: t.required || [], additionalProperties: false });
+        });
+        registerOptional('edit_video_open', '在對話裡放一個「影片編輯器」(播放器＋逐字稿＋時間軸:分割、刪除一段、合併、轉場、疊圖片、插入聲音、TTS 配音、燒錄字幕)。參數:file_id(使用者附的影片,選填)、request(一句話要做什麼,開起來後交給編輯器的 Ask AI,選填)。回傳 {ok: true, id: "編輯器 id"}。',
+            async function (rawArgs) { const a = await parse(this, rawArgs); try { return JSON.stringify(await this._videoOpen({ fileId: a.file_id ? String(a.file_id) : null, request: a.request ? String(a.request) : '' })); } catch (e) { return JSON.stringify({ ok: false, error: String((e && e.message) || e) }); } },
+            { type: 'object', properties: { file_id: { type: 'string', description: '使用者附的影片(file id)' }, request: { type: 'string', description: '一句話要做什麼' } }, additionalProperties: false });
+    };
+    { const prevTools = M._registerEditTools; M._registerEditTools = function (ro) { if (prevTools) prevTools.call(this, ro); this._registerEditVideoTools(ro); }; }
+
+    // ───── 離線 AI = 整套 harness(線上失效、或離線模式開著時):程式讀白話 → 離線訓練器學過的做法 → 意圖引擎(字母選擇題,模型只選不寫) → 計畫模板 → CoLU/UML 單元接線;每一層做不出來才交給下一層 ─────
+    // 回傳 { edits, say, notes, via:[哪幾層出手] };edits 是 video_edit_ai.js 的封閉動作,之後仍由 applyEdits 逐項檢查(模型答錯也弄壞不了專案)
+    M._videoOffline = async function (text, st, onStep) {
+        const say = typeof onStep === 'function' ? onStep : () => {}, TP = window.TwVideoPlans, via = [], notes = [], spec = { clips: st.clips, cues: st.cues, now: st.now, duration: st.duration };
+        let edits = [], head = '';
+        // ① 離線訓練器:線上 AI 做成功過的做法(學回去的規則)、使用者教的;只認 video_* 工具,別的領域的結果不拿來用
+        try {
+            say(T('離線 AI ①:查離線訓練器學過的做法…', 'Offline AI ①: looking up what the offline trainer has learned…'));
+            const plan = await this._otPlan(String(text), {}), ch = plan && plan.decision && plan.decision.status === 'planned' ? plan.decision.chosen : null;
+            if (ch) {
+                const arg = (c) => c.args || (c.rawArgs ? (() => { try { return JSON.parse(c.rawArgs); } catch (_) { return {}; } })() : {});
+                const calls = ch.kind === 'cache' ? (ch.calls || []).map((c) => ({ name: c.name || c.tool, args: arg(c) })) : ch.kind === 'steps' ? (ch.steps || []).map((x) => ({ name: x.tool, args: x.args || {} })) : ch.kind === 'tool' ? [{ name: ch.tool, args: ch.args || {} }] : [];
+                if (calls.length && calls.every((c) => TP.TOOLS[c.name])) { edits = calls.map((c) => TP.toOp(c.name, c.args)); via.push('trainer'); head = T('離線:離線訓練器學過這個做法', 'Offline: the offline trainer has learned this'); }
+            }
+        } catch (e) { notes.push(String((e && e.message) || e).slice(0, 80)); }
+        // ② 計畫模板:一句話的多步驟目標(剪片頭、只保留一段、每 30 秒切一刀、全部逐字稿配音…)由程式展開成動作,數字來自句子或編輯器的狀態
+        if (!edits.length) {
+            say(T('離線 AI ②:套計畫模板…', 'Offline AI ②: plan templates…'));
+            const pl = TP.expand(String(text), spec); if (pl) { if (pl.edits.length) { edits = pl.edits; via.push('plan'); head = T('離線:計畫模板「' + pl.label + '」展開成 ' + pl.edits.length + ' 個動作', 'Offline: plan template "' + pl.label + '" → ' + pl.edits.length + ' action(s)'); } else { pl.notes.forEach((n) => notes.push(pl.label + ':' + n)); } }
+        }
+        // ③ 細切 + 語意推導 + UML + CoLU 接線(通用 harness 的 video 領域):意圖切細、相對說法(前半段、最後 10 秒、第 3 句那一段、沒有字幕的地方)用編輯器的狀態推導成數字、寫成 UML 使用案例、交給單元目錄接線成 video_* 工具呼叫
+        if (!edits.length && typeof FaHarnessHost !== 'undefined') {
+            say(T('離線 AI ③:細切意圖、推導語意、UML 接線(CoLU)…', 'Offline AI ③: decompose the intents, derive the semantics, wire through UML (CoLU)…'));
+            try {
+                const h = await this._harnessRun('video', String(text), spec, { onStep: say});
+                if (h.ok && h.calls.length) {
+                    edits = h.calls.map((c) => TP.toOp(c.tool, c.args)).filter(Boolean); via.push('semantics'); head = T('離線:細切成 ' + h.total + ' 個意圖,CoLU 接上 ' + h.wired + '/' + h.total, 'Offline: ' + h.total + ' intent(s), CoLU wired ' + h.wired + '/' + h.total);
+                    h.derived.forEach((x) => notes.push(T('推導:', 'Derived: ') + x)); if (h.wired < h.total) notes.push(T('有 ' + (h.total - h.calls.filter((c) => c.wired).length) + ' 步沒接上單元,改用該動作自己的工具', 'Some steps were not wired: the action\'s own tool is used'));
+                }
+                if (h.gaps && h.gaps.length) { h.gaps.forEach((g) => notes.push(T('缺:', 'Gap: ') + g)); }
+            } catch (e) { notes.push(String((e && e.message) || e).slice(0, 80)); }
+        }
+        // ③b 意圖引擎:一句話切成子句,每個子句對到一個意圖;對不到才問離線模型一個字母(模型只選不寫)
+        if (!edits.length && typeof FaEditOffline !== 'undefined') {
+            say(T('離線 AI ③:用意圖引擎讀這句話…', 'Offline AI ③: intent engine…'));
+            const A = this._edAi(); let r = null;
+            try { r = await FaEditOffline.make(FaEditOffline.videoAdapter()).run(String(text), spec, {}, (q, opts) => A.pick(q, opts), null); } catch (e) { notes.push(String((e && e.message) || e).slice(0, 80)); }
+            if (r && r.edits.length) { edits = r.edits; via.push('intent'); r.notes.forEach((n) => notes.push(n)); if (r.unmatched.length) notes.push(T('這幾句沒讀懂:', 'Not understood: ') + r.unmatched.join('、')); head = T('離線:程式讀懂了 ' + r.matched.length + ' 句', 'Offline: the program understood ' + r.matched.length + ' sentence(s)'); }
+        }
+        if (!edits.length) return { edits: [], notes, via };
+        // ④ CoLU/UML:這些動作對到單元目錄裡的 video_* 單元(型別接線,0 次模型呼叫);沒接上的只提醒,不擋(編輯器自己的 applyEdits 才是最後一道檢查)
+        const co = this._videoCoLU(edits); if (co) { via.push('colu'); notes.push(co.ok ? T('CoLU 接線:' + co.bound + '/' + co.total + ' 個動作對到單元', 'CoLU wiring: ' + co.bound + '/' + co.total + ' actions bound to units') : T('CoLU:' + co.error, 'CoLU: ' + co.error)); }
+        return { edits, say: head, notes, via };
+    };
+    // UML 使用案例:User -> VideoEditor.video_split(at) -> …,交給單元目錄接線(catalog_bind 同一個函式);回 { ok, bound, total, valid, program } 或 null(沒有 CoLU 模組)
+    M._videoCoLU = function (edits) {
+        if (typeof FaUml === 'undefined' || typeof FaCatalogBind === 'undefined' || !this._unitCatalogBind) return null;
+        const calls = (edits || []).map((e) => window.TwVideoPlans.toTool(e)).filter(Boolean); if (!calls.length) return null;
+        const uml = 'model: VideoEdit\nactor: User\nusecase Request: User -> ' + calls.map((c) => 'VideoEditor.' + c.name + '(' + Object.keys(c.args).join(',') + ')').join(' -> ');
+        try {
+            const r = this._unitCatalogBind(uml, {}); if (!r.ok) return { ok: false, error: String(r.error || '').slice(0, 100) };
+            const res = (r.results || [])[0] || {}, steps = res.steps || []; return { ok: true, bound: steps.filter((x) => x.unit || (x.units && x.units.length)).length, total: calls.length, valid: !!res.valid, program: res.program, uml };
+        } catch (e) { return { ok: false, error: String((e && e.message) || e).slice(0, 100) }; }
+    };
+    // 線上 AI 做成功的句子 → 離線訓練器:句子裡的數字換成擷取群組、引號裡的字換成 {quoted},存成領域 edit_video 的 regex 規則(steps = video_* 工具呼叫);下次同類的句子離線也讀得懂。學不起來(數字不在句子裡)就不存。
+    M._videoLearn = async function (info) {
+        const g = window.TwVideoPlans.generalize(info && info.text, info && info.edits); if (!g) return { ok: false, learned: false };
+        const init = await this._otRun({ action: 'init_domain', domain: 'edit_video', description: '影片編輯器(/edit-video)的說法 → video_* 編輯動作;線上 AI 做成功的句子自動學回來' }); if (init && init.ok === false) return init;
+        let h = 0; for (const ch of g.expr) h = (h * 31 + ch.charCodeAt(0)) | 0; const id = 'vid_' + (h >>> 0).toString(36);
+        const pattern = { id, type: 'regex', expr: g.expr, intent: String(info.text).slice(0, 60), examples: [String(info.text).slice(0, 200)], confidence: 0.9, source: 'edit-video-learned', risk: 'safe', enabled: true, hits: 0 };
+        if (g.steps.length === 1) { pattern.tool = g.steps[0].tool; pattern.args = g.steps[0].args; } else { pattern.steps = g.steps; }
+        const r = await this._otRun({ action: 'add_pattern', domain: 'edit_video', pattern }); return Object.assign({ learned: !!(r && r.ok) }, r);
     };
 
     // ───── 掛載 ─────
@@ -211,7 +297,7 @@
             openEditor: (fid) => self._videoOpen({ fileId: fid }),
             voices: () => self._videoVoices(), pickVoice: (text, lang) => self._videoPickVoice(text, lang),
             synthesize: (text, voiceId, lang) => self._videoSynthesize(text, voiceId, lang),
-            ai: { mode: () => self._videoAiMode(), chat: (system, user) => self._edAi().chat(system || '', user, { maxTokens: 4000, timeoutMs: 150000 }) }
+            ai: { mode: () => self._videoAiMode(), chat: (system, user, onStep) => self._videoOnlineChat(system, user, onStep), offline: (text, st, onStep) => self._videoOffline(text, st, onStep), learn: (info) => self._videoLearn(info) }
         };
     };
     M._videoMountOpts = function (id) {
@@ -227,6 +313,7 @@
             const sc = o.fresh.source;
             Promise.resolve(sc.file ? el._ve.setVideo(sc.file) : el._ve.setVideo({ id: sc.id })).then(null, (e) => el._ve.say(T('載入影片失敗:', 'Could not load the video: ') + String((e && e.message) || e)));
         }
+        if (o.fresh && o.fresh.request) { setTimeout(() => { try { el._ve.tab('ask'); el._ve.ask(o.fresh.request); } catch (_) { /* */ } }, 900); }
         el._ed = { destroy: () => { try { el.remove(); } catch (_) { /* */ } }, getState: () => null };
         return el;
     };
@@ -237,7 +324,7 @@
         if (o.id) { const proj = await FaEditStore.loadProject('edit-video', String(o.id)); if (!proj) return { ok: false, error: T('找不到這個專案:', 'no such project: ') + o.id }; this._edPush('edit-video', String(o.id), null); return { ok: true, id: String(o.id) }; }
         const id = FaEditStore.newId(K.prefix), proj = window.TwVideoEdit.newProject(T('影片', 'Video'));
         await FaEditStore.saveProject('edit-video', id, { v: 1, spec: proj, state: null });
-        this._videoFresh = this._videoFresh || new Map(); this._videoFresh.set(id, { source: o.file ? { file: o.file } : o.fileId ? { id: o.fileId } : null });
+        this._videoFresh = this._videoFresh || new Map(); this._videoFresh.set(id, { source: o.file ? { file: o.file } : o.fileId ? { id: o.fileId } : null, request: String(o.request || '').trim() });
         this._edPush('edit-video', id, null);
         return { ok: true, id, note: 'the video editor is open in the conversation; the user works in it. Do not paste the content into the conversation.' };
     };
