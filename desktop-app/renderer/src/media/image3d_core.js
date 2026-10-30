@@ -692,9 +692,9 @@
       return { subject: 'main', name: '', target: target, decided: false, source: 'hint' };
     }
     // 「把／將 X 變成 3D」「X 轉成立體」：X 就是主體（南瓜燈照片 → 只切出南瓜燈）；「這張圖」之類的泛稱不算
-    if ((m = /(?:把|將)\s*(.+?)\s*(?:變成|轉成|做成|轉為|變為|轉換成|轉)\s*(?:成)?\s*(?:3d|三維|立體)/i.exec(t)) && (name = cleanName(m[1])) && !/[和與跟及、,，]|and/.test(name)) { return { subject: 'main', name: name, target: '', decided: true, source: 'phrase' }; }
+    if ((m = /(?:把|將)\s*(.+?)\s*(?:變成|轉成|做成|作成|製成|轉為|變為|轉換成|轉)\s*(?:成)?\s*(?:3d|三維|立體)/i.exec(t)) && (name = cleanName(m[1])) && !/[和與跟及、,，]|and/.test(name)) { return { subject: 'main', name: name, target: '', decided: true, source: 'phrase' }; }
     // 「只要／只想要／只放 X」
-    if ((m = /只(?:想要|需要|要|想放|放|留|保留|取出|取|拿出|拿|轉|做|抽出)\s*(?:出)?(?:一個|一隻|一顆)?\s*(.+?)(?=[，。,.！!？?；;\n]|$|不要|就好|就可以|即可|而已|然後|並且|變成|轉成|做成|擺|放到|放在|貼|到)/.exec(t))) {
+    if ((m = /只(?:想要|需要|要|想放|放|留|保留|(?:取|切|剪|摳|挖|分|抓|扣|抽|拿)出|取|切|剪|摳|挖|抓|扣|拿|轉|做|作)\s*(?:出)?(?:一個|一隻|一顆)?\s*(.+?)(?=[，。,.！!？?；;\n]|$|不要|就好|就可以|即可|而已|然後|並且|變成|轉成|做成|擺|放到|放在|貼|到)/.exec(t))) {
       name = cleanName(m[1]);
       if (name.length > 12) { return { subject: 'main', name: '', target: '', decided: false, source: 'hint' }; }
       return { subject: 'main', name: name, target: '', decided: true, source: 'phrase' };
@@ -705,7 +705,7 @@
     if ((m = /\b(?:put|place|set)\s+(?:the\s+|a\s+|an\s+|this\s+)?([a-z][a-z ]{1,30}?)\s+(?:photo\s+|picture\s+|image\s+)?(?:on|onto)\s+(?:the\s+|a\s+)?([a-z][a-z ]{1,30})/i.exec(t))) {
       name = cleanName(m[1]); target = cleanTarget(m[2]); if (name) { return { subject: 'main', name: name, target: target, decided: true, source: 'phrase' }; }
     }
-    if (/去背|不要背景|沒有背景|無背景|不含背景|只要(?:前景|主體|主角)|只留主體|不要桌子|不要其他|其他不要|without\s+(?:the\s+)?background/i.test(t)) { return { subject: 'main', name: '', target: '', decided: true, source: 'phrase' }; }
+    if (/去背|(?:切|剪|摳|挖|扣|取)出(?:主體|主角|前景)|不要背景|沒有背景|無背景|不含背景|只要(?:前景|主體|主角)|只留主體|不要桌子|不要其他|其他不要|without\s+(?:the\s+)?background/i.test(t)) { return { subject: 'main', name: '', target: '', decided: true, source: 'phrase' }; }
     if (/主體|主角|單一物件|只|擺到|擺在|放到|放在|放進|subject|\bonly\b|\bjust\b/i.test(t)) { return { subject: 'main', name: '', target: '', decided: false, source: 'hint' }; }
     return { subject: 'all', name: '', target: '', decided: true, source: 'default' };
   }

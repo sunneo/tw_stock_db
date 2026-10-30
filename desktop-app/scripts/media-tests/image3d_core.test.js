@@ -318,4 +318,9 @@ t('subjectIntent: 將南瓜燈變成3d -> 主體南瓜燈；泛稱與多個東�
   assert.strictEqual(C.subjectIntent('把這張圖變成3D').subject, 'all'); assert.strictEqual(C.subjectIntent('把蘋果和香蕉變成3D').subject, 'all');
   assert.strictEqual(C.parseOptions('--editor').editor, true); assert.strictEqual(C.parseOptions('').editor, undefined);
 });
+t('subjectIntent: 將南瓜燈作成3D，只切出南瓜燈', () => {
+  const r = C.subjectIntent('將南瓜燈作成3D，只切出南瓜燈'); assert(r.subject === 'main' && r.name === '南瓜燈' && r.decided, JSON.stringify(r));
+  assert.strictEqual(C.subjectIntent('只切出南瓜燈').name, '南瓜燈'); assert.strictEqual(C.subjectIntent('幫我把主體摳出來').subject, 'main');
+  assert.strictEqual(C.subjectIntent('切出主體').subject, 'main');
+});
 console.log(pass + ' passed' + (process.exitCode ? ', with failures' : ''));
