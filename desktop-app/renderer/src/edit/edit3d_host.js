@@ -192,7 +192,20 @@
         return cv.toDataURL('image/jpeg', 0.85);
     };
     // 「只要主體」：先由程式從使用者的話判斷（FaImage3d.subjectIntent）；只有讀不出來才問模型一個選擇題，答案由程式核對（A／B 以外都當沒答）
-    M._i3dSubjectIntent = async function (text) {
+    // 使用者的要求交給 LLM 讀（全句理解：否定、同義說法…）：回傳的每個欄位都由程式驗證（名稱要真的出現在話裡、倍數夾在範圍內），打出來的 --參數永遠優先；LLM 沒回應或讀不出來就用程式讀的結果（o）
+    M._i3dRequestOptions = async function (text, o) {
+        const t = String(text || '').replace(/\[附件：[^\]]*\]/g, ' ').trim(); if (!t) return o;
+        let A = null; try { A = this._edAi(); } catch (_) { A = null; } if (!A || !A.have()) return o;
+        const say = (l) => { try { if (this._edQuiet && typeof this._edQuiet.sink === 'function') this._edQuiet.sink(l); } catch (_) { /* */ } };
+        say(T('請 LLM 讀你的要求…', 'asking the LLM to read your request…'));
+        const q = FaImage3d.llmRequest(t); let raw = '', timer = null;
+        try { raw = await Promise.race([A.chat(q.system, q.user, { maxTokens: 300, temperature: 0, timeoutMs: 40000, label: '圖片轉3D的要求' }), new Promise((res) => { timer = setTimeout(() => res(''), this._i3dLlmTimeoutMs || 45000); })]); } catch (_) { raw = ''; } finally { if (timer) clearTimeout(timer); }
+        const j = FaImage3d.parseLlmOptions(raw, t);
+        if (!j) { say(T('LLM 沒有給出可用的結果，改用程式讀你的話', 'the LLM gave nothing usable: read the words with the program')); return o; }
+        const m = FaImage3d.mergeOptions(o, j, t); say(T('LLM 讀到：' + (m.subject === 'main' ? '只要主體' + (m.subjectName ? '「' + m.subjectName + '」' : '') : '所有物件') + (m.subjectTarget ? '，擺到「' + m.subjectTarget + '」' : '') + '；外殼 ' + m.shape + '；封閉 ' + m.close + '；深度×' + m.depthScale + '、厚度×' + m.thickScale, 'the LLM read the request')); m.llm = true; return m;
+    };
+    M._i3dSubjectIntent = async function (text, noLlm) {
+        if (!noLlm) { const o0 = FaImage3d.parseOptions(text), o1 = await this._i3dRequestOptions(text, o0); if (o1 && o1.llm) return { subject: o1.subject, name: o1.subjectName || '', target: o1.subjectTarget || '', decided: true, source: 'llm' }; }
         const si = FaImage3d.subjectIntent(text); if (si.decided) return si;
         let pick = null; try { const A = this._edAi(); if (A.have()) { const q = FaImage3d.intentQuestion(text); pick = await A.pick(q.question, q.options); } } catch (_) { pick = null; }
         const v = FaImage3d.intentFromPick(pick);
@@ -254,8 +267,8 @@
     // p: { image?|blob?, request? (the user's words: "要能列印", "用樂高方塊"…), close?: 'objects'|'all', shape?: 'auto'|'cylinder'|'blocks', whole?: bool, model?, device? }
     M._imageTo3d = async function (p) { return await this._i3dTranscript(T('🧊 圖片轉 3D', 'Image to 3D'), () => this._imageTo3d0(p)); };
     M._imageTo3d0 = async function (p) {
-        p = p || {}; const o = FaImage3d.parseOptions(p.request || '');
-        const si = p.subject === 'main' || p.subject === 'all' ? { subject: p.subject, name: String(p.subject_name || '').trim(), decided: true } : (o.subjectDecided ? { subject: o.subject, name: o.subjectName } : await this._i3dSubjectIntent(p.request || '')); if (si.name === undefined) si.name = o.subjectName || '';
+        p = p || {}; const o = await this._i3dRequestOptions(p.request || '', FaImage3d.parseOptions(p.request || ''));
+        const si = p.subject === 'main' || p.subject === 'all' ? { subject: p.subject, name: String(p.subject_name || '').trim(), decided: true } : (o.subjectDecided ? { subject: o.subject, name: o.subjectName } : await this._i3dSubjectIntent(p.request || '', true)); if (si.name === undefined) si.name = o.subjectName || '';
         const subjectOnly = si.subject === 'main' && !p.whole;
         const close = p.close === 'all' || p.close === 'objects' ? p.close : o.close, shape = ['auto', 'smooth', 'cylinder', 'blocks'].includes(p.shape) ? p.shape : o.shape, whole = p.whole != null ? !!p.whole : o.whole;
         this._i3dChapter('read', T('讀取圖片', 'reading the picture'), subjectOnly ? (si.name || T('主體', 'subject')) : ''); const img = await this._vlmResolveImage(p); if (!img.blob) return { ok: false, cancelled: img.cancelled, error: img.error };

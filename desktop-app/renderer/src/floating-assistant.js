@@ -30693,6 +30693,42 @@ const holder = {};
     return out;
   }
 
+  // ---------- the user's request read by an LLM (the program checks every field; flags typed as --xxx always win; without an answer the words are read by parseOptions above) ----------
+  function llmRequest(text) {
+    return {
+      system: '你是「圖片轉 3D」指令的解析器。只輸出一個 JSON 物件，不要解釋、不要程式碼區塊。欄位（使用者沒提到的就省略）：{"subject":"main 或 all","subject_name":"主體的名稱（用使用者話裡的詞）","target":"要擺上去的物件名稱","shape":"auto、smooth、cylinder、blocks 其中之一","close":"objects 或 all","depth_scale":數字,"thickness_scale":數字,"whole":布林,"segment":布林,"panorama":布林}。說明：subject=main 表示使用者只要圖裡的某一個主體（例如「只要小提琴」「去掉背景」「把咖啡杯擺到桌子上」），其他東西都不要；subject=all 表示整張圖所有物件都要。close=all 表示連背景都做成實心（要列印、全部封閉）。shape：smooth 平滑、cylinder 圓柱、blocks 樂高方塊。depth_scale 大於 1 表示正面凹凸更強（立體感強）、小於 1 更平；thickness_scale 大於 1 表示背面更厚、小於 1 更薄。',
+      user: '使用者的要求：「' + String(text || '').replace(/\[附件：[^\]]*\]/g, ' ').trim().slice(0, 400) + '」'
+    };
+  }
+  // reply text -> validated partial options { subject, subjectName, target, shape, close, depthScale, thickScale, whole, segment, panorama } | null
+  function parseLlmOptions(reply, text) {
+    var s = String(reply == null ? '' : reply).replace(/<think>[\s\S]*?<\/think>/gi, ''), a = s.indexOf('{'), b = s.lastIndexOf('}'), j, out = {}, t = String(text || '').toLowerCase();
+    if (a < 0 || b <= a) { return null; }
+    try { j = JSON.parse(s.slice(a, b + 1)); } catch (e) { return null; }
+    if (!j || typeof j !== 'object') { return null; }
+    var num = function (v) { v = Number(v); return isFinite(v) && v > 0 ? Math.max(0.2, Math.min(4, v)) : null; };
+    var nm = function (v) { v = cleanName(v); return v && v.length <= 24 && t.indexOf(v.toLowerCase()) >= 0 ? v : ''; };
+    if (j.subject === 'main' || j.subject === 'all') { out.subject = j.subject; if (j.subject === 'main') { out.subjectName = nm(j.subject_name); out.target = nm(cleanTarget(j.target)) ? cleanTarget(j.target) : ''; } }
+    if (['auto', 'smooth', 'cylinder', 'blocks'].indexOf(j.shape) >= 0) { out.shape = j.shape; }
+    if (j.close === 'objects' || j.close === 'all') { out.close = j.close; }
+    if (num(j.depth_scale)) { out.depthScale = num(j.depth_scale); }
+    if (num(j.thickness_scale)) { out.thickScale = num(j.thickness_scale); }
+    if (j.whole === true) { out.whole = true; } if (j.segment === true) { out.segment = true; } if (j.panorama === true) { out.panorama = true; }
+    return Object.keys(out).length ? out : null;
+  }
+  // o = parseOptions(text); j = parseLlmOptions(...): the LLM reads the whole sentence, but a typed --flag is never overridden
+  function mergeOptions(o, j, text) {
+    var out = {}, k, t = String(text || ''); for (k in o) { out[k] = o[k]; }
+    if (!j) { return out; }
+    if (j.subject && !/--subject/i.test(t)) { out.subject = j.subject; out.subjectName = j.subject === 'main' ? (j.subjectName || '') : ''; out.subjectTarget = j.subject === 'main' ? (j.target || '') : ''; out.subjectDecided = true; out.subjectSource = 'llm'; }
+    if (j.shape && !/--shape/i.test(t)) { out.shape = j.shape; }
+    if (j.close && !/--close/i.test(t)) { out.close = j.close; out.closeSource = 'llm'; }
+    if (j.depthScale && !/--depth/i.test(t)) { out.depthScale = j.depthScale; }
+    if (j.thickScale && !/--thick/i.test(t)) { out.thickScale = j.thickScale; }
+    if (j.whole) { out.whole = true; } if (j.segment) { out.segment = true; } if (j.panorama) { out.panorama = true; }
+    return out;
+  }
+
   // ---------- scene -> raw editor spec (/edit-3d-model): a group holding the background and one custom-shape (mesh:'polygon') object per found object ----------
   // opts: { sizeM (longest side in metres, default 1.5), title, colors:{ id | 'background': '#rrggbb' }, texture: the original picture (a data: URL or ref: key) }
   // With a texture every part gets uvs by projecting the picture straight onto the model from the front (so the front looks like the photo; the sides and back get the nearest edge colours, stretched).
@@ -30729,7 +30765,7 @@ const holder = {};
     return spec;
   }
 
-  return { subjectIntent: subjectIntent, intentQuestion: intentQuestion, intentFromPick: intentFromPick, itemQuestion: itemQuestion, choiceQuestion: choiceQuestion, rankSubjects: rankSubjects, keepLabel: keepLabel, subjectMesh: subjectMesh, stitchDepths: stitchDepths, panoFov: panoFov, buildPanorama: buildPanorama, bendCylinder: bendCylinder, depthBands: depthBands, readExif: readExif, orbitKind: orbitKind, diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
+  return { llmRequest: llmRequest, parseLlmOptions: parseLlmOptions, mergeOptions: mergeOptions, subjectIntent: subjectIntent, intentQuestion: intentQuestion, intentFromPick: intentFromPick, itemQuestion: itemQuestion, choiceQuestion: choiceQuestion, rankSubjects: rankSubjects, keepLabel: keepLabel, subjectMesh: subjectMesh, stitchDepths: stitchDepths, panoFov: panoFov, buildPanorama: buildPanorama, bendCylinder: bendCylinder, depthBands: depthBands, readExif: readExif, orbitKind: orbitKind, diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
 });
 
 }).call(null, undefined, holder);
@@ -32755,7 +32791,20 @@ const FaEditHost = (function () {
         return cv.toDataURL('image/jpeg', 0.85);
     };
     // 「只要主體」：先由程式從使用者的話判斷（FaImage3d.subjectIntent）；只有讀不出來才問模型一個選擇題，答案由程式核對（A／B 以外都當沒答）
-    M._i3dSubjectIntent = async function (text) {
+    // 使用者的要求交給 LLM 讀（全句理解：否定、同義說法…）：回傳的每個欄位都由程式驗證（名稱要真的出現在話裡、倍數夾在範圍內），打出來的 --參數永遠優先；LLM 沒回應或讀不出來就用程式讀的結果（o）
+    M._i3dRequestOptions = async function (text, o) {
+        const t = String(text || '').replace(/\[附件：[^\]]*\]/g, ' ').trim(); if (!t) return o;
+        let A = null; try { A = this._edAi(); } catch (_) { A = null; } if (!A || !A.have()) return o;
+        const say = (l) => { try { if (this._edQuiet && typeof this._edQuiet.sink === 'function') this._edQuiet.sink(l); } catch (_) { /* */ } };
+        say(T('請 LLM 讀你的要求…', 'asking the LLM to read your request…'));
+        const q = FaImage3d.llmRequest(t); let raw = '', timer = null;
+        try { raw = await Promise.race([A.chat(q.system, q.user, { maxTokens: 300, temperature: 0, timeoutMs: 40000, label: '圖片轉3D的要求' }), new Promise((res) => { timer = setTimeout(() => res(''), this._i3dLlmTimeoutMs || 45000); })]); } catch (_) { raw = ''; } finally { if (timer) clearTimeout(timer); }
+        const j = FaImage3d.parseLlmOptions(raw, t);
+        if (!j) { say(T('LLM 沒有給出可用的結果，改用程式讀你的話', 'the LLM gave nothing usable: read the words with the program')); return o; }
+        const m = FaImage3d.mergeOptions(o, j, t); say(T('LLM 讀到：' + (m.subject === 'main' ? '只要主體' + (m.subjectName ? '「' + m.subjectName + '」' : '') : '所有物件') + (m.subjectTarget ? '，擺到「' + m.subjectTarget + '」' : '') + '；外殼 ' + m.shape + '；封閉 ' + m.close + '；深度×' + m.depthScale + '、厚度×' + m.thickScale, 'the LLM read the request')); m.llm = true; return m;
+    };
+    M._i3dSubjectIntent = async function (text, noLlm) {
+        if (!noLlm) { const o0 = FaImage3d.parseOptions(text), o1 = await this._i3dRequestOptions(text, o0); if (o1 && o1.llm) return { subject: o1.subject, name: o1.subjectName || '', target: o1.subjectTarget || '', decided: true, source: 'llm' }; }
         const si = FaImage3d.subjectIntent(text); if (si.decided) return si;
         let pick = null; try { const A = this._edAi(); if (A.have()) { const q = FaImage3d.intentQuestion(text); pick = await A.pick(q.question, q.options); } } catch (_) { pick = null; }
         const v = FaImage3d.intentFromPick(pick);
@@ -32817,8 +32866,8 @@ const FaEditHost = (function () {
     // p: { image?|blob?, request? (the user's words: "要能列印", "用樂高方塊"…), close?: 'objects'|'all', shape?: 'auto'|'cylinder'|'blocks', whole?: bool, model?, device? }
     M._imageTo3d = async function (p) { return await this._i3dTranscript(T('🧊 圖片轉 3D', 'Image to 3D'), () => this._imageTo3d0(p)); };
     M._imageTo3d0 = async function (p) {
-        p = p || {}; const o = FaImage3d.parseOptions(p.request || '');
-        const si = p.subject === 'main' || p.subject === 'all' ? { subject: p.subject, name: String(p.subject_name || '').trim(), decided: true } : (o.subjectDecided ? { subject: o.subject, name: o.subjectName } : await this._i3dSubjectIntent(p.request || '')); if (si.name === undefined) si.name = o.subjectName || '';
+        p = p || {}; const o = await this._i3dRequestOptions(p.request || '', FaImage3d.parseOptions(p.request || ''));
+        const si = p.subject === 'main' || p.subject === 'all' ? { subject: p.subject, name: String(p.subject_name || '').trim(), decided: true } : (o.subjectDecided ? { subject: o.subject, name: o.subjectName } : await this._i3dSubjectIntent(p.request || '', true)); if (si.name === undefined) si.name = o.subjectName || '';
         const subjectOnly = si.subject === 'main' && !p.whole;
         const close = p.close === 'all' || p.close === 'objects' ? p.close : o.close, shape = ['auto', 'smooth', 'cylinder', 'blocks'].includes(p.shape) ? p.shape : o.shape, whole = p.whole != null ? !!p.whole : o.whole;
         this._i3dChapter('read', T('讀取圖片', 'reading the picture'), subjectOnly ? (si.name || T('主體', 'subject')) : ''); const img = await this._vlmResolveImage(p); if (!img.blob) return { ok: false, cancelled: img.cancelled, error: img.error };

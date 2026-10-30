@@ -80,5 +80,15 @@ const host = (answers) => { // answers: 視覺模型每次回答的字母
     const r = await h._imageTo3d({}); assert(r.ok); assert.strictEqual(cards.length, 1); assert.strictEqual(lines.length, 3); assert.strictEqual(lines[0], '【估計深度】南瓜燈：估計遠近'); assert(lines[1].startsWith('　')); assert(pcts[1] > 5 && pcts[1] < 40 && pcts[pcts.length - 1] === 100);
     h._imageTo3d0 = async () => ({ ok: false, error: '壞了' }); await h._imageTo3d({}); assert.strictEqual(cards[1].err, '壞了');
   });
+  await t('LLM 讀要求：用 LLM 的結果（驗證過）；LLM 失敗／逾時就用程式讀的', async () => {
+    const lines = [], text = '把小提琴3d化 只要小提琴跟琴弦，去掉白色背景';
+    const mk = (chat) => Object.assign(Object.create(M), { _edAi: () => ({ have: () => true, chat }), _edQuiet: { sink: (l) => lines.push(l) } });
+    const o0 = Core.parseOptions(text);
+    const a = await mk(async () => '{"subject":"main","subject_name":"小提琴跟琴弦","close":"objects"}')._i3dRequestOptions(text, o0); assert(a.llm && a.subject === 'main' && a.subjectName === '小提琴跟琴弦' && a.subjectDecided); assert(lines.some((l) => /LLM 讀到/.test(l)));
+    const b = await mk(async () => { throw new Error('壞了'); })._i3dRequestOptions(text, o0); assert(!b.llm && b === o0);
+    const hung = mk(() => new Promise(() => {})); hung._i3dLlmTimeoutMs = 30; const c = await hung._i3dRequestOptions(text, o0); assert(!c.llm);
+    const d = await mk(async () => '{"subject":"main"}')._i3dRequestOptions('', o0); assert(d === o0);   // 沒有文字就不問
+    const si = await mk(async () => '{"subject":"main","subject_name":"小提琴","target":"桌子"}')._i3dSubjectIntent('把小提琴擺到桌子上'); assert(si.source === 'llm' && si.name === '小提琴' && si.target === '桌子');
+  });
   console.log(pass + ' passed' + (process.exitCode ? ', with failures' : ''));
 })();

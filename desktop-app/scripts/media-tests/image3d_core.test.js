@@ -338,4 +338,15 @@ t('buildScene: 厚度倍數加厚背面、深度倍數加大正面凹凸，仍�
   assert(zr(b.objects[0])[0] < zr(a.objects[0])[0] - 1e-6, JSON.stringify([zr(a.objects[0]), zr(b.objects[0])]));
   assert(zr(c.objects[0])[1] > zr(a.objects[0])[1] + 1e-6, JSON.stringify([zr(a.objects[0]), zr(c.objects[0])]));
 });
+t('LLM 讀要求：驗證欄位、名稱要真的在話裡、--參數優先', () => {
+  const text = '把小提琴3d化 只要小提琴跟琴弦，去掉白色背景，厚一點', o = C.parseOptions(text);
+  const j = C.parseLlmOptions('好的：```json\n{"subject":"main","subject_name":"小提琴跟琴弦","shape":"smooth","close":"bogus","depth_scale":99,"thickness_scale":1.5,"whole":"yes"}\n```', text);
+  assert.deepStrictEqual(Object.assign({}, j), { subject: 'main', subjectName: '小提琴跟琴弦', target: '', shape: 'smooth', depthScale: 4, thickScale: 1.5 });
+  const m = C.mergeOptions(o, j, text); assert(m.subject === 'main' && m.subjectName === '小提琴跟琴弦' && m.subjectDecided && m.shape === 'smooth' && m.thickScale === 1.5 && m.close === 'objects');
+  assert.strictEqual(C.mergeOptions(C.parseOptions('--shape blocks'), j, '--shape blocks').shape, 'blocks');
+  assert.strictEqual(C.parseLlmOptions('{"subject":"main","subject_name":"長頸鹿"}', text).subjectName, '');
+  assert.strictEqual(C.parseLlmOptions('不是 JSON', text), null); assert.strictEqual(C.parseLlmOptions('{"x":1}', text), null);
+  assert.strictEqual(C.mergeOptions(o, null, text).subject, o.subject);
+  const q = C.llmRequest(text + ' [附件：a.png（file_id=1）]'); assert(q.user.includes('小提琴') && !q.user.includes('file_id') && /JSON/.test(q.system));
+});
 console.log(pass + ' passed' + (process.exitCode ? ', with failures' : ''));
