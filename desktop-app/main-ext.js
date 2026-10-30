@@ -520,7 +520,16 @@ function installChunkedUpdater(ipcMain, ctx, overlay) {
     const { baseline, baselineVersion, stateFile, local } = await loadLocal();
     const remote = await loadRemote();
     const toFetch = changedFiles(baseline, local, remote);
-    if (!toFetch.length) return { ok: true, appliedVersion: local.version, changedFiles: [] };
+    if (!toFetch.length) {
+      // 沒有檔案要換，但遠端版號不一樣（例如新版只多了本機早就有、內容相同的檔案）：只把紀錄的版號跟上，不然畫面會一直顯示舊版號。
+      // 只在覆蓋目錄完整可信（overrideActive）時才寫；沒有覆蓋目錄就沒有 state 可以更新。
+      const rv = remote.version ? String(remote.version) : "";
+      if (rv && local.overrideActive && String(local.version) !== rv) {
+        await writeJson(stateFile, { schema: 1, appliedVersion: rv, appliedAt: new Date().toISOString(), baselineVersion, files: { ...local.files } });
+        return { ok: true, appliedVersion: rv, changedFiles: [] };
+      }
+      return { ok: true, appliedVersion: local.version, changedFiles: [] };
+    }
 
     const downloaded = {};
     for (const rel of toFetch) {
