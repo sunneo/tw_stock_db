@@ -63,5 +63,11 @@ const host = (answers) => { // answers: 視覺模型每次回答的字母
     const r = await h._i3dAttachedEdits({ text: '把這張圖變成 3D 物件', images: [{ dataUrl: 'data:x', name: 'a.jpg' }] });
     assert.strictEqual(got, undefined); assert.strictEqual(r.edits.length, 1); assert.strictEqual(r.edits[0].place, undefined);
   });
+  await t('顯示：預設放成對話裡的 3D 檢視，不開編輯器；--editor 才開編輯器', async () => {
+    ctx.FaEdit3d = { toSceneYaml: () => 'nodes: []' }; const log = [];
+    const h = Object.assign(Object.create(M), { _ensureJsYamlLoaded: async () => {}, _ed3dToChatScene: async (id, y, title) => { log.push(['chat', y, title]); }, _edOpen: async () => { log.push(['editor']); return { ok: true }; } });
+    const r = await h._i3dShow({ objects: [] }, '標題', {}); assert(r.ok && r.viewer); assert.strictEqual(log.length, 1); assert.strictEqual(log[0][0], 'chat');
+    await h._i3dShow({ objects: [] }, '標題', { editor: true }); assert.strictEqual(log[1][0], 'editor');
+  });
   console.log(pass + ' passed' + (process.exitCode ? ', with failures' : ''));
 })();

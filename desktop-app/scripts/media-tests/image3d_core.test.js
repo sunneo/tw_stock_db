@@ -313,4 +313,9 @@ t('rankSubjects: 又大又靠中間的先；keepLabel 只留一個且主體仍�
   assert.strictEqual(s.objects.length, 1); assert(C.isClosed(s.objects[0].mesh));
 });
 
+t('subjectIntent: 將南瓜燈變成3d -> 主體南瓜燈；泛稱與多個東西不算', () => {
+  const r = C.subjectIntent('將南瓜燈變成3d'); assert(r.subject === 'main' && r.name === '南瓜燈' && r.decided, JSON.stringify(r));
+  assert.strictEqual(C.subjectIntent('把這張圖變成3D').subject, 'all'); assert.strictEqual(C.subjectIntent('把蘋果和香蕉變成3D').subject, 'all');
+  assert.strictEqual(C.parseOptions('--editor').editor, true); assert.strictEqual(C.parseOptions('').editor, undefined);
+});
 console.log(pass + ' passed' + (process.exitCode ? ', with failures' : ''));

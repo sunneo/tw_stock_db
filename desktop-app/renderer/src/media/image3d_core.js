@@ -691,6 +691,8 @@
       if (name) { return { subject: 'main', name: name, target: target, decided: true, source: 'phrase' }; }
       return { subject: 'main', name: '', target: target, decided: false, source: 'hint' };
     }
+    // 「把／將 X 變成 3D」「X 轉成立體」：X 就是主體（南瓜燈照片 → 只切出南瓜燈）；「這張圖」之類的泛稱不算
+    if ((m = /(?:把|將)\s*(.+?)\s*(?:變成|轉成|做成|轉為|變為|轉換成|轉)\s*(?:成)?\s*(?:3d|三維|立體)/i.exec(t)) && (name = cleanName(m[1])) && !/[和與跟及、,，]|and/.test(name)) { return { subject: 'main', name: name, target: '', decided: true, source: 'phrase' }; }
     // 「只要／只想要／只放 X」
     if ((m = /只(?:想要|需要|要|想放|放|留|保留|取出|取|拿出|拿|轉|做|抽出)\s*(?:出)?(?:一個|一隻|一顆)?\s*(.+?)(?=[，。,.！!？?；;\n]|$|不要|就好|就可以|即可|而已|然後|並且|變成|轉成|做成|擺|放到|放在|貼|到)/.exec(t))) {
       name = cleanName(m[1]);
@@ -739,6 +741,7 @@
     else if (/圓柱|柱體|cylinder/i.test(t)) { out.shape = 'cylinder'; }
     else if (/樂高|方塊|lego|blocks?/i.test(t)) { out.shape = 'blocks'; }
     if (/--whole(?![a-z])|整張圖當一個|整張當一個|不要?分物件|whole\s+image/i.test(t)) { out.whole = true; }
+    if (/--editor(?![a-z])|開編輯器/i.test(t)) { out.editor = true; }
     var si = subjectIntent(t); out.subject = si.subject; out.subjectName = si.name; out.subjectTarget = si.target; out.subjectDecided = si.decided; out.subjectSource = si.source;
     return out;
   }
