@@ -15,6 +15,10 @@
     { id: 'sd-turbo-webgpu', family: 'sd-turbo', device: 'webgpu', ep: 'webgpu', label: 'sd-turbo（GPU 版，fp16）', repo: 'jdp8/sd-turbo-onnx', rev: '4ea5d203f7def52bcf83781990f97721c98a7f22', needsF16: true, userDownload: true,
       files: [{ name: 'text_encoder/model.onnx', role: 'text', bytes: 681552894 }, { name: 'unet/model.onnx', role: 'unet', bytes: 1737702391 }, { name: 'vae_decoder/model.onnx', role: 'vae', bytes: 99129787 }, { name: 'vae_encoder/model.onnx', role: 'vaeEnc', bytes: 136760235 }] }
   ];
+  // 小型 VAE（TAESD，MIT 授權，各約 5 MB）：給 SDXS／降級路徑當編碼器與解碼器，wasm 與 WebGPU 都能跑（onnxruntime-web 1.20 wasm 實測編碼→解碼來回可還原）。
+  // 輸入影像範圍 [0,1]（不是 [-1,1]）；編碼輸出已是縮放後的潛在值（不用再乘 0.18215）；解碼輸出也是 [0,1]。
+  var TAESD = { id: 'taesd', label: 'TAESD（小型 VAE）', repo: 'julienkay/taesd', rev: 'c8a437fd0201c21c3bcd298fcf3181b063bcc1eb', license: 'MIT', range: '01', scale: 1,
+    files: [{ name: 'vae_encoder/model.onnx', role: 'vaeEnc', bytes: 4910437 }, { name: 'vae_decoder/model.onnx', role: 'vae', bytes: 4912312 }] };
   var LICENSE = { name: 'Stability AI 社群授權', url: 'https://huggingface.co/stabilityai/sd-turbo/blob/main/LICENSE.md',
     note: 'sd-turbo 是 Stability AI 社群授權：研究與非商業免費；商業使用須向 Stability AI 登記（https://stability.ai/community-license），年營收超過 100 萬美元即失效。本程式不內建模型，按下載才從 Hugging Face 取得，使用即表示你同意該授權。' };
   // 沒有可用的 sd-turbo 版本（例如沒有 WebGPU）時的降級：用已內建下載的 SDXS（同樣是 4 通道的 SD 系列，同一套數學），它的圖生圖要另配 VAE 編碼器
@@ -65,15 +69,15 @@
   function gaussian(seed, n) { var r = rng(seed), out = new Float32Array(n); for (var i = 0; i < n; i += 2) { var u = Math.max(r(), 1e-12), v = r(), m = Math.sqrt(-2 * Math.log(u)); out[i] = m * Math.cos(2 * Math.PI * v); if (i + 1 < n) out[i + 1] = m * Math.sin(2 * Math.PI * v); } return out; }
 
   // VAE 編碼器的輸出：8 通道（平均＋對數變異）取前 4 個通道的平均；4 通道就直接用。再乘縮放
-  function latentFromEncoder(out, n) {
-    n = n || 4 * LATENT * LATENT; var res = new Float32Array(n);
+  function latentFromEncoder(out, n, scale) {
+    n = n || 4 * LATENT * LATENT; var res = new Float32Array(n), k = scale == null ? SCALE : scale;
     if (!out || out.length < n) return null;
-    for (var i = 0; i < n; i++) res[i] = out[i] * SCALE; return res;
+    for (var i = 0; i < n; i++) res[i] = out[i] * k; return res;
   }
-  // 影像 RGBA（w×h）→ 編碼器輸入 CHW，範圍 [-1,1]
-  function toChw(rgba, w, h) {
-    var plane = w * h, out = new Float32Array(plane * 3);
-    for (var i = 0; i < plane; i++) for (var c = 0; c < 3; c++) out[c * plane + i] = rgba[i * 4 + c] / 127.5 - 1;
+  // 影像 RGBA（w×h）→ 編碼器輸入 CHW，範圍 [-1,1]（range 給 '01' 則 [0,1]，TAESD 用）
+  function toChw(rgba, w, h, range) {
+    var plane = w * h, out = new Float32Array(plane * 3), r01 = range === '01';
+    for (var i = 0; i < plane; i++) for (var c = 0; c < 3; c++) out[c * plane + i] = r01 ? rgba[i * 4 + c] / 255 : rgba[i * 4 + c] / 127.5 - 1;
     return out;
   }
   // 加噪到時間點 t：x = √ᾱ·z0 + √(1−ᾱ)·noise
@@ -135,5 +139,5 @@
     return '本機改圖失敗：' + msg.slice(0, 200);
   }
 
-  return { SIZE: SIZE, LATENT: LATENT, SCALE: SCALE, TRAIN_STEPS: TRAIN_STEPS, MAXLEN: MAXLEN, MODELS: MODELS, LICENSE: LICENSE, FALLBACK: FALLBACK, byId: byId, urlOf: urlOf, totalBytes: totalBytes, fmtBytes: fmtBytes, pickModel: pickModel, alphasCumprod: alphasCumprod, timesteps: timesteps, rng: rng, gaussian: gaussian, latentFromEncoder: latentFromEncoder, toChw: toChw, addNoise: addNoise, predictX0: predictX0, step: step, fitBox: fitBox, feather: feather, blend: blend, plan: plan, explainError: explainError };
+  return { SIZE: SIZE, LATENT: LATENT, SCALE: SCALE, TRAIN_STEPS: TRAIN_STEPS, MAXLEN: MAXLEN, MODELS: MODELS, TAESD: TAESD, LICENSE: LICENSE, FALLBACK: FALLBACK, byId: byId, urlOf: urlOf, totalBytes: totalBytes, fmtBytes: fmtBytes, pickModel: pickModel, alphasCumprod: alphasCumprod, timesteps: timesteps, rng: rng, gaussian: gaussian, latentFromEncoder: latentFromEncoder, toChw: toChw, addNoise: addNoise, predictX0: predictX0, step: step, fitBox: fitBox, feather: feather, blend: blend, plan: plan, explainError: explainError };
 });
