@@ -228,8 +228,19 @@
         if (!yaml) return await this._edOpen('edit-3d', { spec });
         await this._ed3dToChatScene(null, yaml, title); return { ok: true, viewer: true };
     };
+    // 一次圖片轉3D 的所有步驟（載入深度模型、分割、視覺模型確認、GPU 降級…）集中成「一張」進度卡，過程一行一行記在它的紀錄裡；已經在編輯器裡就沿用編輯器自己的記錄
+    M._i3dTranscript = async function (title, fn) {
+        if (this._edQuiet) return await fn();
+        const prog = this._createProgressWidget(title); prog.update({ status: T('開始…', 'Starting…') });
+        try {
+            const r = await this._edQuietRun((line) => { try { prog.log(String(line)); prog.update({ status: String(line).slice(0, 120) }); } catch (_) { /* */ } }, fn);
+            if (r && r.ok === false && !r.cancelled) prog.fail(r.error || T('失敗', 'failed')); else prog.finish(r && r.cancelled ? T('已取消', 'cancelled') : T('完成', 'done'));
+            return r;
+        } catch (e) { prog.fail(String((e && e.message) || e)); throw e; }
+    };
     // p: { image?|blob?, request? (the user's words: "要能列印", "用樂高方塊"…), close?: 'objects'|'all', shape?: 'auto'|'cylinder'|'blocks', whole?: bool, model?, device? }
-    M._imageTo3d = async function (p) {
+    M._imageTo3d = async function (p) { return await this._i3dTranscript(T('🧊 圖片轉 3D', 'Image to 3D'), () => this._imageTo3d0(p)); };
+    M._imageTo3d0 = async function (p) {
         p = p || {}; const o = FaImage3d.parseOptions(p.request || '');
         const si = p.subject === 'main' || p.subject === 'all' ? { subject: p.subject, name: String(p.subject_name || '').trim(), decided: true } : (o.subjectDecided ? { subject: o.subject, name: o.subjectName } : await this._i3dSubjectIntent(p.request || '')); if (si.name === undefined) si.name = o.subjectName || '';
         const subjectOnly = si.subject === 'main' && !p.whole;
@@ -327,7 +338,8 @@
         return { pano: false };
     };
     // 全景：每張各估深度（各自正規化，所以遠近只是近似）→ 橫向拼成一條 → 依深度切遠／中／近三層，各自封閉後彎到圓柱上；相機放在圓心往外看
-    M._imageToPanorama = async function (p) {
+    M._imageToPanorama = async function (p) { return await this._i3dTranscript(T('🌐 全景轉 3D', 'Panorama to 3D'), () => this._imageToPanorama0(p)); };
+    M._imageToPanorama0 = async function (p) {
         const items = p.items, depths = [];
         for (const it of items) { const dr = await this._depthEstimate({ blob: it.blob, filename: it.filename, model: p.model, device: p.device }); if (!dr.ok) return dr; depths.push(dr.depth); }
         const strip = FaImage3d.stitchDepths(depths, {}), fovDeg = p.fovDeg || FaImage3d.panoFov(strip.w / strip.h);
