@@ -17912,6 +17912,167 @@ const holder = {};
 return holder.FaLocalSd;
 })();
 /* LOCALSD-END */
+/* SDTURBO-BEGIN */
+const FaSdTurbo = (function () {
+const holder = {};
+(function (module, self) {
+/* sd-turbo 圖生圖改圖（UMD，純函式）：使用者給一張圖＋一句話，在本機把圖改掉，不連線上服務。
+ * 這個檔案只有「不碰網路、不碰模型」的部分：模型清單與檔案大小、選版本、圖生圖取樣的數學、遮罩混合、尺寸對齊、錯誤白話說明。下載、載入、執行在 floating-assistant 裡。
+ * 取樣（變分形式，sd-turbo 與 SDXS 共用）：ᾱ(t) 由 scaled_linear 的 beta（0.00085→0.012，1000 步）累乘；
+ *   z0 = vae_encoder(影像)×0.18215；x_t = √ᾱ·z0 + √(1−ᾱ)·雜訊；每步：eps = unet(x_t, t, 文字)；x0 = (x_t − √(1−ᾱ)·eps)/√ᾱ；下一步 x = √ᾱ'·x0 + √(1−ᾱ')·新雜訊（最後一步直接用 x0）。
+ *   strength 決定從哪個時間點開始：steps×strength 取整，至少一步；strength=1 就是整張重畫。
+ * 授權：sd-turbo 是 Stability AI 社群授權（商業須登記、年營收超過 100 萬美元失效），所以不內建、不代下載——使用者按下載才取得。 */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaSdTurbo = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var SIZE = 512, LATENT = 64, SCALE = 0.18215, TRAIN_STEPS = 1000, MAXLEN = 77;
+  var HF = 'https://huggingface.co/';
+  // 位元組數與版本（commit）是釘住的：下載完核對大小，不一樣就不用。sd-turbo 的 ONNX 匯出是 fp16 大小（unet 1.7 GB）。
+  var MODELS = [
+    { id: 'sd-turbo-webgpu', family: 'sd-turbo', device: 'webgpu', ep: 'webgpu', label: 'sd-turbo（GPU 版，fp16）', repo: 'jdp8/sd-turbo-onnx', rev: '4ea5d203f7def52bcf83781990f97721c98a7f22', needsF16: true, userDownload: true,
+      files: [{ name: 'text_encoder/model.onnx', role: 'text', bytes: 681552894 }, { name: 'unet/model.onnx', role: 'unet', bytes: 1737702391 }, { name: 'vae_decoder/model.onnx', role: 'vae', bytes: 99129787 }, { name: 'vae_encoder/model.onnx', role: 'vaeEnc', bytes: 136760235 }] }
+  ];
+  // 小型 VAE（TAESD，MIT 授權，各約 5 MB）：給 SDXS／降級路徑當編碼器與解碼器，wasm 與 WebGPU 都能跑（onnxruntime-web 1.20 wasm 實測編碼→解碼來回可還原）。
+  // 輸入影像範圍 [0,1]（不是 [-1,1]）；編碼輸出已是縮放後的潛在值（不用再乘 0.18215）；解碼輸出也是 [0,1]。
+  var TAESD = { id: 'taesd', label: 'TAESD（小型 VAE）', repo: 'julienkay/taesd', rev: 'c8a437fd0201c21c3bcd298fcf3181b063bcc1eb', license: 'MIT', range: '01', scale: 1,
+    files: [{ name: 'vae_encoder/model.onnx', role: 'vaeEnc', bytes: 4910437 }, { name: 'vae_decoder/model.onnx', role: 'vae', bytes: 4912312 }] };
+  var LICENSE = { name: 'Stability AI 社群授權', url: 'https://huggingface.co/stabilityai/sd-turbo/blob/main/LICENSE.md',
+    note: 'sd-turbo 是 Stability AI 社群授權：研究與非商業免費；商業使用須向 Stability AI 登記（https://stability.ai/community-license），年營收超過 100 萬美元即失效。本程式不內建模型，按下載才從 Hugging Face 取得，使用即表示你同意該授權。' };
+  // 沒有可用的 sd-turbo 版本（例如沒有 WebGPU）時的降級：用已內建下載的 SDXS（同樣是 4 通道的 SD 系列，同一套數學），它的圖生圖要另配 VAE 編碼器
+  var FALLBACK = { family: 'sdxs', note: 'sd-turbo 目前沒有能在 CPU（wasm）跑的版本（fp16 的 unet 約 1.7 GB，fp32 超過 wasm 記憶體上限），沒有 WebGPU 時降級用 SDXS。' };
+
+  function byId(id) { for (var i = 0; i < MODELS.length; i++) if (MODELS[i].id === id) return MODELS[i]; return null; }
+  function urlOf(model, file) { return HF + model.repo + '/resolve/' + model.rev + '/' + file; }
+  function totalBytes(model) { return model.files.reduce(function (a, f) { return a + f.bytes; }, 0); }
+  function fmtBytes(n) { n = Number(n) || 0; return n >= 1e9 ? (n / 1e9).toFixed(2) + ' GB' : Math.round(n / 1e6) + ' MB'; }
+
+  // env: { hasGpu, f16 }；pref: auto｜webgpu｜cpu。回傳 sd-turbo 版本，或說明為什麼要降級
+  function pickModel(env, pref) {
+    env = env || {}; pref = pref === 'webgpu' || pref === 'cpu' ? pref : 'auto'; var notes = [];
+    if (pref === 'cpu') return { ok: true, fallback: 'sdxs', ep: 'wasm', notes: ['設定指定用 CPU。' + FALLBACK.note] };
+    if (!env.hasGpu) {
+      if (pref === 'webgpu') return { ok: false, reason: '設定指定用 GPU 版，但這個環境沒有 WebGPU（瀏覽器或顯示卡不支援）。' };
+      return { ok: true, fallback: 'sdxs', ep: 'wasm', notes: ['沒有 WebGPU。' + FALLBACK.note] };
+    }
+    if (!env.f16) {
+      if (pref === 'webgpu') notes.push('這張顯示卡不支援 f16（shader-f16），GPU 版可能載入失敗。');
+      else return { ok: true, fallback: 'sdxs', ep: 'wasm', notes: ['顯示卡不支援 f16。' + FALLBACK.note] };
+    }
+    var m = byId('sd-turbo-webgpu'); notes.push('第一次要下載約 ' + fmtBytes(totalBytes(m)) + '。');
+    return { ok: true, model: m, ep: m.ep, notes: notes };
+  }
+
+  // ᾱ：scaled_linear 的 beta 累乘
+  var _ac = null;
+  function alphasCumprod() {
+    if (_ac) return _ac; var out = new Float64Array(TRAIN_STEPS), a = 1, b0 = Math.sqrt(0.00085), b1 = Math.sqrt(0.012);
+    for (var i = 0; i < TRAIN_STEPS; i++) { var b = b0 + (b1 - b0) * i / (TRAIN_STEPS - 1); a *= 1 - b * b; out[i] = a; }
+    return (_ac = out);
+  }
+  // 這次要走哪些時間點。steps 1～4（trailing 間隔），strength 0～1 決定略過前面幾個
+  function timesteps(steps, strength) {
+    steps = Math.max(1, Math.min(4, Math.round(Number(steps) || 1))); var s = Number(strength); if (!isFinite(s)) s = 0.5; s = Math.max(0.05, Math.min(1, s));
+    var all = []; for (var i = 0; i < steps; i++) all.push(Math.round(TRAIN_STEPS - 1 - i * (TRAIN_STEPS / steps)));
+    var n = Math.max(1, Math.min(steps, Math.round(steps * s)));
+    var ts = all.slice(steps - n);
+    if (steps === 1 && s < 1) ts = [Math.max(1, Math.round((TRAIN_STEPS - 1) * s))]; // 一步時用 strength 直接決定起點
+    return ts;
+  }
+  function sqrtAb(t) { return Math.sqrt(alphasCumprod()[t]); }
+  function sqrtOneMinusAb(t) { return Math.sqrt(1 - alphasCumprod()[t]); }
+
+  // 可重現的亂數
+  function rng(seed) { var s = (seed >>> 0) || 1; return function () { s = (s + 0x6D2B79F5) >>> 0; var t = s; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+  function gaussian(seed, n) { var r = rng(seed), out = new Float32Array(n); for (var i = 0; i < n; i += 2) { var u = Math.max(r(), 1e-12), v = r(), m = Math.sqrt(-2 * Math.log(u)); out[i] = m * Math.cos(2 * Math.PI * v); if (i + 1 < n) out[i + 1] = m * Math.sin(2 * Math.PI * v); } return out; }
+
+  // VAE 編碼器的輸出：8 通道（平均＋對數變異）取前 4 個通道的平均；4 通道就直接用。再乘縮放
+  function latentFromEncoder(out, n, scale) {
+    n = n || 4 * LATENT * LATENT; var res = new Float32Array(n), k = scale == null ? SCALE : scale;
+    if (!out || out.length < n) return null;
+    for (var i = 0; i < n; i++) res[i] = out[i] * k; return res;
+  }
+  // 影像 RGBA（w×h）→ 編碼器輸入 CHW，範圍 [-1,1]（range 給 '01' 則 [0,1]，TAESD 用）
+  function toChw(rgba, w, h, range) {
+    var plane = w * h, out = new Float32Array(plane * 3), r01 = range === '01';
+    for (var i = 0; i < plane; i++) for (var c = 0; c < 3; c++) out[c * plane + i] = r01 ? rgba[i * 4 + c] / 255 : rgba[i * 4 + c] / 127.5 - 1;
+    return out;
+  }
+  // 加噪到時間點 t：x = √ᾱ·z0 + √(1−ᾱ)·noise
+  function addNoise(z0, noise, t) {
+    var a = sqrtAb(t), b = sqrtOneMinusAb(t), out = new Float32Array(z0.length);
+    for (var i = 0; i < z0.length; i++) out[i] = a * z0[i] + b * noise[i]; return out;
+  }
+  // 由 eps 還原 x0
+  function predictX0(x, eps, t) {
+    var a = sqrtAb(t), b = sqrtOneMinusAb(t), out = new Float32Array(x.length);
+    for (var i = 0; i < x.length; i++) out[i] = (x[i] - b * eps[i]) / a; return out;
+  }
+  // 一步取樣：給目前的 x、eps、這步的 t 與下一步的 tNext（沒有下一步就回 x0）
+  function step(x, eps, t, tNext, noise) {
+    var x0 = predictX0(x, eps, t); if (tNext == null) return x0;
+    return addNoise(x0, noise, tNext);
+  }
+
+  // 尺寸：模型固定 512×512。長寬比不同時，等比縮放放進 512 的畫布，記下放哪裡，之後裁回原比例
+  function fitBox(w, h) {
+    w = Math.max(1, Math.round(w)); h = Math.max(1, Math.round(h)); var k = Math.min(SIZE / w, SIZE / h), dw = Math.max(8, Math.round(w * k / 8) * 8), dh = Math.max(8, Math.round(h * k / 8) * 8);
+    dw = Math.min(SIZE, dw); dh = Math.min(SIZE, dh);
+    return { w: w, h: h, dw: dw, dh: dh, dx: Math.floor((SIZE - dw) / 2), dy: Math.floor((SIZE - dh) / 2), size: SIZE };
+  }
+
+  // 遮罩混合：mask 是 0～1 的 Float32（w×h），越接近 1 越用新圖；先羽化（盒狀模糊 radius 像素）再混。只改遮罩內，其餘保留原圖
+  function feather(mask, w, h, radius) {
+    radius = Math.max(0, Math.round(radius)); if (!radius) return mask;
+    var tmp = new Float32Array(mask.length), out = new Float32Array(mask.length), r = radius, x, y, k, s, c;
+    for (y = 0; y < h; y++) for (x = 0; x < w; x++) { s = 0; c = 0; for (k = -r; k <= r; k++) { var xx = x + k; if (xx >= 0 && xx < w) { s += mask[y * w + xx]; c++; } } tmp[y * w + x] = s / c; }
+    for (x = 0; x < w; x++) for (y = 0; y < h; y++) { s = 0; c = 0; for (k = -r; k <= r; k++) { var yy = y + k; if (yy >= 0 && yy < h) { s += tmp[yy * w + x]; c++; } } out[y * w + x] = s / c; }
+    return out;
+  }
+  function blend(origRgba, newRgba, mask, w, h, featherPx) {
+    var m = mask ? feather(mask, w, h, featherPx == null ? 4 : featherPx) : null, out = new Uint8ClampedArray(origRgba.length);
+    for (var i = 0, n = w * h; i < n; i++) { var a = m ? m[i] : 1; for (var c = 0; c < 4; c++) out[i * 4 + c] = Math.round(origRgba[i * 4 + c] * (1 - a) + newRgba[i * 4 + c] * a); if (!m) out[i * 4 + 3] = origRgba[i * 4 + 3]; }
+    return out;
+  }
+
+  // 分詞結果補成固定長度：sd-turbo（SD 2.x）用 "!"（編號 0）補，SDXS（SD 1.x）用結尾符號（49407）補
+  function padIds(ids, padId, len) {
+    len = len || MAXLEN; var a = Array.prototype.slice.call(ids || []).map(Number).filter(function (x) { return x !== 49407 || true; });
+    if (!a.length) a = [49406, 49407];
+    if (a.length > len) { a = a.slice(0, len); a[len - 1] = 49407; }
+    var end = a.indexOf(49407); if (end < 0) { a[a.length - 1] = 49407; end = a.length - 1; }
+    a = a.slice(0, end + 1); while (a.length < len) a.push(padId == null ? 49407 : padId); return a;
+  }
+
+  // 請求整理：prompt 必填；strength 0.05～1（「微調」0.35、「大改」0.8，預設 0.5）；steps 1～4
+  var STRENGTH_WORDS = [[/微調|稍微|一點點|輕微|subtle|slight/i, 0.35], [/大改|大幅|徹底|完全|重畫|dramatic|completely/i, 0.8]];
+  function plan(a) {
+    a = a || {}; var prompt = String(a.prompt == null ? '' : a.prompt).trim(); if (!prompt) return { ok: false, error: '要把圖改成什麼？請給 prompt（英文效果較好）。' };
+    var notes = [], strength = Number(a.strength);
+    if (!isFinite(strength) || a.strength === '' || a.strength == null) { strength = 0.5; var text = String(a.request || ''); for (var i = 0; i < STRENGTH_WORDS.length; i++) if (STRENGTH_WORDS[i][0].test(text)) { strength = STRENGTH_WORDS[i][1]; break; } }
+    if (strength < 0.05 || strength > 1) { notes.push('強度超出 0.05～1，已調整。'); strength = Math.max(0.05, Math.min(1, strength)); }
+    var steps = Number(a.steps); if (!isFinite(steps) || !steps) steps = strength > 0.6 ? 2 : 1; steps = Math.max(1, Math.min(4, Math.round(steps)));
+    var seed = a.seed != null && a.seed !== '' && isFinite(Number(a.seed)) ? (Math.floor(Number(a.seed)) >>> 0) : (Math.floor(Math.random() * 4294967296) >>> 0);
+    return { ok: true, prompt: prompt.slice(0, 600), strength: strength, steps: steps, seed: seed, timesteps: timesteps(steps, strength), notes: notes };
+  }
+
+  function explainError(err, model, env) {
+    var msg = String((err && err.message) || err || ''); model = model || {}; env = env || {};
+    if (/float16|fp16|f16|shader-f16/i.test(msg)) return '改圖的 GPU 版需要顯示卡支援 f16，這張不支援。（' + msg.slice(0, 100) + '）';
+    if (/out of memory|oom|allocation|memory access|Array buffer allocation|RangeError/i.test(msg)) return '記憶體不夠（sd-turbo 需要約 ' + fmtBytes(model.files ? totalBytes(model) : 1.2e9 + 5e8) + '，載入時還要再多一些）。關掉其他吃記憶體的程式再試。（' + msg.slice(0, 100) + '）';
+    if (/webgpu|adapter|gpu device|createBuffer/i.test(msg)) return 'WebGPU 初始化失敗（' + msg.slice(0, 100) + '）。';
+    if (/fetch|network|Failed to fetch|NetworkError|HTTP|download/i.test(msg)) return '下載模型失敗（' + msg.slice(0, 100) + '）。檢查網路能不能連到 huggingface.co 後再試，已下載的部分會保留。';
+    if (/not supported|unsupported|Unsupported|operator|opset/i.test(msg)) return '這個模型用到的運算子，目前的執行環境不支援（' + msg.slice(0, 120) + '）。';
+    return '本機改圖失敗：' + msg.slice(0, 200);
+  }
+
+  return { SIZE: SIZE, LATENT: LATENT, SCALE: SCALE, TRAIN_STEPS: TRAIN_STEPS, MAXLEN: MAXLEN, MODELS: MODELS, TAESD: TAESD, LICENSE: LICENSE, FALLBACK: FALLBACK, byId: byId, urlOf: urlOf, totalBytes: totalBytes, fmtBytes: fmtBytes, pickModel: pickModel, alphasCumprod: alphasCumprod, timesteps: timesteps, rng: rng, gaussian: gaussian, latentFromEncoder: latentFromEncoder, toChw: toChw, addNoise: addNoise, predictX0: predictX0, step: step, fitBox: fitBox, feather: feather, blend: blend, plan: plan, padIds: padIds, explainError: explainError };
+});
+
+}).call(null, undefined, holder);
+return holder.FaSdTurbo;
+})();
+/* SDTURBO-END */
 /* IMGROUTE-BEGIN */
 const FaImageRoute = (function () {
 const holder = {};
@@ -66789,6 +66950,89 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             const img = { file_id: id, client_file_url: 'client-file/' + id, filename: name, mime: 'image/png', size_bytes: res.blob.size, seed: plan.seed, deck_ref: ref || undefined };
             return { ok: true, provider: 'local', model: model.label, images: [img], file_id: id, client_file_url: 'client-file/' + id, size: FaLocalSd.SIZE + 'x' + FaLocalSd.SIZE, steps: 1, duration_ms: ms, adjusted: plan.notes.length ? plan.notes : undefined, note: [usedNote, warn].filter(Boolean).join(' ') || undefined };
         } catch (e) { try { prog.finish && prog.finish('失敗'); } catch (_) { /* */ } return { ok: false, error: FaLocalSd.explainError(e, null, null) }; }
+    }
+    // ───── 本機改圖（圖生圖）：給一張圖＋一句話，用小模型在本機改（純函式在 FaSdTurbo）─────
+    // 兩條路：① sd-turbo（WebGPU＋f16，使用者自己下載，授權見 FaSdTurbo.LICENSE）；② SDXS＋TAESD 小型編碼器解碼器（WebGPU 或 wasm，各約 5 MB）。
+    // 還沒在真機上驗證畫質：SDXS 是一步蒸餾的，在中途時間點的表現未知；sd-turbo 的文字編碼器輸出層、wasm 之外的後端也未實測。
+    async _localEditPick() {
+        const g = (this.advancedSettings && this.advancedSettings.imageGen) || {}, env = await this._localSdEnv(), pick = FaSdTurbo.pickModel(env, g.localDevice);
+        if (!pick.ok) return { ok: false, error: pick.reason };
+        if (pick.model) return { ok: true, env, notes: pick.notes, models: [pick.model], text: pick.model, enc: pick.model, dec: pick.model, label: pick.model.label, ep: pick.ep, decRange: '-11', encRange: '-11', encScale: FaSdTurbo.SCALE, padId: 0 };
+        const sd = FaLocalSd.pickModel(env, g.localDevice); if (!sd.ok) return { ok: false, error: sd.reason };
+        return { ok: true, env, notes: pick.notes.concat(sd.notes || []), models: [sd.model, FaSdTurbo.TAESD], text: sd.model, enc: FaSdTurbo.TAESD, dec: FaSdTurbo.TAESD, label: sd.model.label + ' ＋ TAESD', ep: sd.ep, decRange: '01', encRange: '01', encScale: FaSdTurbo.TAESD.scale, padId: 49407 };
+    }
+    async _localEditPrepare(opts) {
+        opts = opts || {}; const pk = await this._localEditPick(); if (!pk.ok) return pk;
+        const missing = []; for (const m of pk.models) for (const s of await this._localSdFileState(m)) if (!s.ok) missing.push({ m, s });
+        if (!missing.length) return pk;
+        if (opts.noAsk) return { ok: false, error: '本機改圖模型還沒下載。', needs_download: true };
+        const need = missing.reduce((a, x) => a + x.s.bytes, 0), user = pk.models.some((m) => m.userDownload);
+        const okDl = await this._omAskDownload('要下載本機改圖模型嗎？', '「' + pk.label + '」\n來源：huggingface.co/' + [...new Set(pk.models.map((m) => m.repo))].join('、') + '\n要下載：約 ' + FaLocalSd.fmtBytes(need) + '（只下載一次，存在瀏覽器的快取，可以在設定裡刪除）\n' + (pk.notes.length ? pk.notes.join(' ') + '\n' : '') + '\n' + (user ? FaSdTurbo.LICENSE.note : FaLocalSd.LICENSE.note), '下載');
+        if (!okDl) return { ok: false, cancelled: true, error: '沒有下載本機改圖模型（你取消了）' };
+        try { for (const m of pk.models) await this._localSdDownload(m, (d, t, n) => { if (opts.onProgress) opts.onProgress('下載 ' + n + '：' + FaLocalSd.fmtBytes(d) + ' / ' + FaLocalSd.fmtBytes(t) + '（' + Math.round(d / t * 100) + '%）'); }); }
+        catch (e) { return { ok: false, error: FaSdTurbo.explainError(e, pk.text, pk.env) }; }
+        return pk;
+    }
+    async _localEditLoad(pk, onProgress) {
+        const key = 'edit|' + pk.models.map((m) => m.id).join('+') + '|' + pk.ep; if (this._localSdSess && this._localSdSess.key === key) { this._localSdTouch(); return this._localSdSess; }
+        await this._localSdUnload();
+        const ORT = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/', imp = async (url) => { try { return await import(/* webpackIgnore: true */ url); } catch (e1) { try { return await import(/* webpackIgnore: true */ this._viaAssetProxy(url)); } catch (_) { throw e1; } } };
+        onProgress && onProgress('載入執行環境（onnxruntime-web）…'); const ort = await imp(ORT + 'ort.webgpu.min.mjs'); ort.env.wasm.wasmPaths = ORT; ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.min(8, navigator.hardwareConcurrency || 4) : 1;
+        const c = await caches.open('fa-localsd'), sess = {}, want = { text: pk.text, unet: pk.text, vaeEnc: pk.enc, vae: pk.dec };
+        for (const role of Object.keys(want)) {
+            const m = want[role], f = m.files.find((x) => x.role === role); if (!f) throw new Error('模型清單裡沒有 ' + role);
+            const r = await c.match(FaLocalSd.urlOf(m, f.name)); if (!r) throw new Error('模型檔 ' + f.name + ' 不在快取裡，要先下載');
+            onProgress && onProgress('載入 ' + f.name + '（' + FaLocalSd.fmtBytes(f.bytes) + '）…'); sess[role] = await ort.InferenceSession.create(new Uint8Array(await r.arrayBuffer()), { executionProviders: [pk.ep], graphOptimizationLevel: 'all' });
+        }
+        this._localSdSess = { key, ort, sess }; this._localSdTouch(); return this._localSdSess;
+    }
+    // a: { image（dataUrl 或 Blob）, prompt, strength, steps, seed, mask（可選，{data:Float32Array(w×h,0~1), w, h}，沒有就整張）}
+    async _localEditRun(pk, a, onProgress) {
+        const plan = a._plan, S = await this._localEditLoad(pk, onProgress), ort = S.ort, sess = S.sess, SD = FaSdTurbo, N = SD.SIZE, L = SD.LATENT;
+        const bmp = await createImageBitmap(a.image instanceof Blob ? a.image : await (await fetch(a.image)).blob()), fb = SD.fitBox(bmp.width, bmp.height);
+        const cv = document.createElement('canvas'); cv.width = cv.height = N; const cx = cv.getContext('2d', { willReadFrequently: true }); cx.imageSmoothingQuality = 'high'; cx.drawImage(bmp, 0, 0, bmp.width, bmp.height, 0, 0, N, N);   // 長寬比不同時直接拉伸到 512，輸出再拉回去（編碼器要整塊有內容）
+        const src = cx.getImageData(0, 0, N, N).data;
+        onProgress && onProgress('把圖變成潛在向量…'); const eo = await sess.vaeEnc.run({ [sess.vaeEnc.inputNames[0]]: new ort.Tensor('float32', SD.toChw(src, N, N, pk.encRange), [1, 3, N, N]) });
+        const z0 = SD.latentFromEncoder(eo[sess.vaeEnc.outputNames[0]].data, 0, pk.encScale); if (!z0) throw new Error('編碼器的輸出大小不對');
+        const metaType = (se, name) => { try { const m = se.inputMetadata; const e = Array.isArray(m) ? m.find((x) => x.name === name) : m && m[name]; return e && e.type; } catch (_) { return null; } };
+        onProgress && onProgress('把文字變成向量…'); const ids = SD.padIds(await this._localSdTokenizeRaw(a.prompt), pk.padId), tIn = sess.text.inputNames[0], tType = metaType(sess.text, tIn) || 'int32';
+        const idT = tType === 'int64' ? new ort.Tensor('int64', BigInt64Array.from(ids.map((x) => BigInt(x))), [1, SD.MAXLEN]) : new ort.Tensor('int32', Int32Array.from(ids), [1, SD.MAXLEN]);
+        const hs = (await sess.text.run({ [tIn]: idT }))[sess.text.outputNames[0]];
+        const names = sess.unet.inputNames, nS = names.find((n) => /sample/i.test(n)) || names[0], nT = names.find((n) => /time/i.test(n)) || names[1], nC = names.find((n) => /encoder|hidden|context/i.test(n)) || names[2], tsType = metaType(sess.unet, nT) || 'float32';
+        const ts = plan.timesteps, noise0 = SD.gaussian(plan.seed, z0.length); let x = SD.addNoise(z0, noise0, ts[0]);
+        for (let i = 0; i < ts.length; i++) {
+            onProgress && onProgress('改圖中（第 ' + (i + 1) + '／' + ts.length + ' 步；CPU 版要等一下）…');
+            const tt = tsType === 'int64' ? new ort.Tensor('int64', BigInt64Array.from([BigInt(ts[i])]), [1]) : new ort.Tensor('float32', Float32Array.from([ts[i]]), [1]);
+            const eps = (await sess.unet.run({ [nS]: new ort.Tensor('float32', x, [1, 4, L, L]), [nT]: tt, [nC]: hs }))[sess.unet.outputNames[0]].data;
+            x = SD.step(x, eps, ts[i], i + 1 < ts.length ? ts[i + 1] : null, SD.gaussian(plan.seed + i + 1, z0.length));
+        }
+        onProgress && onProgress('解碼成圖片…'); const dIn = pk.decRange === '01' ? x : x.map((v) => v / SD.SCALE);
+        const img = (await sess.vae.run({ [sess.vae.inputNames[0]]: new ort.Tensor('float32', dIn, [1, 4, L, L]) }))[sess.vae.outputNames[0]].data, plane = N * N, rgba = new Uint8ClampedArray(plane * 4);
+        for (let i = 0; i < plane; i++) { for (let c = 0; c < 3; c++) { const v = (pk.decRange === '01' ? img[c * plane + i] : img[c * plane + i] / 2 + 0.5) * 255; rgba[i * 4 + c] = v < 0 ? 0 : v > 255 ? 255 : Math.round(v); } rgba[i * 4 + 3] = 255; }
+        const o = document.createElement('canvas'); o.width = bmp.width; o.height = bmp.height; const og = o.getContext('2d', { willReadFrequently: true }); og.imageSmoothingQuality = 'high';
+        const t512 = document.createElement('canvas'); t512.width = t512.height = N; t512.getContext('2d').putImageData(new ImageData(rgba, N, N), 0, 0); og.drawImage(t512, 0, 0, bmp.width, bmp.height);
+        const origC = document.createElement('canvas'); origC.width = bmp.width; origC.height = bmp.height; origC.getContext('2d').drawImage(bmp, 0, 0);
+        const outPx = og.getImageData(0, 0, bmp.width, bmp.height), origPx = origC.getContext('2d').getImageData(0, 0, bmp.width, bmp.height);
+        let mask = null; if (a.mask && a.mask.data && a.mask.w === bmp.width && a.mask.h === bmp.height) mask = a.mask.data;
+        const blended = SD.blend(origPx.data, outPx.data, mask, bmp.width, bmp.height, Math.max(2, Math.round(Math.min(bmp.width, bmp.height) / 100)));
+        og.putImageData(new ImageData(blended, bmp.width, bmp.height), 0, 0);
+        const blob = await new Promise((res) => o.toBlob(res, 'image/png')); return { blob, dataUrl: o.toDataURL('image/png'), stats: FaLocalSd.imageStats(blended), w: bmp.width, h: bmp.height };
+    }
+    async _localSdTokenizeRaw(prompt) {
+        await this._localSdTokenize('x');   // 載入分詞器
+        const enc = await this._localSdTok(prompt, { padding: false, truncation: true, max_length: FaLocalSd.MAXLEN }); return Array.from(enc.input_ids.data).map(Number);
+    }
+    async _localEditImage(a) {
+        a = a || {}; const plan = FaSdTurbo.plan(a); if (!plan.ok) return { ok: false, error: plan.error }; if (!a.image) return { ok: false, error: '要改哪一張圖？請給 image。' };
+        const t0 = Date.now(), prog = this._createProgressWidget('🖼 本機改圖'); const say = (t) => { try { prog.update({ status: t }); } catch (_) { /* */ } };
+        try {
+            const pk = await this._localEditPrepare({ onProgress: say }); if (!pk.ok) { try { prog.finish && prog.finish('沒有改'); } catch (_) { /* */ } return pk; }
+            let res; try { res = await this._localEditRun(pk, Object.assign({}, a, { _plan: plan }), say); }
+            catch (e1) { await this._localSdUnload(); throw new Error(String((e1 && e1.message) || e1) + '（後端 ' + pk.ep + '，模型 ' + pk.label + '，已用 ' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）'); }
+            const ms = Date.now() - t0; try { prog.finish && prog.finish('完成：' + (ms / 1000).toFixed(1) + ' 秒'); } catch (_) { /* */ }
+            const warn = res.stats.flat ? '改完的圖幾乎是一片空白，可能是這台機器的運算有問題；換個 seed 或換 CPU／GPU 再試。' : null;
+            return { ok: true, provider: 'local', model: pk.label, backend: pk.ep, blob: res.blob, dataUrl: res.dataUrl, seed: plan.seed, strength: plan.strength, steps: plan.steps, duration_ms: ms, adjusted: plan.notes.length ? plan.notes : undefined, note: [pk.notes.join(' '), warn].filter(Boolean).join(' ') || undefined };
+        } catch (e) { try { prog.finish && prog.finish('失敗'); } catch (_) { /* */ } return { ok: false, error: FaSdTurbo.explainError(e, null, null) }; }
     }
     // ───── 圖像生成的統一入口（唯一一個畫圖工具與 /image 都走這裡）─────
     // 分流：單純形狀的組合圖 → 寫成 SVG／Mermaid 純文字再畫；要畫面的圖 → 程式拆欄位、依模型族套範本（SD／SDXS 逗號關鍵詞、FLUX 自然語句、SD3 混合），再交給擴散模型。

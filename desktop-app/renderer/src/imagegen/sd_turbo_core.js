@@ -117,6 +117,15 @@
     return out;
   }
 
+  // 分詞結果補成固定長度：sd-turbo（SD 2.x）用 "!"（編號 0）補，SDXS（SD 1.x）用結尾符號（49407）補
+  function padIds(ids, padId, len) {
+    len = len || MAXLEN; var a = Array.prototype.slice.call(ids || []).map(Number).filter(function (x) { return x !== 49407 || true; });
+    if (!a.length) a = [49406, 49407];
+    if (a.length > len) { a = a.slice(0, len); a[len - 1] = 49407; }
+    var end = a.indexOf(49407); if (end < 0) { a[a.length - 1] = 49407; end = a.length - 1; }
+    a = a.slice(0, end + 1); while (a.length < len) a.push(padId == null ? 49407 : padId); return a;
+  }
+
   // 請求整理：prompt 必填；strength 0.05～1（「微調」0.35、「大改」0.8，預設 0.5）；steps 1～4
   var STRENGTH_WORDS = [[/微調|稍微|一點點|輕微|subtle|slight/i, 0.35], [/大改|大幅|徹底|完全|重畫|dramatic|completely/i, 0.8]];
   function plan(a) {
@@ -139,5 +148,5 @@
     return '本機改圖失敗：' + msg.slice(0, 200);
   }
 
-  return { SIZE: SIZE, LATENT: LATENT, SCALE: SCALE, TRAIN_STEPS: TRAIN_STEPS, MAXLEN: MAXLEN, MODELS: MODELS, TAESD: TAESD, LICENSE: LICENSE, FALLBACK: FALLBACK, byId: byId, urlOf: urlOf, totalBytes: totalBytes, fmtBytes: fmtBytes, pickModel: pickModel, alphasCumprod: alphasCumprod, timesteps: timesteps, rng: rng, gaussian: gaussian, latentFromEncoder: latentFromEncoder, toChw: toChw, addNoise: addNoise, predictX0: predictX0, step: step, fitBox: fitBox, feather: feather, blend: blend, plan: plan, explainError: explainError };
+  return { SIZE: SIZE, LATENT: LATENT, SCALE: SCALE, TRAIN_STEPS: TRAIN_STEPS, MAXLEN: MAXLEN, MODELS: MODELS, TAESD: TAESD, LICENSE: LICENSE, FALLBACK: FALLBACK, byId: byId, urlOf: urlOf, totalBytes: totalBytes, fmtBytes: fmtBytes, pickModel: pickModel, alphasCumprod: alphasCumprod, timesteps: timesteps, rng: rng, gaussian: gaussian, latentFromEncoder: latentFromEncoder, toChw: toChw, addNoise: addNoise, predictX0: predictX0, step: step, fitBox: fitBox, feather: feather, blend: blend, plan: plan, padIds: padIds, explainError: explainError };
 });

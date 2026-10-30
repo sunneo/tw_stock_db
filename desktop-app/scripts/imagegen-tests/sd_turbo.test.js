@@ -26,6 +26,7 @@ const chw = S.toChw(new Uint8ClampedArray([0, 255, 128, 255]), 1, 1);
 check('toChw: [-1,1] planar', near(chw[0], -1) && near(chw[1], 1) && near(chw[2], 128 / 127.5 - 1));
 
 check('taesd: [0,1] input, scale 1, pinned small files under MIT', near(S.toChw(new Uint8ClampedArray([0, 255, 51, 255]), 1, 1, '01')[2], 0.2) && near(S.latentFromEncoder(new Float32Array(16384).fill(2), 0, S.TAESD.scale)[0], 2) && S.TAESD.license === 'MIT' && /^[0-9a-f]{40}$/.test(S.TAESD.rev) && S.TAESD.files.every((f) => f.bytes > 4e6 && f.bytes < 6e6) && S.TAESD.files.some((f) => f.role === 'vaeEnc'));
+check('padIds: sd-turbo pads with 0 after the end token, sdxs pads with 49407, long input is cut with an end token', (() => { const a = S.padIds([49406, 5, 6, 49407, 49407, 49407], 0), b = S.padIds([49406, 5, 49407], 49407), c = S.padIds(new Array(100).fill(7)); return a.length === 77 && a[3] === 49407 && a[4] === 0 && a[76] === 0 && b[3] === 49407 && c.length === 77 && c[76] === 49407; })());
 const fb = S.fitBox(1024, 512);
 check('fitBox: keeps aspect, multiple of 8, centered in 512', fb.dw === 512 && fb.dh === 256 && fb.dx === 0 && fb.dy === 128 && S.fitBox(300, 900).dh === 512 && S.fitBox(300, 900).dw % 8 === 0);
 
