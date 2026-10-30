@@ -377,7 +377,7 @@ function embedDeckEdit() {
 }
 embedDeckEdit();
 
-// /edit-video:影片逐字稿編輯器(外掛 redmine_ai_chat 同一份程式,window 上的 TwVideo* 全域)＋主機轉接層,放在 DECKEDIT 區塊之後(要用 FaEditHost、FaEditStore、FaWin)
+// /edit-video:影片逐字稿編輯器(window 上的 TwVideo* 全域)＋主機轉接層,放在 DECKEDIT 區塊之後(要用 FaEditHost、FaEditStore、FaWin)
 function embedVideoEdit() {
     const dir = path.join(root, 'renderer/src/video'); if (!fs.existsSync(path.join(dir, 'video_host.js'))) return;
     const rd = (n) => fs.readFileSync(path.join(dir, n + '.js'), 'utf8').replace(/\r\n/g, '\n'); const parts = [];

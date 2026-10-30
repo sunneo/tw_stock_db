@@ -1,5 +1,5 @@
 // /edit-video: "where is the video?" -- a picker inside the editor, like the terminal's file-transfer window: this computer, the files of the CHAT (what was attached or generated in it, kept in this browser
-// or stored as Redmine attachments), and the File Access (FAP) folders the user authorized. Only the DOM and the three lists live here; opening a chat file is the host's job (host.chatFiles).
+// or stored as attachments), and the File Access (FAP) folders the user authorized. Only the DOM and the three lists live here; opening a chat file is the host's job (host.chatFiles).
 //   TwVideoSourcePicker.open({ container, T, mediaKind(name), chatFiles() / storedFiles() -> Promise<[{ name, size?, from, open() -> Promise<File> }]>, fapFolders() -> Promise<[{ label, handle }]>, computer() }) -> Promise<File | null>
 (function (root) {
   'use strict';
@@ -22,7 +22,7 @@
       function busy(msg) { body.textContent = ''; body.appendChild(el('div', 'tw-ve-pk-note', msg)); }
       function pickFrom(label, getFile) { busy(T('讀取 ', 'Reading ') + label + '…'); getFile().then(done, function (e) { busy('⚠️ ' + ((e && e.message) || e)); }); }
       function fileRow(name, meta, onClick, tag) { var r = el('div', 'tw-ve-pk-row'); r.setAttribute('data-pk', tag || 'file'); r.appendChild(el('span', 'n', name)); r.appendChild(el('span', 'm', meta || '')); r.addEventListener('click', onClick); return r; }
-      var TABS = [['computer', T('這台電腦', 'This computer')], ['chat', T('聊天 / Redmine 檔案', 'Chat / Redmine files')], ['fap', T('授權資料夾 (FAP)', 'Authorized folders (FAP)')], ['stored', T('這個瀏覽器的檔案', 'Kept in this browser')]];
+      var TABS = [['computer', T('這台電腦', 'This computer')], ['chat', T('聊天檔案', 'Chat files')], ['fap', T('授權資料夾 (FAP)', 'Authorized folders (FAP)')], ['stored', T('這個瀏覽器的檔案', 'Kept in this browser')]];
       TABS.forEach(function (t) { var b = el('button', '', t[1]); b.type = 'button'; b.setAttribute('data-pk-tab', t[0]); b.addEventListener('click', function () { show(t[0]); }); hd.appendChild(b); tabBtn[t[0]] = b; });
       hd.appendChild(el('span', 'sp')); var x = el('button', '', '✕'); x.type = 'button'; x.setAttribute('data-pk', 'close'); x.addEventListener('click', function () { done(null); }); hd.appendChild(x);
       ov.addEventListener('click', function (e) { if (e.target === ov) { done(null); } });
@@ -36,7 +36,7 @@
           Promise.resolve(o.chatFiles ? o.chatFiles() : []).then(function (list) {
             if (my !== gen) { return; } body.textContent = '';
             if (!list.length) { body.appendChild(el('div', 'tw-ve-pk-note', T('聊天裡還沒有影片或音訊檔(附加檔案或上傳後會列在這裡)。', 'No video or audio files in the chat yet (attach or upload one and it shows up here).'))); return; }
-            list.forEach(function (f) { body.appendChild(fileRow('🎞 ' + f.name, (f.from === 'redmine' ? 'Redmine · ' : T('聊天 · ', 'chat · ')) + size(f.size), function () { pickFrom(f.name, f.open); }, 'chat-file')); });
+            list.forEach(function (f) { body.appendChild(fileRow('🎞 ' + f.name, (f.from === 'redmine' ? 'attachment · ' : T('聊天 · ', 'chat · ')) + size(f.size), function () { pickFrom(f.name, f.open); }, 'chat-file')); });
           }, function (e) { if (my === gen) { busy('⚠️ ' + ((e && e.message) || e)); } });
         } else if (tab === 'stored') {
           busy(T('讀取這個瀏覽器保存的檔案…', 'Reading the files kept in this browser…'));

@@ -1,5 +1,5 @@
 /* /edit-video 的主機轉接層(接在 edit_host.js 之後,同一個 FaEditHost)。設計見 DESIGN.edit-video.md。
- * 編輯器本身(video_edit_core/jobs/ai/ui、來源選擇器、TTS 對話框)是外掛 redmine_ai_chat 同一份程式(window 上的 TwVideo* 全域);這裡只接桌面版自己的能力:
+ * 編輯器本身(video_edit_core/jobs/ai/ui、來源選擇器、TTS 對話框)是 window 上的 TwVideo* 全域模組;這裡只接桌面版自己的能力:
  *   影片、配音、燒錄輸出 = fileCache 的檔案(釘選,不被容量淘汰);專案 = FaEditStore(IndexedDB tw_edit,project/edit-video/ID,存成 { v:1, spec:專案, state:null });
  *   語音辨識 = 既有的 Whisper(_getWhisperTranscriber/_runWhisperWindowed,WebGPU 失敗退回 CPU);燒錄 = 既有的 _burnSubtitles(worker 加了配音軌 dubBed);
  *   TTS = _deckSynthesize(簡報旁白同一條:Kokoro 本機／Microsoft 線上);AI = _edAi()(程式先讀白話,讀不懂才問模型)。

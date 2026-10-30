@@ -378,7 +378,7 @@
     box._ve = { project: project, say: msg, dubs: function () { return dubs; }, dubAudio: function (id) { return audios[id] && audios[id].el; }, queue: q, enqueueBurn: enqueueBurn, enqueueTranscribe: enqueueTranscribe, importText: importText, ask: submitAsk, applyAsk: applyAsk, addTtsDub: addTtsDub, cues: function () { return cues; }, addAt: addAt, edit: edit, video: null, setVideo: setVideo, tab: setTab, panel: function (hidden) { if (hidden !== undefined) { lay.panelHidden = !!hidden; applyPanel(); save(); } return !lay.panelHidden; },
       panelWidth: function (w) { if (w !== undefined) { lay.panelW = core.clampPanelWidth(w, box.clientWidth); applyPanel(); save(); } return lay.panelW; }, layout: function () { return lay; } };
     (o.container || root.document.body).appendChild(box);
-    var FW = o.windowApi || root.FaWin || (typeof FaWin !== 'undefined' ? FaWin : null);   // desktop-app: the shared window shell (pop out / maximize / dock); the plugin uses AiChatWindow
+    var FW = o.windowApi || root.FaWin || (typeof FaWin !== 'undefined' ? FaWin : null);   // desktop-app: the shared window shell (pop out / maximize / dock)
     if (FW && FW.decorate) { box._win = FW.decorate(box, { id: 'ev:' + (o.id || ''), title: T('影片逐字稿編輯器', 'Video transcript editor'), bar: bar, minW: 520, minH: 360 }); }
     else if (root.AiChatWindow) { root.AiChatWindow.attach(box, { key: 'edit-video/' + (o.id || ''), title: T('影片逐字稿編輯器', 'Video transcript editor'), bar: bar, body: body, minW: 420, minH: 300 }); }
     applyPanel(); renderObjs(); setTab(lay.tab);

@@ -36448,7 +36448,7 @@ return holder.FaDeckEditUI;
 }).call(window, undefined);
 (function (module) {
 // /edit-video: "where is the video?" -- a picker inside the editor, like the terminal's file-transfer window: this computer, the files of the CHAT (what was attached or generated in it, kept in this browser
-// or stored as Redmine attachments), and the File Access (FAP) folders the user authorized. Only the DOM and the three lists live here; opening a chat file is the host's job (host.chatFiles).
+// or stored as attachments), and the File Access (FAP) folders the user authorized. Only the DOM and the three lists live here; opening a chat file is the host's job (host.chatFiles).
 //   TwVideoSourcePicker.open({ container, T, mediaKind(name), chatFiles() / storedFiles() -> Promise<[{ name, size?, from, open() -> Promise<File> }]>, fapFolders() -> Promise<[{ label, handle }]>, computer() }) -> Promise<File | null>
 (function (root) {
   'use strict';
@@ -36471,7 +36471,7 @@ return holder.FaDeckEditUI;
       function busy(msg) { body.textContent = ''; body.appendChild(el('div', 'tw-ve-pk-note', msg)); }
       function pickFrom(label, getFile) { busy(T('讀取 ', 'Reading ') + label + '…'); getFile().then(done, function (e) { busy('⚠️ ' + ((e && e.message) || e)); }); }
       function fileRow(name, meta, onClick, tag) { var r = el('div', 'tw-ve-pk-row'); r.setAttribute('data-pk', tag || 'file'); r.appendChild(el('span', 'n', name)); r.appendChild(el('span', 'm', meta || '')); r.addEventListener('click', onClick); return r; }
-      var TABS = [['computer', T('這台電腦', 'This computer')], ['chat', T('聊天 / Redmine 檔案', 'Chat / Redmine files')], ['fap', T('授權資料夾 (FAP)', 'Authorized folders (FAP)')], ['stored', T('這個瀏覽器的檔案', 'Kept in this browser')]];
+      var TABS = [['computer', T('這台電腦', 'This computer')], ['chat', T('聊天檔案', 'Chat files')], ['fap', T('授權資料夾 (FAP)', 'Authorized folders (FAP)')], ['stored', T('這個瀏覽器的檔案', 'Kept in this browser')]];
       TABS.forEach(function (t) { var b = el('button', '', t[1]); b.type = 'button'; b.setAttribute('data-pk-tab', t[0]); b.addEventListener('click', function () { show(t[0]); }); hd.appendChild(b); tabBtn[t[0]] = b; });
       hd.appendChild(el('span', 'sp')); var x = el('button', '', '✕'); x.type = 'button'; x.setAttribute('data-pk', 'close'); x.addEventListener('click', function () { done(null); }); hd.appendChild(x);
       ov.addEventListener('click', function (e) { if (e.target === ov) { done(null); } });
@@ -36485,7 +36485,7 @@ return holder.FaDeckEditUI;
           Promise.resolve(o.chatFiles ? o.chatFiles() : []).then(function (list) {
             if (my !== gen) { return; } body.textContent = '';
             if (!list.length) { body.appendChild(el('div', 'tw-ve-pk-note', T('聊天裡還沒有影片或音訊檔(附加檔案或上傳後會列在這裡)。', 'No video or audio files in the chat yet (attach or upload one and it shows up here).'))); return; }
-            list.forEach(function (f) { body.appendChild(fileRow('🎞 ' + f.name, (f.from === 'redmine' ? 'Redmine · ' : T('聊天 · ', 'chat · ')) + size(f.size), function () { pickFrom(f.name, f.open); }, 'chat-file')); });
+            list.forEach(function (f) { body.appendChild(fileRow('🎞 ' + f.name, (f.from === 'redmine' ? 'attachment · ' : T('聊天 · ', 'chat · ')) + size(f.size), function () { pickFrom(f.name, f.open); }, 'chat-file')); });
           }, function (e) { if (my === gen) { busy('⚠️ ' + ((e && e.message) || e)); } });
         } else if (tab === 'stored') {
           busy(T('讀取這個瀏覽器保存的檔案…', 'Reading the files kept in this browser…'));
@@ -37111,7 +37111,7 @@ return holder.FaDeckEditUI;
     box._ve = { project: project, say: msg, dubs: function () { return dubs; }, dubAudio: function (id) { return audios[id] && audios[id].el; }, queue: q, enqueueBurn: enqueueBurn, enqueueTranscribe: enqueueTranscribe, importText: importText, ask: submitAsk, applyAsk: applyAsk, addTtsDub: addTtsDub, cues: function () { return cues; }, addAt: addAt, edit: edit, video: null, setVideo: setVideo, tab: setTab, panel: function (hidden) { if (hidden !== undefined) { lay.panelHidden = !!hidden; applyPanel(); save(); } return !lay.panelHidden; },
       panelWidth: function (w) { if (w !== undefined) { lay.panelW = core.clampPanelWidth(w, box.clientWidth); applyPanel(); save(); } return lay.panelW; }, layout: function () { return lay; } };
     (o.container || root.document.body).appendChild(box);
-    var FW = o.windowApi || root.FaWin || (typeof FaWin !== 'undefined' ? FaWin : null);   // desktop-app: the shared window shell (pop out / maximize / dock); the plugin uses AiChatWindow
+    var FW = o.windowApi || root.FaWin || (typeof FaWin !== 'undefined' ? FaWin : null);   // desktop-app: the shared window shell (pop out / maximize / dock)
     if (FW && FW.decorate) { box._win = FW.decorate(box, { id: 'ev:' + (o.id || ''), title: T('影片逐字稿編輯器', 'Video transcript editor'), bar: bar, minW: 520, minH: 360 }); }
     else if (root.AiChatWindow) { root.AiChatWindow.attach(box, { key: 'edit-video/' + (o.id || ''), title: T('影片逐字稿編輯器', 'Video transcript editor'), bar: bar, body: body, minW: 420, minH: 300 }); }
     applyPanel(); renderObjs(); setTab(lay.tab);
@@ -37123,7 +37123,7 @@ return holder.FaDeckEditUI;
 
 }).call(window, undefined);
 /* /edit-video 的主機轉接層(接在 edit_host.js 之後,同一個 FaEditHost)。設計見 DESIGN.edit-video.md。
- * 編輯器本身(video_edit_core/jobs/ai/ui、來源選擇器、TTS 對話框)是外掛 redmine_ai_chat 同一份程式(window 上的 TwVideo* 全域);這裡只接桌面版自己的能力:
+ * 編輯器本身(video_edit_core/jobs/ai/ui、來源選擇器、TTS 對話框)是 window 上的 TwVideo* 全域模組;這裡只接桌面版自己的能力:
  *   影片、配音、燒錄輸出 = fileCache 的檔案(釘選,不被容量淘汰);專案 = FaEditStore(IndexedDB tw_edit,project/edit-video/ID,存成 { v:1, spec:專案, state:null });
  *   語音辨識 = 既有的 Whisper(_getWhisperTranscriber/_runWhisperWindowed,WebGPU 失敗退回 CPU);燒錄 = 既有的 _burnSubtitles(worker 加了配音軌 dubBed);
  *   TTS = _deckSynthesize(簡報旁白同一條:Kokoro 本機／Microsoft 線上);AI = _edAi()(程式先讀白話,讀不懂才問模型)。
