@@ -555,6 +555,7 @@ class FileCache {
         const idsToDelete = [];
         for (const r of all) {
             if (total <= target) break;
+            if (r.pinned) continue;   // 釘選的檔案（/edit-video 的影片、配音、燒錄輸出）不被淘汰
             idsToDelete.push(r.id);
             total -= (r.sizeBytes || 0);
         }
@@ -575,6 +576,15 @@ class FileCache {
 
     async getAll() {
         return this._tx('readonly', s => s.getAll());
+    }
+
+    // 釘選（/edit-video）：釘選的檔案不會被容量淘汰；沒有這筆記錄就什麼都不做
+    async pin(id, on = true) {
+        const record = await this._tx('readonly', s => s.get(id));
+        if (!record) return false;
+        record.pinned = !!on;
+        await this._tx('readwrite', s => s.put(record));
+        return true;
     }
 
     async delete(id) {
@@ -36174,6 +36184,1149 @@ return holder.FaDeckEditUI;
 })();
 
 /* DECKEDIT-END */
+/* VIDEOEDIT-BEGIN */
+(function (module) {
+// /edit-video: pure helpers of the video + transcript editor (no DOM, tested in Node: test/edit_video/video_edit_core.test.js). Design: DESIGN.edit-video.md.
+//   TwVideoEdit.clock(t)  parseT(text)  newProject(name)  layout(l)  clampPanelWidth(w, total)  TABS
+(function (root, factory) { if (typeof module === 'object' && module.exports) { module.exports = factory(); } else { root.TwVideoEdit = factory(); } }(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var TABS = ['transcript', 'ask', 'jobs'];     // the right-hand tabs: transcript | job queue (the OBJECT bar, with the dubs, is the left panel: resizable, hideable)
+  var PANEL_MIN = 140, PANEL_MAX_FRAC = 0.5, PANEL_DEFAULT = 220;
+
+  function clock(t) { t = Math.max(0, +t || 0); var m = Math.floor(t / 60), s = t - m * 60; return (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s.toFixed(1); }
+  // "1:05.5", "01:02:03.5" or plain seconds -> seconds; null when it is not a time
+  function parseT(s) {
+    s = String(s == null ? '' : s).trim(); var m;
+    if ((m = /^(\d+):(\d+(?:[.,]\d+)?)$/.exec(s))) { return +m[1] * 60 + parseFloat(m[2].replace(',', '.')); }
+    if ((m = /^(\d+):(\d+):(\d+(?:[.,]\d+)?)$/.exec(s))) { return +m[1] * 3600 + +m[2] * 60 + parseFloat(m[3].replace(',', '.')); }
+    if (!/^\d+(?:[.,]\d+)?$/.test(s)) { return null; }
+    return parseFloat(s.replace(',', '.'));
+  }
+  // the object panel (left) must stay usable: not narrower than PANEL_MIN, not wider than half of the editor
+  function clampPanelWidth(w, total) {
+    var max = Math.max(PANEL_MIN, Math.floor((+total || 0) * PANEL_MAX_FRAC)), n = +w;
+    if (!isFinite(n)) { n = PANEL_DEFAULT; }
+    return Math.max(PANEL_MIN, Math.min(max, Math.round(n)));
+  }
+  // what is remembered of the frame: panel width, panel hidden, active tab. Anything else is dropped; wrong values fall back.
+  function layout(l) {
+    l = l && typeof l === 'object' ? l : {};
+    return { panelW: clampPanelWidth(l.panelW == null ? PANEL_DEFAULT : l.panelW, 100000), panelHidden: l.panelHidden === true, subs: l.subs !== false, genScope: l.genScope === 'whole' ? 'whole' : 'playhead', burnMix: l.burnMix === 'subs' ? 'subs' : 'all', tab: TABS.indexOf(l.tab) >= 0 ? l.tab : 'transcript' };
+  }
+  // the saved project: the video is a client file (AiChatPersistentStorage id) -- never the bytes -- plus the frame layout; cues = the transcript; dubs come with a later step
+  function newProject(name) { return { v: 1, name: String(name || '').slice(0, 80), video: null, layout: layout(null), cues: [], dubs: [], jobs: [] }; }
+
+  // ---- the transcript: cues {id, start, end, text} in seconds, kept sorted by start. Every function returns a NEW list (the editor's undo history keeps the old ones).
+  var MAX_TEXT = 500, MAX_CUES = 5000, EPS = 0.001;
+  // how long "a line at the playhead" is: the default length of a line added at the playhead AND of what "Generate transcript > From playhead" recognizes -- a few seconds, the same on purpose
+  var CUE_SECONDS = 2;
+  function r3(n) { return Math.round(n * 1000) / 1000; }
+  function cleanText(t) { return String(t == null ? '' : t).replace(/\r\n?/g, '\n').slice(0, MAX_TEXT); }
+  function sortCues(list) { return list.slice().sort(function (a, b) { return a.start - b.start || a.end - b.end; }); }
+  // a list read from a saved project or an import: bad rows dropped, times rounded, ids made unique, sorted
+  function normalize(list) {
+    var seen = {}, out = [], n = 0;
+    (Array.isArray(list) ? list : []).forEach(function (c) {
+      if (!c || out.length >= MAX_CUES) { return; }
+      var a = +c.start, b = +c.end; if (!isFinite(a) || !isFinite(b) || a < 0 || b <= a) { return; }
+      var id = typeof c.id === 'string' && /^c\d+$/.test(c.id) && !seen[c.id] ? c.id : null;
+      if (id) { seen[id] = 1; n = Math.max(n, +id.slice(1)); }
+      out.push({ id: id, start: r3(a), end: r3(b), text: cleanText(c.text) });
+    });
+    out.forEach(function (c) { if (!c.id) { do { n++; } while (seen['c' + n]); c.id = 'c' + n; seen[c.id] = 1; } });
+    return sortCues(out);
+  }
+  function nextId(cues) { var n = 0; cues.forEach(function (c) { n = Math.max(n, parseInt(String(c.id).slice(1), 10) || 0); }); return 'c' + (n + 1); }
+  // times must be 0 <= start < end, and inside the video when its length is known (duration > 0)
+  function checkTimes(start, end, duration) {
+    if (!isFinite(start) || !isFinite(end)) { return 'time'; } if (start < 0) { return 'negative'; } if (end <= start) { return 'order'; }
+    if (duration > 0 && end > duration + EPS) { return 'beyond'; } return null;
+  }
+  // add a cue at `at` (the playing position), `dur` long (default 2 s, cut at the end of the video); text may be given
+  function addCue(cues, o) {
+    o = o || {}; if (cues.length >= MAX_CUES) { return { ok: false, error: 'full', cues: cues }; }
+    var d = +o.duration || 0, at = Math.max(0, +o.at || 0); if (d > 0 && at > d - 0.2) { at = Math.max(0, d - 0.2); }
+    var end = at + (+o.dur > 0 ? +o.dur : CUE_SECONDS); if (d > 0) { end = Math.min(end, d); }
+    var err = checkTimes(at, end, d); if (err) { return { ok: false, error: err, cues: cues }; }
+    var id = nextId(cues); return { ok: true, id: id, cues: sortCues(cues.concat([{ id: id, start: r3(at), end: r3(end), text: cleanText(o.text) }])) };
+  }
+  // patch = any of {start, end, text}; the result is refused (cues unchanged, error = 'negative' | 'order' | 'beyond' | 'time' | 'missing') when the times would be wrong
+  function updateCue(cues, id, patch, duration) {
+    var i = cues.findIndex(function (c) { return c.id === id; }); if (i < 0) { return { ok: false, error: 'missing', cues: cues }; }
+    var c = cues[i], n = { id: c.id, start: patch.start !== undefined ? +patch.start : c.start, end: patch.end !== undefined ? +patch.end : c.end, text: patch.text !== undefined ? cleanText(patch.text) : c.text };
+    var err = checkTimes(n.start, n.end, duration); if (err) { return { ok: false, error: err, cues: cues }; }
+    n.start = r3(n.start); n.end = r3(n.end); var copy = cues.slice(); copy[i] = n; return { ok: true, cues: sortCues(copy) };
+  }
+  function removeCue(cues, id) { var out = cues.filter(function (c) { return c.id !== id; }); return { ok: out.length !== cues.length, cues: out }; }
+  // the cue shown at time t (start <= t < end); the first one when they overlap
+  function activeCue(cues, t) { for (var i = 0; i < cues.length; i++) { if (cues[i].start <= t && t < cues[i].end) { return cues[i]; } if (cues[i].start > t) { break; } } return null; }
+  // undo / redo over whole lists:  h = history(list);  h.push(list) h.undo() h.redo() h.current() h.canUndo() h.canRedo()
+  function history(initial) {
+    var stack = [initial], ptr = 0, LIMIT = 100;
+    return { push: function (l) { stack = stack.slice(0, ptr + 1); stack.push(l); if (stack.length > LIMIT) { stack.shift(); } ptr = stack.length - 1; },
+      undo: function () { if (ptr > 0) { ptr--; } return stack[ptr]; }, redo: function () { if (ptr < stack.length - 1) { ptr++; } return stack[ptr]; },
+      current: function () { return stack[ptr]; }, canUndo: function () { return ptr > 0; }, canRedo: function () { return ptr < stack.length - 1; } };
+  }
+
+  // ---- SRT / WebVTT: parseSrt(text) -> { cues, skipped } (cues normalized: sorted, ids, rounded); formatSrt(cues) -> text.
+  // Reads .srt (with or without the index lines, "," or "." before the milliseconds, hours optional), WebVTT (header, NOTE / STYLE blocks, cue ids, <tags> and {\an8} dropped) and the plain
+  // "[M:SS - M:SS] text" lines that /media-transcribe writes. A block whose times cannot be read is counted in `skipped`, never guessed. (ai_chat.js still has its own older parser for /media-burn-subtitles; left untouched on purpose.)
+  function tsToSec(x) {
+    var m = String(x).trim().match(/^(?:(\d+):)?(\d{1,2}):(\d{1,2})(?:[.,](\d{1,3}))?$/); if (!m) { return null; }
+    return (m[1] ? +m[1] : 0) * 3600 + (+m[2]) * 60 + (+m[3]) + (m[4] ? +('0.' + m[4]) : 0);
+  }
+  function parseSrt(text) {
+    var raw = String(text == null ? '' : text).replace(/^﻿/, '').replace(/\r\n?/g, '\n').trim(), out = [], skipped = 0;
+    if (!raw) { return { cues: [], skipped: 0 }; }
+    if (/-->/.test(raw)) {
+      raw.split(/\n{2,}/).forEach(function (block) {
+        var lines = block.split('\n').map(function (l) { return l.replace(/\s+$/, ''); }).filter(function (l) { return l !== ''; });
+        if (!lines.length || /^(WEBVTT|NOTE|STYLE|REGION)\b/.test(lines[0])) { return; }
+        var ti = -1; lines.forEach(function (l, i) { if (ti < 0 && l.indexOf('-->') >= 0) { ti = i; } });
+        if (ti < 0) { skipped++; return; }
+        var parts = lines[ti].split('-->'), a = tsToSec(parts[0]), b = tsToSec(String(parts[1] || '').trim().split(/\s+/)[0]);   // VTT may put settings after the end time
+        var body = lines.slice(ti + 1).join('\n').replace(/<[^>]*>/g, '').replace(/\{\\an?\d\}/g, '').trim();
+        if (a === null || b === null || b <= a || !body) { skipped++; return; }
+        out.push({ start: a, end: b, text: body });
+      });
+    } else {
+      raw.split('\n').forEach(function (line) {
+        var m = line.match(/^\s*\[\s*([\d:.,]+)\s*[-–]\s*([\d:.,]+)\s*\]\s*(.+)$/); if (!m) { if (line.trim()) { skipped++; } return; }
+        var a = tsToSec(m[1]), b = tsToSec(m[2]);
+        if (a === null || b === null || b <= a) { skipped++; return; } out.push({ start: a, end: b, text: m[3].trim() });
+      });
+    }
+    var cues = normalize(out); return { cues: cues, skipped: skipped + (out.length - cues.length) };
+  }
+  function srtTime(t) {
+    var ms = Math.max(0, Math.round((+t || 0) * 1000)), h = Math.floor(ms / 3600000), m = Math.floor(ms / 60000) % 60, s = Math.floor(ms / 1000) % 60, z = function (n, w) { return ('00' + n).slice(-w); };
+    return z(h, 2) + ':' + z(m, 2) + ':' + z(s, 2) + ',' + z(ms % 1000, 3);
+  }
+  function formatSrt(cues) {
+    return sortCues(cues).map(function (c, i) { return (i + 1) + '\n' + srtTime(c.start) + ' --> ' + srtTime(c.end) + '\n' + String(c.text).replace(/\n{2,}/g, '\n'); }).join('\n\n') + (cues.length ? '\n' : '');
+  }
+
+  // Whisper segments [{start,end,text}] (seconds from the START OF WHAT WAS RECOGNIZED) -> cues on the video's own time line: +offset, cut to the video length, empty text / bad times dropped
+  function fromSegments(segments, offset, duration) {
+    var off = +offset > 0 ? +offset : 0, d = +duration > 0 ? +duration : 0;
+    return normalize((Array.isArray(segments) ? segments : []).map(function (g) {
+      if (!g) { return null; } var a = +g.start + off, b = +g.end + off, t = String(g.text == null ? '' : g.text).trim(); if (d > 0) { b = Math.min(b, d); }
+      return t ? { start: a, end: b, text: t } : null;
+    }));
+  }
+
+  // ---- dubs (voice-over recorded from the microphone): {id 'd<n>', start, duration, fileId (client file id of the recording), name}, sorted by start. Same style as the cues: every function returns a NEW list.
+  var MAX_DUBS = 50;
+  // a dub made by text-to-speech keeps what made it: {kind:'tts', text, lang, voiceId}; a microphone dub has none of these
+  function ttsInfo(o) { return o && o.kind === 'tts' ? { kind: 'tts', text: cleanText(o.text), lang: String(o.lang || '').slice(0, 12), voiceId: String(o.voiceId || '').slice(0, 60) } : {}; }
+  function normalizeDubs(list) {
+    var seen = {}, out = [], n = 0;
+    (Array.isArray(list) ? list : []).forEach(function (d) {
+      if (!d || out.length >= MAX_DUBS) { return; } var a = +d.start, l = +d.duration; if (!isFinite(a) || !isFinite(l) || a < 0 || l <= 0) { return; }
+      var id = typeof d.id === 'string' && /^d\d+$/.test(d.id) && !seen[d.id] ? d.id : null; if (id) { seen[id] = 1; n = Math.max(n, +id.slice(1)); }
+      out.push(Object.assign({ id: id, start: r3(a), duration: r3(l), fileId: typeof d.fileId === 'string' ? d.fileId.slice(0, 64) : null, name: String(d.name == null ? '' : d.name).slice(0, 80) }, ttsInfo(d)));
+    });
+    out.forEach(function (d) { if (!d.id) { do { n++; } while (seen['d' + n]); d.id = 'd' + n; seen[d.id] = 1; } });
+    return out.sort(function (a, b) { return a.start - b.start; });
+  }
+  function addDub(dubs, o) {
+    o = o || {}; if (dubs.length >= MAX_DUBS) { return { ok: false, error: 'full', dubs: dubs }; }
+    var a = +o.start, l = +o.duration; if (!isFinite(a) || a < 0 || !isFinite(l) || l <= 0) { return { ok: false, error: 'time', dubs: dubs }; }
+    var n = 0; dubs.forEach(function (d) { n = Math.max(n, parseInt(String(d.id).slice(1), 10) || 0); }); var id = 'd' + (n + 1);
+    return { ok: true, id: id, dubs: dubs.concat([Object.assign({ id: id, start: r3(a), duration: r3(l), fileId: o.fileId || null, name: String(o.name || ('配音 ' + (n + 1))).slice(0, 80) }, ttsInfo(o))]).sort(function (x, y) { return x.start - y.start; }) };
+  }
+  // move a dub: start >= 0, and inside the video when its length is known (it may run past the end: only its START has to be inside)
+  function moveDub(dubs, id, start, videoDuration) {
+    var i = dubs.findIndex(function (d) { return d.id === id; }); if (i < 0) { return { ok: false, error: 'missing', dubs: dubs }; }
+    start = +start; if (!isFinite(start)) { return { ok: false, error: 'time', dubs: dubs }; } if (start < 0) { return { ok: false, error: 'negative', dubs: dubs }; }
+    if (videoDuration > 0 && start >= videoDuration) { return { ok: false, error: 'beyond', dubs: dubs }; }
+    var copy = dubs.slice(); copy[i] = Object.assign({}, dubs[i], { start: r3(start) }); return { ok: true, dubs: copy.sort(function (x, y) { return x.start - y.start; }) };
+  }
+  function removeDub(dubs, id) { var out = dubs.filter(function (d) { return d.id !== id; }); return { ok: out.length !== dubs.length, dubs: out }; }
+  function activeDubs(dubs, t) { return dubs.filter(function (d) { return d.start <= t && t < d.start + d.duration; }); }
+
+  // which samples of a decoded recording to recognize: from startSec, lenSec long (0 = to the end), never outside the recording -> { from, to } (to > from, or null when nothing is left)
+  function pcmWindow(total, rate, startSec, lenSec) {
+    var from = Math.min(total, Math.floor(Math.max(0, +startSec || 0) * rate)), to = +lenSec > 0 ? Math.min(total, from + Math.round(+lenSec * rate)) : total;
+    return to > from ? { from: from, to: to } : null;
+  }
+
+  return { clock: clock, parseT: parseT, clampPanelWidth: clampPanelWidth, layout: layout, newProject: newProject, TABS: TABS, PANEL_MIN: PANEL_MIN,
+    pcmWindow: pcmWindow, CUE_SECONDS: CUE_SECONDS, normalize: normalize, addCue: addCue, updateCue: updateCue, removeCue: removeCue, activeCue: activeCue, history: history, checkTimes: checkTimes, parseSrt: parseSrt, fromSegments: fromSegments, normalizeDubs: normalizeDubs, addDub: addDub, moveDub: moveDub, removeDub: removeDub, activeDubs: activeDubs, formatSrt: formatSrt, MAX_TEXT: MAX_TEXT };
+}));
+
+}).call(window, undefined);
+(function (module) {
+// /edit-video: the in-browser job queue ("enqueue"). Pure state machine, no DOM, tested in Node: test/edit_video/video_jobs.test.js. Design: DESIGN.edit-video.md "逐字稿產生與瀏覽器工作佇列".
+// ONE job runs at a time (a Whisper worker is heavy); the others wait in the order they were enqueued. A job is {id, kind, label, status, progress, error, createdAt, payload, result}.
+//   status: queued -> running -> done | failed | canceled ;  a job that was queued/running when the page went away comes back as 'interrupted' (restore()) and can be retried.
+//   var q = TwVideoJobs.create({ run(job, report) -> { promise, cancel() }, onChange(list) , now? })
+//   q.enqueue({kind, label, payload}) -> id   q.cancel(id)   q.retry(id)   q.remove(id)   q.clearFinished()   q.patch(id, {..})   q.list()   q.get(id)   q.serialize()   q.restore(list)
+//   run() is the only place that does real work: report(text) posts a progress line; the promise resolves with the job's result or rejects with an Error. The result is kept in memory only (serialize() leaves it out).
+(function (root, factory) { if (typeof module === 'object' && module.exports) { module.exports = factory(); } else { root.TwVideoJobs = factory(); } }(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var MAX_JOBS = 50, FINAL = { done: 1, failed: 1, canceled: 1, interrupted: 1 };
+  function create(o) {
+    var jobs = [], seq = 0, current = null, handle = null, now = o.now || function () { return Date.now(); };
+    function emit() { if (o.onChange) { try { o.onChange(jobs.map(copy)); } catch (e) { /* the UI's problem */ } } }
+    function copy(j) { return Object.assign({}, j); }
+    function find(id) { for (var i = 0; i < jobs.length; i++) { if (jobs[i].id === id) { return jobs[i]; } } return null; }
+    function pump() {
+      if (current) { return; }
+      var j = jobs.filter(function (x) { return x.status === 'queued'; })[0]; if (!j) { return; }
+      current = j; j.status = 'running'; j.progress = ''; emit();
+      var finished = false;
+      function end(status, patch) { if (finished || current !== j) { return; } finished = true; Object.assign(j, patch || {}, { status: status }); current = null; handle = null; emit(); pump(); }
+      try {
+        handle = o.run(copy(j), function (text) { if (current === j && j.status === 'running') { j.progress = String(text == null ? '' : text); emit(); } });
+        Promise.resolve(handle && handle.promise).then(function (res) { end('done', { result: res, progress: '' }); }, function (e) { end('failed', { error: String((e && e.message) || e) }); });
+      } catch (e) { end('failed', { error: String((e && e.message) || e) }); }
+    }
+    function enqueue(spec) {
+      if (jobs.length >= MAX_JOBS) { jobs = jobs.filter(function (x) { return !FINAL[x.status]; }); if (jobs.length >= MAX_JOBS) { return null; } }
+      var j = { id: 'j' + (++seq), kind: String(spec.kind || ''), label: String(spec.label || ''), status: 'queued', progress: '', error: '', createdAt: now(), payload: spec.payload || {}, result: null };
+      jobs.push(j); emit(); pump(); return j.id;
+    }
+    function cancel(id) {
+      var j = find(id); if (!j) { return false; }
+      if (j.status === 'queued') { j.status = 'canceled'; emit(); return true; }
+      if (j.status === 'running' && current === j) { var h = handle; j.status = 'canceled'; current = null; handle = null; try { if (h && h.cancel) { h.cancel(); } } catch (e) { /* already gone */ } emit(); pump(); return true; }
+      return false;
+    }
+    function retry(id) { var j = find(id); if (!j || !(j.status === 'failed' || j.status === 'canceled' || j.status === 'interrupted')) { return false; } j.status = 'queued'; j.error = ''; j.progress = ''; j.result = null; emit(); pump(); return true; }
+    function remove(id) { var j = find(id); if (!j || j.status === 'running') { return false; } jobs = jobs.filter(function (x) { return x !== j; }); emit(); return true; }
+    function clearFinished() { jobs = jobs.filter(function (x) { return !FINAL[x.status]; }); emit(); }
+    // keep something small about a finished job that must survive a refresh (e.g. where its output file is stored); shown in serialize()
+    function patch(id, p) { var j = find(id); if (!j || !p || typeof p !== 'object') { return false; } Object.assign(j.payload, p); emit(); return true; }
+    function serialize() { return jobs.map(function (j) { return { id: j.id, kind: j.kind, label: j.label, status: j.status, error: j.error, createdAt: j.createdAt, payload: j.payload }; }); }
+    // a saved list: whatever was waiting or running is 'interrupted' now (nothing is resumed behind the user's back)
+    function restore(list) {
+      jobs = []; (Array.isArray(list) ? list : []).slice(0, MAX_JOBS).forEach(function (j) {
+        if (!j || typeof j.id !== 'string' || !/^j\d+$/.test(j.id)) { return; }
+        var st = FINAL[j.status] ? j.status : 'interrupted'; seq = Math.max(seq, +j.id.slice(1));
+        jobs.push({ id: j.id, kind: String(j.kind || ''), label: String(j.label || ''), status: st, progress: '', error: String(j.error || ''), createdAt: +j.createdAt || 0, payload: j.payload && typeof j.payload === 'object' ? j.payload : {}, result: null });
+      }); emit();
+    }
+    return { enqueue: enqueue, cancel: cancel, retry: retry, remove: remove, patch: patch, clearFinished: clearFinished, list: function () { return jobs.map(copy); }, get: function (id) { var j = find(id); return j ? copy(j) : null; }, serialize: serialize, restore: restore };
+  }
+  return { create: create, MAX_JOBS: MAX_JOBS };
+}));
+
+}).call(window, undefined);
+(function (module) {
+// /edit-video: reading what the user wrote about the video -- pure functions, loaded with the page (the editor's own scripts load only when it opens), tested in Node: test/edit_video/video_edit_core.test.js
+//   TwVideoIntent.mediaKind(name)  parseAttachedFiles(text)  pickMedia(files)  isOpenEditorPhrase(text)
+(function (root, factory) { if (typeof module === 'object' && module.exports) { module.exports = factory(); } else { root.TwVideoIntent = factory(); } }(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  // ---- sources of the video: what the chat's "[Attached files: name (client_file_id: ID), name2 (attachment_id: N)]" note says, and which names are playable media
+  var VIDEO_EXT = ['.mp4', '.m4v', '.mov', '.webm', '.mkv', '.avi', '.ogv', '.mpg', '.mpeg', '.3gp', '.ts'], AUDIO_EXT = ['.mp3', '.wav', '.m4a', '.aac', '.ogg', '.oga', '.opus', '.flac'];
+  // 'video' | 'audio' | null by the file name
+  function mediaKind(name) { var n = String(name || '').toLowerCase(); if (VIDEO_EXT.some(function (e) { return n.endsWith(e); })) { return 'video'; } if (AUDIO_EXT.some(function (e) { return n.endsWith(e); })) { return 'audio'; } return null; }
+  // -> [{ name, kind: 'client' | 'attachment', id }] in the order written; ids are kept only in their safe shape (client file ids: letters, digits, - _ ; attachment ids: digits)
+  function parseAttachedFiles(text) {
+    var out = [], re = /([^,\[\]\n]+?)\s\((client_file_id|attachment_id):\s*([A-Za-z0-9_-]{1,64})\)/g, m, src = String(text == null ? '' : text);
+    while ((m = re.exec(src))) {
+      var name = m[1].replace(/^\s*(?:\[?\s*Attached files:\s*)/i, '').trim(), kind = m[2] === 'client_file_id' ? 'client' : 'attachment';
+      if (!name || (kind === 'attachment' && !/^\d+$/.test(m[3]))) { continue; } out.push({ name: name.slice(0, 200), kind: kind, id: m[3] });
+    }
+    return out;
+  }
+  // the file to open from such a note: the first video, else the first audio, else null (a note without any media file opens an empty editor)
+  function pickMedia(files) {
+    var v = null, a = null; (files || []).forEach(function (f) { var k = mediaKind(f.name); if (k === 'video' && !v) { v = f; } else if (k === 'audio' && !a) { a = f; } }); return v || a || null;
+  }
+  // the words that mean "open the video editor" by themselves (no other request in the sentence), with or without the attached-files note:  編輯影片 / 請幫我剪輯這個影片 / open the video editor ...
+  function isOpenEditorPhrase(text) {
+    var bare = String(text == null ? '' : text).replace(/\s*\[Attached files:[\s\S]*\]\s*$/i, '').trim().replace(/[。.!!]+$/, '');
+    if (!bare || bare.length > 40) { return false; }
+    return /^(?:請|麻煩|幫我|請幫我)?\s*(?:編輯|剪輯|編修|開啟|打開|開)\s*(?:這個|這支|此|該|這部)?\s*(?:影片|視頻|影音)\s*(?:的)?\s*(?:逐字稿|字幕)?\s*(?:編輯器)?$/.test(bare) || /^(?:please\s+)?(?:edit|open)\s+(?:the\s+|this\s+|a\s+)?video(?:\s+(?:transcript|subtitles?))?(?:\s+editor)?$/i.test(bare);
+  }
+
+  return { mediaKind: mediaKind, parseAttachedFiles: parseAttachedFiles, pickMedia: pickMedia, isOpenEditorPhrase: isOpenEditorPhrase };
+}));
+
+}).call(window, undefined);
+(function (module) {
+// /edit-video: "where is the video?" -- a picker inside the editor, like the terminal's file-transfer window: this computer, the files of the CHAT (what was attached or generated in it, kept in this browser
+// or stored as Redmine attachments), and the File Access (FAP) folders the user authorized. Only the DOM and the three lists live here; opening a chat file is the host's job (host.chatFiles).
+//   TwVideoSourcePicker.open({ container, T, mediaKind(name), chatFiles() / storedFiles() -> Promise<[{ name, size?, from, open() -> Promise<File> }]>, fapFolders() -> Promise<[{ label, handle }]>, computer() }) -> Promise<File | null>
+(function (root) {
+  'use strict';
+  function el(tag, cls, text) { var e = root.document.createElement(tag); if (cls) { e.className = cls; } if (text != null) { e.textContent = text; } return e; }
+  function css() {
+    if (root.document.getElementById('tw-ve-pk-css')) { return; }
+    var s = root.document.createElement('style'); s.id = 'tw-ve-pk-css';
+    s.textContent = '.tw-ve-pk{position:absolute;inset:0;z-index:5;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center}.tw-ve-pk-box{background:var(--ai-win-bg,#fff);color:var(--ai-win-fg,inherit);border:1px solid #888;border-radius:8px;width:min(560px,92%);max-height:86%;display:flex;flex-direction:column;overflow:hidden}' +
+      '.tw-ve-pk-hd{display:flex;gap:6px;align-items:center;padding:6px 8px;border-bottom:1px solid #ccc}.tw-ve-pk-hd button,.tw-ve-pk-body button{border:1px solid #8250df;border-radius:6px;background:transparent;color:inherit;padding:2px 9px;cursor:pointer}.tw-ve-pk-hd button.on{background:#8250df;color:#fff}.tw-ve-pk-hd .sp{flex:1}' +
+      '.tw-ve-pk-body{padding:8px;overflow:auto;min-height:120px}.tw-ve-pk-row{display:flex;gap:8px;align-items:center;padding:4px 6px;border:1px solid #bbb;border-radius:6px;margin:3px 0;cursor:pointer}.tw-ve-pk-row:hover{border-color:#8250df}.tw-ve-pk-row .n{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tw-ve-pk-row .m{opacity:.65;font-size:12px}.tw-ve-pk-note{font-size:12px;opacity:.7;margin:4px 0}';
+    root.document.head.appendChild(s);
+  }
+  function size(n) { n = +n; return !n ? '' : n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB'; }
+  function open(o) {
+    css(); var T = o.T || function (a) { return a; };
+    return new Promise(function (resolve) {
+      var ov = el('div', 'tw-ve-pk'), box = el('div', 'tw-ve-pk-box'), hd = el('div', 'tw-ve-pk-hd'), body = el('div', 'tw-ve-pk-body'), tabBtn = {}, gen = 0;
+      ov.setAttribute('data-ve', 'picker'); body.setAttribute('data-ve', 'picker-body'); box.appendChild(hd); box.appendChild(body); ov.appendChild(box);
+      function done(f) { ov.remove(); resolve(f || null); }
+      function busy(msg) { body.textContent = ''; body.appendChild(el('div', 'tw-ve-pk-note', msg)); }
+      function pickFrom(label, getFile) { busy(T('讀取 ', 'Reading ') + label + '…'); getFile().then(done, function (e) { busy('⚠️ ' + ((e && e.message) || e)); }); }
+      function fileRow(name, meta, onClick, tag) { var r = el('div', 'tw-ve-pk-row'); r.setAttribute('data-pk', tag || 'file'); r.appendChild(el('span', 'n', name)); r.appendChild(el('span', 'm', meta || '')); r.addEventListener('click', onClick); return r; }
+      var TABS = [['computer', T('這台電腦', 'This computer')], ['chat', T('聊天 / Redmine 檔案', 'Chat / Redmine files')], ['fap', T('授權資料夾 (FAP)', 'Authorized folders (FAP)')], ['stored', T('這個瀏覽器的檔案', 'Kept in this browser')]];
+      TABS.forEach(function (t) { var b = el('button', '', t[1]); b.type = 'button'; b.setAttribute('data-pk-tab', t[0]); b.addEventListener('click', function () { show(t[0]); }); hd.appendChild(b); tabBtn[t[0]] = b; });
+      hd.appendChild(el('span', 'sp')); var x = el('button', '', '✕'); x.type = 'button'; x.setAttribute('data-pk', 'close'); x.addEventListener('click', function () { done(null); }); hd.appendChild(x);
+      ov.addEventListener('click', function (e) { if (e.target === ov) { done(null); } });
+      function show(tab) {
+        var my = ++gen; Object.keys(tabBtn).forEach(function (k) { tabBtn[k].classList.toggle('on', k === tab); }); body.textContent = '';
+        if (tab === 'computer') {
+          body.appendChild(el('div', 'tw-ve-pk-note', T('從這台電腦的檔案選一個影片或音訊檔。', 'Pick a video or audio file from this computer.')));
+          var b = el('button', '', '📂 ' + T('選擇檔案…', 'Choose a file…')); b.type = 'button'; b.setAttribute('data-pk', 'computer'); b.addEventListener('click', function () { done(null); if (o.computer) { o.computer(); } }); body.appendChild(b);
+        } else if (tab === 'chat') {
+          busy(T('讀取聊天檔案…', 'Reading the chat files…'));
+          Promise.resolve(o.chatFiles ? o.chatFiles() : []).then(function (list) {
+            if (my !== gen) { return; } body.textContent = '';
+            if (!list.length) { body.appendChild(el('div', 'tw-ve-pk-note', T('聊天裡還沒有影片或音訊檔(附加檔案或上傳後會列在這裡)。', 'No video or audio files in the chat yet (attach or upload one and it shows up here).'))); return; }
+            list.forEach(function (f) { body.appendChild(fileRow('🎞 ' + f.name, (f.from === 'redmine' ? 'Redmine · ' : T('聊天 · ', 'chat · ')) + size(f.size), function () { pickFrom(f.name, f.open); }, 'chat-file')); });
+          }, function (e) { if (my === gen) { busy('⚠️ ' + ((e && e.message) || e)); } });
+        } else if (tab === 'stored') {
+          busy(T('讀取這個瀏覽器保存的檔案…', 'Reading the files kept in this browser…'));
+          Promise.resolve(o.storedFiles ? o.storedFiles() : []).then(function (list) {
+            if (my !== gen) { return; } body.textContent = '';
+            body.appendChild(el('div', 'tw-ve-pk-note', T('編輯器輸出的影片(燒錄結果)和你載入的影片都保存在這裡,可以隨時拿來繼續編輯。', 'Videos the editor made (burn results) and the videos you loaded are kept here, so you can keep editing them.')));
+            if (!list.length) { body.appendChild(el('div', 'tw-ve-pk-note', T('目前沒有。', 'None yet.'))); return; }
+            list.forEach(function (f) { body.appendChild(fileRow('🎞 ' + f.name, size(f.size), function () { pickFrom(f.name, f.open); }, 'stored-file')); });
+          }, function (e) { if (my === gen) { busy('⚠️ ' + ((e && e.message) || e)); } });
+        } else {
+          busy(T('讀取授權資料夾…', 'Reading the authorized folders…'));
+          Promise.resolve(o.fapFolders ? o.fapFolders() : []).then(function (folders) {
+            if (my !== gen) { return; } body.textContent = '';
+            if (!folders.length) { body.appendChild(el('div', 'tw-ve-pk-note', T('還沒有授權任何資料夾(Configure > File Access 可以新增)。', 'No folder authorized yet (add one in Configure > File Access).'))); return; }
+            body.appendChild(el('div', 'tw-ve-pk-note', T('選一個資料夾:', 'Choose a folder:')));
+            folders.forEach(function (rec) { var r = fileRow('📁 ' + rec.label, '', function () { browse(rec, [rec.handle], [rec.label], my); }, 'fap-folder'); body.appendChild(r); });
+          }, function (e) { if (my === gen) { busy('⚠️ ' + ((e && e.message) || e)); } });
+        }
+      }
+      // one directory level at a time: sub-folders first, then the media files (the others are not listed)
+      function browse(rec, stack, names, my) {
+        var dir = stack[stack.length - 1];
+        function listIt() {
+          busy(T('讀取資料夾…', 'Reading the folder…'));
+          var dirs = [], files = [];
+          return (async function () { for await (var ent of dir.entries()) { var nm = ent[0], h = ent[1]; if (h.kind === 'directory') { dirs.push([nm, h]); } else if (o.mediaKind(nm)) { files.push([nm, h]); } } })().then(function () {
+            if (my !== gen) { return; } body.textContent = '';
+            var path = el('div', 'tw-ve-pk-note', '📁 ' + names.join(' / ')); path.setAttribute('data-pk', 'path'); body.appendChild(path);
+            if (stack.length > 1) { body.appendChild(fileRow('⬆ ..', '', function () { browse(rec, stack.slice(0, -1), names.slice(0, -1), my); }, 'fap-up')); }
+            else { body.appendChild(fileRow('⬆ ' + T('選別的資料夾', 'Other folders'), '', function () { show('fap'); }, 'fap-up')); }
+            dirs.sort(function (a, b) { return a[0].localeCompare(b[0]); }).forEach(function (d) { body.appendChild(fileRow('📁 ' + d[0], '', function () { browse(rec, stack.concat([d[1]]), names.concat([d[0]]), my); }, 'fap-dir')); });
+            files.sort(function (a, b) { return a[0].localeCompare(b[0]); }).forEach(function (f) { body.appendChild(fileRow('🎞 ' + f[0], '', function () { pickFrom(f[0], function () { return f[1].getFile(); }); }, 'fap-file')); });
+            if (!dirs.length && !files.length) { body.appendChild(el('div', 'tw-ve-pk-note', T('這個資料夾裡沒有影片/音訊檔或子資料夾。', 'No video / audio files or sub-folders here.'))); }
+          }, function (e) { if (my === gen) { busy('⚠️ ' + ((e && e.message) || e)); } });
+        }
+        Promise.resolve(rec.handle.queryPermission ? rec.handle.queryPermission({ mode: 'read' }) : 'granted').then(function (st) {
+          if (st === 'granted') { return listIt(); }
+          body.textContent = ''; body.appendChild(el('div', 'tw-ve-pk-note', T('「', 'The folder "') + rec.label + T('」需要重新授權讀取。', '" needs permission to be read again.')));
+          var g = el('button', '', T('授權讀取', 'Allow reading')); g.type = 'button'; g.setAttribute('data-pk', 'fap-grant');
+          g.addEventListener('click', function () { rec.handle.requestPermission({ mode: 'read' }).then(function (r) { if (r === 'granted') { listIt(); } else { busy(T('沒有授權,不能讀這個資料夾', 'Permission was not granted')); } }, function (e) { busy('⚠️ ' + ((e && e.message) || e)); }); });
+          body.appendChild(g);
+        }, function (e) { busy('⚠️ ' + ((e && e.message) || e)); });
+      }
+      (o.container || root.document.body).appendChild(ov); show(o.start || 'chat');
+    });
+  }
+  root.TwVideoSourcePicker = { open: open };
+}(typeof window !== 'undefined' ? window : globalThis));
+
+}).call(window, undefined);
+(function (module) {
+// /edit-video: the "TTS dub" dialog -- a typing box (prefilled from a transcript line, or typed), the LANGUAGE, the voice SOURCE (this browser's Kokoro / the server's CJK relay) and the VOICE. Only the DOM lives here;
+// the voices come from the host (the page's own list, data-tts-voices: [{id, name, lang, gender, engine: 'local' | 'relay'}]); synthesizing is the host's job.
+//   TwVideoTtsDialog.open({ container, T, text, lang, voiceId, voices, pickVoice(text, lang) -> voice | null }) -> Promise<{ text, lang, voiceId } | null>
+//   TwVideoTtsDialog.langsOf(voices) -> ['zh-TW', ...]    TwVideoTtsDialog.filter(voices, lang, source) -> voices    TwVideoTtsDialog.guessLang(text) -> 'zh-TW' | 'en-US' | 'ja-JP' | 'ko-KR'
+(function (root, factory) { if (typeof module === 'object' && module.exports) { module.exports = factory(null); } else { root.TwVideoTtsDialog = factory(root); } }(typeof self !== 'undefined' ? self : this, function (root) {
+  'use strict';
+  var SOURCES = ['auto', 'local', 'relay'];
+  function langsOf(voices) { var seen = {}, out = []; (voices || []).forEach(function (v) { if (v && v.lang && !seen[v.lang]) { seen[v.lang] = 1; out.push(v.lang); } }); return out; }
+  // language ('' = any) and source ('auto' = any) narrow the voice list; the order of the host's list is kept
+  function filter(voices, lang, source) { return (voices || []).filter(function (v) { return v && (!lang || v.lang === lang) && (!source || source === 'auto' || v.engine === source); }); }
+  // what the text looks like: kana -> Japanese, hangul -> Korean, Han -> Chinese (Traditional by default), else English
+  function guessLang(text) {
+    var t = String(text || ''); if (/[぀-ヿ]/.test(t)) { return 'ja-JP'; } if (/[가-힣]/.test(t)) { return 'ko-KR'; } if (/[一-鿿㐀-䶿]/.test(t)) { return 'zh-TW'; } return 'en-US';
+  }
+  var NAMES = { 'zh-TW': '中文(台灣)', 'zh-CN': '中文(普通话)', 'zh-HK': '中文(香港)', 'en-US': 'English (US)', 'en-GB': 'English (UK)', 'ja-JP': '日本語', 'ko-KR': '한국어' };
+  function el(tag, cls, text) { var e = root.document.createElement(tag); if (cls) { e.className = cls; } if (text != null) { e.textContent = text; } return e; }
+  function css() {
+    if (root.document.getElementById('tw-ve-tts-css')) { return; }
+    var s = root.document.createElement('style'); s.id = 'tw-ve-tts-css';
+    s.textContent = '.tw-ve-tts{position:absolute;inset:0;z-index:6;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center}.tw-ve-tts-box{background:var(--ai-win-bg,#fff);color:var(--ai-win-fg,inherit);border:1px solid #888;border-radius:8px;width:min(480px,92%);max-height:90%;overflow:auto;padding:10px 12px;display:flex;flex-direction:column;gap:8px}' +
+      '.tw-ve-tts-box textarea{width:100%;min-height:90px;box-sizing:border-box;font:inherit;padding:4px}.tw-ve-tts-box label{display:flex;gap:6px;align-items:center;font-size:12px}.tw-ve-tts-box label span{min-width:64px}.tw-ve-tts-box select{flex:1;padding:2px}.tw-ve-tts-box .bt{display:flex;gap:8px;justify-content:flex-end}.tw-ve-tts-box button{border:1px solid #8250df;border-radius:6px;background:transparent;color:inherit;padding:3px 12px;cursor:pointer}.tw-ve-tts-box button.go{background:#8250df;color:#fff}.tw-ve-tts-box button:disabled{opacity:.4}.tw-ve-tts-err{color:#cf222e;font-size:12px}';
+    root.document.head.appendChild(s);
+  }
+  function open(o) {
+    css(); var T = o.T || function (a) { return a; }, voices = o.voices || [];
+    return new Promise(function (resolve) {
+      var ov = el('div', 'tw-ve-tts'), box = el('div', 'tw-ve-tts-box'), ta = el('textarea'), err = el('div', 'tw-ve-tts-err');
+      ov.setAttribute('data-ve', 'tts-dialog'); ta.setAttribute('data-f', 'tts-text'); ta.value = String(o.text || ''); ta.placeholder = T('輸入要配音的文字…', 'Type the text to speak…'); err.setAttribute('data-f', 'tts-err');
+      box.appendChild(el('strong', '', '🔊 ' + T('TTS 配音', 'TTS dub'))); box.appendChild(ta);
+      function row(label, sel, tag) { var l = el('label'); l.appendChild(el('span', '', label)); sel.setAttribute('data-f', tag); l.appendChild(sel); box.appendChild(l); }
+      var sl = el('select'), ss = el('select'), sv = el('select');
+      langsOf(voices).forEach(function (c) { var op = el('option', '', NAMES[c] || c); op.value = c; sl.appendChild(op); });
+      [['auto', T('自動(全部來源)', 'Any source')], ['local', T('瀏覽器本機 (Kokoro)', 'This browser (Kokoro)')], ['relay', T('伺服器 relay (Microsoft)', 'Server relay (Microsoft)')]].forEach(function (p) { var op = el('option', '', p[1]); op.value = p[0]; ss.appendChild(op); });
+      row(T('語言', 'Language'), sl, 'tts-lang'); row(T('聲音來源', 'Voice source'), ss, 'tts-source'); row(T('聲音', 'Voice'), sv, 'tts-voice'); box.appendChild(err);
+      function fillVoices(keep) {
+        var list = filter(voices, sl.value, ss.value); sv.textContent = '';
+        list.forEach(function (v) { var op = el('option', '', v.name + ' · ' + (v.engine === 'relay' ? T('伺服器', 'server') : T('本機', 'local')) + (v.gender ? ' · ' + v.gender : '')); op.value = v.id; sv.appendChild(op); });
+        if (keep && list.some(function (v) { return v.id === keep; })) { sv.value = keep; }
+        err.textContent = list.length ? '' : T('這個語言在這個來源沒有可用的聲音,換一個來源', 'No voice for this language from this source: pick another source'); go.disabled = !list.length;
+      }
+      var go = el('button', 'go', T('合成並加入', 'Synthesize and add')), cancel = el('button', '', T('取消', 'Cancel')), bt = el('div', 'bt'); go.type = cancel.type = 'button'; go.setAttribute('data-f', 'tts-go'); cancel.setAttribute('data-f', 'tts-cancel'); bt.appendChild(cancel); bt.appendChild(go); box.appendChild(bt);
+      // start: the language asked for, else what the text looks like; the voice asked for (its language wins), else the host's default for that text / language
+      var pre = o.voiceId ? voices.filter(function (v) { return v.id === o.voiceId; })[0] : null, lang = pre ? pre.lang : (o.lang && langsOf(voices).indexOf(o.lang) >= 0 ? o.lang : null);
+      if (!lang) { var fam = String(o.lang || '').slice(0, 2).toLowerCase(), g = o.text ? guessLang(o.text) : (root.document.documentElement.lang || 'zh-TW'); lang = langsOf(voices).filter(function (c) { return fam ? c.slice(0, 2).toLowerCase() === fam : c === g; })[0] || langsOf(voices).filter(function (c) { return c.slice(0, 2) === String(g).slice(0, 2); })[0] || langsOf(voices)[0] || ''; }
+      sl.value = lang; var def = pre || (o.pickVoice ? o.pickVoice(ta.value, lang) : null); if (def && def.lang === lang && def.engine) { ss.value = 'auto'; }
+      fillVoices(def && def.id);
+      sl.addEventListener('change', function () { fillVoices(); }); ss.addEventListener('change', function () { fillVoices(sv.value); });
+      function done(r) { ov.remove(); resolve(r || null); }
+      cancel.addEventListener('click', function () { done(null); }); ov.addEventListener('click', function (e) { if (e.target === ov) { done(null); } });
+      go.addEventListener('click', function () { var t = ta.value.trim(); if (!t) { err.textContent = T('請輸入文字', 'Type some text'); return; } if (!sv.value) { return; } done({ text: t, lang: sl.value, voiceId: sv.value }); });
+      ov.appendChild(box); (o.container || root.document.body).appendChild(ov); ta.focus();
+    });
+  }
+  return { open: open, langsOf: langsOf, filter: filter, guessLang: guessLang, SOURCES: SOURCES };
+}));
+
+}).call(window, undefined);
+(function (module) {
+// /edit-video "Ask AI": the pure part (no DOM, no model call; tested in Node: test/edit_video/video_edit_ai.test.js). Design: DESIGN.edit-video.md "Ask AI".
+// The model (or the user's plain sentence, read by localParse) only ever produces CLOSED actions; applyEdits checks every one against the same rules the editor's own fields use and says what it did / refused.
+//   TwVideoEditAi.OPS   editPrompt(cues, text, {duration, zh})   parseReply(text) -> {ok, say, edits, dropped, droppedOps}   applyEdits(cues, edits, duration, zh) -> {cues, applied, rejected, tts}   localParse(text, cues, {now, duration}) -> {edits, notes}
+// Lines are named by their NUMBER in the list the model was shown (1-based, in time order) or by their id ("c3"); numbers are resolved against the list as it was BEFORE the batch, so an earlier action never renumbers a later one.
+(function (root, factory) { if (typeof module === 'object' && module.exports) { module.exports = factory(require('./video_edit_core.js')); } else { root.TwVideoEditAi = factory(root.TwVideoEdit); } }(typeof self !== 'undefined' ? self : this, function (core) {
+  'use strict';
+  var OPS = ['set_text', 'set_time', 'add_cue', 'remove_cue', 'shift', 'replace_text', 'merge', 'translate', 'add_tts_dub'], MAX_EDITS = 200;
+  function isObj(x) { return x && typeof x === 'object' && !Array.isArray(x); }
+  function str(x, n) { return String(x == null ? '' : x).slice(0, n || 500); }
+  function num(x) { if (typeof x === 'number') { return isFinite(x) ? x : null; } var s = String(x == null ? '' : x).trim().replace(/\s*(?:秒|s|sec|seconds?)$/i, ''), neg = /^-/.test(s), t = core.parseT(s.replace(/^[-+]/, '')); return t === null ? null : neg ? -t : t; }
+  function ref(x) { if (typeof x === 'number' && isFinite(x)) { return Math.round(x); } var s = str(x, 12).trim(); return /^\d+$/.test(s) ? +s : /^c\d+$/.test(s) ? s : null; }
+  // only the fields an action may have are kept; anything else is dropped (the model cannot smuggle a field in)
+  function normalizeEdit(e) {
+    if (!isObj(e)) { return null; } var op = String(e.op || e.action || '').trim();
+    if (OPS.indexOf(op) < 0) { return null; } var o = { op: op };
+    if (op === 'set_text') { o.n = ref(e.n != null ? e.n : e.id); o.text = str(e.text); }
+    else if (op === 'set_time') { o.n = ref(e.n != null ? e.n : e.id); if (e.start !== undefined) { o.start = num(e.start); } if (e.end !== undefined) { o.end = num(e.end); } }
+    else if (op === 'add_cue') { o.start = num(e.start); if (e.end !== undefined) { o.end = num(e.end); } o.text = str(e.text); }
+    else if (op === 'remove_cue') { o.n = ref(e.n != null ? e.n : e.id); }
+    else if (op === 'shift') { o.seconds = num(e.seconds); if (e.from !== undefined) { o.from = ref(e.from); } if (e.to !== undefined) { o.to = ref(e.to); } }
+    else if (op === 'replace_text') { o.find = str(e.find, 200); o.with = str(e.with != null ? e.with : e.replace, 200); if (e.n !== undefined) { o.n = ref(e.n); } }
+    else if (op === 'merge') { o.n = ref(e.n != null ? e.n : e.id); }
+    else if (op === 'translate') { o.items = (Array.isArray(e.items) ? e.items : []).slice(0, 500).map(function (it) { return isObj(it) ? { n: ref(it.n != null ? it.n : it.id), text: str(it.text) } : null; }).filter(Boolean); }
+    else if (op === 'add_tts_dub') { if (e.n !== undefined) { o.n = ref(e.n); } if (e.text !== undefined) { o.text = str(e.text); } if (e.start !== undefined) { o.start = num(e.start); } o.lang = str(e.lang, 12).trim(); o.voice = str(e.voice, 60).trim(); }
+    return o;
+  }
+  function parseReply(text) {
+    var t = String(text || '').replace(/<think>[\s\S]*?<\/think>/gi, ''), a = t.indexOf('{'), b = t.lastIndexOf('}'), arr = t.indexOf('['), obj;
+    if (a < 0 || b <= a) { return { ok: false, error: 'no JSON' }; }
+    try { obj = JSON.parse(t.slice(a, b + 1)); } catch (e) { try { obj = JSON.parse(t.slice(a, b + 1).replace(/,\s*([}\]])/g, '$1')); } catch (e2) { return { ok: false, error: 'bad JSON' }; } }
+    var list = Array.isArray(obj) ? obj : Array.isArray(obj.edits) ? obj.edits : obj.op ? [obj] : null; if (!list) { return { ok: false, error: 'no edits' }; }
+    var edits = [], droppedOps = []; list.slice(0, MAX_EDITS).forEach(function (e0) { var e = normalizeEdit(e0); if (e) { edits.push(e); } else { droppedOps.push(str(isObj(e0) ? (e0.op || e0.action || '(no op)') : '(not an object)', 30)); } });
+    return { ok: true, say: str(obj.say, 400), edits: edits, dropped: droppedOps.length, droppedOps: droppedOps };
+  }
+  function cueLines(cues) { return core.normalize(cues).map(function (c, i) { return (i + 1) + '. [' + core.clock(c.start) + ' - ' + core.clock(c.end) + '] ' + String(c.text).replace(/\n/g, ' / '); }).join('\n'); }
+  function editPrompt(cues, text, o) {
+    o = o || {}; var d = +o.duration > 0 ? ' (video length ' + core.clock(o.duration) + ')' : '';
+    var system = 'You edit the transcript (subtitle lines) of a video' + d + '. Answer with ONE JSON object only: {"say":"one short sentence for the user","edits":[ ... ]}. Allowed actions (op), nothing else:\n' +
+      '- {"op":"set_text","n":3,"text":"new text"}\n- {"op":"set_time","n":3,"start":"0:05.5","end":"0:08"}   (start / end optional; "m:ss.s" or seconds)\n- {"op":"add_cue","start":"0:10","end":"0:12","text":"..."}   (end optional: 2 s)\n- {"op":"remove_cue","n":3}\n' +
+      '- {"op":"shift","seconds":-0.5,"from":2,"to":9}   (negative = earlier; from / to optional line numbers, default all)\n- {"op":"replace_text","find":"abc","with":"xyz","n":3}   (n optional: all lines)\n- {"op":"merge","n":3}   (line 3 and the next line become one)\n' +
+      '- {"op":"translate","items":[{"n":1,"text":"..."},{"n":2,"text":"..."}]}   (rewrite many lines at once: translate, fix typos, shorten)\n' +
+      '- {"op":"add_tts_dub","n":3,"lang":"en-US"}   (speak a transcript line with text-to-speech and add it as a dub starting at that line; or give "text" and "start" instead of "n"; lang optional: zh-TW zh-CN zh-HK en-US en-GB ja-JP ko-KR; "voice" optional)\n' +
+      'Line numbers are the numbers in the list. Do not invent actions. If the request cannot be done with these actions, return {"say":"why","edits":[]}.';
+    return { system: system, user: 'Transcript:\n' + (cueLines(cues) || '(empty)') + '\n\nRequest: ' + String(text || '') };
+  }
+
+  // the main entry: apply a batch of edits to a COPY; returns the new list, what was done (applied[]: {op, text}), what was refused (rejected[]: {op, error, text}) and the TTS dubs asked for (tts[]: {text, lang, voice, start, n}) -- those are made later by the host
+  var ERR = { missing: ['找不到這一列', 'line not found'], negative: ['時間不能小於 0', 'time cannot be negative'], order: ['結束時間要大於開始時間', 'end must be after start'], beyond: ['超過影片長度', 'beyond the end of the video'], time: ['時間不正確', 'bad time'], full: ['逐字稿列數已達上限', 'transcript is full'], text: ['沒有文字', 'no text'], not_found: ['找不到要取代的字', 'text to replace not found'], arg: ['參數不完整', 'missing argument'], nomerge: ['後面沒有下一列可合併', 'no next line to merge'] };
+  function applyEdits(cues, edits, duration, zh) {
+    var cur = core.normalize(cues), ids = cur.map(function (c) { return c.id; }), applied = [], rejected = [], tts = [], dur = +duration > 0 ? +duration : 0;
+    function W(a, b) { return zh ? a : b; }
+    function resolve(r) { if (typeof r === 'number') { return ids[r - 1] || null; } return typeof r === 'string' && ids.indexOf(r) >= 0 ? r : null; }
+    function find(id) { return cur.filter(function (c) { return c.id === id; })[0] || null; }
+    function label(e) { return e.n != null ? W('第 ', 'line ') + e.n + W(' 句', '') : ''; }
+    function ok(e, text) { applied.push({ op: e.op, text: text }); }
+    function no(e, code) { var m = ERR[code] || [code, code]; rejected.push({ op: e.op, error: code, text: (label(e) ? label(e) + ':' : '') + W(m[0], m[1]) }); }
+    (edits || []).slice(0, MAX_EDITS).forEach(function (e0) {
+      var e = normalizeEdit(e0);
+      if (!e || OPS.indexOf(e.op) < 0) { rejected.push({ op: String(e0 && e0.op), error: 'bad_op', text: W('不認得的動作', 'unknown action') }); return; }
+      var id, r, c;
+      if (e.op === 'set_text' || e.op === 'set_time' || e.op === 'remove_cue' || e.op === 'merge') { id = resolve(e.n); if (!id || !find(id)) { return no(e, 'missing'); } c = find(id); }
+      if (e.op === 'set_text') { r = core.updateCue(cur, id, { text: e.text }, dur); if (!r.ok) { return no(e, r.error); } cur = r.cues; ok(e, label(e) + W(' 改成「', ' → "') + str(e.text, 40) + W('」', '"')); }
+      else if (e.op === 'set_time') {
+        if (e.start == null && e.end == null) { return no(e, 'arg'); } var p = {}; if (e.start != null) { p.start = e.start; } if (e.end != null) { p.end = e.end; }
+        r = core.updateCue(cur, id, p, dur); if (!r.ok) { return no(e, r.error); } cur = r.cues; var n2 = find(id); ok(e, label(e) + W(' 時間改為 ', ' time → ') + core.clock(n2.start) + ' - ' + core.clock(n2.end));
+      }
+      else if (e.op === 'add_cue') {
+        if (e.start == null) { return no(e, 'time'); } if (dur > 0 && e.start >= dur) { return no(e, 'beyond'); } var end = e.end != null ? e.end : e.start + core.CUE_SECONDS; if (dur > 0 && e.end == null) { end = Math.min(end, dur); }
+        var terr = core.checkTimes(e.start, end, dur); if (terr) { return no(e, terr); } if (cur.length >= 5000) { return no(e, 'full'); }
+        var base = cur.length ? Math.max.apply(null, cur.map(function (x) { return parseInt(x.id.slice(1), 10) || 0; })) : 0, nid = 'c' + (base + 1);
+        cur = core.normalize(cur.concat([{ id: nid, start: e.start, end: end, text: e.text }])); ok(e, W('新增 ', 'add ') + core.clock(e.start) + ' 「' + str(e.text, 40) + '」');
+      }
+      else if (e.op === 'remove_cue') { cur = core.removeCue(cur, id).cues; ok(e, W('刪除第 ', 'delete line ') + e.n + W(' 句', '')); }
+      else if (e.op === 'shift') {
+        if (e.seconds == null || !isFinite(e.seconds) || e.seconds === 0) { return no(e, 'arg'); }
+        var from = e.from != null ? ids.indexOf(resolve(e.from)) : 0, to = e.to != null ? ids.indexOf(resolve(e.to)) : ids.length - 1; if (from < 0 || to < 0 || to < from) { return no(e, 'missing'); }
+        var pick = {}; ids.slice(from, to + 1).forEach(function (x) { pick[x] = 1; }); var bad = null, moved = cur.map(function (x) { if (!pick[x.id]) { return x; } var s = x.start + e.seconds, t = x.end + e.seconds, er = core.checkTimes(s, t, dur); if (er && !bad) { bad = er; } return { id: x.id, start: s, end: t, text: x.text }; });
+        if (bad) { return no(e, bad); } cur = core.normalize(moved); ok(e, (e.seconds < 0 ? W('提早 ', 'earlier by ') : W('延後 ', 'later by ')) + Math.abs(e.seconds) + W(' 秒(', ' s (') + (e.from != null || e.to != null ? W('第 ', 'lines ') + (from + 1) + '–' + (to + 1) + W(' 句', '') : W('全部', 'all')) + ')');
+      }
+      else if (e.op === 'replace_text') {
+        if (!e.find) { return no(e, 'text'); } var only = e.n != null ? resolve(e.n) : null; if (e.n != null && !only) { return no(e, 'missing'); } var hits = 0;
+        cur = cur.map(function (x) { if (only && x.id !== only) { return x; } var parts = x.text.split(e.find); if (parts.length < 2) { return x; } hits += parts.length - 1; return { id: x.id, start: x.start, end: x.end, text: parts.join(e.with) }; });
+        if (!hits) { return no(e, 'not_found'); } cur = core.normalize(cur); ok(e, W('「', '"') + e.find + W('」換成「', '" → "') + e.with + W('」(', '" (') + hits + W(' 處)', ')'));
+      }
+      else if (e.op === 'merge') {
+        var i = cur.indexOf(c), nx = cur[i + 1]; if (!nx) { return no(e, 'nomerge'); } var cjk = /[一-鿿぀-ヿ가-힣]$/.test(c.text) || /^[一-鿿぀-ヿ가-힣]/.test(nx.text);
+        var m = { id: c.id, start: c.start, end: Math.max(c.end, nx.end), text: [c.text, nx.text].filter(Boolean).join(cjk ? '' : ' ').slice(0, 500) }; cur = core.normalize(cur.filter(function (x) { return x.id !== nx.id && x.id !== c.id; }).concat([m])); ok(e, W('合併第 ', 'merge line ') + e.n + W(' 句與下一句', ' with the next'));
+      }
+      else if (e.op === 'translate') {
+        if (!e.items || !e.items.length) { return no(e, 'arg'); } var done = 0;
+        e.items.forEach(function (it) { var tid = resolve(it.n); if (!tid) { return no({ op: 'translate', n: it.n }, 'missing'); } var rr = core.updateCue(cur, tid, { text: it.text }, dur); if (!rr.ok) { return no({ op: 'translate', n: it.n }, rr.error); } cur = rr.cues; done++; });
+        if (done) { ok(e, W('整批改寫 ', 'rewrote ') + done + W(' 句', ' lines')); }
+      }
+      else if (e.op === 'add_tts_dub') {
+        var src = e.n != null ? find(resolve(e.n)) : null; if (e.n != null && !src) { return no(e, 'missing'); }
+        var tx = String(e.text != null && e.text !== '' ? e.text : (src ? src.text : '')).trim(), st = e.start != null ? e.start : (src ? src.start : null);
+        if (!tx) { return no(e, 'text'); } if (st == null || !isFinite(st)) { return no(e, 'time'); } if (st < 0) { return no(e, 'negative'); } if (dur > 0 && st >= dur) { return no(e, 'beyond'); }
+        tts.push({ text: tx.slice(0, 500), lang: e.lang || '', voice: e.voice || '', start: Math.round(st * 1000) / 1000, n: e.n != null ? e.n : null }); ok(e, W('TTS 配音 ', 'TTS dub ') + core.clock(st) + ' 「' + str(tx, 30) + '」' + (e.lang ? ' (' + e.lang + ')' : ''));
+      }
+    });
+    return { cues: cur, applied: applied, rejected: rejected, tts: tts };
+  }
+
+  // ---- the user's plain sentence, read by the program (no model): the common edits that do not need one
+  var CN = { 零: 0, 一: 1, 二: 2, 兩: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+  function nnum(s) {
+    s = String(s || '').trim(); if (/^\d+$/.test(s)) { return +s; } var m = /^([一二兩三四五六七八九])?十([一二三四五六七八九])?$/.exec(s); if (m) { return (m[1] ? CN[m[1]] : 1) * 10 + (m[2] ? CN[m[2]] : 0); } return s.length === 1 && CN[s] != null ? CN[s] : null;
+  }
+  var LANGS = [[/(?:英文|英語|english)/i, 'en-US'], [/(?:日文|日語|japanese)/i, 'ja-JP'], [/(?:韓文|韓語|korean)/i, 'ko-KR'], [/(?:廣東話|粵語|香港)/, 'zh-HK'], [/(?:簡體|普通話|國語|大陸)/, 'zh-CN'], [/(?:中文|華語|台灣|國語)/, 'zh-TW']];
+  function langIn(s) { for (var i = 0; i < LANGS.length; i++) { if (LANGS[i][0].test(s)) { return LANGS[i][1]; } } return ''; }
+  var NUM = '(\\d+|[一二兩三四五六七八九十]+)', LINE = '第\\s*' + NUM + '\\s*(?:句|列|行|段)';
+  function localParse(text, cues, ctx) {
+    var t = String(text || '').trim().replace(/[。.!!]+$/, ''), edits = [], notes = [], m, list = core.normalize(cues);
+    if (!t) { return { edits: edits, notes: notes }; }
+    if ((m = new RegExp('^(?:請|麻煩|幫我)?(?:把|將)?\\s*' + LINE + '\\s*(?:的文字|的字幕)?\\s*(?:改成|改為|換成|改)\\s*[:：]?\\s*([\\s\\S]+)$').exec(t)) || (m = new RegExp('^(?:set|change)\\s+line\\s+(\\d+)\\s+(?:to|as)\\s*[:：]?\\s*([\\s\\S]+)$', 'i').exec(t))) {
+      var n1 = nnum(m[1]); if (n1) { edits.push({ op: 'set_text', n: n1, text: m[2].replace(/^[「"『]|[」"』]$/g, '') }); } return { edits: edits, notes: notes };
+    }
+    if ((m = new RegExp('(?:把|將)?\\s*' + LINE + '\\s*(?:用\\s*([^\\s配]*?)\\s*)?(?:配音|念出來|唸出來|朗讀)').exec(t)) || (m = /(?:dub|speak|read)\s+line\s+(\d+)(?:\s+in\s+(\w+))?/i.exec(t))) {
+      var n2 = nnum(m[1]); if (n2) { var e2 = { op: 'add_tts_dub', n: n2 }; var lg = langIn(m[2] || ''); if (lg) { e2.lang = lg; } edits.push(e2); } return { edits: edits, notes: notes };
+    }
+    if ((m = /(?:全部|所有|整個|整體|字幕|逐字稿)?\s*(提早|提前|往前|延後|往後|延遲|晚|早)\s*(\d+(?:\.\d+)?)\s*秒/.exec(t)) || (m = /(?:shift|move)\s+(?:all\s+)?(?:lines\s+)?(\d+(?:\.\d+)?)\s*(?:s|sec|seconds?)\s+(earlier|later)/i.exec(t))) {
+      var early = /提早|提前|往前|早|earlier/i.test(m[1] + (m[2] || '')), sec = parseFloat(/^\d/.test(m[1]) ? m[1] : m[2]); edits.push({ op: 'shift', seconds: early ? -sec : sec }); return { edits: edits, notes: notes };
+    }
+    if (/(?:刪掉|刪除|移除|delete|remove)\s*(?:所有的?|全部的?|all\s+)?(?:空白|空的|沒有字|empty|blank)/i.test(t)) {
+      list.forEach(function (c, i) { if (!String(c.text).trim()) { edits.push({ op: 'remove_cue', n: i + 1 }); } }); if (!edits.length) { notes.push('no empty line'); } return { edits: edits, notes: notes };
+    }
+    if ((m = new RegExp('(?:刪掉|刪除|移除)\\s*' + LINE).exec(t)) || (m = /(?:delete|remove)\s+line\s+(\d+)/i.exec(t))) { var n3 = nnum(m[1]); if (n3) { edits.push({ op: 'remove_cue', n: n3 }); } return { edits: edits, notes: notes }; }
+    if ((m = new RegExp('(?:合併|合併第|merge)\\s*(?:line\\s*)?(?:第\\s*)?' + NUM, 'i').exec(t))) { var n4 = nnum(m[1]); if (n4) { edits.push({ op: 'merge', n: n4 }); } return { edits: edits, notes: notes }; }
+    if ((m = /^(?:請|幫我)?(?:把|將)\s*[「"]?(.+?)[」"]?\s*(?:全部)?(?:換成|取代為|取代成|改成)\s*[「"]?(.+?)[」"]?$/.exec(t)) && !/第\s*\S+\s*(?:句|列|行|段)/.test(m[1])) { edits.push({ op: 'replace_text', find: m[1], with: m[2] }); return { edits: edits, notes: notes }; }
+    return { edits: edits, notes: notes };
+  }
+  return { OPS: OPS, editPrompt: editPrompt, parseReply: parseReply, applyEdits: applyEdits, localParse: localParse, normalizeEdit: normalizeEdit, cueLines: cueLines, nnum: nnum };
+}));
+
+}).call(window, undefined);
+(function (module) {
+// /edit-video: the editor FRAME (DOM). Left: the object bar (the video, later the dubs) -- resizable by its splitter, hideable. Middle: the video player. Right: tabs (transcript | job queue).
+// The frame itself is an AiChatWindow viewer: docked in the conversation, floating window, maximized. Design: DESIGN.edit-video.md.
+//   TwVideoEditUI.mount({ id, project, container, host: { save(project), loadFile(id), putFile(File) }, restoring }) -> element (el._ve = { project, setVideo(file|{id}), tab(name), panel(hidden?), panelWidth(w) })
+(function (root) {
+  'use strict';
+  var C = function () { return root.TwVideoEdit; };
+  function zh() { return /^zh/i.test(String((root.document.documentElement && root.document.documentElement.lang) || (root.navigator && root.navigator.language) || '')); }
+  function T(a, b) { return zh() ? a : b; }
+  function el(tag, cls, text) { var e = root.document.createElement(tag); if (cls) { e.className = cls; } if (text != null) { e.textContent = text; } return e; }
+  function css() {
+    if (root.document.getElementById('tw-ve-css')) { return; }
+    var s = root.document.createElement('style'); s.id = 'tw-ve-css';
+    s.textContent = '.tw-ve{display:flex;flex-direction:column;border:1px solid #888;border-radius:8px;overflow:hidden;background:var(--ai-win-bg,#fff);color:var(--ai-win-fg,inherit);height:560px;min-height:240px}' +
+      '.tw-ve-bar{display:flex;align-items:center;gap:.5em;padding:.3em .6em;border-bottom:1px solid #ccc;background:rgba(120,140,200,.10);flex:0 0 auto}.tw-ve-bar strong{white-space:nowrap}.tw-ve-name{opacity:.7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}' +
+      '.tw-ve-bar button,.tw-ve-tabs button{border:1px solid #8250df;border-radius:6px;background:transparent;color:inherit;padding:2px 9px;cursor:pointer}.tw-ve-bar button.on,.tw-ve-tabs button.on{background:#8250df;color:#fff}' +
+      '.tw-ve-body{flex:1 1 auto;min-height:0;display:flex}.tw-ve-panel{flex:0 0 auto;overflow:auto;border-right:1px solid #ccc;padding:6px;box-sizing:border-box}.tw-ve-panel h4{margin:0 0 6px;font-size:13px}' +
+      '.tw-ve-split{flex:0 0 6px;cursor:ew-resize;background:rgba(120,140,200,.18)}.tw-ve-split:hover{background:#8250df}.tw-ve-hidden{display:none!important}' +
+      '.tw-ve-main{flex:1 1 auto;min-width:0;display:flex;flex-direction:column}.tw-ve-stage{flex:1 1 55%;min-height:80px;background:#000;display:flex;align-items:center;justify-content:center;position:relative}' +
+      '.tw-ve-stage video{max-width:100%;max-height:100%;display:block}.tw-ve-empty{color:#ccc;text-align:center;padding:10px}.tw-ve-tabs{display:flex;gap:6px;padding:4px 6px;border-top:1px solid #ccc;flex:0 0 auto}' +
+      '.tw-ve-tabbody{flex:1 1 45%;min-height:60px;overflow:auto;padding:6px}.tw-ve-objrow{padding:3px 6px;border:1px solid #bbb;border-radius:6px;margin:3px 0;font-size:12px}.tw-ve-note{font-size:12px;opacity:.7}.tw-ve-tool{position:sticky;top:-6px;z-index:2;display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:-6px -6px 6px;padding:6px;background:var(--ai-win-bg,#fff);border-bottom:1px solid #ccc}.tw-ve-tool button{border:1px solid #8250df;border-radius:6px;background:transparent;color:inherit;padding:2px 9px;cursor:pointer}.tw-ve-tool button:disabled{opacity:.4;cursor:default}.tw-ve-tool button.on{background:#8250df;color:#fff}.tw-ve-err{color:#cf222e;font-size:12px}.tw-ve-job{display:flex;gap:6px;align-items:center;padding:4px 6px;border:1px solid #bbb;border-radius:6px;margin:3px 0;font-size:12px}.tw-ve-job .st{font-weight:600;min-width:64px}.tw-ve-job .pg{flex:1;opacity:.75;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tw-ve-job button{border:1px solid #8250df;border-radius:6px;background:transparent;color:inherit;padding:1px 7px;cursor:pointer}.tw-ve-tool select{padding:1px 3px}.tw-ve-dub{display:flex;gap:4px;align-items:center;flex-wrap:wrap;cursor:pointer}.tw-ve-dub input{width:62px;padding:1px 3px}.tw-ve-dub .x{border:0;background:transparent;cursor:pointer;color:#cf222e;font-size:14px;margin-left:auto}.tw-ve-bar button.rec{background:#cf222e;border-color:#cf222e;color:#fff}.tw-ve-stage:fullscreen video{width:100%;height:100%;max-width:none;max-height:none}.tw-ve-stage:fullscreen .tw-ve-sub{font-size:3vw;bottom:9%}.tw-ve-fs{position:absolute;top:6px;right:6px;z-index:3;border:1px solid #fff8;border-radius:6px;background:rgba(0,0,0,.45);color:#fff;padding:1px 7px;cursor:pointer;opacity:.7}.tw-ve-fs:hover{opacity:1}.tw-ve-menu{position:absolute;right:8px;top:34px;z-index:7;display:flex;flex-direction:column;gap:4px;padding:6px;border:1px solid #888;border-radius:8px;background:var(--ai-win-bg,#fff);color:var(--ai-win-fg,inherit);box-shadow:0 2px 8px rgba(0,0,0,.3)}.tw-ve-menu button{border:1px solid #8250df;border-radius:6px;background:transparent;color:inherit;padding:3px 10px;cursor:pointer;text-align:left}.tw-ve-cue .tts{position:absolute;right:30px;bottom:3px;border:1px solid #8250df;border-radius:50%;width:20px;height:20px;line-height:16px;padding:0;background:var(--ai-win-bg,#fff);cursor:pointer;font-size:11px}.tw-ve-ask{display:flex;flex-direction:column;gap:6px}.tw-ve-asklog>div{padding:4px 6px;border-radius:6px;margin:3px 0;font-size:12px;white-space:pre-wrap}.tw-ve-ask-me{background:rgba(130,80,223,.14);margin-left:24px!important}.tw-ve-ask-ai{border:1px solid #bbb}.tw-ve-ask-err{color:#cf222e}.tw-ve-askin{display:flex;gap:6px;align-items:flex-end}.tw-ve-askin textarea{flex:1;min-height:40px;font:inherit;padding:3px 5px}.tw-ve-askin button,.tw-ve-prop button{border:1px solid #8250df;border-radius:6px;background:transparent;color:inherit;padding:3px 12px;cursor:pointer}.tw-ve-prop{border:1px dashed #8250df;border-radius:6px;padding:6px;font-size:12px}.tw-ve-prop button.go{background:#8250df;color:#fff}.tw-ve-sub{position:absolute;left:4%;right:4%;bottom:12%;text-align:center;color:#fff;font-size:17px;line-height:1.3;white-space:pre-wrap;pointer-events:none;text-shadow:0 0 3px #000,0 0 3px #000,1px 1px 2px #000}' +
+      '.tw-ve-cue{position:relative;display:flex;gap:6px;align-items:flex-start;padding:4px;border:1px solid #bbb;border-radius:6px;margin:3px 0;cursor:pointer}.tw-ve-cue.on{border-color:#8250df;background:rgba(130,80,223,.14)}.tw-ve-cue input{width:70px;padding:2px 3px}.tw-ve-cue input.bad{border-color:#cf222e;background:rgba(207,34,46,.12)}.tw-ve-cue textarea{flex:1;min-width:120px;min-height:34px;resize:vertical;padding:2px 4px;font:inherit}.tw-ve-cue .add{position:absolute;right:4px;bottom:3px;border:1px solid #8250df;border-radius:50%;width:20px;height:20px;line-height:16px;padding:0;background:var(--ai-win-bg,#fff);color:#8250df;cursor:pointer;font-size:14px}.tw-ve-cue textarea{padding-bottom:22px}.tw-ve-cue .x{border:0;background:transparent;cursor:pointer;color:#cf222e;font-size:15px}';
+    root.document.head.appendChild(s);
+  }
+  function mount(o) {
+    css();
+    var core = C(), project = o.project || core.newProject(''), host = o.host || {}, lay = core.layout(project.layout), url = null;
+    var box = el('div', 'tw-ve'); box.setAttribute('data-tw-ve', o.id || '');
+    var bar = el('div', 'tw-ve-bar'); bar.appendChild(el('strong', '', '🎬 ' + T('影片逐字稿編輯器', 'Video transcript editor')));
+    var name = el('span', 'tw-ve-name', project.video ? project.video.name : ''); bar.appendChild(name);
+    var slot = el('span', 'ai-win-btns-slot'); slot.style.cssText = 'margin-left:auto;display:inline-flex;gap:.4em;align-items:center';
+    var bLoad = el('button', '', '📂 ' + T('載入影片', 'Load video')), bPanel = el('button', '', '☰ ' + T('物件列', 'Objects')); bLoad.type = bPanel.type = 'button'; bLoad.setAttribute('data-ve', 'load'); bPanel.setAttribute('data-ve', 'panel');
+    var pick = el('input'); pick.type = 'file'; pick.accept = 'video/*,audio/*,.mkv,.mov'; pick.style.display = 'none';
+    var bRec = el('button', '', '🎤 ' + T('配音', 'Dub')); bRec.type = 'button'; bRec.setAttribute('data-ve', 'rec'); bRec.title = T('從目前播放位置開始錄麥克風配音(建議戴耳機);再按一次停止', 'Record a voice-over from the microphone starting at the playhead (headphones recommended); press again to stop');
+    slot.appendChild(bRec); slot.appendChild(bLoad); slot.appendChild(bPanel); slot.appendChild(pick); bar.appendChild(slot); box.appendChild(bar);
+    var body = el('div', 'tw-ve-body');
+    var panel = el('div', 'tw-ve-panel'); panel.setAttribute('data-ve', 'objbar'); panel.appendChild(el('h4', '', T('物件', 'Objects')));
+    var objMsg = el('div', 'tw-ve-err'); objMsg.setAttribute('data-ve', 'obj-msg'); panel.appendChild(objMsg);
+    var objs = el('div'); panel.appendChild(objs);
+    var split = el('div', 'tw-ve-split'); split.setAttribute('data-ve', 'split'); split.title = T('拖曳調整物件列寬度', 'Drag to resize the object bar');
+    var main = el('div', 'tw-ve-main'), stage = el('div', 'tw-ve-stage'), empty = el('div', 'tw-ve-empty', T('按「載入影片」選一個影片檔', 'Press "Load video" and pick a video file')); stage.appendChild(empty);
+    var tabs = el('div', 'tw-ve-tabs'), tabBody = el('div', 'tw-ve-tabbody'), tabBtn = {};
+    var LABEL = { transcript: T('逐字稿', 'Transcript'), ask: T('Ask AI', 'Ask AI'), jobs: T('工作佇列', 'Job queue') };
+    core.TABS.forEach(function (t) { var b = el('button', '', LABEL[t]); b.type = 'button'; b.setAttribute('data-ve-tab', t); b.addEventListener('click', function () { setTab(t); }); tabs.appendChild(b); tabBtn[t] = b; });
+    main.appendChild(stage); main.appendChild(tabs); main.appendChild(tabBody);
+    body.appendChild(panel); body.appendChild(split); body.appendChild(main); box.appendChild(body);
+
+    var cues = core.normalize(project.cues), hist = core.history(cues), errBox = null, listBox = null;
+    function dur() { var v = box._ve && box._ve.video; return v && isFinite(v.duration) ? v.duration : 0; }
+    function now() { var v = box._ve && box._ve.video; return v ? v.currentTime || 0 : 0; }
+    function commit(next) { cues = next; project.cues = cues; hist.push(cues); save(); if (lay.tab === 'transcript') { renderTranscript(); } }
+    function flash(msg) { if (errBox) { errBox.textContent = msg || ''; } }
+    var ERR = { negative: T('時間不能小於 0', 'Time cannot be negative'), order: T('結束時間要大於開始時間', 'End must be after start'), beyond: T('超過影片長度', 'Beyond the end of the video'), time: T('時間格式:mm:ss.s 或秒數', 'Time format: mm:ss.s or seconds'), full: T('逐字稿列數已達上限', 'Transcript is full'), missing: T('找不到這一列', 'Line not found') };
+    function edit(id, patch) { var r = core.updateCue(cues, id, patch, dur()); if (!r.ok) { renderTranscript(); flash(ERR[r.error] || r.error); return; } commit(r.cues); }
+    function addAt(t) { var r = core.addCue(cues, { at: t, duration: dur() }); if (!r.ok) { flash(ERR[r.error] || r.error); return; } commit(r.cues); var row = listBox && listBox.querySelector('[data-cue="' + r.id + '"] textarea'); if (row) { row.focus(); } }
+    function seek(t) { var v = box._ve && box._ve.video; if (v) { v.currentTime = t; } }
+    var subEl = null, curBlob = null, jobsBox = null, q = null;
+    var JST = { queued: T('排隊中', 'Queued'), running: T('進行中', 'Running'), done: T('完成', 'Done'), failed: T('失敗', 'Failed'), canceled: T('已取消', 'Canceled'), interrupted: T('中斷', 'Interrupted') };
+    function applyTranscript(job, res) {
+      var add = core.fromSegments(res && res.segments, job.payload && job.payload.startSec, dur());
+      if (!add.length) { throw new Error(T('沒有辨識出任何文字', 'No speech was recognized')); }
+      commit(core.normalize(cues.concat(add))); flash(T('辨識完成,新增 ', 'Done: added ') + add.length + T(' 列(可復原;原有的列都保留)', ' lines (undo available; existing lines are kept)'));
+      return { added: add.length };
+    }
+    function runJob(job, report) {
+      if (job.kind !== 'transcribe' && job.kind !== 'burn') { return { promise: Promise.reject(new Error('unknown job kind ' + job.kind)) }; }
+      if (!curBlob) { return { promise: Promise.reject(new Error(T('沒有影片', 'No video loaded'))) }; }
+      if (job.kind === 'burn') {
+        if (!host.burn) { return { promise: Promise.reject(new Error(T('這裡不能燒錄字幕', 'Burning subtitles is not available here'))) }; }
+        var pd = job.payload.mix === 'all' ? (job.payload.dubs || []) : [], hb = null, gone = false;
+        var prep = pd.length ? Promise.all(pd.map(function (d) {
+          var a = audios[d.id]; if (a && a.blob) { return Promise.resolve({ start: d.start, blob: a.blob }); }
+          return (d.fileId && host.loadFile ? host.loadFile(d.fileId).then(function (r) { return { start: d.start, blob: new root.Blob([r.arrayBuffer], { type: r.mimeType || 'audio/webm' }) }; }) : Promise.reject(new Error('no file'))).catch(function () { return null; });
+        })).then(function (l) { var got = l.filter(Boolean); if (got.length < pd.length) { report(T('有 ', '') + (pd.length - got.length) + T(' 個配音讀不到,沒有混進去', ' dubs could not be read and are left out')); } return got; }) : Promise.resolve([]);
+        return { cancel: function () { gone = true; if (hb) { hb.cancel(); } }, promise: prep.then(function (list) {
+          if (gone) { throw new Error('canceled'); }
+          hb = host.burn(curBlob, job.payload.segments || [], report, (project.video && project.video.name) || 'video', { dubs: list });
+          return hb.promise; }).then(function (res) { var cur = q.get(job.id); if (!cur || cur.status !== 'running') { return null; } q.patch(job.id, { out: res.id ? { id: res.id, name: res.name } : null }); return { name: res.name, bytes: res.bytes, id: res.id }; }) };
+      }
+      if (!host.transcribe) { return { promise: Promise.reject(new Error(T('這裡不能做語音辨識', 'Speech recognition is not available here'))) }; }
+      var h = host.transcribe(curBlob, { language: job.payload.language || null, startSec: job.payload.startSec || 0, lenSec: job.payload.lenSec || 0 }, report);
+      return { cancel: h.cancel, promise: h.promise.then(function (res) { var cur = q.get(job.id); if (!cur || cur.status !== 'running') { return null; } return applyTranscript(job, res); }) };
+    }
+    function jobsChanged(list) {
+      project.jobs = q ? q.serialize() : []; var n = list.filter(function (j) { return j.status === 'queued' || j.status === 'running'; }).length;
+      if (tabBtn.jobs) { tabBtn.jobs.textContent = LABEL.jobs + (n ? ' (' + n + ')' : ''); }
+      if (lay.tab === 'jobs') { renderJobs(); }
+      save();
+    }
+    function renderJobs() {
+      tabBody.textContent = ''; jobsBox = el('div'); jobsBox.setAttribute('data-ve', 'jobs'); var list = q.list();
+      if (!list.length) { jobsBox.appendChild(el('div', 'tw-ve-note', T('沒有工作。在「逐字稿」分頁按「🎙 產生逐字稿」會排進這裡。', 'No jobs. "🎙 Generate transcript" in the Transcript tab queues one here.'))); }
+      else { var tool = el('div', 'tw-ve-tool'), bc = el('button', '', T('清除已結束', 'Clear finished')); bc.type = 'button'; bc.setAttribute('data-ve', 'jobs-clear'); bc.addEventListener('click', function () { q.clearFinished(); }); tool.appendChild(bc); jobsBox.appendChild(tool); }
+      list.forEach(function (j) {
+        var r = el('div', 'tw-ve-job'); r.setAttribute('data-job', j.id); r.setAttribute('data-status', j.status);
+        r.appendChild(el('span', 'st', JST[j.status] || j.status)); r.appendChild(el('span', '', (j.kind === 'burn' ? '🔥 ' : '🎙 ') + j.label)); r.appendChild(el('span', 'pg', j.status === 'failed' ? j.error : j.progress));
+        function btn(txt, tag, fn) { var b = el('button', '', txt); b.type = 'button'; b.setAttribute('data-ve', tag); b.addEventListener('click', fn); r.appendChild(b); }
+        if (j.status === 'queued' || j.status === 'running') { btn(T('取消', 'Cancel'), 'job-cancel', function () { q.cancel(j.id); }); }
+        else { if (j.kind === 'burn' && j.status === 'done') { btn('⬇ ' + T('下載', 'Download'), 'job-download', function () { downloadJob(j); }); var oid = j.payload && j.payload.out && j.payload.out.id; if (oid && host.openEditor) { btn('✏️ ' + T('繼續編輯輸出', 'Edit the output'), 'job-edit-output', function () { host.openEditor(oid); }); } }
+          if (j.status !== 'done') { btn(T('重試', 'Retry'), 'job-retry', function () { q.retry(j.id); }); } btn('✕', 'job-remove', function () { q.remove(j.id); }); }
+        jobsBox.appendChild(r);
+      });
+      tabBody.appendChild(jobsBox);
+    }
+    function enqueueBurn() {
+      if (!curBlob) { flash(T('先載入影片', 'Load a video first')); return; }
+      if (!cues.length) { flash(T('沒有逐字稿可燒錄', 'No transcript to burn')); return; }
+      var mix = lay.burnMix === 'all' && dubs.length > 0, nm = (project.video && project.video.name) || '', id = q.enqueue({ kind: 'burn', label: nm + ' (' + cues.length + T(' 列', ' lines') + (mix ? ' + ' + dubs.length + T(' 配音', ' dubs') : '') + ')', payload: { segments: cues.map(function (c) { return { start: c.start, end: c.end, text: c.text }; }), mix: mix ? 'all' : 'subs', dubs: mix ? dubs.map(function (d) { return { id: d.id, start: d.start, fileId: d.fileId }; }) : [] } });   // what is on screen NOW is what gets burned
+      flash(id ? T('已排入工作佇列(看「工作佇列」分頁)', 'Queued (see the Job queue tab)') : T('工作佇列已滿', 'The job queue is full'));
+    }
+    function download(blob, name) { var url = root.URL.createObjectURL(blob), a = el('a'); a.href = url; a.download = name; root.document.body.appendChild(a); a.click(); a.remove(); setTimeout(function () { root.URL.revokeObjectURL(url); }, 4000); }
+    function downloadJob(j) {
+      var out = j.payload && j.payload.out, nm = (j.result && j.result.name) || (out && out.name) || 'video-subtitled.mp4';
+      if (j.result && j.result.bytes) { download(new root.Blob([j.result.bytes], { type: 'video/mp4' }), nm); return; }
+      if (out && out.id && host.loadFile) { host.loadFile(out.id).then(function (rec) { download(new root.Blob([rec.arrayBuffer], { type: 'video/mp4' }), nm); }, function () { flash(T('輸出檔已不在這個瀏覽器的檔案儲存裡,請重新燒錄', 'The output is no longer in this browser\'s file storage; burn again')); }); return; }
+      flash(T('沒有可下載的輸出(重新燒錄)', 'No output to download (burn again)'));
+    }
+    function enqueueTranscribe(language, fromPlayhead) {
+      if (!curBlob) { flash(T('先載入影片', 'Load a video first')); return; }
+      var start = fromPlayhead ? Math.round(now() * 100) / 100 : 0, nm = (project.video && project.video.name) || '';
+      var id = q.enqueue({ kind: 'transcribe', label: nm + (start ? ' @' + core.clock(start) + ' +' + core.CUE_SECONDS + T(' 秒', ' s') : ''), payload: { language: language || null, startSec: start, lenSec: start ? core.CUE_SECONDS : 0 } });
+      flash(id ? T('已排入工作佇列(看「工作佇列」分頁)', 'Queued (see the Job queue tab)') : T('工作佇列已滿', 'The job queue is full'));
+    }
+    function updateOverlay() { if (!subEl) { return; } var a = lay.subs ? core.activeCue(cues, now()) : null, t = a ? a.text : ''; if (subEl.textContent !== t) { subEl.textContent = t; } subEl.style.display = t ? '' : 'none'; }
+    var raf = 0;
+    function loop() { updateOverlay(); highlight(); syncDubs(); var v = box._ve && box._ve.video; raf = v && !v.paused && !v.ended ? root.requestAnimationFrame(loop) : 0; }
+    function startLoop() { if (!raf) { raf = root.requestAnimationFrame(loop); } }
+    function importText(text, nm) {
+      var r = core.parseSrt(text); if (!r.cues.length) { flash(T('讀不到任何字幕(支援 .srt / .vtt)', 'No subtitles could be read (.srt / .vtt)') + (r.skipped ? ' — ' + r.skipped + T(' 段時間不正確', ' blocks with bad times') : '')); return false; }
+      commit(r.cues); flash(T('已匯入 ', 'Imported ') + r.cues.length + T(' 列', ' lines') + (r.skipped ? T(',略過 ', ', skipped ') + r.skipped : '') + T('(可復原)', ' (undo available)')); return true;
+    }
+    function exportSrt() {
+      if (!cues.length) { flash(T('沒有逐字稿可匯出', 'Nothing to export')); return; }
+      var base = String((project.video && project.video.name) || project.name || 'transcript').replace(/\.[^.]+$/, '').replace(/[\\/:*?"<>|]/g, '_') || 'transcript';
+      var url = root.URL.createObjectURL(new root.Blob([core.formatSrt(cues)], { type: 'application/x-subrip;charset=utf-8' })), a = el('a'); a.href = url; a.download = base + '.srt'; root.document.body.appendChild(a); a.click(); a.remove(); setTimeout(function () { root.URL.revokeObjectURL(url); }, 4000);
+    }
+    function highlight() {
+      updateOverlay();
+      if (!listBox) { return; } var a = core.activeCue(cues, now()), id = a ? a.id : null;
+      [].forEach.call(listBox.querySelectorAll('.tw-ve-cue'), function (r) { var on = r.getAttribute('data-cue') === id; if (on !== r.classList.contains('on')) { r.classList.toggle('on', on); if (on && !listBox.contains(root.document.activeElement)) { r.scrollIntoView({ block: 'nearest' }); } } });
+    }
+    function renderTranscript() {
+      tabBody.textContent = ''; var tool = el('div', 'tw-ve-tool'), bAdd = el('button', '', '➕ ' + T('在播放位置新增', 'Add at playhead')), bUndo = el('button', '', '↶'), bRedo = el('button', '', '↷');
+      var bImp = el('button', '', '📥 ' + T('匯入 SRT', 'Import SRT')), bExp = el('button', '', '📤 ' + T('匯出 SRT', 'Export SRT')), bSub = el('button', lay.subs ? 'on' : '', '💬 ' + T('字幕', 'Subtitles')), fin = el('input'); fin.type = 'file'; fin.accept = '.srt,.vtt,.txt,text/*'; fin.style.display = 'none'; fin.setAttribute('data-ve', 'srt-file');
+      bImp.setAttribute('data-ve', 'srt-import'); bExp.setAttribute('data-ve', 'srt-export'); bSub.setAttribute('data-ve', 'subs'); bSub.title = T('播放時在影片上顯示字幕', 'Show the subtitles over the video while playing');
+      bImp.addEventListener('click', function () { fin.click(); });
+      fin.addEventListener('change', function () { var f = fin.files && fin.files[0]; fin.value = ''; if (f) { f.text().then(function (tx) { importText(tx, f.name); }, function (e) { flash((e && e.message) || String(e)); }); } });
+      bExp.addEventListener('click', exportSrt);
+      bSub.addEventListener('click', function () { lay.subs = !lay.subs; bSub.classList.toggle('on', lay.subs); updateOverlay(); save(); });
+      var bGen = el('button', '', '🎙 ' + T('產生逐字稿', 'Generate transcript')), selL = el('select'), scope = el('select');
+      [['zh', '中文'], ['en', 'English'], ['', T('自動', 'Auto')]].forEach(function (o) { var op = el('option', '', o[1]); op.value = o[0]; selL.appendChild(op); }); selL.value = (/^en/i.test(String(root.document.documentElement.lang || '')) ? 'en' : 'zh'); selL.setAttribute('data-ve', 'gen-lang');
+      [['whole', T('整支影片', 'Whole video')], ['playhead', T('播放位置起 ', 'At playhead ') + core.CUE_SECONDS + T(' 秒', ' s')]].forEach(function (o) { var op = el('option', '', o[1]); op.value = o[0]; scope.appendChild(op); }); scope.value = lay.genScope; scope.addEventListener('change', function () { lay.genScope = scope.value === 'whole' ? 'whole' : 'playhead'; save(); }); scope.setAttribute('data-ve', 'gen-scope'); scope.title = T('辨識的範圍:只辨識播放位置起短短 ' + core.CUE_SECONDS + ' 秒(和「在播放位置新增」一樣長),或整支影片', 'What to recognize: only a few seconds (' + core.CUE_SECONDS + ' s, as long as a line added at the playhead) from the playhead, or the whole video');
+      bGen.setAttribute('data-ve', 'gen'); bGen.title = T('在瀏覽器裡用 Whisper 辨識(第一次要下載約 77MB 模型);排進工作佇列,可繼續編輯', 'Recognize with Whisper in this browser (first use downloads a ~77 MB model); queued, you can keep editing');
+      bGen.addEventListener('click', function () { enqueueTranscribe(selL.value, scope.value === 'playhead'); });
+      var bBurn = el('button', '', '🔥 ' + T('燒錄字幕', 'Burn subtitles')); bBurn.setAttribute('data-ve', 'burn'); bBurn.title = T('把目前的逐字稿燒進影片,輸出 <影片名>-subtitled.mp4(排進工作佇列)', 'Burn the current transcript into the video, output <name>-subtitled.mp4 (queued)'); bBurn.addEventListener('click', enqueueBurn);
+      bGen.type = 'button'; tool.appendChild(bGen); tool.appendChild(scope); tool.appendChild(selL); [bAdd, bUndo, bRedo, bImp, bExp, bSub, bBurn].forEach(function (b) { b.type = 'button'; tool.appendChild(b); });
+      var mixSel = el('select'); [['all', T('字幕+配音', 'Subtitles + dubs')], ['subs', T('僅字幕', 'Subtitles only')]].forEach(function (o2) { var op = el('option', '', o2[1]); op.value = o2[0]; mixSel.appendChild(op); }); mixSel.value = lay.burnMix; mixSel.setAttribute('data-ve', 'burn-mix'); mixSel.title = T('燒錄輸出要不要把配音(麥克風、TTS)混進聲音', 'Whether the burned video also gets the dubs (microphone, TTS) mixed into its audio'); mixSel.addEventListener('change', function () { lay.burnMix = mixSel.value === 'subs' ? 'subs' : 'all'; save(); }); tool.appendChild(mixSel); tool.appendChild(fin); bAdd.setAttribute('data-ve', 'cue-add'); bUndo.setAttribute('data-ve', 'undo'); bRedo.setAttribute('data-ve', 'redo'); bUndo.title = T('復原', 'Undo'); bRedo.title = T('重做', 'Redo');
+      bUndo.disabled = !hist.canUndo(); bRedo.disabled = !hist.canRedo();
+      bAdd.addEventListener('click', function () { addAt(now()); });
+      bUndo.addEventListener('click', function () { cues = hist.undo(); project.cues = cues; save(); renderTranscript(); }); bRedo.addEventListener('click', function () { cues = hist.redo(); project.cues = cues; save(); renderTranscript(); });
+      tool.appendChild(el('span', 'tw-ve-note', cues.length + T(' 列', ' lines'))); errBox = el('span', 'tw-ve-err'); errBox.setAttribute('data-ve', 'cue-msg'); tool.appendChild(errBox); tabBody.appendChild(tool);
+      listBox = el('div'); listBox.setAttribute('data-ve', 'cues');
+      if (!cues.length) { listBox.appendChild(el('div', 'tw-ve-note', T('還沒有逐字稿:按「在播放位置新增」(產生逐字稿、匯入 SRT 之後會加上)', 'No transcript yet: press "Add at playhead" (generate and SRT import come later)'))); }
+      cues.forEach(function (c) {
+        var row = el('div', 'tw-ve-cue'); row.setAttribute('data-cue', c.id);
+        var a = el('input'), b = el('input'), tx = el('textarea'), x = el('button', 'x', '✕'); a.value = core.clock(c.start); b.value = core.clock(c.end); tx.value = c.text; x.type = 'button'; x.title = T('刪除', 'Delete');
+        a.setAttribute('data-f', 'start'); b.setAttribute('data-f', 'end'); tx.setAttribute('data-f', 'text'); x.setAttribute('data-f', 'del');
+        function timeField(inp, key) { inp.addEventListener('change', function () { var t = core.parseT(inp.value); if (t === null) { inp.classList.add('bad'); flash(ERR.time); return; } var o = {}; o[key] = t; edit(c.id, o); }); }
+        timeField(a, 'start'); timeField(b, 'end');
+        tx.addEventListener('change', function () { edit(c.id, { text: tx.value }); });
+        x.addEventListener('click', function (e) { e.stopPropagation(); var r = core.removeCue(cues, c.id); if (r.ok) { commit(r.cues); } });
+        row.addEventListener('click', function (e) { if (e.target.closest('input,textarea,button')) { return; } seek(c.start); highlight(); });
+        var plus = el('button', 'add', '+'); plus.type = 'button'; plus.setAttribute('data-f', 'add-after'); plus.title = T('在這一列後面新增一列(從播放位置起;播放位置在這列結束前就從這列結束時間起)', 'Add a line after this one (at the playhead; from the end of this line when the playhead is earlier)');
+        plus.addEventListener('click', function (e) { e.stopPropagation(); addAt(Math.max(now(), c.end)); });
+        var tb = el('button', 'tts', '🔊'); tb.type = 'button'; tb.setAttribute('data-f', 'cue-tts'); tb.title = T('用 TTS 唸這一句,加成配音(從這句開始時間起)', 'Speak this line with TTS and add it as a dub (starting at this line)');
+        tb.addEventListener('click', function (e) { e.stopPropagation(); openTts({ text: tx.value, start: c.start }); });
+        row.appendChild(a); row.appendChild(b); row.appendChild(tx); row.appendChild(x); row.appendChild(plus); if (canTts()) { row.appendChild(tb); } listBox.appendChild(row);
+      });
+      tabBody.appendChild(listBox); highlight();
+    }
+    // ---- Ask AI: say what to change; the program (plain sentences) or the online model (closed JSON actions) answers with a PROPOSAL, shown first; "Apply" makes it ONE undo step of the transcript (and then speaks the TTS dubs it asked for)
+    var askLog = [], askProp = null, askBusy = false, askDraft = '', Ai = function () { return root.TwVideoEditAi; };
+    function askSay(kind, text, lines) { askLog.push({ k: kind, t: text, l: lines || [] }); if (lay.tab === 'ask') { renderAsk(); } }
+    function lineSummary(list, bad) { return list.map(function (a) { return '• ' + a.text; }).concat(bad.map(function (x) { return '✗ ' + x.text; })); }
+    function askModel(text, base) {
+      var P = Ai().editPrompt(base, text, { duration: dur() });
+      return host.ai.chat(P.system, P.user).then(function (rep) {
+        var pr = Ai().parseReply(rep); if (!pr.ok) { return { edits: [], say: T('AI 的回覆我讀不懂(要是 JSON 動作)。換個說法再試,或用程式讀得懂的句子,例如「第 3 句改成…」。', 'I could not read the AI\'s answer (it has to be JSON actions). Rephrase, or use a sentence the program reads, e.g. "set line 3 to …".'), dropped: [] }; }
+        var ap = Ai().applyEdits(base, pr.edits, dur(), true), problems = ap.rejected.map(function (x) { return x.op + ': ' + x.error; }).concat(pr.droppedOps.map(function (o) { return o + ': not an allowed action'; }));
+        if (!problems.length) { return { edits: pr.edits, say: pr.say, dropped: [] }; }
+        // one more round: the model gets the reasons and corrects itself; what is still wrong is shown, never dropped silently
+        return host.ai.chat(P.system, P.user + '\n\nYour previous answer:\n' + String(rep).slice(0, 1800) + '\n\nProblems found (fix them, answer the complete JSON again):\n- ' + problems.join('\n- ')).then(function (rep2) {
+          var p2 = Ai().parseReply(rep2); return p2.ok ? { edits: p2.edits, say: p2.say, dropped: p2.droppedOps } : { edits: pr.edits, say: pr.say, dropped: pr.droppedOps };
+        }, function () { return { edits: pr.edits, say: pr.say, dropped: pr.droppedOps }; });
+      });
+    }
+    function submitAsk(text) {
+      text = String(text || '').trim(); if (!text || askBusy) { return Promise.resolve(); }
+      askProp = null; askDraft = ''; askSay('me', text); askBusy = true; var base = cues, local = Ai().localParse(text, cues, { now: now(), duration: dur() }), p;
+      if (local.edits.length) { p = Promise.resolve({ edits: local.edits, say: T('程式讀懂了你的句子。', 'Read your sentence directly.'), dropped: [] }); }
+      else { p = (host.ai ? host.ai.mode() : Promise.resolve('none')).then(function (m) { return m === 'online' ? askModel(text, base) : { edits: [], say: T('這句話程式讀不懂,而且現在沒有線上 AI 可問。可以說「第 3 句改成…」「全部提早 0.5 秒」「刪掉空白句」「把第 3 句用英文配音」「把 A 換成 B」「合併第 2 句」。', 'The program could not read this and no online AI is available. Try "set line 3 to …", "shift all 0.5 s earlier", "delete empty lines", "dub line 3 in English", "replace A with B", "merge line 2".'), dropped: [] }; }); }
+      return p.then(function (res) {
+        askBusy = false; var ap = Ai().applyEdits(base, res.edits, dur(), /^zh/i.test(String(root.document.documentElement.lang || '')));
+        var bad = ap.rejected.concat((res.dropped || []).map(function (o) { return { text: o + T(':不在可做的清單裡,沒有執行', ': not an allowed action, not run') }; }));
+        if (ap.applied.length) { askProp = { base: base, ap: ap }; }
+        askSay('ai', res.say || (ap.applied.length ? '' : T('沒有任何變更。', 'No change.')), lineSummary(ap.applied, bad));
+      }, function (e) { askBusy = false; askSay('err', '⚠️ ' + ((e && e.message) || e)); });
+    }
+    function applyAsk() {
+      var pr = askProp; if (!pr || askBusy) { return Promise.resolve(); } askProp = null;
+      if (cues !== pr.base) { askSay('err', T('逐字稿在這之間改過了,請再說一次。', 'The transcript changed in the meantime; say it again.')); return Promise.resolve(); }
+      if (JSON.stringify(pr.ap.cues) !== JSON.stringify(cues)) { commit(pr.ap.cues); }
+      askSay('ok', T('已套用(逐字稿分頁的 ↶ 可以一次復原)。', 'Applied (↶ in the Transcript tab undoes it in one step).'));
+      askBusy = true; var voices = host.voices ? host.voices() : [];
+      return pr.ap.tts.reduce(function (chain, t) {
+        return chain.then(function () {
+          var v = voices.filter(function (x) { return x.id === t.voice; })[0] || (host.pickVoice ? host.pickVoice(t.text, t.lang) : null), vid = v ? v.id : '', lang = t.lang || (v && v.lang) || '';
+          askSay('ai', T('TTS 配音 ', 'TTS dub ') + core.clock(t.start) + T(':合成中…', ': synthesizing…'));
+          return addTtsDub({ text: t.text, lang: lang, voiceId: vid, start: t.start }).then(function () { askSay('ok', '🔊 ' + core.clock(t.start) + T(' 已加入配音(在物件列,按播放就會混音)', ' dub added (object bar; press play to hear the mix)')); }, function (e) { askSay('err', '✗ TTS ' + core.clock(t.start) + ': ' + ((e && e.message) || e)); });
+        });
+      }, Promise.resolve()).then(function () { askBusy = false; if (lay.tab === 'ask') { renderAsk(); } });
+    }
+    function renderAsk() {
+      tabBody.textContent = ''; var wrap = el('div', 'tw-ve-ask'), log = el('div', 'tw-ve-asklog'); wrap.setAttribute('data-ve', 'ask'); log.setAttribute('data-ve', 'ask-log');
+      if (!askLog.length) { log.appendChild(el('div', 'tw-ve-note', T('說你要怎麼改逐字稿或加配音,例如:「第 3 句改成…」「全部提早 0.5 秒」「刪掉空白句」「把第 2 句用英文配音」「把整段翻成英文」(最後一種需要線上 AI)。先給你看會改什麼,按「套用」才生效,可復原。', 'Say how to change the transcript or add a dub, e.g. "set line 3 to …", "shift all 0.5 s earlier", "delete empty lines", "dub line 2 in English", "translate everything to English" (the last one needs the online AI). You see what would change first; "Apply" makes it happen, undo works.'))); }
+      askLog.forEach(function (e) { var r = el('div', 'tw-ve-ask-' + e.k, e.t); e.l.forEach(function (ln) { r.appendChild(el('div', /^✗/.test(ln) ? 'tw-ve-err' : '', ln)); }); log.appendChild(r); });
+      wrap.appendChild(log);
+      if (askProp) {
+        var pb = el('div', 'tw-ve-prop'), go = el('button', 'go', T('套用 ', 'Apply ') + askProp.ap.applied.length + T(' 項', ' change(s)')), no = el('button', '', T('放棄', 'Discard')); go.type = no.type = 'button'; pb.setAttribute('data-ve', 'ask-proposal'); go.setAttribute('data-ve', 'ask-apply'); no.setAttribute('data-ve', 'ask-discard');
+        go.addEventListener('click', function () { applyAsk(); }); no.addEventListener('click', function () { askProp = null; askSay('ok', T('已放棄。', 'Discarded.')); }); pb.appendChild(go); pb.appendChild(no); wrap.appendChild(pb);
+      }
+      var inRow = el('div', 'tw-ve-askin'), ta = el('textarea'), sb = el('button', '', askBusy ? '…' : T('送出', 'Send')); ta.setAttribute('data-f', 'ask-text'); sb.setAttribute('data-f', 'ask-send'); sb.type = 'button'; ta.value = askDraft; ta.placeholder = T('例如:第 2 句用英文配音', 'e.g. dub line 2 in English'); sb.disabled = askBusy;
+      ta.addEventListener('input', function () { askDraft = ta.value; }); ta.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); submitAsk(ta.value); } }); sb.addEventListener('click', function () { submitAsk(ta.value); });
+      inRow.appendChild(ta); inRow.appendChild(sb); wrap.appendChild(inRow); tabBody.appendChild(wrap); log.scrollTop = log.scrollHeight;
+    }
+    function save() { project.layout = lay; if (host.save) { try { host.save(project); } catch (e) { /* the editor works without saving */ } } }
+    function applyPanel() {
+      var total = box.clientWidth || root.innerWidth || 800; lay.panelW = core.clampPanelWidth(lay.panelW, total);
+      panel.style.width = lay.panelW + 'px'; panel.classList.toggle('tw-ve-hidden', lay.panelHidden); split.classList.toggle('tw-ve-hidden', lay.panelHidden); bPanel.classList.toggle('on', !lay.panelHidden);
+    }
+    function setTab(t) {
+      lay.tab = core.TABS.indexOf(t) >= 0 ? t : 'transcript'; core.TABS.forEach(function (k) { tabBtn[k].classList.toggle('on', k === lay.tab); });
+      tabBody.textContent = ''; tabBody.setAttribute('data-ve-active', lay.tab);
+      listBox = null; errBox = null;
+      if (lay.tab === 'transcript') { renderTranscript(); } else if (lay.tab === 'ask') { renderAsk(); } else { renderJobs(); }
+      save();
+    }
+    var dubs = core.normalizeDubs(project.dubs), audios = {}, rec = null;
+    var DERR = { negative: T('時間不能小於 0', 'Time cannot be negative'), beyond: T('起始時間超過影片長度', 'Start is beyond the end of the video'), time: T('時間格式:mm:ss.s 或秒數', 'Time format: mm:ss.s or seconds'), full: T('配音已達上限', 'Too many dubs'), missing: T('找不到這個配音', 'Dub not found') };
+    function msg(t) { objMsg.textContent = t || ''; }
+    function commitDubs(next) { dubs = next; project.dubs = dubs; save(); renderObjs(); }
+    function freeAudio(id) { var a = audios[id]; if (a) { try { if (a.el) { a.el.pause(); } if (a.url) { root.URL.revokeObjectURL(a.url); } } catch (e) { /* gone */ } delete audios[id]; } }
+    // one <audio> per dub, made on first need (from the blob just recorded, or read back from the file storage after a refresh)
+    function audioFor(d) {
+      var a = audios[d.id]; if (a && a.el) { return a; } if (a && a.loading) { return null; }
+      if (!a) { a = audios[d.id] = { el: null, url: null, blob: null }; } a.loading = true;
+      var got = a.blob ? Promise.resolve(a.blob) : (d.fileId && host.loadFile ? host.loadFile(d.fileId).then(function (r) { return new root.Blob([r.arrayBuffer], { type: r.mimeType || 'audio/webm' }); }) : Promise.reject(new Error('no file')));
+      got.then(function (b) { if (audios[d.id] !== a) { return; } a.url = root.URL.createObjectURL(b); a.el = new root.Audio(a.url); a.el.preload = 'auto'; a.loading = false; syncDubs(); }, function () { /* the dub stays silent */ });
+      return null;
+    }
+    // the dubs that cover the playhead play (from the right offset), the others are silent; nothing plays while the video is paused
+    function syncDubs() {
+      var v = box._ve && box._ve.video, t = v ? v.currentTime : 0, play = v && !v.paused && !v.ended, act = core.activeDubs(dubs, t).map(function (d) { return d.id; });
+      dubs.forEach(function (d) {
+        var on = play && act.indexOf(d.id) >= 0, a = on ? audioFor(d) : audios[d.id];
+        if (!a || !a.el) { return; }
+        if (!on) { if (!a.el.paused) { a.el.pause(); } return; }
+        var want = t - d.start; if (Math.abs(a.el.currentTime - want) > 0.3) { a.el.currentTime = Math.max(0, want); } if (a.el.paused) { a.el.play().catch(function () { /* autoplay refused */ }); }
+      });
+    }
+    function renderObjs() {
+      objs.textContent = '';
+      var r = el('div', 'tw-ve-objrow', project.video ? '🎞 ' + project.video.name : T('(還沒有影片)', '(no video yet)')); r.setAttribute('data-ve', 'obj-video'); objs.appendChild(r);
+      if (!dubs.length) { objs.appendChild(el('div', 'tw-ve-note', T('按標題列的「🎤 配音」錄音或用 TTS 唸文字;配音會列在這裡(起始時間、時長)', 'Press "🎤 Dub" in the title bar to record or to speak a text (TTS); dubs are listed here (start time, length)'))); }
+      dubs.forEach(function (d) {
+        var row = el('div', 'tw-ve-objrow tw-ve-dub'); row.setAttribute('data-dub', d.id);
+        var st = el('input'); st.value = core.clock(d.start); st.setAttribute('data-f', 'dstart'); st.title = T('起始時間', 'Start time');
+        var du = el('span', '', T('時長 ', 'len ') + core.clock(d.duration)); du.setAttribute('data-f', 'ddur'); var x = el('button', 'x', '✕'); x.type = 'button'; x.setAttribute('data-f', 'ddel'); x.title = T('刪除配音', 'Delete the dub');
+        st.addEventListener('change', function () { var t = core.parseT(st.value), vd = box._ve && box._ve.video, m = t === null ? { ok: false, error: 'time' } : core.moveDub(dubs, d.id, t, vd && isFinite(vd.duration) ? vd.duration : 0); if (!m.ok) { renderObjs(); msg(DERR[m.error] || m.error); return; } msg(''); commitDubs(m.dubs); });
+        x.addEventListener('click', function (e) { e.stopPropagation(); var m = core.removeDub(dubs, d.id); if (m.ok) { freeAudio(d.id); commitDubs(m.dubs); } });
+        row.addEventListener('click', function (e) { if (e.target.closest('input,button')) { return; } seek(d.start); });
+        var nm = el('span', '', (d.kind === 'tts' ? '🔊 ' : '🎤 ') + d.name); if (d.kind === 'tts') { nm.title = d.text + (d.voiceId ? ' · ' + d.voiceId : ''); } row.appendChild(nm); row.appendChild(st); row.appendChild(du); row.appendChild(x); objs.appendChild(row);
+      });
+    }
+    function micError(e) { var n = e && e.name; return n === 'NotAllowedError' || n === 'SecurityError' ? T('麥克風被拒絕(請在瀏覽器允許麥克風;需要 https 或 localhost)', 'Microphone was refused (allow it in the browser; needs https or localhost)') : n === 'NotFoundError' ? T('找不到麥克風', 'No microphone found') : T('無法錄音:', 'Cannot record: ') + ((e && e.message) || e); }
+    function stopRec() { if (rec && rec.mr && rec.mr.state !== 'inactive') { rec.mr.stop(); } }
+    function startRec() {
+      var v = box._ve && box._ve.video; if (!v) { msg(T('先載入影片', 'Load a video first')); return; }
+      if (!root.navigator.mediaDevices || !root.navigator.mediaDevices.getUserMedia || typeof root.MediaRecorder === 'undefined') { msg(T('這個瀏覽器不能錄音', 'This browser cannot record audio')); return; }
+      msg(''); var start = v.currentTime || 0;
+      root.navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+        var types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'], mt = ''; types.some(function (t) { if (root.MediaRecorder.isTypeSupported && root.MediaRecorder.isTypeSupported(t)) { mt = t; return true; } return false; });
+        var mr = mt ? new root.MediaRecorder(stream, { mimeType: mt }) : new root.MediaRecorder(stream), chunks = [], t0 = root.performance.now();
+        rec = { mr: mr, timer: null }; bRec.classList.add('rec');
+        function tick() { bRec.textContent = '⏹ ' + core.clock((root.performance.now() - t0) / 1000); } tick(); rec.timer = root.setInterval(tick, 200);
+        mr.ondataavailable = function (ev) { if (ev.data && ev.data.size) { chunks.push(ev.data); } };
+        mr.onstop = function () {
+          root.clearInterval(rec.timer); rec = null; bRec.classList.remove('rec'); bRec.textContent = '🎤 ' + T('配音', 'Dub'); stream.getTracks().forEach(function (tr) { tr.stop(); }); if (!v.paused) { v.pause(); }
+          var elapsed = (root.performance.now() - t0) / 1000, blob = new root.Blob(chunks, { type: mr.mimeType || mt || 'audio/webm' });
+          if (!blob.size) { msg(T('沒有錄到聲音', 'Nothing was recorded')); return; }
+          finishDub(blob, start, elapsed).then(null, function () { /* shown by msg */ });
+        };
+        mr.start(); if (v.paused) { v.play().catch(function () { /* the user can press play */ }); }
+      }, function (e) { msg(micError(e)); });
+    }
+    // the length is the DECODED length of the recording when the browser can decode it (a MediaRecorder file has no reliable header length), else the time it was recording
+    function finishDub(blob, start, elapsed, extra) {
+      var Ctx = root.AudioContext || root.webkitAudioContext;
+      var len = Ctx ? blob.arrayBuffer().then(function (ab) { return new Ctx().decodeAudioData(ab); }).then(function (b) { return b.duration; }, function () { return elapsed; }) : Promise.resolve(elapsed);
+      return len.then(function (d) {
+        var ext = /wav/.test(blob.type) ? 'wav' : /mpeg|mp3/.test(blob.type) ? 'mp3' : /mp4/.test(blob.type) ? 'm4a' : /ogg/.test(blob.type) ? 'ogg' : 'webm', file = new root.File([blob], 'dub-' + Date.now().toString(36) + '.' + ext, { type: blob.type });
+        var save1 = host.putFile ? host.putFile(file).catch(function () { return null; }) : Promise.resolve(null);
+        return save1.then(function (fileId) {
+          var m = core.addDub(dubs, Object.assign({ start: start, duration: d > 0.05 ? d : elapsed, fileId: fileId }, extra || {})); if (!m.ok) { msg(DERR[m.error] || m.error); throw new Error(DERR[m.error] || m.error); }
+          audios[m.id] = { el: null, url: null, blob: blob }; commitDubs(m.dubs); if (!fileId) { msg(T('做好了,但存不進瀏覽器檔案儲存:重新整理後會消失', 'Done, but it could not be saved in this browser: it is gone after a refresh')); } return m.id;
+        });
+      });
+    }
+    // "Dub": while recording, a press stops it; otherwise the choice -- the microphone, or text-to-speech (only when this page has voices)
+    var menu = null;
+    function closeMenu() { if (menu) { menu.remove(); menu = null; root.document.removeEventListener('click', outsideMenu, true); } }
+    function outsideMenu(e) { if (menu && !menu.contains(e.target) && e.target !== bRec) { closeMenu(); } }
+    function canTts() { return !!(host.synthesize && host.voices && host.voices().length); }
+    // a dub made from text: the host speaks it (this browser's Kokoro / the server's CJK relay), the audio becomes a dub starting at `start` -- the same kind of object as a microphone one, played with the video from then on
+    function addTtsDub(r) {
+      if (!host.synthesize) { return Promise.reject(new Error(T('這裡不能語音合成', 'Text to speech is not available here'))); }
+      if (!box._ve || !box._ve.video) { return Promise.reject(new Error(T('先載入影片', 'Load a video first'))); }
+      msg(T('合成中… ', 'Synthesizing… ') + String(r.text).slice(0, 20));
+      return host.synthesize(r.text, r.voiceId, r.lang).then(function (blob) { return finishDub(blob, r.start, 1, { kind: 'tts', text: r.text, lang: r.lang, voiceId: r.voiceId, name: 'TTS ' + String(r.text).replace(/\s+/g, ' ').slice(0, 14) }); }).then(function (id) { msg(''); return id; }, function (e) { msg('⚠️ ' + ((e && e.message) || e)); throw e; });
+    }
+    function openTts(pre) {
+      if (!box._ve || !box._ve.video) { msg(T('先載入影片', 'Load a video first')); return; }
+      root.TwVideoTtsDialog.open({ container: box, T: T, text: pre.text, lang: pre.lang, voiceId: pre.voiceId, voices: host.voices(), pickVoice: host.pickVoice }).then(function (r) { if (r) { addTtsDub({ text: r.text, lang: r.lang, voiceId: r.voiceId, start: pre.start }).then(null, function () { /* shown by msg */ }); } });
+    }
+    bRec.addEventListener('click', function () {
+      if (rec) { stopRec(); return; } if (menu) { closeMenu(); return; } if (!canTts()) { startRec(); return; }
+      menu = el('div', 'tw-ve-menu'); menu.setAttribute('data-ve', 'dub-menu');
+      var m1 = el('button', '', '🎤 ' + T('麥克風錄音', 'Record with the microphone')), m2 = el('button', '', '🔊 ' + T('TTS 文字轉語音…', 'Text to speech…')); m1.type = m2.type = 'button'; m1.setAttribute('data-ve', 'dub-mic'); m2.setAttribute('data-ve', 'dub-tts');
+      m1.addEventListener('click', function () { closeMenu(); startRec(); }); m2.addEventListener('click', function () { closeMenu(); openTts({ text: '', start: now() }); });
+      menu.appendChild(m1); menu.appendChild(m2); box.appendChild(menu); root.document.addEventListener('click', outsideMenu, true);
+    });
+    // full screen is the STAGE's (the video + the subtitle layer + the dubs keep playing), not the <video>'s own: the native one would show the picture alone, without the subtitles
+    var fsBtn = el('button', 'tw-ve-fs', '⛶'); fsBtn.type = 'button'; fsBtn.setAttribute('data-ve', 'fullscreen'); fsBtn.title = T('全螢幕(字幕會一起顯示);Esc 離開', 'Full screen (the subtitles stay); Esc to leave');
+    function toggleFs() { var d = root.document; if (d.fullscreenElement) { d.exitFullscreen(); } else if (stage.requestFullscreen) { stage.requestFullscreen().then(null, function () { msg(T('這個瀏覽器不允許全螢幕', 'Full screen is not allowed here')); }); } }
+    fsBtn.addEventListener('click', toggleFs);
+    function showVideo(blob, nm) {
+      curBlob = blob;
+      if (url) { root.URL.revokeObjectURL(url); } url = root.URL.createObjectURL(blob);
+      stage.textContent = ''; var v = el('video'); v.controls = true; v.src = url; v.setAttribute('data-ve', 'video'); v.addEventListener('timeupdate', highlight); v.addEventListener('seeked', highlight); v.addEventListener('play', function () { startLoop(); syncDubs(); }); v.addEventListener('pause', syncDubs); v.addEventListener('ended', syncDubs); v.addEventListener('seeked', syncDubs); subEl = el('div', 'tw-ve-sub'); subEl.setAttribute('data-ve', 'subtitle'); subEl.style.display = 'none'; v.setAttribute('controlsList', 'nofullscreen'); stage.appendChild(v); stage.appendChild(subEl); stage.appendChild(fsBtn); box._ve.video = v; name.textContent = nm || ''; renderObjs();
+    }
+    function setVideo(src) {
+      if (src && typeof src.arrayBuffer === 'function' && host.putFile) {         // a File the user picked: keep it in this browser's file storage so a refresh can load it again
+        return host.putFile(src).then(function (id) { project.video = { id: id, name: src.name }; showVideo(src, src.name); save(); return id; });
+      }
+      if (src && typeof src.arrayBuffer === 'function') { project.video = { id: null, name: src.name }; showVideo(src, src.name); save(); return Promise.resolve(null); }
+      if (src && src.id && host.loadFile) {
+        return host.loadFile(src.id).then(function (rec) { var b = new root.Blob([rec.arrayBuffer], { type: rec.mimeType || 'video/mp4' }); project.video = { id: src.id, name: rec.filename || src.name || '' }; showVideo(b, project.video.name); if (host.pin) { host.pin(src.id); } save(); });
+      }
+      return Promise.reject(new Error(T('這個影片來源讀不到', 'cannot read this video source')));
+    }
+    bLoad.addEventListener('click', function () {
+      if (!root.TwVideoSourcePicker || !(host.chatFiles || host.fapFolders || host.storedFiles)) { pick.click(); return; }
+      root.TwVideoSourcePicker.open({ container: box, T: T, mediaKind: root.TwVideoIntent ? root.TwVideoIntent.mediaKind : function () { return 'video'; }, chatFiles: host.chatFiles, fapFolders: host.fapFolders, storedFiles: host.storedFiles, computer: function () { pick.click(); }, start: 'chat' }).then(function (f) {
+        if (!f) { return; }
+        (f.twClientFileId ? setVideo({ id: f.twClientFileId }) : setVideo(f)).then(null, function (e) { msg('⚠️ ' + ((e && e.message) || e)); });
+      });
+    });
+    pick.addEventListener('change', function () { var f = pick.files && pick.files[0]; pick.value = ''; if (f) { setVideo(f).then(null, function (e) { stage.textContent = '⚠️ ' + ((e && e.message) || e); }); } });
+    bPanel.addEventListener('click', function () { lay.panelHidden = !lay.panelHidden; applyPanel(); save(); });
+    split.addEventListener('pointerdown', function (e) {
+      e.preventDefault(); var x0 = e.clientX, w0 = lay.panelW;
+      var mv = function (m) { lay.panelW = core.clampPanelWidth(w0 + m.clientX - x0, box.clientWidth); applyPanel(); };
+      var up = function () { root.document.removeEventListener('pointermove', mv); root.document.removeEventListener('pointerup', up); save(); };
+      root.document.addEventListener('pointermove', mv); root.document.addEventListener('pointerup', up);
+    });
+    root.addEventListener('resize', applyPanel);
+
+    q = root.TwVideoJobs.create({ run: runJob, onChange: jobsChanged }); q.restore(project.jobs);
+    box._ve = { project: project, say: msg, dubs: function () { return dubs; }, dubAudio: function (id) { return audios[id] && audios[id].el; }, queue: q, enqueueBurn: enqueueBurn, enqueueTranscribe: enqueueTranscribe, importText: importText, ask: submitAsk, applyAsk: applyAsk, addTtsDub: addTtsDub, cues: function () { return cues; }, addAt: addAt, edit: edit, video: null, setVideo: setVideo, tab: setTab, panel: function (hidden) { if (hidden !== undefined) { lay.panelHidden = !!hidden; applyPanel(); save(); } return !lay.panelHidden; },
+      panelWidth: function (w) { if (w !== undefined) { lay.panelW = core.clampPanelWidth(w, box.clientWidth); applyPanel(); save(); } return lay.panelW; }, layout: function () { return lay; } };
+    (o.container || root.document.body).appendChild(box);
+    var FW = o.windowApi || root.FaWin || (typeof FaWin !== 'undefined' ? FaWin : null);   // desktop-app: the shared window shell (pop out / maximize / dock); the plugin uses AiChatWindow
+    if (FW && FW.decorate) { box._win = FW.decorate(box, { id: 'ev:' + (o.id || ''), title: T('影片逐字稿編輯器', 'Video transcript editor'), bar: bar, minW: 520, minH: 360 }); }
+    else if (root.AiChatWindow) { root.AiChatWindow.attach(box, { key: 'edit-video/' + (o.id || ''), title: T('影片逐字稿編輯器', 'Video transcript editor'), bar: bar, body: body, minW: 420, minH: 300 }); }
+    applyPanel(); renderObjs(); setTab(lay.tab);
+    if (project.video && project.video.id) { setVideo({ id: project.video.id, name: project.video.name }).then(null, function () { stage.textContent = ''; stage.appendChild(el('div', 'tw-ve-empty', T('影片不在這個瀏覽器的檔案儲存裡了,請重新載入', 'The video is no longer in this browser\'s file storage; load it again'))); }); }
+    return box;
+  }
+  root.TwVideoEditUI = { mount: mount };
+}(typeof window !== 'undefined' ? window : globalThis));
+
+}).call(window, undefined);
+/* /edit-video 的主機轉接層(接在 edit_host.js 之後,同一個 FaEditHost)。設計見 DESIGN.edit-video.md。
+ * 編輯器本身(video_edit_core/jobs/ai/ui、來源選擇器、TTS 對話框)是外掛 redmine_ai_chat 同一份程式(window 上的 TwVideo* 全域);這裡只接桌面版自己的能力:
+ *   影片、配音、燒錄輸出 = fileCache 的檔案(釘選,不被容量淘汰);專案 = FaEditStore(IndexedDB tw_edit,project/edit-video/ID,存成 { v:1, spec:專案, state:null });
+ *   語音辨識 = 既有的 Whisper(_getWhisperTranscriber/_runWhisperWindowed,WebGPU 失敗退回 CPU);燒錄 = 既有的 _burnSubtitles(worker 加了配音軌 dubBed);
+ *   TTS = _deckSynthesize(簡報旁白同一條:Kokoro 本機／Microsoft 線上);AI = _edAi()(程式先讀白話,讀不懂才問模型)。
+ * 外框是共用的 FaWin(彈出、最大化、收回對話裡),對話裡是一則 ```fa-edit-video {"id":…}``` 區塊,重新整理後由 _mountEditEditors 重建。 */
+(function () {
+    'use strict';
+    const H = FaEditHost, T = H.T, M = H.methods;
+    const WHISPER_SR = 16000, BED_RATE = 48000;
+
+    H.register('edit-video', {
+        fence: 'fa-edit-video', icon: '🎬', cmd: '/edit-video', prefix: 'vd', label: () => T('影片逐字稿編輯器', 'Video transcript editor'),
+        core: () => window.TwVideoEdit,
+        ui: () => ({ mount: (o) => window.FaVideoEditMount(o) }),
+        lead: '🎬 影片逐字稿編輯器:左邊是物件列(影片與配音),中間是播放器(字幕疊在上面),右邊是逐字稿／Ask AI／工作佇列。「🎙 產生逐字稿」排進瀏覽器內的佇列(Whisper,離線);可以改時間與文字、匯入匯出 SRT、「🎤 配音」(麥克風或 TTS)、「🔥 燒錄字幕」(字幕+配音或僅字幕)。',
+        collectRefs: () => [],
+        mountOpts: function (id) { return this._videoMountOpts(id); },
+        help: () => '**' + T('影片逐字稿編輯器', 'Video transcript editor') + '**\n\n' + T('`/edit-video`:開一個空的編輯器,用「📂 載入影片」選影片(這台電腦、對話附件、授權資料夾、這個程式存的檔案);`/edit-video 檔名或檔案 id` 直接載入;對話裡剛附的影片會自動帶入。逐字稿可以用 Whisper 產生(整支或從播放位置起 2 秒)、改時間與文字、匯入匯出 SRT,也可以在「Ask AI」分頁用說的改(「第 3 句改成…」「全部延後 0.5 秒」「把第 2 句用英文配音」)。「🎤 配音」錄麥克風或用 TTS 合成,邊播邊聽;「🔥 燒錄字幕」輸出 MP4(字幕+配音,或僅字幕),輸出還能繼續編輯。', '`/edit-video` opens an empty editor; load a video with "📂 Load video" (this computer, chat attachments, authorized folders, files kept by this app). `/edit-video <name or file id>` loads it directly; a video just attached in the chat is picked up. Make the transcript with Whisper, edit times and text, import/export SRT, talk to it in the Ask AI tab, dub with the microphone or TTS, and burn the subtitles (with or without the dubs) into an MP4.')
+    });
+
+    const isLight = (self) => { try { return !!self._isLightTheme(); } catch (_) { return false; } };
+    const mediaKind = (n) => (window.TwVideoIntent ? window.TwVideoIntent.mediaKind(n) : null);
+
+    // fileCache 的記錄 → 編輯器要的 File(帶 twClientFileId,載入時不會再存一份)
+    function fileOf(rec) { const f = new File([rec.blob], rec.filename || 'video', { type: rec.mimeType || rec.blob.type || '' }); f.twClientFileId = rec.id; return f; }
+
+    // ───── 辨識:既有的 Whisper(主執行緒解碼成 16 kHz 單聲道,只取要辨識的那一段) ─────
+    M._videoTranscribe = function (blob, o, report) {
+        const self = this; let dead = false, rejectIt = null;
+        const promise = new Promise((resolve, reject) => {
+            rejectIt = reject;
+            (async () => {
+                report(T('解碼音訊…', 'Decoding audio…'));
+                const audio = await self._decodeAudioForWhisper(blob); if (dead) return;
+                const w = window.TwVideoEdit.pcmWindow(audio.pcm.length, WHISPER_SR, o.startSec, o.lenSec), pcm = w ? audio.pcm.slice(w.from, w.to) : new Float32Array(0);
+                if (pcm.length < 1600) throw new Error(T('從這個位置起沒有可辨識的聲音', 'There is no audio to recognize from this position'));
+                const cpuOnly = self.advancedSettings && (self.advancedSettings.whisperDevicePreference === 'cpu' || self.advancedSettings.offlineDevicePreference === 'cpu');
+                const wantWebGpu = !cpuOnly && await self._isWebGpuAvailable(), order = wantWebGpu ? ['webgpu', 'wasm'] : ['wasm']; let lastErr = null;
+                for (let i = 0; i < order.length && !dead; i++) {
+                    try {
+                        report(T('載入 Whisper 模型(首次約需下載 77 MB)…', 'Loading the Whisper model (about 77 MB the first time)…'));
+                        const tr = await self._getWhisperTranscriber(order[i], (m) => { if (!dead) report(String(m).replace(/^🎙️\s*/, '')); });
+                        const merged = await self._runWhisperWindowed(tr, pcm, o.language || null, order[i], (m) => { if (!dead) report(String(m).replace(/^🎙️\s*/, '')); });
+                        if (dead) return;
+                        const segments = (merged.chunks || []).map((c) => ({ start: Array.isArray(c.timestamp) ? c.timestamp[0] : null, end: Array.isArray(c.timestamp) ? c.timestamp[1] : null, text: String(c.text || '').trim() })).filter((s) => s.text && s.start != null);
+                        resolve({ segments, language: o.language || null, device: order[i] }); return;
+                    } catch (e) { lastErr = e; self._whisperTranscriber = null; self._whisperTranscriberDevice = null; }
+                }
+                throw lastErr || new Error(T('辨識失敗', 'transcription failed'));
+            })().catch(reject);
+        });
+        return { promise, cancel: () => { dead = true; if (rejectIt) rejectIt(new Error('canceled')); } };
+    };
+
+    // ───── 配音軌:所有配音依起始時間排成一條 48 kHz 單聲道 ─────
+    M._videoRenderBed = async function (dubs) {
+        const Ctx = window.AudioContext || window.webkitAudioContext, Off = window.OfflineAudioContext; if (!Ctx || !Off) throw new Error(T('這個瀏覽器不能解碼音訊', 'This browser cannot decode audio'));
+        const dec = new Ctx();
+        try {
+            const list = await Promise.all(dubs.map((d) => d.blob.arrayBuffer().then((ab) => dec.decodeAudioData(ab)).then((buf) => ({ start: d.start, buf }))));
+            const end = list.reduce((m, x) => Math.max(m, x.start + x.buf.duration), 0), off = new Off(1, Math.max(1, Math.ceil(end * BED_RATE) + 1), BED_RATE);
+            list.forEach((x) => { const src = off.createBufferSource(); src.buffer = x.buf; src.connect(off.destination); src.start(x.start); });
+            return new Float32Array((await off.startRendering()).getChannelData(0));
+        } finally { try { dec.close(); } catch (_) { /* 已經關了 */ } }
+    };
+    // videoBlob, segments, report(text), baseName, opt { dubs: [{start, blob}] } -> { promise: {id, name}, cancel() }
+    M._videoBurn = function (videoBlob, segments, report, baseName, opt) {
+        const self = this; let canceled = false, rejectIt = null; const dubs = opt && opt.dubs && opt.dubs.length ? opt.dubs : null;
+        const promise = new Promise((resolve, reject) => {
+            rejectIt = reject;
+            (async () => {
+                let bed = null;
+                if (dubs) { report(T('合成配音音軌… ', 'Preparing the dub track… ') + dubs.length); bed = await self._videoRenderBed(dubs); if (canceled) throw new Error('canceled'); }
+                report(T('燒錄字幕… ', 'Burning subtitles… ') + segments.length + T(' 段', ' segments'));
+                const name = String(baseName || 'video').replace(/\.[^.]+$/, '').replace(/-subtitled$/, '') + '-subtitled.mp4';
+                const r = await self._burnSubtitles({ blob: videoBlob, filename: baseName }, segments, (p) => { if (!canceled && p) report(T('燒錄中… ', 'Burning… ') + (p.pct != null ? p.pct + '%' : (p.frames || '') + T(' 幀', ' frames'))); }, { dubBed: bed ? bed.buffer : null, dubRate: BED_RATE, outName: name });
+                if (canceled) { if (r && r.video_file_id) { try { await self.fileCache.delete(r.video_file_id); } catch (_) { /* */ } } throw new Error('canceled'); }
+                if (!r || !r.ok) throw new Error((r && r.error) || T('燒錄失敗', 'burning failed'));
+                await self._videoPin(r.video_file_id);
+                if (bed && r.dubMixed === false) report(T('這支影片沒有音軌:配音沒有混進去', 'This video has no audio track: the dubs could not be mixed in'));
+                resolve({ id: r.video_file_id, name: r.filename || name });
+            })().catch(reject);
+        });
+        return { promise, cancel: () => { canceled = true; if (rejectIt) rejectIt(new Error('canceled')); } };   // 燒錄 worker 沒有取消通道:已經開始的會跑完,結果丟掉
+    };
+
+    M._videoPin = async function (id) { try { if (id && this.fileCache.pin) await this.fileCache.pin(id, true); } catch (_) { /* 釘不了就算了 */ } return id; };
+
+    // ───── 影片從哪裡來:對話附件、其他檔案、授權資料夾 ─────
+    M._videoChatFiles = async function () {
+        const out = [], seen = {}, add = (rec, from) => { if (!rec || seen[rec.id] || !mediaKind(rec.filename)) return; seen[rec.id] = 1; out.push({ name: rec.filename, size: rec.sizeBytes, from, open: () => this.fileCache.get(rec.id).then((r) => { if (!r) throw new Error(T('檔案不在了', 'the file is gone')); return fileOf(r); }) }); };
+        (this._pendingAttachments || []).filter((a) => a.status === 'done').slice().reverse().forEach((a) => add({ id: a.id, filename: a.filename, sizeBytes: a.sizeBytes }, 'chat'));
+        let all = []; try { all = await this.fileCache.getAll(); } catch (_) { all = []; }
+        all.filter((r) => r.kind === 'uploaded').sort((a, b) => (b.lastAccessedAt || 0) - (a.lastAccessedAt || 0)).forEach((r) => add(r, 'chat'));
+        return out;
+    };
+    M._videoStoredFiles = async function () {
+        let all = []; try { all = await this.fileCache.getAll(); } catch (_) { all = []; }
+        return all.filter((r) => r.kind !== 'uploaded' && mediaKind(r.filename)).sort((a, b) => (b.lastAccessedAt || 0) - (a.lastAccessedAt || 0)).map((r) => ({ name: r.filename, size: r.sizeBytes, from: 'stored', open: () => Promise.resolve(fileOf(r)) }));
+    };
+    M._videoFapFolders = async function () { try { const all = await this.fileAccessPoints.getAll(); return all.map((r) => ({ label: r.label, handle: r.handle })); } catch (_) { return []; } };
+
+    // ───── TTS:桌面版的聲音清單 → 對話框要的格式 {id, name, lang(BCP 47), gender, engine: 'local'|'relay'} ─────
+    M._videoVoices = function () {
+        const out = [], adv = this.advancedSettings || {};
+        const enLang = (l) => (/英式/.test(l) ? 'en-GB' : 'en-US');
+        (typeof TTS_VOICES !== 'undefined' ? TTS_VOICES : []).forEach((v) => out.push({ id: v.id, name: v.name, lang: v.custom || v.clone ? (/中文/.test(v.lang || '') ? 'zh-TW' : 'en-US') : enLang(v.lang || ''), gender: v.gender, engine: 'local' }));
+        (typeof TTS_ZH_VOICES !== 'undefined' ? TTS_ZH_VOICES : []).forEach((v) => out.push({ id: v.id, name: v.name, lang: v.custom || v.clone ? 'zh-TW' : 'zh-CN', gender: v.gender, engine: 'local' }));
+        if (adv.ttsApiEnabled) (typeof TTS_API_VOICES !== 'undefined' ? TTS_API_VOICES : []).forEach((v) => out.push({ id: v.id, name: v.name, lang: /^[a-z]{2}-[A-Z]{2}/.test(v.id) ? v.id.slice(0, 5) : 'zh-TW', gender: v.gender, engine: 'relay' }));
+        return out;
+    };
+    M._videoPickVoice = function (text, lang) {
+        const list = this._videoVoices(), adv = this.advancedSettings || {}; if (!list.length) return null;
+        const fam = String(lang || '').slice(0, 2).toLowerCase(), same = list.filter((v) => !fam || v.lang.slice(0, 2).toLowerCase() === fam); if (!same.length) return list[0];
+        const prefer = fam === 'zh' ? [adv.ttsDefaultApiVoice, typeof TTS_DEFAULT_ZH_VOICE !== 'undefined' ? TTS_DEFAULT_ZH_VOICE : ''] : [adv.ttsDefaultVoice, typeof TTS_DEFAULT_VOICE !== 'undefined' ? TTS_DEFAULT_VOICE : ''];
+        for (const id of prefer) { const v = same.filter((x) => x.id === id && (!lang || x.lang === lang))[0] || same.filter((x) => x.id === id)[0]; if (v) return v; }
+        return same.filter((x) => x.lang === lang)[0] || same[0];
+    };
+    M._videoSynthesize = async function (text, voiceId, lang) {
+        const buf = await this._deckSynthesize(String(text), voiceId || null, 1.0, lang), u = new Uint8Array(buf);
+        return new Blob([u], { type: this._deckIsWav(buf) ? 'audio/wav' : 'audio/mpeg' });
+    };
+
+    // ───── AI:程式先讀白話(video_edit_ai.localParse,在編輯器裡),讀不懂才問模型 ─────
+    M._videoAiMode = async function () {
+        const A = this._edAi(); if (!A.have()) return 'none';
+        return this.advancedSettings && this.advancedSettings.offlineMode ? 'offline' : 'online';
+    };
+
+    // ───── 掛載 ─────
+    M._videoHost = function (id) {
+        const self = this;
+        return {
+            save: (p) => FaEditStore.saveProject('edit-video', id, { v: 1, spec: p, state: null }),
+            putFile: async (f) => self._videoPin(await self.fileCache.put(f.name || 'file', f.type || 'application/octet-stream', f, 'uploaded')),
+            loadFile: async (fid) => { const rec = await self.fileCache.get(fid); if (!rec) throw new Error(T('檔案不在這個程式的檔案儲存裡', 'the file is not in this app\'s file storage')); return { arrayBuffer: await rec.blob.arrayBuffer(), mimeType: rec.mimeType || rec.blob.type, filename: rec.filename }; },
+            pin: (fid) => self._videoPin(fid),
+            transcribe: (blob, o, report) => self._videoTranscribe(blob, o, report),
+            burn: (blob, segs, report, name, opt) => self._videoBurn(blob, segs, report, name, opt),
+            chatFiles: () => self._videoChatFiles(), storedFiles: () => self._videoStoredFiles(), fapFolders: () => self._videoFapFolders(),
+            openEditor: (fid) => self._videoOpen({ fileId: fid }),
+            voices: () => self._videoVoices(), pickVoice: (text, lang) => self._videoPickVoice(text, lang),
+            synthesize: (text, voiceId, lang) => self._videoSynthesize(text, voiceId, lang),
+            ai: { mode: () => self._videoAiMode(), chat: (system, user) => self._edAi().chat(system || '', user, { maxTokens: 4000, timeoutMs: 150000 }) }
+        };
+    };
+    M._videoMountOpts = function (id) {
+        const self = this, fresh = this._videoFresh && this._videoFresh.get(id); if (fresh) this._videoFresh.delete(id);
+        return { host: this._videoHost(id), fresh, light: isLight(self) };
+    };
+    // 專案存成 { v:1, spec: 專案 };外框共用的 _edMount 載入後呼叫這裡
+    window.FaVideoEditMount = function (o) {
+        const holder = document.createElement('div'); holder.style.cssText = 'display:block';
+        const el = window.TwVideoEditUI.mount({ id: o.id, project: o.spec, container: holder, host: o.host, restoring: !o.fresh });
+        el.style.setProperty('--ai-win-bg', o.light ? '#ffffff' : '#1e2127'); el.style.setProperty('--ai-win-fg', o.light ? '#1f2328' : '#e6e6e6');
+        if (o.fresh && o.fresh.source) {
+            const sc = o.fresh.source;
+            Promise.resolve(sc.file ? el._ve.setVideo(sc.file) : el._ve.setVideo({ id: sc.id })).then(null, (e) => el._ve.say(T('載入影片失敗:', 'Could not load the video: ') + String((e && e.message) || e)));
+        }
+        el._ed = { destroy: () => { try { el.remove(); } catch (_) { /* */ } }, getState: () => null };
+        return el;
+    };
+
+    // ───── 開啟:o.fileId＝fileCache 的檔案 id;o.file＝File;o.id＝接著原本的專案 ─────
+    M._videoOpen = async function (o) {
+        o = o || {}; const K = H.KINDS['edit-video'];
+        if (o.id) { const proj = await FaEditStore.loadProject('edit-video', String(o.id)); if (!proj) return { ok: false, error: T('找不到這個專案:', 'no such project: ') + o.id }; this._edPush('edit-video', String(o.id), null); return { ok: true, id: String(o.id) }; }
+        const id = FaEditStore.newId(K.prefix), proj = window.TwVideoEdit.newProject(T('影片', 'Video'));
+        await FaEditStore.saveProject('edit-video', id, { v: 1, spec: proj, state: null });
+        this._videoFresh = this._videoFresh || new Map(); this._videoFresh.set(id, { source: o.file ? { file: o.file } : o.fileId ? { id: o.fileId } : null });
+        this._edPush('edit-video', id, null);
+        return { ok: true, id, note: 'the video editor is open in the conversation; the user works in it. Do not paste the content into the conversation.' };
+    };
+    // 引數:檔案 id 或檔名(找 fileCache 裡最近的同名媒體檔);空＝對話裡剛附的第一個影片/音檔(沒有就開空的)
+    M._videoResolveSource = async function (arg) {
+        const a = String(arg || '').trim().replace(/^\[?Attached files:\s*/i, '');
+        const I = window.TwVideoIntent, parsed = a ? I.pickMedia(I.parseAttachedFiles(a)) : null;
+        let all = []; try { all = await this.fileCache.getAll(); } catch (_) { all = []; }
+        const media = all.filter((r) => mediaKind(r.filename)).sort((x, y) => (y.lastAccessedAt || 0) - (x.lastAccessedAt || 0));
+        const pending = (this._pendingAttachments || []).filter((p) => p.status === 'done' && mediaKind(p.filename))[0];
+        if (parsed && parsed.kind === 'client') { const r = media.filter((x) => x.id === parsed.id)[0] || (await this.fileCache.get(parsed.id)); return r ? r.id : null; }
+        if (a) { const byId = media.filter((x) => x.id === a)[0], byName = media.filter((x) => x.filename === a || x.filename.toLowerCase().indexOf(a.toLowerCase()) >= 0)[0]; return (byId || byName || {}).id || null; }
+        if (pending) return pending.id;
+        return null;
+    };
+
+    M._registerEditVideoCommands = function () {
+        const self0 = this;
+        this.register_slash_command('/edit-video', '[檔案 id｜檔名]',
+            '影片逐字稿編輯器:左邊物件列(影片與配音)、中間播放器(字幕疊在上面)、右邊逐字稿／Ask AI／工作佇列。用 Whisper 產生逐字稿(整支或從播放位置起 2 秒)、改時間與文字、匯入匯出 SRT、麥克風或 TTS 配音、燒錄字幕(字幕+配音或僅字幕)。/edit-video 開空的、/edit-video 檔名 載入那支影片。',
+            async (argsText, run) => {
+                const r = run || self0, a = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/edit-video' + (a ? ' ' + a : '') });
+                try {
+                    const fid = await r._videoResolveSource(a);
+                    if (a && !fid && !/^\[?Attached files:/i.test(a)) { r._pushAssistantMessage('⚠️ ' + T('找不到這個影片:', 'No such video: ') + a + '\n\n' + H.KINDS['edit-video'].help(), null); }
+                    else { const res = await r._videoOpen({ fileId: fid }); if (res && res.ok === false) r._pushAssistantMessage('⚠️ ' + (res.error || T('開不起來', 'could not open it')), null); }
+                } catch (e) { r._pushAssistantMessage('⚠️ ' + T('開不起來:', 'Could not open it: ') + String((e && e.message) || e), null); }
+                try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ }
+            });
+    };
+    const prevRegister = M._registerEditCommands; M._registerEditCommands = function () { if (prevRegister) prevRegister.call(this); this._registerEditVideoCommands(); };
+})();
+
+/* VIDEOEDIT-END */
 /* COMPUTER-BEGIN */
 const FaComputerCore = (function () {
 const holder = {};
@@ -39483,6 +40636,22 @@ function _drawSubtitle(ctx, tSec, segments, style) {
     ctx.restore();
 }
 
+// /edit-video「字幕+配音」：配音軌（單聲道、dubRate Hz、時間 0＝影片開頭）逐個樣本加到解碼後的原音上（截在 ±1）再重新編碼
+function _mixSample(MB, sample, bed, bedRate) {
+    const ch = sample.numberOfChannels, n = sample.numberOfFrames, sr = sample.sampleRate, t0 = sample.timestamp, planes = [];
+    for (let p = 0; p < ch; p++) { const buf = new Float32Array(n); sample.copyTo(buf, { planeIndex: p, format: 'f32-planar' }); planes.push(buf); }
+    let any = false;
+    for (let i = 0; i < n; i++) {
+        const bi = Math.round((t0 + i / sr) * bedRate);
+        if (bi < 0 || bi >= bed.length) continue;
+        const v = bed[bi]; if (!v) continue; any = true;
+        for (let p = 0; p < ch; p++) { const x = planes[p][i] + v; planes[p][i] = x > 1 ? 1 : x < -1 ? -1 : x; }
+    }
+    if (!any) return sample;
+    const out = new Float32Array(n * ch); for (let p = 0; p < ch; p++) out.set(planes[p], p * n);
+    const ns = new MB.AudioSample({ data: out, format: 'f32-planar', numberOfChannels: ch, sampleRate: sr, timestamp: t0 }); sample.close(); return ns;
+}
+
 self.onmessage = async (e) => {
     const d = e.data || {};
     const jobId = d.jobId;
@@ -39494,6 +40663,7 @@ self.onmessage = async (e) => {
         try { totalDur = await input.computeDuration(); } catch (_) {}
         const vt = await input.getPrimaryVideoTrack();
         if (!vt) { self.postMessage({ jobId: jobId, type: 'result', ok: false, error: '這個檔案沒有影像軌，不能燒字幕' }); return; }
+        const bed = d.dubBed ? new Float32Array(d.dubBed) : null; let mixedSamples = 0;
         const output = new MB.Output({ format: new MB.Mp4OutputFormat({ fastStart: 'in-memory' }), target: new MB.BufferTarget() });
         let ctx = null, frames = 0, lastPct = -1, lastPost = 0;
         const conversion = await MB.Conversion.init({
@@ -39512,7 +40682,7 @@ self.onmessage = async (e) => {
                 }
                 return ctx.canvas;
             } },
-            audio: {},
+            audio: bed ? { process: (sample) => { mixedSamples++; return _mixSample(MB, sample, bed, d.dubRate); } } : {},
         });
         if (!conversion.isValid) {
             self.postMessage({ jobId: jobId, type: 'result', ok: false, error: '無法轉換這個影片（' + JSON.stringify(conversion.discardedTracks || []).slice(0, 200) + '）' });
@@ -39520,7 +40690,7 @@ self.onmessage = async (e) => {
         }
         await conversion.execute();
         const buf = output.target.buffer;
-        self.postMessage({ jobId: jobId, type: 'result', ok: true, buffer: buf, frames: frames }, [buf]);
+        self.postMessage({ jobId: jobId, type: 'result', ok: true, buffer: buf, frames: frames, dubMixed: !bed || mixedSamples > 0 }, [buf]);
     } catch (err) {
         self.postMessage({ jobId: jobId, type: 'result', ok: false, error: String((err && err.message) || err) });
     }
@@ -64501,7 +65671,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     // WebCodecs硬體解碼+Mediabunny，音軌passthrough不重編。onProgress收
     // {pct, frames, t}。回傳{ok, video_file_id, filename, frames, sizeBytes}
     // 或{ok:false, error}。
-    async _burnSubtitles(videoRecord, segments, onProgress) {
+    async _burnSubtitles(videoRecord, segments, onProgress, opt) {   // opt: { dubBed: ArrayBuffer(Float32 單聲道配音軌), dubRate, outName }
         if (typeof Worker === 'undefined' || typeof OffscreenCanvas === 'undefined') {
             return { ok: false, error: '這個瀏覽器不支援 Web Worker / OffscreenCanvas，無法燒字幕。請用較新的 Chrome/Edge/Safari（含手機版；Firefox 目前不支援）。' };
         }
@@ -64525,21 +65695,17 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
                     else if (dd.type === 'result') resolve(dd);
                 };
                 worker.onerror = (e) => reject(new Error('燒字幕 worker 錯誤：' + (e.message || e)));
-                worker.postMessage({
-                    jobId,
-                    mediabunnyUrl: FA_ASSET_URLS.mediabunny,
-                    videoBlob: videoRecord.blob,
-                    segments,
-                    style: this._getSubtitleStyle(),
-                });
+                const msg = { jobId, mediabunnyUrl: FA_ASSET_URLS.mediabunny, videoBlob: videoRecord.blob, segments, style: this._getSubtitleStyle() };
+                if (opt && opt.dubBed) { msg.dubBed = opt.dubBed; msg.dubRate = opt.dubRate; }
+                worker.postMessage(msg, opt && opt.dubBed ? [opt.dubBed] : []);
             });
             if (!result.ok) return { ok: false, error: result.error };
             const outBlob = new Blob([result.buffer], { type: 'video/mp4' });
             // 去副檔名；已經是「.字幕版」的檔案再燒一次不要疊成「.字幕版.字幕版」
             const base = String(videoRecord.filename || 'video').replace(/\.[^.]+$/, '').replace(/\.字幕版$/, '');
-            const outName = `${base}.字幕版.mp4`;
+            const outName = (opt && opt.outName) || `${base}.字幕版.mp4`;
             const outId = await this.fileCache.put(outName, 'video/mp4', outBlob, 'uploaded');
-            return { ok: true, video_file_id: outId, filename: outName, frames: result.frames, sizeBytes: outBlob.size };
+            return { ok: true, video_file_id: outId, filename: outName, frames: result.frames, sizeBytes: outBlob.size, dubMixed: result.dubMixed !== false };
         } catch (err) {
             return { ok: false, error: String(err.message || err) };
         } finally {

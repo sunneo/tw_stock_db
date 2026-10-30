@@ -377,6 +377,20 @@ function embedDeckEdit() {
 }
 embedDeckEdit();
 
+// /edit-video:影片逐字稿編輯器(外掛 redmine_ai_chat 同一份程式,window 上的 TwVideo* 全域)＋主機轉接層,放在 DECKEDIT 區塊之後(要用 FaEditHost、FaEditStore、FaWin)
+function embedVideoEdit() {
+    const dir = path.join(root, 'renderer/src/video'); if (!fs.existsSync(path.join(dir, 'video_host.js'))) return;
+    const rd = (n) => fs.readFileSync(path.join(dir, n + '.js'), 'utf8').replace(/\r\n/g, '\n'); const parts = [];
+    // 這些檔案是 UMD／(function (root) {…}(window)):module 設成 undefined,走「掛到 self(window)」那條路
+    for (const fn of ['video_edit_core', 'video_jobs', 'video_intent', 'video_source_picker', 'video_tts_dialog', 'video_edit_ai', 'video_edit_ui']) parts.push('(function (module) {\n' + rd(fn) + '\n}).call(window, undefined);');
+    parts.push(rd('video_host'));
+    let a = src.indexOf('/* VIDEOEDIT-BEGIN */'), b = src.indexOf('/* VIDEOEDIT-END */');
+    if (a < 0 || b < 0) { const e = src.indexOf('/* DECKEDIT-END */'); if (e < 0) throw new Error('找不到 DECKEDIT-END 標記'); const at = e + '/* DECKEDIT-END */'.length; src = src.slice(0, at) + '\n/* VIDEOEDIT-BEGIN */\n/* VIDEOEDIT-END */' + src.slice(at); a = src.indexOf('/* VIDEOEDIT-BEGIN */'); b = src.indexOf('/* VIDEOEDIT-END */'); }
+    src = src.slice(0, a) + '/* VIDEOEDIT-BEGIN */\n' + parts.join('\n') + '\n' + src.slice(b);
+    console.log('已更新影片逐字稿編輯器(' + parts.join('').length + ' 字元)');
+}
+embedVideoEdit();
+
 // computer use 的渲染端（工具、/computer、視覺模型慢路徑）：整個檔案本身就定義 const FaComputerHost，放在 DECKEDIT 區塊之後
 function embedComputer() {
     const dir = path.join(root, 'renderer/src/computer'); if (!fs.existsSync(path.join(dir, 'computer_host.js'))) return;
