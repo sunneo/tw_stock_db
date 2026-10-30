@@ -1,5 +1,11 @@
 # 交接文件：把 sd-turbo 整合進 `/edit-picture`（圖生圖改圖，handoff 1，2026-10-30）
 
+
+## 0. 進度（handoff 2，2026-10-30）
+- 第 1 項完成（提交 a876923c）：查證寫在 DESIGN.edit-picture-sdturbo.md。結論：ONNX 用 jdp8/sd-turbo-onnx（含 vae_encoder，fp16 大小，unet 1.7 GB）；授權是 Stability AI 社群授權（商業須登記），所以不內建、使用者自己下載；wasm 沒有能跑的 sd-turbo 版本，降級用 SDXS（同一套數學）。onnxruntime-web WebGPU 的運算子支援未驗證。
+- 第 2 項完成（提交 4d220fec）：renderer/src/imagegen/sd_turbo_core.js（全域 FaSdTurbo）＋ scripts/imagegen-tests/sd_turbo.test.js（20 項通過，已加進 run-core-tests）。尚未加進 scripts/embed-code-ui.js 的嵌入清單與 floating-assistant.js 的 SDTURBO-BEGIN/END 標記（第 3 項一起做，仿 LOCALSD-BEGIN）。
+- 下一步：第 3 項（主機端下載／載入／執行，含 SDXS 降級需要的 VAE 編碼器來源）。本週額度在這個階段用到 98%，所以沒有啟動接手工作階段；額度重置（2026-10-31 06:59 UTC）後由使用者重新叫起。
+
 ## 1. 開場提示（給接手的工作階段）
 Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app\desktop-app\DESIGN.TODO.edit-picture-sdturbo.md`. 先完整讀完（含使用者原話與做法備忘），照做。執行 low-context-long-run 技能（門檻 30%）：做 Todo 的第一項，context 到門檻就更新這份文件並啟動你的接手工作階段（`mcp__ccd_session__start_session` 是延遲載入的工具，先用 ToolSearch 載入）。第一則訊息用一行說明你讀完了、要開始哪一項。回覆一律繁體中文、不要夾英文縮寫。**不要再做規劃、不要問，直接查證、寫程式、測試、提交。**
 
