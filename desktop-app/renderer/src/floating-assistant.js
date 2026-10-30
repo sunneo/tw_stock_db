@@ -88382,7 +88382,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         p = p || {}; const set = this._omSettings();
         const model = FaVlm.byId(p.model) || FaVlm.byId(FaVlm.DEFAULT_SEGMENT_MODEL);
         if (!model || model.task !== 'segmentation') return { ok: false, error: '不是分割的模型：' + (p.model || '') + '。可用：' + FaVlm.segmentModels().map((m) => m.id).join('、') };
-        const gpu = await this._omGpuInfo(); const dev = FaVlm.resolveDevice(model, p.device || set.device, gpu.available, gpu.f16);
+        const gpu = await this._omGpuInfo(); const dev = FaVlm.resolveDevice(model, p.device || 'cpu', gpu.available, gpu.f16);   // 預設 CPU：GPU 的 fp16 版在遮罩解碼器的著色器會失敗（2026-10-30 使用者實測），CPU（q8）才是驗證過的路
         if (!dev.order.length) return { ok: false, error: dev.reason };
         const img = await this._vlmResolveImage(p); if (!img.blob) return { ok: false, cancelled: img.cancelled, error: img.error };
         const usage = await this._omUsage(); const need = FaVlm.estimateDownload(model, dev.order[0], (usage.byModel[model.id] || { bytes: 0 }).bytes);
