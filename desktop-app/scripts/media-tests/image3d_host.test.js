@@ -70,9 +70,9 @@ const host = (answers) => { // answers: 視覺模型每次回答的字母
     await h._i3dShow({ objects: [] }, '標題', { editor: true }); assert.strictEqual(log[1][0], 'editor');
   });
   await t('進度：整段圖片轉3D 只有一張進度卡，子步驟的行都記在它的紀錄裡', async () => {
-    const cards = [], lines = []; let quiet = null;
-    const h = Object.assign(Object.create(M), { _createProgressWidget: (title) => { const c = { title, log: (l) => lines.push(l), update() {}, finish: (s) => { c.done = s; }, fail: (e) => { c.err = e; } }; cards.push(c); return c; }, _edQuietRun: async (sink, fn) => { h._edQuiet = { sink }; try { return await fn(); } finally { h._edQuiet = null; } }, _imageTo3d0: async () => { h._edQuiet.sink('深度模型：載入…'); h._edQuiet.sink('分割：GPU 失敗，改用 CPU'); return { ok: true }; } });
-    const r = await h._imageTo3d({}); assert(r.ok); assert.strictEqual(cards.length, 1); assert.strictEqual(lines.length, 2); assert.strictEqual(cards[0].done, '完成');
+    const cards = [], lines = [], pcts = [];
+    const h = Object.assign(Object.create(M), { _createProgressWidget: (title) => { const c = { title, log: (l) => lines.push(l), update: (u) => { if (u.pct != null) pcts.push(u.pct); }, finish: (s) => { c.done = s; }, fail: (e) => { c.err = e; } }; cards.push(c); return c; }, _edQuietRun: async (sink, fn) => { h._edQuiet = { sink }; try { return await fn(); } finally { h._edQuiet = null; } }, _imageTo3d0: async () => { h._i3dChapter('depth', '估計遠近', '南瓜燈'); h._edQuiet.sink('深度模型：載入…'); h._edQuiet.sink('分割：GPU 失敗，改用 CPU'); return { ok: true }; } });
+    const r = await h._imageTo3d({}); assert(r.ok); assert.strictEqual(cards.length, 1); assert.strictEqual(lines.length, 3); assert.strictEqual(lines[0], '【估計深度】南瓜燈：估計遠近'); assert(lines[1].startsWith('　')); assert(pcts[1] > 5 && pcts[1] < 40 && pcts[pcts.length - 1] === 100);
     h._imageTo3d0 = async () => ({ ok: false, error: '壞了' }); await h._imageTo3d({}); assert.strictEqual(cards[1].err, '壞了');
   });
   console.log(pass + ' passed' + (process.exitCode ? ', with failures' : ''));
