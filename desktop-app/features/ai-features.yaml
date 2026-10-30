@@ -494,6 +494,13 @@ categories:
         platforms: [desktop]
         samples: ["/edit-media-presentation", "/edit-media-presentation 在第 2 頁後面加一頁講風險", "這頁加一張飛機的照片", "上網查最新規格再加一章"]
         updated: 2026-10-25
+      - id: edit-video
+        name: 影片逐字稿編輯器（播放器＋逐字稿＋配音＋燒錄字幕）
+        summary: 左邊物件列（影片與配音）、中間播放器（字幕疊在上面，全螢幕也看得到）、右邊逐字稿／Ask AI／工作佇列。用 Whisper 產生逐字稿（整支或從播放位置起 2 秒，排進瀏覽器內的佇列）、改時間與文字、匯入匯出 SRT、麥克風或 TTS 配音（邊播邊聽）、燒錄字幕（字幕+配音或僅字幕，輸出可再編輯）；Ask AI 用說的改（「第 3 句改成…」「全部延後 0.5 秒」「把第 2 句用英文配音」）。
+        how: { slash: ["/edit-video"] }
+        platforms: [desktop]
+        samples: ["/edit-video", "/edit-video 會議錄影.mp4"]
+        updated: 2026-10-30
 
   - id: media
     name: 影音處理
