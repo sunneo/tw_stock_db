@@ -32762,7 +32762,7 @@ const FaEditHost = (function () {
                 const du = cv.toDataURL('image/jpeg', 0.85); let idx = null;
                 try {
                     const r = await this._visionDescribe({ images: [du], prompt, max_tokens: 16, runLlm: () => this._interpretImageWithVisionModel(du, prompt) });
-                    const raw = r.ok ? (r.backend === 'llm' ? (typeof r.llm === 'string' ? r.llm : (r.llm && (r.llm.description || r.llm.answer || r.llm.text)) || '') : (r.answer || r.text || '')) : '';
+                    const raw = r.ok ? (r.backend === 'llm' ? (typeof r.llm === 'string' ? r.llm : (r.llm && (r.llm.answer || r.llm.description || r.llm.text)) || '') : (r.answer || r.text || '')) : '';
                     idx = FaEditOffline.parseLetter(raw, 2);
                 } catch (_) { idx = null; }
                 if (idx === 0) { try { bmp.close(); } catch (_) { /* */ } return { id: c.id, how: 'asked', note: T('用視覺模型確認這個物件是「' + name + '」', 'the vision model confirmed this object is "' + name + '"') }; }
@@ -52703,8 +52703,8 @@ ${fnData.code}
             { type: 'object', properties: { skeleton: { type: 'string', description: '骨架條目 key，例如 head-rig、humanoid-rig；不給就依有沒有偵測到臉決定' }, motions: { type: 'array', items: { type: 'string' }, description: '要放進去的動作 key；不給就放這個骨架的全部動作' }, active: { type: 'string', description: '一開始播哪個動作，或 "all" 依序輪播' }, figure_bbox: { type: 'array', items: { type: 'number' }, description: '人形骨架用：人物在影像裡的範圍 [x0,y0,x1,y1]（影像座標，用 parts.json 的座標系）' }, joint_points: { type: 'object', description: '直接指定關節在影像上的位置 {關節key:[x,y]}（影像座標），覆蓋自動放置' }, static_radius: { type: 'number', description: '離骨架多遠以外保持不動（場景單位）；不給就自動' } }, additionalProperties: false }
         );
         registerOptional('image_to_text',
-            '離線圖像轉文字：用跑在這台電腦上的小型視覺模型（Florence-2、SmolVLM…；瀏覽器內的 WebGPU 或多核心 CPU，推論在背景執行緒，不卡畫面）描述圖片、辨識圖上的文字（OCR）、列出物件，或回答關於圖片的問題。**不需要線上視覺模型、圖片不會上傳**；第一次使用要下載模型（約 200MB～數 GB，會先問使用者）。線上視覺模型看不到圖片、失敗、或使用者要求離線處理時用這個。task：caption（簡短描述）、detailed（詳細描述）、ocr（辨識文字）、objects（列出物件）、ask（用 prompt 問問題；Florence-2 與 ViT-GPT2 不支援）。圖用最近一則附件（多張會問使用者），或給 image（file_id）。回傳的 text 主要是英文（模型限制）；需要中文再自己翻譯。模型、裝置（GPU／CPU）、CPU 核心上限在 Configure 的「離線模型管理」分頁。參數: {"task":"detailed","image":"file_id（選填）","prompt":"問題（task=ask 時）","model":"florence-2-base-ft（選填）","max_tokens":256}。',
-            skillWrap(function (p) { return this._imageToText(p); }),
+            '圖像轉文字（自動選後端：你目前設定的線上視覺模型優先，全部失敗才退到離線小模型；只有指定 model 或 device 參數才直接走離線）。離線時用跑在這台電腦上的小型視覺模型（Florence-2、SmolVLM…；瀏覽器內的 WebGPU 或多核心 CPU，推論在背景執行緒，不卡畫面）描述圖片、辨識圖上的文字（OCR）、列出物件，或回答關於圖片的問題。**不需要線上視覺模型、圖片不會上傳**；第一次使用要下載模型（約 200MB～數 GB，會先問使用者）。要離線處理時加 model 或 device 參數。task：caption（簡短描述）、detailed（詳細描述）、ocr（辨識文字）、objects（列出物件）、ask（用 prompt 問問題；Florence-2 與 ViT-GPT2 不支援）。圖用最近一則附件（多張會問使用者），或給 image（file_id）。回傳的 text 主要是英文（模型限制）；需要中文再自己翻譯。模型、裝置（GPU／CPU）、CPU 核心上限在 Configure 的「離線模型管理」分頁。參數: {"task":"detailed","image":"file_id（選填）","prompt":"問題（task=ask 時）","model":"florence-2-base-ft（選填）","max_tokens":256}。',
+            skillWrap(function (p) { return this._imageToTextAuto(p); }),
             { type: 'object', properties: { task: { type: 'string', enum: ['caption', 'detailed', 'ocr', 'objects', 'ask'] }, image: { type: 'string', description: '選填：圖片的 file_id 或檔名；省略時用這個對話最新的圖片附件' }, prompt: { type: 'string', description: 'task=ask 時要問的問題（英文效果最好）' }, model: { type: 'string', description: '選填：模型 id（florence-2-base-ft、smolvlm-256m、vit-gpt2、llava-interleave-qwen-0.5b）；省略用預設' }, device: { type: 'string', enum: ['gpu', 'cpu'], description: '選填：這次要偏好的裝置；省略用設定' }, max_tokens: { type: 'number', description: '選填：最多產生多少 token（16～1024）' } }, additionalProperties: false }
         );
         registerOptional('youtube_download',
@@ -85102,7 +85102,7 @@ _result
             try { const r = JSON.parse(await this.tools.import_uploaded_image.callback.call(this, JSON.stringify({ file_id: a.id }))); if (r && r.ok !== false && r.ref) ref = r.ref; else log('✗ 第 ' + (i + 1) + ' 張匯入失敗：' + String((r && r.error) || '').slice(0, 100)); } catch (e) { log('✗ 第 ' + (i + 1) + ' 張匯入出錯：' + String((e && e.message) || e).slice(0, 100)); }
             if (!ref) { notes.push(a.filename + '：匯入失敗'); continue; }
             let text = '';
-            try { const o = await this._imageToText({ task: 'ocr', image: a.id, silent: true, fallback: true }); if (o && o.ok && o.text) text = String(o.text); else log('第 ' + (i + 1) + ' 張讀不出文字：' + String((o && o.error) || '').slice(0, 100)); } catch (e) { log('第 ' + (i + 1) + ' 張讀字出錯：' + String((e && e.message) || e).slice(0, 100)); }
+            try { const o = await this._imageToTextAuto({ task: 'ocr', image: a.id, silent: true, fallback: true }); if (o && o.ok && o.text) text = String(o.text); else log('第 ' + (i + 1) + ' 張讀不出文字：' + String((o && o.error) || '').slice(0, 100)); } catch (e) { log('第 ' + (i + 1) + ' 張讀字出錯：' + String((e && e.message) || e).slice(0, 100)); }
             // 整理讀到的字：一行一行、去掉版權與頁碼雜訊（©、期號、純數字代碼）、去掉重複行
             const seen = new Set(); const lines = text.replace(/([.!?])(?=[A-Z])/g, '$1 ').split(/\r?\n/).flatMap((x) => x.split(/(?<=[.!?。！？])\s+/)).map((x) => x.replace(/\s+/g, ' ').trim()).filter((x) => x && !/©|\(c\)|copyright|^\W*$|^[\d\s|\-./KW]{5,}$/i.test(x) && !seen.has(x.toLowerCase()) && seen.add(x.toLowerCase()));
             const speakable = lang === 'en' ? lines.filter((x) => !/[\u3400-\u9fff]/.test(x)) : lines;
@@ -88426,6 +88426,18 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             if (prog) prog.finish('完成：' + (used.device === 'webgpu' ? 'GPU' : 'CPU') + '，' + ((res.ms || 0) / 1000).toFixed(1) + ' 秒，' + res.segments.length + ' 個候選遮罩');
             return { ok: true, segments: res.segments, model: model.id, device: used.device === 'webgpu' ? 'gpu' : 'cpu', ms: res.ms };
         } catch (e) { if (prog) prog.fail(String((e && e.message) || e)); return { ok: false, error: String((e && e.message) || e), model: model.id, tried: e && e.tried }; }
+    }
+    // 自動選後端的圖像轉文字：走統一的看圖入口（_interpretImageWithVisionModel → _visionDescribe：線上視覺模型優先，全部失敗才退離線模型，政策看設定的 visionBackendPolicy）。
+    // 2026-10-30 起 image_to_text 工具與簡報食譜的 OCR 都走這裡：模型本身看得到圖（例如 qwen3.6-claude4.7）卻被呼叫離線模型是錯的；只有明確指定 model／device／offline 才直接走離線。
+    async _imageToTextAuto(p) {
+        p = p || {}; if (p.model || p.device || p.offline) return await this._imageToText(p);
+        const img = await this._vlmResolveImage(p); if (!img.blob) return { ok: false, cancelled: img.cancelled, error: img.error };
+        const task = p.task || 'detailed', q = task === 'ocr' ? '逐字抄寫這張圖片裡看得到的所有文字（保留原文、語言與換行）；沒有文字就回答「沒有文字」。' : task === 'caption' ? '用一兩句話簡短描述這張圖片。' : task === 'objects' ? '列出這張圖片裡看得到的所有物件。' : task === 'ask' && p.prompt ? String(p.prompt) : '詳細描述這張圖片的內容。';
+        try {
+            const du = await this._blobToDataUrl(img.blob), t0 = Date.now(), r = await this._interpretImageWithVisionModel(du, q, null, { onStep: p.onStep });
+            const text = task === 'ocr' ? String(r.transcription || r.description || '') : String(r.description || r.answer || '');
+            return { ok: true, text, model: String(r.modelUsed || ''), backend: r.backend, device: r.device || (r.backend === 'online' ? 'online' : ''), ms: Date.now() - t0, note: r.note };
+        } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
     }
     // /image-to-text [描述|詳細|文字|物件|問 …]：先貼圖再打、或先打指令再貼圖送出都可以
     async _imageToTextCommand(argsText) {

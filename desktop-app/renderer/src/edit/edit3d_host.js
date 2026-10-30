@@ -212,7 +212,7 @@
                 const du = cv.toDataURL('image/jpeg', 0.85); let idx = null;
                 try {
                     const r = await this._visionDescribe({ images: [du], prompt, max_tokens: 16, runLlm: () => this._interpretImageWithVisionModel(du, prompt) });
-                    const raw = r.ok ? (r.backend === 'llm' ? (typeof r.llm === 'string' ? r.llm : (r.llm && (r.llm.description || r.llm.answer || r.llm.text)) || '') : (r.answer || r.text || '')) : '';
+                    const raw = r.ok ? (r.backend === 'llm' ? (typeof r.llm === 'string' ? r.llm : (r.llm && (r.llm.answer || r.llm.description || r.llm.text)) || '') : (r.answer || r.text || '')) : '';
                     idx = FaEditOffline.parseLetter(raw, 2);
                 } catch (_) { idx = null; }
                 if (idx === 0) { try { bmp.close(); } catch (_) { /* */ } return { id: c.id, how: 'asked', note: T('用視覺模型確認這個物件是「' + name + '」', 'the vision model confirmed this object is "' + name + '"') }; }
