@@ -20849,6 +20849,18 @@ const holder = {};
     bUndo.title = 'Ctrl+Z'; bRedo.title = 'Ctrl+Y';
     [['', '⬇ 匯出…'], ['html', '網頁（單一 HTML）'], ['json', '專案描述（JSON）'], ['node', '後端：Node 部署檔'], ['cloudflare', '後端：Cloudflare 部署檔']].forEach(function (o) { var op = h('option', null, o[1]); op.value = o[0]; bExp.appendChild(op); });
     [ttl, stat, bUndo, bRedo, bTpl, bSum, bExp].forEach(function (x) { bar.appendChild(x); });
+    // 「🛰️ AI 在：本機／別台機器」（host.aiWhere 由桌面版的遠端橋接提供；跟其他編輯器一樣，見 DESIGN.edit-remote.md）
+    var aiSel = null;
+    function refreshAi() {
+      var w = host.aiWhere; if (!w) { return; } var vis = true; try { vis = w.visible ? !!w.visible() : true; } catch (e) { vis = true; }
+      if (!aiSel) { aiSel = h('select'); aiSel.title = '這個編輯器裡的 AI 請求交給群組裡哪台機器做；文件會傳過去，改動傳回來。選「本機」就跟以前一樣。'; aiSel.onchange = function () { try { var r = w.set(aiSel.value); if (r && r.then) { r.then(refreshAi); } } catch (e) { /* 維持原樣 */ } }; bar.insertBefore(aiSel, bExp); }
+      aiSel.style.display = vis ? '' : 'none'; if (!vis) { return; }
+      var cur = ''; try { cur = w.get() || ''; } catch (e) { cur = ''; } aiSel.textContent = '';
+      var opts = []; try { opts = w.options() || []; } catch (e) { opts = []; } if (cur && !opts.some(function (x) { return x.value === cur; })) { opts.push({ value: cur, label: '（離線的機器）' }); }
+      opts.forEach(function (x) { var o2 = h('option', null, '🛰️ AI 在：' + x.label); o2.value = x.value; if (x.disabled) { o2.disabled = true; } aiSel.appendChild(o2); }); aiSel.value = cur;
+    }
+    refreshAi(); bar.addEventListener('mouseenter', refreshAi);
+    function byLabel(by) { if (!by) { return ''; } var me = (host.selfName && host.selfName()) || ''; if (by.src === 'ai' && by.exec) { return '🛰️ ' + by.exec.name + ' · AI' + (by.req && by.req.name && by.req.name !== me ? '　應 ' + by.req.name + ' 要求' : ''); } if (by.name && by.name !== me) { return (by.kind === 'web' ? '🌐 ' : '🖥️ ') + by.name; } return ''; }
     var tpl = h('div', 'sum'), tplList = h('div', 'row'), tplX = h('button', null, '✕'); tpl.appendChild(h('div', 'st', '從起手式開始（會換掉目前的內容，這一步可以復原）：')); tpl.appendChild(tplList); tpl.appendChild(tplX);
     (W.listStarters ? W.listStarters() : []).forEach(function (t) { var b = h('button', null, t.label); b.title = t.desc; b.onclick = function () { var sp = W.starter(t.id); if (sp) { commit(sp, '從起手式「' + t.label + '」開始', '', 'chat'); tpl.className = 'sum'; curFile = 'index.html'; } }; tplList.appendChild(b); });
     bTpl.onclick = function () { tpl.className = tpl.className.indexOf(' on') >= 0 ? 'sum' : 'sum on'; }; tplX.onclick = function () { tpl.className = 'sum'; };
@@ -20921,8 +20933,8 @@ const holder = {};
     var logEl = h('div', 'log'), attEl = h('div', 'att'), inRow = h('div', 'row'), ta = h('textarea'), bAtt = h('button', null, '📎'), bSend = h('button', 'pri', '送出'), file = h('input'); file.type = 'file'; file.accept = 'image/*'; file.multiple = true; file.style.display = 'none';
     ta.rows = 2; ta.placeholder = '說說想怎麼改（頁面或後端都可以），例如「新增一個搜尋框」「後端加一個 /api/search」；也可以附一張設計圖叫我照著做'; bAtt.title = '附圖（也可以直接貼上、拖進來）'; inRow.appendChild(bAtt); inRow.appendChild(bSend);
     rp.ai.appendChild(logEl); rp.ai.appendChild(attEl); rp.ai.appendChild(ta); rp.ai.appendChild(inRow); rp.ai.appendChild(file);
-    function addMsg(role, text, chips, rejected) { var m = h('div', 'msg ' + (role === 'user' ? 'u' : 'a')); m.appendChild(document.createTextNode(text || '')); (chips || []).forEach(function (c) { m.appendChild(h('span', 'chip', c)); }); (rejected || []).forEach(function (c) { m.appendChild(h('span', 'chip rej', c)); }); logEl.appendChild(m); logEl.scrollTop = logEl.scrollHeight; return m; }
-    function renderLog() { logEl.textContent = ''; if (!S.log.length) addMsg('ai', '我在這裡幫你改這個網站：頁面（HTML／CSS／JS）我直接改；後端的修改我會請「程式設計」的專家來做，並在模擬後端裡先測過。直接說就好，改錯了可以按「復原」。也可以按上面的「📋 起手式」選一個小專案開始，或附一張設計圖。'); S.log.forEach(function (m) { addMsg(m.role, m.text, m.chips, m.rejected); }); }
+    function addMsg(role, text, chips, rejected, by) { var m = h('div', 'msg ' + (role === 'user' ? 'u' : 'a')); var bl = byLabel(by); if (bl) { var bs = h('span', 'chip by', bl); bs.title = '這一則是誰做的'; m.appendChild(bs); } m.appendChild(document.createTextNode(text || '')); (chips || []).forEach(function (c) { m.appendChild(h('span', 'chip', c)); }); (rejected || []).forEach(function (c) { m.appendChild(h('span', 'chip rej', c)); }); logEl.appendChild(m); logEl.scrollTop = logEl.scrollHeight; return m; }
+    function renderLog() { logEl.textContent = ''; if (!S.log.length) addMsg('ai', '我在這裡幫你改這個網站：頁面（HTML／CSS／JS）我直接改；後端的修改我會請「程式設計」的專家來做，並在模擬後端裡先測過。直接說就好，改錯了可以按「復原」。也可以按上面的「📋 起手式」選一個小專案開始，或附一張設計圖。'); S.log.forEach(function (m) { addMsg(m.role, m.text, m.chips, m.rejected, m.by); }); }
     function readFile(f) { return new Promise(function (res) { var r = new FileReader(); r.onload = function () { res({ name: f.name || 'image', dataUrl: String(r.result) }); }; r.onerror = function () { res(null); }; r.readAsDataURL(f); }); }
     function addFiles(files) { Promise.all(Array.prototype.filter.call(files || [], function (f) { return /^image\//.test(f.type); }).slice(0, 3).map(readFile)).then(function (list) { list.filter(Boolean).forEach(function (x) { if (pending.length < 3) pending.push(x); }); renderAtt(); }); }
     function renderAtt() { attEl.textContent = ''; pending.forEach(function (x, i) { var s = h('span'), im = h('img'); im.src = x.dataUrl; im.alt = x.name; var rm = h('b', null, '×'); rm.onclick = function () { pending.splice(i, 1); renderAtt(); }; s.appendChild(im); s.appendChild(rm); attEl.appendChild(s); }); }
@@ -20933,17 +20945,17 @@ const holder = {};
     async function send() {
       var text = ta.value.trim(), imgs = pending.slice(); if (busy || (!text && !imgs.length)) return; busy = true; bSend.disabled = true; ta.value = ''; pending = []; renderAtt(); rightTab = 'ai'; showTabs();
       var um = { role: 'user', text: (text || '（附圖）') + (imgs.length ? '　📎×' + imgs.length : '') }; S.log.push(um); addMsg('user', um.text); var think = addMsg('ai', '…');
-      var chips = [], rej = [], say = '', spec0 = cur(), edits = [], applied = 0, words = [];
+      var chips = [], rej = [], say = '', ans0by = null, spec0 = cur(), edits = [], applied = 0, words = [];
       try {
         var pr = text ? W.parseEditRequest(text, spec0) : { edits: [], matched: [], unmatched: [] }; edits = pr.edits.slice(); var rest = pr.unmatched.join('，');
-        if ((rest || imgs.length) && host.ask) { var ans = await host.ask({ text: rest, images: imgs, spec: spec0, onStatus: function (t) { think.textContent = t; } }); say = (ans && ans.say) || ''; if (ans && ans.edits) edits = edits.concat(ans.edits); if (ans && ans.notes) ans.notes.forEach(function (n) { chips.push(n); }); }
+        if ((rest || imgs.length) && host.ask) { var ans = await host.ask({ text: rest, images: imgs, spec: spec0, onStatus: function (t) { think.textContent = t; } }); say = (ans && ans.say) || ''; ans0by = ans && ans.by ? ans.by : null; if (ans && ans.edits) edits = edits.concat(ans.edits); if (ans && ans.notes) ans.notes.forEach(function (n) { chips.push(n); }); }
         else if (rest) say = '我沒聽懂：「' + rest.slice(0, 40) + '」。這個環境沒有 AI 可以幫忙，可以直接在「程式碼」或「後端」分頁改。';
         var r = W.applyEdits(spec0, edits); var next = spec0; if (r.applied.length) { next = r.spec; edits.forEach(function (e) { if (r.applied.indexOf(e.op) >= 0) words.push(W.editWords(e)); }); }
         (r.rejected || []).forEach(function (x) { rej.push('✗ ' + x.op + '：' + x.error); });
         if (JSON.stringify(next) !== JSON.stringify(spec0)) { commit(next, words.filter(Boolean).join('；'), text || '（附圖）', imgs.length ? 'image' : 'chat'); applied = words.length; words.forEach(function (w) { chips.push('✓ ' + w); }); curFile = cur().files.some(function (f) { return f.name === curFile; }) ? curFile : 'index.html'; }
         if (!applied && (rej.length || chips.length)) say = say && !rej.length && chips.length ? say : '這次沒有改成：'; if (!say) say = applied ? '改好了：' : '這樣已經是目前的樣子了。';
       } catch (e) { say = '這次沒成功：' + String((e && e.message) || e).slice(0, 160); }
-      think.remove(); var am = { role: 'ai', text: say, chips: chips.slice(0, 12), rejected: rej.slice(0, 6) }; S.log.push(am); addMsg('ai', am.text, am.chips, am.rejected); persist(); busy = false; bSend.disabled = false;
+      think.remove(); var am = { role: 'ai', text: say, chips: chips.slice(0, 12), rejected: rej.slice(0, 6), by: ans0by || undefined }; S.log.push(am); addMsg('ai', am.text, am.chips, am.rejected, am.by); persist(); busy = false; bSend.disabled = false;
     }
     bSend.onclick = send;
 
@@ -32837,10 +32849,11 @@ const FaEditHost = (function () {
             try { this._persistChatHistory(); this._renderMessageHistory(); } catch (_) { /* */ }
         },
         // ───── 遠端共筆橋接：編輯器照常在這台顯示，裡面的請求（ask、polish、detail…）交給「AI 在」選的那台機器（見 DESIGN.edit-remote.md、rg_edit.js）
-        _edRemoteDecl(kind) { const K = KINDS[kind]; return (K && K.remote) || REMOTE_DEFAULTS[kind] || { sync: 'snapshot', methods: { ask: { doc: true } } }; },
+        _edRemoteDecl(kind) { if (kind === 'webedit') return { sync: 'patch', methods: { ask: { doc: true, longRunning: true }, polish: {} } }; const K = KINDS[kind]; return (K && K.remote) || REMOTE_DEFAULTS[kind] || { sync: 'snapshot', methods: { ask: { doc: true } } }; },
         _edAssetsAdapter() { return { has: (ns, id) => FaEditStore.hasImage(id), get: (ns, id) => FaEditStore.getImage(id), put: (ns, id, blob) => FaEditStore.putImageAs(id, blob) }; },
         // 「執行者」這邊：別台交來的請求，用這台的 host 方法真的去做（_edHost 的 ask 已經包了離線程式、範例庫、查資料；文件用請求帶來的快取）
         _edRemoteKind(kind) {
+            if (kind === 'webedit') { const me = this; return { remote: this._edRemoteDecl('webedit'), run: async (method, args, ctx) => { const h = me._webeditHostLocal(ctx.sid); if (typeof h[method] !== 'function') throw new Error(T('這台機器的網頁編輯器沒有 ' + method, 'This machine\'s web editor has no ' + method)); return h[method].apply(h, args); } }; }
             const K = KINDS[kind]; if (!K) return null; const self = this, decl = this._edRemoteDecl(kind);
             return {
                 remote: Object.assign({}, decl, { assets: decl.assets || this._edAssetsAdapter() }),
@@ -32848,10 +32861,11 @@ const FaEditHost = (function () {
             };
         },
         _edRemoteCaps() { let ai = false; try { ai = !!this._edAi().have(); } catch (_) { ai = false; } const st = this.advancedSettings || {}; let tier = ''; try { tier = this._envTier(); } catch (_) { tier = ''; } return { ai, offline: !!st.offlineMode, diffusion: !!st.editDiffusion, tier }; },   // tier：這台的環境檔位（low＝手機等小機器，請求者挑執行者時可以避開）
-        _edRemoteSel(kind, id) { return (this._edRemoteMap && this._edRemoteMap.get(kind + ':' + id)) || null; },
+        _edRemoteSel(kind, id) { const m = this._edRemoteMap && this._edRemoteMap.get(kind + ':' + id); if (m) return m; try { const t = localStorage.getItem('fa_ed_remote:' + kind + ':' + id); if (t) { const v = JSON.parse(t); if (v && v.nodeId) { this._edRemoteMap = this._edRemoteMap || new Map(); this._edRemoteMap.set(kind + ':' + id, v); return v; } } } catch (_) { /* 沒有儲存空間就只在這次有效 */ } return null; },
         _edRemoteTarget(kind, id) { const sel = this._edRemoteSel(kind, id); if (!sel) return null; const m = this._rg ? this._rgTargets().find((x) => x.nodeId === sel.nodeId) : null; return { nodeId: sel.nodeId, name: m ? m.name : sel.name }; },
         async _edRemoteSet(kind, id, target) {
             this._edRemoteMap = this._edRemoteMap || new Map(); const key = kind + ':' + id; if (target) this._edRemoteMap.set(key, { nodeId: target.nodeId, name: target.name }); else this._edRemoteMap.delete(key);
+            try { if (target) localStorage.setItem('fa_ed_remote:' + key, JSON.stringify({ nodeId: target.nodeId, name: target.name })); else localStorage.removeItem('fa_ed_remote:' + key); } catch (_) { /* */ }
             try { const proj = await FaEditStore.loadProject(kind, id); if (proj) { proj.origin = Object.assign({}, proj.origin || {}); if (target) proj.origin.remote = { nodeId: target.nodeId, name: target.name }; else delete proj.origin.remote; await FaEditStore.saveProject(kind, id, proj); } } catch (_) { /* 選擇只是少存一次 */ }
         },
         // 包一層 host：宣告成遠端的方法交給「AI 在」那台；save、download、toChat… 留在本機。host.aiWhere 讓外框在標題列顯示「🛰️ AI 在：…」下拉
@@ -68766,7 +68780,9 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         return { say, edits, notes };
     }
     // 編輯器要的功能（見 webedit_ui.js 開頭的說明）
-    _webeditHost(id) {
+    // 遠端共筆橋接（見 DESIGN.edit-remote.md）：ask、polish 交給「AI 在」選的那台；其餘（預覽、後端、匯出）留在本機
+    _webeditHost(id) { return this._edRemoteWrap('webedit', id, this._webeditHostLocal(id), null); }
+    _webeditHostLocal(id) {
         const self = this; const run = () => (self._weRuns && self._weRuns.get(id)) || null; const dec = (b) => { try { return new TextDecoder().decode(b); } catch (_) { return ''; } };
         return {
             palette: () => ({ dark: !self._isLightTheme() }),

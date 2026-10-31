@@ -2,7 +2,7 @@
 // 新增編輯器沒過就是紅燈（DESIGN.edit-remote.md §17）。PENDING 是還沒接上的（要接上就從清單拿掉）。
 // 用法：FA_DEBUG_EVAL_FILE=scripts/eval/edit_remote_conformance.eval.js xvfb-run -a node_modules/electron/dist/electron . --no-sandbox --use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader --user-data-dir=$(mktemp -d)
 const fa = window.fa; const R = { kinds: {}, failed: [] }; const wait = (ms) => new Promise((r) => setTimeout(r, ms)); fa.advancedSettings.offlineMode = false; fa.messages = [];
-const PENDING = { 'edit-video': 'video 是服務式（host.ai／transcribe／synthesize／burn），要 sync:patch', 'edit-webedit': 'webedit 要 patch＋逐行 diff3' };
+const PENDING = { 'edit-video': 'video 是服務式（host.ai／transcribe／synthesize／burn），要 sync:patch' };
 fa._getApiConfig = () => ({ apiKey: 'test', apiUrl: 'http://127.0.0.1:9', apiModel: 'fake' });
 fa._kiLlm = async () => JSON.stringify({ say: 'ok', edits: [] }); fa._subjResolve = async () => ({ block: '', assets: [] }); fa._interpretImageWithVisionModel = async () => ({ description: 'x' });
 class Hub { constructor() { this.ch = new Map(); } transport() { const hub = this; let name = null, id = null; return { async connect(c, n, h) { name = c; id = n; if (!hub.ch.has(name)) hub.ch.set(name, new Map()); hub.ch.get(name).set(id, { h, meta: null }); }, async track(p) { hub.ch.get(name).get(id).meta = p; hub.sync(name); }, async send(p) { for (const [nid, m] of hub.ch.get(name)) if (nid !== id) setTimeout(() => m.h.onBroadcast(JSON.parse(JSON.stringify(p))), 0); }, async disconnect() { hub.ch.get(name) && hub.ch.get(name).delete(id); } }; } sync(name) { const st = {}; for (const [nid, m] of this.ch.get(name)) if (m.meta) st[nid] = [Object.assign({ presence_ref: nid }, m.meta)]; for (const [, m] of this.ch.get(name)) setTimeout(() => m.h.onPresence(JSON.parse(JSON.stringify(st))), 0); } }
@@ -27,6 +27,8 @@ for (const kind of Object.keys(FaEditHost.KINDS)) {
     r.ask = !!v && typeof v === 'object'; r.by = !!(v && v.by && v.by.exec && v.by.exec.name === '執行者' && v.by.src === 'ai'); if (!r.ask || !r.by) fail('ask 沒有帶回結果或 by：' + JSON.stringify(v).slice(0, 120));
   } catch (e) { fail(String((e && e.message) || e).slice(0, 160)); }
 }
+// webedit（/edit-html）不在 FaEditHost.KINDS 裡，有自己的宣告（sync:patch）與 host
+try { const decl = fa._edRemoteDecl('webedit'), spec = FaWebEdit.validate({}).spec, v = await peerA.call(T, 'webedit', 'conf-we', 'ask', [{ text: '做一個很特別的網頁', spec, images: [] }], {}); const r = R.kinds.webedit = { sync: decl.sync, methods: Object.keys(decl.methods), ask: !!v && typeof v === 'object', by: !!(v && v.by && v.by.exec && v.by.src === 'ai') }; if (!r.ask || !r.by) R.failed.push('webedit：ask 沒有帶回結果或 by'); } catch (e) { R.failed.push('webedit：' + String((e && e.message) || e).slice(0, 160)); }
 R.ok = R.failed.length === 0;
 console.log('CONFORMANCE ' + JSON.stringify(R));
 return R;

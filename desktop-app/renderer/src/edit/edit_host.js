@@ -594,10 +594,11 @@ const FaEditHost = (function () {
             try { this._persistChatHistory(); this._renderMessageHistory(); } catch (_) { /* */ }
         },
         // ───── 遠端共筆橋接：編輯器照常在這台顯示，裡面的請求（ask、polish、detail…）交給「AI 在」選的那台機器（見 DESIGN.edit-remote.md、rg_edit.js）
-        _edRemoteDecl(kind) { const K = KINDS[kind]; return (K && K.remote) || REMOTE_DEFAULTS[kind] || { sync: 'snapshot', methods: { ask: { doc: true } } }; },
+        _edRemoteDecl(kind) { if (kind === 'webedit') return { sync: 'patch', methods: { ask: { doc: true, longRunning: true }, polish: {} } }; const K = KINDS[kind]; return (K && K.remote) || REMOTE_DEFAULTS[kind] || { sync: 'snapshot', methods: { ask: { doc: true } } }; },
         _edAssetsAdapter() { return { has: (ns, id) => FaEditStore.hasImage(id), get: (ns, id) => FaEditStore.getImage(id), put: (ns, id, blob) => FaEditStore.putImageAs(id, blob) }; },
         // 「執行者」這邊：別台交來的請求，用這台的 host 方法真的去做（_edHost 的 ask 已經包了離線程式、範例庫、查資料；文件用請求帶來的快取）
         _edRemoteKind(kind) {
+            if (kind === 'webedit') { const me = this; return { remote: this._edRemoteDecl('webedit'), run: async (method, args, ctx) => { const h = me._webeditHostLocal(ctx.sid); if (typeof h[method] !== 'function') throw new Error(T('這台機器的網頁編輯器沒有 ' + method, 'This machine\'s web editor has no ' + method)); return h[method].apply(h, args); } }; }
             const K = KINDS[kind]; if (!K) return null; const self = this, decl = this._edRemoteDecl(kind);
             return {
                 remote: Object.assign({}, decl, { assets: decl.assets || this._edAssetsAdapter() }),
@@ -605,10 +606,11 @@ const FaEditHost = (function () {
             };
         },
         _edRemoteCaps() { let ai = false; try { ai = !!this._edAi().have(); } catch (_) { ai = false; } const st = this.advancedSettings || {}; let tier = ''; try { tier = this._envTier(); } catch (_) { tier = ''; } return { ai, offline: !!st.offlineMode, diffusion: !!st.editDiffusion, tier }; },   // tier：這台的環境檔位（low＝手機等小機器，請求者挑執行者時可以避開）
-        _edRemoteSel(kind, id) { return (this._edRemoteMap && this._edRemoteMap.get(kind + ':' + id)) || null; },
+        _edRemoteSel(kind, id) { const m = this._edRemoteMap && this._edRemoteMap.get(kind + ':' + id); if (m) return m; try { const t = localStorage.getItem('fa_ed_remote:' + kind + ':' + id); if (t) { const v = JSON.parse(t); if (v && v.nodeId) { this._edRemoteMap = this._edRemoteMap || new Map(); this._edRemoteMap.set(kind + ':' + id, v); return v; } } } catch (_) { /* 沒有儲存空間就只在這次有效 */ } return null; },
         _edRemoteTarget(kind, id) { const sel = this._edRemoteSel(kind, id); if (!sel) return null; const m = this._rg ? this._rgTargets().find((x) => x.nodeId === sel.nodeId) : null; return { nodeId: sel.nodeId, name: m ? m.name : sel.name }; },
         async _edRemoteSet(kind, id, target) {
             this._edRemoteMap = this._edRemoteMap || new Map(); const key = kind + ':' + id; if (target) this._edRemoteMap.set(key, { nodeId: target.nodeId, name: target.name }); else this._edRemoteMap.delete(key);
+            try { if (target) localStorage.setItem('fa_ed_remote:' + key, JSON.stringify({ nodeId: target.nodeId, name: target.name })); else localStorage.removeItem('fa_ed_remote:' + key); } catch (_) { /* */ }
             try { const proj = await FaEditStore.loadProject(kind, id); if (proj) { proj.origin = Object.assign({}, proj.origin || {}); if (target) proj.origin.remote = { nodeId: target.nodeId, name: target.name }; else delete proj.origin.remote; await FaEditStore.saveProject(kind, id, proj); } } catch (_) { /* 選擇只是少存一次 */ }
         },
         // 包一層 host：宣告成遠端的方法交給「AI 在」那台；save、download、toChat… 留在本機。host.aiWhere 讓外框在標題列顯示「🛰️ AI 在：…」下拉
