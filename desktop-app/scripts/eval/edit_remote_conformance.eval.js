@@ -2,7 +2,7 @@
 // 新增編輯器沒過就是紅燈（DESIGN.edit-remote.md §17）。PENDING 是還沒接上的（要接上就從清單拿掉）。
 // 用法：FA_DEBUG_EVAL_FILE=scripts/eval/edit_remote_conformance.eval.js xvfb-run -a node_modules/electron/dist/electron . --no-sandbox --use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader --user-data-dir=$(mktemp -d)
 const fa = window.fa; const R = { kinds: {}, failed: [] }; const wait = (ms) => new Promise((r) => setTimeout(r, ms)); fa.advancedSettings.offlineMode = false; fa.messages = [];
-const PENDING = { 'edit-video': 'video 是服務式（host.ai／transcribe／synthesize／burn），要 sync:patch' };
+const PENDING = {};   // 還沒接上遠端橋接的編輯器（接上就從這裡拿掉）：目前沒有；video 的 synthesize／burn 還在本機（見 HANDOFF）
 fa._getApiConfig = () => ({ apiKey: 'test', apiUrl: 'http://127.0.0.1:9', apiModel: 'fake' });
 fa._kiLlm = async () => JSON.stringify({ say: 'ok', edits: [] }); fa._subjResolve = async () => ({ block: '', assets: [] }); fa._interpretImageWithVisionModel = async () => ({ description: 'x' });
 class Hub { constructor() { this.ch = new Map(); } transport() { const hub = this; let name = null, id = null; return { async connect(c, n, h) { name = c; id = n; if (!hub.ch.has(name)) hub.ch.set(name, new Map()); hub.ch.get(name).set(id, { h, meta: null }); }, async track(p) { hub.ch.get(name).get(id).meta = p; hub.sync(name); }, async send(p) { for (const [nid, m] of hub.ch.get(name)) if (nid !== id) setTimeout(() => m.h.onBroadcast(JSON.parse(JSON.stringify(p))), 0); }, async disconnect() { hub.ch.get(name) && hub.ch.get(name).delete(id); } }; } sync(name) { const st = {}; for (const [nid, m] of this.ch.get(name)) if (m.meta) st[nid] = [Object.assign({ presence_ref: nid }, m.meta)]; for (const [, m] of this.ch.get(name)) setTimeout(() => m.h.onPresence(JSON.parse(JSON.stringify(st))), 0); } }
@@ -15,6 +15,10 @@ const T = { nodeId: B.self.nodeId, name: '執行者' };
 for (const kind of Object.keys(FaEditHost.KINDS)) {
   const K = FaEditHost.KINDS[kind], r = R.kinds[kind] = {}; const fail = (why) => { r.error = why; R.failed.push(kind + '：' + why); };
   if (PENDING[kind]) { r.pending = PENDING[kind]; continue; }
+  if (kind === 'edit-video') {   // 服務式：沒有 ask，用 ai.mode 探測遠端執行，再用 ai.offline（沒有狀態就回 none）確認物件型結果與 by
+    try { const decl = fa._edRemoteDecl(kind); r.sync = decl.sync; r.methods = Object.keys(decl.methods); const v = await peerA.call(T, kind, 'conf-vd', 'ai.mode', [{}], {}); r.ask = !!v && typeof v.mode === 'string'; r.by = !!(v && v.by && v.by.exec && v.by.src === 'ai'); if (!r.ask || !r.by) fail('ai.mode 沒有帶回結果或 by：' + JSON.stringify(v).slice(0, 100)); } catch (e) { fail(String((e && e.message) || e).slice(0, 160)); }
+    continue;
+  }
   try {
     const decl = fa._edRemoteDecl(kind); r.sync = decl.sync; r.methods = Object.keys(decl.methods || {});
     if (!decl.methods || !decl.methods.ask) { fail('宣告裡沒有 ask'); continue; }

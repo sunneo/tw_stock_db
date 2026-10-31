@@ -16,6 +16,16 @@
         lead: '🎬 影片逐字稿編輯器:左邊是物件列(影片與配音),中間是播放器(字幕疊在上面),右邊是逐字稿／Ask AI／工作佇列。「🎙 產生逐字稿」排進瀏覽器內的佇列(Whisper,離線);可以改時間與文字、匯入匯出 SRT、「🎤 配音」(麥克風或 TTS)、「🔥 燒錄字幕」(字幕+配音或僅字幕)。',
         collectRefs: () => [],
         mountOpts: function (id) { return this._videoMountOpts(id); },
+        // 遠端共筆橋接（DESIGN.edit-remote.md）：服務式的請求（AI、辨識）交給「AI 在」選的那台；專案與影片檔留在本機（影片檔只在辨識時送過去）。voices／pickVoice／synthesize／burn 還在本機
+        remote: { sync: 'patch', methods: { 'ai.chat': { longRunning: true }, 'ai.offline': { longRunning: true }, 'ai.mode': {}, transcribe: { longRunning: true } } },
+        remoteRun: async function (method, args, ctx) {
+            const h = this._videoHost(ctx.sid), q = args[0] || {};
+            if (method === 'ai.mode') return { mode: await h.ai.mode() };
+            if (method === 'ai.chat') return { text: await h.ai.chat(q.system, q.user, q.onStatus) };
+            if (method === 'ai.offline') { const r = await h.ai.offline(q.text, q.state, q.onStatus); return r && typeof r === 'object' ? r : { none: true }; }
+            if (method === 'transcribe') { const x = h.transcribe(q.blob, q.o || {}, q.onStatus || (() => {})), t = setInterval(() => { try { if (ctx.shouldStop && ctx.shouldStop()) x.cancel(); } catch (_) { /* */ } }, 300); try { return await x.promise; } finally { clearInterval(t); } }
+            throw new Error(T('這個編輯器沒有 ', 'No such method: ') + method);
+        },
         help: () => '**' + T('影片逐字稿編輯器', 'Video transcript editor') + '**\n\n' + T('`/edit-video`:開一個空的編輯器,用「📂 載入影片」選影片(這台電腦、對話附件、授權資料夾、這個程式存的檔案);`/edit-video 檔名或檔案 id` 直接載入;對話裡剛附的影片會自動帶入。逐字稿可以用 Whisper 產生(整支或從播放位置起 2 秒)、改時間與文字、匯入匯出 SRT,也可以在「Ask AI」分頁用說的改(「第 3 句改成…」「全部延後 0.5 秒」「把第 2 句用英文配音」)。「🎤 配音」錄麥克風或用 TTS 合成,邊播邊聽;「🔥 燒錄字幕」輸出 MP4(字幕+配音,或僅字幕),輸出還能繼續編輯。', '`/edit-video` opens an empty editor; load a video with "📂 Load video" (this computer, chat attachments, authorized folders, files kept by this app). `/edit-video <name or file id>` loads it directly; a video just attached in the chat is picked up. Make the transcript with Whisper, edit times and text, import/export SRT, talk to it in the Ask AI tab, dub with the microphone or TTS, and burn the subtitles (with or without the dubs) into an MP4.')
     });
 
@@ -300,9 +310,32 @@
             ai: { mode: () => self._videoAiMode(), chat: (system, user, onStep) => self._videoOnlineChat(system, user, onStep), offline: (text, st, onStep) => self._videoOffline(text, st, onStep), learn: (info) => self._videoLearn(info) }
         };
     };
+    // 遠端橋接：有選「AI 在」別台機器時，ai.chat／ai.offline／ai.mode／transcribe 交給那台，其餘留本機；沒選就完全是本機
+    M._videoHostRemote = function (id) {
+        const self = this, local = this._videoHost(id), kind = 'edit-video', tgt = () => self._edRemoteTarget(kind, id);
+        if (typeof FaRemoteEdit === 'undefined') return local;
+        const call = (method, req) => { const peer = self._rg && self._rg.edit, t = tgt(); return peer ? peer.call(t, kind, id, method, [req], {}) : Promise.reject(new Error(T('還沒加入遠端群組（或已離開），請把「AI 在」改回本機。', 'Not in a remote group (any more): switch "AI on" back to this machine.'))); };
+        const say = (t, f) => { if (typeof f === 'function') { try { f('🛰️ ' + t.name + ' · AI'); } catch (_) { /* */ } } };
+        const out = Object.assign({}, local); out.ai = Object.assign({}, local.ai);
+        out.ai.chat = (system, user, onStep) => { const t = tgt(); if (!t) return local.ai.chat(system, user, onStep); say(t, onStep); return call('ai.chat', { system, user, onStatus: onStep }).then((r) => r.text); };
+        out.ai.offline = (text, st, onStep) => { const t = tgt(); if (!t) return local.ai.offline(text, st, onStep); say(t, onStep); return call('ai.offline', { text, state: st, onStatus: onStep }).then((r) => (r && r.none ? null : r)); };
+        out.ai.mode = () => { const t = tgt(); return t ? call('ai.mode', {}).then((r) => r.mode) : local.ai.mode(); };
+        out.transcribe = (blob, o, report) => {
+            const t = tgt(); if (!t) return local.transcribe(blob, o, report); const ac = new AbortController(); say(t, report);
+            return { promise: call('transcribe', { blob, o, onStatus: report, signal: ac.signal }), cancel: () => ac.abort() };
+        };
+        out.selfName = () => (self._rg && self._rg.room && self._rg.room.self && self._rg.room.self.name) || '';
+        out.aiWhere = {
+            visible: () => !!self._rg || !!self._edRemoteSel(kind, id),
+            options: () => [{ value: '', label: T('本機', 'This machine') }].concat((self._rg ? self._rgTargets() : []).map((m) => ({ value: m.nodeId, label: m.name + (m.allow === false ? T('（不接受需求）', ' (not accepting)') : ''), disabled: m.allow === false }))),
+            get: () => { const sel = self._edRemoteSel(kind, id); return sel ? sel.nodeId : ''; },
+            set: (v) => { const m = v && self._rg ? self._rgTargets().find((x) => x.nodeId === v) : null; return self._edRemoteSet(kind, id, m ? { nodeId: m.nodeId, name: m.name } : null); },
+        };
+        return out;
+    };
     M._videoMountOpts = function (id) {
         const self = this, fresh = this._videoFresh && this._videoFresh.get(id); if (fresh) this._videoFresh.delete(id);
-        return { host: this._videoHost(id), fresh, light: isLight(self) };
+        return { host: this._videoHostRemote(id), fresh, light: isLight(self) };
     };
     // 專案存成 { v:1, spec: 專案 };外框共用的 _edMount 載入後呼叫這裡
     window.FaVideoEditMount = function (o) {

@@ -35,6 +35,17 @@
     var pick = el('input'); pick.type = 'file'; pick.accept = 'video/*,audio/*,.mkv,.mov'; pick.style.display = 'none';
     var bRec = el('button', '', '🎤 ' + T('配音', 'Dub')); bRec.type = 'button'; bRec.setAttribute('data-ve', 'rec'); bRec.title = T('從目前播放位置開始錄麥克風配音(建議戴耳機);再按一次停止', 'Record a voice-over from the microphone starting at the playhead (headphones recommended); press again to stop');
     slot.appendChild(bRec); slot.appendChild(bLoad); slot.appendChild(bPanel); slot.appendChild(pick); bar.appendChild(slot); box.appendChild(bar);
+    // 「🛰️ AI 在：本機／別台機器」（host.aiWhere 由桌面版的遠端橋接提供；見 DESIGN.edit-remote.md）：Ask AI 與語音辨識交給那台做，專案與影片留在本機
+    var aiSel = null;
+    function refreshAi() {
+      var w = host.aiWhere; if (!w) { return; } var vis = true; try { vis = w.visible ? !!w.visible() : true; } catch (e) { vis = true; }
+      if (!aiSel) { aiSel = el('select'); aiSel.title = T('Ask AI 與語音辨識交給群組裡哪台機器做；專案與影片留在這台。選「本機」就跟以前一樣。', 'Which machine runs Ask AI and speech recognition; the project and video stay here.'); aiSel.onchange = function () { try { var r = w.set(aiSel.value); if (r && r.then) { r.then(refreshAi); } } catch (e) { /* keep as is */ } }; bar.insertBefore(aiSel, slot); }
+      aiSel.style.display = vis ? '' : 'none'; if (!vis) { return; }
+      var cur = ''; try { cur = w.get() || ''; } catch (e) { cur = ''; } aiSel.textContent = '';
+      var opts = []; try { opts = w.options() || []; } catch (e) { opts = []; } if (cur && !opts.some(function (x) { return x.value === cur; })) { opts.push({ value: cur, label: T('（離線的機器）', '(offline machine)') }); }
+      opts.forEach(function (x) { var o2 = el('option', '', '🛰️ ' + T('AI 在：', 'AI on: ') + x.label); o2.value = x.value; if (x.disabled) { o2.disabled = true; } aiSel.appendChild(o2); }); aiSel.value = cur;
+    }
+    refreshAi(); bar.addEventListener('mouseenter', refreshAi);
     var body = el('div', 'tw-ve-body');
     var panel = el('div', 'tw-ve-panel'); panel.setAttribute('data-ve', 'objbar'); panel.appendChild(el('h4', '', T('物件', 'Objects')));
     var objMsg = el('div', 'tw-ve-err'); objMsg.setAttribute('data-ve', 'obj-msg'); panel.appendChild(objMsg);

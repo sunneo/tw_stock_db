@@ -602,7 +602,7 @@ const FaEditHost = (function () {
             const K = KINDS[kind]; if (!K) return null; const self = this, decl = this._edRemoteDecl(kind);
             return {
                 remote: Object.assign({}, decl, { assets: decl.assets || this._edAssetsAdapter() }),
-                run: async (method, args, ctx) => { const h = self._edHost(kind, ctx.sid, () => ({ spec: ctx.spec, state: null })); if (typeof h[method] !== 'function') throw new Error(T('這台機器的「' + K.label() + '」沒有 ' + method, 'This machine\'s ' + K.label() + ' has no ' + method)); return h[method].apply(h, args); },
+                run: K.remoteRun ? ((method, args, ctx) => K.remoteRun.call(self, method, args, ctx)) : async (method, args, ctx) => { const h = self._edHost(kind, ctx.sid, () => ({ spec: ctx.spec, state: null })); if (typeof h[method] !== 'function') throw new Error(T('這台機器的「' + K.label() + '」沒有 ' + method, 'This machine\'s ' + K.label() + ' has no ' + method)); return h[method].apply(h, args); },
             };
         },
         _edRemoteCaps() { let ai = false; try { ai = !!this._edAi().have(); } catch (_) { ai = false; } const st = this.advancedSettings || {}; let tier = ''; try { tier = this._envTier(); } catch (_) { tier = ''; } return { ai, offline: !!st.offlineMode, diffusion: !!st.editDiffusion, tier }; },   // tier：這台的環境檔位（low＝手機等小機器，請求者挑執行者時可以避開）
