@@ -1,0 +1,181 @@
+{
+  "schema": 1,
+  "version": "246",
+  "publishedAt": "2026-10-31T17:39:05.417Z",
+  "notes": "環境基準線：3D 與圖片編輯器的畫布解析度上限依檔位（低檔 1 倍）",
+  "files": {
+    "renderer/index.html": {
+      "md5": "039acc67493d2d42bae493dc9822621a",
+      "path": "v2/renderer/index.html"
+    },
+    "renderer/bootstrap.js": {
+      "md5": "33455890395619f620c359fe7a02a96c",
+      "path": "v2/renderer/bootstrap.js"
+    },
+    "renderer/floating-assistant.js": {
+      "md5": "7ddf6525a4195c9515e1195d39951482",
+      "path": "v2/renderer/floating-assistant.js",
+      "parts": [
+        {
+          "path": "v2/parts/floating-assistant.js.000",
+          "md5": "5641972411c156a034040538d1d1e256",
+          "size": 4194304
+        },
+        {
+          "path": "v2/parts/floating-assistant.js.001",
+          "md5": "b5faeceaaf89e0688dbf951259b9a7fb",
+          "size": 4194304
+        },
+        {
+          "path": "v2/parts/floating-assistant.js.002",
+          "md5": "7f21e1ede12ee2f0099e014c0588358d",
+          "size": 1214486
+        }
+      ]
+    },
+    "renderer/floating-assistant.min.js": {
+      "md5": "7ddf6525a4195c9515e1195d39951482",
+      "path": "v2/renderer/floating-assistant.min.js",
+      "parts": [
+        {
+          "path": "v2/parts/floating-assistant.min.js.000",
+          "md5": "5641972411c156a034040538d1d1e256",
+          "size": 4194304
+        },
+        {
+          "path": "v2/parts/floating-assistant.min.js.001",
+          "md5": "b5faeceaaf89e0688dbf951259b9a7fb",
+          "size": 4194304
+        },
+        {
+          "path": "v2/parts/floating-assistant.min.js.002",
+          "md5": "7f21e1ede12ee2f0099e014c0588358d",
+          "size": 1214486
+        }
+      ]
+    },
+    "renderer/vendor/three/3MFLoader.js": {
+      "md5": "d00d9a65406125b59005ae45743a62bd",
+      "path": "v2/renderer/vendor/three/3MFLoader.js"
+    },
+    "renderer/vendor/three/FBXLoader.js": {
+      "md5": "1f41c7848bef78d6cc2db7c5f1091f07",
+      "path": "v2/renderer/vendor/three/FBXLoader.js"
+    },
+    "renderer/vendor/three/LICENSE": {
+      "md5": "39aa4e61c1aaad915b3ca57ddbb559f4",
+      "path": "v2/renderer/vendor/three/LICENSE"
+    },
+    "renderer/vendor/three/OBJLoader.js": {
+      "md5": "a0d3f6d1bfcf2fdbf6b169e6bb9d1024",
+      "path": "v2/renderer/vendor/three/OBJLoader.js"
+    },
+    "renderer/vendor/three/OrbitControls.js": {
+      "md5": "98d0f30d2f372eb8ddd748a23a6763c8",
+      "path": "v2/renderer/vendor/three/OrbitControls.js"
+    },
+    "renderer/vendor/three/SHA256SUMS.txt": {
+      "md5": "81c5b75f4c2018bd6b3d41ede2165721",
+      "path": "v2/renderer/vendor/three/SHA256SUMS.txt"
+    },
+    "renderer/vendor/three/STLLoader.js": {
+      "md5": "52a5d333f21a0f81081e576f7f092489",
+      "path": "v2/renderer/vendor/three/STLLoader.js"
+    },
+    "renderer/vendor/three/fflate.min.js": {
+      "md5": "179550d75b31328ce07fcee0fefbd2d6",
+      "path": "v2/renderer/vendor/three/fflate.min.js"
+    },
+    "renderer/vendor/three/three.min.js": {
+      "md5": "eb8549863a97355411c3259a3f93b8e1",
+      "path": "v2/renderer/vendor/three/three.min.js"
+    },
+    "browser-control-server.js": {
+      "md5": "8babb3ebf7c056f0d1e88b41409b34ed"
+    },
+    "browser-search.js": {
+      "md5": "8e9ac296eee4fa8f61b2168a631dc75a"
+    },
+    "ci-fetch.js": {
+      "md5": "959c90918baaf57e599069dc03bea526"
+    },
+    "cli-format.js": {
+      "md5": "d46fea05645d9de9dbd32dd04225872c"
+    },
+    "coding-edit.js": {
+      "md5": "d74fe48f9bc94a1af740f1bcfa1fdab8"
+    },
+    "coding-tools.js": {
+      "md5": "239cbb92b2a1ec4eb3070eeeed4b4e6e"
+    },
+    "coding-workspace.js": {
+      "md5": "b5d608933d2b95bd042adff14f774b53"
+    },
+    "computer-png.js": {
+      "md5": "1ba4b721fc9cb3d3bb02920d2dfc6fee"
+    },
+    "computer-remote.js": {
+      "md5": "c2eec722c13752a87183ad24d6dcec83"
+    },
+    "computer-use-atspi.js": {
+      "md5": "853ebd07fc29d418d68878aedc21609d"
+    },
+    "computer-use-elements.js": {
+      "md5": "7d1c69f625380f0ca3d1da2404c2bba9"
+    },
+    "computer-use-ipc.js": {
+      "md5": "f9e4a3e401c7a14008b4f196484ddeab",
+      "path": "v2/computer-use-ipc.js"
+    },
+    "computer-use-linux-parse.js": {
+      "md5": "3043510974d92d0e0dce90a41ab21d6b"
+    },
+    "computer-use-linux.js": {
+      "md5": "8bfe40c9e328e424a4a5d318ed2689a3"
+    },
+    "computer-use-safety.js": {
+      "md5": "e4692e079b30c1d241e43ce1df996b97"
+    },
+    "computer-use-uia.js": {
+      "md5": "51e1c0b2f744866be4703af8799c2b42"
+    },
+    "computer-use-win-cs.js": {
+      "md5": "a37a312d0224a2f57eaf12782233ebdf"
+    },
+    "computer-use-windows.js": {
+      "md5": "973156674025724e247045d8bcfa07b7"
+    },
+    "computer-use.js": {
+      "md5": "c3921fbbd2cb159988fe0da0877c0fe1"
+    },
+    "computer-ws.js": {
+      "md5": "1b25bb55f5f1334fa5f041408f3009af"
+    },
+    "edge-tts.js": {
+      "md5": "135b186b61de5963ae2d3852fb70de5b"
+    },
+    "fsx-sync.js": {
+      "md5": "f14777175ba4a3b4d3197c00befc7e82"
+    },
+    "local-proxy.js": {
+      "md5": "079907734ca86f14e31fb6be41b8e2ca"
+    },
+    "main-ext.js": {
+      "md5": "d91cbc8a8cb282f4316bf16cf87dfb17",
+      "path": "v2/main-ext.js"
+    },
+    "rfb-client.js": {
+      "md5": "1ad7d8a545166f0e965d3f5008b94ccb"
+    },
+    "rfb-codec.js": {
+      "md5": "08f2ada7bc710642e7d29fbff63ee4f1"
+    },
+    "sqlite-engine.js": {
+      "md5": "ff9d39366459c465271e617b00abb76e"
+    },
+    "preload.js": {
+      "md5": "edc03acff577324858ec3ef67c310489",
+      "path": "v2/preload.js"
+    }
+  }
+}

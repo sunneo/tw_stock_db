@@ -1,0 +1,214 @@
+// contextBridge——renderer（含floating-assistant.js自己動態載入的任何
+// 第三方CDN函式庫）只看得到`window.desktopAPI`這個窄接口，完全碰不到
+// Node的require/process/fs等原始能力，真正的檔案/程式執行動作都在
+// main.js的ipcMain handler裡做、且都會先做root範圍檢查。
+"use strict";
+const { contextBridge, ipcRenderer } = require("electron");
+
+contextBridge.exposeInMainWorld("desktopAPI", {
+  // 環境基準線（renderer/src/env）：主行程的真實記憶體（瀏覽器的 deviceMemory 最多只回報到 8 GB）。舊版主程式沒有這個介面，renderer 會退回瀏覽器的估計
+  systemInfo: () => ipcRenderer.invoke("fa:system:info"),
+  // preload script本身一直都有Node的`process`可用（跟renderer的
+  // contextIsolation無關，只有preload/main才看得到），這裡直接同步暴露
+  // 平台資訊——2026-09-15使用者要求desktop_ops domain要知道自己現在跑在
+  // Windows還是Linux(/macOS)，才能決定要用`dir`還是`ls`、要不要提供
+  // tmux（POSIX限定工具）等。純靜態資訊，不用IPC往返。
+  platform: {
+    name: process.platform,
+    isWindows: process.platform === "win32",
+    isLinux: process.platform === "linux",
+    isMac: process.platform === "darwin",
+  },
+  roots: {
+    list: () => ipcRenderer.invoke("fa:roots:list"),
+    add: (label) => ipcRenderer.invoke("fa:roots:add", { label }),
+    addByPath: (folderPath, label) => ipcRenderer.invoke("fa:roots:addByPath", { folderPath, label }),
+    rename: (id, label) => ipcRenderer.invoke("fa:roots:rename", { id, label }),
+    remove: (id) => ipcRenderer.invoke("fa:roots:remove", { id }),
+    // dialog.showOpenDialog在這台機器不會顯示（見main.js showFolderBrowserWindow
+    // 說明），這個是自己刻的資料夾瀏覽器視窗，回傳選中的絕對路徑字串或null。
+    browse: (startPath) => ipcRenderer.invoke("fa:roots:browse", { startPath }),
+  },
+  // window.prompt()在這個Electron build完全不會顯示（Electron本身從未實作這個
+  // API，不是這個app的bug），confirm()同樣不可靠——見bootstrap.js對
+  // window.prompt/confirm/alert的全域覆蓋，這三個用ipcRenderer.sendSync()
+  // （renderer執行緒真的會被阻塞到main行程把event.returnValue設好為止，即使
+  // main行程那端的handler內部是async、中間await了使用者在彈出視窗裡的操作）
+  // 讓呼叫端維持跟原生prompt()/confirm()/alert()一樣的同步呼叫語意，
+  // floating-assistant.js核心完全不用改。
+  dialogs: {
+    prompt: (message, defaultValue) => ipcRenderer.sendSync("fa:sync-prompt", { message, defaultValue }),
+    confirm: (message) => ipcRenderer.sendSync("fa:sync-confirm", { message }),
+    alert: (message) => ipcRenderer.sendSync("fa:sync-alert", { message }),
+  },
+  // 下載（見 main-ext.js 的 will-download）：存到哪裡由程式決定，完成後通知畫面
+  downloads: {
+    defaultDir: () => ipcRenderer.invoke("fa:download:defaultDir"),
+    setNext: (dir) => ipcRenderer.invoke("fa:download:setNext", { dir }),
+    reveal: (file) => ipcRenderer.invoke("fa:download:reveal", { file }),
+    onDone: (cb) => { const h = (_e, info) => { try { cb(info); } catch (_) { /* */ } }; ipcRenderer.on("fa:download:done", h); return () => ipcRenderer.removeListener("fa:download:done", h); },
+  },
+  fs: {
+    stat: (rootId, relPath) => ipcRenderer.invoke("fa:fs:stat", { rootId, relPath }),
+    readdir: (rootId, relPath) => ipcRenderer.invoke("fa:fs:readdir", { rootId, relPath }),
+    mkdir: (rootId, relPath) => ipcRenderer.invoke("fa:fs:mkdir", { rootId, relPath }),
+    readFile: (rootId, relPath, encoding) => ipcRenderer.invoke("fa:fs:readFile", { rootId, relPath, encoding }),
+    writeFile: (rootId, relPath, payload) => ipcRenderer.invoke("fa:fs:writeFile", { rootId, relPath, ...payload }),
+    remove: (rootId, relPath, recursive) => ipcRenderer.invoke("fa:fs:remove", { rootId, relPath, recursive }),
+  },
+  // 2026-09-15使用者明確要求「桌面版不應該有任何限制」——這組跟上面的
+  // `fs`（root-scoped，先授權才能碰）並存，直接吃絕對路徑，main.js的
+  // fa:rawfs:*完全不做root範圍檢查，唯一邊界是OS本身的檔案權限。
+  // MCP 伺服器（stdio）：啟動／寫入／關閉子行程、輸出事件、安裝包解開、安裝指令、環境檢查。實作在 main-ext.js（fa:mcp:*）。
+  mcp: {
+    installDir: () => ipcRenderer.invoke("fa:mcp:installDir"),
+    start: (spec) => ipcRenderer.invoke("fa:mcp:start", { spec }),
+    write: (id, text) => ipcRenderer.invoke("fa:mcp:write", { id, text }),
+    stop: (id) => ipcRenderer.invoke("fa:mcp:stop", { id }),
+    list: () => ipcRenderer.invoke("fa:mcp:list"),
+    writeFiles: (name, files, clean) => ipcRenderer.invoke("fa:mcp:writeFiles", { name, files, clean }),
+    removeDir: (dir) => ipcRenderer.invoke("fa:mcp:removeDir", { dir }),
+    exec: (opts) => ipcRenderer.invoke("fa:mcp:exec", opts || {}),
+    runtimes: () => ipcRenderer.invoke("fa:mcp:runtimes"),
+    onData: (cb) => { const h = (_e, m) => { try { cb(m.id, m.text, m.stream); } catch (_) { /* */ } }; ipcRenderer.on("fa:mcp:data", h); return () => ipcRenderer.removeListener("fa:mcp:data", h); },
+    onExit: (cb) => { const h = (_e, m) => { try { cb(m.id, m.code, m.signal); } catch (_) { /* */ } }; ipcRenderer.on("fa:mcp:exit", h); return () => ipcRenderer.removeListener("fa:mcp:exit", h); },
+  },
+  rawfs: {
+    stat: (path) => ipcRenderer.invoke("fa:rawfs:stat", { path }),
+    readdir: (path) => ipcRenderer.invoke("fa:rawfs:readdir", { path }),
+    mkdir: (path) => ipcRenderer.invoke("fa:rawfs:mkdir", { path }),
+    readFile: (path, encoding) => ipcRenderer.invoke("fa:rawfs:readFile", { path, encoding }),
+    writeFile: (path, payload) => ipcRenderer.invoke("fa:rawfs:writeFile", { path, ...payload }),
+    remove: (path, recursive) => ipcRenderer.invoke("fa:rawfs:remove", { path, recursive }),
+    copyChunked: (src, dst, partBytes) => ipcRenderer.invoke("fa:rawfs:copyChunked", { src, dst, partBytes }),
+    find: (path, pattern, maxDepth, maxResults) => ipcRenderer.invoke("fa:rawfs:find", { path, pattern, maxDepth, maxResults }),
+    listDrives: () => ipcRenderer.invoke("fa:rawfs:listDrives"),
+  },
+  // SQLite（main.js的fa:sql:call，sqlite-engine.js）：op＝open／exec／query／schema／pragma／status／cancel／close…，協定見該檔案。
+  sql: {
+    call: (op, args) => ipcRenderer.invoke("fa:sql:call", { op, args }),
+  },
+  // 終端機 /mnt/<label> 的同步檔案後端（main.js 的 fa:fsx:sync，fsx-sync.js）：shell 的檔案系統是同步的，所以用 sendSync
+  fsx: {
+    call: (req) => ipcRenderer.sendSync("fa:fsx:sync", req),
+  },
+  // 對話清單（左邊chat list）的檔案儲存，見main.js的fa:chats:*。
+  chats: {
+    dir: () => ipcRenderer.invoke("fa:chats:dir"),
+    readIndex: () => ipcRenderer.invoke("fa:chats:readIndex"),
+    writeIndex: (text) => ipcRenderer.invoke("fa:chats:writeIndex", { text }),
+    read: (id) => ipcRenderer.invoke("fa:chats:read", { id }),
+    write: (id, text) => ipcRenderer.invoke("fa:chats:write", { id, text }),
+    delete: (id) => ipcRenderer.invoke("fa:chats:delete", { id }),
+  },
+  // 系統匣（見 main-ext.js installTray）：get＝目前狀態；set({trayIcon, closeToTray})
+  tray: {
+    get: () => ipcRenderer.invoke("fa:tray:get"),
+    set: (patch) => ipcRenderer.invoke("fa:tray:set", patch),
+  },
+  exec: {
+    getSettings: () => ipcRenderer.invoke("fa:exec:getSettings"),
+    setSettings: (patch) => ipcRenderer.invoke("fa:exec:setSettings", patch),
+    run: (opts) => ipcRenderer.invoke("fa:exec:run", opts),
+  },
+  // coding domain專用（TODO.md Phase 4）：語意跟rawfs的byte級檔案操作不同
+  // （dry-run、hunk診斷、repo層級操作），獨立命名空間。
+  codingWorkspace: {
+    open: (sourceAbs, opts) => ipcRenderer.invoke("fa:codingws:open", { sourceAbs, ...(opts || {}) }),
+    status: (workspaceAbs) => ipcRenderer.invoke("fa:codingws:status", { workspaceAbs }),
+    deploy: (workspaceAbs, opts) => ipcRenderer.invoke("fa:codingws:deploy", { workspaceAbs, ...(opts || {}) }),
+    discard: (workspaceAbs) => ipcRenderer.invoke("fa:codingws:discard", { workspaceAbs }),
+  },
+  browserControl: {
+    call: (cmd, args, timeoutMs) => ipcRenderer.invoke("fa:bc:call", { cmd, args, timeoutMs }),
+    status: () => ipcRenderer.invoke("fa:bc:status"),
+    regenerateToken: () => ipcRenderer.invoke("fa:bc:regenerateToken"),
+    setEnabled: (on) => ipcRenderer.invoke("fa:bc:setEnabled", !!on),
+  },
+  ci: {
+    fetch: (opts) => ipcRenderer.invoke("fa:ci:fetch", opts),
+  },
+  codingTools: {
+    edit: (cwdAbs, opts) => ipcRenderer.invoke("fa:codingtools:edit", { cwdAbs, ...(opts || {}) }),
+    script: (cwdAbs, opts) => ipcRenderer.invoke("fa:codingtools:script", { cwdAbs, ...(opts || {}) }),
+  },
+  git: {
+    applyPatch: (cwdAbs, patch, opts) => ipcRenderer.invoke("fa:git:applyPatch", { cwdAbs, patch, ...(opts || {}) }),
+    inspect: (cwdAbs, mode, opts) => ipcRenderer.invoke("fa:git:inspect", { cwdAbs, mode, ...(opts || {}) }),
+  },
+  // 2026-09-15使用者明確要求「執行指令也要有有bash, tmux的能力」——POSIX
+  // 限定（見main.js requireTmuxAvailable），Windows呼叫會得到明確的錯誤
+  // 訊息而不是靜默失敗。
+  tmux: {
+    start: (name, command, cwd) => ipcRenderer.invoke("fa:tmux:start", { name, command, cwd }),
+    sendKeys: (name, keys, enter) => ipcRenderer.invoke("fa:tmux:sendKeys", { name, keys, enter }),
+    capture: (name, lines) => ipcRenderer.invoke("fa:tmux:capture", { name, lines }),
+    list: () => ipcRenderer.invoke("fa:tmux:list"),
+    kill: (name) => ipcRenderer.invoke("fa:tmux:kill", { name }),
+  },
+  // computer use（桌面版限定、預設關閉）：全部經主行程的 fa:computer:*（computer-use-ipc.js）。預覽、核准、範圍選擇、中止都是主行程的原生視窗，
+  // renderer 這邊只能「請求」；所有提高權限的事（啟用、自動核准、指定範圍、連線）都要使用者在原生視窗確認。機密只能設定、不能讀回。
+  computer: (() => {
+    const c = (name, args) => ipcRenderer.invoke("fa:computer:" + name, args || {});
+    return {
+      status: () => c("status"), capabilities: () => c("capabilities"),
+      setEnabled: (on) => c("setEnabled", { on: !!on }), setAuto: (on) => c("setAuto", { on: !!on }), pickScope: () => c("pickScope"), setScope: (scope) => c("setScope", scope),
+      abort: (reason) => c("abort", { reason }), resume: () => c("resume"), addDeny: (pattern) => c("addDeny", { pattern }),
+      listWindows: (o) => c("listWindows", o), screenshot: (o) => c("screenshot", o), cropShot: (shotId, rect, o) => c("cropShot", Object.assign({}, o, { shotId, rect })), diffShots: (a, b, o) => c("diffShots", Object.assign({}, o, { a, b })),
+      uiTree: (o) => c("uiTree", o), findElements: (o) => c("findElements", o), elementAt: (o) => c("elementAt", o), elementInfo: (id) => c("elementInfo", { id }),
+      wait: (o) => c("wait", o), sample: (o) => c("sample", o), calibrate: (o) => c("calibrate", o),
+      plan: (steps) => c("plan", { steps }), execute: (planId, o) => c("execute", Object.assign({}, o, { planId })), run: (steps, o) => c("run", Object.assign({}, o, { steps })),
+      remoteProbe: (target) => c("remoteProbe", { target }), remoteConnect: (o) => c("remoteConnect", o), remoteDisconnect: (id) => c("remoteDisconnect", { id }), remoteList: () => c("remoteList"), remoteObjects: (id, o) => c("remoteObjects", Object.assign({}, o, { id })),
+      setRemoteSecret: (name, password) => c("setRemoteSecret", { name, password }), deleteRemoteSecret: (name) => c("deleteRemoteSecret", { name }), listRemoteSecrets: () => c("listRemoteSecrets"),
+      onEvent: (cb) => { const h = (_e, m) => { try { cb(m); } catch (_) { /* */ } }; ipcRenderer.on("fa:computer:event", h); return () => ipcRenderer.removeListener("fa:computer:event", h); },
+    };
+  })(),
+  config: {
+    getLocalProxyPort: () => ipcRenderer.invoke("fa:config:getLocalProxyPort"),
+    getLocalProxyBase: () => ipcRenderer.invoke("fa:config:getLocalProxyBase"),
+    getProxyMode: () => ipcRenderer.invoke("fa:config:getProxyMode"),
+  },
+  // status()只回報有沒有設定（布林值），set()是renderer唯一能把金鑰值送進
+  // 主行程的方向——真正的NVAPI_KEY/OPENROUTER_API_KEY內容不會被讀回
+  // renderer，見main.js的fa:secrets:*說明。
+  secrets: {
+    status: () => ipcRenderer.invoke("fa:secrets:status"),
+    set: (patch) => ipcRenderer.invoke("fa:secrets:set", patch),
+  },
+  shell: {
+    openExternal: (url) => ipcRenderer.invoke("fa:shell:openExternal", url),
+  },
+  // tw_stock_db客製: 2026-09-26使用者要求的桌面版限定「檢查更新」／
+  // live update，見main.js的「Live Update」區塊說明——check()只讀
+  // manifest.json比對，apply()實際下載＋落地覆蓋檔案，reload()把主視窗
+  // 導向套用後的路徑（三步分開，讓renderer可以在apply()完成後先顯示
+  // 「更新完成」，使用者按確認才觸發reload()換頁，不會畫面突然被換掉）。
+  update: {
+    check: () => ipcRenderer.invoke("fa:update:check"),
+    apply: () => ipcRenderer.invoke("fa:update:apply"),
+    reload: () => ipcRenderer.invoke("fa:update:reload"),
+    relaunch: () => ipcRenderer.invoke("fa:update:relaunch"),
+  },
+  // 診斷（不含機密）：主行程模組（main-ext.js）目前的實際狀態，電腦操作載入失敗時畫面會顯示這份資訊
+  diag: {
+    mainExt: () => ipcRenderer.invoke("fa:diag:mainext"),
+  },
+  // tw_stock_db客製: 2026-09-16使用者要求桌面版「在不同資料夾執行」時
+  // 各自獨立的對話+設定——見main.js fa:workspace:*系列handler的說明。
+  // init()只在app啟動、bootstrap.js建構FloatingAssistant之前呼叫一次；
+  // persist()是bootstrap.js的window.localStorage代理每次setItem/
+  // removeItem/clear都會呼叫的寫入端；switch()是Advance Settings「切換
+  // 工作區資料夾」那顆按鈕觸發的動作。全部走一般的invoke（非同步）——
+  // 跟window.prompt/confirm/alert那組不一樣，這裡完全不需要
+  // sendSync/event.returnValue那套同步阻塞機制：初始載入bootstrap.js的
+  // main() IIFE本來就是async、建構FloatingAssistant之前已經在await別的
+  // IPC了，之後的讀取（localStorage.getItem）全部從renderer自己維護的
+  // 記憶體快照回答，不需要每次都往main行程跑一趟，見bootstrap.js的
+  // 說明。
+  workspace: {
+    init: () => ipcRenderer.invoke("fa:workspace:init"),
+    get: () => ipcRenderer.invoke("fa:workspace:get"),
+    persist: (data) => ipcRenderer.invoke("fa:workspace:persist", { data }),
+    switchTo: (newFolder, copiedData) => ipcRenderer.invoke("fa:workspace:switch", { newFolder, copiedData }),
+  },
+});
