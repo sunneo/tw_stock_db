@@ -25894,7 +25894,7 @@ const holder = {};
       });
       var maxSeq = Number(r.seq) || 0; s.objects.forEach(function (o) { var m = /^o(\d+)$/.exec(o.id || ''); if (m) { maxSeq = Math.max(maxSeq, Number(m[1])); } });
       s.objects.forEach(function (o) { if (!o.id) { do { maxSeq++; } while (ids['o' + maxSeq]); o.id = 'o' + maxSeq; ids[o.id] = 1; } });
-      s.seq = maxSeq;
+      s.seq = maxSeq; if (cfg.keep) { cfg.keep.forEach(function (k) { if (r[k] !== undefined) { s[k] = JSON.parse(JSON.stringify(r[k])); } }); }   // 編輯器自己的文件欄位（例如 markdown 的換行與 BOM）原樣帶著走
       return { ok: true, spec: s, problems: problems };
     }
     function byId(spec, id) { for (var i = 0; i < spec.objects.length; i++) { if (spec.objects[i].id === id) { return i; } } return -1; }
@@ -27843,6 +27843,454 @@ const holder = {};
 return holder.FaEditSvgUI;
 })();
 /* EDSVGUI-END */
+/* EDTEXT-BEGIN */
+const FaEditText = (function () {
+const holder = {};
+(function (module, self) {
+// /edit-markdown 與 /edit-text 的文件核心（純函式，Node 與瀏覽器都能跑）。設計見 DESIGN.edit-docs.md。
+// 文件是「區塊」的清單（放在 spec.objects，所以共用外框 FaEditShell 的物件欄、復原、AI 對話、整理成 prompt 全部直接能用）：
+//   { v:1, title, format:'md'|'txt', eol:'\n'|'\r\n', bom:false, lead:0, pad:'', seq, objects:[ { id, name, type, visible, locked, …, src?, gap } ] }
+//   type：heading{text,level} para{text} list{items[],ordered} quote{text} code{text,lang} table{rows[][],align[]} hr raw{text}（不認得的語法原樣保留）line{text}（純文字，一行一個）
+//   src：這個區塊在原檔裡的原始文字——**沒被改過的區塊匯出時原樣輸出**，所以不會把你的檔案重新格式化；任何會改內容的動作都會把 src 清掉。gap：區塊後面有幾個空白行（最後一個區塊：結尾換行數 − 1，沒有結尾換行是 −1）。
+//   lead／pad：檔案開頭的空白行數／整份只有空白時的原文。往返保證：serialize(parse(t)) === t。
+// API：FaEditText.parse(text, format) → spec    serialize(spec) → text    validate / applyEdits / editWords / find（跟 FaEditObjects 一樣）    starter(id) / listStarters()    outline(spec) → 大綱文字    replaceAllText(spec, find, repl, opts)
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./edit_objects_core.js'));
+  else root.FaEditText = factory(root.FaEditObjects || (typeof FaEditObjects !== 'undefined' ? FaEditObjects : undefined));
+})(typeof self !== 'undefined' ? self : this, function (O) {
+  'use strict';
+  var MAXBLOCKS = 20000, MAXTEXT = 2000000;
+  function str(v, max) { return String(v == null ? '' : v).replace(/\u0000/g, '').slice(0, max || 200000); }
+  function int(v, lo, hi, d) { var n = Math.round(Number(v)); if (!isFinite(n)) { return d; } return Math.max(lo, Math.min(hi, n)); }
+  function clone(o) { return JSON.parse(JSON.stringify(o)); }
+  function snippet(t, n) { var s = String(t || '').replace(/\s+/g, ' ').trim(); return s.length > (n || 18) ? s.slice(0, n || 18) + '…' : s; }
+
+  // ───────── 區塊型別（FaEditObjects 的 types）
+  function tail(o) { var t = {}; if (o.src != null && o.src !== '') { t.src = str(o.src, MAXTEXT); if (Array.isArray(o.gapLines)) { t.gapLines = o.gapLines.slice(0, 50).map(function (x) { return str(x, 200); }); } } t.gap = int(o.gap, -1, 20, 1); return t; }
+  function mk(label, defaults, fn) { return { label: label, defaults: Object.assign({ gap: 1 }, defaults), validate: function (o) { var r = fn(o); return { obj: Object.assign(r, tail(o)), problems: [] }; }, bbox: function () { return { x: 0, y: 0, w: 0, h: 0 }; } }; }
+  var types = {
+    heading: mk('標題', { text: '', level: 1 }, function (o) { return { text: str(o.text, 5000).replace(/\n/g, ' '), level: int(o.level, 1, 6, 1) }; }),
+    para: mk('段落', { text: '' }, function (o) { return { text: str(o.text, MAXTEXT) }; }),
+    line: mk('一行', { text: '' }, function (o) { return { text: str(o.text, 100000).replace(/[\r\n]/g, ' ') }; }),
+    quote: mk('引用', { text: '' }, function (o) { return { text: str(o.text, MAXTEXT) }; }),
+    list: mk('清單', { items: [''], ordered: false }, function (o) { var it = Array.isArray(o.items) ? o.items.slice(0, 2000).map(function (x) { return str(x, 20000); }) : []; return { items: it.length ? it : [''], ordered: !!o.ordered }; }),
+    code: mk('程式碼', { text: '', lang: '' }, function (o) { return { text: str(o.text, MAXTEXT), lang: str(o.lang, 30).replace(/[\s`]/g, '') }; }),
+    table: mk('表格', { rows: [['', ''], ['', '']], align: [] }, function (o) {
+      var rows = Array.isArray(o.rows) ? o.rows.slice(0, 500).map(function (r) { return (Array.isArray(r) ? r : []).slice(0, 60).map(function (c) { return str(c, 5000).replace(/\n/g, ' '); }); }) : [];
+      var w = rows.reduce(function (m, r) { return Math.max(m, r.length); }, 1); rows = (rows.length ? rows : [['']]).map(function (r) { while (r.length < w) { r.push(''); } return r; });
+      var al = Array.isArray(o.align) ? o.align.slice(0, w).map(function (a) { return a === 'left' || a === 'right' || a === 'center' ? a : ''; }) : []; return { rows: rows, align: al };
+    }),
+    hr: mk('分隔線', {}, function () { return {}; }),
+    raw: mk('原樣保留', { text: '' }, function (o) { return { text: str(o.text, MAXTEXT) }; }),
+  };
+
+  // ───────── 算出來的名字（物件欄顯示用）
+  function nameOf(b) {
+    var L = { heading: '標題', para: '段落', line: '行', quote: '引用', list: '清單', code: '程式碼', table: '表格', hr: '分隔線', raw: '原樣' }[b.type] || b.type;
+    var t = b.type === 'list' ? (b.items && b.items[0]) : b.type === 'table' ? (b.rows && b.rows[0] && b.rows[0].join(' ')) : b.text; var s = snippet(t, 16);
+    return (b.type === 'heading' ? 'H' + b.level + ' ' : L + ' ') + (s || '（空）');
+  }
+
+  // ───────── 輸出一個區塊（沒有 src 時）
+  function fenceFor(text) { var f = '```'; while (String(text).indexOf(f) >= 0) { f += '`'; } return f; }
+  function render(b) {
+    switch (b.type) {
+      case 'heading': return new Array(b.level + 1).join('#') + ' ' + b.text;
+      case 'para': case 'line': case 'raw': return b.text;
+      case 'quote': return String(b.text).split('\n').map(function (l) { return l === '' ? '>' : '> ' + l; }).join('\n');
+      case 'hr': return '---';
+      case 'code': { var f = fenceFor(b.text); return f + (b.lang || '') + '\n' + b.text + (b.text === '' ? '' : '\n') + f; }
+      case 'list': return b.items.map(function (it, i) { var mark = b.ordered ? (i + 1) + '. ' : '- ', pad = new Array(mark.length + 1).join(' '); return mark + String(it).split('\n').join('\n' + pad); }).join('\n');
+      case 'table': {
+        var rows = b.rows, w = rows[0].length, cell = function (r) { return '| ' + r.map(function (c) { return String(c).replace(/\|/g, '\\|'); }).join(' | ') + ' |'; };
+        var sep = '|' + rows[0].map(function (_, i) { var a = b.align && b.align[i]; return a === 'left' ? ' :--- ' : a === 'right' ? ' ---: ' : a === 'center' ? ' :---: ' : ' --- '; }).join('|') + '|';
+        return [cell(rows[0]), sep].concat(rows.slice(1).map(cell)).join('\n');
+      }
+      default: return b.text || '';
+    }
+  }
+  var SELF_DELIM = { heading: 1, hr: 1, code: 1 };
+  function serialize(spec) {
+    var s = spec, eol = s.eol === '\r\n' ? '\r\n' : '\n', bl = s.objects || [];
+    if (s.format === 'txt') { return (s.bom ? '\uFEFF' : '') + bl.map(function (b) { return b.text; }).join(eol); }
+    var out = [(s.bom ? '\uFEFF' : ''), s.leadLines && s.leadLines.length ? s.leadLines.join(eol) + eol : new Array((s.lead | 0) + 1).join(eol)];
+    if (!bl.length) { return out.join('') + (s.pad || ''); }
+    for (var k = 0; k < bl.length; k++) {
+      var b = bl[k], txt = b.src != null && b.src !== '' ? b.src : render(b), last = k === bl.length - 1, g = b.gap == null ? 1 : b.gap;
+      if (!last) { var nx = bl[k + 1]; if (g < 1 && (!b.src || !nx.src) && !(SELF_DELIM[b.type] || SELF_DELIM[nx.type])) { g = 1; } if (g < 0) { g = 0; } }
+      if (b.src && b.gapLines && b.gapLines.length) { out.push(txt); out.push(eol + b.gapLines.join(eol) + (last ? '' : eol)); continue; }   // 空白行裡有空白字元：原樣輸出
+      out.push(txt); out.push(g + 1 > 0 ? new Array(g + 2).join(eol) : '');   // g+1 個換行（最後一個區塊 g＝−1 → 沒有結尾換行）
+    }
+    return out.join('');
+  }
+
+  // ───────── 解析
+  var RE = {
+    fence: /^( {0,3})(`{3,}|~{3,})(.*)$/, atx: /^ {0,3}(#{1,6})(?:\s+(.*?))?\s*#*\s*$/, hr: /^ {0,3}([-*_])(?:\s*\1){2,}\s*$/, quote: /^ {0,3}>/, setext: /^ {0,3}(=+|-+)\s*$/,
+    list: /^( {0,3})([-*+]|\d{1,9}[.)])(\s+|$)/, tsep: /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$/, html: /^ {0,3}<(?:[a-zA-Z][a-zA-Z0-9-]*[\s>\/]|\/[a-zA-Z]|!--|!\[CDATA\[|\?|![A-Z])/, blank: /^\s*$/,
+  };
+  function splitRow(l) { var t = l.trim(); if (t[0] === '|') { t = t.slice(1); } if (t[t.length - 1] === '|' && t[t.length - 2] !== '\\') { t = t.slice(0, -1); } var cells = [], cur = ''; for (var i = 0; i < t.length; i++) { if (t[i] === '\\' && t[i + 1] === '|') { cur += '|'; i++; } else if (t[i] === '|') { cells.push(cur.trim()); cur = ''; } else { cur += t[i]; } } cells.push(cur.trim()); return cells; }
+  function startsBlock(lines, i, inPara) {
+    var l = lines[i]; if (RE.fence.test(l) || RE.atx.test(l) || RE.hr.test(l) || RE.quote.test(l)) { return true; }
+    var m = RE.list.exec(l); if (m) { return !inPara || true; }
+    if (l.indexOf('|') >= 0 && i + 1 < lines.length && lines[i + 1].indexOf('|') >= 0 && RE.tsep.test(lines[i + 1]) && lines[i + 1].indexOf('-') >= 0) { return true; }
+    return false;
+  }
+  function parse(text, format) {
+    text = String(text == null ? '' : text); var bom = text.charCodeAt(0) === 0xFEFF; if (bom) { text = text.slice(1); }
+    var eol = /\r\n/.test(text) ? '\r\n' : '\n', spec = { v: 1, title: '', format: format === 'txt' ? 'txt' : 'md', eol: eol, bom: bom, lead: 0, pad: '', seq: 0, objects: [] };
+    var id = function () { spec.seq++; return 'b' + spec.seq; };
+    if (text.length > MAXTEXT) { text = text.slice(0, MAXTEXT); }
+    var lines = text.split(eol === '\r\n' ? /\r\n/ : /\n/);
+    if (spec.format === 'txt') { lines.slice(0, MAXBLOCKS).forEach(function (l) { var b = { id: id(), type: 'line', text: l, visible: true, locked: false, gap: 0 }; b.name = nameOf(b); spec.objects.push(b); }); if (lines.length > MAXBLOCKS) { spec.objects[MAXBLOCKS - 1].text += eol + lines.slice(MAXBLOCKS).join(eol); } return spec; }
+    var i = 0, n = lines.length;
+    if (!text.trim()) { spec.pad = text; return spec; }
+    var leadArr = []; while (i < n && RE.blank.test(lines[i])) { leadArr.push(lines[i]); spec.lead++; i++; } if (leadArr.some(function (x) { return x !== ''; })) { spec.leadLines = leadArr; }
+    var blocks = spec.objects;
+    function push(type, props, from, to) { var b = Object.assign({ id: id(), type: type, visible: true, locked: false }, props); b.src = lines.slice(from, to).join(eol); b.gap = 0; b.name = nameOf(b); blocks.push(b); return b; }
+    while (i < n && blocks.length < MAXBLOCKS) {
+      var l = lines[i], start = i, m;
+      if ((m = RE.fence.exec(l)) && !(m[2][0] === '`' && m[3].indexOf('`') >= 0)) {
+        var ch = m[2][0], len = m[2].length, info = m[3].trim(), j = i + 1, inner = [], closer = new RegExp('^ {0,3}' + (ch === '`' ? '`' : '~') + '{' + len + ',}\\s*$');
+        while (j < n && !closer.test(lines[j])) { inner.push(lines[j]); j++; }
+        var end = j < n ? j + 1 : n; push('code', { text: inner.join('\n'), lang: info.split(/\s+/)[0] || '' }, start, end); i = end;
+      }
+      else if (RE.hr.test(l)) { push('hr', {}, i, i + 1); i++; }
+      else if ((m = RE.atx.exec(l))) { push('heading', { text: (m[2] || '').trim(), level: m[1].length }, i, i + 1); i++; }
+      else if (RE.quote.test(l)) { var q = []; while (i < n && RE.quote.test(lines[i])) { q.push(lines[i].replace(/^ {0,3}> ?/, '')); i++; } push('quote', { text: q.join('\n') }, start, i); }
+      else if ((m = RE.list.exec(l))) {
+        var base = m[1].length, items = [], cur = null, ordered = /\d/.test(m[2][0]); i = start;
+        while (i < n) {
+          var li = lines[i], lm = RE.list.exec(li);
+          if (lm && lm[1].length <= base + 1 && /\d/.test(lm[2][0]) !== ordered) { break; }   // 項目符號與編號是不同的清單
+          if (lm && lm[1].length <= base + 1) { if (cur !== null) { items.push(cur); } var cw = lm[0].length; cur = li.slice(cw).replace(/\s+$/, ''); i++; continue; }
+          if (RE.blank.test(li)) { var k = i; while (k < n && RE.blank.test(lines[k])) { k++; } if (k < n && cur !== null && (/^ {2,}\S/.test(lines[k]) || (RE.list.exec(lines[k]) && RE.list.exec(lines[k])[1].length <= base + 1 && RE.list.exec(lines[k])[1].length >= base && /\d/.test(RE.list.exec(lines[k])[2][0]) === ordered))) { cur += '\n'; i = k; if (lines[k].match(/^ {2,}\S/) && !RE.list.exec(lines[k])) { continue; } continue; } break; }
+          if (/^ {2,}\S/.test(li) && cur !== null) { cur += '\n' + li.replace(/^ {1,4}/, '').replace(/\s+$/, ''); i++; continue; }
+          if (cur !== null && !startsBlock(lines, i, true) && !RE.blank.test(li)) { cur += '\n' + li.trim(); i++; continue; }   // 懶惰延續
+          break;
+        }
+        if (cur !== null) { items.push(cur); } while (i > start && RE.blank.test(lines[i - 1])) { i--; }
+        push('list', { items: items.map(function (x) { return x.replace(/\n+$/, ''); }), ordered: ordered }, start, i);
+      }
+      else if (l.indexOf('|') >= 0 && i + 1 < n && lines[i + 1].indexOf('|') >= 0 && RE.tsep.test(lines[i + 1]) && lines[i + 1].indexOf('-') >= 0) {
+        var head = splitRow(l), sep = splitRow(lines[i + 1]), rows = [head], align = sep.map(function (c) { return /^:-+:$/.test(c) ? 'center' : /^:-+$/.test(c) ? 'left' : /^-+:$/.test(c) ? 'right' : ''; }); i += 2;
+        while (i < n && !RE.blank.test(lines[i]) && lines[i].indexOf('|') >= 0) { rows.push(splitRow(lines[i])); i++; }
+        push('table', { rows: rows, align: align }, start, i);
+      }
+      else if (RE.html.test(l)) { while (i < n && !RE.blank.test(lines[i])) { i++; } push('raw', { text: lines.slice(start, i).join('\n') }, start, i); }
+      else {
+        var p = [];
+        while (i < n && !RE.blank.test(lines[i])) {
+          if (p.length && startsBlock(lines, i, true) && !RE.setext.test(lines[i])) { break; }
+          if (p.length && RE.setext.test(lines[i])) { var lv = lines[i].trim()[0] === '=' ? 1 : 2; i++; push('heading', { text: p.map(function (x) { return x.trim(); }).join(' '), level: lv }, start, i); p = null; break; }
+          p.push(lines[i]); i++;
+        }
+        if (p) { push('para', { text: p.join('\n') }, start, i); }
+      }
+      // 區塊後面的空白行數
+      var g = 0, run = []; while (i < n && RE.blank.test(lines[i])) { run.push(lines[i]); g++; i++; } var lb = blocks[blocks.length - 1]; if (lb) { lb.gap = i >= n ? g - 1 + 0 : g; if (run.some(function (x) { return x !== ''; })) { lb.gapLines = run; } }
+      if (i >= n) { break; }
+    }
+    if (i < n) { var rest = lines.slice(i).join(eol), r = { id: id(), type: 'raw', visible: true, locked: false, text: rest, src: rest, gap: -1 }; r.name = nameOf(r); blocks[blocks.length - 1].gap = Math.max(blocks[blocks.length - 1].gap, 0); blocks.push(r); }
+    // 最後一個區塊的 gap：結尾換行數 − 1（splitting 的結尾空字串被算成一個空白行）
+    return spec;
+  }
+
+  // ───────── 文件的整體檢查與動作
+  var extraOps = {
+    set_text: { words: function (e) { return '改文字 ' + e.id; }, apply: function (s, e, H) { var i = H.find(s, e.id); if (i < 0) { return { error: 'there is no block "' + str(e.id, 30) + '"' }; } var o = s.objects[i]; if (o.locked) { return { error: '"' + o.name + '" is locked' }; } if (!('text' in types[o.type].defaults)) { return { error: o.type + ' blocks have no text' }; } var n = H.clone(o); n.text = e.text; delete n.src; var p = [], v = H.validateObject(n, p, {}); if (!v) { return { error: p[0] || 'invalid' }; } v.id = o.id; v.name = nameOf(v); s.objects[i] = v; return {}; } },
+    set_heading: { words: function (e) { return '標題層級 ' + e.id + ' → H' + e.level; }, apply: function (s, e, H) { var i = H.find(s, e.id); if (i < 0) { return { error: 'there is no block "' + str(e.id, 30) + '"' }; } var o = s.objects[i]; if (o.locked) { return { error: '"' + o.name + '" is locked' }; } var n = H.clone(o); if (o.type !== 'heading') { if (!('text' in types[o.type].defaults) || o.type === 'code' || o.type === 'raw') { return { error: 'only text blocks can become a heading' }; } n.type = 'heading'; n.text = String(o.text).replace(/\s*\n\s*/g, ' '); } n.level = e.level; delete n.src; var p = [], v = H.validateObject(n, p, {}); if (!v) { return { error: p[0] || 'invalid' }; } v.id = o.id; v.name = nameOf(v); s.objects[i] = v; return {}; } },
+    list_toggle: { words: function (e) { return '清單 ' + e.id + (e.ordered ? '（編號）' : '（項目符號）'); }, apply: function (s, e, H) { var i = H.find(s, e.id); if (i < 0) { return { error: 'there is no block "' + str(e.id, 30) + '"' }; } var o = s.objects[i]; if (o.locked) { return { error: '"' + o.name + '" is locked' }; } if (o.type === 'list') { var n = H.clone(o); n.ordered = !!e.ordered; delete n.src; s.objects[i] = Object.assign(H.validateObject(n, [], {}), { id: o.id, name: o.name }); return {}; } if (o.type !== 'para' && o.type !== 'line') { return { error: 'only paragraphs can become a list' }; } var items = String(o.text).split('\n').filter(function (x) { return x.trim(); }); var v = H.validateObject({ type: 'list', items: items, ordered: !!e.ordered, gap: o.gap, name: o.name, visible: o.visible, locked: o.locked }, [], {}); if (!v) { return { error: 'invalid' }; } v.id = o.id; v.name = nameOf(v); s.objects[i] = v; return {}; } },
+    set_cell: { words: function (e) { return '表格 ' + e.id + ' 第 ' + (e.row + 1) + ' 列第 ' + (e.col + 1) + ' 欄'; }, apply: function (s, e, H) { var i = H.find(s, e.id); if (i < 0) { return { error: 'there is no block "' + str(e.id, 30) + '"' }; } var o = s.objects[i]; if (o.locked) { return { error: '"' + o.name + '" is locked' }; } if (o.type !== 'table') { return { error: 'not a table' }; } var r = Number(e.row), c = Number(e.col); if (!(r >= 0 && r < o.rows.length && c >= 0 && c < o.rows[0].length)) { return { error: 'the cell (' + e.row + ', ' + e.col + ') is outside the table' }; } var n = H.clone(o); n.rows[r][c] = e.text; delete n.src; var v = H.validateObject(n, [], {}); v.id = o.id; v.name = nameOf(v); s.objects[i] = v; return {}; } },
+    convert_block: { words: function (e) { return '轉成' + ({ para: '段落', quote: '引用', code: '程式碼', heading: '標題', list: '清單', olist: '編號清單', raw: '原樣' }[e.to] || e.to) + ' ' + e.id; }, apply: function (s, e, H) { var i = H.find(s, e.id); if (i < 0) { return { error: 'there is no block "' + str(e.id, 30) + '"' }; } var o = s.objects[i]; if (o.locked) { return { error: '"' + o.name + '" is locked' }; } var to = String(e.to || ''), flat = o.type === 'list' ? o.items.join('\n') : o.type === 'table' ? o.rows.map(function (r) { return r.join('\t'); }).join('\n') : o.type === 'hr' ? '' : o.text; if (s.format === 'txt') { return { error: 'a plain text file has only lines' }; } var n = { gap: o.gap, visible: o.visible, locked: o.locked };
+      if (to === 'para' || to === 'quote' || to === 'raw') { n.type = to; n.text = flat; } else if (to === 'code') { n.type = 'code'; n.text = flat; n.lang = e.lang || ''; } else if (to === 'heading') { n.type = 'heading'; n.text = flat.replace(/\s*\n\s*/g, ' '); n.level = e.level || 2; } else if (to === 'list' || to === 'olist') { n.type = 'list'; n.ordered = to === 'olist'; n.items = flat.split('\n').filter(function (x) { return x.trim(); }); } else { return { error: 'to must be para, quote, code, heading, list, olist or raw' }; }
+      var p = [], v = H.validateObject(n, p, {}); if (!v) { return { error: p[0] || 'invalid' }; } v.id = o.id; v.name = nameOf(v); s.objects[i] = v; return {}; } },
+    move_block: { words: function (e) { return '移動 ' + e.id + ' → ' + e.to; }, apply: function (s, e, H) { var i = H.find(s, e.id); if (i < 0) { return { error: 'there is no block "' + str(e.id, 30) + '"' }; } var o = s.objects[i]; if (o.locked) { return { error: '"' + o.name + '" is locked' }; } var n = s.objects.length, w = e.to, j = w === 'up' || w === 'earlier' ? i - 1 : w === 'down' || w === 'later' ? i + 1 : w === 'top' || w === 'front' || w === 'first' || w === 'start' ? 0 : w === 'bottom' || w === 'back' || w === 'last' || w === 'end' ? n - 1 : Number(w); if (!isFinite(j)) { return { error: 'to must be earlier, later, first, last or a position' }; } j = Math.max(0, Math.min(n - 1, Math.round(j))); s.objects.splice(i, 1); s.objects.splice(j, 0, o); return {}; } },
+    // 把一個區塊換成「用文件原本的語法寫的一段文字」（雙擊區塊編輯就是這個）：解析出 0 個（＝刪掉）、1 個或多個區塊，第一個沿用 id、顯示／鎖定狀態；打的字原樣當成這個區塊的 src
+    replace_block: { words: function (e) { return '改寫區塊 ' + e.id; }, apply: function (s, e, H) { var i = H.find(s, e.id); if (i < 0) { return { error: 'there is no block "' + str(e.id, 30) + '"' }; } var o = s.objects[i]; if (o.locked) { return { error: '"' + o.name + '" is locked' }; }
+      var sub = parse(String(e.text == null ? '' : e.text).replace(/\r\n/g, '\n'), s.format), nb = sub.objects.filter(function (b) { return s.format === 'txt' || !(b.type === 'raw' && !String(b.text).trim()); }); if (s.format !== 'txt' && !String(e.text || '').trim()) { nb = []; }
+      if (s.objects.length - 1 + nb.length > MAXBLOCKS) { return { error: 'too many blocks' }; } var eol = s.eol === '\r\n' ? '\r\n' : '\n', out = nb.map(function (b, k) { var n = JSON.parse(JSON.stringify(b)); n.visible = o.visible; n.locked = false; if (k === 0) { n.id = o.id; } else { s.seq++; n.id = 'o' + s.seq; s._added = (s._added || []).concat([n.id]); } if (n.src) { n.src = n.src.replace(/\n/g, eol); } if (k === nb.length - 1) { n.gap = o.gap; delete n.gapLines; if (o.gapLines && n.src) { n.gapLines = o.gapLines; } } return n; });
+      s.objects.splice.apply(s.objects, [i, 1].concat(out)); return {}; } },
+    set_doc: { words: function (e) { return '文件設定' + (e.eol ? '：換行 ' + (e.eol === '\r\n' ? 'CRLF' : 'LF') : '') + (e.bom != null ? '：BOM ' + (e.bom ? '有' : '無') : ''); }, apply: function (s, e) { if (e.eol != null) { var ne = e.eol === 'crlf' || e.eol === '\r\n' ? '\r\n' : '\n', oe = s.eol === '\r\n' ? '\r\n' : '\n'; if (ne !== oe) { var cv = function (t) { return String(t).replace(/\r\n|\n/g, ne); }; s.objects.forEach(function (b) { if (b.src) { b.src = cv(b.src); } }); if (s.leadLines) { s.leadLines = s.leadLines.slice(); } s.pad = cv(s.pad || ''); s.eol = ne; } } if (e.bom != null) { s.bom = !!e.bom; } return {}; } },
+    replace_all: { words: function (e) { return '全部取代「' + snippet(e.find, 12) + '」→「' + snippet(e.repl, 12) + '」'; }, apply: function (s, e, H) { var r = replaceAllText(s, e.find, e.repl, { scope: e.scope, caseSensitive: e.caseSensitive, regex: e.regex, whole: e.whole }); if (r.error) { return { error: r.error }; } if (!r.count) { return { error: 'the text "' + snippet(e.find, 30) + '" was not found' }; } return {}; } },
+  };
+  var E = O.make({
+    types: types, extraOps: extraOps, keep: ['format', 'eol', 'bom', 'lead', 'pad', 'leadLines'], limits: { objects: MAXBLOCKS, canvas: 16384 },
+    defaultSpec: function () { return { v: 1, title: '未命名文件', format: 'md', eol: '\n', bom: false, lead: 0, pad: '', canvas: { x: 0, y: 0, w: 800, h: 600, bg: '#ffffff' }, seq: 0, objects: [] }; },
+    describeObject: function (o) { return o.type + (o.text ? ' 「' + snippet(o.text, 24) + '」' : ''); },
+  });
+  function validate(spec) {
+    var r = E.validate(spec), s = r.spec, src = spec && typeof spec === 'object' ? spec : {};
+    s.format = src.format === 'txt' ? 'txt' : 'md'; s.eol = src.eol === '\r\n' ? '\r\n' : '\n'; s.bom = !!src.bom; s.lead = int(src.lead, 0, 100, 0); s.pad = str(src.pad, 100000); if (Array.isArray(src.leadLines)) { s.leadLines = src.leadLines.slice(0, 100).map(function (x) { return str(x, 200); }); }
+    s.objects.forEach(function (b) { if (!b.name || /^(heading|para|list|quote|code|table|hr|raw|line)\b/i.test(b.name) || b.name === (types[b.type] && types[b.type].label)) { b.name = nameOf(b); } });
+    return r;
+  }
+  // 查找取代：scope 'all' 或某個區塊 id；回傳 { count, error? }，直接改傳入的 spec（applyEdits 在複本上呼叫）；碰到的區塊清掉 src
+  function replaceAllText(spec, find, repl, o) {
+    o = o || {}; find = String(find == null ? '' : find); repl = String(repl == null ? '' : repl); if (!find) { return { error: 'find must not be empty' }; }
+    var re; try { re = o.regex ? new RegExp(find, o.caseSensitive ? 'g' : 'gi') : new RegExp(find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), o.caseSensitive ? 'g' : 'gi'); } catch (e) { return { error: 'bad pattern: ' + e.message }; }
+    if (o.whole && !o.regex) { re = new RegExp('\\b' + find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', o.caseSensitive ? 'g' : 'gi'); }
+    var count = 0, scope = o.scope && o.scope !== 'all' ? String(o.scope) : null; var sub = function (t) { return String(t).replace(re, function () { count++; return o.regex ? arguments[0].replace(new RegExp(find, o.caseSensitive ? '' : 'i'), repl) : repl; }); };
+    spec.objects.forEach(function (b) {
+      if (b.locked || (scope && b.id !== scope) || b.type === 'hr') { return; } var before = count, ch = false;
+      if ('text' in b && b.type !== 'raw') { var nt = sub(b.text); if (nt !== b.text) { b.text = nt; ch = true; } }
+      if (b.type === 'list') { b.items = b.items.map(function (x) { var nx = sub(x); if (nx !== x) { ch = true; } return nx; }); }
+      if (b.type === 'table') { b.rows = b.rows.map(function (r) { return r.map(function (c) { var nc = sub(c); if (nc !== c) { ch = true; } return nc; }); }); }
+      if (ch || count !== before) { delete b.src; b.name = nameOf(b); }
+    });
+    return { count: count };
+  }
+  function applyEdits(spec, edits, env) {
+    // replace_all 直接改複本；其餘交給共用的動作；add_block 是 add_object 的別名（較貼近文件的說法）
+    var mapped = (edits || []).map(function (e) { if (e && e.op === 'add_block') { var at = e.at; if (e.after === 'start') { at = 'bottom'; } else if (e.after && e.after !== 'end') { at = { above: e.after }; } else if (e.before) { var bi = E.find(spec, e.before); at = bi >= 0 ? bi : 'top'; } else if (at == null) { at = 'top'; } return { op: 'add_object', object: Object.assign({ type: 'para' }, e.block || e.object || {}), at: at }; } if (e && e.op === 'update_block') { return Object.assign({}, e, { op: 'update_object' }); } if (e && e.op === 'remove_block') { return Object.assign({}, e, { op: 'remove_object' }); } if (e && e.op === 'move_object') { return Object.assign({}, e, { op: 'move_block' }); } return e; });
+    mapped = mapped.map(function (e) { if (e && e.op === 'update_object' && e.props) { var p = Object.assign({}, e.props); if ('text' in p || 'items' in p || 'rows' in p || 'level' in p || 'lang' in p || 'ordered' in p) { p.src = ''; } return Object.assign({}, e, { props: p }); } return e; });
+    var r = E.applyEdits(spec, mapped, env);
+    // 結尾的空白行數屬於「文件的結尾」，不屬於哪個區塊：最後一個區塊換人時（搬動、刪除、在最後加）把它交給新的最後一個，舊的改成普通的一個空白行
+    var o0 = spec.objects, ol = o0.length ? o0[o0.length - 1] : null, n1 = r.spec.objects, nl = n1.length ? n1[n1.length - 1] : null;
+    if (spec.format !== 'txt' && ol && nl && nl.id !== ol.id) { var tg = ol.gap, tl = ol.gapLines; n1.forEach(function (b) { if (b.id === ol.id) { b.gap = 1; delete b.gapLines; } }); nl.gap = tg; if (tl && nl.src) { nl.gapLines = tl; } else { delete nl.gapLines; } }
+    // add_object 進來的區塊沒有 src；名字統一
+    r.spec.objects.forEach(function (b) { if (!b.name || b.name === (types[b.type] && types[b.type].label) || /^(heading|para|list|quote|code|table|hr|raw|line)\s*\d*$/i.test(b.name)) { b.name = nameOf(b); } if (b.src === '') { delete b.src; } });
+    return r;
+  }
+  // ───── 程式讀得懂的白話（不經過模型）：改字、全部取代、加／刪區塊、標題層級、清單、移動。讀不懂的回 unmatched 交給 AI。「第 N 段」從文件開頭算
+  function parseCommands(text, spec) {
+    var out = { edits: [], matched: [], unmatched: [] }, s = validate(spec).spec, bl = s.objects, all = bl.map(function (b) { return JSON.stringify(b); }).join('\n').toLowerCase();
+    function ref(r) {
+      r = String(r || '').trim().replace(/^[「"'『]|[」"'』]$/g, ''); var m = /^(?:第\s*)?(\d+)\s*(?:個|段|節|行|項|區塊|號)?$/.exec(r); if (m) { var k = Number(m[1]) - 1; return k >= 0 && k < bl.length ? bl[k].id : null; }
+      if (/^(最後|最後一段|最後一個|最後一行)$/.test(r)) { return bl.length ? bl[bl.length - 1].id : null; } if (/^(第一|第一段|第一個|第一行|開頭)$/.test(r)) { return bl.length ? bl[0].id : null; }
+      var i = E.find(s, r); if (i >= 0) { return bl[i].id; } var low = r.toLowerCase(), hit = bl.filter(function (b) { return String(b.name || '').toLowerCase().indexOf(low) >= 0 || String(b.text || (b.items || []).join(' ') || '').toLowerCase().indexOf(low) >= 0; }); return hit.length === 1 ? hit[0].id : null;
+    }
+    var clauses = String(text || '').split(/[。；;\n]+/).map(function (x) { return x.trim(); }).filter(Boolean);
+    clauses.forEach(function (c) {
+      var m, e = null, id;
+      if ((m = /^(?:把|將)?\s*(?:所有的?|全部的?)?[「"'『](.+?)[」"'』]\s*(?:全部)?(?:都)?(?:改成|換成|改為|取代成|取代為|替換成)\s*[「"'『]?(.*?)[」"'』]?$/.exec(c)) && all.indexOf(m[1].toLowerCase()) >= 0) { e = { op: 'replace_all', find: m[1], repl: m[2] }; }
+      else if ((m = /^(?:把|將)?\s*(.+?)\s*(?:刪掉|刪除|移除|拿掉)$/.exec(c)) || (m = /^(?:刪掉|刪除|移除|拿掉)\s*(.+)$/.exec(c))) { id = ref(m[1]); if (id) { e = { op: 'remove_block', id: id }; } }
+      else if ((m = /^(?:把|將)?\s*(.+?)\s*(?:改成|換成|改為)\s*(?:第?\s*([1-6一二三四五六])\s*(?:級|層)標題|H([1-6])|標題\s*([1-6]))$/i.exec(c))) { id = ref(m[1]); var lv = m[2] || m[3] || m[4], zh = { '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6 }; if (id) { e = { op: 'set_heading', id: id, level: zh[lv] || Number(lv) }; } }
+      else if ((m = /^(?:把|將)?\s*(.+?)\s*(?:改成|換成|變成|轉成)\s*(編號清單|項目清單|項目符號清單|清單|引用|引言|程式碼|一般段落|段落)$/.exec(c))) { id = ref(m[1]); var to = { '編號清單': 'olist', '項目清單': 'list', '項目符號清單': 'list', '清單': 'list', '引用': 'quote', '引言': 'quote', '程式碼': 'code', '一般段落': 'para', '段落': 'para' }[m[2]]; if (id && to) { e = { op: 'convert_block', id: id, to: to }; } }
+      else if ((m = /^(?:把|將)?\s*(.+?)\s*(?:移到最前面|移到最前|移到開頭|移到最上面|移到最後面|移到最後|移到結尾|往前一個|往前移|往上移|上移|往後一個|往後移|往下移|下移)$/.exec(c))) { id = ref(m[1]); var w = c.slice(c.length - 6); if (id) { e = { op: 'move_object', id: id, to: /最前|開頭|最上/.test(c) ? 'first' : /最後|結尾/.test(c) ? 'last' : /前|上移|往上/.test(c) ? 'earlier' : 'later' }; } }
+      else if ((m = /^(?:把|將)?\s*(.+?)\s*(?:改成|換成|改為)\s*[：:]?\s*(.+)$/.exec(c)) && !/^[「"'『]/.test(m[1]) && (id = ref(m[1]))) { var bo = bl[E.find(s, id)]; if (bo && 'text' in types[bo.type].defaults && bo.type !== 'raw') { e = { op: 'set_text', id: id, text: m[2].replace(/^[「"'『]|[」"'』]$/g, '') }; } }
+      else if ((m = /^(?:在)?\s*(最後|結尾|文末|最前面|開頭|文首|(?:第\s*\d+\s*(?:段|個|行|節)|.+?)(?:的)?(?:後面|之後|下面))\s*(?:加|新增|加入|插入|補)\s*(?:上)?\s*(?:一個|一段|一行|一條)?\s*(?:(?:([1-6一二三四五六])\s*(?:級|層)標題|標題)|(清單|項目清單|編號清單|段落|引用))?\s*[：:]?\s*(.+)$/.exec(c)) && !(spec.format === 'txt' && false)) {
+        var where = m[1], hz = { '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6 }, isH = /標題/.test(c.slice(0, c.length - m[4].length)), after = /最後|結尾|文末/.test(where) ? 'end' : /最前面|開頭|文首/.test(where) ? 'start' : ref(where.replace(/(?:的)?(?:後面|之後|下面)$/, ''));
+        if (after) { var body = m[4], kind = m[3] || '', blk = isH ? { type: 'heading', text: body, level: hz[m[2]] || Number(m[2]) || 2 } : /清單/.test(kind) ? { type: 'list', ordered: /編號/.test(kind), items: body.split(/[、,，\n]/).map(function (x) { return x.trim(); }).filter(Boolean) } : kind === '引用' ? { type: 'quote', text: body } : s.format === 'txt' ? { type: 'line', text: body } : { type: 'para', text: body }; if (s.format === 'txt') { blk = { type: 'line', text: body }; } e = { op: 'add_block', after: after, block: blk }; }
+      }
+      if (!e && (m = /^(?:把|將)\s*(.+?)\s*全部(?:都)?(?:改成|換成|取代成|取代為)\s*(.+)$/.exec(c)) && all.indexOf(m[1].toLowerCase()) >= 0) { e = { op: 'replace_all', find: m[1].replace(/^[「"'『]|[」"'』]$/g, ''), repl: m[2].replace(/^[「"'『]|[」"'』]$/g, '') }; }
+      if (!e && s.format !== 'txt' && (m = /^(?:加|新增|加入)\s*(?:一個)?\s*(?:([1-6一二三四五六])\s*(?:級|層))?標題\s*[：:]?\s*(.+)$/.exec(c))) { e = { op: 'add_block', after: 'end', block: { type: 'heading', text: m[2], level: ({ '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6 })[m[1]] || Number(m[1]) || 2 } }; }
+      if (e) { out.edits.push(e); out.matched.push(c); } else { out.unmatched.push(c); }
+    });
+    return out;
+  }
+  var AI_OPS = ['set_text', 'set_heading', 'list_toggle', 'set_cell', 'replace_all', 'convert_block', 'add_block', 'update_block', 'remove_block', 'move_object', 'rename_object', 'duplicate_object', 'set_title'];
+  // 給模型的提示：文件的大綱（每個區塊的 id 與開頭）＋選到的區塊全文＋可用動作。很短的文件整份放進去；長的只放每個區塊前 160 字
+  function editPrompt(spec, request, selection, o) {
+    o = o || {}; var s = validate(spec).spec, budget = o.budget || 9000, total = s.objects.reduce(function (n, b) { return n + (b.text || (b.items || []).join('') || (b.rows || []).join('')).length; }, 0), full = total <= budget;
+    var lines = s.objects.map(function (b, i) { var body = b.type === 'list' ? b.items.map(function (x) { return '- ' + x; }).join('\n') : b.type === 'table' ? b.rows.map(function (r) { return r.join(' | '); }).join('\n') : (b.text || ''); if (!(full || b.id === selection)) { body = body.length > 160 ? body.slice(0, 160) + '…' : body; } return (i + 1) + '. [' + b.id + '] ' + b.type + (b.type === 'heading' ? ' H' + b.level : '') + (b.locked ? ' (locked)' : '') + (b.id === selection ? ' (selected)' : '') + '\n' + body; });
+    var system = 'You edit a ' + (s.format === 'txt' ? 'plain text file (one block = one line)' : 'Markdown document') + ' by answering ONLY with JSON {"say":"one short sentence","edits":[...]}. Every edit is one of these actions (ids come from the list; never invent ids):\n'
+      + '{op:"set_text",id,text} replace the text of a heading/paragraph/quote/code/line block\n{op:"set_heading",id,level:1-6} make a block a heading of that level\n{op:"list_toggle",id,ordered:true|false} turn a paragraph into a list or switch bullets/numbers\n{op:"set_cell",id,row,col,text} one table cell (0-based)\n{op:"replace_all",find,repl,scope?:blockId,caseSensitive?,regex?} find and replace\n'
+      + '{op:"convert_block",id,to:"para|quote|code|heading|list|olist"}\n{op:"add_block",after:"start|end|<blockId>",block:{type:"heading|para|list|quote|code|table|hr' + (s.format === 'txt' ? '|line' : '') + '",text?,level?,items?,ordered?,lang?,rows?}}\n{op:"update_block",id,props:{…}}  {op:"remove_block",id}  {op:"move_object",id,to:"earlier|later|first|last|<position>"}  {op:"duplicate_object",id}  {op:"set_title",text}\n'
+      + 'Change only what was asked; keep the rest of the document untouched. Write new text in the language of the document. If the request cannot be done with these actions, return {"say":"why","edits":[]}.';
+    return { system: system, user: 'Document "' + s.title + '" (' + s.objects.length + ' blocks' + (full ? '' : ', long: bodies shortened' ) + '):\n\n' + (lines.join('\n\n') || '(empty)') + '\n\nRequest: ' + String(request || '') };
+  }
+  function parseEditsReply(text) { return O.parseEditsReply(text, AI_OPS); }
+  // ───── 預覽與匯出 HTML：所有文字先跳脫，再加上我們自己的標籤（連結只收 http／https／mailto），所以預覽可以直接當 innerHTML
+  function esc(t) { return String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+  function inlineHtml(t, depth) {
+    t = String(t == null ? '' : t); depth = depth || 0; var re = /(`+)([\s\S]*?[^`])\1(?!`)|\*\*([^*\n]+?)\*\*|__([^_\n]+?)__|~~([^~\n]+?)~~|\*([^*\n]+?)\*|!\[([^\]\n]*)\]\(([^)\s]*)[^)\n]*\)|\[([^\]\n]+)\]\(([^)\s]*)[^)\n]*\)|<(https?:\/\/[^>\s]+)>/g, out = '', last = 0, m;
+    while ((m = re.exec(t))) {
+      out += esc(t.slice(last, m.index)); last = re.lastIndex;
+      if (m[2] != null) { out += '<code>' + esc(m[2]) + '</code>'; } else if (m[3] != null || m[4] != null) { out += '<strong>' + (depth < 3 ? inlineHtml(m[3] != null ? m[3] : m[4], depth + 1) : esc(m[3] || m[4])) + '</strong>'; } else if (m[5] != null) { out += '<del>' + esc(m[5]) + '</del>'; } else if (m[6] != null) { out += '<em>' + (depth < 3 ? inlineHtml(m[6], depth + 1) : esc(m[6])) + '</em>'; }
+      else if (m[8] != null) { out += '<span class="img">🖼 ' + esc(m[7] || m[8]) + '</span>'; }
+      else if (m[9] != null) { out += /^(https?:|mailto:)/i.test(m[10]) ? '<a href="' + esc(m[10]) + '" target="_blank" rel="noopener noreferrer">' + esc(m[9]) + '</a>' : esc(m[9]); }
+      else if (m[11] != null) { out += '<a href="' + esc(m[11]) + '" target="_blank" rel="noopener noreferrer">' + esc(m[11]) + '</a>'; }
+    }
+    return out + esc(t.slice(last));
+  }
+  function blockHtml(b) {
+    switch (b.type) {
+      case 'heading': return '<h' + b.level + '>' + inlineHtml(b.text) + '</h' + b.level + '>';
+      case 'para': return '<p>' + inlineHtml(b.text).replace(/\n/g, '<br>') + '</p>';
+      case 'line': return '<div class="ln">' + (b.text === '' ? '&nbsp;' : esc(b.text)) + '</div>';
+      case 'quote': return '<blockquote>' + inlineHtml(b.text).replace(/\n/g, '<br>') + '</blockquote>';
+      case 'list': return '<' + (b.ordered ? 'ol' : 'ul') + '>' + b.items.map(function (x) { return '<li>' + inlineHtml(x).replace(/\n/g, '<br>') + '</li>'; }).join('') + '</' + (b.ordered ? 'ol' : 'ul') + '>';
+      case 'code': return '<pre><code' + (b.lang ? ' class="language-' + esc(b.lang) + '"' : '') + '>' + esc(b.text) + '</code></pre>';
+      case 'table': { var al = function (i) { return b.align && b.align[i] ? ' style="text-align:' + b.align[i] + '"' : ''; }; return '<table><thead><tr>' + b.rows[0].map(function (c, i) { return '<th' + al(i) + '>' + inlineHtml(c) + '</th>'; }).join('') + '</tr></thead><tbody>' + b.rows.slice(1).map(function (r) { return '<tr>' + r.map(function (c, i) { return '<td' + al(i) + '>' + inlineHtml(c) + '</td>'; }).join('') + '</tr>'; }).join('') + '</tbody></table>'; }
+      case 'hr': return '<hr>';
+      default: return '<pre class="raw">' + esc(b.text) + '</pre>';
+    }
+  }
+  function toHtml(spec, o) { o = o || {}; var s = validate(spec).spec; return '<!doctype html>\n<html><head><meta charset="utf-8"><title>' + esc(s.title) + '</title><style>body{font:16px/1.7 system-ui,"Microsoft JhengHei",sans-serif;max-width:48em;margin:2em auto;padding:0 1em;color:#1f2328}pre{background:#f6f8fa;padding:.8em;overflow:auto;border-radius:6px}code{background:#f6f8fa;padding:0 .25em;border-radius:3px}pre code{padding:0}blockquote{margin:1em 0;padding:0 1em;border-left:4px solid #d0d7de;color:#59636e}table{border-collapse:collapse}td,th{border:1px solid #d0d7de;padding:.3em .7em}img{max-width:100%}</style></head><body>\n' + s.objects.filter(function (b) { return b.visible !== false; }).map(blockHtml).join('\n') + '\n</body></html>\n'; }
+  // 把整份原始碼重新解析，但沒變的區塊沿用原本的 id、名字、顯示／鎖定（前後相同的先配對，中間用最長共同子序列）：改原始碼不會讓每個區塊都換 id（遠端共筆與 AI 引用 id 才不會斷）
+  function reparse(spec, text) {
+    var old = validate(spec).spec, nu = parse(text, old.format), a = old.objects, b = nu.objects, key = function (x) { return x.type + '\u0001' + (x.src != null && x.src !== '' ? x.src : render(x)); };
+    var ka = a.map(key), kb = b.map(key), n = a.length, m = b.length, p = 0; while (p < n && p < m && ka[p] === kb[p]) { p++; } var q = 0; while (q < n - p && q < m - p && ka[n - 1 - q] === kb[m - 1 - q]) { q++; }
+    var map = {}; for (var i = 0; i < p; i++) { map[i] = i; } for (var j = 0; j < q; j++) { map[m - 1 - j] = n - 1 - j; }
+    var na = n - p - q, nb = m - p - q;
+    if (na > 0 && nb > 0 && na * nb <= 4000000) { var L = []; for (var x = 0; x <= na; x++) { L.push(new Int32Array(nb + 1)); } for (x = na - 1; x >= 0; x--) { for (var y = nb - 1; y >= 0; y--) { L[x][y] = ka[p + x] === kb[p + y] ? L[x + 1][y + 1] + 1 : Math.max(L[x + 1][y], L[x][y + 1]); } } x = 0; y = 0; while (x < na && y < nb) { if (ka[p + x] === kb[p + y]) { map[p + y] = p + x; x++; y++; } else if (L[x + 1][y] >= L[x][y + 1]) { x++; } else { y++; } } }
+    // 兩個配對點之間，舊的與新的區塊一樣多：視為「改了內容」，依位置一對一沿用 id（改一段字不會讓那一段換 id）
+    var pairs = []; for (var k0 = 0; k0 < m; k0++) { if (map[k0] != null) { pairs.push([map[k0], k0]); } } pairs.unshift([-1, -1]); pairs.push([n, m]);
+    for (var g = 0; g + 1 < pairs.length; g++) { var oa = pairs[g + 1][0] - pairs[g][0] - 1, ob = pairs[g + 1][1] - pairs[g][1] - 1; if (oa > 0 && oa === ob) { for (var t = 1; t <= oa; t++) { map[pairs[g][1] + t] = pairs[g][0] + t; } } }
+    var used = {}; a.forEach(function (o) { used[o.id] = 1; }); var seq = old.seq || 0; a.forEach(function (o) { var mm = /^[bo](\d+)$/.exec(o.id); if (mm) { seq = Math.max(seq, Number(mm[1])); } });
+    var out = b.map(function (nb2, k) { var o = map[k] != null ? a[map[k]] : null, r = JSON.parse(JSON.stringify(nb2)); if (o) { r.id = o.id; r.name = o.name; r.visible = o.visible; r.locked = o.locked; } else { do { seq++; } while (used['o' + seq]); r.id = 'o' + seq; used[r.id] = 1; } return r; });
+    var next = JSON.parse(JSON.stringify(nu)); next.objects = out; next.title = old.title; next.seq = seq; return validate(next).spec;
+  }
+  var STARTERS = [
+    { id: 'blank', label: '空白文件', desc: '從零開始。', spec: function () { return { v: 1, title: '未命名文件', format: 'md', objects: [{ type: 'heading', text: '標題', level: 1 }, { type: 'para', text: '' }] }; } },
+    { id: 'notes', label: '會議記錄', desc: '日期、出席、討論、待辦。', spec: function () { return { v: 1, title: '會議記錄', format: 'md', objects: [{ type: 'heading', text: '會議記錄', level: 1 }, { type: 'para', text: '日期：' }, { type: 'heading', text: '出席', level: 2 }, { type: 'list', items: [''] }, { type: 'heading', text: '討論', level: 2 }, { type: 'para', text: '' }, { type: 'heading', text: '待辦', level: 2 }, { type: 'list', items: [''] }] }; } },
+    { id: 'readme', label: 'README', desc: '專案說明的骨架。', spec: function () { return { v: 1, title: 'README', format: 'md', objects: [{ type: 'heading', text: '專案名稱', level: 1 }, { type: 'para', text: '一句話說明這個專案做什麼。' }, { type: 'heading', text: '安裝', level: 2 }, { type: 'code', text: 'npm install', lang: 'bash' }, { type: 'heading', text: '使用', level: 2 }, { type: 'para', text: '' }, { type: 'heading', text: '授權', level: 2 }, { type: 'para', text: 'MIT' }] }; } },
+  ];
+  function starter(id) { var t = STARTERS.filter(function (x) { return x.id === id; })[0]; if (!t) { return null; } var sp = validate(t.spec()).spec; sp.objects.forEach(function (b) { b.name = nameOf(b); }); return sp; }
+  function listStarters() { return STARTERS.map(function (t) { return { id: t.id, label: t.label, desc: t.desc }; }); }
+  function outline(spec) { return spec.objects.filter(function (b) { return b.type === 'heading'; }).map(function (b) { return new Array(b.level).join('  ') + '- ' + b.text; }).join('\n'); }
+  return { types: types, extraOps: extraOps, OPS: E.OPS, validate: validate, applyEdits: applyEdits, editWords: E.editWords, find: E.find, list: E.list, parse: parse, serialize: serialize, render: render, starter: starter, listStarters: listStarters, outline: outline, replaceAllText: replaceAllText, parseCommands: parseCommands, reparse: reparse, toHtml: toHtml, blockHtml: blockHtml, inlineHtml: inlineHtml, editPrompt: editPrompt, parseEditsReply: parseEditsReply, AI_OPS: AI_OPS, nameOf: nameOf, E: E };
+});
+
+}).call(null, undefined, holder);
+return holder.FaEditText;
+})();
+/* EDTEXT-END */
+/* EDTEXTUI-BEGIN */
+const FaEditTextUI = (function () {
+const holder = {};
+(function (module, self) {
+// /edit-markdown 與 /edit-text 的畫面，蓋在共用外框（edit_shell.js）上：中間是「預覽」（一個區塊一塊，單擊選取、雙擊用原本的語法就地改）與「原始碼」（整份文字，套用時沒變的區塊沿用 id），
+// 左邊的物件欄是文件的章節樹（區塊依文件順序），屬性面板改區塊的型別／層級／清單／表格／空行，底部的 AI 對話與記錄是外框的。
+//   FaEditTextUI.mount({ id, state, spec, host, container, restoring, store, windowApi }) -> element (el._ed)
+//   host 除了外框要的以外：openFile?(file) 由 UI 自己讀（FileReader），不需要 host
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaEditTextUI = factory((root.FaEditText || (typeof FaEditText !== 'undefined' ? FaEditText : undefined)), (root.FaEditShell || (typeof FaEditShell !== 'undefined' ? FaEditShell : undefined))); })(typeof self !== 'undefined' ? self : this, function (C, Shell) {
+  'use strict';
+  function h(tag, cls, text) { var e = document.createElement(tag); if (cls) { e.className = cls; } if (text != null) { e.textContent = text; } return e; }
+  var ICON = { heading: '🔠', para: '¶', line: '≡', quote: '❝', list: '☰', code: '⌨', table: '▦', hr: '―', raw: '🧱' };
+  var CSS = '.few .tdoc{flex:1;min-height:0;overflow:auto;max-height:62vh;padding:6px 10px}.few.fwin-pop .tdoc,.few.fwin-max .tdoc{max-height:none}.few .tdoc .blk{position:relative;border-radius:5px;padding:1px 6px;margin:1px 0;border:1px solid transparent;cursor:default}.few .tdoc .blk:hover{background:rgba(120,140,200,.08)}.few .tdoc .blk.sel{border-color:var(--acc);background:rgba(47,129,247,.08)}.few .tdoc .blk.hid{opacity:.4;text-decoration:line-through}.few .tdoc .blk.lk::after{content:"🔒";position:absolute;right:4px;top:2px;font-size:11px}'
+    + '.few .tdoc h1,.few .tdoc h2,.few .tdoc h3,.few .tdoc h4,.few .tdoc h5,.few .tdoc h6{margin:.5em 0 .3em;line-height:1.3}.few .tdoc h1{font-size:1.7em}.few .tdoc h2{font-size:1.4em}.few .tdoc h3{font-size:1.2em}.few .tdoc p{margin:.4em 0;line-height:1.65}.few .tdoc blockquote{margin:.4em 0;padding:0 .9em;border-left:4px solid var(--bd);color:var(--mut)}.few .tdoc pre{margin:.4em 0;padding:.6em;background:var(--hd);border:1px solid var(--bd);border-radius:5px;overflow:auto;font:12px/1.45 ui-monospace,Consolas,monospace}.few .tdoc code{background:var(--hd);padding:0 .25em;border-radius:3px}.few .tdoc pre code{padding:0;background:none}.few .tdoc pre.raw{opacity:.75;border-style:dashed}'
+    + '.few .tdoc table{border-collapse:collapse;margin:.4em 0}.few .tdoc td,.few .tdoc th{border:1px solid var(--bd);padding:.25em .6em}.few .tdoc th{background:var(--hd)}.few .tdoc ul,.few .tdoc ol{margin:.3em 0;padding-left:1.6em}.few .tdoc .ln{white-space:pre-wrap;word-break:break-word;font:13px/1.55 ui-monospace,Consolas,monospace}.few .tdoc .img{color:var(--mut)}.few .tdoc textarea.ed{font:13px/1.5 ui-monospace,Consolas,monospace;min-height:3em;white-space:pre-wrap;resize:vertical}'
+    + '.few .tfind{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:4px 8px;border-bottom:1px solid var(--bd);background:var(--hd)}.few .tfind input{width:9em}';
+  function slug(s) { return String(s || 'document').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ').replace(/\s+/g, '_').replace(/^_+|_+$/g, '').slice(0, 50) || 'document'; }
+  function visibleOnly(spec) { var s = JSON.parse(JSON.stringify(spec)); if (!s.objects.some(function (b) { return b.visible === false; })) { return s; } s.objects = s.objects.filter(function (b) { return b.visible !== false; }); if (s.objects.length) { s.objects[s.objects.length - 1].gap = spec.objects[spec.objects.length - 1].gap; } return s; }
+  function rawOf(b, fmt) { return fmt === 'txt' ? b.text : (b.src != null && b.src !== '' ? b.src : C.render(b)); }
+  function words(spec) { var t = spec.objects.map(function (b) { return b.type === 'list' ? b.items.join(' ') : b.type === 'table' ? b.rows.map(function (r) { return r.join(' '); }).join(' ') : (b.text || ''); }).join(' '); var cjk = (t.match(/[㐀-鿿豈-﫿぀-ヿ가-힯]/g) || []).length, lat = (t.replace(/[㐀-鿿豈-﫿぀-ヿ가-힯]/g, ' ').match(/[^\s]+/g) || []).length; return { chars: t.length, words: cjk + lat }; }
+
+  function mount(opt) {
+    var host = opt.host || {}, spec0 = C.validate(opt.spec || {}).spec, fmt = spec0.format === 'txt' ? 'txt' : 'md', kind = fmt === 'txt' ? 'edit-text' : 'edit-markdown';
+    var W = { validate: C.validate, applyEdits: C.applyEdits, editWords: C.editWords, list: C.list, find: C.find };
+    if (!document.getElementById('few-text-css')) { var st = document.createElement('style'); st.id = 'few-text-css'; st.textContent = CSS; (document.head || document.documentElement).appendChild(st); }
+    return Shell.mount({
+      id: opt.id, kind: kind, title: fmt === 'txt' ? '📄 純文字編輯器' : '📝 Markdown 編輯器', W: W, spec: opt.spec, state: opt.state, host: host, container: opt.container, restoring: opt.restoring, windowApi: opt.windowApi,
+      tabs: [{ id: 'doc', label: fmt === 'txt' ? '📄 文件' : '👁 預覽' }, { id: 'source', label: '🧩 原始碼' }],
+      placeholder: fmt === 'txt' ? '用說的改：「把 abc 全部換成 xyz」「刪掉第 3 行」「在最後加一行：結尾」「把全文整理得簡潔一點」' : '用說的改：「把第 2 段改成…」「在最後加一段：…」「把最後一個改成編號清單」「把「舊」全部換成「新」」「幫我寫一個安裝章節」；雙擊任何區塊可以直接改。',
+      intro: fmt === 'txt'
+        ? '我是純文字編輯器：檔案的每一行是一個區塊，沒動到的行會原封不動（換行、空白、結尾換行都保留）。你可以直接改，也可以用說的：換字、加一行、刪一行、移動、整理全文。每一步都能復原。'
+        : '我是 Markdown 編輯器：文件分成一個個區塊（標題、段落、清單、表格、程式碼…），沒動到的區塊會原封不動，不會把你的檔案重新排版。單擊選取、雙擊就地改，也可以對我說：「把第 2 段改成…」「在最後加一段…」「把這段整理成清單」「寫一個安裝章節」。AI 做的每一步都是封閉的動作，可以隨時復原。',
+      objectIcon: function (o) { return ICON[o.type] || '◻'; },
+      objectInfo: function (o) { return o.type === 'heading' ? 'H' + o.level : o.type === 'list' ? (o.ordered ? '編號 ' : '項目 ') + o.items.length : o.type === 'table' ? o.rows.length + '×' + o.rows[0].length : o.type === 'code' ? (o.lang || '程式碼') : fmt === 'txt' ? '' : o.type; },
+      treeRows: function (sp) { var d = 0, rows = []; sp.objects.forEach(function (b) { if (b.type === 'heading') { d = Math.min(5, b.level - 1); rows.push({ obj: b, depth: d }); d = Math.min(5, b.level); } else { rows.push({ obj: b, depth: fmt === 'txt' ? 0 : d }); } }); return rows; },
+      parseCommands: C.parseCommands,
+      promptOf: function (sp, steps) { var L = ['請寫一份' + (fmt === 'txt' ? '純文字' : ' Markdown ') + '文件「' + sp.title + '」，共 ' + sp.objects.length + ' 個區塊。']; var ol = C.outline(sp); if (ol) { L.push('', '大綱：', ol); } var texts = steps.filter(function (s) { return s.text; }); if (texts.length) { L.push('', '（有效的指示，依序）：'); texts.forEach(function (s, i) { L.push((i + 1) + '. ' + s.text + (s.summary ? ' → ' + s.summary : '')); }); } return L.join('\n'); },
+      exports: fmt === 'txt' ? [{ id: 'txt', label: '純文字檔 (.txt)', chat: false }, { id: 'json', label: '專案（JSON）', chat: false }] : [{ id: 'md', label: 'Markdown 檔 (.md)' }, { id: 'html', label: 'HTML 網頁' }, { id: 'txt', label: '純文字', chat: false }, { id: 'json', label: '專案（JSON）', chat: false }],
+      runExport: async function (id, spec) {
+        var name = slug(spec.title);
+        if (id === 'json') { return { blob: new Blob([JSON.stringify(spec, null, 1)], { type: 'application/json' }), name: name + '.json', mime: 'application/json' }; }
+        if (id === 'html') { return { blob: new Blob([C.toHtml(spec)], { type: 'text/html' }), name: name + '.html', mime: 'text/html' }; }
+        if (id === 'md' || id === 'txt') { var out = C.serialize(visibleOnly(spec)); return { blob: new Blob([out], { type: id === 'md' ? 'text/markdown' : 'text/plain' }), name: name + '.' + id, mime: id === 'md' ? 'text/markdown' : 'text/plain' }; }
+        return null;
+      },
+      build: function (ctx) {
+        var spec = null, sel = null, editing = null, docEl = h('div', 'tdoc'), wrap = h('div'), srcWrap = h('div'), fnd = h('input'), rep = h('input'), fstat = h('span', 'st');
+        wrap.style.cssText = 'display:flex;flex-direction:column;flex:1;min-height:0;margin:-8px'; srcWrap.style.cssText = 'display:flex;flex-direction:column;gap:6px;flex:1';
+        // ───── 找／取代（取代是一個動作，可復原；選了區塊就只動那個區塊） ─────
+        var fbar = h('div', 'tfind'), bRep = h('button', null, '全部取代'), bFind = h('button', null, '找下一個'); fnd.placeholder = '尋找'; rep.placeholder = '取代成'; [fnd, rep, bFind, bRep, fstat].forEach(function (x) { fbar.appendChild(x); });
+        function matches() { var q = fnd.value; if (!q || !spec) { return []; } var low = q.toLowerCase(); return spec.objects.filter(function (b) { return (b.text || (b.items || []).join('\n') || (b.rows || []).join('\n') || '').toLowerCase().indexOf(low) >= 0; }); }
+        var fi = -1; fnd.oninput = function () { var m = matches(); fstat.textContent = fnd.value ? m.length + ' 個區塊有' : ''; fi = -1; };
+        bFind.onclick = function () { var m = matches(); if (!m.length) { fstat.textContent = '找不到'; return; } fi = (fi + 1) % m.length; ctx.select(m[fi].id); fstat.textContent = (fi + 1) + '／' + m.length; var el = docEl.querySelector('[data-id="' + m[fi].id + '"]'); if (el && el.scrollIntoView) { el.scrollIntoView({ block: 'nearest' }); } };
+        fnd.onkeydown = function (ev) { if (ev.key === 'Enter') { ev.preventDefault(); bFind.onclick(); } };
+        bRep.onclick = function () { if (!fnd.value) { return; } var r = ctx.apply([{ op: 'replace_all', find: fnd.value, repl: rep.value, scope: sel || undefined }], '取代「' + fnd.value.slice(0, 12) + '」→「' + rep.value.slice(0, 12) + '」' + (sel ? '（選取的區塊）' : ''), '', 'panel'); fstat.textContent = r.applied && r.applied.length ? '已取代' : (r.rejected && r.rejected[0] ? r.rejected[0].error : '沒有取代'); };
+        wrap.appendChild(fbar); wrap.appendChild(docEl);
+        // ───── 預覽：一個區塊一塊 ─────
+        function draw() {
+          if (!spec) { return; } var keepScroll = docEl.scrollTop; docEl.textContent = ''; editing = null;
+          if (!spec.objects.length) { var em = h('div', 'st', '（空的文件：對 AI 說要寫什麼，或按上面的「＋ 區塊」）'); em.style.padding = '12px'; docEl.appendChild(em); }
+          spec.objects.forEach(function (b) {
+            var w = h('div', 'blk' + (b.id === sel ? ' sel' : '') + (b.visible === false ? ' hid' : '') + (b.locked ? ' lk' : '')); w.setAttribute('data-id', b.id); w.innerHTML = C.blockHtml(b);
+            w.onclick = function (ev) { if (editing) { return; } if (ev.target && ev.target.closest && ev.target.closest('a')) { ev.preventDefault(); } ctx.select(b.id === sel ? null : b.id); };
+            w.ondblclick = function (ev) { ev.preventDefault(); ctx.select(b.id); edit(b.id); };
+            docEl.appendChild(w);
+          });
+          docEl.scrollTop = keepScroll;
+        }
+        // 雙擊：用文件原本的語法就地改，Ctrl+Enter 或離開輸入框就套用，Esc 取消
+        // 輸入框的換行一律是 LF；存回去時 replace_block 會換成文件自己的換行
+        function edit(id) {
+          var i = C.find(spec, id); if (i < 0) { return; } var b = spec.objects[i]; if (b.locked) { ctx.say('「' + b.name + '」鎖住了'); return; } var w = docEl.querySelector('[data-id="' + id + '"]'); if (!w) { return; }
+          var ta = h('textarea', 'ed'), raw = rawOf(b, fmt).replace(/\r\n/g, '\n'); ta.value = raw; ta.rows = Math.max(2, Math.min(18, raw.split('\n').length + 1)); ta.spellcheck = false; w.textContent = ''; w.appendChild(ta); editing = id; ta.focus();
+          var done = false; function finish(ok) { if (done) { return; } done = true; editing = null; var v = ta.value; if (ok && v !== raw) { var r = ctx.apply([{ op: 'replace_block', id: id, text: v }], '改寫 ' + b.name, '', 'panel'); if (r && r.rejected && r.rejected.length) { ctx.say(r.rejected[0].error); } if (!(r && r.applied && r.applied.length)) { draw(); } } else { draw(); } }
+          ta.onkeydown = function (ev) { ev.stopPropagation(); if (ev.key === 'Escape') { finish(false); } else if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); finish(true); } };
+          ta.onblur = function () { finish(true); }; ta.onclick = function (ev) { ev.stopPropagation(); };
+        }
+        // ───── 新增區塊／開啟檔案 ─────
+        var addSel = h('select'), NEW = fmt === 'txt' ? [['line', '一行']] : [['para', '段落'], ['heading', '標題'], ['list', '清單'], ['olist', '編號清單'], ['quote', '引用'], ['code', '程式碼'], ['table', '表格'], ['hr', '分隔線']];
+        var a0 = h('option', null, '＋ 區塊'); a0.value = ''; addSel.appendChild(a0); NEW.forEach(function (x) { var o = h('option', null, x[1]); o.value = x[0]; addSel.appendChild(o); });
+        addSel.title = '在選取的區塊後面（沒選就在最後）加一個新區塊，並直接開始打字';
+        addSel.onchange = function () {
+          var t = addSel.value; addSel.value = ''; if (!t) { return; } var blk = t === 'olist' ? { type: 'list', ordered: true, items: [''] } : t === 'heading' ? { type: 'heading', level: 2, text: '標題' } : t === 'table' ? { type: 'table', rows: [['欄位 1', '欄位 2'], ['', '']] } : t === 'code' ? { type: 'code', text: '', lang: '' } : { type: t, text: t === 'para' ? '新的段落' : t === 'quote' ? '引用' : '', items: t === 'list' ? [''] : undefined };
+          var r = ctx.apply([{ op: 'add_block', after: sel || 'end', block: blk }], '新增' + (NEW.filter(function (x) { return x[0] === t; })[0] || [0, t])[1], '', 'panel'); if (r.added && r.added.length && t !== 'hr') { setTimeout(function () { edit(r.added[r.added.length - 1]); }, 30); }
+        };
+        var openIn = h('input'); openIn.type = 'file'; openIn.accept = '.md,.markdown,.txt,.log,.text,.csv,.tsv,.json,.yaml,.yml,.ini,.conf,.cfg,text/*'; openIn.style.display = 'none';
+        var bOpen = h('button', null, '📂 開啟檔案'); bOpen.title = '把本機的 ' + (fmt === 'txt' ? '文字' : 'Markdown／文字') + '檔讀進來（取代目前的內容，可復原）'; bOpen.onclick = function () { openIn.click(); };
+        function decode(buf) { var u = new Uint8Array(buf); try { return new TextDecoder('utf-8', { fatal: true }).decode(u); } catch (e) { try { return new TextDecoder('big5').decode(u); } catch (e2) { return new TextDecoder('utf-8').decode(u); } } }
+        openIn.onchange = function () { var f = openIn.files && openIn.files[0]; openIn.value = ''; if (!f) { return; } if (f.size > 4000000) { ctx.say('檔案太大（超過 4 MB）'); return; } f.arrayBuffer().then(function (buf) { var text = decode(buf), ns = C.parse(text, fmt); ns.title = f.name.replace(/\.[^.]+$/, '').slice(0, 80) || spec.title; ctx.commit(ns, '開啟檔案 ' + f.name + '（' + ns.objects.length + ' 個區塊）', '', 'panel'); ctx.say('已開啟 ' + f.name); }, function () { ctx.say('讀不了這個檔案'); }); };
+        ctx.bar.appendChild(addSel); ctx.bar.appendChild(bOpen); ctx.bar.appendChild(openIn);
+        // ───── 屬性：選到的區塊（沒選＝文件） ─────
+        function props() {
+          var box = h('div'), o = sel ? spec.objects.filter(function (x) { return x.id === sel; })[0] : null; box.style.cssText = 'display:flex;flex-direction:column;gap:6px';
+          function lab(t, el) { var l = h('label'); l.appendChild(document.createTextNode(t)); l.appendChild(el); return l; }
+          function btn(t, fn, title) { var b = h('button', null, t); if (title) { b.title = title; } b.onclick = fn; return b; }
+          if (!o) {
+            var wc = words(spec), ti = h('input'); ti.type = 'text'; ti.value = spec.title; ti.onchange = function () { if (ti.value.trim()) { ctx.apply([{ op: 'set_title', text: ti.value }], '標題改成「' + ti.value.trim().slice(0, 20) + '」', '', 'panel'); } };
+            box.appendChild(h('div', 'st', '文件：' + spec.objects.length + ' 個區塊・' + wc.chars + ' 字元・約 ' + wc.words + ' 字／詞')); box.appendChild(lab('名稱', ti));
+            var es = h('select'); [['\n', '換行：LF（Unix）'], ['\r\n', '換行：CRLF（Windows）']].forEach(function (x) { var op = h('option', null, x[1]); op.value = x[0]; es.appendChild(op); }); es.value = spec.eol === '\r\n' ? '\r\n' : '\n'; es.onchange = function () { ctx.apply([{ op: 'set_doc', eol: es.value }], '換行改成 ' + (es.value === '\r\n' ? 'CRLF' : 'LF'), '', 'panel'); }; box.appendChild(es);
+            var bom = h('input'); bom.type = 'checkbox'; bom.checked = !!spec.bom; bom.onchange = function () { ctx.apply([{ op: 'set_doc', bom: bom.checked }], 'BOM ' + (bom.checked ? '加上' : '拿掉'), '', 'panel'); }; box.appendChild(lab('UTF-8 BOM', bom));
+            box.appendChild(h('div', 'st', '沒有動到的區塊，輸出時一個位元組都不會變。')); return box;
+          }
+          box.appendChild(h('div', 'st', o.name + '（' + o.type + '，' + o.id + '）'));
+          box.appendChild(btn('✏️ 編輯內容（雙擊也行）', function () { edit(o.id); }));
+          if (fmt !== 'txt') {
+            var cv = h('select'), CV = [['', '轉成…'], ['para', '段落'], ['h1', '標題 H1'], ['h2', '標題 H2'], ['h3', '標題 H3'], ['h4', '標題 H4'], ['quote', '引用'], ['code', '程式碼'], ['list', '清單'], ['olist', '編號清單'], ['raw', '原樣保留']]; CV.forEach(function (x) { var op = h('option', null, x[1]); op.value = x[0]; cv.appendChild(op); });
+            cv.onchange = function () { var v = cv.value; cv.value = ''; if (!v) { return; } var e = /^h(\d)$/.test(v) ? (o.type === 'heading' ? { op: 'set_heading', id: o.id, level: Number(v[1]) } : { op: 'convert_block', id: o.id, to: 'heading', level: Number(v[1]) }) : { op: 'convert_block', id: o.id, to: v }; var r = ctx.apply([e], '轉成 ' + (CV.filter(function (x) { return x[0] === v; })[0] || [0, v])[1], '', 'panel'); if (r.rejected && r.rejected[0]) { ctx.say(r.rejected[0].error); } };
+            box.appendChild(cv);
+          }
+          if (o.type === 'code') { var lg = h('input'); lg.type = 'text'; lg.value = o.lang || ''; lg.onchange = function () { ctx.apply([{ op: 'update_block', id: o.id, props: { lang: lg.value } }], '程式碼語言：' + (lg.value || '（無）'), '', 'panel'); }; box.appendChild(lab('語言', lg)); }
+          if (o.type === 'list') { var od = h('input'); od.type = 'checkbox'; od.checked = !!o.ordered; od.onchange = function () { ctx.apply([{ op: 'list_toggle', id: o.id, ordered: od.checked }], od.checked ? '改成編號清單' : '改成項目符號清單', '', 'panel'); }; box.appendChild(lab('編號', od)); }
+          if (o.type === 'table') {
+            var tb = h('div', 'row'); function tset(rows, words2) { ctx.apply([{ op: 'update_block', id: o.id, props: { rows: rows } }], words2, '', 'panel'); }
+            tb.appendChild(btn('＋列', function () { tset(o.rows.concat([o.rows[0].map(function () { return ''; })]), '表格加一列'); })); tb.appendChild(btn('＋欄', function () { tset(o.rows.map(function (r) { return r.concat(['']); }), '表格加一欄'); }));
+            tb.appendChild(btn('－列', function () { if (o.rows.length > 1) { tset(o.rows.slice(0, -1), '表格少一列'); } })); tb.appendChild(btn('－欄', function () { if (o.rows[0].length > 1) { tset(o.rows.map(function (r) { return r.slice(0, -1); }), '表格少一欄'); } })); box.appendChild(tb);
+          }
+          if (fmt !== 'txt') { var gp = h('input'); gp.type = 'number'; gp.min = 0; gp.max = 5; gp.value = Math.max(0, o.gap); gp.title = '這個區塊後面的空白行數（最後一個區塊：結尾換行數）'; gp.onchange = function () { ctx.apply([{ op: 'update_block', id: o.id, props: { gap: Math.max(0, Math.min(5, Number(gp.value) || 0)) } }], o.name + ' 後面的空白行 ' + gp.value, '', 'panel'); }; if (C.find(spec, o.id) < spec.objects.length - 1) { box.appendChild(lab('後面空白行', gp)); } }
+          return box;
+        }
+        // ───── 原始碼：整份文字；套用時沒變的區塊沿用 id ─────
+        var srcTa = h('textarea', 'code'); srcTa.rows = 18; srcTa.spellcheck = false; srcTa.style.flex = '1'; srcTa.style.whiteSpace = 'pre'; var srcRow = h('div', 'row'), bApply = h('button', 'pri', '▶ 套用原始碼'), bRe = h('button', null, '↻ 重新產生'), srcSt = h('span', 'st'); [bApply, bRe, srcSt].forEach(function (x) { srcRow.appendChild(x); });
+        srcWrap.appendChild(h('div', 'st', '整份文件的原始文字（含隱藏的區塊）。改完按「套用原始碼」：沒改到的區塊保持原樣、沿用原本的 id。')); srcWrap.appendChild(srcTa); srcWrap.appendChild(srcRow);
+        function srcText() { return C.serialize(spec); }
+        function eolOf(t) { return String(t).replace(/\r\n|\n/g, spec.eol === '\r\n' ? '\r\n' : '\n'); }   // 輸入框給的是 LF，換回文件自己的換行再比對／解析
+        function refreshSource() { if (document.activeElement !== srcTa) { srcTa.value = srcText(); } }
+        bRe.onclick = function () { srcTa.value = srcText(); srcSt.textContent = ''; };
+        bApply.onclick = function () { var t = eolOf(srcTa.value); if (t === srcText()) { srcSt.className = 'st'; srcSt.textContent = '沒有改動'; return; } var ns = C.reparse(spec, t); ctx.commit(ns, '改寫原始碼（' + ns.objects.length + ' 個區塊）', '', 'panel'); srcSt.className = 'st'; srcSt.textContent = '已套用'; };
+        return {
+          tabs: { doc: wrap, source: srcWrap },
+          env: function () { return {}; },
+          refresh: function (s, selId) { spec = s; sel = selId; if (!editing) { draw(); } ctx.setProps(props()); refreshSource(); var el = selId ? docEl.querySelector('[data-id="' + selId + '"]') : null; if (el && el.scrollIntoView && !editing) { el.scrollIntoView({ block: 'nearest' }); } },
+          showTab: function (t) { if (t === 'source') { srcTa.value = srcText(); } else { draw(); } },
+          destroy: function () { /* 沒有要收的資源 */ }
+        };
+      }
+    });
+  }
+  return { mount: mount, visibleOnly: visibleOnly };
+});
+
+}).call(null, undefined, holder);
+return holder.FaEditTextUI;
+})();
+/* EDTEXTUI-END */
 /* EDPFX-BEGIN */
 const FaPicFx = (function () {
 const holder = {};
@@ -33470,6 +33918,117 @@ const FaEditHost = (function () {
         const proj = await FaEditStore.loadProject('edit-3d', editorId), idx = proj && proj.origin && proj.origin.index; const m = idx != null ? this.messages[idx] : null;
         if (!m || !m._displayScene3DYaml) return false; Object.defineProperty(m, '_displayScene3DYaml', { value: yamlText, enumerable: false, configurable: true, writable: true }); try { this._persistChatHistory(); this._renderMessageHistory(); } catch (_) { /* */ } return true;
     };
+})();
+
+/* /edit-markdown（/edit-md）、/edit-text（/edit-txt）、/edit-file 的主機轉接層(接在 edit_host.js 後面,同一個 FaEditHost)。設計見 DESIGN.edit-docs.md。
+ * 文件是區塊的清單,AI 只能用封閉動作改(FaEditText.AI_OPS);程式讀得懂的白話(parseCommands)由外框先處理,剩下的才交給 AI。
+ * 遠端:登記就帶 remote 宣告(sync:'edits'),所以「AI 在」下拉、by 標籤、一致性檢查都自動涵蓋。 */
+(function () {
+    'use strict';
+    const H = FaEditHost, T = H.T, M = H.methods;
+    const TEXTY = /\.(md|markdown|mdown|txt|text|log|ini|conf|cfg|properties|env|rst|org|tex|srt|vtt|diff|patch)$/i, MD_EXT = /\.(md|markdown|mdown)$/i;
+    const decodeText = (buf) => { const u = new Uint8Array(buf); try { return new TextDecoder('utf-8', { fatal: true }).decode(u); } catch (_) { try { return new TextDecoder('big5').decode(u); } catch (__) { return new TextDecoder('utf-8').decode(u); } } };
+
+    function coreFor(fmt) {
+        const C = FaEditText;
+        return {
+            validate: (s) => C.validate(s),
+            listStarters: () => (fmt === 'txt' ? [{ id: 'blank', label: T('空白文字', 'Blank text'), desc: T('一行空白,從零開始。', 'One empty line.') }] : C.listStarters()),
+            starter: (id) => { if (fmt === 'txt') { const sp = C.parse('', 'txt'); sp.title = T('未命名文字', 'Untitled text'); return C.validate(sp).spec; } return C.starter(String(id || 'blank')); },
+        };
+    }
+    const KIND = (fmt) => {
+        const txt = fmt === 'txt', core = coreFor(fmt);
+        return {
+            fence: txt ? 'fa-edit-text' : 'fa-edit-markdown', icon: txt ? '📄' : '📝', cmd: txt ? '/edit-text' : '/edit-markdown', prefix: txt ? 'tx' : 'md', label: () => (txt ? T('純文字編輯器', 'Plain text editor') : T('Markdown 編輯器', 'Markdown editor')), core: () => core,
+            ui: () => ({ mount: (o) => FaEditTextUI.mount(o) }),
+            lead: txt ? '📄 純文字編輯器:每一行是一個區塊,沒動到的行原封不動(換行、空白、結尾換行都保留)。直接改,或用說的:換字、加一行、刪一行、移動、整理全文。每一步都能復原。'
+                : '📝 Markdown 編輯器:文件分成區塊(標題、段落、清單、表格、程式碼…),沒動到的區塊原封不動、不會重新排版。單擊選取、雙擊就地改;也可以用說的:「把第 2 段改成…」「在最後加一段…」「把這段整理成清單」「寫一個安裝章節」。AI 的每一步都是封閉動作,可以復原。',
+            polishSystem: 'You tidy a prompt that rebuilds a document. Keep every fact (the structure, headings, wording of the user\'s instructions); make it one clear, reusable prompt. Answer with the prompt only.',
+            remote: { sync: 'edits', methods: { ask: { doc: true }, polish: {} } },
+            ask: function (req, ed) { return this._edAskText(req, ed, fmt); },
+        };
+    };
+    H.register('edit-markdown', KIND('md'));
+    H.register('edit-text', KIND('txt'));
+
+    // ───── AI:程式先讀(外框的 parseCommands 已經做過),剩下的請模型回封閉動作;貼的圖用視覺模型轉錄成文字區塊 ─────
+    M._edAskText = async function (req, ed, fmt) {
+        req = req || {}; const A = this._edAi(), C = FaEditText, spec = C.validate(req.spec).spec, text = String(req.text || '').trim(), notes = [], edits = [], status = typeof req.onStatus === 'function' ? req.onStatus : () => {}; let say = '';
+        const sel = req.selection || (req.env && req.env.selection) || null, imgs = (req.images || []).slice(0, 3);
+        for (let i = 0; i < imgs.length; i++) {
+            const im = imgs[i]; status(T('讀圖片裡的文字…', 'Reading the text in the picture…'));
+            try {
+                const out = String(await A.vision(im.dataUrl, T('把這張圖裡的文字照原本的結構轉錄出來(標題、清單、表格請用 Markdown),只輸出轉錄的內容,看不到文字就回答「無」。', 'Transcribe the text in this picture with its structure (Markdown for headings, lists and tables). Output only the transcription; answer "none" if there is no text.'))).trim();
+                if (!out || /^(無|none|沒有)$/i.test(out)) { notes.push(T('「' + (im.name || '圖片') + '」裡沒有讀到文字', 'No text found in "' + (im.name || 'picture') + '"')); continue; }
+                const sub = C.parse(out, fmt === 'txt' ? 'txt' : 'md');
+                sub.objects.forEach((b) => { const blk = Object.assign({}, b); delete blk.id; delete blk.name; edits.push({ op: 'add_block', after: 'end', block: blk }); });
+                say = say || T('把圖裡的文字轉成文件區塊加在最後了。', 'Added the text from the picture at the end.');
+            } catch (e) { notes.push(T('讀圖失敗:', 'Could not read the picture: ') + String((e && e.message) || e).slice(0, 80)); }
+        }
+        if (edits.length && !text) return { say, edits, notes };
+        if (!text) return { say, edits, notes };
+        if (!A.have()) return { say: T('這句話程式沒有讀懂,而且目前沒有可用的 AI;可以雙擊區塊直接改,或說程式讀得懂的句子:「把第 2 段改成…」「在最後加一段:…」「把「舊」全部換成「新」」「刪掉第 3 段」。', 'The program did not understand this and there is no AI; double-click a block to edit it, or use a sentence like "replace X with Y".'), edits, notes };
+        status(T('想一想怎麼改…', 'Working out the changes…'));
+        const offline = this._edIsOffline(), Pm = C.editPrompt(C.applyEdits(spec, edits, {}).spec, text, sel, { budget: offline ? 3500 : 9000 });
+        try {
+            const rep = await A.chat(Pm.system, Pm.user, { maxTokens: offline ? 1800 : 3500, timeoutMs: 150000 }), pr = C.parseEditsReply(rep);
+            if (pr.ok) { pr.edits.forEach((e) => edits.push(e)); if (pr.say) say = say ? say + ';' + pr.say : pr.say; if (pr.dropped) notes.push(T('有 ' + pr.dropped + ' 個動作不在可做的清單裡,已略過', pr.dropped + ' actions were not allowed and were skipped')); }
+            else if (!edits.length) say = T('AI 的回覆我讀不懂(要是 JSON 動作)。換個說法再試一次。', 'I could not read the AI\'s answer (it has to be JSON actions). Say it differently.');
+        } catch (e) { if (!edits.length) say = T('AI 這次沒有回應(', 'The AI did not answer (') + String((e && e.message) || e).slice(0, 80) + ')。'; }
+        return { say, edits, notes };
+    };
+
+    // ───── 開檔:/edit-file 依副檔名分派;其他格式(csv／xlsx／docx)還沒做的明講 ─────
+    M._edOpenTextFile = async function (name, buf, extra) {
+        const text = decodeText(buf), fmt = MD_EXT.test(name) ? 'md' : 'txt', kind = fmt === 'md' ? 'edit-markdown' : 'edit-text', spec = FaEditText.parse(text, fmt); spec.title = String(name).replace(/\.[^.]+$/, '').slice(0, 80) || spec.title || T('未命名文件', 'Untitled');
+        return this._edOpen(kind, Object.assign({ spec, origin: { file: { name: String(name), size: buf.byteLength || 0 } } }, extra || {}));
+    };
+    M._editFileSlash = async function (argsText, run) {
+        const r = run || this, raw = String(argsText || ''), atts = FaRecipe.parseAttachments(raw), nameArg = raw.replace(/\[附件：[^\]]*\]/g, '').trim().replace(/^["「]|["」]$/g, '');
+        r.messages.push({ role: 'user', content: '/edit-file' + (nameArg ? ' ' + nameArg : '') + (atts.length ? '　📎 ' + atts.map((a) => a.filename).join('、') : '') });
+        const say = (t) => { r._pushAssistantMessage(t, null); try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ } };
+        let targets = atts.map((a) => ({ id: a.id, name: a.filename })), all = []; try { all = (await this.fileCache.getAll()).filter((x) => x && x.filename); } catch (_) { /* */ }
+        all.sort((a, b) => (b.createdAt || b.lastAccessedAt || 0) - (a.createdAt || a.lastAccessedAt || 0));
+        if (!targets.length && nameArg) { const low = nameArg.toLowerCase(), hit = all.filter((x) => x.id === low || String(x.filename).toLowerCase() === low), part = hit.length ? hit : all.filter((x) => String(x.filename).toLowerCase().includes(low)); targets = part.slice(0, 3).map((x) => ({ id: x.id, name: x.filename })); if (!targets.length) { say(T('找不到檔案「' + nameArg + '」。先附上檔案(📎、拖進來、貼上)再下 /edit-file,或用 /edit-markdown、/edit-text 開空白的。', 'No such file: ' + nameArg)); return; } }
+        if (!targets.length) { const x = all.find((y) => TEXTY.test(y.filename)); if (x) targets = [{ id: x.id, name: x.filename }]; }
+        if (!targets.length) { say(T('用法:/edit-file [檔名]　先附上檔案再下 /edit-file。目前可以編輯:Markdown(.md)與純文字(.txt、.log、.ini…);csv、xlsx、docx 還在做。', 'Usage: /edit-file [name] — Markdown and plain text for now; csv, xlsx, docx are coming.')); return; }
+        for (const tg of targets.slice(0, 3)) {
+            if (!TEXTY.test(tg.name)) { say(T('「' + tg.name + '」這種格式的編輯器還沒做(目前:.md 與純文字)。用 /view 可以先看 csv／xlsx。', '"' + tg.name + '": no editor for this format yet.')); continue; }
+            try { const rec = await this.fileCache.get(tg.id); if (!rec || !rec.blob) { say(T('讀不到「' + tg.name + '」', 'Could not read ' + tg.name)); continue; } if (rec.blob.size > 4000000) { say(T('「' + tg.name + '」超過 4 MB,太大了。', tg.name + ' is over 4 MB.')); continue; } const res = await this._edOpenTextFile(tg.name, await rec.blob.arrayBuffer()); if (res && res.ok === false) say('⚠️ ' + (res.error || T('開不起來', 'could not open it'))); }
+            catch (e) { say('⚠️ ' + T('開不起來:', 'Could not open it: ') + String((e && e.message) || e)); }
+        }
+    };
+
+    // ───── 斜線指令與工具 ─────
+    M._registerEditDocsCommands = function () {
+        const hint = '[起手式｜一句話描述]';
+        const mdDesc = 'Markdown 編輯器(區塊式,沒動到的區塊原封不動):單擊選取、雙擊就地改;用說的:「把第 2 段改成…」「在最後加一段:…」「把最後一個改成編號清單」「把「舊」全部換成「新」」「寫一個安裝章節」。物件欄是文件的章節樹;可復原、整理成 prompt、匯出 .md／HTML、開啟本機檔案。/edit-markdown readme 從起手式開始。';
+        const txtDesc = '純文字編輯器(一行一個區塊,換行、空白、結尾換行都保留):換字、加一行、刪一行、移動、整理全文;可復原、匯出 .txt、開啟本機檔案。';
+        const mk = (kind) => async (argsText, run0) => (run0 || this)._edCommand(kind, argsText, run0);
+        this.register_slash_command('/edit-markdown', hint, mdDesc, mk('edit-markdown'));
+        this.register_slash_command('/edit-md', hint, 'Markdown 編輯器:/edit-markdown 的別名。', mk('edit-markdown'));
+        this.register_slash_command('/edit-text', '[一句話描述]', txtDesc, mk('edit-text'));
+        this.register_slash_command('/edit-txt', '[一句話描述]', '純文字編輯器:/edit-text 的別名。', mk('edit-text'));
+        this.register_slash_command('/edit-file', '[檔名]', '依副檔名開編輯器:.md 開 Markdown 編輯器,.txt／.log／.ini… 開純文字編輯器(csv、xlsx、docx 還在做)。先附上檔案(📎、拖進來、貼上)再下 /edit-file,或 /edit-file 檔名;不帶參數開最近上傳的文字檔。', (argsText, run0) => (run0 || this)._editFileSlash(argsText, run0));
+    };
+    const prevRegister = M._registerEditCommands; M._registerEditCommands = function () { if (prevRegister) prevRegister.call(this); this._registerEditDocsCommands(); };
+    M._registerEditDocsTools = function (registerOptional) {
+        const parse = async (self, raw) => { let a = {}; try { a = await self.repairJsonPayload(String(raw || '{}')); } catch (_) { /* */ } return a || {}; };
+        const open = (kind, label) => registerOptional(kind === 'edit-markdown' ? 'edit_markdown_open' : 'edit_text_open',
+            '在對話裡放一個「' + label + '」(區塊式文件編輯器,沒動到的區塊原封不動):使用者用說的改(把第 2 段改成…、在最後加一段、把這段整理成清單、全部取代),或雙擊區塊直接改;可復原、匯出、開啟本機檔案。參數:starter(' + (kind === 'edit-markdown' ? 'blank、notes、readme' : 'blank') + ')、text(開起來時的初始內容)、title、request(一句話:開起來後編輯器自己的 AI 去做)、file_id(使用者附的文字檔)、id(接著原本的專案)。做完編輯器就在對話裡,不要把整份文件貼到對話。參數: {"starter":"blank","text":"(選填)","request":"(選填)","file_id":"(選填)","id":"(選填)"}',
+            async function (rawArgs) {
+                const a = await parse(this, rawArgs);
+                try {
+                    if (a.file_id) { const rec = await this.fileCache.get(String(a.file_id)); if (!rec || !rec.blob) return JSON.stringify({ ok: false, error: 'no such file: ' + a.file_id }); return JSON.stringify(await this._edOpenTextFile(rec.filename || 'document.txt', await rec.blob.arrayBuffer(), { request: a.request })); }
+                    let spec = a.spec; if (!spec && a.text) { spec = FaEditText.parse(String(a.text), kind === 'edit-text' ? 'txt' : 'md'); if (a.title) spec.title = String(a.title).slice(0, 80); }
+                    return JSON.stringify(await this._edOpen(kind, { starter: a.starter, request: a.request, spec, id: a.id }));
+                } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+            },
+            { type: 'object', properties: { starter: { type: 'string', description: '起手式' }, text: { type: 'string', description: '開起來時的初始內容' }, title: { type: 'string', description: '文件名稱' }, request: { type: 'string', description: '一句話要怎麼改或寫什麼' }, file_id: { type: 'string', description: '使用者附的文字檔' }, id: { type: 'string', description: '接著原本的專案' } }, additionalProperties: false });
+        open('edit-markdown', 'Markdown 編輯器'); open('edit-text', '純文字編輯器');
+    };
+    { const prevTools = M._registerEditTools; M._registerEditTools = function (ro) { if (prevTools) prevTools.call(this, ro); this._registerEditDocsTools(ro); }; }
 })();
 
 /* EDITHOST-END */

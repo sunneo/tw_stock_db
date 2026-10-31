@@ -43,7 +43,7 @@
       });
       var maxSeq = Number(r.seq) || 0; s.objects.forEach(function (o) { var m = /^o(\d+)$/.exec(o.id || ''); if (m) { maxSeq = Math.max(maxSeq, Number(m[1])); } });
       s.objects.forEach(function (o) { if (!o.id) { do { maxSeq++; } while (ids['o' + maxSeq]); o.id = 'o' + maxSeq; ids[o.id] = 1; } });
-      s.seq = maxSeq;
+      s.seq = maxSeq; if (cfg.keep) { cfg.keep.forEach(function (k) { if (r[k] !== undefined) { s[k] = JSON.parse(JSON.stringify(r[k])); } }); }   // 編輯器自己的文件欄位（例如 markdown 的換行與 BOM）原樣帶著走
       return { ok: true, spec: s, problems: problems };
     }
     function byId(spec, id) { for (var i = 0; i < spec.objects.length; i++) { if (spec.objects[i].id === id) { return i; } } return -1; }

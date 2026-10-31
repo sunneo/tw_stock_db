@@ -294,18 +294,22 @@ embedRemote();
 
 // /edit-svg、/edit-picture（與 /edit-3d-model）：共用外框、編輯器本體（外掛移植，純函式加 DOM）與主機轉接層。順序＝相依順序（依賴的 const 要先定義）
 const EDIT_MODULES = [['edit_objects_core', 'EDOBJ', 'FaEditObjects'], ['edit_viewport', 'EDVP', 'FaEditViewport'], ['edit_store', 'EDSTORE', 'FaEditStore'], ['picture_source', 'EDPSRC', 'FaPictureSource'], ['edit_pictures', 'EDPICS', 'FaEditPictures'], ['edit_i18n', 'EDI18N', 'FaEditI18n'], ['edit_shell', 'EDSHELL', 'FaEditShell'],
-    ['edit_offline', 'EDOFF', 'FaEditOffline'], ['edit_cases', 'EDCASES', 'FaEditCases'], ['subject_research', 'SUBJRES', 'FaSubjectResearch'], ['subject_3d', 'SUBJ3D', 'FaSubject3d'], ['parts_sheet', 'PSHEET', 'FaPartsSheet'], ['cad_sheet', 'CADSHEET', 'FaCadSheet'], ['edit_svg_core', 'EDSVG', 'FaEditSvg'], ['svg_trace', 'EDTRACE', 'FaSvgTrace'], ['edit_svg_ui', 'EDSVGUI', 'FaEditSvgUI'], ['pic_fx', 'EDPFX', 'FaPicFx'], ['pic_detail', 'EDPDET', 'FaPicDetail'], ['edit_picture_core', 'EDPIC', 'FaEditPicture'], ['edit_picture_ui', 'EDPICUI', 'FaEditPictureUI'], ['edit_picture_i18n', 'EDPICI18N', 'FaEditPictureI18n'],
+    ['edit_offline', 'EDOFF', 'FaEditOffline'], ['edit_cases', 'EDCASES', 'FaEditCases'], ['subject_research', 'SUBJRES', 'FaSubjectResearch'], ['subject_3d', 'SUBJ3D', 'FaSubject3d'], ['parts_sheet', 'PSHEET', 'FaPartsSheet'], ['cad_sheet', 'CADSHEET', 'FaCadSheet'], ['edit_svg_core', 'EDSVG', 'FaEditSvg'], ['svg_trace', 'EDTRACE', 'FaSvgTrace'], ['edit_svg_ui', 'EDSVGUI', 'FaEditSvgUI'], ['text_core', 'EDTEXT', 'FaEditText'], ['text_ui', 'EDTEXTUI', 'FaEditTextUI'], ['pic_fx', 'EDPFX', 'FaPicFx'], ['pic_detail', 'EDPDET', 'FaPicDetail'], ['edit_picture_core', 'EDPIC', 'FaEditPicture'], ['edit_picture_ui', 'EDPICUI', 'FaEditPictureUI'], ['edit_picture_i18n', 'EDPICI18N', 'FaEditPictureI18n'],
     ['mesh_gen', 'MESHGEN', 'FaMeshGen'], ['edit3d_core', 'ED3D', 'FaEdit3d'], ['edit3d_part_core', 'ED3DP', 'FaEdit3dPart'], ['edit3d_ui', 'ED3DUI', 'FaEdit3dUI']];
 function embedEdit() {
     const dir = path.join(root, 'renderer/src/edit');
     for (const [fn, mark, name] of EDIT_MODULES) {
         const pf = path.join(dir, fn + '.js'); if (!fs.existsSync(pf)) continue;
         const core = fs.readFileSync(pf, 'utf8').replace(/\r\n/g, '\n');
-        const a = src.indexOf('/* ' + mark + '-BEGIN */'), b = src.indexOf('/* ' + mark + '-END */'); if (a < 0 || b < 0) throw new Error('找不到 ' + mark + ' 標記');
+        let a = src.indexOf('/* ' + mark + '-BEGIN */'), b = src.indexOf('/* ' + mark + '-END */');
+        if (a < 0 || b < 0) {   // 新的模組：標記自動放在前一個模組的後面
+            const k = EDIT_MODULES.findIndex((x) => x[0] === fn), prev = EDIT_MODULES.slice(0, k).reverse().find((x) => src.indexOf('/* ' + x[1] + '-END */') >= 0); if (!prev) throw new Error('找不到 ' + mark + ' 標記');
+            const at = src.indexOf('/* ' + prev[1] + '-END */') + ('/* ' + prev[1] + '-END */').length; src = src.slice(0, at) + '\n/* ' + mark + '-BEGIN */\n/* ' + mark + '-END */' + src.slice(at); a = src.indexOf('/* ' + mark + '-BEGIN */'); b = src.indexOf('/* ' + mark + '-END */');
+        }
         src = src.slice(0, a) + '/* ' + mark + '-BEGIN */\nconst ' + name + ' = (function () {\nconst holder = {};\n(function (module, self) {\n' + core + '\n}).call(null, undefined, holder);\nreturn holder.' + name + ';\n})();\n' + src.slice(b);
         console.log('已更新 ' + name + '（' + core.length + ' 字元）');
     }
-    const host = ['edit_host.js', 'edit3d_host.js'].filter((n) => fs.existsSync(path.join(dir, n))).map((n) => fs.readFileSync(path.join(dir, n), 'utf8').replace(/\r\n/g, '\n')).join('\n');
+    const host = ['edit_host.js', 'edit3d_host.js', 'docs_host.js'].filter((n) => fs.existsSync(path.join(dir, n))).map((n) => fs.readFileSync(path.join(dir, n), 'utf8').replace(/\r\n/g, '\n')).join('\n');
     const a = src.indexOf('/* EDITHOST-BEGIN */'), b = src.indexOf('/* EDITHOST-END */'); if (a < 0 || b < 0) throw new Error('找不到 EDITHOST 標記');
     src = src.slice(0, a) + '/* EDITHOST-BEGIN */\n' + host + '\n' + src.slice(b);
     console.log('已更新 FaEditHost（' + host.length + ' 字元）');
