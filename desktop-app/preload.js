@@ -6,6 +6,8 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("desktopAPI", {
+  // 環境基準線（renderer/src/env）：主行程的真實記憶體（瀏覽器的 deviceMemory 最多只回報到 8 GB）。舊版主程式沒有這個介面，renderer 會退回瀏覽器的估計
+  systemInfo: () => ipcRenderer.invoke("fa:system:info"),
   // preload script本身一直都有Node的`process`可用（跟renderer的
   // contextIsolation無關，只有preload/main才看得到），這裡直接同步暴露
   // 平台資訊——2026-09-15使用者要求desktop_ops domain要知道自己現在跑在

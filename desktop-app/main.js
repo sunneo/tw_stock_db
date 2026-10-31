@@ -583,6 +583,8 @@ ipcMain.handle("fa:roots:remove", async (_evt, { id }) => {
 });
 
 // ---------- IPC: 檔案系統（一律要求rootId，只在該root底下操作） ----------
+ipcMain.handle("fa:system:info", async () => ({ totalMem: os.totalmem(), freeMem: os.freemem(), cores: os.cpus().length, platform: process.platform }));
+
 ipcMain.handle("fa:fs:stat", async (_evt, { rootId, relPath }) => {
   const rec = await findRoot(rootId);
   const target = resolveWithinRoot(rec.rootPath, relPath);
