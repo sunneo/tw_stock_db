@@ -1,0 +1,219 @@
+{
+  "dates": {
+    "2026-10-01": {
+      "daily_prices": "916bd19c166037f5b0076194a76a37f1",
+      "intraday_quotes": "81ccccef77c8b14b7c5b105c67fb5921",
+      "market_index": "f4fe94d447c00a399d56aea6492dfeaf",
+      "stocks": "69df13e5eccf0701d41079ef5059b586",
+      "technical_indicators": "0d670626fa809e21220524d06552d867"
+    },
+    "2026-10-02": {
+      "daily_prices": "bee7ca611bd68720e6206249ff23443c",
+      "intraday_quotes": "51df31baa4c036f15d7ea4b5cb172b62",
+      "market_index": "d70ebcc629a4b6fbef71d81ab779e15f",
+      "stocks": "69df13e5eccf0701d41079ef5059b586",
+      "technical_indicators": "9e477c9b1dae6763c0d8e827009fa531"
+    },
+    "2026-10-03": {
+      "daily_prices": "1b049aaebcf7fc555f633b1ad84632d8",
+      "intraday_quotes": "44fff740619a9793f5339fdd49ed39bc",
+      "market_index": "e0cdb87b132990dadd99391aa616b5f0",
+      "stocks": "69df13e5eccf0701d41079ef5059b586",
+      "technical_indicators": "383f3f042cd058d755637d800823b815"
+    },
+    "2026-10-04": {
+      "daily_prices": "1b049aaebcf7fc555f633b1ad84632d8",
+      "intraday_quotes": "27487057f2a486ab83ccc2706d71cf90",
+      "market_index": "e0cdb87b132990dadd99391aa616b5f0",
+      "stocks": "69df13e5eccf0701d41079ef5059b586",
+      "technical_indicators": "383f3f042cd058d755637d800823b815"
+    },
+    "2026-10-05": {
+      "daily_prices": "8036da99943490d002dad17ffb5fc853",
+      "intraday_quotes": "de08ea52e926d08e5462d8a37d6929ae",
+      "market_index": "e18b30008d2211bd08786d8c8bcbf856",
+      "stocks": "69df13e5eccf0701d41079ef5059b586",
+      "technical_indicators": "818d10e44a6f095de2e9b0e615f5cd3b"
+    },
+    "2026-10-06": {
+      "daily_prices": "59465505a87d754f9a300a315f32ec5d",
+      "intraday_quotes": "d16b4f277c8ff7e36e7598c3a3ce9cf9",
+      "market_index": "84a219b3c879458908f6e72f22b11750",
+      "stocks": "4b0a47936756f9eb221a7e0d63544ddb",
+      "technical_indicators": "e529983a1747efa2b85967fa9718fc98"
+    },
+    "2026-10-07": {
+      "daily_prices": "799ed73415b6131217f4d89674ea5ef9",
+      "intraday_quotes": "a9637b88fbb8ac5308ae4ff50c52516d",
+      "market_index": "4491067c8f9b91232f7c88392584232e",
+      "stocks": "4b0a47936756f9eb221a7e0d63544ddb",
+      "technical_indicators": "ecafb51ee651e769edfbad5e1bb9e69b"
+    },
+    "2026-10-08": {
+      "daily_prices": "deda8878a6f03a384c749baca15d9a30",
+      "intraday_quotes": "285e8310585561c25c61d46e21400ee5",
+      "market_index": "d72cc7d6fa55c8d4dc5552908298acea",
+      "stocks": "4b0a47936756f9eb221a7e0d63544ddb",
+      "technical_indicators": "dca02bd6839a1d9cd5d557972aa23483"
+    },
+    "2026-10-09": {
+      "daily_prices": "1b049aaebcf7fc555f633b1ad84632d8",
+      "intraday_quotes": "048a20295272f277654b74cd993dbd6c",
+      "market_index": "2c4e9730514ee2dde31276dcac991378",
+      "stocks": "300e9dcfa6ffc17626dd67f115d053d9",
+      "technical_indicators": "383f3f042cd058d755637d800823b815"
+    },
+    "2026-10-10": {
+      "daily_prices": "1b049aaebcf7fc555f633b1ad84632d8",
+      "intraday_quotes": "b8d2e6b6ac49dbbac75f7d02e032ba68",
+      "market_index": "6f564c15fcc25d947c2fc92308e1be30",
+      "stocks": "300e9dcfa6ffc17626dd67f115d053d9",
+      "technical_indicators": "383f3f042cd058d755637d800823b815"
+    },
+    "2026-10-11": {
+      "daily_prices": "1b049aaebcf7fc555f633b1ad84632d8",
+      "intraday_quotes": "c6ece431805519f0ef279ec0a888ea86",
+      "market_index": "6f564c15fcc25d947c2fc92308e1be30",
+      "stocks": "300e9dcfa6ffc17626dd67f115d053d9",
+      "technical_indicators": "383f3f042cd058d755637d800823b815"
+    },
+    "2026-10-12": {
+      "daily_prices": "a16c0445a9bac34b05e8de9a6b318449",
+      "intraday_quotes": "249529eef599edb27eb3c69672f6b6f1",
+      "market_index": "90a5e939d463f160b69d1f9260960c65",
+      "stocks": "300e9dcfa6ffc17626dd67f115d053d9",
+      "technical_indicators": "df056f22c6600072dcaa0f834ae783cb"
+    },
+    "2026-10-13": {
+      "daily_prices": "df141e320a85cb384cb5203b9ddb01f9",
+      "intraday_quotes": "876cccc5850557fb209c0a786308bd3f",
+      "market_index": "a31ed0d5526d87807cb2fc6eceac8e49",
+      "stocks": "300e9dcfa6ffc17626dd67f115d053d9",
+      "technical_indicators": "7db798f6fe4d700a081b392f2e98a783"
+    },
+    "2026-10-14": {
+      "daily_prices": "631143566081ff89012fa2a46ac2e1f2",
+      "intraday_quotes": "999858796251e2f3adc5eaacaa0872dc",
+      "market_index": "23930e3f000f8a659d9ee2a86305d7f7",
+      "stocks": "300e9dcfa6ffc17626dd67f115d053d9",
+      "technical_indicators": "96744866ef7358906a503854505e0306"
+    },
+    "2026-10-15": {
+      "daily_prices": "89ece5487406cde3dc13e28d38b2fb72",
+      "intraday_quotes": "9ae008e728389c01398ed1a6d9285de9",
+      "market_index": "f6801481df269b4d0f4d453f0b3a11f2",
+      "stocks": "d93d5dfa0fde827135ab28d00bfd4f76",
+      "technical_indicators": "c72650eed0ec0b792b5e80b5036d19b6"
+    },
+    "2026-10-16": {
+      "daily_prices": "e4e18caa709e880aa641bcf51f838f08",
+      "intraday_quotes": "75fd2b595b63e713ed2e6cc21e79cc63",
+      "market_index": "acef32dcb741b8b5b1d56d2436c43396",
+      "stocks": "cb707d80af62c6458c79153129b25895",
+      "technical_indicators": "417c07b1d5c88b453247d31ed576886c"
+    },
+    "2026-10-17": {
+      "daily_prices": "1b049aaebcf7fc555f633b1ad84632d8",
+      "intraday_quotes": "b52301251260ad78e7ca7e59784e5c23",
+      "market_index": "3e38b05fabb4ac230bf7c481583dd99e",
+      "stocks": "cb707d80af62c6458c79153129b25895",
+      "technical_indicators": "383f3f042cd058d755637d800823b815"
+    },
+    "2026-10-18": {
+      "daily_prices": "1b049aaebcf7fc555f633b1ad84632d8",
+      "intraday_quotes": "95675dc809e361d31c5fc8e163354bfb",
+      "market_index": "3e38b05fabb4ac230bf7c481583dd99e",
+      "stocks": "cb707d80af62c6458c79153129b25895",
+      "technical_indicators": "383f3f042cd058d755637d800823b815"
+    },
+    "2026-10-19": {
+      "daily_prices": "98b11804dcc58d3a06c27d5bd42ae6a8",
+      "intraday_quotes": "af409ca9080c305780bd0ec1b3fa19cd",
+      "market_index": "610e7b5534a9c42eb709a587f3fbab2c",
+      "stocks": "cb707d80af62c6458c79153129b25895",
+      "technical_indicators": "d7467a0157a9e11db1eb23fa764d3705"
+    },
+    "2026-10-20": {
+      "daily_prices": "d467569853c6e22378b56c6d73454f67",
+      "intraday_quotes": "2a040ca1fa5b15e0340a4e6e1649bb12",
+      "market_index": "893efc54b8205c207ba2b6dfdd0efc1a",
+      "stocks": "68cd87db439e4eac933a5dfcad1d46b1",
+      "technical_indicators": "0e4ef94b10bbf4d09783ba2e73c5a0bd"
+    },
+    "2026-10-21": {
+      "daily_prices": "04268c143745a05268837f8857f75dd3",
+      "intraday_quotes": "0550699c62b399b45f8acb52bc0b5eac",
+      "market_index": "66d6dedd1277d8f164f6ebdae01f6f0a",
+      "stocks": "68cd87db439e4eac933a5dfcad1d46b1",
+      "technical_indicators": "3febb150524433e7e810bb1beec7380c"
+    },
+    "2026-10-22": {
+      "daily_prices": "643a7ce0b348b48e5b73e137e7edaa2f",
+      "intraday_quotes": "2764d817a333d94173cab5170fc485e5",
+      "market_index": "c626d19ba2aad2dacd1b3baf790be775",
+      "stocks": "254c83012b31d98c4ef4bdf035da2996",
+      "technical_indicators": "900317d9323640d8bbefa3be9022b82b"
+    },
+    "2026-10-23": {
+      "daily_prices": "efa2a8bfd71dcda87548335ae5376ef5",
+      "intraday_quotes": "717f4547ebf6055ea046e3ee8c86f23b",
+      "market_index": "10507c5b8045f1ba13743ded8bd2d2f3",
+      "stocks": "a0264fad4256f0f4e1d2f2944984d52c",
+      "technical_indicators": "971ab58387a0b56caf9729b64a556a38"
+    },
+    "2026-10-24": {
+      "daily_prices": "1b049aaebcf7fc555f633b1ad84632d8",
+      "market_index": "72815f8ff26b81bf0b57493735829faf",
+      "stocks": "c295e0a0e124e3fbbf6aefa4c5b9f8ad",
+      "technical_indicators": "383f3f042cd058d755637d800823b815"
+    },
+    "2026-10-25": {
+      "daily_prices": "1b049aaebcf7fc555f633b1ad84632d8",
+      "market_index": "72815f8ff26b81bf0b57493735829faf",
+      "stocks": "c295e0a0e124e3fbbf6aefa4c5b9f8ad",
+      "technical_indicators": "383f3f042cd058d755637d800823b815"
+    },
+    "2026-10-26": {
+      "daily_prices": "1b049aaebcf7fc555f633b1ad84632d8",
+      "market_index": "72815f8ff26b81bf0b57493735829faf",
+      "stocks": "c295e0a0e124e3fbbf6aefa4c5b9f8ad",
+      "technical_indicators": "383f3f042cd058d755637d800823b815"
+    },
+    "2026-10-27": {
+      "daily_prices": "6959d7c21f9b12517d154b5373d0164d",
+      "intraday_quotes": "d4fbe7816ac87b5deaf672f686078a4e",
+      "market_index": "35e063e44a75a95baefb5bae98c7846d",
+      "stocks": "c295e0a0e124e3fbbf6aefa4c5b9f8ad",
+      "technical_indicators": "38590fb45b695a19ac5f4281e9814f98"
+    },
+    "2026-10-28": {
+      "daily_prices": "5e192dff293953bb52b404b26a599f8c",
+      "intraday_quotes": "3ce974b5a7555dcafce6d7d528509607",
+      "market_index": "4c23231a46100f3e851a3d6c8b74e710",
+      "stocks": "c295e0a0e124e3fbbf6aefa4c5b9f8ad",
+      "technical_indicators": "5f01e24a6f34e15db65e58b7662bc732"
+    },
+    "2026-10-29": {
+      "daily_prices": "e77be99c74c3424af0fe219dad7ae1fe",
+      "intraday_quotes": "a095d0ed453bc7567744746bd1111260",
+      "market_index": "b228ab8f76a6c5be7037476093e286ca",
+      "stocks": "c295e0a0e124e3fbbf6aefa4c5b9f8ad",
+      "technical_indicators": "4bdf34d42a97376d25c29024f4c60296"
+    },
+    "2026-10-30": {
+      "daily_prices": "c225670f4e044868fe87cbd1fe60668e",
+      "intraday_quotes": "1737408d6bffebeef7011bb83993ca6e",
+      "market_index": "6de064489b8d93987205f82ddf5a00f7",
+      "stocks": "6622e4ea2709ac45c8fdf5f70e4dcd7e",
+      "technical_indicators": "5ef60c4c51b19b1575683f3e06e1350d"
+    },
+    "2026-10-31": {
+      "daily_prices": "1b049aaebcf7fc555f633b1ad84632d8",
+      "intraday_quotes": "e67669de35d8e296ce57d2fd2285021b",
+      "market_index": "8483975c6b9e1d23bd605f8790439500",
+      "stocks": "6622e4ea2709ac45c8fdf5f70e4dcd7e",
+      "technical_indicators": "383f3f042cd058d755637d800823b815"
+    }
+  },
+  "generated_at": "2026-10-31T10:09:29.467569+00:00"
+}
