@@ -141,10 +141,15 @@
         }
         // 傳訊息給某台（to=nodeId，'*' 是所有人）：整包加密後切塊廣播
         async send(to, type, body) {
-            const id = this.self.nodeId + ':' + (++this.seq); const text = await encryptJson(this.keys, { type, body, from: this.self.nodeId, at: Date.now() });
-            const total = Math.max(1, Math.ceil(text.length / CHUNK));
-            for (let i = 0; i < total; i++) await this.t.send({ to, from: this.self.nodeId, id, i, n: total, c: text.slice(i * CHUNK, (i + 1) * CHUNK) });
-            return id;
+            // 同時呼叫多次 send 時，加密（WebCrypto 非同步）完成的先後不一定，直接送會亂序：加密立刻開始（不排隊、不變慢），但「交給傳輸層」依呼叫順序排隊
+            const id = this.self.nodeId + ':' + (++this.seq), turn = this._sendTail || Promise.resolve(); let done; this._sendTail = new Promise((r) => { done = r; });
+            try {
+                const textP = encryptJson(this.keys, { type, body, from: this.self.nodeId, at: Date.now() }); await turn.catch(() => {}); const text = await textP;
+                const total = Math.max(1, Math.ceil(text.length / CHUNK));
+                const ps = []; for (let i = 0; i < total; i++) ps.push(this.t.send({ to, from: this.self.nodeId, id, i, n: total, c: text.slice(i * CHUNK, (i + 1) * CHUNK) }));   // 同一個 tick 內依序交給傳輸層（順序不亂，傳輸層也才有機會把同時送出的合併成一批）
+                done(); await Promise.all(ps);
+                return id;
+            } finally { done(); }
         }
         async onBroadcast(p) {
             if (!p || typeof p.c !== 'string' || (p.to !== '*' && p.to !== this.self.nodeId)) return;
@@ -153,8 +158,10 @@
             if (this.partial.size > 64) { const old = Array.from(this.partial.entries()).sort((a, b) => a[1].at - b[1].at).slice(0, 32); old.forEach(([k]) => this.partial.delete(k)); }
             if (slot.got < p.n) return;
             this.partial.delete(p.id);
-            const m = await decryptJson(this.keys, slot.parts.join(''));
-            if (m && m.type) this.emit('message', { type: m.type, body: m.body, from: m.from, at: m.at, id: p.id });
+            // 解密同樣是非同步：依「收齊的順序」發出訊息，不依解密完成的先後（不然連續幾則會亂序）
+            const dp = decryptJson(this.keys, slot.parts.join('')); const prev = this._recvTail || Promise.resolve();
+            this._recvTail = prev.then(async () => { const m = await dp; if (m && m.type) this.emit('message', { type: m.type, body: m.body, from: m.from, at: m.at, id: p.id }); }).catch(() => {});
+            await this._recvTail;
         }
     }
     return { ITERATIONS, CHUNK, passwordStrength, generatePassword, deriveKeys, encryptJson, decryptJson, fingerprint, randomId, canon, makeIdentity, verifySig, pubFingerprint, Room, hex, b64, unb64 };

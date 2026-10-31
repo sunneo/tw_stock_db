@@ -88,6 +88,7 @@ const suites = [
     ['遠端共筆 patch 模式（id 定址的 JSON 差異、套用與略過、逐行 diff3）', 'scripts/remote-tests/rg_patch.test.js'],
     ['環境基準線（檔位判斷、政策、OOM 辨識、資源治理：讓位／排隊／跑完卸載／壓力／降級）', 'scripts/env-tests/env_profile.test.js'],
     ['模擬 swap（熱區上限、最久沒用的先寫出、讀回、丟掉）', 'scripts/env-tests/swap.test.js'],
+    ['文件類編輯器核心：markdown／純文字（往返位元組一致、區塊解析、封閉動作）', 'scripts/edit-tests/text_core.test.js'],
     ['動畫簡報：格式、驗證、時間軸、渲染（deck_core）', 'scripts/deck-tests/deck_core.test.js'],
     ['動畫簡報：字幕可以跟念的不一樣（caption）、配音失敗／逾時的備援、聲音清單', 'scripts/deck-tests/deck_voice.test.js'],
     ['動畫簡報：動畫物件描述（場景、物件動畫、鏡頭、連動音效、對話泡泡、敘事文字、要點 highlight、疊字幕）', 'scripts/deck-tests/deck_collage.test.js'],
