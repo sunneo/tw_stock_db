@@ -81,7 +81,7 @@
     // 包住一件重運算：記憶體不足就降級卸載並丟出明確的錯誤，不讓它拖垮整個頁面
     M._envGuard = async function (fn) { try { return await fn(); } catch (e) { if (typeof FaEnv !== 'undefined' && FaEnv.isOom(e)) { await this._envOom(e); throw new Error('記憶體不足：已降低設定並卸載模型，請再試一次（會改用較省的設定、跑得比較慢）'); } throw e; } };
     M._envInit = function () {
-        if (this._envStarted || typeof FaEnv === 'undefined' || typeof window === 'undefined') return; this._envStarted = true; const self = this; this._envGov(); this._envRefresh().catch(() => {});
+        if (this._envStarted || typeof FaEnv === 'undefined' || typeof window === 'undefined') return; this._envStarted = true; const self = this; this._envGov(); window.__faRenderScale = () => Math.max(1, Number(self._envPol('renderScale', 2)) || 2);   // 編輯器的畫布解析度上限（低檔 1、mid 1.5、high 2） this._envRefresh().catch(() => {});
         // 背景分頁（手機被切到別的 App）：低檔把沒在用的全卸載，讓作業系統不要為了記憶體殺掉這個分頁
         document.addEventListener('visibilitychange', () => { try { if (document.hidden && self._envTier() === 'low') self._envGov().unloadAll(); } catch (_) { /* */ } });
         window.addEventListener('pagehide', () => { try { self._envGov().unloadAll(); } catch (_) { /* */ } });

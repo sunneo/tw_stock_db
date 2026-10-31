@@ -104,7 +104,7 @@
         var status = h('span', 'st');
         function draw() {
           if (!vp || !spec) { return; }
-          var v = vp.view(), dpr = Math.min(2, window.devicePixelRatio || 1); if (cv.width !== Math.round(v.cw * dpr) || cv.height !== Math.round(v.ch * dpr)) { cv.width = Math.round(v.cw * dpr); cv.height = Math.round(v.ch * dpr); }
+          var v = vp.view(), dpr = Math.min((window.__faRenderScale ? window.__faRenderScale() : 2), window.devicePixelRatio || 1); if (cv.width !== Math.round(v.cw * dpr) || cv.height !== Math.round(v.ch * dpr)) { cv.width = Math.round(v.cw * dpr); cv.height = Math.round(v.ch * dpr); }
           cx.setTransform(dpr, 0, 0, dpr, 0, 0); cx.fillStyle = chk || '#eee'; cx.fillRect(0, 0, v.cw, v.ch);
           function scr(wx, wy) { return [(wx - v.x) * v.z, (wy - v.y) * v.z]; }
           if (docR) { var r = docR.region, sc = docR.scale, ix0 = Math.max(r.x, v.x), iy0 = Math.max(r.y, v.y), ix1 = Math.min(r.x + r.w, v.x + v.w), iy1 = Math.min(r.y + r.h, v.y + v.h); if (ix1 > ix0 && iy1 > iy0) { var a = scr(ix0, iy0), b = scr(ix1, iy1); cx.imageSmoothingEnabled = v.z * sc < 1 ? true : false; cx.imageSmoothingQuality = 'high'; cx.drawImage(docR.canvas, (ix0 - r.x) * sc, (iy0 - r.y) * sc, (ix1 - ix0) * sc, (iy1 - iy0) * sc, a[0], a[1], b[0] - a[0], b[1] - a[1]); } }

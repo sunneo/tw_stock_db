@@ -28934,7 +28934,7 @@ const holder = {};
         var status = h('span', 'st');
         function draw() {
           if (!vp || !spec) { return; }
-          var v = vp.view(), dpr = Math.min(2, window.devicePixelRatio || 1); if (cv.width !== Math.round(v.cw * dpr) || cv.height !== Math.round(v.ch * dpr)) { cv.width = Math.round(v.cw * dpr); cv.height = Math.round(v.ch * dpr); }
+          var v = vp.view(), dpr = Math.min((window.__faRenderScale ? window.__faRenderScale() : 2), window.devicePixelRatio || 1); if (cv.width !== Math.round(v.cw * dpr) || cv.height !== Math.round(v.ch * dpr)) { cv.width = Math.round(v.cw * dpr); cv.height = Math.round(v.ch * dpr); }
           cx.setTransform(dpr, 0, 0, dpr, 0, 0); cx.fillStyle = chk || '#eee'; cx.fillRect(0, 0, v.cw, v.ch);
           function scr(wx, wy) { return [(wx - v.x) * v.z, (wy - v.y) * v.z]; }
           if (docR) { var r = docR.region, sc = docR.scale, ix0 = Math.max(r.x, v.x), iy0 = Math.max(r.y, v.y), ix1 = Math.min(r.x + r.w, v.x + v.w), iy1 = Math.min(r.y + r.h, v.y + v.h); if (ix1 > ix0 && iy1 > iy0) { var a = scr(ix0, iy0), b = scr(ix1, iy1); cx.imageSmoothingEnabled = v.z * sc < 1 ? true : false; cx.imageSmoothingQuality = 'high'; cx.drawImage(docR.canvas, (ix0 - r.x) * sc, (iy0 - r.y) * sc, (ix1 - ix0) * sc, (iy1 - iy0) * sc, a[0], a[1], b[0] - a[0], b[1] - a[1]); } }
@@ -32407,7 +32407,7 @@ const holder = {};
     var scene = new THREE.Scene(), camera = new THREE.PerspectiveCamera(50, 1, 0.05, 6000), content = new THREE.Group(), helpers = new THREE.Group(), selGroup = new THREE.Group(); scene.add(content); scene.add(helpers); scene.add(selGroup);
     var controls = webgl || ctx2d ? new THREE.OrbitControls(camera, canvas) : null; if (controls) { controls.addEventListener('change', function () { dirty = true; if (opt.onView) { opt.onView(); } }); controls.screenSpacePanning = true; }
     var grid = null, showGrid = opt.grid !== false;
-    function size() { var w = Math.max(40, el.clientWidth), hh = Math.max(40, el.clientHeight); if (renderer) { renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1)); renderer.setSize(w, hh, false); } else if (ctx2d) { canvas.width = w; canvas.height = hh; } camera.aspect = w / hh; camera.updateProjectionMatrix(); dirty = true; }
+    function size() { var w = Math.max(40, el.clientWidth), hh = Math.max(40, el.clientHeight); if (renderer) { renderer.setPixelRatio(Math.min((window.__faRenderScale ? window.__faRenderScale() : 2), window.devicePixelRatio || 1)); renderer.setSize(w, hh, false); } else if (ctx2d) { canvas.width = w; canvas.height = hh; } camera.aspect = w / hh; camera.updateProjectionMatrix(); dirty = true; }
     var ro = typeof ResizeObserver === 'function' ? new ResizeObserver(function () { size(); }) : null; if (ro) { ro.observe(el); }
     function dispose(obj) { obj.traverse(function (o) { if (o.geometry && o.geometry.dispose) { o.geometry.dispose(); } var ms = o.material ? (Array.isArray(o.material) ? o.material : [o.material]) : []; ms.forEach(function (m) { ['map', 'emissiveMap'].forEach(function (k) { if (m[k] && m[k].dispose) { m[k].dispose(); } }); if (m.dispose) { m.dispose(); } }); }); }
     function clear(g) { while (g.children.length) { var c = g.children[0]; g.remove(c); dispose(c); } }
@@ -37249,7 +37249,7 @@ return holder.FaDeckEditUI;
     // 包住一件重運算：記憶體不足就降級卸載並丟出明確的錯誤，不讓它拖垮整個頁面
     M._envGuard = async function (fn) { try { return await fn(); } catch (e) { if (typeof FaEnv !== 'undefined' && FaEnv.isOom(e)) { await this._envOom(e); throw new Error('記憶體不足：已降低設定並卸載模型，請再試一次（會改用較省的設定、跑得比較慢）'); } throw e; } };
     M._envInit = function () {
-        if (this._envStarted || typeof FaEnv === 'undefined' || typeof window === 'undefined') return; this._envStarted = true; const self = this; this._envGov(); this._envRefresh().catch(() => {});
+        if (this._envStarted || typeof FaEnv === 'undefined' || typeof window === 'undefined') return; this._envStarted = true; const self = this; this._envGov(); window.__faRenderScale = () => Math.max(1, Number(self._envPol('renderScale', 2)) || 2);   // 編輯器的畫布解析度上限（低檔 1、mid 1.5、high 2） this._envRefresh().catch(() => {});
         // 背景分頁（手機被切到別的 App）：低檔把沒在用的全卸載，讓作業系統不要為了記憶體殺掉這個分頁
         document.addEventListener('visibilitychange', () => { try { if (document.hidden && self._envTier() === 'low') self._envGov().unloadAll(); } catch (_) { /* */ } });
         window.addEventListener('pagehide', () => { try { self._envGov().unloadAll(); } catch (_) { /* */ } });
