@@ -38,14 +38,14 @@
     var S = { v: 1, ptr: 0, states: [], log: [] }, midTab = (opt.tabs[0] || {}).id, rightTab = 'ai', selected = null, pending = [], busy = false, saveT = null, newIds = {}, editor = null, selFns = [];
     function initState(state, spec) {
       if (state && Array.isArray(state.states) && state.states.length) {
-        S = { v: 1, ptr: Math.max(0, Math.min(state.states.length - 1, state.ptr | 0)), states: state.states.slice(-MAXSTATES).map(function (x) { return { spec: W.validate(x.spec).spec, summary: x.summary || '', text: x.text || '', kind: x.kind || 'panel', t: x.t || 0 }; }), log: Array.isArray(state.log) ? state.log.slice(-60) : [] };
+        S = { v: 1, ptr: Math.max(0, Math.min(state.states.length - 1, state.ptr | 0)), states: state.states.slice(-MAXSTATES).map(function (x) { return { spec: W.validate(x.spec).spec, summary: x.summary || '', text: x.text || '', kind: x.kind || 'panel', t: x.t || 0, by: x.by || undefined }; }), log: Array.isArray(state.log) ? state.log.slice(-60) : [] };
         if (S.ptr >= S.states.length) { S.ptr = S.states.length - 1; }
       } else { S = { v: 1, ptr: 0, states: [{ spec: W.validate(spec || {}).spec, summary: '開始', text: '', kind: 'start', t: Date.now() }], log: [] }; }
     }
     function cur() { return S.states[S.ptr].spec; }
     function getState() { var st = { v: 1, ptr: S.ptr, states: S.states, log: S.log.slice(-60) }; try { while (JSON.stringify(st).length > 3000000 && st.states.length > 2) { st.states = st.states.slice(1); st.ptr = Math.max(0, st.ptr - 1); } } catch (e) { /* keep */ } return st; }
     function persist() { clearTimeout(saveT); saveT = setTimeout(function () { try { if (host.save) { host.save(getState()); } } catch (e) { /* this change still counts */ } }, 400); }
-    function commit(spec, summary, text, kind) { S.states = S.states.slice(0, S.ptr + 1); S.states.push({ spec: W.validate(spec).spec, summary: summary || '', text: text || '', kind: kind || 'panel', t: Date.now() }); if (S.states.length > MAXSTATES) { S.states.shift(); } S.ptr = S.states.length - 1; render(); persist(); }
+    function commit(spec, summary, text, kind, by) { S.states = S.states.slice(0, S.ptr + 1); S.states.push({ spec: W.validate(spec).spec, summary: summary || '', text: text || '', kind: kind || 'panel', t: Date.now(), by: by || undefined }); if (S.states.length > MAXSTATES) { S.states.shift(); } S.ptr = S.states.length - 1; render(); persist(); }
     function env() { var e = {}; try { e = editor && editor.env ? (editor.env() || {}) : {}; } catch (x) { e = {}; } e.selection = selected; return e; }
     function apply(edits, summary, text, kind) {
       var r = W.applyEdits(cur(), edits, env()); if (!r.applied.length) { return r; }
@@ -65,6 +65,17 @@
     (opt.exports || []).forEach(function (x) { var o1 = h('option', null, '⬇ 下載 ' + x.label); o1.value = 'dl:' + x.id; bExp.appendChild(o1); if (x.chat !== false && host.toChat) { var o2 = h('option', null, '💬 放進對話 ' + x.label); o2.value = 'chat:' + x.id; bExp.appendChild(o2); } });
     var bStar = h('button', null, '⭐ 存成案例'); bStar.title = '把這次做好的結果存成案例（進離線訓練器的知識）：下次相似的需求會拿它當參考，弱模型與離線模型會直接用它當起點；/edit-svg、/edit-3d、/edit-game-2d 後面接一句話也會用到'; if (!host.saveCase) { bStar.style.display = 'none'; }
     [ttl, stat, bUndo, bRedo, bSum, bStar, bExp].forEach(function (x) { bar.appendChild(x); });
+    // 「🛰️ AI 在：本機／別台機器」：這個編輯器裡的 AI 請求交給群組裡哪台做（host.aiWhere 由桌面版的遠端橋接提供；沒有就不顯示）
+    var aiSel = null;
+    function refreshAi() {
+      var w = host.aiWhere; if (!w) { return; } var vis = true; try { vis = w.visible ? !!w.visible() : true; } catch (e) { vis = true; }
+      if (!aiSel) { aiSel = h('select'); aiSel.title = '這個編輯器裡的 AI 請求（說話改、找圖、生圖…）交給群組裡哪台機器做；文件與素材會傳過去，改動傳回來。選「本機」就跟以前一樣。'; aiSel.onchange = function () { try { var r = w.set(aiSel.value); if (r && r.then) { r.then(refreshAi); } } catch (e) { /* 選擇失敗就維持原樣 */ } }; bar.insertBefore(aiSel, bExp); }
+      aiSel.style.display = vis ? '' : 'none'; if (!vis) { return; }
+      var cur = ''; try { cur = w.get() || ''; } catch (e) { cur = ''; } aiSel.textContent = '';
+      var opts = []; try { opts = w.options() || []; } catch (e) { opts = []; } if (cur && !opts.some(function (x) { return x.value === cur; })) { opts.push({ value: cur, label: '（離線的機器）' }); }
+      opts.forEach(function (x) { var o2 = h('option', null, '🛰️ AI 在：' + x.label); o2.value = x.value; if (x.disabled) { o2.disabled = true; } aiSel.appendChild(o2); }); aiSel.value = cur;
+    }
+    refreshAi(); bar.addEventListener('mouseenter', refreshAi);
     var sum = h('div', 'sum'), sumTa = h('textarea'); sumTa.rows = 9; var sumRow = h('div', 'row'), bCopy = h('button', null, '📋 複製'), bPol = h('button', null, '✨ 請 AI 潤飾'), bSumX = h('button', null, '✕');
     sumRow.appendChild(h('span', 'st', '只收沒被復原、而且真的改變了成品的那幾輪對話；可以貼到別處重現')); [bCopy, bPol, bSumX].forEach(function (x) { sumRow.appendChild(x); }); sum.appendChild(sumTa); sum.appendChild(sumRow);
     var main = h('div', 'main'), objs = h('div', 'objs'), mid = h('div', 'mid'), mTabs = h('div', 'tabs'), side = h('div', 'side'), rTabs = h('div', 'tabs');
@@ -139,15 +150,17 @@
     }
 
     // ───── history ─────
-    function renderHist() { var p = rp.hist; p.textContent = ''; p.appendChild(h('div', 'st', '點一步就回到那一步（之後的步驟還在，可以重做）：')); S.states.forEach(function (s, i) { var d = h('div', i === S.ptr ? 'cur' : (i > S.ptr ? 'fut' : ''), (i + 1) + '. ' + (s.summary || '（沒有說明）') + (s.text ? '　— 「' + s.text.slice(0, 30) + '」' : '')); d.onclick = function () { S.ptr = i; render(); persist(); }; p.appendChild(d); }); }
+    function renderHist() { var p = rp.hist; p.textContent = ''; p.appendChild(h('div', 'st', '點一步就回到那一步（之後的步驟還在，可以重做）：')); S.states.forEach(function (s, i) { var d = h('div', i === S.ptr ? 'cur' : (i > S.ptr ? 'fut' : ''), (i + 1) + '. ' + (byLabel(s.by) ? '[' + byLabel(s.by) + '] ' : '') + (s.summary || '（沒有說明）') + (s.text ? '　— 「' + s.text.slice(0, 30) + '」' : '')); d.onclick = function () { S.ptr = i; render(); persist(); }; p.appendChild(d); }); }
 
     // ───── AI chat (pictures can be pasted / dropped in) ─────
     var logEl = h('div', 'log'), attEl = h('div', 'att'), inRow = h('div', 'row'), ta = h('textarea'), bAtt = h('button', null, '📎'), bSend = h('button', 'pri', '送出'), file = h('input'); file.type = 'file'; file.accept = 'image/*'; file.multiple = true; file.style.display = 'none';
     ta.rows = 2; ta.placeholder = opt.placeholder || ''; bAtt.title = '附圖（也可以直接貼上、拖進來）'; inRow.appendChild(bAtt); inRow.appendChild(bSend);
     var dock = h('div', 'dock'), dockSay = h('div', 'say'), dockIn = h('div', 'in');   // the AI chat box: always at the bottom of the editor, whatever the width, so it is always in sight
     rp.ai.appendChild(logEl); dockIn.appendChild(ta); dockIn.appendChild(inRow); inRow.style.flexDirection = 'column'; inRow.style.alignItems = 'stretch'; dock.appendChild(dockSay); dock.appendChild(attEl); dock.appendChild(dockIn); dock.appendChild(file); el.appendChild(spD); el.appendChild(dock); applyLay();
-    function addMsg(role, text, chips, rejected) { var m = h('div', 'msg ' + (role === 'user' ? 'u' : 'a')); m.appendChild(document.createTextNode(text || '')); (chips || []).forEach(function (c) { m.appendChild(h('span', 'chip', c)); }); (rejected || []).forEach(function (c) { m.appendChild(h('span', 'chip rej', c)); }); logEl.appendChild(m); logEl.scrollTop = logEl.scrollHeight; return m; }
-    function renderLog() { logEl.textContent = ''; if (!S.log.length && opt.intro) { addMsg('ai', opt.intro); } var lastAi = S.log.slice().reverse().filter(function (m) { return m.role === 'ai'; })[0]; dockSay.textContent = lastAi ? lastAi.text : ''; S.log.forEach(function (m) { addMsg(m.role, m.text, m.chips, m.rejected); }); }
+    // 這則/這一步是誰做的：AI 由別台執行時標「🛰️ 機器名稱 · AI」（請求者不是自己時再加「應 X 要求」）；人做的別人的步驟標「🖥️ 名稱」。自己做的不加標籤
+    function byLabel(by) { if (!by) { return ''; } var me = (host.selfName && host.selfName()) || ''; if (by.src === 'ai' && by.exec) { return '🛰️ ' + by.exec.name + ' · AI' + (by.req && by.req.name && by.req.name !== me ? '　應 ' + by.req.name + ' 要求' : ''); } if (by.name && by.name !== me) { return (by.kind === 'web' ? '🌐 ' : '🖥️ ') + by.name; } return ''; }
+    function addMsg(role, text, chips, rejected, by) { var m = h('div', 'msg ' + (role === 'user' ? 'u' : 'a')); var bl = byLabel(by); if (bl) { var bs = h('span', 'chip by', bl); bs.title = '這一則是誰做的'; m.appendChild(bs); } m.appendChild(document.createTextNode(text || '')); (chips || []).forEach(function (c) { m.appendChild(h('span', 'chip', c)); }); (rejected || []).forEach(function (c) { m.appendChild(h('span', 'chip rej', c)); }); logEl.appendChild(m); logEl.scrollTop = logEl.scrollHeight; return m; }
+    function renderLog() { logEl.textContent = ''; if (!S.log.length && opt.intro) { addMsg('ai', opt.intro); } var lastAi = S.log.slice().reverse().filter(function (m) { return m.role === 'ai'; })[0]; dockSay.textContent = lastAi ? lastAi.text : ''; S.log.forEach(function (m) { addMsg(m.role, m.text, m.chips, m.rejected, m.by); }); }
     function readFile(f) { return new Promise(function (res) { var r = new FileReader(); r.onload = function () { res({ name: f.name || 'image', dataUrl: String(r.result) }); }; r.onerror = function () { res(null); }; r.readAsDataURL(f); }); }
     function addFiles(files) { Promise.all(Array.prototype.filter.call(files || [], function (f) { return /^image\//.test(f.type); }).slice(0, 3).map(readFile)).then(function (list) { list.filter(Boolean).forEach(function (x) { if (pending.length < 3) { pending.push(x); } }); renderAtt(); }); }
     function renderAtt() { attEl.textContent = ''; pending.forEach(function (x, i) { var s = h('span'), im = h('img'); im.src = x.dataUrl; im.alt = x.name; var rm = h('b', null, '×'); rm.onclick = function () { pending.splice(i, 1); renderAtt(); }; s.appendChild(im); s.appendChild(rm); attEl.appendChild(s); }); }
@@ -159,12 +172,12 @@
       var text = ta.value.trim(), imgs = pending.slice(); if (busy || (!text && !imgs.length)) { return; }
       busy = true; bSend.disabled = true; ta.value = ''; pending = []; renderAtt(); rightTab = 'ai'; showTabs();
       var um = { role: 'user', text: (text || '（附圖）') + (imgs.length ? '　📎×' + imgs.length : '') }; S.log.push(um); addMsg('user', um.text, imgs.length ? [] : []); var think = addMsg('ai', '…'); dockSay.textContent = '…';
-      var chips = [], rej = [], say = '', spec0 = cur(), edits = [], applied = 0, words = [], ans0 = null;
+      var chips = [], rej = [], byAns = null, say = '', spec0 = cur(), edits = [], applied = 0, words = [], ans0 = null;
       try {
         var pr = text && opt.parseCommands ? opt.parseCommands(text, spec0) : { edits: [], unmatched: text ? [text] : [] }; edits = pr.edits.slice(); var rest = pr.unmatched.join('，');
         if ((rest || imgs.length) && host.ask) {
           var ans = ans0 = await host.ask({ text: rest, images: imgs, spec: spec0, selection: selected, fresh: effectiveSteps().length === 0, onStatus: function (t) { think.textContent = t; dockSay.textContent = t; } });
-          say = (ans && ans.say) || ''; if (ans && ans.edits) { edits = edits.concat(ans.edits); } if (ans && ans.notes) { ans.notes.forEach(function (n) { chips.push(n); }); }
+          say = (ans && ans.say) || ''; byAns = ans && ans.by ? ans.by : null; if (ans && ans.edits) { edits = edits.concat(ans.edits); } if (ans && ans.notes) { ans.notes.forEach(function (n) { chips.push(n); }); }
         } else if (rest) { say = '我沒聽懂：「' + rest.slice(0, 40) + '」。這個環境沒有 AI 可以幫忙，可以直接在物件欄與屬性面板改。'; }
         var r = W.applyEdits(spec0, edits, env()), next = spec0;
         if (r.applied.length) { next = r.spec; r.appliedEdits.forEach(function (e) { words.push(W.editWords(e)); }); }
@@ -172,13 +185,13 @@
         var aiMade = !!(rest && ans0 && ans0.edits && ans0.edits.length), accepted = true;
         if (opt.previewEdits && aiMade && JSON.stringify(next) !== JSON.stringify(spec0)) { think.textContent = '改動先放在預覽(綠＝新增、黃＝修改、紅虛線＝刪除),按「接受」才套用…'; dockSay.textContent = think.textContent; try { accepted = await opt.previewEdits({ spec0: spec0, next: next, edits: r.appliedEdits || [], words: words.slice(), rejected: r.rejected || [] }); } catch (pe) { accepted = true; } if (!accepted) { next = spec0; say = '已退回這一輪的改動(沒有套用)。'; words = []; chips = []; } }
         if (JSON.stringify(next) !== JSON.stringify(spec0)) {
-          (r.added || []).forEach(function (id) { newIds[id] = 1; }); commit(next, words.filter(Boolean).join('；'), text || '（附圖）', imgs.length ? 'image' : 'chat'); applied = words.length; words.forEach(function (w) { chips.push('✓ ' + w); });
+          (r.added || []).forEach(function (id) { newIds[id] = 1; }); commit(next, words.filter(Boolean).join('；'), text || '（附圖）', imgs.length ? 'image' : 'chat', aiMade && byAns ? byAns : undefined); applied = words.length; words.forEach(function (w) { chips.push('✓ ' + w); });
           if (r.added && r.added.length) { select(r.added[r.added.length - 1]); } else if (selected && W.find(cur(), selected) < 0) { select(null); }
         }
         if (!applied && (rej.length || chips.length)) { say = say && !rej.length && chips.length ? say : '這次沒有改成：'; }
         if (!say) { say = applied ? '改好了：' : '這樣已經是目前的樣子了。'; }
       } catch (e) { say = '這次沒成功：' + String((e && e.message) || e).slice(0, 160); }
-      think.remove(); var am = { role: 'ai', text: say, chips: chips.slice(0, 14), rejected: rej.slice(0, 6) }; S.log.push(am); addMsg('ai', am.text, am.chips, am.rejected); dockSay.textContent = am.text + (am.chips.length ? '  ' + am.chips.slice(0, 4).join('  ') : '') + (am.rejected.length ? '  ' + am.rejected.slice(0, 2).join('  ') : ''); persist(); busy = false; bSend.disabled = false;
+      think.remove(); var am = { role: 'ai', text: say, chips: chips.slice(0, 14), rejected: rej.slice(0, 6), by: byAns || undefined }; S.log.push(am); addMsg('ai', am.text, am.chips, am.rejected, am.by); dockSay.textContent = am.text + (am.chips.length ? '  ' + am.chips.slice(0, 4).join('  ') : '') + (am.rejected.length ? '  ' + am.rejected.slice(0, 2).join('  ') : ''); persist(); busy = false; bSend.disabled = false;
     }
     bSend.onclick = send;
 

@@ -61,7 +61,7 @@
     };
     M._edAsk3d = async function (req, ed) {
         req = req || {}; const A = this._edAi(), C = FaEdit3d, spec = C.validate(req.spec).spec, notes = [], edits = [], text = String(req.text || '').trim(), status = typeof req.onStatus === 'function' ? req.onStatus : () => {}; let say = '', refText = '';
-        const holder = this._edEditors && this._edEditors.get('edit-3d:' + ed.id), env = holder && holder._ed && holder._ed.env ? holder._ed.env() : { selection: req.selection };
+        const holder = this._edEditors && this._edEditors.get('edit-3d:' + ed.id), env = req.env || (holder && holder._ed && holder._ed.env ? holder._ed.env() : { selection: req.selection });   // 遠端執行時沒有掛載的編輯器：用請求者隨請求送來的畫面狀態（相機、選取）
         // 1) pictures pasted into the chat
         for (let i = 0; i < Math.min(3, (req.images || []).length); i++) {
             const im = req.images[i];
@@ -186,7 +186,7 @@
         const d = cx.getImageData(0, 0, w, h); return { width: w, height: h, data: d.data };
     };
     // 手機：記憶體小、主執行緒慢——面數、貼圖都縮小，用完的模型馬上卸載（桌面版不變）
-    M._i3dLite = function () { try { return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '') || (navigator.deviceMemory && navigator.deviceMemory <= 4) || (navigator.maxTouchPoints > 1 && Math.min(screen.width, screen.height) < 820); } catch (_) { return false; } };
+    M._i3dLite = function () { try { if (typeof this._envTier === 'function') return this._envTier() === 'low'; } catch (_) { /* 退回舊的判斷 */ } try { return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '') || (navigator.deviceMemory && navigator.deviceMemory <= 4) || (navigator.maxTouchPoints > 1 && Math.min(screen.width, screen.height) < 820); } catch (_) { return false; } };
     M._i3dFree = function () { if (this._i3dLite() && this._vlmTerminate) { try { this._vlmTerminate('gpu'); this._vlmTerminate('cpu'); } catch (_) { /* */ } } };
     // FaImage3d 的重運算（讀深度、分物件、做網格、組場景）放在 Worker 裡跑，主執行緒只等結果，頁面才不會卡死；開不了 Worker 才退回主執行緒
     M._i3dCall = function (fn, args) {

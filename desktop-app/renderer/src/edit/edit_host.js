@@ -23,6 +23,15 @@ const FaEditHost = (function () {
         'edit-picture': { fence: 'fa-edit-picture', icon: '🎨', cmd: '/edit-picture', prefix: 'pc', label: () => T('圖片編輯器', 'Picture editor'), core: () => FaEditPicture, ui: () => FaEditPictureUI, lead: '🎨 圖片編輯器：圖層式的後製與修復——貼圖、給網址或說「找一張…的圖」就有第一個圖層；然後用說的：「變成水彩風格」「調亮」「修掉右下角的污點」。濾鏡與修復都是圖層，原圖不動；每一步都能復原，進度會保留。' },
     };
     const register = (kind, def) => { KINDS[kind] = def; };
+    // 遠端共筆橋接的預設宣告（設計見 DESIGN.edit-remote.md §4；各編輯器在 register 的 def.remote 可以覆寫）。沒宣告的編輯器退成「ask 走遠端、整份快照同步」
+    const REMOTE_DEFAULTS = {
+        'edit-svg': { sync: 'edits', methods: { ask: { doc: true }, polish: {} } },
+        'edit-picture': { sync: 'edits', methods: { ask: { doc: true }, polish: {}, detail: { doc: true, longRunning: true } } },
+        'edit-3d': { sync: 'edits', methods: { ask: { doc: true }, polish: {} } },
+        'edit-game-2d': { sync: 'edits', methods: { ask: { doc: true }, polish: {} } },
+        'edit-game-3d': { sync: 'edits', methods: { ask: { doc: true }, polish: {} } },
+        'edit-media-presentation': { sync: 'edits', methods: { ask: { doc: true, longRunning: true }, polish: {} } },
+    };
 
     const methods = {
         // ───── 模型、視覺、網路 ─────
@@ -584,6 +593,41 @@ const FaEditHost = (function () {
             if (info.prompt) this._pushAssistantMessage('**' + T('成品', 'Result') + '：' + (info.title || name) + '**\n\n' + T('整理出來的 prompt（只收有效的那幾輪）：', 'The prompt that rebuilds it (only the steps that count):') + '\n\n```text\n' + info.prompt + '\n```', null);
             try { this._persistChatHistory(); this._renderMessageHistory(); } catch (_) { /* */ }
         },
+        // ───── 遠端共筆橋接：編輯器照常在這台顯示，裡面的請求（ask、polish、detail…）交給「AI 在」選的那台機器（見 DESIGN.edit-remote.md、rg_edit.js）
+        _edRemoteDecl(kind) { const K = KINDS[kind]; return (K && K.remote) || REMOTE_DEFAULTS[kind] || { sync: 'snapshot', methods: { ask: { doc: true } } }; },
+        _edAssetsAdapter() { return { has: (ns, id) => FaEditStore.hasImage(id), get: (ns, id) => FaEditStore.getImage(id), put: (ns, id, blob) => FaEditStore.putImageAs(id, blob) }; },
+        // 「執行者」這邊：別台交來的請求，用這台的 host 方法真的去做（_edHost 的 ask 已經包了離線程式、範例庫、查資料；文件用請求帶來的快取）
+        _edRemoteKind(kind) {
+            const K = KINDS[kind]; if (!K) return null; const self = this, decl = this._edRemoteDecl(kind);
+            return {
+                remote: Object.assign({}, decl, { assets: decl.assets || this._edAssetsAdapter() }),
+                run: async (method, args, ctx) => { const h = self._edHost(kind, ctx.sid, () => ({ spec: ctx.spec, state: null })); if (typeof h[method] !== 'function') throw new Error(T('這台機器的「' + K.label() + '」沒有 ' + method, 'This machine\'s ' + K.label() + ' has no ' + method)); return h[method].apply(h, args); },
+            };
+        },
+        _edRemoteCaps() { let ai = false; try { ai = !!this._edAi().have(); } catch (_) { ai = false; } const st = this.advancedSettings || {}; let tier = ''; try { tier = this._envTier(); } catch (_) { tier = ''; } return { ai, offline: !!st.offlineMode, diffusion: !!st.editDiffusion, tier }; },   // tier：這台的環境檔位（low＝手機等小機器，請求者挑執行者時可以避開）
+        _edRemoteSel(kind, id) { return (this._edRemoteMap && this._edRemoteMap.get(kind + ':' + id)) || null; },
+        _edRemoteTarget(kind, id) { const sel = this._edRemoteSel(kind, id); if (!sel) return null; const m = this._rg ? this._rgTargets().find((x) => x.nodeId === sel.nodeId) : null; return { nodeId: sel.nodeId, name: m ? m.name : sel.name }; },
+        async _edRemoteSet(kind, id, target) {
+            this._edRemoteMap = this._edRemoteMap || new Map(); const key = kind + ':' + id; if (target) this._edRemoteMap.set(key, { nodeId: target.nodeId, name: target.name }); else this._edRemoteMap.delete(key);
+            try { const proj = await FaEditStore.loadProject(kind, id); if (proj) { proj.origin = Object.assign({}, proj.origin || {}); if (target) proj.origin.remote = { nodeId: target.nodeId, name: target.name }; else delete proj.origin.remote; await FaEditStore.saveProject(kind, id, proj); } } catch (_) { /* 選擇只是少存一次 */ }
+        },
+        // 包一層 host：宣告成遠端的方法交給「AI 在」那台；save、download、toChat… 留在本機。host.aiWhere 讓外框在標題列顯示「🛰️ AI 在：…」下拉
+        _edRemoteWrap(kind, id, host, proj) {
+            if (typeof FaRemoteEdit === 'undefined') return host; const self = this;
+            if (proj && proj.origin && proj.origin.remote) { this._edRemoteMap = this._edRemoteMap || new Map(); if (!this._edRemoteMap.has(kind + ':' + id)) this._edRemoteMap.set(kind + ':' + id, proj.origin.remote); }
+            const lazy = { kinds: (k) => self._edRemoteKind(k), call: (...a) => { const peer = self._rg && self._rg.edit; return peer ? peer.call(...a) : Promise.reject(new Error(T('還沒加入遠端群組（或已離開），請把「AI 在」改回本機。', 'Not in a remote group (any more): switch "AI on" back to this machine.'))); } };
+            // 需要「畫面狀態」的請求（3D 的相機與選取：「我的左前方」是以請求者現在看的角度算）：隨請求送出 env，執行者沒有掛載的編輯器也算得對
+            const withEnv = { kinds: lazy.kinds, call: (t, k, sid, name, args, o) => { try { const holder = self._edEditors && self._edEditors.get(k + ':' + sid), env = holder && holder._ed && holder._ed.env ? holder._ed.env() : null; if (env && args[0] && typeof args[0] === 'object' && !args[0].env) args = [Object.assign({}, args[0], { env: JSON.parse(JSON.stringify(env)) })].concat(args.slice(1)); } catch (_) { /* 沒有 env 就照舊 */ } return lazy.call(t, k, sid, name, args, o); } };
+            const out = FaRemoteEdit.proxyHost(withEnv, { kind, sid: id, local: host, getTarget: () => self._edRemoteTarget(kind, id) });
+            out.selfName = () => (self._rg && self._rg.room && self._rg.room.self && self._rg.room.self.name) || '';
+            out.aiWhere = {
+                visible: () => !!self._rg || !!self._edRemoteSel(kind, id),
+                options: () => [{ value: '', label: T('本機', 'This machine') }].concat((self._rg ? self._rgTargets() : []).map((m) => ({ value: m.nodeId, label: m.name + (m.allow === false ? T('（不接受需求）', ' (not accepting)') : ''), disabled: m.allow === false }))),
+                get: () => { const sel = self._edRemoteSel(kind, id); return sel ? sel.nodeId : ''; },
+                set: (v) => { const m = v && self._rg ? self._rgTargets().find((x) => x.nodeId === v) : null; return self._edRemoteSet(kind, id, m ? { nodeId: m.nodeId, name: m.name } : null); },
+            };
+            return out;
+        },
         _edHost(kind, id, getSpecState) {
             const self = this, K = KINDS[kind], ai = this._edAi();
             const ask0 = kind === 'edit-svg' ? (req) => self._edAskSvg(req, { id }) : kind === 'edit-picture' ? (req) => self._edAskPicture(req, { id }) : (req) => K.ask.call(self, req, { id });
@@ -625,7 +669,9 @@ const FaEditHost = (function () {
             const C = K.core(); let id = o.id ? String(o.id) : '';
             if (id) { const proj = await FaEditStore.loadProject(kind, id); if (!proj) return { ok: false, error: T('找不到這個專案：', 'no such project: ') + id }; this._edPush(kind, id, null); return { ok: true, id, note: 'the editor is in the conversation' }; }
             const spec = o.spec ? C.validate(typeof o.spec === 'string' ? (() => { try { return JSON.parse(o.spec); } catch (_) { return {}; } })() : o.spec).spec : ((o.starter && C.starter(String(o.starter))) || C.starter('blank'));
-            id = FaEditStore.newId(K.prefix); await FaEditStore.saveProject(kind, id, Object.assign({ v: 1, spec, state: null }, o.origin ? { origin: o.origin } : {}));
+            id = FaEditStore.newId(K.prefix); const rt = this._rg && this._rgTarget ? { remote: { nodeId: this._rgTarget, name: this._rgTargetName(this._rgTarget) } } : null, org0 = (o.origin || rt) ? Object.assign({}, o.origin || {}, rt || {}) : null;   // 對話右下角選了「交給」某台，這個編輯器的 AI 預設就在那台
+            if (rt) { this._edRemoteMap = this._edRemoteMap || new Map(); this._edRemoteMap.set(kind + ':' + id, rt.remote); }
+            await FaEditStore.saveProject(kind, id, Object.assign({ v: 1, spec, state: null }, org0 ? { origin: org0 } : {}));
             this._edFresh = this._edFresh || new Map(); this._edFresh.set(id, { request: String(o.request || '').trim(), style: String(o.style || '').trim(), images: o.images || [] });
             this._edPush(kind, id, null);
             return { ok: true, id, note: 'the ' + K.label() + ' is open in the conversation; the user works by talking to it. Do not paste the content into the conversation.' };
@@ -639,7 +685,8 @@ const FaEditHost = (function () {
             const refs = K.collectRefs ? K.collectRefs(proj) : []; if (!K.collectRefs) { [proj.spec].concat(((proj.state && proj.state.states) || []).map((x) => x.spec)).forEach((sp) => { ((sp && sp.objects) || []).forEach((ob) => { if (ob.type === 'image' && ob.ref && refs.indexOf(ob.ref) < 0) refs.push(ob.ref); }); }); }
             await FaEditStore.preload(refs);
             let node = null; const self = this;
-            const host = this._edHost(kind, id, () => { const st = node && node._ed ? node._ed.getState() : proj.state; const sp = st && st.states && st.states[st.ptr] ? st.states[st.ptr].spec : proj.spec; return { spec: sp, state: st }; });
+            const host0 = this._edHost(kind, id, () => { const st = node && node._ed ? node._ed.getState() : proj.state; const sp = st && st.states && st.states[st.ptr] ? st.states[st.ptr].spec : proj.spec; return { spec: sp, state: st }; });
+            const host = this._edRemoteWrap(kind, id, host0, proj);
             node = K.ui().mount(Object.assign({ id, state: proj.state, spec: proj.spec, host, restoring: !fresh, store: FaEditStore, onVectorize: (obj) => self._edVectorizeObject(node, obj) }, K.mountOpts ? K.mountOpts.call(this, id, proj) : {}));
             holder.textContent = ''; holder.style.cssText = ''; holder.appendChild(node); holder._ed = node._ed; holder._win = node._win;
             try { FaEditI18n.localize(node); } catch (_) { /* 英文介面只是方便 */ }

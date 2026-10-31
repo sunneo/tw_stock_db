@@ -169,6 +169,20 @@
     }
 
     // ===== 解析（統一入口）=====
+    // 嚴格 JSON 文法掃描：回傳第一個不合法字元的位置（合法回 -1）。只在 JSON.parse 的錯誤訊息沒有 position 時用來補行列
+    function jsonErrorPos(t) {
+        t = String(t); var i = 0, n = t.length;
+        function ws() { while (i < n && ' \t\n\r'.indexOf(t[i]) >= 0) i++; }
+        function val() {
+            ws(); if (i >= n) return false; var c = t[i];
+            if (c === '{') { i++; ws(); if (t[i] === '}') { i++; return true; } for (;;) { ws(); if (t[i] !== '"' || !str()) return false; ws(); if (t[i] !== ':') return false; i++; if (!val()) return false; ws(); if (t[i] === ',') { i++; continue; } if (t[i] === '}') { i++; return true; } return false; } }
+            if (c === '[') { i++; ws(); if (t[i] === ']') { i++; return true; } for (;;) { if (!val()) return false; ws(); if (t[i] === ',') { i++; continue; } if (t[i] === ']') { i++; return true; } return false; } }
+            if (c === '"') return str();
+            var m = /^(?:-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)/.exec(t.slice(i, i + 64)); if (!m) return false; i += m[0].length; return true;
+        }
+        function str() { i++; while (i < n) { var c = t[i]; if (c === '"') { i++; return true; } if (c === '\\') { i += 2; continue; } if (c < ' ') return false; i++; } return false; }
+        return val() ? (ws(), i < n ? i : -1) : i;
+    }
     function parse(text, fmt, deps) {
         deps = deps || {};
         try {
@@ -182,7 +196,7 @@
             if (fmt === 'csv' || fmt === 'tsv') { const r = parseCsv(text, fmt === 'tsv' ? '\t' : undefined); const head = r.rows[0] || []; return { ok: true, data: { columns: head, rows: r.rows.slice(1) }, table: true }; }
         } catch (e) {
             let line = e.line || (e.mark && e.mark.line + 1) || null, col = (e.mark && e.mark.column + 1) || null;
-            if (!line) { const m = /position (\d+)/.exec(e.message || ''); if (m) { const pos = +m[1]; const up = String(text).slice(0, pos); line = up.split('\n').length; col = pos - up.lastIndexOf('\n'); } }
+            if (!line) { const m = /position (\d+)/.exec(e.message || ''); let pos = m ? +m[1] : -1; if (pos < 0 && fmt === 'json') pos = jsonErrorPos(text); if (pos >= 0) { const up = String(text).slice(0, pos); line = up.split('\n').length; col = pos - up.lastIndexOf('\n'); } }   // 新版 V8 的錯誤訊息只附一段上下文、沒有 position：自己掃一遍找第一個不合法的字元
             return { ok: false, error: { message: String(e.reason || e.message || e).split('\n')[0], line, col } };
         }
         return { ok: false, error: { message: '不支援的格式 ' + fmt } };

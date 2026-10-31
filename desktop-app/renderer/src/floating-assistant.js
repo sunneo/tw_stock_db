@@ -21587,6 +21587,20 @@ const holder = {};
     }
 
     // ===== 解析（統一入口）=====
+    // 嚴格 JSON 文法掃描：回傳第一個不合法字元的位置（合法回 -1）。只在 JSON.parse 的錯誤訊息沒有 position 時用來補行列
+    function jsonErrorPos(t) {
+        t = String(t); var i = 0, n = t.length;
+        function ws() { while (i < n && ' \t\n\r'.indexOf(t[i]) >= 0) i++; }
+        function val() {
+            ws(); if (i >= n) return false; var c = t[i];
+            if (c === '{') { i++; ws(); if (t[i] === '}') { i++; return true; } for (;;) { ws(); if (t[i] !== '"' || !str()) return false; ws(); if (t[i] !== ':') return false; i++; if (!val()) return false; ws(); if (t[i] === ',') { i++; continue; } if (t[i] === '}') { i++; return true; } return false; } }
+            if (c === '[') { i++; ws(); if (t[i] === ']') { i++; return true; } for (;;) { if (!val()) return false; ws(); if (t[i] === ',') { i++; continue; } if (t[i] === ']') { i++; return true; } return false; } }
+            if (c === '"') return str();
+            var m = /^(?:-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)/.exec(t.slice(i, i + 64)); if (!m) return false; i += m[0].length; return true;
+        }
+        function str() { i++; while (i < n) { var c = t[i]; if (c === '"') { i++; return true; } if (c === '\\') { i += 2; continue; } if (c < ' ') return false; i++; } return false; }
+        return val() ? (ws(), i < n ? i : -1) : i;
+    }
     function parse(text, fmt, deps) {
         deps = deps || {};
         try {
@@ -21600,7 +21614,7 @@ const holder = {};
             if (fmt === 'csv' || fmt === 'tsv') { const r = parseCsv(text, fmt === 'tsv' ? '\t' : undefined); const head = r.rows[0] || []; return { ok: true, data: { columns: head, rows: r.rows.slice(1) }, table: true }; }
         } catch (e) {
             let line = e.line || (e.mark && e.mark.line + 1) || null, col = (e.mark && e.mark.column + 1) || null;
-            if (!line) { const m = /position (\d+)/.exec(e.message || ''); if (m) { const pos = +m[1]; const up = String(text).slice(0, pos); line = up.split('\n').length; col = pos - up.lastIndexOf('\n'); } }
+            if (!line) { const m = /position (\d+)/.exec(e.message || ''); let pos = m ? +m[1] : -1; if (pos < 0 && fmt === 'json') pos = jsonErrorPos(text); if (pos >= 0) { const up = String(text).slice(0, pos); line = up.split('\n').length; col = pos - up.lastIndexOf('\n'); } }   // 新版 V8 的錯誤訊息只附一段上下文、沒有 position：自己掃一遍找第一個不合法的字元
             return { ok: false, error: { message: String(e.reason || e.message || e).split('\n')[0], line, col } };
         }
         return { ok: false, error: { message: '不支援的格式 ' + fmt } };
@@ -26176,10 +26190,13 @@ const holder = {};
     var ref = newId('img'); blobs[ref] = blob;
     return tx('readwrite', function (s) { return s.put(blob, 'img/' + ref); }).then(function () { return dataUrl(blob); }).then(function (u) { urls[ref] = u; return ref; });
   }
+  // 遠端編輯器橋接用：把別台傳來的素材存成「同一個 ref」（文件只存 ref，兩台對得上）
+  function putImageAs(ref, blob) { if (!/^[A-Za-z0-9_-]{1,64}$/.test(String(ref))) { return Promise.reject(new Error('bad ref')); } blobs[ref] = blob; return tx('readwrite', function (s) { return s.put(blob, 'img/' + ref); }).then(function () { return dataUrl(blob); }).then(function (u) { urls[ref] = u; return ref; }); }
+  function hasImage(ref) { if (blobs[ref]) { return Promise.resolve(true); } return tx('readonly', function (s) { return s.get('img/' + ref); }).then(function (b) { return !!b; }); }
   function getImage(ref) { if (blobs[ref]) { return Promise.resolve(blobs[ref]); } return tx('readonly', function (s) { return s.get('img/' + ref); }).then(function (b) { if (b) { blobs[ref] = b; } return b || null; }); }
   function preload(refs) { return Promise.all((refs || []).filter(function (r) { return !urls[r]; }).map(function (r) { return getImage(r).then(function (b) { return b ? dataUrl(b).then(function (u) { urls[r] = u; }) : null; }); })); }
   function imageUrl(ref) { return urls[ref] || ''; }
-  return { saveProject: saveProject, loadProject: loadProject, putImage: putImage, getImage: getImage, preload: preload, imageUrl: imageUrl, dataUrl: dataUrl, newId: newId };
+  return { saveProject: saveProject, loadProject: loadProject, putImage: putImage, putImageAs: putImageAs, hasImage: hasImage, getImage: getImage, preload: preload, imageUrl: imageUrl, dataUrl: dataUrl, newId: newId };
 });
 
 }).call(null, undefined, holder);
@@ -26474,14 +26491,14 @@ const holder = {};
     var S = { v: 1, ptr: 0, states: [], log: [] }, midTab = (opt.tabs[0] || {}).id, rightTab = 'ai', selected = null, pending = [], busy = false, saveT = null, newIds = {}, editor = null, selFns = [];
     function initState(state, spec) {
       if (state && Array.isArray(state.states) && state.states.length) {
-        S = { v: 1, ptr: Math.max(0, Math.min(state.states.length - 1, state.ptr | 0)), states: state.states.slice(-MAXSTATES).map(function (x) { return { spec: W.validate(x.spec).spec, summary: x.summary || '', text: x.text || '', kind: x.kind || 'panel', t: x.t || 0 }; }), log: Array.isArray(state.log) ? state.log.slice(-60) : [] };
+        S = { v: 1, ptr: Math.max(0, Math.min(state.states.length - 1, state.ptr | 0)), states: state.states.slice(-MAXSTATES).map(function (x) { return { spec: W.validate(x.spec).spec, summary: x.summary || '', text: x.text || '', kind: x.kind || 'panel', t: x.t || 0, by: x.by || undefined }; }), log: Array.isArray(state.log) ? state.log.slice(-60) : [] };
         if (S.ptr >= S.states.length) { S.ptr = S.states.length - 1; }
       } else { S = { v: 1, ptr: 0, states: [{ spec: W.validate(spec || {}).spec, summary: '開始', text: '', kind: 'start', t: Date.now() }], log: [] }; }
     }
     function cur() { return S.states[S.ptr].spec; }
     function getState() { var st = { v: 1, ptr: S.ptr, states: S.states, log: S.log.slice(-60) }; try { while (JSON.stringify(st).length > 3000000 && st.states.length > 2) { st.states = st.states.slice(1); st.ptr = Math.max(0, st.ptr - 1); } } catch (e) { /* keep */ } return st; }
     function persist() { clearTimeout(saveT); saveT = setTimeout(function () { try { if (host.save) { host.save(getState()); } } catch (e) { /* this change still counts */ } }, 400); }
-    function commit(spec, summary, text, kind) { S.states = S.states.slice(0, S.ptr + 1); S.states.push({ spec: W.validate(spec).spec, summary: summary || '', text: text || '', kind: kind || 'panel', t: Date.now() }); if (S.states.length > MAXSTATES) { S.states.shift(); } S.ptr = S.states.length - 1; render(); persist(); }
+    function commit(spec, summary, text, kind, by) { S.states = S.states.slice(0, S.ptr + 1); S.states.push({ spec: W.validate(spec).spec, summary: summary || '', text: text || '', kind: kind || 'panel', t: Date.now(), by: by || undefined }); if (S.states.length > MAXSTATES) { S.states.shift(); } S.ptr = S.states.length - 1; render(); persist(); }
     function env() { var e = {}; try { e = editor && editor.env ? (editor.env() || {}) : {}; } catch (x) { e = {}; } e.selection = selected; return e; }
     function apply(edits, summary, text, kind) {
       var r = W.applyEdits(cur(), edits, env()); if (!r.applied.length) { return r; }
@@ -26501,6 +26518,17 @@ const holder = {};
     (opt.exports || []).forEach(function (x) { var o1 = h('option', null, '⬇ 下載 ' + x.label); o1.value = 'dl:' + x.id; bExp.appendChild(o1); if (x.chat !== false && host.toChat) { var o2 = h('option', null, '💬 放進對話 ' + x.label); o2.value = 'chat:' + x.id; bExp.appendChild(o2); } });
     var bStar = h('button', null, '⭐ 存成案例'); bStar.title = '把這次做好的結果存成案例（進離線訓練器的知識）：下次相似的需求會拿它當參考，弱模型與離線模型會直接用它當起點；/edit-svg、/edit-3d、/edit-game-2d 後面接一句話也會用到'; if (!host.saveCase) { bStar.style.display = 'none'; }
     [ttl, stat, bUndo, bRedo, bSum, bStar, bExp].forEach(function (x) { bar.appendChild(x); });
+    // 「🛰️ AI 在：本機／別台機器」：這個編輯器裡的 AI 請求交給群組裡哪台做（host.aiWhere 由桌面版的遠端橋接提供；沒有就不顯示）
+    var aiSel = null;
+    function refreshAi() {
+      var w = host.aiWhere; if (!w) { return; } var vis = true; try { vis = w.visible ? !!w.visible() : true; } catch (e) { vis = true; }
+      if (!aiSel) { aiSel = h('select'); aiSel.title = '這個編輯器裡的 AI 請求（說話改、找圖、生圖…）交給群組裡哪台機器做；文件與素材會傳過去，改動傳回來。選「本機」就跟以前一樣。'; aiSel.onchange = function () { try { var r = w.set(aiSel.value); if (r && r.then) { r.then(refreshAi); } } catch (e) { /* 選擇失敗就維持原樣 */ } }; bar.insertBefore(aiSel, bExp); }
+      aiSel.style.display = vis ? '' : 'none'; if (!vis) { return; }
+      var cur = ''; try { cur = w.get() || ''; } catch (e) { cur = ''; } aiSel.textContent = '';
+      var opts = []; try { opts = w.options() || []; } catch (e) { opts = []; } if (cur && !opts.some(function (x) { return x.value === cur; })) { opts.push({ value: cur, label: '（離線的機器）' }); }
+      opts.forEach(function (x) { var o2 = h('option', null, '🛰️ AI 在：' + x.label); o2.value = x.value; if (x.disabled) { o2.disabled = true; } aiSel.appendChild(o2); }); aiSel.value = cur;
+    }
+    refreshAi(); bar.addEventListener('mouseenter', refreshAi);
     var sum = h('div', 'sum'), sumTa = h('textarea'); sumTa.rows = 9; var sumRow = h('div', 'row'), bCopy = h('button', null, '📋 複製'), bPol = h('button', null, '✨ 請 AI 潤飾'), bSumX = h('button', null, '✕');
     sumRow.appendChild(h('span', 'st', '只收沒被復原、而且真的改變了成品的那幾輪對話；可以貼到別處重現')); [bCopy, bPol, bSumX].forEach(function (x) { sumRow.appendChild(x); }); sum.appendChild(sumTa); sum.appendChild(sumRow);
     var main = h('div', 'main'), objs = h('div', 'objs'), mid = h('div', 'mid'), mTabs = h('div', 'tabs'), side = h('div', 'side'), rTabs = h('div', 'tabs');
@@ -26575,15 +26603,17 @@ const holder = {};
     }
 
     // ───── history ─────
-    function renderHist() { var p = rp.hist; p.textContent = ''; p.appendChild(h('div', 'st', '點一步就回到那一步（之後的步驟還在，可以重做）：')); S.states.forEach(function (s, i) { var d = h('div', i === S.ptr ? 'cur' : (i > S.ptr ? 'fut' : ''), (i + 1) + '. ' + (s.summary || '（沒有說明）') + (s.text ? '　— 「' + s.text.slice(0, 30) + '」' : '')); d.onclick = function () { S.ptr = i; render(); persist(); }; p.appendChild(d); }); }
+    function renderHist() { var p = rp.hist; p.textContent = ''; p.appendChild(h('div', 'st', '點一步就回到那一步（之後的步驟還在，可以重做）：')); S.states.forEach(function (s, i) { var d = h('div', i === S.ptr ? 'cur' : (i > S.ptr ? 'fut' : ''), (i + 1) + '. ' + (byLabel(s.by) ? '[' + byLabel(s.by) + '] ' : '') + (s.summary || '（沒有說明）') + (s.text ? '　— 「' + s.text.slice(0, 30) + '」' : '')); d.onclick = function () { S.ptr = i; render(); persist(); }; p.appendChild(d); }); }
 
     // ───── AI chat (pictures can be pasted / dropped in) ─────
     var logEl = h('div', 'log'), attEl = h('div', 'att'), inRow = h('div', 'row'), ta = h('textarea'), bAtt = h('button', null, '📎'), bSend = h('button', 'pri', '送出'), file = h('input'); file.type = 'file'; file.accept = 'image/*'; file.multiple = true; file.style.display = 'none';
     ta.rows = 2; ta.placeholder = opt.placeholder || ''; bAtt.title = '附圖（也可以直接貼上、拖進來）'; inRow.appendChild(bAtt); inRow.appendChild(bSend);
     var dock = h('div', 'dock'), dockSay = h('div', 'say'), dockIn = h('div', 'in');   // the AI chat box: always at the bottom of the editor, whatever the width, so it is always in sight
     rp.ai.appendChild(logEl); dockIn.appendChild(ta); dockIn.appendChild(inRow); inRow.style.flexDirection = 'column'; inRow.style.alignItems = 'stretch'; dock.appendChild(dockSay); dock.appendChild(attEl); dock.appendChild(dockIn); dock.appendChild(file); el.appendChild(spD); el.appendChild(dock); applyLay();
-    function addMsg(role, text, chips, rejected) { var m = h('div', 'msg ' + (role === 'user' ? 'u' : 'a')); m.appendChild(document.createTextNode(text || '')); (chips || []).forEach(function (c) { m.appendChild(h('span', 'chip', c)); }); (rejected || []).forEach(function (c) { m.appendChild(h('span', 'chip rej', c)); }); logEl.appendChild(m); logEl.scrollTop = logEl.scrollHeight; return m; }
-    function renderLog() { logEl.textContent = ''; if (!S.log.length && opt.intro) { addMsg('ai', opt.intro); } var lastAi = S.log.slice().reverse().filter(function (m) { return m.role === 'ai'; })[0]; dockSay.textContent = lastAi ? lastAi.text : ''; S.log.forEach(function (m) { addMsg(m.role, m.text, m.chips, m.rejected); }); }
+    // 這則/這一步是誰做的：AI 由別台執行時標「🛰️ 機器名稱 · AI」（請求者不是自己時再加「應 X 要求」）；人做的別人的步驟標「🖥️ 名稱」。自己做的不加標籤
+    function byLabel(by) { if (!by) { return ''; } var me = (host.selfName && host.selfName()) || ''; if (by.src === 'ai' && by.exec) { return '🛰️ ' + by.exec.name + ' · AI' + (by.req && by.req.name && by.req.name !== me ? '　應 ' + by.req.name + ' 要求' : ''); } if (by.name && by.name !== me) { return (by.kind === 'web' ? '🌐 ' : '🖥️ ') + by.name; } return ''; }
+    function addMsg(role, text, chips, rejected, by) { var m = h('div', 'msg ' + (role === 'user' ? 'u' : 'a')); var bl = byLabel(by); if (bl) { var bs = h('span', 'chip by', bl); bs.title = '這一則是誰做的'; m.appendChild(bs); } m.appendChild(document.createTextNode(text || '')); (chips || []).forEach(function (c) { m.appendChild(h('span', 'chip', c)); }); (rejected || []).forEach(function (c) { m.appendChild(h('span', 'chip rej', c)); }); logEl.appendChild(m); logEl.scrollTop = logEl.scrollHeight; return m; }
+    function renderLog() { logEl.textContent = ''; if (!S.log.length && opt.intro) { addMsg('ai', opt.intro); } var lastAi = S.log.slice().reverse().filter(function (m) { return m.role === 'ai'; })[0]; dockSay.textContent = lastAi ? lastAi.text : ''; S.log.forEach(function (m) { addMsg(m.role, m.text, m.chips, m.rejected, m.by); }); }
     function readFile(f) { return new Promise(function (res) { var r = new FileReader(); r.onload = function () { res({ name: f.name || 'image', dataUrl: String(r.result) }); }; r.onerror = function () { res(null); }; r.readAsDataURL(f); }); }
     function addFiles(files) { Promise.all(Array.prototype.filter.call(files || [], function (f) { return /^image\//.test(f.type); }).slice(0, 3).map(readFile)).then(function (list) { list.filter(Boolean).forEach(function (x) { if (pending.length < 3) { pending.push(x); } }); renderAtt(); }); }
     function renderAtt() { attEl.textContent = ''; pending.forEach(function (x, i) { var s = h('span'), im = h('img'); im.src = x.dataUrl; im.alt = x.name; var rm = h('b', null, '×'); rm.onclick = function () { pending.splice(i, 1); renderAtt(); }; s.appendChild(im); s.appendChild(rm); attEl.appendChild(s); }); }
@@ -26595,12 +26625,12 @@ const holder = {};
       var text = ta.value.trim(), imgs = pending.slice(); if (busy || (!text && !imgs.length)) { return; }
       busy = true; bSend.disabled = true; ta.value = ''; pending = []; renderAtt(); rightTab = 'ai'; showTabs();
       var um = { role: 'user', text: (text || '（附圖）') + (imgs.length ? '　📎×' + imgs.length : '') }; S.log.push(um); addMsg('user', um.text, imgs.length ? [] : []); var think = addMsg('ai', '…'); dockSay.textContent = '…';
-      var chips = [], rej = [], say = '', spec0 = cur(), edits = [], applied = 0, words = [], ans0 = null;
+      var chips = [], rej = [], byAns = null, say = '', spec0 = cur(), edits = [], applied = 0, words = [], ans0 = null;
       try {
         var pr = text && opt.parseCommands ? opt.parseCommands(text, spec0) : { edits: [], unmatched: text ? [text] : [] }; edits = pr.edits.slice(); var rest = pr.unmatched.join('，');
         if ((rest || imgs.length) && host.ask) {
           var ans = ans0 = await host.ask({ text: rest, images: imgs, spec: spec0, selection: selected, fresh: effectiveSteps().length === 0, onStatus: function (t) { think.textContent = t; dockSay.textContent = t; } });
-          say = (ans && ans.say) || ''; if (ans && ans.edits) { edits = edits.concat(ans.edits); } if (ans && ans.notes) { ans.notes.forEach(function (n) { chips.push(n); }); }
+          say = (ans && ans.say) || ''; byAns = ans && ans.by ? ans.by : null; if (ans && ans.edits) { edits = edits.concat(ans.edits); } if (ans && ans.notes) { ans.notes.forEach(function (n) { chips.push(n); }); }
         } else if (rest) { say = '我沒聽懂：「' + rest.slice(0, 40) + '」。這個環境沒有 AI 可以幫忙，可以直接在物件欄與屬性面板改。'; }
         var r = W.applyEdits(spec0, edits, env()), next = spec0;
         if (r.applied.length) { next = r.spec; r.appliedEdits.forEach(function (e) { words.push(W.editWords(e)); }); }
@@ -26608,13 +26638,13 @@ const holder = {};
         var aiMade = !!(rest && ans0 && ans0.edits && ans0.edits.length), accepted = true;
         if (opt.previewEdits && aiMade && JSON.stringify(next) !== JSON.stringify(spec0)) { think.textContent = '改動先放在預覽(綠＝新增、黃＝修改、紅虛線＝刪除),按「接受」才套用…'; dockSay.textContent = think.textContent; try { accepted = await opt.previewEdits({ spec0: spec0, next: next, edits: r.appliedEdits || [], words: words.slice(), rejected: r.rejected || [] }); } catch (pe) { accepted = true; } if (!accepted) { next = spec0; say = '已退回這一輪的改動(沒有套用)。'; words = []; chips = []; } }
         if (JSON.stringify(next) !== JSON.stringify(spec0)) {
-          (r.added || []).forEach(function (id) { newIds[id] = 1; }); commit(next, words.filter(Boolean).join('；'), text || '（附圖）', imgs.length ? 'image' : 'chat'); applied = words.length; words.forEach(function (w) { chips.push('✓ ' + w); });
+          (r.added || []).forEach(function (id) { newIds[id] = 1; }); commit(next, words.filter(Boolean).join('；'), text || '（附圖）', imgs.length ? 'image' : 'chat', aiMade && byAns ? byAns : undefined); applied = words.length; words.forEach(function (w) { chips.push('✓ ' + w); });
           if (r.added && r.added.length) { select(r.added[r.added.length - 1]); } else if (selected && W.find(cur(), selected) < 0) { select(null); }
         }
         if (!applied && (rej.length || chips.length)) { say = say && !rej.length && chips.length ? say : '這次沒有改成：'; }
         if (!say) { say = applied ? '改好了：' : '這樣已經是目前的樣子了。'; }
       } catch (e) { say = '這次沒成功：' + String((e && e.message) || e).slice(0, 160); }
-      think.remove(); var am = { role: 'ai', text: say, chips: chips.slice(0, 14), rejected: rej.slice(0, 6) }; S.log.push(am); addMsg('ai', am.text, am.chips, am.rejected); dockSay.textContent = am.text + (am.chips.length ? '  ' + am.chips.slice(0, 4).join('  ') : '') + (am.rejected.length ? '  ' + am.rejected.slice(0, 2).join('  ') : ''); persist(); busy = false; bSend.disabled = false;
+      think.remove(); var am = { role: 'ai', text: say, chips: chips.slice(0, 14), rejected: rej.slice(0, 6), by: byAns || undefined }; S.log.push(am); addMsg('ai', am.text, am.chips, am.rejected, am.by); dockSay.textContent = am.text + (am.chips.length ? '  ' + am.chips.slice(0, 4).join('  ') : '') + (am.rejected.length ? '  ' + am.rejected.slice(0, 2).join('  ') : ''); persist(); busy = false; bSend.disabled = false;
     }
     bSend.onclick = send;
 
@@ -32236,6 +32266,15 @@ const FaEditHost = (function () {
         'edit-picture': { fence: 'fa-edit-picture', icon: '🎨', cmd: '/edit-picture', prefix: 'pc', label: () => T('圖片編輯器', 'Picture editor'), core: () => FaEditPicture, ui: () => FaEditPictureUI, lead: '🎨 圖片編輯器：圖層式的後製與修復——貼圖、給網址或說「找一張…的圖」就有第一個圖層；然後用說的：「變成水彩風格」「調亮」「修掉右下角的污點」。濾鏡與修復都是圖層，原圖不動；每一步都能復原，進度會保留。' },
     };
     const register = (kind, def) => { KINDS[kind] = def; };
+    // 遠端共筆橋接的預設宣告（設計見 DESIGN.edit-remote.md §4；各編輯器在 register 的 def.remote 可以覆寫）。沒宣告的編輯器退成「ask 走遠端、整份快照同步」
+    const REMOTE_DEFAULTS = {
+        'edit-svg': { sync: 'edits', methods: { ask: { doc: true }, polish: {} } },
+        'edit-picture': { sync: 'edits', methods: { ask: { doc: true }, polish: {}, detail: { doc: true, longRunning: true } } },
+        'edit-3d': { sync: 'edits', methods: { ask: { doc: true }, polish: {} } },
+        'edit-game-2d': { sync: 'edits', methods: { ask: { doc: true }, polish: {} } },
+        'edit-game-3d': { sync: 'edits', methods: { ask: { doc: true }, polish: {} } },
+        'edit-media-presentation': { sync: 'edits', methods: { ask: { doc: true, longRunning: true }, polish: {} } },
+    };
 
     const methods = {
         // ───── 模型、視覺、網路 ─────
@@ -32797,6 +32836,41 @@ const FaEditHost = (function () {
             if (info.prompt) this._pushAssistantMessage('**' + T('成品', 'Result') + '：' + (info.title || name) + '**\n\n' + T('整理出來的 prompt（只收有效的那幾輪）：', 'The prompt that rebuilds it (only the steps that count):') + '\n\n```text\n' + info.prompt + '\n```', null);
             try { this._persistChatHistory(); this._renderMessageHistory(); } catch (_) { /* */ }
         },
+        // ───── 遠端共筆橋接：編輯器照常在這台顯示，裡面的請求（ask、polish、detail…）交給「AI 在」選的那台機器（見 DESIGN.edit-remote.md、rg_edit.js）
+        _edRemoteDecl(kind) { const K = KINDS[kind]; return (K && K.remote) || REMOTE_DEFAULTS[kind] || { sync: 'snapshot', methods: { ask: { doc: true } } }; },
+        _edAssetsAdapter() { return { has: (ns, id) => FaEditStore.hasImage(id), get: (ns, id) => FaEditStore.getImage(id), put: (ns, id, blob) => FaEditStore.putImageAs(id, blob) }; },
+        // 「執行者」這邊：別台交來的請求，用這台的 host 方法真的去做（_edHost 的 ask 已經包了離線程式、範例庫、查資料；文件用請求帶來的快取）
+        _edRemoteKind(kind) {
+            const K = KINDS[kind]; if (!K) return null; const self = this, decl = this._edRemoteDecl(kind);
+            return {
+                remote: Object.assign({}, decl, { assets: decl.assets || this._edAssetsAdapter() }),
+                run: async (method, args, ctx) => { const h = self._edHost(kind, ctx.sid, () => ({ spec: ctx.spec, state: null })); if (typeof h[method] !== 'function') throw new Error(T('這台機器的「' + K.label() + '」沒有 ' + method, 'This machine\'s ' + K.label() + ' has no ' + method)); return h[method].apply(h, args); },
+            };
+        },
+        _edRemoteCaps() { let ai = false; try { ai = !!this._edAi().have(); } catch (_) { ai = false; } const st = this.advancedSettings || {}; let tier = ''; try { tier = this._envTier(); } catch (_) { tier = ''; } return { ai, offline: !!st.offlineMode, diffusion: !!st.editDiffusion, tier }; },   // tier：這台的環境檔位（low＝手機等小機器，請求者挑執行者時可以避開）
+        _edRemoteSel(kind, id) { return (this._edRemoteMap && this._edRemoteMap.get(kind + ':' + id)) || null; },
+        _edRemoteTarget(kind, id) { const sel = this._edRemoteSel(kind, id); if (!sel) return null; const m = this._rg ? this._rgTargets().find((x) => x.nodeId === sel.nodeId) : null; return { nodeId: sel.nodeId, name: m ? m.name : sel.name }; },
+        async _edRemoteSet(kind, id, target) {
+            this._edRemoteMap = this._edRemoteMap || new Map(); const key = kind + ':' + id; if (target) this._edRemoteMap.set(key, { nodeId: target.nodeId, name: target.name }); else this._edRemoteMap.delete(key);
+            try { const proj = await FaEditStore.loadProject(kind, id); if (proj) { proj.origin = Object.assign({}, proj.origin || {}); if (target) proj.origin.remote = { nodeId: target.nodeId, name: target.name }; else delete proj.origin.remote; await FaEditStore.saveProject(kind, id, proj); } } catch (_) { /* 選擇只是少存一次 */ }
+        },
+        // 包一層 host：宣告成遠端的方法交給「AI 在」那台；save、download、toChat… 留在本機。host.aiWhere 讓外框在標題列顯示「🛰️ AI 在：…」下拉
+        _edRemoteWrap(kind, id, host, proj) {
+            if (typeof FaRemoteEdit === 'undefined') return host; const self = this;
+            if (proj && proj.origin && proj.origin.remote) { this._edRemoteMap = this._edRemoteMap || new Map(); if (!this._edRemoteMap.has(kind + ':' + id)) this._edRemoteMap.set(kind + ':' + id, proj.origin.remote); }
+            const lazy = { kinds: (k) => self._edRemoteKind(k), call: (...a) => { const peer = self._rg && self._rg.edit; return peer ? peer.call(...a) : Promise.reject(new Error(T('還沒加入遠端群組（或已離開），請把「AI 在」改回本機。', 'Not in a remote group (any more): switch "AI on" back to this machine.'))); } };
+            // 需要「畫面狀態」的請求（3D 的相機與選取：「我的左前方」是以請求者現在看的角度算）：隨請求送出 env，執行者沒有掛載的編輯器也算得對
+            const withEnv = { kinds: lazy.kinds, call: (t, k, sid, name, args, o) => { try { const holder = self._edEditors && self._edEditors.get(k + ':' + sid), env = holder && holder._ed && holder._ed.env ? holder._ed.env() : null; if (env && args[0] && typeof args[0] === 'object' && !args[0].env) args = [Object.assign({}, args[0], { env: JSON.parse(JSON.stringify(env)) })].concat(args.slice(1)); } catch (_) { /* 沒有 env 就照舊 */ } return lazy.call(t, k, sid, name, args, o); } };
+            const out = FaRemoteEdit.proxyHost(withEnv, { kind, sid: id, local: host, getTarget: () => self._edRemoteTarget(kind, id) });
+            out.selfName = () => (self._rg && self._rg.room && self._rg.room.self && self._rg.room.self.name) || '';
+            out.aiWhere = {
+                visible: () => !!self._rg || !!self._edRemoteSel(kind, id),
+                options: () => [{ value: '', label: T('本機', 'This machine') }].concat((self._rg ? self._rgTargets() : []).map((m) => ({ value: m.nodeId, label: m.name + (m.allow === false ? T('（不接受需求）', ' (not accepting)') : ''), disabled: m.allow === false }))),
+                get: () => { const sel = self._edRemoteSel(kind, id); return sel ? sel.nodeId : ''; },
+                set: (v) => { const m = v && self._rg ? self._rgTargets().find((x) => x.nodeId === v) : null; return self._edRemoteSet(kind, id, m ? { nodeId: m.nodeId, name: m.name } : null); },
+            };
+            return out;
+        },
         _edHost(kind, id, getSpecState) {
             const self = this, K = KINDS[kind], ai = this._edAi();
             const ask0 = kind === 'edit-svg' ? (req) => self._edAskSvg(req, { id }) : kind === 'edit-picture' ? (req) => self._edAskPicture(req, { id }) : (req) => K.ask.call(self, req, { id });
@@ -32838,7 +32912,9 @@ const FaEditHost = (function () {
             const C = K.core(); let id = o.id ? String(o.id) : '';
             if (id) { const proj = await FaEditStore.loadProject(kind, id); if (!proj) return { ok: false, error: T('找不到這個專案：', 'no such project: ') + id }; this._edPush(kind, id, null); return { ok: true, id, note: 'the editor is in the conversation' }; }
             const spec = o.spec ? C.validate(typeof o.spec === 'string' ? (() => { try { return JSON.parse(o.spec); } catch (_) { return {}; } })() : o.spec).spec : ((o.starter && C.starter(String(o.starter))) || C.starter('blank'));
-            id = FaEditStore.newId(K.prefix); await FaEditStore.saveProject(kind, id, Object.assign({ v: 1, spec, state: null }, o.origin ? { origin: o.origin } : {}));
+            id = FaEditStore.newId(K.prefix); const rt = this._rg && this._rgTarget ? { remote: { nodeId: this._rgTarget, name: this._rgTargetName(this._rgTarget) } } : null, org0 = (o.origin || rt) ? Object.assign({}, o.origin || {}, rt || {}) : null;   // 對話右下角選了「交給」某台，這個編輯器的 AI 預設就在那台
+            if (rt) { this._edRemoteMap = this._edRemoteMap || new Map(); this._edRemoteMap.set(kind + ':' + id, rt.remote); }
+            await FaEditStore.saveProject(kind, id, Object.assign({ v: 1, spec, state: null }, org0 ? { origin: org0 } : {}));
             this._edFresh = this._edFresh || new Map(); this._edFresh.set(id, { request: String(o.request || '').trim(), style: String(o.style || '').trim(), images: o.images || [] });
             this._edPush(kind, id, null);
             return { ok: true, id, note: 'the ' + K.label() + ' is open in the conversation; the user works by talking to it. Do not paste the content into the conversation.' };
@@ -32852,7 +32928,8 @@ const FaEditHost = (function () {
             const refs = K.collectRefs ? K.collectRefs(proj) : []; if (!K.collectRefs) { [proj.spec].concat(((proj.state && proj.state.states) || []).map((x) => x.spec)).forEach((sp) => { ((sp && sp.objects) || []).forEach((ob) => { if (ob.type === 'image' && ob.ref && refs.indexOf(ob.ref) < 0) refs.push(ob.ref); }); }); }
             await FaEditStore.preload(refs);
             let node = null; const self = this;
-            const host = this._edHost(kind, id, () => { const st = node && node._ed ? node._ed.getState() : proj.state; const sp = st && st.states && st.states[st.ptr] ? st.states[st.ptr].spec : proj.spec; return { spec: sp, state: st }; });
+            const host0 = this._edHost(kind, id, () => { const st = node && node._ed ? node._ed.getState() : proj.state; const sp = st && st.states && st.states[st.ptr] ? st.states[st.ptr].spec : proj.spec; return { spec: sp, state: st }; });
+            const host = this._edRemoteWrap(kind, id, host0, proj);
             node = K.ui().mount(Object.assign({ id, state: proj.state, spec: proj.spec, host, restoring: !fresh, store: FaEditStore, onVectorize: (obj) => self._edVectorizeObject(node, obj) }, K.mountOpts ? K.mountOpts.call(this, id, proj) : {}));
             holder.textContent = ''; holder.style.cssText = ''; holder.appendChild(node); holder._ed = node._ed; holder._win = node._win;
             try { FaEditI18n.localize(node); } catch (_) { /* 英文介面只是方便 */ }
@@ -32981,7 +33058,7 @@ const FaEditHost = (function () {
     };
     M._edAsk3d = async function (req, ed) {
         req = req || {}; const A = this._edAi(), C = FaEdit3d, spec = C.validate(req.spec).spec, notes = [], edits = [], text = String(req.text || '').trim(), status = typeof req.onStatus === 'function' ? req.onStatus : () => {}; let say = '', refText = '';
-        const holder = this._edEditors && this._edEditors.get('edit-3d:' + ed.id), env = holder && holder._ed && holder._ed.env ? holder._ed.env() : { selection: req.selection };
+        const holder = this._edEditors && this._edEditors.get('edit-3d:' + ed.id), env = req.env || (holder && holder._ed && holder._ed.env ? holder._ed.env() : { selection: req.selection });   // 遠端執行時沒有掛載的編輯器：用請求者隨請求送來的畫面狀態（相機、選取）
         // 1) pictures pasted into the chat
         for (let i = 0; i < Math.min(3, (req.images || []).length); i++) {
             const im = req.images[i];
@@ -33106,7 +33183,7 @@ const FaEditHost = (function () {
         const d = cx.getImageData(0, 0, w, h); return { width: w, height: h, data: d.data };
     };
     // 手機：記憶體小、主執行緒慢——面數、貼圖都縮小，用完的模型馬上卸載（桌面版不變）
-    M._i3dLite = function () { try { return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '') || (navigator.deviceMemory && navigator.deviceMemory <= 4) || (navigator.maxTouchPoints > 1 && Math.min(screen.width, screen.height) < 820); } catch (_) { return false; } };
+    M._i3dLite = function () { try { if (typeof this._envTier === 'function') return this._envTier() === 'low'; } catch (_) { /* 退回舊的判斷 */ } try { return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '') || (navigator.deviceMemory && navigator.deviceMemory <= 4) || (navigator.maxTouchPoints > 1 && Math.min(screen.width, screen.height) < 820); } catch (_) { return false; } };
     M._i3dFree = function () { if (this._i3dLite() && this._vlmTerminate) { try { this._vlmTerminate('gpu'); this._vlmTerminate('cpu'); } catch (_) { /* */ } } };
     // FaImage3d 的重運算（讀深度、分物件、做網格、組場景）放在 Worker 裡跑，主執行緒只等結果，頁面才不會卡死；開不了 Worker 才退回主執行緒
     M._i3dCall = function (fn, args) {
@@ -35720,7 +35797,7 @@ return holder.FaGameUI;
     };
     M._edAskGame = async function (req, ed, dim) {
         req = req || {}; const A = this._edAi(), C = FaGame, spec = C.validate(req.spec).spec, notes = [], edits = [], text = String(req.text || '').trim(), status = typeof req.onStatus === 'function' ? req.onStatus : () => {}; let say = '';
-        const holder = this._edEditors && this._edEditors.get('edit-game-' + dim + ':' + ed.id), env = holder && holder._ed && holder._ed.env ? holder._ed.env() : { selection: req.selection };
+        const holder = this._edEditors && this._edEditors.get('edit-game-' + dim + ':' + ed.id), env = req.env || (holder && holder._ed && holder._ed.env ? holder._ed.env() : { selection: req.selection });
         if (dim === '3d' && (req.images || []).length && typeof this._i3dSubjectSolid === 'function') {   // 3D 遊戲：貼了圖又說「只要咖啡杯」「把這張圖變成 3D 物件」→ 離線深度模型做成封閉的立體，當選到的那個原型的外觀（只留主體）
             const pre = FaImage3d.subjectIntent(text), asked = /(把|將|用)?這張(圖|照片|圖片).{0,8}(變成|轉成|做成|轉).{0,6}(3D|三維|立體)|圖(片)?轉\s*3D|image.?to.?3d/i.test(text);
             if (asked || (pre.decided && pre.subject === 'main' && (pre.source === 'phrase' || pre.source === 'flag'))) {
@@ -36193,7 +36270,7 @@ return holder.FaDeckEditUI;
 
     M._edAskDeck = async function (req, ed) {
         req = req || {}; const A = this._edAi(), D0 = FaDeckEdit, spec = D0.validate(req.spec).spec, notes = [], edits = [], text = String(req.text || '').trim(), status = typeof req.onStatus === 'function' ? req.onStatus : () => {}; let say = '';
-        const holder = this._edEditors && this._edEditors.get('edit-media-presentation:' + ed.id), env = holder && holder._ed && holder._ed.env ? holder._ed.env() : { selection: req.selection };
+        const holder = this._edEditors && this._edEditors.get('edit-media-presentation:' + ed.id), env = req.env || (holder && holder._ed && holder._ed.env ? holder._ed.env() : { selection: req.selection });
         const curRef = env.slide || req.selection || 'current'; const asNew = NEWPAGE_RE.test(text);
         // 1) 貼進對話框的圖 → 這頁的圖(或新的一頁)
         for (let i = 0; i < Math.min(3, (req.images || []).length); i++) {
@@ -36365,6 +36442,232 @@ return holder.FaDeckEditUI;
 })();
 
 /* HARNESS-END */
+/* ENV-BEGIN */
+(function (module) {
+/* 環境基準線（UMD、純函式＋可注入計時器，不碰 DOM）：依「這個環境現在有多少記憶體可用」決定預設值，並管理離線模型／Worker 等重資源的載入與卸載。設計見 DESIGN.env-baseline.md。
+ *   FaEnv.detect(raw) → facts          raw：{ mobile, deviceMemory, cores, heapLimit, heapUsed, totalMem, freeMem, saveData, batteryLow, gpu, quotaBytes }（缺的就是沒有）
+ *   FaEnv.tierOf(facts, override, degrade) → 'low'|'mid'|'high'     override：'auto'|'low'|'mid'|'high'；degrade：這個工作階段已經降了幾級
+ *   FaEnv.policyOf(tier, overrides) → { budgetMB, unloadAfterTask, graceMs, idleMs, maxWorkers, maxImagePx, fileCacheMB, parallelTasks, preferSmall, renderScale, fps }
+ *   new FaEnv.Governor({ policy, now, setTimeout, clearTimeout, log }) → register／acquire／release／pressure／degrade／unload／state（見下）*/
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaEnv = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const MB = 1048576, TIERS = ['low', 'mid', 'high'];
+    function detect(raw) {
+        raw = raw || {}; const f = Object.assign({}, raw);
+        f.mobile = !!raw.mobile; f.cores = Math.max(1, Number(raw.cores) || 1);
+        // 實際記憶體：桌面版主行程給的 totalMem 最準；瀏覽器的 deviceMemory 最大只回報到 8；Chrome 的 heapLimit 在手機通常只有幾百 MB 到 1 GB
+        f.memGB = raw.totalMem ? raw.totalMem / (1024 * MB) : (Number(raw.deviceMemory) || 0);
+        f.memKnown = f.memGB > 0; f.heapLimitMB = raw.heapLimit ? raw.heapLimit / MB : 0;
+        return f;
+    }
+    // 先看「最弱的那個指標」：手機、省流量、記憶體小、heap 上限小都往低檔走；沒有任何資訊時保守地當 mid
+    function baseTier(f) {
+        if (f.mobile || f.saveData) return 'low';
+        if (f.heapLimitMB && f.heapLimitMB < 1100) return 'low';
+        if (f.memKnown) { if (f.memGB <= 4) return 'low'; if (f.totalMem) { return f.memGB < 6 ? 'low' : f.memGB < 12 ? 'mid' : 'high'; } return f.memGB >= 8 && f.cores >= 8 ? 'high' : 'mid'; }
+        return f.cores >= 8 ? 'mid' : f.cores <= 2 ? 'low' : 'mid';
+    }
+    function tierOf(f, override, degrade) {
+        let i = TIERS.indexOf(override) >= 0 ? TIERS.indexOf(override) : TIERS.indexOf(baseTier(f));
+        if (f && f.batteryLow && override !== 'high' && TIERS.indexOf(override) < 0) i -= 1;   // 電量很低又沒插電：降一級（不是使用者指定的檔位才降）
+        i -= Math.max(0, degrade | 0); return TIERS[Math.max(0, Math.min(2, i))];
+    }
+    const POLICIES = {
+        // unloadAfterTask：跑完一個任務就卸載（graceMs 內又要用就不卸，連續的步驟不會反覆載入）；idleMs：閒置多久卸載（Infinity＝不卸）
+        low:  { budgetMB: 600,  unloadAfterTask: true,  graceMs: 4000,  idleMs: 30000,   maxWorkers: 2, maxImagePx: 1024, fileCacheMB: 64,   parallelTasks: 1, preferSmall: true,  renderScale: 1,   fps: 30, tilePx: 512,  batch: 1 },
+        mid:  { budgetMB: 1800, unloadAfterTask: false, graceMs: 0,     idleMs: 120000,  maxWorkers: 4, maxImagePx: 2048, fileCacheMB: 256,  parallelTasks: 2, preferSmall: false, renderScale: 1.5, fps: 60, tilePx: 1024, batch: 2 },
+        high: { budgetMB: 5000, unloadAfterTask: false, graceMs: 0,     idleMs: 600000,  maxWorkers: 8, maxImagePx: 4096, fileCacheMB: 1024, parallelTasks: 3, preferSmall: false, renderScale: 2,   fps: 60, tilePx: 2048, batch: 4 },
+    };
+    function policyOf(tier, overrides) { return Object.assign({}, POLICIES[tier] || POLICIES.mid, overrides || {}); }
+    // 這些錯誤訊息代表「記憶體不夠」（WebAssembly、WebGPU、ArrayBuffer、onnxruntime 的各種說法；也包含 Worker 回報的數字錯誤碼）
+    const OOM_RE = /out of memory|oom|allocation failed|array buffer allocation|cannot allocate|memory access out of bounds|failed to allocate|device (?:was )?lost|context lost|std::bad_alloc|記憶體不足|Invalid (?:typed )?array length|Invalid string length|無法配置/i;
+    function isOom(e) { const t = typeof e === 'number' ? 'code ' + e : String((e && (e.message || e.reason)) || e || ''); return OOM_RE.test(t) || (typeof e === 'number' && e > 1000000); }
+
+    class Governor {
+        constructor(o) {
+            o = o || {}; this.policyFn = o.policy || (() => policyOf('mid')); this.now = o.now || (() => Date.now()); /* 包一層：瀏覽器的 setTimeout 不能用別的物件當 this 呼叫 */ const st0 = o.setTimeout, ct0 = o.clearTimeout; this.st = (fn, ms) => (st0 ? st0(fn, ms) : setTimeout(fn, ms)); this.ct = (id) => (ct0 ? ct0(id) : clearTimeout(id)); this.log = o.log || (() => {});
+            this.res = new Map(); this.degradeLevel = 0; this.events = []; this.waiters = [];
+        }
+        policy() { return this.policyFn(); }
+        // register：unload() 真的釋放（終止 Worker、dispose 管線、把引用設成 null）；bytes() 估計常駐大小；kind 只是標籤
+        // def.resident()：資源常駐與否由外面的程式自己追蹤時給（例如 this._whisperTranscriber 有沒有值）；不給就由 acquire／unload 追蹤
+        register(id, def) { const r = this.res.get(id) || { id, busy: 0, last: 0, timer: null, _res: false }; Object.assign(r, { unload: def.unload, bytes: def.bytes || (() => 0), kind: def.kind || 'model', label: def.label || id, isRes: def.resident || null }); Object.defineProperty(r, 'resident', { configurable: true, get() { return this.isRes ? !!this.isRes() : this._res; }, set(v) { this._res = !!v; } }); this.res.set(id, r); return r; }
+        residentBytes(except) { let n = 0; for (const r of this.res.values()) if (r.resident && r.id !== except) n += Number(r.bytes()) || 0; return n; }
+        // settle：外部追蹤的資源用完一次（不經過 acquire）：依政策排程卸載（低檔 graceMs、其他檔 idleMs）
+        settle(id, o) { const r = this.res.get(id); if (!r || r.busy > 0) return; this.clearTimer(r); r.last = this.now(); const p = this.policy(), ms = (o && o.immediate) ? 0 : p.unloadAfterTask ? p.graceMs : p.idleMs; if (!Number.isFinite(ms)) return; r.timer = this.st(() => { r.timer = null; if (r.busy === 0) this.unload(id, p.unloadAfterTask ? '任務完成' : '閒置'); }, ms); }
+        // acquire：要載入／使用 id（預估 estBytes 位元組）。寧可慢、不要被瀏覽器因記憶體不足殺掉：
+        //   ① 先把別的閒置資源依最久沒用的順序卸載到放得下；② 還放不下、但有別的資源正在用 → **排隊等它們用完**（不超額同時載入）；
+        //   ③ 沒有別的在用、單一個就比預算大 → 回報 fits:false，由呼叫端改用小模型或分塊（不硬載）。maxWaitMs 到了還是等不到就丟錯（說明在等誰）。
+        async acquire(id, estBytes, o) {
+            const r = this.res.get(id); if (!r) throw new Error('FaEnv：沒有登記的資源 ' + id);
+            o = o || {}; this.clearTimer(r); estBytes = Number(estBytes) || Number(r.bytes()) || 0; const t0 = this.now(), maxWait = o.maxWaitMs == null ? 30 * 60 * 1000 : o.maxWaitMs;
+            for (;;) {
+                const budget = this.policy().budgetMB * MB, need = () => this.residentBytes(id) + estBytes - budget;
+                if (need() > 0) { const idle = [...this.res.values()].filter((x) => x.resident && x.id !== id && x.busy === 0).sort((a, b) => a.last - b.last); for (const x of idle) { if (need() <= 0) break; await this.unload(x.id, '讓出記憶體給 ' + r.label); } }
+                const busyOthers = [...this.res.values()].filter((x) => x.resident && x.id !== id && x.busy > 0);
+                if (need() > 0 && busyOthers.length && o.wait !== false) {
+                    if (this.now() - t0 > maxWait) throw new Error('等太久了（記憶體被 ' + busyOthers.map((x) => x.label).join('、') + ' 佔著），為了不讓瀏覽器因記憶體不足被關掉，這次先不載入 ' + r.label);
+                    await new Promise((res) => { this.waiters.push(res); if (o.pollMs) this.st(res, o.pollMs); }); continue;
+                }
+                r.busy++; r.resident = true; r.last = this.now(); return { fits: need() <= 0, free: Math.max(0, budget - this.residentBytes(id) - estBytes), waited: this.now() - t0 };
+            }
+        }
+        wake() { const w = this.waiters; this.waiters = []; w.forEach((f) => { try { f(); } catch (_) { /* */ } }); }
+        touch(id) { const r = this.res.get(id); if (r) { r.last = this.now(); } }
+        // release：這次任務用完了。低檔：graceMs 後卸載；其他檔：閒置 idleMs 後卸載（Infinity 不卸）
+        release(id, o) {
+            const r = this.res.get(id); if (!r) return; r.busy = Math.max(0, r.busy - 1); r.last = this.now(); if (r.busy > 0) return; this.wake();
+            const p = this.policy(), immediate = o && o.immediate; this.clearTimer(r);
+            const ms = immediate ? 0 : p.unloadAfterTask ? p.graceMs : p.idleMs; if (!Number.isFinite(ms)) return;
+            r.timer = this.st(() => { r.timer = null; if (r.busy === 0) this.unload(id, p.unloadAfterTask ? '任務完成' : '閒置'); }, ms);
+        }
+        clearTimer(r) { if (r.timer) { this.ct(r.timer); r.timer = null; } }
+        async unload(id, why) {
+            const r = this.res.get(id); if (!r || !r.resident) return false; this.clearTimer(r);
+            try { await r.unload(); } catch (e) { this.log('卸載 ' + r.label + ' 時出錯：' + ((e && e.message) || e)); }
+            r.resident = false; r.busy = 0; this.wake(); this.events.push({ t: this.now(), id, why: why || '' }); if (this.events.length > 50) this.events.shift(); this.log('已卸載 ' + r.label + (why ? '（' + why + '）' : '')); return true;
+        }
+        async unloadAll(except) { let n = 0; for (const r of [...this.res.values()]) if (r.id !== except && r.resident && r.busy === 0 && await this.unload(r.id, '全部卸載')) n++; return n; }
+        // 記憶體壓力：high＝把閒置的卸載到剩預算的 70%；critical＝閒置的全卸，並降一級（這個工作階段）
+        async pressure(level) {
+            if (level === 'ok') return 0; const budget = this.policy().budgetMB * MB; let n = 0;
+            const idle = () => [...this.res.values()].filter((x) => x.resident && x.busy === 0).sort((a, b) => a.last - b.last);
+            if (level === 'critical') { n = await this.unloadAll(); this.degrade('記憶體吃緊'); return n; }
+            for (const x of idle()) { if (this.residentBytes() <= budget * 0.7) break; if (await this.unload(x.id, '記憶體壓力')) n++; } return n;
+        }
+        degrade(reason) { if (this.degradeLevel < 2) { this.degradeLevel++; this.events.push({ t: this.now(), id: '*', why: '降級（' + (reason || '') + '）' }); this.log('環境降一級：' + (reason || '')); return true; } return false; }
+        recover() { this.degradeLevel = 0; }
+        state() { return { degradeLevel: this.degradeLevel, residentMB: Math.round(this.residentBytes() / MB), budgetMB: this.policy().budgetMB, resources: [...this.res.values()].map((r) => ({ id: r.id, label: r.label, kind: r.kind, resident: r.resident, busy: r.busy, mb: Math.round((Number(r.bytes()) || 0) / MB) })), events: this.events.slice(-10) }; }
+    }
+    return { detect, tierOf, policyOf, baseTier, isOom, Governor, POLICIES, TIERS };
+});
+
+}).call(window, undefined);
+(function (module) {
+/* 模擬 swap（UMD、儲存層可注入）：把大塊的中間資料（解碼後的音訊、圖片、網格…）放到 IndexedDB（瀏覽器把 Blob 存成磁碟檔），
+ * 記憶體裡只留「最近用的」一小部分；用到時再讀回來。記憶體少的環境（手機）因此跑得慢一點，但不會因為同時握著太多大塊資料被殺掉。
+ *   const swap = FaSwap.create({ store, hotBytes, now })    store：{ put(id, blob), get(id), del(id), clear() }（非同步；預設用 IndexedDB 'fa_swap'）；hotBytes：記憶體裡最多留多少（超過就把最久沒用的寫出去）
+ *   const h = await swap.put(blob|ArrayBuffer|Uint8Array)   → handle { id, size, type }
+ *   await swap.get(h) → Blob（在記憶體就直接給，不在就從 store 讀回來並算成「最近用的」）      await swap.drop(h)      swap.stats()      await swap.clear()（啟動時清掉上次沒清乾淨的） */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaSwap = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const toBlob = (x, type) => (typeof Blob !== 'undefined' && x instanceof Blob ? x : new Blob([x], { type: type || 'application/octet-stream' }));
+    function idbStore(name) {
+        let db = null; const open = () => db || (db = new Promise((res, rej) => { const rq = indexedDB.open(name || 'fa_swap', 1); rq.onupgradeneeded = () => rq.result.createObjectStore('kv'); rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error); }));
+        const tx = (mode, fn) => open().then((d) => new Promise((res, rej) => { const t = d.transaction('kv', mode), rq = fn(t.objectStore('kv')); t.oncomplete = () => res(rq && rq.result !== undefined ? rq.result : undefined); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error); }));
+        return { put: (id, blob) => tx('readwrite', (s) => s.put(blob, id)), get: (id) => tx('readonly', (s) => s.get(id)), del: (id) => tx('readwrite', (s) => s.delete(id)), clear: () => tx('readwrite', (s) => s.clear()) };
+    }
+    function create(o) {
+        o = o || {}; const store = o.store || idbStore(), now = o.now || (() => Date.now()); let hotBytes = o.hotBytes == null ? 32 * 1048576 : o.hotBytes, seq = 0;
+        const hot = new Map(), meta = new Map();   // id → Blob（在記憶體）／id → { size, type, last, onDisk }
+        const hotSize = () => { let n = 0; for (const id of hot.keys()) n += meta.get(id).size; return n; };
+        async function evict(except) {
+            while (hotSize() > hotBytes) {
+                const cands = [...hot.keys()].filter((id) => id !== except).sort((a, b) => meta.get(a).last - meta.get(b).last); if (!cands.length) break;
+                const id = cands[0], m = meta.get(id); if (!m.onDisk) { await store.put(id, hot.get(id)); m.onDisk = true; } hot.delete(id);
+            }
+        }
+        return {
+            async put(x, type) { const blob = toBlob(x, type), id = 'sw' + (++seq).toString(36) + Math.random().toString(36).slice(2, 6); meta.set(id, { size: blob.size, type: blob.type || type || '', last: now(), onDisk: false }); hot.set(id, blob); await evict(id); return { id, size: blob.size, type: blob.type || type || '' }; },
+            async get(h) {
+                const m = meta.get(h.id); if (!m) throw new Error('swap：這份資料已經被丟掉了'); m.last = now(); if (hot.has(h.id)) return hot.get(h.id);
+                const blob = await store.get(h.id); if (!blob) throw new Error('swap：讀不回來（儲存空間被清掉了）'); hot.set(h.id, blob); await evict(h.id); return blob;
+            },
+            async drop(h) { const m = meta.get(h.id); if (!m) return; hot.delete(h.id); meta.delete(h.id); if (m.onDisk) { try { await store.del(h.id); } catch (_) { /* 殘留的啟動時會清 */ } } },
+            async clear() { hot.clear(); meta.clear(); try { await store.clear(); } catch (_) { /* */ } },
+            setHotBytes(n) { hotBytes = n; return evict(); },
+            stats() { let disk = 0; for (const m of meta.values()) if (m.onDisk) disk += m.size; return { items: meta.size, hotBytes: hotSize(), diskBytes: disk, limit: hotBytes }; },
+        };
+    }
+    return { create, idbStore };
+});
+
+}).call(window, undefined);
+/* 環境基準線的主機轉接層（FaEnvHost，混進 FloatingAssistant.prototype）。設計見 DESIGN.env-baseline.md。
+ * 原則：寧可跑得慢，也不要因為記憶體不足被瀏覽器直接殺掉（手機尤其）。
+ *   - 依環境（手機、記憶體、heap 上限、省流量、電量、有沒有 GPU）自動決定「檔位」low／mid／high，各自有預設政策（預算、跑完就卸載、閒置多久卸載、同時幾個任務、圖最大幾像素…）
+ *   - 離線模型、Worker 等重資源登記到 Governor：載入前先讓位（卸載閒置的）、放不下又有別人在用就排隊、跑完依政策卸載；背景分頁（手機）全卸
+ *   - 記憶體壓力（Chrome 的 performance.memory）與 OOM 錯誤會讓這個工作階段降一級並卸載；/env 可以看、指定檔位、全部卸載 */
+(function () {
+    'use strict';
+    const M = {}, MB = 1048576;
+    M._envRawSync = function () {
+        const n = typeof navigator !== 'undefined' ? navigator : {}, raw = {};
+        try { raw.mobile = /Android|iPhone|iPad|iPod|Mobile/i.test(n.userAgent || '') || (n.maxTouchPoints > 1 && Math.min(screen.width, screen.height) < 820); } catch (_) { raw.mobile = false; }
+        raw.deviceMemory = n.deviceMemory || 0; raw.cores = n.hardwareConcurrency || 1; raw.gpu = !!n.gpu;
+        try { const pm = typeof performance !== 'undefined' && performance.memory; if (pm) { raw.heapLimit = pm.jsHeapSizeLimit; raw.heapUsed = pm.usedJSHeapSize; } } catch (_) { /* 只有 Chrome 有 */ }
+        try { if (n.connection && n.connection.saveData) raw.saveData = true; } catch (_) { /* */ }
+        return raw;
+    };
+    // 慢的、非同步的資訊（電量、儲存空間、桌面版主行程給的真實記憶體）補進來；沒有就算了
+    M._envRefresh = async function () {
+        const raw = Object.assign({}, this._envRaw || {}, this._envRawSync()), n = typeof navigator !== 'undefined' ? navigator : {};
+        try { if (n.getBattery) { const b = await n.getBattery(); raw.batteryLow = !b.charging && b.level < 0.15; } } catch (_) { /* */ }
+        try { if (n.storage && n.storage.estimate) { const e = await n.storage.estimate(); raw.quotaBytes = e.quota; } } catch (_) { /* */ }
+        try { if (window.desktopAPI && typeof window.desktopAPI.systemInfo === 'function') { const si = await window.desktopAPI.systemInfo(); if (si && si.totalMem) { raw.totalMem = si.totalMem; raw.freeMem = si.freeMem; } } } catch (_) { /* 舊版主程式沒有這個介面 */ }
+        this._envRaw = raw; return raw;
+    };
+    M._envSettings = function () { const a = this.advancedSettings || {}; return { profile: ['low', 'mid', 'high'].includes(a.envProfile) ? a.envProfile : 'auto', overrides: (a.envOverrides && typeof a.envOverrides === 'object') ? a.envOverrides : {} }; };
+    M._envGov = function () {
+        if (this._envGovernor) return this._envGovernor; if (typeof FaEnv === 'undefined') return null; const self = this;
+        if (!this._envRaw) this._envRaw = this._envRawSync();
+        const g = this._envGovernor = new FaEnv.Governor({ policy: () => self._envPolicy(), log: (x) => { try { console.log('[env] ' + x); } catch (_) { /* */ } } });
+        // 已知的重資源：由各自的程式追蹤「有沒有載入」，這裡只負責「什麼時候卸載」
+        for (const slot of ['gpu', 'cpu']) g.register('vlm:' + slot, { kind: 'model', label: '看圖模型（' + slot + '）', bytes: () => 700 * MB, resident: () => !!(self._vlmWks && self._vlmWks[slot]), unload: async () => { self._vlmTerminate && self._vlmTerminate(slot); } });
+        g.register('whisper', { kind: 'model', label: '語音辨識模型', bytes: () => 300 * MB, resident: () => !!self._whisperTranscriber, unload: async () => { const t = self._whisperTranscriber; self._whisperTranscriber = null; self._whisperTranscriberDevice = null; try { if (t && t.dispose) await t.dispose(); } catch (_) { /* */ } } });
+        return g;
+    };
+    // 模擬 swap：大塊的中間資料放 IndexedDB、記憶體只留最近用的（熱區＝預算的 1/4）。慢一點、但不會因為同時握太多大塊資料被殺掉
+    M._envSwap = function () {
+        if (this._envSwapObj) return this._envSwapObj; if (typeof FaSwap === 'undefined' || typeof indexedDB === 'undefined') return null; const self = this, hot = () => Math.max(8, Math.round(self._envPolicy().budgetMB / 4)) * MB;
+        const sw = this._envSwapObj = FaSwap.create({ hotBytes: hot() }); sw.clear().catch(() => {});   // 啟動時清掉上次沒清乾淨的
+        const g = this._envGov(); if (g) g.register('swap', { kind: 'cache', label: '暫存區（swap）', bytes: () => sw.stats().hotBytes, resident: () => sw.stats().hotBytes > 0, unload: async () => { await sw.setHotBytes(0); await sw.setHotBytes(hot()); } });
+        return sw;
+    };
+    M._envTier = function () { const st = this._envSettings(), g = this._envGovernor; return FaEnv.tierOf(FaEnv.detect(this._envRaw || this._envRawSync()), st.profile, g ? g.degradeLevel : 0); };
+    M._envPolicy = function () { return FaEnv.policyOf(this._envTier(), this._envSettings().overrides); };
+    // 重資源用完了一次（外部追蹤的資源）：依政策排程卸載
+    M._envSettle = function (id) { try { const g = this._envGov(); if (g) g.settle(id); } catch (_) { /* */ } };
+    // 載入前先讓位／排隊；回傳 {fits}。fits:false 代表單一個就超過預算：呼叫端應改用小模型或分塊（不硬載）
+    M._envAcquire = async function (id, estBytes, o) { const g = this._envGov(); if (!g) return { fits: true }; return g.acquire(id, estBytes, o); };
+    M._envRelease = function (id, o) { try { const g = this._envGov(); if (g) g.release(id, o); } catch (_) { /* */ } };
+    // OOM：這個工作階段降一級、全部卸載、通知一次（寧可慢）
+    M._envOom = async function (err) {
+        const g = this._envGov(); if (!g) return; const now = Date.now(); g.degrade('OOM：' + String((err && err.message) || err).slice(0, 80)); try { await g.unloadAll(); } catch (_) { /* */ }
+        if (!this._envOomAt || now - this._envOomAt > 60000) { this._envOomAt = now; try { this._pushAssistantMessage('⚠️ 記憶體不足：已卸載模型並改用較省的設定（目前檔位：' + this._envTier() + '）。這次可以再試一次，會跑得比較慢但不會被瀏覽器關掉。用 /env 可以看或調整。', null); this._renderMessageHistory(); } catch (_) { /* */ } }
+    };
+    // 包住一件重運算：記憶體不足就降級卸載並丟出明確的錯誤，不讓它拖垮整個頁面
+    M._envGuard = async function (fn) { try { return await fn(); } catch (e) { if (typeof FaEnv !== 'undefined' && FaEnv.isOom(e)) { await this._envOom(e); throw new Error('記憶體不足：已降低設定並卸載模型，請再試一次（會改用較省的設定、跑得比較慢）'); } throw e; } };
+    M._envInit = function () {
+        if (this._envStarted || typeof FaEnv === 'undefined' || typeof window === 'undefined') return; this._envStarted = true; const self = this; this._envGov(); this._envRefresh().catch(() => {});
+        // 背景分頁（手機被切到別的 App）：低檔把沒在用的全卸載，讓作業系統不要為了記憶體殺掉這個分頁
+        document.addEventListener('visibilitychange', () => { try { if (document.hidden && self._envTier() === 'low') self._envGov().unloadAll(); } catch (_) { /* */ } });
+        window.addEventListener('pagehide', () => { try { self._envGov().unloadAll(); } catch (_) { /* */ } });
+        // 全域的 OOM 錯誤（WebAssembly、WebGPU、ArrayBuffer…）：降級並卸載
+        window.addEventListener('unhandledrejection', (ev) => { try { if (FaEnv.isOom(ev && ev.reason)) self._envOom(ev.reason); } catch (_) { /* */ } });
+        window.addEventListener('error', (ev) => { try { if (FaEnv.isOom(ev && (ev.error || ev.message))) self._envOom(ev.error || ev.message); } catch (_) { /* */ } });
+        // 記憶體壓力（Chrome 才有 performance.memory）：80% 以上先卸載閒置的、92% 以上全卸並降級
+        if (typeof performance !== 'undefined' && performance.memory) this._envTimer = setInterval(() => { try { const m = performance.memory, r = m.usedJSHeapSize / m.jsHeapSizeLimit; if (r >= 0.92) self._envGov().pressure('critical'); else if (r >= 0.8) self._envGov().pressure('high'); } catch (_) { /* */ } }, 5000);
+    };
+    M._envReport = function () {
+        const g = this._envGov(), f = FaEnv.detect(this._envRaw || this._envRawSync()), st = this._envSettings(), p = this._envPolicy(), s = g ? g.state() : null, mb = (x) => (x ? Math.round(x / MB) + ' MB' : '未知');
+        const L = ['**執行環境基準線**（寧可慢、不要被瀏覽器因記憶體不足殺掉）', '', '- 目前檔位：**' + this._envTier() + '**（' + (st.profile === 'auto' ? '自動偵測' : '你指定：' + st.profile) + (s && s.degradeLevel ? '，這個工作階段已因記憶體吃緊降了 ' + s.degradeLevel + ' 級' : '') + '）',
+            '- 偵測到：' + [f.mobile ? '手機／觸控裝置' : '桌機', '記憶體 ' + (f.memKnown ? f.memGB + ' GB' + (f.totalMem ? '' : '（瀏覽器回報，最多到 8）') : '未知'), 'CPU ' + f.cores + ' 核', 'JS heap 上限 ' + mb(f.heapLimit), f.gpu ? 'WebGPU' : '沒有 WebGPU', f.saveData ? '省流量' : '', f.batteryLow ? '電量很低' : ''].filter(Boolean).join('、'),
+            '- 政策：記憶體預算 ' + p.budgetMB + ' MB；' + (p.unloadAfterTask ? '模型**跑完任務就卸載**（' + Math.round(p.graceMs / 1000) + ' 秒內又要用就不卸）' : '模型閒置 ' + (Number.isFinite(p.idleMs) ? Math.round(p.idleMs / 1000) + ' 秒' : '永遠不') + '才卸載') + '；同時 ' + p.parallelTasks + ' 個重任務；Worker 最多 ' + p.maxWorkers + ' 個；圖最大 ' + p.maxImagePx + ' px；' + (p.preferSmall ? '優先用小模型' : '可以用大模型')];
+        const sw = this._envSwapObj ? this._envSwapObj.stats() : null; if (sw && sw.items) L.push('- swap：' + sw.items + ' 份，記憶體 ' + Math.round(sw.hotBytes / MB) + ' MB、磁碟 ' + Math.round(sw.diskBytes / MB) + ' MB');
+        if (s) { L.push('- 目前常駐：' + s.residentMB + ' / ' + s.budgetMB + ' MB'); s.resources.forEach((r) => L.push('  - ' + r.label + '：' + (r.resident ? '已載入' + (r.busy ? '（使用中）' : '（閒置）') : '未載入'))); if (s.events.length) L.push('- 最近：' + s.events.slice(-4).map((e) => e.id + ' ' + e.why).join('；')); }
+        L.push('', '用法：`/env auto|low|mid|high` 指定檔位（auto＝自動偵測）、`/env unload` 現在全部卸載、`/env reset` 取消降級。'); return L.join('\n');
+    };
+    window.FaEnvHost = { methods: M };
+})();
+
+/* ENV-END */
 /* VIDEOEDIT-BEGIN */
 (function (module) {
 // /edit-video: pure helpers of the video + transcript editor (no DOM, tested in Node: test/edit_video/video_edit_core.test.js). Design: DESIGN.edit-video.md.
@@ -45572,6 +45875,377 @@ const holder = {};
 }).call(null, undefined, holder);
 return holder.FaRemoteFiles;
 })();
+const FaRemotePatch = (function () {
+const holder = {};
+(function (module, self) {
+/* 遠端共筆的「patch」同步模式（UMD、純函式）。設計見 DESIGN.edit-remote.md §6：沒有封閉動作集、但文件是「以 id 定址的 JSON」的編輯器（video 的專案、webedit 的檔案集）
+ * 用結構差異當一筆 commit：
+ *   FaRemotePatch.diff(a, b, keys) → ops        keys：{ 路徑名: 鍵欄位 }，沒列的陣列若每個元素都是有 id 的物件就用 'id'，否則整個陣列當一個值
+ *   FaRemotePatch.apply(doc, ops, keys) → { doc, applied, rejected:[{op,error}], conflicts:[路徑] }   不改傳入的 doc；對象不存在就略過並回報（同 applyEdits 的 rejected）
+ *   FaRemotePatch.merge3(base, mine, theirs) → { text, conflict }   逐行 diff3：沒重疊的修改都保留，重疊的以 theirs（後到者）為準並標 conflict
+ * ops：{op:'set', at, value} | {op:'del', at} | {op:'ins', at, value, after} | {op:'order', at, ids} | {op:'text', at, base, value}
+ * at：路徑陣列，元素是物件鍵（字串）或 {id: 值}（有鍵的陣列元素；鍵欄位名稱記在 {k:'name', v:值}）。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaRemotePatch = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const isObj = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
+    const clone = (x) => (x === undefined ? undefined : JSON.parse(JSON.stringify(x)));
+    const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    const TEXT_MIN = 80;   // 字串夠長或有換行才用文字合併；短字串直接 set
+    // 這個陣列有沒有鍵：keys 用路徑名（最後一段的鍵名）指定；沒指定就看是不是「每個元素都是有 id 的物件且不重複」
+    function keyOf(arr, name, keys) {
+        const k = keys && keys[name] ? keys[name] : 'id';
+        if (!arr.length) return keys && keys[name] ? k : null;
+        const seen = new Set(); for (const e of arr) { if (!isObj(e) || e[k] === undefined || e[k] === null || seen.has(e[k])) return null; seen.add(e[k]); }
+        return k;
+    }
+    // ───────── diff
+    function diff(a, b, keys) {
+        const ops = []; walk(a, b, [], '', keys || {}, ops); return ops;
+    }
+    function walk(a, b, at, name, keys, ops) {
+        if (eq(a, b)) return;
+        if (isObj(a) && isObj(b)) {
+            for (const k of Object.keys(a)) if (!(k in b)) ops.push({ op: 'del', at: at.concat([k]) });
+            for (const k of Object.keys(b)) { if (!(k in a)) ops.push({ op: 'set', at: at.concat([k]), value: clone(b[k]) }); else walk(a[k], b[k], at.concat([k]), k, keys, ops); }
+            return;
+        }
+        if (Array.isArray(a) && Array.isArray(b)) {
+            const ka = keyOf(a, name, keys), kb = keyOf(b, name, keys);
+            if (ka && kb && ka === kb) { diffKeyed(a, b, at, name, ka, keys, ops); return; }
+        }
+        if (typeof a === 'string' && typeof b === 'string' && (a.length >= TEXT_MIN || a.indexOf('\n') >= 0 || b.indexOf('\n') >= 0)) { ops.push({ op: 'text', at, base: a, value: b }); return; }
+        ops.push({ op: 'set', at, value: clone(b) });
+    }
+    function diffKeyed(a, b, at, name, k, keys, ops) {
+        const ia = new Map(a.map((e) => [e[k], e])), ib = new Map(b.map((e) => [e[k], e]));
+        for (const e of a) if (!ib.has(e[k])) ops.push({ op: 'del', at: at.concat([{ k, v: e[k] }]) });
+        let prev = null;
+        for (const e of b) { if (!ia.has(e[k])) ops.push({ op: 'ins', at, k, value: clone(e), after: prev }); prev = e[k]; }
+        for (const e of b) if (ia.has(e[k])) walk(ia.get(e[k]), e, at.concat([{ k, v: e[k] }]), name, keys, ops);
+        const common = (arr) => arr.filter((e) => ib.has(e[k]) && ia.has(e[k])).map((e) => e[k]);
+        if (!eq(common(a), common(b))) ops.push({ op: 'order', at, k, ids: b.map((e) => e[k]) });
+    }
+    // ───────── apply
+    function step(node, seg) {
+        if (typeof seg === 'string') return isObj(node) ? { parent: node, key: seg, val: node[seg], ok: true } : { ok: false };
+        if (!Array.isArray(node)) return { ok: false };
+        const i = node.findIndex((e) => isObj(e) && e[seg.k] === seg.v); return i < 0 ? { ok: false } : { parent: node, key: i, val: node[i], ok: true, arr: true };
+    }
+    function resolve(doc, at) {   // 回傳 at 指到的「父節點與鍵」；中間找不到就 null
+        let node = doc;
+        for (let i = 0; i < at.length - 1; i++) { const s = step(node, at[i]); if (!s.ok || s.val === undefined) return null; node = s.val; }
+        return { node };
+    }
+    function apply(doc0, ops, keys) {
+        const doc = clone(doc0), applied = [], rejected = [], conflicts = [];
+        for (const op of ops || []) {
+            try {
+                if (op.op === 'ins') {
+                    const r = op.at.length ? resolveFull(doc, op.at) : { val: doc, ok: true }; if (!r.ok || !Array.isArray(r.val)) { rejected.push({ op: 'ins', error: '找不到要插入的陣列' }); continue; }
+                    const arr = r.val, ex = arr.findIndex((e) => isObj(e) && e[op.k] === op.value[op.k]); if (ex >= 0) { arr[ex] = clone(op.value); applied.push(op); continue; }
+                    const ai = op.after == null ? -1 : arr.findIndex((e) => isObj(e) && e[op.k] === op.after); arr.splice(ai < 0 ? (op.after == null ? 0 : arr.length) : ai + 1, 0, clone(op.value)); applied.push(op); continue;
+                }
+                if (op.op === 'order') {
+                    const r = op.at.length ? resolveFull(doc, op.at) : { val: doc, ok: true }; if (!r.ok || !Array.isArray(r.val)) { rejected.push({ op: 'order', error: '找不到要排序的陣列' }); continue; }
+                    const arr = r.val, pos = new Map(op.ids.map((id, i) => [id, i])); const known = arr.filter((e) => pos.has(e[op.k])).sort((x, y) => pos.get(x[op.k]) - pos.get(y[op.k])), rest = arr.filter((e) => !pos.has(e[op.k]));
+                    arr.length = 0; known.concat(rest).forEach((e) => arr.push(e)); applied.push(op); continue;
+                }
+                const last = op.at[op.at.length - 1], par = op.at.length > 1 ? resolveFull(doc, op.at.slice(0, -1)) : { val: doc, ok: true };
+                if (!par.ok) { rejected.push({ op: op.op, error: '對象已經不存在了' }); continue; }
+                const P = par.val;
+                if (typeof last === 'string') {
+                    if (!isObj(P)) { rejected.push({ op: op.op, error: '父層不是物件' }); continue; }
+                    if (op.op === 'del') { delete P[last]; applied.push(op); }
+                    else if (op.op === 'set') { P[last] = clone(op.value); applied.push(op); }
+                    else if (op.op === 'text') { const cur = P[last]; const r = textApply(cur, op); if (r.conflict) conflicts.push(op.at.map((x) => (typeof x === 'string' ? x : x.v)).join('/')); P[last] = r.text; applied.push(op); }
+                } else {   // 最後一段是「有鍵的陣列元素」
+                    if (!Array.isArray(P)) { rejected.push({ op: op.op, error: '父層不是陣列' }); continue; }
+                    const i = P.findIndex((e) => isObj(e) && e[last.k] === last.v);
+                    if (op.op === 'del') { if (i >= 0) P.splice(i, 1); applied.push(op); }
+                    else if (i < 0) { rejected.push({ op: op.op, error: '這一項已經被刪掉了' }); }
+                    else if (op.op === 'set') { P[i] = clone(op.value); applied.push(op); }
+                    else if (op.op === 'text') { rejected.push({ op: 'text', error: '文字不能直接放在陣列元素上' }); }
+                }
+            } catch (e) { rejected.push({ op: op && op.op, error: String((e && e.message) || e) }); }
+        }
+        return { doc, applied, rejected, conflicts };
+    }
+    function resolveFull(doc, at) { let node = doc; for (const seg of at) { const s = step(node, seg); if (!s.ok || s.val === undefined) return { ok: false }; node = s.val; } return { ok: true, val: node }; }
+    function textApply(cur, op) {
+        if (typeof cur !== 'string') return { text: op.value, conflict: false };
+        if (cur === op.base) return { text: op.value, conflict: false };
+        if (cur === op.value) return { text: cur, conflict: false };
+        const m = merge3(op.base, cur, op.value); return { text: m.text, conflict: m.conflict };
+    }
+    // ───────── 逐行 diff3
+    function lcsHunks(a, b) {   // a→b 的修改區塊：[{ s, e, lines }]（取代 a[s..e) 為 lines）
+        const n = a.length, m = b.length; let p = 0; while (p < n && p < m && a[p] === b[p]) p++;
+        let q = 0; while (q < n - p && q < m - p && a[n - 1 - q] === b[m - 1 - q]) q++;
+        const A = a.slice(p, n - q), B = b.slice(p, m - q); if (!A.length && !B.length) return [];
+        if (A.length * B.length > 4e6) return [{ s: p, e: n - q, lines: B }];   // 太大：整段當一個修改
+        const L = Array.from({ length: A.length + 1 }, () => new Uint32Array(B.length + 1));
+        for (let i = A.length - 1; i >= 0; i--) for (let j = B.length - 1; j >= 0; j--) L[i][j] = A[i] === B[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+        const hunks = []; let i = 0, j = 0, cur = null;
+        const flush = () => { if (cur) { hunks.push(cur); cur = null; } };
+        while (i < A.length || j < B.length) {
+            if (i < A.length && j < B.length && A[i] === B[j]) { flush(); i++; j++; }
+            else if (j < B.length && (i >= A.length || L[i][j + 1] >= L[i + 1][j])) { if (!cur) cur = { s: p + i, e: p + i, lines: [] }; cur.lines.push(B[j]); j++; }
+            else { if (!cur) cur = { s: p + i, e: p + i, lines: [] }; cur.e = p + i + 1; i++; }
+        }
+        flush(); return hunks;
+    }
+    function merge3(base, mine, theirs) {
+        base = String(base == null ? '' : base); mine = String(mine == null ? '' : mine); theirs = String(theirs == null ? '' : theirs);
+        if (mine === base) return { text: theirs, conflict: false }; if (theirs === base || mine === theirs) return { text: mine, conflict: false };
+        const bl = base.split('\n'), hm = lcsHunks(bl, mine.split('\n')), ht = lcsHunks(bl, theirs.split('\n'));
+        const out = []; let pos = 0, conflict = false, im = 0, it = 0;
+        const overlap = (x, y) => x.s < y.e && y.s < x.e || (x.s === y.s && x.e === y.e) || (x.s === x.e && y.s === y.e && x.s === y.s) || (x.s === x.e && y.s < x.s && x.s < y.e) || (y.s === y.e && x.s < y.s && y.s < x.e);
+        while (im < hm.length || it < ht.length) {
+            const a = hm[im], b = ht[it];
+            let h, from;
+            if (a && b && overlap(a, b)) {   // 重疊：以 theirs（後到者）為準
+                conflict = true; const s = Math.min(a.s, b.s); let e = Math.max(a.e, b.e);
+                while (im + 1 < hm.length && hm[im + 1].s < e) { e = Math.max(e, hm[++im].e); } while (it + 1 < ht.length && ht[it + 1].s < e) { e = Math.max(e, ht[++it].e); }
+                for (; pos < s; pos++) out.push(bl[pos]); out.push(...b.lines); pos = e; im++; it++; continue;
+            }
+            if (a && (!b || a.s <= b.s)) { h = a; im++; } else { h = b; it++; }
+            for (; pos < h.s; pos++) out.push(bl[pos]); out.push(...h.lines); pos = Math.max(pos, h.e);
+        }
+        for (; pos < bl.length; pos++) out.push(bl[pos]);
+        return { text: out.join('\n'), conflict };
+    }
+    return { diff, apply, merge3, keyOf };
+});
+
+}).call(null, undefined, holder);
+return holder.FaRemotePatch;
+})();
+const FaRemoteEdit = (function () {
+const holder = {};
+(function (module, self) {
+/* 遠端編輯器的橋接層（骨架）。設計見 DESIGN.edit-remote.md。
+ * 編輯器照常在本機顯示；編輯器裡的「請求」（ask、polish、detail、transcribe…）交給群組裡選定的機器執行，
+ * 文件與素材傳過去、改動（edits）與產生的素材傳回來。純邏輯（UMD、不碰畫面），建立在 Room 的介面上（send、on('message')、self、members）
+ * 與 FaRemoteFiles.FileShare（素材傳輸），所以可以用記憶體傳輸測試。
+ *
+ *   const peer = new FaRemoteEdit.Peer({ room, files, kinds, gate, allow, caps, log })
+ *     kinds(kind) → { remote:{ sync, methods:{ ask:{doc:true, longRunning?}, … }, assets:{ has, get, put } }, run(method, args, ctx) }  (沒有就是這台不支援)
+ *       run 是「執行者」這邊真正做事的函式（呼叫本機的 host 方法）；assets 是素材轉接器（ns 一律 'ref'）
+ *     gate(m) → 錯誤文字或 ''（指紋核對、限制模式）；allow() → 錯誤文字或 ''（允許派工、唯讀沙盒）
+ *   peer.call(target, kind, sid, method, args, opts) → Promise(值；物件結果會多一個 by 欄位)
+ *   FaRemoteEdit.proxyHost(peer, { kind, sid, local, getTarget }) → 一個 host：宣告為遠端的方法交給 getTarget() 那台，沒有目標就用本機
+ * 訊息：ed_hello/ed_hello_ack、ed_call、ed_event、ed_result、ed_cancel、ed_ack、ed_close（本機當文件的主人；執行者只存「快取」，見設計 §3、§9）。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaRemoteEdit = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const rnd = () => Math.random().toString(36).slice(2, 10);
+    const OFFER_TTL = 15 * 60 * 1000, SESSION_MAX = 8, HELLO_TTL = 60 * 1000;
+
+    // 穩定序列化（鍵排序）與雜湊：只用來對齊「執行者手上的快取是不是這一版」，不是安全用途
+    function canon(v) {
+        if (v === null || typeof v !== 'object') return JSON.stringify(v === undefined ? null : v);
+        if (Array.isArray(v)) return '[' + v.map(canon).join(',') + ']';
+        return '{' + Object.keys(v).filter((k) => v[k] !== undefined && typeof v[k] !== 'function').sort().map((k) => JSON.stringify(k) + ':' + canon(v[k])).join(',') + '}';
+    }
+    function hash(v) {
+        const s = canon(v); let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+        for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); h1 = Math.imul(h1 ^ c, 2654435761); h2 = Math.imul(h2 ^ c, 1597334677); }
+        h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909); h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+        return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16) + ':' + s.length;
+    }
+    // 文件或結果裡出現的素材代號：叫 ref 的字串欄位（svg／picture 的圖片物件）、picture 擴散細化層的 result（img 開頭的代號）、3D 貼圖的「ref:代號」字串。
+    // 編輯器可以在宣告裡給 remote.refsOf(值) → [代號] 取代這個通用規則
+    function collectRefs(v, out) {
+        out = out || [];
+        if (Array.isArray(v)) v.forEach((x) => collectRefs(x, out));
+        else if (v && typeof v === 'object') { for (const k of Object.keys(v)) { const x = v[k]; if (k === 'ref' && typeof x === 'string' && x) out.push(x); else if (k === 'result' && typeof x === 'string' && /^img[A-Za-z0-9]{2,60}$/.test(x)) out.push(x); else collectRefs(x, out); } }
+        else if (typeof v === 'string') { const m = /^ref:([A-Za-z0-9_-]{1,64})$/.exec(v); if (m) out.push(m[1]); }
+        return out;
+    }
+    const refsOf = (k, v) => (k && k.remote && typeof k.remote.refsOf === 'function' ? k.remote.refsOf(v) : collectRefs(v)) || [];
+    const b64 = (u8) => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return typeof btoa === 'function' ? btoa(s) : Buffer.from(u8).toString('base64'); };
+    const unb64 = (s) => { if (typeof atob === 'function') { const bin = atob(s); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; } return new Uint8Array(Buffer.from(s, 'base64')); };
+    function dataUrlToBlob(du) {
+        const m = /^data:([^;,]*)((?:;[^;,]*)*),([\s\S]*)$/.exec(du); if (!m) throw new Error('不是 data URL');
+        const mime = m[1] || 'application/octet-stream', isB64 = /;base64/i.test(m[2]);
+        return new Blob([isB64 ? unb64(m[3]) : new TextEncoder().encode(decodeURIComponent(m[3]))], { type: mime });
+    }
+    async function blobToDataUrl(blob) { return 'data:' + (blob.type || 'application/octet-stream') + ';base64,' + b64(new Uint8Array(await blob.arrayBuffer())); }
+    const isBlob = (x) => typeof Blob !== 'undefined' && x instanceof Blob;
+
+    class Peer {
+        constructor(o) {
+            this.room = o.room; this.files = o.files || null; this.kinds = o.kinds || (() => null); this.gate = o.gate || (async () => ''); this.allow = o.allow || (() => ''); this.caps = o.caps || (() => ({})); this.log = o.log || (() => {});
+            this.slow = 1; this.idleMs = 120000; this.longIdleMs = 600000; this.ackMs = 15000;
+            this.offers = new Map(); this.pending = new Map(); this.asks = new Map(); this.sessions = new Map(); this.known = new Map(); this.helloCache = new Map(); this.cancelled = new Set();
+            this.lock = Promise.resolve(); this.queued = 0; this.stats = { specSent: 0, specSkipped: 0, blobsOffered: 0, calls: 0 };
+            this.room.on('message', (m) => { if (m && typeof m.type === 'string' && m.type.startsWith('ed_')) this.handle(m).catch((e) => this.log('編輯器橋接訊息處理失敗：' + ((e && e.message) || e))); });
+        }
+        // ───────── 素材提供（給 FileShare 的 getFile／allowed 用）
+        getOffered(id) { const o = this.offers.get(id); return o && o.exp > Date.now() ? { blob: o.blob, name: o.name, mime: o.mime } : null; }
+        isAllowed(id, from) { const o = this.offers.get(id); return !!(o && o.exp > Date.now() && o.to === from); }
+        offer(id, blob, name, mime, to, cid) { this.offers.set(id, { blob, name: name || id, mime: mime || blob.type || 'application/octet-stream', to, cid, exp: Date.now() + OFFER_TTL }); this.stats.blobsOffered++; if (this.offers.size > 400) this.prune(); }
+        prune() { const now = Date.now(); for (const [k, v] of this.offers) if (v.exp < now) this.offers.delete(k); }
+        dropOffers(cid) { for (const [k, v] of this.offers) if (v.cid === cid) this.offers.delete(k); }
+        // ───────── 編碼／解碼：Blob 與很長的 data URL 換成 {$blob}，內容走素材傳輸
+        async encode(v, cid, to) {
+            let n = 0; const self = this;
+            const handle = (blob, name, as) => { const id = 'ed:' + cid + ':' + (n++); self.offer(id, blob, name, blob.type, to, cid); return { $blob: { id, as: as || '', name: name || '', mime: blob.type || '', size: blob.size } }; };
+            async function w(x) {
+                if (x === undefined || typeof x === 'function') return undefined;
+                if (x === null) return null;
+                if (isBlob(x)) return handle(x, x.name || 'blob', '');
+                if (typeof x === 'string') { if (x.length > 2000 && /^data:[^;,]*(;[^;,]*)*,/.test(x)) { try { return handle(dataUrlToBlob(x), 'data', 'dataUrl'); } catch (_) { return x; } } return x; }
+                if (Array.isArray(x)) { const out = []; for (const i of x) { const r = await w(i); out.push(r === undefined ? null : r); } return out; }
+                if (typeof x === 'object') { const out = {}; for (const k of Object.keys(x)) { const r = await w(x[k]); if (r !== undefined) out[k] = r; } return out; }
+                return x;
+            }
+            return w(v);
+        }
+        async decode(v, from, cancel) {
+            const self = this;
+            async function w(x) {
+                if (Array.isArray(x)) { const out = []; for (const i of x) out.push(await w(i)); return out; }
+                if (x && typeof x === 'object') {
+                    if (x.$blob && typeof x.$blob.id === 'string') { if (!self.files) throw new Error('沒有素材傳輸通道'); const r = await self.files.fetch(from, x.$blob.id, { cancel: cancel || { cancelled: false } }); return x.$blob.as === 'dataUrl' ? blobToDataUrl(r.blob) : r.blob; }
+                    const out = {}; for (const k of Object.keys(x)) out[k] = await w(x[k]); return out;
+                }
+                return x;
+            }
+            return w(v);
+        }
+        // ───────── 問答
+        ask(to, type, body, replyType, ms) {
+            const rid = rnd() + rnd();
+            return new Promise((resolve, reject) => {
+                const t = setTimeout(() => { this.asks.delete(rid); reject(new Error('對方沒有回應')); }, (ms || 8000) * this.slow);
+                this.asks.set(rid, { replyType, resolve: (v) => { clearTimeout(t); this.asks.delete(rid); resolve(v); } });
+                this.room.send(to, type, Object.assign({ rid }, body || {})).catch((e) => { clearTimeout(t); this.asks.delete(rid); reject(e); });
+            });
+        }
+        async hello(to, kind) {
+            const key = to + '|' + kind, c = this.helloCache.get(key); if (c && c.exp > Date.now()) return c.v;
+            const v = await this.ask(to, 'ed_hello', { kind }, 'ed_hello_ack'); this.helloCache.set(key, { v, exp: Date.now() + HELLO_TTL }); return v;
+        }
+        // ───────── 請求者：把一次方法呼叫交給 target（{nodeId, name}）
+        async call(t, kind, sid, method, args, o) {
+            o = o || {}; this.stats.calls++;
+            const k = this.kinds(kind); if (!k || !k.remote || !k.remote.methods) throw new Error('這台機器沒有「' + kind + '」的遠端橋接宣告');
+            const h = await this.hello(t.nodeId, kind); if (!h.ok) throw new Error(h.error || (t.name + ' 不能做「' + kind + '」'));
+            const def = k.remote.methods[method] || {}, cid = rnd() + rnd(), req0 = args[0] && typeof args[0] === 'object' && !isBlob(args[0]) && !Array.isArray(args[0]) ? args[0] : null;
+            const onStatus = req0 && typeof req0.onStatus === 'function' ? req0.onStatus : null, signal = req0 && req0.signal;
+            const spec = def.doc && req0 ? req0.spec : undefined, key = t.nodeId + '|' + sid;
+            const send = async (forceSpec) => {
+                const refs = [];
+                if (spec !== undefined && k.remote.assets) { for (const ref of new Set(refsOf(k, spec))) { let blob = null; try { blob = await k.remote.assets.get('ref', ref); } catch (_) { /* 沒有就不送 */ } if (blob) { const id = 'ed:' + cid + ':r:' + ref; this.offer(id, blob, ref, blob.type, t.nodeId, cid); refs.push({ ref, id }); } } }
+                const wireArgs = await this.encode(args.map((a, i) => (i === 0 && req0 ? Object.assign({}, a, { spec: undefined }) : a)), cid, t.nodeId);
+                const dh = spec !== undefined ? hash(spec) : '', sendSpec = spec !== undefined && (forceSpec || this.known.get(key) !== dh);
+                if (spec !== undefined) { if (sendSpec) this.stats.specSent++; else this.stats.specSkipped++; }
+                const body = { sid, cid, kind, method, args: wireArgs, docHash: dh, refs }; if (sendSpec) body.spec = spec;
+                return { body, dh };
+            };
+            const wait = (idleMs) => new Promise((resolve, reject) => {
+                let idle = null, ack = null, done = false; const ms = (idleMs || (def.longRunning ? this.longIdleMs : this.idleMs)) * this.slow;
+                const fin = (fn, v) => { if (done) return; done = true; clearTimeout(idle); clearTimeout(ack); this.pending.delete(cid); fn(v); };
+                const bump = () => { clearTimeout(idle); idle = setTimeout(() => fin(reject, new Error(t.name + ' 太久沒有動靜（' + Math.round(ms / 1000) + ' 秒），已放棄。對方可能離線或被瀏覽器凍結了。')), ms); };
+                ack = setTimeout(() => fin(reject, new Error(t.name + ' 沒有回應（' + Math.round(this.ackMs * this.slow / 1000) + ' 秒）。對方可能已離線。')), this.ackMs * this.slow);
+                this.pending.set(cid, { onEvent: (ev) => { clearTimeout(ack); bump(); if (ev && ev.text && onStatus) { try { onStatus(String(ev.text)); } catch (_) { /* */ } } }, resolve: (r) => fin(resolve, r) }); bump();
+                if (signal) { const ab = () => { this.room.send(t.nodeId, 'ed_cancel', { cid }).catch(() => {}); fin(reject, new Error('已取消')); }; if (signal.aborted) ab(); else if (signal.addEventListener) signal.addEventListener('abort', ab, { once: true }); }
+            });
+            try {
+                let { body, dh } = await send(false), p = wait(); await this.room.send(t.nodeId, 'ed_call', body); let r = await p;
+                if (r && r.need === 'spec' && spec !== undefined) { this.known.delete(key); ({ body, dh } = await send(true)); p = wait(); await this.room.send(t.nodeId, 'ed_call', body); r = await p; }
+                if (!r || r.ok === false) throw new Error((r && r.error) || (t.name + ' 沒有做成'));
+                if (spec !== undefined) this.known.set(key, dh);
+                // 對方產生的素材：先全部抓回來存好，才把結果交給編輯器套用（不會有「物件有了、圖還沒到」的半成品）
+                if (Array.isArray(r.refs) && r.refs.length && k.remote.assets) { for (const x of r.refs) { if (await k.remote.assets.has('ref', x.ref)) continue; const f = await this.files.fetch(t.nodeId, x.id, { cancel: { cancelled: false } }); await k.remote.assets.put('ref', x.ref, f.blob, { name: x.ref }); } }
+                const value = await this.decode(r.value, t.nodeId);
+                this.room.send(t.nodeId, 'ed_ack', { cid }).catch(() => {});
+                const me = this.room.self || {};
+                if (value && typeof value === 'object' && !Array.isArray(value)) value.by = { src: 'ai', exec: { nodeId: t.nodeId, name: t.name }, req: { nodeId: me.nodeId, name: me.name } };
+                return value;
+            } finally { this.dropOffers(cid); this.pending.delete(cid); }
+        }
+        cancel(cid, to) { this.room.send(to, 'ed_cancel', { cid }).catch(() => {}); }
+        closeSession(to, sid) { this.known.delete(to + '|' + sid); this.room.send(to, 'ed_close', { sid }).catch(() => {}); }
+        // ───────── 訊息處理
+        async handle(m) {
+            const b = m.body || {};
+            if (m.type === 'ed_hello_ack') { const a = this.asks.get(b.rid); if (a && a.replyType === m.type) a.resolve(b); return; }
+            if (m.type === 'ed_event') { const p = this.pending.get(b.cid); if (p) p.onEvent(b); return; }
+            if (m.type === 'ed_result') { const p = this.pending.get(b.cid); if (p) { p.onEvent({}); p.resolve(b); } return; }
+            if (m.type === 'ed_ack') { this.dropOffers(b.cid); return; }
+            if (m.type === 'ed_cancel') { this.cancelled.add(b.cid); setTimeout(() => this.cancelled.delete(b.cid), OFFER_TTL); return; }
+            if (m.type === 'ed_close') { this.sessions.delete(m.from + '|' + b.sid); return; }
+            if (m.type === 'ed_hello') { return this.onHello(m); }
+            if (m.type === 'ed_call') { this.queued++; this.room.send(m.from, 'ed_event', { cid: b.cid, kind: 'ack', text: this.queued > 1 ? '對方正在忙，已排隊（前面還有 ' + (this.queued - 1) + ' 個）' : '' }).catch(() => {}); const run = this.lock.then(() => this.exec(m)); this.lock = run.catch(() => {}); try { await run; } finally { this.queued--; } }
+        }
+        async onHello(m) {
+            const b = m.body || {}, reply = (o) => this.room.send(m.from, 'ed_hello_ack', Object.assign({ rid: b.rid }, o)).catch(() => {});
+            const gerr = await this.gate(m); if (gerr) return reply({ ok: false, error: gerr });
+            const aerr = this.allow(); if (aerr) return reply({ ok: false, error: aerr });
+            const k = this.kinds(b.kind); if (!k || !k.remote || !k.remote.methods) return reply({ ok: false, error: '這台機器沒有「' + b.kind + '」編輯器（版本太舊或被停用了）' });
+            let caps = {}; try { caps = this.caps(b.kind) || {}; } catch (_) { caps = {}; }
+            reply({ ok: true, kind: b.kind, methods: Object.keys(k.remote.methods), caps, name: (this.room.self || {}).name });
+        }
+        // ───────── 執行者：真正做事
+        async exec(m) {
+            const b = m.body || {}, cid = b.cid, to = m.from;
+            const reply = (o) => this.room.send(to, 'ed_result', Object.assign({ cid }, o)).catch(() => {});
+            const ev = (text) => this.room.send(to, 'ed_event', { cid, kind: 'status', text: String(text == null ? '' : text).slice(0, 300) }).catch(() => {});
+            try {
+                const gerr = await this.gate(m); if (gerr) return reply({ ok: false, error: gerr });
+                const aerr = this.allow(); if (aerr) return reply({ ok: false, error: aerr });
+                const k = this.kinds(b.kind), def = k && k.remote && k.remote.methods && k.remote.methods[b.method];
+                if (!k || !def || typeof k.run !== 'function') return reply({ ok: false, error: '這台機器沒有「' + b.kind + '」的 ' + b.method + '（版本太舊，或沒有這個編輯器）' });
+                if (this.cancelled.has(cid)) return reply({ ok: false, error: '已取消' });
+                const skey = to + '|' + b.sid; let sess = this.sessions.get(skey);
+                if (def.doc) {
+                    if (b.spec !== undefined) { if (hash(b.spec) !== b.docHash) return reply({ ok: false, error: '文件在傳輸中被改變（雜湊不符），已丟棄' }); sess = { kind: b.kind, spec: b.spec, hash: b.docHash, used: Date.now() }; this.sessions.set(skey, sess); this.trimSessions(); }
+                    else if (!sess || sess.hash !== b.docHash) return reply({ ok: false, need: 'spec' });
+                    sess.used = Date.now();
+                }
+                const cancelObj = { get cancelled() { return false; } };
+                if (Array.isArray(b.refs) && b.refs.length && k.remote.assets) { for (const x of b.refs) { if (await k.remote.assets.has('ref', x.ref)) continue; ev('取得素材…'); const f = await this.files.fetch(to, x.id, { cancel: cancelObj }); await k.remote.assets.put('ref', x.ref, f.blob, { name: x.ref }); } }
+                const args = await this.decode(b.args, to, cancelObj), req0 = args[0] && typeof args[0] === 'object' && !isBlob(args[0]) && !Array.isArray(args[0]) ? args[0] : null;
+                if (req0) { if (def.doc && sess) req0.spec = sess.spec; req0.onStatus = (t) => ev(t); req0.shouldStop = () => this.cancelled.has(cid); }
+                ev('開始處理…');
+                const value = await k.run(b.method, args, { sid: b.sid, from: to, spec: sess && sess.spec, shouldStop: () => this.cancelled.has(cid) });
+                if (this.cancelled.has(cid)) return reply({ ok: false, error: '已取消' });
+                const refs = [];
+                if (k.remote.assets) { for (const ref of new Set(refsOf(k, value))) { let blob = null; try { blob = await k.remote.assets.get('ref', ref); } catch (_) { /* */ } if (blob) { const id = 'ed:' + cid + ':o:' + ref; this.offer(id, blob, ref, blob.type, to, cid); refs.push({ ref, id }); } } }
+                const wire = await this.encode(value === undefined ? null : value, cid, to);
+                reply({ ok: true, value: wire, refs });
+            } catch (e) { reply({ ok: false, error: String((e && e.message) || e).slice(0, 500) }); }
+            finally { setTimeout(() => this.cancelled.delete(cid), 1000); }
+        }
+        trimSessions() { if (this.sessions.size <= SESSION_MAX) return; const arr = [...this.sessions.entries()].sort((a, b) => a[1].used - b[1].used); while (arr.length > SESSION_MAX) this.sessions.delete(arr.shift()[0]); }
+    }
+
+    // 一個 host：宣告成遠端的方法交給 getTarget() 那台（沒有目標＝用本機），其餘（save、download、toChat…）留在本機
+    function proxyHost(peer, o) {
+        const k = peer.kinds(o.kind), methods = (k && k.remote && k.remote.methods) || {}, local = o.local, host = Object.assign({}, local);
+        Object.keys(methods).forEach((name) => {
+            const fn = local && local[name]; if (typeof fn !== 'function') return;   // 本機沒有的方法（例如離線時沒有 polish）不替它造一個，介面才不會多出會失敗的按鈕
+            host[name] = function () {
+                const args = Array.prototype.slice.call(arguments), t = o.getTarget && o.getTarget();
+                if (!t) return fn.apply(local, args);
+                return peer.call(t, o.kind, o.sid, name, args, {});
+            };
+        });
+        return host;
+    }
+    return { Peer, proxyHost, canon, hash, collectRefs, dataUrlToBlob, blobToDataUrl };
+});
+
+}).call(null, undefined, holder);
+return holder.FaRemoteEdit;
+})();
 /* 遠端群組的主機轉接層：右上角「線上」旁的滑出面板、建立／加入／離開、機器清單、測試連線。
  * 核心見 rg_core.js，傳輸見 rg_transport_supabase.js，設計見 DESIGN.remote-group.md。
  * 目前是第 1 階段：房間、密碼、在線名單、人數上限、測試連線；派工與內容傳輸在後面的階段。
@@ -45733,8 +46407,11 @@ const FaRemoteHost = (function () {
             if (!r.ok) { try { await room.leave(); } catch (_) { /* */ } throw new Error(r.reason === 'full' ? '群組已滿（上限 ' + s.maxMembers + ' 台）' : '加入失敗'); }
             rg.shared = {}; rg.captures = new Set();
             const ice = this._rgIceServers();
-            rg.files = new FaRemoteFiles.FileShare({ room, rtc: ice ? { RTCPeerConnection: window.RTCPeerConnection, iceServers: ice } : undefined, log: (x) => this._rgLog(x), getFile: async (id) => { const rec = await this.fileCache.get(id); return rec && rec.blob ? { blob: rec.blob, name: rec.filename, mime: rec.mimeType } : null; }, allowed: (id, from) => !!(rg.shared[id] && rg.shared[id].has(from)) });
+            rg.files = new FaRemoteFiles.FileShare({ room, rtc: ice ? { RTCPeerConnection: window.RTCPeerConnection, iceServers: ice } : undefined, log: (x) => this._rgLog(x), getFile: async (id) => { const eo = rg.edit && rg.edit.getOffered(id); if (eo) return eo; const rec = await this.fileCache.get(id); return rec && rec.blob ? { blob: rec.blob, name: rec.filename, mime: rec.mimeType } : null; }, allowed: (id, from) => !!(rg.shared[id] && rg.shared[id].has(from)) || !!(rg.edit && rg.edit.isAllowed(id, from)) });
             if (BACKENDS[rg.idx].kind === 'kv') { rg.files.slow = 10; rg.files.relayMax = 256 * 1024; }
+            // 遠端編輯器的橋接（設計見 DESIGN.edit-remote.md）：別台把編輯器裡的請求（AI 等）交給這台做，素材與文件經由上面的內容傳輸
+            rg.edit = new FaRemoteEdit.Peer({ room, files: rg.files, log: (x) => this._rgLog(x), kinds: (k) => this._edRemoteKind(k), caps: (k) => this._edRemoteCaps(k), gate: (m) => this._rgGate(m), allow: () => { const st = this._rgSettings(); return !st.allowDispatch ? '這台機器目前不接受遠端需求' : st.readonlySandbox ? '這台機器設為「只允許唯讀與沙盒」，不能執行編輯器的請求（AI 會查網路、生圖、存檔）' : ''; } });
+            if (BACKENDS[rg.idx].kind === 'kv') { rg.edit.slow = 10; }
             if (creator) this._rgMirrorRegister(rg).catch(() => {});
             this._rgSaveSession(code, this._rgLastPw, name, room.self.nodeId); // 存「想用的名稱」，不存自動加了編號的 this._rgLastPw = null;
             this._rg = rg; FaRemoteDispatch.installTracking.setNotify(() => this._rgPublishSoon()); this._rgSaveSettings({ machineName: room.self.name }); try { await this._rgLoadTasks(); } catch (_) { /* */ }
@@ -49853,6 +50530,7 @@ class FloatingAssistant {
         // 只登記真正屬於「這個聊天widget本身」的內建指令，tw_stock_db自己的
         // 業務邏輯指令一律由外部（index.html）呼叫register_slash_command()掛進來。
         this.slashCommands = new Map();
+        try { this._envInit(); } catch (_) { /* 環境偵測失敗就照舊 */ }
         this.register_slash_command('/unit-catalog', '[json]',
             '把這個程式已登記的工具轉成「單元目錄」（每個工具一個單元：參數與型別、副作用、可用性、信任等級），顯示評量統計；加 json 會把完整目錄存成檔案。是讓離線小模型組合行為的第一步，設計見 DESIGN.unit-catalog.md。',
             (argsText, run) => (run || this)._unitCatalogSlash(argsText));
@@ -49939,6 +50617,13 @@ class FloatingAssistant {
         this.register_slash_command('/tool-aliases', '[list|clear]',
             '看或清掉「學來的工具別名」：模型說沒有某個工具、程式替它找到之後它真的做出來了，使用者那句話就會記成那個工具的別名（只在反思搜尋時用，不佔對話的 context）。',
             async (argsText, run) => { const r = run || this; const st = await r._capAliasLoad(); const a = String(argsText || '').trim().toLowerCase(); if (a === 'clear') { st.tools = {}; await r._capAliasSave(); r._pushAssistantMessage('已清掉學來的別名。', null); } else { const rows = Object.entries(st.tools || {}); r._pushAssistantMessage(rows.length ? '學來的別名（' + rows.length + ' 個工具）：\n' + rows.map(([k, v]) => '・' + k + '：' + v.map((x) => '「' + x.p + '」×' + x.n).join('、')).join('\n') : '還沒有學到別名。模型說沒有某個工具、程式替它找到、它也真的做出來了，才會記下來。', null); } try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ } });
+        this.register_slash_command('/env', '[auto|low|mid|high|unload|reset]',
+            '看或調整執行環境基準線：依這台裝置的記憶體等狀況自動決定預設值（手機：模型跑完就卸載、一次只做一件事、圖縮小），寧可跑得慢也不要被瀏覽器因記憶體不足殺掉。auto＝自動偵測；low／mid／high＝指定檔位；unload＝現在把沒在用的模型全卸載；reset＝取消這個工作階段因記憶體吃緊而降的級。',
+            async (argsText, run) => { const r = run || this; const a = String(argsText || '').trim().toLowerCase(); r.messages.push({ role: 'user', content: '/env' + (a ? ' ' + a : '') }); let note = '';
+                if (['auto', 'low', 'mid', 'high'].includes(a)) { this.advancedSettings.envProfile = a; this._saveAdvancedSettings(); note = '已設成「' + a + '」。\n\n'; }
+                else if (a === 'unload') { const n = await this._envGov().unloadAll(); note = '已卸載 ' + n + ' 個沒在用的模型。\n\n'; }
+                else if (a === 'reset') { this._envGov().recover(); note = '已取消降級。\n\n'; }
+                r._pushAssistantMessage(note + this._envReport(), null); try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ } });
         this.register_slash_command('/view', '[檔名]',
             '在對話裡開啟檔案檢視器：xlsx（工作表頁籤、AI 的回答變成另一張工作表）、csv、tsv、json、yaml、toml。先附上檔案再下 /view，或 /view 檔名；不帶參數開最近上傳、可以檢視的檔案。可搜尋、匯出（xlsx／csv／sqlite3…）、問 AI。',
             (argsText, run) => (run || this)._viewSlash(argsText));
@@ -51109,6 +51794,8 @@ class FloatingAssistant {
             extractAudioFormat: 'mp3',
             docgen: { templates: [], format: ['md'], lang: 'zh-TW', level: 'standard', rewrite: true }, // 文件撰寫器（/user-guide、/design-guide）：自訂範本與預設值
             editDiffusion: false, // /edit-picture 的「啟用擴散編修」（擴散細化層；預設關）
+            envProfile: 'auto', // 環境檔位：auto（自動偵測）／low／mid／high（見 /env、DESIGN.env-baseline.md）
+            envOverrides: {}, // 個別覆寫檔位政策的欄位（budgetMB、idleMs、maxImagePx…）
             imageGen: { apiKey: '', model: 'black-forest-labs/flux.1-schnell', customModel: '', provider: 'auto', localDevice: 'auto', templates: {} }, // 圖像生成（NVIDIA 線上模型）：金鑰、選的模型、自己填的模型路徑
             // tw_stock_db客製: 2026-09-12——text_to_speech預設語音代號（見
             // TTS_VOICES）。
@@ -52522,6 +53209,8 @@ class FloatingAssistant {
             extractAudioFormat: raw.extractAudioFormat === 'wav' ? 'wav' : 'mp3',
             docgen: (() => { const g = raw.docgen || {}; return { templates: (Array.isArray(g.templates) ? g.templates : []).slice(0, 30).map((t) => FaDocgen.sanitizeTemplate(t)).filter(Boolean), format: (Array.isArray(g.format) ? g.format : ['md']).filter((x, i, a) => FaDocgen.FORMATS.indexOf(x) >= 0 && a.indexOf(x) === i), lang: g.lang === 'en' ? 'en' : 'zh-TW', level: FaDocgen.LEVELS[g.level] ? g.level : 'standard', rewrite: g.rewrite !== false }; })(),
             editDiffusion: raw.editDiffusion === true,
+            envProfile: ['low', 'mid', 'high'].includes(raw.envProfile) ? raw.envProfile : 'auto',
+            envOverrides: (raw.envOverrides && typeof raw.envOverrides === 'object' && !Array.isArray(raw.envOverrides)) ? raw.envOverrides : {},
             // 這幾個之前只能在程式裡讀、存檔時會被丟掉：編輯器案例庫、不認識的東西先去查、複製引擎執行緒、簡報旁白音檔格式
             editorCasesOff: raw.editorCasesOff === true,
             editorCasesWeak: raw.editorCasesWeak === true,
@@ -67808,7 +68497,9 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     // 起把落在重疊區前段的segment丟掉（前一個window已經涵蓋），並把各window
     // 的時間軸offset回整段音訊的絕對時間；最後把相鄰逐字相同的segment去重
     // （重疊造成的假重複）。
-    async _runWhisperWindowed(transcriber, pcm, language, device, log) {
+    // 跑完一次就依環境政策排程卸載模型（低檔幾秒後卸載）；記憶體不足會降級並丟出明確的錯誤，不拖垮頁面
+    async _runWhisperWindowed(...args) { try { return await this._envGuard(() => this._runWhisperWindowedRaw(...args)); } finally { this._envSettle('whisper'); } }
+    async _runWhisperWindowedRaw(transcriber, pcm, language, device, log) {
         const SR = WHISPER_SAMPLE_RATE;
         const winSec = WHISPER_CHUNK_LENGTH_S;
         const overlapSec = WHISPER_STRIDE_LENGTH_S;
@@ -91000,7 +91691,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         for (const s of slots) { const rec = this._vlmWks && this._vlmWks[s]; if (rec) { try { rec.die('已卸載'); } catch (_) {} } if (this._vlmLoadedBy) this._vlmLoadedBy[s] = null; if (this._vlmIdleTimers[s]) { clearTimeout(this._vlmIdleTimers[s]); this._vlmIdleTimers[s] = null; } }
     }
     _vlmTerminateModel(id) { for (const s of ['gpu', 'cpu']) { const l = this._vlmLoadedBy && this._vlmLoadedBy[s]; if (l && l.modelId === id) this._vlmTerminate(s); } }
-    _vlmScheduleIdle(slot) { this._vlmIdleTimers = this._vlmIdleTimers || {}; for (const s of (slot ? [slot] : ['gpu', 'cpu'])) { if (this._vlmIdleTimers[s]) clearTimeout(this._vlmIdleTimers[s]); this._vlmIdleTimers[s] = setTimeout(() => { this._vlmTerminate(s); }, 5 * 60 * 1000); } } // 閒置 5 分鐘就卸載（釋放記憶體與顯示記憶體）
+    _vlmScheduleIdle(slot) { this._vlmIdleTimers = this._vlmIdleTimers || {}; let ms = 5 * 60 * 1000; try { const p = this._envPolicy(); ms = p.unloadAfterTask ? p.graceMs : p.idleMs; } catch (_) { /* 沒有環境政策就用 5 分鐘 */ } for (const s of (slot ? [slot] : ['gpu', 'cpu'])) { if (this._vlmIdleTimers[s]) clearTimeout(this._vlmIdleTimers[s]); if (Number.isFinite(ms)) this._vlmIdleTimers[s] = setTimeout(() => { this._vlmTerminate(s); }, ms); } } // 依環境檔位卸載：低檔跑完（幾秒後）就卸載、中檔閒置 2 分鐘、高檔 10 分鐘（釋放記憶體與顯示記憶體；寧可慢、不要被瀏覽器因記憶體不足殺掉）
     _vlmProgressAgg(label, update) {
         const files = new Map(); let last = 0;
         return (p) => {
@@ -101868,6 +102559,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
 Object.assign(FloatingAssistant.prototype, FaDeckHost.methods, FaDeckTools.methods, FaKnowledgeHost.methods);
 // /edit-svg、/edit-picture、/edit-3d-model（renderer/src/edit/，設計見 DESIGN.edit-svg.md、DESIGN.edit-picture.md、DESIGN.edit-3d.md）
 Object.assign(FloatingAssistant.prototype, FaEditHost.methods);
+if (typeof FaEnvHost !== 'undefined') Object.assign(FloatingAssistant.prototype, FaEnvHost.methods);   // 環境基準線：依環境決定預設值、模型跑完就卸載、記憶體不足降級（見 DESIGN.env-baseline.md）
 if (typeof FaHarnessHost !== 'undefined') Object.assign(FloatingAssistant.prototype, FaHarnessHost.methods);   // 離線 harness 的主機方法(通用,見 DESIGN.offline-harness.md)
 Object.assign(FloatingAssistant.prototype, FaComputerHost.methods);   // computer use（桌面版限定；見 renderer/src/computer/computer_host.js）
 // 遠端群組（renderer/src/remote/，設計見 DESIGN.remote-group.md）

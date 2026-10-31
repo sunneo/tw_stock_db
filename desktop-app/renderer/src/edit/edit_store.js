@@ -18,8 +18,11 @@
     var ref = newId('img'); blobs[ref] = blob;
     return tx('readwrite', function (s) { return s.put(blob, 'img/' + ref); }).then(function () { return dataUrl(blob); }).then(function (u) { urls[ref] = u; return ref; });
   }
+  // 遠端編輯器橋接用：把別台傳來的素材存成「同一個 ref」（文件只存 ref，兩台對得上）
+  function putImageAs(ref, blob) { if (!/^[A-Za-z0-9_-]{1,64}$/.test(String(ref))) { return Promise.reject(new Error('bad ref')); } blobs[ref] = blob; return tx('readwrite', function (s) { return s.put(blob, 'img/' + ref); }).then(function () { return dataUrl(blob); }).then(function (u) { urls[ref] = u; return ref; }); }
+  function hasImage(ref) { if (blobs[ref]) { return Promise.resolve(true); } return tx('readonly', function (s) { return s.get('img/' + ref); }).then(function (b) { return !!b; }); }
   function getImage(ref) { if (blobs[ref]) { return Promise.resolve(blobs[ref]); } return tx('readonly', function (s) { return s.get('img/' + ref); }).then(function (b) { if (b) { blobs[ref] = b; } return b || null; }); }
   function preload(refs) { return Promise.all((refs || []).filter(function (r) { return !urls[r]; }).map(function (r) { return getImage(r).then(function (b) { return b ? dataUrl(b).then(function (u) { urls[r] = u; }) : null; }); })); }
   function imageUrl(ref) { return urls[ref] || ''; }
-  return { saveProject: saveProject, loadProject: loadProject, putImage: putImage, getImage: getImage, preload: preload, imageUrl: imageUrl, dataUrl: dataUrl, newId: newId };
+  return { saveProject: saveProject, loadProject: loadProject, putImage: putImage, putImageAs: putImageAs, hasImage: hasImage, getImage: getImage, preload: preload, imageUrl: imageUrl, dataUrl: dataUrl, newId: newId };
 });

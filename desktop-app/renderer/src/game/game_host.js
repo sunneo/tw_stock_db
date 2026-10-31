@@ -106,7 +106,7 @@
     };
     M._edAskGame = async function (req, ed, dim) {
         req = req || {}; const A = this._edAi(), C = FaGame, spec = C.validate(req.spec).spec, notes = [], edits = [], text = String(req.text || '').trim(), status = typeof req.onStatus === 'function' ? req.onStatus : () => {}; let say = '';
-        const holder = this._edEditors && this._edEditors.get('edit-game-' + dim + ':' + ed.id), env = holder && holder._ed && holder._ed.env ? holder._ed.env() : { selection: req.selection };
+        const holder = this._edEditors && this._edEditors.get('edit-game-' + dim + ':' + ed.id), env = req.env || (holder && holder._ed && holder._ed.env ? holder._ed.env() : { selection: req.selection });
         if (dim === '3d' && (req.images || []).length && typeof this._i3dSubjectSolid === 'function') {   // 3D 遊戲：貼了圖又說「只要咖啡杯」「把這張圖變成 3D 物件」→ 離線深度模型做成封閉的立體，當選到的那個原型的外觀（只留主體）
             const pre = FaImage3d.subjectIntent(text), asked = /(把|將|用)?這張(圖|照片|圖片).{0,8}(變成|轉成|做成|轉).{0,6}(3D|三維|立體)|圖(片)?轉\s*3D|image.?to.?3d/i.test(text);
             if (asked || (pre.decided && pre.subject === 'main' && (pre.source === 'phrase' || pre.source === 'flag'))) {

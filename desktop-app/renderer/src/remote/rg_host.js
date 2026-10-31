@@ -159,8 +159,11 @@ const FaRemoteHost = (function () {
             if (!r.ok) { try { await room.leave(); } catch (_) { /* */ } throw new Error(r.reason === 'full' ? '群組已滿（上限 ' + s.maxMembers + ' 台）' : '加入失敗'); }
             rg.shared = {}; rg.captures = new Set();
             const ice = this._rgIceServers();
-            rg.files = new FaRemoteFiles.FileShare({ room, rtc: ice ? { RTCPeerConnection: window.RTCPeerConnection, iceServers: ice } : undefined, log: (x) => this._rgLog(x), getFile: async (id) => { const rec = await this.fileCache.get(id); return rec && rec.blob ? { blob: rec.blob, name: rec.filename, mime: rec.mimeType } : null; }, allowed: (id, from) => !!(rg.shared[id] && rg.shared[id].has(from)) });
+            rg.files = new FaRemoteFiles.FileShare({ room, rtc: ice ? { RTCPeerConnection: window.RTCPeerConnection, iceServers: ice } : undefined, log: (x) => this._rgLog(x), getFile: async (id) => { const eo = rg.edit && rg.edit.getOffered(id); if (eo) return eo; const rec = await this.fileCache.get(id); return rec && rec.blob ? { blob: rec.blob, name: rec.filename, mime: rec.mimeType } : null; }, allowed: (id, from) => !!(rg.shared[id] && rg.shared[id].has(from)) || !!(rg.edit && rg.edit.isAllowed(id, from)) });
             if (BACKENDS[rg.idx].kind === 'kv') { rg.files.slow = 10; rg.files.relayMax = 256 * 1024; }
+            // 遠端編輯器的橋接（設計見 DESIGN.edit-remote.md）：別台把編輯器裡的請求（AI 等）交給這台做，素材與文件經由上面的內容傳輸
+            rg.edit = new FaRemoteEdit.Peer({ room, files: rg.files, log: (x) => this._rgLog(x), kinds: (k) => this._edRemoteKind(k), caps: (k) => this._edRemoteCaps(k), gate: (m) => this._rgGate(m), allow: () => { const st = this._rgSettings(); return !st.allowDispatch ? '這台機器目前不接受遠端需求' : st.readonlySandbox ? '這台機器設為「只允許唯讀與沙盒」，不能執行編輯器的請求（AI 會查網路、生圖、存檔）' : ''; } });
+            if (BACKENDS[rg.idx].kind === 'kv') { rg.edit.slow = 10; }
             if (creator) this._rgMirrorRegister(rg).catch(() => {});
             this._rgSaveSession(code, this._rgLastPw, name, room.self.nodeId); // 存「想用的名稱」，不存自動加了編號的 this._rgLastPw = null;
             this._rg = rg; FaRemoteDispatch.installTracking.setNotify(() => this._rgPublishSoon()); this._rgSaveSettings({ machineName: room.self.name }); try { await this._rgLoadTasks(); } catch (_) { /* */ }

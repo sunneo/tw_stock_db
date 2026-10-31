@@ -88,7 +88,7 @@
 
     M._edAskDeck = async function (req, ed) {
         req = req || {}; const A = this._edAi(), D0 = FaDeckEdit, spec = D0.validate(req.spec).spec, notes = [], edits = [], text = String(req.text || '').trim(), status = typeof req.onStatus === 'function' ? req.onStatus : () => {}; let say = '';
-        const holder = this._edEditors && this._edEditors.get('edit-media-presentation:' + ed.id), env = holder && holder._ed && holder._ed.env ? holder._ed.env() : { selection: req.selection };
+        const holder = this._edEditors && this._edEditors.get('edit-media-presentation:' + ed.id), env = req.env || (holder && holder._ed && holder._ed.env ? holder._ed.env() : { selection: req.selection });
         const curRef = env.slide || req.selection || 'current'; const asNew = NEWPAGE_RE.test(text);
         // 1) 貼進對話框的圖 → 這頁的圖(或新的一頁)
         for (let i = 0; i < Math.min(3, (req.images || []).length); i++) {

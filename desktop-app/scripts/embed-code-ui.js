@@ -285,7 +285,7 @@ function embedRemote() {
     const dir = path.join(root, 'renderer/src/remote'); const rd = (n) => fs.readFileSync(path.join(dir, n), 'utf8').replace(/\r\n/g, '\n');
     const wrap = (name, code) => 'const ' + name + ' = (function () {\nconst holder = {};\n(function (module, self) {\n' + code + '\n}).call(null, undefined, holder);\nreturn holder.' + name + ';\n})();\n';
     const a = src.indexOf('/* REMOTE-BEGIN */'), b = src.indexOf('/* REMOTE-END */'); if (a < 0 || b < 0) throw new Error('找不到 REMOTE 標記');
-    const body = wrap('FaRemoteGroup', rd('rg_core.js')) + wrap('FaRemoteTransport', rd('rg_transport_supabase.js')) + wrap('FaRemoteTransportKv', rd('rg_transport_kv.js')) + wrap('FaRemoteFiles', rd('rg_files.js')) + rd('rg_host.js') + rd('rg_dispatch.js') + '\n';
+    const body = wrap('FaRemoteGroup', rd('rg_core.js')) + wrap('FaRemoteTransport', rd('rg_transport_supabase.js')) + wrap('FaRemoteTransportKv', rd('rg_transport_kv.js')) + wrap('FaRemoteFiles', rd('rg_files.js')) + wrap('FaRemotePatch', rd('rg_patch.js')) + wrap('FaRemoteEdit', rd('rg_edit.js')) + rd('rg_host.js') + rd('rg_dispatch.js') + '\n';
     src = src.slice(0, a) + '/* REMOTE-BEGIN */\n' + body + src.slice(b);
     console.log('已更新遠端群組（' + body.length + ' 字元）');
 }
@@ -392,6 +392,17 @@ function embedHarness() {
     console.log('已更新離線 harness(' + parts.join('').length + ' 字元)');
 }
 embedHarness();
+
+// 環境基準線（FaEnv 純函式核心＋FaEnvHost 主機轉接層）：放在 HARNESS 區塊之後
+function embedEnv() {
+    const dir = path.join(root, 'renderer/src/env'); if (!fs.existsSync(path.join(dir, 'env_host.js'))) return;
+    const rd = (n) => fs.readFileSync(path.join(dir, n + '.js'), 'utf8').replace(/\r\n/g, '\n'); const parts = ['(function (module) {\n' + rd('env_profile') + '\n}).call(window, undefined);', '(function (module) {\n' + rd('swap') + '\n}).call(window, undefined);', rd('env_host')];
+    let a = src.indexOf('/* ENV-BEGIN */'), b = src.indexOf('/* ENV-END */');
+    if (a < 0 || b < 0) { const e = src.indexOf('/* HARNESS-END */'); if (e < 0) throw new Error('找不到 HARNESS-END 標記'); const at = e + '/* HARNESS-END */'.length; src = src.slice(0, at) + '\n/* ENV-BEGIN */\n/* ENV-END */' + src.slice(at); a = src.indexOf('/* ENV-BEGIN */'); b = src.indexOf('/* ENV-END */'); }
+    src = src.slice(0, a) + '/* ENV-BEGIN */\n' + parts.join('\n') + '\n' + src.slice(b);
+    console.log('已更新環境基準線（' + parts.join('').length + ' 字元）');
+}
+embedEnv();
 
 // /edit-video:影片逐字稿編輯器(window 上的 TwVideo* 全域)＋主機轉接層,放在 DECKEDIT 區塊之後(要用 FaEditHost、FaEditStore、FaWin)
 function embedVideoEdit() {

@@ -2,6 +2,8 @@
 // coding-tools.js 整合測試：真的建暫存工作區（coding-workspace.js）、真的 git、真的跑腳本
 // 執行：ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/electron scripts/coding-tools.itest.js（node 腳本會用 process.execPath＝electron 當內建 node）
 const assert = require('assert'), fs = require('fs'), os = require('os'), path = require('path');
+// 暫存工作區預設在 os.tmpdir()/floating-assistant/coding；那個目錄可能屬於別的帳號而寫不進去，所以測試改用自己的私有暫存目錄（os.tmpdir() 讀 TMPDIR／TEMP／TMP）
+const PRIV_TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'fa-coding-itest-')); process.env.TMPDIR = process.env.TEMP = process.env.TMP = PRIV_TMP; process.on('exit', () => { try { fs.rmSync(PRIV_TMP, { recursive: true, force: true }); } catch (_) { /* */ } });
 const T = require('../coding-tools.js'), WS = require('../coding-workspace.js');
 let ok = 0; const bad = []; const queue = []; const t = (n, f) => queue.push([n, f]);
 const rd = (p) => fs.readFileSync(p, 'utf8');
