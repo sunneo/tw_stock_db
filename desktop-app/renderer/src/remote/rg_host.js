@@ -23,7 +23,8 @@ const FaRemoteHost = (function () {
         },
         _rgSaveSettings(patch) { const s = Object.assign(this._rgSettings(), patch || {}); try { localStorage.setItem(STORE, JSON.stringify(s)); } catch (_) { /* 無痕模式 */ } return s; },
         _rgTransport(i) { const b = BACKENDS[i || 0] || BACKENDS[0]; if (b.kind === 'kv') return new FaRemoteTransportKv.KvTransport({ url: b.url }); return new FaRemoteTransport.SupabaseTransport({ url: b.url, key: b.key, loadLib: () => _faLoadScriptOnce(b.lib) }); },
-        _rgSelfInfo(name) { const desktop = !!window.desktopAPI; return Object.assign(this._rgNodeIdWanted ? { nodeId: this._rgNodeIdWanted } : {}, { name, kind: desktop ? 'desktop' : 'web', caps: desktop ? ['desktop', 'files', 'shell', 'sandbox'] : ['web', 'sandbox'], allow: this._rgSettings().allowDispatch, sub: this._rgSettings().acceptSubtasks, busy: false, agents: 0, pk: this._rgIdent ? this._rgIdent.pub : undefined }); },
+        _rgSelfInfo(name) { const desktop = !!window.desktopAPI; let tier = ''; try { tier = this._envTier(); } catch (_) { tier = ''; }
+            return Object.assign(this._rgNodeIdWanted ? { nodeId: this._rgNodeIdWanted } : {}, { name, tier, kind: desktop ? 'desktop' : 'web', caps: desktop ? ['desktop', 'files', 'shell', 'sandbox'] : ['web', 'sandbox'], allow: this._rgSettings().allowDispatch, sub: this._rgSettings().acceptSubtasks, busy: false, agents: 0, pk: this._rgIdent ? this._rgIdent.pub : undefined }); },
         // 建立：代號由這邊隨機挑（8 位數起）；撞號（伺服器回 false）就換一個，連續撞號多加一位
         // 在某個後端登記一個新房間（代號由這邊隨機挑，8 位數起；撞號就換，連續撞號多加一位）。order：後端編號的嘗試順序
         // 每個房間代號對應一個固定的「家」（四個 Supabase 專案之一）：創建者把房間放在家，加入的人用同樣的算法先去家，
@@ -252,7 +253,7 @@ const FaRemoteHost = (function () {
             const rg = this._rg; if (!rg) { sel.style.display = 'none'; sel.innerHTML = ''; const inp0 = document.getElementById('ai-input-text'); if (inp0 && this._rgPh != null) inp0.placeholder = this._rgPh; try { this._renderChatList(); } catch (_) { /* */ } return; }
             const pal = this._getThemePalette(), cur = this._rgTarget || '';
             sel.style.background = pal.inputBg; sel.style.color = pal.inputText; sel.style.border = '1px solid ' + pal.inputBorder; sel.style.colorScheme = this._isLightTheme() ? 'light' : 'dark';
-            const opts = ['<option value="">交給：本機</option>'].concat(this._rgTargets().map((m) => '<option value="' + this._escapeHtml(m.nodeId) + '"' + (m.allow === false ? ' disabled' : '') + '>交給：' + this._escapeHtml(m.name) + (m.kind === 'desktop' ? '（桌面）' : '（網頁）') + (m.busy ? ' 忙碌' : '') + (m.allow === false ? ' 不接受' : '') + '</option>'));
+            const opts = ['<option value="">交給：本機</option>'].concat(this._rgTargets().map((m) => '<option value="' + this._escapeHtml(m.nodeId) + '"' + (m.allow === false ? ' disabled' : '') + '>交給：' + this._escapeHtml(m.name) + (m.kind === 'desktop' ? '（桌面）' : '（網頁）') + (m.tier === 'low' ? '（低檔）' : '') + (m.busy ? ' 忙碌' : '') + (m.allow === false ? ' 不接受' : '') + '</option>'));
             sel.innerHTML = opts.join(''); sel.value = this._rgTargets().some((m) => m.nodeId === cur) ? cur : ''; if (sel.value !== cur) this._rgTarget = sel.value;
             sel.style.display = '';
             const inp = document.getElementById('ai-input-text'); if (inp) { if (this._rgPh == null) this._rgPh = inp.placeholder; const tm = this._rgTargets().find((m) => m.nodeId === this._rgTarget); inp.placeholder = tm ? '交給「' + tm.name + '」：輸入需求，會在那台機器開一個新對話…' : this._rgPh; }

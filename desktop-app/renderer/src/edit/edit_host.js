@@ -129,7 +129,7 @@ const FaEditHost = (function () {
         },
         _edPics(kind) {
             this._edPicsCache = this._edPicsCache || {};
-            if (!this._edPicsCache[kind]) { const ai = this._edAi(); this._edPicsCache[kind] = FaEditPictures.make({ C: KINDS[kind].core(), store: FaEditStore, ai: { have: ai.have, chat: ai.chat }, T, fetch: this._edFetchFn() }); }
+            if (!this._edPicsCache[kind]) { const ai = this._edAi(); this._edPicsCache[kind] = FaEditPictures.make({ maxPx: () => this._envPol('maxImagePx', 4096), C: KINDS[kind].core(), store: FaEditStore, ai: { have: ai.have, chat: ai.chat }, T, fetch: this._edFetchFn() }); }
             return this._edPicsCache[kind];
         },
 

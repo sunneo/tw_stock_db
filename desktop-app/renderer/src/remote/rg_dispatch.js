@@ -511,7 +511,7 @@ const FaRemoteDispatch = (function () {
             const gate = await this._rgGate(m); if (gate) { this._rgEvent(job, { kind: 'rejected', error: gate }); job.done = true; this._rgLog('拒絕了 ' + fromName + ' 的' + (sub ? '子任務' : '需求') + '：' + gate); return; }
             // 整個需求要「允許派工」；AI 拆出來的子任務要另外勾「接受子任務分工」（預設關）
             if (sub ? !s.acceptSubtasks : !s.allowDispatch) { this._rgEvent(job, { kind: 'rejected', error: sub ? '這台機器沒有勾選「接受子任務分工」' : '這台機器目前不接受遠端需求' }); job.done = true; this._rgLog('拒絕了 ' + fromName + ' 的' + (sub ? '子任務' : '需求') + '（設定不允許）'); return; }
-            const max = Math.max(1, Math.min(16, Number(s.maxParallel) || 3)); rg.running = rg.running || 0; rg.waiting = rg.waiting || [];
+            const max = Math.max(1, Math.min(16, Number(s.maxParallel) || 3, this._envPol ? this._envPol('parallelTasks', 16) : 16)); rg.running = rg.running || 0; rg.waiting = rg.waiting || [];
             const queued = rg.running >= max ? rg.waiting.length + 1 : 0;
             await rg.room.send(m.from, 'task_ack', { taskId: b.taskId, queued }).catch(() => {});
             this._rgLog('收到 ' + fromName + ' 的' + (sub ? '子任務' : '需求') + '：' + b.text.slice(0, 30) + (queued ? '（排隊中）' : ''));
@@ -526,7 +526,7 @@ const FaRemoteDispatch = (function () {
         },
         _rgSetBusy() { const rg = this._rg; if (!rg) return; rg.room.self.busy = (rg.running || 0) > 0; this._rgPublishSoon(); },
         // 狀態（忙碌、子任務數、設定）變動：稍微合併後更新在線名單
-        _rgPublishSoon() { const rg = this._rg; if (!rg || rg.pubTimer) return; rg.pubTimer = setTimeout(() => { rg.pubTimer = null; if (this._rg === rg) { rg.room.self.agents = AGENTS.size; rg.room.publishSelf().catch(() => {}); this._rgRenderMembers && this._rgRenderMembers(); } }, 400); },
+        _rgPublishSoon() { const rg = this._rg; if (!rg || rg.pubTimer) return; rg.pubTimer = setTimeout(() => { rg.pubTimer = null; if (this._rg === rg) { rg.room.self.agents = AGENTS.size; try { rg.room.self.tier = this._envTier(); } catch (_) { /* 沒有環境資訊就不標 */ } rg.room.publishSelf().catch(() => {}); this._rgRenderMembers && this._rgRenderMembers(); } }, 400); },
         async _rgRunTask(job) {
             const s = this._rgSettings(); const prog = this._createProgressWidget((job.sub ? '🧩 子任務（來自 ' : '🛰️ 遠端需求（來自 ') + job.fromName + '）：' + job.text.slice(0, 24));
             try { job.chatCtx = await this._rgCreateRemoteChat(job); } catch (_) { /* 記錄成對話失敗不影響執行 */ }

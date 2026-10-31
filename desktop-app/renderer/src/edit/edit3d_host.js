@@ -189,7 +189,8 @@
     M._i3dLite = function () { try { if (typeof this._envTier === 'function') return this._envTier() === 'low'; } catch (_) { /* 退回舊的判斷 */ } try { return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '') || (navigator.deviceMemory && navigator.deviceMemory <= 4) || (navigator.maxTouchPoints > 1 && Math.min(screen.width, screen.height) < 820); } catch (_) { return false; } };
     M._i3dFree = function () { if (this._i3dLite() && this._vlmTerminate) { try { this._vlmTerminate('gpu'); this._vlmTerminate('cpu'); } catch (_) { /* */ } } };
     // FaImage3d 的重運算（讀深度、分物件、做網格、組場景）放在 Worker 裡跑，主執行緒只等結果，頁面才不會卡死；開不了 Worker 才退回主執行緒
-    M._i3dCall = function (fn, args) {
+    M._i3dCall = function (fn, args) { return this._envLane ? this._envLane(() => this._envGuard(() => this._i3dCallRaw(fn, args))) : this._i3dCallRaw(fn, args); };
+    M._i3dCallRaw = function (fn, args) {
         const self = this;
         if (typeof Worker === 'undefined' || typeof FA_IMG3D_WORKER_SRC === 'undefined') return Promise.resolve().then(() => FaImage3d[fn].apply(null, args));
         return new Promise((resolve, reject) => {

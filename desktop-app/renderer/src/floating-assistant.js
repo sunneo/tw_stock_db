@@ -26326,6 +26326,7 @@ const holder = {};
     function PS() { var M = cfg.PS || (typeof FaPictureSource !== 'undefined' ? FaPictureSource : (typeof self !== 'undefined' ? self : window).FaPictureSource); return M.make({ relayUrl: cfg.relayUrl, fetch: cfg.fetch, timeoutMs: 20000 }); }
     function canvasBlob(cv, type, q) { return new Promise(function (res) { cv.toBlob(res, type || 'image/png', q); }); }
     async function decode(blob, maxSide) {
+      if (cfg.maxPx) { try { maxSide = Math.min(maxSide, Number(cfg.maxPx()) || maxSide); } catch (e) { /* 沒有環境資訊就照原來的 */ } }   // 環境檔位：手機圖最大邊 1024
       var bmp = await createImageBitmap(blob), s = Math.min(1, maxSide / Math.max(bmp.width, bmp.height)), w = Math.max(1, Math.round(bmp.width * s)), h = Math.max(1, Math.round(bmp.height * s));
       var cv = document.createElement('canvas'); cv.width = w; cv.height = h; var g = cv.getContext('2d', { willReadFrequently: true }); g.fillStyle = '#fff'; g.fillRect(0, 0, w, h); g.drawImage(bmp, 0, 0, w, h);
       var id = g.getImageData(0, 0, w, h); return { width: w, height: h, data: id.data, canvas: cv, natural: { w: bmp.width, h: bmp.height } };
@@ -32832,7 +32833,7 @@ const FaEditHost = (function () {
         },
         _edPics(kind) {
             this._edPicsCache = this._edPicsCache || {};
-            if (!this._edPicsCache[kind]) { const ai = this._edAi(); this._edPicsCache[kind] = FaEditPictures.make({ C: KINDS[kind].core(), store: FaEditStore, ai: { have: ai.have, chat: ai.chat }, T, fetch: this._edFetchFn() }); }
+            if (!this._edPicsCache[kind]) { const ai = this._edAi(); this._edPicsCache[kind] = FaEditPictures.make({ maxPx: () => this._envPol('maxImagePx', 4096), C: KINDS[kind].core(), store: FaEditStore, ai: { have: ai.have, chat: ai.chat }, T, fetch: this._edFetchFn() }); }
             return this._edPicsCache[kind];
         },
 
@@ -33648,7 +33649,8 @@ const FaEditHost = (function () {
     M._i3dLite = function () { try { if (typeof this._envTier === 'function') return this._envTier() === 'low'; } catch (_) { /* 退回舊的判斷 */ } try { return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '') || (navigator.deviceMemory && navigator.deviceMemory <= 4) || (navigator.maxTouchPoints > 1 && Math.min(screen.width, screen.height) < 820); } catch (_) { return false; } };
     M._i3dFree = function () { if (this._i3dLite() && this._vlmTerminate) { try { this._vlmTerminate('gpu'); this._vlmTerminate('cpu'); } catch (_) { /* */ } } };
     // FaImage3d 的重運算（讀深度、分物件、做網格、組場景）放在 Worker 裡跑，主執行緒只等結果，頁面才不會卡死；開不了 Worker 才退回主執行緒
-    M._i3dCall = function (fn, args) {
+    M._i3dCall = function (fn, args) { return this._envLane ? this._envLane(() => this._envGuard(() => this._i3dCallRaw(fn, args))) : this._i3dCallRaw(fn, args); };
+    M._i3dCallRaw = function (fn, args) {
         const self = this;
         if (typeof Worker === 'undefined' || typeof FA_IMG3D_WORKER_SRC === 'undefined') return Promise.resolve().then(() => FaImage3d[fn].apply(null, args));
         return new Promise((resolve, reject) => {
@@ -37115,7 +37117,9 @@ return holder.FaDeckEditUI;
         recover() { this.degradeLevel = 0; }
         state() { return { degradeLevel: this.degradeLevel, residentMB: Math.round(this.residentBytes() / MB), budgetMB: this.policy().budgetMB, resources: [...this.res.values()].map((r) => ({ id: r.id, label: r.label, kind: r.kind, resident: r.resident, busy: r.busy, mb: Math.round((Number(r.bytes()) || 0) / MB) })), events: this.events.slice(-10) }; }
     }
-    return { detect, tierOf, policyOf, baseTier, isOom, Governor, POLICIES, TIERS };
+    // 服務端（Node）：用 os 模組填 raw，之後 detect／tierOf／policyOf／Governor 與瀏覽器共用同一套。FaEnv.rawFromNode(require('os'))
+    function rawFromNode(os) { const raw = { mobile: false, cores: (os.cpus() || []).length || 1, totalMem: os.totalmem(), freeMem: os.freemem() }; try { const hs = require('v8').getHeapStatistics(); raw.heapLimit = hs.heap_size_limit; raw.heapUsed = hs.used_heap_size; } catch (_) { /* 沒有 v8 就算了 */ } return raw; }
+    return { rawFromNode, detect, tierOf, policyOf, baseTier, isOom, Governor, POLICIES, TIERS };
 });
 
 }).call(window, undefined);
@@ -37194,6 +37198,9 @@ return holder.FaDeckEditUI;
         // 已知的重資源：由各自的程式追蹤「有沒有載入」，這裡只負責「什麼時候卸載」
         for (const slot of ['gpu', 'cpu']) g.register('vlm:' + slot, { kind: 'model', label: '看圖模型（' + slot + '）', bytes: () => 700 * MB, resident: () => !!(self._vlmWks && self._vlmWks[slot]), unload: async () => { self._vlmTerminate && self._vlmTerminate(slot); } });
         g.register('whisper', { kind: 'model', label: '語音辨識模型', bytes: () => 300 * MB, resident: () => !!self._whisperTranscriber, unload: async () => { const t = self._whisperTranscriber; self._whisperTranscriber = null; self._whisperTranscriberDevice = null; try { if (t && t.dispose) await t.dispose(); } catch (_) { /* */ } } });
+        // 本機生圖（SDXS，onnxruntime 工作階段）與本機 TTS（Kokoro 的 Worker）：載入前讓位、跑完依政策卸載
+        g.register('localsd', { kind: 'model', label: '本機生圖模型', bytes: () => 900 * MB, resident: () => !!self._localSdSess, unload: async () => { if (self._localSdUnload) await self._localSdUnload(); } });
+        g.register('tts', { kind: 'model', label: '語音合成（Kokoro）', bytes: () => 350 * MB, resident: () => !!self._ttsWorker, unload: async () => { try { if (self._ttsWorker) { self._ttsWorker.terminate(); self._ttsWorker = null; } } catch (_) { /* */ } } });
         return g;
     };
     // 模擬 swap：大塊的中間資料放 IndexedDB、記憶體只留最近用的（熱區＝預算的 1/4）。慢一點、但不會因為同時握太多大塊資料被殺掉
@@ -37205,6 +37212,30 @@ return holder.FaDeckEditUI;
     };
     M._envTier = function () { const st = this._envSettings(), g = this._envGovernor; return FaEnv.tierOf(FaEnv.detect(this._envRaw || this._envRawSync()), st.profile, g ? g.degradeLevel : 0); };
     M._envPolicy = function () { return FaEnv.policyOf(this._envTier(), this._envSettings().overrides); };
+    // 取政策裡的一個欄位（沒有環境基準線時用預設值）
+    M._envPol = function (key, d) { try { const v = this._envPolicy()[key]; return v == null ? d : v; } catch (_) { return d; } };
+    // 一件重運算：載入前先讓位／排隊（acquire）、記憶體不足就降級卸載（_envGuard）、跑完依政策卸載（release）。單一個就超過預算時不拒絕（沒有更小的替代）：已經卸掉所有別的，載不起來由 _envGuard 接住
+    M._envHeavy = async function (id, estBytes, fn) {
+        const g = this._envGov(); if (!g || !g.res.has(id)) return fn();
+        await g.acquire(id, estBytes); try { return await this._envGuard(fn); } finally { g.release(id); }
+    };
+    // 同一時間最多 parallelTasks 件（低檔 1 件）：超過的排隊，不要同時開一堆 Worker 吃光記憶體
+    M._envLane = async function (fn) {
+        const lane = this._envLaneState = this._envLaneState || { running: 0, waiting: [] };
+        while (lane.running >= Math.max(1, Number(this._envPol('parallelTasks', 2)) || 1)) await new Promise((res) => lane.waiting.push(res));
+        lane.running++; try { return await fn(); } finally { lane.running--; const w = lane.waiting.shift(); if (w) w(); }
+    };
+    // /env set key=value …（個別覆寫政策欄位）、/env set reset
+    const OVERRIDE_KEYS = { budgetMB: [100, 16000], maxImagePx: [256, 8192], parallelTasks: [1, 8], maxWorkers: [1, 16], fileCacheMB: [8, 4096], tilePx: [128, 4096], batch: [1, 16], renderScale: [0.5, 3], fps: [10, 120], graceMs: [0, 600000] };
+    M._envSetOverride = function (argsText) {
+        const a = String(argsText || '').trim(); if (/^reset$/i.test(a)) { this.advancedSettings.envOverrides = {}; this._saveAdvancedSettings(); this._envApplyPolicy(); return '已清掉個別覆寫。\n\n'; }
+        const ov = Object.assign({}, this._envSettings().overrides), done = [], bad = [];
+        a.split(/[\s,]+/).filter(Boolean).forEach((kv) => { const m = /^([A-Za-z]+)=(.+)$/.exec(kv); if (!m || !OVERRIDE_KEYS[m[1]]) { bad.push(kv); return; } const n = Number(m[2]), r = OVERRIDE_KEYS[m[1]]; if (!isFinite(n)) { bad.push(kv); return; } ov[m[1]] = Math.max(r[0], Math.min(r[1], n)); done.push(m[1] + '=' + ov[m[1]]); });
+        if (done.length) { this.advancedSettings.envOverrides = ov; this._saveAdvancedSettings(); this._envApplyPolicy(); }
+        return (done.length ? '已覆寫：' + done.join('、') + '。' : '') + (bad.length ? '不認得：' + bad.join('、') + '（可用：' + Object.keys(OVERRIDE_KEYS).join('、') + '）。' : '') + (done.length || bad.length ? '\n\n' : '用法：/env set budgetMB=900 maxImagePx=1024；/env set reset 取消。\n\n');
+    };
+    // 政策變了（換檔、降級、覆寫）：已經建好的東西跟著調整
+    M._envApplyPolicy = function () { try { if (this.fileCache && this.fileCache.setMaxBytes && this._getFileCacheLimitBytes) this.fileCache.setMaxBytes(this._getFileCacheLimitBytes()); } catch (_) { /* */ } try { if (this._envSwapObj) this._envSwapObj.setHotBytes(Math.max(8, Math.round(this._envPolicy().budgetMB / 4)) * MB); } catch (_) { /* */ } };
     // 重資源用完了一次（外部追蹤的資源）：依政策排程卸載
     M._envSettle = function (id) { try { const g = this._envGov(); if (g) g.settle(id); } catch (_) { /* */ } };
     // 載入前先讓位／排隊；回傳 {fits}。fits:false 代表單一個就超過預算：呼叫端應改用小模型或分塊（不硬載）
@@ -37212,7 +37243,7 @@ return holder.FaDeckEditUI;
     M._envRelease = function (id, o) { try { const g = this._envGov(); if (g) g.release(id, o); } catch (_) { /* */ } };
     // OOM：這個工作階段降一級、全部卸載、通知一次（寧可慢）
     M._envOom = async function (err) {
-        const g = this._envGov(); if (!g) return; const now = Date.now(); g.degrade('OOM：' + String((err && err.message) || err).slice(0, 80)); try { await g.unloadAll(); } catch (_) { /* */ }
+        const g = this._envGov(); if (!g) return; const now = Date.now(); g.degrade('OOM：' + String((err && err.message) || err).slice(0, 80)); try { await g.unloadAll(); } catch (_) { /* */ } this._envApplyPolicy();
         if (!this._envOomAt || now - this._envOomAt > 60000) { this._envOomAt = now; try { this._pushAssistantMessage('⚠️ 記憶體不足：已卸載模型並改用較省的設定（目前檔位：' + this._envTier() + '）。這次可以再試一次，會跑得比較慢但不會被瀏覽器關掉。用 /env 可以看或調整。', null); this._renderMessageHistory(); } catch (_) { /* */ } }
     };
     // 包住一件重運算：記憶體不足就降級卸載並丟出明確的錯誤，不讓它拖垮整個頁面
@@ -46895,7 +46926,8 @@ const FaRemoteHost = (function () {
         },
         _rgSaveSettings(patch) { const s = Object.assign(this._rgSettings(), patch || {}); try { localStorage.setItem(STORE, JSON.stringify(s)); } catch (_) { /* 無痕模式 */ } return s; },
         _rgTransport(i) { const b = BACKENDS[i || 0] || BACKENDS[0]; if (b.kind === 'kv') return new FaRemoteTransportKv.KvTransport({ url: b.url }); return new FaRemoteTransport.SupabaseTransport({ url: b.url, key: b.key, loadLib: () => _faLoadScriptOnce(b.lib) }); },
-        _rgSelfInfo(name) { const desktop = !!window.desktopAPI; return Object.assign(this._rgNodeIdWanted ? { nodeId: this._rgNodeIdWanted } : {}, { name, kind: desktop ? 'desktop' : 'web', caps: desktop ? ['desktop', 'files', 'shell', 'sandbox'] : ['web', 'sandbox'], allow: this._rgSettings().allowDispatch, sub: this._rgSettings().acceptSubtasks, busy: false, agents: 0, pk: this._rgIdent ? this._rgIdent.pub : undefined }); },
+        _rgSelfInfo(name) { const desktop = !!window.desktopAPI; let tier = ''; try { tier = this._envTier(); } catch (_) { tier = ''; }
+            return Object.assign(this._rgNodeIdWanted ? { nodeId: this._rgNodeIdWanted } : {}, { name, tier, kind: desktop ? 'desktop' : 'web', caps: desktop ? ['desktop', 'files', 'shell', 'sandbox'] : ['web', 'sandbox'], allow: this._rgSettings().allowDispatch, sub: this._rgSettings().acceptSubtasks, busy: false, agents: 0, pk: this._rgIdent ? this._rgIdent.pub : undefined }); },
         // 建立：代號由這邊隨機挑（8 位數起）；撞號（伺服器回 false）就換一個，連續撞號多加一位
         // 在某個後端登記一個新房間（代號由這邊隨機挑，8 位數起；撞號就換，連續撞號多加一位）。order：後端編號的嘗試順序
         // 每個房間代號對應一個固定的「家」（四個 Supabase 專案之一）：創建者把房間放在家，加入的人用同樣的算法先去家，
@@ -47124,7 +47156,7 @@ const FaRemoteHost = (function () {
             const rg = this._rg; if (!rg) { sel.style.display = 'none'; sel.innerHTML = ''; const inp0 = document.getElementById('ai-input-text'); if (inp0 && this._rgPh != null) inp0.placeholder = this._rgPh; try { this._renderChatList(); } catch (_) { /* */ } return; }
             const pal = this._getThemePalette(), cur = this._rgTarget || '';
             sel.style.background = pal.inputBg; sel.style.color = pal.inputText; sel.style.border = '1px solid ' + pal.inputBorder; sel.style.colorScheme = this._isLightTheme() ? 'light' : 'dark';
-            const opts = ['<option value="">交給：本機</option>'].concat(this._rgTargets().map((m) => '<option value="' + this._escapeHtml(m.nodeId) + '"' + (m.allow === false ? ' disabled' : '') + '>交給：' + this._escapeHtml(m.name) + (m.kind === 'desktop' ? '（桌面）' : '（網頁）') + (m.busy ? ' 忙碌' : '') + (m.allow === false ? ' 不接受' : '') + '</option>'));
+            const opts = ['<option value="">交給：本機</option>'].concat(this._rgTargets().map((m) => '<option value="' + this._escapeHtml(m.nodeId) + '"' + (m.allow === false ? ' disabled' : '') + '>交給：' + this._escapeHtml(m.name) + (m.kind === 'desktop' ? '（桌面）' : '（網頁）') + (m.tier === 'low' ? '（低檔）' : '') + (m.busy ? ' 忙碌' : '') + (m.allow === false ? ' 不接受' : '') + '</option>'));
             sel.innerHTML = opts.join(''); sel.value = this._rgTargets().some((m) => m.nodeId === cur) ? cur : ''; if (sel.value !== cur) this._rgTarget = sel.value;
             sel.style.display = '';
             const inp = document.getElementById('ai-input-text'); if (inp) { if (this._rgPh == null) this._rgPh = inp.placeholder; const tm = this._rgTargets().find((m) => m.nodeId === this._rgTarget); inp.placeholder = tm ? '交給「' + tm.name + '」：輸入需求，會在那台機器開一個新對話…' : this._rgPh; }
@@ -48118,7 +48150,7 @@ const FaRemoteDispatch = (function () {
             const gate = await this._rgGate(m); if (gate) { this._rgEvent(job, { kind: 'rejected', error: gate }); job.done = true; this._rgLog('拒絕了 ' + fromName + ' 的' + (sub ? '子任務' : '需求') + '：' + gate); return; }
             // 整個需求要「允許派工」；AI 拆出來的子任務要另外勾「接受子任務分工」（預設關）
             if (sub ? !s.acceptSubtasks : !s.allowDispatch) { this._rgEvent(job, { kind: 'rejected', error: sub ? '這台機器沒有勾選「接受子任務分工」' : '這台機器目前不接受遠端需求' }); job.done = true; this._rgLog('拒絕了 ' + fromName + ' 的' + (sub ? '子任務' : '需求') + '（設定不允許）'); return; }
-            const max = Math.max(1, Math.min(16, Number(s.maxParallel) || 3)); rg.running = rg.running || 0; rg.waiting = rg.waiting || [];
+            const max = Math.max(1, Math.min(16, Number(s.maxParallel) || 3, this._envPol ? this._envPol('parallelTasks', 16) : 16)); rg.running = rg.running || 0; rg.waiting = rg.waiting || [];
             const queued = rg.running >= max ? rg.waiting.length + 1 : 0;
             await rg.room.send(m.from, 'task_ack', { taskId: b.taskId, queued }).catch(() => {});
             this._rgLog('收到 ' + fromName + ' 的' + (sub ? '子任務' : '需求') + '：' + b.text.slice(0, 30) + (queued ? '（排隊中）' : ''));
@@ -48133,7 +48165,7 @@ const FaRemoteDispatch = (function () {
         },
         _rgSetBusy() { const rg = this._rg; if (!rg) return; rg.room.self.busy = (rg.running || 0) > 0; this._rgPublishSoon(); },
         // 狀態（忙碌、子任務數、設定）變動：稍微合併後更新在線名單
-        _rgPublishSoon() { const rg = this._rg; if (!rg || rg.pubTimer) return; rg.pubTimer = setTimeout(() => { rg.pubTimer = null; if (this._rg === rg) { rg.room.self.agents = AGENTS.size; rg.room.publishSelf().catch(() => {}); this._rgRenderMembers && this._rgRenderMembers(); } }, 400); },
+        _rgPublishSoon() { const rg = this._rg; if (!rg || rg.pubTimer) return; rg.pubTimer = setTimeout(() => { rg.pubTimer = null; if (this._rg === rg) { rg.room.self.agents = AGENTS.size; try { rg.room.self.tier = this._envTier(); } catch (_) { /* 沒有環境資訊就不標 */ } rg.room.publishSelf().catch(() => {}); this._rgRenderMembers && this._rgRenderMembers(); } }, 400); },
         async _rgRunTask(job) {
             const s = this._rgSettings(); const prog = this._createProgressWidget((job.sub ? '🧩 子任務（來自 ' : '🛰️ 遠端需求（來自 ') + job.fromName + '）：' + job.text.slice(0, 24));
             try { job.chatCtx = await this._rgCreateRemoteChat(job); } catch (_) { /* 記錄成對話失敗不影響執行 */ }
@@ -51241,12 +51273,13 @@ class FloatingAssistant {
         this.register_slash_command('/tool-aliases', '[list|clear]',
             '看或清掉「學來的工具別名」：模型說沒有某個工具、程式替它找到之後它真的做出來了，使用者那句話就會記成那個工具的別名（只在反思搜尋時用，不佔對話的 context）。',
             async (argsText, run) => { const r = run || this; const st = await r._capAliasLoad(); const a = String(argsText || '').trim().toLowerCase(); if (a === 'clear') { st.tools = {}; await r._capAliasSave(); r._pushAssistantMessage('已清掉學來的別名。', null); } else { const rows = Object.entries(st.tools || {}); r._pushAssistantMessage(rows.length ? '學來的別名（' + rows.length + ' 個工具）：\n' + rows.map(([k, v]) => '・' + k + '：' + v.map((x) => '「' + x.p + '」×' + x.n).join('、')).join('\n') : '還沒有學到別名。模型說沒有某個工具、程式替它找到、它也真的做出來了，才會記下來。', null); } try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ } });
-        this.register_slash_command('/env', '[auto|low|mid|high|unload|reset]',
+        this.register_slash_command('/env', '[auto|low|mid|high|unload|reset|set key=值]',
             '看或調整執行環境基準線：依這台裝置的記憶體等狀況自動決定預設值（手機：模型跑完就卸載、一次只做一件事、圖縮小），寧可跑得慢也不要被瀏覽器因記憶體不足殺掉。auto＝自動偵測；low／mid／high＝指定檔位；unload＝現在把沒在用的模型全卸載；reset＝取消這個工作階段因記憶體吃緊而降的級。',
             async (argsText, run) => { const r = run || this; const a = String(argsText || '').trim().toLowerCase(); r.messages.push({ role: 'user', content: '/env' + (a ? ' ' + a : '') }); let note = '';
                 if (['auto', 'low', 'mid', 'high'].includes(a)) { this.advancedSettings.envProfile = a; this._saveAdvancedSettings(); note = '已設成「' + a + '」。\n\n'; }
                 else if (a === 'unload') { const n = await this._envGov().unloadAll(); note = '已卸載 ' + n + ' 個沒在用的模型。\n\n'; }
-                else if (a === 'reset') { this._envGov().recover(); note = '已取消降級。\n\n'; }
+                else if (a === 'reset') { this._envGov().recover(); this._envApplyPolicy(); note = '已取消降級。\n\n'; }
+                else if (/^set(\s|$)/.test(a)) { note = this._envSetOverride(a.replace(/^set\s*/, '')); }
                 r._pushAssistantMessage(note + this._envReport(), null); try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ } });
         this.register_slash_command('/view', '[檔名]',
             '在對話裡開啟檔案檢視器：xlsx（工作表頁籤、AI 的回答變成另一張工作表）、csv、tsv、json、yaml、toml。先附上檔案再下 /view，或 /view 檔名；不帶參數開最近上傳、可以檢視的檔案。可搜尋、匯出（xlsx／csv／sqlite3…）、問 AI。',
@@ -52506,7 +52539,7 @@ class FloatingAssistant {
     // 超大數字把IndexedDB塞爆或讓FileCache邏輯除零。
     _getFileCacheLimitBytes() {
         const mb = Number(this.advancedSettings?.fileCacheLimitMB);
-        const clamped = Number.isFinite(mb) && mb > 0 ? Math.min(2048, Math.max(1, mb)) : 256;
+        const userSet = Number.isFinite(mb) && mb > 0 && mb !== 256, clamped = userSet ? Math.min(2048, Math.max(1, mb)) : Math.min(256, this._envPol ? this._envPol('fileCacheMB', 256) : 256);   // 預設值（256）視為沒自己設定：依環境檔位（手機 64 MB）；改成別的數字就照使用者的
         return clamped * 1024 * 1024;
     }
 
@@ -58049,7 +58082,8 @@ ${fnData.code}
     // 要不要退回main thread的_getTtsEngine路徑；worker內部try/catch包住的
     // 業務邏輯錯誤（例如voice id不存在）不會有這個旗標，直接照實拋出、不
     // retry、不fallback。
-    async _generateTtsInWorker(text, voiceId, onProgress, speed, phonemes) {
+    async _generateTtsInWorker(text, voiceId, onProgress, speed, phonemes) { return this._envHeavy('tts', 350 * 1048576, () => this._generateTtsInWorkerInner(text, voiceId, onProgress, speed, phonemes)); }
+    async _generateTtsInWorkerInner(text, voiceId, onProgress, speed, phonemes) {
         const worker = await this._ensureTtsWorker();
         const jobId = (crypto.randomUUID ? crypto.randomUUID() : `tts_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`);
         return new Promise((resolve, reject) => {
@@ -70677,7 +70711,8 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const rgba = FaLocalSd.toRgba(img, FaLocalSd.SIZE, FaLocalSd.SIZE), cv = document.createElement('canvas'); cv.width = cv.height = FaLocalSd.SIZE; cv.getContext('2d').putImageData(new ImageData(rgba, FaLocalSd.SIZE, FaLocalSd.SIZE), 0, 0);
         const blob = await new Promise((res) => cv.toBlob(res, 'image/png')); return { blob, dataUrl: cv.toDataURL('image/png'), stats: FaLocalSd.imageStats(rgba) };
     }
-    async _localSdGenerate(a) {
+    async _localSdGenerate(a) { return this._envHeavy('localsd', 900 * 1048576, () => this._localSdGenerateInner(a)); }
+    async _localSdGenerateInner(a) {
         const plan = FaLocalSd.plan(a); if (!plan.ok) return { ok: false, error: plan.error };
         const t0 = Date.now(), prog = this._createProgressWidget('🖼 本機生圖'); const say = (t) => { try { prog.update({ status: t }); } catch (_) { /* */ } };
         try {
@@ -82944,7 +82979,7 @@ _result
         catch (e) { if (rec.urls.length > 1 && /pyodide|import|fetch|load/i.test(String(e.message))) { rec.indexURL = rec.urls[1]; return await attempt(rec.indexURL); } throw e; }
     }
 
-    _mpWorkerCap() { return Math.max(2, Math.min(8, (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4)); }
+    _mpWorkerCap() { return Math.max(1, Math.min(this._envPol ? this._envPol('maxWorkers', 8) : 8, Math.max(2, Math.min(8, (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4)))); }
 
     async _mpCreateWorker() {
         if (!this._pyodideIndexURL) throw new Error('Pyodide尚未載入，無法建立worker');
@@ -92274,7 +92309,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const ans = await this.requestUserForm({ title, description, choices: [yesLabel, '取消'] }); // Configure 開著時 requestUserForm 會跳最上層的對話框
         return !!(ans && ans.confirmed && ans.answer === yesLabel);
     }
-    _omCores() { const ts = this._omThreadSupport(); return { hardware: Math.max(1, (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 1), isolated: ts.ok, coi: ts.coi, reason: ts.reason }; }
+    _omCores() { const ts = this._omThreadSupport(), hw0 = Math.max(1, (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 1), lowCap = this._envTier && this._envTier() === 'low' ? this._envPol('maxWorkers', hw0) : hw0; return { hardware: Math.max(1, Math.min(hw0, lowCap)), isolated: ts.ok, coi: ts.coi, reason: ts.reason }; }
     // WebGPU 偵測（含顯示卡名稱與 fp16 支援）；結果快取，force 重新偵測
     async _omGpuInfo(force) {
         if (this._omGpuCache && !force) return this._omGpuCache;

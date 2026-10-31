@@ -1,12 +1,12 @@
 {
   "schema": 1,
   "baseVersion": "1.1.0",
-  "generatedAt": "2026-10-31T17:30:51.533Z",
+  "generatedAt": "2026-10-31T17:37:32.984Z",
   "files": {
     "renderer/index.html": "039acc67493d2d42bae493dc9822621a",
     "renderer/bootstrap.js": "33455890395619f620c359fe7a02a96c",
-    "renderer/floating-assistant.js": "d13b3e8ae4cccf696291e991b8ea0416",
-    "renderer/floating-assistant.min.js": "d13b3e8ae4cccf696291e991b8ea0416",
+    "renderer/floating-assistant.js": "8299234cedb8918219b6858b03e87637",
+    "renderer/floating-assistant.min.js": "8299234cedb8918219b6858b03e87637",
     "renderer/vendor/three/3MFLoader.js": "d00d9a65406125b59005ae45743a62bd",
     "renderer/vendor/three/FBXLoader.js": "1f41c7848bef78d6cc2db7c5f1091f07",
     "renderer/vendor/three/LICENSE": "39aa4e61c1aaad915b3ca57ddbb559f4",
@@ -43,13 +43,13 @@
     "rfb-client.js": "1ad7d8a545166f0e965d3f5008b94ccb",
     "rfb-codec.js": "08f2ada7bc710642e7d29fbff63ee4f1",
     "sqlite-engine.js": "ff9d39366459c465271e617b00abb76e",
-    "preload.js": "bb78495349c3b613374c2c57418f8e72"
+    "preload.js": "edc03acff577324858ec3ef67c310489"
   },
   "sizes": {
     "renderer/index.html": 5741,
     "renderer/bootstrap.js": 199845,
-    "renderer/floating-assistant.js": 9599395,
-    "renderer/floating-assistant.min.js": 9599395,
+    "renderer/floating-assistant.js": 9602954,
+    "renderer/floating-assistant.min.js": 9602954,
     "renderer/vendor/three/3MFLoader.js": 35114,
     "renderer/vendor/three/FBXLoader.js": 100686,
     "renderer/vendor/three/LICENSE": 1081,
@@ -86,6 +86,6 @@
     "rfb-client.js": 27415,
     "rfb-codec.js": 14601,
     "sqlite-engine.js": 22797,
-    "preload.js": 14761
+    "preload.js": 15022
   }
 }

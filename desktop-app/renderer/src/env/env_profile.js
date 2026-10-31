@@ -96,5 +96,7 @@
         recover() { this.degradeLevel = 0; }
         state() { return { degradeLevel: this.degradeLevel, residentMB: Math.round(this.residentBytes() / MB), budgetMB: this.policy().budgetMB, resources: [...this.res.values()].map((r) => ({ id: r.id, label: r.label, kind: r.kind, resident: r.resident, busy: r.busy, mb: Math.round((Number(r.bytes()) || 0) / MB) })), events: this.events.slice(-10) }; }
     }
-    return { detect, tierOf, policyOf, baseTier, isOom, Governor, POLICIES, TIERS };
+    // 服務端（Node）：用 os 模組填 raw，之後 detect／tierOf／policyOf／Governor 與瀏覽器共用同一套。FaEnv.rawFromNode(require('os'))
+    function rawFromNode(os) { const raw = { mobile: false, cores: (os.cpus() || []).length || 1, totalMem: os.totalmem(), freeMem: os.freemem() }; try { const hs = require('v8').getHeapStatistics(); raw.heapLimit = hs.heap_size_limit; raw.heapUsed = hs.used_heap_size; } catch (_) { /* 沒有 v8 就算了 */ } return raw; }
+    return { rawFromNode, detect, tierOf, policyOf, baseTier, isOom, Governor, POLICIES, TIERS };
 });

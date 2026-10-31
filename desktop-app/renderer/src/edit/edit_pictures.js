@@ -11,6 +11,7 @@
     function PS() { var M = cfg.PS || (typeof FaPictureSource !== 'undefined' ? FaPictureSource : (typeof self !== 'undefined' ? self : window).FaPictureSource); return M.make({ relayUrl: cfg.relayUrl, fetch: cfg.fetch, timeoutMs: 20000 }); }
     function canvasBlob(cv, type, q) { return new Promise(function (res) { cv.toBlob(res, type || 'image/png', q); }); }
     async function decode(blob, maxSide) {
+      if (cfg.maxPx) { try { maxSide = Math.min(maxSide, Number(cfg.maxPx()) || maxSide); } catch (e) { /* 沒有環境資訊就照原來的 */ } }   // 環境檔位：手機圖最大邊 1024
       var bmp = await createImageBitmap(blob), s = Math.min(1, maxSide / Math.max(bmp.width, bmp.height)), w = Math.max(1, Math.round(bmp.width * s)), h = Math.max(1, Math.round(bmp.height * s));
       var cv = document.createElement('canvas'); cv.width = w; cv.height = h; var g = cv.getContext('2d', { willReadFrequently: true }); g.fillStyle = '#fff'; g.fillRect(0, 0, w, h); g.drawImage(bmp, 0, 0, w, h);
       var id = g.getImageData(0, 0, w, h); return { width: w, height: h, data: id.data, canvas: cv, natural: { w: bmp.width, h: bmp.height } };

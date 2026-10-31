@@ -27,6 +27,16 @@ const sw = fa._envSwap(); const mk = (n, c) => new Blob([new Uint8Array(n).fill(
 R.swap = { items: sw.stats().items, hot_mb: Math.round(sw.stats().hotBytes / 1048576), disk_mb: Math.round(sw.stats().diskBytes / 1048576) };
 const back = await sw.get(hs[0]); const u = new Uint8Array(await back.arrayBuffer()); R.swap.roundtrip = u.length === 2 * 1048576 && u[0] === 1 && u[u.length - 1] === 1;
 await fa._envGov().unload('swap', '測試'); R.swap.after_unload_hot = sw.stats().hotBytes; for (const h of hs) await sw.drop(h); R.swap.cleared = sw.stats().items === 0;
+// ── 政策欄位真正被用到（低檔）
+await cmd('/env').handler('low', fa);
+R.policy_used = { file_cache_mb: fa._getFileCacheLimitBytes() / 1048576, worker_cap: fa._mpWorkerCap(), om_cores: fa._omCores().hardware, pol_max_px: fa._envPol('maxImagePx', 0), registered: ['localsd', 'tts'].every((k) => fa._envGov().res.has(k)) };
+let running = 0, peak = 0; const lane = () => fa._envLane(async () => { running++; peak = Math.max(peak, running); await new Promise((r) => setTimeout(r, 40)); running--; });
+await Promise.all([lane(), lane(), lane()]); R.lane_low_peak = peak;
+const note = fa._envSetOverride('maxImagePx=512 parallelTasks=2 bogus=1'); R.set_override = { note: /maxImagePx=512/.test(note) && /不認得：bogus=1/.test(note), px: fa._envPol('maxImagePx', 0), par: fa._envPol('parallelTasks', 0) };
+running = 0; peak = 0; await Promise.all([lane(), lane(), lane()]); R.lane_after_override_peak = peak; fa._envSetOverride('reset'); R.set_reset = fa._envPol('maxImagePx', 0);
+let heavy = 0; await fa._envHeavy('tts', 1048576, async () => { heavy = fa._envGov().res.get('tts').busy; }); R.heavy_busy_during = heavy; R.heavy_busy_after = fa._envGov().res.get('tts').busy;
+R.self_tier = fa._rgSelfInfo ? fa._rgSelfInfo('x').tier : null;
+R.policy_ok = R.policy_used.file_cache_mb === 64 && R.policy_used.worker_cap === 2 && R.policy_used.om_cores <= 2 && R.policy_used.pol_max_px === 1024 && R.policy_used.registered && R.lane_low_peak === 1 && R.set_override.note && R.set_override.px === 512 && R.lane_after_override_peak === 2 && R.set_reset === 1024 && R.heavy_busy_during === 1 && R.heavy_busy_after === 0 && R.self_tier === 'low';
 await cmd('/env').handler('auto', fa);
 console.log('ENV_RESULT ' + JSON.stringify(R));
 return R;

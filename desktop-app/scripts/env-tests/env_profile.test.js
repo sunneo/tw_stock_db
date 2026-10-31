@@ -57,5 +57,7 @@ const mk = (policy) => { const unloaded = []; const g = new E.Governor(Object.as
     ({ g, unloaded, add } = mk(E.policyOf('low'))); g.register('boom', { unload: async () => { throw new Error('壞了'); }, bytes: () => 100 * MB }); add('ok', 100); await g.acquire('boom'); await g.acquire('ok'); g.release('boom'); g.release('ok'); const cnt = await g.unloadAll(); check('卸載出錯：記錄並繼續卸載其他', cnt === 2 && unloaded.join() === 'ok' && !g.res.get('boom').resident, [cnt, unloaded]);
     // 沒登記的資源
     let thrown = null; try { await g.acquire('nope'); } catch (e) { thrown = e.message; } check('沒登記的資源 acquire 會報錯', /沒有登記/.test(thrown || ''));
+    { const raw = E.rawFromNode(require('os')); check('服務端：rawFromNode 填得出記憶體與核心數', raw.totalMem > 0 && raw.cores >= 1 && raw.mobile === false); const t = E.tierOf(E.detect(raw), 'auto', 0); check('服務端：檔位是三種之一', ['low', 'mid', 'high'].includes(t), t);
+      const fake = { cpus: () => new Array(2).fill({}), totalmem: () => 2 * 1024 * MB, freemem: () => 512 * MB }; check('服務端：2 GB 的小機器是 low', E.tierOf(E.detect(E.rawFromNode(fake)), 'auto', 0) === 'low'); }
     console.log(bad.length ? 'FAILED:\n  ' + bad.join('\n  ') : 'env_profile: ' + ok + ' passed'); process.exit(bad.length ? 1 : 0);
 })().catch((e) => { console.log('EXCEPTION', e && e.stack || e); process.exit(1); });
