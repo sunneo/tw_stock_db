@@ -7,7 +7,7 @@
  *   FaWin.decorate(el, { id, title, bar, minW, minH, floating, onChange }) → ctl
  *     bar：介面自己的標題列（有的話按鈕加在裡面、拿它當拖曳把手）；沒有就在元素右上角放一排小按鈕（滑過才明顯），彈出時多一條標題列。
  *     floating：true＝一開始就彈出。
- *   ctl: { pop(), dock(), maximize(on), toggleMax(), isPopped(), isMaximized(), destroy() }
+ *   ctl: { pop(), dock(), maximize(on), toggleMax(), fullscreen(on), isFullscreen(), isPopped(), isMaximized(), destroy() }（⛶ 全螢幕用瀏覽器的 Fullscreen API，Esc 離開）
  *   FaWin.registry：目前有外殼的元素（除錯與測試用）。 */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaWin = factory();
@@ -22,6 +22,8 @@
     + '.fwd{display:flex;flex-direction:column;background:#0d1117;color:#e5e7eb;border:1px solid #6b7280;border-radius:8px;overflow:hidden;margin:6px 0;height:520px;max-width:100%;box-sizing:border-box}.fwd .fwd-bar{display:flex;align-items:center;gap:8px;padding:4px 8px;background:#1f2937;flex:none;user-select:none;font:13px system-ui,"Microsoft JhengHei",sans-serif}.fwd .fwd-bar .t{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.fwd .fwd-bar button{background:none;border:none;color:#e5e7eb;cursor:pointer;font-size:14px;padding:0 6px}.fwd iframe{flex:1;width:100%;border:0;background:#fff;min-height:0}'
     + '.fwin-host.fsb:not(.fwin-pop){position:relative!important;left:auto!important;top:auto!important;width:100%!important;height:520px!important;z-index:auto!important;margin:6px 0;max-width:100%}.fwin-host.fsb .rz{display:none}.fwin-pop.fwd,.fwin-pop.fsb{display:flex!important;flex-direction:column}'
     + '.fwin-rz{position:absolute;z-index:7}.fwin-rz.n{top:0;left:8px;right:8px;height:5px;cursor:ns-resize}.fwin-rz.s{bottom:0;left:8px;right:8px;height:5px;cursor:ns-resize}.fwin-rz.e{right:0;top:8px;bottom:8px;width:5px;cursor:ew-resize}.fwin-rz.w{left:0;top:8px;bottom:8px;width:5px;cursor:ew-resize}.fwin-rz.ne{top:0;right:0;width:10px;height:10px;cursor:nesw-resize}.fwin-rz.nw{top:0;left:0;width:10px;height:10px;cursor:nwse-resize}.fwin-rz.se{bottom:0;right:0;width:14px;height:14px;cursor:nwse-resize}.fwin-rz.sw{bottom:0;left:0;width:10px;height:10px;cursor:nesw-resize}';
+  CSS += '.fwin-pop.fa-3d-card,.fa-3d-card:fullscreen{display:flex!important;flex-direction:column}.fwin-pop .fa-3d-holder,.fa-3d-card:fullscreen .fa-3d-holder{flex:1;min-height:0}.fwin-pop .fa-3d-holder>div,.fa-3d-card:fullscreen .fa-3d-holder>div{height:100%}.fwin-pop .fa-3d-holder canvas,.fa-3d-card:fullscreen .fa-3d-holder canvas{height:100%!important}';
+  CSS += '.fwin-host:fullscreen{border-radius:0!important;max-width:none!important;max-height:none!important;margin:0!important}.fwin-host:fullscreen .fwin-rz{display:none}';
   var registry = [];
   function injectCss() { if (document.getElementById('fwin-css')) return; var s = document.createElement('style'); s.id = 'fwin-css'; s.textContent = CSS; (document.head || document.documentElement).appendChild(s); }
   function h(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
@@ -35,8 +37,9 @@
     var popped = false, maxed = false, ph = null, saved = null, rect = null, rects = null, mode = null, rzDir = null, sx = 0, sy = 0, reparent = false, homeParent = null, homeNext = null, titleEl = null, handles = [], cleanup = null;
     el.classList.add('fwin-host'); if (getComputedStyle(el).position === 'static') el.style.position = 'relative';
     var bMax = h('button', null, '☐'), bPop = h('button', null, '⤢'); bMax.title = '最大化（也可以雙擊標題列）'; bPop.title = '彈出成可以拖曳、改大小的視窗';
+    var bFs = h('button', null, '⛶'); bFs.title = '全螢幕（Esc 離開）'; if (typeof document === 'undefined' || !document.fullscreenEnabled) bFs.style.display = 'none';
     var tools = null;
-    if (bar) { bar.appendChild(bMax); bar.appendChild(bPop); } else { tools = h('div', 'fwin-tools'); tools.appendChild(bMax); tools.appendChild(bPop); el.insertBefore(tools, el.firstChild); }
+    if (bar) { bar.appendChild(bMax); bar.appendChild(bPop); bar.appendChild(bFs); } else { tools = h('div', 'fwin-tools'); tools.appendChild(bMax); tools.appendChild(bPop); tools.appendChild(bFs); el.insertBefore(tools, el.firstChild); }
     function notify() { if (typeof opts.onChange === 'function') { try { opts.onChange({ popped: popped, maximized: maxed }); } catch (e) { /* */ } } }
     function front() { if (el.style.zIndex === String(zTop)) { return; } zTop += 1; el.style.zIndex = String(zTop); }
     function persist() { if (popped && rect) save(id, { rect: rect, maxed: maxed }); }
@@ -59,7 +62,7 @@
       reparent = true; document.body.appendChild(el); apply(start);
       // 點到哪個視窗（或裡面的輸入框取得焦點）就把它拉到最上層
       if (!el._faFront) { el._faFront = true; el.addEventListener('mousedown', function () { if (popped) front(); }, true); el.addEventListener('focusin', function () { if (popped) front(); }); }
-      if (!bar) { titleEl = h('div', 'fwin-title'); titleEl.appendChild(h('b', null, titleText || '')); titleEl.appendChild(bMax); titleEl.appendChild(bPop); el.insertBefore(titleEl, el.firstChild); if (tools) tools.style.display = 'none'; }
+      if (!bar) { titleEl = h('div', 'fwin-title'); titleEl.appendChild(h('b', null, titleText || '')); titleEl.appendChild(bMax); titleEl.appendChild(bPop); titleEl.appendChild(bFs); el.insertBefore(titleEl, el.firstChild); if (tools) tools.style.display = 'none'; }
       bPop.textContent = '⤓'; bPop.title = '收回對話裡'; var dragEl = bar || titleEl; if (dragEl) { dragEl.style.cursor = 'move'; }
       ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'].forEach(function (d) { var x = h('div', 'fwin-rz ' + d); x.onmousedown = function (e) { if (maxed) return; mode = 'rz'; rzDir = d; sx = e.clientX; sy = e.clientY; rects = null; el._r0 = { l: rect.left, t: rect.top, w: rect.width, h: rect.height }; front(); e.preventDefault(); e.stopPropagation(); }; el.appendChild(x); handles.push(x); });
       var down = function (e) { if (maxed || isBtn(e.target)) return; mode = 'mv'; sx = e.clientX; sy = e.clientY; el._o = { l: rect.left, t: rect.top }; front(); e.preventDefault(); };
@@ -84,13 +87,16 @@
     }
     function dock() {
       if (!popped) return ctl; if (cleanup) cleanup(); cleanup = null; maxed = false; popped = false;
-      handles.forEach(function (x) { x.remove(); }); handles = []; if (titleEl) { bMax.remove(); bPop.remove(); titleEl.remove(); titleEl = null; if (tools) { tools.style.display = ''; tools.appendChild(bMax); tools.appendChild(bPop); } else if (bar) { bar.appendChild(bMax); bar.appendChild(bPop); } }
+      handles.forEach(function (x) { x.remove(); }); handles = []; if (titleEl) { bMax.remove(); bPop.remove(); bFs.remove(); titleEl.remove(); titleEl = null; if (tools) { tools.style.display = ''; tools.appendChild(bMax); tools.appendChild(bPop); tools.appendChild(bFs); } else if (bar) { bar.appendChild(bMax); bar.appendChild(bPop); bar.appendChild(bFs); } }
       el.classList.remove('fwin-pop', 'fwin-max', 'fwin-notitle'); if (saved) el.setAttribute('style', saved); else el.removeAttribute('style'); if (getComputedStyle(el).position === 'static') el.style.position = 'relative';
       if (reparent && ph && ph.parentNode) { ph.parentNode.insertBefore(el, ph); } reparent = false; if (ph) { ph.remove(); ph = null; }
       bMax.textContent = '☐'; bMax.title = '最大化（也可以雙擊標題列）'; bPop.textContent = '⤢'; bPop.title = '彈出成可以拖曳、改大小的視窗'; notify(); return ctl;
     }
+    function isFs() { return document.fullscreenElement === el; }
+    function setFs(on) { try { if (on === undefined) on = !isFs(); if (on && !isFs() && el.requestFullscreen) { var p = el.requestFullscreen(); if (p && p.catch) p.catch(function () { /* 沒有手勢或被擋就算了 */ }); } else if (!on && isFs()) { document.exitFullscreen(); } } catch (e) { /* 不支援全螢幕 */ } return ctl; }
+    bFs.onclick = function () { setFs(); };
     bPop.onclick = function () { if (popped) dock(); else pop(); }; bMax.onclick = function () { setMax(!maxed); };
-    var ctl = { pop: pop, dock: dock, maximize: function (on) { setMax(on === undefined ? !maxed : !!on); return ctl; }, toggleMax: function () { setMax(!maxed); return ctl; }, isPopped: function () { return popped; }, isMaximized: function () { return maxed; }, setTitle: function (t) { titleText = t; if (titleEl && titleEl.firstChild) titleEl.firstChild.textContent = t; }, destroy: function () { if (popped) dock(); if (tools) tools.remove(); try { bMax.remove(); bPop.remove(); } catch (e) { /* */ } el.classList.remove('fwin-host'); delete el._fwin; var i = registry.indexOf(ctl); if (i >= 0) registry.splice(i, 1); }, el: el };
+    var ctl = { pop: pop, dock: dock, maximize: function (on) { setMax(on === undefined ? !maxed : !!on); return ctl; }, toggleMax: function () { setMax(!maxed); return ctl; }, fullscreen: setFs, isFullscreen: isFs, isPopped: function () { return popped; }, isMaximized: function () { return maxed; }, setTitle: function (t) { titleText = t; if (titleEl && titleEl.firstChild) titleEl.firstChild.textContent = t; }, destroy: function () { if (popped) dock(); if (tools) tools.remove(); try { bMax.remove(); bPop.remove(); bFs.remove(); } catch (e) { /* */ } el.classList.remove('fwin-host'); delete el._fwin; var i = registry.indexOf(ctl); if (i >= 0) registry.splice(i, 1); }, el: el };
     el._fwin = ctl; registry.push(ctl); if (opts.floating) pop(); return ctl;
   }
   return { decorate: decorate, registry: registry };

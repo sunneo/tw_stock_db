@@ -259,6 +259,7 @@
         if (p && p.editor) return await this._edOpen('edit-3d', { spec });
         let yaml = ''; try { await this._ensureJsYamlLoaded(); yaml = FaEdit3d.toSceneYaml(spec); } catch (_) { yaml = ''; }
         if (!yaml) return await this._edOpen('edit-3d', { spec });
+        try { const rg = this._rg; if (rg && rg.captures && rg.captures.size) await this.fileCache.put('3d-scene-' + Date.now().toString(36) + '.3dscene.yaml', 'text/yaml', new Blob([yaml], { type: 'text/yaml' }), 'generated'); } catch (_) { /* 遠端派工時順便存一份給對方取回；存不成不影響顯示 */ }
         await this._ed3dToChatScene(null, yaml, title); return { ok: true, viewer: true };
     };
     // 一次圖片轉3D 的所有過程（載入模型、分割、確認主體、GPU 降級…）集中成「一張」進度卡：進度條是總進度（依章節加權），紀錄分成「章節／主角／做的行為」，子步驟的回報縮排記在目前章節底下；已經在編輯器裡就沿用編輯器自己的記錄
