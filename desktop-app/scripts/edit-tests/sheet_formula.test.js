@@ -1,0 +1,30 @@
+// node scripts/edit-tests/sheet_formula.test.js -- 試算表公式求值器
+const F = require('../../renderer/src/edit/sheet_formula.js');
+let ok = 0; const bad = [];
+function check(name, cond, extra) { if (cond) ok++; else bad.push(name + (extra !== undefined ? ' ' + JSON.stringify(extra).slice(0, 200) : '')); }
+const mk = (grid) => { const w = Math.max(...grid.map((r) => r.length)); const cols = Array.from({ length: w }, (_, i) => ({ id: 'c' + i })); return { cols, rows: grid.map((r, i) => ({ id: 'r' + i, c: Object.fromEntries(r.map((v, j) => [cols[j].id, v]).filter((x) => x[1] !== undefined)) })) }; };
+const run = (grid) => F.compute(mk(grid)).values.map((r) => r.map(F.show));
+const f = (s) => ({ f: s });
+check('四則與優先順序', run([[f('1+2*3'), f('(1+2)*3'), f('2^3^2'), f('-2^2'), f('10/4'), f('50%')]])[0].join() === '7,9,512,4,2.5,0.5', run([[f('1+2*3'), f('(1+2)*3'), f('2^3^2'), f('-2^2')]]));
+check('字串連接與比較', run([[f('"a"&"b"&1'), f('1<2'), f('"a"="A"'), f('2<>3')]])[0].join() === 'ab1,TRUE,TRUE,TRUE');
+check('A1 參照與範圍', run([[1, 2, 3], [4, 5, 6], [f('SUM(A1:C2)'), f('SUM(B1:B2)'), f('A1+C2')]])[2].join() === '21,7,7');
+check('絕對參照', run([[5, f('$A$1*2')]])[0].join() === '5,10');
+check('統計函式', run([[1, 2, 3, 4], [f('AVERAGE(A1:D1)'), f('MIN(A1:D1)'), f('MAX(A1:D1)'), f('COUNT(A1:D1)')]])[1].join() === '2.5,1,4,4');
+check('COUNTA 與文字不進 SUM', run([['x', 1, '', 2], [f('COUNTA(A1:D1)'), f('SUM(A1:D1)'), f('COUNT(A1:D1)')]])[1].slice(0, 3).join() === '3,3,2');
+check('IF / IFERROR / AND / OR / NOT', run([[f('IF(1>2,"a","b")'), f('IFERROR(1/0,"壞")'), f('AND(1=1,2=2)'), f('OR(1=2,2=2)'), f('NOT(1=1)')]])[0].join() === 'b,壞,TRUE,TRUE,FALSE');
+check('除以零與錯誤傳遞', run([[f('1/0'), f('A1+1'), f('SUM(A1,2)')]])[0].join() === '#DIV/0!,#DIV/0!,#DIV/0!');
+check('循環偵測', run([[f('B1'), f('A1')], [f('A2+1')]])[0].join() === '#CYCLE!,#CYCLE!' && run([[f('A1')]])[0][0] === '#CYCLE!');
+check('相依鏈（不照順序）', run([[f('B1+1'), f('C1+1'), 1]])[0].join() === '3,2,1');
+check('文字函式', run([['Hello World', f('LEN(A1)'), f('LEFT(A1,5)'), f('RIGHT(A1,5)'), f('MID(A1,7,3)'), f('UPPER(A1)'), f('LOWER(A1)'), f('TRIM("  a   b ")'), f('CONCAT(A1,"!",1)')]])[0].slice(1).join('|') === '11|Hello|World|Wor|HELLO WORLD|hello world|a b|Hello World!1');
+check('ROUND/ABS/INT/MOD/SQRT/POWER', run([[f('ROUND(2.345,2)'), f('ROUND(-1.5)'), f('ABS(-3)'), f('INT(-1.2)'), f('MOD(-3,5)'), f('SQRT(9)'), f('POWER(2,10)')]])[0].join() === '2.35,-2,3,-2,2,3,1024');
+check('SUMIF / COUNTIF', run([['a', 1], ['b', 2], ['a', 3], [f('SUMIF(A1:A3,"a",B1:B3)'), f('COUNTIF(A1:A3,"a")'), f('COUNTIF(B1:B3,">1")')]])[3].join() === '4,2,2');
+check('VLOOKUP 精確與近似', run([['a', 10], ['b', 20], [f('VLOOKUP("b",A1:B2,2,FALSE)'), f('VLOOKUP("z",A1:B2,2,FALSE)'), f('VLOOKUP("c",A1:B2,2)')]])[2].join() === '20,#N/A,20');
+check('TODAY 是整數日期序號', /^\d{5}$/.test(run([[f('TODAY()')]])[0][0]));
+check('不認得的函式與名稱', run([[f('FOO(1)'), f('bar')]])[0].join() === '#NAME?,#NAME?');
+check('語法錯誤不丟例外', run([[f('1+'), f('(1'), f('1 2'), f('SUM(1;2)')]])[0].every((x) => x === '#NAME?'));
+check('超出範圍', run([[f('A99999999')]])[0][0] !== undefined);
+check('字串數字當數字、逗號千分位', run([['1,200', '3', f('A1+B1')]])[0][2] === '1203');
+check('空白格當 0／空字串', run([[undefined, f('A1+1'), f('A1&"x"')]])[0].join() === ',1,x');
+check('布林與比較文字', run([[f('TRUE'), f('IF(TRUE,1,2)'), f('"b">"a"')]])[0].join() === 'TRUE,1,TRUE');
+check('不用 eval／Function', !/\beval\s*\(|new Function/.test(require('fs').readFileSync(require.resolve('../../renderer/src/edit/sheet_formula.js'), 'utf8').replace(/\/\/.*$/gm, '')));
+console.log('sheet_formula: ' + ok + ' passed, ' + bad.length + ' failed' + (bad.length ? '：\n  ' + bad.join('\n  ') : '')); process.exit(bad.length ? 1 : 0);

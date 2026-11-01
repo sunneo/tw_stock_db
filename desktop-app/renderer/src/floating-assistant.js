@@ -28363,6 +28363,652 @@ const holder = {};
 return holder.FaEditTextUI;
 })();
 /* EDTEXTUI-END */
+/* EDSHEETF-BEGIN */
+const FaSheetFormula = (function () {
+const holder = {};
+(function (module, self) {
+// 試算表的公式求值器（純函式；Node 與瀏覽器都能跑；不用 eval／Function）。設計見 DESIGN.edit-docs.md §5。
+//   FaSheetFormula.compute(sheet) → { values:[[…]], errors:n }   sheet = { cols:[{id}], rows:[{ id, c:{ colId: 值 | {f, v} } }] }；values[r][c] 是算好的值（公式格用算出來的，其他格用原值）
+//   FaSheetFormula.evaluate(src, ctx) → 值   ctx = { cell(r, c) → 值, range(r1, c1, r2, c2) → [[…]], today? }
+//   FaSheetFormula.parse(src) → AST（語法錯誤丟例外）   colLetter(i) / colIndex('AB')   addr('B3') → { r, c }（0 起算）
+// 支援：+ - * / ^ & = <> < > <= >= %、括號、A1／$A$1／A1:B9、字串與數字、TRUE／FALSE；函式 SUM AVERAGE MIN MAX COUNT COUNTA IF IFERROR AND OR NOT ROUND ABS INT MOD SQRT POWER CONCAT LEN LEFT RIGHT MID UPPER LOWER TRIM
+// VLOOKUP SUMIF COUNTIF TODAY。不認得的函式回 #NAME?（原公式字串保留，不計算）。循環參照回 #CYCLE!，除以零 #DIV/0!，格子超出範圍 #REF!，型別不對 #VALUE!。
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaSheetFormula = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  function colLetter(i) { var s = ''; i++; while (i > 0) { var m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; }
+  function colIndex(L) { var n = 0; String(L).toUpperCase().split('').forEach(function (ch) { n = n * 26 + ch.charCodeAt(0) - 64; }); return n - 1; }
+  function addr(a) { var m = /^\$?([A-Za-z]{1,3})\$?(\d{1,7})$/.exec(String(a).trim()); return m ? { r: Number(m[2]) - 1, c: colIndex(m[1]) } : null; }
+  function FErr(code) { this.code = code; } FErr.prototype.toString = function () { return this.code; };
+  var isErr = function (v) { return v instanceof FErr; };
+  // ───── 詞法
+  function lex(src) {
+    var t = [], i = 0, s = String(src), m;
+    while (i < s.length) {
+      var ch = s[i];
+      if (/\s/.test(ch)) { i++; continue; }
+      if (ch === '"') { var j = i + 1, out = ''; while (j < s.length) { if (s[j] === '"') { if (s[j + 1] === '"') { out += '"'; j += 2; continue; } break; } out += s[j++]; } if (j >= s.length) { throw new Error('字串沒有結尾'); } t.push({ k: 'str', v: out }); i = j + 1; continue; }
+      if ((m = /^\d+(\.\d+)?([eE][+-]?\d+)?|^\.\d+/.exec(s.slice(i)))) { t.push({ k: 'num', v: Number(m[0]) }); i += m[0].length; continue; }
+      if ((m = /^\$?[A-Za-z]{1,3}\$?\d{1,7}(?![A-Za-z0-9_(])/.exec(s.slice(i)))) { t.push({ k: 'ref', v: m[0] }); i += m[0].length; continue; }
+      if ((m = /^[A-Za-z_][A-Za-z0-9_.]*/.exec(s.slice(i)))) { t.push({ k: 'name', v: m[0].toUpperCase() }); i += m[0].length; continue; }
+      if ((m = /^(<>|<=|>=)/.exec(s.slice(i)))) { t.push({ k: 'op', v: m[0] }); i += 2; continue; }
+      if ('+-*/^&=<>(),:%'.indexOf(ch) >= 0) { t.push({ k: 'op', v: ch }); i++; continue; }
+      throw new Error('不認得的字元「' + ch + '」');
+    }
+    return t;
+  }
+  // ───── 語法（Pratt）：比較 < 連接 & < 加減 < 乘除 < 次方 < 一元 < 百分比
+  var BIN = { '=': 1, '<>': 1, '<': 1, '>': 1, '<=': 1, '>=': 1, '&': 2, '+': 3, '-': 3, '*': 4, '/': 4, '^': 5 };
+  function parse(src) {
+    var t = lex(src), p = 0;
+    function peek() { return t[p]; } function next() { return t[p++]; }
+    function expr(min) {
+      var left = unary();
+      for (;;) { var o = peek(); if (!o || o.k !== 'op' || !(o.v in BIN) || BIN[o.v] < min) { break; } next(); var right = expr(o.v === '^' ? BIN[o.v] : BIN[o.v] + 1); left = { t: 'bin', op: o.v, a: left, b: right }; }
+      return left;
+    }
+    function unary() { var o = peek(); if (o && o.k === 'op' && (o.v === '-' || o.v === '+')) { next(); var x = unary(); return o.v === '-' ? { t: 'neg', a: x } : x; } return postfix(); }
+    function postfix() { var x = primary(); while (peek() && peek().k === 'op' && peek().v === '%') { next(); x = { t: 'pct', a: x }; } return x; }
+    function primary() {
+      var k = next(); if (!k) { throw new Error('公式不完整'); }
+      if (k.k === 'num') { return { t: 'num', v: k.v }; } if (k.k === 'str') { return { t: 'str', v: k.v }; }
+      if (k.k === 'ref') { var a = addr(k.v); if (peek() && peek().k === 'op' && peek().v === ':') { next(); var e = next(); var b = e && e.k === 'ref' ? addr(e.v) : null; if (!b) { throw new Error('範圍的終點不對'); } return { t: 'range', r1: Math.min(a.r, b.r), c1: Math.min(a.c, b.c), r2: Math.max(a.r, b.r), c2: Math.max(a.c, b.c) }; } return { t: 'ref', r: a.r, c: a.c }; }
+      if (k.k === 'name') {
+        if (peek() && peek().k === 'op' && peek().v === '(') { next(); var args = []; if (peek() && peek().k === 'op' && peek().v === ')') { next(); return { t: 'fn', n: k.v, a: args }; } for (;;) { args.push(expr(1)); var s = next(); if (!s) { throw new Error('少了右括號'); } if (s.v === ')') { break; } if (s.v !== ',') { throw new Error('參數之間要用逗號'); } } return { t: 'fn', n: k.v, a: args }; }
+        if (k.v === 'TRUE') { return { t: 'bool', v: true }; } if (k.v === 'FALSE') { return { t: 'bool', v: false }; } return { t: 'name', n: k.v };
+      }
+      if (k.v === '(') { var x = expr(1); var c = next(); if (!c || c.v !== ')') { throw new Error('少了右括號'); } return x; }
+      throw new Error('不該出現「' + k.v + '」');
+    }
+    var ast = expr(1); if (p < t.length) { throw new Error('多出來的「' + t[p].v + '」'); } return ast;
+  }
+  // ───── 求值
+  function num(v) { if (isErr(v)) { return v; } if (v === '' || v == null) { return 0; } if (typeof v === 'boolean') { return v ? 1 : 0; } if (typeof v === 'number') { return v; } var n = Number(String(v).trim().replace(/,/g, '')); return isFinite(n) && String(v).trim() !== '' ? n : new FErr('#VALUE!'); }
+  function text(v) { if (isErr(v)) { return v; } if (v == null) { return ''; } if (typeof v === 'boolean') { return v ? 'TRUE' : 'FALSE'; } if (typeof v === 'number') { return String(Math.round(v * 1e12) / 1e12); } return String(v); }
+  function truthy(v) { if (isErr(v)) { return v; } if (typeof v === 'string') { var u = v.toUpperCase(); if (u === 'TRUE') { return true; } if (u === 'FALSE' || u === '') { return false; } var n = Number(v); return isFinite(n) ? n !== 0 : new FErr('#VALUE!'); } return !!v; }
+  function flat(args, ctx, o) { var out = []; args.forEach(function (a) { var v = ev(a, ctx); if (Array.isArray(v)) { v.forEach(function (row) { row.forEach(function (x) { out.push({ v: x, ranged: true }); }); }); } else { out.push({ v: v, ranged: false }); } }); return out; }
+  function nums(args, ctx) { var out = []; for (var x of flat(args, ctx)) { var v = x.v; if (isErr(v)) { return v; } if (x.ranged && (typeof v !== 'number')) { if (typeof v === 'string' && v !== '' && isFinite(Number(v.replace(/,/g, '')))) { out.push(Number(v.replace(/,/g, ''))); } continue; } var n = num(v); if (isErr(n)) { return n; } out.push(n); } return out; }
+  function cmp(a, b) { if (typeof a === 'number' && typeof b === 'number') { return a - b; } var na = Number(a), nb = Number(b); if (a !== '' && b !== '' && isFinite(na) && isFinite(nb) && typeof a !== 'boolean') { return na - nb; } var sa = text(a).toLowerCase(), sb = text(b).toLowerCase(); return sa < sb ? -1 : sa > sb ? 1 : 0; }
+  function crit(c) { var m = /^(<=|>=|<>|=|<|>)?(.*)$/.exec(String(c)); var op = m[1] || '=', val = m[2]; var n = Number(val); return function (v) { var r = isFinite(n) && val !== '' && v !== '' && isFinite(Number(v)) ? Number(v) - n : (String(v).toLowerCase() < val.toLowerCase() ? -1 : String(v).toLowerCase() > val.toLowerCase() ? 1 : 0); return op === '=' ? r === 0 : op === '<>' ? r !== 0 : op === '<' ? r < 0 : op === '>' ? r > 0 : op === '<=' ? r <= 0 : r >= 0; }; }
+  var FN = {
+    SUM: function (a, c) { var n = nums(a, c); return isErr(n) ? n : n.reduce(function (s, x) { return s + x; }, 0); },
+    AVERAGE: function (a, c) { var n = nums(a, c); return isErr(n) ? n : n.length ? n.reduce(function (s, x) { return s + x; }, 0) / n.length : new FErr('#DIV/0!'); },
+    MIN: function (a, c) { var n = nums(a, c); return isErr(n) ? n : n.length ? Math.min.apply(null, n) : 0; }, MAX: function (a, c) { var n = nums(a, c); return isErr(n) ? n : n.length ? Math.max.apply(null, n) : 0; },
+    COUNT: function (a, c) { return flat(a, c).filter(function (x) { return !isErr(x.v) && (typeof x.v === 'number' || (x.v !== '' && x.v != null && typeof x.v !== 'boolean' && isFinite(Number(String(x.v).replace(/,/g, ''))))); }).length; },
+    COUNTA: function (a, c) { return flat(a, c).filter(function (x) { return x.v !== '' && x.v != null; }).length; },
+    IF: function (a, c) { if (a.length < 2) { return new FErr('#VALUE!'); } var t = truthy(ev(a[0], c)); if (isErr(t)) { return t; } return t ? ev(a[1], c) : (a.length > 2 ? ev(a[2], c) : false); },
+    IFERROR: function (a, c) { var v = ev(a[0], c); return isErr(v) ? (a.length > 1 ? ev(a[1], c) : '') : v; },
+    AND: function (a, c) { var r = true; for (var x of flat(a, c)) { var t = truthy(x.v); if (isErr(t)) { return t; } r = r && t; } return r; }, OR: function (a, c) { var r = false; for (var x of flat(a, c)) { var t = truthy(x.v); if (isErr(t)) { return t; } r = r || t; } return r; },
+    NOT: function (a, c) { var t = truthy(ev(a[0], c)); return isErr(t) ? t : !t; },
+    ROUND: function (a, c) { var n = num(ev(a[0], c)), d = a.length > 1 ? num(ev(a[1], c)) : 0; if (isErr(n)) { return n; } if (isErr(d)) { return d; } var f = Math.pow(10, d); return Math.round((n + (n < 0 ? -1e-12 : 1e-12)) * f) / f; },
+    ABS: function (a, c) { var n = num(ev(a[0], c)); return isErr(n) ? n : Math.abs(n); }, INT: function (a, c) { var n = num(ev(a[0], c)); return isErr(n) ? n : Math.floor(n); },
+    MOD: function (a, c) { var x = num(ev(a[0], c)), y = num(ev(a[1], c)); if (isErr(x)) { return x; } if (isErr(y)) { return y; } return y === 0 ? new FErr('#DIV/0!') : x - y * Math.floor(x / y); },
+    SQRT: function (a, c) { var n = num(ev(a[0], c)); return isErr(n) ? n : n < 0 ? new FErr('#VALUE!') : Math.sqrt(n); }, POWER: function (a, c) { var x = num(ev(a[0], c)), y = num(ev(a[1], c)); return isErr(x) ? x : isErr(y) ? y : Math.pow(x, y); },
+    CONCAT: function (a, c) { var s = ''; for (var x of flat(a, c)) { var t = text(x.v); if (isErr(t)) { return t; } s += t; } return s; },
+    LEN: function (a, c) { var t = text(ev(a[0], c)); return isErr(t) ? t : t.length; },
+    LEFT: function (a, c) { var t = text(ev(a[0], c)), n = a.length > 1 ? num(ev(a[1], c)) : 1; return isErr(t) ? t : isErr(n) ? n : t.slice(0, Math.max(0, n)); },
+    RIGHT: function (a, c) { var t = text(ev(a[0], c)), n = a.length > 1 ? num(ev(a[1], c)) : 1; return isErr(t) ? t : isErr(n) ? n : n <= 0 ? '' : t.slice(-n); },
+    MID: function (a, c) { var t = text(ev(a[0], c)), s = num(ev(a[1], c)), n = num(ev(a[2], c)); return isErr(t) ? t : isErr(s) ? s : isErr(n) ? n : t.substr(Math.max(0, s - 1), Math.max(0, n)); },
+    UPPER: function (a, c) { var t = text(ev(a[0], c)); return isErr(t) ? t : t.toUpperCase(); }, LOWER: function (a, c) { var t = text(ev(a[0], c)); return isErr(t) ? t : t.toLowerCase(); }, TRIM: function (a, c) { var t = text(ev(a[0], c)); return isErr(t) ? t : t.trim().replace(/\s+/g, ' '); },
+    TODAY: function (a, c) { var d = c.today ? c.today() : new Date(); return Math.floor((Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) - Date.UTC(1899, 11, 30)) / 86400000); },
+    SUMIF: function (a, c) { var rg = ev(a[0], c), cr = ev(a[1], c), sm = a.length > 2 ? ev(a[2], c) : rg; if (!Array.isArray(rg)) { return new FErr('#VALUE!'); } var f = crit(text(cr)), s = 0; for (var i = 0; i < rg.length; i++) { for (var j = 0; j < rg[i].length; j++) { if (f(rg[i][j] == null ? '' : rg[i][j])) { var v = Array.isArray(sm) ? (sm[i] || [])[j] : sm, n = num(v); if (!isErr(n) && v !== '' && v != null) { s += n; } } } } return s; },
+    COUNTIF: function (a, c) { var rg = ev(a[0], c), f = crit(text(ev(a[1], c))), n = 0; if (!Array.isArray(rg)) { return new FErr('#VALUE!'); } rg.forEach(function (row) { row.forEach(function (v) { if (f(v == null ? '' : v)) { n++; } }); }); return n; },
+    VLOOKUP: function (a, c) { var key = ev(a[0], c), rg = ev(a[1], c), ci = num(ev(a[2], c)), exact = a.length > 3 ? !truthy(ev(a[3], c)) : false; if (!Array.isArray(rg) || isErr(ci)) { return new FErr('#VALUE!'); } if (ci < 1 || ci > (rg[0] || []).length) { return new FErr('#REF!'); } var best = -1; for (var i = 0; i < rg.length; i++) { var d = cmp(rg[i][0], key); if (d === 0) { return rg[i][ci - 1]; } if (!exact && d < 0) { best = i; } } return !exact && best >= 0 ? rg[best][ci - 1] : new FErr('#N/A'); },
+  };
+  function ev(n, ctx) {
+    switch (n.t) {
+      case 'num': case 'str': case 'bool': return n.v;
+      case 'ref': return ctx.cell(n.r, n.c);
+      case 'range': return ctx.range(n.r1, n.c1, n.r2, n.c2);
+      case 'name': return new FErr('#NAME?');
+      case 'neg': { var v = num(scalar(ev(n.a, ctx))); return isErr(v) ? v : -v; }
+      case 'pct': { var p = num(scalar(ev(n.a, ctx))); return isErr(p) ? p : p / 100; }
+      case 'fn': { var f = FN[n.n]; if (!f) { return new FErr('#NAME?'); } try { var r = f(n.a, ctx); return Array.isArray(r) ? scalar(r) : r; } catch (e) { return new FErr('#VALUE!'); } }
+      case 'bin': {
+        var a = scalar(ev(n.a, ctx)), b = scalar(ev(n.b, ctx)); if (isErr(a)) { return a; } if (isErr(b)) { return b; }
+        if (n.op === '&') { return text(a) + text(b); }
+        if (n.op === '=' || n.op === '<>' || n.op === '<' || n.op === '>' || n.op === '<=' || n.op === '>=') { var d = cmp(a, b); return n.op === '=' ? d === 0 : n.op === '<>' ? d !== 0 : n.op === '<' ? d < 0 : n.op === '>' ? d > 0 : n.op === '<=' ? d <= 0 : d >= 0; }
+        var x = num(a), y = num(b); if (isErr(x)) { return x; } if (isErr(y)) { return y; }
+        if (n.op === '+') { return x + y; } if (n.op === '-') { return x - y; } if (n.op === '*') { return x * y; } if (n.op === '/') { return y === 0 ? new FErr('#DIV/0!') : x / y; } if (n.op === '^') { return Math.pow(x, y); }
+      }
+    }
+    return new FErr('#VALUE!');
+  }
+  function scalar(v) { return Array.isArray(v) ? (v.length && v[0].length ? v[0][0] : '') : v; }
+  function evaluate(src, ctx) { var ast; try { ast = parse(String(src).replace(/^=/, '')); } catch (e) { return new FErr('#NAME?'); } var v = scalar(ev(ast, ctx)); return v === undefined ? '' : v; }
+  // ───── 整張表：公式格依相依順序遞迴求值，循環回 #CYCLE!
+  function compute(sheet) {
+    var cols = sheet.cols || [], rows = sheet.rows || [], R = rows.length, C = cols.length, cache = {}, state = {}, errors = 0, cc = cols.map(function (c) { return c.id; });
+    function raw(r, c) { var row = rows[r]; return row ? row.c[cc[c]] : undefined; }
+    function val(r, c) {
+      if (r < 0 || c < 0 || r >= R + 0 || c >= C) { return (r >= 0 && c >= 0 && r < R + 1000 && c < C + 100) ? '' : new FErr('#REF!'); }
+      var k = r * 4096 + c, x = raw(r, c);
+      if (!(x && typeof x === 'object' && typeof x.f === 'string')) { return x === undefined || x === null ? '' : x; }
+      if (k in cache) { return cache[k]; } if (state[k] === 1) { return new FErr('#CYCLE!'); } state[k] = 1;
+      var v = evaluate(x.f, { cell: function (rr, c2) { var y = val(rr, c2); return y; }, range: function (r1, c1, r2, c2) { var out = []; for (var i = r1; i <= r2; i++) { var line = []; for (var j = c1; j <= c2; j++) { var y = val(i, j); line.push(y); } out.push(line); } return out; } });
+      state[k] = 2; cache[k] = v; return v;
+    }
+    var values = rows.map(function (row, r) { return cc.map(function (id, c) { var v = val(r, c); if (isErr(v)) { errors++; return v; } return v; }); });
+    return { values: values, errors: errors };
+  }
+  function show(v) { return isErr(v) ? v.code : v === undefined || v === null ? '' : typeof v === 'boolean' ? (v ? 'TRUE' : 'FALSE') : typeof v === 'number' ? String(Math.round(v * 1e12) / 1e12) : String(v); }
+  return { parse: parse, evaluate: evaluate, compute: compute, colLetter: colLetter, colIndex: colIndex, addr: addr, show: show, isErr: isErr, FUNCTIONS: Object.keys(FN) };
+});
+
+}).call(null, undefined, holder);
+return holder.FaSheetFormula;
+})();
+/* EDSHEETF-END */
+/* EDSHEET-BEGIN */
+const FaEditSheet = (function () {
+const holder = {};
+(function (module, self) {
+// /edit-csv 與 /edit-xlsx 的文件核心（純函式，Node 與瀏覽器都能跑）。設計見 DESIGN.edit-docs.md。
+// 文件的「物件」是工作表（所以共用外框 FaEditShell 的物件欄＝工作表清單、復原、AI 對話都直接能用）：
+//   { v:1, title, format:'csv'|'xlsx', delim, eol, bom, finalNl, quoteAll, src?, sig?, notes:[], seq, objects:[ { id, name, type:'sheet', visible, locked, header, cols:[{id, w?}], rows:[{ id, c:{ colId: 值 } }], seq, cseq, frozen:{r,c}, merges:[…] } ] }
+//   格子的值：字串（CSV 一律是字串，原文字原樣保存）| 數字 | 布林 | { f:'公式字串(沒有=)', v:快取值 }（只有 xlsx；公式由 FaSheetFormula 算）。列 1＝rows[0]；標題列只是 header:true 時畫面與排序當標題看。
+//   往返：CSV 匯入時保存原文（src，≤1MB）與格子簽章（sig）；沒改過的 serialize 原樣輸出原文，所以不會把你的檔案重新格式化。xlsx：沒改過由呼叫端輸出原檔位元組；改過就重新產生（樣式、圖表、樞紐表等編輯器不懂的部分不保留，開檔時會在 notes 列出）。
+// API：FaEditSheet.parseCsv(text, name) → spec    serializeCsv(spec, sheetId?) → 文字    readXlsx(bytes, JSZip, name) → Promise<spec>    buildXlsx(spec, JSZip) → Promise<Uint8Array>
+//   validate / applyEdits / editWords / find（同 FaEditObjects）    parseCommands(text, spec) → { edits, matched, unmatched }（程式讀得懂的白話）    editPrompt / parseEditsReply / AI_OPS（給模型）    computed(sheet) → 算好的值    starter / listStarters
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./edit_objects_core.js'), require('./sheet_formula.js'));
+  else root.FaEditSheet = factory(root.FaEditObjects || (typeof FaEditObjects !== 'undefined' ? FaEditObjects : undefined), root.FaSheetFormula || (typeof FaSheetFormula !== 'undefined' ? FaSheetFormula : undefined));
+})(typeof self !== 'undefined' ? self : this, function (O, FX) {
+  'use strict';
+  var MAXROWS = 20000, MAXCOLS = 200, MAXCELL = 32767, MAXSRC = 1000000, MAXSHEETS = 50;
+  function str(v, max) { return String(v == null ? '' : v).replace(/\u0000/g, '').slice(0, max || 200); }
+  function int(v, lo, hi, d) { var n = Math.round(Number(v)); if (!isFinite(n)) { return d; } return Math.max(lo, Math.min(hi, n)); }
+  function clone(o) { return JSON.parse(JSON.stringify(o)); }
+  function snippet(t, n) { var s = String(t == null ? '' : t).replace(/\s+/g, ' ').trim(); return s.length > (n || 18) ? s.slice(0, n || 18) + '…' : s; }
+  var isF = function (x) { return x && typeof x === 'object' && typeof x.f === 'string'; };
+  function raw(x) { return isF(x) ? x.v : x; }
+  function cellStr(x) { var v = raw(x); return v === undefined || v === null ? '' : typeof v === 'boolean' ? (v ? 'TRUE' : 'FALSE') : String(v); }
+  function cleanCell(x, csv) {
+    if (x === undefined || x === null) { return undefined; }
+    if (isF(x)) { if (csv) { return str('=' + x.f, MAXCELL); } var v = x.v; return { f: str(x.f, 8000).replace(/^=/, ''), v: typeof v === 'number' || typeof v === 'boolean' ? v : (v === undefined || v === null ? '' : str(v, MAXCELL)) }; }
+    if (typeof x === 'number') { return isFinite(x) ? x : ''; } if (typeof x === 'boolean') { return csv ? (x ? 'TRUE' : 'FALSE') : x; }
+    var s = String(x).replace(/\u0000/g, '').slice(0, MAXCELL); return csv ? s : s;
+  }
+
+  // ───────── CSV：解析（保留分隔符、行尾、BOM、結尾換行、是否全部加引號）
+  function detectDelim(text) {
+    var first = text.slice(0, 20000).split(/\r\n|\n|\r/)[0] || '', cnt = function (c) { var q = false, n = 0; for (var i = 0; i < first.length; i++) { var ch = first[i]; if (ch === '"') { q = !q; } else if (!q && ch === c) { n++; } } return n; };
+    var best = ',', bn = cnt(','); [['\t', cnt('\t')], [';', cnt(';')], ['|', cnt('|')]].forEach(function (p) { if (p[1] > bn) { best = p[0]; bn = p[1]; } }); return best;
+  }
+  function parseRows(text, delim) {
+    var rows = [], row = [], f = '', q = false, i = 0, n = text.length, quotedAny = 0, plainAny = 0, wasQ = false;
+    while (i < n) {
+      var c = text[i];
+      if (q) { if (c === '"') { if (text[i + 1] === '"') { f += '"'; i += 2; continue; } q = false; i++; continue; } f += c; i++; continue; }
+      if (c === '"' && f === '') { q = true; wasQ = true; i++; continue; }
+      if (c === delim) { row.push(f); if (wasQ) { quotedAny++; } else if (f !== '') { plainAny++; } wasQ = false; f = ''; i++; continue; }
+      if (c === '\r' || c === '\n') { row.push(f); if (wasQ) { quotedAny++; } else if (f !== '') { plainAny++; } wasQ = false; rows.push(row); row = []; f = ''; if (c === '\r' && text[i + 1] === '\n') { i++; } i++; continue; }
+      f += c; i++;
+    }
+    var finalNl = true; if (f !== '' || row.length || wasQ) { row.push(f); if (wasQ) { quotedAny++; } else if (f !== '') { plainAny++; } rows.push(row); finalNl = false; }
+    return { rows: rows, finalNl: finalNl, quoteAll: quotedAny > 0 && plainAny === 0 };
+  }
+  function newSheet(name, rows, o) {
+    o = o || {}; var w = rows.reduce(function (m, r) { return Math.max(m, r.length); }, 0); w = Math.min(MAXCOLS, Math.max(w, o.minCols || 0));
+    var cols = []; for (var j = 0; j < w; j++) { cols.push({ id: 'c' + (j + 1) }); }
+    var rs = rows.slice(0, MAXROWS).map(function (r, i) { var c = {}; for (var k = 0; k < Math.min(r.length, w); k++) { var v = r[k]; if (v !== '' && v !== undefined && v !== null) { c[cols[k].id] = v; } } return { id: 'r' + (i + 1), c: c }; });
+    var s = { id: o.id || 's1', name: name || 'Sheet1', type: 'sheet', visible: true, locked: false, header: o.header !== false, cols: cols, rows: rs, seq: rs.length, cseq: w, frozen: o.frozen || { r: 0, c: 0 }, merges: o.merges || [] }; return s;
+  }
+  function sigOf(spec) { var s = JSON.stringify([spec.delim, spec.eol, !!spec.bom, !!spec.quoteAll, spec.finalNl !== false, spec.objects.map(function (o) { return [o.name, o.cols.map(function (c) { return c.id; }), o.rows.map(function (r) { return [r.id, r.c]; })]; })]); var h = 2166136261; for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(16) + ':' + s.length; }
+  function headerGuess(rows) { if (rows.length < 2) { return rows.length === 1 && rows[0].some(function (x) { return x !== '' && isNaN(Number(x)); }); } var h = rows[0]; if (!h.length || h.some(function (x) { return x === ''; })) { return false; } if (h.every(function (x) { return isNaN(Number(x)); })) { return true; } return false; }
+  function parseCsv(text, name) {
+    text = String(text == null ? '' : text); var bom = text.charCodeAt(0) === 0xFEFF; if (bom) { text = text.slice(1); }
+    var delim = detectDelim(text), eol = /\r\n/.test(text) ? '\r\n' : (/\r/.test(text) && !/\n/.test(text) ? '\r' : '\n'), p = parseRows(text, delim), rows = p.rows;
+    var sh = newSheet(name || 'Sheet1', rows, { header: headerGuess(rows) });
+    var spec = { v: 1, title: name || '未命名表格', format: 'csv', delim: delim, eol: eol, bom: bom, finalNl: p.finalNl, quoteAll: p.quoteAll, notes: [], seq: 1, canvas: { x: 0, y: 0, w: 800, h: 600, bg: '#ffffff' }, objects: [sh] };
+    if (text.length <= MAXSRC) { spec.src = (bom ? '﻿' : '') + text; } spec.sig = sigOf(spec); if (rows.length > MAXROWS) { spec.notes.push('檔案有 ' + rows.length + ' 列，只讀入前 ' + MAXROWS + ' 列'); }
+    return spec;
+  }
+  function csvField(v, d, quoteAll) { var s = cellStr(v); if (quoteAll || /["\r\n]/.test(s) || s.indexOf(d) >= 0 || /^\s|\s$/.test(s) && false) { return '"' + s.replace(/"/g, '""') + '"'; } return s; }
+  function serializeCsv(spec, sheetId) {
+    var s = validate(spec).spec, sh = sheetId ? s.objects.filter(function (o) { return o.id === sheetId; })[0] : s.objects[0]; if (!sh) { return ''; }
+    if (!sheetId && s.src != null && s.sig && sigOf(s) === s.sig) { return s.src; }
+    var d = s.delim || ',', eol = s.eol || '\n', f = FX && s.format === 'xlsx' ? computed(sh) : null;
+    var lines = sh.rows.map(function (r, i) { return sh.cols.map(function (c, j) { var x = r.c[c.id]; return csvField(f && isF(x) ? FX.show(f[i][j]) : cellStr(x), d, s.quoteAll); }).join(d); });
+    while (s.format !== 'csv' && lines.length && lines[lines.length - 1].replace(new RegExp('\\' + d, 'g'), '') === '') { lines.pop(); }
+    return (s.bom ? '﻿' : '') + lines.join(eol) + (lines.length && s.finalNl !== false ? eol : '');
+  }
+  function computed(sh) { return FX ? FX.compute(sh).values : sh.rows.map(function (r) { return sh.cols.map(function (c) { return raw(r.c[c.id]); }); }); }
+
+  // ───────── XLSX 讀寫（自己解 XML；保留公式與快取值、欄寬、凍結窗格、合併儲存格；不懂的內容只列在 notes）
+  var xmlUnesc = function (s) { return String(s).replace(/&(lt|gt|amp|quot|apos|#\d+|#x[0-9a-fA-F]+);/g, function (m, e) { return { lt: '<', gt: '>', amp: '&', quot: '"', apos: "'" }[e] || (e[1] === 'x' ? String.fromCodePoint(parseInt(e.slice(2), 16)) : String.fromCodePoint(parseInt(e.slice(1), 10))); }); };
+  var xmlEsc = function (s) { return String(s).replace(/[&<>"\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, function (c) { return c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '"' ? '&quot;' : ''; }); };
+  async function readXlsx(bytes, JSZip, name) {
+    if (!JSZip) { throw new Error('JSZip 還沒載入'); }
+    var zip = await JSZip.loadAsync(bytes), rd = async function (p) { var f = zip.file(p); return f ? f.async('string') : ''; };
+    var wb = await rd('xl/workbook.xml'), rels = await rd('xl/_rels/workbook.xml.rels'), ss = await rd('xl/sharedStrings.xml'), shared = [];
+    if (ss) { var re0 = /<si>([\s\S]*?)<\/si>/g, m0; while ((m0 = re0.exec(ss))) { var t = '', tr = /<t[^>]*>([\s\S]*?)<\/t>/g, tm; while ((tm = tr.exec(m0[1]))) { t += xmlUnesc(tm[1]); } shared.push(t); } }
+    var relMap = {}, rre = /<Relationship\b[^>]*>/g, rm0; while ((rm0 = rre.exec(rels))) { var id = /Id="([^"]+)"/.exec(rm0[0]), tg = /Target="([^"]+)"/.exec(rm0[0]); if (id && tg) { relMap[id[1]] = tg[1]; } }
+    var sheets = [], notes = [], sre = /<sheet\b[^>]*>/g, sm, k = 0;
+    while ((sm = sre.exec(wb)) && sheets.length < MAXSHEETS) {
+      var nm = /name="([^"]*)"/.exec(sm[0]), rid = /r:id="([^"]+)"/.exec(sm[0]); if (!nm || !rid) { continue; }
+      var target = (relMap[rid[1]] || '').replace(/^\/?(xl\/)?/, 'xl/'), xml = await rd(target), rows = [], maxC = 0, shared_f = 0;
+      var rr = /<row\b([^>]*?)(?:\/>|>([\s\S]*?)<\/row>)/g, rmm;
+      while ((rmm = rr.exec(xml))) {
+        var rn = /r="(\d+)"/.exec(rmm[1]), ri = rn ? Number(rn[1]) - 1 : rows.length; if (ri >= MAXROWS) { continue; } while (rows.length <= ri) { rows.push([]); }
+        var cr = /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g, cm;
+        while ((cm = cr.exec(rmm[2] || ''))) {
+          var attrs = cm[1], body = cm[2] || '', ref = /r="([A-Z]+)(\d+)"/.exec(attrs); if (!ref) { continue; } var ci = FX.colIndex(ref[1]); if (ci >= MAXCOLS) { continue; } var ty = (/t="(\w+)"/.exec(attrs) || [])[1], v = '', fm = /<f\b([^>]*?)(?:\/>|>([\s\S]*?)<\/f>)/.exec(body);
+          if (ty === 'inlineStr') { var tt = /<t[^>]*>([\s\S]*?)<\/t>/g, x; while ((x = tt.exec(body))) { v += xmlUnesc(x[1]); } }
+          else { var vm = /<v>([\s\S]*?)<\/v>/.exec(body); if (vm) { var rv = xmlUnesc(vm[1]); if (ty === 's') { v = shared[+rv] || ''; } else if (ty === 'b') { v = rv === '1'; } else if (ty === 'str' || ty === 'e') { v = rv; } else { var nn = Number(rv); v = isFinite(nn) ? nn : rv; } } }
+          if (fm && fm[2]) { v = { f: xmlUnesc(fm[2]), v: v }; } else if (fm) { shared_f++; }
+          while (rows[ri].length <= ci) { rows[ri].push(undefined); } rows[ri][ci] = v; if (ci + 1 > maxC) { maxC = ci + 1; }
+        }
+      }
+      var s2 = newSheet(xmlUnesc(nm[1]), rows.map(function (r) { return r.map(function (x) { return x === undefined ? '' : x; }); }), { id: 's' + (++k), header: false });
+      // 欄寬（字元數）、凍結窗格、合併儲存格
+      var cw = /<col\b[^>]*>/g, cx; while ((cx = cw.exec(xml))) { var mn = /min="(\d+)"/.exec(cx[0]), mx = /max="(\d+)"/.exec(cx[0]), wd = /width="([\d.]+)"/.exec(cx[0]); if (mn && mx && wd) { for (var q = Number(mn[1]); q <= Math.min(Number(mx[1]), s2.cols.length); q++) { s2.cols[q - 1].w = Math.round(Number(wd[1]) * 10) / 10; } } }
+      var pn = /<pane\b[^>]*>/.exec(xml); if (pn) { var xs = /xSplit="(\d+)"/.exec(pn[0]), ys = /ySplit="(\d+)"/.exec(pn[0]); s2.frozen = { r: ys ? Number(ys[1]) : 0, c: xs ? Number(xs[1]) : 0 }; }
+      var mg = /<mergeCell\b[^>]*ref="([A-Z]+\d+:[A-Z]+\d+)"/g, mgm; while ((mgm = mg.exec(xml))) { s2.merges.push(mgm[1]); }
+      if (shared_f) { notes.push('「' + s2.name + '」有 ' + shared_f + ' 個共用公式，只保留算好的值'); }
+      var unk = []; if (/<conditionalFormatting/.test(xml)) { unk.push('條件式格式'); } if (/<dataValidations/.test(xml)) { unk.push('資料驗證'); } if (/<drawing\b/.test(xml)) { unk.push('圖表／圖片'); } if (/<tableParts/.test(xml)) { unk.push('表格物件'); } if (unk.length) { notes.push('「' + s2.name + '」有' + unk.join('、') + '：修改後匯出不會保留'); }
+      sheets.push(s2);
+    }
+    var names = Object.keys(zip.files); if (names.some(function (n) { return /^xl\/(pivotTables|charts)\//.test(n); })) { notes.push('檔案有圖表或樞紐表：修改後匯出不會保留'); } if (names.some(function (n) { return /vbaProject/.test(n); })) { notes.push('檔案有巨集：修改後匯出不會保留'); }
+    if (!sheets.length) { sheets.push(newSheet('Sheet1', [[]], { id: 's1', header: false, minCols: 1 })); }
+    var spec = { v: 1, title: name || '未命名活頁簿', format: 'xlsx', delim: ',', eol: '\n', bom: false, notes: notes, seq: sheets.length, canvas: { x: 0, y: 0, w: 800, h: 600, bg: '#ffffff' }, objects: sheets };
+    spec.sig = sigOf(spec); return spec;
+  }
+  function sheetXml(sh) {
+    var vals = computed(sh), rows = [], lastNonEmpty = -1; sh.rows.forEach(function (r, i) { if (Object.keys(r.c).length) { lastNonEmpty = i; } });
+    for (var i = 0; i <= lastNonEmpty; i++) {
+      var r = sh.rows[i], cells = '';
+      sh.cols.forEach(function (c, j) {
+        var x = r.c[c.id]; if (x === undefined || x === '') { return; } var ref = FX.colLetter(j) + (i + 1);
+        if (isF(x)) { var v = vals[i][j], isE = FX.isErr(v), vs = isE ? v.code : (typeof v === 'number' ? String(v) : typeof v === 'boolean' ? (v ? '1' : '0') : xmlEsc(String(v == null ? '' : v))); cells += '<c r="' + ref + '"' + (isE ? ' t="e"' : typeof v === 'boolean' ? ' t="b"' : typeof v === 'number' ? '' : ' t="str"') + '><f>' + xmlEsc(x.f) + '</f><v>' + vs + '</v></c>'; }
+        else if (typeof x === 'number') { cells += '<c r="' + ref + '"><v>' + x + '</v></c>'; } else if (typeof x === 'boolean') { cells += '<c r="' + ref + '" t="b"><v>' + (x ? 1 : 0) + '</v></c>'; }
+        else { cells += '<c r="' + ref + '" t="inlineStr"><is><t xml:space="preserve">' + xmlEsc(String(x)) + '</t></is></c>'; }
+      });
+      rows.push('<row r="' + (i + 1) + '">' + cells + '</row>');
+    }
+    var colsX = sh.cols.map(function (c, j) { return c.w ? '<col min="' + (j + 1) + '" max="' + (j + 1) + '" width="' + c.w + '" customWidth="1"/>' : ''; }).join('');
+    var fr = sh.frozen || {}, pane = fr.r || fr.c ? '<sheetViews><sheetView workbookViewId="0"><pane' + (fr.c ? ' xSplit="' + fr.c + '"' : '') + (fr.r ? ' ySplit="' + fr.r + '"' : '') + ' topLeftCell="' + FX.colLetter(fr.c || 0) + ((fr.r || 0) + 1) + '" activePane="' + (fr.r && fr.c ? 'bottomRight' : fr.r ? 'bottomLeft' : 'topRight') + '" state="frozen"/></sheetView></sheetViews>' : '';
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' + pane + (colsX ? '<cols>' + colsX + '</cols>' : '') + '<sheetData>' + rows.join('') + '</sheetData>' + ((sh.merges || []).length ? '<mergeCells count="' + sh.merges.length + '">' + sh.merges.map(function (m) { return '<mergeCell ref="' + xmlEsc(m) + '"/>'; }).join('') + '</mergeCells>' : '') + '</worksheet>';
+  }
+  async function buildXlsx(spec, JSZip) {
+    if (!JSZip) { throw new Error('JSZip 還沒載入'); } var s = validate(spec).spec, sheets = s.objects.length ? s.objects : [newSheet('Sheet1', [[]], { minCols: 1 })], used = {};
+    var names = sheets.map(function (o) { var n = String(o.name || 'Sheet').replace(/[\[\]:*?\/\\]/g, ' ').trim().slice(0, 31) || 'Sheet', b = n, i = 2; while (used[n.toLowerCase()]) { n = b.slice(0, 28) + '~' + (i++); } used[n.toLowerCase()] = 1; return n; });
+    var zip = new JSZip(), X = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+    zip.file('[Content_Types].xml', X + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' + sheets.map(function (_, i) { return '<Override PartName="/xl/worksheets/sheet' + (i + 1) + '.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'; }).join('') + '</Types>');
+    zip.file('_rels/.rels', X + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>');
+    zip.file('xl/workbook.xml', X + '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>' + names.map(function (n, i) { return '<sheet name="' + xmlEsc(n) + '" sheetId="' + (i + 1) + '" r:id="rId' + (i + 1) + '"/>'; }).join('') + '</sheets></workbook>');
+    zip.file('xl/_rels/workbook.xml.rels', X + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' + sheets.map(function (_, i) { return '<Relationship Id="rId' + (i + 1) + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet' + (i + 1) + '.xml"/>'; }).join('') + '</Relationships>');
+    sheets.forEach(function (o, i) { zip.file('xl/worksheets/sheet' + (i + 1) + '.xml', sheetXml(o)); });
+    return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
+  }
+
+  // ───────── 公式參照隨列／欄的插入、刪除移動（只改字串，不計算）
+  function shiftFormula(f, dim, at, delta) {   // dim 'r'|'c'；at＝0 起算的位置；delta>0 插入 delta 個、<0 刪掉 -delta 個（刪到的參照變 #REF!）
+    return String(f).replace(/("(?:[^"]|"")*")|(\$?)([A-Za-z]{1,3})(\$?)(\d{1,7})(?![A-Za-z0-9_(])/g, function (m, qs, d1, L, d2, N) {
+      if (qs) { return qs; } var c = FX.colIndex(L), r = Number(N) - 1, v = dim === 'r' ? r : c;
+      if (delta > 0) { if (v >= at) { v += delta; } } else { if (v >= at && v < at - delta) { return '#REF!'; } if (v >= at - delta) { v += delta; } }
+      return dim === 'r' ? d1 + L + d2 + (v + 1) : d1 + FX.colLetter(v) + d2 + N;
+    });
+  }
+  function shiftAll(sh, dim, at, delta) { sh.rows.forEach(function (r) { Object.keys(r.c).forEach(function (k) { var x = r.c[k]; if (isF(x)) { x.f = shiftFormula(x.f, dim, at, delta); } }); }); }
+  function hasFormula(sh) { return sh.rows.some(function (r) { return Object.keys(r.c).some(function (k) { return isF(r.c[k]); }); }); }
+
+  // ───────── 型別與動作
+  function mkSheetType() {
+    return { label: '工作表', defaults: { header: false, cols: [], rows: [], seq: 0, cseq: 0, frozen: { r: 0, c: 0 }, merges: [] }, bbox: function () { return { x: 0, y: 0, w: 1, h: 1 }; },
+      validate: function (o) {
+        var csv = !!o.__csv, cols = [], seenC = {}; (Array.isArray(o.cols) ? o.cols : []).slice(0, MAXCOLS).forEach(function (c) { var id = c && /^[A-Za-z][A-Za-z0-9_-]{0,20}$/.test(String(c.id || '')) && !seenC[c.id] ? String(c.id) : null; if (!id) { var n = 1; while (seenC['c' + n]) { n++; } id = 'c' + n; } seenC[id] = 1; var col = { id: id }; if (c && Number(c.w) > 0) { col.w = Math.min(500, Math.round(Number(c.w) * 10) / 10); } cols.push(col); });
+        var seenR = {}, rows = []; (Array.isArray(o.rows) ? o.rows : []).slice(0, MAXROWS).forEach(function (r) { var id = r && /^[A-Za-z][A-Za-z0-9_-]{0,20}$/.test(String(r.id || '')) && !seenR[r.id] ? String(r.id) : null; if (!id) { var n = rows.length + 1; while (seenR['r' + n]) { n++; } id = 'r' + n; } seenR[id] = 1; var c = {}; var src = r && r.c && typeof r.c === 'object' ? r.c : {}; cols.forEach(function (col) { var v = cleanCell(src[col.id], csv); if (v !== undefined && v !== '') { c[col.id] = v; } }); rows.push({ id: id, c: c }); });
+        var fr = o.frozen && typeof o.frozen === 'object' ? o.frozen : {}, mg = (Array.isArray(o.merges) ? o.merges : []).slice(0, 2000).map(function (m) { return str(m, 30); }).filter(function (m) { return /^[A-Z]+\d+:[A-Z]+\d+$/.test(m); });
+        return { obj: { header: !!o.header, cols: cols, rows: rows, seq: Math.max(rows.length, int(o.seq, 0, 1e9, 0)), cseq: Math.max(cols.length, int(o.cseq, 0, 1e9, 0)), frozen: { r: int(fr.r, 0, 1000, 0), c: int(fr.c, 0, 100, 0) }, merges: mg }, problems: [] };
+      } };
+  }
+  var types = { sheet: mkSheetType() };
+  function find(spec, ref) { var i = O_find(spec, ref); return i; }
+  function O_find(spec, ref) { for (var i = 0; i < spec.objects.length; i++) { if (spec.objects[i].id === ref || spec.objects[i].name === ref) { return i; } } return -1; }
+  function sheetFor(s, e, H) { var i = e.sheet != null && e.sheet !== '' ? O_find(s, String(e.sheet)) : (s.objects.length ? 0 : -1); if (i < 0 && e.sheet == null) { return null; } return i < 0 ? null : s.objects[i]; }
+  function headerText(sh, j) { return sh.header && sh.rows[0] ? cellStr(sh.rows[0].c[sh.cols[j].id]) : (!sh.header && sh.rows[0] ? cellStr(sh.rows[0].c[sh.cols[j].id]) : ''); }
+  // 欄的說法：數字（1 起算）、欄字母、colId、標題文字（標題列的字，沒有標題列就看第一列）
+  function colRef(sh, ref) {
+    if (ref == null || ref === '') { return -1; } var r = String(ref).trim().replace(/^[「"'『]|[」"'』]$/g, ''), i;
+    for (i = 0; i < sh.cols.length; i++) { if (sh.cols[i].id === r) { return i; } }
+    if (/^[A-Za-z]{1,3}$/.test(r) && FX.colIndex(r) < sh.cols.length && !sh.rows.some(function (x, k) { return k === 0 && false; })) { var byHead = -1; for (i = 0; i < sh.cols.length; i++) { if (headerText(sh, i).toLowerCase() === r.toLowerCase()) { byHead = i; } } return byHead >= 0 ? byHead : FX.colIndex(r); }
+    if (/^\d+$/.test(r)) { var n = Number(r) - 1; return n >= 0 && n < sh.cols.length ? n : -1; }
+    for (i = 0; i < sh.cols.length; i++) { if (headerText(sh, i).toLowerCase() === r.toLowerCase()) { return i; } }
+    for (i = 0; i < sh.cols.length; i++) { if (headerText(sh, i).toLowerCase().indexOf(r.toLowerCase()) >= 0 && r) { return i; } }
+    return -1;
+  }
+  function rowRef(sh, ref) { if (ref == null || ref === '') { return -1; } var r = String(ref).trim(); for (var i = 0; i < sh.rows.length; i++) { if (sh.rows[i].id === r) { return i; } } if (/^\d+$/.test(r)) { var n = Number(r) - 1; return n >= 0 && n < sh.rows.length ? n : -1; } return -1; }
+  function newRowId(sh) { var n = sh.seq || sh.rows.length, ids = {}; sh.rows.forEach(function (r) { ids[r.id] = 1; }); do { n++; } while (ids['r' + n]); sh.seq = n; return 'r' + n; }
+  function newColId(sh) { var n = sh.cseq || sh.cols.length, ids = {}; sh.cols.forEach(function (c) { ids[c.id] = 1; }); do { n++; } while (ids['c' + n]); sh.cseq = n; return 'c' + n; }
+  function setVal(spec, sh, r, cid, v) {
+    if (v === '' || v == null) { delete sh.rows[r].c[cid]; return; }
+    if (spec.format === 'xlsx' && typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v.trim()) && v.trim().length < 16 && !/^0\d/.test(v.trim())) { sh.rows[r].c[cid] = Number(v); } else { sh.rows[r].c[cid] = v; }
+  }
+  function cmpVals(a, b, numeric) { var A = raw(a), B = raw(b), ea = A === undefined || A === '' || A === null, eb = B === undefined || B === '' || B === null; if (ea || eb) { return ea && eb ? 0 : ea ? 1 : -1; } var na = Number(String(A).replace(/,/g, '')), nb = Number(String(B).replace(/,/g, '')); if (numeric !== false && isFinite(na) && isFinite(nb)) { return na - nb; } var sa = String(A).toLowerCase(), sb = String(B).toLowerCase(); return sa < sb ? -1 : sa > sb ? 1 : 0; }
+  function A(words, apply) { return { words: words, apply: apply }; }
+  function need(s, e) { var sh = sheetFor(s, e); return sh || null; }
+  var NOS = { error: 'there is no such sheet (use a sheet id or name from the list)' };
+  var extraOps = {
+    set_cell: A(function (e) { return '改格子 ' + (e.col == null ? '' : e.col) + (e.row == null ? '' : e.row); }, function (s, e) {
+      var sh = need(s, e); if (!sh) { return NOS; } if (sh.locked) { return { error: 'the sheet is locked' }; } var r = rowRef(sh, e.row), c = colRef(sh, e.col);
+      if (r < 0 && /^\d+$/.test(String(e.row)) && Number(e.row) >= 1 && Number(e.row) <= MAXROWS) { while (sh.rows.length < Number(e.row)) { sh.rows.push({ id: newRowId(sh), c: {} }); } r = Number(e.row) - 1; }
+      if (c < 0 && /^[A-Za-z]{1,3}$/.test(String(e.col)) && FX.colIndex(String(e.col)) < MAXCOLS) { while (sh.cols.length <= FX.colIndex(String(e.col))) { sh.cols.push({ id: newColId(sh) }); } c = FX.colIndex(String(e.col)); }
+      if (r < 0 || c < 0) { return { error: 'no such row or column' }; }
+      if (e.f != null && s.format === 'xlsx') { sh.rows[r].c[sh.cols[c].id] = { f: String(e.f).replace(/^=/, ''), v: '' }; } else { setVal(s, sh, r, sh.cols[c].id, e.v == null ? '' : (typeof e.v === 'number' || typeof e.v === 'boolean' ? (s.format === 'csv' ? String(e.v) : e.v) : String(e.v))); } return {};
+    }),
+    fill_col: A(function (e) { return '填滿欄 ' + e.col; }, function (s, e) {
+      var sh = need(s, e); if (!sh) { return NOS; } if (sh.locked) { return { error: 'the sheet is locked' }; } var c = colRef(sh, e.col); if (c < 0) { return { error: 'no such column' }; }
+      var from = e.from != null ? Number(e.from) - 1 : (sh.header ? 1 : 0), to = e.to != null ? Number(e.to) - 1 : sh.rows.length - 1; from = Math.max(0, from); to = Math.min(sh.rows.length - 1, to); var n = 0;
+      for (var r = from; r <= to; r++) {
+        var v; if (e.formula != null && s.format === 'xlsx') { sh.rows[r].c[sh.cols[c].id] = { f: String(e.formula).replace(/^=/, '').replace(/\{r\}/g, String(r + 1)), v: '' }; n++; continue; }
+        if (e.series && typeof e.series === 'object') { v = Number(e.series.start || 0) + (r - from) * Number(e.series.step == null ? 1 : e.series.step); } else { v = e.value == null ? '' : e.value; }
+        setVal(s, sh, r, sh.cols[c].id, typeof v === 'number' ? (s.format === 'csv' ? String(v) : v) : String(v)); n++;
+      } return n ? {} : { error: 'no rows to fill' };
+    }),
+    add_col: A(function (e) { return '加一欄' + (e.name ? '「' + snippet(e.name, 10) + '」' : ''); }, function (s, e) {
+      var sh = need(s, e); if (!sh) { return NOS; } if (sh.locked) { return { error: 'the sheet is locked' }; } if (sh.cols.length >= MAXCOLS) { return { error: 'too many columns' }; }
+      var at = e.after === 'start' ? 0 : (e.after == null || e.after === 'end' ? sh.cols.length : colRef(sh, e.after) + 1); if (at < 0) { return { error: 'no such column' }; } var id = newColId(sh); sh.cols.splice(at, 0, { id: id });
+      if (s.format === 'xlsx' && hasFormula(sh)) { shiftAll(sh, 'c', at, 1); }
+      var vals = Array.isArray(e.values) ? e.values : null; if (e.name != null && sh.rows.length === 0) { sh.rows.push({ id: newRowId(sh), c: {} }); } if (e.name != null && sh.rows[0]) { setVal(s, sh, 0, id, String(e.name)); }
+      var from = e.name != null ? 1 : 0; for (var r = from; r < sh.rows.length; r++) { if (e.formula != null && s.format === 'xlsx') { sh.rows[r].c[id] = { f: String(e.formula).replace(/^=/, '').replace(/\{r\}/g, String(r + 1)), v: '' }; } else if (vals && vals[r - from] != null) { setVal(s, sh, r, id, String(vals[r - from])); } else if (e.value != null) { setVal(s, sh, r, id, String(e.value)); } }
+      return {};
+    }),
+    del_col: A(function (e) { return '刪掉欄 ' + e.col; }, function (s, e) {
+      var sh = need(s, e); if (!sh) { return NOS; } if (sh.locked) { return { error: 'the sheet is locked' }; } var c = colRef(sh, e.col); if (c < 0) { return { error: 'no such column' }; } if (sh.cols.length <= 1) { return { error: 'cannot delete the last column' }; }
+      var id = sh.cols[c].id; sh.cols.splice(c, 1); sh.rows.forEach(function (r) { delete r.c[id]; }); if (s.format === 'xlsx' && hasFormula(sh)) { shiftAll(sh, 'c', c, -1); } return {};
+    }),
+    move_col: A(function (e) { return '移動欄 ' + e.col; }, function (s, e) {
+      var sh = need(s, e); if (!sh) { return NOS; } if (sh.locked) { return { error: 'the sheet is locked' }; } if (s.format === 'xlsx' && hasFormula(sh)) { return { error: 'this sheet has formulas; moving a column would break their references' }; } var c = colRef(sh, e.col); if (c < 0) { return { error: 'no such column' }; }
+      var col = sh.cols.splice(c, 1)[0], to = e.to === 'start' ? 0 : e.to === 'end' ? sh.cols.length : colRef(sh, e.to) + 1; if (to < 0) { sh.cols.splice(c, 0, col); return { error: 'no such target column' }; } sh.cols.splice(to, 0, col); return {};
+    }),
+    set_width: A(function (e) { return '欄寬 ' + e.col; }, function (s, e) { var sh = need(s, e); if (!sh) { return NOS; } var c = colRef(sh, e.col); if (c < 0) { return { error: 'no such column' }; } var w = Number(e.w); if (!(w > 0)) { delete sh.cols[c].w; } else { sh.cols[c].w = Math.min(500, w); } return {}; }),
+    add_row: A(function (e) { return '加一列'; }, function (s, e) {
+      var sh = need(s, e); if (!sh) { return NOS; } if (sh.locked) { return { error: 'the sheet is locked' }; } if (sh.rows.length >= MAXROWS) { return { error: 'too many rows' }; }
+      var at = e.after === 'start' ? 0 : (e.after == null || e.after === 'end' ? sh.rows.length : rowRef(sh, e.after) + 1); if (at < 0) { return { error: 'no such row' }; } var row = { id: newRowId(sh), c: {} }; sh.rows.splice(at, 0, row);
+      if (s.format === 'xlsx' && hasFormula(sh)) { shiftAll(sh, 'r', at, 1); } var vals = Array.isArray(e.values) ? e.values : []; for (var j = 0; j < Math.min(vals.length, sh.cols.length); j++) { if (vals[j] != null) { setVal(s, sh, at, sh.cols[j].id, String(vals[j])); } } return {};
+    }),
+    del_rows: A(function (e) { return '刪列'; }, function (s, e) {
+      var sh = need(s, e); if (!sh) { return NOS; } if (sh.locked) { return { error: 'the sheet is locked' }; } var kill = {}, first = sh.header ? 1 : 0, i;
+      if (Array.isArray(e.rows)) { e.rows.forEach(function (x) { var r = rowRef(sh, x); if (r >= 0) { kill[r] = 1; } }); }
+      if (e.blank) { for (i = first; i < sh.rows.length; i++) { if (!Object.keys(sh.rows[i].c).length) { kill[i] = 1; } } }
+      if (e.duplicates) { var cs = Array.isArray(e.duplicates.cols) ? e.duplicates.cols.map(function (x) { return colRef(sh, x); }).filter(function (x) { return x >= 0; }) : sh.cols.map(function (_, j) { return j; }), seen = {}; for (i = first; i < sh.rows.length; i++) { var key = JSON.stringify(cs.map(function (j) { return cellStr(sh.rows[i].c[sh.cols[j].id]); })); if (seen[key]) { kill[i] = 1; } else { seen[key] = 1; } } }
+      if (e.where && typeof e.where === 'object') { var wc = colRef(sh, e.where.col); if (wc < 0) { return { error: 'no such column in where' }; } var op = String(e.where.op || '='), val = String(e.where.value == null ? '' : e.where.value);
+        for (i = first; i < sh.rows.length; i++) { var t = cellStr(sh.rows[i].c[sh.cols[wc].id]), nt = Number(t), nv = Number(val), hit = op === '=' ? t === val : op === '!=' ? t !== val : op === 'contains' ? t.toLowerCase().indexOf(val.toLowerCase()) >= 0 : op === 'empty' ? t === '' : op === '>' ? isFinite(nt) && isFinite(nv) && nt > nv : op === '<' ? isFinite(nt) && isFinite(nv) && nt < nv : op === '>=' ? isFinite(nt) && isFinite(nv) && nt >= nv : op === '<=' ? isFinite(nt) && isFinite(nv) && nt <= nv : false; if (hit) { kill[i] = 1; } } }
+      var idx = Object.keys(kill).map(Number).sort(function (a, b) { return b - a; }); if (!idx.length) { return { error: 'no rows matched' }; }
+      var xl = s.format === 'xlsx' && hasFormula(sh); idx.forEach(function (r) { sh.rows.splice(r, 1); if (xl) { shiftAll(sh, 'r', r, -1); } }); return {};
+    }),
+    move_row: A(function (e) { return '移動列'; }, function (s, e) {
+      var sh = need(s, e); if (!sh) { return NOS; } if (sh.locked) { return { error: 'the sheet is locked' }; } if (s.format === 'xlsx' && hasFormula(sh)) { return { error: 'this sheet has formulas; moving a row would break their references' }; } var r = rowRef(sh, e.row); if (r < 0) { return { error: 'no such row' }; }
+      var row = sh.rows.splice(r, 1)[0], to = e.to === 'start' ? 0 : e.to === 'end' ? sh.rows.length : rowRef(sh, e.to) + 1; if (to < 0) { sh.rows.splice(r, 0, row); return { error: 'no such target row' }; } sh.rows.splice(to, 0, row); return {};
+    }),
+    sort: A(function (e) { return '依「' + e.col + '」' + (e.dir === 'desc' ? '由大到小' : '由小到大') + '排序'; }, function (s, e) {
+      var sh = need(s, e); if (!sh) { return NOS; } if (sh.locked) { return { error: 'the sheet is locked' }; } if (s.format === 'xlsx' && hasFormula(sh)) { return { error: 'this sheet has formulas; sorting would break their references' }; } var c = colRef(sh, e.col); if (c < 0) { return { error: 'no such column' }; }
+      var id = sh.cols[c].id, first = sh.header ? 1 : 0, head = sh.rows.slice(0, first), body = sh.rows.slice(first), dir = e.dir === 'desc' ? -1 : 1;
+      var idx = body.map(function (r, i) { return { r: r, i: i }; }); idx.sort(function (a, b) { var d = cmpVals(a.r.c[id], b.r.c[id], e.numeric); var ea = raw(a.r.c[id]) === undefined || raw(a.r.c[id]) === '', eb = raw(b.r.c[id]) === undefined || raw(b.r.c[id]) === ''; if (ea || eb) { return d || a.i - b.i; } return d * dir || a.i - b.i; });
+      sh.rows = head.concat(idx.map(function (x) { return x.r; })); return {};
+    }),
+    set_header: A(function (e) { return e.header === false ? '第一列不當標題' : '第一列當標題'; }, function (s, e) { var sh = need(s, e); if (!sh) { return NOS; } sh.header = e.header !== false; return {}; }),
+    trim: A(function (e) { return '去掉前後空白'; }, function (s, e) { var sh = need(s, e); if (!sh) { return NOS; } if (sh.locked) { return { error: 'the sheet is locked' }; } var cs = e.col != null ? [colRef(sh, e.col)] : sh.cols.map(function (_, j) { return j; }); if (cs.some(function (x) { return x < 0; })) { return { error: 'no such column' }; } var n = 0;
+      sh.rows.forEach(function (r) { cs.forEach(function (j) { var id = sh.cols[j].id, x = r.c[id]; if (typeof x === 'string' && x !== x.trim().replace(/[ \t]+/g, ' ')) { r.c[id] = x.trim().replace(/[ \t]+/g, ' '); if (r.c[id] === '') { delete r.c[id]; } n++; } }); }); return n ? {} : { error: 'nothing to trim' }; }),
+    replace_all: A(function (e) { return '全部取代「' + snippet(e.find, 12) + '」→「' + snippet(e.repl, 12) + '」'; }, function (s, e) {
+      var find = String(e.find == null ? '' : e.find), repl = String(e.repl == null ? '' : e.repl); if (!find) { return { error: 'find must not be empty' }; } var re;
+      try { re = e.regex ? new RegExp(find, e.caseSensitive ? 'g' : 'gi') : new RegExp(find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), e.caseSensitive ? 'g' : 'gi'); } catch (x) { return { error: 'bad pattern: ' + x.message }; }
+      var n = 0; s.objects.forEach(function (sh) { if (sh.locked || (e.sheet != null && e.sheet !== '' && sh.id !== e.sheet && sh.name !== e.sheet)) { return; } var cs = e.col != null ? [colRef(sh, e.col)] : sh.cols.map(function (_, j) { return j; }); cs.forEach(function (j) { if (j < 0) { return; } var id = sh.cols[j].id; sh.rows.forEach(function (r) { var x = r.c[id]; if (typeof x === 'string') { var nx = x.replace(re, function () { n++; return repl; }); if (nx !== x) { r.c[id] = nx; if (nx === '') { delete r.c[id]; } } } }); }); });
+      return n ? {} : { error: 'nothing found' };
+    }),
+    set_doc: A(function (e) { return '檔案設定'; }, function (s, e) { if (e.delim != null) { if ([',', ';', '\t', '|'].indexOf(e.delim) < 0) { return { error: 'delimiter must be , ; tab or |' }; } s.delim = e.delim; } if (e.eol != null) { s.eol = e.eol === 'crlf' || e.eol === '\r\n' ? '\r\n' : '\n'; } if (e.bom != null) { s.bom = !!e.bom; } if (e.quoteAll != null) { s.quoteAll = !!e.quoteAll; } return {}; }),
+  };
+  var E = O.make({
+    types: types, extraOps: extraOps, keep: ['format', 'delim', 'eol', 'bom', 'finalNl', 'quoteAll', 'src', 'sig', 'notes'], limits: { objects: MAXSHEETS, canvas: 16384 },
+    defaultSpec: function () { return { v: 1, title: '未命名表格', format: 'csv', delim: ',', eol: '\n', bom: false, finalNl: true, quoteAll: false, notes: [], canvas: { x: 0, y: 0, w: 800, h: 600, bg: '#ffffff' }, seq: 0, objects: [] }; },
+    describeObject: function (o) { return o.type + ' ' + o.name; },
+  });
+  function validate(spec) {
+    var src = spec && typeof spec === 'object' ? spec : {}, fmt = src.format === 'xlsx' ? 'xlsx' : 'csv', input = clone(src); (input.objects || []).forEach(function (o) { o.__csv = fmt === 'csv'; });
+    var r = E.validate(input), s = r.spec; s.format = fmt; s.delim = [',', ';', '\t', '|'].indexOf(src.delim) >= 0 ? src.delim : ','; s.eol = src.eol === '\r\n' ? '\r\n' : (src.eol === '\r' ? '\r' : '\n'); s.bom = !!src.bom; s.finalNl = src.finalNl !== false; s.quoteAll = !!src.quoteAll;
+    s.notes = Array.isArray(src.notes) ? src.notes.slice(0, 30).map(function (x) { return str(x, 300); }) : []; if (typeof src.src === 'string' && src.src.length <= MAXSRC + 2) { s.src = src.src; } if (typeof src.sig === 'string') { s.sig = str(src.sig, 40); }
+    if (!s.objects.length) { s.objects.push(Object.assign({ id: 's1', name: 'Sheet1', type: 'sheet', visible: true, locked: false }, types.sheet.validate({ cols: [{ id: 'c1' }], rows: [{ id: 'r1', c: {} }], header: false }).obj)); }
+    s.objects.forEach(function (o) { delete o.__csv; if (!o.name) { o.name = 'Sheet'; } }); return r;
+  }
+  function applyEdits(spec, edits, env) {
+    var fmt = spec && spec.format === 'xlsx' ? 'xlsx' : 'csv', mapped = (edits || []).map(function (e) { if (e && e.op === 'add_sheet') { return { op: 'add_object', object: Object.assign({ type: 'sheet', name: e.name || 'Sheet', header: !!e.header }, e.rows ? { cols: (e.rows[0] || []).map(function (_, j) { return { id: 'c' + (j + 1) }; }), rows: e.rows.map(function (rw, i) { var c = {}; rw.forEach(function (v, j) { if (v !== '' && v != null) { c['c' + (j + 1)] = v; } }); return { id: 'r' + (i + 1), c: c }; }) } : { cols: [{ id: 'c1' }, { id: 'c2' }, { id: 'c3' }], rows: [{ id: 'r1', c: {} }] }) }; } if (e && e.op === 'rename_sheet') { return { op: 'rename_object', id: e.sheet || e.id, name: e.name }; } if (e && e.op === 'del_sheet') { return { op: 'remove_object', id: e.sheet || e.id }; } if (e && e.op === 'dup_sheet') { return { op: 'duplicate_object', id: e.sheet || e.id }; } return e; });
+    var src2 = clone(spec); (src2.objects || []).forEach(function (o) { o.__csv = fmt === 'csv'; }); var r = E.applyEdits(src2, mapped, env); r.spec.objects.forEach(function (o) { delete o.__csv; }); r.spec.format = fmt;
+    if (r.spec.objects.length === 0) { r.spec.objects = clone(spec.objects).slice(0, 1); r.rejected.push({ op: 'remove_object', error: 'a workbook needs at least one sheet' }); }
+    return r;
+  }
+  // ───── 程式讀得懂的白話（不經過模型）。「第 N 列」「B 欄」「「單價」那一欄」從目前（第一張）工作表算
+  var ZH = { '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10 };
+  function parseCommands(text, spec) {
+    var out = { edits: [], matched: [], unmatched: [] }, s = validate(spec).spec, sh = s.objects[0];
+    function col(r) { r = String(r || '').trim().replace(/^第\s*/, '').replace(/\s*(?:欄|欄位|那一欄|這一欄|列)$/, '').replace(/^[「"'『]|[」"'』]$/g, '').trim(); var i = colRef(sh, r); return i >= 0 ? sh.cols[i].id : null; }
+    function rowNo(r) { r = String(r || '').trim(); var m = /^(?:第\s*)?(\d+)\s*(?:列|行)?$/.exec(r); if (m) { return Number(m[1]); } if (/^(最後|最後一列|最後一行)$/.test(r)) { return sh.rows.length; } if (/^(最前|第一列|第一行|標題列|開頭)$/.test(r)) { return 1; } return 0; }
+    var clauses = String(text || '').split(/[。；;\n]+/).map(function (x) { return x.trim(); }).filter(Boolean);
+    clauses.forEach(function (c) {
+      var m, e = null, cid, rn;
+      if ((m = /^(?:把)?\s*(.+?)\s*(?:欄)?\s*(?:由大到小|從大到小|降冪|遞減)\s*排序$/.exec(c)) || (m = /^(?:依|按|照)\s*(.+?)\s*(?:欄)?\s*(?:由大到小|從大到小|降冪|遞減)\s*排序$/.exec(c))) { cid = col(m[1]); if (cid) { e = { op: 'sort', col: cid, dir: 'desc' }; } }
+      else if ((m = /^(?:把)?\s*(.+?)\s*(?:欄)?\s*(?:由小到大|從小到大|升冪|遞增|排序)$/.exec(c)) || (m = /^(?:依|按|照)\s*(.+?)\s*(?:欄)?\s*(?:由小到大|從小到大|升冪|遞增)?\s*排序$/.exec(c))) { cid = col(m[1].replace(/排序$/, '')); if (cid) { e = { op: 'sort', col: cid, dir: 'asc' }; } }
+      else if (/^(?:刪掉|刪除|移除|拿掉)\s*(?:所有的?)?(?:空白列|空列|空白行|空行)$/.test(c)) { e = { op: 'del_rows', blank: true }; }
+      else if (/^(?:去掉|刪掉|刪除|移除)\s*(?:重複|重複的列|重複列|重複的資料)$/.test(c) || /^(?:去除重複|去重|去重複)$/.test(c)) { e = { op: 'del_rows', duplicates: {} }; }
+      else if (/^(?:去掉|去除|刪掉)\s*(?:前後|多餘的?)?空白$/.test(c)) { e = { op: 'trim' }; }
+      else if ((m = /^(?:把|將)?\s*第\s*(\d+)\s*(?:列|行)\s*(?:到|至|~|－|-)\s*第?\s*(\d+)\s*(?:列|行)?\s*(?:刪掉|刪除|移除)$/.exec(c))) { var rs = []; for (var q = Number(m[1]); q <= Math.min(Number(m[2]), Number(m[1]) + 5000); q++) { rs.push(q); } e = { op: 'del_rows', rows: rs }; }
+      else if ((m = /^(?:把|將)?\s*(?:第\s*)?(\d+)\s*(?:列|行)\s*(?:刪掉|刪除|移除)$/.exec(c)) || (m = /^(?:刪掉|刪除|移除)\s*第\s*(\d+)\s*(?:列|行)$/.exec(c))) { e = { op: 'del_rows', rows: [Number(m[1])] }; }
+      else if ((m = /^(?:把|將)?\s*(.+?)\s*(?:欄|欄位)\s*(?:刪掉|刪除|移除)$/.exec(c)) || (m = /^(?:刪掉|刪除|移除)\s*(.+?)\s*(?:欄|欄位)$/.exec(c))) { cid = col(m[1]); if (cid) { e = { op: 'del_col', col: cid }; } }
+      else if ((m = /^(?:刪掉|刪除|移除)\s*(?:所有)?[「"'『]?(.+?)[」"'』]?\s*(?:欄|欄位)?\s*(?:是|為|等於)\s*[「"'『]?(.+?)[」"'』]?\s*的列$/.exec(c))) { cid = col(m[1]); if (cid) { e = { op: 'del_rows', where: { col: cid, op: '=', value: m[2] } }; } }
+      else if ((m = /^(?:在)?\s*最後\s*(?:加|新增)\s*一?(?:列|行)(?:\s*[：:]\s*(.+))?$/.exec(c))) { e = { op: 'add_row', after: 'end' }; if (m[1]) { e.values = m[1].split(/[,，、\t]/).map(function (x) { return x.trim(); }); } }
+      else if ((m = /^(?:在)?\s*最後\s*(?:加|新增)\s*一?欄\s*[「"'『]?(.+?)[」"'』]?\s*(?:=|＝|等於|公式)\s*(.+)$/.exec(c)) && s.format === 'xlsx') { e = { op: 'add_col', after: 'end', name: m[1], formula: m[2].replace(/^=/, '') }; }
+      else if ((m = /^(?:在)?\s*最後\s*(?:加|新增)\s*一?欄(?:\s*[「"'『]?(.+?)[」"'』]?)?$/.exec(c))) { e = { op: 'add_col', after: 'end', name: m[1] || '新欄位' }; }
+      else if ((m = /^(?:把)?\s*([A-Za-z]{1,3}\s*\d{1,6})\s*(?:改成|換成|改為|設成|設為|=|＝)\s*(.+)$/.exec(c))) { var ad = FX.addr(m[1].replace(/\s+/g, '')); if (ad && ad.c < MAXCOLS) { var v = m[2].trim().replace(/^[「"'『]|[」"'』]$/g, ''); e = /^=/.test(v) && s.format === 'xlsx' ? { op: 'set_cell', row: ad.r + 1, col: FX.colLetter(ad.c), f: v } : { op: 'set_cell', row: ad.r + 1, col: FX.colLetter(ad.c), v: v }; } }
+      else if ((m = /^(?:把)?\s*第\s*(\d+)\s*(?:列|行)\s*[「"'『]?(.+?)[」"'』]?\s*(?:欄)?\s*(?:改成|換成|改為|設成)\s*(.+)$/.exec(c))) { cid = col(m[2]); if (cid) { e = { op: 'set_cell', row: Number(m[1]), col: cid, v: m[3].trim().replace(/^[「"'『]|[」"'』]$/g, '') }; } }
+      else if ((m = /^(?:把)?\s*[「"'『](.+?)[」"'』]\s*(?:全部)?(?:都)?(?:改成|換成|改為|取代成)\s*[「"'『]?(.*?)[」"'』]?$/.exec(c)) || (m = /^(?:把|將)\s*(.+?)\s*全部(?:都)?(?:改成|換成|取代成|取代為)\s*(.+)$/.exec(c))) { e = { op: 'replace_all', find: m[1].replace(/^[「"'『]|[」"'』]$/g, ''), repl: m[2].replace(/^[「"'『]|[」"'』]$/g, '') }; }
+      else if ((m = /^(?:把)?\s*第一列\s*(?:當|當作|設為|設成)\s*(?:標題|表頭)$/.exec(c))) { e = { op: 'set_header', header: true }; }
+      else if (/^(?:第一列|標題列)\s*(?:不是|不要當|不當)\s*(?:標題|表頭)?$/.test(c)) { e = { op: 'set_header', header: false }; }
+      if (e) { out.edits.push(e); out.matched.push(c); } else { out.unmatched.push(c); }
+    });
+    return out;
+  }
+  var AI_OPS = ['set_cell', 'fill_col', 'add_col', 'del_col', 'move_col', 'add_row', 'del_rows', 'move_row', 'sort', 'set_header', 'trim', 'replace_all', 'set_width', 'add_sheet', 'rename_sheet', 'del_sheet', 'dup_sheet', 'set_title'];
+  // 給模型的提示：只給「概要」（欄位字母＋標題＋型別＋樣本列），不把整份文件丟過去
+  function profile(sh, nSample) {
+    var vals = computed(sh), first = sh.header ? 1 : 0, cols = sh.cols.map(function (c, j) { var seen = 0, nums = 0, empty = 0, samples = []; for (var i = first; i < sh.rows.length; i++) { var v = vals[i][j]; if (v === '' || v == null) { empty++; continue; } seen++; if (typeof v === 'number' || (v !== '' && isFinite(Number(String(v).replace(/,/g, ''))))) { nums++; } if (samples.length < 3 && samples.indexOf(String(v)) < 0) { samples.push(String(v).slice(0, 24)); } } return { letter: FX.colLetter(j), name: headerText(sh, j), type: seen && nums === seen ? 'number' : 'text', empty: empty, samples: samples }; });
+    return { rows: sh.rows.length, cols: cols, head: sh.rows.slice(0, nSample || 5).map(function (r, i) { return sh.cols.map(function (c, j) { return String(vals[i][j] == null ? '' : vals[i][j]).slice(0, 24); }); }) };
+  }
+  function editPrompt(spec, request, selection, o) {
+    var s = validate(spec).spec, lines = s.objects.map(function (sh) { var p = profile(sh, 5); return 'Sheet id=' + sh.id + ' name="' + sh.name + '" rows=' + p.rows + (sh.header ? ' (row 1 is the header)' : '') + '\n  columns: ' + p.cols.map(function (c) { return c.letter + (c.name ? '="' + c.name + '"' : '') + ':' + c.type + (c.samples.length ? ' e.g. ' + c.samples.map(function (x) { return JSON.stringify(x); }).join(',') : ''); }).join('; ') + '\n  first rows:\n' + p.head.map(function (r) { return '    ' + r.join(' | '); }).join('\n'); });
+    var system = 'You edit a ' + (s.format === 'xlsx' ? 'spreadsheet' : 'CSV table') + ' by answering ONLY with JSON {"say":"one short sentence","edits":[...]}. Rows are numbered from 1 (row 1 is the first row of the sheet); columns are letters (A, B, ...) or header names. Every edit is one of these actions (sheet is optional = the first sheet; never invent columns or sheets):\n'
+      + '{op:"set_cell",row,col,v' + (s.format === 'xlsx' ? '|f' : '') + '} one cell' + (s.format === 'xlsx' ? ' (f is a formula without the leading = like SUM(B2:B9); supported: + - * / ^ & comparison, SUM AVERAGE MIN MAX COUNT COUNTA IF IFERROR AND OR NOT ROUND ABS INT MOD SQRT POWER CONCAT LEN LEFT RIGHT MID UPPER LOWER TRIM VLOOKUP SUMIF COUNTIF TODAY)' : '') + '\n'
+      + '{op:"fill_col",col,value|series:{start,step}' + (s.format === 'xlsx' ? '|formula:"B{r}*C{r}"' : '') + ',from?,to?} fill a column (from/to are row numbers)\n{op:"add_col",after:"start|end|<col>",name,value?' + (s.format === 'xlsx' ? ',formula?' : '') + '}  {op:"del_col",col}  {op:"move_col",col,to:"start|end|<col>"}  {op:"set_width",col,w}\n'
+      + '{op:"add_row",after:"start|end|<row number>",values?:[...]}  {op:"del_rows",rows?:[numbers],blank?:true,duplicates?:{cols?},where?:{col,op:"=|!=|contains|empty|>|<|>=|<=",value}}  {op:"move_row",row,to}\n'
+      + '{op:"sort",col,dir:"asc|desc"}  {op:"set_header",header:true|false}  {op:"trim",col?}  {op:"replace_all",find,repl,col?,regex?}  {op:"add_sheet",name,rows?:[[...]]}  {op:"rename_sheet",sheet,name}  {op:"del_sheet",sheet}  {op:"dup_sheet",sheet}\n'
+      + 'Change only what was asked; keep the rest untouched. If the request cannot be done with these actions, return {"say":"why","edits":[]}.';
+    return { system: system, user: (s.title ? 'File "' + s.title + '"\n' : '') + lines.join('\n') + (selection ? '\nSelected: ' + selection : '') + '\n\nRequest: ' + String(request || '') };
+  }
+  function parseEditsReply(text) { return O.parseEditsReply(text, AI_OPS); }
+  var STARTERS = [
+    { id: 'blank', label: '空白表格', desc: '3 欄、1 列，從零開始。', spec: function () { var sp = parseCsv('A,B,C\n,,\n', '未命名表格'); delete sp.src; return sp; } },
+    { id: 'sheet', label: '空白試算表', desc: '空白的活頁簿（xlsx），可以用公式。', spec: function () { var sh = newSheet('Sheet1', [['', '', ''], ['', '', '']], { id: 's1', header: false }); return { v: 1, title: '未命名試算表', format: 'xlsx', objects: [sh] }; } },
+    { id: 'budget', label: '收支表（xlsx，有公式）', desc: '日期、項目、收入、支出、餘額（公式）。', spec: function () { var rows = [['日期', '項目', '收入', '支出', '餘額'], ['2026-01-01', '期初', 1000, '', { f: 'C2-D2', v: 1000 }], ['2026-01-02', '午餐', '', 120, { f: 'E2+C3-D3', v: 880 }]]; var sh = newSheet('收支', rows, { id: 's1', header: true }); return { v: 1, title: '收支表', format: 'xlsx', objects: [sh] }; } },
+  ];
+  function starter(id) { var t = STARTERS.filter(function (x) { return x.id === id; })[0]; return t ? validate(t.spec()).spec : null; }
+  function listStarters() { return STARTERS.map(function (t) { return { id: t.id, label: t.label, desc: t.desc }; }); }
+  return { types: types, extraOps: extraOps, OPS: E.OPS, validate: validate, applyEdits: applyEdits, editWords: E.editWords, find: E.find, list: E.list, parseCsv: parseCsv, serializeCsv: serializeCsv, readXlsx: readXlsx, buildXlsx: buildXlsx, computed: computed, newSheet: newSheet, sigOf: sigOf, colRef: colRef, rowRef: rowRef, cellStr: cellStr, isF: isF, raw: raw, parseCommands: parseCommands, editPrompt: editPrompt, parseEditsReply: parseEditsReply, AI_OPS: AI_OPS, profile: profile, starter: starter, listStarters: listStarters, shiftFormula: shiftFormula, MAXROWS: MAXROWS, MAXCOLS: MAXCOLS };
+});
+
+}).call(null, undefined, holder);
+return holder.FaEditSheet;
+})();
+/* EDSHEET-END */
+/* EDSHEETUI-BEGIN */
+const FaEditSheetUI = (function () {
+const holder = {};
+(function (module, self) {
+// /edit-csv 與 /edit-xlsx 的畫面，蓋在共用外框（edit_shell.js）上：中間是「表格」（虛擬捲動：只畫看得到的列，兩萬列也順；單擊選格、雙擊或直接打字改、Enter／Tab 移動、Delete 清空、可貼上試算表的區塊）、
+// CSV 另有「原始碼」分頁；左邊的物件欄是工作表清單，屬性面板改選到的格／列／欄（排序、插入、刪除、欄寬）與工作表（標題列、凍結、檔案設定）。
+//   FaEditSheetUI.mount({ id, state, spec, host, container, restoring, store, windowApi }) -> element (el._ed)
+//   host：jszip()? → Promise<JSZip>（讀寫 xlsx）、origXlsx()? → Promise<Uint8Array|null>（沒改過的 xlsx 匯出原檔）
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaEditSheetUI = factory((root.FaEditSheet || (typeof FaEditSheet !== 'undefined' ? FaEditSheet : undefined)), (root.FaEditShell || (typeof FaEditShell !== 'undefined' ? FaEditShell : undefined)), (root.FaSheetFormula || (typeof FaSheetFormula !== 'undefined' ? FaSheetFormula : undefined))); })(typeof self !== 'undefined' ? self : this, function (C, Shell, FX) {
+  'use strict';
+  function h(tag, cls, text) { var e = document.createElement(tag); if (cls) { e.className = cls; } if (text != null) { e.textContent = text; } return e; }
+  var RH = 24, HEADH = 24, RNW = 46, CSS = '.few .sgrid{flex:1;min-height:0;overflow:auto;max-height:62vh;position:relative;outline:none}.few.fwin-pop .sgrid,.few.fwin-max .sgrid{max-height:none}'
+    + '.few .sgrid table{border-collapse:separate;border-spacing:0;table-layout:fixed;font:12px system-ui,"Microsoft JhengHei",sans-serif}.few .sgrid td,.few .sgrid th{height:' + RH + 'px;box-sizing:border-box;border-right:1px solid var(--bd);border-bottom:1px solid var(--bd);padding:0 5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:var(--bg)}'
+    + '.few .sgrid th{position:sticky;top:0;z-index:2;background:var(--hd);font-weight:600;text-align:center;cursor:pointer;color:var(--mut)}.few .sgrid th.rn{left:0;z-index:3}.few .sgrid td.rn{position:sticky;left:0;z-index:1;background:var(--hd);color:var(--mut);text-align:center;cursor:pointer}'
+    + '.few .sgrid td.hd{font-weight:700;background:var(--hd)}.few .sgrid td.num{text-align:right}.few .sgrid td.fx{color:#0969da}.few .sgrid td.err{color:#cf222e}.few .sgrid td.sel{outline:2px solid var(--acc);outline-offset:-2px;background:rgba(47,129,247,.12)}.few .sgrid td.rsel,.few .sgrid th.csel{background:rgba(47,129,247,.14)}'
+    + '.few .sgrid td input{width:100%;height:100%;box-sizing:border-box;border:0;outline:2px solid var(--acc);padding:0 4px;font:inherit;background:var(--bg);color:inherit}.few .sbar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:4px 8px;border-bottom:1px solid var(--bd);background:var(--hd)}.few .sbar input.fx{flex:1;min-width:8em}.few .sbar .ad{font-weight:700;min-width:3.2em}';
+  function slug(s) { return String(s || 'table').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ').replace(/\s+/g, '_').replace(/^_+|_+$/g, '').slice(0, 50) || 'table'; }
+  function decode(buf) { var u = new Uint8Array(buf); try { return new TextDecoder('utf-8', { fatal: true }).decode(u); } catch (e) { try { return new TextDecoder('big5').decode(u); } catch (e2) { return new TextDecoder('utf-8').decode(u); } } }
+  function colPx(c) { return c && c.w ? Math.max(40, Math.round(c.w * 7 + 12)) : 110; }
+
+  function mount(opt) {
+    var host = opt.host || {}, spec0 = C.validate(opt.spec || {}).spec, fmt = spec0.format === 'xlsx' ? 'xlsx' : 'csv', kind = fmt === 'xlsx' ? 'edit-xlsx' : 'edit-csv', curSheetId = null;
+    var W = { validate: C.validate, applyEdits: C.applyEdits, editWords: C.editWords, list: C.list, find: C.find };
+    if (!document.getElementById('few-sheet-css')) { var st = document.createElement('style'); st.id = 'few-sheet-css'; st.textContent = CSS; (document.head || document.documentElement).appendChild(st); }
+    return Shell.mount({
+      id: opt.id, kind: kind, title: fmt === 'xlsx' ? '📊 試算表編輯器' : '🧾 CSV 編輯器', W: W, spec: opt.spec, state: opt.state, host: host, container: opt.container, restoring: opt.restoring, windowApi: opt.windowApi,
+      tabs: fmt === 'csv' ? [{ id: 'grid', label: '▦ 表格' }, { id: 'source', label: '🧩 原始碼' }] : [{ id: 'grid', label: '▦ 表格' }],
+      placeholder: '用說的改：「把 qty 由大到小排序」「刪掉空白列」「B2 改成 99」「在最後加一欄「總價」」「刪掉 name 是 banana 的列」「把價格都加 10%」',
+      intro: (fmt === 'xlsx' ? '我是試算表編輯器：工作表在左邊的清單，公式（SUM、AVERAGE、IF、VLOOKUP…）會算，修改前後的公式與算好的值都保留。' : '我是 CSV 編輯器：你的檔案沒動到的地方一個位元組都不會變（分隔符號、換行、引號習慣、BOM 都保留）。')
+        + '單擊選格、雙擊或直接打字改、Enter／Tab 移動，也可以貼上試算表的區塊。用說的也行：排序、刪空白列／重複列、加欄加列、取代、條件式刪列；讀不懂的才請 AI，AI 只看欄位概要，不會把整份資料送出去。每一步都能復原。',
+      objectIcon: function () { return '▦'; },
+      objectInfo: function (o) { return o.rows.length + '×' + o.cols.length + (C.isF && o.rows.some(function (r) { return Object.keys(r.c).some(function (k) { return C.isF(r.c[k]); }); }) ? ' ƒ' : ''); },
+      parseCommands: C.parseCommands,
+      promptOf: function (sp, steps) { var sh = sp.objects[0], L = ['請做一份' + (fmt === 'xlsx' ? '試算表' : ' CSV 表格') + '「' + sp.title + '」，共 ' + sp.objects.length + ' 張工作表；第一張 ' + sh.rows.length + ' 列 × ' + sh.cols.length + ' 欄。']; var p = C.profile(sh, 3); L.push('', '欄位：'); p.cols.forEach(function (c) { L.push('- ' + c.letter + (c.name ? '「' + c.name + '」' : '') + '（' + c.type + '）'); }); var texts = steps.filter(function (s) { return s.text; }); if (texts.length) { L.push('', '修改過程：'); texts.forEach(function (s, i) { L.push((i + 1) + '. ' + s.text); }); } return L.join('\n'); },
+      exports: fmt === 'xlsx' ? [{ id: 'xlsx', label: 'Excel 檔 (.xlsx)', chat: false }, { id: 'csv', label: '目前工作表（CSV）', chat: false }, { id: 'json', label: '專案（JSON）', chat: false }] : [{ id: 'csv', label: 'CSV 檔 (.csv)' }, { id: 'xlsx', label: 'Excel 檔 (.xlsx)', chat: false }, { id: 'json', label: '專案（JSON）', chat: false }],
+      runExport: async function (id, spec) {
+        var name = slug(spec.title);
+        if (id === 'json') { return { blob: new Blob([JSON.stringify(spec, null, 1)], { type: 'application/json' }), name: name + '.json', mime: 'application/json' }; }
+        if (id === 'csv') { var out = C.serializeCsv(spec, fmt === 'xlsx' ? curSheetId : null); return { blob: new Blob([out], { type: 'text/csv' }), name: name + '.csv', mime: 'text/csv' }; }
+        if (id === 'xlsx') {
+          if (fmt === 'xlsx' && spec.sig && C.sigOf(spec) === spec.sig && host.origXlsx) { var ob = null; try { ob = await host.origXlsx(); } catch (e) { ob = null; } if (ob) { return { blob: new Blob([ob], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), name: name + '.xlsx', mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }; } }
+          var Z = host.jszip ? await host.jszip() : null; if (!Z) { throw new Error('這裡還不能輸出 xlsx（JSZip 沒有載入）'); } var bytes = await C.buildXlsx(spec, Z); return { blob: new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), name: name + '.xlsx', mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' };
+        }
+        return null;
+      },
+      build: function (ctx) {
+        var spec = null, selId = null, sh = null, vals = null, cur = { r: 0, c: 0 }, selRow = null, selCol = null, editing = null, scrollEl = h('div', 'sgrid'), wrap = h('div'), srcWrap = h('div'), raf = 0;
+        wrap.style.cssText = 'display:flex;flex-direction:column;flex:1;min-height:0;margin:-8px'; scrollEl.tabIndex = 0;
+        var bar = h('div', 'sbar'), ad = h('span', 'ad', 'A1'), fxIn = h('input', 'fx'); fxIn.type = 'text'; fxIn.placeholder = fmt === 'xlsx' ? '值，或以 = 開頭的公式' : '值'; fxIn.spellcheck = false; var fnd = h('input'), rep = h('input'), fst = h('span', 'st'), bRep = h('button', null, '全部取代'), bFind = h('button', null, '找下一個'); fnd.placeholder = '尋找'; fnd.style.width = '8em'; rep.placeholder = '取代成'; rep.style.width = '8em';
+        [ad, fxIn, fnd, rep, bFind, bRep, fst].forEach(function (x) { bar.appendChild(x); }); wrap.appendChild(bar); wrap.appendChild(scrollEl);
+        function sheetNow() { var i = selId ? C.find(spec, selId) : -1; return spec.objects[i >= 0 ? i : 0]; }
+        function disp(r, c) { var x = sh.rows[r] && sh.rows[r].c[sh.cols[c].id]; if (fmt === 'xlsx' && C.isF(x)) { return FX.show(vals[r][c]); } return C.cellStr(x); }
+        function rawText(r, c) { var x = sh.rows[r] && sh.rows[r].c[sh.cols[c].id]; return C.isF(x) ? '=' + x.f : C.cellStr(x); }
+        function setCell(r, c, text, move) {
+          var row = sh.rows[r], col = sh.cols[c]; if (!row || !col) { return; } if (rawText(r, c) === text) { return; } var e = { op: 'set_cell', sheet: sh.id, row: row.id, col: col.id }; if (fmt === 'xlsx' && /^=/.test(text)) { e.f = text; } else { e.v = text; }
+          var res = ctx.apply([e], '改 ' + FX.colLetter(c) + (r + 1), '', 'panel'); if (res && res.rejected && res.rejected.length) { ctx.say(res.rejected[0].error); }
+        }
+        function status() { var x = sh.rows[cur.r] ? FX.colLetter(cur.c) + (cur.r + 1) : ''; ad.textContent = x; if (document.activeElement !== fxIn) { fxIn.value = sh.rows[cur.r] ? rawText(cur.r, cur.c) : ''; } }
+        // ───── 虛擬捲動：只畫看得到的列 ─────
+        function draw() {
+          if (!sh) { return; } var keep = scrollEl.scrollTop, vh = scrollEl.clientHeight || 400, first = Math.max(0, Math.floor(keep / RH) - 6), count = Math.ceil(vh / RH) + 14, last = Math.min(sh.rows.length, first + count), cols = sh.cols;
+          var tb = h('table'), cg = h('colgroup'), rn = h('col'); rn.style.width = RNW + 'px'; cg.appendChild(rn); cols.forEach(function (c) { var cc = h('col'); cc.style.width = colPx(c) + 'px'; cg.appendChild(cc); }); tb.appendChild(cg); tb.style.width = (RNW + cols.reduce(function (s, c) { return s + colPx(c); }, 0)) + 'px';
+          var hr = h('tr'), corner = h('th', 'rn', ''); hr.appendChild(corner); cols.forEach(function (c, j) { var th = h('th', j === selCol ? 'csel' : '', FX.colLetter(j)); th.onclick = function () { selCol = j; selRow = null; cur.c = j; draw(); ctx.setProps(props()); status(); }; hr.appendChild(th); }); var thead = h('thead'); thead.appendChild(hr); tb.appendChild(thead);
+          var tbody = h('tbody'); if (first > 0) { var sp = h('tr'); sp.style.height = first * RH + 'px'; var std = h('td'); std.colSpan = cols.length + 1; std.style.cssText = 'height:' + first * RH + 'px;padding:0;border:0'; sp.appendChild(std); tbody.appendChild(sp); }
+          for (var r = first; r < last; r++) {
+            (function (r) {
+              var tr = h('tr'), rnc = h('td', 'rn' + (r === selRow ? ' rsel' : ''), String(r + 1)); rnc.onclick = function () { selRow = r; selCol = null; cur.r = r; draw(); ctx.setProps(props()); status(); }; tr.appendChild(rnc);
+              cols.forEach(function (c, j) {
+                var v = disp(r, j), x = sh.rows[r].c[c.id], isH = sh.header && r === 0, cl = (isH ? 'hd ' : '') + (r === cur.r && j === cur.c ? 'sel ' : '') + (r === selRow ? 'rsel ' : '') + (fmt === 'xlsx' && C.isF(x) ? (FX.isErr(vals[r][j]) ? 'err ' : 'fx ') : '') + (typeof (C.raw(x)) === 'number' ? 'num' : ''), td = h('td', cl.trim(), v); td.title = fmt === 'xlsx' && C.isF(x) ? '=' + x.f : '';
+                td.onclick = function () { if (editing) { return; } cur = { r: r, c: j }; selRow = null; selCol = null; draw(); ctx.setProps(props()); status(); scrollEl.focus(); }; td.ondblclick = function () { startEdit(r, j); };
+                tr.appendChild(td);
+              });
+              tbody.appendChild(tr);
+            })(r);
+          }
+          if (last < sh.rows.length) { var sp2 = h('tr'), st2 = h('td'); st2.colSpan = cols.length + 1; st2.style.cssText = 'height:' + (sh.rows.length - last) * RH + 'px;padding:0;border:0'; sp2.appendChild(st2); tbody.appendChild(sp2); }
+          tb.appendChild(tbody); scrollEl.textContent = ''; scrollEl.appendChild(tb); scrollEl.scrollTop = keep; editing = null;
+        }
+        scrollEl.onscroll = function () { if (raf || editing) { return; } raf = requestAnimationFrame(function () { raf = 0; draw(); }); };
+        function cellEl(r, c) { var trs = scrollEl.querySelectorAll('tbody tr'); for (var i = 0; i < trs.length; i++) { var rn = trs[i].firstChild; if (rn && rn.textContent === String(r + 1)) { return trs[i].children[c + 1]; } } return null; }
+        function ensureVisible() { var top = cur.r * RH + HEADH, bot = top + RH; if (top < scrollEl.scrollTop + HEADH) { scrollEl.scrollTop = Math.max(0, cur.r * RH); } else if (bot > scrollEl.scrollTop + scrollEl.clientHeight) { scrollEl.scrollTop = bot - scrollEl.clientHeight + 4; } }
+        function startEdit(r, c, init) {
+          if (sh.locked) { ctx.say('「' + sh.name + '」鎖住了'); return; } if (editing) { return; } cur = { r: r, c: c }; ensureVisible(); draw(); var td = cellEl(r, c); if (!td) { return; }
+          var inp = h('input'); inp.type = 'text'; inp.value = init != null ? init : rawText(r, c); td.textContent = ''; td.appendChild(inp); editing = { r: r, c: c }; inp.focus(); if (init == null) { inp.select(); }
+          var done = false; function finish(ok, dr, dc) { if (done) { return; } done = true; editing = null; var v = inp.value; if (ok) { setCell(r, c, v); } cur = { r: Math.max(0, Math.min(sh.rows.length - 1, r + (dr || 0))), c: Math.max(0, Math.min(sh.cols.length - 1, c + (dc || 0))) }; draw(); status(); scrollEl.focus(); }
+          inp.onkeydown = function (ev) { ev.stopPropagation(); if (ev.key === 'Escape') { finish(false); } else if (ev.key === 'Enter') { ev.preventDefault(); finish(true, ev.shiftKey ? -1 : 1, 0); } else if (ev.key === 'Tab') { ev.preventDefault(); finish(true, 0, ev.shiftKey ? -1 : 1); } }; inp.onblur = function () { finish(true, 0, 0); }; inp.onclick = function (ev) { ev.stopPropagation(); };
+        }
+        scrollEl.onkeydown = function (ev) {
+          if (editing || !sh) { return; } var k = ev.key, mv = null; ev.stopPropagation();
+          if (k === 'ArrowDown') { mv = [1, 0]; } else if (k === 'ArrowUp') { mv = [-1, 0]; } else if (k === 'ArrowLeft') { mv = [0, -1]; } else if (k === 'ArrowRight') { mv = [0, 1]; } else if (k === 'Tab') { mv = [0, ev.shiftKey ? -1 : 1]; } else if (k === 'Enter') { mv = [ev.shiftKey ? -1 : 1, 0]; } else if (k === 'PageDown') { mv = [20, 0]; } else if (k === 'PageUp') { mv = [-20, 0]; }
+          if (mv && !(k === 'Enter' && false)) { ev.preventDefault(); cur = { r: Math.max(0, Math.min(sh.rows.length - 1, cur.r + mv[0])), c: Math.max(0, Math.min(sh.cols.length - 1, cur.c + mv[1])) }; selRow = selCol = null; ensureVisible(); draw(); status(); return; }
+          if (k === 'F2') { ev.preventDefault(); startEdit(cur.r, cur.c); return; }
+          if (k === 'Delete' || k === 'Backspace') { ev.preventDefault(); setCell(cur.r, cur.c, ''); return; }
+          if (k === 'z' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); ctx.undo(); return; } if ((k === 'y' && (ev.ctrlKey || ev.metaKey))) { ev.preventDefault(); ctx.redo(); return; }
+          if (k === 'c' && (ev.ctrlKey || ev.metaKey)) { try { navigator.clipboard.writeText(disp(cur.r, cur.c)); } catch (e) { /* 沒有權限就算了 */ } return; }
+          if (k.length === 1 && !ev.ctrlKey && !ev.metaKey && !ev.altKey) { ev.preventDefault(); startEdit(cur.r, cur.c, k); }
+        };
+        scrollEl.addEventListener('paste', function (ev) {   // 貼上試算表的區塊（Tab 分欄、換行分列）：一次動作、可復原
+          if (editing || !sh) { return; } var t = (ev.clipboardData && ev.clipboardData.getData('text')) || ''; if (!t) { return; } ev.preventDefault(); var rows = t.replace(/\r\n/g, '\n').replace(/\n$/, '').split('\n').map(function (l) { return l.split('\t'); }); if (rows.length * (rows[0] || []).length > 5000) { ctx.say('一次貼太多（超過 5000 格）'); return; }
+          var es = []; rows.forEach(function (rw, i) { rw.forEach(function (v, j) { var r = cur.r + i, c = cur.c + j; if (c >= C.MAXCOLS || r >= C.MAXROWS) { return; } var e = { op: 'set_cell', sheet: sh.id, row: r + 1, col: FX.colLetter(c) }; if (fmt === 'xlsx' && /^=/.test(v)) { e.f = v; } else { e.v = v; } es.push(e); }); });
+          var res = ctx.apply(es, '貼上 ' + rows.length + '×' + (rows[0] || []).length + ' 格', '', 'panel'); if (res && res.rejected && res.rejected.length) { ctx.say(res.rejected[0].error); }
+        });
+        fxIn.onkeydown = function (ev) { ev.stopPropagation(); if (ev.key === 'Enter') { ev.preventDefault(); setCell(cur.r, cur.c, fxIn.value); scrollEl.focus(); } else if (ev.key === 'Escape') { fxIn.value = rawText(cur.r, cur.c); scrollEl.focus(); } };
+        // ───── 找／取代 ─────
+        var fi = -1; function hits() { var q = fnd.value.toLowerCase(), out = []; if (!q || !sh) { return out; } for (var r = 0; r < sh.rows.length && out.length < 5000; r++) { for (var c = 0; c < sh.cols.length; c++) { if (disp(r, c).toLowerCase().indexOf(q) >= 0) { out.push({ r: r, c: c }); } } } return out; }
+        fnd.oninput = function () { var m = hits(); fst.textContent = fnd.value ? m.length + ' 格' : ''; fi = -1; };
+        bFind.onclick = function () { var m = hits(); if (!m.length) { fst.textContent = '找不到'; return; } fi = (fi + 1) % m.length; cur = m[fi]; selRow = selCol = null; ensureVisible(); draw(); status(); fst.textContent = (fi + 1) + '／' + m.length; };
+        fnd.onkeydown = function (ev) { ev.stopPropagation(); if (ev.key === 'Enter') { ev.preventDefault(); bFind.onclick(); } }; rep.onkeydown = function (ev) { ev.stopPropagation(); };
+        bRep.onclick = function () { if (!fnd.value) { return; } var r = ctx.apply([{ op: 'replace_all', find: fnd.value, repl: rep.value, sheet: sh.id }], '取代「' + fnd.value.slice(0, 12) + '」→「' + rep.value.slice(0, 12) + '」', '', 'panel'); fst.textContent = r.applied.length ? '已取代' : (r.rejected[0] ? r.rejected[0].error : ''); };
+        // ───── 工具列：加列、加欄、開啟檔案 ─────
+        var bAddRow = h('button', null, '＋列'), bAddCol = h('button', null, '＋欄'); bAddRow.title = '在選到的列後面（沒選就在最後）加一列'; bAddCol.title = '在選到的欄後面（沒選就在最後）加一欄';
+        bAddRow.onclick = function () { ctx.apply([{ op: 'add_row', sheet: sh.id, after: String(cur.r + 1) }], '加一列', '', 'panel'); }; bAddCol.onclick = function () { ctx.apply([{ op: 'add_col', sheet: sh.id, after: sh.cols[cur.c].id }], '加一欄', '', 'panel'); };
+        var openIn = h('input'); openIn.type = 'file'; openIn.accept = '.csv,.tsv,.txt,.xlsx,text/csv'; openIn.style.display = 'none'; var bOpen = h('button', null, '📂 開啟檔案'); bOpen.title = '把本機的 CSV 或 Excel 檔讀進來（取代目前的內容，可復原）'; bOpen.onclick = function () { openIn.click(); };
+        openIn.onchange = function () {
+          var f = openIn.files && openIn.files[0]; openIn.value = ''; if (!f) { return; } if (f.size > 20000000) { ctx.say('檔案太大（超過 20 MB）'); return; } var isX = /\.xlsx$/i.test(f.name), title = f.name.replace(/\.[^.]+$/, '').slice(0, 60);
+          f.arrayBuffer().then(async function (buf) { var ns; if (isX) { var Z = host.jszip ? await host.jszip() : null; if (!Z) { ctx.say('這裡還讀不了 xlsx（JSZip 沒有載入）'); return; } ns = await C.readXlsx(new Uint8Array(buf), Z, title); if (host.keepOrig) { try { host.keepOrig(new Uint8Array(buf)); } catch (e) { /* 原檔沒存到就是匯出時重新產生 */ } } } else { ns = C.parseCsv(decode(buf), title); } if (ns.format !== fmt) { ctx.say('這是' + (fmt === 'xlsx' ? '試算表' : 'CSV') + '編輯器：請用 /edit-' + (ns.format === 'xlsx' ? 'xlsx' : 'csv') + ' 開這個檔案'); return; } ctx.commit(ns, '開啟 ' + f.name, '', 'panel'); ctx.say('已開啟 ' + f.name + (ns.notes && ns.notes.length ? '（' + ns.notes.length + ' 項注意事項，見屬性面板）' : '')); }).catch(function (e) { ctx.say('開不起來：' + String((e && e.message) || e).slice(0, 80)); });
+        };
+        ctx.bar.appendChild(bAddRow); ctx.bar.appendChild(bAddCol); ctx.bar.appendChild(bOpen); ctx.bar.appendChild(openIn);
+        // ───── 屬性：選到的格／列／欄；沒選＝工作表與檔案 ─────
+        function props() {
+          var box = h('div'); box.style.cssText = 'display:flex;flex-direction:column;gap:6px'; function lab(t, el) { var l = h('label'); l.appendChild(document.createTextNode(t)); l.appendChild(el); return l; } function btn(t, fn, title) { var b = h('button', null, t); if (title) { b.title = title; } b.onclick = fn; return b; } function row(list) { var d = h('div', 'row'); list.forEach(function (x) { d.appendChild(x); }); return d; }
+          if (selCol != null) {
+            var c = sh.cols[selCol]; box.appendChild(h('div', 'st', '欄 ' + FX.colLetter(selCol) + (sh.header && sh.rows[0] ? '「' + C.cellStr(sh.rows[0].c[c.id]) + '」' : '')));
+            box.appendChild(row([btn('↑ 由小到大', function () { var r = ctx.apply([{ op: 'sort', sheet: sh.id, col: c.id, dir: 'asc' }], '依 ' + FX.colLetter(selCol) + ' 欄排序', '', 'panel'); if (r.rejected && r.rejected[0]) { ctx.say(r.rejected[0].error); } }), btn('↓ 由大到小', function () { var r = ctx.apply([{ op: 'sort', sheet: sh.id, col: c.id, dir: 'desc' }], '依 ' + FX.colLetter(selCol) + ' 欄由大到小排序', '', 'panel'); if (r.rejected && r.rejected[0]) { ctx.say(r.rejected[0].error); } })]));
+            box.appendChild(row([btn('← 左邊加欄', function () { ctx.apply([{ op: 'add_col', sheet: sh.id, after: selCol === 0 ? 'start' : sh.cols[selCol - 1].id }], '加一欄', '', 'panel'); }), btn('右邊加欄 →', function () { ctx.apply([{ op: 'add_col', sheet: sh.id, after: c.id }], '加一欄', '', 'panel'); })]));
+            var w = h('input'); w.type = 'number'; w.min = 3; w.max = 80; w.value = c.w || 14; w.onchange = function () { ctx.apply([{ op: 'set_width', sheet: sh.id, col: c.id, w: Number(w.value) }], '欄寬', '', 'panel'); }; box.appendChild(lab('欄寬（字元）', w));
+            box.appendChild(row([btn('🧹 去前後空白', function () { ctx.apply([{ op: 'trim', sheet: sh.id, col: c.id }], '去空白', '', 'panel'); }), btn('🗑 刪掉這欄', function () { var r = ctx.apply([{ op: 'del_col', sheet: sh.id, col: c.id }], '刪掉 ' + FX.colLetter(selCol) + ' 欄', '', 'panel'); selCol = null; if (r.rejected && r.rejected[0]) { ctx.say(r.rejected[0].error); } })])); return box;
+          }
+          if (selRow != null) {
+            var rw = sh.rows[selRow]; box.appendChild(h('div', 'st', '第 ' + (selRow + 1) + ' 列'));
+            box.appendChild(row([btn('↑ 上面加列', function () { ctx.apply([{ op: 'add_row', sheet: sh.id, after: selRow === 0 ? 'start' : String(selRow) }], '加一列', '', 'panel'); }), btn('下面加列 ↓', function () { ctx.apply([{ op: 'add_row', sheet: sh.id, after: String(selRow + 1) }], '加一列', '', 'panel'); })]));
+            box.appendChild(btn('🗑 刪掉這列', function () { ctx.apply([{ op: 'del_rows', sheet: sh.id, rows: [rw.id] }], '刪掉第 ' + (selRow + 1) + ' 列', '', 'panel'); selRow = null; })); return box;
+          }
+          var nf = sh.rows.reduce(function (n, r) { return n + Object.keys(r.c).filter(function (k) { return C.isF(r.c[k]); }).length; }, 0), ti = h('input'); ti.type = 'text'; ti.value = spec.title; ti.onchange = function () { if (ti.value.trim()) { ctx.apply([{ op: 'set_title', text: ti.value }], '標題改成「' + ti.value.trim().slice(0, 20) + '」', '', 'panel'); } };
+          box.appendChild(h('div', 'st', '工作表「' + sh.name + '」：' + sh.rows.length + ' 列 × ' + sh.cols.length + ' 欄' + (nf ? '・' + nf + ' 個公式' : '') + (fmt === 'xlsx' ? '・共 ' + spec.objects.length + ' 張' : ''))); box.appendChild(lab('檔名', ti));
+          var hd = h('input'); hd.type = 'checkbox'; hd.checked = !!sh.header; hd.onchange = function () { ctx.apply([{ op: 'set_header', sheet: sh.id, header: hd.checked }], hd.checked ? '第一列當標題' : '第一列不當標題', '', 'panel'); }; box.appendChild(lab('第一列是標題', hd));
+          box.appendChild(row([btn('🧹 刪空白列', function () { var r = ctx.apply([{ op: 'del_rows', sheet: sh.id, blank: true }], '刪掉空白列', '', 'panel'); if (r.rejected && r.rejected[0]) { ctx.say(r.rejected[0].error); } }), btn('♊ 去重複列', function () { var r = ctx.apply([{ op: 'del_rows', sheet: sh.id, duplicates: {} }], '去掉重複的列', '', 'panel'); if (r.rejected && r.rejected[0]) { ctx.say(r.rejected[0].error); } }), btn('🧹 去空白', function () { var r = ctx.apply([{ op: 'trim', sheet: sh.id }], '去前後空白', '', 'panel'); if (r.rejected && r.rejected[0]) { ctx.say(r.rejected[0].error); } })]));
+          if (fmt === 'csv') {
+            var ds = h('select'); [[',', '分隔：逗號'], [';', '分隔：分號'], ['\t', '分隔：Tab'], ['|', '分隔：直線']].forEach(function (x) { var o = h('option', null, x[1]); o.value = x[0]; ds.appendChild(o); }); ds.value = spec.delim; ds.onchange = function () { ctx.apply([{ op: 'set_doc', delim: ds.value }], '分隔符號改成 ' + ds.options[ds.selectedIndex].textContent, '', 'panel'); }; box.appendChild(ds);
+            var es = h('select'); [['\n', '換行：LF'], ['\r\n', '換行：CRLF']].forEach(function (x) { var o = h('option', null, x[1]); o.value = x[0]; es.appendChild(o); }); es.value = spec.eol === '\r\n' ? '\r\n' : '\n'; es.onchange = function () { ctx.apply([{ op: 'set_doc', eol: es.value }], '換行改成 ' + (es.value === '\r\n' ? 'CRLF' : 'LF'), '', 'panel'); }; box.appendChild(es);
+            var bm = h('input'); bm.type = 'checkbox'; bm.checked = !!spec.bom; bm.onchange = function () { ctx.apply([{ op: 'set_doc', bom: bm.checked }], 'BOM ' + (bm.checked ? '加上' : '拿掉'), '', 'panel'); }; box.appendChild(lab('UTF-8 BOM（Excel 開中文用）', bm));
+            var qa = h('input'); qa.type = 'checkbox'; qa.checked = !!spec.quoteAll; qa.onchange = function () { ctx.apply([{ op: 'set_doc', quoteAll: qa.checked }], qa.checked ? '全部加引號' : '只在需要時加引號', '', 'panel'); }; box.appendChild(lab('每格都加引號', qa));
+            box.appendChild(h('div', 'st', '沒有動到的檔案，輸出時一個位元組都不會變。'));
+          }
+          (spec.notes || []).forEach(function (n) { var d = h('div', 'st', '⚠️ ' + n); d.style.color = '#9a6700'; box.appendChild(d); }); return box;
+        }
+        // ───── CSV 的原始碼分頁 ─────
+        var srcTa = h('textarea', 'code'); srcTa.rows = 18; srcTa.spellcheck = false; srcTa.style.flex = '1'; srcTa.style.whiteSpace = 'pre'; srcWrap.style.cssText = 'display:flex;flex-direction:column;gap:6px;flex:1';
+        var bApply = h('button', 'pri', '▶ 套用原始碼'), bRe = h('button', null, '↻ 重新產生'), srcSt = h('span', 'st'), srow = h('div', 'row'); [bApply, bRe, srcSt].forEach(function (x) { srow.appendChild(x); });
+        srcWrap.appendChild(h('div', 'st', '整份 CSV 的原始文字。改完按「套用原始碼」（會整份重新解析；欄列的 id 重新編）。')); srcWrap.appendChild(srcTa); srcWrap.appendChild(srow);
+        function srcText() { return C.serializeCsv(spec); }
+        bRe.onclick = function () { srcTa.value = srcText(); srcSt.textContent = ''; };
+        bApply.onclick = function () { var t = srcTa.value.replace(/\r\n|\n/g, spec.eol === '\r\n' ? '\r\n' : '\n'); if (t === srcText()) { srcSt.textContent = '沒有改動'; return; } var ns = C.parseCsv((spec.bom ? '﻿' : '') + t, spec.title); ctx.commit(ns, '改寫原始碼（' + ns.objects[0].rows.length + ' 列）', '', 'panel'); srcSt.textContent = '已套用'; };
+        var ret = {
+          tabs: fmt === 'csv' ? { grid: wrap, source: srcWrap } : { grid: wrap }, env: function () { return { selection: selId }; },
+          refresh: function (s, id) {
+            spec = s; selId = id; var prev = sh; sh = sheetNow(); curSheetId = sh.id; if (prev && prev.id !== sh.id) { cur = { r: 0, c: 0 }; selRow = selCol = null; scrollEl.scrollTop = 0; } vals = fmt === 'xlsx' ? C.computed(sh) : null; cur = { r: Math.min(cur.r, Math.max(0, sh.rows.length - 1)), c: Math.min(cur.c, Math.max(0, sh.cols.length - 1)) };
+            if (selRow != null && selRow >= sh.rows.length) { selRow = null; } if (selCol != null && selCol >= sh.cols.length) { selCol = null; } if (!editing) { draw(); } ctx.setProps(props()); status(); if (fmt === 'csv' && document.activeElement !== srcTa) { srcTa.value = srcText(); }
+          },
+          showTab: function (t) { if (t === 'source') { srcTa.value = srcText(); } else { draw(); } }, destroy: function () { /* 沒有要收的資源 */ },
+        };
+        return ret;
+      }
+    });
+  }
+  return { mount: mount, colPx: colPx };
+});
+
+}).call(null, undefined, holder);
+return holder.FaEditSheetUI;
+})();
+/* EDSHEETUI-END */
 /* EDPFX-BEGIN */
 const FaPicFx = (function () {
 const holder = {};
@@ -34001,7 +34647,7 @@ const FaEditHost = (function () {
 (function () {
     'use strict';
     const H = FaEditHost, T = H.T, M = H.methods;
-    const TEXTY = /\.(md|markdown|mdown|txt|text|log|ini|conf|cfg|properties|env|rst|org|tex|srt|vtt|diff|patch)$/i, MD_EXT = /\.(md|markdown|mdown)$/i;
+    const TEXTY = /\.(md|markdown|mdown|txt|text|log|ini|conf|cfg|properties|env|rst|org|tex|srt|vtt|diff|patch)$/i, MD_EXT = /\.(md|markdown|mdown)$/i, SHEETY = /\.(csv|tsv|xlsx)$/i;
     const decodeText = (buf) => { const u = new Uint8Array(buf); try { return new TextDecoder('utf-8', { fatal: true }).decode(u); } catch (_) { try { return new TextDecoder('big5').decode(u); } catch (__) { return new TextDecoder('utf-8').decode(u); } } };
 
     function coreFor(fmt) {
@@ -34066,11 +34712,11 @@ const FaEditHost = (function () {
         let targets = atts.map((a) => ({ id: a.id, name: a.filename })), all = []; try { all = (await this.fileCache.getAll()).filter((x) => x && x.filename); } catch (_) { /* */ }
         all.sort((a, b) => (b.createdAt || b.lastAccessedAt || 0) - (a.createdAt || a.lastAccessedAt || 0));
         if (!targets.length && nameArg) { const low = nameArg.toLowerCase(), hit = all.filter((x) => x.id === low || String(x.filename).toLowerCase() === low), part = hit.length ? hit : all.filter((x) => String(x.filename).toLowerCase().includes(low)); targets = part.slice(0, 3).map((x) => ({ id: x.id, name: x.filename })); if (!targets.length) { say(T('找不到檔案「' + nameArg + '」。先附上檔案(📎、拖進來、貼上)再下 /edit-file,或用 /edit-markdown、/edit-text 開空白的。', 'No such file: ' + nameArg)); return; } }
-        if (!targets.length) { const x = all.find((y) => TEXTY.test(y.filename)); if (x) targets = [{ id: x.id, name: x.filename }]; }
-        if (!targets.length) { say(T('用法:/edit-file [檔名]　先附上檔案再下 /edit-file。目前可以編輯:Markdown(.md)與純文字(.txt、.log、.ini…);csv、xlsx、docx 還在做。', 'Usage: /edit-file [name] — Markdown and plain text for now; csv, xlsx, docx are coming.')); return; }
+        if (!targets.length) { const x = all.find((y) => TEXTY.test(y.filename) || SHEETY.test(y.filename)); if (x) targets = [{ id: x.id, name: x.filename }]; }
+        if (!targets.length) { say(T('用法:/edit-file [檔名]　先附上檔案再下 /edit-file。目前可以編輯:Markdown(.md)、純文字(.txt、.log、.ini…)、CSV(.csv)與試算表(.xlsx);docx 還在做。', 'Usage: /edit-file [name] — Markdown, plain text, CSV and xlsx; docx is coming.')); return; }
         for (const tg of targets.slice(0, 3)) {
-            if (!TEXTY.test(tg.name)) { say(T('「' + tg.name + '」這種格式的編輯器還沒做(目前:.md 與純文字)。用 /view 可以先看 csv／xlsx。', '"' + tg.name + '": no editor for this format yet.')); continue; }
-            try { const rec = await this.fileCache.get(tg.id); if (!rec || !rec.blob) { say(T('讀不到「' + tg.name + '」', 'Could not read ' + tg.name)); continue; } if (rec.blob.size > 4000000) { say(T('「' + tg.name + '」超過 4 MB,太大了。', tg.name + ' is over 4 MB.')); continue; } const res = await this._edOpenTextFile(tg.name, await rec.blob.arrayBuffer()); if (res && res.ok === false) say('⚠️ ' + (res.error || T('開不起來', 'could not open it'))); }
+            if (!TEXTY.test(tg.name) && !SHEETY.test(tg.name)) { say(T('「' + tg.name + '」這種格式的編輯器還沒做(目前:.md、純文字、.csv、.xlsx;docx 在做)。用 /view 可以先看。', '"' + tg.name + '": no editor for this format yet.')); continue; }
+            try { const rec = await this.fileCache.get(tg.id); if (!rec || !rec.blob) { say(T('讀不到「' + tg.name + '」', 'Could not read ' + tg.name)); continue; } const lim = SHEETY.test(tg.name) ? 20000000 : 4000000; if (rec.blob.size > lim) { say(T('「' + tg.name + '」超過 ' + (lim / 1000000) + ' MB,太大了。', tg.name + ' is over ' + (lim / 1000000) + ' MB.')); continue; } const res = SHEETY.test(tg.name) ? await this._edOpenSheetFile(tg.name, await rec.blob.arrayBuffer()) : await this._edOpenTextFile(tg.name, await rec.blob.arrayBuffer()); if (res && res.ok === false) say('⚠️ ' + (res.error || T('開不起來', 'could not open it'))); }
             catch (e) { say('⚠️ ' + T('開不起來:', 'Could not open it: ') + String((e && e.message) || e)); }
         }
     };
@@ -34085,7 +34731,7 @@ const FaEditHost = (function () {
         this.register_slash_command('/edit-md', hint, 'Markdown 編輯器:/edit-markdown 的別名。', mk('edit-markdown'));
         this.register_slash_command('/edit-text', '[一句話描述]', txtDesc, mk('edit-text'));
         this.register_slash_command('/edit-txt', '[一句話描述]', '純文字編輯器:/edit-text 的別名。', mk('edit-text'));
-        this.register_slash_command('/edit-file', '[檔名]', '依副檔名開編輯器:.md 開 Markdown 編輯器,.txt／.log／.ini… 開純文字編輯器(csv、xlsx、docx 還在做)。先附上檔案(📎、拖進來、貼上)再下 /edit-file,或 /edit-file 檔名;不帶參數開最近上傳的文字檔。', (argsText, run0) => (run0 || this)._editFileSlash(argsText, run0));
+        this.register_slash_command('/edit-file', '[檔名]', '依副檔名開編輯器:.md 開 Markdown 編輯器,.txt／.log／.ini… 開純文字編輯器、.csv、.xlsx(docx 還在做)。先附上檔案(📎、拖進來、貼上)再下 /edit-file,或 /edit-file 檔名;不帶參數開最近上傳的文字檔。', (argsText, run0) => (run0 || this)._editFileSlash(argsText, run0));
     };
     const prevRegister = M._registerEditCommands; M._registerEditCommands = function () { if (prevRegister) prevRegister.call(this); this._registerEditDocsCommands(); };
     M._registerEditDocsTools = function (registerOptional) {
@@ -34104,6 +34750,94 @@ const FaEditHost = (function () {
         open('edit-markdown', 'Markdown 編輯器'); open('edit-text', '純文字編輯器');
     };
     { const prevTools = M._registerEditTools; M._registerEditTools = function (ro) { if (prevTools) prevTools.call(this, ro); this._registerEditDocsTools(ro); }; }
+})();
+
+/* /edit-csv、/edit-xlsx(/edit-sheet) 的主機轉接層(接在 docs_host.js 後面,同一個 FaEditHost)。設計見 DESIGN.edit-docs.md。
+ * 文件是工作表的清單(FaEditSheet);AI 只能用封閉動作改(FaEditSheet.AI_OPS),且只看欄位概要;程式讀得懂的白話(parseCommands)由外框先處理。
+ * 遠端:登記就帶 remote 宣告(sync:'edits'),所以「AI 在」下拉、by 標籤、一致性檢查、多人同編都自動涵蓋。 */
+(function () {
+    'use strict';
+    const H = FaEditHost, T = H.T, M = H.methods;
+    const SHEETY = /\.(csv|tsv|xlsx)$/i;
+    const decodeText = (buf) => { const u = new Uint8Array(buf); try { return new TextDecoder('utf-8', { fatal: true }).decode(u); } catch (_) { try { return new TextDecoder('big5').decode(u); } catch (__) { return new TextDecoder('utf-8').decode(u); } } };
+    function coreFor(fmt) {
+        const C = FaEditSheet, pick = (id) => (fmt === 'xlsx' ? (id === 'blank' ? 'sheet' : id) : id);
+        return { validate: (s) => C.validate(s), listStarters: () => C.listStarters().filter((t) => (t.id === 'budget' || t.id === 'sheet') === (fmt === 'xlsx')), starter: (id) => C.starter(pick(String(id || 'blank'))) };
+    }
+    const KIND = (fmt) => {
+        const x = fmt === 'xlsx';
+        return {
+            fence: x ? 'fa-edit-xlsx' : 'fa-edit-csv', icon: x ? '📊' : '🧾', cmd: x ? '/edit-xlsx' : '/edit-csv', prefix: x ? 'xl' : 'cs', label: () => (x ? T('試算表編輯器', 'Spreadsheet editor') : T('CSV 編輯器', 'CSV editor')),
+            core: () => coreFor(fmt),
+            ui: () => ({ mount: (o) => FaEditSheetUI.mount(Object.assign({}, o, { host: Object.assign(o.host || {}, o._sheetHostExt || {}) })) }),
+            mountOpts: function (id) { return { _sheetHostExt: this._sheetHostExt(x ? 'edit-xlsx' : 'edit-csv', id) }; },
+            lead: x ? '📊 試算表編輯器:工作表在左邊,公式(SUM、AVERAGE、IF、VLOOKUP…)會算,公式與算好的值都保留。單擊選格、雙擊或直接打字改;用說的:排序、刪空白列、加欄加列、取代。每一步都能復原。'
+                : '🧾 CSV 編輯器:沒動到的檔案一個位元組都不會變(分隔符號、換行、引號、BOM 都保留)。單擊選格、雙擊或直接打字改;用說的:排序、刪空白列／重複列、加欄加列、條件式刪列、取代。每一步都能復原。',
+            polishSystem: 'You tidy a prompt that rebuilds a table. Keep every fact (columns, rules, wording of the user\'s instructions); make it one clear, reusable prompt. Answer with the prompt only.',
+            remote: { sync: 'edits', methods: { ask: { doc: true }, polish: {} } },
+            ask: function (req, ed) { return this._edAskSheet(req, ed, fmt); },
+            help: () => '**' + (x ? T('試算表編輯器', 'Spreadsheet editor') : T('CSV 編輯器', 'CSV editor')) + '**\n\n' + (x ? '`/edit-xlsx`' : '`/edit-csv`') + T(':開一個空的表,或 `/edit-file 檔名` 開附上的檔案。', ': open an empty table, or `/edit-file name` for an attached file.'),
+        };
+    };
+    H.register('edit-csv', KIND('csv'));
+    H.register('edit-xlsx', KIND('xlsx'));
+
+    // ───── 編輯器的檔案轉接(xlsx 需要 JSZip;沒改過的 xlsx 匯出原檔,所以原檔存在 fileCache) ─────
+    M._sheetHostExt = function (kind, id) {
+        const self = this;
+        return {
+            jszip: async () => { await self._ensureJSZipLoaded(); return window.JSZip; },
+            origXlsx: async () => { const o = await self._edOriginGet(kind, id), fid = o && o.origFile; if (!fid) return null; const rec = await self.fileCache.get(fid); return rec && rec.blob ? new Uint8Array(await rec.blob.arrayBuffer()) : null; },
+            keepOrig: async (bytes) => { const rec = await self.fileCache.put('origin-' + id + '.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', new Blob([bytes]), 'uploaded'); const fid = rec && rec.id ? rec.id : rec; if (fid) await self._edPatchOrigin(kind, id, (o) => { o.origFile = fid; }); },
+        };
+    };
+    M._edOpenSheetFile = async function (name, buf, extra) {
+        const isX = /\.xlsx$/i.test(name), title = String(name).replace(/\.[^.]+$/, '').slice(0, 80); let spec;
+        if (isX) { await this._ensureJSZipLoaded(); spec = await FaEditSheet.readXlsx(new Uint8Array(buf), window.JSZip, title); } else { spec = FaEditSheet.parseCsv(decodeText(buf), title); }
+        const kind = spec.format === 'xlsx' ? 'edit-xlsx' : 'edit-csv', res = await this._edOpen(kind, Object.assign({ spec, origin: { file: { name: String(name), size: buf.byteLength || 0 } } }, extra || {}));
+        if (isX && res && res.ok) { try { await this._sheetHostExt(kind, res.id).keepOrig(new Uint8Array(buf)); } catch (_) { /* 原檔沒存到:匯出時重新產生 */ } }
+        return res;
+    };
+
+    // ───── AI:程式先讀(外框已做過 parseCommands),剩下的請模型回封閉動作(只給欄位概要) ─────
+    M._edAskSheet = async function (req, ed, fmt) {
+        req = req || {}; const A = this._edAi(), C = FaEditSheet, spec = C.validate(req.spec).spec, text = String(req.text || '').trim(), notes = [], edits = [], status = typeof req.onStatus === 'function' ? req.onStatus : () => {}; let say = '';
+        const sel = req.selection || (req.env && req.env.selection) || null;
+        if (!text) return { say, edits, notes };
+        if (!A.have()) return { say: T('這句話程式沒有讀懂,而且目前沒有可用的 AI;可以直接在表格上改,或說程式讀得懂的句子:「把 B 欄由大到小排序」「刪掉空白列」「B2 改成 99」「在最後加一欄「總價」」。', 'I could not read that and no AI is available; edit the grid directly or use a plain command.'), edits, notes };
+        status(T('想一想怎麼改…', 'Working out the changes…'));
+        const Pm = C.editPrompt(spec, text, sel, { budget: this._edIsOffline() ? 3500 : 9000 });
+        try {
+            const rep = await A.chat(Pm.system, Pm.user, { maxTokens: this._edIsOffline() ? 1800 : 3500, timeoutMs: 150000 }), pr = C.parseEditsReply(rep);
+            if (pr.ok) { pr.edits.forEach((e) => edits.push(e)); if (pr.say) say = pr.say; if (pr.dropped) notes.push(T('有 ' + pr.dropped + ' 個動作不在可做的清單裡,已略過', pr.dropped + ' actions were not allowed and were skipped')); }
+            else say = T('AI 的回覆我讀不懂(要是 JSON 動作)。換個說法再試一次。', 'I could not read the AI\'s answer (it has to be JSON actions). Say it differently.');
+        } catch (e) { say = T('AI 這次沒有回應(', 'The AI did not answer (') + String((e && e.message) || e).slice(0, 80) + ')。'; }
+        return { say, edits, notes };
+    };
+
+    M._registerEditSheetCommands = function () {
+        const hint = '[起手式｜一句話描述]', mk = (kind) => async (argsText, run0) => (run0 || this)._edCommand(kind, argsText, run0);
+        this.register_slash_command('/edit-csv', hint, 'CSV 編輯器(沒動到的檔案一個位元組都不會變,分隔符號、換行、引號、BOM 保留):單擊選格、雙擊改;用說的:「把 qty 由大到小排序」「刪掉空白列」「B2 改成 99」「在最後加一欄「總價」」「刪掉 name 是 banana 的列」;可復原、匯出、開啟本機檔案。', mk('edit-csv'));
+        this.register_slash_command('/edit-xlsx', hint, '試算表編輯器(xlsx):多工作表、公式會算(SUM AVERAGE IF VLOOKUP…)、公式與算好的值都保留;其餘同 /edit-csv。/edit-xlsx budget 從收支表(有公式)開始。', mk('edit-xlsx'));
+        this.register_slash_command('/edit-sheet', hint, '試算表編輯器:/edit-xlsx 的別名。', mk('edit-xlsx'));
+    };
+    { const prev = M._registerEditCommands; M._registerEditCommands = function () { if (prev) prev.call(this); this._registerEditSheetCommands(); }; }
+    M._registerEditSheetTools = function (registerOptional) {
+        const parse = async (self, raw) => { let a = {}; try { a = await self.repairJsonPayload(String(raw || '{}')); } catch (_) { /* */ } return a || {}; };
+        const open = (kind, label) => registerOptional(kind === 'edit-xlsx' ? 'edit_xlsx_open' : 'edit_csv_open',
+            '在對話裡放一個「' + label + '」:使用者用說的改(排序、刪空白列、加欄加列、取代、條件式刪列),或直接在表格上改;可復原、匯出、開啟本機檔案。參數:starter、csv(開起來時的 CSV 文字)、title、request、file_id(使用者附的 csv／xlsx)。',
+            async function (rawArgs) {
+                const a = await parse(this, rawArgs);
+                try {
+                    if (a.file_id) { const rec = await this.fileCache.get(String(a.file_id)); if (!rec || !rec.blob) return JSON.stringify({ ok: false, error: 'no such file: ' + a.file_id }); return JSON.stringify(await this._edOpenSheetFile(rec.filename || 'table.csv', await rec.blob.arrayBuffer(), { request: a.request })); }
+                    let spec = a.spec; if (!spec && a.csv) { spec = FaEditSheet.parseCsv(String(a.csv), a.title ? String(a.title).slice(0, 80) : undefined); delete spec.src; delete spec.sig; if (kind === 'edit-xlsx') spec.format = 'xlsx'; }
+                    return JSON.stringify(await this._edOpen(kind, { starter: a.starter, request: a.request, spec, id: a.id }));
+                } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+            },
+            { type: 'object', properties: { starter: { type: 'string', description: '起手式' }, csv: { type: 'string', description: '開起來時的 CSV 文字' }, title: { type: 'string', description: '檔名' }, request: { type: 'string', description: '一句話要怎麼改' }, file_id: { type: 'string', description: '使用者附的 csv／xlsx 檔' }, id: { type: 'string', description: '接著原來的專案編輯' } } });
+        open('edit-csv', 'CSV 編輯器'); open('edit-xlsx', '試算表編輯器');
+    };
+    { const prevTools = M._registerEditTools; M._registerEditTools = function (ro) { if (prevTools) prevTools.call(this, ro); this._registerEditSheetTools(ro); }; }
 })();
 
 /* 多人同編的主機轉接層(接在 edit_host.js 後面,同一個 FaEditHost)。設計見 DESIGN.edit-remote.md §6.5;文件邏輯在 FaEditSession,訊息層在 FaEditCollab。
