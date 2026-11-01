@@ -200,6 +200,7 @@
     const NOTE_LABEL = { user: 'aidoc 補充', comment: '原始碼註解', auto: '自動分析' };
     // deps.parse(language, src) → tree.rootNode（呼叫端提供 web-tree-sitter）；deps.notes[path|path::fn] 是 aidoc 的說明
     async function explainSource(path, src, opts) {
+        src = String(src == null ? '' : src).replace(/\r\n/g, '\n'); // Windows 的 CRLF 會讓語法樹的錯誤恢復漏掉壞掉函式後面的函式（行號不變）
         opts = opts || {}; const tx = opts.taxonomy; const deps = opts.deps || {}; const target = opts.fn || null; const notes = Object.assign(Object.create(null), tx.__notes || {}, opts.notes || {});
         const out = []; const meta = { path, language: null, functions: 0, unclassified: [], sources: {} };
         const lowKind = detectLowLevelKind(path, src); const language = languageOfPath(path);

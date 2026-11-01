@@ -5,7 +5,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const { suite } = require('./_t.js');
 const t = suite('integration_doc');
-const ROOT = path.join(__dirname, '..', '..'), md = fs.readFileSync(path.join(ROOT, 'renderer/src/computer/INTEGRATION.md'), 'utf8');
+const ROOT = path.join(__dirname, '..', '..'), md = fs.readFileSync(path.join(ROOT, 'renderer/src/computer/INTEGRATION.md'), 'utf8').replace(/\r\n/g, '\n'); // Windows 的 CRLF 會讓區塊正規式對不上
 const block = (name) => { const m = new RegExp('<!-- BLOCK:' + name + ' -->\\s*```(\\w+)\\n([\\s\\S]*?)```').exec(md); if (!m) throw new Error('找不到區塊 ' + name); return m[2]; };
 global.FaComputerCore = require('../../renderer/src/computer/computer_core.js'); global.FaComputerVision = require('../../renderer/src/computer/computer_vision.js');
 const Host = require('../../renderer/src/computer/computer_host.js');

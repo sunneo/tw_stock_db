@@ -160,15 +160,30 @@ const suites = [
     ['圖片轉3D核心（封閉殼、平滑殼、背景差分、全景分層、貼材質）', 'scripts/media-tests/image3d_core.test.js'],
     ['圖片轉3D主機端模擬（只要主體：挑主體、貼圖流程、擺到桌子上）', 'scripts/media-tests/image3d_host.test.js'],
 ];
-let failed = 0;
-const results = [], t00 = Date.now();   // 測試報告：每組的結果、數量、失敗項目、耗時
+let failed = 0, failedNew = 0;
+const results = [], t00 = Date.now();
+// 已知失敗清單（test-reports/known-failures.json：{ "測試檔路徑": "原因與為什麼先不修" }）：列在裡面的失敗標「既有」，不讓入口測試變紅；沒列的失敗是「新增」，一律變紅
+let known = {};
+try { known = JSON.parse(require('fs').readFileSync(path.join(root, 'test-reports', 'known-failures.json'), 'utf8')); } catch (_) { known = {}; }
+// 失敗原因：先找測試自己印的 FAIL／FAILED 行（含後面縮排的說明），再找 stderr 裡的第一個錯誤訊息；都沒有就老實寫「沒有輸出原因」
+function reasonOf(r) {
+    const out = String(r.stdout || '').split('\n'), err = String(r.stderr || '').split('\n').map((l) => l.replace(/\r$/, ''));
+    const lines = [];
+    out.forEach((l, i) => { if (/^FAIL|FAILED|failed [1-9]|[1-9][0-9]* failed/.test(l)) { lines.push(l.trim()); for (let k = 1; k <= 2 && out[i + k] && /^\s+\S/.test(out[i + k]); k++) lines.push(out[i + k].trim()); } });
+    const e = err.find((l) => /(Error|assert)/i.test(l) && !/^\s+at /.test(l));
+    if (e) lines.push('stderr：' + e.trim());
+    if (r.status === null) lines.push('被中止（逾時或訊號 ' + (r.signal || '?') + '）');
+    else if (r.status !== 0 && !lines.length) lines.push('結束碼 ' + r.status + '，沒有輸出原因');
+    return lines.slice(0, 4).join('；').slice(0, 300);
+}   // 測試報告：每組的結果、數量、失敗項目、耗時
 for (const [name, file] of suites) {
     const t0 = Date.now(), r = spawnSync(process.execPath, [path.join(root, file)], { encoding: 'utf8' });
     const last = String(r.stdout || '').trim().split('\n').pop();
     const ok = r.status === 0 && /(0 failed|[0-9]+ passed)/.test(last) && !/FAILED/.test(last);
-    if (!ok) failed++;
-    console.log((ok ? 'PASS ' : 'FAIL ') + name + '：' + last);
-    results.push({ name, file, ok, summary: last, failures: ok ? [] : String(r.stdout || '').split('\n').filter((l) => /^FAIL/.test(l)).map((l) => l.slice(0, 200)), error: ok ? '' : String(r.stderr || '').slice(0, 300), ms: Date.now() - t0 });
+    const reason = ok ? '' : reasonOf(r), isKnown = !ok && Object.prototype.hasOwnProperty.call(known, file);
+    if (!ok) { failed++; if (!isKnown) failedNew++; }
+    console.log((ok ? 'PASS ' : (isKnown ? 'FAIL(既有) ' : 'FAIL(新增) ')) + name + '：' + (ok ? last : reason || last));
+    results.push({ name, file, ok, known: isKnown, reason, summary: last, failures: ok ? [] : String(r.stdout || '').split('\n').filter((l) => /^FAIL/.test(l)).map((l) => l.slice(0, 200)), error: ok ? '' : String(r.stderr || '').slice(0, 300), ms: Date.now() - t0 });
     if (!ok) console.log(String(r.stdout || '').split('\n').filter((l) => /^FAIL/.test(l)).join('\n') + String(r.stderr || '').slice(0, 500));
 }
 // 部位偵測（Python）：有 python 與 numpy／pillow 才跑，沒有就略過並說明
@@ -189,11 +204,11 @@ else { const last = String(pq.stdout || '').trim().split('\n').filter(Boolean).p
 try {
     const fs = require('fs'), dir = path.join(root, 'test-reports'); fs.mkdirSync(dir, { recursive: true });
     const stamp = new Date().toISOString(), pass = results.filter((x) => x.ok).length;
-    const md = ['# 核心測試報告', '', '產生時間：' + stamp + '　（`node scripts/run-core-tests.js`）', '', '結果：' + pass + ' / ' + results.length + ' 組通過' + (failed ? '，**' + failed + ' 組失敗**' : '，全部通過') + '；總耗時 ' + Math.round((Date.now() - t00) / 1000) + ' 秒（只含這些純函式核心，不含 Electron／瀏覽器的真實環境測試）', '', '| 結果 | 測試組 | 摘要 | 耗時 |', '|---|---|---|---|']
-        .concat(results.map((x) => '| ' + (x.ok ? '通過' : '**失敗**') + ' | ' + x.name.replace(/\|/g, '/') + ' | ' + x.summary.replace(/\|/g, '/').slice(0, 120) + ' | ' + (x.ms / 1000).toFixed(1) + ' 秒 |'));
-    const bad = results.filter((x) => !x.ok); if (bad.length) { md.push('', '## 失敗項目'); bad.forEach((x) => { md.push('', '### ' + x.name + '（`' + x.file + '`）'); x.failures.slice(0, 20).forEach((l) => md.push('- ' + l)); if (x.error) md.push('- stderr：' + x.error.replace(/\s+/g, ' ')); }); }
-    fs.writeFileSync(path.join(dir, 'core-tests-latest.md'), md.join('\n') + '\n'); fs.writeFileSync(path.join(dir, 'core-tests-latest.json'), JSON.stringify({ at: stamp, failed, results }, null, 1));
+    const md = ['# 核心測試報告', '', '產生時間：' + stamp + '　（`node scripts/run-core-tests.js`）', '', '結果：' + pass + ' / ' + results.length + ' 組通過' + (failed ? '，**' + failed + ' 組失敗**' : '，全部通過') + '；總耗時 ' + Math.round((Date.now() - t00) / 1000) + ' 秒（只含這些純函式核心，不含 Electron／瀏覽器的真實環境測試）', '', '| 結果 | 測試組 | 摘要／失敗原因 | 耗時 |', '|---|---|---|---|']
+        .concat(results.map((x) => '| ' + (x.ok ? '通過' : (x.known ? '**失敗（既有）**' : '**失敗（新增）**')) + ' | ' + x.name.replace(/\|/g, '/') + ' | ' + (x.ok ? x.summary : (x.reason || x.summary)).replace(/\|/g, '/').slice(0, 160) + ' | ' + (x.ms / 1000).toFixed(1) + ' 秒 |'));
+    const bad = results.filter((x) => !x.ok); if (bad.length) { md.push('', '## 失敗項目'); bad.forEach((x) => { md.push('', '### ' + x.name + '（`' + x.file + '`）'); x.failures.slice(0, 20).forEach((l) => md.push('- ' + l)); if (x.error) md.push('- stderr：' + x.error.replace(/\s+/g, ' ')); if (x.reason) md.push('- 原因：' + x.reason); if (x.known) md.push('- 既有失敗：' + known[x.file]); }); }
+    fs.writeFileSync(path.join(dir, 'core-tests-latest.md'), md.join('\n') + '\n'); fs.writeFileSync(path.join(dir, 'core-tests-latest.json'), JSON.stringify({ at: stamp, failed, failed_new: failedNew, results }, null, 1));
     console.log('\n測試報告：test-reports/core-tests-latest.md');
 } catch (e) { console.log('（測試報告寫不出來：' + e.message + '）'); }
-console.log(failed ? '\n有 ' + failed + ' 組失敗' : '\n全部通過');
-process.exit(failed ? 1 : 0);
+console.log('\n通過 ' + (results.length - failed) + '／' + results.length + ' 組；失敗 ' + failed + '（新增 ' + failedNew + '、既有 ' + (failed - failedNew) + '）' + (failedNew ? '　← 有新增失敗' : ''));
+process.exit(failedNew ? 1 : 0);

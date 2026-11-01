@@ -2,7 +2,7 @@
 // 專案索引的「定義抽取」（_faRepoExtract，正規表示式版）的純函式測試：node scripts/repo-extract.test.js
 // 從 renderer/src/floating-assistant.js 的原始碼把函式本體切出來（它是 2MB 的單一檔案，沒辦法直接 require）。
 const fs = require('fs'), path = require('path'), assert = require('assert');
-const src = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'src', 'floating-assistant.js'), 'utf8');
+const src = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'src', 'floating-assistant.js'), 'utf8').replace(/\r\n/g, '\n'); // 工作目錄在 Windows 是 CRLF，切函式本體要靠 LF
 function grab(re) { const m = re.exec(src); assert.ok(m, '找不到 ' + re); const eol = src.indexOf('\n', m.index), first = src.slice(m.index, eol); if (/\}\s*(\/\/.*)?$/.test(first)) return first; const e = src.indexOf('\n}\n', m.index); assert.ok(e > 0); return src.slice(m.index, e + 2); } // 一行的函式取那一行；多行的取到「第 0 欄的 }」
 const lang = /^const FA_REPOMAP_LANG = .*$/m.exec(src)[0] + '\n' + /^const FA_CODE_STOP = .*$/m.exec(src)[0] + '\n' + /^const FA_LOC_LANGS = .*$/m.exec(src)[0] + '\n' + /^const FA_EXTRACT_SV = .*$/m.exec(src)[0];
 const code = [lang, grab(/function _faRepoExt\(/), grab(/function _faRepoLang\(/), grab(/function _faRepoSvOf\(/), grab(/function _faRepoExtract\(/)].join('\n');

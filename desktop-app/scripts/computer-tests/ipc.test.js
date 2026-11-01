@@ -54,7 +54,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   script = []; const nw2 = windowsOpened.length; r = await call('run', { steps: [{ op: 'key', keys: 'ctrl+alt+Delete' }] }); t.check('危險按鍵：直接拒絕、不開視窗', !r.ok && windowsOpened.length === nw2);
   // 機密
   r = await call('setRemoteSecret', { name: 'my vnc!', password: 'p@ss w0rd' }); const saved = JSON.parse(fs.readFileSync(secretsPath, 'utf8'));
-  t.check('setRemoteSecret：名稱消毒、存進 secrets.json 的專屬欄位、不動別的金鑰、檔案權限 600', r.ok && r.name === 'my_vnc_' && saved.COMPUTER_REMOTE_SECRETS.my_vnc_.password === 'p@ss w0rd' && saved.NVAPI_KEY === 'keep-me' && (fs.statSync(secretsPath).mode & 0o077) === 0);
+  t.check('setRemoteSecret：名稱消毒、存進 secrets.json 的專屬欄位、不動別的金鑰、檔案權限 600', r.ok && r.name === 'my_vnc_' && saved.COMPUTER_REMOTE_SECRETS.my_vnc_.password === 'p@ss w0rd' && saved.NVAPI_KEY === 'keep-me' && (process.platform === 'win32' || (fs.statSync(secretsPath).mode & 0o077) === 0));
   r = await call('listRemoteSecrets'); t.check('listRemoteSecrets 只回名稱、不回密碼', r.ok && JSON.stringify(r).includes('my_vnc_') && !JSON.stringify(r).includes('p@ss'));
   t.check('機密 getter：設定的密碼可取、環境變數 FA_VNC_PASSWORD_<NAME> 優先、不存在回 null', (() => { process.env.FA_VNC_PASSWORD_ENVONE = 'from-env'; const ok = reg.secrets.get('my_vnc_') === 'p@ss w0rd' && reg.secrets.get('envone') === 'from-env' && reg.secrets.get('nope') === null; delete process.env.FA_VNC_PASSWORD_ENVONE; return ok; })());
   r = await call('deleteRemoteSecret', { name: 'my_vnc_' }); t.check('deleteRemoteSecret', r.ok && !JSON.parse(fs.readFileSync(secretsPath, 'utf8')).COMPUTER_REMOTE_SECRETS.my_vnc_);
