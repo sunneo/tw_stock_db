@@ -4,7 +4,7 @@
 (function () {
     'use strict';
     const H = FaEditHost, T = H.T, M = H.methods;
-    const TEXTY = /\.(md|markdown|mdown|txt|text|log|ini|conf|cfg|properties|env|rst|org|tex|srt|vtt|diff|patch)$/i, MD_EXT = /\.(md|markdown|mdown)$/i, SHEETY = /\.(csv|tsv|xlsx)$/i;
+    const TEXTY = /\.(md|markdown|mdown|txt|text|log|ini|conf|cfg|properties|env|rst|org|tex|srt|vtt|diff|patch)$/i, MD_EXT = /\.(md|markdown|mdown)$/i, SHEETY = /\.(csv|tsv|xlsx)$/i, DOCXY = /\.docx$/i;
     const decodeText = (buf) => { const u = new Uint8Array(buf); try { return new TextDecoder('utf-8', { fatal: true }).decode(u); } catch (_) { try { return new TextDecoder('big5').decode(u); } catch (__) { return new TextDecoder('utf-8').decode(u); } } };
 
     function coreFor(fmt) {
@@ -69,11 +69,11 @@
         let targets = atts.map((a) => ({ id: a.id, name: a.filename })), all = []; try { all = (await this.fileCache.getAll()).filter((x) => x && x.filename); } catch (_) { /* */ }
         all.sort((a, b) => (b.createdAt || b.lastAccessedAt || 0) - (a.createdAt || a.lastAccessedAt || 0));
         if (!targets.length && nameArg) { const low = nameArg.toLowerCase(), hit = all.filter((x) => x.id === low || String(x.filename).toLowerCase() === low), part = hit.length ? hit : all.filter((x) => String(x.filename).toLowerCase().includes(low)); targets = part.slice(0, 3).map((x) => ({ id: x.id, name: x.filename })); if (!targets.length) { say(T('找不到檔案「' + nameArg + '」。先附上檔案(📎、拖進來、貼上)再下 /edit-file,或用 /edit-markdown、/edit-text 開空白的。', 'No such file: ' + nameArg)); return; } }
-        if (!targets.length) { const x = all.find((y) => TEXTY.test(y.filename) || SHEETY.test(y.filename)); if (x) targets = [{ id: x.id, name: x.filename }]; }
-        if (!targets.length) { say(T('用法:/edit-file [檔名]　先附上檔案再下 /edit-file。目前可以編輯:Markdown(.md)、純文字(.txt、.log、.ini…)、CSV(.csv)與試算表(.xlsx);docx 還在做。', 'Usage: /edit-file [name] — Markdown, plain text, CSV and xlsx; docx is coming.')); return; }
+        if (!targets.length) { const x = all.find((y) => TEXTY.test(y.filename) || SHEETY.test(y.filename) || DOCXY.test(y.filename)); if (x) targets = [{ id: x.id, name: x.filename }]; }
+        if (!targets.length) { say(T('用法:/edit-file [檔名]　先附上檔案再下 /edit-file。目前可以編輯:Markdown(.md)、純文字(.txt、.log、.ini…)、CSV(.csv)、試算表(.xlsx)與 Word(.docx)。', 'Usage: /edit-file [name] — Markdown, plain text, CSV, xlsx and docx.')); return; }
         for (const tg of targets.slice(0, 3)) {
-            if (!TEXTY.test(tg.name) && !SHEETY.test(tg.name)) { say(T('「' + tg.name + '」這種格式的編輯器還沒做(目前:.md、純文字、.csv、.xlsx;docx 在做)。用 /view 可以先看。', '"' + tg.name + '": no editor for this format yet.')); continue; }
-            try { const rec = await this.fileCache.get(tg.id); if (!rec || !rec.blob) { say(T('讀不到「' + tg.name + '」', 'Could not read ' + tg.name)); continue; } const lim = SHEETY.test(tg.name) ? 20000000 : 4000000; if (rec.blob.size > lim) { say(T('「' + tg.name + '」超過 ' + (lim / 1000000) + ' MB,太大了。', tg.name + ' is over ' + (lim / 1000000) + ' MB.')); continue; } const res = SHEETY.test(tg.name) ? await this._edOpenSheetFile(tg.name, await rec.blob.arrayBuffer()) : await this._edOpenTextFile(tg.name, await rec.blob.arrayBuffer()); if (res && res.ok === false) say('⚠️ ' + (res.error || T('開不起來', 'could not open it'))); }
+            if (!TEXTY.test(tg.name) && !SHEETY.test(tg.name) && !DOCXY.test(tg.name)) { say(T('「' + tg.name + '」這種格式的編輯器還沒做(目前:.md、純文字、.csv、.xlsx、.docx)。用 /view 可以先看。', '"' + tg.name + '": no editor for this format yet.')); continue; }
+            try { const rec = await this.fileCache.get(tg.id); if (!rec || !rec.blob) { say(T('讀不到「' + tg.name + '」', 'Could not read ' + tg.name)); continue; } const lim = DOCXY.test(tg.name) ? 30000000 : SHEETY.test(tg.name) ? 20000000 : 4000000; if (rec.blob.size > lim) { say(T('「' + tg.name + '」超過 ' + (lim / 1000000) + ' MB,太大了。', tg.name + ' is over ' + (lim / 1000000) + ' MB.')); continue; } const res = DOCXY.test(tg.name) ? await this._edOpenDocxFile(tg.name, await rec.blob.arrayBuffer()) : SHEETY.test(tg.name) ? await this._edOpenSheetFile(tg.name, await rec.blob.arrayBuffer()) : await this._edOpenTextFile(tg.name, await rec.blob.arrayBuffer()); if (res && res.ok === false) say('⚠️ ' + (res.error || T('開不起來', 'could not open it'))); }
             catch (e) { say('⚠️ ' + T('開不起來:', 'Could not open it: ') + String((e && e.message) || e)); }
         }
     };
@@ -88,7 +88,7 @@
         this.register_slash_command('/edit-md', hint, 'Markdown 編輯器:/edit-markdown 的別名。', mk('edit-markdown'));
         this.register_slash_command('/edit-text', '[一句話描述]', txtDesc, mk('edit-text'));
         this.register_slash_command('/edit-txt', '[一句話描述]', '純文字編輯器:/edit-text 的別名。', mk('edit-text'));
-        this.register_slash_command('/edit-file', '[檔名]', '依副檔名開編輯器:.md 開 Markdown 編輯器,.txt／.log／.ini… 開純文字編輯器、.csv、.xlsx(docx 還在做)。先附上檔案(📎、拖進來、貼上)再下 /edit-file,或 /edit-file 檔名;不帶參數開最近上傳的文字檔。', (argsText, run0) => (run0 || this)._editFileSlash(argsText, run0));
+        this.register_slash_command('/edit-file', '[檔名]', '依副檔名開編輯器:.md 開 Markdown 編輯器,.txt／.log／.ini… 開純文字編輯器、.csv、.xlsx、.docx。先附上檔案(📎、拖進來、貼上)再下 /edit-file,或 /edit-file 檔名;不帶參數開最近上傳的文字檔。', (argsText, run0) => (run0 || this)._editFileSlash(argsText, run0));
     };
     const prevRegister = M._registerEditCommands; M._registerEditCommands = function () { if (prevRegister) prevRegister.call(this); this._registerEditDocsCommands(); };
     M._registerEditDocsTools = function (registerOptional) {

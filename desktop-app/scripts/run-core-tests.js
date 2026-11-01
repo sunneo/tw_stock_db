@@ -91,6 +91,7 @@ const suites = [
     ['多人同編接手（主持機離線太久由 nodeId 最小的在線者接手、改連、舊主持機回來被通知）', 'scripts/remote-tests/rg_collab_failover.test.js'],
     ['試算表公式求值器（四則、範圍、統計、文字、IF、查找、循環與錯誤）', 'scripts/edit-tests/sheet_formula.test.js'],
     ['表格文件核心（CSV 往返位元組一致、動作、公式參照位移、程式白話、xlsx 讀寫）', 'scripts/edit-tests/sheet_core.test.js'],
+    ['Word 文件核心（讀、沒改的區塊原樣輸出、package patching、格式、清單、表格、程式白話）', 'scripts/edit-tests/docx_core.test.js'],
     ['遠端共筆 patch 模式（id 定址的 JSON 差異、套用與略過、逐行 diff3）', 'scripts/remote-tests/rg_patch.test.js'],
     ['環境基準線（檔位判斷、政策、OOM 辨識、資源治理：讓位／排隊／跑完卸載／壓力／降級）', 'scripts/env-tests/env_profile.test.js'],
     ['模擬 swap（熱區上限、最久沒用的先寫出、讀回、丟掉）', 'scripts/env-tests/swap.test.js'],
