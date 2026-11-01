@@ -1,0 +1,22 @@
+{
+ "schema": 1,
+ "files": [
+  {
+   "path": "GeneralUser-GS-22k.sf3",
+   "version": 1,
+   "size": 6614304,
+   "sha256": "05999384654ad90e865b09da8b4a5a16decbb1c4102eb9f7f25a2ed721b5bcb6",
+   "md5": "c6f01d650e1ba739f1a7c84bacf2d661",
+   "parts": 1,
+   "partSize": [
+    6614304
+   ],
+   "partSha256": [
+    "05999384654ad90e865b09da8b4a5a16decbb1c4102eb9f7f25a2ed721b5bcb6"
+   ],
+   "partMd5": [
+    "c6f01d650e1ba739f1a7c84bacf2d661"
+   ]
+  }
+ ]
+}
