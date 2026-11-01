@@ -32,7 +32,7 @@ function main(argv, io) {
     const load = () => readJson(stateFile, null);
     if (cmd === 'start') {
         const task = o._.slice(1).join(' ').trim(); if (!task) { say('用法：start "<任務文字>"', { error: '沒有任務文字' }); return 2; }
-        const lib = readJson(TEMPLATES, { templates: [] }).templates; const s = L.createSession(lib, task);
+        const lib = readJson(TEMPLATES, { templates: [] }).templates; const exp = readJson(path.join(o.dir, 'experience.json'), null); const hints = exp && Array.isArray(exp.entries) ? exp.entries.map((e) => ({ task: e.task, template: e.template })) : []; const s = L.createSession(lib, task, { hints });
         writeJson(stateFile, s); const q = L.currentQuestion(s);
         say(q ? '已開始（' + (s.template ? '程式已路由到「' + s.template.label + '」' : '需要先回答路由題') + '）。接著執行 next。' : '已完成：' + s.result, { id: s.id, state: s.state, template: s.template && s.template.id });
         return 0;

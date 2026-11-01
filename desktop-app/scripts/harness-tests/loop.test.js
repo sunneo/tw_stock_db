@@ -60,6 +60,16 @@ check('字母容錯', L.parseLetter('B', 3) === 1 && L.parseLetter('"c"', 3) ===
 const s7 = L.createSession(lib, '請問怎麼用匯出'); const back = JSON.parse(JSON.stringify(s7));
 check('狀態可存檔續跑', L.currentQuestion(back) && L.currentQuestion(back).text === L.currentQuestion(s7).text);
 
+// ---- 回流前後（只量程式部分：路由命中，不涉及真模型）----
+const hints = [{ task: '請問怎麼用匯出功能', template: 'triage_issue' }];
+const probes = [['請問怎麼用列印功能', 'triage_issue'], ['今天天氣如何', null], ['幫我約週三開會', 'schedule_meeting']];
+const routed = (text, h) => { const s = L.createSession(lib, text, { hints: h }); return s.template ? s.template.id : null; };
+const before = probes.filter(([t, e]) => routed(t, []) === e).length, after = probes.filter(([t, e]) => routed(t, hints) === e).length;
+check('回流前：沒有關鍵字的相似說法路由不到', routed('請問怎麼用列印功能', []) === null);
+check('回流後：相似說法由程式路由（by program，標 learned）', routed('請問怎麼用列印功能', hints) === 'triage_issue' && L.createSession(lib, '請問怎麼用列印功能', { hints }).steps[0].learned === true);
+check('回流後：無關的話不被誤路由', routed('今天天氣如何', hints) === null && routed('幫我約週三開會', hints) === 'schedule_meeting');
+check('回流前後命中數：不退步且有進步', after >= before && after > before, { before, after });
+
 // ---- 命令列 ----
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wh-')); const out = []; const io = { out: (x) => out.push(x) };
 const run = (...a) => H.main(a.concat(['--dir', dir, '--json']), io);

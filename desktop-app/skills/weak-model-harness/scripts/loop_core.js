@@ -21,11 +21,18 @@
     const letter = (i) => String.fromCharCode(65 + i);
 
     // ---------- 路由：關鍵字命中數 → autoPick；差距不夠才出路由題 ----------
-    function routeCands(templates, text) {
+    // hints：回流的經驗 [{ task, template }]；任務文字跟學過的相似（字元二連詞的相似度）就算命中。這是學習層真正改變路由的地方
+    function bigrams(s) { s = String(s || '').toLowerCase().replace(/s+/g, '').replace(/d+/g, '#'); const out = new Set(); for (let i = 0; i + 1 < s.length; i++) out.add(s.slice(i, i + 2)); return out; }
+    function similarity(a, b) { const A = bigrams(a), B = bigrams(b); if (!A.size || !B.size) return 0; let n = 0; for (const x of A) if (B.has(x)) n++; return n / (A.size + B.size - n); }
+    const HINT_MIN = 0.4;
+    function routeCands(templates, text, hints) {
         const low = String(text || '').toLowerCase();
         return templates.map((t) => {
             const hits = (t.keywords || []).filter((k) => low.includes(String(k).toLowerCase())).length;
-            return { tool: t.id, intent: t.label, score: hits ? Math.min(1, 0.4 + hits * 0.2) : 0, hits };
+            let score = hits ? Math.min(1, 0.4 + hits * 0.2) : 0, learned = 0;
+            for (const h of hints || []) if (h.template === t.id) { const sim = similarity(text, h.task); if (sim >= HINT_MIN) learned = Math.max(learned, sim); }
+            if (learned) score = Math.min(1, Math.max(score, 0.5 + learned * 0.5));
+            return { tool: t.id, intent: t.label, score, hits, learned };
         }).sort((a, b) => b.score - a.score);
     }
 
@@ -33,9 +40,9 @@
         opts = opts || {};
         const s = { v: SESSION_VERSION, id: opts.id || ('hs_' + Date.now().toString(36)), task: String(text || '').slice(0, 600), templates: null, template: null,
             step: 0, slots: {}, steps: [], pending: { tries: 0, error: '' }, state: 'running', verdict: null, result: '', numbers: (String(text || '').match(/\d+(?:\.\d+)?/g) || []) };
-        const cands = routeCands(templates, text);
+        const cands = routeCands(templates, text, opts.hints);
         const pick = R.autoPick(cands.filter((c) => c.score > 0));
-        if (pick) { s.template = templates.find((t) => t.id === cands[pick.index].tool); s.steps.push({ id: 'route', kind: 'route', by: 'program', tries: 0, ok: true, answer: s.template.id }); }
+        if (pick) { s.template = templates.find((t) => t.id === cands[pick.index].tool); s.steps.push({ id: 'route', kind: 'route', by: 'program', tries: 0, ok: true, answer: s.template.id, learned: !!cands[pick.index].learned }); }
         else s.route = { options: templates.map((t) => ({ key: t.id, label: t.label })).concat([{ key: 'none', label: '以上都不是' }]) };
         s.library = templates;
         advanceByProgram(s);
@@ -157,5 +164,5 @@
         return { id: s.id, state: s.state, verdict: s.verdict, template: s.template ? s.template.id : (s.routeKey || null), step: s.step, slots: s.slots, missing: s.missing || [], result: s.result, steps: s.steps, reason: s.reason || '' };
     }
 
-    return { SESSION_VERSION, MAX_TRIES, routeCands, createSession, currentQuestion, submitAnswer, bindTemplate, finish, status, parseLetter, programFields };
+    return { SESSION_VERSION, MAX_TRIES, similarity, routeCands, createSession, currentQuestion, submitAnswer, bindTemplate, finish, status, parseLetter, programFields };
 });

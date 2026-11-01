@@ -43,6 +43,7 @@ learn           → 經驗閘門：只收程式驗證過的成功；去重、去
 
 - 第 1 項：本文件（已寫）。
 - 第 2、3 項（已做，測試 loop 21 項、experience 26 項全過）：skill 套件 skills/weak-model-harness/（SKILL.md、scripts/harness.js、loop_core.js、pack.js、references/）、經驗閘門 renderer/src/harness/experience_core.js；兩組測試已加進核心測試清單。命令列 learn 把通過閘門的 pattern 寫到 .weak-harness/trainer-patterns.json，失敗寫成 uml-candidates.json。範本目前 4 個（安排會議、單位換算、問題分級、批次改檔名），從技能編譯器（skill_compile_core）自動產生範本：未做。
-- 第 4、5 項（Haiku 實驗與回流前後對照）：未做。
+- 第 4 項（Haiku 實驗）：腳本已寫好 scripts/harness-tests/haiku-experiment.js（固定 8 題；光桿約 8 次呼叫，harness 約 16 次；用 claude -p 無頭模式；記通過數、欄位命中、被退回次數、token、花費；第一次呼叫失敗就中止並印「未驗證」）。**實際結果：未驗證。** 2026-11-01 試跑時無頭命令列回「OAuth session expired and could not be refreshed」（登入工作階段過期，需要使用者在終端機重新登入後才能呼叫），五小時額度當時也已用 94%；只呼叫了 1 次、沒有任何成績。模型代號 claude-haiku-5-5 也因此沒確認可用。重新登入後直接執行 node scripts/harness-tests/haiku-experiment.js 即可（先用 --dry 看呼叫數）。
+- 第 5 項（回流前後對照）：回流真的會改變路由——loop_core.routeCands 吃 hints（來自 experience.json，字元二連詞相似度 0.4 以上算命中，第一步標 learned）。測試量到的是**程式部分**：沒有關鍵字的相似說法，回流前路由不到、回流後由程式路由，無關的話不被誤路由（loop.test.js）。真模型的前後對照：未驗證（依賴第 4 項）。
 - 第 6 項（訓練器 UI 定位、清冊、嵌入）：未做；音樂線還在跑同一個工作樹，等它結束再碰 floating-assistant.js。
 - 未驗證：套件在 Claude Code 載入後由 Haiku 實際照迴圈操作的品質（第 4 項才會量）。
