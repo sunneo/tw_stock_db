@@ -21,7 +21,13 @@ Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app
 
 ## 3. Todo（依序；階段 0–4 已做完，階段 5 做了規則部分）
 
-### 下一步（handoff 7 接手，2026-11-02，**最新，先看這段**）：讓作曲真的由 LLM「學會」理解需求
+### 下一步（作曲家升級，管理層派工，2026-11-02，**最新，先看這段**）：AI 真的是作曲家，不只是選範本
+使用者原話（2026-11-02）：「請問照這樣，有哪個是他透過api去填入midi 的note的?感覺只是讓ai選種子」；「yes，他必須是一個作曲家，像是在拆uml一樣，divide and conquer, 然後組裝起整體」；先前：「他好歹要LLM學會...」。UML design 的意思（使用者定義）：由上而下持續規劃、細切到不可再切，再用 CoLU 接線；弱到不能規劃時用樣板；不是寫死流程。
+- 設計寫在 DESIGN.music.md「作曲樹」章節。新模組 renderer/src/music/compose_tree.js（FaComposeTree）：規格 → 曲式 → 每段和聲 → 每段聲部分工 → 主題動機 → 程式發展與組裝 → 整體檢查；每個節點小而封閉、程式驗證、失敗只重做該節點（嚴格版重問，再不行用該節點範本）、結果卡片以樹狀列出每個節點來源（AI 決定／程式修正／範本預設）。
+- 進度（每批提交後更新這裡）：批次一＝設計文件（本段）；批次二＝compose_tree.js 核心＋單元測試＋假模型測試；批次三＝宿主接線＋樹狀卡片＋重做節點＋經驗回流＋入口測試；真模型實測：未驗證（沒有金鑰就維持未驗證）。
+- 階段七（音樂知識與維基風格查詢）仍暫緩。管理層代發，不要自己執行發布腳本；context 到 30% 自己更新本段、提交，回報「需要接手，文件已更新，commit <hash>」。
+
+### 下一步（handoff 7 接手，2026-11-02，（前一輪））：讓作曲真的由 LLM「學會」理解需求
 使用者原話（2026-11-02）：「他好歹要LLM學會...我們handoff7 有辦法enable這件事情嗎？」；實測 v267 的 /media-compose-midi 顯示：「這次沒有用 AI，用的是範本規則（AI 的回答讀不懂（The user wants to create tech-style musi…））」。
 
 **現況（已提交 6b16b71a）：** renderer/src/music/compose_plan.js（FaComposePlan：decide／parseAnswer／questionOf／toOptions／edit／describe）、宿主 renderer/src/floating-assistant.js 的 _midiComposeFlow／_midiComposeFinish／_midiRecompose／_mountComposeCards（卡片 fa-compose）；斜線 /media-compose-midi 與工具 midi_compose 都走 _midiComposeFlow；測試 scripts/music-tests/compose_plan.test.js（27 項，假 AI：完美、亂答、無 JSON、部分答對、沉默、逾時、丟錯、重試）。AI 呼叫是 this._callSimpleCompletion(user, { systemPrompt, maxTokens: 300, temperature: 0, noBudgetRetry: true })，逾時 25 秒，最多 2 次。
