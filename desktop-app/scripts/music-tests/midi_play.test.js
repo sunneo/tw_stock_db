@@ -61,4 +61,19 @@ function fake() {
   check('loop: the player keeps playing past the end instead of stopping', f.pl.isPlaying());
 }
 
-console.log(ok + ' passed, ' + bad.length + ' failed'); bad.forEach((b) => console.log('FAIL: ' + b)); process.exit(bad.length ? 1 : 0);
+// 分片音色庫:每片核對長度與檢查碼,合併後核對總大小;壞片與缺片要報得出原因
+(async () => {
+  const crypto = require('crypto'); if (!global.crypto || !global.crypto.subtle) global.crypto = crypto.webcrypto;
+  const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
+  const data = Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(2500, 7)]), pb = 1000, parts = []; for (let o = 0; o < data.length; o += pb) parts.push(data.subarray(o, o + pb));
+  const man = { files: [{ path: 'x.sf2', size: data.length, sha256: sha(data), parts: parts.length, partSize: parts.map((p) => p.length), partSha256: parts.map(sha) }] };
+  const mkFetch = (over) => async (u) => { if (u.endsWith('manifest.json')) return { ok: true, json: async () => man }; const m = /\.part(\d+)$/.exec(u); if (!m) return { ok: false, status: 404 }; const i = Number(m[1]); const b = over && i in over ? over[i] : parts[i]; if (b === null) return { ok: false, status: 404 }; return { ok: true, arrayBuffer: async () => b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) }; };
+  const msgs = []; const buf = await P.fetchParts({ base: 'https://h/x/', path: 'x.sf2' }, (m) => msgs.push(m), mkFetch());
+  check('sharded bank: parts merge back to the original bytes', Buffer.from(buf).equals(data) && msgs.length === 3, msgs);
+  let err = ''; try { await P.fetchParts({ base: 'https://h/x/', path: 'x.sf2' }, () => {}, mkFetch({ 1: Buffer.alloc(1000, 9) })); } catch (e) { err = e.message; } check('sharded bank: a corrupted part is rejected by its checksum', /第 2 片檢查碼不符/.test(err), err);
+  err = ''; try { await P.fetchParts({ base: 'https://h/x/', path: 'x.sf2' }, () => {}, mkFetch({ 2: Buffer.alloc(400, 7) })); } catch (e) { err = e.message; } check('sharded bank: a short part is rejected by its length', /長度不符/.test(err), err);
+  err = ''; try { await P.fetchParts({ base: 'https://h/x/', path: 'x.sf2' }, () => {}, mkFetch({ 0: null })); } catch (e) { err = e.message; } check('sharded bank: a missing part reports HTTP status', /HTTP 404/.test(err), err);
+  const buf2 = await P.fetchBank([{ base: 'https://h/x/', path: 'nope.sf2' }, 'https://h/y.sf2'], () => {}, async (u) => (u.endsWith('manifest.json') ? { ok: true, json: async () => man } : { ok: true, headers: { get: () => String(data.length) }, arrayBuffer: async () => data.buffer.slice(data.byteOffset, data.byteOffset + data.length) }));
+  check('sharded bank: falls back to the next source when the manifest lacks the file', Buffer.from(buf2).equals(data));
+  console.log(ok + ' passed, ' + bad.length + ' failed'); bad.forEach((b) => console.log('FAIL: ' + b)); process.exit(bad.length ? 1 : 0);
+})();

@@ -112,11 +112,38 @@
     prog('就緒', 1);
     return synth;
   }
+  // 分片來源:{ base, path }。base 底下有 manifest.json({files:[{path,size,sha256,parts,partSize:[…],partSha256:[…]}]})與 <path>.partNNN;
+  // 每片單獨核對長度與 sha256、單獨放進 Cache API(中斷後重來只補缺的片),合併後核對總大小。base 要用完整 commit SHA 釘住。
+  async function sha256Hex(buf) { const d = await crypto.subtle.digest('SHA-256', buf); return Array.from(new Uint8Array(d)).map((b) => b.toString(16).padStart(2, '0')).join(''); }
+  async function fetchParts(src, prog, f) {
+    const CACHE = 'fa-soundbank-v1'; const base = src.base;
+    const cache = typeof caches !== 'undefined' ? await caches.open(CACHE) : null;
+    const mUrl = base + 'manifest.json'; let mr = await f(mUrl); if (!mr.ok) throw new Error('manifest HTTP ' + mr.status);
+    const man = await mr.json(); const ent = (man.files || []).find((x) => x.path === src.path); if (!ent || !(ent.parts > 0)) throw new Error('manifest 裡沒有 ' + src.path);
+    const whole = base + '#' + src.path + '@' + (ent.sha256 || ent.size); const hit = cache && await cache.match(whole); if (hit) { prog('從本機快取讀取音色庫…', 0.5); return await hit.arrayBuffer(); }
+    const out = new Uint8Array(ent.size); let off = 0;
+    for (let i = 0; i < ent.parts; i++) {
+      const u = base + src.path + '.part' + String(i).padStart(3, '0'); let buf = null; const ph = cache && await cache.match(u); if (ph) { const b = await ph.arrayBuffer(); if (b.byteLength === ent.partSize[i]) buf = b; }
+      if (!buf) {
+        prog('下載音色庫 第 ' + (i + 1) + ' / ' + ent.parts + ' 片(共 ' + Math.round(ent.size / 1048576) + ' MB)', i / ent.parts);
+        const r = await f(u); if (!r.ok) throw new Error(u.split('/').pop() + ' HTTP ' + r.status); buf = await r.arrayBuffer();
+        if (buf.byteLength !== ent.partSize[i]) throw new Error('第 ' + (i + 1) + ' 片長度不符(預期 ' + ent.partSize[i] + '、實際 ' + buf.byteLength + ')');
+        if (ent.partSha256 && typeof crypto !== 'undefined' && crypto.subtle && (await sha256Hex(buf)) !== ent.partSha256[i]) throw new Error('第 ' + (i + 1) + ' 片檢查碼不符');
+        if (cache) { try { await cache.put(u, new Response(buf.slice(0))); } catch (e) { /* 配額不足就算了 */ } }
+      }
+      out.set(new Uint8Array(buf), off); off += buf.byteLength;
+    }
+    if (off !== ent.size) throw new Error('合併後大小不符(預期 ' + ent.size + '、實際 ' + off + ')');
+    if (new Uint8Array(out.buffer, 0, 4).join() !== '82,73,70,70') throw new Error('不是 sf2/RIFF 檔');
+    if (cache) { try { await cache.put(whole, new Response(out.buffer.slice(0))); } catch (e) { /* */ } }
+    return out.buffer;
+  }
   // 下載音色庫:有進度、核對長度、快取放 Cache API(下次不用再下載)
   async function fetchBank(urls, prog, f) {
     const CACHE = 'fa-soundbank-v1';
     const list = [].concat(urls || []); let last = '';
     for (const u of list) {
+      if (u && typeof u === 'object') { try { return await fetchParts(u, prog, f); } catch (e) { last = String(e && e.message || e); continue; } }
       try {
         const cache = typeof caches !== 'undefined' ? await caches.open(CACHE) : null;
         const hit = cache && await cache.match(u); if (hit) { prog('從本機快取讀取音色庫…', 0.5); return await hit.arrayBuffer(); }
@@ -153,5 +180,5 @@
     return await ctx.startRendering();
   }
 
-  return { channelMap, buildEvents, createPlayer, loadSynth, fetchBank, renderOffline };
+  return { channelMap, buildEvents, createPlayer, loadSynth, fetchBank, fetchParts, renderOffline };
 });

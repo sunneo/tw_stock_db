@@ -911,8 +911,8 @@
    "names": [
     "FaMidiPlay"
    ],
-   "size": 6212,
-   "md5": "18ff7f266ff0a43c5d1334878866c5f3"
+   "size": 8028,
+   "md5": "08f00887182c15aad499248ef5dafe67"
   },
   "musicedit": {
    "file": "chunks/musicedit.js",
@@ -1012,7 +1012,7 @@
   }
  },
  "core": {
-  "size": 5147968,
-  "md5": "8f89659df4e82df200eca59de025ba23"
+  "size": 5148109,
+  "md5": "c359e833b65c024f9e5034791a16e4fd"
  }
 }
