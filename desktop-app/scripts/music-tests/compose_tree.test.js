@@ -83,7 +83,13 @@ const byNode = (per, log) => async (sys, user, op) => { const id = nodeOf(sys); 
   check('掃描 ' + sweep + ' 組:組裝都沒警告', !sweepBad.length, sweepBad.slice(0, 3));
   const tm = await T.plan(Object.assign(RES({ style: 'edm', bars: 16 }), { fields: { mode: 'B' } }), { ask: byNode((id) => id === 'harmony.main' ? 'i VI III VII' : id === 'harmony.lift' ? 'iv i VII i' : GOOD[id]) }); check('小調:AI 的小調和聲被採用', tm.mode === 'minor' && tm.nodes['harmony.main'].value === 'i VI III VII', tm.nodes['harmony.main']);
   const cm = T.compose(tm, 4); check('小調:組裝沒警告', !cm.warnings.length, cm.warnings);
+  // 11b. 規格改了(換調、換長度):保留還合法的 AI 節點;學到的節點直接採用不問 AI
+  const rb = T.rebase(tp, RES({ key: 'G', bars: 32 })); check('rebase:AI 的和聲保留', rb.nodes['harmony.main'].source === 'ai' && rb.nodes['harmony.main'].value === 'I V vi IV' && rb.key === 'G' && rb.bars === 32);
+  check('rebase:曲式不合就換範本', T.rebase(tp, RES({ bars: 6 })).nodes.form.source === 'template'); check('rebase 後作得出曲子', !T.compose(rb, 2).warnings.length);
+  const ll = []; const tl2 = await T.plan(RES(), { ask: byNode(GOOD, ll), learnedNodes: { 'harmony.main': 'vi IV I V', motif: 'zzz' }, attempts: 2 });
+  check('學到的:合法的直接採用、不問 AI', tl2.nodes['harmony.main'].source === 'learned' && tl2.nodes['harmony.main'].value === 'vi IV I V' && !ll.some((l) => l.id === 'harmony.main'));
+  check('學到的:不合法的忽略,照常問 AI', tl2.nodes.motif.source === 'ai'); check('usable:全範本為否、有 AI 為是', !T.usable(t0) && T.usable(tp));
   // 12. 整棵樹壞掉也不丟例外
   const broken = JSON.parse(JSON.stringify(tp)); broken.style = 'nope'; let threw = false; try { T.compose(broken, 1); } catch (_) { threw = true; } check('壞樹:不丟例外', !threw);
-  console.log(ok + ' 項通過,' + bad.length + ' 項失敗'); if (bad.length) { console.log(bad.join('\n')); process.exit(1); }
+  console.log(ok + ' passed, ' + bad.length + ' failed'); if (bad.length) { console.log(bad.join('\n')); process.exit(1); }
 })();

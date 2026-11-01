@@ -203,6 +203,7 @@
     for (let guard = 0; guard < 40; guard++) {
       const ids = nodeIds(t); const next = ids.find((id) => (only ? only.has(id) && !(t.nodes[id] && t.nodes[id].done) : !t.nodes[id])); if (!next) break;
       const tpl = templateValue(t, next); const nd = t.nodes[next] = { value: tpl, source: 'template', tries: 0, raw: '', error: '', done: true };
+      if (o.learnedNodes && o.learnedNodes[next]) { const lr = validateNode(t, next, o.learnedNodes[next]); if (!lr.problem) { nd.value = lr.value; nd.source = 'learned'; continue; } }
       if (typeof o.ask !== 'function') { nd.error = o.noAiReason || '沒有可用的 AI(離線或沒有設定)'; continue; }
       if (stopWhy) { nd.error = '沒有問(' + stopWhy + ')'; continue; }
       let netFail = 0;
@@ -224,6 +225,12 @@
     const t2 = JSON.parse(JSON.stringify(t)); delete t2.nodes[id]; const ids = new Set([id]); await fill(t2, Object.assign({}, o, { onlyIds: [id] }));
     if (id === 'form') await fill(t2, Object.assign({}, o, { onlyIds: nodeIds(t2).filter((x) => !t2.nodes[x]) })); void ids; return t2;
   }
+  function rebase(old, res) { // 使用者改了風格、調、速度、長度等規格:保留還合法的節點(含 AI 決定的),其餘用範本
+    const t = newTree(res, { task: old.task }); t.moodName = old.moodName; t.purpose = old.purpose || t.purpose;
+    for (let g = 0; g < 40; g++) { const id = nodeIds(t).find((x) => !t.nodes[x]); if (!id) break; const o2 = old.nodes[id]; const r = o2 ? validateNode(t, id, o2.value) : null; t.nodes[id] = r && !r.problem ? { value: r.value, source: o2.source, tries: o2.tries, raw: o2.raw, error: '', done: true } : { value: templateValue(t, id), source: 'template', tries: 0, raw: '', error: '', done: true }; }
+    return t;
+  }
+  function usable(t) { return Object.keys(t.nodes).some((id) => t.nodes[id].source !== 'template'); }
   function setNode(t, id, value) { // 使用者給值(標 user);回傳 { tree } 或 { error }
     const r = validateNode(t, id, value); if (r.problem) return { error: r.problem }; const t2 = JSON.parse(JSON.stringify(t)); t2.nodes[id] = { value: r.value, source: 'user', tries: 0, raw: '', error: '', done: true };
     nodeIds(t2).forEach((x) => { if (!t2.nodes[x]) t2.nodes[x] = { value: templateValue(t2, x), source: 'template', tries: 0, raw: '', error: '', done: true }; }); return { tree: t2 };
@@ -317,7 +324,7 @@
   function optionsOf(t) { return { style: t.style, key: t.key, tempo: t.tempo, bars: t.bars, progression: 0, lead: t.lead == null ? undefined : t.lead, title: t.title }; }
 
   // ---------- 說明 ----------
-  const SRC = { ai: 'AI 決定', fixed: '程式修正', template: '範本預設', user: '你指定' };
+  const SRC = { learned: '以前學到的', ai: 'AI 決定', fixed: '程式修正', template: '範本預設', user: '你指定' };
   function prettyValue(t, id, v) {
     if (id === 'form') { const f = FORMS.find((x) => x.id === v); return f ? f.names.join('→') : v; }
     if (id === 'motif' || id.indexOf('harmony.') === 0) return v; const o = letterOpts(t, id).find((x) => x[0] === v); return o ? o[1] : v;
@@ -327,5 +334,5 @@
     const counts = {}; rows.forEach((r) => { counts[r.source] = (counts[r.source] || 0) + 1; }); return { rows, counts };
   }
   function learnNodes(t) { return nodeIds(t).filter((id) => t.nodes[id] && (t.nodes[id].source === 'ai' || t.nodes[id].source === 'user') && (id === 'motif' || id.indexOf('harmony.') === 0)).map((id) => ({ id, value: t.nodes[id].value })); }
-  return { plan, compose, redo, setNode, describe, learnNodes, parseChords, parseMotif, checkMotif, checkChords, checkForm, layout, validateNode, questionOf, nodeIds, templateValue, FORMS, VOC, TEXTURES, BASSES, drumChoices, fill, newTree };
+  return { rebase, usable, plan, compose, redo, setNode, describe, learnNodes, parseChords, parseMotif, checkMotif, checkChords, checkForm, layout, validateNode, questionOf, nodeIds, templateValue, FORMS, VOC, TEXTURES, BASSES, drumChoices, fill, newTree };
 });
