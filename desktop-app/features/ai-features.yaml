@@ -594,6 +594,13 @@ categories:
         platforms: [web, desktop]
         samples: ["把這張臉做成 2.5D", "我要在圖上標註這個杯子，教你認得", "我自己標，不要 AI 猜", "讓這個 2.5D 模型動起來（點頭、揮手）", "把這張圖做成 2.5D 視差網格", "幫我把這張圖向量化重繪成 SVG，並猜出前後景深"]
         updated: 2026-10-05
+      - id: music-midi
+        name: 音樂：MIDI 播放與轉 mp3
+        summary: 在對話裡放 MIDI 播放卡片（合成器用 SpessaSynth＋GeneralUser GS 音色庫，第一次播放才下載並快取），可轉成 mp3；音樂領域附樂理與風格知識。網頁版的音樂模組走延遲載入。
+        how: { slash: ["/midi", "/midi-to-mp3"], tools: [midi_play, midi_to_mp3, music_topic] }
+        platforms: [web, desktop]
+        samples: ["放一首小星星的 MIDI", "/midi", "/midi-to-mp3", "把這個 MIDI 轉成 mp3", "什麼是三和弦的轉位"]
+        updated: 2026-11-01
       - id: youtube-download
         name: 下載 YouTube 影片
         summary: 下載 YouTube 影片（瀏覽器端跑真正的 yt-dlp，含 JS 簽章解密橋接＋PO Token/BotGuard橋接）。Advance Settings 的 YouTube Data API 金鑰／頻道 ID 是選填的範圍限制（填了才會限制只能下載本人頻道或 CC 授權影片，留空可下載任何影片）。已知限制：Google 目前只給這個app信任度較低的「降級版」PO Token，多數影片仍然會下載失敗、只剩縮圖格式可用（已排除是瀏覽器環境被偵測為自動化的問題），這塊持續是進行中的逆向工程課題。
