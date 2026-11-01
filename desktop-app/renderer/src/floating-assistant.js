@@ -54100,6 +54100,32 @@ class FloatingAssistant {
                     try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ }
                 });
         });
+        // 音樂:/midi 播放卡片、/midi-to-mp3 轉 mp3(設計見 DESIGN.music.md)
+        const _midiFileFrom = async (r, raw) => {
+            const att = FaRecipe.parseAttachments(raw).filter((x) => /\.midi?$/i.test(x.filename))[0];
+            if (att) return await r._midiSongFromArgs({ file_id: att.id });
+            const m = raw.match(/\bmi[0-9a-z]{6,}\b/); if (m) return await r._midiSongFromArgs({ song_id: m[0] });
+            return null;
+        };
+        this.register_slash_command('/midi', '[.mid 檔 | 範例]',
+            'MIDI 播放卡片:/midi 附上 .mid 檔(用 📎 上傳)→ 在對話裡放播放卡片(播放、拖進度、每軌靜音／獨奏／音量、下載、轉 mp3);/midi 範例 → 放一首示範曲。音色是 GS 音色庫(第一次播放下載約 31 MB,存在本機)。也可以直接對 AI 說「幫我寫一段 …風格的曲子」。',
+            async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/midi' + (raw ? ' ' + raw : '') });
+                try {
+                    if (/^(範例|示範|demo)/i.test(raw)) { const a = await r._midiSongFromArgs({ song: { title: '示範曲', tempo: 100, tracks: [{ name: '鋼琴', program: 0, notes: [[0, 1, 60, 90], [1, 1, 64, 90], [2, 1, 67, 90], [3, 1, 72, 90], [4, 2, 67, 90], [6, 2, 64, 90]] }, { name: '貝斯', program: 33, notes: [[0, 2, 36, 100], [2, 2, 43, 100], [4, 4, 36, 100]] }, { name: '鼓', drum: true, notes: [[0, 0.25, 36, 110], [1, 0.25, 42, 80], [2, 0.25, 38, 100], [3, 0.25, 42, 80], [4, 0.25, 36, 110], [5, 0.25, 42, 80], [6, 0.25, 38, 100], [7, 0.25, 42, 80]] }] } }); r._midiPushCard(a.song, '示範曲'); }
+                    else { const f = await _midiFileFrom(r, raw); if (!f) r._pushAssistantMessage('用法:用 📎 上傳 .mid 檔再打 /midi,或打 /midi 範例;也可以直接說「幫我寫一段爵士風格的曲子」。'); else if (f.error) r._pushAssistantMessage('⚠️ ' + f.error); else r._midiPushCard(f.song, f.title); }
+                } catch (e) { r._pushAssistantMessage('⚠️ /midi 失敗:' + String((e && e.message) || e)); }
+                try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ }
+            });
+        this.register_slash_command('/midi-to-mp3', '[.mid 檔]',
+            '把 MIDI 用 GS 音色庫離線渲染成 mp3(用 📎 上傳 .mid 檔再打這個指令;第一次要下載音色庫約 31 MB)。',
+            async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/midi-to-mp3' + (raw ? ' ' + raw : '') });
+                try {
+                    const f = await _midiFileFrom(r, raw);
+                    if (!f) r._pushAssistantMessage('用法:用 📎 上傳 .mid 檔再打 /midi-to-mp3。'); else if (f.error) r._pushAssistantMessage('⚠️ ' + f.error);
+                    else { r._pushAssistantMessage('🎼 渲染中…(' + Math.round(FaMidi.durationSec(f.song)) + ' 秒的曲子,第一次要下載音色庫)'); const blob = await r._midiToMp3(f.song); await r.generateAndDeliverFile(blob, String(f.title || f.song.title || 'song').replace(/[\\/:*?"<>|]/g, '_') + '.mp3', 'audio/mpeg'); }
+                } catch (e) { r._pushAssistantMessage('⚠️ 轉 mp3 失敗:' + String((e && e.message) || e)); }
+                try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ }
+            });
         this.register_slash_command('/worksheet', '[學習單描述]',
             '學習單編輯器：/worksheet 10又幾 做8串（程式讀你的描述做出一份，並在對話裡放一個編輯器）；/worksheet 範本（列出所有範本）、/worksheet 範本 數的組成（從範本開始）；不帶描述＝接著開最近一份（沒有就開一份空白的，直接在編輯器裡用對話做）。編輯器裡可以用對話或屬性面板改、附圖、復原／重做、把編輯過程摘要成 prompt。',
             async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/worksheet' + (raw ? ' ' + raw : '') });

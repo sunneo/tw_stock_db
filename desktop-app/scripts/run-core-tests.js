@@ -159,6 +159,8 @@ const suites = [
     ['電腦操作：INTEGRATION.md 的貼上用區塊（領域、任務提示 regex、YAML、embed 片段、接線補丁）', 'scripts/computer-tests/integration_doc.test.js'],
     ['圖片轉3D核心（封閉殼、平滑殼、背景差分、全景分層、貼材質）', 'scripts/media-tests/image3d_core.test.js'],
     ['圖片轉3D主機端模擬（只要主體：挑主體、貼圖流程、擺到桌子上）', 'scripts/media-tests/image3d_host.test.js'],
+    ['音樂：MIDI 核心（解析、寫出、往返、量化、移調、合併拆分、速度表）', 'scripts/music-tests/midi_core.test.js'],
+    ['音樂：播放排程（事件、頻道配置、前瞻排程、靜音獨奏、跳轉、迴圈）', 'scripts/music-tests/midi_play.test.js'],
 ];
 let failed = 0, failedNew = 0;
 const results = [], t00 = Date.now();
