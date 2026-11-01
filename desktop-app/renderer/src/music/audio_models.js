@@ -42,12 +42,20 @@
     if (h !== m.sha256) { for (let i = 0; i < n; i++) await opts.store.del(key(i)); throw new Error(m.label + ' 檢查碼不符(' + h.slice(0, 12) + '… 應為 ' + m.sha256.slice(0, 12) + '…),已清掉快取,請重試'); }
     return all;
   }
+  // 離線模型管理頁用:這個模型在本機存了幾片、共多少位元組、是不是整個都在(每片大小要對才算);刪除就是把每片拿掉
+  async function status(id, store) {
+    const m = REGISTRY[id]; if (!m) throw new Error('沒有這個模型:' + id); const n = Math.ceil(m.bytes / CHUNK); let have = 0, chunks = 0;
+    for (let i = 0; i < n; i++) { const key = 'model:' + id + ':' + m.sha256.slice(0, 8) + ':' + i, want = Math.min(m.bytes, (i + 1) * CHUNK) - i * CHUNK; // 有 has() 就只問在不在(不把 8 MB 一片整個讀出來);片的大小與整個檢查碼在真正用到時核對
+      if (store.has ? await store.has(key) : (await store.get(key) || { length: -1 }).length === want) { have += want; chunks++; } }
+    return { id, bytes: m.bytes, have, chunks, total: n, complete: chunks === n };
+  }
+  async function remove(id, store) { const m = REGISTRY[id]; if (!m) throw new Error('沒有這個模型:' + id); const n = Math.ceil(m.bytes / CHUNK); for (let i = 0; i < n; i++) await store.del('model:' + id + ':' + m.sha256.slice(0, 8) + ':' + i); return n; }
   // 瀏覽器端的 IndexedDB 儲存(資料庫 fa-a2m-models)
   function idbStore() {
     const open = () => new Promise((res, rej) => { const q = indexedDB.open('fa-a2m-models', 1); q.onupgradeneeded = () => q.result.createObjectStore('kv'); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); });
     const run = async (mode, f) => { const db = await open(); return new Promise((res, rej) => { const tx = db.transaction('kv', mode), r = f(tx.objectStore('kv')); tx.oncomplete = () => { db.close(); res(r && r.result); }; tx.onerror = () => rej(tx.error); }); };
-    return { get: (k) => run('readonly', (s) => s.get(k)), set: (k, v) => run('readwrite', (s) => s.put(v, k)), del: (k) => run('readwrite', (s) => s.delete(k)) };
+    return { get: (k) => run('readonly', (s) => s.get(k)), set: (k, v) => run('readwrite', (s) => s.put(v, k)), del: (k) => run('readwrite', (s) => s.delete(k)), has: async (k) => (await run('readonly', (s) => s.count(k))) > 0 };
   }
   async function webSha256(u8) { const d = await crypto.subtle.digest('SHA-256', u8); return Array.from(new Uint8Array(d), (b) => b.toString(16).padStart(2, '0')).join(''); }
-  return { REGISTRY, CHUNK, fetchModel, idbStore, webSha256 };
+  return { REGISTRY, CHUNK, fetchModel, status, remove, idbStore, webSha256 };
 });

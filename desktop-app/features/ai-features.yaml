@@ -608,6 +608,13 @@ categories:
         platforms: [web, desktop]
         samples: ["/media-audio-to-midi", "把這首 mp3 轉成 MIDI", "把這段錄音轉成譜，拆軌"]
         updated: 2026-11-01
+      - id: music-model-manager
+        name: 音樂：離線模型管理（聲音轉 MIDI 模型、音色庫、配樂）
+        summary: 設定頁「離線模型管理」多一區音樂：聲音轉 MIDI 的三個模型（Basic Pitch、YAMNet、Demucs）、GS 音色庫（瘦身版）各自顯示已下載量、可下載（可續傳）或刪除，配樂可清掉對話裡的暫存。大小一律從登錄與音色庫清單算出來顯示，不寫死；音色庫整份存好後不再多留一份分片。
+        how: { slash: [], tools: [] }
+        platforms: [web, desktop]
+        samples: ["離線模型管理裡有哪些音樂用的模型", "刪掉音色庫"]
+        updated: 2026-11-01
       - id: music-soundtrack
         name: 音樂：配樂（簡報、遊戲、影片剪輯的背景音樂）
         summary: 把 MIDI 或 mp3／wav 當背景音樂：簡報（整份簡報，播放時接在旁白下面、匯出 MP4 時混進去）、2D／3D 遊戲（每個場景，循環）、影片剪輯（鋪滿整條時間軸變成一筆配音，燒錄時一起混進去）。循環、淡入淡出、音量由共用的配樂模組處理；MIDI 用到才下載音色庫。限制：匯出成獨立遊戲包時不帶配樂，會退回風格合成的曲子；影片剪輯加入後再剪短時間軸，配樂不會自動跟著變短。

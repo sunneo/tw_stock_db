@@ -911,8 +911,8 @@
    "names": [
     "FaMidiPlay"
    ],
-   "size": 8989,
-   "md5": "0e175a7a06875b679856875c8402043d"
+   "size": 10028,
+   "md5": "ceda5038ac27ad9e40b5093dbc0ba7ba"
   },
   "musicsoundtrack": {
    "file": "chunks/musicsoundtrack.js",
@@ -967,8 +967,8 @@
    "names": [
     "FaAudioModels"
    ],
-   "size": 3455,
-   "md5": "d16149e7759900c6ea26552691fa1236"
+   "size": 4077,
+   "md5": "7043ad0b14b4e5171db74152792fb477"
   },
   "musicrt": {
    "file": "chunks/musicrt.js",
@@ -1068,7 +1068,7 @@
   }
  },
  "core": {
-  "size": 5188877,
-  "md5": "37b73df7e3c7be7b1d78040afa1b0108"
+  "size": 5194745,
+  "md5": "0b01f40d9731d31615883fd4c9936cf7"
  }
 }

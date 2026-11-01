@@ -136,6 +136,21 @@
   // 分片來源:{ base, path }。base 底下有 manifest.json({files:[{path,size,sha256,parts,partSize:[…],partSha256:[…]}]})與 <path>.partNNN;
   // 每片單獨核對長度與 sha256、單獨放進 Cache API(中斷後重來只補缺的片),合併後核對總大小。base 要用完整 commit SHA 釘住。
   async function sha256Hex(buf) { const d = await crypto.subtle.digest('SHA-256', buf); return Array.from(new Uint8Array(d)).map((b) => b.toString(16).padStart(2, '0')).join(''); }
+  // 大小顯示一律從清單(sf-pack 產生的 manifest.json 的位元組數)算,不寫死:「約 6.6 MB」
+  function fmtMB(bytes) { const mb = Number(bytes) / 1048576; return (mb >= 10 ? Math.round(mb) : Math.round(mb * 10) / 10) + ' MB'; }
+  // 讀清單回 { path, size, parts, label:'約 6.6 MB', md5, sha256 };f 是 fetch
+  async function bankInfo(src, f) {
+    const r = await f(src.base + 'manifest.json'); if (!r.ok) throw new Error('manifest HTTP ' + r.status); const man = await r.json(), ent = (man.files || []).find((x) => x.path === src.path);
+    if (!ent) throw new Error('manifest 裡沒有 ' + src.path); return { path: ent.path, size: ent.size, parts: ent.parts, md5: ent.md5 || '', sha256: ent.sha256 || '', label: '約 ' + fmtMB(ent.size) };
+  }
+  const BANK_CACHE = 'fa-soundbank-v1';
+  // 本機快取:已存多少位元組、有沒有整份(whole 是 base#path@… 那一筆);cachesApi 預設是瀏覽器的 caches
+  async function bankCacheStatus(cachesApi) {
+    cachesApi = cachesApi || (typeof caches !== 'undefined' ? caches : null); if (!cachesApi) return { bytes: 0, entries: 0, whole: false };
+    let bytes = 0, entries = 0, whole = false; try { const c = await cachesApi.open(BANK_CACHE); for (const rq of await c.keys()) { const r = await c.match(rq); if (!r) continue; const b = await r.clone().arrayBuffer(); bytes += b.byteLength; entries++; if (String(rq.url || rq).indexOf('#') >= 0) whole = true; } } catch (_) { /* */ }
+    return { bytes, entries, whole };
+  }
+  async function bankCacheClear(cachesApi) { cachesApi = cachesApi || (typeof caches !== 'undefined' ? caches : null); if (!cachesApi) return false; try { return await cachesApi.delete(BANK_CACHE); } catch (_) { return false; } }
   async function fetchParts(src, prog, f) {
     const CACHE = 'fa-soundbank-v1'; const base = src.base;
     const cache = typeof caches !== 'undefined' ? await caches.open(CACHE) : null;
@@ -146,7 +161,7 @@
     for (let i = 0; i < ent.parts; i++) {
       const u = base + src.path + '.part' + String(i).padStart(3, '0'); let buf = null; const ph = cache && await cache.match(u); if (ph) { const b = await ph.arrayBuffer(); if (b.byteLength === ent.partSize[i]) buf = b; }
       if (!buf) {
-        prog('下載音色庫 第 ' + (i + 1) + ' / ' + ent.parts + ' 片(共 ' + Math.round(ent.size / 1048576) + ' MB)', i / ent.parts);
+        prog('下載音色庫 第 ' + (i + 1) + ' / ' + ent.parts + ' 片(共 ' + fmtMB(ent.size) + ')', i / ent.parts);
         const r = await f(u); if (!r.ok) throw new Error(u.split('/').pop() + ' HTTP ' + r.status); buf = await r.arrayBuffer();
         if (buf.byteLength !== ent.partSize[i]) throw new Error('第 ' + (i + 1) + ' 片長度不符(預期 ' + ent.partSize[i] + '、實際 ' + buf.byteLength + ')');
         if (ent.partSha256 && typeof crypto !== 'undefined' && crypto.subtle && (await sha256Hex(buf)) !== ent.partSha256[i]) throw new Error('第 ' + (i + 1) + ' 片檢查碼不符');
@@ -156,7 +171,8 @@
     }
     if (off !== ent.size) throw new Error('合併後大小不符(預期 ' + ent.size + '、實際 ' + off + ')');
     if (new Uint8Array(out.buffer, 0, 4).join() !== '82,73,70,70') throw new Error('不是 sf2/RIFF 檔');
-    if (cache) { try { await cache.put(whole, new Response(out.buffer.slice(0))); } catch (e) { /* */ } }
+    // 整份存好之後就不再多留一份分片(不然同一份音色庫在快取裡占兩倍空間);整份存失敗才留著分片給下次續用
+    if (cache) { try { await cache.put(whole, new Response(out.buffer.slice(0))); for (let i = 0; i < ent.parts; i++) await cache.delete(base + src.path + '.part' + String(i).padStart(3, '0')); } catch (e) { /* */ } }
     return out.buffer;
   }
   // 下載音色庫:有進度、核對長度、快取放 Cache API(下次不用再下載)
@@ -201,5 +217,5 @@
     return await ctx.startRendering();
   }
 
-  return { channelMap, buildEvents, createPlayer, loadSynth, fetchBank, fetchParts, renderOffline };
+  return { channelMap, buildEvents, createPlayer, loadSynth, fetchBank, fetchParts, renderOffline, fmtMB, bankInfo, bankCacheStatus, bankCacheClear };
 });

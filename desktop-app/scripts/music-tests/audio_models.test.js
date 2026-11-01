@@ -24,5 +24,14 @@ const mkFetch = (o) => { o = o || {}; o.calls = 0; return async (url, h) => { o.
   const st6 = mkStore(); err = null; try { await D.fetchModel('test', { fetchFn: mkFetch(), store: st6, sha256: async () => 'deadbeef' + '0'.repeat(56) }); } catch (e) { err = e; }
   check('wrong checksum throws and clears the cache', err && /檢查碼不符/.test(err.message) && st6.m.size === 0, err && err.message);
   check('registry sizes and checksums are the verified ones', D.REGISTRY['basic-pitch'].bytes === 230444 && D.REGISTRY['yamnet'].bytes === 16093355 && D.REGISTRY['demucs-6s'].bytes === 136428532 && Object.values(D.REGISTRY).every((m) => m.id === 'test' || /^[0-9a-f]{64}$/.test(m.sha256)));
+  // ── 離線模型管理頁:已下載量與刪除
+  { const sx = mkStore(), id = 'yamnet', m = D.REGISTRY[id], n = Math.ceil(m.bytes / D.CHUNK), key = (i) => 'model:' + id + ':' + m.sha256.slice(0, 8) + ':' + i, size = (i) => Math.min(m.bytes, (i + 1) * D.CHUNK) - i * D.CHUNK;
+    let q = await D.status(id, sx); check('status: nothing downloaded yet', q.chunks === 0 && q.have === 0 && !q.complete && q.total === n, q);
+    await sx.set(key(0), new Uint8Array(size(0))); q = await D.status(id, sx); check('status: a half-downloaded model reports its bytes (resumable)', q.chunks === 1 && q.have === size(0) && !q.complete, q);
+    for (let i = 0; i < n; i++) await sx.set(key(i), new Uint8Array(size(i))); q = await D.status(id, sx); check('status: all chunks of the right size = complete', q.complete && q.have === m.bytes, q);
+    await sx.set(key(0), new Uint8Array(5)); q = await D.status(id, sx); check('status: a chunk with the wrong size does not count', !q.complete && q.chunks === n - 1, q);
+    const withHas = Object.assign({}, sx, { has: async (k) => sx.m.has(k) }); q = await D.status(id, withHas); check('status: with has() it only asks whether chunks exist (no 8 MB reads)', q.chunks === n, q);
+    await sx.set('model:other:xx:0', new Uint8Array(1)); await D.remove(id, sx); check('remove: deletes every chunk of that model and leaves other keys alone', sx.m.size === 1 && sx.m.has('model:other:xx:0'));
+    let e2 = ''; try { await D.status('nope', sx); } catch (e) { e2 = e.message; } check('status: unknown model is an error', /沒有這個模型/.test(e2)); }
   console.log(bad.length ? 'FAIL\n' + bad.join('\n') : 'ok'); console.log(ok + ' passed, ' + bad.length + ' failed'); process.exit(bad.length ? 1 : 0);
 })();

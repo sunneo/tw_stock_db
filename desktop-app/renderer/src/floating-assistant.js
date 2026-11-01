@@ -1469,7 +1469,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
         enabled: true,
         label: '音樂(MIDI 播放、MIDI 轉 mp3、音樂知識:音階和弦節奏音域配器與各風格;音色一律用 GS 音色庫)',
         toolNames: ['midi_play', 'midi_edit_open', 'midi_compose', 'midi_to_mp3', 'audio_to_midi', 'soundtrack_make', 'music_topic', 'list_uploaded_files', 'browser_search', 'fetch_web_page'],
-        systemPrompt: '你負責音樂:播放 MIDI、把 MIDI 轉成 mp3、把使用者上傳的 mp3/wav 轉成 MIDI(audio_to_midi,結果要誠實說沒做到的部分)、回答音樂知識、依描述組一首短曲讓使用者聽。做法:0) 使用者要你作曲、寫一首曲子、做背景音樂 → midi_compose({description,或 style／key／tempo／bars})(程式依風格範本產生並檢查音域與跳進,結果直接進編輯器;不要自己一個音一個音寫,除非使用者給了明確的旋律);1) 使用者上傳了 .mid 檔 → midi_play({file_id}) 放播放卡片;要 mp3 → midi_to_mp3({file_id})。2) 要你寫一段曲子 → 先 music_topic 查需要的知識(和弦進行、音域、鼓型、風格),再自己組 song 呼叫 midi_play({song}):速度與拍號合風格,音高在樂器合理音域內,旋律音落在調內、強拍用和弦內音,貝斯彈根音,鼓用 drum:true 的軌(底鼓 36、小鼓 38、閉合踩鈸 42),每軌 program 用 GM 編號;小節數取 4 的倍數。3) 不確定某個風格的細節 → browser_search 查維基再回答,不要憑印象講數字。4) 音色只有 GS 音色庫的 GM 128 音色與鼓組;不能承諾做不到的(例如任意樂器分離、錄音轉譜目前還沒有)。5) 誠實說明:播放卡片第一次要下載約 31 MB 音色庫。',
+        systemPrompt: '你負責音樂:播放 MIDI、把 MIDI 轉成 mp3、把使用者上傳的 mp3/wav 轉成 MIDI(audio_to_midi,結果要誠實說沒做到的部分)、回答音樂知識、依描述組一首短曲讓使用者聽。做法:0) 使用者要你作曲、寫一首曲子、做背景音樂 → midi_compose({description,或 style／key／tempo／bars})(程式依風格範本產生並檢查音域與跳進,結果直接進編輯器;不要自己一個音一個音寫,除非使用者給了明確的旋律);1) 使用者上傳了 .mid 檔 → midi_play({file_id}) 放播放卡片;要 mp3 → midi_to_mp3({file_id})。2) 要你寫一段曲子 → 先 music_topic 查需要的知識(和弦進行、音域、鼓型、風格),再自己組 song 呼叫 midi_play({song}):速度與拍號合風格,音高在樂器合理音域內,旋律音落在調內、強拍用和弦內音,貝斯彈根音,鼓用 drum:true 的軌(底鼓 36、小鼓 38、閉合踩鈸 42),每軌 program 用 GM 編號;小節數取 4 的倍數。3) 不確定某個風格的細節 → browser_search 查維基再回答,不要憑印象講數字。4) 音色只有 GS 音色庫的 GM 128 音色與鼓組;不能承諾做不到的(例如任意樂器分離、錄音轉譜目前還沒有)。5) 誠實說明:播放卡片第一次要下載瘦身版音色庫(大小會顯示在下載進度)。',
         dynamicNote: '路由建議:使用者提到 MIDI、.mid、播放音樂、轉 mp3、作曲、和弦、音階、節奏、配樂、某種音樂風格的特色時,委派這個領域。'
     },
     worksheet: {
@@ -33228,6 +33228,21 @@ const holder = {};
   // 分片來源:{ base, path }。base 底下有 manifest.json({files:[{path,size,sha256,parts,partSize:[…],partSha256:[…]}]})與 <path>.partNNN;
   // 每片單獨核對長度與 sha256、單獨放進 Cache API(中斷後重來只補缺的片),合併後核對總大小。base 要用完整 commit SHA 釘住。
   async function sha256Hex(buf) { const d = await crypto.subtle.digest('SHA-256', buf); return Array.from(new Uint8Array(d)).map((b) => b.toString(16).padStart(2, '0')).join(''); }
+  // 大小顯示一律從清單(sf-pack 產生的 manifest.json 的位元組數)算,不寫死:「約 6.6 MB」
+  function fmtMB(bytes) { const mb = Number(bytes) / 1048576; return (mb >= 10 ? Math.round(mb) : Math.round(mb * 10) / 10) + ' MB'; }
+  // 讀清單回 { path, size, parts, label:'約 6.6 MB', md5, sha256 };f 是 fetch
+  async function bankInfo(src, f) {
+    const r = await f(src.base + 'manifest.json'); if (!r.ok) throw new Error('manifest HTTP ' + r.status); const man = await r.json(), ent = (man.files || []).find((x) => x.path === src.path);
+    if (!ent) throw new Error('manifest 裡沒有 ' + src.path); return { path: ent.path, size: ent.size, parts: ent.parts, md5: ent.md5 || '', sha256: ent.sha256 || '', label: '約 ' + fmtMB(ent.size) };
+  }
+  const BANK_CACHE = 'fa-soundbank-v1';
+  // 本機快取:已存多少位元組、有沒有整份(whole 是 base#path@… 那一筆);cachesApi 預設是瀏覽器的 caches
+  async function bankCacheStatus(cachesApi) {
+    cachesApi = cachesApi || (typeof caches !== 'undefined' ? caches : null); if (!cachesApi) return { bytes: 0, entries: 0, whole: false };
+    let bytes = 0, entries = 0, whole = false; try { const c = await cachesApi.open(BANK_CACHE); for (const rq of await c.keys()) { const r = await c.match(rq); if (!r) continue; const b = await r.clone().arrayBuffer(); bytes += b.byteLength; entries++; if (String(rq.url || rq).indexOf('#') >= 0) whole = true; } } catch (_) { /* */ }
+    return { bytes, entries, whole };
+  }
+  async function bankCacheClear(cachesApi) { cachesApi = cachesApi || (typeof caches !== 'undefined' ? caches : null); if (!cachesApi) return false; try { return await cachesApi.delete(BANK_CACHE); } catch (_) { return false; } }
   async function fetchParts(src, prog, f) {
     const CACHE = 'fa-soundbank-v1'; const base = src.base;
     const cache = typeof caches !== 'undefined' ? await caches.open(CACHE) : null;
@@ -33238,7 +33253,7 @@ const holder = {};
     for (let i = 0; i < ent.parts; i++) {
       const u = base + src.path + '.part' + String(i).padStart(3, '0'); let buf = null; const ph = cache && await cache.match(u); if (ph) { const b = await ph.arrayBuffer(); if (b.byteLength === ent.partSize[i]) buf = b; }
       if (!buf) {
-        prog('下載音色庫 第 ' + (i + 1) + ' / ' + ent.parts + ' 片(共 ' + Math.round(ent.size / 1048576) + ' MB)', i / ent.parts);
+        prog('下載音色庫 第 ' + (i + 1) + ' / ' + ent.parts + ' 片(共 ' + fmtMB(ent.size) + ')', i / ent.parts);
         const r = await f(u); if (!r.ok) throw new Error(u.split('/').pop() + ' HTTP ' + r.status); buf = await r.arrayBuffer();
         if (buf.byteLength !== ent.partSize[i]) throw new Error('第 ' + (i + 1) + ' 片長度不符(預期 ' + ent.partSize[i] + '、實際 ' + buf.byteLength + ')');
         if (ent.partSha256 && typeof crypto !== 'undefined' && crypto.subtle && (await sha256Hex(buf)) !== ent.partSha256[i]) throw new Error('第 ' + (i + 1) + ' 片檢查碼不符');
@@ -33248,7 +33263,8 @@ const holder = {};
     }
     if (off !== ent.size) throw new Error('合併後大小不符(預期 ' + ent.size + '、實際 ' + off + ')');
     if (new Uint8Array(out.buffer, 0, 4).join() !== '82,73,70,70') throw new Error('不是 sf2/RIFF 檔');
-    if (cache) { try { await cache.put(whole, new Response(out.buffer.slice(0))); } catch (e) { /* */ } }
+    // 整份存好之後就不再多留一份分片(不然同一份音色庫在快取裡占兩倍空間);整份存失敗才留著分片給下次續用
+    if (cache) { try { await cache.put(whole, new Response(out.buffer.slice(0))); for (let i = 0; i < ent.parts; i++) await cache.delete(base + src.path + '.part' + String(i).padStart(3, '0')); } catch (e) { /* */ } }
     return out.buffer;
   }
   // 下載音色庫:有進度、核對長度、快取放 Cache API(下次不用再下載)
@@ -33293,7 +33309,7 @@ const holder = {};
     return await ctx.startRendering();
   }
 
-  return { channelMap, buildEvents, createPlayer, loadSynth, fetchBank, fetchParts, renderOffline };
+  return { channelMap, buildEvents, createPlayer, loadSynth, fetchBank, fetchParts, renderOffline, fmtMB, bankInfo, bankCacheStatus, bankCacheClear };
 });
 
 }).call(null, undefined, holder);
@@ -33937,14 +33953,22 @@ const holder = {};
     if (h !== m.sha256) { for (let i = 0; i < n; i++) await opts.store.del(key(i)); throw new Error(m.label + ' 檢查碼不符(' + h.slice(0, 12) + '… 應為 ' + m.sha256.slice(0, 12) + '…),已清掉快取,請重試'); }
     return all;
   }
+  // 離線模型管理頁用:這個模型在本機存了幾片、共多少位元組、是不是整個都在(每片大小要對才算);刪除就是把每片拿掉
+  async function status(id, store) {
+    const m = REGISTRY[id]; if (!m) throw new Error('沒有這個模型:' + id); const n = Math.ceil(m.bytes / CHUNK); let have = 0, chunks = 0;
+    for (let i = 0; i < n; i++) { const key = 'model:' + id + ':' + m.sha256.slice(0, 8) + ':' + i, want = Math.min(m.bytes, (i + 1) * CHUNK) - i * CHUNK; // 有 has() 就只問在不在(不把 8 MB 一片整個讀出來);片的大小與整個檢查碼在真正用到時核對
+      if (store.has ? await store.has(key) : (await store.get(key) || { length: -1 }).length === want) { have += want; chunks++; } }
+    return { id, bytes: m.bytes, have, chunks, total: n, complete: chunks === n };
+  }
+  async function remove(id, store) { const m = REGISTRY[id]; if (!m) throw new Error('沒有這個模型:' + id); const n = Math.ceil(m.bytes / CHUNK); for (let i = 0; i < n; i++) await store.del('model:' + id + ':' + m.sha256.slice(0, 8) + ':' + i); return n; }
   // 瀏覽器端的 IndexedDB 儲存(資料庫 fa-a2m-models)
   function idbStore() {
     const open = () => new Promise((res, rej) => { const q = indexedDB.open('fa-a2m-models', 1); q.onupgradeneeded = () => q.result.createObjectStore('kv'); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); });
     const run = async (mode, f) => { const db = await open(); return new Promise((res, rej) => { const tx = db.transaction('kv', mode), r = f(tx.objectStore('kv')); tx.oncomplete = () => { db.close(); res(r && r.result); }; tx.onerror = () => rej(tx.error); }); };
-    return { get: (k) => run('readonly', (s) => s.get(k)), set: (k, v) => run('readwrite', (s) => s.put(v, k)), del: (k) => run('readwrite', (s) => s.delete(k)) };
+    return { get: (k) => run('readonly', (s) => s.get(k)), set: (k, v) => run('readwrite', (s) => s.put(v, k)), del: (k) => run('readwrite', (s) => s.delete(k)), has: async (k) => (await run('readonly', (s) => s.count(k))) > 0 };
   }
   async function webSha256(u8) { const d = await crypto.subtle.digest('SHA-256', u8); return Array.from(new Uint8Array(d), (b) => b.toString(16).padStart(2, '0')).join(''); }
-  return { REGISTRY, CHUNK, fetchModel, idbStore, webSha256 };
+  return { REGISTRY, CHUNK, fetchModel, status, remove, idbStore, webSha256 };
 });
 
 }).call(null, undefined, holder);
@@ -55177,7 +55201,7 @@ class FloatingAssistant {
             return null;
         };
         this.register_slash_command('/media-midi', '[.mid 檔 | 範例]',
-            'MIDI 播放卡片:/media-midi 附上 .mid 檔(用 📎 上傳)→ 在對話裡放播放卡片(播放、拖進度、每軌靜音／獨奏／音量、下載、轉 mp3);/media-midi 範例 → 放一首示範曲。音色是 GS 音色庫(第一次播放下載約 31 MB,存在本機)。也可以直接對 AI 說「幫我寫一段 …風格的曲子」。',
+            'MIDI 播放卡片:/media-midi 附上 .mid 檔(用 📎 上傳)→ 在對話裡放播放卡片(播放、拖進度、每軌靜音／獨奏／音量、下載、轉 mp3);/media-midi 範例 → 放一首示範曲。音色是 GS 音色庫(第一次播放才下載瘦身版音色庫,大小會顯示在下載進度,存在本機)。也可以直接對 AI 說「幫我寫一段 …風格的曲子」。',
             async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/media-midi' + (raw ? ' ' + raw : '') });
                 try {
                     if (/^(範例|示範|demo)/i.test(raw)) { const a = await r._midiSongFromArgs({ song: { title: '示範曲', tempo: 100, tracks: [{ name: '鋼琴', program: 0, notes: [[0, 1, 60, 90], [1, 1, 64, 90], [2, 1, 67, 90], [3, 1, 72, 90], [4, 2, 67, 90], [6, 2, 64, 90]] }, { name: '貝斯', program: 33, notes: [[0, 2, 36, 100], [2, 2, 43, 100], [4, 4, 36, 100]] }, { name: '鼓', drum: true, notes: [[0, 0.25, 36, 110], [1, 0.25, 42, 80], [2, 0.25, 38, 100], [3, 0.25, 42, 80], [4, 0.25, 36, 110], [5, 0.25, 42, 80], [6, 0.25, 38, 100], [7, 0.25, 42, 80]] }] } }); r._midiPushCard(a.song, '示範曲'); }
@@ -55186,7 +55210,7 @@ class FloatingAssistant {
                 try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ }
             });
         this.register_slash_command('/media-midi-to-mp3', '[.mid 檔]',
-            '把 MIDI 用 GS 音色庫離線渲染成 mp3(用 📎 上傳 .mid 檔再打這個指令;第一次要下載音色庫約 31 MB)。',
+            '把 MIDI 用 GS 音色庫離線渲染成 mp3(用 📎 上傳 .mid 檔再打這個指令;第一次要下載瘦身版音色庫(大小會顯示在下載進度))。',
             async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/media-midi-to-mp3' + (raw ? ' ' + raw : '') });
                 try {
                     const f = await _midiFileFrom(r, raw);
@@ -59652,7 +59676,7 @@ ${fnData.code}
             { type: 'object', properties: { description: { type: 'string', description: '使用者的中文描述,例如「輕快的爵士,D 調,16 小節」' }, style: { type: 'string', enum: ['pop', 'rock', 'jazz', 'blues', 'waltz', 'folk', 'lofi', 'edm', 'classical'] }, key: { type: 'string', description: 'C、D、Eb、F#… 大調或(小調風格)的主音' }, tempo: { type: 'number' }, bars: { type: 'number', description: '4 到 64,16 以上有前奏／主歌／副歌結構' }, progression: { type: 'number', description: '風格內的和弦進行編號,從 0 起算' }, seed: { type: 'number' }, title: { type: 'string' } }, additionalProperties: false }
         );
         registerOptional('midi_to_mp3',
-            '把 MIDI 用 GS 音色庫離線渲染並編成 mp3 檔(變成下載卡片)。來源同 midi_play:file_id、song_id 或 song。第一次要下載音色庫(約 31 MB);長曲子會花一些時間。',
+            '把 MIDI 用 GS 音色庫離線渲染並編成 mp3 檔(變成下載卡片)。來源同 midi_play:file_id、song_id 或 song。第一次要下載瘦身版音色庫(大小會顯示在下載進度);長曲子會花一些時間。',
             async function (rawArgs) {
                 let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 try {
@@ -73610,11 +73634,21 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const bank = []; if (FA_ASSET_URLS.gsSoundbankBase) bank.push({ base: FA_ASSET_URLS.gsSoundbankBase, path: 'GeneralUser-GS-22k.sf3' }); bank.push(FA_ASSET_URLS.gsSoundbank);
         return { lib: [lib], processor: [proc], soundbank: bank };
     }
+    // 音色庫大小從清單(soundfont-assets 分支的 manifest.json,sf-pack 產生)算出來顯示。清單抓不到就不報數字;退回原版 sf2 才是備援(約 31 MB)
+    _midiBankInfo() {
+        if (!this._midiBankInfoP) {
+            const src = this._midiSources().soundbank[0];
+            this._midiBankInfoP = (src && typeof src === 'object' ? FaMidiPlay.bankInfo(src, (u) => fetch(u)) : Promise.reject(new Error('沒有分片音色庫'))).then((i) => { this._midiBankInfoV = i; return i; }, (e) => { this._midiBankInfoP = null; throw e; });
+        }
+        return this._midiBankInfoP;
+    }
+    _midiBankNote() { const i = this._midiBankInfoV; return i ? '瘦身版音色庫(' + i.label + ')' : '瘦身版音色庫(大小在下載進度裡顯示;抓不到才退回備援的原版,約 31 MB)'; }
     _midiB64(bytes) { let b = ''; for (let i = 0; i < bytes.length; i += 0x8000) b += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(b); }
     _midiStoreSong(song, id) { this._midiSongs = this._midiSongs || new Map(); id = id || ('mi' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5)); this._midiSongs.set(id, song); if (this._midiSongs.size > 30) this._midiSongs.delete(this._midiSongs.keys().next().value); return id; }
     // 工具參數 → 曲子:file_id(上傳的 .mid)、song_id(對話裡已有的)、或 song(模型組的:tempo、timesig、tracks[{name,program,drum,notes:[[第幾拍,幾拍長,音高,力度]]}])
     async _midiSongFromArgs(a) {
         a = a || {};
+        try { await Promise.race([this._midiBankInfo(), new Promise((r) => setTimeout(r, 2000))]); } catch (_) { /* 清單抓不到就不報數字 */ }
         if (a.song_id && this._midiSongs && this._midiSongs.get(String(a.song_id))) return { song: this._midiSongs.get(String(a.song_id)) };
         if (a.file_id) {
             const rec = await this.fileCache.get(String(a.file_id)); if (!rec || !rec.blob) return { error: '找不到這個檔案:' + a.file_id };
@@ -73778,7 +73812,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     _midiPushCard(song, title, lead) {
         const id = this._midiStoreSong(song); const ref = { id, title: title || song.title || 'MIDI' };
         try { const bytes = FaMidi.write(song); if (bytes.length <= 90000) ref.b64 = this._midiB64(bytes); } catch (_) { /* */ }
-        this._pushAssistantMessage((lead || '🎹 MIDI 播放卡片:按播放聽聽看(第一次會下載音色庫約 31 MB,之後存在本機),可以靜音／獨奏／調音量,也能下載 MIDI 或轉成 mp3。') + '\n\n```fa-midi\n' + JSON.stringify(ref) + '\n```', null);
+        this._pushAssistantMessage((lead || '🎹 MIDI 播放卡片:按播放聽聽看(第一次會下載' + this._midiBankNote() + ',之後存在本機),可以靜音／獨奏／調音量,也能下載 MIDI 或轉成 mp3。') + '\n\n```fa-midi\n' + JSON.stringify(ref) + '\n```', null);
         return id;
     }
     // MIDI 編輯器(階段 2):卡片 fa-midi-edit;曲子存在 _midiSongs,編輯後即時更新;讀不懂的話交給模型(只能回封閉的動作清單)
@@ -97683,6 +97717,31 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const side = document.getElementById('ai-advanced-sidebar');
         if (side) side.addEventListener('click', (ev) => { const c = ev.target.closest('.ai-advanced-cat'); if (c && c.dataset.cat === 'offline-models') this._omRenderPane(); });
     }
+    // 離線模型管理頁的「音樂」區:聲音轉 MIDI 的三個模型、GS 音色庫(瘦身版)、配樂暫存;大小一律從登錄／清單算
+    async _omMusicSection(btn, esc) {
+        const MB = (b) => FaMidiPlay.fmtMB(b); let html = '<div style="font-weight:600; margin:10px 0 4px;">音樂（聲音轉 MIDI、音色庫、配樂）</div>';
+        const store = FaAudioModels.idbStore(), REG = FaAudioModels.REGISTRY; const rows = [];
+        for (const id of Object.keys(REG)) {
+            const m = REG[id]; let st = null; try { st = await FaAudioModels.status(id, store); } catch (_) { st = null; }
+            const have = st && st.chunks > 0, full = st && st.complete;
+            rows.push('<div style="border:1px solid #334155; border-radius:8px; padding:8px; margin-bottom:6px;"><div><b>' + esc(m.label) + '</b>　<span style="color:#94a3b8; font-size:12px;">' + esc(MB(m.bytes)) + (m.license ? '　授權 ' + esc(m.license) : '') + '</span></div>'
+                + '<div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-top:4px;"><span>' + (full ? '✅ 已下載 ' + esc(MB(st.have)) : have ? '🟡 下載到一半 ' + esc(MB(st.have)) + ' / ' + esc(MB(m.bytes)) + '（可續傳）' : '⬜ 未下載') + '</span>'
+                + (full ? '' : '<button style="' + btn + '" data-om="mus-model-dl" data-id="' + esc(id) + '">' + (have ? '續傳' : '下載') + '</button>') + (have ? '<button style="' + btn + ' color:#fca5a5;" data-om="mus-model-del" data-id="' + esc(id) + '">刪除</button>' : '') + '<span data-om-status="mus-' + esc(id) + '" style="color:#7dd3fc;"></span></div></div>');
+        }
+        html += rows.join('');
+        let info = null, cache = { bytes: 0, entries: 0, whole: false }, infoErr = '';
+        try { info = await this._midiBankInfo(); } catch (e) { infoErr = String((e && e.message) || e); }
+        try { cache = await FaMidiPlay.bankCacheStatus(); } catch (_) { /* */ }
+        html += '<div style="border:1px solid #334155; border-radius:8px; padding:8px; margin-bottom:6px;"><div><b>GS 音色庫（播放、轉 mp3、配樂的 MIDI 都用這一份）</b>　<span style="color:#94a3b8; font-size:12px;">瘦身版 ' + (info ? esc(info.label) + '（清單：' + info.parts + ' 片）' : '大小讀不到（' + esc(infoErr) + '）') + '</span></div>'
+            + '<div style="color:#94a3b8; font-size:12px;">第一次播放才下載，存在這台電腦；下載失敗時才退回備援的原版（約 31 MB）。</div>'
+            + '<div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-top:4px;"><span>' + (cache.entries ? '✅ 本機已存 ' + esc(MB(cache.bytes)) : '⬜ 未下載') + '</span>'
+            + (cache.whole ? '' : '<button style="' + btn + '" data-om="mus-bank-dl">' + (cache.entries ? '續傳' : '下載') + '</button>') + (cache.entries ? '<button style="' + btn + ' color:#fca5a5;" data-om="mus-bank-del">刪除</button>' : '') + '<span data-om-status="mus-bank" style="color:#7dd3fc;"></span></div></div>';
+        const stc = this._soundtracks ? this._soundtracks.size : 0;
+        html += '<div style="border:1px solid #334155; border-radius:8px; padding:8px; margin-bottom:6px;"><div><b>配樂</b>　<span style="color:#94a3b8; font-size:12px;">簡報、遊戲、影片剪輯的背景音樂</span></div>'
+            + '<div style="color:#94a3b8; font-size:12px;">MIDI 配樂的內容存在各專案裡，播放時用上面那份音色庫渲染；音訊配樂（mp3／wav）存在檔案庫。這裡只能清掉對話裡暫存的配樂與已渲染的聲音（專案裡的不受影響）。</div>'
+            + '<div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-top:4px;"><span>對話裡暫存的配樂 ' + stc + ' 筆</span><button style="' + btn + '" data-om="mus-st-clear">清除暫存</button><span data-om-status="mus-st" style="color:#7dd3fc;"></span></div></div>';
+        return html;
+    }
     async _omRenderPane() {
         const root = this._omPaneRoot; if (!root) return;
         const keepOut = root.querySelector('[data-om-out]') ? root.querySelector('[data-om-out]').textContent : ''; const keepChat = root.querySelector('[data-om-chatout]') ? root.querySelector('[data-om-chatout]').textContent : '';
@@ -97707,6 +97766,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 <div style="margin-top:4px; font-size:12px;">${badge}　${m.toolCalling ? `<button style="${btn}" data-om="toolbench" data-id="${esc(m.id)}">測試工具呼叫</button>` : ''}${bn ? `<span style="color:#64748b;"> ${bn.details.filter((d) => !d.ok).map((d) => esc(d.id + '：' + d.reason)).join('；')}</span>` : ''}</div>`;
         };
         const textRows = FaVlm.textModels().map(cardOf).join(''); const imgRows = FaVlm.imageModels().map(cardOf).join(''); const otherRows = FaVlm.MODELS.filter((m) => m.managedOnly || m.task === 'depth-estimation' || m.task === 'segmentation').map(cardOf).join('');
+        const musicHtml = await this._omMusicSection(btn, esc);
         const other = usage.other.files ? `<div style="margin-top:4px;">其他快取：${usage.other.files} 個檔案、${FaVlm.fmtBytes(usage.other.bytes)}${usage.other.repos.length ? '（' + usage.other.repos.map(esc).join('、') + '）' : ''} ${usage.other.repos.map((r) => `<button style="${btn} color:#fca5a5;" data-om="delrepo" data-repo="${esc(r)}">刪除 ${esc(r)}</button>`).join(' ')}</div>` : '';
         root.innerHTML = `<div style="color:#94a3b8; margin-bottom:8px;">離線模型在你的電腦上執行（瀏覽器內的 WebAssembly／WebGPU），圖片不會上傳；推論在背景執行緒，不會卡住畫面。模型第一次使用時才下載，存在瀏覽器快取。</div>
             <div style="border:1px solid #334155; border-radius:8px; padding:8px; margin-bottom:10px;">
@@ -97739,6 +97799,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             <div style="font-weight:600; margin-bottom:4px;">文字生成（聊天）模型　<span style="font-weight:400; color:#94a3b8;">預設：${esc(S.textModel)}</span></div>${textRows}
             <div style="font-weight:600; margin:10px 0 4px;">圖像（VLM）模型　<span style="font-weight:400; color:#94a3b8;">預設：${esc(S.model)}</span></div>${imgRows}
             <div style="font-weight:600; margin:10px 0 4px;">其他（只管理快取）</div>${otherRows}
+            ${musicHtml}
             <div style="font-weight:600; margin:10px 0 4px;">UniK3D（景物照片的度量深度，選用、自備）</div>
             <div style="border:1px solid #334155; border-radius:8px; padding:8px; color:#94a3b8; line-height:1.6;">UniK3D 的授權是 CC BY-NC 4.0（非商業），所以<b>不內建、不下載、不散布</b>；官方也只發 PyTorch 權重，沒有現成的 .onnx。想用的話要自己匯出：<br>1. 取得官方程式碼與權重（github.com/lpiccinelli-eth/UniK3D，模型 vits）。<br>2. 在專案根目錄執行官方的 unik3d/models/export.py，輸入解析度固定為 462×630，得到 .onnx 檔。<br>3. 把檔案放在這台電腦上；目前<b>這個版本還沒有接上推論</b>（沒有驗證過它能不能在瀏覽器跑，也不知道匯出檔的輸入輸出名稱），所以 /image-to-3d 一律用上面的 Depth Anything V2 Small。</div>
             <div style="border:1px solid #334155; border-radius:8px; padding:8px; margin-top:10px;">
@@ -97791,6 +97852,21 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 out.textContent = r.ok ? r.header + '\n\n' + r.text : '失敗：' + r.error; b.disabled = false; return;
             }
             if (act === 'delete') { const m = FaVlm.byId(id); if (!confirm('刪除「' + (m && m.label) + '」的下載檔案？下次使用會重新下載。')) return; await this._omDeleteModel(id); return this._omRenderPane(); }
+            if (act === 'mus-model-dl') {
+                b.disabled = true; const REG = FaAudioModels.REGISTRY, m = REG[id];
+                try { await FaAudioModels.fetchModel(id, { fetchFn: (u, h) => fetch(u, { headers: h }), store: FaAudioModels.idbStore(), sha256: FaAudioModels.webSha256, sleep: (ms) => new Promise((r) => setTimeout(r, ms)), onProgress: (p) => stat('mus-' + id, FaMidiPlay.fmtMB(p.done) + ' / ' + FaMidiPlay.fmtMB(p.total) + (p.resumed ? '（' + p.resumed + ' 片來自本機）' : '')) }); stat('mus-' + id, '✅ 完成'); }
+                catch (e) { stat('mus-' + id, '❌ ' + String((e && e.message) || e)); b.disabled = false; return; }
+                return this._omRenderPane();
+            }
+            if (act === 'mus-model-del') { const m = FaAudioModels.REGISTRY[id]; if (!confirm('刪除「' + (m && m.label) + '」的下載檔案？下次轉譜會重新下載。')) return; await FaAudioModels.remove(id, FaAudioModels.idbStore()); return this._omRenderPane(); }
+            if (act === 'mus-bank-dl') {
+                b.disabled = true;
+                try { await FaMidiPlay.fetchBank(this._midiSources().soundbank, (msg, p) => stat('mus-bank', String(msg || '')), (u) => fetch(u)); stat('mus-bank', '✅ 完成'); }
+                catch (e) { stat('mus-bank', '❌ ' + String((e && e.message) || e)); b.disabled = false; return; }
+                return this._omRenderPane();
+            }
+            if (act === 'mus-bank-del') { if (!confirm('刪除本機的 GS 音色庫？下次播放 MIDI 會重新下載。')) return; await FaMidiPlay.bankCacheClear(); try { this._midiSynthP = null; } catch (_) { /* */ } return this._omRenderPane(); }
+            if (act === 'mus-st-clear') { try { if (this._soundtracks) this._soundtracks.clear(); FaSoundtrack.clearCache(); } catch (_) { /* */ } return this._omRenderPane(); }
             if (act === 'delrepo') { const repo = b.getAttribute('data-repo'); if (!confirm('刪除 ' + repo + ' 的快取檔案？')) return; await this._omDeleteRepo(repo); return this._omRenderPane(); }
             if (act === 'clearall') { if (!confirm('清除全部離線模型快取（含 Whisper）？下次使用會重新下載。')) return; await this._omClearAll(); return this._omRenderPane(); }
             if (act === 'preload') { b.disabled = true; stat(id, '等待你的確認…'); const r = await this._omPreload(id, (s) => stat(id, s)); stat(id, r.ok ? '✅ 完成（' + (r.device === 'webgpu' ? 'GPU' : 'CPU') + '）' : (r.cancelled ? '' : '❌ ' + r.error)); b.disabled = false; if (r.ok) this._omRenderPane(); return; }

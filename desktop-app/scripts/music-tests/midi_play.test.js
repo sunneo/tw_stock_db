@@ -145,5 +145,17 @@ function songWith(notes) { let sg = M.emptySong(); sg.tempos = [{ t: 0, bpm: 120
   pb.dispose(); sm2.advance(1000); check('two cards: removing the active one frees the group and leaves nothing sounding', group.active === null && sm2.sounding() === 0, sm2.sounding());
   pa.stop(); check('two cards: stopping an already-stopped card does not disturb the group', group.active === null);
 }
+  // ── 音色庫大小從清單算、本機快取狀態、整份存好後不再多留分片(離線模型管理頁、播放卡片訊息用)
+  check('fmtMB: sizes come out as 6.3 MB / 31 MB (MiB) (never hard-coded)', P.fmtMB(6614304) === '6.3 MB' && P.fmtMB(32319396) === '31 MB' && P.fmtMB(1048576) === '1 MB', [P.fmtMB(6614304), P.fmtMB(32319396)]);
+  const bi = await P.bankInfo({ base: 'https://h/x/', path: 'x.sf2' }, async () => ({ ok: true, json: async () => man }));
+  check('bankInfo: size, parts and label come from the manifest', bi.size === data.length && bi.parts === parts.length && bi.label === '約 ' + P.fmtMB(data.length), bi);
+  let bierr = ''; try { await P.bankInfo({ base: 'https://h/x/', path: 'nope.sf2' }, async () => ({ ok: true, json: async () => man })); } catch (e) { bierr = e.message; } check('bankInfo: a manifest without the file is reported', /nope\.sf2/.test(bierr), bierr);
+  const store = new Map(); const fakeCaches = { async open() { return { async put(k, r) { store.set(typeof k === 'string' ? k : k.url, Buffer.from(await r.arrayBuffer())); }, async match(k) { const v = store.get(typeof k === 'string' ? k : k.url); return v ? { arrayBuffer: async () => v.buffer.slice(v.byteOffset, v.byteOffset + v.length), clone() { return this; } } : undefined; }, async delete(k) { return store.delete(typeof k === 'string' ? k : k.url); }, async keys() { return Array.from(store.keys()).map((u) => ({ url: u })); } }; }, async delete() { const had = store.size > 0; store.clear(); return had; } };
+  global.caches = fakeCaches; global.Response = global.Response || class { constructor(b) { this._b = b; } async arrayBuffer() { return this._b; } };
+  await P.fetchParts({ base: 'https://h/x/', path: 'x.sf2' }, () => {}, mkFetch());
+  check('fetchParts: after the whole bank is cached the part entries are dropped (no double storage)', Array.from(store.keys()).length === 1 && Array.from(store.keys())[0].indexOf('#') >= 0, Array.from(store.keys()));
+  const cs = await P.bankCacheStatus(fakeCaches); check('bankCacheStatus: reports bytes and that the whole bank is there', cs.whole && cs.bytes === data.length && cs.entries === 1, cs);
+  check('bankCacheClear: empties the cache', (await P.bankCacheClear(fakeCaches)) === true && (await P.bankCacheStatus(fakeCaches)).entries === 0);
+  delete global.caches;
   console.log(ok + ' passed, ' + bad.length + ' failed'); bad.forEach((b) => console.log('FAIL: ' + b)); process.exit(bad.length ? 1 : 0);
 })();
