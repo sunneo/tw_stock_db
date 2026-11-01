@@ -90,6 +90,8 @@ The desktop app has a top‑right **🔄 檢查更新** button (desktop‑only c
 * `renderer/floating-assistant.js`
 * `renderer/floating-assistant.min.js`
 
+**Web lazy loading:** the web build (`web/index.html`, `web/aiweb/index.html`) does not load the full `floating-assistant.js`; it loads `desktop-app/web-lazy/core.js` plus on-demand chunk files from `desktop-app/web-lazy/chunks/`, all pinned to the same commit SHA (`window.__FA_LAZY_BASE`). The desktop app keeps the single full file, so the chunk files are **not** part of the live-patch list (old installed `main.js` could not receive new files anyway). `scripts/web-lazy-check.js` (run by `scripts/publish.sh`) verifies the chunks match the manifest and, with `--remote <SHA>`, that every chunk URL answers HTTP 200. See `DESIGN.lazy-loading.md`.
+
 Applying an update writes these files into `<userData>/live-patch/renderer/` and points the `BrowserWindow` there via `loadFile()` — no reinstall, no full app relaunch. It never touches `main.js`/`preload.js` (main‑process code that's already loaded into memory) or the installer itself.
 
 ### How comparison works

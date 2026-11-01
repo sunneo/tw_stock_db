@@ -86,3 +86,10 @@
 | FA_CATALOG_EVAL_SET_JSON | 10K |
 | FA_CATALOG_INTENTS_JSON | 7K |
 | FA_PRESET_MODEL_STATE | 7K |
+
+## 網頁版延遲載入的做法與驗證（2026-11-01）
+- 桌面版繼續用整份 `renderer/floating-assistant.js`：舊版已安裝的主程式熱更新白名單是寫死的，新增的分檔到不了舊版，所以桌面版不拆、也不需要把區塊檔放進熱更新清單。
+- 網頁版改載入 `web-lazy/core.js`（核心）＋ `web-lazy/chunks/*.js`（120 個區塊，第一次碰到才用同步請求載入，或由 `FaLazy.ensure` 預先非同步載入）。網址跟核心一樣釘在同一個完整提交 SHA；`web/index.html` 與 `web/aiweb/index.html` 都在載入核心前設定 `window.__FA_LAZY_BASE`。
+- `scripts/web-lazy-check.js` 檢查區塊檔與 manifest 一致，`--remote <SHA>` 逐檔驗證遠端回應 200 與檢查碼；`scripts/publish.sh` 已接上。
+- 本機驗證（內建瀏覽器，真正網頁版複本與 aiweb 複本）：開頁主控台零錯誤；約 50 個斜線指令與各編輯器入口逐一觸發，對應區塊皆載入成功；120 個區塊全部手動載入皆無錯誤；`_codeHtml`、`_codeAiPack`、行為說明、簡報與匯出資料在沒有預先載入時直接呼叫皆可用。`_behTables` 的 `t[n].push is not a function` 整份檔案也一樣（既有現象）。
+- 還原先前對話的網頁（例如 aiweb）開頁就會載入對話裡出現過的小工具所需的區塊（資料檢視、學習單、知識庫等，約 13 個、340K），這是預期行為。
