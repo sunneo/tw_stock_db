@@ -1,4 +1,4 @@
-# 交接文件：音樂領域（MIDI／mp3 轉 MIDI／音色庫瘦身，handoff 2，2026-11-01）
+# 交接文件：音樂領域（MIDI／mp3 轉 MIDI／音色庫瘦身，handoff 3，2026-11-01）
 
 ## 1. 開場提示（給接手的工作階段）
 Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app\desktop-app\DESIGN.TODO.music.md`. 先完整讀完（含使用者原話與做法備忘），照做。工作目錄 `D:\Downloads\videos-嗨投資-desktop-app\desktop-app`（產品程式在這裡）；參考專案 `D:\Downloads\SRC\piano-web` 只讀不改（若沒有權限讀，先用目錄授權工具請求該目錄）。執行 low-context-long-run 技能（門檻 30%）：做 Todo 的第一項，context 到門檻就更新這份文件並啟動你的接手工作階段（`mcp__ccd_session__start_session` 是延遲載入的工具，先用 ToolSearch 載入）。第一則訊息用一行說明你讀完了、要開始哪一項。回覆一律繁體中文、不要夾英文縮寫。**不要做長篇規劃、不要問，直接查證、寫程式、測試、提交。**
@@ -19,16 +19,20 @@ Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app
 | 6 | 接進簡報（media-presentation）、2D／3D 遊戲、影片剪輯當配樂 | 一條共用的「配樂」介面 |
 | 7 | 風格知識：瀏覽器查維基的風格介紹、風格設計範本 | 與階段 3 共用 |
 
-## 3. Todo（依序；階段 0 已做完，階段 1 做了大半）
+## 3. Todo（依序；階段 0、1 已做完，階段 2 做了編輯器本體）
 
 **已完成並提交（細節與實測結果見 `DESIGN.music.md` §1–§5）：**
 - 階段 0：`scripts/sf-analyze.js`（結論：重複樣本不到 0.05 MB，瘦身要靠降取樣與 SF3 壓縮）、轉譜模型查證、piano-web 盤點（c6a21abf）。
 - 階段 1 程式：`renderer/src/music/{midi_core,midi_play,midi_ui,music_knowledge}.js`＋測試 `scripts/music-tests/`（41 項全過，已接進 `scripts/run-core-tests.js`）、播放卡片 `fa-midi`、工具 `midi_play`／`midi_to_mp3`／`music_topic`、斜線 `/midi`、`/midi-to-mp3`、domain `music`、合成器程式庫放 `renderer/vendor/spessasynth/`（提交 2befe2d0…最新見 git log）。瀏覽器實測有聲、卡片可播（測試頁 `scripts/music-tests/browser.html`、`card.html`；音色庫本機副本放在 TEMP 的 gs.sf2，**不要放進 scripts/ 以免 publish.sh 的 git add -A 把 32 MB 提交進去**）。
 
-**第一項（現在就做）：收尾階段 1 並發布**
-1. 已經建置好（embed-code-ui＋build-assistant＋web-lazy 檢查通過），但**發布被自動模式的權限檢查擋下（Production Deploy）**：先向使用者回報並請他確認或自己執行 `PUBLISH_TRAILER="Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>" bash scripts/publish.sh -m "音樂階段1：MIDI 播放卡片、轉 mp3、domain music"`；不要繞過。使用者確認前先做第 2 步與階段 2 的純函式部分。
-2. 補驗證（誠實標在 DESIGN.music.md §5「未驗證」）：（a）`midi_to_mp3` 的 mp3 編碼真機走一次（lamejs 從 CDN 載入，內建瀏覽器載 CDN 很慢，可把 lame.min.js 放本機伺服器測）；（b）網頁版合成器路徑（`_midiSources` 由 `__FA_LAZY_BASE` 往上兩層推 `renderer/vendor/spessasynth/`，要對照 publish 後遠端實際目錄，用 curl 查 200）；（c）在桌面版或網頁版整條流程（說「放一首…」→ 工具 → 卡片 → 播放）。
-3. `FEATURES.md` 加一條音樂功能（該檔有別的工作階段的未提交修改，要加時只加自己那段，不要連帶提交別人的）。
+**階段 1 補充（handoff 3 做完的）：** 功能清冊 `features/ai-features.yaml` 已加 `music-midi`（FEATURES.md 是產生檔，不要手改）；mp3 編碼是重用既有 `_encodeMp3`（lamejs，TTS 與抽音訊走同一條，已實用過），未單獨真機跑一次；網頁版合成器路徑推導（__FA_LAZY_BASE 往上兩層＝desktop-app/，再接 renderer/vendor/spessasynth/）檢查過邏輯，**發布後要用 curl 對釘住的 commit 查 200**；合成器程式庫是 fetch 文字後用 data: 網址載入，所以 CDN 的 MIME 類型不是問題。
+
+**階段 2 已完成並提交（handoff 3）：** `renderer/src/music/midi_edit.js`（封閉動作 apply／applyAll、中文指令 parseCommands、復原重做 history；數字音軌＝從 0 起算索引，字串音軌＝第幾軌或名稱；測試 `scripts/music-tests/midi_edit.test.js` 19 項）、`midi_editor_ui.js`（鋼琴捲簾畫布、音軌欄、GS 128 音色下拉、復原重做、試聽、下載、底部對話框：程式先讀、讀不懂才 `host.askAI`）、`floating-assistant.js` 內的 `_midiPushEditor／_midiEditAsk／_mountMidiEditCards`、斜線 `/edit-midi`、工具 `midi_edit_open`、卡片區塊 `fa-midi-edit`；瀏覽器實測（`scripts/music-tests/editor.html`，新增／刪除音符、中文指令、AI 退路、復原都正確）。
+
+**第一項（現在就做）：階段 2 剩下的「遠端」兩件**
+1. 發布仍待使用者確認（被權限檢查擋過，見第 4 節）；未確認前不要發布、不要繞過。
+2. **遠端卡片與遠端編輯**。查證結果（不要重查）：現有遠端共筆是 `renderer/src/remote/rg_collab.js`＋`rg_session.js`＋`rg_patch.js`＋`rg_edit.js`，**一個編輯器要被遠端共筆，必須是 `KINDS` 登錄的編輯器種類（`FaEditShell` 外框、專案存 `FaEditStore`）**，宣告在 `_edRemoteDecl(kind)`（`sync:'patch'`＋`patchKeys`＝陣列鍵欄位，文件必須是「以 id 定址的 JSON」）。我們的 MIDI 編輯器目前是對話裡的獨立卡片，不是 KINDS。做法：（a）新增純函式 `songToDoc／docToSong`（給每軌與每個音符穩定 id，`patchKeys:{tracks:'id',notes:'id'}`，這樣兩人改不同音符會事件層級合併、改同一個音符較新者勝）並加測試；（b）把 MIDI 登錄成 KINDS 的一種（`edit-midi`，仿最小的一種，看 `KINDS` 內 `remote`、`remoteRun`），讓 `/edit-midi` 可選擇「開成共筆編輯器」；（c）播放卡片的遠端顯示：看遠端卡片機制（grep `REMOTE` 區塊、`fa-worksheet` 在遠端的處理方式）；（d）用記憶體傳輸寫測試（`rg_*` 既有測試可仿）。若 KINDS 登錄代價太大，退路：在現有卡片上用 `rg.room.send` 直接傳動作事件（`host.onChange(song, action)` 已把每個動作送出；`card._midiEdit.applyRemote(actions)` 已能套用遠端動作），衝突用「較新者勝」，並在文件寫明。
+3. 階段 2 做完且測試全過 → 回報使用者請他確認發布，之後進階段 3。
 
 **之後各階段（做完前一階段再做下一階段，不要問）：階段 2 → 7，內容見原文如下（階段 1 已完成的部分略）。**
 - **階段 2**：MIDI 編輯器 `/edit-midi`（仿 `FaEditShell` 外框：音軌欄、鋼琴捲簾、屬性、復原重做、底部 AI 對話框；**音色只能選 GS 音色**，GM 128＋鼓組；piano-web 的多音軌設計可參考，但不要整個搬）；**內建問 AI**：編輯器底部對話框用封閉動作（add_note、move、transpose、quantize、set_program、add_track、delete…）加 `parseCommands`（程式先讀中文），讀不懂才問模型；**遠端**：MIDI 播放卡片要能在遠端卡片裡顯示（看 `REMOTE` 區塊與遠端卡片機制，`renderer/src/remote/`），**遠端編輯**（遠端的人改同一份 MIDI，沿用現有遠端群組的訊息通道；衝突用「較新者勝＋事件層級合併」，每次編輯是一個事件）。
