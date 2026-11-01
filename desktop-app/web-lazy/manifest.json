@@ -930,6 +930,14 @@
    "size": 4428,
    "md5": "57739e4cb0bf8e7b75466026eee563fa"
   },
+  "musiceditui": {
+   "file": "chunks/musiceditui.js",
+   "names": [
+    "FaMidiEditUI"
+   ],
+   "size": 8104,
+   "md5": "56dacfc436c05349df779f56fbc81f0b"
+  },
   "musicknow": {
    "file": "chunks/musicknow.js",
    "names": [
@@ -1004,7 +1012,7 @@
   }
  },
  "core": {
-  "size": 5142806,
-  "md5": "63a8a5ca340eca458a47e1493e0f8f3b"
+  "size": 5147475,
+  "md5": "31ca08516487092e8af8aee9a20aaefd"
  }
 }

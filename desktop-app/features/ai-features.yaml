@@ -595,9 +595,9 @@ categories:
         samples: ["把這張臉做成 2.5D", "我要在圖上標註這個杯子，教你認得", "我自己標，不要 AI 猜", "讓這個 2.5D 模型動起來（點頭、揮手）", "把這張圖做成 2.5D 視差網格", "幫我把這張圖向量化重繪成 SVG，並猜出前後景深"]
         updated: 2026-10-05
       - id: music-midi
-        name: 音樂：MIDI 播放與轉 mp3
+        name: 音樂：MIDI 播放、編輯與轉 mp3
         summary: 在對話裡放 MIDI 播放卡片（合成器用 SpessaSynth＋GeneralUser GS 音色庫，第一次播放才下載並快取），可轉成 mp3；音樂領域附樂理與風格知識。網頁版的音樂模組走延遲載入。
-        how: { slash: ["/midi", "/midi-to-mp3"], tools: [midi_play, midi_to_mp3, music_topic] }
+        how: { slash: ["/midi", "/midi-to-mp3", "/edit-midi"], tools: [midi_play, midi_edit_open, midi_to_mp3, music_topic] }
         platforms: [web, desktop]
         samples: ["放一首小星星的 MIDI", "/midi", "/midi-to-mp3", "把這個 MIDI 轉成 mp3", "什麼是三和弦的轉位"]
         updated: 2026-11-01
