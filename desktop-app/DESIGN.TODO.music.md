@@ -21,6 +21,12 @@ Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app
 
 ## 3. Todo（依序；階段 0–4 已做完，階段 5 做了規則部分）
 
+### 目前狀態（handoff 6，2026-11-01，**最新，先看這段**）
+- **階段 5 已提交（2eb0a0c5，入口測試 162/163，唯一失敗是既有的遠端協定探測）**：`renderer/src/music/` 新增 `audio_pipeline.js`、`basic_pitch.js`、`instrument_classify.js`、`audio_models.js`、`audio_runtime.js`；工具 `audio_to_midi`、斜線 `/audio-to-midi [拆軌]`、功能清冊 `music-audio-to-midi`。三個模型都真的下載並在瀏覽器實測（結果寫在 DESIGN.music.md「階段 5 實測」）。限制：Demucs 要關最佳化、只能 wasm、很慢，預設不拆軌；鼓分類門檻與 YAMNet 對真實錄音的準確度未驗證；`/audio-to-midi` 在整個 App 裡沒有手動點過（只測了零件與流程）。
+- **下一步：階段 6**（配樂共用介面：先看 `game_audio.js`、簡報 `media-presentation`、影片剪輯 `edit-video` 現有音訊欄位，一個一個接），然後階段 7。發布仍由管理層代發。
+- 測試用本機伺服器：scratchpad 的 `srv.js`（`node srv.js <folder>`，埠改用沒被占的，8778 被別人占了），測試頁在 `scripts/music-tests/a2m-*.html`。
+- 想還原誤改的檔案時，`git checkout <檔>` 會被權限擋下；改用重新跑 embed/build 讓產生檔回到來源內容。
+
 ### 目前狀態（handoff 5 接手時，2026-11-01，管理層寫入，**先看這段**）
 - 已完成並提交：階段 0～4。階段 1／2／3 已由管理層發布（v257／v258／v259）。階段 4（音色庫瘦身，cc17af7e）只有腳本與測試，沒有隨 patch 發出的檔案，所以沒發布。階段 5 的模型查證已提交（787c1623：Demucs 6 軌 fp16 約 136 MB、MIT；Basic Pitch Apache-2.0；都沒下載或實跑，Basic Pitch 檔案大小與張量形狀、WebGPU 能否跑沒查到，仍是「未驗證」）。
 - **工作樹有上一個接手做到一半、尚未提交的階段 5 規則部分**（`renderer/src/floating-assistant.js`、`scripts/embed-code-ui.js`、`scripts/run-core-tests.js` 等有修改，另有新檔）：它回報「規則部分已寫好、單元測試…」但被截斷、沒提交。**第一件事：看 `git status`／`git diff` 弄清楚這些修改是什麼，跑對應的測試與 `node scripts/run-core-tests.js`，沒有新增失敗就提交；有壞掉的就修好或還原那一段（只還原你確認是上一個接手寫的、不是別人的）。**
