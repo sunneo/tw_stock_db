@@ -161,6 +161,7 @@ const suites = [
     ['圖片轉3D主機端模擬（只要主體：挑主體、貼圖流程、擺到桌子上）', 'scripts/media-tests/image3d_host.test.js'],
     ['音樂：MIDI 核心（解析、寫出、往返、量化、移調、合併拆分、速度表）', 'scripts/music-tests/midi_core.test.js'],
     ['音樂：播放排程（事件、頻道配置、前瞻排程、靜音獨奏、跳轉、迴圈）', 'scripts/music-tests/midi_play.test.js'],
+    ['音樂：MIDI 編輯器純函式層（封閉動作、中文指令、復原重做）', 'scripts/music-tests/midi_edit.test.js'],
 ];
 let failed = 0, failedNew = 0;
 const results = [], t00 = Date.now();
