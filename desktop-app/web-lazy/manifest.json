@@ -46,8 +46,8 @@
    "names": [
     "FaBeh2"
    ],
-   "size": 93054,
-   "md5": "12afeb2ae21733b1490b35c34d81e79a"
+   "size": 93099,
+   "md5": "21971924c4c084b36869d18147be2fc6"
   },
   "ref": {
    "file": "chunks/ref.js",
@@ -898,6 +898,38 @@
    "size": 69570,
    "md5": "418db38251f593381ee8edc010457fab"
   },
+  "musicmidi": {
+   "file": "chunks/musicmidi.js",
+   "names": [
+    "FaMidi"
+   ],
+   "size": 8747,
+   "md5": "d2ca6aa17800353c70d23068be50a981"
+  },
+  "musicplay": {
+   "file": "chunks/musicplay.js",
+   "names": [
+    "FaMidiPlay"
+   ],
+   "size": 6212,
+   "md5": "18ff7f266ff0a43c5d1334878866c5f3"
+  },
+  "musicui": {
+   "file": "chunks/musicui.js",
+   "names": [
+    "FaMidiUI"
+   ],
+   "size": 4428,
+   "md5": "57739e4cb0bf8e7b75466026eee563fa"
+  },
+  "musicknow": {
+   "file": "chunks/musicknow.js",
+   "names": [
+    "FaMusicKnowledge"
+   ],
+   "size": 6753,
+   "md5": "c7a4fb7dc985f65afdd64d56984d4b0d"
+  },
   "explain": {
    "file": "chunks/explain.js",
    "names": [
@@ -911,8 +943,8 @@
    "names": [
     "FA_EXPORT_SRC"
    ],
-   "size": 217096,
-   "md5": "da55a4a481e89d4ef347e00697bc640f"
+   "size": 217271,
+   "md5": "0ff56dd24a15a08285137f677a95544c"
   },
   "sqlix": {
    "file": "chunks/sqlix.js",
@@ -964,7 +996,7 @@
   }
  },
  "core": {
-  "size": 5130218,
-  "md5": "96198932d32606c10007db4dde3e5169"
+  "size": 5142215,
+  "md5": "094c81884386c8a66b7690fa4f1a4438"
  }
 }
