@@ -19,7 +19,8 @@ Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app
 2. **設計 stub 機制（先做最小可行，寫在報告裡一段）**：`FaLazy`（放在核心最前面，很小）：`FaLazy.register(名稱, {url, global})`、`await FaLazy.ensure(名稱)`（下載→執行→把真正的模組接到全域名稱）、`FaLazy.stub(名稱, 方法清單)`（stub 物件：呼叫前先 ensure，已載入就直接轉呼叫）。**同步存取的問題是最大風險**：很多模組是 `const FaX = (function(){…})()` 然後同步使用。規則：每個被延遲的模組，先列出所有使用處（搜全域名稱）；使用處在 `async` 函式裡就加 `await FaLazy.ensure('x')`；在同步路徑裡就要改成非同步或讓入口（斜線指令、工具執行、面板開啟）先 ensure。**不確定能不能安全改的模組就不要延遲，寧可少拆。**
 3. **第一批：純資料與只有少數入口用的大塊**（風險最低、收益最大）：`FA_BEHAVIOR_DATA`、`FA_DECK_SRC`、`FA_REF_DATA`、`FA_EXPORT_SRC`、`FA_PYBRIDGE_FILES`、`FA_IDR_SKILL_FILES`、各種 `*_HTML`、`FA_IMG3D_WORKER_SRC` 等。改成放獨立檔（建置時產出到 `renderer/lazy/*.js`），第一次用到才 `FaLazy.ensure`。**每一個使用處都要確認走到 ensure**（寫一個靜態檢查：搜尋被搬走的常數名稱，除了 stub 之外不得有直接引用）。
 4. **第二批：功能模組**（遊戲編輯器 GAME、簡報 DECK、影片剪輯 VIDEOEDIT、遠端 REMOTE、3D 編輯器 ED3D、編輯器主機層 EDITHOST…）：每個模組一個 chunk，入口（斜線指令、工具、面板、`fa-edit-*` 訊息的掛載）前先 ensure。逐個做、逐個測，不要一次全拆。
-5. **建置與發布管線**：`scripts/embed-code-ui.js` 與 `build-assistant.js` 要產出 chunk 檔（terser 壓縮、各自 md5）；`renderer/update-manifest.json` 與 `LIVE_PATCH_ALLOWED_FILES`／`LIVE_PATCH_MAIN_FILES`（`main.js`、`build-assistant.js` 兩處同步）要納入 chunk 檔；`scripts/make-live-patch.js`／`publish.sh` 要把 chunk 帶上；網頁版 chunk 的網址要跟著 commit SHA 釘住（同一個 SHA）。**舊版桌面版也要收得到更新、不准要求重裝；manifest 檔案清單要完整；版本號單調**（見 `publish-live-update-patch` 技能）。`main.js` 不能熱更新，所以 chunk 載入要能在「舊 main.js＋新 renderer」下運作（chunk 走相對路徑、`<script>` 或 fetch，同一個載入方式）。
+5. **【硬性規則，使用者 2026-11-01 提醒】發 patch 時，拆出來的每一個 chunk 檔都必須進 live patch 清單**：先決定每個 chunk 的類別（renderer 前端／主行程模組），再同步改 `renderer/update-manifest.json` 的來源（`build-assistant.js` 產生）、`main.js` 的 `LIVE_PATCH_ALLOWED_FILES`／`LIVE_PATCH_MAIN_FILES` 與 `build-assistant.js` 同名常數（兩處同步）、`scripts/make-live-patch.js`。發布前跑一個檢查：列出 `renderer/lazy/` 實際產出的所有檔案，逐一確認都在 manifest 裡、每個的 md5 與推上去的 blob 一致（`publish.sh` 的驗證步驟），**少一個就不准發布**。網頁版另外確認每個 chunk 網址在釘住的 commit SHA 下回應 HTTP 200。
+   建置與發布管線：`scripts/embed-code-ui.js` 與 `build-assistant.js` 要產出 chunk 檔（terser 壓縮、各自 md5）；`renderer/update-manifest.json` 與 `LIVE_PATCH_ALLOWED_FILES`／`LIVE_PATCH_MAIN_FILES`（`main.js`、`build-assistant.js` 兩處同步）要納入 chunk 檔；`scripts/make-live-patch.js`／`publish.sh` 要把 chunk 帶上；網頁版 chunk 的網址要跟著 commit SHA 釘住（同一個 SHA）。**舊版桌面版也要收得到更新、不准要求重裝；manifest 檔案清單要完整；版本號單調**（見 `publish-live-update-patch` 技能）。`main.js` 不能熱更新，所以 chunk 載入要能在「舊 main.js＋新 renderer」下運作（chunk 走相對路徑、`<script>` 或 fetch，同一個載入方式）。
 6. **驗證（硬性，全部通過才算完成）**：
    - `node scripts/run-core-tests.js`（改前先跑一次記基準；先前是 133／136 組，3 組是既有失敗，不要把它們算成你造成的）；
    - 真實 Electron 的 eval 腳本（`scripts/eval/*.js`，例如 `edit3d.eval.js`）能跑的全跑；
@@ -44,6 +45,8 @@ Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app
 - 標準發布指令（歷來）：「更新網頁，發布patch」「完成就可以更新網頁，發布patch」
 - 一貫的態度：「JUST DO IT!」「不要再繼續plan了」——不要長篇規劃、不要問，直接做。
 - 熱更新規則（歷來）：舊版也要收得到、不准要求重裝。
+
+- 「發patch時，要思考是不是這些拆出來的都要進live patch的清單」（2026-11-01）
 
 ## 6. 交接流程（自我遞迴）
 執行 low-context-long-run 技能（門檻 30%）：每個批次邊界用 `mcp__ccd_session_mgmt__get_usage` 看 context，≥30% 就更新本文件、提交、用 `start_session`（initiation `user_asked`、context `fresh`、同一個工作目錄、`use_worktree:false`）啟動接手，確認後 `mark_completed`＋`archive_session`（被拒就跳過並告知，不要重試迴圈）。
