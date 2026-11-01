@@ -1,4 +1,21 @@
-# 交接文件：`floating-assistant.js` 改成延遲載入（stub＋動態載入，handoff 1，2026-11-01）
+# 交接文件：`floating-assistant.js` 改成延遲載入（stub＋動態載入，handoff 2，2026-11-01）
+
+## 0. 狀態更新（handoff 2，2026-11-01，本節優先於下面第 2、3 節）
+**已完成並提交**（commit `04b5e06a` 與之後的 publish.sh／web-lazy-check 提交）：
+- `scripts/size-report.js`、`DESIGN.lazy-loading.md`（量測與基準）。
+- **關鍵設計決定（重要發現）**：舊版已安裝的 `main.js` 熱更新白名單是寫死的（只有 index.html、bootstrap.js、floating-assistant.js／.min.js、主行程模組、preload），**新增的分檔到不了舊版桌面版**。所以：**桌面版繼續用整份 `renderer/floating-assistant.js`（完全不變，零風險）；只有網頁版改用「核心＋獨立區塊檔」**。輸出放在 `desktop-app/web-lazy/`（`core.js`、`chunks/*.js`、`manifest.json`），`package.json` 打包不含它。使用者問「拆出來的要不要進 live patch 清單」：桌面版不需要（沿用整份檔案）；網頁版靠釘 SHA 的 raw 網址取得，由 `scripts/web-lazy-check.js`（本機檢查＋`--remote <SHA>` 逐檔驗證 HTTP 200 與檢查碼）把關，已接進 `publish.sh`。要向使用者誠實說明這一點。
+- 機制（不需改任何同步使用處）：`renderer/src/lazy-runtime.js` 的 `FaLazy`；`scripts/build-web-lazy.js`（由 `build-assistant.js` 呼叫）把「頂層只有宣告」的嵌入區塊（≥3K、不在 `EXCLUDE` 清單）搬成獨立檔，核心裡每個宣告的名稱換成全域取值函式：第一次碰到就用同步請求載入該區塊（之後就是區塊自己宣告的全域綁定）；`FaLazy.ensure(名稱)` 可預先非同步載入（有快取、重試、附 HTTP 狀態與耗時）。`EXCLUDE` 是開頁一定碰到的 26 個區塊（留在核心，避免開頁一串同步請求）。
+- 原始碼只改了 3 處（讓大資料不在載入時被讀取）：`FA_REF_FORMAT`／`FA_REF_MIGRATIONS` 別名移除、IDR 人設改 getter。
+- 量測（本機無網路延遲）：核心 5010K（gzip 1.74MB）＋120 個區塊 4607K，對照整份 9.6MB（gzip 3.15MB）；開頁到建構完成 1.10 秒對 1.98 秒；開頁零個區塊被載入；120 個區塊全部手動觸發載入、名稱皆有定義、主控台零錯誤。
+- 測試工具：`node scripts/lazy-test/serve.js 8765` 後開 `http://localhost:8765/`（核心＋區塊）或 `?mono=1`（整份對照）；`window.__FA_LAZY_TRACE=1` 已開，`window.__faLazyTrace` 記每次區塊載入的呼叫堆疊；`node scripts/lazy-loadtime.js` 靜態找載入時就碰到區塊的位置；`node scripts/lazy-analyze.js` 看每個區塊是否純定義。`fa._behTables()` 在測試頁會丟 `t[n].push is not a function`，整份檔案也一樣（既有現象，不是退步）。
+- 注意：重新建置時 `web-lazy/` 會被清掉重建（約 1 分鐘），測試頁此時會白畫面；測試頁預設隱藏按鈕，要在主控台 `fa.toggleWindow()` 才看得到視窗。
+
+**核心測試**：`node scripts/run-core-tests.js` 在背景跑，輸出 `C:\Users\sunneo\AppData\Local\Temp\core-tests.log`（基準 133／136，3 組既有失敗）；接手者先看結果，沒結果就重跑。
+
+**尚未做（依序）**：
+1. 網頁版實測：到 `D:\Downloads\videos-嗨投資`（main 分支，`web/index.html`、`web/aiweb/index.html`）把 fetch 的網址從 `.../desktop-app/renderer/floating-assistant.js` 改成 `.../desktop-app/web-lazy/core.js`，並在載入前加 `window.__FA_LAZY_BASE = 'https://raw.githubusercontent.com/sunneo/tw_stock_db/<同一個完整 SHA>/desktop-app/web-lazy/chunks/';`（`publish.sh` 的 sed 會一起換 SHA）。**先本機測**（複製一份 index.html、把網址指到 localhost:8765，用內建瀏覽器逐一觸發每個功能入口：/ref、行為說明、簡報、匯出、各編輯器、遊戲、影片、遠端、3D…，主控台零錯誤），測過才改正式檔。web repo 的修改要提交推送屬對外發布，照使用者慣例完成驗證後直接做。
+2. 進一步縮小核心（選做，每批測試後提交）：(a) 非純定義的區塊（GAME 468K、VIDEOEDIT 295K、REMOTE 287K、EDITHOST 216K、DECKHOST 169K、DECKEDIT、COMPUTER、ENV、HARNESS，共約 1.5MB）頂層有立即執行函式做註冊等副作用，要逐一看它們做了什麼，才能決定怎麼延遲；(b) `FloatingAssistant` 類別本身約 3MB，可評估把大型功能的方法群（行為說明、/ref、簡報、匯出）分檔，用 `Object.assign(FloatingAssistant.prototype, …)` 的樣式延遲安裝。**不確定就不拆。**
+3. 驗證全部通過後：更新 README Live Update 一節與 `DESIGN.lazy-loading.md`，再 `PUBLISH_TRAILER="Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>" bash scripts/publish.sh -m "…"`（它會跑 web-lazy-check、提交 web-lazy、推送、驗證）。發布後用內建瀏覽器開真正的網頁版確認載入的是新版且 AI 助理能開。驗證沒全過就不要發布。
 
 ## 1. 開場提示（給接手的工作階段）
 Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app\desktop-app\DESIGN.TODO.lazy-loading.md`. 先完整讀完（含使用者原話與做法備忘），照做。執行 low-context-long-run 技能（門檻 30%）：做 Todo 的第一項，context 到門檻就更新這份文件並啟動你的接手工作階段（`mcp__ccd_session__start_session` 是延遲載入的工具，先用 ToolSearch 載入）。第一則訊息用一行說明你讀完了、要開始哪一項。回覆一律繁體中文、不要夾英文縮寫。**不要做長篇規劃、不要問，直接量測、重構、測試、提交；最重要的限制是：重構後全部功能不能出錯。**

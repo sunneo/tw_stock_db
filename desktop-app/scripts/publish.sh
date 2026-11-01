@@ -55,6 +55,8 @@ fi
 say "語法檢查"
 node --check renderer/src/floating-assistant.js
 node --check renderer/bootstrap.js
+say "網頁版延遲載入檔案檢查（web-lazy 與 manifest 一致）"
+node scripts/web-lazy-check.js || exit 1
 
 # ---- 2. 版號與提交 ----
 # 版號的唯一維護處是 desktop-app/PATCH_VERSION（對照遠端 manifest.v2.json／manifest.json／patch commit 訊息，取最大再 +1）；見 scripts/release-version.js、DESIGN.release.md
@@ -62,7 +64,7 @@ node --check renderer/bootstrap.js
 say "版號 $VERSION（PATCH_VERSION 跟這次提交一起更新）"
 if [ "$DRY" != 1 ]; then node scripts/release-version.js claim "$VERSION" || exit 1; git add PATCH_VERSION; fi
 say "提交並推到 $REMOTE/desktop-app"
-git add -A renderer scripts
+git add -A renderer scripts web-lazy
 if git diff --cached --quiet; then echo "沒有新的 renderer／scripts 變更要提交"; else
   MSG_FILE="$(mktemp)"; with_trailer "$COMMIT_MSG" > "$MSG_FILE"
   run git commit -q -F "$MSG_FILE"; rm -f "$MSG_FILE"
@@ -123,6 +125,7 @@ if [ "$WEB" = 1 ]; then
       git -C "$WEB_REPO" commit -q -F "$WMSG"; rm -f "$WMSG"
       git -C "$WEB_REPO" push -q "$REMOTE" main
       CODE="$(curl -sI -o /dev/null -w '%{http_code}' "https://raw.githubusercontent.com/sunneo/tw_stock_db/$HEAD_SHA/desktop-app/renderer/floating-assistant.js" || true)"
+      node scripts/web-lazy-check.js --remote "$HEAD_SHA" || echo "⚠️ 網頁版區塊檔遠端驗證沒過（CDN 可能還沒更新，稍後重跑 node scripts/web-lazy-check.js --remote $HEAD_SHA）" >&2
       echo "釘住的檔案網址回應：HTTP $CODE（Pages 約 1～2 分鐘後換上新版；要確認頁面實際載入的版本，用 fa._createProgressWidget.toString() 之類檢查）"
     fi
   fi
