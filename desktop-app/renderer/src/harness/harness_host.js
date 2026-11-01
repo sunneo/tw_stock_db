@@ -23,5 +23,27 @@
         const cs = FH.callsOf(d, res.intents, bind, cat);
         return { ok: cs.calls.length > 0, calls: cs.calls, gaps: res.gaps.concat(cs.gaps), derived: res.derived, via: res.via, wired: cs.wired, total: cs.total, uml, semantic };
     };
+    // ---------- harness 經驗 → 離線訓練器（訓練器是 harness 的學習層）----------
+    // 輸入是 skills/weak-model-harness 的 learn 產生的 trainer-patterns.json。只收 FaHarnessExp 認得的 pattern（來源 harness、id 前綴 hx_、範例沒有路徑／金鑰），
+    // 進獨立領域 harness_experience（可停用、可刪、在領域清單看得到來源）。預設「停用」：這些 pattern 沒有可執行的工具，只是路由經驗的參考，由使用者決定要不要打開。
+    M._hxDomain = async function (create) {
+        const st = await this._otLoad(); let d = st.domains.get('harness_experience');
+        if (!d && create) d = { name: 'harness_experience', description: '來自弱模型 harness 的經驗（程式驗證過的成功才會進來；來源 harness，可停用、可刪）。離線訓練器是 harness 的學習層。', enabled: false, source: 'harness', patterns: [], tools: [], states: { initial: null, states: {} } };
+        return d || null;
+    };
+    M._hxImport = async function (text) {
+        const X = window.FaHarnessExp; if (!X) return { ok: false, error: '經驗模組沒載入' };
+        let data; try { data = JSON.parse(String(text || '')); } catch (_) { return { ok: false, error: '不是合法的 JSON' }; }
+        const list = data && Array.isArray(data.patterns) ? data.patterns : null; if (!list) return { ok: false, error: '找不到 patterns 陣列（要用 harness 的 learn 產生的 trainer-patterns.json）' };
+        const d = await this._hxDomain(true); let added = 0, updated = 0; const rejected = [];
+        for (const p of list.slice(0, X.LIM.entries)) {
+            const why = !X.isHarnessPattern(p) ? '不是 harness 的 pattern' : p.type !== 'semantic' || !Array.isArray(p.examples) || !p.examples.length ? '格式不對' : p.examples.some((e) => typeof e !== 'string' || X.leaks(e)) ? '範例含路徑或金鑰' : '';
+            if (why) { rejected.push({ id: p && p.id, why }); continue; }
+            const q = { id: p.id, type: 'semantic', examples: p.examples.map((e) => String(e).slice(0, 300)), intent: String(p.intent || '').slice(0, 120), description: String(p.description || '').slice(0, 300), tool: '', args: {}, risk: 'safe', confidence: Math.min(0.95, Number(p.confidence) || 0.6), source: 'harness', enabled: true, stats: Object.assign({}, p.stats, { harnessTemplate: p.args && p.args.template }) };
+            const i = d.patterns.findIndex((x) => x.id === q.id); if (i >= 0) { q.hits = d.patterns[i].hits || 0; d.patterns[i] = q; updated++; } else { d.patterns.push(q); added++; }
+        }
+        await this._otSaveDomain(d); for (const p of d.patterns) await this._otSyncPatternExamples(d, p);
+        return { ok: true, added, updated, rejected, enabled: d.enabled !== false };
+    };
     window.FaHarnessHost = { methods: M };
 })();

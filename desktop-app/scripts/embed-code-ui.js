@@ -410,7 +410,7 @@ embedDeckEdit();
 // 離線 harness(通用核心 FaHarness＋主機轉接層 FaHarnessHost),放在 DECKEDIT 區塊之後、VIDEOEDIT 之前(領域與編輯器掛在它上面)
 function embedHarness() {
     const dir = path.join(root, 'renderer/src/harness'); if (!fs.existsSync(path.join(dir, 'harness_host.js'))) return;
-    const rd = (n) => fs.readFileSync(path.join(dir, n + '.js'), 'utf8').replace(/\r\n/g, '\n'); const parts = ['(function (module) {\n' + rd('intent_harness') + '\n}).call(window, undefined);', rd('harness_host')];
+    const rd = (n) => fs.readFileSync(path.join(dir, n + '.js'), 'utf8').replace(/\r\n/g, '\n'); const parts = ['(function (module) {\n' + rd('intent_harness') + '\n}).call(window, undefined);', '(function (module) {\n' + rd('experience_core') + '\n}).call(window, undefined);', rd('harness_host')];
     let a = src.indexOf('/* HARNESS-BEGIN */'), b = src.indexOf('/* HARNESS-END */');
     if (a < 0 || b < 0) { const e = src.indexOf('/* DECKEDIT-END */'); if (e < 0) throw new Error('找不到 DECKEDIT-END 標記'); const at = e + '/* DECKEDIT-END */'.length; src = src.slice(0, at) + '\n/* HARNESS-BEGIN */\n/* HARNESS-END */' + src.slice(at); a = src.indexOf('/* HARNESS-BEGIN */'); b = src.indexOf('/* HARNESS-END */'); }
     src = src.slice(0, a) + '/* HARNESS-BEGIN */\n' + parts.join('\n') + '\n' + src.slice(b);
