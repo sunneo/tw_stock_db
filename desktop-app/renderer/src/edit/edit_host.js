@@ -594,7 +594,7 @@ const FaEditHost = (function () {
             try { this._persistChatHistory(); this._renderMessageHistory(); } catch (_) { /* */ }
         },
         // ───── 遠端共筆橋接：編輯器照常在這台顯示，裡面的請求（ask、polish、detail…）交給「AI 在」選的那台機器（見 DESIGN.edit-remote.md、rg_edit.js）
-        _edRemoteDecl(kind) { if (kind === 'webedit') return { sync: 'patch', methods: { ask: { doc: true, longRunning: true }, polish: {} } }; const K = KINDS[kind]; return (K && K.remote) || REMOTE_DEFAULTS[kind] || { sync: 'snapshot', methods: { ask: { doc: true } } }; },
+        _edRemoteDecl(kind) { if (kind === 'webedit') return { sync: 'patch', patchKeys: { files: 'name' }, methods: { ask: { doc: true, longRunning: true }, polish: {} } }; const K = KINDS[kind]; return (K && K.remote) || REMOTE_DEFAULTS[kind] || { sync: 'snapshot', methods: { ask: { doc: true } } }; },
         _edAssetsAdapter() { return { has: (ns, id) => FaEditStore.hasImage(id), get: (ns, id) => FaEditStore.getImage(id), put: (ns, id, blob) => FaEditStore.putImageAs(id, blob) }; },
         // 「執行者」這邊：別台交來的請求，用這台的 host 方法真的去做（_edHost 的 ask 已經包了離線程式、範例庫、查資料；文件用請求帶來的快取）
         _edRemoteKind(kind) {

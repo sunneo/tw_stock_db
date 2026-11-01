@@ -335,7 +335,7 @@
     };
     M._videoMountOpts = function (id) {
         const self = this, fresh = this._videoFresh && this._videoFresh.get(id); if (fresh) this._videoFresh.delete(id);
-        return { host: this._videoHostRemote(id), fresh, light: isLight(self) };
+        return { host: this._edCollabHostExt(this._videoHostRemote(id), 'edit-video', id), fresh, light: isLight(self) };
     };
     // 專案存成 { v:1, spec: 專案 };外框共用的 _edMount 載入後呼叫這裡
     window.FaVideoEditMount = function (o) {
@@ -347,7 +347,9 @@
             Promise.resolve(sc.file ? el._ve.setVideo(sc.file) : el._ve.setVideo({ id: sc.id })).then(null, (e) => el._ve.say(T('載入影片失敗:', 'Could not load the video: ') + String((e && e.message) || e)));
         }
         if (o.fresh && o.fresh.request) { setTimeout(() => { try { el._ve.tab('ask'); el._ve.ask(o.fresh.request); } catch (_) { /* */ } }, 900); }
-        el._ed = { destroy: () => { try { el.remove(); } catch (_) { /* */ } }, getState: () => null };
+        el._ed = { destroy: () => { try { el.remove(); } catch (_) { /* */ } }, getState: () => null, getSpec: () => el._ve.shareDoc(), attachCollab: (c) => el._ve.attachCollab(c), detachCollab: () => el._ve.detachCollab(), ctx: { say: (t) => el._ve.say(t) } };
+        if (o.host && o.host.collab) el._ve.attachCollab(o.host.collab);
+        if (o.host && o.host.collabUi) { const b = document.createElement('button'); b.type = 'button'; b.textContent = '👥 ' + T('共編', 'Co-edit'); b.title = T('跟群組裡別台機器一起編輯逐字稿(剪輯時間軸與影片檔各機器自己的)', 'Edit the transcript together with other machines in the group'); b.onclick = () => o.host.collabUi.open(el); const slot = el.querySelector('.ai-win-btns-slot'); if (slot) slot.insertBefore(b, slot.firstChild); }
         return el;
     };
 

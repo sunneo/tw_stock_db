@@ -37,6 +37,7 @@
             });
         }
         // ───────── 素材：ref 一律經編輯器宣告的 assets 轉接器;offer 給群組('*'),要的人用 FileShare 抓
+        keysOf(kind) { const k = this.kinds(kind); return (k && k.remote && k.remote.patchKeys) || {}; }   // patch 的鍵欄位（例如網頁編輯器的 files 以 name 定址）
         assetsOf(kind) { const k = this.kinds(kind); return k && k.remote && k.remote.assets ? { k, a: k.remote.assets } : null; }
         refsIn(kind, v) { const x = this.assetsOf(kind); if (!x || !E) return []; const r = x.k.remote.refsOf ? x.k.remote.refsOf(v) : E.collectRefs(v); return [...new Set(r || [])]; }
         async offerRefs(kind, sid, refs) {   // → [{ref,id}]：這台有的才提供
@@ -83,7 +84,7 @@
     }
 
     class HostSession extends Emitter {
-        constructor(c, o) { super(); this.c = c; this.sid = o.sid; this.kind = o.kind; this.title = o.title || ''; this.open = o.open !== false; this.host = S.createHost({ spec: o.spec, keys: o.keys, rev: o.rev }); this.me = o.me || c.room.self; this.replica = S.createReplica({ spec: o.spec, rev: o.rev | 0, nodeId: this.me.nodeId, keys: o.keys }); this.parts = new Set(); this.pres = new Map(); }
+        constructor(c, o) { super(); this.c = c; this.sid = o.sid; this.kind = o.kind; this.title = o.title || ''; this.open = o.open !== false; this.keys = o.keys || c.keysOf(o.kind); this.host = S.createHost({ spec: o.spec, keys: this.keys, rev: o.rev }); this.me = o.me || c.room.self; this.replica = S.createReplica({ spec: o.spec, rev: o.rev | 0, nodeId: this.me.nodeId, keys: this.keys }); this.parts = new Set(); this.pres = new Map(); }
         get spec() { return this.host.spec; } get rev() { return this.host.rev; }
         members() { return [{ nodeId: this.me.nodeId, name: this.me.name, kind: this.me.kind, host: true }].concat(this.host.members().filter((m) => m.nodeId !== this.me.nodeId)); }
         _fan(type, body, except) { for (const id of this.parts) if (id !== except) this.c.room.send(id, type, body).catch(() => {}); }
@@ -125,7 +126,7 @@
     }
 
     class Participant extends Emitter {
-        constructor(c, host, sid, r) { super(); this.c = c; this.hostNode = host; this.sid = sid; this.kind = r.kind; this.title = r.title; this.membersList = r.members || []; this.me = c.room.self; this.replica = S.createReplica({ spec: r.snapshot.spec, rev: r.snapshot.rev, nodeId: this.me.nodeId }); this.state = 'online'; this.syncing = false; }
+        constructor(c, host, sid, r) { super(); this.c = c; this.hostNode = host; this.sid = sid; this.kind = r.kind; this.title = r.title; this.membersList = r.members || []; this.me = c.room.self; this.keys = c.keysOf(r.kind); this.replica = S.createReplica({ spec: r.snapshot.spec, rev: r.snapshot.rev, nodeId: this.me.nodeId, keys: this.keys }); this.state = 'online'; this.syncing = false; }
         get spec() { return this.replica.spec; } get rev() { return this.replica.rev; } members() { return this.membersList; } queued() { return this.replica.queued().length; }
         _hostHere() { return (this.c.room.members() || []).some((x) => x.nodeId === this.hostNode.nodeId); }
         _setState(s) { if (s !== this.state) { this.state = s; this.emit('status', s); } }

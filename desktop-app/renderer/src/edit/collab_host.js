@@ -9,7 +9,23 @@
     const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
     // 同一個專案的讀改寫排隊(外框存檔與這裡改 origin 不會互相蓋掉)
     M._edProjLock = function (key, fn) { this._edLocks = this._edLocks || new Map(); const prev = this._edLocks.get(key) || Promise.resolve(); const run = prev.catch(() => {}).then(fn); this._edLocks.set(key, run.catch(() => {})); return run; };
-    M._edPatchOrigin = function (kind, id, fn) { return this._edProjLock(kind + ':' + id, async () => { const proj = await FaEditStore.loadProject(kind, id); if (!proj) return; const o = Object.assign({}, proj.origin || {}); fn(o); await FaEditStore.saveProject(kind, id, Object.assign({}, proj, { origin: o })); }); };
+    // 網頁編輯器、影片編輯器的專案不在 FaEditStore(各有自己的存法)或沒有 origin：共編身分存在 localStorage
+    const LS = (kind) => kind === 'webedit';
+    const lsKey = (kind, id) => 'fa_collab_origin:' + kind + ':' + id;
+    M._edOriginGet = async function (kind, id) { if (LS(kind)) { try { return JSON.parse(localStorage.getItem(lsKey(kind, id)) || 'null') || {}; } catch (_) { return {}; } } const proj = await FaEditStore.loadProject(kind, id); return (proj && proj.origin) || {}; };
+    M._edPatchOrigin = function (kind, id, fn) { return this._edProjLock(kind + ':' + id, async () => { if (LS(kind)) { const o = await this._edOriginGet(kind, id); fn(o); try { localStorage.setItem(lsKey(kind, id), JSON.stringify(o)); } catch (_) { /* 存不了就下次重連要手動 */ } return; } const proj = await FaEditStore.loadProject(kind, id); if (!proj) return; const o = Object.assign({}, proj.origin || {}); fn(o); await FaEditStore.saveProject(kind, id, Object.assign({}, proj, { origin: o })); }); };
+    // 編輯器的操作介面（外框用 el._ed;網頁編輯器是 el._we）：一律回 { _ed:{ getSpec, attachCollab, detachCollab, ctx:{say} } }
+    M._edNode = function (kind, id) {
+        if (kind === 'webedit') { const holder = this._weEditors && this._weEditors.get(id), we = holder && holder._we; return we ? { _ed: { getSpec: () => we.getSpec(), attachCollab: (c) => we.attachCollab(c), detachCollab: () => we.detachCollab(), ctx: { say: (t) => we.say(t) } } } : null; }
+        const n = this._edEditors && this._edEditors.get(kind + ':' + id); return n && n._ed && n._ed.attachCollab ? n : null;
+    };
+    // 開一個放著指定文件的本機專案（加入共編、衝突副本用）：各編輯器存法不同
+    M._edOpenShared = async function (kind, spec, origin) {
+        if (kind === 'webedit') { const id = this._weStore(null, spec, null); try { localStorage.setItem(lsKey(kind, id), JSON.stringify(origin || {})); } catch (_) { /* */ } this._wePushEditor(id); return { ok: true, id }; }
+        if (kind === 'edit-video') { const K = H.KINDS[kind], id = FaEditStore.newId(K.prefix), proj = Object.assign(window.TwVideoEdit.newProject(spec.name || ''), spec); await FaEditStore.saveProject(kind, id, { v: 1, spec: proj, state: null, origin }); this._videoFresh = this._videoFresh || new Map(); this._videoFresh.set(id, { source: null, request: '' }); this._edPush(kind, id, null); return { ok: true, id }; }
+        return this._edOpen(kind, { spec, origin });
+    };
+    M._edCollabHostExt = function (host, kind, id) { const out = Object.assign({}, host); out.collabUi = { open: (el) => this._edCollabPanel(kind, id, el) }; const rec = this._edShared && this._edShared.get(kind + ':' + id); if (rec) out.collab = rec.adapter; return out; };
     M._edCollab = function () {
         const rg = this._rg; if (!rg || !rg.room || typeof FaEditCollab === 'undefined') return null;
         if (!rg.collab) rg.collab = new FaEditCollab.Collab({ room: rg.room, kinds: (k) => this._edRemoteKind(k), gate: (m) => this._rgGate(m), allow: () => { const st = this._rgSettings(); return !st.allowDispatch ? T('這台機器目前不接受遠端需求', 'This machine does not accept remote requests') : ''; }, log: (x) => this._rgLog(x), peer: rg.edit });
@@ -18,7 +34,7 @@
     // 外框用的轉接器:把 HostSession／Participant 包成同一個樣子
     M._edCollabAdapter = function (session) {
         return {
-            session, spec: () => session.spec, diff: (a, b) => FaRemotePatch.diff(a, b), propose: (patch, meta) => Promise.resolve(session.propose(patch, meta)),
+            session, spec: () => session.spec, diff: (a, b) => FaRemotePatch.diff(a, b, session.keys || {}), apply: (doc, patch) => FaRemotePatch.apply(doc, patch, session.keys || {}).doc, selfId: () => session.me.nodeId, propose: (patch, meta) => Promise.resolve(session.propose(patch, meta)),
             undo: () => session.undo(), redo: () => session.redo(), undoable: () => session.undoable(), redoable: () => session.redoable(), members: () => session.members(), color: (n) => FaEditSession.color(n),
             status: () => session.state || 'online', queued: () => (session.queued ? session.queued() : 0), presence: (sel) => session.presence(sel), on: (e, f) => session.on(e, f),
         };
@@ -26,30 +42,30 @@
     M._edShareNow = function (kind, id) {
         this._edShared = this._edShared || new Map(); const key = kind + ':' + id; if (this._edShared.has(key)) return this._edShared.get(key);
         const c = this._edCollab(); if (!c) throw new Error(T('還沒加入遠端群組', 'Not in a remote group'));
-        const node = this._edEditors && this._edEditors.get(key); if (!node || !node._ed) throw new Error(T('編輯器還沒開好', 'The editor is not ready'));
-        const spec = node._ed.getSpec(), hs = c.share({ sid: id, kind, title: spec.title || '', spec });
+        const node = this._edNode(kind, id); if (!node || !node._ed) throw new Error(T('編輯器還沒開好', 'The editor is not ready'));
+        const spec = node._ed.getSpec(), hs = c.share({ sid: id, kind, title: spec.title || spec.name || '', spec });
         const rec = { role: 'host', session: hs, adapter: this._edCollabAdapter(hs) }; this._edShared.set(key, rec); this._edWatch(kind, id, rec); node._ed.attachCollab(rec.adapter); this._edPatchOrigin(kind, id, (o) => { o.hosting = true; delete o.shared; }).catch(() => {}); return rec;
     };
     M._edUnshare = function (kind, id) {
-        const key = kind + ':' + id, rec = this._edShared && this._edShared.get(key); if (!rec) return; const node = this._edEditors && this._edEditors.get(key);
+        const key = kind + ':' + id, rec = this._edShared && this._edShared.get(key); if (!rec) return; const node = this._edNode(kind, id);
         try { if (rec.role === 'host') rec.session.close(); else rec.session.leave(); } catch (_) { /* */ } this._edShared.delete(key); this._edPatchOrigin(kind, id, (o) => { delete o.hosting; delete o.shared; }).catch(() => {}); try { if (node && node._ed) node._ed.detachCollab(); } catch (_) { /* */ }
     };
     M._edWatch = function (kind, id, rec) {
         const self = this, key = kind + ':' + id; let t = null, s = rec.session;
         const saveBase = () => { clearTimeout(t); t = setTimeout(() => { if (rec.role !== 'joined' || !self._edShared || self._edShared.get(key) !== rec || (s.queued && s.queued())) return; const sp = s.spec, rv = s.rev; self._edPatchOrigin(kind, id, (o) => { if (o.shared) o.shared = Object.assign({}, o.shared, { base: sp, rev: rv }); }).catch(() => {}); }, 600); };
         if (rec.role === 'joined') { s.on('commit', saveBase); s.on('reset', saveBase); s.on('flushed', saveBase);
-            s.on('promoted', (hs) => { const node = self._edEditors && self._edEditors.get(key); const r2 = { role: 'host', session: hs, adapter: self._edCollabAdapter(hs) }; self._edShared.set(key, r2); self._edWatch(kind, id, r2); self._edPatchOrigin(kind, id, (o) => { o.hosting = true; delete o.shared; }).catch(() => {}); if (node && node._ed) node._ed.attachCollab(r2.adapter); try { node && node._ed && node._ed.ctx.say(T('原主持機離線太久，你接手當主持機了', 'The host was away too long; you are the host now')); } catch (_) { /* */ } });
-            s.on('moved', (nh) => { try { const node = self._edEditors && self._edEditors.get(key); node && node._ed && node._ed.ctx.say(T(nh.name + ' 接手當主持機', nh.name + ' is the host now')); self._edPatchOrigin(kind, id, (o) => { if (o.shared) o.shared = Object.assign({}, o.shared, { host: nh.nodeId, name: nh.name }); }).catch(() => {}); } catch (_) { /* */ } }); }
+            s.on('promoted', (hs) => { const node = self._edNode(kind, id); const r2 = { role: 'host', session: hs, adapter: self._edCollabAdapter(hs) }; self._edShared.set(key, r2); self._edWatch(kind, id, r2); self._edPatchOrigin(kind, id, (o) => { o.hosting = true; delete o.shared; }).catch(() => {}); if (node && node._ed) node._ed.attachCollab(r2.adapter); try { node && node._ed && node._ed.ctx.say(T('原主持機離線太久，你接手當主持機了', 'The host was away too long; you are the host now')); } catch (_) { /* */ } });
+            s.on('moved', (nh) => { try { const node = self._edNode(kind, id); node && node._ed && node._ed.ctx.say(T(nh.name + ' 接手當主持機', nh.name + ' is the host now')); self._edPatchOrigin(kind, id, (o) => { if (o.shared) o.shared = Object.assign({}, o.shared, { host: nh.nodeId, name: nh.name }); }).catch(() => {}); } catch (_) { /* */ } }); }
         else s.on('demoted', (nh) => self._edDemoted(kind, id, rec, nh).catch(() => {}));
     };
     M._edDemoted = async function (kind, id, rec, nh) {
         const key = kind + ':' + id; if (!this._edShared || this._edShared.get(key) !== rec) return; const mine = JSON.parse(JSON.stringify(rec.session.spec));
         this._edUnshare(kind, id);
-        try { const sp = Object.assign({}, mine, { title: ((mine && mine.title) || '') + T('（衝突副本）', ' (conflict copy)') }); await this._edOpen(kind, { spec: sp }); } catch (_) { /* 副本存不了就算了,下面照樣改連 */ }
+        try { const sp = Object.assign({}, mine, { title: ((mine && mine.title) || '') + T('（衝突副本）', ' (conflict copy)') }); await this._edOpenShared(kind, sp, null); } catch (_) { /* 副本存不了就算了,下面照樣改連 */ }
         await this._edRejoin(kind, id, { nodeId: nh.nodeId, name: nh.name }, { sid: id, base: null });
     };
     M._edRejoin = async function (kind, id, hostNode, shared) {
-        const key = kind + ':' + id, c = this._edCollab(), node = this._edEditors && this._edEditors.get(key); if (!c || !node || !node._ed) throw new Error('not ready');
+        const key = kind + ':' + id, c = this._edCollab(), node = this._edNode(kind, id); if (!c || !node || !node._ed) throw new Error('not ready');
         const local = node._ed.getSpec(), offline = shared && shared.base ? FaRemotePatch.diff(shared.base, local) : [];
         const p = await c.join(hostNode, shared ? shared.sid : id, { kind }); const rec = { role: 'joined', session: p, adapter: this._edCollabAdapter(p) };
         this._edShared = this._edShared || new Map(); this._edShared.set(key, rec); this._edWatch(kind, id, rec); node._ed.attachCollab(rec.adapter); p.emit('reset', p.spec);
@@ -61,7 +77,7 @@
         const key = kind + ':' + id, o = (proj && proj.origin) || {}, sh = o.shared, hosting = o.hosting; if (!sh && !hosting) return; this._edReco = this._edReco || new Map(); if (this._edReco.has(key)) return; this._edReco.set(key, 1);
         const self = this; let n = 0;
         const tick = async () => {
-            const node = self._edEditors && self._edEditors.get(key); if (!node || !node._ed || (self._edShared && self._edShared.has(key)) || n++ > 400) { self._edReco.delete(key); return; }
+            const node = self._edNode(kind, id); if (!node || !node._ed || (self._edShared && self._edShared.has(key)) || n++ > 400) { self._edReco.delete(key); return; }
             try {
                 const c = self._edCollab(), here = c && (self._rg.room.members() || []);
                 if (c && here) {
@@ -75,8 +91,8 @@
     };
     // 開著的編輯器(重新掛載時)要接回去;剛加入的專案掛好就接上
     M._edCollabAttach = function (kind, id, node) {
-        const key = kind + ':' + id, rec = this._edShared && this._edShared.get(key); if (rec && node._ed.attachCollab) node._ed.attachCollab(rec.adapter);
-        else if (!rec) { FaEditStore.loadProject(kind, id).then((proj) => this._edAutoReconnect(kind, id, proj)).catch(() => {}); }
+        const key = kind + ':' + id, rec = this._edShared && this._edShared.get(key); const nn = this._edNode(kind, id); if (rec && nn) nn._ed.attachCollab(rec.adapter);
+        else if (!rec) { this._edOriginGet(kind, id).then((o) => this._edAutoReconnect(kind, id, { origin: o })).catch(() => {}); }
     };
     M._edCollabPanel = function (kind, id, el) {
         const self = this, key = kind + ':' + id; let box = el.querySelector('.collabpanel'); if (box) { box.remove(); return; }
@@ -111,10 +127,10 @@
         try {
             const p = await c.join(it.host, it.sid, { kind: it.kind }), K = H.KINDS[it.kind]; if (!K) { p.leave(); return say(T('這台沒有這種編輯器:', 'No such editor here: ') + it.kind); }
             const spec = p.spec; this._edPendingJoin = this._edPendingJoin || new Map();
-            const res = await this._edOpen(it.kind, { spec, origin: { shared: { host: it.host.nodeId, name: it.host.name, sid: it.sid } } });
+            const res = await this._edOpenShared(it.kind, spec, { shared: { host: it.host.nodeId, name: it.host.name, sid: it.sid } });
             if (!res || !res.ok) { p.leave(); return say(T('開不起來:', 'Could not open: ') + ((res && res.error) || '')); }
             this._edShared = this._edShared || new Map(); const rec = { role: 'joined', session: p, adapter: this._edCollabAdapter(p) }; this._edShared.set(it.kind + ':' + res.id, rec); this._edWatch(it.kind, res.id, rec); this._edPatchOrigin(it.kind, res.id, (o) => { o.shared = Object.assign({}, o.shared || {}, { host: it.host.nodeId, name: it.host.name, sid: it.sid, base: p.spec, rev: p.rev }); }).catch(() => {});
-            for (let i = 0; i < 120; i++) { const node = this._edEditors && this._edEditors.get(it.kind + ':' + res.id); if (node && node._ed && node._ed.attachCollab) { node._ed.attachCollab(rec.adapter); break; } await new Promise((ok) => setTimeout(ok, 50)); }   // 編輯器下一個畫面才掛上來
+            for (let i = 0; i < 120; i++) { const node = this._edNode(it.kind, res.id); if (node && node._ed && node._ed.attachCollab) { node._ed.attachCollab(rec.adapter); break; } await new Promise((ok) => setTimeout(ok, 50)); }   // 編輯器下一個畫面才掛上來
             say(T('已加入 ' + it.host.name + ' 的共同編輯。', 'Joined ' + it.host.name + '\'s session.'));
         } catch (e) { say(T('加入失敗:', 'Could not join: ') + String((e && e.message) || e)); }
         return '';

@@ -66,7 +66,7 @@
     var cues = core.normalize(project.cues), hist = core.history(cues), errBox = null, listBox = null;
     function dur() { var v = box._ve && box._ve.video; return v && isFinite(v.duration) ? v.duration : 0; }
     function now() { var v = box._ve && box._ve.video; return v ? v.currentTime || 0 : 0; }
-    function commit(next) { cues = next; project.cues = cues; hist.push(cues); save(); if (lay.tab === 'transcript') { renderTranscript(); } }
+    function commit(next) { if (collab) { ownUndo.push(collab.diff({ cues: next }, { cues: cues })); ownRedo = []; if (ownUndo.length > 100) { ownUndo.shift(); } } cues = next; project.cues = cues; hist.push(cues); save(); if (lay.tab === 'transcript') { renderTranscript(); } }
     function flash(msg) { if (errBox) { errBox.textContent = msg || ''; } }
     var ERR = { negative: T('時間不能小於 0', 'Time cannot be negative'), order: T('結束時間要大於開始時間', 'End must be after start'), beyond: T('超過影片長度', 'Beyond the end of the video'), time: T('時間格式:mm:ss.s 或秒數', 'Time format: mm:ss.s or seconds'), full: T('逐字稿列數已達上限', 'Transcript is full'), missing: T('找不到這一列', 'Line not found') };
     function edit(id, patch) { var r = core.updateCue(cues, id, patch, dur()); if (!r.ok) { renderTranscript(); flash(ERR[r.error] || r.error); return; } commit(r.cues); }
@@ -185,9 +185,10 @@
       var bBurn = el('button', '', '🔥 ' + T('燒錄字幕', 'Burn subtitles')); bBurn.setAttribute('data-ve', 'burn'); bBurn.title = T('把目前的逐字稿燒進影片,輸出 <影片名>-subtitled.mp4(排進工作佇列)', 'Burn the current transcript into the video, output <name>-subtitled.mp4 (queued)'); bBurn.addEventListener('click', enqueueBurn);
       bGen.type = 'button'; tool.appendChild(bGen); tool.appendChild(scope); tool.appendChild(secsIn); tool.appendChild(selL); [bAdd, bUndo, bRedo, bImp, bExp, bSub, bBurn].forEach(function (b) { b.type = 'button'; tool.appendChild(b); });
       var mixSel = el('select'); [['all', T('字幕+配音', 'Subtitles + dubs')], ['subs', T('僅字幕', 'Subtitles only')]].forEach(function (o2) { var op = el('option', '', o2[1]); op.value = o2[0]; mixSel.appendChild(op); }); mixSel.value = lay.burnMix; mixSel.setAttribute('data-ve', 'burn-mix'); mixSel.title = T('燒錄輸出要不要把配音(麥克風、TTS)混進聲音', 'Whether the burned video also gets the dubs (microphone, TTS) mixed into its audio'); mixSel.addEventListener('change', function () { lay.burnMix = mixSel.value === 'subs' ? 'subs' : 'all'; save(); }); tool.appendChild(mixSel); tool.appendChild(fin); bAdd.setAttribute('data-ve', 'cue-add'); bUndo.setAttribute('data-ve', 'undo'); bRedo.setAttribute('data-ve', 'redo'); bUndo.title = T('復原', 'Undo'); bRedo.title = T('重做', 'Redo');
-      bUndo.disabled = !hist.canUndo(); bRedo.disabled = !hist.canRedo();
+      bUndo.disabled = collab ? !ownUndo.length : !hist.canUndo(); bRedo.disabled = collab ? !ownRedo.length : !hist.canRedo();
       bAdd.addEventListener('click', function () { addAt(now()); });
-      bUndo.addEventListener('click', function () { cues = hist.undo(); project.cues = cues; save(); renderTranscript(); }); bRedo.addEventListener('click', function () { cues = hist.redo(); project.cues = cues; save(); renderTranscript(); });
+      bUndo.addEventListener('click', function () { if (collab) { var inv = ownUndo.pop(); if (!inv) { return; } var before = cues, d = collab.apply(shareDoc(), inv); cues = core.normalize(d.cues); project.cues = cues; ownRedo.push(collab.diff({ cues: cues }, { cues: before })); hist.push(cues); } else { cues = hist.undo(); project.cues = cues; } save(); renderTranscript(); });
+      bRedo.addEventListener('click', function () { if (collab) { var fwd = ownRedo.pop(); if (!fwd) { return; } var before2 = cues, d2 = collab.apply(shareDoc(), fwd); cues = core.normalize(d2.cues); project.cues = cues; ownUndo.push(collab.diff({ cues: cues }, { cues: before2 })); hist.push(cues); } else { cues = hist.redo(); project.cues = cues; } save(); renderTranscript(); });
       tool.appendChild(el('span', 'tw-ve-note', cues.length + T(' 列', ' lines'))); errBox = el('span', 'tw-ve-err'); errBox.setAttribute('data-ve', 'cue-msg'); tool.appendChild(errBox); tabBody.appendChild(tool);
       listBox = el('div'); listBox.setAttribute('data-ve', 'cues');
       if (!cues.length) { listBox.appendChild(el('div', 'tw-ve-note', T('還沒有逐字稿:按「在播放位置新增」(產生逐字稿、匯入 SRT 之後會加上)', 'No transcript yet: press "Add at playhead" (generate and SRT import come later)'))); }
@@ -309,7 +310,48 @@
       ta.addEventListener('input', function () { askDraft = ta.value; }); ta.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); submitAsk(ta.value); } }); sb.addEventListener('click', function () { submitAsk(ta.value); });
       inRow.appendChild(ta); inRow.appendChild(sb); wrap.appendChild(inRow); tabBody.appendChild(wrap); log.scrollTop = log.scrollHeight;
     }
-    function save() { project.layout = lay; if (host.save) { try { host.save(project); } catch (e) { /* the editor works without saving */ } } }
+    function save() { project.layout = lay; if (host.save) { try { host.save(project); } catch (e) { /* the editor works without saving */ } } if (collab && !applying) { if (editHist.length) { editAfter[editHist.length - 1] = shareDoc(); } syncOut(); } }
+    // ───── 多人共編（DESIGN.edit-remote.md §6.5）：這個編輯器先在本機套用（畫面是就地改的），再把「跟上次同步的差異」以 id 定址的 patch 送給主持機；別人的 commit 以同樣的 patch 併進目前文件。
+    // 共享的是 cues／overlays／dubs（的描述）／name；剪輯時間軸（clips）與影片檔、配音檔各機器自己的（clips 引用各機器自己的檔案代號），layout 也是各人的。
+    var ownUndo = [], ownRedo = [], collab = null, base = null, inflight = false, dirty = false, applying = false, collabEl = null, editAfter = [];
+    function shareDoc() { return JSON.parse(JSON.stringify({ name: project.name || '', cues: project.cues || [], overlays: project.overlays || [], dubs: project.dubs || [] })); }
+    function adoptDoc(doc) {
+      applying = true;
+      try {
+        cues = core.normalize(doc.cues || []); project.cues = cues; dubs = core.normalizeDubs(doc.dubs || []); project.dubs = dubs; ovs = tl.normalizeOverlays(doc.overlays || []); project.overlays = ovs; if (typeof doc.name === 'string') { project.name = doc.name; }
+        renderObjs(); if (lay.tab === 'transcript') { renderTranscript(); } try { refreshCtl(); } catch (e) { /* 畫面還沒好 */ } if (host.save) { try { host.save(project); } catch (e) { /* 照常 */ } }
+      } finally { applying = false; }
+    }
+    function syncOut() {
+      if (!collab || applying) { return; } if (inflight) { dirty = true; return; }
+      var next = shareDoc(), patch = collab.diff(base, next); if (!patch.length) { return; } inflight = true;
+      Promise.resolve(collab.propose(patch, { summary: '', kind: 'panel', src: 'user' })).then(function (r) {
+        inflight = false;
+        if (r && r.queued) { base = next; renderCollab(); }   // 主持機離線：暫存在副本裡，回來自動送出
+        else if (r && (!r.ok || (r.rejected && r.rejected.length))) { msg('✗ ' + (r.error === 'readonly' ? T('你在這個共編裡是唯讀的', 'You are read-only here') : T('有些改動因為別人已改過而沒有套上，已換成共同的版本', 'Some changes did not apply because others changed them; replaced by the shared version'))); adoptDoc(base); }
+        if (dirty) { dirty = false; syncOut(); }
+      }, function () { inflight = false; });
+    }
+    function onCollabCommit(c) {
+      var mine = c.by && c.by.nodeId === collab.selfId(); base = collab.apply(base, c.patch || []); if (mine) { return; }
+      adoptDoc(collab.apply(shareDoc(), c.patch || [])); flash((c.by && c.by.name ? c.by.name : '') + (c.summary ? '：' + c.summary : T(' 改了逐字稿', ' edited the transcript')));
+    }
+    function renderCollab() {
+      if (!collab) { return; } if (!collabEl) { collabEl = el('span', 'tw-ve-name'); collabEl.style.cssText = 'display:inline-flex;gap:6px;flex-wrap:wrap'; bar.insertBefore(collabEl, slot); }
+      collabEl.textContent = ''; var ms = []; try { ms = collab.members() || []; } catch (e) { ms = []; }
+      ms.forEach(function (m) { var c = el('span', '', '● ' + (m.kind === 'web' ? '🌐 ' : '') + m.name + (m.host ? T('（主持）', ' (host)') : '') + (m.readonly ? T('（唯讀）', ' (read-only)') : '')); c.style.color = collab.color(m.name); collabEl.appendChild(c); });
+      var st = ''; try { st = collab.status(); } catch (e) { st = ''; } if (st === 'offline') { collabEl.appendChild(el('span', '', T('⚠️ 主持機離線', '⚠️ host offline'))); } else if (st === 'closed') { collabEl.appendChild(el('span', '', T('⛔ 共編已結束', '⛔ session ended'))); }
+    }
+    function attachCollab(c) {
+      if (collab === c) { return; } collab = c; if (!collab) { return; } base = collab.spec(); renderCollab();
+      collab.on('commit', onCollabCommit); collab.on('members', renderCollab);
+      collab.on('status', function () { renderCollab(); if (collab && collab.status() === 'online') { syncOut(); } }); collab.on('closed', function (why) { renderCollab(); flash(why || T('共編已結束', 'Session ended')); });
+      collab.on('reset', function () { var un = collab.diff(base, shareDoc()); base = collab.spec(); adoptDoc(collab.apply(base, un)); syncOut(); });
+      syncOut();
+    }
+    function detachCollab() { collab = null; base = null; if (collabEl) { collabEl.remove(); collabEl = null; } }
+    // 復原只復原自己的：把「那一步前後」的差異反過來，套在現在的文件上（別人在這之間改的不動）
+    function inverseOnto(afterDoc, beforeDoc) { var cur = shareDoc(); return collab.apply(cur, collab.diff(afterDoc, beforeDoc)); }
     function applyPanel() {
       var total = box.clientWidth || root.innerWidth || 800; lay.panelW = core.clampPanelWidth(lay.panelW, total);
       panel.style.width = lay.panelW + 'px'; panel.classList.toggle('tw-ve-hidden', lay.panelHidden); split.classList.toggle('tw-ve-hidden', lay.panelHidden); bPanel.classList.toggle('on', !lay.panelHidden);
@@ -548,8 +590,8 @@
     }
     var TLERR = { edge: T('這裡離片段的邊緣太近(要至少 0.05 秒)', 'Too close to the edge of the clip (at least 0.05 s)'), full: T('片段數已達上限', 'Too many clips'), range: T('要刪的範圍太短或不合法', 'The range is too short or not valid'), all: T('不能把整支影片都刪掉', 'You cannot remove the whole video'), time: T('時間或長度不合法', 'Invalid time or length'), missing: T('找不到', 'Not found'), first: T('第一個片段沒有轉場', 'The first clip has no transition') };
     var inBatch = false, pickAt = null;
-    function snap() { if (inBatch) { return; } editHist.push(JSON.stringify({ clips: clips, cues: cues, dubs: dubs, ovs: ovs })); if (editHist.length > 30) { editHist.shift(); } bUndoEdit.disabled = false; }
-    function dropSnap() { if (inBatch) { return; } editHist.pop(); bUndoEdit.disabled = !editHist.length; }
+    function snap() { if (inBatch) { return; } editHist.push(JSON.stringify({ clips: clips, cues: cues, dubs: dubs, ovs: ovs })); editAfter[editHist.length - 1] = null; if (editHist.length > 30) { editHist.shift(); editAfter.shift(); } bUndoEdit.disabled = false; }
+    function dropSnap() { if (inBatch) { return; } editHist.pop(); editAfter.length = editHist.length; bUndoEdit.disabled = !editHist.length; }
     function setClips(next, keepT) {
       var t = keepT == null ? tlNow() : keepT; clips = next; project.clips = clips; save(); renderObjs(); refreshCtl();
       if (!clips.length) { return; } var loc = tl.locate(clips, t);
@@ -557,7 +599,8 @@
     }
     function applyAnnotations(c2, d2, o2) { cues = core.normalize(c2); project.cues = cues; hist.push(cues); dubs = core.normalizeDubs(d2); project.dubs = dubs; ovs = tl.normalizeOverlays(o2); project.overlays = ovs; if (lay.tab === 'transcript') { renderTranscript(); } }
     function undoEdit() {
-      var raw = editHist.pop(); bUndoEdit.disabled = !editHist.length; if (!raw) { return; } var st = JSON.parse(raw), t = tlNow();
+      var raw = editHist.pop(), after = editAfter[editHist.length]; editAfter.length = editHist.length; bUndoEdit.disabled = !editHist.length; if (!raw) { return; } var st = JSON.parse(raw), t = tlNow();
+      if (collab) { var d3 = inverseOnto(after || shareDoc(), { name: project.name || '', cues: st.cues, overlays: st.ovs, dubs: st.dubs }); st.cues = d3.cues; st.dubs = d3.dubs; st.ovs = d3.overlays; }
       applyAnnotations(st.cues, st.dubs, st.ovs); setClips(tl.normalizeClips(st.clips), t); flash(T('已復原剪輯', 'Edit undone'));
     }
     function doSplit(at) {
@@ -655,7 +698,7 @@
     inVid.addEventListener('change', function () { var l = inVid.files; var arr = Array.prototype.slice.call(l); inVid.value = ''; addVideos(arr); }); inImg.addEventListener('change', function () { var f = inImg.files && inImg.files[0]; inImg.value = ''; if (f) { addImage(f); } }); inAud.addEventListener('change', function () { var f = inAud.files && inAud.files[0]; inAud.value = ''; if (f) { addAudio(f); } });
     [bSplit, mkA, bMkA, mkB, bMkB, bCut, bAddVid, bAddImg, bAddAud, bUndoEdit, inVid, inImg, inAud].forEach(function (n) { edBar.appendChild(n); });
     q = root.TwVideoJobs.create({ run: runJob, onChange: jobsChanged }); q.restore(project.jobs);
-    box._ve = { project: project, say: msg, runOps: runOps, state: aiState, clips: function () { return clips; }, overlays: function () { return ovs; }, split: doSplit, removeRange: doRemoveRange, addVideos: addVideos, addImage: addImage, addAudio: addAudio, setTransition: setTransition, undoEdit: undoEdit, loadSrc: loadSrc, srcs: function () { return srcs; }, dubs: function () { return dubs; }, dubAudio: function (id) { return audios[id] && audios[id].el; }, queue: q, enqueueBurn: enqueueBurn, enqueueTranscribe: enqueueTranscribe, importText: importText, ask: submitAsk, applyAsk: applyAsk, addTtsDub: addTtsDub, cues: function () { return cues; }, addAt: addAt, edit: edit, video: null, setVideo: setVideo, tab: setTab, panel: function (hidden) { if (hidden !== undefined) { lay.panelHidden = !!hidden; applyPanel(); save(); } return !lay.panelHidden; },
+    box._ve = { attachCollab: attachCollab, detachCollab: detachCollab, shareDoc: shareDoc, project: project, say: msg, runOps: runOps, state: aiState, clips: function () { return clips; }, overlays: function () { return ovs; }, split: doSplit, removeRange: doRemoveRange, addVideos: addVideos, addImage: addImage, addAudio: addAudio, setTransition: setTransition, undoEdit: undoEdit, loadSrc: loadSrc, srcs: function () { return srcs; }, dubs: function () { return dubs; }, dubAudio: function (id) { return audios[id] && audios[id].el; }, queue: q, enqueueBurn: enqueueBurn, enqueueTranscribe: enqueueTranscribe, importText: importText, ask: submitAsk, applyAsk: applyAsk, addTtsDub: addTtsDub, cues: function () { return cues; }, addAt: addAt, edit: edit, video: null, setVideo: setVideo, tab: setTab, panel: function (hidden) { if (hidden !== undefined) { lay.panelHidden = !!hidden; applyPanel(); save(); } return !lay.panelHidden; },
       panelWidth: function (w) { if (w !== undefined) { lay.panelW = core.clampPanelWidth(w, box.clientWidth); applyPanel(); save(); } return lay.panelW; }, layout: function () { return lay; } };
     (o.container || root.document.body).appendChild(box);
     var FW = o.windowApi || root.FaWin || (typeof FaWin !== 'undefined' ? FaWin : null);   // desktop-app: the shared window shell (pop out / maximize / dock)

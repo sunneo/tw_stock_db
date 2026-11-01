@@ -33,7 +33,7 @@
   function mount(opt) {
     var W = opt.W || WE, host = opt.host || {}, el = h('div', 'fwe'); var dark = false; try { dark = !!(host.palette && host.palette().dark); } catch (e) { dark = false; } if (dark) el.className += ' dark';
     if (!document.getElementById('fwe-css')) { var st0 = document.createElement('style'); st0.id = 'fwe-css'; st0.textContent = CSS; (document.head || document.documentElement).appendChild(st0); }
-    var S = { v: 1, ptr: 0, states: [], log: [] }, leftTab = 'preview', rightTab = 'ai', curFile = 'index.html', pending = [], busy = false, saveT = null, previewT = null, lastRun = '';
+    var S = { v: 1, ptr: 0, states: [], log: [] }, leftTab = 'preview', rightTab = 'ai', curFile = 'index.html', pending = [], busy = false, saveT = null, previewT = null, lastRun = '', collab = null, collabEl = null;
     function initState(state, spec) {
       if (state && Array.isArray(state.states) && state.states.length) { S = { v: 1, ptr: Math.max(0, Math.min(state.states.length - 1, state.ptr | 0)), states: state.states.slice(-MAXSTATES).map(function (x) { return { spec: W.validate(x.spec).spec, summary: x.summary || '', text: x.text || '', kind: x.kind || 'panel', t: x.t || 0 }; }), log: Array.isArray(state.log) ? state.log.slice(-60) : [] }; if (S.ptr >= S.states.length) S.ptr = S.states.length - 1; }
       else S = { v: 1, ptr: 0, states: [{ spec: W.validate(spec || W.defaults()).spec, summary: '開始', text: '', kind: 'start', t: Date.now() }], log: [] };
@@ -41,10 +41,39 @@
     function cur() { return S.states[S.ptr].spec; }
     function getState() { var st = { v: 1, ptr: S.ptr, states: S.states, log: S.log.slice(-60) }; try { while (JSON.stringify(st).length > 2500000 && st.states.length > 2) { st.states = st.states.slice(1); st.ptr = Math.max(0, st.ptr - 1); } } catch (e) { /* 照存 */ } return st; }
     function persist() { clearTimeout(saveT); saveT = setTimeout(function () { try { if (host.save) host.save(getState()); } catch (e) { /* 存不了這次還是有效 */ } }, 400); }
-    function commit(spec, summary, text, kind) { S.states = S.states.slice(0, S.ptr + 1); S.states.push({ spec: W.validate(spec).spec, summary: summary || '', text: text || '', kind: kind || 'panel', t: Date.now() }); if (S.states.length > MAXSTATES) S.states.shift(); S.ptr = S.states.length - 1; render(); persist(); }
+    function pushState(spec, summary, text, kind, by) { S.states = S.states.slice(0, S.ptr + 1); S.states.push({ spec: W.validate(spec).spec, summary: summary || '', text: text || '', kind: kind || 'panel', t: Date.now(), by: by || undefined }); if (S.states.length > MAXSTATES) S.states.shift(); S.ptr = S.states.length - 1; render(); persist(); }
+    // 單人：直接記成一步。多人共編：算出 id 定址的 patch（files 以檔名定址、長文字逐行合併）交給主持機編號，等 commit 事件回來才記（含自己的）；復原只復原自己的步驟（見 edit_shell.js 同名流程）
+    function commit(spec, summary, text, kind) {
+      if (!collab) { pushState(spec, summary, text, kind); return; }
+      var next = W.validate(spec).spec, patch = collab.diff(cur(), next); if (!patch.length) { return; } var k = kind || 'panel';
+      return Promise.resolve(collab.propose(patch, { summary: summary || '', text: text || '', kind: k, src: k === 'chat' || k === 'image' ? 'ai' : 'user' })).then(function (r) { collabReply(r); return r; });
+    }
+    function collabReply(r) {
+      if (!r) { return; } if (r.queued) { stat.textContent = '⚠️ ' + (r.error || '主持機離線，已暫存'); renderCollab(); return; }
+      if (!r.ok) { var why = r.error === 'readonly' ? '你在這個共編裡是唯讀的' : (r.error === 'all-rejected' ? '這個改動套不上去（對象已被別人刪掉或改掉了）' : (r.error || '沒有成功')); stat.textContent = '✗ ' + why; addMsg('ai', '✗ ' + why, [], (r.rejected || []).slice(0, 4).map(function (x) { return '✗ ' + x.op + '：' + x.error; })); return; }
+      if (r.rejected && r.rejected.length) { addMsg('ai', '有 ' + r.rejected.length + ' 個動作因為別人已改過而略過', [], r.rejected.slice(0, 4).map(function (x) { return '✗ ' + x.op + '：' + x.error; })); }
+    }
+    function onCollabCommit(c) {
+      var k = c.kind === 'undo' || c.kind === 'redo' ? c.kind : (c.kind && c.kind !== 'edit' ? c.kind : 'panel');
+      if (c.text && c.by && !(host.selfName && c.by.name === host.selfName() && c.by.src !== 'ai')) { var lm = { role: 'user', text: c.text, by: c.by }; S.log.push(lm); addMsg('user', lm.text, [], [], lm.by); }
+      lastRun = ''; pushState(collab.spec(), c.summary || '', c.text || '', k, c.by);
+    }
+    function renderCollab() {
+      if (!collab) { return; } if (!collabEl) { collabEl = h('span', 'st'); collabEl.style.cssText = 'display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap'; bar.insertBefore(collabEl, ttl.nextSibling); }
+      collabEl.textContent = ''; var ms = []; try { ms = collab.members() || []; } catch (e) { ms = []; }
+      ms.forEach(function (m) { var c = h('span', null, '● ' + (m.kind === 'web' ? '🌐 ' : '') + m.name + (m.host ? '（主持）' : '') + (m.readonly ? '（唯讀）' : '')); c.style.color = collab.color(m.name); collabEl.appendChild(c); });
+      var st = ''; try { st = collab.status(); } catch (e) { st = ''; } var q = 0; try { q = collab.queued() || 0; } catch (e) { q = 0; }
+      if (st === 'offline') { collabEl.appendChild(h('span', null, '⚠️ 主持機離線' + (q ? '，' + q + ' 筆待同步' : ''))); } else if (st === 'closed') { collabEl.appendChild(h('span', null, '⛔ 共編已結束（本機副本保留）')); }
+    }
+    function attachCollab(c) {
+      if (collab === c) { return; } collab = c; if (!collab) { return; }
+      collab.on('commit', onCollabCommit); collab.on('reset', function () { lastRun = ''; pushState(collab.spec(), '重新跟主持機同步', '', 'remote'); }); collab.on('members', renderCollab); collab.on('status', renderCollab);
+      collab.on('closed', function (why) { renderCollab(); stat.textContent = why || '共編已結束'; }); render();
+    }
+    function detachCollab() { collab = null; if (collabEl) { collabEl.remove(); collabEl = null; } render(); }
     function apply(edits, summary, text, kind) { var r = W.applyEdits(cur(), edits); if (!r.applied.length) return r; var words = summary || edits.filter(function (e) { return r.applied.indexOf(e.op) >= 0; }).map(W.editWords).filter(Boolean).join('；'); commit(r.spec, words, text, kind); return r; }
-    function undo() { if (S.ptr > 0) { S.ptr--; render(); persist(); } }
-    function redo() { if (S.ptr < S.states.length - 1) { S.ptr++; render(); persist(); } }
+    function undo() { if (collab) { Promise.resolve(collab.undo()).then(function (r) { if (r && !r.ok) { collabReply(r); } else if (!r) { stat.textContent = '沒有你自己的步驟可以復原'; } }); return; } if (S.ptr > 0) { S.ptr--; render(); persist(); } }
+    function redo() { if (collab) { Promise.resolve(collab.redo()).then(function (r) { if (r && !r.ok) { collabReply(r); } }); return; } if (S.ptr < S.states.length - 1) { S.ptr++; render(); persist(); } }
 
     // ───── 骨架 ─────
     var bar = h('div', 'bar'), ttl = h('span', 'ttl', '🌐 網頁編輯器'), stat = h('span', 'st'), bUndo = h('button', null, '↶ 復原'), bRedo = h('button', null, '↷ 重做'), bTpl = h('button', null, '📋 起手式'), bSum = h('button', null, '📝 摘要成 prompt'), bExp = h('select'), bFull = h('button', null, '⛶');
@@ -129,7 +158,7 @@
     bE1.onclick = function () { doExport('node'); }; bE2.onclick = function () { doExport('cloudflare'); }; bE3.onclick = function () { doExport('python'); };
 
     // ───── 記錄 ─────
-    function renderHist() { var p = rp.hist; p.textContent = ''; p.appendChild(h('div', 'st', '點一步就回到那一步（之後的步驟還在，可以重做）：')); S.states.forEach(function (s, i) { var d = h('div', i === S.ptr ? 'cur' : (i > S.ptr ? 'fut' : ''), (i + 1) + '. ' + (s.summary || '（沒有說明）') + (s.text ? '　— 「' + s.text.slice(0, 30) + '」' : '')); d.onclick = function () { S.ptr = i; render(); persist(); }; p.appendChild(d); }); }
+    function renderHist() { var p = rp.hist; p.textContent = ''; p.appendChild(h('div', 'st', collab ? '共同編輯的歷史（每一步都標了是誰；復原只會復原你自己的步驟）：' : '點一步就回到那一步（之後的步驟還在，可以重做）：')); S.states.forEach(function (s, i) { var d = h('div', i === S.ptr ? 'cur' : (i > S.ptr ? 'fut' : ''), (i + 1) + '. ' + (byLabel(s.by) ? '[' + byLabel(s.by) + '] ' : '') + (s.summary || '（沒有說明）') + (s.text ? '　— 「' + s.text.slice(0, 30) + '」' : '')); if (!collab) { d.onclick = function () { S.ptr = i; render(); persist(); }; } p.appendChild(d); }); }
 
     // ───── AI 對話（可附圖）─────
     var logEl = h('div', 'log'), attEl = h('div', 'att'), inRow = h('div', 'row'), ta = h('textarea'), bAtt = h('button', null, '📎'), bSend = h('button', 'pri', '送出'), file = h('input'); file.type = 'file'; file.accept = 'image/*'; file.multiple = true; file.style.display = 'none';
@@ -172,9 +201,11 @@
     bUndo.onclick = undo; bRedo.onclick = redo;
     el.addEventListener('keydown', function (ev) { var tag = ev.target && ev.target.tagName; if ((tag === 'TEXTAREA' || tag === 'INPUT' || tag === 'SELECT') && ev.target !== el) return; if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && ev.key.toLowerCase() === 'z') { ev.preventDefault(); undo(); } else if ((ev.ctrlKey || ev.metaKey) && (ev.key.toLowerCase() === 'y' || (ev.shiftKey && ev.key.toLowerCase() === 'z'))) { ev.preventDefault(); redo(); } else if (ev.key === 'Escape' && el.className.indexOf(' full') >= 0) bFull.onclick(); });
     el.tabIndex = 0;
-    function render() { renderCode(); refreshBackend(); renderHist(); bUndo.disabled = S.ptr === 0; bRedo.disabled = S.ptr >= S.states.length - 1; stat.textContent = '第 ' + (S.ptr + 1) + '／' + S.states.length + ' 步'; showTabs(); startPreview(false); }
+    function render() { renderCode(); refreshBackend(); renderHist(); if (collab) { bUndo.disabled = !collab.undoable(); bRedo.disabled = !collab.redoable(); renderCollab(); } else { bUndo.disabled = S.ptr === 0; bRedo.disabled = S.ptr >= S.states.length - 1; } stat.textContent = '第 ' + (S.ptr + 1) + '／' + S.states.length + ' 步'; showTabs(); startPreview(false); }
     initState(opt.state, opt.spec); renderLog(); render();
-    el._we = { getState: getState, reload: function (state) { initState(state, null); lastRun = ''; renderLog(); render(); }, setSpec: function (spec, summary) { commit(spec, summary || '由對話修改', '', 'chat'); }, undo: undo, redo: redo, send: function (t) { ta.value = t; return send(); }, refreshBackend: refreshBackend, showTab: function (t) { leftTab = t; showTabs(); if (t === 'backend') refreshBackend(); }, restart: function () { startPreview(true); }, destroy: function () { try { if (host.stop) host.stop(); } catch (e) { /* */ } } };
+    var bCo = null; if (host.collabUi) { bCo = h('button', null, '👥 共編'); bCo.title = '跟群組裡別台機器一起編輯這個網頁：每個人都有完整副本，由主持機排序；各人只復原自己的步驟'; bCo.onclick = function () { try { host.collabUi.open(el); } catch (e) { stat.textContent = '共編：' + String((e && e.message) || e).slice(0, 80); } }; bar.insertBefore(bCo, bSum); }
+    if (host.collab) { attachCollab(host.collab); }
+    el._we = { attachCollab: attachCollab, detachCollab: detachCollab, getSpec: function () { return cur(); }, say: function (t) { stat.textContent = t; }, getState: getState, reload: function (state) { initState(state, null); lastRun = ''; renderLog(); render(); }, setSpec: function (spec, summary) { commit(spec, summary || '由對話修改', '', 'chat'); }, undo: undo, redo: redo, send: function (t) { ta.value = t; return send(); }, refreshBackend: refreshBackend, showTab: function (t) { leftTab = t; showTabs(); if (t === 'backend') refreshBackend(); }, restart: function () { startPreview(true); }, destroy: function () { try { if (host.stop) host.stop(); } catch (e) { /* */ } } };
     return el;
   }
   return { mount: mount, CSS: CSS };
