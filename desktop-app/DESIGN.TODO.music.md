@@ -1,4 +1,4 @@
-# 交接文件：音樂領域（MIDI／mp3 轉 MIDI／音色庫瘦身，handoff 3，2026-11-01）
+# 交接文件：音樂領域（MIDI／mp3 轉 MIDI／音色庫瘦身，handoff 4，2026-11-01）
 
 ## 1. 開場提示（給接手的工作階段）
 Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app\desktop-app\DESIGN.TODO.music.md`. 先完整讀完（含使用者原話與做法備忘），照做。工作目錄 `D:\Downloads\videos-嗨投資-desktop-app\desktop-app`（產品程式在這裡）；參考專案 `D:\Downloads\SRC\piano-web` 只讀不改（若沒有權限讀，先用目錄授權工具請求該目錄）。執行 low-context-long-run 技能（門檻 30%）：做 Todo 的第一項，context 到門檻就更新這份文件並啟動你的接手工作階段（`mcp__ccd_session__start_session` 是延遲載入的工具，先用 ToolSearch 載入）。第一則訊息用一行說明你讀完了、要開始哪一項。回覆一律繁體中文、不要夾英文縮寫。**不要做長篇規劃、不要問，直接查證、寫程式、測試、提交。**
@@ -19,7 +19,7 @@ Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app
 | 6 | 接進簡報（media-presentation）、2D／3D 遊戲、影片剪輯當配樂 | 一條共用的「配樂」介面 |
 | 7 | 風格知識：瀏覽器查維基的風格介紹、風格設計範本 | 與階段 3 共用 |
 
-## 3. Todo（依序；階段 0、1 已做完，階段 2 做了編輯器本體）
+## 3. Todo（依序；階段 0–3 已做完，下一個是階段 4）
 
 **已完成並提交（細節與實測結果見 `DESIGN.music.md` §1–§5）：**
 - 階段 0：`scripts/sf-analyze.js`（結論：重複樣本不到 0.05 MB，瘦身要靠降取樣與 SF3 壓縮）、轉譜模型查證、piano-web 盤點（c6a21abf）。
@@ -27,12 +27,13 @@ Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app
 
 **階段 1 補充（handoff 3 做完的）：** 功能清冊 `features/ai-features.yaml` 已加 `music-midi`（FEATURES.md 是產生檔，不要手改）；mp3 編碼是重用既有 `_encodeMp3`（lamejs，TTS 與抽音訊走同一條，已實用過），未單獨真機跑一次；網頁版合成器路徑推導（__FA_LAZY_BASE 往上兩層＝desktop-app/，再接 renderer/vendor/spessasynth/）檢查過邏輯，**發布後要用 curl 對釘住的 commit 查 200**；合成器程式庫是 fetch 文字後用 data: 網址載入，所以 CDN 的 MIME 類型不是問題。
 
-**階段 2 已完成並提交（handoff 3）：** `renderer/src/music/midi_edit.js`（封閉動作 apply／applyAll、中文指令 parseCommands、復原重做 history；數字音軌＝從 0 起算索引，字串音軌＝第幾軌或名稱；測試 `scripts/music-tests/midi_edit.test.js` 19 項）、`midi_editor_ui.js`（鋼琴捲簾畫布、音軌欄、GS 128 音色下拉、復原重做、試聽、下載、底部對話框：程式先讀、讀不懂才 `host.askAI`）、`floating-assistant.js` 內的 `_midiPushEditor／_midiEditAsk／_mountMidiEditCards`、斜線 `/edit-midi`、工具 `midi_edit_open`、卡片區塊 `fa-midi-edit`；瀏覽器實測（`scripts/music-tests/editor.html`，新增／刪除音符、中文指令、AI 退路、復原都正確）。
+**階段 2、3 已完成（handoff 4）：** 階段 2（編輯器＋遠端共編）已由管理層發布（patch v258，561a2d36）。階段 3 已提交 cf3c51c8（待管理層發布）：`renderer/src/music/music_compose.js`（9 種風格範本、有種子亂數、旋律檢查失敗自動換種子、parseRequest 讀中文）、工具 `midi_compose`、測試 `scripts/music-tests/music_compose.test.js`。音色庫分片：`scripts/sf-pack.js`＋`FaMidiPlay.fetchParts`（每片核對長度與 sha256、單片快取）已提交；**待管理層**把 scratchpad 的 sfbranch（5 片＋manifest＋授權）推到 soundfont-assets 分支並把完整 SHA 填進 `FA_ASSET_URLS.gsSoundbankBase`（見 DESIGN.music.md「音色庫分片與延遲載入」）。**發布一律由管理層代發（使用者說「由你代發」）：每階段提交後用 SendMessage 回報 local_49f6c57d-8f18-427b-a8f1-7b1d23efc5f5「階段 N 已提交，可發布，commit <hash>」，然後立刻接著做；不要自己跑 publish.sh（publish.sh 的 git add -A 會把你工作中的檔案一起提交，無妨但要知道）。** 入口測試（node scripts/run-core-tests.js，約 3 分鐘，用 run_in_background 跑並輸出到 /tmp，再用 Monitor 等）要沒有新增失敗；遠端協定探測那組是不穩定的既有測試。
 
-**第一項（現在就做）：階段 2 剩下的「遠端」兩件**
-1. 發布仍待使用者確認（被權限檢查擋過，見第 4 節）；未確認前不要發布、不要繞過。
-2. **遠端卡片與遠端編輯**。查證結果（不要重查）：現有遠端共筆是 `renderer/src/remote/rg_collab.js`＋`rg_session.js`＋`rg_patch.js`＋`rg_edit.js`，**一個編輯器要被遠端共筆，必須是 `KINDS` 登錄的編輯器種類（`FaEditShell` 外框、專案存 `FaEditStore`）**，宣告在 `_edRemoteDecl(kind)`（`sync:'patch'`＋`patchKeys`＝陣列鍵欄位，文件必須是「以 id 定址的 JSON」）。我們的 MIDI 編輯器目前是對話裡的獨立卡片，不是 KINDS。做法：（a）新增純函式 `songToDoc／docToSong`（給每軌與每個音符穩定 id，`patchKeys:{tracks:'id',notes:'id'}`，這樣兩人改不同音符會事件層級合併、改同一個音符較新者勝）並加測試；（b）把 MIDI 登錄成 KINDS 的一種（`edit-midi`，仿最小的一種，看 `KINDS` 內 `remote`、`remoteRun`），讓 `/edit-midi` 可選擇「開成共筆編輯器」；（c）播放卡片的遠端顯示：看遠端卡片機制（grep `REMOTE` 區塊、`fa-worksheet` 在遠端的處理方式）；（d）用記憶體傳輸寫測試（`rg_*` 既有測試可仿）。若 KINDS 登錄代價太大，退路：在現有卡片上用 `rg.room.send` 直接傳動作事件（`host.onChange(song, action)` 已把每個動作送出；`card._midiEdit.applyRemote(actions)` 已能套用遠端動作），衝突用「較新者勝」，並在文件寫明。
-3. 階段 2 做完且測試全過 → 回報使用者請他確認發布，之後進階段 3。
+**第一項（現在就做）：階段 4 音色庫瘦身（找樣本內部 loop，不是找樣本之間的重複）**
+1. 讀 `scripts/sf-analyze.js` 與 DESIGN.music.md 階段 0 結論。先寫 sf2 讀寫（解析 sdta smpl、shdr 的 start／end／startLoop／endLoop，可參考 sf-analyze.js；或看 `renderer/vendor/spessasynth` 內有沒有可用的 sf2 解析／寫出）。音色庫本機副本在 `%TEMP%gs.sf2`（32 MB），**不要放進 repo**。
+2. `scripts/sf-slim.js`：（a）自相關／週期偵測找基頻週期與穩定段，找無縫 loop 起訖（對齊零交越、相位連續、能量一致）；（b）已有 loop 的樣本，loop 結束點之後的資料截掉；穩定段太長只留整數個週期；（c）持續音（弦、管、合唱、風琴等，用 GM 音色分類加 shdr 判斷）沒有 loop 的嘗試自動找並加上，打擊單擊音不加；（d）再降取樣率；（e）SF3（Ogg Vorbis）看 spessasynth 是否支援，不支援就用分片＋解壓。每一步先寫純函式與單元測試（合成的正弦／鋸齒波樣本）。
+3. 聽感比對工具 `scripts/sf-compare.js`：同一份 MIDI（用 FaMidiCompose 產的）用原版與瘦身版各渲染一次（瀏覽器端離線渲染，見 scripts/music-tests/browser.html），算頻譜差異與 loop 接縫處的不連續度，列出差異最大的音色。
+4. 輸出的新 sf2 用 `scripts/sf-pack.js` 分片，manifest 的 version 加一；Roland 樣本一律不可使用。完成且測試全過 → 提交並回報管理層，接著階段 5（先查證模型並寫進 DESIGN.music.md，見階段 5 採用順序）。
 
 **之後各階段（做完前一階段再做下一階段，不要問）：階段 2 → 7，內容見原文如下（階段 1 已完成的部分略）。**
 - **階段 2**：MIDI 編輯器 `/edit-midi`（仿 `FaEditShell` 外框：音軌欄、鋼琴捲簾、屬性、復原重做、底部 AI 對話框；**音色只能選 GS 音色**，GM 128＋鼓組；piano-web 的多音軌設計可參考，但不要整個搬）；**內建問 AI**：編輯器底部對話框用封閉動作（add_note、move、transpose、quantize、set_program、add_track、delete…）加 `parseCommands`（程式先讀中文），讀不懂才問模型；**遠端**：MIDI 播放卡片要能在遠端卡片裡顯示（看 `REMOTE` 區塊與遠端卡片機制，`renderer/src/remote/`），**遠端編輯**（遠端的人改同一份 MIDI，沿用現有遠端群組的訊息通道；衝突用「較新者勝＋事件層級合併」，每次編輯是一個事件）。
