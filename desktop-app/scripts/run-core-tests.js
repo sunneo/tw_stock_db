@@ -87,6 +87,7 @@ const suites = [
     ['遠端編輯器橋接（文件快取、素材往返、允許名單與閘門、取消、by 蓋章）', 'scripts/remote-tests/rg_edit.test.js'],
     ['多人同編核心（主持機排序、副本收斂、衝突略過、各人獨立復原、離線暫存）', 'scripts/remote-tests/rg_session.test.js'],
     ['多人同編訊息層（列表、加入、提出與廣播、by 蓋章、唯讀、各人復原、presence、漏補、離線暫存）', 'scripts/remote-tests/rg_collab.test.js'],
+    ['多人同編素材（加入時取齊、參與者新增的圖經主持機轉給大家）', 'scripts/remote-tests/rg_collab_assets.test.js'],
     ['遠端共筆 patch 模式（id 定址的 JSON 差異、套用與略過、逐行 diff3）', 'scripts/remote-tests/rg_patch.test.js'],
     ['環境基準線（檔位判斷、政策、OOM 辨識、資源治理：讓位／排隊／跑完卸載／壓力／降級）', 'scripts/env-tests/env_profile.test.js'],
     ['模擬 swap（熱區上限、最久沒用的先寫出、讀回、丟掉）', 'scripts/env-tests/swap.test.js'],

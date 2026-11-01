@@ -264,7 +264,7 @@
     function attachCollab(c) {
       if (collab === c) { return; } collab = c; if (!collab) { return; }
       collab.on('commit', onCollabCommit); collab.on('reset', function () { pushState(collab.spec(), '重新跟主持機同步', '', 'remote'); }); collab.on('members', function () { renderCollab(); });
-      collab.on('status', function () { renderCollab(); }); collab.on('closed', function (why) { renderCollab(); stat.textContent = why || '共編已結束'; });
+      collab.on('status', function () { renderCollab(); }); collab.on('assets', function () { render(); }); collab.on('closed', function (why) { renderCollab(); stat.textContent = why || '共編已結束'; });
       collab.on('presence', function (p) { if (!p || !p.by) { return; } remoteSel[p.by.nodeId] = { id: p.sel && p.sel.id, name: p.by.name }; renderObjects(); });
       render();
     }

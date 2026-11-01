@@ -60,7 +60,7 @@
         }
         // ───────── 素材提供（給 FileShare 的 getFile／allowed 用）
         getOffered(id) { const o = this.offers.get(id); return o && o.exp > Date.now() ? { blob: o.blob, name: o.name, mime: o.mime } : null; }
-        isAllowed(id, from) { const o = this.offers.get(id); return !!(o && o.exp > Date.now() && o.to === from); }
+        isAllowed(id, from) { const o = this.offers.get(id); return !!(o && o.exp > Date.now() && (o.to === from || o.to === '*')); }   // '*'＝群組裡誰要都給（共同編輯的素材；群組已互信）
         offer(id, blob, name, mime, to, cid) { this.offers.set(id, { blob, name: name || id, mime: mime || blob.type || 'application/octet-stream', to, cid, exp: Date.now() + OFFER_TTL }); this.stats.blobsOffered++; if (this.offers.size > 400) this.prune(); }
         prune() { const now = Date.now(); for (const [k, v] of this.offers) if (v.exp < now) this.offers.delete(k); }
         dropOffers(cid) { for (const [k, v] of this.offers) if (v.cid === cid) this.offers.delete(k); }
