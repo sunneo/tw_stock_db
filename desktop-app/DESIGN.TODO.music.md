@@ -46,6 +46,15 @@ Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app
 
 **其他已完成、別重做：** 階段 6 配樂（bb43a845）、音色庫換瘦身版（99371b76，記得 v262 起預設 6.3 MB）、播放卡片清混音（a29bd77f）、說明文字與離線模型管理音樂區（f43774ff）、作曲說法路由與成品卡片（448917dc）。階段 7 仍暫緩。
 
+### 已完成（handoff 7 接手，2026-11-02）：作曲「理解需求」改成逐欄提問
+- **查證結果**：`_callSimpleCompletion` 只讀 `choices[0].message.content`，標準的 `reasoning_content` 不會混進回覆；但有些模型（或轉接服務）會把英文思考直接寫在 content 裡（使用者看到的「The user wants to create tech-style musi…」就是這種），而且舊的整包 JSON 一次要七欄，模型先思考就讀不到 JSON。`maxTokens: 300` + `noBudgetRetry: true` 讓「思考吃光額度、回空白」無法自動加倍重試。這些是讀程式的結論，**沒有用真模型驗證**。沒有找到可關閉思考的通用參數（`reasoning_effort` 只在進階取樣設定，不通用），所以改成問得短、讀得寬。
+- `compose_plan.js`：`questionOf(欄位, 需求, strict)` 一次問一欄（風格、情緒、速度、調式、主奏、長度、用途），每題附三個範例、明講只回一個字母；`parseLetter` 先剝思考區塊（含沒關的 think），再找 JSON、開頭字母、「答案是 X」、整句只有選項名稱，長篇英文思考文字不亂猜；第二次用「更嚴格版」（貼回上次回覆、說明不合法）；兩次都讀不懂只那一欄退回規則／預設。使用者已經說了的欄位（風格詞、bpm、小調／大調、樂器、小節數、用途）不問。連線類錯誤連兩次就不再問後面的欄位，前三欄一個都沒答對也停（避免每欄都等逾時）。`report.perField` 帶每欄的次數、回覆前 80 字、錯誤，卡片的提醒會寫「AI 沒答對的欄位改用程式預設：欄位（原因）」，進度卡寫模型名稱。
+- 宿主 `_midiComposeFlow`：maxTokens 改 400（用途 200），**不再關預算加倍重試**。
+- 經驗回流：結果卡片多了「👍 就用這個」按鈕（使用者按了才算接受）。`_composeLearn` 經 `FaHarnessExp` 閘門（只收程式驗證過的、去識別、去重、上限）存本機 `fa_compose_experience`，並把 pattern 送進離線訓練器 `harness_experience` 領域（預設停用）。之後類似說法（字元二連詞相似度 ≥ 0.7）由 `FaComposePlan.matchLearned` 直接對到字母，那幾欄不再問 AI，來源顯示「以前學到的」。程式猜的與預設的欄位不收。失敗案例進 UML 編修候選：**未做**（只有成功回流）。
+- 測試 `scripts/music-tests/compose_plan.test.js` 43 項：加了 parseLetter／parsePurpose、六種假模型（完美、亂答、英文思考文字、沉默、逾時、只回一半）與嚴格版重問、學到的說法。
+- **未驗證**：真模型小樣本實測（這個環境沒有 API 金鑰）；「就用這個」按鈕在真實介面的點擊與離線訓練器匯入；快取／網頁版載入。使用者實測時請看卡片的提醒文字，會寫出哪一欄、模型回了什麼。
+- 限制：用途（purpose）那題若模型亂回短句，程式只擋英文思考開頭與過長，擋不掉一句不相干的中文。
+
 ### 階段 6 已提交（handoff 7）
 - 新模組 renderer/src/music/soundtrack.js（FaSoundtrack：規格、淡入淡出、循環鋪滿、wav、播放控制；真渲染測試 scripts/music-tests/soundtrack.html）、工具 soundtrack_make。簡報：deck.soundtrack（set_deck 的 soundtrack、編輯器簡報屬性裡的配樂列，播放接在旁白下、匯出 MP4 混進去）；遊戲：set_bgm 的 soundtrack 參數、場景面板與聲音分頁的「🎼 配樂」按鈕、播放端非同步取緩衝；影片剪輯：「🎼 配樂」鋪滿時間軸存成一筆配音。MIDI 遠端卡片：卡片的 fa-midi 區塊內含 base64（90 KB 以下），遠端收到同樣會掛載播放卡片（讀程式確認，沒有兩台機器實測）。
 - 限制：獨立遊戲包不帶配樂（退回風格合成）；影片剪短後配樂不跟著變短；簡報拖進度時配樂重接，未做旁白時壓低；階段 7 依使用者指示暫緩。

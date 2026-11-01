@@ -33652,8 +33652,8 @@ const FaComposePlan = (function () {
 const holder = {};
 (function (module, self) {
 // 作曲的「理解需求」那一段(CoLU 形狀:封閉題由 AI 回答、程式逐欄核對、每一欄都有程式的預設退路;AI 不吐音符,音符仍由 music_compose.js 的範本作曲)。
-//   decide(text, { ask, explicit, timeoutMs, attempts }) → { fields, sources, options, report }
-//     ask(systemPrompt, userPrompt) → Promise<string>:有 AI 時給;沒有(離線、額度用盡)就不給,整個走程式規則並在報告裡講明
+//   decide(text, { ask, explicit, timeoutMs, attempts, onStep }) → { fields, sources, options, report }
+//     ask(systemPrompt, userPrompt, { field, strict }) → Promise<string>(一次問一欄,字母作答;第二次起 strict=true 用更嚴格的提示重問):有 AI 時給;沒有(離線、額度用盡)就不給,整個走程式規則並在報告裡講明
 //     explicit:呼叫端明確指定的欄位(工具參數 style／key／tempo／bars),視為使用者指定
 //   欄位:style 風格範本(九種)、mood 情緒、speed 速度(慢中快)、mode 調式、lead 主奏樂器、bars 長度、key 調、tempo 速度數字、purpose 用途或場景描述(文字)
 //   來源 sources[欄位]:'user'(使用者自己說的或指定的數字)／'ai'(AI 選的,核對過)／'rule'(程式規則從關鍵字猜的)／'default'(程式預設)
@@ -33680,27 +33680,46 @@ const holder = {};
   function ruleLead(text) { const m = [['A', /鋼琴|piano/i], ['B', /電鋼琴/], ['C', /吉他|guitar/i], ['D', /弦樂|小提琴|提琴|violin/i], ['E', /長笛|笛|木管|flute/i], ['F', /小號|銅管|trumpet/i], ['G', /合成主奏|合成器|synth/i], ['I', /顫音琴|鐘琴|木琴/]]; for (const [k, re] of m) if (re.test(text)) return k; return null; }
   function rulePurpose(text) { const m = /(?:用來|用於|拿來|作為|當作|給|for)\s*([^,，。;；\n]{1,40})/i.exec(text); return m ? m[1].replace(/(的)?(背景)?(音樂|曲子|配樂)?(使用)?$/, '').trim().slice(0, 40) : ''; }
 
-  function questionOf() {
-    const sty = STYLE_KEYS.map((k, i) => L[i] + '=' + C.STYLES[k].name + '(' + (C.STYLES[k].mode === 'minor' ? '小調' : '大調') + ',速度 ' + C.STYLES[k].tempo[0] + '–' + C.STYLES[k].tempo[1] + ')').join('、');
-    const system = '你是作曲助理的「需求理解」。只回一個 JSON 物件,不要任何說明。欄位都填選項字母(purpose 除外):\n' +
-      'style 風格範本:' + sty + '。使用者要的風格(包含作曲家、樂派、情境)不在清單裡時,選最接近的那一個字母。\n' +
-      'mood 情緒:' + MOODS.map((x) => x[0] + '=' + x[1]).join('、') + '\n' +
-      'speed 速度:' + SPEEDS.map((x) => x[0] + '=' + x[1]).join('、') + '\n' +
-      'mode 調式:' + MODES.map((x) => x[0] + '=' + x[1]).join('、') + '(選的風格範本若是小調而你選大調,程式會以範本為準,所以請選和調式一致的範本)\n' +
-      'lead 主奏樂器:' + LEADS.map((x) => x[0] + '=' + x[1]).join('、') + '\n' +
-      'bars 長度(小節):' + BARS.map((x) => x[0] + '=' + x[1]).join('、') + '\n' +
-      'purpose 用途或場景:一句話(40 字內),沒有就空字串。\n範例:{"style":"H","mood":"G","speed":"B","mode":"B","lead":"G","bars":"B","purpose":"簡報開場"}';
-    return system;
+  // 逐欄提問:一次只問一欄,選項字母作答,附範例;範例刻意和真實需求無關,避免模型照抄
+  const FIELD_ORDER = ['style', 'mood', 'speed', 'mode', 'lead', 'bars'];
+  function optionsOf(k) {
+    if (k === 'style') return STYLE_KEYS.map((key, i) => [L[i], C.STYLES[key].name + '(' + (C.STYLES[key].mode === 'minor' ? '小調' : '大調') + ')']);
+    if (k === 'mood') return MOODS; if (k === 'speed') return SPEEDS; if (k === 'mode') return MODES; if (k === 'lead') return LEADS.map((x) => [x[0], x[1]]); if (k === 'bars') return BARS.map((x) => [x[0], x[1] + ' 小節']);
+    return [];
   }
-  // 解析 AI 的回答:逐欄核對,不在清單內的欄位回 null(呼叫端用規則或預設補);整個讀不懂就 {}
-  function parseAnswer(text) {
-    const out = {}; const m = String(text || '').match(/\{[\s\S]*?\}/); if (!m) return out; let o; try { o = JSON.parse(m[0]); } catch (_) { return out; } if (!o || typeof o !== 'object') return out;
-    const letter = (v, allowed) => { const c = String(v == null ? '' : v).trim().charAt(0).toUpperCase(); return allowed.indexOf(c) >= 0 ? c : null; };
-    const f = { style: letter(o.style, L.slice(0, 9)), mood: letter(o.mood, 'ABCDEFGH'), speed: letter(o.speed, 'ABC'), mode: letter(o.mode, 'ABC'), lead: letter(o.lead, L), bars: letter(o.bars, 'ABCD') };
-    Object.keys(f).forEach((k) => { if (f[k]) out[k] = f[k]; });
-    if (typeof o.purpose === 'string') out.purpose = o.purpose.trim().slice(0, 40);
-    return out;
+  const ASK = { style: '曲子最適合哪一種風格範本(使用者要的風格、作曲家、樂派、情境不在清單裡時,選最接近的)', mood: '曲子的情緒', speed: '曲子的速度', mode: '曲子的調式', lead: '主奏樂器', bars: '曲子的長度' };
+  const SHOTS = {
+    style: [['想要一首下雨天咖啡館的音樂', 'F'], ['寫一首熱血的搖滾', 'B'], ['優雅的三拍子舞曲', 'E']],
+    mood: [['安靜的夜晚讀書用', 'C'], ['遊戲 Boss 戰', 'E'], ['新手機發表會開場', 'G']],
+    speed: [['悠閒的午後', 'A'], ['運動會進場', 'C'], ['一般的背景音樂', 'B']],
+    mode: [['憂傷的告別', 'B'], ['生日快樂', 'A'], ['隨便一首', 'C']],
+    lead: [['浪漫的小夜曲', 'D'], ['營火晚會', 'C'], ['電玩風格', 'G']],
+    bars: [['很短的提示音樂', 'A'], ['一般長度', 'B'], ['長一點的完整曲子', 'D']]
+  };
+  // 單欄的題目。strict:上一次回的東西讀不懂,這次用更嚴格的版本(貼回上次的回覆、說明錯在哪)
+  function questionOf(k, text, strict) {
+    if (k === 'purpose') {
+      const system = '你是作曲助理。用一句話(40 字內,繁體中文)說這首曲子的用途或場景。只回這一句話,不要任何說明、不要引號。沒有明確用途就回「無」。\n範例:\n需求:幫我做簡報開場音樂 → 簡報開場\n需求:隨便來一首 → 無' + (strict ? '\n【上一次你回的不是一句短話:「' + (strict.raw || '(空白)') + '」。這次第一個字就是答案,不要先說明或思考。】' : '');
+      return { system, user: '需求:' + String(text).slice(0, 600) + ' →' };
+    }
+    const opts = optionsOf(k), letters = opts.map((x) => x[0]).join('');
+    const shots = (SHOTS[k] || []).filter((x) => letters.indexOf(x[1]) >= 0).map((x) => '需求:' + x[0] + ' → ' + x[1]).join('\n');
+    const system = '你是作曲助理的「需求理解」。這一題要選:' + ASK[k] + '。\n選項:' + opts.map((x) => x[0] + '=' + x[1]).join('、') + '\n只回一個字母(' + letters.charAt(0) + ' 到 ' + letters.charAt(letters.length - 1) + '),不要解釋、不要思考過程、不要標點。\n範例:\n' + shots +
+      (strict ? '\n【上一次你回的是「' + (strict.raw || '(空白)') + '」,這不是合法答案。這次你回覆的第一個字元就必須是 ' + letters.split('').join('、') + ' 其中一個字母,後面什麼都不要寫。】' : '');
+    return { system, user: '需求:' + String(text).slice(0, 600) + ' →' };
   }
+  const stripThink = (raw) => { let t = String(raw == null ? '' : raw); t = t.replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, ''); const open = t.search(/<think(?:ing)?>/i); if (open >= 0) t = t.slice(0, open); t = t.replace(/^[\s\S]*<\/think(?:ing)?>/i, ''); return t.replace(/```[a-z]*/gi, '').trim(); };
+  // 寬容解析一欄的字母:剝掉思考、JSON、「答案:H」、開頭的字母、整句只有選項名稱;長篇英文思考文字裡不亂猜
+  function parseLetter(raw, k) {
+    const opts = optionsOf(k), allowed = opts.map((x) => x[0]).join(''); const t = stripThink(raw); if (!t) return null;
+    const ok = (c) => { c = String(c || '').toUpperCase(); return c.length === 1 && allowed.indexOf(c) >= 0 ? c : null; };
+    const js = t.match(/\{[\s\S]*?\}/); if (js) { try { const o = JSON.parse(js[0]); const v = o && (o[k] != null ? o[k] : Object.values(o)[0]); const c = ok(String(v == null ? '' : v).trim().charAt(0)); if (c) return c; } catch (_) { /* */ } }
+    const head = /^[\s"'「『(（\[*]*([A-Za-z])(?![A-Za-z])/.exec(t); if (head && (head[1] === head[1].toUpperCase() || t.length <= 3) && ok(head[1])) return ok(head[1]);
+    const ans = [...t.matchAll(/(?:答案|選擇|選項|我選|answer|choice|option)\s*(?:是|為|:|：|=|is)?\s*["「『(（*]*([A-Z])(?![A-Za-z])/gi)]; for (let i = ans.length - 1; i >= 0; i--) if (ans[i][1] === ans[i][1].toUpperCase() && ok(ans[i][1])) return ok(ans[i][1]);
+    if (t.length <= 24) { const hit = opts.filter((x) => t.indexOf(String(x[1]).replace(/\(.*\)$/, '')) >= 0); if (hit.length === 1) return hit[0][0]; }
+    return null;
+  }
+  function parsePurpose(raw) { let t = stripThink(raw).split(/\n/)[0].replace(/^[\s"'「『]+|[\s"'」』。]+$/g, '').trim(); if (!t || t === '無' || /^(none|n\/a)$/i.test(t)) return ''; if (/^(the user|user wants|i need|let me|okay|we need|first)/i.test(t) || t.length > 40) return null; return t; }
 
   const withTimeout = (p, ms) => new Promise((res, rej) => { const t = setTimeout(() => rej(new Error('逾時 ' + Math.round(ms / 1000) + ' 秒')), ms); Promise.resolve(p).then((v) => { clearTimeout(t); res(v); }, (e) => { clearTimeout(t); rej(e); }); });
 
@@ -33709,16 +33728,36 @@ const holder = {};
     o = o || {}; text = String(text || ''); const explicit = o.explicit || {}; const step = o.onStep || (() => {}); const report = { usedAi: false, aiError: '', attempts: 0, notes: [] };
     const base = C.parseRequest(text); // 使用者自己說的:風格詞、調、速度數字、小節數
     const userStyleWord = base.style && !base.styleNote; // 明確的風格詞(流行、爵士…)才算使用者指定;作曲家／樂派對應是程式猜的
-    // 呼叫 AI(最多 attempts 次,每次有逾時);失敗不整個放棄,只是這次沒有 AI 的答案
-    let ai = {};
+    // 呼叫 AI:一次問一欄;每欄最多 attempts 次(第二次起用更嚴格的提示並貼回上次的回覆);兩次都讀不懂只那一欄退回預設
+    // 使用者已經自己決定的欄位不問;連線類錯誤連兩次就停止問後面的欄位(不用每欄都等逾時);前三欄一個都沒答對也停止
+    const ai = {}; report.perField = {}; report.aiMissing = []; report.calls = 0;
+    // 以前學到的(使用者接受過的類似說法):那幾欄直接用,不再問 AI
+    const learnedKeys = []; { let lp = null; try { lp = typeof o.learned === 'function' ? o.learned(text) : null; } catch (_) { lp = null; } if (lp) FIELD_ORDER.forEach((k) => { const v = lp[k]; if (v && optionsOf(k).some((x) => x[0] === v)) { ai[k] = v; learnedKeys.push(k); } }); }
+    report.learned = learnedKeys.slice();
     if (typeof o.ask === 'function') {
       const attempts = o.attempts || 2, timeoutMs = o.timeoutMs || 20000;
-      for (let i = 0; i < attempts && !Object.keys(ai).length; i++) {
-        report.attempts = i + 1; step('第 ' + (i + 1) + ' 次問 AI(選擇題:風格範本、情緒、速度、調式、主奏樂器、長度、用途)…');
-        try { const raw = await withTimeout(o.ask(questionOf(), '使用者的需求:' + text.slice(0, 600)), timeoutMs); ai = parseAnswer(raw); report.aiRaw = String(raw || '').slice(0, 80).replace(/\s+/g, ' '); if (!Object.keys(ai).length) { report.aiError = 'AI 的回答讀不懂(' + report.aiRaw + ')'; step('AI 回的不是要的格式:' + report.aiRaw); } else step('AI 回答的欄位:' + Object.keys(ai).map((k) => k + '=' + ai[k]).join('、')); }
-        catch (e) { report.aiError = String((e && e.message) || e); step('問 AI 失敗:' + report.aiError); }
+      const skip = {}; if (explicit.style || userStyleWord) skip.style = '你說的'; if (explicit.tempo || base.tempo) skip.speed = '你說的'; if (ruleMode(text)) skip.mode = '你說的'; if (ruleLead(text)) skip.lead = '你說的'; if (explicit.bars || base.bars) skip.bars = '你說的';
+      learnedKeys.forEach((k) => { skip[k] = '學到的'; }); const todo = FIELD_ORDER.filter((k) => !skip[k]).concat(rulePurpose(text) ? [] : ['purpose']); let stopWhy = '', failRun = 0, anyOk = false;
+      for (const k of todo) {
+        const pf = report.perField[k] = { ok: false, tries: 0, raw: '', error: '' };
+        if (stopWhy) { pf.error = '沒有問(' + stopWhy + ')'; report.aiMissing.push(k); continue; }
+        let netFail = 0;
+        for (let i = 0; i < attempts && !pf.ok; i++) {
+          const q = questionOf(k, text, i > 0 && pf.raw !== undefined && !pf.error.startsWith('連線') ? { raw: pf.raw.slice(0, 60) } : null); pf.tries = i + 1; report.calls++; step('問「' + (k === 'purpose' ? '用途' : ASK[k].slice(0, 6)) + '」第 ' + (i + 1) + ' 次…');
+          try {
+            const raw = await withTimeout(o.ask(q.system, q.user, { field: k, strict: i > 0 }), timeoutMs); pf.raw = String(raw == null ? '' : raw).replace(/\s+/g, ' ').trim().slice(0, 80); pf.error = '';
+            const v = k === 'purpose' ? parsePurpose(raw) : parseLetter(raw, k);
+            if (v === null) { pf.error = pf.raw ? '讀不懂(' + pf.raw + ')' : '回了空白'; step('「' + k + '」' + pf.error); } else { ai[k] = v; pf.ok = true; pf.value = v; step('「' + k + '」AI 答:' + (v === '' ? '(無)' : v)); }
+          } catch (e) { pf.error = '連線' + String((e && e.message) || e); netFail++; step('「' + k + '」問 AI 失敗:' + pf.error); }
+        }
+        if (pf.ok) { anyOk = true; failRun = 0; } else { report.aiMissing.push(k); failRun++; }
+        if (netFail >= attempts) stopWhy = '前一欄連線連續失敗:' + pf.error; else if (!anyOk && failRun >= 3) stopWhy = '前三欄都沒答對,這個模型看來不適合,停止再問';
       }
-      report.usedAi = Object.keys(ai).length > 0; report.aiMissing = report.usedAi ? ['style', 'mood', 'speed', 'mode', 'lead', 'bars'].filter((k) => !ai[k]) : [];
+      report.attempts = report.calls; report.usedAi = Object.keys(ai).length > learnedKeys.length || (learnedKeys.length > 0 && !todo.length);
+      const firstBad = todo.map((k) => [k, report.perField[k]]).find((x) => x[1] && !x[1].ok);
+      report.aiRaw = firstBad ? firstBad[1].raw : ''; if (!report.usedAi) report.aiError = firstBad ? '「' + firstBad[0] + '」' + firstBad[1].error : '沒有需要問 AI 的欄位';
+      report.aiMissing = report.aiMissing.filter((k) => k !== 'purpose');
+      if (!report.usedAi && learnedKeys.length && !report.aiError) report.aiError = '';
     } else report.aiError = o.noAiReason || '沒有可用的 AI(離線或沒有設定)';
     const f = {}, src = {};
     const set = (k, v, s) => { f[k] = v; src[k] = s; };
@@ -33745,6 +33784,7 @@ const holder = {};
     // 用途(文字)
     const rp = rulePurpose(text); if (rp) set('purpose', rp, 'user'); else if (ai.purpose) set('purpose', ai.purpose, 'ai'); else set('purpose', '', 'default');
     if (base.styleNote && src.style === 'rule') report.notes.push(base.styleNote); else if (base.styleNote && src.style !== 'user') report.notes.push(base.styleNote);
+    learnedKeys.forEach((k) => { if (src[k] === 'ai') src[k] = 'learned'; });
     const plan = { fields: f, sources: src };
     return finish(plan, report, tmplMode);
   }
@@ -33753,8 +33793,9 @@ const holder = {};
     const options = toOptions(f); const wantMode = f.mode === 'C' ? tmplMode : f.mode;
     const notes = (report.notes || []).slice();
     if (wantMode !== tmplMode) notes.push('調式想要' + (wantMode === 'A' ? '大調' : '小調') + ',但「' + tmpl.name + '」範本是' + (tmplMode === 'A' ? '大調' : '小調') + ',這版以範本為準(要' + (wantMode === 'A' ? '大調' : '小調') + '可以換成' + STYLE_KEYS.filter((k) => (C.STYLES[k].mode === 'minor') === (wantMode === 'B')).map((k) => C.STYLES[k].name).join('、') + '範本)');
+    if (report.learned && report.learned.length) notes.push('這幾欄用你以前接受過的類似說法的選擇,沒有再問 AI:' + report.learned.join('、'));
     if (!report.usedAi) notes.unshift('這次沒有用 AI,用的是範本規則(' + (report.aiError || '沒有 AI') + ')');
-    else { const bad = ['style', 'mood', 'speed', 'mode', 'lead', 'bars'].filter((k) => plan.sources[k] !== 'ai' && plan.sources[k] !== 'user' && report.aiMissing && report.aiMissing.indexOf(k) >= 0); if (bad.length) notes.push('AI 沒答對的欄位改用程式預設:' + bad.join('、')); }
+    else { const bad = ['style', 'mood', 'speed', 'mode', 'lead', 'bars'].filter((k) => plan.sources[k] !== 'ai' && plan.sources[k] !== 'user' && report.aiMissing && report.aiMissing.indexOf(k) >= 0); if (bad.length) notes.push('AI 沒答對的欄位改用程式預設:' + bad.map((k) => { const pf = (report.perField || {})[k]; return k + (pf && pf.error ? '(' + pf.error.slice(0, 50) + ')' : ''); }).join('、')); }
     return { fields: f, sources: plan.sources, options, report: Object.assign({}, report, { notes, tmplName: tmpl.name, tmplMode }) };
   }
   // 規劃 → compose 的選項(純函式)
@@ -33770,7 +33811,7 @@ const holder = {};
     Object.keys(patch || {}).forEach((k) => { if (!(k in fields)) return; let v = patch[k]; if (k === 'tempo') v = v === '' || v == null ? null : clamp(Number(v), 40, 220); if (k === 'bars') v = clamp(Math.round(Number(v)), 4, 64); if (k === 'style' && !C.STYLES[v]) return; fields[k] = v; sources[k] = 'user'; if (k === 'tempo' && v == null) sources[k] = 'default'; if (k === 'tempo' && v != null) sources.speed = 'user'; if (k === 'speed') { fields.tempo = null; sources.tempo = 'default'; } });
     return finish({ fields, sources }, { usedAi: !!rp.usedAi, aiError: rp.aiError || '', aiMissing: [], notes: [] });
   }
-  const SRC = { user: '你說的', ai: 'AI 選的', rule: '程式規則猜的', default: '程式預設' };
+  const SRC = { user: '你說的', learned: '以前學到的(你接受過類似的)', ai: 'AI 選的', rule: '程式規則猜的', default: '程式預設' };
   const labelOf = (k, f, C2) => {
     const st = C2.STYLES[f.style];
     switch (k) {
@@ -33787,7 +33828,21 @@ const holder = {};
     const rows = ROWS.map(([k, name]) => ({ key: k, name, value: labelOf(k, res.fields, C), source: sk(k), sourceLabel: SRC[sk(k)] || '' }));
     return { rows, notes: res.report.notes, usedAi: res.report.usedAi, seed, template: res.report.tmplName };
   }
-  return { STYLE_KEYS, MOODS, SPEEDS, MODES, LEADS, BARS, SRC, decide, parseAnswer, questionOf, toOptions, edit, describe, rulePurpose, ruleMood };
+  // 經驗:使用者接受的結果 → 這一句話對到哪幾欄的字母(只收使用者說的、AI 選的、學到的;程式猜的與預設不收)
+  function learnPicks(res) {
+    const f = res.fields, sr = res.sources, picks = {}, okSrc = (k) => sr[k] === 'ai' || sr[k] === 'user' || sr[k] === 'learned';
+    if (okSrc('style')) picks.style = L[STYLE_KEYS.indexOf(f.style)]; if (f.mood && okSrc('mood')) picks.mood = f.mood; if (f.tempo == null && f.speed && okSrc('speed')) picks.speed = f.speed; if (f.mode && f.mode !== 'C' && okSrc('mode')) picks.mode = f.mode;
+    if (f.lead && okSrc('lead')) picks.lead = f.lead; const bi = BARS.findIndex((x) => x[1] === f.bars); if (bi >= 0 && okSrc('bars')) picks.bars = BARS[bi][0];
+    Object.keys(picks).forEach((k) => { if (!picks[k] || picks[k] === 'undefined') delete picks[k]; }); return picks;
+  }
+  // 找以前學到的類似說法(字元二連詞相似度 ≥ 0.7);entries:[{task, picks}]
+  function matchLearned(text, entries) {
+    const grams = (t) => { t = String(t || '').toLowerCase().replace(/\s+/g, ''); const g = new Set(); for (let i = 0; i < t.length - 1; i++) g.add(t.slice(i, i + 2)); return g; };
+    const a = grams(text); if (a.size < 3) return null; let best = null, bs = 0;
+    (entries || []).forEach((e) => { if (!e || !e.picks || !e.task) return; const b = grams(e.task); let inter = 0; a.forEach((x) => { if (b.has(x)) inter++; }); const sim = inter / (a.size + b.size - inter || 1); if (sim > bs) { bs = sim; best = e; } });
+    return bs >= 0.7 ? best.picks : null;
+  }
+  return { learnPicks, matchLearned, STYLE_KEYS, MOODS, SPEEDS, MODES, LEADS, BARS, SRC, decide, parseLetter, parsePurpose, stripThink, questionOf, toOptions, edit, describe, rulePurpose, ruleMood };
 });
 
 }).call(null, undefined, holder);
@@ -73785,21 +73840,40 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     // 沒有 AI(離線、額度用盡、逾時)才完全走範本規則並明講。作曲本身(FaMidiCompose)仍由程式做,同種子同曲。斜線指令 /media-compose-midi 與工具 midi_compose 都走這裡
     async _midiComposeFlow(text, explicit, o) {
         o = o || {}; const offline = !!(this.advancedSettings && this.advancedSettings.offlineMode);
-        const ask = offline ? null : (sys, user) => this._callSimpleCompletion(user, { systemPrompt: sys, maxTokens: 300, temperature: 0, noBudgetRetry: true });
+        // 一次問一欄、只要一個字母:輸出上限 400(用途一句話 200);思考型模型把額度用在思考而回空白時,讓 _callSimpleCompletion 自己把上限加倍重來(不再關掉)
+        const ask = offline ? null : (sys, user, op) => this._callSimpleCompletion(user, { systemPrompt: sys, maxTokens: op && op.field === 'purpose' ? 200 : 400, temperature: 0 });
         // 一張進度卡:使用者按下指令就看到「正在處理」,AI 回了什麼、哪裡退回規則都寫在裡面(失敗時是哪個模型、回了什麼前 80 字)
         let model = ''; try { model = (this._getApiConfig() || {}).apiModel || ''; } catch (_) { /* */ }
         const prog = this._createProgressWidget('🎼 作曲'); const say = (pct, s2) => { try { prog.log(s2); prog.update({ pct, status: s2 }); } catch (_) { /* */ } };
         try {
             say(5, '【理解需求】' + (offline ? '離線模式,用範本規則' : '請 AI 理解你的需求' + (model ? '(模型:' + model + ')' : '')) + ':' + String(text).slice(0, 60));
-            const res = await FaComposePlan.decide(text, { ask, explicit: explicit || {}, noAiReason: offline ? '離線模式' : '', timeoutMs: 25000, attempts: 2, onStep: (m) => say(25, '【理解需求】' + m) });
+            const res = await FaComposePlan.decide(text, { ask, explicit: explicit || {}, noAiReason: offline ? '離線模式' : '', timeoutMs: 25000, attempts: 2, learned: (t) => this._composeLearnedFor(t), onStep: (m) => say(25, '【理解需求】' + m) });
             say(60, '【核對】' + (res.report.usedAi ? '程式逐欄核對 AI 的答案,沒答對的欄位用預設' : '這次沒有用 AI,用的是範本規則(' + (res.report.aiError || '') + ')') + (model && !res.report.usedAi && !offline ? ';模型:' + model : ''));
             say(75, '【作曲】' + res.report.tmplName + '範本,依規劃作曲並做程式檢查…');
-            const out = this._midiComposeFinish(res, o.seed); prog.update({ pct: 100 }); prog.finish('完成:' + out.c.song.title + '(種子 ' + out.c.seed + ')'); return out;
+            res.task = String(text); res.report.model = model; const out = this._midiComposeFinish(res, o.seed); prog.update({ pct: 100 }); prog.finish('完成:' + out.c.song.title + '(種子 ' + out.c.seed + ')'); return out;
         } catch (e) { try { prog.fail(String((e && e.message) || e)); } catch (_) { /* */ } throw e; }
+    }
+    // 作曲經驗:使用者按「就用這個」才算接受(沒按就不算)。經 FaHarnessExp 的閘門(只收程式驗證過的成功、去識別、去重、上限)存進本機,
+    // 同時把 pattern 送進離線訓練器的 harness_experience 領域;之後類似說法由 FaComposePlan.matchLearned 直接對到字母,不再問 AI
+    _composeStore() { try { return FaHarnessExp.migrate(JSON.parse(localStorage.getItem('fa_compose_experience') || 'null')); } catch (_) { return FaHarnessExp.emptyStore(); } }
+    _composeLearnedFor(text) { try { return FaComposePlan.matchLearned(text, this._composeStore().entries.map((e) => ({ task: e.rawTask, picks: e.picks }))); } catch (_) { return null; } }
+    async _composeLearn(ref) {
+        if (typeof FaHarnessExp === 'undefined') return { ok: false, why: '經驗模組沒載入' };
+        const res = { fields: ref.fields, sources: ref.sources }, picks = FaComposePlan.learnPicks(res); const keys = Object.keys(picks);
+        if (!ref.task || !keys.length) return { ok: false, why: '這一首的欄位都是程式猜的或預設,沒有可學的' };
+        const steps = keys.map((k) => ({ id: k, kind: 'choice', by: ref.sources[k] === 'ai' ? 'model' : 'program', tries: 1, ok: true }));
+        const rec = FaHarnessExp.makeRecord({ template: 'media-compose-midi', task: ref.task, verdict: 'ok', steps, slots: picks, missing: [] });
+        const g = FaHarnessExp.gate(rec); if (!g.accept) return { ok: false, why: g.reason };
+        rec.picks = picks; rec.rawTask = rec.task; const m = FaHarnessExp.merge(this._composeStore(), rec);
+        if (!m.accepted) return { ok: false, why: m.reason };
+        try { localStorage.setItem('fa_compose_experience', JSON.stringify(m.store)); } catch (_) { /* 存不了就只是這次不學 */ }
+        let sent = '';
+        try { const t = FaHarnessExp.toTrainer(rec); if (t.pattern && this._hxImport) { const r = await this._hxImport(JSON.stringify({ patterns: [t.pattern] })); sent = r && r.ok ? '已送進離線訓練器的 harness_experience(預設停用)' : '離線訓練器沒收:' + (r && r.error); } } catch (e) { sent = '送離線訓練器失敗:' + String((e && e.message) || e); }
+        return { ok: true, duplicate: !!m.duplicate, sent };
     }
     _midiComposeFinish(res, seed) {
         const sd = seed > 0 ? seed : 1 + Math.floor(Math.random() * 99999); const c = FaMidiCompose.compose(Object.assign({}, res.options, { seed: sd })); const desc = FaComposePlan.describe(res, c.seed);
-        const ref = { fields: res.fields, sources: res.sources, report: { usedAi: res.report.usedAi, aiError: res.report.aiError, notes: res.report.notes, tmplName: res.report.tmplName }, seed: c.seed, tries: c.tries, warnings: c.warnings };
+        const ref = { fields: res.fields, sources: res.sources, task: String(res.task || '').slice(0, 200), report: { usedAi: res.report.usedAi, aiError: res.report.aiError, notes: res.report.notes, tmplName: res.report.tmplName, calls: res.report.calls, learned: res.report.learned, model: res.report.model }, seed: c.seed, tries: c.tries, warnings: c.warnings };
         const head = '🎼 已依「' + desc.template + '」範本作曲(' + res.options.key + ' 調、' + res.options.tempo + ' 拍/分、' + res.options.bars + ' 小節,種子 ' + c.seed + ');' + (desc.usedAi ? '需求由 AI 理解,' : '這次沒有用 AI,') + '下面是每個欄位怎麼決定的。按「試聽」聽聽看,可以直接改。';
         const id = this._midiPushEditor(c.song, c.song.title, head + '\n\n```fa-compose\n' + JSON.stringify(ref) + '\n```');
         return { id, c, desc, ref };
@@ -73809,7 +73883,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         let res; const rep0 = Object.assign({}, ref.report || {});
         if (patch && Object.keys(patch).length) res = FaComposePlan.edit({ fields: ref.fields, sources: ref.sources, report: rep0 }, patch);
         else { const base = FaComposePlan.edit({ fields: ref.fields, sources: ref.sources, report: rep0 }, {}); res = base; }
-        return this._midiComposeFinish(res, reroll ? 0 : ref.seed);
+        res.task = ref.task; res.report.model = rep0.model; res.report.learned = rep0.learned; return this._midiComposeFinish(res, reroll ? 0 : ref.seed);
     }
     _mountComposeCards(mdDiv) {
         if (typeof FaComposePlan === 'undefined') return;
@@ -73829,11 +73903,12 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             addSel('speed', '速度', FaComposePlan.SPEEDS, ref.fields.speed || 'B'); addSel('mode', '調式', FaComposePlan.MODES, ref.fields.mode);
             addSel('lead', '主奏', FaComposePlan.LEADS.map((x) => [x[0], x[1]]), ref.fields.lead); addSel('bars', '長度', FaComposePlan.BARS.map((x) => [x[1], x[1] + ' 小節']).concat([[ref.fields.bars, ref.fields.bars + ' 小節']]).filter((x, i, a2) => a2.findIndex((y) => y[0] === x[0]) === i), ref.fields.bars);
             card.appendChild(row);
-            const btns = mk('div', 'display:flex;gap:6px;margin-top:6px;'); const b1 = mk('button', null, '🎲 換一首(換種子)'), b2 = mk('button', null, '✏️ 改成上面的設定重新作曲');
+            const btns = mk('div', 'display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;'); const b1 = mk('button', null, '🎲 換一首(換種子)'), b2 = mk('button', null, '✏️ 改成上面的設定重新作曲'), b3 = mk('button', null, '👍 就用這個(讓助理學起來)'); const note3 = mk('div', 'font-size:12px;opacity:.8;margin-top:4px;');
             const run = async (btn, patchFn) => { btn.disabled = true; try { const out = this._midiRecompose(ref, patchFn && patchFn(), !patchFn); try { this._persistChatHistory(); this._renderMessageHistory(); } catch (_) { /* */ } return out; } catch (e) { btn.textContent = '⚠️ ' + String((e && e.message) || e); } };
             b1.onclick = () => run(b1, null);
             b2.onclick = () => run(b2, () => { const p = {}; Object.keys(sels).forEach((k) => { let v = sels[k].value; if (k === 'bars') v = Number(v); if (k === 'mood' && v === '') v = null; if (String(v) !== String(ref.fields[k] == null ? (k === 'mood' ? '' : v) : ref.fields[k])) p[k] = v; }); return p; });
-            btns.append(b1, b2); card.appendChild(btns);
+            b3.onclick = async () => { b3.disabled = true; try { const r = await this._composeLearn(ref); note3.textContent = r.ok ? '✅ 已記住這種說法的選擇' + (r.duplicate ? '(以前也記過,次數加一)' : '') + (r.sent ? ';' + r.sent : '') : 'ℹ️ 沒有記:' + r.why; } catch (e) { note3.textContent = '⚠️ ' + String((e && e.message) || e); } };
+            btns.append(b1, b2, b3); card.appendChild(btns); card.appendChild(note3);
             code.parentElement.replaceWith(card);
         });
     }

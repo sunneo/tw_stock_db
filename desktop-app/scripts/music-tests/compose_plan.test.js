@@ -3,7 +3,11 @@ const P = require('../../renderer/src/music/compose_plan.js'), C = require('../.
 let ok = 0; const bad = [];
 function check(name, cond, extra) { if (cond) ok++; else bad.push(name + (extra !== undefined ? ' ' + JSON.stringify(extra).slice(0, 300) : '')); }
 const REQ = '建立科技感的音樂 用來描述intel';
-const perfect = async () => '好的:{"style":"H","mood":"G","speed":"C","mode":"B","lead":"G","bars":"C","purpose":"描述 Intel 的科技感"}';
+// 假模型:看題目是哪一欄,回該欄的字母(per 沒給的欄位回 A);用途那題回一句話
+const fieldOf = (sys) => /用一句話/.test(sys) ? 'purpose' : /最適合哪一種風格/.test(sys) ? 'style' : /曲子的情緒/.test(sys) ? 'mood' : /曲子的速度/.test(sys) ? 'speed' : /曲子的調式/.test(sys) ? 'mode' : /主奏樂器/.test(sys) ? 'lead' : /曲子的長度/.test(sys) ? 'bars' : '?';
+const byField = (per) => async (sys) => { const k = fieldOf(sys); return per[k] != null ? per[k] : 'A'; };
+const PERFECT = { style: 'H', mood: 'G', speed: 'C', mode: 'B', lead: 'G', bars: 'C', purpose: '描述 Intel 的科技感' };
+const perfect = byField(PERFECT);
 (async () => {
   // 1. 完美的 AI
   let r = await P.decide(REQ, { ask: perfect });
@@ -28,15 +32,15 @@ const perfect = async () => '好的:{"style":"H","mood":"G","speed":"C","mode":"
   check('partly right: the report names what fell back', r.report.usedAi && r.report.notes.some((n) => /AI 沒答對的欄位/.test(n)), r.report.notes);
   // 5. 沉默(空字串)與丟錯
   r = await P.decide(REQ, { ask: async () => '', attempts: 2 });
-  check('silent AI: tried twice, then the rules', r.report.attempts === 2 && !r.report.usedAi && r.fields.style === 'edm');
+  check('silent AI: each field tried twice, then the rules', r.report.perField.style.tries === 2 && !r.report.usedAi && r.fields.style === 'edm');
   r = await P.decide(REQ, { ask: async () => { throw new Error('HTTP 429'); }, attempts: 2 });
   check('AI error: kept as a concrete fact in the report', /HTTP 429/.test(r.report.aiError) && r.report.notes[0].indexOf('HTTP 429') > 0, r.report);
   // 6. 逾時
   const t0 = Date.now(); r = await P.decide(REQ, { ask: () => new Promise(() => {}), timeoutMs: 60, attempts: 2 });
   check('timeout: gives up after the limit (twice) and falls back to the rules', Date.now() - t0 < 1500 && /逾時/.test(r.report.aiError) && !r.report.usedAi && r.fields.style === 'edm', [Date.now() - t0, r.report.aiError]);
   // 7. 第一次失敗第二次成功(暫時性失敗自己重試)
-  let n = 0; r = await P.decide(REQ, { ask: async () => { n++; if (n === 1) throw new Error('HTTP 503'); return perfect(); }, attempts: 2 });
-  check('a transient failure is retried once and the second answer is used', r.report.usedAi && r.report.attempts === 2 && r.sources.style === 'ai');
+  let n = 0; r = await P.decide(REQ, { ask: async (sys) => { n++; if (n === 1) throw new Error('HTTP 503'); return perfect(sys); }, attempts: 2 });
+  check('a transient failure is retried once and the second answer is used', r.report.usedAi && r.report.perField.style.tries === 2 && r.sources.style === 'ai');
   // 8. 使用者自己說的優先於 AI
   r = await P.decide('來一首爵士,D 調,90 bpm,12 小節,用小提琴', { ask: perfect });
   check('what the user said beats the AI: style, key, tempo, bars, lead', r.fields.style === 'jazz' && r.sources.style === 'user' && r.fields.key === 'D' && r.sources.key === 'user' && r.options.tempo === 90 && r.fields.bars === 12 && r.fields.lead === 'D' && r.sources.lead === 'user', [r.fields, r.sources]);
@@ -57,10 +61,41 @@ const perfect = async () => '好的:{"style":"H","mood":"G","speed":"C","mode":"
   // 12. 說明卡片
   const d = P.describe(base, 1234);
   check('describe: every field with value and source, plus template and seed', d.rows.length === 8 && d.rows.find((x) => x.key === 'style').sourceLabel === 'AI 選的' && d.rows.find((x) => x.key === 'purpose').sourceLabel === '你說的' && d.seed === 1234 && d.template === '電子舞曲', d);
-  // 13. parseAnswer 小細節
-  const pa = P.parseAnswer('{"style":"h. 電子","mood":"g","speed":"B","mode":"c","lead":"j","bars":"a","purpose":"  開場  "}');
-  check('parseAnswer: lower case and "H. text" forms are accepted, purpose is trimmed', pa.style === 'H' && pa.mood === 'G' && pa.mode === 'C' && pa.lead === 'J' && pa.bars === 'A' && pa.purpose === '開場', pa);
-  check('parseAnswer: junk gives nothing', Object.keys(P.parseAnswer('')).length === 0 && Object.keys(P.parseAnswer('{bad json')).length === 0 && Object.keys(P.parseAnswer('[1,2]')).length === 0);
+  // 13. parseLetter 寬容解析
+  const pl = (raw, k) => P.parseLetter(raw, k || 'style');
+  check('parseLetter: plain, lower-case single letter, "H. text", quoted and JSON forms', pl('H') === 'H' && pl('h') === 'H' && pl('H. 電子舞曲') === 'H' && pl('"G"', 'mood') === 'G' && pl('{"mood":"g"}', 'mood') === 'G' && pl('**B**', 'speed') === 'B');
+  check('parseLetter: think blocks are stripped, the answer after them is found', pl('<think>The user wants A tech piece... maybe C</think>\nH') === 'H' && pl('<think>hmm</think>答案:E', 'mood') === 'E');
+  check('parseLetter: an unclosed think block or long English reasoning gives nothing (no guessing)', pl('<think>The user wants tech music, so A or B') === null && pl('The user wants to create tech-style music for describing Intel. A tech feel means electronic. So the style is') === null);
+  check('parseLetter: "答案是 H" and the option name alone are understood; out-of-range letters are refused', pl('我想了一下,答案是 H') === 'H' && pl('電子舞曲') === 'H' && pl('Z') === null && pl('J', 'mood') === null && pl('') === null);
+  check('parsePurpose: one short line; thinking text and over-long text are refused; 無 means none', P.parsePurpose('簡報開場') === '簡報開場' && P.parsePurpose('無') === '' && P.parsePurpose('The user wants a piece') === null && P.parsePurpose('一二三四五六七八九十'.repeat(5)) === null);
+  // 14. 六種情況(假模型測試法):完美、亂答、英文思考文字、沉默、逾時、只回一半 -- 每種的欄位來源與退路
+  const THINK = 'The user wants to create tech-style music to describe Intel. Let me think about which style fits. A tech feel suggests electronic';
+  { const asked = []; r = await P.decide(REQ, { ask: async (sys, usr, op) => { asked.push([fieldOf(sys), op && op.strict]); return perfect(sys); } });
+    check('six cases / perfect: one question per field (the purpose the user stated is not asked), 6 calls, none strict, every field from the AI', asked.length === 6 && asked.every((x) => !x[1]) && ['style', 'mood', 'speed', 'mode', 'lead', 'bars'].every((k) => r.sources[k] === 'ai' && r.report.perField[k].ok), asked); }
+  { const calls = []; r = await P.decide(REQ, { ask: async (sys, usr, op) => { calls.push([fieldOf(sys), !!(op && op.strict), sys]); return '亂七八糟 !!! ###'; } });
+    check('six cases / chaos: each field tried twice (second one strict, quotes the previous reply), then that field alone falls back', calls.filter((c) => c[0] === 'style').length === 2 && calls.filter((c) => c[0] === 'style')[1][1] === true && calls.filter((c) => c[0] === 'style')[1][2].indexOf('亂七八糟') > 0 && calls.filter((c) => c[0] === 'style')[0][2] !== calls.filter((c) => c[0] === 'style')[1][2] && r.fields.style === 'edm' && r.sources.style === 'rule', calls.length);
+    check('six cases / chaos: the report says which field failed and what the model said', !r.report.usedAi && /「style」/.test(r.report.aiError) && /亂七八糟/.test(r.report.aiError) && r.report.perField.style.tries === 2, r.report.aiError); }
+  { const calls = []; r = await P.decide(REQ, { ask: async (sys) => { calls.push(fieldOf(sys)); return THINK; } });
+    check('six cases / English thinking text: not understood, strict retry, rules take over, report shows the start of the text and stops asking after three dead fields', !r.report.usedAi && r.fields.style === 'edm' && /The user wants/.test(r.report.aiError) && calls.length === 6 && r.report.perField.mode.error.indexOf('沒有問') === 0, [calls.length, r.report.aiError]); }
+  { let n = 0; r = await P.decide(REQ, { ask: async (sys, usr, op) => { n++; if (!(op && op.strict)) return THINK; return perfect(sys); } });
+    check('six cases / thinking first, strict retry succeeds: AI is used for every field', r.report.usedAi && ['style', 'mood', 'speed', 'mode', 'lead', 'bars'].every((k) => r.sources[k] === 'ai') && n === 12, n); }
+  { r = await P.decide(REQ, { ask: async () => '', attempts: 2 });
+    check('six cases / silent: the report says blank and rules are used', !r.report.usedAi && /空白/.test(r.report.aiError) && r.fields.style === 'edm' && r.sources.style === 'rule'); }
+  { const t1 = Date.now(); r = await P.decide(REQ, { ask: () => new Promise(() => {}), timeoutMs: 40, attempts: 2 });
+    check('six cases / timeout: stops after the first field gives up twice (not 7 x timeout)', Date.now() - t1 < 1000 && /逾時/.test(r.report.aiError) && r.report.calls === 2 && r.report.perField.mood.error.indexOf('沒有問') === 0, r.report.calls); }
+  { r = await P.decide(REQ, { ask: async (sys) => { const k = fieldOf(sys); return k === 'style' ? 'H' : k === 'mood' ? 'G' : k === 'speed' ? 'The user' : ''; } });
+    check('six cases / half answered: answered fields are the AI\'s, the others fall back one by one with a note naming them', r.report.usedAi && r.sources.style === 'ai' && r.sources.mood === 'ai' && r.sources.bars === 'default' && r.sources.lead !== 'ai' && r.report.notes.some((n) => /AI 沒答對的欄位/.test(n) && /speed/.test(n)), r.report.notes); }
+  { const asked = []; r = await P.decide('來一首爵士,90 bpm,12 小節,用小提琴,小調', { ask: async (sys) => { asked.push(fieldOf(sys)); return perfect(sys); } });
+    check('fields the user already decided are not asked', asked.indexOf('style') < 0 && asked.indexOf('speed') < 0 && asked.indexOf('bars') < 0 && asked.indexOf('lead') < 0 && asked.indexOf('mode') < 0 && asked.indexOf('mood') >= 0, asked); }
+  // 15. 經驗回流:接受的結果 → 類似說法下次直接用,不再問 AI(只收使用者說的、AI 選的,程式猜的與預設不收)
+  { const acc = await P.decide(REQ, { ask: perfect }); const picks = P.learnPicks(acc);
+    check('learnPicks: letters of the fields that AI/user decided; mode "auto" and guesses are not learned', picks.style === 'H' && picks.mood === 'G' && picks.speed === 'C' && picks.lead === 'G' && picks.bars === 'C' && picks.mode === 'B', picks);
+    const entries = [{ task: REQ, picks }]; let asked = 0;
+    const r2 = await P.decide('建立科技感的音樂 用來描述 intel 產品', { ask: async (s) => { asked++; return perfect(s); }, learned: (t) => P.matchLearned(t, entries) });
+    check('learned: a similar request takes the accepted picks and asks the AI nothing', asked === 0 && r2.sources.style === 'learned' && r2.fields.style === 'edm' && r2.report.notes.some((n) => /以前接受過/.test(n)), [asked, r2.sources]);
+    check('learned: an unrelated request does not match', P.matchLearned('來一首悲傷的圓舞曲給婚禮', entries) === null && P.matchLearned('', entries) === null);
+    const r3 = await P.decide('建立科技感的音樂 用來描述 intel 產品', { learned: () => ({ style: 'ZZ', mood: 'G' }), ask: perfect });
+    check('learned: invalid letters in a stored entry are ignored', r3.sources.mood === 'learned' && r3.sources.style === 'ai'); }
   check('every composed result passes the program\'s own checks (no warnings) for several seeds', [1, 2, 3, 4].every((sd) => C.compose(Object.assign({}, base.options, { seed: sd })).warnings.length === 0));
   console.log(bad.length ? 'FAIL\n' + bad.join('\n') : 'ok'); console.log(ok + ' passed, ' + bad.length + ' failed'); process.exit(bad.length ? 1 : 0);
 })();
