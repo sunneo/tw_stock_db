@@ -2,12 +2,13 @@
 <body style="font-family:sans-serif;padding:12px"><div id="host"></div>
 <script src="../../renderer/src/music/midi_core.js"></script>
 <script src="../../renderer/src/music/midi_edit.js"></script>
+<script src="../../renderer/src/remote/rg_patch.js"></script>
 <script src="../../renderer/src/music/midi_editor_ui.js"></script>
 <script>
 let s = FaMidi.emptySong(); s = FaMidi.addTrack(s, '旋律', 0); s = FaMidi.addTrack(s, '貝斯', 33);
 [60, 64, 67, 72].forEach((n, i) => { s = FaMidi.addNote(s, 0, { t: i * 480, d: 440, n, v: 100 }); });
 window.__log = [];
 const host = { player: async () => { throw new Error('測試頁沒有合成器'); }, download: (n, b) => { window.__log.push(['dl', n, b.length]); }, askAI: async (t) => [{ act: 'set_tempo', bpm: 77 }], onChange: (sg, a) => window.__log.push(a.act) };
-window.__card = FaMidiEditUI.mount({ song: s, title: '測試曲', host, M: FaMidi, E: FaMidiEdit });
+window.__card = FaMidiEditUI.mount({ song: s, title: '測試曲', host, M: FaMidi, E: FaMidiEdit, P: FaRemotePatch });
 document.getElementById('host').appendChild(window.__card);
 </script>

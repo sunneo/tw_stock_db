@@ -11,17 +11,19 @@
   const gsName = (p) => (p + 1) + '. ' + (GS_NAMES[p] || ('音色 ' + p));
 
   function mount(opts) {
-    const M = opts.M, E = opts.E, host = opts.host || {};
+    const M = opts.M, E = opts.E, P = opts.P, host = opts.host || {};
+    let remote = null;   // 共編:{ session, doc }
     const hist = E.history(opts.song);
     let sel = 0, grid = 0.5, pxBeat = 40, pitchLo = 36, rows = 36, playing = null, destroyed = false;
     const card = el('div', 'border:1px solid rgba(128,128,128,.4);border-radius:10px;padding:10px;max-width:720px;font-size:13px;'); card.className = 'fa-midi-edit';
     const head = el('div', 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;');
     head.appendChild(el('span', 'font-size:18px', '🎼')); head.appendChild(el('b', 'flex:1;min-width:80px', opts.title || hist.song.title || 'MIDI 編輯器'));
+    const colB = el('button', BTN, '👥 共編'); colB.style.display = host.collab ? '' : 'none';
     const undoB = el('button', BTN, '↶'), redoB = el('button', BTN, '↷'), playB = el('button', BTN, '▶ 試聽'), dlB = el('button', BTN, '⬇ MIDI');
     undoB.title = '復原'; redoB.title = '重做';
     const gridSel = el('select', BTN); [['四分音符', 1], ['八分音符', 0.5], ['十六分音符', 0.25]].forEach(([n, v]) => { const o = el('option', '', n); o.value = v; if (v === grid) o.selected = true; gridSel.appendChild(o); });
     gridSel.onchange = () => { grid = Number(gridSel.value); };
-    head.append(undoB, redoB, gridSel, playB, dlB); card.appendChild(head);
+    head.append(undoB, redoB, gridSel, playB, colB, dlB); card.appendChild(head);
     const mid = el('div', 'display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;');
     const side = el('div', 'min-width:170px;flex:0 0 170px;');
     const canvasWrap = el('div', 'flex:1;min-width:240px;overflow:auto;border:1px solid rgba(128,128,128,.3);border-radius:6px;max-height:300px;');
@@ -55,9 +57,31 @@
       const addD = el('button', BTN + 'width:100%;margin-top:4px;', '＋ 新增鼓組'); addD.onclick = () => { run({ act: 'add_track', name: '鼓', drum: true }); sel = hist.song.tracks.length - 1; drawSide(); draw(); };
       side.append(add, addD);
     }
+    // 共編:每次本地改動把前後兩份「有 id 的文件」算 diff 送出去;別人的 commit 進來就換掉整份曲子(不再送回去)
+    function pushRemote(label) {
+      if (!remote) return; const nd = E.reId(remote.doc, hist.song), ops = P.diff(remote.doc, nd, E.PATCH_KEYS); if (!ops.length) return; remote.doc = nd;
+      Promise.resolve(remote.session.propose(ops, { summary: label })).then((r) => { if (r && r.ok === false && !r.queued) { say('⚠️ 這個改動被拒絕:' + (r.error || r.rejected || '')); pullRemote(); } }).catch((e) => say('⚠️ 送不出去:' + String((e && e.message) || e)));
+    }
+    function pullRemote() { if (!remote) return; remote.doc = remote.session.spec; hist.push(E.fromDoc(remote.doc)); stopPlay(); drawSide(); draw(); }
+    function attach(session) {
+      remote = { session, doc: session.spec }; keysOk(); const me = session.me && session.me.nodeId;
+      session.on('commit', (c) => { if (c && c.by && c.by.nodeId === me) return; pullRemote(); }); session.on('reset', () => pullRemote());
+      session.on('members', (ms) => { colB.textContent = '👥 共編中(' + ((ms || []).length || 1) + ')'; }); colB.textContent = '👥 共編中';
+    }
+    function keysOk() { if (remote && remote.session && !remote.session.keys) remote.session.keys = E.PATCH_KEYS; }
+    colB.onclick = async () => {
+      try {
+        const c = host.collab; const box = el('div', 'margin-top:6px;padding:6px;border:1px dashed rgba(128,128,128,.5);border-radius:6px;'); const old = card.querySelector('.fa-midi-collab'); if (old) old.remove(); box.className = 'fa-midi-collab';
+        const b1 = el('button', BTN, remote ? '已在共編' : '分享給群組'); b1.disabled = !!remote; b1.onclick = async () => { try { attach(await c.share(E.toDoc(hist.song), opts.title)); box.remove(); say('已分享給群組,對方用「👥 共編 → 加入」'); } catch (e) { say('⚠️ ' + String((e && e.message) || e)); } };
+        box.appendChild(b1); const items = await c.list().catch(() => []);
+        (items || []).forEach((it) => { const b = el('button', BTN + 'margin-left:6px;', '加入 ' + it.host.name + ' · ' + (it.title || 'MIDI')); b.onclick = async () => { try { const sess = await c.join(it); attach(sess); pullRemote(); box.remove(); say('已加入共編'); } catch (e) { say('⚠️ ' + String((e && e.message) || e)); } }; box.appendChild(b); });
+        if (!(items || []).length) box.appendChild(el('span', 'margin-left:8px;opacity:.7', '群組裡目前沒有人開放共編的 MIDI'));
+        card.insertBefore(box, mid);
+      } catch (e) { say('⚠️ ' + String((e && e.message) || e)); }
+    };
     function run(a, fromRemote) {
       const r = E.apply(hist.song, a); if (r.error) { say('⚠️ ' + r.error); return false; }
-      hist.push(r.song); stopPlay(); if (!fromRemote && host.onChange) { try { host.onChange(r.song, a); } catch (_) { /* */ } } drawSide(); draw(); return true;
+      hist.push(r.song); stopPlay(); pushRemote(a.act); if (!fromRemote && host.onChange) { try { host.onChange(r.song, a); } catch (_) { /* */ } } drawSide(); draw(); return true;
     }
     cv.onclick = (ev) => { // 點空白處新增、點音符刪除
       const s = hist.song, tr = s.tracks[sel]; if (!tr) { say('先新增一軌'); return; }
@@ -68,8 +92,8 @@
       else run({ act: 'add_note', track: sel, beat: Math.floor(beat / grid) * grid, beats: grid, pitch });
       if (host.preview) { try { host.preview(tr, pitch); } catch (_) { /* */ } }
     };
-    undoB.onclick = () => { hist.undo(); stopPlay(); if (host.onChange) host.onChange(hist.song, { act: 'undo' }); drawSide(); draw(); };
-    redoB.onclick = () => { hist.redo(); stopPlay(); if (host.onChange) host.onChange(hist.song, { act: 'redo' }); drawSide(); draw(); };
+    undoB.onclick = () => { hist.undo(); pushRemote('undo'); stopPlay(); if (host.onChange) host.onChange(hist.song, { act: 'undo' }); drawSide(); draw(); };
+    redoB.onclick = () => { hist.redo(); pushRemote('redo'); stopPlay(); if (host.onChange) host.onChange(hist.song, { act: 'redo' }); drawSide(); draw(); };
     function stopPlay() { if (playing) { try { playing.stop(); } catch (_) { /* */ } playing = null; playB.textContent = '▶ 試聽'; } }
     playB.onclick = async () => {
       if (playing) { stopPlay(); return; }
@@ -90,7 +114,7 @@
     }
     go.onclick = send; inp.onkeydown = (e) => { if (e.key === 'Enter') send(); };
     card._midiEdit = {
-      getSong: () => hist.song,
+      getSong: () => hist.song, attach,
       setSong(song) { hist.push(song); drawSide(); draw(); },
       applyRemote(actions) { (actions || []).forEach((a) => run(a, true)); },
       destroy() { destroyed = true; stopPlay(); },

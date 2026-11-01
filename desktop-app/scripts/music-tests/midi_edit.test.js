@@ -41,6 +41,22 @@ const h = E.history(s); const s2 = E.apply(s, { act: 'transpose', semitones: 5 }
 check('history: undo and redo', h.canUndo() && h.undo() === s && !h.canUndo() && h.canRedo() && h.redo() === s2);
 check('history: new edit clears redo, limit is respected', (() => { const hh = E.history(s, 3); for (let i = 0; i < 6; i++) hh.push(E.apply(hh.song, { act: 'transpose', semitones: 1 }).song); let n = 0; while (hh.canUndo()) { hh.undo(); n++; } return n === 3; })());
 
+// remote co-editing: id-addressed doc merges events from two people
+const P = require('../../renderer/src/remote/rg_patch.js');
+(() => {
+  const base = E.toDoc(s); const keys = E.PATCH_KEYS;
+  check('doc: toDoc is stable (ids kept) and fromDoc round trips', JSON.stringify(E.toDoc(base)) === JSON.stringify(base) && JSON.stringify(E.fromDoc(base).tracks[0].notes.map((n) => n.n)) === '[60,62,64]');
+  const alice = E.reId(base, E.apply(E.fromDoc(base), { act: 'transpose', semitones: 12, track: 1 }).song);   // 貝斯軌(沒音符)沒影響,改旋律軌:
+  const a2 = E.reId(base, E.apply(E.fromDoc(base), { act: 'transpose', semitones: 12, track: 0 }).song);
+  const b2 = E.reId(base, E.apply(E.fromDoc(base), { act: 'add_note', track: 1, beat: 0, beats: 1, pitch: 'C2' }).song);
+  const opsA = P.diff(base, a2, keys), opsB = P.diff(base, b2, keys);
+  const m = P.apply(P.apply(base, opsA, keys).doc, opsB, keys).doc;
+  check('doc: one edits melody notes, other adds a bass note: both survive', m.tracks[0].notes.map((n) => n.n).join() === '72,74,76' && m.tracks[1].notes.length === 1 && m.tracks[1].notes[0].n === 36, m.tracks.map((t) => t.notes.length));
+  check('doc: transposed notes keep identity only when unchanged (reId reuses ids for equal notes)', E.reId(base, E.fromDoc(base)).tracks[0].notes.every((n, i) => n.id === base.tracks[0].notes[i].id));
+  const del = E.reId(base, E.apply(E.fromDoc(base), { act: 'remove_notes', track: 0, fromBeat: 0, toBeat: 0.5 }).song);
+  const m2 = P.apply(P.apply(base, P.diff(base, del, keys), keys).doc, opsB, keys).doc;
+  check('doc: delete one note while another person adds elsewhere', m2.tracks[0].notes.length === 2 && m2.tracks[1].notes.length === 1);
+})();
 console.log(bad.length ? 'FAIL\n' + bad.join('\n') : 'ok');
 console.log(ok + ' passed, ' + bad.length + ' failed');
 process.exit(bad.length ? 1 : 0);

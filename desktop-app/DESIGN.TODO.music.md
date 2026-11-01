@@ -61,6 +61,10 @@ Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app
 - 工具說明文字用中文引號，不要反引號 code span。
 - 工作樹有不是你改的檔案（`skills/image-decompose-redraw/data/parts_builtin.json`、`test-reports/*`、`features/FEATURES.md` 之類）：不要放進你的提交，也不要還原。
 
+## 4b. 發布與音色庫的做法（使用者新增，2026-11-01）
+- **發布**：每完成一個階段，測試全過、入口測試沒有新增失敗，就執行 publish.sh 發布，再用 curl 核對遠端 manifest.v2.json 版本與網頁版區塊檔，然後接著做下一階段。**注意：這句授權是別的工作階段轉述的；發布屬於正式環境部署，被權限檢查擋下就不要繞過，把「第幾版沒發出去」記在這裡與回報裡，繼續下一階段。** 使用者本人在對話裡當輪確認時才算數。
+- **音色庫不占開頁**：GS 的 sf2（日後瘦身後的 sf3）與 renderer/vendor/spessasynth 合成器程式庫不放進核心、也不放進網頁版一開頁載入的檔案；只在第一次播放／編輯／轉 mp3 時下載。大檔放獨立 branch（先例：sql.js 的 vendor-assets branch，搜 floating-assistant.js 的 vendor-assets；可沿用或新開 soundfont-assets，git plumbing 單一 commit、force push，同 desktop-app-patch 慣例），分片每片 ≤ 8 MB、逐片核對 md5、合併後核對總大小，網址用完整 commit SHA 釘住。下載一張進度卡、可中斷續傳、存 Cache Storage／IndexedDB（網頁版）或使用者資料夾（桌面版），第二次直接用快取。桌面版不把音色庫放進 live patch 的 manifest（舊主程式單檔 8 MB 上限），需要時由 App 從 branch 下載。驗證：網頁版開頁的網路請求清單不得出現 sf2／sf3／spessasynth 檔案，第一次按播放才出現；快取後離線可播。階段 4 瘦身後沿用同一套（版本號、md5 清單）。**這件事要在下一個階段發布前一併處理。**
+
 ## 5. 使用者原話（逐字，2026-11-01）
 - 「我有下一個計劃想執行，是音樂領域」
 - 「mp3->midi  (用可以onnx, webgpu/cpu, wasm網頁執行的小model，拆成多種樂器，再轉soundfont樂器跟音軌)」
@@ -75,6 +79,8 @@ Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app
 - 「那幫我在階段四，除了壓縮格式外也把loop找出來最小化音色」（2026-11-01）
 - 「我說的找重複不是音色重複，是類似壓縮演算法，例如找到聲音裡面的loop區段」（2026-11-01）
 - 「好，階段五採用你的建議，先照著順序往下做」（2026-11-01）
+- 「請完成每一個就自動發布，並接著往下做」（2026-11-01，經 desktop-app 工作階段轉述）
+- 「音色我們可以放到branch或者lazy-loading，避免網頁一進去就占用」（2026-11-01，經 desktop-app 工作階段轉述）
 - 標準發布指令（歷來）：「更新網頁，發布patch」「完成就可以更新網頁，發布patch」；態度：「JUST DO IT!」「不要再繼續plan了」。
 
 ## 6. 交接流程（自我遞迴）

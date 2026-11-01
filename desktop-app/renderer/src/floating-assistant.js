@@ -33347,7 +33347,23 @@ const holder = {};
       canUndo() { return past.length > 0; }, canRedo() { return future.length > 0; },
     };
   }
-  return { ACTS, apply, applyAll, parseCommands, history, pitchOf, programOf, cnNum, trackIndex };
+  // ───────── 遠端共筆用的文件形式:每軌每個音符都有穩定 id,兩個人改不同音符會事件層級合併(FaRemotePatch,patchKeys 預設用 id)
+  const rid = () => Math.random().toString(36).slice(2, 9);
+  const PATCH_KEYS = { tracks: 'id', notes: 'id' };
+  function toDoc(song) { // 沒有 id 的補上(已有就保留,所以每次呼叫都穩定)
+    const d = JSON.parse(JSON.stringify(song)); d.tracks.forEach((t) => { t.id = t.id || ('t' + rid()); t.notes.forEach((n) => { n.id = n.id || ('n' + rid()); }); }); return d;
+  }
+  function fromDoc(doc) { const d = JSON.parse(JSON.stringify(doc)); d.tracks.forEach((t) => { delete t.id; t.notes.forEach((n) => { delete n.id; }); t.notes.sort((a, b) => a.t - b.t || a.n - b.n); }); return d; }
+  // 套完動作之後把新增的音符／音軌補上 id,舊的沿用(以內容比對:同軌同 t／n／d／v 的先用舊 id)
+  function reId(prevDoc, song) {
+    const d = JSON.parse(JSON.stringify(song)); const pt = (prevDoc && prevDoc.tracks) || [];
+    d.tracks.forEach((t, i) => {
+      const p = pt[i]; t.id = (p && p.id) || ('t' + rid()); const pool = new Map(); (p ? p.notes : []).forEach((n) => { const k = n.t + ',' + n.n + ',' + n.d + ',' + n.v; (pool.get(k) || pool.set(k, []).get(k)).push(n.id); });
+      t.notes.forEach((n) => { const k = n.t + ',' + n.n + ',' + n.d + ',' + n.v; const q = pool.get(k); n.id = q && q.length ? q.shift() : ('n' + rid()); });
+    });
+    return d;
+  }
+  return { PATCH_KEYS, toDoc, fromDoc, reId, ACTS, apply, applyAll, parseCommands, history, pitchOf, programOf, cnNum, trackIndex };
 });
 
 }).call(null, undefined, holder);
@@ -33459,17 +33475,19 @@ const holder = {};
   const gsName = (p) => (p + 1) + '. ' + (GS_NAMES[p] || ('音色 ' + p));
 
   function mount(opts) {
-    const M = opts.M, E = opts.E, host = opts.host || {};
+    const M = opts.M, E = opts.E, P = opts.P, host = opts.host || {};
+    let remote = null;   // 共編:{ session, doc }
     const hist = E.history(opts.song);
     let sel = 0, grid = 0.5, pxBeat = 40, pitchLo = 36, rows = 36, playing = null, destroyed = false;
     const card = el('div', 'border:1px solid rgba(128,128,128,.4);border-radius:10px;padding:10px;max-width:720px;font-size:13px;'); card.className = 'fa-midi-edit';
     const head = el('div', 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;');
     head.appendChild(el('span', 'font-size:18px', '🎼')); head.appendChild(el('b', 'flex:1;min-width:80px', opts.title || hist.song.title || 'MIDI 編輯器'));
+    const colB = el('button', BTN, '👥 共編'); colB.style.display = host.collab ? '' : 'none';
     const undoB = el('button', BTN, '↶'), redoB = el('button', BTN, '↷'), playB = el('button', BTN, '▶ 試聽'), dlB = el('button', BTN, '⬇ MIDI');
     undoB.title = '復原'; redoB.title = '重做';
     const gridSel = el('select', BTN); [['四分音符', 1], ['八分音符', 0.5], ['十六分音符', 0.25]].forEach(([n, v]) => { const o = el('option', '', n); o.value = v; if (v === grid) o.selected = true; gridSel.appendChild(o); });
     gridSel.onchange = () => { grid = Number(gridSel.value); };
-    head.append(undoB, redoB, gridSel, playB, dlB); card.appendChild(head);
+    head.append(undoB, redoB, gridSel, playB, colB, dlB); card.appendChild(head);
     const mid = el('div', 'display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;');
     const side = el('div', 'min-width:170px;flex:0 0 170px;');
     const canvasWrap = el('div', 'flex:1;min-width:240px;overflow:auto;border:1px solid rgba(128,128,128,.3);border-radius:6px;max-height:300px;');
@@ -33503,9 +33521,31 @@ const holder = {};
       const addD = el('button', BTN + 'width:100%;margin-top:4px;', '＋ 新增鼓組'); addD.onclick = () => { run({ act: 'add_track', name: '鼓', drum: true }); sel = hist.song.tracks.length - 1; drawSide(); draw(); };
       side.append(add, addD);
     }
+    // 共編:每次本地改動把前後兩份「有 id 的文件」算 diff 送出去;別人的 commit 進來就換掉整份曲子(不再送回去)
+    function pushRemote(label) {
+      if (!remote) return; const nd = E.reId(remote.doc, hist.song), ops = P.diff(remote.doc, nd, E.PATCH_KEYS); if (!ops.length) return; remote.doc = nd;
+      Promise.resolve(remote.session.propose(ops, { summary: label })).then((r) => { if (r && r.ok === false && !r.queued) { say('⚠️ 這個改動被拒絕:' + (r.error || r.rejected || '')); pullRemote(); } }).catch((e) => say('⚠️ 送不出去:' + String((e && e.message) || e)));
+    }
+    function pullRemote() { if (!remote) return; remote.doc = remote.session.spec; hist.push(E.fromDoc(remote.doc)); stopPlay(); drawSide(); draw(); }
+    function attach(session) {
+      remote = { session, doc: session.spec }; keysOk(); const me = session.me && session.me.nodeId;
+      session.on('commit', (c) => { if (c && c.by && c.by.nodeId === me) return; pullRemote(); }); session.on('reset', () => pullRemote());
+      session.on('members', (ms) => { colB.textContent = '👥 共編中(' + ((ms || []).length || 1) + ')'; }); colB.textContent = '👥 共編中';
+    }
+    function keysOk() { if (remote && remote.session && !remote.session.keys) remote.session.keys = E.PATCH_KEYS; }
+    colB.onclick = async () => {
+      try {
+        const c = host.collab; const box = el('div', 'margin-top:6px;padding:6px;border:1px dashed rgba(128,128,128,.5);border-radius:6px;'); const old = card.querySelector('.fa-midi-collab'); if (old) old.remove(); box.className = 'fa-midi-collab';
+        const b1 = el('button', BTN, remote ? '已在共編' : '分享給群組'); b1.disabled = !!remote; b1.onclick = async () => { try { attach(await c.share(E.toDoc(hist.song), opts.title)); box.remove(); say('已分享給群組,對方用「👥 共編 → 加入」'); } catch (e) { say('⚠️ ' + String((e && e.message) || e)); } };
+        box.appendChild(b1); const items = await c.list().catch(() => []);
+        (items || []).forEach((it) => { const b = el('button', BTN + 'margin-left:6px;', '加入 ' + it.host.name + ' · ' + (it.title || 'MIDI')); b.onclick = async () => { try { const sess = await c.join(it); attach(sess); pullRemote(); box.remove(); say('已加入共編'); } catch (e) { say('⚠️ ' + String((e && e.message) || e)); } }; box.appendChild(b); });
+        if (!(items || []).length) box.appendChild(el('span', 'margin-left:8px;opacity:.7', '群組裡目前沒有人開放共編的 MIDI'));
+        card.insertBefore(box, mid);
+      } catch (e) { say('⚠️ ' + String((e && e.message) || e)); }
+    };
     function run(a, fromRemote) {
       const r = E.apply(hist.song, a); if (r.error) { say('⚠️ ' + r.error); return false; }
-      hist.push(r.song); stopPlay(); if (!fromRemote && host.onChange) { try { host.onChange(r.song, a); } catch (_) { /* */ } } drawSide(); draw(); return true;
+      hist.push(r.song); stopPlay(); pushRemote(a.act); if (!fromRemote && host.onChange) { try { host.onChange(r.song, a); } catch (_) { /* */ } } drawSide(); draw(); return true;
     }
     cv.onclick = (ev) => { // 點空白處新增、點音符刪除
       const s = hist.song, tr = s.tracks[sel]; if (!tr) { say('先新增一軌'); return; }
@@ -33516,8 +33556,8 @@ const holder = {};
       else run({ act: 'add_note', track: sel, beat: Math.floor(beat / grid) * grid, beats: grid, pitch });
       if (host.preview) { try { host.preview(tr, pitch); } catch (_) { /* */ } }
     };
-    undoB.onclick = () => { hist.undo(); stopPlay(); if (host.onChange) host.onChange(hist.song, { act: 'undo' }); drawSide(); draw(); };
-    redoB.onclick = () => { hist.redo(); stopPlay(); if (host.onChange) host.onChange(hist.song, { act: 'redo' }); drawSide(); draw(); };
+    undoB.onclick = () => { hist.undo(); pushRemote('undo'); stopPlay(); if (host.onChange) host.onChange(hist.song, { act: 'undo' }); drawSide(); draw(); };
+    redoB.onclick = () => { hist.redo(); pushRemote('redo'); stopPlay(); if (host.onChange) host.onChange(hist.song, { act: 'redo' }); drawSide(); draw(); };
     function stopPlay() { if (playing) { try { playing.stop(); } catch (_) { /* */ } playing = null; playB.textContent = '▶ 試聽'; } }
     playB.onclick = async () => {
       if (playing) { stopPlay(); return; }
@@ -33538,7 +33578,7 @@ const holder = {};
     }
     go.onclick = send; inp.onkeydown = (e) => { if (e.key === 'Enter') send(); };
     card._midiEdit = {
-      getSong: () => hist.song,
+      getSong: () => hist.song, attach,
       setSong(song) { hist.push(song); drawSide(); draw(); },
       applyRemote(actions) { (actions || []).forEach((a) => run(a, true)); },
       destroy() { destroyed = true; stopPlay(); },
@@ -72780,6 +72820,16 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const m = String(out || '').match(/\[[\s\S]*\]/); if (!m) return [];
         try { const arr = JSON.parse(m[0]); return Array.isArray(arr) ? arr.slice(0, 40) : []; } catch (_) { return []; }
     }
+    // 遠端共編:共用遠端群組的多人同編訊息層(FaEditCollab,patch 模式),曲子轉成每軌每音符有 id 的文件
+    _midiCollabHost(id) {
+        const self = this;
+        const need = () => { const c = self._edCollab && self._edCollab(); if (!c) throw new Error('還沒加入遠端群組,先到右上角的遠端面板加入。'); return c; };
+        return {
+            share: async (doc, title) => need().share({ sid: id, kind: 'edit-midi', title: title || 'MIDI', spec: doc, keys: FaMidiEdit.PATCH_KEYS }),
+            list: async () => (await need().list()).filter((it) => it.kind === 'edit-midi'),
+            join: async (it) => need().join(it.host, it.sid, { kind: 'edit-midi' }),
+        };
+    }
     _mountMidiEditCards(mdDiv) {
         if (typeof FaMidiEditUI === 'undefined' || typeof FaMidiEdit === 'undefined' || typeof FaMidi === 'undefined') return;
         this._midiEditCards = this._midiEditCards || new Map();
@@ -72791,8 +72841,8 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
                 if (!song && ref.b64) { try { const bin = atob(ref.b64); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); song = FaMidi.parse(u); this._midiStoreSong(song, ref.id); } catch (_) { /* */ } }
                 if (!song) { const w = document.createElement('div'); w.style.cssText = 'padding:8px;opacity:.8'; w.textContent = '⚠️ 找不到這首曲子的內容,請重新開啟編輯器。'; code.parentElement.replaceWith(w); return; }
                 const base = this._midiHost(), self = this;
-                const host = { player: base.player, download: base.download, askAI: (t, sg) => self._midiEditAsk(t, sg), onChange: (sg) => { self._midiStoreSong(sg, ref.id); } };
-                el = FaMidiEditUI.mount({ song, title: ref.title, host, M: FaMidi, E: FaMidiEdit }); this._midiEditCards.set(ref.id, el);
+                const host = { player: base.player, download: base.download, askAI: (t, sg) => self._midiEditAsk(t, sg), onChange: (sg) => { self._midiStoreSong(sg, ref.id); }, collab: self._midiCollabHost(ref.id) };
+                el = FaMidiEditUI.mount({ song, title: ref.title, host, M: FaMidi, E: FaMidiEdit, P: FaRemotePatch }); this._midiEditCards.set(ref.id, el);
                 if (this._midiEditCards.size > 10) { const k = this._midiEditCards.keys().next().value; try { this._midiEditCards.get(k)._midiEdit.destroy(); } catch (_) { /* */ } this._midiEditCards.delete(k); }
             }
             code.parentElement.replaceWith(el);

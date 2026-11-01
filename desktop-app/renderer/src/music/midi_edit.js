@@ -89,5 +89,21 @@
       canUndo() { return past.length > 0; }, canRedo() { return future.length > 0; },
     };
   }
-  return { ACTS, apply, applyAll, parseCommands, history, pitchOf, programOf, cnNum, trackIndex };
+  // ───────── 遠端共筆用的文件形式:每軌每個音符都有穩定 id,兩個人改不同音符會事件層級合併(FaRemotePatch,patchKeys 預設用 id)
+  const rid = () => Math.random().toString(36).slice(2, 9);
+  const PATCH_KEYS = { tracks: 'id', notes: 'id' };
+  function toDoc(song) { // 沒有 id 的補上(已有就保留,所以每次呼叫都穩定)
+    const d = JSON.parse(JSON.stringify(song)); d.tracks.forEach((t) => { t.id = t.id || ('t' + rid()); t.notes.forEach((n) => { n.id = n.id || ('n' + rid()); }); }); return d;
+  }
+  function fromDoc(doc) { const d = JSON.parse(JSON.stringify(doc)); d.tracks.forEach((t) => { delete t.id; t.notes.forEach((n) => { delete n.id; }); t.notes.sort((a, b) => a.t - b.t || a.n - b.n); }); return d; }
+  // 套完動作之後把新增的音符／音軌補上 id,舊的沿用(以內容比對:同軌同 t／n／d／v 的先用舊 id)
+  function reId(prevDoc, song) {
+    const d = JSON.parse(JSON.stringify(song)); const pt = (prevDoc && prevDoc.tracks) || [];
+    d.tracks.forEach((t, i) => {
+      const p = pt[i]; t.id = (p && p.id) || ('t' + rid()); const pool = new Map(); (p ? p.notes : []).forEach((n) => { const k = n.t + ',' + n.n + ',' + n.d + ',' + n.v; (pool.get(k) || pool.set(k, []).get(k)).push(n.id); });
+      t.notes.forEach((n) => { const k = n.t + ',' + n.n + ',' + n.d + ',' + n.v; const q = pool.get(k); n.id = q && q.length ? q.shift() : ('n' + rid()); });
+    });
+    return d;
+  }
+  return { PATCH_KEYS, toDoc, fromDoc, reId, ACTS, apply, applyAll, parseCommands, history, pitchOf, programOf, cnNum, trackIndex };
 });
