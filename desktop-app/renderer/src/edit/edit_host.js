@@ -622,6 +622,7 @@ const FaEditHost = (function () {
             const withEnv = { kinds: lazy.kinds, call: (t, k, sid, name, args, o) => { try { const holder = self._edEditors && self._edEditors.get(k + ':' + sid), env = holder && holder._ed && holder._ed.env ? holder._ed.env() : null; if (env && args[0] && typeof args[0] === 'object' && !args[0].env) args = [Object.assign({}, args[0], { env: JSON.parse(JSON.stringify(env)) })].concat(args.slice(1)); } catch (_) { /* 沒有 env 就照舊 */ } return lazy.call(t, k, sid, name, args, o); } };
             const out = FaRemoteEdit.proxyHost(withEnv, { kind, sid: id, local: host, getTarget: () => self._edRemoteTarget(kind, id) });
             out.selfName = () => (self._rg && self._rg.room && self._rg.room.self && self._rg.room.self.name) || '';
+            if (typeof FaEditCollab !== 'undefined' && !(KINDS[kind] && KINDS[kind].noCollab)) { out.collabUi = { open: (el) => self._edCollabPanel(kind, id, el) }; const rec = self._edShared && self._edShared.get(kind + ':' + id); if (rec) out.collab = rec.adapter; }
             out.aiWhere = {
                 visible: () => !!self._rg || !!self._edRemoteSel(kind, id),
                 options: () => [{ value: '', label: T('本機', 'This machine') }].concat((self._rg ? self._rgTargets() : []).map((m) => ({ value: m.nodeId, label: m.name + (m.allow === false ? T('（不接受需求）', ' (not accepting)') : ''), disabled: m.allow === false }))),
@@ -691,6 +692,7 @@ const FaEditHost = (function () {
             const host = this._edRemoteWrap(kind, id, host0, proj);
             node = K.ui().mount(Object.assign({ id, state: proj.state, spec: proj.spec, host, restoring: !fresh, store: FaEditStore, onVectorize: (obj) => self._edVectorizeObject(node, obj) }, K.mountOpts ? K.mountOpts.call(this, id, proj) : {}));
             holder.textContent = ''; holder.style.cssText = ''; holder.appendChild(node); holder._ed = node._ed; holder._win = node._win;
+            try { if (this._edCollabAttach) this._edCollabAttach(kind, id, node); } catch (_) { /* 共編接不上不影響編輯 */ }
             try { FaEditI18n.localize(node); } catch (_) { /* 英文介面只是方便 */ }
             if (fresh) {
                 if (!proj.state) { try { await FaEditStore.saveProject(kind, id, Object.assign({}, proj.origin ? { origin: proj.origin } : {}, { v: 1, spec: proj.spec, state: node._ed.getState() })); } catch (_) { /* */ } }

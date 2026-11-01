@@ -26472,6 +26472,7 @@ const holder = {};
 //   FaEditShell.mount({ id, kind, title, W, spec, state, host, container, restoring, tabs:[{id,label}], build(ctx) -> { tabs:{id:element}, properties?:element, refresh(spec, selectedId), bar?:[elements] },
 //                       objectInfo?(obj) -> small text, objectIcon?(obj) -> glyph, parseCommands?(text, spec) -> { edits, unmatched }, exports:[{id,label,chat?:true}], runExport(id, spec) -> Promise<{blob,name}>,
 //                       build's result may have env() -> { view:{x,y,w,h} } (where the user is looking: 'place relative to the view'),
+//                       collab?: 多人同編的轉接器 { spec(), diff(a,b), propose(patch,meta)->Promise<{ok,rejected,error,queued}>, undo(), redo(), undoable(), redoable(), members(), color(name), status(), queued(), presence(sel), on(evt,fn) 事件 commit/reset/members/status/presence/closed }：有的話文件由主持機編號，commit 先送出、等 commit 事件回來才記成一步（各人只復原自己的步驟）,
 //                       promptOf?(spec, steps) -> text, placeholder, intro, extraPrompt?, windowKey?,
 //                       previewEdits?({spec0, next, edits, words, rejected}) -> Promise<boolean> (what the AI changed is shown first; true = apply, false = take it back), confirmRemove?(obj, spec) -> boolean,
 //                       treeRows?(spec, collapsed) -> [{obj, depth}] (a TREE in the objects view, parents before children; groups fold), onObjectOpen?(obj) (double click on a row: the editor opens the object by itself instead of renaming it) }) -> element with el._ed = { getState, reload, setSpec, undo, redo, send(text), select(id), getSpec, ctx }
@@ -26501,7 +26502,7 @@ const holder = {};
     try { dark = !!(host.palette && host.palette().dark); } catch (e) { dark = false; }
     if (dark) { el.className += ' dark'; }
     if (!document.getElementById('few-css')) { var st0 = document.createElement('style'); st0.id = 'few-css'; st0.textContent = CSS; (document.head || document.documentElement).appendChild(st0); }
-    var S = { v: 1, ptr: 0, states: [], log: [] }, midTab = (opt.tabs[0] || {}).id, rightTab = 'ai', selected = null, pending = [], busy = false, saveT = null, newIds = {}, editor = null, selFns = [];
+    var S = { v: 1, ptr: 0, states: [], log: [] }, midTab = (opt.tabs[0] || {}).id, rightTab = 'ai', selected = null, pending = [], busy = false, saveT = null, newIds = {}, editor = null, selFns = [], collab = null, pendSel = null, remoteSel = {}, selT = null;
     function initState(state, spec) {
       if (state && Array.isArray(state.states) && state.states.length) {
         S = { v: 1, ptr: Math.max(0, Math.min(state.states.length - 1, state.ptr | 0)), states: state.states.slice(-MAXSTATES).map(function (x) { return { spec: W.validate(x.spec).spec, summary: x.summary || '', text: x.text || '', kind: x.kind || 'panel', t: x.t || 0, by: x.by || undefined }; }), log: Array.isArray(state.log) ? state.log.slice(-60) : [] };
@@ -26511,7 +26512,25 @@ const holder = {};
     function cur() { return S.states[S.ptr].spec; }
     function getState() { var st = { v: 1, ptr: S.ptr, states: S.states, log: S.log.slice(-60) }; try { while (JSON.stringify(st).length > 3000000 && st.states.length > 2) { st.states = st.states.slice(1); st.ptr = Math.max(0, st.ptr - 1); } } catch (e) { /* keep */ } return st; }
     function persist() { clearTimeout(saveT); saveT = setTimeout(function () { try { if (host.save) { host.save(getState()); } } catch (e) { /* this change still counts */ } }, 400); }
-    function commit(spec, summary, text, kind, by) { S.states = S.states.slice(0, S.ptr + 1); S.states.push({ spec: W.validate(spec).spec, summary: summary || '', text: text || '', kind: kind || 'panel', t: Date.now(), by: by || undefined }); if (S.states.length > MAXSTATES) { S.states.shift(); } S.ptr = S.states.length - 1; render(); persist(); }
+    function pushState(spec, summary, text, kind, by) { S.states = S.states.slice(0, S.ptr + 1); S.states.push({ spec: W.validate(spec).spec, summary: summary || '', text: text || '', kind: kind || 'panel', t: Date.now(), by: by || undefined }); if (S.states.length > MAXSTATES) { S.states.shift(); } S.ptr = S.states.length - 1; render(); persist(); if (pendSel && W.find(cur(), pendSel) >= 0) { var ps = pendSel; pendSel = null; select(ps); } }
+    // 單人：直接記成一步。多人：算出 id 定址的 patch 交給主持機編號，等 commit 事件回來才記（含自己的），被略過的動作回報在聊天框
+    function commit(spec, summary, text, kind, by) {
+      if (!collab) { pushState(spec, summary, text, kind, by); return; }
+      var next = W.validate(spec).spec, patch = collab.diff(cur(), next); if (!patch.length) { return; }
+      var k = kind || 'panel', meta = { summary: summary || '', text: text || '', kind: k, src: by && by.src === 'ai' ? 'ai' : (k === 'chat' || k === 'image' ? 'ai' : 'user'), exec: by && by.exec, req: by && by.req };
+      return Promise.resolve(collab.propose(patch, meta)).then(function (r) { collabReply(r); return r; });
+    }
+    function collabReply(r) {
+      if (!r) { return; }
+      if (r.queued) { stat.textContent = '⚠️ ' + (r.error || '主持機離線，已暫存'); renderCollab(); return; }
+      if (!r.ok) { var why = r.error === 'readonly' ? '你在這個共編裡是唯讀的' : (r.error === 'all-rejected' ? '這個改動套不上去（對象已被別人刪掉或改掉了）' : (r.error || '沒有成功')); stat.textContent = '✗ ' + why; addMsg('ai', '✗ ' + why, [], (r.rejected || []).slice(0, 4).map(function (x) { return '✗ ' + x.op + '：' + x.error; })); return; }
+      if (r.rejected && r.rejected.length) { addMsg('ai', '有 ' + r.rejected.length + ' 個動作因為別人已改過而略過', [], r.rejected.slice(0, 4).map(function (x) { return '✗ ' + x.op + '：' + x.error; })); }
+    }
+    function onCollabCommit(c) {
+      var k = c.kind === 'undo' || c.kind === 'redo' ? c.kind : (c.kind && c.kind !== 'edit' ? c.kind : 'panel');
+      if (c.text && c.by && !(host.selfName && c.by.name === host.selfName() && c.by.src !== 'ai')) { var lm = { role: 'user', text: c.text, by: c.by }; S.log.push(lm); addMsg('user', lm.text, [], [], lm.by); }
+      pushState(collab.spec(), c.summary || '', c.text || '', k, c.by);
+    }
     function env() { var e = {}; try { e = editor && editor.env ? (editor.env() || {}) : {}; } catch (x) { e = {}; } e.selection = selected; return e; }
     function apply(edits, summary, text, kind) {
       var r = W.applyEdits(cur(), edits, env()); if (!r.applied.length) { return r; }
@@ -26520,9 +26539,18 @@ const holder = {};
       commit(r.spec, words, text, kind); if (r.added && r.added.length) { select(r.added[r.added.length - 1]); }
       return r;
     }
-    function undo() { if (S.ptr > 0) { S.ptr--; render(); persist(); } }
-    function redo() { if (S.ptr < S.states.length - 1) { S.ptr++; render(); persist(); } }
-    function select(id) { selected = id || null; renderObjects(); if (editor && editor.refresh) { editor.refresh(cur(), selected); } selFns.forEach(function (f) { try { f(selected); } catch (e) { /* editor's problem */ } }); }
+    function undo() { if (collab) { Promise.resolve(collab.undo()).then(function (r) { if (r && !r.ok) { collabReply(r); } else if (!r) { stat.textContent = '沒有你自己的步驟可以復原'; } }); return; } if (S.ptr > 0) { S.ptr--; render(); persist(); } }
+    function redo() { if (collab) { Promise.resolve(collab.redo()).then(function (r) { if (r && !r.ok) { collabReply(r); } }); return; } if (S.ptr < S.states.length - 1) { S.ptr++; render(); persist(); } }
+    // 標題列：在線的人（色點＋名字，網頁加 🌐）與連線狀態
+    var collabEl = null;
+    function renderCollab() {
+      if (!collab) { return; } if (!collabEl) { collabEl = h('span', 'collab'); collabEl.style.cssText = 'display:inline-flex;gap:6px;align-items:center;font-size:12px;flex-wrap:wrap'; bar.insertBefore(collabEl, ttl.nextSibling); }
+      collabEl.textContent = ''; var ms = []; try { ms = collab.members() || []; } catch (e) { ms = []; }
+      ms.forEach(function (m) { var c = h('span', null, '● ' + (m.kind === 'web' ? '🌐 ' : '') + m.name + (m.host ? '（主持）' : '') + (m.readonly ? '（唯讀）' : '')); c.style.color = collab.color(m.name); c.title = m.name + (m.readonly ? '：唯讀' : ''); collabEl.appendChild(c); });
+      var st = ''; try { st = collab.status(); } catch (e) { st = ''; } var q = 0; try { q = collab.queued() || 0; } catch (e) { q = 0; }
+      if (st === 'offline') { collabEl.appendChild(h('span', null, '⚠️ 主持機離線' + (q ? '，' + q + ' 筆待同步' : ''))); } else if (st === 'closed') { collabEl.appendChild(h('span', null, '⛔ 共編已結束（本機副本保留）')); }
+    }
+    function select(id) { if (collab && id && W.find(cur(), id) < 0) { pendSel = id; return; } selected = id || null; if (collab) { clearTimeout(selT); selT = setTimeout(function () { try { collab.presence({ id: selected }); } catch (e) { /* 存在感只是提示 */ } }, 150); } renderObjects(); if (editor && editor.refresh) { editor.refresh(cur(), selected); } selFns.forEach(function (f) { try { f(selected); } catch (e) { /* editor's problem */ } }); }
 
     // ───── frame ─────
     var bar = h('div', 'bar'), ttl = h('span', 'ttl', opt.title), stat = h('span', 'st'), bUndo = h('button', null, '↶ 復原'), bRedo = h('button', null, '↷ 重做'), bSum = h('button', null, '📝 整理成 prompt'), bExp = h('select');
@@ -26593,7 +26621,7 @@ const holder = {};
       rowsList.forEach(function (rr, k) {
         var o = rr.obj;
         var row = h('div', 'ob' + (o.id === selected ? ' sel' : '') + (o.visible ? '' : ' hid') + (newIds[o.id] ? ' new' : '')), ic = h('span', 'ic', opt.objectIcon ? opt.objectIcon(o) : '◻'), nm = h('span', 'nm');
-        row.setAttribute('data-id', o.id); nm.appendChild(document.createTextNode(o.name)); var info = opt.objectInfo ? opt.objectInfo(o) : o.type; if (info) { nm.appendChild(h('small', null, info)); }
+        row.setAttribute('data-id', o.id); nm.appendChild(document.createTextNode(o.name)); if (collab) { Object.keys(remoteSel).forEach(function (nid) { var rs = remoteSel[nid]; if (rs.id === o.id) { var dot = h('span', null, '●'); dot.style.color = collab.color(rs.name); dot.title = rs.name + ' 選取中'; nm.appendChild(dot); } }); } var info = opt.objectInfo ? opt.objectInfo(o) : o.type; if (info) { nm.appendChild(h('small', null, info)); }
         var eye = h('button', null, o.visible ? '👁' : '—'), lock = h('button', null, o.locked ? '🔒' : '🔓'), tb = h('span', 'tb'), up = h('button', null, '▲'), dn = h('button', null, '▼'), dup = h('button', null, '⧉'), del = h('button', null, '🗑');
         eye.title = '顯示／隱藏'; lock.title = '鎖定／解鎖'; up.title = treeRows ? '往上移' : '往上一層'; dn.title = treeRows ? '往下移' : '往下一層'; dup.title = '複製'; del.title = '刪除';
         if (treeRows) { row.style.paddingLeft = (6 + rr.depth * 14) + 'px'; if (o.type === 'group') { ic.textContent = collapsed[o.id] ? '▸' : '▾'; ic.style.cursor = 'pointer'; ic.title = '收合／展開'; ic.onclick = function (ev) { ev.stopPropagation(); collapsed[o.id] = !collapsed[o.id]; renderObjects(); }; } }
@@ -26616,7 +26644,7 @@ const holder = {};
     }
 
     // ───── history ─────
-    function renderHist() { var p = rp.hist; p.textContent = ''; p.appendChild(h('div', 'st', '點一步就回到那一步（之後的步驟還在，可以重做）：')); S.states.forEach(function (s, i) { var d = h('div', i === S.ptr ? 'cur' : (i > S.ptr ? 'fut' : ''), (i + 1) + '. ' + (byLabel(s.by) ? '[' + byLabel(s.by) + '] ' : '') + (s.summary || '（沒有說明）') + (s.text ? '　— 「' + s.text.slice(0, 30) + '」' : '')); d.onclick = function () { S.ptr = i; render(); persist(); }; p.appendChild(d); }); }
+    function renderHist() { var p = rp.hist; p.textContent = ''; p.appendChild(h('div', 'st', collab ? '共同編輯的歷史（每一步都標了是誰；復原只會復原你自己的步驟）：' : '點一步就回到那一步（之後的步驟還在，可以重做）：')); S.states.forEach(function (s, i) { var d = h('div', i === S.ptr ? 'cur' : (i > S.ptr ? 'fut' : ''), (i + 1) + '. ' + (byLabel(s.by) ? '[' + byLabel(s.by) + '] ' : '') + (s.summary || '（沒有說明）') + (s.text ? '　— 「' + s.text.slice(0, 30) + '」' : '')); if (!collab) { d.onclick = function () { S.ptr = i; render(); persist(); }; } p.appendChild(d); }); }
 
     // ───── AI chat (pictures can be pasted / dropped in) ─────
     var logEl = h('div', 'log'), attEl = h('div', 'att'), inRow = h('div', 'row'), ta = h('textarea'), bAtt = h('button', null, '📎'), bSend = h('button', 'pri', '送出'), file = h('input'); file.type = 'file'; file.accept = 'image/*'; file.multiple = true; file.style.display = 'none';
@@ -26663,7 +26691,7 @@ const holder = {};
 
     // ───── prompt, export ─────
     // the steps that count: the ones up to the current position (an undone step is never in it) that really changed the document and carry what the user said
-    function effectiveSteps() { return S.states.slice(0, S.ptr + 1).filter(function (s) { return s.kind !== 'start' && s.kind !== 'undo' && (s.text || s.summary); }); }
+    function effectiveSteps() { return S.states.slice(0, S.ptr + 1).filter(function (s) { return s.kind !== 'start' && s.kind !== 'undo' && s.kind !== 'redo' && (s.text || s.summary); }); }
     function defaultPrompt(spec, steps) {
       var L = ['請做一份「' + spec.title + '」，畫布 ' + spec.canvas.w + '×' + spec.canvas.h + '，背景 ' + spec.canvas.bg + '。', '', '物件（由下到上）：'];
       spec.objects.forEach(function (o, i) { L.push((i + 1) + '. ' + o.name + '（' + o.type + '）' + (opt.objectInfo ? ' ' + opt.objectInfo(o) : '')); });
@@ -26691,17 +26719,29 @@ const holder = {};
     el.addEventListener('keydown', function (ev) { var tag = ev.target && ev.target.tagName; if ((tag === 'TEXTAREA' || tag === 'INPUT' || tag === 'SELECT') && ev.target !== el) { return; } if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && ev.key.toLowerCase() === 'z') { ev.preventDefault(); undo(); } else if ((ev.ctrlKey || ev.metaKey) && (ev.key.toLowerCase() === 'y' || (ev.shiftKey && ev.key.toLowerCase() === 'z'))) { ev.preventDefault(); redo(); } else if ((ev.key === 'Delete' || ev.key === 'Backspace') && selected && tag !== 'TEXTAREA' && tag !== 'INPUT') { ev.preventDefault(); apply([{ op: 'remove_object', id: selected }], '刪掉物件 ' + selected, '', 'panel'); } });
     el.tabIndex = 0;
     function render() {
-      renderObjects(); renderHist(); bUndo.disabled = S.ptr === 0; bRedo.disabled = S.ptr >= S.states.length - 1; stat.textContent = '第 ' + (S.ptr + 1) + '／' + S.states.length + ' 步';
+      renderObjects(); renderHist(); if (collab) { bUndo.disabled = !collab.undoable(); bRedo.disabled = !collab.redoable(); renderCollab(); } else { bUndo.disabled = S.ptr === 0; bRedo.disabled = S.ptr >= S.states.length - 1; } stat.textContent = '第 ' + (S.ptr + 1) + '／' + S.states.length + ' 步';
       if (selected && W.find(cur(), selected) < 0) { selected = null; renderObjects(); }
       showTabs(); if (editor && editor.refresh) { editor.refresh(cur(), selected); }
     }
     var ctx = { el: el, W: W, host: host, getSpec: function () { return cur(); }, commit: commit, apply: apply, select: select, selected: function () { return selected; }, onSelect: function (f) { selFns.push(f); }, say: function (t) { stat.textContent = t; setTimeout(function () { if (stat.textContent === t) { stat.textContent = ''; } }, 3500); }, undo: undo, redo: redo, bar: bar, setTab: function (id) { midTab = id; showTabs(); }, setProps: function (e) { prop.textContent = ''; if (e) { prop.appendChild(e); } prop.style.display = e ? '' : 'none'; } };
     initState(opt.state, opt.spec); renderLog();
     editor = opt.build(ctx) || {}; opt.tabs.forEach(function (t) { if (editor.tabs && editor.tabs[t.id]) { mp[t.id].appendChild(editor.tabs[t.id]); } }); (editor.bar || []).forEach(function (x) { bar.insertBefore(x, bUndo); });
+    // 接上多人同編（開著的編輯器也能中途開始分享；之後文件由主持機編號）
+    function attachCollab(c) {
+      if (collab === c) { return; } collab = c; if (!collab) { return; }
+      collab.on('commit', onCollabCommit); collab.on('reset', function () { pushState(collab.spec(), '重新跟主持機同步', '', 'remote'); }); collab.on('members', function () { renderCollab(); });
+      collab.on('status', function () { renderCollab(); }); collab.on('closed', function (why) { renderCollab(); stat.textContent = why || '共編已結束'; });
+      collab.on('presence', function (p) { if (!p || !p.by) { return; } remoteSel[p.by.nodeId] = { id: p.sel && p.sel.id, name: p.by.name }; renderObjects(); });
+      render();
+    }
+    function detachCollab() { collab = null; remoteSel = {}; if (collabEl) { collabEl.remove(); collabEl = null; } render(); }
+    // 標題列的「👥 共編」：分享這個編輯器給群組，或看目前的共編狀態（host.collabUi 由桌面版提供，沒有就不顯示）
+    var bCo = null; if (host.collabUi) { bCo = h('button', null, '👥 共編'); bCo.title = '跟群組裡別台機器一起編輯這個文件：每個人都有完整副本，由主持機排序；各人只復原自己的步驟'; bCo.onclick = function () { try { host.collabUi.open(el); } catch (e) { stat.textContent = '共編：' + String((e && e.message) || e).slice(0, 80); } }; bar.insertBefore(bCo, bSum); }
+    if (opt.collab || host.collab) { attachCollab(opt.collab || host.collab); }
     if (opt.container) { opt.container.appendChild(el); }
     var WIN = opt.windowApi || (typeof FaWin !== 'undefined' ? FaWin : null), win = WIN && WIN.decorate ? WIN.decorate(el, { id: opt.kind + ':' + (opt.id || ''), title: opt.title, bar: bar, minW: 720, minH: 460 }) : null; el._win = win;
     render();
-    el._ed = { editor: editor, getState: getState, reload: function (state) { initState(state, null); renderLog(); render(); }, setSpec: function (spec, summary) { commit(spec, summary || '由對話修改', '', 'chat'); }, undo: undo, redo: redo, send: function (t) { ta.value = t; return send(); }, select: select, getSpec: function () { return cur(); }, env: env, ctx: ctx, effectiveSteps: effectiveSteps, addImages: function (list) { list.forEach(function (x) { if (pending.length < 3) { pending.push(x); } }); renderAtt(); }, snapshot: function () { return opt.runExport ? opt.runExport('png', W.validate(cur()).spec) : Promise.resolve(null); }, destroy: function () { try { if (editor && editor.destroy) { editor.destroy(); } } catch (e) { /* gone */ } } };
+    el._ed = { attachCollab: attachCollab, detachCollab: detachCollab, editor: editor, getState: getState, reload: function (state) { initState(state, null); renderLog(); render(); }, setSpec: function (spec, summary) { commit(spec, summary || '由對話修改', '', 'chat'); }, undo: undo, redo: redo, send: function (t) { ta.value = t; return send(); }, select: select, getSpec: function () { return cur(); }, env: env, ctx: ctx, effectiveSteps: effectiveSteps, addImages: function (list) { list.forEach(function (x) { if (pending.length < 3) { pending.push(x); } }); renderAtt(); }, snapshot: function () { return opt.runExport ? opt.runExport('png', W.validate(cur()).spec) : Promise.resolve(null); }, destroy: function () { try { if (editor && editor.destroy) { editor.destroy(); } } catch (e) { /* gone */ } } };
     return el;
   }
   return { mount: mount, CSS: CSS };
@@ -33326,6 +33366,7 @@ const FaEditHost = (function () {
             const withEnv = { kinds: lazy.kinds, call: (t, k, sid, name, args, o) => { try { const holder = self._edEditors && self._edEditors.get(k + ':' + sid), env = holder && holder._ed && holder._ed.env ? holder._ed.env() : null; if (env && args[0] && typeof args[0] === 'object' && !args[0].env) args = [Object.assign({}, args[0], { env: JSON.parse(JSON.stringify(env)) })].concat(args.slice(1)); } catch (_) { /* 沒有 env 就照舊 */ } return lazy.call(t, k, sid, name, args, o); } };
             const out = FaRemoteEdit.proxyHost(withEnv, { kind, sid: id, local: host, getTarget: () => self._edRemoteTarget(kind, id) });
             out.selfName = () => (self._rg && self._rg.room && self._rg.room.self && self._rg.room.self.name) || '';
+            if (typeof FaEditCollab !== 'undefined' && !(KINDS[kind] && KINDS[kind].noCollab)) { out.collabUi = { open: (el) => self._edCollabPanel(kind, id, el) }; const rec = self._edShared && self._edShared.get(kind + ':' + id); if (rec) out.collab = rec.adapter; }
             out.aiWhere = {
                 visible: () => !!self._rg || !!self._edRemoteSel(kind, id),
                 options: () => [{ value: '', label: T('本機', 'This machine') }].concat((self._rg ? self._rgTargets() : []).map((m) => ({ value: m.nodeId, label: m.name + (m.allow === false ? T('（不接受需求）', ' (not accepting)') : ''), disabled: m.allow === false }))),
@@ -33395,6 +33436,7 @@ const FaEditHost = (function () {
             const host = this._edRemoteWrap(kind, id, host0, proj);
             node = K.ui().mount(Object.assign({ id, state: proj.state, spec: proj.spec, host, restoring: !fresh, store: FaEditStore, onVectorize: (obj) => self._edVectorizeObject(node, obj) }, K.mountOpts ? K.mountOpts.call(this, id, proj) : {}));
             holder.textContent = ''; holder.style.cssText = ''; holder.appendChild(node); holder._ed = node._ed; holder._win = node._win;
+            try { if (this._edCollabAttach) this._edCollabAttach(kind, id, node); } catch (_) { /* 共編接不上不影響編輯 */ }
             try { FaEditI18n.localize(node); } catch (_) { /* 英文介面只是方便 */ }
             if (fresh) {
                 if (!proj.state) { try { await FaEditStore.saveProject(kind, id, Object.assign({}, proj.origin ? { origin: proj.origin } : {}, { v: 1, spec: proj.spec, state: node._ed.getState() })); } catch (_) { /* */ } }
@@ -34031,6 +34073,89 @@ const FaEditHost = (function () {
         open('edit-markdown', 'Markdown 編輯器'); open('edit-text', '純文字編輯器');
     };
     { const prevTools = M._registerEditTools; M._registerEditTools = function (ro) { if (prevTools) prevTools.call(this, ro); this._registerEditDocsTools(ro); }; }
+})();
+
+/* 多人同編的主機轉接層(接在 edit_host.js 後面,同一個 FaEditHost)。設計見 DESIGN.edit-remote.md §6.5;文件邏輯在 FaEditSession,訊息層在 FaEditCollab。
+ * 流程:主持機在編輯器標題列按「👥 共編」→「分享給群組」;別台用 /edit-join 列出、/edit-join 編號 加入(把主持機的文件存成自己本機的一份專案,之後文件由主持機編號)。
+ * 每個編輯器的 host 帶 collabUi(標題列按鈕)與 collab(已經在共編時的轉接器);外框(edit_shell.js)只認這個轉接器。
+ * 目前還沒做:素材(圖片 ref)的自動取得、重開後自動重連、主持權轉移。 */
+(function () {
+    'use strict';
+    const H = FaEditHost, T = H.T, M = H.methods;
+    const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    M._edCollab = function () {
+        const rg = this._rg; if (!rg || !rg.room || typeof FaEditCollab === 'undefined') return null;
+        if (!rg.collab) rg.collab = new FaEditCollab.Collab({ room: rg.room, kinds: (k) => this._edRemoteKind(k), gate: (m) => this._rgGate(m), allow: () => { const st = this._rgSettings(); return !st.allowDispatch ? T('這台機器目前不接受遠端需求', 'This machine does not accept remote requests') : ''; }, log: (x) => this._rgLog(x) });
+        return rg.collab;
+    };
+    // 外框用的轉接器:把 HostSession／Participant 包成同一個樣子
+    M._edCollabAdapter = function (session) {
+        return {
+            session, spec: () => session.spec, diff: (a, b) => FaRemotePatch.diff(a, b), propose: (patch, meta) => Promise.resolve(session.propose(patch, meta)),
+            undo: () => session.undo(), redo: () => session.redo(), undoable: () => session.undoable(), redoable: () => session.redoable(), members: () => session.members(), color: (n) => FaEditSession.color(n),
+            status: () => session.state || 'online', queued: () => (session.queued ? session.queued() : 0), presence: (sel) => session.presence(sel), on: (e, f) => session.on(e, f),
+        };
+    };
+    M._edShareNow = function (kind, id) {
+        this._edShared = this._edShared || new Map(); const key = kind + ':' + id; if (this._edShared.has(key)) return this._edShared.get(key);
+        const c = this._edCollab(); if (!c) throw new Error(T('還沒加入遠端群組', 'Not in a remote group'));
+        const node = this._edEditors && this._edEditors.get(key); if (!node || !node._ed) throw new Error(T('編輯器還沒開好', 'The editor is not ready'));
+        const spec = node._ed.getSpec(), hs = c.share({ sid: id, kind, title: spec.title || '', spec });
+        const rec = { role: 'host', session: hs, adapter: this._edCollabAdapter(hs) }; this._edShared.set(key, rec); node._ed.attachCollab(rec.adapter); return rec;
+    };
+    M._edUnshare = function (kind, id) {
+        const key = kind + ':' + id, rec = this._edShared && this._edShared.get(key); if (!rec) return; const node = this._edEditors && this._edEditors.get(key);
+        try { if (rec.role === 'host') rec.session.close(); else rec.session.leave(); } catch (_) { /* */ } this._edShared.delete(key); try { if (node && node._ed) node._ed.detachCollab(); } catch (_) { /* */ }
+    };
+    // 開著的編輯器(重新掛載時)要接回去;剛加入的專案掛好就接上
+    M._edCollabAttach = function (kind, id, node) {
+        const key = kind + ':' + id, rec = this._edShared && this._edShared.get(key); if (rec && node._ed.attachCollab) node._ed.attachCollab(rec.adapter);
+    };
+    M._edCollabPanel = function (kind, id, el) {
+        const self = this, key = kind + ':' + id; let box = el.querySelector('.collabpanel'); if (box) { box.remove(); return; }
+        box = document.createElement('div'); box.className = 'collabpanel'; box.style.cssText = 'position:absolute;z-index:50;top:36px;left:40px;background:#fff;color:#222;border:1px solid #888;border-radius:8px;padding:10px;min-width:260px;max-width:360px;box-shadow:0 4px 18px rgba(0,0,0,.3);font-size:13px'; el.appendChild(box);
+        const draw = () => {
+            const rec = self._edShared && self._edShared.get(key), c = self._edCollab(); box.textContent = '';
+            const add = (t, tag) => { const d = document.createElement(tag || 'div'); d.innerHTML = t; box.appendChild(d); return d; }, btn = (label, fn) => { const b = document.createElement('button'); b.textContent = label; b.style.cssText = 'margin:4px 6px 0 0'; b.onclick = fn; box.appendChild(b); return b; };
+            add('<b>👥 ' + T('共同編輯', 'Co-editing') + '</b>');
+            if (!c) { add(T('還沒加入遠端群組(右上角的遠端面板)。', 'Not in a remote group yet.')); btn(T('關閉', 'Close'), () => box.remove()); return; }
+            if (!rec) { add(T('把這個編輯器分享給群組:別台用 /edit-join 加入,每個人都有完整副本,由這台排序;各人只復原自己的步驟。', 'Share this editor with the group: others join with /edit-join; everyone keeps a full copy, this machine orders the changes; undo only undoes your own steps.')); btn(T('分享給群組', 'Share with the group'), () => { try { self._edShareNow(kind, id); } catch (e) { add('⚠️ ' + esc(e.message)); return; } draw(); }); }
+            else {
+                add((rec.role === 'host' ? T('你是主持機。', 'You are the host. ') : T('已加入共編(主持機:', 'Joined (host: ') + esc(rec.session.hostNode ? rec.session.hostNode.name : '') + ')'));
+                const ms = rec.session.members(); ms.forEach((m) => { const d = add('<span style="color:' + FaEditSession.color(m.name) + '">●</span> ' + (m.kind === 'web' ? '🌐 ' : '') + esc(m.name) + (m.host ? '(' + T('主持', 'host') + ')' : '') + (m.readonly ? '(' + T('唯讀', 'read-only') + ')' : '')); if (rec.role === 'host' && !m.host) { const b1 = document.createElement('button'); b1.textContent = m.readonly ? T('改成可編輯', 'Allow edit') : T('設為唯讀', 'Read-only'); b1.style.marginLeft = '8px'; b1.onclick = () => { rec.session.setReadonly(m.nodeId, !m.readonly); draw(); }; d.appendChild(b1); const b2 = document.createElement('button'); b2.textContent = T('移除', 'Remove'); b2.style.marginLeft = '4px'; b2.onclick = () => { rec.session.remove(m.nodeId); draw(); }; d.appendChild(b2); } });
+                btn(rec.role === 'host' ? T('停止分享', 'Stop sharing') : T('離開共編(保留本機副本)', 'Leave (keep my copy)'), () => { self._edUnshare(kind, id); box.remove(); });
+            }
+            btn(T('關閉', 'Close'), () => box.remove());
+        };
+        draw();
+    };
+    // /edit-join:不帶編號=列出群組裡別台開著的編輯器;帶編號=加入
+    M._edJoinSlash = async function (argsText, run) {
+        const r = run || this, n = parseInt(String(argsText || '').trim(), 10);
+        r.messages.push({ role: 'user', content: '/edit-join' + (argsText ? ' ' + argsText : '') });
+        const say = (t) => { r._pushAssistantMessage(t, null); try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ } };
+        const c = this._edCollab(); if (!c) return say(T('還沒加入遠端群組,先到右上角的遠端面板加入。', 'Not in a remote group yet.'));
+        if (!n) {
+            const items = await c.list(); this._edJoinList = items;
+            if (!items.length) return say(T('群組裡目前沒有人開放共同編輯。對方在編輯器標題列按「👥 共編」→「分享給群組」,你再下一次 /edit-join。', 'Nobody in the group is sharing an editor.'));
+            return say(T('群組裡開著的編輯器(/edit-join 編號 加入):\n', 'Shared editors (/edit-join N):\n') + items.map((it, i) => (i + 1) + '. ' + it.host.name + ' · ' + (H.KINDS[it.kind] ? H.KINDS[it.kind].label() : it.kind) + ' · ' + (it.title || T('（未命名）', '(untitled)')) + ' · ' + it.online + T(' 人在線', ' online')).join('\n'));
+        }
+        const it = (this._edJoinList || [])[n - 1]; if (!it) return say(T('沒有這個編號,先下 /edit-join 看清單。', 'No such number; run /edit-join first.'));
+        try {
+            const p = await c.join(it.host, it.sid, { kind: it.kind }), K = H.KINDS[it.kind]; if (!K) { p.leave(); return say(T('這台沒有這種編輯器:', 'No such editor here: ') + it.kind); }
+            const spec = p.spec; this._edPendingJoin = this._edPendingJoin || new Map();
+            const res = await this._edOpen(it.kind, { spec, origin: { shared: { host: it.host.nodeId, name: it.host.name, sid: it.sid } } });
+            if (!res || !res.ok) { p.leave(); return say(T('開不起來:', 'Could not open: ') + ((res && res.error) || '')); }
+            this._edShared = this._edShared || new Map(); const rec = { role: 'joined', session: p, adapter: this._edCollabAdapter(p) }; this._edShared.set(it.kind + ':' + res.id, rec);
+            for (let i = 0; i < 120; i++) { const node = this._edEditors && this._edEditors.get(it.kind + ':' + res.id); if (node && node._ed && node._ed.attachCollab) { node._ed.attachCollab(rec.adapter); break; } await new Promise((ok) => setTimeout(ok, 50)); }   // 編輯器下一個畫面才掛上來
+            say(T('已加入 ' + it.host.name + ' 的共同編輯。', 'Joined ' + it.host.name + '\'s session.'));
+        } catch (e) { say(T('加入失敗:', 'Could not join: ') + String((e && e.message) || e)); }
+        return '';
+    };
+    M._registerEditCollabCommands = function () {
+        this.register_slash_command('/edit-join', '[編號]', '加入群組裡別台開放的共同編輯:不帶編號列出清單,帶編號加入。對方先在編輯器標題列「👥 共編」分享。', (a, run0) => (run0 || this)._edJoinSlash(a, run0));
+    };
+    const prev = M._registerEditCommands; M._registerEditCommands = function () { if (prev) prev.call(this); this._registerEditCollabCommands(); };
 })();
 
 /* EDITHOST-END */
@@ -46677,6 +46802,238 @@ const holder = {};
 
 }).call(null, undefined, holder);
 return holder.FaRemotePatch;
+})();
+const FaEditSession = (function () {
+const holder = {};
+(function (module, self) {
+/* 多人同編的核心（UMD、純函式、不碰網路與畫面）。設計見 DESIGN.edit-remote.md §6 / §6.5。
+ *   一筆 commit 一律是 id 定址的 patch（FaRemotePatch）：提出者在自己的副本上算好「改完的文件」，送 diff(改前, 改後)；
+ *   所以不管編輯器是 edits / patch / snapshot 模式、有沒有相機或選取這類本機 env，每個副本套出的都是同一份文件（不需要 resolve）。
+ *   FaEditSession.createHost({ spec, keys, maxLog }) → host
+ *     host.propose(by, { base, patch, summary, text, src, kind }) → { ok, commit?, rejected, error? }   主持機唯一編 rev；唯讀者被拒；套不上的動作略過並回報；全部套不上就不編號
+ *     host.join(by) / host.leave(nodeId) / host.setReadonly(nodeId, bool) / host.remove(nodeId) / host.members() / host.snapshot() / host.since(rev) → commits 或 null（太舊要整份）
+ *   FaEditSession.createReplica({ spec, rev, keys, nodeId }) → replica
+ *     replica.receive(commit) → 'ok' | 'dup' | 'gap' | 'diverged'；replica.reset(snapshot)；replica.spec / rev
+ *     replica.undoable() / redoable()；replica.undoPatch() / redoPatch() → 要提出的 patch（各人只復原自己的步驟）；replica.noteOwn(commit) 內部呼叫
+ *   FaEditSession.color(name) → 固定色；FaEditSession.hash(spec) */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory(require('./rg_patch.js'));
+    else root.FaEditSession = factory(root.FaRemotePatch || (typeof FaRemotePatch !== 'undefined' ? FaRemotePatch : undefined));
+})(typeof self !== 'undefined' ? self : this, function (P) {
+    'use strict';
+    const clone = (x) => (x === undefined ? undefined : JSON.parse(JSON.stringify(x)));
+    function hash(spec) { const s = JSON.stringify(spec); let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(16); }
+    function color(name) { let h = 0; const s = String(name || ''); for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0; return 'hsl(' + (h % 360) + ',65%,55%)'; }
+    const sameWho = (a, b) => !!a && !!b && a.nodeId === b.nodeId;
+
+    function createHost(cfg) {
+        cfg = cfg || {}; const keys = cfg.keys || {}, maxLog = cfg.maxLog || 400;
+        let spec = clone(cfg.spec), rev = cfg.rev | 0; const log = []; const mem = new Map();   // nodeId → { by, readonly, joinedAt }
+        function snapshot() { return { rev, spec: clone(spec), hash: hash(spec), members: members() }; }
+        function members() { return [...mem.values()].map((m) => ({ nodeId: m.by.nodeId, name: m.by.name, kind: m.by.kind, readonly: !!m.readonly })); }
+        function join(by) { if (!by || !by.nodeId) return { ok: false, error: 'no-id' }; if (!mem.has(by.nodeId)) mem.set(by.nodeId, { by: { nodeId: by.nodeId, name: by.name, kind: by.kind }, readonly: false, joinedAt: rev }); else mem.get(by.nodeId).by = { nodeId: by.nodeId, name: by.name, kind: by.kind }; return { ok: true, snapshot: snapshot() }; }
+        function propose(by, req) {
+            if (!by || !by.nodeId) return { ok: false, error: 'no-id', rejected: [] };
+            const m = mem.get(by.nodeId); if (m && m.readonly) return { ok: false, error: 'readonly', rejected: [] };
+            const patch = (req && req.patch) || [];
+            if (!patch.length) return { ok: false, error: 'empty', rejected: [] };
+            const r = P.apply(spec, patch, keys);
+            if (!r.applied.length) return { ok: false, error: 'all-rejected', rejected: r.rejected || [] };
+            const applied = r.applied;
+            spec = r.doc; rev++;
+            const c = { rev, by: { nodeId: by.nodeId, name: by.name, kind: by.kind, src: (req && req.src) || 'user', exec: req && req.exec, req: req && req.req }, patch: applied, summary: (req && req.summary) || '', text: (req && req.text) || '', kind: (req && req.kind) || 'edit', reqId: req && req.reqId, base: req && req.base, hashAfter: hash(spec) };
+            log.push(c); if (log.length > maxLog) log.shift();
+            return { ok: true, commit: c, rejected: r.rejected || [] };
+        }
+        return {
+            get rev() { return rev; }, get spec() { return spec; }, snapshot, members, join, propose,
+            leave(id) { mem.delete(id); },
+            remove(id) { mem.delete(id); },
+            setReadonly(id, v) { const m = mem.get(id); if (m) m.readonly = !!v; return !!m; },
+            since(r) { if (r >= rev) return []; if (!log.length || log[0].rev > r + 1) return null; return log.filter((c) => c.rev > r); },
+            log() { return log.slice(); },
+        };
+    }
+
+    function createReplica(cfg) {
+        cfg = cfg || {}; const keys = cfg.keys || {}; const me = cfg.nodeId; let spec = clone(cfg.spec), rev = cfg.rev | 0;
+        let undo = [], redo = [];   // 只記自己的步驟：{ rev, inverse, forward, summary }
+        const queue = [];           // 主持機離線時暫存的 patch
+        function receive(c) {
+            if (!c || typeof c.rev !== 'number') return 'diverged';
+            if (c.rev <= rev) return 'dup';
+            if (c.rev !== rev + 1) return 'gap';
+            const before = spec, r = P.apply(spec, c.patch || [], keys);
+            spec = r.doc; rev = c.rev;
+            if (c.hashAfter && c.hashAfter !== hash(spec)) return 'diverged';
+            if (me && c.by && c.by.nodeId === me) {
+                if (c.kind === 'undo') { /* 已在 undoPatch() 搬過 */ }
+                else if (c.kind === 'redo') { /* 同上 */ }
+                else { undo.push({ rev: c.rev, inverse: P.diff(spec, before, keys), forward: c.patch, summary: c.summary }); redo = []; if (undo.length > 200) undo.shift(); }
+            }
+            return 'ok';
+        }
+        function reset(s) { spec = clone(s.spec); rev = s.rev | 0; }
+        return {
+            get spec() { return spec; }, get rev() { return rev; }, receive, reset,
+            undoable() { return undo.length > 0; }, redoable() { return redo.length > 0; },
+            // 取出要提出的「復原」patch：以現在的文件重算（別人改過的地方不會被蓋掉；被別人刪掉的對象略過）
+            undoPatch() { const e = undo.pop(); if (!e) return null; redo.push(e); return { patch: e.inverse, summary: '復原：' + (e.summary || ''), kind: 'undo' }; },
+            redoPatch() { const e = redo.pop(); if (!e) return null; undo.push(e); return { patch: e.forward, summary: '重做：' + (e.summary || ''), kind: 'redo' }; },
+            // 復原的提出被主持機整個拒絕（例如全被別人改掉）：把步驟放回去
+            undoFailed() { const e = redo.pop(); if (e) undo.push(e); }, redoFailed() { const e = undo.pop(); if (e) redo.push(e); },
+            enqueue(p) { queue.push(p); return queue.length; }, queued() { return queue.slice(); }, drain() { return queue.splice(0); },
+            diffTo(next) { return P.diff(spec, next, keys); },
+            resetUndo() { undo = []; redo = []; },
+        };
+    }
+    return { createHost, createReplica, hash, color, sameWho };
+});
+
+}).call(null, undefined, holder);
+return holder.FaEditSession;
+})();
+const FaEditCollab = (function () {
+const holder = {};
+(function (module, self) {
+/* 多人同編的訊息層（UMD、不碰畫面）。設計見 DESIGN.edit-remote.md §6.5；文件邏輯（編號、副本、各人復原）在 FaEditSession。
+ *   const c = new FaEditCollab.Collab({ room, kinds, gate, allow, log })      kinds(kind) → 有這個編輯器就回物件（跟 FaRemoteEdit.Peer 同一個函式）；gate(m)／allow() 同 Peer
+ *   const hs = c.share({ sid, kind, title, spec, keys })                       我是主持機：hs.propose(patch, meta) 本地提出；hs.onCommit/onMembers/onPresence(fn)；hs.setReadonly(id, v)/remove(id)/presence(sel)/close()
+ *   const items = await c.list()                                               群組裡各台開著且允許加入的編輯器 [{ host:{nodeId,name}, sid, kind, title, online }]
+ *   const p = await c.join(hostNode, sid)                                      我是參與者：p.spec/rev/members；p.propose(patch, meta) → { ok, rejected, error, queued };p.undo()/redo()；p.onCommit/onMembers/onPresence/onStatus(fn)；p.presence(sel)/leave()
+ * 訊息：ed_list(_ack)、ed_join(_ack)、ed_leave、ed_commit_req／ed_commit_ack、ed_commit、ed_sync_req／ed_sync、ed_members、ed_presence、ed_shared_close。
+ * by 由主持機依「通道上已驗證的寄件者」蓋章，不信 payload 自稱的身分；exec／req（AI 由誰執行、應誰要求）是資訊，照帶。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory(require('./rg_session.js'));
+    else root.FaEditCollab = factory(root.FaEditSession || (typeof FaEditSession !== 'undefined' ? FaEditSession : undefined));
+})(typeof self !== 'undefined' ? self : this, function (S) {
+    'use strict';
+    const rnd = () => Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 6);
+    const clone = (x) => (x === undefined ? undefined : JSON.parse(JSON.stringify(x)));
+    class Emitter { constructor() { this.fns = {}; } on(k, f) { (this.fns[k] = this.fns[k] || []).push(f); return this; } emit(k, v) { (this.fns[k] || []).forEach((f) => { try { f(v); } catch (_) { /* */ } }); } }
+
+    class Collab {
+        constructor(o) {
+            this.room = o.room; this.kinds = o.kinds || (() => null); this.gate = o.gate || (async () => ''); this.allow = o.allow || (() => ''); this.log = o.log || (() => {});
+            this.shared = new Map(); this.joined = new Map(); this.asks = new Map(); this.slow = 1; this.askMs = 8000;
+            this.room.on('message', (m) => { if (m && typeof m.type === 'string' && /^ed_(list|join|leave|commit|sync|members|presence|shared_close)/.test(m.type)) this.handle(m).catch((e) => this.log('多人同編訊息處理失敗：' + ((e && e.message) || e))); });
+            this.room.on('members', () => { for (const p of this.joined.values()) p._checkHost(); });
+        }
+        who(id) { const m = (this.room.members() || []).find((x) => x.nodeId === id); return { nodeId: id, name: m ? m.name : id.slice(0, 6), kind: m ? m.kind : 'web' }; }
+        ask(to, type, body, ms) {
+            const rid = rnd();
+            return new Promise((resolve, reject) => {
+                const t = setTimeout(() => { this.asks.delete(rid); reject(new Error('對方沒有回應')); }, (ms || this.askMs) * this.slow);
+                this.asks.set(rid, (v) => { clearTimeout(t); this.asks.delete(rid); resolve(v); });
+                this.room.send(to, type, Object.assign({ rid }, body || {})).catch((e) => { clearTimeout(t); this.asks.delete(rid); reject(e); });
+            });
+        }
+        share(o) { const hs = new HostSession(this, o); this.shared.set(o.sid, hs); return hs; }
+        async list(ms) {
+            const rid = rnd(), out = [];
+            this.asks.set(rid, (v) => out.push(v));
+            await this.room.send('*', 'ed_list', { rid }).catch(() => {});
+            await new Promise((r) => setTimeout(r, (ms || 1200) * this.slow)); this.asks.delete(rid);
+            const items = []; for (const v of out) for (const it of v.items || []) items.push(Object.assign({ host: v.host }, it)); return items;
+        }
+        async join(host, sid) {
+            const r = await this.ask(host.nodeId, 'ed_join', { sid, kind: (arguments[2] || {}).kind });
+            if (!r.ok) throw new Error(r.error || '加入失敗');
+            const p = new Participant(this, host, sid, r); this.joined.set(host.nodeId + '|' + sid, p); return p;
+        }
+        async handle(m) {
+            const b = m.body || {}, t = m.type;
+            if (b.rid && this.asks.has(b.rid) && /_ack$|^ed_sync$/.test(t) && t !== 'ed_commit_req') { this.asks.get(b.rid)(Object.assign({ from: m.from, host: this.who(m.from) }, b)); return; }
+            if (t === 'ed_list') {
+                if (await this.gate(m) || this.allow()) return;
+                const items = [...this.shared.values()].filter((h) => h.open && this.kinds(h.kind)).map((h) => ({ sid: h.sid, kind: h.kind, title: h.title, online: h.host.members().length + 1 }));
+                if (items.length) this.room.send(m.from, 'ed_list_ack', { rid: b.rid, items }).catch(() => {}); return;
+            }
+            const key = (t === 'ed_commit' || t === 'ed_members' || t === 'ed_shared_close' || t === 'ed_sync' || (t === 'ed_presence' && this.joined.has(m.from + '|' + b.sid))) ? m.from + '|' + b.sid : null;
+            if (key) { const p = this.joined.get(key); if (p) p._onMsg(t, b); return; }
+            const hs = this.shared.get(b.sid); if (!hs) { if (b.rid) this.room.send(m.from, t === 'ed_join' ? 'ed_join_ack' : 'ed_commit_ack', { rid: b.rid, ok: false, error: '對方已經沒有開這個編輯器了' }).catch(() => {}); return; }
+            await hs._onMsg(m, t, b);
+        }
+    }
+
+    class HostSession extends Emitter {
+        constructor(c, o) { super(); this.c = c; this.sid = o.sid; this.kind = o.kind; this.title = o.title || ''; this.open = o.open !== false; this.host = S.createHost({ spec: o.spec, keys: o.keys, rev: o.rev }); this.me = o.me || c.room.self; this.replica = S.createReplica({ spec: o.spec, rev: o.rev | 0, nodeId: this.me.nodeId, keys: o.keys }); this.parts = new Set(); this.pres = new Map(); }
+        get spec() { return this.host.spec; } get rev() { return this.host.rev; }
+        members() { return [{ nodeId: this.me.nodeId, name: this.me.name, kind: this.me.kind, host: true }].concat(this.host.members().filter((m) => m.nodeId !== this.me.nodeId)); }
+        _fan(type, body, except) { for (const id of this.parts) if (id !== except) this.c.room.send(id, type, body).catch(() => {}); }
+        _commit(r) { if (!r.ok) return r; this.replica.receive(r.commit); this._fan('ed_commit', { sid: this.sid, commit: r.commit }); this.emit('commit', r.commit); return r; }
+        // 主持機自己的提出（本地、馬上編號）
+        propose(patch, meta) { return this._commit(this.host.propose(this.me, Object.assign({ patch }, meta || {}))); }
+        undo() { const u = this.replica.undoPatch(); if (!u) return null; const r = this.propose(u.patch, { summary: u.summary, kind: 'undo' }); if (!r.ok) this.replica.undoFailed(); return r; }
+        redo() { const u = this.replica.redoPatch(); if (!u) return null; const r = this.propose(u.patch, { summary: u.summary, kind: 'redo' }); if (!r.ok) this.replica.redoFailed(); return r; }
+        undoable() { return this.replica.undoable(); } redoable() { return this.replica.redoable(); }
+        _members() { const ms = this.members(); this._fan('ed_members', { sid: this.sid, members: ms }); this.emit('members', ms); }
+        setReadonly(id, v) { this.host.setReadonly(id, v); this._members(); } remove(id) { this.host.remove(id); this.parts.delete(id); this.c.room.send(id, 'ed_shared_close', { sid: this.sid, reason: '已被主持人移出' }).catch(() => {}); this._members(); }
+        presence(sel) { this._fan('ed_presence', { sid: this.sid, by: this.me.nodeId, sel }); }
+        close() { this._fan('ed_shared_close', { sid: this.sid, reason: '主持人關閉了這個編輯器' }); this.c.shared.delete(this.sid); this.open = false; }
+        async _onMsg(m, t, b) {
+            const c = this.c, reply = (type, o) => c.room.send(m.from, type, Object.assign({ rid: b.rid }, o)).catch(() => {});
+            if (t === 'ed_join') {
+                const gerr = await c.gate(m); if (gerr) return reply('ed_join_ack', { ok: false, error: gerr });
+                const aerr = c.allow(); if (aerr) return reply('ed_join_ack', { ok: false, error: aerr });
+                if (!this.open) return reply('ed_join_ack', { ok: false, error: '主持人沒有開放別人加入' });
+                const by = c.who(m.from), j = this.host.join(by); this.parts.add(m.from);
+                reply('ed_join_ack', { ok: true, kind: this.kind, title: this.title, snapshot: j.snapshot, members: this.members() }); this._members(); return;
+            }
+            if (!this.parts.has(m.from)) { if (t === 'ed_commit_req') reply('ed_commit_ack', { ok: false, error: '你還沒有加入' }); return; }
+            if (t === 'ed_leave') { this.host.leave(m.from); this.parts.delete(m.from); this._members(); return; }
+            if (t === 'ed_commit_req') { const r = this._commit(this.host.propose(c.who(m.from), { patch: b.patch, summary: b.summary, text: b.text, src: b.src, exec: b.exec, req: b.req, kind: b.kind, base: b.base })); reply('ed_commit_ack', { ok: r.ok, rev: r.commit && r.commit.rev, rejected: r.rejected, error: r.error }); return; }
+            if (t === 'ed_sync_req') { const cs = this.host.since(b.rev | 0); reply('ed_sync', cs ? { sid: this.sid, commits: cs } : { sid: this.sid, snapshot: this.host.snapshot() }); return; }
+            if (t === 'ed_presence') { this._fan('ed_presence', { sid: this.sid, by: m.from, sel: b.sel }, m.from); this.emit('presence', { by: c.who(m.from), sel: b.sel }); }
+        }
+    }
+
+    class Participant extends Emitter {
+        constructor(c, host, sid, r) { super(); this.c = c; this.hostNode = host; this.sid = sid; this.kind = r.kind; this.title = r.title; this.membersList = r.members || []; this.me = c.room.self; this.replica = S.createReplica({ spec: r.snapshot.spec, rev: r.snapshot.rev, nodeId: this.me.nodeId }); this.state = 'online'; this.syncing = false; }
+        get spec() { return this.replica.spec; } get rev() { return this.replica.rev; } members() { return this.membersList; } queued() { return this.replica.queued().length; }
+        _hostHere() { return (this.c.room.members() || []).some((x) => x.nodeId === this.hostNode.nodeId); }
+        _setState(s) { if (s !== this.state) { this.state = s; this.emit('status', s); } }
+        _checkHost() { if (this._hostHere()) { if (this.state === 'offline') this._reconnect(); } else this._setState('offline'); }
+        async _reconnect() {
+            try { const r = await this.c.ask(this.hostNode.nodeId, 'ed_join', { sid: this.sid }, 4000); if (!r.ok) { this._setState('closed'); return; } this._apply(r.snapshot.rev === this.rev ? [] : null, r.snapshot); this.membersList = r.members || []; this._setState('online'); this.emit('members', this.membersList);
+                for (const it of this.replica.drain()) { const x = await this._send(it); this.emit('flushed', x); } } catch (_) { /* 還沒回來,下次 members 事件再試 */ }
+        }
+        _apply(commits, snap) {
+            if (commits === null) { this.replica.reset(snap); this.replica.resetUndo(); this.emit('reset', this.replica.spec); return; }
+            for (const cm of commits) { const x = this.replica.receive(cm); if (x === 'diverged') { this._sync(true); return; } if (x === 'gap') { this._sync(); return; } if (x === 'ok') this.emit('commit', cm); }
+        }
+        async _sync(force) {
+            if (this.syncing) return; this.syncing = true;
+            try { const r = await this.c.ask(this.hostNode.nodeId, 'ed_sync_req', { sid: this.sid, rev: force ? -1 : this.rev }); if (r.commits && !force) this._apply(r.commits); else this._apply(null, r.snapshot || (r.commits ? null : null)); } catch (_) { /* */ } finally { this.syncing = false; }
+        }
+        _onMsg(t, b) {
+            if (t === 'ed_commit') { const x = this.replica.receive(b.commit); if (x === 'ok') this.emit('commit', b.commit); else if (x === 'gap') this._sync(); else if (x === 'diverged') this._sync(true); return; }
+            if (t === 'ed_members') { this.membersList = b.members || []; this.emit('members', this.membersList); return; }
+            if (t === 'ed_presence') { this.emit('presence', { by: this.c.who(b.by), sel: b.sel }); return; }
+            if (t === 'ed_shared_close') { this._setState('closed'); this.emit('closed', b.reason || ''); }
+        }
+        async _send(meta) {
+            const r = await this.c.ask(this.hostNode.nodeId, 'ed_commit_req', { sid: this.sid, base: this.rev, patch: meta.patch, summary: meta.summary, text: meta.text, src: meta.src, exec: meta.exec, req: meta.req, kind: meta.kind });
+            return { ok: r.ok, rejected: r.rejected || [], error: r.error, rev: r.rev };
+        }
+        // 提出：回傳時（ok）已經套在自己的副本上了（commit 先到、ack 後到）;主持機離線就暫存
+        async propose(patch, meta) {
+            const m = Object.assign({ patch }, meta || {});
+            if (this.state === 'closed') return { ok: false, error: '這個共編已經結束了', rejected: [] };
+            if (this.state === 'offline' || !this._hostHere()) { this._setState('offline'); this.replica.enqueue(m); return { ok: false, queued: true, error: '主持機離線，已暫存', rejected: [] }; }
+            try { return await this._send(m); } catch (e) { this._setState('offline'); this.replica.enqueue(m); return { ok: false, queued: true, error: '主持機沒有回應，已暫存', rejected: [] }; }
+        }
+        async undo() { const u = this.replica.undoPatch(); if (!u) return null; const r = await this.propose(u.patch, { summary: u.summary, kind: 'undo' }); if (!r.ok) this.replica.undoFailed(); return r; }
+        async redo() { const u = this.replica.redoPatch(); if (!u) return null; const r = await this.propose(u.patch, { summary: u.summary, kind: 'redo' }); if (!r.ok) this.replica.redoFailed(); return r; }
+        undoable() { return this.replica.undoable(); } redoable() { return this.replica.redoable(); }
+        presence(sel) { this.c.room.send(this.hostNode.nodeId, 'ed_presence', { sid: this.sid, sel }).catch(() => {}); }
+        leave() { this.c.room.send(this.hostNode.nodeId, 'ed_leave', { sid: this.sid }).catch(() => {}); this.c.joined.delete(this.hostNode.nodeId + '|' + this.sid); }
+    }
+    return { Collab, HostSession, Participant };
+});
+
+}).call(null, undefined, holder);
+return holder.FaEditCollab;
 })();
 const FaRemoteEdit = (function () {
 const holder = {};

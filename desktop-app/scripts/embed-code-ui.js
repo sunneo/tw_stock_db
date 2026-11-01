@@ -285,7 +285,7 @@ function embedRemote() {
     const dir = path.join(root, 'renderer/src/remote'); const rd = (n) => fs.readFileSync(path.join(dir, n), 'utf8').replace(/\r\n/g, '\n');
     const wrap = (name, code) => 'const ' + name + ' = (function () {\nconst holder = {};\n(function (module, self) {\n' + code + '\n}).call(null, undefined, holder);\nreturn holder.' + name + ';\n})();\n';
     const a = src.indexOf('/* REMOTE-BEGIN */'), b = src.indexOf('/* REMOTE-END */'); if (a < 0 || b < 0) throw new Error('找不到 REMOTE 標記');
-    const body = wrap('FaRemoteGroup', rd('rg_core.js')) + wrap('FaRemoteTransport', rd('rg_transport_supabase.js')) + wrap('FaRemoteTransportKv', rd('rg_transport_kv.js')) + wrap('FaRemoteFiles', rd('rg_files.js')) + wrap('FaRemotePatch', rd('rg_patch.js')) + wrap('FaRemoteEdit', rd('rg_edit.js')) + rd('rg_host.js') + rd('rg_dispatch.js') + '\n';
+    const body = wrap('FaRemoteGroup', rd('rg_core.js')) + wrap('FaRemoteTransport', rd('rg_transport_supabase.js')) + wrap('FaRemoteTransportKv', rd('rg_transport_kv.js')) + wrap('FaRemoteFiles', rd('rg_files.js')) + wrap('FaRemotePatch', rd('rg_patch.js')) + wrap('FaEditSession', rd('rg_session.js')) + wrap('FaEditCollab', rd('rg_collab.js')) + wrap('FaRemoteEdit', rd('rg_edit.js')) + rd('rg_host.js') + rd('rg_dispatch.js') + '\n';
     src = src.slice(0, a) + '/* REMOTE-BEGIN */\n' + body + src.slice(b);
     console.log('已更新遠端群組（' + body.length + ' 字元）');
 }
@@ -309,7 +309,7 @@ function embedEdit() {
         src = src.slice(0, a) + '/* ' + mark + '-BEGIN */\nconst ' + name + ' = (function () {\nconst holder = {};\n(function (module, self) {\n' + core + '\n}).call(null, undefined, holder);\nreturn holder.' + name + ';\n})();\n' + src.slice(b);
         console.log('已更新 ' + name + '（' + core.length + ' 字元）');
     }
-    const host = ['edit_host.js', 'edit3d_host.js', 'docs_host.js'].filter((n) => fs.existsSync(path.join(dir, n))).map((n) => fs.readFileSync(path.join(dir, n), 'utf8').replace(/\r\n/g, '\n')).join('\n');
+    const host = ['edit_host.js', 'edit3d_host.js', 'docs_host.js', 'collab_host.js'].filter((n) => fs.existsSync(path.join(dir, n))).map((n) => fs.readFileSync(path.join(dir, n), 'utf8').replace(/\r\n/g, '\n')).join('\n');
     const a = src.indexOf('/* EDITHOST-BEGIN */'), b = src.indexOf('/* EDITHOST-END */'); if (a < 0 || b < 0) throw new Error('找不到 EDITHOST 標記');
     src = src.slice(0, a) + '/* EDITHOST-BEGIN */\n' + host + '\n' + src.slice(b);
     console.log('已更新 FaEditHost（' + host.length + ' 字元）');

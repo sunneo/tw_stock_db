@@ -6,6 +6,7 @@
 //   FaEditShell.mount({ id, kind, title, W, spec, state, host, container, restoring, tabs:[{id,label}], build(ctx) -> { tabs:{id:element}, properties?:element, refresh(spec, selectedId), bar?:[elements] },
 //                       objectInfo?(obj) -> small text, objectIcon?(obj) -> glyph, parseCommands?(text, spec) -> { edits, unmatched }, exports:[{id,label,chat?:true}], runExport(id, spec) -> Promise<{blob,name}>,
 //                       build's result may have env() -> { view:{x,y,w,h} } (where the user is looking: 'place relative to the view'),
+//                       collab?: 多人同編的轉接器 { spec(), diff(a,b), propose(patch,meta)->Promise<{ok,rejected,error,queued}>, undo(), redo(), undoable(), redoable(), members(), color(name), status(), queued(), presence(sel), on(evt,fn) 事件 commit/reset/members/status/presence/closed }：有的話文件由主持機編號，commit 先送出、等 commit 事件回來才記成一步（各人只復原自己的步驟）,
 //                       promptOf?(spec, steps) -> text, placeholder, intro, extraPrompt?, windowKey?,
 //                       previewEdits?({spec0, next, edits, words, rejected}) -> Promise<boolean> (what the AI changed is shown first; true = apply, false = take it back), confirmRemove?(obj, spec) -> boolean,
 //                       treeRows?(spec, collapsed) -> [{obj, depth}] (a TREE in the objects view, parents before children; groups fold), onObjectOpen?(obj) (double click on a row: the editor opens the object by itself instead of renaming it) }) -> element with el._ed = { getState, reload, setSpec, undo, redo, send(text), select(id), getSpec, ctx }
@@ -35,7 +36,7 @@
     try { dark = !!(host.palette && host.palette().dark); } catch (e) { dark = false; }
     if (dark) { el.className += ' dark'; }
     if (!document.getElementById('few-css')) { var st0 = document.createElement('style'); st0.id = 'few-css'; st0.textContent = CSS; (document.head || document.documentElement).appendChild(st0); }
-    var S = { v: 1, ptr: 0, states: [], log: [] }, midTab = (opt.tabs[0] || {}).id, rightTab = 'ai', selected = null, pending = [], busy = false, saveT = null, newIds = {}, editor = null, selFns = [];
+    var S = { v: 1, ptr: 0, states: [], log: [] }, midTab = (opt.tabs[0] || {}).id, rightTab = 'ai', selected = null, pending = [], busy = false, saveT = null, newIds = {}, editor = null, selFns = [], collab = null, pendSel = null, remoteSel = {}, selT = null;
     function initState(state, spec) {
       if (state && Array.isArray(state.states) && state.states.length) {
         S = { v: 1, ptr: Math.max(0, Math.min(state.states.length - 1, state.ptr | 0)), states: state.states.slice(-MAXSTATES).map(function (x) { return { spec: W.validate(x.spec).spec, summary: x.summary || '', text: x.text || '', kind: x.kind || 'panel', t: x.t || 0, by: x.by || undefined }; }), log: Array.isArray(state.log) ? state.log.slice(-60) : [] };
@@ -45,7 +46,25 @@
     function cur() { return S.states[S.ptr].spec; }
     function getState() { var st = { v: 1, ptr: S.ptr, states: S.states, log: S.log.slice(-60) }; try { while (JSON.stringify(st).length > 3000000 && st.states.length > 2) { st.states = st.states.slice(1); st.ptr = Math.max(0, st.ptr - 1); } } catch (e) { /* keep */ } return st; }
     function persist() { clearTimeout(saveT); saveT = setTimeout(function () { try { if (host.save) { host.save(getState()); } } catch (e) { /* this change still counts */ } }, 400); }
-    function commit(spec, summary, text, kind, by) { S.states = S.states.slice(0, S.ptr + 1); S.states.push({ spec: W.validate(spec).spec, summary: summary || '', text: text || '', kind: kind || 'panel', t: Date.now(), by: by || undefined }); if (S.states.length > MAXSTATES) { S.states.shift(); } S.ptr = S.states.length - 1; render(); persist(); }
+    function pushState(spec, summary, text, kind, by) { S.states = S.states.slice(0, S.ptr + 1); S.states.push({ spec: W.validate(spec).spec, summary: summary || '', text: text || '', kind: kind || 'panel', t: Date.now(), by: by || undefined }); if (S.states.length > MAXSTATES) { S.states.shift(); } S.ptr = S.states.length - 1; render(); persist(); if (pendSel && W.find(cur(), pendSel) >= 0) { var ps = pendSel; pendSel = null; select(ps); } }
+    // 單人：直接記成一步。多人：算出 id 定址的 patch 交給主持機編號，等 commit 事件回來才記（含自己的），被略過的動作回報在聊天框
+    function commit(spec, summary, text, kind, by) {
+      if (!collab) { pushState(spec, summary, text, kind, by); return; }
+      var next = W.validate(spec).spec, patch = collab.diff(cur(), next); if (!patch.length) { return; }
+      var k = kind || 'panel', meta = { summary: summary || '', text: text || '', kind: k, src: by && by.src === 'ai' ? 'ai' : (k === 'chat' || k === 'image' ? 'ai' : 'user'), exec: by && by.exec, req: by && by.req };
+      return Promise.resolve(collab.propose(patch, meta)).then(function (r) { collabReply(r); return r; });
+    }
+    function collabReply(r) {
+      if (!r) { return; }
+      if (r.queued) { stat.textContent = '⚠️ ' + (r.error || '主持機離線，已暫存'); renderCollab(); return; }
+      if (!r.ok) { var why = r.error === 'readonly' ? '你在這個共編裡是唯讀的' : (r.error === 'all-rejected' ? '這個改動套不上去（對象已被別人刪掉或改掉了）' : (r.error || '沒有成功')); stat.textContent = '✗ ' + why; addMsg('ai', '✗ ' + why, [], (r.rejected || []).slice(0, 4).map(function (x) { return '✗ ' + x.op + '：' + x.error; })); return; }
+      if (r.rejected && r.rejected.length) { addMsg('ai', '有 ' + r.rejected.length + ' 個動作因為別人已改過而略過', [], r.rejected.slice(0, 4).map(function (x) { return '✗ ' + x.op + '：' + x.error; })); }
+    }
+    function onCollabCommit(c) {
+      var k = c.kind === 'undo' || c.kind === 'redo' ? c.kind : (c.kind && c.kind !== 'edit' ? c.kind : 'panel');
+      if (c.text && c.by && !(host.selfName && c.by.name === host.selfName() && c.by.src !== 'ai')) { var lm = { role: 'user', text: c.text, by: c.by }; S.log.push(lm); addMsg('user', lm.text, [], [], lm.by); }
+      pushState(collab.spec(), c.summary || '', c.text || '', k, c.by);
+    }
     function env() { var e = {}; try { e = editor && editor.env ? (editor.env() || {}) : {}; } catch (x) { e = {}; } e.selection = selected; return e; }
     function apply(edits, summary, text, kind) {
       var r = W.applyEdits(cur(), edits, env()); if (!r.applied.length) { return r; }
@@ -54,9 +73,18 @@
       commit(r.spec, words, text, kind); if (r.added && r.added.length) { select(r.added[r.added.length - 1]); }
       return r;
     }
-    function undo() { if (S.ptr > 0) { S.ptr--; render(); persist(); } }
-    function redo() { if (S.ptr < S.states.length - 1) { S.ptr++; render(); persist(); } }
-    function select(id) { selected = id || null; renderObjects(); if (editor && editor.refresh) { editor.refresh(cur(), selected); } selFns.forEach(function (f) { try { f(selected); } catch (e) { /* editor's problem */ } }); }
+    function undo() { if (collab) { Promise.resolve(collab.undo()).then(function (r) { if (r && !r.ok) { collabReply(r); } else if (!r) { stat.textContent = '沒有你自己的步驟可以復原'; } }); return; } if (S.ptr > 0) { S.ptr--; render(); persist(); } }
+    function redo() { if (collab) { Promise.resolve(collab.redo()).then(function (r) { if (r && !r.ok) { collabReply(r); } }); return; } if (S.ptr < S.states.length - 1) { S.ptr++; render(); persist(); } }
+    // 標題列：在線的人（色點＋名字，網頁加 🌐）與連線狀態
+    var collabEl = null;
+    function renderCollab() {
+      if (!collab) { return; } if (!collabEl) { collabEl = h('span', 'collab'); collabEl.style.cssText = 'display:inline-flex;gap:6px;align-items:center;font-size:12px;flex-wrap:wrap'; bar.insertBefore(collabEl, ttl.nextSibling); }
+      collabEl.textContent = ''; var ms = []; try { ms = collab.members() || []; } catch (e) { ms = []; }
+      ms.forEach(function (m) { var c = h('span', null, '● ' + (m.kind === 'web' ? '🌐 ' : '') + m.name + (m.host ? '（主持）' : '') + (m.readonly ? '（唯讀）' : '')); c.style.color = collab.color(m.name); c.title = m.name + (m.readonly ? '：唯讀' : ''); collabEl.appendChild(c); });
+      var st = ''; try { st = collab.status(); } catch (e) { st = ''; } var q = 0; try { q = collab.queued() || 0; } catch (e) { q = 0; }
+      if (st === 'offline') { collabEl.appendChild(h('span', null, '⚠️ 主持機離線' + (q ? '，' + q + ' 筆待同步' : ''))); } else if (st === 'closed') { collabEl.appendChild(h('span', null, '⛔ 共編已結束（本機副本保留）')); }
+    }
+    function select(id) { if (collab && id && W.find(cur(), id) < 0) { pendSel = id; return; } selected = id || null; if (collab) { clearTimeout(selT); selT = setTimeout(function () { try { collab.presence({ id: selected }); } catch (e) { /* 存在感只是提示 */ } }, 150); } renderObjects(); if (editor && editor.refresh) { editor.refresh(cur(), selected); } selFns.forEach(function (f) { try { f(selected); } catch (e) { /* editor's problem */ } }); }
 
     // ───── frame ─────
     var bar = h('div', 'bar'), ttl = h('span', 'ttl', opt.title), stat = h('span', 'st'), bUndo = h('button', null, '↶ 復原'), bRedo = h('button', null, '↷ 重做'), bSum = h('button', null, '📝 整理成 prompt'), bExp = h('select');
@@ -127,7 +155,7 @@
       rowsList.forEach(function (rr, k) {
         var o = rr.obj;
         var row = h('div', 'ob' + (o.id === selected ? ' sel' : '') + (o.visible ? '' : ' hid') + (newIds[o.id] ? ' new' : '')), ic = h('span', 'ic', opt.objectIcon ? opt.objectIcon(o) : '◻'), nm = h('span', 'nm');
-        row.setAttribute('data-id', o.id); nm.appendChild(document.createTextNode(o.name)); var info = opt.objectInfo ? opt.objectInfo(o) : o.type; if (info) { nm.appendChild(h('small', null, info)); }
+        row.setAttribute('data-id', o.id); nm.appendChild(document.createTextNode(o.name)); if (collab) { Object.keys(remoteSel).forEach(function (nid) { var rs = remoteSel[nid]; if (rs.id === o.id) { var dot = h('span', null, '●'); dot.style.color = collab.color(rs.name); dot.title = rs.name + ' 選取中'; nm.appendChild(dot); } }); } var info = opt.objectInfo ? opt.objectInfo(o) : o.type; if (info) { nm.appendChild(h('small', null, info)); }
         var eye = h('button', null, o.visible ? '👁' : '—'), lock = h('button', null, o.locked ? '🔒' : '🔓'), tb = h('span', 'tb'), up = h('button', null, '▲'), dn = h('button', null, '▼'), dup = h('button', null, '⧉'), del = h('button', null, '🗑');
         eye.title = '顯示／隱藏'; lock.title = '鎖定／解鎖'; up.title = treeRows ? '往上移' : '往上一層'; dn.title = treeRows ? '往下移' : '往下一層'; dup.title = '複製'; del.title = '刪除';
         if (treeRows) { row.style.paddingLeft = (6 + rr.depth * 14) + 'px'; if (o.type === 'group') { ic.textContent = collapsed[o.id] ? '▸' : '▾'; ic.style.cursor = 'pointer'; ic.title = '收合／展開'; ic.onclick = function (ev) { ev.stopPropagation(); collapsed[o.id] = !collapsed[o.id]; renderObjects(); }; } }
@@ -150,7 +178,7 @@
     }
 
     // ───── history ─────
-    function renderHist() { var p = rp.hist; p.textContent = ''; p.appendChild(h('div', 'st', '點一步就回到那一步（之後的步驟還在，可以重做）：')); S.states.forEach(function (s, i) { var d = h('div', i === S.ptr ? 'cur' : (i > S.ptr ? 'fut' : ''), (i + 1) + '. ' + (byLabel(s.by) ? '[' + byLabel(s.by) + '] ' : '') + (s.summary || '（沒有說明）') + (s.text ? '　— 「' + s.text.slice(0, 30) + '」' : '')); d.onclick = function () { S.ptr = i; render(); persist(); }; p.appendChild(d); }); }
+    function renderHist() { var p = rp.hist; p.textContent = ''; p.appendChild(h('div', 'st', collab ? '共同編輯的歷史（每一步都標了是誰；復原只會復原你自己的步驟）：' : '點一步就回到那一步（之後的步驟還在，可以重做）：')); S.states.forEach(function (s, i) { var d = h('div', i === S.ptr ? 'cur' : (i > S.ptr ? 'fut' : ''), (i + 1) + '. ' + (byLabel(s.by) ? '[' + byLabel(s.by) + '] ' : '') + (s.summary || '（沒有說明）') + (s.text ? '　— 「' + s.text.slice(0, 30) + '」' : '')); if (!collab) { d.onclick = function () { S.ptr = i; render(); persist(); }; } p.appendChild(d); }); }
 
     // ───── AI chat (pictures can be pasted / dropped in) ─────
     var logEl = h('div', 'log'), attEl = h('div', 'att'), inRow = h('div', 'row'), ta = h('textarea'), bAtt = h('button', null, '📎'), bSend = h('button', 'pri', '送出'), file = h('input'); file.type = 'file'; file.accept = 'image/*'; file.multiple = true; file.style.display = 'none';
@@ -197,7 +225,7 @@
 
     // ───── prompt, export ─────
     // the steps that count: the ones up to the current position (an undone step is never in it) that really changed the document and carry what the user said
-    function effectiveSteps() { return S.states.slice(0, S.ptr + 1).filter(function (s) { return s.kind !== 'start' && s.kind !== 'undo' && (s.text || s.summary); }); }
+    function effectiveSteps() { return S.states.slice(0, S.ptr + 1).filter(function (s) { return s.kind !== 'start' && s.kind !== 'undo' && s.kind !== 'redo' && (s.text || s.summary); }); }
     function defaultPrompt(spec, steps) {
       var L = ['請做一份「' + spec.title + '」，畫布 ' + spec.canvas.w + '×' + spec.canvas.h + '，背景 ' + spec.canvas.bg + '。', '', '物件（由下到上）：'];
       spec.objects.forEach(function (o, i) { L.push((i + 1) + '. ' + o.name + '（' + o.type + '）' + (opt.objectInfo ? ' ' + opt.objectInfo(o) : '')); });
@@ -225,17 +253,29 @@
     el.addEventListener('keydown', function (ev) { var tag = ev.target && ev.target.tagName; if ((tag === 'TEXTAREA' || tag === 'INPUT' || tag === 'SELECT') && ev.target !== el) { return; } if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && ev.key.toLowerCase() === 'z') { ev.preventDefault(); undo(); } else if ((ev.ctrlKey || ev.metaKey) && (ev.key.toLowerCase() === 'y' || (ev.shiftKey && ev.key.toLowerCase() === 'z'))) { ev.preventDefault(); redo(); } else if ((ev.key === 'Delete' || ev.key === 'Backspace') && selected && tag !== 'TEXTAREA' && tag !== 'INPUT') { ev.preventDefault(); apply([{ op: 'remove_object', id: selected }], '刪掉物件 ' + selected, '', 'panel'); } });
     el.tabIndex = 0;
     function render() {
-      renderObjects(); renderHist(); bUndo.disabled = S.ptr === 0; bRedo.disabled = S.ptr >= S.states.length - 1; stat.textContent = '第 ' + (S.ptr + 1) + '／' + S.states.length + ' 步';
+      renderObjects(); renderHist(); if (collab) { bUndo.disabled = !collab.undoable(); bRedo.disabled = !collab.redoable(); renderCollab(); } else { bUndo.disabled = S.ptr === 0; bRedo.disabled = S.ptr >= S.states.length - 1; } stat.textContent = '第 ' + (S.ptr + 1) + '／' + S.states.length + ' 步';
       if (selected && W.find(cur(), selected) < 0) { selected = null; renderObjects(); }
       showTabs(); if (editor && editor.refresh) { editor.refresh(cur(), selected); }
     }
     var ctx = { el: el, W: W, host: host, getSpec: function () { return cur(); }, commit: commit, apply: apply, select: select, selected: function () { return selected; }, onSelect: function (f) { selFns.push(f); }, say: function (t) { stat.textContent = t; setTimeout(function () { if (stat.textContent === t) { stat.textContent = ''; } }, 3500); }, undo: undo, redo: redo, bar: bar, setTab: function (id) { midTab = id; showTabs(); }, setProps: function (e) { prop.textContent = ''; if (e) { prop.appendChild(e); } prop.style.display = e ? '' : 'none'; } };
     initState(opt.state, opt.spec); renderLog();
     editor = opt.build(ctx) || {}; opt.tabs.forEach(function (t) { if (editor.tabs && editor.tabs[t.id]) { mp[t.id].appendChild(editor.tabs[t.id]); } }); (editor.bar || []).forEach(function (x) { bar.insertBefore(x, bUndo); });
+    // 接上多人同編（開著的編輯器也能中途開始分享；之後文件由主持機編號）
+    function attachCollab(c) {
+      if (collab === c) { return; } collab = c; if (!collab) { return; }
+      collab.on('commit', onCollabCommit); collab.on('reset', function () { pushState(collab.spec(), '重新跟主持機同步', '', 'remote'); }); collab.on('members', function () { renderCollab(); });
+      collab.on('status', function () { renderCollab(); }); collab.on('closed', function (why) { renderCollab(); stat.textContent = why || '共編已結束'; });
+      collab.on('presence', function (p) { if (!p || !p.by) { return; } remoteSel[p.by.nodeId] = { id: p.sel && p.sel.id, name: p.by.name }; renderObjects(); });
+      render();
+    }
+    function detachCollab() { collab = null; remoteSel = {}; if (collabEl) { collabEl.remove(); collabEl = null; } render(); }
+    // 標題列的「👥 共編」：分享這個編輯器給群組，或看目前的共編狀態（host.collabUi 由桌面版提供，沒有就不顯示）
+    var bCo = null; if (host.collabUi) { bCo = h('button', null, '👥 共編'); bCo.title = '跟群組裡別台機器一起編輯這個文件：每個人都有完整副本，由主持機排序；各人只復原自己的步驟'; bCo.onclick = function () { try { host.collabUi.open(el); } catch (e) { stat.textContent = '共編：' + String((e && e.message) || e).slice(0, 80); } }; bar.insertBefore(bCo, bSum); }
+    if (opt.collab || host.collab) { attachCollab(opt.collab || host.collab); }
     if (opt.container) { opt.container.appendChild(el); }
     var WIN = opt.windowApi || (typeof FaWin !== 'undefined' ? FaWin : null), win = WIN && WIN.decorate ? WIN.decorate(el, { id: opt.kind + ':' + (opt.id || ''), title: opt.title, bar: bar, minW: 720, minH: 460 }) : null; el._win = win;
     render();
-    el._ed = { editor: editor, getState: getState, reload: function (state) { initState(state, null); renderLog(); render(); }, setSpec: function (spec, summary) { commit(spec, summary || '由對話修改', '', 'chat'); }, undo: undo, redo: redo, send: function (t) { ta.value = t; return send(); }, select: select, getSpec: function () { return cur(); }, env: env, ctx: ctx, effectiveSteps: effectiveSteps, addImages: function (list) { list.forEach(function (x) { if (pending.length < 3) { pending.push(x); } }); renderAtt(); }, snapshot: function () { return opt.runExport ? opt.runExport('png', W.validate(cur()).spec) : Promise.resolve(null); }, destroy: function () { try { if (editor && editor.destroy) { editor.destroy(); } } catch (e) { /* gone */ } } };
+    el._ed = { attachCollab: attachCollab, detachCollab: detachCollab, editor: editor, getState: getState, reload: function (state) { initState(state, null); renderLog(); render(); }, setSpec: function (spec, summary) { commit(spec, summary || '由對話修改', '', 'chat'); }, undo: undo, redo: redo, send: function (t) { ta.value = t; return send(); }, select: select, getSpec: function () { return cur(); }, env: env, ctx: ctx, effectiveSteps: effectiveSteps, addImages: function (list) { list.forEach(function (x) { if (pending.length < 3) { pending.push(x); } }); renderAtt(); }, snapshot: function () { return opt.runExport ? opt.runExport('png', W.validate(cur()).spec) : Promise.resolve(null); }, destroy: function () { try { if (editor && editor.destroy) { editor.destroy(); } } catch (e) { /* gone */ } } };
     return el;
   }
   return { mount: mount, CSS: CSS };
