@@ -46,6 +46,7 @@
         }
         if (edits.length && !text) return { say, edits, notes };
         if (!text) return { say, edits, notes };
+        if (this._edIsOffline() && this._edOfflineDocs) return this._edOfflineDocs('text', req, status).then((r) => ({ say: say ? say + ';' + r.say : r.say, edits: edits.concat(r.edits), notes: notes.concat(r.notes) }));   // 離線：整套 harness（不讓離線小模型自己寫 JSON）
         if (!A.have()) return { say: T('這句話程式沒有讀懂,而且目前沒有可用的 AI;可以雙擊區塊直接改,或說程式讀得懂的句子:「把第 2 段改成…」「在最後加一段:…」「把「舊」全部換成「新」」「刪掉第 3 段」。', 'The program did not understand this and there is no AI; double-click a block to edit it, or use a sentence like "replace X with Y".'), edits, notes };
         status(T('想一想怎麼改…', 'Working out the changes…'));
         const offline = this._edIsOffline(), Pm = C.editPrompt(C.applyEdits(spec, edits, {}).spec, text, sel, { budget: offline ? 3500 : 9000 });

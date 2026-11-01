@@ -414,7 +414,9 @@ function embedVideoEdit() {
     const rd = (n) => fs.readFileSync(path.join(dir, n + '.js'), 'utf8').replace(/\r\n/g, '\n'); const parts = [];
     // 這些檔案是 UMD／(function (root) {…}(window)):module 設成 undefined,走「掛到 self(window)」那條路
     for (const fn of ['video_edit_core', 'video_timeline', 'video_plans', 'video_semantics', 'video_jobs', 'video_intent', 'video_source_picker', 'video_tts_dialog', 'video_edit_ai', 'video_edit_ui']) parts.push('(function (module) {\n' + rd(fn) + '\n}).call(window, undefined);');
+    parts.push('(function (module) {\n' + fs.readFileSync(path.join(root, 'renderer/src/edit/doc_semantics.js'), 'utf8').replace(/\r\n/g, '\n') + '\n}).call(window, undefined);');   // 表格／文字／Word 的離線 harness 領域（要在 HARNESS 之後）
     parts.push(rd('video_host'));
+    parts.push(fs.readFileSync(path.join(root, 'renderer/src/edit/docs_offline_host.js'), 'utf8').replace(/\r\n/g, '\n'));
     let a = src.indexOf('/* VIDEOEDIT-BEGIN */'), b = src.indexOf('/* VIDEOEDIT-END */');
     if (a < 0 || b < 0) { const e = src.indexOf('/* DECKEDIT-END */'); if (e < 0) throw new Error('找不到 DECKEDIT-END 標記'); const at = e + '/* DECKEDIT-END */'.length; src = src.slice(0, at) + '\n/* VIDEOEDIT-BEGIN */\n/* VIDEOEDIT-END */' + src.slice(at); a = src.indexOf('/* VIDEOEDIT-BEGIN */'); b = src.indexOf('/* VIDEOEDIT-END */'); }
     src = src.slice(0, a) + '/* VIDEOEDIT-BEGIN */\n' + parts.join('\n') + '\n' + src.slice(b);

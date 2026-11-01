@@ -34,6 +34,7 @@
         req = req || {}; const A = this._edAi(), C = FaEditDocx, spec = C.validate(req.spec).spec, text = String(req.text || '').trim(), notes = [], edits = [], status = typeof req.onStatus === 'function' ? req.onStatus : () => {}; let say = '';
         const sel = req.selection || (req.env && req.env.selection) || null;
         if (!text) return { say, edits, notes };
+        if (this._edIsOffline() && this._edOfflineDocs) return this._edOfflineDocs('doc', req, status);   // 離線：整套 harness（不讓離線小模型自己寫 JSON）
         if (!A.have()) return { say: T('這句話程式沒有讀懂,而且目前沒有可用的 AI;可以雙擊區塊直接改,或說程式讀得懂的句子:「把第 2 段改成…」「把第 3 段改成粗體」「在最後加一段:…」「把「舊」全部換成「新」」。', 'I could not read that and no AI is available; edit a block directly or use a plain command.'), edits, notes };
         status(T('想一想怎麼改…', 'Working out the changes…'));
         const offline = this._edIsOffline(), Pm = C.editPrompt(spec, text, sel, { budget: offline ? 3500 : 9000 });

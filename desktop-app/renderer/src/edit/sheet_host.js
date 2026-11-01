@@ -50,6 +50,7 @@
         req = req || {}; const A = this._edAi(), C = FaEditSheet, spec = C.validate(req.spec).spec, text = String(req.text || '').trim(), notes = [], edits = [], status = typeof req.onStatus === 'function' ? req.onStatus : () => {}; let say = '';
         const sel = req.selection || (req.env && req.env.selection) || null;
         if (!text) return { say, edits, notes };
+        if (this._edIsOffline() && this._edOfflineDocs) return this._edOfflineDocs('sheet', req, status);   // 離線：整套 harness（不讓離線小模型自己寫 JSON）
         if (!A.have()) return { say: T('這句話程式沒有讀懂,而且目前沒有可用的 AI;可以直接在表格上改,或說程式讀得懂的句子:「把 B 欄由大到小排序」「刪掉空白列」「B2 改成 99」「在最後加一欄「總價」」。', 'I could not read that and no AI is available; edit the grid directly or use a plain command.'), edits, notes };
         status(T('想一想怎麼改…', 'Working out the changes…'));
         const Pm = C.editPrompt(spec, text, sel, { budget: this._edIsOffline() ? 3500 : 9000 });
