@@ -92,3 +92,7 @@ Roland SC-88 的資料只當大小目標，不抽取、不轉換。注意：pian
 - **Demucs 6 軌 fp16 權重版**：136,428,532 位元組，SHA-256 7ce55792…6869；輸入 `mix` `[1,2,343980]`、輸出 `stems` `[1,6,2,343980]`，順序 drums、bass、other、vocals、guitar、piano（模型卡）。原生 onnxruntime CPU 7.8 秒音訊約 11 秒。**瀏覽器：圖形最佳化開（預設）時 wasm 與 WebGPU 都建不起工作階段（「Aborted()」），把最佳化關掉（`graphOptimizationLevel:'disabled'`）wasm 才能載入：載入約 29 秒、單段（7.8 秒）推論約 42 秒（單執行緒，窗格被隱藏時可能偏慢）；WebGPU 在這台機器關掉最佳化也失敗。** 所以拆軌只有 wasm，三分鐘的歌約要 20 分鐘；預設不拆，使用者要求「拆軌」才下載。分軌用合成的正弦波測試，真實音樂的分離品質未驗證。
 - 下載：8 MB 分片存 IndexedDB，重新整理後從快取載入（實測 17 片全部 resumed），SHA-256 在瀏覽器核對通過。
 - 測試頁：`scripts/music-tests/a2m-browser.html?m=basic-pitch|yamnet|demucs-6s&ep=wasm|webgpu[&opt=disabled]`（要用本機伺服器開）。
+
+
+## 音色庫取代原版（2026-11-01）
+使用者決定用瘦身版（22 kHz、SF3 品質 3、6.6 MB，scripts/sf-slim.js --max-rate=22050 --sf3 --hi-share-db=-35）取代 32 MB 原版當預設，並接受七項波形門檻中 10 個位置未過：頻譜距離 GM 72、5、12、15；重心位移 GM 61、116、7、88；包絡相關 GM 110、83；高頻損失 GM 42（9.4 dB）。分片放在 soundfont-assets 分支 commit 9ee509dd06ec0e9c0bcebaaea7c7645294a5edff（單片，md5 c6f01d650e1ba739f1a7c84bacf2d661），floating-assistant.js 的 FA_ASSET_URLS.gsSoundbankBase 指向它，失敗時退回原始 sf2 網址。重現與進一步改善見 DESIGN.TODO.music.md「音色庫驗證結果」。

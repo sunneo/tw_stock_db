@@ -47492,8 +47492,8 @@ const FA_ASSET_URLS = {
     spessaLib: './vendor/spessasynth/spessasynth-lib.js',
     spessaProcessor: './vendor/spessasynth/spessasynth-processor.min.js',
     gsSoundbank: 'https://raw.githubusercontent.com/mrbumpy409/GeneralUser-GS/main/GeneralUser-GS.sf2',
-    // 分片音色庫(soundfont-assets 分支,scripts/sf-pack.js 產生,每片 <= 8 MB):填入「完整 commit SHA」的 raw 網址才啟用,空字串就只用上面的原始網址
-    gsSoundbankBase: '',
+    // 分片音色庫(soundfont-assets 分支,scripts/sf-pack.js 產生,每片 <= 8 MB):瘦身版 22 kHz SF3(6.6 MB,2026-11-01 使用者接受 10 個位置未過波形門檻,見 DESIGN.music.md);base 用完整 commit SHA 釘住,失敗時退回上面的原始網址
+    gsSoundbankBase: 'https://raw.githubusercontent.com/sunneo/tw_stock_db/9ee509dd06ec0e9c0bcebaaea7c7645294a5edff/',
     // tw_stock_db客製: 2026-09-06使用者要求——3D場景匯出成H.264 MP4影片。
     // 純JS的MP4 muxer（把WebCodecs VideoEncoder吐出的H.264 chunk包成真正的
     // .mp4容器，不需要ffmpeg.wasm那種幾十MB的重量級wasm），global-attaching
@@ -73566,7 +73566,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     _midiSources() {
         let lib = FA_ASSET_URLS.spessaLib, proc = FA_ASSET_URLS.spessaProcessor;
         try { const base = typeof window !== 'undefined' && window.__FA_LAZY_BASE; if (base && /^https?:/i.test(base)) { lib = new URL('../../renderer/vendor/spessasynth/spessasynth-lib.js', base).href; proc = new URL('../../renderer/vendor/spessasynth/spessasynth-processor.min.js', base).href; } } catch (_) { /* */ }
-        const bank = []; if (FA_ASSET_URLS.gsSoundbankBase) bank.push({ base: FA_ASSET_URLS.gsSoundbankBase, path: 'GeneralUser-GS.sf2' }); bank.push(FA_ASSET_URLS.gsSoundbank);
+        const bank = []; if (FA_ASSET_URLS.gsSoundbankBase) bank.push({ base: FA_ASSET_URLS.gsSoundbankBase, path: 'GeneralUser-GS-22k.sf3' }); bank.push(FA_ASSET_URLS.gsSoundbank);
         return { lib: [lib], processor: [proc], soundbank: bank };
     }
     _midiB64(bytes) { let b = ''; for (let i = 0; i < bytes.length; i += 0x8000) b += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(b); }

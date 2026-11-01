@@ -26,7 +26,9 @@ Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app
 - 限制：獨立遊戲包不帶配樂（退回風格合成）；影片剪短後配樂不跟著變短；簡報拖進度時配樂重接，未做旁白時壓低；階段 7 依使用者指示暫緩。
 
 ### 音色庫驗證結果（handoff 7，2026-11-01，**最新**）
-- **結論：七項波形門檻沒有全過，所以沒有推 soundfont-assets、沒有填 gsSoundbankBase，原版繼續當預設。**
+- **結論（已更新）：七項波形門檻沒有全過（10 個位置），但使用者 2026-11-01 決定接受，用最好的一版（22 kHz、SF3 品質 3、6.6 MB）取代原版。已推到 soundfont-assets 分支（commit 9ee509dd06ec0e9c0bcebaaea7c7645294a5edff，單片 GeneralUser-GS-22k.sf3.part000，md5 c6f01d650e1ba739f1a7c84bacf2d661，sha256 與清單一致），FA_ASSET_URLS.gsSoundbankBase 已填，原始 sf2 網址保留當退路。桌面版沒有放進 live patch 清單。**
+- 使用者接受的未過位置：頻譜距離 GM 72、5、12、15；重心位移 GM 61、116、7、88；包絡相關 GM 110、83；高頻損失 GM 42。
+- 驗證（內建瀏覽器、本機伺服器）：開 renderer/index.html 後資源請求清單沒有 sf2／sf3／spessasynth 檔；第一次播放才出現 spessasynth-processor、spessasynth-lib、manifest.json、GeneralUser-GS-22k.sf3.part000，進度訊息「下載音色庫 第 1 / 1 片」到「就緒」；遠端這一片的 md5 與清單一致。沒驗證：快取後離線播放、桌面版（桌面版同一段程式，沒另外跑）。
 - 新增：sf-compare.html 改成七項（靜音、均方根差 ≤3 dB、11 kHz 以下對數頻譜距離 ≤5 dB、重心位移 ≤12%、包絡相關 ≥0.9、接縫爆音、高頻損失清單）；sf-loop.js 加逐樣本波形檢查（改 loop 的樣本照 loop 播放比頻譜與重心，不過就退回原樣本）與高頻分級（11 kHz 以上能量多的樣本不降取樣，用 --hi-share-db=-35）；sf-slim.js 不動兩類樣本：sampleModes=3（鬆鍵後繼續播 loop 後尾段）與用到起訖／loop 位移產生器的（共 135 個）。這兩類被截尾是上一版 GM 35 等大量失敗的原因，修完 131 個比對位置從 44 個失敗降到 10 個。
 - 目前最好一版（22 kHz、SF3 品質 3、6.6 MB）：沒有靜音、沒有接縫爆音、高頻損失只剩 GM 42（9.4 dB）。**仍未過的 10 項**：頻譜距離 GM 72（7.4）、GM 5（7.1）、GM 12（6.9）、GM 15（5.0）；重心位移 GM 61（32%）、GM 116（14%）、GM 7（41%）、GM 88（39%）；包絡相關 GM 110（0.58）、GM 83（0.65）。提高 SF3 品質到 7（8.9 MB）只修好 GM 15 並多出 GM 9，所以不是壓縮品質，是降取樣或剩下的 loop 處理造成。
 - 下一步（若要繼續）：對這幾個音色的樣本逐一用 --max-rate 不降、--no-add-loop 試，看是哪一步造成；重現指令：node scripts/sf-slim.js 原版.sf2 輸出.sf3 --max-rate=22050 --sf3 --hi-share-db=-35，再 node 小伺服器開 scripts/music-tests/sf-compare.html?a=原版&b=輸出&from=0&to=128。

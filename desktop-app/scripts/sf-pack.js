@@ -8,10 +8,10 @@ const args = process.argv.slice(2), pos = args.filter((a) => !a.startsWith('--')
 args.filter((a) => a.startsWith('--')).forEach((a) => { const m = /^--([^=]+)=(.*)$/.exec(a); if (m) opt[m[1]] = m[2]; });
 if (pos.length < 2) { console.error('用法: node scripts/sf-pack.js <音色庫檔> <輸出目錄> [--path=名稱] [--part-mb=8] [--version=1]'); process.exit(1); }
 const src = pos[0], out = pos[1], rel = opt.path || path.basename(src), partBytes = Math.floor(Number(opt['part-mb'] || 8) * 1000 * 1000);
-const sha = (b) => crypto.createHash('sha256').update(b).digest('hex'); const data = fs.readFileSync(src);
+const sha = (b) => crypto.createHash('sha256').update(b).digest('hex'), md5 = (b) => crypto.createHash('md5').update(b).digest('hex'); const data = fs.readFileSync(src);
 if (data.slice(0, 4).toString() !== 'RIFF') { console.error('不是 sf2/RIFF 檔'); process.exit(1); }
-fs.mkdirSync(out, { recursive: true }); const ent = { path: rel, version: Number(opt.version || 1), size: data.length, sha256: sha(data), parts: 0, partSize: [], partSha256: [] };
-for (let off = 0, i = 0; off < data.length; off += partBytes, i++) { const b = data.subarray(off, off + partBytes); fs.writeFileSync(path.join(out, rel + '.part' + String(i).padStart(3, '0')), b); ent.parts++; ent.partSize.push(b.length); ent.partSha256.push(sha(b)); }
+fs.mkdirSync(out, { recursive: true }); const ent = { path: rel, version: Number(opt.version || 1), size: data.length, sha256: sha(data), md5: md5(data), parts: 0, partSize: [], partSha256: [], partMd5: [] };
+for (let off = 0, i = 0; off < data.length; off += partBytes, i++) { const b = data.subarray(off, off + partBytes); fs.writeFileSync(path.join(out, rel + '.part' + String(i).padStart(3, '0')), b); ent.parts++; ent.partSize.push(b.length); ent.partSha256.push(sha(b)); ent.partMd5.push(md5(b)); }
 const mp = path.join(out, 'manifest.json'); let man = { schema: 1, files: [] }; try { man = JSON.parse(fs.readFileSync(mp, 'utf8')); } catch (_) { /* 新的 */ }
 man.files = (man.files || []).filter((x) => x.path !== rel).concat([ent]); fs.writeFileSync(mp, JSON.stringify(man, null, 1));
 console.log('已切成 ' + ent.parts + ' 片,最大 ' + Math.max.apply(null, ent.partSize) + ' 位元組,sha256 ' + ent.sha256.slice(0, 12) + '…');
