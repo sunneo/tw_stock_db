@@ -922,6 +922,14 @@
    "size": 7249,
    "md5": "61a63eef3f05840fedc5bcf6927ded8b"
   },
+  "musiccompose": {
+   "file": "chunks/musiccompose.js",
+   "names": [
+    "FaMidiCompose"
+   ],
+   "size": 8090,
+   "md5": "6e5323a8c7614346cbe2055af1a5651d"
+  },
   "musicui": {
    "file": "chunks/musicui.js",
    "names": [
@@ -1012,7 +1020,7 @@
   }
  },
  "core": {
-  "size": 5148109,
-  "md5": "c359e833b65c024f9e5034791a16e4fd"
+  "size": 5150763,
+  "md5": "7175417d7aee1fd432db75127aadd2be"
  }
 }

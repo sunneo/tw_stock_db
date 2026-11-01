@@ -65,3 +65,9 @@ Roland SC-88 的資料只當大小目標，不抽取、不轉換。注意：pian
 **已實測(內建瀏覽器、本機伺服器):** 離線渲染一段 4 音的短曲有聲(峰值 0.096,非靜音取樣 5 萬點);播放卡片按播放後 12 個音符事件全部送出、播完按鈕復位、下載 MIDI 回傳 228 位元組。**踩到的坑:** 離線渲染必須在送完事件後等一下(事件經訊息埠非同步送進處理器執行緒,馬上渲染會是靜音);已在 `renderOffline` 加等待。
 **未驗證:** (1) 在真正的桌面版／網頁版裡的整條流程(工具呼叫→卡片→播放);(2) `midi_to_mp3` 的 mp3 編碼(沿用 `_encodeMp3`,lamejs 從 CDN 載入);(3) 網頁版的合成器程式庫路徑(由延遲載入基底網址往上兩層推算 `renderer/vendor/spessasynth/`,若實際發佈的目錄結構不同會顯示載入失敗);(4) 聽感(只驗證有聲,沒有人聽過)。
 **階段 1 剩下:** 遠端卡片屬階段 2;MIDI 轉 mp3 的真機驗證;`FEATURES.md` 加一條音樂功能(該檔目前有別的工作階段的未提交修改,等它提交後再加)。
+
+## 音色庫分片與延遲載入（2026-11-01）
+- 現況：網頁版開頁**不會**載入合成器程式庫與音色庫；只有第一次播放／編輯試聽／轉 mp3 時 `loadSynth` 才下載（程式庫以文字抓取再用 data 位址載入，音色庫放 Cache Storage，第二次直接讀快取）。
+- 新增分片來源：`scripts/sf-pack.js <sf2> <輸出目錄> --path=GeneralUser-GS.sf2` 切成每片 ≤ 8 MB 並寫 `manifest.json`（長度與 sha256，整份與每片）；`FaMidiPlay.fetchParts` 逐片核對長度與檢查碼、每片單獨快取（中斷後只補缺的片）、合併後核對總大小。
+- **待做（需要推送，由管理層代發）**：把輸出目錄（附 GeneralUser GS 的 `LICENSE.txt`）用 git plumbing 單一 commit 強制推到 `soundfont-assets` 分支，拿到完整 commit SHA 後，把 `FA_ASSET_URLS.gsSoundbankBase` 填成 `https://raw.githubusercontent.com/sunneo/tw_stock_db/<完整SHA>/`，重建並發布；`gsSoundbankBase` 空字串時沿用原始網址（行為不變）。驗證：開頁網路請求清單沒有 sf2／sf3／spessasynth，第一次按播放才出現分片；快取後離線可播。
+- 桌面版：音色庫與程式庫不進 live patch manifest；網址相同時由 App 下載。階段 4 瘦身版沿用同一套（manifest 的 version 與 sha256）。
