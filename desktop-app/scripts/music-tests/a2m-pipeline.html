@@ -1,0 +1,17 @@
+<!doctype html><meta charset="utf8"><title>a2m pipeline test</title><body><pre id="o"></pre>
+<script src="/renderer/src/music/midi_core.js"></script><script src="/renderer/src/music/audio_to_midi.js"></script><script src="/renderer/src/music/audio_pipeline.js"></script><script src="/renderer/src/music/basic_pitch.js"></script><script src="/renderer/src/music/instrument_classify.js"></script><script src="/renderer/src/music/audio_models.js"></script><script src="/renderer/src/music/audio_runtime.js"></script>
+<script>
+// 真瀏覽器:整條流程(Basic Pitch ＋ YAMNet ＋ 流程分段)跑一首合成的 20 秒和弦＋旋律
+const log = (s) => { window.__log = (window.__log || '') + s + '\n'; };
+(async () => { try {
+  const R = FaAudioModels, mk = (id) => R.fetchModel(id, { fetchFn: (u, h) => fetch(u, { headers: h }), store: R.idbStore(), sha256: R.webSha256 });
+  const ort = await FaAudioRuntime.loadOrt();
+  const bp = await FaAudioRuntime.createSession(ort, await mk('basic-pitch'), ['wasm']), ym = await FaAudioRuntime.createSession(ort, await mk('yamnet'), ['wasm']);
+  const sr = 44100, x = new Float32Array(sr * 20);
+  const chords = [[60, 64, 67], [65, 69, 72], [67, 71, 74], [60, 64, 67]];
+  for (let b = 0; b < 40; b++) { const ch = chords[Math.floor(b / 10)]; ch.forEach((n) => { const f = 440 * Math.pow(2, (n - 69) / 12), o = Math.floor(b * 0.5 * sr); for (let i = 0; i < sr * 0.45; i++) { const tt = i / sr; x[o + i] += 0.2 * Math.exp(-tt * 3) * Math.min(1, tt / 0.01) * (Math.sin(2 * Math.PI * f * tt) + 0.4 * Math.sin(4 * Math.PI * f * tt)); } }); }
+  const t0 = performance.now(), ps = [];
+  const r = await FaAudioPipeline.run({ left: x, right: x, sampleRate: sr }, { transcriber: FaAudioRuntime.makeTranscriber(ort, bp.session), classifier: FaAudioRuntime.makeClassifier(ort, ym.session), onProgress: (p) => ps.push(p.message) });
+  log('ms ' + Math.round(performance.now() - t0) + ' tempo ' + JSON.stringify(r.tempo) + ' tracks ' + JSON.stringify(r.song.tracks.map((t) => [t.name, t.program, t.notes.length])) + ' report ' + JSON.stringify(r.report) + ' first ' + JSON.stringify(r.song.tracks[0].notes.slice(0, 6)));
+} catch (e) { log('ERROR ' + (e && e.stack || e)); } log('DONE'); })();
+</script>

@@ -1468,8 +1468,8 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     music: {
         enabled: true,
         label: '音樂(MIDI 播放、MIDI 轉 mp3、音樂知識:音階和弦節奏音域配器與各風格;音色一律用 GS 音色庫)',
-        toolNames: ['midi_play', 'midi_edit_open', 'midi_compose', 'midi_to_mp3', 'music_topic', 'list_uploaded_files', 'browser_search', 'fetch_web_page'],
-        systemPrompt: '你負責音樂:播放 MIDI、把 MIDI 轉成 mp3、回答音樂知識、依描述組一首短曲讓使用者聽。做法:0) 使用者要你作曲、寫一首曲子、做背景音樂 → midi_compose({description,或 style／key／tempo／bars})(程式依風格範本產生並檢查音域與跳進,結果直接進編輯器;不要自己一個音一個音寫,除非使用者給了明確的旋律);1) 使用者上傳了 .mid 檔 → midi_play({file_id}) 放播放卡片;要 mp3 → midi_to_mp3({file_id})。2) 要你寫一段曲子 → 先 music_topic 查需要的知識(和弦進行、音域、鼓型、風格),再自己組 song 呼叫 midi_play({song}):速度與拍號合風格,音高在樂器合理音域內,旋律音落在調內、強拍用和弦內音,貝斯彈根音,鼓用 drum:true 的軌(底鼓 36、小鼓 38、閉合踩鈸 42),每軌 program 用 GM 編號;小節數取 4 的倍數。3) 不確定某個風格的細節 → browser_search 查維基再回答,不要憑印象講數字。4) 音色只有 GS 音色庫的 GM 128 音色與鼓組;不能承諾做不到的(例如任意樂器分離、錄音轉譜目前還沒有)。5) 誠實說明:播放卡片第一次要下載約 31 MB 音色庫。',
+        toolNames: ['midi_play', 'midi_edit_open', 'midi_compose', 'midi_to_mp3', 'audio_to_midi', 'music_topic', 'list_uploaded_files', 'browser_search', 'fetch_web_page'],
+        systemPrompt: '你負責音樂:播放 MIDI、把 MIDI 轉成 mp3、把使用者上傳的 mp3/wav 轉成 MIDI(audio_to_midi,結果要誠實說沒做到的部分)、回答音樂知識、依描述組一首短曲讓使用者聽。做法:0) 使用者要你作曲、寫一首曲子、做背景音樂 → midi_compose({description,或 style／key／tempo／bars})(程式依風格範本產生並檢查音域與跳進,結果直接進編輯器;不要自己一個音一個音寫,除非使用者給了明確的旋律);1) 使用者上傳了 .mid 檔 → midi_play({file_id}) 放播放卡片;要 mp3 → midi_to_mp3({file_id})。2) 要你寫一段曲子 → 先 music_topic 查需要的知識(和弦進行、音域、鼓型、風格),再自己組 song 呼叫 midi_play({song}):速度與拍號合風格,音高在樂器合理音域內,旋律音落在調內、強拍用和弦內音,貝斯彈根音,鼓用 drum:true 的軌(底鼓 36、小鼓 38、閉合踩鈸 42),每軌 program 用 GM 編號;小節數取 4 的倍數。3) 不確定某個風格的細節 → browser_search 查維基再回答,不要憑印象講數字。4) 音色只有 GS 音色庫的 GM 128 音色與鼓組;不能承諾做不到的(例如任意樂器分離、錄音轉譜目前還沒有)。5) 誠實說明:播放卡片第一次要下載約 31 MB 音色庫。',
         dynamicNote: '路由建議:使用者提到 MIDI、.mid、播放音樂、轉 mp3、作曲、和弦、音階、節奏、配樂、某種音樂風格的特色時,委派這個領域。'
     },
     worksheet: {
@@ -33651,8 +33651,8 @@ const holder = {};
     if (!L || !L.length || !sr) throw new Error('沒有可轉的音訊取樣');
     const report = { used: [], skipped: [], stems: [], chunks: 0, resumed: 0, seconds: L.length / sr };
     const onP = opts.onProgress || (() => {}), store = opts.store, id = opts.id || fingerprint(L, sr);
-    const chunk = opts.chunkSec || CHUNK, total = Math.max(1, Math.ceil(L.length / sr / chunk));
-    const useSep = typeof opts.separator === 'function', stemNames = useSep ? (opts.stems || ['drums', 'bass', 'other', 'vocals']) : ['mix'];
+    const useSep = typeof opts.separator === 'function', chunk = opts.chunkSec || (useSep && opts.separator.segmentSec ? opts.separator.segmentSec - 2 * MARGIN : CHUNK), total = Math.max(1, Math.ceil(L.length / sr / chunk));
+    const stemNames = useSep ? (opts.stems || ['drums', 'bass', 'other', 'vocals']) : ['mix'];
     if (!useSep) { report.skipped.push('沒有分軌模型:整個混音當成一軌處理,只用單音音高追蹤,不拆鼓、貝斯、人聲'); }
     else report.used.push('分軌:' + stemNames.join('、'));
     const acc = {}; stemNames.forEach((s) => { acc[s] = []; });
@@ -33707,6 +33707,171 @@ const holder = {};
 return holder.FaAudioPipeline;
 })();
 /* MUSICA2MPIPE-END */
+/* MUSICBP-BEGIN */
+const FaBasicPitch = (function () {
+const holder = {};
+(function (module, self) {
+// Basic Pitch(nmp.onnx,Apache-2.0)的前後處理。2026-11-01 用 onnxruntime 實測:輸入 [批次, 43844, 1](22050 Hz 單聲道,約 2 秒),
+// 輸出依序是 onset [批次,172,88]、note [批次,172,88]、contour [批次,172,264];88 格從 MIDI 21(A0)起,每格一個半音,幀長 256 樣本。
+// 模型檔 230,444 位元組,SHA-256 2c3c1d144bfa61ad236e92e169c13535c880469a12a047d4e73451f2c059a0ec。
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaBasicPitch = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  const SR = 22050, WIN = 43844, FRAMES = 172, BINS = 88, HOP_S = 256, LOW = 21, OVERLAP = 7680, TRIM = OVERLAP / HOP_S / 2; // 每個視窗頭尾各丟 15 幀
+  const STEP = WIN - OVERLAP;
+  // 把整段單聲道(22050 Hz)切成互相重疊的視窗;開頭補半個重疊長度的零
+  function windows(x) { const pad = OVERLAP / 2, n = x.length + pad; const count = Math.max(1, Math.ceil(n / STEP)); const out = []; for (let w = 0; w < count; w++) { const buf = new Float32Array(WIN); for (let i = 0; i < WIN; i++) { const src = w * STEP + i - pad; if (src >= 0 && src < x.length) buf[i] = x[src]; } out.push(buf); } return out; }
+  // results[w] = { onset: Float32Array(172*88), note: Float32Array(172*88) };回傳串接後的 { onset, note, frames }(已丟掉每個視窗頭尾的重疊幀,並截到原長)
+  function stitch(results, samples) { const keep = FRAMES - 2 * TRIM, total = Math.min(results.length * keep, Math.ceil(samples / HOP_S)); const onset = new Float32Array(total * BINS), note = new Float32Array(total * BINS); for (let w = 0; w < results.length; w++) for (let f = 0; f < keep; f++) { const g = w * keep + f; if (g >= total) break; const src = (f + TRIM) * BINS; onset.set(results[w].onset.subarray(src, src + BINS), g * BINS); note.set(results[w].note.subarray(src, src + BINS), g * BINS); } return { onset, note, frames: total }; }
+  // 起音峰值＋note 機率持續 → 音符。沒有起音的持續音不收(避免把殘響當新音)
+  function decode(p, opt) {
+    opt = opt || {}; const onT = opt.onsetThr || 0.5, frT = opt.frameThr || 0.3, minLen = opt.minFrames || 5, gap = opt.gapFrames || 3, F = p.frames; const sec = HOP_S / SR; const notes = [];
+    for (let b = 0; b < BINS; b++) {
+      for (let f = 0; f < F; f++) {
+        const o = p.onset[f * BINS + b], pv = f > 0 ? p.onset[(f - 1) * BINS + b] : 0, nx = f < F - 1 ? p.onset[(f + 1) * BINS + b] : 0; if (o < onT || o < pv || o < nx) continue;
+        if (pv === o) continue; // 平台只取第一幀
+        let e = f, low = 0; for (let g = f; g < F; g++) { if (p.note[g * BINS + b] >= frT) { e = g; low = 0; } else if (++low > gap) break; if (g > f && p.onset[g * BINS + b] >= onT && p.onset[g * BINS + b] > p.onset[(g - 1) * BINS + b] && p.onset[g * BINS + b] >= p.onset[Math.min(F - 1, g + 1) * BINS + b]) break; } // 下一個起音就在此結束
+        if (e - f + 1 >= minLen) notes.push({ t: f * sec, d: (e - f + 1) * sec, n: LOW + b, v: Math.max(30, Math.min(120, Math.round(40 + 80 * o))) });
+      }
+    }
+    // 同一音高相鄰、時間重疊的合併(起音峰值可能連著兩個)
+    notes.sort((a, b) => a.n - b.n || a.t - b.t); const out = []; for (const n of notes) { const q = out[out.length - 1]; if (q && q.n === n.n && n.t < q.t + q.d - 0.02 && n.t - q.t < 0.06) { q.d = Math.max(q.d, n.t + n.d - q.t); } else out.push(n); }
+    return out.sort((a, b) => a.t - b.t || a.n - b.n);
+  }
+  return { windows, stitch, decode, SR, WIN, FRAMES, BINS, LOW, STEP };
+});
+
+}).call(null, undefined, holder);
+return holder.FaBasicPitch;
+})();
+/* MUSICBP-END */
+/* MUSICIC-BEGIN */
+const FaInstrumentClassify = (function () {
+const holder = {};
+(function (module, self) {
+// 樂器分類(YAMNet,Apache-2.0)的後處理。YAMNet 模型 yamnet.onnx(16,093,355 位元組,SHA-256 d3835ffb…f908e)2026-11-01 用 onnxruntime 實測:
+// 輸入 waveform 16 kHz 單聲道,輸出 scores [幀數,521](每 0.48 秒一幀,視窗 0.96 秒)。類別名稱出自 AudioSet 本體(CC BY 4.0,Google)。
+// 這裡不讓模型自由輸出:只在「候選樂器」的封閉清單裡比分數,選出的結果再經程式核對(分數夠高、領先第二名夠多),不夠就回傳 null 讓呼叫端退回音域規則。
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaInstrumentClassify = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  // [YAMNet 類別編號, 給 labelToProgram 吃的標籤(對得到 GM 音色)]
+  const CANDIDATES = [[24, 'Singing'], [135, 'Acoustic guitar'], [136, 'Electric guitar'], [137, 'Bass'], [138, 'Acoustic guitar'], [139, 'Steel guitar'], [142, 'Banjo'], [143, 'Sitar'], [144, 'Acoustic guitar'], [146, 'Acoustic guitar'], [147, 'Piano'], [148, 'Piano'], [149, 'Rhodes'], [150, 'Organ'], [151, 'Organ'], [152, 'Organ'], [153, 'Synthesizer'], [155, 'Piano'], [175, 'Marimba'], [176, 'Glockenspiel'], [177, 'Vibraphone'], [179, 'Orchestra'], [180, 'Brass'], [181, 'French horn'], [182, 'Trumpet'], [183, 'Trombone'], [185, 'String section'], [186, 'Violin'], [188, 'Cello'], [189, 'Bass'], [191, 'Flute'], [192, 'Saxophone'], [193, 'Clarinet'], [194, 'Harp'], [203, 'Harmonica'], [204, 'Accordion']];
+  // scores: Float32Array(frames*521)。回傳 { label, score, margin, ranked } 或 null
+  function pick(scores, frames, opt) {
+    opt = opt || {}; const minScore = opt.minScore != null ? opt.minScore : 0.08, minMargin = opt.minMargin != null ? opt.minMargin : 0.02;
+    if (!frames) return null; const sums = new Map();
+    for (const [idx, label] of CANDIDATES) { let s = 0; for (let f = 0; f < frames; f++) s += scores[f * 521 + idx]; s /= frames; sums.set(label, Math.max(sums.get(label) || 0, s)); }
+    const ranked = Array.from(sums, ([label, score]) => ({ label, score })).sort((a, b) => b.score - a.score);
+    const top = ranked[0], second = ranked[1] || { score: 0 }; if (!top || top.score < minScore) return null;
+    return { label: top.label, score: top.score, margin: top.score - second.score, ranked: ranked.slice(0, 3), confident: top.score - second.score >= minMargin };
+  }
+  return { CANDIDATES, pick };
+});
+
+}).call(null, undefined, holder);
+return holder.FaInstrumentClassify;
+})();
+/* MUSICIC-END */
+/* MUSICMODELS-BEGIN */
+const FaAudioModels = (function () {
+const holder = {};
+(function (module, self) {
+// 音訊轉 MIDI 用的模型登錄與下載:分片(8 MB)、可續傳(每片存起來,中斷後只補缺的)、核對大小與 SHA-256、每片失敗自己重試。
+// 三個模型的大小與檢查碼 2026-11-01 從 Hugging Face 檔案清單與實際下載核對過(下載後 SHA-256 與清單的 LFS 值一致)。
+//   fetchFn(url, headers) → { status, headers.get(name), arrayBuffer() }  (瀏覽器就是 fetch)
+//   store { get(key), set(key, Uint8Array), del(key) }  (瀏覽器用 IndexedDB;測試用 Map)
+//   sha256(Uint8Array) → Promise<hex>
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaAudioModels = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  const MB = 1024 * 1024;
+  const REGISTRY = {
+    'basic-pitch': { id: 'basic-pitch', label: 'Basic Pitch(多音轉譜)', url: 'https://huggingface.co/daserge/basic-pitch-onnx/resolve/main/nmp.onnx', bytes: 230444, sha256: '2c3c1d144bfa61ad236e92e169c13535c880469a12a047d4e73451f2c059a0ec', license: 'Apache-2.0', source: 'spotify/basic-pitch' },
+    'yamnet': { id: 'yamnet', label: 'YAMNet(樂器分類)', url: 'https://huggingface.co/audiomagic/yamnet-onnx/resolve/main/yamnet.onnx', bytes: 16093355, sha256: 'd3835ffbbd4a1bb3e777f0ca217b5007907f5171dd5d17c4236b95b2af8f908e', license: 'Apache-2.0(類別名稱 CC BY 4.0,Google AudioSet)', source: 'tensorflow/models yamnet' },
+    'demucs-6s': { id: 'demucs-6s', label: 'Demucs 6 軌(分軌:鼓、貝斯、其他、人聲、吉他、鋼琴)', url: 'https://huggingface.co/adowu/htdemucs-6s-onnx/resolve/main/htdemucs_6s_fp16weights.onnx', bytes: 136428532, sha256: '7ce55792e2231c93fbf92de95f5fd5b3a5e6c89f7db690dfd693e8f1dce56869', license: 'MIT', source: 'facebookresearch/demucs' }
+  };
+  const CHUNK = 8 * MB;
+  function cat(parts, total) { const out = new Uint8Array(total); let o = 0; for (const p of parts) { out.set(p, o); o += p.length; } return out; }
+  async function getChunk(m, i, opts) {
+    const a = i * CHUNK, b = Math.min(m.bytes, a + CHUNK) - 1, want = b - a + 1; let last = null;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      if (opts.signal && opts.signal.aborted) throw Object.assign(new Error('已中斷'), { aborted: true });
+      const t0 = Date.now();
+      try {
+        const r = await opts.fetchFn(m.url, { Range: 'bytes=' + a + '-' + b });
+        if (r.status !== 206 && r.status !== 200) throw new Error('HTTP ' + r.status);
+        let buf = new Uint8Array(await r.arrayBuffer());
+        if (r.status === 200 && buf.length === m.bytes) buf = buf.subarray(a, b + 1); // 伺服器不支援 Range,回了整檔
+        if (buf.length !== want) throw new Error('片段大小 ' + buf.length + ' 不等於 ' + want);
+        return buf;
+      } catch (e) { last = (e && e.message || e) + '(第 ' + (attempt + 1) + ' 次,' + (Date.now() - t0) + ' 毫秒)'; if (opts.sleep) await opts.sleep(500 * Math.pow(2, attempt)); }
+    }
+    throw new Error('下載 ' + m.label + ' 第 ' + (i + 1) + ' 片失敗,重試 4 次仍然失敗:' + last);
+  }
+  async function fetchModel(id, opts) {
+    const m = REGISTRY[id]; if (!m) throw new Error('沒有這個模型:' + id); const n = Math.ceil(m.bytes / CHUNK), key = (i) => 'model:' + id + ':' + m.sha256.slice(0, 8) + ':' + i, onP = opts.onProgress || (() => {});
+    const parts = []; let have = 0, resumed = 0;
+    for (let i = 0; i < n; i++) {
+      let c = await opts.store.get(key(i)); const want = Math.min(m.bytes, (i + 1) * CHUNK) - i * CHUNK;
+      if (c && c.length === want) resumed++; else { c = await getChunk(m, i, opts); await opts.store.set(key(i), c); }
+      parts.push(c); have += c.length; onP({ model: id, done: have, total: m.bytes, chunk: i + 1, chunks: n, resumed });
+    }
+    const all = cat(parts, have); if (all.length !== m.bytes) throw new Error(m.label + ' 大小不符:' + all.length + ' / ' + m.bytes);
+    const h = await opts.sha256(all);
+    if (h !== m.sha256) { for (let i = 0; i < n; i++) await opts.store.del(key(i)); throw new Error(m.label + ' 檢查碼不符(' + h.slice(0, 12) + '… 應為 ' + m.sha256.slice(0, 12) + '…),已清掉快取,請重試'); }
+    return all;
+  }
+  // 瀏覽器端的 IndexedDB 儲存(資料庫 fa-a2m-models)
+  function idbStore() {
+    const open = () => new Promise((res, rej) => { const q = indexedDB.open('fa-a2m-models', 1); q.onupgradeneeded = () => q.result.createObjectStore('kv'); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); });
+    const run = async (mode, f) => { const db = await open(); return new Promise((res, rej) => { const tx = db.transaction('kv', mode), r = f(tx.objectStore('kv')); tx.oncomplete = () => { db.close(); res(r && r.result); }; tx.onerror = () => rej(tx.error); }); };
+    return { get: (k) => run('readonly', (s) => s.get(k)), set: (k, v) => run('readwrite', (s) => s.put(v, k)), del: (k) => run('readwrite', (s) => s.delete(k)) };
+  }
+  async function webSha256(u8) { const d = await crypto.subtle.digest('SHA-256', u8); return Array.from(new Uint8Array(d), (b) => b.toString(16).padStart(2, '0')).join(''); }
+  return { REGISTRY, CHUNK, fetchModel, idbStore, webSha256 };
+});
+
+}).call(null, undefined, holder);
+return holder.FaAudioModels;
+})();
+/* MUSICMODELS-END */
+/* MUSICRT-BEGIN */
+const FaAudioRuntime = (function () {
+const holder = {};
+(function (module, self) {
+// 音訊轉 MIDI 的模型執行層:用 onnxruntime-web 載入 Basic Pitch、YAMNet、Demucs 6 軌,包成流程要的三個可插拔函式。
+// 執行環境三條路:webgpu(有就用,失敗自動退)→ wasm(多執行緒需要跨來源隔離,沒有就單執行緒)→ 都失敗就回報,流程退回規則做法。
+// 張量形狀、輸出順序都是 2026-11-01 用 onnxruntime 實測(Basic Pitch、YAMNet)或依模型卡(Demucs)。
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(require('./audio_pipeline.js'), require('./basic_pitch.js'), require('./instrument_classify.js')); else root.FaAudioRuntime = factory(root.FaAudioPipeline || (typeof FaAudioPipeline !== 'undefined' ? FaAudioPipeline : undefined), root.FaBasicPitch || (typeof FaBasicPitch !== 'undefined' ? FaBasicPitch : undefined), root.FaInstrumentClassify || (typeof FaInstrumentClassify !== 'undefined' ? FaInstrumentClassify : undefined)); })(typeof self !== 'undefined' ? self : this, function (P, BP, IC) {
+  'use strict';
+  const ORT_VERSION = '1.22.0', ORT_URL = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@' + ORT_VERSION + '/dist/ort.webgpu.min.mjs', ORT_BASE = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@' + ORT_VERSION + '/dist/';
+  const SEG = 343980, DSR = 44100, STEMS = ['drums', 'bass', 'other', 'vocals', 'guitar', 'piano'];
+  async function loadOrt(opts) { opts = opts || {}; const ort = opts.ort || await import(opts.ortUrl || ORT_URL); ort.env.wasm.wasmPaths = opts.wasmBase || ORT_BASE; ort.env.wasm.proxy = opts.proxy !== false; ort.env.wasm.numThreads = (typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated) ? Math.min(4, (navigator.hardwareConcurrency || 2)) : 1; return ort; }
+  // 建立工作階段:依序試 eps(預設 webgpu、wasm),回傳 { session, ep, tried }
+  async function createSession(ort, bytes, eps, opts) { const tried = []; for (const ep of (eps || ['webgpu', 'wasm'])) { try { if (ep === 'webgpu' && !(typeof navigator !== 'undefined' && navigator.gpu)) throw new Error('沒有 WebGPU'); const session = await ort.InferenceSession.create(bytes, { executionProviders: [ep], graphOptimizationLevel: (opts && opts.opt) || 'all' }); return { session, ep, tried }; } catch (e) { tried.push(ep + ':' + (e && e.message || e)); } } throw new Error('所有執行方式都失敗:' + tried.join(';')); }
+  function makeTranscriber(ort, session, onFrame) {
+    const name = session.inputNames[0];
+    return async function (mono, sr) { const x = P.resample(mono, sr, BP.SR), ws = BP.windows(x), res = []; for (let i = 0; i < ws.length; i++) { const out = await session.run({ [name]: new ort.Tensor('float32', ws[i], [1, BP.WIN, 1]) }); const o = session.outputNames; res.push({ onset: out[o[0]].data, note: out[o[1]].data }); if (onFrame) onFrame(i + 1, ws.length); } return BP.decode(BP.stitch(res, x.length)).map((n) => ({ t: n.t, d: n.d, n: n.n, v: n.v })); };
+  }
+  function makeClassifier(ort, session) {
+    return async function (mono16k) { const out = await session.run({ waveform: new ort.Tensor('float32', mono16k, [mono16k.length]) }); const sc = out[session.outputNames[0]]; const r = IC.pick(sc.data, sc.dims[0]); return r && r.confident ? r.label : null; };
+  }
+  function makeSeparator(ort, session) {
+    const f = async function (c) {
+      const n = c.left.length, L = P.resample(c.left, c.sr, DSR), R = c.right ? P.resample(c.right, c.sr, DSR) : L, buf = new Float32Array(2 * SEG);
+      buf.set(L.subarray(0, Math.min(SEG, L.length)), 0); buf.set(R.subarray(0, Math.min(SEG, R.length)), SEG);
+      const out = await session.run({ mix: new ort.Tensor('float32', buf, [1, 2, SEG]) }), d = out[session.outputNames[0]].data, res = {};
+      STEMS.forEach((s, k) => { const m = new Float32Array(Math.min(SEG, L.length)); for (let i = 0; i < m.length; i++) m[i] = 0.5 * (d[(k * 2) * SEG + i] + d[(k * 2 + 1) * SEG + i]); const back = P.resample(m, DSR, c.sr); const o = new Float32Array(n); o.set(back.subarray(0, Math.min(n, back.length))); res[s] = o; });
+      return res;
+    };
+    f.segmentSec = SEG / DSR; return f;
+  }
+  const DEMUCS_OPT = 'disabled'; // 實測:Demucs 圖形最佳化會讓 wasm 與 webgpu 建立工作階段失敗,關掉最佳化 wasm 才載得起來
+  return { DEMUCS_OPT, ORT_VERSION, ORT_URL, SEG, STEMS, loadOrt, createSession, makeTranscriber, makeClassifier, makeSeparator };
+});
+
+}).call(null, undefined, holder);
+return holder.FaAudioRuntime;
+})();
+/* MUSICRT-END */
 /* MUSICUI-BEGIN */
 const FaMidiUI = (function () {
 const holder = {};
@@ -54717,6 +54882,16 @@ class FloatingAssistant {
                 } catch (e) { r._pushAssistantMessage('⚠️ 轉 mp3 失敗:' + String((e && e.message) || e)); }
                 try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ }
             });
+        this.register_slash_command('/audio-to-midi', '[音訊檔] [拆軌]',
+            '把 mp3／wav 轉成 MIDI 並開編輯器(用 📎 上傳音訊再打這個指令;離線小模型,第一次下載約 16 MB;加「拆軌」會再用 Demucs 分鼓／貝斯／人聲／吉他／鋼琴,多下載約 136 MB 且很慢)。結果不保證準確。',
+            async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/audio-to-midi' + (raw ? ' ' + raw : '') });
+                try {
+                    const att = FaRecipe.parseAttachments(raw).filter((x) => /.(mp3|wav|m4a|ogg|flac|aac)$/i.test(x.filename))[0];
+                    if (!att) r._pushAssistantMessage('用法:用 📎 上傳 mp3／wav 再打 /audio-to-midi(想分鼓、貝斯、人聲、吉他、鋼琴就加「拆軌」)。');
+                    else { const res = await r._audioToMidi({ file_id: att.id, stems: /拆軌|stems/i.test(raw), title: att.filename }); if (!res.ok) r._pushAssistantMessage('⚠️ 轉 MIDI 失敗:' + res.error); }
+                } catch (e) { r._pushAssistantMessage('⚠️ /audio-to-midi 失敗:' + String((e && e.message) || e)); }
+                try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ }
+            });
         this.register_slash_command('/edit-midi', '[.mid 檔 | 空白新曲]',
             'MIDI 編輯器:/edit-midi 附上 .mid 檔(用 📎 上傳)→ 在對話裡放編輯器(鋼琴捲簾、多音軌、只能選 GS 音色、復原重做、下面可用說的改);/edit-midi 空白 → 新曲。',
             async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/edit-midi' + (raw ? ' ' + raw : '') });
@@ -59165,6 +59340,14 @@ ${fnData.code}
                 } catch (err) { return JSON.stringify({ ok: false, error: '轉 mp3 失敗:' + String((err && err.message) || err) }); }
             },
             { type: 'object', properties: { file_id: { type: 'string' }, song_id: { type: 'string' }, song: { type: 'object' }, title: { type: 'string' } }, additionalProperties: false }
+        );
+        registerOptional('audio_to_midi',
+            '把使用者上傳的 mp3／wav 音訊轉成 MIDI 並開編輯器(離線,小模型在這台電腦跑:Basic Pitch 多音轉譜＋YAMNet 挑音色;stems=true 時再用 Demucs 分成鼓／貝斯／人聲／吉他／鋼琴／其他,要多下載約 136 MB 而且很慢)。第一次要下載模型(約 16 MB,存在本機)。結果不保證準確,拆樂器只到分軌模型給的幾軌;回覆使用者時要把工具結果裡 skipped 列的沒做到的部分講清楚。參數: {"file_id":"…","stems":false}',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try { return JSON.stringify(await this._audioToMidi(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+            },
+            { type: 'object', properties: { file_id: { type: 'string', description: '使用者上傳的音訊檔' }, stems: { type: 'boolean', description: 'true＝先用 Demucs 分軌(下載約 136 MB、很慢)' }, title: { type: 'string' } }, required: ['file_id'], additionalProperties: false }
         );
         registerOptional('music_topic',
             '查音樂知識:basics(音高與記號、速度、tick)、scales(音階與調性)、chords(和弦與常見進行)、rhythm(拍號與鼓型)、ranges(各樂器音域與鼓組編號)、instrumentation(GM 音色編號與配器)、structure(曲式)、styles(各風格典型)。不帶 topic 回傳全部主題名稱。',
@@ -73133,6 +73316,56 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const buf = await FaMidiPlay.renderOffline(song, this._midiSources(), { onProgress: prog });
         if (prog) prog('編成 mp3…');
         return await this._encodeMp3(buf, 160);
+    }
+    // 音訊轉 MIDI(階段 5):解碼 → Basic Pitch 多音轉譜(wasm)＋YAMNet 挑音色 ＋(選用)Demucs 6 軌分軌 → 進編輯器。只出一張進度卡;模型載不起來就退回規則做法並在結果裡寫明
+    async _audioToMidi(a) {
+        a = a || {};
+        const rec = a.file_id ? await this.fileCache.get(String(a.file_id)) : null; if (!rec || !rec.blob) return { ok: false, error: '找不到音訊檔:請用 📎 上傳 mp3／wav 再試(file_id=' + (a.file_id || '空') + ')' };
+        const prog = this._createProgressWidget('🎼 音訊轉 MIDI'); const say = (pct, s) => { try { prog.log(s); prog.update({ pct: Math.min(99, pct), status: s }); } catch (_) { /* */ } };
+        try {
+            const t0 = Date.now(); say(2, '【解碼】' + (rec.filename || '音訊'));
+            const buf = await new OfflineAudioContext(2, 1, 44100).decodeAudioData(await rec.blob.arrayBuffer());
+            if (buf.duration > 900) throw new Error('這首有 ' + Math.round(buf.duration / 60) + ' 分鐘,太長了(上限 15 分鐘);請先剪短再轉');
+            const L = buf.getChannelData(0), R = buf.numberOfChannels > 1 ? buf.getChannelData(1) : null, notes = [];
+            const store = FaAudioModels.idbStore(), REG = FaAudioModels.REGISTRY;
+            const dl = (id, lo, hi) => FaAudioModels.fetchModel(id, { fetchFn: (u, h) => fetch(u, { headers: h }), store, sha256: FaAudioModels.webSha256, sleep: (ms) => new Promise((r) => setTimeout(r, ms)), onProgress: (p) => say(lo + (hi - lo) * p.done / p.total, '【下載模型】' + REG[id].label + ' ' + Math.round(p.done / 1048576) + '/' + Math.round(p.total / 1048576) + ' MB' + (p.resumed ? '(' + p.resumed + ' 片來自本機快取)' : '')) });
+            const o = { store, title: String(a.title || rec.filename || '從音訊轉出').replace(/\.[a-z0-9]+$/i, ''), onProgress: (p) => say(20 + 70 * p.done / Math.max(1, p.total), '【' + p.chapter + '】' + p.message) };
+            let ort = null; try { ort = await FaAudioRuntime.loadOrt(); } catch (e) { notes.push('無法載入 onnxruntime-web(' + String((e && e.message) || e) + '),全部改用規則做法'); }
+            const load = async (id, lo, hi, make, eps, opt, what) => { if (!ort) return null; try { const bytes = await dl(id, lo, hi); say(hi, '【載入模型】' + REG[id].label); const s = await FaAudioRuntime.createSession(ort, bytes, eps || ['wasm'], { opt }); return make(ort, s.session); } catch (e) { notes.push(REG[id].label + ' 沒能用(' + String((e && e.message) || e).slice(0, 200) + '):' + what); return null; } };
+            o.transcriber = await load('basic-pitch', 4, 8, FaAudioRuntime.makeTranscriber, ['wasm'], undefined, '改用單音音高追蹤(同時只能抓一個音)');
+            o.classifier = await load('yamnet', 8, 12, FaAudioRuntime.makeClassifier, ['wasm'], undefined, '音色改用音域規則挑');
+            if (a.stems) o.separator = await load('demucs-6s', 12, 20, FaAudioRuntime.makeSeparator, ['wasm'], FaAudioRuntime.DEMUCS_OPT, '不分軌,整個混音當一軌'); if (o.separator) o.stems = FaAudioRuntime.STEMS;
+            const r = await FaAudioPipeline.run({ left: L, right: R, sampleRate: buf.sampleRate }, o);
+            prog.update({ pct: 100 }); prog.finish('完成(' + Math.round((Date.now() - t0) / 1000) + ' 秒)');
+            const skipped = notes.concat(r.report.skipped), tracks = r.song.tracks.map((t) => t.name + '(' + t.notes.length + ' 個音)').join('、');
+            const id = this._midiPushEditor(r.song, o.title, '🎼 已從音訊轉出 MIDI,速度約 ' + Math.round(r.tempo.bpm) + ' 拍/分' + (r.tempo.confident === false ? '(速度是猜的,可能差一倍)' : '') + ',音軌:' + tracks + '。\n\n**沒做到的部分(誠實列出):**\n' + skipped.map((s) => '- ' + s).join('\n') + '\n\n按「試聽」比對原曲,再用編輯器修正。');
+            return { ok: true, song_id: id, seconds: Math.round(buf.duration), tracks: r.song.tracks.map((t) => ({ name: t.name, program: t.program, drum: !!t.drum, notes: t.notes.length })), tempo: Math.round(r.tempo.bpm), skipped, resumed_chunks: r.report.resumed };
+        } catch (e) { try { prog.fail(String((e && e.message) || e)); } catch (_) { /* */ } return { ok: false, error: String((e && e.message) || e) }; }
+    }
+    // 音訊轉 MIDI(階段 5):解碼 → Basic Pitch 多音轉譜(wasm)＋YAMNet 挑音色 ＋(選用)Demucs 6 軌分軌 → 進編輯器。只出一張進度卡;模型載不起來就退回規則做法並在結果裡寫明
+    async _audioToMidi(a) {
+        a = a || {};
+        const rec = a.file_id ? await this.fileCache.get(String(a.file_id)) : null; if (!rec || !rec.blob) return { ok: false, error: '找不到音訊檔:請用 📎 上傳 mp3／wav 再試(file_id=' + (a.file_id || '空') + ')' };
+        const prog = this._createProgressWidget('🎼 音訊轉 MIDI'); const say = (pct, s) => { try { prog.log(s); prog.update({ pct: Math.min(99, pct), status: s }); } catch (_) { /* */ } };
+        try {
+            const t0 = Date.now(); say(2, '【解碼】' + (rec.filename || '音訊'));
+            const buf = await new OfflineAudioContext(2, 1, 44100).decodeAudioData(await rec.blob.arrayBuffer());
+            if (buf.duration > 900) throw new Error('這首有 ' + Math.round(buf.duration / 60) + ' 分鐘,太長了(上限 15 分鐘);請先剪短再轉');
+            const L = buf.getChannelData(0), R = buf.numberOfChannels > 1 ? buf.getChannelData(1) : null, notes = [];
+            const store = FaAudioModels.idbStore(), REG = FaAudioModels.REGISTRY;
+            const dl = (id, lo, hi) => FaAudioModels.fetchModel(id, { fetchFn: (u, h) => fetch(u, { headers: h }), store, sha256: FaAudioModels.webSha256, sleep: (ms) => new Promise((r) => setTimeout(r, ms)), onProgress: (p) => say(lo + (hi - lo) * p.done / p.total, '【下載模型】' + REG[id].label + ' ' + Math.round(p.done / 1048576) + '/' + Math.round(p.total / 1048576) + ' MB' + (p.resumed ? '(' + p.resumed + ' 片來自本機快取)' : '')) });
+            const o = { store, title: String(a.title || rec.filename || '從音訊轉出').replace(/\.[a-z0-9]+$/i, ''), onProgress: (p) => say(20 + 70 * p.done / Math.max(1, p.total), '【' + p.chapter + '】' + p.message) };
+            let ort = null; try { ort = await FaAudioRuntime.loadOrt(); } catch (e) { notes.push('無法載入 onnxruntime-web(' + String((e && e.message) || e) + '),全部改用規則做法'); }
+            const load = async (id, lo, hi, make, eps, opt, what) => { if (!ort) return null; try { const bytes = await dl(id, lo, hi); say(hi, '【載入模型】' + REG[id].label); const s = await FaAudioRuntime.createSession(ort, bytes, eps || ['wasm'], { opt }); return make(ort, s.session); } catch (e) { notes.push(REG[id].label + ' 沒能用(' + String((e && e.message) || e).slice(0, 200) + '):' + what); return null; } };
+            o.transcriber = await load('basic-pitch', 4, 8, FaAudioRuntime.makeTranscriber, ['wasm'], undefined, '改用單音音高追蹤(同時只能抓一個音)');
+            o.classifier = await load('yamnet', 8, 12, FaAudioRuntime.makeClassifier, ['wasm'], undefined, '音色改用音域規則挑');
+            if (a.stems) o.separator = await load('demucs-6s', 12, 20, FaAudioRuntime.makeSeparator, ['wasm'], FaAudioRuntime.DEMUCS_OPT, '不分軌,整個混音當一軌'); if (o.separator) o.stems = FaAudioRuntime.STEMS;
+            const r = await FaAudioPipeline.run({ left: L, right: R, sampleRate: buf.sampleRate }, o);
+            prog.update({ pct: 100 }); prog.finish('完成(' + Math.round((Date.now() - t0) / 1000) + ' 秒)');
+            const skipped = notes.concat(r.report.skipped), tracks = r.song.tracks.map((t) => t.name + '(' + t.notes.length + ' 個音)').join('、');
+            const id = this._midiPushEditor(r.song, o.title, '🎼 已從音訊轉出 MIDI,速度約 ' + Math.round(r.tempo.bpm) + ' 拍/分' + (r.tempo.confident === false ? '(速度是猜的,可能差一倍)' : '') + ',音軌:' + tracks + '。\n\n**沒做到的部分(誠實列出):**\n' + skipped.map((s) => '- ' + s).join('\n') + '\n\n按「試聽」比對原曲,再用編輯器修正。');
+            return { ok: true, song_id: id, seconds: Math.round(buf.duration), tracks: r.song.tracks.map((t) => ({ name: t.name, program: t.program, drum: !!t.drum, notes: t.notes.length })), tempo: Math.round(r.tempo.bpm), skipped, resumed_chunks: r.report.resumed };
+        } catch (e) { try { prog.fail(String((e && e.message) || e)); } catch (_) { /* */ } return { ok: false, error: String((e && e.message) || e) }; }
     }
     _mountMidiCards(mdDiv) {
         if (typeof FaMidiUI === 'undefined' || typeof FaMidi === 'undefined') return;

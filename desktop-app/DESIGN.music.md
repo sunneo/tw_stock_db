@@ -85,3 +85,10 @@ Roland SC-88 的資料只當大小目標，不抽取、不轉換。注意：pian
 - **Basic Pitch**：Apache-2.0（spotify/basic-pitch，basic-pitch-ts 也是）；ONNX 檔 `nmp.onnx`（`daserge/basic-pitch-onnx`，SHA-256 2c3c1d14…a0ec，與上游套件內的檔案逐位元組相同）；**檔案大小與輸入輸出張量形狀未查到（未驗證）**，原始模型很小（參數量約 17 萬級，未驗證）；多音、輸出音高格＋起音＋輪廓，適合每個分軌逐軌轉譜。
 - **YAMNet（音訊事件分類，521 類，含樂器類）**：Apache-2.0；ONNX 約 14–15 MB（`audiomagic/yamnet-onnx`；Qualcomm 的匯出標 MIT 但卡片指向上游授權，以 Apache-2.0 為準）；STMicroelectronics 有 int8 量化 256 維版（Apache-2.0，更小，分類力未驗證）；AudioSet 標籤 CC BY 4.0（要標示來源）。**PANNs／AST／Essentia 沒有查到可靠的瀏覽器版本資料（未驗證）**，先用 YAMNet。
 - **結論（照使用者同意的順序做）**：先做不依賴大模型的部分——鼓軌規則拆解、單音音高追蹤（貝斯、人聲）、速度與量化、分軌組裝成 MIDI、樂器指派的退路規則（頻譜特徵、音域）；模型端（Demucs、Basic Pitch、YAMNet）做成可插拔的介面與下載登錄（沿用 FaVlm 的登錄與工作執行緒、只出一張進度卡、續傳、核對檔案大小與檢查碼），模型檔使用者按需下載，不進核心。
+
+## 階段 5 實測（2026-11-01，三個模型都真的下載並跑過）
+- **Basic Pitch `nmp.onnx`**：230,444 位元組，SHA-256 2c3c1d14…a0ec；輸入 `[批次,43844,1]`（22050 Hz，約 2 秒），輸出依序 onset `[批次,172,88]`、note `[批次,172,88]`、contour `[批次,172,264]`（順序用「兩個持續音」實測：onset 在 0.3 秒起音處出峰、note 持續）。88 格從 MIDI 21 起，幀長 256 樣本；視窗重疊 7680 樣本、頭尾各丟 15 幀。瀏覽器 wasm（onnxruntime-web 1.22）4 秒音訊約 0.8–1 秒，三個合成音（60、64、67）全對、起音誤差 0.01 秒。
+- **YAMNet `yamnet.onnx`**：16,093,355 位元組，SHA-256 d3835ffb…f908e；輸入 `waveform`（16 kHz 一維），輸出 scores `[幀數,521]`（每 0.48 秒一幀）、embeddings、spectrogram。5 秒音訊 wasm 約 0.17 秒。我們只在 36 個樂器候選類別裡比平均分數（分數 ≥ 0.08、領先第二名 ≥ 0.02 才採用，否則退回音域規則）。**合成正弦波被判成 Synthesizer/Piano，真實錄音的分類準確度未驗證。**
+- **Demucs 6 軌 fp16 權重版**：136,428,532 位元組，SHA-256 7ce55792…6869；輸入 `mix` `[1,2,343980]`、輸出 `stems` `[1,6,2,343980]`，順序 drums、bass、other、vocals、guitar、piano（模型卡）。原生 onnxruntime CPU 7.8 秒音訊約 11 秒。**瀏覽器：圖形最佳化開（預設）時 wasm 與 WebGPU 都建不起工作階段（「Aborted()」），把最佳化關掉（`graphOptimizationLevel:'disabled'`）wasm 才能載入：載入約 29 秒、單段（7.8 秒）推論約 42 秒（單執行緒，窗格被隱藏時可能偏慢）；WebGPU 在這台機器關掉最佳化也失敗。** 所以拆軌只有 wasm，三分鐘的歌約要 20 分鐘；預設不拆，使用者要求「拆軌」才下載。分軌用合成的正弦波測試，真實音樂的分離品質未驗證。
+- 下載：8 MB 分片存 IndexedDB，重新整理後從快取載入（實測 17 片全部 resumed），SHA-256 在瀏覽器核對通過。
+- 測試頁：`scripts/music-tests/a2m-browser.html?m=basic-pitch|yamnet|demucs-6s&ep=wasm|webgpu[&opt=disabled]`（要用本機伺服器開）。

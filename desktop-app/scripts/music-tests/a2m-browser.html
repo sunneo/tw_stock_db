@@ -1,0 +1,20 @@
+<!doctype html><meta charset="utf8"><title>a2m browser test</title><body><pre id="o"></pre>
+<script src="/renderer/src/music/midi_core.js"></script><script src="/renderer/src/music/audio_to_midi.js"></script><script src="/renderer/src/music/audio_pipeline.js"></script><script src="/renderer/src/music/basic_pitch.js"></script><script src="/renderer/src/music/instrument_classify.js"></script><script src="/renderer/src/music/audio_models.js"></script><script src="/renderer/src/music/audio_runtime.js"></script>
+<script>
+// 真瀏覽器實測頁:下載三個模型(IndexedDB 分片)、用 onnxruntime-web 跑一次,記錄形狀與耗時。用法:?m=basic-pitch|yamnet|demucs-6s&ep=wasm|webgpu
+const log = (s) => { document.getElementById('o').textContent += s + '\n'; window.__log = (window.__log || '') + s + '\n'; };
+const qs = new URLSearchParams(location.search), mid = qs.get('m') || 'basic-pitch', ep = qs.get('ep') || 'wasm';
+(async () => { try {
+  const t0 = performance.now(); let last = 0;
+  const bytes = await FaAudioModels.fetchModel(mid, { fetchFn: (u, h) => fetch(u, { headers: h }), store: FaAudioModels.idbStore(), sha256: FaAudioModels.webSha256, sleep: (ms) => new Promise((r) => setTimeout(r, ms)), onProgress: (p) => { if (p.chunk !== last) { last = p.chunk; log('download ' + p.chunk + '/' + p.chunks + ' ' + p.done + ' resumed ' + p.resumed); } } });
+  log('model ok bytes ' + bytes.length + ' in ' + Math.round(performance.now() - t0) + ' ms');
+  const ort = await FaAudioRuntime.loadOrt({ ortUrl: qs.get('ortUrl') || undefined }); if (qs.get('verbose')) ort.env.logLevel = 'verbose'; const t1 = performance.now();
+  const { session, ep: used, tried } = await FaAudioRuntime.createSession(ort, bytes, [ep], { opt: qs.get('opt') || undefined }); log('session ep=' + used + ' load ' + Math.round(performance.now() - t1) + ' ms; inputs ' + session.inputNames + ' outputs ' + session.outputNames);
+  const sr = 22050; const x = new Float32Array(sr * 4); [[60, .3], [64, 1.3], [67, 2.3]].forEach(([n, t]) => { const f = 440 * Math.pow(2, (n - 69) / 12), o = Math.floor(t * sr); for (let i = 0; i < sr * 0.8; i++) { const tt = i / sr; x[o + i] += 0.35 * Math.min(1, tt / 0.02) * (Math.sin(2 * Math.PI * f * tt) + 0.3 * Math.sin(4 * Math.PI * f * tt)); } });
+  const t2 = performance.now();
+  if (mid === 'basic-pitch') { const notes = await FaAudioRuntime.makeTranscriber(ort, session)(x, sr); log('notes ' + JSON.stringify(notes.map((n) => [n.n, +n.t.toFixed(2), +n.d.toFixed(2)])) + ' run ' + Math.round(performance.now() - t2) + ' ms'); }
+  else if (mid === 'yamnet') { const x16 = FaAudioPipeline.resample(x, sr, 16000); const out = await session.run({ waveform: new ort.Tensor('float32', x16, [x16.length]) }); const sc = out[session.outputNames[0]]; log('scores dims ' + sc.dims + ' pick ' + JSON.stringify(FaInstrumentClassify.pick(sc.data, sc.dims[0])) + ' run ' + Math.round(performance.now() - t2) + ' ms'); }
+  else { const sep = FaAudioRuntime.makeSeparator(ort, session); const L = new Float32Array(44100 * 7); for (let i = 0; i < L.length; i++) L[i] = 0.3 * Math.sin(2 * Math.PI * 220 * i / 44100); const st = await sep({ left: L, right: L, sr: 44100 }); log('stems ' + Object.keys(st) + ' len ' + st.drums.length + ' rms ' + JSON.stringify(Object.fromEntries(Object.entries(st).map(([k, v]) => [k, +Math.sqrt(v.reduce((a, b) => a + b * b, 0) / v.length).toFixed(4)]))) + ' run ' + Math.round(performance.now() - t2) + ' ms'); }
+  log('DONE');
+} catch (e) { log('ERROR ' + (e && e.stack || e)); log('DONE'); } })();
+</script>

@@ -20,8 +20,8 @@
     if (!L || !L.length || !sr) throw new Error('沒有可轉的音訊取樣');
     const report = { used: [], skipped: [], stems: [], chunks: 0, resumed: 0, seconds: L.length / sr };
     const onP = opts.onProgress || (() => {}), store = opts.store, id = opts.id || fingerprint(L, sr);
-    const chunk = opts.chunkSec || CHUNK, total = Math.max(1, Math.ceil(L.length / sr / chunk));
-    const useSep = typeof opts.separator === 'function', stemNames = useSep ? (opts.stems || ['drums', 'bass', 'other', 'vocals']) : ['mix'];
+    const useSep = typeof opts.separator === 'function', chunk = opts.chunkSec || (useSep && opts.separator.segmentSec ? opts.separator.segmentSec - 2 * MARGIN : CHUNK), total = Math.max(1, Math.ceil(L.length / sr / chunk));
+    const stemNames = useSep ? (opts.stems || ['drums', 'bass', 'other', 'vocals']) : ['mix'];
     if (!useSep) { report.skipped.push('沒有分軌模型:整個混音當成一軌處理,只用單音音高追蹤,不拆鼓、貝斯、人聲'); }
     else report.used.push('分軌:' + stemNames.join('、'));
     const acc = {}; stemNames.forEach((s) => { acc[s] = []; });

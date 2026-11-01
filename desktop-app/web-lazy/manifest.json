@@ -943,8 +943,32 @@
    "names": [
     "FaAudioPipeline"
    ],
-   "size": 4809,
-   "md5": "faee42089350b504f46b445b9415f425"
+   "size": 4862,
+   "md5": "0ea66f964e4fd2ccabdc7ae8a0b2a202"
+  },
+  "musicbp": {
+   "file": "chunks/musicbp.js",
+   "names": [
+    "FaBasicPitch"
+   ],
+   "size": 1629,
+   "md5": "75476714b0a5f6a4774c316d2e8231af"
+  },
+  "musicmodels": {
+   "file": "chunks/musicmodels.js",
+   "names": [
+    "FaAudioModels"
+   ],
+   "size": 3455,
+   "md5": "d16149e7759900c6ea26552691fa1236"
+  },
+  "musicrt": {
+   "file": "chunks/musicrt.js",
+   "names": [
+    "FaAudioRuntime"
+   ],
+   "size": 2768,
+   "md5": "cb32d51d1c60bfa04344671996012315"
   },
   "musicui": {
    "file": "chunks/musicui.js",
@@ -1036,7 +1060,7 @@
   }
  },
  "core": {
-  "size": 5150861,
-  "md5": "70dd9bde651669237d0f8831acb11090"
+  "size": 5161371,
+  "md5": "de687a7ffd144edf2bb914a68757c23d"
  }
 }

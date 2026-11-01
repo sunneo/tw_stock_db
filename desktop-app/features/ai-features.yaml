@@ -601,6 +601,13 @@ categories:
         platforms: [web, desktop]
         samples: ["放一首小星星的 MIDI", "/midi", "/midi-to-mp3", "把這個 MIDI 轉成 mp3", "什麼是三和弦的轉位", "幫我寫一首輕快的爵士，D 調，16 小節", "作一首 lofi 的背景音樂"]
         updated: 2026-11-01
+      - id: music-audio-to-midi
+        name: 音樂：mp3／wav 轉 MIDI
+        summary: 把上傳的音訊離線轉成 MIDI 並開編輯器：Basic Pitch 多音轉譜加 YAMNet 挑音色（約 16 MB，第一次下載後存在本機），選用 Demucs 6 軌分成鼓、貝斯、人聲、吉他、鋼琴、其他（約 136 MB，只能用 wasm、很慢）。拆樂器只到分軌模型給的幾軌，結果不保證準確，回覆會誠實列出沒做到的部分。
+        how: { slash: ["/audio-to-midi"], tools: [audio_to_midi] }
+        platforms: [web, desktop]
+        samples: ["/audio-to-midi", "把這首 mp3 轉成 MIDI", "把這段錄音轉成譜，拆軌"]
+        updated: 2026-11-01
       - id: youtube-download
         name: 下載 YouTube 影片
         summary: 下載 YouTube 影片（瀏覽器端跑真正的 yt-dlp，含 JS 簽章解密橋接＋PO Token/BotGuard橋接）。Advance Settings 的 YouTube Data API 金鑰／頻道 ID 是選填的範圍限制（填了才會限制只能下載本人頻道或 CC 授權影片，留空可下載任何影片）。已知限制：Google 目前只給這個app信任度較低的「降級版」PO Token，多數影片仍然會下載失敗、只剩縮圖格式可用（已排除是瀏覽器環境被偵測為自動化的問題），這塊持續是進行中的逆向工程課題。

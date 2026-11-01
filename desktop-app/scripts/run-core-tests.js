@@ -169,6 +169,9 @@ const suites = [
     ['音樂：音色庫樣本內部 loop 偵測與瘦身規則（週期、無縫 loop、截尾、降取樣）', 'scripts/music-tests/sf_loop.test.js'],
     ['音樂：音訊轉 MIDI 的規則部分（鼓拆解、音高追蹤、速度、量化、樂器標籤、組裝）', 'scripts/music-tests/audio_to_midi.test.js'],
     ['音樂：音訊轉 MIDI 流程（分段、可插拔分軌器與轉譜器、續跑、中斷、誠實報告）', 'scripts/music-tests/audio_pipeline.test.js'],
+    ['音樂：Basic Pitch 視窗與音符解碼（真模型輸出固定資料）', 'scripts/music-tests/basic_pitch.test.js'],
+    ['音樂：樂器分類（封閉候選清單、GM 對應）', 'scripts/music-tests/instrument_classify.test.js'],
+    ['音樂：模型分片下載（續傳、核對、重試）', 'scripts/music-tests/audio_models.test.js'],
 ];
 let failed = 0, failedNew = 0;
 const results = [], t00 = Date.now();
