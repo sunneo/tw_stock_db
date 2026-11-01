@@ -34196,6 +34196,79 @@ const holder = {};
 return holder.FaComposeTree;
 })();
 /* MUSICTREE-END */
+/* MUSICBRIDGE-BEGIN */
+const FaMidigenBridge = (function () {
+const holder = {};
+(function (module, self) {
+// midigenai 與我們作曲樹的橋(設計見 DESIGN.music.md「midigenai 查證與整合設計」)。三層退路:模型生成 → 由上而下拆解作曲(compose_tree)→ 範本(compose_tree 內各節點)。
+// midigenai 的輸入是 MIDI 不是文字:先由作曲樹產生種子(旋律、和弦、貝斯、鼓),只把旋律軌交給模型,請它補貝斯、鼓、和弦聲部;
+// 每個聲部獨立:生成 → 程式驗證修正(吸附到調內、音域、小節數、鼓軌是鼓)→ 不合格重生(最多 retries 次)→ 仍不合格那個聲部用作曲樹的原聲部。
+//   unsupported(tree) → '' 或超出模型範圍的原因   FaMidigenBridge.compose(tree, seed, { engine, timeoutMs, retries, onStep }) → Promise<{ song, layer, layers, reason, warnings, fixes, tries, sections, seed }>
+//   engine:{ accompany(bytes, { bars, instrument, seed, tempoBpm }) → Promise<{ midi: Uint8Array }> },沒有就整首用作曲樹並寫明原因;engine 丟出 { fatal:true } 代表模型壞了,其餘聲部不再試
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(require('./midi_core.js'), require('./music_compose.js'), require('./compose_tree.js')); else root.FaMidigenBridge = factory(root.FaMidi || (typeof FaMidi !== 'undefined' ? FaMidi : undefined), root.FaMidiCompose || (typeof FaMidiCompose !== 'undefined' ? FaMidiCompose : undefined), root.FaComposeTree || (typeof FaComposeTree !== 'undefined' ? FaComposeTree : undefined)); })(typeof self !== 'undefined' ? self : this, function (M, C, T) {
+  'use strict';
+  const FAMILY = ['Piano', 'ChromPerc', 'Organ', 'Guitar', 'Bass', 'Strings', 'Ensemble', 'Brass', 'Reed', 'Pipe', 'SynthLead', 'SynthPad', 'SynthFX', 'Ethnic', 'Percussive', 'SoundFX'];
+  const MAJOR = [0, 2, 4, 5, 7, 9, 11], MINOR = [0, 2, 3, 5, 7, 8, 10], MAX_BARS = 16;
+  const withTimeout = (p, ms) => new Promise((res, rej) => { const t = setTimeout(() => rej(Object.assign(new Error('逾時 ' + Math.round(ms / 1000) + ' 秒'), { timeout: true })), ms); Promise.resolve(p).then((v) => { clearTimeout(t); res(v); }, (e) => { clearTimeout(t); rej(e); }); });
+  // 超出模型範圍(使用者:模型處理不了才退回拆解):拍號不是 4/4、超過一次能處理的小節數、速度在模型標頭範圍外
+  function unsupported(tree) {
+    const st = C.STYLES[tree.style]; if (!st) return '不認得的風格'; if (st.timesig[0] !== 4 || st.timesig[1] !== 4) return '這個風格不是 4/4 拍,模型只認 4/4';
+    if (tree.bars > MAX_BARS) return '曲子 ' + tree.bars + ' 小節,超過模型一次能補的 ' + MAX_BARS + ' 小節'; if (tree.tempo < 40 || tree.tempo > 220) return '速度 ' + tree.tempo + ' 超出模型標頭的範圍'; return '';
+  }
+  const voicesOf = (tree, song) => {
+    const st = C.STYLES[tree.style]; const out = [{ id: 'bass', label: '貝斯', ti: 2, instrument: 'Bass', range: [24, 67], pitched: true }];
+    if (song.tracks[3] && song.tracks[3].drum) out.push({ id: 'drums', label: '鼓', ti: 3, instrument: 'Drums', range: [27, 87], pitched: false });
+    out.push({ id: 'chords', label: '和弦', ti: 1, instrument: FAMILY[Math.min(15, Math.floor(st.inst.chord / 8))], range: [40, 88], pitched: true }); return out;
+  };
+  // 驗證與修正一個模型生成的聲部;回傳 { notes, fixes } 或 { problem }
+  function checkVoice(track, v, tree, ppq) {
+    if (!track || !track.notes || !track.notes.length) return { problem: '模型沒生成音符' }; const k = 480 / (ppq || 480); const bpbT = 4 * 480, endT = tree.bars * bpbT + 240; let fixes = 0;
+    if (!v.pitched && !track.drum) return { problem: '鼓聲部生成的不是鼓軌' }; if (v.pitched && track.drum) return { problem: '要的是有音高的聲部,生成了鼓軌' };
+    const steps = tree.mode === 'minor' ? MINOR : MAJOR, pc0 = C.KEYS[tree.key] == null ? 0 : C.KEYS[tree.key]; const inScale = (pc) => steps.indexOf(((pc - pc0) % 12 + 12) % 12) >= 0;
+    const notes = []; track.notes.forEach((n) => {
+      const t = Math.round(n.t * k), d = Math.max(1, Math.round(n.d * k)); if (t >= endT) { fixes++; return; } let p = n.n;
+      if (v.pitched) { while (p < v.range[0]) { p += 12; fixes++; } while (p > v.range[1]) { p -= 12; fixes++; } if (!inScale(p)) { p += inScale(p - 1) ? -1 : 1; fixes++; } }
+      notes.push({ t, d: Math.min(d, endT - t), n: p, v: n.v });
+    });
+    const bars = new Set(notes.map((n) => Math.floor(n.t / bpbT))); if (bars.size < Math.ceil(tree.bars * 0.6)) return { problem: '只覆蓋 ' + bars.size + ' / ' + tree.bars + ' 小節' };
+    if (notes.length < tree.bars * (v.pitched ? 1 : 2)) return { problem: '音符太少(' + notes.length + ')' };
+    return { notes, fixes };
+  }
+  async function compose(tree, seed, o) {
+    o = o || {}; const step = o.onStep || (() => {}); seed = Number(seed) || 1; const retries = o.retries == null ? 2 : o.retries, timeoutMs = o.timeoutMs || 90000;
+    const base = T.compose(tree, seed); const res = { song: base.song, layer: 'tree', layers: [], reason: '', warnings: (base.warnings || []).slice(), fixes: 0, tries: base.tries, sections: base.sections, seed: base.seed, style: base.style, options: base.options };
+    const why = !o.engine ? (o.noEngineReason || '模型沒下載或沒載入') : unsupported(tree); const voices = voicesOf(tree, base.song);
+    if (why) { res.reason = why; res.layers = voices.map((v) => ({ voice: v.id, label: v.label, layer: 'tree', reason: why })); return res; }
+    if (base.fallback) { res.reason = '作曲樹自己退回了範本,沒有種子可交給模型'; res.layers = voices.map((v) => ({ voice: v.id, label: v.label, layer: 'tree', reason: res.reason })); return res; }
+    const lead = base.song.tracks[0]; const bytes = M.write(Object.assign({}, base.song, { tracks: [lead] })); let dead = '';
+    const song = JSON.parse(JSON.stringify(base.song));
+    for (const v of voices) {
+      const L = { voice: v.id, label: v.label, layer: 'tree', reason: '', tries: 0 }; res.layers.push(L);
+      if (dead) { L.reason = dead; continue; }
+      for (let a = 0; a <= retries && L.layer !== 'model'; a++) {
+        L.tries = a + 1; step('請模型補「' + v.label + '」第 ' + (a + 1) + ' 次…');
+        try {
+          const r = await withTimeout(o.engine.accompany(bytes, { bars: tree.bars, instrument: v.instrument, seed: seed * 7 + a, tempoBpm: tree.tempo }), timeoutMs);
+          const parsed = M.parse(r.midi); const gen = parsed.tracks.slice(1).filter((t) => t.notes && t.notes.length)[0]; const c = checkVoice(gen, v, tree, parsed.ppq);
+          if (c.problem) { L.reason = c.problem; step('「' + v.label + '」' + c.problem); continue; }
+          song.tracks[v.ti].notes = c.notes; res.fixes += c.fixes; L.layer = 'model'; L.reason = c.fixes ? '程式修正了 ' + c.fixes + ' 處(吸附調內、音域、超出小節)' : '';
+        } catch (e) {
+          L.reason = e && e.timeout ? String(e.message) : '模型出錯:' + String((e && e.message) || e); step('「' + v.label + '」' + L.reason); if (e && e.fatal) { dead = L.reason; break; } if (e && e.timeout) break;
+        }
+      }
+      if (L.layer !== 'model') L.reason = '用作曲樹的原聲部(' + (L.reason || '沒有結果') + ')';
+    }
+    const n = res.layers.filter((l) => l.layer === 'model').length; res.layer = n === 0 ? 'tree' : n === res.layers.length ? 'model' : 'partial';
+    if (n === 0) res.reason = '模型沒有任何聲部通過驗證,整首用作曲樹'; res.song = M.validate(song); return res;
+  }
+  const MANIFEST = { version: 'v5', vocab_size: 598, n_layers: 12, n_heads: 12, head_dim: 64, opset: 17, files: { gpu: { file: 'decoder-webgpu-q4.onnx', bytes: 73151835, sha256: '7c5de98ff7460bd88d07acc537c6e238f0a4afce29b8c9ad488eb97f99bdbfdf', quant: 'q4', cache: 'present, (1,H,P,D)' }, cpu: { file: 'decoder-wasm-int8.onnx', bytes: 114561179, sha256: '5ca00f42ba3900aeb6d98821d4e8b559a880c8d99d62dbdc0d1555a38c1eed65', quant: 'int8', cache: 'new-rows, time-major (1,P,H,D)' } } };
+  return { MANIFEST, unsupported, compose, checkVoice, voicesOf, MAX_BARS };
+});
+
+}).call(null, undefined, holder);
+return holder.FaMidigenBridge;
+})();
+/* MUSICBRIDGE-END */
 /* MUSICA2M-BEGIN */
 const FaAudioToMidi = (function () {
 const holder = {};
@@ -34469,7 +34542,9 @@ const holder = {};
   const REGISTRY = {
     'basic-pitch': { id: 'basic-pitch', label: 'Basic Pitch(多音轉譜)', url: 'https://huggingface.co/daserge/basic-pitch-onnx/resolve/main/nmp.onnx', bytes: 230444, sha256: '2c3c1d144bfa61ad236e92e169c13535c880469a12a047d4e73451f2c059a0ec', license: 'Apache-2.0', source: 'spotify/basic-pitch' },
     'yamnet': { id: 'yamnet', label: 'YAMNet(樂器分類)', url: 'https://huggingface.co/audiomagic/yamnet-onnx/resolve/main/yamnet.onnx', bytes: 16093355, sha256: 'd3835ffbbd4a1bb3e777f0ca217b5007907f5171dd5d17c4236b95b2af8f908e', license: 'Apache-2.0(類別名稱 CC BY 4.0,Google AudioSet)', source: 'tensorflow/models yamnet' },
-    'demucs-6s': { id: 'demucs-6s', label: 'Demucs 6 軌(分軌:鼓、貝斯、其他、人聲、吉他、鋼琴)', url: 'https://huggingface.co/adowu/htdemucs-6s-onnx/resolve/main/htdemucs_6s_fp16weights.onnx', bytes: 136428532, sha256: '7ce55792e2231c93fbf92de95f5fd5b3a5e6c89f7db690dfd693e8f1dce56869', license: 'MIT', source: 'facebookresearch/demucs' }
+    'demucs-6s': { id: 'demucs-6s', label: 'Demucs 6 軌(分軌:鼓、貝斯、其他、人聲、吉他、鋼琴)', url: 'https://huggingface.co/adowu/htdemucs-6s-onnx/resolve/main/htdemucs_6s_fp16weights.onnx', bytes: 136428532, sha256: '7ce55792e2231c93fbf92de95f5fd5b3a5e6c89f7db690dfd693e8f1dce56869', license: 'MIT', source: 'facebookresearch/demucs' },
+    'midigenai-v5-cpu': { id: 'midigenai-v5-cpu', label: 'midigenai v5 作曲模型(wasm 8 位元,所有瀏覽器可跑,約 7 秒/256 音符)', url: 'https://huggingface.co/nicholasbien/midigenai/resolve/main/v5/onnx/decoder-wasm-int8.onnx', bytes: 114561179, sha256: '5ca00f42ba3900aeb6d98821d4e8b559a880c8d99d62dbdc0d1555a38c1eed65', license: 'MIT(程式碼與模型卡標示;訓練資料集授權未確認,商用前請自行確認)', source: 'nicholasbien/midigenai', note: '以 MIDI 為輸入,替種子樂句補聲部;速度數字是專案頁面寫的,未在這台機器實測' },
+    'midigenai-v5-gpu': { id: 'midigenai-v5-gpu', label: 'midigenai v5 作曲模型(WebGPU 4 位元,較快,需要 WebGPU)', url: 'https://huggingface.co/nicholasbien/midigenai/resolve/main/v5/onnx/decoder-webgpu-q4.onnx', bytes: 73151835, sha256: '7c5de98ff7460bd88d07acc537c6e238f0a4afce29b8c9ad488eb97f99bdbfdf', license: 'MIT(程式碼與模型卡標示;訓練資料集授權未確認,商用前請自行確認)', source: 'nicholasbien/midigenai', note: '二選一下載即可(依裝置);頁面寫約 2.8 秒/256 音符,未實測' }
   };
   const CHUNK = 8 * MB;
   function cat(parts, total) { const out = new Uint8Array(total); let o = 0; for (const p of parts) { out.set(p, o); o += p.length; } return out; }
@@ -74207,7 +74282,8 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
                     const cnt = FaComposeTree.describe(res.tree).counts; say(72, '【作曲樹】AI 決定 ' + (cnt.ai || 0) + '、程式修正 ' + (cnt.fixed || 0) + '、以前學到 ' + (cnt.learned || 0) + '、範本預設 ' + (cnt.template || 0) + ' 個節點' + (FaComposeTree.usable(res.tree) ? '' : ';AI 一個節點都沒答對,整首退回範本作曲'));
                 } catch (e) { res.tree = null; say(72, '【作曲樹】失敗,退回範本作曲:' + String((e && e.message) || e)); }
             }
-            say(75, '【作曲】' + (res.tree && FaComposeTree.usable(res.tree) ? '依作曲樹組裝(程式展開動機、配和弦與聲部、整體檢查)' : res.report.tmplName + '範本,依規劃作曲並做程式檢查') + '…'); const out = this._midiComposeFinish(res, o.seed); prog.update({ pct: 100 }); prog.finish('完成:' + out.c.song.title + '(種子 ' + out.c.seed + ')'); return out;
+            say(74, '【模型】檢查 midigenai 作曲模型(首選;沒下載或處理不了才用作曲樹,再不行用範本)…');
+            say(75, '【作曲】' + (res.tree && FaComposeTree.usable(res.tree) ? '依作曲樹組裝(程式展開動機、配和弦與聲部、整體檢查)' : res.report.tmplName + '範本,依規劃作曲並做程式檢查') + '…'); const sd0 = o.seed > 0 ? o.seed : 1 + Math.floor(Math.random() * 99999); res.composed = await this._midigenCompose(res, sd0, say); const out = this._midiComposeFinish(res, sd0); prog.update({ pct: 100 }); prog.finish('完成:' + out.c.song.title + '(種子 ' + out.c.seed + ')'); return out;
         } catch (e) { try { prog.fail(String((e && e.message) || e)); } catch (_) { /* */ } throw e; }
     }
     // 作曲經驗:使用者按「就用這個」才算接受(沒按就不算)。經 FaHarnessExp 的閘門(只收程式驗證過的成功、去識別、去重、上限)存進本機,
@@ -74229,20 +74305,54 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         return { ok: true, duplicate: !!m.duplicate, sent };
     }
     _midiComposeFinish(res, seed) {
-        const sd = seed > 0 ? seed : 1 + Math.floor(Math.random() * 99999); const useTree = !!(res.tree && typeof FaComposeTree !== 'undefined' && FaComposeTree.usable(res.tree)); const c = useTree ? FaComposeTree.compose(res.tree, sd) : FaMidiCompose.compose(Object.assign({}, res.options, { seed: sd })); const desc = FaComposePlan.describe(res, c.seed);
-        const ref = { fields: res.fields, sources: res.sources, task: String(res.task || '').slice(0, 200), report: { usedAi: res.report.usedAi, aiError: res.report.aiError, notes: useTree ? (res.report.notes || []).filter((n) => !/以範本為準/.test(n)) : res.report.notes, tmplName: res.report.tmplName, calls: res.report.calls, learned: res.report.learned, model: res.report.model }, seed: c.seed, tries: c.tries, warnings: c.warnings, tree: useTree ? res.tree : null };
+        const sd = seed > 0 ? seed : 1 + Math.floor(Math.random() * 99999); const useTree = !!(res.tree && typeof FaComposeTree !== 'undefined' && FaComposeTree.usable(res.tree)); let c, layer = 'template';
+        if (res.composed && !(res.composed.layer === 'tree' && !useTree)) { c = res.composed; layer = c.layer; } else if (useTree) { c = FaComposeTree.compose(res.tree, sd); layer = 'tree'; } else c = FaMidiCompose.compose(Object.assign({}, res.options, { seed: sd }));
+        const layers = res.composed ? res.composed.layers : [], lreason = res.composed ? res.composed.reason : ''; const desc = FaComposePlan.describe(res, c.seed);
+        const ref = { fields: res.fields, sources: res.sources, task: String(res.task || '').slice(0, 200), report: { usedAi: res.report.usedAi, aiError: res.report.aiError, notes: useTree ? (res.report.notes || []).filter((n) => !/以範本為準/.test(n)) : res.report.notes, tmplName: res.report.tmplName, calls: res.report.calls, learned: res.report.learned, model: res.report.model }, seed: c.seed, tries: c.tries, warnings: c.warnings, tree: useTree || res.composed ? res.tree : null, layer, layers, lreason };
         const tcnt = useTree ? FaComposeTree.describe(res.tree).counts : null; const head = useTree ? '🎼 已由「作曲樹」作曲(' + res.options.key + ' 調、' + res.options.tempo + ' 拍/分、' + res.options.bars + ' 小節,種子 ' + c.seed + ');AI 決定 ' + (tcnt.ai || 0) + ' 個節點、程式修正 ' + (tcnt.fixed || 0) + '、以前學到 ' + (tcnt.learned || 0) + '、你指定 ' + (tcnt.user || 0) + '、範本預設 ' + (tcnt.template || 0) + '。下面是每個欄位與每個節點怎麼決定的,節點可以「重做」或「改成…」。' : '🎼 已依「' + desc.template + '」範本作曲(' + res.options.key + ' 調、' + res.options.tempo + ' 拍/分、' + res.options.bars + ' 小節,種子 ' + c.seed + ');' + (desc.usedAi ? '需求由 AI 理解,但作曲樹沒有採用(AI 沒答對任何節點),' : '這次沒有用 AI,') + '下面是每個欄位怎麼決定的。按「試聽」聽聽看,可以直接改。';
-        const id = this._midiPushEditor(c.song, c.song.title, head + '\n\n```fa-compose\n' + JSON.stringify(ref) + '\n```');
+        const layerNote = '\n🧱 這次用了:' + ({ model: '模型生成(midigenai)', partial: '模型生成(部分聲部)+作曲樹', tree: '由上而下拆解的作曲樹', template: '範本作曲' })[layer] + (lreason ? '(' + lreason + ')' : '') + '。';
+        const id = this._midiPushEditor(c.song, c.song.title, head + layerNote + '\n\n```fa-compose\n' + JSON.stringify(ref) + '\n```');
         return { id, c, desc, ref };
     }
     // 卡片上的「換一首」(換種子)與「改成…」(改幾個欄位重新作曲;被改的欄位標成你說的)
-    _midiRecompose(ref, patch, reroll) {
+    async _midiRecompose(ref, patch, reroll) {
         let res; const rep0 = Object.assign({}, ref.report || {});
         if (patch && Object.keys(patch).length) res = FaComposePlan.edit({ fields: ref.fields, sources: ref.sources, report: rep0 }, patch);
         else { const base = FaComposePlan.edit({ fields: ref.fields, sources: ref.sources, report: rep0 }, {}); res = base; }
         res.task = ref.task; res.report.model = rep0.model; res.report.learned = rep0.learned;
         if (ref.tree && typeof FaComposeTree !== 'undefined') res.tree = patch && Object.keys(patch).length ? FaComposeTree.rebase(ref.tree, res) : ref.tree;
-        return this._midiComposeFinish(res, reroll ? 0 : ref.seed);
+        const sd1 = reroll ? 1 + Math.floor(Math.random() * 99999) : ref.seed; if (res.tree) res.composed = await this._midigenCompose(res, sd1, () => {});
+        return this._midiComposeFinish(res, sd1);
+    }
+    // midigenai 作曲模型(首選):用離線模型管理下載好的 ONNX 檔,載入失敗或沒下載就回 { engine:null, reason },由橋退回作曲樹
+    async _midigenEngine() {
+        if (this._midigenP) return this._midigenP;
+        const msg = (e) => String((e && e.message) || e);
+        this._midigenP = (async () => {
+            try {
+                const store = FaAudioModels.idbStore(); const want = (typeof navigator !== 'undefined' && navigator.gpu) ? ['midigenai-v5-gpu', 'midigenai-v5-cpu'] : ['midigenai-v5-cpu']; let id = null;
+                for (const w of want) { let st = null; try { st = await FaAudioModels.status(w, store); } catch (_) { st = null; } if (st && st.complete) { id = w; break; } }
+                if (!id) return { engine: null, reason: '模型還沒下載(Configure → 離線模型管理 → 音樂 → midigenai v5)' };
+                const base = new URL('src/music/midigenai/', document.baseURI).href; let mod, web;
+                try { mod = await import(base + 'tasks.mjs'); web = await import(base + 'midigen-web.mjs'); } catch (e) { return { engine: null, reason: '模型的程式檔載入失敗(' + msg(e) + ');網頁版目前沒有帶這些檔' }; }
+                const bytes = await FaAudioModels.fetchModel(id, { fetchFn: (u, h) => fetch(u, { headers: h }), store, sha256: FaAudioModels.webSha256, sleep: (ms) => new Promise((r) => setTimeout(r, ms)) });
+                const ort = await FaAudioRuntime.loadOrt(); const eng = id.endsWith('gpu') ? 'gpu' : 'cpu';
+                const model = await web.loadModel({ ort, engine: eng, base: 'https://midigenai.local/', manifest: FaMidigenBridge.MANIFEST, cache: false, fetchImpl: async () => new Response(bytes) });
+                const mg = await mod.loadMidigen({ model });
+                return { engine: { accompany: (b, op) => mg.accompany(b, op) }, id, eng };
+            } catch (e) { this._midigenP = null; return { engine: null, reason: '模型載入失敗:' + msg(e) }; }
+        })();
+        return this._midigenP;
+    }
+    async _midigenCompose(res, sd, say) {
+        if (typeof FaMidigenBridge === 'undefined' || typeof FaComposeTree === 'undefined') return null;
+        try {
+            if (!res.tree) res.tree = await FaComposeTree.plan(res, { task: res.task });
+            const got = await this._midigenEngine(); if (got.engine) say(76, '【模型】用 ' + got.id + ' 補貝斯、鼓、和弦(逾時 90 秒,不合格重生最多 2 次)…');
+            const r = await FaMidigenBridge.compose(res.tree, sd, { engine: got.engine, noEngineReason: got.reason, onStep: (m) => say(78, '【模型】' + m) });
+            say(80, '【模型】' + (r.layer === 'model' ? '三個聲部都由模型生成並通過程式驗證' : r.layer === 'partial' ? '部分聲部由模型生成,其餘用作曲樹' : '這次沒有用模型:' + (r.reason || '')));
+            return r;
+        } catch (e) { say(80, '【模型】出錯,退回作曲樹:' + String((e && e.message) || e)); return null; }
     }
     // 卡片上某個節點的「重做這段」(只重問該節點)與「改成…」(使用者自己給值)
     async _midiNodeAction(ref, id, value) {
@@ -74253,6 +74363,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             const askNode = (sys, user, op) => this._callSimpleCompletion(user, { systemPrompt: sys, maxTokens: op && (op.node === 'motif' || String(op.node).indexOf('harmony.') === 0) ? 600 : 300, temperature: 0 });
             base.tree = await FaComposeTree.redo(ref.tree, id, { ask: askNode, timeoutMs: 25000, attempts: 2 });
         }
+        base.composed = await this._midigenCompose(base, ref.seed, () => {});
         return this._midiComposeFinish(base, ref.seed);
     }
     _mountComposeCards(mdDiv) {
@@ -74274,7 +74385,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             addSel('lead', '主奏', FaComposePlan.LEADS.map((x) => [x[0], x[1]]), ref.fields.lead); addSel('bars', '長度', FaComposePlan.BARS.map((x) => [x[1], x[1] + ' 小節']).concat([[ref.fields.bars, ref.fields.bars + ' 小節']]).filter((x, i, a2) => a2.findIndex((y) => y[0] === x[0]) === i), ref.fields.bars);
             card.appendChild(row);
             const btns = mk('div', 'display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;'); const b1 = mk('button', null, '🎲 換一首(換種子)'), b2 = mk('button', null, '✏️ 改成上面的設定重新作曲'), b3 = mk('button', null, '👍 就用這個(讓助理學起來)'); const note3 = mk('div', 'font-size:12px;opacity:.8;margin-top:4px;');
-            const run = async (btn, patchFn) => { btn.disabled = true; try { const out = this._midiRecompose(ref, patchFn && patchFn(), !patchFn); try { this._persistChatHistory(); this._renderMessageHistory(); } catch (_) { /* */ } return out; } catch (e) { btn.textContent = '⚠️ ' + String((e && e.message) || e); } };
+            const run = async (btn, patchFn) => { btn.disabled = true; try { const out = await this._midiRecompose(ref, patchFn && patchFn(), !patchFn); try { this._persistChatHistory(); this._renderMessageHistory(); } catch (_) { /* */ } return out; } catch (e) { btn.textContent = '⚠️ ' + String((e && e.message) || e); } };
             b1.onclick = () => run(b1, null);
             b2.onclick = () => run(b2, () => { const p = {}; Object.keys(sels).forEach((k) => { let v = sels[k].value; if (k === 'bars') v = Number(v); if (k === 'mood' && v === '') v = null; if (String(v) !== String(ref.fields[k] == null ? (k === 'mood' ? '' : v) : ref.fields[k])) p[k] = v; }); return p; });
             b3.onclick = async () => { b3.disabled = true; try { const r = await this._composeLearn(ref); note3.textContent = r.ok ? '✅ 已記住這種說法的選擇' + (r.duplicate ? '(以前也記過,次數加一)' : '') + (r.sent ? ';' + r.sent : '') : 'ℹ️ 沒有記:' + r.why; } catch (e) { note3.textContent = '⚠️ ' + String((e && e.message) || e); } };
@@ -74294,6 +74405,11 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
                     line.append(rb, eb, msg); box.appendChild(line);
                 });
                 card.appendChild(box);
+            }
+            if (ref.layers && ref.layers.length) {
+                const lb = mk('div', 'margin-top:8px;border-top:1px dashed rgba(128,128,128,.4);padding-top:6px;'); lb.appendChild(mk('div', 'font-weight:600;margin-bottom:4px;', '🧱 這次用了哪一層(模型生成 → 作曲樹 → 範本)'));
+                ref.layers.forEach((l) => lb.appendChild(mk('div', 'margin:2px 0;', l.label + ':' + (l.layer === 'model' ? '✅ 模型生成' : '↩️ 作曲樹') + (l.reason ? '　' + l.reason : '') + (l.tries > 1 ? '(試了 ' + l.tries + ' 次)' : ''))));
+                card.appendChild(lb);
             }
             code.parentElement.replaceWith(card);
         });
@@ -98388,7 +98504,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         for (const id of Object.keys(REG)) {
             const m = REG[id]; let st = null; try { st = await FaAudioModels.status(id, store); } catch (_) { st = null; }
             const have = st && st.chunks > 0, full = st && st.complete;
-            rows.push('<div style="border:1px solid #334155; border-radius:8px; padding:8px; margin-bottom:6px;"><div><b>' + esc(m.label) + '</b>　<span style="color:#94a3b8; font-size:12px;">' + esc(MB(m.bytes)) + (m.license ? '　授權 ' + esc(m.license) : '') + '</span></div>'
+            rows.push('<div style="border:1px solid #334155; border-radius:8px; padding:8px; margin-bottom:6px;"><div><b>' + esc(m.label) + '</b>　<span style="color:#94a3b8; font-size:12px;">' + esc(MB(m.bytes)) + (m.license ? '　授權 ' + esc(m.license) : '') + '</span></div>' + (m.note ? '<div style="color:#94a3b8; font-size:12px;">' + esc(m.note) + '</div>' : '')
                 + '<div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-top:4px;"><span>' + (full ? '✅ 已下載 ' + esc(MB(st.have)) : have ? '🟡 下載到一半 ' + esc(MB(st.have)) + ' / ' + esc(MB(m.bytes)) + '（可續傳）' : '⬜ 未下載') + '</span>'
                 + (full ? '' : '<button style="' + btn + '" data-om="mus-model-dl" data-id="' + esc(id) + '">' + (have ? '續傳' : '下載') + '</button>') + (have ? '<button style="' + btn + ' color:#fca5a5;" data-om="mus-model-del" data-id="' + esc(id) + '">刪除</button>' : '') + '<span data-om-status="mus-' + esc(id) + '" style="color:#7dd3fc;"></span></div></div>');
         }

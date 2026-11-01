@@ -140,3 +140,10 @@ Roland SC-88 的資料只當大小目標，不抽取、不轉換。注意：pian
 **管線（仿 /image）**：使用者需求 → 逐欄理解（compose_plan）→ 規格 → 拆解樹產生種子（和弦、動機、貝斯／鼓骨架，對應成屬性標頭）→ midigenai 補聲部／續寫／重寫（每次一段，種子固定可重現）→ 程式驗證修正（吸附調內、音域、小節數、強拍與和弦不衝突）→ 組裝 MIDI 與卡片（卡片寫每段用了哪一層與原因）。這讓兩邊是合作而不只是首選與退路：模型負責「把種子發展成自然的曲子與聲部」，拆解負責「從文字需求產生種子與骨架」。
 **離線模型管理（音樂區）**：新增一列 midigenai v5（兩個版本依裝置挑一個，顯示大小 73／115 MB、授權 MIT＋資料集授權未確認警語、來源 Hugging Face 網址、已下載、刪除、占用），沿用 audio_models.js 的分片下載、續傳、SHA-256 核對（Hub manifest 有 sha256）；ort 的 wasm 約 27 MB 另列。
 **分工與批次**：批次四＝本段查證（已提交）；批次五＝等同意後複製 MIT 原始碼與授權、audio_models 加登錄、離線模型管理列；批次六＝midigen_bridge（種子→標頭與 MIDI、任務選擇、驗證修正、三層退路與原因）＋假引擎測試；批次七＝實機量測（下載 115 MB，寫秒數）與卡片。
+
+### midigenai 實作紀錄（批次五、六）
+- 已複製 MIT 原始碼到 `renderer/src/music/midigenai/`（attributes／generator／midi／midigen-prompt／midigen-web／tasks／tokenizer 七個 .mjs ＋ LICENSE，未改一字；沒有複製訓練與伺服器程式）。模型本體**不進 repo、不進安裝包**。
+- 離線模型管理音樂區多兩列：`midigenai-v5-cpu`（114,561,179 位元組）與 `midigenai-v5-gpu`（73,151,835），沿用分片續傳與 SHA-256（值取自 Hub 的 manifest.json），列出授權與「資料集授權未確認」警語。
+- `renderer/src/music/midigen_bridge.js`（FaMidigenBridge）：種子＝作曲樹；只把旋律軌交給模型，請它補貝斯、鼓、和弦（古典等沒有鼓軌的風格不問鼓）；每個聲部獨立「生成 → 驗證修正（吸附調內、音域移八度、超出小節裁掉、鼓軌種類）→ 不合格重生最多 2 次 → 仍失敗那個聲部用作曲樹原聲部」；逾時（預設 90 秒）只試一次；模型壞掉（fatal）其餘聲部不再問。超出範圍（非 4/4、超過 16 小節、速度範圍外）不呼叫模型直接退回。卡片寫每個聲部用了哪一層與原因。測試 `scripts/music-tests/midigen_bridge.test.js` 25 項（假引擎）。
+- 宿主：`_midigenEngine` 讀離線模型管理下載好的檔，用 `FaAudioRuntime.loadOrt` 載 onnxruntime-web（本專案 1.22.0），以假的 fetch 交給 midigenai 的 `loadModel`（關掉它自己的 Cache API 快取）；分詞表 `tokenizer.json`（約 10 KB）仍從 Hub 抓，**完全離線時會失敗並退回作曲樹**。`_midiComposeFlow` 在作曲樹之後、重新作曲、重做節點都會先試模型；結果卡片與提示文字寫明用了哪一層。
+- 實測腳本 `scripts/music-tests/midigen-bench.html`（在 desktop-app 資料夾起靜態伺服器後開，?engine=cpu|gpu；載 CDN 的 onnxruntime-web 1.30.0 並下載模型到瀏覽器快取，不進 repo）。**本機實測被自動分類器擋下**（頁面會執行外部程式碼），所以：速度、這台機器能不能跑、ort 1.22 與 1.30 的相容性、模型實際輸出品質，全部**未驗證**。網頁版沒有帶這些 .mjs，會寫明原因並退回作曲樹。

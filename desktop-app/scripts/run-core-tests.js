@@ -170,6 +170,7 @@ const suites = [
     ['音樂：MIDI 遠端共編（共編訊息層、事件層級合併）', 'scripts/music-tests/midi_remote.test.js'],
     ['音樂：作曲的理解需求（假 AI：完美、亂答、部分答對、沉默、逾時、丟錯；使用者說的優先；改成…；說明卡片）', 'scripts/music-tests/compose_plan.test.js'],
     ['音樂：作曲樹（曲式、和聲、聲部、動機逐節點；假模型七種；重做節點、改成…、組裝掃描）', 'scripts/music-tests/compose_tree.test.js'],
+    ['音樂：midigenai 橋（假引擎：完美、沒引擎、超出範圍、不合格重生、逾時、出錯、模型壞掉、部分通過）', 'scripts/music-tests/midigen_bridge.test.js'],
     ['音樂：作曲說法的路由（寫貝多芬風格的 MIDI → midi_compose）與成品用卡片交付的規則', 'scripts/music-tests/midi_route.test.js'],
     ['音樂：配樂共用介面（簡報、遊戲、影片剪輯的背景音樂：規格、淡入淡出、循環鋪滿、播放控制）', 'scripts/music-tests/soundtrack.test.js'],
     ['音樂：程式作曲（風格範本、和弦進行、旋律檢查、同種子同曲）', 'scripts/music-tests/music_compose.test.js'],

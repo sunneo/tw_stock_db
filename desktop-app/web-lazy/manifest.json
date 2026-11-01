@@ -954,6 +954,14 @@
    "size": 25311,
    "md5": "97e59749b4c4591b13cf9df0cbefe1f8"
   },
+  "musicbridge": {
+   "file": "chunks/musicbridge.js",
+   "names": [
+    "FaMidigenBridge"
+   ],
+   "size": 4902,
+   "md5": "e7a21dbad2c654274f68370b2c48a463"
+  },
   "musica2m": {
    "file": "chunks/musica2m.js",
    "names": [
@@ -983,8 +991,8 @@
    "names": [
     "FaAudioModels"
    ],
-   "size": 4077,
-   "md5": "7043ad0b14b4e5171db74152792fb477"
+   "size": 5152,
+   "md5": "50d74ba357db0c49df22067a702c9cc5"
   },
   "musicrt": {
    "file": "chunks/musicrt.js",
@@ -1084,7 +1092,7 @@
   }
  },
  "core": {
-  "size": 5207277,
-  "md5": "7e5a95b6e739574aea587a97d15ac9d6"
+  "size": 5210773,
+  "md5": "0f8886952de33204013d9c3b14d56b39"
  }
 }

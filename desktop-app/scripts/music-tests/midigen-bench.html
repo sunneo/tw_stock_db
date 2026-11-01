@@ -1,0 +1,26 @@
+<!doctype html>
+<meta charset="utf-8"><title>midigenai 實測</title>
+<!-- 用法:在 desktop-app 資料夾起靜態伺服器(python -m http.server 8813),開 /scripts/music-tests/midigen-bench.html?engine=cpu 或 gpu。模型存在瀏覽器的 Cache API,不進 repo。結果在 window.__bench。 -->
+<script src="../../renderer/src/music/midi_core.js"></script><script src="../../renderer/src/music/music_compose.js"></script><script src="../../renderer/src/music/compose_tree.js"></script>
+<pre id="o">載入中…</pre>
+<script type="module">
+const out = document.getElementById('o'), log = (s) => { out.textContent += '\n' + s; }; const B = window.__bench = { steps: [] };
+const mark = (name, extra) => { B.steps.push(Object.assign({ name, t: Math.round(performance.now()) }, extra || {})); log(name + ' ' + JSON.stringify(extra || {})); };
+try {
+  const engine = new URLSearchParams(location.search).get('engine') || 'cpu';
+  const ort = await import('https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/ort.webgpu.min.mjs'); mark('ort 載入', { env: !!ort.env });
+  const { loadMidigen } = await import('../../renderer/src/music/midigenai/tasks.mjs'); const web = await import('../../renderer/src/music/midigenai/midigen-web.mjs');
+  B.detect = await web.detect(); mark('偵測', B.detect);
+  let last = 0; const t0 = performance.now();
+  const mg = await loadMidigen({ ort, engine, onProgress: (p) => { if (p.loaded - last > 8e6 || p.phase === 'load') { last = p.loaded; log(p.phase + ' ' + (p.loaded / 1e6).toFixed(1) + '/' + (p.total / 1e6).toFixed(1) + ' MB'); } } });
+  mark('模型就緒', { ms: Math.round(performance.now() - t0), engine });
+  // 種子:作曲樹模板作一首 8 小節流行,只留旋律軌當條件,補貝斯
+  const tree = await FaComposeTree.plan({ fields: {}, options: { style: 'pop', key: 'C', tempo: 100, bars: 8 } }, {}); const c = FaComposeTree.compose(tree, 3);
+  const only = Object.assign({}, c.song, { tracks: [c.song.tracks[0]] }); const bytes = FaMidi.write(only); mark('種子', { bytes: bytes.length, notes: only.tracks[0].notes.length });
+  const t1 = performance.now(); const r = await mg.accompany(bytes, { bars: 8, instrument: 'bass', seed: 1, tempoBpm: 100 });
+  mark('補貝斯(8 小節)', { ms: Math.round(performance.now() - t1), generatedNotes: r.generatedNotes, header: r.header, midiBytes: r.midi.length });
+  const t2 = performance.now(); const g = await mg.generate(bytes, { maxNewTokens: 256, seed: 1, tempoBpm: 100 });
+  mark('續寫 256 token', { ms: Math.round(performance.now() - t2), generatedTokens: g.generatedTokens, promptTokens: g.promptTokens });
+  B.done = true;
+} catch (e) { B.error = String(e && e.stack || e); log('錯誤 ' + B.error); B.done = true; }
+</script>

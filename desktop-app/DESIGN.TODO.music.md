@@ -22,7 +22,7 @@ Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app
 ## 3. Todo（依序；階段 0–4 已做完，階段 5 做了規則部分）
 
 ### 下一步（midigenai 當首選，管理層追加，2026-11-02，**最新**）
-使用者原話：「可以用midigenai當首選，一樣在離線模型裡面管理，我們的管線跟處理方式可以當額外參考，用類似/image 的diffusion一樣，將使用者需求轉為midigenai的prompt」；「而相關內容無法處理，才fallback為我們的拆分方式」。查證與設計已提交（DESIGN.music.md「midigenai 查證與整合設計」，commit 9aa5d818）：MIT、v5 約 1.13 億參數、輸入是 MIDI 不是文字、有 JS 端與 ONNX（wasm 8 位元 115 MB／WebGPU 4 位元 73 MB）、資料集授權未確認。**卡在需要同意的兩件事**：① 把 MIT 原始碼（midigenai/web 下約 7 個檔）複製進專案並附授權；② 下載 115 MB 模型做實機量測。同意後照文件批次五到七做。
+使用者原話：「可以用midigenai當首選，一樣在離線模型裡面管理，我們的管線跟處理方式可以當額外參考，用類似/image 的diffusion一樣，將使用者需求轉為midigenai的prompt」；「而相關內容無法處理，才fallback為我們的拆分方式」。查證與設計已提交（DESIGN.music.md「midigenai 查證與整合設計」，commit 9aa5d818）：MIT、v5 約 1.13 億參數、輸入是 MIDI 不是文字、有 JS 端與 ONNX（wasm 8 位元 115 MB／WebGPU 4 位元 73 MB）、資料集授權未確認。**卡在需要同意的兩件事**：① 把 MIT 原始碼（midigenai/web 下約 7 個檔）複製進專案並附授權；② 下載 115 MB 模型做實機量測。批次五、六已提交（複製 MIT 原始碼、離線模型管理兩列、midigen_bridge 橋＋假引擎測試 25 項、宿主三層退路與卡片層級列）；批次七（實機量測）被自動分類器擋下，未驗證，需使用者在自己機器上用 scripts/music-tests/midigen-bench.html 量測。
 
 ### 下一步（作曲家升級，管理層派工，2026-11-02，（上一項，已完成））：AI 真的是作曲家，不只是選範本
 使用者原話（2026-11-02）：「請問照這樣，有哪個是他透過api去填入midi 的note的?感覺只是讓ai選種子」；「yes，他必須是一個作曲家，像是在拆uml一樣，divide and conquer, 然後組裝起整體」；先前：「他好歹要LLM學會...」。UML design 的意思（使用者定義）：由上而下持續規劃、細切到不可再切，再用 CoLU 接線；弱到不能規劃時用樣板；不是寫死流程。
