@@ -111,5 +111,5 @@
     return out;
   }
   const choices = () => Object.keys(STYLES).map((k) => ({ id: k, name: STYLES[k].name, tempo: STYLES[k].tempo, progressions: STYLES[k].progs.length, mode: STYLES[k].mode }));
-  return { STYLES, KEYS, compose, parseRequest, validate, choices };
+  return { STYLES, KEYS, chordTones, compose, parseRequest, validate, choices };
 });
