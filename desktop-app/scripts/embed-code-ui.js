@@ -377,7 +377,7 @@ embedImage3d();
 function embedMusic() {
     const dir = path.join(root, 'renderer/src/music'); if (!fs.existsSync(dir)) return;
     let prevEnd = '/* IMG3DWORKER-END */';
-    for (const [fn, mark, name] of [['midi_core', 'MUSICMIDI', 'FaMidi']]) {
+    for (const [fn, mark, name] of [['midi_core', 'MUSICMIDI', 'FaMidi'], ['midi_play', 'MUSICPLAY', 'FaMidiPlay']]) {
         const fp = path.join(dir, fn + '.js'); if (!fs.existsSync(fp)) continue;
         const core = fs.readFileSync(fp, 'utf8').replace(/\r\n/g, '\n');
         let a = src.indexOf('/* ' + mark + '-BEGIN */'), b = src.indexOf('/* ' + mark + '-END */');

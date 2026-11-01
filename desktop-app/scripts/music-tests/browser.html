@@ -1,0 +1,25 @@
+<!doctype html><meta charset="utf-8"><title>music browser test</title>
+<!-- 在 desktop-app 資料夾起一個靜態伺服器後開 /scripts/music-tests/browser.html;結果寫在 window.__result -->
+<pre id="out">running…</pre>
+<script src="../../renderer/src/music/midi_core.js"></script>
+<script src="../../renderer/src/music/midi_play.js"></script>
+<script>
+(async () => {
+  const out = document.getElementById('out'); const log = (m) => { window.__last = m; };
+  const R = { steps: [] };
+  try {
+    let s = FaMidi.emptySong(); s = FaMidi.addTrack(s, '鋼琴', 0);
+    [60, 64, 67, 72].forEach((n, i) => { s = FaMidi.addNote(s, 0, { t: i * 240, d: 240, n, v: 100 }); });
+    const sources = {
+      lib: ['/renderer/vendor/spessasynth/spessasynth-lib.js'],
+      processor: ['/renderer/vendor/spessasynth/spessasynth-processor.min.js'],
+      soundbank: [new URLSearchParams(location.search).get('bank') || 'https://raw.githubusercontent.com/mrbumpy409/GeneralUser-GS/main/GeneralUser-GS.sf2']
+    };
+    const t0 = performance.now();
+    const buf = await FaMidiPlay.renderOffline(s, sources, { tail: 1, onProgress: (m, p) => log(m + ' ' + Math.round(p * 100)) });
+    const d = buf.getChannelData(0); let peak = 0, nz = 0; for (let i = 0; i < d.length; i++) { const a = Math.abs(d[i]); if (a > peak) peak = a; if (a > 0.001) nz++; }
+    R.seconds = buf.duration; R.peak = peak; R.nonSilent = nz; R.ms = Math.round(performance.now() - t0); R.ok = peak > 0.01;
+  } catch (e) { R.error = String(e && e.stack || e); R.ok = false; }
+  window.__result = R; out.textContent += '\n' + JSON.stringify(R);
+})();
+</script>

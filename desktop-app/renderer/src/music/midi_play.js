@@ -1,0 +1,157 @@
+// 音樂領域:播放排程核心 FaMidiPlay(純函式＋與合成器無關的播放器;node 與瀏覽器都能跑,合成器用「轉接器」注入)。
+//   轉接器介面(SpessaSynth 的 WorkletSynthesizer 剛好符合,見 loadSynth):
+//     noteOn(ch, n, v, {time}) noteOff(ch, n, {time}) programChange(ch, p, {time}) controllerChange(ch, cc, val, {time}) stopAll(force)
+//   時間 time 是 AudioContext 的絕對秒數;播放器用 clock() 取得現在時間(預設 ctx.currentTime)。
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(require('./midi_core.js')); else root.FaMidiPlay = factory(root.FaMidi || (typeof FaMidi !== 'undefined' ? FaMidi : undefined)); })(typeof self !== 'undefined' ? self : this, function (M) {
+  'use strict';
+
+  // 軌道 → 頻道:鼓組固定 9,其他依序用 0–15 跳過 9;超過 15 個旋律軌的多餘軌道不發聲(回報在 dropped)
+  function channelMap(song) {
+    const map = []; let next = 0; const dropped = [];
+    song.tracks.forEach((t, i) => {
+      if (t.drum) { map[i] = 9; return; }
+      if (next === 9) next++;
+      if (next > 15) { map[i] = -1; dropped.push(i); return; }
+      map[i] = next++;
+    });
+    return { map, dropped };
+  }
+
+  // 整首曲子變成依時間排序的事件清單(秒)。opts.mute: 靜音軌道索引集合;opts.solo: 獨奏索引(有就只放它);
+  // 同一時間的順序:程式／控制 → 音符結束 → 音符開始(同音高連續音不會被吃掉)
+  function buildEvents(song, opts) {
+    opts = opts || {}; const mute = new Set(opts.mute || []); const solo = opts.solo != null ? new Set([].concat(opts.solo)) : null;
+    const { map } = channelMap(song); const ev = [];
+    song.tracks.forEach((tr, i) => {
+      const ch = map[i]; if (ch < 0) return;
+      ev.push({ t: 0, ord: 0, type: 'prog', ch, a: tr.drum ? 0 : tr.program });
+      ev.push({ t: 0, ord: 0, type: 'cc', ch, a: 7, b: tr.volume }, { t: 0, ord: 0, type: 'cc', ch, a: 10, b: tr.pan });
+      if (mute.has(i) || (solo && !solo.has(i))) return;
+      for (const n of tr.notes) {
+        const on = M.ticksToSec(song, n.t), off = M.ticksToSec(song, n.t + n.d);
+        ev.push({ t: on, ord: 2, type: 'on', ch, a: n.n, b: n.v, i }, { t: off, ord: 1, type: 'off', ch, a: n.n, i });
+      }
+    });
+    ev.sort((x, y) => x.t - y.t || x.ord - y.ord);
+    return ev;
+  }
+
+  // 播放器:前瞻排程(每 tickMs 把接下來 ahead 秒內的事件送進合成器,時間用絕對 AudioContext 秒數)
+  function createPlayer(song, synth, opts) {
+    opts = opts || {};
+    const clock = opts.clock || (() => 0); const ahead = opts.ahead || 0.25, tickMs = opts.tickMs || 50;
+    const setT = opts.setInterval || setInterval, clearT = opts.clearInterval || clearInterval;
+    const st = { song, events: [], idx: 0, startAt: 0, offset: 0, playing: false, timer: null, mute: new Set(), solo: null, volume: new Map(), total: M.durationSec(song), onEnd: null, onTick: null, loop: !!opts.loop, held: new Map() };
+    const rebuild = () => { st.events = buildEvents(st.song, { mute: st.mute, solo: st.solo }); };
+    const pos = () => (st.playing ? Math.min(st.total, st.offset + (clock() - st.startAt)) : st.offset);
+    const evOpts = (at) => ({ time: at });
+    const send = (e, at) => {
+      if (e.type === 'on') { synth.noteOn(e.ch, e.a, e.b, evOpts(at)); st.held.set(e.ch + ':' + e.a, (st.held.get(e.ch + ':' + e.a) || 0) + 1); }
+      else if (e.type === 'off') { synth.noteOff(e.ch, e.a, evOpts(at)); const k = e.ch + ':' + e.a, c = (st.held.get(k) || 1) - 1; if (c <= 0) st.held.delete(k); else st.held.set(k, c); }
+      else if (e.type === 'prog') synth.programChange(e.ch, e.a, evOpts(at));
+      else if (e.type === 'cc') {
+        const { map } = channelMap(st.song); const ti = map.indexOf(e.ch); let b = e.b;
+        if (e.a === 7 && st.volume.has(ti)) b = Math.round(b * st.volume.get(ti));
+        synth.controllerChange(e.ch, e.a, Math.max(0, Math.min(127, b)), evOpts(at));
+      }
+    };
+    const seekIndex = (sec) => { let lo = 0, hi = st.events.length; while (lo < hi) { const m = (lo + hi) >> 1; if (st.events[m].t < sec) lo = m + 1; else hi = m; } return lo; };
+    function pump() {
+      const now = clock(); const rel = st.offset + (now - st.startAt);
+      while (st.idx < st.events.length && st.events[st.idx].t <= rel + ahead) {
+        const e = st.events[st.idx++]; send(e, st.startAt + (e.t - st.offset) );
+      }
+      if (st.onTick) st.onTick(Math.min(st.total, rel));
+      if (rel >= st.total + 0.05 && st.idx >= st.events.length) {
+        if (st.loop) { api.seek(0); return; }
+        api.pause(); st.offset = 0; if (st.onEnd) st.onEnd();
+      }
+    }
+    // 跳轉時,已經開始但還沒結束的音符要補送 noteOn 嗎?不補(從音符邊界重新聽起);跳轉前先全部停掉
+    const api = {
+      state: st,
+      play() {
+        if (st.playing) return; rebuild();
+        // 從 offset 開始;先送出所有 t<offset 的程式／控制事件,讓音色與音量到位
+        st.idx = 0;
+        const now = clock(); st.startAt = now + 0.05;
+        while (st.idx < st.events.length && st.events[st.idx].t < st.offset) { const e = st.events[st.idx++]; if (e.type === 'prog' || e.type === 'cc') send(e, now); }
+        st.playing = true; st.timer = setT(pump, tickMs); pump();
+      },
+      pause() { if (!st.playing) return; st.offset = pos(); st.playing = false; clearT(st.timer); st.timer = null; synth.stopAll(true); st.held.clear(); },
+      stop() { api.pause(); st.offset = 0; if (st.onTick) st.onTick(0); },
+      seek(sec) { const was = st.playing; if (was) api.pause(); st.offset = Math.max(0, Math.min(st.total, Number(sec) || 0)); if (was) api.play(); else if (st.onTick) st.onTick(st.offset); },
+      position() { return pos(); },
+      duration() { return st.total; },
+      isPlaying() { return st.playing; },
+      setMute(i, on) { if (on) st.mute.add(i); else st.mute.delete(i); api._refresh(); },
+      setSolo(i) { st.solo = i == null ? null : [i]; api._refresh(); },
+      setTrackVolume(i, factor) { st.volume.set(i, Math.max(0, Math.min(1.5, Number(factor)))); const { map } = channelMap(st.song); if (map[i] >= 0) { const base = st.song.tracks[i].volume; synth.controllerChange(map[i], 7, Math.max(0, Math.min(127, Math.round(base * st.volume.get(i)))), evOpts(clock())); } },
+      setSong(s) { const was = st.playing; if (was) api.pause(); st.song = s; st.total = M.durationSec(s); st.offset = Math.min(st.offset, st.total); if (was) api.play(); },
+      _refresh() { if (st.playing) { const at = pos(); api.pause(); st.offset = at; api.play(); } },
+      onEnd(f) { st.onEnd = f; }, onTick(f) { st.onTick = f; }, setLoop(v) { st.loop = !!v; }
+    };
+    return api;
+  }
+
+  // 瀏覽器端:載入 SpessaSynth(程式庫與處理器文字用 fetchText 取得,以 data 位址載入,離線單檔與 file 頁面都可)與音色庫。
+  // sources = { lib, processor, soundbank }:各自是網址陣列(依序試,失敗換下一個);onProgress(msg, 0..1)
+  async function loadSynth(ctx, destination, sources, onProgress, fetchImpl) {
+    const prog = onProgress || (() => {}); const f = fetchImpl || (typeof fetch === 'function' ? fetch.bind(globalThis) : null);
+    if (!f) throw new Error('這個環境沒有 fetch,無法載入合成器');
+    const getText = async (urls) => { let last = ''; for (const u of urls) { try { const r = await f(u); if (!r.ok) { last = 'HTTP ' + r.status + ' ' + u; continue; } return await r.text(); } catch (e) { last = String(e && e.message || e) + ' ' + u; } } throw new Error('載入失敗:' + last); };
+    prog('載入合成器程式…', 0.02);
+    const [procText, libText] = await Promise.all([getText(sources.processor), getText(sources.lib)]);
+    const b64 = (t) => btoa(unescape(encodeURIComponent(t)));
+    await ctx.audioWorklet.addModule('data:text/javascript;base64,' + b64(procText));
+    const mod = await import(/* webpackIgnore: true */ 'data:text/javascript;base64,' + b64(libText));
+    const synth = new mod.WorkletSynthesizer(ctx); await synth.isReady; synth.connect(destination);
+    const bank = await fetchBank(sources.soundbank, prog, f);
+    prog('安裝音色庫…', 0.97);
+    await synth.soundBankManager.addSoundBank(bank, 'main');
+    prog('就緒', 1);
+    return synth;
+  }
+  // 下載音色庫:有進度、核對長度、快取放 Cache API(下次不用再下載)
+  async function fetchBank(urls, prog, f) {
+    const CACHE = 'fa-soundbank-v1';
+    const list = [].concat(urls || []); let last = '';
+    for (const u of list) {
+      try {
+        const cache = typeof caches !== 'undefined' ? await caches.open(CACHE) : null;
+        const hit = cache && await cache.match(u); if (hit) { prog('從本機快取讀取音色庫…', 0.5); return await hit.arrayBuffer(); }
+        const r = await f(u); if (!r.ok) { last = 'HTTP ' + r.status; continue; }
+        const total = Number(r.headers.get('content-length')) || 0; const reader = r.body && r.body.getReader ? r.body.getReader() : null;
+        let buf;
+        if (reader) { const chunks = []; let got = 0; for (;;) { const { done, value } = await reader.read(); if (done) break; chunks.push(value); got += value.length; if (total) prog('下載音色庫 ' + Math.round(got / 1048576) + ' / ' + Math.round(total / 1048576) + ' MB', 0.05 + 0.9 * got / total); } buf = new Uint8Array(got); let o = 0; for (const c of chunks) { buf.set(c, o); o += c.length; } if (total && got !== total) { last = '大小不符 ' + got + '/' + total; continue; } buf = buf.buffer; }
+        else buf = await r.arrayBuffer();
+        if (new Uint8Array(buf, 0, 4).join() !== '82,73,70,70') { last = '不是 sf2/RIFF 檔'; continue; }
+        if (cache) { try { await cache.put(u, new Response(buf.slice(0))); } catch (e) { /* 配額不足就算了 */ } }
+        return buf;
+      } catch (e) { last = String(e && e.message || e); }
+    }
+    throw new Error('音色庫下載失敗:' + last);
+  }
+
+  // 離線渲染成 AudioBuffer(MIDI 轉 mp3 的前半):tail 秒是音符結束後的殘響
+  async function renderOffline(song, sources, opts) {
+    opts = opts || {}; const sr = opts.sampleRate || 44100, tail = opts.tail == null ? 2.5 : opts.tail;
+    const secs = M.durationSec(song) + tail; const OAC = opts.OfflineAudioContext || (typeof OfflineAudioContext !== 'undefined' ? OfflineAudioContext : null);
+    if (!OAC) throw new Error('這個環境不支援離線渲染(沒有 OfflineAudioContext)');
+    const ctx = new OAC(2, Math.ceil(secs * sr), sr);
+    const synth = await loadSynth(ctx, ctx.destination, sources, opts.onProgress, opts.fetch);
+    const adapter = { noteOn: (c, n, v, o) => synth.noteOn(c, n, v, o), noteOff: (c, n, o) => synth.noteOff(c, n, o), programChange: (c, p, o) => synth.programChange(c, p, o), controllerChange: (c, cc, v, o) => synth.controllerChange(c, cc, v, o) };
+    const evs = buildEvents(song, { mute: opts.mute });
+    for (const e of evs) {
+      const o = { time: e.t };
+      if (e.type === 'on') adapter.noteOn(e.ch, e.a, e.b, o); else if (e.type === 'off') adapter.noteOff(e.ch, e.a, o);
+      else if (e.type === 'prog') adapter.programChange(e.ch, e.a, o); else adapter.controllerChange(e.ch, e.a, e.b, o);
+    }
+    // 事件經 MessagePort 非同步送進處理器執行緒,離線渲染一開始就跑會搶在事件前面(結果是靜音);等事件到齊再開始
+    await new Promise((r) => setTimeout(r, 300 + Math.min(4000, evs.length / 10)));
+    if (opts.onProgress) opts.onProgress('渲染中…', 0.98);
+    return await ctx.startRendering();
+  }
+
+  return { channelMap, buildEvents, createPlayer, loadSynth, fetchBank, renderOffline };
+});
