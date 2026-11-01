@@ -17,7 +17,7 @@ const seen = new Set(); const mount = async (kind, opts) => { const r = await fa
 // ① 主持機（桌面）：開 Markdown 編輯器、分享
 const spec0 = FaEditText.parse('# 標題\n\n第一段\n\n第二段\n', 'md'); spec0.title = '共編測試';
 const A = await mount('edit-markdown', { spec: spec0 }); ok('host_opened', A.r && A.r.ok && A.ed);
-fa._edCollab = () => cA; fa._edEditors.get('edit-markdown:' + A.r.id); const recA = fa._edShareNow('edit-markdown', A.r.id); ok('shared', !!recA && recA.role === 'host');
+let curC = cA; fa._edCollab = () => curC; fa._edEditors.get('edit-markdown:' + A.r.id); const recA = fa._edShareNow('edit-markdown', A.r.id); ok('shared', !!recA && recA.role === 'host');
 ok('host_has_toolbar_button', [...A.ed.querySelectorAll('.bar button')].some((b) => /共編/.test(b.textContent)));
 // ② 參與者（網頁）：列表 → 加入 → 開本機副本
 const items = await cB.list(300); ok('list_shows_host', items.length === 1 && items[0].host.name === '小明' && items[0].kind === 'edit-markdown', items);
@@ -49,6 +49,14 @@ const btn = [...A.ed.querySelectorAll('.bar button')].find((b) => /共編/.test(
 await rA.leave(); await wait(400); ok('offline_shown', /離線/.test(B.ed.querySelector('.collab').textContent), B.ed.querySelector('.collab').textContent);
 await B.ed._ed.send('在最後加一段：離線寫的'); await wait(300); ok('queued_count_shown', /1 筆待同步/.test(B.ed.querySelector('.collab').textContent), B.ed.querySelector('.collab').textContent);
 await rA.join(); await wait(1200); ok('flushed_after_return', /離線寫的/.test(ser(A.ed)) && ser(A.ed) === ser(B.ed) && !/待同步/.test(B.ed.querySelector('.collab').textContent), [ser(A.ed), ser(B.ed)]);
+// ⑩ 重開專案自動重連：B 的專案記得 origin.shared（含 base）；模擬重開＝先脫離共編、離線改一筆，再走掛載時的自動重連
+const kB = 'edit-markdown:' + B.r.id; await fa._edPatchOrigin('edit-markdown', B.r.id, (o) => { o.shared = { host: rA.self.nodeId, name: '小明', sid: A.r.id, base: B.ed._ed.getSpec(), rev: p.rev }; });
+p.leave(); fa._edShared.delete(kB); B.ed._ed.detachCollab(); curC = cB; fa._rg = { room: rB }; await wait(100);
+await B.ed._ed.send('在最後加一段：重開前離線寫的'); await wait(300); ok('solo_edit_while_detached', /重開前離線寫的/.test(ser(B.ed)) && !/重開前離線寫的/.test(ser(A.ed)));
+fa._edAutoReconnect('edit-markdown', B.r.id, await FaEditStore.loadProject('edit-markdown', B.r.id));
+await until(() => /重開前離線寫的/.test(ser(A.ed)), 12000); ok('auto_reconnect_offline_edit_reaches_host', /重開前離線寫的/.test(ser(A.ed)) && ser(A.ed) === ser(B.ed), [ser(A.ed), ser(B.ed)]);
+ok('rejoined_has_collab_bar', !!B.ed.querySelector('.collab') && fa._edShared.has(kB));
+const pj = await FaEditStore.loadProject('edit-markdown', B.r.id); ok('origin_shared_kept', pj.origin && pj.origin.shared && pj.origin.shared.sid === A.r.id && !!pj.origin.shared.base, pj.origin);
 // ⑨ 停止分享
 fa._edUnshare('edit-markdown', A.r.id); await wait(200); ok('unshared', !A.ed.querySelector('.collab') && !fa._edShared.has('edit-markdown:' + A.r.id));
 R.ok = R.fail.length === 0; console.log('EDIT_COLLAB ' + JSON.stringify(R)); return R;

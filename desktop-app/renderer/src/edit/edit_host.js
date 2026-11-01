@@ -652,7 +652,7 @@ const FaEditHost = (function () {
             return {
                 palette: () => ({ dark: !self._isLightTheme() }),
                 ask,
-                save: async (state) => { const c = getSpecState(); let old = null; try { old = await FaEditStore.loadProject(kind, id); } catch (_) { /* a new project */ } return FaEditStore.saveProject(kind, id, Object.assign({}, old && old.origin ? { origin: old.origin } : {}, { v: 1, spec: c.spec, state })); },
+                save: (state) => self._edProjLock(kind + ':' + id, async () => { const c = getSpecState(); let old = null; try { old = await FaEditStore.loadProject(kind, id); } catch (_) { /* a new project */ } return FaEditStore.saveProject(kind, id, Object.assign({}, old && old.origin ? { origin: old.origin } : {}, { v: 1, spec: c.spec, state })); }),
                 download: (blob, name, mime) => self.generateAndDeliverFile(blob, name, mime || blob.type),
                 toChat: (blob, name, info) => self._edToChat(kind, blob, name, info),
                 saveCase: (info, o) => self._edCaseSave(kind, info, o),

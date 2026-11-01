@@ -3,6 +3,8 @@
  *   const hs = c.share({ sid, kind, title, spec, keys })                       我是主持機：hs.propose(patch, meta) 本地提出；hs.onCommit/onMembers/onPresence(fn)；hs.setReadonly(id, v)/remove(id)/presence(sel)/close()
  *   const items = await c.list()                                               群組裡各台開著且允許加入的編輯器 [{ host:{nodeId,name}, sid, kind, title, online }]
  *   const p = await c.join(hostNode, sid)                                      我是參與者：p.spec/rev/members；p.propose(patch, meta) → { ok, rejected, error, queued };p.undo()/redo()；p.onCommit/onMembers/onPresence/onStatus(fn)；p.presence(sel)/leave()
+ * 主持機離線超過 graceMs（預設 20 秒）：在線參與者裡 nodeId 最小者接手（promote：用自己的完整副本開 HostSession，廣播 ed_host_moved，其他人改連它）；
+ *   舊主持機回來收到 ed_host_moved 會發 'demoted' 事件（由呼叫端決定怎麼處理自己的副本）。
  * 訊息：ed_list(_ack)、ed_join(_ack)、ed_leave、ed_commit_req／ed_commit_ack、ed_commit、ed_sync_req／ed_sync、ed_members、ed_presence、ed_shared_close。
  * by 由主持機依「通道上已驗證的寄件者」蓋章，不信 payload 自稱的身分；exec／req（AI 由誰執行、應誰要求）是資訊，照帶。 */
 (function (root, factory) {
@@ -17,9 +19,13 @@
     class Collab {
         constructor(o) {
             this.room = o.room; this.kinds = o.kinds || (() => null); this.gate = o.gate || (async () => ''); this.allow = o.allow || (() => ''); this.log = o.log || (() => {}); this.peer = o.peer || null;
-            this.shared = new Map(); this.joined = new Map(); this.asks = new Map(); this.slow = 1; this.askMs = 8000;
-            this.room.on('message', (m) => { if (m && typeof m.type === 'string' && /^ed_(list|join|leave|commit|sync|members|presence|shared_close|assets)/.test(m.type)) this.handle(m).catch((e) => this.log('多人同編訊息處理失敗：' + ((e && e.message) || e))); });
-            this.room.on('members', () => { for (const p of this.joined.values()) p._checkHost(); });
+            this.shared = new Map(); this.joined = new Map(); this.asks = new Map(); this.slow = 1; this.askMs = 8000; this.graceMs = o.graceMs || 20000;
+            this.room.on('message', (m) => { if (m && typeof m.type === 'string' && /^ed_(list|join|leave|commit|sync|members|presence|shared_close|assets|host_moved)/.test(m.type)) this.handle(m).catch((e) => this.log('多人同編訊息處理失敗：' + ((e && e.message) || e))); });
+            this.room.on('members', () => {
+                for (const p of this.joined.values()) p._checkHost();
+                const here = new Set((this.room.members() || []).map((x) => x.nodeId));   // 接手後舊主持機才回來：通知它（它會收到 demoted）
+                for (const hs of this.shared.values()) if (hs.movedFrom && here.has(hs.movedFrom)) { this.room.send(hs.movedFrom, 'ed_host_moved', { sid: hs.sid, host: this.room.self.nodeId }).catch(() => {}); hs.movedFrom = null; }
+            });
         }
         who(id) { const m = (this.room.members() || []).find((x) => x.nodeId === id); return { nodeId: id, name: m ? m.name : id.slice(0, 6), kind: m ? m.kind : 'web' }; }
         ask(to, type, body, ms) {
@@ -64,6 +70,10 @@
                 if (await this.gate(m) || this.allow()) return;
                 const items = [...this.shared.values()].filter((h) => h.open && this.kinds(h.kind)).map((h) => ({ sid: h.sid, kind: h.kind, title: h.title, online: h.host.members().length + 1 }));
                 if (items.length) this.room.send(m.from, 'ed_list_ack', { rid: b.rid, items }).catch(() => {}); return;
+            }
+            if (t === 'ed_host_moved') {
+                const p = [...this.joined.values()].find((x) => x.sid === b.sid && x.hostNode.nodeId !== m.from);
+                if (p) p._moved(this.who(m.from)); const hs = this.shared.get(b.sid); if (hs && m.from !== this.room.self.nodeId) hs.emit('demoted', this.who(m.from)); return;
             }
             const key = (t === 'ed_commit' || t === 'ed_members' || t === 'ed_shared_close' || t === 'ed_assets' || t === 'ed_sync' || (t === 'ed_presence' && this.joined.has(m.from + '|' + b.sid))) ? m.from + '|' + b.sid : null;
             if (key) { const p = this.joined.get(key); if (p) p._onMsg(t, b); return; }
@@ -119,9 +129,32 @@
         get spec() { return this.replica.spec; } get rev() { return this.replica.rev; } members() { return this.membersList; } queued() { return this.replica.queued().length; }
         _hostHere() { return (this.c.room.members() || []).some((x) => x.nodeId === this.hostNode.nodeId); }
         _setState(s) { if (s !== this.state) { this.state = s; this.emit('status', s); } }
-        _checkHost() { if (this._hostHere()) { if (this.state === 'offline') this._reconnect(); } else this._setState('offline'); }
+        _checkHost() {
+            if (this._hostHere()) { clearTimeout(this._grace); this._grace = null; if (this.state === 'offline') this._reconnect(); return; }
+            if (this.state === 'closed' || this.state === 'promoted') return; this._setState('offline');
+            if (!this._grace) this._grace = setTimeout(() => { this._grace = null; this._maybePromote(); }, this.c.graceMs * this.c.slow);
+        }
+        // 接手:在線的參與者(不含離線的主持機、唯讀者)裡 nodeId 最小者
+        _maybePromote() {
+            if (this.state !== 'offline') return; const here = new Set((this.c.room.members() || []).map((x) => x.nodeId)), me = this.me.nodeId;
+            const cands = this.membersList.filter((m) => !m.host && !m.readonly && m.nodeId !== this.hostNode.nodeId && (m.nodeId === me || here.has(m.nodeId))).map((m) => m.nodeId); if (!cands.includes(me)) cands.push(me);
+            if (this.membersList.some((m) => m.nodeId === me && m.readonly)) return;
+            if (cands.sort()[0] !== me) { this._grace = setTimeout(() => { this._grace = null; this._maybePromote(); }, this.c.graceMs * this.c.slow); return; }   // 等最小的那位接手;它沒動作就再算一次
+            this.promote();
+        }
+        promote() {
+            const c = this.c, oldHost = this.hostNode, key = oldHost.nodeId + '|' + this.sid; c.joined.delete(key); this.state = 'promoted'; clearTimeout(this._grace);
+            const hs = c.share({ sid: this.sid, kind: this.kind, title: this.title, spec: this.replica.spec, rev: this.replica.rev, me: this.me });
+            for (const m of this.membersList) if (m.nodeId !== this.me.nodeId && m.nodeId !== oldHost.nodeId) c.room.send(m.nodeId, 'ed_host_moved', { sid: this.sid, host: this.me.nodeId }).catch(() => {});
+            c.room.send(oldHost.nodeId, 'ed_host_moved', { sid: this.sid, host: this.me.nodeId }).catch(() => {});   // 舊主持機若其實還活著(斷線的是我)，讓它知道
+            hs.movedFrom = oldHost.nodeId; hs.replica = this.replica;   // 保留自己的復原堆疊
+            const items = this.replica.drain(); for (const it of items) hs.propose(it.patch, it);
+            this.emit('promoted', hs); return hs;
+        }
+        // 別人接手了:改連新主持機（用 snapshot 對齊）
+        _moved(newHost) { clearTimeout(this._grace); this._grace = null; this.c.joined.delete(this.hostNode.nodeId + '|' + this.sid); this.hostNode = newHost; this.c.joined.set(newHost.nodeId + '|' + this.sid, this); this.state = 'offline'; this._reconnect(); this.emit('moved', newHost); }
         async _reconnect() {
-            try { const r = await this.c.ask(this.hostNode.nodeId, 'ed_join', { sid: this.sid }, 4000); if (!r.ok) { this._setState('closed'); return; } this._apply(r.snapshot.rev === this.rev ? [] : null, r.snapshot); this.membersList = r.members || []; this._setState('online'); this.emit('members', this.membersList);
+            try { const r = await this.c.ask(this.hostNode.nodeId, 'ed_join', { sid: this.sid }, 4000); if (!r.ok) { this._setState('closed'); return; } this._apply(r.snapshot.rev === this.rev && r.snapshot.hash === S.hash(this.spec) ? [] : null, r.snapshot); this.membersList = r.members || []; this._setState('online'); this.emit('members', this.membersList);
                 for (const it of this.replica.drain()) { const x = await this._send(it); this.emit('flushed', x); } } catch (_) { /* 還沒回來,下次 members 事件再試 */ }
         }
         _apply(commits, snap) {
