@@ -72456,7 +72456,12 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     }
     // 對話裡的編輯器：訊息裡只有 {id}，內容從存好的進度讀；同一個 id 的畫面元件會被快取（重畫對話不會丟掉編輯中的狀態）
     // ───────── 音樂領域:MIDI 播放卡片、轉 mp3(設計見 DESIGN.music.md;核心在 FaMidi／FaMidiPlay／FaMidiUI)
-    _midiSources() { return { lib: [FA_ASSET_URLS.spessaLib], processor: [FA_ASSET_URLS.spessaProcessor], soundbank: [FA_ASSET_URLS.gsSoundbank] }; }
+    // 網頁版:合成器程式庫跟延遲載入區塊釘在同一個提交(web-lazy/chunks/ 往上兩層就是 renderer/vendor/);桌面版用安裝包內的相對路徑
+    _midiSources() {
+        let lib = FA_ASSET_URLS.spessaLib, proc = FA_ASSET_URLS.spessaProcessor;
+        try { const base = typeof window !== 'undefined' && window.__FA_LAZY_BASE; if (base && /^https?:/i.test(base)) { lib = new URL('../../renderer/vendor/spessasynth/spessasynth-lib.js', base).href; proc = new URL('../../renderer/vendor/spessasynth/spessasynth-processor.min.js', base).href; } } catch (_) { /* */ }
+        return { lib: [lib], processor: [proc], soundbank: [FA_ASSET_URLS.gsSoundbank] };
+    }
     _midiB64(bytes) { let b = ''; for (let i = 0; i < bytes.length; i += 0x8000) b += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(b); }
     _midiStoreSong(song, id) { this._midiSongs = this._midiSongs || new Map(); id = id || ('mi' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5)); this._midiSongs.set(id, song); if (this._midiSongs.size > 30) this._midiSongs.delete(this._midiSongs.keys().next().value); return id; }
     // 工具參數 → 曲子:file_id(上傳的 .mid)、song_id(對話裡已有的)、或 song(模型組的:tempo、timesig、tracks[{name,program,drum,notes:[[第幾拍,幾拍長,音高,力度]]}])

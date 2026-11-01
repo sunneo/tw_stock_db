@@ -59,3 +59,9 @@ Roland SC-88 的資料只當大小目標，不抽取、不轉換。注意：pian
 
 ## 4. 下一步（階段 1）
 純函式核心 `renderer/src/music/midi_core.js`（`FaMidi`）→ 測試 → 播放卡片 → 轉 mp3 → domain `music`。階段 4 開頭先實測 SF3 壓縮可行性。
+
+## 5. 階段 1 實作現況（2026-11-01）
+已做並提交:`renderer/src/music/midi_core.js`(FaMidi:解析／寫出／量化／移調／合併拆分／速度表)、`midi_play.js`(FaMidiPlay:事件排程、前瞻播放器、載入 SpessaSynth 與音色庫、離線渲染)、`midi_ui.js`(播放卡片畫面)、`music_knowledge.js`(音樂知識八個主題)。接進 `floating-assistant.js`:對話區塊 ```` ```fa-midi ````、工具 `midi_play`／`midi_to_mp3`／`music_topic`、斜線指令 `/midi`、`/midi-to-mp3`、domain `music`。合成器程式庫放 `renderer/vendor/spessasynth/`(Apache-2.0,附授權文字);音色庫不內建,第一次播放時從 GeneralUser-GS 官方倉庫下載(約 31 MB,已驗證網址回應 200、長度 32319396 位元組)並存在瀏覽器快取。
+**已實測(內建瀏覽器、本機伺服器):** 離線渲染一段 4 音的短曲有聲(峰值 0.096,非靜音取樣 5 萬點);播放卡片按播放後 12 個音符事件全部送出、播完按鈕復位、下載 MIDI 回傳 228 位元組。**踩到的坑:** 離線渲染必須在送完事件後等一下(事件經訊息埠非同步送進處理器執行緒,馬上渲染會是靜音);已在 `renderOffline` 加等待。
+**未驗證:** (1) 在真正的桌面版／網頁版裡的整條流程(工具呼叫→卡片→播放);(2) `midi_to_mp3` 的 mp3 編碼(沿用 `_encodeMp3`,lamejs 從 CDN 載入);(3) 網頁版的合成器程式庫路徑(由延遲載入基底網址往上兩層推算 `renderer/vendor/spessasynth/`,若實際發佈的目錄結構不同會顯示載入失敗);(4) 聽感(只驗證有聲,沒有人聽過)。
+**階段 1 剩下:** 遠端卡片屬階段 2;MIDI 轉 mp3 的真機驗證;`FEATURES.md` 加一條音樂功能(該檔目前有別的工作階段的未提交修改,等它提交後再加)。
