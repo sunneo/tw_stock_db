@@ -938,6 +938,14 @@
    "size": 6716,
    "md5": "f9af229f8ab69ae8a37a5772ce7ecb0e"
   },
+  "musica2mpipe": {
+   "file": "chunks/musica2mpipe.js",
+   "names": [
+    "FaAudioPipeline"
+   ],
+   "size": 4809,
+   "md5": "faee42089350b504f46b445b9415f425"
+  },
   "musicui": {
    "file": "chunks/musicui.js",
    "names": [
@@ -1028,7 +1036,7 @@
   }
  },
  "core": {
-  "size": 5150809,
-  "md5": "9958638db2d5e1ce423ef3546ca7903d"
+  "size": 5150861,
+  "md5": "70dd9bde651669237d0f8831acb11090"
  }
 }

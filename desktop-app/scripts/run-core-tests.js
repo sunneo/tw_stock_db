@@ -166,6 +166,7 @@ const suites = [
     ['音樂：程式作曲（風格範本、和弦進行、旋律檢查、同種子同曲）', 'scripts/music-tests/music_compose.test.js'],
     ['音樂：音色庫樣本內部 loop 偵測與瘦身規則（週期、無縫 loop、截尾、降取樣）', 'scripts/music-tests/sf_loop.test.js'],
     ['音樂：音訊轉 MIDI 的規則部分（鼓拆解、音高追蹤、速度、量化、樂器標籤、組裝）', 'scripts/music-tests/audio_to_midi.test.js'],
+    ['音樂：音訊轉 MIDI 流程（分段、可插拔分軌器與轉譜器、續跑、中斷、誠實報告）', 'scripts/music-tests/audio_pipeline.test.js'],
 ];
 let failed = 0, failedNew = 0;
 const results = [], t00 = Date.now();
