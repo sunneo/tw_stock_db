@@ -1465,6 +1465,13 @@ const SUBAGENT_DOMAIN_REGISTRY = {
         systemPrompt: '你負責「電腦操作」:看與操作這台電腦。鐵則:1) 先 computer_capabilities——沒啟用或還沒指定範圍,就請使用者輸入 /computer enable 與 /computer scope(只有他能做,你不能替他啟用、也不要叫他開自動核准);2) 由快到慢:先用作業系統知道的物件(computer_list_windows 看視窗,computer_ui_tree／computer_find_element 找按鈕與文字欄,有角色、名字、文字內容、矩形),不要一開始就猜畫面;視窗的 canvas 欄不是 null(遠端桌面、VNC、noVNC、遊戲、影片)就沒有內部元件:VNC／noVNC 用 computer_remote_probe 認協定、computer_remote_connect 連線後讀繪圖更新,RDP／NoMachine 沒有內建用戶端,用 computer_screenshot＋computer_describe(視覺模型慢路徑,可能看錯,重要的事要驗證);3) 動手用 computer_click／computer_type／computer_key／computer_actions(一批最多 25 步),使用者會在原生視窗看預覽並核准,被拒絕就停下來問,不要換個方式繞過;能用 computer_element_action 就不要用座標;動完用 computer_screenshot 確認結果;4) 不碰密碼欄、系統設定、付款、驗證／提權視窗、這個 app 自己的視窗(程式會擋,不要試圖繞);要密碼的 VNC 只帶 secret_name,密碼由使用者用 /computer secret 存;5) 座標是螢幕像素,截圖要用 origin／scale 換算回來;急停用 computer_abort。',
         dynamicNote: '路由建議:使用者要你看他的螢幕、操作某個視窗、點按鈕、輸入文字到某個應用程式、查某個視窗裡有什麼、連到遠端桌面（VNC／noVNC）、截圖並說明畫面時,委派這個領域（桌面版限定）。',
     },
+    music: {
+        enabled: true,
+        label: '音樂(MIDI 播放、MIDI 轉 mp3、音樂知識:音階和弦節奏音域配器與各風格;音色一律用 GS 音色庫)',
+        toolNames: ['midi_play', 'midi_to_mp3', 'music_topic', 'list_uploaded_files', 'browser_search', 'fetch_web_page'],
+        systemPrompt: '你負責音樂:播放 MIDI、把 MIDI 轉成 mp3、回答音樂知識、依描述組一首短曲讓使用者聽。做法:1) 使用者上傳了 .mid 檔 → midi_play({file_id}) 放播放卡片;要 mp3 → midi_to_mp3({file_id})。2) 要你寫一段曲子 → 先 music_topic 查需要的知識(和弦進行、音域、鼓型、風格),再自己組 song 呼叫 midi_play({song}):速度與拍號合風格,音高在樂器合理音域內,旋律音落在調內、強拍用和弦內音,貝斯彈根音,鼓用 drum:true 的軌(底鼓 36、小鼓 38、閉合踩鈸 42),每軌 program 用 GM 編號;小節數取 4 的倍數。3) 不確定某個風格的細節 → browser_search 查維基再回答,不要憑印象講數字。4) 音色只有 GS 音色庫的 GM 128 音色與鼓組;不能承諾做不到的(例如任意樂器分離、錄音轉譜目前還沒有)。5) 誠實說明:播放卡片第一次要下載約 31 MB 音色庫。',
+        dynamicNote: '路由建議:使用者提到 MIDI、.mid、播放音樂、轉 mp3、作曲、和弦、音階、節奏、配樂、某種音樂風格的特色時,委派這個領域。'
+    },
     worksheet: {
         enabled: true,
         label: '教育文書（學習單、練習卷、教材、教具：排版成 HTML、輸出 PDF；可參考圖片；有互動編輯器）',
@@ -33245,6 +33252,122 @@ const holder = {};
 return holder.FaMidiPlay;
 })();
 /* MUSICPLAY-END */
+/* MUSICUI-BEGIN */
+const FaMidiUI = (function () {
+const holder = {};
+(function (module, self) {
+// 音樂領域:MIDI 播放卡片的畫面 FaMidiUI(只依賴 DOM 與注入的 host,不碰聊天主程式)。
+//   FaMidiUI.mount({ song, title, host }) → DOM 節點
+//   host = { player(song) → Promise<createPlayer 的回傳>(第一次按播放才建立合成器),  download(name, bytes, mime), toMp3(song) → Promise<Blob>, onStatus }
+//   卡片:播放／暫停、停止、進度條(可拖)、時間、音軌列(靜音、獨奏、音量)、下載 MIDI、轉 mp3、迴圈。
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaMidiUI = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  const fmt = (s) => { s = Math.max(0, Math.round(s)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+  const el = (tag, css, text) => { const e = document.createElement(tag); if (css) e.style.cssText = css; if (text != null) e.textContent = text; return e; };
+  const BTN = 'cursor:pointer;border:1px solid rgba(128,128,128,.5);background:transparent;color:inherit;border-radius:6px;padding:3px 9px;font-size:13px;';
+
+  function mount(opts) {
+    const song = opts.song, host = opts.host, M = opts.M;
+    const card = el('div', 'border:1px solid rgba(128,128,128,.4);border-radius:10px;padding:10px;max-width:520px;font-size:13px;');
+    card.className = 'fa-midi-card';
+    const head = el('div', 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;');
+    head.appendChild(el('span', 'font-size:18px', '🎹'));
+    head.appendChild(el('b', 'flex:1;min-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;', opts.title || song.title || 'MIDI'));
+    head.appendChild(el('span', 'opacity:.7', M.noteCount(song) + ' 個音・' + song.tracks.length + ' 軌・' + Math.round(song.tempos[0].bpm) + ' 拍/分'));
+    card.appendChild(head);
+
+    const bar = el('div', 'display:flex;align-items:center;gap:8px;margin:8px 0;');
+    const playBtn = el('button', BTN, '▶ 播放'); playBtn.title = '播放／暫停';
+    const stopBtn = el('button', BTN, '■'); stopBtn.title = '停止';
+    const seek = el('input', 'flex:1;min-width:60px;'); seek.type = 'range'; seek.min = 0; seek.max = 1000; seek.value = 0;
+    const time = el('span', 'font-variant-numeric:tabular-nums;opacity:.8', '0:00 / ' + fmt(M.durationSec(song)));
+    bar.append(playBtn, stopBtn, seek, time); card.appendChild(bar);
+
+    const status = el('div', 'opacity:.75;min-height:1.2em;font-size:12px;', ''); card.appendChild(status);
+    const say = (m) => { status.textContent = m || ''; };
+
+    let player = null, muted = new Set(), soloIdx = null, dragging = false;
+    const total = M.durationSec(song);
+    const onTick = (sec) => { if (!dragging) seek.value = total ? Math.round(sec / total * 1000) : 0; time.textContent = fmt(sec) + ' / ' + fmt(total); };
+    async function ensure() {
+      if (player) return player;
+      say('準備合成器(第一次要下載音色庫,之後直接從本機讀取)…');
+      player = await host.player(song, (m) => say(m));
+      player.onTick(onTick); player.onEnd(() => { playBtn.textContent = '▶ 播放'; });
+      say(''); return player;
+    }
+    playBtn.onclick = async () => {
+      try { const p = await ensure(); if (p.isPlaying()) { p.pause(); playBtn.textContent = '▶ 播放'; } else { p.play(); playBtn.textContent = '❚❚ 暫停'; } }
+      catch (e) { say('⚠️ 無法播放:' + String((e && e.message) || e)); }
+    };
+    stopBtn.onclick = () => { if (player) { player.stop(); playBtn.textContent = '▶ 播放'; } };
+    seek.oninput = () => { dragging = true; time.textContent = fmt(seek.value / 1000 * total) + ' / ' + fmt(total); };
+    seek.onchange = async () => { dragging = false; try { const p = await ensure(); p.seek(seek.value / 1000 * total); } catch (e) { say('⚠️ ' + String((e && e.message) || e)); } };
+
+    const list = el('div', 'margin-top:6px;');
+    song.tracks.forEach((t, i) => {
+      const row = el('div', 'display:flex;align-items:center;gap:6px;padding:2px 0;');
+      const name = el('span', 'flex:1;min-width:60px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;', (i + 1) + '. ' + t.name + (t.drum ? '(鼓組)' : ''));
+      const mute = el('button', BTN + 'padding:1px 6px;', 'M'); mute.title = '靜音';
+      const solo = el('button', BTN + 'padding:1px 6px;', 'S'); solo.title = '獨奏';
+      const vol = el('input', 'width:70px;'); vol.type = 'range'; vol.min = 0; vol.max = 150; vol.value = 100; vol.title = '音量';
+      mute.onclick = async () => { const on = !muted.has(i); if (on) muted.add(i); else muted.delete(i); mute.style.background = on ? 'rgba(220,80,80,.4)' : 'transparent'; try { (await ensure()).setMute(i, on); } catch (_) { /* */ } };
+      solo.onclick = async () => { soloIdx = soloIdx === i ? null : i; Array.from(list.querySelectorAll('button[data-solo]')).forEach((b) => { b.style.background = 'transparent'; }); if (soloIdx === i) solo.style.background = 'rgba(80,160,220,.4)'; try { (await ensure()).setSolo(soloIdx); } catch (_) { /* */ } };
+      solo.dataset.solo = '1';
+      vol.oninput = async () => { try { (await ensure()).setTrackVolume(i, vol.value / 100); } catch (_) { /* */ } };
+      row.append(name, mute, solo, vol); list.appendChild(row);
+    });
+    card.appendChild(list);
+
+    const foot = el('div', 'display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px;');
+    const loop = el('label', 'display:flex;align-items:center;gap:4px;'); const lc = el('input'); lc.type = 'checkbox'; lc.onchange = async () => { try { (await ensure()).setLoop(lc.checked); } catch (_) { /* */ } }; loop.append(lc, document.createTextNode('重複'));
+    const dl = el('button', BTN, '⬇ MIDI 檔'); dl.onclick = () => { try { host.download((opts.title || song.title || 'song').replace(/[\\/:*?"<>|]/g, '_') + '.mid', M.write(song), 'audio/midi'); } catch (e) { say('⚠️ ' + String((e && e.message) || e)); } };
+    const mp3 = el('button', BTN, '⬇ mp3');
+    mp3.onclick = async () => {
+      mp3.disabled = true; const old = mp3.textContent; mp3.textContent = '渲染中…';
+      try { const blob = await host.toMp3(song, (m) => say(m)); host.download((opts.title || song.title || 'song').replace(/[\\/:*?"<>|]/g, '_') + '.mp3', new Uint8Array(await blob.arrayBuffer()), 'audio/mpeg'); say('已轉成 mp3(' + Math.round(blob.size / 1024) + ' KB)'); }
+      catch (e) { say('⚠️ 轉 mp3 失敗:' + String((e && e.message) || e)); }
+      mp3.disabled = false; mp3.textContent = old;
+    };
+    foot.append(loop, dl, mp3); card.appendChild(foot);
+    card._midi = { destroy() { if (player) player.stop(); } };
+    return card;
+  }
+  return { mount, fmt };
+});
+
+}).call(null, undefined, holder);
+return holder.FaMidiUI;
+})();
+/* MUSICUI-END */
+/* MUSICKNOW-BEGIN */
+const FaMusicKnowledge = (function () {
+const holder = {};
+(function (module, self) {
+// 音樂領域的知識描述 FaMusicKnowledge(純資料;node 與瀏覽器都能跑)。給 domain music 的 music_topic 工具與階段 3 的創作用。
+// 數字是常見慣例的典型值,不是規定;風格範本(階段 7)會讓使用者查維基補充與覆寫。
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaMusicKnowledge = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  const TOPICS = {
+    basics: '音高與記號:MIDI 音符編號 60 是中央 C(C4),每加 1 就高一個半音,加 12 高一個八度。每個八度 12 個半音:C C# D D# E F F# G G# A A# B。力度(velocity)1–127:弱 pp≈40、中弱 mp≈60、中強 mf≈80、強 f≈100、很強 ff≈120。速度單位是每分鐘幾拍(bpm):慢板 60–76、行板 76–108、中板 108–120、快板 120–168、急板 168 以上。時間單位:這個程式內一個四分音符=480 個 tick,八分=240,十六分=120,三連音八分=160,附點四分=720。',
+    scales: '音階(用半音距離表示):大調 0 2 4 5 7 9 11;自然小調 0 2 3 5 7 8 10;和聲小調 0 2 3 5 7 8 11;旋律小調(上行) 0 2 3 5 7 9 11;五聲大調 0 2 4 7 9;五聲小調 0 3 5 7 10;藍調 0 3 5 6 7 10;多利亞 0 2 3 5 7 9 10;米索利地亞 0 2 4 5 7 9 10;利地亞 0 2 4 6 7 9 11;全音階 0 2 4 6 8 10。調性:大調的相對小調是往下小三度(C 大調↔A 小調)。旋律音多半落在調內音,強拍落在和弦內音(1、3、5 度),弱拍可用經過音。跳進超過一個八度很少見,大跳之後通常反方向級進。',
+    chords: '和弦(根音加半音數):大三和弦 0 4 7;小三 0 3 7;減三 0 3 6;增三 0 4 8;屬七 0 4 7 10;大七 0 4 7 11;小七 0 3 7 10;半減七 0 3 6 10;掛二 0 2 7;掛四 0 5 7;加六 0 4 7 9;九和弦在七和弦上加 14。大調的順階和弦(羅馬數字):I 大、ii 小、iii 小、IV 大、V 大(常加七)、vi 小、vii° 減。功能:主 I/vi(穩定)→下屬 IV/ii(離開)→屬 V/vii°(緊張)→回主(解決)。常見進行:I–V–vi–IV(流行)、I–vi–IV–V(五零年代)、ii–V–I(爵士)、vi–IV–I–V、I–IV–V(搖滾/藍調)、i–VII–VI–VII(小調搖滾)、i–iv–v、卡農 I–V–vi–iii–IV–I–IV–V。轉位與開放排列讓聲部連接平順:相鄰和弦盡量保留共同音、其他聲部走最小移動。',
+    rhythm: '拍號:4/4(最常見,強弱次強弱)、3/4(華爾滋,強弱弱)、6/8(兩大拍各三小拍)、2/4(進行曲)、12/8(慢藍調)。切分音是重音落在弱拍或拍間。搖擺(swing)是把成對的八分音符變成長短 2:1(三連音感)。常見鼓型(4/4,以十六分為格,共 16 格,1 是第一拍頭):搖滾 底鼓 1、9(有時 7、11),小鼓 5、13,踩鈸每個八分(1 3 5 7 9 11 13 15);放克 加十六分踩鈸與幽靈音;迪斯可 底鼓四拍(1 5 9 13)、開放踩鈸在反拍;嘻哈 底鼓 1、(7)、(11) 小鼓 5、13 速度 80–95;拉丁/騷莎 用 3-2 或 2-3 的 clave 型;華爾滋 底鼓 1,小鼓/踩鈸 2、3。貝斯常彈根音在強拍,加五度或八度作變化。',
+    ranges: '各樂器合理音域(MIDI 編號,含)與用途:鋼琴 21–108(常用 36–96);原音吉他 40–84;電吉他 40–88(失真時避免密集小二度);電貝斯/原音貝斯 28–67(常用 28–55);大提琴 36–76;小提琴 55–100;中提琴 48–88;長笛 60–96;雙簧管 58–91;單簧管 50–94;薩克斯風 中音 49–81、次中音 44–76;小號 55–82;長號 40–72;法國號 34–77;人聲 女高 60–81、女低 53–74、男高 48–67、男低 40–62。同一個聲部的相鄰音跳進以級進為主;同時發聲的音在低音區(C3 以下)避免緊密的三和弦疊音(會混濁)。鼓組(頻道 10):底鼓 36、小鼓 38、拍手 39、閉合踩鈸 42、開放踩鈸 46、腳踩踩鈸 44、低/中/高筒鼓 41/45/48、鈸 49、叮叮鈸 51、牛鈴 56、鈴鼓 54。',
+    instrumentation: '配器常識(GM 音色編號,從 0 起算):鋼琴 0、電鋼琴 4、羽管鍵琴 6、鐘琴 9、木琴 13、管風琴 19、原音吉他(尼龍)24、原音吉他(鋼弦)25、爵士電吉他 26、清音電吉他 27、悶音 28、過載 29、失真 30、原音貝斯 32、指彈電貝斯 33、撥片貝斯 34、無琴格貝斯 35、合成貝斯 38、小提琴 40、中提琴 41、大提琴 42、弦樂合奏 48、慢弦樂 49、合成弦樂 50、合唱 52、小號 56、長號 57、法國號 60、銅管合奏 61、高音薩克斯風 64、中音 65、次中音 66、雙簧管 68、單簧管 71、長笛 73、方波主音 80、鋸齒波主音 81、合成鋪底 88–95。層次安排:低頻(底鼓+貝斯)打底、中頻(和弦樂器:鋼琴/吉他/弦樂鋪底)填和聲、高頻(主旋律樂器)突出。主旋律與和弦樂器避免音域重疊;伴奏的力度比主旋律低 15–25。段落越往副歌越加層次(加鼓、加弦樂、加疊奏)。',
+    structure: '常見曲式:流行歌 前奏(4–8 小節)→主歌 A(8 或 16)→預備副歌(4–8,可省)→副歌(8)→主歌 B→副歌→橋段(8)→副歌×2→尾奏;小節數多為 4 的倍數,樂句 4 小節一組、8 小節一段。AABA(爵士標準曲 32 小節)、十二小節藍調(I–I–I–I / IV–IV–I–I / V–IV–I–V)。每個樂句結尾落在穩定音(主音、屬音),段落結尾用終止式(V–I 完全終止;IV–I 變格終止;V 半終止留懸念)。動機(2–4 個音的小片段)重複、移位、倒影或節奏變化來發展,首尾呼應。',
+    styles: '各風格典型(速度 bpm、拍號、和聲、節奏、配器):流行 pop 90–130、4/4、I–V–vi–IV 類、鼓+貝斯+鋼琴/吉他+弦樂鋪底;搖滾 rock 100–160、4/4、power chord(根音+五度)、I–IV–V、鼓+貝斯+兩把電吉他;爵士 jazz 80–220、4/4 搖擺、ii–V–I 與七和弦九和弦、行走貝斯(四分音符級進)+鋼琴+鼓刷+薩克斯風/小號;藍調 blues 60–120、12/8 或搖擺 4/4、十二小節、屬七和弦、藍調音階;古典 classical 依樂章、常 3/4 或 4/4、功能和聲嚴格、弦樂四重奏/鋼琴/管弦;電子 electronic/EDM 120–140(house 120–128、techno 125–150、trance 130–145)、4/4 四拍底鼓、反拍開放踩鈸、合成貝斯與琶音;民謠 folk 70–120、4/4 或 3/4 或 6/8、I–IV–V、原音吉他分解和弦、口琴/提琴;拉丁 latin(騷莎 180–220、巴薩諾瓦 120–140)、clave 節奏、七和弦、打擊樂;嘻哈 hip-hop 80–100、4/4、小調、底鼓小鼓採樣感+808 低音;雷鬼 reggae 70–90、4/4 但重音在 2、4 拍反拍(off-beat 吉他)、貝斯突出;放克 funk 95–120、十六分切分、貝斯與吉他切分短音;新世紀/環境 ambient 50–90、長音鋪底、緩慢和聲變化。實際曲目請用瀏覽器搜尋工具查使用者指定風格的維基介紹來補充(風格範本工具之後會自動化這件事)。'
+  };
+  const ORDER = ['basics', 'scales', 'chords', 'rhythm', 'ranges', 'instrumentation', 'structure', 'styles'];
+  function topic(name) { return TOPICS[name] || null; }
+  function all() { return ORDER.map((k) => '【' + k + '】' + TOPICS[k]).join('\n\n'); }
+  return { TOPICS, ORDER, topic, all };
+});
+
+}).call(null, undefined, holder);
+return holder.FaMusicKnowledge;
+})();
+/* MUSICKNOW-END */
 /* MESHGEN-BEGIN */
 const FaMeshGen = (function () {
 const holder = {};
@@ -46338,6 +46461,10 @@ const FA_ASSET_URLS = {
     three3MFLoader: './vendor/three/3MFLoader.js',
     threeFBXLoader: './vendor/three/FBXLoader.js',
     threeFflate: './vendor/three/fflate.min.js',
+    // 音樂領域:SpessaSynth 合成器程式庫（Apache-2.0，隨安裝包放在 renderer/vendor/spessasynth/）與 GeneralUser GS 音色庫（允許任何用途，第一次播放時下載並快取在本機）
+    spessaLib: './vendor/spessasynth/spessasynth-lib.js',
+    spessaProcessor: './vendor/spessasynth/spessasynth-processor.min.js',
+    gsSoundbank: 'https://raw.githubusercontent.com/mrbumpy409/GeneralUser-GS/main/GeneralUser-GS.sf2',
     // tw_stock_db客製: 2026-09-06使用者要求——3D場景匯出成H.264 MP4影片。
     // 純JS的MP4 muxer（把WebCodecs VideoEncoder吐出的H.264 chunk包成真正的
     // .mp4容器，不需要ffmpeg.wasm那種幾十MB的重量級wasm），global-attaching
@@ -58364,6 +58491,36 @@ ${fnData.code}
                 catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
             },
             { type: 'object', properties: { worksheet_id: { type: 'string' }, blank: { type: 'boolean', description: 'true＝開一份空白的' } }, additionalProperties: false }
+        );
+        registerOptional('midi_play',
+            '在對話裡放一個「MIDI 播放卡片」:可以播放、暫停、拖進度、每軌靜音／獨奏／調音量、下載 MIDI、轉成 mp3。三種來源擇一:file_id(使用者上傳的 .mid／.midi 檔)、song_id(對話裡已有的曲子)、song(自己組一首:{title,tempo,timesig:[4,4],tracks:[{name,program(GM 音色編號 0–127),drum(true=鼓組),notes:[[第幾拍(從 0 起),幾拍長,音高(MIDI 60=中央 C),力度 1–127]]}]})。音色一律是 GS 音色庫的 GM 128 音色與鼓組。音樂知識(音階、和弦、音域、配器、風格)用 music_topic 查。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try { const r = await this._midiSongFromArgs(a); if (r.error) return JSON.stringify({ ok: false, error: r.error }); const id = this._midiPushCard(r.song, a.title || r.title); return JSON.stringify({ ok: true, song_id: id, summary: FaMidi.summary(r.song) }); }
+                catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+            },
+            { type: 'object', properties: { file_id: { type: 'string', description: '使用者上傳的 MIDI 檔' }, song_id: { type: 'string' }, song: { type: 'object', description: '{title,tempo,timesig,tracks:[{name,program,drum,notes:[[拍,拍長,音高,力度]]}]}' }, title: { type: 'string' } }, additionalProperties: false }
+        );
+        registerOptional('midi_to_mp3',
+            '把 MIDI 用 GS 音色庫離線渲染並編成 mp3 檔(變成下載卡片)。來源同 midi_play:file_id、song_id 或 song。第一次要下載音色庫(約 31 MB);長曲子會花一些時間。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try {
+                    const r = await this._midiSongFromArgs(a); if (r.error) return JSON.stringify({ ok: false, error: r.error });
+                    const t0 = Date.now(); const blob = await this._midiToMp3(r.song); const name = String(a.title || r.title || r.song.title || 'song').replace(/[\\/:*?"<>|]/g, '_') + '.mp3';
+                    await this.generateAndDeliverFile(blob, name, 'audio/mpeg');
+                    return JSON.stringify({ ok: true, filename: name, size_kb: Math.round(blob.size / 1024), seconds: Math.round(FaMidi.durationSec(r.song)), render_ms: Date.now() - t0 });
+                } catch (err) { return JSON.stringify({ ok: false, error: '轉 mp3 失敗:' + String((err && err.message) || err) }); }
+            },
+            { type: 'object', properties: { file_id: { type: 'string' }, song_id: { type: 'string' }, song: { type: 'object' }, title: { type: 'string' } }, additionalProperties: false }
+        );
+        registerOptional('music_topic',
+            '查音樂知識:basics(音高與記號、速度、tick)、scales(音階與調性)、chords(和弦與常見進行)、rhythm(拍號與鼓型)、ranges(各樂器音域與鼓組編號)、instrumentation(GM 音色編號與配器)、structure(曲式)、styles(各風格典型)。不帶 topic 回傳全部主題名稱。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const K = FaMusicKnowledge; const k = String(a.topic || ''); return JSON.stringify(K.TOPICS[k] ? { ok: true, topic: k, text: K.TOPICS[k] } : { ok: true, topics: K.ORDER });
+            },
+            { type: 'object', properties: { topic: { type: 'string', enum: ['basics', 'scales', 'chords', 'rhythm', 'ranges', 'instrumentation', 'structure', 'styles'] } }, additionalProperties: false }
         );
         registerOptional('worksheet_topic',
             '查學習單的進階說明：topic=format（描述格式與每種區塊的欄位）、templates（範本清單）、draw（自由繪圖區塊）、number_bond（數的組成）、edits（調整動作清單）、reference（用參考圖片的做法）、colors（串珠標準色）。參數: {"topic":"format"}',
@@ -72272,6 +72429,76 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         return { say, edits, refs, notes };
     }
     // 對話裡的編輯器：訊息裡只有 {id}，內容從存好的進度讀；同一個 id 的畫面元件會被快取（重畫對話不會丟掉編輯中的狀態）
+    // ───────── 音樂領域:MIDI 播放卡片、轉 mp3(設計見 DESIGN.music.md;核心在 FaMidi／FaMidiPlay／FaMidiUI)
+    _midiSources() { return { lib: [FA_ASSET_URLS.spessaLib], processor: [FA_ASSET_URLS.spessaProcessor], soundbank: [FA_ASSET_URLS.gsSoundbank] }; }
+    _midiB64(bytes) { let b = ''; for (let i = 0; i < bytes.length; i += 0x8000) b += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(b); }
+    _midiStoreSong(song, id) { this._midiSongs = this._midiSongs || new Map(); id = id || ('mi' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5)); this._midiSongs.set(id, song); if (this._midiSongs.size > 30) this._midiSongs.delete(this._midiSongs.keys().next().value); return id; }
+    // 工具參數 → 曲子:file_id(上傳的 .mid)、song_id(對話裡已有的)、或 song(模型組的:tempo、timesig、tracks[{name,program,drum,notes:[[第幾拍,幾拍長,音高,力度]]}])
+    async _midiSongFromArgs(a) {
+        a = a || {};
+        if (a.song_id && this._midiSongs && this._midiSongs.get(String(a.song_id))) return { song: this._midiSongs.get(String(a.song_id)) };
+        if (a.file_id) {
+            const rec = await this.fileCache.get(String(a.file_id)); if (!rec || !rec.blob) return { error: '找不到這個檔案:' + a.file_id };
+            try { return { song: FaMidi.parse(new Uint8Array(await rec.blob.arrayBuffer())), title: String(rec.filename || '').replace(/\.midi?$/i, '') }; } catch (e) { return { error: '讀不懂這個 MIDI 檔:' + String((e && e.message) || e) }; }
+        }
+        let sp = a.song; if (typeof sp === 'string') { try { sp = JSON.parse(sp); } catch (_) { sp = null; } }
+        if (sp && typeof sp === 'object') {
+            const P = FaMidi.PPQ; const song = FaMidi.emptySong(); song.title = String(sp.title || '').slice(0, 60);
+            song.tempos = [{ t: 0, bpm: Number(sp.tempo) || 120 }]; if (sp.timesig) song.timesig = { n: Number(sp.timesig[0] || sp.timesig.n) || 4, d: Number(sp.timesig[1] || sp.timesig.d) || 4 };
+            (Array.isArray(sp.tracks) ? sp.tracks : []).slice(0, 16).forEach((t, i) => {
+                const tr = FaMidi.emptyTrack(t && t.name || ('軌道 ' + (i + 1)), 0, t && t.program); tr.drum = !!(t && t.drum);
+                (Array.isArray(t && t.notes) ? t.notes : []).slice(0, 20000).forEach((n) => { if (Array.isArray(n) && n.length >= 3) tr.notes.push({ t: Math.round(Number(n[0]) * P), d: Math.max(1, Math.round(Number(n[1]) * P)), n: Number(n[2]), v: Number(n[3]) || 90 }); });
+                song.tracks.push(tr);
+            });
+            const v = FaMidi.validate(song); if (!FaMidi.noteCount(v)) return { error: 'song 裡沒有音符(notes 每個是 [第幾拍, 幾拍長, 音高, 力度])' };
+            return { song: v, title: v.title };
+        }
+        return { error: '需要 file_id(上傳的 .mid 檔)、song_id 或 song' };
+    }
+    _midiHost() {
+        const self = this;
+        return {
+            async player(song, prog) {
+                if (!self._midiSynthP) {
+                    self._midiCtx = new (window.AudioContext || window.webkitAudioContext)();
+                    self._midiSynthP = FaMidiPlay.loadSynth(self._midiCtx, self._midiCtx.destination, self._midiSources(), prog).catch((e) => { self._midiSynthP = null; try { self._midiCtx.close(); } catch (_) { /* */ } throw e; });
+                }
+                const synth = await self._midiSynthP; try { await self._midiCtx.resume(); } catch (_) { /* */ }
+                const ctx = self._midiCtx;
+                return FaMidiPlay.createPlayer(song, { noteOn: (c, n, v, o) => synth.noteOn(c, n, v, o), noteOff: (c, n, o) => synth.noteOff(c, n, o), programChange: (c, p, o) => synth.programChange(c, p, o), controllerChange: (c, cc, v, o) => synth.controllerChange(c, cc, v, o), stopAll: (f) => synth.stopAll(f) }, { clock: () => ctx.currentTime });
+            },
+            async download(name, bytes, mime) { await self.generateAndDeliverFile(new Blob([bytes], { type: mime }), name, mime); },
+            toMp3(song, prog) { return self._midiToMp3(song, prog); }
+        };
+    }
+    async _midiToMp3(song, prog) {
+        const buf = await FaMidiPlay.renderOffline(song, this._midiSources(), { onProgress: prog });
+        if (prog) prog('編成 mp3…');
+        return await this._encodeMp3(buf, 160);
+    }
+    _mountMidiCards(mdDiv) {
+        if (typeof FaMidiUI === 'undefined' || typeof FaMidi === 'undefined') return;
+        this._midiCards = this._midiCards || new Map();
+        mdDiv.querySelectorAll('pre > code.language-fa-midi').forEach((code) => {
+            let ref = null; try { ref = JSON.parse(code.textContent); } catch (_) { /* */ } if (!ref || !ref.id) return;
+            let el = this._midiCards.get(ref.id);
+            if (!el) {
+                let song = this._midiSongs && this._midiSongs.get(ref.id);
+                if (!song && ref.b64) { try { const bin = atob(ref.b64); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); song = FaMidi.parse(u); this._midiStoreSong(song, ref.id); } catch (_) { /* */ } }
+                if (!song) { const w = document.createElement('div'); w.style.cssText = 'padding:8px;opacity:.8'; w.textContent = '⚠️ 找不到這首曲子的內容(太大的 MIDI 不會跟著對話保存),請重新產生或重新上傳。'; code.parentElement.replaceWith(w); return; }
+                el = FaMidiUI.mount({ song, title: ref.title, host: this._midiHost(), M: FaMidi }); this._midiCards.set(ref.id, el);
+                if (this._midiCards.size > 20) { const k = this._midiCards.keys().next().value; try { this._midiCards.get(k)._midi.destroy(); } catch (_) { /* */ } this._midiCards.delete(k); }
+            }
+            code.parentElement.replaceWith(el);
+        });
+    }
+    _midiPushCard(song, title, lead) {
+        const id = this._midiStoreSong(song); const ref = { id, title: title || song.title || 'MIDI' };
+        try { const bytes = FaMidi.write(song); if (bytes.length <= 90000) ref.b64 = this._midiB64(bytes); } catch (_) { /* */ }
+        this._pushAssistantMessage((lead || '🎹 MIDI 播放卡片:按播放聽聽看(第一次會下載音色庫約 31 MB,之後存在本機),可以靜音／獨奏／調音量,也能下載 MIDI 或轉成 mp3。') + '\n\n```fa-midi\n' + JSON.stringify(ref) + '\n```', null);
+        return id;
+    }
+    // 對話裡的編輯器(學習單)
     _mountWorksheetEditors(mdDiv) {
         if (typeof FaWorksheetUI === 'undefined' || !FaWorksheetUI || !FaWorksheetUI.mount) return;
         this._wsEditors = this._wsEditors || new Map();
@@ -104117,6 +104344,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     try { this._mountDataViewers(mdDiv); } catch (e) { console.warn('資料檢視器掛載失敗', e); }
                     try { this._mountSvgViewers(mdDiv); } catch (e) { console.warn('SVG 檢視器掛載失敗', e); }
                     try { this._mountWorksheetEditors(mdDiv); } catch (e) { console.warn('學習單編輯器掛載失敗', e); }
+                    try { this._mountMidiCards(mdDiv); } catch (e) { console.warn('MIDI 播放卡片掛載失敗', e); }
                     try { this._mountWebEditors(mdDiv); } catch (e) { console.warn('網頁編輯器掛載失敗', e); }
                     try { this._mountEditEditors(mdDiv); } catch (e) { console.warn('SVG／圖片／3D 編輯器掛載失敗', e); }
                     try { this._mountKnowledgePanels(mdDiv); } catch (e) { console.warn('知識庫面板掛載失敗', e); }

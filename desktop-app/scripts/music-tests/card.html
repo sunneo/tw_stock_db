@@ -1,0 +1,24 @@
+<!doctype html><meta charset="utf-8"><title>midi card test</title>
+<!-- 靜態伺服器開 /scripts/music-tests/card.html?bank=/scripts/music-tests/gs.sf2.local;點播放後 window.__card 有狀態 -->
+<body style="font-family:sans-serif;padding:12px"><div id="host"></div>
+<script src="../../renderer/src/music/midi_core.js"></script>
+<script src="../../renderer/src/music/midi_play.js"></script>
+<script src="../../renderer/src/music/midi_ui.js"></script>
+<script>
+let s = FaMidi.emptySong(); s = FaMidi.addTrack(s, '鋼琴', 0); s = FaMidi.addTrack(s, '貝斯', 33); s.title = '測試曲';
+[60, 64, 67, 72, 67, 64, 60, 55].forEach((n, i) => { s = FaMidi.addNote(s, 0, { t: i * 480, d: 440, n, v: 100 }); });
+[36, 36, 43, 43].forEach((n, i) => { s = FaMidi.addNote(s, 1, { t: i * 960, d: 900, n, v: 100 }); });
+const bank = new URLSearchParams(location.search).get('bank') || 'https://raw.githubusercontent.com/mrbumpy409/GeneralUser-GS/main/GeneralUser-GS.sf2';
+let ctx = null, synthP = null; window.__card = { events: [] };
+const host = {
+  async player(song, prog) {
+    if (!synthP) { ctx = new AudioContext(); synthP = FaMidiPlay.loadSynth(ctx, ctx.destination, { lib: ['/renderer/vendor/spessasynth/spessasynth-lib.js'], processor: ['/renderer/vendor/spessasynth/spessasynth-processor.min.js'], soundbank: [bank] }, prog); }
+    const synth = await synthP; await ctx.resume();
+    window.__card.synth = synth;
+    return FaMidiPlay.createPlayer(song, { noteOn: (c, n, v, o) => { window.__card.events.push('on' + n); synth.noteOn(c, n, v, o); }, noteOff: (c, n, o) => synth.noteOff(c, n, o), programChange: (c, p, o) => synth.programChange(c, p, o), controllerChange: (c, cc, v, o) => synth.controllerChange(c, cc, v, o), stopAll: (f) => synth.stopAll(f) }, { clock: () => ctx.currentTime });
+  },
+  download(n, b, m) { window.__card.downloaded = [n, b.length, m]; },
+  async toMp3() { throw new Error('測試頁沒有 mp3 編碼器'); }
+};
+document.getElementById('host').appendChild(FaMidiUI.mount({ song: s, title: '測試曲', host, M: FaMidi }));
+</script>
