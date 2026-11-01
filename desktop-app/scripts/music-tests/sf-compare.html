@@ -14,6 +14,12 @@
   function bands(x, off) { const N = 8192, re = new Float64Array(N), im = new Float64Array(N); for (let i = 0; i < N; i++) re[i] = (x[off + i] || 0) * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / N)); fft(re, im); const out = new Float64Array(BANDS); for (let b = 0; b < BANDS; b++) { const f0 = 60 * Math.pow(16000 / 60, b / BANDS), f1 = 60 * Math.pow(16000 / 60, (b + 1) / BANDS); let e = 0; for (let k = Math.floor(f0 * N / SR); k <= Math.ceil(f1 * N / SR); k++) e += re[k] * re[k] + im[k] * im[k]; out[b] = 10 * Math.log10(e + 1e-9); } return out; }
   function rms(x, a, b) { let s = 0; for (let i = a; i < b; i++) s += x[i] * x[i]; return Math.sqrt(s / Math.max(1, b - a)); }
   function spike(x, a, b) { let m = 0; for (let i = a + 2; i < b; i++) m = Math.max(m, Math.abs(x[i] - 2 * x[i - 1] + x[i - 2])); return m / (rms(x, a, b) + 1e-6); } // 二階差分的最大值相對於 RMS:喀嚓聲會讓它變大
+  const r2 = (v) => Math.round(v * 100) / 100;
+  const BAND_HI = Array.from({ length: BANDS }, (_, b) => 60 * Math.pow(16000 / 60, (b + 1) / BANDS));
+  function spec(x, off) { const N = 8192, re = new Float64Array(N), im = new Float64Array(N); for (let i = 0; i < N; i++) re[i] = (x[off + i] || 0) * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / N)); fft(re, im); const bands = bands_(re, im, N); let tot = 0, cen = 0, hf = 0; for (let k = 1; k < N / 2; k++) { const p = re[k] * re[k] + im[k] * im[k], f = k * SR / N; tot += p; cen += p * f; if (f > 11000) hf += p; } return { bands, peak: Math.max.apply(null, bands), centroid: cen / (tot + 1e-12), total: 10 * Math.log10(tot + 1e-9), hf: 10 * Math.log10(hf + 1e-9) }; }
+  function bands_(re, im, N) { const out = new Float64Array(BANDS); for (let b = 0; b < BANDS; b++) { const f0 = 60 * Math.pow(16000 / 60, b / BANDS), f1 = BAND_HI[b]; let e = 0; for (let k = Math.floor(f0 * N / SR); k <= Math.ceil(f1 * N / SR); k++) e += re[k] * re[k] + im[k] * im[k]; out[b] = 10 * Math.log10(e + 1e-9); } return out; }
+  function env(x, a, b) { const F = 8192, out = []; for (let i = a; i + F <= b; i += F) out.push(rms(x, i, i + F)); return out; }
+  function corr(p, q) { const n = Math.min(p.length, q.length); let mp = 0, mq = 0; for (let i = 0; i < n; i++) { mp += p[i]; mq += q[i]; } mp /= n; mq /= n; let sp = 0, sq = 0, c = 0; for (let i = 0; i < n; i++) { sp += (p[i] - mp) ** 2; sq += (q[i] - mq) ** 2; c += (p[i] - mp) * (q[i] - mq); } return sp < 1e-12 && sq < 1e-12 ? 1 : c / Math.sqrt(sp * sq + 1e-18); }
   async function render(bank, progs, drums) {
     let s = FaMidi.emptySong(); s.tempos = [{ t: 0, bpm: 60 }];
     progs.forEach((p, i) => { s = FaMidi.addTrack(s, 'p' + p, p); const note = p >= 24 && p < 40 ? 40 : 60; s = FaMidi.addNote(s, s.tracks.length - 1, { t: i * SLOT * 480, d: 2 * 480, n: note, v: 100 }); s = FaMidi.addNote(s, s.tracks.length - 1, { t: i * SLOT * 480 + 2 * 480, d: 480, n: note + 7, v: 100 }); });
@@ -28,13 +34,20 @@
       const slots = progs.map((p, i) => ({ name: 'GM ' + (p + 1), t: i * SLOT })); if (last) { slots.push({ name: '鼓組(底鼓／小鼓／踩鑔／鈸／通鼓)', t: progs.length * SLOT }); slots.push({ name: '鼓組 2', t: (progs.length + 1) * SLOT }); slots.push({ name: '鼓組 3', t: (progs.length + 2) * SLOT }); }
       slots.forEach((sl) => {
         const o = Math.floor((sl.t + 0.3) * SR), e0 = Math.floor((sl.t + 2.9) * SR); const ra = rms(da, o, e0), rb = rms(db, o, e0);
-        if (ra < 1e-4 && rb < 1e-4) { R.rows.push({ name: sl.name, silent: true, diff: 0 }); return; }
-        const ba = bands(da, o), bb = bands(db, o); let d = 0; for (let k = 0; k < BANDS; k++) d += Math.abs(ba[k] - bb[k]); d /= BANDS;
-        R.rows.push({ name: sl.name, diff: Math.round(d * 100) / 100, levelDb: Math.round(20 * Math.log10((rb + 1e-9) / (ra + 1e-9)) * 10) / 10, spikeA: Math.round(spike(da, o, e0) * 10) / 10, spikeB: Math.round(spike(db, o, e0) * 10) / 10 });
+        if (ra < 1e-4 && rb < 1e-4) { R.rows.push({ name: sl.name, silent: false, bothSilent: true, diff: 0 }); return; }
+        if (rb < 1e-4) { R.rows.push({ name: sl.name, silent: true, diff: 99 }); return; } // 項目 1:原版有聲、瘦身版靜音
+        const A_ = spec(da, o), B_ = spec(db, o); let d = 0, n = 0; for (let k = 0; k < BANDS; k++) { if (BAND_HI[k] > 11000) continue; const fl = A_.peak - 80; d += Math.abs(Math.max(A_.bands[k], fl) - Math.max(B_.bands[k], fl)); n++; } d /= n; // 項目 3:11 kHz 以下的對數頻譜距離(dB)
+        const levelDb = 20 * Math.log10((rb + 1e-9) / (ra + 1e-9)); // 項目 2:均方根差(dB)
+        const cShift = Math.abs(B_.centroid - A_.centroid) / A_.centroid; // 項目 4:頻譜重心位移(比例)
+        const ea = env(da, o, e0), eb = env(db, o, e0), ec = corr(ea, eb); // 項目 5:包絡相關
+        const sa = spike(da, o, e0), sb = spike(db, o, e0); // 項目 6:接縫爆音
+        const hfLoss = A_.hf - B_.hf, hfSig = A_.hf > A_.total - 40; // 項目 7:11 kHz 以上的損失(只在原版這段有足夠能量時才算)
+        const fails = []; if (Math.abs(levelDb) > 3) fails.push('rms'); if (d > 5) fails.push('spectrum'); if (cShift > 0.12) fails.push('centroid'); if (ec < 0.9) fails.push('envelope'); if (sb > Math.max(sa * 1.5, 8)) fails.push('seam');
+        R.rows.push({ name: sl.name, diff: r2(d), levelDb: r2(levelDb), centroidShift: r2(cShift), envCorr: r2(ec), spikeA: r2(sa), spikeB: r2(sb), hfLossDb: r2(hfLoss), hfSignificant: hfSig, hfLoss: hfSig && hfLoss > 6, fails });
       });
     }
-    R.rows.sort((x, y) => y.diff - x.diff); R.mean = Math.round(R.rows.reduce((s, r) => s + r.diff, 0) / R.rows.length * 100) / 100; R.worst = R.rows.slice(0, 10); R.spikier = R.rows.filter((r) => r.spikeB > r.spikeA * 1.5 && r.spikeB > 8).map((r) => r.name); R.done = true;
+    R.rows.sort((x, y) => y.diff - x.diff); R.mean = Math.round(R.rows.reduce((s, r) => s + r.diff, 0) / R.rows.length * 100) / 100; R.worst = R.rows.slice(0, 10); R.spikier = R.rows.filter((r) => r.fails && r.fails.indexOf('seam') >= 0).map((r) => r.name); R.failed = R.rows.filter((r) => r.silent || (r.fails && r.fails.length)).map((r) => ({ name: r.name, silent: !!r.silent, fails: r.fails, diff: r.diff, levelDb: r.levelDb, centroidShift: r.centroidShift, envCorr: r.envCorr })); R.hfLossList = R.rows.filter((r) => r.hfLoss).map((r) => r.name + ' (' + r.hfLossDb + ' dB)'); R.count = R.rows.length; R.done = true;
   } catch (e) { R.errors.push(String(e && e.stack || e)); R.done = true; }
-  document.getElementById('out').textContent = JSON.stringify({ mean: R.mean, worst: R.worst, spikier: R.spikier, errors: R.errors });
+  document.getElementById('out').textContent = JSON.stringify({ count: R.count, mean: R.mean, failed: R.failed, hfLossList: R.hfLossList, errors: R.errors });
 })();
 </script>

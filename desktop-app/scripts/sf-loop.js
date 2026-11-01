@@ -73,6 +73,22 @@ function resample(x, ratio, taps) {
   return out;
 }
 
+// ── 波形門檻(每個被改動的樣本都要過):把原樣本與改過的樣本各「照 loop 播放」一段,比 11 kHz 以下的對數頻譜與頻譜重心 ──
+function fftInPlace(re, im) { const n = re.length; for (let i = 1, j = 0; i < n; i++) { let bit = n >> 1; for (; j & bit; bit >>= 1) j ^= bit; j ^= bit; if (i < j) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; } } for (let len = 2; len <= n; len <<= 1) { const a = -2 * Math.PI / len, wr = Math.cos(a), wi = Math.sin(a); for (let i = 0; i < n; i += len) { let cr = 1, ci = 0; for (let k = 0; k < len / 2; k++) { const xr = re[i + k + len / 2] * cr - im[i + k + len / 2] * ci, xi = re[i + k + len / 2] * ci + im[i + k + len / 2] * cr; re[i + k + len / 2] = re[i + k] - xr; im[i + k + len / 2] = im[i + k] - xi; re[i + k] += xr; im[i + k] += xi; const t = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = t; } } } }
+function playLooped(x, sl, el, n) { const out = new Float32Array(n), looped = el > sl + 8 && el <= x.length; for (let i = 0, p = 0; i < n; i++) { if (looped && p >= el) p = sl + ((p - sl) % (el - sl)); if (p >= x.length) break; out[i] = x[p++]; } return out; }
+const FB = 20; // 60 Hz ~ 11 kHz 的對數頻帶
+function bandSpec(y, rate, off) { const N = 4096, re = new Float64Array(N), im = new Float64Array(N); for (let i = 0; i < N; i++) re[i] = (y[off + i] || 0) * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / N)); fftInPlace(re, im); const b = new Float64Array(FB); let cs = 0, tot = 0; for (let k = 1; k < N / 2; k++) { const f = k * rate / N, p = re[k] * re[k] + im[k] * im[k]; if (f > 11000) continue; tot += p; cs += p * f; const bi = Math.floor(FB * Math.log(Math.max(f, 60) / 60) / Math.log(11000 / 60)); if (f >= 60 && bi >= 0 && bi < FB) b[bi] += p; } return { b: Array.from(b, (e) => 10 * Math.log10(e + 1e-12)), cen: cs / (tot + 1e-12) }; }
+// 回 { ok, dist, cShift }:dist 是 11 kHz 以下平均頻帶差(dB,低於峰值 70 dB 的頻帶不計),cShift 是重心位移比例
+function fidelity(a, aHdr, aRate, b, bHdr, bRate) {
+  const secs = 2.0, aLoop = aHdr.endLoop > aHdr.startLoop + 8; const lenSec = a.length / aRate, win = aLoop ? secs : Math.min(secs, lenSec - 0.05); if (win < 0.25) return { ok: true, dist: 0, cShift: 0, skipped: true };
+  const ya = playLooped(a, aHdr.startLoop, aHdr.endLoop, Math.ceil(secs * aRate)), yb = playLooped(b, bHdr.startLoop, bHdr.endLoop, Math.ceil(secs * bRate));
+  let dist = 0, cs = 0, cnt = 0; const t0 = Math.min(0.25, win / 2);
+  for (let t = t0; t + 4096 / Math.min(aRate, bRate) <= win; t += 0.2) { const sa = bandSpec(ya, aRate, Math.floor(t * aRate)), sb = bandSpec(yb, bRate, Math.floor(t * bRate)), pk = Math.max.apply(null, sa.b); let d = 0, n = 0; for (let k = 0; k < FB; k++) { const fl = pk - 70; d += Math.abs(Math.max(sa.b[k], fl) - Math.max(sb.b[k], fl)); n++; } dist = Math.max(dist, d / n); cs = Math.max(cs, Math.abs(sb.cen - sa.cen) / (sa.cen + 1e-9)); cnt++; }
+  return { ok: cnt === 0 || (dist <= 3 && cs <= 0.08), dist, cShift: cs };
+}
+// 高頻內容:11 kHz 以上的功率占比(dB 相對全部);小於 -35 表示降到 22 kHz 取樣也沒什麼損失
+function hfShare(x, sr) { if (sr <= 22050 || x.length < 4096) return -99; const N = 4096; let hf = 0, tot = 0; for (let off = 0; off + N <= x.length; off += N * 2) { const re = new Float64Array(N), im = new Float64Array(N); for (let i = 0; i < N; i++) re[i] = x[off + i] * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / N)); fftInPlace(re, im); for (let k = 1; k < N / 2; k++) { const p = re[k] * re[k] + im[k] * im[k]; tot += p; if (k * sr / N > 11000) hf += p; } } return 10 * Math.log10((hf + 1e-12) / (tot + 1e-12)); }
+
 const GUARD = 48; // loop 結尾後保留的點數(插值用)
 // 規則:① 已有 loop → 截掉結尾後的資料;太長且有週期 → 只留整數個週期;② 沒有 loop 的持續音 → 試著找一個;③ 打擊音不動;④ 之後才降取樣
 function slim(x, sr, hdr, opts) {
@@ -84,9 +100,11 @@ function slim(x, sr, hdr, opts) {
   } else if (isSustained(x, sr)) {
     const lp = findLoop(x, sr, opts); if (lp) { sl = lp.start; el = lp.end; data = x.subarray(0, Math.min(x.length, el + GUARD)); action = 'add-loop'; }
   }
-  let rate = sr;
-  if (opts.maxRate && sr > opts.maxRate) { const ratio = opts.maxRate / sr; data = resample(data, ratio); sl = Math.round(sl * ratio); el = Math.round(el * ratio); rate = opts.maxRate; action += '+down'; }
+  if (action !== 'keep' && !opts.noGuard) { const g = fidelity(x, { startLoop: hasLoop ? (hdr.startLoop | 0) : 0, endLoop: hasLoop ? (hdr.endLoop | 0) : 0 }, sr, data, { startLoop: sl, endLoop: el }, sr); if (!g.ok) { data = x; sl = hdr.startLoop | 0; el = hdr.endLoop | 0; action = 'reverted(' + action + ')'; } }
+  let rate = sr, keepHi = false;
+  if (opts.maxRate && sr > opts.maxRate && opts.hiShareDb != null && hfShare(data, sr) > opts.hiShareDb) keepHi = true; // 分級取樣率:高頻內容多的(鈸、踩鑔、銅管)不降
+  if (opts.maxRate && sr > opts.maxRate && !keepHi) { const ratio = opts.maxRate / sr; data = resample(data, ratio); sl = Math.round(sl * ratio); el = Math.round(el * ratio); rate = opts.maxRate; action += '+down'; }
   return { data, hdr: { startLoop: sl, endLoop: el, rate }, action };
 }
 
-module.exports = { findPeriod, findLoop, seamError, isSustained, resample, slim, GUARD };
+module.exports = { fidelity, hfShare, findPeriod, findLoop, seamError, isSustained, resample, slim, GUARD };

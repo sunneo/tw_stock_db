@@ -21,6 +21,12 @@ Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app
 
 ## 3. Todo（依序；階段 0–4 已做完，階段 5 做了規則部分）
 
+### 音色庫驗證結果（handoff 7，2026-11-01，**最新**）
+- **結論：七項波形門檻沒有全過，所以沒有推 soundfont-assets、沒有填 gsSoundbankBase，原版繼續當預設。**
+- 新增：sf-compare.html 改成七項（靜音、均方根差 ≤3 dB、11 kHz 以下對數頻譜距離 ≤5 dB、重心位移 ≤12%、包絡相關 ≥0.9、接縫爆音、高頻損失清單）；sf-loop.js 加逐樣本波形檢查（改 loop 的樣本照 loop 播放比頻譜與重心，不過就退回原樣本）與高頻分級（11 kHz 以上能量多的樣本不降取樣，用 --hi-share-db=-35）；sf-slim.js 不動兩類樣本：sampleModes=3（鬆鍵後繼續播 loop 後尾段）與用到起訖／loop 位移產生器的（共 135 個）。這兩類被截尾是上一版 GM 35 等大量失敗的原因，修完 131 個比對位置從 44 個失敗降到 10 個。
+- 目前最好一版（22 kHz、SF3 品質 3、6.6 MB）：沒有靜音、沒有接縫爆音、高頻損失只剩 GM 42（9.4 dB）。**仍未過的 10 項**：頻譜距離 GM 72（7.4）、GM 5（7.1）、GM 12（6.9）、GM 15（5.0）；重心位移 GM 61（32%）、GM 116（14%）、GM 7（41%）、GM 88（39%）；包絡相關 GM 110（0.58）、GM 83（0.65）。提高 SF3 品質到 7（8.9 MB）只修好 GM 15 並多出 GM 9，所以不是壓縮品質，是降取樣或剩下的 loop 處理造成。
+- 下一步（若要繼續）：對這幾個音色的樣本逐一用 --max-rate 不降、--no-add-loop 試，看是哪一步造成；重現指令：node scripts/sf-slim.js 原版.sf2 輸出.sf3 --max-rate=22050 --sf3 --hi-share-db=-35，再 node 小伺服器開 scripts/music-tests/sf-compare.html?a=原版&b=輸出&from=0&to=128。
+
 ### 目前狀態（handoff 6，2026-11-01，**最新，先看這段**）
 - **階段 5 已提交（2eb0a0c5，入口測試 162/163，唯一失敗是既有的遠端協定探測）**：`renderer/src/music/` 新增 `audio_pipeline.js`、`basic_pitch.js`、`instrument_classify.js`、`audio_models.js`、`audio_runtime.js`；工具 `audio_to_midi`、斜線 `/audio-to-midi [拆軌]`、功能清冊 `music-audio-to-midi`。三個模型都真的下載並在瀏覽器實測（結果寫在 DESIGN.music.md「階段 5 實測」）。限制：Demucs 要關最佳化、只能 wasm、很慢，預設不拆軌；鼓分類門檻與 YAMNet 對真實錄音的準確度未驗證；`/audio-to-midi` 在整個 App 裡沒有手動點過（只測了零件與流程）。
 - **下一步：階段 6**（配樂共用介面：先看 `game_audio.js`、簡報 `media-presentation`、影片剪輯 `edit-video` 現有音訊欄位，一個一個接），然後階段 7。發布仍由管理層代發。
