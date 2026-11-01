@@ -54982,40 +54982,40 @@ class FloatingAssistant {
                     try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ }
                 });
         });
-        // 音樂:/midi 播放卡片、/midi-to-mp3 轉 mp3(設計見 DESIGN.music.md)
+        // 音樂:/media-midi 播放卡片、/media-midi-to-mp3 轉 mp3(設計見 DESIGN.music.md)
         const _midiFileFrom = async (r, raw) => {
             const att = FaRecipe.parseAttachments(raw).filter((x) => /\.midi?$/i.test(x.filename))[0];
             if (att) return await r._midiSongFromArgs({ file_id: att.id });
             const m = raw.match(/\bmi[0-9a-z]{6,}\b/); if (m) return await r._midiSongFromArgs({ song_id: m[0] });
             return null;
         };
-        this.register_slash_command('/midi', '[.mid 檔 | 範例]',
-            'MIDI 播放卡片:/midi 附上 .mid 檔(用 📎 上傳)→ 在對話裡放播放卡片(播放、拖進度、每軌靜音／獨奏／音量、下載、轉 mp3);/midi 範例 → 放一首示範曲。音色是 GS 音色庫(第一次播放下載約 31 MB,存在本機)。也可以直接對 AI 說「幫我寫一段 …風格的曲子」。',
-            async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/midi' + (raw ? ' ' + raw : '') });
+        this.register_slash_command('/media-midi', '[.mid 檔 | 範例]',
+            'MIDI 播放卡片:/media-midi 附上 .mid 檔(用 📎 上傳)→ 在對話裡放播放卡片(播放、拖進度、每軌靜音／獨奏／音量、下載、轉 mp3);/media-midi 範例 → 放一首示範曲。音色是 GS 音色庫(第一次播放下載約 31 MB,存在本機)。也可以直接對 AI 說「幫我寫一段 …風格的曲子」。',
+            async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/media-midi' + (raw ? ' ' + raw : '') });
                 try {
                     if (/^(範例|示範|demo)/i.test(raw)) { const a = await r._midiSongFromArgs({ song: { title: '示範曲', tempo: 100, tracks: [{ name: '鋼琴', program: 0, notes: [[0, 1, 60, 90], [1, 1, 64, 90], [2, 1, 67, 90], [3, 1, 72, 90], [4, 2, 67, 90], [6, 2, 64, 90]] }, { name: '貝斯', program: 33, notes: [[0, 2, 36, 100], [2, 2, 43, 100], [4, 4, 36, 100]] }, { name: '鼓', drum: true, notes: [[0, 0.25, 36, 110], [1, 0.25, 42, 80], [2, 0.25, 38, 100], [3, 0.25, 42, 80], [4, 0.25, 36, 110], [5, 0.25, 42, 80], [6, 0.25, 38, 100], [7, 0.25, 42, 80]] }] } }); r._midiPushCard(a.song, '示範曲'); }
-                    else { const f = await _midiFileFrom(r, raw); if (!f) r._pushAssistantMessage('用法:用 📎 上傳 .mid 檔再打 /midi,或打 /midi 範例;也可以直接說「幫我寫一段爵士風格的曲子」。'); else if (f.error) r._pushAssistantMessage('⚠️ ' + f.error); else r._midiPushCard(f.song, f.title); }
-                } catch (e) { r._pushAssistantMessage('⚠️ /midi 失敗:' + String((e && e.message) || e)); }
+                    else { const f = await _midiFileFrom(r, raw); if (!f) r._pushAssistantMessage('用法:用 📎 上傳 .mid 檔再打 /media-midi,或打 /media-midi 範例;也可以直接說「幫我寫一段爵士風格的曲子」。'); else if (f.error) r._pushAssistantMessage('⚠️ ' + f.error); else r._midiPushCard(f.song, f.title); }
+                } catch (e) { r._pushAssistantMessage('⚠️ /media-midi 失敗:' + String((e && e.message) || e)); }
                 try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ }
             });
-        this.register_slash_command('/midi-to-mp3', '[.mid 檔]',
+        this.register_slash_command('/media-midi-to-mp3', '[.mid 檔]',
             '把 MIDI 用 GS 音色庫離線渲染成 mp3(用 📎 上傳 .mid 檔再打這個指令;第一次要下載音色庫約 31 MB)。',
-            async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/midi-to-mp3' + (raw ? ' ' + raw : '') });
+            async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/media-midi-to-mp3' + (raw ? ' ' + raw : '') });
                 try {
                     const f = await _midiFileFrom(r, raw);
-                    if (!f) r._pushAssistantMessage('用法:用 📎 上傳 .mid 檔再打 /midi-to-mp3。'); else if (f.error) r._pushAssistantMessage('⚠️ ' + f.error);
+                    if (!f) r._pushAssistantMessage('用法:用 📎 上傳 .mid 檔再打 /media-midi-to-mp3。'); else if (f.error) r._pushAssistantMessage('⚠️ ' + f.error);
                     else { r._pushAssistantMessage('🎼 渲染中…(' + Math.round(FaMidi.durationSec(f.song)) + ' 秒的曲子,第一次要下載音色庫)'); const blob = await r._midiToMp3(f.song); await r.generateAndDeliverFile(blob, String(f.title || f.song.title || 'song').replace(/[\\/:*?"<>|]/g, '_') + '.mp3', 'audio/mpeg'); }
                 } catch (e) { r._pushAssistantMessage('⚠️ 轉 mp3 失敗:' + String((e && e.message) || e)); }
                 try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ }
             });
-        this.register_slash_command('/audio-to-midi', '[音訊檔] [拆軌]',
+        this.register_slash_command('/media-audio-to-midi', '[音訊檔] [拆軌]',
             '把 mp3／wav 轉成 MIDI 並開編輯器(用 📎 上傳音訊再打這個指令;離線小模型,第一次下載約 16 MB;加「拆軌」會再用 Demucs 分鼓／貝斯／人聲／吉他／鋼琴,多下載約 136 MB 且很慢)。結果不保證準確。',
-            async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/audio-to-midi' + (raw ? ' ' + raw : '') });
+            async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/media-audio-to-midi' + (raw ? ' ' + raw : '') });
                 try {
                     const att = FaRecipe.parseAttachments(raw).filter((x) => /.(mp3|wav|m4a|ogg|flac|aac)$/i.test(x.filename))[0];
-                    if (!att) r._pushAssistantMessage('用法:用 📎 上傳 mp3／wav 再打 /audio-to-midi(想分鼓、貝斯、人聲、吉他、鋼琴就加「拆軌」)。');
+                    if (!att) r._pushAssistantMessage('用法:用 📎 上傳 mp3／wav 再打 /media-audio-to-midi(想分鼓、貝斯、人聲、吉他、鋼琴就加「拆軌」)。');
                     else { const res = await r._audioToMidi({ file_id: att.id, stems: /拆軌|stems/i.test(raw), title: att.filename }); if (!res.ok) r._pushAssistantMessage('⚠️ 轉 MIDI 失敗:' + res.error); }
-                } catch (e) { r._pushAssistantMessage('⚠️ /audio-to-midi 失敗:' + String((e && e.message) || e)); }
+                } catch (e) { r._pushAssistantMessage('⚠️ /media-audio-to-midi 失敗:' + String((e && e.message) || e)); }
                 try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ }
             });
         this.register_slash_command('/edit-midi', '[.mid 檔 | 空白新曲]',
@@ -55029,6 +55029,16 @@ class FloatingAssistant {
                 } catch (e) { r._pushAssistantMessage('⚠️ /edit-midi 失敗:' + String((e && e.message) || e)); }
                 try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ }
             });
+        // 舊名(已發布過 v257～v259)保留當別名,選單不主列;新名一律 /media- 開頭,編輯器維持 /edit-midi
+        { const old = [['/media-midi', '/midi'], ['/media-midi-to-mp3', '/midi-to-mp3']]; old.forEach(([nw, al]) => { const en = this.slashCommands.get(nw); if (en) this.slashCommands.set(al, Object.assign({}, en, { cmd: al, desc: '（舊名，等於 ' + nw + '）' + en.desc, _menuHidden: true })); }); }
+        this.register_slash_command('/media-compose-midi', '[風格描述]',
+            '依描述用風格範本作曲並開 MIDI 編輯器，例如 /media-compose-midi 輕快的爵士，D 調，16 小節。',
+            async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/media-compose-midi' + (raw ? ' ' + raw : '') });
+                try { const c = FaMidiCompose.compose(Object.assign({}, FaMidiCompose.parseRequest(raw), { seed: 1 + Math.floor(Math.random() * 99999) })); r._midiPushEditor(c.song, c.song.title, '🎼 已依「' + FaMidiCompose.STYLES[c.style].name + '」範本作曲(' + c.options.key + ' 調、' + c.options.tempo + ' 拍/分、' + c.options.bars + ' 小節,種子 ' + c.seed + '):按「試聽」聽聽看，可以直接改。'); }
+                catch (e) { r._pushAssistantMessage('⚠️ 作曲失敗:' + String((e && e.message) || e)); }
+                try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ }
+            });
+
         this.register_slash_command('/worksheet', '[學習單描述]',
             '學習單編輯器：/worksheet 10又幾 做8串（程式讀你的描述做出一份，並在對話裡放一個編輯器）；/worksheet 範本（列出所有範本）、/worksheet 範本 數的組成（從範本開始）；不帶描述＝接著開最近一份（沒有就開一份空白的，直接在編輯器裡用對話做）。編輯器裡可以用對話或屬性面板改、附圖、復原／重做、把編輯過程摘要成 prompt。',
             async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/worksheet' + (raw ? ' ' + raw : '') });
@@ -67735,6 +67745,10 @@ ${fnData.code}
             else if (t.dataset.otSel !== undefined) { this.advancedSettings[t.dataset.otSel] = t.value; this._saveAdvancedSettings(); refresh(); }
             else if (t.dataset.otSkillEn !== undefined) { const [dn, pid] = t.dataset.otSkillEn.split('|'); const st2 = await this._otLoad(); const d = st2.domains.get(dn); if (d) { for (const p of d.patterns) if (p.id === pid || p.id === pid + '_kw') { p.enabled = t.checked; if (t.checked && p.stats) p.stats.needs_review = false; await this._otSyncPatternExamples(d, p); } await this._otSaveDomain(d); } }
             else if (t.dataset.otPat !== undefined) { const [dn, pid] = t.dataset.otPat.split('|'); const st = await this._otLoad(); const d = st.domains.get(dn); const p = d && d.patterns.find((x) => x.id === pid); if (p) { p.enabled = t.checked; if (p.source === 'builtin') p.edited = true; await this._otSaveDomain(d); await this._otSyncPatternExamples(d, p); } }
+            else if (t.id === 'ai-ot-hx-file' && t.files && t.files[0]) {
+                const file = t.files[0]; t.value = ''; const r = await this._hxImport(await file.text());
+                alert(r.ok ? '已匯入 harness 經驗：新增 ' + r.added + '、更新 ' + r.updated + (r.rejected.length ? '、拒絕 ' + r.rejected.length + '（' + r.rejected.slice(0, 3).map((x) => x.why).join('、') + '）' : '') + (r.enabled ? '' : '。領域 harness_experience 預設停用，要用的話在下面的領域清單勾「啟用」。') : '匯入失敗：' + r.error); refresh();
+            }
             else if (t.id === 'ai-ot-restore-file' && t.files && t.files[0]) {
                 const msg = root.querySelector('#ai-ot-ref-msg'); const file = t.files[0]; t.value = '';
                 const r = await this._refRestore(await file.text());
@@ -67744,10 +67758,6 @@ ${fnData.code}
                 const done = await r.apply();
                 if (msg) msg.textContent = done.ok ? '✅ 已還原。還原前的資料備份：' + done.backup : '⚠️ ' + done.error;
                 this._otRenderPane();
-            }
-            else if (t.id === 'ai-ot-hx-file' && t.files && t.files[0]) {
-                const file = t.files[0]; t.value = ''; const r = await this._hxImport(await file.text());
-                alert(r.ok ? '已匯入 harness 經驗：新增 ' + r.added + '、更新 ' + r.updated + (r.rejected.length ? '、拒絕 ' + r.rejected.length + '（' + r.rejected.slice(0, 3).map((x) => x.why).join('、') + '）' : '') + (r.enabled ? '' : '。領域 harness_experience 預設停用，要用的話在下面的領域清單勾「啟用」。') : '匯入失敗：' + r.error); refresh();
             }
             else if (t.id === 'ai-ot-import-file' && t.files && t.files[0]) { try { const data = JSON.parse(await t.files[0].text()); const chk = await this._otRun({ action: 'import', data: data.data && data.data.payload ? data.data : data, dry_run: true }); if (!chk.ok) { if (chk.checksum_mismatch && window.confirm(chk.error + '\n\n仍要匯入嗎？')) { chk.ok = true; chk.force = true; } else { alert('匯入失敗：' + chk.error); t.value = ''; return; } } const sm = chk.summary || {}; const msg = '要匯入嗎？\n領域 ' + sm.domains + '、規則 ' + sm.patterns + '、狀態 ' + sm.states + '、原始碼工具 ' + sm.tools + '、解法 ' + sm.solutions + (sm.turns ? '、對話紀錄 ' + sm.turns : '') + (chk.rejected_tools && chk.rejected_tools.length ? '\n\n⚠️ ' + chk.rejected_tools.length + ' 個工具檢查沒過（不會匯入）：' + chk.rejected_tools.map((x) => x.name + '（' + x.error + '）').join('、') : '') + (chk.warnings && chk.warnings.length ? '\n\n提醒：\n- ' + chk.warnings.slice(0, 6).join('\n- ') : '') + '\n\n原始碼工具只會在沙盒worker裡執行，有副作用的工具呼叫仍會先問你。只匯入你信任來源的檔案。'; if (!window.confirm(msg)) { t.value = ''; return; } const replace = window.confirm('同名領域要怎麼處理？\n確定＝覆蓋（用匯入的取代）\n取消＝合併（保留你改過的規則與工具）'); const r = await this._otRun({ action: 'import', data: data.data && data.data.payload ? data.data : data, mode: replace ? 'replace' : 'merge', ui_confirmed: true, force: !!chk.force }); this._pushAssistantMessage('🔌 已匯入離線訓練器：' + JSON.stringify(r.imported || r), null); this._renderMessageHistory(); } catch (e) { alert('匯入失敗：' + e.message); } t.value = ''; refresh(); }
         });
@@ -67803,6 +67813,7 @@ ${fnData.code}
                 else if (act === 'forget') { if (confirm('清除所有「學到的」規則、問答記憶與已學會的解法？（內建與你自己加的規則不會動）')) { await this._otRun({ action: 'forget_learned' }); refresh(); } }
                 else if (act === 'export') { const withTurns = window.confirm('匯出內容：領域（規則＋狀態機＋原始碼工具）、已學會的解法、同義詞、你的知識類型與條目（部位、顏色族群、標註範例）。\n\n要連「訓練用的對話紀錄」一起匯出嗎？（確定＝一起匯出；取消＝不含）'); const r = await this._otRun({ action: 'export', include_turns: withTurns }); const blob = new Blob([JSON.stringify(r.data, null, 1)], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'offline-trainer-bundle.json'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); alert('已匯出：領域 ' + r.summary.domains + '、規則 ' + r.summary.patterns + '、狀態 ' + r.summary.states + '、原始碼工具 ' + r.summary.tools + '、解法 ' + r.summary.solutions + '、知識類型 ' + (r.summary.knowledge_types || 0) + '、知識條目 ' + (r.summary.knowledge_entries || 0)); }
                                 else if (act === 'import') root.querySelector('#ai-ot-import-file').click();
+                else if (act === 'hx-import') root.querySelector('#ai-ot-hx-file').click();
                 else if (act === 'del-domain') { const n = b.dataset.d; if (confirm('刪除領域 ' + n + '？')) { st.domains.delete(n); await this._otDb().delete('domains', n); await this._otVecDelete('ot_examples', (id, m) => m && m.domain === n); refresh(); } }
                 else if (act === 'del-pat') { await this._otRun({ action: 'remove_pattern', domain: b.dataset.d, pattern: b.dataset.p }); refresh(); }
                 else if (act === 'edit-pat') { const d = st.domains.get(b.dataset.d); this._otPatternEditor(b.dataset.d, d && d.patterns.find((x) => x.id === b.dataset.p)); }
@@ -67813,7 +67824,6 @@ ${fnData.code}
                 else if (act === 'del-qa') { await this._otVecDelete('ot_qa', (id) => id === b.dataset.id); refresh(); }
                 else if (act === 'rag-train') { const rec = await this.ragSystem.get(b.dataset.id); if (rec) { const cs = this._otCallsFromText(rec.content); if (!cs.length) alert('這個節點裡沒有找到工具呼叫（[CALL: 工具({...})] 或 工具({...})），沒有東西可以學。'); else { const title = (String(rec.id).replace(/[_\-]/g, ' ') + ' ' + String(rec.content).split(/\n/)[0].slice(0, 80)).trim(); await this._otLearnFromTurn(title, cs, '', true); await this._otRecordTurn(title, cs, '', { source: 'rag' }); alert('學到 ' + cs.length + ' 個工具呼叫'); } } refresh(); }
                 else if (act === 'rag-del') { if (confirm('刪除這個RAG節點？')) { await this.ragSystem.delete(b.dataset.id); refresh(); } }
-                else if (act === 'hx-import') root.querySelector('#ai-ot-hx-file').click();
             } catch (e) { alert('操作失敗：' + ((e && e.message) || e)); }
         });
     }

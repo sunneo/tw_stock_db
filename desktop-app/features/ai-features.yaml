@@ -597,16 +597,16 @@ categories:
       - id: music-midi
         name: 音樂：MIDI 播放、編輯與轉 mp3
         summary: 在對話裡放 MIDI 播放卡片（合成器用 SpessaSynth＋GeneralUser GS 音色庫，第一次播放才下載並快取），可轉成 mp3；音樂領域附樂理與風格知識。網頁版的音樂模組走延遲載入。
-        how: { slash: ["/midi", "/midi-to-mp3", "/edit-midi"], tools: [midi_play, midi_edit_open, midi_compose, midi_to_mp3, music_topic] }
+        how: { slash: ["/media-midi", "/media-midi-to-mp3", "/media-compose-midi", "/edit-midi"], tools: [midi_play, midi_edit_open, midi_compose, midi_to_mp3, music_topic] }
         platforms: [web, desktop]
-        samples: ["放一首小星星的 MIDI", "/midi", "/midi-to-mp3", "把這個 MIDI 轉成 mp3", "什麼是三和弦的轉位", "幫我寫一首輕快的爵士，D 調，16 小節", "作一首 lofi 的背景音樂"]
+        samples: ["放一首小星星的 MIDI", "/media-midi", "/media-midi-to-mp3", "/media-compose-midi 輕快的爵士", "把這個 MIDI 轉成 mp3", "什麼是三和弦的轉位", "幫我寫一首輕快的爵士，D 調，16 小節", "作一首 lofi 的背景音樂"]
         updated: 2026-11-01
       - id: music-audio-to-midi
         name: 音樂：mp3／wav 轉 MIDI
         summary: 把上傳的音訊離線轉成 MIDI 並開編輯器：Basic Pitch 多音轉譜加 YAMNet 挑音色（約 16 MB，第一次下載後存在本機），選用 Demucs 6 軌分成鼓、貝斯、人聲、吉他、鋼琴、其他（約 136 MB，只能用 wasm、很慢）。拆樂器只到分軌模型給的幾軌，結果不保證準確，回覆會誠實列出沒做到的部分。
-        how: { slash: ["/audio-to-midi"], tools: [audio_to_midi] }
+        how: { slash: ["/media-audio-to-midi"], tools: [audio_to_midi] }
         platforms: [web, desktop]
-        samples: ["/audio-to-midi", "把這首 mp3 轉成 MIDI", "把這段錄音轉成譜，拆軌"]
+        samples: ["/media-audio-to-midi", "把這首 mp3 轉成 MIDI", "把這段錄音轉成譜，拆軌"]
         updated: 2026-11-01
       - id: youtube-download
         name: 下載 YouTube 影片
