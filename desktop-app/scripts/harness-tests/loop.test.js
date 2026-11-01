@@ -60,6 +60,11 @@ check('字母容錯', L.parseLetter('B', 3) === 1 && L.parseLetter('"c"', 3) ===
 const s7 = L.createSession(lib, '請問怎麼用匯出'); const back = JSON.parse(JSON.stringify(s7));
 check('狀態可存檔續跑', L.currentQuestion(back) && L.currentQuestion(back).text === L.currentQuestion(s7).text);
 
+// ---- 語意路由：夠強才由程式決定，弱的不猜（不會把無關的話硬塞進某個範本）----
+const semOnly = (t) => L.createSession(lib, t);
+check('語意路由：沒有關鍵字、但範例句夠像 → 程式路由', semOnly('幫我把照片的名字統一加上日期').template && semOnly('幫我把照片的名字統一加上日期').template.id === 'rename_files');
+check('語意路由：弱相似不猜', ['今天天氣如何', '寫一首詩', '你覺得這個設計怎麼樣', '晚餐吃什麼'].every((t) => !semOnly(t).template));
+
 // ---- 回流前後（只量程式部分：路由命中，不涉及真模型）----
 const hints = [{ task: '請問怎麼用匯出功能', template: 'triage_issue' }];
 const probes = [['請問怎麼用列印功能', 'triage_issue'], ['今天天氣如何', null], ['幫我約週三開會', 'schedule_meeting']];

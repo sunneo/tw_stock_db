@@ -22,17 +22,27 @@
 
     // ---------- 路由：關鍵字命中數 → autoPick；差距不夠才出路由題 ----------
     // hints：回流的經驗 [{ task, template }]；任務文字跟學過的相似（字元二連詞的相似度）就算命中。這是學習層真正改變路由的地方
-    function bigrams(s) { s = String(s || '').toLowerCase().replace(/s+/g, '').replace(/d+/g, '#'); const out = new Set(); for (let i = 0; i + 1 < s.length; i++) out.add(s.slice(i, i + 2)); return out; }
+    function bigrams(s) { s = String(s || '').toLowerCase().replace(/\s+/g, '').replace(/\d+/g, '#'); const out = new Set(); for (let i = 0; i + 1 < s.length; i++) out.add(s.slice(i, i + 2)); return out; }
     function similarity(a, b) { const A = bigrams(a), B = bigrams(b); if (!A.size || !B.size) return 0; let n = 0; for (const x of A) if (B.has(x)) n++; return n / (A.size + B.size - n); }
     const HINT_MIN = 0.4;
+    // 語意路由：範本的範例句跟使用者的話用離線訓練器的特徵雜湊嵌入比餘弦；只有夠強（SEM_MIN 以上）才讓程式決定，弱的不猜、留給路由題
+    const TC = (() => { try { return require('./vendor/trainer_core.js'); } catch (_) { return null; } })();
+    const SEM_MIN = 0.5;
+    function semanticScore(t, text) {
+        if (!TC || !t.examples || !t.examples.length) return 0;
+        const q = TC._faSemEmbed(text, 256); let best = 0;
+        for (const ex of t.examples) best = Math.max(best, TC._faSemCos(q, TC._faSemEmbed(ex, 256)));
+        return best;
+    }
     function routeCands(templates, text, hints) {
         const low = String(text || '').toLowerCase();
         return templates.map((t) => {
             const hits = (t.keywords || []).filter((k) => low.includes(String(k).toLowerCase())).length;
             let score = hits ? Math.min(1, 0.4 + hits * 0.2) : 0, learned = 0;
+            const sem = semanticScore(t, text); if (sem >= SEM_MIN) score = Math.max(score, Math.min(0.95, sem));
             for (const h of hints || []) if (h.template === t.id) { const sim = similarity(text, h.task); if (sim >= HINT_MIN) learned = Math.max(learned, sim); }
             if (learned) score = Math.min(1, Math.max(score, 0.5 + learned * 0.5));
-            return { tool: t.id, intent: t.label, score, hits, learned };
+            return { tool: t.id, intent: t.label, score, hits, learned, sem: Math.round(sem * 100) / 100 };
         }).sort((a, b) => b.score - a.score);
     }
 

@@ -4,93 +4,319 @@
     {
       "id": "schedule_meeting",
       "label": "安排會議（約時間開會）",
-      "keywords": ["會議", "開會", "約", "meeting", "預約", "行程"],
+      "keywords": [
+        "會議",
+        "開會",
+        "約",
+        "meeting",
+        "預約",
+        "行程"
+      ],
       "questions": [
         {
-          "id": "fields", "kind": "fill",
+          "id": "fields",
+          "kind": "fill",
           "prompt": "從使用者的話裡找出會議的欄位。沒提到的填 null，不要猜。",
           "fields": [
-            { "name": "title", "type": "string", "required": true, "description": "會議主題" },
-            { "name": "weekday", "type": "string", "enum": ["週一", "週二", "週三", "週四", "週五", "週六", "週日"], "description": "星期幾" },
-            { "name": "hour", "type": "integer", "min": 0, "max": 23, "required": true, "description": "幾點（24 小時制）" },
-            { "name": "duration_min", "type": "integer", "min": 5, "max": 480, "description": "持續幾分鐘" }
+            {
+              "name": "title",
+              "type": "string",
+              "required": true,
+              "description": "會議主題"
+            },
+            {
+              "name": "weekday",
+              "type": "string",
+              "enum": [
+                "週一",
+                "週二",
+                "週三",
+                "週四",
+                "週五",
+                "週六",
+                "週日"
+              ],
+              "description": "星期幾"
+            },
+            {
+              "name": "hour",
+              "type": "integer",
+              "min": 0,
+              "max": 23,
+              "required": true,
+              "description": "幾點（24 小時制）"
+            },
+            {
+              "name": "duration_min",
+              "type": "integer",
+              "min": 5,
+              "max": 480,
+              "description": "持續幾分鐘"
+            }
           ]
         }
       ],
-      "result": "會議「{{slots.title}}」{{slots.weekday}} {{slots.hour}} 點，{{slots.duration_min}} 分鐘"
+      "result": "會議「{{slots.title}}」{{slots.weekday}} {{slots.hour}} 點，{{slots.duration_min}} 分鐘",
+      "examples": [
+        "幫我約明天下午開會",
+        "安排週五十點的會議",
+        "預約一個和同事討論的時間"
+      ]
     },
     {
       "id": "convert_units",
       "label": "單位換算（數值從一個單位換成另一個）",
-      "keywords": ["換算", "轉換", "等於多少", "公里", "英里", "公斤", "磅", "攝氏", "華氏", "convert"],
+      "keywords": [
+        "換算",
+        "轉換",
+        "等於多少",
+        "公里",
+        "英里",
+        "公斤",
+        "磅",
+        "攝氏",
+        "華氏",
+        "convert"
+      ],
       "questions": [
         {
-          "id": "fields", "kind": "fill",
+          "id": "fields",
+          "kind": "fill",
           "prompt": "找出要換算的數值與單位。沒提到的填 null，不要猜。",
           "fields": [
-            { "name": "value", "type": "number", "required": true, "description": "數值" },
-            { "name": "from", "type": "string", "enum": ["公里", "英里", "公斤", "磅", "攝氏", "華氏"], "required": true, "description": "原單位" },
-            { "name": "to", "type": "string", "enum": ["公里", "英里", "公斤", "磅", "攝氏", "華氏"], "required": true, "description": "目標單位" }
+            {
+              "name": "value",
+              "type": "number",
+              "required": true,
+              "description": "數值"
+            },
+            {
+              "name": "from",
+              "type": "string",
+              "enum": [
+                "公里",
+                "英里",
+                "公斤",
+                "磅",
+                "攝氏",
+                "華氏"
+              ],
+              "required": true,
+              "description": "原單位"
+            },
+            {
+              "name": "to",
+              "type": "string",
+              "enum": [
+                "公里",
+                "英里",
+                "公斤",
+                "磅",
+                "攝氏",
+                "華氏"
+              ],
+              "required": true,
+              "description": "目標單位"
+            }
           ]
         }
       ],
-      "result": "把 {{slots.value}} {{slots.from}} 換成{{slots.to}}"
+      "result": "把 {{slots.value}} {{slots.from}} 換成{{slots.to}}",
+      "examples": [
+        "這個重量換成另一個單位是多少",
+        "五公里等於幾英里",
+        "把溫度從攝氏轉成華氏"
+      ]
     },
     {
       "id": "triage_issue",
       "label": "問題分級（回報程式的問題或錯誤、排版瑕疵，或詢問怎麼用某個功能）",
-      "keywords": ["問題", "bug", "當機", "錯誤", "壞掉", "故障", "回報", "issue"],
+      "keywords": [
+        "問題",
+        "bug",
+        "當機",
+        "錯誤",
+        "壞掉",
+        "故障",
+        "回報",
+        "issue"
+      ],
       "questions": [
         {
-          "id": "severity", "kind": "choose",
+          "id": "severity",
+          "kind": "choose",
           "prompt": "這個問題的嚴重程度是哪一級？",
           "options": [
-            { "key": "blocker", "label": "整個無法使用（當機、資料遺失）", "match": ["當機", "打不開", "資料遺失", "無法使用", "崩潰"] },
-            { "key": "major", "label": "主要功能壞了，但有替代做法", "match": ["功能壞", "失效", "不能用"] },
-            { "key": "minor", "label": "小瑕疵（排版、錯字、顏色）", "match": ["錯字", "排版", "顏色", "對不齊", "小問題"] },
-            { "key": "question", "label": "只是詢問用法", "match": ["怎麼用", "請問", "如何"] }
+            {
+              "key": "blocker",
+              "label": "整個無法使用（當機、資料遺失）",
+              "match": [
+                "當機",
+                "打不開",
+                "資料遺失",
+                "無法使用",
+                "崩潰"
+              ]
+            },
+            {
+              "key": "major",
+              "label": "主要功能壞了，但有替代做法",
+              "match": [
+                "功能壞",
+                "失效",
+                "不能用"
+              ]
+            },
+            {
+              "key": "minor",
+              "label": "小瑕疵（排版、錯字、顏色）",
+              "match": [
+                "錯字",
+                "排版",
+                "顏色",
+                "對不齊",
+                "小問題"
+              ]
+            },
+            {
+              "key": "question",
+              "label": "只是詢問用法",
+              "match": [
+                "怎麼用",
+                "請問",
+                "如何"
+              ]
+            }
           ],
           "default": "major"
         },
         {
-          "id": "area", "kind": "choose",
+          "id": "area",
+          "kind": "choose",
           "prompt": "問題出在哪個區域？",
           "options": [
-            { "key": "ui", "label": "畫面與操作", "match": ["按鈕", "畫面", "選單", "排版"] },
-            { "key": "data", "label": "資料與儲存", "match": ["資料", "儲存", "檔案", "匯出", "匯入"] },
-            { "key": "network", "label": "連線與同步", "match": ["連線", "網路", "同步", "逾時"] },
-            { "key": "other", "label": "其他或不確定", "match": [] }
+            {
+              "key": "ui",
+              "label": "畫面與操作",
+              "match": [
+                "按鈕",
+                "畫面",
+                "選單",
+                "排版"
+              ]
+            },
+            {
+              "key": "data",
+              "label": "資料與儲存",
+              "match": [
+                "資料",
+                "儲存",
+                "檔案",
+                "匯出",
+                "匯入"
+              ]
+            },
+            {
+              "key": "network",
+              "label": "連線與同步",
+              "match": [
+                "連線",
+                "網路",
+                "同步",
+                "逾時"
+              ]
+            },
+            {
+              "key": "other",
+              "label": "其他或不確定",
+              "match": []
+            }
           ],
           "default": "other"
         }
       ],
-      "result": "分級：{{slots.severity}}／區域：{{slots.area}}"
+      "result": "分級：{{slots.severity}}／區域：{{slots.area}}",
+      "examples": [
+        "程式一直當機打不開",
+        "按鈕按了沒有反應",
+        "畫面的字體顯示不正常",
+        "請問這個功能要怎麼操作",
+        "匯入資料的時候出現錯誤訊息",
+        "想回報一個軟體的毛病"
+      ]
     },
     {
       "id": "rename_files",
       "label": "批次改檔名（替檔案加前後綴或取代名稱中的字）",
-      "keywords": ["改名", "重新命名", "檔名", "rename"],
+      "keywords": [
+        "改名",
+        "重新命名",
+        "檔名",
+        "rename"
+      ],
       "questions": [
         {
-          "id": "mode", "kind": "choose",
+          "id": "mode",
+          "kind": "choose",
           "prompt": "要用哪種方式改檔名？",
           "options": [
-            { "key": "prefix", "label": "在檔名前面加字", "match": ["前面加", "開頭加", "加前綴", "前綴"] },
-            { "key": "suffix", "label": "在檔名後面加字", "match": ["後面加", "結尾加", "加後綴", "後綴"] },
-            { "key": "replace", "label": "把某段字換成別的字", "match": ["取代", "換成", "替換"] }
+            {
+              "key": "prefix",
+              "label": "在檔名前面加字",
+              "match": [
+                "前面加",
+                "開頭加",
+                "加前綴",
+                "前綴"
+              ]
+            },
+            {
+              "key": "suffix",
+              "label": "在檔名後面加字",
+              "match": [
+                "後面加",
+                "結尾加",
+                "加後綴",
+                "後綴"
+              ]
+            },
+            {
+              "key": "replace",
+              "label": "把某段字換成別的字",
+              "match": [
+                "取代",
+                "換成",
+                "替換"
+              ]
+            }
           ],
           "default": "prefix"
         },
         {
-          "id": "text", "kind": "fill",
+          "id": "text",
+          "kind": "fill",
           "prompt": "找出要加或要換的字。沒提到的填 null，不要猜。",
           "fields": [
-            { "name": "text", "type": "string", "required": true, "description": "要加上或換成的字" },
-            { "name": "target", "type": "string", "description": "要被換掉的字（只有取代時才需要）" }
+            {
+              "name": "text",
+              "type": "string",
+              "required": true,
+              "description": "要加上或換成的字"
+            },
+            {
+              "name": "target",
+              "type": "string",
+              "description": "要被換掉的字（只有取代時才需要）"
+            }
           ]
         }
       ],
-      "result": "{{slots.mode}}：{{slots.text}}"
+      "result": "{{slots.mode}}：{{slots.text}}",
+      "examples": [
+        "把這些檔案批次改名",
+        "檔名前面統一加上日期",
+        "把檔名裡的某個字換掉"
+      ]
     }
   ]
 }
