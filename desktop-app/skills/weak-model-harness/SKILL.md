@@ -34,6 +34,19 @@ node scripts/harness.js learn
 
 status 的判定由程式算出：ok（全部由程式或你答對）、degraded（用過預設退路）、failed（缺必填欄位或路由不到）。learn 把這件事送進經驗閘門：只收 ok 的成功，去重、去識別、有大小上限；通過的寫進 `trainer-patterns.json`（離線訓練器的語意 pattern，來源標 harness）；失敗的只記成 UML 編修候選（`uml-candidates.json`），不直接變成知識。
 
+## 內建的離線訓練器與程式行為分析
+
+這個資料夾自給自足：scripts/vendor/ 內附專案「離線訓練器」的語意與規則核心（特徵雜湊嵌入、概念詞典、槽位擷取、規則比對、參數樣板）與「程式行為分析」引擎（tree-sitter 語法樹為基礎）。任何人匯入這個 skill 都直接擁有，不需要 Floating Assistant。
+
+```bash
+node scripts/harness.js trainer "使用者的話" [--domains 離線訓練器匯出檔.json]
+node scripts/harness.js behavior 某個原始碼檔
+```
+
+- trainer：乾跑離線訓練器，列出最像的規則或範例句、填好的參數與缺的槽位，完全不呼叫模型。harness 學到的經驗（trainer-patterns.json）會自動一起比對。
+- behavior：把原始碼解釋成由下而上的行為敘事（函式做了什麼、分支、迴圈）。第一次需要網路下載語法樹，之後用快取；失敗會明確回報，不猜。
+- 改了來源（recipe_core、離線訓練器核心、行為引擎）之後執行 node scripts/pack.js 重新產生 vendor/，並一起提交。
+
 ## 資料放哪裡
 
 預設在目前資料夾的 `.weak-harness/`：`session.json`（可中斷續跑）、`experience.json`、`trainer-patterns.json`、`uml-candidates.json`。用 `--dir` 換位置，`--json` 取得機器可讀輸出。範本在 `references/templates.json`，題型說明在 `references/closed-questions.md`。

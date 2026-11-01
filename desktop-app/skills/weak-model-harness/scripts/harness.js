@@ -17,8 +17,8 @@ const X = tryReq('./vendor/experience_core.js') || tryReq('../../../renderer/src
 const TEMPLATES = path.join(__dirname, '..', 'references', 'templates.json');
 
 function parseArgs(argv) {
-    const o = { _: [], dir: path.join(process.cwd(), '.weak-harness'), json: false };
-    for (let i = 0; i < argv.length; i++) { const a = argv[i]; if (a === '--dir') o.dir = path.resolve(argv[++i]); else if (a === '--json') o.json = true; else o._.push(a); }
+    const o = { _: [], dir: path.join(process.cwd(), '.weak-harness'), json: false, domainFiles: [] };
+    for (let i = 0; i < argv.length; i++) { const a = argv[i]; if (a === '--dir') o.dir = path.resolve(argv[++i]); else if (a === '--json') o.json = true; else if (a === '--domains') o.domainFiles.push(path.resolve(argv[++i])); else o._.push(a); }
     return o;
 }
 function readJson(f, dflt) { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) { return dflt; } }
@@ -38,6 +38,16 @@ function main(argv, io) {
         return 0;
     }
     if (cmd === 'reset') { try { fs.unlinkSync(stateFile); } catch (_) {} say('已清除'); return 0; }
+    if (cmd === 'trainer') {   // 離線訓練器乾跑：trainer "<文字>" [--domains 匯出檔.json]
+        const T = require('./trainer.js'); const text = o._.slice(1).join(' ').trim();
+        if (!text) { say('用法：trainer "<文字>" [--domains 檔案]', { error: '沒有文字' }); return 2; }
+        const files = o.domainFiles.concat([path.join(o.dir, 'trainer-patterns.json')].filter((f) => fs.existsSync(f)));
+        const r = T.match(text, T.loadDomains(files)); say(JSON.stringify(r, null, 1), r); return 0;
+    }
+    if (cmd === 'behavior') {   // 程式行為分析：behavior <原始碼檔>
+        const file = o._[1]; if (!file) { say('用法：behavior <原始碼檔>', { error: '沒有檔案' }); return 2; }
+        return require('./behavior.js').explainFile(path.resolve(file)).then((r) => { say(r.ok ? r.markdown : '失敗：' + r.error, r); return r.ok ? 0 : 2; });
+    }
     const s = load(); if (!s) { say('還沒有進行中的工作，先執行 start。', { error: '沒有工作' }); return 2; }
     if (cmd === 'next') {
         const q = L.currentQuestion(s);
@@ -74,5 +84,5 @@ function main(argv, io) {
     say('未知命令。可用：start／next／answer／status／learn／reset', { error: '未知命令' }); return 2;
 }
 
-if (require.main === module) process.exit(main(process.argv.slice(2)));
+if (require.main === module) Promise.resolve(main(process.argv.slice(2))).then((code) => process.exit(code));
 module.exports = { main, parseArgs };
