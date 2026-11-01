@@ -21,6 +21,10 @@ Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app
 
 ## 3. Todo（依序；階段 0–4 已做完，階段 5 做了規則部分）
 
+### 階段 6 已提交（handoff 7）
+- 新模組 renderer/src/music/soundtrack.js（FaSoundtrack：規格、淡入淡出、循環鋪滿、wav、播放控制；真渲染測試 scripts/music-tests/soundtrack.html）、工具 soundtrack_make。簡報：deck.soundtrack（set_deck 的 soundtrack、編輯器簡報屬性裡的配樂列，播放接在旁白下、匯出 MP4 混進去）；遊戲：set_bgm 的 soundtrack 參數、場景面板與聲音分頁的「🎼 配樂」按鈕、播放端非同步取緩衝；影片剪輯：「🎼 配樂」鋪滿時間軸存成一筆配音。MIDI 遠端卡片：卡片的 fa-midi 區塊內含 base64（90 KB 以下），遠端收到同樣會掛載播放卡片（讀程式確認，沒有兩台機器實測）。
+- 限制：獨立遊戲包不帶配樂（退回風格合成）；影片剪短後配樂不跟著變短；簡報拖進度時配樂重接，未做旁白時壓低；階段 7 依使用者指示暫緩。
+
 ### 音色庫驗證結果（handoff 7，2026-11-01，**最新**）
 - **結論：七項波形門檻沒有全過，所以沒有推 soundfont-assets、沒有填 gsSoundbankBase，原版繼續當預設。**
 - 新增：sf-compare.html 改成七項（靜音、均方根差 ≤3 dB、11 kHz 以下對數頻譜距離 ≤5 dB、重心位移 ≤12%、包絡相關 ≥0.9、接縫爆音、高頻損失清單）；sf-loop.js 加逐樣本波形檢查（改 loop 的樣本照 loop 播放比頻譜與重心，不過就退回原樣本）與高頻分級（11 kHz 以上能量多的樣本不降取樣，用 --hi-share-db=-35）；sf-slim.js 不動兩類樣本：sampleModes=3（鬆鍵後繼續播 loop 後尾段）與用到起訖／loop 位移產生器的（共 135 個）。這兩類被截尾是上一版 GM 35 等大量失敗的原因，修完 131 個比對位置從 44 個失敗降到 10 個。

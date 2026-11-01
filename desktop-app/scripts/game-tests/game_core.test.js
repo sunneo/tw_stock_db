@@ -89,5 +89,11 @@ check('context pack: scene, focus, objects (ids, names, positions), vars, bounde
 // -- a closed 3D mesh as a prefab's look (picture -> 3D, subject only)
 check('mesh asset + mesh sprite survive validation; broken faces/empty meshes are dropped; the sprite kind is in the vocabulary', (() => { const sp = G.starter('platformer-side'); const m = { kind: 'mesh', name: 'cup', vertices: [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], faces: [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3], [9, 9, 9]] }; sp.assets = { cup: m, bad: { kind: 'mesh', vertices: [], faces: [] } }; const v = G.validate(sp).spec; return V.SPRITES.indexOf('mesh') >= 0 && v.assets.cup && v.assets.cup.faces.length === 4 && v.assets.cup.vertices.length === 4 && !v.assets.bad; })());
 
+// -- 配樂(階段 6):MIDI／音訊當場景背景音樂,規格放在 song 素材的 soundtrack 欄位
+{ const ST = { kind: 'midi', title: '小星星', midiB64: 'TVRoZAAAAAYAAQABAeBNVHJrAAAABAD/LwA=', volume: 0.5, fadeIn: 2 }; const r = G.applyEdits(plat(), [{ op: 'set_bgm', soundtrack: ST }, { op: 'set_bgm', soundtrack: { kind: 'midi', midiB64: 'x' } }, { op: 'set_bgm', soundtrack: { kind: 'audio', fileId: 'f9', title: 'mp3 曲' }, scene: 'forest' }]);
+  const sc = get(r.spec, 'forest', 'scene'), asset = sc && r.spec.assets[sc.bgm];
+  check('soundtrack: a MIDI spec becomes a song asset with its soundtrack kept; the scene points at it', !!asset && asset.kind === 'song' && asset.soundtrack && asset.soundtrack.kind === 'audio' && asset.soundtrack.fileId === 'f9', asset);
+  const m = G.applyEdits(plat(), [{ op: 'set_bgm', soundtrack: ST }]), ma = m.spec.assets[get(m.spec, 'forest', 'scene').bgm]; check('soundtrack: volume and fade survive in the spec', ma.soundtrack.volume === 0.5 && ma.soundtrack.fadeIn === 2 && ma.soundtrack.loop === true, ma);
+  check('soundtrack: a broken MIDI spec is rejected, not turned into a synth song', G.applyEdits(plat(), [{ op: 'set_bgm', soundtrack: { kind: 'midi', midiB64: 'x' } }]).rejected.length === 1); }
 console.log('game_core: ' + ok + ' passed' + (bad.length ? ', ' + bad.length + ' FAILED:\n  ' + bad.join('\n  ') : ''));
 process.exit(bad.length ? 1 : 0);

@@ -1,0 +1,30 @@
+<!doctype html><meta charset="utf-8"><title>soundtrack real render</title>
+<!-- 真的渲染:一首短 MIDI 用音色庫離線渲染 → 配樂模組鋪成 8 秒(循環、淡入淡出) → 檢查有聲、淡入淡出、循環接縫沒有爆音。
+     起靜態伺服器後開 /scripts/music-tests/soundtrack.html?bank=<音色庫網址>;結果在 window.__result -->
+<pre id="out">running…</pre>
+<script src="../../renderer/src/music/midi_core.js"></script>
+<script src="../../renderer/src/music/midi_play.js"></script>
+<script src="../../renderer/src/music/soundtrack.js"></script>
+<script>
+(async () => {
+  const R = window.__result = { checks: {}, errors: [] };
+  try {
+    const bank = new URLSearchParams(location.search).get('bank');
+    let s = FaMidi.emptySong(); s.tempos = [{ t: 0, bpm: 120 }]; s = FaMidi.addTrack(s, '鋼琴', 0);
+    [60, 64, 67, 72].forEach((n, i) => { s = FaMidi.addNote(s, 0, { t: i * 480, d: 480, n, v: 100 }); });
+    const bytes = FaMidi.write(s); let b = ''; bytes.forEach((x) => { b += String.fromCharCode(x); }); const b64 = btoa(b);
+    const deps = { renderMidi: async (m) => { const u = Uint8Array.from(atob(m), (c) => c.charCodeAt(0)); const buf = await FaMidiPlay.renderOffline(FaMidi.parse(u), { lib: ['/renderer/vendor/spessasynth/spessasynth-lib.js'], processor: ['/renderer/vendor/spessasynth/spessasynth-processor.min.js'], soundbank: [bank] }, { tail: 0.5 }); const ch = []; for (let i = 0; i < buf.numberOfChannels; i++) ch.push(new Float32Array(buf.getChannelData(i))); return { channels: ch, sr: buf.sampleRate }; } };
+    const spec = FaSoundtrack.normalize({ kind: 'midi', midiB64: b64, volume: 0.5, fadeIn: 1, fadeOut: 1.5 });
+    const r = await FaSoundtrack.resolve(spec, deps), sr = 32000, ch = FaSoundtrack.fill(r.channels, r.sr, sr, 8, spec);
+    const rms = (x, a, c) => { let t = 0; for (let i = a; i < c; i++) t += x[i] * x[i]; return Math.sqrt(t / Math.max(1, c - a)); };
+    R.sourceSeconds = r.duration; R.length = ch[0].length;
+    R.checks.hasSound = rms(ch[0], 3 * sr, 5 * sr) > 0.005;
+    R.checks.fadeIn = rms(ch[0], 0, Math.floor(0.1 * sr)) < rms(ch[0], 3 * sr, 5 * sr);
+    R.checks.fadeOut = rms(ch[0], Math.floor(7.9 * sr), 8 * sr) < rms(ch[0], 4 * sr, 5 * sr) * 0.2;
+    R.checks.loops = rms(ch[0], Math.floor((r.duration + 0.3) * sr), Math.floor((r.duration + 1.3) * sr)) > 0.002; // 第一輪放完之後還有聲音
+    let worst = 0; const L = Math.floor((r.duration - 0.03) * sr); for (let i = L - 200; i < L + 200; i++) worst = Math.max(worst, Math.abs(ch[0][i + 1] - ch[0][i])); R.seamStep = worst; R.checks.seam = worst < 0.2;
+    R.wavBytes = FaSoundtrack.wavBytes(ch, sr).length;
+  } catch (e) { R.errors.push(String(e && e.stack || e)); }
+  R.done = true; document.getElementById('out').textContent = JSON.stringify(R);
+})();
+</script>

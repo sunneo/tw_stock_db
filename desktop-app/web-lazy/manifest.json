@@ -914,6 +914,14 @@
    "size": 8028,
    "md5": "08f00887182c15aad499248ef5dafe67"
   },
+  "musicsoundtrack": {
+   "file": "chunks/musicsoundtrack.js",
+   "names": [
+    "FaSoundtrack"
+   ],
+   "size": 3959,
+   "md5": "619a0913e3df3d0a3febe622ce33e02d"
+  },
   "musicedit": {
    "file": "chunks/musicedit.js",
    "names": [
@@ -1055,12 +1063,12 @@
    "names": [
     "FA_DECK_SRC"
    ],
-   "size": 819228,
-   "md5": "f77bd346b4e4773126662ffef01236b7"
+   "size": 822276,
+   "md5": "7ee505241c232a0541646da056965683"
   }
  },
  "core": {
-  "size": 5170058,
-  "md5": "e27134ac30d7f4febc96e920464cd690"
+  "size": 5183208,
+  "md5": "f0402c1a64c832167920ea4885149c9f"
  }
 }

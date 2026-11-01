@@ -81,7 +81,15 @@
     function songBuffer(id) { const a = assets[id]; if (!a || a.kind !== 'song') { return null; } const key = 'song:' + id; if (cache[key]) { return cache[key]; } const sr = 22050; return (cache[key] = bufferOf(renderSong(a, sr), sr)); }
     function playBuffer(buf, bus, loop, vol) { const src = ctx.createBufferSource(); src.buffer = buf; src.loop = !!loop; const g = ctx.createGain(); g.gain.value = vol == null ? 1 : vol; src.connect(g); g.connect(buses[bus] || buses.sfx); src.start(); return { src, g }; }
     function stopBgm(fade) { if (!bgmNode) { return; } const n = bgmNode; bgmNode = null; bgmId = null; try { n.g.gain.setTargetAtTime(0, ctx.currentTime, (fade || 0.25) / 3); n.src.stop(ctx.currentTime + (fade || 0.25) + 0.05); } catch (e) { /* 已停 */ } }
-    function bgm(id) { if (id === bgmId) { return; } stopBgm(0.4); if (!id) { return; } const b = songBuffer(id); if (!b) { return; } bgmId = id; bgmNode = playBuffer(b, 'bgm', true, 0.001); bgmNode.g.gain.setTargetAtTime(1, ctx.currentTime, 0.2); }
+    // 配樂(MIDI／mp3):asset.soundtrack 由 o.soundtrackProvider(spec) 非同步給 AudioBuffer(第一次要下載音色庫);等的時候不出聲,拿不到就退回用風格合成的曲子
+    function soundtrackBgm(id, a) {
+      bgmId = id; const key = 'st:' + id, st = a.soundtrack, level = Math.min(1, (st.volume == null ? 0.35 : st.volume) / 0.5);
+      Promise.resolve(cache[key] || (o.soundtrackProvider ? o.soundtrackProvider(st) : null)).then((b) => b || null, () => null).then((b) => {
+        if (bgmId !== id || bgmNode) { return; } if (b) { cache[key] = b; } const buf = b || songBuffer(id); if (!buf) { return; }
+        bgmNode = playBuffer(buf, 'bgm', st.loop !== false || !b, 0.001); bgmNode.g.gain.setTargetAtTime(b ? level : 1, ctx.currentTime, b ? Math.max(0.05, (st.fadeIn == null ? 1.5 : st.fadeIn) / 3) : 0.2);
+      });
+    }
+    function bgm(id) { if (id === bgmId) { return; } stopBgm(0.4); if (!id) { return; } if (assets[id] && assets[id].kind === 'song' && assets[id].soundtrack) { soundtrackBgm(id, assets[id]); return; } const b = songBuffer(id); if (!b) { return; } bgmId = id; bgmNode = playBuffer(b, 'bgm', true, 0.001); bgmNode.g.gain.setTargetAtTime(1, ctx.currentTime, 0.2); }
     function mouth(text, voice) { const base = VOICE_PITCH[voice] != null ? VOICE_PITCH[voice] : 200; if (!base) { return; } const chars = Array.from(String(text || '')).filter((c) => /\S/.test(c)).slice(0, 40); chars.forEach((c, i) => { const f = base * (1 + ((c.charCodeAt(0) % 7) - 3) * 0.05); const s = renderSfxTone(f); const when = ctx.currentTime + i * 0.065; const src = ctx.createBufferSource(); src.buffer = s; const g = ctx.createGain(); g.gain.value = 0.5; src.connect(g); g.connect(buses.voice); src.start(when); }); }
     function renderSfxTone(f) { const sr = 22050, out = new Float32Array(Math.floor(0.05 * sr)); segs(out, sr, [{ shape: 'tri', f0: f, f1: f * 0.97, dur: 0.05, vol: 0.4, decay: 0.8 }], 1, 1); return bufferOf(out, sr); }
     function play(ev) {

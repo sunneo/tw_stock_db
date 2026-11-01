@@ -608,6 +608,13 @@ categories:
         platforms: [web, desktop]
         samples: ["/media-audio-to-midi", "把這首 mp3 轉成 MIDI", "把這段錄音轉成譜，拆軌"]
         updated: 2026-11-01
+      - id: music-soundtrack
+        name: 音樂：配樂（簡報、遊戲、影片剪輯的背景音樂）
+        summary: 把 MIDI 或 mp3／wav 當背景音樂：簡報（整份簡報，播放時接在旁白下面、匯出 MP4 時混進去）、2D／3D 遊戲（每個場景，循環）、影片剪輯（鋪滿整條時間軸變成一筆配音，燒錄時一起混進去）。循環、淡入淡出、音量由共用的配樂模組處理；MIDI 用到才下載音色庫。限制：匯出成獨立遊戲包時不帶配樂，會退回風格合成的曲子；影片剪輯加入後再剪短時間軸，配樂不會自動跟著變短。
+        how: { tools: [soundtrack_make] }
+        platforms: [web, desktop]
+        samples: ["把這首 MIDI 當簡報的背景音樂", "遊戲第一關用這個 mp3 當背景音樂", "幫這支影片加配樂"]
+        updated: 2026-11-01
       - id: youtube-download
         name: 下載 YouTube 影片
         summary: 下載 YouTube 影片（瀏覽器端跑真正的 yt-dlp，含 JS 簽章解密橋接＋PO Token/BotGuard橋接）。Advance Settings 的 YouTube Data API 金鑰／頻道 ID 是選填的範圍限制（填了才會限制只能下載本人頻道或 CC 授權影片，留空可下載任何影片）。已知限制：Google 目前只給這個app信任度較低的「降級版」PO Token，多數影片仍然會下載失敗、只剩縮圖格式可用（已排除是瀏覽器環境被偵測為自動化的問題），這塊持續是進行中的逆向工程課題。

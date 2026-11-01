@@ -167,6 +167,7 @@ const suites = [
     ['音樂：播放排程（事件、頻道配置、前瞻排程、靜音獨奏、跳轉、迴圈）', 'scripts/music-tests/midi_play.test.js'],
     ['音樂：MIDI 編輯器純函式層（封閉動作、中文指令、復原重做）', 'scripts/music-tests/midi_edit.test.js'],
     ['音樂：MIDI 遠端共編（共編訊息層、事件層級合併）', 'scripts/music-tests/midi_remote.test.js'],
+    ['音樂：配樂共用介面（簡報、遊戲、影片剪輯的背景音樂：規格、淡入淡出、循環鋪滿、播放控制）', 'scripts/music-tests/soundtrack.test.js'],
     ['音樂：程式作曲（風格範本、和弦進行、旋律檢查、同種子同曲）', 'scripts/music-tests/music_compose.test.js'],
     ['音樂：音色庫樣本內部 loop 偵測與瘦身規則（週期、無縫 loop、截尾、降取樣）', 'scripts/music-tests/sf_loop.test.js'],
     ['音樂：音訊轉 MIDI 的規則部分（鼓拆解、音高追蹤、速度、量化、樂器標籤、組裝）', 'scripts/music-tests/audio_to_midi.test.js'],

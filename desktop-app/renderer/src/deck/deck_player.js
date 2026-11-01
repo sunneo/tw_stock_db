@@ -11,7 +11,7 @@
   var DECK_URL_RE = /\.deck\.yaml(\?.*)?$/i;
   var PREHEAT = 3;      // slides that must be ready before the play button appears
   var LOOKAHEAD = 3;    // slides prepared ahead of the one being shown
-  var audioCompressor = null, ttsProvider = null, ttsConcurrent = false, speechPreparer = null, voiceLister = null, captionTranslator = null;
+  var soundtrackProvider = null, audioCompressor = null, ttsProvider = null, ttsConcurrent = false, speechPreparer = null, voiceLister = null, captionTranslator = null;
   var audioCtx = null;
 
   // ------------------------------------------------------------------ small utilities
@@ -872,11 +872,27 @@
     if (!sfxCache[k]) { sfxCache[k] = window.AiChatDeckSfx ? window.AiChatDeckSfx.render(name, sr, vc ? { voice: vc, step: cue.step || 0 } : undefined) : new Float32Array(0); } return sfxCache[k];
   }
 
+  // 配樂(階段 6):deck.soundtrack({kind:'midi'|'audio', ...},見 renderer/src/music/soundtrack.js)由 soundtrackProvider(spec, seconds, sampleRate) 非同步鋪成整份簡報長度的床(循環、淡入淡出、音量都套好);
+  // 這裡轉成單聲道存起來,播放時從播放位置接著放,匯出 MP4 時混進旁白的音軌。沒有設定配樂或失敗就什麼都不做(旁白照常)。
+  Session.prototype.prepareSoundtrack = function () {
+    var self = this, spec = this.deck && this.deck.soundtrack, ctx = getAudioCtx();
+    if (!spec || !soundtrackProvider) { return Promise.resolve(null); }
+    var sr = ctx ? ctx.sampleRate : 32000, key = JSON.stringify([spec.kind, (spec.midiB64 || spec.fileId || '').length, spec.volume, spec.fadeIn, spec.fadeOut, spec.loop, spec.offset, Math.ceil(this.tl.total), sr]);
+    if (this._stKey === key && this._stP) { return this._stP; }
+    this._stKey = key; this._stMono = null;
+    this._stP = Promise.resolve(soundtrackProvider(spec, this.tl.total + 1, sr)).then(function (r) {
+      if (!r || !r.channels || !r.channels.length) { return null; } var n = r.channels[0].length, mono = new Float32Array(n);
+      for (var c = 0; c < r.channels.length; c++) { for (var i = 0; i < n; i++) { mono[i] += r.channels[c][i] / r.channels.length; } }
+      if (self._stKey === key) { self._stMono = mono; } return mono;
+    }).then(null, function (e) { self._stError = String((e && e.message) || e); if (self._stKey === key) { self._stP = null; } return null; });
+    return this._stP;
+  };
   Session.prototype.audioSource = function () {
     var self = this, ctx = getAudioCtx();
     var withAudio = this.preps.map(function (p, i) { return p.audio ? i : -1; }).filter(function (i) { return i >= 0; });
     var hasSfx = this.deck.slides.some(function (_s, i) { return self.sfxFor(i).length > 0; });
-    if ((!withAudio.length && !hasSfx) || !ctx) { return null; }
+    var bed = this._stMono || null;
+    if ((!withAudio.length && !hasSfx && !bed) || !ctx) { return null; }
     var sr = ctx.sampleRate;
     // sound effects: [{start (sample), samples}] on the whole-deck clock, mixed in below
     var sfxSpans = [];
@@ -898,6 +914,7 @@
             });
           });
         }, Promise.resolve()).then(function () {
+          if (bed) { for (var b = Math.max(pos, 0); b < Math.min(end, bed.length); b++) { var bv = out[b - pos] + bed[b]; out[b - pos] = bv > 1 ? 1 : (bv < -1 ? -1 : bv); } }
           sfxSpans.forEach(function (sp) { if (sp.start >= end || sp.end <= pos) { return; } var from = Math.max(pos, sp.start), to = Math.min(end, sp.end); for (var k = from; k < to; k++) { var v = out[k - pos] + sp.samples[k - sp.start] * sp.vol; out[k - pos] = v > 1 ? 1 : (v < -1 ? -1 : v); } });
           return out;
         });
@@ -1504,7 +1521,7 @@
     var T = Math.max(0, Math.min(1, f)) * this.s.tl.total, loc = Core.locate(this.s.tl, T);
     this.goTo(loc.i);
     var self = this, nt = this.navTok; // goTo has just cancelled any old wait and (if the slide is not ready) started its own; a later move of the viewer cancels this one too
-    this.s.whenReady(loc.i).then(function () { if (self.navTok !== nt) { return; } var seg = self.s.tl.segs[loc.i]; self.T = Math.min(seg.end - 0.01, Math.max(seg.bodyStart, T)); self.draw(); });
+    this.s.whenReady(loc.i).then(function () { if (self.navTok !== nt) { return; } var seg = self.s.tl.segs[loc.i]; self.T = Math.min(seg.end - 0.01, Math.max(seg.bodyStart, T)); self.draw(); if (self.playing) { self.startBed(); } });
   };
 
   Player.prototype.play = function () {
@@ -1512,9 +1529,18 @@
     if (ctx && ctx.state === 'suspended') { ctx.resume(); }
     if (this.ended) { this.T = 0; this.ended = false; }
     if (this.buffering >= 0 && this.s.isReady(this.buffering)) { this.finishBuffering(); } // the slide became ready while paused
-    this.started = true; this.playing = true; this.audioFor = -1; if (this.buffering < 0) { this.hideOverlay(); } this.updateUi();
+    this.started = true; this.playing = true; this.audioFor = -1; if (this.buffering < 0) { this.hideOverlay(); } this.updateUi(); this.startBed();
   };
-  Player.prototype.pause = function () { this.playing = false; this.stopAudio(); this.updateUi(); };
+  // 配樂:從播放位置接著放(暫停、拖進度、結束都會重接或停掉);準備好之前不出聲,準備失敗旁白照常
+  Player.prototype.startBed = function () {
+    var self = this, ctx = getAudioCtx(); this.stopBed(); if (!ctx || !this.s.deck.soundtrack) { return; } var tok = this._bedTok;
+    this.s.prepareSoundtrack().then(function (mono) {
+      if (self._bedTok !== tok || !self.playing || !self.alive || !mono) { return; } var buf = ctx.createBuffer(1, mono.length, ctx.sampleRate); buf.getChannelData(0).set(mono);
+      var src = ctx.createBufferSource(); src.buffer = buf; src.connect(self.gain || ctx.destination); src.start(0, Math.max(0, Math.min(self.T || 0, buf.duration - 0.05))); self.bedSrc = src;
+    });
+  };
+  Player.prototype.stopBed = function () { this._bedTok = (this._bedTok || 0) + 1; if (this.bedSrc) { try { this.bedSrc.stop(); } catch (e) { /* 已停 */ } this.bedSrc = null; } };
+  Player.prototype.pause = function () { this.playing = false; this.stopAudio(); this.stopBed(); this.updateUi(); };
   Player.prototype.toggle = function () { if (this.playing) { this.pause(); } else { this.play(); } };
   Player.prototype.setSpeed = function (v) { this.speed = v; if (this.src) { try { this.src.playbackRate.value = v; } catch (e) { /* ended */ } } };
   Player.prototype.setMuted = function (m) {
@@ -1713,7 +1739,7 @@
     });
   };
 
-  Player.prototype.destroy = function () { this.alive = false; this.stopAudio(); Object.keys(this.hosts || {}).forEach(function (k) { var h = this.hosts[k]; clearTimeout(h.timer); if (h.el.parentNode) { h.el.parentNode.removeChild(h.el); } if (h.ov && h.ov.parentNode) { h.ov.parentNode.removeChild(h.ov); } }, this); this.s.destroy(); };
+  Player.prototype.destroy = function () { this.alive = false; this.stopAudio(); this.stopBed(); Object.keys(this.hosts || {}).forEach(function (k) { var h = this.hosts[k]; clearTimeout(h.timer); if (h.el.parentNode) { h.el.parentNode.removeChild(h.el); } if (h.ov && h.ov.parentNode) { h.ov.parentNode.removeChild(h.ov); } }, this); this.s.destroy(); };
 
   // ------------------------------------------------------------------ mounting into the chat
   function mount(container) {
@@ -1756,6 +1782,7 @@
     // fn(text, voiceId|null, lang) -> Promise<{text, voice}>: last look at a slide's narration before it is spoken (translate it for an English voice, pick the
     // Chinese voice for Chinese text). The returned text replaces the narration (so the subtitles match what is heard).
     setSpeechPreparer: function (fn) { speechPreparer = fn; },
+    setSoundtrackProvider: function (fn) { soundtrackProvider = fn; },
     // the narration is kept as WAV while it is played (exact length, no encoder delay, no encode time); only a file that leaves the app (the bundle zips) is squeezed to mp3: fn(ArrayBuffer wav) -> Promise<ArrayBuffer mp3>
     setAudioCompressor: function (fn) { audioCompressor = fn; },
     compressAudio: function (bytes) { var u = new Uint8Array(bytes, 0, Math.min(12, bytes.byteLength)); var wav = u.length >= 12 && u[0] === 82 && u[1] === 73 && u[2] === 70 && u[3] === 70 && u[8] === 87 && u[9] === 65 && u[10] === 86 && u[11] === 69; return wav && audioCompressor ? audioCompressor(bytes) : Promise.resolve(bytes); },

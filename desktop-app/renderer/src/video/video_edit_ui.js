@@ -646,6 +646,19 @@
         });
       }).then(null, function (e) { msg('⚠️ ' + ((e && e.message) || e)); });
     }
+    // 配樂:MIDI 或 mp3／wav 鋪滿整條時間軸(循環、淡入淡出、音量由宿主端的配樂模組處理),存成一筆配音;之後在物件列移動、刪除,燒錄時一起混進去
+    function addSoundtrack(src) {
+      if (!clips.length) { msg(T('先載入影片', 'Load a video first')); return Promise.resolve(); }
+      if (!host.soundtrack) { msg(T('這裡不能做配樂', 'Soundtrack is not available here')); return Promise.resolve(); }
+      var total = tlTotal(); msg(T('製作配樂中…(MIDI 第一次要下載音色庫)', 'Making the soundtrack… (MIDI downloads the sound bank the first time)'));
+      return host.soundtrack(src, { seconds: total, volume: 0.3, fadeIn: 1.5, fadeOut: 2 }).then(function (r) {
+        var name = T('配樂 ', 'Music ') + r.title, wf = new File([r.blob], name + '.wav', { type: 'audio/wav' });
+        return putMedia(wf).then(function (id) {
+          snap(); var res = core.addDub(dubs, { start: 0, duration: r.duration, fileId: id, name: name, kind: 'file' }); if (!res.ok) { dropSnap(); throw new Error(DERR[res.error] || res.error); }
+          audios[res.id] = { el: null, url: null, blob: wf }; commitDubs(res.dubs); msg(''); flash(T('已加入配樂(整條時間軸,在物件列可移動或刪除)', 'Soundtrack added over the whole timeline')); return res.id;
+        });
+      }).then(null, function (e) { msg('⚠️ ' + ((e && e.message) || e)); });
+    }
     function setTransition(id, patch) { snap(); var r = tl.setTransition(clips, id, patch); if (!r.ok) { dropSnap(); msg(TLERR[r.error] || r.error); return false; } clips = r.clips; project.clips = clips; save(); renderObjs(); return true; }
     // recognition runs per clip: the range of the timeline is cut along the clips, each piece is recognized in ITS source file and moved to timeline time
     function transcribeTimeline(job, report) {
@@ -685,9 +698,9 @@
       });
     }
     var bSplit = el('button', '', '✂ ' + T('分割', 'Split')), mkA = el('input', 'mk'), mkB = el('input', 'mk'), bMkA = el('button', '', '['), bMkB = el('button', '', ']'), bCut = el('button', '', '🗑 ' + T('刪除這段', 'Remove range'));
-    var bAddVid = el('button', '', '➕ ' + T('加入影片', 'Add videos')), bAddImg = el('button', '', '🖼 ' + T('插入圖片', 'Insert picture')), bAddAud = el('button', '', '🎵 ' + T('插入聲音', 'Insert sound')), bUndoEdit = el('button', '', '↶ ' + T('復原剪輯', 'Undo edit'));
-    var inVid = el('input'), inImg = el('input'), inAud = el('input'); inVid.type = inImg.type = inAud.type = 'file'; inVid.multiple = true; inVid.accept = 'video/*,audio/*,.mkv,.mov'; inImg.accept = 'image/*'; inAud.accept = 'audio/*,.m4a,.flac'; [inVid, inImg, inAud].forEach(function (i2) { i2.style.display = 'none'; });
-    [bSplit, bMkA, bMkB, bCut, bAddVid, bAddImg, bAddAud, bUndoEdit].forEach(function (b) { b.type = 'button'; }); mkA.placeholder = T('起', 'from'); mkB.placeholder = T('迄', 'to'); mkA.setAttribute('data-ve', 'mark-a'); mkB.setAttribute('data-ve', 'mark-b');
+    var bAddVid = el('button', '', '➕ ' + T('加入影片', 'Add videos')), bAddImg = el('button', '', '🖼 ' + T('插入圖片', 'Insert picture')), bAddAud = el('button', '', '🎵 ' + T('插入聲音', 'Insert sound')), bUndoEdit = el('button', '', '↶ ' + T('復原剪輯', 'Undo edit')), bAddBgm = el('button', '', '🎼 ' + T('配樂', 'Soundtrack')), selBgm = el('select');
+    var inVid = el('input'), inImg = el('input'), inAud = el('input'), inBgm = el('input'); inVid.type = inImg.type = inAud.type = inBgm.type = 'file'; inBgm.accept = 'audio/*,.m4a,.flac,.mid,.midi'; inBgm.style.display = 'none'; inVid.multiple = true; inVid.accept = 'video/*,audio/*,.mkv,.mov'; inImg.accept = 'image/*'; inAud.accept = 'audio/*,.m4a,.flac'; [inVid, inImg, inAud].forEach(function (i2) { i2.style.display = 'none'; });
+    [bSplit, bMkA, bMkB, bCut, bAddVid, bAddImg, bAddAud, bUndoEdit, bAddBgm].forEach(function (b) { b.type = 'button'; }); bAddBgm.setAttribute('data-ve', 'add-soundtrack'); bAddBgm.setAttribute('data-needs', '1'); bAddBgm.title = T('選 MIDI 或 mp3／wav 當背景音樂:鋪滿整條時間軸、循環、淡入淡出(變成物件列的配音)', 'Pick a MIDI or mp3/wav as background music: spread over the whole timeline, looped, faded (it becomes a dub in the object list)'); selBgm.title = T('用對話裡剛做好的配樂', 'Use a soundtrack just made in the chat'); selBgm.style.display = 'none'; mkA.placeholder = T('起', 'from'); mkB.placeholder = T('迄', 'to'); mkA.setAttribute('data-ve', 'mark-a'); mkB.setAttribute('data-ve', 'mark-b');
     bSplit.setAttribute('data-ve', 'split-clip'); bCut.setAttribute('data-ve', 'cut-range'); bAddVid.setAttribute('data-ve', 'add-video'); bAddImg.setAttribute('data-ve', 'add-image'); bAddAud.setAttribute('data-ve', 'add-sound'); bUndoEdit.setAttribute('data-ve', 'undo-edit'); bUndoEdit.disabled = true;
     bSplit.title = T('在播放位置把片段切成兩段', 'Cut the clip in two at the playhead'); bMkA.title = T('把播放位置設為要刪除範圍的起點', 'Use the playhead as the start of the range to remove'); bMkB.title = T('把播放位置設為要刪除範圍的終點', 'Use the playhead as the end of the range to remove'); bCut.title = T('把起~迄之間的影片整段拿掉,後面的內容(逐字稿、配音、圖片)往前接', 'Take out everything between from and to; what follows (transcript, dubs, pictures) moves up');
     bAddVid.title = T('選多個影片,依序接在時間軸最後面(合併)', 'Pick several videos: they are appended to the end of the timeline (merge)'); bAddImg.title = T('在播放位置疊上一張圖片(長度、位置、大小在物件列改)', 'Overlay a picture at the playhead (length, position and size in the object list)'); bAddAud.title = T('在播放位置加入一段聲音(變成物件列的配音)', 'Add a sound at the playhead (it becomes a dub in the object list)');
@@ -695,8 +708,11 @@
     bSplit.addEventListener('click', function () { doSplit(); }); bMkA.addEventListener('click', function () { mkA.value = core.clock(now()); }); bMkB.addEventListener('click', function () { mkB.value = core.clock(now()); });
     bCut.addEventListener('click', function () { var a = core.parseT(mkA.value), b = core.parseT(mkB.value); if (a === null || b === null) { msg(T('起、迄要填時間(mm:ss.s 或秒數),或按 [ ] 用播放位置', 'Fill from / to (mm:ss.s or seconds), or press [ ] to use the playhead')); return; } doRemoveRange(a, b); mkA.value = mkB.value = ''; });
     bAddVid.addEventListener('click', function () { inVid.click(); }); bAddImg.addEventListener('click', function () { inImg.click(); }); bAddAud.addEventListener('click', function () { inAud.click(); }); bUndoEdit.addEventListener('click', undoEdit);
+    bAddBgm.addEventListener('click', function () { inBgm.click(); }); inBgm.addEventListener('change', function () { var f2 = inBgm.files && inBgm.files[0]; inBgm.value = ''; if (f2) { addSoundtrack(f2); } });
+    selBgm.addEventListener('change', function () { var v2 = selBgm.value; selBgm.value = ''; if (v2) { addSoundtrack({ soundtrackId: v2 }); } });
+    if (host.soundtrackRecent) { var fillBgm = function () { var l = host.soundtrackRecent() || []; selBgm.innerHTML = ''; var o0 = el('option', '', T('對話裡的配樂…', 'From the chat…')); o0.value = ''; selBgm.appendChild(o0); l.forEach(function (x) { var o1 = el('option', '', x.title); o1.value = x.id; selBgm.appendChild(o1); }); selBgm.style.display = l.length ? '' : 'none'; }; bAddBgm.addEventListener('mouseenter', fillBgm); fillBgm(); }
     inVid.addEventListener('change', function () { var l = inVid.files; var arr = Array.prototype.slice.call(l); inVid.value = ''; addVideos(arr); }); inImg.addEventListener('change', function () { var f = inImg.files && inImg.files[0]; inImg.value = ''; if (f) { addImage(f); } }); inAud.addEventListener('change', function () { var f = inAud.files && inAud.files[0]; inAud.value = ''; if (f) { addAudio(f); } });
-    [bSplit, mkA, bMkA, mkB, bMkB, bCut, bAddVid, bAddImg, bAddAud, bUndoEdit, inVid, inImg, inAud].forEach(function (n) { edBar.appendChild(n); });
+    [bSplit, mkA, bMkA, mkB, bMkB, bCut, bAddVid, bAddImg, bAddAud, bAddBgm, selBgm, bUndoEdit, inVid, inImg, inAud, inBgm].forEach(function (n) { edBar.appendChild(n); });
     q = root.TwVideoJobs.create({ run: runJob, onChange: jobsChanged }); q.restore(project.jobs);
     box._ve = { attachCollab: attachCollab, detachCollab: detachCollab, shareDoc: shareDoc, project: project, say: msg, runOps: runOps, state: aiState, clips: function () { return clips; }, overlays: function () { return ovs; }, split: doSplit, removeRange: doRemoveRange, addVideos: addVideos, addImage: addImage, addAudio: addAudio, setTransition: setTransition, undoEdit: undoEdit, loadSrc: loadSrc, srcs: function () { return srcs; }, dubs: function () { return dubs; }, dubAudio: function (id) { return audios[id] && audios[id].el; }, queue: q, enqueueBurn: enqueueBurn, enqueueTranscribe: enqueueTranscribe, importText: importText, ask: submitAsk, applyAsk: applyAsk, addTtsDub: addTtsDub, cues: function () { return cues; }, addAt: addAt, edit: edit, video: null, setVideo: setVideo, tab: setTab, panel: function (hidden) { if (hidden !== undefined) { lay.panelHidden = !!hidden; applyPanel(); save(); } return !lay.panelHidden; },
       panelWidth: function (w) { if (w !== undefined) { lay.panelW = core.clampPanelWidth(w, box.clientWidth); applyPanel(); save(); } return lay.panelW; }, layout: function () { return lay; } };

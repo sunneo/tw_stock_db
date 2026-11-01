@@ -142,7 +142,7 @@
     if (!window.AiChatVideoExport) { return Promise.reject(new Error('the video export script is not loaded')); }
     return askMp4Options().then(function (opt) {
       if (!opt) { throw new Error('已取消匯出'); }
-      return prepareAll(session, P).then(function () {
+      return prepareAll(session, P).then(function () { if (session.deck && session.deck.soundtrack) { P.step(1, '正在準備配樂…'); return session.prepareSoundtrack(); } }).then(function () {
         P.step(1, '正在設定編碼器與磁碟暫存…');
         var deck = session.deck, tl = session.tl, w = opt.width, h = Math.round(w * 9 / 16), fps = opt.fps;
         var canvas = document.createElement('canvas'); canvas.width = w; canvas.height = h;

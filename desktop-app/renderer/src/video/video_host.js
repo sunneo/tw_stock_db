@@ -301,6 +301,9 @@
             loadBlob: async (fid) => { const rec = await self.fileCache.get(fid); if (!rec) throw new Error(T('檔案不在這個程式的檔案儲存裡', 'the file is not in this app\'s file storage')); return rec.blob; },
             loadFile: async (fid) => { const rec = await self.fileCache.get(fid); if (!rec) throw new Error(T('檔案不在這個程式的檔案儲存裡', 'the file is not in this app\'s file storage')); return { arrayBuffer: await rec.blob.arrayBuffer(), mimeType: rec.mimeType || rec.blob.type, filename: rec.filename }; },
             pin: (fid) => self._videoPin(fid),
+            // 配樂:f 是檔案(MIDI 或音訊)或 { soundtrackId }(對話裡做好的);回 { blob(wav), duration, title }
+            soundtrack: async (f, o) => { o = o || {}; const ex = { volume: o.volume, fadeIn: o.fadeIn, fadeOut: o.fadeOut }; const spec = f && f.soundtrackId ? FaSoundtrack.normalize(Object.assign({}, self._soundtracks && self._soundtracks.get(f.soundtrackId), ex)) : await self._soundtrackSpecFromBlob(f, f.name, ex); if (!spec) throw new Error(T('找不到這個配樂', 'Soundtrack not found')); const r = await self._soundtrackWav(spec, o.seconds); return { blob: r.blob, duration: r.duration, title: spec.title }; },
+            soundtrackRecent: () => Array.from((self._soundtracks || new Map()).entries()).map(([id, sp]) => ({ id, title: sp.title })),
             transcribe: (blob, o, report) => self._videoTranscribe(blob, o, report),
             burn: (blob, segs, report, name, opt) => self._videoBurn(blob, segs, report, name, opt),
             chatFiles: () => self._videoChatFiles(), storedFiles: () => self._videoStoredFiles(), fapFolders: () => self._videoFapFolders(),
