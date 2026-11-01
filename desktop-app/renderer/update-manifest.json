@@ -1,12 +1,12 @@
 {
   "schema": 1,
   "baseVersion": "1.1.0",
-  "generatedAt": "2026-11-01T07:21:15.627Z",
+  "generatedAt": "2026-11-01T07:51:01.674Z",
   "files": {
     "renderer/index.html": "039acc67493d2d42bae493dc9822621a",
     "renderer/bootstrap.js": "33455890395619f620c359fe7a02a96c",
-    "renderer/floating-assistant.js": "ec003dc3d86a1d203eaf470cc5e4d35a",
-    "renderer/floating-assistant.min.js": "ec003dc3d86a1d203eaf470cc5e4d35a",
+    "renderer/floating-assistant.js": "0b3832b926bbc22dbb86c748f275e894",
+    "renderer/floating-assistant.min.js": "0b3832b926bbc22dbb86c748f275e894",
     "renderer/vendor/three/3MFLoader.js": "d00d9a65406125b59005ae45743a62bd",
     "renderer/vendor/three/FBXLoader.js": "1f41c7848bef78d6cc2db7c5f1091f07",
     "renderer/vendor/three/LICENSE": "39aa4e61c1aaad915b3ca57ddbb559f4",
@@ -48,8 +48,8 @@
   "sizes": {
     "renderer/index.html": 5741,
     "renderer/bootstrap.js": 199845,
-    "renderer/floating-assistant.js": 9839611,
-    "renderer/floating-assistant.min.js": 9839611,
+    "renderer/floating-assistant.js": 9839557,
+    "renderer/floating-assistant.min.js": 9839557,
     "renderer/vendor/three/3MFLoader.js": 35114,
     "renderer/vendor/three/FBXLoader.js": 100686,
     "renderer/vendor/three/LICENSE": 1081,

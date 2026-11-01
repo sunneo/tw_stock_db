@@ -138,6 +138,13 @@ async function main() {
   );
 
   writeUpdateManifest();
+
+  // 網頁版延遲載入：核心＋獨立區塊檔放在 web-lazy/（網頁版從釘住的 commit SHA 讀取；桌面版不用，繼續用上面整份檔案）
+  await require("./scripts/build-web-lazy.js").build(code, {
+    compress: { drop_console: false, drop_debugger: true },
+    mangle: true,
+    format: { comments: false },
+  });
 }
 
 // LIVE_PATCH_ALLOWED_FILES四個檔案裡，floating-assistant.js／

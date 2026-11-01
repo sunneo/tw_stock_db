@@ -43764,8 +43764,8 @@ export default {
 // 知識資料（離線訓練器的使用者／AI 補的定義，localStorage fa_ref_user_defs_v1）的格式版本。見 DESIGN.knowledge-types.md §11。
 // v0＝沒有 _format 欄位的舊格式（一律這樣稱呼）；v1＝加上 _format 封套，並備好 types（註冊的知識類型）與 typed（帶 customize 的條目）兩個容器。
 // 遷移是宣告式的（不跑程式碼）：op 只有 default（補預設值）、rename、move、drop、stamp（寫入格式封套）。永遠只做向前遷移；要退回用備份還原。
-const FA_REF_FORMAT = FaRef.FORMAT; // 格式版本與遷移表：純邏輯在共用引擎（renderer/src/refs/ref_engine.js），這裡只是別名
-const FA_REF_MIGRATIONS = FaRef.MIGRATIONS;
+// FA_REF_FORMAT 別名已拿掉（直接用 FaRef.FORMAT，避免載入時就讀取參考知識資料）： // 格式版本與遷移表：純邏輯在共用引擎（renderer/src/refs/ref_engine.js），這裡只是別名
+// FA_REF_MIGRATIONS 別名沒有人用，已移除
 
 const BUILTIN_SKILLS = [
     {
@@ -43781,7 +43781,7 @@ const BUILTIN_SKILLS = [
         name: 'image-decompose-redraw',
         awaitInput: { kind: 'attachment', prompt: '📥 請貼上圖片（在輸入框按 Ctrl+V）或用 📎 上傳，也可以順便補一句要求（例如「預覽」「用 vision auto 決定前後順序」）。貼好後按送出就會直接處理，不用再打一次指令（輸入框上方有圖片附件時，打這個指令就會直接處理那張圖）。' },
         builtinToolNames: ['image_decompose_redraw', 'image_parts_teach', 'image_parts_annotate', 'image_rig_animate', 'ref_lookup', 'ref_types', 'list_uploaded_files', 'list_file_access_points', 'fap_list_files'],
-        personaPrompt: (FA_IDR_SKILL_FILES['SKILL.md'] || '') + `
+        get personaPrompt() { return (FA_IDR_SKILL_FILES['SKILL.md'] || '') + `
 
 ## 在助理裡怎麼用（重要）
 
@@ -43789,7 +43789,7 @@ const BUILTIN_SKILLS = [
 - 使用者要「更準的前後順序」或圖裡有複雜重疊時用 vision:"auto"：會用助理已設定、支援讀圖的 Model 看圖決定每個區域的名稱與景深；沒有支援讀圖的 Model 時自動退回純幾何，結果的 stats.depth_source 會寫 geometry 或 vision，照實轉告使用者。
 - 圖片不是上傳的附件（例如在使用者授權的資料夾裡）時，先請使用者用📎上傳，或用把資料夾檔案複製到 persistentStorage 的工具取得 file_id，再呼叫。
 - 回報結果時照實說：景深是猜測、邊界精度約等於最小格子大小、轉動視角時被擋住的地方是空洞（不會編造內容）。stdout 的 JSON 摘要有區域數、三角形數、耗時。
-`,
+`; },
     },
     {
         id: 'builtin-skill-creator',
@@ -63929,7 +63929,7 @@ ${fnData.code}
         // 知識類型：使用者註冊的類型與條目（部位、顏色族群、標註範例…）跟預訓練資料一起帶走；內建的不用帶（每個版本都有）。舊格式（v0）的使用者沒有這些，不輸出。
         if (opts.include_knowledge !== false) {
             const fi = this._refFormatInfo();
-            if (fi.version >= 1) { const pk = FaRef.exportPack(this._refUserDefs(), FA_REF_FORMAT.current); if (pk) payload.knowledge = pk; } // 舊格式（v0）的使用者沒有這些，不輸出
+            if (fi.version >= 1) { const pk = FaRef.exportPack(this._refUserDefs(), FaRef.FORMAT.current); if (pk) payload.knowledge = pk; } // 舊格式（v0）的使用者沒有這些，不輸出
         }
         const summary = { knowledge_types: payload.knowledge ? payload.knowledge.types.length : 0, knowledge_entries: payload.knowledge ? payload.knowledge.typed.length : 0, domains: doms.length, patterns: doms.reduce((n, d) => n + d.patterns.length, 0), tools: doms.reduce((n, d) => n + (d.tools || []).length, 0), states: doms.reduce((n, d) => n + Object.keys((d.states && d.states.states) || {}).length, 0), solutions: payload.solutions.length, turns: (payload.turns || []).length, synonym_groups: Object.keys(payload.synonyms).length };
         return { format: 'fa-offline-trainer', version: 2, exported_at: new Date().toISOString(), summary, payload, checksum: _faRepoHash(JSON.stringify(payload)) };
@@ -63965,7 +63965,7 @@ ${fnData.code}
             (d.patterns || []).forEach((p) => { if (p.tool && !this.tools[p.tool]) warnings.push(`${d.name}/${p.id}：工具「${p.tool}」在這個版本／平台不存在`); });
             domains.push(Object.assign({}, d, { tools: cleanTools }));
         }
-        const pk = FaRef.inspectPack(FA_REF_DATA, this._refUserDefs(), payload.knowledge, FA_REF_FORMAT.current);
+        const pk = FaRef.inspectPack(FA_REF_DATA, this._refUserDefs(), payload.knowledge, FaRef.FORMAT.current);
         pk.warnings.forEach((w) => warnings.push(w));
         const knowledge = pk.knowledge;
         const summary = { knowledge_types: knowledge ? knowledge.types.length : 0, knowledge_entries: knowledge ? knowledge.typed.length : 0, knowledge_by_kind: knowledge ? knowledge.by_kind : undefined, domains: domains.length, patterns: domains.reduce((n, d) => n + (d.patterns || []).length, 0), tools: tools.filter((t) => t.ok).length, states: domains.reduce((n, d) => n + Object.keys((d.states && d.states.states) || {}).length, 0), solutions: (payload.solutions || []).length, turns: (payload.turns || []).length, synonym_groups: Object.keys(payload.synonyms || {}).length };
@@ -65593,7 +65593,7 @@ ${fnData.code}
         let d = null; try { d = JSON.parse(localStorage.getItem('fa_ref_user_defs_v1') || 'null'); } catch (_) {}
         this._refUserCache = d && typeof d === 'object' ? d : {};
         // 全新安裝（沒有任何舊資料）直接用最新格式；有舊資料但沒有 _format 的是 v0，保持原樣，等使用者在離線訓練器設定頁按 Migration
-        if (!(d && typeof d === 'object')) { this._refUserCache._format = { name: FA_REF_FORMAT.name, version: FA_REF_FORMAT.current, createdAt: Date.now() }; this._refUserCache.types = {}; this._refUserCache.typed = []; }
+        if (!(d && typeof d === 'object')) { this._refUserCache._format = { name: FaRef.FORMAT.name, version: FaRef.FORMAT.current, createdAt: Date.now() }; this._refUserCache.types = {}; this._refUserCache.typed = []; }
         ['errors', 'commands', 'options'].forEach((k) => { if (!this._refUserCache[k]) this._refUserCache[k] = {}; });
         ['pragmas', 'clauses', 'generic', 'buildRules'].forEach((k) => { if (!Array.isArray(this._refUserCache[k])) this._refUserCache[k] = []; });
         return this._refUserCache;
@@ -65671,7 +65671,7 @@ ${fnData.code}
         let p; try { p = JSON.parse(text); } catch (_) { return { ok: false, error: '不是有效的 JSON 檔' }; }
         if (!p || p.format !== 'fa-ref-backup' || !p.data || typeof p.data !== 'object') return { ok: false, error: '這不是知識資料備份檔（format 應該是 fa-ref-backup）' };
         const v = p.data._format && Number(p.data._format.version) ? Number(p.data._format.version) : 0;
-        if (v > FA_REF_FORMAT.current) return { ok: false, error: `備份是 v${v}，比這個版本認得的新，不能還原` };
+        if (v > FaRef.FORMAT.current) return { ok: false, error: `備份是 v${v}，比這個版本認得的新，不能還原` };
         return { ok: true, version: v, counts: this._refCountStore(p.data), createdAt: p.createdAt, label: p.label, apply: async () => {
             const bk = await this._refBackup('還原前的自動備份');
             if (!bk.ok) return { ok: false, error: '還原前備份失敗，已中止' };

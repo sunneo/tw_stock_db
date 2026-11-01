@@ -1,0 +1,17 @@
+<!doctype html><meta charset="utf-8"><title>lazy harness</title>
+<div id="ai-tab-panel" style="height:600px"></div>
+<script>
+// 模擬網頁版：fetch 核心 → 包成 Blob 當 script 執行；?mono=1 則載入整份檔案當對照
+const q = new URLSearchParams(location.search);
+window.__FA_LAZY_TRACE = 1; window.__FA_LAZY_BASE = location.origin + '/web-lazy/chunks/';
+const url = q.get('mono') ? '/renderer/floating-assistant.js' : '/web-lazy/core.js';
+const t0 = performance.now();
+window.__ready = fetch(url).then(r => r.text()).then(text => new Promise((res, rej) => {
+  const u = URL.createObjectURL(new Blob([text], { type: 'application/javascript' }));
+  const s = document.createElement('script'); s.src = u;
+  s.onload = () => { window.__loadMs = performance.now() - t0; res(); }; s.onerror = rej; document.head.appendChild(s);
+})).then(() => {
+  window.fa = new FloatingAssistant({ mountSelector: '#ai-tab-panel', buttonText: 'AI', buttonStyle: 'display:none;' });
+  window.__constructedMs = performance.now() - t0;
+});
+</script>
