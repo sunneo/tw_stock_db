@@ -3,7 +3,7 @@
   "templates": [
     {
       "id": "schedule_meeting",
-      "label": "安排會議",
+      "label": "安排會議（約時間開會）",
       "keywords": ["會議", "開會", "約", "meeting", "預約", "行程"],
       "questions": [
         {
@@ -21,7 +21,7 @@
     },
     {
       "id": "convert_units",
-      "label": "單位換算",
+      "label": "單位換算（數值從一個單位換成另一個）",
       "keywords": ["換算", "轉換", "等於多少", "公里", "英里", "公斤", "磅", "攝氏", "華氏", "convert"],
       "questions": [
         {
@@ -38,7 +38,7 @@
     },
     {
       "id": "triage_issue",
-      "label": "問題分級",
+      "label": "問題分級（回報程式的問題或錯誤、排版瑕疵，或詢問怎麼用某個功能）",
       "keywords": ["問題", "bug", "當機", "錯誤", "壞掉", "故障", "回報", "issue"],
       "questions": [
         {
@@ -68,7 +68,7 @@
     },
     {
       "id": "rename_files",
-      "label": "批次改檔名",
+      "label": "批次改檔名（替檔案加前後綴或取代名稱中的字）",
       "keywords": ["改名", "重新命名", "檔名", "rename"],
       "questions": [
         {

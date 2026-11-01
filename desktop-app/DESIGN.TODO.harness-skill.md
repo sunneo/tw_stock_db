@@ -1,7 +1,7 @@
 # 交接文件：把弱模型 harness（offline-trainer、UML design、CoLU）做成 skill，並讓經驗回流（handoff 1，2026-11-01）
 
 ## 1. 開場提示（給接手的工作階段）
-Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app\desktop-app\DESIGN.TODO.harness-skill.md`. 先完整讀完（含使用者原話與做法備忘），照做。工作目錄 `D:\Downloads\videos-嗨投資-desktop-app\desktop-app`。**開工前先確認沒有別的工作階段（音樂線、補完與驗證線）正在跑並改同一個工作樹；有就先只讀、寫設計文件，不碰 `renderer/src/floating-assistant.js` 與 `scripts/embed-code-ui.js`。** 第一則訊息用一行說明你讀完了、要開始哪一項。回覆一律繁體中文、不要夾英文縮寫。不要長篇規劃、不要問，直接讀、寫、測、提交。發布由管理層代發：你不要執行發布腳本，每項提交後在回報最後一行寫「第 N 項已提交，可發布，commit <hash>」。到 context 門檻（30%）時更新本文件、提交，回報最後一行寫「需要接手，文件已更新，commit <hash>」（子工作階段在這個 app 不能自己啟動接手）。**本週額度已用到約 88%：跑模型的實驗（第 4 項）要小樣本、記錄用量，不要大量呼叫。**
+Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app\desktop-app\DESIGN.TODO.harness-skill.md`. 先完整讀完（含使用者原話與做法備忘），照做。工作目錄 `D:\Downloads\videos-嗨投資-desktop-app\desktop-app`。**開工前先確認沒有別的工作階段（音樂線、補完與驗證線）正在跑並改同一個工作樹；有就先只讀、寫設計文件，不碰 `renderer/src/floating-assistant.js` 與 `scripts/embed-code-ui.js`。** 第一則訊息用一行說明你讀完了、要開始哪一項。回覆一律繁體中文、不要夾英文縮寫。不要長篇規劃、不要問，直接讀、寫、測、提交。發布由管理層代發：你不要執行發布腳本，每項提交後在回報最後一行寫「第 N 項已提交，可發布，commit <hash>」。到 context 門檻（30%）時更新本文件、提交，回報最後一行寫「需要接手，文件已更新，commit <hash>」（子工作階段在這個 app 不能自己啟動接手）。**（2026-11-01 更新：本週額度實際約 15%，五小時額度才是瓶頸；88% 是上一個週期的舊數字。）跑模型的實驗（第 4 項）要小樣本、記錄用量，不要大量呼叫。**
 
 ## 2. 結論與大方向（先說）
 **有機會，而且大部分零件已經存在。** 使用者的想法：offline-trainer、UML design、CoLU 這一整套「讓小模型／弱模型也能把事情做對」的機制，其實是一個**弱模型 harness**；它可以包成 **skill**（Claude 格式 `SKILL.md`＋`scripts/`＋`references/`），讓像 `claude-haiku-5.5` 這種小模型在它的帶領下執行任務，品質有保證；而 harness 處理問題時得到的**經驗，適合的要回流補進 offline-trainer**——也就是 offline-trainer 不只是名義上的離線訓練器，而是 harness 的「學習層」。
@@ -42,6 +42,6 @@ Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app
 ## 7. 陷阱
 - 「skill」在本專案有兩個意思：① Claude 格式的 skill 套件（`SKILL.md`，給 Claude Code／Claude 應用載入）；② 專案內建的 BUILTIN_SKILLS 與「技能→食譜編譯器」（把 skill 編成離線食譜）。使用者這次要的是①，同時可以沿用②的編譯器把 skill 的步驟轉成 harness 的題型。
 - 不要把經驗回流做成「模型說成功就收」；閘門的依據是程式核對的結果。
-- 本週額度很吃緊（約 88%）：第 4 項的實驗要小樣本，且先記用量。
+- 五小時額度會用完（每次 claude -p 呼叫約 3.5 萬個快取輸入 token）：實驗要小樣本，先看 get_usage。第 4 項已跑過一輪（結果見 DESIGN.harness-skill.md）。
 - 無頭 `claude -p` 的模型代號、可用性我沒驗證；查不到就標未驗證。
 - 同一個工作樹同時只能一個寫手；`floating-assistant.js`／`embed-code-ui.js` 是衝突熱點。

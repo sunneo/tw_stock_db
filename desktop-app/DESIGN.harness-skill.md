@@ -43,7 +43,11 @@ learn           → 經驗閘門：只收程式驗證過的成功；去重、去
 
 - 第 1 項：本文件（已寫）。
 - 第 2、3 項（已做，測試 loop 21 項、experience 26 項全過）：skill 套件 skills/weak-model-harness/（SKILL.md、scripts/harness.js、loop_core.js、pack.js、references/）、經驗閘門 renderer/src/harness/experience_core.js；兩組測試已加進核心測試清單。命令列 learn 把通過閘門的 pattern 寫到 .weak-harness/trainer-patterns.json，失敗寫成 uml-candidates.json。範本目前 4 個（安排會議、單位換算、問題分級、批次改檔名），從技能編譯器（skill_compile_core）自動產生範本：未做。
-- 第 4 項（Haiku 實驗）：腳本已寫好 scripts/harness-tests/haiku-experiment.js（固定 8 題；光桿約 8 次呼叫，harness 約 16 次；用 claude -p 無頭模式；記通過數、欄位命中、被退回次數、token、花費；第一次呼叫失敗就中止並印「未驗證」）。**實際結果：未驗證。** 2026-11-01 試跑時無頭命令列回「OAuth session expired and could not be refreshed」（登入工作階段過期，需要使用者在終端機重新登入後才能呼叫），五小時額度當時也已用 94%；只呼叫了 1 次、沒有任何成績。模型代號 claude-haiku-5-5 也因此沒確認可用。重新登入後直接執行 node scripts/harness-tests/haiku-experiment.js 即可（先用 --dry 看呼叫數）。
-- 第 5 項（回流前後對照）：回流真的會改變路由——loop_core.routeCands 吃 hints（來自 experience.json，字元二連詞相似度 0.4 以上算命中，第一步標 learned）。測試量到的是**程式部分**：沒有關鍵字的相似說法，回流前路由不到、回流後由程式路由，無關的話不被誤路由（loop.test.js）。真模型的前後對照：未驗證（依賴第 4 項）。
-- 第 6 項（訓練器 UI 定位、清冊、嵌入）：未做；音樂線還在跑同一個工作樹，等它結束再碰 floating-assistant.js。
+- 第 4 項（Haiku 實驗）：**已跑，2026-11-01**，模型 claude-haiku-5-5（用 claude -p，使用者提供的登入權杖以環境變數傳入，沒寫進任何檔案）。固定 8 題（人工標準答案：範本＋欄位）、小樣本，只能當方向不能當統計。
+  - 第一輪（範本標籤只有短名稱）：光桿 Haiku 完全答對 4/8、路由對 6/8、欄位 13/20；加 harness 完全答對 6/8、路由對 6/8、欄位 16/20；harness 被退回的答案 0 次、格式違規 0。兩邊各有 2 題路由錯（沒有關鍵字的「排版有點對不齊」「請問怎麼用匯出功能」）。光桿另外把取代的「舊字／新字」填反一題，加 harness 沒錯（目標欄位由題目分開問）。用量：16 次呼叫、輸入約 57 萬（大部分是 Claude Code 自己的快取前綴，每次呼叫約 3.5 萬）、輸出約 2500 個 token、約 0.023 美元。
+  - 找到的弱點：路由題的選項太短。我把四個範本的標籤改成帶說明（例如「問題分級（回報程式的問題或錯誤、排版瑕疵，或詢問怎麼用某個功能）」），只重測那 2 題：光桿與 harness 都 2/2。**這是看過失敗題之後調整再測，不是獨立驗證**，而且光桿也跟著受益（光桿的提示也用同一份標籤），所以不能拿來說 harness 贏在路由。
+  - 結論（誠實版）：在這 8 題上 harness 的優勢來自「欄位一題一題問、程式核對」（欄位 16/20 對 13/20，完全答對 6 對 4），路由則取決於範本標籤寫得好不好。樣本太小，沒有顯著性。
+- 第 5 項（回流前後對照）：回流真的會改變路由——loop_core.routeCands 吃 hints（來自 experience.json，字元二連詞相似度 0.4 以上算命中，第一步標 learned）。程式部分已量：沒有關鍵字的相似說法，回流前路由不到、回流後由程式路由，無關的話不被誤路由（loop.test.js）。真模型的「回流後再跑一次同題組」：未做——第 4 項這 8 題彼此不相似，回流的經驗幫不到彼此，要設計成對的相似題組才有意義。
+- 第 6 項（訓練器 UI 定位、清冊、嵌入）：訓練器頁「🧪 匯入 harness 經驗」按鈕、獨立領域 harness_experience（來源 harness、預設停用）、清冊說明、host_import.test.js（commit 3e710f19）。建置產物（renderer/floating-assistant*.js、update-manifest、web-lazy）未提交，交管理層重建；訓練器頁的實際畫面沒在瀏覽器看過（未驗證）。
+- 第 7 項（內建離線訓練器與行為分析）：skill 自給自足——scripts/vendor/ 內附 recipe_core、experience_core、trainer_core（從 floating-assistant.js 依函式名切出）、behavior_engine＋behavior_data；命令 trainer、behavior；portable.test.js 驗證 vendor 與來源一致、搬到 repo 外仍能跑（commit 54a88f9c）。語法樹第一次要連網下載。
 - 未驗證：套件在 Claude Code 載入後由 Haiku 實際照迴圈操作的品質（第 4 項才會量）。

@@ -7,6 +7,7 @@ const fs = require('fs'); const path = require('path'); const { spawnSync } = re
 const L = require('../../skills/weak-model-harness/scripts/loop_core.js');
 const lib = JSON.parse(fs.readFileSync(path.join(__dirname, '../../skills/weak-model-harness/references/templates.json'), 'utf8')).templates;
 const arg = (k, d) => { const i = process.argv.indexOf(k); return i >= 0 ? process.argv[i + 1] : d; };
+const only = arg('--only', '') ? arg('--only', '').split(',').map(Number) : null;
 const model = arg('--model', 'claude-haiku-5-5'), limit = Number(arg('--limit', 8)), dry = process.argv.includes('--dry');
 
 // 固定題組：期望的範本與欄位（人工寫的標準答案）
@@ -19,7 +20,7 @@ const TASKS = [
     { task: '請問怎麼用匯出功能', template: 'triage_issue', slots: { severity: 'question', area: 'data' } },
     { task: '幫我重新命名，前面加 2024_', template: 'rename_files', slots: { mode: 'prefix', text: '2024_' } },
     { task: '重新命名檔名，把 draft 取代成 final', template: 'rename_files', slots: { mode: 'replace', text: 'final', target: 'draft' } }
-].slice(0, limit);
+].slice(0, limit).filter((t, i) => !only || only.includes(i));
 
 const usage = { calls: 0, input: 0, output: 0, cost: 0, ms: 0 };
 function callModel(prompt) {
