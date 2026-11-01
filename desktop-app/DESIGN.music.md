@@ -79,3 +79,9 @@ Roland SC-88 的資料只當大小目標，不抽取、不轉換。注意：pian
 - 降取樣是大宗：`--max-rate=22050` → 20.7 MB（−36%）；16000 → 15.3 MB（−53%）。
 - SF3（Ogg Vorbis，用 ffmpeg libvorbis，quality 3）加 22050：**5.8 MB（−82%）**，spessasynth 能直接載入播放（128 音色逐一渲染：無靜音、無音量掉落、接縫突波沒有變多；頻帶平均差 3.25 dB，差最大是 GM 35 無琴格貝斯 19 dB、GM 79 等，高頻被低通造成，需要人耳確認）。
 - 尚未做：用耳朵聽的確認、16 kHz 與 quality 的取捨、鼓組與打擊類是否要保留 44.1 kHz、`gsSoundbankBase` 與瘦身版的發布（管理層）。
+
+## 階段 5 查證（2026-11-01，來源是網路搜尋與 Hugging Face 頁面，檔案未下載、未在本機跑過）
+- **Demucs 6 軌（鼓／貝斯／其他／人聲／吉他／鋼琴）ONNX**：社群匯出 `adowu/htdemucs-6s-onnx`（頁面標 MIT，與上游 facebookresearch/demucs 的 MIT 一致）；`htdemucs_6s.onnx` 258 MB（fp32，opset 17），`htdemucs_6s_fp16weights.onnx` 136 MB（權重 fp16）；輸入 `mix` (1,2,343980) 立體聲 44.1 kHz，輸出 `stems` (1,6,2,343980)，順序 drums、bass、other、vocals、guitar、piano；STFT 已換成 Conv1d 放在圖裡，原始波形直接進；一次 7.8 秒，長曲要分段重疊相加（頁面附 infer.py 的 separate）；頁面範例用 onnxruntime-web 的 wasm 後端載入 fp16 版，**沒提 WebGPU**。另有別的匯出標 57 MB 或授權不明（unblend 頁面警告權重不要假設跟程式碼同為 MIT），**用哪個檔要逐一核對檔案大小與授權後才內建**；**未驗證：瀏覽器實際記憶體與速度**（136 MB 檔在手機大概跑不動，只給桌面版／高階機）。
+- **Basic Pitch**：Apache-2.0（spotify/basic-pitch，basic-pitch-ts 也是）；ONNX 檔 `nmp.onnx`（`daserge/basic-pitch-onnx`，SHA-256 2c3c1d14…a0ec，與上游套件內的檔案逐位元組相同）；**檔案大小與輸入輸出張量形狀未查到（未驗證）**，原始模型很小（參數量約 17 萬級，未驗證）；多音、輸出音高格＋起音＋輪廓，適合每個分軌逐軌轉譜。
+- **YAMNet（音訊事件分類，521 類，含樂器類）**：Apache-2.0；ONNX 約 14–15 MB（`audiomagic/yamnet-onnx`；Qualcomm 的匯出標 MIT 但卡片指向上游授權，以 Apache-2.0 為準）；STMicroelectronics 有 int8 量化 256 維版（Apache-2.0，更小，分類力未驗證）；AudioSet 標籤 CC BY 4.0（要標示來源）。**PANNs／AST／Essentia 沒有查到可靠的瀏覽器版本資料（未驗證）**，先用 YAMNet。
+- **結論（照使用者同意的順序做）**：先做不依賴大模型的部分——鼓軌規則拆解、單音音高追蹤（貝斯、人聲）、速度與量化、分軌組裝成 MIDI、樂器指派的退路規則（頻譜特徵、音域）；模型端（Demucs、Basic Pitch、YAMNet）做成可插拔的介面與下載登錄（沿用 FaVlm 的登錄與工作執行緒、只出一張進度卡、續傳、核對檔案大小與檢查碼），模型檔使用者按需下載，不進核心。
