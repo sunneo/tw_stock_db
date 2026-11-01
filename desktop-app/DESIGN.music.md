@@ -71,3 +71,11 @@ Roland SC-88 的資料只當大小目標，不抽取、不轉換。注意：pian
 - 新增分片來源：`scripts/sf-pack.js <sf2> <輸出目錄> --path=GeneralUser-GS.sf2` 切成每片 ≤ 8 MB 並寫 `manifest.json`（長度與 sha256，整份與每片）；`FaMidiPlay.fetchParts` 逐片核對長度與檢查碼、每片單獨快取（中斷後只補缺的片）、合併後核對總大小。
 - **待做（需要推送，由管理層代發）**：把輸出目錄（附 GeneralUser GS 的 `LICENSE.txt`）用 git plumbing 單一 commit 強制推到 `soundfont-assets` 分支，拿到完整 commit SHA 後，把 `FA_ASSET_URLS.gsSoundbankBase` 填成 `https://raw.githubusercontent.com/sunneo/tw_stock_db/<完整SHA>/`，重建並發布；`gsSoundbankBase` 空字串時沿用原始網址（行為不變）。驗證：開頁網路請求清單沒有 sf2／sf3／spessasynth，第一次按播放才出現分片；快取後離線可播。
 - 桌面版：音色庫與程式庫不進 live patch manifest；網址相同時由 App 下載。階段 4 瘦身版沿用同一套（manifest 的 version 與 sha256）。
+
+## 階段 4：音色庫瘦身實測（2026-11-01）
+工具：`scripts/sf-loop.js`（純函式：自相關找週期、整數週期無縫 loop、持續音判斷、降取樣、截尾；測試 `scripts/music-tests/sf_loop.test.js` 12 項）、`scripts/sf-slim.js`（讀寫 sf2：改 smpl 與 shdr，其餘區塊原樣；`--max-rate`、`--sf3 --quality`）、聽感比對 `scripts/music-tests/sf-compare.html`（原版與瘦身版離線渲染 128 個音色加鼓組，算 24 頻帶差異、音量差、接縫突波）。輸入輸出的音色庫放 repo 外。
+實測（GeneralUser GS 原版 32.3 MB、920 個樣本）：
+- **GeneralUser 本來就已經設好短 loop**：916 個有 loop 的樣本裡 808 個 loop 短於 0.6 秒，只有 108 個長 loop；自動縮短 loop 只動到 41 個、截尾 145 個，**只省約 1.6 MB（5%）**。誠實結論：找樣本內部 loop 對這個音色庫的效益有限，主要在長 loop 的弦樂與合唱；沒有 loop 的持續音沒有找到需要補的（持續音幾乎都已有 loop）。
+- 降取樣是大宗：`--max-rate=22050` → 20.7 MB（−36%）；16000 → 15.3 MB（−53%）。
+- SF3（Ogg Vorbis，用 ffmpeg libvorbis，quality 3）加 22050：**5.8 MB（−82%）**，spessasynth 能直接載入播放（128 音色逐一渲染：無靜音、無音量掉落、接縫突波沒有變多；頻帶平均差 3.25 dB，差最大是 GM 35 無琴格貝斯 19 dB、GM 79 等，高頻被低通造成，需要人耳確認）。
+- 尚未做：用耳朵聽的確認、16 kHz 與 quality 的取捨、鼓組與打擊類是否要保留 44.1 kHz、`gsSoundbankBase` 與瘦身版的發布（管理層）。

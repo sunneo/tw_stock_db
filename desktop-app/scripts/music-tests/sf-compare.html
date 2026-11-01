@@ -1,0 +1,40 @@
+<!doctype html><meta charset="utf-8"><title>sound bank compare</title>
+<!-- 聽感比對:同一份曲目(每個 GM 音色各彈 C4／C3 與一段和弦,加一組鼓)用原版與瘦身版各離線渲染一次,算頻譜差異與接縫的突波,列出差異最大的音色。
+     起一個靜態伺服器後開 /scripts/music-tests/sf-compare.html?a=<原版網址>&b=<瘦身版網址>&from=0&to=128;結果在 window.__result(由大到小排序),進度在 window.__progress -->
+<pre id="out">running…</pre>
+<script src="../../renderer/src/music/midi_core.js"></script>
+<script src="../../renderer/src/music/midi_play.js"></script>
+<script>
+(async () => {
+  const q = new URLSearchParams(location.search), A = q.get('a'), B = q.get('b'), from = Number(q.get('from') || 0), to = Number(q.get('to') || 128), SLOT = 3, SR = 44100;
+  const sources = (u) => ({ lib: ['/renderer/vendor/spessasynth/spessasynth-lib.js'], processor: ['/renderer/vendor/spessasynth/spessasynth-processor.min.js'], soundbank: [u] });
+  const R = { rows: [], errors: [] }; window.__result = R;
+  function fft(re, im) { const n = re.length; for (let i = 1, j = 0; i < n; i++) { let bit = n >> 1; for (; j & bit; bit >>= 1) j ^= bit; j ^= bit; if (i < j) { [re[i], re[j]] = [re[j], re[i]]; [im[i], im[j]] = [im[j], im[i]]; } } for (let len = 2; len <= n; len <<= 1) { const a = -2 * Math.PI / len; for (let i = 0; i < n; i += len) for (let k = 0; k < len / 2; k++) { const c = Math.cos(a * k), s = Math.sin(a * k), xr = re[i + k + len / 2] * c - im[i + k + len / 2] * s, xi = re[i + k + len / 2] * s + im[i + k + len / 2] * c; re[i + k + len / 2] = re[i + k] - xr; im[i + k + len / 2] = im[i + k] - xi; re[i + k] += xr; im[i + k] += xi; } } }
+  const BANDS = 24; // 對數間隔頻帶,60Hz~16kHz
+  function bands(x, off) { const N = 8192, re = new Float64Array(N), im = new Float64Array(N); for (let i = 0; i < N; i++) re[i] = (x[off + i] || 0) * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / N)); fft(re, im); const out = new Float64Array(BANDS); for (let b = 0; b < BANDS; b++) { const f0 = 60 * Math.pow(16000 / 60, b / BANDS), f1 = 60 * Math.pow(16000 / 60, (b + 1) / BANDS); let e = 0; for (let k = Math.floor(f0 * N / SR); k <= Math.ceil(f1 * N / SR); k++) e += re[k] * re[k] + im[k] * im[k]; out[b] = 10 * Math.log10(e + 1e-9); } return out; }
+  function rms(x, a, b) { let s = 0; for (let i = a; i < b; i++) s += x[i] * x[i]; return Math.sqrt(s / Math.max(1, b - a)); }
+  function spike(x, a, b) { let m = 0; for (let i = a + 2; i < b; i++) m = Math.max(m, Math.abs(x[i] - 2 * x[i - 1] + x[i - 2])); return m / (rms(x, a, b) + 1e-6); } // 二階差分的最大值相對於 RMS:喀嚓聲會讓它變大
+  async function render(bank, progs, drums) {
+    let s = FaMidi.emptySong(); s.tempos = [{ t: 0, bpm: 60 }];
+    progs.forEach((p, i) => { s = FaMidi.addTrack(s, 'p' + p, p); const note = p >= 24 && p < 40 ? 40 : 60; s = FaMidi.addNote(s, s.tracks.length - 1, { t: i * SLOT * 480, d: 2 * 480, n: note, v: 100 }); s = FaMidi.addNote(s, s.tracks.length - 1, { t: i * SLOT * 480 + 2 * 480, d: 480, n: note + 7, v: 100 }); });
+    if (drums) { s = FaMidi.addTrack(s, '鼓', 0, true); [36, 38, 42, 46, 49, 45].forEach((n, i) => { s = FaMidi.addNote(s, s.tracks.length - 1, { t: (progs.length + Math.floor(i / 2)) * SLOT * 480 + (i % 2) * 480, d: 240, n, v: 100 }); }); }
+    return await FaMidiPlay.renderOffline(s, sources(bank), { tail: 1 });
+  }
+  try {
+    const all = []; for (let p = from; p < to; p++) all.push(p);
+    for (let c = 0; c < all.length; c += 14) {
+      const progs = all.slice(c, c + 14), last = c + 14 >= all.length; window.__progress = 'chunk ' + c;
+      const a = await render(A, progs, last), b = await render(B, progs, last), da = a.getChannelData(0), db = b.getChannelData(0);
+      const slots = progs.map((p, i) => ({ name: 'GM ' + (p + 1), t: i * SLOT })); if (last) { slots.push({ name: '鼓組(底鼓／小鼓／踩鑔／鈸／通鼓)', t: progs.length * SLOT }); slots.push({ name: '鼓組 2', t: (progs.length + 1) * SLOT }); slots.push({ name: '鼓組 3', t: (progs.length + 2) * SLOT }); }
+      slots.forEach((sl) => {
+        const o = Math.floor((sl.t + 0.3) * SR), e0 = Math.floor((sl.t + 2.9) * SR); const ra = rms(da, o, e0), rb = rms(db, o, e0);
+        if (ra < 1e-4 && rb < 1e-4) { R.rows.push({ name: sl.name, silent: true, diff: 0 }); return; }
+        const ba = bands(da, o), bb = bands(db, o); let d = 0; for (let k = 0; k < BANDS; k++) d += Math.abs(ba[k] - bb[k]); d /= BANDS;
+        R.rows.push({ name: sl.name, diff: Math.round(d * 100) / 100, levelDb: Math.round(20 * Math.log10((rb + 1e-9) / (ra + 1e-9)) * 10) / 10, spikeA: Math.round(spike(da, o, e0) * 10) / 10, spikeB: Math.round(spike(db, o, e0) * 10) / 10 });
+      });
+    }
+    R.rows.sort((x, y) => y.diff - x.diff); R.mean = Math.round(R.rows.reduce((s, r) => s + r.diff, 0) / R.rows.length * 100) / 100; R.worst = R.rows.slice(0, 10); R.spikier = R.rows.filter((r) => r.spikeB > r.spikeA * 1.5 && r.spikeB > 8).map((r) => r.name); R.done = true;
+  } catch (e) { R.errors.push(String(e && e.stack || e)); R.done = true; }
+  document.getElementById('out').textContent = JSON.stringify({ mean: R.mean, worst: R.worst, spikier: R.spikier, errors: R.errors });
+})();
+</script>

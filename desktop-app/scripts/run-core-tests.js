@@ -164,6 +164,7 @@ const suites = [
     ['音樂：MIDI 編輯器純函式層（封閉動作、中文指令、復原重做）', 'scripts/music-tests/midi_edit.test.js'],
     ['音樂：MIDI 遠端共編（共編訊息層、事件層級合併）', 'scripts/music-tests/midi_remote.test.js'],
     ['音樂：程式作曲（風格範本、和弦進行、旋律檢查、同種子同曲）', 'scripts/music-tests/music_compose.test.js'],
+    ['音樂：音色庫樣本內部 loop 偵測與瘦身規則（週期、無縫 loop、截尾、降取樣）', 'scripts/music-tests/sf_loop.test.js'],
 ];
 let failed = 0, failedNew = 0;
 const results = [], t00 = Date.now();

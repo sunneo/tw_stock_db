@@ -37,20 +37,23 @@ function seamError(x, start, end) { // 比較 loop 結尾往前一段與開頭�
 
 function nextUpCross(x, i, limit) { for (; i < limit; i++) if (x[i - 1] <= 0 && x[i] > 0) return i; return -1; }
 
+// opts.lo／opts.hi:搜尋範圍(預設樣本的 55%~90%,給了就在範圍內找,且偏好最早的好 loop,因為 loop 結尾之後的資料都會被丟掉)
 function findLoop(x, sr, opts) {
-  opts = opts || {}; const minLoop = Math.floor(sr * (opts.minLoopSec || 0.08)), maxLoop = Math.floor(sr * (opts.maxLoopSec || 0.4));
+  opts = opts || {}; const minLoop = Math.floor(sr * (opts.minLoopSec || 0.12)), maxLoop = Math.floor(sr * (opts.maxLoopSec || 0.5));
   const per = findPeriod(x, sr, opts); if (per.strength < (opts.minStrength || 0.9) || per.period < 2) return null;
-  const P = per.period; const k = Math.max(1, Math.ceil(minLoop / P)); let L = k * P; while (L > maxLoop && L > P * 1.5) L -= P;
-  // 在樣本後半找 loop 結尾候選(從 55% 到 90%),每個候選以正向零交越對齊,挑接縫誤差最小的
-  let best = null;
-  const lo = Math.floor(x.length * 0.55), hi = Math.floor(x.length * 0.9);
-  for (let e = lo; e < hi; e += Math.max(1, Math.floor(P / 4))) {
-    const end = nextUpCross(x, e, hi); if (end < 0) continue;
-    const startF = end - L; const start = nextUpCross(x, Math.max(1, Math.round(startF) - Math.ceil(P / 2)), Math.round(startF) + Math.ceil(P / 2)); if (start < 0 || start < 64) continue;
-    const loopLen = end - start; if (loopLen < minLoop * 0.8) continue;
-    const err = seamError(x, start, end); if (!best || err < best.err) best = { start, end, err };
+  const P = per.period, ranged = opts.lo != null; const lo = ranged ? opts.lo : Math.floor(x.length * 0.55), hi = Math.min(x.length - 1, ranged ? opts.hi : Math.floor(x.length * 0.9));
+  const k0 = Math.max(1, Math.ceil(minLoop / P)); let best = null; const step = Math.max(1, Math.floor(P / 4));
+  const win = ranged ? Math.max(P * 6, (hi - lo) * 0.35) : hi - lo;   // 有範圍時只看開頭附近的結尾候選(越早越省)
+  for (let k = k0; k <= k0 + 3; k++) {
+    const L = k * P; if (L > maxLoop && k > k0) break;
+    for (let e = Math.floor(lo + L); e < Math.min(hi, lo + L + win); e += step) {
+      const end = nextUpCross(x, e, hi); if (end < 0) continue; const startF = end - L;
+      const start = nextUpCross(x, Math.max(1, Math.round(startF) - Math.ceil(P / 2)), Math.round(startF) + Math.ceil(P / 2)); if (start < Math.max(64, lo)) continue;
+      const err = seamError(x, start, end) + (ranged ? 0.02 * (end - lo) / Math.max(1, hi - lo) : 0);   // 同樣好時偏好早的
+      if (!best || err < best.err) best = { start, end, err, raw: seamError(x, start, end) };
+    }
   }
-  if (!best) return null; const score = 1 - best.err; if (score < (opts.minScore || 0.8)) return null;
+  if (!best) return null; const score = 1 - best.raw; if (score < (opts.minScore || 0.8)) return null;
   return { start: best.start, end: best.end, score, periods: (best.end - best.start) / P, period: P };
 }
 
@@ -76,7 +79,7 @@ function slim(x, sr, hdr, opts) {
   opts = opts || {}; let data = x, sl = hdr.startLoop | 0, el = hdr.endLoop | 0, action = 'keep'; const hasLoop = el > sl + 8 && el <= x.length;
   if (hasLoop) {
     const len = el - sl, maxLoop = Math.floor(sr * (opts.maxLoopSec || 0.4));
-    if (len > maxLoop * 1.5) { const lp = findLoop(x.subarray(0, el), sr, opts); if (lp && lp.end - lp.start < len) { sl = lp.start; el = lp.end; action = 'shorten-loop'; } }
+    if (len > maxLoop * 1.2) { const lp = findLoop(x, sr, Object.assign({}, opts, { lo: sl + Math.floor(sr * 0.01), hi: el })); if (lp && lp.end < el - sr * 0.05) { sl = lp.start; el = lp.end; action = 'shorten-loop'; } }
     const cut = Math.min(x.length, el + GUARD); if (cut < x.length) { data = x.subarray(0, cut); action = action === 'keep' ? 'cut-tail' : action; }
   } else if (isSustained(x, sr)) {
     const lp = findLoop(x, sr, opts); if (lp) { sl = lp.start; el = lp.end; data = x.subarray(0, Math.min(x.length, el + GUARD)); action = 'add-loop'; }
