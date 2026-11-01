@@ -7,6 +7,7 @@
 //                       objectInfo?(obj) -> small text, objectIcon?(obj) -> glyph, parseCommands?(text, spec) -> { edits, unmatched }, exports:[{id,label,chat?:true}], runExport(id, spec) -> Promise<{blob,name}>,
 //                       build's result may have env() -> { view:{x,y,w,h} } (where the user is looking: 'place relative to the view'),
 //                       collab?: 多人同編的轉接器 { spec(), diff(a,b), propose(patch,meta)->Promise<{ok,rejected,error,queued}>, undo(), redo(), undoable(), redoable(), members(), color(name), status(), queued(), presence(sel), on(evt,fn) 事件 commit/reset/members/status/presence/closed }：有的話文件由主持機編號，commit 先送出、等 commit 事件回來才記成一步（各人只復原自己的步驟）,
+//                       file?: { exportId, importBytes(bytes, name) -> Promise<spec>, types:[{description, accept:{mime:[ext]}}] }（有的話、且 host.localFile 在，標題列多一個「💾 本機檔案」：開啟並綁定／另存並綁定／存回／重新載入／自動存檔；存的內容就是 runExport(exportId) 的結果）,
 //                       promptOf?(spec, steps) -> text, placeholder, intro, extraPrompt?, windowKey?,
 //                       previewEdits?({spec0, next, edits, words, rejected}) -> Promise<boolean> (what the AI changed is shown first; true = apply, false = take it back), confirmRemove?(obj, spec) -> boolean,
 //                       treeRows?(spec, collapsed) -> [{obj, depth}] (a TREE in the objects view, parents before children; groups fold), onObjectOpen?(obj) (double click on a row: the editor opens the object by itself instead of renaming it) }) -> element with el._ed = { getState, reload, setSpec, undo, redo, send(text), select(id), getSpec, ctx }
@@ -45,7 +46,7 @@
     }
     function cur() { return S.states[S.ptr].spec; }
     function getState() { var st = { v: 1, ptr: S.ptr, states: S.states, log: S.log.slice(-60) }; try { while (JSON.stringify(st).length > 3000000 && st.states.length > 2) { st.states = st.states.slice(1); st.ptr = Math.max(0, st.ptr - 1); } } catch (e) { /* keep */ } return st; }
-    function persist() { clearTimeout(saveT); saveT = setTimeout(function () { try { if (host.save) { host.save(getState()); } } catch (e) { /* this change still counts */ } }, 400); }
+    function persist() { try { fileAuto(); } catch (e) { /* 自動存檔只是方便 */ } clearTimeout(saveT); saveT = setTimeout(function () { try { if (host.save) { host.save(getState()); } } catch (e) { /* this change still counts */ } }, 400); }
     function pushState(spec, summary, text, kind, by) { S.states = S.states.slice(0, S.ptr + 1); S.states.push({ spec: W.validate(spec).spec, summary: summary || '', text: text || '', kind: kind || 'panel', t: Date.now(), by: by || undefined }); if (S.states.length > MAXSTATES) { S.states.shift(); } S.ptr = S.states.length - 1; render(); persist(); if (pendSel && W.find(cur(), pendSel) >= 0) { var ps = pendSel; pendSel = null; select(ps); } }
     // 單人：直接記成一步。多人：算出 id 定址的 patch 交給主持機編號，等 commit 事件回來才記（含自己的），被略過的動作回報在聊天框
     function commit(spec, summary, text, kind, by) {
@@ -253,7 +254,7 @@
     el.addEventListener('keydown', function (ev) { var tag = ev.target && ev.target.tagName; if ((tag === 'TEXTAREA' || tag === 'INPUT' || tag === 'SELECT') && ev.target !== el) { return; } if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && ev.key.toLowerCase() === 'z') { ev.preventDefault(); undo(); } else if ((ev.ctrlKey || ev.metaKey) && (ev.key.toLowerCase() === 'y' || (ev.shiftKey && ev.key.toLowerCase() === 'z'))) { ev.preventDefault(); redo(); } else if ((ev.key === 'Delete' || ev.key === 'Backspace') && selected && tag !== 'TEXTAREA' && tag !== 'INPUT') { ev.preventDefault(); apply([{ op: 'remove_object', id: selected }], '刪掉物件 ' + selected, '', 'panel'); } });
     el.tabIndex = 0;
     function render() {
-      renderObjects(); renderHist(); if (collab) { bUndo.disabled = !collab.undoable(); bRedo.disabled = !collab.redoable(); renderCollab(); } else { bUndo.disabled = S.ptr === 0; bRedo.disabled = S.ptr >= S.states.length - 1; } stat.textContent = '第 ' + (S.ptr + 1) + '／' + S.states.length + ' 步';
+      renderFile(); renderObjects(); renderHist(); if (collab) { bUndo.disabled = !collab.undoable(); bRedo.disabled = !collab.redoable(); renderCollab(); } else { bUndo.disabled = S.ptr === 0; bRedo.disabled = S.ptr >= S.states.length - 1; } stat.textContent = '第 ' + (S.ptr + 1) + '／' + S.states.length + ' 步';
       if (selected && W.find(cur(), selected) < 0) { selected = null; renderObjects(); }
       showTabs(); if (editor && editor.refresh) { editor.refresh(cur(), selected); }
     }
@@ -269,6 +270,54 @@
       render();
     }
     function detachCollab() { collab = null; remoteSel = {}; if (collabEl) { collabEl.remove(); collabEl = null; } render(); }
+    // ───── 本機檔案綁定（host.localFile 由桌面版／網頁版的轉接層提供，見 local_file.js、file_host.js）─────
+    var LF = opt.file && host.localFile ? host.localFile : null, fileSig = null, fileMsg = '', fileBusy = false, fileExt = false, fileAutoT = null, fileStat = null, bFile = null, fileBox = null;
+    function sigNow() { try { return JSON.stringify(cur()); } catch (e) { return ''; } }
+    function fileInfo() { try { return LF ? LF.info() : null; } catch (e) { return null; } }
+    function renderFile() {
+      if (!LF || !bFile) { return; } var b = fileInfo(); bFile.textContent = '💾 ' + (b ? b.name : '本機檔案');
+      var dirty = b && fileSig !== null && fileSig !== sigNow(); fileStat.textContent = !b ? '' : fileExt ? '⚠️ 檔案在外面被改過' : fileBusy ? '存檔中…' : dirty ? '● 還沒存回檔案' : '✓ 已存回檔案'; fileStat.style.color = fileExt ? '#cf222e' : dirty ? '#9a6700' : '';
+      bFile.title = b ? (b.path || b.name) + (b.auto ? '（自動存檔）' : '') + '：Ctrl+S 存回檔案' : '把這份文件存成本機檔案，或接到本機的檔案上';
+    }
+    async function fileBytes() { var out = await opt.runExport(opt.file.exportId, W.validate(cur()).spec); if (!out) { throw new Error('沒有可以存的內容'); } return { bytes: new Uint8Array(await out.blob.arrayBuffer()), name: out.name }; }
+    async function fileSave(force) {
+      var b = fileInfo(); if (!LF) { return; } if (!b) { openFileMenu(); return; } if (fileBusy) { return; }
+      if (b.enc && b.enc !== 'utf-8' && !force && typeof confirm === 'function' && !confirm('原檔是 ' + b.enc.toUpperCase() + ' 編碼，存回會變成 UTF-8（內容不變、編碼會變）。要存嗎？')) { return; }
+      fileBusy = true; renderFile(); var sg = sigNow();
+      try { var x = await fileBytes(), r = await LF.save(x.bytes, { force: !!force }); if (r.conflict) { fileExt = true; fileMsg = '檔案在外面被改過，沒有覆蓋。選「覆蓋存回」或「重新載入」。'; } else if (!r.ok) { fileMsg = '存不了：' + (r.error || ''); } else { fileSig = sg; fileExt = false; fileMsg = '已存回 ' + (r.binding ? r.binding.name : '') + '（' + new Date().toTimeString().slice(0, 8) + '）'; } }
+      catch (e) { fileMsg = '存不了：' + String((e && e.message) || e).slice(0, 120); } fileBusy = false; renderFile(); renderFileBox(); ctx0.say(fileMsg);
+    }
+    function fileAuto() { var b = fileInfo(); if (!LF || !b || !b.auto || fileExt || fileBusy || fileSig === null) { return; } clearTimeout(fileAutoT); fileAutoT = setTimeout(function () { if (fileSig !== sigNow()) { fileSave(false); } }, 1500); }
+    async function fileLoad(res, why) {
+      if (!res) { return; } var ns = await opt.file.importBytes(res.bytes, res.name || (fileInfo() || {}).name || ''); commit(ns, why + ' ' + (res.name || ''), '', 'panel');
+      setTimeout(function () { fileSig = sigNow(); fileExt = false; renderFile(); renderFileBox(); }, 0); fileMsg = why + '：' + (res.name || '') + (ns.notes && ns.notes.length ? '（' + ns.notes.length + ' 項注意事項）' : '');
+    }
+    async function fileAction(fn) { try { await fn(); } catch (e) { fileMsg = String((e && e.message) || e).slice(0, 160); } renderFile(); renderFileBox(); if (fileMsg) { ctx0.say(fileMsg); } }
+    function renderFileBox() {
+      if (!fileBox) { return; } fileBox.textContent = ''; var b = fileInfo(); function add(t, tag) { var d = h(tag || 'div', null, t); fileBox.appendChild(d); return d; } function btn(t, fn, title) { var x = h('button', null, t); if (title) { x.title = title; } x.style.margin = '4px 6px 0 0'; x.onclick = fn; fileBox.appendChild(x); return x; }
+      add('💾 本機檔案').style.fontWeight = '700';
+      if (b) { add((b.path || b.name) + '（' + b.size + ' 位元組）').style.cssText = 'font-size:12px;word-break:break-all'; }
+      else { add('這份文件還沒有接到本機檔案。').style.fontSize = '12px'; }
+      if (fileMsg) { var m = add(fileMsg); m.style.cssText = 'font-size:12px;color:' + (/存不了|被改過|不/.test(fileMsg) ? '#9a6700' : 'inherit'); }
+      if (b) {
+        btn('💾 存回檔案（Ctrl+S）', function () { fileAction(function () { return fileSave(false); }); }); if (fileExt) { btn('⚠️ 覆蓋存回', function () { fileAction(function () { return fileSave(true); }); }, '用目前的內容蓋掉外面改過的檔案'); }
+        btn('↻ 重新從檔案載入', function () { fileAction(async function () { var r = await LF.reload(); await fileLoad(r, '從檔案重新載入'); }); }, '丟掉編輯器裡的內容，改用檔案現在的內容（可復原）');
+        var au = h('input'); au.type = 'checkbox'; au.checked = !!b.auto; au.onchange = function () { LF.setAuto(au.checked); renderFile(); if (au.checked) { fileAuto(); } }; var l = h('label'); l.style.cssText = 'display:block;margin-top:6px;font-size:12px'; l.appendChild(au); l.appendChild(document.createTextNode(' 自動存檔（改完 1.5 秒後存回；外面有改動就停止）')); fileBox.appendChild(l);
+        btn('✂️ 解除綁定', function () { LF.unbind(); fileExt = false; fileSig = null; fileMsg = '已解除綁定（檔案不動）'; renderFile(); renderFileBox(); });
+      }
+      var sup = LF.supported(); btn('📂 開啟並綁定…', function () { fileAction(async function () { var r = await LF.openAndBind(opt.file.types); if (r) { await fileLoad(r, '從檔案開啟'); } }); }, '讀一個本機檔案進來（取代目前的內容，可復原），之後存回就寫回那個檔案');
+      btn('📝 另存並綁定…', function () { fileAction(async function () { var x = await fileBytes(); var r = await LF.saveAsAndBind(x.bytes, x.name, opt.file.types); if (r) { fileSig = sigNow(); fileMsg = '已存成 ' + r.name; } }); }, '把目前的內容存成一個本機檔案，之後存回就寫回它');
+      if (!sup.desktop && !sup.web) { add('這個環境不能直接存取本機檔案（桌面版或 Chrome／Edge 才可以）；請用「📤 輸出」下載。').style.cssText = 'font-size:12px;color:#9a6700'; }
+      btn('關閉', function () { fileBox.remove(); fileBox = null; });
+    }
+    function openFileMenu() { if (fileBox) { fileBox.remove(); fileBox = null; return; } fileBox = h('div', 'filepanel'); fileBox.style.cssText = 'position:absolute;z-index:50;top:36px;left:40px;background:#fff;color:#222;border:1px solid #888;border-radius:8px;padding:10px;min-width:260px;max-width:380px;box-shadow:0 4px 18px rgba(0,0,0,.3);font-size:13px'; el.appendChild(fileBox); renderFileBox(); if (LF && LF.check) { LF.check().then(function (c) { if (c && c.changed) { fileExt = true; renderFile(); renderFileBox(); } }); } }
+    var ctx0 = { say: function (t) { stat.textContent = t; setTimeout(function () { if (stat.textContent === t) { stat.textContent = ''; } }, 4000); } };
+    if (LF) {
+      bFile = h('button', null, '💾 本機檔案'); fileStat = h('span', 'st'); bFile.onclick = openFileMenu; bar.insertBefore(bFile, bSum); bar.insertBefore(fileStat, bSum);
+      if (LF.ready) { LF.ready().then(function () { fileSig = fileInfo() ? sigNow() : null; renderFile(); }); } else { fileSig = fileInfo() ? sigNow() : null; }
+      el.addEventListener('keydown', function (ev) { if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && !ev.altKey && ev.key.toLowerCase() === 's') { ev.preventDefault(); ev.stopPropagation(); fileSave(false); } }, true);
+      var onFocus = function () { var b = fileInfo(); if (b && !fileBusy && LF.check) { LF.check().then(function (c) { if (c && c.changed && !fileExt) { fileExt = true; renderFile(); ctx0.say('檔案在外面被改過'); } }); } }; try { window.addEventListener('focus', onFocus); } catch (e) { /* 沒有視窗焦點事件就不檢查 */ }
+    }
     // 標題列的「👥 共編」：分享這個編輯器給群組，或看目前的共編狀態（host.collabUi 由桌面版提供，沒有就不顯示）
     var bCo = null; if (host.collabUi) { bCo = h('button', null, '👥 共編'); bCo.title = '跟群組裡別台機器一起編輯這個文件：每個人都有完整副本，由主持機排序；各人只復原自己的步驟'; bCo.onclick = function () { try { host.collabUi.open(el); } catch (e) { stat.textContent = '共編：' + String((e && e.message) || e).slice(0, 80); } }; bar.insertBefore(bCo, bSum); }
     if (opt.collab || host.collab) { attachCollab(opt.collab || host.collab); }

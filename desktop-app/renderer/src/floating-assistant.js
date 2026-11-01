@@ -26504,6 +26504,7 @@ const holder = {};
 //                       objectInfo?(obj) -> small text, objectIcon?(obj) -> glyph, parseCommands?(text, spec) -> { edits, unmatched }, exports:[{id,label,chat?:true}], runExport(id, spec) -> Promise<{blob,name}>,
 //                       build's result may have env() -> { view:{x,y,w,h} } (where the user is looking: 'place relative to the view'),
 //                       collab?: 多人同編的轉接器 { spec(), diff(a,b), propose(patch,meta)->Promise<{ok,rejected,error,queued}>, undo(), redo(), undoable(), redoable(), members(), color(name), status(), queued(), presence(sel), on(evt,fn) 事件 commit/reset/members/status/presence/closed }：有的話文件由主持機編號，commit 先送出、等 commit 事件回來才記成一步（各人只復原自己的步驟）,
+//                       file?: { exportId, importBytes(bytes, name) -> Promise<spec>, types:[{description, accept:{mime:[ext]}}] }（有的話、且 host.localFile 在，標題列多一個「💾 本機檔案」：開啟並綁定／另存並綁定／存回／重新載入／自動存檔；存的內容就是 runExport(exportId) 的結果）,
 //                       promptOf?(spec, steps) -> text, placeholder, intro, extraPrompt?, windowKey?,
 //                       previewEdits?({spec0, next, edits, words, rejected}) -> Promise<boolean> (what the AI changed is shown first; true = apply, false = take it back), confirmRemove?(obj, spec) -> boolean,
 //                       treeRows?(spec, collapsed) -> [{obj, depth}] (a TREE in the objects view, parents before children; groups fold), onObjectOpen?(obj) (double click on a row: the editor opens the object by itself instead of renaming it) }) -> element with el._ed = { getState, reload, setSpec, undo, redo, send(text), select(id), getSpec, ctx }
@@ -26542,7 +26543,7 @@ const holder = {};
     }
     function cur() { return S.states[S.ptr].spec; }
     function getState() { var st = { v: 1, ptr: S.ptr, states: S.states, log: S.log.slice(-60) }; try { while (JSON.stringify(st).length > 3000000 && st.states.length > 2) { st.states = st.states.slice(1); st.ptr = Math.max(0, st.ptr - 1); } } catch (e) { /* keep */ } return st; }
-    function persist() { clearTimeout(saveT); saveT = setTimeout(function () { try { if (host.save) { host.save(getState()); } } catch (e) { /* this change still counts */ } }, 400); }
+    function persist() { try { fileAuto(); } catch (e) { /* 自動存檔只是方便 */ } clearTimeout(saveT); saveT = setTimeout(function () { try { if (host.save) { host.save(getState()); } } catch (e) { /* this change still counts */ } }, 400); }
     function pushState(spec, summary, text, kind, by) { S.states = S.states.slice(0, S.ptr + 1); S.states.push({ spec: W.validate(spec).spec, summary: summary || '', text: text || '', kind: kind || 'panel', t: Date.now(), by: by || undefined }); if (S.states.length > MAXSTATES) { S.states.shift(); } S.ptr = S.states.length - 1; render(); persist(); if (pendSel && W.find(cur(), pendSel) >= 0) { var ps = pendSel; pendSel = null; select(ps); } }
     // 單人：直接記成一步。多人：算出 id 定址的 patch 交給主持機編號，等 commit 事件回來才記（含自己的），被略過的動作回報在聊天框
     function commit(spec, summary, text, kind, by) {
@@ -26750,7 +26751,7 @@ const holder = {};
     el.addEventListener('keydown', function (ev) { var tag = ev.target && ev.target.tagName; if ((tag === 'TEXTAREA' || tag === 'INPUT' || tag === 'SELECT') && ev.target !== el) { return; } if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && ev.key.toLowerCase() === 'z') { ev.preventDefault(); undo(); } else if ((ev.ctrlKey || ev.metaKey) && (ev.key.toLowerCase() === 'y' || (ev.shiftKey && ev.key.toLowerCase() === 'z'))) { ev.preventDefault(); redo(); } else if ((ev.key === 'Delete' || ev.key === 'Backspace') && selected && tag !== 'TEXTAREA' && tag !== 'INPUT') { ev.preventDefault(); apply([{ op: 'remove_object', id: selected }], '刪掉物件 ' + selected, '', 'panel'); } });
     el.tabIndex = 0;
     function render() {
-      renderObjects(); renderHist(); if (collab) { bUndo.disabled = !collab.undoable(); bRedo.disabled = !collab.redoable(); renderCollab(); } else { bUndo.disabled = S.ptr === 0; bRedo.disabled = S.ptr >= S.states.length - 1; } stat.textContent = '第 ' + (S.ptr + 1) + '／' + S.states.length + ' 步';
+      renderFile(); renderObjects(); renderHist(); if (collab) { bUndo.disabled = !collab.undoable(); bRedo.disabled = !collab.redoable(); renderCollab(); } else { bUndo.disabled = S.ptr === 0; bRedo.disabled = S.ptr >= S.states.length - 1; } stat.textContent = '第 ' + (S.ptr + 1) + '／' + S.states.length + ' 步';
       if (selected && W.find(cur(), selected) < 0) { selected = null; renderObjects(); }
       showTabs(); if (editor && editor.refresh) { editor.refresh(cur(), selected); }
     }
@@ -26766,6 +26767,54 @@ const holder = {};
       render();
     }
     function detachCollab() { collab = null; remoteSel = {}; if (collabEl) { collabEl.remove(); collabEl = null; } render(); }
+    // ───── 本機檔案綁定（host.localFile 由桌面版／網頁版的轉接層提供，見 local_file.js、file_host.js）─────
+    var LF = opt.file && host.localFile ? host.localFile : null, fileSig = null, fileMsg = '', fileBusy = false, fileExt = false, fileAutoT = null, fileStat = null, bFile = null, fileBox = null;
+    function sigNow() { try { return JSON.stringify(cur()); } catch (e) { return ''; } }
+    function fileInfo() { try { return LF ? LF.info() : null; } catch (e) { return null; } }
+    function renderFile() {
+      if (!LF || !bFile) { return; } var b = fileInfo(); bFile.textContent = '💾 ' + (b ? b.name : '本機檔案');
+      var dirty = b && fileSig !== null && fileSig !== sigNow(); fileStat.textContent = !b ? '' : fileExt ? '⚠️ 檔案在外面被改過' : fileBusy ? '存檔中…' : dirty ? '● 還沒存回檔案' : '✓ 已存回檔案'; fileStat.style.color = fileExt ? '#cf222e' : dirty ? '#9a6700' : '';
+      bFile.title = b ? (b.path || b.name) + (b.auto ? '（自動存檔）' : '') + '：Ctrl+S 存回檔案' : '把這份文件存成本機檔案，或接到本機的檔案上';
+    }
+    async function fileBytes() { var out = await opt.runExport(opt.file.exportId, W.validate(cur()).spec); if (!out) { throw new Error('沒有可以存的內容'); } return { bytes: new Uint8Array(await out.blob.arrayBuffer()), name: out.name }; }
+    async function fileSave(force) {
+      var b = fileInfo(); if (!LF) { return; } if (!b) { openFileMenu(); return; } if (fileBusy) { return; }
+      if (b.enc && b.enc !== 'utf-8' && !force && typeof confirm === 'function' && !confirm('原檔是 ' + b.enc.toUpperCase() + ' 編碼，存回會變成 UTF-8（內容不變、編碼會變）。要存嗎？')) { return; }
+      fileBusy = true; renderFile(); var sg = sigNow();
+      try { var x = await fileBytes(), r = await LF.save(x.bytes, { force: !!force }); if (r.conflict) { fileExt = true; fileMsg = '檔案在外面被改過，沒有覆蓋。選「覆蓋存回」或「重新載入」。'; } else if (!r.ok) { fileMsg = '存不了：' + (r.error || ''); } else { fileSig = sg; fileExt = false; fileMsg = '已存回 ' + (r.binding ? r.binding.name : '') + '（' + new Date().toTimeString().slice(0, 8) + '）'; } }
+      catch (e) { fileMsg = '存不了：' + String((e && e.message) || e).slice(0, 120); } fileBusy = false; renderFile(); renderFileBox(); ctx0.say(fileMsg);
+    }
+    function fileAuto() { var b = fileInfo(); if (!LF || !b || !b.auto || fileExt || fileBusy || fileSig === null) { return; } clearTimeout(fileAutoT); fileAutoT = setTimeout(function () { if (fileSig !== sigNow()) { fileSave(false); } }, 1500); }
+    async function fileLoad(res, why) {
+      if (!res) { return; } var ns = await opt.file.importBytes(res.bytes, res.name || (fileInfo() || {}).name || ''); commit(ns, why + ' ' + (res.name || ''), '', 'panel');
+      setTimeout(function () { fileSig = sigNow(); fileExt = false; renderFile(); renderFileBox(); }, 0); fileMsg = why + '：' + (res.name || '') + (ns.notes && ns.notes.length ? '（' + ns.notes.length + ' 項注意事項）' : '');
+    }
+    async function fileAction(fn) { try { await fn(); } catch (e) { fileMsg = String((e && e.message) || e).slice(0, 160); } renderFile(); renderFileBox(); if (fileMsg) { ctx0.say(fileMsg); } }
+    function renderFileBox() {
+      if (!fileBox) { return; } fileBox.textContent = ''; var b = fileInfo(); function add(t, tag) { var d = h(tag || 'div', null, t); fileBox.appendChild(d); return d; } function btn(t, fn, title) { var x = h('button', null, t); if (title) { x.title = title; } x.style.margin = '4px 6px 0 0'; x.onclick = fn; fileBox.appendChild(x); return x; }
+      add('💾 本機檔案').style.fontWeight = '700';
+      if (b) { add((b.path || b.name) + '（' + b.size + ' 位元組）').style.cssText = 'font-size:12px;word-break:break-all'; }
+      else { add('這份文件還沒有接到本機檔案。').style.fontSize = '12px'; }
+      if (fileMsg) { var m = add(fileMsg); m.style.cssText = 'font-size:12px;color:' + (/存不了|被改過|不/.test(fileMsg) ? '#9a6700' : 'inherit'); }
+      if (b) {
+        btn('💾 存回檔案（Ctrl+S）', function () { fileAction(function () { return fileSave(false); }); }); if (fileExt) { btn('⚠️ 覆蓋存回', function () { fileAction(function () { return fileSave(true); }); }, '用目前的內容蓋掉外面改過的檔案'); }
+        btn('↻ 重新從檔案載入', function () { fileAction(async function () { var r = await LF.reload(); await fileLoad(r, '從檔案重新載入'); }); }, '丟掉編輯器裡的內容，改用檔案現在的內容（可復原）');
+        var au = h('input'); au.type = 'checkbox'; au.checked = !!b.auto; au.onchange = function () { LF.setAuto(au.checked); renderFile(); if (au.checked) { fileAuto(); } }; var l = h('label'); l.style.cssText = 'display:block;margin-top:6px;font-size:12px'; l.appendChild(au); l.appendChild(document.createTextNode(' 自動存檔（改完 1.5 秒後存回；外面有改動就停止）')); fileBox.appendChild(l);
+        btn('✂️ 解除綁定', function () { LF.unbind(); fileExt = false; fileSig = null; fileMsg = '已解除綁定（檔案不動）'; renderFile(); renderFileBox(); });
+      }
+      var sup = LF.supported(); btn('📂 開啟並綁定…', function () { fileAction(async function () { var r = await LF.openAndBind(opt.file.types); if (r) { await fileLoad(r, '從檔案開啟'); } }); }, '讀一個本機檔案進來（取代目前的內容，可復原），之後存回就寫回那個檔案');
+      btn('📝 另存並綁定…', function () { fileAction(async function () { var x = await fileBytes(); var r = await LF.saveAsAndBind(x.bytes, x.name, opt.file.types); if (r) { fileSig = sigNow(); fileMsg = '已存成 ' + r.name; } }); }, '把目前的內容存成一個本機檔案，之後存回就寫回它');
+      if (!sup.desktop && !sup.web) { add('這個環境不能直接存取本機檔案（桌面版或 Chrome／Edge 才可以）；請用「📤 輸出」下載。').style.cssText = 'font-size:12px;color:#9a6700'; }
+      btn('關閉', function () { fileBox.remove(); fileBox = null; });
+    }
+    function openFileMenu() { if (fileBox) { fileBox.remove(); fileBox = null; return; } fileBox = h('div', 'filepanel'); fileBox.style.cssText = 'position:absolute;z-index:50;top:36px;left:40px;background:#fff;color:#222;border:1px solid #888;border-radius:8px;padding:10px;min-width:260px;max-width:380px;box-shadow:0 4px 18px rgba(0,0,0,.3);font-size:13px'; el.appendChild(fileBox); renderFileBox(); if (LF && LF.check) { LF.check().then(function (c) { if (c && c.changed) { fileExt = true; renderFile(); renderFileBox(); } }); } }
+    var ctx0 = { say: function (t) { stat.textContent = t; setTimeout(function () { if (stat.textContent === t) { stat.textContent = ''; } }, 4000); } };
+    if (LF) {
+      bFile = h('button', null, '💾 本機檔案'); fileStat = h('span', 'st'); bFile.onclick = openFileMenu; bar.insertBefore(bFile, bSum); bar.insertBefore(fileStat, bSum);
+      if (LF.ready) { LF.ready().then(function () { fileSig = fileInfo() ? sigNow() : null; renderFile(); }); } else { fileSig = fileInfo() ? sigNow() : null; }
+      el.addEventListener('keydown', function (ev) { if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && !ev.altKey && ev.key.toLowerCase() === 's') { ev.preventDefault(); ev.stopPropagation(); fileSave(false); } }, true);
+      var onFocus = function () { var b = fileInfo(); if (b && !fileBusy && LF.check) { LF.check().then(function (c) { if (c && c.changed && !fileExt) { fileExt = true; renderFile(); ctx0.say('檔案在外面被改過'); } }); } }; try { window.addEventListener('focus', onFocus); } catch (e) { /* 沒有視窗焦點事件就不檢查 */ }
+    }
     // 標題列的「👥 共編」：分享這個編輯器給群組，或看目前的共編狀態（host.collabUi 由桌面版提供，沒有就不顯示）
     var bCo = null; if (host.collabUi) { bCo = h('button', null, '👥 共編'); bCo.title = '跟群組裡別台機器一起編輯這個文件：每個人都有完整副本，由主持機排序；各人只復原自己的步驟'; bCo.onclick = function () { try { host.collabUi.open(el); } catch (e) { stat.textContent = '共編：' + String((e && e.message) || e).slice(0, 80); } }; bar.insertBefore(bCo, bSum); }
     if (opt.collab || host.collab) { attachCollab(opt.collab || host.collab); }
@@ -28255,6 +28304,7 @@ const holder = {};
       objectInfo: function (o) { return o.type === 'heading' ? 'H' + o.level : o.type === 'list' ? (o.ordered ? '編號 ' : '項目 ') + o.items.length : o.type === 'table' ? o.rows.length + '×' + o.rows[0].length : o.type === 'code' ? (o.lang || '程式碼') : fmt === 'txt' ? '' : o.type; },
       treeRows: function (sp) { var d = 0, rows = []; sp.objects.forEach(function (b) { if (b.type === 'heading') { d = Math.min(5, b.level - 1); rows.push({ obj: b, depth: d }); d = Math.min(5, b.level); } else { rows.push({ obj: b, depth: fmt === 'txt' ? 0 : d }); } }); return rows; },
       parseCommands: C.parseCommands,
+      file: { exportId: fmt === 'txt' ? 'txt' : 'md', types: fmt === 'txt' ? [{ description: '純文字', accept: { 'text/plain': ['.txt', '.log', '.text', '.ini', '.conf', '.cfg'] } }] : [{ description: 'Markdown', accept: { 'text/markdown': ['.md', '.markdown', '.mdown'] } }], importBytes: function (bytes, name) { var u = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), text; try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(u); } catch (e) { try { text = new TextDecoder('big5').decode(u); } catch (e2) { text = new TextDecoder('utf-8').decode(u); } } var ns = C.parse(text, fmt); ns.title = String(name || '').replace(/\.[^.]+$/, '').slice(0, 80) || spec0.title; return Promise.resolve(ns); } },
       promptOf: function (sp, steps) { var L = ['請寫一份' + (fmt === 'txt' ? '純文字' : ' Markdown ') + '文件「' + sp.title + '」，共 ' + sp.objects.length + ' 個區塊。']; var ol = C.outline(sp); if (ol) { L.push('', '大綱：', ol); } var texts = steps.filter(function (s) { return s.text; }); if (texts.length) { L.push('', '（有效的指示，依序）：'); texts.forEach(function (s, i) { L.push((i + 1) + '. ' + s.text + (s.summary ? ' → ' + s.summary : '')); }); } return L.join('\n'); },
       exports: fmt === 'txt' ? [{ id: 'txt', label: '純文字檔 (.txt)', chat: false }, { id: 'json', label: '專案（JSON）', chat: false }] : [{ id: 'md', label: 'Markdown 檔 (.md)' }, { id: 'html', label: 'HTML 網頁' }, { id: 'txt', label: '純文字', chat: false }, { id: 'json', label: '專案（JSON）', chat: false }],
       runExport: async function (id, spec) {
@@ -28306,7 +28356,7 @@ const holder = {};
         };
         var openIn = h('input'); openIn.type = 'file'; openIn.accept = '.md,.markdown,.txt,.log,.text,.csv,.tsv,.json,.yaml,.yml,.ini,.conf,.cfg,text/*'; openIn.style.display = 'none';
         var bOpen = h('button', null, '📂 開啟檔案'); bOpen.title = '把本機的 ' + (fmt === 'txt' ? '文字' : 'Markdown／文字') + '檔讀進來（取代目前的內容，可復原）'; bOpen.onclick = function () { openIn.click(); };
-        function decode(buf) { var u = new Uint8Array(buf); try { return new TextDecoder('utf-8', { fatal: true }).decode(u); } catch (e) { try { return new TextDecoder('big5').decode(u); } catch (e2) { return new TextDecoder('utf-8').decode(u); } } }
+        function decode(buf) { var u = new Uint8Array(buf); try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(u); } catch (e) { try { return new TextDecoder('big5').decode(u); } catch (e2) { return new TextDecoder('utf-8').decode(u); } } }
         openIn.onchange = function () { var f = openIn.files && openIn.files[0]; openIn.value = ''; if (!f) { return; } if (f.size > 4000000) { ctx.say('檔案太大（超過 4 MB）'); return; } f.arrayBuffer().then(function (buf) { var text = decode(buf), ns = C.parse(text, fmt); ns.title = f.name.replace(/\.[^.]+$/, '').slice(0, 80) || spec.title; ctx.commit(ns, '開啟檔案 ' + f.name + '（' + ns.objects.length + ' 個區塊）', '', 'panel'); ctx.say('已開啟 ' + f.name); }, function () { ctx.say('讀不了這個檔案'); }); };
         ctx.bar.appendChild(addSel); ctx.bar.appendChild(bOpen); ctx.bar.appendChild(openIn);
         // ───── 屬性：選到的區塊（沒選＝文件） ─────
@@ -28854,7 +28904,7 @@ const holder = {};
     + '.few .sgrid td.hd{font-weight:700;background:var(--hd)}.few .sgrid td.num{text-align:right}.few .sgrid td.fx{color:#0969da}.few .sgrid td.err{color:#cf222e}.few .sgrid td.sel{outline:2px solid var(--acc);outline-offset:-2px;background:rgba(47,129,247,.12)}.few .sgrid td.rsel,.few .sgrid th.csel{background:rgba(47,129,247,.14)}'
     + '.few .sgrid td input{width:100%;height:100%;box-sizing:border-box;border:0;outline:2px solid var(--acc);padding:0 4px;font:inherit;background:var(--bg);color:inherit}.few .sbar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:4px 8px;border-bottom:1px solid var(--bd);background:var(--hd)}.few .sbar input.fx{flex:1;min-width:8em}.few .sbar .ad{font-weight:700;min-width:3.2em}';
   function slug(s) { return String(s || 'table').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ').replace(/\s+/g, '_').replace(/^_+|_+$/g, '').slice(0, 50) || 'table'; }
-  function decode(buf) { var u = new Uint8Array(buf); try { return new TextDecoder('utf-8', { fatal: true }).decode(u); } catch (e) { try { return new TextDecoder('big5').decode(u); } catch (e2) { return new TextDecoder('utf-8').decode(u); } } }
+  function decode(buf) { var u = new Uint8Array(buf); try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(u); } catch (e) { try { return new TextDecoder('big5').decode(u); } catch (e2) { return new TextDecoder('utf-8').decode(u); } } }
   function colPx(c) { return c && c.w ? Math.max(40, Math.round(c.w * 7 + 12)) : 110; }
 
   function mount(opt) {
@@ -28870,6 +28920,8 @@ const holder = {};
       objectIcon: function () { return '▦'; },
       objectInfo: function (o) { return o.rows.length + '×' + o.cols.length + (C.isF && o.rows.some(function (r) { return Object.keys(r.c).some(function (k) { return C.isF(r.c[k]); }); }) ? ' ƒ' : ''); },
       parseCommands: C.parseCommands,
+      file: { exportId: fmt === 'xlsx' ? 'xlsx' : 'csv', types: fmt === 'xlsx' ? [{ description: 'Excel 活頁簿', accept: { 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'] } }] : [{ description: 'CSV', accept: { 'text/csv': ['.csv', '.tsv', '.txt'] } }],
+        importBytes: async function (bytes, name) { var u = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), title = String(name || '').replace(/\.[^.]+$/, '').slice(0, 60) || spec0.title, ns; if (fmt === 'xlsx') { var Z = host.jszip ? await host.jszip() : null; if (!Z) { throw new Error('這裡還讀不了 xlsx（JSZip 沒有載入）'); } ns = await C.readXlsx(u, Z, title); if (host.keepOrig) { try { host.keepOrig(u); } catch (e) { /* 匯出時重新產生 */ } } } else { ns = C.parseCsv(decode(u), title); } if (ns.format !== fmt) { throw new Error('這個檔案不是' + (fmt === 'xlsx' ? '試算表' : 'CSV')); } return ns; } },
       promptOf: function (sp, steps) { var sh = sp.objects[0], L = ['請做一份' + (fmt === 'xlsx' ? '試算表' : ' CSV 表格') + '「' + sp.title + '」，共 ' + sp.objects.length + ' 張工作表；第一張 ' + sh.rows.length + ' 列 × ' + sh.cols.length + ' 欄。']; var p = C.profile(sh, 3); L.push('', '欄位：'); p.cols.forEach(function (c) { L.push('- ' + c.letter + (c.name ? '「' + c.name + '」' : '') + '（' + c.type + '）'); }); var texts = steps.filter(function (s) { return s.text; }); if (texts.length) { L.push('', '修改過程：'); texts.forEach(function (s, i) { L.push((i + 1) + '. ' + s.text); }); } return L.join('\n'); },
       exports: fmt === 'xlsx' ? [{ id: 'xlsx', label: 'Excel 檔 (.xlsx)', chat: false }, { id: 'csv', label: '目前工作表（CSV）', chat: false }, { id: 'json', label: '專案（JSON）', chat: false }] : [{ id: 'csv', label: 'CSV 檔 (.csv)' }, { id: 'xlsx', label: 'Excel 檔 (.xlsx)', chat: false }, { id: 'json', label: '專案（JSON）', chat: false }],
       runExport: async function (id, spec) {
@@ -29403,6 +29455,8 @@ const holder = {};
       objectInfo: function (o) { return o.type === 'heading' ? 'H' + o.level : o.type === 'li' ? (o.ordered ? '編號' : '項目') : o.type === 'table' ? o.rows.length + '×' + o.rows[0].length : ''; },
       treeRows: function (sp) { var d = 0, rows = []; sp.objects.forEach(function (b) { if (b.type === 'heading') { d = Math.min(5, b.level - 1); rows.push({ obj: b, depth: d }); d = Math.min(5, b.level); } else { rows.push({ obj: b, depth: d }); } }); return rows; },
       parseCommands: C.parseCommands,
+      file: { exportId: 'docx', types: [{ description: 'Word 文件', accept: { 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'] } }],
+        importBytes: async function (bytes, name) { var u = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), Z = host.jszip ? await host.jszip() : null; if (!Z) { throw new Error('這裡還讀不了 docx（JSZip 沒有載入）'); } var ns = await C.read(u, Z, String(name || '').replace(/\.[^.]+$/, '').slice(0, 60)); if (host.keepOrig) { try { host.keepOrig(u); } catch (e) { /* 匯出時重新產生 */ } } return ns; } },
       promptOf: function (sp, steps) { var L = ['請寫一份 Word 文件「' + sp.title + '」，共 ' + sp.objects.length + ' 個區塊。']; var heads = sp.objects.filter(function (b) { return b.type === 'heading'; }); if (heads.length) { L.push('', '大綱：'); heads.forEach(function (b) { L.push(new Array(b.level).join('  ') + '- ' + C.plain(b)); }); } var texts = steps.filter(function (s) { return s.text; }); if (texts.length) { L.push('', '修改過程：'); texts.forEach(function (s, i) { L.push((i + 1) + '. ' + s.text); }); } return L.join('\n'); },
       exports: [{ id: 'docx', label: 'Word 檔 (.docx)', chat: false }, { id: 'html', label: 'HTML 網頁' }, { id: 'txt', label: '純文字', chat: false }, { id: 'json', label: '專案（JSON）', chat: false }],
       runExport: async function (id, spec) {
@@ -29502,6 +29556,64 @@ const holder = {};
 return holder.FaEditDocxUI;
 })();
 /* EDDOCXUI-END */
+/* EDLOCALFILE-BEGIN */
+const FaLocalFile = (function () {
+const holder = {};
+(function (module, self) {
+// 編輯器的「本機檔案綁定」核心（UMD、純邏輯；平台差異由呼叫端傳進來的轉接器處理，所以 Node 用假的轉接器就能測）。設計見 DESIGN.edit-docs.md §3。
+//   const LF = FaLocalFile.create({ desk, web, store })
+//     desk（桌面版，絕對路徑）：{ stat(path) → {size, mtimeMs}, read(path) → Uint8Array, write(path, bytes) }          （desktopAPI.rawfs：writeFile 不是原子的、也沒有 rename，所以寫完會讀回檢查，並且寫之前先比對檔案有沒有在外面被改過）
+//     web（瀏覽器 File System Access）：{ pick(opts) → handle|null, pickSave(opts) → handle|null, file(handle) → { bytes, size, mtimeMs, name }, write(handle, bytes), allowed(handle, write) → Promise<bool> }（寫入用 createWritable，關閉時才一次換上，本身就接近原子）
+//     store（只有 web 要）：{ get(key), set(key, handle), del(key) }，存 FileSystemFileHandle（IndexedDB 可以存）
+//   binding：{ v:1, via:'desktop'|'web', name, path?, size, mtimeMs, hash, enc?, auto? }——存在專案的 origin.file；不跟著遠端共筆傳給別人（每台機器各自的）
+//   LF.bindDesktop(path) → { binding, bytes }    LF.bindWeb(key, opts) → { binding, bytes } | null    LF.saveAsDesktop(path, bytes, opts) / LF.saveAsWeb(key, bytes, opts) → { binding }
+//   LF.read(binding, key) → { binding, bytes }（重新載入）    LF.check(binding, key) → { changed, missing?, current }    LF.save(binding, key, bytes, { force }) → { ok, binding } | { ok:false, conflict:true, current } | { ok:false, error }
+//   LF.hash(bytes)    LF.looksLikePath(text)    LF.supported() → { desktop, web }
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaLocalFile = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  function hash(bytes) { var h = 2166136261, n = bytes.length; for (var i = 0; i < n; i++) { h ^= bytes[i]; h = Math.imul(h, 16777619); } return (h >>> 0).toString(16) + ':' + n; }
+  function baseName(p) { return String(p).replace(/[\\/]+$/, '').split(/[\\/]/).pop() || String(p); }
+  function looksLikePath(t) { t = String(t || '').trim().replace(/^["「]|["」]$/g, ''); return /^([A-Za-z]:[\\/]|\\\\|\/|~[\\/])/.test(t) && /[\\/]/.test(t.slice(1)); }
+  function create(cfg) {
+    cfg = cfg || {}; var desk = cfg.desk || null, web = cfg.web || null, store = cfg.store || null;
+    function mk(via, name, st, bytes, extra) { return Object.assign({ v: 1, via: via, name: name, size: st.size, mtimeMs: st.mtimeMs, hash: hash(bytes) }, extra || {}); }
+    async function handleOf(key) { if (!store) { throw new Error('這裡沒有保存檔案控制代碼的地方'); } var h = await store.get(key); if (!h) { throw new Error('找不到這個檔案的控制代碼（可能被清掉了），請重新綁定'); } return h; }
+    return {
+      supported: function () { return { desktop: !!desk, web: !!(web && web.pick) }; }, hash: hash, looksLikePath: looksLikePath, baseName: baseName,
+      async bindDesktop(path) { if (!desk) { throw new Error('這裡不能用路徑開檔'); } path = String(path || '').trim().replace(/^["「]|["」]$/g, ''); var st = await desk.stat(path); if (st.isDirectory) { throw new Error('這是資料夾，不是檔案'); } var bytes = await desk.read(path); return { binding: mk('desktop', baseName(path), st, bytes, { path: path }), bytes: bytes }; },
+      async bindWeb(key, opts) { if (!web || !web.pick) { throw new Error('這個瀏覽器不能直接開本機檔案（要 Chrome 或 Edge）'); } var h = await web.pick(opts || {}); if (!h) { return null; } var f = await web.file(h); if (store) { await store.set(key, h); } return { binding: mk('web', f.name, f, f.bytes), bytes: f.bytes }; },
+      async saveAsDesktop(path, bytes, opts) { if (!desk) { throw new Error('這裡不能用路徑存檔'); } path = String(path || '').trim().replace(/^["「]|["」]$/g, ''); var exists = null; try { exists = await desk.stat(path); } catch (e) { exists = null; } if (exists && exists.isDirectory) { throw new Error('這是資料夾'); } if (exists && !(opts && opts.overwrite)) { return { ok: false, exists: true }; } await desk.write(path, bytes); var st = await desk.stat(path), back = await desk.read(path); if (hash(back) !== hash(bytes)) { throw new Error('寫入後讀回來的內容不一樣'); } return { ok: true, binding: mk('desktop', baseName(path), st, bytes, { path: path }) }; },
+      async saveAsWeb(key, bytes, opts) { if (!web || !web.pickSave) { throw new Error('這個瀏覽器不能直接存到本機檔案（要 Chrome 或 Edge）'); } var h = await web.pickSave(opts || {}); if (!h) { return null; } await web.write(h, bytes); if (store) { await store.set(key, h); } var f = await web.file(h); return { ok: true, binding: mk('web', f.name, f, bytes) }; },
+      async read(b, key) { if (b.via === 'desktop') { var st = await desk.stat(b.path), bytes = await desk.read(b.path); return { binding: Object.assign({}, b, { size: st.size, mtimeMs: st.mtimeMs, hash: hash(bytes) }), bytes: bytes }; } var h = await handleOf(key); if (web.allowed && !(await web.allowed(h, false))) { throw new Error('沒有讀取這個檔案的權限'); } var f = await web.file(h); return { binding: Object.assign({}, b, { name: f.name, size: f.size, mtimeMs: f.mtimeMs, hash: hash(f.bytes) }), bytes: f.bytes }; },
+      // 檔案在外面被改過嗎：先比大小與修改時間；不同才讀內容，內容跟上次讀寫的一樣就不算改過（有些系統的修改時間會被同步軟體動到）
+      async check(b, key) {
+        try {
+          if (b.via === 'desktop') { var st = await desk.stat(b.path); if (st.size === b.size && st.mtimeMs === b.mtimeMs) { return { changed: false, current: st }; } var bytes = await desk.read(b.path); return { changed: hash(bytes) !== b.hash, current: st }; }
+          var h = await handleOf(key), f = await web.file(h); if (f.size === b.size && f.mtimeMs === b.mtimeMs) { return { changed: false, current: f }; } return { changed: hash(f.bytes) !== b.hash, current: f };
+        } catch (e) { return { changed: false, missing: true, error: String((e && e.message) || e) }; }
+      },
+      async save(b, key, bytes, opts) {
+        opts = opts || {};
+        try {
+          if (!opts.force) { var c = await this.check(b, key); if (c.changed) { return { ok: false, conflict: true, current: c.current }; } }
+          if (b.via === 'desktop') {
+            await desk.write(b.path, bytes); var st = await desk.stat(b.path), back = await desk.read(b.path);
+            if (hash(back) !== hash(bytes)) { await desk.write(b.path, bytes); back = await desk.read(b.path); if (hash(back) !== hash(bytes)) { return { ok: false, error: '寫入後讀回來的內容不一樣，檔案可能壞了——請用「另存」存到別的地方' }; } }
+            return { ok: true, binding: Object.assign({}, b, { size: st.size, mtimeMs: st.mtimeMs, hash: hash(bytes) }) };
+          }
+          var h = await handleOf(key); if (web.allowed && !(await web.allowed(h, true))) { return { ok: false, error: '沒有寫入這個檔案的權限（瀏覽器要你按允許）' }; } await web.write(h, bytes); var f = await web.file(h);
+          return { ok: true, binding: Object.assign({}, b, { name: f.name, size: f.size, mtimeMs: f.mtimeMs, hash: hash(bytes) }) };
+        } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+      },
+    };
+  }
+  return { create: create, hash: hash, looksLikePath: looksLikePath, baseName: baseName };
+});
+
+}).call(null, undefined, holder);
+return holder.FaLocalFile;
+})();
+/* EDLOCALFILE-END */
 /* EDPFX-BEGIN */
 const FaPicFx = (function () {
 const holder = {};
@@ -34536,6 +34648,7 @@ const FaEditHost = (function () {
             const withEnv = { kinds: lazy.kinds, call: (t, k, sid, name, args, o) => { try { const holder = self._edEditors && self._edEditors.get(k + ':' + sid), env = holder && holder._ed && holder._ed.env ? holder._ed.env() : null; if (env && args[0] && typeof args[0] === 'object' && !args[0].env) args = [Object.assign({}, args[0], { env: JSON.parse(JSON.stringify(env)) })].concat(args.slice(1)); } catch (_) { /* 沒有 env 就照舊 */ } return lazy.call(t, k, sid, name, args, o); } };
             const out = FaRemoteEdit.proxyHost(withEnv, { kind, sid: id, local: host, getTarget: () => self._edRemoteTarget(kind, id) });
             out.selfName = () => (self._rg && self._rg.room && self._rg.room.self && self._rg.room.self.name) || '';
+            if (typeof FaLocalFile !== 'undefined' && self._edFileKinds && self._edFileKinds[kind]) out.localFile = self._edLocalFile(kind, id, proj);
             if (typeof FaEditCollab !== 'undefined' && !(KINDS[kind] && KINDS[kind].noCollab)) { out.collabUi = { open: (el) => self._edCollabPanel(kind, id, el) }; const rec = self._edShared && self._edShared.get(kind + ':' + id); if (rec) out.collab = rec.adapter; }
             out.aiWhere = {
                 visible: () => !!self._rg || !!self._edRemoteSel(kind, id),
@@ -35141,7 +35254,7 @@ const FaEditHost = (function () {
     'use strict';
     const H = FaEditHost, T = H.T, M = H.methods;
     const TEXTY = /\.(md|markdown|mdown|txt|text|log|ini|conf|cfg|properties|env|rst|org|tex|srt|vtt|diff|patch)$/i, MD_EXT = /\.(md|markdown|mdown)$/i, SHEETY = /\.(csv|tsv|xlsx)$/i, DOCXY = /\.docx$/i;
-    const decodeText = (buf) => { const u = new Uint8Array(buf); try { return new TextDecoder('utf-8', { fatal: true }).decode(u); } catch (_) { try { return new TextDecoder('big5').decode(u); } catch (__) { return new TextDecoder('utf-8').decode(u); } } };
+    const decodeText = (buf) => { const u = new Uint8Array(buf); try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(u); } catch (_) { try { return new TextDecoder('big5').decode(u); } catch (__) { return new TextDecoder('utf-8').decode(u); } } };
 
     function coreFor(fmt) {
         const C = FaEditText;
@@ -35202,6 +35315,7 @@ const FaEditHost = (function () {
         const r = run || this, raw = String(argsText || ''), atts = FaRecipe.parseAttachments(raw), nameArg = raw.replace(/\[附件：[^\]]*\]/g, '').trim().replace(/^["「]|["」]$/g, '');
         r.messages.push({ role: 'user', content: '/edit-file' + (nameArg ? ' ' + nameArg : '') + (atts.length ? '　📎 ' + atts.map((a) => a.filename).join('、') : '') });
         const say = (t) => { r._pushAssistantMessage(t, null); try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ } };
+        if (nameArg && !atts.length && this._edIsLocalPath && this._edIsLocalPath(nameArg)) { await this._edOpenLocalPath(nameArg, say); return; }   // 絕對路徑（桌面版）：讀檔並綁定
         let targets = atts.map((a) => ({ id: a.id, name: a.filename })), all = []; try { all = (await this.fileCache.getAll()).filter((x) => x && x.filename); } catch (_) { /* */ }
         all.sort((a, b) => (b.createdAt || b.lastAccessedAt || 0) - (a.createdAt || a.lastAccessedAt || 0));
         if (!targets.length && nameArg) { const low = nameArg.toLowerCase(), hit = all.filter((x) => x.id === low || String(x.filename).toLowerCase() === low), part = hit.length ? hit : all.filter((x) => String(x.filename).toLowerCase().includes(low)); targets = part.slice(0, 3).map((x) => ({ id: x.id, name: x.filename })); if (!targets.length) { say(T('找不到檔案「' + nameArg + '」。先附上檔案(📎、拖進來、貼上)再下 /edit-file,或用 /edit-markdown、/edit-text 開空白的。', 'No such file: ' + nameArg)); return; } }
@@ -35252,7 +35366,7 @@ const FaEditHost = (function () {
     'use strict';
     const H = FaEditHost, T = H.T, M = H.methods;
     const SHEETY = /\.(csv|tsv|xlsx)$/i;
-    const decodeText = (buf) => { const u = new Uint8Array(buf); try { return new TextDecoder('utf-8', { fatal: true }).decode(u); } catch (_) { try { return new TextDecoder('big5').decode(u); } catch (__) { return new TextDecoder('utf-8').decode(u); } } };
+    const decodeText = (buf) => { const u = new Uint8Array(buf); try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(u); } catch (_) { try { return new TextDecoder('big5').decode(u); } catch (__) { return new TextDecoder('utf-8').decode(u); } } };
     function coreFor(fmt) {
         const C = FaEditSheet, pick = (id) => (fmt === 'xlsx' ? (id === 'blank' ? 'sheet' : id) : id);
         return { validate: (s) => C.validate(s), listStarters: () => C.listStarters().filter((t) => (t.id === 'budget' || t.id === 'sheet') === (fmt === 'xlsx')), starter: (id) => C.starter(pick(String(id || 'blank'))) };
@@ -35399,6 +35513,78 @@ const FaEditHost = (function () {
             { type: 'object', properties: { starter: { type: 'string', description: '起手式 blank／letter／report' }, text: { type: 'string', description: '開起來時的純文字(空行分段)' }, title: { type: 'string', description: '文件名稱' }, request: { type: 'string', description: '一句話要怎麼改或寫什麼' }, file_id: { type: 'string', description: '使用者附的 .docx' }, id: { type: 'string', description: '接著原來的專案編輯' } } });
     };
     { const prevTools = M._registerEditTools; M._registerEditTools = function (ro) { if (prevTools) prevTools.call(this, ro); this._registerEditDocxTools(ro); }; }
+})();
+
+/* 編輯器的本機檔案綁定的主機轉接層(接在 docx_host.js 後面,同一個 FaEditHost)。核心在 local_file.js(FaLocalFile)。設計見 DESIGN.edit-docs.md §3。
+ * 桌面版:用 desktopAPI.rawfs 的絕對路徑(這個 Electron 的原生檔案對話框不會顯示,所以路徑用輸入的:/edit-file 路徑、或標題列「💾 本機檔案」裡輸入);writeFile 不是原子的、也沒有 rename,
+ *   所以存檔前先比對檔案有沒有在外面被改過(大小+修改時間,不同再比內容),寫完讀回檢查。
+ * 網頁版:File System Access(Chrome／Edge):選檔／另存得到控制代碼,存在 IndexedDB,下次開啟專案還在(權限要重新按允許)。
+ * 綁定存在專案的 origin.file(每台機器各自的,不會跟著遠端共筆傳給別人)。支援的編輯器:edit-markdown、edit-text、edit-csv、edit-xlsx、edit-docx。 */
+(function () {
+    'use strict';
+    const H = FaEditHost, M = H.methods, T = H.T;
+    const FILE_KINDS = { 'edit-markdown': 'text', 'edit-text': 'text', 'edit-csv': 'text', 'edit-xlsx': 'bin', 'edit-docx': 'bin' };
+    const isUtf8 = (u) => { try { new TextDecoder('utf-8', { fatal: true }).decode(u); return true; } catch (_) { return false; } };
+    const b64 = (u8) => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); };
+    const unb64 = (s) => { const bin = atob(s), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; };
+    // ───── 控制代碼存在 IndexedDB（FileSystemFileHandle 可以直接存）
+    function idbStore() {
+        const open = () => new Promise((res, rej) => { const r = indexedDB.open('fa-file-handles', 1); r.onupgradeneeded = () => r.result.createObjectStore('h'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+        const tx = async (mode, fn) => { const db = await open(); return new Promise((res, rej) => { const t = db.transaction('h', mode), q = fn(t.objectStore('h')); t.oncomplete = () => res(q && q.result); t.onerror = () => rej(t.error); }); };
+        return { get: (k) => tx('readonly', (s) => s.get(k)), set: (k, v) => tx('readwrite', (s) => s.put(v, k)), del: (k) => tx('readwrite', (s) => s.delete(k)) };
+    }
+    M._edFilePlatform = function () {
+        if (this._edFilePlat) return this._edFilePlat; const out = {};
+        const raw = window.desktopAPI && window.desktopAPI.rawfs;
+        if (raw) out.desk = { stat: async (p) => raw.stat(p), read: async (p) => { const r = await raw.readFile(p); return r && r.base64 != null ? unb64(r.base64) : new TextEncoder().encode(String((r && r.text) || '')); }, write: async (p, bytes) => { await raw.writeFile(p, { base64: b64(bytes) }); } };
+        if (typeof window.showOpenFilePicker === 'function') {
+            const perm = async (h, write) => { const o = { mode: write ? 'readwrite' : 'read' }; if (h.queryPermission && (await h.queryPermission(o)) === 'granted') return true; return !!(h.requestPermission && (await h.requestPermission(o)) === 'granted'); };
+            out.web = { pick: async (o) => { try { const a = await window.showOpenFilePicker({ multiple: false, types: (o && o.types) || undefined }); return a[0] || null; } catch (e) { if (e && e.name === 'AbortError') return null; throw e; } },
+                pickSave: async (o) => { try { return await window.showSaveFilePicker({ suggestedName: o && o.suggestedName, types: (o && o.types) || undefined }); } catch (e) { if (e && e.name === 'AbortError') return null; throw e; } },
+                file: async (h) => { const f = await h.getFile(); return { bytes: new Uint8Array(await f.arrayBuffer()), size: f.size, mtimeMs: f.lastModified, name: f.name }; },
+                write: async (h, bytes) => { const w = await h.createWritable(); try { await w.write(bytes); } finally { await w.close(); } }, allowed: perm };
+            try { out.store = idbStore(); } catch (_) { /* 沒有 IndexedDB：下次開啟要重新綁定 */ }
+        }
+        this._edFilePlat = out; return out;
+    };
+    M._edIsLocalPath = function (t) { return typeof FaLocalFile !== 'undefined' && FaLocalFile.looksLikePath(t) && !!(window.desktopAPI && window.desktopAPI.rawfs); };
+    M._edLocalFile = function (kind, id, proj) {
+        const self = this, key = kind + ':' + id, plat = this._edFilePlatform(), lf = FaLocalFile.create(plat); this._edFileB = this._edFileB || new Map();
+        const ob = proj && proj.origin && proj.origin.file; if (ob && ob.via && !this._edFileB.has(key)) this._edFileB.set(key, Object.assign({}, ob));
+        const persist = (b) => { if (b) this._edFileB.set(key, b); else this._edFileB.delete(key); return this._edPatchOrigin(kind, id, (o) => { o.file = b ? Object.assign({}, b) : { name: (o.file && o.file.name) || '' }; }).catch(() => {}); };
+        const withEnc = (b, bytes) => (FILE_KINDS[kind] === 'text' ? Object.assign({}, b, { enc: isUtf8(bytes) ? 'utf-8' : 'big5' }) : b);
+        const askPath = (msg, def) => { const d = window.desktopAPI && window.desktopAPI.dialogs; if (!d || !d.prompt) return null; const v = d.prompt(msg, def || ''); return v ? String(v).trim() : null; };
+        return {
+            info: () => self._edFileB.get(key) || null, supported: () => lf.supported(), ready: () => Promise.resolve(),
+            async openAndBind(types) {
+                let res; if (plat.desk) { const p = askPath(T('要開啟的檔案的完整路徑（例如 C:\\文件\\a.docx 或 /home/me/a.csv）', 'Full path of the file to open'), ''); if (!p) return null; res = await lf.bindDesktop(p); } else { res = await lf.bindWeb(key, { types }); if (!res) return null; }
+                const b = withEnc(res.binding, res.bytes); await persist(b); return { bytes: res.bytes, name: b.name };
+            },
+            async saveAsAndBind(bytes, name, types) {
+                let r; if (plat.desk) {
+                    let dir = ''; try { dir = (await window.desktopAPI.downloads.defaultDir()) || ''; } catch (_) { dir = ''; } const sep = /\\/.test(dir) ? '\\' : '/'; const p = askPath(T('存成這個路徑（完整路徑）', 'Save to this path'), dir ? dir.replace(/[\\/]+$/, '') + sep + name : name); if (!p) return null;
+                    r = await lf.saveAsDesktop(p, bytes); if (r && r.exists) { if (typeof confirm === 'function' && !confirm(T('這個檔案已經存在，要覆蓋嗎？', 'The file exists. Overwrite?'))) return null; r = await lf.saveAsDesktop(p, bytes, { overwrite: true }); }
+                } else { r = await lf.saveAsWeb(key, bytes, { suggestedName: name, types }); if (!r) return null; }
+                const b = withEnc(r.binding, bytes); await persist(b); return { name: b.name };
+            },
+            async save(bytes, o) { const b = self._edFileB.get(key); if (!b) return { ok: false, error: T('還沒綁定檔案', 'No file bound') }; const r = await lf.save(b, key, bytes, o); if (r.ok) { await persist(withEnc(r.binding, bytes)); } return r; },
+            async reload() { const b = self._edFileB.get(key); if (!b) return null; const r = await lf.read(b, key); const nb = withEnc(r.binding, r.bytes); await persist(nb); return { bytes: r.bytes, name: nb.name }; },
+            async check() { const b = self._edFileB.get(key); return b ? lf.check(b, key) : { changed: false }; },
+            unbind() { const b = self._edFileB.get(key); if (b && b.via === 'web' && plat.store) { plat.store.del(key).catch(() => {}); } persist(null); },
+            setAuto(v) { const b = self._edFileB.get(key); if (b) persist(Object.assign({}, b, { auto: !!v })); },
+        };
+    };
+    // /edit-file 後面接絕對路徑（桌面版）：讀檔、依副檔名開編輯器、直接綁定
+    M._edOpenLocalPath = async function (path, say) {
+        const lf = FaLocalFile.create(this._edFilePlatform()); let res; try { res = await lf.bindDesktop(path); } catch (e) { say(T('開不起來：', 'Could not open it: ') + String((e && e.message) || e)); return; }
+        const name = res.binding.name, buf = res.bytes.buffer.slice(res.bytes.byteOffset, res.bytes.byteOffset + res.bytes.byteLength), isText = /\.(md|markdown|mdown|txt|text|log|ini|conf|cfg|properties|env|rst|org|tex|srt|vtt|diff|patch)$/i.test(name), isCsv = /\.(csv|tsv)$/i.test(name), isX = /\.xlsx$/i.test(name), isD = /\.docx$/i.test(name);
+        const kindOf = isD ? 'edit-docx' : isX ? 'edit-xlsx' : isCsv ? 'edit-csv' : /\.(md|markdown|mdown)$/i.test(name) ? 'edit-markdown' : 'edit-text';
+        if (!isText && !isCsv && !isX && !isD) { say(T('「' + name + '」這種格式還沒有編輯器（目前:.md、純文字、.csv、.xlsx、.docx）。', 'No editor for this format yet.')); return; }
+        const b = FILE_KINDS[kindOf] === 'text' ? Object.assign({}, res.binding, { enc: isUtf8(res.bytes) ? 'utf-8' : 'big5' }) : res.binding, extra = { origin: { file: b } };
+        const r = isD ? await this._edOpenDocxFile(name, buf, extra) : (isX || isCsv) ? await this._edOpenSheetFile(name, buf, extra) : await this._edOpenTextFile(name, buf, extra);
+        if (r && r.ok === false) say('⚠️ ' + (r.error || '')); else say(T('已開啟並綁定 ', 'Opened and bound ') + res.binding.path + T('（Ctrl+S 存回檔案）', ' (Ctrl+S saves back)'));
+    };
+    M._edFileKinds = FILE_KINDS;
 })();
 
 /* 多人同編的主機轉接層(接在 edit_host.js 後面,同一個 FaEditHost)。設計見 DESIGN.edit-remote.md §6.5;文件邏輯在 FaEditSession,訊息層在 FaEditCollab。

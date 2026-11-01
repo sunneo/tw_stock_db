@@ -92,6 +92,7 @@ const suites = [
     ['試算表公式求值器（四則、範圍、統計、文字、IF、查找、循環與錯誤）', 'scripts/edit-tests/sheet_formula.test.js'],
     ['表格文件核心（CSV 往返位元組一致、動作、公式參照位移、程式白話、xlsx 讀寫）', 'scripts/edit-tests/sheet_core.test.js'],
     ['Word 文件核心（讀、沒改的區塊原樣輸出、package patching、格式、清單、表格、程式白話）', 'scripts/edit-tests/docx_core.test.js'],
+    ['本機檔案綁定核心（開檔、存回、外部修改衝突、讀回驗證、web 控制代碼）', 'scripts/edit-tests/local_file.test.js'],
     ['遠端共筆 patch 模式（id 定址的 JSON 差異、套用與略過、逐行 diff3）', 'scripts/remote-tests/rg_patch.test.js'],
     ['環境基準線（檔位判斷、政策、OOM 辨識、資源治理：讓位／排隊／跑完卸載／壓力／降級）', 'scripts/env-tests/env_profile.test.js'],
     ['模擬 swap（熱區上限、最久沒用的先寫出、讀回、丟掉）', 'scripts/env-tests/swap.test.js'],

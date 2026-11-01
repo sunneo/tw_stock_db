@@ -5,7 +5,7 @@
     'use strict';
     const H = FaEditHost, T = H.T, M = H.methods;
     const TEXTY = /\.(md|markdown|mdown|txt|text|log|ini|conf|cfg|properties|env|rst|org|tex|srt|vtt|diff|patch)$/i, MD_EXT = /\.(md|markdown|mdown)$/i, SHEETY = /\.(csv|tsv|xlsx)$/i, DOCXY = /\.docx$/i;
-    const decodeText = (buf) => { const u = new Uint8Array(buf); try { return new TextDecoder('utf-8', { fatal: true }).decode(u); } catch (_) { try { return new TextDecoder('big5').decode(u); } catch (__) { return new TextDecoder('utf-8').decode(u); } } };
+    const decodeText = (buf) => { const u = new Uint8Array(buf); try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(u); } catch (_) { try { return new TextDecoder('big5').decode(u); } catch (__) { return new TextDecoder('utf-8').decode(u); } } };
 
     function coreFor(fmt) {
         const C = FaEditText;
@@ -66,6 +66,7 @@
         const r = run || this, raw = String(argsText || ''), atts = FaRecipe.parseAttachments(raw), nameArg = raw.replace(/\[附件：[^\]]*\]/g, '').trim().replace(/^["「]|["」]$/g, '');
         r.messages.push({ role: 'user', content: '/edit-file' + (nameArg ? ' ' + nameArg : '') + (atts.length ? '　📎 ' + atts.map((a) => a.filename).join('、') : '') });
         const say = (t) => { r._pushAssistantMessage(t, null); try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ } };
+        if (nameArg && !atts.length && this._edIsLocalPath && this._edIsLocalPath(nameArg)) { await this._edOpenLocalPath(nameArg, say); return; }   // 絕對路徑（桌面版）：讀檔並綁定
         let targets = atts.map((a) => ({ id: a.id, name: a.filename })), all = []; try { all = (await this.fileCache.getAll()).filter((x) => x && x.filename); } catch (_) { /* */ }
         all.sort((a, b) => (b.createdAt || b.lastAccessedAt || 0) - (a.createdAt || a.lastAccessedAt || 0));
         if (!targets.length && nameArg) { const low = nameArg.toLowerCase(), hit = all.filter((x) => x.id === low || String(x.filename).toLowerCase() === low), part = hit.length ? hit : all.filter((x) => String(x.filename).toLowerCase().includes(low)); targets = part.slice(0, 3).map((x) => ({ id: x.id, name: x.filename })); if (!targets.length) { say(T('找不到檔案「' + nameArg + '」。先附上檔案(📎、拖進來、貼上)再下 /edit-file,或用 /edit-markdown、/edit-text 開空白的。', 'No such file: ' + nameArg)); return; } }

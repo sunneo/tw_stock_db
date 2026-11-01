@@ -622,6 +622,7 @@ const FaEditHost = (function () {
             const withEnv = { kinds: lazy.kinds, call: (t, k, sid, name, args, o) => { try { const holder = self._edEditors && self._edEditors.get(k + ':' + sid), env = holder && holder._ed && holder._ed.env ? holder._ed.env() : null; if (env && args[0] && typeof args[0] === 'object' && !args[0].env) args = [Object.assign({}, args[0], { env: JSON.parse(JSON.stringify(env)) })].concat(args.slice(1)); } catch (_) { /* 沒有 env 就照舊 */ } return lazy.call(t, k, sid, name, args, o); } };
             const out = FaRemoteEdit.proxyHost(withEnv, { kind, sid: id, local: host, getTarget: () => self._edRemoteTarget(kind, id) });
             out.selfName = () => (self._rg && self._rg.room && self._rg.room.self && self._rg.room.self.name) || '';
+            if (typeof FaLocalFile !== 'undefined' && self._edFileKinds && self._edFileKinds[kind]) out.localFile = self._edLocalFile(kind, id, proj);
             if (typeof FaEditCollab !== 'undefined' && !(KINDS[kind] && KINDS[kind].noCollab)) { out.collabUi = { open: (el) => self._edCollabPanel(kind, id, el) }; const rec = self._edShared && self._edShared.get(kind + ':' + id); if (rec) out.collab = rec.adapter; }
             out.aiWhere = {
                 visible: () => !!self._rg || !!self._edRemoteSel(kind, id),

@@ -5,7 +5,7 @@
     'use strict';
     const H = FaEditHost, T = H.T, M = H.methods;
     const SHEETY = /\.(csv|tsv|xlsx)$/i;
-    const decodeText = (buf) => { const u = new Uint8Array(buf); try { return new TextDecoder('utf-8', { fatal: true }).decode(u); } catch (_) { try { return new TextDecoder('big5').decode(u); } catch (__) { return new TextDecoder('utf-8').decode(u); } } };
+    const decodeText = (buf) => { const u = new Uint8Array(buf); try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(u); } catch (_) { try { return new TextDecoder('big5').decode(u); } catch (__) { return new TextDecoder('utf-8').decode(u); } } };
     function coreFor(fmt) {
         const C = FaEditSheet, pick = (id) => (fmt === 'xlsx' ? (id === 'blank' ? 'sheet' : id) : id);
         return { validate: (s) => C.validate(s), listStarters: () => C.listStarters().filter((t) => (t.id === 'budget' || t.id === 'sheet') === (fmt === 'xlsx')), starter: (id) => C.starter(pick(String(id || 'blank'))) };

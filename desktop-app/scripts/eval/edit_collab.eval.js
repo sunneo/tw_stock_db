@@ -54,7 +54,7 @@ const kB = 'edit-markdown:' + B.r.id; await fa._edPatchOrigin('edit-markdown', B
 p.leave(); fa._edShared.delete(kB); B.ed._ed.detachCollab(); curC = cB; fa._rg = { room: rB }; await wait(100);
 await B.ed._ed.send('在最後加一段：重開前離線寫的'); await wait(300); ok('solo_edit_while_detached', /重開前離線寫的/.test(ser(B.ed)) && !/重開前離線寫的/.test(ser(A.ed)));
 fa._edAutoReconnect('edit-markdown', B.r.id, await FaEditStore.loadProject('edit-markdown', B.r.id));
-await until(() => /重開前離線寫的/.test(ser(A.ed)), 12000); ok('auto_reconnect_offline_edit_reaches_host', /重開前離線寫的/.test(ser(A.ed)) && ser(A.ed) === ser(B.ed), [ser(A.ed), ser(B.ed)]);
+await until(() => /重開前離線寫的/.test(ser(A.ed)), 12000); await wait(500); ok('auto_reconnect_offline_edit_reaches_host', /重開前離線寫的/.test(ser(A.ed)) && ser(A.ed) === ser(B.ed), [ser(A.ed), ser(B.ed)]);
 ok('rejoined_has_collab_bar', !!B.ed.querySelector('.collab') && fa._edShared.has(kB));
 const pj = await FaEditStore.loadProject('edit-markdown', B.r.id); ok('origin_shared_kept', pj.origin && pj.origin.shared && pj.origin.shared.sid === A.r.id && !!pj.origin.shared.base, pj.origin);
 // ⑨ 停止分享
