@@ -1,4 +1,4 @@
-# 交接文件：音樂領域（MIDI／mp3 轉 MIDI／音色庫瘦身，handoff 1，2026-11-01）
+# 交接文件：音樂領域（MIDI／mp3 轉 MIDI／音色庫瘦身，handoff 2，2026-11-01）
 
 ## 1. 開場提示（給接手的工作階段）
 Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app\desktop-app\DESIGN.TODO.music.md`. 先完整讀完（含使用者原話與做法備忘），照做。工作目錄 `D:\Downloads\videos-嗨投資-desktop-app\desktop-app`（產品程式在這裡）；參考專案 `D:\Downloads\SRC\piano-web` 只讀不改（若沒有權限讀，先用目錄授權工具請求該目錄）。執行 low-context-long-run 技能（門檻 30%）：做 Todo 的第一項，context 到門檻就更新這份文件並啟動你的接手工作階段（`mcp__ccd_session__start_session` 是延遲載入的工具，先用 ToolSearch 載入）。第一則訊息用一行說明你讀完了、要開始哪一項。回覆一律繁體中文、不要夾英文縮寫。**不要做長篇規劃、不要問，直接查證、寫程式、測試、提交。**
@@ -19,14 +19,18 @@ Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app
 | 6 | 接進簡報（media-presentation）、2D／3D 遊戲、影片剪輯當配樂 | 一條共用的「配樂」介面 |
 | 7 | 風格知識：瀏覽器查維基的風格介紹、風格設計範本 | 與階段 3 共用 |
 
-## 3. Todo（依序，每項做完測試、提交；發布見最後）
-**第一項（現在就做）：階段 0 的三件事，各一小時內，結果寫進 `DESIGN.music.md`（新檔，短，含「未驗證」標示）：**
-1. **音色庫分析工具** `scripts/sf-analyze.js`（node）：讀 `D:\Downloads\SRC\piano-web\vendor\soundfonts\`（或 `js/vendor-data/soundfont-gs-b64.js` 解出的 GeneralUser-GS.sf2，約 32 MB，base64 後 43 MB）。輸出：樣本（sample）數量與總位元組、取樣率分布、每個預設音色（preset）用到的樣本、**完全相同的樣本（內容雜湊）**、**近似重複的樣本（同音高、波形相關係數高）**、未被任何預設音色使用的樣本、循環點（loop）資訊。可以借 SpessaSynth 的 sf2 解析（`D:\Downloads\SRC\piano-web\vendor\spessasynth` 與 `vendor-data/spessasynth-lib-b64.js`），也可以自己寫（sf2 是 RIFF，格式單純）。這個報告決定階段 4 能省多少。
-2. **轉譜模型查證**：找 mp3→MIDI 與樂器拆軌可用的 ONNX 模型——候選：Basic Pitch（多音轉譜，樂器無關，模型很小）、Demucs／Open-Unmix 的 ONNX（人聲／鼓／貝斯／其他四軌）、MT3 類（多樂器轉譜，通常很大）、鼓轉譜模型。對每個記：Hugging Face 或官方的 ONNX 檔在哪、檔案大小、授權（能不能散布；不能就改「使用者自己下載」，像 UniK3D 那樣不內建）、onnxruntime-web 的 WebGPU 與 WASM 是否能跑、輸入長度限制。**只記查到的事實，查不到就寫「未驗證」，不要猜。**
-3. **piano-web 盤點**：讀 `D:\Downloads\SRC\piano-web` 的 `js/multitrack.js`（245 KB，多音軌編輯器；含 AI 讀譜分段 `MT_AI_MAX_CHUNK_SIZE`）、`js/gs-engine.js`（SpessaSynth＋GeneralUser-GS 的音色引擎）、`js/midi-export.js`、`js/mp3-export.js`（lame）、`js/player.js`、`js/soundfont.js`、`js/custom-instruments.js`，寫出「哪些能搬、哪些依賴 DOM／全域、哪些要改成只用 GS 音色」的一頁清單（以函式／檔案為單位）。授權：SpessaSynth 是 Apache-2.0，GeneralUser GS 允許任何用途包含商業（要保留授權文字，見 piano-web 的 `vendor/spessasynth/SPESSASYNTH-LICENSE.txt`）。
+## 3. Todo（依序；階段 0 已做完，階段 1 做了大半）
 
-**之後各階段（做完前一階段再做下一階段，不要問）：**
-- **階段 1**：純函式核心 `renderer/src/music/midi_core.js`（`FaMidi`：解析／寫出標準 MIDI 檔、事件模型 `{tracks:[{name,program,channel,notes:[{t,d,n,v}]}], tempo, timesig}`，量化、移調、合併／拆分軌，測試 `scripts/music-tests/`）；合成引擎沿用 SpessaSynth＋GS 音色（延遲載入，不是核心）；**MIDI 播放卡片**（聊天裡一則訊息，圖碼 ```` ```fa-midi {...} ````，仿 `fa-edit-*` 與 3D 場景卡；播放／暫停／進度／音軌靜音與音量／下載）；**MIDI 轉 mp3**（沿用 piano-web 的離線渲染＋lame 做法）；斜線指令 `/midi`、`/midi-to-mp3`，工具 `midi_play`、`midi_to_mp3`；domain `music` 登錄在 `SUBAGENT_DOMAIN_REGISTRY`（`renderer/src/floating-assistant.js` 搜 `SUBAGENT_DOMAIN_REGISTRY.code_debug` 看寫法），systemPrompt 裡放**音樂知識描述**：調性與音階、和弦與功能、節奏與拍號、聲部與音域（每種 GM 樂器的合理音域）、配器常識、各風格（流行、搖滾、爵士、古典、電子、民謠、拉丁、嘻哈…）的典型和弦進行／節奏型／速度範圍／配器；工具說明用中文引號，不要反引號。
+**已完成並提交（細節與實測結果見 `DESIGN.music.md` §1–§5）：**
+- 階段 0：`scripts/sf-analyze.js`（結論：重複樣本不到 0.05 MB，瘦身要靠降取樣與 SF3 壓縮）、轉譜模型查證、piano-web 盤點（c6a21abf）。
+- 階段 1 程式：`renderer/src/music/{midi_core,midi_play,midi_ui,music_knowledge}.js`＋測試 `scripts/music-tests/`（41 項全過，已接進 `scripts/run-core-tests.js`）、播放卡片 `fa-midi`、工具 `midi_play`／`midi_to_mp3`／`music_topic`、斜線 `/midi`、`/midi-to-mp3`、domain `music`、合成器程式庫放 `renderer/vendor/spessasynth/`（提交 2befe2d0…最新見 git log）。瀏覽器實測有聲、卡片可播（測試頁 `scripts/music-tests/browser.html`、`card.html`；音色庫本機副本放在 TEMP 的 gs.sf2，**不要放進 scripts/ 以免 publish.sh 的 git add -A 把 32 MB 提交進去**）。
+
+**第一項（現在就做）：收尾階段 1 並發布**
+1. 已經建置好（embed-code-ui＋build-assistant＋web-lazy 檢查通過），但**發布被自動模式的權限檢查擋下（Production Deploy）**：先向使用者回報並請他確認或自己執行 `PUBLISH_TRAILER="Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>" bash scripts/publish.sh -m "音樂階段1：MIDI 播放卡片、轉 mp3、domain music"`；不要繞過。使用者確認前先做第 2 步與階段 2 的純函式部分。
+2. 補驗證（誠實標在 DESIGN.music.md §5「未驗證」）：（a）`midi_to_mp3` 的 mp3 編碼真機走一次（lamejs 從 CDN 載入，內建瀏覽器載 CDN 很慢，可把 lame.min.js 放本機伺服器測）；（b）網頁版合成器路徑（`_midiSources` 由 `__FA_LAZY_BASE` 往上兩層推 `renderer/vendor/spessasynth/`，要對照 publish 後遠端實際目錄，用 curl 查 200）；（c）在桌面版或網頁版整條流程（說「放一首…」→ 工具 → 卡片 → 播放）。
+3. `FEATURES.md` 加一條音樂功能（該檔有別的工作階段的未提交修改，要加時只加自己那段，不要連帶提交別人的）。
+
+**之後各階段（做完前一階段再做下一階段，不要問）：階段 2 → 7，內容見原文如下（階段 1 已完成的部分略）。**
 - **階段 2**：MIDI 編輯器 `/edit-midi`（仿 `FaEditShell` 外框：音軌欄、鋼琴捲簾、屬性、復原重做、底部 AI 對話框；**音色只能選 GS 音色**，GM 128＋鼓組；piano-web 的多音軌設計可參考，但不要整個搬）；**內建問 AI**：編輯器底部對話框用封閉動作（add_note、move、transpose、quantize、set_program、add_track、delete…）加 `parseCommands`（程式先讀中文），讀不懂才問模型；**遠端**：MIDI 播放卡片要能在遠端卡片裡顯示（看 `REMOTE` 區塊與遠端卡片機制，`renderer/src/remote/`），**遠端編輯**（遠端的人改同一份 MIDI，沿用現有遠端群組的訊息通道；衝突用「較新者勝＋事件層級合併」，每次編輯是一個事件）。
 - **階段 3**：AI 創作。UML design 的意思（使用者定義）：「由上而下持續規劃，細切到不可再切，再用 CoLU 接線；弱到不能規劃時用樣板；不是寫死流程」。做法：風格→段落結構（前奏／主歌／副歌…）→和弦進行（從風格範本挑，程式驗證調內和弦）→旋律（節奏型範本＋和弦音約束，程式驗證音域與不超過跳進上限）→伴奏／貝斯／鼓（範本）→配器（GM 音色對應）。模型只做封閉選擇題與填空（挑風格、挑進行、挑速度），生成的音符由程式產生並檢查；檢查失敗自動重來（暫時性失敗要自己重試到底）。輸出直接進 `/edit-midi`。可存成功案例進離線訓練器（`editor_cases` 種類 `edit-midi`）。
 - **階段 4**：依階段 0 的分析報告，做 `scripts/sf-slim.js`：去掉未使用樣本、合併完全相同的樣本、近似重複改成共用（調整調音偏移）、降取樣率（依音高與用途，例如 22.05 kHz／16 kHz）、截短循環前多餘的尾段、壓縮（Ogg Vorbis 的 sf3，SpessaSynth 若支援 sf3 就用；不支援就用自訂分檔格式＋解壓）。目標：**迷你 GS 音色庫**（使用者說 Roland Virtual Sound Canvas SC-88 的安裝包與音色檔非常小，GeneralUser GS 太大，要最小化音色並找出重複區）。**重要：Roland 的音色資料有版權，只能當「大小目標」參考，絕對不要抽取、轉換或散布 Roland 的樣本。** 只對 GeneralUser GS（允許修改散布，保留授權文字）做瘦身；每次瘦身要附**聽感比對工具**（同一份 MIDI 用原版與瘦身版各渲染一次，算頻譜差異，列出差異最大的音色給人聽）。
@@ -37,6 +41,7 @@ Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app
 **完成後直接發布**（使用者慣例：完成一個階段、測試全過就更新網頁、發布 patch；**沒有全過不要發布**）：`PUBLISH_TRAILER="Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>" bash scripts/publish.sh -m "…"`，再 curl 查遠端 `manifest.v2.json` 版本。發布前確認：新模組的網頁版區塊檔都在 `web-lazy/manifest.json`、都在釘住的 commit 下回應 HTTP 200（這台 Node 沒有 `fetch`，`web-lazy-check.js --remote` 會失敗，改用 curl 逐一核對檢查碼）；桌面版整份檔案所以不受影響。如果發布腳本被權限檢查擋下，回報給使用者確認，不要繞過。
 
 ## 4. 做法備忘（使用者的規則）
+- 發布被權限檢查擋下就回報使用者，不要繞過。
 - 繁體中文、結論先說、不要在中文裡夾英文縮寫；做完誠實說哪些沒驗證。
 - 改來源模組（`renderer/src/music/*.js`），再 `node scripts/embed-code-ui.js && node build-assistant.js`；不要改嵌入後那份。新模組要加進 `scripts/embed-code-ui.js` 的嵌入清單，並確認 `web-lazy` 建置有把它拆成區塊。
 - 改檔用 Edit／Write 工具；**Bash heredoc 內的 Python 會吃掉反斜線與中文**，需要時用 Write 工具寫 `.py` 檔再執行。`floating-assistant.js` 行尾 CRLF／LF 混合，改前用 `s.count()` 試兩種。
@@ -73,3 +78,11 @@ Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app
 - 遠端編輯要先看現有遠端機制能不能傳「事件」而不是整份檔案，大 MIDI 整份傳會卡。
 - 網頁版是離線優先：區塊下載失敗要明確提示、已載入的能用。
 - `scripts/embed-code-ui.js` 會把 `floating-assistant.js` 整份重寫（行尾可能被統一）；提交時看 `git diff --stat`。
+
+## 8. 階段 1 學到的坑（handoff 2 新增）
+- 離線渲染（OfflineAudioContext＋SpessaSynth）送完事件後要等一下才能 startRendering，否則整段靜音（事件經訊息埠非同步到處理器執行緒）；`renderOffline` 已處理。
+- 瀏覽器窗格隱藏時下載與計時會被節流：測試用本機伺服器＋本機音色庫副本；`javascript_tool` 不要回傳大量日誌（進度回呼只存最後一則）。
+- `scripts/publish.sh` 會 `git add -A renderer scripts web-lazy`：scripts/ 底下不能放大檔；其他工作階段未提交的檔案也會被帶進去，發布前看 `git status`。
+- 本機 python http.server 在這台會回 404（cwd 問題），改用 scratchpad 內的小 node 伺服器（`node srv.js <資料夾>`，埠 8777）。
+- 嵌入 `floating-assistant.js` 的模組 factory 取不到另一個嵌入模組要用 `root.X || (typeof X !== "undefined" ? X : undefined)`（見 midi_play.js 開頭）。
+- 對 `floating-assistant.js` 的大改用 Write 寫一次性補丁腳本（scratchpad），錨點必須唯一，CRLF/LF 混合所以錨點用單行。
