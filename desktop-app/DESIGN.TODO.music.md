@@ -1,4 +1,4 @@
-# 交接文件：音樂領域（MIDI／mp3 轉 MIDI／音色庫瘦身，handoff 4，2026-11-01）
+# 交接文件：音樂領域（MIDI／mp3 轉 MIDI／音色庫瘦身，handoff 5，2026-11-01）
 
 ## 1. 開場提示（給接手的工作階段）
 Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app\desktop-app\DESIGN.TODO.music.md`. 先完整讀完（含使用者原話與做法備忘），照做。工作目錄 `D:\Downloads\videos-嗨投資-desktop-app\desktop-app`（產品程式在這裡）；參考專案 `D:\Downloads\SRC\piano-web` 只讀不改（若沒有權限讀，先用目錄授權工具請求該目錄）。執行 low-context-long-run 技能（門檻 30%）：做 Todo 的第一項，context 到門檻就更新這份文件並啟動你的接手工作階段（`mcp__ccd_session__start_session` 是延遲載入的工具，先用 ToolSearch 載入）。第一則訊息用一行說明你讀完了、要開始哪一項。回覆一律繁體中文、不要夾英文縮寫。**不要做長篇規劃、不要問，直接查證、寫程式、測試、提交。**
@@ -20,6 +20,15 @@ Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app
 | 7 | 風格知識：瀏覽器查維基的風格介紹、風格設計範本 | 與階段 3 共用 |
 
 ## 3. Todo（依序；階段 0–3 已做完，下一個是階段 4）
+
+### 目前狀態（handoff 5 接手時，2026-11-01，管理層寫入，**先看這段**）
+- 已完成並提交：階段 0～4。階段 1／2／3 已由管理層發布（v257／v258／v259）。階段 4（音色庫瘦身，cc17af7e）只有腳本與測試，沒有隨 patch 發出的檔案，所以沒發布。階段 5 的模型查證已提交（787c1623：Demucs 6 軌 fp16 約 136 MB、MIT；Basic Pitch Apache-2.0；都沒下載或實跑，Basic Pitch 檔案大小與張量形狀、WebGPU 能否跑沒查到，仍是「未驗證」）。
+- **工作樹有上一個接手做到一半、尚未提交的階段 5 規則部分**（`renderer/src/floating-assistant.js`、`scripts/embed-code-ui.js`、`scripts/run-core-tests.js` 等有修改，另有新檔）：它回報「規則部分已寫好、單元測試…」但被截斷、沒提交。**第一件事：看 `git status`／`git diff` 弄清楚這些修改是什麼，跑對應的測試與 `node scripts/run-core-tests.js`，沒有新增失敗就提交；有壞掉的就修好或還原那一段（只還原你確認是上一個接手寫的、不是別人的）。**
+- 然後做階段 5 剩下的（拆軌模型的載入與執行、Basic Pitch 轉譜、樂器分類選擇題、分群退路、輸出進 `/edit-midi`），再階段 6、7。
+- **等使用者決定、你不要自己做**：① 5.8 MB 瘦身版 SF3（`gs-22k.sf3`，在 scratchpad）要不要取代原版當預設音色庫；② 要不要把音色庫 5 片推到 `soundfont-assets` 分支並填入 `gsSoundbankBase`。聽感尚未用耳朵確認。
+- **發布由管理層代發**（使用者 2026-11-01 說「由你代發」）：你**不要執行發布腳本**。每完成一個階段（測試全過、入口測試沒有新增失敗、已提交），在回報最後一行寫「階段 N 已提交，可發布，commit <hash>」，然後立刻接著做下一個階段。若這個階段沒有隨 patch 發出的檔案，註明「只有腳本與文件」。
+- **這個 app 不允許子工作階段自己啟動接手**（上一個接手試過）。所以到 context 門檻時：更新本文件、提交，然後在回報最後一行寫「需要接手，文件已更新，commit <hash>」，由管理層啟動下一個。
+
 
 **已完成並提交（細節與實測結果見 `DESIGN.music.md` §1–§5）：**
 - 階段 0：`scripts/sf-analyze.js`（結論：重複樣本不到 0.05 MB，瘦身要靠降取樣與 SF3 壓縮）、轉譜模型查證、piano-web 盤點（c6a21abf）。
