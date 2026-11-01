@@ -943,8 +943,8 @@
    "names": [
     "FaComposePlan"
    ],
-   "size": 9309,
-   "md5": "c1819631dd86b4783b76941d781aa2ab"
+   "size": 9604,
+   "md5": "d91e646fb9e3ee6d2b3c94c6255091f9"
   },
   "musica2m": {
    "file": "chunks/musica2m.js",
@@ -1076,7 +1076,7 @@
   }
  },
  "core": {
-  "size": 5199968,
-  "md5": "edd006dff91b9610c740c3482cb7c366"
+  "size": 5200784,
+  "md5": "9ee6deefb3ab453d704afb2390084c61"
  }
 }

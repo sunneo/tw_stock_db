@@ -33706,7 +33706,7 @@ const holder = {};
 
   // 主流程
   async function decide(text, o) {
-    o = o || {}; text = String(text || ''); const explicit = o.explicit || {}; const report = { usedAi: false, aiError: '', attempts: 0, notes: [] };
+    o = o || {}; text = String(text || ''); const explicit = o.explicit || {}; const step = o.onStep || (() => {}); const report = { usedAi: false, aiError: '', attempts: 0, notes: [] };
     const base = C.parseRequest(text); // 使用者自己說的:風格詞、調、速度數字、小節數
     const userStyleWord = base.style && !base.styleNote; // 明確的風格詞(流行、爵士…)才算使用者指定;作曲家／樂派對應是程式猜的
     // 呼叫 AI(最多 attempts 次,每次有逾時);失敗不整個放棄,只是這次沒有 AI 的答案
@@ -33714,9 +33714,9 @@ const holder = {};
     if (typeof o.ask === 'function') {
       const attempts = o.attempts || 2, timeoutMs = o.timeoutMs || 20000;
       for (let i = 0; i < attempts && !Object.keys(ai).length; i++) {
-        report.attempts = i + 1;
-        try { const raw = await withTimeout(o.ask(questionOf(), '使用者的需求:' + text.slice(0, 600)), timeoutMs); ai = parseAnswer(raw); if (!Object.keys(ai).length) report.aiError = 'AI 的回答讀不懂(' + String(raw || '').slice(0, 40).replace(/\s+/g, ' ') + ')'; }
-        catch (e) { report.aiError = String((e && e.message) || e); }
+        report.attempts = i + 1; step('第 ' + (i + 1) + ' 次問 AI(選擇題:風格範本、情緒、速度、調式、主奏樂器、長度、用途)…');
+        try { const raw = await withTimeout(o.ask(questionOf(), '使用者的需求:' + text.slice(0, 600)), timeoutMs); ai = parseAnswer(raw); report.aiRaw = String(raw || '').slice(0, 80).replace(/\s+/g, ' '); if (!Object.keys(ai).length) { report.aiError = 'AI 的回答讀不懂(' + report.aiRaw + ')'; step('AI 回的不是要的格式:' + report.aiRaw); } else step('AI 回答的欄位:' + Object.keys(ai).map((k) => k + '=' + ai[k]).join('、')); }
+        catch (e) { report.aiError = String((e && e.message) || e); step('問 AI 失敗:' + report.aiError); }
       }
       report.usedAi = Object.keys(ai).length > 0; report.aiMissing = report.usedAi ? ['style', 'mood', 'speed', 'mode', 'lead', 'bars'].filter((k) => !ai[k]) : [];
     } else report.aiError = o.noAiReason || '沒有可用的 AI(離線或沒有設定)';
@@ -73786,8 +73786,16 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     async _midiComposeFlow(text, explicit, o) {
         o = o || {}; const offline = !!(this.advancedSettings && this.advancedSettings.offlineMode);
         const ask = offline ? null : (sys, user) => this._callSimpleCompletion(user, { systemPrompt: sys, maxTokens: 300, temperature: 0, noBudgetRetry: true });
-        const res = await FaComposePlan.decide(text, { ask, explicit: explicit || {}, noAiReason: offline ? '離線模式' : '', timeoutMs: 25000, attempts: 2 });
-        return this._midiComposeFinish(res, o.seed);
+        // 一張進度卡:使用者按下指令就看到「正在處理」,AI 回了什麼、哪裡退回規則都寫在裡面(失敗時是哪個模型、回了什麼前 80 字)
+        let model = ''; try { model = (this._getApiConfig() || {}).apiModel || ''; } catch (_) { /* */ }
+        const prog = this._createProgressWidget('🎼 作曲'); const say = (pct, s2) => { try { prog.log(s2); prog.update({ pct, status: s2 }); } catch (_) { /* */ } };
+        try {
+            say(5, '【理解需求】' + (offline ? '離線模式,用範本規則' : '請 AI 理解你的需求' + (model ? '(模型:' + model + ')' : '')) + ':' + String(text).slice(0, 60));
+            const res = await FaComposePlan.decide(text, { ask, explicit: explicit || {}, noAiReason: offline ? '離線模式' : '', timeoutMs: 25000, attempts: 2, onStep: (m) => say(25, '【理解需求】' + m) });
+            say(60, '【核對】' + (res.report.usedAi ? '程式逐欄核對 AI 的答案,沒答對的欄位用預設' : '這次沒有用 AI,用的是範本規則(' + (res.report.aiError || '') + ')') + (model && !res.report.usedAi && !offline ? ';模型:' + model : ''));
+            say(75, '【作曲】' + res.report.tmplName + '範本,依規劃作曲並做程式檢查…');
+            const out = this._midiComposeFinish(res, o.seed); prog.update({ pct: 100 }); prog.finish('完成:' + out.c.song.title + '(種子 ' + out.c.seed + ')'); return out;
+        } catch (e) { try { prog.fail(String((e && e.message) || e)); } catch (_) { /* */ } throw e; }
     }
     _midiComposeFinish(res, seed) {
         const sd = seed > 0 ? seed : 1 + Math.floor(Math.random() * 99999); const c = FaMidiCompose.compose(Object.assign({}, res.options, { seed: sd })); const desc = FaComposePlan.describe(res, c.seed);

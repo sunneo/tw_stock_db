@@ -53,7 +53,7 @@
 
   // 主流程
   async function decide(text, o) {
-    o = o || {}; text = String(text || ''); const explicit = o.explicit || {}; const report = { usedAi: false, aiError: '', attempts: 0, notes: [] };
+    o = o || {}; text = String(text || ''); const explicit = o.explicit || {}; const step = o.onStep || (() => {}); const report = { usedAi: false, aiError: '', attempts: 0, notes: [] };
     const base = C.parseRequest(text); // 使用者自己說的:風格詞、調、速度數字、小節數
     const userStyleWord = base.style && !base.styleNote; // 明確的風格詞(流行、爵士…)才算使用者指定;作曲家／樂派對應是程式猜的
     // 呼叫 AI(最多 attempts 次,每次有逾時);失敗不整個放棄,只是這次沒有 AI 的答案
@@ -61,9 +61,9 @@
     if (typeof o.ask === 'function') {
       const attempts = o.attempts || 2, timeoutMs = o.timeoutMs || 20000;
       for (let i = 0; i < attempts && !Object.keys(ai).length; i++) {
-        report.attempts = i + 1;
-        try { const raw = await withTimeout(o.ask(questionOf(), '使用者的需求:' + text.slice(0, 600)), timeoutMs); ai = parseAnswer(raw); if (!Object.keys(ai).length) report.aiError = 'AI 的回答讀不懂(' + String(raw || '').slice(0, 40).replace(/\s+/g, ' ') + ')'; }
-        catch (e) { report.aiError = String((e && e.message) || e); }
+        report.attempts = i + 1; step('第 ' + (i + 1) + ' 次問 AI(選擇題:風格範本、情緒、速度、調式、主奏樂器、長度、用途)…');
+        try { const raw = await withTimeout(o.ask(questionOf(), '使用者的需求:' + text.slice(0, 600)), timeoutMs); ai = parseAnswer(raw); report.aiRaw = String(raw || '').slice(0, 80).replace(/\s+/g, ' '); if (!Object.keys(ai).length) { report.aiError = 'AI 的回答讀不懂(' + report.aiRaw + ')'; step('AI 回的不是要的格式:' + report.aiRaw); } else step('AI 回答的欄位:' + Object.keys(ai).map((k) => k + '=' + ai[k]).join('、')); }
+        catch (e) { report.aiError = String((e && e.message) || e); step('問 AI 失敗:' + report.aiError); }
       }
       report.usedAi = Object.keys(ai).length > 0; report.aiMissing = report.usedAi ? ['style', 'mood', 'speed', 'mode', 'lead', 'bars'].filter((k) => !ai[k]) : [];
     } else report.aiError = o.noAiReason || '沒有可用的 AI(離線或沒有設定)';

@@ -28,6 +28,14 @@ Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app
 
 **失敗原因（推測，尚未用真模型驗證）：** 現在是「一次要整包 JSON」（questionOf 一段長系統提示 + 六個字母欄位 + purpose）。有些模型會先回英文的思考文字（「The user wants to create…」），沒有 JSON，parseAnswer 讀不到，整段退回規則。maxTokens 300 對會先思考的模型也可能不夠（思考吃光上限，答案是空的；_callSimpleCompletion 的預算加倍重試被 noBudgetRetry 關掉了）。
 
+**管理層查到的原因（補充，未用該模型驗證）：**
+- renderer/src/floating-assistant.js 約 73788 行（_midiComposeFlow）：ask 呼叫 _callSimpleCompletion(user, { systemPrompt, maxTokens: 300, temperature: 0, noBudgetRetry: true })。
+- renderer/src/music/compose_plan.js：questionOf() 一次要整包 JSON（七個欄位）；parseAnswer() 只取第一個 {…} 並 JSON.parse，不剝思考文字、不寬容；decide() 第二次重問是同一題原樣重送，不會有不同結果。
+- 使用者看到的回覆開頭是英文「The user wants to create tech-style musi…」：推測是帶思考過程的模型在 maxTokens 300 內把 token 用在思考，回覆被截斷、JSON 還沒出現。要先確認 _callSimpleCompletion 會不會把思考內容混進回覆、有沒有 reasoning 參數可關或可分離。
+- 我在內建瀏覽器用假模型回「The user wants to create tech-style music…」重現了同樣的症狀（兩次都讀不懂、退回規則）；進度卡現在會寫出模型名稱與回了什麼前 80 字。
+
+**這一輪已加（進度卡，使用者另外回報「按斜線指令沒有任何處理中的卡片」）：** _midiComposeFlow 現在會放一張「🎼 作曲」進度卡（【理解需求】【核對】【作曲】，含模型名稱、AI 回答的欄位或回的前 80 字、退回規則的原因）；compose_plan.js 的 decide 多了 onStep 回呼與 report.aiRaw。尚未做：逐欄診斷（哪一欄、回了什麼）要在逐欄提問改好後再補。
+
 **要做的事（照使用者要求，沿用 CoLU／弱模型 harness 做法）：**
 1. 一次問一欄、字母作答，不要整包 JSON；每題前面放 2～3 個範例（few-shot），明講「只回一個字母，不要解釋」；用途（purpose）另外一題，回一句話。
 2. 解析要寬容：剝掉思考區塊（<think>、英文思考）與前後文字，在回覆裡找第一個／最後一個合法字母或欄位值；仍讀不懂就用同一題「更嚴格版」重問一次（把上次的回覆貼回去，說明格式錯在哪），兩次都失敗才退回「那一欄」的預設，只退那一欄。maxTokens 要夠（思考型模型）或開預算加倍重試。
