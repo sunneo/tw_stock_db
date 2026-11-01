@@ -117,7 +117,7 @@
       getSong: () => hist.song, attach,
       setSong(song) { hist.push(song); drawSide(); draw(); },
       applyRemote(actions) { (actions || []).forEach((a) => run(a, true)); },
-      destroy() { destroyed = true; stopPlay(); },
+      destroy() { destroyed = true; if (playing) { try { playing.dispose(); } catch (_) { /* */ } playing = null; playB.textContent = '▶ 試聽'; } },
     };
     drawSide(); draw(); return card;
   }

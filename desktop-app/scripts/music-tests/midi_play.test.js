@@ -75,5 +75,75 @@ function fake() {
   err = ''; try { await P.fetchParts({ base: 'https://h/x/', path: 'x.sf2' }, () => {}, mkFetch({ 0: null })); } catch (e) { err = e.message; } check('sharded bank: a missing part reports HTTP status', /HTTP 404/.test(err), err);
   const buf2 = await P.fetchBank([{ base: 'https://h/x/', path: 'nope.sf2' }, 'https://h/y.sf2'], () => {}, async (u) => (u.endsWith('manifest.json') ? { ok: true, json: async () => man } : { ok: true, headers: { get: () => String(data.length) }, arrayBuffer: async () => data.buffer.slice(data.byteOffset, data.byteOffset + data.length) }));
   check('sharded bank: falls back to the next source when the manifest lacks the file', Buffer.from(buf2).equals(data));
+// ── 清掉混音(使用者回報:播完、暫停、清除對話後音符會卡住變無窮迴圈) ──
+// 模擬 SpessaSynth:帶時間的 noteOn／noteOff 先排進佇列,時間到了才生效;stopAll(true) 只關掉「當下正在響」的音,取消不了佇列裡還沒到時間的事件
+function sim() {
+  const q = [], voices = new Map(), now = { t: 10 }; let seq = 0;
+  const key = (c, n) => c + ':' + n;
+  const apply = (e) => { if (e.k === 'on') voices.set(key(e.c, e.n), (voices.get(key(e.c, e.n)) || 0) + 1); else if (e.k === 'off') { const v = voices.get(key(e.c, e.n)); if (v) { if (v <= 1) voices.delete(key(e.c, e.n)); else voices.set(key(e.c, e.n), v - 1); } } else if (e.k === 'allOff') { for (const k of Array.from(voices.keys())) if (k.startsWith(e.c + ':')) voices.delete(k); } };
+  const push = (e, time) => { e.time = time == null ? now.t : time; e.seq = seq++; q.push(e); };
+  const synth = {
+    noteOn: (c, n, v, o) => push({ k: 'on', c, n }, o && o.time), noteOff: (c, n, o) => push({ k: 'off', c, n }, o && o.time), programChange() {},
+    controllerChange: (c, cc, v, o) => { if (cc === 120 || cc === 123) push({ k: 'allOff', c }, o && o.time); },
+    stopAll: () => { voices.clear(); stops++; }
+  };
+  let stops = 0;
+  // 時間往前走到 t:處理佇列裡 time<=t 的事件
+  const advance = (t) => { now.t = t; q.sort((a, b) => a.time - b.time || a.seq - b.seq); while (q.length && q[0].time <= t) apply(q.shift()); };
+  return { synth, now, advance, sounding: () => Array.from(voices.values()).reduce((a, b) => a + b, 0), queued: () => q.length, stops: () => stops };
+}
+function mk(song, o) {
+  const sm = sim(); let timers = [], cb = null, guards = [];
+  const group = o && o.group;
+  const pl = P.createPlayer(song, sm.synth, { clock: () => sm.now.t, setInterval: (f) => { cb = f; return 1; }, clearInterval: () => { cb = null; }, ahead: 0.25, group, setTimeout: (f) => { guards.push(f); return guards.length; }, clearTimeout: () => {} });
+  return { sm, pl, tick: () => cb && cb(), runGuards: () => { const g = guards; guards = []; g.forEach((f) => f()); }, hasTimer: () => !!cb };
+}
+function songWith(notes) { let sg = M.emptySong(); sg.tempos = [{ t: 0, bpm: 120 }]; sg = M.addTrack(sg, 'p', 0); notes.forEach((n) => { sg = M.addNote(sg, 0, n); }); return sg; }
+{
+  const long = songWith([{ t: 0, d: 480 * 40, n: 60, v: 100 }, { t: 480, d: 480 * 40, n: 64, v: 100 }]); // 40 拍的長音:noteOff 遠在前瞻視窗之外
+  const a = mk(long); a.pl.play(); a.sm.advance(10.1); a.tick(); a.sm.advance(10.6); a.tick(); a.sm.advance(10.6);
+  check('clear: long notes are sounding while playing', a.sm.sounding() === 2, a.sm.sounding());
+  a.pl.pause(); a.sm.advance(10.7);
+  check('pause: nothing keeps sounding right after', a.sm.sounding() === 0, a.sm.sounding());
+  a.sm.advance(40); check('pause: nothing sounds later either (queued noteOns are paired with a noteOff)', a.sm.sounding() === 0 && a.sm.queued() === 0, [a.sm.sounding(), a.sm.queued()]);
+  check('pause: the schedule timer is gone and the held notes are cleared', !a.hasTimer() && a.pl.state.held.size === 0);
+  // 暫停當下還有「已排進佇列但時間還沒到」的 noteOn
+  const b = mk(long); b.pl.play(); b.sm.advance(10.1); b.tick(); b.sm.advance(10.3); b.tick(); // 第二個音 0.5 s 在前瞻視窗裡,已排進佇列、尚未響
+  b.pl.pause(); b.sm.advance(10.4); b.sm.advance(11); b.sm.advance(60);
+  check('pause with a note queued but not yet started: it never sounds forever', b.sm.sounding() === 0, b.sm.sounding());
+  // 只有 noteOn、沒有 noteOff 的 MIDI(音符長度到曲子盡頭以外)
+  const never = songWith([{ t: 0, d: 480 * 1000, n: 62, v: 100 }]);
+  const c = mk(never); c.pl.play(); c.sm.advance(10.2); c.tick(); c.pl.stop(); c.sm.advance(20); c.sm.advance(1000);
+  check('stop: a note with no noteOff in sight is closed', c.sm.sounding() === 0 && c.pl.position() === 0 && !c.pl.isPlaying(), c.sm.sounding());
+  // 播完自然結束
+  const short = songWith([{ t: 0, d: 480, n: 60, v: 100 }]); const d = mk(short); let ended = 0; d.pl.onEnd(() => { ended++; }); d.pl.play();
+  for (let t = 10.1; t < 12; t += 0.05) { d.sm.advance(t); d.tick(); }
+  d.sm.advance(30); check('end: finishing naturally silences everything and fires onEnd once', ended === 1 && d.sm.sounding() === 0 && !d.pl.isPlaying() && !d.hasTimer(), { ended, s: d.sm.sounding() });
+  // 結束時有一個永遠不放開的音
+  const e = mk(never); e.pl.play(); e.pl.seek(0.4); e.sm.advance(10.5); e.tick(); e.pl.pause(); e.sm.advance(500);
+  check('seek then pause: still nothing hanging', e.sm.sounding() === 0, e.sm.sounding());
+  // 安全閥:前瞻時間過後再關一次
+  const g = mk(long); g.pl.play(); g.sm.advance(10.2); g.tick(); g.pl.pause(); const stops0 = g.sm.stops(); g.runGuards(); check('pause: a second stopAll runs after the look-ahead window as a safety net', g.sm.stops() === stops0 + 1);
+  // 重複按
+  let threw = false; try { const h = mk(long); h.pl.pause(); h.pl.stop(); h.pl.stop(); h.pl.play(); h.pl.pause(); h.pl.pause(); h.pl.dispose(); h.pl.dispose(); h.pl.stop(); h.pl.play(); } catch (err) { threw = String(err); }
+  check('repeated pause / stop / dispose never throws, and a disposed player stays silent', !threw, threw);
+  const di = mk(long); di.pl.play(); di.sm.advance(10.2); di.tick(); di.pl.dispose(); di.sm.advance(100); di.pl.play(); di.sm.advance(200);
+  check('dispose: silent afterwards and play() is ignored', di.sm.sounding() === 0 && !di.pl.isPlaying() && di.pl.isDisposed(), di.sm.sounding());
+  // 暫停的踏板
+  const pedalLog = []; const sy = { noteOn() {}, noteOff() {}, programChange() {}, controllerChange: (c, cc, v) => pedalLog.push([c, cc, v]), stopAll() {} };
+  const pp = P.createPlayer(long, sy, { clock: () => 10, setInterval: () => 1, clearInterval() {}, setTimeout: () => 1, clearTimeout() {} }); pp.play(); pp.pause();
+  check('pause releases the sustain pedal and sends all-sound-off / all-notes-off on all 16 channels', [64, 120, 123].every((cc) => Array.from({ length: 16 }, (_, ch) => pedalLog.some((l) => l[0] === ch && l[1] === cc)).every(Boolean)));
+  // 換曲
+  const sw = mk(long); sw.pl.play(); sw.sm.advance(10.2); sw.tick(); sw.pl.setSong(songWith([{ t: 0, d: 480, n: 70, v: 100 }])); sw.sm.advance(10.3); sw.pl.pause(); sw.sm.advance(500);
+  check('setSong while playing leaves nothing hanging', sw.sm.sounding() === 0, sw.sm.sounding());
+  // 多張卡片共用一個合成器
+  const group = { active: null }; const sm2 = sim(); let cbA = null, cbB = null;
+  const mkp = (song, set) => P.createPlayer(song, sm2.synth, { clock: () => sm2.now.t, setInterval: (f) => { set(f); return 1; }, clearInterval: () => {}, ahead: 0.25, group, setTimeout: () => 1, clearTimeout() {} });
+  const pa = mkp(long, (f) => { cbA = f; }), pb = mkp(songWith([{ t: 0, d: 480 * 30, n: 72, v: 100 }]), (f) => { cbB = f; }); let aEnded = 0; pa.onEnd(() => { aEnded++; });
+  pa.play(); sm2.advance(10.2); cbA(); pb.play(); sm2.advance(10.3); sm2.advance(60);
+  check('two cards on one synth: starting the second silences the first and tells its screen (onEnd)', !pa.isPlaying() && pb.isPlaying() && aEnded === 1 && group.active === pb, { a: pa.isPlaying(), b: pb.isPlaying(), aEnded });
+  pb.dispose(); sm2.advance(1000); check('two cards: removing the active one frees the group and leaves nothing sounding', group.active === null && sm2.sounding() === 0, sm2.sounding());
+  pa.stop(); check('two cards: stopping an already-stopped card does not disturb the group', group.active === null);
+}
   console.log(ok + ' passed, ' + bad.length + ' failed'); bad.forEach((b) => console.log('FAIL: ' + b)); process.exit(bad.length ? 1 : 0);
 })();

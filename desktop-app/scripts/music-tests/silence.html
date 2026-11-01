@@ -1,0 +1,34 @@
+<!doctype html><meta charset="utf-8"><title>midi silence real test</title>
+<!-- 真的合成器:播一段含長音、有 loop 的音色(管風琴、弦樂)的 MIDI,依序做暫停、停止、播完、卡片移除(dispose)、換另一張卡片,
+     每一步之後等 1 秒量輸出音量(AnalyserNode),都要接近 0。起靜態伺服器後開 /scripts/music-tests/silence.html?bank=<音色庫網址>;結果在 window.__result。
+     注意:瀏覽器要允許自動播放(內建瀏覽器窗格可以);audioState 不是 running 的話結果是「未驗證」。 -->
+<pre id="out">running…</pre>
+<script src="../../renderer/src/music/midi_core.js"></script>
+<script src="../../renderer/src/music/midi_play.js"></script>
+<script>
+(async () => {
+  const R = window.__result = { steps: [], errors: [] }; const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  try {
+    const bank = new URLSearchParams(location.search).get('bank');
+    const ctx = new AudioContext(); await ctx.resume(); R.audioState = ctx.state;
+    const synth = await FaMidiPlay.loadSynth(ctx, ctx.destination, { lib: ['/renderer/vendor/spessasynth/spessasynth-lib.js'], processor: ['/renderer/vendor/spessasynth/spessasynth-processor.min.js'], soundbank: [bank] }, () => {});
+    const an = ctx.createAnalyser(); an.fftSize = 2048; synth.connect(an); const buf = new Float32Array(an.fftSize);
+    const level = async () => { let peak = 0; for (let k = 0; k < 8; k++) { an.getFloatTimeDomainData(buf); for (let i = 0; i < buf.length; i++) peak = Math.max(peak, Math.abs(buf[i])); await wait(60); } return Math.round(peak * 10000) / 10000; };
+    const mkSong = (prog, n) => { let s = FaMidi.emptySong(); s.tempos = [{ t: 0, bpm: 120 }]; s = FaMidi.addTrack(s, 'x', prog); s = FaMidi.addNote(s, 0, { t: 0, d: 480 * 60, n, v: 110 }); s = FaMidi.addNote(s, 0, { t: 480, d: 480 * 60, n: n + 4, v: 110 }); s = FaMidi.addNote(s, 0, { t: 960, d: 480 * 60, n: n + 7, v: 110 }); return s; };
+    const adapter = { noteOn: (c, n, v, o) => synth.noteOn(c, n, v, o), noteOff: (c, n, o) => synth.noteOff(c, n, o), programChange: (c, p, o) => synth.programChange(c, p, o), controllerChange: (c, cc, v, o) => synth.controllerChange(c, cc, v, o), stopAll: (f) => synth.stopAll(f) };
+    const group = { active: null }; const mk = (song) => FaMidiPlay.createPlayer(song, adapter, { clock: () => ctx.currentTime, group });
+    const step = async (name, f, expectSound) => { await f(); await wait(1000); const lv = await level(); R.steps.push({ name, level: lv }); };
+    const A = mk(mkSong(19, 60)), B = mk(mkSong(48, 55)); let ended = 0; A.onEnd(() => { ended++; });
+    A.play(); await wait(1800); const playing = await level(); R.steps.push({ name: '播放中(要有聲)', level: playing });
+    await step('暫停後', async () => A.pause());
+    A.play(); await wait(1200); await step('停止後', async () => A.stop());
+    A.play(); await wait(1200); await step('換另一張卡片出聲後(A 要被關掉,B 在響)', async () => { B.play(); await wait(800); });
+    await step('B 卡片移除(dispose)後', async () => B.dispose());
+    A.play(); await wait(800); A.seek(2); await wait(500); await step('跳轉後暫停', async () => A.pause());
+    A.dispose();
+    R.playingLevel = playing; R.maxAfter = Math.max.apply(null, R.steps.filter((s) => !/播放中|B 在響/.test(s.name)).map((s) => s.level));
+    R.ok = R.audioState === 'running' && playing > 0.01 && R.maxAfter < 0.002 && ended >= 1;
+  } catch (e) { R.errors.push(String(e && e.stack || e)); }
+  R.done = true; document.getElementById('out').textContent = JSON.stringify(R);
+})();
+</script>

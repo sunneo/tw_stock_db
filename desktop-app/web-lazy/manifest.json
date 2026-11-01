@@ -911,8 +911,8 @@
    "names": [
     "FaMidiPlay"
    ],
-   "size": 8028,
-   "md5": "08f00887182c15aad499248ef5dafe67"
+   "size": 8989,
+   "md5": "0e175a7a06875b679856875c8402043d"
   },
   "musicsoundtrack": {
    "file": "chunks/musicsoundtrack.js",
@@ -983,16 +983,16 @@
    "names": [
     "FaMidiUI"
    ],
-   "size": 4428,
-   "md5": "57739e4cb0bf8e7b75466026eee563fa"
+   "size": 4659,
+   "md5": "e3c0eb35f0fb7e725333c85b21cd1661"
   },
   "musiceditui": {
    "file": "chunks/musiceditui.js",
    "names": [
     "FaMidiEditUI"
    ],
-   "size": 9911,
-   "md5": "3b20529f5e13339529760c013f8e7353"
+   "size": 9974,
+   "md5": "fd77e688b93b176d1b370971d8875a4b"
   },
   "musicknow": {
    "file": "chunks/musicknow.js",
@@ -1068,7 +1068,7 @@
   }
  },
  "core": {
-  "size": 5188261,
-  "md5": "240fd415e63d7177c96a0c685057dadb"
+  "size": 5188877,
+  "md5": "37b73df7e3c7be7b1d78040afa1b0108"
  }
 }

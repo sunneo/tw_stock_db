@@ -30,8 +30,12 @@
 
     let player = null, muted = new Set(), soloIdx = null, dragging = false;
     const total = M.durationSec(song);
-    const onTick = (sec) => { if (!dragging) seek.value = total ? Math.round(sec / total * 1000) : 0; time.textContent = fmt(sec) + ' / ' + fmt(total); };
+    let wasConnected = false;
+    // 卡片從畫面上被移掉(清除對話、對話被壓縮、換了對話):釋放播放器,不留著發聲
+    const orphanCheck = () => { if (card.isConnected) { wasConnected = true; return false; } if (wasConnected && player) { try { player.dispose(); } catch (_) { /* */ } playBtn.textContent = '▶ 播放'; return true; } return false; };
+    const onTick = (sec) => { if (orphanCheck()) return; if (!dragging) seek.value = total ? Math.round(sec / total * 1000) : 0; time.textContent = fmt(sec) + ' / ' + fmt(total); };
     async function ensure() {
+      if (player && player.isDisposed && player.isDisposed()) player = null;
       if (player) return player;
       say('準備合成器(第一次要下載音色庫,之後直接從本機讀取)…');
       player = await host.player(song, (m) => say(m));
@@ -72,7 +76,7 @@
       mp3.disabled = false; mp3.textContent = old;
     };
     foot.append(loop, dl, mp3); card.appendChild(foot);
-    card._midi = { destroy() { if (player) player.stop(); } };
+    card._midi = { destroy() { if (player) { try { player.dispose(); } catch (_) { /* */ } playBtn.textContent = '▶ 播放'; } } };
     return card;
   }
   return { mount, fmt };

@@ -33133,13 +33133,14 @@ const holder = {};
     opts = opts || {};
     const clock = opts.clock || (() => 0); const ahead = opts.ahead || 0.25, tickMs = opts.tickMs || 50;
     const setT = opts.setInterval || setInterval, clearT = opts.clearInterval || clearInterval;
-    const st = { song, events: [], idx: 0, startAt: 0, offset: 0, playing: false, timer: null, mute: new Set(), solo: null, volume: new Map(), total: M.durationSec(song), onEnd: null, onTick: null, loop: !!opts.loop, held: new Map() };
+    const setOnce = opts.setTimeout || (typeof setTimeout === 'function' ? setTimeout : null), clearOnce = opts.clearTimeout || (typeof clearTimeout === 'function' ? clearTimeout : null), group = opts.group || null;
+    const st = { song, events: [], idx: 0, startAt: 0, offset: 0, playing: false, timer: null, mute: new Set(), solo: null, volume: new Map(), total: M.durationSec(song), onEnd: null, onTick: null, loop: !!opts.loop, held: new Map(), guard: null, disposed: false };
     const rebuild = () => { st.events = buildEvents(st.song, { mute: st.mute, solo: st.solo }); };
     const pos = () => (st.playing ? Math.min(st.total, st.offset + (clock() - st.startAt)) : st.offset);
     const evOpts = (at) => ({ time: at });
     const send = (e, at) => {
-      if (e.type === 'on') { synth.noteOn(e.ch, e.a, e.b, evOpts(at)); st.held.set(e.ch + ':' + e.a, (st.held.get(e.ch + ':' + e.a) || 0) + 1); }
-      else if (e.type === 'off') { synth.noteOff(e.ch, e.a, evOpts(at)); const k = e.ch + ':' + e.a, c = (st.held.get(k) || 1) - 1; if (c <= 0) st.held.delete(k); else st.held.set(k, c); }
+      if (e.type === 'on') { synth.noteOn(e.ch, e.a, e.b, evOpts(at)); const k = e.ch + ':' + e.a; (st.held.get(k) || st.held.set(k, []).get(k)).push(at); }
+      else if (e.type === 'off') { synth.noteOff(e.ch, e.a, evOpts(at)); const k = e.ch + ':' + e.a, l = st.held.get(k); if (l) { l.shift(); if (!l.length) st.held.delete(k); } }
       else if (e.type === 'prog') synth.programChange(e.ch, e.a, evOpts(at));
       else if (e.type === 'cc') {
         const { map } = channelMap(st.song); const ti = map.indexOf(e.ch); let b = e.b;
@@ -33159,19 +33160,39 @@ const holder = {};
         api.pause(); st.offset = 0; if (st.onEnd) st.onEnd();
       }
     }
+    // 清掉混音(暫停、停止、播放完畢、換曲、跳轉、卡片被移除、頁面關閉都走這裡):合成器會把「帶時間」的事件排進佇列,stopAll 取消不了還沒到時間的 noteOn,
+    // 所以(1)每個送出了 noteOn 卻還沒送 noteOff 的音符,補一個「不早於它開始時間」的 noteOff(沒有這個,排在前面的 noteOn 之後會永遠響,長音與 loop 音色尤其明顯);
+    // (2)每個頻道送延音踏板放開、全部聲音關閉、全部音符關閉;(3)stopAll(true);(4)過了前瞻時間再關一次,把剛好在這之後才到時間的殘餘聲音收掉。
+    function silenceAll() {
+      if (st.timer) { clearT(st.timer); st.timer = null; }
+      const now = clock();
+      st.held.forEach((times, k) => { const i = k.indexOf(':'), ch = Number(k.slice(0, i)), n = Number(k.slice(i + 1)); times.forEach((at) => { try { synth.noteOff(ch, n, evOpts(Math.max(now, at) + 0.01)); } catch (_) { /* 合成器已釋放 */ } }); });
+      st.held.clear();
+      for (let ch = 0; ch < 16; ch++) { try { synth.controllerChange(ch, 64, 0, evOpts(now)); synth.controllerChange(ch, 120, 0, evOpts(now)); synth.controllerChange(ch, 123, 0, evOpts(now)); } catch (_) { /* */ } }
+      try { synth.stopAll(true); } catch (_) { /* */ }
+      if (st.guard && clearOnce) { clearOnce(st.guard); st.guard = null; }
+      if (setOnce) st.guard = setOnce(() => { st.guard = null; if (!st.playing) { try { synth.stopAll(true); } catch (_) { /* */ } } }, (ahead + 0.2) * 1000);
+    }
     // 跳轉時,已經開始但還沒結束的音符要補送 noteOn 嗎?不補(從音符邊界重新聽起);跳轉前先全部停掉
     const api = {
       state: st,
       play() {
-        if (st.playing) return; rebuild();
+        if (st.playing || st.disposed) return;
+        // 同一個合成器只讓一張卡片出聲:另一張正在放的先停掉並通知它的畫面(共用頻道,不然互相蓋掉或漏關)
+        if (group) { const other = group.active; if (other && other !== api) { try { other.stop(); if (other.state.onEnd) other.state.onEnd(); } catch (_) { /* */ } } group.active = api; }
+        rebuild();
         // 從 offset 開始;先送出所有 t<offset 的程式／控制事件,讓音色與音量到位
         st.idx = 0;
         const now = clock(); st.startAt = now + 0.05;
         while (st.idx < st.events.length && st.events[st.idx].t < st.offset) { const e = st.events[st.idx++]; if (e.type === 'prog' || e.type === 'cc') send(e, now); }
         st.playing = true; st.timer = setT(pump, tickMs); pump();
       },
-      pause() { if (!st.playing) return; st.offset = pos(); st.playing = false; clearT(st.timer); st.timer = null; synth.stopAll(true); st.held.clear(); },
-      stop() { api.pause(); st.offset = 0; if (st.onTick) st.onTick(0); },
+      pause() { if (st.playing) { st.offset = pos(); st.playing = false; } silenceAll(); },
+      stop() { if (st.playing) { st.offset = pos(); st.playing = false; } silenceAll(); st.offset = 0; if (st.onTick) st.onTick(0); },
+      // 卡片被移除、清除對話、頁面關閉:停掉、清空、之後不再出聲(重複呼叫沒關係)
+      dispose() { if (st.disposed) return; st.playing = false; silenceAll(); st.disposed = true; st.onEnd = null; st.onTick = null; if (group && group.active === api) group.active = null; },
+      isDisposed() { return st.disposed; },
+      silence() { silenceAll(); },
       seek(sec) { const was = st.playing; if (was) api.pause(); st.offset = Math.max(0, Math.min(st.total, Number(sec) || 0)); if (was) api.play(); else if (st.onTick) st.onTick(st.offset); },
       position() { return pos(); },
       duration() { return st.total; },
@@ -34005,8 +34026,12 @@ const holder = {};
 
     let player = null, muted = new Set(), soloIdx = null, dragging = false;
     const total = M.durationSec(song);
-    const onTick = (sec) => { if (!dragging) seek.value = total ? Math.round(sec / total * 1000) : 0; time.textContent = fmt(sec) + ' / ' + fmt(total); };
+    let wasConnected = false;
+    // 卡片從畫面上被移掉(清除對話、對話被壓縮、換了對話):釋放播放器,不留著發聲
+    const orphanCheck = () => { if (card.isConnected) { wasConnected = true; return false; } if (wasConnected && player) { try { player.dispose(); } catch (_) { /* */ } playBtn.textContent = '▶ 播放'; return true; } return false; };
+    const onTick = (sec) => { if (orphanCheck()) return; if (!dragging) seek.value = total ? Math.round(sec / total * 1000) : 0; time.textContent = fmt(sec) + ' / ' + fmt(total); };
     async function ensure() {
+      if (player && player.isDisposed && player.isDisposed()) player = null;
       if (player) return player;
       say('準備合成器(第一次要下載音色庫,之後直接從本機讀取)…');
       player = await host.player(song, (m) => say(m));
@@ -34047,7 +34072,7 @@ const holder = {};
       mp3.disabled = false; mp3.textContent = old;
     };
     foot.append(loop, dl, mp3); card.appendChild(foot);
-    card._midi = { destroy() { if (player) player.stop(); } };
+    card._midi = { destroy() { if (player) { try { player.dispose(); } catch (_) { /* */ } playBtn.textContent = '▶ 播放'; } } };
     return card;
   }
   return { mount, fmt };
@@ -34180,7 +34205,7 @@ const holder = {};
       getSong: () => hist.song, attach,
       setSong(song) { hist.push(song); drawSide(); draw(); },
       applyRemote(actions) { (actions || []).forEach((a) => run(a, true)); },
-      destroy() { destroyed = true; stopPlay(); },
+      destroy() { destroyed = true; if (playing) { try { playing.dispose(); } catch (_) { /* */ } playing = null; playB.textContent = '▶ 試聽'; } },
     };
     drawSide(); draw(); return card;
   }
@@ -73609,6 +73634,19 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         }
         return { error: '需要 file_id(上傳的 .mid 檔)、song_id 或 song' };
     }
+    // 同一個合成器同一時間只讓一張播放卡片出聲;清除對話、卡片被淘汰、頁面關閉時把所有播放卡片停掉並釋放(使用者回報:播完、暫停、清除對話後音符會卡住無窮迴圈)
+    _midiGroupGet() {
+        if (!this._midiGroup) {
+            this._midiGroup = { active: null };
+            try { if (typeof window !== 'undefined') window.addEventListener('pagehide', () => { try { this._midiReleaseAll(); } catch (_) { /* */ } }); } catch (_) { /* */ }
+        }
+        return this._midiGroup;
+    }
+    _midiReleaseAll() {
+        const g = this._midiGroup; if (g && g.active) { try { g.active.dispose(); } catch (_) { /* */ } g.active = null; }
+        [this._midiCards, this._midiEditCards].forEach((m, i) => { if (!m) return; m.forEach((el) => { try { (i === 0 ? el._midi : el._midiEdit).destroy(); } catch (_) { /* */ } }); m.clear(); });
+        try { if (this._midiSynthP) this._midiSynthP.then((sy) => { try { sy.stopAll(true); } catch (_) { /* */ } }, () => {}); } catch (_) { /* */ }
+    }
     _midiHost() {
         const self = this;
         return {
@@ -73619,7 +73657,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
                 }
                 const synth = await self._midiSynthP; try { await self._midiCtx.resume(); } catch (_) { /* */ }
                 const ctx = self._midiCtx;
-                return FaMidiPlay.createPlayer(song, { noteOn: (c, n, v, o) => synth.noteOn(c, n, v, o), noteOff: (c, n, o) => synth.noteOff(c, n, o), programChange: (c, p, o) => synth.programChange(c, p, o), controllerChange: (c, cc, v, o) => synth.controllerChange(c, cc, v, o), stopAll: (f) => synth.stopAll(f) }, { clock: () => ctx.currentTime });
+                return FaMidiPlay.createPlayer(song, { noteOn: (c, n, v, o) => synth.noteOn(c, n, v, o), noteOff: (c, n, o) => synth.noteOff(c, n, o), programChange: (c, p, o) => synth.programChange(c, p, o), controllerChange: (c, cc, v, o) => synth.controllerChange(c, cc, v, o), stopAll: (f) => synth.stopAll(f) }, { clock: () => ctx.currentTime, group: self._midiGroupGet() });
             },
             async download(name, bytes, mime) { await self.generateAndDeliverFile(new Blob([bytes], { type: mime }), name, mime); },
             toMp3(song, prog) { return self._midiToMp3(song, prog); }
@@ -104351,6 +104389,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     // 建構子裡「完全沒有對話時才插入」是同一個原則——清空後的對話狀態
     // 等同「完全沒有對話」。
     _clearChatHistory() {
+        try { this._midiReleaseAll(); } catch (_) { /* */ }
         this.messages = [];
         this.archivedDisplayBlocks = [];
         // tw_stock_db客製: 2026-09-09使用者實測回報——清除對話後，緊接著的
