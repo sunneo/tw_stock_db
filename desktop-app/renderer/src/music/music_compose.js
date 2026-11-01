@@ -89,12 +89,20 @@
     o = o || {}; const style = STYLES[o.style] ? o.style : 'pop'; const st = STYLES[style];
     const opts = { style, key: KEYS[o.key] != null ? o.key : 'C', tempo: Math.max(40, Math.min(220, Number(o.tempo) || Math.round((st.tempo[0] + st.tempo[1]) / 2))), bars: Math.max(4, Math.min(64, Number(o.bars) || 16)), progression: Number(o.progression) || 0, title: o.title };
     let seed = Number(o.seed) || 1, last = null, tries = 0;
-    for (; tries < 12; tries++, seed++) { last = build(opts, seed); const problems = validate(last.song, last.info); if (!problems.length) return { song: M.validate(last.song), style, options: opts, seed, tries: tries + 1, warnings: [], sections: last.info.sections }; last.problems = problems; }
-    return { song: M.validate(last.song), style, options: opts, seed, tries, warnings: last.problems, sections: last.info.sections };
+    for (; tries < 12; tries++, seed++) { last = build(opts, seed); const problems = validate(last.song, last.info); if (!problems.length) return { song: M.validate(last.song), style, options: opts, seed, tries: tries + 1, warnings: [], sections: last.info.sections, styleNote: o.styleNote || '' }; last.problems = problems; }
+    return { song: M.validate(last.song), style, options: opts, seed, tries, warnings: last.problems, sections: last.info.sections, styleNote: o.styleNote || '' };
   }
   // 中文描述 → 選擇題的答案(風格、調、速度、小節數);沒說的留空讓 compose 用預設
+  // 九種範本以外的風格、作曲家、樂派:對到最接近的範本,並在結果裡明講(styleNote);完全對不到時用流行並明講,不讓路由放棄
+  const CLOSE = { 貝多芬: 'classical', 莫札特: 'classical', 巴哈: 'classical', 蕭邦: 'classical', 李斯特: 'classical', 舒伯特: 'classical', 舒曼: 'classical', 布拉姆斯: 'classical', 海頓: 'classical', 韓德爾: 'classical', 韋瓦第: 'classical', 德布西: 'classical', 拉赫曼尼諾夫: 'classical', 柴可夫斯基: 'classical', 孟德爾頌: 'classical', 浪漫樂派: 'classical', 古典樂派: 'classical', 交響: 'classical', 奏鳴曲: 'classical', 協奏曲: 'classical', 小夜曲: 'classical', 月光: 'classical', 歡樂頌: 'classical', 重金屬: 'rock', 金屬: 'rock', 龐克: 'rock', 硬搖滾: 'rock', 另類: 'rock', 搖擺: 'jazz', 波薩諾瓦: 'jazz', 森巴: 'jazz', 拉丁: 'jazz', 鄉村: 'folk', 民俗: 'folk', 嘻哈: 'lofi', 饒舌: 'lofi', 咖啡廳: 'lofi', 電音: 'edm', 浩室: 'edm', 鐵克諾: 'edm', 流行樂: 'pop', 情歌: 'pop', 兒歌: 'folk', 進行曲: 'rock' };
+  const CLOSE_EN = { beethoven: 'classical', mozart: 'classical', bach: 'classical', chopin: 'classical', schubert: 'classical', debussy: 'classical', metal: 'rock', punk: 'rock', swing: 'jazz', bossa: 'jazz', latin: 'jazz', country: 'folk', 'hip hop': 'lofi', hiphop: 'lofi', house: 'edm', techno: 'edm', trance: 'edm', symphony: 'classical', sonata: 'classical' };
   function parseRequest(text) {
     text = String(text || ''); const out = {}; for (const k of Object.keys(ALIAS)) if (text.indexOf(k) >= 0) { out.style = ALIAS[k]; break; }
+    if (!out.style) {
+      const low = text.toLowerCase(); let hit = null; for (const k of Object.keys(CLOSE)) if (text.indexOf(k) >= 0) { hit = [k, CLOSE[k]]; break; } if (!hit) for (const k of Object.keys(CLOSE_EN)) if (low.indexOf(k) >= 0) { hit = [k, CLOSE_EN[k]]; break; }
+      if (hit) { out.style = hit[1]; out.styleNote = '沒有「' + hit[0] + '」專屬的範本,用最接近的「' + STYLES[hit[1]].name + '」範本(' + STYLES[hit[1]].progs.length + ' 種和弦進行、速度 ' + STYLES[hit[1]].tempo[0] + '–' + STYLES[hit[1]].tempo[1] + ');旋律是程式依範本產生的,不是' + hit[0] + '的真實作品'; }
+      else if (/風格|style|式的|派|樂風|味道/i.test(text)) { out.styleNote = '沒有對得上的風格範本,用「流行」範本;想換可以指定 pop、rock、jazz、blues、waltz、folk、lofi、edm、classical'; }
+    }
     const m = /([A-G][#b]?)\s*(?:大調|小調|調)?/.exec(text); if (m && KEYS[m[1]] != null) out.key = m[1];
     const t = /(\d{2,3})\s*(?:bpm|拍\/分|拍每分)/i.exec(text) || /速度\D{0,3}(\d{2,3})/.exec(text); if (t) out.tempo = Number(t[1]);
     const b = /(\d{1,2})\s*小節/.exec(text); if (b) out.bars = Number(b[1]);

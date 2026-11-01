@@ -19,4 +19,12 @@ const q = C.parseRequest('幫我寫一首爵士的曲子，D調，80 bpm，8 小
 check('parseRequest reads style, key, tempo and bars', q.style === 'jazz' && q.key === 'D' && q.tempo === 80 && q.bars === 8, q);
 check('parseRequest: "快" picks the style\'s fast end', C.parseRequest('快的搖滾').tempo === C.STYLES.rock.tempo[1]);
 check('sections for 16+ bars follow verse/chorus structure', C.compose({ style: 'pop', bars: 24 }).sections.map((s) => s.name).join() === '前奏,主歌,副歌,主歌,副歌,尾奏');
+// 沒有專屬範本的風格／作曲家:對到最接近的範本並明講,不要靜默退成流行(使用者回報:「貝多芬風格」走偏)
+{ const b = C.parseRequest('寫一首貝多芬風格的曲子'), r = C.compose(b);
+  check('unknown composer maps to the closest template and says so', b.style === 'classical' && /貝多芬/.test(r.styleNote) && /古典/.test(r.styleNote) && /不是貝多芬的真實作品/.test(r.styleNote), r.styleNote);
+  check('english composer name also maps (Beethoven -> classical)', C.parseRequest('write Beethoven style music').style === 'classical');
+  check('metal maps to rock, hip hop maps to lofi', C.parseRequest('重金屬').style === 'rock' && C.parseRequest('hip hop beat').style === 'lofi');
+  check('a known style gives no note', C.compose(C.parseRequest('來一首爵士')).styleNote === '');
+  const u = C.parseRequest('寫一首很哀傷風格的曲子'); check('a style word with no template says it falls back to pop', !u.style && /流行/.test(u.styleNote) && C.compose(u).style === 'pop');
+  check('a bare request ("幫我做 MIDI") makes a piece with no fuss', C.compose(C.parseRequest('幫我做 MIDI')).styleNote === ''); }
 console.log(bad.length ? 'FAIL\n' + bad.join('\n') : 'ok'); console.log(ok + ' passed, ' + bad.length + ' failed'); process.exit(bad.length ? 1 : 0);

@@ -33581,12 +33581,20 @@ const holder = {};
     o = o || {}; const style = STYLES[o.style] ? o.style : 'pop'; const st = STYLES[style];
     const opts = { style, key: KEYS[o.key] != null ? o.key : 'C', tempo: Math.max(40, Math.min(220, Number(o.tempo) || Math.round((st.tempo[0] + st.tempo[1]) / 2))), bars: Math.max(4, Math.min(64, Number(o.bars) || 16)), progression: Number(o.progression) || 0, title: o.title };
     let seed = Number(o.seed) || 1, last = null, tries = 0;
-    for (; tries < 12; tries++, seed++) { last = build(opts, seed); const problems = validate(last.song, last.info); if (!problems.length) return { song: M.validate(last.song), style, options: opts, seed, tries: tries + 1, warnings: [], sections: last.info.sections }; last.problems = problems; }
-    return { song: M.validate(last.song), style, options: opts, seed, tries, warnings: last.problems, sections: last.info.sections };
+    for (; tries < 12; tries++, seed++) { last = build(opts, seed); const problems = validate(last.song, last.info); if (!problems.length) return { song: M.validate(last.song), style, options: opts, seed, tries: tries + 1, warnings: [], sections: last.info.sections, styleNote: o.styleNote || '' }; last.problems = problems; }
+    return { song: M.validate(last.song), style, options: opts, seed, tries, warnings: last.problems, sections: last.info.sections, styleNote: o.styleNote || '' };
   }
   // 中文描述 → 選擇題的答案(風格、調、速度、小節數);沒說的留空讓 compose 用預設
+  // 九種範本以外的風格、作曲家、樂派:對到最接近的範本,並在結果裡明講(styleNote);完全對不到時用流行並明講,不讓路由放棄
+  const CLOSE = { 貝多芬: 'classical', 莫札特: 'classical', 巴哈: 'classical', 蕭邦: 'classical', 李斯特: 'classical', 舒伯特: 'classical', 舒曼: 'classical', 布拉姆斯: 'classical', 海頓: 'classical', 韓德爾: 'classical', 韋瓦第: 'classical', 德布西: 'classical', 拉赫曼尼諾夫: 'classical', 柴可夫斯基: 'classical', 孟德爾頌: 'classical', 浪漫樂派: 'classical', 古典樂派: 'classical', 交響: 'classical', 奏鳴曲: 'classical', 協奏曲: 'classical', 小夜曲: 'classical', 月光: 'classical', 歡樂頌: 'classical', 重金屬: 'rock', 金屬: 'rock', 龐克: 'rock', 硬搖滾: 'rock', 另類: 'rock', 搖擺: 'jazz', 波薩諾瓦: 'jazz', 森巴: 'jazz', 拉丁: 'jazz', 鄉村: 'folk', 民俗: 'folk', 嘻哈: 'lofi', 饒舌: 'lofi', 咖啡廳: 'lofi', 電音: 'edm', 浩室: 'edm', 鐵克諾: 'edm', 流行樂: 'pop', 情歌: 'pop', 兒歌: 'folk', 進行曲: 'rock' };
+  const CLOSE_EN = { beethoven: 'classical', mozart: 'classical', bach: 'classical', chopin: 'classical', schubert: 'classical', debussy: 'classical', metal: 'rock', punk: 'rock', swing: 'jazz', bossa: 'jazz', latin: 'jazz', country: 'folk', 'hip hop': 'lofi', hiphop: 'lofi', house: 'edm', techno: 'edm', trance: 'edm', symphony: 'classical', sonata: 'classical' };
   function parseRequest(text) {
     text = String(text || ''); const out = {}; for (const k of Object.keys(ALIAS)) if (text.indexOf(k) >= 0) { out.style = ALIAS[k]; break; }
+    if (!out.style) {
+      const low = text.toLowerCase(); let hit = null; for (const k of Object.keys(CLOSE)) if (text.indexOf(k) >= 0) { hit = [k, CLOSE[k]]; break; } if (!hit) for (const k of Object.keys(CLOSE_EN)) if (low.indexOf(k) >= 0) { hit = [k, CLOSE_EN[k]]; break; }
+      if (hit) { out.style = hit[1]; out.styleNote = '沒有「' + hit[0] + '」專屬的範本,用最接近的「' + STYLES[hit[1]].name + '」範本(' + STYLES[hit[1]].progs.length + ' 種和弦進行、速度 ' + STYLES[hit[1]].tempo[0] + '–' + STYLES[hit[1]].tempo[1] + ');旋律是程式依範本產生的,不是' + hit[0] + '的真實作品'; }
+      else if (/風格|style|式的|派|樂風|味道/i.test(text)) { out.styleNote = '沒有對得上的風格範本,用「流行」範本;想換可以指定 pop、rock、jazz、blues、waltz、folk、lofi、edm、classical'; }
+    }
     const m = /([A-G][#b]?)\s*(?:大調|小調|調)?/.exec(text); if (m && KEYS[m[1]] != null) out.key = m[1];
     const t = /(\d{2,3})\s*(?:bpm|拍\/分|拍每分)/i.exec(text) || /速度\D{0,3}(\d{2,3})/.exec(text); if (t) out.tempo = Number(t[1]);
     const b = /(\d{1,2})\s*小節/.exec(text); if (b) out.bars = Number(b[1]);
@@ -45922,6 +45930,13 @@ FA_TASK_TOOL_HINTS.push({
     tools: ['merge_pdfs', 'list_uploaded_files'],
     note: '【這個需求有專用工具：merge_pdfs】PDF、圖片、文字檔、docx、xlsx（可混在一起）要合併成一份PDF，直接呼叫 merge_pdfs，不要自己寫 python／docx2pdf／ImageMagick 腳本。files 照使用者要的順序給（file_id／檔名／fap:名稱/路徑／絕對路徑），或用 folder（整個資料夾，依檔名自然排序）；沒給＝對話附件。docx／xlsx 會用 Word／LibreOffice 轉成原樣（沒有時退回簡化版，工具會在 warnings 說明，請原樣轉告使用者）。要存到哪裡用 output_path。做完回報 files 裡每個檔案的頁數與轉換方式。',
 });
+FA_TASK_TOOL_HINTS.push({
+    id: 'midi_compose',
+    re: /^(?=[\s\S]*(寫|作|創作|譜|編|做|產生|生成|來|弄|給我|想要|compose|write|make|create))(?=[\s\S]*(曲子|樂曲|曲風|歌曲|一首|一段|配樂|背景音樂|旋律|midi|\.mid|melody|tune|song))/i,
+    neg: /(播放|放出來|放一下|轉成?\s*mp3|mp3\s*轉|音訊轉|轉譜|轉成?\s*midi|上傳|附件|怎麼|如何|為什麼|是什麼|教我|說明|知識|樂理)|(詩|文章|程式|報告|信件|故事|小說|文案|code|腳本|python|文件|簡報|摘要|笑話)/i,
+    tools: ['midi_compose', 'midi_edit_open', 'midi_to_mp3', 'midi_play', 'music_topic'],
+    note: '【這個需求有專用工具：midi_compose】使用者要你作曲或產生 MIDI：直接呼叫 midi_compose({description: 使用者的原話})——程式依風格範本產生並檢查音域與跳進，結果會變成對話裡的 MIDI 編輯器卡片（可試聽、改、下載 MIDI、轉 mp3、轉成配樂）。不要自己寫 Python／mido 腳本、不要把 .mid 寫到資料夾後只報路徑——成品一律用卡片交付。作曲家、樂派或沒有專屬範本的風格（例如貝多芬、重金屬）工具會自動挑最接近的範本並在結果裡寫 style_note，回覆時照實轉述這句話，不要說成真的是那位作曲家的作品。',
+});
 function _faTaskToolHints(task) { const t = String(task || ''); return FA_TASK_TOOL_HINTS.filter((h) => h.re.test(t) && !(h.neg && h.neg.test(t))); }
 /* TASK-HINTS-END */
 
@@ -55181,7 +55196,7 @@ class FloatingAssistant {
         this.register_slash_command('/media-compose-midi', '[風格描述]',
             '依描述用風格範本作曲並開 MIDI 編輯器，例如 /media-compose-midi 輕快的爵士，D 調，16 小節。',
             async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/media-compose-midi' + (raw ? ' ' + raw : '') });
-                try { const c = FaMidiCompose.compose(Object.assign({}, FaMidiCompose.parseRequest(raw), { seed: 1 + Math.floor(Math.random() * 99999) })); r._midiPushEditor(c.song, c.song.title, '🎼 已依「' + FaMidiCompose.STYLES[c.style].name + '」範本作曲(' + c.options.key + ' 調、' + c.options.tempo + ' 拍/分、' + c.options.bars + ' 小節,種子 ' + c.seed + '):按「試聽」聽聽看，可以直接改。'); }
+                try { const c = FaMidiCompose.compose(Object.assign({}, FaMidiCompose.parseRequest(raw), { seed: 1 + Math.floor(Math.random() * 99999) })); r._midiPushEditor(c.song, c.song.title, '🎼 已依「' + FaMidiCompose.STYLES[c.style].name + '」範本作曲(' + c.options.key + ' 調、' + c.options.tempo + ' 拍/分、' + c.options.bars + ' 小節,種子 ' + c.seed + '):按「試聽」聽聽看，可以直接改。' + (c.styleNote ? '\n\n⚠️ ' + c.styleNote : '')); }
                 catch (e) { r._pushAssistantMessage('⚠️ 作曲失敗:' + String((e && e.message) || e)); }
                 try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ }
             });
@@ -59600,13 +59615,13 @@ ${fnData.code}
             { type: 'object', properties: { file_id: { type: 'string' }, song_id: { type: 'string' }, song: { type: 'object' }, title: { type: 'string' } }, additionalProperties: false }
         );
         registerOptional('midi_compose',
-            '依描述「作曲」並開 MIDI 編輯器:程式依風格範本產生(前奏／主歌／副歌結構、和弦進行、旋律、貝斯、和弦伴奏、鼓),旋律音域與跳進由程式檢查,失敗自動重來;你只需要選風格、調、速度、小節數、和弦進行編號(都可省略)。風格:pop 流行、rock 搖滾、jazz 爵士、blues 藍調、waltz 圓舞曲(3/4)、folk 民謠、lofi 低傳真、edm 電子舞曲、classical 古典。也可以只給 description(中文描述,程式會讀出風格／調／速度／小節數)。同樣的 seed 產生同樣的曲子,想換一首就換 seed。',
+            '依描述「作曲」並開 MIDI 編輯器:程式依風格範本產生(前奏／主歌／副歌結構、和弦進行、旋律、貝斯、和弦伴奏、鼓),旋律音域與跳進由程式檢查,失敗自動重來;你只需要選風格、調、速度、小節數、和弦進行編號(都可省略)。風格:pop 流行、rock 搖滾、jazz 爵士、blues 藍調、waltz 圓舞曲(3/4)、folk 民謠、lofi 低傳真、edm 電子舞曲、classical 古典;沒有專屬範本的風格或作曲家(貝多芬、重金屬、森巴…)會自動挑最接近的範本,結果裡有 style_note,要照實轉述、不要說成真的是那位作曲家的作品;結果是編輯器卡片,不要自己寫 Python／mido 腳本或把 .mid 寫到資料夾。也可以只給 description(中文描述,程式會讀出風格／調／速度／小節數)。同樣的 seed 產生同樣的曲子,想換一首就換 seed。',
             async function (rawArgs) {
                 let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 try {
                     const o = Object.assign({}, FaMidiCompose.parseRequest(a.description || ''), a.style ? { style: a.style } : {}, a.key ? { key: a.key } : {}, a.tempo ? { tempo: a.tempo } : {}, a.bars ? { bars: a.bars } : {}, a.progression != null ? { progression: a.progression } : {}, a.seed ? { seed: a.seed } : { seed: 1 + Math.floor(Math.random() * 99999) }, a.title ? { title: a.title } : {});
-                    const r = FaMidiCompose.compose(o); const id = this._midiPushEditor(r.song, r.song.title, '🎼 已依「' + FaMidiCompose.STYLES[r.style].name + '」範本作曲(' + r.options.key + ' 調、' + r.options.tempo + ' 拍/分、' + r.options.bars + ' 小節,種子 ' + r.seed + '):按「試聽」聽聽看,可以直接改,或對底下的對話框說「第一軌升兩個半音」。');
-                    return JSON.stringify({ ok: true, song_id: id, style: r.style, key: r.options.key, tempo: r.options.tempo, bars: r.options.bars, seed: r.seed, tries: r.tries, warnings: r.warnings, sections: r.sections });
+                    const r = FaMidiCompose.compose(o); const id = this._midiPushEditor(r.song, r.song.title, '🎼 已依「' + FaMidiCompose.STYLES[r.style].name + '」範本作曲(' + r.options.key + ' 調、' + r.options.tempo + ' 拍/分、' + r.options.bars + ' 小節,種子 ' + r.seed + '):按「試聽」聽聽看,可以直接改,或對底下的對話框說「第一軌升兩個半音」。' + (r.styleNote ? '\n\n⚠️ ' + r.styleNote : ''));
+                    return JSON.stringify({ ok: true, song_id: id, style: r.style, style_note: r.styleNote || undefined, card: '編輯器卡片已放進對話(可試聽、改、下載 MIDI、轉 mp3);回覆時不要再說檔案寫到哪個資料夾,也不要自己寫程式產生 MIDI', key: r.options.key, tempo: r.options.tempo, bars: r.options.bars, seed: r.seed, tries: r.tries, warnings: r.warnings, sections: r.sections });
                 } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
             },
             { type: 'object', properties: { description: { type: 'string', description: '使用者的中文描述,例如「輕快的爵士,D 調,16 小節」' }, style: { type: 'string', enum: ['pop', 'rock', 'jazz', 'blues', 'waltz', 'folk', 'lofi', 'edm', 'classical'] }, key: { type: 'string', description: 'C、D、Eb、F#… 大調或(小調風格)的主音' }, tempo: { type: 'number' }, bars: { type: 'number', description: '4 到 64,16 以上有前奏／主歌／副歌結構' }, progression: { type: 'number', description: '風格內的和弦進行編號,從 0 起算' }, seed: { type: 'number' }, title: { type: 'string' } }, additionalProperties: false }
@@ -64851,6 +64866,7 @@ ${fnData.code}
                 { id: 'images_to_pdf', type: 'regex', expr: '^(?=[^]*(?:轉|變|做|存|輸出|匯出|合成|合併|併|拼|merge|convert)[^\\n]{0,6}(?:成|為|to)?\\s*pdf)(?=[^]*\\[附件：[^\\]]*\\.(?:png|jpe?g|webp|gif|bmp))(?![^]*\\[附件：[^\\]]*\\.pdf)', intent: '圖片轉PDF（附件是圖片）', tool: 'images_to_pdf', args: {}, confidence: 0.99, risk: 'safe', source: 'builtin', enabled: true, hits: 0 },
                 { id: 'image_to_text', type: 'regex', expr: '(?:(?:描述|解析|分析|辨識|辨認|說明|解釋|看看|讀)(?:一下)?(?:這張|這個|此|附件的?)?(?:圖|圖片|照片|圖像)|圖(?:片|像)?(?:轉|轉成|變成)(?:文字|描述)|(?:圖片|照片|圖像)(?:裡|中|上)?(?:有什麼|寫什麼|的文字|的內容)|image\\s*to\\s*text|\\bOCR\\b|文字辨識)', intent: '離線圖像轉文字（描述圖片或辨識圖上的文字；模型跑在這台電腦上，不需要 AI）', tool: 'image_to_text', args: { task: 'detailed' }, confidence: 0.86, risk: 'safe', source: 'builtin', enabled: true, hits: 0 },
                 { id: 'image_decompose', type: 'regex', expr: '(?:2\.5\s*D|2\.5d|圖片分解|圖像分解|向量重繪|重繪成向量|拆(?:成)?圖層|(?:把|將)?(?:這張|這個|此)?(?:圖|圖片|照片|圖像).{0,8}(?:變成|做成|轉成|轉為).{0,6}(?:3D|立體|浮雕|視差))', intent: '把圖片分解重繪成 2.5D 模型（純幾何＋知識庫的部位知識，不需要 AI）', tool: 'image_decompose_redraw', args: {}, confidence: 0.85, risk: 'safe', source: 'builtin', enabled: true, hits: 0 },
+                { id: 'midi_compose_request', type: 'regex', expr: '^(?![^]*(?:播放|轉成?\\s*mp3|音訊轉|轉譜|轉成?\\s*[Mm][Ii][Dd][Ii]|上傳|附件|怎麼|如何|為什麼|是什麼|詩|文章|程式|報告|故事|小說|文案|[Pp]ython|腳本))(?=[^]*(?:寫|作|創作|譜|編|做|產生|生成|來|弄|給我))(?=[^]*(?:曲子|樂曲|歌曲|一首|一段|配樂|背景音樂|旋律|[Mm][Ii][Dd][Ii]))', intent: '作曲／產生 MIDI（程式依風格範本產生，結果是編輯器卡片）', tool: 'midi_compose', args: { description: '{problem_text}' }, confidence: 0.85, risk: 'safe', source: 'builtin', enabled: true },
                 { id: 'ref_pragma', type: 'regex', expr: '#\\s*pragma\\s+\\S+', intent: '解釋 #pragma（OpenMP、GCC…）', tool: 'ref_lookup', args: { query: '{problem_text}' }, confidence: 0.9, risk: 'safe' },
                 { id: 'greeting', type: 'regex', expr: '^\\s*(?:你好|哈囉|嗨|hi|hello|hey|早安|午安|晚安)[!！。.\\s]*$', intent: '打招呼', answer: '你好！目前是離線模式：我不經過AI，只能依「離線訓練器」學到的規則與範例做事（搜尋、讀網頁、檔案、圖片、程式專案…）。說說你要做什麼，或打 /offline-dry <一句話> 看我會怎麼判斷。', confidence: 0.92, source: 'builtin', enabled: true, hits: 0 },
                 { id: 'browser_open_read', type: 'regex', expr: '^(?![^]*(?:截取|截圖|截個圖|截一張|screenshot))[^]*?(?:(?:(?:瀏覽器控制|用瀏覽器|瀏覽器(?:開啟|打開|前往|看)|browser[ _]?control|用chrome|用 chrome)[^]*?https?://|https?://[^\\s]*[^]*?(?:瀏覽器控制|用瀏覽器|browser[ _]?control)))', intent: '用瀏覽器控制開啟網址並讀取頁面', steps: [{ tool: 'browser_create_tab', args: { url: '{url}' } }, { tool: 'browser_get_page_text', args: { tab_id: '{step1.tab_id}' } }, { tool: 'browser_close', args: { tab_id: '{step1.tab_id}' }, cleanup: true }], confidence: 0.98, risk: 'safe', source: 'builtin', enabled: true, hits: 0 },
@@ -76556,6 +76572,23 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     //    存活期間才有效的舊URL字串——效果等同data URL可以持久使用，但
     //    不需要真的把整個檔案base64編碼存進聊天紀錄JSON裡，省空間也省
     //    CPU）。
+    // 成品檔案一律用卡片交付(階段 6 之後使用者回報:AI 把 .mid 寫到資料夾後只用文字報路徑)。bytes:Uint8Array;.mid／.midi 變 MIDI 播放卡片(可試聽、下載、轉 mp3),其他變下載卡片
+    async _deliverBytes(bytes, name) {
+        const nm = String(name || 'file').replace(/^.*[\\/]/, ''), ext = (/\.([A-Za-z0-9]+)$/.exec(nm) || [])[1] || '';
+        if (/^midi?$/i.test(ext)) {
+            try { const song = FaMidi.parse(bytes); const id = this._midiPushCard(song, nm.replace(/\.[^.]+$/, ''), '🎹 這是產生好的 MIDI(檔案也已經在你的電腦上):按播放試聽,或下載、轉成 mp3、用「MIDI 編輯器」改。'); return { ok: true, card: 'midi', song_id: id }; } catch (_) { /* 讀不懂就當一般檔案給下載卡片 */ }
+        }
+        const MIME = { mp3: 'audio/mpeg', wav: 'audio/wav', flac: 'audio/flac', ogg: 'audio/ogg', m4a: 'audio/mp4', mid: 'audio/midi', midi: 'audio/midi', mp4: 'video/mp4', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', pdf: 'application/pdf', svg: 'image/svg+xml', txt: 'text/plain', json: 'application/json', csv: 'text/csv', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' };
+        const mime = MIME[ext.toLowerCase()] || 'application/octet-stream'; await this.generateAndDeliverFile(new Blob([bytes], { type: mime }), nm, mime); return { ok: true, card: 'file' };
+    }
+    // 桌面版:讀這台電腦上的檔案(絕對路徑)並用卡片交付
+    async _deliverDiskFile(path) {
+        const api = typeof window !== 'undefined' && window.desktopAPI && window.desktopAPI.rawfs; if (!api) return { ok: false, error: '只有桌面版能讀這台電腦上的檔案' };
+        const r = await api.readFile(String(path), 'base64'); if (!r || r.base64 == null) return { ok: false, error: '讀不到這個檔案' };
+        if (r.sizeBytes > 60 * 1024 * 1024) return { ok: false, error: '檔案太大(' + Math.round(r.sizeBytes / 1048576) + ' MB),不放進對話卡片;檔案在 ' + r.path };
+        const bin = atob(r.base64), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+        const out = await this._deliverBytes(u, r.path); out.path = r.path; return out;
+    }
     async generateAndDeliverFile(blob, filename, mimeType) {
         if (!(blob instanceof Blob)) throw new Error('generateAndDeliverFile 需要一個 Blob');
         const id = await this.fileCache.put(filename, mimeType || blob.type || 'application/octet-stream', blob);
