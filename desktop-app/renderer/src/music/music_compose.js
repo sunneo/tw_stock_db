@@ -53,7 +53,7 @@
     const [tn, td] = st.timesig; const beatsPerBar = tn * (4 / td); const bars = o.bars;
     const prog = st.progs[o.progression % st.progs.length];
     let song = M.emptySong(); song.title = o.title || (st.name + '・' + o.key); song.tempos = [{ t: 0, bpm: o.tempo }]; song.timesig = { n: tn, d: td };
-    song = M.addTrack(song, '旋律', st.inst.lead); song = M.addTrack(song, '和弦', st.inst.chord); song = M.addTrack(song, '貝斯', st.inst.bass); if (st.drum) song = M.addTrack(song, '鼓', 0, true);
+    song = M.addTrack(song, '旋律', Number.isInteger(o.lead) ? o.lead : st.inst.lead); song = M.addTrack(song, '和弦', st.inst.chord); song = M.addTrack(song, '貝斯', st.inst.bass); if (st.drum) song = M.addTrack(song, '鼓', 0, true);
     const chords = [], leadBars = new Set(); const add = (ti, t, d, n, v) => { song = M.addNote(song, ti, { t: Math.round(t * PPQ), d: Math.max(1, Math.round(d * PPQ)), n, v }); };
     const sections = []; { const names = bars >= 16 ? STRUCT.song : STRUCT.short; const per = Math.max(2, Math.floor(bars / names.length)); names.forEach((nm, i) => sections.push({ name: nm, from: i * per, to: i === names.length - 1 ? bars : (i + 1) * per })); }
     let prev = 72 + sc.base % 12 - 12 * (sc.base % 12 > 5 ? 1 : 0); prev = Math.max(62, Math.min(76, prev));
@@ -68,7 +68,7 @@
       else if (st.bass === 'oompah') { add(2, t0, 0.95, bn, 85); for (let i = 1; i < beatsPerBar; i++) add(2, t0 + i, 0.5, bn + 7, 60); }
       else for (let i = 0; i < beatsPerBar; i++) add(2, t0 + i, 0.95, bn, i === 0 ? 90 : 70);
       // 鼓:每小節重複同一型(前奏只有踩鑔)
-      if (st.drum) { const pat = st.drum[0]; for (let i = 0; i < 16 * (beatsPerBar / 4); i++) { const c = pat[i % pat.length]; if (c === '.' || (intro && c !== 'h' && c !== 'r')) continue; add(3, t0 + i * 0.25, 0.2, DRUM_NOTE[c] || 42, c === 'k' || c === 's' ? 100 : 70); } }
+      if (st.drum) { const pat = st.drum[(o.drumIdx | 0) % st.drum.length]; for (let i = 0; i < 16 * (beatsPerBar / 4); i++) { const c = pat[i % pat.length]; if (c === '.' || (intro && c !== 'h' && c !== 'r')) continue; add(3, t0 + i * 0.25, 0.2, DRUM_NOTE[c] || 42, c === 'k' || c === 's' ? 100 : 70); } }
       // 旋律:前奏第一小節與尾奏最後一小節留白;其餘依節奏型,強拍用和弦音、弱拍用調內音級步進
       if (b === 0 && sec.name === '前奏' && bars >= 16) continue; if (b === bars - 1 && bars >= 16) { add(0, t0, beatsPerBar, tones.map((x) => 60 + ((root + x) % 12))[0] + 12 * 0, 90); leadBars.add(b); prev = 60 + (root % 12); continue; }
       const rh = pick(r, st.melody).split(' '); let t = t0, total = 0; rh.forEach((x) => { total += DUR[x]; }); const scale = beatsPerBar / total;
@@ -87,7 +87,7 @@
   // 主要入口:o = { style, key, tempo, bars, progression, seed, title };缺的欄位用風格預設。檢查失敗換種子重來(最多 12 次),都失敗就回最後一次並附 warnings
   function compose(o) {
     o = o || {}; const style = STYLES[o.style] ? o.style : 'pop'; const st = STYLES[style];
-    const opts = { style, key: KEYS[o.key] != null ? o.key : 'C', tempo: Math.max(40, Math.min(220, Number(o.tempo) || Math.round((st.tempo[0] + st.tempo[1]) / 2))), bars: Math.max(4, Math.min(64, Number(o.bars) || 16)), progression: Number(o.progression) || 0, title: o.title };
+    const opts = { style, key: KEYS[o.key] != null ? o.key : 'C', tempo: Math.max(40, Math.min(220, Number(o.tempo) || Math.round((st.tempo[0] + st.tempo[1]) / 2))), bars: Math.max(4, Math.min(64, Number(o.bars) || 16)), progression: Number(o.progression) || 0, title: o.title, lead: Number.isInteger(o.lead) && o.lead >= 0 && o.lead <= 127 ? o.lead : undefined, drumIdx: Math.max(0, o.drumIdx | 0) };
     let seed = Number(o.seed) || 1, last = null, tries = 0;
     for (; tries < 12; tries++, seed++) { last = build(opts, seed); const problems = validate(last.song, last.info); if (!problems.length) return { song: M.validate(last.song), style, options: opts, seed, tries: tries + 1, warnings: [], sections: last.info.sections, styleNote: o.styleNote || '' }; last.problems = problems; }
     return { song: M.validate(last.song), style, options: opts, seed, tries, warnings: last.problems, sections: last.info.sections, styleNote: o.styleNote || '' };

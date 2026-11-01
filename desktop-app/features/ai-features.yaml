@@ -608,6 +608,13 @@ categories:
         platforms: [web, desktop]
         samples: ["/media-audio-to-midi", "把這首 mp3 轉成 MIDI", "把這段錄音轉成譜，拆軌"]
         updated: 2026-11-01
+      - id: music-compose-understand
+        name: 音樂：作曲先由 AI 理解需求（風格、情緒、速度、調式、主奏、長度、用途）
+        summary: /media-compose-midi 與工具 midi_compose 走同一條路：有 AI 時，AI 用封閉選擇題回答九種風格範本（作曲家與沒有的風格選最接近的）、情緒、速度、調式、主奏樂器、長度與用途，程式逐欄核對，答錯的欄位只退回那一欄的預設；沒有 AI（離線、額度用盡、逾時）才完全走範本規則並明講。音符仍由程式依範本作曲，同種子同曲。結果卡片顯示每個欄位是你說的、AI 選的、程式規則猜的還是預設，並有「換一首」與「改成…」。
+        how: { slash: ["/media-compose-midi"], tools: [midi_compose] }
+        platforms: [web, desktop]
+        samples: ["/media-compose-midi 建立科技感的音樂 用來描述intel", "寫一首貝多芬風格的曲子", "幫我做一首慢一點的小調 lofi，24 小節"]
+        updated: 2026-11-02
       - id: music-model-manager
         name: 音樂：離線模型管理（聲音轉 MIDI 模型、音色庫、配樂）
         summary: 設定頁「離線模型管理」多一區音樂：聲音轉 MIDI 的三個模型（Basic Pitch、YAMNet、Demucs）、GS 音色庫（瘦身版）各自顯示已下載量、可下載（可續傳）或刪除，配樂可清掉對話裡的暫存。大小一律從登錄與音色庫清單算出來顯示，不寫死；音色庫整份存好後不再多留一份分片。

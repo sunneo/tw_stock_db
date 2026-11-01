@@ -33582,7 +33582,7 @@ const holder = {};
     const [tn, td] = st.timesig; const beatsPerBar = tn * (4 / td); const bars = o.bars;
     const prog = st.progs[o.progression % st.progs.length];
     let song = M.emptySong(); song.title = o.title || (st.name + '・' + o.key); song.tempos = [{ t: 0, bpm: o.tempo }]; song.timesig = { n: tn, d: td };
-    song = M.addTrack(song, '旋律', st.inst.lead); song = M.addTrack(song, '和弦', st.inst.chord); song = M.addTrack(song, '貝斯', st.inst.bass); if (st.drum) song = M.addTrack(song, '鼓', 0, true);
+    song = M.addTrack(song, '旋律', Number.isInteger(o.lead) ? o.lead : st.inst.lead); song = M.addTrack(song, '和弦', st.inst.chord); song = M.addTrack(song, '貝斯', st.inst.bass); if (st.drum) song = M.addTrack(song, '鼓', 0, true);
     const chords = [], leadBars = new Set(); const add = (ti, t, d, n, v) => { song = M.addNote(song, ti, { t: Math.round(t * PPQ), d: Math.max(1, Math.round(d * PPQ)), n, v }); };
     const sections = []; { const names = bars >= 16 ? STRUCT.song : STRUCT.short; const per = Math.max(2, Math.floor(bars / names.length)); names.forEach((nm, i) => sections.push({ name: nm, from: i * per, to: i === names.length - 1 ? bars : (i + 1) * per })); }
     let prev = 72 + sc.base % 12 - 12 * (sc.base % 12 > 5 ? 1 : 0); prev = Math.max(62, Math.min(76, prev));
@@ -33597,7 +33597,7 @@ const holder = {};
       else if (st.bass === 'oompah') { add(2, t0, 0.95, bn, 85); for (let i = 1; i < beatsPerBar; i++) add(2, t0 + i, 0.5, bn + 7, 60); }
       else for (let i = 0; i < beatsPerBar; i++) add(2, t0 + i, 0.95, bn, i === 0 ? 90 : 70);
       // 鼓:每小節重複同一型(前奏只有踩鑔)
-      if (st.drum) { const pat = st.drum[0]; for (let i = 0; i < 16 * (beatsPerBar / 4); i++) { const c = pat[i % pat.length]; if (c === '.' || (intro && c !== 'h' && c !== 'r')) continue; add(3, t0 + i * 0.25, 0.2, DRUM_NOTE[c] || 42, c === 'k' || c === 's' ? 100 : 70); } }
+      if (st.drum) { const pat = st.drum[(o.drumIdx | 0) % st.drum.length]; for (let i = 0; i < 16 * (beatsPerBar / 4); i++) { const c = pat[i % pat.length]; if (c === '.' || (intro && c !== 'h' && c !== 'r')) continue; add(3, t0 + i * 0.25, 0.2, DRUM_NOTE[c] || 42, c === 'k' || c === 's' ? 100 : 70); } }
       // 旋律:前奏第一小節與尾奏最後一小節留白;其餘依節奏型,強拍用和弦音、弱拍用調內音級步進
       if (b === 0 && sec.name === '前奏' && bars >= 16) continue; if (b === bars - 1 && bars >= 16) { add(0, t0, beatsPerBar, tones.map((x) => 60 + ((root + x) % 12))[0] + 12 * 0, 90); leadBars.add(b); prev = 60 + (root % 12); continue; }
       const rh = pick(r, st.melody).split(' '); let t = t0, total = 0; rh.forEach((x) => { total += DUR[x]; }); const scale = beatsPerBar / total;
@@ -33616,7 +33616,7 @@ const holder = {};
   // 主要入口:o = { style, key, tempo, bars, progression, seed, title };缺的欄位用風格預設。檢查失敗換種子重來(最多 12 次),都失敗就回最後一次並附 warnings
   function compose(o) {
     o = o || {}; const style = STYLES[o.style] ? o.style : 'pop'; const st = STYLES[style];
-    const opts = { style, key: KEYS[o.key] != null ? o.key : 'C', tempo: Math.max(40, Math.min(220, Number(o.tempo) || Math.round((st.tempo[0] + st.tempo[1]) / 2))), bars: Math.max(4, Math.min(64, Number(o.bars) || 16)), progression: Number(o.progression) || 0, title: o.title };
+    const opts = { style, key: KEYS[o.key] != null ? o.key : 'C', tempo: Math.max(40, Math.min(220, Number(o.tempo) || Math.round((st.tempo[0] + st.tempo[1]) / 2))), bars: Math.max(4, Math.min(64, Number(o.bars) || 16)), progression: Number(o.progression) || 0, title: o.title, lead: Number.isInteger(o.lead) && o.lead >= 0 && o.lead <= 127 ? o.lead : undefined, drumIdx: Math.max(0, o.drumIdx | 0) };
     let seed = Number(o.seed) || 1, last = null, tries = 0;
     for (; tries < 12; tries++, seed++) { last = build(opts, seed); const problems = validate(last.song, last.info); if (!problems.length) return { song: M.validate(last.song), style, options: opts, seed, tries: tries + 1, warnings: [], sections: last.info.sections, styleNote: o.styleNote || '' }; last.problems = problems; }
     return { song: M.validate(last.song), style, options: opts, seed, tries, warnings: last.problems, sections: last.info.sections, styleNote: o.styleNote || '' };
@@ -33647,6 +33647,153 @@ const holder = {};
 return holder.FaMidiCompose;
 })();
 /* MUSICCOMPOSE-END */
+/* MUSICPLAN-BEGIN */
+const FaComposePlan = (function () {
+const holder = {};
+(function (module, self) {
+// 作曲的「理解需求」那一段(CoLU 形狀:封閉題由 AI 回答、程式逐欄核對、每一欄都有程式的預設退路;AI 不吐音符,音符仍由 music_compose.js 的範本作曲)。
+//   decide(text, { ask, explicit, timeoutMs, attempts }) → { fields, sources, options, report }
+//     ask(systemPrompt, userPrompt) → Promise<string>:有 AI 時給;沒有(離線、額度用盡)就不給,整個走程式規則並在報告裡講明
+//     explicit:呼叫端明確指定的欄位(工具參數 style／key／tempo／bars),視為使用者指定
+//   欄位:style 風格範本(九種)、mood 情緒、speed 速度(慢中快)、mode 調式、lead 主奏樂器、bars 長度、key 調、tempo 速度數字、purpose 用途或場景描述(文字)
+//   來源 sources[欄位]:'user'(使用者自己說的或指定的數字)／'ai'(AI 選的,核對過)／'rule'(程式規則從關鍵字猜的)／'default'(程式預設)
+//   toOptions(fields) → 給 FaMidiCompose.compose 的選項;edit(plan, patch) → 使用者改某幾欄(標成 user)後的新規劃;describe(report) → 結果卡片的文字
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(require('./music_compose.js')); else root.FaComposePlan = factory(root.FaMidiCompose || (typeof FaMidiCompose !== 'undefined' ? FaMidiCompose : undefined)); })(typeof self !== 'undefined' ? self : this, function (C) {
+  'use strict';
+  const STYLE_KEYS = ['pop', 'rock', 'jazz', 'blues', 'waltz', 'folk', 'lofi', 'edm', 'classical'], L = 'ABCDEFGHIJ';
+  const MOODS = [['A', '明亮歡快'], ['B', '溫暖柔和'], ['C', '放鬆悠閒'], ['D', '憂鬱抒情'], ['E', '緊張懸疑'], ['F', '活力有勁'], ['G', '科技未來感'], ['H', '莊嚴壯闊']];
+  const MOOD_STYLE = { A: 'pop', B: 'folk', C: 'lofi', D: 'lofi', E: 'edm', F: 'rock', G: 'edm', H: 'classical' };
+  const MOOD_DRUM = { A: 0, B: 0, C: 0, D: 0, E: 1, F: 1, G: 1, H: 0 };
+  const MOOD_SPEED = { A: 'B', B: 'A', C: 'A', D: 'A', E: 'B', F: 'C', G: 'B', H: 'B' };
+  const MOOD_LEAD = { A: 'A', B: 'C', C: 'B', D: 'A', E: 'G', F: 'C', G: 'G', H: 'D' };
+  const MOOD_WORDS = [['G', /科技|未來|數位|電子感|科幻|賽博|tech|cyber|futur/i], ['E', /緊張|懸疑|驚悚|刺激/], ['F', /活力|熱血|運動|動感|有勁|energetic/i], ['H', /莊嚴|壯闊|史詩|宏大|磅礡|epic/i], ['D', /憂鬱|悲傷|感傷|哀傷|傷感|抒情/], ['C', /放鬆|悠閒|慵懶|睡眠|咖啡|chill/i], ['B', /溫暖|柔和|溫柔|療癒/], ['A', /輕快|歡樂|開心|明亮|愉快|歡快/]];
+  const SPEEDS = [['A', '慢'], ['B', '中'], ['C', '快']];
+  const MODES = [['A', '大調'], ['B', '小調'], ['C', '自動(用範本的調式)']];
+  const LEADS = [['A', '鋼琴', 0], ['B', '電鋼琴', 4], ['C', '吉他', 25], ['D', '弦樂(小提琴)', 40], ['E', '長笛(木管)', 73], ['F', '小號(銅管)', 56], ['G', '合成主奏', 80], ['H', '合成氛圍', 88], ['I', '顫音琴(鐘琴類)', 11], ['J', '自動(用範本的主奏)', null]];
+  const BARS = [['A', 8], ['B', 16], ['C', 24], ['D', 32]];
+  const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
+
+  // 規則:從關鍵字猜(沒有 AI 時的全部、有 AI 時的退路)
+  function ruleMood(text) { for (const [k, re] of MOOD_WORDS) if (re.test(text)) return k; return null; }
+  function ruleSpeed(text) { if (/慢|緩|舒緩/.test(text)) return 'A'; if (/快|急促|疾/.test(text)) return 'C'; return null; }
+  function ruleMode(text) { if (/小調/.test(text)) return 'B'; if (/大調/.test(text)) return 'A'; return null; }
+  function ruleLead(text) { const m = [['A', /鋼琴|piano/i], ['B', /電鋼琴/], ['C', /吉他|guitar/i], ['D', /弦樂|小提琴|提琴|violin/i], ['E', /長笛|笛|木管|flute/i], ['F', /小號|銅管|trumpet/i], ['G', /合成主奏|合成器|synth/i], ['I', /顫音琴|鐘琴|木琴/]]; for (const [k, re] of m) if (re.test(text)) return k; return null; }
+  function rulePurpose(text) { const m = /(?:用來|用於|拿來|作為|當作|給|for)\s*([^,，。;；\n]{1,40})/i.exec(text); return m ? m[1].replace(/(的)?(背景)?(音樂|曲子|配樂)?(使用)?$/, '').trim().slice(0, 40) : ''; }
+
+  function questionOf() {
+    const sty = STYLE_KEYS.map((k, i) => L[i] + '=' + C.STYLES[k].name + '(' + (C.STYLES[k].mode === 'minor' ? '小調' : '大調') + ',速度 ' + C.STYLES[k].tempo[0] + '–' + C.STYLES[k].tempo[1] + ')').join('、');
+    const system = '你是作曲助理的「需求理解」。只回一個 JSON 物件,不要任何說明。欄位都填選項字母(purpose 除外):\n' +
+      'style 風格範本:' + sty + '。使用者要的風格(包含作曲家、樂派、情境)不在清單裡時,選最接近的那一個字母。\n' +
+      'mood 情緒:' + MOODS.map((x) => x[0] + '=' + x[1]).join('、') + '\n' +
+      'speed 速度:' + SPEEDS.map((x) => x[0] + '=' + x[1]).join('、') + '\n' +
+      'mode 調式:' + MODES.map((x) => x[0] + '=' + x[1]).join('、') + '(選的風格範本若是小調而你選大調,程式會以範本為準,所以請選和調式一致的範本)\n' +
+      'lead 主奏樂器:' + LEADS.map((x) => x[0] + '=' + x[1]).join('、') + '\n' +
+      'bars 長度(小節):' + BARS.map((x) => x[0] + '=' + x[1]).join('、') + '\n' +
+      'purpose 用途或場景:一句話(40 字內),沒有就空字串。\n範例:{"style":"H","mood":"G","speed":"B","mode":"B","lead":"G","bars":"B","purpose":"簡報開場"}';
+    return system;
+  }
+  // 解析 AI 的回答:逐欄核對,不在清單內的欄位回 null(呼叫端用規則或預設補);整個讀不懂就 {}
+  function parseAnswer(text) {
+    const out = {}; const m = String(text || '').match(/\{[\s\S]*?\}/); if (!m) return out; let o; try { o = JSON.parse(m[0]); } catch (_) { return out; } if (!o || typeof o !== 'object') return out;
+    const letter = (v, allowed) => { const c = String(v == null ? '' : v).trim().charAt(0).toUpperCase(); return allowed.indexOf(c) >= 0 ? c : null; };
+    const f = { style: letter(o.style, L.slice(0, 9)), mood: letter(o.mood, 'ABCDEFGH'), speed: letter(o.speed, 'ABC'), mode: letter(o.mode, 'ABC'), lead: letter(o.lead, L), bars: letter(o.bars, 'ABCD') };
+    Object.keys(f).forEach((k) => { if (f[k]) out[k] = f[k]; });
+    if (typeof o.purpose === 'string') out.purpose = o.purpose.trim().slice(0, 40);
+    return out;
+  }
+
+  const withTimeout = (p, ms) => new Promise((res, rej) => { const t = setTimeout(() => rej(new Error('逾時 ' + Math.round(ms / 1000) + ' 秒')), ms); Promise.resolve(p).then((v) => { clearTimeout(t); res(v); }, (e) => { clearTimeout(t); rej(e); }); });
+
+  // 主流程
+  async function decide(text, o) {
+    o = o || {}; text = String(text || ''); const explicit = o.explicit || {}; const report = { usedAi: false, aiError: '', attempts: 0, notes: [] };
+    const base = C.parseRequest(text); // 使用者自己說的:風格詞、調、速度數字、小節數
+    const userStyleWord = base.style && !base.styleNote; // 明確的風格詞(流行、爵士…)才算使用者指定;作曲家／樂派對應是程式猜的
+    // 呼叫 AI(最多 attempts 次,每次有逾時);失敗不整個放棄,只是這次沒有 AI 的答案
+    let ai = {};
+    if (typeof o.ask === 'function') {
+      const attempts = o.attempts || 2, timeoutMs = o.timeoutMs || 20000;
+      for (let i = 0; i < attempts && !Object.keys(ai).length; i++) {
+        report.attempts = i + 1;
+        try { const raw = await withTimeout(o.ask(questionOf(), '使用者的需求:' + text.slice(0, 600)), timeoutMs); ai = parseAnswer(raw); if (!Object.keys(ai).length) report.aiError = 'AI 的回答讀不懂(' + String(raw || '').slice(0, 40).replace(/\s+/g, ' ') + ')'; }
+        catch (e) { report.aiError = String((e && e.message) || e); }
+      }
+      report.usedAi = Object.keys(ai).length > 0; report.aiMissing = report.usedAi ? ['style', 'mood', 'speed', 'mode', 'lead', 'bars'].filter((k) => !ai[k]) : [];
+    } else report.aiError = o.noAiReason || '沒有可用的 AI(離線或沒有設定)';
+    const f = {}, src = {};
+    const set = (k, v, s) => { f[k] = v; src[k] = s; };
+    // 風格:使用者指定 > 呼叫端指定 > AI > 規則(作曲家／情緒) > 預設
+    if (explicit.style && C.STYLES[explicit.style]) set('style', explicit.style, 'user');
+    else if (userStyleWord) set('style', base.style, 'user');
+    else if (ai.style) set('style', STYLE_KEYS[L.indexOf(ai.style)], 'ai');
+    else if (base.style) set('style', base.style, 'rule');
+    else { const mk = ai.mood || ruleMood(text); if (mk) set('style', MOOD_STYLE[mk], 'rule'); else set('style', 'pop', 'default'); }
+    // 情緒
+    if (ai.mood) set('mood', ai.mood, 'ai'); else { const mk = ruleMood(text); if (mk) set('mood', mk, 'rule'); else set('mood', null, 'default'); }
+    // 速度:使用者給了數字最優先(tempo 欄位);否則 慢中快
+    if (explicit.tempo || base.tempo) set('tempo', clamp(Number(explicit.tempo || base.tempo), 40, 220), 'user'); else set('tempo', null, 'default');
+    if (f.tempo == null) { if (ai.speed) set('speed', ai.speed, 'ai'); else { const sk = ruleSpeed(text); if (sk) set('speed', sk, 'rule'); else set('speed', f.mood ? MOOD_SPEED[f.mood] : 'B', f.mood ? 'rule' : 'default'); } } else set('speed', null, 'user');
+    // 調式
+    const tmpl = C.STYLES[f.style]; const tmplMode = tmpl.mode === 'minor' ? 'B' : 'A';
+    if (ruleMode(text)) set('mode', ruleMode(text), 'user'); else if (ai.mode) set('mode', ai.mode, 'ai'); else set('mode', 'C', 'default');
+    // 主奏樂器
+    if (ruleLead(text)) set('lead', ruleLead(text), 'user'); else if (ai.lead && ai.lead !== 'J') set('lead', ai.lead, 'ai'); else if (ai.lead === 'J') set('lead', 'J', 'ai'); else if (f.mood) set('lead', MOOD_LEAD[f.mood], 'rule'); else set('lead', 'J', 'default');
+    // 長度
+    if (explicit.bars || base.bars) set('bars', clamp(Math.round(Number(explicit.bars || base.bars)), 4, 64), 'user'); else if (ai.bars) set('bars', BARS[L.indexOf(ai.bars)][1], 'ai'); else set('bars', 16, 'default');
+    // 調
+    if (explicit.key || base.key) set('key', explicit.key || base.key, 'user'); else set('key', 'C', 'default');
+    // 用途(文字)
+    const rp = rulePurpose(text); if (rp) set('purpose', rp, 'user'); else if (ai.purpose) set('purpose', ai.purpose, 'ai'); else set('purpose', '', 'default');
+    if (base.styleNote && src.style === 'rule') report.notes.push(base.styleNote); else if (base.styleNote && src.style !== 'user') report.notes.push(base.styleNote);
+    const plan = { fields: f, sources: src };
+    return finish(plan, report, tmplMode);
+  }
+  function finish(plan, report, tmplMode) {
+    const f = plan.fields, tmpl = C.STYLES[f.style]; tmplMode = tmplMode || (tmpl.mode === 'minor' ? 'B' : 'A');
+    const options = toOptions(f); const wantMode = f.mode === 'C' ? tmplMode : f.mode;
+    const notes = (report.notes || []).slice();
+    if (wantMode !== tmplMode) notes.push('調式想要' + (wantMode === 'A' ? '大調' : '小調') + ',但「' + tmpl.name + '」範本是' + (tmplMode === 'A' ? '大調' : '小調') + ',這版以範本為準(要' + (wantMode === 'A' ? '大調' : '小調') + '可以換成' + STYLE_KEYS.filter((k) => (C.STYLES[k].mode === 'minor') === (wantMode === 'B')).map((k) => C.STYLES[k].name).join('、') + '範本)');
+    if (!report.usedAi) notes.unshift('這次沒有用 AI,用的是範本規則(' + (report.aiError || '沒有 AI') + ')');
+    else { const bad = ['style', 'mood', 'speed', 'mode', 'lead', 'bars'].filter((k) => plan.sources[k] !== 'ai' && plan.sources[k] !== 'user' && report.aiMissing && report.aiMissing.indexOf(k) >= 0); if (bad.length) notes.push('AI 沒答對的欄位改用程式預設:' + bad.join('、')); }
+    return { fields: f, sources: plan.sources, options, report: Object.assign({}, report, { notes, tmplName: tmpl.name, tmplMode }) };
+  }
+  // 規劃 → compose 的選項(純函式)
+  function toOptions(f) {
+    const st = C.STYLES[f.style] || C.STYLES.pop; const sp = f.tempo != null ? f.tempo : (f.speed === 'A' ? st.tempo[0] : f.speed === 'C' ? st.tempo[1] : Math.round((st.tempo[0] + st.tempo[1]) / 2));
+    const lead = (LEADS.find((x) => x[0] === f.lead) || [])[2]; const drumIdx = f.mood ? Math.min(MOOD_DRUM[f.mood] || 0, Math.max(0, (st.drum ? st.drum.length : 1) - 1)) : 0;
+    const title = (f.purpose ? f.purpose + '・' : '') + st.name + (f.mood ? '・' + (MOODS.find((x) => x[0] === f.mood) || [])[1] : '') + '・' + f.key;
+    return { style: f.style, key: f.key, tempo: sp, bars: f.bars, progression: 0, lead: lead == null ? undefined : lead, drumIdx, title };
+  }
+  // 使用者改某幾欄(「改成…」):那幾欄標成 user,其他不動,重新算選項
+  function edit(plan, patch) {
+    const fields = Object.assign({}, plan.fields), sources = Object.assign({}, plan.sources), rp = plan.report || {};
+    Object.keys(patch || {}).forEach((k) => { if (!(k in fields)) return; let v = patch[k]; if (k === 'tempo') v = v === '' || v == null ? null : clamp(Number(v), 40, 220); if (k === 'bars') v = clamp(Math.round(Number(v)), 4, 64); if (k === 'style' && !C.STYLES[v]) return; fields[k] = v; sources[k] = 'user'; if (k === 'tempo' && v == null) sources[k] = 'default'; if (k === 'tempo' && v != null) sources.speed = 'user'; if (k === 'speed') { fields.tempo = null; sources.tempo = 'default'; } });
+    return finish({ fields, sources }, { usedAi: !!rp.usedAi, aiError: rp.aiError || '', aiMissing: [], notes: [] });
+  }
+  const SRC = { user: '你說的', ai: 'AI 選的', rule: '程式規則猜的', default: '程式預設' };
+  const labelOf = (k, f, C2) => {
+    const st = C2.STYLES[f.style];
+    switch (k) {
+      case 'style': return st.name + '(' + f.style + ')'; case 'mood': return f.mood ? (MOODS.find((x) => x[0] === f.mood) || [])[1] : '(沒有指定)';
+      case 'speed': return f.tempo != null ? f.tempo + ' 拍/分' : (SPEEDS.find((x) => x[0] === f.speed) || [])[1] + '(' + toOptions(f).tempo + ' 拍/分)';
+      case 'mode': return (MODES.find((x) => x[0] === f.mode) || [])[1]; case 'lead': return (LEADS.find((x) => x[0] === f.lead) || [])[1]; case 'bars': return f.bars + ' 小節'; case 'key': return f.key + ' 調'; case 'purpose': return f.purpose || '(沒有)';
+    }
+    return '';
+  };
+  const ROWS = [['style', '風格範本'], ['mood', '情緒'], ['speed', '速度'], ['mode', '調式'], ['lead', '主奏樂器'], ['bars', '長度'], ['key', '調'], ['purpose', '用途']];
+  // 結果卡片的說明:每個欄位的值與來源
+  function describe(res, seed) {
+    const sk = (k) => (k === 'speed' && res.fields.tempo != null ? res.sources.tempo : res.sources[k]);
+    const rows = ROWS.map(([k, name]) => ({ key: k, name, value: labelOf(k, res.fields, C), source: sk(k), sourceLabel: SRC[sk(k)] || '' }));
+    return { rows, notes: res.report.notes, usedAi: res.report.usedAi, seed, template: res.report.tmplName };
+  }
+  return { STYLE_KEYS, MOODS, SPEEDS, MODES, LEADS, BARS, SRC, decide, parseAnswer, questionOf, toOptions, edit, describe, rulePurpose, ruleMood };
+});
+
+}).call(null, undefined, holder);
+return holder.FaComposePlan;
+})();
+/* MUSICPLAN-END */
 /* MUSICA2M-BEGIN */
 const FaAudioToMidi = (function () {
 const holder = {};
@@ -55245,7 +55392,7 @@ class FloatingAssistant {
         this.register_slash_command('/media-compose-midi', '[風格描述]',
             '依描述用風格範本作曲並開 MIDI 編輯器，例如 /media-compose-midi 輕快的爵士，D 調，16 小節。',
             async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/media-compose-midi' + (raw ? ' ' + raw : '') });
-                try { const c = FaMidiCompose.compose(Object.assign({}, FaMidiCompose.parseRequest(raw), { seed: 1 + Math.floor(Math.random() * 99999) })); r._midiPushEditor(c.song, c.song.title, '🎼 已依「' + FaMidiCompose.STYLES[c.style].name + '」範本作曲(' + c.options.key + ' 調、' + c.options.tempo + ' 拍/分、' + c.options.bars + ' 小節,種子 ' + c.seed + '):按「試聽」聽聽看，可以直接改。' + (c.styleNote ? '\n\n⚠️ ' + c.styleNote : '')); }
+                try { await r._midiComposeFlow(raw || '來一首曲子', {}, {}); }
                 catch (e) { r._pushAssistantMessage('⚠️ 作曲失敗:' + String((e && e.message) || e)); }
                 try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ }
             });
@@ -59664,13 +59811,13 @@ ${fnData.code}
             { type: 'object', properties: { file_id: { type: 'string' }, song_id: { type: 'string' }, song: { type: 'object' }, title: { type: 'string' } }, additionalProperties: false }
         );
         registerOptional('midi_compose',
-            '依描述「作曲」並開 MIDI 編輯器:程式依風格範本產生(前奏／主歌／副歌結構、和弦進行、旋律、貝斯、和弦伴奏、鼓),旋律音域與跳進由程式檢查,失敗自動重來;你只需要選風格、調、速度、小節數、和弦進行編號(都可省略)。風格:pop 流行、rock 搖滾、jazz 爵士、blues 藍調、waltz 圓舞曲(3/4)、folk 民謠、lofi 低傳真、edm 電子舞曲、classical 古典;沒有專屬範本的風格或作曲家(貝多芬、重金屬、森巴…)會自動挑最接近的範本,結果裡有 style_note,要照實轉述、不要說成真的是那位作曲家的作品;結果是編輯器卡片,不要自己寫 Python／mido 腳本或把 .mid 寫到資料夾。也可以只給 description(中文描述,程式會讀出風格／調／速度／小節數)。同樣的 seed 產生同樣的曲子,想換一首就換 seed。',
+            '依描述「作曲」並開 MIDI 編輯器(跟斜線指令 /media-compose-midi 走同一條路:有 AI 時由 AI 用選擇題理解風格範本、情緒、速度、調式、主奏樂器、長度與用途,程式逐欄核對,答錯只退回那一欄的預設;沒有 AI 才用範本規則,結果卡片會寫每個欄位是誰決定的):程式依風格範本產生(前奏／主歌／副歌結構、和弦進行、旋律、貝斯、和弦伴奏、鼓),旋律音域與跳進由程式檢查,失敗自動重來;你只需要選風格、調、速度、小節數、和弦進行編號(都可省略)。風格:pop 流行、rock 搖滾、jazz 爵士、blues 藍調、waltz 圓舞曲(3/4)、folk 民謠、lofi 低傳真、edm 電子舞曲、classical 古典;沒有專屬範本的風格或作曲家(貝多芬、重金屬、森巴…)會自動挑最接近的範本,結果裡有 style_note,要照實轉述、不要說成真的是那位作曲家的作品;結果是編輯器卡片,不要自己寫 Python／mido 腳本或把 .mid 寫到資料夾。也可以只給 description(中文描述,程式會讀出風格／調／速度／小節數)。同樣的 seed 產生同樣的曲子,想換一首就換 seed。',
             async function (rawArgs) {
                 let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 try {
-                    const o = Object.assign({}, FaMidiCompose.parseRequest(a.description || ''), a.style ? { style: a.style } : {}, a.key ? { key: a.key } : {}, a.tempo ? { tempo: a.tempo } : {}, a.bars ? { bars: a.bars } : {}, a.progression != null ? { progression: a.progression } : {}, a.seed ? { seed: a.seed } : { seed: 1 + Math.floor(Math.random() * 99999) }, a.title ? { title: a.title } : {});
-                    const r = FaMidiCompose.compose(o); const id = this._midiPushEditor(r.song, r.song.title, '🎼 已依「' + FaMidiCompose.STYLES[r.style].name + '」範本作曲(' + r.options.key + ' 調、' + r.options.tempo + ' 拍/分、' + r.options.bars + ' 小節,種子 ' + r.seed + '):按「試聽」聽聽看,可以直接改,或對底下的對話框說「第一軌升兩個半音」。' + (r.styleNote ? '\n\n⚠️ ' + r.styleNote : ''));
-                    return JSON.stringify({ ok: true, song_id: id, style: r.style, style_note: r.styleNote || undefined, card: '編輯器卡片已放進對話(可試聽、改、下載 MIDI、轉 mp3);回覆時不要再說檔案寫到哪個資料夾,也不要自己寫程式產生 MIDI', key: r.options.key, tempo: r.options.tempo, bars: r.options.bars, seed: r.seed, tries: r.tries, warnings: r.warnings, sections: r.sections });
+                    const ex = {}; if (a.style) ex.style = a.style; if (a.key) ex.key = a.key; if (a.tempo) ex.tempo = a.tempo; if (a.bars) ex.bars = a.bars;
+                    const out = await this._midiComposeFlow(a.description || '', ex, { seed: a.seed ? Number(a.seed) : 0 });
+                    return JSON.stringify({ ok: true, song_id: out.id, template: out.desc.template, decided: out.desc.rows.map((x) => ({ field: x.name, value: x.value, by: x.sourceLabel })), used_ai: out.desc.usedAi, notes: out.desc.notes, seed: out.c.seed, warnings: out.c.warnings, card: '編輯器卡片與「怎麼決定的」卡片已放進對話(可試聽、改、換一首、改成…);回覆時照實說哪些欄位是 AI 選的、哪些是程式預設,notes 的話要轉述,不要自己寫 Python／mido 腳本或把 .mid 寫到資料夾' });
                 } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
             },
             { type: 'object', properties: { description: { type: 'string', description: '使用者的中文描述,例如「輕快的爵士,D 調,16 小節」' }, style: { type: 'string', enum: ['pop', 'rock', 'jazz', 'blues', 'waltz', 'folk', 'lofi', 'edm', 'classical'] }, key: { type: 'string', description: 'C、D、Eb、F#… 大調或(小調風格)的主音' }, tempo: { type: 'number' }, bars: { type: 'number', description: '4 到 64,16 以上有前奏／主歌／副歌結構' }, progression: { type: 'number', description: '風格內的和弦進行編號,從 0 起算' }, seed: { type: 'number' }, title: { type: 'string' } }, additionalProperties: false }
@@ -73633,6 +73780,54 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         try { const base = typeof window !== 'undefined' && window.__FA_LAZY_BASE; if (base && /^https?:/i.test(base)) { lib = new URL('../../renderer/vendor/spessasynth/spessasynth-lib.js', base).href; proc = new URL('../../renderer/vendor/spessasynth/spessasynth-processor.min.js', base).href; } } catch (_) { /* */ }
         const bank = []; if (FA_ASSET_URLS.gsSoundbankBase) bank.push({ base: FA_ASSET_URLS.gsSoundbankBase, path: 'GeneralUser-GS-22k.sf3' }); bank.push(FA_ASSET_URLS.gsSoundbank);
         return { lib: [lib], processor: [proc], soundbank: bank };
+    }
+    // 作曲(階段 3 之後的「理解需求」):有 AI 時,AI 用封閉選擇題回答風格範本、情緒、速度、調式、主奏樂器、長度與用途,程式逐欄核對,答錯的欄位只退回那一欄的預設;
+    // 沒有 AI(離線、額度用盡、逾時)才完全走範本規則並明講。作曲本身(FaMidiCompose)仍由程式做,同種子同曲。斜線指令 /media-compose-midi 與工具 midi_compose 都走這裡
+    async _midiComposeFlow(text, explicit, o) {
+        o = o || {}; const offline = !!(this.advancedSettings && this.advancedSettings.offlineMode);
+        const ask = offline ? null : (sys, user) => this._callSimpleCompletion(user, { systemPrompt: sys, maxTokens: 300, temperature: 0, noBudgetRetry: true });
+        const res = await FaComposePlan.decide(text, { ask, explicit: explicit || {}, noAiReason: offline ? '離線模式' : '', timeoutMs: 25000, attempts: 2 });
+        return this._midiComposeFinish(res, o.seed);
+    }
+    _midiComposeFinish(res, seed) {
+        const sd = seed > 0 ? seed : 1 + Math.floor(Math.random() * 99999); const c = FaMidiCompose.compose(Object.assign({}, res.options, { seed: sd })); const desc = FaComposePlan.describe(res, c.seed);
+        const ref = { fields: res.fields, sources: res.sources, report: { usedAi: res.report.usedAi, aiError: res.report.aiError, notes: res.report.notes, tmplName: res.report.tmplName }, seed: c.seed, tries: c.tries, warnings: c.warnings };
+        const head = '🎼 已依「' + desc.template + '」範本作曲(' + res.options.key + ' 調、' + res.options.tempo + ' 拍/分、' + res.options.bars + ' 小節,種子 ' + c.seed + ');' + (desc.usedAi ? '需求由 AI 理解,' : '這次沒有用 AI,') + '下面是每個欄位怎麼決定的。按「試聽」聽聽看,可以直接改。';
+        const id = this._midiPushEditor(c.song, c.song.title, head + '\n\n```fa-compose\n' + JSON.stringify(ref) + '\n```');
+        return { id, c, desc, ref };
+    }
+    // 卡片上的「換一首」(換種子)與「改成…」(改幾個欄位重新作曲;被改的欄位標成你說的)
+    _midiRecompose(ref, patch, reroll) {
+        let res; const rep0 = Object.assign({}, ref.report || {});
+        if (patch && Object.keys(patch).length) res = FaComposePlan.edit({ fields: ref.fields, sources: ref.sources, report: rep0 }, patch);
+        else { const base = FaComposePlan.edit({ fields: ref.fields, sources: ref.sources, report: rep0 }, {}); res = base; }
+        return this._midiComposeFinish(res, reroll ? 0 : ref.seed);
+    }
+    _mountComposeCards(mdDiv) {
+        if (typeof FaComposePlan === 'undefined') return;
+        mdDiv.querySelectorAll('pre > code.language-fa-compose').forEach((code) => {
+            let ref = null; try { ref = JSON.parse(code.textContent); } catch (_) { /* */ } if (!ref || !ref.fields) return;
+            const res = { fields: ref.fields, sources: ref.sources, options: FaComposePlan.toOptions(ref.fields), report: Object.assign({ notes: [] }, ref.report) };
+            const d = FaComposePlan.describe(res, ref.seed); const mk = (t, css, txt) => { const e = document.createElement(t); if (css) e.style.cssText = css; if (txt != null) e.textContent = txt; return e; };
+            const card = mk('div', 'border:1px solid rgba(128,128,128,.4);border-radius:10px;padding:10px;max-width:720px;font-size:13px;margin:6px 0;');
+            card.appendChild(mk('div', 'font-weight:600;margin-bottom:4px;', '🧭 這首曲子怎麼決定的(' + (d.usedAi ? '需求由 AI 理解、程式核對' : '這次沒有用 AI,用的是範本規則') + ')'));
+            const tbl = mk('table', 'border-collapse:collapse;width:100%;'); d.rows.forEach((r) => { const tr = mk('tr'); tr.appendChild(mk('td', 'padding:2px 8px 2px 0;opacity:.7;white-space:nowrap;', r.name)); tr.appendChild(mk('td', 'padding:2px 8px 2px 0;', r.value)); tr.appendChild(mk('td', 'padding:2px 0;white-space:nowrap;color:' + (r.source === 'ai' ? '#38bdf8' : r.source === 'user' ? '#34d399' : '#94a3b8') + ';', r.sourceLabel)); tbl.appendChild(tr); }); card.appendChild(tbl);
+            (d.notes || []).forEach((n) => card.appendChild(mk('div', 'margin-top:4px;color:#fbbf24;', '⚠️ ' + n)));
+            card.appendChild(mk('div', 'margin-top:4px;opacity:.7;', '範本:' + d.template + '　種子:' + ref.seed + '(同樣的設定與種子會作出同一首)' + (ref.warnings && ref.warnings.length ? '　程式檢查提醒:' + ref.warnings.join('、') : '')));
+            const row = mk('div', 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px;'); const sels = {};
+            const addSel = (key, label, opts, cur) => { const l = mk('label', 'display:flex;gap:4px;align-items:center;', label); const s2 = mk('select'); opts.forEach(([v, t]) => { const o2 = mk('option', null, t); o2.value = v; if (String(v) === String(cur)) o2.selected = true; s2.appendChild(o2); }); l.appendChild(s2); sels[key] = s2; row.appendChild(l); };
+            addSel('style', '風格', FaComposePlan.STYLE_KEYS.map((k) => [k, FaMidiCompose.STYLES[k].name]), ref.fields.style);
+            addSel('mood', '情緒', [['', '(不指定)']].concat(FaComposePlan.MOODS.map((m) => [m[0], m[1]])), ref.fields.mood || '');
+            addSel('speed', '速度', FaComposePlan.SPEEDS, ref.fields.speed || 'B'); addSel('mode', '調式', FaComposePlan.MODES, ref.fields.mode);
+            addSel('lead', '主奏', FaComposePlan.LEADS.map((x) => [x[0], x[1]]), ref.fields.lead); addSel('bars', '長度', FaComposePlan.BARS.map((x) => [x[1], x[1] + ' 小節']).concat([[ref.fields.bars, ref.fields.bars + ' 小節']]).filter((x, i, a2) => a2.findIndex((y) => y[0] === x[0]) === i), ref.fields.bars);
+            card.appendChild(row);
+            const btns = mk('div', 'display:flex;gap:6px;margin-top:6px;'); const b1 = mk('button', null, '🎲 換一首(換種子)'), b2 = mk('button', null, '✏️ 改成上面的設定重新作曲');
+            const run = async (btn, patchFn) => { btn.disabled = true; try { const out = this._midiRecompose(ref, patchFn && patchFn(), !patchFn); try { this._persistChatHistory(); this._renderMessageHistory(); } catch (_) { /* */ } return out; } catch (e) { btn.textContent = '⚠️ ' + String((e && e.message) || e); } };
+            b1.onclick = () => run(b1, null);
+            b2.onclick = () => run(b2, () => { const p = {}; Object.keys(sels).forEach((k) => { let v = sels[k].value; if (k === 'bars') v = Number(v); if (k === 'mood' && v === '') v = null; if (String(v) !== String(ref.fields[k] == null ? (k === 'mood' ? '' : v) : ref.fields[k])) p[k] = v; }); return p; });
+            btns.append(b1, b2); card.appendChild(btns);
+            code.parentElement.replaceWith(card);
+        });
     }
     // 音色庫大小從清單(soundfont-assets 分支的 manifest.json,sf-pack 產生)算出來顯示。清單抓不到就不報數字;退回原版 sf2 才是備援(約 31 MB)
     _midiBankInfo() {
@@ -105765,7 +105960,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     try { this._mountDataViewers(mdDiv); } catch (e) { console.warn('資料檢視器掛載失敗', e); }
                     try { this._mountSvgViewers(mdDiv); } catch (e) { console.warn('SVG 檢視器掛載失敗', e); }
                     try { this._mountWorksheetEditors(mdDiv); } catch (e) { console.warn('學習單編輯器掛載失敗', e); }
-                    try { this._mountMidiCards(mdDiv); } catch (e) { console.warn('MIDI 播放卡片掛載失敗', e); } try { this._mountMidiEditCards(mdDiv); } catch (e) { console.warn('MIDI 編輯器掛載失敗', e); }
+                    try { this._mountComposeCards(mdDiv); } catch (e) { console.warn('作曲卡片掛載失敗', e); } try { this._mountMidiCards(mdDiv); } catch (e) { console.warn('MIDI 播放卡片掛載失敗', e); } try { this._mountMidiEditCards(mdDiv); } catch (e) { console.warn('MIDI 編輯器掛載失敗', e); }
                     try { this._mountWebEditors(mdDiv); } catch (e) { console.warn('網頁編輯器掛載失敗', e); }
                     try { this._mountEditEditors(mdDiv); } catch (e) { console.warn('SVG／圖片／3D 編輯器掛載失敗', e); }
                     try { this._mountKnowledgePanels(mdDiv); } catch (e) { console.warn('知識庫面板掛載失敗', e); }
