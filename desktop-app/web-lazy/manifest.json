@@ -930,6 +930,14 @@
    "size": 8090,
    "md5": "6e5323a8c7614346cbe2055af1a5651d"
   },
+  "musica2m": {
+   "file": "chunks/musica2m.js",
+   "names": [
+    "FaAudioToMidi"
+   ],
+   "size": 6716,
+   "md5": "f9af229f8ab69ae8a37a5772ce7ecb0e"
+  },
   "musicui": {
    "file": "chunks/musicui.js",
    "names": [
@@ -1020,7 +1028,7 @@
   }
  },
  "core": {
-  "size": 5150763,
-  "md5": "7175417d7aee1fd432db75127aadd2be"
+  "size": 5150809,
+  "md5": "9958638db2d5e1ce423ef3546ca7903d"
  }
 }

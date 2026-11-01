@@ -19,7 +19,7 @@ Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app
 | 6 | 接進簡報（media-presentation）、2D／3D 遊戲、影片剪輯當配樂 | 一條共用的「配樂」介面 |
 | 7 | 風格知識：瀏覽器查維基的風格介紹、風格設計範本 | 與階段 3 共用 |
 
-## 3. Todo（依序；階段 0–3 已做完，下一個是階段 4）
+## 3. Todo（依序；階段 0–4 已做完，階段 5 做了規則部分）
 
 ### 目前狀態（handoff 5 接手時，2026-11-01，管理層寫入，**先看這段**）
 - 已完成並提交：階段 0～4。階段 1／2／3 已由管理層發布（v257／v258／v259）。階段 4（音色庫瘦身，cc17af7e）只有腳本與測試，沒有隨 patch 發出的檔案，所以沒發布。階段 5 的模型查證已提交（787c1623：Demucs 6 軌 fp16 約 136 MB、MIT；Basic Pitch Apache-2.0；都沒下載或實跑，Basic Pitch 檔案大小與張量形狀、WebGPU 能否跑沒查到，仍是「未驗證」）。
@@ -36,13 +36,16 @@ Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app
 
 **階段 1 補充（handoff 3 做完的）：** 功能清冊 `features/ai-features.yaml` 已加 `music-midi`（FEATURES.md 是產生檔，不要手改）；mp3 編碼是重用既有 `_encodeMp3`（lamejs，TTS 與抽音訊走同一條，已實用過），未單獨真機跑一次；網頁版合成器路徑推導（__FA_LAZY_BASE 往上兩層＝desktop-app/，再接 renderer/vendor/spessasynth/）檢查過邏輯，**發布後要用 curl 對釘住的 commit 查 200**；合成器程式庫是 fetch 文字後用 data: 網址載入，所以 CDN 的 MIME 類型不是問題。
 
-**階段 2、3 已完成（handoff 4）：** 階段 2（編輯器＋遠端共編）已由管理層發布（patch v258，561a2d36）。階段 3 已提交 cf3c51c8（待管理層發布）：`renderer/src/music/music_compose.js`（9 種風格範本、有種子亂數、旋律檢查失敗自動換種子、parseRequest 讀中文）、工具 `midi_compose`、測試 `scripts/music-tests/music_compose.test.js`。音色庫分片：`scripts/sf-pack.js`＋`FaMidiPlay.fetchParts`（每片核對長度與 sha256、單片快取）已提交；**待管理層**把 scratchpad 的 sfbranch（5 片＋manifest＋授權）推到 soundfont-assets 分支並把完整 SHA 填進 `FA_ASSET_URLS.gsSoundbankBase`（見 DESIGN.music.md「音色庫分片與延遲載入」）。**發布一律由管理層代發（使用者說「由你代發」）：每階段提交後用 SendMessage 回報 local_49f6c57d-8f18-427b-a8f1-7b1d23efc5f5「階段 N 已提交，可發布，commit <hash>」，然後立刻接著做；不要自己跑 publish.sh（publish.sh 的 git add -A 會把你工作中的檔案一起提交，無妨但要知道）。** 入口測試（node scripts/run-core-tests.js，約 3 分鐘，用 run_in_background 跑並輸出到 /tmp，再用 Monitor 等）要沒有新增失敗；遠端協定探測那組是不穩定的既有測試。
+**階段 2、3、4 已完成並提交（handoff 5）：** 階段 2、3 已由管理層發布（v258、v259）。階段 4 已提交 cc17af7e 並回報管理層（只加腳本與測試，不影響主程式）：`scripts/sf-loop.js`、`scripts/sf-slim.js`、`scripts/music-tests/sf-compare.html`；實測 GeneralUser GS 本來就設好短 loop，找 loop 只省約 5%，降到 22 kHz 加 SF3 從 32.3 MB 剩 5.8 MB（瘦身版放在 scratchpad 的 gs-22k.sf3，**沒有進 repo**，要不要當預設音色庫由使用者決定）。音色庫分片推送（soundfont-assets 分支）仍等使用者決定，**不要推、不要填 gsSoundbankBase**。
 
-**第一項（現在就做）：階段 4 音色庫瘦身（找樣本內部 loop，不是找樣本之間的重複）**
-1. 讀 `scripts/sf-analyze.js` 與 DESIGN.music.md 階段 0 結論。先寫 sf2 讀寫（解析 sdta smpl、shdr 的 start／end／startLoop／endLoop，可參考 sf-analyze.js；或看 `renderer/vendor/spessasynth` 內有沒有可用的 sf2 解析／寫出）。音色庫本機副本在 `%TEMP%gs.sf2`（32 MB），**不要放進 repo**。
-2. `scripts/sf-slim.js`：（a）自相關／週期偵測找基頻週期與穩定段，找無縫 loop 起訖（對齊零交越、相位連續、能量一致）；（b）已有 loop 的樣本，loop 結束點之後的資料截掉；穩定段太長只留整數個週期；（c）持續音（弦、管、合唱、風琴等，用 GM 音色分類加 shdr 判斷）沒有 loop 的嘗試自動找並加上，打擊單擊音不加；（d）再降取樣率；（e）SF3（Ogg Vorbis）看 spessasynth 是否支援，不支援就用分片＋解壓。每一步先寫純函式與單元測試（合成的正弦／鋸齒波樣本）。
-3. 聽感比對工具 `scripts/sf-compare.js`：同一份 MIDI（用 FaMidiCompose 產的）用原版與瘦身版各渲染一次（瀏覽器端離線渲染，見 scripts/music-tests/browser.html），算頻譜差異與 loop 接縫處的不連續度，列出差異最大的音色。
-4. 輸出的新 sf2 用 `scripts/sf-pack.js` 分片，manifest 的 version 加一；Roland 樣本一律不可使用。完成且測試全過 → 提交並回報管理層，接著階段 5（先查證模型並寫進 DESIGN.music.md，見階段 5 採用順序）。
+**發布一律由管理層代發**：每階段提交、入口測試（node scripts/run-core-tests.js，約 3 分鐘，用 run_in_background 輸出到 /tmp 再用 Monitor 等；遠端協定探測那組是不穩定的既有測試）無新增失敗後，用 SendMessage 回報 local_49f6c57d-8f18-427b-a8f1-7b1d23efc5f5「階段 N 已提交，可發布，commit <hash>」，然後立刻接著做。**app 不允許在自動事件回合用 start_session（會被拒），所以接手工作階段要由使用者或管理層在對話裡要求才起得來；本工作階段 context 過門檻（34%）後停在這裡。**
+
+**第一項（現在就做）：階段 5 的剩餘部分**（查證結果已寫進 DESIGN.music.md「階段 5 查證」，規則部分已完成）：
+- 已提交：`renderer/src/music/audio_to_midi.js`（鼓軌規則拆解、YIN 單音音高追蹤、音符切分、速度估計、量化、樂器標籤對應 GM、音域退路、組裝多軌）＋ `scripts/music-tests/audio_to_midi.test.js`（12 項，**用合成音訊調的門檻，真實錄音還沒試過**，鼓分類門檻要用真實鼓樣本再調）。已加進 embed 清單與入口測試。
+- 待做 1：`FaAudioToMidiPipeline`（新檔 `renderer/src/music/audio_pipeline.js`）：解碼（WebAudio decodeAudioData，重新取樣到 44.1 kHz 立體聲）→ 可插拔分軌器（`separator(chunk) → {drums,bass,other,vocals,guitar,piano}`，沒有就把整個混音當一軌，鼓用 drumHits、其餘用 Basic Pitch 介面或單音追蹤）→ 逐軌轉譜 → 分類標籤 → buildSong；長曲分段（7.8 秒一段、重疊相加）、可中斷續跑（每段結果存 IndexedDB）、進度只出一張卡。介面用假的分軌器與假的轉譜器寫測試。
+- 待做 2：模型登錄與下載（沿用 FaVlm 的登錄與工作執行緒，`renderer/src/vlm/vlm_core.js`、`faVlmWorkerMain()`）：Demucs 6 軌 ONNX（adowu/htdemucs-6s-onnx，fp16 版 136 MB，MIT）、Basic Pitch nmp.onnx（Apache-2.0，大小未驗證）、YAMNet ONNX（約 15 MB，Apache-2.0）；WebGPU／WASM／CPU 三條路；下載要進度、續傳、核對大小與檢查碼；**檔案大小、輸入輸出張量、瀏覽器速度都未驗證，先下載一個真的跑一次再寫進文件**。
+- 待做 3：工具 `audio_to_midi({file_id})` 與斜線 `/audio-to-midi`，結果用 `_midiPushEditor` 進編輯器，並在回覆誠實寫明：拆樂器只到鼓／貝斯／人聲／其他（模型有就多吉他與鋼琴）、沒有模型時哪些部分被跳過、不保證準確。加進功能清冊 `features/ai-features.yaml`、domain music 的 toolNames 與提示詞。
+- 之後：階段 6（配樂共用介面：先看 `game_audio.js` 與簡報、影片編輯器現有音訊欄位，一個一個接）、階段 7（風格知識工具 music_style_lookup 與範本）。
 
 **之後各階段（做完前一階段再做下一階段，不要問）：階段 2 → 7，內容見原文如下（階段 1 已完成的部分略）。**
 - **階段 2**：MIDI 編輯器 `/edit-midi`（仿 `FaEditShell` 外框：音軌欄、鋼琴捲簾、屬性、復原重做、底部 AI 對話框；**音色只能選 GS 音色**，GM 128＋鼓組；piano-web 的多音軌設計可參考，但不要整個搬）；**內建問 AI**：編輯器底部對話框用封閉動作（add_note、move、transpose、quantize、set_program、add_track、delete…）加 `parseCommands`（程式先讀中文），讀不懂才問模型；**遠端**：MIDI 播放卡片要能在遠端卡片裡顯示（看 `REMOTE` 區塊與遠端卡片機制，`renderer/src/remote/`），**遠端編輯**（遠端的人改同一份 MIDI，沿用現有遠端群組的訊息通道；衝突用「較新者勝＋事件層級合併」，每次編輯是一個事件）。
