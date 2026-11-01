@@ -601,7 +601,24 @@ function installTray(ctx, ipcMain) {
   try { for (const sw of ["disable-renderer-backgrounding", "disable-background-timer-throttling", "disable-backgrounding-occluded-windows"]) app.commandLine.appendSwitch(sw); } catch (_) { /* */ }
   try { const cur = String(app.commandLine.getSwitchValue("disable-features") || ""); const add = ["CalculateNativeWinOcclusion"].filter((f) => cur.split(",").indexOf(f) < 0); if (add.length) app.commandLine.appendSwitch("disable-features", [cur].concat(add).filter(Boolean).join(",")); } catch (_) { /* */ }
   const mainWin = () => { try { const w = ctx.getMainWindow && ctx.getMainWindow(); return w && !w.isDestroyed() ? w : null; } catch (_) { return null; } };
-  const showWin = () => { const w = mainWin(); if (!w) return; try { if (w.isMinimized()) w.restore(); w.setSkipTaskbar(false); w.show(); w.focus(); } catch (_) { /* */ } };
+  // 對話框（匯入技能的資料夾選擇、執行確認等）都是 parent＝主視窗的 modal 子視窗，主視窗藏起來時它們會跟著被藏／鎖住：
+  // 從系統匣顯示時只剩失控的子視窗、主視窗被它鎖住叫不回來。所以：縮到系統匣前先把子視窗當成「取消」關掉；顯示時主視窗與子視窗一起帶回前景。
+  const childWins = (w) => { try { return (w.getChildWindows() || []).filter((c) => c && !c.isDestroyed()); } catch (_) { return []; } };
+  // 原生對話框（dialog.showOpenDialog／showMessageBox／showSaveDialog）沒有視窗物件可關：計數，有未回應的就不縮到系統匣
+  st.nativeOpen = 0;
+  try {
+    const D = E.dialog;
+    if (D) for (const name of ["showOpenDialog", "showMessageBox", "showSaveDialog"]) {
+      const orig = D[name]; if (typeof orig !== "function" || orig.__faCounted) continue;
+      const wrapped = function () { st.nativeOpen++; let r; try { r = orig.apply(this, arguments); } catch (e) { st.nativeOpen--; throw e; } return Promise.resolve(r).finally(() => { st.nativeOpen = Math.max(0, st.nativeOpen - 1); }); };
+      wrapped.__faCounted = true; try { D[name] = wrapped; } catch (_) { /* 唯讀就算了 */ }
+    }
+  } catch (_) { /* */ }
+  const showWin = () => {
+    const w = mainWin(); if (!w) return;
+    try { if (w.isMinimized()) w.restore(); w.setSkipTaskbar(false); w.show(); w.focus(); } catch (_) { /* */ }
+    for (const c of childWins(w)) { try { if (c.isMinimized()) c.restore(); if (!c.isVisible()) c.show(); c.focus(); } catch (_) { /* */ } }   // 還有開著的子視窗：一起帶回，焦點給它（modal 時主視窗本來就點不了）
+  };
   const quit = () => { st.quitting = true; app.quit(); };
   const iconImage = () => {
     const cands = [nodePath.join(app.getAppPath(), "build", "icon.png"), nodePath.join(__dirname, "build", "icon.png")];
@@ -633,6 +650,8 @@ function installTray(ctx, ipcMain) {
     win.on("close", (ev) => {
       if (st.quitting || !st.cfg.closeToTray || !st.tray || win !== mainWin()) return;
       ev.preventDefault();
+      if (st.nativeOpen > 0) { try { if (win.isMinimized()) win.restore(); win.show(); win.focus(); } catch (_) { /* */ } return; }   // 原生對話框還沒回應：不藏起來，把視窗帶到前面讓使用者先處理
+      for (const c of childWins(win)) { try { c.close(); } catch (_) { try { c.destroy(); } catch (__) { /* */ } } }   // 子視窗的 closed 處理都是「取消」；關不掉就強制銷毀，免得留下被鎖的孤兒
       try { if (trayReliable()) { win.hide(); win.setSkipTaskbar(true); } else win.minimize(); } catch (_) { /* */ }   // 系統匣不一定看得到：看不到就只最小化，視窗還在工作列上找得回來
     });
   };
