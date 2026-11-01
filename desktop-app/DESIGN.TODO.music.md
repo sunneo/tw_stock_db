@@ -21,6 +21,23 @@ Continue from the handoff document at `D:\Downloads\videos-嗨投資-desktop-app
 
 ## 3. Todo（依序；階段 0–4 已做完，階段 5 做了規則部分）
 
+### 下一步（handoff 7 接手，2026-11-02，**最新，先看這段**）：讓作曲真的由 LLM「學會」理解需求
+使用者原話（2026-11-02）：「他好歹要LLM學會...我們handoff7 有辦法enable這件事情嗎？」；實測 v267 的 /media-compose-midi 顯示：「這次沒有用 AI，用的是範本規則（AI 的回答讀不懂（The user wants to create tech-style musi…））」。
+
+**現況（已提交 6b16b71a）：** renderer/src/music/compose_plan.js（FaComposePlan：decide／parseAnswer／questionOf／toOptions／edit／describe）、宿主 renderer/src/floating-assistant.js 的 _midiComposeFlow／_midiComposeFinish／_midiRecompose／_mountComposeCards（卡片 fa-compose）；斜線 /media-compose-midi 與工具 midi_compose 都走 _midiComposeFlow；測試 scripts/music-tests/compose_plan.test.js（27 項，假 AI：完美、亂答、無 JSON、部分答對、沉默、逾時、丟錯、重試）。AI 呼叫是 this._callSimpleCompletion(user, { systemPrompt, maxTokens: 300, temperature: 0, noBudgetRetry: true })，逾時 25 秒，最多 2 次。
+
+**失敗原因（推測，尚未用真模型驗證）：** 現在是「一次要整包 JSON」（questionOf 一段長系統提示 + 六個字母欄位 + purpose）。有些模型會先回英文的思考文字（「The user wants to create…」），沒有 JSON，parseAnswer 讀不到，整段退回規則。maxTokens 300 對會先思考的模型也可能不夠（思考吃光上限，答案是空的；_callSimpleCompletion 的預算加倍重試被 noBudgetRetry 關掉了）。
+
+**要做的事（照使用者要求，沿用 CoLU／弱模型 harness 做法）：**
+1. 一次問一欄、字母作答，不要整包 JSON；每題前面放 2～3 個範例（few-shot），明講「只回一個字母，不要解釋」；用途（purpose）另外一題，回一句話。
+2. 解析要寬容：剝掉思考區塊（<think>、英文思考）與前後文字，在回覆裡找第一個／最後一個合法字母或欄位值；仍讀不懂就用同一題「更嚴格版」重問一次（把上次的回覆貼回去，說明格式錯在哪），兩次都失敗才退回「那一欄」的預設，只退那一欄。maxTokens 要夠（思考型模型）或開預算加倍重試。
+3. 診斷要誠實：失敗時卡片要寫出是哪一欄、模型回了什麼（前 80 字）、用了哪個模型（this._getApiConfig().apiModel），方便判斷是模型問題還是提示問題。FaComposePlan.decide 的 report 要多帶 perField 診斷。
+4. 經驗回流（harness 的學習層）：使用者最後接受的結果（沒按「換一首」、直接用或下載）當作程式驗證過的成功，經 renderer/src/harness/experience_core.js 的閘門寫進離線訓練器；之後類似說法（「科技感／電子／用來描述某產品」）由程式直接對到正確範本與配器，不必每次問 AI；失敗案例進 UML 編修候選，不直接當知識。先讀 skills/weak-model-harness 與 DESIGN.TODO.harness-skill.md、experience_core.js 的介面。
+5. 用 skills/weak-model-harness 的假模型測試法測：完美、亂答、英文思考文字、沉默、逾時、只回一半，每種的欄位與退路；再用真模型（claude-haiku-5-5 或使用者設定的模型）小樣本實測一次並記用量；沒實測的寫「未驗證」。
+測完跑整套入口測試（tray_dialog 與遠端協定探測是偶發既有項，單獨跑通過即可）、提交，回報最後一行「已提交，可發布，commit <hash>」。
+
+**其他已完成、別重做：** 階段 6 配樂（bb43a845）、音色庫換瘦身版（99371b76，記得 v262 起預設 6.3 MB）、播放卡片清混音（a29bd77f）、說明文字與離線模型管理音樂區（f43774ff）、作曲說法路由與成品卡片（448917dc）。階段 7 仍暫緩。
+
 ### 階段 6 已提交（handoff 7）
 - 新模組 renderer/src/music/soundtrack.js（FaSoundtrack：規格、淡入淡出、循環鋪滿、wav、播放控制；真渲染測試 scripts/music-tests/soundtrack.html）、工具 soundtrack_make。簡報：deck.soundtrack（set_deck 的 soundtrack、編輯器簡報屬性裡的配樂列，播放接在旁白下、匯出 MP4 混進去）；遊戲：set_bgm 的 soundtrack 參數、場景面板與聲音分頁的「🎼 配樂」按鈕、播放端非同步取緩衝；影片剪輯：「🎼 配樂」鋪滿時間軸存成一筆配音。MIDI 遠端卡片：卡片的 fa-midi 區塊內含 base64（90 KB 以下），遠端收到同樣會掛載播放卡片（讀程式確認，沒有兩台機器實測）。
 - 限制：獨立遊戲包不帶配樂（退回風格合成）；影片剪短後配樂不跟著變短；簡報拖進度時配樂重接，未做旁白時壓低；階段 7 依使用者指示暫緩。
