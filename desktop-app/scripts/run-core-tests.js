@@ -63,6 +63,8 @@ const suites = [
     ['探索時的反思（錯字：英文編輯距離／中文同音近形字、不認得的字、概念再找、可能是新的需求、整份計畫反思：問使用者／統一走建議／上限）', 'renderer/src/catalog/reflect_core.test.js'],
     ['CoLU 的 ReLU 形式（relu／sat／max2、可達性逐位元等於位元版、ReLU 層疊網路、最佳接線分數等於 findPipelines、矩陣連乘後端一致性檢查）', 'renderer/src/catalog/relu_core.test.js'],
     ['CoLU 接線題（出題、評分、退化偵測、假模型跑整套、建議 self／guided／auto／unknown、使用時的提示）', 'renderer/src/catalog/colu_bench_core.test.js'],
+    ['弱模型 harness 迴圈（程式路由、封閉題核對、退回重答、預設退路、判定、命令列續跑；假模型：完美、亂答、沉默、連線失敗）', 'scripts/harness-tests/loop.test.js'],
+    ['harness 經驗與回流閘門（去識別、簽名去重、拒絕附原因、上限、migrate、訓練器 pattern、UML 編修問題）', 'scripts/harness-tests/experience.test.js'],
     ['計畫的分歧偵測（沒有分歧不問、分數接近／取捨／勉強合格／找不到、題數上限、套用回答、打字補充撿網址、摘要）', 'renderer/src/catalog/branch_core.test.js'],
     ['採用／退回的回饋累積（壓縮卡片、計畫轉標註、權重、覆蓋規則、轉成訓練資料、可不可以訓練、樣本權重）', 'renderer/src/catalog/feedback_core.test.js'],
     ['缺口驅動探索（缺口、搜尋關鍵字、候選排名、錯誤歸類與換做法、整個迴圈用假主機）', 'renderer/src/catalog/discover_core.test.js'],

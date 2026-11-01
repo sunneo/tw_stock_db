@@ -42,4 +42,7 @@ learn           → 經驗閘門：只收程式驗證過的成功；去重、去
 ## 4. 進度與未驗證
 
 - 第 1 項：本文件（已寫）。
-- 第 2～7 項：見提交紀錄；未做的項目會在下面逐項補上「做到哪、哪些未驗證」。
+- 第 2、3 項（已做，測試 loop 21 項、experience 26 項全過）：skill 套件 skills/weak-model-harness/（SKILL.md、scripts/harness.js、loop_core.js、pack.js、references/）、經驗閘門 renderer/src/harness/experience_core.js；兩組測試已加進核心測試清單。命令列 learn 把通過閘門的 pattern 寫到 .weak-harness/trainer-patterns.json，失敗寫成 uml-candidates.json。範本目前 4 個（安排會議、單位換算、問題分級、批次改檔名），從技能編譯器（skill_compile_core）自動產生範本：未做。
+- 第 4、5 項（Haiku 實驗與回流前後對照）：未做。
+- 第 6 項（訓練器 UI 定位、清冊、嵌入）：未做；音樂線還在跑同一個工作樹，等它結束再碰 floating-assistant.js。
+- 未驗證：套件在 Claude Code 載入後由 Haiku 實際照迴圈操作的品質（第 4 項才會量）。
