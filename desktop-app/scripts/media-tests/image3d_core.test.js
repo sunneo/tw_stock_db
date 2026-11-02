@@ -141,6 +141,17 @@ t('細緻度：面數上限提高後，物件面數真的變多且仍封閉；�
   assert(lo.objects[0].mesh.faces.length >= withBg.objects[0].mesh.faces.length);
 });
 
+t('依內容分配面數：深度起伏大的地方面多、平坦的地方面少，總數貼近上限且封閉', () => {
+  const W = 160, H = 160, labels = grid(W, H, (x, y) => (((x - 80) ** 2 + (y - 80) ** 2 < 70 ** 2) ? 1 : 0));
+  // 左半邊平坦，右半邊有密集的起伏（像五官）
+  const dep = grid(W, H, (x, y) => (x < 80 ? 0.5 : 0.5 + 0.25 * Math.sin(x / 2.1) * Math.cos(y / 2.3)));
+  const s = C.buildScene({ labels, depth: dep }, { shape: 'smooth', maxFaces: 20000, noBackground: true }), mesh = s.objects[0].mesh;
+  assert(C.isClosed(mesh)); assert(mesh.faces.length <= 20000 && mesh.faces.length > 12000, 'faces ' + mesh.faces.length);
+  const xs = mesh.vertices.map((v) => v[0]), mid = (Math.min(...xs) + Math.max(...xs)) / 2; let left = 0, right = 0;
+  mesh.faces.forEach((f) => { const cx = (xs[f[0]] + xs[f[1]] + xs[f[2]]) / 3; if (cx < mid) { left++; } else { right++; } });
+  assert(right > left * 2, 'left ' + left + ' right ' + right);
+});
+
 t('隨機遮罩與深度（固定種子）：每個結果都封閉，方塊殼不退回外框', () => {
   let seed = 12345; const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
   let boxes = 0;

@@ -83,7 +83,7 @@
 
   // ---------- blocks (Lego) shell ----------
   // m, dn are y-up grids. Returns a closed mesh or null.
-  function blocksMesh(m, dn, bb, n, zp, smooth) {
+  function blocksMesh(m, dn, bb, n, zp, smooth, budget) {
     var bw = bb.x1 - bb.x0, bh = bb.y1 - bb.y0, s = Math.max(bw, bh) / n;
     var cols = Math.max(1, Math.ceil(bw / s - 1e-9)), rows = Math.max(1, Math.ceil(bh / s - 1e-9)), i, j, x, y;
     var occ = [], hgt = [], best = null, bestCnt = -1;
@@ -120,7 +120,7 @@
         }
       }
     }
-    if (smooth) { return smoothTops(occ, hgt, rows, cols, bb, s, zp); }
+    if (smooth) { return budget ? adaptiveTops(occ, hgt, rows, cols, bb, s, zp, budget) : smoothTops(occ, hgt, rows, cols, bb, s, zp); }
     var H = [];
     for (j = 0; j < rows; j++) { H.push([]); for (i = 0; i < cols; i++) { H[j].push(occ[j][i] ? Math.round((zp.zMin + zp.zRange * hgt[j][i]) * 1e6) / 1e6 : null); } }
     var zb = Math.round(zp.zBack * 1e6) / 1e6, B = new Builder();
@@ -184,6 +184,104 @@
         }
       }
     }
+    return B.mesh();
+  }
+
+  // adaptive smooth shell: the same occupied cells and corner heights as smoothTops, but flat stretches far from the outline are merged into bigger square leaves
+  // (power-of-two blocks, aligned, so they nest). A leaf is triangulated with every breakpoint of its neighbours on its edges (no cracks): two triangles when it has only
+  // four corners, otherwise a fan around its centre. The flatness tolerance is searched so that the face count just fits the budget: faces go where the depth changes
+  // (the face, the hands, the edges) and few are spent on flat cloth or wall. Outline cells are never merged, so the walls stay as in smoothTops.
+  function adaptiveTops(occ, hgt, rows, cols, bb, s, zp, budget) {
+    var i, j, gi, gj, k, S;
+    var zb = Math.round(zp.zBack * 1e6) / 1e6;
+    var X = function (g) { return bb.x0 + g * s; }, Y = function (g) { return bb.y0 + g * s; };
+    var has = function (jj, ii) { return jj >= 0 && jj < rows && ii >= 0 && ii < cols && occ[jj][ii]; };
+    var cn = [];   // normalized height at every grid corner (mean of the occupied cells around it)
+    for (gj = 0; gj <= rows; gj++) {
+      cn.push([]);
+      for (gi = 0; gi <= cols; gi++) {
+        var sum = 0, cnt = 0;
+        for (var dj = -1; dj < 1; dj++) { for (var di = -1; di < 1; di++) { if (has(gj + dj, gi + di)) { sum += hgt[gj + dj][gi + di]; cnt++; } } }
+        cn[gj].push(cnt ? sum / cnt : 0);
+      }
+    }
+    var zOf = function (g) { return Math.round((zp.zMin + zp.zRange * g) * 1e6) / 1e6; };
+    var pre = []; for (j = 0; j <= rows; j++) { pre.push(new Int32Array(cols + 1)); }   // prefix sums of "interior" cells (all four neighbours occupied too)
+    for (j = 0; j < rows; j++) { for (i = 0; i < cols; i++) { var it = has(j, i) && has(j - 1, i) && has(j + 1, i) && has(j, i - 1) && has(j, i + 1) ? 1 : 0; pre[j + 1][i + 1] = it + pre[j][i + 1] + pre[j + 1][i] - pre[j][i]; } }
+    var sizes = []; for (S = 64; S >= 2; S /= 2) { if (S <= Math.min(rows, cols)) { sizes.push(S); } }
+    var devs = {};
+    sizes.forEach(function (Sz) {
+      var nb = Math.floor(cols / Sz), nr = Math.floor(rows / Sz), a = new Float64Array(nb * nr), bj, bi;
+      for (bj = 0; bj < nr; bj++) {
+        for (bi = 0; bi < nb; bi++) {
+          var i0 = bi * Sz, j0 = bj * Sz, inside = pre[j0 + Sz][i0 + Sz] - pre[j0][i0 + Sz] - pre[j0 + Sz][i0] + pre[j0][i0], d = 0;
+          if (inside !== Sz * Sz) { a[bj * nb + bi] = Infinity; continue; }
+          var c00 = cn[j0][i0], c10 = cn[j0][i0 + Sz], c01 = cn[j0 + Sz][i0], c11 = cn[j0 + Sz][i0 + Sz];
+          for (var yy = 0; yy <= Sz; yy++) { for (var xx = 0; xx <= Sz; xx++) { var u = xx / Sz, v = yy / Sz, e = Math.abs(cn[j0 + yy][i0 + xx] - (c00 * (1 - u) * (1 - v) + c10 * u * (1 - v) + c01 * (1 - u) * v + c11 * u * v)); if (e > d) { d = e; } } }
+          a[bj * nb + bi] = d;
+        }
+      }
+      devs[Sz] = { nb: nb, nr: nr, a: a };
+    });
+    var plan = function (tol) {
+      var lid = new Int32Array(rows * cols).fill(-1), leaves = [];
+      sizes.forEach(function (Sz) {
+        var dv = devs[Sz], bj, bi, yy, xx;
+        for (bj = 0; bj < dv.nr; bj++) {
+          for (bi = 0; bi < dv.nb; bi++) {
+            if (dv.a[bj * dv.nb + bi] > tol || lid[bj * Sz * cols + bi * Sz] !== -1) { continue; }
+            var id = leaves.length; leaves.push({ i: bi * Sz, j: bj * Sz, S: Sz });
+            for (yy = 0; yy < Sz; yy++) { for (xx = 0; xx < Sz; xx++) { lid[(bj * Sz + yy) * cols + bi * Sz + xx] = id; } }
+          }
+        }
+      });
+      for (var jj = 0; jj < rows; jj++) { for (var ii = 0; ii < cols; ii++) { if (occ[jj][ii] && lid[jj * cols + ii] === -1) { lid[jj * cols + ii] = leaves.length; leaves.push({ i: ii, j: jj, S: 1 }); } } }
+      return { lid: lid, leaves: leaves };
+    };
+    var verts = function (pl, lf) {   // boundary of a leaf, counter-clockwise, with a vertex wherever the leaf across the edge changes
+      var lid = pl.lid, at = function (jj, ii) { return jj >= 0 && jj < rows && ii >= 0 && ii < cols ? lid[jj * cols + ii] : -1; }, i0 = lf.i, j0 = lf.j, Sz = lf.S, out = [];
+      out.push([i0, j0]); for (k = 1; k < Sz; k++) { if (at(j0 - 1, i0 + k) !== at(j0 - 1, i0 + k - 1)) { out.push([i0 + k, j0]); } }
+      out.push([i0 + Sz, j0]); for (k = 1; k < Sz; k++) { if (at(j0 + k, i0 + Sz) !== at(j0 + k - 1, i0 + Sz)) { out.push([i0 + Sz, j0 + k]); } }
+      out.push([i0 + Sz, j0 + Sz]); for (k = Sz - 1; k >= 1; k--) { if (at(j0 + Sz, i0 + k) !== at(j0 + Sz, i0 + k - 1)) { out.push([i0 + k, j0 + Sz]); } }
+      out.push([i0, j0 + Sz]); for (k = Sz - 1; k >= 1; k--) { if (at(j0 + k, i0 - 1) !== at(j0 + k - 1, i0 - 1)) { out.push([i0, j0 + k]); } }
+      return out;
+    };
+    var count = function (pl) {
+      var n = 0;
+      pl.leaves.forEach(function (lf) {
+        var nv = verts(pl, lf).length; n += 2 * (nv === 4 ? 2 : nv);
+        if (lf.S === 1) { if (!has(lf.j - 1, lf.i)) { n += 2; } if (!has(lf.j, lf.i + 1)) { n += 2; } if (!has(lf.j + 1, lf.i)) { n += 2; } if (!has(lf.j, lf.i - 1)) { n += 2; } }
+      });
+      return n;
+    };
+    var pl = plan(0);
+    if (count(pl) > budget) {
+      var best = plan(1);   // heights are 0..1, so tolerance 1 merges every block that can be merged
+      if (count(best) > budget) { return null; }
+      var lo = 0, hi = 1;
+      for (var it2 = 0; it2 < 14; it2++) { var mid = (lo + hi) / 2, p2 = plan(mid); if (count(p2) <= budget) { hi = mid; best = p2; } else { lo = mid; } }
+      pl = best;
+    }
+    var B = new Builder();
+    var top = function (g) { return B.vert(X(g[0]), Y(g[1]), zOf(cn[g[1]][g[0]])); }, bot = function (g) { return B.vert(X(g[0]), Y(g[1]), zb); };
+    pl.leaves.forEach(function (lf) {
+      var vs = verts(pl, lf), n = vs.length;
+      if (n === 4) {
+        B.quad(top(vs[0]), top(vs[1]), top(vs[2]), top(vs[3])); B.quad(bot(vs[0]), bot(vs[3]), bot(vs[2]), bot(vs[1]));
+      } else {
+        var cz = (cn[lf.j][lf.i] + cn[lf.j][lf.i + lf.S] + cn[lf.j + lf.S][lf.i] + cn[lf.j + lf.S][lf.i + lf.S]) / 4, cx = X(lf.i + lf.S / 2), cy = Y(lf.j + lf.S / 2);
+        var ct = B.vert(cx, cy, zOf(cz)), cb = B.vert(cx, cy, zb);
+        for (var q = 0; q < n; q++) { var a = vs[q], b = vs[(q + 1) % n]; B.tri(ct, top(a), top(b)); B.tri(cb, bot(b), bot(a)); }
+      }
+      if (lf.S === 1) {
+        var i1 = lf.i, j1 = lf.j, sides = [[i1, j1, i1 + 1, j1, j1 - 1, i1], [i1 + 1, j1, i1 + 1, j1 + 1, j1, i1 + 1], [i1 + 1, j1 + 1, i1, j1 + 1, j1 + 1, i1], [i1, j1 + 1, i1, j1, j1, i1 - 1]];
+        for (var w = 0; w < 4; w++) {
+          var sd = sides[w]; if (has(sd[4], sd[5])) { continue; }
+          var Pl = bot([sd[0], sd[1]]), Ql = bot([sd[2], sd[3]]), Ph = top([sd[0], sd[1]]), Qh = top([sd[2], sd[3]]);
+          B.tri(Pl, Ql, Qh); B.tri(Pl, Qh, Ph);
+        }
+      }
+    });
     return B.mesh();
   }
 
@@ -399,6 +497,13 @@
           var cm = null; try { cm = cylinderMesh(m, dn, dnExt, bb, CYL_LEVELS[level][0], CYL_LEVELS[level][1], zp, W, H); } catch (e) { cm = null; }
           if (!cm || cm.faces.length > maxFaces || !isClosed(cm)) { if (best) { break; } else { continue; } }
           best = { mesh: cm, level: level };
+        }
+      } else if (kind === 'smooth') {
+        // adaptive: try the finest grid (one cell per picture cell) first and merge flat stretches until the faces fit; a coarser grid only when even that does not fit
+        var nat = Math.max(bb.x1 - bb.x0, bb.y1 - bb.y0), tries = [Math.min(nat, 512)].concat(SMOOTH_LEVELS.filter(function (l) { return l < Math.min(nat, 512); }).reverse());
+        for (level = 0; level < tries.length && !best; level++) {
+          var am = null; try { am = blocksMesh(m, dn, bb, tries[level], zp, true, maxFaces); } catch (e3) { am = null; }
+          if (am && am.faces.length <= maxFaces && isClosed(am)) { best = { mesh: am, level: tries[level] }; }
         }
       } else {
         for (level = 0; level < (kind === 'smooth' ? SMOOTH_LEVELS : BLOCK_LEVELS).length; level++) {
