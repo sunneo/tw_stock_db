@@ -887,16 +887,16 @@
    "names": [
     "FaImage3d"
    ],
-   "size": 38114,
-   "md5": "bda66e4dc9efb38c044d0f8a36168120"
+   "size": 42022,
+   "md5": "c325a2569bc6f502ffb183f87c243a07"
   },
   "img3dworker": {
    "file": "chunks/img3dworker.js",
    "names": [
     "FA_IMG3D_WORKER_SRC"
    ],
-   "size": 71108,
-   "md5": "a36c87f014822b93596cff751cc33cba"
+   "size": 80181,
+   "md5": "0042609323c5747102e998c2df358104"
   },
   "musicmidi": {
    "file": "chunks/musicmidi.js",
@@ -1092,7 +1092,7 @@
   }
  },
  "core": {
-  "size": 5211626,
-  "md5": "188b64c8bc2e92ed7e89afd6807c34ac"
+  "size": 5215013,
+  "md5": "e25f7bd9c07fdb5d9aa2c6091e48d444"
  }
 }
