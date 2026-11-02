@@ -887,16 +887,16 @@
    "names": [
     "FaImage3d"
    ],
-   "size": 42022,
-   "md5": "c325a2569bc6f502ffb183f87c243a07"
+   "size": 44145,
+   "md5": "26e679f3f8dd89e2df344b8c73604d83"
   },
   "img3dworker": {
    "file": "chunks/img3dworker.js",
    "names": [
     "FA_IMG3D_WORKER_SRC"
    ],
-   "size": 80181,
-   "md5": "0042609323c5747102e998c2df358104"
+   "size": 85188,
+   "md5": "df7e98acebf6ddf98e589b3687b70ed2"
   },
   "musicmidi": {
    "file": "chunks/musicmidi.js",
@@ -943,24 +943,24 @@
    "names": [
     "FaComposePlan"
    ],
-   "size": 13983,
-   "md5": "dd35aa717ab6e4f80ba86effe276c3cc"
+   "size": 14766,
+   "md5": "c8b10547aaf684f7c4cc888d59a4e118"
   },
   "musictree": {
    "file": "chunks/musictree.js",
    "names": [
     "FaComposeTree"
    ],
-   "size": 25311,
-   "md5": "97e59749b4c4591b13cf9df0cbefe1f8"
+   "size": 25618,
+   "md5": "08faee01636ebff6034780d5aafe2220"
   },
   "musicbridge": {
    "file": "chunks/musicbridge.js",
    "names": [
     "FaMidigenBridge"
    ],
-   "size": 4902,
-   "md5": "e7a21dbad2c654274f68370b2c48a463"
+   "size": 5576,
+   "md5": "e5e954f240a3613ae85f1fe833759e05"
   },
   "musica2m": {
    "file": "chunks/musica2m.js",
@@ -991,8 +991,8 @@
    "names": [
     "FaAudioModels"
    ],
-   "size": 5152,
-   "md5": "50d74ba357db0c49df22067a702c9cc5"
+   "size": 5231,
+   "md5": "d4d44ec08a0dc1a5e03a8807c26c17ad"
   },
   "musicrt": {
    "file": "chunks/musicrt.js",
@@ -1092,7 +1092,7 @@
   }
  },
  "core": {
-  "size": 5215013,
-  "md5": "e25f7bd9c07fdb5d9aa2c6091e48d444"
+  "size": 5221188,
+  "md5": "02e1dc7f0ac7f450779d8ca09142025a"
  }
 }
