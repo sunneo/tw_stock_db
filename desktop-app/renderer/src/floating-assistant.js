@@ -34251,9 +34251,71 @@ const holder = {};
     const mode = f.mode === 'A' ? 'major' : f.mode === 'B' ? 'minor' : st.mode;
     return { v: 1, style, key: opt.key || f.key || 'C', tempo: opt.tempo || Math.round((st.tempo[0] + st.tempo[1]) / 2), bars: clamp(Number(opt.bars || f.bars) || 16, 4, 64), mode, lead: Number.isInteger(opt.lead) ? opt.lead : null, title: opt.title || '', purpose: f.purpose || '', task: (o && o.task) || '', moodName: '', nodes: {} };
   }
+
+  // ---------- 批次問法 ----------
+  // 排隊一次的代價每次呼叫都要付(線上大模型 context 大、排隊久、只回一個字很不划算):能放進預留空間就一次問完整棵樹,
+  // 放不下退成「曲式 → 其餘(和聲＋聲部＋動機)」兩三批,再放不下按預留切塊,切到剩一題就是一次一題。順序永遠是先試最大的批。
+  const estTokens = (str) => { let n = 0; for (const ch of String(str)) n += ch.charCodeAt(0) > 255 ? 1.6 : 0.3; return Math.ceil(n); };
+  const expectOut = (id) => (id === 'motif' ? 300 : id.indexOf('harmony.') === 0 ? 50 : 12);
+  const GROUPS = ['main', 'lift', 'contrast'];
+  function allIds(t) { // 超集合:三組都問,曲式答出來後用得到哪幾組就收哪幾組
+    const ids = ['form']; GROUPS.forEach((g) => ids.push('harmony.' + g)); GROUPS.forEach((g) => { ids.push('voices.' + g + '.texture', 'voices.' + g + '.bass'); if ((C.STYLES[t.style] || {}).drum) ids.push('voices.' + g + '.drum'); }); ids.push('motif'); return ids;
+  }
+  function batchItem(t, id) {
+    if (id === 'form') return '【form】整首曲子的曲式,回一個字母。選項與選了的後果:\n' + feasibleForms(t.bars).map((f) => '  ' + f.id + '=' + f.name + ' → ' + f.names.length + ' 段(' + layout(f.id, t.bars).map((x) => x.name + (x.to - x.from)).join('、') + ' 小節),只需要「' + groupsOf(f.id, t.bars).map((g) => GROUP_NAME[g]).join('、') + '」的和聲與聲部').join('\n');
+    if (id === 'motif') { const bpb = bpbOf(t.style); return '【motif】整首的主題動機:' + 2 * bpb + ' 拍(每小節 ' + bpb + ' 拍)的短旋律,之後程式展開成整首。每個音寫「音級:時值」用空白隔開;音級 1～7,+ 高八度、- 低八度;時值 w=4 拍 h=2 拍 q=1 拍 e=0.5 拍 s=0.25 拍,後加 . 附點。時值加起來剛好 ' + 2 * bpb + ' 拍,強拍盡量落在主段和弦的和弦音上,結尾落在 1、3 或 5。'; }
+    const p = id.split('.'); if (p[0] === 'harmony') return '【' + id + '】' + GROUP_NAME[p[1]] + '的和弦進行,一個和弦一小節,2～8 個(建議 4 個),空白隔開。' + (p[1] === 'main' ? '第一個要是主和弦(大調 I、小調 i)。' : p[1] === 'lift' ? '要比主段更有力,常從 IV(小調 iv 或 VI)開始。' : '要和主段不同,常從 vi(小調 VI)開始。');
+    return '【' + id + '】' + GROUP_NAME[p[1]] + '的' + ({ texture: '和弦伴奏織體', bass: '貝斯彈法', drum: '鼓型' })[p[2]] + ',回一個字母:' + letterOpts(t, id).map((x) => x[0] + '=' + x[1]).join('、');
+  }
+  function batchQuestion(t, ids) {
+    const ctx = ctxLine(t, t.moodName ? { mood: t.moodName } : null); const hasH = ids.some((i) => i.indexOf('harmony.') === 0);
+    const ex = ['form: B', 'harmony.main: ' + (t.mode === 'minor' ? 'i VI III VII' : 'I V vi IV'), 'voices.main.texture: B', 'motif: 1:q 3:q 5:e 4:e 3:h'].filter((l) => ids.indexOf(l.split(':')[0]) >= 0);
+    return { system: '你是作曲家。下面每一題都要回答。回答格式:每題一行「代號: 答案」,代號照【】裡的寫,不要解釋、不要思考過程、不要多餘的字。\n曲式選項旁寫了它需要幾組:你選的曲式只需要幾組,後面和聲與聲部就只答那幾組,多答的欄位程式會丟掉。\n' + (hasH ? '和弦只能用這些羅馬數字:' + Object.keys(VOC[t.mode]).join(' ') + '\n' : '') + '\n' + ids.map((id) => batchItem(t, id)).join('\n') + '\n\n回答範例(只示範格式):\n' + ex.join('\n'), user: ctx + ' →' };
+  }
+  function parseBatch(raw, ids) { // 一行一欄「代號: 答案」,容許全形冒號、項目符號、反引號、JSON 物件備案;回傳 { id: 文字 }
+    const text = stripThink(raw), out = {}; const set = (k, v) => { k = String(k).toLowerCase().replace(/[「【\[`"'*」】\]]/g, '').trim(); if (ids.indexOf(k) >= 0 && out[k] === undefined && String(v).trim()) out[k] = String(v).trim(); };
+    text.split(/\n/).forEach((line) => { const m = /^[\s\-*•\d.)]*[「【\[`"*]*([A-Za-z]+(?:\.[A-Za-z]+){0,2})[」】\]`"*]*\s*[:：=]\s*(.*)$/.exec(line); if (m) set(m[1], m[2].replace(/^[`"「『*]+|[`"」』*]+$/g, '')); });
+    if (!Object.keys(out).length) { const js = text.match(/\{[\s\S]*\}/); if (js) { try { const o = JSON.parse(js[0]); Object.keys(o).forEach((k) => set(k, o[k])); } catch (_) { /* */ } } }
+    return out;
+  }
+  const batchCheck = (t, id, val) => { if (id === 'motif' || id.indexOf('harmony.') === 0) return validateNode(t, id, val); const opts = letterOpts(t, id); const c = parseLetterIn(val, opts.map((x) => x[0]).join(''), opts); return c ? validateNode(t, id, c) : { problem: '讀不懂' }; };
   async function fill(t, o) {
     o = o || {}; const step = o.onStep || (() => {}); const attempts = o.attempts || 2, timeoutMs = o.timeoutMs || 25000; const only = o.onlyIds ? new Set(o.onlyIds) : null;
     let stopWhy = '', failRun = 0, anyOk = false, calls = 0;
+    const info = (only && t.batchInfo) || (t.batchInfo = { mode: 'single', calls: 0, promptTokens: [], failed: [], notes: [] });
+    const sleepB = o.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
+    async function runBatch(ids) { // 問一批;回傳答對幾欄。連線失敗自己退避重試(次數少),仍失敗就回 -1 讓呼叫端退成一次一題
+      const q = batchQuestion(t, ids); const need = estTokens(q.system + q.user); info.promptTokens.push(need); const bNet = o.batchNetAttempts || 2, bt = o.batchTimeoutMs || timeoutMs * 2; let raw = null, err = '';
+      for (let n = 0; n < bNet && raw === null; n++) {
+        calls++; info.calls++; const tmo = Math.round(bt * (1 + 0.6 * n)), t0 = Date.now(); step('一次問 ' + ids.length + ' 題(' + ids.slice(0, 3).join('、') + (ids.length > 3 ? '…' : '') + ')' + (n ? ',連線重試,等最多 ' + Math.round(tmo / 1000) + ' 秒' : '') + '…');
+        try { raw = String(await withTimeout(o.ask(q.system, q.user, { batch: true, nodes: ids.slice() }), tmo)); } catch (e) { err = String((e && e.message) || e) + '(第 ' + (n + 1) + ' 次,耗時 ' + Math.round((Date.now() - t0) / 1000) + ' 秒)'; step('批次問 AI 失敗:連線' + err); if (n < bNet - 1) await sleepB(Math.min(8000, 1000 * Math.pow(2, n))); }
+      }
+      if (raw === null) { info.notes.push('批次連線失敗:' + err); return -1; }
+      const got = parseBatch(raw, ids); const nodeOf = (r, val) => ({ value: r.value, source: r.fixed ? 'fixed' : 'ai', tries: 1, raw: String(val).replace(/\s+/g, ' ').slice(0, 80), error: '', done: true, batch: true });
+      let ok = 0; const bad = []; const order = ids.slice().sort((a, b) => (a === 'form' ? -1 : b === 'form' ? 1 : 0)); let needed = null;
+      order.forEach((id) => {
+        if (needed && !needed.has(id)) return; if (t.nodes[id]) return; const val = got[id];
+        if (val === undefined) { bad.push(id + '(漏答)'); return; } const r = batchCheck(t, id, val); if (r.problem) { bad.push(id + '(' + r.problem + ')'); return; }
+        t.nodes[id] = nodeOf(r, val); ok++; if (id === 'form') needed = new Set(nodeIds(t));
+      });
+      if (!needed) needed = new Set(nodeIds(t)); const mine = bad.filter((b) => needed.has(b.split('(')[0])); mine.forEach((b) => info.failed.push(b));
+      step('批次回來:答對 ' + ok + ' 欄' + (mine.length ? ',沒答對的欄位改一欄一欄重問:' + mine.join('、') : '')); if (ok) anyOk = true; return ok;
+    }
+    async function batchPhase() {
+      const budget = Math.floor(o.contextWindowTokens * (o.batchReserve || 0.25)); const learned = o.learnedNodes || {}; const skip = (id) => learned[id] && !validateNode(t, id, learned[id]).problem;
+      const fits = (ids) => { if (ids.length < 2) return false; const q = batchQuestion(t, ids); return estTokens(q.system + q.user) + ids.reduce((a, id) => a + expectOut(id), 0) <= budget; };
+      info.budget = budget; const whole = allIds(t).filter((id) => !skip(id));
+      if (fits(whole)) { info.mode = 'whole'; const n = await runBatch(whole); if (n <= 0) { info.mode = 'single'; if (n === 0) info.notes.push('批次問法這個模型不適用,改一欄一欄問'); } return; }
+      // 放不下整棵樹:曲式先問(一題),其餘依預留切塊
+      await fill(t, Object.assign({}, o, { onlyIds: ['form'], contextWindowTokens: 0 })); info.mode = 'staged';
+      let rest = nodeIds(t).filter((id) => id !== 'form' && !t.nodes[id] && !skip(id)); let useless = false;
+      while (rest.length >= 2 && !useless) {
+        const chunk = []; for (const id of rest) { if (chunk.length < 2 || fits(chunk.concat(id))) chunk.push(id); else break; } if (!fits(chunk)) break;
+        const n = await runBatch(chunk); if (n <= 0) useless = true; rest = rest.filter((id) => chunk.indexOf(id) < 0);
+      }
+      if (useless) info.notes.push('批次問法這個模型不適用,其餘一欄一欄問');
+    }
+    if (!only && typeof o.ask === 'function' && o.contextWindowTokens > 0 && !o.noBatch) { await batchPhase(); }
     // 節點會隨曲式改變:先放好範本預設,再依序問(曲式問完才知道有哪些組)
     for (let guard = 0; guard < 40; guard++) {
       const ids = nodeIds(t); const next = ids.find((id) => (only ? only.has(id) && !(t.nodes[id] && t.nodes[id].done) : !t.nodes[id])); if (!next) break;
@@ -34389,7 +34451,7 @@ const holder = {};
     const counts = {}; rows.forEach((r) => { counts[r.source] = (counts[r.source] || 0) + 1; }); return { rows, counts };
   }
   function learnNodes(t) { return nodeIds(t).filter((id) => t.nodes[id] && (t.nodes[id].source === 'ai' || t.nodes[id].source === 'user') && (id === 'motif' || id.indexOf('harmony.') === 0)).map((id) => ({ id, value: t.nodes[id].value })); }
-  return { rebase, usable, plan, compose, redo, setNode, describe, learnNodes, parseChords, parseMotif, checkMotif, checkChords, checkForm, layout, validateNode, questionOf, nodeIds, templateValue, FORMS, VOC, TEXTURES, BASSES, drumChoices, fill, newTree };
+  return { estTokens, batchQuestion, parseBatch, allIds, rebase, usable, plan, compose, redo, setNode, describe, learnNodes, parseChords, parseMotif, checkMotif, checkChords, checkForm, layout, validateNode, questionOf, nodeIds, templateValue, FORMS, VOC, TEXTURES, BASSES, drumChoices, fill, newTree };
 });
 
 }).call(null, undefined, holder);

@@ -951,8 +951,8 @@
    "names": [
     "FaComposeTree"
    ],
-   "size": 25618,
-   "md5": "08faee01636ebff6034780d5aafe2220"
+   "size": 31279,
+   "md5": "4fb14c0b37309373d5f15e0de2fd3543"
   },
   "musicbridge": {
    "file": "chunks/musicbridge.js",
@@ -1092,7 +1092,7 @@
   }
  },
  "core": {
-  "size": 5221236,
-  "md5": "7a7fcbd6d0485882539d5d369d7fb5de"
+  "size": 5222260,
+  "md5": "1b62f762b8d3fc13985bcb515e9a905a"
  }
 }
