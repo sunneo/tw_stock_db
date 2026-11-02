@@ -337,11 +337,19 @@
 
   // ---------- one object ----------
   var CYL_LEVELS = [[0.05, 0], [0.025, 1], [0.012, 1], [0.012, 2], [0.006, 2]];
-  var BLOCK_LEVELS = [2, 4, 8, 16, 32, 64, 128];
-  var SMOOTH_LEVELS = [4, 8, 16, 24, 32, 48, 64, 96, 128, 192];
-  // detail 1 = default, 2 = finer, 3 = finest: grid cells on the longest side and the face budget of the whole scene
-  var DETAIL = { 1: { workMax: 96, maxFaces: 12000 }, 2: { workMax: 144, maxFaces: 30000 }, 3: { workMax: 192, maxFaces: 60000 } };
-  function detailPreset(level) { var n = Math.round(Number(level)); return DETAIL[n >= 1 && n <= 3 ? n : 1]; }
+  var BLOCK_LEVELS = [2, 4, 8, 16, 32, 64, 128, 256];
+  var SMOOTH_LEVELS = [4, 8, 16, 24, 32, 48, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, 480, 512];
+  // detail 1 = default, 2 = finer, 3 = finest = the user's face ceiling (Configure > Image to 3D, default 60000).
+  // 1 -> min(12000, ceiling); 2 -> halfway (geometric) between 12000 and the ceiling; 3 -> the ceiling. Grid cells on the longest side follow the face budget (about 1.5 faces per cell).
+  var DEFAULT_MAX_FACES = 60000, MIN_FACES = 1000, MAX_FACES_LIMIT = 2000000, BASE_FACES = 12000;
+  function clampMaxFaces(v) { var n = Math.floor(Number(v)); return isFinite(n) && n >= MIN_FACES ? Math.min(MAX_FACES_LIMIT, n) : DEFAULT_MAX_FACES; }
+  // explicit = a face count the user asked for in this very request ("面數 20 萬", --max-faces): it wins over the ceiling
+  function detailPreset(level, ceiling, explicit) {
+    var n = Math.round(Number(level)); n = n >= 1 && n <= 3 ? n : 1;
+    var top = explicit > 0 ? clampMaxFaces(explicit) : clampMaxFaces(ceiling); if (explicit > 0) { n = 3; }
+    var faces = n === 1 ? Math.min(BASE_FACES, top) : (n === 3 ? top : Math.round(Math.sqrt(Math.min(BASE_FACES, top) * top)));
+    return { workMax: Math.max(96, Math.min(512, Math.round(Math.sqrt(faces / 1.5)))), maxFaces: faces, level: n, ceiling: top };
+  }
 
   function buildObject(mask, depth, opts) {
     opts = opts || {};
@@ -766,7 +774,10 @@
     else if (/薄一點|薄一些|變薄|更薄|扁一點|厚度[^，。,.\n]{0,4}(?:小|低|少|薄)/.test(t)) { out.thickScale = 0.6; }
     // 細緻度（網格格數與總面數）：--detail 1~3，或用說的：「細一點」「更細緻」「面數多一點」＝2，「最細」「非常細」＝3
     out.detail = 1;
-    if ((m = /--detail[=\s]+([123])(?![0-9])/i.exec(t))) { out.detail = parseInt(m[1], 10); }
+    if ((m = /--max-?faces[=\s]+(\d+)(萬)?/i.exec(t))) { out.maxFaces = clampMaxFaces(parseInt(m[1], 10) * (m[2] ? 10000 : 1)); out.detail = 3; }
+    else if ((m = /(?:面數|最多|上限)[^，。,.\n\d]{0,4}(\d+(?:\.\d+)?)\s*(萬|万|k|K)?\s*面?/.exec(t)) && /面/.test(m[0])) { out.maxFaces = clampMaxFaces(parseFloat(m[1]) * (m[2] === '萬' || m[2] === '万' ? 10000 : (m[2] ? 1000 : 1))); out.detail = 3; }
+    if (out.maxFaces) { out.detail = 3; }   // 明講面數：就用那個數字
+    else if ((m = /--detail[=\s]+([123])(?![0-9])/i.exec(t))) { out.detail = parseInt(m[1], 10); }
     else if (/最細|非常細|超細|極細|最高(?:精細|解析|細緻)|finest|ultra\s*detail/i.test(t)) { out.detail = 3; }
     else if (/細一點|細一些|更細|細緻|精細|面數(?:多|高|增)|多(?:一點|些)?面|高解析|解析度(?:高|提高)|馬賽克|fine(?:r)?\s+detail|more\s+(?:faces|detail)/i.test(t)) { out.detail = 2; }
     var si = subjectIntent(t); out.subject = si.subject; out.subjectName = si.name; out.subjectTarget = si.target; out.subjectDecided = si.decided; out.subjectSource = si.source;
@@ -872,5 +883,5 @@
     return spec;
   }
 
-  return { alphaMask: alphaMask, needsLlm: needsLlm, llmRequest: llmRequest, parseLlmOptions: parseLlmOptions, mergeOptions: mergeOptions, subjectIntent: subjectIntent, intentQuestion: intentQuestion, intentFromPick: intentFromPick, itemQuestion: itemQuestion, choiceQuestion: choiceQuestion, rankSubjects: rankSubjects, keepLabel: keepLabel, subjectMesh: subjectMesh, stitchDepths: stitchDepths, panoFov: panoFov, buildPanorama: buildPanorama, bendCylinder: bendCylinder, depthBands: depthBands, readExif: readExif, orbitKind: orbitKind, diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, detailPreset: detailPreset, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
+  return { alphaMask: alphaMask, needsLlm: needsLlm, llmRequest: llmRequest, parseLlmOptions: parseLlmOptions, mergeOptions: mergeOptions, subjectIntent: subjectIntent, intentQuestion: intentQuestion, intentFromPick: intentFromPick, itemQuestion: itemQuestion, choiceQuestion: choiceQuestion, rankSubjects: rankSubjects, keepLabel: keepLabel, subjectMesh: subjectMesh, stitchDepths: stitchDepths, panoFov: panoFov, buildPanorama: buildPanorama, bendCylinder: bendCylinder, depthBands: depthBands, readExif: readExif, orbitKind: orbitKind, diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, detailPreset: detailPreset, clampMaxFaces: clampMaxFaces, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
 });

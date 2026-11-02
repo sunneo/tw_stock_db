@@ -99,7 +99,28 @@ t('細緻度：--detail 與口語解析，預設 1，超出範圍當預設', () 
   assert.strictEqual(C.parseOptions('人的面數多一點').detail, 2);
   assert.strictEqual(C.parseOptions('臉要細緻一點').detail, 2);
   assert.strictEqual(C.parseOptions('越細越好，要最細').detail, 3);
-  assert.deepStrictEqual([1, 2, 3, 0, 7, 'x'].map((n) => C.detailPreset(n).maxFaces), [12000, 30000, 60000, 12000, 12000, 12000]);
+  assert.deepStrictEqual([1, 2, 3, 0, 7, 'x'].map((n) => C.detailPreset(n).maxFaces), [12000, 26833, 60000, 12000, 12000, 12000]);
+});
+t('最大面數設定：三檔跟著上限走，上限夾在範圍內，話裡明講的面數優先', () => {
+  assert.strictEqual(C.detailPreset(3, 200000).maxFaces, 200000);
+  assert.strictEqual(C.detailPreset(1, 200000).maxFaces, 12000);
+  assert.strictEqual(C.detailPreset(1, 5000).maxFaces, 5000);   // 上限比預設還小就不超過
+  assert.strictEqual(C.detailPreset(2, 5000).maxFaces, 5000);
+  assert.strictEqual(C.detailPreset(3, 'abc').maxFaces, 60000); assert.strictEqual(C.detailPreset(3, 10).maxFaces, 60000);
+  assert.strictEqual(C.detailPreset(3, 9e9).maxFaces, 2000000);
+  const big = C.detailPreset(3, 200000), small = C.detailPreset(3, 20000);
+  assert(big.workMax > small.workMax && big.workMax <= 512 && small.workMax >= 96);
+  assert.strictEqual(C.detailPreset(1, 30000, 200000).maxFaces, 200000);   // 明講 20 萬：不管設定與檔位
+  assert.strictEqual(C.clampMaxFaces(undefined), 60000);
+});
+t('最大面數：從話裡讀出面數', () => {
+  assert.strictEqual(C.parseOptions('面數 20 萬').maxFaces, 200000);
+  assert.strictEqual(C.parseOptions('面數要20萬面').maxFaces, 200000);
+  assert.strictEqual(C.parseOptions('--max-faces 150000').maxFaces, 150000);
+  assert.strictEqual(C.parseOptions('最多 8 萬面').maxFaces, 80000);
+  assert.strictEqual(C.parseOptions('面數多一點').maxFaces, undefined);
+  assert.strictEqual(C.parseOptions('做成立體').maxFaces, undefined);
+  assert.strictEqual(C.parseOptions('面數 20 萬').detail, 3);
 });
 t('細緻度：LLM 回的 detail 驗證，手打的 --detail 優先', () => {
   const j = C.parseLlmOptions('{"detail":2}', '細一點'); assert.strictEqual(j.detail, 2);
