@@ -94,12 +94,9 @@
     };
     undoB.onclick = () => { hist.undo(); pushRemote('undo'); stopPlay(); if (host.onChange) host.onChange(hist.song, { act: 'undo' }); drawSide(); draw(); };
     redoB.onclick = () => { hist.redo(); pushRemote('redo'); stopPlay(); if (host.onChange) host.onChange(hist.song, { act: 'redo' }); drawSide(); draw(); };
-    function stopPlay() { if (playing) { try { playing.stop(); } catch (_) { /* */ } playing = null; playB.textContent = '▶ 試聽'; } }
-    playB.onclick = async () => {
-      if (playing) { stopPlay(); return; }
-      try { say('準備合成器…'); playing = await host.player(hist.song, say); playing.onEnd(() => { playing = null; playB.textContent = '▶ 試聽'; }); playing.play(); playB.textContent = '■ 停止'; say(''); }
-      catch (e) { say('⚠️ 無法試聽:' + String((e && e.message) || e)); playing = null; }
-    };
+    const pt = FaMidiPlay.playToggle({ player: () => host.player(hist.song, say), label: (on) => { playB.textContent = on ? '■ 停止' : '▶ 試聽'; }, say });
+    function stopPlay() { pt.stop(); }
+    playB.onclick = () => pt.toggle();
     dlB.onclick = () => { try { host.download((opts.title || hist.song.title || 'song').replace(/[\\/:*?"<>|]/g, '_') + '.mid', M.write(hist.song), 'audio/midi'); } catch (e) { say('⚠️ ' + String((e && e.message) || e)); } };
     async function send() {
       const text = inp.value.trim(); if (!text) return; inp.value = '';
@@ -117,7 +114,7 @@
       getSong: () => hist.song, attach,
       setSong(song) { hist.push(song); drawSide(); draw(); },
       applyRemote(actions) { (actions || []).forEach((a) => run(a, true)); },
-      destroy() { destroyed = true; if (playing) { try { playing.dispose(); } catch (_) { /* */ } playing = null; playB.textContent = '▶ 試聽'; } },
+      destroy() { destroyed = true; pt.dispose(); },
     };
     drawSide(); draw(); return card;
   }

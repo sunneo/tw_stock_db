@@ -145,6 +145,33 @@ function songWith(notes) { let sg = M.emptySong(); sg.tempos = [{ t: 0, bpm: 120
   pb.dispose(); sm2.advance(1000); check('two cards: removing the active one frees the group and leaves nothing sounding', group.active === null && sm2.sounding() === 0, sm2.sounding());
   pa.stop(); check('two cards: stopping an already-stopped card does not disturb the group', group.active === null);
 }
+  // ── 編輯器卡片的試聽／停止:舊寫法的 bug(舊播放器的 onEnd 把新播放器的參照清掉,停止按鈕就停不掉)與修正後的按鈕狀態
+  {
+    const mkEnv = () => { const group = { active: null }; const sm = sim(); const cbs = []; const players = [];
+      const make = () => { let cb = null; const p = P.createPlayer(songWith([{ t: 0, d: 480 * 60, n: 60, v: 100 }]), sm.synth, { clock: () => sm.now.t, setInterval: (f) => { cb = f; return 1; }, clearInterval: () => { cb = null; }, ahead: 0.25, group, setTimeout: () => 1, clearTimeout() {} }); p._tick = () => cb && cb(); players.push(p); return p; };
+      return { sm, make, players, group }; };
+    // 舊寫法(重現):停止只 stop() 不處理 group,第二次試聽時 group 叫舊播放器 stop()+onEnd(),舊 onEnd 把 playing 設成 null
+    { const env = mkEnv(); let playing = null; const old = async () => { if (playing) { try { playing.stop(); } catch (_) { /* */ } playing = null; return; } playing = env.make(); playing.onEnd(() => { playing = null; }); playing.play(); };
+      await old(); env.sm.advance(10.3); await old(); await old(); env.sm.advance(10.6); await old(); env.sm.advance(10.9);
+      check('舊寫法重現:第二次試聽後「目前播放器」被清成 null,停止按鈕只會再開一個,聲音疊著響', env.players.length >= 3 && env.sm.sounding() > 0, [env.players.length, env.sm.sounding()]); }
+    // 修正後
+    { const env = mkEnv(); const labels = []; const pt = P.playToggle({ player: async () => env.make(), label: (on) => labels.push(on), say: () => {} });
+      await pt.toggle(); env.sm.advance(10.3); check('試聽:按下去開始放且按鈕變停止', pt.isPlaying() && env.sm.sounding() > 0 && labels[labels.length - 1] === true);
+      await pt.toggle(); env.sm.advance(11); check('停止:按一下就沒聲音、按鈕回到試聽', !pt.isPlaying() && env.sm.sounding() === 0 && labels[labels.length - 1] === false, env.sm.sounding());
+      await pt.toggle(); env.sm.advance(11.3); await pt.toggle(); env.sm.advance(12); check('停了再試聽再停:第二輪也停得乾淨(舊 onEnd 不會清掉新播放器)', !pt.isPlaying() && env.sm.sounding() === 0 && env.players.length === 2, [env.sm.sounding(), env.players.length]);
+      await pt.toggle(); await pt.toggle(); await pt.toggle(); await pt.toggle(); env.sm.advance(13); check('連按多次:最後一次按下的狀態才算,沒有殘留聲音', !pt.isPlaying() && env.sm.sounding() === 0, env.sm.sounding()); }
+    // 準備合成器的等待中再按(第一次載入音色庫要好幾秒):是取消,不會又建一個、也不會事後才開始放
+    { const env = mkEnv(); let release; const gate = new Promise((r) => { release = r; }); let made = 0; const labels = [];
+      const pt = P.playToggle({ player: async () => { made++; await gate; return env.make(); }, label: (on) => labels.push(on), say: () => {} });
+      const p1 = pt.toggle(); await pt.toggle(); release(); await p1; env.sm.advance(11);
+      check('準備中再按=取消:不會開第二個播放器,載入完也不開始放', made === 1 && !pt.isPlaying() && !pt.isPreparing() && env.sm.sounding() === 0 && env.players.every((p) => !p.isPlaying()) && labels[labels.length - 1] === false, [made, env.sm.sounding()]); }
+    // 自然播完後再按試聽:重新開始(不是當成停止)
+    { const env = mkEnv(); const pt = P.playToggle({ player: async () => env.make(), label: () => {}, say: () => {} }); await pt.toggle(); const p = env.players[0]; p.state.onEnd && p.state.onEnd(); p.stop();
+      check('播完(onEnd)後 isPlaying 為假,再按一次重新試聽', !pt.isPlaying()); await pt.toggle(); check('播完後再按:開始新的一輪', pt.isPlaying() && env.players.length === 2); await pt.toggle(); env.sm.advance(30); check('…而且停得掉', env.sm.sounding() === 0); }
+    // 卡片移除:播放中直接 dispose;載入失敗:按鈕回到試聽並寫原因
+    { const env = mkEnv(); const labels = []; const say = []; const pt = P.playToggle({ player: async () => env.make(), label: (on) => labels.push(on), say: (m) => say.push(m) }); await pt.toggle(); pt.dispose(); env.sm.advance(30); check('卡片移除:播放中被停掉且合成器淨空', env.sm.sounding() === 0 && env.players[0].isDisposed() && labels[labels.length - 1] === false);
+      const pt2 = P.playToggle({ player: async () => { throw new Error('音色庫下載失敗'); }, label: (on) => labels.push(on), say: (m) => say.push(m) }); await pt2.toggle(); check('載入失敗:按鈕回到試聽、訊息寫原因', !pt2.isPlaying() && labels[labels.length - 1] === false && say.some((m) => /音色庫下載失敗/.test(m)), say); }
+  }
   // ── 音色庫大小從清單算、本機快取狀態、整份存好後不再多留分片(離線模型管理頁、播放卡片訊息用)
   check('fmtMB: sizes come out as 6.3 MB / 31 MB (MiB) (never hard-coded)', P.fmtMB(6614304) === '6.3 MB' && P.fmtMB(32319396) === '31 MB' && P.fmtMB(1048576) === '1 MB', [P.fmtMB(6614304), P.fmtMB(32319396)]);
   const bi = await P.bankInfo({ base: 'https://h/x/', path: 'x.sf2' }, async () => ({ ok: true, json: async () => man }));

@@ -34984,13 +34984,17 @@ const holder = {};
     // 卡片從畫面上被移掉(清除對話、對話被壓縮、換了對話):釋放播放器,不留著發聲
     const orphanCheck = () => { if (card.isConnected) { wasConnected = true; return false; } if (wasConnected && player) { try { player.dispose(); } catch (_) { /* */ } playBtn.textContent = '▶ 播放'; return true; } return false; };
     const onTick = (sec) => { if (orphanCheck()) return; if (!dragging) seek.value = total ? Math.round(sec / total * 1000) : 0; time.textContent = fmt(sec) + ' / ' + fmt(total); };
+    let pending = null; // 準備中的承諾:連按播放時共用同一個,不會建出兩個播放器疊著響
     async function ensure() {
-      if (player && player.isDisposed && player.isDisposed()) player = null;
+      if (player && player.isDisposed && player.isDisposed()) { player = null; pending = null; }
       if (player) return player;
-      say('準備合成器(第一次要下載音色庫,之後直接從本機讀取)…');
-      player = await host.player(song, (m) => say(m));
-      player.onTick(onTick); player.onEnd(() => { playBtn.textContent = '▶ 播放'; });
-      say(''); return player;
+      if (!pending) pending = (async () => {
+        say('準備合成器(第一次要下載音色庫,之後直接從本機讀取)…');
+        const p = await host.player(song, (m) => say(m));
+        player = p; p.onTick(onTick); p.onEnd(() => { playBtn.textContent = '▶ 播放'; });
+        say(''); return p;
+      })().catch((e) => { pending = null; throw e; });
+      return pending;
     }
     playBtn.onclick = async () => {
       try { const p = await ensure(); if (p.isPlaying()) { p.pause(); playBtn.textContent = '▶ 播放'; } else { p.play(); playBtn.textContent = '❚❚ 暫停'; } }

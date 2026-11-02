@@ -115,6 +115,24 @@
     return api;
   }
 
+  // 編輯器卡片的「試聽／停止」按鈕狀態:一次只有一個播放器;準備合成器的等待中再按一次=取消(不會又開一個);
+  // 每個播放器的 onEnd 只認自己(同一合成器共用 group 時,新播放器 play() 會叫舊播放器 stop()+onEnd(),舊的 onEnd 若直接把「目前播放器」設成 null,新的就停不掉了)
+  // o:{ player()→Promise<createPlayer 回傳>, label(playing:boolean), say(msg) }
+  function playToggle(o) {
+    let cur = null, token = 0, preparing = false;
+    const stop = () => { token++; preparing = false; if (cur) { const p = cur; cur = null; try { p.stop(); } catch (_) { /* */ } } o.label(false); };
+    async function toggle() {
+      if (preparing || cur) { stop(); return; }
+      const my = ++token; preparing = true; o.label(true);
+      try {
+        o.say('準備合成器…'); const p = await o.player();
+        if (my !== token) { try { p.stop(); } catch (_) { /* */ } return; } // 等待中被取消:建好的播放器不開始放
+        preparing = false; cur = p; p.onEnd(() => { if (cur === p) { cur = null; o.label(false); } }); p.play(); if (cur === p) o.label(true); o.say('');
+      } catch (e) { if (my === token) { preparing = false; cur = null; o.label(false); } o.say('⚠️ 無法試聽:' + String((e && e.message) || e)); }
+    }
+    return { toggle, stop, isPlaying: () => !!cur, isPreparing: () => preparing, dispose() { token++; preparing = false; if (cur) { const p = cur; cur = null; try { p.dispose(); } catch (_) { /* */ } } o.label(false); } };
+  }
+
   // 瀏覽器端:載入 SpessaSynth(程式庫與處理器文字用 fetchText 取得,以 data 位址載入,離線單檔與 file 頁面都可)與音色庫。
   // sources = { lib, processor, soundbank }:各自是網址陣列(依序試,失敗換下一個);onProgress(msg, 0..1)
   async function loadSynth(ctx, destination, sources, onProgress, fetchImpl) {
@@ -217,5 +235,5 @@
     return await ctx.startRendering();
   }
 
-  return { channelMap, buildEvents, createPlayer, loadSynth, fetchBank, fetchParts, renderOffline, fmtMB, bankInfo, bankCacheStatus, bankCacheClear };
+  return { playToggle, channelMap, buildEvents, createPlayer, loadSynth, fetchBank, fetchParts, renderOffline, fmtMB, bankInfo, bankCacheStatus, bankCacheClear };
 });
