@@ -74540,6 +74540,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         let model = ''; try { model = (this._getApiConfig() || {}).apiModel || ''; } catch (_) { /* */ }
         const prog = this._createProgressWidget('🎼 作曲'); const say = (pct, s2) => { try { prog.log(s2); prog.update({ pct, status: s2 }); } catch (_) { /* */ } };
         try {
+            const pre = await this._midigenProbe(); say(3, '【模型預檢】' + (pre.ok ? 'midigenai 已下載、程式檔載得進來,作曲最後會請模型補聲部' : '這次不會用 midigenai:' + pre.reason + '(仍會用作曲樹作曲)'));
             say(5, '【理解需求】' + (offline ? '離線模式,用範本規則' : '請 AI 理解你的需求' + (model ? '(模型:' + model + ')' : '')) + ':' + String(text).slice(0, 60));
             const res = await FaComposePlan.decide(text, { ask, explicit: explicit || {}, noAiReason: offline ? '離線模式' : '', timeoutMs: 25000, attempts: 2, learned: (t) => this._composeLearnedFor(t), onStep: (m) => say(25, '【理解需求】' + m) });
             say(60, '【核對】' + (res.report.usedAi ? '程式逐欄核對 AI 的答案,沒答對的欄位用預設' : '這次沒有用 AI,用的是範本規則(' + (res.report.aiError || '') + ')') + (model && !res.report.usedAi && !offline ? ';模型:' + model : ''));
@@ -74547,10 +74548,10 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             if (ask && res.report.usedAi && typeof FaComposeTree !== 'undefined') {
                 // 作曲樹:曲式 → 和聲 → 聲部 → 主題動機,一次一個節點;任何節點讀不懂只退回該節點的範本
                 const mk = res.fields.mood, moodName = mk ? ((FaComposePlan.MOODS.find((m) => m[0] === mk) || [])[1] || '') : '';
-                const askNode = (sys, user, op) => this._callSimpleCompletion(user, { systemPrompt: sys, maxTokens: op && (op.node === 'motif' || String(op.node).indexOf('harmony.') === 0) ? 600 : 300, temperature: 0 });
-                say(62, '【作曲樹】由上而下請 AI 決定曲式、和聲、聲部、主題動機(一次一題)…');
+                const askNode = (sys, user, op) => this._callSimpleCompletion(user, { systemPrompt: sys, maxTokens: op && op.batch ? Math.min(4000, 400 + 120 * (op.nodes || []).length) : op && (op.node === 'motif' || String(op.node).indexOf('harmony.') === 0) ? 600 : 300, temperature: 0 });
+                say(62, '【作曲樹】由上而下請 AI 決定曲式、和聲、聲部、主題動機(context 放得下就一次問完,答錯的欄位再單獨重問)…');
                 try {
-                    const lt = this._composeLearnedFor(text); res.tree = await FaComposeTree.plan(res, { ask: askNode, task: String(text), moodName, timeoutMs: 25000, attempts: 2, learnedNodes: lt && lt.tree, onStep: (m) => say(68, '【作曲樹】' + m) });
+                    const lt = this._composeLearnedFor(text); res.tree = await FaComposeTree.plan(res, { ask: askNode, task: String(text), moodName, timeoutMs: 25000, attempts: 2, contextWindowTokens: Number((this._getGenerationSettings() || {}).contextWindowTokens) || 0, learnedNodes: lt && lt.tree, onStep: (m) => say(68, '【作曲樹】' + m) });
                     const cnt = FaComposeTree.describe(res.tree).counts; say(72, '【作曲樹】AI 決定 ' + (cnt.ai || 0) + '、程式修正 ' + (cnt.fixed || 0) + '、以前學到 ' + (cnt.learned || 0) + '、範本預設 ' + (cnt.template || 0) + ' 個節點' + (FaComposeTree.usable(res.tree) ? '' : ';AI 一個節點都沒答對,整首退回範本作曲'));
                 } catch (e) { res.tree = null; say(72, '【作曲樹】失敗,退回範本作曲:' + String((e && e.message) || e)); }
             }
@@ -74597,6 +74598,17 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         return this._midiComposeFinish(res, sd1);
     }
     // midigenai 作曲模型(首選):用離線模型管理下載好的 ONNX 檔,載入失敗或沒下載就回 { engine:null, reason },由橋退回作曲樹
+    // 便宜的預檢(不載入模型):下載狀態(同離線模型管理的判斷)+ 程式檔 import 得進來;結果只在成功時記住
+    async _midigenProbe() {
+        if (this._midigenOk) return { ok: true };
+        try {
+            const store = FaAudioModels.idbStore(); const want = (typeof navigator !== 'undefined' && navigator.gpu) ? ['midigenai-v5-gpu', 'midigenai-v5-cpu'] : ['midigenai-v5-cpu'];
+            const found = await FaMidigenBridge.findModel(want, (w) => FaAudioModels.status(w, store)); if (!found.id) return { ok: false, reason: found.reason };
+            const base = new URL('vendor/midigenai/', document.baseURI).href;
+            try { await import(base + 'tasks.mjs'); await import(base + 'midigen-web.mjs'); } catch (e) { return { ok: false, reason: '模型的程式檔載入失敗(' + String((e && e.message) || e) + ')' }; }
+            return { ok: true, id: found.id };
+        } catch (e) { return { ok: false, reason: '預檢出錯:' + String((e && e.message) || e) }; }
+    }
     async _midigenEngine() {
         if (this._midigenOk) return this._midigenOk; // 只記成功:沒下載的結果不記,使用者剛下載完下一次就看得到
         const msg = (e) => String((e && e.message) || e);

@@ -91,5 +91,56 @@ const byNode = (per, log) => async (sys, user, op) => { const id = nodeOf(sys); 
   check('學到的:不合法的忽略,照常問 AI', tl2.nodes.motif.source === 'ai'); check('usable:全範本為否、有 AI 為是', !T.usable(t0) && T.usable(tp));
   // 12. 整棵樹壞掉也不丟例外
   const broken = JSON.parse(JSON.stringify(tp)); broken.style = 'nope'; let threw = false; try { T.compose(broken, 1); } catch (_) { threw = true; } check('壞樹:不丟例外', !threw);
+  // 批次問法:能放得下就一次問完整棵樹;答錯／漏答只重問那幾欄;放不下縮成多批;context 很小退回一次一題
+  {
+    const FULL = Object.assign({}, GOOD, { 'harmony.contrast': 'vi IV I V', 'voices.contrast.texture': 'A', 'voices.contrast.bass': 'A', 'voices.contrast.drum': 'A' });
+    const batchModel = (opt) => { const log = []; opt = opt || {}; const ask = async (sys, user, op) => {
+      if (op && op.batch) { log.push({ batch: true, nodes: op.nodes.slice(), tok: T.estTokens(sys + user) }); if (opt.batchFail) { if (typeof opt.batchFail === 'function') { const r = opt.batchFail(log.length); if (r instanceof Error) throw r; if (r !== undefined) return r; } else throw new Error('HTTP 503'); }
+        return op.nodes.filter((id) => !(opt.omit || []).includes(id)).map((id) => id + ': ' + ((opt.wrong || {})[id] || FULL[id])).join('\n'); }
+      const id = nodeOf(sys); log.push({ batch: false, id }); return (opt.single || {})[id] || FULL[id]; }; return { ask, log }; };
+    const NEED = (t) => T.nodeIds(t);
+    // 1. 整棵樹放得下:只呼叫 1 次,全部是 AI 答的;提示不超過預留
+    let m = batchModel(); let tb = await T.plan(RES(), { ask: m.ask, contextWindowTokens: 200000, timeoutMs: 1000, sleep: async () => {} });
+    check('批次/整棵樹:只呼叫 1 次', m.log.length === 1 && m.log[0].batch && tb.batchInfo.mode === 'whole', m.log.length);
+    check('批次/整棵樹:每個節點都是 AI 答的', NEED(tb).every((id) => tb.nodes[id].source === 'ai' || tb.nodes[id].source === 'fixed'), NEED(tb).map((id) => id + ':' + tb.nodes[id].source));
+    check('批次/整棵樹:曲式 B 只收主段與高潮段(對比段的答案被丟掉)', !tb.nodes['harmony.contrast'] && tb.nodes['harmony.lift'].value === 'IV I V vi' && T.nodeIds(tb).length === 10, Object.keys(tb.nodes));
+    check('批次/整棵樹:提示在預留內', m.log[0].tok <= 200000 * 0.25 && tb.batchInfo.promptTokens[0] === m.log[0].tok);
+    // 與一次一題給同樣答案得到同一棵樹(同種子同曲)
+    const seqm = batchModel(); const ts = await T.plan(RES(), { ask: seqm.ask, timeoutMs: 1000 });
+    check('批次:跟一次一題的結果一樣', NEED(tb).every((id) => tb.nodes[id].value === ts.nodes[id].value) && JSON.stringify(T.compose(tb, 7).song) === JSON.stringify(T.compose(ts, 7).song) && seqm.log.length === 10, seqm.log.length);
+    // 2. 答錯一欄:只重問那一欄
+    m = batchModel({ wrong: { 'harmony.lift': 'X Y Z' } }); tb = await T.plan(RES(), { ask: m.ask, contextWindowTokens: 200000, timeoutMs: 1000, sleep: async () => {} });
+    check('批次/答錯一欄:只多一次且只問那一欄', m.log.length === 3 && m.log.filter((x) => !x.batch).map((x) => x.id).join() === 'harmony.lift,harmony.lift' || (m.log.length === 2 && m.log[1].id === 'harmony.lift'), m.log.map((x) => x.id || 'batch'));
+    check('批次/答錯一欄:重問後其他欄沒重來,該欄拿到值', tb.nodes['harmony.main'].batch === true && tb.nodes['harmony.lift'].value === 'IV I V vi' && tb.nodes['harmony.lift'].batch !== true && tb.batchInfo.failed.length === 1 && /harmony\.lift/.test(tb.batchInfo.failed[0]), tb.batchInfo.failed);
+    // 3. 漏答兩欄
+    m = batchModel({ omit: ['voices.main.bass', 'voices.lift.texture'] }); tb = await T.plan(RES(), { ask: m.ask, contextWindowTokens: 200000, timeoutMs: 1000, sleep: async () => {} });
+    check('批次/漏答兩欄:只重問那兩欄', m.log.length === 3 && m.log.slice(1).map((x) => x.id).sort().join() === 'voices.lift.texture,voices.main.bass' && tb.batchInfo.failed.every((x) => /漏答/.test(x)), m.log.map((x) => x.id || 'batch'));
+    check('批次/漏答:最後每個節點都有 AI 的值', NEED(tb).every((id) => tb.nodes[id].source === 'ai' || tb.nodes[id].source === 'fixed'));
+    // 4. 超過預留:整棵放不下就縮成多批(曲式一題 + 切塊),每批都在預留內
+    const wholeTok = T.estTokens(T.batchQuestion(tb, T.allIds(tb)).system + T.batchQuestion(tb, T.allIds(tb)).user) + 400; const cwMid = Math.floor(wholeTok * 0.6 / 0.25);
+    m = batchModel(); tb = await T.plan(RES(), { ask: m.ask, contextWindowTokens: cwMid, timeoutMs: 1000, sleep: async () => {} });
+    const batches = m.log.filter((x) => x.batch); const singles = m.log.filter((x) => !x.batch);
+    check('批次/超過預留:縮成多批,不是一次問完', tb.batchInfo.mode === 'staged' && batches.length >= 1 && batches.every((b) => b.nodes.length < T.allIds(tb).length) && singles[0].id === 'form', [tb.batchInfo.mode, batches.length, singles.length]);
+    check('批次/超過預留:每批提示都在預留內', batches.every((b) => b.tok <= cwMid * 0.25), [batches.map((b) => b.tok), cwMid * 0.25]);
+    check('批次/超過預留:總呼叫比一次一題少且節點都是 AI 答的', m.log.length < 10 && NEED(tb).every((id) => tb.nodes[id].source === 'ai' || tb.nodes[id].source === 'fixed'), m.log.length);
+    // 5. context 很小:退回一次一題
+    m = batchModel(); tb = await T.plan(RES(), { ask: m.ask, contextWindowTokens: 800, timeoutMs: 1000, sleep: async () => {} });
+    check('批次/context 小:全部一次一題', m.log.length === 10 && m.log.every((x) => !x.batch) && tb.batchInfo.calls === 0, m.log.length);
+    m = batchModel(); tb = await T.plan(RES(), { ask: m.ask, timeoutMs: 1000 }); check('批次/沒給 context 大小:維持一次一題', m.log.length === 10 && m.log.every((x) => !x.batch));
+    // 6. 整批亂碼:這個模型不適用批次,退回一次一題照樣做完
+    const junk = { calls: [] }; tb = await T.plan(RES(), { contextWindowTokens: 200000, timeoutMs: 1000, sleep: async () => {}, ask: async (sys, user, op) => { junk.calls.push(op && op.batch ? 'batch' : nodeOf(sys)); return op && op.batch ? '我覺得這首歌應該要很好聽,祝你順利' : FULL[nodeOf(sys)]; } });
+    check('批次/亂碼:只浪費一批,其餘一欄一欄問且成功', junk.calls[0] === 'batch' && junk.calls.filter((c) => c === 'batch').length === 1 && junk.calls.length === 11 && /不適用/.test(tb.batchInfo.notes.join()) && NEED(tb).every((id) => tb.nodes[id].source === 'ai'), junk.calls.length);
+    // 7. 整批逾時:批次本身退避重試一次,仍失敗就退回一次一題,失敗訊息附耗時
+    const steps = []; m = batchModel({ batchFail: true }); tb = await T.plan(RES(), { ask: m.ask, contextWindowTokens: 200000, timeoutMs: 1000, sleep: async () => {}, onStep: (x) => steps.push(x) });
+    check('批次/連線失敗:批次重試 2 次後退回一次一題並做完', m.log.filter((x) => x.batch).length === 2 && m.log.filter((x) => !x.batch).length === 10 && NEED(tb).every((id) => tb.nodes[id].source === 'ai') && steps.some((x) => /批次問 AI 失敗.*HTTP 503.*耗時/.test(x)), [m.log.length, steps.filter((x) => /批次/.test(x))]);
+    // 8. 批次第一次失敗、第二次成功,仍只算一批答完
+    m = batchModel({ batchFail: (n) => (n === 1 ? new Error('HTTP 503') : undefined) }); tb = await T.plan(RES(), { ask: m.ask, contextWindowTokens: 200000, timeoutMs: 1000, sleep: async () => {} });
+    check('批次/連線重試成功:不退回一次一題', m.log.length === 2 && m.log.every((x) => x.batch) && tb.batchInfo.mode === 'whole');
+    // 9. 解析:全形冒號、項目符號、反引號、JSON 備案、思考文字
+    const ids3 = ['form', 'harmony.main', 'motif']; const pb = T.parseBatch('<think>我來想想: form: Z</think>\n- form:B\n`harmony.main`：I V vi IV\n3. motif = 1:q 3:q 5:h 4:q 3:q 2:q 1:q', ids3);
+    check('批次解析:寬鬆格式', pb.form === 'B' && pb['harmony.main'] === 'I V vi IV' && /^1:q/.test(pb.motif), pb);
+    check('批次解析:JSON 備案', T.parseBatch('{"form":"C","harmony.main":"i VI III VII"}', ids3).form === 'C');
+    console.log('批次問法量測(假資料):整棵樹 1 次呼叫、提示約 ' + T.estTokens(T.batchQuestion(tb, T.allIds(tb)).system) + ' 估計 token;一次一題 10 次呼叫;中等預留 ' + cwMid + ' 時 ' + (batches.length + singles.length) + ' 次');
+  }
   console.log(ok + ' passed, ' + bad.length + ' failed'); if (bad.length) { console.log(bad.join('\n')); process.exit(1); }
 })();
