@@ -215,7 +215,7 @@
   function batchQuestion(t, ids) {
     const ctx = ctxLine(t, t.moodName ? { mood: t.moodName } : null); const hasH = ids.some((i) => i.indexOf('harmony.') === 0);
     const ex = ['form: B', 'harmony.main: ' + (t.mode === 'minor' ? 'i VI III VII' : 'I V vi IV'), 'voices.main.texture: B', 'motif: 1:q 3:q 5:e 4:e 3:h'].filter((l) => ids.indexOf(l.split(':')[0]) >= 0);
-    return { system: '你是作曲家。下面每一題都要回答。回答格式:每題一行「代號: 答案」,代號照【】裡的寫,不要解釋、不要思考過程、不要多餘的字。\n' + (hasH ? '和弦只能用這些羅馬數字:' + Object.keys(VOC[t.mode]).join(' ') + '\n' : '') + '\n' + ids.map((id) => batchItem(t, id)).join('\n') + '\n\n回答範例(只示範格式):\n' + ex.join('\n'), user: ctx + ' →' };
+    return { system: '你是作曲家。下面每一題都要回答。回答格式:每題一行「代號: 答案」,代號照【】裡的寫,不要解釋、不要思考過程、不要多餘的字。\n曲式選項旁寫了它需要幾組:你選的曲式只需要幾組,後面和聲與聲部就只答那幾組,多答的欄位程式會丟掉。\n' + (hasH ? '和弦只能用這些羅馬數字:' + Object.keys(VOC[t.mode]).join(' ') + '\n' : '') + '\n' + ids.map((id) => batchItem(t, id)).join('\n') + '\n\n回答範例(只示範格式):\n' + ex.join('\n'), user: ctx + ' →' };
   }
   function parseBatch(raw, ids) { // 一行一欄「代號: 答案」,容許全形冒號、項目符號、反引號、JSON 物件備案;回傳 { id: 文字 }
     const text = stripThink(raw), out = {}; const set = (k, v) => { k = String(k).toLowerCase().replace(/[「【\[`"'*」】\]]/g, '').trim(); if (ids.indexOf(k) >= 0 && out[k] === undefined && String(v).trim()) out[k] = String(v).trim(); };
