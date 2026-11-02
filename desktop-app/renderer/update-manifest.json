@@ -1,12 +1,12 @@
 {
   "schema": 1,
   "baseVersion": "1.1.0",
-  "generatedAt": "2026-11-01T19:16:00.311Z",
+  "generatedAt": "2026-11-02T15:32:11.768Z",
   "files": {
     "renderer/index.html": "039acc67493d2d42bae493dc9822621a",
     "renderer/bootstrap.js": "a9953cd7275f9fe213f27d062f660e1a",
-    "renderer/floating-assistant.js": "b129172669666ef081d6b0d4611c5a67",
-    "renderer/floating-assistant.min.js": "b129172669666ef081d6b0d4611c5a67",
+    "renderer/floating-assistant.js": "b9de1fdea39f95f383d2339e11618bdc",
+    "renderer/floating-assistant.min.js": "b9de1fdea39f95f383d2339e11618bdc",
     "renderer/vendor/spessasynth/SPESSASYNTH-LICENSE.txt": "3b83ef96387f14655fc854ddc3c6bd57",
     "renderer/vendor/spessasynth/spessasynth-lib.js": "bace1fd56e9bfee4d4428922bff4fd1d",
     "renderer/vendor/spessasynth/spessasynth-processor.min.js": "46e4dcfc964128aa7bdf41509df4aba8",
@@ -51,8 +51,8 @@
   "sizes": {
     "renderer/index.html": 5741,
     "renderer/bootstrap.js": 202259,
-    "renderer/floating-assistant.js": 10049304,
-    "renderer/floating-assistant.min.js": 10049304,
+    "renderer/floating-assistant.js": 10052699,
+    "renderer/floating-assistant.min.js": 10052699,
     "renderer/vendor/spessasynth/SPESSASYNTH-LICENSE.txt": 11358,
     "renderer/vendor/spessasynth/spessasynth-lib.js": 835918,
     "renderer/vendor/spessasynth/spessasynth-processor.min.js": 402596,
