@@ -108,6 +108,8 @@ const byNode = (per, log) => async (sys, user, op) => { const id = nodeOf(sys); 
     // 與一次一題給同樣答案得到同一棵樹(同種子同曲)
     const seqm = batchModel(); const ts = await T.plan(RES(), { ask: seqm.ask, timeoutMs: 1000 });
     check('批次:跟一次一題的結果一樣', NEED(tb).every((id) => tb.nodes[id].value === ts.nodes[id].value) && JSON.stringify(T.compose(tb, 7).song) === JSON.stringify(T.compose(ts, 7).song) && seqm.log.length === 10, seqm.log.length);
+    { const m1 = batchModel({ wrong: { form: 'F' } }); const t1 = await T.plan(RES(), { ask: m1.ask, contextWindowTokens: 200000, timeoutMs: 1000, sleep: async () => {} });
+      check('批次/曲式只有 1 組:多答的欄位被丟掉且不報錯、仍只呼叫 1 次', m1.log.length === 1 && T.nodeIds(t1).length === 6 && !t1.nodes['harmony.lift'] && t1.batchInfo.failed.length === 0 && /需要幾組/.test(T.batchQuestion(t1, T.allIds(t1)).system) && /主歌16 小節/.test(T.batchQuestion(t1, T.allIds(t1)).system), [m1.log.length, T.nodeIds(t1), t1.batchInfo.failed]); }
     // 2. 答錯一欄:只重問那一欄
     m = batchModel({ wrong: { 'harmony.lift': 'X Y Z' } }); tb = await T.plan(RES(), { ask: m.ask, contextWindowTokens: 200000, timeoutMs: 1000, sleep: async () => {} });
     check('批次/答錯一欄:只多一次且只問那一欄', m.log.length === 3 && m.log.filter((x) => !x.batch).map((x) => x.id).join() === 'harmony.lift,harmony.lift' || (m.log.length === 2 && m.log[1].id === 'harmony.lift'), m.log.map((x) => x.id || 'batch'));

@@ -207,7 +207,7 @@
     const ids = ['form']; GROUPS.forEach((g) => ids.push('harmony.' + g)); GROUPS.forEach((g) => { ids.push('voices.' + g + '.texture', 'voices.' + g + '.bass'); if ((C.STYLES[t.style] || {}).drum) ids.push('voices.' + g + '.drum'); }); ids.push('motif'); return ids;
   }
   function batchItem(t, id) {
-    if (id === 'form') return '【form】整首曲子的曲式,回一個字母。選項與選了的後果:\n' + feasibleForms(t.bars).map((f) => '  ' + f.id + '=' + f.name + ' → ' + f.names.length + ' 段,只需要「' + groupsOf(f.id, t.bars).map((g) => GROUP_NAME[g]).join('、') + '」的和聲與聲部').join('\n');
+    if (id === 'form') return '【form】整首曲子的曲式,回一個字母。選項與選了的後果:\n' + feasibleForms(t.bars).map((f) => '  ' + f.id + '=' + f.name + ' → ' + f.names.length + ' 段(' + layout(f.id, t.bars).map((x) => x.name + (x.to - x.from)).join('、') + ' 小節),只需要「' + groupsOf(f.id, t.bars).map((g) => GROUP_NAME[g]).join('、') + '」的和聲與聲部').join('\n');
     if (id === 'motif') { const bpb = bpbOf(t.style); return '【motif】整首的主題動機:' + 2 * bpb + ' 拍(每小節 ' + bpb + ' 拍)的短旋律,之後程式展開成整首。每個音寫「音級:時值」用空白隔開;音級 1～7,+ 高八度、- 低八度;時值 w=4 拍 h=2 拍 q=1 拍 e=0.5 拍 s=0.25 拍,後加 . 附點。時值加起來剛好 ' + 2 * bpb + ' 拍,強拍盡量落在主段和弦的和弦音上,結尾落在 1、3 或 5。'; }
     const p = id.split('.'); if (p[0] === 'harmony') return '【' + id + '】' + GROUP_NAME[p[1]] + '的和弦進行,一個和弦一小節,2～8 個(建議 4 個),空白隔開。' + (p[1] === 'main' ? '第一個要是主和弦(大調 I、小調 i)。' : p[1] === 'lift' ? '要比主段更有力,常從 IV(小調 iv 或 VI)開始。' : '要和主段不同,常從 vi(小調 VI)開始。');
     return '【' + id + '】' + GROUP_NAME[p[1]] + '的' + ({ texture: '和弦伴奏織體', bass: '貝斯彈法', drum: '鼓型' })[p[2]] + ',回一個字母:' + letterOpts(t, id).map((x) => x[0] + '=' + x[1]).join('、');
