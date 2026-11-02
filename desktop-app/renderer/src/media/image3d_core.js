@@ -537,8 +537,8 @@
     var objects = [];
     idList.forEach(function (id) {
       var mask = labels.map(function (r) { return r.map(function (v) { return v === id ? 1 : 0; }); });
-      var res = buildObject(mask, nd, { shape: opts.shape, normalize: false, scale: scale, maxFaces: Math.max(24, Math.floor(objBudget * areas[id] / sumA)), zFront: { base: 0.05 * R, range: R }, thickness: opts.thickness, thickScale: opts.thickScale });
-      if (res) { res.id = id; objects.push(res); }
+      var res = buildObject(mask, nd, { shape: opts.shape, normalize: false, scale: scale, maxFaces: Math.max(24, Math.floor(objBudget * areas[id] / sumA)), zFront: { base: 0.05 * R, range: R }, thickness: (opts.partThickness && opts.partThickness[id]) || opts.thickness, thickScale: opts.thickScale });
+      if (res) { res.id = id; if (opts.partNames && opts.partNames[id]) { res.name = opts.partNames[id]; } objects.push(res); }
     });
     var unknown = labels.map(function (r) { return r.map(function (v) { return v > 0; }); });
     var bgDepth = fillBackground(nd, unknown), all = labels.map(function (r) { return r.map(function () { return 1; }); });
@@ -846,6 +846,66 @@
   // keep one label as the only object (id 1), everything else becomes empty
   function keepLabel(labels, id) { return labels.map(function (r) { return r.map(function (v) { return v === id ? 1 : 0; }); }); }
 
+  // ---------- limbs from a pose (MoveNet's 17 keypoints) ----------
+  // kp = [[x, y, confidence] x 17], x and y as fractions of the picture (0..1, y down), the COCO order: 5/6 shoulders, 7/8 elbows, 9/10 wrists.
+  // splitLimbs(labels, kp, opts) cuts the arms out of the person's label: a pixel of the person within one arm's half-width of its shoulder-elbow-wrist line becomes a part of its own
+  // (a new label), so the arm gets its own face budget and its own back (the thickness of the limb, not of the whole body). Everything is checked by the program:
+  //   - the shoulders, the elbow and the wrist (when used) need a confidence of at least opts.minConf (0.4), and every joint must lie on the person (or within 2 cells of it)
+  //     -- an arm hidden behind a bottle, or a joint that landed on another object, is simply not used
+  //   - the arm must cover at least 1% and at most 60% of the person
+  // Returns { labels, arms:[{ id, side, cells, halfWidth }], notes:[...] } (the input is not changed), or null when no arm could be used.
+  function splitLimbs(labels, kp, opts) {
+    opts = opts || {};
+    var d = dims(labels), H = d.h, W = d.w, minConf = opts.minConf > 0 ? opts.minConf : 0.4, notes = [];
+    if (!H || !W || !kp || kp.length < 11) { return null; }
+    var P = function (i) { var k = kp[i]; return k && k[2] >= minConf ? [k[0] * W, k[1] * H] : null; };
+    var at = function (p) { var x = Math.max(0, Math.min(W - 1, Math.floor(p[0]))), y = Math.max(0, Math.min(H - 1, Math.floor(p[1]))); return labels[y][x]; };
+    var onLabel = function (p, id) {
+      for (var dy = -2; dy <= 2; dy++) { for (var dx = -2; dx <= 2; dx++) { var x = Math.floor(p[0]) + dx, y = Math.floor(p[1]) + dy; if (x >= 0 && x < W && y >= 0 && y < H && labels[y][x] === id) { return true; } } }
+      return false;
+    };
+    var ls = P(5), rs = P(6);
+    if (!ls || !rs) { return null; }
+    // the person = the label under the shoulders' midpoint (or the nose)
+    var mid = [(ls[0] + rs[0]) / 2, (ls[1] + rs[1]) / 2], pid = at(mid) || (P(0) ? at(P(0)) : 0);
+    if (!pid) { return null; }
+    var sw = Math.sqrt(Math.pow(ls[0] - rs[0], 2) + Math.pow(ls[1] - rs[1], 2)), half = Math.max(1.5, 0.2 * sw), total = 0, x, y;
+    if (sw < 4) { return null; }
+    for (y = 0; y < H; y++) { for (x = 0; x < W; x++) { if (labels[y][x] === pid) { total++; } } }
+    var out = labels.map(function (r) { return r.slice(); }), maxId = 0, arms = [];
+    for (y = 0; y < H; y++) { for (x = 0; x < W; x++) { if (labels[y][x] > maxId) { maxId = labels[y][x]; } } }
+    var sides = [['左', 5, 7, 9], ['右', 6, 8, 10]];
+    sides.forEach(function (sd) {
+      var S = P(sd[1]), E = P(sd[2]), Wr = P(sd[3]);
+      if (!S || !E) { notes.push(sd[0] + '臂：肩或手肘的信心值不夠，不分出'); return; }
+      if (!onLabel(S, pid) || !onLabel(E, pid)) { notes.push(sd[0] + '臂：肩或手肘不在人身上（可能被別的東西擋住），不分出'); return; }
+      if (Wr && !onLabel(Wr, pid)) { Wr = null; notes.push(sd[0] + '臂：手腕不在人身上，只分出上臂'); }
+      var segs = [[S, E]]; if (Wr) { segs.push([E, Wr]); }
+      var id = maxId + 1, cells = 0, cut = [];
+      for (y = 0; y < H; y++) {
+        for (x = 0; x < W; x++) {
+          if (out[y][x] !== pid) { continue; }
+          var best = Infinity;
+          for (var si = 0; si < segs.length; si++) {
+            var A = segs[si][0], B = segs[si][1], vx = B[0] - A[0], vy = B[1] - A[1], L2 = vx * vx + vy * vy;
+            if (L2 < 1e-6) { continue; }
+            var t = ((x + 0.5 - A[0]) * vx + (y + 0.5 - A[1]) * vy) / L2;
+            if (si === 0 && t < 0.1) { continue; }                       // not into the shoulder
+            if (t > (si === segs.length - 1 ? 1.3 : 1)) { continue; }    // past the wrist: the hand, a little
+            var qx = A[0] + Math.max(0, t) * vx, qy = A[1] + Math.max(0, t) * vy, dd = Math.sqrt(Math.pow(x + 0.5 - qx, 2) + Math.pow(y + 0.5 - qy, 2));
+            if (dd < best) { best = dd; }
+          }
+          if (best <= half) { cut.push([x, y]); cells++; }
+        }
+      }
+      if (cells < Math.max(12, 0.01 * total) || cells > 0.6 * total) { notes.push(sd[0] + '臂：圈到的格數不合理（' + cells + ' / ' + total + '），不分出'); return; }
+      cut.forEach(function (c) { out[c[1]][c[0]] = id; });
+      maxId = id; arms.push({ id: id, side: sd[0], cells: cells, halfWidth: half, joints: Wr ? 3 : 2 });
+    });
+    if (!arms.length) { return null; }
+    return { labels: out, arms: arms, personId: pid, notes: notes };
+  }
+
   // ---------- options from the user's words (the program decides; the model is only asked when this cannot) ----------
   // close: 'objects' (default; every found object is a closed solid, the backdrop is a thin closed slab) | 'all' (the user wants everything closed / printable: the backdrop is a full-thickness solid too)
   function parseOptions(text) {
@@ -878,6 +938,7 @@
     else if (/厚一點|厚一些|加厚|更厚|厚度[^，。,.\n]{0,4}(?:大|高|多|厚)/.test(t)) { out.thickScale = 1.6; }
     else if (/薄一點|薄一些|變薄|更薄|扁一點|厚度[^，。,.\n]{0,4}(?:小|低|少|薄)/.test(t)) { out.thickScale = 0.6; }
     // 細緻度（網格格數與總面數）：--detail 1~3，或用說的：「細一點」「更細緻」「面數多一點」＝2，「最細」「非常細」＝3
+    out.pose = /--(?:pose|limbs)(?![a-z])|骨架|四肢|手臂|姿態|肢體|pose\s+estimation/i.test(t);   // 明講要用骨架：模型沒下載會問要不要下載；沒講但模型已下載也會用
     out.detail = 1;
     if ((m = /--max-?faces[=\s]+(\d+)(萬)?/i.exec(t))) { out.maxFaces = clampMaxFaces(parseInt(m[1], 10) * (m[2] ? 10000 : 1)); out.detail = 3; }
     else if ((m = /(?:面數|最多|上限)[^，。,.\n\d]{0,4}(\d+(?:\.\d+)?)\s*(萬|万|k|K)?\s*面?/.exec(t)) && /面/.test(m[0])) { out.maxFaces = clampMaxFaces(parseFloat(m[1]) * (m[2] === '萬' || m[2] === '万' ? 10000 : (m[2] ? 1000 : 1))); out.detail = 3; }
@@ -901,7 +962,7 @@
   function needsLlm(text, o) {
     var t = String(text || '').replace(/\[附件：[^\]]*\]/g, ' ').replace(/--[a-z-]+(?:[=\s]+[^\s-][^\s]*)?/gi, ' ').trim(); if (!t) { return false; }
     if (o && o.subjectDecided === false) { return true; }
-    var rec = o && (o.subjectSource !== 'default' || o.shape !== 'auto' || o.closeSource !== 'default' || o.whole || o.segment || o.panorama || o.editor || o.noBackground || o.depthM || o.heightM || o.widthM || o.sizeM || o.depthScale !== 1 || o.thickScale !== 1 || o.detail > 1);
+    var rec = o && (o.subjectSource !== 'default' || o.shape !== 'auto' || o.closeSource !== 'default' || o.whole || o.segment || o.panorama || o.editor || o.noBackground || o.depthM || o.heightM || o.widthM || o.sizeM || o.depthScale !== 1 || o.thickScale !== 1 || o.detail > 1 || o.pose);
     if (rec) { return false; }
     var rest = t.replace(/[\s，。,.！!？?、；;：:「」"']/g, '').replace(/請|幫我|麻煩|謝謝|可以|好嗎|一下|把|將|這張|圖片|照片|圖|變成|轉成|轉為|轉|做成|作成|3d化|3d|三維|立體|成|image-?to-?3d/gi, '');
     return rest.length >= 4;
@@ -956,7 +1017,7 @@
     opts = opts || {};
     var parts = [], mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
     if (scene.background && scene.background.mesh) { parts.push({ name: '背景', key: 'background', res: scene.background }); }
-    scene.objects.forEach(function (o, i) { parts.push({ name: '物件' + (i + 1), key: o.id, res: o }); });
+    scene.objects.forEach(function (o, i) { parts.push({ name: o.name || '物件' + (i + 1), key: o.id, res: o }); });
     parts.forEach(function (p) { p.res.mesh.vertices.forEach(function (v) { for (var a = 0; a < 3; a++) { if (v[a] < mn[a]) { mn[a] = v[a]; } if (v[a] > mx[a]) { mx[a] = v[a]; } } }); });
     if (!parts.length) { return null; }
     var pano = scene.pano || null;
@@ -988,5 +1049,5 @@
     return spec;
   }
 
-  return { alphaMask: alphaMask, needsLlm: needsLlm, llmRequest: llmRequest, parseLlmOptions: parseLlmOptions, mergeOptions: mergeOptions, subjectIntent: subjectIntent, intentQuestion: intentQuestion, intentFromPick: intentFromPick, itemQuestion: itemQuestion, choiceQuestion: choiceQuestion, rankSubjects: rankSubjects, keepLabel: keepLabel, subjectMesh: subjectMesh, stitchDepths: stitchDepths, panoFov: panoFov, buildPanorama: buildPanorama, bendCylinder: bendCylinder, depthBands: depthBands, readExif: readExif, orbitKind: orbitKind, diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, detailPreset: detailPreset, clampMaxFaces: clampMaxFaces, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
+  return { alphaMask: alphaMask, needsLlm: needsLlm, llmRequest: llmRequest, parseLlmOptions: parseLlmOptions, mergeOptions: mergeOptions, subjectIntent: subjectIntent, intentQuestion: intentQuestion, intentFromPick: intentFromPick, itemQuestion: itemQuestion, choiceQuestion: choiceQuestion, rankSubjects: rankSubjects, keepLabel: keepLabel, subjectMesh: subjectMesh, stitchDepths: stitchDepths, panoFov: panoFov, buildPanorama: buildPanorama, bendCylinder: bendCylinder, depthBands: depthBands, readExif: readExif, orbitKind: orbitKind, diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, detailPreset: detailPreset, clampMaxFaces: clampMaxFaces, splitLimbs: splitLimbs, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
 });

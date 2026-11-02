@@ -152,6 +152,41 @@ t('依內容分配面數：深度起伏大的地方面多、平坦的地方面�
   assert(right > left * 2, 'left ' + left + ' right ' + right);
 });
 
+// 骨架：一個人形（頭、軀幹、兩條橫伸的手臂），關節以 MoveNet 的順序給
+const personGrid = () => grid(100, 100, (x, y) => ((x >= 40 && x < 60 && y >= 30 && y < 80) || (y >= 34 && y < 42 && x >= 10 && x < 90) || ((x - 50) ** 2 + (y - 20) ** 2 < 100) ? 1 : 0));
+const poseKp = (over) => { const kp = Array.from({ length: 17 }, () => [0.5, 0.2, 0.9]); kp[5] = [0.42, 0.38, 0.9]; kp[6] = [0.58, 0.38, 0.9]; kp[7] = [0.25, 0.38, 0.9]; kp[8] = [0.75, 0.38, 0.9]; kp[9] = [0.12, 0.38, 0.9]; kp[10] = [0.88, 0.38, 0.9]; return Object.assign(kp, over || {}); };
+t('骨架：兩條手臂分成各自的部分，躯幹留在原標籤，總格數不變', () => {
+  const lab = personGrid(), cnt = (l, id) => l.reduce((a, r) => a + r.filter((v) => v === id).length, 0), before = cnt(lab, 1);
+  const r = C.splitLimbs(lab, poseKp());
+  assert(r && r.arms.length === 2, JSON.stringify(r && r.notes));
+  const [a, b] = r.arms; assert(a.id !== 1 && b.id !== 1 && a.id !== b.id);
+  assert.strictEqual(cnt(r.labels, 1) + cnt(r.labels, a.id) + cnt(r.labels, b.id), before);
+  assert(cnt(r.labels, a.id) > 40 && cnt(r.labels, b.id) > 40 && cnt(r.labels, 1) > cnt(r.labels, a.id));
+  assert.strictEqual(lab[38][20], 1);   // 輸入沒有被改
+  const left = r.arms.find((x) => x.side === '左'), right = r.arms.find((x) => x.side === '右');
+  assert(r.labels[38][15] === left.id && r.labels[38][85] === right.id && r.labels[38][50] === 1 && r.labels[20][50] === 1);   // 左右手臂各在自己那邊，軀幹與頭留在原標籤
+});
+t('骨架：信心值不夠、關節不在人身上、圈到的格數不合理，都不分出那一條手臂', () => {
+  const lab = personGrid();
+  const low = C.splitLimbs(lab, poseKp({ 7: [0.25, 0.38, 0.2] })); assert(low && low.arms.length === 1 && low.arms[0].side === '右');
+  const off = C.splitLimbs(lab, poseKp({ 8: [0.75, 0.9, 0.9] })); assert(off && off.arms.length === 1 && off.arms[0].side === '左');
+  assert.strictEqual(C.splitLimbs(lab, poseKp({ 5: [0.42, 0.38, 0.1] })), null);   // 肩膀不可靠：整個不用
+  assert.strictEqual(C.splitLimbs(lab, null), null);
+  assert.strictEqual(C.splitLimbs(grid(100, 100, () => 0), poseKp()), null);        // 身體不在任何標籤上
+});
+t('骨架：分出的手臂成為場景裡自己的封閉立體，厚度用肢體寬度', () => {
+  const lab = personGrid(), r = C.splitLimbs(lab, poseKp()), dep = grid(100, 100, (x, y) => (lab[y][x] ? 0.7 : 0.2));
+  const pt = {}, pn = {}; r.arms.forEach((a) => { pt[a.id] = 2 * a.halfWidth; pn[a.id] = a.side + '手臂'; });
+  const s = C.buildScene({ labels: r.labels, depth: dep }, { shape: 'smooth', maxFaces: 12000, noBackground: true, partThickness: pt, partNames: pn });
+  assert.strictEqual(s.objects.length, 3); s.objects.forEach((o) => assert(C.isClosed(o.mesh), 'object ' + o.id));
+  assert(s.objects.some((o) => o.name === '左手臂') && s.objects.some((o) => o.name === '右手臂'));
+});
+t('骨架：選項 --pose 與口語', () => {
+  assert.strictEqual(C.parseOptions('做成立體').pose, false);
+  assert.strictEqual(C.parseOptions('--pose').pose, true);
+  assert.strictEqual(C.parseOptions('手臂用圓柱').pose, true);
+});
+
 t('隨機遮罩與深度（固定種子）：每個結果都封閉，方塊殼不退回外框', () => {
   let seed = 12345; const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
   let boxes = 0;

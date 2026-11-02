@@ -54,6 +54,11 @@
         // 分割（/image-to-3d 自動分物件用，不能拿來做圖像轉文字）：SAM 家族。MobileSAM 官方沒有 Transformers.js 格式的轉檔，所以用同家族、同授權友善的 SlimSAM（Xenova 轉檔）。檔案大小 2026-10-30 讀自 HuggingFace 檔案清單（q8：編碼器 8.9MB＋解碼器 4.9MB；fp16：12.2MB＋8.6MB）。
         { id: 'slimsam-77-uniform', gpuNeedsF16: true, label: 'SlimSAM 77（分割，/image-to-3d --segment 用）', task: 'segmentation', arch: 'sam', repo: 'Xenova/slimsam-77-uniform', tasks: [], lang: '無（輸出物件遮罩）', license: 'Apache-2.0',
             dtype: { gpu: 'fp16', cpu: 'q8' }, bytes: { gpu: 22 * MB, cpu: 16 * MB }, verified: false, notes: 'Segment Anything 的瘦身版（約 1000 萬參數）：在圖上撒一組點、每個點取最好的遮罩、去掉重複與太小的，當作「圖裡有哪些物件」。2026-10-30 在瀏覽器（CPU、q8）實測：載入約 6 秒、影像編碼約 16 秒、4×4 個點共約 28 秒，合成圖（蘋果＋盒子＋地面）分出 3 個物件；背景大遮罩（占圖 70% 以上）要丟掉，所以預設最大面積比例是 0.5。GPU 的 fp16 版還沒驗證。' },
+        // 姿態（/image-to-3d 找手臂用，不能拿來做圖像轉文字）：MoveNet Thunder，輸入 256×256 的整數 NHWC，輸出 17 個關鍵點（y、x、信心值）。Xenova 轉的 ONNX（Apache-2.0）。
+        // 8 位元量化版（6.75MB）在 CPU（WebAssembly）會缺 ConvInteger 載不進去（2026-11-02 在命令列的 onnxruntime 實測，同深度模型的結論），所以用完整版 fp32（25.1MB）。
+        // 2026-11-02 在瀏覽器（transformers.js 3.7.5、CPU）實測：AutoModel 對沒登記的 movenet 退回基礎類別，載入約 5 秒（含下載）、推論約 0.3 秒，結果跟命令列一致。
+        { id: 'movenet-thunder', label: 'MoveNet Thunder（姿態，/image-to-3d 找手臂用）', task: 'pose-estimation', arch: 'pose', repo: 'Xenova/movenet-singlepose-thunder', tasks: [], lang: '無（輸出 17 個關鍵點）', license: 'Apache-2.0',
+            dtype: { gpu: 'fp32', cpu: 'fp32' }, bytes: { gpu: 25 * MB, cpu: 25 * MB }, verified: true, verifiedOn: 'cpu', measured: '瀏覽器 CPU：載入約 5 秒（含下載）、推論約 0.3 秒；兩張小孩的半身照上，頭部很準、肩與手臂大致對，被物品擋住的一側會偏（信心值低的點程式會丟掉）', notes: '單人姿態：鼻、眼、耳、肩、肘、腕、髖、膝、踝，沒有手指。給 /image-to-3d 把手臂分成各自的部分。只看單人、取最明顯的一個。授權欄位寫 Apache-2.0（第三方轉檔頁面），Kaggle 原頁的授權欄位未查證。' },
         // 管理用（不能拿來做圖像轉文字）：語音轉文字 Whisper，跟這裡共用同一個瀏覽器快取
         { id: 'whisper-base', label: 'Whisper base（語音轉文字，transcribe_media 用）', task: 'asr', arch: 'whisper', repo: 'onnx-community/whisper-base', tasks: [], bytes: { gpu: 80 * MB, cpu: 80 * MB }, managedOnly: true, verified: true, notes: '影音轉逐字稿用，跟圖像轉文字共用快取與裝置設定。' },
     ];
@@ -64,6 +69,8 @@
     const DEFAULT_DEPTH_MODEL = 'depth-anything-v2-small';
     const segmentModels = () => MODELS.filter((m) => m.task === 'segmentation');
     const DEFAULT_SEGMENT_MODEL = 'slimsam-77-uniform';
+    const poseModels = () => MODELS.filter((m) => m.task === 'pose-estimation');
+    const DEFAULT_POSE_MODEL = 'movenet-thunder';
     const DEFAULT_MODEL = 'florence-2-base-ft';          // 圖像（VLM）預設
     const DEFAULT_TEXT_MODEL = 'qwen3-0.6b';             // 文字生成預設（兩種預設分開設定）
 
@@ -431,5 +438,5 @@
     // 估算這次下載量（依裝置組合）；已經在快取裡的部分不用再下載
     function estimateDownload(model, device, cachedBytes) { const total = (model.bytes && model.bytes[device === 'webgpu' ? 'gpu' : 'cpu']) || 0; return Math.max(0, total - (Number(cachedBytes) || 0)); }
 
-    return { MODELS, byId, imageModels, textModels, depthModels, DEFAULT_DEPTH_MODEL, segmentModels, DEFAULT_SEGMENT_MODEL, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
+    return { MODELS, byId, imageModels, textModels, depthModels, DEFAULT_DEPTH_MODEL, segmentModels, DEFAULT_SEGMENT_MODEL, poseModels, DEFAULT_POSE_MODEL, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
 });

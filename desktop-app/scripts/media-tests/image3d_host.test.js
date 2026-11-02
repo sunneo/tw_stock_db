@@ -34,6 +34,27 @@ const host = (answers) => { // answers: 視覺模型每次回答的字母
   await t('有名字：視覺模型卡住 → 逾時後不再等，選最大又靠中間的', async () => {
     const h = host(['A']); h._i3dPickTimeoutMs = 50; h._visionDescribe = () => new Promise(() => {}); const r = await h._i3dPickSubject(labels, W, H, {}, '杯子'); assert.strictEqual(r.how, 'central'); assert(/沒回應/.test(r.note));
   });
+  // 骨架：假的姿態模型（回固定的關鍵點），驗證分手臂、沒下載不打擾、失敗退回
+  const pl = grid(100, 100, (x, y) => ((x >= 40 && x < 60 && y >= 30 && y < 80) || (y >= 34 && y < 42 && x >= 10 && x < 90) ? 1 : 0));
+  const kp = Array.from({ length: 17 }, () => [0.5, 0.2, 0.9]); kp[5] = [0.42, 0.38, 0.9]; kp[6] = [0.58, 0.38, 0.9]; kp[7] = [0.25, 0.38, 0.9]; kp[8] = [0.75, 0.38, 0.9]; kp[9] = [0.12, 0.38, 0.9]; kp[10] = [0.88, 0.38, 0.9];
+  const poseHost = (pr) => Object.assign(Object.create(M), { asked: [], _i3dChapter() {}, _poseEstimate: async function (a) { this.asked.push(a); return pr; } });
+  await t('骨架：有姿態結果 → 兩條手臂成為各自的部分（名字、厚度）', async () => {
+    const h = poseHost({ ok: true, pose: { kp } }); const r = await h._i3dSplitArms(pl, { blob: {}, filename: 'a.jpg' }, {}, {});
+    assert.strictEqual(r.arms, 2); assert(/2 條手臂/.test(r.note), r.note); assert.strictEqual(Object.keys(r.partThick).length, 2); assert(Object.values(r.partNames).every((n) => /手臂$/.test(n)));
+    assert.strictEqual(h.asked[0].askDownload, false);   // 沒明講用骨架：不問下載
+  });
+  await t('骨架：模型沒下載且沒明講 → 安靜退回；明講「用骨架」→ 會問下載、失敗說原因', async () => {
+    let h = poseHost({ ok: false, notInstalled: true, error: '還沒下載' }); let r = await h._i3dSplitArms(pl, {}, {}, {});
+    assert.strictEqual(r.labels, pl); assert.strictEqual(r.note, ''); assert.strictEqual(r.arms, 0);
+    h = poseHost({ ok: false, notInstalled: true, error: '還沒下載' }); r = await h._i3dSplitArms(pl, {}, {}, { pose: true });
+    assert.strictEqual(h.asked[0].askDownload, true); assert(/還沒下載/.test(r.note));
+    h = poseHost({ ok: false, cancelled: true, error: '取消' }); r = await h._i3dSplitArms(pl, {}, { pose: true }, {}); assert.strictEqual(r.note, '');
+  });
+  await t('骨架：關節都不可靠或姿態模型丟錯 → 維持整個人一個物件並說明', async () => {
+    const bad = kp.map((k) => [k[0], k[1], 0.1]); let r = await poseHost({ ok: true, pose: { kp: bad } })._i3dSplitArms(pl, {}, {}, {});
+    assert.strictEqual(r.labels, pl); assert(/沒有找到可用的手臂/.test(r.note));
+    const h = poseHost(null); h._poseEstimate = async () => { throw new Error('爆了'); }; r = await h._i3dSplitArms(pl, {}, {}, {}); assert.strictEqual(r.labels, pl); assert(/爆了/.test(r.note));
+  });
   await t('貼圖流程：話裡沒有主體意思、也不是「變成3D」→ 不處理', async () => {
     const h = Object.assign(Object.create(M), { _i3dSubjectSolid: async () => { throw new Error('不該被呼叫'); } });
     assert.strictEqual(await h._i3dAttachedEdits({ text: '把這張圖貼到桌子上當桌布', images: [{ dataUrl: 'x', name: 'a.png' }] }), null);
