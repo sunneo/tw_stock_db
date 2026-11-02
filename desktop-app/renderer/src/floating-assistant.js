@@ -74749,7 +74749,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         if (typeof FaMidigenBridge === 'undefined' || typeof FaComposeTree === 'undefined') return null;
         try {
             if (!res.tree) res.tree = await FaComposeTree.plan(res, { task: res.task });
-            const got = await this._midigenEngine(); if (got.engine) say(76, '【模型】用 ' + got.id + ' 補貝斯、鼓、和弦(逾時 90 秒,不合格重生最多 2 次)…');
+            const pre = FaMidigenBridge.unsupported(res.tree); const got = pre ? { engine: null, reason: pre } : await this._midigenEngine(); if (got.engine) say(76, '【模型】用 ' + got.id + ' 補貝斯、鼓、和弦(逾時 90 秒,不合格重生最多 2 次)…');
             const r = await FaMidigenBridge.compose(res.tree, sd, { engine: got.engine, noEngineReason: got.reason, onStep: (m) => say(78, '【模型】' + m) });
             say(80, '【模型】' + (r.layer === 'model' ? '三個聲部都由模型生成並通過程式驗證' : r.layer === 'partial' ? '部分聲部由模型生成,其餘用作曲樹' : '這次沒有用模型:' + (r.reason || '')));
             return r;
@@ -74809,7 +74809,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             }
             if (ref.layers && ref.layers.length) {
                 const lb = mk('div', 'margin-top:8px;border-top:1px dashed rgba(128,128,128,.4);padding-top:6px;'); lb.appendChild(mk('div', 'font-weight:600;margin-bottom:4px;', '🧱 這次用了哪一層(模型生成 → 作曲樹 → 範本)'));
-                ref.layers.forEach((l) => lb.appendChild(mk('div', 'margin:2px 0;', l.label + ':' + (l.layer === 'model' ? '✅ 模型生成' : '↩️ 作曲樹') + (l.reason ? '　' + l.reason : '') + (l.tries > 1 ? '(試了 ' + l.tries + ' 次)' : ''))));
+                ref.layers.forEach((l) => lb.appendChild(mk('div', 'margin:2px 0;', l.label + ':' + (l.layer === 'model' ? '✅ 模型生成' : l.layer === 'partial' ? '🟡 部分段落用模型' : '↩️ 作曲樹') + (l.reason ? '　' + l.reason : '') + (l.tries > 1 ? '(試了 ' + l.tries + ' 次)' : ''))));
                 card.appendChild(lb);
             }
             code.parentElement.replaceWith(card);

@@ -11,7 +11,7 @@
   // 超出模型範圍(使用者:模型處理不了才退回拆解):拍號不是 4/4、超過一次能處理的小節數、速度在模型標頭範圍外
   function unsupported(tree) {
     const st = C.STYLES[tree.style]; if (!st) return '不認得的風格'; if (st.timesig[0] !== 4 || st.timesig[1] !== 4) return '這個風格不是 4/4 拍,模型只認 4/4';
-    if (tree.bars > MAX_BARS) return '曲子 ' + tree.bars + ' 小節,超過模型一次能補的 ' + MAX_BARS + ' 小節'; if (tree.tempo < 40 || tree.tempo > 220) return '速度 ' + tree.tempo + ' 超出模型標頭的範圍'; return '';
+    if (tree.tempo < 40 || tree.tempo > 220) return '速度 ' + tree.tempo + ' 超出模型標頭的範圍'; return '';
   }
   const voicesOf = (tree, song) => {
     const st = C.STYLES[tree.style]; const out = [{ id: 'bass', label: '貝斯', ti: 2, instrument: 'Bass', range: [24, 67], pitched: true }];
@@ -32,32 +32,51 @@
     if (notes.length < tree.bars * (v.pitched ? 1 : 2)) return { problem: '音符太少(' + notes.length + ')' };
     return { notes, fixes };
   }
+  // 長曲子分段補:每段最多 MAX_BARS 小節,後一段的開頭和前一段重疊 ov 小節(重疊處以前一段已定的音當條件,只收自己負責的部分,不重複寫入也不漏)
+  function segmentsOf(bars, maxSeg, ov) {
+    maxSeg = maxSeg || MAX_BARS; ov = ov == null ? 2 : ov; if (bars <= maxSeg) return [{ s: 0, e: bars, own: 0 }]; const out = []; let s = 0;
+    for (;;) { const e = Math.min(bars, s + maxSeg); out.push({ s, e, own: out.length ? s + ov : 0 }); if (e >= bars) break; s = e - ov; } return out;
+  }
+  const BPB_T = 4 * 480; const cloneTrack = (tr, notes) => Object.assign({}, tr, { notes });
   async function compose(tree, seed, o) {
-    o = o || {}; const step = o.onStep || (() => {}); seed = Number(seed) || 1; const retries = o.retries == null ? 2 : o.retries, timeoutMs = o.timeoutMs || 90000;
+    o = o || {}; const step = o.onStep || (() => {}); seed = Number(seed) || 1; const retries = o.retries == null ? 2 : o.retries, timeoutMs = o.timeoutMs || 90000, budgetMs = o.budgetMs || timeoutMs * 4, ov = o.overlap == null ? 2 : o.overlap;
     const base = T.compose(tree, seed); const res = { song: base.song, layer: 'tree', layers: [], reason: '', warnings: (base.warnings || []).slice(), fixes: 0, tries: base.tries, sections: base.sections, seed: base.seed, style: base.style, options: base.options };
     const why = !o.engine ? (o.noEngineReason || '模型沒下載或沒載入') : unsupported(tree); const voices = voicesOf(tree, base.song);
     if (why) { res.reason = why; res.layers = voices.map((v) => ({ voice: v.id, label: v.label, layer: 'tree', reason: why })); return res; }
     if (base.fallback) { res.reason = '作曲樹自己退回了範本,沒有種子可交給模型'; res.layers = voices.map((v) => ({ voice: v.id, label: v.label, layer: 'tree', reason: res.reason })); return res; }
-    const lead = base.song.tracks[0]; const bytes = M.write(Object.assign({}, base.song, { tracks: [lead] })); let dead = '';
-    const song = JSON.parse(JSON.stringify(base.song));
+    const lead = base.song.tracks[0]; const song = JSON.parse(JSON.stringify(base.song)); const segs = segmentsOf(tree.bars, MAX_BARS, ov); const deadline = Date.now() + budgetMs; let dead = '';
+    const inRange = (notes, from, to) => notes.filter((n) => n.t >= from && n.t < to);
     for (const v of voices) {
-      const L = { voice: v.id, label: v.label, layer: 'tree', reason: '', tries: 0 }; res.layers.push(L);
-      if (dead) { L.reason = dead; continue; }
-      for (let a = 0; a <= retries && L.layer !== 'model'; a++) {
-        L.tries = a + 1; step('請模型補「' + v.label + '」第 ' + (a + 1) + ' 次…');
-        try {
-          const r = await withTimeout(o.engine.accompany(bytes, { bars: tree.bars, instrument: v.instrument, seed: seed * 7 + a, tempoBpm: tree.tempo }), timeoutMs);
-          const parsed = M.parse(r.midi); const gen = parsed.tracks.slice(1).filter((t) => t.notes && t.notes.length)[0]; const c = checkVoice(gen, v, tree, parsed.ppq);
-          if (c.problem) { L.reason = c.problem; step('「' + v.label + '」' + c.problem); continue; }
-          song.tracks[v.ti].notes = c.notes; res.fixes += c.fixes; L.layer = 'model'; L.reason = c.fixes ? '程式修正了 ' + c.fixes + ' 處(吸附調內、音域、超出小節)' : '';
-        } catch (e) {
-          L.reason = e && e.timeout ? String(e.message) : '模型出錯:' + String((e && e.message) || e); step('「' + v.label + '」' + L.reason); if (e && e.fatal) { dead = L.reason; break; } if (e && e.timeout) break;
+      const L = { voice: v.id, label: v.label, layer: 'tree', reason: '', tries: 0, segments: [] }; res.layers.push(L); const treeNotes = base.song.tracks[v.ti].notes || []; const decided = [];
+      for (let k = 0; k < segs.length; k++) {
+        const g = segs[k]; const SR = { from: g.own + 1, to: g.e, layer: 'tree', reason: '', tries: 0 }; L.segments.push(SR); const label = segs.length > 1 ? '(第 ' + (g.own + 1) + '–' + g.e + ' 小節)' : '';
+        const fallbackNotes = () => decided.push(...inRange(treeNotes, g.own * BPB_T, g.e * BPB_T).map((n) => Object.assign({}, n)));
+        if (dead) { SR.reason = dead; fallbackNotes(); continue; }
+        // 這一段的條件:旋律軌切出 [s, e) 平移到 0;不是第一段就再附上重疊處已定的伴奏音(平移後同樣在開頭)
+        const leadSeg = cloneTrack(lead, inRange(lead.notes, g.s * BPB_T, g.e * BPB_T).map((n) => Object.assign({}, n, { t: n.t - g.s * BPB_T, d: Math.min(n.d, g.e * BPB_T - n.t) })));
+        const ctxNotes = k ? inRange(decided, g.s * BPB_T, g.own * BPB_T).map((n) => Object.assign({}, n, { t: n.t - g.s * BPB_T })) : []; const tracksIn = ctxNotes.length ? [leadSeg, cloneTrack(base.song.tracks[v.ti], ctxNotes)] : [leadSeg];
+        const bytes = M.write(Object.assign({}, base.song, { tracks: tracksIn })); const segTree = Object.assign({}, tree, { bars: g.e - g.s });
+        for (let a = 0; a <= retries && SR.layer !== 'model'; a++) {
+          const remain = deadline - Date.now(); if (remain <= 0) { SR.reason = '整體時間預算用完(' + Math.round(budgetMs / 1000) + ' 秒)'; dead = dead || SR.reason; break; }
+          SR.tries++; L.tries++; step('請模型補「' + v.label + '」' + label + '第 ' + (a + 1) + ' 次…');
+          try {
+            const r = await withTimeout(o.engine.accompany(bytes, { bars: g.e - g.s, instrument: v.instrument, seed: seed * 7 + a + k * 101, tempoBpm: tree.tempo }), Math.min(timeoutMs, remain));
+            const parsed = M.parse(r.midi); const gen = parsed.tracks.slice(tracksIn.length).filter((t) => t.notes && t.notes.length)[0]; const c = checkVoice(gen, v, segTree, parsed.ppq);
+            if (c.problem) { SR.reason = c.problem; step('「' + v.label + '」' + label + c.problem); continue; }
+            decided.push(...c.notes.map((n) => Object.assign({}, n, { t: n.t + g.s * BPB_T })).filter((n) => n.t >= g.own * BPB_T && n.t < g.e * BPB_T + 240)); res.fixes += c.fixes; SR.layer = 'model'; SR.reason = c.fixes ? '程式修正了 ' + c.fixes + ' 處(吸附調內、音域、超出小節)' : '';
+          } catch (e) {
+            SR.reason = e && e.timeout ? String(e.message) : '模型出錯:' + String((e && e.message) || e); step('「' + v.label + '」' + label + SR.reason); if (e && e.fatal) { dead = SR.reason; break; } if (e && e.timeout) break;
+          }
         }
+        if (SR.layer !== 'model') { SR.reason = '用作曲樹的結果(' + (SR.reason || '沒有結果') + ')'; fallbackNotes(); }
       }
-      if (L.layer !== 'model') L.reason = '用作曲樹的原聲部(' + (L.reason || '沒有結果') + ')';
+      const okSeg = L.segments.filter((x) => x.layer === 'model').length; L.layer = okSeg === 0 ? 'tree' : okSeg === L.segments.length ? 'model' : 'partial';
+      if (okSeg) song.tracks[v.ti].notes = decided.sort((x, y) => x.t - y.t || x.n - y.n);
+      if (L.segments.length === 1) L.reason = L.layer === 'model' ? L.segments[0].reason : '用作曲樹的原聲部(' + L.segments[0].reason.replace(/^用作曲樹的結果\(|\)$/g, '') + ')';
+      else { const lab = (x) => '第 ' + x.from + '–' + x.to + ' 小節'; const okL = L.segments.filter((x) => x.layer === 'model').map(lab), bad = L.segments.filter((x) => x.layer !== 'model'); L.reason = (okL.length ? '模型:' + okL.join('、') : '') + (bad.length ? (okL.length ? ';' : '') + '作曲樹:' + bad.map((x) => lab(x) + ' ' + x.reason).join('、') : ''); if (!okL.length) L.reason = '用作曲樹的原聲部(' + L.reason + ')'; }
     }
-    const n = res.layers.filter((l) => l.layer === 'model').length; res.layer = n === 0 ? 'tree' : n === res.layers.length ? 'model' : 'partial';
-    if (n === 0) res.reason = '模型沒有任何聲部通過驗證,整首用作曲樹'; res.song = M.validate(song); return res;
+    const n = res.layers.filter((l) => l.layer === 'model').length, np = res.layers.filter((l) => l.layer !== 'tree').length; res.layer = np === 0 ? 'tree' : n === res.layers.length ? 'model' : 'partial';
+    if (np === 0) res.reason = '模型沒有任何聲部通過驗證,整首用作曲樹'; res.segments = segs.length; res.song = M.validate(song); return res;
   }
   // 找已下載的模型:跟離線模型管理列表用同一個 FaAudioModels.status;沒找到時說明每個候選找了哪個鍵、看到幾片、缺哪幾片、多少位元組
   async function findModel(ids, statusFn) {
@@ -104,5 +123,5 @@
     const p = M.parse(r.midi); const n = p.tracks.slice(1).reduce((a, t) => a + ((t.notes && t.notes.length) || 0), 0); if (!n) throw new Error('冒煙測試:模型沒有生成任何音符'); return { ms: Date.now() - t0, notes: n };
   }
   const MANIFEST = { version: 'v5', vocab_size: 598, n_layers: 12, n_heads: 12, head_dim: 64, opset: 17, files: { gpu: { file: 'decoder-webgpu-q4.onnx', bytes: 73151835, sha256: '7c5de98ff7460bd88d07acc537c6e238f0a4afce29b8c9ad488eb97f99bdbfdf', quant: 'q4', cache: 'present, (1,H,P,D)' }, cpu: { file: 'decoder-wasm-int8.onnx', bytes: 114561179, sha256: '5ca00f42ba3900aeb6d98821d4e8b559a880c8d99d62dbdc0d1555a38c1eed65', quant: 'int8', cache: 'new-rows, time-major (1,P,H,D)' } } };
-  return { MANIFEST, openSession, smoke, DEV_NAME, DEV_FILE, findModel, unsupported, compose, checkVoice, voicesOf, MAX_BARS };
+  return { segmentsOf, MANIFEST, openSession, smoke, DEV_NAME, DEV_FILE, findModel, unsupported, compose, checkVoice, voicesOf, MAX_BARS };
 });

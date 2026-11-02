@@ -33,7 +33,7 @@ function fake(mode, log) {
   check('沒引擎:仍作得出曲子', n1.song.tracks[0].notes.length > 10 && JSON.stringify(n1.song) === JSON.stringify(T.compose(t, 3).song));
   // 3. 超出模型範圍:三拍子、太長 → 不問模型就退回,原因寫明
   const lg = []; const w = await B.compose(await tree({ style: 'waltz', bars: 8 }), 1, { engine: fake('ok', lg) }); check('三拍子:退回作曲樹且沒呼叫模型', w.layer === 'tree' && /4\/4/.test(w.reason) && !lg.length, w.reason);
-  const long = await B.compose(await tree({ bars: 32 }), 1, { engine: fake('ok', lg) }); check('超過 16 小節:退回並寫原因', long.layer === 'tree' && /16/.test(long.reason) && !lg.length, long.reason);
+  check('範圍檢查:超過 16 小節不再拒絕(改分段補)', B.unsupported(await tree({ bars: 32 })) === '');
   check('範圍檢查:一般 pop 8 小節支援', B.unsupported(t) === '');
   // 4. 輸出不合格:空、太短、音域外、調外、鼓軌種類不對 → 重生兩次後仍失敗 → 該聲部用作曲樹
   for (const mode of ['empty', 'short', 'wrongkind']) { const lg2 = []; const x = await B.compose(t, 3, { engine: fake(mode, lg2), retries: 2 }); check('不合格(' + mode + '):每聲部試 3 次後退回作曲樹', x.layer === 'tree' && x.layers.every((l) => l.tries === 3 && /用作曲樹的原聲部/.test(l.reason)) && lg2.length === 9, { layer: x.layer, n: lg2.length, l: x.layers[0] }); check('不合格(' + mode + '):歌還是完整', JSON.stringify(x.song) === JSON.stringify(T.compose(t, 3).song)); }
@@ -79,6 +79,33 @@ function fake(mode, log) {
     x = mk({ has: async () => false }); r = await B.openSession(x.o); check('裝置/都沒下載:先下載第一順位(WebGPU)這一版', r.device === 'webgpu' && x.log[0] === 'ensure:webgpu');
     const sm = await B.smoke(fake('ok')); check('冒煙測試:假引擎有音符就通過', sm.notes > 0 && sm.ms >= 0, sm);
     let smErr = ''; try { await B.smoke(fake('empty')); } catch (e) { smErr = e.message; } check('冒煙測試:沒音符就失敗並寫原因', /沒有生成任何音符/.test(smErr), smErr);
+  }
+  // 10. 長曲子分段補(每段最多 16 小節,前後重疊 2 小節)
+  {
+    const tile = (bars) => { const sg = B.segmentsOf(bars); let at = 0; let okT = true; sg.forEach((g) => { if (g.own !== at || g.e <= g.own || g.e - g.s > 16) okT = false; at = g.e; }); return okT && at === bars; };
+    check('分段:16 小節 1 段、17 小節 2 段(14–17)、64 小節 5 段、100 小節 7 段,每段 ≤16 且負責的範圍剛好接起來不重複不漏', B.segmentsOf(16).length === 1 && B.segmentsOf(17).length === 2 && B.segmentsOf(17)[1].s === 14 && B.segmentsOf(64).length === 5 && B.segmentsOf(100).length === 7 && [1, 4, 16, 17, 30, 31, 64, 100, 128].every(tile), [B.segmentsOf(64), B.segmentsOf(100).length]);
+    const rec = (mode, extra) => { const log = []; const inner = fake(mode || 'ok'); return { log, accompany: async (bytes, op) => { const inp = M.parse(bytes); log.push({ op, ntr: inp.tracks.length, ctx: inp.tracks[1] ? inp.tracks[1].notes.length : 0, ctxMax: inp.tracks[1] ? Math.max.apply(null, inp.tracks[1].notes.map((n) => n.t)) : -1, instrument: op.instrument, k: Math.floor((op.seed - 21) / 101) }); if (extra && extra.pre) { const r = await extra.pre(op, log[log.length - 1]); if (r) return r; } return inner.accompany(bytes, op); } }; };
+    const t64 = await tree({ bars: 64 }); const e1 = rec(); const r64 = await B.compose(t64, 3, { engine: e1, retries: 2 });
+    const bassN = r64.song.tracks[2].notes; const keys = bassN.map((n) => n.t + ':' + n.n);
+    check('64 小節:3 個聲部各 5 段,共 15 次呼叫,每次 ≤16 小節,整首標 model', r64.layer === 'model' && e1.log.length === 15 && e1.log.every((x) => x.op.bars <= 16) && r64.layers.every((l) => l.segments.length === 5 && l.layer === 'model'), [r64.layer, e1.log.length, r64.layers.map((l) => l.layer)]);
+    check('64 小節:重疊接縫不重複不漏音(貝斯每小節剛好 2 個音、64 小節都有、沒有重複的 t:n)', bassN.length === 128 && new Set(keys).size === 128 && new Set(bassN.map((n) => Math.floor(n.t / 1920))).size === 64, [bassN.length, new Set(keys).size]);
+    check('64 小節:後面的段有帶重疊處已定的音當條件(第二個軌道,都在重疊範圍內)', e1.log.filter((x) => x.k > 0).every((x) => x.ntr === 2 && x.ctx > 0 && x.ctxMax < 2 * 1920 + 1) && e1.log.filter((x) => x.k === 0).every((x) => x.ntr === 1), e1.log.map((x) => [x.k, x.ntr, x.ctx]));
+    check('64 小節:旋律軌仍是作曲樹的,歌能寫成 MIDI 再讀回', JSON.stringify(r64.song.tracks[0]) === JSON.stringify(T.compose(t64, 3).song.tracks[0]) && M.parse(M.write(r64.song)).tracks.length >= 3);
+    const e16 = rec(); const r16 = await B.compose(await tree({ bars: 16 }), 3, { engine: e16 }); check('剛好 16 小節:每個聲部只呼叫 1 次(不分段)', e16.log.length === 3 && r16.layers.every((l) => l.segments.length === 1) && r16.layer === 'model', e16.log.length);
+    const e17 = rec(); const r17 = await B.compose(await tree({ bars: 17 }), 3, { engine: e17 }); check('17 小節:每個聲部分 2 段(共 6 次),接縫處音符不重複', e17.log.length === 6 && r17.layer === 'model' && (() => { const b = r17.song.tracks[2].notes; return b.length === 34 && new Set(b.map((n) => n.t)).size === 34; })(), [e17.log.length, r17.song.tracks[2].notes.length]);
+    // 100 小節(把樹的長度改成 100,走和 64 小節一樣的路)
+    let r100 = null, t100 = null; try { t100 = JSON.parse(JSON.stringify(await tree({ bars: 64 }))); t100.bars = 100; const e100 = rec(); r100 = await B.compose(t100, 3, { engine: e100 }); check('100 小節:7 段 × 3 聲部 = 21 次呼叫,每次 ≤16 小節', e100.log.length === 21 && e100.log.every((x) => x.op.bars <= 16) && r100.layers.every((l) => l.segments.length === 7), [e100.log.length]); } catch (e) { check('100 小節:能組裝', false, String(e.message)); }
+    // 中間一段失敗:只那一段退回作曲樹,其他段保留模型結果,紀錄寫清楚
+    const ef = rec('ok', { pre: async (op, lg) => (lg.instrument === 'Bass' && lg.k === 2 ? { midi: M.write(Object.assign({}, M.emptySong(), { tracks: [] })) } : null) }); const rf = await B.compose(t64, 3, { engine: ef, retries: 1 });
+    const bl = rf.layers.find((l) => l.voice === 'bass'); const treeBass = T.compose(t64, 3).song.tracks[2].notes;
+    check('中間一段失敗:貝斯標 partial,只第 3 段(29–44 小節的自己範圍 31–44)退回作曲樹並寫原因', bl.layer === 'partial' && bl.segments.map((x) => x.layer).join() === 'model,model,tree,model,model' && /作曲樹/.test(bl.reason) && /沒生成音符|出錯|音符/.test(bl.segments[2].reason) && rf.layer === 'partial' && rf.layers.filter((l) => l.voice !== 'bass').every((l) => l.layer === 'model'), [bl.segments.map((x) => x.layer + ':' + x.reason), bl.reason]);
+    const own = (g) => rf.song.tracks[2].notes.filter((n) => n.t >= g.own * 1920 && n.t < g.e * 1920); const g3 = B.segmentsOf(64)[2];
+    check('中間一段失敗:退回的那段就是作曲樹的音,其他段是模型的音,整首貝斯仍每小節都有、沒有重複', JSON.stringify(own(g3).map((n) => n.t + ':' + n.n)) === JSON.stringify(treeBass.filter((n) => n.t >= g3.own * 1920 && n.t < g3.e * 1920).map((n) => n.t + ':' + n.n)) && own(B.segmentsOf(64)[1]).every((n) => n.n === 36 || n.n === 43) && new Set(rf.song.tracks[2].notes.map((n) => Math.floor(n.t / 1920))).size === 64 && new Set(rf.song.tracks[2].notes.map((n) => n.t + ':' + n.n)).size === rf.song.tracks[2].notes.length, rf.song.tracks[2].notes.length);
+    // 整體預算:每次呼叫都慢,預算用完後面的段全退回,不是每段各自再等一輪
+    const t0 = Date.now(); const es = rec('ok', { pre: async () => { await new Promise((r) => setTimeout(r, 40)); return null; } }); const rb = await B.compose(t64, 3, { engine: es, timeoutMs: 1000, budgetMs: 100 });
+    check('整體預算:用完後剩下的段退回作曲樹並寫「整體時間預算用完」,呼叫數遠少於 15、總時間不疊加', es.log.length < 15 && es.log.length >= 1 && Date.now() - t0 < 600 && rb.layers.some((l) => l.segments.some((x) => /整體時間預算用完/.test(x.reason))) && rb.layer !== 'tree' || (es.log.length < 15 && rb.layers.some((l) => l.segments.some((x) => /整體時間預算用完/.test(x.reason)))), [es.log.length, Date.now() - t0]);
+    // 模型壞掉(fatal):第一次就停,後面全部退回,不再問
+    const ed = rec('fatal'); const rd = await B.compose(t64, 3, { engine: ed }); check('長曲子遇到模型壞掉:只問 1 次,其餘段與聲部都退回並寫原因', ed.log.length === 1 && rd.layer === 'tree' && rd.layers.every((l) => l.segments.every((x) => /模型載入失敗/.test(x.reason))), ed.log.length);
   }
   check('同種子同結果', JSON.stringify((await B.compose(t, 3, { engine: fake('ok') })).song) === JSON.stringify(r.song));
   console.log(ok + ' passed, ' + bad.length + ' failed'); if (bad.length) { console.log(bad.join('\n')); process.exit(1); }
