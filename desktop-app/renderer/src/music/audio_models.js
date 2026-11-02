@@ -46,10 +46,10 @@
   }
   // 離線模型管理頁用:這個模型在本機存了幾片、共多少位元組、是不是整個都在(每片大小要對才算);刪除就是把每片拿掉
   async function status(id, store) {
-    const m = REGISTRY[id]; if (!m) throw new Error('沒有這個模型:' + id); const n = Math.ceil(m.bytes / CHUNK); let have = 0, chunks = 0;
+    const m = REGISTRY[id]; if (!m) throw new Error('沒有這個模型:' + id); const n = Math.ceil(m.bytes / CHUNK); let have = 0, chunks = 0; const missing = [];
     for (let i = 0; i < n; i++) { const key = 'model:' + id + ':' + m.sha256.slice(0, 8) + ':' + i, want = Math.min(m.bytes, (i + 1) * CHUNK) - i * CHUNK; // 有 has() 就只問在不在(不把 8 MB 一片整個讀出來);片的大小與整個檢查碼在真正用到時核對
-      if (store.has ? await store.has(key) : (await store.get(key) || { length: -1 }).length === want) { have += want; chunks++; } }
-    return { id, bytes: m.bytes, have, chunks, total: n, complete: chunks === n };
+      if (store.has ? await store.has(key) : (await store.get(key) || { length: -1 }).length === want) { have += want; chunks++; } else missing.push(i); }
+    return { id, bytes: m.bytes, have, chunks, total: n, missing, keyPrefix: 'model:' + id + ':' + m.sha256.slice(0, 8) + ':', complete: chunks === n };
   }
   async function remove(id, store) { const m = REGISTRY[id]; if (!m) throw new Error('沒有這個模型:' + id); const n = Math.ceil(m.bytes / CHUNK); for (let i = 0; i < n; i++) await store.del('model:' + id + ':' + m.sha256.slice(0, 8) + ':' + i); return n; }
   // 瀏覽器端的 IndexedDB 儲存(資料庫 fa-a2m-models)

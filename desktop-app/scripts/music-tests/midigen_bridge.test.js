@@ -48,6 +48,15 @@ function fake(mode, log) {
   const p = await B.compose(t, 3, { engine: mixed, retries: 0 }); check('部分通過:標 partial,鼓用作曲樹、其餘用模型', p.layer === 'partial' && p.layers.find((l) => l.voice === 'drums').layer === 'tree' && p.layers.find((l) => l.voice === 'bass').layer === 'model', p.layers.map((l) => l.voice + ':' + l.layer));
   // 7. 沒有鼓的風格(古典)不請模型生鼓
   const lg5 = []; const cl = await B.compose(await tree({ style: 'classical', bars: 8 }), 2, { engine: fake('ok', lg5) }); check('古典:不問鼓', cl.layers.map((l) => l.voice).join() === 'bass,chords' && !lg5.some((x) => x.instrument === 'Drums'), cl.layers.map((l) => l.voice));
+  // 8. 找模型:跟離線模型管理用同一個 status;已下載→找到、缺片→說明缺哪片、都沒有→附上找的鍵與看到的片數
+  const AM = require('../../renderer/src/music/audio_models.js'); const mem = (keys) => ({ get: async (k) => keys[k], has: async (k) => !!keys[k] });
+  const reg = AM.REGISTRY['midigenai-v5-cpu']; const nC = Math.ceil(reg.bytes / AM.CHUNK); const kk = (i) => 'model:midigenai-v5-cpu:' + reg.sha256.slice(0, 8) + ':' + i;
+  const full = {}; for (let i = 0; i < nC; i++) full[kk(i)] = { length: Math.min(reg.bytes, (i + 1) * AM.CHUNK) - i * AM.CHUNK };
+  const f1 = await B.findModel(['midigenai-v5-gpu', 'midigenai-v5-cpu'], (id) => AM.status(id, mem(full))); check('找模型:快取完整→判定已下載(跳過沒下載的 gpu)', f1.id === 'midigenai-v5-cpu' && !f1.reason, f1);
+  const gap = Object.assign({}, full); delete gap[kk(3)]; const f2 = await B.findModel(['midigenai-v5-cpu'], (id) => AM.status(id, mem(gap))); check('找模型:缺第 4 片→說明缺哪一片與片數', !f2.id && /只下載了一部分/.test(f2.reason) && /缺第 4 片/.test(f2.reason) && new RegExp('看到 ' + (nC - 1) + ' / ' + nC).test(f2.reason), f2.reason);
+  const f3 = await B.findModel(['midigenai-v5-cpu'], (id) => AM.status(id, mem({}))); check('找模型:完全沒有→附鍵前綴、0 片、位元組', /還沒下載/.test(f3.reason) && f3.reason.indexOf(kk(0).slice(0, -1)) >= 0 && /看到 0 \//.test(f3.reason) && /114561179/.test(f3.reason), f3.reason);
+  const f4 = await B.findModel(['midigenai-v5-cpu'], async () => { throw new Error('IndexedDB 被擋'); }); check('找模型:讀狀態出錯→寫出錯原因而不是籠統說沒下載', /讀取下載狀態失敗\(IndexedDB 被擋\)/.test(f4.reason), f4.reason);
+  const calls = []; const late = { n: 0 }; const f5a = await B.findModel(['midigenai-v5-cpu'], (id) => AM.status(id, mem({}))); const f5b = await B.findModel(['midigenai-v5-cpu'], (id) => AM.status(id, mem(full))); check('找模型:先沒有、後下載完→第二次找得到(不記住負面結果)', !f5a.id && f5b.id === 'midigenai-v5-cpu');
   check('同種子同結果', JSON.stringify((await B.compose(t, 3, { engine: fake('ok') })).song) === JSON.stringify(r.song));
   console.log(ok + ' passed, ' + bad.length + ' failed'); if (bad.length) { console.log(bad.join('\n')); process.exit(1); }
 })();

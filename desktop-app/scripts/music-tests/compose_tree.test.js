@@ -40,8 +40,8 @@ const byNode = (per, log) => async (sys, user, op) => { const id = nodeOf(sys); 
   check('沉默:前三節點失敗後停止問(不超過 6 次)', sl.length === 6, sl.length); check('沉默:停止後的節點寫明沒有問', /沒有問/.test(ts.nodes['voices.main.texture'].error), ts.nodes['voices.main.texture'].error);
   check('沉默:空白寫成回了空白', /回了空白/.test(ts.nodes.form.error));
   // 6. 逾時:連線類失敗連兩次就停止,其餘節點明講沒有問
-  const tl = []; const tto = await T.plan(RES(), { ask: (sys) => { tl.push(1); return new Promise(() => {}); }, timeoutMs: 20, attempts: 2 });
-  check('逾時:全退範本', T.nodeIds(tto).every((id) => tto.nodes[id].source === 'template')); check('逾時:只試兩次就停', tl.length === 2, tl.length); check('逾時:原因寫連線逾時', /連線.*逾時/.test(tto.nodes.form.error), tto.nodes.form.error);
+  const tl = []; const tto = await T.plan(RES(), { ask: (sys) => { tl.push(1); return new Promise(() => {}); }, timeoutMs: 20, attempts: 2, sleep: async () => {} });
+  check('逾時:全退範本', T.nodeIds(tto).every((id) => tto.nodes[id].source === 'template')); check('逾時:連線重試 4 次才停', tl.length === 4, tl.length); check('逾時:原因寫連線逾時', /連線.*逾時/.test(tto.nodes.form.error), tto.nodes.form.error);
   const te = await T.plan(RES(), { ask: byNode(() => new Error('HTTP 429')), attempts: 2 }); check('丟錯:寫出錯誤訊息', /HTTP 429/.test(te.nodes.form.error), te.nodes.form.error);
   // 7. 只回一半:動機只有三個音(總拍數不夠) → 嚴格版重問 → 第二次完整就採用;兩次都只回一半 → 該節點範本,其他節點照常
   const half = (id, op) => id === 'motif' ? (op.strict ? GOOD.motif : '1:q 3:q 5:e') : GOOD[id];

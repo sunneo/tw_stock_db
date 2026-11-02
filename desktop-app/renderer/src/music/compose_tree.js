@@ -206,17 +206,17 @@
       if (o.learnedNodes && o.learnedNodes[next]) { const lr = validateNode(t, next, o.learnedNodes[next]); if (!lr.problem) { nd.value = lr.value; nd.source = 'learned'; continue; } }
       if (typeof o.ask !== 'function') { nd.error = o.noAiReason || '沒有可用的 AI(離線或沒有設定)'; continue; }
       if (stopWhy) { nd.error = '沒有問(' + stopWhy + ')'; continue; }
-      let netFail = 0;
-      for (let i = 0; i < attempts && nd.source !== 'ai' && nd.source !== 'fixed'; i++) {
-        const q = questionOf(t, next, i > 0 && !nd.error.startsWith('連線') ? { raw: nd.raw.slice(0, 60), why: nd.error } : null); nd.tries = i + 1; calls++; step('問「' + LABEL(next) + '」第 ' + (i + 1) + ' 次…');
+      let netFail = 0, i = 0; const netMax = o.netAttempts || 4, sleepFn = o.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
+      while (i < attempts && netFail < netMax && nd.source !== 'ai' && nd.source !== 'fixed') {
+        const q = questionOf(t, next, i > 0 && !nd.error.startsWith('連線') ? { raw: nd.raw.slice(0, 60), why: nd.error } : null); nd.tries++; calls++; const tmo = Math.round(timeoutMs * (1 + 0.6 * netFail)), t0 = Date.now(); step('問「' + LABEL(next) + '」第 ' + nd.tries + ' 次' + (netFail ? '(連線重試,等最多 ' + Math.round(tmo / 1000) + ' 秒)' : '') + '…');
         try {
-          const raw = await withTimeout(o.ask(q.system, q.user, { node: next, strict: i > 0 }), timeoutMs); nd.raw = String(raw == null ? '' : raw).replace(/\s+/g, ' ').trim().slice(0, 80); nd.error = '';
+          const raw = await withTimeout(o.ask(q.system, q.user, { node: next, strict: i > 0 }), tmo); nd.raw = String(raw == null ? '' : raw).replace(/\s+/g, ' ').trim().slice(0, 80); nd.error = ''; i++;
           let r; if (next === 'motif' || next.indexOf('harmony.') === 0) r = validateNode(t, next, stripThink(raw)); else { const opts = letterOpts(t, next); const c = parseLetterIn(raw, opts.map((x) => x[0]).join(''), opts); r = c ? validateNode(t, next, c) : { problem: nd.raw ? '讀不懂' : '回了空白' }; }
           if (r.problem) { nd.error = r.problem + (nd.raw ? '(' + nd.raw + ')' : ''); step('「' + LABEL(next) + '」' + nd.error); } else { nd.value = r.value; nd.source = r.fixed ? 'fixed' : 'ai'; nd.error = ''; step('「' + LABEL(next) + '」AI 答:' + String(r.value).slice(0, 40) + (r.fixed ? '(程式修正了時值)' : '')); }
-        } catch (e) { nd.error = '連線' + String((e && e.message) || e); netFail++; step('「' + LABEL(next) + '」問 AI 失敗:' + nd.error); }
+        } catch (e) { netFail++; nd.error = '連線' + String((e && e.message) || e) + '(第 ' + netFail + ' 次連線失敗,耗時 ' + Math.round((Date.now() - t0) / 1000) + ' 秒)'; step('「' + LABEL(next) + '」問 AI 失敗:' + nd.error); if (netFail < netMax) await sleepFn(Math.min(8000, 1000 * Math.pow(2, netFail - 1))); }
       }
       if (nd.source === 'ai' || nd.source === 'fixed') { anyOk = true; failRun = 0; } else failRun++;
-      if (netFail >= attempts) stopWhy = '前一個節點連線連續失敗:' + nd.error; else if (!anyOk && failRun >= 3) stopWhy = '前三個節點都沒答對,這個模型看來不適合,其餘用範本預設';
+      if (netFail >= netMax) stopWhy = '前一個節點連線連續失敗:' + nd.error; else if (!anyOk && failRun >= 3) stopWhy = '前三個節點都沒答對,這個模型看來不適合,其餘用範本預設';
     }
     t.calls = (t.calls || 0) + calls; return t;
   }

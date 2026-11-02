@@ -82,23 +82,24 @@
     const learnedKeys = []; { let lp = null; try { lp = typeof o.learned === 'function' ? o.learned(text) : null; } catch (_) { lp = null; } if (lp) FIELD_ORDER.forEach((k) => { const v = lp[k]; if (v && optionsOf(k).some((x) => x[0] === v)) { ai[k] = v; learnedKeys.push(k); } }); }
     report.learned = learnedKeys.slice();
     if (typeof o.ask === 'function') {
-      const attempts = o.attempts || 2, timeoutMs = o.timeoutMs || 20000;
+      const attempts = o.attempts || 2, timeoutMs = o.timeoutMs || 20000, netMax = o.netAttempts || 4, sleepFn = o.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
       const skip = {}; if (explicit.style || userStyleWord) skip.style = '你說的'; if (explicit.tempo || base.tempo) skip.speed = '你說的'; if (ruleMode(text)) skip.mode = '你說的'; if (ruleLead(text)) skip.lead = '你說的'; if (explicit.bars || base.bars) skip.bars = '你說的';
       learnedKeys.forEach((k) => { skip[k] = '學到的'; }); const todo = FIELD_ORDER.filter((k) => !skip[k]).concat(rulePurpose(text) ? [] : ['purpose']); let stopWhy = '', failRun = 0, anyOk = false;
       for (const k of todo) {
         const pf = report.perField[k] = { ok: false, tries: 0, raw: '', error: '' };
         if (stopWhy) { pf.error = '沒有問(' + stopWhy + ')'; report.aiMissing.push(k); continue; }
-        let netFail = 0;
-        for (let i = 0; i < attempts && !pf.ok; i++) {
-          const q = questionOf(k, text, i > 0 && pf.raw !== undefined && !pf.error.startsWith('連線') ? { raw: pf.raw.slice(0, 60) } : null); pf.tries = i + 1; report.calls++; step('問「' + (k === 'purpose' ? '用途' : ASK[k].slice(0, 6)) + '」第 ' + (i + 1) + ' 次…');
+        // 連線類失敗(逾時、5xx、過載)是暫時的:不算「讀不懂」的次數,另外自己重試到底(逾時一次比一次長、中間退避),全用完才算這欄連線失敗
+        let netFail = 0, i = 0;
+        while (i < attempts && netFail < netMax && !pf.ok) {
+          const q = questionOf(k, text, i > 0 && pf.raw !== undefined && !pf.error.startsWith('連線') ? { raw: pf.raw.slice(0, 60) } : null); pf.tries++; report.calls++; const tmo = Math.round(timeoutMs * (1 + 0.6 * netFail)); const t0 = Date.now(); step('問「' + (k === 'purpose' ? '用途' : ASK[k].slice(0, 6)) + '」第 ' + pf.tries + ' 次' + (netFail ? '(連線重試,等最多 ' + Math.round(tmo / 1000) + ' 秒)' : '') + '…');
           try {
-            const raw = await withTimeout(o.ask(q.system, q.user, { field: k, strict: i > 0 }), timeoutMs); pf.raw = String(raw == null ? '' : raw).replace(/\s+/g, ' ').trim().slice(0, 80); pf.error = '';
+            const raw = await withTimeout(o.ask(q.system, q.user, { field: k, strict: i > 0 }), tmo); pf.raw = String(raw == null ? '' : raw).replace(/\s+/g, ' ').trim().slice(0, 80); pf.error = ''; i++;
             const v = k === 'purpose' ? parsePurpose(raw) : parseLetter(raw, k);
             if (v === null) { pf.error = pf.raw ? '讀不懂(' + pf.raw + ')' : '回了空白'; step('「' + k + '」' + pf.error); } else { ai[k] = v; pf.ok = true; pf.value = v; step('「' + k + '」AI 答:' + (v === '' ? '(無)' : v)); }
-          } catch (e) { pf.error = '連線' + String((e && e.message) || e); netFail++; step('「' + k + '」問 AI 失敗:' + pf.error); }
+          } catch (e) { netFail++; pf.error = '連線' + String((e && e.message) || e) + '(第 ' + netFail + ' 次連線失敗,耗時 ' + Math.round((Date.now() - t0) / 1000) + ' 秒)'; step('「' + k + '」問 AI 失敗:' + pf.error); if (netFail < netMax) await sleepFn(Math.min(8000, 1000 * Math.pow(2, netFail - 1))); }
         }
         if (pf.ok) { anyOk = true; failRun = 0; } else { report.aiMissing.push(k); failRun++; }
-        if (netFail >= attempts) stopWhy = '前一欄連線連續失敗:' + pf.error; else if (!anyOk && failRun >= 3) stopWhy = '前三欄都沒答對,這個模型看來不適合,停止再問';
+        if (netFail >= netMax) stopWhy = '前一欄連線連續失敗:' + pf.error; else if (!anyOk && failRun >= 3) stopWhy = '前三欄都沒答對,這個模型看來不適合,停止再問';
       }
       report.attempts = report.calls; report.usedAi = Object.keys(ai).length > learnedKeys.length || (learnedKeys.length > 0 && !todo.length);
       const firstBad = todo.map((k) => [k, report.perField[k]]).find((x) => x[1] && !x[1].ok);
@@ -189,5 +190,10 @@
     (entries || []).forEach((e) => { if (!e || !e.picks || !e.task) return; const b = grams(e.task); let inter = 0; a.forEach((x) => { if (b.has(x)) inter++; }); const sim = inter / (a.size + b.size - inter || 1); if (sim > bs) { bs = sim; best = e; } });
     return bs >= 0.7 ? best.picks : null;
   }
-  return { learnPicks, matchLearned, STYLE_KEYS, MOODS, SPEEDS, MODES, LEADS, BARS, SRC, decide, parseLetter, parsePurpose, stripThink, questionOf, toOptions, edit, describe, rulePurpose, ruleMood };
+  // 一個需求只出一組卡片:同一輪對話裡 AI 又呼叫一次作曲(常見是看到「這次沒有用 AI」的提示就換個速度重打),除非使用者明講要多首,否則不再產生新的一組
+  function repeatGuard(userText, doneCount) {
+    if (!doneCount) return ''; const t = String(userText || ''); const many = /(?:[2-9二兩三四五六七八九十幾多數]\s*(?:首|個版本|種版本|版|段|組))|多首|多個版本|各一首|不同版本|比較|分別/.test(t);
+    return many ? '' : '這一輪對話已經作好一首(卡片已在對話裡),使用者只要了一首;不要再呼叫 midi_compose。AI 沒回應是暫時的,程式已自己重試過,卡片上可按「換一首」或「改成…」調整,速度也能在卡片上改。';
+  }
+  return { repeatGuard, learnPicks, matchLearned, STYLE_KEYS, MOODS, SPEEDS, MODES, LEADS, BARS, SRC, decide, parseLetter, parsePurpose, stripThink, questionOf, toOptions, edit, describe, rulePurpose, ruleMood };
 });

@@ -59,6 +59,19 @@
     const n = res.layers.filter((l) => l.layer === 'model').length; res.layer = n === 0 ? 'tree' : n === res.layers.length ? 'model' : 'partial';
     if (n === 0) res.reason = '模型沒有任何聲部通過驗證,整首用作曲樹'; res.song = M.validate(song); return res;
   }
+  // 找已下載的模型:跟離線模型管理列表用同一個 FaAudioModels.status;沒找到時說明每個候選找了哪個鍵、看到幾片、缺哪幾片、多少位元組
+  async function findModel(ids, statusFn) {
+    const facts = [];
+    for (const id of ids) {
+      let st = null, err = '';
+      try { st = await statusFn(id); } catch (e) { err = String((e && e.message) || e); }
+      if (st && st.complete) return { id, status: st };
+      if (err) facts.push(id + ':讀取下載狀態失敗(' + err + ')');
+      else if (st) facts.push(id + ':找鍵 ' + (st.keyPrefix || '') + '0~' + (st.total - 1) + ',看到 ' + st.chunks + ' / ' + st.total + ' 片、' + st.have + ' / ' + st.bytes + ' 位元組' + (st.chunks && st.missing && st.missing.length ? ',缺第 ' + st.missing.map((i) => i + 1).join('、') + ' 片' : ''));
+    }
+    const part = facts.some((f) => /看到 [1-9]/.test(f));
+    return { id: null, reason: (part ? '模型只下載了一部分(' : '模型還沒下載(') + facts.join(';') + ')。到 Configure → 離線模型管理 → 音樂 → midigenai v5 ' + (part ? '續傳' : '下載') };
+  }
   const MANIFEST = { version: 'v5', vocab_size: 598, n_layers: 12, n_heads: 12, head_dim: 64, opset: 17, files: { gpu: { file: 'decoder-webgpu-q4.onnx', bytes: 73151835, sha256: '7c5de98ff7460bd88d07acc537c6e238f0a4afce29b8c9ad488eb97f99bdbfdf', quant: 'q4', cache: 'present, (1,H,P,D)' }, cpu: { file: 'decoder-wasm-int8.onnx', bytes: 114561179, sha256: '5ca00f42ba3900aeb6d98821d4e8b559a880c8d99d62dbdc0d1555a38c1eed65', quant: 'int8', cache: 'new-rows, time-major (1,P,H,D)' } } };
-  return { MANIFEST, unsupported, compose, checkVoice, voicesOf, MAX_BARS };
+  return { MANIFEST, findModel, unsupported, compose, checkVoice, voicesOf, MAX_BARS };
 });

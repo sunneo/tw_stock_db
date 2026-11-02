@@ -36,8 +36,8 @@ const perfect = byField(PERFECT);
   r = await P.decide(REQ, { ask: async () => { throw new Error('HTTP 429'); }, attempts: 2 });
   check('AI error: kept as a concrete fact in the report', /HTTP 429/.test(r.report.aiError) && r.report.notes[0].indexOf('HTTP 429') > 0, r.report);
   // 6. 逾時
-  const t0 = Date.now(); r = await P.decide(REQ, { ask: () => new Promise(() => {}), timeoutMs: 60, attempts: 2 });
-  check('timeout: gives up after the limit (twice) and falls back to the rules', Date.now() - t0 < 1500 && /逾時/.test(r.report.aiError) && !r.report.usedAi && r.fields.style === 'edm', [Date.now() - t0, r.report.aiError]);
+  const t0 = Date.now(); r = await P.decide(REQ, { ask: () => new Promise(() => {}), timeoutMs: 60, attempts: 2, sleep: async () => {} });
+  check('timeout: gives up after the limit (4 connection tries) and falls back to the rules', Date.now() - t0 < 1500 && /逾時/.test(r.report.aiError) && !r.report.usedAi && r.fields.style === 'edm', [Date.now() - t0, r.report.aiError]);
   // 7. 第一次失敗第二次成功(暫時性失敗自己重試)
   let n = 0; r = await P.decide(REQ, { ask: async (sys) => { n++; if (n === 1) throw new Error('HTTP 503'); return perfect(sys); }, attempts: 2 });
   check('a transient failure is retried once and the second answer is used', r.report.usedAi && r.report.perField.style.tries === 2 && r.sources.style === 'ai');
@@ -81,8 +81,8 @@ const perfect = byField(PERFECT);
     check('six cases / thinking first, strict retry succeeds: AI is used for every field', r.report.usedAi && ['style', 'mood', 'speed', 'mode', 'lead', 'bars'].every((k) => r.sources[k] === 'ai') && n === 12, n); }
   { r = await P.decide(REQ, { ask: async () => '', attempts: 2 });
     check('six cases / silent: the report says blank and rules are used', !r.report.usedAi && /空白/.test(r.report.aiError) && r.fields.style === 'edm' && r.sources.style === 'rule'); }
-  { const t1 = Date.now(); r = await P.decide(REQ, { ask: () => new Promise(() => {}), timeoutMs: 40, attempts: 2 });
-    check('six cases / timeout: stops after the first field gives up twice (not 7 x timeout)', Date.now() - t1 < 1000 && /逾時/.test(r.report.aiError) && r.report.calls === 2 && r.report.perField.mood.error.indexOf('沒有問') === 0, r.report.calls); }
+  { const t1 = Date.now(); r = await P.decide(REQ, { ask: () => new Promise(() => {}), timeoutMs: 40, attempts: 2, sleep: async () => {} });
+    check('six cases / timeout: stops after the first field uses up 4 connection tries (not 7 fields x tries)', Date.now() - t1 < 2000 && /逾時/.test(r.report.aiError) && /耗時/.test(r.report.aiError) && r.report.calls === 4 && r.report.perField.mood.error.indexOf('沒有問') === 0, r.report.calls); }
   { r = await P.decide(REQ, { ask: async (sys) => { const k = fieldOf(sys); return k === 'style' ? 'H' : k === 'mood' ? 'G' : k === 'speed' ? 'The user' : ''; } });
     check('six cases / half answered: answered fields are the AI\'s, the others fall back one by one with a note naming them', r.report.usedAi && r.sources.style === 'ai' && r.sources.mood === 'ai' && r.sources.bars === 'default' && r.sources.lead !== 'ai' && r.report.notes.some((n) => /AI 沒答對的欄位/.test(n) && /speed/.test(n)), r.report.notes); }
   { const asked = []; r = await P.decide('來一首爵士,90 bpm,12 小節,用小提琴,小調', { ask: async (sys) => { asked.push(fieldOf(sys)); return perfect(sys); } });
@@ -97,5 +97,12 @@ const perfect = byField(PERFECT);
     const r3 = await P.decide('建立科技感的音樂 用來描述 intel 產品', { learned: () => ({ style: 'ZZ', mood: 'G' }), ask: perfect });
     check('learned: invalid letters in a stored entry are ignored', r3.sources.mood === 'learned' && r3.sources.style === 'ai'); }
   check('every composed result passes the program\'s own checks (no warnings) for several seeds', [1, 2, 3, 4].every((sd) => C.compose(Object.assign({}, base.options, { seed: sd })).warnings.length === 0));
+  { // 暫時性連線失敗:前兩次逾時／503,第三次才好 → 仍用 AI,不退回範本;逾時值一次比一次長;讀不懂的次數不被連線失敗吃掉
+    let n = 0; const tmos = []; const slept = []; let q = 0;
+    r = await P.decide(REQ, { timeoutMs: 100, attempts: 2, sleep: async (ms) => { slept.push(ms); }, ask: (sys, user, op) => { n++; if (n === 1) return new Promise(() => {}); if (n === 2) return Promise.reject(new Error('API錯誤(503): Service temporarily overloaded')); return Promise.resolve('A'); } });
+    check('transient: timeout then 503 then ok on the same field -> AI still used', r.report.usedAi && r.report.perField.style.ok && r.report.perField.style.tries === 3 && slept.length === 2 && slept[1] > slept[0], [r.report.perField.style, slept]); }
+  { const u = '創作midi 音樂，以搖滾卡農跟final fantasy的風格演奏, 3分鐘';
+    check('repeat guard: first compose in a turn is allowed', P.repeatGuard(u, 0) === ''); check('repeat guard: second compose for the same one-song request is refused with a reason', /不要再呼叫/.test(P.repeatGuard(u, 1)));
+    check('repeat guard: user asking for several versions may compose again', P.repeatGuard('幫我作三首不同風格的曲子', 1) === '' && P.repeatGuard('做兩個版本比較', 2) === ''); }
   console.log(bad.length ? 'FAIL\n' + bad.join('\n') : 'ok'); console.log(ok + ' passed, ' + bad.length + ' failed'); process.exit(bad.length ? 1 : 0);
 })();

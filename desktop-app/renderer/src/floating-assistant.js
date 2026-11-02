@@ -33929,23 +33929,24 @@ const holder = {};
     const learnedKeys = []; { let lp = null; try { lp = typeof o.learned === 'function' ? o.learned(text) : null; } catch (_) { lp = null; } if (lp) FIELD_ORDER.forEach((k) => { const v = lp[k]; if (v && optionsOf(k).some((x) => x[0] === v)) { ai[k] = v; learnedKeys.push(k); } }); }
     report.learned = learnedKeys.slice();
     if (typeof o.ask === 'function') {
-      const attempts = o.attempts || 2, timeoutMs = o.timeoutMs || 20000;
+      const attempts = o.attempts || 2, timeoutMs = o.timeoutMs || 20000, netMax = o.netAttempts || 4, sleepFn = o.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
       const skip = {}; if (explicit.style || userStyleWord) skip.style = '你說的'; if (explicit.tempo || base.tempo) skip.speed = '你說的'; if (ruleMode(text)) skip.mode = '你說的'; if (ruleLead(text)) skip.lead = '你說的'; if (explicit.bars || base.bars) skip.bars = '你說的';
       learnedKeys.forEach((k) => { skip[k] = '學到的'; }); const todo = FIELD_ORDER.filter((k) => !skip[k]).concat(rulePurpose(text) ? [] : ['purpose']); let stopWhy = '', failRun = 0, anyOk = false;
       for (const k of todo) {
         const pf = report.perField[k] = { ok: false, tries: 0, raw: '', error: '' };
         if (stopWhy) { pf.error = '沒有問(' + stopWhy + ')'; report.aiMissing.push(k); continue; }
-        let netFail = 0;
-        for (let i = 0; i < attempts && !pf.ok; i++) {
-          const q = questionOf(k, text, i > 0 && pf.raw !== undefined && !pf.error.startsWith('連線') ? { raw: pf.raw.slice(0, 60) } : null); pf.tries = i + 1; report.calls++; step('問「' + (k === 'purpose' ? '用途' : ASK[k].slice(0, 6)) + '」第 ' + (i + 1) + ' 次…');
+        // 連線類失敗(逾時、5xx、過載)是暫時的:不算「讀不懂」的次數,另外自己重試到底(逾時一次比一次長、中間退避),全用完才算這欄連線失敗
+        let netFail = 0, i = 0;
+        while (i < attempts && netFail < netMax && !pf.ok) {
+          const q = questionOf(k, text, i > 0 && pf.raw !== undefined && !pf.error.startsWith('連線') ? { raw: pf.raw.slice(0, 60) } : null); pf.tries++; report.calls++; const tmo = Math.round(timeoutMs * (1 + 0.6 * netFail)); const t0 = Date.now(); step('問「' + (k === 'purpose' ? '用途' : ASK[k].slice(0, 6)) + '」第 ' + pf.tries + ' 次' + (netFail ? '(連線重試,等最多 ' + Math.round(tmo / 1000) + ' 秒)' : '') + '…');
           try {
-            const raw = await withTimeout(o.ask(q.system, q.user, { field: k, strict: i > 0 }), timeoutMs); pf.raw = String(raw == null ? '' : raw).replace(/\s+/g, ' ').trim().slice(0, 80); pf.error = '';
+            const raw = await withTimeout(o.ask(q.system, q.user, { field: k, strict: i > 0 }), tmo); pf.raw = String(raw == null ? '' : raw).replace(/\s+/g, ' ').trim().slice(0, 80); pf.error = ''; i++;
             const v = k === 'purpose' ? parsePurpose(raw) : parseLetter(raw, k);
             if (v === null) { pf.error = pf.raw ? '讀不懂(' + pf.raw + ')' : '回了空白'; step('「' + k + '」' + pf.error); } else { ai[k] = v; pf.ok = true; pf.value = v; step('「' + k + '」AI 答:' + (v === '' ? '(無)' : v)); }
-          } catch (e) { pf.error = '連線' + String((e && e.message) || e); netFail++; step('「' + k + '」問 AI 失敗:' + pf.error); }
+          } catch (e) { netFail++; pf.error = '連線' + String((e && e.message) || e) + '(第 ' + netFail + ' 次連線失敗,耗時 ' + Math.round((Date.now() - t0) / 1000) + ' 秒)'; step('「' + k + '」問 AI 失敗:' + pf.error); if (netFail < netMax) await sleepFn(Math.min(8000, 1000 * Math.pow(2, netFail - 1))); }
         }
         if (pf.ok) { anyOk = true; failRun = 0; } else { report.aiMissing.push(k); failRun++; }
-        if (netFail >= attempts) stopWhy = '前一欄連線連續失敗:' + pf.error; else if (!anyOk && failRun >= 3) stopWhy = '前三欄都沒答對,這個模型看來不適合,停止再問';
+        if (netFail >= netMax) stopWhy = '前一欄連線連續失敗:' + pf.error; else if (!anyOk && failRun >= 3) stopWhy = '前三欄都沒答對,這個模型看來不適合,停止再問';
       }
       report.attempts = report.calls; report.usedAi = Object.keys(ai).length > learnedKeys.length || (learnedKeys.length > 0 && !todo.length);
       const firstBad = todo.map((k) => [k, report.perField[k]]).find((x) => x[1] && !x[1].ok);
@@ -34036,7 +34037,12 @@ const holder = {};
     (entries || []).forEach((e) => { if (!e || !e.picks || !e.task) return; const b = grams(e.task); let inter = 0; a.forEach((x) => { if (b.has(x)) inter++; }); const sim = inter / (a.size + b.size - inter || 1); if (sim > bs) { bs = sim; best = e; } });
     return bs >= 0.7 ? best.picks : null;
   }
-  return { learnPicks, matchLearned, STYLE_KEYS, MOODS, SPEEDS, MODES, LEADS, BARS, SRC, decide, parseLetter, parsePurpose, stripThink, questionOf, toOptions, edit, describe, rulePurpose, ruleMood };
+  // 一個需求只出一組卡片:同一輪對話裡 AI 又呼叫一次作曲(常見是看到「這次沒有用 AI」的提示就換個速度重打),除非使用者明講要多首,否則不再產生新的一組
+  function repeatGuard(userText, doneCount) {
+    if (!doneCount) return ''; const t = String(userText || ''); const many = /(?:[2-9二兩三四五六七八九十幾多數]\s*(?:首|個版本|種版本|版|段|組))|多首|多個版本|各一首|不同版本|比較|分別/.test(t);
+    return many ? '' : '這一輪對話已經作好一首(卡片已在對話裡),使用者只要了一首;不要再呼叫 midi_compose。AI 沒回應是暫時的,程式已自己重試過,卡片上可按「換一首」或「改成…」調整,速度也能在卡片上改。';
+  }
+  return { repeatGuard, learnPicks, matchLearned, STYLE_KEYS, MOODS, SPEEDS, MODES, LEADS, BARS, SRC, decide, parseLetter, parsePurpose, stripThink, questionOf, toOptions, edit, describe, rulePurpose, ruleMood };
 });
 
 }).call(null, undefined, holder);
@@ -34255,17 +34261,17 @@ const holder = {};
       if (o.learnedNodes && o.learnedNodes[next]) { const lr = validateNode(t, next, o.learnedNodes[next]); if (!lr.problem) { nd.value = lr.value; nd.source = 'learned'; continue; } }
       if (typeof o.ask !== 'function') { nd.error = o.noAiReason || '沒有可用的 AI(離線或沒有設定)'; continue; }
       if (stopWhy) { nd.error = '沒有問(' + stopWhy + ')'; continue; }
-      let netFail = 0;
-      for (let i = 0; i < attempts && nd.source !== 'ai' && nd.source !== 'fixed'; i++) {
-        const q = questionOf(t, next, i > 0 && !nd.error.startsWith('連線') ? { raw: nd.raw.slice(0, 60), why: nd.error } : null); nd.tries = i + 1; calls++; step('問「' + LABEL(next) + '」第 ' + (i + 1) + ' 次…');
+      let netFail = 0, i = 0; const netMax = o.netAttempts || 4, sleepFn = o.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
+      while (i < attempts && netFail < netMax && nd.source !== 'ai' && nd.source !== 'fixed') {
+        const q = questionOf(t, next, i > 0 && !nd.error.startsWith('連線') ? { raw: nd.raw.slice(0, 60), why: nd.error } : null); nd.tries++; calls++; const tmo = Math.round(timeoutMs * (1 + 0.6 * netFail)), t0 = Date.now(); step('問「' + LABEL(next) + '」第 ' + nd.tries + ' 次' + (netFail ? '(連線重試,等最多 ' + Math.round(tmo / 1000) + ' 秒)' : '') + '…');
         try {
-          const raw = await withTimeout(o.ask(q.system, q.user, { node: next, strict: i > 0 }), timeoutMs); nd.raw = String(raw == null ? '' : raw).replace(/\s+/g, ' ').trim().slice(0, 80); nd.error = '';
+          const raw = await withTimeout(o.ask(q.system, q.user, { node: next, strict: i > 0 }), tmo); nd.raw = String(raw == null ? '' : raw).replace(/\s+/g, ' ').trim().slice(0, 80); nd.error = ''; i++;
           let r; if (next === 'motif' || next.indexOf('harmony.') === 0) r = validateNode(t, next, stripThink(raw)); else { const opts = letterOpts(t, next); const c = parseLetterIn(raw, opts.map((x) => x[0]).join(''), opts); r = c ? validateNode(t, next, c) : { problem: nd.raw ? '讀不懂' : '回了空白' }; }
           if (r.problem) { nd.error = r.problem + (nd.raw ? '(' + nd.raw + ')' : ''); step('「' + LABEL(next) + '」' + nd.error); } else { nd.value = r.value; nd.source = r.fixed ? 'fixed' : 'ai'; nd.error = ''; step('「' + LABEL(next) + '」AI 答:' + String(r.value).slice(0, 40) + (r.fixed ? '(程式修正了時值)' : '')); }
-        } catch (e) { nd.error = '連線' + String((e && e.message) || e); netFail++; step('「' + LABEL(next) + '」問 AI 失敗:' + nd.error); }
+        } catch (e) { netFail++; nd.error = '連線' + String((e && e.message) || e) + '(第 ' + netFail + ' 次連線失敗,耗時 ' + Math.round((Date.now() - t0) / 1000) + ' 秒)'; step('「' + LABEL(next) + '」問 AI 失敗:' + nd.error); if (netFail < netMax) await sleepFn(Math.min(8000, 1000 * Math.pow(2, netFail - 1))); }
       }
       if (nd.source === 'ai' || nd.source === 'fixed') { anyOk = true; failRun = 0; } else failRun++;
-      if (netFail >= attempts) stopWhy = '前一個節點連線連續失敗:' + nd.error; else if (!anyOk && failRun >= 3) stopWhy = '前三個節點都沒答對,這個模型看來不適合,其餘用範本預設';
+      if (netFail >= netMax) stopWhy = '前一個節點連線連續失敗:' + nd.error; else if (!anyOk && failRun >= 3) stopWhy = '前三個節點都沒答對,這個模型看來不適合,其餘用範本預設';
     }
     t.calls = (t.calls || 0) + calls; return t;
   }
@@ -34455,8 +34461,21 @@ const holder = {};
     const n = res.layers.filter((l) => l.layer === 'model').length; res.layer = n === 0 ? 'tree' : n === res.layers.length ? 'model' : 'partial';
     if (n === 0) res.reason = '模型沒有任何聲部通過驗證,整首用作曲樹'; res.song = M.validate(song); return res;
   }
+  // 找已下載的模型:跟離線模型管理列表用同一個 FaAudioModels.status;沒找到時說明每個候選找了哪個鍵、看到幾片、缺哪幾片、多少位元組
+  async function findModel(ids, statusFn) {
+    const facts = [];
+    for (const id of ids) {
+      let st = null, err = '';
+      try { st = await statusFn(id); } catch (e) { err = String((e && e.message) || e); }
+      if (st && st.complete) return { id, status: st };
+      if (err) facts.push(id + ':讀取下載狀態失敗(' + err + ')');
+      else if (st) facts.push(id + ':找鍵 ' + (st.keyPrefix || '') + '0~' + (st.total - 1) + ',看到 ' + st.chunks + ' / ' + st.total + ' 片、' + st.have + ' / ' + st.bytes + ' 位元組' + (st.chunks && st.missing && st.missing.length ? ',缺第 ' + st.missing.map((i) => i + 1).join('、') + ' 片' : ''));
+    }
+    const part = facts.some((f) => /看到 [1-9]/.test(f));
+    return { id: null, reason: (part ? '模型只下載了一部分(' : '模型還沒下載(') + facts.join(';') + ')。到 Configure → 離線模型管理 → 音樂 → midigenai v5 ' + (part ? '續傳' : '下載') };
+  }
   const MANIFEST = { version: 'v5', vocab_size: 598, n_layers: 12, n_heads: 12, head_dim: 64, opset: 17, files: { gpu: { file: 'decoder-webgpu-q4.onnx', bytes: 73151835, sha256: '7c5de98ff7460bd88d07acc537c6e238f0a4afce29b8c9ad488eb97f99bdbfdf', quant: 'q4', cache: 'present, (1,H,P,D)' }, cpu: { file: 'decoder-wasm-int8.onnx', bytes: 114561179, sha256: '5ca00f42ba3900aeb6d98821d4e8b559a880c8d99d62dbdc0d1555a38c1eed65', quant: 'int8', cache: 'new-rows, time-major (1,P,H,D)' } } };
-  return { MANIFEST, unsupported, compose, checkVoice, voicesOf, MAX_BARS };
+  return { MANIFEST, findModel, unsupported, compose, checkVoice, voicesOf, MAX_BARS };
 });
 
 }).call(null, undefined, holder);
@@ -34773,10 +34792,10 @@ const holder = {};
   }
   // 離線模型管理頁用:這個模型在本機存了幾片、共多少位元組、是不是整個都在(每片大小要對才算);刪除就是把每片拿掉
   async function status(id, store) {
-    const m = REGISTRY[id]; if (!m) throw new Error('沒有這個模型:' + id); const n = Math.ceil(m.bytes / CHUNK); let have = 0, chunks = 0;
+    const m = REGISTRY[id]; if (!m) throw new Error('沒有這個模型:' + id); const n = Math.ceil(m.bytes / CHUNK); let have = 0, chunks = 0; const missing = [];
     for (let i = 0; i < n; i++) { const key = 'model:' + id + ':' + m.sha256.slice(0, 8) + ':' + i, want = Math.min(m.bytes, (i + 1) * CHUNK) - i * CHUNK; // 有 has() 就只問在不在(不把 8 MB 一片整個讀出來);片的大小與整個檢查碼在真正用到時核對
-      if (store.has ? await store.has(key) : (await store.get(key) || { length: -1 }).length === want) { have += want; chunks++; } }
-    return { id, bytes: m.bytes, have, chunks, total: n, complete: chunks === n };
+      if (store.has ? await store.has(key) : (await store.get(key) || { length: -1 }).length === want) { have += want; chunks++; } else missing.push(i); }
+    return { id, bytes: m.bytes, have, chunks, total: n, missing, keyPrefix: 'model:' + id + ':' + m.sha256.slice(0, 8) + ':', complete: chunks === n };
   }
   async function remove(id, store) { const m = REGISTRY[id]; if (!m) throw new Error('沒有這個模型:' + id); const n = Math.ceil(m.bytes / CHUNK); for (let i = 0; i < n; i++) await store.del('model:' + id + ':' + m.sha256.slice(0, 8) + ':' + i); return n; }
   // 瀏覽器端的 IndexedDB 儲存(資料庫 fa-a2m-models)
@@ -60543,9 +60562,11 @@ ${fnData.code}
             async function (rawArgs) {
                 let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 try {
+                    const turn = this._currentTurnUserText || ''; const rec = this._midiComposeTurn && this._midiComposeTurn.turn === turn ? this._midiComposeTurn : (this._midiComposeTurn = { turn, done: [] });
+                    const dup = turn ? FaComposePlan.repeatGuard(turn, rec.done.length) : ''; if (dup) return JSON.stringify({ ok: true, duplicate: true, song_id: rec.done[rec.done.length - 1], note: dup });
                     const ex = {}; if (a.style) ex.style = a.style; if (a.key) ex.key = a.key; if (a.tempo) ex.tempo = a.tempo; if (a.bars) ex.bars = a.bars;
-                    const out = await this._midiComposeFlow(a.description || '', ex, { seed: a.seed ? Number(a.seed) : 0 });
-                    return JSON.stringify({ ok: true, song_id: out.id, template: out.desc.template, decided: out.desc.rows.map((x) => ({ field: x.name, value: x.value, by: x.sourceLabel })), used_ai: out.desc.usedAi, notes: out.desc.notes, seed: out.c.seed, warnings: out.c.warnings, card: '編輯器卡片與「怎麼決定的」卡片已放進對話(可試聽、改、換一首、改成…);回覆時照實說哪些欄位是 AI 選的、哪些是程式預設,notes 的話要轉述,不要自己寫 Python／mido 腳本或把 .mid 寫到資料夾' });
+                    const out = await this._midiComposeFlow(a.description || '', ex, { seed: a.seed ? Number(a.seed) : 0 }); rec.done.push(out.id);
+                    return JSON.stringify({ ok: true, song_id: out.id, template: out.desc.template, decided: out.desc.rows.map((x) => ({ field: x.name, value: x.value, by: x.sourceLabel })), used_ai: out.desc.usedAi, notes: out.desc.notes, seed: out.c.seed, warnings: out.c.warnings, card: '編輯器卡片與「怎麼決定的」卡片已放進對話(可試聽、改、換一首、改成…);回覆時照實說哪些欄位是 AI 選的、哪些是程式預設,notes 的話要轉述(「這次沒有用 AI」是暫時連線問題,不是要你換參數重打一次的理由,一個需求只呼叫一次),不要自己寫 Python／mido 腳本或把 .mid 寫到資料夾' });
                 } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
             },
             { type: 'object', properties: { description: { type: 'string', description: '使用者的中文描述,例如「輕快的爵士,D 調,16 小節」' }, style: { type: 'string', enum: ['pop', 'rock', 'jazz', 'blues', 'waltz', 'folk', 'lofi', 'edm', 'classical'] }, key: { type: 'string', description: 'C、D、Eb、F#… 大調或(小調風格)的主音' }, tempo: { type: 'number' }, bars: { type: 'number', description: '4 到 64,16 以上有前奏／主歌／副歌結構' }, progression: { type: 'number', description: '風格內的和弦進行編號,從 0 起算' }, seed: { type: 'number' }, title: { type: 'string' } }, additionalProperties: false }
@@ -74577,23 +74598,20 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     }
     // midigenai 作曲模型(首選):用離線模型管理下載好的 ONNX 檔,載入失敗或沒下載就回 { engine:null, reason },由橋退回作曲樹
     async _midigenEngine() {
-        if (this._midigenP) return this._midigenP;
+        if (this._midigenOk) return this._midigenOk; // 只記成功:沒下載的結果不記,使用者剛下載完下一次就看得到
         const msg = (e) => String((e && e.message) || e);
-        this._midigenP = (async () => {
-            try {
-                const store = FaAudioModels.idbStore(); const want = (typeof navigator !== 'undefined' && navigator.gpu) ? ['midigenai-v5-gpu', 'midigenai-v5-cpu'] : ['midigenai-v5-cpu']; let id = null;
-                for (const w of want) { let st = null; try { st = await FaAudioModels.status(w, store); } catch (_) { st = null; } if (st && st.complete) { id = w; break; } }
-                if (!id) return { engine: null, reason: '模型還沒下載(Configure → 離線模型管理 → 音樂 → midigenai v5)' };
-                const base = new URL('src/music/midigenai/', document.baseURI).href; let mod, web;
-                try { mod = await import(base + 'tasks.mjs'); web = await import(base + 'midigen-web.mjs'); } catch (e) { return { engine: null, reason: '模型的程式檔載入失敗(' + msg(e) + ');網頁版目前沒有帶這些檔' }; }
-                const bytes = await FaAudioModels.fetchModel(id, { fetchFn: (u, h) => fetch(u, { headers: h }), store, sha256: FaAudioModels.webSha256, sleep: (ms) => new Promise((r) => setTimeout(r, ms)) });
-                const ort = await FaAudioRuntime.loadOrt(); const eng = id.endsWith('gpu') ? 'gpu' : 'cpu';
-                const model = await web.loadModel({ ort, engine: eng, base: 'https://midigenai.local/', manifest: FaMidigenBridge.MANIFEST, cache: false, fetchImpl: async () => new Response(bytes) });
-                const mg = await mod.loadMidigen({ model });
-                return { engine: { accompany: (b, op) => mg.accompany(b, op) }, id, eng };
-            } catch (e) { this._midigenP = null; return { engine: null, reason: '模型載入失敗:' + msg(e) }; }
-        })();
-        return this._midigenP;
+        try {
+            const store = FaAudioModels.idbStore(); const want = (typeof navigator !== 'undefined' && navigator.gpu) ? ['midigenai-v5-gpu', 'midigenai-v5-cpu'] : ['midigenai-v5-cpu'];
+            const found = await FaMidigenBridge.findModel(want, (w) => FaAudioModels.status(w, store)); const id = found.id;
+            if (!id) return { engine: null, reason: found.reason };
+            const base = new URL('src/music/midigenai/', document.baseURI).href; let mod, web;
+            try { mod = await import(base + 'tasks.mjs'); web = await import(base + 'midigen-web.mjs'); } catch (e) { return { engine: null, reason: '模型的程式檔載入失敗(' + msg(e) + ');網頁版目前沒有帶這些檔' }; }
+            const bytes = await FaAudioModels.fetchModel(id, { fetchFn: (u, h) => fetch(u, { headers: h }), store, sha256: FaAudioModels.webSha256, sleep: (ms) => new Promise((r) => setTimeout(r, ms)) });
+            const ort = await FaAudioRuntime.loadOrt(); const eng = id.endsWith('gpu') ? 'gpu' : 'cpu';
+            const model = await web.loadModel({ ort, engine: eng, base: 'https://midigenai.local/', manifest: FaMidigenBridge.MANIFEST, cache: false, fetchImpl: async () => new Response(bytes) });
+            const mg = await mod.loadMidigen({ model });
+            return (this._midigenOk = { engine: { accompany: (b, op) => mg.accompany(b, op) }, id, eng });
+        } catch (e) { return { engine: null, reason: '模型載入失敗:' + msg(e) }; }
     }
     async _midigenCompose(res, sd, say) {
         if (typeof FaMidigenBridge === 'undefined' || typeof FaComposeTree === 'undefined') return null;
