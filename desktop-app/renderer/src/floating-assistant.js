@@ -74681,11 +74681,23 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             // 程式檔放在 renderer/vendor/midigenai/（安裝包不含 renderer/src，熱更新清單含 renderer/vendor 底下全部檔案；放在 src 底下的話桌面版根本沒有這些檔）
             const base = new URL('vendor/midigenai/', document.baseURI).href; let mod, web;
             try { mod = await import(base + 'tasks.mjs'); web = await import(base + 'midigen-web.mjs'); } catch (e) { return { engine: null, reason: '模型的程式檔載入失敗(' + msg(e) + ');桌面版這些檔在 renderer/vendor/midigenai/，網頁版目前沒有帶這些檔' }; }
-            const bytes = await FaAudioModels.fetchModel(id, { fetchFn: (u, h) => fetch(u, { headers: h }), store, sha256: FaAudioModels.webSha256, sleep: (ms) => new Promise((r) => setTimeout(r, ms)) });
-            const ort = await FaAudioRuntime.loadOrt(); const eng = id.endsWith('gpu') ? 'gpu' : 'cpu';
-            const model = await web.loadModel({ ort, engine: eng, base: 'https://midigenai.local/', manifest: FaMidigenBridge.MANIFEST, cache: false, fetchImpl: async () => new Response(bytes) });
-            const mg = await mod.loadMidigen({ model });
-            return (this._midigenOk = { engine: { accompany: (b, op) => mg.accompany(b, op) }, id, eng });
+            // 載入一個模型。WebGPU 版要用 preferredOutputLocation 把快取留在顯示卡上，onnxruntime-web 在 wasm 代理執行緒（env.wasm.proxy）開著時不支援這個選項
+            // （實測訊息：session option "preferredOutputLocation" is not supported for proxy），所以 GPU 版載入前把代理關掉；CPU 版維持代理（loadOrt 預設）
+            const load = async (mid) => {
+                const bytes = await FaAudioModels.fetchModel(mid, { fetchFn: (u, h) => fetch(u, { headers: h }), store, sha256: FaAudioModels.webSha256, sleep: (ms) => new Promise((r) => setTimeout(r, ms)) });
+                const eng = mid.endsWith('gpu') ? 'gpu' : 'cpu', ort = await FaAudioRuntime.loadOrt({ proxy: eng !== 'gpu' });
+                const model = await web.loadModel({ ort, engine: eng, base: 'https://midigenai.local/', manifest: FaMidigenBridge.MANIFEST, cache: false, fetchImpl: async () => new Response(bytes) });
+                const mg = await mod.loadMidigen({ model });
+                return (this._midigenOk = { engine: { accompany: (b, op) => mg.accompany(b, op) }, id: mid, eng });
+            };
+            try { return await load(id); }
+            catch (e1) {
+                // GPU 版載入失敗：已下載 CPU 版就改用 CPU 版（較慢但跑得動），兩個的失敗原因都寫出來
+                if (!id.endsWith('gpu')) throw e1;
+                const cpu = await FaMidigenBridge.findModel(['midigenai-v5-cpu'], (w) => FaAudioModels.status(w, store));
+                if (!cpu.id) return { engine: null, reason: '模型載入失敗:GPU 版 ' + id + '：' + msg(e1) + '；CPU 版也不能用：' + cpu.reason };
+                try { return await load(cpu.id); } catch (e2) { return { engine: null, reason: '模型載入失敗:GPU 版 ' + id + '：' + msg(e1) + '；改用 CPU 版 ' + cpu.id + ' 也失敗：' + msg(e2) }; }
+            }
         } catch (e) { return { engine: null, reason: '模型載入失敗:' + msg(e) }; }
     }
     async _midigenCompose(res, sd, say) {
