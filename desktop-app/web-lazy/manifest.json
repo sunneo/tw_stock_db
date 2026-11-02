@@ -959,8 +959,8 @@
    "names": [
     "FaMidigenBridge"
    ],
-   "size": 5576,
-   "md5": "e5e954f240a3613ae85f1fe833759e05"
+   "size": 7518,
+   "md5": "2bde3f453564fe817aeef769c67bdaf9"
   },
   "musica2m": {
    "file": "chunks/musica2m.js",
@@ -1092,7 +1092,7 @@
   }
  },
  "core": {
-  "size": 5222260,
-  "md5": "1b62f762b8d3fc13985bcb515e9a905a"
+  "size": 5227382,
+  "md5": "b41ca2d23fde43416108bc2465eca7a5"
  }
 }
