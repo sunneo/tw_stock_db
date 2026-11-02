@@ -74602,7 +74602,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         let model = ''; try { model = (this._getApiConfig() || {}).apiModel || ''; } catch (_) { /* */ }
         const prog = this._createProgressWidget('🎼 作曲'); const say = (pct, s2) => { try { prog.log(s2); prog.update({ pct, status: s2 }); } catch (_) { /* */ } };
         try {
-            const pre = await this._midigenProbe(); say(3, '【模型預檢】' + (pre.ok ? 'midigenai 已下載、程式檔載得進來,作曲最後會請模型補聲部' : '這次不會用 midigenai:' + pre.reason + '(仍會用作曲樹作曲)'));
+            const pre = await this._midigenProbe(); say(3, '【模型預檢】' + (pre.ok ? 'midigenai 程式檔載得進來' + (pre.note ? '(' + pre.note + ')' : ',作曲最後會請模型補聲部') : '這次不會用 midigenai:' + pre.reason + '(仍會用作曲樹作曲)'));
             say(5, '【理解需求】' + (offline ? '離線模式,用範本規則' : '請 AI 理解你的需求' + (model ? '(模型:' + model + ')' : '')) + ':' + String(text).slice(0, 60));
             const res = await FaComposePlan.decide(text, { ask, explicit: explicit || {}, noAiReason: offline ? '離線模式' : '', timeoutMs: 25000, attempts: 2, learned: (t) => this._composeLearnedFor(t), onStep: (m) => say(25, '【理解需求】' + m) });
             say(60, '【核對】' + (res.report.usedAi ? '程式逐欄核對 AI 的答案,沒答對的欄位用預設' : '這次沒有用 AI,用的是範本規則(' + (res.report.aiError || '') + ')') + (model && !res.report.usedAi && !offline ? ';模型:' + model : ''));
@@ -74660,44 +74660,54 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         return this._midiComposeFinish(res, sd1);
     }
     // midigenai 作曲模型(首選):用離線模型管理下載好的 ONNX 檔,載入失敗或沒下載就回 { engine:null, reason },由橋退回作曲樹
-    // 便宜的預檢(不載入模型):下載狀態(同離線模型管理的判斷)+ 程式檔 import 得進來;結果只在成功時記住
+    // ---- midigenai:對使用者是一個模型;裝置(WebGPU／CPU)跟其他離線模型一樣依「運算裝置」偏好與 GPU 偵測決定(FaVlm.resolveDevice),失敗自動降級,已驗證的裝置與失敗原因記在 localStorage ----
+    _midigenRec() { try { return JSON.parse(localStorage.getItem('fa_midigen_device') || '{}') || {}; } catch (_) { return {}; } }
+    _midigenRecSave(r) { try { localStorage.setItem('fa_midigen_device', JSON.stringify(r)); } catch (_) { /* 存不了就只是下次重測 */ } }
+    async _midigenDevices() {
+        const gpu = await this._omGpuInfo(); const stub = { id: 'midigenai-v5' }, pref = this._omDevicePrefOf(stub);
+        const dev = FaVlm.resolveDevice(stub, pref, gpu.available, gpu.f16);
+        return { order: dev.order, reason: dev.reason, pref, gpu, envKey: [FaAudioRuntime.ORT_VERSION, gpu.available ? (gpu.name || 'gpu') : 'nogpu', pref].join('|') };
+    }
+    async _midigenFiles() { // 兩個檔的下載狀態(同離線模型管理列表用的 FaAudioModels.status)
+        const store = FaAudioModels.idbStore(); const out = {}; for (const d of ['webgpu', 'wasm']) { try { out[d] = await FaAudioModels.status(FaMidigenBridge.DEV_FILE[d], store); } catch (_) { out[d] = null; } } return out;
+    }
+    // 便宜的預檢(不載入模型):程式檔 import 得進來;還沒下載不算失敗(作曲時依靜默下載設定下載或先問)
     async _midigenProbe() {
         if (this._midigenOk) return { ok: true };
         try {
-            const store = FaAudioModels.idbStore(); const want = (typeof navigator !== 'undefined' && navigator.gpu) ? ['midigenai-v5-gpu', 'midigenai-v5-cpu'] : ['midigenai-v5-cpu'];
-            const found = await FaMidigenBridge.findModel(want, (w) => FaAudioModels.status(w, store)); if (!found.id) return { ok: false, reason: found.reason };
             const base = new URL('vendor/midigenai/', document.baseURI).href;
             try { await import(base + 'tasks.mjs'); await import(base + 'midigen-web.mjs'); } catch (e) { return { ok: false, reason: '模型的程式檔載入失敗(' + String((e && e.message) || e) + ')' }; }
-            return { ok: true, id: found.id };
+            const f = await this._midigenFiles(); const have = f.webgpu && f.webgpu.complete || f.wasm && f.wasm.complete; return { ok: true, note: have ? '' : '模型還沒下載,作曲時會依「靜默下載」設定下載或先問你' };
         } catch (e) { return { ok: false, reason: '預檢出錯:' + String((e && e.message) || e) }; }
     }
-    async _midigenEngine() {
-        if (this._midigenOk) return this._midigenOk; // 只記成功:沒下載的結果不記,使用者剛下載完下一次就看得到
+    async _midigenEngine(opt) {
+        opt = opt || {}; if (this._midigenOk && !opt.force) return this._midigenOk; // 只記成功
         const msg = (e) => String((e && e.message) || e);
         try {
-            const store = FaAudioModels.idbStore(); const want = (typeof navigator !== 'undefined' && navigator.gpu) ? ['midigenai-v5-gpu', 'midigenai-v5-cpu'] : ['midigenai-v5-cpu'];
-            const found = await FaMidigenBridge.findModel(want, (w) => FaAudioModels.status(w, store)); const id = found.id;
-            if (!id) return { engine: null, reason: found.reason };
-            // 程式檔放在 renderer/vendor/midigenai/（安裝包不含 renderer/src，熱更新清單含 renderer/vendor 底下全部檔案；放在 src 底下的話桌面版根本沒有這些檔）
             const base = new URL('vendor/midigenai/', document.baseURI).href; let mod, web;
             try { mod = await import(base + 'tasks.mjs'); web = await import(base + 'midigen-web.mjs'); } catch (e) { return { engine: null, reason: '模型的程式檔載入失敗(' + msg(e) + ');桌面版這些檔在 renderer/vendor/midigenai/，網頁版目前沒有帶這些檔' }; }
-            // 載入一個模型。WebGPU 版要用 preferredOutputLocation 把快取留在顯示卡上，onnxruntime-web 在 wasm 代理執行緒（env.wasm.proxy）開著時不支援這個選項
-            // （實測訊息：session option "preferredOutputLocation" is not supported for proxy），所以 GPU 版載入前把代理關掉；CPU 版維持代理（loadOrt 預設）
-            const load = async (mid) => {
-                const bytes = await FaAudioModels.fetchModel(mid, { fetchFn: (u, h) => fetch(u, { headers: h }), store, sha256: FaAudioModels.webSha256, sleep: (ms) => new Promise((r) => setTimeout(r, ms)) });
-                const eng = mid.endsWith('gpu') ? 'gpu' : 'cpu', ort = await FaAudioRuntime.loadOrt({ proxy: eng !== 'gpu' });
-                const model = await web.loadModel({ ort, engine: eng, base: 'https://midigenai.local/', manifest: FaMidigenBridge.MANIFEST, cache: false, fetchImpl: async () => new Response(bytes) });
-                const mg = await mod.loadMidigen({ model });
-                return (this._midigenOk = { engine: { accompany: (b, op) => mg.accompany(b, op) }, id: mid, eng });
-            };
-            try { return await load(id); }
-            catch (e1) {
-                // GPU 版載入失敗：已下載 CPU 版就改用 CPU 版（較慢但跑得動），兩個的失敗原因都寫出來
-                if (!id.endsWith('gpu')) throw e1;
-                const cpu = await FaMidigenBridge.findModel(['midigenai-v5-cpu'], (w) => FaAudioModels.status(w, store));
-                if (!cpu.id) return { engine: null, reason: '模型載入失敗:GPU 版 ' + id + '：' + msg(e1) + '；CPU 版也不能用：' + cpu.reason };
-                try { return await load(cpu.id); } catch (e2) { return { engine: null, reason: '模型載入失敗:GPU 版 ' + id + '：' + msg(e1) + '；改用 CPU 版 ' + cpu.id + ' 也失敗：' + msg(e2) }; }
-            }
+            const dv = await this._midigenDevices(); if (!dv.order.length) return { engine: null, reason: dv.reason };
+            const store = FaAudioModels.idbStore(), files = await this._midigenFiles(); const rec = this._midigenRec(); const bytesOf = {};
+            const r = await FaMidigenBridge.openSession({
+                order: dv.order, envKey: dv.envKey, record: rec, now: () => Date.now(),
+                has: async (d) => !!(files[d] && files[d].complete),
+                ensure: async (d) => {
+                    const id = FaMidigenBridge.DEV_FILE[d], m = FaAudioModels.REGISTRY[id]; const st = await FaAudioModels.status(id, store);
+                    if (!st.complete && !(await this._omAskDownload('要下載 midigenai v5 作曲模型（' + FaMidiPlay.fmtMB(m.bytes) + '，' + (d === 'webgpu' ? 'WebGPU' : 'CPU') + ' 版）嗎？', '這台電腦會用 ' + (d === 'webgpu' ? 'WebGPU' : 'CPU') + ' 跑這個模型，只下載這一版；之後 WebGPU 跑不起來才會補下載 CPU 版。授權 ' + m.license, '下載'))) return { ok: false, reason: '使用者沒有下載 ' + id };
+                    try { bytesOf[d] = await FaAudioModels.fetchModel(id, { fetchFn: (u, h) => fetch(u, { headers: h }), store, sha256: FaAudioModels.webSha256, sleep: (ms) => new Promise((r2) => setTimeout(r2, ms)) }); return { ok: true }; } catch (e) { return { ok: false, reason: '下載 ' + id + ' 失敗:' + msg(e) }; }
+                },
+                // 載入。WebGPU 版要用 preferredOutputLocation 把快取留在顯示卡上，onnxruntime-web 在 wasm 代理執行緒（env.wasm.proxy）開著時不支援這個選項
+                // （實測訊息：session option "preferredOutputLocation" is not supported for proxy），所以 GPU 版載入前把代理關掉；CPU 版維持代理（loadOrt 預設）
+                load: async (d) => {
+                    const ort = await FaAudioRuntime.loadOrt({ proxy: d !== 'webgpu' }); const bytes = bytesOf[d];
+                    const model = await web.loadModel({ ort, engine: d === 'webgpu' ? 'gpu' : 'cpu', base: 'https://midigenai.local/', manifest: FaMidigenBridge.MANIFEST, cache: false, fetchImpl: async () => new Response(bytes) });
+                    const mg = await mod.loadMidigen({ model }); return { accompany: (b, op) => mg.accompany(b, op) };
+                },
+                smoke: (e) => FaMidigenBridge.smoke(e)
+            });
+            this._midigenRecSave(r.record);
+            if (!r.engine) return { engine: null, reason: r.reason };
+            return (this._midigenOk = { engine: r.engine, id: FaMidigenBridge.DEV_FILE[r.device], eng: r.device === 'webgpu' ? 'gpu' : 'cpu', device: r.device });
         } catch (e) { return { engine: null, reason: '模型載入失敗:' + msg(e) }; }
     }
     async _midigenCompose(res, sd, say) {
@@ -98885,16 +98895,29 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (side) side.addEventListener('click', (ev) => { const c = ev.target.closest('.ai-advanced-cat'); if (c && c.dataset.cat === 'offline-models') this._omRenderPane(); });
     }
     // 離線模型管理頁的「音樂」區:聲音轉 MIDI 的三個模型、GS 音色庫(瘦身版)、配樂暫存;大小一律從登錄／清單算
+    // 離線模型管理:midigenai 只列一列(顯示下載了哪一版、哪個裝置已驗證、最近一次失敗原因;按鈕:下載這台會用的那一版、測試、刪除)
+    async _midigenRow(btn, esc, MB) {
+        const F = FaMidigenBridge, REG = FaAudioModels.REGISTRY, dv = await this._midigenDevices(), files = await this._midigenFiles(), rec = this._midigenRec(); const nm = (d) => F.DEV_NAME[d];
+        const lines = ['webgpu', 'wasm'].map((d) => { const st = files[d], m = REG[F.DEV_FILE[d]]; const full = st && st.complete, part = st && st.chunks > 0; return nm(d) + ' 版 ' + MB(m.bytes) + '：' + (full ? '✅ 已下載' : part ? '🟡 下載到一半 ' + MB(st.have) + '（' + st.chunks + ' / ' + st.total + ' 片）' : '⬜ 未下載'); });
+        const v = rec.verified && rec.verified.env === dv.envKey ? '✅ ' + nm(rec.verified.device) + ' 已驗證可用（冒煙測試 ' + (rec.verified.ms / 1000).toFixed(1) + ' 秒，onnxruntime-web ' + FaAudioRuntime.ORT_VERSION + '）' : rec.verified ? '⚠️ 之前在 ' + nm(rec.verified.device) + ' 驗證過，但環境（偏好、顯示卡或 ort 版本）變了，下次作曲會重測' : '尚未驗證（第一次作曲或按「測試」時會跑一次冒煙測試）';
+        const fails = Object.keys(rec.failures || {}).map((d) => '❌ ' + (rec.failures[d].reason || '') + (rec.failures[d].env === dv.envKey ? '' : '（舊環境，會重試）')).join('\n');
+        const any = (files.webgpu && files.webgpu.chunks > 0) || (files.wasm && files.wasm.chunks > 0); const use = dv.order[0] ? nm(dv.order[0]) : '（沒有可用裝置）'; const m0 = REG['midigenai-v5-cpu'];
+        return '<div style="border:1px solid #334155; border-radius:8px; padding:8px; margin-bottom:6px;"><div><b>midigenai v5 作曲模型</b>　<span style="color:#94a3b8; font-size:12px;">授權 ' + esc(m0.license) + '</span></div><div style="color:#94a3b8; font-size:12px;">依「運算裝置」偏好選裝置：' + esc(dv.reason) + '。這台會用 ' + esc(use) + '；失敗自動降級 CPU，只在需要時才補下載另一版。</div>'
+            + '<div style="margin-top:4px; white-space:pre-wrap;">' + esc(lines.join('\n')) + '</div><div style="margin-top:4px;">' + esc(v) + '</div>' + (fails ? '<div style="margin-top:4px; color:#fca5a5; white-space:pre-wrap;">' + esc(fails) + '</div>' : '')
+            + '<div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-top:4px;"><button style="' + btn + '" data-om="midigen-dl">下載這台會用的版本（' + esc(use) + '）</button><button style="' + btn + '" data-om="midigen-test">測試</button>' + (any ? '<button style="' + btn + ' color:#fca5a5;" data-om="midigen-del">刪除</button>' : '') + '<span data-om-status="mus-midigen" style="color:#7dd3fc;"></span></div></div>';
+    }
     async _omMusicSection(btn, esc) {
         const MB = (b) => FaMidiPlay.fmtMB(b); let html = '<div style="font-weight:600; margin:10px 0 4px;">音樂（聲音轉 MIDI、音色庫、配樂）</div>';
         const store = FaAudioModels.idbStore(), REG = FaAudioModels.REGISTRY; const rows = [];
         for (const id of Object.keys(REG)) {
+            if (/^midigenai-v5-/.test(id)) continue; // midigenai 兩個檔對使用者是一個模型,下面合成一列
             const m = REG[id]; let st = null; try { st = await FaAudioModels.status(id, store); } catch (_) { st = null; }
             const have = st && st.chunks > 0, full = st && st.complete;
             rows.push('<div style="border:1px solid #334155; border-radius:8px; padding:8px; margin-bottom:6px;"><div><b>' + esc(m.label) + '</b>　<span style="color:#94a3b8; font-size:12px;">' + esc(MB(m.bytes)) + (m.license ? '　授權 ' + esc(m.license) : '') + '</span></div>' + (m.note ? '<div style="color:#94a3b8; font-size:12px;">' + esc(m.note) + '</div>' : '')
                 + '<div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-top:4px;"><span>' + (full ? '✅ 已下載 ' + esc(MB(st.have)) : have ? '🟡 下載到一半 ' + esc(MB(st.have)) + ' / ' + esc(MB(m.bytes)) + '（可續傳）' : '⬜ 未下載') + '</span>'
                 + (full ? '' : '<button style="' + btn + '" data-om="mus-model-dl" data-id="' + esc(id) + '">' + (have ? '續傳' : '下載') + '</button>') + (have ? '<button style="' + btn + ' color:#fca5a5;" data-om="mus-model-del" data-id="' + esc(id) + '">刪除</button>' : '') + '<span data-om-status="mus-' + esc(id) + '" style="color:#7dd3fc;"></span></div></div>');
         }
+        try { rows.push(await this._midigenRow(btn, esc, MB)); } catch (_) { /* 這一列顯示失敗不影響其他列 */ }
         html += rows.join('');
         let info = null, cache = { bytes: 0, entries: 0, whole: false }, infoErr = '';
         try { info = await this._midiBankInfo(); } catch (e) { infoErr = String((e && e.message) || e); }
@@ -99019,6 +99042,17 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 out.textContent = r.ok ? r.header + '\n\n' + r.text : '失敗：' + r.error; b.disabled = false; return;
             }
             if (act === 'delete') { const m = FaVlm.byId(id); if (!confirm('刪除「' + (m && m.label) + '」的下載檔案？下次使用會重新下載。')) return; await this._omDeleteModel(id); return this._omRenderPane(); }
+            if (act === 'midigen-dl') {
+                b.disabled = true; const dv = await this._midigenDevices(); const d = dv.order[0] || 'wasm', mid = FaMidigenBridge.DEV_FILE[d];
+                try { await FaAudioModels.fetchModel(mid, { fetchFn: (u, h) => fetch(u, { headers: h }), store: FaAudioModels.idbStore(), sha256: FaAudioModels.webSha256, sleep: (ms) => new Promise((r) => setTimeout(r, ms)), onProgress: (p) => stat('mus-midigen', FaMidiPlay.fmtMB(p.done) + ' / ' + FaMidiPlay.fmtMB(p.total) + (p.resumed ? '（' + p.resumed + ' 片來自本機）' : '')) }); stat('mus-midigen', '✅ 完成'); }
+                catch (e) { stat('mus-midigen', '❌ ' + String((e && e.message) || e)); b.disabled = false; return; }
+                return this._omRenderPane();
+            }
+            if (act === 'midigen-test') {
+                b.disabled = true; stat('mus-midigen', '測試中…（載入模型並補 2 小節貝斯）'); const t0 = Date.now(); this._midigenOk = null; const r = await this._midigenEngine({ force: true });
+                stat('mus-midigen', r.engine ? '✅ ' + (r.device === 'webgpu' ? 'WebGPU' : 'CPU') + ' 可用，共 ' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒' : '❌ ' + r.reason); if (r.engine) return this._omRenderPane(); b.disabled = false; return;
+            }
+            if (act === 'midigen-del') { if (!confirm('刪除 midigenai 已下載的檔案（兩個版本都清掉）？下次使用會重新下載，已驗證的裝置紀錄也會清掉。')) return; const st = FaAudioModels.idbStore(); await FaAudioModels.remove('midigenai-v5-gpu', st); await FaAudioModels.remove('midigenai-v5-cpu', st); this._midigenOk = null; try { localStorage.removeItem('fa_midigen_device'); } catch (_) { /* */ } return this._omRenderPane(); }
             if (act === 'mus-model-dl') {
                 b.disabled = true; const REG = FaAudioModels.REGISTRY, m = REG[id];
                 try { await FaAudioModels.fetchModel(id, { fetchFn: (u, h) => fetch(u, { headers: h }), store: FaAudioModels.idbStore(), sha256: FaAudioModels.webSha256, sleep: (ms) => new Promise((r) => setTimeout(r, ms)), onProgress: (p) => stat('mus-' + id, FaMidiPlay.fmtMB(p.done) + ' / ' + FaMidiPlay.fmtMB(p.total) + (p.resumed ? '（' + p.resumed + ' 片來自本機）' : '')) }); stat('mus-' + id, '✅ 完成'); }

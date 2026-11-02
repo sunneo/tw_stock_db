@@ -72,6 +72,37 @@
     const part = facts.some((f) => /看到 [1-9]/.test(f));
     return { id: null, reason: (part ? '模型只下載了一部分(' : '模型還沒下載(') + facts.join(';') + ')。到 Configure → 離線模型管理 → 音樂 → midigenai v5 ' + (part ? '續傳' : '下載') };
   }
+  // ---------- 裝置選擇(跟其他離線模型一樣:依「運算裝置」偏好排順序,失敗自動降級,記住已驗證的裝置) ----------
+  // 對使用者 midigenai 是「一個模型」;webgpu 對應 4 位元 GPU 檔、wasm 對應 8 位元 CPU 檔,哪個檔下載、哪個裝置用由程式決定。
+  const DEV_NAME = { webgpu: 'WebGPU', wasm: 'CPU' }, DEV_FILE = { webgpu: 'midigenai-v5-gpu', wasm: 'midigenai-v5-cpu' };
+  // o:{ order:['webgpu','wasm'], has(dev)→bool(這個裝置要的檔已下載), ensure(dev)→{ok,reason}(沒下載時依靜默下載設定下載或先問), load(dev)→engine, smoke(engine,dev)→{ms}, record:{verified,failures}(會被改寫,呼叫端存起來), envKey, now() }
+  // 規則:已下載的裝置排前面(不為了更快的裝置去多下載一份);同一個環境(ort 版本、顯示卡、偏好)記錄過失敗的裝置不重踩(除非沒有別的可試);已驗證的裝置下次不再跑冒煙測試;
+  // 載入或冒煙測試失敗就記原因並換下一個裝置;檔案沒下載成(使用者取消、下載失敗)不算裝置的失敗。
+  async function openSession(o) {
+    const rec = o.record = o.record || {}; rec.failures = rec.failures || {}; const now = o.now || (() => Date.now()); const msg = (e) => String((e && e.message) || e);
+    const present = [], missing = []; for (const d of o.order) ((await o.has(d)) ? present : missing).push(d); const list = present.concat(missing);
+    let usable = list.filter((d) => !(rec.failures[d] && rec.failures[d].env === o.envKey)); const skipped = list.filter((d) => usable.indexOf(d) < 0);
+    if (!usable.length) { usable = list.slice(-1); skipped.splice(skipped.indexOf(usable[0]), 1); } const tried = [];
+    for (const dev of usable) {
+      const t0 = now();
+      try {
+        const e = await o.ensure(dev); if (!e || !e.ok) { tried.push({ device: dev, ok: false, file: true, reason: (e && e.reason) || '檔案沒準備好' }); continue; }
+        const engine = await o.load(dev); const v = rec.verified && rec.verified.device === dev && rec.verified.env === o.envKey; let ms = v ? rec.verified.ms : null;
+        if (!v) { const sm = await o.smoke(engine, dev); ms = sm && sm.ms != null ? sm.ms : now() - t0; rec.verified = { device: dev, env: o.envKey, ms, at: now() }; }
+        delete rec.failures[dev]; tried.push({ device: dev, ok: true, ms }); return { engine, device: dev, tried, skipped, record: rec };
+      } catch (err) {
+        const reason = DEV_NAME[dev] + '(' + DEV_FILE[dev] + ')失敗,耗時 ' + Math.round((now() - t0) / 1000) + ' 秒:' + msg(err); rec.failures[dev] = { reason, env: o.envKey, at: now() }; if (rec.verified && rec.verified.device === dev) delete rec.verified; tried.push({ device: dev, ok: false, reason });
+      }
+    }
+    const parts = tried.map((x) => x.reason).concat(skipped.map((d) => DEV_NAME[d] + ' 這個環境之前失敗過,先不重試(' + rec.failures[d].reason + ';換偏好、ort 版本或顯示卡後會再試)'));
+    return { engine: null, device: null, tried, skipped, reason: '模型沒有裝置能用:' + parts.join(';'), record: rec };
+  }
+  // 冒煙測試:用作曲樹範本的旋律軌當條件,補貝斯 2 小節;要真的有音符才算通過
+  async function smoke(engine) {
+    const t0 = Date.now(); const tree = await T.plan({ fields: {}, options: { style: 'pop', key: 'C', tempo: 100, bars: 4 } }, {}); const c = T.compose(tree, 1);
+    const bytes = M.write(Object.assign({}, c.song, { tracks: [c.song.tracks[0]] })); const r = await engine.accompany(bytes, { bars: 2, instrument: 'Bass', seed: 1, tempoBpm: 100 });
+    const p = M.parse(r.midi); const n = p.tracks.slice(1).reduce((a, t) => a + ((t.notes && t.notes.length) || 0), 0); if (!n) throw new Error('冒煙測試:模型沒有生成任何音符'); return { ms: Date.now() - t0, notes: n };
+  }
   const MANIFEST = { version: 'v5', vocab_size: 598, n_layers: 12, n_heads: 12, head_dim: 64, opset: 17, files: { gpu: { file: 'decoder-webgpu-q4.onnx', bytes: 73151835, sha256: '7c5de98ff7460bd88d07acc537c6e238f0a4afce29b8c9ad488eb97f99bdbfdf', quant: 'q4', cache: 'present, (1,H,P,D)' }, cpu: { file: 'decoder-wasm-int8.onnx', bytes: 114561179, sha256: '5ca00f42ba3900aeb6d98821d4e8b559a880c8d99d62dbdc0d1555a38c1eed65', quant: 'int8', cache: 'new-rows, time-major (1,P,H,D)' } } };
-  return { MANIFEST, findModel, unsupported, compose, checkVoice, voicesOf, MAX_BARS };
+  return { MANIFEST, openSession, smoke, DEV_NAME, DEV_FILE, findModel, unsupported, compose, checkVoice, voicesOf, MAX_BARS };
 });
