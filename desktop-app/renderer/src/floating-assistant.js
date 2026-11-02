@@ -74604,8 +74604,9 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             const store = FaAudioModels.idbStore(); const want = (typeof navigator !== 'undefined' && navigator.gpu) ? ['midigenai-v5-gpu', 'midigenai-v5-cpu'] : ['midigenai-v5-cpu'];
             const found = await FaMidigenBridge.findModel(want, (w) => FaAudioModels.status(w, store)); const id = found.id;
             if (!id) return { engine: null, reason: found.reason };
-            const base = new URL('src/music/midigenai/', document.baseURI).href; let mod, web;
-            try { mod = await import(base + 'tasks.mjs'); web = await import(base + 'midigen-web.mjs'); } catch (e) { return { engine: null, reason: '模型的程式檔載入失敗(' + msg(e) + ');網頁版目前沒有帶這些檔' }; }
+            // 程式檔放在 renderer/vendor/midigenai/（安裝包不含 renderer/src，熱更新清單含 renderer/vendor 底下全部檔案；放在 src 底下的話桌面版根本沒有這些檔）
+            const base = new URL('vendor/midigenai/', document.baseURI).href; let mod, web;
+            try { mod = await import(base + 'tasks.mjs'); web = await import(base + 'midigen-web.mjs'); } catch (e) { return { engine: null, reason: '模型的程式檔載入失敗(' + msg(e) + ');桌面版這些檔在 renderer/vendor/midigenai/，網頁版目前沒有帶這些檔' }; }
             const bytes = await FaAudioModels.fetchModel(id, { fetchFn: (u, h) => fetch(u, { headers: h }), store, sha256: FaAudioModels.webSha256, sleep: (ms) => new Promise((r) => setTimeout(r, ms)) });
             const ort = await FaAudioRuntime.loadOrt(); const eng = id.endsWith('gpu') ? 'gpu' : 'cpu';
             const model = await web.loadModel({ ort, engine: eng, base: 'https://midigenai.local/', manifest: FaMidigenBridge.MANIFEST, cache: false, fetchImpl: async () => new Response(bytes) });

@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <meta charset="utf-8"><title>midigenai 實測</title>
 <!-- 用法:在 desktop-app 資料夾起靜態伺服器(python -m http.server 8813),開 /scripts/music-tests/midigen-bench.html?engine=cpu 或 gpu。模型存在瀏覽器的 Cache API,不進 repo。結果在 window.__bench。 -->
 <script src="../../renderer/src/music/midi_core.js"></script><script src="../../renderer/src/music/music_compose.js"></script><script src="../../renderer/src/music/compose_tree.js"></script>
@@ -9,7 +9,7 @@ const mark = (name, extra) => { B.steps.push(Object.assign({ name, t: Math.round
 try {
   const engine = new URLSearchParams(location.search).get('engine') || 'cpu';
   const ort = await import('https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/ort.webgpu.min.mjs'); mark('ort 載入', { env: !!ort.env });
-  const { loadMidigen } = await import('../../renderer/src/music/midigenai/tasks.mjs'); const web = await import('../../renderer/src/music/midigenai/midigen-web.mjs');
+  const { loadMidigen } = await import('../../renderer/vendor/midigenai/tasks.mjs'); const web = await import('../../renderer/vendor/midigenai/midigen-web.mjs');
   B.detect = await web.detect(); mark('偵測', B.detect);
   let last = 0; const t0 = performance.now();
   const mg = await loadMidigen({ ort, engine, onProgress: (p) => { if (p.loaded - last > 8e6 || p.phase === 'load') { last = p.loaded; log(p.phase + ' ' + (p.loaded / 1e6).toFixed(1) + '/' + (p.total / 1e6).toFixed(1) + ' MB'); } } });
