@@ -911,8 +911,8 @@
    "names": [
     "FaMidiPlay"
    ],
-   "size": 10028,
-   "md5": "ceda5038ac27ad9e40b5093dbc0ba7ba"
+   "size": 10649,
+   "md5": "d60b122d20ca05841c20bd29d3cbcdc7"
   },
   "musicsoundtrack": {
    "file": "chunks/musicsoundtrack.js",
@@ -959,8 +959,8 @@
    "names": [
     "FaMidigenBridge"
    ],
-   "size": 7518,
-   "md5": "2bde3f453564fe817aeef769c67bdaf9"
+   "size": 9338,
+   "md5": "e6d211a5d5d51411b1ebe8c624abbcce"
   },
   "musica2m": {
    "file": "chunks/musica2m.js",
@@ -1015,8 +1015,8 @@
    "names": [
     "FaMidiEditUI"
    ],
-   "size": 9974,
-   "md5": "fd77e688b93b176d1b370971d8875a4b"
+   "size": 9756,
+   "md5": "a2ef206df80d72c22f773525b96eb8bc"
   },
   "musicknow": {
    "file": "chunks/musicknow.js",
@@ -1092,7 +1092,7 @@
   }
  },
  "core": {
-  "size": 5227382,
-  "md5": "b41ca2d23fde43416108bc2465eca7a5"
+  "size": 5227494,
+  "md5": "4aa4207a4d4d0245a10eeb081a4cd37b"
  }
 }
