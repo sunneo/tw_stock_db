@@ -92,6 +92,34 @@ t('場景：兩個物件加背景，全部封閉', () => {
   }
 });
 
+t('細緻度：--detail 與口語解析，預設 1，超出範圍當預設', () => {
+  assert.strictEqual(C.parseOptions('做成立體').detail, 1);
+  assert.strictEqual(C.parseOptions('--detail 3').detail, 3);
+  assert.strictEqual(C.parseOptions('--detail 9').detail, 1);
+  assert.strictEqual(C.parseOptions('人的面數多一點').detail, 2);
+  assert.strictEqual(C.parseOptions('臉要細緻一點').detail, 2);
+  assert.strictEqual(C.parseOptions('越細越好，要最細').detail, 3);
+  assert.deepStrictEqual([1, 2, 3, 0, 7, 'x'].map((n) => C.detailPreset(n).maxFaces), [12000, 30000, 60000, 12000, 12000, 12000]);
+});
+t('細緻度：LLM 回的 detail 驗證，手打的 --detail 優先', () => {
+  const j = C.parseLlmOptions('{"detail":2}', '細一點'); assert.strictEqual(j.detail, 2);
+  assert.strictEqual(C.parseLlmOptions('{"detail":9,"shape":"smooth"}', 'x').detail, undefined);
+  assert.strictEqual(C.mergeOptions(C.parseOptions('--detail 1'), { detail: 3 }, '--detail 1').detail, 1);
+  assert.strictEqual(C.mergeOptions(C.parseOptions('細一點'), { detail: 3 }, '細一點').detail, 3);
+});
+t('細緻度：面數上限提高後，物件面數真的變多且仍封閉；只要主體時背景不佔面數', () => {
+  const W = 120, H = 120, labels = grid(W, H, (x, y) => (((x - 60) ** 2 + (y - 60) ** 2 < 2500) ? 1 : 0));
+  const dep = grid(W, H, (x, y) => 0.3 + 0.7 * Math.max(0, 1 - ((x - 60) ** 2 + (y - 60) ** 2) / 2500) + x / 2000);
+  const lo = C.buildScene({ labels, depth: dep }, { shape: 'smooth', maxFaces: 12000, noBackground: true });
+  const hi = C.buildScene({ labels, depth: dep }, { shape: 'smooth', maxFaces: 60000, noBackground: true });
+  assert.strictEqual(lo.background, null); assert.strictEqual(hi.background, null);
+  assert(C.isClosed(lo.objects[0].mesh) && C.isClosed(hi.objects[0].mesh));
+  assert(hi.objects[0].mesh.faces.length > lo.objects[0].mesh.faces.length * 1.5, lo.objects[0].mesh.faces.length + ' -> ' + hi.objects[0].mesh.faces.length);
+  assert(hi.objects[0].mesh.faces.length <= 60000);
+  const withBg = C.buildScene({ labels, depth: dep }, { shape: 'smooth', maxFaces: 12000 });
+  assert(lo.objects[0].mesh.faces.length >= withBg.objects[0].mesh.faces.length);
+});
+
 t('隨機遮罩與深度（固定種子）：每個結果都封閉，方塊殼不退回外框', () => {
   let seed = 12345; const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
   let boxes = 0;

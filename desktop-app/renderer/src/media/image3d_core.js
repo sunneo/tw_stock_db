@@ -337,8 +337,11 @@
 
   // ---------- one object ----------
   var CYL_LEVELS = [[0.05, 0], [0.025, 1], [0.012, 1], [0.012, 2], [0.006, 2]];
-  var BLOCK_LEVELS = [2, 4, 8, 16, 32, 64];
-  var SMOOTH_LEVELS = [4, 8, 16, 24, 32, 48, 64, 96];
+  var BLOCK_LEVELS = [2, 4, 8, 16, 32, 64, 128];
+  var SMOOTH_LEVELS = [4, 8, 16, 24, 32, 48, 64, 96, 128, 192];
+  // detail 1 = default, 2 = finer, 3 = finest: grid cells on the longest side and the face budget of the whole scene
+  var DETAIL = { 1: { workMax: 96, maxFaces: 12000 }, 2: { workMax: 144, maxFaces: 30000 }, 3: { workMax: 192, maxFaces: 60000 } };
+  function detailPreset(level) { var n = Math.round(Number(level)); return DETAIL[n >= 1 && n <= 3 ? n : 1]; }
 
   function buildObject(mask, depth, opts) {
     opts = opts || {};
@@ -417,7 +420,7 @@
     var rg = mx - mn, nd = depth.map(function (r) { return r.map(function (v) { return rg > EPS ? (opts.invert ? (mx - v) : (v - mn)) / rg : 0.5; }); });
     var idList = Object.keys(ids).map(Number).sort(function (a, b) { return a - b; });
     var sumA = 0; idList.forEach(function (i) { sumA += areas[i]; });
-    var bgBudget = Math.max(24, Math.floor(total * 0.2)), objBudget = total - bgBudget;
+    var bgBudget = opts.noBackground ? 24 : Math.max(24, Math.floor(total * 0.2)), objBudget = total - bgBudget;
     var objects = [];
     idList.forEach(function (id) {
       var mask = labels.map(function (r) { return r.map(function (v) { return v === id ? 1 : 0; }); });
@@ -426,7 +429,7 @@
     });
     var unknown = labels.map(function (r) { return r.map(function (v) { return v > 0; }); });
     var bgDepth = fillBackground(nd, unknown), all = labels.map(function (r) { return r.map(function () { return 1; }); });
-    var bg = buildObject(all, bgDepth, { shape: 'blocks', normalize: false, scale: scale, maxFaces: bgBudget, zFront: { base: 0.05 * R, range: R }, thickness: (opts.closeMode === 'all' ? 0.25 : 0.06) * maxdim });
+    var bg = opts.noBackground ? null : buildObject(all, bgDepth, { shape: 'blocks', normalize: false, scale: scale, maxFaces: bgBudget, zFront: { base: 0.05 * R, range: R }, thickness: (opts.closeMode === 'all' ? 0.25 : 0.06) * maxdim });
     return { objects: objects, background: bg, closeMode: opts.closeMode === 'all' ? 'all' : 'objects', width: W, height: H };
   }
 
@@ -761,6 +764,11 @@
     else if ((m = /厚度\s*(?:x|×|\*|乘)?\s*(\d+(?:\.\d+)?)\s*倍/i.exec(t))) { out.thickScale = clampK(parseFloat(m[1])); }
     else if (/厚一點|厚一些|加厚|更厚|厚度[^，。,.\n]{0,4}(?:大|高|多|厚)/.test(t)) { out.thickScale = 1.6; }
     else if (/薄一點|薄一些|變薄|更薄|扁一點|厚度[^，。,.\n]{0,4}(?:小|低|少|薄)/.test(t)) { out.thickScale = 0.6; }
+    // 細緻度（網格格數與總面數）：--detail 1~3，或用說的：「細一點」「更細緻」「面數多一點」＝2，「最細」「非常細」＝3
+    out.detail = 1;
+    if ((m = /--detail[=\s]+([123])(?![0-9])/i.exec(t))) { out.detail = parseInt(m[1], 10); }
+    else if (/最細|非常細|超細|極細|最高(?:精細|解析|細緻)|finest|ultra\s*detail/i.test(t)) { out.detail = 3; }
+    else if (/細一點|細一些|更細|細緻|精細|面數(?:多|高|增)|多(?:一點|些)?面|高解析|解析度(?:高|提高)|馬賽克|fine(?:r)?\s+detail|more\s+(?:faces|detail)/i.test(t)) { out.detail = 2; }
     var si = subjectIntent(t); out.subject = si.subject; out.subjectName = si.name; out.subjectTarget = si.target; out.subjectDecided = si.decided; out.subjectSource = si.source;
     return out;
   }
@@ -777,7 +785,7 @@
   function needsLlm(text, o) {
     var t = String(text || '').replace(/\[附件：[^\]]*\]/g, ' ').replace(/--[a-z-]+(?:[=\s]+[^\s-][^\s]*)?/gi, ' ').trim(); if (!t) { return false; }
     if (o && o.subjectDecided === false) { return true; }
-    var rec = o && (o.subjectSource !== 'default' || o.shape !== 'auto' || o.closeSource !== 'default' || o.whole || o.segment || o.panorama || o.editor || o.noBackground || o.depthM || o.heightM || o.widthM || o.sizeM || o.depthScale !== 1 || o.thickScale !== 1);
+    var rec = o && (o.subjectSource !== 'default' || o.shape !== 'auto' || o.closeSource !== 'default' || o.whole || o.segment || o.panorama || o.editor || o.noBackground || o.depthM || o.heightM || o.widthM || o.sizeM || o.depthScale !== 1 || o.thickScale !== 1 || o.detail > 1);
     if (rec) { return false; }
     var rest = t.replace(/[\s，。,.！!？?、；;：:「」"']/g, '').replace(/請|幫我|麻煩|謝謝|可以|好嗎|一下|把|將|這張|圖片|照片|圖|變成|轉成|轉為|轉|做成|作成|3d化|3d|三維|立體|成|image-?to-?3d/gi, '');
     return rest.length >= 4;
@@ -786,7 +794,7 @@
   // ---------- the user's request read by an LLM (the program checks every field; flags typed as --xxx always win; without an answer the words are read by parseOptions above) ----------
   function llmRequest(text) {
     return {
-      system: '你是「圖片轉 3D」指令的解析器。只輸出一個 JSON 物件，不要解釋、不要程式碼區塊。欄位（使用者沒提到的就省略）：{"subject":"main 或 all","subject_name":"主體的名稱（用使用者話裡的詞）","target":"要擺上去的物件名稱","shape":"auto、smooth、cylinder、blocks 其中之一","close":"objects 或 all","depth_scale":數字,"thickness_scale":數字,"whole":布林,"segment":布林,"panorama":布林,"no_background":布林,"depth_cm":數字,"height_cm":數字,"width_cm":數字,"size_cm":數字}。說明：depth_cm＝模型前後的總深度（公分）、height_cm 高、width_cm 寬、size_cm 最長邊，使用者給了實際尺寸才填（單位換算成公分）；subject=main 表示使用者只要圖裡的某一個主體（例如「只要小提琴」「去掉背景」「把咖啡杯擺到桌子上」），其他東西都不要；subject=all 表示整張圖所有物件都要。close=all 表示連背景都做成實心（要列印、全部封閉）。shape：smooth 平滑、cylinder 圓柱、blocks 樂高方塊。no_background=true 表示不要背景（去掉背景、去背）。depth_scale 大於 1 表示正面凹凸更強（立體感強）、小於 1 更平；thickness_scale 大於 1 表示背面更厚、小於 1 更薄。',
+      system: '你是「圖片轉 3D」指令的解析器。只輸出一個 JSON 物件，不要解釋、不要程式碼區塊。欄位（使用者沒提到的就省略）：{"subject":"main 或 all","subject_name":"主體的名稱（用使用者話裡的詞）","target":"要擺上去的物件名稱","shape":"auto、smooth、cylinder、blocks 其中之一","close":"objects 或 all","depth_scale":數字,"thickness_scale":數字,"detail":1、2 或 3,"whole":布林,"segment":布林,"panorama":布林,"no_background":布林,"depth_cm":數字,"height_cm":數字,"width_cm":數字,"size_cm":數字}。說明：depth_cm＝模型前後的總深度（公分）、height_cm 高、width_cm 寬、size_cm 最長邊，使用者給了實際尺寸才填（單位換算成公分）；subject=main 表示使用者只要圖裡的某一個主體（例如「只要小提琴」「去掉背景」「把咖啡杯擺到桌子上」），其他東西都不要；subject=all 表示整張圖所有物件都要。close=all 表示連背景都做成實心（要列印、全部封閉）。shape：smooth 平滑、cylinder 圓柱、blocks 樂高方塊。no_background=true 表示不要背景（去掉背景、去背）。depth_scale 大於 1 表示正面凹凸更強（立體感強）、小於 1 更平；thickness_scale 大於 1 表示背面更厚、小於 1 更薄。detail 是網格細緻度：1 預設、2 更細（面數多、不再是一塊塊的）、3 最細；使用者說「細一點」「面數多一點」「人臉細緻」填 2，說「最細」填 3。',
       user: '使用者的要求：「' + String(text || '').replace(/\[附件：[^\]]*\]/g, ' ').trim().slice(0, 400) + '」'
     };
   }
@@ -803,6 +811,7 @@
     if (j.close === 'objects' || j.close === 'all') { out.close = j.close; }
     if (num(j.depth_scale)) { out.depthScale = num(j.depth_scale); }
     if (num(j.thickness_scale)) { out.thickScale = num(j.thickness_scale); }
+    if ([1, 2, 3].indexOf(Math.round(Number(j.detail))) >= 0 && Number(j.detail) > 0) { out.detail = Math.round(Number(j.detail)); }
     var cm = function (v) { v = Number(v); return isFinite(v) && v > 0 ? Math.max(0.2, Math.min(10000, v)) / 100 : 0; };
     if (cm(j.depth_cm)) { out.depthM = cm(j.depth_cm); } if (cm(j.height_cm)) { out.heightM = cm(j.height_cm); } if (cm(j.width_cm)) { out.widthM = cm(j.width_cm); } if (cm(j.size_cm)) { out.sizeM = cm(j.size_cm); }
     if (j.no_background === true) { out.noBackground = true; } if (j.whole === true) { out.whole = true; } if (j.segment === true) { out.segment = true; } if (j.panorama === true) { out.panorama = true; }
@@ -817,6 +826,7 @@
     if (j.close && !/--close/i.test(t)) { out.close = j.close; out.closeSource = 'llm'; }
     if (j.depthScale && !/--depth/i.test(t)) { out.depthScale = j.depthScale; }
     if (j.thickScale && !/--thick/i.test(t)) { out.thickScale = j.thickScale; }
+    if (j.detail && !/--detail/i.test(t)) { out.detail = j.detail; }
     if (j.depthM && !/--depth/i.test(t)) { out.depthM = j.depthM; } if (j.heightM) { out.heightM = j.heightM; } if (j.widthM) { out.widthM = j.widthM; } if (j.sizeM && !/--size/i.test(t)) { out.sizeM = j.sizeM; }
     if (j.noBackground) { out.noBackground = true; }
     if (j.whole) { out.whole = true; } if (j.segment) { out.segment = true; } if (j.panorama) { out.panorama = true; }
@@ -862,5 +872,5 @@
     return spec;
   }
 
-  return { alphaMask: alphaMask, needsLlm: needsLlm, llmRequest: llmRequest, parseLlmOptions: parseLlmOptions, mergeOptions: mergeOptions, subjectIntent: subjectIntent, intentQuestion: intentQuestion, intentFromPick: intentFromPick, itemQuestion: itemQuestion, choiceQuestion: choiceQuestion, rankSubjects: rankSubjects, keepLabel: keepLabel, subjectMesh: subjectMesh, stitchDepths: stitchDepths, panoFov: panoFov, buildPanorama: buildPanorama, bendCylinder: bendCylinder, depthBands: depthBands, readExif: readExif, orbitKind: orbitKind, diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
+  return { alphaMask: alphaMask, needsLlm: needsLlm, llmRequest: llmRequest, parseLlmOptions: parseLlmOptions, mergeOptions: mergeOptions, subjectIntent: subjectIntent, intentQuestion: intentQuestion, intentFromPick: intentFromPick, itemQuestion: itemQuestion, choiceQuestion: choiceQuestion, rankSubjects: rankSubjects, keepLabel: keepLabel, subjectMesh: subjectMesh, stitchDepths: stitchDepths, panoFov: panoFov, buildPanorama: buildPanorama, bendCylinder: bendCylinder, depthBands: depthBands, readExif: readExif, orbitKind: orbitKind, diffMask: diffMask, labelsFromMasks: labelsFromMasks, parseOptions: parseOptions, detailPreset: detailPreset, toSpec: toSpec, prepareInput: prepareInput, labelComponents: labelComponents, resampleGrid: resampleGrid, resampleMask: resampleMask, buildObject: buildObject, buildScene: buildScene, fillBackground: fillBackground, isClosed: isClosed, blocksMesh: blocksMesh, cylinderMesh: cylinderMesh, earClip: earClip, boxMesh: boxMesh };
 });
