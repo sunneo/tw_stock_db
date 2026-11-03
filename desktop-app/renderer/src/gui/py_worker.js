@@ -46,12 +46,24 @@
         py.globals.set('__fa_src__', m.src);
         py.globals.set('__fa_path__', '/work/' + m.scriptName);
         py.runPython(m.runner);
+        // 程式寫在目前目錄（/work）的檔案送回頁面，讓終端機的 ls 看得到（例如 missile 範例寫出的貼圖）
+        function syncBack() {
+          var files = [];
+          py.FS.readdir('/work').forEach(function (n) {
+            var p = '/work/' + n;
+            if (n === '.' || n === '..' || !py.FS.isFile(py.FS.stat(p).mode)) { return; }
+            files.push({ rel: n, bytes: py.FS.readFile(p) });
+          });
+          self.postMessage({ type: 'files', files: files });
+        }
         var go = py.globals.get('go');
         try {
           await go.callPromising();
+          syncBack();
           self.postMessage({ type: 'done', code: 0 });
         } catch (e) {
           self.postMessage({ type: 'err', text: String((e && e.message) || e) + '\n' });
+          syncBack();
           self.postMessage({ type: 'done', code: 1 });
         } finally {
           go.destroy();

@@ -95,7 +95,7 @@ const eventOf = (line) => JSON.parse(line);
 
 // 7. wait resolves at once with a queued event, or when the next one arrives; closing wakes a waiter with null
 (async () => {
-  const { host } = newHost();
+  const { host, closed } = newHost();
   host.apply(msg({ op: 'open', id: 'w1' }));
   host.apply(msg({ op: 'add', id: 'w1', node: { id: 'b1', kind: 'button', text: 'x' } }));
   const hook = renders[renders.length - 1].onEvent;
@@ -107,6 +107,20 @@ const eventOf = (line) => JSON.parse(line);
   host.close('w1');
   assert.strictEqual(await pending, null); ok();
   assert.strictEqual(await host.wait('w1'), null); ok();
+
+  // the user pressed × : a program that waits gets a "close" event (not null), the window is gone, and a later poll still sees the event
+  host.apply(msg({ op: 'open', id: 'w2', title: 'b' }));
+  const xHook = renders[renders.length - 1].onClose;
+  const waiting2 = host.wait('w2');
+  xHook();
+  assert.deepStrictEqual(JSON.parse(await waiting2), { v: 1, event: 'close', id: 'w2' }); ok();
+  assert.strictEqual(host.isOpen('w2'), false); ok();
+  host.apply(msg({ op: 'open', id: 'w3', title: 'c' }));
+  const xHook3 = renders[renders.length - 1].onClose;
+  xHook3();
+  assert.deepStrictEqual(JSON.parse(host.poll('w3')), { v: 1, event: 'close', id: 'w3' }); ok();
+  assert.strictEqual(host.poll('w3'), null); ok();
+  assert.deepStrictEqual(closed.slice(-2), ['w2', 'w3']); ok();
 
   console.log('gui_host: ' + n + ' assertions passed');
 })().catch((e) => { console.error(e); process.exit(1); });

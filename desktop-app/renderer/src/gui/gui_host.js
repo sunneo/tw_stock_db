@@ -71,7 +71,7 @@
       var old = views[winId];
       var wasActive = !!(old && old.classList && old.classList.contains('ai-chat-wheel-on'));
       removeView(winId);
-      var view = render.renderWindow(doc, snap, onEventFor(winId), function () { close(winId); }, {
+      var view = render.renderWindow(doc, snap, onEventFor(winId), function () { closeByUser(winId); }, {
         image: function (nodeId, name) { return picture(winId, nodeId, name); }
       });
       views[winId] = view;
@@ -106,6 +106,15 @@
       if (!session.windows[winId]) { return; }
       bridge.apply(session, { v: 1, op: 'close', id: winId });
       teardown(winId);
+    }
+    // the user pressed the window's × : the program must learn it (a "close" event, which gui.py's wait and poll return), so the event stays
+    // queued for the program; the window itself is gone at once. A program that waits gets the event now.
+    function closeByUser(winId) {
+      if (!session.windows[winId]) { return; }
+      enqueue(winId, 'close', JSON.stringify({ v: 1, event: 'close', id: winId }));
+      bridge.apply(session, { v: 1, op: 'close', id: winId });
+      removeView(winId);
+      if (opts.onClosed) { opts.onClosed(winId); }
     }
     // everything a closed window leaves behind: its view, its queue, a waiting program, and the caller's notice
     function teardown(winId) {
