@@ -74,7 +74,8 @@
       var old = views[winId];
       var wasActive = !!(old && old.classList && old.classList.contains('ai-chat-wheel-on'));
       var wasPopped = !!(shells[winId] && shells[winId].isPopped());
-      var prev = old && old.style && !shells[winId] ? {
+      // 視窗外殼（可縮放、可最大化的視窗）的位置與大小也要保留：外殼是套在同一個元素上，所以樣式還在 old.style 裡
+      var prev = old && old.style ? {
         left: old.style.left, top: old.style.top, width: old.style.width, height: old.style.height, maxWidth: old.style.maxWidth,
         resized: !!(old.style.height || (old.getAttribute && old.getAttribute('data-saved'))),
         saved: old.getAttribute ? old.getAttribute('data-saved') : null

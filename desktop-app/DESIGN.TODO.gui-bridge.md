@@ -360,3 +360,74 @@ node scripts/eval/run_eval.js scripts/eval/ai_gui_cap.eval.js 17933
 node scripts/eval/run_eval.js <map 或 breakout 評估檔> 17932
 ```
 真模型驗證的評估檔與啟動器在 gui-h2 的暫存資料夾，沒有進 repo（依賴使用者本機的金鑰）；做法見 11.3。
+
+## 12. 交接 6（2026-11-03，gui-h2 續作在 context 33% 時寫；不自行開後繼，由管理層決定）
+
+### 12.1 開場提示（貼給接手的工作階段）
+
+Continue from the handoff document at desktop-app/DESIGN.TODO.gui-bridge.md (repo root D:\Downloads\videos-嗨投資-desktop-app\desktop-app, branch desktop-app). Read it fully, especially section 12 (current status, half-done items and resume points) and section 12.5 (verbatim words), then section 11.6 and 12.6 (lessons). Follow the working style there. Run the low-context-long-run skill: do the next todo item in 12.3, and when your context reaches 30%, update this document, commit, and report 「需要接手，文件已更新，commit <hash>」 to the manager; do not start your own successor. Quote the user's key instruction verbatim: 「python的input回傳none, 沒有ctrl+c的問題必須修掉」「複合指令的$? 必須帶到下一段」「那些限制都必須修正」. Reply to the user in Traditional Chinese only, no English abbreviations inside Chinese sentences. Do not push and do not run publish.sh. First message: one line saying you read the document and which item you start.
+
+### 12.2 管理層指示（2026-11-03，原文，經管理層轉達）
+
+「python的input回傳none, 沒有ctrl+c的問題必須修掉」「複合指令的$? 必須帶到下一段」「那些限制都必須修正」。11.4 的八條已知限制全部要修，不可再列為已知限制。每條先寫會重現的測試（node 與真桌面版評估檔，用 `scripts/eval/run_eval.js`）再修，每修好一條就提交，真桌面版驗證與只有 node 測試的要分開寫。全部做完並驗證後才回報「已提交，可發布，commit <hash>」，中途只回報進度。打磚塊：使用者已選「同意，另寫一支」（見 11.1 第 2 項），所以不必再問；在教訓裡已更正（見 12.6 第 1 條）。
+
+### 12.3 八條的狀態（每條對應 11.4 的限制）
+
+| 條 | 內容 | 狀態 | 位置／證據 |
+|---|---|---|---|
+| 7 | 時間上限改成呼叫範圍，不放 session | **完成（已實機）**：`session_has_cap: false`；`ai_gui_cap.eval.js` 全部通過 | `terminal_run` 包裝改成 `_terminalRunCommand(session, cmd, { ..., guiTimeoutSec: 120 })`，沿 opts 往下傳到 `_terminalZenity`／`_terminalGui`／`_terminalNode`／`_terminalTryPythonAsync`（第三個參數 `guiTimeoutSec`）；session 上已沒有 `guiAiTimeoutSec` |
+| 6 | 複合指令 `$?` 帶到下一段 | **進行中（半完成，未全部驗證）**，見 12.4 | `exit_code_chain.eval.js` |
+| 5 | AI 路徑 stdout 移除 `@gui` 行 | **程式已改、未驗證** | `_terminalWriteOutput` 回傳過濾後文字；`_terminalRunWasmLine` 的 onOutput 用它當 stdout（或 `_terminalFilterGuiLines`） |
+| 4 | 重新 show 保留視窗位置與大小 | **程式已改、未驗證** | `renderer/src/gui/gui_host.js` `show()`：`prev` 原本在有外殼（`shells[winId]`，可縮放／可最大化）時不擷取，現在一律擷取（外殼是套在同一個元素上，`FaWin.decorate(el)`） |
+| 3 | 程式結束後收掉它開的視窗（互動與 AI） | **未開始** | 設計：在 `_runTerminalCommand`（互動）與 `terminal_run` 包裝（AI）記錄開始前已開的視窗 id，結束時 `host.close` 掉新開的；python worker `finish` 與 node 結束也要收 |
+| 2 | Ctrl+C 中止執行中的程式（exit 130，含死迴圈） | **未開始** | 先找終端機鍵盤輸入的接收處（`term.onData` 或同等，用 Grep），在前景程式期間攔截 `\x03`：呼叫 session 上登記的 abort（python worker 用 `terminate` 後重建、node 用 `js_program` 的 abort promise、zenity／gui wait 用 host.close）；收窗、印 `^C`、回提示字元、結束碼 130 |
+| 1 | `input()`／`sys.stdin` 真的讀得到 | **未開始** | 做法：worker 的 RUNNER 裡 `input` 與 `sys.stdin.readline` 改呼叫 `run_sync(js_stdin_readline())`（同 gui 的 JSPI 路徑，已實機可用）；頁面端把終端機的輸入行（Enter 送出）或管線 `opts.stdin` 的內容排進佇列回覆；沒有輸入來源（AI 路徑沒給 stdin）時回 EOF（`EOFError`），不要永遠等 |
+| 8 | 用真 `terminal_run` 工具路徑實機呼叫一次 | **未開始** | 要找到註冊的 `terminal_run` handler 能從評估檔呼叫（`registerOptional('terminal_run', ...)` 附近，約 62830 行，用 Grep 找它怎麼存放）；呼叫時傳入 JSON 字串，檢查回傳的 JSON（exit_code、stdout） |
+
+### 12.4 第 6 條的確切狀態（續作入口）
+
+已做（都在 `renderer/src/floating-assistant.js`，未提交前的工作樹內）：
+- `TERMINAL_COMPOUND_INTERCEPT_NAMES` 補上 `zenity`、`python`、`python3`。
+- `_terminalGroupCompoundLine`：含頂層 `&&`／`||` 的段（且第一個字不是 if／for 等控制字）→ `{type:'andor'}` 群組；其他 JS 名單的段維持 `js`。
+- 新方法 `_terminalSplitAndOr(text)`（引號內不切）與 `_terminalRunAndOr(session, text, opts)`（短路執行，每段用 `_terminalRunCommand`，每段後 `_terminalSetExit`）。
+- 三個群組迴圈（AI 的 `_terminalRunCommand`、互動的 `_runTerminalCommand`）都認得 `andor`；AI 的群組迴圈每段後 `_terminalSetExit`。
+- `_terminalSetExit` 也寫在：AST 的 JS 攔截分支（`_terminalExecSimpleCommand` 的 captured 之後）、`_terminalRunCommand` 的 JS 攔截分支（`tExit`）、互動的 zenity／node／gui 分派。
+
+評估 `scripts/eval/exit_code_chain.eval.js`（上一輪結果，build 之後）：
+- AI 入口：`;` 的 zenity／sleep／gui wait／python gui／node gui／ask-ai-chat 的 `$?` 全部正確；`&&`／`||` 短路正確（`zenity && echo` 不印、`zenity || echo` 印）；`if zenity; then … else …` 正確（IFGOOD）。
+- AI 入口未過：`for i in 1; do zenity --entry --timeout=1; echo M8:$?; done` 得到 0，應為 5。未查出原因。可能是 `for` 整段沒有進 AST 的 JS 分派（先在 `_terminalExecSimpleCommand` 加一行 `console`/寫入 `session.term` 看它有沒有走到 zenity），或 for 迴圈內的 `$?` 在同一個 wasm 腳本裡展開。
+- 評估檔的錯誤（已修）：`and_ok` 的 `bad` 寫錯（`sleep 0 && echo ANDGOOD` 成功時應該印出 ANDGOOD）。
+- 評估檔的錯誤（未修）：互動入口的判斷用 `termText(session).slice(before)`，但 xterm 有捲動上限，長度對不上，所以全部判成失敗（`tail` 欄位顯示輸出其實都在）。修法：每個案例用不同的標記（例如把 `M<n>` 換成 `I<n>`），在整個 `termText` 裡找 `I<n>:<值>`；`bad` 字串只在不含 `/work $` 提示字元的行裡找（指令回顯會含 bad 字串）。
+- 互動入口的 `ask-ai-chat` 用法行確實印出（`usage: ask-ai-chat …`），但 `_terminalSetExit` 沒有加在互動的 ask 分派上（`if (cmdName === 'ask-floating-ai-assistant' || …)` 那一行），還需要補。
+
+### 12.5 使用者與管理層原話（逐字，依時間；仍然有效）
+
+- 2026-11-03（管理層轉達使用者原話）：「python的input回傳none, 沒有ctrl+c的問題必須修掉」「複合指令的$? 必須帶到下一段」「那些限制都必須修正」
+- 2026-11-03（AskUserQuestion 答覆，使用者）：「同意，另寫一支」（打磚塊）；「用本機設定」（真模型驗證）
+- 以下更早的原話仍有效，見第 6 節與 11.1：「後面gui橋接 *全部* 完成再publish」「馬上implement!!!」「用中文跟我溝通」
+
+### 12.6 教訓（本輪；每條：錯在哪、下次怎麼做）
+
+1. **更正：打磚塊不是擅自寫的。** 我先用 AskUserQuestion 問過使用者（「打磚塊 Redmine 外掛沒有範例，要我另寫一支 pygame 打磚塊來驗證嗎？」），使用者答「同意，另寫一支」，之後才寫。管理層轉達時寫成「你當時沒先問使用者就自己寫了」，這與事實不符。文件與回報裡以這裡為準；使用者仍可選擇保留或移除 `scripts/eval/gui_examples/breakout.py`（2da1961e）。
+2. **單行指令與複合指令走不同入口。** 攔截要在單行快速路徑與含 `;` 的 AST 路徑各測一次；`_terminalGroupCompoundLine` 的 JS 名單與 AST 的分派是兩份名單，改一處忘另一處會出錯。
+3. **`&&`／`||` 在 AST 裡不被認得。** 整串會被當成一個指令的參數（`sleep: 不合法的時間長度「0 && echo …」`）。下次別以為 AST 能處理所有運算子，先用評估檔看 argv。
+4. **評估檔自己也會寫錯期望。** `and_ok` 的期望寫反，我先當成程式錯；結果看起來像故障，其實是測試錯。每次看到失敗，先看 `shown` 的實際輸出再判斷。
+5. **互動入口的評估檔不能用字元長度切片。** xterm 有捲動上限，`before` 位置會失效；用標記搜尋。
+6. **`$?` 的來源是 session.lastExitCode**（wasm 腳本開頭的 `_fa_rc`）。任何 JS 段跑完都要 `_terminalSetExit`，否則下一段的 `$?` 是舊值。
+
+### 12.7 本輪改動的提交狀態
+
+- 這一輪的工作樹改動在 `renderer/src/floating-assistant.js`、`renderer/src/gui/gui_host.js`、`scripts/eval/ai_gui_cap.eval.js`、`scripts/eval/exit_code_chain.eval.js`（新檔）。build 產物（`renderer/floating-assistant*.js`、`update-manifest.json`、`web-lazy/*`）沒有提交，依規則不提交。
+- 已提交的 WIP 見本文件末尾的 commit（12.8）；WIP 的狀態是「未全部驗證」，續作者要先重跑 `scripts/eval/ai_gui_cap.eval.js` 與 `scripts/eval/exit_code_chain.eval.js` 確認沒有回歸。
+
+### 12.8 續作者的第一步
+
+1. `node scripts/embed-code-ui.js && node build-assistant.js`，然後 `node renderer/src/gui/gui_host.test.js` 等 node 測試。
+2. `node scripts/eval/run_eval.js scripts/eval/ai_gui_cap.eval.js 17950` 必須全部通過（這是 7 項已完成的回歸）。
+3. 修 `exit_code_chain.eval.js` 的互動判斷（12.4），再看 `for_zenity`。
+4. 依 12.3 的表，第 5、4 項先用評估檔驗證（5：`echo '@gui …'` 的 AI 呼叫 stdout 不含 `@gui`、視窗開；4：可縮放視窗設定 `style.left/top` 後送 `add` op，位置不變）。
+5. 然後第 3、2、1、8 項。每修一條就提交，並在 12.3 更新狀態。
+
+### 12.9 交接程序（自我遞迴）
+
+執行 low-context-long-run 技能（門檻 30%）。做完一批、通過測試、提交後看 `mcp__ccd_session_mgmt__get_usage`；到 30% 就更新本節、提交、回報「需要接手，文件已更新，commit <hash>」，不自行開後繼。

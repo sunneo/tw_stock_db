@@ -50943,7 +50943,7 @@ const TERMINAL_SHELL_BUILTINS = [
 const TERMINAL_COMPOUND_INTERCEPT_NAMES = new Set([
     'cd', 'pwd', 'clear', 'exit', 'help', 'which', 'chmod', 'time',
     'ask-floating-ai-assistant', 'ask-ai-chat', 'gui', 'node', 'sync', 'sleep', 'curl', 'wget', 'httping', 'make', 'sqlite3', 'sqlite', 'sqlitebrowser',
-    'sh', 'bash',
+    'sh', 'bash', 'zenity', 'python', 'python3',
 ]);
 
 // tw_stock_db客製: 2026-09-25使用者最終要求——不再靠wasi-sh的host builtin
@@ -62837,10 +62837,8 @@ ${fnData.code}
                 if (!String(parsed.command || '').trim()) return JSON.stringify({ ok: false, error: '缺少command參數' });
                 try {
                     // AI 呼叫沒有人能按視窗：這次呼叫內的 GUI 等待（zenity、gui wait、含 gui 的 python／node）最多等 120 秒（見 _terminalZenity）
-                    session.guiAiTimeoutSec = 120;
-                    let result;
-                    try { result = await this._terminalRunCommand(session, String(parsed.command), { outputFile: parsed.output_file, stderrFile: parsed.stderr_file }); }
-                    finally { delete session.guiAiTimeoutSec; }
+                    // 上限只跟著這一次呼叫（沿 opts 往下傳），不放在 session 上，使用者自己在終端機打的 GUI 等待不受影響
+                    const result = await this._terminalRunCommand(session, String(parsed.command), { outputFile: parsed.output_file, stderrFile: parsed.stderr_file, guiTimeoutSec: 120 });
                     return JSON.stringify(result);
                 } catch (err) {
                     return JSON.stringify({ ok: false, error: String(err.message || err) });
@@ -83916,6 +83914,42 @@ ${sourceTool.handlerScript}
         return parts.map((p) => p.trim()).filter(Boolean);
     }
 
+    // 把一段裡頂層的 && 與 || 切開（引號內不切）。回傳 [{op, cmd}]，第一段的 op 是 null。
+    _terminalSplitAndOr(text) {
+        const parts = [];
+        let cur = '', op = null, inS = false, inD = false;
+        for (let i = 0; i < text.length; i++) {
+            const c = text[i], n = text[i + 1];
+            if (inS) { cur += c; if (c === "'") inS = false; continue; }
+            if (inD) { cur += c; if (c === '"') inD = false; continue; }
+            if (c === "'") { inS = true; cur += c; continue; }
+            if (c === '"') { inD = true; cur += c; continue; }
+            if ((c === '&' && n === '&') || (c === '|' && n === '|')) {
+                parts.push({ op, cmd: cur.trim() });
+                op = c + n; cur = ''; i++;
+                continue;
+            }
+            cur += c;
+        }
+        parts.push({ op, cmd: cur.trim() });
+        return parts.filter((p) => p.cmd);
+    }
+
+    // a && b || c：照 shell 的規則短路執行。每一段都走 _terminalRunCommand（JS 指令與 wasm 指令都在那裡分派），每段跑完就把結束碼寫回，讓後面的 $? 拿得到。
+    async _terminalRunAndOr(session, text, opts = {}) {
+        let exit = 0, stdout = '', stderr = '';
+        for (const p of this._terminalSplitAndOr(text)) {
+            if (p.op === '&&' && exit !== 0) continue;
+            if (p.op === '||' && exit === 0) continue;
+            const r = await this._terminalRunCommand(session, p.cmd, { streamToWidget: opts.streamToWidget, guiTimeoutSec: opts.guiTimeoutSec });
+            exit = r.exit_code;
+            stdout += r.stdout || '';
+            stderr += r.stderr || '';
+            this._terminalSetExit(session, exit);
+        }
+        return { ok: true, exit_code: exit, stdout, stderr };
+    }
+
     _terminalGroupCompoundLine(line) {
         const segments = this._terminalSplitTopLevelSemicolons(line);
         const groups = [];
@@ -83929,7 +83963,12 @@ ${sourceTool.handlerScript}
             // 使用者自己取的），額外用「含斜線」當判斷條件——跟cd/chmod/
             // sh/bash同一類「busybox本身做不到、一定要JS層攔截」的指令，
             // 見_terminalRunCommand裡對應的slash-script分支說明。
-            if (TERMINAL_COMPOUND_INTERCEPT_NAMES.has(firstWord) || firstWord.includes('/')) {
+            // 含 && 或 || 的段交給 AST 執行器（它有短路規則，JS 指令也在那裡分派）；只有單純的段才拆成 JS 段
+            const hasAndOr = /&&|\|\|/.test(seg);
+            if (hasAndOr && !/^(if|for|while|until|case|do|done|then|else|elif|fi|esac)$/.test(firstWord)) {
+                flushWasm();
+                groups.push({ type: 'andor', text: seg });
+            } else if (!hasAndOr && (TERMINAL_COMPOUND_INTERCEPT_NAMES.has(firstWord) || firstWord.includes('/'))) {
                 flushWasm();
                 groups.push({ type: 'js', text: seg });
             } else {
@@ -84549,7 +84588,7 @@ ${sourceTool.handlerScript}
             const restArgsQuoted = expandedArgv.slice(1).map((a) => this._shQuote(a)).join(' ');
             // python／python3 含 import gui 或 pygame 時走 Worker（與互動路徑同一套判斷，見 _terminalTryPythonAsync）；其他 python 照原本走 wasm
             if ((cmdName === 'python' || cmdName === 'python3') && !this._terminalHasShellOps(restArgsQuoted)) {
-                const pyCap = await this._terminalCaptureWrites(session, () => this._terminalTryPythonAsync(session, restArgsQuoted));
+                const pyCap = await this._terminalCaptureWrites(session, () => this._terminalTryPythonAsync(session, restArgsQuoted, opts.guiTimeoutSec));
                 if (pyCap.result === true) return { exitCode: session.lastExitCode || 0, stdout: pyCap.hadError ? '' : pyCap.text, stderr: pyCap.hadError ? pyCap.text : '' };
             }
             const captured = await this._terminalCaptureWrites(session, async () => {
@@ -84560,13 +84599,14 @@ ${sourceTool.handlerScript}
                 else if (cmdName === 'date') await this._terminalDateInline(session, expandedArgv.slice(1));
                 else if (cmdName === 'ask-floating-ai-assistant' || cmdName === 'ask-ai-chat') return await this._terminalAskAI(session, restArgsRaw, this._terminalConsumeStdinOpt(opts));
                 else if (cmdName === 'sqlite3' || cmdName === 'sqlite') return await this._terminalSqlite(session, expandedArgv.slice(1), this._terminalConsumeStdinOpt(opts));
-                else if (cmdName === 'node') return await this._terminalNode(session, restArgsRaw);
-                else if (cmdName === 'gui') return await this._terminalGui(session, expandedArgv.slice(1), env);
-                else if (cmdName === 'zenity') return await this._terminalZenity(session, restArgsQuoted);
+                else if (cmdName === 'node') return await this._terminalNode(session, restArgsRaw, opts.guiTimeoutSec);
+                else if (cmdName === 'gui') return await this._terminalGui(session, expandedArgv.slice(1), env, opts.guiTimeoutSec);
+                else if (cmdName === 'zenity') return await this._terminalZenity(session, restArgsQuoted, opts.guiTimeoutSec);
                 else if (cmdName === 'sqlitebrowser') return await this._terminalSqliteBrowser(session, expandedArgv.slice(1));
                 else if (cmdName === 'make') await this._terminalRunMakeViaTool(session, restArgsRaw);
             });
             const vExit = typeof captured.result === 'number' ? captured.result : (captured.hadError ? 1 : 0);
+            this._terminalSetExit(session, vExit);   // 後面的 $? 要拿得到這個 JS 指令的結束碼
             return { exitCode: vExit, stdout: vExit ? '' : captured.text, stderr: vExit ? captured.text : '' };
         }
         const prefix = this._terminalBuildEnvPrefix(env);
@@ -84744,7 +84784,9 @@ ${sourceTool.handlerScript}
         if (groups.length > 1) {
             for (const g of groups) {
                 if (session.ended) return;
-                await (g.type === 'js' ? this._runTerminalCommand(session, g.text) : this._terminalRunShellText(session, g.text, {}));
+                await (g.type === 'andor' ? this._terminalRunAndOr(session, g.text, { streamToWidget: true })
+                    : g.type === 'js' ? this._runTerminalCommand(session, g.text)
+                    : this._terminalRunShellText(session, g.text, {}));
             }
             return;
         }
@@ -84898,9 +84940,9 @@ ${sourceTool.handlerScript}
         // python／python3 的程式含 import gui 或 pygame 時走 Worker（見 _terminalTryPythonAsync）；其他 python 指令不受影響
         if ((cmdName === 'python' || cmdName === 'python3') && !this._terminalHasShellOps(restArgs) && await this._terminalTryPythonAsync(session, restArgs)) return;
         if (cmdName === 'zenity' && this._terminalHasShellOps(restArgs)) { await this._terminalRunShellText(session, trimmed, {}); return; }
-        if (cmdName === 'zenity') { await this._terminalZenity(session, restArgs); return; }
-        if (cmdName === 'node') { await this._terminalNode(session, restArgs); return; }
-        if (cmdName === 'gui') { await this._terminalGui(session, this._terminalTokenizeArgs(restArgs), null); return; }
+        if (cmdName === 'zenity') { this._terminalSetExit(session, await this._terminalZenity(session, restArgs)); return; }
+        if (cmdName === 'node') { this._terminalSetExit(session, await this._terminalNode(session, restArgs)); return; }
+        if (cmdName === 'gui') { this._terminalSetExit(session, await this._terminalGui(session, this._terminalTokenizeArgs(restArgs), null)); return; }
         if (cmdName === 'sqlite3' || cmdName === 'sqlite') { await this._terminalSqlite(session, this._terminalTokenizeArgs(restArgs), null); return; }
         if (cmdName === 'sqlitebrowser') { await this._terminalSqliteBrowser(session, this._terminalTokenizeArgs(restArgs)); return; }
         // tw_stock_db客製: 2026-09-25使用者要求——sleep/curl/wget/httping。這幾個
@@ -85041,10 +85083,11 @@ ${sourceTool.handlerScript}
     // （_runTerminalShellLine/_terminalRunScriptFile）共用這個helper。
     _terminalWriteOutput(session, text) {
         text = this._terminalFilterGuiLines(session, text);
-        if (!text) return;
+        if (!text) return '';
         session.term.write(text);
         const enabled = !this.advancedSettings.terminal || this.advancedSettings.terminal.scrollToOutputEnabled !== false;
         if (enabled && typeof session.term.scrollToBottom === 'function') session.term.scrollToBottom();
+        return text.replace(/\r\n/g, '\n');   // 回傳實際顯示的文字（@gui 行已拿掉），呼叫端拿來當 stdout
     }
 
     // pager.mjs/editor.mjs裡也各自有一份一模一樣的resolvePath——那两个是
@@ -85594,13 +85637,16 @@ ${sourceTool.handlerScript}
         if (groups.length > 1) {
             let stdout = '', stderr = '', exitCode = 0;
             for (const g of groups) {
-                const r = g.type === 'js'
-                    ? await this._terminalRunCommand(session, g.text, { streamToWidget: opts.streamToWidget })
-                    : await this._terminalRunShellText(session, g.text, { streamToWidget: opts.streamToWidget });
+                const r = g.type === 'andor'
+                    ? await this._terminalRunAndOr(session, g.text, { streamToWidget: opts.streamToWidget, guiTimeoutSec: opts.guiTimeoutSec })
+                    : g.type === 'js'
+                    ? await this._terminalRunCommand(session, g.text, { streamToWidget: opts.streamToWidget, guiTimeoutSec: opts.guiTimeoutSec })
+                    : await this._terminalRunShellText(session, g.text, { streamToWidget: opts.streamToWidget, guiTimeoutSec: opts.guiTimeoutSec });
                 if (!r.ok) return r;
                 stdout += r.stdout || '';
                 stderr += r.stderr || '';
                 exitCode = r.exit_code;
+                this._terminalSetExit(session, exitCode);   // 下一段的 $? 要拿到這一段的結束碼（JS 段不會自己寫回）
             }
             if (opts.outputFile || opts.stderrFile) {
                 try {
@@ -85646,12 +85692,13 @@ ${sourceTool.handlerScript}
         const httpToolWithOps = (cmdNameOnly === 'curl' || cmdNameOnly === 'wget') && this._terminalHasShellOps(restArgsForBuiltin);
         // 單行的 python（沒有 ; 等運算子）不會進 AST 執行器，要在這裡判斷：含 import gui／pygame 走 Worker，其他照原本的 wasm
         if ((cmdNameOnly === 'python' || cmdNameOnly === 'python3') && !this._terminalHasShellOps(restArgsForBuiltin)) {
-            const pyCap = await this._terminalCaptureWrites(session, () => this._terminalTryPythonAsync(session, restArgsForBuiltin));
+            const pyCap = await this._terminalCaptureWrites(session, () => this._terminalTryPythonAsync(session, restArgsForBuiltin, opts.guiTimeoutSec));
             if (pyCap.result === true) return { ok: true, exit_code: session.lastExitCode || 0, stdout: pyCap.hadError ? '' : pyCap.text, stderr: pyCap.hadError ? pyCap.text : '' };
         }
         if (JS_INTERCEPTED_WITH_CAPTURE[cmdNameOnly] && !httpToolWithOps) {
-            const captured = await this._terminalCaptureWrites(session, () => this[JS_INTERCEPTED_WITH_CAPTURE[cmdNameOnly]](session, restArgsForBuiltin));
+            const captured = await this._terminalCaptureWrites(session, () => this[JS_INTERCEPTED_WITH_CAPTURE[cmdNameOnly]](session, restArgsForBuiltin, opts.guiTimeoutSec));
             const tExit = typeof captured.result === 'number' ? captured.result : (captured.hadError ? 1 : 0);
+            this._terminalSetExit(session, tExit);
             return tExit
                 ? { ok: true, exit_code: tExit, stdout: '', stderr: captured.text }
                 : { ok: true, exit_code: 0, stdout: captured.text, stderr: '' };
@@ -85783,8 +85830,9 @@ ${sourceTool.handlerScript}
                 command: script, fs: fsStore, wasm: runtime.wasmBytes.slice(0), inline: true, builtins,
                 onOutput: (bytes, channel) => {
                     const text = new TextDecoder().decode(bytes);
-                    if (channel === 'stderr') errBuf += text; else outBuf += text;
-                    if (opts.streamToWidget !== false) this._terminalWriteOutput(session, text.replace(/\n/g, '\r\n'));
+                    // @gui 行只套用、不進 stdout（視窗照開）；其餘照舊
+                    const shown = opts.streamToWidget !== false ? this._terminalWriteOutput(session, text.replace(/\n/g, '\r\n')) : this._terminalFilterGuiLines(session, text);
+                    if (channel === 'stderr') errBuf += text; else outBuf += shown;
                     session.lastActiveAt = Date.now();
                 },
             };
@@ -86888,7 +86936,7 @@ ${sourceTool.handlerScript}
     }
     // node <檔案.js>：JavaScript 程式在 sandbox="allow-scripts" 的 iframe 裡跑（沒有 allow-same-origin，碰不到這個頁面）。
     // 程式有 console.log／console.error 與 gui（開視窗，同 Python 的 gui），其餘 Node 的 API（require、fs、process）都沒有。
-    async _terminalNode(session, argsText) {
+    async _terminalNode(session, argsText, guiTimeoutSec) {
         const w = (s, red) => session.term.write((red ? '\x1b[31m' : '') + String(s).replace(/\r?\n/g, '\r\n') + (red ? '\x1b[0m' : ''));
         const words = this._terminalTokenizeArgs(argsText);
         if (!words.length) { w('usage: node <檔案.js>（沙盒執行：有 console.log 與 gui，沒有 require／fs）\r\n', true); return 2; }
@@ -86899,7 +86947,7 @@ ${sourceTool.handlerScript}
             src = new TextDecoder('utf-8').decode(this._terminalSandboxFileBytes(fsStore, this._terminalResolvePath(session.cwd, words[0])));
         } catch (_) { w(`node: ${words[0]}: 找不到這個檔案\r\n`, true); return 1; }
         const JP = this._faGuiModule('jsprogram');
-        const cap = Number(session.guiAiTimeoutSec) || 0;   // AI 路徑的時間上限（沒有人能關視窗）
+        const cap = Number(guiTimeoutSec) || 0;   // AI 呼叫的時間上限（沒有人能關視窗）
         const r = await JP.run(src, { onGui: (op, args) => this._pyBridgeGui(String(op).replace(/^gui\./, ''), args, session), timeoutMs: cap ? cap * 1000 : undefined });
         if (cap && r.exit_code === 124) this._terminalGuiHost(session).closeAll();
         if (r.stdout) w(r.stdout);
@@ -86908,7 +86956,7 @@ ${sourceTool.handlerScript}
     }
     // gui 指令：gui wait <視窗> [--timeout 秒] [變數]（等下一個事件；超時 exit 124，視窗已關閉會得到 close 事件）、gui poll <視窗>（不等，沒有事件 exit 1）。
     // 事件是一行 JSON：有給變數名就存進 shell 變數（只在腳本裡有效），沒有就印出來。
-    async _terminalGui(session, argv, env) {
+    async _terminalGui(session, argv, env, guiTimeoutSec) {
         const w = (s) => session.term.write(String(s).replace(/\r?\n/g, '\r\n') + '\r\n');
         const sub = argv[0];
         const rest = argv.slice(1);
@@ -86917,7 +86965,7 @@ ${sourceTool.handlerScript}
             if (rest[i] === '--timeout' || rest[i] === '-t') timeout = Math.min(300, Math.max(0, Number(rest[++i]) || 0));
             else pos.push(rest[i]);
         }
-        if (session.guiAiTimeoutSec) timeout = Math.min(timeout, session.guiAiTimeoutSec);   // AI 路徑：沒有人能按，等待有上限
+        if (guiTimeoutSec) timeout = Math.min(timeout, guiTimeoutSec);   // AI 呼叫：沒有人能按，等待有上限
         if ((sub !== 'wait' && sub !== 'poll') || !pos[0]) { w('\x1b[31musage: gui wait <視窗> [--timeout 秒] [變數] | gui poll <視窗> [變數]\x1b[0m'); return 2; }
         const host = this._terminalGuiHost(session);
         const winId = pos[0], varName = pos[1];
@@ -87029,7 +87077,7 @@ ${sourceTool.handlerScript}
 
     // python／python3 的程式含 import gui 或 pygame 時走 Worker；否則回傳 false，原本的 python 指令照常執行（既有行為不動）。
     // 檔案從終端機的沙盒讀；同一個目錄的一般檔案一起交給 Worker（程式可以 open 貼圖之類的檔案）。
-    async _terminalTryPythonAsync(session, argsText) {
+    async _terminalTryPythonAsync(session, argsText, guiTimeoutSec) {
         const PA = this._faGuiModule('pyasync');
         const words = this._terminalTokenizeArgs(argsText);
         let i = 0;
@@ -87058,13 +87106,13 @@ ${sourceTool.handlerScript}
                 inputs.push({ rel: name, bytes: this._terminalSandboxFileBytes(fsStore, p) });
             }
         } catch (_) { /* 讀不到目錄就只有腳本本身 */ }
-        const cap = Number(session.guiAiTimeoutSec) || 0;
+        const cap = Number(guiTimeoutSec) || 0;
         session.lastExitCode = await this._terminalRunPythonWorker(session, { src, scriptName, inputs }, fsStore, cwd, { timeoutMs: cap ? cap * 1000 : 0 });
         return true;
     }
 
     // zenity（winetricks 相容）：對話框是一個 GUI 視窗，等使用者按下後把答案印到 stdout，回傳 exit code（0 OK、1 取消、5 逾時）
-    async _terminalZenity(session, argsText) {
+    async _terminalZenity(session, argsText, guiTimeoutSec) {
         const Z = this._faGuiModule('zenity');
         const parsed = Z.parse(this._terminalTokenizeArgs(argsText));
         if (parsed.ok === false) { session.term.write(`\x1b[31mzenity: ${parsed.error}\x1b[0m\r\n`); return 1; }
@@ -87077,8 +87125,8 @@ ${sourceTool.handlerScript}
             const r = host.apply(`@gui ${JSON.stringify(Object.assign({ v: 1 }, m))}`);
             if (!r.ok) { session.term.write(`\x1b[31mzenity: ${r.error}\x1b[0m\r\n`); return 1; }
         }
-        // AI 路徑（session.guiAiTimeoutSec）沒有人能按按鈕：沒給 --timeout 就用上限；給了比上限大也以上限為準
-        const cap = Number(session.guiAiTimeoutSec) || 0;
+        // AI 呼叫（guiTimeoutSec）沒有人能按按鈕：沒給 --timeout 就用上限；給了比上限大也以上限為準
+        const cap = Number(guiTimeoutSec) || 0;
         const timeoutSec = cap ? Math.min(Number(parsed.opts.timeout) || cap, cap) : (Number(parsed.opts.timeout) || 0);
         let timedOut = false;
         const timer = timeoutSec > 0 ? setTimeout(() => { timedOut = true; host.close(winId); }, timeoutSec * 1000) : null;
