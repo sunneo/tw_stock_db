@@ -1468,7 +1468,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     music: {
         enabled: true,
         label: '音樂(MIDI 播放、MIDI 轉 mp3、音樂知識:音階和弦節奏音域配器與各風格;音色一律用 GS 音色庫)',
-        toolNames: ['midi_play', 'midi_edit_open', 'midi_compose', 'midi_to_mp3', 'audio_to_midi', 'soundtrack_make', 'music_topic', 'list_uploaded_files', 'browser_search', 'fetch_web_page'],
+        toolNames: ['midi_play', 'midi_edit_open', 'midi_compose', 'midi_to_mp3', 'audio_to_midi', 'soundtrack_make', 'music_topic', 'music_work_learn', 'list_uploaded_files', 'browser_search', 'fetch_web_page'],
         systemPrompt: '你負責音樂:播放 MIDI、把 MIDI 轉成 mp3、把使用者上傳的 mp3/wav 轉成 MIDI(audio_to_midi,結果要誠實說沒做到的部分)、回答音樂知識、依描述組一首短曲讓使用者聽。做法:0) 使用者要你作曲、寫一首曲子、做背景音樂 → midi_compose({description,或 style／key／tempo／bars})(程式依風格範本產生並檢查音域與跳進,結果直接進編輯器;不要自己一個音一個音寫,除非使用者給了明確的旋律);1) 使用者上傳了 .mid 檔 → midi_play({file_id}) 放播放卡片;要 mp3 → midi_to_mp3({file_id})。2) 要你寫一段曲子 → 先 music_topic 查需要的知識(和弦進行、音域、鼓型、風格),再自己組 song 呼叫 midi_play({song}):速度與拍號合風格,音高在樂器合理音域內,旋律音落在調內、強拍用和弦內音,貝斯彈根音,鼓用 drum:true 的軌(底鼓 36、小鼓 38、閉合踩鈸 42),每軌 program 用 GM 編號;小節數取 4 的倍數。3) 不確定某個風格的細節 → browser_search 查維基再回答,不要憑印象講數字。4) 音色只有 GS 音色庫的 GM 128 音色與鼓組;不能承諾做不到的(例如任意樂器分離、錄音轉譜目前還沒有)。5) 誠實說明:播放卡片第一次要下載瘦身版音色庫(大小會顯示在下載進度)。',
         dynamicNote: '路由建議:使用者提到 MIDI、.mid、播放音樂、轉 mp3、作曲、和弦、音階、節奏、配樂、某種音樂風格的特色時,委派這個領域。'
     },
@@ -60685,7 +60685,7 @@ ${fnData.code}
             { type: 'object', properties: { file_id: { type: 'string' }, song_id: { type: 'string' }, song: { type: 'object' }, title: { type: 'string' } }, additionalProperties: false }
         );
         registerOptional('midi_compose',
-            '依描述「作曲」並開 MIDI 編輯器(跟斜線指令 /media-compose-midi 走同一條路:有 AI 時由 AI 用選擇題理解風格範本、情緒、速度、調式、主奏樂器、長度與用途,程式逐欄核對,答錯只退回那一欄的預設;沒有 AI 才用範本規則,結果卡片會寫每個欄位是誰決定的):程式依風格範本產生(前奏／主歌／副歌結構、和弦進行、旋律、貝斯、和弦伴奏、鼓),旋律音域與跳進由程式檢查,失敗自動重來;你只需要選風格、調、速度、小節數、和弦進行編號(都可省略)。風格:pop 流行、rock 搖滾、jazz 爵士、blues 藍調、waltz 圓舞曲(3/4)、folk 民謠、lofi 低傳真、edm 電子舞曲、classical 古典;沒有專屬範本的風格或作曲家(貝多芬、重金屬、森巴…)會自動挑最接近的範本,結果裡有 style_note,要照實轉述、不要說成真的是那位作曲家的作品;結果是編輯器卡片,不要自己寫 Python／mido 腳本或把 .mid 寫到資料夾。也可以只給 description(中文描述,程式會讀出風格／調／速度／小節數)。同樣的 seed 產生同樣的曲子,想換一首就換 seed。',
+            '依描述「作曲」並開 MIDI 編輯器(跟斜線指令 /media-compose-midi 走同一條路:有 AI 時由 AI 用選擇題理解風格範本、情緒、速度、調式、主奏樂器、長度與用途,程式逐欄核對,答錯只退回那一欄的預設;沒有 AI 才用範本規則,結果卡片會寫每個欄位是誰決定的):程式依風格範本產生(前奏／主歌／副歌結構、和弦進行、旋律、貝斯、和弦伴奏、鼓),旋律音域與跳進由程式檢查,失敗自動重來;你只需要選風格、調、速度、小節數、和弦進行編號(都可省略)。風格:pop 流行、rock 搖滾、jazz 爵士、blues 藍調、waltz 圓舞曲(3/4)、folk 民謠、lofi 低傳真、edm 電子舞曲、classical 古典;沒有專屬範本的風格或作曲家(貝多芬、重金屬、森巴…)會自動挑最接近的範本,結果裡有 style_note,要照實轉述、不要說成真的是那位作曲家的作品;結果是編輯器卡片,不要自己寫 Python／mido 腳本或把 .mid 寫到資料夾。也可以只給 description(中文描述,程式會讀出風格／調／速度／小節數)。遇到你不熟的作品、遊戲、電影或作曲家名字(例如某款遊戲的配樂),先用 browser_search 查它的調、調式、速度、樂器、和弦進行這類事實,再把查到的事實寫進 description 或 style／key／tempo 參數,不要憑印象猜,也不要照搬旋律;查到了就呼叫 music_work_learn 記進離線目錄(要附出處網址),下次同名的作品程式直接查表、不必再上網;查不到才照實說不確定。同樣的 seed 產生同樣的曲子,想換一首就換 seed。',
             async function (rawArgs) {
                 let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 try {
@@ -60697,6 +60697,26 @@ ${fnData.code}
                 } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
             },
             { type: 'object', properties: { description: { type: 'string', description: '使用者的中文描述,例如「輕快的爵士,D 調,16 小節」' }, style: { type: 'string', enum: ['pop', 'rock', 'jazz', 'blues', 'waltz', 'folk', 'lofi', 'edm', 'classical'] }, key: { type: 'string', description: 'C、D、Eb、F#… 大調或(小調風格)的主音' }, tempo: { type: 'number' }, bars: { type: 'number', description: '4 到 64,16 以上有前奏／主歌／副歌結構' }, progression: { type: 'number', description: '風格內的和弦進行編號,從 0 起算' }, seed: { type: 'number' }, title: { type: 'string' } }, additionalProperties: false }
+        );
+        registerOptional('music_work_learn',
+            '把「上網查到的作品音樂特徵」記進離線目錄(使用者機器上),下次作曲遇到同名作品直接查表、不必再上網。只收事實:調、調式、速度、風格範本、一句話特徵(樂器、和弦進行),不收旋律;一定要附出處網址;程式會逐欄核對,不合格會說明哪裡不對,請照訊息改了再呼叫。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try {
+                    const v = FaMidiCompose.validateWork(a); if (v.error) return JSON.stringify({ ok: false, error: v.error });
+                    let list = []; try { list = JSON.parse(localStorage.getItem('fa_music_works') || '[]') || []; } catch (_) { list = []; }
+                    list = list.filter((w) => w.name !== v.work.name); list.push(Object.assign(v.work, { at: new Date().toISOString().slice(0, 10) })); if (list.length > 200) list = list.slice(-200);
+                    try { localStorage.setItem('fa_music_works', JSON.stringify(list)); } catch (e) { return JSON.stringify({ ok: false, error: '存不進本機:' + String((e && e.message) || e) }); }
+                    FaMidiCompose.setLearnedWorks(list);
+                    let harness = '';
+                    try { // 同時進 harness 經驗閘門(只收程式驗證過、去識別、去重的成功),之後由離線訓練器取用
+                        const rec = FaHarnessExp.makeRecord({ template: 'media-compose-midi', task: '作品特徵:' + v.work.name, verdict: 'ok', steps: [{ id: 'work', kind: 'choice', by: 'program', tries: 1, ok: true }], slots: { work: v.work.name, style: v.work.style, key: v.work.key, mode: v.work.mode, tempo: String(v.work.tempo) }, missing: [] });
+                        const g = FaHarnessExp.gate(rec); harness = g.accept ? '已送進 harness 經驗' : '經驗閘門沒收:' + g.reason;
+                    } catch (e) { harness = '經驗閘門略過:' + String((e && e.message) || e); }
+                    return JSON.stringify({ ok: true, saved: v.work.name, count: list.length, harness, note: '已記進離線目錄,之後作曲遇到「' + v.work.keys.join('、') + '」會直接套用這些特徵' });
+                } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+            },
+            { type: 'object', properties: { name: { type: 'string' }, aliases: { type: 'array', items: { type: 'string' }, description: '別名、英文名、系列簡稱' }, key: { type: 'string', description: '主音,如 D、Eb、F#' }, mode: { type: 'string', enum: ['major', 'minor'] }, tempo: { type: 'number', description: '40 到 220 拍/分' }, style: { type: 'string', enum: ['pop', 'rock', 'jazz', 'blues', 'waltz', 'folk', 'lofi', 'edm', 'classical'], description: '最接近的風格範本' }, hint: { type: 'string', description: '一句話事實:樂器、和弦進行、氛圍,不要寫旋律' }, source_url: { type: 'string', description: '查到這些事實的網頁網址' } }, required: ['name', 'key', 'mode', 'tempo', 'style', 'hint', 'source_url'], additionalProperties: false }
         );
         registerOptional('midi_to_mp3',
             '把 MIDI 用 GS 音色庫離線渲染並編成 mp3 檔(變成下載卡片)。來源同 midi_play:file_id、song_id 或 song。第一次要下載瘦身版音色庫(大小會顯示在下載進度);長曲子會花一些時間。',
@@ -74669,7 +74689,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         try {
             const pre = await this._midigenProbe(); say(3, '【模型預檢】' + (pre.ok ? 'midigenai 程式檔載得進來' + (pre.note ? '(' + pre.note + ')' : ',作曲最後會請模型補聲部') : '這次不會用 midigenai:' + pre.reason + '(仍會用作曲樹作曲)'));
             say(5, '【理解需求】' + (offline ? '離線模式,用範本規則' : '請 AI 理解你的需求' + (model ? '(模型:' + model + ')' : '')) + ':' + String(text).slice(0, 60));
-            const wkHint = FaMidiCompose.workHints(text); if (wkHint) say(4, '【作品特徵】程式查表:' + wkHint.replace(/^\n作品特徵\(程式查表,供參考,只是風格事實不是旋律\):/, '').slice(0, 200));
+            try { FaMidiCompose.setLearnedWorks(JSON.parse(localStorage.getItem('fa_music_works') || '[]')); } catch (_) { /* 沒有學到的作品 */ } const wkHint = FaMidiCompose.workHints(text); if (wkHint) say(4, '【作品特徵】程式查表:' + wkHint.replace(/^\n作品特徵\(程式查表,供參考,只是風格事實不是旋律\):/, '').slice(0, 200));
             const res = await FaComposePlan.decide(text, { hint: wkHint, ask, explicit: explicit || {}, noAiReason: offline ? '離線模式' : '', timeoutMs: 25000, attempts: 2, learned: (t) => this._composeLearnedFor(t), onStep: (m) => say(25, '【理解需求】' + m) });
             say(60, '【核對】' + (res.report.usedAi ? '程式逐欄核對 AI 的答案,沒答對的欄位用預設' : '這次沒有用 AI,用的是範本規則(' + (res.report.aiError || '') + ')') + (model && !res.report.usedAi && !offline ? ';模型:' + model : ''));
             res.task = String(text); res.report.model = model;
