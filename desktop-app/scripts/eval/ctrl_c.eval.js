@@ -14,7 +14,7 @@ put('spin.py', 'import gui\nw = gui.Window("spin", width=200)\nw.button("OK")\nn
 put('waitwin.py', 'import gui\nw = gui.Window("ww", width=200)\nw.button("OK")\nwhile True:\n    ev = w.wait(timeout=60)\n    print("ev", ev)\n');
 put('spin.js', 'const w = await gui.open("sj", 200); await w.button("OK"); for (;;) { }\n');
 put('ok.py', 'import gui\nprint("after-ok")\n');
-const cases = [['py_spin', 'python3 spin.py'], ['py_wait', 'python3 waitwin.py'], ['js_spin', 'node spin.js'], ['zenity', 'zenity --entry']];
+const cases = [['py_spin', 'python3 spin.py'], ['py_wait', 'python3 waitwin.py'], ['js_spin', 'node spin.js'], ['zenity', 'zenity --entry'], ['py_compound', 'python3 spin.py; echo AFTER-OK']];
 for (const [n, c] of cases) {
   const p = fa._handleTerminalInput(session, c + '\r');
   const t1 = Date.now(); while (Date.now() - t1 < 40000 && !(n !== 'js_spin' ? wins() > 0 : wins() > 0)) await wait(200);
@@ -23,7 +23,9 @@ for (const [n, c] of cases) {
   const t0 = Date.now();
   await fa._handleTerminalInput(session, '\x03');
   await Promise.race([p, wait(8000)]);
-  R[n] = { busy_before: busy, wins_before: w1, ms: Date.now() - t0, busy_after: session.busy, wins_after: wins(), lec: session.lastExitCode, tail: termText(session).slice(-80) };
+  // 結果行（不含指令回顯的 $ 提示字元那一行）出現 AFTER-OK＝後面的段仍有跑
+  const after_ok = termText(session).split(String.fromCharCode(10)).some((l) => l.includes('AFTER-OK') && !l.includes('$ '));
+  R[n] = { busy_before: busy, wins_before: w1, ms: Date.now() - t0, busy_after: session.busy, wins_after: wins(), lec: session.lastExitCode, after_ok, tail: termText(session).slice(-80) };
 }
 await fa._runTerminalCommand(session, 'python3 ok.py');
 R.next_ok = termText(session).includes('after-ok');

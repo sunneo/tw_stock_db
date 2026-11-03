@@ -83741,7 +83741,7 @@ ${sourceTool.handlerScript}
     // parser不認得heredoc，拆開會把本體當成一行行指令；其餘走原本的指令路徑（cd/sleep/python…的JS層攔截照舊）。
     async _terminalRunUnits(session, units) {
         for (const u of units) {
-            if (session.ended) return;
+            if (session.ended || session._sigint) return;
             if (u.heredoc) {
                 const r = await this._terminalRunWasmLine(session, u.text);
                 if (r && r.ok === false) session.term.write(`\x1b[31m${String(r.error || '執行失敗')}\x1b[0m\r\n`);
@@ -83942,6 +83942,7 @@ ${sourceTool.handlerScript}
     async _terminalRunAndOr(session, text, opts = {}) {
         let exit = 0, stdout = '', stderr = '';
         for (const p of this._terminalSplitAndOr(text)) {
+            if (session._sigint) break;
             if (p.op === '&&' && exit !== 0) continue;
             if (p.op === '||' && exit === 0) continue;
             const r = await this._terminalRunCommand(session, p.cmd, { streamToWidget: opts.streamToWidget, guiTimeoutSec: opts.guiTimeoutSec });
@@ -84633,7 +84634,7 @@ ${sourceTool.handlerScript}
                 let exitCode = 0, stdout = '', stderr = '';
                 let batch = [];
                 const flushBatch = async () => {
-                    if (!batch.length) return;
+                    if (!batch.length || session._sigint) { batch = []; return; }   // Ctrl+C 之後不再送出尚未執行的段
                     const prefix = this._terminalBuildEnvPrefix(env);
                     const text = prefix + batch.join('; ');
                     batch = [];
@@ -84642,7 +84643,7 @@ ${sourceTool.handlerScript}
                     stdout += r.ok ? r.stdout : ''; stderr += r.ok ? r.stderr : String(r.error || '');
                 };
                 for (const part of node.parts) {
-                    if (session.ended) break;
+                    if (session.ended || session._sigint) break;
                     if (part.type === 'SimpleCommand' && !part.argvWords.length && part.assignments.length) {
                         for (const a of part.assignments) this._terminalApplyShellAssignment(session, env, a.name, this._terminalExpandWord(a.valueWordSrc, env).text);
                         continue;
@@ -84688,6 +84689,7 @@ ${sourceTool.handlerScript}
             case 'AndOr': {
                 let exitCode = 0, stdout = '', stderr = '';
                 for (const { node: n, op } of node.items) {
+                    if (session._sigint) break;
                     if (op === '&&' && exitCode !== 0) continue;
                     if (op === '||' && exitCode === 0) continue;
                     const r = await this._terminalExecShellNode(session, n, env, opts);
@@ -84699,7 +84701,7 @@ ${sourceTool.handlerScript}
                 const items = await this._terminalEvalForLoopList(session, node.listWords, env);
                 let exitCode = 0, stdout = '', stderr = '';
                 for (const item of items) {
-                    if (session.ended) break;
+                    if (session.ended || session._sigint) break;
                     env[node.varName] = item;
                     const r = await this._terminalExecShellNode(session, node.body, env, opts);
                     exitCode = r.exitCode; stdout += r.stdout; stderr += r.stderr;
@@ -84710,7 +84712,7 @@ ${sourceTool.handlerScript}
                 let exitCode = 0, stdout = '', stderr = '';
                 let guard = 0;
                 for (;;) {
-                    if (session.ended || ++guard > 100000) break;
+                    if (session.ended || session._sigint || ++guard > 100000) break;
                     const prefix = this._terminalBuildEnvPrefix(env);
                     const condR = await this._terminalRunWasmLine(session, prefix + node.condSrc, { streamToWidget: false });
                     const condMet = condR.ok && (node.isUntil ? condR.exit_code !== 0 : condR.exit_code === 0);
@@ -84796,7 +84798,7 @@ ${sourceTool.handlerScript}
         const groups = this._terminalGroupCompoundLine(trimmedRaw);
         if (groups.length > 1) {
             for (const g of groups) {
-                if (session.ended) return;
+                if (session.ended || session._sigint) return;
                 await (g.type === 'andor' ? this._terminalRunAndOr(session, g.text, { streamToWidget: true })
                     : g.type === 'js' ? this._runTerminalCommand(session, g.text)
                     : this._terminalRunShellText(session, g.text, {}));
