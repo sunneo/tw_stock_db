@@ -151,6 +151,8 @@
         }
       }
       window.addEventListener('message', onMessage);
+      // Ctrl+C: the terminal calls the registered function to stop the program (removing the iframe stops even a busy loop)
+      if (opts.onAbortable) { opts.onAbortable(function () { finish({ ok: false, stdout: out.join(''), stderr: err.join('') + 'node: interrupted\n', exit_code: 130 }); }); }
       timer = setTimeout(function () {
         finish({ ok: false, stdout: out.join(''), stderr: err.join('') + 'node: timed out\n', exit_code: 124 });
       }, timeoutMs);
