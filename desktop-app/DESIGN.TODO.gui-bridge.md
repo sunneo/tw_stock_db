@@ -64,7 +64,13 @@ Continue from the handoff document at desktop-app/DESIGN.TODO.gui-bridge.md (rep
    - 進度：已完成 `renderer/src/gui/py_async.js`（判斷要不要走非同步，29 項 node 測試通過，commit a3698122）。
    - 程式路徑（已查明，見共用筆記資料夾的 python-gui-wiring-findings.md）：`python` 指令 → `SANDBOX_COMMAND_REGISTRY`（`kind:'pyodide'`）→ `_runPythonBuiltin` → `_runPyodideScriptSync`（同步）。`_pyBridgeDispatch` 沒有 `gui.*` 分支。`_pyBridgeEnabled()` 只在 `_pyBridgeDepth>0` 時為真（目前只有技能網域與 rig 流程會加）。
    - 注意：pyodide 只能從 jsDelivr 這類正確送出 JS mimetype 的來源載入（見 floating-assistant.js 約 48984 行的註解），內部用動態 `import()`。在 Blob worker 裡能否載入，要先實測。
-   - 還沒做：worker 的建立與 Pyodide 載入、`gui.*` op 接到 `_pyBridgeDispatch`（`gui.open`→`@gui {v:1,op:'open',...}`、`add`、`draw`、`image`（要回傳 w/h）、`poll`／`wait`（host 的 `poll`/`wait` 回字串，要 JSON.parse）、`close`）、`gui.py` 範例與 missile command 的實機驗證。
+   - **實測結果（2026-11-03，`scripts/eval/py_worker_probe.eval.js`，真 Electron）**：
+     - Pyodide 在 **module worker** 裡能載入：`new Worker(blobUrl, {type:'module'})`，內部 `await import(base + 'pyodide.mjs')`，`loadPyodide({indexURL: base})`，`1+1` 得 2。classic worker（importScripts）不行，回報「Classic web workers are not supported」。
+     - 頁面 `crossOriginIsolated` 是 false，所以 SharedArrayBuffer 不能用，`Atomics.wait` 不能用。
+     - **JSPI 可用**（`WebAssembly.Suspending` 存在）。做法：worker 裡 `self.slow_js = async (x) => …`（要掛在 `self` 上，`py.globals.set` 的值 `from js import` 拿不到）；Python 用 `pyodide.ffi.run_sync(slow_js(21))` 同步取值；整支程式要包在一個 `def` 裡，用 `py.globals.get('go').callPromising()` 呼叫（直接 `runPython` 的入口會報「Cannot stack switch…Use pyFunc.callPromising()」）。結果 `42`。
+     - 因此 gui.wait 可以是「同步的 Python 呼叫，worker 內掛起 wasm 堆疊、等頁面回覆」，不需要 SAB。
+   - 下一步：(a) worker 內 `self.guiCall(op,args)` 回傳 Promise，用 postMessage 把 op 送到頁面，頁面用 `_terminalGuiHost` 做事後回覆；(b) `fa_bridge.call` 的 IN_BROWSER 分支要從 `asyncio.run(...)` 改成 `pyodide.ffi.run_sync(_fa_pybridge.call(...))`；(c) 程式入口用 callPromising。
+   - 還沒做：worker 的建立與 Pyodide 載入（上面已實測）、`gui.*` op 接到 `_pyBridgeDispatch`（`gui.open`→`@gui {v:1,op:'open',...}`、`add`、`draw`、`image`（要回傳 w/h）、`poll`／`wait`（host 的 `poll`/`wait` 回字串，要 JSON.parse）、`close`）、`gui.py` 範例與 missile command 的實機驗證。
 6. **missile command 實機驗證**：Redmine 的 `examples/missile_command.py` 與四張貼圖複製到桌面版（用終端機寫檔或 `terminal_cp_to`），在終端機執行，截圖確認：widget 開始視窗、canvas 遊戲畫面、貼圖可見、滑鼠點擊發射、拖曳、滾輪。沒有截圖證據就寫「未驗證」。
 7. **resizable、maximize**：`map_viewer.py` 或 pygame 的 `RESIZABLE` 視窗，實機拖曳與最大化按鈕截圖驗證。
 8. **打磚塊**：Redmine 沒有這個範例。要做的話，先問使用者是否同意我另寫一支。
