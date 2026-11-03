@@ -44,6 +44,12 @@ assert.strictEqual(P.needsAsync('doc = """\nimport pygame\n"""\nimport gui\n'), 
 assert.strictEqual(P.needsAsync("s = 'it\\'s'\nimport gui\n"), true); ok();
 assert.strictEqual(P.needsAsync("s = 'it\\'s import gui'\n"), false); ok();
 
+// input()／sys.stdin 要讀使用者輸入，也走 Worker；字串或註解裡出現的不算；obj.input( 不算
+assert.strictEqual(P.needsAsync('name = input("name? ")\n'), true); ok();
+assert.strictEqual(P.needsAsync('import sys\nline = sys.stdin.readline()\n'), true); ok();
+assert.strictEqual(P.needsAsync('print("input(x)")  # input()\n'), false); ok();
+assert.strictEqual(P.needsAsync('w.input("x")\n'), false); ok();
+
 // blankOut 保留換行數，讓行號與行首比對不會錯位
 const sample = 'a = "x\ny"\n# c\nimport gui\n';
 assert.strictEqual(P.blankOut(sample).split('\n').length, sample.split('\n').length); ok();

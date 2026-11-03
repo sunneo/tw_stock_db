@@ -38,8 +38,12 @@
   // 行首（允許縮排）的 import：import gui／import os, pygame.locals；行首的 from：from gui import …／from pygame.locals import …
   var GUI_IMPORT = /^[ \t]*(?:import[ \t]+(?:[\w.]+[ \t]*,[ \t]*)*(?:gui|pygame)(?![\w])|from[ \t]+(?:gui|pygame)(?![\w]))/m;
 
+  // 讀使用者輸入（input()、sys.stdin）也要走 Worker：同步的 python 沒辦法在呼叫處等一行輸入
+  var STDIN_USE = /(?:^|[^\w.])input[ \t]*\(|\bsys\.stdin\b/;
+
   function needsAsync(src) {
-    return GUI_IMPORT.test(blankOut(src));
+    var code = blankOut(src);
+    return GUI_IMPORT.test(code) || STDIN_USE.test(code);
   }
 
   return { needsAsync: needsAsync, blankOut: blankOut };
