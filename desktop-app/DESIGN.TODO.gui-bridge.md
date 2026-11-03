@@ -290,3 +290,73 @@ node 測試：`renderer/src/gui/*.test.js`（gui_host 26、gui_render 40、gui_b
 - 證明：`scripts/eval/no_update_dialog.eval.js` 讀 DOM，有預寫 rev 時 `update_dialog_shown:false`，對照組（沒預寫）`true`。畫面上的更新按鈕標籤也會寫「發現新版本」，那不是對話框，判斷對話框看有沒有「立即更新」。
 - 不要在測試實例按「立即更新」。
 - pygame `Surface.get_size` 已補（commit 09ea05a3），本次加測試；missile 重跑畫布 25 色（讀 canvas 像素，不是全黑）。
+
+## 11. 本階段完成狀態（gui-h2 續作，2026-11-03；以本節為準，取代 10.3 的待辦）
+
+### 11.1 待辦 10.3 的結果
+
+| 項目 | 結果 | commit | 驗證 |
+|---|---|---|---|
+| 1. map_viewer 實機驗證 | 完成 | 108ea22d（評估檔產生器 `scripts/eval/gen_map_eval.js`） | 真 Electron，`run_eval.js`：Ctrl+滾輪放大 1→1.25 並保持游標下的點不動、再滾回 1；拖曳平移 (0,0)→(-40,-20)；方向鍵右三次 +60；空白鍵重設；畫布 32 色；載入的是工作目錄的 `renderer/floating-assistant.js` |
+| 2. 打磚塊 | 完成（使用者同意「同意，另寫一支」，2026-11-03） | 2da1961e（`scripts/eval/gui_examples/breakout.py`、`scripts/eval/gen_breakout_eval.js`） | 真 Electron：發球後球會動；左鍵擋板 165→81；追球機器人 16 秒內打中 2 塊（分數 2）；漏接命數 3→2；按 × 後 exit 0 |
+| 3. terminal_run（AI 工具路徑）接 gui／node／@gui／ask-ai-chat | 完成 | 99abda1a、03db07dc | `scripts/eval/ai_gui_cap.eval.js`（上限設 4 秒）：zenity 管線與單獨 exit 5 且視窗關閉；python gui exit 124 並印出逾時訊息、視窗關閉；node gui exit 124、視窗關閉；`gui wait` exit 124；回歸：不含 gui 的 python 輸出 2 |
+| 4. 真模型驗證 ask-ai-chat | 完成（使用者答「用本機設定」） | 03db07dc（修正：AI 路徑的管線沒接上 ask-ai-chat） | 見 11.3 |
+| 5. 剩餘小項 | 不實作，列為已知限制（見 11.4） | — | — |
+| 6. 打包核對 | 完成（已再核對） | — | `renderer/floating-assistant.js` 與 `.min.js` 都含 `closeAll`、`guiAiTimeoutSec`、`FA_GUI_HOST_SRC`（Grep 計數 8／7／2） |
+| 網頁版 JSPI 查證 | 完成（內建瀏覽器實測） | — | 見 11.5 |
+
+### 11.2 本階段新增的提交（都未 push、未 publish）
+
+- 108ea22d map_viewer 評估檔產生器
+- 99abda1a AI 工具路徑接上 zenity／python gui／node gui／gui wait，並加 120 秒上限；`gui_host.closeAll`（gui_host.test.js 30 項通過）
+- 2da1961e 打磚塊範例與評估檔產生器
+- 03db07dc AI 路徑的含 ask-ai-chat 管線改走 `_terminalRunAiPipe`（跟互動路徑同一套）
+
+node 測試（全部通過）：gui_bridge 69、gui_host 30、gui_render 40、js_program 3、py_async 29、py_worker 24、zenity 56。
+
+### 11.3 真模型驗證（2026-11-03）
+
+- 做法：`run_eval.js` 的同一套啟動，但另外把使用者本機的 `secrets.json` 複製進這次的暫存使用者資料夾，跑完刪除副本（原檔不動）。secrets.json 只含模型金鑰（欄位名稱：NVAPI_KEY、OPENROUTER_API_KEY），內容沒有寫進任何檔案或回報。
+- 結果：`cat log.txt | ask-ai-chat "用一句話摘要…，並把專案代號原文寫出來"` 的回答含 `ORCHID-7`（這個代號只存在於 stdin 的文字裡），exit 0，約 5.4 秒。對照：不給 stdin 時回答「不知道」，沒有提到代號。stdin 確實被模型看到。
+- 修正過程：第一次跑時管線報 `sh: line 4: ask-ai-chat: not found`，原因是 AI 路徑沒有接 `_terminalSplitAiPipe`（互動路徑有）。已修（03db07dc）。
+- 未做：模型名稱、回答品質的評分（只驗證 stdin 可見）。
+
+### 11.4 已知限制（沒有修，寫給後繼與發布者）
+
+- Python Worker 的 `input()`／stdin 永遠回傳 None。
+- 沒有 Ctrl+C 停止 Worker；程式不等視窗事件的死迴圈只能靠時間上限（AI 路徑）或關視窗（互動路徑，程式要有 wait／poll 才會收到 close）。
+- 程式正常結束後視窗不自動關閉（互動路徑與 AI 路徑都是）。
+- 重新 show（add／set）時已彈出的視窗位置回到預設。
+- AI 路徑的 stdout 仍會含 `@gui` 行（視窗會正確開啟，只是行本身沒有從回傳的 stdout 移除）。
+- 複合指令裡 JS 攔截段的 `$?` 不會帶到下一段（既有限制，不是 GUI 造成）。
+- 時間上限（`session.guiAiTimeoutSec`）是整個終端機 session 的狀態：terminal_run 呼叫期間，同一個 session 裡使用者自己打的 GUI 等待也會被限制（120 秒）。
+- `terminal_run` 包裝裡的 120 秒預設，只有程式碼檢查，沒有用 terminal_run 工具本身實機呼叫過（評估檔是直接呼叫 `_terminalRunCommand` 並手動設上限）。
+
+### 11.5 網頁版 JSPI 查證（2026-11-03，內建瀏覽器，Chromium 152）
+
+- `typeof WebAssembly.Suspending === 'function'`：true（JSPI 可用）。
+- 未隔離的一般網頁：`crossOriginIsolated` 為 false，`SharedArrayBuffer` 為 undefined（所以網頁版不能用 SAB＋Atomics.wait，除非網頁有 COOP／COEP 標頭）。
+- 結論：管理層決定的「Python 同步等待維持 JSPI」在網頁版的 Chromium 系瀏覽器可以跑。Firefox 與 Safari 的支援狀況沒有實測，不寫成事實。
+- 注意：這次只驗證了 JSPI 的存在；網頁版的 Pyodide 完整流程沒有在網頁上跑過（只有桌面版的 Electron 實機跑過）。
+
+### 11.6 教訓（本階段，每條：錯在哪、下次怎麼做）
+
+1. **評估檔的滑鼠與滾輪沒有先點一下，就以為是程式壞掉。** 錯在：`.ai-chat-wheel-on` 閘門只在真的 mousedown 後加上，`cv.focus()` 不夠，滾輪事件被丟掉，縮放沒變。下次怎麼做：每個含滑鼠或滾輪的評估檔，先送一次 mousedown／mouseup（不做事）再操作。
+2. **範例檔取名 `gui.py` 會遮住 gui 模組。** 錯在：`import gui` 先找到 cwd 的 gui.py，報「partially initialized module」。下次怎麼做：測試程式不要用內建模組的名字。
+3. **只改 AST 執行器，單行指令根本不經過它。** 錯在：我先把 python gui 的判斷加在 `_terminalExecSimpleCommand`，單行 `python3 x.py` 走的是 `_terminalRunCommand` 的快速路徑，改了也沒用，還以為是 Worker 的問題。下次怎麼做：每個攔截都要在兩個入口（單行快速路徑、含 `;` 的 AST 路徑）各測一次；這次的做法是把單行判斷放進 `_terminalRunCommand` 的攔截區。
+4. **壓縮產物的識別字會被改名，不能用變數名判斷載入的程式是不是新的。** 錯在：我用 `String(fa._terminalExecSimpleCommand).includes('restArgsQuoted')` 驗證，結果 false，誤以為改動沒載入。下次怎麼做：用字串常值（例如 `'python3'`）或行為（超時是否回傳 124）驗證；`renderer/floating-assistant.js` 是壓縮過的，`grep -c 變數名` 不可靠。
+5. **node 沙盒的程式要用頂層 await。** 錯在：包成 IIFE 的 async 函式，沙盒不等它，程式 exit 0 而且沒有印出任何東西。下次怎麼做：照 `js_node.eval.js` 的寫法，頂層 `await gui.open(...)`。
+6. **AskUserQuestion 的題目至少要有兩個選項。** 錯在：多塞了一題空的，整個呼叫被拒絕。下次怎麼做：只問有兩個真正選項的題目。
+7. **AI 路徑的管線沒有跟互動路徑同步。** 錯在：`_terminalRunCommand` 與 `_runTerminalCommand` 是兩套入口，我只在一邊接了 AI 段。下次怎麼做：新增攔截或管線判斷時，檢查兩個入口是不是都要改（`grep -n "_terminalSplitAiPipe\|_terminalRunCommand(" 檔案`）。
+8. **沒有先確認使用者目前的環境。** 錯在：我一開始沒有查模型金鑰放在哪；使用者要求「用本機設定」才去找。下次怎麼做：需要使用者本機資料的驗證，先問，再只複製需要的檔案，跑完刪副本、不印出內容。
+
+### 11.7 驗證指令（本階段用的）
+
+```
+node scripts/embed-code-ui.js && node build-assistant.js
+node scripts/eval/gen_map_eval.js <examples資料夾> <輸出評估檔>
+node scripts/eval/gen_breakout_eval.js <輸出評估檔>
+node scripts/eval/run_eval.js scripts/eval/ai_gui_cap.eval.js 17933
+node scripts/eval/run_eval.js <map 或 breakout 評估檔> 17932
+```
+真模型驗證的評估檔與啟動器在 gui-h2 的暫存資料夾，沒有進 repo（依賴使用者本機的金鑰）；做法見 11.3。
