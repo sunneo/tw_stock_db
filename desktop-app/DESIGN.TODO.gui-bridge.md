@@ -237,3 +237,48 @@ Continue from the handoff document at desktop-app/DESIGN.TODO.gui-bridge.md (rep
 
 - 讀本檔第 1 節的開場提示（它仍然有效，改用本檔第 9 節的現況）。
 - 先確認 `git log --oneline -5` 有 `929d4de7` 與 `9ec1871c`，再開始。
+
+## 10. 交接 4（2026-11-03，gui-h2 在 context 約 27% 時寫；不自行開後繼，由管理層決定）
+
+### 10.1 這個階段新增的提交（都未 push、未 publish；全部完成並驗證前不要說「可發布」，使用者原話：「後面gui橋接 *全部* 完成再publish」）
+
+| commit | 內容 | 實機驗證（真 Electron，`FA_DISABLE_MAIN_OVERLAY=1`，評估檔在 scripts/eval/） |
+|---|---|---|
+| 1caf05e6 | `ask-ai-chat`（別名 `ask-floating-ai-assistant`）讀管線 stdin、輸出可接管線；stdin 依 contextWindowTokens 截斷（前六後四）；管線含 `; & > <` 時維持舊路徑 | `ask_ai_pipe.eval.js`：單獨、`cat\|ask`、`ask\|grep`、`cat\|ask\|wc`、舊名稱、usage 都對。**模型呼叫換成回聲，沒有驗證真模型的回答品質**。另有 `sab_probe.eval.js`（SAB 實測） |
+| 7086733d | shell 的 `@gui` 行（輸出經 `_terminalFilterGuiLines` 套用、不顯示）與 `gui wait\|poll`（`_terminalGui`；變數、`--timeout`、超時 exit 124） | `gui_shell.eval.js`：echo 開視窗、按鈕事件存進變數、超時走 `\|\|` 分支、`@gui` 沒洩漏 |
+| 986c2fc5 | `node 檔案.js`（`js_program.js` 移植 Redmine，sandbox 只有 allow-scripts；`_terminalNode`；嵌入 GUIJSPROGRAM，已加入 build-web-lazy 的 EXCLUDE） | `js_node.eval.js`：console.log、gui 視窗與事件、`parent.fa` 被擋、throw 印錯誤、找不到檔案。node 測試 3 項 |
+| 09ea05a3 | 可縮放視窗改用應用程式共用外殼 `FaWin.decorate`（只套用在 resizable／maximizable 的視窗）；控制按鈕靠右、關閉最右；視窗寬度不再被 cssText 蓋掉；pygame `Surface.get_size` | `gui_resize.eval.js`：最大化後視窗 1904x1001＝頁面大小，畫布隨之 1902x974 並送出 VIDEORESIZE，還原再送一次；標題在左、按鈕靠右（量座標） |
+| 102d9bc3 | `gen_missile_eval.js`（產生 missile 逐項驗證評估檔） | missile 原檔：點擊 shots 0→1、拖曳砲台 60／250、**Ctrl+滾輪**一格 ±12、方向鍵三次 +12、空白鍵發射、畫布 23 色 |
+
+### 10.2 使用者指正（本階段，必須記住）
+
+- 「他對最大化有誤解」「不是填滿terminal」：最大化是**蓋滿整個頁面**（跟應用程式其他視窗一樣，用 `FaWin`：☐ 最大化、⤢ 彈出、⛶ 全螢幕、八向縮放），不是填滿終端機區域。舊的 `gui_render.js` 自帶的最大化鈕（填滿終端機）只在沒有外殼時當備援。
+- 「視窗控制的control button 應該要靠右」：標題在左，按鈕在右，關閉鈕最右。
+- 「SharedArrayBuffer一直都有在用」：桌面版 `main.js:29` 已啟用；module Worker 內 `SharedArrayBuffer`＋`Atomics.wait` 實測可用（被主執行緒喚醒，值 7）。**技術選擇**：Python Worker 仍用 JSPI（`run_sync`），因為已實機跑通 gui.py 與 missile，SAB 沒有帶來額外能力；若之後要停掉死迴圈或網頁版備援再改。
+
+### 10.3 還沒做（依序，下一項最先）
+
+1. **map_viewer 實機驗證**：`C:\Users\sunneo\Downloads\redmine_ai_chat\examples\map_viewer.py`（pygame，滾輪／滑鼠移動／方向鍵／空白鍵）。做法照 `gen_missile_eval.js`：包一層換掉狀態輸出，用 DOM 事件操作畫布，從終端機輸出核對。若它沒有 RESIZABLE，resizable 已用 `gui_resize.eval.js` 的自寫程式驗過。
+2. **打磚塊**：Redmine 沒有範例。**要先問使用者是否同意我另寫**，不要自己寫。
+3. **AI 工具路徑（terminal_run）**：含 `import gui`／pygame 的 python、`node`、`gui`、`@gui` 行、`ask-ai-chat` 在 `terminal_run` 不會套用（見 9.2；`_runTerminalCommandForTool` 約在 `JS_INTERCEPTED_WITH_CAPTURE` 那段）。要不要接、怎麼接（AI 沒有人按按鈕，視窗會一直等）屬技術取捨，自己決定並寫理由。
+4. **真模型驗證 ask-ai-chat**：用有設定模型的環境跑一次 `cat log | ask-ai-chat "摘要"`，確認 stdin 內容真的被模型看到（目前只驗證了提示詞內容）。
+5. **剩餘小項**：Worker 的 `input()`／stdin 永遠 None；沒有 Ctrl+C 停止 Worker；重新顯示（add／set）時已彈出的視窗位置回到預設；程式結束後視窗不自動關閉（目前選擇）。
+6. **打包核對（待辦 10）已查**：`FA_GUI_JSPROGRAM_SRC`、`FA_GUI_PYWORKER_SRC`、`FA_PYBRIDGE_FILES` 都在 `renderer/floating-assistant.js` 與 `.min.js`（`package.json` 的 `renderer/**/*` 包含、`!renderer/src/**` 排除原始碼；熱更新允許清單含這兩個檔）；`web-lazy/core.js` 刻意不含 GUIJSPROGRAM（EXCLUDE）。發布前由管理層再跑 `node scripts/embed-code-ui.js`、`node build-assistant.js`。
+7. 全部完成後才回報「已提交，可發布，commit <hash>」，分開寫「真桌面版驗證過的」與「只有 node／Python 測試的」。
+
+### 10.4 本階段教訓（補充到 9.6）
+
+6. **殼層指令內嵌（heredoc／python 內嵌）又吃掉反斜線。** 錯在：用 Bash 的 heredoc 寫含 `\n`、`\d` 的程式，反斜線被吃掉，評估檔語法錯誤，來回修了三次。下次：含反斜線的程式一律用 Edit／Write 工具，或在程式裡改用 `String.fromCharCode(10)`、`[0-9]`。
+7. **沒先查設計意圖就沿用「最大化＝填滿終端機」。** 錯在：前人這樣做，我驗證時只量到「填滿」就當通過，使用者才指正。下次：驗證前先找應用程式已有的同類功能（這次是 `FaWin`）與使用者的用語，不是只驗證現有行為。
+8. **範例檔尾端直接呼叫 `main()`**（missile）：包一層要在 import 前去掉它，否則 monkey patch 來不及。`py_async` 只看被執行的那支檔案本身，包裝檔要自己 `import pygame` 才會走 Worker。
+9. **評估檔偶爾「終端機掛載逾時」**：是環境暫時問題，重跑即可，不要誤判成程式壞掉。
+10. **滾輪要 Ctrl**（一般滾輪保留給頁面捲動）：測試與說明都要寫 Ctrl+滾輪。
+
+### 10.5 驗證指令（沿用第 2b 節）
+
+```
+node scripts/embed-code-ui.js && node build-assistant.js
+FA_DISABLE_MAIN_OVERLAY=1 FA_DEBUG_EVAL_FILE=<評估檔絕對路徑> FA_BROWSER_CONTROL_PORT=17931 node_modules/electron/dist/electron.exe . --no-sandbox --disable-gpu --user-data-dir=<全新暫存資料夾>
+node scripts/eval/gen_missile_eval.js <examples資料夾> <輸出評估檔>
+```
+node 測試：`renderer/src/gui/*.test.js`（gui_host 26、gui_render 40、gui_bridge 69、zenity 56、py_async 29、py_worker 24、js_program 3，全部通過）。
