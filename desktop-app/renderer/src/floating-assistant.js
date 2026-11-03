@@ -86936,7 +86936,17 @@ ${sourceTool.handlerScript}
     }
     // node <檔案.js>：JavaScript 程式在 sandbox="allow-scripts" 的 iframe 裡跑（沒有 allow-same-origin，碰不到這個頁面）。
     // 程式有 console.log／console.error 與 gui（開視窗，同 Python 的 gui），其餘 Node 的 API（require、fs、process）都沒有。
+    // 程式（python／node）正常結束或出錯結束時，收掉它自己開的視窗（之前就開著的視窗，例如 @gui 行開的，不動）
+    async _terminalGuiScope(session, fn) {
+        const host = this._terminalGuiHost(session);
+        const before = new Set(Object.keys(host.session.windows || {}));
+        try { return await fn(); }
+        finally { Object.keys(host.session.windows || {}).filter((id) => !before.has(id)).forEach((id) => host.close(id)); }
+    }
     async _terminalNode(session, argsText, guiTimeoutSec) {
+        return this._terminalGuiScope(session, () => this._terminalNodeRun(session, argsText, guiTimeoutSec));
+    }
+    async _terminalNodeRun(session, argsText, guiTimeoutSec) {
         const w = (s, red) => session.term.write((red ? '\x1b[31m' : '') + String(s).replace(/\r?\n/g, '\r\n') + (red ? '\x1b[0m' : ''));
         const words = this._terminalTokenizeArgs(argsText);
         if (!words.length) { w('usage: node <檔案.js>（沙盒執行：有 console.log 與 gui，沒有 require／fs）\r\n', true); return 2; }
@@ -87107,7 +87117,7 @@ ${sourceTool.handlerScript}
             }
         } catch (_) { /* 讀不到目錄就只有腳本本身 */ }
         const cap = Number(guiTimeoutSec) || 0;
-        session.lastExitCode = await this._terminalRunPythonWorker(session, { src, scriptName, inputs }, fsStore, cwd, { timeoutMs: cap ? cap * 1000 : 0 });
+        session.lastExitCode = await this._terminalGuiScope(session, () => this._terminalRunPythonWorker(session, { src, scriptName, inputs }, fsStore, cwd, { timeoutMs: cap ? cap * 1000 : 0 }));
         return true;
     }
 
