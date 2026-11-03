@@ -1500,6 +1500,8 @@ async function loadBaselineManifest() {
 // 算出「目前實際生效」的本機manifest：覆蓋目錄完整可信時採用baseline疊加
 // state.json的結果，否則單純退回baseline（詳見上方Live Update區塊說明）。
 async function computeEffectiveLocalManifest() {
+  // FA_DISABLE_MAIN_OVERLAY=1（測試用）：整個停用覆蓋，渲染頁也一律用安裝包內建的 renderer/，不採用 userData/live-patch 裡的版本
+  if (process.env.FA_DISABLE_MAIN_OVERLAY === "1") { const b = await loadBaselineManifest(); return { version: b.baseVersion || app.getVersion(), files: { ...b.files }, overrideActive: false }; }
   const baseline = await loadBaselineManifest();
   const baselineVersion = baseline.baseVersion || app.getVersion();
   const state = await readJsonSafe(LIVE_PATCH_STATE_FILE(), null);
