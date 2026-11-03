@@ -463,3 +463,32 @@ Continue from the handoff document at desktop-app/DESIGN.TODO.gui-bridge.md (rep
 1. Bash 的 heredoc、Python 內嵌會吃反斜線（`\n`、`\b` 變成真換行與退格字元），這次又發生三次（js_program.js、py_async.js、測試檔）。含反斜線的修改一律用 Edit 工具，或用 Write 寫成 node 腳本並用 `String.fromCharCode(92)`。
 2. 評估檔先確認「前提成立」：autoclose 第一版沒看到視窗存在就以為通過，加了 MutationObserver 與保留視窗才算數。
 3. Windows 上 `node -e` 讀 stdin 會 EOF 失敗，改輸出到檔案再解析。
+
+## 14. 給接手者（Haiku）的一步一步（交接 7 收尾，2026-11-03）
+
+八條都已完成，沒有半成品。還沒修的只有第 13 節「沒做、要明講」那幾項，使用者沒有要求就不要開新的一條。
+
+### 還沒修的限制與驗收做法
+| 限制 | 接續點 | 驗收 |
+|---|---|---|
+| 複合行 Ctrl+C 後，後面的段仍會跑 | `_terminalInterrupt` 設了 `session._sigint`；`_runTerminalCommand` 的群組迴圈、`_terminalRunAndOr`、`_terminalExecShellNode` 的 For／While／Sequence 迴圈每段開始前檢查它，為真就停 | 在 `scripts/eval/ctrl_c.eval.js` 新增案例 `python3 spin.py; echo AFTER`，Ctrl+C 後終端機文字不含 AFTER，結束碼 130 |
+| `sleep` 打不斷 | `_terminalSleep` 內用 `_terminalRegisterAbort` 登記，中止時清 timer 並 resolve | 同上評估檔加 `sleep 30` 案例，毫秒內回提示字元 |
+| `SystemExit(3)` 結束碼是 1 | `renderer/src/gui/py_worker.js` 的 `go()` 捕捉 SystemExit 取 code，done 訊息帶回 | `scripts/eval/gui_autoclose.eval.js` 的 py_exit3 案例，預期 exit 3 |
+| 互動輸入沒有方向鍵 | `_terminalStdinFeed` | 不急，使用者沒要求 |
+
+### 一步一步（每步一個動作，附可檢查的結果）
+1. 讀本檔第 13、14 節。檢查：能說出八條各用哪個評估檔。
+2. `git log --oneline -3`。檢查：看得到 4021f5b1 或更新的提交。
+3. 改程式只用 Edit 或 Write 工具，不要用 Bash 的 heredoc 或 python 內嵌（會吃反斜線，這輪壞了三次）。檢查：改完用 `node --check` 或對應的 node 測試。
+4. 改 `renderer/src/gui/*.js` 或 `renderer/src/floating-assistant.js` 後，先跑 `node scripts/embed-code-ui.js && node build-assistant.js`。檢查：指令沒報錯。
+5. 寫評估檔，先確認前提真的成立（例如視窗真的存在、目標程式真的在跑），再斷言結果。檢查：沒修時評估檔必須失敗。
+6. 跑 `node scripts/eval/run_eval.js scripts/eval/<檔>.eval.js <埠>`，輸出存到暫存檔再 grep `eval-file] result`（不要用管線讀 stdin）。每個評估檔用不同的埠。檢查：`loaded.scripts` 指向工作目錄的 `renderer/floating-assistant.js`。
+7. 回歸三個評估檔：`ai_gui_cap`、`exit_code_chain`、`ctrl_c`，加 `renderer/src/gui/*.test.js` 全部。檢查：與第 13 節的數字相同。
+8. 提交只用 `git add <明確路徑>`；不提交 `renderer/floating-assistant*.js`、`update-manifest.json`、`web-lazy/*`、`test-reports/*`、`.claude/launch.json`。訊息結尾加 Co-Authored-By 行。檢查：`git status` 沒有誤加。
+9. 不 push、不跑 publish.sh，發布由管理層做。回報用繁體中文，不夾英文縮寫，並分開寫真桌面版驗證過的與只有 node 測試的。
+
+### 常見坑
+- 單行指令走 `_terminalRunCommand` 的快速路徑，含 `;` 走 AST，互動輸入又是 `_runTerminalCommand`；新增攔截要三個入口各測。
+- `$?` 的來源是 `session.lastExitCode`，任何 JS 段結束都要 `_terminalSetExit`。
+- 壓縮產物的變數名不可靠，驗證載入用字串常值或行為。
+- 評估檔偶爾「終端機掛載逾時」是環境暫時問題，重跑即可。
