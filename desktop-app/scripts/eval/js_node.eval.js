@@ -1,0 +1,24 @@
+// 用法同 gui_py_worker.eval.js。終端機 `node 檔案.js`：沙盒 iframe 跑 JavaScript，console.log 進終端機，gui.open 開視窗，點按鈕後程式收到事件；另測沙盒隔離（拿不到頁面的 window.fa）與語法錯誤。
+const fa = window.fa;
+const R = {};
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const until = async (fn, ms = 20000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { try { const v = fn(); if (v) return v; } catch (_) { /* 還沒就緒 */ } await wait(100); } return null; };
+const termText = (session) => { const b = session.term.buffer.active; const out = []; for (let i = 0; i < b.length; i++) { const l = b.getLine(i); if (l) out.push(l.translateToString(true)); } return out.join('\n'); };
+R.loaded = { scripts: Array.from(document.scripts).map((s) => s.src).filter((s) => /floating-assistant/.test(s)), has_node: typeof fa._terminalNode === 'function' };
+const t = await fa._createTerminalForAI({ name: 'node-eval', initialCommand: '' });
+const session = fa._resolveTerminalSession(t.id).session;
+await wait(800);
+await fa._runTerminalCommand(session, 'cd /work');
+const prog = 'console.log("hi", 1+1); let leak = "none"; try { leak = typeof parent.fa; } catch (e) { leak = "blocked"; } console.log("leak:" + leak); const w = await gui.open("JS", 300); await w.label("x"); const b = await w.button("OK"); const ev = await w.wait(60); console.log("ev", ev.event, ev.node === b); await w.close(); console.log("end");';
+await fa._runTerminalCommand(session, "printf '%s\n' '" + prog + "' > hello.js");
+const done = fa._runTerminalCommand(session, 'node hello.js');
+const btn = await until(() => Array.from(document.querySelectorAll('.gui-window .gui-button')).find((b) => b.textContent === 'OK'));
+R.window_opened = !!btn;
+if (btn) btn.click();
+await Promise.race([done, wait(30000)]);
+await fa._runTerminalCommand(session, "printf '%s\n' 'throw new Error(\"boom\")' > bad.js");
+await fa._runTerminalCommand(session, 'node bad.js');
+await fa._runTerminalCommand(session, 'node nofile.js');
+await wait(300);
+R.screen = termText(session).split('\n').filter((l) => l.trim());
+return R;

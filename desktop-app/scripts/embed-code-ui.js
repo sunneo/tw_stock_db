@@ -59,6 +59,8 @@ embed('renderer/src/gui/gui_host.js', 'GUIHOST-BEGIN', 'GUIHOST-END', 'FA_GUI_HO
 // GUI 的 Python 工作者（renderer/src/gui/py_worker.js）與非同步判斷（py_async.js）：同上，嵌入後執行時載入。
 embed('renderer/src/gui/py_worker.js', 'GUIPYWORKER-BEGIN', 'GUIPYWORKER-END', 'FA_GUI_PYWORKER_SRC');
 embed('renderer/src/gui/py_async.js', 'GUIPYASYNC-BEGIN', 'GUIPYASYNC-END', 'FA_GUI_PYASYNC_SRC');
+// JavaScript 程式的沙盒執行器（renderer/src/gui/js_program.js）：`node 檔案.js` 在 sandbox="allow-scripts" 的 iframe 裡跑，同上。
+embed('renderer/src/gui/js_program.js', 'GUIJSPROGRAM-BEGIN', 'GUIJSPROGRAM-END', 'FA_GUI_JSPROGRAM_SRC');
 function embedBehavior() {
     const data = require('./behavior-data.js').load(root);
     const a = src.indexOf('/* BEHAVIOR-BEGIN */'), b = src.indexOf('/* BEHAVIOR-END */');
