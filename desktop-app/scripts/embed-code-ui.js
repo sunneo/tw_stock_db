@@ -54,6 +54,8 @@ embed('renderer/src/gui/gui_bridge.js', 'GUIBRIDGE-BEGIN', 'GUIBRIDGE-END', 'FA_
 embed('renderer/src/gui/gui_render.js', 'GUIRENDER-BEGIN', 'GUIRENDER-END', 'FA_GUI_RENDER_SRC');
 // zenity 參數解析與對話框建構（renderer/src/gui/zenity.js，純函式，winetricks 相容）：同上，嵌入後執行時載入。
 embed('renderer/src/gui/zenity.js', 'GUIZENITY-BEGIN', 'GUIZENITY-END', 'FA_GUI_ZENITY_SRC');
+// 視窗主機（renderer/src/gui/gui_host.js，不直接碰 DOM 細節，render 與 bridge 由呼叫端傳入）：同上。
+embed('renderer/src/gui/gui_host.js', 'GUIHOST-BEGIN', 'GUIHOST-END', 'FA_GUI_HOST_SRC');
 function embedBehavior() {
     const data = require('./behavior-data.js').load(root);
     const a = src.indexOf('/* BEHAVIOR-BEGIN */'), b = src.indexOf('/* BEHAVIOR-END */');
