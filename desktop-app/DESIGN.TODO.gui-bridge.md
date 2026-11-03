@@ -25,6 +25,14 @@ Continue from the handoff document at desktop-app/DESIGN.TODO.gui-bridge.md (rep
 | f5fb8f12 | `renderer/src/gui/zenity.js`（自 Redmine 移植）＋ `zenity.test.js`，嵌入 GUIZENITY 區塊（`FA_GUI_ZENITY_SRC`），EXCLUDE 加 GUIZENITY | `node renderer/src/gui/zenity.test.js`：56 項通過 |
 | 739164eb | 嵌入：`floating-assistant.js` 的 `GUIBRIDGE-BEGIN/END` 區塊（常數 `FA_GUI_BRIDGE_SRC`）、`scripts/embed-code-ui.js` 加 `embed(...)` 一行、`scripts/build-web-lazy.js` EXCLUDE 加 GUIBRIDGE | 用 node 讀嵌入的字串、`new Function` 載入後 `apply` 開窗成功（一次性檢查，未寫成測試） |
 
+## 追加需求與現況（2026-11-03，管理層透過 side session 轉達）
+
+- 使用者補充：「我想要有zenity, ask-ai-chat stdin, stdout pipe」。ask-ai-chat 要能從 stdin 讀（`cat log.txt | ask-ai-chat "摘要"`），答案寫到 stdout，可再接管線（`ask-ai-chat "..." | grep ...`）。用桌面版既有的模型呼叫（線上／離線依既有設定，不另寫一套）；**不搬 Redmine 的 Rails／ActiveJob 輪詢**。能邊生成邊進管線就做，做不到就整段輸出並說明限制。沒有真實模型時用假模型測，並明說沒在桌面版真實跑過。
+- 使用者補充：「可以參考C:\Users\sunneo\Downloads\redmine_ai_chat 的實作」：協定核心、繪製器、zenity、node 的 iframe 執行器、gui.py、pygame.py 與 test\gui_bridge\* 能沿用就沿用，改成桌面版模組形式與嵌入方式；不要重新發明協定。
+- 桌面版現況（已讀）：終端機已有虛擬指令 `ask-floating-ai-assistant`，入口 `_terminalAskAI(session, argsText)`（floating-assistant.js 約 86572 行）。它呼叫 `_runSubAgentTask`，整段答案一次寫到終端機，**不讀 stdin**，`--format text|json`。
+- 虛擬指令進管線的既有機制：`JS_INTERCEPTED_WITH_CAPTURE`（約 85366 行）讓 sleep／curl／wget／httping 的輸出可被管線接走（以暫換 `session.term.write` 錄下輸出）。ask-ai-chat 的 stdin 要比照這個路徑接，stdin 來源是前一段指令的輸出（`VIRTUAL_STDIN` 類機制需要確認）。
+- 命名決定（待確認）：桌面版既有名稱是 `ask-floating-ai-assistant`，使用者與管理層要求的是 `ask-ai-chat`。預設做法：兩個名稱都可用（`ask-ai-chat` 為新增別名），並在 commit 訊息說明；若使用者不要別名，再改。
+
 ## Todo（依序；下一項最先）
 
 1. **（嵌入已完成，739164eb；讀取端待做）**：在 `floating-assistant.js` 找到終端機的 session 建立處，加一個懶載入函式（例如 `_faGuiBridge()`），用 `new Function('module', FA_GUI_BRIDGE_SRC)` 取得 `AiChatGuiBridge`（module.exports 形式）。寫 node 測試：讀嵌入字串、載入、apply。注意 floating-assistant.js 極大（約 10 萬行），**不要整檔讀**，用 Grep 找 `_mountTerminalWidget`（約 83029 行）、`_runTerminalCommand`（約 84466）、`_runTerminalShellLine`（約 85190）、`SANDBOX_COMMAND_REGISTRY`（約 47636）。
