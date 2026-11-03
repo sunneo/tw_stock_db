@@ -1747,7 +1747,7 @@ select:focus { outline: 2px solid var(--acc); }
      floating-assistant.js`——已實測驗證`curl`拿掉其中一個`desktop-app`
      會是404，兩個都要保留。 -->
 <script>
-  window.__floatingAssistantJsReady = (window.__FA_LAZY_BASE = 'https://raw.githubusercontent.com/sunneo/tw_stock_db/6c61c169be8ea25a2902983ed24c47ef9f229807/desktop-app/web-lazy/chunks/', fetch('https://raw.githubusercontent.com/sunneo/tw_stock_db/6c61c169be8ea25a2902983ed24c47ef9f229807/desktop-app/web-lazy/core.js'))
+  window.__floatingAssistantJsReady = (window.__FA_LAZY_BASE = 'https://raw.githubusercontent.com/sunneo/tw_stock_db/efd9bbc82799f1e3dfb1c9b6f33c1d2df3259d15/desktop-app/web-lazy/chunks/', fetch('https://raw.githubusercontent.com/sunneo/tw_stock_db/efd9bbc82799f1e3dfb1c9b6f33c1d2df3259d15/desktop-app/web-lazy/core.js'))
     .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
     .then(text => new Promise((resolve, reject) => {
       const blob = new Blob([text], { type: 'application/javascript' });
