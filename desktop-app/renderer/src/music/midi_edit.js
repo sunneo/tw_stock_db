@@ -2,7 +2,7 @@
 // 動作是 { act, ... },全部由 apply 執行並回傳新曲子;AI 或使用者說的話先由 parseCommands 讀成動作,讀不懂才交給模型(模型也只能輸出這份動作清單)。
 (function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(require('./midi_core.js')); else root.FaMidiEdit = factory(root.FaMidi || (typeof FaMidi !== 'undefined' ? FaMidi : undefined)); })(typeof self !== 'undefined' ? self : this, function (M) {
   'use strict';
-  const ACTS = ['add_note', 'remove_notes', 'move', 'transpose', 'quantize', 'set_program', 'add_track', 'remove_track', 'set_tempo', 'velocity', 'merge_tracks', 'split_pitch'];
+  const ACTS = ['add_note', 'remove_notes', 'move', 'transpose', 'quantize', 'set_program', 'add_track', 'remove_track', 'set_tempo', 'set_mix', 'velocity', 'merge_tracks', 'split_pitch'];
   const GRID = { '全': 4, '二分': 2, '四分': 1, '八分': 0.5, '十六分': 0.25, '三十二分': 0.125 };
   const CN = { 零: 0, 〇: 0, 一: 1, 二: 2, 兩: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
   function cnNum(s) { // 「十二」「二十」「三」或阿拉伯數字
@@ -42,7 +42,8 @@
       case 'set_program': { if (ti == null) return { song, error: '要指定哪一軌' }; return { song: M.setProgram(song, ti, a.program) }; }
       case 'add_track': return { song: M.addTrack(song, a.name, a.program || 0, !!a.drum) };
       case 'remove_track': { if (ti == null) return { song, error: '要指定哪一軌' }; return { song: M.removeTrack(song, ti) }; }
-      case 'set_tempo': return { song: M.setTempo(song, a.bpm) };
+      case 'set_mix': { if (ti == null) return { song, error: '要指定哪一軌' }; const s = JSON.parse(JSON.stringify(song)), t = s.tracks[ti]; if (a.volume != null) t.volume = Math.max(0, Math.min(127, Math.round(Number(a.volume)) || 0)); if (a.pan != null) t.pan = Math.max(0, Math.min(127, Math.round(Number(a.pan)) || 0)); return { song: s }; }
+      case 'set_tempo': return { song: a.scale ? M.scaleTempo(song, a.bpm) : M.setTempo(song, a.bpm) };
       case 'velocity': return { song: M.scaleVelocity(song, a.factor || 1, ti) };
       case 'merge_tracks': { const b = trackIndex(song, a.with); if (ti == null || b == null) return { song, error: '要指定兩軌' }; return { song: M.mergeTracks(song, ti, b) }; }
       case 'split_pitch': { if (ti == null) return { song, error: '要指定哪一軌' }; return { song: M.splitByPitch(song, ti, typeof a.at === 'string' ? pitchOf(a.at) : a.at) }; }

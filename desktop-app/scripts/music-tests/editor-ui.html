@@ -1,0 +1,18 @@
+<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>midi editor ui test</title>
+<body style="font-family:sans-serif;padding:12px"><div id="host"></div><pre id="log" style="font-size:11px"></pre>
+<script src="../../renderer/src/music/midi_core.js"></script>
+<script src="../../renderer/src/music/midi_edit.js"></script>
+<script src="../../renderer/src/music/midi_play.js"></script>
+<script src="../../renderer/src/remote/rg_patch.js"></script>
+<script src="../../renderer/src/music/midi_editor_ui.js"></script>
+<script>
+// 真的 FaMidiPlay 播放器 + 假的合成器(把收到的事件記下來)與真時鐘,不需要音色庫
+window.synthLog = [];
+const synth = { noteOn: (c, n, v, o) => synthLog.push(['on', c, n]), noteOff: (c, n) => synthLog.push(['off', c, n]), programChange() {}, controllerChange: (c, cc, v) => synthLog.push(['cc', c, cc, v]), stopAll() {} };
+let s = FaMidi.emptySong(); s = FaMidi.addTrack(s, '旋律', 0); s = FaMidi.addTrack(s, '貝斯', 33); s = FaMidi.addTrack(s, '鼓', 0, true);
+for (let i = 0; i < 16; i++) { s = FaMidi.addNote(s, 0, { t: i * 480, d: 440, n: 60 + (i % 5) * 2, v: 100 }); if (i % 2 === 0) s = FaMidi.addNote(s, 1, { t: i * 480, d: 900, n: 36 + (i % 3), v: 90 }); s = FaMidi.addNote(s, 2, { t: i * 480, d: 200, n: i % 2 ? 42 : 36, v: 90 }); }
+const t0 = performance.now(); window.players = [];
+const host = { player: async () => { const p = FaMidiPlay.createPlayer(s, synth, { clock: () => (performance.now() - t0) / 1000 }); players.push(p); return p; }, download: () => {}, askAI: async () => [], onChange: (sg) => { window.lastSong = sg; } };
+window.__card = FaMidiEditUI.mount({ song: s, title: '測試曲', host, M: FaMidi, E: FaMidiEdit, P: FaRemotePatch });
+document.getElementById('host').appendChild(window.__card);
+</script>

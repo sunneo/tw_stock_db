@@ -184,5 +184,17 @@ function songWith(notes) { let sg = M.emptySong(); sg.tempos = [{ t: 0, bpm: 120
   const cs = await P.bankCacheStatus(fakeCaches); check('bankCacheStatus: reports bytes and that the whole bank is there', cs.whole && cs.bytes === data.length && cs.entries === 1, cs);
   check('bankCacheClear: empties the cache', (await P.bankCacheClear(fakeCaches)) === true && (await P.bankCacheStatus(fakeCaches)).entries === 0);
   delete global.caches;
+  // 階段 A/B:即時混音(音量、左右平衡)、多軌 solo、playToggle 的 current／ended
+  {
+    const sg = songWith([{ t: 0, d: 480 * 8, n: 60, v: 100 }]); const log = []; const sy = { noteOn() {}, noteOff() {}, programChange() {}, controllerChange: (c, cc, v) => log.push([c, cc, v]), stopAll() {} }; let cb = null, now = 0;
+    const pl = P.createPlayer(sg, sy, { clock: () => now, setInterval: (f) => { cb = f; return 1; }, clearInterval: () => {}, setTimeout: () => 1, clearTimeout() {} });
+    pl.setMix(0, 50, 10); check('setMix: sends CC7 and CC10 to the track channel at once', log.some((x) => x[1] === 7 && x[2] === 50) && log.some((x) => x[1] === 10 && x[2] === 10), log);
+    log.length = 0; pl.play(); check('setMix: the override beats the values stored in the song when playback (re)starts', log.some((x) => x[1] === 7 && x[2] === 50) && log.some((x) => x[1] === 10 && x[2] === 10) && !log.some((x) => x[1] === 7 && x[2] === 100), log.slice(0, 6));
+    pl.setMix(0, 200, -3); check('setMix: clamps to 0–127', pl.state.volAbs.get(0) === 127 && pl.state.panAbs.get(0) === 0); pl.dispose();
+    const two = songWith([{ t: 0, d: 480, n: 60, v: 100 }]); two.tracks.push(Object.assign({}, two.tracks[0], { name: 'b', channel: 1 })); two.tracks.push(Object.assign({}, two.tracks[0], { name: 'c', channel: 2 }));
+    const ev = P.buildEvents(two, { solo: [0, 2] }).filter((e) => e.type === 'on'); check('buildEvents: solo accepts several tracks', ev.length === 2 && ev.every((e) => e.i === 0 || e.i === 2), ev.map((e) => e.i));
+    const p2 = P.createPlayer(two, sy, { clock: () => 0, setInterval: () => 1, clearInterval() {}, setTimeout: () => 1, clearTimeout() {} }); p2.setSolo([0, 2]); check('setSolo: array and empty array (back to all)', p2.state.solo.join() === '0,2' && (p2.setSolo([]), p2.state.solo === null)); p2.setMuteSet(new Set([1])); check('setMuteSet: replaces the mute set', p2.state.mute.has(1) && p2.state.mute.size === 1);
+    let ended = 0; const fp = { onEnd(f) { fp.e = f; }, onTick() {}, play() {}, stop() {}, dispose() {} }; const tg = P.playToggle({ player: async () => fp, label() {}, say() {}, ended: () => ended++ }); await tg.toggle(); check('playToggle: current() is the live player, and ended fires on a natural end only', tg.current() === fp && (fp.e(), ended === 1 && tg.current() === null)); await tg.toggle(); tg.stop(); check('playToggle: a manual stop does not fire ended', ended === 1);
+  }
   console.log(ok + ' passed, ' + bad.length + ' failed'); bad.forEach((b) => console.log('FAIL: ' + b)); process.exit(bad.length ? 1 : 0);
 })();

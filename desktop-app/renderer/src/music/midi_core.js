@@ -169,6 +169,8 @@
     return s;
   }
   function setTempo(song, bpm) { const s = clone(song); s.tempos = [{ t: 0, bpm: Math.max(20, Math.min(400, Number(bpm) || 120)) }]; return s; }
+  // 等比縮放整張速度表:第一個速度改成 bpm,後面的變速點照比例跟著變(保留速度起伏);只有一個速度時等同 setTempo
+  function scaleTempo(song, bpm) { const s = clone(song); const to = Math.max(20, Math.min(400, Number(bpm) || 120)); const f = to / song.tempos[0].bpm; s.tempos = s.tempos.map((x) => ({ t: x.t, bpm: Math.max(20, Math.min(400, Math.round(x.bpm * f * 100) / 100)) })); s.tempos[0].bpm = to; return s; }
   function scaleVelocity(song, factor, trackIdx) {
     const s = clone(song); factor = Math.max(0.1, Math.min(3, Number(factor) || 1));
     s.tracks.forEach((tr, i) => { if (trackIdx != null && i !== trackIdx) return; tr.notes.forEach((n) => { n.v = clampI(n.v * factor, 1, 127, 90); }); });
@@ -211,5 +213,5 @@
   const NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
   function noteName(n) { return NAMES[n % 12] + (Math.floor(n / 12) - 1); }
 
-  return { PPQ, LIM, emptySong, emptyTrack, parse, write, validate, ticksToSec, secToTicks, endTick, durationSec, noteCount, transpose, quantize, shiftTime, setTempo, scaleVelocity, addTrack, removeTrack, setProgram, mergeTracks, splitByPitch, addNote, removeNotes, summary, noteName };
+  return { PPQ, LIM, emptySong, emptyTrack, parse, write, validate, ticksToSec, secToTicks, endTick, durationSec, noteCount, transpose, quantize, shiftTime, setTempo, scaleTempo, scaleVelocity, addTrack, removeTrack, setProgram, mergeTracks, splitByPitch, addNote, removeNotes, summary, noteName };
 });

@@ -33243,6 +33243,8 @@ const holder = {};
     return s;
   }
   function setTempo(song, bpm) { const s = clone(song); s.tempos = [{ t: 0, bpm: Math.max(20, Math.min(400, Number(bpm) || 120)) }]; return s; }
+  // 等比縮放整張速度表:第一個速度改成 bpm,後面的變速點照比例跟著變(保留速度起伏);只有一個速度時等同 setTempo
+  function scaleTempo(song, bpm) { const s = clone(song); const to = Math.max(20, Math.min(400, Number(bpm) || 120)); const f = to / song.tempos[0].bpm; s.tempos = s.tempos.map((x) => ({ t: x.t, bpm: Math.max(20, Math.min(400, Math.round(x.bpm * f * 100) / 100)) })); s.tempos[0].bpm = to; return s; }
   function scaleVelocity(song, factor, trackIdx) {
     const s = clone(song); factor = Math.max(0.1, Math.min(3, Number(factor) || 1));
     s.tracks.forEach((tr, i) => { if (trackIdx != null && i !== trackIdx) return; tr.notes.forEach((n) => { n.v = clampI(n.v * factor, 1, 127, 90); }); });
@@ -33285,7 +33287,7 @@ const holder = {};
   const NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
   function noteName(n) { return NAMES[n % 12] + (Math.floor(n / 12) - 1); }
 
-  return { PPQ, LIM, emptySong, emptyTrack, parse, write, validate, ticksToSec, secToTicks, endTick, durationSec, noteCount, transpose, quantize, shiftTime, setTempo, scaleVelocity, addTrack, removeTrack, setProgram, mergeTracks, splitByPitch, addNote, removeNotes, summary, noteName };
+  return { PPQ, LIM, emptySong, emptyTrack, parse, write, validate, ticksToSec, secToTicks, endTick, durationSec, noteCount, transpose, quantize, shiftTime, setTempo, scaleTempo, scaleVelocity, addTrack, removeTrack, setProgram, mergeTracks, splitByPitch, addNote, removeNotes, summary, noteName };
 });
 
 }).call(null, undefined, holder);
@@ -33340,7 +33342,7 @@ const holder = {};
     const clock = opts.clock || (() => 0); const ahead = opts.ahead || 0.25, tickMs = opts.tickMs || 50;
     const setT = opts.setInterval || setInterval, clearT = opts.clearInterval || clearInterval;
     const setOnce = opts.setTimeout || (typeof setTimeout === 'function' ? setTimeout : null), clearOnce = opts.clearTimeout || (typeof clearTimeout === 'function' ? clearTimeout : null), group = opts.group || null;
-    const st = { song, events: [], idx: 0, startAt: 0, offset: 0, playing: false, timer: null, mute: new Set(), solo: null, volume: new Map(), total: M.durationSec(song), onEnd: null, onTick: null, loop: !!opts.loop, held: new Map(), guard: null, disposed: false };
+    const st = { song, events: [], idx: 0, startAt: 0, offset: 0, playing: false, timer: null, mute: new Set(), solo: null, volume: new Map(), volAbs: new Map(), panAbs: new Map(), total: M.durationSec(song), onEnd: null, onTick: null, loop: !!opts.loop, held: new Map(), guard: null, disposed: false };
     const rebuild = () => { st.events = buildEvents(st.song, { mute: st.mute, solo: st.solo }); };
     const pos = () => (st.playing ? Math.min(st.total, st.offset + (clock() - st.startAt)) : st.offset);
     const evOpts = (at) => ({ time: at });
@@ -33350,7 +33352,7 @@ const holder = {};
       else if (e.type === 'prog') synth.programChange(e.ch, e.a, evOpts(at));
       else if (e.type === 'cc') {
         const { map } = channelMap(st.song); const ti = map.indexOf(e.ch); let b = e.b;
-        if (e.a === 7 && st.volume.has(ti)) b = Math.round(b * st.volume.get(ti));
+        if (e.a === 7 && st.volAbs.has(ti)) b = st.volAbs.get(ti); else if (e.a === 7 && st.volume.has(ti)) b = Math.round(b * st.volume.get(ti)); else if (e.a === 10 && st.panAbs.has(ti)) b = st.panAbs.get(ti);
         synth.controllerChange(e.ch, e.a, Math.max(0, Math.min(127, b)), evOpts(at));
       }
     };
@@ -33404,7 +33406,10 @@ const holder = {};
       duration() { return st.total; },
       isPlaying() { return st.playing; },
       setMute(i, on) { if (on) st.mute.add(i); else st.mute.delete(i); api._refresh(); },
-      setSolo(i) { st.solo = i == null ? null : [i]; api._refresh(); },
+      setSolo(i) { st.solo = i == null || (Array.isArray(i) && !i.length) ? null : [].concat(i); api._refresh(); },
+      // 即時混音:音量(0–127)與左右平衡(0–127,64 在中間),馬上送進合成器,之後跳轉／重排程仍沿用(蓋過曲子裡的值)
+      setMix(i, vol, pan) { const { map } = channelMap(st.song); const ch = map[i]; if (vol != null) st.volAbs.set(i, Math.max(0, Math.min(127, Math.round(vol)))); if (pan != null) st.panAbs.set(i, Math.max(0, Math.min(127, Math.round(pan)))); if (ch >= 0 && !st.disposed) { if (vol != null) synth.controllerChange(ch, 7, st.volAbs.get(i), evOpts(clock())); if (pan != null) synth.controllerChange(ch, 10, st.panAbs.get(i), evOpts(clock())); } },
+      setMuteSet(set) { st.mute = new Set(set || []); api._refresh(); },
       setTrackVolume(i, factor) { st.volume.set(i, Math.max(0, Math.min(1.5, Number(factor)))); const { map } = channelMap(st.song); if (map[i] >= 0) { const base = st.song.tracks[i].volume; synth.controllerChange(map[i], 7, Math.max(0, Math.min(127, Math.round(base * st.volume.get(i)))), evOpts(clock())); } },
       setSong(s) { const was = st.playing; if (was) api.pause(); st.song = s; st.total = M.durationSec(s); st.offset = Math.min(st.offset, st.total); if (was) api.play(); },
       _refresh() { if (st.playing) { const at = pos(); api.pause(); st.offset = at; api.play(); } },
@@ -33425,10 +33430,10 @@ const holder = {};
       try {
         o.say('準備合成器…'); const p = await o.player();
         if (my !== token) { try { p.stop(); } catch (_) { /* */ } return; } // 等待中被取消:建好的播放器不開始放
-        preparing = false; cur = p; p.onEnd(() => { if (cur === p) { cur = null; o.label(false); } }); p.play(); if (cur === p) o.label(true); o.say('');
+        preparing = false; cur = p; p.onEnd(() => { if (cur === p) { cur = null; o.label(false); if (o.ended) { try { o.ended(); } catch (_) { /* */ } } } }); p.play(); if (cur === p) o.label(true); o.say('');
       } catch (e) { if (my === token) { preparing = false; cur = null; o.label(false); } o.say('⚠️ 無法試聽:' + String((e && e.message) || e)); }
     }
-    return { toggle, stop, isPlaying: () => !!cur, isPreparing: () => preparing, dispose() { token++; preparing = false; if (cur) { const p = cur; cur = null; try { p.dispose(); } catch (_) { /* */ } } o.label(false); } };
+    return { toggle, stop, current: () => cur, isPlaying: () => !!cur, isPreparing: () => preparing, dispose() { token++; preparing = false; if (cur) { const p = cur; cur = null; try { p.dispose(); } catch (_) { /* */ } } o.label(false); } };
   }
 
   // 瀏覽器端:載入 SpessaSynth(程式庫與處理器文字用 fetchText 取得,以 data 位址載入,離線單檔與 file 頁面都可)與音色庫。
@@ -33637,7 +33642,7 @@ const holder = {};
 // 動作是 { act, ... },全部由 apply 執行並回傳新曲子;AI 或使用者說的話先由 parseCommands 讀成動作,讀不懂才交給模型(模型也只能輸出這份動作清單)。
 (function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(require('./midi_core.js')); else root.FaMidiEdit = factory(root.FaMidi || (typeof FaMidi !== 'undefined' ? FaMidi : undefined)); })(typeof self !== 'undefined' ? self : this, function (M) {
   'use strict';
-  const ACTS = ['add_note', 'remove_notes', 'move', 'transpose', 'quantize', 'set_program', 'add_track', 'remove_track', 'set_tempo', 'velocity', 'merge_tracks', 'split_pitch'];
+  const ACTS = ['add_note', 'remove_notes', 'move', 'transpose', 'quantize', 'set_program', 'add_track', 'remove_track', 'set_tempo', 'set_mix', 'velocity', 'merge_tracks', 'split_pitch'];
   const GRID = { '全': 4, '二分': 2, '四分': 1, '八分': 0.5, '十六分': 0.25, '三十二分': 0.125 };
   const CN = { 零: 0, 〇: 0, 一: 1, 二: 2, 兩: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
   function cnNum(s) { // 「十二」「二十」「三」或阿拉伯數字
@@ -33677,7 +33682,8 @@ const holder = {};
       case 'set_program': { if (ti == null) return { song, error: '要指定哪一軌' }; return { song: M.setProgram(song, ti, a.program) }; }
       case 'add_track': return { song: M.addTrack(song, a.name, a.program || 0, !!a.drum) };
       case 'remove_track': { if (ti == null) return { song, error: '要指定哪一軌' }; return { song: M.removeTrack(song, ti) }; }
-      case 'set_tempo': return { song: M.setTempo(song, a.bpm) };
+      case 'set_mix': { if (ti == null) return { song, error: '要指定哪一軌' }; const s = JSON.parse(JSON.stringify(song)), t = s.tracks[ti]; if (a.volume != null) t.volume = Math.max(0, Math.min(127, Math.round(Number(a.volume)) || 0)); if (a.pan != null) t.pan = Math.max(0, Math.min(127, Math.round(Number(a.pan)) || 0)); return { song: s }; }
+      case 'set_tempo': return { song: a.scale ? M.scaleTempo(song, a.bpm) : M.setTempo(song, a.bpm) };
       case 'velocity': return { song: M.scaleVelocity(song, a.factor || 1, ti) };
       case 'merge_tracks': { const b = trackIndex(song, a.with); if (ti == null || b == null) return { song, error: '要指定兩軌' }; return { song: M.mergeTracks(song, ti, b) }; }
       case 'split_pitch': { if (ti == null) return { song, error: '要指定哪一軌' }; return { song: M.splitByPitch(song, ti, typeof a.at === 'string' ? pitchOf(a.at) : a.at) }; }
@@ -35137,7 +35143,7 @@ const holder = {};
     const M = opts.M, E = opts.E, P = opts.P, host = opts.host || {};
     let remote = null;   // 共編:{ session, doc }
     const hist = E.history(opts.song);
-    let sel = 0, grid = 0.5, pxBeat = 40, pitchLo = 36, rows = 36, playing = null, destroyed = false;
+    let sel = 0, grid = 0.5, pxBeat = 40, pitchLo = 36, rows = 36, playing = null, destroyed = false, posTick = 0, dragging = false;
     const card = el('div', 'border:1px solid rgba(128,128,128,.4);border-radius:10px;padding:10px;max-width:720px;font-size:13px;'); card.className = 'fa-midi-edit';
     const head = el('div', 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;');
     head.appendChild(el('span', 'font-size:18px', '🎼')); head.appendChild(el('b', 'flex:1;min-width:80px', opts.title || hist.song.title || 'MIDI 編輯器'));
@@ -35147,10 +35153,19 @@ const holder = {};
     const gridSel = el('select', BTN); [['四分音符', 1], ['八分音符', 0.5], ['十六分音符', 0.25]].forEach(([n, v]) => { const o = el('option', '', n); o.value = v; if (v === grid) o.selected = true; gridSel.appendChild(o); });
     gridSel.onchange = () => { grid = Number(gridSel.value); };
     head.append(undoB, redoB, gridSel, playB, colB, dlB); card.appendChild(head);
+    // 傳輸列:跳到開頭／結尾、時間與小節、可點可拖的進度條、BPM
+    const tp = el('div', 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:8px;');
+    const toStartB = el('button', BTN, '⏮'), toEndB = el('button', BTN, '⏭'); toStartB.title = '跳到開頭'; toEndB.title = '跳到結尾';
+    const timeL = el('span', 'font-variant-numeric:tabular-nums;font-size:12px;min-width:112px;', '0:00 / 0:00');
+    const bar = el('input', 'flex:1;min-width:120px;'); bar.type = 'range'; bar.min = 0; bar.max = 1; bar.step = 1; bar.value = 0; bar.title = '播放位置(拖曳或點一下跳轉)';
+    const bpmL = el('label', 'display:flex;align-items:center;gap:3px;font-size:12px;', '♩='); const bpmIn = el('input', 'width:56px;padding:2px 4px;'); bpmIn.type = 'number'; bpmIn.min = 20; bpmIn.max = 400; bpmIn.step = 1; bpmIn.title = '速度(每分鐘拍數)。曲中有變速時,改這裡會等比縮放整條速度表'; bpmL.appendChild(bpmIn); const bpmNote = el('span', 'opacity:.7;font-size:11px;'); bpmL.appendChild(bpmNote);
+    tp.append(toStartB, toEndB, timeL, bar, bpmL); card.appendChild(tp);
     const mid = el('div', 'display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;');
     const side = el('div', 'min-width:170px;flex:0 0 170px;');
     const canvasWrap = el('div', 'flex:1;min-width:240px;overflow:auto;border:1px solid rgba(128,128,128,.3);border-radius:6px;max-height:300px;');
-    const cv = el('canvas', 'display:block;cursor:crosshair;'); canvasWrap.appendChild(cv); mid.append(side, canvasWrap); card.appendChild(mid);
+    const inner = el('div', 'position:relative;'); const rv = el('canvas', 'display:block;cursor:pointer;height:16px;'); rv.title = '點一下或拖曳跳到那個位置';
+    const cv = el('canvas', 'display:block;cursor:crosshair;'); const head0 = el('div', 'position:absolute;top:0;bottom:0;width:2px;margin-left:-1px;background:#ff3b30;pointer-events:none;z-index:2;display:none;');
+    inner.append(rv, cv, head0); canvasWrap.appendChild(inner); mid.append(side, canvasWrap); card.appendChild(mid);
     const status = el('div', 'opacity:.75;min-height:1.2em;font-size:12px;margin-top:6px;'); card.appendChild(status);
     const say = (m) => { status.textContent = m || ''; };
     const ask = el('div', 'display:flex;gap:6px;margin-top:6px;');
@@ -35160,14 +35175,37 @@ const holder = {};
     function draw() {
       const s = hist.song, dpr = window.devicePixelRatio || 1;
       const end = Math.max(16, Math.ceil(M.endTick(s) / s.ppq) + 4), W = end * pxBeat, H = rows * 12;
-      cv.width = W * dpr; cv.height = H * dpr; cv.style.width = W + 'px'; cv.style.height = H + 'px';
+      inner.style.width = W + 'px'; cv.width = W * dpr; cv.height = H * dpr; cv.style.width = W + 'px'; cv.style.height = H + 'px';
       const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
       for (let r = 0; r < rows; r++) { const p = pitchLo + rows - 1 - r; if ([1, 3, 6, 8, 10].indexOf(p % 12) >= 0) { g.fillStyle = 'rgba(128,128,128,.12)'; g.fillRect(0, r * 12, W, 12); } if (p % 12 === 0) { g.fillStyle = 'rgba(128,128,128,.35)'; g.fillRect(0, r * 12 + 11, W, 1); g.fillStyle = 'rgba(128,128,128,.8)'; g.font = '9px sans-serif'; g.fillText(M.noteName(p), 2, r * 12 + 9); } }
       for (let b = 0; b <= end; b++) { g.fillStyle = b % s.timesig.n === 0 ? 'rgba(128,128,128,.5)' : 'rgba(128,128,128,.2)'; g.fillRect(b * pxBeat, 0, 1, H); }
       s.tracks.forEach((tr, i) => { g.fillStyle = COLORS[i % COLORS.length]; g.globalAlpha = i === sel ? 1 : 0.35; tr.notes.forEach((n) => { const r = pitchLo + rows - 1 - n.n; if (r < 0 || r >= rows) return; g.fillRect(n.t / s.ppq * pxBeat, r * 12 + 1, Math.max(3, n.d / s.ppq * pxBeat - 1), 10); }); }); g.globalAlpha = 1;
       undoB.disabled = !hist.canUndo(); redoB.disabled = !hist.canRedo();
+      rv.width = W * dpr; rv.height = 16 * dpr; rv.style.width = W + 'px'; const r = rv.getContext('2d'); r.setTransform(dpr, 0, 0, dpr, 0, 0); r.clearRect(0, 0, W, 16); r.fillStyle = 'rgba(128,128,128,.18)'; r.fillRect(0, 0, W, 16); r.font = '10px sans-serif'; r.fillStyle = 'rgba(128,128,128,.95)';
+      for (let b = 0; b <= end; b += s.timesig.n) { r.fillRect(b * pxBeat, 8, 1, 8); r.fillText(String(b / s.timesig.n + 1), b * pxBeat + 3, 10); }
+      syncTransport();
     }
-    function drawSide() {
+    const fmtT = (sec) => { sec = Math.max(0, sec); const m = Math.floor(sec / 60), x = Math.floor(sec % 60); return m + ':' + (x < 10 ? '0' : '') + x; };
+    function syncTransport() {
+      const s = hist.song, endT = M.endTick(s); bar.max = Math.max(1, endT); if (!dragging) bar.value = Math.min(posTick, endT);
+      const beat = posTick / s.ppq; timeL.textContent = fmtT(M.ticksToSec(s, posTick)) + ' / ' + fmtT(M.durationSec(s)) + '  小節 ' + (Math.floor(beat / s.timesig.n) + 1);
+      head0.style.display = ''; head0.style.left = (beat * pxBeat) + 'px';
+      if (document.activeElement !== bpmIn) bpmIn.value = Math.round(s.tempos[0].bpm * 100) / 100; bpmNote.textContent = s.tempos.length > 1 ? '(+' + (s.tempos.length - 1) + ' 處變速)' : '';
+    }
+    function setPos(t, follow) {
+      posTick = Math.max(0, Math.round(t)); syncTransport();
+      if (follow) { const x = posTick / hist.song.ppq * pxBeat, L = canvasWrap.scrollLeft, w = canvasWrap.clientWidth; if (w && (x > L + w - 24 || x < L)) canvasWrap.scrollLeft = Math.max(0, x - 40); }
+    }
+    function seekTick(t) {
+      const s = hist.song; t = Math.max(0, Math.min(M.endTick(s), Math.round(t))); setPos(t, true);
+      const p = pt.current(); if (p && p.isPlaying && p.isPlaying()) { try { p.seek(M.ticksToSec(s, t)); } catch (_) { /* */ } }
+    }
+    const onTick = (sec) => { if (pt.isPlaying() && !dragging) setPos(M.secToTicks(hist.song, sec), true); };
+    toStartB.onclick = () => seekTick(0); toEndB.onclick = () => seekTick(M.endTick(hist.song));
+    bar.oninput = () => { dragging = true; setPos(Number(bar.value), false); }; bar.onchange = () => { dragging = false; seekTick(Number(bar.value)); };
+    const rulerSeek = (ev) => { const rc = rv.getBoundingClientRect(); seekTick((ev.clientX - rc.left) / pxBeat * hist.song.ppq); };
+    rv.onpointerdown = (ev) => { rulerSeek(ev); try { rv.setPointerCapture(ev.pointerId); } catch (_) { /* */ } rv.onpointermove = (e2) => { if (e2.buttons) rulerSeek(e2); }; };
+    bpmIn.onchange = () => { const v = Number(bpmIn.value); if (!(v >= 20 && v <= 400)) { say('⚠️ 速度要在 20 到 400 之間'); syncTransport(); return; } const multi = hist.song.tempos.length > 1; if (run({ act: 'set_tempo', bpm: v, scale: true }) && multi) say('曲中有變速,已把整條速度表等比縮放(保留快慢起伏)'); };    function drawSide() {
       const s = hist.song; side.textContent = '';
       s.tracks.forEach((tr, i) => {
         const row = el('div', 'padding:4px;border-radius:6px;margin-bottom:4px;cursor:pointer;border:1px solid ' + (i === sel ? COLORS[i % COLORS.length] : 'transparent') + ';');
@@ -35217,7 +35255,9 @@ const holder = {};
     };
     undoB.onclick = () => { hist.undo(); pushRemote('undo'); stopPlay(); if (host.onChange) host.onChange(hist.song, { act: 'undo' }); drawSide(); draw(); };
     redoB.onclick = () => { hist.redo(); pushRemote('redo'); stopPlay(); if (host.onChange) host.onChange(hist.song, { act: 'redo' }); drawSide(); draw(); };
-    const pt = FaMidiPlay.playToggle({ player: () => host.player(hist.song, say), label: (on) => { playB.textContent = on ? '■ 停止' : '▶ 試聽'; }, say });
+    const pt = FaMidiPlay.playToggle({
+      player: async () => { const p = await host.player(hist.song, say); p.onTick(onTick); const s = hist.song; if (posTick >= M.endTick(s) - 1) setPos(0, true); if (posTick > 0) p.seek(M.ticksToSec(s, posTick)); return p; },
+      label: (on) => { playB.textContent = on ? '■ 停止' : '▶ 試聽'; }, ended: () => setPos(0, true), say });
     function stopPlay() { pt.stop(); }
     playB.onclick = () => pt.toggle();
     dlB.onclick = () => { try { host.download((opts.title || hist.song.title || 'song').replace(/[\\/:*?"<>|]/g, '_') + '.mid', M.write(hist.song), 'audio/midi'); } catch (e) { say('⚠️ ' + String((e && e.message) || e)); } };

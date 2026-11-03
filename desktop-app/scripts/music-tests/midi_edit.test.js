@@ -57,6 +57,16 @@ const P = require('../../renderer/src/remote/rg_patch.js');
   const m2 = P.apply(P.apply(base, P.diff(base, del, keys), keys).doc, opsB, keys).doc;
   check('doc: delete one note while another person adds elsewhere', m2.tracks[0].notes.length === 2 && m2.tracks[1].notes.length === 1);
 })();
+// 階段 A:速度等比縮放、混音動作
+{ let t = M.emptySong(); t.tempos = [{ t: 0, bpm: 100 }, { t: 1920, bpm: 150 }, { t: 3840, bpm: 50 }]; t = M.addTrack(t, 'a', 0); t = M.addNote(t, 0, { t: 0, d: 480, n: 60, v: 90 });
+  const r = E.apply(t, { act: 'set_tempo', bpm: 50, scale: true }).song;
+  check('scale tempo: first becomes 50 and the others keep their ratio (150→75, 50→25), ticks unchanged', r.tempos.map((x) => x.bpm).join() === '50,75,25' && r.tempos.map((x) => x.t).join() === '0,1920,3840', r.tempos);
+  check('scale tempo: the result is clamped to 20-400', E.apply(t, { act: 'set_tempo', bpm: 400, scale: true }).song.tempos.every((x) => x.bpm <= 400 && x.bpm >= 20));
+  check('scale tempo: without scale it still flattens to one tempo (old behavior)', E.apply(t, { act: 'set_tempo', bpm: 90 }).song.tempos.length === 1 && t.tempos.length === 3);
+  const mx = E.apply(t, { act: 'set_mix', track: 0, volume: 80, pan: 20 }); check('set_mix: volume and pan are written into the track (exported as CC7/CC10)', mx.song.tracks[0].volume === 80 && mx.song.tracks[0].pan === 20 && t.tracks[0].volume === 100);
+  check('set_mix: values clamp to 0–127, a missing track is an error, only the given field changes', E.apply(t, { act: 'set_mix', track: 0, volume: 999, pan: -5 }).song.tracks[0].volume === 127 && E.apply(t, { act: 'set_mix', track: 0, volume: 999, pan: -5 }).song.tracks[0].pan === 0 && !!E.apply(t, { act: 'set_mix', track: 9, volume: 1 }).error && E.apply(t, { act: 'set_mix', track: 0, pan: 10 }).song.tracks[0].volume === 100);
+  const wr = M.parse(M.write(E.apply(t, { act: 'set_mix', track: 0, volume: 55, pan: 99 }).song)); check('set_mix: survives write → parse (CC7 / CC10 in the file)', wr.tracks[0].volume === 55 && wr.tracks[0].pan === 99, [wr.tracks[0].volume, wr.tracks[0].pan]);
+}
 console.log(bad.length ? 'FAIL\n' + bad.join('\n') : 'ok');
 console.log(ok + ' passed, ' + bad.length + ' failed');
 process.exit(bad.length ? 1 : 0);

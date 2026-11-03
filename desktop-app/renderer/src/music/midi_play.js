@@ -42,7 +42,7 @@
     const clock = opts.clock || (() => 0); const ahead = opts.ahead || 0.25, tickMs = opts.tickMs || 50;
     const setT = opts.setInterval || setInterval, clearT = opts.clearInterval || clearInterval;
     const setOnce = opts.setTimeout || (typeof setTimeout === 'function' ? setTimeout : null), clearOnce = opts.clearTimeout || (typeof clearTimeout === 'function' ? clearTimeout : null), group = opts.group || null;
-    const st = { song, events: [], idx: 0, startAt: 0, offset: 0, playing: false, timer: null, mute: new Set(), solo: null, volume: new Map(), total: M.durationSec(song), onEnd: null, onTick: null, loop: !!opts.loop, held: new Map(), guard: null, disposed: false };
+    const st = { song, events: [], idx: 0, startAt: 0, offset: 0, playing: false, timer: null, mute: new Set(), solo: null, volume: new Map(), volAbs: new Map(), panAbs: new Map(), total: M.durationSec(song), onEnd: null, onTick: null, loop: !!opts.loop, held: new Map(), guard: null, disposed: false };
     const rebuild = () => { st.events = buildEvents(st.song, { mute: st.mute, solo: st.solo }); };
     const pos = () => (st.playing ? Math.min(st.total, st.offset + (clock() - st.startAt)) : st.offset);
     const evOpts = (at) => ({ time: at });
@@ -52,7 +52,7 @@
       else if (e.type === 'prog') synth.programChange(e.ch, e.a, evOpts(at));
       else if (e.type === 'cc') {
         const { map } = channelMap(st.song); const ti = map.indexOf(e.ch); let b = e.b;
-        if (e.a === 7 && st.volume.has(ti)) b = Math.round(b * st.volume.get(ti));
+        if (e.a === 7 && st.volAbs.has(ti)) b = st.volAbs.get(ti); else if (e.a === 7 && st.volume.has(ti)) b = Math.round(b * st.volume.get(ti)); else if (e.a === 10 && st.panAbs.has(ti)) b = st.panAbs.get(ti);
         synth.controllerChange(e.ch, e.a, Math.max(0, Math.min(127, b)), evOpts(at));
       }
     };
@@ -106,7 +106,10 @@
       duration() { return st.total; },
       isPlaying() { return st.playing; },
       setMute(i, on) { if (on) st.mute.add(i); else st.mute.delete(i); api._refresh(); },
-      setSolo(i) { st.solo = i == null ? null : [i]; api._refresh(); },
+      setSolo(i) { st.solo = i == null || (Array.isArray(i) && !i.length) ? null : [].concat(i); api._refresh(); },
+      // 即時混音:音量(0–127)與左右平衡(0–127,64 在中間),馬上送進合成器,之後跳轉／重排程仍沿用(蓋過曲子裡的值)
+      setMix(i, vol, pan) { const { map } = channelMap(st.song); const ch = map[i]; if (vol != null) st.volAbs.set(i, Math.max(0, Math.min(127, Math.round(vol)))); if (pan != null) st.panAbs.set(i, Math.max(0, Math.min(127, Math.round(pan)))); if (ch >= 0 && !st.disposed) { if (vol != null) synth.controllerChange(ch, 7, st.volAbs.get(i), evOpts(clock())); if (pan != null) synth.controllerChange(ch, 10, st.panAbs.get(i), evOpts(clock())); } },
+      setMuteSet(set) { st.mute = new Set(set || []); api._refresh(); },
       setTrackVolume(i, factor) { st.volume.set(i, Math.max(0, Math.min(1.5, Number(factor)))); const { map } = channelMap(st.song); if (map[i] >= 0) { const base = st.song.tracks[i].volume; synth.controllerChange(map[i], 7, Math.max(0, Math.min(127, Math.round(base * st.volume.get(i)))), evOpts(clock())); } },
       setSong(s) { const was = st.playing; if (was) api.pause(); st.song = s; st.total = M.durationSec(s); st.offset = Math.min(st.offset, st.total); if (was) api.play(); },
       _refresh() { if (st.playing) { const at = pos(); api.pause(); st.offset = at; api.play(); } },
@@ -127,10 +130,10 @@
       try {
         o.say('準備合成器…'); const p = await o.player();
         if (my !== token) { try { p.stop(); } catch (_) { /* */ } return; } // 等待中被取消:建好的播放器不開始放
-        preparing = false; cur = p; p.onEnd(() => { if (cur === p) { cur = null; o.label(false); } }); p.play(); if (cur === p) o.label(true); o.say('');
+        preparing = false; cur = p; p.onEnd(() => { if (cur === p) { cur = null; o.label(false); if (o.ended) { try { o.ended(); } catch (_) { /* */ } } } }); p.play(); if (cur === p) o.label(true); o.say('');
       } catch (e) { if (my === token) { preparing = false; cur = null; o.label(false); } o.say('⚠️ 無法試聽:' + String((e && e.message) || e)); }
     }
-    return { toggle, stop, isPlaying: () => !!cur, isPreparing: () => preparing, dispose() { token++; preparing = false; if (cur) { const p = cur; cur = null; try { p.dispose(); } catch (_) { /* */ } } o.label(false); } };
+    return { toggle, stop, current: () => cur, isPlaying: () => !!cur, isPreparing: () => preparing, dispose() { token++; preparing = false; if (cur) { const p = cur; cur = null; try { p.dispose(); } catch (_) { /* */ } } o.label(false); } };
   }
 
   // 瀏覽器端:載入 SpessaSynth(程式庫與處理器文字用 fetchText 取得,以 data 位址載入,離線單檔與 file 頁面都可)與音色庫。
