@@ -321,7 +321,7 @@ node 測試（全部通過）：gui_bridge 69、gui_host 30、gui_render 40、js
 - 修正過程：第一次跑時管線報 `sh: line 4: ask-ai-chat: not found`，原因是 AI 路徑沒有接 `_terminalSplitAiPipe`（互動路徑有）。已修（03db07dc）。
 - 未做：模型名稱、回答品質的評分（只驗證 stdin 可見）。
 
-### 11.4 已知限制（沒有修，寫給後繼與發布者）
+### 11.4 已知限制（交接 6 之後八條全部已修，見第 13 節；以下保留原文）
 
 - Python Worker 的 `input()`／stdin 永遠回傳 None。
 - 沒有 Ctrl+C 停止 Worker；程式不等視窗事件的死迴圈只能靠時間上限（AI 路徑）或關視窗（互動路徑，程式要有 wait／poll 才會收到 close）。
@@ -431,3 +431,35 @@ Continue from the handoff document at desktop-app/DESIGN.TODO.gui-bridge.md (rep
 ### 12.9 交接程序（自我遞迴）
 
 執行 low-context-long-run 技能（門檻 30%）。做完一批、通過測試、提交後看 `mcp__ccd_session_mgmt__get_usage`；到 30% 就更新本節、提交、回報「需要接手，文件已更新，commit <hash>」，不自行開後繼。
+
+## 13. 交接 7 結果（Sonnet，2026-11-03）：11.4 的八條全部修完並實機驗證
+
+全部用 `node scripts/eval/run_eval.js <評估檔> <埠>`（真 Electron、全新資料夾、換埠），每個評估檔輸出的 `loaded.scripts` 指向工作目錄的 `renderer/floating-assistant.js`。
+
+| 條 | 內容 | commit | 評估檔 | 結果 |
+|---|---|---|---|---|
+| 7 | 時間上限只跟呼叫 | 3e773200 | ai_gui_cap | 通過（本輪再跑，無回歸） |
+| 6 | 複合指令 `$?` | c85bcd76 | exit_code_chain | AI 與互動兩個入口各 12 案例全過。根因：for 的迴圈變數賦值（`i=1;`）把 `$?` 洗成 0，`_terminalBuildEnvPrefix` 後補回 `_fa_rc`；互動的 ask-ai-chat 補寫結束碼；評估檔互動判斷改用 I<n> 標記 |
+| 5 | AI 路徑 stdout 移除 `@gui` | 9551970e | gui_stdout_pos | stdout 為空字串。根因：全是 `@gui` 行時 outBuf 空，退回原始 stdout |
+| 4 | 重新 add 保留位置大小 | 9551970e | gui_stdout_pos | 77/55/333/222 保持。註：評估是在修好後寫的，沒有先看到失敗的版本 |
+| 3 | 程式結束收窗 | 9039d5c3 | gui_autoclose | python／node 正常與出錯結束，互動與 AI 都收掉；`@gui` 行開的視窗保留 |
+| 2 | Ctrl+C | 9c316a70 | ctrl_c | 走真的 `_handleTerminalInput`：python 死迴圈、python 等視窗、node 死迴圈、zenity 都在毫秒內停止，視窗收掉，結束碼 130，下個指令正常（Worker 每次新建） |
+| 1 | input／stdin | bcfe7c39 | py_stdin | 互動（提示、打字、Backspace、Enter、sys.stdin.readline）、管線（互動與 AI；read() 讀全部）、AI 沒給輸入＝EOF（4 秒內 EOFError，不等）、等輸入時 Ctrl+C=130、不讀輸入的 python 不變 |
+| 8 | 真 terminal_run 工具 | 本節所在 commit | terminal_run_tool | `fa.tools.terminal_run.callback(JSON)`：echo 正常；沒人按的 zenity 120019 毫秒、exit 5、視窗收掉 |
+
+### 技術取捨（自己決定）
+- 讀輸入的 python（`input(`、`sys.stdin`）也走 Worker（`py_async.js`），因為同步 python 沒辦法在呼叫處等一行；Worker 的 `input` 與 `sys.stdin` 在 RUNNER 的 `go()` 裡換成呼叫橋接 `stdin.readline`（JSPI），頁面端 `_terminalReadStdinLine`。
+- 管線尾端的 python 用 `_terminalSplitPyPipe`：先 probe 確認會走 Worker 才跑前面的段，避免前面的段跑兩次。
+- Ctrl+C：前景程式用 `_terminalRegisterAbort` 登記中止函式；Worker `terminate`、node 移除 iframe；zenity 與 `gui wait` 靠 `closeAll`；`session._sigint` 讓結束碼固定 130。
+
+### 沒做、要明講
+- `python x.py; echo 後面` 這種複合行，Ctrl+C 只中止目前這支程式，後面的段仍會接著跑（真的 shell 會整行中止）。
+- `sleep` 沒有登記中止函式，Ctrl+C 打不斷。
+- `SystemExit(3)` 在 Worker 路徑結束碼是 1（既有行為，沒改）。
+- 互動輸入只處理可印字元、Backspace、Enter、Ctrl+D；方向鍵與游標移動沒做。
+- 沒有視覺截圖（全部讀 DOM／終端機文字）。
+
+### 教訓（本輪）
+1. Bash 的 heredoc、Python 內嵌會吃反斜線（`\n`、`\b` 變成真換行與退格字元），這次又發生三次（js_program.js、py_async.js、測試檔）。含反斜線的修改一律用 Edit 工具，或用 Write 寫成 node 腳本並用 `String.fromCharCode(92)`。
+2. 評估檔先確認「前提成立」：autoclose 第一版沒看到視窗存在就以為通過，加了 MutationObserver 與保留視窗才算數。
+3. Windows 上 `node -e` 讀 stdin 會 EOF 失敗，改輸出到檔案再解析。
