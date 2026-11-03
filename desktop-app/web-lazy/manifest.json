@@ -935,16 +935,16 @@
    "names": [
     "FaMidiCompose"
    ],
-   "size": 10211,
-   "md5": "ceb5302424d567547228155aacf5663b"
+   "size": 13333,
+   "md5": "0912c303efca875bfbef3237cc30632e"
   },
   "musicplan": {
    "file": "chunks/musicplan.js",
    "names": [
     "FaComposePlan"
    ],
-   "size": 14766,
-   "md5": "c8b10547aaf684f7c4cc888d59a4e118"
+   "size": 14779,
+   "md5": "180a5ee819b73ce4197c3e492a0f5f7b"
   },
   "musictree": {
    "file": "chunks/musictree.js",
@@ -1092,7 +1092,7 @@
   }
  },
  "core": {
-  "size": 5227494,
-  "md5": "4aa4207a4d4d0245a10eeb081a4cd37b"
+  "size": 5230643,
+  "md5": "a3b7e3272f483dcd54355236e9baf2f4"
  }
 }

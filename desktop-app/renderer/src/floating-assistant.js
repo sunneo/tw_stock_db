@@ -33837,6 +33837,31 @@ const holder = {};
   // 九種範本以外的風格、作曲家、樂派:對到最接近的範本,並在結果裡明講(styleNote);完全對不到時用流行並明講,不讓路由放棄
   const CLOSE = { 貝多芬: 'classical', 莫札特: 'classical', 巴哈: 'classical', 蕭邦: 'classical', 李斯特: 'classical', 舒伯特: 'classical', 舒曼: 'classical', 布拉姆斯: 'classical', 海頓: 'classical', 韓德爾: 'classical', 韋瓦第: 'classical', 德布西: 'classical', 拉赫曼尼諾夫: 'classical', 柴可夫斯基: 'classical', 孟德爾頌: 'classical', 浪漫樂派: 'classical', 古典樂派: 'classical', 交響: 'classical', 奏鳴曲: 'classical', 協奏曲: 'classical', 小夜曲: 'classical', 月光: 'classical', 歡樂頌: 'classical', 重金屬: 'rock', 金屬: 'rock', 龐克: 'rock', 硬搖滾: 'rock', 另類: 'rock', 搖擺: 'jazz', 波薩諾瓦: 'jazz', 森巴: 'jazz', 拉丁: 'jazz', 鄉村: 'folk', 民俗: 'folk', 嘻哈: 'lofi', 饒舌: 'lofi', 咖啡廳: 'lofi', 電音: 'edm', 浩室: 'edm', 鐵克諾: 'edm', 流行樂: 'pop', 情歌: 'pop', 兒歌: 'folk', 進行曲: 'rock' };
   const CLOSE_EN = { beethoven: 'classical', mozart: 'classical', bach: 'classical', chopin: 'classical', schubert: 'classical', debussy: 'classical', metal: 'rock', punk: 'rock', swing: 'jazz', bossa: 'jazz', latin: 'jazz', country: 'folk', 'hip hop': 'lofi', hiphop: 'lofi', house: 'edm', techno: 'edm', trance: 'edm', symphony: 'classical', sonata: 'classical' };
+  // 知名作品／系列的「特徵查表」:只有調、調式、速度、樂器、和弦進行這類事實,不含旋律(不抄作品);值是整理出來的常見印象,不一定逐字精確。
+  // 用途:(1) 沒有 AI 時補風格／調／速度;(2) 有 AI 時當「作品特徵」附在需求後面,AI 才知道這個名字代表什麼(選和聲、調式、樂器、情緒時參考)。
+  const WORKS = [
+    { name: '歌劇魅影', keys: ['歌劇魅影', 'phantom of the opera', 'phantom'], style: 'classical', key: 'D', mode: 'minor', tempo: 120, hint: '歌劇魅影:D 小調、戲劇性、教堂管風琴為主加弦樂與合唱感,低音持續音與下行線條,和弦常見 i VI III VII、i iv V' },
+    { name: '卡農', keys: ['卡農', 'canon in d', 'pachelbel', 'canon'], style: 'classical', key: 'D', mode: 'major', tempo: 70, hint: '帕海貝爾卡農:D 大調、弦樂(小提琴、大提琴)、低音反覆 8 個音,和弦進行 I V vi iii IV I IV V(搖滾版常把節奏加快、加電吉他與鼓)' },
+    { name: 'Final Fantasy', keys: ['final fantasy', '最終幻想', '太空戰士', 'ff7', 'ff10'], style: 'classical', key: 'C', mode: 'major', tempo: 110, hint: 'Final Fantasy:遊戲配樂風,開頭常用琶音(豎琴或鋼琴)上行下行,管弦樂編制、史詩感,和弦常見 I V vi IV、vi IV I V 並加入調外的轉折' }
+  ];
+  // 查過網路學到的作品(使用者機器上的離線目錄):由 music_work_learn 驗證後存下,下次直接查表,不必再上網
+  let LEARNED = []; function setLearnedWorks(l) { LEARNED = Array.isArray(l) ? l.filter((w) => w && Array.isArray(w.keys) && w.keys.length) : []; }
+  function workOf(text) { const low = String(text || '').toLowerCase(); return WORKS.concat(LEARNED).filter((w) => w.keys.some((k) => low.indexOf(String(k).toLowerCase()) >= 0)); }
+  // 程式核對模型從網路查到的作品特徵(封閉欄位:調、調式、速度、風格都在範圍內;出處網址必填;旋律不收):回傳 { work } 或 { error }
+  function validateWork(w) {
+    w = w || {}; const str = (x, n) => String(x == null ? '' : x).replace(/\s+/g, ' ').trim().slice(0, n); const name = str(w.name, 40); if (!name) return { error: '缺作品名稱' };
+    if (WORKS.some((x) => x.keys.some((k) => k.toLowerCase() === name.toLowerCase()) || x.name.toLowerCase() === name.toLowerCase())) return { error: '「' + name + '」程式已經內建,不必再記' };
+    const key = str(w.key, 3); if (KEYS[key] == null) return { error: '調要是 C、D、Eb、F# 這類主音(你給了「' + key + '」)' };
+    const mode = w.mode === 'minor' || w.mode === 'major' ? w.mode : ''; if (!mode) return { error: 'mode 要是 major 或 minor' };
+    const tempo = Math.round(Number(w.tempo)); if (!(tempo >= 40 && tempo <= 220)) return { error: '速度要在 40 到 220 之間(你給了 ' + w.tempo + ')' };
+    const style = str(w.style, 20); if (!STYLES[style]) return { error: '風格要是 ' + Object.keys(STYLES).join('、') + ' 其中之一' };
+    const hint = str(w.hint, 300); if (hint.length < 10) return { error: 'hint 至少寫一句話(調、樂器、和弦進行等事實,不要寫旋律)' };
+    const src = str(w.source_url, 300); if (!/^https?:\/\//i.test(src)) return { error: '要附出處網址(http 或 https 開頭),沒有查過就不要記' };
+    const keys = [name].concat(Array.isArray(w.aliases) ? w.aliases : []).map((x) => str(x, 40)).filter(Boolean).filter((x, i, a) => a.indexOf(x) === i).slice(0, 8);
+    return { work: { name, keys, style, key, mode, tempo, hint: name + ':' + hint, source: src, learned: true } };
+  }
+
+  function workHints(text) { const ws = workOf(text); return ws.length ? '\n作品特徵(程式查表,供參考,只是風格事實不是旋律):' + ws.map((w) => w.hint).join(';') : ''; }
   function parseRequest(text) {
     text = String(text || ''); const out = {}; for (const k of Object.keys(ALIAS)) if (text.indexOf(k) >= 0) { out.style = ALIAS[k]; break; }
     if (!out.style) {
@@ -33844,15 +33869,18 @@ const holder = {};
       if (hit) { out.style = hit[1]; out.styleNote = '沒有「' + hit[0] + '」專屬的範本,用最接近的「' + STYLES[hit[1]].name + '」範本(' + STYLES[hit[1]].progs.length + ' 種和弦進行、速度 ' + STYLES[hit[1]].tempo[0] + '–' + STYLES[hit[1]].tempo[1] + ');旋律是程式依範本產生的,不是' + hit[0] + '的真實作品'; }
       else if (/風格|style|式的|派|樂風|味道/i.test(text)) { out.styleNote = '沒有對得上的風格範本,用「流行」範本;想換可以指定 pop、rock、jazz、blues、waltz、folk、lofi、edm、classical'; }
     }
+    const ws = workOf(text); if (ws.length) { const w = ws[0]; if (!out.style) { out.style = w.style; out.styleNote = '沒有「' + ws.map((x) => x.name).join('、') + '」專屬的範本,用查表整理出的特徵(' + w.key + (w.mode === 'minor' ? ' 小調' : ' 大調') + '、約 ' + w.tempo + ' 拍/分)配最接近的「' + STYLES[w.style].name + '」範本;旋律是程式依範本產生的,不是真實作品'; out.fromWork = w.name; } }
     const m = /([A-G][#b]?)\s*(?:大調|小調|調)?/.exec(text); if (m && KEYS[m[1]] != null) out.key = m[1];
+    if (ws.length && !out.key && out.fromWork) out.key = ws[0].key; if (ws.length && out.fromWork) { out.workTempo = ws[0].tempo; out.workMode = ws[0].mode; }
     const t = /(\d{2,3})\s*(?:bpm|拍\/分|拍每分)/i.exec(text) || /速度\D{0,3}(\d{2,3})/.exec(text); if (t) out.tempo = Number(t[1]);
     const b = /(\d{1,2})\s*小節/.exec(text); if (b) out.bars = Number(b[1]);
+    if (out.workTempo && !out.tempo && !/快|慢/.test(text)) out.tempo = out.workTempo; delete out.workTempo;
     if (/快/.test(text) && !out.tempo) out.fast = true; if (/慢/.test(text) && !out.tempo) out.slow = true;
     const stl = STYLES[out.style]; if (stl && out.fast) out.tempo = stl.tempo[1]; if (stl && out.slow) out.tempo = stl.tempo[0]; delete out.fast; delete out.slow;
     return out;
   }
   const choices = () => Object.keys(STYLES).map((k) => ({ id: k, name: STYLES[k].name, tempo: STYLES[k].tempo, progressions: STYLES[k].progs.length, mode: STYLES[k].mode }));
-  return { STYLES, KEYS, chordTones, compose, parseRequest, validate, choices };
+  return { WORKS, setLearnedWorks, validateWork, workOf, workHints, STYLES, KEYS, chordTones, compose, parseRequest, validate, choices };
 });
 
 }).call(null, undefined, holder);
@@ -33956,7 +33984,7 @@ const holder = {};
         // 連線類失敗(逾時、5xx、過載)是暫時的:不算「讀不懂」的次數,另外自己重試到底(逾時一次比一次長、中間退避),全用完才算這欄連線失敗
         let netFail = 0, i = 0;
         while (i < attempts && netFail < netMax && !pf.ok) {
-          const q = questionOf(k, text, i > 0 && pf.raw !== undefined && !pf.error.startsWith('連線') ? { raw: pf.raw.slice(0, 60) } : null); pf.tries++; report.calls++; const tmo = Math.round(timeoutMs * (1 + 0.6 * netFail)); const t0 = Date.now(); step('問「' + (k === 'purpose' ? '用途' : ASK[k].slice(0, 6)) + '」第 ' + pf.tries + ' 次' + (netFail ? '(連線重試,等最多 ' + Math.round(tmo / 1000) + ' 秒)' : '') + '…');
+          const q = questionOf(k, text + (o.hint || ''), i > 0 && pf.raw !== undefined && !pf.error.startsWith('連線') ? { raw: pf.raw.slice(0, 60) } : null); pf.tries++; report.calls++; const tmo = Math.round(timeoutMs * (1 + 0.6 * netFail)); const t0 = Date.now(); step('問「' + (k === 'purpose' ? '用途' : ASK[k].slice(0, 6)) + '」第 ' + pf.tries + ' 次' + (netFail ? '(連線重試,等最多 ' + Math.round(tmo / 1000) + ' 秒)' : '') + '…');
           try {
             const raw = await withTimeout(o.ask(q.system, q.user, { field: k, strict: i > 0 }), tmo); pf.raw = String(raw == null ? '' : raw).replace(/\s+/g, ' ').trim().slice(0, 80); pf.error = ''; i++;
             const v = k === 'purpose' ? parsePurpose(raw) : parseLetter(raw, k);
