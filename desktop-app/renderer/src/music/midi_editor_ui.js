@@ -14,7 +14,7 @@
     const M = opts.M, E = opts.E, P = opts.P, host = opts.host || {};
     let remote = null;   // 共編:{ session, doc }
     const hist = E.history(opts.song);
-    let sel = 0, grid = 0.5, pxBeat = 40, pitchLo = 36, rows = 36, playing = null, destroyed = false, posTick = 0, dragging = false;
+    let sel = 0, grid = 0.5, pxBeat = 40, pitchLo = 36, rows = 36, playing = null, destroyed = false, posTick = 0, dragging = false; const mute = new Set(), solo = new Set(); // 靜音／獨奏只是試聽狀態(不進曲子、不匯出 MIDI);音量與左右平衡才寫進曲子
     const card = el('div', 'border:1px solid rgba(128,128,128,.4);border-radius:10px;padding:10px;max-width:720px;font-size:13px;'); card.className = 'fa-midi-edit';
     const head = el('div', 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;');
     head.appendChild(el('span', 'font-size:18px', '🎼')); head.appendChild(el('b', 'flex:1;min-width:80px', opts.title || hist.song.title || 'MIDI 編輯器'));
@@ -83,6 +83,13 @@
         const top = el('div', 'display:flex;gap:4px;align-items:center;'); top.appendChild(el('span', 'width:10px;height:10px;border-radius:50%;background:' + COLORS[i % COLORS.length])); top.appendChild(el('span', 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;', tr.name + (tr.drum ? '(鼓組)' : '')));
         const del = el('button', BTN + 'padding:0 5px;', '✕'); del.title = '刪除這一軌'; del.onclick = (e) => { e.stopPropagation(); run({ act: 'remove_track', track: i }); if (sel >= hist.song.tracks.length) sel = Math.max(0, hist.song.tracks.length - 1); drawSide(); draw(); }; top.appendChild(del); row.appendChild(top);
         if (!tr.drum) { const ps = el('select', 'width:100%;margin-top:2px;font-size:12px;'); for (let p = 0; p < 128; p++) { const o = el('option', '', gsName(p)); o.value = p; if (p === tr.program) o.selected = true; ps.appendChild(o); } ps.onclick = (e) => e.stopPropagation(); ps.onchange = () => run({ act: 'set_program', track: i, program: Number(ps.value) }); row.appendChild(ps); }
+        // 混音:靜音／獨奏(試聽用)、音量、左右平衡(拖曳時即時生效,放開才記一筆可復原的改動;存進曲子,匯出成 CC7／CC10)
+        const mx = el('div', 'display:flex;align-items:center;gap:4px;margin-top:3px;flex-wrap:wrap;'); mx.onclick = (e) => e.stopPropagation();
+        const mB = el('button', BTN + 'padding:0 6px;font-size:12px;' + (mute.has(i) ? 'background:#e5534b;color:#fff;' : ''), 'M'), sB = el('button', BTN + 'padding:0 6px;font-size:12px;' + (solo.has(i) ? 'background:#d9a400;color:#fff;' : ''), 'S'); mB.title = '靜音這一軌(只影響試聽)'; sB.title = '獨奏這一軌(只聽有按 S 的軌,只影響試聽)';
+        mB.onclick = () => { if (mute.has(i)) mute.delete(i); else mute.add(i); applyMixState(); drawSide(); }; sB.onclick = () => { if (solo.has(i)) solo.delete(i); else solo.add(i); applyMixState(); drawSide(); };
+        const sl = (label, val, title, live, commit) => { const w = el('label', 'display:flex;align-items:center;gap:2px;font-size:11px;flex:1;min-width:70px;', label); const r = el('input', 'flex:1;min-width:40px;width:100%;'); r.type = 'range'; r.min = 0; r.max = 127; r.step = 1; r.value = val; r.title = title + ':' + val; r.oninput = () => { r.title = title + ':' + r.value; live(Number(r.value)); }; r.onchange = () => commit(Number(r.value)); r.ondblclick = () => { r.value = title === '左右平衡' ? 64 : 100; r.oninput(); r.onchange(); }; w.appendChild(r); return w; };
+        const live = (v, p) => { const pl = pt.current(); if (pl && pl.setMix) pl.setMix(i, v, p); };
+        mx.append(mB, sB, sl('音量', tr.volume, '音量', (v) => live(v, null), (v) => runQuiet({ act: 'set_mix', track: i, volume: v })), sl('平衡', tr.pan, '左右平衡', (v) => live(null, v), (v) => runQuiet({ act: 'set_mix', track: i, pan: v }))); row.appendChild(mx);
         row.onclick = () => { sel = i; drawSide(); draw(); }; side.appendChild(row);
       });
       const add = el('button', BTN + 'width:100%;margin-top:2px;', '＋ 新增音軌'); add.onclick = () => { run({ act: 'add_track', name: '軌道 ' + (hist.song.tracks.length + 1), program: 0 }); sel = hist.song.tracks.length - 1; drawSide(); draw(); };
@@ -111,8 +118,11 @@
         card.insertBefore(box, mid);
       } catch (e) { say('⚠️ ' + String((e && e.message) || e)); }
     };
+    // 不打斷播放的改動(混音):照樣進復原紀錄、共編與 onChange,但不停止播放、不重畫側欄(不然拖到一半滑桿會被換掉)
+    function runQuiet(a) { const r = E.apply(hist.song, a); if (r.error) { say('⚠️ ' + r.error); return false; } hist.push(r.song); pushRemote(a.act); if (host.onChange) { try { host.onChange(r.song, a); } catch (_) { /* */ } } draw(); return true; }
+    function applyMixState() { const p = pt.current(); if (p && p.setMuteSet) { p.setMuteSet(mute); p.setSolo(Array.from(solo)); } }
     function run(a, fromRemote) {
-      const r = E.apply(hist.song, a); if (r.error) { say('⚠️ ' + r.error); return false; }
+      const r = E.apply(hist.song, a); if (r.error) { say('⚠️ ' + r.error); return false; } if (a.act === 'remove_track' || a.act === 'merge_tracks') { mute.clear(); solo.clear(); }
       hist.push(r.song); stopPlay(); pushRemote(a.act); if (!fromRemote && host.onChange) { try { host.onChange(r.song, a); } catch (_) { /* */ } } drawSide(); draw(); return true;
     }
     cv.onclick = (ev) => { // 點空白處新增、點音符刪除
@@ -127,7 +137,7 @@
     undoB.onclick = () => { hist.undo(); pushRemote('undo'); stopPlay(); if (host.onChange) host.onChange(hist.song, { act: 'undo' }); drawSide(); draw(); };
     redoB.onclick = () => { hist.redo(); pushRemote('redo'); stopPlay(); if (host.onChange) host.onChange(hist.song, { act: 'redo' }); drawSide(); draw(); };
     const pt = FaMidiPlay.playToggle({
-      player: async () => { const p = await host.player(hist.song, say); p.onTick(onTick); const s = hist.song; if (posTick >= M.endTick(s) - 1) setPos(0, true); if (posTick > 0) p.seek(M.ticksToSec(s, posTick)); return p; },
+      player: async () => { const p = await host.player(hist.song, say); p.onTick(onTick); if (p.setMuteSet) { p.setMuteSet(mute); p.setSolo(Array.from(solo)); } const s = hist.song; if (posTick >= M.endTick(s) - 1) setPos(0, true); if (posTick > 0) p.seek(M.ticksToSec(s, posTick)); return p; },
       label: (on) => { playB.textContent = on ? '■ 停止' : '▶ 試聽'; }, ended: () => setPos(0, true), say });
     function stopPlay() { pt.stop(); }
     playB.onclick = () => pt.toggle();
