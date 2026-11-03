@@ -93,6 +93,41 @@ Continue from the handoff document at desktop-app/DESIGN.TODO.gui-bridge.md (rep
 
 執行 low-context-long-run 技能（門檻 30%）。每個批次：做完 → 測試 → commit → 用 `mcp__ccd_session_mgmt__get_usage` 讀 context 百分比。低於 30% 繼續下一項；達到 30% 就：改寫本檔（保留逐字原話、補 commit 紀錄與待辦狀態）→ commit（訊息寫明是 handoff）→ `mcp__ccd_session__start_session`（initiation user_asked、context fresh、同目錄、同分支 desktop-app、title「GUI 橋接 · handoff N」、prompt 用第 1 節）→ 等後繼確認接手 → 本 session 才能 mark_completed 與 archive（不刪除，不 clear）。
 
+## 7.5 補充（管理層要求，給接手者直接用）
+
+**驗證分類**
+
+- 驗證過（node 或本機 Python）：協定 `gui_bridge.test.js` 69、繪製器 `gui_render.test.js` 40、zenity `zenity.test.js` 56、視窗主機 `gui_host.test.js` 21、Python `gui_py_test.py`、`gui_pygame_test.py`；`node build-assistant.js` 成功，四個 GUI 常數進入 `renderer/floating-assistant.js` 與 `.min.js`。
+- 驗證過（語法）：`main.js` 與 `floating-assistant.js` 的 `node --check`。
+- **未驗證（桌面版實機）**：以上全部。實機啟動後視窗空白，渲染頁是否載入不知道。zenity 對話框、`ask-ai-chat`、`gui wait`、Python 開窗、JavaScript 執行器、missile command、resizable、maximize，都沒有實機確認。
+
+**已提交的關鍵位置（以名稱搜尋，不靠行號）**
+
+- `renderer/src/floating-assistant.js` 的 `_faGuiModule(name)`（用嵌入字串 `FA_GUI_*_SRC` + `new Function` 載入）、`_terminalGuiHost(session)`（每個 session 一個 `guiHost`，容器 `session.container` 設為 `position: relative`）、`_terminalZenity(session, argsText)`（建立視窗、等 `host.wait`、回傳 exit code 0/1/5）。
+- `session.container = container` 在 `_mountTerminalWidget` 建立 session 的地方設定。
+- zenity 接線點：`_runTerminalCommand` 裡 `ask-floating-ai-assistant` 那一行後面（有 shell 運算子時走 `_terminalRunShellText`，否則直接 `_terminalZenity`）；管線擷取點是 `JS_INTERCEPTED_WITH_CAPTURE` 物件（已加 `zenity`）；`TERMINAL_VIRTUAL_SCRIPT_COMMANDS` 集合開頭已加 `'zenity'`。
+- 既有的 `_terminalAskAI(session, argsText)` 在 `ask-floating-ai-assistant` 的分支裡，呼叫 `_runSubAgentTask`，不讀 stdin。
+- 視窗主機在 `renderer/src/gui/gui_host.js`，它只接受 `render` 與 `bridge` 作為參數，DOM 細節不在這裡。
+
+**Electron 本機快取與啟動方式**
+
+- 快取 zip：`C:\Users\sunneo\AppData\Local\electron\Cache\electron-v44.4.0-win32-x64.zip`（158,278,765 bytes，與預期一致）。
+- 已解壓到 `node_modules/electron/dist`，`node_modules/electron/path.txt` 寫入 `electron.exe`。
+- 啟動（PowerShell，在 `desktop-app` 目錄）：
+  ```
+  $env:FA_BROWSER_CONTROL_PORT = "17924"; $env:FA_DISABLE_MAIN_OVERLAY = "1"
+  Start-Process -FilePath ".\node_modules\electron\dist\electron.exe" -ArgumentList "."
+  ```
+- 不要跑 `npm install` 或 `node install.js`（Node v16.15.0 會因為 ESM 失敗），也不要重新下載。
+
+**不要做的事**
+
+- 不要整檔讀 `renderer/src/floating-assistant.js`（約 10 萬行，會超過上限）；用 Grep 搜名稱，再用 Read 的 offset/limit 讀 40–80 行。
+- 不要連續截圖；截圖只用在關鍵驗證點，因為每張都很耗 token。
+- 不要在桌面版 Claude 的聊天輸入框打字（那是別人在用的）。
+- 不要提交 `renderer/floating-assistant*.js`、`renderer/update-manifest.json`、`web-lazy/*`，它們是 build 產物，交給發布流程。
+- 不要 push、不要跑 publish.sh。
+
 ## 8. Traps（踩過的坑）
 
 - 直接用 Read 讀 `renderer/src/floating-assistant.js` 會超過上限（約 11 萬 token）。用 Grep（`output_mode: content`、`head_limit`）定位後，再用 Read 的 offset／limit 讀 40–80 行。
