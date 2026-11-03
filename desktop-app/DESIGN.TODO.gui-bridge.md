@@ -492,3 +492,19 @@ Continue from the handoff document at desktop-app/DESIGN.TODO.gui-bridge.md (rep
 - `$?` 的來源是 `session.lastExitCode`，任何 JS 段結束都要 `_terminalSetExit`。
 - 壓縮產物的變數名不可靠，驗證載入用字串常值或行為。
 - 評估檔偶爾「終端機掛載逾時」是環境暫時問題，重跑即可。
+
+## 15. 最後三項限制修完（Haiku，2026-11-03）
+
+| 步驟 | 內容 | commit | 評估檔 | 修前 → 修後 |
+|---|---|---|---|---|
+| A | 複合行 Ctrl+C 後後段不再跑 | 8da55371 | ctrl_c（新增 py_compound） | after_ok true → false，結束碼 130，下一個指令正常 |
+| B | sleep 可被 Ctrl+C 打斷 | 9fd8d764 | ctrl_c（新增 sleep_30） | 8003 ms、busy 不歸零 → 7 ms、busy 歸零、結束碼 130 |
+| C | SystemExit(n) 結束碼是 n | 7a9cbcb1 | gui_autoclose（新增 boom_sys、boom_exit、err） | sys.exit(3)／exit(3)／raise SystemExit(3) 都是 1 → 都是 3；正常 0、未捕捉 1 |
+
+- 驗證方式：`node scripts/eval/run_eval.js <評估檔> <埠>`（真 Electron、全新資料夾、換埠），每個評估檔的 `loaded.scripts` 都指向工作目錄的 `renderer/floating-assistant.js`。
+- 回歸：ctrl_c 6 案例全部 130 且下一個指令正常；exit_code_chain 24 項 ok 全為真；gui_autoclose 的 AI 與互動兩個入口一致；`renderer/src/gui/*.test.js` 全部通過。
+- 沒驗證：`sys.exit("文字")` 印到 stderr 後結束碼 1 的路徑；視窗外觀；使用者真的用鍵盤按 Ctrl+C（評估檔是走 `_handleTerminalInput` 送 `\x03`，不是作業系統層級的鍵盤）。
+- 做法：A 在群組迴圈、`_terminalRunAndOr`、`_terminalRunUnits`、shell 的 Sequence／AndOr／For／While 每段前檢查 `session._sigint`，Sequence 的批次送出也檢查；B 用 `_terminalRegisterAbort` 登記，中止時清計時器；C 在 Worker 的 `go()` 用 try/except SystemExit 回傳結束碼。
+
+### 教訓（Haiku）
+1. **shell 的工作目錄會殘留。** 錯在：前一條指令 `cd` 進了 `renderer/src`，後面的 `node scripts/...` 全部找不到檔案，我以為是工具壞了。下次怎麼做：每條 Bash 指令開頭都用絕對路徑 `cd "…/desktop-app"`，錯誤訊息先看路徑再判斷。
