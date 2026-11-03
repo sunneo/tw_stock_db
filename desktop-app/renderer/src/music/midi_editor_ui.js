@@ -21,11 +21,11 @@
     const head = el('div', 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;');
     head.appendChild(el('span', 'font-size:18px', '🎼')); head.appendChild(el('b', 'flex:1;min-width:80px', opts.title || hist.song.title || 'MIDI 編輯器'));
     const colB = el('button', BTN, '👥 共編'); colB.style.display = host.collab ? '' : 'none';
-    const undoB = el('button', BTN, '↶'), redoB = el('button', BTN, '↷'), playB = el('button', BTN, '▶ 試聽'), dlB = el('button', BTN, '⬇ MIDI');
+    const undoB = el('button', BTN, '↶'), redoB = el('button', BTN, '↷'), pianoB = el('button', BTN, '🎹'), playB = el('button', BTN, '▶ 試聽'), dlB = el('button', BTN, '⬇ MIDI');
     undoB.title = '復原'; redoB.title = '重做';
     const gridSel = el('select', BTN); [['四分音符', 1], ['八分音符', 0.5], ['十六分音符', 0.25]].forEach(([n, v]) => { const o = el('option', '', n); o.value = v; if (v === grid) o.selected = true; gridSel.appendChild(o); });
     gridSel.onchange = () => { grid = Number(gridSel.value); };
-    head.append(undoB, redoB, gridSel, playB, colB, dlB); card.appendChild(head);
+    pianoB.title = '虛擬鋼琴:用電腦鍵盤或點琴鍵彈奏選取的音軌的音色,鍵位可自訂'; head.append(undoB, redoB, gridSel, playB, pianoB, colB, dlB); card.appendChild(head);
     // 傳輸列:跳到開頭／結尾、時間與小節、可點可拖的進度條、BPM
     const tp = el('div', 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:8px;');
     const toStartB = el('button', BTN, '⏮'), toEndB = el('button', BTN, '⏭'); toStartB.title = '跳到開頭'; toEndB.title = '跳到結尾';
@@ -39,12 +39,25 @@
     const inner = el('div', 'position:relative;'); const rv = el('canvas', 'display:block;cursor:pointer;height:16px;'); rv.title = '點一下或拖曳跳到那個位置';
     const cv = el('canvas', 'display:block;cursor:crosshair;'); const head0 = el('div', 'position:absolute;top:0;bottom:0;width:2px;margin-left:-1px;background:#ff3b30;pointer-events:none;z-index:2;display:none;');
     inner.append(rv, cv, head0); canvasWrap.appendChild(inner); mid.append(side, canvasWrap); card.appendChild(mid);
+    let vp = null, vcP = null, vcKey = ''; // 虛擬鋼琴(延後建立);發聲用選取音軌的音色,host.voice 提供即時發聲
     const status = el('div', 'opacity:.75;min-height:1.2em;font-size:12px;margin-top:6px;'); card.appendChild(status);
     const say = (m) => { status.textContent = m || ''; };
     const ask = el('div', 'display:flex;gap:6px;margin-top:6px;');
     const inp = el('input', 'flex:1;min-width:120px;padding:4px 6px;'); inp.placeholder = '跟編輯器說話,例如「第一軌升兩個半音」「速度改成 90」「貝斯換成大提琴」';
     const go = el('button', BTN, '送出'); ask.append(inp, go); card.appendChild(ask);
 
+    function getVoice() {
+      const tr = hist.song.tracks[sel], key = tr ? (tr.drum ? 'd' : String(tr.program)) : '0';
+      if (!host.voice) { say('⚠️ 這個環境沒有即時發聲的合成器,虛擬鋼琴只能看不能聽'); return Promise.resolve(null); }
+      if (!vcP || vcKey !== key) { vcKey = key; vcP = Promise.resolve(host.voice(tr && !tr.drum ? tr.program : 0, !!(tr && tr.drum))).catch((e) => { vcP = null; say('⚠️ 虛擬鋼琴無法發聲:' + String((e && e.message) || e)); return null; }); }
+      return vcP;
+    }
+    pianoB.onclick = () => {
+      if (typeof FaVirtualPiano === 'undefined') { say('⚠️ 虛擬鋼琴模組沒有載入'); return; }
+      if (!vp) { vp = FaVirtualPiano.mount({ host: { noteOn: (m, v) => { getVoice().then((c) => c && c.noteOn(m, v)); }, noteOff: (m) => { getVoice().then((c) => c && c.noteOff(m)); } } }); vp.style.display = 'none'; card.insertBefore(vp, status); }
+      const on = vp.style.display === 'none'; vp.style.display = on ? '' : 'none'; vp._vpiano.setActive(on); pianoB.style.background = on ? '#4aa3ff' : ''; pianoB.style.color = on ? '#fff' : '';
+      if (on) getVoice();
+    };
     function draw() {
       const s = hist.song, dpr = window.devicePixelRatio || 1;
       // 單軌檢視:音高範圍貼合看得到的軌(上下各留 2 格),不用在 36 格裡找
@@ -162,7 +175,7 @@
       getSong: () => hist.song, attach,
       setSong(song) { hist.push(song); drawSide(); draw(); },
       applyRemote(actions) { (actions || []).forEach((a) => run(a, true)); },
-      destroy() { destroyed = true; pt.dispose(); },
+      destroy() { destroyed = true; pt.dispose(); if (vp) vp._vpiano.destroy(); },
     };
     drawSide(); draw(); return card;
   }
