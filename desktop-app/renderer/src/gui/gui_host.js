@@ -199,10 +199,13 @@
 
     function isOpen(winId) { return !!session.windows[winId]; }
 
+    // closeAll: closes every window of this session (the AI path does this when a GUI program hits its time limit and nobody can close it)
+    function closeAll() { Object.keys(session.windows).forEach(close); }
+
     // the window's current snapshot (for tests and for the caller's own checks)
     function snapshot(winId) { return bridge.snapshot(session, winId); }
 
-    return { apply: apply, wait: wait, poll: poll, close: close, paint: paint, isOpen: isOpen, snapshot: snapshot, session: session, queueLength: function (winId) { return (queues[winId] || []).length; } };
+    return { apply: apply, wait: wait, poll: poll, close: close, closeAll: closeAll, paint: paint, isOpen: isOpen, snapshot: snapshot, session: session, queueLength: function (winId) { return (queues[winId] || []).length; } };
   }
 
   return { createHost: createHost, QUEUE_MAX: QUEUE_MAX };

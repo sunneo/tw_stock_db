@@ -122,5 +122,18 @@ const eventOf = (line) => JSON.parse(line);
   assert.strictEqual(host.poll('w3'), null); ok();
   assert.deepStrictEqual(closed.slice(-2), ['w2', 'w3']); ok();
 
+  // closeAll closes every open window (and reports each to onClosed); a second call is harmless
+  {
+    const { host, closed } = newHost();
+    host.apply(msg({ op: 'open', id: 'a1' }));
+    host.apply(msg({ op: 'open', id: 'a2' }));
+    host.closeAll();
+    assert.strictEqual(host.isOpen('a1'), false); ok();
+    assert.strictEqual(host.isOpen('a2'), false); ok();
+    assert.deepStrictEqual(closed, ['a1', 'a2']); ok();
+    host.closeAll();
+    assert.deepStrictEqual(closed, ['a1', 'a2']); ok();
+  }
+
   console.log('gui_host: ' + n + ' assertions passed');
 })().catch((e) => { console.error(e); process.exit(1); });
