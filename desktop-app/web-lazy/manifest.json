@@ -999,8 +999,8 @@
    "names": [
     "FaAudioRuntime"
    ],
-   "size": 2768,
-   "md5": "cb32d51d1c60bfa04344671996012315"
+   "size": 2995,
+   "md5": "43ee9ca111b5211966fbd5761066b1e5"
   },
   "musicui": {
    "file": "chunks/musicui.js",
