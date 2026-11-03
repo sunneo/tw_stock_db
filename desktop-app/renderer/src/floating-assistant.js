@@ -87394,10 +87394,16 @@ ${sourceTool.handlerScript}
         if (unit === 'm') seconds *= 60; else if (unit === 'h') seconds *= 3600;
         const MAX_SECONDS = 3600;
         if (seconds > MAX_SECONDS) {
-            session.term.write(`\x1b[33msleep: 最多接受${MAX_SECONDS}秒（1小時），已自動縮短（沙盒沒有Ctrl+C中斷執行中指令的機制，避免打錯數字卡死太久）\x1b[0m\r\n`);
+            session.term.write(`\x1b[33msleep: 最多接受${MAX_SECONDS}秒（1小時），已自動縮短（避免打錯數字卡死太久）\x1b[0m\r\n`);
             seconds = MAX_SECONDS;
         }
-        await new Promise((resolve) => setTimeout(resolve, seconds * 1000));
+        // Ctrl+C 要能打斷：登記中止函式，中止時清掉計時器並立刻結束（不再把整段秒數等完）
+        await new Promise((resolve) => {
+            let timer = null, unregister = null;
+            const done = () => { clearTimeout(timer); if (unregister) unregister(); resolve(); };
+            timer = setTimeout(done, seconds * 1000);
+            unregister = this._terminalRegisterAbort(session, done);
+        });
     }
 
     // curl/wget/httping共用的簡易shell詞法拆解（支援單/雙引號包住含空白的

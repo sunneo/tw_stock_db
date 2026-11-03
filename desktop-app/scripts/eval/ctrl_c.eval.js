@@ -14,10 +14,12 @@ put('spin.py', 'import gui\nw = gui.Window("spin", width=200)\nw.button("OK")\nn
 put('waitwin.py', 'import gui\nw = gui.Window("ww", width=200)\nw.button("OK")\nwhile True:\n    ev = w.wait(timeout=60)\n    print("ev", ev)\n');
 put('spin.js', 'const w = await gui.open("sj", 200); await w.button("OK"); for (;;) { }\n');
 put('ok.py', 'import gui\nprint("after-ok")\n');
-const cases = [['py_spin', 'python3 spin.py'], ['py_wait', 'python3 waitwin.py'], ['js_spin', 'node spin.js'], ['zenity', 'zenity --entry'], ['py_compound', 'python3 spin.py; echo AFTER-OK']];
+const cases = [['py_spin', 'python3 spin.py'], ['py_wait', 'python3 waitwin.py'], ['js_spin', 'node spin.js'], ['zenity', 'zenity --entry'], ['py_compound', 'python3 spin.py; echo AFTER-OK'], ['sleep_30', 'sleep 30']];
 for (const [n, c] of cases) {
   const p = fa._handleTerminalInput(session, c + '\r');
-  const t1 = Date.now(); while (Date.now() - t1 < 40000 && !(n !== 'js_spin' ? wins() > 0 : wins() > 0)) await wait(200);
+  const t1 = Date.now();
+  const ready = () => (n.startsWith('sleep') ? Date.now() - t1 > 500 : wins() > 0);   // sleep 不開視窗，等它開始跑就好
+  while (Date.now() - t1 < 40000 && !ready()) await wait(200);
   await wait(500);
   const busy = session.busy, w1 = wins();
   const t0 = Date.now();
