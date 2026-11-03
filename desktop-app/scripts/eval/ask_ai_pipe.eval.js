@@ -1,0 +1,22 @@
+// 用法同 gui_py_worker.eval.js。把 _runSubAgentTask 換成回聲（只驗證管線接線，不驗證模型品質），在真終端機跑 ask-ai-chat 的各種管線。
+const fa = window.fa;
+const R = {};
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const termText = (session) => { const b = session.term.buffer.active; const out = []; for (let i = 0; i < b.length; i++) { const l = b.getLine(i); if (l) out.push(l.translateToString(true)); } return out.join('\n'); };
+R.loaded = { scripts: Array.from(document.scripts).map((s) => s.src).filter((s) => /floating-assistant/.test(s)), has_pipe: typeof fa._terminalSplitAiPipe === 'function' };
+const prompts = [];
+fa._runSubAgentTask = async (p) => { prompts.push(p); return { text: 'ECHO[' + p.split('\n')[0] + '|' + (p.includes('標準輸入') ? 'stdin:' + p.split('標準輸入的內容 ---\n')[1].trim().replace(/\n/g, '/') : 'nostdin') + ']\nline2 error' }; };
+const t = await fa._createTerminalForAI({ name: 'ask-eval', initialCommand: '' });
+const session = fa._resolveTerminalSession(t.id).session;
+await wait(800);
+await fa._runTerminalCommand(session, 'cd /work');
+const run = async (cmd) => { await fa._runTerminalCommand(session, "echo ==== " + cmd.replace(/[^\w ]/g, '_')); await fa._runTerminalCommand(session, cmd); await wait(400); return null; };
+await run('printf "a1\nb2\nc3\n" > log.txt');
+R.plain = await run('ask-ai-chat "你好"');
+R.stdin = await run('cat log.txt | ask-ai-chat "摘要"');
+R.head_grep = await run('ask-ai-chat "x" | grep line2');
+R.mid = await run('cat log.txt | ask-ai-chat "q" | wc -l');
+R.alias = await run('echo hi | ask-floating-ai-assistant "old"');
+R.usage = await run('ask-ai-chat');
+R.prompts = prompts; R.screen = termText(session).split('\n').filter((l) => l.trim());
+return R;

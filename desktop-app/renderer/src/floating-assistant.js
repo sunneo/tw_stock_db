@@ -50922,7 +50922,7 @@ const TERMINAL_BUSYBOX_APPLETS = [
 // 檔案，不是額外的一份指令白名單管制。
 const TERMINAL_SHELL_BUILTINS = [
     'cd', 'pwd', 'clear', 'exit', 'help', 'which', 'chmod', 'time', 'sh', 'bash',
-    'ask-floating-ai-assistant', 'sync', 'sqlite3', 'sqlite', 'sqlitebrowser',
+    'ask-floating-ai-assistant', 'ask-ai-chat', 'sync', 'sqlite3', 'sqlite', 'sqlitebrowser',
     // tw_stock_db客製: 2026-09-25使用者要求——sleep（busybox applet清單裡沒有）、
     // curl/wget/httping（非同步網路請求，SANDBOX_COMMAND_REGISTRY那條host
     // builtin路徑要求同步callback做不到，見_runTerminalCommand裡的說明）。
@@ -50939,7 +50939,7 @@ const TERMINAL_SHELL_BUILTINS = [
 // 複合指令中間執行，語意/測試成本都高出很多）。
 const TERMINAL_COMPOUND_INTERCEPT_NAMES = new Set([
     'cd', 'pwd', 'clear', 'exit', 'help', 'which', 'chmod', 'time',
-    'ask-floating-ai-assistant', 'sync', 'sleep', 'curl', 'wget', 'httping', 'make', 'sqlite3', 'sqlite', 'sqlitebrowser',
+    'ask-floating-ai-assistant', 'ask-ai-chat', 'sync', 'sleep', 'curl', 'wget', 'httping', 'make', 'sqlite3', 'sqlite', 'sqlitebrowser',
     'sh', 'bash',
 ]);
 
@@ -50953,7 +50953,7 @@ const TERMINAL_COMPOUND_INTERCEPT_NAMES = new Set([
 // 的AST裡，SimpleCommand節點要不要直接async dispatch，還是要合併進wasi-sh
 // batch」，兩者語意不同）。
 const TERMINAL_VIRTUAL_SCRIPT_COMMANDS = new Set(['zenity',
-    'sleep', 'curl', 'wget', 'httping', 'date', 'ask-floating-ai-assistant', 'make', 'time', 'export', 'sqlite3', 'sqlite', 'sqlitebrowser',
+    'sleep', 'curl', 'wget', 'httping', 'date', 'ask-floating-ai-assistant', 'ask-ai-chat', 'make', 'time', 'export', 'sqlite3', 'sqlite', 'sqlitebrowser',
 ]);
 
 // tw_stock_db客製: 2026-09-18使用者要求的xterm Configure分頁佈景主題
@@ -84546,7 +84546,7 @@ ${sourceTool.handlerScript}
                 else if (cmdName === 'wget') return await this._terminalWget(session, restArgsQuoted);
                 else if (cmdName === 'httping') await this._terminalHttping(session, restArgsQuoted);
                 else if (cmdName === 'date') await this._terminalDateInline(session, expandedArgv.slice(1));
-                else if (cmdName === 'ask-floating-ai-assistant') await this._terminalAskAI(session, restArgsRaw);
+                else if (cmdName === 'ask-floating-ai-assistant' || cmdName === 'ask-ai-chat') return await this._terminalAskAI(session, restArgsRaw, this._terminalConsumeStdinOpt(opts));
                 else if (cmdName === 'sqlite3' || cmdName === 'sqlite') return await this._terminalSqlite(session, expandedArgv.slice(1), this._terminalConsumeStdinOpt(opts));
                 else if (cmdName === 'sqlitebrowser') return await this._terminalSqliteBrowser(session, expandedArgv.slice(1));
                 else if (cmdName === 'make') await this._terminalRunMakeViaTool(session, restArgsRaw);
@@ -84587,6 +84587,13 @@ ${sourceTool.handlerScript}
                     if (session.ended) break;
                     if (part.type === 'SimpleCommand' && !part.argvWords.length && part.assignments.length) {
                         for (const a of part.assignments) this._terminalApplyShellAssignment(session, env, a.name, this._terminalExpandWord(a.valueWordSrc, env).text);
+                        continue;
+                    }
+                    const aiPipe = (part.type === 'SimpleCommand' && !part.assignments.length) ? this._terminalSplitAiPipe(part.srcText) : null;
+                    if (aiPipe) {
+                        await flushBatch();
+                        const pr = await this._terminalRunAiPipe(session, aiPipe, env, opts);
+                        exitCode = pr.exitCode; stdout += pr.stdout; stderr += pr.stderr;
                         continue;
                     }
                     const sqlPipe = (part.type === 'SimpleCommand' && !part.assignments.length) ? this._terminalSplitSqlitePipe(part.srcText) : null;
@@ -84727,6 +84734,8 @@ ${sourceTool.handlerScript}
             return;
         }
         const trimmed = trimmedRaw;
+        const aiPipeStages = this._terminalSplitAiPipe(trimmed);
+        if (aiPipeStages) { await this._terminalRunAiPipe(session, aiPipeStages, {}, {}); return; }
         const firstSpace = trimmed.indexOf(' ');
         const cmdName = firstSpace === -1 ? trimmed : trimmed.slice(0, firstSpace);
         const restArgs = firstSpace === -1 ? '' : trimmed.slice(firstSpace + 1).trim();
@@ -84752,7 +84761,7 @@ ${sourceTool.handlerScript}
                 'ls /bin、ls /usr/bin：列出目前這個沙盒有哪些內建指令可以用',
                 '/mnt/<FAP別名>：存取已授權的File Access Point（真實磁碟資料夾），第一次cd/ls進去才會讀取內容',
                 'sync [FAP別名]：把/mnt底下的變更寫回真正的FAP（不會自動flush，留空＝全部已讀取過的都flush）',
-                'ask-floating-ai-assistant [--format text|json] <問題>：問這個AI助理本身一個問題，阻塞等待回應',
+                'ask-ai-chat（同ask-floating-ai-assistant）[--format text|json] <問題>：問這個AI助理本身一個問題，阻塞等待回應；可接管線：cat log.txt | ask-ai-chat "摘要"',
                 '其餘指令交給busybox ash執行（ls/cat/grep/sed/awk/find/管線/重導向等都支援）',
                 'top：只顯示這個終端機session自己（沒有真正的process可以列），每秒重繪，按q離開',
             ].join('\r\n') + '\r\n');
@@ -84869,7 +84878,7 @@ ${sourceTool.handlerScript}
         // JS層攔截（不是真的丟給busybox執行，busybox裡沒有、也不可能有這個
         // 指令），因為這裡要做的事（打一次LLM API、等回應）完全不是busybox
         // shell的能力範圍，攔截在這裡直接處理最直接。
-        if (cmdName === 'ask-floating-ai-assistant') { await this._terminalAskAI(session, restArgs); return; }
+        if (cmdName === 'ask-floating-ai-assistant' || cmdName === 'ask-ai-chat') { await this._terminalAskAI(session, restArgs); return; }
         // zenity 有管線或重導向時交給 shell（同 curl）；單獨執行就直接開對話框
         // python／python3 的程式含 import gui 或 pygame 時走 Worker（見 _terminalTryPythonAsync）；其他 python 指令不受影響
         if ((cmdName === 'python' || cmdName === 'python3') && !this._terminalHasShellOps(restArgs) && await this._terminalTryPythonAsync(session, restArgs)) return;
@@ -86977,7 +86986,16 @@ ${sourceTool.handlerScript}
         return result.exit_code;
     }
 
-    async _terminalAskAI(session, argsText) {
+    // ask-floating-ai-assistant／ask-ai-chat：stdinText＝管線送進來的文字（沒有就 null）；回傳結束碼
+    async _terminalAskAI(session, argsText, stdinText) {
+        const r = await this._terminalAskAIText(session, argsText, stdinText == null ? null : String(stdinText));
+        if (r.usage) { session.term.write('usage: ask-ai-chat [--format text|json] <問題文字>（可接管線：cat log.txt | ask-ai-chat "摘要"）\r\n'); return 2; }
+        if (r.error) { session.term.write(`\x1b[${r.warn ? 33 : 31}mask-ai-chat: ${r.error}\x1b[0m\r\n`); return 1; }
+        session.term.write(r.text.replace(/\r?\n/g, '\r\n') + '\r\n');
+        return 0;
+    }
+    // 問 AI 一次，不寫終端機（管線要拿字串）。stdin 太長時照模型的 contextWindowTokens 比例截斷（前六後四），並在結果的 notes 說明
+    async _terminalAskAIText(session, argsText, stdinText) {
         let format = 'text';
         let rest = String(argsText || '');
         const formatMatch = rest.match(/^--format[=\s]+(\S+)\s*/);
@@ -86985,47 +87003,81 @@ ${sourceTool.handlerScript}
             format = formatMatch[1].toLowerCase();
             rest = rest.slice(formatMatch[0].length);
         }
-        const prompt = rest.trim();
-        if (!prompt) {
-            session.term.write('usage: ask-floating-ai-assistant [--format text|json] <問題文字>\r\n');
-            return;
+        let prompt = rest.trim();
+        if (!prompt && !stdinText) return { usage: true };
+        if (format !== 'text' && format !== 'json') return { error: `不支援的格式「${format}」，只支援text/json` };
+        if (!prompt) prompt = '請用繁體中文摘要以下內容的重點。';
+        const notes = [];
+        let fullPrompt = prompt;
+        if (stdinText) {
+            const cw = Number((this._getGenerationSettings() || {}).contextWindowTokens) || 32000;
+            const maxChars = Math.max(4000, Math.floor(cw * 1.5));
+            let body = stdinText;
+            if (body.length > maxChars) {
+                const head = Math.floor(maxChars * 0.6), tail = maxChars - head;
+                notes.push(`輸入共 ${body.length} 字，超過上限 ${maxChars} 字（約模型上下文的一半），只保留前 ${head} 與後 ${tail} 字`);
+                body = body.slice(0, head) + '\n…（中間省略）…\n' + body.slice(body.length - tail);
+            }
+            fullPrompt = prompt + '\n\n--- 以下是標準輸入的內容 ---\n' + body;
         }
-        if (format !== 'text' && format !== 'json') {
-            session.term.write(`\x1b[31mask-floating-ai-assistant: 不支援的格式「${format}」，只支援text/json\x1b[0m\r\n`);
-            return;
-        }
-
+        if (notes.length) session.term.write(`\x1b[90m${notes.join('；')}\x1b[0m\r\n`);
         const startedAt = Date.now();
         let heartbeatSeconds = 0;
         const heartbeat = setInterval(() => {
             heartbeatSeconds += 5;
             session.term.write(`\x1b[90m[thinking] ⏳ 等待 AI 回應中…（已經過 ${heartbeatSeconds} 秒）\x1b[0m\r\n`);
         }, 5000);
-
         let result;
         try {
-            result = await this._runSubAgentTask(prompt, SUBAGENT_DELEGATE_MAX_ROUNDS);
+            result = await this._runSubAgentTask(fullPrompt, SUBAGENT_DELEGATE_MAX_ROUNDS);
         } catch (err) {
+            return { error: String(err.message || err) };
+        } finally {
             clearInterval(heartbeat);
-            session.term.write(`\x1b[31mask-floating-ai-assistant: ${String(err.message || err)}\x1b[0m\r\n`);
-            return;
         }
-        clearInterval(heartbeat);
-
         const answer = String((result && result.text) || '').trim();
-        if (!answer) {
-            session.term.write('\x1b[33mask-floating-ai-assistant: 沒有取得任何文字結果（可以重打一次試試）\x1b[0m\r\n');
-            return;
+        if (!answer) return { error: '沒有取得任何文字結果（可以重打一次試試）', warn: true };
+        if (format === 'json') return { text: JSON.stringify({ ok: true, prompt, response: answer, elapsed_ms: Date.now() - startedAt }) };
+        return { text: answer };
+    }
+    // 管線裡有 ask-ai-chat／ask-floating-ai-assistant 的階段：回傳各階段字串；沒有、或有 ; && || & 重導向就回 null（走原本的路徑）
+    _terminalSplitAiPipe(src) {
+        const s = String(src || ''); const stages = []; let q = null, start = 0;
+        for (let i = 0; i < s.length; i++) {
+            const c = s[i];
+            if (q) { if (c === '\\' && q === '"') i++; else if (c === q) q = null; continue; }
+            if (c === '"' || c === "'") { q = c; continue; }
+            if (c === '\\') { i++; continue; }
+            if (c === ';' || c === '&' || c === '>' || c === '<' || c === '\n') return null;
+            if (c === '|') { if (s[i + 1] === '|') return null; stages.push(s.slice(start, i)); start = i + 1; }
         }
-        if (format === 'json') {
-            const envelope = {
-                ok: true, prompt, response: answer,
-                elapsed_ms: Date.now() - startedAt,
-            };
-            session.term.write(JSON.stringify(envelope) + '\r\n');
-        } else {
-            session.term.write(answer + '\r\n');
+        stages.push(s.slice(start));
+        const AI = /^\s*(?:ask-ai-chat|ask-floating-ai-assistant)(?:\s|$)/;
+        if (!stages.some((x) => AI.test(x))) return null;
+        return stages.map((x) => x.trim());
+    }
+    // 依序執行管線：ask 階段把前一階段的輸出當 stdin，其他階段交給 shell（stdin 同樣是前一階段輸出）。最後一個階段的輸出會顯示在終端機
+    async _terminalRunAiPipe(session, stages, env, opts) {
+        const AI = /^(?:ask-ai-chat|ask-floating-ai-assistant)(?:\s|$)/;
+        let data = null, exitCode = 0, stderr = '';
+        for (let i = 0; i < stages.length; i++) {
+            if (session.ended) break;
+            const last = i === stages.length - 1, st = stages[i];
+            if (AI.test(st)) {
+                const argsText = this._terminalTokenizeArgs(st).slice(1).join(' ');
+                const r = await this._terminalAskAIText(session, argsText, data);
+                if (r.usage) { session.term.write('usage: ask-ai-chat [--format text|json] <問題文字>\r\n'); return { exitCode: 2, stdout: '', stderr: 'usage' }; }
+                if (r.error) { session.term.write(`\x1b[31mask-ai-chat: ${r.error}\x1b[0m\r\n`); return { exitCode: 1, stdout: '', stderr: r.error + '\n' }; }
+                data = r.text + '\n'; exitCode = 0;
+                if (last) session.term.write(data.replace(/\n/g, '\r\n'));
+            } else {
+                const r = await this._terminalRunWasmLine(session, this._terminalBuildEnvPrefix(env || {}) + st, { streamToWidget: last ? opts.streamToWidget : false, stdin: data == null ? undefined : data });
+                if (!r.ok) { session.term.write(`\x1b[31m${String(r.error || '')}\x1b[0m\r\n`); return { exitCode: 1, stdout: '', stderr: String(r.error || '') }; }
+                data = r.stdout || ''; exitCode = r.exit_code; stderr += r.stderr || '';
+                if (!last && r.stderr) session.term.write(String(r.stderr).replace(/\n/g, '\r\n'));
+            }
         }
+        return { exitCode, stdout: data || '', stderr };
     }
 
     // tw_stock_db客製: 2026-09-25使用者要求——terminal_run工具呼叫
