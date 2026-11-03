@@ -74669,7 +74669,8 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         try {
             const pre = await this._midigenProbe(); say(3, '【模型預檢】' + (pre.ok ? 'midigenai 程式檔載得進來' + (pre.note ? '(' + pre.note + ')' : ',作曲最後會請模型補聲部') : '這次不會用 midigenai:' + pre.reason + '(仍會用作曲樹作曲)'));
             say(5, '【理解需求】' + (offline ? '離線模式,用範本規則' : '請 AI 理解你的需求' + (model ? '(模型:' + model + ')' : '')) + ':' + String(text).slice(0, 60));
-            const res = await FaComposePlan.decide(text, { ask, explicit: explicit || {}, noAiReason: offline ? '離線模式' : '', timeoutMs: 25000, attempts: 2, learned: (t) => this._composeLearnedFor(t), onStep: (m) => say(25, '【理解需求】' + m) });
+            const wkHint = FaMidiCompose.workHints(text); if (wkHint) say(4, '【作品特徵】程式查表:' + wkHint.replace(/^\n作品特徵\(程式查表,供參考,只是風格事實不是旋律\):/, '').slice(0, 200));
+            const res = await FaComposePlan.decide(text, { hint: wkHint, ask, explicit: explicit || {}, noAiReason: offline ? '離線模式' : '', timeoutMs: 25000, attempts: 2, learned: (t) => this._composeLearnedFor(t), onStep: (m) => say(25, '【理解需求】' + m) });
             say(60, '【核對】' + (res.report.usedAi ? '程式逐欄核對 AI 的答案,沒答對的欄位用預設' : '這次沒有用 AI,用的是範本規則(' + (res.report.aiError || '') + ')') + (model && !res.report.usedAi && !offline ? ';模型:' + model : ''));
             res.task = String(text); res.report.model = model;
             if (ask && res.report.usedAi && typeof FaComposeTree !== 'undefined') {
@@ -74678,7 +74679,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
                 const askNode = (sys, user, op) => this._callSimpleCompletion(user, { systemPrompt: sys, maxTokens: op && op.batch ? Math.min(4000, 400 + 120 * (op.nodes || []).length) : op && (op.node === 'motif' || String(op.node).indexOf('harmony.') === 0) ? 600 : 300, temperature: 0 });
                 say(62, '【作曲樹】由上而下請 AI 決定曲式、和聲、聲部、主題動機(context 放得下就一次問完,答錯的欄位再單獨重問)…');
                 try {
-                    const lt = this._composeLearnedFor(text); res.tree = await FaComposeTree.plan(res, { ask: askNode, task: String(text), moodName, timeoutMs: 25000, attempts: 2, contextWindowTokens: Number((this._getGenerationSettings() || {}).contextWindowTokens) || 0, learnedNodes: lt && lt.tree, onStep: (m) => say(68, '【作曲樹】' + m) });
+                    const lt = this._composeLearnedFor(text); res.tree = await FaComposeTree.plan(res, { ask: askNode, task: String(text) + wkHint, moodName, timeoutMs: 25000, attempts: 2, contextWindowTokens: Number((this._getGenerationSettings() || {}).contextWindowTokens) || 0, learnedNodes: lt && lt.tree, onStep: (m) => say(68, '【作曲樹】' + m) });
                     const cnt = FaComposeTree.describe(res.tree).counts; say(72, '【作曲樹】AI 決定 ' + (cnt.ai || 0) + '、程式修正 ' + (cnt.fixed || 0) + '、以前學到 ' + (cnt.learned || 0) + '、範本預設 ' + (cnt.template || 0) + ' 個節點' + (FaComposeTree.usable(res.tree) ? '' : ';AI 一個節點都沒答對,整首退回範本作曲'));
                 } catch (e) { res.tree = null; say(72, '【作曲樹】失敗,退回範本作曲:' + String((e && e.message) || e)); }
             }

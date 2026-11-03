@@ -104,5 +104,11 @@ const perfect = byField(PERFECT);
   { const u = '創作midi 音樂，以搖滾卡農跟final fantasy的風格演奏, 3分鐘';
     check('repeat guard: first compose in a turn is allowed', P.repeatGuard(u, 0) === ''); check('repeat guard: second compose for the same one-song request is refused with a reason', /不要再呼叫/.test(P.repeatGuard(u, 1)));
     check('repeat guard: user asking for several versions may compose again', P.repeatGuard('幫我作三首不同風格的曲子', 1) === '' && P.repeatGuard('做兩個版本比較', 2) === ''); }
+  { const C2 = require('../../renderer/src/music/music_compose.js'); const rq = '創作歌劇魅影、卡農、final fantasy 風格的曲子';
+    check('known works: the table knows all three names and puts facts (key / progression) in the hint', C2.workOf(rq).map((w) => w.name).join() === '歌劇魅影,卡農,Final Fantasy' && /I V vi iii IV I IV V/.test(C2.workHints(rq)) && C2.workHints('隨便來一首') === '');
+    const rr = await P.decide(rq, {}); check('known works: with no AI the rules fill style / key / tempo from the table and say so', rr.fields.style === 'classical' && rr.fields.key === 'D' && rr.fields.tempo === 120 && /專屬的範本.*查表/.test(rr.report.notes.join()), rr.fields);
+    const seen = []; await P.decide(rq, { hint: C2.workHints(rq), ask: async (sys, user) => { seen.push(sys + user); return 'A'; }, timeoutMs: 500 });
+    check('known works: the hint reaches the AI questions but does not change what the rules read from the user text', seen.length > 0 && seen.every((x) => /作品特徵/.test(x)));
+    const rr2 = await P.decide('搖滾卡農', {}); check('known works: an explicit style word wins over the table', rr2.fields.style === 'rock', rr2.fields.style); }
   console.log(bad.length ? 'FAIL\n' + bad.join('\n') : 'ok'); console.log(ok + ' passed, ' + bad.length + ' failed'); process.exit(bad.length ? 1 : 0);
 })();

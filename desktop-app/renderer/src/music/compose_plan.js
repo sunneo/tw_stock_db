@@ -91,7 +91,7 @@
         // 連線類失敗(逾時、5xx、過載)是暫時的:不算「讀不懂」的次數,另外自己重試到底(逾時一次比一次長、中間退避),全用完才算這欄連線失敗
         let netFail = 0, i = 0;
         while (i < attempts && netFail < netMax && !pf.ok) {
-          const q = questionOf(k, text, i > 0 && pf.raw !== undefined && !pf.error.startsWith('連線') ? { raw: pf.raw.slice(0, 60) } : null); pf.tries++; report.calls++; const tmo = Math.round(timeoutMs * (1 + 0.6 * netFail)); const t0 = Date.now(); step('問「' + (k === 'purpose' ? '用途' : ASK[k].slice(0, 6)) + '」第 ' + pf.tries + ' 次' + (netFail ? '(連線重試,等最多 ' + Math.round(tmo / 1000) + ' 秒)' : '') + '…');
+          const q = questionOf(k, text + (o.hint || ''), i > 0 && pf.raw !== undefined && !pf.error.startsWith('連線') ? { raw: pf.raw.slice(0, 60) } : null); pf.tries++; report.calls++; const tmo = Math.round(timeoutMs * (1 + 0.6 * netFail)); const t0 = Date.now(); step('問「' + (k === 'purpose' ? '用途' : ASK[k].slice(0, 6)) + '」第 ' + pf.tries + ' 次' + (netFail ? '(連線重試,等最多 ' + Math.round(tmo / 1000) + ' 秒)' : '') + '…');
           try {
             const raw = await withTimeout(o.ask(q.system, q.user, { field: k, strict: i > 0 }), tmo); pf.raw = String(raw == null ? '' : raw).replace(/\s+/g, ' ').trim().slice(0, 80); pf.error = ''; i++;
             const v = k === 'purpose' ? parsePurpose(raw) : parseLetter(raw, k);

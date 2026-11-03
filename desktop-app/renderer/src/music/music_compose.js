@@ -96,6 +96,15 @@
   // 九種範本以外的風格、作曲家、樂派:對到最接近的範本,並在結果裡明講(styleNote);完全對不到時用流行並明講,不讓路由放棄
   const CLOSE = { 貝多芬: 'classical', 莫札特: 'classical', 巴哈: 'classical', 蕭邦: 'classical', 李斯特: 'classical', 舒伯特: 'classical', 舒曼: 'classical', 布拉姆斯: 'classical', 海頓: 'classical', 韓德爾: 'classical', 韋瓦第: 'classical', 德布西: 'classical', 拉赫曼尼諾夫: 'classical', 柴可夫斯基: 'classical', 孟德爾頌: 'classical', 浪漫樂派: 'classical', 古典樂派: 'classical', 交響: 'classical', 奏鳴曲: 'classical', 協奏曲: 'classical', 小夜曲: 'classical', 月光: 'classical', 歡樂頌: 'classical', 重金屬: 'rock', 金屬: 'rock', 龐克: 'rock', 硬搖滾: 'rock', 另類: 'rock', 搖擺: 'jazz', 波薩諾瓦: 'jazz', 森巴: 'jazz', 拉丁: 'jazz', 鄉村: 'folk', 民俗: 'folk', 嘻哈: 'lofi', 饒舌: 'lofi', 咖啡廳: 'lofi', 電音: 'edm', 浩室: 'edm', 鐵克諾: 'edm', 流行樂: 'pop', 情歌: 'pop', 兒歌: 'folk', 進行曲: 'rock' };
   const CLOSE_EN = { beethoven: 'classical', mozart: 'classical', bach: 'classical', chopin: 'classical', schubert: 'classical', debussy: 'classical', metal: 'rock', punk: 'rock', swing: 'jazz', bossa: 'jazz', latin: 'jazz', country: 'folk', 'hip hop': 'lofi', hiphop: 'lofi', house: 'edm', techno: 'edm', trance: 'edm', symphony: 'classical', sonata: 'classical' };
+  // 知名作品／系列的「特徵查表」:只有調、調式、速度、樂器、和弦進行這類事實,不含旋律(不抄作品);值是整理出來的常見印象,不一定逐字精確。
+  // 用途:(1) 沒有 AI 時補風格／調／速度;(2) 有 AI 時當「作品特徵」附在需求後面,AI 才知道這個名字代表什麼(選和聲、調式、樂器、情緒時參考)。
+  const WORKS = [
+    { name: '歌劇魅影', keys: ['歌劇魅影', 'phantom of the opera', 'phantom'], style: 'classical', key: 'D', mode: 'minor', tempo: 120, hint: '歌劇魅影:D 小調、戲劇性、教堂管風琴為主加弦樂與合唱感,低音持續音與下行線條,和弦常見 i VI III VII、i iv V' },
+    { name: '卡農', keys: ['卡農', 'canon in d', 'pachelbel', 'canon'], style: 'classical', key: 'D', mode: 'major', tempo: 70, hint: '帕海貝爾卡農:D 大調、弦樂(小提琴、大提琴)、低音反覆 8 個音,和弦進行 I V vi iii IV I IV V(搖滾版常把節奏加快、加電吉他與鼓)' },
+    { name: 'Final Fantasy', keys: ['final fantasy', '最終幻想', '太空戰士', 'ff7', 'ff10'], style: 'classical', key: 'C', mode: 'major', tempo: 110, hint: 'Final Fantasy:遊戲配樂風,開頭常用琶音(豎琴或鋼琴)上行下行,管弦樂編制、史詩感,和弦常見 I V vi IV、vi IV I V 並加入調外的轉折' }
+  ];
+  function workOf(text) { const low = String(text || '').toLowerCase(); return WORKS.filter((w) => w.keys.some((k) => low.indexOf(k.toLowerCase()) >= 0)); }
+  function workHints(text) { const ws = workOf(text); return ws.length ? '\n作品特徵(程式查表,供參考,只是風格事實不是旋律):' + ws.map((w) => w.hint).join(';') : ''; }
   function parseRequest(text) {
     text = String(text || ''); const out = {}; for (const k of Object.keys(ALIAS)) if (text.indexOf(k) >= 0) { out.style = ALIAS[k]; break; }
     if (!out.style) {
@@ -103,13 +112,16 @@
       if (hit) { out.style = hit[1]; out.styleNote = '沒有「' + hit[0] + '」專屬的範本,用最接近的「' + STYLES[hit[1]].name + '」範本(' + STYLES[hit[1]].progs.length + ' 種和弦進行、速度 ' + STYLES[hit[1]].tempo[0] + '–' + STYLES[hit[1]].tempo[1] + ');旋律是程式依範本產生的,不是' + hit[0] + '的真實作品'; }
       else if (/風格|style|式的|派|樂風|味道/i.test(text)) { out.styleNote = '沒有對得上的風格範本,用「流行」範本;想換可以指定 pop、rock、jazz、blues、waltz、folk、lofi、edm、classical'; }
     }
+    const ws = workOf(text); if (ws.length) { const w = ws[0]; if (!out.style) { out.style = w.style; out.styleNote = '沒有「' + ws.map((x) => x.name).join('、') + '」專屬的範本,用查表整理出的特徵(' + w.key + (w.mode === 'minor' ? ' 小調' : ' 大調') + '、約 ' + w.tempo + ' 拍/分)配最接近的「' + STYLES[w.style].name + '」範本;旋律是程式依範本產生的,不是真實作品'; out.fromWork = w.name; } }
     const m = /([A-G][#b]?)\s*(?:大調|小調|調)?/.exec(text); if (m && KEYS[m[1]] != null) out.key = m[1];
+    if (ws.length && !out.key && out.fromWork) out.key = ws[0].key; if (ws.length && out.fromWork) { out.workTempo = ws[0].tempo; out.workMode = ws[0].mode; }
     const t = /(\d{2,3})\s*(?:bpm|拍\/分|拍每分)/i.exec(text) || /速度\D{0,3}(\d{2,3})/.exec(text); if (t) out.tempo = Number(t[1]);
     const b = /(\d{1,2})\s*小節/.exec(text); if (b) out.bars = Number(b[1]);
+    if (out.workTempo && !out.tempo && !/快|慢/.test(text)) out.tempo = out.workTempo; delete out.workTempo;
     if (/快/.test(text) && !out.tempo) out.fast = true; if (/慢/.test(text) && !out.tempo) out.slow = true;
     const stl = STYLES[out.style]; if (stl && out.fast) out.tempo = stl.tempo[1]; if (stl && out.slow) out.tempo = stl.tempo[0]; delete out.fast; delete out.slow;
     return out;
   }
   const choices = () => Object.keys(STYLES).map((k) => ({ id: k, name: STYLES[k].name, tempo: STYLES[k].tempo, progressions: STYLES[k].progs.length, mode: STYLES[k].mode }));
-  return { STYLES, KEYS, chordTones, compose, parseRequest, validate, choices };
+  return { WORKS, workOf, workHints, STYLES, KEYS, chordTones, compose, parseRequest, validate, choices };
 });
