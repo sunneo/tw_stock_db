@@ -14,6 +14,9 @@ Continue from the handoff document at desktop-app/DESIGN.TODO.gui-bridge.md (rep
 
 | commit | 內容 | 驗證 |
 |---|---|---|
+| 929d4de7 | 待辦 5 第二批：視窗的 × 送 close 事件給程式（之前直接關、遊戲收不到事件，之後 draw 報 window is not open）；Worker 結束時把 /work 的檔案寫回終端機；gui_host.test.js 新增 × 情境 | 實機 missile_command.py：開始→遊戲視窗 400×300 畫出畫面，輸入後改變 771 像素（對照組不操作 75 像素），按 × 後 exit 0；gui_host.test.js 26 項 |
+| 9ec1871c | 待辦 5 第一批：`fa_bridge.call` 網頁版改 `run_sync`；`_pyBridgeDispatch` 加 gui.* 分支（`_pyBridgeGui`）；含 import gui／pygame 的 python 走 module Worker（`_terminalTryPythonAsync`、`_terminalRunPythonWorker`，模組 `renderer/src/gui/py_worker.js`，嵌入 GUIPYWORKER／GUIPYASYNC）；視窗被點擊後加 `ai-chat-wheel-on`（桌面版沒有設定，滑鼠事件會被 gui_render 丟掉） | 實機 gui.py 範例：開窗、填 Alice、按 OK，終端機印出 `answer: Alice`、`done`，exit 0；不含 gui 的 python 照常（回歸：plain 2）；py_worker.test.js 24 項 |
+| efd9bbc8 | （另一個工作階段的 MIDI 提交，見第 9 節的說明：它夾帶了我的 fa_bridge.py、py_worker.js 與產物）| 見第 9 節 |
 | d4a8255b | `main.js`：`FA_DISABLE_MAIN_OVERLAY=1` 同時停用渲染頁的 live-patch 覆蓋（`computeEffectiveLocalManifest` 早退，`index.html` 改用安裝包內建 `renderer/`） | `node --check` 通過；實機效果未確認 |
 | 2a1b5536 | 終端機接上 zenity：`_faGuiModule`、`_terminalGuiHost`、`_terminalZenity`；`zenity` 加入 `JS_INTERCEPTED_WITH_CAPTURE`、`TERMINAL_VIRTUAL_SCRIPT_COMMANDS`；有 shell 運算子時走 shell | 四組 node 測試通過；`node build-assistant.js` 成功，四個 GUI 常數進入 `renderer/floating-assistant.js` 與 `.min.js`；實機未驗證 |
 | ef2fe842 | 視窗主機 `renderer/src/gui/gui_host.js`（開/關/重繪/事件佇列/上限 50/frame 合併/mouse move 合併/wait） | `gui_host.test.js` 21 項通過 |
@@ -166,3 +169,50 @@ Continue from the handoff document at desktop-app/DESIGN.TODO.gui-bridge.md (rep
 - `zenity` 的 `--progress` 沒有 stdin 版本，立即回傳 exit 0（`Z.immediate`）。
 - Electron 的 `node_modules/electron/install.js` 在 Node v16.15.0 會因為 `@electron/get` 是 ESM 而失敗；本機快取已有 zip，不需要再下載。
 - 截圖 token 很貴；只在關鍵驗證點截圖。
+
+## 9. 交接 3（2026-11-03，待辦 5 第一、二批完成後寫）
+
+### 9.1 已完成（已提交到 desktop-app，未 push、未 publish）
+
+- 待辦 5 的四步：`fa_bridge.call` 網頁版改 `run_sync`（不再 `asyncio.run`）；`_pyBridgeDispatch(op, a, ctx)` 的 `gui.*` 分支轉到 `_pyBridgeGui(op, a, session)`；`python`／`python3` 的程式，`py_async.js` 的 `needsAsync` 為真才走 `_terminalTryPythonAsync` → `_terminalRunPythonWorker`（module Worker，Pyodide 網址同 `FA_ASSET_URLS.pyodideJsBase`）。其他 python 指令路徑沒有改。
+- 技術選擇的理由：
+  - `gui.wait` 用輪詢佇列（`waitEvent`）而不用 `host.wait`：host 的 resolver 不能取消，超時後下一個事件會被丟掉。
+  - 程式包在 `go()` 裡用 `callPromising` 執行，因為 `run_sync` 要在 JSPI 堆疊裡才能用；`install_hooks` 也放進 `go()`（放頂層會報「Cannot stack switch」）。
+  - × 送 close 事件：程式要知道使用者關了視窗，否則之後的 draw 會失敗。
+  - Worker 結束後把 /work 的檔案寫回終端機的目前目錄（missile 會寫貼圖）。
+  - 窗的指標：gui_render 只在 `.ai-chat-wheel-on` 祖先之下送滑鼠與滾輪，這是 Redmine 那邊的 scroll-focus 腳本設的，桌面版沒有，所以在 gui_host 的 capture-phase mousedown 加上。
+- 測試：`gui_host` 26、`gui_render` 40、`gui_bridge` 69、`zenity` 56、`py_async` 29、`py_worker` 24（node，全部通過）。
+- 實機（真 Electron，`FA_DISABLE_MAIN_OVERLAY=1`、`FA_BROWSER_CONTROL_PORT=17931`、全新 `--user-data-dir`，評估檔 `scripts/eval/gui_py_worker.eval.js`）：
+  - gui.py 範例：開窗、填值、按 OK，終端機 `answer: Alice`、`done`，exit 0。
+  - 回歸：不含 gui 的 python 照常（`plain 2`），沒有走 Worker。
+  - missile_command.py（Redmine 範例原檔，四張貼圖）：按「開始」→遊戲視窗 400×300，畫面有 23→115 種顏色；對照組（不操作 1.2 秒）改變 75 像素，輸入後改變 771 像素；指標旗標生效；按 × 後程式 exit 0，沒有錯誤。
+  - missile 的評估檔在 scratchpad（`missile.eval.js`，由 `gen_missile.js` 從 `missile.tpl.js` 產生，含貼圖的 base64），沒有進 repo。
+
+### 9.2 未驗證（要明講）
+
+- 畫面外觀：沒有截圖，視窗位置、貼圖是否正確顯示、字型都未看過。
+- missile 的各操作只驗到「有反應」：沒有分開確認射擊命中、拖曳、滾輪、方向鍵。
+- 「按 Ctrl+C 停止 Worker」沒有做。程式如果不等視窗事件而死迴圈，目前只能關視窗（若程式有 wait／poll 會收到 close）；無 wait 的死迴圈無法停。
+- Worker 的 stdin 永遠回傳 None（`input()` 會失敗）。
+- 終端機 AI 工具路徑（`terminal_run`，約 `_runTerminalCommand` 之外的 `JS_INTERCEPTED_WITH_CAPTURE` 那段）沒有接 Worker 路徑，AI 呼叫含 gui 的 python 仍會走同步路徑而失敗。這要另外接。
+- 視窗程式結束後不自動關閉（目前的選擇，使用者要自己按 ×）。
+- `sleep()` 在 fa_bridge 網頁版仍是 `asyncio.run`（沒有在 Worker 實測過）。
+- `renderer/src/pybridge/fa_bridge.py` 的 `acall` 仍用 asyncio（只在網頁版路徑，沒有人呼叫）。
+- resizable、maximize、map_viewer、JavaScript 執行器、打磚塊：都還沒做。打磚塊要先問使用者。
+
+### 9.3 另一個工作階段夾帶我的 WIP（需要知道）
+
+- 提交 `efd9bbc8`（MIDI 編輯器，另一個工作階段）把我當時尚未提交的 `renderer/src/pybridge/fa_bridge.py`、`renderer/src/gui/py_worker.js`、`py_worker.test.js`，以及 `renderer/floating-assistant.js` 等 build 產物一起提交了（`git add -A` 式）。
+- 沒有改寫歷史（不 reset、不 rebase）。`fa_bridge.py` 的內容現在在 HEAD 上是正確的；`py_worker.js` 的舊版在 efd9bbc8，之後的修改在 9ec1871c、929d4de7。
+- 兩個共用資料夾的工作階段會互相覆蓋：提交時只用明確路徑 `git add <file>`，不要用 `git add -A`。
+
+### 9.4 工作方式（沿用第 5 節，這次新增的）
+
+- 每個 commit 只加自己改過的檔案；產物（`renderer/floating-assistant*.js`、`renderer/update-manifest.json`、`web-lazy/*`、`test-reports/*`、`features/FEATURES.md`、`.claude/launch.json`、`skills/*/parts_builtin.json`）不提交。
+- 每次改 `renderer/src/floating-assistant.js` 後要跑：`node scripts/embed-code-ui.js`、`node build-assistant.js`，再啟動 Electron 驗證（嵌入的 `FA_GUI_*_SRC` 來自 `renderer/src/gui/*.js`，改來源模組後一定要 re-embed）。
+- 下一項最先：待辦 7（map_viewer、resizable、maximize）；待辦 9-10 之後。打磚塊先問使用者（第 4 節）。
+
+### 9.5 下一個工作階段（後繼）
+
+- 讀本檔第 1 節的開場提示（它仍然有效，改用本檔第 9 節的現況）。
+- 先確認 `git log --oneline -5` 有 `929d4de7` 與 `9ec1871c`，再開始。
