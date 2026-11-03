@@ -41,8 +41,10 @@ Continue from the handoff document at desktop-app/DESIGN.TODO.gui-bridge.md (rep
 - 用真的 Electron 加評估檔，不截圖、不靠肉眼找視窗。範例檔：`scripts/eval/gui_bridge.eval.js`。
 - 啟動（每次用全新的暫存資料夾，不碰安裝版資料；埠不用 17923）：
   ```
-  FA_DEBUG_EVAL_FILE=<評估檔絕對路徑> FA_BROWSER_CONTROL_PORT=17931 electron.exe <desktop-app路徑> --no-sandbox --disable-gpu --user-data-dir=<全新暫存資料夾>
+  FA_DISABLE_MAIN_OVERLAY=1 FA_DEBUG_EVAL_FILE=<評估檔絕對路徑> FA_BROWSER_CONTROL_PORT=17931 electron.exe <desktop-app路徑> --no-sandbox --disable-gpu --user-data-dir=<全新暫存資料夾>
   ```
+- 一定要加 `FA_DISABLE_MAIN_OVERLAY=1`。沒加的那次執行會下載遠端版本（輸出「要更新 2 個檔案」），驗證的就不是工作目錄的實作。加了之後評估檔的 `loaded.scripts` 指向工作目錄的 `renderer/floating-assistant.js`，輸出仍會有一行「檢查更新」，但沒有套用，全新資料目錄裡也不會產生 `live-patch`。
+- 啟動前先跑 `node scripts/embed-code-ui.js` 與 `node build-assistant.js`，讓 `renderer/floating-assistant.js` 與原始碼同步。這兩個產物是追蹤中的檔案，要不要 commit 屬於發布流程，不要混進功能 commit。
 - 結果看標準輸出的 `[eval-file] result` 或 `[eval-file] error` 行；跑完程序會自己結束（逾時用 `timeout` 包住）。
 - 評估檔在渲染頁裡執行，可用 `window.fa`、`fa._createTerminalForAI`、`fa._resolveTerminalSession`、`fa._runTerminalCommand` 與 DOM（視窗主機的節點是 `.gui-window[data-window]`，輸入框 `.gui-entry`，按鈕 `.gui-button`）。
 - 「模擬使用者」是在 DOM 上填值、派發 input 事件、呼叫按鈕的 click，不是作業系統層級的滑鼠輸入。

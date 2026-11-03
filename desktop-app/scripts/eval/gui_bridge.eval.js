@@ -4,6 +4,15 @@
 const fa = window.fa;
 const R = {};
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+// 證明載入的是工作目錄的實作：載入的腳本路徑，以及 fa 上的 GUI 函式是否存在
+R.loaded = {
+  bootstrap_ready: !!window.__faBootstrapReady,
+  scripts: Array.from(document.scripts).map((s) => s.src).filter((s) => /floating-assistant/.test(s)),
+  has_zenity: typeof fa._terminalZenity === 'function',
+  has_gui_host: typeof fa._terminalGuiHost === 'function',
+  has_gui_module: typeof fa._faGuiModule === 'function',
+  has_create_terminal: typeof fa._createTerminalForAI === 'function',
+};
 const until = async (fn, ms = 15000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { try { const v = fn(); if (v) return v; } catch (_) { /* 還沒就緒 */ } await wait(150); } return null; };
 const termText = (session) => { const b = session.term.buffer.active; const out = []; for (let i = 0; i < b.length; i++) { const l = b.getLine(i); if (l) out.push(l.translateToString(true)); } return out.join('\n'); };
 
