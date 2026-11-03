@@ -85823,7 +85823,7 @@ ${sourceTool.handlerScript}
         }
         const fsStack = this._activeSandboxFsStack || (this._activeSandboxFsStack = []);
         fsStack.push(fsStore);
-        let outBuf = '', errBuf = '';
+        let outBuf = '', errBuf = '', gotStdout = false;
         let result;
         try {
             const runOpts = {
@@ -85832,7 +85832,7 @@ ${sourceTool.handlerScript}
                     const text = new TextDecoder().decode(bytes);
                     // @gui 行只套用、不進 stdout（視窗照開）；其餘照舊
                     const shown = opts.streamToWidget !== false ? this._terminalWriteOutput(session, text.replace(/\n/g, '\r\n')) : this._terminalFilterGuiLines(session, text);
-                    if (channel === 'stderr') errBuf += text; else outBuf += shown;
+                    if (channel === 'stderr') errBuf += text; else { outBuf += shown; gotStdout = true; }
                     session.lastActiveAt = Date.now();
                 },
             };
@@ -85848,7 +85848,7 @@ ${sourceTool.handlerScript}
             fsStack.pop();
         }
         this._terminalSetExit(session, result.exitCode);
-        const stdout = outBuf || result.stdout || '';
+        const stdout = gotStdout ? outBuf : this._terminalFilterGuiLines(session, result.stdout || '');   // 有串流過就以過濾後的為準（全是 @gui 行時 outBuf 是空的，不能退回原始 stdout）
         const stderr = errBuf || result.stderr || '';
         // tw_stock_db客製: 使用者要求「也可以讓terminal將輸出導入檔案，並
         // 取得stdout, stderr」——不是靠shell的>重導向語法（那樣會讓輸出
