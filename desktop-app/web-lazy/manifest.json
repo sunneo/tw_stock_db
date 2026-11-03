@@ -22,8 +22,8 @@
    "names": [
     "FA_PYBRIDGE_FILES"
    ],
-   "size": 147479,
-   "md5": "6041ccd377eb8a2a3782909cf30f3a88"
+   "size": 171355,
+   "md5": "e9705fcb7221c1a67a947328b035013a"
   },
   "aidocview": {
    "file": "chunks/aidocview.js",
@@ -903,16 +903,16 @@
    "names": [
     "FaMidi"
    ],
-   "size": 8747,
-   "md5": "d2ca6aa17800353c70d23068be50a981"
+   "size": 8972,
+   "md5": "da355ab422f9fb18ce78367524ba6418"
   },
   "musicplay": {
    "file": "chunks/musicplay.js",
    "names": [
     "FaMidiPlay"
    ],
-   "size": 10649,
-   "md5": "d60b122d20ca05841c20bd29d3cbcdc7"
+   "size": 11213,
+   "md5": "266662555de4e3c43e49bd59a6874d8a"
   },
   "musicsoundtrack": {
    "file": "chunks/musicsoundtrack.js",
@@ -927,8 +927,8 @@
    "names": [
     "FaMidiEdit"
    ],
-   "size": 7249,
-   "md5": "61a63eef3f05840fedc5bcf6927ded8b"
+   "size": 7586,
+   "md5": "8468672eec4b06e46f60773527c232af"
   },
   "musiccompose": {
    "file": "chunks/musiccompose.js",
@@ -1010,13 +1010,21 @@
    "size": 4659,
    "md5": "e3c0eb35f0fb7e725333c85b21cd1661"
   },
+  "musicvpiano": {
+   "file": "chunks/musicvpiano.js",
+   "names": [
+    "FaVirtualPiano"
+   ],
+   "size": 10274,
+   "md5": "99e3570c0e510e8a1fc482773341982c"
+  },
   "musiceditui": {
    "file": "chunks/musiceditui.js",
    "names": [
     "FaMidiEditUI"
    ],
-   "size": 9756,
-   "md5": "a2ef206df80d72c22f773525b96eb8bc"
+   "size": 18151,
+   "md5": "2f33566f54af706e42b108d0e361056b"
   },
   "musicknow": {
    "file": "chunks/musicknow.js",
@@ -1092,7 +1100,7 @@
   }
  },
  "core": {
-  "size": 5230643,
-  "md5": "a3b7e3272f483dcd54355236e9baf2f4"
+  "size": 5289502,
+  "md5": "87c748b7dcefe3f87c7238ea2c6f3779"
  }
 }

@@ -58,9 +58,11 @@ def sleep(seconds):
 def call(op, args=None, timeout=240.0):
     """送一個請求給助理並等回應。op 例如 'pw.goto'、'tool'、'domain'。"""
     if IN_BROWSER:
-        import asyncio
+        # 同步等待 JS Promise：pyodide.ffi.run_sync 在 JSPI 下掛起 wasm 堆疊，不需要 SharedArrayBuffer。
+        # 前提是整支程式包在 callPromising 裡執行（見 floating-assistant.js 的 worker 路徑）；否則這裡會報錯。
+        from pyodide.ffi import run_sync
         import _fa_pybridge
-        raw = asyncio.run(_fa_pybridge.call(op, json.dumps(args or {})))
+        raw = run_sync(_fa_pybridge.call(op, json.dumps(args or {})))
         data = json.loads(str(raw))
         if not data.get("ok", False):
             _fail(data, op)
