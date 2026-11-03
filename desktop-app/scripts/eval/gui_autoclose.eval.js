@@ -12,6 +12,9 @@ const put = (n, s) => fa._writeBytesToTerminalFs(fsStore, '/work/' + n, new Text
 put('done.py', 'import gui\nw = gui.Window("auto", width=200)\nw.button("OK")\nprint("py-done")\n');
 put('done.js', 'const w = await gui.open("auto", 200); await w.button("OK"); console.log("js-done");\n');
 put('boom.py', 'import gui\nw = gui.Window("auto", width=200)\nw.button("OK")\nraise SystemExit(3)\n');
+put('boom_sys.py', 'import gui\nw = gui.Window("auto", width=200)\nw.button("OK")\nimport sys\nsys.exit(3)\n');
+put('boom_exit.py', 'import gui\nw = gui.Window("auto", width=200)\nw.button("OK")\nexit(3)\n');
+put('err.py', 'import gui\nw = gui.Window("auto", width=200)\nw.button("OK")\nraise ValueError("boom")\n');
 const Q = String.fromCharCode(39);
 R.keep_open = fa._terminalGuiHost(session).apply('@gui {"v":1,"op":"open","id":"keep","title":"k","width":200}');
 await wait(500);
@@ -19,7 +22,7 @@ R.keep_before = wins();
 let seen = new Set();
 const mo = new MutationObserver(() => wins().forEach((w) => seen.add(w)));
 mo.observe(document.body, { childList: true, subtree: true });
-const cases = [['py', 'python3 done.py'], ['js', 'node done.js'], ['py_exit3', 'python3 boom.py']];
+const cases = [['py', 'python3 done.py'], ['js', 'node done.js'], ['py_exit3', 'python3 boom.py'], ['py_sysexit3', 'python3 boom_sys.py'], ['py_exit_fn3', 'python3 boom_exit.py'], ['py_err', 'python3 err.py']];
 R.keep_ids = Object.keys(fa._terminalGuiHost(session).session.windows);
 R.ai = {}; R.inter = {};
 for (const [n, c] of cases) {

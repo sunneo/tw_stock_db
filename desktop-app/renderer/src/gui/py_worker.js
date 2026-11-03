@@ -58,9 +58,9 @@
         }
         var go = py.globals.get('go');
         try {
-          await go.callPromising();
+          var rc = await go.callPromising();   // go() 回傳程式的結束碼（SystemExit 的值，或正常結束的 0）
           syncBack();
-          self.postMessage({ type: 'done', code: 0 });
+          self.postMessage({ type: 'done', code: typeof rc === 'number' ? rc : 0 });
         } catch (e) {
           self.postMessage({ type: 'err', text: String((e && e.message) || e) + '\n' });
           syncBack();
@@ -124,7 +124,16 @@
     '    builtins.input = _input',
     '    sys.stdin = _Stdin()',
     "    g = {'__name__': '__main__', '__file__': __fa_path__}",
-    '    exec(compile(__fa_src__, __fa_path__, "exec"), g)',
+    // SystemExit 與 Python 的 sys.exit 一樣：整數是結束碼，None 是 0，其他值印到 stderr 後結束碼 1；未捕捉的例外仍是 1（由 JS 端的 catch 處理）
+    '    try:',
+    '        exec(compile(__fa_src__, __fa_path__, "exec"), g)',
+    '    except SystemExit as e:',
+    '        c = e.code',
+    '        if c is None: return 0',
+    '        if isinstance(c, int): return c',
+    '        sys.stderr.write(str(c) + "\\n")',
+    '        return 1',
+    '    return 0',
   ].join('\n');
 
   // gui.* 橋接操作（gui.py 呼叫的名字，去掉 gui. 前綴）。與 gui_bridge.js 的 OPS 對應，另外 poll／wait／image 由頁面處理。
