@@ -50,6 +50,8 @@ embedIdrSkill();
 // GUI 橋接協定核心（renderer/src/gui/gui_bridge.js，純函式、UMD）：整份原始碼當字串嵌入，執行時用 new Function 載入。
 // 不放在 renderer/src 之外的目錄：renderer/src/** 不進安裝包，這裡嵌進 floating-assistant.js 之後才會進安裝包與熱更新。
 embed('renderer/src/gui/gui_bridge.js', 'GUIBRIDGE-BEGIN', 'GUIBRIDGE-END', 'FA_GUI_BRIDGE_SRC');
+// GUI 繪製器（renderer/src/gui/gui_render.js，DOM 用 textContent，不用 innerHTML）：同上，嵌入後執行時載入。
+embed('renderer/src/gui/gui_render.js', 'GUIRENDER-BEGIN', 'GUIRENDER-END', 'FA_GUI_RENDER_SRC');
 function embedBehavior() {
     const data = require('./behavior-data.js').load(root);
     const a = src.indexOf('/* BEHAVIOR-BEGIN */'), b = src.indexOf('/* BEHAVIOR-END */');
