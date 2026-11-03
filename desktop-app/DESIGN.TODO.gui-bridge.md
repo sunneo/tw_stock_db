@@ -282,3 +282,11 @@ FA_DISABLE_MAIN_OVERLAY=1 FA_DEBUG_EVAL_FILE=<評估檔絕對路徑> FA_BROWSER_
 node scripts/eval/gen_missile_eval.js <examples資料夾> <輸出評估檔>
 ```
 node 測試：`renderer/src/gui/*.test.js`（gui_host 26、gui_render 40、gui_bridge 69、zenity 56、py_async 29、py_worker 24、js_program 3，全部通過）。
+
+### 10.6 啟動測試實例的正確做法（管理層更正，2026-11-03）
+
+- 全新 `--user-data-dir` 第一次啟動沒有 `main-ext-rev.txt`，`main-ext.js` 會把 `autoPrompt` 設為真，畫面自動跳出「發現新版本」對話框，按「立即更新」會把遠端版本蓋過工作目錄的實作。不用新增環境變數：啟動前在暫存資料夾預先寫入 `main-ext-rev.txt`（內容讀自 `main-ext.js` 的 `REV`，不要寫死）。
+- 一律用 `node scripts/eval/run_eval.js <評估檔> [埠]`（已包含：暫存資料夾、預寫 rev、`FA_DISABLE_MAIN_OVERLAY=1`、換埠）。第 2b、10.5 節的手動啟動指令請改用它。
+- 證明：`scripts/eval/no_update_dialog.eval.js` 讀 DOM，有預寫 rev 時 `update_dialog_shown:false`，對照組（沒預寫）`true`。畫面上的更新按鈕標籤也會寫「發現新版本」，那不是對話框，判斷對話框看有沒有「立即更新」。
+- 不要在測試實例按「立即更新」。
+- pygame `Surface.get_size` 已補（commit 09ea05a3），本次加測試；missile 重跑畫布 25 色（讀 canvas 像素，不是全黑）。

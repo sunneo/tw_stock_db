@@ -48,6 +48,7 @@ check('open window', calls[0][0] == 'gui.open' and calls[0][1]['width'] == 344)
 check('a plain window is not resizable or maximizable', calls[0][1]['resizable'] is False and calls[0][1]['maximizable'] is False)
 check('canvas node', calls[1][1]['node'] == {'id': 'n1', 'kind': 'canvas', 'width': 320, 'height': 240, 'fps': 0})
 check('screen size', screen.get_width() == 320 and screen.get_height() == 240)
+check('screen get_size / get_rect', screen.get_size() == (320, 240) and screen.get_rect().width == 320 and screen.get_rect().height == 240)
 check('one screen per program', raises(RuntimeError, lambda: pygame.display.set_mode((10, 10))))
 
 # fill, rect, circle, line, text: one flip sends them in order as one gui.draw
