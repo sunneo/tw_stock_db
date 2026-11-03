@@ -85584,6 +85584,12 @@ ${sourceTool.handlerScript}
         // 保留同一個wasm shell instance內`export X=1; echo $X`這類共享狀態
         // 的語意。outputFile/stderrFile只在整條複合指令跑完後對累積好的
         // stdout/stderr套用一次，不會被拆成每個group各寫一次。
+        // 含 ask-ai-chat 的管線（cat x | ask-ai-chat "…"）：跟互動輸入（_runTerminalCommand）同一套逐段執行，AI 段的 stdin 才接得上；不然會落到 wasm 的 sh 找不到 ask-ai-chat
+        const aiPipeStages = this._terminalSplitAiPipe(trimmedLine);
+        if (aiPipeStages) {
+            const pr = await this._terminalRunAiPipe(session, aiPipeStages, {}, { streamToWidget: true });
+            return { ok: true, exit_code: pr.exitCode, stdout: pr.stdout, stderr: pr.stderr };
+        }
         const groups = this._terminalGroupCompoundLine(trimmedLine);
         if (groups.length > 1) {
             let stdout = '', stderr = '', exitCode = 0;
