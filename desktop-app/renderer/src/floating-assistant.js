@@ -50922,7 +50922,7 @@ const TERMINAL_BUSYBOX_APPLETS = [
 // 檔案，不是額外的一份指令白名單管制。
 const TERMINAL_SHELL_BUILTINS = [
     'cd', 'pwd', 'clear', 'exit', 'help', 'which', 'chmod', 'time', 'sh', 'bash',
-    'ask-floating-ai-assistant', 'ask-ai-chat', 'sync', 'sqlite3', 'sqlite', 'sqlitebrowser',
+    'ask-floating-ai-assistant', 'ask-ai-chat', 'gui', 'sync', 'sqlite3', 'sqlite', 'sqlitebrowser',
     // tw_stock_db客製: 2026-09-25使用者要求——sleep（busybox applet清單裡沒有）、
     // curl/wget/httping（非同步網路請求，SANDBOX_COMMAND_REGISTRY那條host
     // builtin路徑要求同步callback做不到，見_runTerminalCommand裡的說明）。
@@ -50939,7 +50939,7 @@ const TERMINAL_SHELL_BUILTINS = [
 // 複合指令中間執行，語意/測試成本都高出很多）。
 const TERMINAL_COMPOUND_INTERCEPT_NAMES = new Set([
     'cd', 'pwd', 'clear', 'exit', 'help', 'which', 'chmod', 'time',
-    'ask-floating-ai-assistant', 'ask-ai-chat', 'sync', 'sleep', 'curl', 'wget', 'httping', 'make', 'sqlite3', 'sqlite', 'sqlitebrowser',
+    'ask-floating-ai-assistant', 'ask-ai-chat', 'gui', 'sync', 'sleep', 'curl', 'wget', 'httping', 'make', 'sqlite3', 'sqlite', 'sqlitebrowser',
     'sh', 'bash',
 ]);
 
@@ -50952,7 +50952,7 @@ const TERMINAL_COMPOUND_INTERCEPT_NAMES = new Set([
 // 那份是「這一行第一個詞要不要被pre-interception攔截」，這份是「解析出來
 // 的AST裡，SimpleCommand節點要不要直接async dispatch，還是要合併進wasi-sh
 // batch」，兩者語意不同）。
-const TERMINAL_VIRTUAL_SCRIPT_COMMANDS = new Set(['zenity',
+const TERMINAL_VIRTUAL_SCRIPT_COMMANDS = new Set(['zenity', 'gui',
     'sleep', 'curl', 'wget', 'httping', 'date', 'ask-floating-ai-assistant', 'ask-ai-chat', 'make', 'time', 'export', 'sqlite3', 'sqlite', 'sqlitebrowser',
 ]);
 
@@ -84548,6 +84548,7 @@ ${sourceTool.handlerScript}
                 else if (cmdName === 'date') await this._terminalDateInline(session, expandedArgv.slice(1));
                 else if (cmdName === 'ask-floating-ai-assistant' || cmdName === 'ask-ai-chat') return await this._terminalAskAI(session, restArgsRaw, this._terminalConsumeStdinOpt(opts));
                 else if (cmdName === 'sqlite3' || cmdName === 'sqlite') return await this._terminalSqlite(session, expandedArgv.slice(1), this._terminalConsumeStdinOpt(opts));
+                else if (cmdName === 'gui') return await this._terminalGui(session, expandedArgv.slice(1), env);
                 else if (cmdName === 'sqlitebrowser') return await this._terminalSqliteBrowser(session, expandedArgv.slice(1));
                 else if (cmdName === 'make') await this._terminalRunMakeViaTool(session, restArgsRaw);
             });
@@ -84884,6 +84885,7 @@ ${sourceTool.handlerScript}
         if ((cmdName === 'python' || cmdName === 'python3') && !this._terminalHasShellOps(restArgs) && await this._terminalTryPythonAsync(session, restArgs)) return;
         if (cmdName === 'zenity' && this._terminalHasShellOps(restArgs)) { await this._terminalRunShellText(session, trimmed, {}); return; }
         if (cmdName === 'zenity') { await this._terminalZenity(session, restArgs); return; }
+        if (cmdName === 'gui') { await this._terminalGui(session, this._terminalTokenizeArgs(restArgs), null); return; }
         if (cmdName === 'sqlite3' || cmdName === 'sqlite') { await this._terminalSqlite(session, this._terminalTokenizeArgs(restArgs), null); return; }
         if (cmdName === 'sqlitebrowser') { await this._terminalSqliteBrowser(session, this._terminalTokenizeArgs(restArgs)); return; }
         // tw_stock_db客製: 2026-09-25使用者要求——sleep/curl/wget/httping。這幾個
@@ -85023,6 +85025,8 @@ ${sourceTool.handlerScript}
     // 看歷史輸出的位置，不會被新輸出打斷、強制拉回底部。兩個run()呼叫端
     // （_runTerminalShellLine/_terminalRunScriptFile）共用這個helper。
     _terminalWriteOutput(session, text) {
+        text = this._terminalFilterGuiLines(session, text);
+        if (!text) return;
         session.term.write(text);
         const enabled = !this.advancedSettings.terminal || this.advancedSettings.terminal.scrollToOutputEnabled !== false;
         if (enabled && typeof session.term.scrollToBottom === 'function') session.term.scrollToBottom();
@@ -86836,6 +86840,56 @@ ${sourceTool.handlerScript}
     }
 
     // 每個終端機 session 一個視窗主機，視窗畫在終端機容器裡
+    // 程式輸出裡以 "@gui " 開頭的整行交給視窗主機套用、不顯示（shell 腳本用 echo '@gui {...}' 開視窗）。
+    // 只有「可能是 @gui 行開頭」的未完成行會暫存到換行為止，其他輸出照舊即時顯示。
+    _terminalFilterGuiLines(session, text) {
+        const held = session._guiPartial || '';
+        if (!held && text.indexOf('@') < 0) return text;
+        session._guiPartial = '';
+        const lines = (held + text).split('\n');
+        const last = lines.pop();
+        let out = '';
+        for (const ln of lines) {
+            const bare = ln.replace(/\r$/, '');
+            if (bare.startsWith('@gui ')) {
+                const r = this._terminalGuiHost(session).apply(bare);
+                if (!r.ok) out += `\x1b[31mgui: ${r.error}\x1b[0m\r\n`;
+            } else out += ln + '\n';
+        }
+        if (last && (last.startsWith('@gui ') || (last.length < 5 && '@gui '.startsWith(last)))) session._guiPartial = last;
+        else out += last;
+        return out;
+    }
+    // gui 指令：gui wait <視窗> [--timeout 秒] [變數]（等下一個事件；超時 exit 124，視窗已關閉會得到 close 事件）、gui poll <視窗>（不等，沒有事件 exit 1）。
+    // 事件是一行 JSON：有給變數名就存進 shell 變數（只在腳本裡有效），沒有就印出來。
+    async _terminalGui(session, argv, env) {
+        const w = (s) => session.term.write(String(s).replace(/\r?\n/g, '\r\n') + '\r\n');
+        const sub = argv[0];
+        const rest = argv.slice(1);
+        let timeout = 300, pos = [];
+        for (let i = 0; i < rest.length; i++) {
+            if (rest[i] === '--timeout' || rest[i] === '-t') timeout = Math.min(300, Math.max(0, Number(rest[++i]) || 0));
+            else pos.push(rest[i]);
+        }
+        if ((sub !== 'wait' && sub !== 'poll') || !pos[0]) { w('\x1b[31musage: gui wait <視窗> [--timeout 秒] [變數] | gui poll <視窗> [變數]\x1b[0m'); return 2; }
+        const host = this._terminalGuiHost(session);
+        const winId = pos[0], varName = pos[1];
+        let line;
+        if (sub === 'poll') line = host.poll(winId);
+        else {
+            if (!host.isOpen(winId) && host.queueLength(winId) === 0) line = JSON.stringify({ event: 'close', id: winId });
+            else {
+                const PW = this._faGuiModule('pyworker');
+                const ev = await PW.waitEvent(host, winId, timeout, { now: () => Date.now(), sleep: (ms) => new Promise((r) => setTimeout(r, ms)) });
+                if (ev === null) return 124;
+                line = JSON.stringify(ev);
+            }
+        }
+        if (line === null || line === undefined) return 1;
+        if (varName && env) env[varName] = line; else w(line);
+        return 0;
+    }
+
     _terminalGuiHost(session) {
         if (!session.guiHost) {
             const H = this._faGuiModule('host');
