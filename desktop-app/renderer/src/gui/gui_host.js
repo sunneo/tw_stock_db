@@ -18,6 +18,7 @@
       if (!layer) {
         layer = doc.createElement('div');
         layer.className = 'ai-gui-layer';
+        if (layer.style) { layer.style.cssText = 'position:absolute;left:0;top:0;right:0;bottom:0;overflow:auto;pointer-events:none;'; }
         container.appendChild(layer);
       }
       return layer;
@@ -72,6 +73,8 @@
         image: function (nodeId, name) { return picture(winId, nodeId, name); }
       });
       views[winId] = view;
+      // a window sits in the layer at its own spot; pointer events are on again for the window itself
+      if (view.style) { view.style.cssText = 'position:absolute;left:12px;top:12px;pointer-events:auto;background:#fff;color:#111;border:1px solid #888;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.4);font:13px sans-serif;'; }
       ensureLayer().appendChild(view);
     }
 
