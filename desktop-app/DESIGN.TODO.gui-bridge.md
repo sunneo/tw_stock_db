@@ -22,6 +22,7 @@ Continue from the handoff document at desktop-app/DESIGN.TODO.gui-bridge.md (rep
 |---|---|---|
 | 4d6a197c | `renderer/src/gui/gui_bridge.js`（協定核心，UMD，自 Redmine 移植）＋ `gui_bridge.test.js` | `node renderer/src/gui/gui_bridge.test.js`：69 項通過 |
 | 0d1570d2 | `renderer/src/gui/gui_render.js`（DOM 繪製器，自 Redmine 移植）＋ `gui_render.test.js`，並嵌入 GUIRENDER 區塊（`FA_GUI_RENDER_SRC`）；`build-web-lazy` EXCLUDE 加 GUIRENDER | `node renderer/src/gui/gui_render.test.js`：40 項通過（fake DOM，未在真頁面看過） |
+| f5fb8f12 | `renderer/src/gui/zenity.js`（自 Redmine 移植）＋ `zenity.test.js`，嵌入 GUIZENITY 區塊（`FA_GUI_ZENITY_SRC`），EXCLUDE 加 GUIZENITY | `node renderer/src/gui/zenity.test.js`：56 項通過 |
 | 739164eb | 嵌入：`floating-assistant.js` 的 `GUIBRIDGE-BEGIN/END` 區塊（常數 `FA_GUI_BRIDGE_SRC`）、`scripts/embed-code-ui.js` 加 `embed(...)` 一行、`scripts/build-web-lazy.js` EXCLUDE 加 GUIBRIDGE | 用 node 讀嵌入的字串、`new Function` 載入後 `apply` 開窗成功（一次性檢查，未寫成測試） |
 
 ## Todo（依序；下一項最先）
@@ -29,7 +30,7 @@ Continue from the handoff document at desktop-app/DESIGN.TODO.gui-bridge.md (rep
 1. **（嵌入已完成，739164eb；讀取端待做）**：在 `floating-assistant.js` 找到終端機的 session 建立處，加一個懶載入函式（例如 `_faGuiBridge()`），用 `new Function('module', FA_GUI_BRIDGE_SRC)` 取得 `AiChatGuiBridge`（module.exports 形式）。寫 node 測試：讀嵌入字串、載入、apply。注意 floating-assistant.js 極大（約 10 萬行），**不要整檔讀**，用 Grep 找 `_mountTerminalWidget`（約 83029 行）、`_runTerminalCommand`（約 84466）、`_runTerminalShellLine`（約 85190）、`SANDBOX_COMMAND_REGISTRY`（約 47636）。
 2. **（已完成，0d1570d2）繪製器**。注意：`renderer/src/gui/gui_render.js` 的 canvas 聚焦判斷仍用 Redmine 的 `.ai-chat-wheel-on` 類別（`el.closest('.ai-chat-wheel-on')`），桌面版要換成自己的聚焦類別，或在視窗主機加上同名類別（第 3 項處理）。
 3. **視窗主機與事件佇列**：session.guiHost（show、hide、refresh、paint；上限 4 視窗；事件佇列上限 50；frame、mouse move 合併）。顯示位置先用 terminal 容器內的浮層（`.ai-gui-layer` 類）。
-4. **shell**：`gui wait <window> [VAR]`（同 sleep 的非同步虛擬指令，上限 300 秒，超時 exit 124）、stdout 的 `@gui ` 行交給套用函式（不顯示）、zenity 子集（`--info --warning --error --question --entry --password --list --checklist --radiolist --progress`；其餘 exit 1 並說明）。
+4. **shell**（zenity 的純函式部分已完成，f5fb8f12；終端機的接線還沒做）：`gui wait <window> [VAR]`（同 sleep 的非同步虛擬指令，上限 300 秒，超時 exit 124）、stdout 的 `@gui ` 行交給套用函式（不顯示）、zenity 子集（`--info --warning --error --question --entry --password --list --checklist --radiolist --progress`；其餘 exit 1 並說明）。
 5. **Python**：`gui.py`、`pygame.py` 子集放在 `renderer/src/pybridge/`（pybridge 已由 build 嵌入 FA_PYBRIDGE_FILES，會自動進 worker）。注意：pybridge 會被嵌入，新增 .py 不需改 build 腳本，但要確認 `ai_chat_python_worker` 的檔案清單（桌面版對應的是現有 python 執行路徑）。
 6. **JavaScript**：`node <file.js>` 在 sandbox iframe 執行（`allow-scripts` only）。
 7. **技能宣告 GUI**：技能（skill）能宣告/使用 GUI，待前面完成後再細化。
