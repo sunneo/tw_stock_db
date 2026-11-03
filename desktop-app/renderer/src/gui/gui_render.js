@@ -252,7 +252,8 @@
       win.removeAttribute('data-saved');
       button.textContent = '□';
     } else {
-      win.setAttribute('data-saved', JSON.stringify({ left: win.style.left, top: win.style.top, width: win.style.width, height: win.style.height, maxWidth: win.style.maxWidth }));
+      // the size in pixels as it is now (the style may be empty or auto, and a canvas that grew has widened the window)
+      win.setAttribute('data-saved', JSON.stringify({ left: win.style.left, top: win.style.top, width: (win.offsetWidth || parseFloat(win.style.width) || 0) + 'px', height: win.style.height || (win.offsetHeight ? win.offsetHeight + 'px' : ''), maxWidth: win.style.maxWidth }));
       win.style.left = '0px'; win.style.top = '0px'; win.style.maxWidth = 'none';
       win.style.width = box.clientWidth + 'px'; win.style.height = box.clientHeight + 'px';
       button.textContent = '❐';
@@ -261,6 +262,7 @@
 
   // snapshot = { id, title, width, resizable, maximizable, root }; onEvent(name, nodeId, value) is called for user actions in the window;
   // opts (optional) = { image(nodeId, name) } for the pictures of the canvases
+  var CONTROL_BUTTON_CSS = 'border:none;background:transparent;cursor:pointer;font:14px sans-serif;line-height:1;padding:2px 7px;border-radius:4px;color:#222;';
   function renderWindow(doc, snap, onEvent, onClose, opts) {
     var win = doc.createElement('div');
     win.className = 'gui-window';
@@ -268,12 +270,16 @@
     win.style.width = snap.width + 'px';
     var bar = doc.createElement('div');
     bar.className = 'gui-titlebar';
+    // the title on the left, the control buttons on the right (close last), like any desktop window
+    bar.style.cssText = 'display:flex;align-items:center;gap:2px;padding:3px 4px 3px 8px;background:#e9e9ee;border-bottom:1px solid #b5b5bd;border-radius:6px 6px 0 0;user-select:none;flex:0 0 auto;';
     var title = doc.createElement('span');
     title.textContent = snap.title;
+    title.style.cssText = 'flex:1 1 auto;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
     var close = doc.createElement('button');
     close.type = 'button';
     close.className = 'gui-close';
     close.textContent = '×';
+    close.style.cssText = CONTROL_BUTTON_CSS;
     close.addEventListener('click', function () { onClose(); });
     bar.appendChild(title);
     if (snap.maximizable) {
@@ -281,6 +287,7 @@
       max.type = 'button';
       max.className = 'gui-maximize';
       max.textContent = '□';
+      max.style.cssText = CONTROL_BUTTON_CSS;
       max.addEventListener('click', function () { toggleMaximize(win, max); });
       bar.appendChild(max);
     }
@@ -296,5 +303,5 @@
     return win;
   }
 
-  return { renderWindow: renderWindow, paintFrame: paintFrame };
+  return { CONTROL_BUTTON_CSS: CONTROL_BUTTON_CSS, renderWindow: renderWindow, paintFrame: paintFrame };
 }));

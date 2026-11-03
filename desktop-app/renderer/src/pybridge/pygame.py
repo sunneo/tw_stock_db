@@ -190,6 +190,9 @@ class Surface(object):
     def get_height(self):
         return self.size[1]
 
+    def get_size(self):
+        return (self.size[0], self.size[1])
+
     def get_rect(self):
         return Rect(0, 0, self.size[0], self.size[1])
 

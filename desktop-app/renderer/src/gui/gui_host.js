@@ -8,11 +8,13 @@
   'use strict';
   var QUEUE_MAX = 50;
 
-  // opts: { doc, container, bridge, render, onClosed(winId) }
+  // opts: { doc, container, bridge, render, onClosed(winId), decorate(el, {id, title, bar, minW, minH, floating, onChange}) -> controller or null }
+  // decorate (optional) is the app's window shell (FaWin: popped window, drag, edge resize, maximize over the whole page). It is used for windows that
+  // asked to be resizable or maximizable; a window the shell cannot decorate keeps the plain resize corner and the renderer's own maximize button.
   function createHost(opts) {
     var doc = opts.doc, container = opts.container, bridge = opts.bridge, render = opts.render;
     var session = bridge.createSession();
-    var layer = null, views = {}, queues = {}, waiters = {}, pictures = {};
+    var layer = null, views = {}, queues = {}, waiters = {}, pictures = {}, shells = {};
 
     function ensureLayer() {
       if (!layer) {
@@ -61,6 +63,7 @@
 
     function removeView(winId) {
       var v = views[winId];
+      if (shells[winId]) { try { shells[winId].destroy(); } catch (e) { /* the shell is gone with the window */ } delete shells[winId]; }
       if (v && v.parentNode) { v.parentNode.removeChild(v); }
       delete views[winId];
     }
@@ -70,6 +73,12 @@
       if (!snap) { return; }
       var old = views[winId];
       var wasActive = !!(old && old.classList && old.classList.contains('ai-chat-wheel-on'));
+      var wasPopped = !!(shells[winId] && shells[winId].isPopped());
+      var prev = old && old.style && !shells[winId] ? {
+        left: old.style.left, top: old.style.top, width: old.style.width, height: old.style.height, maxWidth: old.style.maxWidth,
+        resized: !!(old.style.height || (old.getAttribute && old.getAttribute('data-saved'))),
+        saved: old.getAttribute ? old.getAttribute('data-saved') : null
+      } : null;
       removeView(winId);
       var view = render.renderWindow(doc, snap, onEventFor(winId), function () { closeByUser(winId); }, {
         image: function (nodeId, name) { return picture(winId, nodeId, name); }
@@ -81,8 +90,47 @@
       if (wasActive) { view.classList.add('ai-chat-wheel-on'); }
       if (view.addEventListener) { view.addEventListener('mousedown', function () { view.classList.add('ai-chat-wheel-on'); }, true); }
       // a window sits in the layer at its own spot; pointer events are on again for the window itself
-      if (view.style) { view.style.cssText = 'position:absolute;left:12px;top:12px;pointer-events:auto;background:#fff;color:#111;border:1px solid #888;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.4);font:13px sans-serif;'; }
+      if (view.style) {
+        view.style.cssText = 'position:absolute;left:12px;top:12px;pointer-events:auto;background:#fff;color:#111;border:1px solid #888;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.4);font:13px sans-serif;box-sizing:border-box;width:' + snap.width + 'px;'
+          // a resizable window: the corner drags (CSS resize), the body fills the rest (flex column), the content never spills out
+          + (snap.resizable ? 'display:flex;flex-direction:column;resize:both;overflow:hidden;min-width:200px;min-height:120px;' : '');
+        // a re-show (add, set) keeps the place and size the user gave the window, and a maximized window stays maximized
+        if (prev) {
+          if (prev.left) { view.style.left = prev.left; }
+          if (prev.top) { view.style.top = prev.top; }
+          if (prev.resized) { view.style.width = prev.width; view.style.height = prev.height; }
+          if (prev.maxWidth) { view.style.maxWidth = prev.maxWidth; }
+          if (prev.saved) {
+            view.setAttribute('data-saved', prev.saved);
+            var mb = view.querySelector && view.querySelector('.gui-maximize');
+            if (mb) { mb.textContent = '❐'; }
+          }
+        }
+      }
       ensureLayer().appendChild(view);
+      if (opts.decorate && (snap.resizable || snap.maximizable)) {
+        var bar = view.querySelector && view.querySelector('.gui-titlebar');
+        var ctl = null;
+        try {
+          ctl = opts.decorate(view, {
+            id: 'gui-' + snap.title, title: snap.title, bar: bar, minW: 240, minH: 160, floating: wasPopped,
+            // a popped window has the shell's own edge handles: the CSS corner would double them
+            onChange: function (st) { if (view.style) { view.style.resize = st.popped ? 'none' : (snap.resizable ? 'both' : ''); } }
+          });
+        } catch (e) { ctl = null; }
+        if (ctl) {
+          shells[winId] = ctl;
+          // the shell appended its buttons after the close button: style them like the others and put the close button last (right edge)
+          if (bar && bar.querySelectorAll) {
+            Array.prototype.forEach.call(bar.querySelectorAll('button'), function (b) { if (!b.style.cssText) { b.style.cssText = render.CONTROL_BUTTON_CSS || ''; } });
+            var cl = bar.querySelector('.gui-close');
+            if (cl) { bar.appendChild(cl); }
+          }
+          // the shell has its own maximize button
+          var own = view.querySelector('.gui-maximize');
+          if (own && own.parentNode) { own.parentNode.removeChild(own); }
+        }
+      }
     }
 
     function repaintCanvas(winId, nodeId) {
