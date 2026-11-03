@@ -1,0 +1,12 @@
+const fa = window.fa; const R = {};
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const t = await fa._createTerminalForAI({ name: 'for-probe', initialCommand: '' });
+const session = fa._resolveTerminalSession(t.id).session;
+await wait(800);
+const run = async (c, env) => { const ast = fa._terminalParseShellSource(c); const r = await fa._terminalExecShellNode(session, ast, env || {}, { guiTimeoutSec: 4 }); return { r, lec: session.lastExitCode }; };
+R.a = await run('zenity --entry --timeout=1; echo A:$?');
+R.b = await run('zenity --entry --timeout=1; echo A:$?', { i: '1' });
+fa._terminalSetExit(session, 7);
+R.c = await run('echo C:$?');
+R.d = await run('echo C:$?', { i: '1' });
+return R;

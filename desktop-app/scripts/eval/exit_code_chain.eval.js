@@ -44,15 +44,19 @@ for (const c of CASES) {
   R.ai[c[0]] = Object.assign({ exit_code: r.exit_code, shown: aiOut.slice(0, 160) }, check(aiOut, c));
 }
 // 互動入口沒有時間上限：會等視窗的三個案例在 2 秒後替使用者按 ×，程式收到關閉事件後正常結束，結束碼 0
-const HANG_CLOSED = { semi_gui_wait: 'M9:0', semi_python_gui: 'M10:0', semi_node_gui: 'M11:0' };
+// 標記改成 I<n>（xterm 有捲動上限，不能用長度切片）；整個終端機文字裡找「I<n>:值」，不該出現的字串只看不含提示字元的行（指令回顯會含它）
+const HANG_CLOSED = { semi_gui_wait: 'M9:124', semi_python_gui: 'M10:0', semi_node_gui: 'M11:0' };
 for (const c of CASES) {
-  const before = termText(session).length;
+  const cmd = c[1].replace(/M(\d+):/g, 'I$1:');
+  const want = (HANG_CLOSED[c[0]] || c[2]).replace(/^M/, 'I');
   const closer = setTimeout(() => document.querySelectorAll('.gui-window[data-window] .gui-close').forEach((b) => b.click()), 2000);
-  await fa._runTerminalCommand(session, c[1]);
+  await fa._runTerminalCommand(session, cmd);
   clearTimeout(closer);
-  const seen = termText(session).slice(before);
-  const cc = HANG_CLOSED[c[0]] ? [c[0], c[1], HANG_CLOSED[c[0]], c[3]] : c;
-  R.inter[c[0]] = Object.assign(check(seen, cc), { tail: seen.slice(-120) });
+  await wait(200);
+  const all = termText(session);
+  const lines = all.split(String.fromCharCode(10)).filter((l) => !/\$ /.test(l) && !/\/work/.test(l));
+  const ok = all.includes(want) && !(c[3] && lines.some((l) => l.includes(c[3])));
+  R.inter[c[0]] = { ok, want, bad: c[3] || null, tail: all.slice(-100) };
 }
 R.session_has_cap = 'guiAiTimeoutSec' in session;
 return R;
