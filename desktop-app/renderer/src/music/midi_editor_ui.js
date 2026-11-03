@@ -21,11 +21,11 @@
     const head = el('div', 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;');
     head.appendChild(el('span', 'font-size:18px', '🎼')); head.appendChild(el('b', 'flex:1;min-width:80px', opts.title || hist.song.title || 'MIDI 編輯器'));
     const colB = el('button', BTN, '👥 共編'); colB.style.display = host.collab ? '' : 'none';
-    const undoB = el('button', BTN, '↶'), redoB = el('button', BTN, '↷'), pianoB = el('button', BTN, '🎹'), playB = el('button', BTN, '▶ 試聽'), dlB = el('button', BTN, '⬇ MIDI');
+    const undoB = el('button', BTN, '↶'), redoB = el('button', BTN, '↷'), pianoB = el('button', BTN, '🎹'), recB = el('button', BTN + 'display:none;', '⏺ 錄入'), playB = el('button', BTN, '▶ 試聽'), dlB = el('button', BTN, '⬇ MIDI');
     undoB.title = '復原'; redoB.title = '重做';
     const gridSel = el('select', BTN); [['四分音符', 1], ['八分音符', 0.5], ['十六分音符', 0.25]].forEach(([n, v]) => { const o = el('option', '', n); o.value = v; if (v === grid) o.selected = true; gridSel.appendChild(o); });
     gridSel.onchange = () => { grid = Number(gridSel.value); };
-    pianoB.title = '虛擬鋼琴:用電腦鍵盤或點琴鍵彈奏選取的音軌的音色,鍵位可自訂'; head.append(undoB, redoB, gridSel, playB, pianoB, colB, dlB); card.appendChild(head);
+    pianoB.title = '虛擬鋼琴:用電腦鍵盤或點琴鍵彈奏選取的音軌的音色,鍵位可自訂'; head.append(undoB, redoB, gridSel, playB, pianoB, recB, colB, dlB); card.appendChild(head);
     // 傳輸列:跳到開頭／結尾、時間與小節、可點可拖的進度條、BPM
     const tp = el('div', 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:8px;');
     const toStartB = el('button', BTN, '⏮'), toEndB = el('button', BTN, '⏭'); toStartB.title = '跳到開頭'; toEndB.title = '跳到結尾';
@@ -39,6 +39,7 @@
     const inner = el('div', 'position:relative;'); const rv = el('canvas', 'display:block;cursor:pointer;height:16px;'); rv.title = '點一下或拖曳跳到那個位置';
     const cv = el('canvas', 'display:block;cursor:crosshair;'); const head0 = el('div', 'position:absolute;top:0;bottom:0;width:2px;margin-left:-1px;background:#ff3b30;pointer-events:none;z-index:2;display:none;');
     inner.append(rv, cv, head0); canvasWrap.appendChild(inner); mid.append(side, canvasWrap); card.appendChild(mid);
+    let rec = false; const recStart = new Map(); // 錄入:虛擬鋼琴彈的音寫進選取的音軌
     let vp = null, vcP = null, vcKey = ''; // 虛擬鋼琴(延後建立);發聲用選取音軌的音色,host.voice 提供即時發聲
     const status = el('div', 'opacity:.75;min-height:1.2em;font-size:12px;margin-top:6px;'); card.appendChild(status);
     const say = (m) => { status.textContent = m || ''; };
@@ -46,6 +47,18 @@
     const inp = el('input', 'flex:1;min-width:120px;padding:4px 6px;'); inp.placeholder = '跟編輯器說話,例如「第一軌升兩個半音」「速度改成 90」「貝斯換成大提琴」';
     const go = el('button', BTN, '送出'); ask.append(inp, go); card.appendChild(ask);
 
+    const paintRec = () => { recB.style.background = rec ? '#e5534b' : ''; recB.style.color = rec ? '#fff' : ''; recB.textContent = rec ? '⏺ 錄入中' : '⏺ 錄入'; };
+    recB.title = '錄入:彈的音寫進選取的音軌。按 ▶ 試聽邊放邊錄(音符放在播放位置);沒在播放時每彈一個音就放在位置線上、長度一格,並往後移一格(逐步輸入)';
+    recB.onclick = () => { rec = !rec; recStart.clear(); paintRec(); say(rec ? '錄入開啟:寫進「' + ((hist.song.tracks[sel] || {}).name || '(沒有音軌)') + '」。' + (pt.isPlaying() ? '正在播放,音符放在播放位置' : '沒在播放:每彈一個音放在位置線上並往後一格') : '錄入關閉'); };
+    const gridTicks = () => Math.max(1, Math.round(grid * hist.song.ppq));
+    const nowTick = () => { const p = pt.current(); return p && p.isPlaying && p.isPlaying() ? M.secToTicks(hist.song, p.position()) : null; };
+    function recDown(m, v) { if (!rec) return; if (!hist.song.tracks[sel]) { say('先新增一軌再錄入'); return; } if (!visible(sel)) { say('這一軌被隱藏了,先按 👁 顯示再錄入'); return; } const t = nowTick(); recStart.set(m, { t: t == null ? posTick : t, live: t != null, v: Math.max(1, Math.min(127, v || 100)) }); }
+    function recUp(m) {
+      const r = recStart.get(m); if (!r) return; recStart.delete(m); const s = hist.song;
+      const len = r.live ? Math.max(Math.round(s.ppq / 16), (nowTick() == null ? r.t : nowTick()) - r.t) : gridTicks();
+      if (!runQuiet({ act: 'add_note', track: sel, beat: r.t / s.ppq, beats: len / s.ppq, pitch: m, velocity: r.v })) return;
+      if (!r.live) setPos(r.t + gridTicks(), true);
+    }
     function getVoice() {
       const tr = hist.song.tracks[sel], key = tr ? (tr.drum ? 'd' : String(tr.program)) : '0';
       if (!host.voice) { say('⚠️ 這個環境沒有即時發聲的合成器,虛擬鋼琴只能看不能聽'); return Promise.resolve(null); }
@@ -54,8 +67,8 @@
     }
     pianoB.onclick = () => {
       if (typeof FaVirtualPiano === 'undefined') { say('⚠️ 虛擬鋼琴模組沒有載入'); return; }
-      if (!vp) { vp = FaVirtualPiano.mount({ host: { noteOn: (m, v) => { getVoice().then((c) => c && c.noteOn(m, v)); }, noteOff: (m) => { getVoice().then((c) => c && c.noteOff(m)); } } }); vp.style.display = 'none'; card.insertBefore(vp, status); }
-      const on = vp.style.display === 'none'; vp.style.display = on ? '' : 'none'; vp._vpiano.setActive(on); pianoB.style.background = on ? '#4aa3ff' : ''; pianoB.style.color = on ? '#fff' : '';
+      if (!vp) { vp = FaVirtualPiano.mount({ host: { noteOn: (m, v) => { getVoice().then((c) => c && c.noteOn(m, v)); recDown(m, v); }, noteOff: (m) => { getVoice().then((c) => c && c.noteOff(m)); recUp(m); } } }); vp.style.display = 'none'; card.insertBefore(vp, status); }
+      const on = vp.style.display === 'none'; vp.style.display = on ? '' : 'none'; vp._vpiano.setActive(on); pianoB.style.background = on ? '#4aa3ff' : ''; pianoB.style.color = on ? '#fff' : ''; recB.style.display = on ? '' : 'none'; rec = on; recStart.clear(); paintRec(); if (on) say('虛擬鋼琴彈的音會寫進選取的音軌「' + ((hist.song.tracks[sel] || {}).name || '(沒有音軌)') + '」;只想試彈不寫入,按「⏺ 錄入中」關掉。');
       if (on) getVoice();
     };
     function draw() {
