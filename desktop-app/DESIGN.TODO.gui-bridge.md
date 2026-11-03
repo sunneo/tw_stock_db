@@ -36,9 +36,22 @@ Continue from the handoff document at desktop-app/DESIGN.TODO.gui-bridge.md (rep
   ```
 - 測試用控制埠 17924（不要用預設 17923）。
 
+## 2b. 驗證方法（實機，2026-11-03 管理層指定）
+
+- 用真的 Electron 加評估檔，不截圖、不靠肉眼找視窗。範例檔：`scripts/eval/gui_bridge.eval.js`。
+- 啟動（每次用全新的暫存資料夾，不碰安裝版資料；埠不用 17923）：
+  ```
+  FA_DEBUG_EVAL_FILE=<評估檔絕對路徑> FA_BROWSER_CONTROL_PORT=17931 electron.exe <desktop-app路徑> --no-sandbox --disable-gpu --user-data-dir=<全新暫存資料夾>
+  ```
+- 結果看標準輸出的 `[eval-file] result` 或 `[eval-file] error` 行；跑完程序會自己結束（逾時用 `timeout` 包住）。
+- 評估檔在渲染頁裡執行，可用 `window.fa`、`fa._createTerminalForAI`、`fa._resolveTerminalSession`、`fa._runTerminalCommand` 與 DOM（視窗主機的節點是 `.gui-window[data-window]`，輸入框 `.gui-entry`，按鈕 `.gui-button`）。
+- 「模擬使用者」是在 DOM 上填值、派發 input 事件、呼叫按鈕的 click，不是作業系統層級的滑鼠輸入。
+- 已驗證過的：zenity `--entry --text=hi` 在真 Electron 裡出現視窗、按 OK 後答案 Alice 印在終端機、視窗關閉、指令結束（2026-11-03，`gui_bridge.eval.js`）。
+- 未驗證：視窗在螢幕上的實際外觀（沒有做視覺檢查）、zenity 的退出碼（評估檔沒有讀取）、取消按鈕、其他 GUI 指令。
+
 ## 3. 待辦（依序；下一項最先）
 
-1. **【最優先】找出實機視窗空白的原因。** 症狀：`electron.exe .` 啟動後，主視窗標題是 `FloatingAssistant`，程序回應正常，但螢幕上那塊區域（DISPLAY1，0,0–1920,1040）只看到桌布，沒有內容。已排除：live-patch 覆蓋（d4a8255b 之後渲染頁用內建檔）。下一步：
+1. **【已解決：不重現】找出實機視窗空白的原因。**（2026-11-03 結論：用獨立資料夾啟動後，渲染頁 DOM 有內容，topbar 1904×38、app 1904×948，視窗在主螢幕 (0,0)–(1920,1040) 可見，截圖確認聊天介面正常。之前看到的空白未能重現，原因未知。） 症狀：`electron.exe .` 啟動後，主視窗標題是 `FloatingAssistant`，程序回應正常，但螢幕上那塊區域（DISPLAY1，0,0–1920,1040）只看到桌布，沒有內容。已排除：live-patch 覆蓋（d4a8255b 之後渲染頁用內建檔）。下一步：
    - 用 `FA_DEBUG_CONSOLE`（見 `main.js` 約 1844 行）或 `FA_DEBUG_EVAL_FILE`（約 1940 行）把渲染頁的 console 錯誤寫到檔案，讀 `$env:TEMP\fa_electron_*.log`。
    - 確認 `renderer/index.html` 與 `renderer/floating-assistant.js` 的載入路徑（`resolveIndexHtmlPath`，約 1527 行）。
    - 預期結果：看得到渲染錯誤，或確認頁面有內容但視窗位置／透明度問題。找到原因後才繼續。
