@@ -21,7 +21,8 @@ assert.ok(W.RUNNER_PY.includes("'__name__': '__main__'")); ok();
 assert.ok(W.RUNNER_PY.includes('exec(compile(__fa_src__, __fa_path__')); ok();
 assert.ok(W.PRELUDE_PY.includes("sys.path.insert(0, '/work')")); ok();
 assert.ok(W.PRELUDE_PY.includes('import fa_bridge')); ok();
-assert.ok(W.PRELUDE_PY.includes('fa_bridge.install_hooks()')); ok();
+assert.ok(!W.PRELUDE_PY.includes('install_hooks'), 'install_hooks runs inside go(), not at the top level'); ok();
+assert.ok(W.RUNNER_PY.indexOf('fa_bridge.install_hooks()') < W.RUNNER_PY.indexOf('exec(')); ok();
 
 // the Python prelude and runner must be valid Python: compiled with the same names the worker sets (checked only when python3 exists)
 // (done in gui_pygame_test-style checks by hand; here the text is compared, not run)

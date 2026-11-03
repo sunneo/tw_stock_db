@@ -74,6 +74,7 @@
   }
 
   // Worker 內先執行：轉接層的路徑、橋接版 fa_bridge（網頁版：IN_BROWSER 時 call 用 run_sync）。sys.path 把 /work 放最前面，跟桌面版的 python 一樣。
+  // install_hooks 不放這裡：它會呼叫 run_sync，頂層不在 callPromising 裡會報「Cannot stack switch」，所以放進 RUNNER_PY 的 go() 裡。
   var PRELUDE_PY = [
     'import sys',
     "if '/fa_pybridge' not in sys.path:",
@@ -81,12 +82,12 @@
     "sys.path.insert(0, '/work')",
     'import fa_bridge',
     'fa_bridge.ACTIVE = True',
-    'fa_bridge.install_hooks()',
   ].join('\n');
 
   // 把程式包在 go() 裡執行：整支程式在 callPromising 裡，頂層的 gui 呼叫才能同步等待。__name__ 設成 __main__，__file__ 指向 /work 內的路徑。
   var RUNNER_PY = [
     'def go():',
+    '    fa_bridge.install_hooks()',
     "    g = {'__name__': '__main__', '__file__': __fa_path__}",
     '    exec(compile(__fa_src__, __fa_path__, "exec"), g)',
   ].join('\n');

@@ -68,11 +68,18 @@
     function show(winId) {
       var snap = bridge.snapshot(session, winId);
       if (!snap) { return; }
+      var old = views[winId];
+      var wasActive = !!(old && old.classList && old.classList.contains('ai-chat-wheel-on'));
       removeView(winId);
       var view = render.renderWindow(doc, snap, onEventFor(winId), function () { close(winId); }, {
         image: function (nodeId, name) { return picture(winId, nodeId, name); }
       });
       views[winId] = view;
+      // the canvas takes the pointer and the wheel only after a click into its window: gui_render.js checks the ai-chat-wheel-on class on
+      // an ancestor. Set it in the capture phase so it is already there when the canvas's own mousedown listener runs, and keep it across
+      // a re-show (add, set) of the same window.
+      if (wasActive) { view.classList.add('ai-chat-wheel-on'); }
+      if (view.addEventListener) { view.addEventListener('mousedown', function () { view.classList.add('ai-chat-wheel-on'); }, true); }
       // a window sits in the layer at its own spot; pointer events are on again for the window itself
       if (view.style) { view.style.cssText = 'position:absolute;left:12px;top:12px;pointer-events:auto;background:#fff;color:#111;border:1px solid #888;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.4);font:13px sans-serif;'; }
       ensureLayer().appendChild(view);
