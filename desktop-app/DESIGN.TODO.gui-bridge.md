@@ -60,7 +60,11 @@ Continue from the handoff document at desktop-app/DESIGN.TODO.gui-bridge.md (rep
 2. **zenity 實機驗證**（需要的指令：在終端機輸入 `zenity --entry --text=hi`，截圖確認對話框出現，輸入後答案印在終端機）。通過後回報「已提交，可發布，commit <hash>」（若有修正）。
 3. **`ask-ai-chat` 管線**：stdin 讀入、stdout 輸出、可接管線（`cat log.txt | ask-ai-chat "摘要"`、`ask-ai-chat "..." | grep ...`）。桌面版現有的是 `ask-floating-ai-assistant`（`_terminalAskAI`，約 86572 行，不讀 stdin，整段輸出）。預設做法：新增 `ask-ai-chat` 別名，沿用 `_runSubAgentTask` 現有模型呼叫；做不到串流就整段輸出並說明限制。**命名問題待使用者確認**（見 4）。
 4. **`gui wait` 與 `@gui` 行**（shell 端）：`gui wait <window> [VAR]`（同 sleep 的非同步虛擬指令，上限 300 秒，超時 exit 124）；程式輸出裡以 `@gui ` 開頭的行交給 host 套用、不顯示。
-5. **Python 接線**：桌面版 `python <file.py>` 目前走 `terminalPython` → `AiChatPython`；要把 `gui.py` / `pygame.py` 提供給 worker（`fa_bridge` 的 gui op 接到 `_terminalGuiOp`）。
+5. **Python 接線**（2026-11-03 管理層決定：只有 import gui／pygame 的程式走非同步，既有 `python` 行為不動；Python 在 worker 跑，gui.wait/poll 透過橋接回呼頁面，頁面用 Promise 等事件，worker 端阻塞等回覆）。
+   - 進度：已完成 `renderer/src/gui/py_async.js`（判斷要不要走非同步，29 項 node 測試通過，commit a3698122）。
+   - 程式路徑（已查明，見共用筆記資料夾的 python-gui-wiring-findings.md）：`python` 指令 → `SANDBOX_COMMAND_REGISTRY`（`kind:'pyodide'`）→ `_runPythonBuiltin` → `_runPyodideScriptSync`（同步）。`_pyBridgeDispatch` 沒有 `gui.*` 分支。`_pyBridgeEnabled()` 只在 `_pyBridgeDepth>0` 時為真（目前只有技能網域與 rig 流程會加）。
+   - 注意：pyodide 只能從 jsDelivr 這類正確送出 JS mimetype 的來源載入（見 floating-assistant.js 約 48984 行的註解），內部用動態 `import()`。在 Blob worker 裡能否載入，要先實測。
+   - 還沒做：worker 的建立與 Pyodide 載入、`gui.*` op 接到 `_pyBridgeDispatch`（`gui.open`→`@gui {v:1,op:'open',...}`、`add`、`draw`、`image`（要回傳 w/h）、`poll`／`wait`（host 的 `poll`/`wait` 回字串，要 JSON.parse）、`close`）、`gui.py` 範例與 missile command 的實機驗證。
 6. **missile command 實機驗證**：Redmine 的 `examples/missile_command.py` 與四張貼圖複製到桌面版（用終端機寫檔或 `terminal_cp_to`），在終端機執行，截圖確認：widget 開始視窗、canvas 遊戲畫面、貼圖可見、滑鼠點擊發射、拖曳、滾輪。沒有截圖證據就寫「未驗證」。
 7. **resizable、maximize**：`map_viewer.py` 或 pygame 的 `RESIZABLE` 視窗，實機拖曳與最大化按鈕截圖驗證。
 8. **打磚塊**：Redmine 沒有這個範例。要做的話，先問使用者是否同意我另寫一支。
