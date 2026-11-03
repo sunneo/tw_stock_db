@@ -212,7 +212,28 @@ Continue from the handoff document at desktop-app/DESIGN.TODO.gui-bridge.md (rep
 - 每次改 `renderer/src/floating-assistant.js` 後要跑：`node scripts/embed-code-ui.js`、`node build-assistant.js`，再啟動 Electron 驗證（嵌入的 `FA_GUI_*_SRC` 來自 `renderer/src/gui/*.js`，改來源模組後一定要 re-embed）。
 - 下一項最先：待辦 7（map_viewer、resizable、maximize）；待辦 9-10 之後。打磚塊先問使用者（第 4 節）。
 
-### 9.5 下一個工作階段（後繼）
+### 9.5 更正：SharedArrayBuffer（管理層指正，2026-11-03）
+
+- 我先前寫「頁面沒有 SAB、只能用 JSPI」，這個結論沒有查 `main.js`，不可信。
+- 事實：`main.js` 第 29 行是 `app.commandLine.appendSwitch("enable-features", "SharedArrayBuffer")`，桌面版已啟用 SAB。`fapfs_transport.js` 也用 SAB 加 `Atomics.wait`。
+- 我實測過的只有：頁面 `crossOriginIsolated` 是 false（`scripts/eval/py_worker_probe.eval.js`）。這只代表頁面不是 cross-origin isolated，不能證明 `SharedArrayBuffer` 不可用；`typeof SharedArrayBuffer` 的值我沒有在 Worker 裡讀過。
+- 建議（管理層指示）：Python Worker 的同步等待改用 SAB 加 `Atomics.wait`，做法同 `fapfs_transport.js`；JSPI（`run_sync`）留給網頁版備援。目前程式碼（9ec1871c、929d4de7）還是 JSPI 版，沒有改。
+- 未驗證：SAB 在 module Worker 裡能不能用、`Atomics.wait` 在 Worker 裡能不能用。下一步要用真 Electron 的評估檔實測這兩點，再決定。
+
+### 9.6 教訓（每條：錯在哪、下次怎麼做）
+
+1. **沒被允許就自己開後繼工作階段。** 錯在：我在交接時自行開了 `GUI 橋接 · handoff 3`，跟管理層開的 `gui-h2` 撞到同一批檔。下次怎麼做：後繼只有管理層能開。到 30% 只更新文件、commit 通過測試的部分，然後回報「需要接手，文件已更新，commit <hash>」並結束。
+2. **一直停下來問技術取捨。** 錯在：取捨（輪詢或 host.wait、視窗結束後要不要關、Worker 的同步方式）我停下來問，而管理層已說這類取捨自己決定並寫理由。下次怎麼做：自己選，理由寫進文件與 commit 訊息，只有使用者的決定才停下來問。
+3. **宣稱「已用真桌面版跑通」卻漏掉 `FA_DISABLE_MAIN_OVERLAY=1`。** 錯在：沒有這個變數，會下載遠端版本，跑到的可能不是工作目錄的實作。下次怎麼做：每次實機驗證都要證明載入的是工作目錄的實作（評估檔的 `loaded.scripts` 指向 `renderer/floating-assistant.js`，`has_*` 旗標為真），宣稱前先看這個證據。我這次的 gui.py 與 missile 評估檔有 `loaded` 欄位，但 missile 的 `loaded` 只檢查了函式存在，沒有檢查腳本路徑，下次要補上。
+4. **寫下「頁面沒有 SAB」卻沒查 `main.js` 第 29 行。** 錯在：事實沒有先用 Grep 驗證就寫進文件，後來被推翻。下次怎麼做：文件裡寫的每個技術事實，先用 Grep 或實測確認，寫進去時附上來源（檔案與行號或評估結果）。
+5. **繞路找 Electron、連續截圖。** 錯在：花了額外的步驟找 Electron 二進位檔，連續截圖消耗大量 token。下次怎麼做：用 `node_modules/electron/dist/electron.exe`（文件已記載），截圖只用在必要的驗證點，優先用評估檔讀 DOM 與 canvas 的像素。
+
+### 9.7 下一個工作階段（後繼）
+
+- 不由本工作階段開後繼。文件更新後由管理層決定是否開。
+- 後繼開場先讀本檔 9.5（SAB 更正）與 9.6（教訓），再讀第 9 節的未驗證清單。
+
+### 9.8 原先的後繼說明（已作廢，保留紀錄）
 
 - 讀本檔第 1 節的開場提示（它仍然有效，改用本檔第 9 節的現況）。
 - 先確認 `git log --oneline -5` 有 `929d4de7` 與 `9ec1871c`，再開始。
