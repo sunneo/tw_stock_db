@@ -35143,7 +35143,9 @@ const holder = {};
     const M = opts.M, E = opts.E, P = opts.P, host = opts.host || {};
     let remote = null;   // 共編:{ session, doc }
     const hist = E.history(opts.song);
-    let sel = 0, grid = 0.5, pxBeat = 40, pitchLo = 36, rows = 36, playing = null, destroyed = false, posTick = 0, dragging = false; const mute = new Set(), solo = new Set(); // 靜音／獨奏只是試聽狀態(不進曲子、不匯出 MIDI);音量與左右平衡才寫進曲子
+    let sel = 0, grid = 0.5, pxBeat = 40, pitchLo = 36, rows = 36, playing = null, destroyed = false, posTick = 0, dragging = false; const hidden = new Set(); let focus = false; const mute = new Set(), solo = new Set(); // hidden／focus:只是畫面(眼睛、單軌檢視),不影響聽到什麼
+    const visible = (i) => (focus ? i === sel : !hidden.has(i));
+    const alphaOf = (i) => (visible(i) ? (i === sel ? 1 : 0.35) : (focus ? 0.1 : 0)); // 靜音／獨奏只是試聽狀態(不進曲子、不匯出 MIDI);音量與左右平衡才寫進曲子
     const card = el('div', 'border:1px solid rgba(128,128,128,.4);border-radius:10px;padding:10px;max-width:720px;font-size:13px;'); card.className = 'fa-midi-edit';
     const head = el('div', 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;');
     head.appendChild(el('span', 'font-size:18px', '🎼')); head.appendChild(el('b', 'flex:1;min-width:80px', opts.title || hist.song.title || 'MIDI 編輯器'));
@@ -35174,12 +35176,14 @@ const holder = {};
 
     function draw() {
       const s = hist.song, dpr = window.devicePixelRatio || 1;
+      // 單軌檢視:音高範圍貼合看得到的軌(上下各留 2 格),不用在 36 格裡找
+      if (focus) { let lo = 127, hi = 0; s.tracks.forEach((tr, i) => { if (visible(i)) tr.notes.forEach((n) => { if (n.n < lo) lo = n.n; if (n.n > hi) hi = n.n; }); }); if (hi >= lo) { rows = Math.max(14, hi - lo + 5); pitchLo = Math.max(0, Math.min(127 - rows + 1, lo - 2)); } } else { rows = 36; pitchLo = 36; }
       const end = Math.max(16, Math.ceil(M.endTick(s) / s.ppq) + 4), W = end * pxBeat, H = rows * 12;
       inner.style.width = W + 'px'; cv.width = W * dpr; cv.height = H * dpr; cv.style.width = W + 'px'; cv.style.height = H + 'px';
       const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
       for (let r = 0; r < rows; r++) { const p = pitchLo + rows - 1 - r; if ([1, 3, 6, 8, 10].indexOf(p % 12) >= 0) { g.fillStyle = 'rgba(128,128,128,.12)'; g.fillRect(0, r * 12, W, 12); } if (p % 12 === 0) { g.fillStyle = 'rgba(128,128,128,.35)'; g.fillRect(0, r * 12 + 11, W, 1); g.fillStyle = 'rgba(128,128,128,.8)'; g.font = '9px sans-serif'; g.fillText(M.noteName(p), 2, r * 12 + 9); } }
       for (let b = 0; b <= end; b++) { g.fillStyle = b % s.timesig.n === 0 ? 'rgba(128,128,128,.5)' : 'rgba(128,128,128,.2)'; g.fillRect(b * pxBeat, 0, 1, H); }
-      s.tracks.forEach((tr, i) => { g.fillStyle = COLORS[i % COLORS.length]; g.globalAlpha = i === sel ? 1 : 0.35; tr.notes.forEach((n) => { const r = pitchLo + rows - 1 - n.n; if (r < 0 || r >= rows) return; g.fillRect(n.t / s.ppq * pxBeat, r * 12 + 1, Math.max(3, n.d / s.ppq * pxBeat - 1), 10); }); }); g.globalAlpha = 1;
+      s.tracks.forEach((tr, i) => { g.fillStyle = COLORS[i % COLORS.length]; g.globalAlpha = alphaOf(i); if (!g.globalAlpha) return; tr.notes.forEach((n) => { const r = pitchLo + rows - 1 - n.n; if (r < 0 || r >= rows) return; g.fillRect(n.t / s.ppq * pxBeat, r * 12 + 1, Math.max(3, n.d / s.ppq * pxBeat - 1), 10); }); }); g.globalAlpha = 1;
       undoB.disabled = !hist.canUndo(); redoB.disabled = !hist.canRedo();
       rv.width = W * dpr; rv.height = 16 * dpr; rv.style.width = W + 'px'; const r = rv.getContext('2d'); r.setTransform(dpr, 0, 0, dpr, 0, 0); r.clearRect(0, 0, W, 16); r.fillStyle = 'rgba(128,128,128,.18)'; r.fillRect(0, 0, W, 16); r.font = '10px sans-serif'; r.fillStyle = 'rgba(128,128,128,.95)';
       for (let b = 0; b <= end; b += s.timesig.n) { r.fillRect(b * pxBeat, 8, 1, 8); r.fillText(String(b / s.timesig.n + 1), b * pxBeat + 3, 10); }
@@ -35210,7 +35214,7 @@ const holder = {};
       s.tracks.forEach((tr, i) => {
         const row = el('div', 'padding:4px;border-radius:6px;margin-bottom:4px;cursor:pointer;border:1px solid ' + (i === sel ? COLORS[i % COLORS.length] : 'transparent') + ';');
         const top = el('div', 'display:flex;gap:4px;align-items:center;'); top.appendChild(el('span', 'width:10px;height:10px;border-radius:50%;background:' + COLORS[i % COLORS.length])); top.appendChild(el('span', 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;', tr.name + (tr.drum ? '(鼓組)' : '')));
-        const del = el('button', BTN + 'padding:0 5px;', '✕'); del.title = '刪除這一軌'; del.onclick = (e) => { e.stopPropagation(); run({ act: 'remove_track', track: i }); if (sel >= hist.song.tracks.length) sel = Math.max(0, hist.song.tracks.length - 1); drawSide(); draw(); }; top.appendChild(del); row.appendChild(top);
+        const eye = el('button', BTN + 'padding:0 5px;' + (hidden.has(i) ? 'opacity:.45;' : ''), hidden.has(i) ? '🚫' : '👁'); eye.title = hidden.has(i) ? '顯示這一軌(只影響畫面)' : '隱藏這一軌(只影響畫面,聲音照放)'; eye.onclick = (e) => { e.stopPropagation(); if (hidden.has(i)) hidden.delete(i); else hidden.add(i); if (hidden.has(sel) && !focus) { const k = s.tracks.findIndex((_, j) => !hidden.has(j)); if (k >= 0) sel = k; } drawSide(); draw(); }; top.appendChild(eye); const del = el('button', BTN + 'padding:0 5px;', '✕'); del.title = '刪除這一軌'; del.onclick = (e) => { e.stopPropagation(); run({ act: 'remove_track', track: i }); if (sel >= hist.song.tracks.length) sel = Math.max(0, hist.song.tracks.length - 1); drawSide(); draw(); }; top.appendChild(del); row.appendChild(top);
         if (!tr.drum) { const ps = el('select', 'width:100%;margin-top:2px;font-size:12px;'); for (let p = 0; p < 128; p++) { const o = el('option', '', gsName(p)); o.value = p; if (p === tr.program) o.selected = true; ps.appendChild(o); } ps.onclick = (e) => e.stopPropagation(); ps.onchange = () => run({ act: 'set_program', track: i, program: Number(ps.value) }); row.appendChild(ps); }
         // 混音:靜音／獨奏(試聽用)、音量、左右平衡(拖曳時即時生效,放開才記一筆可復原的改動;存進曲子,匯出成 CC7／CC10)
         const mx = el('div', 'display:flex;align-items:center;gap:4px;margin-top:3px;flex-wrap:wrap;'); mx.onclick = (e) => e.stopPropagation();
@@ -35223,7 +35227,7 @@ const holder = {};
       });
       const add = el('button', BTN + 'width:100%;margin-top:2px;', '＋ 新增音軌'); add.onclick = () => { run({ act: 'add_track', name: '軌道 ' + (hist.song.tracks.length + 1), program: 0 }); sel = hist.song.tracks.length - 1; drawSide(); draw(); };
       const addD = el('button', BTN + 'width:100%;margin-top:4px;', '＋ 新增鼓組'); addD.onclick = () => { run({ act: 'add_track', name: '鼓', drum: true }); sel = hist.song.tracks.length - 1; drawSide(); draw(); };
-      side.append(add, addD);
+      const fcB = el('button', BTN + 'width:100%;margin-top:4px;' + (focus ? 'background:#4aa3ff;color:#fff;' : ''), focus ? '🎯 單軌檢視中(再按回全部)' : '🎯 只看選取的這一軌'); fcB.title = '只顯示並編輯選取的音軌,其他軌淡化,音高範圍貼合這一軌'; fcB.onclick = () => { focus = !focus; drawSide(); draw(); }; side.append(add, addD, fcB);
     }
     // 共編:每次本地改動把前後兩份「有 id 的文件」算 diff 送出去;別人的 commit 進來就換掉整份曲子(不再送回去)
     function pushRemote(label) {
@@ -35255,7 +35259,7 @@ const holder = {};
       hist.push(r.song); stopPlay(); pushRemote(a.act); if (!fromRemote && host.onChange) { try { host.onChange(r.song, a); } catch (_) { /* */ } } drawSide(); draw(); return true;
     }
     cv.onclick = (ev) => { // 點空白處新增、點音符刪除
-      const s = hist.song, tr = s.tracks[sel]; if (!tr) { say('先新增一軌'); return; }
+      const s = hist.song, tr = s.tracks[sel]; if (!tr) { say('先新增一軌'); return; } if (!visible(sel)) { say('這一軌被隱藏了,先按 👁 顯示再編輯'); return; }
       const rc = cv.getBoundingClientRect(), x = ev.clientX - rc.left, y = ev.clientY - rc.top;
       const beat = x / pxBeat, pitch = pitchLo + rows - 1 - Math.floor(y / 12), tick = beat * s.ppq;
       const hit = tr.notes.find((n) => n.n === pitch && tick >= n.t && tick < n.t + n.d);
