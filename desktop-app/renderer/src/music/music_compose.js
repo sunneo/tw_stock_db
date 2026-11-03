@@ -103,7 +103,23 @@
     { name: '卡農', keys: ['卡農', 'canon in d', 'pachelbel', 'canon'], style: 'classical', key: 'D', mode: 'major', tempo: 70, hint: '帕海貝爾卡農:D 大調、弦樂(小提琴、大提琴)、低音反覆 8 個音,和弦進行 I V vi iii IV I IV V(搖滾版常把節奏加快、加電吉他與鼓)' },
     { name: 'Final Fantasy', keys: ['final fantasy', '最終幻想', '太空戰士', 'ff7', 'ff10'], style: 'classical', key: 'C', mode: 'major', tempo: 110, hint: 'Final Fantasy:遊戲配樂風,開頭常用琶音(豎琴或鋼琴)上行下行,管弦樂編制、史詩感,和弦常見 I V vi IV、vi IV I V 並加入調外的轉折' }
   ];
-  function workOf(text) { const low = String(text || '').toLowerCase(); return WORKS.filter((w) => w.keys.some((k) => low.indexOf(k.toLowerCase()) >= 0)); }
+  // 查過網路學到的作品(使用者機器上的離線目錄):由 music_work_learn 驗證後存下,下次直接查表,不必再上網
+  let LEARNED = []; function setLearnedWorks(l) { LEARNED = Array.isArray(l) ? l.filter((w) => w && Array.isArray(w.keys) && w.keys.length) : []; }
+  function workOf(text) { const low = String(text || '').toLowerCase(); return WORKS.concat(LEARNED).filter((w) => w.keys.some((k) => low.indexOf(String(k).toLowerCase()) >= 0)); }
+  // 程式核對模型從網路查到的作品特徵(封閉欄位:調、調式、速度、風格都在範圍內;出處網址必填;旋律不收):回傳 { work } 或 { error }
+  function validateWork(w) {
+    w = w || {}; const str = (x, n) => String(x == null ? '' : x).replace(/\s+/g, ' ').trim().slice(0, n); const name = str(w.name, 40); if (!name) return { error: '缺作品名稱' };
+    if (WORKS.some((x) => x.keys.some((k) => k.toLowerCase() === name.toLowerCase()) || x.name.toLowerCase() === name.toLowerCase())) return { error: '「' + name + '」程式已經內建,不必再記' };
+    const key = str(w.key, 3); if (KEYS[key] == null) return { error: '調要是 C、D、Eb、F# 這類主音(你給了「' + key + '」)' };
+    const mode = w.mode === 'minor' || w.mode === 'major' ? w.mode : ''; if (!mode) return { error: 'mode 要是 major 或 minor' };
+    const tempo = Math.round(Number(w.tempo)); if (!(tempo >= 40 && tempo <= 220)) return { error: '速度要在 40 到 220 之間(你給了 ' + w.tempo + ')' };
+    const style = str(w.style, 20); if (!STYLES[style]) return { error: '風格要是 ' + Object.keys(STYLES).join('、') + ' 其中之一' };
+    const hint = str(w.hint, 300); if (hint.length < 10) return { error: 'hint 至少寫一句話(調、樂器、和弦進行等事實,不要寫旋律)' };
+    const src = str(w.source_url, 300); if (!/^https?:\/\//i.test(src)) return { error: '要附出處網址(http 或 https 開頭),沒有查過就不要記' };
+    const keys = [name].concat(Array.isArray(w.aliases) ? w.aliases : []).map((x) => str(x, 40)).filter(Boolean).filter((x, i, a) => a.indexOf(x) === i).slice(0, 8);
+    return { work: { name, keys, style, key, mode, tempo, hint: name + ':' + hint, source: src, learned: true } };
+  }
+
   function workHints(text) { const ws = workOf(text); return ws.length ? '\n作品特徵(程式查表,供參考,只是風格事實不是旋律):' + ws.map((w) => w.hint).join(';') : ''; }
   function parseRequest(text) {
     text = String(text || ''); const out = {}; for (const k of Object.keys(ALIAS)) if (text.indexOf(k) >= 0) { out.style = ALIAS[k]; break; }
@@ -123,5 +139,5 @@
     return out;
   }
   const choices = () => Object.keys(STYLES).map((k) => ({ id: k, name: STYLES[k].name, tempo: STYLES[k].tempo, progressions: STYLES[k].progs.length, mode: STYLES[k].mode }));
-  return { WORKS, workOf, workHints, STYLES, KEYS, chordTones, compose, parseRequest, validate, choices };
+  return { WORKS, setLearnedWorks, validateWork, workOf, workHints, STYLES, KEYS, chordTones, compose, parseRequest, validate, choices };
 });

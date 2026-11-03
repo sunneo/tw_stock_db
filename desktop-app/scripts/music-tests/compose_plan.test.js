@@ -110,5 +110,10 @@ const perfect = byField(PERFECT);
     const seen = []; await P.decide(rq, { hint: C2.workHints(rq), ask: async (sys, user) => { seen.push(sys + user); return 'A'; }, timeoutMs: 500 });
     check('known works: the hint reaches the AI questions but does not change what the rules read from the user text', seen.length > 0 && seen.every((x) => /作品特徵/.test(x)));
     const rr2 = await P.decide('搖滾卡農', {}); check('known works: an explicit style word wins over the table', rr2.fields.style === 'rock', rr2.fields.style); }
+  { const C3 = require('../../renderer/src/music/music_compose.js'); const good = { name: '薩爾達傳說', aliases: ['Zelda', '海拉魯'], key: 'Eb', mode: 'major', tempo: 130, style: 'classical', hint: '冒險主題,銅管與弦樂,號角式的上行音程,和弦 I IV V', source_url: 'https://example.com/zelda' };
+    const v = C3.validateWork(good); check('learned works: a complete record from a web search is accepted and tagged learned', v.work && v.work.learned && v.work.keys.join() === '薩爾達傳說,Zelda,海拉魯' && v.work.tempo === 130, v);
+    check('learned works: no source url / bad key / bad tempo / bad style / short hint / already built in are each refused with the reason', [[{ source_url: '' }, /出處網址/], [{ key: 'H' }, /調要是/], [{ tempo: 999 }, /40 到 220/], [{ style: 'metal' }, /風格要是/], [{ hint: '好聽' }, /hint/], [{ name: '卡農' }, /已經內建/], [{ mode: 'dorian' }, /mode/]].every((c) => { const r = C3.validateWork(Object.assign({}, good, c[0])); return r.error && c[1].test(r.error); }));
+    check('learned works: unknown before learning, known after (no search needed next time), and cleared again', C3.workOf('來首塞爾達').length === 0 && (C3.setLearnedWorks([v.work]), C3.workOf('來首 zelda 風格的').length === 1 && /薩爾達傳說/.test(C3.workHints('Zelda'))));
+    const rr3 = await P.decide('來首海拉魯的曲子', {}); check('learned works: with no AI the rules use the learned record (style / key / tempo)', rr3.fields.style === 'classical' && rr3.fields.key === 'Eb' && rr3.fields.tempo === 130, rr3.fields); C3.setLearnedWorks([]); }
   console.log(bad.length ? 'FAIL\n' + bad.join('\n') : 'ok'); console.log(ok + ' passed, ' + bad.length + ' failed'); process.exit(bad.length ? 1 : 0);
 })();
