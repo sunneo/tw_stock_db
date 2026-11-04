@@ -53,6 +53,36 @@
 - B. 把 `ask_user_card` 從 gated 移到根層級（改成一般 `register_openai_tool`，不經 `registerOptional`）：父對話與子對話都會有它，符合「工具能力一致」。代價：根層級多一個工具的 schema 大約幾百 token。**採用此方案**。理由：`ask_user_card` 是對話層級的互動能力（問使用者），不是某個領域的專用工具，放在 gated 集合是分類錯誤。
 - C. 只在 `ask_user_card` 加到提示表（`FA_TASK_TOOL_HINTS`）：靠關鍵字，不可靠。不採用。
 
+## 步驟 2：修根因，工具清單一致（已驗證）
+
+### 改了什麼（源頭 `renderer/src/floating-assistant.js`）
+
+- `_registerBuiltinAiTools` 裡 `ask_user_card` 從 `registerOptional(...)` 改成 `this.register_openai_tool(...)`（約 61073 行，附註解）。它不再屬於 `_domainGatedToolNames`，所以 `_getRootToolNames()` 在 `full`／`router` 模式下會列出它。說明、參數、回傳格式都沒改。
+- 選了方案 B（見上面「修正方向」）：A 只改子對話會造成不一致，C 靠關鍵字不可靠。
+- 代價：根層級每一輪多一個工具的 schema（約幾百 token）。父對話行為會多一種能力：可以主動開互動卡片。步驟 6 要確認工具預算相關評估沒有變紅。
+
+### 評估
+
+`scripts/eval/subchat_tools.eval.js`，真桌面版，埠 17967，假 LLM 抓 `body.tools`。同一句「幫我畫一張貓的圖」：父對話（話題偵測關閉）與子對話（經 `_subchatSend`，閒置 → 新一輪）各抓一次請求。
+
+| 檢查 | 修前 | 修後 |
+|---|---|---|
+| parentCaptured／childCaptured | true／true | true／true |
+| sameNameSet（名稱集合完全相同） | true | true |
+| parentHasAskCard | **false** | true |
+| childHasAskCard | **false** | true |
+| loadedWorkdirImpl | （修前沒有此項） | true |
+| 工具數（父／子） | 9／9 | 10／10 |
+| allPass | false | **true** |
+
+修前的重點：父與子的名稱集合本來就相同，兩邊都缺 `ask_user_card`。所以管理層預期的「子對話與父對話不同」在這個根因下不成立，差異是**父子都缺**。修前失敗來自 `parentHasAskCard`、`childHasAskCard`。
+
+### 建置注意
+
+- 建置後的 `renderer/floating-assistant.js` 把單引號改成雙引號（`register_openai_tool("ask_user_card",`），而且行數與排版都不同。判準不能只找單引號字串；評估改成兩種引號都接受的 regex。
+- 建置前已把 `renderer/floating-assistant*.js`、`update-manifest.json`、`web-lazy/core.js`、`web-lazy/manifest.json`、`test-reports/core-tests-latest.*`、`skills/image-decompose-redraw/data/parts_builtin.json` 備份到暫存資料夾（不提交）。
+
 ## 教訓
 
-- （步驟 1 尚無錯誤。之後若走歪，在這裡新增一條：錯在哪、下次怎麼做。）
+- 步驟 1：`ask_user_card` 被歸為 domain-gated 是分類錯誤，不是子對話的錯。之後遇到「子對話少了某工具」先確認父對話有沒有，不要直接在子對話加。
+- 步驟 2：建置會改寫引號與排版，評估判準要用 regex 接受兩種引號，不要寫死單引號字串。一開始 `loadedWorkdirImpl` 因此誤判成 false，不是載入錯檔；修判準後重跑才通過。
