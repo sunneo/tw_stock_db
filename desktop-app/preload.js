@@ -8,15 +8,6 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("desktopAPI", {
   // 環境基準線（renderer/src/env）：主行程的真實記憶體（瀏覽器的 deviceMemory 最多只回報到 8 GB）。舊版主程式沒有這個介面，renderer 會退回瀏覽器的估計
   systemInfo: () => ipcRenderer.invoke("fa:system:info"),
-  // 原生執行器（階段 3）：子程序推論。只在桌面版存在；網頁版沒有 desktopAPI，呼叫端要先判斷。
-  nativeRunner: {
-    status: () => ipcRenderer.invoke("fa:native:status"),
-    run: (req) => ipcRenderer.invoke("fa:native:run", req),
-    cancel: (id) => ipcRenderer.invoke("fa:native:cancel", { id }),
-    dispose: () => ipcRenderer.invoke("fa:native:dispose"),
-    reenable: () => ipcRenderer.invoke("fa:native:reenable"),
-    onEvent: (fn) => { const h = (_e, data) => fn(data); ipcRenderer.on("fa:native:event", h); return () => ipcRenderer.removeListener("fa:native:event", h); },
-  },
   // preload script本身一直都有Node的`process`可用（跟renderer的
   // contextIsolation無關，只有preload/main才看得到），這裡直接同步暴露
   // 平台資訊——2026-09-15使用者要求desktop_ops domain要知道自己現在跑在

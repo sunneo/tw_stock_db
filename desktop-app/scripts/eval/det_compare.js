@@ -7,7 +7,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { applyRepetitionPenalty } = require('../../native-runner/gen_params.js');
+const { applyRepetitionPenalty } = require('../../nr-gen-params.js');
 const TEMP = process.env.TEMP || os.tmpdir();
 const R = path.join(__dirname, '..', '..', 'test-reports', 'native-vs-wasm');
 const native = JSON.parse(fs.readFileSync(path.join(R, 'native-det-penalty.json'), 'utf8'));

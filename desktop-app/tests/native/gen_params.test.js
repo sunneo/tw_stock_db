@@ -1,7 +1,7 @@
 // 原生生成參數（重複懲罰、不重複 n-gram、溫度、top-p、可重現取樣）的單元測試。
 // 期望值以手算得到（註解內有算式），不是從程式輸出複製。用法：node native-runner/gen_params.test.js
 'use strict';
-const G = require('./gen_params.js');
+const G = require('../../nr-gen-params.js');
 
 let ok = 0; const bad = [];
 const check = (name, c, x) => { if (c) ok++; else { bad.push(name); console.log('FAIL', name, x === undefined ? '' : JSON.stringify(x).slice(0, 300)); } };

@@ -299,12 +299,12 @@
   5. 模型檔：WASM 快取項目的 key 是 `onnx/model_quantized.onnx`（與應用程式使用的 CPU q8 相同檔名）；原生檔是它的截斷複本（617,687,575 位元組，md5 `c3846afd…`）。WASM 側的位元組沒有直接取出做 md5 比對，所以「同一個檔」只是高度可能，未直接證明。
 - **已排除的假設**：生成迴圈、位置編號的遞增、KV 初始化、輸入名稱、形狀、WASM 執行緒數、ORT-node 圖最佳化與執行緒數。
 - **未排除**：兩邊讀到的檔案位元組是否完全相同（需要直接取出 WASM 側的位元組比對 md5）。
-- **無法在目前條件下判定**：同版本比對（ORT-node 1.22.0 vs ORT-web 1.22.0）需要安裝 onnxruntime-node 1.22.0，屬於新安裝，需使用者同意，**尚未做**。若兩引擎本來就有這種量級的數值差異，「餘弦 > 0.999」這個目標無法靠修改原生生成迴圈達成。
+- **無法在目前條件下判定**：同版本比對（ORT-node 1.22.0 vs ORT-web 1.22.0）需要安裝 onnxruntime-node 1.22.0。（後續已完成，見 8-A4。）若兩引擎本來就有這種量級的數值差異，「餘弦 > 0.999」這個目標無法靠修改原生生成迴圈達成。
 - 摘要檔：`test-reports/native-vs-wasm/bisect-summary.json`。
 
 ### 8-A4 同版本比對：差異來自 onnxruntime-node 1.31.1 與 1.22.0（真量測）
 
-- 使用者先前同意的安裝範圍只涵蓋 1.31.1；1.22.0 是另外詢問後才安裝（使用者同意）。安裝位置：`%TEMP%\ort-node-test122`（`npm install onnxruntime-node@1.22.0`，`node_modules` 239 MB，du）。**該資料夾保留，未刪除。** 倉庫與舊的 `ort-node-test` 沒有被改動。
+- 安裝 1.22.0 前，Claude 以對話框詢問使用者「要不要另外安裝 onnxruntime-node@1.22.0 到新的隔離資料夾」，使用者的回答原文是「同意安裝 1.22.0」。使用者沒有對後續的其他動作另行表態。安裝位置：`%TEMP%\ort-node-test122`（`npm install onnxruntime-node@1.22.0`，`node_modules` 239 MB，du）。**該資料夾保留，未刪除。** 倉庫與舊的 `ort-node-test` 沒有被改動。
 - **單次 forward（同一串 ids、同一個模型檔，與 WASM 的 ORT-web 1.22.0 比對，16 題）**：
   - onnxruntime-node **1.22.0** vs WASM：餘弦 **1.0**（最小 1.0），top-1 相同 **16/16**，最大絕對誤差 **0**（`test-reports/native-vs-wasm/bisect-ort-1.22.0.json`，腳本 `scripts/eval/bisect_ort_version.js`）。
   - onnxruntime-node 1.22.0 vs 1.31.1：餘弦平均 0.93654，top-1 相同 12/16。
@@ -329,4 +329,19 @@
 ### 需要使用者決定
 
 1. 原生路徑的 onnxruntime-node 版本：固定 **1.22.0**（與桌面版 WASM 的 ORT-web 1.22.0 一致，本次量測證實逐 logit 相同），還是採用 1.31.1（已知與 1.22.0 有數值差異）？推薦：**1.22.0**。
-2. 是否同意開始 8-C 的實作（需要另開提交與舊版熱更新測試）？
+2. 8-C（不重裝實作）：管理層決定直接開始實作（使用者未另行確認）。
+
+### 8-C 實作結果（2026-11-04，不重裝版）
+
+- **做法**：
+  - 主程序端的信箱（`startNativeMailbox`）寫在 `main-ext.js`。原因：`main-ext.js` 在熱更新清單中；新增的頂層 `nr-*.js` 不在舊安裝的清單中（清單由安裝包內的 `update-manifest.json` 決定），無法送達舊版安裝。
+  - 渲染程序不用 `desktopAPI.nativeRunner`（preload 沒有此欄位）；改用既有的 `desktopAPI.rawfs` 寫請求檔 `native-runner-box/req-<id>.json`，等待 `resp-<id>.json`（逾時 10 秒）。信箱位置由既有的 `desktopAPI.diag.mainExt()` 的 `logFile` 推得（`<userData>/logs/main-ext.log` → `<userData>/native-runner-box`）。
+  - `main.js` 與 `preload.js` 還原為 96292810 的版本（移除 stage 3、4 加的 `nativeRunner` 與 IPC 註冊）；`package.json` 也還原。
+  - `native-runner/*.js` 改為頂層 `nr-*.js`（協定、子程序、主程序端、模板、分詞、生成參數），供安裝包與測試使用；測試移到 `tests/native/`。
+- **守護**：`_nrAvailable()` 檢查 `desktopAPI.rawfs` 與 `desktopAPI.diag.mainExt`。舊版渲染程式碼對 `window.desktopAPI.nativeRunner` 的呼叫已不存在；新渲染程式碼不再呼叫它。信箱逾時或沒有回應時，設定頁顯示原因，不崩潰。
+- **真 Electron 驗證**（`scripts/eval/native_mailbox.eval.js`，全新 profile）：status、reenable 經信箱回應；run 回傳 `no_engine`（沒有真引擎時不假裝成功）；設定頁狀態列由信箱更新。結果：PASS。
+- **已知問題**：第一次呼叫在全新 profile 上偶爾超過 10 秒（主程序尚未開始輪詢）；之後的呼叫約 170 毫秒。尚未加入自動重試。
+- **未完成（如實）**：
+  - **舊版安裝模擬**（git worktree 開舊 commit、熱更新覆蓋）尚未做。覆蓋機制的細節（`state.json` 與 md5、`LIVE_PATCH_MAIN_FILES` 的來源）已讀過，但沒有實際驗證；renderer 檔案的覆蓋（`floating-assistant.js`）也未驗證。
+  - **真引擎接上**與**按需下載執行包**都未做。執行包應放在 `userData/native-runtime/`，由 `main-ext.js` 載入其中的程式；這個設計還沒有實作。
+  - 目前的 `nr-*.js` 仍是假引擎（測試用），在正式版中不會被 `main-ext.js` 呼叫。

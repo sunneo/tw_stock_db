@@ -1,12 +1,12 @@
 {
   "schema": 1,
   "baseVersion": "1.1.0",
-  "generatedAt": "2026-11-04T14:13:25.220Z",
+  "generatedAt": "2026-11-04T15:56:37.601Z",
   "files": {
     "renderer/index.html": "039acc67493d2d42bae493dc9822621a",
     "renderer/bootstrap.js": "a9953cd7275f9fe213f27d062f660e1a",
-    "renderer/floating-assistant.js": "82584886855f9d267b998f4b7818285e",
-    "renderer/floating-assistant.min.js": "82584886855f9d267b998f4b7818285e",
+    "renderer/floating-assistant.js": "30827e4609b6643aa316f3d460020553",
+    "renderer/floating-assistant.min.js": "30827e4609b6643aa316f3d460020553",
     "renderer/vendor/midigenai/LICENSE": "99eb9c75e3dddbe23104e4cb8e5d8168",
     "renderer/vendor/midigenai/attributes.mjs": "1596c456f30ac128b844544d0ddcc47e",
     "renderer/vendor/midigenai/generator.mjs": "09f3c65bda0308b5f4998301edda2c8c",
@@ -50,17 +50,17 @@
     "edge-tts.js": "135b186b61de5963ae2d3852fb70de5b",
     "fsx-sync.js": "f14777175ba4a3b4d3197c00befc7e82",
     "local-proxy.js": "079907734ca86f14e31fb6be41b8e2ca",
-    "main-ext.js": "43bb3c739aa83b625e4543579b41dccc",
+    "main-ext.js": "1711c814c519ef278d236ab23da662d1",
     "rfb-client.js": "1ad7d8a545166f0e965d3f5008b94ccb",
     "rfb-codec.js": "08f2ada7bc710642e7d29fbff63ee4f1",
     "sqlite-engine.js": "ff9d39366459c465271e617b00abb76e",
-    "preload.js": "91ffac9656b8e4a8f577dede6cbfea8d"
+    "preload.js": "edc03acff577324858ec3ef67c310489"
   },
   "sizes": {
     "renderer/index.html": 5741,
     "renderer/bootstrap.js": 202259,
-    "renderer/floating-assistant.js": 10357337,
-    "renderer/floating-assistant.min.js": 10357337,
+    "renderer/floating-assistant.js": 10358565,
+    "renderer/floating-assistant.min.js": 10358565,
     "renderer/vendor/midigenai/LICENSE": 1070,
     "renderer/vendor/midigenai/attributes.mjs": 9065,
     "renderer/vendor/midigenai/generator.mjs": 11160,
@@ -104,10 +104,10 @@
     "edge-tts.js": 7363,
     "fsx-sync.js": 5425,
     "local-proxy.js": 26808,
-    "main-ext.js": 58801,
+    "main-ext.js": 61781,
     "rfb-client.js": 27415,
     "rfb-codec.js": 14601,
     "sqlite-engine.js": 22797,
-    "preload.js": 15647
+    "preload.js": 15022
   }
 }

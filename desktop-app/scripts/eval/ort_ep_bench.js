@@ -1,4 +1,4 @@
-// 執行提供者對照（node，onnxruntime-node）：CPU 與 DirectML 同一模型、同一份 ids（native-runner/template.js＋tokenizer.js）、貪婪解碼＋重複懲罰 1.08（與桌面版 WASM 路徑相同）。
+// 執行提供者對照（node，onnxruntime-node）：CPU 與 DirectML 同一模型、同一份 ids（nr-template.js＋tokenizer.js）、貪婪解碼＋重複懲罰 1.08（與桌面版 WASM 路徑相同）。
 // 交錯：每題先 CPU、再 DML。記錄：每題耗時、第一步 logits 的 top-1 是否相同、top-5 重疊數、餘弦相似度；
 // 封閉題（8 題）以程式算出的標準答案核對答對數（與 colu 相同的出題程式）。
 // 逐題進度輸出到 stdout；總時間上限 10 分鐘；結果寫入 test-reports/native-vs-wasm/ep-bench-<時間>.json。
@@ -8,8 +8,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const ort = require(path.join(process.env.TEMP || os.tmpdir(), 'ort-node-test', 'node_modules', 'onnxruntime-node'));
-const { applyTemplate } = require('../../native-runner/template.js');
-const { createTokenizer } = require('../../native-runner/tokenizer.js');
+const { applyTemplate } = require('../../nr-template.js');
+const { createTokenizer } = require('../../nr-tokenizer.js');
 
 const TEMP = process.env.TEMP || os.tmpdir();
 const ORT_DIR = path.join(TEMP, 'ort-node-test');

@@ -4,10 +4,10 @@
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const proto = require('./protocol.js');
-const { createNativeRunnerHost } = require('./host.js');
+const proto = require('../../nr-protocol.js');
+const { createNativeRunnerHost } = require('../../nr-host.js');
 
-const CHILD = path.join(__dirname, 'child.js');
+const CHILD = path.join(__dirname, '..', '..', 'nr-child.js');
 let ok = 0; const bad = [];
 const check = (name, c, x) => { if (c) ok++; else { bad.push(name); console.log('FAIL', name, x === undefined ? '' : JSON.stringify(x).slice(0, 300)); } };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

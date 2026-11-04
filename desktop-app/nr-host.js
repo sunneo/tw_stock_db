@@ -4,7 +4,7 @@
 //          逾時（timeoutMs：先送 cancel，寬限 graceMs 仍沒回來就強制結束子程序，呼叫端拿到 code:'timeout'）。
 'use strict';
 
-const proto = require('./protocol.js');
+const proto = require('./nr-protocol.js');
 
 function makeError(code, message, detail) {
     const e = new Error(message);

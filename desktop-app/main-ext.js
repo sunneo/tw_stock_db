@@ -324,6 +324,9 @@ function register(ipcMain, ctx) {
   };
   // computer use（桌面版限定、預設關閉）：IPC、原生核准視窗、中止快捷鍵都在 computer-use-ipc.js
   loadWithHeal("computer use", () => require("./computer-use-ipc.js").register(ipcMain, ctx));
+  // 原生執行器信箱（不重裝版，見 DESIGN.TODO.native-runner.md 第 8-C 節）：寫在這個檔案裡，因為 main-ext.js 會被熱更新送達；
+  // 子目錄或新檔案（nr-*.js）不在舊安裝的熱更新清單中，無法送達舊版安裝。
+  loadWithHeal("native runner mailbox", () => startNativeMailbox(ctx));
 
   return { rawFsPath, detectLikelyBinary };
 }
@@ -667,6 +670,47 @@ function installTray(ctx, ipcMain) {
     Object.assign(st.cfg, next); try { await ctx.patchDesktopSettings(next); } catch (_) { /* 這次還是生效，只是下次啟動不記得 */ }
     await apply(); if (!st.cfg.closeToTray) { const w = mainWin(); if (w && !w.isVisible()) showWin(); } return status();
   });
+}
+
+// 原生執行器的主程序信箱（見 DESIGN.TODO.native-runner.md 第 8-C 節）。
+// 渲染程序把請求寫成 <userData>/native-runner-box/req-<id>.json（用既有的 desktopAPI.rawfs），這裡每 200 毫秒輪詢，
+// 寫回 resp-<id>.json（先寫 .tmp 再改名）。真引擎尚未接上：status 回報沒有子程序，run 回傳 no_engine（不假裝成功）。
+// 協定與子程序執行器的程式在 nr-*.js（隨安裝包提供）；接上真引擎後，這裡改為載入執行包（userData/native-runtime）內的程式。
+function startNativeMailbox(ctx) {
+  const fsSync = require("fs"), pathM = require("path");
+  const app = ctx.electron && ctx.electron.app;
+  const userData = ctx.userDataDir ? ctx.userDataDir() : (app ? app.getPath("userData") : null);
+  if (!userData) return { ok: false, reason: "沒有 userData 路徑" };
+  const box = pathM.join(userData, "native-runner-box");
+  try { fsSync.mkdirSync(box, { recursive: true }); } catch (_) { /* 之後每輪再試 */ }
+  async function handle(op, payload) {
+    if (op === "status") return { ok: true, status: { alive: false, pid: null, pending: 0, consecutiveCrashes: 0, disabled: false, disabledReason: "" }, engine: "none", box };
+    if (op === "reenable" || op === "dispose") return { ok: true, status: { alive: false, engine: "none" } };
+    if (op === "run") return { ok: false, code: "no_engine", message: "原生引擎還沒有接上（沒有可用的執行包）" };
+    return { ok: false, code: "bad_op", message: "未知的操作：" + String(op) };
+  }
+  let busy = false;
+  const timer = setInterval(async () => {
+    if (busy) return;
+    busy = true;
+    try {
+      let names = [];
+      try { names = fsSync.readdirSync(box).filter((n) => /^req-.+\.json$/.test(n)); } catch (_) { names = []; }
+      for (const n of names) {
+        const id = n.slice(4, -5), reqPath = pathM.join(box, n);
+        let req = null;
+        try { req = JSON.parse(fsSync.readFileSync(reqPath, "utf8")); } catch (_) { req = null; }
+        try { fsSync.unlinkSync(reqPath); } catch (_) { /* 已移除 */ }
+        if (!req) continue;
+        const resp = await handle(String(req.op || ""), req.payload).catch((e) => ({ ok: false, code: "internal", message: String((e && e.message) || e) }));
+        const tmp = pathM.join(box, "resp-" + id + ".tmp"), out = pathM.join(box, "resp-" + id + ".json");
+        fsSync.writeFileSync(tmp, JSON.stringify(resp));
+        fsSync.renameSync(tmp, out);
+      }
+    } catch (_) { /* 下一輪再試 */ } finally { busy = false; }
+  }, 200);
+  if (timer.unref) timer.unref();
+  return { ok: true, box };
 }
 
 module.exports = { register };

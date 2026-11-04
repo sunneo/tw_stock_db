@@ -1,6 +1,6 @@
 // 原生樣板驗證：WASM 側（真 Electron，桌面版使用的 transformers.js 分詞器與聊天樣板）對 scripts/eval/template_cases.json 的每組 messages，
 // 取出實際的樣板文字與 input ids，寫入 %TEMP%\nvw-out\template-wasm.json。
-// 之後由 scripts/eval/template_validate.js（node）用原生 native-runner/template.js 與 native-runner/tokenizer.js 產生同樣的文字與 ids，逐組比對。
+// 之後由 scripts/eval/template_validate.js（node）用原生 nr-template.js 與 nr-tokenizer.js 產生同樣的文字與 ids，逐組比對。
 // 只載入分詞器（不載入模型），不下載模型；分詞器檔從快取取得（與應用程式相同的 transformers.js 版本與 repo）。
 return (async () => {
     const REPO = 'D:\\Downloads\\videos-嗨投資-desktop-app\\desktop-app';

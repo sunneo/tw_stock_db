@@ -1,4 +1,4 @@
-// 原生樣板驗收（node）：用 native-runner/template.js 與 native-runner/tokenizer.js 產生文字與 input ids，
+// 原生樣板驗收（node）：用 nr-template.js 與 nr-tokenizer.js 產生文字與 input ids，
 // 與 WASM 側（template_validate.eval.js 取得的 transformers.js 結果）逐組比對。
 // 比對項目：(1) 樣板文字完全相同；(2) input ids 完全相同。不同時列出第一個差異位置與兩邊的文字片段。
 // 用法：node scripts/eval/template_validate.js [WASM 結果 JSON] [分詞器 tokenizer.json]
@@ -6,8 +6,8 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { applyTemplate } = require('../../native-runner/template.js');
-const { createTokenizer } = require('../../native-runner/tokenizer.js');
+const { applyTemplate } = require('../../nr-template.js');
+const { createTokenizer } = require('../../nr-tokenizer.js');
 
 const TEMP = process.env.TEMP || os.tmpdir();
 const WASM = process.argv[2] || path.join(TEMP, 'nvw-out', 'template-wasm.json');

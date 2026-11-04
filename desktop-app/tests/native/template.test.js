@@ -1,8 +1,8 @@
 // 原生提示樣板與 run.template 協定的單元測試（node，不需要模型與分詞器檔）。
 // 用法：node native-runner/template.test.js
 'use strict';
-const { applyTemplate, TEMPLATES } = require('./template.js');
-const proto = require('./protocol.js');
+const { applyTemplate, TEMPLATES } = require('../../nr-template.js');
+const proto = require('../../nr-protocol.js');
 
 let ok = 0; const bad = [];
 const check = (name, c, x) => { if (c) ok++; else { bad.push(name); console.log('FAIL', name, x === undefined ? '' : JSON.stringify(x).slice(0, 300)); } };

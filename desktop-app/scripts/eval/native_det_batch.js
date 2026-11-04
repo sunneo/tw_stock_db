@@ -1,15 +1,15 @@
-// 原生端的確定性生成（與桌面版 WASM 的 deterministic:true 相同設定）：onnxruntime-node CPU、同一串 ids（native-runner/template.js＋tokenizer.js）、
+// 原生端的確定性生成（與桌面版 WASM 的 deterministic:true 相同設定）：onnxruntime-node CPU、同一串 ids（nr-template.js＋tokenizer.js）、
 // gen 物件與產品端 FaVlm.textGenParams({deterministic:true}) 的輸出相同：{ do_sample:false, repetition_penalty:1.08 }，
-// 取樣與懲罰都由 native-runner/gen_params.js 處理（與 transformers.js 的處理器相同做法）。最多 16 個新 token，遇到 EOS 即停止。
+// 取樣與懲罰都由 nr-gen-params.js 處理（與 transformers.js 的處理器相同做法）。最多 16 個新 token，遇到 EOS 即停止。
 // 用法：ELECTRON_RUN_AS_NODE=1 electron.exe scripts/eval/native_det_batch.js  （需要 %TEMP%\ort-node-test 內的模型與套件）
 'use strict';
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const ort = require(process.env.ORT_MODULE || path.join(process.env.TEMP || os.tmpdir(), 'ort-node-test', 'node_modules', 'onnxruntime-node'));
-const { applyTemplate } = require('../../native-runner/template.js');
-const { createTokenizer } = require('../../native-runner/tokenizer.js');
-const { validateGen, pickToken } = require('../../native-runner/gen_params.js');
+const { applyTemplate } = require('../../nr-template.js');
+const { createTokenizer } = require('../../nr-tokenizer.js');
+const { validateGen, pickToken } = require('../../nr-gen-params.js');
 
 const TEMP = process.env.TEMP || os.tmpdir();
 const ORT_DIR = path.join(TEMP, 'ort-node-test');

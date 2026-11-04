@@ -100900,8 +100900,38 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             </div>`;
     }
     // 原生執行器（階段 5）：離線設定頁的小區塊。只在桌面版（有 desktopAPI.nativeRunner）顯示；網頁版回傳空字串。
+    // 原生執行器信箱（不重裝版）：渲染程序用既有的 desktopAPI.rawfs 寫請求檔，主程序的 nr-ipc.js（由 main-ext.js 熱更新送達）輪詢處理。
+    // 信箱位置由 desktopAPI.diag.mainExt().logFile 推得：logFile 是 <userData>/logs/main-ext.log，信箱是 <userData>/native-runner-box。
+    _nrAvailable() { return !!(typeof window !== 'undefined' && window.desktopAPI && window.desktopAPI.rawfs && window.desktopAPI.diag && window.desktopAPI.diag.mainExt); }
+    async _nrBox() {
+        const info = await window.desktopAPI.diag.mainExt();
+        const log = info && info.logFile; if (!log) return null;
+        const BS = String.fromCharCode(92);
+        const sep = log.indexOf(BS) >= 0 ? BS : '/';
+        const segs = log.split(sep); segs.pop(); segs.pop(); // 去掉 main-ext.log 與 logs
+        return segs.join(sep) + sep + 'native-runner-box';
+    }
+    // op：status／reenable／dispose。寫 req-<id>.json，等 resp-<id>.json；逾時回傳 { ok:false, code:'mailbox_timeout' }（主程序沒有回應：舊版安裝或主程序未載入）。
+    async _nrCall(op, payload, timeoutMs) {
+        if (!this._nrAvailable()) return { ok: false, code: 'no_bridge', message: '這個環境沒有桌面版橋接' };
+        const box = await this._nrBox(); if (!box) return { ok: false, code: 'no_box', message: '找不到使用者資料夾' };
+        const sep = box.indexOf(String.fromCharCode(92)) >= 0 ? String.fromCharCode(92) : '/';
+        const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+        await window.desktopAPI.rawfs.writeFile(box + sep + 'req-' + id + '.json', { text: JSON.stringify({ op, payload: payload || {} }) });
+        const t0 = Date.now(), limit = timeoutMs || 10000; // 主程序剛啟動時第一次可能較慢
+        const respPath = box + sep + 'resp-' + id + '.json';
+        while (Date.now() - t0 < limit) {
+            try {
+                const r = await window.desktopAPI.rawfs.readFile(respPath, 'utf8');
+                const text = r && typeof r === 'object' ? r.text : r;
+                if (text) { try { await window.desktopAPI.rawfs.remove(respPath, false); } catch (_) { /* 已移除 */ } return JSON.parse(text); }
+            } catch (_) { /* 還沒有回應 */ }
+            await new Promise((res) => setTimeout(res, 150));
+        }
+        return { ok: false, code: 'mailbox_timeout', message: '主程序沒有在 ' + limit + ' 毫秒內回應（舊版安裝或主程序尚未載入原生執行器）' };
+    }
     _omNativeBoxHtml() {
-        if (!(typeof window !== 'undefined' && window.desktopAPI && window.desktopAPI.nativeRunner)) return '';
+        if (!this._nrAvailable()) return '';
         setTimeout(() => { try { this._omNativeRefresh(); } catch (_) { /* 頁面已切換 */ } }, 0);
         const btn = 'padding:3px 10px; border-radius:6px; border:1px solid #475569; background:#1e293b; color:#e2e8f0; cursor:pointer; font-size:12px;';
         return `<div style="border:1px solid #334155; border-radius:8px; padding:8px; margin-bottom:10px;">
@@ -100912,19 +100942,21 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             </div>`;
     }
     async _omNativeRefresh() {
-        const root = this._omPaneRoot; const nr = typeof window !== 'undefined' && window.desktopAPI && window.desktopAPI.nativeRunner;
-        if (!root || !nr) return;
+        const root = this._omPaneRoot;
+        if (!root || !this._nrAvailable()) return;
         const el = root.querySelector('[data-om-native-status]');
         if (!el) return;
         try {
-            const st = await nr.status();
+            const r = await this._nrCall('status');
+            if (!r.ok) { el.textContent = '原生執行器：' + (r.message || r.code); return; }
+            const st = r.status || {};
             el.textContent = '子程序：' + (st.alive ? '執行中（pid ' + st.pid + '）' : '未啟動（需要時才啟動）') + '；' + (st.disabled ? '已停用：' + st.disabledReason : '可用') + '；連續崩潰 ' + st.consecutiveCrashes + ' 次';
         } catch (e) { el.textContent = '原生執行器狀態讀取失敗：' + String((e && e.message) || e); }
     }
     async _omNativeAct(act, root) {
-        const nr = typeof window !== 'undefined' && window.desktopAPI && window.desktopAPI.nativeRunner; if (!nr) return;
-        if (act === 'reenable') await nr.reenable();
-        else if (act === 'dispose') await nr.dispose();
+        if (!this._nrAvailable()) return;
+        if (act === 'reenable') await this._nrCall('reenable');
+        else if (act === 'dispose') await this._nrCall('dispose');
         await this._omNativeRefresh();
     }
     _omWirePane(root) {

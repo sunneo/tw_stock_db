@@ -1,12 +1,12 @@
-// 第一步比對（原生側）：用 native-runner/template.js＋tokenizer.js 產生 ids，取 onnxruntime-node CPU 在「第一步」（整段預填）的最後位置 logits。
+// 第一步比對（原生側）：用 nr-template.js＋tokenizer.js 產生 ids，取 onnxruntime-node CPU 在「第一步」（整段預填）的最後位置 logits。
 // 輸出 %TEMP%\nvw-out\first-native.json（每題的 ids 與 logits 的 base64 Float32）。WASM 側的對應檔由 first_step_wasm.eval.js 產生。
 'use strict';
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const ort = require(path.join(process.env.TEMP || os.tmpdir(), 'ort-node-test', 'node_modules', 'onnxruntime-node'));
-const { applyTemplate } = require('../../native-runner/template.js');
-const { createTokenizer } = require('../../native-runner/tokenizer.js');
+const { applyTemplate } = require('../../nr-template.js');
+const { createTokenizer } = require('../../nr-tokenizer.js');
 const TEMP = process.env.TEMP || os.tmpdir();
 const ORT_DIR = path.join(TEMP, 'ort-node-test');
 const tok = createTokenizer(JSON.parse(fs.readFileSync(path.join(ORT_DIR, 'tok', 'tokenizer.json'), 'utf8')));
