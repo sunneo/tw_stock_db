@@ -61,6 +61,8 @@ embed('renderer/src/gui/py_worker.js', 'GUIPYWORKER-BEGIN', 'GUIPYWORKER-END', '
 embed('renderer/src/gui/py_async.js', 'GUIPYASYNC-BEGIN', 'GUIPYASYNC-END', 'FA_GUI_PYASYNC_SRC');
 // JavaScript 程式的沙盒執行器（renderer/src/gui/js_program.js）：`node 檔案.js` 在 sandbox="allow-scripts" 的 iframe 裡跑，同上。
 embed('renderer/src/gui/js_program.js', 'GUIJSPROGRAM-BEGIN', 'GUIJSPROGRAM-END', 'FA_GUI_JSPROGRAM_SRC');
+// 讀取帳本（renderer/src/agent/read_ledger.js，純函式、UMD）：分頁讀取沒讀完就不接受最終回答。同上，嵌入後執行時用 new Function 載入。
+embed('renderer/src/agent/read_ledger.js', 'READLEDGER-BEGIN', 'READLEDGER-END', 'FA_READ_LEDGER_SRC');
 function embedBehavior() {
     const data = require('./behavior-data.js').load(root);
     const a = src.indexOf('/* BEHAVIOR-BEGIN */'), b = src.indexOf('/* BEHAVIOR-END */');

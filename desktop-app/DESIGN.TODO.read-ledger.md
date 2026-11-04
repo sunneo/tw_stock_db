@@ -54,7 +54,30 @@ Redmine 端的修正設計：工具迴圈每次工具回傳 `has_more: true` 就
 - [ ] 步驟 3：`runAgentLoop`（離線路徑）是否也要接，待決定（它的 `tools` 與 `handoff` 結構不同）
 - [ ] 步驟 4：真桌面版評估
 
+## 步驟 2 完成
+
+- `renderer/src/agent/read_ledger.js`（UMD，同 gui_bridge.js 寫法）與 `read_ledger.test.js`，`node renderer/src/agent/read_ledger.test.js` 11 項全過。commit 7a8dd03a。
+- 純函式：`record` 回傳新帳本（不改傳入值）；`ok:false` 不改；駝峰與蛇形都認；只有 truncated 沒有續讀參數的列為 `blocking:false`（只提醒、不阻擋最終回答）。
+
+## 步驟 3 接線（進行中）
+
+- 嵌入：`scripts/embed-code-ui.js` 登記 `READLEDGER-BEGIN/END` → 常數 `FA_READ_LEDGER_SRC`；`renderer/src/floating-assistant.js` 內 `/* READLEDGER-BEGIN */`、`/* READLEDGER-END */` 標記在 `GUIPYWORKER-END` 之後。
+- 載入：`_faReadLedgerMod()`（同 `_faGuiModule` 的 new Function 做法）。
+- 記錄：`_noteReadLedger(fnName, rawArgs, result)`，在原生迴圈 `_loopFetchNative` 工具執行後、`_pushToolResultMessage` 之前呼叫。
+- 閘門：`_readLedgerGate()`，在 `_loopFetchNative` 的「沒有 tool_calls」分支（`if (!toolCalls.length)`，在 `_pushAssistantMessage(finalContent…)` 之前）。有 blocking 且該來源提醒未滿 3 次就 `messages.push({role:'system'})` 後重跑；提醒用完就在 `finalContent` 前加警語放行；放行後帳本與提醒次數歸零。
+- 建置：`scripts/build-web-lazy.js` 的 EXCLUDE 加入 `READLEDGER`（核心迴圈一開始就要用，不能拆成延遲載入區塊；不加的話會產生 `web-lazy/chunks/readledger.js`）。
+
+## 還沒做（步驟 3 的缺口）
+
+- 串流路徑 `_loopFetch`（文字式工具呼叫，例如 `[CALL:...]` 的模型）沒有接帳本，只接了原生路徑。這條路徑的工具結果在第 103048 行附近（`task.fnName`）。需要另外評估。
+- 離線小模型路徑 `runAgentLoop`（`renderer/src/floating-assistant.js` 第 7563 行）沒有接，依指示只記位置。
+- 工具執行出錯（catch 分支）不記帳本，也不影響帳本。
+- 帳本只在「放行的最終回答」時歸零；如果這一輪因錯誤或停止而中斷，帳本會殘留到下一輪（待評估）。
+
 ## 陷阱
+
+- 不要用 `grep` 直接搜 `renderer/src/floating-assistant.js` 的嵌入常數名（例如 `FA_GUI_BRIDGE_SRC`）：會把整段壓縮字串印出來，吃掉大量上下文。要加 `-l`，或只用 `cut -c1-160` 截斷。
+- 嵌入常數 `FA_*_SRC` 的字串是一整行，`Read` 那一段也會很長。
 
 - `floating-assistant.js` 是十萬行壓縮檔，不要整檔讀，只用 Grep 加小範圍 Read。
 - 不要提交 `renderer/floating-assistant*.js`、`update-manifest.json`、`web-lazy/*`、`test-reports/*`。
