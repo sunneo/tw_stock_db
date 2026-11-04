@@ -195,6 +195,46 @@
 - 存檔與重新整理之間的競態（見上）。
 - 重新整理後，子對話的「卡片」（`_card` 訊息）會留在子對話的歷史裡變成唯讀（S4 已知，本次沒有改）。
 
+## 步驟 6：回歸（已驗證）
+
+真桌面版，工作目錄的最終建置（步驟 5 之後），評估 14 個並行（埠 18001 起）；其中兩個（fap、reload）並行時初始化競態失敗，單獨重跑後通過，以單獨結果為準。
+
+| 評估 | 結果 | 說明 |
+|---|---|---|
+| `subchat_open` | `allPass: true` | 含開關關閉段（`offNoChild`、`offNoLinkCard`、`offEachTurnOneParentCall`） |
+| `subchat_link` | `allPass: true` | 連結卡片、存檔重讀、側欄 |
+| `subchat_card_request` | `allPass: true` | 連結卡片不進請求 |
+| `subchat_bubble` | `allPass: true` | 卡片等待冒泡（S4 原判準） |
+| `subchat_send` | `allPass: true` | 傳訊息（閒置 turn、回應中 steer） |
+| `topic_local` | 全部 true | 開關關閉與開啟的呼叫數一致 |
+| `chat_tree` | 全部 true | 含 `regression_no_children`、`regression_class_names` |
+| `chat_tree_index` | 各欄位符合預期，沒有 false | 沒有內建 `allPass`，人工判讀 |
+| `read_ledger` | 數值記錄完整 | **沒有內建判準，只做人工判讀**，沒有與 S3 記錄逐項比對，不算通過 |
+| `tool-budget` | `ok: false`，違規 `domain_too_many_tools:skill_…` | **既有問題**：S4 的 commit（`17971890`）重建跑同一評估，也有同類違規（不同技能 ID）。與 S4b 的根層級變動無關（本步驟改的是 `ask_user_card` 的根層級歸類，不是領域工具數）。不在 S4b 範圍，列為既有問題 |
+| `subchat_tools` | `allPass: true` | 步驟 2 |
+| `subchat_form` | `allPass: true` | 步驟 3（19 項含 F7） |
+| `subchat_fap` | `allPass: true`（單獨重跑） | 步驟 4；並行時失敗為初始化競態 |
+| `subchat_reload` | `allPass: true`（單獨重跑） | 步驟 5；並行時失敗為初始化競態 |
+
+結論：S4 既有判準全部維持；`subchat_open` 的開關關閉段顯示關閉時三則只在父對話、各一次父對話呼叫，行為不變。
+
+## 總結：S4 缺口的處理結果
+
+- 缺口 5（子對話工具清單不含 `ask_user_card`）：根因是 `ask_user_card` 被歸為 domain-gated，父對話在預設 `full` 模式也不送，子對話與父對話一致地缺它。修為根層級工具。
+- 缺口 1（表單）：已冒泡並可在父對話回答（選項、欄位、允許補充的打字）。
+- 缺口 2（FAP 權限框）：已冒泡，父對話按「授權／拒絕」才算數，不自動回答、文字不接受，權限框標示來自哪個子對話。
+- 下載位置選擇：**沒有冒泡，不是缺口**。它只在使用者點了下載連結才開，模型不等它，子對話不會因此停住。
+- 缺口 3（`askBranchChoice`）：S4 文件寫「沒查」。它走 `requestUserForm`，因此已隨表單的冒泡一起處理（表單路徑的 choices／allowSupplement 都適用），但沒有單獨的評估案例。
+- 缺口 4（重新整理後）：`waiting_user` 與 `running` 改為 `failed`，原因寫明，父對話不再永遠顯示「等你回應」。
+
+## 未驗證／限制（照實寫）
+
+- 連結卡片上的按鈕**點擊路徑**（表單選項、授權按鈕）只在評估中以程式呼叫 `_subchatAnswerForm`／`_subchatAnswerFap`，或點權限框本身；卡片按鈕的實際點擊沒有單獨驗證，只驗證到按鈕存在、數量正確。
+- 存檔與重新整理之間的競態（步驟 5）。
+- 同一子對話同時兩件等待時，連結卡片只顯示先到的一件（步驟 4）。
+- `read_ledger` 沒有與 S3 記錄逐項比對。
+- `tool-budget` 的既有違規未修。
+
 ## 教訓
 
 - 步驟 1：`ask_user_card` 被歸為 domain-gated 是分類錯誤，不是子對話的錯。之後遇到「子對話少了某工具」先確認父對話有沒有，不要直接在子對話加。
