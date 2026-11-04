@@ -92,23 +92,62 @@
         if (open) { unclosed = true; const t = open[1].trim(); if (t) parts.push(t); s = s.slice(0, open.index); }
         return { answer: s.trim(), reasoning: parts.join('\n\n'), unclosed };
     }
+    // CoLU+Thinking：某階段要不要開 thinking、預算與逾時（純函式，不呼叫模型）。
+    // 只對 qwen3-0.6b 生效；enabled 預設 true，false 時一律關；只有 plan（計畫）與 reflect（反思）會開，route／fill 永遠關。
+    // 預算＝contextTokens × 比例，再夾在 [min, max]，所以跟模型上下文一起縮放（不寫死單一常數）。
+    const THINK_MODELS = new Set(['qwen3-0.6b']);
+    const THINK_STAGES = {
+        plan: { ratio: 0.4, min: 1500, max: 3000, timeoutMs: 30000 },
+        reflect: { ratio: 0.075, min: 300, max: 600, timeoutMs: 15000 },
+    };
+    function thinkingPlan(opts) {
+        opts = opts || {}; const off = { enabled: false, maxTokens: null, timeoutMs: null };
+        if (opts.enabled === false) return off;
+        if (!THINK_MODELS.has(String(opts.modelId == null ? '' : opts.modelId))) return off;
+        const sp = Object.prototype.hasOwnProperty.call(THINK_STAGES, opts.stage) ? THINK_STAGES[opts.stage] : null; if (!sp) return off;
+        const c = Number(opts.contextTokens); const ctxTok = Number.isFinite(c) && c > 0 ? c : 4096;
+        return { enabled: true, maxTokens: Math.round(Math.min(sp.max, Math.max(sp.min, ctxTok * sp.ratio))), timeoutMs: sp.timeoutMs };
+    }
     // 一個小而有型別的決策：ctx = { generate({messages,maxTokens})→string, messages, validate(obj)→[錯誤], maxTries=2, maxTokens=160 }
     // 回覆不合格 → 退回：模型只看到「它自己最後一次的回覆＋精確的錯誤」（不累積歷史）；連續兩次回覆完全相同就提前停止（小模型會原樣複誦錯誤答案）。
     // prefill：先替模型寫好回覆的開頭（例如 {"choice":），小模型就不會改用散文回答；generate 回傳的文字要包含這個開頭
+    // ctx.thinking（選用，來自 thinkingPlan）：有且 enabled 時，先開 thinking 問一輪（maxTokens 用 thinking.maxTokens）；
+    // 答案仍不合法 → 同一題改 enableThinking:false 再問一次（只一次）；再不行才走下面的 ok:false。
+    // 沒有 ctx.thinking 時，generate 收到的參數與以前完全相同（不多帶任何欄位）。
     async function jsonStep(ctx) {
-        const maxTries = ctx.maxTries || 2; const rejected = []; let last = null; let msgs = ctx.messages; const reasoning = [];
-        for (let tries = 1; tries <= maxTries; tries++) {
-            let raw; try { raw = await ctx.generate({ messages: msgs, maxTokens: ctx.maxTokens || 160, prefill: ctx.prefill }); } catch (e) { return { ok: false, tries, rejected, reasoning: reasoning.join('\n\n'), error: String((e && e.message) || e) }; }
-            // 先去掉思考區塊，驗證與退回都只看答案；思考文字另存在 reasoning（只給使用者看，不進 messages）
-            const th = stripThink(raw); const text = th.answer; if (th.reasoning) reasoning.push(th.reasoning); const obj = parseJsonLoose(text);
-            const errs = obj && typeof obj === 'object' && !Array.isArray(obj) ? (ctx.validate ? ctx.validate(obj) : []) : ['不是合法的 JSON 物件'];
-            if (!errs.length) return { ok: true, value: obj, tries, rejected, reasoning: reasoning.join('\n\n') };
-            rejected.push({ reply: text.slice(0, 200), errors: errs });
-            if (last !== null && text.trim() === last.trim()) break;
-            last = text;
-            msgs = ctx.messages.concat([{ role: 'assistant', content: text.slice(0, 300) }, { role: 'user', content: '上一個回覆不合格：' + errs.join('；') + '。請只輸出修正後的 JSON，不要多說別的。' }]);
+        const reasoning = []; const rejected = []; const th = ctx.thinking && ctx.thinking.enabled ? ctx.thinking : null; let calls = 0;
+        const finish = (ok, extra) => Object.assign({ ok, tries: calls, rejected, reasoning: reasoning.join('\n\n') }, extra);
+        const failErr = () => rejected.length ? rejected[rejected.length - 1].errors.join('；') : '沒有回覆';
+        // 一輪：最多 maxTries 次，回覆不合格就退回重問（同前）；generate 拋錯回傳 thrown
+        async function round(maxTries, maxTokens, enableThinking) {
+            let last = null; let msgs = ctx.messages;
+            for (let t = 1; t <= maxTries; t++) {
+                const req = { messages: msgs, maxTokens, prefill: ctx.prefill }; if (th) { req.enableThinking = enableThinking; req.timeoutMs = th.timeoutMs; }
+                calls++;
+                let raw; try { raw = await ctx.generate(req); } catch (e) { return { thrown: true, error: String((e && e.message) || e) }; }
+                // 先去掉思考區塊，驗證與退回都只看答案；思考文字另存在 reasoning（只給使用者看，不進 messages）
+                const st = stripThink(raw); const text = st.answer; if (st.reasoning) reasoning.push(st.reasoning); const obj = parseJsonLoose(text);
+                const errs = obj && typeof obj === 'object' && !Array.isArray(obj) ? (ctx.validate ? ctx.validate(obj) : []) : ['不是合法的 JSON 物件'];
+                if (!errs.length) return { ok: true, value: obj };
+                rejected.push({ reply: text.slice(0, 200), errors: errs });
+                if (last !== null && text.trim() === last.trim()) break;
+                last = text;
+                msgs = ctx.messages.concat([{ role: 'assistant', content: text.slice(0, 300) }, { role: 'user', content: '上一個回覆不合格：' + errs.join('；') + '。請只輸出修正後的 JSON，不要多說別的。' }]);
+            }
+            return { ok: false };
         }
-        return { ok: false, tries: rejected.length, rejected, reasoning: reasoning.join('\n\n'), error: rejected.length ? rejected[rejected.length - 1].errors.join('；') : '沒有回覆' };
+        const maxTries = ctx.maxTries || 2; const base = ctx.maxTokens || 160;
+        if (!th) {
+            const r = await round(maxTries, base, false);
+            if (r.thrown) return finish(false, { error: r.error });
+            return r.ok ? finish(true, { value: r.value }) : finish(false, { error: failErr() });
+        }
+        const a = await round(maxTries, th.maxTokens, true);
+        if (a.thrown) return finish(false, { error: a.error });
+        if (a.ok) return finish(true, { value: a.value });
+        const b = await round(1, base, false); // 退路：同一題，關掉 thinking 再問一次
+        if (b.thrown) return finish(false, { error: b.error });
+        return b.ok ? finish(true, { value: b.value }) : finish(false, { error: failErr() });
     }
     // 填欄位：只問「還缺的」；prompt 不放範例數字或範例值（小模型會照抄）；不知道就填 null（不要編）
     function fillMessages(question, defs, toolName) {
@@ -293,5 +332,5 @@
         return { ok: true, text: typeof res === 'string' ? res : JSON.stringify(res), vars: scope.vars };
     }
 
-    return { buildReferencePack, extractiveSummary, chunkText, splitSentences, parseAttachments, stripAttachments, kindOf, cleanQuery, narrowByEvidence, relevantOptional, slotsFromSchema, programFill, parseJsonLoose, stripThink, jsonStep, fillMessages, validateFill, modelFill, autoPick, menuMessages, chooseTool, tokensOf, checkExtractive, phraseMessages, newTrace, decide, pushRing, tracesToLines, validateRecipe, runRecipe, interp, MAX_STEPS };
+    return { buildReferencePack, extractiveSummary, chunkText, splitSentences, parseAttachments, stripAttachments, kindOf, cleanQuery, narrowByEvidence, relevantOptional, slotsFromSchema, programFill, parseJsonLoose, stripThink, thinkingPlan, jsonStep,fillMessages, validateFill, modelFill, autoPick, menuMessages, chooseTool, tokensOf, checkExtractive, phraseMessages, newTrace, decide, pushRing, tracesToLines, validateRecipe, runRecipe, interp, MAX_STEPS };
 });

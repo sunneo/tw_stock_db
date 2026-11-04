@@ -263,3 +263,37 @@ Level 判斷的設定位置：模型表加一個欄位（例如 `thinking: 'nati
 - `skills/weak-model-harness/scripts/vendor/recipe_core.js` 是另一份副本，本階段刻意不同步；要不要同步留給發布階段決定。
 - 工作目錄在 Windows 上 git 會提示「LF will be replaced by CRLF」，但索引與工作樹都是 LF，`git diff --stat` 只顯示 54 行新增、6 行刪除，沒有整檔換行變動。
 - 回傳新增 `reasoning` 欄位時，要把失敗路徑（`generate` 拋錯）也補上，否則前幾次嘗試的思考會遺失；已補並有測試。
+
+## 階段 2 記錄（2026-11-04，參數與預算，不接任何呼叫端、不接 UI）
+
+**改了哪些檔**：
+- `renderer/src/recipe/recipe_core.js`：
+  - 新增 `thinkingPlan({modelId, stage, contextTokens, enabled})`（約第 103 行）：只有 `qwen3-0.6b` 且 stage 為 `plan`／`reflect` 且 `enabled !== false` 才開；`plan` 預算＝contextTokens×0.4 夾在 1500～3000、逾時 30000；`reflect` 預算＝×0.075 夾在 300～600、逾時 15000；其他一律 `{enabled:false, maxTokens:null, timeoutMs:null}`。
+  - `jsonStep`（約第 117 行）：接受選用的 `ctx.thinking`。有且 enabled 時，先開 `enableThinking:true` 問一輪（maxTokens 用 `thinking.maxTokens`，每次生成都帶 `timeoutMs`）；答案仍不合法 → 同一題（原始 messages）改 `enableThinking:false` 再問一次（只一次，maxTokens 用 `ctx.maxTokens||160`）；再不行走既有 ok:false。`generate` 拋錯不做退路，直接 ok:false。沒有 `ctx.thinking` 時，`generate` 收到的物件只有 `messages／maxTokens／prefill` 三個鍵，與階段 1 完全相同。
+  - 匯出清單加入 `thinkingPlan`。
+- `renderer/src/floating-assistant.js`（只改 4 處，都用 Edit 以字串定位）：
+  - 工作者端 `chat(m)` 的兩處 `enable_thinking: false` → `enable_thinking: m.enableThinking === true`（約第 50881、50883 行）。沒傳時仍是 false，行為不變。
+  - `_llmGenerate` 的 `limitMs`（約第 100507 行）：有 `a.timeoutMs` 就用它，否則沿用 90／300 秒。
+  - `_llmGenerate` 的 `_vlmRpc('chat', …)` payload 加 `enableThinking`（約第 100509 行）；`_vlmRpc` 用 `Object.assign` 轉交，已確認會到工作者的 `m`。
+  - 內嵌的 RECIPE 區塊由 `node scripts/embed-code-ui.js` 重新產生（這次順便把階段 1 的 stripThink 也嵌入了，之前嵌入的是舊版）。其他區塊內容沒有變動。**沒有跑 `build-assistant.js`**，因為它會改寫 `renderer/floating-assistant.js` 與 `.min.js`，這兩份不在本階段範圍。
+- `renderer/src/recipe/think_plan.test.js`（新檔，41 個檢查）。
+- `scripts/run-core-tests.js`：登記新測試一行。
+
+**測試結果**（假模型，全部在 node 執行）：
+- `think_plan.test.js`：41 passed, 0 failed。
+- `recipe_core.test.js`：89 passed, 0 failed（與階段 1 相同，沒有新增檢查）。
+- `plan_core.test.js`：57 passed, 0 failed。
+- `skill_compile_core.test.js`：48 passed, 0 failed。
+- `vlm_core.test.js`：135 passed, 0 failed。
+- `node --check renderer/src/floating-assistant.js`：語法通過。
+- 沒有跑完整的 `run-core-tests.js`，因為它會改寫 `test-reports/` 下本來就有未提交變動的報告檔。
+
+**還沒做（留給後續階段）**：
+- 沒有任何呼叫端傳 `thinking`，所以目前實際執行路徑沒有任何改變（階段 3、4 才接計畫與反思）。
+- 主執行緒的 `_llmGenerate` 目前只會把 `enableThinking` 與 `timeoutMs` 轉交，還沒有 jsonStep 把 `generate` 的 `req.enableThinking` 轉成 `_llmGenerate` 的 `a.enableThinking`。呼叫端接線時要自己轉（`generate: (req) => this._llmGenerate(model, {messages: req.messages, maxTokens: req.maxTokens, prefill: req.prefill, enableThinking: req.enableThinking, timeoutMs: req.timeoutMs}, cb)`）。
+- `renderer/floating-assistant.js` 與 `.min.js` 沒有重新建置，發布前要照專案流程跑 `build-assistant.js`。
+- `skills/weak-model-harness/scripts/vendor/recipe_core.js` 仍是另一份副本，本階段刻意不同步（同階段 1）。
+
+**遇到的坑與教訓**：
+- `embed-code-ui.js` 會一次重寫所有嵌入區塊。這次 `git diff` 確認只有 RECIPE 區塊與我改的 4 處有實質變動，但之後跑它前應該先 diff 一次確認。
+- 工作目錄仍有本階段之外的未提交變動（`.claude/launch.json`、`features/FEATURES.md`、`test-reports/*`、`parts_builtin.json`），提交時只加本階段的檔案。

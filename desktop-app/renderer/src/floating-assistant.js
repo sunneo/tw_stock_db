@@ -8553,22 +8553,71 @@ const holder = {};
         for (let j = i; j < s.length; j++) { const c = s[j]; if (inStr) { if (esc) esc = false; else if (c === '\\') esc = true; else if (c === '"') inStr = false; continue; } if (c === '"') inStr = true; else if (c === '{') depth++; else if (c === '}') { depth--; if (depth === 0) { try { return JSON.parse(s.slice(i, j + 1)); } catch (_) { return null; } } } }
         return null;
     }
+    // 去掉思考區塊：<think>…</think>（<thinking>…</thinking> 同樣處理），大小寫不分；只有開頭沒閉合時，從開頭到結尾都當作思考。
+    // 回傳 { answer 去掉思考後的答案, reasoning 思考文字（多段以空行串接；沒有思考時為空字串）, unclosed 是否有未閉合的思考區塊 }
+    function stripThink(text) {
+        let s = String(text == null ? '' : text); const parts = [];
+        s = s.replace(/<think(?:ing)?>([\s\S]*?)<\/think(?:ing)?>/gi, (_, inner) => { const t = String(inner).trim(); if (t) parts.push(t); return ''; });
+        let unclosed = false; const open = s.match(/<think(?:ing)?>([\s\S]*)$/i);
+        if (open) { unclosed = true; const t = open[1].trim(); if (t) parts.push(t); s = s.slice(0, open.index); }
+        return { answer: s.trim(), reasoning: parts.join('\n\n'), unclosed };
+    }
+    // CoLU+Thinking：某階段要不要開 thinking、預算與逾時（純函式，不呼叫模型）。
+    // 只對 qwen3-0.6b 生效；enabled 預設 true，false 時一律關；只有 plan（計畫）與 reflect（反思）會開，route／fill 永遠關。
+    // 預算＝contextTokens × 比例，再夾在 [min, max]，所以跟模型上下文一起縮放（不寫死單一常數）。
+    const THINK_MODELS = new Set(['qwen3-0.6b']);
+    const THINK_STAGES = {
+        plan: { ratio: 0.4, min: 1500, max: 3000, timeoutMs: 30000 },
+        reflect: { ratio: 0.075, min: 300, max: 600, timeoutMs: 15000 },
+    };
+    function thinkingPlan(opts) {
+        opts = opts || {}; const off = { enabled: false, maxTokens: null, timeoutMs: null };
+        if (opts.enabled === false) return off;
+        if (!THINK_MODELS.has(String(opts.modelId == null ? '' : opts.modelId))) return off;
+        const sp = Object.prototype.hasOwnProperty.call(THINK_STAGES, opts.stage) ? THINK_STAGES[opts.stage] : null; if (!sp) return off;
+        const c = Number(opts.contextTokens); const ctxTok = Number.isFinite(c) && c > 0 ? c : 4096;
+        return { enabled: true, maxTokens: Math.round(Math.min(sp.max, Math.max(sp.min, ctxTok * sp.ratio))), timeoutMs: sp.timeoutMs };
+    }
     // 一個小而有型別的決策：ctx = { generate({messages,maxTokens})→string, messages, validate(obj)→[錯誤], maxTries=2, maxTokens=160 }
     // 回覆不合格 → 退回：模型只看到「它自己最後一次的回覆＋精確的錯誤」（不累積歷史）；連續兩次回覆完全相同就提前停止（小模型會原樣複誦錯誤答案）。
     // prefill：先替模型寫好回覆的開頭（例如 {"choice":），小模型就不會改用散文回答；generate 回傳的文字要包含這個開頭
+    // ctx.thinking（選用，來自 thinkingPlan）：有且 enabled 時，先開 thinking 問一輪（maxTokens 用 thinking.maxTokens）；
+    // 答案仍不合法 → 同一題改 enableThinking:false 再問一次（只一次）；再不行才走下面的 ok:false。
+    // 沒有 ctx.thinking 時，generate 收到的參數與以前完全相同（不多帶任何欄位）。
     async function jsonStep(ctx) {
-        const maxTries = ctx.maxTries || 2; const rejected = []; let last = null; let msgs = ctx.messages;
-        for (let tries = 1; tries <= maxTries; tries++) {
-            let raw; try { raw = await ctx.generate({ messages: msgs, maxTokens: ctx.maxTokens || 160, prefill: ctx.prefill }); } catch (e) { return { ok: false, tries, rejected, error: String((e && e.message) || e) }; }
-            const text = String(raw == null ? '' : raw); const obj = parseJsonLoose(text);
-            const errs = obj && typeof obj === 'object' && !Array.isArray(obj) ? (ctx.validate ? ctx.validate(obj) : []) : ['不是合法的 JSON 物件'];
-            if (!errs.length) return { ok: true, value: obj, tries, rejected };
-            rejected.push({ reply: text.slice(0, 200), errors: errs });
-            if (last !== null && text.trim() === last.trim()) break;
-            last = text;
-            msgs = ctx.messages.concat([{ role: 'assistant', content: text.slice(0, 300) }, { role: 'user', content: '上一個回覆不合格：' + errs.join('；') + '。請只輸出修正後的 JSON，不要多說別的。' }]);
+        const reasoning = []; const rejected = []; const th = ctx.thinking && ctx.thinking.enabled ? ctx.thinking : null; let calls = 0;
+        const finish = (ok, extra) => Object.assign({ ok, tries: calls, rejected, reasoning: reasoning.join('\n\n') }, extra);
+        const failErr = () => rejected.length ? rejected[rejected.length - 1].errors.join('；') : '沒有回覆';
+        // 一輪：最多 maxTries 次，回覆不合格就退回重問（同前）；generate 拋錯回傳 thrown
+        async function round(maxTries, maxTokens, enableThinking) {
+            let last = null; let msgs = ctx.messages;
+            for (let t = 1; t <= maxTries; t++) {
+                const req = { messages: msgs, maxTokens, prefill: ctx.prefill }; if (th) { req.enableThinking = enableThinking; req.timeoutMs = th.timeoutMs; }
+                calls++;
+                let raw; try { raw = await ctx.generate(req); } catch (e) { return { thrown: true, error: String((e && e.message) || e) }; }
+                // 先去掉思考區塊，驗證與退回都只看答案；思考文字另存在 reasoning（只給使用者看，不進 messages）
+                const st = stripThink(raw); const text = st.answer; if (st.reasoning) reasoning.push(st.reasoning); const obj = parseJsonLoose(text);
+                const errs = obj && typeof obj === 'object' && !Array.isArray(obj) ? (ctx.validate ? ctx.validate(obj) : []) : ['不是合法的 JSON 物件'];
+                if (!errs.length) return { ok: true, value: obj };
+                rejected.push({ reply: text.slice(0, 200), errors: errs });
+                if (last !== null && text.trim() === last.trim()) break;
+                last = text;
+                msgs = ctx.messages.concat([{ role: 'assistant', content: text.slice(0, 300) }, { role: 'user', content: '上一個回覆不合格：' + errs.join('；') + '。請只輸出修正後的 JSON，不要多說別的。' }]);
+            }
+            return { ok: false };
         }
-        return { ok: false, tries: rejected.length, rejected, error: rejected.length ? rejected[rejected.length - 1].errors.join('；') : '沒有回覆' };
+        const maxTries = ctx.maxTries || 2; const base = ctx.maxTokens || 160;
+        if (!th) {
+            const r = await round(maxTries, base, false);
+            if (r.thrown) return finish(false, { error: r.error });
+            return r.ok ? finish(true, { value: r.value }) : finish(false, { error: failErr() });
+        }
+        const a = await round(maxTries, th.maxTokens, true);
+        if (a.thrown) return finish(false, { error: a.error });
+        if (a.ok) return finish(true, { value: a.value });
+        const b = await round(1, base, false); // 退路：同一題，關掉 thinking 再問一次
+        if (b.thrown) return finish(false, { error: b.error });
+        return b.ok ? finish(true, { value: b.value }) : finish(false, { error: failErr() });
     }
     // 填欄位：只問「還缺的」；prompt 不放範例數字或範例值（小模型會照抄）；不知道就填 null（不要編）
     function fillMessages(question, defs, toolName) {
@@ -8753,7 +8802,7 @@ const holder = {};
         return { ok: true, text: typeof res === 'string' ? res : JSON.stringify(res), vars: scope.vars };
     }
 
-    return { buildReferencePack, extractiveSummary, chunkText, splitSentences, parseAttachments, stripAttachments, kindOf, cleanQuery, narrowByEvidence, relevantOptional, slotsFromSchema, programFill, parseJsonLoose, jsonStep, fillMessages, validateFill, modelFill, autoPick, menuMessages, chooseTool, tokensOf, checkExtractive, phraseMessages, newTrace, decide, pushRing, tracesToLines, validateRecipe, runRecipe, interp, MAX_STEPS };
+    return { buildReferencePack, extractiveSummary, chunkText, splitSentences, parseAttachments, stripAttachments, kindOf, cleanQuery, narrowByEvidence, relevantOptional, slotsFromSchema, programFill, parseJsonLoose, stripThink, thinkingPlan, jsonStep,fillMessages, validateFill, modelFill, autoPick, menuMessages, chooseTool, tokensOf, checkExtractive, phraseMessages, newTrace, decide, pushRing, tracesToLines, validateRecipe, runRecipe, interp, MAX_STEPS };
 });
 
 }).call(null, undefined, holder);
@@ -50829,9 +50878,9 @@ function faVlmWorkerMain() {
         const L = lib; const t0 = Date.now();
         let inputs;
         if (m.prefill) { // prefill：把回覆的開頭先寫進提示詞（模型從那裡接著寫），回傳的文字包含這個開頭
-            const text = cur.tokenizer.apply_chat_template(m.messages, { tools: m.tools && m.tools.length ? m.tools : undefined, add_generation_prompt: true, tokenize: false, enable_thinking: false }) + m.prefill;
+            const text = cur.tokenizer.apply_chat_template(m.messages, { tools: m.tools && m.tools.length ? m.tools : undefined, add_generation_prompt: true, tokenize: false, enable_thinking: m.enableThinking === true }) + m.prefill;
             inputs = await cur.tokenizer(text, { add_special_tokens: false, return_tensor: true });
-        } else inputs = cur.tokenizer.apply_chat_template(m.messages, { tools: m.tools && m.tools.length ? m.tools : undefined, add_generation_prompt: true, return_dict: true, enable_thinking: false });
+        } else inputs = cur.tokenizer.apply_chat_template(m.messages, { tools: m.tools && m.tools.length ? m.tools : undefined, add_generation_prompt: true, return_dict: true, enable_thinking: m.enableThinking === true });
         const stopper = L.InterruptableStoppingCriteria ? new L.InterruptableStoppingCriteria() : null; cur.stopper = stopper;
         let buf = '', last = Date.now();
         const flush = () => { if (buf) { post({ type: 'stream', tid: m.tid, t: buf }); buf = ''; } last = Date.now(); };
@@ -100455,9 +100504,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const gen = Object.assign(FaVlm.textGenParams(model, { deterministic: !!(a.strict || a.deterministic) }), a.strict ? { repetition_penalty: 1.2, no_repeat_ngram_size: 5 } : {});
         let acc = '', since = 0, stopped = null; const rec = this._vlmWorkerGet(slot);
         const stop = (why) => { if (stopped) return; stopped = why; try { rec.worker.postMessage({ type: 'interrupt' }); } catch (_) {} };
-        const limitMs = (ld.device === 'webgpu' ? 90 : 300) * 1000; const timer = setTimeout(() => stop('逾時'), limitMs);
+        const limitMs = a.timeoutMs > 0 ? a.timeoutMs : (ld.device === 'webgpu' ? 90 : 300) * 1000; const timer = setTimeout(() => stop('逾時'), limitMs);
         try {
-            const res = await this._vlmRpc('chat', { messages: msgs, tools: a.tools && a.tools.length ? a.tools : undefined, maxTokens: a.maxTokens || 512, gen, prefill: a.prefill || undefined }, null, (chunk) => {
+            const res = await this._vlmRpc('chat', { messages: msgs, tools: a.tools && a.tools.length ? a.tools : undefined, maxTokens: a.maxTokens || 512, gen, prefill: a.prefill || undefined, enableThinking: a.enableThinking === true }, null, (chunk) => {
                 acc += chunk; since += chunk.length; if (cb.onToken) cb.onToken(acc);
                 if (since >= 64 && acc.length > 120) { since = 0; const g = FaVlm.looksLikeGarbage(acc.slice(-1500)); if (g.garbage && g.reason !== 'empty' && g.reason !== 'no_content') stop('垃圾輸出：' + g.reason); }
             }, slot);
