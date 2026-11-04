@@ -180,7 +180,7 @@
 ## 5. 要使用者決定的事（每項附推薦）
 
 1. **是否同意下載 onnxruntime-node（階段 5）？** 檔名：`onnxruntime-node`（npm）；來源：registry.npmjs.org；大小：全平台約 307.6 MB（最新版，metadata），單平台待量測。推薦：先量單平台大小後再同意。
-2. **不重裝的設計（已決定方向，見第 9-C 節，不再需要使用者決定）**：不改 `main.js`、不改 `preload.js`；原生執行器的 IPC 由 `main-ext.js` 承接；渲染程序經由 `preload.js` 既有的 `rawfs` 通道（`readFile`、`writeFile`、`mkdir`）用檔案信箱（spool）與主程序溝通。這不是 HTTP，也不開埠。
+2. **不重裝的設計（已決定方向，見第 9-C 節，不再需要使用者決定）**：不改 `main.js`、不改 `preload.js`；原生執行器的 IPC 由 `main-ext.js` 承接；渲染程序經由 `preload.js` 既有的 `rawfs` 通道（`readFile`、`writeFile`、`mkdir`）用檔案信箱（spool）與主程序溝通。這不走網路通道，也不開埠。
 3. **COI 評估（階段 1 步驟 3）**：是否允許改用 `fa-local://` 載入頁面（影響開機與熱更新覆蓋目錄）？推薦：先做評估，不直接切換；若 ORT 多執行緒已在階段 1 生效，就不切。
 4. **Linux 驗證方式**：本機沒有 Linux。推薦：WSL 或 CI 上的 Linux 環境實跑；在那之前標示「未在 Linux 實跑」。
 5. **閒置關閉時間**：推薦 10 分鐘。
