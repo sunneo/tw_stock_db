@@ -207,7 +207,7 @@
 
 | 候選 | 來源 | 大小 | 授權 | 狀態 |
 |---|---|---|---|---|
-| ECAPA-TDNN ONNX（第三方轉換） | Hugging Face `astrolabos/ecapa-tdnn` | 83,404,680 位元組（約 80MB） | Apache-2.0（沿襲 SpeechBrain） | 未下載；未在本專案驗證；第三方轉換 |
+| ECAPA-TDNN ONNX（第三方轉換） | Hugging Face `astrolabos/ecapa-tdnn` | 83,404,680 位元組（約 80MB） | Apache-2.0（沿襲 SpeechBrain） | 2026-11-05 使用者同意後已下載到工作階段暫存資料夾（不在倉庫內）；大小與預期相同；sha256 `9acb086d5d9efca07266930ce03772f13cad5fd5a415bcf014ee4d82bed26311`；未在本專案跑過推論；第三方轉換 |
 | 3D-Speaker 工具套件內的 ECAPA-TDNN | GitHub `modelscope/3D-Speaker`（Apache-2.0） | 未確認 | Apache-2.0 | 未下載；單檔大小與可否單獨取得未確認 |
 
 - 下載前要回報：檔名、來源、大小。目前沒有任何下載。
