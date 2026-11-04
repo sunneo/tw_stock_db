@@ -61083,6 +61083,40 @@ ${fnData.code}
             },
             { type: 'object', properties: { spec: { type: 'object', description: '卡片規格：{title,description,questions} 或 {title,steps:[…]}，欄位見工具說明' } }, required: ['spec'], additionalProperties: true }
         );
+        // 子對話 S5：父對話操作自己子對話的工具（只在目前對話有子對話時送進工具清單，見 _subchatToolFilter）。只能操作本機、parentId 是目前對話的子對話。
+        this.register_openai_tool('chat_list_children',
+            '列出目前對話的子對話（id、標題、狀態、摘要）。只在已經有子對話時有用。',
+            async function () {
+                const host = this._faHost || this; const pid = this._ctx && this._ctx.id;
+                const kids = host._chatTreeMod().childrenOf((host._chatIndex && host._chatIndex.chats) || [], pid);
+                return JSON.stringify({ ok: true, children: kids.map((c) => ({ chat_id: c.id, title: c.title, status: c.status || null, summary: String(c.summary || '').slice(0, 200) })) });
+            },
+            { type: 'object', properties: {} });
+        this.register_openai_tool('chat_send_to_child',
+            '把訊息送進目前對話的某個子對話（等同連結卡片的「傳給子對話」），回傳該子對話的狀態。只在已經有子對話時有用。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const host = this._faHost || this; const pid = this._ctx && this._ctx.id;
+                const chk = host._subchatToolTarget(pid, a.chat_id);
+                if (!chk.ok) return JSON.stringify(chk);
+                const r = await host._subchatSend(a.chat_id, String(a.message || ''));
+                if (!r.ok) return JSON.stringify({ ok: false, error: r.error });
+                return JSON.stringify({ ok: true, mode: r.mode, status: (host._chatEntry(a.chat_id) || {}).status || null });
+            },
+            { type: 'object', properties: { chat_id: { type: 'string', description: '子對話 id（chat_list_children 取得）' }, message: { type: 'string', description: '要傳給子對話的訊息' } }, required: ['chat_id', 'message'] });
+        this.register_openai_tool('chat_get_child_summary',
+            '取得目前對話某個子對話的摘要與最後一則助理回覆（前 500 字）。只在已經有子對話時有用。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const host = this._faHost || this; const pid = this._ctx && this._ctx.id;
+                const chk = host._subchatToolTarget(pid, a.chat_id);
+                if (!chk.ok) return JSON.stringify(chk);
+                const e = host._chatEntry(a.chat_id) || {};
+                let last = '';
+                try { const cctx = await host._chatCtxLoad(a.chat_id); const as = (cctx.messages || []).filter((m) => m && m.role === 'assistant' && typeof m.content === 'string'); last = as.length ? as[as.length - 1].content.slice(0, 500) : ''; } catch (_) { /* 讀不到就留空 */ }
+                return JSON.stringify({ ok: true, chat_id: a.chat_id, title: e.title || '', status: e.status || null, summary: String(e.summary || ''), last_reply: last });
+            },
+            { type: 'object', properties: { chat_id: { type: 'string', description: '子對話 id' } }, required: ['chat_id'] });
         registerOptional('uml_guide',
             '用互動卡片一步一步引導使用者把「情境」設計成 UML 與程式骨架：程式先讀情境（參與者、使用案例、類別），再用卡片問使用者真正需要決定的事——語言與套件、要實作哪些使用案例（可以勾掉或補一句）、架構風格，接著依這些回應產生第二張卡片（平手的設計抉擇必須使用者選，其餘有帶程式的建議值），最後確認，才依答案產生設計、專案 zip 與設計檢視器。全程不需要 AI 或模型生成 UML，弱的 AI／離線模型也能用；使用者的回應只回傳給這個工具。情境要用「<參與者>可以<動作><名詞>」的句型（例如「顧客可以加入購物車並結帳付款」）；讀不出來會回報，不會編造。',
             async function (rawArgs) {
@@ -74755,18 +74789,38 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     // 完全叫不到）；'router'/'full'模式不再無條件加進根層級，改成透過建構子
     // 新增的custom_skills虛擬domain（見建構子/_resolveDomainToolNames），只能
     // 透過delegate_to_subagent委派給子agent按需查詢/呼叫。
+    // 子對話 S5：父對話的子對話工具（chat_list_children 等三個）只在目前對話有子對話時才送進工具清單；沒有子對話時清單與之前完全相同。
+    _subchatToolFilter(names) {
+        if (!Array.isArray(names)) return names;
+        const SUB = ['chat_list_children', 'chat_send_to_child', 'chat_get_child_summary'];
+        const pid = this._ctx && this._ctx.id;
+        const hasKids = !!pid && this._chatTreeMod().childrenOf((this._chatIndex && this._chatIndex.chats) || [], pid).length > 0;
+        return hasKids ? names : names.filter((n) => SUB.indexOf(n) < 0);
+    }
+
+    // 子對話 S5：子對話工具的目標檢查。只能操作本機、且 parentId 是目前對話的子對話；其餘回 ok:false 並說明原因。
+    _subchatToolTarget(pid, childId) {
+        const id = typeof childId === 'string' ? childId : '';
+        if (!id) return { ok: false, error: '缺少 chat_id' };
+        const e = this._chatEntry(id);
+        if (!e) return { ok: false, error: '找不到這個對話' };
+        if (e.nodeName) return { ok: false, error: '遠端對話不能用這個工具（遠端子對話之後的版本才支援）' };
+        if (!e.parentId || e.parentId !== pid) return { ok: false, error: '這不是目前對話的子對話' };
+        return { ok: true };
+    }
+
     _getRootToolNames() {
         const mode = this.multiSubAgentMode;
         const custom = this.advancedSettings.customTools.map(t => t.name);
         if (mode === 'off') {
             const allBuiltins = Object.keys(this.tools).filter(n => n !== 'delegate_to_subagent');
-            return allBuiltins.concat(custom);
+            return this._subchatToolFilter(allBuiltins.concat(custom));
         }
         const rootBuiltins = Object.keys(this.tools).filter(n => !this._domainGatedToolNames.has(n));
         // 依「使用者這一則訊息」補專用工具（見 FA_TASK_TOOL_HINTS）：例如「圖片合併成PDF」直接拿到 images_to_pdf，不用先委派、也不會被委派到一個沒有它的領域去自己寫 python
         for (const h of this._rootTaskHints()) for (const n of h.tools) if (this.tools[n] && !rootBuiltins.includes(n)) rootBuiltins.push(n);
-        if (mode === 'intent') return this._intentFilter(rootBuiltins);
-        return rootBuiltins;
+        if (mode === 'intent') return this._subchatToolFilter(this._intentFilter(rootBuiltins));
+        return this._subchatToolFilter(rootBuiltins);
     }
 
     // ===== 網頁編輯器（FaWebEdit／FaWebEditUI）：HTML 預覽＋模擬後端編輯器；後端用既有的 sandbox_mock（JS）與 Pyodide（Python），不佔埠 =====
