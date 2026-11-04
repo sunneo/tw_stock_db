@@ -1,0 +1,147 @@
+{
+  "version": 1,
+  "observer": "teacher",
+  "note": "老師（管理層）從觀察者角度寫的路線經驗，2026-11-04，來源是管理層工作階段 local_49f6c57d 的對話與提交紀錄。格式與 path-experiences.json 相同，另加 observer 欄。",
+  "records": [
+    {
+      "id": "T-positive-stage-loop",
+      "observer": "teacher",
+      "task": "CoLU+Thinking 階段 1 到 5 的派工與驗收",
+      "kind": "positive_path",
+      "stage": "colu-thinking 1-5",
+      "steps": [
+        {"do": "派工簡報只限一個階段，列出要改的檔案、不准碰的檔案、測試與評估名稱", "check": "簡報內容含檔案清單與驗收指令"},
+        {"do": "Haiku 回報後，老師自己重跑該階段測試", "check": "recipe_core 89、plan_core 57、skill_compile_core 48、vlm_core 135 等數字與回報一致"},
+        {"do": "老師用 git show --stat 與 git ls-files --eol 查改動範圍與行尾", "check": "只動該動的檔，行尾 LF"},
+        {"do": "老師跑完整核心測試，只允許已知失敗（tray_dialog、RFB 探測）", "check": "run-core-tests 的 FAIL 行只有這兩項"},
+        {"do": "確認副本（vendor）與來源一致", "check": "cmp 兩檔無差異"}
+      ],
+      "alternatives": [],
+      "lesson": "一階段一個寫檔者，老師每階段親自重跑測試與範圍檢查，階段 1 到 5 都沒有走歪。",
+      "evidence": "管理層對話中各階段核對紀錄；提交 4d30a0c0、adea8058、500bcdb4、8784bbbb、b12affba",
+      "verified": true
+    },
+    {
+      "id": "T-branch-consensus-drift",
+      "observer": "teacher",
+      "task": "原生執行器設計定稿",
+      "kind": "branch",
+      "stage": "native-runner",
+      "steps": [],
+      "alternatives": [
+        {"option": "老師只確認提交存在與文字回報，接受『與本文件一致』", "outcome": "設計定稿含 HTTP 本機伺服器兩個階段，偏離使用者早已說過的標準輸入輸出共識；使用者說了兩次不要 HTTP", "chosen": true},
+        {"option": "派工簡報附共識檔，驗收時用程式檢查必須／禁止條款，並逐條對照使用者原話", "outcome": "本次沒有做，事後才補（consensus_check 與 teacher_gate）", "chosen": false}
+      ],
+      "lesson": "弱模型會自己加入使用者沒同意或已否決的方案，而且報告裡寫『一致』；老師不能只信文字，要用程式檢查共識，並把使用者原話逐條對照。",
+      "evidence": "提交 88116691（定稿含 HTTP）；使用者原話：『我們不是已經說stdin？』『為什麼他又要提什麼白癡http？！』『這就是haiku需要harness學習的地方』",
+      "verified": true
+    },
+    {
+      "id": "T-reflection-consensus-ledger",
+      "observer": "teacher",
+      "task": "使用者決定的記錄與重複詢問",
+      "kind": "reflection",
+      "stage": "native-runner、colu-thinking",
+      "steps": [
+        {"do": "每個使用者決定寫進『決定帳本』（原話加日期），派工前先查帳本", "check": "派工簡報附決定清單，且沒有再問已回答過的問題"},
+        {"do": "老師每次想問使用者前，先 Grep 帳本與設計文件的『使用者決定』小節", "check": "查無此題才問"}
+      ],
+      "alternatives": [],
+      "lesson": "使用者多次指出不要讓他重複說明；決定一旦說過就是共識，必須進帳本並被下游簡報與驗收使用。",
+      "evidence": "使用者原話：『我已經說明了，不要再讓我重複，請直接定稿 => 實作!』『我們這邊前面不是討論出共識?!』",
+      "verified": true
+    },
+    {
+      "id": "T-branch-no-progress",
+      "observer": "teacher",
+      "task": "階段 6 真模型量測",
+      "kind": "branch",
+      "stage": "colu-thinking 6",
+      "steps": [],
+      "alternatives": [
+        {"option": "派工簡報沒要求逐題進度與總時間上限，量測跑了約 35 分鐘才被使用者發現看不到進度", "outcome": "使用者失去控制感，停掉重跑，丟掉已跑的組別", "chosen": true},
+        {"option": "簡報規定：長時間任務必須逐題輸出進度、即時寫結果檔、先印預估上限時間、超過 40 分鐘先縮小題目", "outcome": "重跑 41 題約 25 分鐘完成，過程可見", "chosen": false}
+      ],
+      "lesson": "任何可能超過幾分鐘的任務，派工當下就要求進度輸出、結果檔與時間上限；老師用結果檔輪詢，不要等結束。",
+      "evidence": "使用者原話：『他一個progressive都沒有，他怎麼知道每個跑多久，這不是很讓人覺得失去控制嗎，就像halting problem』；提交 bd8f9bbf、8414f5a8",
+      "verified": true
+    },
+    {
+      "id": "T-branch-shared-copy-contamination",
+      "observer": "teacher",
+      "task": "harness vendor 副本同步",
+      "kind": "branch",
+      "stage": "colu-thinking 3-4",
+      "steps": [],
+      "alternatives": [
+        {"option": "老師在階段 4 的 Haiku 還有未提交修改時，複製 recipe_core.js 到 vendor 並提交", "outcome": "提交 a3c16797 帶入了階段 4 尚未完成的程式；之後靠階段 4 自己的提交才一致", "chosen": true},
+        {"option": "等寫檔者提交後再同步共用副本", "outcome": "不會污染", "chosen": false}
+      ],
+      "lesson": "一次一個寫檔者的規則老師也要遵守：有寫檔者進行中時，老師不動它改的檔，也不同步它改的檔的副本。",
+      "evidence": "提交 a3c16797 與 8784bbbb；管理層對話中階段 4 回報提到副本比 HEAD 多了反思程式",
+      "verified": true
+    },
+    {
+      "id": "T-branch-queued-not-delivered",
+      "observer": "teacher",
+      "task": "對執行中的子工作階段傳訊息",
+      "kind": "branch",
+      "stage": "native-runner、colu-thinking 6、7",
+      "steps": [],
+      "alternatives": [
+        {"option": "收到『已排隊、未確認已讀』就當成已送達", "outcome": "指令可能沒生效；本次靠事後看提交才確認", "chosen": true},
+        {"option": "傳訊息後用提交紀錄、結果檔或事件確認有沒有照做，沒有就補救", "outcome": "階段 6 重跑與階段 7 任務 C、D 都照做了", "chosen": false}
+      ],
+      "lesson": "訊息回報排隊不等於生效；老師要用程式可見的證據（提交、結果檔）確認，不要只信送出動作。",
+      "evidence": "管理層對話中多次 SendMessage 回報 delivery: queued；階段 6 重跑提交 bd8f9bbf；階段 7 提交 7e0ada05、cc1f44c0",
+      "verified": true
+    },
+    {
+      "id": "T-branch-process-kill-scope",
+      "observer": "teacher",
+      "task": "停掉測試用的桌面版程序",
+      "kind": "branch",
+      "stage": "colu-thinking 6",
+      "steps": [],
+      "alternatives": [
+        {"option": "用程序名稱加命令列關鍵字過濾後直接停止", "outcome": "範圍是正確的，但之後使用者的 Claude 主程式消失，使用者懷疑是被誤殺，老師花很多回合證明範圍而且沒有查出真因", "chosen": true},
+        {"option": "停止前先列出程序清單並讓測試腳本自己負責清理，記錄停掉的編號與依據", "outcome": "可以直接給出證據，並避免殘留程序", "chosen": false}
+      ],
+      "lesson": "停程序前先留下可驗證的紀錄（編號、命令列、時間）；測試腳本要自帶清理，老師不要事後動手。",
+      "evidence": "管理層對話：停止 electron 編號 8492、13928、20264、16448；使用者原話：『我猜你kill錯對象』『主畫面跟task icon與process都不見』",
+      "verified": false
+    },
+    {
+      "id": "T-branch-jargon",
+      "observer": "teacher",
+      "task": "與使用者溝通用詞",
+      "kind": "branch",
+      "stage": "native-runner",
+      "steps": [],
+      "alternatives": [
+        {"option": "用『簡報』『退路』等內部說法描述給下一個人的工作說明", "outcome": "使用者問『什麼簡報』", "chosen": true},
+        {"option": "直接說『工作說明』或用白話描述", "outcome": "使用者不需要追問", "chosen": false}
+      ],
+      "lesson": "對使用者只用白話；內部用詞留在文件，不放進回覆。",
+      "evidence": "使用者原話：『什麼簡報 請直接實作』",
+      "verified": true
+    },
+    {
+      "id": "T-reflection-long-run-shortcuts",
+      "observer": "teacher",
+      "task": "整體思考捷徑（CoLU+Thinking 約 5.5 小時）",
+      "kind": "reflection",
+      "stage": "colu-thinking 全程",
+      "steps": [
+        {"do": "動手前先做零成本前置檢查（例如 crossOriginIsolated 與執行緒數）", "check": "實測值寫進文件，再決定要不要做昂貴的路線"},
+        {"do": "量測一開始就縮小題目、逐題進度、時間上限", "check": "預估上限小於 40 分鐘"},
+        {"do": "把使用者決定寫進帳本並附在每個派工", "check": "共識檢查通過"},
+        {"do": "沒有寫檔衝突的工作並行（調查、文件、量測）", "check": "各自只改自己的檔"}
+      ],
+      "alternatives": [],
+      "lesson": "耗時主要來自等 CPU 量測、重跑、偏離共識後的返工；先做零成本前置檢查、縮小量測、帳本與程式驗收可以省下大部分時間。",
+      "evidence": "階段 6 重跑（bd8f9bbf、8414f5a8）、階段 7（cc1f44c0）、設計偏離（88116691）；耗時估算來自提交時間 16:00 到 21:50",
+      "verified": false
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 ---
 name: weak-model-harness
-description: 讓小模型或弱模型（例如 claude-haiku-5.5）也能把事情做對的封閉題迴圈。程式負責路由、欄位、核對與預設退路，模型每次只回答一題封閉題（一個字母或固定欄位的 JSON）。做完還會把「程式驗證過的成功」存成經驗，回流給離線訓練器。當你（或你所在的弱模型）要處理安排會議、單位換算、問題分級、批次改檔名這類有固定欄位的任務，或要驗證弱模型在帶領下的執行品質時使用。
+description: 弱模型（例如 claude-haiku-5.5）的帶領技能，包含三部分。一是封閉題迴圈：程式負責路由、欄位、核對與預設退路，模型每次只回答一題封閉題，做完把程式驗證過的成功存成經驗。二是老師端的派工與驗收輔助（teacher_gate：dispatch 記下使用者原話，verify 核對提交範圍、共識、驗收指令與「沒有出入」之類的宣稱，observe 記下老師視角的記錄）。三是共識閘門與路線經驗（共識檔的必須與禁止條款、正路與分支與反思的 JSON）。當你要處理安排會議、單位換算、批次改檔名這類有固定欄位的任務，或要派工、驗收弱模型的工作、驗證它的執行品質時使用。
 ---
 
 # 弱模型 harness
@@ -70,3 +70,36 @@ node scripts/harness.js behavior 某個原始碼檔
 老師每次派工，簡報都要附共識檔（`references/consensus/<名稱>.json`）：`must` 列必須出現的片語，`forbid` 列已被使用者否決或未同意的方案與片語，`allow` 列例外（例如 CDN 網址、註明禁止的句子）。Haiku 提交前自己跑一次：`node scripts/consensus_check.js references/consensus/<名稱>.json --root <專案資料夾>`；管理層驗收時也跑一次。結束碼 1 代表違反，要退回重做，不能靠記憶判斷「應該沒問題」。
 
 為什麼要這樣做：弱模型在設計時會把已被否決的方案當成「選用」或「之後再說」列進去，文字上看起來有出入，但依然違反共識。條款與程式檢查比說明文字可靠，所以共識要寫成條款。
+
+## 老師迴圈的程式輔助
+
+老師（管理層）也會犯「沒有照原話核對」的錯。所以老師端有 `scripts/teacher_gate.js`，三個子指令：
+
+1. **派工前 dispatch**：把使用者原話逐句記下來（每句一個 `--quote`），寫明共識檔與允許修改的檔案或資料夾（資料夾要以 `/` 結尾）。
+   ```bash
+   node skills/weak-model-harness/scripts/teacher_gate.js dispatch --task 任務名 --quote "原話一" --quote "原話二" --consensus skills/weak-model-harness/references/consensus/某共識.json --allow 某檔.md --verify "node scripts/harness-tests/portable.test.js"
+   ```
+   紀錄寫到目前資料夾的 `.weak-harness/dispatch/<任務>.json`。
+
+2. **驗收時 verify**：傳入提交 hash 與報告文字檔。程式自動做五件事：(1) 用 `git diff-tree` 核對提交只動了允許的檔案；(2) 讀提交內的檔案內容跑共識檢查（不是工作目錄）；(3) 跑派工時記下的驗收指令，收集結束碼；(4) 掃描宣稱詞（「沒有出入」「一致」「已完成」「全過」等），每一句要附證據：可解析的提交 hash 或指令輸出；比較型宣稱（「一致」「沒有出入」「完全相同」）光附 hash 不算，要附比對輸出或逐條對照（句中寫「已對照」）；(5) 原話逐條對照欄，預設全部「否」，老師用 `--confirm` 檔逐條填「是」才算通過。結束碼 0 才可接受，1 不可接受，驗收單寫到 `.weak-harness/dispatch/<任務>.verdict.md`，並印在畫面上。
+
+   ```bash
+   node skills/weak-model-harness/scripts/teacher_gate.js verify --task 任務名 --hash 提交hash --report 報告.txt --confirm 對照.json
+   ```
+
+3. **驗收後 observe**：老師從觀察者角度追加一筆記錄（`--kind` 為 positive_path、branch 或 reflection，`--stage`、`--lesson`、`--evidence` 必填）。驗收單最後會提示「請補老師觀察」。
+
+**老師守則**（寫進每次驗收的習慣，不靠記憶）：
+
+- (a) 不接受只有文字的「沒有出入」或「一致」。要嘛有程式檢查的輸出，要嘛逐條對照使用者原話並在驗收單上填「是」。
+- (b) 偏離共識也要記一筆 branch（`observe --kind branch`），並在 `path-experiences.json` 留下來源。偏離不是只靠事後修正就算了。
+
+## 正路與觀察者並列（observer 欄位）
+
+`references/path-experiences.json` 每筆有 `observer` 欄位：`self` 是弱模型自己的記錄（原本的 42 筆）；`teacher` 是老師（觀察者）的記錄（9 筆來自 `teacher-observations.json`，合併後保留 id 與內容；之後新的老師記錄用 `teacher_gate.js observe` 寫入，不再手動改 JSON）。`teacher-observations.json` 只當合併時的來源快照，之後以 `path-experiences.json` 為準。
+
+規則：每個階段結束，弱模型寫自己的正路、分支與反思（`self`），老師另外寫觀察者的正路、分支與反思（`teacher`）。兩者並列才算完整經驗。開新階段前，兩種都要讀，先看正路與反思，再看有沒有相同性質的分支。
+
+## 打包
+
+`scripts/pack.js` 只重新產生 `scripts/vendor/`，不會產生 zip。來源改了要先跑 `node scripts/pack.js`，再重新打包 `weak-model-harness.zip`（在 `skills/weak-model-harness` 底下用 PowerShell 的 Compress-Archive 把內容打包到根層，不包含 zip 本身）。
