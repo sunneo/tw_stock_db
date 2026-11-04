@@ -79896,6 +79896,45 @@ ${sourceTool.handlerScript}
         await this._saveChatIndex();
     }
 
+    // 子對話 S7：側欄的批次刪除選取模式（只對一個父對話；展開它、顯示核取方塊與工具列）
+    _chatSelectMode(pid) {
+        const idx = this._chatIndex; if (!idx || !this._chatEntry(pid)) return;
+        idx.expanded = Object.assign({}, idx.expanded || {}); idx.expanded[pid] = true;
+        this._chatSelectParent = pid; this._chatSelect = new Set();
+        this._chatListSig = null; this._renderChatList();
+    }
+
+    _chatSelectExit() {
+        this._chatSelectParent = null; this._chatSelect = new Set();
+        this._chatListSig = null; try { this._renderChatList(); } catch (_) { /* */ }
+    }
+
+    // 子對話 S7：批次刪除（側欄按鈕共用）。計畫由 planDelete 產生；確認對話框列出將刪除的標題與數量；
+    // 有進行中的子對話時另外問一次「要不要連它們一起刪」（按取消＝只刪其餘）。取消任何一步都不動資料。
+    async _chatBatchDelete(pid, opts) {
+        const busyIds = Array.from(this._chatCtxs.entries()).filter(([, c]) => c && c.isResponding).map(([id]) => id);
+        const mod = this._chatDeleteMod();
+        let plan = mod.planDelete(this._chatIndex.chats, Object.assign({ parentId: pid, busyIds }, opts));
+        if (plan.error) { alert('無法批次刪除：' + plan.error); return; }
+        if (opts.filter === 'ids' && !(opts.ids && opts.ids.length)) { alert('還沒有選取要刪除的子對話。'); return; }
+        const listOf = (arr) => arr.slice(0, 20).map((x) => '・' + (x.title || x.id)).join('\n') + (arr.length > 20 ? `\n…（另 ${arr.length - 20} 個）` : '');
+        const inProg = plan.skipped.filter((s) => s.reason === 'in_progress' || s.reason === 'descendant_in_progress');
+        if (!plan.toDelete.length) {
+            alert('沒有可以刪除的子對話。' + (plan.skipped.length ? `\n略過 ${plan.skipped.length} 個：\n${listOf(plan.skipped)}` : ''));
+            return;
+        }
+        let msg = `將刪除 ${plan.toDelete.length} 個對話（其中子孫 ${plan.descendantsDeleted} 個一併刪除）？\n這個動作無法復原。\n\n${listOf(plan.toDelete)}`;
+        if (plan.skipped.length) msg += `\n\n略過 ${plan.skipped.length} 個（進行中或受保護）：\n${listOf(plan.skipped)}`;
+        if (!confirm(msg)) return;
+        if (inProg.length && confirm(`還有 ${inProg.length} 個進行中的子對話。\n按「確定」＝連它們一起刪除（會先停止它們）；按「取消」＝只刪其餘。`)) {
+            plan = mod.planDelete(this._chatIndex.chats, Object.assign({ parentId: pid, busyIds, includeRunning: true }, opts));
+        }
+        const res = await this._chatDeleteMany(plan);
+        this._chatSelectExit();
+        const failNote = res.failed.length ? `；失敗 ${res.failed.length} 個` : '';
+        this._log(`🗑 已刪除 ${res.deleted.length} 個對話${failNote}`);
+    }
+
     // 子對話 S7：批次刪除的執行。計畫由 _chatDeleteMod().planDelete 產生（只含子對話與其子孫）；這裡只負責刪與清理。
     // 單一項目失敗（存檔刪除出錯）不影響其他項目，結果逐項列在 failed。目前對話被刪時改停在父對話（沒被刪的），否則最近更新的一筆。
     async _chatDeleteMany(plan) {
@@ -80065,11 +80104,39 @@ ${sourceTool.handlerScript}
         if (sig === this._chatListSig && list.firstChild) return; // 沒有實質變化（AI每一步存檔都會呼叫這裡）
         this._chatListSig = sig;
         list.textContent = '';
+        // 子對話 S7：選取模式的工具列（選取數、刪除選取的、刪除已完成／失敗的、取消）
+        if (this._chatSelectParent && this._chatEntry(this._chatSelectParent)) {
+            const pid = this._chatSelectParent; const n = this._chatSelect.size;
+            const bar = document.createElement('div'); bar.className = 'cl-batch';
+            bar.style.cssText = 'display:flex; gap:6px; flex-wrap:wrap; align-items:center; padding:6px 8px; font-size:12px;';
+            const lab = document.createElement('span'); lab.style.cssText = 'flex:1 1 100%; opacity:0.85;';
+            lab.textContent = `批次刪除「${this._chatEntry(pid).title}」的子對話（已選 ${n}）`;
+            const mkBtn = (text, fn, danger) => {
+                const b = document.createElement('button'); b.type = 'button'; b.className = 'cl-batch-btn'; b.textContent = text;
+                b.style.cssText = `cursor:pointer; padding:3px 8px; border-radius:6px; border:1px solid ${danger ? 'rgba(220,38,38,0.6)' : 'rgba(99,102,241,0.5)'}; background:transparent; color:${danger ? '#dc2626' : '#6366f1'}; font-size:12px;`;
+                b.addEventListener('click', (ev) => { ev.preventDefault(); ev.stopPropagation(); fn(); });
+                return b;
+            };
+            bar.appendChild(lab);
+            bar.appendChild(mkBtn(`刪除選取的（${n}）`, () => this._chatBatchDelete(pid, { filter: 'ids', ids: Array.from(this._chatSelect) }), true));
+            bar.appendChild(mkBtn('刪除已完成／失敗的', () => this._chatBatchDelete(pid, { filter: 'done_or_failed' }), true));
+            bar.appendChild(mkBtn('取消', () => this._chatSelectExit(), false));
+            list.appendChild(bar);
+        }
         if (this._rgRenderChatListMachines) this._rgRenderChatListMachines(list); // 遠端群組：在清單最上面列出群組裡的機器
         const chatEl = (c, nested, depth = 0, row = null) => {
             const el = document.createElement('div');
             el.className = `cl-item${c.id === idx.currentId ? ' active' : ''}${nested ? ' nested' : ''}`;
             el.dataset.chatId = c.id; el.draggable = true;
+            // 子對話 S7：批次刪除的選取模式（只在這個父對話的選取模式打開時出現核取方塊；沒有選取模式時列與現在完全相同）
+            if (this._chatSelectParent && c.parentId === this._chatSelectParent) {
+                const cb = document.createElement('input');
+                cb.type = 'checkbox'; cb.className = 'cl-select'; cb.checked = this._chatSelect.has(c.id);
+                cb.style.cssText = 'margin-right:6px; flex:0 0 auto;';
+                cb.addEventListener('click', (ev) => ev.stopPropagation());
+                cb.addEventListener('change', () => { if (cb.checked) this._chatSelect.add(c.id); else this._chatSelect.delete(c.id); this._chatListSig = null; this._renderChatList(); });
+                el.insertBefore(cb, el.firstChild);
+            }
             if (depth > 0) { el.classList.add('cl-child'); el.dataset.depth = String(depth); el.style.marginLeft = (depth * 14) + 'px'; }
             const cx = this._chatCtxs.get(c.id);
             // 狀態標記放在標題「前面」：⏳＝AI還在跑、❓＝AI在等你確認、藍點＝背景有你還沒看的新內容
@@ -80230,6 +80297,7 @@ ${sourceTool.handlerScript}
                 ...groupItems,
                 { label: '　＋ 新群組並移入', run: () => { const g = { id: this._chatNewId('g'), name: '新群組', collapsed: false }; idx.groups.push(g); this._chatMove(id, g.id); this._chatInlineRename(`[data-group-id="${g.id}"] .cl-title`, g.name, (name) => { g.name = name; this._renderChatList(); this._saveChatIndex(); }); } },
                 { sep: true },
+                ...(this._chatIndex.chats.some((k) => k.parentId === id) ? [{ label: '批次刪除子對話…', run: () => this._chatSelectMode(id) }] : []),
                 { label: '刪除對話', danger: true, run: () => this._chatDelete(id) },
             ]);
         } else if (head) {
