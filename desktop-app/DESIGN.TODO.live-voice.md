@@ -260,3 +260,16 @@
   2. 真 Electron 評估（隔離環境、用錄好的測試音檔，或 Chromium 假音訊輸入）。
   3. 設定區塊目前是原生團隊加的「開發中」標示且停用，要在真的可用後拿掉。
 - 階段 C 到 F 尚未開始；聲紋模型已下載到工作階段暫存，尚未在程式裡使用。
+
+### 2026-11-05 階段 B 接線（已提交 1c7e678a）與階段 C 第一段
+- 階段 B 接線：`floating-assistant.js` 的 `_liveVoiceStart`／`_liveVoiceStop`、收音迴圈接既有 Whisper、真 Electron 評估 `scripts/eval/live_voice_b.eval.js` 12 項全過（麥克風與辨識為替身，如實標明）。
+- 階段 C 第一段（純邏輯，未嵌入 App）：
+  - `renderer/src/voice/voiceprint_store.js`：上限 8–128、ID 不重用、模型版本檢查、餘弦比對取最大值、強制錄入判斷。測試 15 項全過。
+  - `renderer/src/voice/fbank.js`：16kHz、25ms 視窗、10ms 位移、80 維 log-mel。測試 8 項全過。**未與來源模型的前處理逐位元比對**（Hann 視窗與來源是否一致未確認）。
+- **階段 C 還沒做的**：
+  1. 用 onnxruntime-web（與既有 `importOrt` 相同的 CDN 載入方式，1.22.0）跑 ECAPA 推論；輸入形狀要在真模型上確認。
+  2. 錄入流程與 UI、語音「新增聲紋」「刪除聲紋」（刪除要二次確認）、回報 ID 的語音。
+  3. 門檻實測：專案裡有真實語音可用，例如 `D:\Downloads\videos\型態圖形班\converted\` 的多個講課 mp3（同一講者）；要用不同講者（例如 `videos\巧虎\` 內的音檔）對照。目前還沒跑。
+  4. 模型交付：網頁版要在使用者同意後，從 `https://huggingface.co/astrolabos/ecapa-tdnn/resolve/main/ecapa_tdnn.onnx` 下載並核對 sha256 `9acb086d…311`；桌面版原生路徑需要改 `nr-*.js`／`main-ext.js`，這兩個不在我的範圍內（管理層指示），所以桌面版目前也走 onnxruntime-web。
+  5. 真 Electron 評估。
+- 「全語音Live」開關仍停用，待聲紋完成才開放。
