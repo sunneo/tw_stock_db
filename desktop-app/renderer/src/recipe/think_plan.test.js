@@ -100,6 +100,20 @@ const TH = { enabled: true, maxTokens: 1600, timeoutMs: 30000 };
     const r5 = await R.jsonStep({ generate: f5.generate, messages: msgs, validate: VALID, thinking: { enabled: false, maxTokens: null, timeoutMs: null } });
     check('thinking enabled false: request keys unchanged', r5.ok && Object.keys(f5.calls[0]).sort().join(',') === 'maxTokens,messages,prefill', Object.keys(f5.calls[0]));
 
+    // ---- 階段 C：依裝置取逾時（webgpu／cpu），預算兩種裝置相同 ----
+    const pG = R.thinkingPlan({ modelId: 'qwen3-0.6b', stage: 'plan', contextTokens: 4096, device: 'webgpu' });
+    const pC = R.thinkingPlan({ modelId: 'qwen3-0.6b', stage: 'plan', contextTokens: 4096, device: 'cpu' });
+    check('C1 plan webgpu timeout 30000', pG.enabled === true && pG.timeoutMs === 30000 && pG.device === 'webgpu', pG);
+    check('C2 plan cpu timeout 300000', pC.enabled === true && pC.timeoutMs === 300000 && pC.device === 'cpu', pC);
+    const rG = R.thinkingPlan({ modelId: 'qwen3-0.6b', stage: 'reflect', contextTokens: 4096, device: 'webgpu' });
+    const rC = R.thinkingPlan({ modelId: 'qwen3-0.6b', stage: 'reflect', contextTokens: 4096, device: 'cpu' });
+    check('C3 reflect webgpu timeout 15000', rG.enabled === true && rG.timeoutMs === 15000, rG);
+    check('C4 reflect cpu timeout 120000', rC.enabled === true && rC.timeoutMs === 120000, rC);
+    check('C5 budget identical on cpu and webgpu', pC.maxTokens === pG.maxTokens && rC.maxTokens === rG.maxTokens && pC.maxTokens === 1638 && rC.maxTokens === 307, [pC.maxTokens, rC.maxTokens]);
+    check('C6 no device or unknown device means webgpu (unchanged)', R.thinkingPlan({ modelId: 'qwen3-0.6b', stage: 'plan', contextTokens: 4096 }).timeoutMs === 30000 && R.thinkingPlan({ modelId: 'qwen3-0.6b', stage: 'plan', contextTokens: 4096, device: 'wasm' }).timeoutMs === 30000);
+    check('C7 non-qwen3-0.6b stays off even with cpu', R.thinkingPlan({ modelId: 'qwen3-1.7b', stage: 'plan', contextTokens: 8192, device: 'cpu' }).enabled === false);
+    check('C8 switch off stays off with cpu', R.thinkingPlan({ modelId: 'qwen3-0.6b', stage: 'plan', contextTokens: 4096, device: 'cpu', enabled: false }).enabled === false);
+
     console.log(ok + ' passed, ' + bad.length + ' failed', bad);
     process.exit(bad.length ? 1 : 0);
 })();

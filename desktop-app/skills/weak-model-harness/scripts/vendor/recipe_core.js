@@ -97,8 +97,9 @@
     // 預算＝contextTokens × 比例，再夾在 [min, max]，所以跟模型上下文一起縮放（不寫死單一常數）。
     const THINK_MODELS = new Set(['qwen3-0.6b']);
     const THINK_STAGES = {
-        plan: { ratio: 0.4, min: 1500, max: 3000, timeoutMs: 30000 },
-        reflect: { ratio: 0.075, min: 300, max: 600, timeoutMs: 15000 },
+        // timeoutMs：GPU（webgpu，預設）；cpuTimeoutMs：CPU 版。CPU 放寬只是防卡死的保險，不切掉正常的思考（使用者離線時會放著跑）。預算（maxTokens）兩種裝置相同。
+        plan: { ratio: 0.4, min: 1500, max: 3000, timeoutMs: 30000, cpuTimeoutMs: 300000 },
+        reflect: { ratio: 0.075, min: 300, max: 600, timeoutMs: 15000, cpuTimeoutMs: 120000 },
     };
     function thinkingPlan(opts) {
         opts = opts || {}; const off = { enabled: false, maxTokens: null, timeoutMs: null };
@@ -106,7 +107,9 @@
         if (!THINK_MODELS.has(String(opts.modelId == null ? '' : opts.modelId))) return off;
         const sp = Object.prototype.hasOwnProperty.call(THINK_STAGES, opts.stage) ? THINK_STAGES[opts.stage] : null; if (!sp) return off;
         const c = Number(opts.contextTokens); const ctxTok = Number.isFinite(c) && c > 0 ? c : 4096;
-        return { enabled: true, maxTokens: Math.round(Math.min(sp.max, Math.max(sp.min, ctxTok * sp.ratio))), timeoutMs: sp.timeoutMs };
+        // device：'cpu' 用 CPU 的逾時；其他（沒給、'webgpu'）一律當 webgpu（與以前相同）
+        const device = opts.device === 'cpu' ? 'cpu' : 'webgpu';
+        return { enabled: true, device, maxTokens: Math.round(Math.min(sp.max, Math.max(sp.min, ctxTok * sp.ratio))), timeoutMs: device === 'cpu' ? sp.cpuTimeoutMs : sp.timeoutMs };
     }
     // ---------- CoLU+Thinking 反思（模型 thinking 反思；與「反思①②」程式流程、catalog/reflect_core.js 字詞反思都不同）----------
     // 反思題是封閉題：「這個計畫有沒有缺口？A 沒有 B 有：缺口是…」。只在 thinkingPlan({stage:'reflect'}) 開啟時才問。
@@ -115,7 +118,7 @@
     // 回傳 { gap, note, reasoning, ok, error? }；沒有 thinking 時 skipped:true 且不呼叫 generate。
     function coluThinkReflect(opts) {
         opts = opts || {};
-        const th = thinkingPlan({ modelId: opts.modelId, stage: 'reflect', contextTokens: opts.contextTokens, enabled: opts.enabled });
+        const th = thinkingPlan({ modelId: opts.modelId, stage: 'reflect', contextTokens: opts.contextTokens, enabled: opts.enabled, device: opts.device });
         if (!th.enabled || typeof opts.generate !== 'function') return Promise.resolve({ gap: false, note: '', reasoning: '', ok: false, skipped: true });
         const timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : th.timeoutMs;
         const msgs = [
@@ -140,9 +143,9 @@
     async function coluThinkRevise(opts) {
         const b = opts.budget || coluThinkBudget(); const qid = String(opts.qid || 'plan'); const perQ = qid !== 'plan';
         const out = { value: opts.original, reflected: 0, gap: false, note: '', redone: false, fallback: false, reasoning: '', unsure: false };
-        if (!thinkingPlan({ modelId: opts.modelId, stage: 'reflect', contextTokens: opts.contextTokens, enabled: opts.enabled }).enabled) return out;
+        if (!thinkingPlan({ modelId: opts.modelId, stage: 'reflect', contextTokens: opts.contextTokens, enabled: opts.enabled, device: opts.device }).enabled) return out;
         const take = () => { if (b.total >= b.max || (perQ && (b.perQ[qid] || 0) >= b.perQMax)) return false; b.total++; if (perQ) b.perQ[qid] = (b.perQ[qid] || 0) + 1; return true; };
-        const ask = (value) => coluThinkReflect({ generate: opts.generate, modelId: opts.modelId, contextTokens: opts.contextTokens, enabled: opts.enabled, question: opts.describe(value) });
+        const ask = (value) => coluThinkReflect({ generate: opts.generate, modelId: opts.modelId, contextTokens: opts.contextTokens, enabled: opts.enabled, device: opts.device, question: opts.describe(value) });
         if (!take()) { out.fallback = true; return out; }
         const r1 = await ask(opts.original); out.reflected = 1; out.reasoning = r1.reasoning; out.unsure = !r1.ok;
         if (!r1.gap) return out;

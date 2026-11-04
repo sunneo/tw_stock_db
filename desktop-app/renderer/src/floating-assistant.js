@@ -8567,8 +8567,9 @@ const holder = {};
     // 預算＝contextTokens × 比例，再夾在 [min, max]，所以跟模型上下文一起縮放（不寫死單一常數）。
     const THINK_MODELS = new Set(['qwen3-0.6b']);
     const THINK_STAGES = {
-        plan: { ratio: 0.4, min: 1500, max: 3000, timeoutMs: 30000 },
-        reflect: { ratio: 0.075, min: 300, max: 600, timeoutMs: 15000 },
+        // timeoutMs：GPU（webgpu，預設）；cpuTimeoutMs：CPU 版。CPU 放寬只是防卡死的保險，不切掉正常的思考（使用者離線時會放著跑）。預算（maxTokens）兩種裝置相同。
+        plan: { ratio: 0.4, min: 1500, max: 3000, timeoutMs: 30000, cpuTimeoutMs: 300000 },
+        reflect: { ratio: 0.075, min: 300, max: 600, timeoutMs: 15000, cpuTimeoutMs: 120000 },
     };
     function thinkingPlan(opts) {
         opts = opts || {}; const off = { enabled: false, maxTokens: null, timeoutMs: null };
@@ -8576,7 +8577,9 @@ const holder = {};
         if (!THINK_MODELS.has(String(opts.modelId == null ? '' : opts.modelId))) return off;
         const sp = Object.prototype.hasOwnProperty.call(THINK_STAGES, opts.stage) ? THINK_STAGES[opts.stage] : null; if (!sp) return off;
         const c = Number(opts.contextTokens); const ctxTok = Number.isFinite(c) && c > 0 ? c : 4096;
-        return { enabled: true, maxTokens: Math.round(Math.min(sp.max, Math.max(sp.min, ctxTok * sp.ratio))), timeoutMs: sp.timeoutMs };
+        // device：'cpu' 用 CPU 的逾時；其他（沒給、'webgpu'）一律當 webgpu（與以前相同）
+        const device = opts.device === 'cpu' ? 'cpu' : 'webgpu';
+        return { enabled: true, device, maxTokens: Math.round(Math.min(sp.max, Math.max(sp.min, ctxTok * sp.ratio))), timeoutMs: device === 'cpu' ? sp.cpuTimeoutMs : sp.timeoutMs };
     }
     // ---------- CoLU+Thinking 反思（模型 thinking 反思；與「反思①②」程式流程、catalog/reflect_core.js 字詞反思都不同）----------
     // 反思題是封閉題：「這個計畫有沒有缺口？A 沒有 B 有：缺口是…」。只在 thinkingPlan({stage:'reflect'}) 開啟時才問。
@@ -8585,7 +8588,7 @@ const holder = {};
     // 回傳 { gap, note, reasoning, ok, error? }；沒有 thinking 時 skipped:true 且不呼叫 generate。
     function coluThinkReflect(opts) {
         opts = opts || {};
-        const th = thinkingPlan({ modelId: opts.modelId, stage: 'reflect', contextTokens: opts.contextTokens, enabled: opts.enabled });
+        const th = thinkingPlan({ modelId: opts.modelId, stage: 'reflect', contextTokens: opts.contextTokens, enabled: opts.enabled, device: opts.device });
         if (!th.enabled || typeof opts.generate !== 'function') return Promise.resolve({ gap: false, note: '', reasoning: '', ok: false, skipped: true });
         const timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : th.timeoutMs;
         const msgs = [
@@ -8610,9 +8613,9 @@ const holder = {};
     async function coluThinkRevise(opts) {
         const b = opts.budget || coluThinkBudget(); const qid = String(opts.qid || 'plan'); const perQ = qid !== 'plan';
         const out = { value: opts.original, reflected: 0, gap: false, note: '', redone: false, fallback: false, reasoning: '', unsure: false };
-        if (!thinkingPlan({ modelId: opts.modelId, stage: 'reflect', contextTokens: opts.contextTokens, enabled: opts.enabled }).enabled) return out;
+        if (!thinkingPlan({ modelId: opts.modelId, stage: 'reflect', contextTokens: opts.contextTokens, enabled: opts.enabled, device: opts.device }).enabled) return out;
         const take = () => { if (b.total >= b.max || (perQ && (b.perQ[qid] || 0) >= b.perQMax)) return false; b.total++; if (perQ) b.perQ[qid] = (b.perQ[qid] || 0) + 1; return true; };
-        const ask = (value) => coluThinkReflect({ generate: opts.generate, modelId: opts.modelId, contextTokens: opts.contextTokens, enabled: opts.enabled, question: opts.describe(value) });
+        const ask = (value) => coluThinkReflect({ generate: opts.generate, modelId: opts.modelId, contextTokens: opts.contextTokens, enabled: opts.enabled, device: opts.device, question: opts.describe(value) });
         if (!take()) { out.fallback = true; return out; }
         const r1 = await ask(opts.original); out.reflected = 1; out.reasoning = r1.reasoning; out.unsure = !r1.ok;
         if (!r1.gap) return out;
@@ -9675,7 +9678,7 @@ class {{className}}Test {
         const thOn = !!(opts.thinking && opts.thinking.enabled); const reasoning = [];
         const ask = async (stage, spec, label) => { if (thOn) emit({ type: 'thinking', phase: 'start', stage, label }); const r = await R.jsonStep({ generate: opts.generate, messages: spec.messages, validate: spec.validate, maxTries: opts.maxTries || 2, maxTokens: 400, prefill: PREFILL[stage], thinking: opts.thinking }); if (thOn) { if (r.reasoning) reasoning.push(r.reasoning); emit({ type: 'thinking', phase: 'done', stage, label, chars: String(r.reasoning || '').length, text: r.reasoning || '' }); } decisions.push({ stage, label, by: 'model', tries: r.tries, rejected: r.rejected, ok: r.ok }); emit({ type: 'stage', stage, label, ok: r.ok }); if (!r.ok) warnings.push(stage + (label ? '（' + label + '）' : '') + ' 模型沒給出合格的回覆：' + (r.error || ''));
             // CoLU+Thinking 反思（答案層）：核對失敗才反思一次（每題最多 1 次）；有缺口就把 note 當反思提示重做一次。推理只進 reasoning（給介面看）
-            if (!r.ok && opts.reflect && opts.reflect.enabled) { const rv = await R.coluThinkRevise({ qid: 'ans:' + stage + ':' + (label || ''), budget: opts.reflect.budget, generate: opts.generate, modelId: opts.reflect.modelId, contextTokens: opts.reflect.contextTokens, enabled: true, original: null, describe: () => '階段「' + stage + '」' + (label ? '（' + label + '）' : '') + '的回覆沒有通過核對：' + String(r.error || '').slice(0, 160), redo: async (note) => { const again = await R.jsonStep({ generate: opts.generate, messages: spec.messages.concat([{ role: 'user', content: '反思提示：' + note + '。請依此修正，只輸出修正後的 JSON。' }]), validate: spec.validate, maxTries: opts.maxTries || 2, maxTokens: 400, prefill: PREFILL[stage], thinking: opts.thinking }); if (again.reasoning) reasoning.push(again.reasoning); return again.ok ? again.value : null; } });
+            if (!r.ok && opts.reflect && opts.reflect.enabled) { const rv = await R.coluThinkRevise({ qid: 'ans:' + stage + ':' + (label || ''), budget: opts.reflect.budget, generate: opts.generate, modelId: opts.reflect.modelId, contextTokens: opts.reflect.contextTokens, device: opts.reflect.device, enabled: true, original: null, describe: () => '階段「' + stage + '」' + (label ? '（' + label + '）' : '') + '的回覆沒有通過核對：' + String(r.error || '').slice(0, 160), redo: async (note) => { const again = await R.jsonStep({ generate: opts.generate, messages: spec.messages.concat([{ role: 'user', content: '反思提示：' + note + '。請依此修正，只輸出修正後的 JSON。' }]), validate: spec.validate, maxTries: opts.maxTries || 2, maxTokens: 400, prefill: PREFILL[stage], thinking: opts.thinking }); if (again.reasoning) reasoning.push(again.reasoning); return again.ok ? again.value : null; } });
                 if (rv.reflected) emit({ type: 'reflect', level: 'answer', gap: rv.gap, note: rv.note, count: rv.reflected, redone: rv.redone, fallback: rv.fallback, unsure: rv.unsure, chars: String(rv.reasoning || '').length, text: rv.reasoning || '', label: stage + (label ? '（' + label + '）' : '') });
                 if (rv.reasoning) reasoning.push(rv.reasoning);
                 if (rv.redone) return rv.value; }
@@ -10889,7 +10892,7 @@ public class Application {
             const build = (sc) => U.scenarioToModelBig(sc, { generate: opts.generate, onStage: opts.onStage, maxTries: opts.maxTries, program: opts.program, glossary: opts.glossary, thinking: opts.thinking, reflect: rf });
             res = await build(scenario); if (!res.ok) return { ok: false, error: res.error, trail, decisions: res.decisions, warnings: res.warnings };
             if (rf) {
-                const rv = await R.coluThinkRevise({ qid: 'plan', budget: rf.budget, generate: opts.generate, modelId: rf.modelId, contextTokens: rf.contextTokens, enabled: true, original: res, describe: (x) => String(U.toDsl(x.model) || '').slice(0, 1500), secondCheck: true, redo: async (note) => { const again = await build(scenario + '\n\n（反思提示，請修正這個缺口：' + note + '）'); return again.ok ? again : null; } });
+                const rv = await R.coluThinkRevise({ qid: 'plan', budget: rf.budget, generate: opts.generate, modelId: rf.modelId, contextTokens: rf.contextTokens, device: rf.device, enabled: true, original: res, describe: (x) => String(U.toDsl(x.model) || '').slice(0, 1500), secondCheck: true, redo: async (note) => { const again = await build(scenario + '\n\n（反思提示，請修正這個缺口：' + note + '）'); return again.ok ? again : null; } });
                 if (opts.onStage) try { opts.onStage({ type: 'reflect', level: 'plan', gap: rv.gap, note: rv.note, count: rv.reflected, redone: rv.redone, fallback: rv.fallback, unsure: rv.unsure, chars: String(rv.reasoning || '').length, text: rv.reasoning || '', label: '計畫' }); } catch (_) {}
                 res = rv.value; trail.push({ stage: 'reflect', by: 'model', count: rv.reflected, gap: rv.gap, redone: rv.redone, fallback: rv.fallback });
             }
@@ -100373,16 +100376,26 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         return { error: '離線文字模型不能用：' + err + '；目前的線上模型做過體檢、也沒跑通一次一小題的拆解流程。請改用 uml_guide（程式讀情境、卡片逐步確認，不需要模型）。' };
     }
     // CoLU+Thinking（計畫階段）：只對離線 qwen3-0.6b 開；開關 advancedSettings.coluThinking 未設定視為開。線上模型或其他離線模型回傳 null（呼叫端行為不變）
-    _coluThinkingFor(M) {
+    async _coluThinkingFor(M) {
         if (!M || M.online || !M.model) return null;
-        return FaRecipe.thinkingPlan({ modelId: M.model.id, stage: 'plan', contextTokens: M.model.contextTokens, enabled: this.advancedSettings.coluThinking !== false });
+        return FaRecipe.thinkingPlan({ modelId: M.model.id, stage: 'plan', contextTokens: M.model.contextTokens, enabled: this.advancedSettings.coluThinking !== false, device: await this._coluDeviceOf(M) });
+    }
+    // 這個模型實際跑在哪個裝置（回傳 'webgpu' 或 'cpu'，供思考逾時取值）：先看已載入的結果，沒有就照 resolveDevice 的第一選擇（與 _llmGenerate 相同）；拿不到時當 webgpu
+    async _coluDeviceOf(M) {
+        try {
+            const L = this._vlmLoadedBy || {};
+            for (const s of ['gpu', 'cpu']) { const l = L[s]; if (l && l.modelId === M.model.id && l.device) return l.device === 'wasm' ? 'cpu' : 'webgpu'; }
+            const gpu = await this._omGpuInfo(); const dev = FaVlm.resolveDevice(M.model, this._omDevicePrefOf(M.model), gpu.available, gpu.f16);
+            if (dev && dev.order && dev.order.length) return dev.order[0] === 'wasm' ? 'cpu' : 'webgpu';
+        } catch (_) { /* 拿不到裝置：當 webgpu */ }
+        return 'webgpu';
     }
     // CoLU+Thinking 反思（與「反思①②」程式流程不同）：和 _coluThinkingFor 同一條件；其他模型或開關關閉回傳 null，反思完全不跑
-    _coluReflectFor(M) { const th = this._coluThinkingFor(M); return th && th.enabled ? { modelId: M.model.id, contextTokens: M.model.contextTokens, enabled: true } : null; }
+    async _coluReflectFor(M) { const th = await this._coluThinkingFor(M); return th && th.enabled ? { modelId: M.model.id, contextTokens: M.model.contextTokens, enabled: true, device: th.device } : null; }
     async _umlDesign(a) {
         const scenario = String(a.scenario || '').trim(); if (!scenario) return { ok: false, error: '缺少 scenario' }; const lang = ['python', 'typescript', 'java'].includes(a.language) ? a.language : 'python';
         const M = await this._umlModel(a.model); if (M.error) return { ok: false, error: M.error };
-        const prog = this._createProgressWidget('情境→UML→程式骨架（' + M.label + '）'); const r = await FaDesign.designProject(scenario, { generate: M.gen, language: lang, package: a.package, constraints: a.constraints, prefs: this.advancedSettings.designPrefs || {}, glossary: this.advancedSettings.umlGlossary || {}, userGlue: this.advancedSettings.userGlue || [], experience: this.advancedSettings.glueExperience || {}, thinking: this._coluThinkingFor(M), reflect: this._coluReflectFor(M), onStage: (e) => { if (e.type === 'reflect') { prog.log('🪞 反思（' + e.chars + ' 字）：' + (e.gap ? (e.redone ? '有缺口，已依此重做一次：' : '有缺口（重做沒有通過，用原本的）：') + e.note : (e.unsure ? '沒有定論（逾時或格式不對），照原本的' : '沒有缺口'))); prog.reasoning({ label: '反思·' + (e.label || e.level || ''), text: e.text }); return; } if (e.type === 'thinking') { prog.log(e.phase === 'start' ? '🧠 思考中…（' + e.stage + '）' : '🧠 思考完成（' + e.chars + ' 字）'); if (e.phase === 'done') prog.reasoning({ label: e.stage, text: e.text }); return; } if (e.type === 'stage') prog.log('✔ ' + e.stage + (e.label ? '：' + e.label : '') + (e.ok ? '' : '（模型沒給出合格回覆，用保守預設）')); } });
+        const prog = this._createProgressWidget('情境→UML→程式骨架（' + M.label + '）'); const r = await FaDesign.designProject(scenario, { generate: M.gen, language: lang, package: a.package, constraints: a.constraints, prefs: this.advancedSettings.designPrefs || {}, glossary: this.advancedSettings.umlGlossary || {}, userGlue: this.advancedSettings.userGlue || [], experience: this.advancedSettings.glueExperience || {}, thinking: await this._coluThinkingFor(M), reflect: await this._coluReflectFor(M), onStage: (e) => { if (e.type === 'reflect') { prog.log('🪞 反思（' + e.chars + ' 字）：' + (e.gap ? (e.redone ? '有缺口，已依此重做一次：' : '有缺口（重做沒有通過，用原本的）：') + e.note : (e.unsure ? '沒有定論（逾時或格式不對），照原本的' : '沒有缺口'))); prog.reasoning({ label: '反思·' + (e.label || e.level || ''), text: e.text }); return; } if (e.type === 'thinking') { prog.log(e.phase === 'start' ? '🧠 思考中…（' + e.stage + '）' : '🧠 思考完成（' + e.chars + ' 字）'); if (e.phase === 'done') prog.reasoning({ label: e.stage, text: e.text }); return; } if (e.type === 'stage') prog.log('✔ ' + e.stage + (e.label ? '：' + e.label : '') + (e.ok ? '' : '（模型沒給出合格回覆，用保守預設）')); } });
         if (!r.ok) { prog.fail(r.error); return { ok: false, error: r.error, warnings: r.warnings }; }
         const sess = await this._umlStartSession(r.model, lang, a.package, scenario, r.design); const z = await this._umlZip(sess.proj.files, r.model.name || 'design', lang); prog.finish('完成：' + sess.proj.files.length + ' 個檔案');
         const res = this._umlResult(r.model, lang, { files: sess.proj.files, design: r.design }, z, { uml: r.dsl, seededFrom: r.seedUsed, rework: r.rework.rounds.map((x) => x.issues.length + ' 個問題'), warnings: r.warnings.slice(0, 8) });
@@ -106564,7 +106577,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                         <input type="checkbox" id="ai-colu-think-chk" ${FaRecipe.coluThinkingSetting(this.advancedSettings.coluThinking) ? 'checked' : ''} style="cursor:pointer;">
                                         <label for="ai-colu-think-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">CoLU+Thinking（離線 qwen3-0.6b 的計畫與反思先思考，預設打開）</label>
                                     </div>
-                                    <p class="ai-advanced-hint">只對離線模型 qwen3-0.6b 生效，其他模型與線上模型不受影響。開啟時，UML 設計的計畫與反思會先思考再回答，比較慢（計畫最多約 30 秒，逾時會退回原本的做法）；推理過程可在進度卡片裡展開查看，不會進入對話紀錄。關閉則維持原本的快速流程。</p>
+                                    <p class="ai-advanced-hint">只對離線模型 qwen3-0.6b 生效，其他模型與線上模型不受影響。開啟時，UML 設計的計畫與反思會先思考再回答，比較慢（計畫在 GPU 最多約 30 秒、在 CPU 最多約 5 分鐘，逾時會退回原本的做法（CPU 的時限只是防卡死的保險，正常思考不會被切掉））；推理過程可在進度卡片裡展開查看，不會進入對話紀錄。關閉則維持原本的快速流程。</p>
                                     <div style="margin-top:6px; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
                                         <input type="checkbox" id="ai-festival-chk" ${this.advancedSettings.festivalThemeEnabled !== false ? 'checked' : ''} style="cursor:pointer;">
                                         <label for="ai-festival-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">啟用台灣節慶套版（春節、元宵、端午、中秋、國慶、聖誕…依台灣行事曆自動換裝，連假期間都算同一個節慶）</label>
