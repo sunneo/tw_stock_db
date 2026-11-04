@@ -99,6 +99,29 @@ rg 收到 task(sub=false, fromName=N)
 | F（重新載入接續） | 不改（`chatId` 指向子對話即可） | 沒驗證 | 列為缺口 |
 | 遷移（舊 `remote` 欄位） | 新增 `migrateRemoteChats` | 能（純函式 node 測試＋評估的舊格式索引） | 步驟 2、3 |
 
-## 5. 教訓
+## 5. 步驟 2：純函式（已完成）
 
-（目前沒有。若走歪，在這裡新增一條。）
+- 模組：`renderer/src/chat/remote_inbox.js`（UMD，同 `chat_tree.js`）。測試：`renderer/src/chat/remote_inbox.test.js`，16 項，`node renderer/src/chat/remote_inbox.test.js` 全過。
+- 函式：`inboxIdFor`、`findInbox`、`makeInboxEntry`、`ensureInbox`（只建一次，回傳新陣列不改原陣列）、`attachRemoteChild`（回傳 `parentId`、`nodeName`、已確保存在的 `chats`、`created`）、`migrateRemoteChats`（只處理有 `remote` 欄位、沒有 `parentId` 的對話；節點名先用 `nodeName`，沒有才用 `remote.fromName`；只補 `parentId` 與缺的 `nodeName`；冪等）。
+- 既有 `chat_tree.test.js` 仍全過（22 項）。`chat_tree.test.js:18` 測的是 `normalizeChatEntry` 不改 `nodeName`，本步驟沒改那個函式，所以不衝突。
+- **尚未嵌入主檔**（`scripts/embed-code-ui.js` 還沒加 `REMOTEINBOX-BEGIN/END`，主檔還沒有 `FA_REMOTE_INBOX_SRC`）。這是步驟 3 的事。
+- 收件對話索引欄位：`kind:'remote-inbox'`、`nodeName`、`parentId:null`、`shared:false`、`status:null`、`touched:true`。
+
+### 步驟 2 的教訓
+
+- 測試裡每次呼叫都建新的 id 產生器，同一次測試內會得到重複 id（`in1`），測試就紅了。同一個測試的多次呼叫要共用一個產生器。
+
+## 6. 步驟 3 起的待辦（交接用）
+
+1. `scripts/embed-code-ui.js`：加 `embed('renderer/src/chat/remote_inbox.js', 'REMOTEINBOX-BEGIN', 'REMOTEINBOX-END', 'FA_REMOTE_INBOX_SRC')`（參照 `chat_tree.js` 66–67 行的寫法）；`scripts/build-web-lazy.js` 的 EXCLUDE 要查（`chat_tree` 的 `CHATTREE` 是否已在 EXCLUDE，照它的做法）。
+2. 主檔：在 `_chatTreeMod()`（79527）旁加 `_remoteInboxMod()`（同 79528 的 `new Function` 寫法）。
+3. 改 `_rgCreateRemoteChat`（主檔 53473–53486）：用 `ensureInbox` 找或建收件對話（建立要 `this._chatIndex.chats` 寫回並存檔），再用 `_chatNew`（79783）的 `opts.parentId`／`opts.nodeName`／`opts.status`／`opts.summary`／`opts.fingerprint`（已存在，79802–79806）或同等的 push 建子對話；第一則訊息與來源記錄保持原樣；子對話的 `remote` 欄位保留（側欄前綴 79972 讀它）。注意 `_chatNew` 會 `_chatActivate`，遠端收到需求時**不能**切走使用者的畫面，要用 `noActivate:true`。
+4. 載入索引時（`_chatListInit` 79673–79674 之後）呼叫 `migrateRemoteChats`，寫入 `idx.chats`。
+5. `FA_CHAT_CTX_KEYS`（51009 起）：S6 目前沒有新增 ctx 狀態欄位，若新增要進去並查重設點。
+6. 評估：`scripts/eval/subchat_remote.eval.js`（新檔），參照 `scripts/eval/subchat_pullback.eval.js` 的寫法（真 Electron、換埠、假 LLM）。先證明修前不成立（修前：遠端需求是根對話、沒有收件對話）。
+
+## 7. 沒驗證、目前的缺口
+
+- 步驟 1 的行號是讀程式與 Grep 驗證，沒有真桌面版驗證。
+- 步驟 2 只有 node 測試，沒有真桌面版驗證。
+- 尚未做步驟 3–5 的任何程式修改（只有步驟 1 文件與步驟 2 純函式）。
