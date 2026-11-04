@@ -722,31 +722,68 @@ function startNativeMailbox(ctx) {
   let protocolOk = false;
   if (runtime.ok) { try { require(require("path").join(runtime.dir, "nr-protocol.js")); protocolOk = true; } catch (e) { runtime = { ok: false, reason: "載入子程序協定失敗：" + String((e && e.message) || e) }; } }
   console.log("[main-ext] 執行包：" + (runtime.ok ? "就緒 " + runtime.version + "（onnxruntime-node " + runtime.ortVersion + "）" : "沒有可用（" + runtime.reason + "）"));
-  async function handle(op, payload) {
-    if (op === "status") return { ok: true, status: { alive: false, pid: null, pending: 0, consecutiveCrashes: 0, disabled: false, disabledReason: "" }, engine: "none", box, runtime: { ok: runtime.ok, version: runtime.version || null, reason: runtime.ok ? "" : runtime.reason, protocolOk } };
-    if (op === "reenable" || op === "dispose") return { ok: true, status: { alive: false, engine: "none" } };
-    if (op === "run") return { ok: false, code: "no_engine", message: "原生引擎還沒有接上（沒有可用的執行包）" };
+  // 真引擎：子程序由 nr-host.js 管理（懶啟動、握手、逾時、崩潰重啟）。模型檔與分詞器路徑由環境變數給（產品端的下載位置見第 4 項）。
+  const modelPath = process.env.FA_NATIVE_MODEL_PATH || "", tokenizerPath = process.env.FA_NATIVE_TOKENIZER_PATH || "";
+  let host = null;
+  function getHost() {
+    if (!host) host = require(pathM.join(runtime.dir, "nr-host.js")).createNativeRunnerHost({
+      childPath: pathM.join(runtime.dir, "nr-child.js"),
+      progressFile: pathM.join(box, "progress.jsonl"),
+      execPath: process.execPath,
+      log: (s) => console.log("[main-ext] " + s),
+    });
+    return host;
+  }
+  const idleStatus = { alive: false, pid: null, pending: 0, consecutiveCrashes: 0, disabled: false, disabledReason: "" };
+  let runQueue = Promise.resolve(); // 生成一次只跑一個（子程序一次只處理一個生成）
+  async function doRun(id, p) {
+    const tokFile = pathM.join(box, "tok-" + id + ".jsonl");
+    try { fsSync.unlinkSync(tokFile); } catch (_) { /* 還沒有 */ }
+    try {
+      const r = await getHost().run({
+        messages: p.messages || [], template: p.template, gen: p.gen, maxTokens: p.maxTokens, stream: !!p.stream, timeoutMs: p.timeoutMs || 0, seed: p.seed,
+        modelPath, tokenizerPath,
+        onToken: (t) => { try { fsSync.appendFileSync(tokFile, JSON.stringify({ text: t }) + "\n"); } catch (_) { /* 寫不了就只靠最後結果 */ } },
+      });
+      return { ok: true, text: r.text, ms: r.ms, finish_reason: r.finish_reason, backend: "native" };
+    } catch (e) {
+      return { ok: false, code: (e && e.code) || "internal", message: String((e && e.message) || e), backend: "native" };
+    }
+  }
+  async function handle(op, payload, id) {
+    const p = payload || {};
+    if (op === "status") return { ok: true, status: host ? host.status() : idleStatus, engine: runtime.ok && modelPath ? "native" : "none", box, runtime: { ok: runtime.ok, version: runtime.version || null, reason: runtime.ok ? "" : runtime.reason, protocolOk, modelReady: !!(runtime.ok && modelPath && tokenizerPath) } };
+    if (op === "reenable") { if (host) host.reenable(); return { ok: true, status: host ? host.status() : idleStatus }; }
+    if (op === "dispose") { if (host) host.dispose("介面要求"); return { ok: true, status: host ? host.status() : idleStatus }; }
+    if (op === "run") {
+      if (!runtime.ok) return { ok: false, code: "no_engine", message: "原生引擎沒有可用的執行包（" + runtime.reason + "）" };
+      if (!modelPath || !tokenizerPath) return { ok: false, code: "no_model", message: "原生引擎沒有模型檔路徑（環境變數 FA_NATIVE_MODEL_PATH／FA_NATIVE_TOKENIZER_PATH 未設定）" };
+      const job = runQueue.then(() => doRun(id, p));
+      runQueue = job.catch(() => {});
+      return job;
+    }
     return { ok: false, code: "bad_op", message: "未知的操作：" + String(op) };
   }
-  let busy = false;
-  const timer = setInterval(async () => {
-    if (busy) return;
-    busy = true;
-    try {
-      let names = [];
-      try { names = fsSync.readdirSync(box).filter((n) => /^req-.+\.json$/.test(n)); } catch (_) { names = []; }
-      for (const n of names) {
-        const id = n.slice(4, -5), reqPath = pathM.join(box, n);
-        let req = null;
-        try { req = JSON.parse(fsSync.readFileSync(reqPath, "utf8")); } catch (_) { req = null; }
-        try { fsSync.unlinkSync(reqPath); } catch (_) { /* 已移除 */ }
-        if (!req) continue;
-        const resp = await handle(String(req.op || ""), req.payload).catch((e) => ({ ok: false, code: "internal", message: String((e && e.message) || e) }));
-        const tmp = pathM.join(box, "resp-" + id + ".tmp"), out = pathM.join(box, "resp-" + id + ".json");
-        fsSync.writeFileSync(tmp, JSON.stringify(resp));
-        fsSync.renameSync(tmp, out);
-      }
-    } catch (_) { /* 下一輪再試 */ } finally { busy = false; }
+  // 每 200 毫秒取一批請求。生成很慢，所以不等待：每個請求各自完成後寫回應，status 之類的請求不會被生成擋住。
+  const timer = setInterval(() => {
+    let names = [];
+    try { names = fsSync.readdirSync(box).filter((n) => /^req-.+\.json$/.test(n)); } catch (_) { names = []; }
+    for (const n of names) {
+      const id = n.slice(4, -5), reqPath = pathM.join(box, n);
+      let req = null;
+      try { req = JSON.parse(fsSync.readFileSync(reqPath, "utf8")); } catch (_) { req = null; }
+      try { fsSync.unlinkSync(reqPath); } catch (_) { /* 已移除 */ }
+      if (!req) continue;
+      Promise.resolve().then(() => handle(String(req.op || ""), req.payload, id))
+        .catch((e) => ({ ok: false, code: "internal", message: String((e && e.message) || e) }))
+        .then((resp) => {
+          try {
+            const tmp = pathM.join(box, "resp-" + id + ".tmp"), out = pathM.join(box, "resp-" + id + ".json");
+            fsSync.writeFileSync(tmp, JSON.stringify(resp));
+            fsSync.renameSync(tmp, out);
+          } catch (_) { /* 寫回失敗：渲染程序會逾時重試 */ }
+        });
+    }
   }, 200);
   if (timer.unref) timer.unref();
   // 就緒訊號：輪詢已經開始，渲染程序看到 ready.json 才送請求（避免第一次請求等到超時）

@@ -383,7 +383,10 @@
    - 真 Electron 結果（隔離 userData、換埠）：正常來源 → `runtime.ok=true`、版本 1.22.0-1、`protocolOk=true`；竄改一個位元組的 DLL → 「檔案核對失敗」且不留 `.partial`；沒有來源 → 「沒有執行包」。
    - 載入驗證：Windows x64 的 Electron（以 `ELECTRON_RUN_AS_NODE` 執行）可以 `require` 執行包內的 onnxruntime-node，版本 1.22.0。注意：本機的一般 node 是 32 位元（ia32），不能用來測 x64 原生檔。
    - 還沒做：`run` 仍回 `no_engine`（item 3 接真引擎）；執行包還沒有從網路下載（item 4）。
-3. **接真引擎進 `_llmGenerate` 的 backendOrder**（尚未做）
+3. **接真引擎進 `_llmGenerate` 的 backendOrder**（3a／3b 已做：真推論與主程序信箱；3c 渲染程序接線還沒做）
+   - 3a／3b 已做：`nr-engine.js` 是真推論（KV 迴圈與 native_det_batch.js 相同），`nr-child.js` 有 `model_path` 就用真引擎（沒有就用假引擎，測試用），`nr-host.js` 會把模型路徑傳給子程序，`main-ext.js` 的信箱 `run` 經 nr-host 執行，生成一次只跑一個，`status` 不被生成擋住，逐 token 寫進 `tok-<id>.jsonl`（渲染程序輪詢）。
+   - 模型路徑目前用環境變數 `FA_NATIVE_MODEL_PATH`、`FA_NATIVE_TOKENIZER_PATH`（測試用；產品的模型檔位置屬於第 4 項，要使用者決定）。
+   - 端到端（子程序直接跑，不經渲染程序）：`scripts/eval/native_engine_parity.js` 跑 16 題，與原生參考結果 16/16 相同、與 WASM 文字 16/16 相同。
    - 起點：`renderer/src/floating-assistant.js` 的 `_llmGenerate`（搜尋該函式名）與 `FaVlm.backendOrder`（`renderer/src/vlm/vlm_core.js`）。目前 `_vlmEnsureLoaded` 仍用 `resolveDevice`。
    - 做法：order 為 `native` 時經 `_nrCall('run', {messages, template, gen, maxTokens})` 送出；`gen` 必須是 `FaVlm.textGenParams(model, {deterministic})` 的結果，不另外定義預設；失敗或 `no_engine` 時退回 webgpu／wasm，並把實際後端與原因寫進 log。
    - 真引擎程式：`nr-child.js` 目前是假引擎；要改為真的 ORT 推論（參考 `scripts/eval/nvw_live.js` 與 `scripts/eval/native_det_batch.js` 的 KV 迴圈，兩者都已驗證）。

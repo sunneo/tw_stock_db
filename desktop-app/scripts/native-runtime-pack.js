@@ -9,7 +9,7 @@ const crypto = require('crypto');
 
 const RUNTIME_VERSION = '1.22.0-1';
 const ORT_VERSION = '1.22.0';
-const NR_FILES = ['nr-child.js', 'nr-host.js', 'nr-protocol.js', 'nr-gen-params.js', 'nr-template.js', 'nr-tokenizer.js'];
+const NR_FILES = ['nr-child.js', 'nr-engine.js', 'nr-host.js', 'nr-protocol.js', 'nr-gen-params.js', 'nr-template.js', 'nr-tokenizer.js'];
 
 function parseArgs(argv) {
   const a = { out: null, ortSrc: null, platform: process.platform, arch: process.arch };

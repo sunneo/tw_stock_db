@@ -168,6 +168,8 @@ function createNativeRunnerHost(opts) {
                 const msg = { type: 'run', id, messages: req.messages || [], template: req.template || 'qwen3-chatml', max_tokens: req.maxTokens || 512, timeout_ms: req.timeoutMs || 0, stream: !!req.stream, fake: req.fake };
                 if (req.gen !== undefined) msg.gen = req.gen; // 產品端的 textGenParams 結果，原樣傳給子程序
                 if (req.seed !== undefined) msg.seed = req.seed; // 取樣用的亂數種子（可重現）
+                if (req.modelPath) msg.model_path = req.modelPath; // 真引擎：模型檔路徑（沒有就用假引擎）
+                if (req.tokenizerPath) msg.tokenizer_path = req.tokenizerPath;
                 writeMsg(msg);
             } catch (e) { pending.delete(id); clearTimeout(job.timeoutTimer); reject(e); }
         }));

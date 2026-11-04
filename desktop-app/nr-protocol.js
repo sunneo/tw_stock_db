@@ -41,6 +41,10 @@ function validate(msg) {
     if (msg.type === 'run' && msg.template !== undefined && typeof msg.template !== 'string') return { ok: false, error: 'run.template 必須是字串' };
     // run 的 gen 欄位：產品端 FaVlm.textGenParams 的結果（照字面套用，原生端不自訂預設）
     if (msg.type === 'run' && msg.gen !== undefined && (msg.gen === null || typeof msg.gen !== 'object' || Array.isArray(msg.gen))) return { ok: false, error: 'run.gen 必須是物件' };
+    // run 的真引擎欄位（可選）：模型檔與分詞器路徑（字串）、取樣種子（數字）。有 model_path 就用真推論，沒有就用假引擎。
+    if (msg.type === 'run' && msg.model_path !== undefined && (typeof msg.model_path !== 'string' || !msg.model_path)) return { ok: false, error: 'run.model_path 必須是非空字串' };
+    if (msg.type === 'run' && msg.tokenizer_path !== undefined && typeof msg.tokenizer_path !== 'string') return { ok: false, error: 'run.tokenizer_path 必須是字串' };
+    if (msg.type === 'run' && msg.seed !== undefined && typeof msg.seed !== 'number') return { ok: false, error: 'run.seed 必須是數字' };
     return { ok: true, error: '' };
 }
 
