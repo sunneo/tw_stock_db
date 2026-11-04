@@ -122,7 +122,7 @@
         async function round(maxTries, maxTokens, enableThinking) {
             let last = null; let msgs = ctx.messages;
             for (let t = 1; t <= maxTries; t++) {
-                const req = { messages: msgs, maxTokens, prefill: ctx.prefill }; if (th) { req.enableThinking = enableThinking; req.timeoutMs = th.timeoutMs; }
+                const req = { messages: msgs, maxTokens, prefill: ctx.prefill }; if (th) { req.enableThinking = enableThinking; req.timeoutMs = th.timeoutMs; if (enableThinking) delete req.prefill; } // 開 thinking 那一輪不帶 prefill：prefill 會把 JSON 開頭寫死，模型就沒機會先想（退路那一輪才帶）
                 calls++;
                 let raw; try { raw = await ctx.generate(req); } catch (e) { return { thrown: true, error: String((e && e.message) || e) }; }
                 // 先去掉思考區塊，驗證與退回都只看答案；思考文字另存在 reasoning（只給使用者看，不進 messages）

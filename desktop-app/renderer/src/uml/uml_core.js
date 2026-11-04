@@ -453,7 +453,9 @@ class {{className}}Test {
             if (h.unknown.length) warnings.push('情境裡有程式不認得的參與者：' + h.unknown.join('、') + '（可以用詞彙表補上）');
             ensureOps(model); let errs0 = validateModel(model); if (errs0.length) warnings.push('驗證有 ' + errs0.length + ' 個問題：' + errs0.slice(0, 3).join('；'));
             return { ok: true, model, dsl: toDsl(model), decisions, warnings, errors: errs0, fromHints: true }; } }
-        const ask = async (stage, spec, label) => { const r = await R.jsonStep({ generate: opts.generate, messages: spec.messages, validate: spec.validate, maxTries: opts.maxTries || 2, maxTokens: 400, prefill: PREFILL[stage] }); decisions.push({ stage, label, by: 'model', tries: r.tries, rejected: r.rejected, ok: r.ok }); emit({ type: 'stage', stage, label, ok: r.ok }); if (!r.ok) warnings.push(stage + (label ? '（' + label + '）' : '') + ' 模型沒給出合格的回覆：' + (r.error || '')); return r.ok ? r.value : null; };
+        // CoLU+Thinking：opts.thinking（來自 R.thinkingPlan，沒給或 enabled:false 就完全照舊）。推理只進 reasoning（給介面看），不進 messages、不進 decisions
+        const thOn = !!(opts.thinking && opts.thinking.enabled); const reasoning = [];
+        const ask = async (stage, spec, label) => { if (thOn) emit({ type: 'thinking', phase: 'start', stage, label }); const r = await R.jsonStep({ generate: opts.generate, messages: spec.messages, validate: spec.validate, maxTries: opts.maxTries || 2, maxTokens: 400, prefill: PREFILL[stage], thinking: opts.thinking }); if (thOn) { if (r.reasoning) reasoning.push(r.reasoning); emit({ type: 'thinking', phase: 'done', stage, label, chars: String(r.reasoning || '').length }); } decisions.push({ stage, label, by: 'model', tries: r.tries, rejected: r.rejected, ok: r.ok }); emit({ type: 'stage', stage, label, ok: r.ok }); if (!r.ok) warnings.push(stage + (label ? '（' + label + '）' : '') + ' 模型沒給出合格的回覆：' + (r.error || '')); return r.ok ? r.value : null; };
         // ① 參與者與使用案例
         const a1 = await ask('actors', stageSpec.actors(scenario)); if (!a1) return { ok: false, model, dsl: '', decisions, warnings, error: '找不到參與者與使用案例' };
         model.actors = a1.actors.slice(); model.usecases = a1.usecases.map((u) => ({ name: u.name, actor: u.actor, summary: u.summary || '', steps: [] }));
@@ -484,7 +486,7 @@ class {{className}}Test {
         // 整體驗證；把不合法的關係／步驟拿掉（不要讓一個壞回覆毀掉整份模型）
         let errs = validateModel(model); if (errs.length) { const names2 = new Set(names); model.relations = model.relations.filter((r) => names2.has(r.from) && names2.has(r.to) && !(r.kind === 'implement' && kinds[r.to] !== 'interface')); errs = validateModel(model); if (errs.length) warnings.push('驗證仍有 ' + errs.length + ' 個問題：' + errs.slice(0, 3).join('；')); }
         const dsl = toDsl(model); decisions.push({ stage: 'assemble', by: 'program', ok: true }); emit({ type: 'done' });
-        return { ok: true, model, dsl, decisions, warnings, errors: errs };
+        return { ok: true, model, dsl, decisions, warnings, errors: errs, reasoning: reasoning.join('\n\n') };
     }
 
     // ===== 大問題：先切成小塊，每塊各自走一次一小題的流程，最後合併 =====
@@ -513,11 +515,11 @@ class {{className}}Test {
     // 跟 scenarioToModel 一樣的回傳；情境小就直接走一次，大就切塊。回傳多一個 chunks（切成幾塊）
     async function scenarioToModelBig(scenario, opts) {
         opts = opts || {}; const parts = opts.split === false ? [String(scenario || '')] : splitScenario(scenario, opts); if (parts.length <= 1) { const r = await scenarioToModel(scenario, opts); return Object.assign(r, { chunks: 1 }); }
-        const decisions = [], warnings = [], models = []; let okAny = false, firstErr = '';
-        for (let i = 0; i < parts.length; i++) { const r = await scenarioToModel(parts[i], opts); for (const d of r.decisions || []) decisions.push(Object.assign({ chunk: i + 1 }, d)); for (const w of r.warnings || []) warnings.push('第 ' + (i + 1) + ' 塊：' + w); if (r.ok && r.model && (r.model.classes.length || r.model.usecases.length)) { okAny = true; models.push(r.model); } else { if (!firstErr) firstErr = r.error || '這一塊沒有結果'; warnings.push('第 ' + (i + 1) + ' 塊沒有拆出來：' + (r.error || '沒有結果')); } }
+        const decisions = [], warnings = [], models = [], reasons = []; let okAny = false, firstErr = '';
+        for (let i = 0; i < parts.length; i++) { const r = await scenarioToModel(parts[i], opts); if (r.reasoning) reasons.push(r.reasoning); for (const d of r.decisions || []) decisions.push(Object.assign({ chunk: i + 1 }, d)); for (const w of r.warnings || []) warnings.push('第 ' + (i + 1) + ' 塊：' + w); if (r.ok && r.model && (r.model.classes.length || r.model.usecases.length)) { okAny = true; models.push(r.model); } else { if (!firstErr) firstErr = r.error || '這一塊沒有結果'; warnings.push('第 ' + (i + 1) + ' 塊沒有拆出來：' + (r.error || '沒有結果')); } }
         if (!okAny) return { ok: false, model: emptyModel(), dsl: '', decisions, warnings, error: firstErr || '找不到參與者與使用案例', chunks: parts.length };
         const model = mergeModels(models); model.name = String(scenario || '').split(/[：:。\n]/)[0].trim().slice(0, 24) || model.name; const errs = validateModel(model); if (errs.length) warnings.push('合併後驗證有 ' + errs.length + ' 個問題：' + errs.slice(0, 3).join('；'));
-        decisions.push({ stage: 'merge', by: 'program', ok: true, chunks: parts.length }); return { ok: true, model, dsl: toDsl(model), decisions, warnings, errors: errs, chunks: parts.length, partial: models.length < parts.length };
+        decisions.push({ stage: 'merge', by: 'program', ok: true, chunks: parts.length }); return { ok: true, model, dsl: toDsl(model), decisions, warnings, errors: errs, chunks: parts.length, partial: models.length < parts.length, reasoning: reasons.join('\n\n') };
     }
     return { ACTORS, NOUNS, VERBS, splitScenario, mergeModels, scenarioToModelBig, scenarioHints, PREFILL, CLASS_NAME, MEMBER_NAME, PRIMS, KINDS, LANGS, parseType, typeToString, typeRefs, parseDsl, toDsl, validateModel, ensureOps, toMermaidClass, toMermaidSequence, toMermaidUseCase, toPlantUml, renderTpl, FILTERS, langType, genFiles, genReadme, scenarioToModel, stageSpec, emptyModel };
 });

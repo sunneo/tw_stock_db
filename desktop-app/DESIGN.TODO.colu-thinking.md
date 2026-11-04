@@ -297,3 +297,31 @@ Level 判斷的設定位置：模型表加一個欄位（例如 `thinking: 'nati
 **遇到的坑與教訓**：
 - `embed-code-ui.js` 會一次重寫所有嵌入區塊。這次 `git diff` 確認只有 RECIPE 區塊與我改的 4 處有實質變動，但之後跑它前應該先 diff 一次確認。
 - 工作目錄仍有本階段之外的未提交變動（`.claude/launch.json`、`features/FEATURES.md`、`test-reports/*`、`parts_builtin.json`），提交時只加本階段的檔案。
+
+---
+## 階段 3 記錄（2026-11-04，計畫階段接上 thinking；只做 UML 由上而下計畫這一條）
+
+**接線位置**（計畫入口 → 呼叫端）：
+- `renderer/src/floating-assistant.js` `_coluThinkingFor(M)`（新增，在 `_umlDesign` 前）：線上模型或沒有模型時回傳 null；離線模型交給 `R.thinkingPlan({modelId, stage:'plan', contextTokens, enabled: advancedSettings.coluThinking !== false})`。開關未設定視為開。
+- `_umlDesign`：把結果當 `thinking` 傳給 `FaDesign.designProject`；`onStage` 多處理 `type:'thinking'`，進度列印「🧠 思考中…（階段）」「🧠 思考完成（N 字）」。
+- `renderer/src/uml/design_core.js`：`designProject` 把 `opts.thinking` 傳給 `scenarioToModelBig`；回傳多一個 `reasoning` 欄位（只給程式內部，`_umlDesign` 不放進工具結果）。
+- `renderer/src/uml/uml_core.js`：`scenarioToModel` 的 `ask` 把 `opts.thinking` 原樣交給 `R.jsonStep`；思考字數用 `thinking` 事件送出；結果多一個 `reasoning` 欄位；`scenarioToModelBig` 把切塊的推理串接起來。沒有 `thinking`（或 enabled:false）時，請求與以前完全相同。
+- 逾時：`jsonStep` 把 `timeoutMs`（30 秒）交給 `generate`，`_llmGenerate` 本來就用 `a.timeoutMs`；逾時時 worker 回傳已生成的部分文字（不丟例外），沒閉合的思考就變成空答案，jsonStep 走退路（同一題、關 thinking 再問一次）。最後仍不合格就照既有預設路徑（`ok:false`，各階段退回程式預設）。
+
+**修正一個階段 2 的接線問題**：`jsonStep` 開 thinking 那一輪原本也帶 `prefill`（例如 `{"actors":["`），worker 會把 prefill 接在生成提示後面，模型就沒機會先思考。現在只有「開 thinking 的那一輪」不帶 prefill；退路那一輪照舊帶。
+
+**推理不進哪裡（證明）**：`grep reasoning` 在 `recipe_core.js`、`uml_core.js`、`design_core.js`、`floating-assistant.js` 的計畫段落，只會看到：`stripThink` 回傳、`jsonStep` 的 `reasoning` 陣列與回傳欄位、`scenarioToModel`／`scenarioToModelBig`／`designProject` 的回傳欄位、`_umlDesign` 的進度文字（只用字數）。重試時退回的 `messages` 只用答案（`stripThink` 之後的文字）；`decisions` 與 `dsl` 也不含推理。工具結果 `_umlResult(...)` 沒有 `reasoning`，不會存進對話。
+
+**不是 UI**：完整展開推理的介面留給階段 5；這階段只有一行進度。
+
+**測試**：
+- `renderer/src/uml/plan_think.test.js`（新檔）：25 passed, 0 failed。涵蓋 thinkingPlan 模型與預算縮放（4096→1638，2048→1500 下限，8192→3000 上限）、開關關、其他模型的請求鍵集合不變、逾時與不合格的退路（同一題、保留 prefill、30 秒）、generate 拋錯不丟例外、推理不進 messages／dsl／decisions、進度事件、切塊合併推理。
+- 既有：`recipe_core.test.js` 89、`plan_core.test.js` 57、`skill_compile_core.test.js` 48、`think_plan.test.js` 41、`vlm_core.test.js` 135、`uml_core.test.js` 76，全部 0 failed。
+- `scripts/eval/colu_think_plan.eval.js`（真 Electron）：在隔離副本（`%TEMP%\colu-iso\desktop-app`，node_modules 用 junction）跑 `node scripts/eval/run_eval.js`，結果 PASS：qwen3-0.6b 的 7 次計畫呼叫帶 `enableThinking`、逾時 30000、預算 1638，工作者 RPC 的 payload 有 `enableThinking:true`；推理標記不在工具結果；開關關掉後沒有任何 thinking 請求。
+- `node scripts/run-core-tests.js`（在隔離副本跑，沒有動到工作目錄的 `test-reports/`）：172／175 組通過。失敗：`tray_dialog`（已知）、`computer-remote` RFB（已知），以及 `harness skill 可攜`（新，見下）。
+
+**沒有做、需要知道的事**：
+- `renderer/floating-assistant.js`（建置出來的檔）**沒有**在工作目錄重新建置，因為 `build-assistant.js` 會改寫 `.min.js` 與 `update-manifest.json`（發佈相關）。評估是在隔離副本建置後跑的。發布前要照 `publish-live-update-patch` 流程跑建置。
+- `harness skill 可攜` 失敗來自 `skills/weak-model-harness/scripts/vendor/recipe_core.js` 與來源不一致，**從階段 1（4d30a0c0）就開始**（那時就決定不同步，留給發布階段）。這次沒有同步，需要決定：同步 vendor 副本（會讓這個檢查通過）或刪掉這條檢查。
+- 計畫階段每一題都可能等 30 秒，一次 UML 設計的題數多（類別、成員、關係、呼叫順序各一題）時，總時間會變長；尚未量測真機時間。
+- 評估裡另有 6 次生成沒有 thinking（呼叫來源沒有逐一查明，推測是設計流程的重整／歧義判斷，`designProject` 內的 `opts.generate`）。依設計只有計畫階段開 thinking，這 6 次行為不變。

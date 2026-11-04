@@ -494,7 +494,7 @@ public class Application {
         const seed = opts.seed === false ? { model: U.emptyModel(), used: [], skipped: [] } : seedModel(scenario, opts); trail.push({ stage: 'seed', by: 'program', used: seed.used });
         let res;
         if (opts.model) res = { ok: true, model: opts.model, decisions: [], warnings: [] };
-        else { res = await U.scenarioToModelBig(scenario, { generate: opts.generate, onStage: opts.onStage, maxTries: opts.maxTries, program: opts.program, glossary: opts.glossary }); if (!res.ok) return { ok: false, error: res.error, trail, decisions: res.decisions, warnings: res.warnings }; }
+        else { res = await U.scenarioToModelBig(scenario, { generate: opts.generate, onStage: opts.onStage, maxTries: opts.maxTries, program: opts.program, glossary: opts.glossary, thinking: opts.thinking }); if (!res.ok) return { ok: false, error: res.error, trail, decisions: res.decisions, warnings: res.warnings }; }
         const model = res.model; // 種子片段的類別補進來（名稱不衝突的）
         for (const c of seed.model.classes) if (!model.classes.some((x) => x.name === c.name) && model.classes.length < 10) model.classes.push(c); for (const r of seed.model.relations) if (!model.relations.some((x) => x.from === r.from && x.to === r.to && x.kind === r.kind)) model.relations.push(r);
         normalize(model); let rw = { rounds: [], remaining: findIssues(model) }; if (opts.generate && opts.rework !== false) rw = await reworkModel(model, scenario, { generate: opts.generate, maxRounds: opts.maxRounds || 2 }); trail.push({ stage: 'rework', rounds: rw.rounds.length, remaining: rw.remaining.length });
@@ -502,7 +502,7 @@ public class Application {
         const rec = recommend(scenario, lang, { prefs: Object.assign({}, fragChoices, opts.prefs || {}), constraints: opts.constraints || {} });
         const dec = opts.generate ? await resolveAmbiguous(rec, scenario, opts.generate) : []; trail.push({ stage: 'design', by: 'program', ambiguous: dec.length });
         const proj = buildProject(model, { language: lang, package: opts.package, scenario, design: rec, userGlue: opts.userGlue, experience: opts.experience, glue: opts.glue });
-        return { ok: true, model, dsl: U.toDsl(model), design: rec, files: proj.files, libs: proj.libs, glue: proj.glue, packages: packagesOf(model), rework: rw, trail, decisions: (res.decisions || []).concat(dec), warnings: (res.warnings || []).concat(rw.remaining.map((i) => '尚有問題：' + i.msg)), seedUsed: seed.used };
+        return { ok: true, model, dsl: U.toDsl(model), design: rec, files: proj.files, libs: proj.libs, glue: proj.glue, packages: packagesOf(model), rework: rw, trail, decisions: (res.decisions || []).concat(dec), warnings: (res.warnings || []).concat(rw.remaining.map((i) => '尚有問題：' + i.msg)), seedUsed: seed.used, reasoning: res.reasoning || '' };
     }
 
     // ---------- 互動引導（對話卡片）：把「設計抉擇」做成表單，使用者逐步確認；程式決定問什麼、使用者回答、程式照答案組設計 ----------
