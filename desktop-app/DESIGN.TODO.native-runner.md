@@ -367,7 +367,10 @@
 
 ### (2) 剩下的工作與起點
 
-1. **舊版安裝模擬**（尚未做）
+1. **舊版安裝模擬**（已做，真 Electron 驗證通過）
+   - 做法：`git worktree add` 把 96292810 開到暫存資料夾，`node_modules` 用 junction 接到目前工作目錄；userData 寫入 `live-patch/state.json` 與新版 `main-ext.js`；驅動程式是 `scripts/eval/native_old_install_sim.js`。
+   - 結果：舊主程式套用新版 `main-ext.js` 後，`ready.json` 在 228 毫秒出現，`status` 回 ok（611 毫秒），`run` 回 `no_engine`。對照組（不放覆蓋檔）沒有 `ready.json`。
+   - 還沒驗證：renderer 的覆蓋（`floating-assistant.js`）；以及真正的熱更新下載流程（這次是直接寫入 live-patch 資料夾）。
    - 起點：`git worktree add <路徑> 96292810`（stage 1 的 commit，沒有原生程式、main.js 與 preload.js 是原版）；`node_modules` 用 junction 連到目前的 `desktop-app/node_modules`。
    - 覆蓋方式：讀 `main.js` 的 `mainOverlaySources`（約第 99–132 行）與 `LIVE_PATCH_MAIN_FILES`（第 61–97 行）。覆蓋檔放在 `<userData>/live-patch/`，`state.json` 的 `baselineVersion` 必須等於 `renderer/update-manifest.json` 的 `baseVersion`，每個檔的 md5 要對得上。
    - 預期：舊版主程式載入新版 `main-ext.js`（在清單內）後，信箱能運作；`ready.json` 出現；`status` 回 ok。
