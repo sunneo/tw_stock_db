@@ -63,6 +63,8 @@ embed('renderer/src/gui/py_async.js', 'GUIPYASYNC-BEGIN', 'GUIPYASYNC-END', 'FA_
 embed('renderer/src/gui/js_program.js', 'GUIJSPROGRAM-BEGIN', 'GUIJSPROGRAM-END', 'FA_GUI_JSPROGRAM_SRC');
 // 讀取帳本（renderer/src/agent/read_ledger.js，純函式、UMD）：分頁讀取沒讀完就不接受最終回答。同上，嵌入後執行時用 new Function 載入。
 embed('renderer/src/agent/read_ledger.js', 'READLEDGER-BEGIN', 'READLEDGER-END', 'FA_READ_LEDGER_SRC');
+// 對話樹（renderer/src/chat/chat_tree.js，純函式、UMD）：子對話的索引欄位、側欄樹狀、@ 指名解析。同上，嵌入後用 new Function 載入。
+embed('renderer/src/chat/chat_tree.js', 'CHATTREE-BEGIN', 'CHATTREE-END', 'FA_CHAT_TREE_SRC');
 function embedBehavior() {
     const data = require('./behavior-data.js').load(root);
     const a = src.indexOf('/* BEHAVIOR-BEGIN */'), b = src.indexOf('/* BEHAVIOR-END */');

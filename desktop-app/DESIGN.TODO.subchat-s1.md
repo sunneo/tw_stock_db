@@ -96,6 +96,9 @@
 
 - 純函式：`node renderer/src/chat/chat_tree.test.js`（步驟 2 起）。
 - 真桌面版：`scripts/eval/chat_tree.eval.js`，用 `scripts/eval/run_eval.js` 啟動真 Electron（步驟 5）。
+- **步驟 4 已驗證（真桌面版）**：`scripts/eval/chat_tree_index.eval.js`（換埠 17951、全新資料夾）。結果：載入來源為工作目錄的 `renderer/floating-assistant.js`；舊索引載入後 6 個新欄位全為 null；舊欄位不變（`updatedAt` 除外）；補齊後寫回後端，重讀仍正確；`_chatNew()` 不傳選項時不帶 `parentId`／`nodeName`；`_chatNew(null,{parentId,nodeName})` 寫入兩者。
+- **步驟 4 未驗證**：遠端需求建立對話寫入 `nodeName`（`rg_dispatch.js` `_rgCreateRemoteChat`）只有讀程式與 `rg_methods.test.js`（102 項，全過）；沒有真的跑遠端群組。
+- 步驟 4 的 `updatedAt` 說明：目前對話在載入時 `updatedAt` 會被既有邏輯更新（`floating-assistant.js` 約 79543，`_touchSig`），與補欄位無關，評估檔已排除此欄位比對。
 
 ## 4. 教訓
 
