@@ -1,0 +1,591 @@
+{
+  "version": 1,
+  "records": [
+    {
+      "id": "inv-positive-1",
+      "task": "唯讀盤點離線文字模型與 CoLU 實作，寫成可核對的設計草案",
+      "kind": "positive_path",
+      "stage": "inv",
+      "steps": [
+        {"do": "Grep 模型表與 qwen3 字樣，列出所有離線文字模型（大小、執行函式庫、是否支援 thinking）", "check": "grep -n \"qwen3-0.6b\" renderer/src/vlm/vlm_core.js 命中模型表（第 30 行）；qwen3-1.7b 命中第 48 行"},
+        {"do": "Grep enable_thinking 找出離線生成處是否寫死關閉思考", "check": "grep -n enable_thinking 找到寫死 false 的兩處（記錄中為建置檔的 50832／50834 行，需標明是哪一份副本）"},
+        {"do": "Grep 定位 jsonStep 與各題型的 maxTokens，再用小段讀取（每次 40 至 80 行）確認", "check": "grep -n \"jsonStep\" renderer/src/recipe/recipe_core.js 找到定義；草案步驟 2 寫明選項題 40、欄位題 160 的來源行號"},
+        {"do": "把未查到的項目明寫在「沒查」小節，不推測成事實", "check": "文件含「沒查」小節，且每條結論附行號或寫明推測"}
+      ],
+      "alternatives": [
+        {"option": "逐檔整檔讀取 floating-assistant.js", "outcome": "檔案約十萬行，不可行；改為 Grep 定位", "chosen": false},
+        {"option": "Grep 定位後小段讀取", "outcome": "盤點完成，附行號", "chosen": true}
+      ],
+      "lesson": "大檔先 Grep 定位再小段讀；每條盤點結論附行號，並標明是來源檔還是建置檔。",
+      "evidence": "工作階段 local_fd90132f-f163-4806-b98d-7d29f560daa8（調查 Haiku）步驟 1、2 的 Grep／Read 順序；DESIGN.TODO.colu-thinking.md 步驟 1、2",
+      "verified": false
+    },
+    {
+      "id": "inv-branch-1",
+      "task": "中途範圍擴大：從只盤點 Qwen 擴大到所有離線文字模型",
+      "kind": "branch",
+      "stage": "inv",
+      "steps": [],
+      "alternatives": [
+        {"option": "另開新工作階段處理擴大的範圍", "outcome": "未採用（會重新讀一次資料）", "chosen": false},
+        {"option": "同一工作階段補充到同一份文件，並在文件加補充小節", "outcome": "約一分鐘內完成補充提交 8e0f2417，但文件末尾的「要先問使用者」清單沒有同步更新", "chosen": true}
+      ],
+      "lesson": "範圍擴大時，待問清單與結論要一起更新，不能只加補充段落。",
+      "evidence": "工作階段 local_fd90132f-f163-4806-b98d-7d29f560daa8 收到管理層補充訊息之後的最後回報；提交 e12ff754（16:00:57）與 8e0f2417（16:01:41，作者時間）",
+      "verified": true
+    },
+    {
+      "id": "inv-reflection-1",
+      "task": "盤點前先確認要改的是來源檔還是建置檔",
+      "kind": "reflection",
+      "stage": "inv",
+      "steps": [
+        {"do": "開盤點前確認來源檔（renderer/src/ 底下）與建置檔（renderer/ 底下）各自的行數與是否存在", "check": "ls renderer/src/floating-assistant.js renderer/floating-assistant.js；wc -l 兩者結果不同即需標明副本"}
+      ],
+      "alternatives": [],
+      "lesson": "同一個檔名在來源與建置兩處行號完全不同。盤點結論若沒寫明是哪一份，後面每一階段都會對錯行。",
+      "evidence": "階段 1 記錄第 17 行（步驟 3 寫的 floating-assistant.js:34015 在 renderer/floating-assistant.js 找不到，該檔 1196 行）；階段 2 記錄第 30 行（同一檔的 50881 行被改動）",
+      "verified": false
+    },
+    {
+      "id": "1-positive-1",
+      "task": "在 recipe 純函式層加入思考剝除（stripThink）並讓 jsonStep 只用答案去驗證",
+      "kind": "positive_path",
+      "stage": "1",
+      "steps": [
+        {"do": "讀設計草案步驟 3、5(b) 與「使用者決定」，確認規格", "check": "DESIGN.TODO.colu-thinking.md 含「使用者決定」小節"},
+        {"do": "在 recipe_core.js 的 jsonStep 之前加 stripThink，回傳 answer、reasoning、unclosed", "check": "grep -n \"function stripThink\" renderer/src/recipe/recipe_core.js 有命中"},
+        {"do": "jsonStep 每次 generate 之後先 stripThink，驗證與回饋只用 answer，reasoning 累積成新欄位", "check": "node renderer/src/recipe/recipe_core.test.js 輸出 89 passed, 0 failed"},
+        {"do": "補 17 項測試（stripThink 12、jsonStep 整合 5），並跑同目錄其他測試", "check": "node renderer/src/recipe/plan_core.test.js 輸出 57 passed；node renderer/src/recipe/skill_compile_core.test.js 輸出 48 passed"},
+        {"do": "只加三個檔並提交，行尾維持 LF", "check": "git show --stat 4d30a0c0 只列 recipe_core.js、recipe_core.test.js、DESIGN.TODO.colu-thinking.md；git ls-files --eol 顯示 lf"}
+      ],
+      "alternatives": [
+        {"option": "照文件的行號 floating-assistant.js:34015 抄程式", "outcome": "行號在指定路徑對不上，抄不到", "chosen": false},
+        {"option": "照規格（閉合、未閉合、多段、大小寫）重新實作", "outcome": "完成，17 項測試通過", "chosen": true}
+      ],
+      "lesson": "規格要寫成可測的條件（閉合、未閉合、多段、大小寫），行號只當線索，不能當依據。",
+      "evidence": "工作階段 local_657981bf-5652-4d7a-bb80-1f7d8e87c078（階段 1）；提交 4d30a0c0（18:06:06，作者時間）；階段 1 記錄第 3–20 行",
+      "verified": true
+    },
+    {
+      "id": "1-branch-1",
+      "task": "vendor 副本刻意不同步，之後才在測試中撞到漂移",
+      "kind": "branch",
+      "stage": "1",
+      "steps": [],
+      "alternatives": [
+        {"option": "階段 1 就同步 skills/weak-model-harness/scripts/vendor/recipe_core.js", "outcome": "未採用", "chosen": false},
+        {"option": "留給發布階段再決定", "outcome": "階段 3 的可攜測試「harness skill 可攜」失敗；之後由提交 a3c16797（18:35，作者時間）同步，而不是原本的階段 1", "chosen": true}
+      ],
+      "lesson": "改了來源模組又有 vendor 副本的，要在同一階段同步，否則下一階段會在無關的測試上失敗。",
+      "evidence": "階段 1 記錄第 18 行；階段 3 記錄第 80 行；工作階段 local_d30a97ca-5aa3-4a5f-8411-2e84aad9ddc1 最後回報；提交 a3c16797",
+      "verified": true
+    },
+    {
+      "id": "1-reflection-1",
+      "task": "凡是改了有 vendor 副本的來源，提交前先跑可攜測試",
+      "kind": "reflection",
+      "stage": "1",
+      "steps": [
+        {"do": "改來源後，執行可攜測試，確認 vendor 與來源一致", "check": "node scripts/harness-tests/portable.test.js 全過（11 項）"},
+        {"do": "若不一致，同階段同步並寫進記錄，不留給後面", "check": "diff 來源與 vendor 副本為空（或 pack 腳本通過）"}
+      ],
+      "alternatives": [],
+      "lesson": "如果重來，階段 1 就應該同步 vendor；那樣階段 3 不會多一次「是否同步」的上報。",
+      "evidence": "階段 3 記錄第 80 行與最後回報；階段 4 的同步紀錄",
+      "verified": false
+    },
+    {
+      "id": "2-positive-1",
+      "task": "加入 thinkingPlan 與 jsonStep 的 thinking 參數，並把離線生成參數接到工作者",
+      "kind": "positive_path",
+      "stage": "2",
+      "steps": [
+        {"do": "寫 thinkingPlan：只有 qwen3-0.6b 且階段為 plan 或 reflect 才開，plan 預算夾在 1500～3000、逾時 30000；reflect 夾在 300～600、逾時 15000", "check": "node renderer/src/recipe/think_plan.test.js 輸出 49 passed, 0 failed（階段 2 當時為 41，階段 7 任務 C 加了 8 項）"},
+        {"do": "jsonStep 接受 ctx.thinking：先開思考問一輪，不合格就關閉思考同題重問一次，再不行走既有 ok:false；沒有 thinking 時 generate 收到的鍵與階段 1 完全相同", "check": "node renderer/src/recipe/recipe_core.test.js 仍為 89 passed（沒有新增檢查，行為不變）"},
+        {"do": "只改離線工作者的 enable_thinking 讀取 m.enableThinking 與 _llmGenerate 的逾時參數，改完用語法檢查", "check": "node --check renderer/src/floating-assistant.js 通過"},
+        {"do": "提交前列出 git diff --stat，確認只動預期的檔", "check": "git show --stat adea8058 只含 recipe_core.js、floating-assistant.js、think_plan.test.js、run-core-tests.js、DESIGN.TODO.colu-thinking.md"}
+      ],
+      "alternatives": [
+        {"option": "改動後跑 build-assistant.js 重建", "outcome": "未採用：它會改寫 .min.js 與 manifest，超出本階段範圍", "chosen": false},
+        {"option": "只改來源與嵌入區塊，不重建", "outcome": "完成，但之後的真機評估只能在隔離副本建置（見階段 3、4）", "chosen": true}
+      ],
+      "lesson": "參數接線分三層（純函式、呼叫端、工作者）各自測；預設值要讓舊呼叫完全不變。",
+      "evidence": "工作階段 local_d5149bba-cef5-4e57-881c-5eacb03eb379（階段 2）；提交 adea8058（18:10:34，作者時間）；階段 2 記錄第 22–54 行",
+      "verified": true
+    },
+    {
+      "id": "2-branch-1",
+      "task": "開思考那一輪帶了 prefill，模型沒有機會先思考",
+      "kind": "branch",
+      "stage": "2",
+      "steps": [],
+      "alternatives": [
+        {"option": "開思考與退路兩輪都帶 prefill（沿用原本的做法）", "outcome": "模型被 prefill 接在提示後面，直接跳過思考", "chosen": false},
+        {"option": "只有退路那一輪帶 prefill", "outcome": "階段 3 發現並修正（提交 500bcdb4）", "chosen": true}
+      ],
+      "lesson": "prefill 會截斷思考。凡是要讓模型思考的那一輪，都不要帶 prefill。",
+      "evidence": "階段 3 記錄第 66 行（「順手修的階段 2 問題」）；工作階段 local_d30a97ca-5aa3-4a5f-8411-2e84aad9ddc1",
+      "verified": false
+    },
+    {
+      "id": "2-branch-2",
+      "task": "嵌入重寫會改動所有區塊，需要逐一 diff 確認",
+      "kind": "branch",
+      "stage": "2",
+      "steps": [],
+      "alternatives": [
+        {"option": "直接跑 embed 並提交", "outcome": "未採用", "chosen": false},
+        {"option": "跑完 embed 後用 git diff 確認只有預期的區塊有變動", "outcome": "確認只有 RECIPE 區塊與自己改的四處，之後每階段都重複這個步驟", "chosen": true}
+      ],
+      "lesson": "embed 腳本是全量重寫。跑之前先存一次 diff 基準，跑完再比對。",
+      "evidence": "階段 2 記錄第 53 行；階段 4、5 的同類確認紀錄",
+      "verified": false
+    },
+    {
+      "id": "2-reflection-1",
+      "task": "跑真機評估前，先確認評估載入的是建置檔還是來源檔",
+      "kind": "reflection",
+      "stage": "2",
+      "steps": [
+        {"do": "評估前用標記字串檢查評估會載入的檔案", "check": "grep -c \"_coluThinkingFor\" renderer/floating-assistant.js 的結果大於 0，否則不能跑評估（改在隔離副本建置）"}
+      ],
+      "alternatives": [],
+      "lesson": "如果重來，階段 2 就應該在隔離副本建置後跑評估，不要等到階段 4 才發現評估用的是舊檔（0 次反思）。",
+      "evidence": "階段 2 記錄第 47–49 行（未重建的建置檔）；階段 4 記錄第 122–124 行（第一次評估 0 次反思）",
+      "verified": false
+    },
+    {
+      "id": "3-positive-1",
+      "task": "在 UML 由上而下計畫的入口接上 thinking，並讓推理只給介面",
+      "kind": "positive_path",
+      "stage": "3",
+      "steps": [
+        {"do": "寫 _coluThinkingFor(M)：線上模型回傳 null，離線 qwen3-0.6b 才用 thinkingPlan 的 plan 階段，開關未設定視為開", "check": "grep -n \"_coluThinkingFor\" renderer/src/floating-assistant.js 命中定義與 _umlDesign 呼叫"},
+        {"do": "把 thinking 從 _umlDesign 傳到 designProject、scenarioToModel 再到 jsonStep；reasoning 只放回傳欄位", "check": "node renderer/src/uml/plan_think.test.js 輸出 25 passed, 0 failed"},
+        {"do": "用真 Electron 在隔離副本跑計畫評估", "check": "node scripts/eval/run_eval.js 跑 colu_think_plan.eval.js 輸出 PASS；工作目錄的 test-reports 沒有被改"}
+      ],
+      "alternatives": [],
+      "lesson": "推理只能掛在回傳欄位與進度文字，不能進 messages、dsl、decisions；用 grep 證明而不是只看程式。",
+      "evidence": "工作階段 local_d30a97ca-5aa3-4a5f-8411-2e84aad9ddc1（階段 3）；提交 500bcdb4（18:28:16，作者時間）；階段 3 記錄第 57–75 行",
+      "verified": true
+    },
+    {
+      "id": "3-branch-1",
+      "task": "建置檔在工作目錄不重建，評估只能改在隔離副本建置",
+      "kind": "branch",
+      "stage": "3",
+      "steps": [],
+      "alternatives": [
+        {"option": "在工作目錄跑 build-assistant.js", "outcome": "未採用：會改 .min.js 與 update-manifest.json，與「不碰 .min.js」的限制衝突", "chosen": false},
+        {"option": "在 %TEMP% 的隔離副本建置並評估", "outcome": "評估 PASS；工作目錄留著舊建置，發布前仍要重建", "chosen": true}
+      ],
+      "lesson": "建置與發布屬於發布階段。開發階段的評估一律在隔離副本做，並在記錄寫明這件事。",
+      "evidence": "階段 3 記錄第 79 行與第 75 行；階段 4 記錄第 116 行",
+      "verified": false
+    },
+    {
+      "id": "3-branch-2",
+      "task": "可攜測試失敗，先查 HEAD 才決定要不要動手",
+      "kind": "branch",
+      "stage": "3",
+      "steps": [],
+      "alternatives": [
+        {"option": "直接同步 vendor 副本並提交", "outcome": "未採用：查到同步已由其他工作階段提交（a3c16797）", "chosen": false},
+        {"option": "先確認 HEAD 與 vendor 的狀態，只回報結果與需要的決定", "outcome": "發現 vendor 已一致，但 HEAD 的來源缺少反思段，結果只能靠工作目錄版本通過；提出待決定事項", "chosen": true}
+      ],
+      "lesson": "動手前先確認別人是否已經做了同一件事，否則容易重複提交或把未提交的變動誤當成已提交。",
+      "evidence": "工作階段 local_d30a97ca-5aa3-4a5f-8411-2e84aad9ddc1 最後回報；提交 a3c16797",
+      "verified": true
+    },
+    {
+      "id": "3-reflection-1",
+      "task": "接線前先算計畫階段的最壞時間（題數乘逾時）",
+      "kind": "reflection",
+      "stage": "3",
+      "steps": [
+        {"do": "列出計畫會問幾題、每題逾時多久，算最壞總時間，寫進設計風險欄", "check": "記錄含「題數 × 逾時 = 最壞時間」的算式"}
+      ],
+      "alternatives": [],
+      "lesson": "階段 3 只寫了「會變長」，沒有算數。階段 6 實測才發現 CPU 上單題就會超過 30 秒，最壞時間遠超估計。",
+      "evidence": "階段 3 記錄第 81 行（未量測）；階段 6 記錄第 207 行（推測）與表格",
+      "verified": false
+    },
+    {
+      "id": "4-positive-1",
+      "task": "加入 CoLU+Thinking 反思（計畫層與答案層各一處），含上限與退路",
+      "kind": "positive_path",
+      "stage": "4",
+      "steps": [
+        {"do": "寫 coluThinkReflect、coluThinkRevise、coluThinkBudget：反思失敗一律視為沒有缺口，重做最多一次", "check": "node renderer/src/recipe/think_reflect.test.js 輸出 24 passed, 0 failed"},
+        {"do": "接上計畫層（design_core）與答案層（uml_core），來源檔只加一個 reflect 參數", "check": "node renderer/src/recipe/recipe_core.test.js 89 passed；plan_core 57；skill_compile_core 48；uml_core 76 全過"},
+        {"do": "用真 Electron 走整條 _umlDesign 路徑跑五個情境（有缺口重做、上限、反思輸出壞掉、開關關閉、答案層反思）", "check": "scripts/eval/colu_think_reflect.eval.js 輸出 PASS，在隔離副本埠 17942 執行"},
+        {"do": "跑完整核心測試並還原使用者的未提交報告檔", "check": "node scripts/run-core-tests.js 為 174／176，失敗只剩 tray_dialog 與 RFB 探測（已知）"}
+      ],
+      "alternatives": [],
+      "lesson": "反思做成「封閉題＋程式決定要不要重做＋硬上限」，模型只回答有沒有缺口，上限由程式算。",
+      "evidence": "工作階段 local_aa72f34e-69f9-4427-a73b-01b4256ecdc5（階段 4）；提交 8784bbbb（18:51:22，作者時間）；階段 4 記錄第 86–116 行",
+      "verified": true
+    },
+    {
+      "id": "4-branch-1",
+      "task": "第一次真機評估 0 次反思，原因不在功能而在載入的檔案",
+      "kind": "branch",
+      "stage": "4",
+      "steps": [],
+      "alternatives": [
+        {"option": "懷疑功能有問題，改程式", "outcome": "未採用", "chosen": false},
+        {"option": "確認評估載入的是建置檔，缺少新程式；在隔離副本建置後重跑", "outcome": "重跑 PASS，但多花一輪評估時間", "chosen": true}
+      ],
+      "lesson": "評估 0 次呼叫時，先查載入的檔案是否含新程式，再查功能。",
+      "evidence": "階段 4 記錄第 123–124 行；工作階段 local_aa72f34e-69f9-4427-a73b-01b4256ecdc5 中評估的兩次執行紀錄",
+      "verified": false
+    },
+    {
+      "id": "4-branch-2",
+      "task": "隔離副本建置時 robocopy 遇到非 ASCII 路徑失敗",
+      "kind": "branch",
+      "stage": "4",
+      "steps": [],
+      "alternatives": [
+        {"option": "繼續用 robocopy 並改路徑", "outcome": "robocopy 回傳 exit 16，未採用", "chosen": false},
+        {"option": "改用 node 腳本複製（略過 node_modules 與 .git），node_modules 用 junction 連結", "outcome": "複製成功；junction 因目的地已有 node_modules 失敗，刪除後重建成功", "chosen": true}
+      ],
+      "lesson": "專案路徑含中文時，robocopy 容易失敗。隔離副本建議直接用 node 複製，並先確認目的地沒有 node_modules。",
+      "evidence": "工作階段 local_aa72f34e-69f9-4427-a73b-01b4256ecdc5 的 robocopy 與 junction 紀錄",
+      "verified": false
+    },
+    {
+      "id": "4-branch-3",
+      "task": "測試抓到 max:0 被當成 2 的預設值 bug",
+      "kind": "branch",
+      "stage": "4",
+      "steps": [],
+      "alternatives": [
+        {"option": "用 opts.max || 2 寫預設值", "outcome": "0 被當成 2，測試第 16 項失敗", "chosen": false},
+        {"option": "改成 opts.max != null 判斷，並留一項 0 的測試", "outcome": "24 項全過", "chosen": true}
+      ],
+      "lesson": "預設值用 || 會吃掉 0 與空字串。數字參數一律用 != null 判斷，並為 0 補測試。",
+      "evidence": "階段 4 記錄第 125 行；工作階段 local_aa72f34e-69f9-4427-a73b-01b4256ecdc5 的測試紀錄（第 16 項）",
+      "verified": false
+    },
+    {
+      "id": "4-branch-4",
+      "task": "核心測試會覆寫使用者未提交的報告檔",
+      "kind": "branch",
+      "stage": "4",
+      "steps": [],
+      "alternatives": [
+        {"option": "直接跑完整核心測試", "outcome": "未採用：會覆寫 test-reports 下使用者未提交的變動", "chosen": false},
+        {"option": "先備份兩個報告檔，跑完後還原，並用 sha1 驗證", "outcome": "還原成功，未碰到使用者變動", "chosen": true}
+      ],
+      "lesson": "跑會寫報告的測試之前，先備份工作目錄中有未提交變動的檔案。",
+      "evidence": "階段 4 記錄第 126 行；工作階段 local_aa72f34e-69f9-4427-a73b-01b4256ecdc5 的備份與還原紀錄",
+      "verified": false
+    },
+    {
+      "id": "4-branch-5",
+      "task": "反思預算「整份計畫最多兩次」是否包含答案層，規格寫得不清楚",
+      "kind": "branch",
+      "stage": "4",
+      "steps": [],
+      "alternatives": [
+        {"option": "依字面做成計畫層與答案層共用兩次", "outcome": "已採用，答案層先用掉額度時計畫層可能用不到第二次", "chosen": true},
+        {"option": "分開計算各自的上限", "outcome": "未採用，交給管理層決定", "chosen": false}
+      ],
+      "lesson": "規格有歧義時，依字面實作並在記錄寫明，同時把決定權交回管理層。",
+      "evidence": "階段 4 記錄第 133 行；工作階段 local_aa72f34e-69f9-4427-a73b-01b4256ecdc5 最後回報",
+      "verified": false
+    },
+    {
+      "id": "4-reflection-1",
+      "task": "真機評估前做一次 smoke，確認載入的 bundle 含新函式",
+      "kind": "reflection",
+      "stage": "4",
+      "steps": [
+        {"do": "在跑評估前，先在隔離副本建置並用標記字串確認新函式存在", "check": "grep -c \"_coluReflectFor\" 隔離副本的 renderer/floating-assistant.js 大於 0"},
+        {"do": "若評估出現 0 次呼叫，先判定為載入問題，不改功能程式", "check": "評估紀錄中 reflect_calls 為 0 時，先跑上一步的 grep"}
+      ],
+      "alternatives": [],
+      "lesson": "如果重來，階段 4 的第一次評估就不用白跑。",
+      "evidence": "階段 4 記錄第 123–124 行",
+      "verified": false
+    },
+    {
+      "id": "5-positive-1",
+      "task": "加入 CoLU+Thinking 設定開關與收合的推理區塊（只給使用者看，不進對話）",
+      "kind": "positive_path",
+      "stage": "5",
+      "steps": [
+        {"do": "加設定預設值（未設定視為開）與純函式 coluThinkingSetting、reasoningView、reasoningBlockHtml（先跳脫 HTML，超過 20000 字截斷）", "check": "node renderer/src/recipe/colu_think_ui.test.js 輸出 20 passed, 0 failed"},
+        {"do": "推理掛在進度卡片的不可列舉屬性上，不進對話存檔", "check": "grep -n \"enumerable:false\" renderer/src/floating-assistant.js 命中推理狀態那一行"},
+        {"do": "用真 Electron 驗證開關、收合區塊、跳脫 img 標記", "check": "scripts/eval/colu_think_ui.eval.js 輸出 PASS"}
+      ],
+      "alternatives": [],
+      "lesson": "顯示與儲存分開設計：推理存在不可列舉屬性，就不會因存檔而流進對話內容。",
+      "evidence": "工作階段 local_7bf36fed-3744-47b8-bdcb-ff5be6edda56（階段 5）；提交 b12affba（19:02:53，作者時間）；階段 5 記錄第 136–169 行",
+      "verified": true
+    },
+    {
+      "id": "5-branch-1",
+      "task": "設定 UI 是否有第二份要同步，先用 grep 確認再動手",
+      "kind": "branch",
+      "stage": "5",
+      "steps": [],
+      "alternatives": [
+        {"option": "依記憶的通則，假設 index.html 也有一份並兩邊都加", "outcome": "未採用", "chosen": false},
+        {"option": "先 grep，確認 topicShiftCheck 只在 floating-assistant.js 有 UI，只加一處", "outcome": "免去同步，結果正確", "chosen": true}
+      ],
+      "lesson": "記憶裡「設定 UI 有兩份」是針對某些設定的通則，不要直接套用到別的設定；先 grep 再決定。",
+      "evidence": "階段 5 記錄第 138 行；工作階段 local_7bf36fed-3744-47b8-bdcb-ff5be6edda56 的 grep 紀錄",
+      "verified": false
+    },
+    {
+      "id": "5-reflection-1",
+      "task": "顯示位置在動工前先定（卡片或回覆泡泡）",
+      "kind": "reflection",
+      "stage": "5",
+      "steps": [
+        {"do": "動工前把「推理放哪裡」寫成一個問題交給管理層，不要先做完再改", "check": "設計文件有「推理顯示位置」的決定紀錄"}
+      ],
+      "alternatives": [],
+      "lesson": "階段 5 把推理放在進度卡片，沒放回覆泡泡，這個決定在完成後才交給管理層。如果一開始就問，就不用事後重做。",
+      "evidence": "階段 5 記錄第 165 行；工作階段 local_7bf36fed-3744-47b8-bdcb-ff5be6edda56 最後回報",
+      "verified": false
+    },
+    {
+      "id": "6-positive-1",
+      "task": "真模型量測：固定種子題目、先做假生成乾跑、再真跑、結果寫入檔案",
+      "kind": "positive_path",
+      "stage": "6",
+      "steps": [
+        {"do": "用固定種子出題，每組只取少量題目，並估算總時間上限", "check": "估算的上限寫在量測計畫，例如 41 次呼叫約 34 分鐘，低於 40 分鐘上限"},
+        {"do": "先用假生成乾跑整條流程（不載入真模型）", "check": "假生成乾跑在 7 秒內結束，結果檔有 41 行進度與一行 event:\"done\""},
+        {"do": "真跑時每題即時寫入結果檔（jsonl），由檔案判讀進度", "check": "結果檔 %TEMP%\\colu-real-out 下的 run-*.jsonl 有 event:\"done\""},
+        {"do": "提交前確認沒有大檔進入暫存區", "check": "git show --stat 8414f5a8 只含 eval 檔與階段 6 記錄"}
+      ],
+      "alternatives": [
+        {"option": "只看終端機輸出", "outcome": "未採用：渲染程序的 console.log 不會送到終端機", "chosen": false},
+        {"option": "把進度寫進結果檔", "outcome": "可以在 3 分鐘檢查點讀到進度", "chosen": true}
+      ],
+      "lesson": "長量測的進度通道要在動工前確定，並用假生成先驗證。",
+      "evidence": "工作階段 local_4b094bc9-c76f-4ae4-89be-ba4fd2af027a（階段 6）；提交 bd8f9bbf（20:26:24）與 8414f5a8（20:54:04），作者時間；階段 6 記錄第 175–223 行",
+      "verified": false
+    },
+    {
+      "id": "6-branch-1",
+      "task": "題數從使用者要求的 20 題以上縮成每組 8 題",
+      "kind": "branch",
+      "stage": "6",
+      "steps": [],
+      "alternatives": [
+        {"option": "維持 20 題以上", "outcome": "CPU 上單組估計超過一小時，未採用", "chosen": false},
+        {"option": "縮成每組 8 題，並把限制寫進記錄", "outcome": "量測完成，但樣本太小，只能看方向", "chosen": true}
+      ],
+      "lesson": "縮小樣本是管理層的決定，要在動工前讓管理層看到估算時間，不要跑到一半才說。",
+      "evidence": "階段 6 記錄第 212 行；工作階段 local_4b094bc9-c76f-4ae4-89be-ba4fd2af027a 的計畫更新與 bd8f9bbf 到 8414f5a8 的縮小",
+      "verified": false
+    },
+    {
+      "id": "6-branch-2",
+      "task": "上一次取消的量測留下四個殘留的 Electron 程序",
+      "kind": "branch",
+      "stage": "6",
+      "steps": [],
+      "alternatives": [
+        {"option": "相信管理層說「已關閉」，直接開始新量測", "outcome": "未採用：工作管理員列表仍有四個程序", "chosen": false},
+        {"option": "列出程序，確認都來自自己的隔離副本後停止", "outcome": "停止完成，之後的量測不受影響", "chosen": true}
+      ],
+      "lesson": "開始量測前與結束後都要用程序列表確認，不要只看口頭回報。",
+      "evidence": "工作階段 local_4b094bc9-c76f-4ae4-89be-ba4fd2af027a 中 tasklist 的紀錄",
+      "verified": false
+    },
+    {
+      "id": "6-branch-3",
+      "task": "CPU 上思考的 60 秒上限沒有被準確執行，實測最長 148.6 秒",
+      "kind": "branch",
+      "stage": "6",
+      "steps": [],
+      "alternatives": [
+        {"option": "把 60 秒當成真的上限，直接寫進結論", "outcome": "未採用：實測超過上限", "chosen": false},
+        {"option": "照實記錄超時事實，原因標為未查證，留到階段 7 處理", "outcome": "階段 7 找到根因（見 7-positive-1）", "chosen": true}
+      ],
+      "lesson": "上限是否有效要用實測資料證明，不能只看設定值。",
+      "evidence": "階段 6 記錄第 185–186 行與表格；工作階段 local_4b094bc9-c76f-4ae4-89be-ba4fd2af027a 的 stats 檢查",
+      "verified": false
+    },
+    {
+      "id": "6-branch-4",
+      "task": "反思的 15 秒逾時在 CPU 上九次全部失效",
+      "kind": "branch",
+      "stage": "6",
+      "steps": [],
+      "alternatives": [
+        {"option": "沿用 WebGPU 的 15 秒逾時量測", "outcome": "九次全部逾時，沒有有效判斷", "chosen": true},
+        {"option": "量測前先確認裝置能力，依裝置決定逾時", "outcome": "未在階段 6 做；階段 7 任務 C 才補上", "chosen": false}
+      ],
+      "lesson": "逾時值要依實際會跑的裝置決定。這台機器的顯示卡不支援 shader-f16，量測前就能確認只會跑處理器版。",
+      "evidence": "階段 6 記錄第 178 行（裝置判定）與第 195 行（反思全部逾時）；階段 7 補記任務 C（提交 7e0ada05）",
+      "verified": false
+    },
+    {
+      "id": "6-branch-5",
+      "task": "量測沒有存原始回覆，無法分辨錯誤是推理錯還是格式錯",
+      "kind": "branch",
+      "stage": "6",
+      "steps": [],
+      "alternatives": [
+        {"option": "只存判分與耗時", "outcome": "已採用，之後無法分析錯誤型態", "chosen": true},
+        {"option": "同時存每題的原始回覆", "outcome": "未採用", "chosen": false}
+      ],
+      "lesson": "量測的結果檔一定要留原始輸出，否則錯誤型態無法事後分析。",
+      "evidence": "階段 6 記錄第 200 行與第 215 行",
+      "verified": false
+    },
+    {
+      "id": "6-branch-6",
+      "task": "記錄寫完才發現繁簡字與一句超出量測的敘述，提交前修正",
+      "kind": "branch",
+      "stage": "6",
+      "steps": [],
+      "alternatives": [
+        {"option": "直接提交", "outcome": "未採用", "chosen": false},
+        {"option": "提交前逐句對照數字，修正後才提交", "outcome": "修正完成後提交 8414f5a8", "chosen": true}
+      ],
+      "lesson": "記錄中的每個數字與結論，提交前要對照結果檔。",
+      "evidence": "工作階段 local_4b094bc9-c76f-4ae4-89be-ba4fd2af027a 提交前的兩次 Edit 紀錄",
+      "verified": false
+    },
+    {
+      "id": "6-reflection-1",
+      "task": "量測前先查裝置能力與實際會載入的版本，再決定逾時與預算",
+      "kind": "reflection",
+      "stage": "6",
+      "steps": [
+        {"do": "量測前列出裝置能力（例如顯示卡是否支援 shader-f16）與實際會載入的版本", "check": "記錄中有裝置判定那一行（階段 6 記錄第 178 行這類紀錄）"},
+        {"do": "量測腳本把原始回覆寫進結果檔", "check": "結果檔每筆含 raw 欄位（或等價欄位）"}
+      ],
+      "alternatives": [],
+      "lesson": "如果重來，階段 2 設定 30 秒逾時前就應該查裝置；階段 6 量測前就應該存原始回覆。",
+      "evidence": "階段 6 記錄第 178、200 行；階段 7 補記任務 C",
+      "verified": false
+    },
+    {
+      "id": "7-positive-1",
+      "task": "找到逾時超時的根因（閒置卸載計時器）並加上硬性上限",
+      "kind": "positive_path",
+      "stage": "7",
+      "steps": [
+        {"do": "先讀程式找根因：閒置卸載計時器在呼叫中途觸發，把呼叫以已卸載結束", "check": "grep -n \"_vlmScheduleIdle\" renderer/src/floating-assistant.js 找到排程點；呼叫開始時沒有取消"},
+        {"do": "寫 guardedCall：到時限先中斷，寬限後放棄工作者，之後的結果一律丟棄", "check": "node renderer/src/recipe/colu_think_timeout.test.js 輸出 19 passed, 0 failed"},
+        {"do": "_llmGenerate 只對有 timeoutMs 的呼叫使用 guardedCall，並在開始前取消閒置計時器", "check": "沒給 timeoutMs 的呼叫行為不變（測試中有一項）"},
+        {"do": "用假的卡住工作者做真 Electron 評估", "check": "scripts/eval/colu_think_timeout.eval.js 輸出 PASS：卡住呼叫 8.07 秒拋逾時；退路 8.09 秒拿到答案"}
+      ],
+      "alternatives": [
+        {"option": "直接把 60 秒改成更大的數字", "outcome": "未採用：不知道超時的真正原因", "chosen": false},
+        {"option": "先讀程式找根因，再決定修正", "outcome": "找到根因，修正只影響有逾時的呼叫", "chosen": true}
+      ],
+      "lesson": "逾時問題先查程式的計時器與取消機制，不要先調數字。",
+      "evidence": "工作階段 local_4185b0f9-60cf-4e98-bf21-d3c7ed6ee7a6（階段 7）；提交 459f84bb（21:08:26，作者時間）；階段 7 記錄第 227–252 行",
+      "verified": true
+    },
+    {
+      "id": "7-branch-1",
+      "task": "協作式中斷在 CPU 上等不到工作者回應，需要寬限後放棄",
+      "kind": "branch",
+      "stage": "7",
+      "steps": [],
+      "alternatives": [
+        {"option": "只送中斷，繼續等工作者回應", "outcome": "CPU 上一步很慢，實測等到 148.6 秒", "chosen": false},
+        {"option": "中斷後等 5 秒寬限，仍未回應就放棄（終止工作者）", "outcome": "採用；舊結果晚到時丟棄", "chosen": true}
+      ],
+      "lesson": "協作式中斷必須搭配硬性放棄，否則慢裝置上上限形同虛設。",
+      "evidence": "階段 7 記錄第 230 行與第 235 行；工作階段 local_4185b0f9-60cf-4e98-bf21-d3c7ed6ee7a6",
+      "verified": false
+    },
+    {
+      "id": "7-branch-2",
+      "task": "逾時值依裝置取（WebGPU 與處理器兩組）",
+      "kind": "branch",
+      "stage": "7",
+      "steps": [],
+      "alternatives": [
+        {"option": "全部沿用 30 秒與 15 秒", "outcome": "處理器版會被切掉大多數答案，未採用", "chosen": false},
+        {"option": "依裝置分組：顯示卡版 30 秒與 15 秒，處理器版 300 秒與 120 秒，預算不變", "outcome": "採用（提交 7e0ada05），設定面板提示同步更新", "chosen": true}
+      ],
+      "lesson": "裝置不同，延遲分布不同。逾時值與提示文字要一起依裝置改。",
+      "evidence": "階段 7 補記任務 C（第 256 行）；提交 7e0ada05（21:15:07，作者時間）",
+      "verified": false
+    },
+    {
+      "id": "7-branch-3",
+      "task": "反思在處理器上重量測：九次全部有效但全部「沒有缺口」，無法證明能抓缺口",
+      "kind": "branch",
+      "stage": "7",
+      "steps": [],
+      "alternatives": [
+        {"option": "只報三題三次一致（3/3）", "outcome": "一致性是有的，但沒有任何有缺口的題，不能推論偵測能力", "chosen": true},
+        {"option": "加入已知有缺口的對照題再量", "outcome": "未在本階段做", "chosen": false}
+      ],
+      "lesson": "反思的量測一定要包含已知答案是「有缺口」的對照題，否則只量到穩定，量不到有效。",
+      "evidence": "階段 7 補記任務 D（第 262–266 行）；提交 cc1f44c0（21:33:16，作者時間）",
+      "verified": false
+    },
+    {
+      "id": "7-branch-4",
+      "task": "量測中途桌面程式重新啟動，工作階段被中斷",
+      "kind": "branch",
+      "stage": "7",
+      "steps": [],
+      "alternatives": [
+        {"option": "重新啟動量測", "outcome": "未採用：會浪費已完成的九次中的五次", "chosen": false},
+        {"option": "不殺程序，讀結果檔繼續等，跑完後寫記錄", "outcome": "採用，九次全部完成", "chosen": true}
+      ],
+      "lesson": "長量測寫進結果檔，中斷後可以從檔案接續。",
+      "evidence": "工作階段 local_4185b0f9-60cf-4e98-bf21-d3c7ed6ee7a6 的管理層跨工作階段訊息與 ScheduleWakeup 紀錄",
+      "verified": false
+    },
+    {
+      "id": "7-reflection-1",
+      "task": "逾時修正要同時考慮計時器衝突與裝置差異，兩者都要有測試",
+      "kind": "reflection",
+      "stage": "7",
+      "steps": [
+        {"do": "列出所有會計時或會卸載的機制（閒置卸載、逾時、寬限），確認它們不互相殺掉呼叫", "check": "grep -n \"_vlmScheduleIdle\" 與 guardedCall 的呼叫點都有對應的取消或例外處理"},
+        {"do": "量測逾時時同時量測各裝置的延遲分布，不只看中位數", "check": "記錄含最長值與超時次數"}
+      ],
+      "alternatives": [],
+      "lesson": "如果重來，階段 2 就該把閒置卸載與逾時一起檢查；這樣階段 7 的 120 秒問題在階段 2 就會被找到。",
+      "evidence": "階段 7 記錄第 229–231 行；階段 6 表格",
+      "verified": false
+    },
+    {
+      "id": "all-reflection-1",
+      "task": "跨階段通則：碰壁最多的是「用錯檔案或錯裝置的假設」",
+      "kind": "reflection",
+      "stage": "all",
+      "steps": [
+        {"do": "動工前先確認三件事：要改的是來源還是建置檔、評估跑的是哪份檔、執行裝置是哪一種", "check": "記錄三行標明：來源路徑與行數、評估載入路徑、裝置判定"},
+        {"do": "開始每個量測前，先跑假生成乾跑", "check": "乾跑在數秒內完成並寫出完整結果檔"}
+      ],
+      "alternatives": [],
+      "lesson": "多數碰壁不是演算法問題，而是檔案副本、裝置或計時器的假設錯了。第一步就查這三件事，可以省下大部分的評估輪次。",
+      "evidence": "階段 1 記錄第 17 行；階段 4 記錄第 123–124 行；階段 6 記錄第 178 行；階段 7 記錄第 229 行；以上為跨階段的同類碰壁",
+      "verified": false
+    },
+    {
+      "id": "all-reflection-2",
+      "task": "跨階段通則：子任務只能在自己的檔案範圍內動手，跨階段的依賴要寫明",
+      "kind": "reflection",
+      "stage": "all",
+      "steps": [
+        {"do": "每個階段開頭列出它依賴的前一階段提交，並確認已存在", "check": "git show --stat <依賴的提交> 有預期的檔案"},
+        {"do": "vendor 副本、建置檔、設定 UI 的同步在同一階段完成或明確交棒", "check": "階段記錄有「同步」或「交棒」一行"}
+      ],
+      "alternatives": [],
+      "lesson": "階段 1 留下的 vendor 漂移、階段 2 留下的未建置、階段 5 的 UI 同步問題，都是交棒沒寫清楚造成的。",
+      "evidence": "階段 1 記錄第 18 行；階段 3 記錄第 80 行；階段 5 記錄第 138 行",
+      "verified": false
+    }
+  ]
+}

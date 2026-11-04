@@ -54,3 +54,13 @@ node scripts/harness.js behavior 某個原始碼檔
 ## 為什麼這樣設計
 
 小模型整段讀需求會漏、會編。這個迴圈把需求切成小而封閉的題目，程式核對每一個答案，模型只當「字母神諭」。它跟專案的離線訓練器、UML design、CoLU 是同一套思路：字母選擇題、程式檢查、程式預設退路。離線訓練器因此不只是離線備援，而是這個 harness 的學習層。
+
+## 路線經驗
+
+除了「封閉題經驗」，這個資料夾還有 `references/path-experiences.json`：記錄一個任務從頭到尾**走過的路線**，包括正路（實際成功的步驟與每步的程式驗收）、分支（當時的選項、選了哪個、結果、是否繞遠路）與反思（如果重來，捷徑、前置檢查、該拆小的步驟、該早點問的決定）。格式：`{ "version":1, "records":[ {id, task, kind, stage, steps:[{do,check}], alternatives:[{option,outcome,chosen}], lesson, evidence, verified} ] }`，`kind` 只能是 `positive_path`、`branch`、`reflection`。每筆的 `evidence` 必須寫來源（工作階段名加提交號或文件行號），沒有來源的不收。
+
+**何時讀取**：開新的同類任務（例如另一個 CoLU 型的思考外殼、又要接計畫與反思的功能）之前，先讀同類任務的 `positive_path` 與 `reflection`，依 `task` 欄位判斷是否同類。碰到相同性質的卡點（例如「評估 0 次呼叫」「量測用的是舊檔」「逾時值沒依裝置」）時，先看有沒有對應的 `branch`。
+
+**與 `experience.json` 的差別**：`experience.json`（放在目前資料夾的 `.weak-harness/`）只收 `learn` 時 `status` 為 ok 的封閉題成功經驗，由程式驗證，每筆是「一題怎麼答對」。路線經驗是人工整理的任務層級記錄，不由 `learn` 寫入，也不經程式核對，所以 `verified` 欄位要如實標示（只有重跑過測試才標 true）。兩者不要混用：封閉題經驗給離線的答題用，路線經驗給開工前的人與模型讀。
+
+詳細整理與待辦建議見 `DESIGN.TODO.path-experience.md`。
