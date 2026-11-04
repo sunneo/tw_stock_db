@@ -76,6 +76,7 @@ async function readFromGithub(manifest, file, opts) {
 // 回傳 { ok, runtimeDir, sourcesUsed: {rel: 'npm'|'github'}, why? }
 async function installRuntime(opts) {
     const log = opts.log || (() => {});
+    const prog = opts.progress || (() => {}); // prog({ stage, source, detail }) 給介面顯示進度與來源
     const m = opts.manifest;
     const files = platformFiles(m, opts.platformKey);
     const stage = opts.runtimeDir + '.partial';
@@ -83,11 +84,13 @@ async function installRuntime(opts) {
     let npm = { ok: false, why: '沒有嘗試' };
     if (!opts.forceGithub) {
         log('[native-runtime] 來源 1：npm 官方庫（' + m.sources.npm.package + '）');
+        prog({ stage: 'npm', source: 'npm', detail: '正在下載 npm 官方庫的 tgz（約 89 MB）' });
         npm = await trySourceNpm(m, opts);
-        if (npm.ok) log('[native-runtime] npm 成功（' + npm.bytes + ' 位元組），抽取 onnxruntime 相關檔');
-        else log('[native-runtime] 切換到來源 2（GitHub 分支）：' + npm.why);
+        if (npm.ok) { log('[native-runtime] npm 成功（' + npm.bytes + ' 位元組），抽取 onnxruntime 相關檔'); prog({ stage: 'npm-ok', source: 'npm', detail: 'npm 下載完成，integrity 驗證通過（' + npm.bytes + ' 位元組）' }); }
+        else { log('[native-runtime] 切換到來源 2（GitHub 分支）：' + npm.why); prog({ stage: 'switch', source: 'github', detail: '切換到 GitHub 分支，原因：' + npm.why }); }
     } else {
         log('[native-runtime] 強制使用來源 2（GitHub 分支）');
+        prog({ stage: 'switch', source: 'github', detail: '強制使用 GitHub 分支（測試）' });
     }
     const sourcesUsed = {};
     const installed = {};
@@ -103,6 +106,7 @@ async function installRuntime(opts) {
             fs.writeFileSync(dst, buf);
             sourcesUsed[f.path] = from;
             installed[f.path] = { size: buf.length, md5: md5(buf), sha256: sha256(buf) };
+            prog({ stage: 'file', source: from, detail: '第 ' + (Object.keys(installed).length) + ' / ' + files.length + ' 個檔案（' + from + '）：' + f.path });
         }
         // 子程序程式（nr-*.js）：只能從來源 2 取得（npm 沒有）；名單在 manifest 的 files 裡，source 標示 github
         if (opts.nrSourceDir) {

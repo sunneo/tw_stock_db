@@ -729,6 +729,9 @@ function startNativeMailbox(ctx) {
   const modelPath = process.env.FA_NATIVE_MODEL_PATH || "", tokenizerPath = process.env.FA_NATIVE_TOKENIZER_PATH || "";
   let host = null;
   let installing = false;
+  // 安裝進度：寫進信箱資料夾的 install-progress.json（渲染程序每半秒讀一次）
+  const progFile = pathM.join(box, "install-progress.json");
+  const writeProg = (o) => { try { fsSync.writeFileSync(progFile + ".tmp", JSON.stringify(Object.assign({ at: Date.now() }, o))); fsSync.renameSync(progFile + ".tmp", progFile); } catch (_) { /* 寫不了就只靠最後的回應 */ } };
   function getHost() {
     if (!host) host = require(pathM.join(runtime.dir, "nr-host.js")).createNativeRunnerHost({
       childPath: pathM.join(runtime.dir, "nr-child.js"),
@@ -763,6 +766,7 @@ function startNativeMailbox(ctx) {
       // 按需安裝（只有使用者在介面按下安裝時才會送來）。來源 1：npm 官方庫；來源 2：GitHub 分支（釘住 commit SHA）。見 nr-runtime-install.js。
       if (installing) return { ok: false, code: "busy", message: "執行包安裝已經在進行中" };
       installing = true;
+      writeProg({ state: "running", stage: "start", source: "", detail: "開始安裝" });
       try {
         const inst = require(pathM.join(__dirname, "nr-runtime-install.js"));
         const manifest = JSON.parse(fsSync.readFileSync(pathM.join(__dirname, "native-runner", "runtime-manifest.json"), "utf8"));
@@ -778,15 +782,29 @@ function startNativeMailbox(ctx) {
           nrSourceDir: __dirname,
           timeoutMs: 120000,
           log: (s) => console.log("[main-ext] " + s),
+          progress: (o) => writeProg(Object.assign({ state: "running" }, o)),
         });
-        if (!r.ok) return { ok: false, code: "install_failed", message: r.why, sourcesUsed: r.sourcesUsed || {} };
+        if (!r.ok) {
+          writeProg({ state: "failed", stage: "failed", source: "", detail: r.why });
+          return { ok: false, code: "install_failed", message: r.why, sourcesUsed: r.sourcesUsed || {} };
+        }
         runtime = checkNativeRuntimeDir(nativeRuntimeDir(userData));
         if (host) { try { host.dispose("安裝完成，重新載入"); } catch (_) { /* */ } host = null; }
         const counts = {}; for (const k of Object.keys(r.sourcesUsed)) counts[r.sourcesUsed[k]] = (counts[r.sourcesUsed[k]] || 0) + 1;
+        writeProg({ state: "done", stage: "done", source: r.npmUsed ? "npm" : "github", detail: "安裝完成" });
         return { ok: runtime.ok, runtime: { ok: runtime.ok, version: runtime.version || null, reason: runtime.ok ? "" : runtime.reason }, npmUsed: r.npmUsed, sourceCounts: counts };
       } catch (e) {
+        writeProg({ state: "failed", stage: "failed", source: "", detail: String((e && e.message) || e) });
         return { ok: false, code: "install_failed", message: String((e && e.message) || e) };
       } finally { installing = false; }
+    }
+    if (op === "remove") {
+      // 移除執行包：先關掉子程序，再刪除 userData/native-runtime/<版本>/。不會動安裝目錄。
+      if (installing) return { ok: false, code: "busy", message: "安裝中，不能移除" };
+      if (host) { try { host.dispose("移除執行包"); } catch (_) { /* */ } host = null; }
+      try { fsSync.rmSync(nativeRuntimeDir(userData), { recursive: true, force: true }); } catch (e) { return { ok: false, code: "remove_failed", message: String((e && e.message) || e) }; }
+      runtime = checkNativeRuntimeDir(nativeRuntimeDir(userData));
+      return { ok: true, runtime: { ok: runtime.ok, version: null, reason: runtime.reason || "" } };
     }
     if (op === "run") {
       if (!runtime.ok) return { ok: false, code: "no_engine", message: "原生引擎沒有可用的執行包（" + runtime.reason + "）" };
