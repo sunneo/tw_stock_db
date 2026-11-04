@@ -124,6 +124,41 @@
 - F5 的「父對話先回答、子對話畫面上的表單收掉」是在子對話**被切走之後**的路徑（`_chatActivate` 收起表單 → 父對話回答 → 切回）也有驗證到（F5 之後接 F6／F7）；但「子對話在畫面上、父對話先回答」的直接路徑只驗證到「表單被收掉」（`f5_childFormRemoved`）。
 - 欄位表單的 `widget` 與 `info` 種類不在這次範圍（`_showUserForm` 只支援 choices 與 fields，見源頭註解）。
 
+## 步驟 4：FAP 資料夾授權框的冒泡與回答（已驗證）
+
+### 種類與不可自動回答的原則
+
+- `_checkFapPermission`（約 64405 行）＝模型工具要讀寫資料夾時，若沒有授權就跳出授權框（全域 modal，`_showFapPermissionDialog`），工具等使用者按「授權」或「拒絕」。**會卡住子對話**，要冒泡。
+- **權限式問題**：這是安全閘門，**一律由使用者在父對話或權限框上明確按下**。程式不會替使用者同意：沒有自動授權、沒有逾時自動同意、父對話的文字輸入不接受（`_subchatAnswer` 對 `fap` 回傳錯誤）。
+- 瀏覽器的 `requestPermission()` 需要使用者手勢，所以「授權」必須在點擊事件裡同步呼叫。父對話的按鈕與權限框的按鈕都呼叫同一組 `allow()`／`deny()`，`allow()` 第一個動作就是同步呼叫 `requestPermission()`。
+
+### 改了什麼（源頭 `renderer/src/floating-assistant.js`）
+
+- `_checkFapPermission`：子對話來的檢查（`this._ctx` 是子對話，`_chatEntry(id).parentId` 有值）→ 登記 `_subchatFapBubble`（等待記錄 `{kind:'fap', key, label, mode}` 存在 `_subchatPendingMap`，狀態 `ask`，問題文字「需要資料夾授權：<名稱>（讀寫／讀取）」）。等待結束（不論同意或拒絕）`clear()` 清掉等待記錄、狀態回 `answer`。
+- `_showFapPermissionDialog(rec, mode, key, from)`：權限框加上「來自子對話：<標題>」（回答原本的「框上沒有對話名稱」缺口）；框註冊 `_fapPermCtl`（key → `{allow, deny}`），框關閉時移除。
+- `_subchatAnswerFap(childId, allow)`：父對話按「授權／拒絕」→ 呼叫 `_fapPermCtl` 的 `allow()`／`deny()`。
+- `_subchatFapRow(w, childId)`：連結卡片的按鈕列（授權、拒絕、說明「權限問題只能由你按按鈕決定」）。
+- `_subchatLinkInfo` 的 `pending` 多一種 `'fap'`；`_subchatLinkDecorate` 對 `fap` 畫按鈕列；`_subchatAnswer` 對 `fap` 回傳錯誤（不接受文字）。
+- 同一子對話同時只顯示一件等待：已有別的等待（卡片、表單）時，權限的等待不覆蓋它，權限框仍在畫面上可以按（照常等）。這是已知限制，見下。
+- 沒有新增 ctx 狀態欄位（`_fapPermCtl` 與 `_subchatPending` 都在 app 實例上），所以不用進 `FA_CHAT_CTX_KEYS`。
+
+### 評估
+
+`scripts/eval/subchat_fap.eval.js`，真桌面版，埠 17969，假 handle（`queryPermission` 回 prompt、`requestPermission` 回 granted），不碰真的檔案系統。最終結果 `allPass: true`（19 項全過）：
+
+- P1 子對話發起讀取授權：waiting_user；權限框有「來自子對話」；連結卡片有「授權」按鈕；父對話打字被拒絕；等 800ms 仍未回答（沒有自動回答）；父對話按「授權」→ 檢查結束、框消失、等待清除、狀態不再 waiting。
+- P2 子對話發起讀寫授權，父對話按「拒絕」→ 檢查拋出含「拒絕」的錯誤、等待清除。
+- P3 子對話發起授權，使用者直接在權限框按「授權」→ 檢查結束、連結卡片的等待也清除（兩條路一致）。
+- P4 父對話自己發起授權：不冒泡（子對話狀態不變、沒有等待記錄）。
+- `loadedWorkdirImpl`。
+
+修前（HEAD 源頭重建）：`p1_waitingUser`、`p1_questionShown`、`p1_modalShownFromChild`、`p1_cardHasAllowButton`、`p1_answerOk`、`p1_resolvedOk`、`p1_modalGone`、`p2_denyOk`、`p2_deniedThrows`、`p3_waitingUser`、`p3_modalPathResolves`、`loadedWorkdirImpl` 都是 false，`allPass: false`。修前為 true 的 `p1_typingRejected`（方法不存在而出錯）、`p1_notAutoAnswered`（沒有回答）、`p4_parentNoBubble`（本來就不冒泡，是防回歸的判準）、`p1_bubbleCleared`、`p2_bubbleCleared`、`p3_bubbleClearedByModal`、`p1_notWaitingAfter`，不能算作修正的證據，只是確認沒有誤判。
+
+### 已知限制（照實寫）
+
+- 同一子對話同時有兩件等待（例如一張卡片加一個授權）時，連結卡片只顯示先到的那一件；另一件的框仍在畫面上可以按，但連結卡片上沒有它的按鈕。這種情況子對話的工具呼叫本來就很少同時發生，本次沒有測。
+- 「重新整理後的權限等待」見步驟 5（記憶體等待消失）。
+
 ## 教訓
 
 - 步驟 1：`ask_user_card` 被歸為 domain-gated 是分類錯誤，不是子對話的錯。之後遇到「子對話少了某工具」先確認父對話有沒有，不要直接在子對話加。

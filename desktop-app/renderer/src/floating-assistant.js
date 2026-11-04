@@ -64412,14 +64412,18 @@ ${fnData.code}
         if (perm === 'granted') return;
         if (!this._fapPermissionDialogPromises) this._fapPermissionDialogPromises = new Map();
         const dialogKey = `${rec.id}:${mode}`;
+        // 子對話 S4b：這次檢查來自子對話 → 子對話狀態變 waiting_user，父對話連結卡片也能按「授權／拒絕」（同一個授權框的按鈕，不會自動回答）
+        const subId = this._ctx && this._ctx.id; const subEntry = subId && this._chatEntry(subId); const isChild = !!(subEntry && subEntry.parentId);
         let pending = this._fapPermissionDialogPromises.get(dialogKey);
         if (!pending) {
-            pending = this._showFapPermissionDialog(rec, mode).finally(() => {
+            pending = this._showFapPermissionDialog(rec, mode, dialogKey, isChild ? String(subEntry.title || '子對話') : '').finally(() => {
                 this._fapPermissionDialogPromises.delete(dialogKey);
             });
             this._fapPermissionDialogPromises.set(dialogKey, pending);
         }
-        const granted = await pending;
+        const bub = isChild ? this._subchatFapBubble(subId, rec, mode, dialogKey) : null;
+        let granted = false;
+        try { granted = await pending; } finally { if (bub) bub.clear(); }
         if (!granted) {
             throw new Error(`「${rec.label}」目前沒有${mode === 'readwrite' ? '讀寫' : '讀取'}權限——使用者在授權對話框裡選擇了拒絕，或沒有完成授權。`);
         }
@@ -64433,7 +64437,7 @@ ${fnData.code}
     // 完全看不到、點不到，卡住整個流程。授權對話框語意上一定要蓋過任何
     // 其他畫面（使用者非回應不可才能繼續），改用2147483647（32-bit
     // z-index的實務安全上限），確保永遠在最上層。
-    _showFapPermissionDialog(rec, mode) {
+    _showFapPermissionDialog(rec, mode, key, from) {
         return new Promise((resolve) => {
             const overlay = document.createElement('div');
             overlay.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.45); z-index:2147483647; display:flex; align-items:center; justify-content:center;';
@@ -64441,6 +64445,7 @@ ${fnData.code}
             box.style.cssText = 'background:#fff; color:#222; border-radius:10px; padding:18px 20px; width:min(340px,90vw); box-shadow:0 10px 34px rgba(0,0,0,0.3); font-size:13px; font-family:inherit;';
             box.innerHTML = `
                 <div style="font-weight:bold; font-size:14px; margin-bottom:10px;">🔐 需要資料夾授權</div>
+                ${from ? `<div style="font-size:12px; color:#555; margin:-6px 0 10px;">來自子對話：${this._escapeHtml(from)}</div>` : ''}
                 <div style="margin-bottom:16px; line-height:1.5;">AI想要${mode === 'readwrite' ? '讀寫' : '讀取'}「<b>${this._escapeHtml(rec.label)}</b>」這個File Access Point資料夾，但瀏覽器目前沒有授權（可能是太久沒用被重置了）。要允許嗎？</div>
                 <div style="display:flex; justify-content:flex-end; gap:8px;">
                     <button type="button" id="fa-fapperm-deny" style="padding:6px 14px; border-radius:6px; border:1px solid #ccc; background:#f5f5f5; cursor:pointer; font-size:13px;">拒絕</button>
@@ -64450,7 +64455,8 @@ ${fnData.code}
             overlay.appendChild(box);
             document.body.appendChild(overlay);
             let settled = false;
-            const cleanup = () => overlay.remove();
+            const host = this._faHost || this;
+            const cleanup = () => { overlay.remove(); if (key && host._fapPermCtl) host._fapPermCtl.delete(key); };
             const deny = () => { if (settled) return; settled = true; cleanup(); resolve(false); };
             const allow = async () => {
                 if (settled) return;
@@ -64469,6 +64475,8 @@ ${fnData.code}
             box.querySelector('#fa-fapperm-deny').addEventListener('click', deny);
             box.querySelector('#fa-fapperm-allow').addEventListener('click', allow);
             overlay.addEventListener('click', (e) => { if (e.target === overlay) deny(); });
+            // 子對話 S4b：父對話連結卡片的「授權／拒絕」呼叫同一組函式（allow 會同步呼叫 requestPermission，所以要在使用者點擊的同一個事件裡呼叫）
+            if (key) { host._fapPermCtl = host._fapPermCtl || new Map(); host._fapPermCtl.set(key, { allow: () => allow(), deny: () => deny() }); }
         });
     }
 
@@ -96013,6 +96021,8 @@ _result
         w.appendChild(st);
         // 子對話 S4b：等待中的是表單 → 父對話直接顯示表單的選項／欄位（不是文字輸入列）
         if (info.pending === 'form' && info.canAnswer) { host._subchatFormRow(w, childId, info.form || {}); return; }
+        // 子對話 S4b：等待中是資料夾授權 → 父對話按「授權／拒絕」（權限問題不接受打字）
+        if (info.pending === 'fap' && info.canAnswer) { host._subchatFapRow(w, childId); return; }
         const row = document.createElement('div');
         row.className = 'fa-subchat-answer-row';
         row.style.cssText = 'flex:1 1 100%; display:flex; gap:6px;';
@@ -96067,7 +96077,7 @@ _result
         const stale = e.status === M.WAITING && !canAnswer;
         const text = stale ? '等你回應已失效（重新整理後請到子對話處理）' : M.summarize(e.status, e.subInfo || {});
         const rec = this._subchatPendingMap().get(childId);
-        return { status: e.status, text, canAnswer, pending: rec ? (rec.kind === 'form' ? 'form' : 'card') : null, form: rec && rec.kind === 'form' ? rec.options : null };
+        return { status: e.status, text, canAnswer, pending: rec ? (rec.kind === 'form' ? 'form' : (rec.kind === 'fap' ? 'fap' : 'card')) : null, form: rec && rec.kind === 'form' ? rec.options : null };
     }
 
     // 子對話 S4b：子對話的表單（requestUserForm）冒泡。等待記錄存在 _subchatPendingMap（kind:'form'，只在記憶體）。
@@ -96120,6 +96130,40 @@ _result
         try { host._renderMessageHistory(); } catch (_) { /* 重畫失敗不影響回答 */ }
         return { ok: true };
     }
+    // 子對話 S4b：資料夾授權（FAP 權限框）冒泡。等待記錄 {kind:'fap', key, label, mode}，只在記憶體。
+    // 同一子對話同時只顯示一件等待：已有別的等待（卡片、表單）就不覆蓋，那件照常等，權限框仍在畫面上可以按。
+    _subchatFapBubble(subId, rec, mode, key) {
+        const host = this._faHost || this; const map = host._subchatPendingMap();
+        const bub = { kind: 'fap', key: key, label: String(rec.label || ''), mode: mode };
+        if (!map.has(subId)) map.set(subId, bub);
+        host._subchatSetStatus(subId, 'ask', { question: '需要資料夾授權：' + bub.label + '（' + (mode === 'readwrite' ? '讀寫' : '讀取') + '）' });
+        return { clear: () => { if (map.get(subId) === bub) { map.delete(subId); host._subchatSetStatus(subId, 'answer'); } } };
+    }
+    // 子對話 S4b：父對話按「授權」或「拒絕」→ 呼叫權限框的同一組函式。requestPermission 在這個點擊事件裡同步呼叫，符合瀏覽器的使用者手勢要求。
+    _subchatAnswerFap(childId, allow) {
+        const host = this._faHost || this; const bub = host._subchatPendingMap().get(childId);
+        if (!bub || bub.kind !== 'fap') return { ok: false, error: '子對話目前沒有等待中的授權' };
+        const ctl = host._fapPermCtl && host._fapPermCtl.get(bub.key);
+        if (!ctl) return { ok: false, error: '授權框已經不在了（可能已經回答）' };
+        if (allow) ctl.allow(); else ctl.deny();
+        return { ok: true };
+    }
+    _subchatFapRow(w, childId) {
+        const host = this._faHost || this;
+        const row = document.createElement('div'); row.className = 'fa-subchat-answer-row';
+        row.style.cssText = 'flex:1 1 100%; display:flex; flex-wrap:wrap; gap:6px;';
+        const err = document.createElement('div'); err.style.cssText = 'flex:1 1 100%; font-size:12px; color:#f87171;';
+        const note = document.createElement('div'); note.style.cssText = 'flex:1 1 100%; font-size:12px; opacity:.85;';
+        note.textContent = '權限問題只能由你按按鈕決定，不會自動回答。';
+        const btn = (label, ok) => {
+            const b = document.createElement('button'); b.type = 'button'; b.className = 'fa-subchat-answer-send'; b.textContent = label;
+            b.style.cssText = 'cursor:pointer; padding:4px 10px; border-radius:6px; border:1px solid rgba(99,102,241,0.5); background:transparent; color:#6366f1; font-size:12px; white-space:nowrap;';
+            b.addEventListener('click', (ev) => { ev.preventDefault(); const r = host._subchatAnswerFap(childId, ok); if (!r.ok) err.textContent = '回答失敗：' + r.error; });
+            return b;
+        };
+        row.appendChild(btn('授權', true)); row.appendChild(btn('拒絕', false)); row.appendChild(note); row.appendChild(err); w.appendChild(row);
+    }
+
     // 子對話 S4b：父對話連結卡片上的表單控制項（選項按鈕、欄位輸入、取消、允許補充時的文字輸入）
     _subchatFormRow(w, childId, form) {
         const host = this._faHost || this;
@@ -96153,6 +96197,8 @@ _result
         const msg = this._subchatPendingMap().get(childId);
         // 子對話 S4b：等待中是表單 → 文字只在表單允許補充時才接受（當成補充），否則要求按選項
         if (msg && msg.kind === 'form') return this._subchatAnswerForm(childId, { kind: 'supplement', text: text });
+        // 子對話 S4b：權限問題只能按「授權」或「拒絕」，文字一律不接受（不可自動回答）
+        if (msg && msg.kind === 'fap') return { ok: false, error: '權限問題只能按「授權」或「拒絕」' };
         const w = msg && this._cardWaitersMap().get(msg);
         if (!w) return { ok: false, error: '子對話目前沒有等待中的問題' };
         const t = String(text == null ? '' : text).trim();
