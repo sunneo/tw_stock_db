@@ -10,9 +10,14 @@
 3. 不要求使用者重新安裝；原生執行包按需下載到使用者資料夾。舊版安裝也要能收到。
 4. 下載任何模型檔前，先顯示檔名、來源、大小，並取得使用者同意。安裝與下載前一律先問。
 5. 桌面版原生優先；原生不可用或沒下載時，退回網頁版原路徑（WebGPU／WASM），並顯示實際後端與真實原因。網頁版原路徑保留，不刪。
-6. 不使用 DirectML 當預設。DirectML 在 qwen3-0.6b 的某個節點失敗，其他模型只能在第一階段量測中逐一試，通過才另議。Linux 的 CUDA 目前只是規劃，未實跑。
+6. 原生只跑 CPU。DirectML 在 qwen3-0.6b 的某個節點失敗，本次範圍不含 DirectML；Linux 的 CUDA 目前只是規劃，未實跑。
 7. 設計定稿後直接實作：第一階段是量測，量測結果出來後直接接著做，不另開設計會議。
 8. 不用 Python；子程序以 process.execPath 加 ELECTRON_RUN_AS_NODE=1 執行（沿用 native-runner 既有做法）。
+9. **後端選擇規則（管理層補充共識，所有模型一致，使用者原話：「選的是 webgpu 版，就不用透過原生；選的是 cpu 版，就直接跑 native」）**：
+   - 使用者選 webgpu → 只走網頁版 WebGPU，不碰原生。（與「選cpu才走原生」一致：只有 cpu 才走原生。）
+   - 使用者選 cpu → 直接走原生（已安裝且可用）；原生失敗才退網頁版 WASM，並顯示真實原因。
+   - 使用者選 auto → 有可用 WebGPU 就走 WebGPU；沒有就按 cpu 處理（原生優先，失敗退 WASM）。
+   - 因此逐模型的評估重點是「cpu 路徑：原生 CPU 對 WASM 值不值得」。WebGPU 路徑不受原生影響，不拿原生去比 WebGPU 來做取捨，只在量測表中記錄供參考。
 
 共識來源：`skills/weak-model-harness/references/consensus/native-runner.json`，完整設計與進度見 `DESIGN.TODO.native-runner.md`。
 
@@ -127,7 +132,7 @@
 ## 3. 逐模型建議
 
 判斷依據：
-1. 目前走 WebGPU 的模型，原生 CPU 可能反而比較慢。已知原生 CPU 對 WASM 約 1.3～1.5 倍，這是 Qwen3 0.6B 的實測；其他模型沒有實測，下面凡是說「會比較快」的都是推測。
+1. 只比 cpu 路徑（依共識第 9 條「選cpu才走原生」）：原生 CPU 對 WASM 值不值得。WebGPU 路徑不經原生，只記錄供參考。已知原生 CPU 對 WASM 約 1.3～1.5 倍，這是 Qwen3 0.6B 的實測；其他模型沒有實測，下面凡是說「會比較快」的都是推測。
 2. 耗時最長、最吃效能的先做。
 3. 原生加速後端（DirectML、Linux CUDA）只做量測，不做預設。
 
@@ -138,7 +143,7 @@
 | **YAMNet** | **做（第一批，跟 Basic Pitch 一起試）** | 15 MB，輸入一段 0.96 秒，呼叫次數少，前後處理簡單 | 收益不明；同 Basic Pitch |
 | **midigenai v5** | **測了再說** | 自回歸逐 token 生成，每步一次 `session.run`，固定成本會放大；KV 快取的形狀（GPU 與 CPU 不同）要在子程序內照樣維持；CPU 版的速度數字（7 秒）未實測 | 每步小張量，固定成本可能吃掉收益；GPU 版（q4 WebGPU）原生沒有對應後端，只能 CPU；KV 快取要跨多次呼叫保留在子程序（要新增 session 狀態的規則）；授權註記「訓練資料集授權未確認」 |
 | **Whisper base** | **測了再說（先量編碼器）** | 編碼器一次性、輸入大，原生 CPU 可能有收益（推測）；解碼器是逐 token 迴圈，放原生要做樣板，工作量大 | 解碼器逐 token 呼叫會放大固定成本；WebGPU 路徑（q8 在 WebGPU 的行為）未在這裡確認；`video_host` 有 WebGPU 失敗退 CPU 的邏輯，原生要跟它對齊 |
-| **SDXS-512（生圖與擴散細化）** | **測了再說（先問使用者同不同意 1.1 GB 下載）** | 最大的模型檔之一，每步 unet 一次，原生 CPU 或 DirectML 都可能有收益，但要實測；生圖步數由 `local_sd.js` 的設定決定，要先確認步數 | 下載量最大（GPU 版約 880 MB、CPU 版約 1.1 GB）；磁碟佔用加倍（見第 4 節）；SDXS 的 unet 在 DirectML 是否會失敗未知，要逐一測；**存放位置未查證** |
+| **SDXS-512（生圖與擴散細化）** | **測了再說（先問使用者同不同意 1.1 GB 下載）** | 最大的模型檔之一，每步 unet 一次，原生 CPU 路徑可能有收益（推測），要實測；生圖步數由 `local_sd.js` 的設定決定，要先確認步數 | 下載量最大（GPU 版約 880 MB、CPU 版約 1.1 GB）；磁碟佔用加倍（見第 4 節）；SDXS 的 unet 在 DirectML 是否會失敗未知，要逐一測；**存放位置未查證** |
 | **TAESD（小型 VAE）** | **跟 SDXS 一起做，單獨不做** | 約 5 MB，沒有獨立價值 | 跟 SDXS 同 |
 | **Depth Anything V2 Small** | **做（第二批）** | 單次推論、輸入輸出簡單、只有一個張量進出；WASM 的 fp32 在 CPU 要 8～10 秒，原生 CPU 可能明顯較快（推測），很適合當「第二個量測對象」 | 99 MB 下載（CPU fp32）；WebGPU 用 fp16，原生的 fp16 支援要量測 |
 | **SlimSAM 77** | **測了再說（先做編碼器）** | 編碼器約 16 秒是大頭（實測），原生 CPU 可能有收益（推測）；解碼器每點一次，量少，之後再說 | 解碼器點數多時固定成本放大；登錄檔大小在兩個來源不一致（22 MB 與 13.8 MB），要以實際檔案為準 |
@@ -196,7 +201,7 @@
 
 ### 階段 1：逐模型量測（最便宜，必須先做）
 
-**目標**：用固定題目，逐模型比較「原生 CPU（onnxruntime-node 1.22.0）」、「WASM（onnxruntime-web 1.22.0）」、「WebGPU（onnxruntime-web 1.22.0）」的實際速度，並記錄輸出是否一致。
+**目標**：用固定題目，逐模型比較「原生 CPU（onnxruntime-node 1.22.0）」與「WASM（onnxruntime-web 1.22.0）」的實際速度，並記錄輸出是否一致。WebGPU（onnxruntime-web 1.22.0）只作為參考列記錄，不影響取捨。
 
 **檔案與函式**（新增，不改產品程式）：
 - 新增 `scripts/eval/native_all_models_bench.js`：主流程，讀 `bench-config.json`，逐模型逐後端執行，結果寫 `test-reports/native-all-models/results.jsonl`（一行一筆，每完成一題就寫一行）。
@@ -219,7 +224,7 @@
 
 **驗收（程式可檢查）**：
 - `results.jsonl` 每一行都是合法 JSON，且欄位齊全（model、backend、q、ms、ok、out_hash、max_abs_err 或 null）。
-- 每個模型三個後端各有一列，或該後端明確記錄為 `skipped` 並附原因（例如「沒有 WebGPU 轉接器」）。
+- 每個模型的「原生 CPU」與「WASM」兩列必須都有；「WebGPU」列為參考，可以是 `skipped` 並附原因（例如「沒有 WebGPU 轉接器」）。
 - 沒有任何模型在量測過程中自動下載：可用 `needs_download` 欄位檢查，且量測前後的模型目錄檔案數不變。
 - 同一次量測跑兩遍，WASM 的 out_hash 一致（確認可重現）。
 - 總時間不超過 45 分鐘，超過時 `aborted` 欄位有值。
@@ -250,7 +255,7 @@
 1. 寫 `nr-tensor-io.js`，附單元測試（寫入後讀回一致、位元組數不符要丟錯）。
 2. 擴充 `nr-protocol.js` 的驗證，新增單元測試（不合法的 `inputs`、缺 `path` 要被拒絕）。
 3. `nr-child.js` 支援 `tensor_load` 與 `tensor_run`。
-4. 在 `audio_runtime.js` 加原生包裝，預設關閉（設定旗標），開啟時先試原生，失敗就退回原路徑。
+4. 在 `audio_runtime.js` 加原生包裝，依共識規則接線：只有使用者選 cpu（或 auto 且無 WebGPU）才先試原生；選 webgpu 完全不經原生；原生失敗退 WASM 並顯示真實原因。
 5. Basic Pitch 的 `makeTranscriber` 改成可接受外部 session（不改演算法）。
 
 **驗收（程式可檢查）**：
@@ -318,7 +323,7 @@
 
 **不准做的事**：
 - 不准把 Whisper 的解碼器搬進原生（這是另一個階段，要另外規劃）。
-- 不准在 midigenai 的 GPU 版上宣稱原生加速（原生沒有 WebGPU 後端）。
+- midigenai 原生只用 CPU 檔（int8）；GPU 檔（q4）只留給網頁版 WebGPU 路徑，不准在原生路徑上使用或宣稱它的加速。
 
 ### 階段 5：SDXS（生圖與擴散細化）
 
@@ -351,7 +356,7 @@
 4. **transformers.js 模型（沒有檢查碼）要不要補釘住 revision？**
    - 推薦：要，並且在下載原生模型前先做。理由：沒釘住的話，原生與網頁版可能拿到不同版本，結果不一致，難以比對。
 5. **DirectML 要不要在第一階段量測中試？**
-   - 推薦：要試，但只量不當預設。理由：你的說明寫的是「不使用 DirectML（qwen 某節點失敗）」，但也寫「其他模型要逐一測」。我的理解是：量測可以試，預設不開。請確認。
+   - 推薦：不試，移出本次範圍。理由：依管理層補充共識，原生只在使用者選 cpu 時使用；DirectML 不是 CPU 路徑，不在量測條件內。若日後要做，另案評估。請確認。
 6. **SDXS 要不要進原生？**
    - 推薦：測了再說，先問使用者是否接受 1.1 GB 下載與磁碟佔用。理由：它是最大的模型，收益不確定（每步固定成本可能吃掉收益）。
 7. **Demucs 要不要做？**
