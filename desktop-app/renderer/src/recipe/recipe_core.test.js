@@ -161,6 +161,44 @@ function check(name, cond, info) { if (cond) ok++; else { bad.push(name); consol
     const chunks = R.chunkText(long2, 120);
     check('chunkText: every chunk is within the token budget and nothing is lost', chunks.length > 2 && chunks.every((c) => R.tokensOf(c).size > 0) && chunks.join('').replace(/\n/g, '').length >= long2.length - 40, { n: chunks.length });
     check('chunkText: smaller budget → more chunks (scales with the model context)', R.chunkText(long2, 60).length > R.chunkText(long2, 240).length);
+
+    // ---- stripThink（階段 1：思考區塊剝除，純函式）----
+    let st = R.stripThink('<think>先想一下</think>{"x": 1}');
+    check('stripThink: normal → answer without block, reasoning kept', st.answer === '{"x": 1}' && st.reasoning === '先想一下' && st.unclosed === false, st);
+    st = R.stripThink('{"x": 2}');
+    check('stripThink: no think block → reasoning empty, answer unchanged', st.answer === '{"x": 2}' && st.reasoning === '' && st.unclosed === false, st);
+    st = R.stripThink('<think>想到一半沒有閉合 {"x": 3}');
+    check('stripThink: unclosed open tag → everything after it is reasoning', st.answer === '' && /想到一半/.test(st.reasoning) && st.unclosed === true, st);
+    st = R.stripThink('答案前綴<think>還在想');
+    check('stripThink: unclosed keeps the text before the tag as answer', st.answer === '答案前綴' && st.reasoning === '還在想' && st.unclosed === true, st);
+    st = R.stripThink('<think>第一段</think>中間<think>第二段</think>{"x":4}');
+    check('stripThink: multiple blocks are merged into reasoning', st.reasoning === '第一段\n\n第二段' && st.answer === '中間{"x":4}', st);
+    st = R.stripThink('<think>我想 {"a": {"b": [1]}} 和 ( ) 的關係</think>{"choice": 2}');
+    check('stripThink: JSON braces inside thinking do not leak into answer', st.answer === '{"choice": 2}' && /\{"a"/.test(st.reasoning), st);
+    st = R.stripThink('<think>選項 A 還是 B？選 C 比較好</think>{"choice":3}');
+    check('stripThink: letter options inside thinking do not leak into answer', st.answer === '{"choice":3}' && /選項 A/.test(st.reasoning), st);
+    st = R.stripThink('');
+    check('stripThink: empty string → all empty, not unclosed', st.answer === '' && st.reasoning === '' && st.unclosed === false, st);
+    st = R.stripThink(null);
+    check('stripThink: null/undefined is treated as empty string', st.answer === '' && st.reasoning === '', st);
+    st = R.stripThink('<THINK>大寫標籤</THINK>  {"x":5}  ');
+    check('stripThink: uppercase tags are handled and whitespace is trimmed', st.answer === '{"x":5}' && st.reasoning === '大寫標籤', st);
+    st = R.stripThink('<Thinking>混合</thinking>\n\n{"x":6}\n');
+    check('stripThink: <thinking> variant and mixed case handled', st.answer === '{"x":6}' && st.reasoning === '混合', st);
+    st = R.stripThink('<think>\n  \n</think>{"x":7}');
+    check('stripThink: empty thinking block gives empty reasoning', st.answer === '{"x":7}' && st.reasoning === '', st);
+
+    // jsonStep 整合
+    r = await R.jsonStep({ generate: gen(['<think>想想看 {"x": 9}</think>{"x": 8}']), messages: [], validate: () => [] });
+    check('jsonStep: think block stripped before parse, reasoning exposed', r.ok && r.value.x === 8 && /想想看/.test(r.reasoning) && r.tries === 1, r);
+    log = []; r = await R.jsonStep({ generate: gen(['<think>想</think>{"x": 0}', '<think>又想</think>{"x": 5}'], log), messages: [{ role: 'user', content: 'q' }], validate: (o) => (o.x < 1 ? ['x 必須 ≥ 1'] : []) });
+    check('jsonStep: retry messages carry the answer only, never the reasoning', r.ok && r.value.x === 5 && log[1].every((m) => !/想/.test(m.content)) && /x 必須/.test(log[1][2].content) && r.reasoning === '想\n\n又想', { r, msgs: log[1] });
+    r = await R.jsonStep({ generate: gen(['<think>沒閉合的思考 {"x":1}']), messages: [], validate: () => [], maxTries: 1 });
+    check('jsonStep: unclosed think with no answer fails but keeps reasoning', !r.ok && /JSON/.test(r.error) && /沒閉合/.test(r.reasoning), r);
+    r = await R.jsonStep({ generate: gen(['純文字沒有思考']), messages: [], validate: () => [], maxTries: 1 });
+    check('jsonStep: existing behavior unchanged without think blocks (reasoning empty)', !r.ok && r.reasoning === '', r);
+    r = await R.jsonStep({ generate: gen(['{"choice": 1}']), messages: [], validate: (o) => (o.choice === 1 ? [] : ['bad']) });
+    check('jsonStep: existing success shape unchanged plus reasoning field', r.ok && r.value.choice === 1 && r.tries === 1 && Array.isArray(r.rejected) && r.reasoning === '', r);
     console.log(ok + ' passed, ' + bad.length + ' failed', bad);
     process.exit(bad.length ? 1 : 0);
 })();

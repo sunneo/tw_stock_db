@@ -240,3 +240,26 @@ Level 判斷的設定位置：模型表加一個欄位（例如 `thinking: 'nati
 - 離線：`_llmGenerate`（`floating-assistant.js:100376`）→ worker → transformers.js。
 - 線上：`_coluBenchCall`、`ai.chat`、`_kiLlm`（沒查每一條）。
 - 本草案只針對**離線**。
+
+---
+
+## 階段 1 記錄（2026-11-04，純函式，不接 UI、不呼叫模型）
+
+**改了哪些檔**（只有三個，其餘未碰）：
+- `renderer/src/recipe/recipe_core.js`：
+  - 新增 `stripThink(text)`（約第 88 行起）：回傳 `{answer, reasoning, unclosed}`；去掉 `<think>…</think>` 與 `<thinking>…</thinking>`（大小寫不分），多段思考以空行合併；只有開頭沒閉合時，從開頭到結尾都當思考，並設 `unclosed: true`。
+  - `jsonStep`（約第 98 行起）：每次 `generate` 回傳後先呼叫 `stripThink`，驗證、退回提示的「上一個回覆」都只用答案；思考文字累積到 `reasoning`（多次嘗試以空行串接）。成功、失敗、`generate` 拋錯三種回傳都帶 `reasoning` 欄位（新欄位，既有欄位語意不變）。
+  - 匯出清單加入 `stripThink`（約第 296 行）。
+- `renderer/src/recipe/recipe_core.test.js`：新增約第 165–205 行，共 17 個新檢查（stripThink 12 個＋jsonStep 整合 5 個）。
+- 本記錄（`DESIGN.TODO.colu-thinking.md`）。
+
+**測試結果**：
+- `node renderer/src/recipe/recipe_core.test.js`：89 passed, 0 failed。
+- `node renderer/src/recipe/plan_core.test.js`：57 passed, 0 failed。
+- `node renderer/src/recipe/skill_compile_core.test.js`：48 passed, 0 failed。
+
+**遇到的坑與教訓**：
+- 步驟 3 寫的 `floating-assistant.js:34015` 在 `renderer/floating-assistant.js`（1196 行）裡超出範圍，行號對不上；語意改照本階段規格（閉合、未閉合、多段、大小寫）實作，沒有照抄那份程式。之後若要對照，要先確認是哪一份副本。
+- `skills/weak-model-harness/scripts/vendor/recipe_core.js` 是另一份副本，本階段刻意不同步；要不要同步留給發布階段決定。
+- 工作目錄在 Windows 上 git 會提示「LF will be replaced by CRLF」，但索引與工作樹都是 LF，`git diff --stat` 只顯示 54 行新增、6 行刪除，沒有整檔換行變動。
+- 回傳新增 `reasoning` 欄位時，要把失敗路徑（`generate` 拋錯）也補上，否則前幾次嘗試的思考會遺失；已補並有測試。
