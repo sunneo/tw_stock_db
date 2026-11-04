@@ -72,6 +72,7 @@ const suites = [
     ['harness 經驗與回流閘門（去識別、簽名去重、拒絕附原因、上限、migrate、訓練器 pattern、UML 編修問題）', 'scripts/harness-tests/experience.test.js'],
     ['harness 經驗匯入離線訓練器（只收 harness 來源、拒絕含路徑金鑰的、獨立領域預設停用、重複只更新）', 'scripts/harness-tests/host_import.test.js'],
     ['harness skill 可攜（vendor 與來源一致、搬到 repo 外仍能跑迴圈、經驗閘門、離線訓練器乾跑與規則比對、行為分析引擎載入）', 'scripts/harness-tests/portable.test.js'],
+    ['harness 共識閘門（中文字面與正規表達式條款、行號、allow 遮罩、必須缺漏、結束碼 0／1／2、--root 與 scope、--json）', 'scripts/harness-tests/consensus.test.js'],
     ['計畫的分歧偵測（沒有分歧不問、分數接近／取捨／勉強合格／找不到、題數上限、套用回答、打字補充撿網址、摘要）', 'renderer/src/catalog/branch_core.test.js'],
     ['採用／退回的回饋累積（壓縮卡片、計畫轉標註、權重、覆蓋規則、轉成訓練資料、可不可以訓練、樣本權重）', 'renderer/src/catalog/feedback_core.test.js'],
     ['缺口驅動探索（缺口、搜尋關鍵字、候選排名、錯誤歸類與換做法、整個迴圈用假主機）', 'renderer/src/catalog/discover_core.test.js'],

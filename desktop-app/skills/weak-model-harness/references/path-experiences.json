@@ -586,6 +586,35 @@
       "lesson": "階段 1 留下的 vendor 漂移、階段 2 留下的未建置、階段 5 的 UI 同步問題，都是交棒沒寫清楚造成的。",
       "evidence": "階段 1 記錄第 18 行；階段 3 記錄第 80 行；階段 5 記錄第 138 行",
       "verified": false
+    },
+    {
+      "id": "native-runner-branch-1",
+      "task": "原生執行器設計定稿：把已被使用者否決的 HTTP 本機伺服器寫成設計階段（2b、5）",
+      "kind": "branch",
+      "stage": "native-runner-design",
+      "steps": [],
+      "alternatives": [
+        {"option": "只寫共識內的路線：標準輸入輸出加進度檔（路線 B）", "outcome": "未採用", "chosen": false},
+        {"option": "把 HTTP 本機伺服器列為路線 A 的 2b 與路線 C 的階段 5，註明「只在條件成立時」或「選用」", "outcome": "定稿 88116691 採用；使用者已說過兩次不要 HTTP（管理層轉述），這是偏離共識", "chosen": true}
+      ],
+      "lesson": "已被否決的方案就算標成「選用」「之後再說」「只在某條件才做」，仍然是違反共識。弱模型不會自動記得否決，要靠條款檔與程式檢查。",
+      "evidence": "提交 88116691（作者時間 2026-11-04 21:50:59，訊息「設計定稿（第 0 步更正、分階段計畫、要問使用者的決定）」）；DESIGN.TODO.native-runner.md 第 15–17 行、第 90 行、第 124–139 行、第 207–217 行；使用者原話（管理層轉述）：「這就是haiku需要harness學習的地方，這個過程並不是『沒有什麼出入』」。共識閘門對 88116691 版本跑出 5 條違反（http、伺服器模式、127.0.0.1、金鑰、缺「直接實作」）",
+      "verified": true
+    },
+    {
+      "id": "native-runner-reflection-1",
+      "task": "派工前把共識寫成必須與禁止條款，並讓提交前與驗收時都跑共識閘門",
+      "kind": "reflection",
+      "stage": "native-runner-design",
+      "steps": [
+        {"do": "派工前把使用者與管理層的共識寫成共識檔（must、forbid、allow），附在簡報裡", "check": "共識檔存在於 skills/weak-model-harness/references/consensus/ 且 JSON 可解析"},
+        {"do": "Haiku 提交前跑共識閘門，管理層驗收時再跑一次；違反就退回，不靠記憶", "check": "node skills/weak-model-harness/scripts/consensus_check.js <共識檔> --root . 結束碼為 0"},
+        {"do": "設計文件的「要問使用者的決定」清單要分開標「已定案」與「未定案」", "check": "文件中已定案的項目不再以選項形式出現"}
+      ],
+      "alternatives": [],
+      "lesson": "根因：簡報只寫了共識的說明，沒有寫成必須與禁止條款，也沒有程式檢查。如果重來，共識一定寫成條款，設計階段提交前先跑閘門，違反就不能提交。",
+      "evidence": "提交 88116691 的設計內容；閘門對 88116691 與 5826fe36 兩版的輸出（違反 5 條，見 skills/weak-model-harness/references/consensus/native-runner.json）；使用者原話（管理層轉述）：「這就是haiku需要harness學習的地方，這個過程並不是『沒有什麼出入』」",
+      "verified": true
     }
   ]
 }

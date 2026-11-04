@@ -64,3 +64,9 @@ node scripts/harness.js behavior 某個原始碼檔
 **與 `experience.json` 的差別**：`experience.json`（放在目前資料夾的 `.weak-harness/`）只收 `learn` 時 `status` 為 ok 的封閉題成功經驗，由程式驗證，每筆是「一題怎麼答對」。路線經驗是人工整理的任務層級記錄，不由 `learn` 寫入，也不經程式核對，所以 `verified` 欄位要如實標示（只有重跑過測試才標 true）。兩者不要混用：封閉題經驗給離線的答題用，路線經驗給開工前的人與模型讀。
 
 詳細整理與待辦建議見 `DESIGN.TODO.path-experience.md`。
+
+### 共識閘門
+
+老師每次派工，簡報都要附共識檔（`references/consensus/<名稱>.json`）：`must` 列必須出現的片語，`forbid` 列已被使用者否決或未同意的方案與片語，`allow` 列例外（例如 CDN 網址、註明禁止的句子）。Haiku 提交前自己跑一次：`node scripts/consensus_check.js references/consensus/<名稱>.json --root <專案資料夾>`；管理層驗收時也跑一次。結束碼 1 代表違反，要退回重做，不能靠記憶判斷「應該沒問題」。
+
+為什麼要這樣做：弱模型在設計時會把已被否決的方案當成「選用」或「之後再說」列進去，文字上看起來有出入，但依然違反共識。條款與程式檢查比說明文字可靠，所以共識要寫成條款。
