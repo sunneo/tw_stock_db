@@ -287,3 +287,17 @@
 - **結論**：在完全相同的確定性設定、相同 ids 下，原生與 WASM 仍然**不等價**。第一步 logits 的差異是系統性的（top-5 只重疊約 4 個），不只是近似平手的翻轉。原因未查證（候選：ORT-web 1.22 與 ORT-node 1.31 的量化內核、或 KV 與位置輸入的處理）。在這點查清前，不能宣稱兩者行為等價。
 - **取樣模式無法與 WASM 比對**：transformers.js 的取樣使用它自己的亂數來源（沒有 seed 介面），所以無法得到相同的抽樣序列。取樣模式只能在原生端自己檢查可重現性與分布（已在 `gen_params.test.js` 測試）。
 - **指標說明**：「文字完全相同」在貪婪解碼下會因一次近似平手的分歧而全部改變，因此只能當作參考，不能當作等價性的證據；主要指標是第一步 logits 的 top-1、top-5 與餘弦，以及任務正確率。
+
+### 8-A3 二分法：第一步差異的來源（2026-11-04，依管理層要求）
+
+- **結論**：輸入與生成迴圈**不是**造成差異的原因（單次 forward 就已經不一致）。最可能的原因是**兩個 ORT 引擎的 q8 內核數值差異**（ORT-web 1.22 的 WASM 與 ORT-node 1.31 的 CPU），但**尚未用同版本比對直接證明**。
+- 步驟與結果（真量測，同一串 ids、同一個模型檔）：
+  1. 單次 forward（不經 generate）：WASM 側用應用程式的 transformers.js 所載入的 ORT-web session（`model.sessions.model`，`scripts/eval/bisect_wasm_single.eval.js`）；原生用 onnxruntime-node（`scripts/eval/bisect_native_single.js`）。**輸入名稱清單相同**（`input_ids`、`attention_mask`、`position_ids`、28 層 key／value）。結果：cos 平均 0.93654（最小 0.82256），top-1 相同 12/16，最大絕對誤差 12.5。**單次 forward 就已不一致**。
+  2. 執行緒（WASM）：單執行緒與預設執行緒的 logits 完全相同（cos 0.936540 兩者相同）。
+  3. 圖最佳化與執行緒（原生）：`disabled`／`basic`／`all`，1／4 執行緒之間 cos = 1.0（`scripts/eval/bisect_native_opts.js`）。原生引擎本身穩定。
+  4. 誤差分布（原生 vs WASM，前 4 至 6 題）：在每個排名區間都約 1–2 個 logit（前 10 名平均絕對誤差約 2.0–2.3；標準差約 3.6）。top-1 與 top-3 在多數題相同。**這不像位置或 mask 錯誤**（那類錯誤通常會讓 top token 大幅改變）。
+  5. 模型檔：WASM 快取項目的 key 是 `onnx/model_quantized.onnx`（與應用程式使用的 CPU q8 相同檔名）；原生檔是它的截斷複本（617,687,575 位元組，md5 `c3846afd…`）。WASM 側的位元組沒有直接取出做 md5 比對，所以「同一個檔」只是高度可能，未直接證明。
+- **已排除的假設**：生成迴圈、位置編號的遞增、KV 初始化、輸入名稱、形狀、WASM 執行緒數、ORT-node 圖最佳化與執行緒數。
+- **未排除**：兩邊讀到的檔案位元組是否完全相同（需要直接取出 WASM 側的位元組比對 md5）。
+- **無法在目前條件下判定**：同版本比對（ORT-node 1.22.0 vs ORT-web 1.22.0）需要安裝 onnxruntime-node 1.22.0，屬於新安裝，需使用者同意，**尚未做**。若兩引擎本來就有這種量級的數值差異，「餘弦 > 0.999」這個目標無法靠修改原生生成迴圈達成。
+- 摘要檔：`test-reports/native-vs-wasm/bisect-summary.json`。

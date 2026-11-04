@@ -1,0 +1,63 @@
+{
+ "note": "二分法：同一模型檔、同一串 ids、單次 forward（無生成迴圈）。WASM＝應用程式的 transformers.js 所用的 ORT-web session（model.sessions.model）；原生＝onnxruntime-node。",
+ "model_file": {
+  "wasm_cache_key": "https://huggingface.co/onnx-community/Qwen3-0.6B-ONNX/resolve/main/onnx/model_quantized.onnx",
+  "native_copy": {
+   "path": "%TEMP%\\ort-node-test\\models\\qwen3-0.6b-cpu.onnx",
+   "size": 617687575,
+   "md5": "c3846afda1750921e01ac82a1d9a529d",
+   "note": "快取項目截到 ModelProto 結尾（617,687,575），去掉快取中繼資料"
+  }
+ },
+ "inputs": {
+  "native_names_equal_wasm": true,
+  "names": [
+   "input_ids",
+   "attention_mask",
+   "position_ids",
+   "past_key_values.0.key",
+   "...（28 層 key／value）"
+  ],
+  "dtype_note": "int64 ids／mask／position；float32 空 KV [1,8,0,128]（兩邊相同）"
+ },
+ "hypotheses": [
+  {
+   "h": "生成迴圈的位置編號／attention mask／KV 回填有錯",
+   "result": "不成立（單次 forward 就已不一致，與生成迴圈無關）"
+  },
+  {
+   "h": "輸入名稱或形狀不同",
+   "result": "不成立（名稱清單相同；形狀相同）"
+  },
+  {
+   "h": "WASM 執行緒數造成不同",
+   "result": "不成立（WASM 單執行緒與預設執行緒的 logits 完全相同，cos 0.936540 vs 0.936540）"
+  },
+  {
+   "h": "ORT-node 的圖最佳化或執行緒影響結果",
+   "result": "不成立（disabled／basic／all、1／4 執行緒之間 cos = 1.0，內部完全穩定）"
+  },
+  {
+   "h": "兩邊讀的不是同一個模型檔",
+   "result": "未完全排除：快取項目 key 為 onnx/model_quantized.onnx（同一檔名），原生檔為其截斷複本；但 WASM 側的位元組未被直接取出做 md5 比對"
+  },
+  {
+   "h": "引擎（ORT-web 1.22 WASM vs ORT-node 1.31 CPU）的 q8 內核差異",
+   "result": "最可能（未直接證明）：top-1 與 top-3 在多數題相同，誤差在所有排名區間都約 1–2 個 logit（標準差約 3.6），而非集中在某些 token；與位置或 mask 錯誤的特徵不同"
+  }
+ ],
+ "numbers": {
+  "cos_min": 0.822558,
+  "cos_mean": 0.93654,
+  "top1_same": "12/16",
+  "max_abs_err_max": 12.496,
+  "mean_abs_err_by_rank": {
+   "top10": "約 2.0–2.3",
+   "r10_100": "約 1.6–2.5",
+   "r100_1000": "約 1.4–2.2",
+   "rest": "約 1.1–1.7"
+  }
+ },
+ "decisive_test_not_done": "同版本比較（ORT-node 1.22.0 對 ORT-web 1.22.0，或 ORT-web 在 node 下執行）需要安裝 onnxruntime-node 1.22.0 或 onnxruntime-web；屬於新的安裝，需使用者同意，尚未做。",
+ "conclusion": "輸入與生成迴圈不是原因（單次 forward 即不一致）。最可能的原因是兩個 ORT 引擎的 q8 內核數值差異；在同版本比較前不能確定。peer 指定的目標（餘弦 > 0.999）若要求跨引擎達成，可能無法達到。"
+}
