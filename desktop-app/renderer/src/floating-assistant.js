@@ -61131,6 +61131,22 @@ ${fnData.code}
                 return JSON.stringify({ ok: true, chat_id: a.chat_id, title: e.title || '', status: e.status || null, summary: String(e.summary || ''), last_reply: last });
             },
             { type: 'object', properties: { chat_id: { type: 'string', description: '子對話 id' } }, required: ['chat_id'] });
+        // 子對話 S7：AI 批次刪除子對話。一定先經確認（window.confirm）才刪；dry_run 或沒有確認機制時只回預覽。只在已經有子對話時送進工具清單。
+        this.register_openai_tool('chat_delete_children',
+            '批次刪除子對話（連同子孫，無法復原）。會先跳出確認，使用者按確認才刪；dry_run=true 只回傳預覽。只在已經有子對話時有用。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const host = this._faHost || this; const cur = this._ctx && this._ctx.id;
+                const pid = a.parent_id ? String(a.parent_id) : cur;
+                return JSON.stringify(await host._chatDeleteChildrenTool({ pid, cur, filter: a.filter, ids: a.ids, includeRunning: a.include_running === true, dryRun: a.dry_run === true }));
+            },
+            { type: 'object', properties: {
+                parent_id: { type: 'string', description: '父對話 id（省略＝目前對話）' },
+                filter: { type: 'string', enum: ['done', 'failed', 'done_or_failed', 'all', 'ids'], description: '條件；ids 時用 ids' },
+                ids: { type: 'array', items: { type: 'string' }, description: 'filter 為 ids 時的子對話 id' },
+                include_running: { type: 'boolean', description: '也刪除進行中的（預設否）' },
+                dry_run: { type: 'boolean', description: '只回傳預覽，不刪' } },
+              required: ['filter'] });
         registerOptional('uml_guide',
             '用互動卡片一步一步引導使用者把「情境」設計成 UML 與程式骨架：程式先讀情境（參與者、使用案例、類別），再用卡片問使用者真正需要決定的事——語言與套件、要實作哪些使用案例（可以勾掉或補一句）、架構風格，接著依這些回應產生第二張卡片（平手的設計抉擇必須使用者選，其餘有帶程式的建議值），最後確認，才依答案產生設計、專案 zip 與設計檢視器。全程不需要 AI 或模型生成 UML，弱的 AI／離線模型也能用；使用者的回應只回傳給這個工具。情境要用「<參與者>可以<動作><名詞>」的句型（例如「顧客可以加入購物車並結帳付款」）；讀不出來會回報，不會編造。',
             async function (rawArgs) {
@@ -74806,7 +74822,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     // 子對話 S5：父對話的子對話工具（chat_list_children 等三個）只在目前對話有子對話時才送進工具清單；沒有子對話時清單與之前完全相同。
     _subchatToolFilter(names) {
         if (!Array.isArray(names)) return names;
-        const SUB = ['chat_list_children', 'chat_send_to_child', 'chat_get_child_summary'];
+        const SUB = ['chat_list_children', 'chat_send_to_child', 'chat_get_child_summary', 'chat_delete_children'];
         const pid = this._ctx && this._ctx.id;
         const hasKids = !!pid && this._chatTreeMod().childrenOf((this._chatIndex && this._chatIndex.chats) || [], pid).length > 0;
         return hasKids ? names : names.filter((n) => SUB.indexOf(n) < 0);
@@ -79907,6 +79923,26 @@ ${sourceTool.handlerScript}
     _chatSelectExit() {
         this._chatSelectParent = null; this._chatSelect = new Set();
         this._chatListSig = null; try { this._renderChatList(); } catch (_) { /* */ }
+    }
+
+    // 子對話 S7：AI 工具 chat_delete_children 的實作。順序：計畫 → 預覽（dry_run／沒有確認機制）→ 確認（window.confirm）→ 執行。
+    // 遠端收件對話與根對話不會進計畫（planDelete 擋掉），正在執行這個工具的對話本身不能刪。
+    async _chatDeleteChildrenTool(o) {
+        if (!o.pid || !this._chatEntry(o.pid)) return { ok: false, error: '找不到父對話（省略 parent_id 時指目前對話）' };
+        const busyIds = Array.from(this._chatCtxs.entries()).filter(([, c]) => c && c.isResponding).map(([id]) => id);
+        const plan = this._chatDeleteMod().planDelete(this._chatIndex.chats, { parentId: o.pid, filter: o.filter, ids: Array.isArray(o.ids) ? o.ids : [], includeRunning: o.includeRunning === true, busyIds });
+        if (plan.error) return { ok: false, error: plan.error === 'unknown_filter' ? 'filter 只能是 done、failed、done_or_failed、all、ids' : '缺少條件（ids 或 parent_id）' };
+        if (o.cur && plan.toDelete.some((x) => x.id === o.cur)) return { ok: false, error: '不能刪除正在執行這個工具的對話', deleted: [], skipped: plan.skipped, descendants_deleted: 0 };
+        const would = plan.toDelete.map((x) => ({ id: x.id, title: x.title }));
+        if (o.dryRun || !plan.toDelete.length) return { ok: true, dry_run: !!o.dryRun, would_delete: would, deleted: [], skipped: plan.skipped, descendants_deleted: plan.descendantsDeleted };
+        if (typeof window === 'undefined' || typeof window.confirm !== 'function') {
+            return { ok: true, dry_run: true, would_delete: would, deleted: [], skipped: plan.skipped, descendants_deleted: plan.descendantsDeleted, note: '沒有確認機制可用，只回傳預覽，未刪除' };
+        }
+        const lines = plan.toDelete.slice(0, 30).map((x) => '・' + (x.title || x.id)).join('\n') + (plan.toDelete.length > 30 ? `\n…（另 ${plan.toDelete.length - 30} 個）` : '');
+        const msg = `AI 要求刪除 ${plan.toDelete.length} 個對話（其中子孫 ${plan.descendantsDeleted} 個一併刪除）？\n這個動作無法復原。${o.includeRunning ? '\n包含進行中的（會先停止）。' : ''}\n\n${lines}`;
+        if (!window.confirm(msg)) return { ok: false, error: '使用者未確認，沒有刪除任何對話', deleted: [], skipped: plan.skipped, descendants_deleted: 0 };
+        const res = await this._chatDeleteMany(plan);
+        return { ok: res.ok, deleted: res.deleted, skipped: res.skipped.concat(res.failed.map((f) => ({ id: f.id, title: f.title, reason: 'failed: ' + f.error }))), descendants_deleted: res.descendantsDeleted };
     }
 
     // 子對話 S7：批次刪除（側欄按鈕共用）。計畫由 planDelete 產生；確認對話框列出將刪除的標題與數量；
