@@ -675,6 +675,9 @@ function installTray(ctx, ipcMain) {
 // 執行包（見 DESIGN.TODO.native-runner.md 交接第 (2) 節）：子程序程式（nr-*.js）與 onnxruntime-node 1.22.0 原生檔放在
 // userData/native-runtime/<版本>/，manifest.json 記錄每個檔案的大小與 md5。載入前全部核對；任何一個對不上就當作沒有執行包（不用半個）。
 const NATIVE_RUNTIME_VERSION = "1.22.0-1";
+// 執行包來源（見 nr-runtime-install.js）：來源 1 是 npm 官方庫的 tgz；來源 2 是 GitHub 分支 native-runtime-1.22.0，釘住 commit SHA 的 raw 網址。
+const NATIVE_NPM_TARBALL = "https://registry.npmjs.org/onnxruntime-node/-/onnxruntime-node-1.22.0.tgz";
+const NATIVE_GITHUB_BASE = "https://raw.githubusercontent.com/sunneo/tw_stock_db/9702b97723a24f61792d0814832a885e3aa756db";
 function checkNativeRuntimeDir(dir) {
   const fsSync = require("fs"), pathM = require("path"), crypto = require("crypto");
   let manifest = null;
@@ -725,6 +728,7 @@ function startNativeMailbox(ctx) {
   // 真引擎：子程序由 nr-host.js 管理（懶啟動、握手、逾時、崩潰重啟）。模型檔與分詞器路徑由環境變數給（產品端的下載位置見第 4 項）。
   const modelPath = process.env.FA_NATIVE_MODEL_PATH || "", tokenizerPath = process.env.FA_NATIVE_TOKENIZER_PATH || "";
   let host = null;
+  let installing = false;
   function getHost() {
     if (!host) host = require(pathM.join(runtime.dir, "nr-host.js")).createNativeRunnerHost({
       childPath: pathM.join(runtime.dir, "nr-child.js"),
@@ -755,6 +759,35 @@ function startNativeMailbox(ctx) {
     if (op === "status") return { ok: true, status: host ? host.status() : idleStatus, engine: runtime.ok && modelPath ? "native" : "none", box, runtime: { ok: runtime.ok, version: runtime.version || null, reason: runtime.ok ? "" : runtime.reason, protocolOk, modelReady: !!(runtime.ok && modelPath && tokenizerPath) } };
     if (op === "reenable") { if (host) host.reenable(); return { ok: true, status: host ? host.status() : idleStatus }; }
     if (op === "dispose") { if (host) host.dispose("介面要求"); return { ok: true, status: host ? host.status() : idleStatus }; }
+    if (op === "install") {
+      // 按需安裝（只有使用者在介面按下安裝時才會送來）。來源 1：npm 官方庫；來源 2：GitHub 分支（釘住 commit SHA）。見 nr-runtime-install.js。
+      if (installing) return { ok: false, code: "busy", message: "執行包安裝已經在進行中" };
+      installing = true;
+      try {
+        const inst = require(pathM.join(__dirname, "nr-runtime-install.js"));
+        const manifest = JSON.parse(fsSync.readFileSync(pathM.join(__dirname, "native-runner", "runtime-manifest.json"), "utf8"));
+        const testNpm = process.env.FA_NATIVE_INSTALL_NPM_FILE || "", testGh = process.env.FA_NATIVE_INSTALL_GH_DIR || "";
+        const testing = !!(testNpm || testGh);
+        const r = await inst.installRuntime({
+          manifest, platformKey: process.platform + "-" + process.arch,
+          runtimeDir: nativeRuntimeDir(userData),
+          npmLocation: testNpm || NATIVE_NPM_TARBALL,
+          githubBase: testGh || NATIVE_GITHUB_BASE,
+          fetchBytes: testing ? inst.localFetchBytes : inst.httpsFetchBytes,
+          forceGithub: !!(payload && payload.forceGithub),
+          nrSourceDir: __dirname,
+          timeoutMs: 120000,
+          log: (s) => console.log("[main-ext] " + s),
+        });
+        if (!r.ok) return { ok: false, code: "install_failed", message: r.why, sourcesUsed: r.sourcesUsed || {} };
+        runtime = checkNativeRuntimeDir(nativeRuntimeDir(userData));
+        if (host) { try { host.dispose("安裝完成，重新載入"); } catch (_) { /* */ } host = null; }
+        const counts = {}; for (const k of Object.keys(r.sourcesUsed)) counts[r.sourcesUsed[k]] = (counts[r.sourcesUsed[k]] || 0) + 1;
+        return { ok: runtime.ok, runtime: { ok: runtime.ok, version: runtime.version || null, reason: runtime.ok ? "" : runtime.reason }, npmUsed: r.npmUsed, sourceCounts: counts };
+      } catch (e) {
+        return { ok: false, code: "install_failed", message: String((e && e.message) || e) };
+      } finally { installing = false; }
+    }
     if (op === "run") {
       if (!runtime.ok) return { ok: false, code: "no_engine", message: "原生引擎沒有可用的執行包（" + runtime.reason + "）" };
       if (!modelPath || !tokenizerPath) return { ok: false, code: "no_model", message: "原生引擎沒有模型檔路徑（環境變數 FA_NATIVE_MODEL_PATH／FA_NATIVE_TOKENIZER_PATH 未設定）" };
