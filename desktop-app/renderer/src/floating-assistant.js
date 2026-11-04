@@ -95968,11 +95968,16 @@ _result
         const td = this.topicData;
         const cur = td.fingerprint && typeof td.fingerprint === 'object' ? td.fingerprint : null;
         const past = Array.isArray(td.pastTopics) ? td.pastTopics : [];
-        const r = L.detectShift(cur, past, userText);
-        let base = null;
-        if (r.isShifted) {
+        // 子對話 S5：父對話底下的子對話也是拉回的候選（id＝子對話 id）。
+        const kids = this._subchatChildCandidates();
+        const r = L.detectShift(cur, past.concat(kids), userText);
+        // 命中子對話＝拉回那個子對話：父對話的目前話題不變（子對話的話題不算父對話的話題），訊息之後由 _subchatOpenFor 轉給子對話。
+        const toChild = !!(r.isShifted && r.matchedTopicId && kids.some((k) => k.id === r.matchedTopicId));
+        let base = null, pushedId = null;
+        if (r.isShifted && !toChild) {
             if (cur) {
-                past.push({ id: 'topic_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), fingerprint: cur });
+                pushedId = 'topic_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+                past.push({ id: pushedId, fingerprint: cur });
                 while (past.length > 20) past.shift();
             }
             if (r.matchedTopicId) {
@@ -95980,10 +95985,22 @@ _result
                 if (idx >= 0) base = past.splice(idx, 1)[0].fingerprint;
             }
             this._log('🔀 本地話題偵測：判定新話題（' + r.reason + '）');
+        } else if (toChild) {
+            this._log('🔀 本地話題偵測：拉回子對話（' + r.matchedTopicId + '）');
         }
         td.pastTopics = past;
-        td.fingerprint = L.mergeFingerprint(r.isShifted ? base : cur, userText, L.DEFAULT_MAX_TERMS);
-        this._lastTopicShift = { isShifted: r.isShifted, score: r.score, matchedTopicId: r.matchedTopicId, reason: r.reason, at: Date.now() };
+        if (!toChild) td.fingerprint = L.mergeFingerprint(r.isShifted ? base : cur, userText, L.DEFAULT_MAX_TERMS);
+        // pushedId／prevFingerprint：開新子對話時要把父對話的話題還原（子對話的話題不該變成父對話的話題）
+        this._lastTopicShift = { isShifted: r.isShifted, score: r.score, matchedTopicId: r.matchedTopicId, reason: r.reason, at: Date.now(), toChild: toChild, pushedId: pushedId, prevFingerprint: cur };
+    }
+
+    // 子對話 S5：目前對話的子對話候選（{ id, fingerprint }）。子對話本身不再有子對話，所以子對話回傳空陣列。
+    _subchatChildCandidates() {
+        const pid = this._ctx && this._ctx.id;
+        const pe = pid && this._chatEntry(pid);
+        if (!pe || pe.parentId) return [];
+        const chats = (this._chatIndex && Array.isArray(this._chatIndex.chats)) ? this._chatIndex.chats : [];
+        return chats.filter((c) => c && c.parentId === pid && c.fingerprint && typeof c.fingerprint === 'object').map((c) => ({ id: c.id, fingerprint: c.fingerprint }));
     }
 
     // 子對話交接模組（renderer/src/chat/handoff.js）：嵌入時用頂層的 FA_SUBCHAT_HANDOFF_SRC（new Function），只載入一次。
@@ -96230,15 +96247,39 @@ _result
         return this._subchatHandoffModule;
     }
 
+    // 子對話 S5：拉回舊話題。訊息轉給被命中的子對話（沿用 _subchatSend：子對話正在回應就插話，閒置就開新一輪）。
+    // 父對話只留使用者訊息＋連結卡片「↳ 回到子對話」，不呼叫父模型，也不把子對話的歷史載回父對話（只帶摘要）。失敗回傳 false，退回父對話流程。
+    async _subchatPullback(childId, userText) {
+        const pid = this._ctx && this._ctx.id;
+        const child = this._chatEntry(childId);
+        if (!child || child.parentId !== pid) return false;
+        const L = this._topicLocalMod();
+        child.fingerprint = L.mergeFingerprint(child.fingerprint, userText, L.DEFAULT_MAX_TERMS);
+        this._saveChatIndex();
+        const r = await this._subchatSend(childId, userText);
+        if (!r || !r.ok) return false;
+        const m = this._buildToolResultMessage('display', JSON.stringify({ ok: true, note: '子對話' }), {});
+        m.content = '↳ 回到子對話：〈' + child.title + '〉';
+        m._subchatLink = { childId, title: child.title };
+        this.messages.push(m);
+        this._renderMessageHistory();
+        this._persistChatHistory();
+        this._log('↩️ 偵測到舊話題，已轉給子對話：' + child.title);
+        return true;
+    }
+
     // 子對話 S3：目前這則使用者訊息被判成「全新話題」時開出子對話，並在背景送出。回傳 true＝已接手（呼叫端不再呼叫父對話模型）。
     // 只處理全新話題：matchedTopicId 有值（拉回舊話題）是 S5，這裡回傳 false，照舊在父對話處理。
     // 子對話本身不再開子對話（索引有 parentId 就不開）。建立失敗也回傳 false，退回照舊的父對話流程。
     async _subchatOpenFor(userText) {
         const st = this._lastTopicShift;
-        if (!st || !st.isShifted || st.matchedTopicId) return false;
+        if (!st || !st.isShifted) return false;
         const pid = this._ctx && this._ctx.id;
         const parent = pid && this._chatEntry(pid);
         if (!parent || parent.parentId) return false;
+        // 子對話 S5：命中某個子對話 → 拉回（訊息轉給那個子對話）；命中父對話自己的舊話題 → 照舊在父對話處理
+        if (st.matchedTopicId) return st.toChild ? await this._subchatPullback(st.matchedTopicId, userText) : false;
+        const td = this.topicData;
         const H = this._subchatHandoffMod(), L = this._topicLocalMod();
         const oldMsgs = this.messages.slice(0, -1); // 不含剛推入的這則使用者訊息
         const { title, handoff } = H.buildHandoff(parent.title, oldMsgs, userText);
@@ -96246,6 +96287,8 @@ _result
         const childId = await this._chatNew(parent.groupId || null, { parentId: pid, title, noActivate: true, status: 'running', summary: handoff.slice(0, 200), fingerprint: fp });
         const cctx = childId ? this._chatCtxs.get(childId) : null;
         if (!cctx) return false;
+        // 父對話的話題還原（見 _localTopicCheck）：新子對話的話題不算父對話的話題，父對話仍停在原本的話題
+        if (td) { td.pastTopics = (Array.isArray(td.pastTopics) ? td.pastTopics : []).filter((c) => !st.pushedId || c.id !== st.pushedId); td.fingerprint = st.prevFingerprint || null; }
         // 子對話的 ctx：system 提示＋交接內文；話題指紋以新訊息初始化（子對話自己的偵測不會再判轉移）
         cctx.messages = [{ role: 'system', content: this._getFinalSystemPrompt() }, { role: 'system', content: handoff }];
         cctx.topicData = { currentTopic: title, fingerprint: fp, pastTopics: [] };
