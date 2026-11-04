@@ -53,7 +53,7 @@
     { const prev = M._registerEditCommands; M._registerEditCommands = function () { if (prev) prev.call(this); this._registerEditDocxCommands(); }; }
     M._registerEditDocxTools = function (registerOptional) {
         const parse = async (self, raw) => { let a = {}; try { a = await self.repairJsonPayload(String(raw || '{}')); } catch (_) { /* */ } return a || {}; };
-        registerOptional('edit_docx_open', '在對話裡放一個「Word 文件編輯器」(區塊式,沒動到的區塊、圖片、頁首頁尾、樣式原封不動):使用者用說的改(把第 2 段改成…、改成粗體、在最後加一段、把這段整理成清單、全部取代),或雙擊區塊直接改;可復原、匯出 .docx。參數:starter(blank、letter、report)、text(開起來時的純文字,空行分段)、title、request、file_id(使用者附的 .docx)、id(接著原來的專案編輯)。',
+        registerOptional('edit_docx_open', '在對話裡放一個「Word 文件編輯器」（適用：Word 文件、合約、公文、履歷、信件、會議紀錄、文章稿）(區塊式,沒動到的區塊、圖片、頁首頁尾、樣式原封不動):使用者用說的改(把第 2 段改成…、改成粗體、在最後加一段、把這段整理成清單、全部取代),或雙擊區塊直接改;可復原、匯出 .docx。參數:starter(blank、letter、report)、text(開起來時的純文字,空行分段)、title、request、file_id(使用者附的 .docx)、id(接著原來的專案編輯)。',
             async function (rawArgs) {
                 const a = await parse(this, rawArgs);
                 try {

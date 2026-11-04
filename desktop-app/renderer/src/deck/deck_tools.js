@@ -831,7 +831,7 @@ const FaDeckTools = (function () {
                 obj({ file_id: { type: 'string' } }),
                 async function (a) { return this._deckVerify(a); });
             tool('open_existing_presentation',
-                'Show a previously saved presentation (a .deck.yaml file made by render_presentation, or one the user uploaded) again as a player. "file_id" = its file id.',
+                '（適用：簡報、提案、投影片、發表）Show a previously saved presentation (a .deck.yaml file made by render_presentation, or one the user uploaded) again as a player. "file_id" = its file id.',
                 obj({ file_id: { type: 'string' } }, ['file_id']),
                 async function (a) {
                     const text = await this._deckReadYaml(a.file_id); await this._ensureJsYamlLoaded();

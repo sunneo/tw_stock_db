@@ -110,6 +110,13 @@ ok(hh >= 1, '第二組至少有命中（資訊性：實際 ' + hh + '/' + HARD.l
 const d = G.deriveTool('把那份試算的東西叫出來', scan.tools, { synonyms });
 ok(Array.isArray(d), '推導：沒對上時回空陣列而不是亂猜');
 ok(G.pickDerived(G.deriveTool('看看今天天氣如何', scan.tools, { synonyms })) === null, '推導：跟開啟無關的句子推導不出（交回原本流程）');
+// 評測集（scripts/eval/offline-open-derive.data.js，70 句沒寫進任何規則的新說法）：程式端分段命中率。
+// seen＝寫工具說明時看過的詞（回歸測試）；heldout＝說明補完後才寫、詞沒出現在說明裡（真正的推導能力，目標 ≥60%，目前未達，如實回報）
+const EV = require('./eval/offline-open-derive.eval.js');
+const evSeen = EV.run(EV.DATA.seen), evHeld = EV.run(EV.DATA.heldout);
+console.log('   （評測 seen ' + evSeen.right + '/' + evSeen.total + '＝' + Math.round(evSeen.rate * 100) + '%；heldout ' + evHeld.right + '/' + evHeld.total + '＝' + Math.round(evHeld.rate * 100) + '%，推導錯 ' + evHeld.seg.wrong + '、推導不出 ' + evHeld.seg.unresolved + '）');
+ok(EV.DATA.length >= 30 && evSeen.rate >= 0.9, '評測 seen 組程式端命中率 ≥90%（回歸；實際 ' + Math.round(evSeen.rate * 100) + '%）');
+ok(evHeld.rate >= 0.33 && evHeld.seg.wrong <= 3, '評測 heldout 組程式端命中率 ≥33% 且推導錯 ≤3（下限；目標 60% 尚未達到；實際 ' + Math.round(evHeld.rate * 100) + '%、錯 ' + evHeld.seg.wrong + '）');
 // 整句記憶：以前問過的說法下次直接懂
 const mem = {}; mem['s:' + G.memKey('把那份神秘東西叫出來')] = 'kind:xlsx';
 ok(G.gate('把那份神秘東西叫出來', { memory: mem }).kind === 'xlsx' && /記憶/.test(G.gate('把那份神秘東西叫出來', { memory: mem }).kindBy), '記憶：整句說法直接對到以前問過的種類');

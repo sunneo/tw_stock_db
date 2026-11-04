@@ -139,11 +139,14 @@
     // 靜態掃原始碼的註冊（測試用）：回傳 { tools:[{name, desc}], slashes:[name] }。執行時用 this.tools 的說明，不掃原始碼
     function scanTools(src) {
         const tools = []; const seen = {};
-        const re = /(?:registerOptional|registerTool|bcTool|[^\w.]tool)\(\s*'([a-z][a-z0-9_]*)'\s*,\s*(?:`([^`]{0,160})|'([^']{0,160}))?/g;
+        const re = /(?:registerOptional|registerTool|bcTool|[^\w.]tool)\(\s*'([a-z][a-z0-9_]*)'\s*,\s*(?:`([^`]{0,400})|'([^']{0,400}))?/g;
         let m; while ((m = re.exec(src))) { if (seen[m[1]]) continue; seen[m[1]] = 1; tools.push({ name: m[1], desc: m[2] || m[3] || '' }); }
         // 用三元運算子或輔助函式註冊的（例如 edit_xlsx_open／edit_csv_open）：名稱含 open／viewer／editor／player／preview 的字串常值也算
         const lre = /(?:registerOptional|registerTool)\(([^,]{0,240}),/g;
-        while ((m = lre.exec(src))) { const q = /'([a-z][a-z0-9_]*)'/g; let n; while ((n = q.exec(m[1]))) { if (seen[n[1]]) continue; seen[n[1]] = 1; tools.push({ name: n[1], desc: '' }); } }
+        while ((m = lre.exec(src))) { const q = /'([a-z][a-z0-9_]*)'/g; let n; const names = []; while ((n = q.exec(m[1]))) names.push(n[1]);
+            // 兩個名稱用三元運算子註冊時，說明裡也常用同樣的三元運算子分開寫（例如 edit_xlsx_open／edit_csv_open）：照順序配對
+            const tern = /\?\s*'([^']{0,200})'\s*:\s*'([^']{0,200})'/.exec(src.slice(lre.lastIndex, lre.lastIndex + 900));
+            names.forEach((nm, i) => { if (seen[nm]) return; seen[nm] = 1; tools.push({ name: nm, desc: names.length === 2 && tern ? tern[i + 1] : '' }); }); }
         const slashes = []; const sre = /(?:register_slash_command|[^\w.]cmd)\(\s*'(\/[a-z0-9-]+)'/g; while ((m = sre.exec(src))) if (slashes.indexOf(m[1]) < 0) slashes.push(m[1]);
         return { tools, slashes };
     }
@@ -179,17 +182,25 @@
         const docs = OPEN_TABLE.filter((e) => e.kind !== 'editor').map((e) => { const txt = [e.label, e.nouns.replace(/\\b|[|?]/g, ' '), e.exts.join(' '), e.viewer || '', e.tool ? descOf[e.tool] || '' : '', e.tool || '', e.slash || ''].join(' '); return { e, docText: txt, docSet: new Set(bigramsOf(txt).concat((e.slashes || []).map((s) => s.replace(/[^a-z0-9]+/g, ' ')))) }; });
         const df = {}; docs.forEach((d) => d.docSet.forEach((b) => { df[b] = (df[b] || 0) + 1; }));
         const res = docs.map((d) => { let score = 0; const hit = []; new Set(q).forEach((b) => { if (d.docSet.has(b)) { score += Math.log(1 + docs.length / df[b]) * (b.length >= 3 ? 1.5 : 1); hit.push(b); } }); return { kind: d.e.kind, label: d.e.label, tool: d.e.tool, slash: d.e.slash || null, score: Math.round(score * 100) / 100, hit, d }; });
+        // 中文名詞多半「尾字表示類別」（損益『表』、企劃『書』、推薦『信』、短『片』）：拿句子裡各詞的尾字，去對各種類說明裡詞語的尾字
+        docs.forEach((d) => { d.heads = new Set(String(d.docText).split(/[、，,（）()\/|\s]+/).filter((w) => /^[一-鿿]{2,}$/.test(w)).map((w) => w.slice(-1))); });
+        const hdf = {}; docs.forEach((d) => d.heads.forEach((c) => { hdf[c] = (hdf[c] || 0) + 1; }));
+        const lastRun = (String(text).replace(DERIVE_STOP, ' ').match(/[一-鿿]{2,}/g) || []).slice(-1); // 「動詞＋修飾＋的＋名詞」的中心詞在最後面
+        const qheads = new Set(lastRun.map((r) => r.slice(-1)));
+        res.forEach((r) => qheads.forEach((c) => { if (r.d.heads.has(c)) { r.score = Math.round((r.score + 1.4 * Math.log(1 + docs.length / hdf[c])) * 100) / 100; r.hit.push('尾字' + c); } }));
         // 雙字詞都沒對上時，退一步用單字（權重低、要求比第二名明顯高才採用）：財報→報表、紀錄→錄音…
         if (!res.some((r) => r.score > 0)) {
             const uni = {}; docs.forEach((d) => { const cs = new Set((d.docText || '').match(/[一-鿿]/g) || []); d.chars = cs; cs.forEach((c) => { uni[c] = (uni[c] || 0) + 1; }); });
             const qc = new Set((String(text || '').replace(DERIVE_STOP, ' ').match(/[一-鿿]/g) || []));
-            res.forEach((r) => { qc.forEach((c) => { if (r.d.chars.has(c)) { r.score += 0.9 * Math.log(1 + docs.length / uni[c]); r.hit.push(c); } }); r.score = Math.round(r.score * 100) / 100; });
+            res.forEach((r) => { r.uni = true; qc.forEach((c) => { if (r.d.chars.has(c)) { r.score += 0.9 * Math.log(1 + docs.length / uni[c]); r.hit.push(c); } }); r.score = Math.round(r.score * 100) / 100; });
         }
-        res.forEach((r) => { delete r.d; });
+        // 只靠單字或尾字湊出來的證據（財報→簡報 的「報」）不自動採用：只用來排候選順序，交給小模型字母題或使用者
+        res.forEach((r) => { delete r.d; r.uni = r.hit.length > 0 && r.hit.every((h) => h.indexOf('尾字') === 0 || h.length === 1); if (!r.uni) delete r.uni; });
         return res.filter((r) => r.score > 0).sort((a, b) => b.score - a.score);
     }
     // 程式先決定的門檻：最高分夠高、且明顯高於第二名
-    function pickDerived(cands) { if (!cands.length) return null; const a = cands[0], b = cands[1]; return a.score >= 3 && (!b || a.score >= b.score * 1.4) ? a : null; }
+    function pickDerived(cands) { if (!cands.length) return null; const a = cands[0], b = cands[1]; if (a.uni) return null; // 只靠單字湊出來的分數不自動採用（通訊錄→音訊 這種），留給小模型或使用者
+        return a.score >= 3 && (!b || a.score >= b.score * 1.4) ? a : null; }
     const DANGER_RE = /(?:^|[\s;&|])(?:rm|sudo|mkfs|dd|shutdown|reboot|halt|format|del|rmdir|chmod|chown|kill|killall)(?:\s|$)|>\s*\/dev\/|:\(\)\s*\{|curl[^|]*\|\s*(?:sh|bash)|wget[^|]*\|\s*(?:sh|bash)/i;
     // 終端機要跑的指令：句子裡「跑／執行／運行 xxx」，或常見的自然說法（看目錄→ls、目前位置→pwd）
     function terminalCommand(text) {

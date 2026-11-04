@@ -96,7 +96,7 @@
     M._registerEditDocsTools = function (registerOptional) {
         const parse = async (self, raw) => { let a = {}; try { a = await self.repairJsonPayload(String(raw || '{}')); } catch (_) { /* */ } return a || {}; };
         const open = (kind, label) => registerOptional(kind === 'edit-markdown' ? 'edit_markdown_open' : 'edit_text_open',
-            '在對話裡放一個「' + label + '」(區塊式文件編輯器,沒動到的區塊原封不動):使用者用說的改(把第 2 段改成…、在最後加一段、把這段整理成清單、全部取代),或雙擊區塊直接改;可復原、匯出、開啟本機檔案。參數:starter(' + (kind === 'edit-markdown' ? 'blank、notes、readme' : 'blank') + ')、text(開起來時的初始內容)、title、request(一句話:開起來後編輯器自己的 AI 去做)、file_id(使用者附的文字檔)、id(接著原本的專案)。做完編輯器就在對話裡,不要把整份文件貼到對話。參數: {"starter":"blank","text":"(選填)","request":"(選填)","file_id":"(選填)","id":"(選填)"}',
+            '在對話裡放一個「' + label + '」' + (kind === 'edit-markdown' ? '（適用：Markdown、筆記、文章草稿、README）' : '（適用：純文字、記事本、文字檔、日誌）') + '(區塊式文件編輯器,沒動到的區塊原封不動):使用者用說的改(把第 2 段改成…、在最後加一段、把這段整理成清單、全部取代),或雙擊區塊直接改;可復原、匯出、開啟本機檔案。參數:starter(' + (kind === 'edit-markdown' ? 'blank、notes、readme' : 'blank') + ')、text(開起來時的初始內容)、title、request(一句話:開起來後編輯器自己的 AI 去做)、file_id(使用者附的文字檔)、id(接著原本的專案)。做完編輯器就在對話裡,不要把整份文件貼到對話。參數: {"starter":"blank","text":"(選填)","request":"(選填)","file_id":"(選填)","id":"(選填)"}',
             async function (rawArgs) {
                 const a = await parse(this, rawArgs);
                 try {

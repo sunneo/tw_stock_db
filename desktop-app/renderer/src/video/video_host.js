@@ -222,7 +222,7 @@
                 const op = window.TwVideoPlans.toOp(name, a); try { return JSON.stringify(await ed._ve.runOps([op])); } catch (e) { return JSON.stringify({ ok: false, error: String((e && e.message) || e) }); }
             }, { type: 'object', properties: props, required: t.required || [], additionalProperties: false });
         });
-        registerOptional('edit_video_open', '在對話裡放一個「影片編輯器」(播放器＋逐字稿＋時間軸:分割、刪除一段、合併、轉場、疊圖片、插入聲音、TTS 配音、燒錄字幕)。參數:file_id(使用者附的影片,選填)、request(一句話要做什麼,開起來後交給編輯器的 Ask AI,選填)。回傳 {ok: true, id: "編輯器 id"}。',
+        registerOptional('edit_video_open', '在對話裡放一個「影片編輯器」（適用：影片、錄影、剪輯、字幕）(播放器＋逐字稿＋時間軸:分割、刪除一段、合併、轉場、疊圖片、插入聲音、TTS 配音、燒錄字幕)。參數:file_id(使用者附的影片,選填)、request(一句話要做什麼,開起來後交給編輯器的 Ask AI,選填)。回傳 {ok: true, id: "編輯器 id"}。',
             async function (rawArgs) { const a = await parse(this, rawArgs); try { return JSON.stringify(await this._videoOpen({ fileId: a.file_id ? String(a.file_id) : null, request: a.request ? String(a.request) : '' })); } catch (e) { return JSON.stringify({ ok: false, error: String((e && e.message) || e) }); } },
             { type: 'object', properties: { file_id: { type: 'string', description: '使用者附的影片(file id)' }, request: { type: 'string', description: '一句話要做什麼' } }, additionalProperties: false });
     };

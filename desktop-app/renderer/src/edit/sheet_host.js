@@ -72,7 +72,7 @@
     M._registerEditSheetTools = function (registerOptional) {
         const parse = async (self, raw) => { let a = {}; try { a = await self.repairJsonPayload(String(raw || '{}')); } catch (_) { /* */ } return a || {}; };
         const open = (kind, label) => registerOptional(kind === 'edit-xlsx' ? 'edit_xlsx_open' : 'edit_csv_open',
-            '在對話裡放一個「' + label + '」:使用者用說的改(排序、刪空白列、加欄加列、取代、條件式刪列),或直接在表格上改;可復原、匯出、開啟本機檔案。參數:starter、csv(開起來時的 CSV 文字)、title、request、file_id(使用者附的 csv／xlsx)。',
+            '在對話裡放一個「' + label + '」' + (kind === 'edit-xlsx' ? '（適用：Excel、試算表、財務報表、帳務明細、績效統計、數據表格）' : '（適用：CSV、名單、通訊錄、清單、逗號分隔資料）') + ':使用者用說的改(排序、刪空白列、加欄加列、取代、條件式刪列),或直接在表格上改;可復原、匯出、開啟本機檔案。參數:starter、csv(開起來時的 CSV 文字)、title、request、file_id(使用者附的 csv／xlsx)。',
             async function (rawArgs) {
                 const a = await parse(this, rawArgs);
                 try {

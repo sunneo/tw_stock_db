@@ -38557,13 +38557,13 @@ const FaEditHost = (function () {
             const parse = async (self, raw) => { let a = {}; try { a = await self.repairJsonPayload(String(raw || '{}')); } catch (_) { /* */ } return a || {}; };
             const filesOf = async (self, a) => { const out = []; const ids = [].concat(a.file_id || [], a.file_ids || []).filter(Boolean).slice(0, 3); for (const fid of ids) { try { const rec = await self.fileCache.get(String(fid)); if (rec && rec.blob && /^image\//.test(rec.blob.type || '')) out.push({ name: rec.filename || 'picture', dataUrl: await FaEditStore.dataUrl(rec.blob) }); } catch (_) { /* 少一張而已 */ } } return out; };
             registerOptional('edit_svg_open',
-                '在對話裡放一個「SVG 編輯器」（用語言主導的概念畫家）：一堆物件在沒有邊界的平面上，使用者說要畫什麼、放在哪個東西的哪一邊，編輯器自己的 AI 就加一個物件；可貼圖描成 SVG、給網址、找圖；有物件欄、屬性面板、復原／重做、整理成 prompt、匯出 SVG／PNG。參數：starter（blank、shapes、flow）、request（一句話：開起來後編輯器自己的 AI 去做）、file_id（使用者附的圖片，當作第一個要描的圖）、id（接著原本的專案）。做完編輯器就在對話裡，不要把 SVG 貼到對話。參數: {"starter":"blank","request":"（選填）","file_id":"（選填）","id":"（選填）"}',
+                '在對話裡放一個「SVG 編輯器」（適用：向量圖、標誌 logo、插圖、示意圖）（用語言主導的概念畫家）：一堆物件在沒有邊界的平面上，使用者說要畫什麼、放在哪個東西的哪一邊，編輯器自己的 AI 就加一個物件；可貼圖描成 SVG、給網址、找圖；有物件欄、屬性面板、復原／重做、整理成 prompt、匯出 SVG／PNG。參數：starter（blank、shapes、flow）、request（一句話：開起來後編輯器自己的 AI 去做）、file_id（使用者附的圖片，當作第一個要描的圖）、id（接著原本的專案）。做完編輯器就在對話裡，不要把 SVG 貼到對話。參數: {"starter":"blank","request":"（選填）","file_id":"（選填）","id":"（選填）"}',
                 async function (rawArgs) { const a = await parse(this, rawArgs); try { return JSON.stringify(await this._edOpen('edit-svg', { starter: a.starter, request: a.request, spec: a.spec, id: a.id, images: await filesOf(this, a) })); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); } },
                 { type: 'object', properties: { starter: { type: 'string', description: '起手式：blank、shapes、flow' }, request: { type: 'string', description: '一句話要畫什麼' }, file_id: { type: 'string', description: '使用者附的圖片（會當第一個要描成 SVG 的圖）' }, id: { type: 'string', description: '接著原本的專案' } }, additionalProperties: false }
             );
             if (this._registerEdit3dTools) this._registerEdit3dTools(registerOptional);
             registerOptional('edit_picture_open',
-                '在對話裡放一個「圖片編輯器」（圖層式、語言主導、像 GIMP 的後製與修復）：圖片、形狀、濾鏡層、修復層疊在沒有邊界的平面上；使用者用說的改（變成水彩風格、調亮、修掉右下角的污點、在左邊加一隻貓、找一張飛機的照片、用 AI 重畫成油畫），濾鏡與修復都是圖層，原圖不動。參數：starter（blank、poster）、request（一句話：開起來後編輯器自己的 AI 去做）、style（先套用的風格：oil、watercolor、sketch、ink、cartoon、pixel、poster、vintage、neon…）、file_id（使用者附的圖片，當作第一個圖層）、id。做完編輯器就在對話裡，不要自己處理圖片。參數: {"starter":"blank","request":"（選填）","style":"watercolor","file_id":"（選填）","id":"（選填）"}',
+                '在對話裡放一個「圖片編輯器」（適用：照片、設計稿、海報、圖片後製與修復）（圖層式、語言主導、像 GIMP 的後製與修復）：圖片、形狀、濾鏡層、修復層疊在沒有邊界的平面上；使用者用說的改（變成水彩風格、調亮、修掉右下角的污點、在左邊加一隻貓、找一張飛機的照片、用 AI 重畫成油畫），濾鏡與修復都是圖層，原圖不動。參數：starter（blank、poster）、request（一句話：開起來後編輯器自己的 AI 去做）、style（先套用的風格：oil、watercolor、sketch、ink、cartoon、pixel、poster、vintage、neon…）、file_id（使用者附的圖片，當作第一個圖層）、id。做完編輯器就在對話裡，不要自己處理圖片。參數: {"starter":"blank","request":"（選填）","style":"watercolor","file_id":"（選填）","id":"（選填）"}',
                 async function (rawArgs) { const a = await parse(this, rawArgs); try { return JSON.stringify(await this._edOpen('edit-picture', { starter: a.starter, request: a.request, style: a.style, spec: a.spec, id: a.id, images: await filesOf(this, a) })); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); } },
                 { type: 'object', properties: { starter: { type: 'string', description: '起手式：blank、poster' }, request: { type: 'string', description: '一句話要怎麼處理或畫什麼' }, style: { type: 'string', description: '先套用的風格' }, file_id: { type: 'string', description: '使用者附的圖片（第一個圖層）' }, id: { type: 'string', description: '接著原本的專案' } }, additionalProperties: false }
             );
@@ -39062,7 +39062,7 @@ const FaEditHost = (function () {
             { type: 'object', properties: { image: { type: 'string', description: '選填：圖片的 file_id 或檔名；省略時用這個對話最新的圖片附件' }, request: { type: 'string', description: '使用者的原話（例如「物件要封閉」「要能列印」「用樂高方塊」），程式會從裡面解析封閉範圍與外殼種類' }, close: { type: 'string', enum: ['objects', 'all'], description: 'objects＝每個物件封閉、背景是薄板（預設）；all＝連背景都做成實心' }, shape: { type: 'string', enum: ['auto', 'smooth', 'cylinder', 'blocks'] }, whole: { type: 'boolean', description: 'true＝整張圖當一個物件，不分前景背景' }, bg: { type: 'string', description: '選填：沒有主體的背景圖（file_id 或檔名，要跟主體圖同一個視角），用背景差分取出前景' }, segment: { type: 'boolean', description: 'true＝用分割模型自動分出多個物件（要下載 SlimSAM）；預設用去背遮罩' }, subject: { type: 'string', enum: ['main', 'all'], description: 'main＝只要主體（例如咖啡杯放在桌上的照片，只要咖啡杯一個封閉的立體，桌子和背景不放，之後可以擺到別的桌子上）；all（預設）＝圖裡所有物件。省略時程式會從 request（使用者的話）判斷' }, depth_scale: { type: 'number', description: '選填：正面凹凸（深度）的強度倍數，1＝預設，大於 1 更立體、小於 1 更平；使用者說「立體感強一點」「平一點」時用 1.6／0.6，程式也會從 request 解析' }, thickness_scale: { type: 'number', description: '選填：背面推測厚度的倍數，1＝預設；使用者說「厚一點」「薄一點」「厚度 2 倍」時用，程式也會從 request 解析' }, detail: { type: 'number', description: '選填：網格細緻度 1～3，1＝預設（約 1.2 萬面、一塊塊的）、2＝更細、3＝最細（用到使用者在設定裡指定的最大面數，預設 6 萬）；使用者說「細一點」「面數多一點」「臉細緻」用 2，「最細」用 3，程式也會從 request 解析' }, pose: { type: 'boolean', description: '選填：true＝用姿態模型（MoveNet）找肩肘腕，把手臂分成各自的部分（沒下載模型會問要不要下載）；不填＝模型已下載才自動用；false＝不用。使用者說「用骨架」「手臂用圓柱」時填 true，程式也會從 request 解析' }, max_faces: { type: 'number', description: '選填：使用者在這次要求裡明講的面數（例如「面數 20 萬」填 200000）；沒講就不要填，由設定裡的最大面數決定' }, depth_cm: { type: 'number', description: '選填：模型前後的總深度（公分），例如使用者說「深度 10 公分」；10 公分與 20 公分真的會差一倍' }, height_cm: { type: 'number', description: '選填：模型的高（公分）' }, width_cm: { type: 'number', description: '選填：模型的寬（公分）' }, size_cm: { type: 'number', description: '選填：最長邊（公分）；預設 150' }, no_background: { type: 'boolean', description: 'true＝不要背景（使用者說「去掉背景」「不要背景」）：只留物件，不放背景板；圖本身已去背（透明）時會自動這樣' }, editor: { type: 'boolean', description: 'true＝直接開 3D 場景編輯器；預設只在對話裡顯示可轉動的 3D 檢視' }, subject_name: { type: 'string', description: '選填：主體是什麼（例如「咖啡杯」），程式用視覺模型從找到的物件裡挑出它；沒給就選最大又最靠中間的' } } }
         );
         registerOptional('edit_3d_open',
-            '在對話裡放一個「3D 場景編輯器」（用語言主導；位置完全以使用者現在看的角度算：「我的左前方」「桌子的右邊」）：物件欄（樹狀、群組）、屬性面板、3D 畫面（拖曳轉視角、點物件選取、拖曳移動）、🧾 YAML 原始碼分頁（可直接改）、雙擊物件進「單一物件編輯」（像做塑膠模型：每個面貼什麼圖、塗什麼顏色）、貼圖（貼進編輯器對話框、網址、找圖）、復原／重做、匯出場景 YAML（render_3d_scene 可直接播放）／PNG／整理成 prompt。參數：starter（blank、room、model、studio）、request（一句話：開起來後編輯器自己的 AI 去做）、yaml（一份場景 YAML 當起點）、file_id（使用者上傳的 .3dscene.yaml 或 STL／OBJ／3MF／FBX 模型）、last（true＝接著對話裡最近的 3D 場景）、id（接著原本的專案）。做完編輯器就在對話裡，不要把場景 YAML 貼進對話。參數: {"starter":"room","request":"（選填）","yaml":"（選填）","file_id":"（選填）","last":false,"id":"（選填）"}',
+            '在對話裡放一個「3D 場景編輯器」（適用：3D 模型、立體場景、房間擺設、空間配置）（用語言主導；位置完全以使用者現在看的角度算：「我的左前方」「桌子的右邊」）：物件欄（樹狀、群組）、屬性面板、3D 畫面（拖曳轉視角、點物件選取、拖曳移動）、🧾 YAML 原始碼分頁（可直接改）、雙擊物件進「單一物件編輯」（像做塑膠模型：每個面貼什麼圖、塗什麼顏色）、貼圖（貼進編輯器對話框、網址、找圖）、復原／重做、匯出場景 YAML（render_3d_scene 可直接播放）／PNG／整理成 prompt。參數：starter（blank、room、model、studio）、request（一句話：開起來後編輯器自己的 AI 去做）、yaml（一份場景 YAML 當起點）、file_id（使用者上傳的 .3dscene.yaml 或 STL／OBJ／3MF／FBX 模型）、last（true＝接著對話裡最近的 3D 場景）、id（接著原本的專案）。做完編輯器就在對話裡，不要把場景 YAML 貼進對話。參數: {"starter":"room","request":"（選填）","yaml":"（選填）","file_id":"（選填）","last":false,"id":"（選填）"}',
             async function (rawArgs) { const a = await parse(this, rawArgs); try { return JSON.stringify(await this._ed3dOpen({ starter: a.starter, request: a.request, yaml: a.yaml, file_id: a.file_id, last: !!a.last, id: a.id })); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); } },
             { type: 'object', properties: { starter: { type: 'string', description: '起手式：blank、room、model、studio' }, request: { type: 'string', description: '一句話要擺什麼' }, yaml: { type: 'string', description: '場景 YAML 當起點' }, file_id: { type: 'string', description: '使用者上傳的 .3dscene.yaml 或 3D 模型檔' }, last: { type: 'boolean', description: '接著對話裡最近的 3D 場景' }, id: { type: 'string', description: '接著原本的專案' } }, additionalProperties: false }
         );
@@ -39176,7 +39176,7 @@ const FaEditHost = (function () {
     M._registerEditDocsTools = function (registerOptional) {
         const parse = async (self, raw) => { let a = {}; try { a = await self.repairJsonPayload(String(raw || '{}')); } catch (_) { /* */ } return a || {}; };
         const open = (kind, label) => registerOptional(kind === 'edit-markdown' ? 'edit_markdown_open' : 'edit_text_open',
-            '在對話裡放一個「' + label + '」(區塊式文件編輯器,沒動到的區塊原封不動):使用者用說的改(把第 2 段改成…、在最後加一段、把這段整理成清單、全部取代),或雙擊區塊直接改;可復原、匯出、開啟本機檔案。參數:starter(' + (kind === 'edit-markdown' ? 'blank、notes、readme' : 'blank') + ')、text(開起來時的初始內容)、title、request(一句話:開起來後編輯器自己的 AI 去做)、file_id(使用者附的文字檔)、id(接著原本的專案)。做完編輯器就在對話裡,不要把整份文件貼到對話。參數: {"starter":"blank","text":"(選填)","request":"(選填)","file_id":"(選填)","id":"(選填)"}',
+            '在對話裡放一個「' + label + '」' + (kind === 'edit-markdown' ? '（適用：Markdown、筆記、文章草稿、README）' : '（適用：純文字、記事本、文字檔、日誌）') + '(區塊式文件編輯器,沒動到的區塊原封不動):使用者用說的改(把第 2 段改成…、在最後加一段、把這段整理成清單、全部取代),或雙擊區塊直接改;可復原、匯出、開啟本機檔案。參數:starter(' + (kind === 'edit-markdown' ? 'blank、notes、readme' : 'blank') + ')、text(開起來時的初始內容)、title、request(一句話:開起來後編輯器自己的 AI 去做)、file_id(使用者附的文字檔)、id(接著原本的專案)。做完編輯器就在對話裡,不要把整份文件貼到對話。參數: {"starter":"blank","text":"(選填)","request":"(選填)","file_id":"(選填)","id":"(選填)"}',
             async function (rawArgs) {
                 const a = await parse(this, rawArgs);
                 try {
@@ -39265,7 +39265,7 @@ const FaEditHost = (function () {
     M._registerEditSheetTools = function (registerOptional) {
         const parse = async (self, raw) => { let a = {}; try { a = await self.repairJsonPayload(String(raw || '{}')); } catch (_) { /* */ } return a || {}; };
         const open = (kind, label) => registerOptional(kind === 'edit-xlsx' ? 'edit_xlsx_open' : 'edit_csv_open',
-            '在對話裡放一個「' + label + '」:使用者用說的改(排序、刪空白列、加欄加列、取代、條件式刪列),或直接在表格上改;可復原、匯出、開啟本機檔案。參數:starter、csv(開起來時的 CSV 文字)、title、request、file_id(使用者附的 csv／xlsx)。',
+            '在對話裡放一個「' + label + '」' + (kind === 'edit-xlsx' ? '（適用：Excel、試算表、財務報表、帳務明細、績效統計、數據表格）' : '（適用：CSV、名單、通訊錄、清單、逗號分隔資料）') + ':使用者用說的改(排序、刪空白列、加欄加列、取代、條件式刪列),或直接在表格上改;可復原、匯出、開啟本機檔案。參數:starter、csv(開起來時的 CSV 文字)、title、request、file_id(使用者附的 csv／xlsx)。',
             async function (rawArgs) {
                 const a = await parse(this, rawArgs);
                 try {
@@ -39335,7 +39335,7 @@ const FaEditHost = (function () {
     { const prev = M._registerEditCommands; M._registerEditCommands = function () { if (prev) prev.call(this); this._registerEditDocxCommands(); }; }
     M._registerEditDocxTools = function (registerOptional) {
         const parse = async (self, raw) => { let a = {}; try { a = await self.repairJsonPayload(String(raw || '{}')); } catch (_) { /* */ } return a || {}; };
-        registerOptional('edit_docx_open', '在對話裡放一個「Word 文件編輯器」(區塊式,沒動到的區塊、圖片、頁首頁尾、樣式原封不動):使用者用說的改(把第 2 段改成…、改成粗體、在最後加一段、把這段整理成清單、全部取代),或雙擊區塊直接改;可復原、匯出 .docx。參數:starter(blank、letter、report)、text(開起來時的純文字,空行分段)、title、request、file_id(使用者附的 .docx)、id(接著原來的專案編輯)。',
+        registerOptional('edit_docx_open', '在對話裡放一個「Word 文件編輯器」（適用：Word 文件、合約、公文、履歷、信件、會議紀錄、文章稿）(區塊式,沒動到的區塊、圖片、頁首頁尾、樣式原封不動):使用者用說的改(把第 2 段改成…、改成粗體、在最後加一段、把這段整理成清單、全部取代),或雙擊區塊直接改;可復原、匯出 .docx。參數:starter(blank、letter、report)、text(開起來時的純文字,空行分段)、title、request、file_id(使用者附的 .docx)、id(接著原來的專案編輯)。',
             async function (rawArgs) {
                 const a = await parse(this, rawArgs);
                 try {
@@ -45172,7 +45172,7 @@ return holder.FaDeckEditUI;
                 const op = window.TwVideoPlans.toOp(name, a); try { return JSON.stringify(await ed._ve.runOps([op])); } catch (e) { return JSON.stringify({ ok: false, error: String((e && e.message) || e) }); }
             }, { type: 'object', properties: props, required: t.required || [], additionalProperties: false });
         });
-        registerOptional('edit_video_open', '在對話裡放一個「影片編輯器」(播放器＋逐字稿＋時間軸:分割、刪除一段、合併、轉場、疊圖片、插入聲音、TTS 配音、燒錄字幕)。參數:file_id(使用者附的影片,選填)、request(一句話要做什麼,開起來後交給編輯器的 Ask AI,選填)。回傳 {ok: true, id: "編輯器 id"}。',
+        registerOptional('edit_video_open', '在對話裡放一個「影片編輯器」（適用：影片、錄影、剪輯、字幕）(播放器＋逐字稿＋時間軸:分割、刪除一段、合併、轉場、疊圖片、插入聲音、TTS 配音、燒錄字幕)。參數:file_id(使用者附的影片,選填)、request(一句話要做什麼,開起來後交給編輯器的 Ask AI,選填)。回傳 {ok: true, id: "編輯器 id"}。',
             async function (rawArgs) { const a = await parse(this, rawArgs); try { return JSON.stringify(await this._videoOpen({ fileId: a.file_id ? String(a.file_id) : null, request: a.request ? String(a.request) : '' })); } catch (e) { return JSON.stringify({ ok: false, error: String((e && e.message) || e) }); } },
             { type: 'object', properties: { file_id: { type: 'string', description: '使用者附的影片(file id)' }, request: { type: 'string', description: '一句話要做什麼' } }, additionalProperties: false });
     };
@@ -46911,11 +46911,14 @@ const holder = {};
     // 靜態掃原始碼的註冊（測試用）：回傳 { tools:[{name, desc}], slashes:[name] }。執行時用 this.tools 的說明，不掃原始碼
     function scanTools(src) {
         const tools = []; const seen = {};
-        const re = /(?:registerOptional|registerTool|bcTool|[^\w.]tool)\(\s*'([a-z][a-z0-9_]*)'\s*,\s*(?:`([^`]{0,160})|'([^']{0,160}))?/g;
+        const re = /(?:registerOptional|registerTool|bcTool|[^\w.]tool)\(\s*'([a-z][a-z0-9_]*)'\s*,\s*(?:`([^`]{0,400})|'([^']{0,400}))?/g;
         let m; while ((m = re.exec(src))) { if (seen[m[1]]) continue; seen[m[1]] = 1; tools.push({ name: m[1], desc: m[2] || m[3] || '' }); }
         // 用三元運算子或輔助函式註冊的（例如 edit_xlsx_open／edit_csv_open）：名稱含 open／viewer／editor／player／preview 的字串常值也算
         const lre = /(?:registerOptional|registerTool)\(([^,]{0,240}),/g;
-        while ((m = lre.exec(src))) { const q = /'([a-z][a-z0-9_]*)'/g; let n; while ((n = q.exec(m[1]))) { if (seen[n[1]]) continue; seen[n[1]] = 1; tools.push({ name: n[1], desc: '' }); } }
+        while ((m = lre.exec(src))) { const q = /'([a-z][a-z0-9_]*)'/g; let n; const names = []; while ((n = q.exec(m[1]))) names.push(n[1]);
+            // 兩個名稱用三元運算子註冊時，說明裡也常用同樣的三元運算子分開寫（例如 edit_xlsx_open／edit_csv_open）：照順序配對
+            const tern = /\?\s*'([^']{0,200})'\s*:\s*'([^']{0,200})'/.exec(src.slice(lre.lastIndex, lre.lastIndex + 900));
+            names.forEach((nm, i) => { if (seen[nm]) return; seen[nm] = 1; tools.push({ name: nm, desc: names.length === 2 && tern ? tern[i + 1] : '' }); }); }
         const slashes = []; const sre = /(?:register_slash_command|[^\w.]cmd)\(\s*'(\/[a-z0-9-]+)'/g; while ((m = sre.exec(src))) if (slashes.indexOf(m[1]) < 0) slashes.push(m[1]);
         return { tools, slashes };
     }
@@ -46951,17 +46954,25 @@ const holder = {};
         const docs = OPEN_TABLE.filter((e) => e.kind !== 'editor').map((e) => { const txt = [e.label, e.nouns.replace(/\\b|[|?]/g, ' '), e.exts.join(' '), e.viewer || '', e.tool ? descOf[e.tool] || '' : '', e.tool || '', e.slash || ''].join(' '); return { e, docText: txt, docSet: new Set(bigramsOf(txt).concat((e.slashes || []).map((s) => s.replace(/[^a-z0-9]+/g, ' ')))) }; });
         const df = {}; docs.forEach((d) => d.docSet.forEach((b) => { df[b] = (df[b] || 0) + 1; }));
         const res = docs.map((d) => { let score = 0; const hit = []; new Set(q).forEach((b) => { if (d.docSet.has(b)) { score += Math.log(1 + docs.length / df[b]) * (b.length >= 3 ? 1.5 : 1); hit.push(b); } }); return { kind: d.e.kind, label: d.e.label, tool: d.e.tool, slash: d.e.slash || null, score: Math.round(score * 100) / 100, hit, d }; });
+        // 中文名詞多半「尾字表示類別」（損益『表』、企劃『書』、推薦『信』、短『片』）：拿句子裡各詞的尾字，去對各種類說明裡詞語的尾字
+        docs.forEach((d) => { d.heads = new Set(String(d.docText).split(/[、，,（）()\/|\s]+/).filter((w) => /^[一-鿿]{2,}$/.test(w)).map((w) => w.slice(-1))); });
+        const hdf = {}; docs.forEach((d) => d.heads.forEach((c) => { hdf[c] = (hdf[c] || 0) + 1; }));
+        const lastRun = (String(text).replace(DERIVE_STOP, ' ').match(/[一-鿿]{2,}/g) || []).slice(-1); // 「動詞＋修飾＋的＋名詞」的中心詞在最後面
+        const qheads = new Set(lastRun.map((r) => r.slice(-1)));
+        res.forEach((r) => qheads.forEach((c) => { if (r.d.heads.has(c)) { r.score = Math.round((r.score + 1.4 * Math.log(1 + docs.length / hdf[c])) * 100) / 100; r.hit.push('尾字' + c); } }));
         // 雙字詞都沒對上時，退一步用單字（權重低、要求比第二名明顯高才採用）：財報→報表、紀錄→錄音…
         if (!res.some((r) => r.score > 0)) {
             const uni = {}; docs.forEach((d) => { const cs = new Set((d.docText || '').match(/[一-鿿]/g) || []); d.chars = cs; cs.forEach((c) => { uni[c] = (uni[c] || 0) + 1; }); });
             const qc = new Set((String(text || '').replace(DERIVE_STOP, ' ').match(/[一-鿿]/g) || []));
-            res.forEach((r) => { qc.forEach((c) => { if (r.d.chars.has(c)) { r.score += 0.9 * Math.log(1 + docs.length / uni[c]); r.hit.push(c); } }); r.score = Math.round(r.score * 100) / 100; });
+            res.forEach((r) => { r.uni = true; qc.forEach((c) => { if (r.d.chars.has(c)) { r.score += 0.9 * Math.log(1 + docs.length / uni[c]); r.hit.push(c); } }); r.score = Math.round(r.score * 100) / 100; });
         }
-        res.forEach((r) => { delete r.d; });
+        // 只靠單字或尾字湊出來的證據（財報→簡報 的「報」）不自動採用：只用來排候選順序，交給小模型字母題或使用者
+        res.forEach((r) => { delete r.d; r.uni = r.hit.length > 0 && r.hit.every((h) => h.indexOf('尾字') === 0 || h.length === 1); if (!r.uni) delete r.uni; });
         return res.filter((r) => r.score > 0).sort((a, b) => b.score - a.score);
     }
     // 程式先決定的門檻：最高分夠高、且明顯高於第二名
-    function pickDerived(cands) { if (!cands.length) return null; const a = cands[0], b = cands[1]; return a.score >= 3 && (!b || a.score >= b.score * 1.4) ? a : null; }
+    function pickDerived(cands) { if (!cands.length) return null; const a = cands[0], b = cands[1]; if (a.uni) return null; // 只靠單字湊出來的分數不自動採用（通訊錄→音訊 這種），留給小模型或使用者
+        return a.score >= 3 && (!b || a.score >= b.score * 1.4) ? a : null; }
     const DANGER_RE = /(?:^|[\s;&|])(?:rm|sudo|mkfs|dd|shutdown|reboot|halt|format|del|rmdir|chmod|chown|kill|killall)(?:\s|$)|>\s*\/dev\/|:\(\)\s*\{|curl[^|]*\|\s*(?:sh|bash)|wget[^|]*\|\s*(?:sh|bash)/i;
     // 終端機要跑的指令：句子裡「跑／執行／運行 xxx」，或常見的自然說法（看目錄→ls、目前位置→pwd）
     function terminalCommand(text) {
@@ -56534,7 +56545,7 @@ const FaDeckTools = (function () {
                 obj({ file_id: { type: 'string' } }),
                 async function (a) { return this._deckVerify(a); });
             tool('open_existing_presentation',
-                'Show a previously saved presentation (a .deck.yaml file made by render_presentation, or one the user uploaded) again as a player. "file_id" = its file id.',
+                '（適用：簡報、提案、投影片、發表）Show a previously saved presentation (a .deck.yaml file made by render_presentation, or one the user uploaded) again as a player. "file_id" = its file id.',
                 obj({ file_id: { type: 'string' } }, ['file_id']),
                 async function (a) {
                     const text = await this._deckReadYaml(a.file_id); await this._ensureJsYamlLoaded();
@@ -62461,7 +62472,7 @@ ${fnData.code}
             { type: 'object', properties: { question: { type: 'string', description: '問題；省略＝摘要' }, format: { type: 'string', description: '學過的格式名稱（省略＝最近一份）' }, text: { type: 'string', description: '一行日誌或一行 key = value（問這一行是什麼）、或整份日誌／設定檔文字' }, file_id: { type: 'string' }, path: { type: 'string' }, other_text: { type: 'string', description: '（設定檔比較）另一份設定檔的文字' }, other_file_id: { type: 'string' }, other_path: { type: 'string' }, kind: { type: 'string', enum: ['log', 'config', 'grammar'] } }, additionalProperties: false }
         );
         registerOptional('webedit_open',
-            '在對話裡放一個「網頁編輯器」（AI 輔助的小網站編輯器）：預覽、程式碼（HTML／CSS／JS 多個檔）、模擬後端（JS 的 Node 風格或 Python Flask／FastAPI；全部在頁面內執行、不佔埠，fetch／WebSocket／EventSource 都由它回應，資料持久，可匯出 Node／Cloudflare 部署檔），右邊用對話修改（頁面直接改；後端會交給程式設計專家並先在沙盒測過）、附圖、復原／重做、摘要成 prompt，進度會保留。參數：starter（起手式：blank、todo、chat、form、python_api）、或 request（一句話描述要做的網站，AI 先做出第一版）、或 spec（整份描述，格式見 webedit_topic）、或 id（重新打開之前的專案）。做完編輯器就在對話裡了，不要再把程式碼貼到對話。PHP 目前不能在瀏覽器裡執行。參數: {"starter":"todo","request":"（選填）","spec":{},"id":"（選填）"}',
+            '在對話裡放一個「網頁編輯器」（適用：網站、網頁編輯、HTML 頁面）（AI 輔助的小網站編輯器）：預覽、程式碼（HTML／CSS／JS 多個檔）、模擬後端（JS 的 Node 風格或 Python Flask／FastAPI；全部在頁面內執行、不佔埠，fetch／WebSocket／EventSource 都由它回應，資料持久，可匯出 Node／Cloudflare 部署檔），右邊用對話修改（頁面直接改；後端會交給程式設計專家並先在沙盒測過）、附圖、復原／重做、摘要成 prompt，進度會保留。參數：starter（起手式：blank、todo、chat、form、python_api）、或 request（一句話描述要做的網站，AI 先做出第一版）、或 spec（整份描述，格式見 webedit_topic）、或 id（重新打開之前的專案）。做完編輯器就在對話裡了，不要再把程式碼貼到對話。PHP 目前不能在瀏覽器裡執行。參數: {"starter":"todo","request":"（選填）","spec":{},"id":"（選填）"}',
             async function (rawArgs) {
                 let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 try { return JSON.stringify(await this._webeditOpen(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
@@ -62493,7 +62504,7 @@ ${fnData.code}
             { type: 'object', properties: { edits: { type: 'array', items: { type: 'object' }, description: '編輯動作，例如 {"op":"set_title","text":"…"}' }, worksheet_id: { type: 'string' } }, required: ['edits'], additionalProperties: false }
         );
         registerOptional('worksheet_open',
-            '在對話裡放一個「學習單編輯器」小工具（可以直接在裡面用對話或屬性面板改、附圖、復原／重做、把編輯過程摘要成 prompt；進度會保留，之後可以接著改）。worksheet_make 做完會自動放一個；用這個工具來：重新打開某一份（worksheet_id）、接著最近一份、或開一份空白的讓使用者自己從對話開始做。參數: {"worksheet_id":"（選填，預設最近一份）","blank":false}',
+            '在對話裡放一個「學習單編輯器」（適用：學習單、教材、練習題、習作、考卷）小工具（可以直接在裡面用對話或屬性面板改、附圖、復原／重做、把編輯過程摘要成 prompt；進度會保留，之後可以接著改）。worksheet_make 做完會自動放一個；用這個工具來：重新打開某一份（worksheet_id）、接著最近一份、或開一份空白的讓使用者自己從對話開始做。參數: {"worksheet_id":"（選填，預設最近一份）","blank":false}',
             async function (rawArgs) {
                 let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 try { let cur = a.blank === true ? null : await this._wsLoadSpec(a.worksheet_id); if (!cur) { if (a.worksheet_id && a.blank !== true) return JSON.stringify({ ok: false, error: '找不到這份學習單：' + a.worksheet_id }); cur = { id: this._wsStoreSpec(FaWorksheet.validate({ title: '學習單', blocks: [] }).spec) }; } this._wsPushEditor(cur.id); return JSON.stringify({ ok: true, worksheet_id: cur.id, note: '編輯器已經放在對話裡了；告訴使用者可以直接在裡面改，不要再重複描述裡面的內容。' }); }
@@ -62511,7 +62522,7 @@ ${fnData.code}
             { type: 'object', properties: { file_id: { type: 'string', description: '使用者上傳的 MIDI 檔' }, song_id: { type: 'string' }, song: { type: 'object', description: '{title,tempo,timesig,tracks:[{name,program,drum,notes:[[拍,拍長,音高,力度]]}]}' }, title: { type: 'string' } }, additionalProperties: false }
         );
         registerOptional('midi_edit_open',
-            '在對話裡開「MIDI 編輯器」卡片(鋼琴捲簾、多音軌、只能選 GS 音色、復原重做、底下可用說的改)。來源同 midi_play:file_id、song_id 或 song;三者都沒有就開一首空白新曲。使用者說「編輯／修改這首 MIDI」時用。',
+            '在對話裡開「MIDI 編輯器」卡片（適用：音樂、曲子、歌曲、旋律、配樂、樂譜、鋼琴）(鋼琴捲簾、多音軌、只能選 GS 音色、復原重做、底下可用說的改)。來源同 midi_play:file_id、song_id 或 song;三者都沒有就開一首空白新曲。使用者說「編輯／修改這首 MIDI」時用。',
             async function (rawArgs) {
                 let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 try {
@@ -64418,7 +64429,7 @@ ${fnData.code}
         // Command/_resolveTerminalCopySource等核心方法（見上方定義）。
         // ============================================================
         registerOptional('terminal_create',
-            '建立一個新的WASM沙盒終端機（busybox ash，跟/run-terminal同一種，會直接顯示在對話裡讓使用者也看得到），回傳{ok, id, name}供之後terminal_run/terminal_get_text/terminal_cp_*等工具指定使用。可以順便給一個初始指令直接執行。參數: {"name":"（選填）自訂名稱，不給會自動編號term-N", "initial_command":"（選填）建立後立刻執行的指令"}',
+            '（適用：終端機、命令列、shell、跑指令、看目錄）建立一個新的WASM沙盒終端機（busybox ash，跟/run-terminal同一種，會直接顯示在對話裡讓使用者也看得到），回傳{ok, id, name}供之後terminal_run/terminal_get_text/terminal_cp_*等工具指定使用。可以順便給一個初始指令直接執行。參數: {"name":"（選填）自訂名稱，不給會自動編號term-N", "initial_command":"（選填）建立後立刻執行的指令"}',
             async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
