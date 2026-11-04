@@ -775,10 +775,12 @@ function startNativeMailbox(ctx) {
         const r = await inst.installRuntime({
           manifest, platformKey: process.platform + "-" + process.arch,
           runtimeDir: nativeRuntimeDir(userData),
-          npmLocation: testNpm || NATIVE_NPM_TARBALL,
-          githubBase: testGh || NATIVE_GITHUB_BASE,
+          // 測試用覆寫（只給驗證腳本用）：FA_NATIVE_INSTALL_NPM_URL、FA_NATIVE_INSTALL_GH_BASE 可換成別的網址（例如故意不可達的網址）
+          npmLocation: testNpm || process.env.FA_NATIVE_INSTALL_NPM_URL || NATIVE_NPM_TARBALL,
+          githubBase: testGh || process.env.FA_NATIVE_INSTALL_GH_BASE || NATIVE_GITHUB_BASE,
           fetchBytes: testing ? inst.localFetchBytes : inst.httpsFetchBytes,
           forceGithub: !!(payload && payload.forceGithub),
+          stats: {},
           nrSourceDir: __dirname,
           timeoutMs: 120000,
           log: (s) => console.log("[main-ext] " + s),
@@ -792,7 +794,7 @@ function startNativeMailbox(ctx) {
         if (host) { try { host.dispose("安裝完成，重新載入"); } catch (_) { /* */ } host = null; }
         const counts = {}; for (const k of Object.keys(r.sourcesUsed)) counts[r.sourcesUsed[k]] = (counts[r.sourcesUsed[k]] || 0) + 1;
         writeProg({ state: "done", stage: "done", source: r.npmUsed ? "npm" : "github", detail: "安裝完成" });
-        return { ok: runtime.ok, runtime: { ok: runtime.ok, version: runtime.version || null, reason: runtime.ok ? "" : runtime.reason }, npmUsed: r.npmUsed, sourceCounts: counts };
+        return { ok: runtime.ok, runtime: { ok: runtime.ok, version: runtime.version || null, reason: runtime.ok ? "" : runtime.reason }, npmUsed: r.npmUsed, sourceCounts: counts, npmBytes: r.npmBytes || 0, githubBytes: r.githubBytes || 0, runtimeDir: r.runtimeDir };
       } catch (e) {
         writeProg({ state: "failed", stage: "failed", source: "", detail: String((e && e.message) || e) });
         return { ok: false, code: "install_failed", message: String((e && e.message) || e) };

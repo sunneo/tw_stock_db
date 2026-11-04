@@ -64,6 +64,7 @@ async function readFromGithub(manifest, file, opts) {
     const parts = [];
     for (const p of file.parts) {
         const b = await opts.fetchBytes(opts.githubBase + '/parts/' + p.name, opts.timeoutMs);
+        if (opts.stats) opts.stats.githubBytes = (opts.stats.githubBytes || 0) + b.length;
         if (md5(b) !== p.md5) throw new Error('段 ' + p.name + ' 的 md5 不符');
         parts.push(b);
     }
@@ -128,7 +129,7 @@ async function installRuntime(opts) {
         fs.rmSync(opts.runtimeDir, { recursive: true, force: true });
         fs.mkdirSync(path.dirname(opts.runtimeDir), { recursive: true });
         fs.renameSync(stage, opts.runtimeDir);
-        return { ok: true, runtimeDir: opts.runtimeDir, sourcesUsed, npmUsed: npm.ok };
+        return { ok: true, runtimeDir: opts.runtimeDir, sourcesUsed, npmUsed: npm.ok, npmBytes: npm.ok ? npm.bytes : 0, githubBytes: (opts.stats && opts.stats.githubBytes) || 0 };
     } catch (e) {
         fs.rmSync(stage, { recursive: true, force: true });
         return { ok: false, why: String((e && e.message) || e), sourcesUsed };
