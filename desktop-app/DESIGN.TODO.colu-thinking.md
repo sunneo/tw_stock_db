@@ -466,3 +466,32 @@ cd "$TEMP/colu-real/desktop-app"
 FA_DISABLE_MAIN_OVERLAY=1 FA_DEBUG_EVAL_FILE="$PWD/scripts/eval/colu_think_real.eval.js" FA_BROWSER_CONTROL_PORT=17961 ./node_modules/electron/dist/electron.exe "$PWD" --no-sandbox --user-data-dir="$TEMP/colu-real-ud"
 ```
 - `scripts/eval/colu_think_real.eval.js` 的 `FAKE` 常數為 `false` 時是真量測；`FAKE = true` 時只跑假生成（約 7 秒），用來驗證流程與結果檔。
+
+## 階段 7 記錄：思考逾時的硬性上限
+
+**查證結果（讀程式碼，不是推測）**：
+
+1. **120 秒很可能是閒置卸載計時器造成（由程式碼推得，量測時的環境檔位未查證）。** `_vlmScheduleIdle` 在每次呼叫成功後排一個閒置卸載計時器（中檔 `idleMs` 為 120000 毫秒，低檔 `graceMs` 為 4 秒）。`_llmGenerate` 開始新呼叫時**沒有取消**這個計時器，所以計時器在呼叫進行到第 120 秒時觸發 `_vlmTerminate` → `die('已卸載')`，把正在算的呼叫以 `err:"已卸載"` 結束。這正好是量測表的「120.0 秒，`err:已卸載`」。
+2. **148.6 秒是另一個機制**：`_llmGenerate` 的 60 秒逾時只送出 `interrupt`（協作式），工作者要等目前這一步結束才看得到中斷；這一步沒有被殺掉，所以呼叫端一直等到它自然結束。
+3. **jsonStep 的思考那一輪拋錯就直接失敗**（沒有走關閉思考重問的退路），所以逾時後使用者會直接拿到失敗，而不是退路答案。
+
+**修正（只改有給 `timeoutMs` 的呼叫）**：
+
+- `FaRecipe.guardedCall(start, {timeoutMs, graceMs: 5000, interrupt, abandon})`（`renderer/src/recipe/recipe_core.js`）：到 `timeoutMs` 先 `interrupt`；再等 5 秒寬限，還沒回來就 `abandon`（終止工作者），呼叫端立即拿到 `err.timeout === true` 的錯誤。之後才到的結果一律丟棄（每次呼叫只結算一次）。沒給 `timeoutMs`（或不是正數）時就是原本的呼叫。
+- `_llmGenerate`（`renderer/src/floating-assistant.js`）：有 `timeoutMs` 時用 `guardedCall` 包住 `_vlmRpc`，並在開始前取消閒置卸載計時器（`_vlmCancelIdle`）。沒有 `timeoutMs` 的呼叫維持原樣（包括閒置卸載計時器的行為）。
+- `jsonStep`：思考那一輪是逾時（`timeout` 欄位）時，走既有的「關閉思考重問一次」退路；其他拋錯維持原樣直接失敗。
+
+**測試**：
+- 假工作者 node 測試 `renderer/src/recipe/colu_think_timeout.test.js`：19 項全過（準時回覆、可中斷的工作者、卡住後放棄並終止一次、時限在 timeoutMs＋寬限內、舊結果晚到被丟棄、連續呼叫不錯位、放棄後新工作者不被卡住、沒給 timeoutMs 不變、0／負數／非數字視同沒給、同步丟錯、abandon 丟錯、一般錯誤不算逾時、jsonStep 逾時退路、一般錯誤不退路、退路也逾時、沒有 thinking 不變）。已加入 `scripts/run-core-tests.js`。
+- 真 Electron 評估 `scripts/eval/colu_think_timeout.eval.js`（假的卡住工作者，`timeoutMs` 設 3 秒，不載入真模型）：**PASS**
+  - A：卡住的呼叫在 8.07 秒拋出逾時錯誤（3 秒＋5 秒寬限），工作者被終止 1 次。
+  - B：`jsonStep` 思考那一輪逾時後，關閉思考重問，8.09 秒拿到合格答案（`ok:true`）。
+  - C：會中斷的工作者，3.12 秒拿到中斷後的結果，不終止工作者。
+- `node scripts/run-core-tests.js`：176／178 通過。兩組失敗都是既有或已知的：`tray_dialog`（系統匣對話框）與 RFB 探測（遠端協定）。CoLU+Thinking 階段 2 到 7 相關的組都通過。
+
+**沒有做、需要知道的事**：
+
+- **沒有改 `renderer/floating-assistant.js` 與 `.min.js`**。那兩個檔案是 `build-assistant.js` 從 `renderer/src/floating-assistant.js` 產生的（發佈流程的一部分）。所以目前倉庫裡的桌面版載入的仍是舊的 `_llmGenerate`，要等建置與發佈才會生效。真評估是在暫存副本（`%TEMP%\colu-s7\desktop-app`）跑完 `build-assistant.js` 之後做的。
+- **沒有改沒給 `timeoutMs` 的呼叫的閒置卸載問題**。依指示，沒有給 `timeoutMs` 的呼叫行為不變；但低檔的 4 秒 `graceMs` 理論上也會在呼叫中途殺掉它（推測，未量測）。若要修，需要另外決定。
+- **`vlm` 的 `run`（圖像）路徑沒有動**，它也會呼叫 `_vlmScheduleIdle`，未檢查它是否有同樣的中途卸載問題。
+- 真模型（qwen3-0.6b）上的效果沒有重新量測。本階段只用假工作者證明流程正確。

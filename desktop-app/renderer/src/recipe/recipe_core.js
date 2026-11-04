@@ -156,6 +156,32 @@
         if (r2.gap) { out.fallback = true; return out; } // 重做後仍有缺口：用原計畫
         out.value = cand; return out;
     }
+    // 有時限的呼叫（CoLU+Thinking 逾時的硬性上限）：start() 回傳真正的呼叫（Promise）。
+    // timeoutMs 到了：先呼叫 interrupt()（請工作者停下；它可能要等目前這一步結束）；再等 graceMs（預設 5 秒）還沒回來，就呼叫 abandon()（例如終止工作者），
+    // 呼叫端立刻拿到錯誤，錯誤的 timeout 欄位為 true。之後才到的結果一律丟棄（每次呼叫只會結算一次）。
+    // timeoutMs 沒給或不是正數：就是 start() 本身（同步丟錯也照原樣），行為不變。
+    function guardedCall(start, opts) {
+        opts = opts || {};
+        const timeoutMs = Number(opts.timeoutMs);
+        if (!(timeoutMs > 0)) { try { return Promise.resolve(start()); } catch (e) { return Promise.reject(e); } }
+        const grace = Number(opts.graceMs) >= 0 ? Number(opts.graceMs) : 5000;
+        return new Promise((resolve, reject) => {
+            let done = false, t1 = null, t2 = null;
+            const settle = (fn, v) => { if (done) return; done = true; clearTimeout(t1); clearTimeout(t2); fn(v); };
+            let p; try { p = start(); } catch (e) { settle(reject, e); return; }
+            Promise.resolve(p).then((v) => settle(resolve, v), (e) => settle(reject, e));
+            t1 = setTimeout(() => {
+                t1 = null;
+                try { if (opts.interrupt) opts.interrupt(); } catch (_) { /* 中斷失敗就照樣等寬限 */ }
+                t2 = setTimeout(() => {
+                    t2 = null;
+                    try { if (opts.abandon) opts.abandon(); } catch (_) { /* 終止失敗也照樣放棄 */ }
+                    const err = new Error('逾時（' + Math.round(timeoutMs / 1000) + ' 秒），已放棄這次回覆'); err.timeout = true;
+                    settle(reject, err);
+                }, grace);
+            }, timeoutMs);
+        });
+    }
     // 一個小而有型別的決策：ctx = { generate({messages,maxTokens})→string, messages, validate(obj)→[錯誤], maxTries=2, maxTokens=160 }
     // 回覆不合格 → 退回：模型只看到「它自己最後一次的回覆＋精確的錯誤」（不累積歷史）；連續兩次回覆完全相同就提前停止（小模型會原樣複誦錯誤答案）。
     // prefill：先替模型寫好回覆的開頭（例如 {"choice":），小模型就不會改用散文回答；generate 回傳的文字要包含這個開頭
@@ -172,7 +198,7 @@
             for (let t = 1; t <= maxTries; t++) {
                 const req = { messages: msgs, maxTokens, prefill: ctx.prefill }; if (th) { req.enableThinking = enableThinking; req.timeoutMs = th.timeoutMs; if (enableThinking) delete req.prefill; } // 開 thinking 那一輪不帶 prefill：prefill 會把 JSON 開頭寫死，模型就沒機會先想（退路那一輪才帶）
                 calls++;
-                let raw; try { raw = await ctx.generate(req); } catch (e) { return { thrown: true, error: String((e && e.message) || e) }; }
+                let raw; try { raw = await ctx.generate(req); } catch (e) { return { thrown: true, timeout: !!(e && e.timeout), error: String((e && e.message) || e) }; }
                 // 先去掉思考區塊，驗證與退回都只看答案；思考文字另存在 reasoning（只給使用者看，不進 messages）
                 const st = stripThink(raw); const text = st.answer; if (st.reasoning) reasoning.push(st.reasoning); const obj = parseJsonLoose(text);
                 const errs = obj && typeof obj === 'object' && !Array.isArray(obj) ? (ctx.validate ? ctx.validate(obj) : []) : ['不是合法的 JSON 物件'];
@@ -191,7 +217,7 @@
             return r.ok ? finish(true, { value: r.value }) : finish(false, { error: failErr() });
         }
         const a = await round(maxTries, th.maxTokens, true);
-        if (a.thrown) return finish(false, { error: a.error });
+        if (a.thrown && !a.timeout) return finish(false, { error: a.error }); // 逾時也走退路（關掉 thinking 重問一次）；其他拋錯維持原樣直接失敗
         if (a.ok) return finish(true, { value: a.value });
         const b = await round(1, base, false); // 退路：同一題，關掉 thinking 再問一次
         if (b.thrown) return finish(false, { error: b.error });
@@ -400,5 +426,5 @@
         return '<details class="colu-think-block" style="margin-top:6px;"><summary style="cursor:pointer; opacity:.85;">思考過程' + (label ? '（' + escapeHtml(label) + '）' : '') + '</summary>' +
             '<pre class="colu-think-text" style="white-space:pre-wrap; word-break:break-word; margin:6px 0 0; max-height:320px; overflow:auto; font:11px/1.5 ui-monospace,Consolas,monospace; color:#475569;">' + escapeHtml(v.text) + '</pre>' + cut + '</details>';
     }
-    return { buildReferencePack, extractiveSummary, chunkText, splitSentences, parseAttachments, stripAttachments, kindOf, cleanQuery, narrowByEvidence, relevantOptional, slotsFromSchema, programFill, parseJsonLoose, stripThink, thinkingPlan, coluThinkBudget, coluThinkReflect, coluThinkRevise, coluThinkingSetting, escapeHtml, reasoningView, reasoningBlockHtml, REASONING_SHOW_MAX, jsonStep,fillMessages, validateFill, modelFill, autoPick, menuMessages, chooseTool, tokensOf, checkExtractive, phraseMessages, newTrace, decide, pushRing, tracesToLines, validateRecipe, runRecipe, interp, MAX_STEPS };
+    return { buildReferencePack, extractiveSummary, chunkText, splitSentences, parseAttachments, stripAttachments, kindOf, cleanQuery, narrowByEvidence, relevantOptional, slotsFromSchema, programFill, parseJsonLoose, stripThink, thinkingPlan, coluThinkBudget, coluThinkReflect, coluThinkRevise, coluThinkingSetting, escapeHtml, reasoningView, reasoningBlockHtml, REASONING_SHOW_MAX, jsonStep, guardedCall, fillMessages, validateFill, modelFill, autoPick, menuMessages, chooseTool, tokensOf, checkExtractive, phraseMessages, newTrace, decide, pushRing, tracesToLines, validateRecipe, runRecipe, interp, MAX_STEPS };
 });
