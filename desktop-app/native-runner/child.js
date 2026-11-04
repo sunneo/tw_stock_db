@@ -79,7 +79,11 @@ function handle(msg) {
     }
     if (msg.type === 'run') {
         // 提示樣板：假引擎不使用文字，但仍要驗證樣板名稱存在、messages 能套用（與真引擎行為一致）
-        try { require('./template.js').applyTemplate(msg.template || 'qwen3-chatml', msg.messages || [], { enable_thinking: false }); }
+        try {
+            require('./template.js').applyTemplate(msg.template || 'qwen3-chatml', msg.messages || [], { enable_thinking: false });
+            // gen 有給就要通過驗證（與真引擎相同的規則）；假引擎不實際取樣
+            if (msg.gen !== undefined) require('./gen_params.js').validateGen(msg.gen);
+        }
         catch (e) { send({ type: 'error', id: msg.id, code: 'internal', message: String((e && e.message) || e) }); return; }
         runFake(msg).catch((e) => send({ type: 'error', id: msg.id, code: 'internal', message: String((e && e.message) || e) }));
         return;

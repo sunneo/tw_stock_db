@@ -1,0 +1,232 @@
+{
+ "note": "確定性模式：native gen = {do_sample:false, repetition_penalty:1.08}（產品 textGenParams，deterministic:true）；WASM 同設定（wasm-threads1.jsonl）。",
+ "text": {
+  "n": 16,
+  "exact_same": 4,
+  "same_ignoring_whitespace": 9,
+  "rows": [
+   {
+    "id": "c0",
+    "same": true,
+    "first_diff_char": null,
+    "native": "{\"answer\": \"C\"}",
+    "wasm": "{\"answer\": \"C\"}"
+   },
+   {
+    "id": "c1",
+    "same": false,
+    "first_diff_char": 1,
+    "native": "{\n  \"answer\": \"C\"\n}",
+    "wasm": "{\"answer\": \"C\"}"
+   },
+   {
+    "id": "c2",
+    "same": false,
+    "first_diff_char": 12,
+    "native": "{\"answer\": \"D\"}",
+    "wasm": "{\"answer\": \"69\"}"
+   },
+   {
+    "id": "c3",
+    "same": false,
+    "first_diff_char": 10,
+    "native": "{\"answer\":\"B\"}",
+    "wasm": "{\"answer\": \"B\"}"
+   },
+   {
+    "id": "c4",
+    "same": true,
+    "first_diff_char": null,
+    "native": "{\"answer\":\"D\"}",
+    "wasm": "{\"answer\":\"D\"}"
+   },
+   {
+    "id": "c5",
+    "same": false,
+    "first_diff_char": 12,
+    "native": "{\"answer\":\"D\"}",
+    "wasm": "{\"answer\":\"D. 3\"}"
+   },
+   {
+    "id": "c6",
+    "same": false,
+    "first_diff_char": 12,
+    "native": "{\"answer\": \"B\"}",
+    "wasm": "{\"answer\": \"D\"}"
+   },
+   {
+    "id": "c7",
+    "same": false,
+    "first_diff_char": 11,
+    "native": "{\"answer\":\"C\"}",
+    "wasm": "{\"answer\":\"B\"}"
+   },
+   {
+    "id": "p0",
+    "same": true,
+    "first_diff_char": null,
+    "native": "{\"choice\": 1}",
+    "wasm": "{\"choice\": 1}"
+   },
+   {
+    "id": "p1",
+    "same": false,
+    "first_diff_char": 1,
+    "native": "{\n  \"choice\": 2\n}",
+    "wasm": "{\"choice\": 1}"
+   },
+   {
+    "id": "p2",
+    "same": false,
+    "first_diff_char": 0,
+    "native": "```json\n{\n  \"choice\": 1\n}\n```",
+    "wasm": "{\n  \"choice\": 1\n}"
+   },
+   {
+    "id": "p3",
+    "same": false,
+    "first_diff_char": 1,
+    "native": "{\"choice\": 1}",
+    "wasm": "{\n  \"choice\": 1\n}"
+   },
+   {
+    "id": "p4",
+    "same": false,
+    "first_diff_char": 1,
+    "native": "{\"choice\": 2}",
+    "wasm": "{\n  \"choice\": 2\n}"
+   },
+   {
+    "id": "p5",
+    "same": false,
+    "first_diff_char": 1,
+    "native": "{\n  \"choice\": 1\n}",
+    "wasm": "{\"choice\": 1}"
+   },
+   {
+    "id": "p6",
+    "same": true,
+    "first_diff_char": null,
+    "native": "{\n  \"choice\": 3\n}",
+    "wasm": "{\n  \"choice\": 3\n}"
+   },
+   {
+    "id": "p7",
+    "same": false,
+    "first_diff_char": 1,
+    "native": "{\"choice\": 1}",
+    "wasm": "{\n  \"choice\": 2\n}"
+   }
+  ]
+ },
+ "first_step_with_penalty": {
+  "n": 16,
+  "top1_same": 9,
+  "top5_overlap_mean": 4.19,
+  "cosine_mean": 0.936539,
+  "cosine_min": 0.822558,
+  "rows": [
+   {
+    "id": "c0",
+    "top1_same": true,
+    "top5_overlap": 4,
+    "cosine": 0.971238
+   },
+   {
+    "id": "c1",
+    "top1_same": false,
+    "top5_overlap": 5,
+    "cosine": 0.956157
+   },
+   {
+    "id": "c2",
+    "top1_same": true,
+    "top5_overlap": 4,
+    "cosine": 0.954215
+   },
+   {
+    "id": "c3",
+    "top1_same": true,
+    "top5_overlap": 3,
+    "cosine": 0.957412
+   },
+   {
+    "id": "c4",
+    "top1_same": true,
+    "top5_overlap": 5,
+    "cosine": 0.822558
+   },
+   {
+    "id": "c5",
+    "top1_same": true,
+    "top5_overlap": 4,
+    "cosine": 0.973119
+   },
+   {
+    "id": "c6",
+    "top1_same": true,
+    "top5_overlap": 4,
+    "cosine": 0.966505
+   },
+   {
+    "id": "c7",
+    "top1_same": true,
+    "top5_overlap": 4,
+    "cosine": 0.929622
+   },
+   {
+    "id": "p0",
+    "top1_same": true,
+    "top5_overlap": 4,
+    "cosine": 0.932338
+   },
+   {
+    "id": "p1",
+    "top1_same": false,
+    "top5_overlap": 4,
+    "cosine": 0.918807
+   },
+   {
+    "id": "p2",
+    "top1_same": false,
+    "top5_overlap": 4,
+    "cosine": 0.950964
+   },
+   {
+    "id": "p3",
+    "top1_same": false,
+    "top5_overlap": 5,
+    "cosine": 0.939559
+   },
+   {
+    "id": "p4",
+    "top1_same": false,
+    "top5_overlap": 4,
+    "cosine": 0.902819
+   },
+   {
+    "id": "p5",
+    "top1_same": false,
+    "top5_overlap": 4,
+    "cosine": 0.935439
+   },
+   {
+    "id": "p6",
+    "top1_same": true,
+    "top5_overlap": 5,
+    "cosine": 0.961161
+   },
+   {
+    "id": "p7",
+    "top1_same": false,
+    "top5_overlap": 4,
+    "cosine": 0.912712
+   }
+  ]
+ },
+ "accuracy_closed8": {
+  "native": "1/8",
+  "wasm": "2/8",
+  "answers": "BCCCCCCB"
+ }
+}

@@ -272,3 +272,18 @@
 | A 準確率（8 封閉）| 原生 2/8、WASM 2/8（指標：標準答案）| 本次提交 |
 | B DirectML | 可載入，執行失敗（E_INVALIDARG）| 本次提交 |
 | C 不重裝設計 | 設計完成，未實作 | 本次提交 |
+
+### 8-A2 更正：生成參數（使用者與管理層查證）
+
+- **先前的錯誤假設**：「WASM 與原生都用貪婪解碼」不成立。
+- **WASM 量測實際走的參數（已查證）**：`_llmGenerate`（`floating-assistant.js` 內 `gen = Object.assign(FaVlm.textGenParams(model, { deterministic: !!(a.strict || a.deterministic) }), …)`），量測時傳入 `deterministic: true`，因此 `gen = { do_sample: false, repetition_penalty: 1.08 }`。工作者的 `cur.model.generate({ ...inputs, ...(m.gen || {}), max_new_tokens })`（`floating-assistant.js` 約第 51004 行）把這些參數原樣交給 transformers.js。`max_new_tokens` 為 16。非確定模式的預設是 `do_sample: true`、`temperature: 0.4`、`top_p: 0.9`、`repetition_penalty: 1.08`。
+- **原生端實作（`native-runner/gen_params.js`）**：與 transformers.js 相同的處理順序與做法——重複懲罰（對「輸入加已生成」的全部 token：正數除以 penalty、負數乘以 penalty）、不重複 n-gram、溫度、top-p（升序累積、移除累積 ≤ 1−top_p 的，至少保留一個）、可重現取樣（mulberry32，接受 seed）。不自訂預設：`gen` 由產品端的 `textGenParams` 結果傳入，原樣套用。不支援的鍵直接報錯。
+- **協定**：`run` 增加 `gen`（物件，必須通過 `validateGen`）與 `seed`；`host.js`、`ipc.js` 原樣轉送。
+- **測試**：`native-runner/gen_params.test.js` 17 項，期望值以手算（例：重複懲罰 `[2,-1,0.5,3]`、penalty 2 → `[1,-2,0.5,3]`；`2/1.08 ≈ 1.852 < 1.9` 因此選 token 1；top-p 0.7 對機率 `[0.5,0.3,0.2]` 移除 0.2）。
+- **確定性模式比對（真量測，同一串 ids、同一套 gen；`scripts/eval/native_det_batch.js`、`scripts/eval/det_compare.js`）**：
+  - 文字完全相同：**4/16**；忽略空白後相同：**9/16**（第一個分歧位置見 `det-compare.json`）
+  - 第一步 logits（兩邊都套用同一個重複懲罰，以 prompt 為已出現的 token）：top-1 相同 **9/16**，top-5 重疊平均 **4.19**，餘弦相似度平均 **0.9365**（最小 0.823）。套用懲罰後，餘弦幾乎沒變，表示差異不是來自懲罰本身。
+  - 8 封閉題答對數（標準答案 `BCCCCCCB`）：原生 **1/8**，WASM **2/8**。
+- **結論**：在完全相同的確定性設定、相同 ids 下，原生與 WASM 仍然**不等價**。第一步 logits 的差異是系統性的（top-5 只重疊約 4 個），不只是近似平手的翻轉。原因未查證（候選：ORT-web 1.22 與 ORT-node 1.31 的量化內核、或 KV 與位置輸入的處理）。在這點查清前，不能宣稱兩者行為等價。
+- **取樣模式無法與 WASM 比對**：transformers.js 的取樣使用它自己的亂數來源（沒有 seed 介面），所以無法得到相同的抽樣序列。取樣模式只能在原生端自己檢查可重現性與分布（已在 `gen_params.test.js` 測試）。
+- **指標說明**：「文字完全相同」在貪婪解碼下會因一次近似平手的分歧而全部改變，因此只能當作參考，不能當作等價性的證據；主要指標是第一步 logits 的 top-1、top-5 與餘弦，以及任務正確率。

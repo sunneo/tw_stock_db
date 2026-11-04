@@ -165,7 +165,10 @@ function createNativeRunnerHost(opts) {
                 }, req.timeoutMs);
             }
             try {
-                writeMsg({ type: 'run', id, messages: req.messages || [], template: req.template || 'qwen3-chatml', max_tokens: req.maxTokens || 512, timeout_ms: req.timeoutMs || 0, stream: !!req.stream, fake: req.fake });
+                const msg = { type: 'run', id, messages: req.messages || [], template: req.template || 'qwen3-chatml', max_tokens: req.maxTokens || 512, timeout_ms: req.timeoutMs || 0, stream: !!req.stream, fake: req.fake };
+                if (req.gen !== undefined) msg.gen = req.gen; // 產品端的 textGenParams 結果，原樣傳給子程序
+                if (req.seed !== undefined) msg.seed = req.seed; // 取樣用的亂數種子（可重現）
+                writeMsg(msg);
             } catch (e) { pending.delete(id); clearTimeout(job.timeoutTimer); reject(e); }
         }));
     }

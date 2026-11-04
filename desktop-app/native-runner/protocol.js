@@ -39,6 +39,8 @@ function validate(msg) {
     if (msg.type === 'error' && ERROR_CODES.indexOf(msg.code) < 0) return { ok: false, error: 'error.code 不合法：' + String(msg.code) };
     // run 的 template 欄位是可選的（提示樣板名稱，預設 'qwen3-chatml'；由 template.js 登記，其他模型各自一個樣板）
     if (msg.type === 'run' && msg.template !== undefined && typeof msg.template !== 'string') return { ok: false, error: 'run.template 必須是字串' };
+    // run 的 gen 欄位：產品端 FaVlm.textGenParams 的結果（照字面套用，原生端不自訂預設）
+    if (msg.type === 'run' && msg.gen !== undefined && (msg.gen === null || typeof msg.gen !== 'object' || Array.isArray(msg.gen))) return { ok: false, error: 'run.gen 必須是物件' };
     return { ok: true, error: '' };
 }
 
