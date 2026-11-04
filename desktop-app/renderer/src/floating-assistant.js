@@ -3462,6 +3462,73 @@ class FaOtDb {
     async deleteMany(store, keys) { const db = await this._open(); return new Promise((resolve, reject) => { const tx = db.transaction(store, 'readwrite'); const s = tx.objectStore(store); keys.forEach((k) => s.delete(k)); tx.oncomplete = () => resolve(keys.length); tx.onerror = () => reject(tx.error); }); }
 }
 
+/* OT-WEB-BEGIN */
+// 離線訓練器的網頁處理：後半句目標詞（找／搜尋／查 XX）、關鍵字篩選、has_more 自動續讀、「打開」要讓使用者看得到
+const FA_OT_MAX_PAGES = 5;
+function _faOtWebGoal(text) {
+    let s = String(text || '').replace(/https?:\/\/\S+/g, ' ').replace(/\s+/g, ' ');
+    const m = /(?:並且?|然後|再|且|，|,|、)?\s*(?:幫我|請)?(?:找出|找到|尋找|搜尋|搜索|查詢|查找|找|查)\s*(?:一下)?(?:有關|關於)?\s*([^，。,.!！?？]{1,30})/.exec(s);
+    if (!m) return null;
+    let kw = m[1].replace(/(?:的)?(?:相關)?(?:最新)?(?:新聞|消息|報導|資料|文章|頭條|內容|標題)\s*$/, '').replace(/^(?:有關|關於|一下)/, '').trim();
+    kw = kw.replace(/[的]$/, '').trim();
+    if (kw.length < 2) return null;
+    const terms = [kw];
+    if (/選舉|大選/.test(kw)) {
+        const us = /美國|美/.test(kw);
+        (us ? ['美國大選', '美國選舉', '美國總統', '總統大選', '大選', '川普', '賀錦麗', '拜登', '共和黨', '民主黨', '期中選舉'] : ['大選', '選舉', '投票', '候選人']).forEach((t) => terms.push(t));
+        if (us) terms.push('選舉');
+    }
+    return { keyword: kw, terms: Array.from(new Set(terms)) };
+}
+function _faOtWebFilter(lines, goal) {
+    const seen = new Set(); const hit = [];
+    for (const l of lines) { if (seen.has(l)) continue; if (goal.terms.some((t) => l.indexOf(t) >= 0)) { seen.add(l); hit.push(l); } }
+    return hit;
+}
+// 使用者說「打開／開啟／前往」→ 要讓使用者看得到：前景＋保留分頁、不關掉；只說「讀」則維持背景讀完就關
+function _faOtWantsVisible(text) {
+    const t = String(text || '');
+    return /(?:打開|開啟|前往|開一下|開個|開到|瀏覽器開|幫我開|open\s)/i.test(t);
+}
+function _faOtAdjustSteps(steps, text) {
+    if (!Array.isArray(steps) || !_faOtWantsVisible(text)) return steps;
+    if (!steps.some((s) => s && s.tool === 'browser_create_tab')) return steps;
+    return steps.filter((s) => !(s && s.tool === 'browser_close' && s.cleanup)).map((s) => (s && s.tool === 'browser_create_tab' ? Object.assign({}, s, { args: Object.assign({}, s.args, { active: true, keep_open: true }) }) : s));
+}
+// has_more 為真就用 offset 續讀（最多 maxPages 頁），合併成一份結果；沒讀完會標 has_more 並寫明讀了多少字
+async function _faOtFollowAll(ctx, tools, tool, args, raw, trail, maxPages) {
+    maxPages = maxPages || FA_OT_MAX_PAGES;
+    let j; try { j = JSON.parse(raw); } catch (_) { return raw; }
+    if (!j || typeof j !== 'object' || j.ok === false || j.error) return raw;
+    const note = (s) => { if (trail) trail.push(s); };
+    if (tool === 'fetch_web_page' && j.file_id && tools.parse_uploaded_file) {
+        let text = '', off = 0, pages = 0, more = false, total = j.sizeChars;
+        for (; pages < maxPages;) {
+            let r; try { r = JSON.parse(await tools.parse_uploaded_file.callback.call(ctx, JSON.stringify({ file_id: j.file_id, offset: off }))); } catch (_) { r = null; }
+            if (!r || r.ok === false || typeof r.content !== 'string') { if (!pages) return raw; break; }
+            text += r.content; pages++; more = !!r.has_more; if (r.total_chars != null) total = r.total_chars;
+            if (!more) break;
+            off = r.next_offset != null ? r.next_offset : off + r.content.length;
+        }
+        note('📄 讀取網頁內容 ' + pages + ' 頁，共 ' + text.length + ' 字' + (more ? '（還沒讀完）' : '（已讀完）'));
+        return JSON.stringify({ ok: true, title: j.title, url: j.url, text, total_chars: total || text.length, pages, read_chars: text.length, has_more: more });
+    }
+    if (j.has_more && typeof j.text === 'string' && tools[tool]) {
+        let text = j.text, pages = 1, more = true, off = j.next_offset != null ? j.next_offset : (j.offset || 0) + (j.returned_chars || j.text.length);
+        const merged = Object.assign({}, j);
+        while (more && pages < maxPages) {
+            let r; try { r = JSON.parse(await tools[tool].callback.call(ctx, JSON.stringify(Object.assign({}, args, { offset: off })))); } catch (_) { r = null; }
+            if (!r || r.ok === false || typeof r.text !== 'string') break;
+            text += r.text; pages++; more = !!r.has_more; Object.assign(merged, { title: r.title || merged.title, url: r.url || merged.url });
+            off = r.next_offset != null ? r.next_offset : off + (r.returned_chars || r.text.length);
+        }
+        note('📄 讀取頁面文字 ' + pages + ' 頁，共 ' + text.length + ' 字' + (more ? '（還沒讀完）' : '（已讀完）'));
+        return JSON.stringify(Object.assign(merged, { text, pages, read_chars: text.length, has_more: more }));
+    }
+    return raw;
+}
+/* OT-WEB-END */
+
 // 槽位擷取：從使用者文字裡抓網址、路徑、引號內容、數字、程式碼區塊…，讓pattern的參數樣板可以用 {url} {path} {quoted} {number} 等
 function _faOtSlots(text) {
     const t = String(text || '');
@@ -67550,6 +67617,7 @@ ${fnData.code}
     // ---- 執行與回答 ----
     // 網頁文字（browser_get_page_text）的整理：去掉時間戳、導覽列、捲動位置等雜訊；列表型頁面（新聞首頁）依頁面順序列出標題
     _otPageDigest(o, query) {
+        const goal = _faOtWebGoal(query);
         const raw = String(o.text);
         const noise = [/^\S{0,16}[•·]\s*\d+\s*(?:秒|分鐘|分|小時|天|週|周|月)前$/, /^[\d\s:：\-\/.,]+$/, /^(?:登入|註冊|首頁|更多|搜尋|選單|廣告|分享|訂閱|回到頂端|關於|隱私|服務條款|Yahoo|新聞熱搜)/, /^\d+\s*(?:秒|分鐘|小時|天)前(?:更新)?$/];
         const lines = raw.split(/\n+/).map((x) => x.trim()).filter(Boolean);
@@ -67558,7 +67626,11 @@ ${fnData.code}
         if (o.title) head.push('**' + o.title + '**' + (o.url ? '（' + o.url + '）' : '')); else if (o.url) head.push(String(o.url));
         const avg = good.reduce((a, l) => a + l.length, 0) / (good.length || 1);
         let body;
-        if (good.length >= 10 && avg < 45) {
+        if (goal) {
+            const hit = _faOtWebFilter(good, goal);
+            const pick = hit.slice(0, 15);
+            body = '🔎 以「' + goal.keyword + '」（及相近詞：' + goal.terms.slice(1, 6).join('、') + '）篩選頁面文字，' + (hit.length ? '篩出 ' + hit.length + ' 則' + (hit.length > pick.length ? '，列出前 ' + pick.length + ' 則' : '') + '：\n' + pick.map((l) => '- ' + l).join('\n') : '頁面上沒有找到跟「' + goal.keyword + '」有關的標題。\n可以改用該網站的站內搜尋，或換個關鍵字再試；我不會拿不相關的標題充數。');
+        } else if (good.length >= 10 && avg < 45) {
             const seen = new Set(); const pick = [];
             for (const l of good) { if (seen.has(l)) continue; seen.add(l); pick.push(l); if (pick.length >= 15) break; }
             body = '這是列表型頁面（約' + good.length + '行有內容的文字），依頁面順序列出前' + pick.length + '則：\n' + pick.map((l) => '- ' + l).join('\n');
@@ -67566,7 +67638,7 @@ ${fnData.code}
             const sents = _faSemSentences(good.join('\n'));
             body = sents.length >= 6 ? _faSummarize(sents, 6, 0.4, query).join('\n') + '\n…（原文' + raw.length + '字，以上是依TextRank挑出的重點句）' : (good.join('\n').slice(0, 1800) || '（頁面沒有可顯示的文字）');
         }
-        if (o.has_more) body += '\n\n（頁面後面還有內容沒讀完；要看更多請用 browser_get_page_text 帶 offset 繼續讀。）';
+        if (o.has_more) body += '\n\n⚠️ 沒有讀完：' + (o.read_chars ? '只讀了前 ' + o.read_chars + ' 字' + (o.pages ? '（' + o.pages + ' 頁）' : '') : '頁面後面還有內容') + '，以上結論只根據已讀到的部分；要看更多請用 browser_get_page_text 帶 offset 繼續讀。';
         body += '\n\n（離線模式只能列出頁面上的文字，無法像AI一樣歸納說明；要完整說明請切回線上模式。）';
         return head.concat([body]).join('\n\n');
     }
@@ -67618,7 +67690,9 @@ ${fnData.code}
             };
             let failed = null;
             const shots = [];
-            for (const st of c.steps || []) {
+            const trail = [];
+            const stepList = _faOtAdjustSteps(c.steps || [], plan.text);
+            for (const st of stepList) {
                 if (failed && !st.cleanup) { results.push({ tool: st.tool, skipped: true }); continue; }
                 const t = this.tools[st.tool];
                 if (!t) { if (!st.cleanup) failed = failed || `工具「${st.tool}」不存在（可能是這個版本沒有，或網頁版不支援）`; results.push({ tool: st.tool, error: '工具不存在' }); continue; }
@@ -67626,13 +67700,16 @@ ${fnData.code}
                 if (Object.values(args).some((x) => x === '')) { failed = failed || (st.tool === 'browser_screenshot' && (c.steps[0] || {}).tool === 'browser_list_tabs' ? '目前沒有AI開啟的分頁可以截圖。請在指令裡附上網址，例如：截圖 https://example.com 上方 800x400' : `${st.tool}缺少前一步的結果（例如分頁id），前面的步驟可能沒成功`); results.push({ tool: st.tool, skipped: true }); continue; }
                 let raw, json = null, ok = true;
                 try { raw = await t.callback.call(this, JSON.stringify(args)); } catch (e) { raw = JSON.stringify({ error: String((e && e.message) || e) }); }
+                if (st.tool === 'browser_create_tab' && args.url) trail.push('🌐 開啟 ' + args.url + (args.active ? '（切到前景，保留分頁）' : '（背景開啟）'));
+                if (/^(?:browser_get_page_text|fetch_web_page)$/.test(st.tool)) raw = await _faOtFollowAll(this, this.tools, st.tool, args, raw, trail);
                 try { json = JSON.parse(raw); if (json && (json.ok === false || json.error)) ok = false; } catch (_) {}
                 if (json && json.type === 'image' && json.dataUrl) { this._otShowImage(json); shots.push(json.meta || {}); results.push({ tool: st.tool, ok: true, shown: true }); continue; }
                 results.push({ tool: st.tool, raw, json, ok });
                 if (!ok && !st.cleanup) failed = failed || (json && json.error ? String(json.error).slice(0, 300) : st.tool + '失敗');
             }
             const shotText = shots.map((m) => '📸 已截圖' + (m.width ? '（' + m.width + '×' + m.height + '）' : '') + (m.title ? '：' + m.title : '') + (m.url ? ' ' + m.url : '') + (m.region_applied ? '，範圍 ' + m.region_applied.width + '×' + m.region_applied.height + '（x=' + m.region_applied.x + ',y=' + m.region_applied.y + (m.region_applied.by === 'local' ? '，本機裁切' : '') + '）' : '') + (m.warning ? '\n⚠️ ' + m.warning : '')).join('\n');
-            const body = [shotText].concat(results.filter((r) => r.raw && r.ok && !/^browser_(create_tab|close|list_tabs)$/.test(r.tool)).map((r) => this._otPretty(r.raw, plan.text))).filter(Boolean).join('\n\n') + (shots.length ? '\n\n（離線模式不看圖片內容，只負責截圖；要說明畫面內容請切回線上模式。）' : '');
+            const trailText = trail.length ? '📋 做了這些步驟：\n' + trail.map((x) => '- ' + x).join('\n') : '';
+            const body = [trailText, shotText].concat(results.filter((r) => r.raw && r.ok && !/^browser_(create_tab|close|list_tabs)$/.test(r.tool)).map((r) => this._otPretty(r.raw, plan.text))).filter(Boolean).join('\n\n') + (shots.length ? '\n\n（離線模式不看圖片內容，只負責截圖；要說明畫面內容請切回線上模式。）' : '');
             if (failed) return { ok: false, kind: 'steps', error: failed, text: body, results };
             return { ok: true, kind: 'steps', text: body || '（步驟都執行了，但沒有可顯示的內容）', results };
         }
@@ -67652,9 +67729,11 @@ ${fnData.code}
             }
             let raw;
             try { raw = await t.callback.call(this, JSON.stringify(c.args)); } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+            const trail1 = [];
+            if (/^(?:browser_get_page_text|fetch_web_page)$/.test(c.tool)) raw = await _faOtFollowAll(this, this.tools, c.tool, c.args || {}, raw, trail1);
             let ok = true;
             try { const j = JSON.parse(raw); if (j && (j.ok === false || j.error)) ok = false; } catch (_) {}
-            return { ok, kind: 'tool', raw, text: this._otPretty(raw, plan.text) };
+            return { ok, kind: 'tool', raw, text: (trail1.length ? '📋 做了這些步驟：\n' + trail1.map((x) => '- ' + x).join('\n') + '\n\n' : '') + this._otPretty(raw, plan.text) };
         }
         return { ok: false, error: '不認得的動作類型' };
     }
@@ -101487,7 +101566,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             if (FA_OT_RISKY_TOOL.test(cand.tool)) { const ans = await this.requestUserForm({ title: '🍳 離線食譜要執行有副作用的工具', description: '工具：' + cand.tool + '\n參數：' + JSON.stringify(args).slice(0, 400) + '\n\n這是離線小模型加規則決定的，不一定正確。要執行嗎？', choices: ['執行', '取消'] }); if (!ans || !ans.confirmed || ans.answer !== '執行') { this._recipeSaveTrace(trace); return { handled: true, ok: false, header: header0, text: '已取消。' }; } }
             let raw, ok = true; try { raw = await tool.callback.call(this, JSON.stringify(args)); } catch (e) { raw = JSON.stringify({ ok: false, error: String((e && e.message) || e) }); ok = false; }
             try { const j = JSON.parse(raw); if (j && (j.ok === false || j.error)) ok = false; } catch (_) {}
-            const pretty = this._otPretty(raw, question); FaRecipe.decide(trace, { stage: 'run', tool: cand.tool, answer: ok ? 'ok' : 'failed', by: 'program' }); steps.push('執行：' + cand.tool + (ok ? '' : '（失敗）'));
+            const rtrail = []; if (ok && /^(?:browser_get_page_text|fetch_web_page)$/.test(cand.tool)) raw = await _faOtFollowAll(this, this.tools, cand.tool, args, raw, rtrail);
+            if (args && args.url) rtrail.unshift('🌐 抓取 ' + args.url);
+            const pretty = (rtrail.length ? '📋 做了這些步驟：\n' + rtrail.map((x) => '- ' + x).join('\n') + '\n\n' : '') + this._otPretty(raw, question); FaRecipe.decide(trace, { stage: 'run', tool: cand.tool, answer: ok ? 'ok' : 'failed', by: 'program' }); steps.push('執行：' + cand.tool + (ok ? '' : '（失敗）'));
             // ④ 措辭（只對資訊類結果；通過檢查才用）
             let text = pretty; let phraseBy = '程式';
             if (ok && S.recipePhrase && /search|fetch|lookup|query|read|parse|get_|summar|ask|explain/.test(cand.tool) && pretty.length > 80) {
