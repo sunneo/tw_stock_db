@@ -79667,7 +79667,12 @@ ${sourceTool.handlerScript}
         try {
             for (const [id, text] of pending) {
                 if (!this._chatEntry(id)) continue; // 寫檔前被刪掉了
+                // S8 步驟 A：寫入進行中若被刪除，寫入落盤後要把檔案再刪掉（否則已刪的對話會復活）。
                 await this._chatBackend().write(id, text);
+                if (!this._chatEntry(id)) {
+                    console.warn('S8:resurrect 寫入期間對話已被刪除，已清掉剛寫入的檔案', id);
+                    try { await this._chatBackend().del(id); } catch (err) { console.warn('對話檔案刪除失敗:', err); }
+                }
             }
             await this._saveChatIndex();
         } catch (err) {
