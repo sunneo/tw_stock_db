@@ -675,7 +675,7 @@ function installTray(ctx, ipcMain) {
 // 執行包（見 DESIGN.TODO.native-runner.md 交接第 (2) 節）：子程序程式（nr-*.js）與 onnxruntime-node 1.22.0 原生檔放在
 // userData/native-runtime/<版本>/，manifest.json 記錄每個檔案的大小與 md5。載入前全部核對；任何一個對不上就當作沒有執行包（不用半個）。
 const NATIVE_RUNTIME_VERSION = "1.22.0-1";
-// 執行包來源（見 nr-runtime-install.js）：來源 1 是 npm 官方庫的 tgz；來源 2 是 GitHub 分支 native-runtime-1.22.0，釘住 commit SHA 的 raw 網址。
+// 執行包來源（見 main-ext.js 的 NRI）：來源 1 是 npm 官方庫的 tgz；來源 2 是 GitHub 分支 native-runtime-1.22.0，釘住 commit SHA 的 raw 網址。
 const NATIVE_NPM_TARBALL = "https://registry.npmjs.org/onnxruntime-node/-/onnxruntime-node-1.22.0.tgz";
 const NATIVE_GITHUB_BASE = "https://raw.githubusercontent.com/sunneo/tw_stock_db/9702b97723a24f61792d0814832a885e3aa756db";
 function checkNativeRuntimeDir(dir) {
@@ -710,6 +710,758 @@ function installNativeRuntimeFromLocal(userData, srcDir) {
 // 渲染程序把請求寫成 <userData>/native-runner-box/req-<id>.json（用既有的 desktopAPI.rawfs），這裡每 200 毫秒輪詢，
 // 寫回 resp-<id>.json（先寫 .tmp 再改名）。真引擎尚未接上：status 回報沒有子程序，run 回傳 no_engine（不假裝成功）。
 // 協定與子程序執行器的程式在 nr-*.js（隨安裝包提供）；接上真引擎後，這裡改為載入執行包（userData/native-runtime）內的程式。
+// 執行包按需安裝（併入本檔，因為 main-ext.js 不能 require 不在熱更新清單內的檔案；見 DESIGN.TODO.native-runner.md 第 4 項與「安裝路徑」教訓）。
+// 執行包的分割清單（與 GitHub 分支 native-runtime-1.22.0 的 manifest.json 逐位元組相同；內嵌在本檔，因為外部資料檔熱更新送不到舊安裝）。
+const NATIVE_RUNTIME_MANIFEST = {
+  "runtimeVersion": "1.22.0-1",
+  "ortVersion": "1.22.0",
+  "license": "MIT",
+  "partMaxBytes": 5242880,
+  "sources": {
+    "npm": {
+      "package": "onnxruntime-node@1.22.0",
+      "tarball": "https://registry.npmjs.org/onnxruntime-node/-/onnxruntime-node-1.22.0.tgz",
+      "integrity": "sha512-QaAqr7PFekrmEsmu1rpw7OxJYyG+iACjNHoNtQIVt9Oh7st8WDPIIUe6KhF9l35HVJTJd9CV1rePoPmKhSV26g==",
+      "tgzBytes": 93267589,
+      "note": "npm 官方庫（來源 1）只提供 onnxruntime 相關檔（不含 nr-*.js）"
+    },
+    "commonPackage": "onnxruntime-common@1.22.0（來源：本機既有安裝，見 DESIGN.TODO.native-runner.md 第 4 項）",
+    "github": {
+      "branch": "native-runtime-1.22.0",
+      "commit": "",
+      "note": "來源 2：釘住 commit SHA 的 raw 網址；所有檔案都在這裡"
+    }
+  },
+  "platforms": {
+    "win32-x64": 21707587,
+    "linux-x64": 31433755
+  },
+  "files": [
+    {
+      "path": "node_modules/onnxruntime-node/package.json",
+      "platform": "all",
+      "size": 1563,
+      "sha256": "93822b4dc79a4da16969c13feb57e4ff907bd151cde1c20f9f08abc705f3aa8c",
+      "parts": [
+        {
+          "name": "node_modules__onnxruntime-node__package.json.001.part",
+          "size": 1563,
+          "md5": "deb73ac61fce96b53949ba4ace09bfd0"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/onnxruntime-node/dist/backend.js",
+      "platform": "all",
+      "size": 6242,
+      "sha256": "2fb40405c5dad7aa88dcf1071ea4b8a0e49a3ad59def0a3f23b5dda8ff273d3e",
+      "parts": [
+        {
+          "name": "node_modules__onnxruntime-node__dist__backend.js.001.part",
+          "size": 6242,
+          "md5": "0fcec928859ae8f5eba82457da377988"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/onnxruntime-node/dist/binding.js",
+      "platform": "all",
+      "size": 1507,
+      "sha256": "65be03f9a10c7ad773c22185a94f0b80835cd40ddcdc2acd63c1fbe96f94cbb8",
+      "parts": [
+        {
+          "name": "node_modules__onnxruntime-node__dist__binding.js.001.part",
+          "size": 1507,
+          "md5": "e75e045ad4c3c947675dfb2f7519785c"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/onnxruntime-node/dist/index.js",
+      "platform": "all",
+      "size": 1602,
+      "sha256": "019eb02133b94b1f7fdf2d89eb93b590ce1288d271f7b280647fb3978e6391fa",
+      "parts": [
+        {
+          "name": "node_modules__onnxruntime-node__dist__index.js.001.part",
+          "size": 1602,
+          "md5": "5c8472d3fa84691984af86b872f0e037"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/onnxruntime-node/dist/version.js",
+      "platform": "all",
+      "size": 361,
+      "sha256": "b2a2394cf6f8abf4682cb3ee6488e4b0c72b07bcacd286636881d22880fd5bed",
+      "parts": [
+        {
+          "name": "node_modules__onnxruntime-node__dist__version.js.001.part",
+          "size": 361,
+          "md5": "8407ced7d136f2c3371042931f205337"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/onnxruntime-node/bin/napi-v6/win32/x64/onnxruntime.dll",
+      "platform": "win32-x64",
+      "size": 21296680,
+      "sha256": "ba2a8a791133d97d6a80da393815565709dd6936f457bc00d8ce4c707873e3a6",
+      "parts": [
+        {
+          "name": "node_modules__onnxruntime-node__bin__napi-v6__win32__x64__onnxruntime.dll.001.part",
+          "size": 5242880,
+          "md5": "eafaee9bcec6835d4f98b6ad34913c87"
+        },
+        {
+          "name": "node_modules__onnxruntime-node__bin__napi-v6__win32__x64__onnxruntime.dll.002.part",
+          "size": 5242880,
+          "md5": "676cd94729a60d88485fd845a8491832"
+        },
+        {
+          "name": "node_modules__onnxruntime-node__bin__napi-v6__win32__x64__onnxruntime.dll.003.part",
+          "size": 5242880,
+          "md5": "214c7110cd3848013a422308e5611d4f"
+        },
+        {
+          "name": "node_modules__onnxruntime-node__bin__napi-v6__win32__x64__onnxruntime.dll.004.part",
+          "size": 5242880,
+          "md5": "f09c1f6d9603111b9c03bf4952dceffb"
+        },
+        {
+          "name": "node_modules__onnxruntime-node__bin__napi-v6__win32__x64__onnxruntime.dll.005.part",
+          "size": 325160,
+          "md5": "81d30a4abdfc445619230ac984ccdbd5"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/onnxruntime-node/bin/napi-v6/win32/x64/onnxruntime_binding.node",
+      "platform": "win32-x64",
+      "size": 294448,
+      "sha256": "93ef9b1ad9d7297ea0a61e8c06d2d58c13df4a4e8b82acef63e454bd0feac0cb",
+      "parts": [
+        {
+          "name": "node_modules__onnxruntime-node__bin__napi-v6__win32__x64__onnxruntime_binding.node.001.part",
+          "size": 294448,
+          "md5": "972494a41ee074e8e58369df660773a6"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/onnxruntime-node/bin/napi-v6/linux/x64/libonnxruntime.so.1",
+      "platform": "linux-x64",
+      "size": 30948272,
+      "sha256": "08cf3bf4218f0e816c2a534e960d85221274cb319569bdf1136b29da7065b015",
+      "parts": [
+        {
+          "name": "node_modules__onnxruntime-node__bin__napi-v6__linux__x64__libonnxruntime.so.1.001.part",
+          "size": 5242880,
+          "md5": "ff291677be8d4c6fd4e26e477a85d0c7"
+        },
+        {
+          "name": "node_modules__onnxruntime-node__bin__napi-v6__linux__x64__libonnxruntime.so.1.002.part",
+          "size": 5242880,
+          "md5": "4767f1d949c51bd799dadb8e68c38c0d"
+        },
+        {
+          "name": "node_modules__onnxruntime-node__bin__napi-v6__linux__x64__libonnxruntime.so.1.003.part",
+          "size": 5242880,
+          "md5": "e719ec1667e3bf7cd1f19abbe071c111"
+        },
+        {
+          "name": "node_modules__onnxruntime-node__bin__napi-v6__linux__x64__libonnxruntime.so.1.004.part",
+          "size": 5242880,
+          "md5": "423b9b0b0ce78885ffe9b7143b2640f8"
+        },
+        {
+          "name": "node_modules__onnxruntime-node__bin__napi-v6__linux__x64__libonnxruntime.so.1.005.part",
+          "size": 5242880,
+          "md5": "df470d4d21708c2d4ce3cf59cb8748e7"
+        },
+        {
+          "name": "node_modules__onnxruntime-node__bin__napi-v6__linux__x64__libonnxruntime.so.1.006.part",
+          "size": 4733872,
+          "md5": "4345bd92535f32bf6d09be83d28d0664"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/onnxruntime-node/bin/napi-v6/linux/x64/onnxruntime_binding.node",
+      "platform": "linux-x64",
+      "size": 369024,
+      "sha256": "229510ccb4eefde35f99c5004a5e5cf402e7735683ddfdaa85ca9b5cda696bb5",
+      "parts": [
+        {
+          "name": "node_modules__onnxruntime-node__bin__napi-v6__linux__x64__onnxruntime_binding.node.001.part",
+          "size": 369024,
+          "md5": "88b3f0822104128e94d831817b84575f"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/onnxruntime-common/package.json",
+      "platform": "all",
+      "size": 924,
+      "sha256": "172704f8f9132f41e35b35331fd607ca9a2ce0db159f5bb958e5fd0c4948b720",
+      "parts": [
+        {
+          "name": "node_modules__onnxruntime-common__package.json.001.part",
+          "size": 924,
+          "md5": "f61da94ece8007e8928b7efbce3350e9"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/onnxruntime-common/dist/cjs/backend-impl.js",
+      "platform": "all",
+      "size": 5608,
+      "sha256": "3d25321895995f7e9480570b9a88f121049adf152e1829d0ecb11218da02d487",
+      "parts": [
+        {
+          "name": "node_modules__onnxruntime-common__dist__cjs__backend-impl.js.001.part",
+          "size": 5608,
+          "md5": "be75c4c780f203a3b2144c936318f066"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/onnxruntime-common/dist/cjs/backend.js",
+      "platform": "all",
+      "size": 433,
+      "sha256": "325aaee7a2649ea27629666f3ca01c0d80b9751e704ce502e43a8352390749b4",
+      "parts": [
+        {
+          "name": "node_modules__onnxruntime-common__dist__cjs__backend.js.001.part",
+          "size": 433,
+          "md5": "580167fb8499ce6b1016a7c527c0ff74"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/onnxruntime-common/dist/cjs/env-impl.js",
+      "platform": "all",
+      "size": 969,
+      "sha256": "35cd8cac33973538eab471b68622c86c35a6896f4307d1a74c9ca0eda7abbac6",
+      "parts": [
+        {
+          "name": "node_modules__onnxruntime-common__dist__cjs__env-impl.js.001.part",
+          "size": 969,
+          "md5": "88dc4a7f069afbd3e4f1421b96c671bb"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/onnxruntime-common/dist/cjs/env.js",
+      "platform": "all",
+      "size": 366,
+      "sha256": "22c7647f8ca1c1b83b437a92b95fee1457fcb72866fa029616b8f146dc609be8",
+      "parts": [
+        {
+          "name": "node_modules__onnxruntime-common__dist__cjs__env.js.001.part",
+          "size": 366,
+          "md5": "1359e1f3094a40b5d36fb79289fafc8d"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/onnxruntime-common/dist/cjs/index.js",
+      "platform": "all",
+      "size": 1955,
+      "sha256": "d7dd6cc9790e87299099fcd1b0ccb4969c01591d7eec0383a1c64dbea133dd1a",
+      "parts": [
+        {
+          "name": "node_modules__onnxruntime-common__dist__cjs__index.js.001.part",
+          "size": 1955,
+          "md5": "e2eed22c99037b33cae03c0cf9a160fd"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/onnxruntime-common/dist/cjs/inference-session-impl.js",
+      "platform": "all",
+      "size": 8726,
+      "sha256": "f7dd84f0cbd7f1f5de1b091acd6831f9d56281a08375a519daffe78218894c11",
+      "parts": [
+        {
+          "name": "node_modules__onnxruntime-common__dist__cjs__inference-session-impl.js.001.part",
+          "size": 8726,
+          "md5": "3548dd7fd57e6219bd4c97f9237b0a61"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/onnxruntime-common/dist/cjs/inference-session.js",
+      "platform": "all",
+      "size": 467,
+      "sha256": "458be26f316c5068d32a56ddbc30ca0aa687c636e079b3d161a69f0f14a683f1",
+      "parts": [
+        {
+          "name": "node_modules__onnxruntime-common__dist__cjs__inference-session.js.001.part",
+          "size": 467,
+          "md5": "19954cb9802e55c93ea024fb031a1c4a"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/onnxruntime-common/dist/cjs/onnx-model.js",
+      "platform": "all",
+      "size": 211,
+      "sha256": "667f5fdac4b6df25e17f8a864d4dc619507f541f9fa0aafb6d3572fcca1e25e5",
+      "parts": [
+        {
+          "name": "node_modules__onnxruntime-common__dist__cjs__onnx-model.js.001.part",
+          "size": 211,
+          "md5": "0fa6c079f9e7182cc9773e36bafe648f"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/onnxruntime-common/dist/cjs/onnx-value.js",
+      "platform": "all",
+      "size": 211,
+      "sha256": "8446854766f4955ce438a7338216f49223767ecc508bb502b73a3dc1a1f1998e",
+      "parts": [
+        {
+          "name": "node_modules__onnxruntime-common__dist__cjs__onnx-value.js.001.part",
+          "size": 211,
+          "md5": "9d53b845c82e1021aca4f1089d27bab7"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/onnxruntime-common/dist/cjs/package.json",
+      "platform": "all",
+      "size": 20,
+      "sha256": "091a04fa67c7907b98e106fcff8b964e13129754fce72d24f3025b97c4887fa3",
+      "parts": [
+        {
+          "name": "node_modules__onnxruntime-common__dist__cjs__package.json.001.part",
+          "size": 20,
+          "md5": "a6b7eb31b5dcf3835a90ea0d201f21e3"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/onnxruntime-common/dist/cjs/tensor-conversion-impl.js",
+      "platform": "all",
+      "size": 8153,
+      "sha256": "c99276518d66de5826798a3c488166ed827fcd0db2372ca3ace06338cef27e5a",
+      "parts": [
+        {
+          "name": "node_modules__onnxruntime-common__dist__cjs__tensor-conversion-impl.js.001.part",
+          "size": 8153,
+          "md5": "0a32dbdce6b3160afc806ce628aac6dc"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/onnxruntime-common/dist/cjs/tensor-conversion.js",
+      "platform": "all",
+      "size": 218,
+      "sha256": "28cc462d4a9ea556ecc86c0e6d16a51d61b58d5bc5b4b7b48976b14bc8035bdc",
+      "parts": [
+        {
+          "name": "node_modules__onnxruntime-common__dist__cjs__tensor-conversion.js.001.part",
+          "size": 218,
+          "md5": "35c568b3e11f00fed3430979e7380ba3"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/onnxruntime-common/dist/cjs/tensor-factory-impl.js",
+      "platform": "all",
+      "size": 11656,
+      "sha256": "a3204838a2c14416e4e61c968dc17c663ab3c9b8b2c4a8b7f2a1c5b06e3e5173",
+      "parts": [
+        {
+          "name": "node_modules__onnxruntime-common__dist__cjs__tensor-factory-impl.js.001.part",
+          "size": 11656,
+          "md5": "f8a2752f2daa802ab19fd07068588981"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/onnxruntime-common/dist/cjs/tensor-factory.js",
+      "platform": "all",
+      "size": 215,
+      "sha256": "13b8d735350b828a49bda8aeec50b1dac888cf42268006efc4312f50a88b6906",
+      "parts": [
+        {
+          "name": "node_modules__onnxruntime-common__dist__cjs__tensor-factory.js.001.part",
+          "size": 215,
+          "md5": "a426f8441535f34d1c53ab02a1f27cfc"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/onnxruntime-common/dist/cjs/tensor-impl-type-mapping.js",
+      "platform": "all",
+      "size": 2995,
+      "sha256": "333110edbbffdb7575ea340cb341bcaf691862d6594a649db28097f7d8cb19b7",
+      "parts": [
+        {
+          "name": "node_modules__onnxruntime-common__dist__cjs__tensor-impl-type-mapping.js.001.part",
+          "size": 2995,
+          "md5": "ad395af7a584d9eaef868f3f1fc6d519"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/onnxruntime-common/dist/cjs/tensor-impl.js",
+      "platform": "all",
+      "size": 16458,
+      "sha256": "11645352ba5d08971344717d3339f86aac560f84f29229b2ebe07f1ec8aa8905",
+      "parts": [
+        {
+          "name": "node_modules__onnxruntime-common__dist__cjs__tensor-impl.js.001.part",
+          "size": 16458,
+          "md5": "3f957b33ed99024d7c566d697c48fca0"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/onnxruntime-common/dist/cjs/tensor-utils-impl.js",
+      "platform": "all",
+      "size": 2213,
+      "sha256": "e7b1db989d33d54bdd1807b080a0989ff0b10d5f7dd8c93b92bbf293103aa4d5",
+      "parts": [
+        {
+          "name": "node_modules__onnxruntime-common__dist__cjs__tensor-utils-impl.js.001.part",
+          "size": 2213,
+          "md5": "2bb223e57b0506d3eb093c3c38c7f769"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/onnxruntime-common/dist/cjs/tensor-utils.js",
+      "platform": "all",
+      "size": 213,
+      "sha256": "d3f577e90dc2257c72ac728e5e6355c34af0342d971158d9f22b69d22aa97b8d",
+      "parts": [
+        {
+          "name": "node_modules__onnxruntime-common__dist__cjs__tensor-utils.js.001.part",
+          "size": 213,
+          "md5": "c96e0742cba6061381360cc4364ef1ba"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/onnxruntime-common/dist/cjs/tensor.js",
+      "platform": "all",
+      "size": 393,
+      "sha256": "9097114de356750f36f28776fa6ccd08d13694f0f9aac9e7669c30b6c43153f7",
+      "parts": [
+        {
+          "name": "node_modules__onnxruntime-common__dist__cjs__tensor.js.001.part",
+          "size": 393,
+          "md5": "d18b07a43fd1b8bab9a1876d7eee7b78"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/onnxruntime-common/dist/cjs/trace.js",
+      "platform": "all",
+      "size": 1783,
+      "sha256": "f7b21eb2aa4c44bf85274c58b803ae49689a929911e103297fb26220e39e11e6",
+      "parts": [
+        {
+          "name": "node_modules__onnxruntime-common__dist__cjs__trace.js.001.part",
+          "size": 1783,
+          "md5": "71de144c3f762b5e65b1ebb37f33e9b1"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/onnxruntime-common/dist/cjs/type-helper.js",
+      "platform": "all",
+      "size": 212,
+      "sha256": "7f786da8d2a611ad751c70a74edf4d9acfccd26be8e5c6b1cb730f982892bf32",
+      "parts": [
+        {
+          "name": "node_modules__onnxruntime-common__dist__cjs__type-helper.js.001.part",
+          "size": 212,
+          "md5": "b42bb8dd40c691aade1467401d945fbc"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/onnxruntime-common/dist/cjs/version.js",
+      "platform": "all",
+      "size": 361,
+      "sha256": "b2a2394cf6f8abf4682cb3ee6488e4b0c72b07bcacd286636881d22880fd5bed",
+      "parts": [
+        {
+          "name": "node_modules__onnxruntime-common__dist__cjs__version.js.001.part",
+          "size": 361,
+          "md5": "8407ced7d136f2c3371042931f205337"
+        }
+      ]
+    },
+    {
+      "path": "nr-child.js",
+      "platform": "all",
+      "size": 7629,
+      "sha256": "437cb6df334906bdf4633d4ae6ccd25d78383d61aade27e028bec406c39f787e",
+      "parts": [
+        {
+          "name": "nr-child.js.001.part",
+          "size": 7629,
+          "md5": "db7e4f5b7b1e10987ff1828db7c97445"
+        }
+      ]
+    },
+    {
+      "path": "nr-engine.js",
+      "platform": "all",
+      "size": 4514,
+      "sha256": "3a6f8943a383b840f2c5c9e54ba60ec60a62e34c6dda5bc28bd88adb84340a79",
+      "parts": [
+        {
+          "name": "nr-engine.js.001.part",
+          "size": 4514,
+          "md5": "663d698c89f5ecde20de5e0d82d28015"
+        }
+      ]
+    },
+    {
+      "path": "nr-host.js",
+      "platform": "all",
+      "size": 11212,
+      "sha256": "576357f00e29c9fd4189b85ba0e3ddee23b91d68f23141700848c4d53ed7b34d",
+      "parts": [
+        {
+          "name": "nr-host.js.001.part",
+          "size": 11212,
+          "md5": "24e6748c3dde747b2c62f79d795d511a"
+        }
+      ]
+    },
+    {
+      "path": "nr-protocol.js",
+      "platform": "all",
+      "size": 4424,
+      "sha256": "7ffeb1793ee4446893fbb9ce223ed48a6f255c39d3834e011cba26a34097f0e4",
+      "parts": [
+        {
+          "name": "nr-protocol.js.001.part",
+          "size": 4424,
+          "md5": "e7ecfc335b67492fa5fb79dc98400180"
+        }
+      ]
+    },
+    {
+      "path": "nr-gen-params.js",
+      "platform": "all",
+      "size": 5653,
+      "sha256": "5641c517f416f0e62452f2536e80abad1d981d7c0ef8061161903a821d757dcd",
+      "parts": [
+        {
+          "name": "nr-gen-params.js.001.part",
+          "size": 5653,
+          "md5": "b16613584ef2509459fbe2f5f81b5d3b"
+        }
+      ]
+    },
+    {
+      "path": "nr-template.js",
+      "platform": "all",
+      "size": 2089,
+      "sha256": "f2d8cccdb6a5d4ceaf0bbe3d8787d0c9455b52bc0db2f0b022beb11e6acbccf2",
+      "parts": [
+        {
+          "name": "nr-template.js.001.part",
+          "size": 2089,
+          "md5": "7cb23cd7ca34b14737c56f3e5298b927"
+        }
+      ]
+    },
+    {
+      "path": "nr-tokenizer.js",
+      "platform": "all",
+      "size": 4903,
+      "sha256": "55398a744469b67eefb07dfcbf7ae1c0bb7537293daa2dd6aa674e1f999e8b9c",
+      "parts": [
+        {
+          "name": "nr-tokenizer.js.001.part",
+          "size": 4903,
+          "md5": "9c9e19a3dd31fdce9ec0b3041d482663"
+        }
+      ]
+    }
+  ]
+};
+
+const NRI = (function () {
+// 執行包按需安裝（見 DESIGN.TODO.native-runner.md 第 4 項）。只在主程序使用；由使用者在介面按下安裝時才執行，不會自動下載。
+// 來源順序（使用者原話：「用npm官方庫優先，官方庫掛了才跑github branch下載」）：
+//   1. npm 官方庫：onnxruntime-node-1.22.0.tgz，用 integrity（sha512）驗證後抽取 onnxruntime 相關檔（不含 onnxruntime-common 與子程序程式）。
+//   2. GitHub 分支 native-runtime-1.22.0：釘住 commit SHA 的 raw 網址，分割段逐段 md5，合併後整檔 sha256。
+// 切換條件：npm 連線失敗、逾時、HTTP 非 200、或 integrity 驗證失敗，才改走來源 2。兩個來源取得的每個檔案都要 sha256 相同。
+// 進度與原因都會寫進 log（哪個來源、為什麼切換）。
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const zlib = require('zlib');
+
+const NPM_PREFIX = 'node_modules/onnxruntime-node/';
+
+function sha256(buf) { return crypto.createHash('sha256').update(buf).digest('hex'); }
+function md5(buf) { return crypto.createHash('md5').update(buf).digest('hex'); }
+function sha512Integrity(buf) { return 'sha512-' + crypto.createHash('sha512').update(buf).digest('base64'); }
+
+// 讀 tgz 內的檔案（ustar 格式，只取 wanted(名稱) 為真的一般檔案）。名稱是 tgz 內的路徑（例如 package/dist/index.js）。
+function tgzEntries(gz, wanted) {
+    const buf = zlib.gunzipSync(gz);
+    const out = new Map();
+    const cstr = (off, len) => { let e = off; while (e < off + len && buf[e] !== 0) e++; return buf.toString('utf8', off, e); };
+    let off = 0;
+    while (off + 512 <= buf.length) {
+        if (buf.subarray(off, off + 512).every((b) => b === 0)) break;
+        const name = cstr(off, 100), prefix = cstr(off + 345, 155);
+        const full = prefix ? prefix + '/' + name : name;
+        const size = parseInt(cstr(off + 124, 12).trim() || '0', 8);
+        const type = String.fromCharCode(buf[off + 156] || 48);
+        if ((type === '0' || type === '\0') && wanted(full)) out.set(full, Buffer.from(buf.subarray(off + 512, off + 512 + size)));
+        off += 512 + Math.ceil(size / 512) * 512;
+    }
+    return out;
+}
+
+// tgz 內名稱（package/...）對應到執行包內的路徑（node_modules/onnxruntime-node/...）
+function tgzToRel(name) {
+    if (!name.startsWith('package/')) return null;
+    return NPM_PREFIX + name.slice('package/'.length);
+}
+
+function platformFiles(manifest, platformKey) {
+    return manifest.files.filter((f) => f.platform === platformKey || f.platform === 'all');
+}
+
+// 來源 1：npm。回傳 { ok, why, bufs: Map(rel→Buffer) }。
+async function trySourceNpm(manifest, opts) {
+    const src = manifest.sources.npm;
+    let gz;
+    try { gz = await opts.fetchBytes(opts.npmLocation || src.tarball, opts.timeoutMs); }
+    catch (e) { return { ok: false, why: 'npm 連線失敗、逾時或 HTTP 非 200：' + String((e && e.message) || e) }; }
+    if (sha512Integrity(gz) !== src.integrity) return { ok: false, why: 'npm 的 integrity（sha512）驗證失敗' };
+    const want = new Set(platformFiles(manifest, opts.platformKey).map((f) => f.path));
+    const entries = tgzEntries(gz, (n) => { const r = tgzToRel(n); return r && want.has(r); });
+    const bufs = new Map();
+    for (const [name, buf] of entries) bufs.set(tgzToRel(name), buf);
+    return { ok: true, bufs, bytes: gz.length };
+}
+
+// 來源 2：GitHub 分支的分割段。每段 md5 核對，合併後整檔 sha256 核對。
+async function readFromGithub(manifest, file, opts) {
+    const parts = [];
+    for (const p of file.parts) {
+        const b = await opts.fetchBytes(opts.githubBase + '/parts/' + p.name, opts.timeoutMs);
+        if (opts.stats) opts.stats.githubBytes = (opts.stats.githubBytes || 0) + b.length;
+        if (md5(b) !== p.md5) throw new Error('段 ' + p.name + ' 的 md5 不符');
+        parts.push(b);
+    }
+    const buf = Buffer.concat(parts);
+    if (buf.length !== file.size || sha256(buf) !== file.sha256) throw new Error('合併後 ' + file.path + ' 的 sha256 不符');
+    return buf;
+}
+
+// 主流程。opts: { manifest, platformKey, runtimeDir（最後的目標）, npmLocation?, githubBase, fetchBytes(location, timeoutMs)→Buffer, forceGithub?, timeoutMs, log, nrSourceDir }
+// 回傳 { ok, runtimeDir, sourcesUsed: {rel: 'npm'|'github'}, why? }
+async function installRuntime(opts) {
+    const log = opts.log || (() => {});
+    const prog = opts.progress || (() => {}); // prog({ stage, source, detail }) 給介面顯示進度與來源
+    const m = opts.manifest;
+    const files = platformFiles(m, opts.platformKey);
+    const stage = opts.runtimeDir + '.partial';
+    fs.rmSync(stage, { recursive: true, force: true });
+    let npm = { ok: false, why: '沒有嘗試' };
+    if (!opts.forceGithub) {
+        log('[native-runtime] 來源 1：npm 官方庫（' + m.sources.npm.package + '）');
+        prog({ stage: 'npm', source: 'npm', detail: '正在下載 npm 官方庫的 tgz（約 89 MB）' });
+        npm = await trySourceNpm(m, opts);
+        if (npm.ok) { log('[native-runtime] npm 成功（' + npm.bytes + ' 位元組），抽取 onnxruntime 相關檔'); prog({ stage: 'npm-ok', source: 'npm', detail: 'npm 下載完成，integrity 驗證通過（' + npm.bytes + ' 位元組）' }); }
+        else { log('[native-runtime] 切換到來源 2（GitHub 分支）：' + npm.why); prog({ stage: 'switch', source: 'github', detail: '切換到 GitHub 分支，原因：' + npm.why }); }
+    } else {
+        log('[native-runtime] 強制使用來源 2（GitHub 分支）');
+        prog({ stage: 'switch', source: 'github', detail: '強制使用 GitHub 分支（測試）' });
+    }
+    const sourcesUsed = {};
+    const installed = {};
+    try {
+        for (const f of files) {
+            let buf = npm.ok && npm.bufs.get(f.path) ? npm.bufs.get(f.path) : null;
+            let from = 'npm';
+            if (buf && sha256(buf) !== f.sha256) { buf = null; log('[native-runtime] npm 的 ' + f.path + ' sha256 不符，改用來源 2'); }
+            if (!buf) { buf = await readFromGithub(m, f, opts); from = 'github'; }
+            if (sha256(buf) !== f.sha256) throw new Error('最終檔案 ' + f.path + ' 的 sha256 不符');
+            const dst = path.join(stage, ...f.path.split('/'));
+            fs.mkdirSync(path.dirname(dst), { recursive: true });
+            fs.writeFileSync(dst, buf);
+            sourcesUsed[f.path] = from;
+            installed[f.path] = { size: buf.length, md5: md5(buf), sha256: sha256(buf) };
+            prog({ stage: 'file', source: from, detail: '第 ' + (Object.keys(installed).length) + ' / ' + files.length + ' 個檔案（' + from + '）：' + f.path });
+        }
+        // 子程序程式（nr-*.js）：只能從來源 2 取得（npm 沒有）；名單在 manifest 的 files 裡，source 標示 github
+        if (opts.nrSourceDir) {
+            // 只有安裝目錄真的有這個檔案才用本機的（舊安裝沒有）；沒有就走來源 2
+            for (const f of m.files.filter((x) => /^nr-.*\.js$/.test(x.path) && fs.existsSync(path.join(opts.nrSourceDir, x.path)))) {
+                const buf = fs.readFileSync(path.join(opts.nrSourceDir, f.path));
+                if (sha256(buf) !== f.sha256) throw new Error('本機 ' + f.path + ' 與分割包不一致');
+                fs.writeFileSync(path.join(stage, f.path), buf);
+                sourcesUsed[f.path] = 'local';
+                installed[f.path] = { size: buf.length, md5: md5(buf), sha256: sha256(buf) };
+            }
+        }
+        for (const f of m.files.filter((x) => /^nr-.*\.js$/.test(x.path))) {
+            if (!installed[f.path]) { const buf = await readFromGithub(m, f, opts); fs.writeFileSync(path.join(stage, f.path), buf); sourcesUsed[f.path] = 'github'; installed[f.path] = { size: buf.length, md5: md5(buf), sha256: sha256(buf) }; }
+        }
+        const [plat, arch] = opts.platformKey.split('-');
+        const runtimeFiles = {};
+        for (const k of Object.keys(installed)) runtimeFiles[k] = { size: installed[k].size, md5: installed[k].md5 };
+        fs.writeFileSync(path.join(stage, 'manifest.json'), JSON.stringify({ runtimeVersion: m.runtimeVersion, ortVersion: m.ortVersion, platform: plat, arch, license: m.license, files: runtimeFiles }, null, 2) + '\n');
+        fs.rmSync(opts.runtimeDir, { recursive: true, force: true });
+        fs.mkdirSync(path.dirname(opts.runtimeDir), { recursive: true });
+        fs.renameSync(stage, opts.runtimeDir);
+        return { ok: true, runtimeDir: opts.runtimeDir, sourcesUsed, npmUsed: npm.ok, npmBytes: npm.ok ? npm.bytes : 0, githubBytes: (opts.stats && opts.stats.githubBytes) || 0 };
+    } catch (e) {
+        fs.rmSync(stage, { recursive: true, force: true });
+        return { ok: false, why: String((e && e.message) || e), sourcesUsed };
+    }
+}
+
+// 本機與測試用的讀取器：location 是檔案路徑（tgz 或目錄）；網址則用 https（只在主程序、產品用）。
+function localFetchBytes(location) {
+    if (fs.existsSync(location) && fs.statSync(location).isFile()) return Promise.resolve(fs.readFileSync(location));
+    return Promise.reject(new Error('找不到來源：' + location));
+}
+
+// 產品用的網路讀取器（只在主程序、使用者按下安裝時用）：跟隨最多 5 次轉址，HTTP 非 200 就失敗，逾時就中斷。
+function httpsFetchBytes(url, timeoutMs) {
+    return new Promise((resolve, reject) => {
+        const https = require('https');
+        const go = (u, hops) => {
+            const req = https.get(u, { timeout: timeoutMs || 60000 }, (res) => {
+                if ([301, 302, 303, 307, 308].indexOf(res.statusCode) >= 0 && res.headers.location && hops < 5) {
+                    res.resume(); go(new URL(res.headers.location, u).toString(), hops + 1); return;
+                }
+                if (res.statusCode !== 200) { res.resume(); reject(new Error('HTTP ' + res.statusCode)); return; }
+                const chunks = [];
+                res.on('data', (c) => chunks.push(c));
+                res.on('end', () => resolve(Buffer.concat(chunks)));
+                res.on('error', reject);
+            });
+            req.on('timeout', () => req.destroy(new Error('逾時')));
+            req.on('error', reject);
+        };
+        go(url, 0);
+    });
+}
+
+
+return { installRuntime, tgzEntries, sha256, sha512Integrity, localFetchBytes, httpsFetchBytes, NPM_PREFIX };
+})();
+
 function startNativeMailbox(ctx) {
   const fsSync = require("fs"), pathM = require("path");
   const app = ctx.electron && ctx.electron.app;
@@ -768,8 +1520,8 @@ function startNativeMailbox(ctx) {
       installing = true;
       writeProg({ state: "running", stage: "start", source: "", detail: "開始安裝" });
       try {
-        const inst = require(pathM.join(__dirname, "nr-runtime-install.js"));
-        const manifest = JSON.parse(fsSync.readFileSync(pathM.join(__dirname, "native-runner", "runtime-manifest.json"), "utf8"));
+        const inst = NRI;
+        const manifest = NATIVE_RUNTIME_MANIFEST; // 清單直接放在本檔（舊安裝沒有外部資料檔，熱更新也送不到）
         const testNpm = process.env.FA_NATIVE_INSTALL_NPM_FILE || "", testGh = process.env.FA_NATIVE_INSTALL_GH_DIR || "";
         const testing = !!(testNpm || testGh);
         const r = await inst.installRuntime({
@@ -844,4 +1596,4 @@ function startNativeMailbox(ctx) {
   return { ok: true, box };
 }
 
-module.exports = { register };
+module.exports = { register, _NRI: NRI };

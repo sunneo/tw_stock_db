@@ -4,7 +4,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const { installRuntime, localFetchBytes, sha256 } = require(path.join(__dirname, '..', '..', 'nr-runtime-install.js'));
+const { installRuntime, localFetchBytes, sha256 } = require(path.join(__dirname, '..', '..', 'main-ext.js'))._NRI;
 
 const [, , PACK, TGZ, WORK, REF] = process.argv;
 const manifest = JSON.parse(fs.readFileSync(path.join(PACK, 'manifest.json'), 'utf8'));
