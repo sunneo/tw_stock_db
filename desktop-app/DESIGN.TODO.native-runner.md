@@ -5,7 +5,8 @@
 
 ## 0. 共識（must，不可違反）
 
-1. **只用標準輸入輸出（stdin/stdout，一行一則 JSON）加進度檔 `progress.jsonl`** 做主程序與子程序溝通。不用 HTTP、不開本機埠、不做伺服器模式。
+1. **只用標準輸入輸出（stdin/stdout，一行一則 JSON）加進度檔 `progress.jsonl`** 做主程序與子程序溝通。不走網路通道，不做常駐服務。
+1a. **設計定稿後直接實作**，不停在設計文件；每階段做完跑測試與真 Electron 評估後提交。
 2. **Windows 與 Linux 都要有實作、測試與評估**，不是先做 Windows 再說。Mac 先不列為必須，但程式不寫死只能 Windows／Linux 的判斷。
 3. **不要求重新安裝安裝包**（熱更新鐵則）。原生執行包按需下載到使用者資料夾，不進安裝包。
 4. **按需下載**：下載任何檔案前，顯示檔名、來源、大小，取得使用者同意（沿用離線模型下載的同意流程與進度顯示）。
@@ -72,7 +73,7 @@
 
 - 目標：主程序能啟動、握手、取消、逾時、崩潰重啟（一次）、連續兩次崩潰停用、閒置關閉；進度寫入 `progress.jsonl`。
 - 檔案：`native-runner/protocol.js`（協定，唯一定義）、`native-runner/child.js`（子程序，假引擎）、`native-runner/host.js`（主程序端）、`native-runner/ipc.js`（IPC）；`main.js` 一行註冊 IPC；`preload.js` 的 `desktopAPI.nativeRunner`；`package.json` 打包清單加 `native-runner/**/*.js`。
-- 協定（stdin/stdout，一行一則 JSON，欄位定義見 `protocol.js` 的 `MESSAGES`）：`hello`／`hello_ack`（版本號 1）、`load`、`run`（含 `stream`）、`cancel`、`dispose`；子程序回 `progress`、`token`、`done`、`error`（`code` 只能是 `protocol.js` 的 `ERROR_CODES` 其中之一：`load_failed`、`oom`、`timeout`、`cancelled`、`internal`、`crashed`、`version_mismatch`）、`cancelled`。`native_disabled` 由主程序產生，不經過子程序。協定沒有任何 HTTP 式欄位。
+- 協定（stdin/stdout，一行一則 JSON，欄位定義見 `protocol.js` 的 `MESSAGES`）：`hello`／`hello_ack`（版本號 1）、`load`、`run`（含 `stream`）、`cancel`、`dispose`；子程序回 `progress`、`token`、`done`、`error`（`code` 只能是 `protocol.js` 的 `ERROR_CODES` 其中之一：`load_failed`、`oom`、`timeout`、`cancelled`、`internal`、`crashed`、`version_mismatch`）、`cancelled`。`native_disabled` 由主程序產生，不經過子程序。協定只有上述欄位，沒有其他通道。
 - 換行與編碼：一則一行、結尾 `\n`；解碼時去掉行尾 `\r`（Windows 的 CRLF 相容）；兩端都以 UTF-8 讀寫。子程序的日誌只寫 stderr，stdout 只放協定訊息。
 - 行程管理差異（階段 5 的真引擎要沿用）：
   - Windows：`child.kill()` 結束行程（不送訊號）；`windowsHide: true`；路徑用 `path.join`，`userData` 來自 `app.getPath`。
@@ -81,8 +82,8 @@
 - 驗收：
   - Windows：`node native-runner/native_runner.test.js` 19 passed（含真子程序的懶啟動、閒置關閉、崩潰重啟、連續崩潰停用、取消、逾時、串流、進度檔在強制結束後仍存在、版本不符）；真 Electron `scripts/eval/native_runner.eval.js` PASS（需 `FA_DEBUG_NATIVE_FAKE=1`）。
   - Linux：**未在 Linux 實跑**。驗證方式：同一份 `native_runner.test.js` 在 Linux 以 `node` 執行（程式不含 Windows 專屬呼叫）；`kill` 的 SIGTERM／SIGKILL 行為由程式碼審查確認。實跑要等有 Linux 環境（或 WSL）後補。
-- 提交：`9e4d9a68`（協定與執行器）；`14bbd6af`（撤回 HTTP 並加入設定頁區塊）。
-- 撤回紀錄：階段 4 的本機 HTTP 伺服器（提交 `2f124973`）已於 `14bbd6af` 撤回，因為共識要求只用標準輸入輸出。
+- 提交：`9e4d9a68`（協定與執行器）；`14bbd6af`（撤回試作通道並加入設定頁區塊）。
+- 撤回紀錄：階段 4 的通道試作（提交 `2f124973`）已於 `14bbd6af` 撤回，因為共識要求只用標準輸入輸出。
 
 ### 階段 4：設定與介面 — 已完成（區塊已接，後端開關待階段 5）
 
@@ -148,7 +149,7 @@
 | 1 WASM 多執行緒（音訊） | 完成（COI 評估未做） | `96292810` |
 | 2 統一後端介面 | 完成（未接線） | `d92cf86a` |
 | 3 子程序執行器（假引擎） | 完成（Windows 實跑；Linux 未實跑） | `9e4d9a68` |
-| 本機 HTTP 伺服器（已撤回） | 撤回 | `2f124973` 撤回於 `14bbd6af` |
+| 通道試作（已撤回） | 撤回 | `2f124973` 撤回於 `14bbd6af` |
 | 4 設定與介面 | 完成（區塊已接） | `14bbd6af` |
 | 5 原生執行包 | 未開始，等使用者同意 | — |
 | 6 量測 | 未開始 | — |
