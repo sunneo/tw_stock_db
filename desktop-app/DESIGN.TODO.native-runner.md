@@ -113,7 +113,26 @@
   - 真 Electron：Windows 實跑；Linux 未在 Linux 實跑（標示限制，見階段 3 的說明）。
   - 退回：執行包不存在時，自動走 WebGPU／WASM，行為與改動前相同（比對 `backendOrder` 結果）。
 
-### 階段 6：速度與正確率量測 — 尚未開始
+### 階段 6：速度與正確率量測 — 部分完成（真量測：原生 CPU；WASM 對照未做）
+
+- 做法（真量測，2026-11-04）：
+  - 套件：onnxruntime-node 1.31.1，安裝在隔離資料夾 %TEMP%\ort-node-test（不在倉庫）；node_modules 合計 296 MB（du）；napi-v6；Windows 套件內含 DirectML.dll、dxcompiler.dll、onnxruntime.dll（**DirectML 是否能實際使用，尚未測**）。
+  - 模型：從 Electron 隔離快取 %TEMP%\colu-real-ud 的 CacheStorage 項目（617,688,669 位元組）讀出 ONNX 本體（ModelProto 長度 617,687,575，其後為快取中繼資料，已去掉），複製為 %TEMP%\ort-node-test\models\qwen3-0.6b-cpu.onnx。ORT 載入成功（57 個輸出，含 28 層 KV）。這是 qwen3-0.6b 的 CPU 版（q8）。
+  - 量測：固定 16 個 prompt token（不含分詞器），貪婪解碼 16 步，逐步計時。以 Electron 的 node 模式（x64）執行，因為本機 node 是 32 位元（ia32），套件只提供 x64 二進位。
+  - 結果（真量測）：
+    - 執行緒 1：每步中位數 367 ms，16 步總時間 6,937 ms
+    - 執行緒 4：每步中位數 267 ms，16 步總時間 4,759 ms
+    - 1 與 4 執行緒的 16 個輸出 token 完全相同：30,358,2776,1588,311,1492,498,448,4113,13,1416,498,614,894,4755,11
+  - 結論（真量測範圍內）：原生 CPU 4 執行緒比 1 執行緒快約 1.37 倍（每步）。**沒有量測 WASM 的速度，所以「原生比 WASM 快幾倍」目前不能回答。**
+- 未做（如實）：
+  - WASM 單執行緒與多執行緒的對照（需要 onnxruntime-web 或桌面版同一路徑；本次只被授權安裝 onnxruntime-node，未安裝或下載 onnxruntime-web）。
+  - 8 封閉題加 8 計畫題的正確率（需要分詞器與完整生成流程；快取中沒有分詞器檔，未下載）。
+  - 記憶體峰值、WebGPU 對照、DirectML 實測。
+- Linux：未在 Linux 實跑（本機沒有 Linux 環境）。
+- 推測（未量測）：單執行緒與多執行緒的差距小於 4 倍，可能是因為單步的矩陣運算只有部分可平行化。
+- 結論：要不要做完整整合，要等 WASM 對照與正確率數字。目前只能說：原生 CPU 能載入這個模型，以 4 執行緒運作，速度數字是真量測，但還沒有與 WASM 比較。
+- 量測腳本與結果 JSON 在 %TEMP%\ort-node-test\bench.js 與 bench-native-result.json，不進倉庫。
+
 
 - 目標：原生 CPU、WebGPU、WASM 的速度與正確率對照；固定 20 題，每組 3 次取中位數，超過 15 分鐘的組別標 `timeout`。
 - 驗收：結果檔 `test-reports/native-bench-latest.json` 含每組 `median_ms`、`first_token_ms`、`peak_mb`、`crashes`、`accuracy`；Windows 實跑，Linux 標示未實跑（若無環境）。
@@ -152,4 +171,4 @@
 | 通道試作（已撤回） | 撤回 | `2f124973` 撤回於 `14bbd6af` |
 | 4 設定與介面 | 完成（區塊已接） | `14bbd6af` |
 | 5 原生執行包 | 未開始，等使用者同意 | — |
-| 6 量測 | 未開始 | — |
+| 6 量測 | 部分完成（原生 CPU 真量測；WASM 對照未做） | 見本次提交 |
