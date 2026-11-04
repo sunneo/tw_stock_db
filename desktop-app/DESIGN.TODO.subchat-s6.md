@@ -109,6 +109,8 @@ rg 收到 task(sub=false, fromName=N)
 
 ### 步驟 2 的教訓
 
+- **還沒到 30% 就回報「需要接手」，錯在把「這一輪做不完」當成交接理由。** 下次怎麼做：未到 30% 一律繼續做完全部步驟；交接只在上下文真的到 30% 時才做。
+
 - 測試裡每次呼叫都建新的 id 產生器，同一次測試內會得到重複 id（`in1`），測試就紅了。同一個測試的多次呼叫要共用一個產生器。
 
 ## 6. 步驟 3 起的待辦（交接用）
@@ -119,6 +121,35 @@ rg 收到 task(sub=false, fromName=N)
 4. 載入索引時（`_chatListInit` 79673–79674 之後）呼叫 `migrateRemoteChats`，寫入 `idx.chats`。
 5. `FA_CHAT_CTX_KEYS`（51009 起）：S6 目前沒有新增 ctx 狀態欄位，若新增要進去並查重設點。
 6. 評估：`scripts/eval/subchat_remote.eval.js`（新檔），參照 `scripts/eval/subchat_pullback.eval.js` 的寫法（真 Electron、換埠、假 LLM）。先證明修前不成立（修前：遠端需求是根對話、沒有收件對話）。
+
+## 6.5 步驟 3：接進建立路徑（已完成，真桌面版驗證過）
+
+改動（照 6 節待辦）：
+
+- `scripts/embed-code-ui.js`：新增 `embed('renderer/src/chat/remote_inbox.js', 'REMOTEINBOX-BEGIN', 'REMOTEINBOX-END', 'FA_REMOTE_INBOX_SRC')`。主檔 `renderer/src/floating-assistant.js` 在 `SUBCHATSTATUS-END` 後面放了標記區塊（先放空字串，嵌入後自動填入）。
+- `scripts/build-web-lazy.js`：EXCLUDE 加 `REMOTEINBOX`（與 `CHATTREE` 相同，留在網頁版核心，因為遠端需求邏輯在核心）。
+- `renderer/src/floating-assistant.js`：
+  - `_remoteInboxMod()`（`_chatTreeMod` 旁，用 `new Function` 載入 `FA_REMOTE_INBOX_SRC`）。
+  - `_chatListInit`：`normalizeChats` 之後呼叫 `migrateRemoteChats`（載入時遷移舊索引，之後由 `_saveChatIndex` 寫回）。
+- `renderer/src/remote/rg_dispatch.js`（來源；主檔的 REMOTE 區塊由 `embed-code-ui.js` 內嵌）：
+  - `_rgCreateRemoteChat`：`ensureInbox` 找或建來源節點的收件對話（只建一次，不切換畫面、不呼叫模型）；子對話寫入 `parentId`、`nodeName`、`status:null`，之後 `_subchatSetStatus(id,'start')`。第一則訊息與來源記錄不變。
+  - `_rgChatRecord`：結果回寫時，子對話狀態 done→`finish`，failed／rejected→`error`（原因＝錯誤字串），stopped→`error`（原因「已停止」）。
+- `scripts/eval/subchat_remote.eval.js`（新檔）：模擬兩個節點各一需求再加一個，以及舊格式索引遷移。
+
+建置：`node scripts/embed-code-ui.js && node build-assistant.js`（後者會連帶跑 `build-web-lazy`，產生的 `web-lazy/*`、`renderer/floating-assistant*.js`、`update-manifest.json` 都**沒有提交**）。建置前的備份在 scratchpad `bak/`。
+
+### 評估結果（真桌面版，換埠 17966 修後／17967 修前，假 LLM）
+
+- 修後：`allPass: true`，20 項全過。事實：收件對話 2 個（B機、C機）；B機 2 個子對話（標題「來自 B機：寫一首詩」「來自 B機：寫一首短歌」）、C機 1 個；子對話 `status` 全為 `done`；建立時 `currentId` 不變；沒有模型呼叫；側欄收件對話列 `childCount:2`、收合時子對話不出現在扁平清單；舊格式 `D機` 遠端對話遷移後 `parentId` 指向 D機收件對話、`remote` 欄位不變。
+- 修前（建置前的 `renderer/floating-assistant.js` 備份）：`allPass: false`，多數判準失敗（`hasRemoteInboxMod`、`inboxOnePerNode`、`noRootRemoteChats`、`sidebarDomHasInbox`、`migrateOldRemoteUnderInbox`、`loadedWorkdirImpl` 等）。
+- **空真注意**：修前 `childNodeName`、`childStatusDone` 為真，原因是修前沒有任何子對話，`every` 在空陣列上為真。這兩項在修前沒有證明力，修後的結果才是有效證據。
+
+### 步驟 3 沒有驗證的
+
+- 沒有真的遠端節點對真的需求（用 `_rgCreateRemoteChat`／`_rgChatRecord` 模擬 `_rgRunTask` 的兩個呼叫）。
+- 沒有經過 `_rgRunTask` 的完整流程（排隊、閘門、執行）。
+- 嵌入式網頁版路徑（沒有對話清單，走 `_rgRecordInline`）沒有驗證，行為理論上未變（程式未改），但沒有證據。
+- 收件對話被點開時的畫面（目前會顯示一般空對話的建議卡片）是步驟 4 的工作，尚未處理。
 
 ## 7. 沒驗證、目前的缺口
 

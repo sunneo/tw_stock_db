@@ -71,6 +71,8 @@ embed('renderer/src/chat/topic_local.js', 'TOPICLOCAL-BEGIN', 'TOPICLOCAL-END', 
 embed('renderer/src/chat/handoff.js', 'SUBCHATHANDOFF-BEGIN', 'SUBCHATHANDOFF-END', 'FA_SUBCHAT_HANDOFF_SRC');
 // 子對話狀態模型（renderer/src/chat/sub_status.js，純函式、UMD）：子對話 S4，status 轉換與連結卡片文字。同上，嵌入後用 new Function 載入。
 embed('renderer/src/chat/sub_status.js', 'SUBCHATSTATUS-BEGIN', 'SUBCHATSTATUS-END', 'FA_SUBCHAT_STATUS_SRC');
+// 遠端收件對話（renderer/src/chat/remote_inbox.js，純函式、UMD）：子對話 S6，遠端需求統一成子對話。同上，嵌入後用 new Function 載入。
+embed('renderer/src/chat/remote_inbox.js', 'REMOTEINBOX-BEGIN', 'REMOTEINBOX-END', 'FA_REMOTE_INBOX_SRC');
 function embedBehavior() {
     const data = require('./behavior-data.js').load(root);
     const a = src.indexOf('/* BEHAVIOR-BEGIN */'), b = src.indexOf('/* BEHAVIOR-END */');
