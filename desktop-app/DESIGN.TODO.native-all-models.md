@@ -1,0 +1,376 @@
+# 其他模型是否也走原生執行器（唯讀調查，2026-11-05）
+
+> 狀態：調查文件，尚未實作。本次只讀程式、不改程式、不下載、不安裝模型。
+> 標記：「實測」＝有實際跑過或文件記有量測結果；「推測」＝沒有量測，只是依模型結構或經驗估計；「未查證」＝本次沒有追到證據。
+
+## 開頭：共識（must）
+
+1. 子程序與主程序之間只用標準輸入輸出（一行一則 JSON）加進度檔 progress.jsonl 溝通；不用網路服務端的做法、不開本機埠、不用任何網路通道。
+2. Windows 與 Linux 都要實作與驗證；Mac 不必須，但程式不寫死平台。
+3. 不要求使用者重新安裝；原生執行包按需下載到使用者資料夾。舊版安裝也要能收到。
+4. 下載任何模型檔前，先顯示檔名、來源、大小，並取得使用者同意。安裝與下載前一律先問。
+5. 桌面版原生優先；原生不可用或沒下載時，退回網頁版原路徑（WebGPU／WASM），並顯示實際後端與真實原因。網頁版原路徑保留，不刪。
+6. 不使用 DirectML 當預設。DirectML 在 qwen3-0.6b 的某個節點失敗，其他模型只能在第一階段量測中逐一試，通過才另議。Linux 的 CUDA 目前只是規劃，未實跑。
+7. 設計定稿後直接實作：第一階段是量測，量測結果出來後直接接著做，不另開設計會議。
+8. 不用 Python；子程序以 process.execPath 加 ELECTRON_RUN_AS_NODE=1 執行（沿用 native-runner 既有做法）。
+
+共識來源：`skills/weak-model-harness/references/consensus/native-runner.json`，完整設計與進度見 `DESIGN.TODO.native-runner.md`。
+
+---
+
+## 1. 模型清單盤點
+
+### 1.1 圖像、影片、音訊相關模型（使用者列出的範圍）
+
+下表每列一個模型。「執行方式」欄說的是網頁版（渲染程序）現在怎麼跑；所有 transformers.js 模型都經由 `_ensureTransformersJsLoaded`（`renderer/src/floating-assistant.js`，transformers.js 3.7.5 來自 cdn.jsdelivr.net，約第 49090 行）載入。
+
+| 模型 | 用途 | 檔案與大小（登錄值） | 執行方式 | 載入與推論位置 | 前後處理位置 | 張量輸入輸出（實測或讀程式） | 桌面版已測速度 | 模型存放位置 |
+|---|---|---|---|---|---|---|---|---|
+| **Florence-2 base（ft）** | 看圖：描述、詳細描述、OCR、物件 | 登錄 gpu 約 344 MB、cpu 約 208 MB；repo `onnx-community/Florence-2-base-ft`，未釘版本（用 `resolve/main`） | transformers.js，WebGPU（embed fp16、視覺 fp16、編碼與解碼 q4）或 WASM（embed q8、視覺 q4、編碼解碼 q4） | `renderer/src/vlm/vlm_core.js:14`（登錄）；推論在 VLM Worker（`faVlmWorkerMain`，`web-lazy/core.js` 內） | 分詞與生成迴圈在 transformers.js 內；圖像縮放正規化在 transformers.js 的 processor 內（未逐行核對） | 視覺編碼器輸入 pixel_values 約 [1,3,768,768]（推測，依 Florence-2 結構）；輸出 token ID | 實測（登錄註記）：CPU 4 執行緒，簡短描述約 34 秒（含下載與載入），詳細描述約 21 秒 | IndexedDB 不是；在瀏覽器 Cache Storage（`env.useBrowserCache = true`，`floating-assistant.js:50967`、`63534`） |
+| **SmolVLM 256M** | 看圖，可以問問題 | 登錄 gpu 約 200 MB、cpu 約 203 MB；repo `HuggingFaceTB/SmolVLM-256M-Instruct` | transformers.js，WebGPU 或 WASM | `vlm_core.js:18` | 同上（transformers.js 內） | 未逐項核對 | 登錄註記：CPU 約 16～38 秒、Intel GPU 約 10 秒，`verified: false` | 同上 Cache Storage |
+| **ViT-GPT2** | 一句話描述（最簡單） | 登錄 cpu 約 238 MB（q8）；repo `Xenova/vit-gpt2-image-captioning` | transformers.js，WASM 為主 | `vlm_core.js:22` | 同上 | 未核對 | 實測（登錄註記）：CPU 4 執行緒約 2 秒 | 同上 Cache Storage |
+| **Depth Anything V2 Small** | 深度估計，給 /image-to-3d 當基礎層 | 登錄 gpu（fp16）約 50 MB、cpu（fp32）約 99 MB；repo `onnx-community/depth-anything-v2-small`，約 25M 參數 | transformers.js；CPU 用 fp32（int8 在 WASM 缺 ConvInteger，載不進去，實測） | `vlm_core.js:52`（登錄）、`vlm_core.js:69`（預設）；使用端 `renderer/src/edit/edit3d_host.js:486` 起 | 深度圖後處理（`renderer/src/media/image3d_core.js`，建網格與封閉檢查，純 JS） | 輸入約 512×384 的影像（實測尺寸）；輸出單通道相對深度圖（推測） | 實測（登錄註記）：CPU（WASM，fp32）512×384 約 8～10 秒 | Cache Storage |
+| **SlimSAM 77（uniform）** | 分割：自動分物件，給 /image-to-3d --segment | 登錄 gpu（fp16）約 22 MB、cpu（q8）約 16 MB；讀檔清單記錄 q8 為編碼器 8.9 MB ＋解碼器 4.9 MB、fp16 為 12.2 MB ＋ 8.6 MB；repo `Xenova/slimsam-77-uniform` | transformers.js；CPU 用 q8 | `vlm_core.js:55`；撒點、取遮罩、去重的邏輯在 JS（`renderer/src/media/image3d_core.js` 或使用端，未逐行核對） | 撒點（4×4 網格）、遮罩選擇、去重、去小碎塊：JS | 編碼器一次，解碼器每個點一次（推測，依 SAM 結構） | 實測（登錄註記，2026-10-30，瀏覽器 CPU q8）：載入約 6 秒、影像編碼約 16 秒、4×4 共 16 點約 28 秒 | Cache Storage |
+| **MoveNet Thunder** | 單人姿態，17 個關鍵點，給 /image-to-3d 找手臂 | 登錄 fp32 約 25 MB（8 位元版在 WASM 缺 ConvInteger，所以用完整版）；repo `Xenova/movenet-singlepose-thunder` | transformers.js，WASM | `vlm_core.js:60` | 關鍵點信心值過濾與座標換算：JS | 輸入 256×256 整數 NHWC（登錄註記）；輸出 17 個（y、x、信心值） | 實測（登錄註記，2026-11-02）：CPU 推論約 0.3 秒、載入約 5 秒（含下載） | Cache Storage |
+| **Whisper base** | 語音轉文字（影片逐字稿、transcribe_media） | 登錄約 80 MB（`vlm_core.js:63`）；**UI 文字寫約 77 MB**（`video_host.js:52`、`floating-assistant.js:1764`），兩處數字不一致，需以檔案清單為準；repo `onnx-community/whisper-base`，dtype `q8`（`floating-assistant.js:47027`–`47028`） | transformers.js `automatic-speech-recognition`；`_getWhisperTranscriber(device)` 依裝置建立（`floating-assistant.js:64413`），WebGPU 失敗退 CPU | `floating-assistant.js:64413`；影片端 `renderer/src/video/video_host.js:38`–`58`（`_runWhisperWindowed` 分段） | 解碼成 16 kHz 單聲道（主執行緒，`_decodeAudioForWhisper`）；梅爾頻譜在 transformers.js 內（推測）；分段與合併在 `video_host.js` | 編碼器輸入 log-mel 約 [1,80,3000]（推測，Whisper 結構）；編碼器輸出約 [1,1500,512]（推測）；解碼器逐 token 呼叫（推測） | 未在桌面版量測（本次未找到量測紀錄） | Cache Storage；`transformers-cache` 有備份分支退路（`floating-assistant.js` 約 64440 行起，從自家 repo 補檔） |
+| **Basic Pitch（nmp.onnx）** | 多音轉譜（音訊轉 MIDI） | `renderer/src/music/audio_models.js:10`：230,444 位元組（約 225 KB），**有 SHA-256 釘住** | onnxruntime-web 1.22.0（CDN：cdn.jsdelivr.net），WebGPU 失敗退 WASM（`audio_runtime.js` 的 `createSession`） | `renderer/src/music/audio_runtime.js` 的 `makeTranscriber`；前後處理在 `renderer/src/music/basic_pitch.js` | 重新取樣到 22050 Hz、切窗（`windows`）、拼接（`stitch`）、解碼（`decode`）：全部 JS | 輸入 [1, 43844, 1] float32（約 2 秒，22050 Hz 單聲道，實測）；輸出多個張量，順序在 `basic_pitch.js` 固定（實測） | 未在桌面版量測（本次未找到量測紀錄） | IndexedDB `fa-a2m-models`，8 MB 分片、每片存起來可續傳（`audio_models.js:16`、`57`） |
+| **YAMNet（yamnet.onnx）** | 樂器分類（決定 GM 音色） | `audio_models.js:11`：16,093,355 位元組（約 15.3 MB），SHA-256 釘住 | onnxruntime-web 1.22.0 | `audio_runtime.js` 的 `makeClassifier`；後處理在 `renderer/src/music/instrument_classify.js` | 取前 0.96 秒、標籤挑選（`IC.pick`）：JS | 輸入 waveform [N]，16 kHz 單聲道（實測）；輸出 scores [幀數, 521]，每 0.48 秒一幀（實測） | 未量測 | IndexedDB `fa-a2m-models` |
+| **Demucs 6 軌（htdemucs_6s，fp16 權重）** | 分軌：鼓、貝斯、其他、人聲、吉他、鋼琴 | `audio_models.js:12`：136,428,532 位元組（約 130 MB），SHA-256 釘住 | onnxruntime-web 1.22.0；`DEMUCS_OPT = 'disabled'`（關掉圖形最佳化，實測：開著 WASM 與 WebGPU 都建不起工作階段，`audio_runtime.js:41`） | `audio_runtime.js` 的 `makeSeparator`（固定段長 `SEG = 343980` 樣本，44.1 kHz，約 7.8 秒） | 立體聲分左右兩段、重新取樣到 44.1 kHz、段與段之間的拼接：JS；**未看到重疊相加（overlap-add），段界可能有接縫，需確認** | 輸入 mix [1, 2, 343980] float32（實測，程式內固定）；輸出 6 軌，每軌左右兩聲道，順序在 `STEMS` 固定（程式內） | 未量測 | IndexedDB `fa-a2m-models` |
+| **midigenai v5（作曲模型，decoder）** | 以 MIDI 為輸入，替種子樂句補聲部（自回歸生成） | 兩檔二選一：CPU（wasm、int8）`midigenai-v5-cpu` 114,561,179 位元組（約 109 MB）；GPU（WebGPU、q4）`midigenai-v5-gpu` 73,151,835 位元組（約 70 MB）；兩者都有 SHA-256（`audio_models.js:13`–`14`） | onnxruntime-web 1.22.0；裝置順序 `['webgpu', 'wasm']`（`midigen_bridge.js:96`–`117`） | `renderer/src/music/midigen_bridge.js`（裝置選擇與載入）、`MANIFEST` 在 `midigen_bridge.js:125`（vocab 598、12 層、12 頭、head_dim 64、opset 17） | 符號化（vocab）、取樣與逐 token 迴圈、KV 快取的拼接：JS（`midigen_bridge.js` 內，未逐行核對） | 有 KV 快取：GPU 版 `(1,H,P,D)`，CPU 版 `(1,P,H,D)`（`MANIFEST` 的 `cache` 欄位）；逐步呼叫，每步一次 session.run（推測） | 未量測；頁面說「約 7 秒／256 音符（CPU）」「約 2.8 秒（GPU）」，**都是專案頁面數字，未在這台機器實測**（`audio_models.js` 註記） | IndexedDB `fa-a2m-models`（同一套登錄；`midigen_bridge.js` 的 `ensure` 未逐行核對） |
+| **SDXS-512（文字生圖、/edit-picture 擴散細化）** | 生圖，以及 /edit-picture 的「擴散細化」（只重畫一小塊） | GPU 版（fp16）：text_encoder 246,275,486、unet 631,766,742、vae_decoder 2,467,568 位元組，合計約 880 MB（十進位）；CPU 版（int8）合計約 1,116 MB（`local_sd.js:14`–`22`）；repo 與 commit 釘住（`skillsafeai/sdxs-512-dreamshaper-onnx-webgpu`、`lequangky/tipsy-sdxs-512-int8`） | onnxruntime-web：GPU 為 WebGPU、CPU 為 WASM（`local_sd.js:3`–`4`） | `renderer/src/imagegen/local_sd.js`（登錄與挑版本）、`sd_turbo_core.js`（TAESD 小型 VAE 與降級路徑，約 5 MB） | 分詞：CLIP 分詞器（Xenova/clip-vit-base-patch32，JS）；去噪迴圈與排程：JS（推測，未逐行核對）；VAE 解碼：ONNX | text 輸出約 [1,77,768]（推測，CLIP 結構）；unet 潛空間約 [1,4,64,64]（推測）；每步 unet 一次（推測） | 未量測 | **未查證**：`local_sd.js` 本身沒有 cache 與 IndexedDB 呼叫，要到 `floating-assistant.js` 的 SDXS 下載流程（約第 76854 行附近）再查 |
+| **TAESD（小型 VAE）** | 給 SDXS 與降級路徑當編碼器與解碼器 | 各約 5 MB（`sd_turbo_core.js:15`） | onnxruntime-web，wasm 與 WebGPU 都能跑（onnxruntime-web 1.20 wasm 實測編碼→解碼成功，註記） | `sd_turbo_core.js` | 同 SDXS | 未核對 | 註記中有 1.20 版實測 | **未查證** |
+| **Qwen3 0.6B（預設文字模型，原生已有路徑）** | 聊天、RAG、工具呼叫 | gpu q4f16 約 543 MB、cpu q8 約 589 MB；repo `onnx-community/Qwen3-0.6B-ONNX`（`vlm_core.js:32`） | transformers.js（網頁版）；**原生已有路徑**：onnxruntime-node 1.22.0 子程序（`native-runner/nr-engine.js`、`nr-tokenizer.js`，分詞與生成迴圈在子程序內） | `vlm_core.js:32`；原生 `native-runner/nr-engine.js` 的 `generate` | 分詞與樣板在子程序內（`nr-tokenizer.js`、`nr-template.js`） | 已在原生路徑跑通 | 實測（`DESIGN.TODO.native-runner.md`）：原生 CPU 4 執行緒每步中位數 267 ms；網頁版 WASM 4 執行緒每題中位數 12,925 ms（16 題總計 175,177 ms）；原生比 WASM 快約 1.3～1.5 倍（以文件記錄為準） | 原生路徑：使用者資料夾（執行包 `userData/native-runtime/`，模型檔仍取自瀏覽器快取，見第 4 節） |
+| **Qwen2.5 0.5B / 1.5B、Qwen3 1.7B、SmolLM2 360M、Granite 4.0 350M 與 1B** | 聊天、工具呼叫（其他文字模型，都在 `vlm_core.js:24`–`50`） | 登錄約 260 MB（SmolLM2）到 1.7 GB（Granite 1B、CPU） | transformers.js；**只有 Qwen3 0.6B 有原生路徑**；其餘 `verified: false` 或未在這台機器驗證 | `vlm_core.js` | 同 Qwen3 | 同 Qwen3 的 transformers.js 路徑 | 未量測（Granite 350M、1B 註記「未實測」） | Cache Storage |
+
+#### 1.2 其他離線模型（使用者列出之外，專案內有）
+
+| 模型 | 用途 | 檔案與大小 | 執行方式與位置 | 備註 |
+|---|---|---|---|---|
+| **Whisper base（另一條影片路徑）** | 同上 Whisper，`transcribe_media` 工具 | 同上 | `floating-assistant.js:47027` | 與上面同一模型，兩個入口，要一起改 |
+| **Kokoro（TTS，文字轉語音）** | 朗讀 | 約 90 MB（`floating-assistant.js:1764` 的說明文字） | transformers.js（未逐行核對） | **未查證**大小與位置；屬於 TTS，不在使用者列表內 |
+| **MOSS-TTS-Nano（聲音複製）** | 語音合成（零樣本複製） | 來源 `OpenMOSS-Team/MOSS-TTS-Nano-100M-ONNX`、`MOSS-Audio-Tokenizer-Nano-ONNX`（`floating-assistant.js` 內的登錄） | onnxruntime-web，**只有 `executionProviders: ['wasm']`**（`renderer/src/tts/moss_worker.js:17`） | 不在使用者列表內；要另立一份評估 |
+| **Qwen 系列生成的 ONNX 檔（以文字模型為主）** | 同上 | 同上 | 同上 | 已在上面的表列出 |
+
+#### 1.3 盤點的限制（要誠實說）
+
+- 每個模型的前後處理主要在 transformers.js 內部或 JS 內，本次只核對了專案自己寫的部分（`audio_runtime.js`、`basic_pitch.js`、`instrument_classify.js`、`midigen_bridge.js`、`local_sd.js`、`video_host.js`）。transformers.js 內部的分詞與梅爾頻譜是推測。
+- 「桌面版已測速度」只採用文件與登錄檔裡寫的量測。它們寫的是「瀏覽器 CPU」，沒有註明是否在桌面版（Electron）內。
+- 登錄檔的檔案大小有兩個來源（讀 HuggingFace 清單的日期不同），Whisper 的 80 MB 與 77 MB 就不一致。
+
+---
+
+## 2. 通用方案評估：「通用 ONNX 工作階段服務」
+
+### 2.1 方案
+
+子程序只做三件事：載入模型檔（`InferenceSession.create`）、接收輸入張量、呼叫 `session.run` 後回傳輸出張量。前處理與後處理留在渲染程序的 JS（沿用 `basic_pitch.js`、`audio_runtime.js`、`local_sd.js` 等現有程式）。Qwen3 0.6B 那條專用路徑（子程序內含分詞與生成迴圈）保留，不併入通用服務。
+
+### 2.2 與現有協定的差異（`native-runner/nr-protocol.js`）
+
+現有訊息種類（第 10–20 行）：`hello`、`load`、`run`、`cancel`、`dispose`、`hello_ack`、`progress`、`token`、`done`、`error`、`cancelled`。這些都是 LLM 專用（`messages`、`token`、`finish_reason`）。
+
+建議新增（不改動既有 LLM 訊息）：
+
+| 新訊息 | 方向 | 必填欄位 | 用途 |
+|---|---|---|---|
+| `tensor_load` | 主程序 → 子程序 | `id`、`model_path`、`device`、`threads`、`graph_opt`（預設 `all`，Demucs 用 `disabled`） | 載入 ONNX 檔成 session（與 LLM 的 `load` 分開，避免混用） |
+| `tensor_run` | 主程序 → 子程序 | `id`、`inputs`（每項 `name`、`dtype`、`dims`、`path`）、`timeout_ms` | 跑一次 `session.run`；輸入張量放在檔案，訊息只帶路徑 |
+| `tensor_done` | 子程序 → 主程序 | `id`、`outputs`（每項 `name`、`dtype`、`dims`、`path`）、`ms` | 回傳輸出張量的檔案路徑 |
+| `tensor_error` 或沿用 `error` | 子程序 → 主程序 | `id`、`code` | 錯誤碼沿用 `ERROR_CODES`（`load_failed`、`oom`、`timeout`、`cancelled`、`internal`、`crashed`、`version_mismatch`） |
+
+`cancel` 與 `dispose` 可以直接沿用，只要 `id` 能對到。
+
+### 2.3 張量傳輸方式
+
+**結論：控制訊息走標準輸入輸出，張量走暫存檔。**
+
+理由與估算（數字是推測，依張量大小算出，沒有實際量測；第一階段要量測）：
+
+| 張量 | 大小（float32 原始位元組） | 若用 JSON 一行（數字文字約 3 到 4 倍） | 若用 base64 | 建議 |
+|---|---|---|---|---|
+| Basic Pitch 一窗輸入 [1,43844,1] | 約 175 KB | 約 0.6 MB | 約 233 KB | 暫存檔即可，JSON 也撐得住 |
+| YAMNet 輸入 0.96 秒 | 約 61 KB | 約 0.2 MB | 約 81 KB | 同上 |
+| Whisper 梅爾頻譜 [1,80,3000] | 約 960 KB | 約 3 MB | 約 1.3 MB | 暫存檔 |
+| Whisper 編碼器輸出 [1,1500,512] | 約 3.1 MB | 約 10 MB | 約 4.1 MB | 暫存檔 |
+| Florence-2 pixel_values [1,3,768,768] | 約 7.1 MB | 約 22 MB | 約 9.5 MB | 暫存檔 |
+| Demucs 輸入 [1,2,343980] | 約 2.75 MB | 約 9 MB | 約 3.7 MB | 暫存檔 |
+| Demucs 輸出 6 軌（每段） | 約 16.5 MB | 約 50 MB | 約 22 MB | 暫存檔，必須 |
+| SD 的 unet 潛空間 [1,4,64,64] | 約 65 KB | 約 0.2 MB | 約 87 KB | 暫存檔（每步很多次，小張量也建議走檔） |
+
+- 不選 JSON 一行：標準輸入輸出是「一行一則」，一行 50 MB 的 JSON 會讓讀行、解析、記憶體同時變壞，而且每一步都要重解析。
+- 不選 base64 一行：仍然要整塊進記憶體，只是小一點。
+- 選暫存檔：張量寫成原始二進位（`.bin`），檔名放在使用者資料夾的暫存目錄（每個 `id` 一個子資料夾），訊息只帶路徑、dtype、dims 與位元組數。子程序讀完即刪；主程序收到 `tensor_done` 後讀完即刪。子程序與主程序都要核對位元組數，不符就回 `error`。
+- 注意：子程序的標準輸出只能放協定訊息，不能有任何除錯輸出，否則會汙染協定（現有 `nr-protocol.js` 已用一行一則解析，這點沿用）。
+
+### 2.4 效能損耗估算（推測）
+
+- 單次呼叫的額外成本 = 寫檔 ＋ 讀檔 ＋ 一次行程間訊息。在一般硬碟與系統快取下，寫讀各數 MB 的檔案通常是幾毫秒到幾十毫秒（推測，未量測）。
+- Demucs 一段 7.8 秒的音訊：輸入與輸出合計約 19 MB 的檔案 IO，相對於 Demucs 一段推論的時間（推測為數秒到數十秒），IO 不是瓶頸。
+- SD 每步一次 unet 呼叫，只有幾百 KB 的張量，但步數多時，每步的固定成本（行程間訊息、檔案 IO）會累積。這一類要量測，不能只靠估算。
+- 結論：**效能損耗以「單次呼叫的固定成本」為主，不以張量大小為主**。量測時要把兩者分開記錄。
+
+### 2.5 串流與分段
+
+- **Whisper**：影片端已經分段（`_runWhisperWindowed`，`video_host.js:54`）。每一段一次 `tensor_run`（編碼器），解碼器的逐 token 迴圈若要放原生，就會變成很多次 `tensor_run`，固定成本會放大。這一點是 Whisper 不能直接套用通用服務的主要理由，建議先測。
+- **Demucs**：段長固定 7.8 秒（程式內），天然分段。每段一次 `tensor_run`，進度用 `progress` 訊息（或 progress.jsonl）回報「第幾段／共幾段」。
+- **Basic Pitch**：已經切窗（`windows`），每窗一次。
+- **取消與逾時**：每個 `tensor_run` 帶 `timeout_ms`；超時就 kill 子程序（與 LLM 路徑一致）；使用者按取消就送 `cancel`，子程序在兩次 `session.run` 之間檢查，無法中斷正在跑的一次呼叫（onnxruntime-node 沒有中斷 API，推測）。所以單次呼叫的上限要夠短，Demucs 一段的時間就是取消的最壞延遲。
+
+### 2.6 與 qwen3-0.6b 專用路徑的並存
+
+- 子程序內部用 `kind` 區分：`llm`（現有的 `load`、`run`、`token`、`done`）與 `onnx`（新的 `tensor_*`）。一個子程序一次只載入一個模型（沿用現有做法，避免記憶體疊加），切換模型時先 `dispose`。
+- Qwen3 的 `nr-engine.js`、`nr-tokenizer.js`、`nr-template.js` 不改動，只在 `nr-child.js` 的訊息分派處多一條路。
+- 通用服務不要求 Qwen 改寫；如果以後要把 Florence-2、Whisper 的解碼器搬進原生，那是「每個模型一份樣板」的工作，不是通用服務的一部分。
+
+---
+
+## 3. 逐模型建議
+
+判斷依據：
+1. 目前走 WebGPU 的模型，原生 CPU 可能反而比較慢。已知原生 CPU 對 WASM 約 1.3～1.5 倍，這是 Qwen3 0.6B 的實測；其他模型沒有實測，下面凡是說「會比較快」的都是推測。
+2. 耗時最長、最吃效能的先做。
+3. 原生加速後端（DirectML、Linux CUDA）只做量測，不做預設。
+
+| 模型 | 建議 | 理由 | 預期風險 |
+|---|---|---|---|
+| **Demucs 6 軌** | **做（第二批，量測通過就做）** | 耗時最長的音訊模型，段長固定，輸入輸出簡單；最可能因為原生 CPU 而有明顯收益（推測） | 130 MB 下載；圖形最佳化關閉（`DEMUCS_OPT`）可能讓原生速度不如預期；段界接縫（未確認有無重疊相加）；大輸出 16.5 MB 每段的檔案 IO |
+| **Basic Pitch** | **做（第一批，試點）** | 最小（225 KB）、前後處理已經在 JS、張量形狀與順序已實測；最適合用來驗證整條張量路徑 | 收益可能很小（模型很小，主要成本可能在 JS 前處理）；收益不大不代表不要做，它的價值是驗證協定 |
+| **YAMNet** | **做（第一批，跟 Basic Pitch 一起試）** | 15 MB，輸入一段 0.96 秒，呼叫次數少，前後處理簡單 | 收益不明；同 Basic Pitch |
+| **midigenai v5** | **測了再說** | 自回歸逐 token 生成，每步一次 `session.run`，固定成本會放大；KV 快取的形狀（GPU 與 CPU 不同）要在子程序內照樣維持；CPU 版的速度數字（7 秒）未實測 | 每步小張量，固定成本可能吃掉收益；GPU 版（q4 WebGPU）原生沒有對應後端，只能 CPU；KV 快取要跨多次呼叫保留在子程序（要新增 session 狀態的規則）；授權註記「訓練資料集授權未確認」 |
+| **Whisper base** | **測了再說（先量編碼器）** | 編碼器一次性、輸入大，原生 CPU 可能有收益（推測）；解碼器是逐 token 迴圈，放原生要做樣板，工作量大 | 解碼器逐 token 呼叫會放大固定成本；WebGPU 路徑（q8 在 WebGPU 的行為）未在這裡確認；`video_host` 有 WebGPU 失敗退 CPU 的邏輯，原生要跟它對齊 |
+| **SDXS-512（生圖與擴散細化）** | **測了再說（先問使用者同不同意 1.1 GB 下載）** | 最大的模型檔之一，每步 unet 一次，原生 CPU 或 DirectML 都可能有收益，但要實測；生圖步數由 `local_sd.js` 的設定決定，要先確認步數 | 下載量最大（GPU 版約 880 MB、CPU 版約 1.1 GB）；磁碟佔用加倍（見第 4 節）；SDXS 的 unet 在 DirectML 是否會失敗未知，要逐一測；**存放位置未查證** |
+| **TAESD（小型 VAE）** | **跟 SDXS 一起做，單獨不做** | 約 5 MB，沒有獨立價值 | 跟 SDXS 同 |
+| **Depth Anything V2 Small** | **做（第二批）** | 單次推論、輸入輸出簡單、只有一個張量進出；WASM 的 fp32 在 CPU 要 8～10 秒，原生 CPU 可能明顯較快（推測），很適合當「第二個量測對象」 | 99 MB 下載（CPU fp32）；WebGPU 用 fp16，原生的 fp16 支援要量測 |
+| **SlimSAM 77** | **測了再說（先做編碼器）** | 編碼器約 16 秒是大頭（實測），原生 CPU 可能有收益（推測）；解碼器每點一次，量少，之後再說 | 解碼器點數多時固定成本放大；登錄檔大小在兩個來源不一致（22 MB 與 13.8 MB），要以實際檔案為準 |
+| **MoveNet Thunder** | **不做** | CPU 推論約 0.3 秒，已經夠快；25 MB 下載不划算 | 無 |
+| **Florence-2 base** | **測了再說（最後才做）** | 同時有視覺編碼器與自回歸解碼器，還有 transformers.js 內部的生成迴圈，要逐步搬，工作量最大；實測 CPU 約 21～34 秒，收益可能很大，但不是第一批 | 生成迴圈與分詞在 transformers.js 內，搬出來要自己寫；WebGPU 的 q4 是否在原生可跑未知 |
+| **SmolVLM 256M** | **不做（先不管）** | `verified: false`，連網頁版的品質都還沒驗證；先不投入 | 無 |
+| **ViT-GPT2** | **不做** | 實測 CPU 約 2 秒，夠快，只是一句話描述，沒有需要加速的理由 | 無 |
+| **Qwen3 0.6B** | **已做（原生路徑已存在），本次範圍不動** | 已有原生路徑與實測 | DirectML 在某節點失敗（已知） |
+| **Qwen2.5、Qwen3 1.7B、SmolLM2、Granite** | **不在本次範圍；測了再說** | 只有 Qwen3 0.6B 驗證過原生路徑；其餘未在這台機器驗證，先不擴大範圍 | 更大的模型，下載量與記憶體需求更高 |
+| **Whisper（另一條路徑，transcribe_media）** | 跟 Whisper base 同一件事 | 同一模型，兩個入口 | 同 Whisper |
+| **Kokoro TTS、MOSS-TTS-Nano** | **不在本次範圍，另立評估** | 使用者列表外；MOSS 是 WASM-only，原生收益要另測 | 無 |
+
+---
+
+## 4. 模型檔共用
+
+### 4.1 現況（實測與讀程式）
+
+| 來源 | 存放位置 | 是否有檢查碼 |
+|---|---|---|
+| transformers.js 模型（Florence-2、SmolVLM、ViT-GPT2、Depth、SlimSAM、MoveNet、Whisper、Qwen 系列） | 瀏覽器 Cache Storage（`env.useBrowserCache = true`，`floating-assistant.js:50967`、`63534`） | **沒有**：`vlm_core.js` 的 `repo` 欄位沒有 commit 釘住，`resolve/main` 會跟著上游變；只有大小的檢查 |
+| 音訊模型（Basic Pitch、YAMNet、Demucs、midigenai） | IndexedDB `fa-a2m-models`，8 MB 分片，每片存起來（`audio_models.js:16`、`57`） | **有**：SHA-256 釘住，下載完比對，不符就清掉重下 |
+| SDXS／TAESD | 未查證（見 1.1 表） | SDXS 的 repo 與 commit 有釘住（`local_sd.js:16`、`18`）；大小核對在下載時做 |
+
+### 4.2 原生執行包需要什麼
+
+原生子程序要的是**檔案路徑**，不是瀏覽器快取的位元組。所以模型檔必須落地到使用者資料夾。
+
+### 4.3 建議做法
+
+**建議：一份落地到使用者資料夾，由現有下載流程寫入，並建一個索引檔。**
+
+1. 目錄：`userData/native-models/<model-id>/<檔名>`，另有 `userData/native-models/index.json`，每個條目記：模型 id、檔名、位元組數、SHA-256（如有）、來源 repo 與 revision（如有）、寫入時間。
+2. 寫入來源：
+   - 音訊模型（有 SHA-256）：從 IndexedDB 的分片依序讀出，寫進檔案（每次一片，避免一次把 130 MB 放進記憶體），寫完後核對 SHA-256。
+   - transformers.js 模型（沒有檢查碼）：不從瀏覽器快取讀（Cache Storage 的內容格式不是單純的檔案），而是由主程序依 repo 與檔名重新下載一次，寫入上述目錄，並在索引檔記下大小。這會重複下載一次，要先問使用者同意。
+3. 重複佔用：瀏覽器快取與原生目錄會各存一份，磁碟佔用加倍。SDXS 合計約 1.1 GB、Demucs 130 MB、Whisper 約 80 MB。
+   - 建議：原生目錄是唯一的原生來源，瀏覽器快取保留不動（網頁版路徑仍需要）。
+   - 替代：原生啟用後，提供「清除瀏覽器重複快取」的選項，但必須使用者確認；預設不刪。
+4. 不重複下載的做法：
+   - 音訊模型：從 IndexedDB 讀出寫檔，不用重新下載。
+   - transformers.js 模型：若使用者已經在網頁版下載過，原生目錄還是需要一份，會重新下載一次。這是本方案的代價，要在下載前列出檔名、來源、大小，取得同意。
+5. 舊版安裝不需要重裝：
+   - 原生目錄是按需建立的，沒有就走網頁版路徑，並提示「可以下載原生模型」。
+   - 下載流程與第 4.1 節的現有機制一致（分片、續傳、SHA-256），不要求安裝包改版。
+6. 版本釘住：
+   - 所有要給原生用的模型都要寫 revision 或 SHA-256 進索引檔。
+   - `vlm_core.js` 的 transformers.js 模型目前沒有釘住，原生目錄要用就要先補釘住，否則網頁版與原生版可能拿到不同版本，結果不一致。這一點要先問使用者。
+
+---
+
+## 5. 分階段實作計畫與驗收
+
+每階段格式：目標、檔案與函式、逐步清單、驗收（程式可檢查）、Windows 與 Linux 驗證方式、不准做的事。
+
+### 階段 1：逐模型量測（最便宜，必須先做）
+
+**目標**：用固定題目，逐模型比較「原生 CPU（onnxruntime-node 1.22.0）」、「WASM（onnxruntime-web 1.22.0）」、「WebGPU（onnxruntime-web 1.22.0）」的實際速度，並記錄輸出是否一致。
+
+**檔案與函式**（新增，不改產品程式）：
+- 新增 `scripts/eval/native_all_models_bench.js`：主流程，讀 `bench-config.json`，逐模型逐後端執行，結果寫 `test-reports/native-all-models/results.jsonl`（一行一筆，每完成一題就寫一行）。
+- 新增 `scripts/eval/native_all_models_bench/inputs/`：固定輸入（固定種子、固定音訊檔、固定影像），每個模型至少 3 題，題目與答案雜湊寫在 `inputs/manifest.json`。
+- 重用既有腳本的做法：`scripts/eval/native_vs_onnx_node.js`（原生量測）與 `scripts/eval/native_vs_wasm.eval.js`（網頁版量測）。不另寫新的推論程式。
+
+**逐步清單**：
+1. 寫 `bench-config.json`：列出 Basic Pitch、YAMNet、Depth Anything V2 Small、Demucs 6 軌、Whisper base（編碼器）、SlimSAM（編碼器）、SDXS（只量一步 unet，不跑完整生圖）、midigenai（只量 16 步）。
+2. 每個模型先檢查「模型檔是否已在本機」：
+   - 已在（音訊模型的 IndexedDB 或已有的原生目錄）：直接量。
+   - 不在：列檔名、來源、大小，寫入結果檔的 `needs_download` 欄位，標記「需先問使用者」，**不下載**。
+3. 量測設定：
+   - 每個後端每題跑 1 次暖機（不計時）＋ 3 次計時，取中位數。
+   - 子程序以低優先權執行（Windows 用 `os.setPriority(pid, 19)` 等級的低優先權；Linux 用 `nice`）。
+   - 總時間上限 45 分鐘；超過就停止並寫入 `aborted: "time_cap"`。
+   - 單次呼叫逾時 120 秒，逾時記錄為 `timeout`，不重試。
+4. 逐題進度：每完成一題寫一行 `{"model":..., "backend":..., "q":..., "ms":..., "ok":..., "out_hash":...}`。進度另寫 progress.jsonl，供 UI 或人工查看。
+5. 輸出一致性：每個模型的 WASM 結果當作參考，原生與 WebGPU 的輸出張量做最大絕對誤差比對，寫入 `max_abs_err`。
+6. 結束時輸出摘要表（每個模型一列，三個後端的中位數、誤差、狀態）。
+
+**驗收（程式可檢查）**：
+- `results.jsonl` 每一行都是合法 JSON，且欄位齊全（model、backend、q、ms、ok、out_hash、max_abs_err 或 null）。
+- 每個模型三個後端各有一列，或該後端明確記錄為 `skipped` 並附原因（例如「沒有 WebGPU 轉接器」）。
+- 沒有任何模型在量測過程中自動下載：可用 `needs_download` 欄位檢查，且量測前後的模型目錄檔案數不變。
+- 同一次量測跑兩遍，WASM 的 out_hash 一致（確認可重現）。
+- 總時間不超過 45 分鐘，超過時 `aborted` 欄位有值。
+
+**Windows 與 Linux 驗證方式**：
+- Windows：在 Electron 的 node 模式下執行（沿用 `native_vs_onnx_node.js` 的做法）。
+- Linux：**未實跑**。本次環境是 Windows，Linux 的量測要在有 Linux 環境時補做，結果先標「未驗證」。
+
+**不准做的事**：
+- 不准下載模型（即使是小檔）。需要下載的只列出來。
+- 不准啟用 DirectML 或 CUDA 作為量測條件之一，除非使用者另外同意（第 6 節的決定）。
+- 不准改產品程式（`renderer/src/**`、`native-runner/**`）。
+- 不准用網頁版的 `floating-assistant.js` 直接跑量測（它會觸發下載與 UI 狀態）。量測腳本必須自己載入需要的 ONNX 檔。
+
+### 階段 2：張量協定與試點（Basic Pitch ＋ YAMNet）
+
+**前提**：階段 1 的結果顯示原生 CPU 對這兩個模型不會比 WASM 差，且輸出誤差在容許範圍內。
+
+**目標**：在 `nr-protocol.js` 新增 `tensor_*` 訊息，`nr-child.js` 支援 `kind: 'onnx'`，用 Basic Pitch 跑通一整條路徑。
+
+**檔案與函式**：
+- `native-runner/nr-protocol.js`：第 10–20 行的訊息表新增 `tensor_load`、`tensor_run`、`tensor_done`；第 33–48 行的驗證函式新增對應欄位檢查。
+- `native-runner/nr-child.js`：訊息分派新增 `kind: 'onnx'` 分支，載入 `onnxruntime-node`（沿用 `nr-engine.js` 的 `ortModule()`）。
+- `renderer/src/music/audio_runtime.js`：新增一個「原生工作階段」的包裝，與 `createSession` 同介面，失敗時回退到既有的 WebGPU／WASM 路徑。
+- 新增 `native-runner/nr-tensor-io.js`：張量寫檔與讀檔（原始二進位，附 dtype、dims、位元組數核對）。
+
+**逐步清單**：
+1. 寫 `nr-tensor-io.js`，附單元測試（寫入後讀回一致、位元組數不符要丟錯）。
+2. 擴充 `nr-protocol.js` 的驗證，新增單元測試（不合法的 `inputs`、缺 `path` 要被拒絕）。
+3. `nr-child.js` 支援 `tensor_load` 與 `tensor_run`。
+4. 在 `audio_runtime.js` 加原生包裝，預設關閉（設定旗標），開啟時先試原生，失敗就退回原路徑。
+5. Basic Pitch 的 `makeTranscriber` 改成可接受外部 session（不改演算法）。
+
+**驗收（程式可檢查）**：
+- 單元測試：張量寫讀一致、協定驗證通過。
+- 原生輸出與 WASM 參考的最大絕對誤差 ≤ 1e-4（Basic Pitch 的 onset、note 張量各一項）。
+- 旗標關閉時，`audio_runtime.js` 的行為與現況完全一致（用既有的 `audio_runtime.test.js` 驗證，`scripts/music-tests/audio_runtime.test.js`）。
+- 原生失敗（例如 `nmp.onnx` 不存在）時，UI 或回傳值要顯示實際後端與真實原因，不靜默退回。
+
+**Windows 與 Linux 驗證方式**：Windows 用 Electron 真實執行；Linux 未實跑，標未驗證。
+
+**不准做的事**：
+- 不准把張量放進 stdin 或 stdout 的同一行。
+- 不准讓子程序在標準輸出寫除錯訊息。
+- 不准開本機埠或做任何網路伺服器。
+- 不准改動 Qwen 的 `load`、`run`、`token`、`done` 訊息。
+
+### 階段 3：Depth Anything V2 Small 與 Demucs
+
+**前提**：階段 2 通過，階段 1 量測顯示 Demucs 或 Depth 的原生收益明顯。
+
+**目標**：兩個模型都能走原生，並支援取消與逾時。
+
+**檔案與函式**：
+- `renderer/src/vlm/vlm_core.js`：Depth 的原生包裝（只在 `depth-estimation` 任務，不動 Florence 與其他）。
+- `renderer/src/music/audio_runtime.js`：`makeSeparator` 的原生包裝（段長與 `DEMUCS_OPT` 保留）。
+- `native-runner/nr-child.js`：`tensor_run` 支援取消（每次呼叫前檢查旗標）。
+
+**逐步清單**：
+1. Depth 先做（單次推論，風險小）。
+2. Demucs 段與段的拼接先確認是否有接縫：用同一首歌的原生與 WASM 輸出做比對，接縫位置的誤差要在容許範圍內。
+3. Demucs 段數多時，進度以段為單位回報。
+
+**驗收（程式可檢查）**：
+- Depth：原生與 WASM 的深度圖最大絕對誤差 ≤ 1e-3（值域 0 到 1 或 0 到 255，明寫在測試）。
+- Demucs：六軌的 SNR（相對 WASM）≥ 40 dB（推測的門檻，需第一階段量測後確認）。
+- 取消：送出取消後，下一段開始前就停止，不得在 5 秒內仍有新的段輸出。
+- 逾時：單段超過 `timeout_ms` 時子程序被 kill，UI 顯示「逾時，已退回網頁版」。
+
+**Windows 與 Linux 驗證方式**：同階段 2。
+
+**不准做的事**：
+- 不准為了加速而關閉檢查碼核對。
+- 不准把 Demucs 的 `DEMUCS_OPT` 改成 `all` 來「試試看」，除非先在階段 1 的量測中證明它在原生可以建 session。
+
+### 階段 4：midigenai、Whisper 編碼器、SlimSAM 編碼器
+
+**前提**：階段 3 完成，且階段 1 量測證明這些模型原生有收益。
+
+**目標**：
+- midigenai：CPU 版（wasm int8 對應的 ONNX）在原生跑，KV 快取保留在子程序。
+- Whisper：編碼器原生，解碼器仍在網頁版（混合路徑）。
+- SlimSAM：編碼器原生，解碼器仍在網頁版。
+
+**檔案與函式**：
+- `renderer/src/music/midigen_bridge.js`：`load(dev)` 支援原生選項。
+- `native-runner/nr-child.js`：`tensor_run` 支援保留 session 內的狀態（KV 快取）。
+- `renderer/src/video/video_host.js`：Whisper 編碼器的原生包裝。
+
+**驗收**：
+- midigenai：每步輸出的 logits 與 WASM 參考誤差 ≤ 1e-3；同一種子生成的音符序列完全相同。
+- Whisper 編碼器：輸出誤差 ≤ 1e-3，轉錄文字與網頁版一致（以固定的 3 段音訊比對）。
+- SlimSAM 編碼器：遮罩 IoU ≥ 0.98（與網頁版比）。
+
+**Windows 與 Linux 驗證方式**：同階段 2。
+
+**不准做的事**：
+- 不准把 Whisper 的解碼器搬進原生（這是另一個階段，要另外規劃）。
+- 不准在 midigenai 的 GPU 版上宣稱原生加速（原生沒有 WebGPU 後端）。
+
+### 階段 5：SDXS（生圖與擴散細化）
+
+**前提**：使用者同意 1.1 GB 下載與磁碟佔用（第 6 節），且階段 1 量測證明 unet 原生有收益。
+
+**目標**：SDXS 的 unet 原生跑，text encoder 與 VAE 仍在網頁版（混合路徑），或者全部原生（視量測而定）。
+
+**檔案與函式**：`renderer/src/imagegen/local_sd.js`、`renderer/src/imagegen/sd_turbo_core.js`、`native-runner/nr-child.js`。
+
+**驗收**：生成的影像與網頁版參考的 PSNR ≥ 35 dB（推測的門檻，要量測後確認）；同種子結果一致。
+
+**Windows 與 Linux 驗證方式**：同階段 2。
+
+**不准做的事**：不准在沒有使用者同意的情況下下載 1.1 GB。
+
+### 階段 6：Florence-2、SmolVLM、其他
+
+**前提**：前面階段完成，使用者另外決定。本次只列為「測了再說」，沒有驗收條件。
+
+---
+
+## 6. 要問使用者的決定（每項附推薦與理由）
+
+1. **要不要把 Basic Pitch 與 YAMNet 作為第一批試點？**
+   - 推薦：要。理由：最小、前後處理已在 JS、張量形狀已實測，最適合驗證整條張量路徑；收益可能不大，但它的價值在協定。
+2. **階段 1 的量測要不要實際下載需要的模型？**
+   - 推薦：不下載。只量已經在本機的模型；沒有的列檔名、來源、大小，等使用者逐一同意。理由：下載量最大的是 SDXS（約 1.1 GB），不能在量測時順手下載。
+3. **模型檔要不要在原生目錄保留一份（重複佔用磁碟）？**
+   - 推薦：保留一份，瀏覽器快取不動。理由：網頁版路徑要保留，刪快取會讓網頁版也要重下。提供「清除重複快取」選項，但預設不刪。
+4. **transformers.js 模型（沒有檢查碼）要不要補釘住 revision？**
+   - 推薦：要，並且在下載原生模型前先做。理由：沒釘住的話，原生與網頁版可能拿到不同版本，結果不一致，難以比對。
+5. **DirectML 要不要在第一階段量測中試？**
+   - 推薦：要試，但只量不當預設。理由：你的說明寫的是「不使用 DirectML（qwen 某節點失敗）」，但也寫「其他模型要逐一測」。我的理解是：量測可以試，預設不開。請確認。
+6. **SDXS 要不要進原生？**
+   - 推薦：測了再說，先問使用者是否接受 1.1 GB 下載與磁碟佔用。理由：它是最大的模型，收益不確定（每步固定成本可能吃掉收益）。
+7. **Demucs 要不要做？**
+   - 推薦：做，但要在階段 1 量測證明收益之後。理由：它是最耗時的音訊模型，最可能有收益；但它的圖形最佳化被關掉，原生速度要實測。
+8. **Florence-2 要不要做？**
+   - 推薦：最後才做。理由：它的生成迴圈在 transformers.js 內，搬出來工作量最大。
+9. **Kokoro 與 MOSS-TTS-Nano 要不要納入？**
+   - 推薦：不納入本次範圍，另立評估。理由：不在使用者列出的範圍內，而且 MOSS 是 WASM-only，要另測。
+10. **Whisper 登錄大小 80 MB 與介面文字 77 MB 不一致，以哪個為準？**
+    - 推薦：以實際下載檔案的位元組數為準，階段 1 量測時順便記錄，然後修正登錄檔。理由：目前兩處數字不一致，會誤導使用者的磁碟空間判斷。
+
+---
+
+## 附：本次調查沒有完成的部分（誠實列出）
+
+- SDXS 與 TAESD 的模型檔存放位置：未查證（`floating-assistant.js` 的 SDXS 下載流程未逐行追）。
+- midigenai 的下載是否走 IndexedDB 的同一套登錄：推測是，未逐行核對 `midigen_bridge.js` 的 `ensure`。
+- Demucs 段界是否有重疊相加：未確認。
+- transformers.js 內部的分詞與梅爾頻譜：未核對（在 transformers.js 套件內，不在本專案）。
+- Kokoro 與 MOSS-TTS-Nano 的檔案大小與位置：未查證。
+- 所有原生與 WebGPU 的速度：沒有實測，全部標推測，留給階段 1 量測。
+- Linux 的任何驗證：未實跑。
