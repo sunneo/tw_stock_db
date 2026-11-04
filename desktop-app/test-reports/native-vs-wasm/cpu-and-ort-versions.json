@@ -1,0 +1,13 @@
+{
+ "cpu": "Intel(R) Core(TM) i5-2320 CPU @ 3.00GHz（4 核心、4 執行緒）",
+ "features_windows_api": {
+  "AVX": true,
+  "AVX2": false,
+  "AVX512F": false,
+  "VNNI": "未檢查（此世代 Intel 沒有 VNNI）"
+ },
+ "ort_node_131_size_du": "296M（node_modules）",
+ "ort_node_122_size_du": "239M（node_modules）",
+ "ort_node_122_folder": "%TEMP%\\ort-node-test122（保留，未刪）",
+ "note": "CPU 的指令集旗標是 Windows API 的結果（IsProcessorFeaturePresent），沒有直接讀取 cpuid。"
+}

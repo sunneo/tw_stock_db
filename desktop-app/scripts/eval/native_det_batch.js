@@ -6,7 +6,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const ort = require(path.join(process.env.TEMP || os.tmpdir(), 'ort-node-test', 'node_modules', 'onnxruntime-node'));
+const ort = require(process.env.ORT_MODULE || path.join(process.env.TEMP || os.tmpdir(), 'ort-node-test', 'node_modules', 'onnxruntime-node'));
 const { applyTemplate } = require('../../native-runner/template.js');
 const { createTokenizer } = require('../../native-runner/tokenizer.js');
 const { validateGen, pickToken } = require('../../native-runner/gen_params.js');
@@ -17,7 +17,7 @@ const tok = createTokenizer(JSON.parse(fs.readFileSync(path.join(ORT_DIR, 'tok',
 const prompts = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'test-reports', 'native-vs-wasm', 'prompts.json'), 'utf8'));
 const GEN = validateGen({ do_sample: false, repetition_penalty: 1.08 }); // = FaVlm.textGenParams(model, { deterministic: true })
 const LAYERS = 28, KV = 8, HD = 128, MAX_NEW = 16, EOS = [151645, 151643];
-const OUT = path.join(__dirname, '..', '..', 'test-reports', 'native-vs-wasm', 'native-det-penalty.json');
+const OUT = process.env.DET_OUT || path.join(__dirname, '..', '..', 'test-reports', 'native-vs-wasm', 'native-det-penalty.json');
 
 function kvEmpty() { const out = {}; for (let l = 0; l < LAYERS; l++) for (const k of ['key', 'value']) out[`past_key_values.${l}.${k}`] = new ort.Tensor('float32', new Float32Array(0), [1, KV, 0, HD]); return out; }
 async function gen(sess, promptIds, rng, firstOut) {

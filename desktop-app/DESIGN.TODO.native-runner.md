@@ -301,3 +301,32 @@
 - **未排除**：兩邊讀到的檔案位元組是否完全相同（需要直接取出 WASM 側的位元組比對 md5）。
 - **無法在目前條件下判定**：同版本比對（ORT-node 1.22.0 vs ORT-web 1.22.0）需要安裝 onnxruntime-node 1.22.0，屬於新安裝，需使用者同意，**尚未做**。若兩引擎本來就有這種量級的數值差異，「餘弦 > 0.999」這個目標無法靠修改原生生成迴圈達成。
 - 摘要檔：`test-reports/native-vs-wasm/bisect-summary.json`。
+
+### 8-A4 同版本比對：差異來自 onnxruntime-node 1.31.1 與 1.22.0（真量測）
+
+- 使用者先前同意的安裝範圍只涵蓋 1.31.1；1.22.0 是另外詢問後才安裝（使用者同意）。安裝位置：`%TEMP%\ort-node-test122`（`npm install onnxruntime-node@1.22.0`，`node_modules` 239 MB，du）。**該資料夾保留，未刪除。** 倉庫與舊的 `ort-node-test` 沒有被改動。
+- **單次 forward（同一串 ids、同一個模型檔，與 WASM 的 ORT-web 1.22.0 比對，16 題）**：
+  - onnxruntime-node **1.22.0** vs WASM：餘弦 **1.0**（最小 1.0），top-1 相同 **16/16**，最大絕對誤差 **0**（`test-reports/native-vs-wasm/bisect-ort-1.22.0.json`，腳本 `scripts/eval/bisect_ort_version.js`）。
+  - onnxruntime-node 1.22.0 vs 1.31.1：餘弦平均 0.93654，top-1 相同 12/16。
+- **確定性生成（與 WASM 相同 gen：貪婪＋重複懲罰 1.08，16 個新 token）**：1.22.0 的文字與 WASM **完全相同 16/16**（`native-det-penalty-ort122.json`）。8 封閉題答對數：1.22.0 **2/8**，WASM **2/8**。
+- **結論**：差異的來源是 **onnxruntime-node 1.31.1 的數值行為**，不是輸入、不是生成迴圈、也不是原生引擎本身的 WASM 與原生內核本質差異。在同版本（1.22.0）下，原生與 WASM 行為**等價**（逐 logit 相同，文字相同）。
+- **原先的假設（與管理層的候選）**：
+  - 「CPU 沒有 VNNI，q8 的 u8s8 矩陣乘法在原生內核飽和」：**沒有證據**。目前只知道 1.31.1 與 1.22.0 的數值不同，沒有查出 1.31.1 改了哪個內核，也沒有 fp32 對照，所以不下結論。
+  - CPU 指令集（Windows API，`test-reports/native-vs-wasm/cpu-and-ort-versions.json`）：Intel i5-2320（Sandy Bridge 世代）：AVX 有、AVX2 沒有、AVX-512 沒有。這是記錄，不是證據。
+- **誰比較接近 fp32 真值**：**無法判定**。沒有 fp32 模型可比（快取中只有 q8 版）。以答對數輔助（8 題，樣本太小）：1.22.0 與 WASM 都是 2/8，1.31.1 是 1/8，只能說明 1.22.0 與 WASM 一致，不能說明誰比較準。
+- **產品建議**：原生路徑若要與桌面版 WASM（ORT-web 1.22.0）行為一致，應固定 onnxruntime-node **1.22.0**，而不是最新版。這是一個需要使用者決定的版本選擇（見下）。
+
+### 8-B DirectML（更新）
+
+- onnxruntime-node **1.22.0** 上，DirectML 同樣能建立 session，但第一次預填即失敗於同一個節點（`SkipSimplifiedLayerNormalization`，`/model/layers.0/post_attention_layernorm/SkipLayerNorm`）。所以 DirectML 的失敗不取決於版本（1.31.1 與 1.22.0 都失敗）。
+- Linux CUDA：**未實跑**（本機沒有 Linux 環境）。
+
+### 8-C 不重裝（確認狀態）
+
+- 設計已在 8-C（`9fb99ed8`）寫明：IPC 註冊移到 `main-ext.js`、渲染程序以既有的 `desktopAPI.rawfs` 做檔案信箱、執行器檔案改為頂層名稱。
+- **尚未實作**。目前程式碼仍含 stage 3、4 的 `main.js`、`preload.js` 改動，對舊版安裝不生效。
+
+### 需要使用者決定
+
+1. 原生路徑的 onnxruntime-node 版本：固定 **1.22.0**（與桌面版 WASM 的 ORT-web 1.22.0 一致，本次量測證實逐 logit 相同），還是採用 1.31.1（已知與 1.22.0 有數值差異）？推薦：**1.22.0**。
+2. 是否同意開始 8-C 的實作（需要另開提交與舊版熱更新測試）？
