@@ -14,35 +14,76 @@
     const BARE_RE = /(?<![\w@./-])(?:[a-z0-9-]+\.)+(?:com|tw|org|net|io|gov|edu|jp|cn|co|dev|app|info|tv|me|ai|uk|us|hk|kr)(?:\/[^\s，。,、）)]*)?(?![\w-])/gi;
     const ATTACH_RE = /\[附件：([^\]]*)\]/g;
     const FILE_ID_RE = /([^、（()\s]+?)（file_id=([^）]+)）/g;
-    const EXT_RE = /([\w一-鿿().-]+?)\.(deck\.yaml|3dscene\.yaml|pptx?|docx?|xlsx?|csv|pdf|midi?|mp3|wav|flac|ogg|m4a|mp4|mov|mkv|webm|svg|png|jpe?g|gif|webp|md|markdown|txt|glb|gltf|obj|stl|fbx)(?![\w])/i;
-
-    // 種類 → 開啟工具（都是既有工具；沒有就寫 null，並在 note 老實說）
-    const KINDS = {
-        url: { label: '網頁', tool: 'browser_create_tab' },
-        music: { label: '音樂（MIDI 編輯器）', tool: 'midi_edit_open' },
-        pdf: { label: 'PDF', tool: 'parse_uploaded_file', note: '目前沒有專用的 PDF 檢視器，只能讀出文字內容' },
-        docx: { label: 'Word 文件', tool: 'edit_docx_open' },
-        xlsx: { label: 'Excel 試算表', tool: 'edit_xlsx_open' },
-        csv: { label: 'CSV 表格', tool: 'edit_csv_open' },
-        model3d: { label: '3D 場景編輯器', tool: 'edit_3d_open' },
-        deck: { label: '簡報', tool: 'open_existing_presentation' },
-        svg: { label: 'SVG 編輯器', tool: 'edit_svg_open' },
-        picture: { label: '圖片編輯器', tool: 'edit_picture_open' },
-        video: { label: '影片編輯器', tool: 'edit_video_open' },
-        markdown: { label: 'Markdown 編輯器', tool: 'edit_markdown_open' },
-        text: { label: '文字編輯器', tool: 'edit_text_open' },
-        editor: { label: '編輯器', tool: null }
-    };
-    const EXT_KIND = { 'deck.yaml': 'deck', '3dscene.yaml': 'model3d', ppt: 'deck', pptx: 'deck', doc: 'docx', docx: 'docx', xls: 'xlsx', xlsx: 'xlsx', csv: 'csv', pdf: 'pdf', mid: 'music', midi: 'music', mp3: 'music', wav: 'music', flac: 'music', ogg: 'music', m4a: 'music', mp4: 'video', mov: 'video', mkv: 'video', webm: 'video', svg: 'svg', png: 'picture', jpg: 'picture', jpeg: 'picture', gif: 'picture', webp: 'picture', md: 'markdown', markdown: 'markdown', txt: 'text', glb: 'model3d', gltf: 'model3d', obj: 'model3d', stl: 'model3d', fbx: 'model3d' };
-    const NOUN_KIND = [
-        ['deck', /簡報|投影片|deck|powerpoint|pptx?\b/i], ['music', /音樂|歌曲|曲子|旋律|配樂|midi|鋼琴捲簾|作曲|樂譜/i], ['pdf', /pdf/i],
-        ['docx', /word|docx?\b|文件檔|文書/i], ['xlsx', /excel|xlsx?\b|試算表/i], ['csv', /csv|表格/i], ['model3d', /3d|三維|立體場景|場景編輯/i],
-        ['video', /影片|video|剪輯/i], ['svg', /svg|向量圖/i], ['picture', /圖片|照片|圖檔|相片/i], ['markdown', /markdown|筆記/i], ['text', /純文字|文字檔|記事本/i]
+    // ---------- 「打開」的種類表（MIME 對應）----------
+    // 鍵＝種類；每一種有 MIME 類型與副檔名（判斷依據）、使用者常說的名詞，值＝開啟工具（或斜線指令）與檢視器。
+    // 這張表是「底線」不是全部：說法沒對上時，由 deriveTool 從工具目錄的說明自動推導（見下面），不靠一句一句手寫規則。
+    // 覆蓋測試（scripts/offline-gate-open.test.js）會掃程式裡所有名稱含 open／viewer／editor／player／preview 的工具與斜線指令，
+    // 每個都必須出現在這張表（tool／slashes／alsoTools）或 EXEMPT（寫明不適用的原因）；新增工具沒登記就測試失敗。
+    const OPEN_TABLE = [
+        { kind: 'url', label: '網頁', mimes: ['text/uri-list'], exts: [], nouns: '網頁|網站|網址|瀏覽器|browser|chrome', tool: 'browser_create_tab', viewer: '瀏覽器控制（AI Controlled 分頁群組）' },
+        { kind: 'terminal', label: '終端機', mimes: ['application/x-sh'], exts: [], nouns: '終端機|terminal|命令列|指令列|shell|bash', tool: 'terminal_create', viewer: 'WASM 沙盒終端機（busybox ash）', noFile: true },
+        { kind: 'music', label: '音樂（MIDI 編輯器）', mimes: ['audio/midi', 'audio/x-midi'], exts: ['mid', 'midi'], nouns: '音樂|歌曲|曲子|旋律|配樂|midi|鋼琴捲簾|作曲|樂譜', tool: 'midi_edit_open', playTool: 'midi_play', slashes: ['/edit-midi'], viewer: 'MIDI 編輯器／播放卡片', noFile: true },
+        { kind: 'audio', label: '音訊', mimes: ['audio/mpeg', 'audio/wav', 'audio/flac', 'audio/ogg', 'audio/mp4', 'audio/*'], exts: ['mp3', 'wav', 'flac', 'ogg', 'm4a'], nouns: '音檔|錄音|音訊|聲音檔', tool: null, note: '目前沒有專用的音訊播放器（只有 MIDI 播放）' },
+        { kind: 'pdf', label: 'PDF', mimes: ['application/pdf'], exts: ['pdf'], nouns: 'pdf', tool: 'parse_uploaded_file', note: '目前沒有專用的 PDF 檢視器，只能讀出文字內容' },
+        { kind: 'docx', label: 'Word 文件', mimes: ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/msword'], exts: ['docx', 'doc'], nouns: 'word|docx?\\b|文件檔|文書|公文|合約書', tool: 'edit_docx_open', slashes: ['/edit-docx', '/edit-word'], viewer: 'Word 文件編輯器' },
+        { kind: 'xlsx', label: 'Excel 試算表', mimes: ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.ms-excel'], exts: ['xlsx', 'xls'], nouns: 'excel|xlsx?\\b|試算表|報表|工作表', tool: 'edit_xlsx_open', slashes: ['/edit-xlsx', '/edit-sheet'], viewer: '試算表編輯器' },
+        { kind: 'csv', label: 'CSV 表格', mimes: ['text/csv'], exts: ['csv'], nouns: 'csv|表格', tool: 'edit_csv_open', slashes: ['/edit-csv'], viewer: 'CSV 編輯器' },
+        { kind: 'deck', label: '簡報', mimes: ['application/vnd.openxmlformats-officedocument.presentationml.presentation', 'application/vnd.ms-powerpoint', 'application/x-deck+yaml'], exts: ['pptx', 'ppt', 'deck.yaml'], nouns: '簡報|投影片|deck|powerpoint|pptx?\\b', tool: 'open_existing_presentation', alsoTools: ['pptx_to_deck'], slashes: ['/edit-media-presentation', '/media-open-presentation'], viewer: '簡報播放器／簡報編輯器' },
+        { kind: 'markdown', label: 'Markdown 編輯器', mimes: ['text/markdown'], exts: ['md', 'markdown'], nouns: 'markdown|筆記', tool: 'edit_markdown_open', slashes: ['/edit-markdown', '/edit-md'], viewer: 'Markdown 編輯器' },
+        { kind: 'text', label: '純文字編輯器', mimes: ['text/plain'], exts: ['txt', 'log'], nouns: '純文字|文字檔|記事本', tool: 'edit_text_open', slashes: ['/edit-text', '/edit-txt'], viewer: '純文字編輯器' },
+        { kind: 'code', label: '程式碼（文字編輯器）', mimes: ['text/javascript', 'application/javascript', 'text/x-python', 'text/x-c', 'text/x-java', 'text/css'], exts: ['js', 'ts', 'py', 'c', 'cpp', 'h', 'java', 'go', 'rs', 'sh', 'css', 'rb', 'php'], nouns: '原始碼|程式碼檔|腳本檔', tool: 'edit_text_open', viewer: '純文字編輯器' },
+        { kind: 'html', label: '網頁編輯器', mimes: ['text/html'], exts: ['html', 'htm'], nouns: '網頁編輯|html', tool: 'webedit_open', slashes: ['/webedit', '/edit-html'], viewer: '網頁編輯器（預覽、HTML／CSS／JS）', noFile: true },
+        { kind: 'data', label: '資料檢視器（JSON／YAML／TOML）', mimes: ['application/json', 'application/yaml', 'application/toml', 'text/tab-separated-values'], exts: ['json', 'jsonc', 'yaml', 'yml', 'toml', 'tsv'], nouns: 'json|yaml|toml|tsv', tool: null, slash: '/view', slashes: ['/view'], viewer: '資料檢視器（_dataViewOpenFile）' },
+        { kind: 'svg', label: 'SVG 編輯器', mimes: ['image/svg+xml'], exts: ['svg'], nouns: 'svg|向量圖', tool: 'edit_svg_open', slashes: ['/edit-svg'], viewer: 'SVG 編輯器', noFile: true },
+        { kind: 'picture', label: '圖片編輯器', mimes: ['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/*'], exts: ['png', 'jpg', 'jpeg', 'gif', 'webp'], nouns: '圖片|照片|圖檔|相片', tool: 'edit_picture_open', slashes: ['/edit-picture'], viewer: '圖片編輯器', noFile: true },
+        { kind: 'video', label: '影片編輯器', mimes: ['video/mp4', 'video/quicktime', 'video/webm', 'video/*'], exts: ['mp4', 'mov', 'mkv', 'webm'], nouns: '影片|video|剪輯', tool: 'edit_video_open', slashes: ['/edit-video'], viewer: '影片編輯器' },
+        { kind: 'model3d', label: '3D 場景編輯器', mimes: ['model/gltf+json', 'model/gltf-binary', 'model/stl', 'model/obj', 'application/x-3dscene+yaml'], exts: ['glb', 'gltf', 'obj', 'stl', 'fbx', '3mf', '3dscene.yaml'], nouns: '3d|三維|立體場景|場景編輯', tool: 'edit_3d_open', slashes: ['/edit-3d', '/edit-3d-model', '/view-3d-attachment'], viewer: '3D 場景編輯器／檢視器', noFile: true },
+        { kind: 'viewerdoc', label: '互動文件檢視器', mimes: ['application/x-viewerdoc+yaml'], exts: ['viewerdoc.yaml', 'viewer.yaml'], nouns: '互動文件|互動表單', tool: 'import_interactive_viewer_attachment', slashes: ['/import-viewer-attachment'], viewer: '互動表單卡片' },
+        { kind: 'worksheet', label: '學習單編輯器', mimes: [], exts: [], nouns: '學習單|習作|練習卷', tool: 'worksheet_open', viewer: '學習單編輯器', noFile: true },
+        { kind: 'sqlite', label: 'SQLite 瀏覽器', mimes: ['application/x-sqlite3', 'application/vnd.sqlite3'], exts: ['sqlite', 'sqlite3', 'db'], nouns: 'sqlite|資料庫檔', tool: null, slash: '/sqlite-browser', slashes: ['/sqlite-browser'], viewer: 'SQLite 瀏覽器', noFile: true },
+        { kind: 'archive', label: '壓縮檔', mimes: ['application/zip', 'application/x-tar', 'application/gzip'], exts: ['zip', 'tar', 'gz', 'tgz'], nouns: '壓縮檔', tool: null, note: '目前沒有專用的壓縮檔檢視器（可以請終端機解開再看）' },
+        { kind: 'editor', label: '編輯器', mimes: [], exts: [], nouns: '', tool: null }
     ];
+    // 不是「讓使用者打開某種東西」的工具／斜線指令，要寫明原因（覆蓋測試用）
+    const EXEMPT = {
+        tools: {
+            playbook_state: '程式設計流程的狀態機，不是開啟',
+            render_interactive_viewer: 'AI 用 YAML 渲染表單給使用者看，是產生內容，不是依使用者說的種類開檔',
+            get_interactive_viewer_yaml: '讀取目前互動表單的 YAML（查詢）',
+            get_viewer_state: '查詢互動表單狀態（查詢）',
+            set_viewer_state: '修改互動表單狀態（AI 操作，不是使用者開啟）',
+            terminal_list: '列出終端機（查詢）', terminal_run: '在已開的終端機執行指令（理解閘用 terminal_create 的 initial_command 一次做完）',
+            terminal_get_text: '讀終端機畫面（查詢）', terminal_cp_to: '複製檔案進終端機（檔案操作）', terminal_cp_from: '從終端機取出檔案（檔案操作）'
+        },
+        slashes: {
+            '/edit-file': '依副檔名自動分派到各編輯器，等於理解閘本身的種類表',
+            '/edit-join': '把兩個編輯器內容合併，不是開啟',
+            '/edit-game-2d': '遊戲編輯器：沒有檔案種類可對應，使用者要明說「2D 遊戲編輯器」；先列為不適用',
+            '/edit-game-3d': '遊戲編輯器：同上',
+            '/remote-open': '開啟遠端機器的結果，屬於遠端群組流程'
+        }
+    };
+    const KINDS = {}; const EXT_KIND = {}; const NOUN_KIND = [];
+    OPEN_TABLE.forEach((e) => {
+        KINDS[e.kind] = { label: e.label, tool: e.tool, slash: e.slash || null, note: e.note || '', viewer: e.viewer || '', noFile: !!e.noFile, playTool: e.playTool || null };
+        e.exts.forEach((x) => { EXT_KIND[x] = e.kind; });
+        if (e.nouns) NOUN_KIND.push([e.kind, new RegExp(e.nouns, 'i')]);
+    });
+    const MIME_KIND = {}; OPEN_TABLE.forEach((e) => e.mimes.forEach((m) => { MIME_KIND[m] = e.kind; }));
+    // MIME → 種類：先精確比對，再比對 type/*（例如 image/bmp → picture）
+    function kindOfMime(mime) {
+        const m = String(mime || '').toLowerCase().split(';')[0].trim(); if (!m) return null;
+        if (MIME_KIND[m]) return MIME_KIND[m];
+        const star = m.split('/')[0] + '/*'; return MIME_KIND[star] || null;
+    }
+    const EXT_RE_SRC = OPEN_TABLE.reduce((a, e) => a.concat(e.exts), []).filter((x, i, arr) => arr.indexOf(x) === i).sort((x, y) => y.length - x.length).map((x) => x.replace(/\./g, '\\.')).join('|');
+    const EXT_RE = new RegExp('([\\w\\u4e00-\\u9fff().-]+?)\\.(' + EXT_RE_SRC + ')(?![\\w])', 'i');
+
     const BROWSER_RE = /瀏覽器|browser|chrome|網頁|網站|網址/i;
 
-    const OPEN_RE = /(?:打開|開啟|開一下|開個|開到|前往|瀏覽|(?<![a-z])open(?![a-z])|launch|開(?![始會心車機關獎放發頭場玩笑支票戶學])|看一下|看看)/i;
+    const OPEN_RE = /(?:打開|開啟|開一下|開個|開到|前往|瀏覽|叫出|調出|秀出|顯示出|查看|檢視|(?<![a-z])open(?![a-z])|launch|開(?![始會心車機關獎放發頭場玩笑支票戶學])|看一下|看看)/i;
     const PLAY_RE = /播放|播一下|聽一下|聽聽|播出/;
+    const EXPLICIT_OPEN_RE = /打開|開啟|叫出|調出|秀出|顯示出|查看|檢視|開一下|開個|前往/;
     const SHOT_RE = /截取|截圖|截個圖|截一張|螢幕截圖|screenshot/i;
     const SEARCH_RE = /(?:搜尋|搜索|查詢|查一下|查找|尋找|找出|找到|找一下|找|查|google)/i;
     const READ_RE = /(?:讀取|讀一下|讀|抓取|抓一下|抓|擷取內容|讀出)/;
@@ -82,6 +123,9 @@
         const fe = src.files[0] && EXT_RE.exec(src.files[0].name);
         const ext = (fe && fe[2]) || (src.names[0] && src.names[0].ext);
         if (ext && EXT_KIND[ext.toLowerCase()]) return { kind: EXT_KIND[ext.toLowerCase()], by: '副檔名' };
+        // 比「網址／瀏覽器」更具體的說法先判（網頁編輯器、終端機；指令裡的網址不代表要開網頁）
+        if (/網頁編輯|網站編輯|webedit/i.test(t)) return { kind: 'html', by: '名詞（網頁編輯器）' };
+        if (/終端機|terminal|命令列|指令列/i.test(t) && !/瀏覽器|browser|chrome/i.test(t)) return { kind: 'terminal', by: '名詞（終端機）' };
         if (src.urls.length) return { kind: 'url', by: '網址' };
         if (BROWSER_RE.test(t)) return { kind: 'url', by: '提到瀏覽器／網頁' };
         for (const [k, re] of NOUN_KIND) if (re.test(t)) return { kind: k, by: '名詞' };
@@ -89,6 +133,89 @@
         return { kind: null, by: '' };
     }
 
+    // ---------- 語意推導：從工具目錄推出「這句話要開哪一種」（不靠一句一句手寫規則）----------
+    const OPEN_NAME_RE = /open|viewer|editor|player|preview|^terminal_create$/i;
+    const SLASH_NAME_RE = /open|view|edit|play|preview/i;
+    // 靜態掃原始碼的註冊（測試用）：回傳 { tools:[{name, desc}], slashes:[name] }。執行時用 this.tools 的說明，不掃原始碼
+    function scanTools(src) {
+        const tools = []; const seen = {};
+        const re = /(?:registerOptional|registerTool|bcTool|[^\w.]tool)\(\s*'([a-z][a-z0-9_]*)'\s*,\s*(?:`([^`]{0,160})|'([^']{0,160}))?/g;
+        let m; while ((m = re.exec(src))) { if (seen[m[1]]) continue; seen[m[1]] = 1; tools.push({ name: m[1], desc: m[2] || m[3] || '' }); }
+        // 用三元運算子或輔助函式註冊的（例如 edit_xlsx_open／edit_csv_open）：名稱含 open／viewer／editor／player／preview 的字串常值也算
+        const lre = /(?:registerOptional|registerTool)\(([^,]{0,240}),/g;
+        while ((m = lre.exec(src))) { const q = /'([a-z][a-z0-9_]*)'/g; let n; while ((n = q.exec(m[1]))) { if (seen[n[1]]) continue; seen[n[1]] = 1; tools.push({ name: n[1], desc: '' }); } }
+        const slashes = []; const sre = /(?:register_slash_command|[^\w.]cmd)\(\s*'(\/[a-z0-9-]+)'/g; while ((m = sre.exec(src))) if (slashes.indexOf(m[1]) < 0) slashes.push(m[1]);
+        return { tools, slashes };
+    }
+    // 目錄裡「會打開某種東西」的工具／斜線指令名稱
+    function openClassTools(names) { return names.filter((n) => OPEN_NAME_RE.test(n)); }
+    function openClassSlashes(names) { return names.filter((n) => SLASH_NAME_RE.test(n)); }
+    // 覆蓋檢查：回傳沒登記（也不在 EXEMPT）的工具與斜線指令
+    function coverageGaps(toolNames, slashNames) {
+        const inTable = {}; const slashIn = {};
+        OPEN_TABLE.forEach((e) => { if (e.tool) inTable[e.tool] = 1; if (e.playTool) inTable[e.playTool] = 1; (e.alsoTools || []).forEach((t) => { inTable[t] = 1; }); (e.slashes || []).forEach((s) => { slashIn[s] = 1; }); if (e.slash) slashIn[e.slash] = 1; });
+        return {
+            tools: openClassTools(toolNames).filter((n) => !inTable[n] && !EXEMPT.tools[n]),
+            slashes: openClassSlashes(slashNames).filter((n) => !slashIn[n] && !EXEMPT.slashes[n]),
+            staleExempt: Object.keys(EXEMPT.tools).filter((n) => toolNames.indexOf(n) < 0).concat(Object.keys(EXEMPT.slashes).filter((n) => slashNames.indexOf(n) < 0))
+        };
+    }
+    const DERIVE_STOP = /打開|開啟|開一下|開個|叫出來|叫出|調出|秀出|顯示出|顯示|查看|檢視|看一下|看看|幫我|請|一下|這個|那個|那份|這份|那些|把|給我|我要|我想|用|來|吧|的|了|它/g;
+    function bigramsOf(s) {
+        const out = []; const t = String(s || '').toLowerCase();
+        (t.match(/[a-z0-9]{2,}/g) || []).forEach((w) => out.push(w));
+        const zh = t.match(/[一-鿿]+/g) || []; zh.forEach((run) => { if (run.length === 1) return; for (let i = 0; i < run.length - 1; i++) out.push(run.slice(i, i + 2)); if (run.length >= 2 && run.length <= 4) out.push(run); });
+        return out;
+    }
+    // 推導：句子 ＋ 工具目錄（[{name, desc}]）＋ 同義詞組（陣列的陣列）→ 候選種類排序。每個候選＝種類表的一列，文件＝種類名稱、名詞、副檔名、檢視器、對應工具的說明。
+    function deriveTool(text, index, opts) {
+        opts = opts || {};
+        text = String(text || '').replace(/\[附件：[^\]]*\]/g, ' ');
+        const q0 = bigramsOf(String(text || '').replace(DERIVE_STOP, ' '));
+        if (!q0.length) return [];
+        const q = q0.slice();
+        (opts.synonyms || []).forEach((g) => { if (Array.isArray(g) && g.some((t) => t.length >= 2 && q0.indexOf(String(t).toLowerCase()) >= 0)) g.forEach((t) => { if (t.length >= 2) bigramsOf(t).forEach((b) => { if (q.indexOf(b) < 0) q.push(b); }); }); });
+        const descOf = {}; (index || []).forEach((t) => { descOf[t.name] = t.desc || ''; });
+        const docs = OPEN_TABLE.filter((e) => e.kind !== 'editor').map((e) => { const txt = [e.label, e.nouns.replace(/\\b|[|?]/g, ' '), e.exts.join(' '), e.viewer || '', e.tool ? descOf[e.tool] || '' : '', e.tool || '', e.slash || ''].join(' '); return { e, docText: txt, docSet: new Set(bigramsOf(txt).concat((e.slashes || []).map((s) => s.replace(/[^a-z0-9]+/g, ' ')))) }; });
+        const df = {}; docs.forEach((d) => d.docSet.forEach((b) => { df[b] = (df[b] || 0) + 1; }));
+        const res = docs.map((d) => { let score = 0; const hit = []; new Set(q).forEach((b) => { if (d.docSet.has(b)) { score += Math.log(1 + docs.length / df[b]) * (b.length >= 3 ? 1.5 : 1); hit.push(b); } }); return { kind: d.e.kind, label: d.e.label, tool: d.e.tool, slash: d.e.slash || null, score: Math.round(score * 100) / 100, hit, d }; });
+        // 雙字詞都沒對上時，退一步用單字（權重低、要求比第二名明顯高才採用）：財報→報表、紀錄→錄音…
+        if (!res.some((r) => r.score > 0)) {
+            const uni = {}; docs.forEach((d) => { const cs = new Set((d.docText || '').match(/[一-鿿]/g) || []); d.chars = cs; cs.forEach((c) => { uni[c] = (uni[c] || 0) + 1; }); });
+            const qc = new Set((String(text || '').replace(DERIVE_STOP, ' ').match(/[一-鿿]/g) || []));
+            res.forEach((r) => { qc.forEach((c) => { if (r.d.chars.has(c)) { r.score += 0.9 * Math.log(1 + docs.length / uni[c]); r.hit.push(c); } }); r.score = Math.round(r.score * 100) / 100; });
+        }
+        res.forEach((r) => { delete r.d; });
+        return res.filter((r) => r.score > 0).sort((a, b) => b.score - a.score);
+    }
+    // 程式先決定的門檻：最高分夠高、且明顯高於第二名
+    function pickDerived(cands) { if (!cands.length) return null; const a = cands[0], b = cands[1]; return a.score >= 3 && (!b || a.score >= b.score * 1.4) ? a : null; }
+    const DANGER_RE = /(?:^|[\s;&|])(?:rm|sudo|mkfs|dd|shutdown|reboot|halt|format|del|rmdir|chmod|chown|kill|killall)(?:\s|$)|>\s*\/dev\/|:\(\)\s*\{|curl[^|]*\|\s*(?:sh|bash)|wget[^|]*\|\s*(?:sh|bash)/i;
+    // 終端機要跑的指令：句子裡「跑／執行／運行 xxx」，或常見的自然說法（看目錄→ls、目前位置→pwd）
+    function terminalCommand(text) {
+        const t = String(text || '');
+        const m = /(?:跑|執行|運行|run)\s*[「"'`]?([^「」"'`，。\n]+?)[」"'`]?\s*$/i.exec(t.replace(/\[附件：[^\]]*\]/g, ''));
+        if (m && m[1].trim().length >= 1) return m[1].trim();
+        if (/目錄|資料夾內容|檔案列表|有哪些檔案|有什麼檔案/.test(t)) return 'ls';
+        if (/目前(?:路徑|位置|在哪)|現在在哪/.test(t)) return 'pwd';
+        return '';
+    }
+
+    // 探索第③步給小模型的封閉題：候選裡挑一個（0＝都不是）。候選沒有時用常見種類當選單
+    const COMMON_KINDS = ['docx', 'xlsx', 'deck', 'picture', 'video', 'text'];
+    function exploreOptions(cands) {
+        const list = (cands || []).filter((c) => c.kind && c.kind !== 'editor').slice(0, 4);
+        if (list.length >= 2) return list;
+        const extra = COMMON_KINDS.filter((k) => !list.some((c) => c.kind === k)).slice(0, 5 - list.length).map((k) => ({ kind: k, label: KINDS[k].label, score: 0 }));
+        return list.concat(extra);
+    }
+    function exploreMessages(text, options) {
+        return [
+            { role: 'system', content: '你負責判斷使用者想打開哪一種東西。只輸出一個 JSON 物件，格式：{"choice": 編號}。編號只能是選單裡有的數字；0 代表都不是。' },
+            { role: 'user', content: '選單：\n' + options.map((o, i) => (i + 1) + '. ' + o.label).join('\n') + '\n0. 都不是\n\n使用者的話：\n' + String(text).slice(0, 200) }
+        ];
+    }
+    function validateExplore(n) { return (o) => { const c = o && o.choice; if (!Number.isInteger(c)) return ['「choice」必須是整數']; if (c < 0 || c > n) return ['「choice」必須是 0～' + n + ' 之間的整數']; return []; }; }
     // ---------- 記憶、理解題、核對（階段 4）----------
     // 後置步驟的類型：給使用者選、給小模型選的封閉題都用同一份
     const POST_CHOICES = [
@@ -102,7 +229,7 @@
     function recall(memory, clause) {
         const k = memKey(clause); if (k.length < 2) return null;
         if (memory[k]) return memory[k];
-        for (const key of Object.keys(memory)) if (key.length >= 3 && (k.indexOf(key) >= 0 || key.indexOf(k) >= 0)) return memory[key];
+        for (const key of Object.keys(memory)) if (key.indexOf('s:') !== 0 && key.length >= 3 && (k.indexOf(key) >= 0 || key.indexOf(k) >= 0)) return memory[key];
         return null;
     }
     function applyType(out, type, clause, by) {
@@ -169,7 +296,9 @@
 
         const src = parseSources(original);
         const clauses = src.stripped.split(SPLIT_RE).map((x) => x.replace(/\u0001/g, ' ').trim()).filter(Boolean);
-        const kd = detectKind(original, src);
+        let kd = detectKind(original, src);
+        if (!kd.kind && opts.memory) { const mk = opts.memory['s:' + memKey(original)]; if (mk && mk.indexOf('kind:') === 0 && KINDS[mk.slice(5)]) kd = { kind: mk.slice(5), by: '記憶（以前問過的說法）' }; }
+        if (!kd.kind && opts.forceKind && KINDS[opts.forceKind]) kd = { kind: opts.forceKind, by: opts.forceBy || '語意推導' };
         out.kind = kd.kind; out.kindBy = kd.by;
         if (src.urls[0]) out.url = src.urls[0];
         if (src.files[0]) { out.fileId = src.files[0].id; out.fileName = src.files[0].name; } else if (src.names[0]) out.fileName = src.names[0].name;
@@ -197,6 +326,7 @@
                 if (isSum) pushPost({ type: 'summarize' });
                 continue;
             }
+            if (out.kind === 'terminal' && /^(?:請|幫我)*(?:跑|執行|運行|run)\s*\S/i.test(c)) continue;
             if (isShot) { pushPost({ type: 'screenshot' }); continue; }
             if (isSum) { if (!sawMain) { sawMain = true; out.action = 'summarize'; } pushPost({ type: 'summarize' }); if (isReason) pushPost({ type: 'reason', text: c }); continue; }
             if (isReason) { if (!sawMain) { sawMain = true; out.action = 'reason'; } pushPost({ type: 'reason', text: c }); continue; }
@@ -221,17 +351,20 @@
             if (out.post.length > before) out.unhandled = [];
         }
         if (!out.action && kd.kind && kd.by !== '提到瀏覽器／網頁') out.action = 'open'; // 只有名詞（「簡報」「音樂編輯器」）時當作要開
+        out.explicit = (out.action === 'open' || out.action === 'play') && EXPLICIT_OPEN_RE.test(original);
         out.visible = out.action === 'open' || out.action === 'play';
         out.closeWhenDone = out.kind === 'url' && (out.action === 'open' || out.action === 'read' || out.action === 'screenshot'); // 舊共識：自己開的分頁自己關
 
         const K = out.kind && KINDS[out.kind];
         if (K) {
-            out.label = K.label; out.openTool = K.tool; out.note = K.note || '';
-            if (out.kind === 'music' && out.action === 'play') out.openTool = 'midi_play';
+            out.label = K.label; out.openTool = K.tool; out.openSlash = K.slash; out.viewer = K.viewer; out.note = K.note || '';
+            if (out.kind === 'music' && out.action === 'play') out.openTool = K.playTool || 'midi_play';
             if (out.kind === 'deck' && /\.pptx?$/i.test(out.fileName || '')) out.openTool = 'pptx_to_deck';
             if (out.kind === 'url' && out.url) out.openArgs = { url: out.url, active: out.visible, keep_open: false };
             else if (out.fileId && out.openTool) out.openArgs = { file_id: out.fileId };
-            else if (out.kind === 'music' && out.openTool === 'midi_edit_open') out.openArgs = {};
+            else if (out.kind === 'terminal') { out.command = terminalCommand(original); out.openArgs = out.command ? { initial_command: out.command } : {}; out.risk = out.command && DANGER_RE.test(out.command) ? 'confirm' : 'safe'; if (out.risk === 'confirm') out.note = '指令看起來有風險，執行前會先問你確認'; }
+            else if (out.openSlash) out.openArgs = { slash_args: out.fileName || '' };
+            else if (K.noFile && out.openTool) out.openArgs = {};
         }
 
         // 處理建議
@@ -239,8 +372,8 @@
             if (!out.kind) { out.advice = 'ask'; out.reason = '說了要開，但看不出要開什麼（沒有網址、檔案或種類）'; }
             else if (out.kind === 'editor') { out.advice = 'ask'; out.reason = '只說「編輯器」，要先問是哪一種（文件、試算表、3D、音樂、簡報…）'; }
             else if (out.kind === 'url' && !out.url) { out.advice = 'ask'; out.reason = '要開網頁但句子裡沒有網址'; }
-            else if (out.kind !== 'url' && !out.fileId && out.kind !== 'music') { out.advice = 'need_file'; out.reason = KINDS[out.kind].label + '需要檔案：請附上檔案（或給 file_id）'; }
-            else if (!out.openTool) { out.advice = 'no_tool'; out.reason = '沒有對應的開啟工具'; }
+            else if (out.kind !== 'url' && !out.fileId && !(KINDS[out.kind] && KINDS[out.kind].noFile) && !(out.openSlash && out.fileName)) { out.advice = 'need_file'; out.reason = KINDS[out.kind].label + '需要檔案：請附上檔案（或給 file_id）'; }
+            else if (!out.openTool && !out.openSlash) { out.advice = 'no_tool'; out.reason = '沒有對應的開啟工具' + (out.note ? '：' + out.note : ''); }
             else out.advice = 'open';
         }
         const base = out.advice === 'direct' || out.advice === 'open';
@@ -257,5 +390,5 @@
         return out;
     }
 
-    return { gate, parseSources, detectKind, KINDS, cleanKeyword, POST_CHOICES, memKey, recall, resolveClause, interpretMessages, validateChoice, choiceType, verify, verifyMessages, validateAB };
+    return { gate, parseSources, detectKind, KINDS, exploreOptions, exploreMessages, validateExplore, OPEN_TABLE, EXEMPT, kindOfMime, scanTools, coverageGaps, deriveTool, pickDerived, terminalCommand, DANGER_RE, cleanKeyword, POST_CHOICES, memKey, recall, resolveClause, interpretMessages, validateChoice, choiceType, verify, verifyMessages, validateAB };
 });

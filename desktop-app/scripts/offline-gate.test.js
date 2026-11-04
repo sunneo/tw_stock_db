@@ -39,7 +39,7 @@ T('找美國選舉新聞，再摘要', { action: 'search', keyword: '美國選�
 T('打開音樂編輯器', { action: 'open', kind: 'music', openTool: 'midi_edit_open', advice: 'open' });
 T('開一首 midi 來編輯', { action: 'open', kind: 'music', openTool: 'midi_edit_open' });
 T('打開 song.mid' + att('song.mid', 'm1'), { action: 'open', kind: 'music', openTool: 'midi_edit_open', fileId: 'm1', advice: 'open' });
-T('播放 song.mp3' + att('song.mp3', 'm2'), { action: 'play', kind: 'music', openTool: 'midi_play', fileId: 'm2' });
+T('播放 song.mp3' + att('song.mp3', 'm2'), { action: 'play', kind: 'audio', advice: 'no_tool', fileId: 'm2' });
 // pdf／docx／xlsx
 T('打開 report.pdf' + att('report.pdf', 'p1'), { action: 'open', kind: 'pdf', openTool: 'parse_uploaded_file', advice: 'open', fileId: 'p1' });
 T('開啟這份 pdf', { action: 'open', kind: 'pdf', advice: 'need_file' });
@@ -51,7 +51,7 @@ T('開啟 Excel 試算表', { action: 'open', kind: 'xlsx', advice: 'need_file' 
 T('打開 data.csv' + att('data.csv', 'c1'), { action: 'open', kind: 'csv', openTool: 'edit_csv_open' });
 // 3D
 T('打開 room.glb' + att('room.glb', 'g1'), { action: 'open', kind: 'model3d', openTool: 'edit_3d_open', advice: 'open' });
-T('開啟 3D 場景編輯器', { action: 'open', kind: 'model3d', advice: 'need_file' });
+T('開啟 3D 場景編輯器', { action: 'open', kind: 'model3d', advice: 'open', openTool: 'edit_3d_open' });
 T('打開 scene.3dscene.yaml' + att('scene.3dscene.yaml', 'g2'), { kind: 'model3d', fileId: 'g2' });
 // deck
 T('打開 簡報 demo.deck.yaml' + att('demo.deck.yaml', 's1'), { action: 'open', kind: 'deck', openTool: 'open_existing_presentation', fileId: 's1', advice: 'open' });

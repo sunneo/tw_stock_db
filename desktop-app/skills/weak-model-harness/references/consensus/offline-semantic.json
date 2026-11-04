@@ -1,0 +1,31 @@
+{
+  "name": "離線語意推導共識（2026-11-05 使用者原則：減少我們主動塞資料，核心是探索與語意推導）",
+  "source": "使用者原話（2026-11-05）：「這種應該都要進harness，做到內建規則，就像我們一開始幫LLM建立tool call，讓他vlm讀懂圖片……建立原則讓LLM在不清楚的時候要有能力查wiki。甚至反思。都是為了減少我們主動塞資料。所以最核心的探索，語意推導必須要做好」。另：「我們所有的種類麻煩都要cover到」「也有開terminal」「純文字viewer, json viewer, 就像是mime的對應」。",
+  "scope": ["renderer/src/floating-assistant.js"],
+  "must": [
+    "_otGateExplore",
+    "_otGateReflect",
+    "_otGateResolve",
+    "deriveTool",
+    "coverageGaps",
+    "FA_OT_GATE_MAX_REFLECT",
+    "knowledge_ask",
+    "kindOfMime",
+    "application/json",
+    "application/pdf",
+    "terminal_create"
+  ],
+  "forbid": [
+    {"re": "並找美國選舉新聞", "flags": ""},
+    {"re": "tw\\.yahoo\\.com[^\\n]{0,40}(?:id|expr|pattern)\\s*:", "flags": "i"}
+  ],
+  "allow": [],
+  "rules": [
+    {"id": "table-is-floor", "text": "種類表（MIME 對應）與規則是底線，不是全部；新說法由 deriveTool 從工具目錄的說明、同義詞組自動推導，不為單一句子寫死規則當解法。"},
+    {"id": "explore-order", "text": "不確定時的探索順序固定且內建在迴圈裡：①工具目錄（程式）→ ②知識庫／wiki（knowledge_ask）→ ③離線小模型字母題（qwen3-0.6b＋CoLU Thinking）→ ④問使用者。每一步都在卡片上留下紀錄。"},
+    {"id": "reflect", "text": "做完核對有沒有達成目標；沒達成就換路線，上限 FA_OT_GATE_MAX_REFLECT（寫死，目前 2）；成功後把「句子→種類」寫進記憶，下次不用再探索。"},
+    {"id": "coverage", "text": "覆蓋測試（scripts/offline-gate-open.test.js）自動掃出名稱含 open／viewer／editor／player／preview 的工具與開啟類斜線指令，每個都要在種類表或 EXEMPT（寫明原因）；新增工具沒登記就失敗。"},
+    {"id": "danger-confirm", "text": "終端機等有風險的動作仍走既有的確認機制（chosen.risk = confirm）。"},
+    {"id": "honest", "text": "做不到就明說（沒有檢視器、沒有搜尋框、小模型沒載入），不拿無關結果充數、不假裝做完。"}
+  ]
+}

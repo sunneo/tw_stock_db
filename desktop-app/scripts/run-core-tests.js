@@ -43,6 +43,8 @@ const suites = [
     ['離線理解閘（動作、目標種類、開啟工具、後置步驟、處理建議）', 'scripts/offline-gate.test.js'],
     ['離線理解閘接進執行流程（找主題、站內搜尋、摘要、路由）', 'scripts/offline-gate-exec.test.js'],
     ['離線理解閘：理解不了先思考、問使用者並記憶、最後核對', 'scripts/offline-gate-think.test.js'],
+    ['離線理解閘：打開的種類表（MIME 對應）、覆蓋測試、終端機、語意推導命中率', 'scripts/offline-gate-open.test.js'],
+    ['離線理解閘：探索迴圈（目錄→知識庫→小模型→問使用者）與反思換路線', 'scripts/offline-gate-explore.test.js'],
     ['單元目錄核心（已登記工具 → 單元：型別、副作用、可用性、信任等級；型別字串與相容判斷；格式驗證；評量統計）', 'renderer/src/catalog/catalog_core.test.js'],
     ['型別接線矩陣與路徑搜尋（回傳型別推論、具體程度、布林矩陣連乘、前 K 條接線與得分、萬用結構強制轉型）', 'renderer/src/catalog/matrix_core.test.js'],
     ['單元目錄：Python 原型抽取（註解 → 型別、原型 → 單元、真實跑抽取腳本）', 'renderer/src/catalog/extract_py.test.js'],

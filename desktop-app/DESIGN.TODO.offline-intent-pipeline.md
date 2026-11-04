@@ -145,6 +145,40 @@
 - 「關鍵字打開也太rough，我們也可以開音樂，開pdf, docx, xlsx, 3D model, 編輯器」→ 「打開」不是一個動作，是「動詞加目標種類」：理解閘要先判斷目標種類再選工具：網址→瀏覽器；音樂／音檔→音樂播放與編輯；pdf、docx、xlsx（含附件或檔案路徑）→對應檢視器；3D 模型→3D 場景編輯器；圖片、SVG、簡報等→對應編輯器。種類的判斷依據：網址、副檔名、附件、使用者說的名詞。目前規則 `browser_open_read` 只認「瀏覽器打開＋網址」，其他「打開」全落到別條規則或沒規則。階段 2 的理解閘案例要涵蓋這些種類（每種至少 3 句），並先查既有工具（midi_edit_open、各編輯器開啟工具、檢視器）與既有「開啟」規則，不要另造。
 - 「也可以開deck」（2026-11-05）→ 目標種類再加：deck（簡報，`.pptx` 或本機簡報編輯器／deck 檢視器）→ 對應的簡報編輯器；理解閘案例也要涵蓋。
 
+- 「也有開terminal」（2026-11-05）→ 目標種類再加：終端機。既有工具 terminal_create（可帶 initial_command 一次建立並執行）、terminal_list、terminal_run、terminal_get_text；理解閘用 terminal_create 的 initial_command，有風險的指令（rm、sudo、dd、curl|sh 等）走既有的確認機制（chosen.risk=confirm）。案例：「開一個終端機」「打開 terminal 跑 ls」「開終端機並執行 echo hello」。
+- 「我們所有的種類麻煩都要cover到」「純文字viewer, json viewer, 就像是mime的對應」（2026-11-05）→ 種類表做成 MIME 對應（程式裡的 OPEN_TABLE，見 renderer/src/offline/intent_gate.js），並有覆蓋測試。既有的「依類型選檢視器」邏輯：遠端群組的 _rgViewKind／_rgFileKind（依副檔名與 mime 選專屬檢視器）、/view 斜線指令（資料檢視器：xlsx、csv、tsv、json、yaml、toml）、_openHtmlViewer、fa-widget 訊息；理解閘沿用 /view 與各 *_open 工具，沒有另造檢視器。
+
+### 11.1 種類表（MIME 對應；由程式的 OPEN_TABLE 產生）
+
+| 種類 | MIME 類型 | 副檔名 | 開啟工具／斜線指令 | 檢視器 |
+| --- | --- | --- | --- | --- |
+| url（網頁） | text/uri-list | — | browser_create_tab | 瀏覽器控制（AI Controlled 分頁群組） |
+| terminal（終端機） | application/x-sh | — | terminal_create | WASM 沙盒終端機（busybox ash） |
+| music（音樂（MIDI 編輯器）） | audio/midi、audio/x-midi | mid、midi | midi_edit_open、播放：midi_play、/edit-midi | MIDI 編輯器／播放卡片 |
+| audio（音訊） | audio/mpeg、audio/wav、audio/flac、audio/ogg、audio/mp4、audio/* | mp3、wav、flac、ogg、m4a | （目前沒有專用的音訊播放器（只有 MIDI 播放）） | — |
+| pdf（PDF） | application/pdf | pdf | parse_uploaded_file（目前沒有專用的 PDF 檢視器，只能讀出文字內容） | — |
+| docx（Word 文件） | application/vnd.openxmlformats-officedocument.wordprocessingml.document、application/msword | docx、doc | edit_docx_open、/edit-docx、/edit-word | Word 文件編輯器 |
+| xlsx（Excel 試算表） | application/vnd.openxmlformats-officedocument.spreadsheetml.sheet、application/vnd.ms-excel | xlsx、xls | edit_xlsx_open、/edit-xlsx、/edit-sheet | 試算表編輯器 |
+| csv（CSV 表格） | text/csv | csv | edit_csv_open、/edit-csv | CSV 編輯器 |
+| deck（簡報） | application/vnd.openxmlformats-officedocument.presentationml.presentation、application/vnd.ms-powerpoint、application/x-deck+yaml | pptx、ppt、deck.yaml | open_existing_presentation、pptx_to_deck、/edit-media-presentation、/media-open-presentation | 簡報播放器／簡報編輯器 |
+| markdown（Markdown 編輯器） | text/markdown | md、markdown | edit_markdown_open、/edit-markdown、/edit-md | Markdown 編輯器 |
+| text（純文字編輯器） | text/plain | txt、log | edit_text_open、/edit-text、/edit-txt | 純文字編輯器 |
+| code（程式碼（文字編輯器）） | text/javascript、application/javascript、text/x-python、text/x-c、text/x-java、text/css | js、ts、py、c、cpp、h、java、go、rs、sh、css、rb、php | edit_text_open | 純文字編輯器 |
+| html（網頁編輯器） | text/html | html、htm | webedit_open、/webedit、/edit-html | 網頁編輯器（預覽、HTML／CSS／JS） |
+| data（資料檢視器（JSON／YAML／TOML）） | application/json、application/yaml、application/toml、text/tab-separated-values | json、jsonc、yaml、yml、toml、tsv | /view | 資料檢視器（_dataViewOpenFile） |
+| svg（SVG 編輯器） | image/svg+xml | svg | edit_svg_open、/edit-svg | SVG 編輯器 |
+| picture（圖片編輯器） | image/png、image/jpeg、image/gif、image/webp、image/* | png、jpg、jpeg、gif、webp | edit_picture_open、/edit-picture | 圖片編輯器 |
+| video（影片編輯器） | video/mp4、video/quicktime、video/webm、video/* | mp4、mov、mkv、webm | edit_video_open、/edit-video | 影片編輯器 |
+| model3d（3D 場景編輯器） | model/gltf+json、model/gltf-binary、model/stl、model/obj、application/x-3dscene+yaml | glb、gltf、obj、stl、fbx、3mf、3dscene.yaml | edit_3d_open、/edit-3d、/edit-3d-model、/view-3d-attachment | 3D 場景編輯器／檢視器 |
+| viewerdoc（互動文件檢視器） | application/x-viewerdoc+yaml | viewerdoc.yaml、viewer.yaml | import_interactive_viewer_attachment、/import-viewer-attachment | 互動表單卡片 |
+| worksheet（學習單編輯器） | — | — | worksheet_open | 學習單編輯器 |
+| sqlite（SQLite 瀏覽器） | application/x-sqlite3、application/vnd.sqlite3 | sqlite、sqlite3、db | /sqlite-browser | SQLite 瀏覽器 |
+| archive（壓縮檔） | application/zip、application/x-tar、application/gzip | zip、tar、gz、tgz | （目前沒有專用的壓縮檔檢視器（可以請終端機解開再看）） | — |
+
+不適用（EXEMPT，覆蓋測試要求寫明原因）：playbook_state：程式設計流程的狀態機，不是開啟；render_interactive_viewer：AI 用 YAML 渲染表單給使用者看，是產生內容，不是依使用者說的種類開檔；get_interactive_viewer_yaml：讀取目前互動表單的 YAML（查詢）；get_viewer_state：查詢互動表單狀態（查詢）；set_viewer_state：修改互動表單狀態（AI 操作，不是使用者開啟）；terminal_list：列出終端機（查詢）；terminal_run：在已開的終端機執行指令（理解閘用 terminal_create 的 initial_command 一次做完）；terminal_get_text：讀終端機畫面（查詢）；terminal_cp_to：複製檔案進終端機（檔案操作）；terminal_cp_from：從終端機取出檔案（檔案操作）；/edit-file：依副檔名自動分派到各編輯器，等於理解閘本身的種類表；/edit-join：把兩個編輯器內容合併，不是開啟；/edit-game-2d：遊戲編輯器：沒有檔案種類可對應，使用者要明說「2D 遊戲編輯器」；先列為不適用；/edit-game-3d：遊戲編輯器：同上；/remote-open：開啟遠端機器的結果，屬於遠端群組流程。
+
+覆蓋測試（scripts/offline-gate-open.test.js）自動掃出名稱含 open／viewer／editor／player／preview 的工具與開啟類斜線指令，每個都必須在種類表或 EXEMPT；新增工具沒登記就失敗。種類判斷順序：副檔名 → 網頁編輯器／終端機等具體說法 → 網址 → 瀏覽器字樣 → 名詞；都沒有才進語意推導與探索（第 13 節）。
+
 ## 12. 階段 2～4 實作註記（2026-11-05，子工作階段；提交 7e4de04c、c343b725、c0df5c82）
 
 - 實作位置：`renderer/src/offline/intent_gate.js`（純函式；動作、目標種類、開啟工具、後置步驟、記憶、核對）；接線在 `floating-assistant.js` 的 `_otGateApply`／`_otGateResolve`／`_otGatePost`／`_otGateVerifyAsk` 與 `_otExecute` 的 steps 分支（後置步驟在關閉分頁之前跑）。
@@ -153,3 +187,15 @@
 - 規則接手條件：規則是字面（regex）且信心 ≥0.8、或工具與理解閘的開啟工具相同，就尊重規則；語意勉強配到別的工具（例如「打開 合約.docx」→ merge_pdfs 0.66）才由閘接手。
 - 沒做／只推測：①PDF 沒有專用檢視器，只能 `parse_uploaded_file` 讀文字；②「比較／判斷」「取第 N 則」後置步驟只記成「沒做到」（階段 5）；③離線小模型（qwen3-0.6b）實際回答品質沒量測，真桌面版的實測用「小模型沒載入」路徑（直接問使用者），小模型路徑只有注入假模型的單元測試；④真擴充功能沒接，實測用替身瀏覽器工具。
 - 既有失敗（非本次造成，推測）：`midi_route.test.js` 解析來源的 `re:` 格式失敗、tray_dialog 輸出格式、computer-remote 兩項。
+
+## 13. 語意推導、探索迴圈、反思（2026-11-05，使用者原則，子工作階段實作）
+
+使用者原話：「這種應該都要進harness，做到內建規則……建立原則讓LLM在不清楚的時候要有能力查wiki。甚至反思。都是為了減少我們主動塞資料。所以最核心的探索，語意推導必須要做好」。（第 12 節是階段 2～4 的實作註記，這一節是接著的新原則。）
+
+1. 種類表與規則是底線：核心是 `deriveTool`——把句子的雙字詞（找不到時退到單字）、同義詞組（`FA_SEM_GROUPS` 與使用者自訂）拿去對工具目錄（種類名稱、名詞、副檔名、工具說明），算分數排序；最高分夠高且明顯高於第二名，程式就直接決定（`pickDerived`）。
+2. 不確定時的探索順序（內建在 `_otGateExplore`）：①工具目錄（程式）→ ②知識庫（`knowledge_ask`，查使用者自己放進去的文件；本版沒有另外接專案 wiki／`ref_lookup`）→ ③離線小模型（qwen3-0.6b＋CoLU Thinking）字母選擇題 → ④問使用者。每一步都在卡片上留下紀錄。
+3. 反思（`_otGateReflect`）：執行後沒成功就換路線，上限 `FA_OT_GATE_MAX_REFLECT`＝2（寫死）；成功後把「整句→種類」寫進記憶（key 為 `s:` 加正規化句子），下次不用再探索。
+4. 共識檔：`skills/weak-model-harness/references/consensus/offline-semantic.json`（must：探索、反思、覆蓋測試、knowledge_ask 等；forbid：為單一句子寫死規則）；`consensus_check.js` 對程式碼檢查通過。
+5. 驗收（誠實回報，見 `scripts/offline-gate-open.test.js` 輸出）：第一組 20 句新說法（關鍵詞多半已在種類表的名詞裡）程式推導命中 20/20；第二組 10 句「關鍵詞不在表裡」（財報、名單、設計稿、會議紀錄、提案、績效表、教材、腳本、錄影…）**只靠程式推導命中 2/10**，其餘要靠探索第②～④步（知識庫、小模型字母題、問使用者）。沒命中的原因：這些詞不在任何種類的名詞、說明或同義詞組裡，雙字詞對不上，單字退路分數又太接近。要提高程式端命中率，要靠補同義詞組（使用者回答後可自動擴充）而不是補規則。
+6. 沒做／推測：探索第②步沒用真的知識庫跑過（只有注入假資料的單元測試）；第③步只有假模型的單元測試；PDF、音訊、壓縮檔目前沒有檢視器，卡片會明說。
+7. 實機發現（真 Electron，已裝 qwen3-0.6b，開 Thinking）：「把那份財報叫出來」（附一個沒副檔名的附件）探索③小模型選了「簡報」，**答錯**（該是試算表）；只有 1 筆樣本，不能當正確率，但足以說明 0.6b 的猜測不可靠。因此：小模型選的種類、反思換路線的結果**不自動寫進記憶**（只有使用者回答、或程式靠工具目錄／知識庫有把握的才記），卡片明說「猜的，沒有自動記住」。真正量測 0.6b 在這類題的正確率仍是階段 5 的待辦。
