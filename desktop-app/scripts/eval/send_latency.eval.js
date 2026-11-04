@@ -60,18 +60,28 @@ window.fetch = async (url, init) => {
   return mk(reply);
 };
 
+// 兩組：topicShiftCheck 關（預設）與開；每組先清空對話，各自從乾淨狀態送同樣三則。
 const texts = ['幫我畫一張貓的圖', '幫我創作一首音樂', '再畫一張狗'];
-for (const text of texts) {
-  cur = { text, steps: [], modelCalls: [] };
-  t0 = now();
-  let err = null;
-  await Promise.race([fa.executeChat(text), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 60000))]).catch((e) => { err = String(e && e.message || e); });
-  cur.totalMs = rel();
-  cur.firstModelCallMs = cur.modelCalls.length ? cur.modelCalls[0].atMs : null;
-  cur.err = err;
-  R.messages.push(cur);
-  cur = null;
+R.passes = {};
+for (const [label, on] of [['off', false], ['on', true]]) {
+  fa.advancedSettings.topicShiftCheck = on;
+  fa._clearChatHistory();
+  R.messages = [];
+  for (const text of texts) {
+    cur = { text, steps: [], modelCalls: [] };
+    t0 = now();
+    let err = null;
+    await Promise.race([fa.executeChat(text), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 60000))]).catch((e) => { err = String(e && e.message || e); });
+    cur.totalMs = rel();
+    cur.firstModelCallMs = cur.modelCalls.length ? cur.modelCalls[0].atMs : null;
+    cur.err = err;
+    R.messages.push(cur);
+    cur = null;
+  }
+  R.passes[label] = R.messages;
 }
+delete R.messages;
+fa.advancedSettings.topicShiftCheck = false;
 R.loadedScripts = Array.from(document.scripts).map((s) => s.src).filter(Boolean).slice(0, 30);
 window.fetch = realFetch;
 return R;

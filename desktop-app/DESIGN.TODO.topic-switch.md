@@ -46,9 +46,32 @@
 - `executeChat` 中 `_checkTopicTransition` 呼叫處（約 102549 行，需以 Grep 重新確認）。
 - `_checkTopicTransition` 定義處（約 95871 行，需以 Grep 重新確認）。
 
-## 量測結果
+## 步驟 4 — executeChat 加條件（已完成，2026-11-04）
 
-（步驟 4 完成後填入：`scripts/eval/send_latency.eval.js` 修前與修後的模型呼叫序列）
+- 改動：`renderer/src/floating-assistant.js` 約 102553 行，`executeChat` 的 `_checkTopicTransition` 呼叫改為 `if (this.advancedSettings.topicShiftCheck === true) await this._checkTopicTransition(userText);`，`stopRequested` 檢查保留。
+- `_checkTopicTransition` 是唯一呼叫處（Grep 驗證）。`topicData.currentTopic` 只在它內部讀寫，其餘只有重設（約 79551、106615 行），關閉時沒有殘留依賴。
+- 評估檔：`scripts/eval/send_latency.eval.js` 改成兩組（先 `_clearChatHistory()` 再送同樣三則），`off`＝預設、`on`＝開啟。
+
+### 量測（真桌面版，2026-11-04）
+
+| 則 | 修前（舊程式，無論設定都判斷） | 修後 off（預設） | 修後 on（開啟） |
+|---|---|---|---|
+| 1 畫貓 | 步驟有跑但無模型呼叫（訊息數不足 3 就提早 return）→ 主模型 | 主模型 | 步驟有跑但無模型呼叫 → 主模型 |
+| 2 創作音樂 | 判斷 → 摘要 → 主模型 | 主模型 | 判斷 → 摘要 → 主模型 |
+| 3 再畫狗 | 判斷 → 主模型 | 主模型 | 判斷 → 主模型 |
+
+- 修前第 1 則：`_checkTopicTransition` 有出現在步驟列，但模型呼叫只有主模型（訊息數不足 3 會提早 return）。
+- 修後 off：三則都沒有 `_checkTopicTransition` 步驟，模型呼叫只有主模型。第 2 則沒有判斷與摘要。
+- 修後 on：與修前第 2、3 則完全相同（判斷 → 摘要 → 主模型；判斷 → 主模型），證明開啟時行為不變。
+- 第 2 則修前耗時約 29.9 ms、修後 off 約 11.9 ms（同一機器單次量測，僅供參考，不是統計結論）。
+
+## 驗證總結
+
+- 步驟 2：`scripts/eval/topic_shift_setting.eval.js` 真桌面版全部通過（預設 false、舊設定 false、只接受布林、匯出匯入保留 true）。
+- 步驟 3：`scripts/eval/topic_shift_ui.eval.js` 真桌面版全部通過（核取方塊存在、預設未勾、點擊改設定值）。
+- 步驟 4：`scripts/eval/send_latency.eval.js` 真桌面版，見上表。
+- 每次評估都在全新暫存資料夾、換埠（17941–17944）執行；每次都先重建嵌入檔才評估。
+- 評估載入的是工作目錄的實作：修後 off 組沒有判斷步驟，修前有，這個差異只可能來自本次改動。
 
 ## 教訓
 

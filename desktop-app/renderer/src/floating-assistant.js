@@ -102550,7 +102550,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         // 之後、_ensureNativeToolSupportProbed()之前了（見那邊的說明），
         // 這裡不再重複呼叫一次。
 
-        await this._checkTopicTransition(userText);
+        if (this.advancedSettings.topicShiftCheck === true) await this._checkTopicTransition(userText); // 話題更動檢查：預設關閉，不等模型判斷、不產生話題摘要
         if (this.stopRequested) return;
 
         // ============================================================
