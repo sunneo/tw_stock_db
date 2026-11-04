@@ -584,6 +584,7 @@ const FaRemoteDispatch = (function () {
             const id = this._chatNewId('c'), title = '來自 ' + job.fromName + '：' + String(job.text).replace(/\s+/g, ' ').slice(0, 22);
             this._chatIndex.chats.push({ id, title, groupId: null, createdAt: now, updatedAt: now, touched: true, shared: true, nodeName: job.fromName, parentId: inbox.inboxId, status: null, remote: { fromName: job.fromName, fromId: job.from, taskId: job.taskId, at: now, fp } });
             try { this._subchatSetStatus(id, 'start'); } catch (_) { /* 狀態更新失敗不影響執行 */ }
+            try { await this._remoteInboxLink(inbox.inboxId, id, title); } catch (_) { /* 收件對話的連結卡片失敗不影響執行 */ }
             const ctx = this._chatCtxNew(id); this._chatCtxs.set(id, ctx); const run = this._chatRunner(ctx);
             const trust = { trusted: '指紋已核對', changed: '⚠️ 指紋跟你核對過的不同', new: '指紋尚未核對', none: '沒有指紋' }[st];
             run._pushAssistantMessage('📨 **遠端需求記錄**\n\n- 來自：**' + job.fromName + '**（' + (mem ? (mem.kind === 'desktop' ? '桌面版' : '網頁版') : '未知') + '）\n- 時間：' + new Date(now).toLocaleString() + '\n- 指紋：' + (fp || '—') + '（' + trust + '）\n- 任務編號：' + job.taskId + '\n\n這是群組裡另一台機器交給這台的需求，由這台機器用自己的模型與工具執行，結果會接在下面。\n\n這個對話已自動分享到群組：發出需求的機器可以在左邊清單看到它、並接著對話。', null);

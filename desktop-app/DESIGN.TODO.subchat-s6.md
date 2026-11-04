@@ -151,6 +151,31 @@ rg 收到 task(sub=false, fromName=N)
 - 嵌入式網頁版路徑（沒有對話清單，走 `_rgRecordInline`）沒有驗證，行為理論上未變（程式未改），但沒有證據。
 - 收件對話被點開時的畫面（目前會顯示一般空對話的建議卡片）是步驟 4 的工作，尚未處理。
 
+## 6.6 步驟 4：冒泡與 `@`（已完成，真桌面版驗證過）
+
+改動：
+
+- `renderer/src/remote/rg_dispatch.js`：`_rgCreateRemoteChat` 建立子對話後，呼叫 `_remoteInboxLink(inboxId, childId, title)`（連結卡片進收件對話）。
+- `renderer/src/floating-assistant.js`：
+  - `_remoteInboxLink`（`_remoteInboxMod` 旁）：收件對話第一次建立時放一則說明卡片；每個子對話放一張 `_subchatLink` 連結卡片（沿用 S3 的形狀）。收件對話 ctx 用 `_chatCtxLoad` 載入，存檔後若目前正在看就重畫。
+  - `executeChat` 開頭守衛：目前對話是 `kind:'remote-inbox'` 就只提示「這是遠端需求的收件對話，不能在這裡直接對話…」，**不送出、不呼叫模型**。
+- 子對話等待使用者（表單）的冒泡沿用 S4：`_subchatAskForm` 以 `isChild`（`parentId`）判斷，遠端子對話因為有 `parentId` 自動走這條路，不需要新程式。
+- `@`：`_mentionPrepare` 已經用 `resolveMention(chats, tok, '')`，遠端子對話（有 `nodeName`）以 `節點名/對話名` 比對，S6 不需要改解析。
+
+評估：`scripts/eval/subchat_remote_bubble.eval.js`（新檔，換埠 17968 修後、17969 修前，假 LLM）。
+
+- 修後：`allPass: true`，13 項全過。事實：子對話 `waiting_user`；收件對話的連結卡片 `canAnswer: true`、`pending: 'form'`；打字回答被拒（只有選項）；按選項回答後子對話離開等待、pending 清除；`@[B機/來自 B機：畫一張貓]` 解析到子對話且提示含 `id=…,節點=B機`；只寫對話名的 `@[…]` 要求補節點名；收件對話打字不呼叫模型，顯示提示；收件對話畫面有連結卡片 DOM。
+- 修前（建置前備份）：`allPass: false`。失敗：`childWaitingUser`、`inboxHasLinkCard`、`inboxCardCanAnswer`、`loadedWorkdirImpl`、`inboxShowsLinkDom`、`inboxNoModelCall`、`inboxNoticeShown`（修前沒有收件對話，這些都不成立）。
+- **不是 S6 新能力的判準**：`typedRejectedForChoiceOnly`、`answerResolvedForm`、`childLeftWaiting`、`pendingCleared`、`mentionAutocompleteFindsRemoteChild`、`mentionResolvesRemoteChild`、`mentionBareNeedsNode` 在修前也通過。原因：這些是 S4 與 S1 既有的行為，修前的遠端需求對話本來就有 `nodeName`、本來就能被 `@` 解析、表單本來就能在任何對話 ctx 上等待。所以它們證明的是「S6 之後沒有壞掉」，不是「S6 做好了」。
+
+### 步驟 4 沒有驗證的（缺口）
+
+- 權限框（`fap`）與「問題卡片」（`ask_user_card` 的文字問題）在遠端子對話上的冒泡：評估只跑了表單（`choices`）。權限框與問題卡片的程式路徑與表單共用 `_subchatLinkInfo`，但沒有實際跑過。
+- 收件對話的連結卡片數量很多時的捲動與收合：沒有驗證。
+- 標題格式：遠端子對話標題仍是「來自 B機：〈需求前 22 字〉」（與 S6 前相同）。因為標題含空白與冒號，`@` 必須用方括號 `@[B機/來自 B機：…]`，手打不方便。**這是已知的可用性缺口**，改標題格式要先問使用者（會改變側欄顯示），本步驟沒改。
+- `@` 候選會包含收件對話本身（`B機/遠端需求 · B機`）。收件對話不接受直接對話，所以這個候選送出後會被守衛擋下。是否要從候選移除，本步驟沒改，列為缺口。
+- 遠端子對話的 `chat_send_to_child`（父對話工具）仍然拒絕遠端子對話（S5 規則，`_subchatToolTarget` 的「遠端對話不能用這個工具」）。是否支援遠端子對話的工具，留給之後，列為缺口。
+
 ## 7. 沒驗證、目前的缺口
 
 - 步驟 1 的行號是讀程式與 Grep 驗證，沒有真桌面版驗證。

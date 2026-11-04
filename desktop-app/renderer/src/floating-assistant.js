@@ -53485,6 +53485,7 @@ const FaRemoteDispatch = (function () {
             const id = this._chatNewId('c'), title = '來自 ' + job.fromName + '：' + String(job.text).replace(/\s+/g, ' ').slice(0, 22);
             this._chatIndex.chats.push({ id, title, groupId: null, createdAt: now, updatedAt: now, touched: true, shared: true, nodeName: job.fromName, parentId: inbox.inboxId, status: null, remote: { fromName: job.fromName, fromId: job.from, taskId: job.taskId, at: now, fp } });
             try { this._subchatSetStatus(id, 'start'); } catch (_) { /* 狀態更新失敗不影響執行 */ }
+            try { await this._remoteInboxLink(inbox.inboxId, id, title); } catch (_) { /* 收件對話的連結卡片失敗不影響執行 */ }
             const ctx = this._chatCtxNew(id); this._chatCtxs.set(id, ctx); const run = this._chatRunner(ctx);
             const trust = { trusted: '指紋已核對', changed: '⚠️ 指紋跟你核對過的不同', new: '指紋尚未核對', none: '沒有指紋' }[st];
             run._pushAssistantMessage('📨 **遠端需求記錄**\n\n- 來自：**' + job.fromName + '**（' + (mem ? (mem.kind === 'desktop' ? '桌面版' : '網頁版') : '未知') + '）\n- 時間：' + new Date(now).toLocaleString() + '\n- 指紋：' + (fp || '—') + '（' + trust + '）\n- 任務編號：' + job.taskId + '\n\n這是群組裡另一台機器交給這台的需求，由這台機器用自己的模型與工具執行，結果會接在下面。\n\n這個對話已自動分享到群組：發出需求的機器可以在左邊清單看到它、並接著對話。', null);
@@ -79545,6 +79546,20 @@ ${sourceTool.handlerScript}
         return this._remoteInboxModule;
     }
 
+    // 子對話 S6：收件對話的說明卡片（第一次）與子對話的連結卡片（沿用 S3 的 _subchatLink 與 S4 的冒泡）。收件對話不呼叫模型。
+    async _remoteInboxLink(inboxId, childId, title) {
+        if (!inboxId || !childId) return;
+        const ictx = await this._chatCtxLoad(inboxId);
+        const run = this._chatRunner(ictx);
+        if (!ictx.messages.length) run._pushAssistantMessage('📥 **遠端需求收件對話**\n\n這裡列出這個節點交來的需求，每一個都是這個對話底下的子對話。這個對話本身不呼叫模型，不能在這裡直接對話。\n\n- 點連結卡片可以打開那個子對話。\n- 子對話需要你回答（表單、權限、問題）時，卡片上會直接出現回答欄。', null);
+        const m = this._buildToolResultMessage('display', JSON.stringify({ ok: true, note: '子對話' }), {});
+        m.content = '↳ 子對話：' + title;
+        m._subchatLink = { childId, title };
+        ictx.messages.push(m);
+        run._persistChatHistory();
+        if (this._chatIndex && this._chatIndex.currentId === inboxId) { try { this._renderMessageHistory(); } catch (_) { /* 畫面不在也沒關係 */ } }
+    }
+
     // ---- 每個對話各自一份的執行狀態（背景執行，見FA_CHAT_CTX_KEYS）----
     _chatCtxNew(id) {
         return {
@@ -103015,6 +103030,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
      * 執行 Stream 對話循環
      */
     async executeChat(userText) {
+        // 子對話 S6：遠端收件對話不呼叫模型（它只收子對話）。使用者在這裡打字，只提示，不送出。
+        { const ie = this._ctx && this._chatEntry(this._ctx.id); if (ie && ie.kind === 'remote-inbox') { this._pushAssistantMessage('這是遠端需求的收件對話，不能在這裡直接對話。請點進下面的子對話，或在連結卡片回答子對話的問題。', null); return; } }
         if (this.isResponding) {
             this._addSteeringMessage(userText);
             return;
