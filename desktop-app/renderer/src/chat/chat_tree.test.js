@@ -210,4 +210,47 @@ t('listMentionCandidates：前綴比對完整名稱（遠端用節點名開頭�
   assert.deepStrictEqual(T.listMentionCandidates(M, 'zzz', SELF), []);
 });
 
+// S8 步驟 C：收件對話不進 @；遠端標題含空白冒號時用前綴
+const M2 = [
+  { id: 'l1', title: '畫貓', createdAt: 1 },
+  { id: 'inb', title: '遠端需求 · B機', nodeName: 'B機', kind: 'remote-inbox', createdAt: 2 },
+  { id: 'r1', title: '來自 B機：幫我寫一個爬蟲抓新聞', nodeName: 'B機', createdAt: 3 },
+  { id: 'r2', title: '來自 B機：寫作業的進度', nodeName: 'B機', createdAt: 4 },
+  { id: 'r3', title: '來自 C機：畫一張山景', nodeName: 'C機', createdAt: 5 },
+];
+
+t('S8：@ 候選與解析不含遠端收件對話', () => {
+  assert.ok(T.listMentionCandidates(M2, '', SELF).every((c) => c.chatId !== 'inb'));
+  assert.ok(T.listMentionCandidates(M2, 'B機/', SELF).every((c) => c.chatId !== 'inb'));
+  assert.strictEqual(T.resolveMention(M2, '@B機/遠端需求 · B機', SELF).notFound, true);
+  assert.strictEqual(T.resolveMention(M2, '@遠端需求', SELF).notFound, true);
+});
+
+t('S8：遠端子對話可以用「節點名/標題」前綴（不用打空白與冒號）', () => {
+  const r = T.resolveMention(M2, '@B機/來自B機', SELF);
+  assert.strictEqual(r.ok, false); // 「來自B機」沒有空白，與標題「來自 B機」不同 → 不匹配
+  const r2 = T.resolveMention(M2, '@B機/來自 B機：幫我寫', SELF);
+  assert.strictEqual(r2.chatId, 'r1');
+  const r3 = T.resolveMention(M2, '@b機/來自 B機：幫我寫一個', SELF);
+  assert.strictEqual(r3.ok, true);
+  assert.strictEqual(r3.chatId, 'r1');
+  assert.strictEqual(r3.viaPrefix, true);
+  const r4 = T.resolveMention(M2, '@C機/來自', SELF);
+  assert.strictEqual(r4.chatId, 'r3');
+});
+
+t('S8：前綴歧義列出候選要求補長；只打 1 個字不做前綴比對', () => {
+  const amb = T.resolveMention(M2, '@B機/來自 B機：', SELF);
+  assert.strictEqual(amb.ok, false);
+  assert.strictEqual(amb.ambiguous, true);
+  assert.deepStrictEqual(amb.candidates.map((c) => c.chatId).sort(), ['r1', 'r2']);
+  assert.strictEqual(T.resolveMention(M2, '@畫貓', SELF).chatId, 'l1'); // 精準比對不變
+  assert.strictEqual(T.resolveMention(M2, '@畫', SELF).notFound, true); // 單一字不做前綴比對
+  assert.strictEqual(T.resolveMention(M2, '@B', SELF).notFound, true);
+});
+
+t('S8：既有的方括號寫法仍可用', () => {
+  assert.strictEqual(T.resolveMention(M2, '@[B機/來自 B機：幫我寫一個爬蟲抓新聞]', SELF).chatId, 'r1');
+});
+
 console.log(n + ' tests passed');

@@ -121,6 +121,33 @@
 - 延續清單是手寫的，沒有覆蓋所有口語（例如「ok 那下一個」「對了」）。這些句子的行為沒有量。
 - 門檻對 `matchThreshold`（拉回舊話題）與 `sameThreshold`（同話題）是同一個旋鈕；分開調沒有做。
 
+## 步驟 C：`@` 與遠端的缺口
+
+### C.1 結果一覽
+
+| 項目 | 修前 | 修後 | 證據 |
+|---|---|---|---|
+| (1) `@` 候選排除遠端收件對話 | 收件對話在候選裡（S6 缺口） | 排除（`isInbox`，`chat_tree.js`，`listMentionCandidates` 與 `resolveMention` 都過濾 `kind:'remote-inbox'`） | `chat_tree.test.js` 的 S8 測試；修前用 HEAD 模組跑同一份測試，第一個 S8 斷言失敗 |
+| (2) 節點名/標題前綴 | 只有精準比對與方括號 | 精準不變；沒有精準時，完整名稱（節點名/對話名）的**唯一**前綴可用，前綴至少 2 字；歧義列候選（`ambiguous`、`prefix:true`） | `chat_tree.test.js` 的 S8 前綴測試（`@b機/來自 B機：幫我寫一個` 命中 `r1`、`@B機/來自 B機：` 列 `r1`、`r2`）；修前同一測試失敗 |
+| (3) `chat_send_to_child` 遠端子對話 | 拒絕 | **保留拒絕**（理由見 C.2） | 程式位置與傳輸路徑 |
+| (4) 網頁版載入 | 沒驗證 | `scripts/web-lazy-check.js` 本機檢查通過（核心與 137 個區塊）；嵌入式網頁版路徑（無對話清單）**沒有**跑 | `node scripts/web-lazy-check.js` 輸出「本機檢查通過」 |
+
+- `@` 的 Electron 回歸：`chat_mention.eval.js` allPass（工作目錄實作）；`chat_tree.eval.js`、`chat_tree_index.eval.js` 沒有 allPass 欄位，逐項檢查，沒有任何 `false`。
+- 「遠端子對話標題含空白與冒號」本身不改（S6 管理層指示：改標題格式會改變側欄顯示，要先問使用者）；改用前綴比對解決手打不便的問題。
+
+### C.2 第 (3) 項：為什麼保留拒絕（證據）
+
+- 遠端需求的進度、結果、停止都經由群組傳輸回給發出的節點：`_rgEvent(job, {kind:'progress'|…})`（`floating-assistant.js` 約 53440 起，`job.done` 與 `prog.fail` 旁邊）。
+- 子對話的回應由本機的子對話 ctx 執行（`_subchatSend` 約 96366 不檢查 nodeName），但「追問一句」不會經過那條回報路徑：發出需求的節點不知道這句話，兩邊的結果會分岔。
+- 所以在本機對遠端子對話追問需要一個新的回報協定，超出 S8 範圍。保留 `_subchatToolTarget` 的拒絕（約 74832，錯誤訊息「遠端對話不能用這個工具」）。
+- 缺口：遠端子對話仍不能由父對話工具傳訊息；使用者若要追問，需要另外的協定設計（列為後續，不在 S8）。
+
+### C.3 測試與限制
+
+- `renderer/src/chat/chat_tree.test.js`：26 項全過（含 S8 的 4 項）。
+- 限制：前綴比對只對「完整名稱」（節點名/對話名）做，不對對話名單獨做（遠端對話名單獨對上時仍是 `needNode`，維持原行為）。
+- 限制：`@` 候選的 App 層（輸入框自動完成）沒有另做 Electron 評估，只靠模組測試與 `chat_mention.eval.js`。
+
 ## 教訓
 
 - 守衛要放在「寫入前」與「寫入後」兩邊。只檢查寫入前，遇到 await 中間的刪除就會漏。

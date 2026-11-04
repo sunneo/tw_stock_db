@@ -144,6 +144,9 @@
 
   function normMention(s) { return String(s == null ? '' : s).trim().toLowerCase(); }
 
+  // S8 步驟 C：遠端收件對話（kind:'remote-inbox'）不是可以 @ 的對話（送出會被守衛擋下），所以不進 @ 的候選與解析。
+  function isInbox(c) { return !!c && c.kind === 'remote-inbox'; }
+
   function isRemoteChat(c, selfNodeName) {
     const nn = typeof c.nodeName === 'string' ? c.nodeName.trim() : '';
     return nn !== '' && nn !== String(selfNodeName || '').trim();
@@ -189,7 +192,7 @@
     if (q === null) return { ok: false, notMention: true };
     const key = normMention(q);
     if (!key) return { ok: false, notMention: true };
-    const list = (Array.isArray(chats) ? chats : []).filter(isObj);
+    const list = (Array.isArray(chats) ? chats : []).filter(isObj).filter((c) => !isInbox(c));
 
     const exact = list.filter((c) => normMention(mentionLabel(c, selfNodeName)) === key);
     if (exact.length === 1) {
@@ -201,6 +204,17 @@
     // 只用對話名就能對上的遠端對話：要求補上節點名
     const bare = list.filter((c) => isRemoteChat(c, selfNodeName) && normMention(c.title || '新對話') === key);
     if (bare.length) return { ok: false, needNode: true, candidates: bare.map((c) => candidateOf(c, selfNodeName)) };
+
+    // S8 步驟 C：沒有精準比對時，接受完整名稱（節點名/對話名，本機為對話名）的唯一前綴。遠端標題含空白與冒號，手打不方便。
+    // 前綴至少 2 個字（單一字太寬）；有歧義就列出候選，要求補長。
+    if (key.length >= 2) {
+      const pre = list.filter((c) => normMention(mentionLabel(c, selfNodeName)).indexOf(key) === 0);
+      if (pre.length === 1) {
+        const cand = candidateOf(pre[0], selfNodeName);
+        return { ok: true, chatId: cand.chatId, nodeName: cand.nodeName, title: cand.title, label: cand.label, remote: cand.remote, viaPrefix: true };
+      }
+      if (pre.length > 1) return { ok: false, ambiguous: true, prefix: true, candidates: pre.map((c) => candidateOf(c, selfNodeName)) };
+    }
     return { ok: false, notFound: true };
   }
 
@@ -212,7 +226,7 @@
     let s = raw.charAt(0) === '@' ? raw.slice(1) : raw;
     if (s.charAt(0) === '[') s = s.slice(1);
     const p = normMention(s);
-    const list = (Array.isArray(chats) ? chats : []).filter(isObj);
+    const list = (Array.isArray(chats) ? chats : []).filter(isObj).filter((c) => !isInbox(c));
     const out = list.filter((c) => normMention(mentionLabel(c, selfNodeName)).indexOf(p) === 0).map((c) => candidateOf(c, selfNodeName));
     out.sort((a, b) => (a.remote === b.remote ? 0 : a.remote ? 1 : -1) || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0));
     return out;
