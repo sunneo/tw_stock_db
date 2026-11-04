@@ -3465,7 +3465,7 @@ class FaOtDb {
 /* OT-WEB-BEGIN */
 // 離線訓練器的網頁處理：後半句目標詞（找／搜尋／查 XX）、關鍵字篩選、has_more 自動續讀、「打開」要讓使用者看得到
 const FA_OT_MAX_PAGES = 5;
-function _faOtWebGoal(text) {
+function _faOtWebGoal(text, lex, groups) {
     let s = String(text || '').replace(/https?:\/\/\S+/g, ' ').replace(/\s+/g, ' ');
     const m = /(?:並且?|然後|再|且|，|,|、)?\s*(?:幫我|請)?(?:找出|找到|尋找|搜尋|搜索|查詢|查找|找|查)\s*(?:一下)?(?:有關|關於)?\s*([^，。,.!！?？]{1,30})/.exec(s);
     if (!m) return null;
@@ -3478,6 +3478,7 @@ function _faOtWebGoal(text) {
         (us ? ['美國大選', '美國選舉', '美國總統', '總統大選', '大選', '川普', '賀錦麗', '拜登', '共和黨', '民主黨', '期中選舉'] : ['大選', '選舉', '投票', '候選人']).forEach((t) => terms.push(t));
         if (us) terms.push('選舉');
     }
+    try { _faOtExpandTerms(kw, lex, groups).forEach((t) => terms.push(t)); } catch (_) { /* */ }
     return { keyword: kw, terms: Array.from(new Set(terms)) };
 }
 function _faOtWebFilter(lines, goal) {
@@ -3526,6 +3527,27 @@ async function _faOtFollowAll(ctx, tools, tool, args, raw, trail, maxPages) {
         return JSON.stringify(Object.assign(merged, { text, pages, read_chars: text.length, has_more: more }));
     }
     return raw;
+}
+// 階段3：同義詞擴充（只用現有詞庫：概念組整組等於關鍵字時才擴充，以及使用者自訂的同義詞組；不亂擴，避免拿無關結果充數）
+function _faOtExpandTerms(kw, lex, groups) {
+    const out = [];
+    if (lex && Array.isArray(lex.cjk)) {
+        const ids = lex.cjk.filter((e) => e[0] === kw).map((e) => e[1]);
+        lex.cjk.forEach((e) => { if (ids.indexOf(e[1]) >= 0 && e[0] !== kw && e[0].length >= 2 && /[\u4e00-\u9fff]/.test(e[0])) out.push(e[0]); });
+    }
+    (groups || []).forEach((g) => { if (Array.isArray(g) && g.indexOf(kw) >= 0) g.forEach((t) => { if (t !== kw && t.length >= 2) out.push(t); }); });
+    return out;
+}
+const FA_OT_NOISE = [/^\S{0,16}[•·]\s*\d+\s*(?:秒|分鐘|分|小時|天|週|周|月)前$/, /^[\d\s:：\-\/.,]+$/, /^(?:登入|註冊|首頁|更多|搜尋|選單|廣告|分享|訂閱|回到頂端|關於|隱私|服務條款|Yahoo|新聞熱搜)/, /^\d+\s*(?:秒|分鐘|小時|天)前(?:更新)?$/];
+function _faOtGoodLines(raw) {
+    return String(raw || '').split(/\n+/).map((x) => x.trim()).filter(Boolean).filter((l) => l.length >= 8 && l.length <= 140 && !FA_OT_NOISE.some((re) => re.test(l)));
+}
+// 從 browser_get_elements 的結果找搜尋框：type=search、role=searchbox，或名稱／placeholder／文字像「搜尋」
+function _faOtFindSearchBox(els) {
+    const isInput = (e) => /^(?:input|textarea)$/i.test(e.tag || '') || /^(?:search|searchbox|textbox|combobox)$/i.test(e.role || '');
+    const hay = (e) => [e.type, e.role, e.name, e.id, e.placeholder, e.text, e.label, e['aria-label'], e.ariaLabel].filter(Boolean).join(' ');
+    const list = (els || []).filter((e) => e && isInput(e) && !/^(?:hidden|checkbox|radio|submit|button|password|file)$/i.test(e.type || ''));
+    return list.find((e) => /^search/i.test(e.type || '') || /searchbox/i.test(e.role || '')) || list.find((e) => /搜尋|搜索|查詢|search|query|keyword|(?:^|[\s_-])q(?:$|[\s_-])/i.test(hay(e))) || null;
 }
 /* OT-WEB-END */
 
@@ -67810,7 +67832,7 @@ ${fnData.code}
     // ---- 執行與回答 ----
     // 網頁文字（browser_get_page_text）的整理：去掉時間戳、導覽列、捲動位置等雜訊；列表型頁面（新聞首頁）依頁面順序列出標題
     _otPageDigest(o, query) {
-        const goal = _faOtWebGoal(query);
+        const goal = _faOtWebGoal(query, typeof FA_SEM_LEX !== 'undefined' ? FA_SEM_LEX : null, typeof this._otSynGroups === 'function' ? this._otSynGroups() : []);
         const raw = String(o.text);
         const noise = [/^\S{0,16}[•·]\s*\d+\s*(?:秒|分鐘|分|小時|天|週|周|月)前$/, /^[\d\s:：\-\/.,]+$/, /^(?:登入|註冊|首頁|更多|搜尋|選單|廣告|分享|訂閱|回到頂端|關於|隱私|服務條款|Yahoo|新聞熱搜)/, /^\d+\s*(?:秒|分鐘|小時|天)前(?:更新)?$/];
         const lines = raw.split(/\n+/).map((x) => x.trim()).filter(Boolean);
@@ -67885,7 +67907,17 @@ ${fnData.code}
             const shots = [];
             const trail = [];
             const stepList = _faOtAdjustSteps(c.steps || [], plan.text);
+            const gateOn = plan.gate && c && (c.pattern === 'browser_open_read' || c.pattern === 'gate_browser_open') && (plan.gate.post.length || plan.gate.unhandled.length);
+            let gatePostDone = false, gateOut = null;
+            if (plan.gate && c && (c.pattern === 'browser_open_read' || c.pattern === 'gate_browser_open')) trail.push('🧭 理解：' + (plan.gate.action === 'open' ? '開啟' + (plan.gate.label || '') : plan.gate.action) + (plan.gate.post.length ? '；目標＝' + plan.gate.post.map((p) => (p.type === 'find_topic' ? '找「' + p.keyword + '」' : p.type)).join('、') : '；沒有其他目標'));
             for (const st of stepList) {
+                if (gateOn && !gatePostDone && st.cleanup && st.tool === 'browser_close') {
+                    gatePostDone = true;
+                    const pg = [...results].reverse().find((r) => r.tool === 'browser_get_page_text' && r.json);
+                    const tab = results[0] && results[0].json && results[0].json.tab_id;
+                    if (!failed && pg && plan.gate.post.length) { try { gateOut = await this._otGatePost(plan.gate, { tabId: tab, page: pg.json, plan, trail }); gateOut.extra.forEach((x) => results.push(x)); if (gateOut.extra.some((x) => x.search)) pg.superseded = true; if (gateOut.shots) gateOut.shots.forEach((m) => shots.push(m)); } catch (e) { trail.push('⚠️ 後置步驟出錯：' + String((e && e.message) || e).slice(0, 100)); } }
+                    else if (plan.gate.post.length) gateOut = { undone: plan.gate.post.map((p) => p.type + '（前面的步驟沒成功，沒做）'), extra: [], summary: '' };
+                }
                 if (failed && !st.cleanup) { results.push({ tool: st.tool, skipped: true }); continue; }
                 const t = this.tools[st.tool];
                 if (!t) { if (!st.cleanup) failed = failed || `工具「${st.tool}」不存在（可能是這個版本沒有，或網頁版不支援）`; results.push({ tool: st.tool, error: '工具不存在' }); continue; }
@@ -67901,9 +67933,12 @@ ${fnData.code}
                 results.push({ tool: st.tool, raw, json, ok });
                 if (!ok && !st.cleanup) failed = failed || (json && json.error ? String(json.error).slice(0, 300) : st.tool + '失敗');
             }
+            if (plan.gate && plan.gate.unhandled.length && (c.pattern === 'browser_open_read' || c.pattern === 'gate_browser_open')) trail.push('⚠️ 只做了動作，沒處理：' + plan.gate.unhandled.join('；'));
+            if (gateOut && gateOut.undone && gateOut.undone.length) trail.push('⚠️ 沒做到：' + gateOut.undone.join('；'));
             const shotText = shots.map((m) => '📸 已截圖' + (m.width ? '（' + m.width + '×' + m.height + '）' : '') + (m.title ? '：' + m.title : '') + (m.url ? ' ' + m.url : '') + (m.region_applied ? '，範圍 ' + m.region_applied.width + '×' + m.region_applied.height + '（x=' + m.region_applied.x + ',y=' + m.region_applied.y + (m.region_applied.by === 'local' ? '，本機裁切' : '') + '）' : '') + (m.warning ? '\n⚠️ ' + m.warning : '')).join('\n');
             const trailText = trail.length ? '📋 做了這些步驟：\n' + trail.map((x) => '- ' + x).join('\n') : '';
-            const body = [trailText, shotText].concat(results.filter((r) => r.raw && r.ok && !/^browser_(create_tab|close|list_tabs)$/.test(r.tool)).map((r) => this._otPretty(r.raw, plan.text))).filter(Boolean).join('\n\n') + (shots.length ? '\n\n（離線模式不看圖片內容，只負責截圖；要說明畫面內容請切回線上模式。）' : '');
+            const sumText = gateOut && gateOut.summary ? '📝 摘要（機械摘要，TextRank 挑的重點句）：\n' + gateOut.summary : '';
+            const body = [trailText, shotText, sumText].concat(results.filter((r) => r.raw && r.ok && !r.superseded && !/^browser_(create_tab|close|list_tabs)$/.test(r.tool)).map((r) => this._otPretty(r.raw, plan.text))).filter(Boolean).join('\n\n') + (shots.length ? '\n\n（離線模式不看圖片內容，只負責截圖；要說明畫面內容請切回線上模式。）' : '');
             if (failed) return { ok: false, kind: 'steps', error: failed, text: body, results };
             return { ok: true, kind: 'steps', text: body || '（步驟都執行了，但沒有可顯示的內容）', results };
         }
@@ -67927,9 +67962,80 @@ ${fnData.code}
             if (/^(?:browser_get_page_text|fetch_web_page)$/.test(c.tool)) raw = await _faOtFollowAll(this, this.tools, c.tool, c.args || {}, raw, trail1);
             let ok = true;
             try { const j = JSON.parse(raw); if (j && (j.ok === false || j.error)) ok = false; } catch (_) {}
+            if (plan.gate && c.pattern && /^gate_open_/.test(c.pattern)) { trail1.unshift('🧭 理解：開啟' + plan.gate.label + '（' + plan.gate.kindBy + '）'); trail1.push(ok ? '✅ 已用 ' + c.tool + ' 開啟' + plan.gate.label + '（結果卡片在對話裡）' : '⚠️ ' + c.tool + ' 沒有成功'); if (plan.gate.note) trail1.push('ℹ️ ' + plan.gate.note); if (plan.gate.post.length || plan.gate.unhandled.length) trail1.push('⚠️ 已開啟，但後面的目標沒處理：' + plan.gate.post.map((p) => p.type).concat(plan.gate.unhandled).join('、')); }
             return { ok, kind: 'tool', raw, text: (trail1.length ? '📋 做了這些步驟：\n' + trail1.map((x) => '- ' + x).join('\n') + '\n\n' : '') + this._otPretty(raw, plan.text) };
         }
         return { ok: false, error: '不認得的動作類型' };
+    }
+    // 使用者自訂的同義詞組（Configure → 離線訓練器 → set_synonyms），每組拆成詞陣列
+    _otSynGroups() { return Object.values((this._ot && this._ot.synonyms) || {}).map((v) => String(v).split(/\s+/).filter(Boolean)); }
+    // 理解閘的後置步驟：找主題（篩不到就站內搜尋）、摘要、截圖；做不到的記在 undone，不假裝做完
+    async _otGatePost(gate, ctx) {
+        const { tabId, plan, trail } = ctx; const extra = []; const undone = []; let summary = '';
+        let latest = ctx.page || {}; let found = null;
+        const call = async (name, args) => { const t = this.tools[name]; if (!t) return { ok: false, error: '工具「' + name + '」不存在' }; try { return JSON.parse(await t.callback.call(this, JSON.stringify(args))); } catch (e) { return { ok: false, error: String((e && e.message) || e) }; } };
+        const lex = typeof FA_SEM_LEX !== 'undefined' ? FA_SEM_LEX : null;
+        for (const p of gate.post || []) {
+            if (p.type === 'find_topic') {
+                const goal = _faOtWebGoal(plan.text, lex, this._otSynGroups()) || _faOtWebGoal('找' + p.keyword, lex, this._otSynGroups());
+                if (!goal) { undone.push('找主題（沒有抓到關鍵字）'); continue; }
+                let hits = _faOtWebFilter(_faOtGoodLines(latest.text), goal);
+                if (hits.length) { trail.push('🔎 在頁面上篩出 ' + hits.length + ' 則跟「' + goal.keyword + '」有關的標題'); found = hits; continue; }
+                trail.push('🔎 頁面上沒有找到跟「' + goal.keyword + '」有關的標題，改試站內搜尋');
+                if (!tabId) { undone.push('站內搜尋（沒有可操作的分頁）'); continue; }
+                const el = await call('browser_get_elements', { tab_id: tabId, max: 80, viewport_only: false });
+                const box = _faOtFindSearchBox(el && el.elements);
+                if (!box) { trail.push('⚠️ 這個頁面沒有找到搜尋框，沒辦法站內搜尋'); undone.push('站內搜尋（頁面沒有搜尋框）'); continue; }
+                if (box.x != null && box.y != null) await call('browser_mouse', { tab_id: tabId, action: 'click', x: box.x, y: box.y });
+                const ty = await call('browser_type_text', Object.assign({ tab_id: tabId, text: goal.keyword, clear: true, submit: true }, box.selector ? { selector: box.selector } : {}));
+                if (ty && (ty.ok === false || ty.error)) { trail.push('⚠️ 在搜尋框輸入失敗：' + String(ty.error || '').slice(0, 80)); undone.push('站內搜尋（輸入失敗）'); continue; }
+                trail.push('⌨️ 在搜尋框輸入「' + goal.keyword + '」並送出');
+                await new Promise((r) => setTimeout(r, this._otSearchWaitMs != null ? this._otSearchWaitMs : 1500));
+                let raw2 = JSON.stringify(await call('browser_get_page_text', { tab_id: tabId }));
+                raw2 = await _faOtFollowAll(this, this.tools, 'browser_get_page_text', { tab_id: tabId }, raw2, trail);
+                let page2 = null; try { page2 = JSON.parse(raw2); } catch (_) { /* */ }
+                if (!page2 || page2.ok === false || page2.error) { undone.push('站內搜尋（讀不到結果頁）'); continue; }
+                latest = page2; extra.push({ tool: 'browser_get_page_text', raw: raw2, ok: true, json: page2, search: true });
+                hits = _faOtWebFilter(_faOtGoodLines(page2.text), goal);
+                if (hits.length) { trail.push('✅ 搜尋結果頁篩出 ' + hits.length + ' 則跟「' + goal.keyword + '」有關的標題' + (page2.has_more ? '（還沒讀完）' : '')); found = hits; }
+                else { trail.push('⚠️ 搜尋結果頁也沒有跟「' + goal.keyword + '」有關的標題'); undone.push('找到「' + goal.keyword + '」相關內容（頁面與站內搜尋都沒有）'); }
+            } else if (p.type === 'summarize') {
+                const src = found ? found.join('\n') : _faOtGoodLines(latest.text).join('\n');
+                const sents = src ? _faSemSentences(src) : [];
+                if (!sents.length) { undone.push('摘要（沒有可摘要的內容）'); continue; }
+                summary = _faSummarize(sents, 5, 0.4, plan.text).join('\n');
+                trail.push('📝 做了機械摘要（TextRank，不是 AI 歸納）');
+            } else if (p.type === 'screenshot') {
+                if (!tabId) { undone.push('截圖（沒有可操作的分頁）'); continue; }
+                const sh = await call('browser_screenshot', { tab_id: tabId });
+                if (sh && sh.type === 'image' && sh.dataUrl) { this._otShowImage(sh); (ctx.shots = ctx.shots || []).push(sh.meta || {}); trail.push('📸 已截圖'); } else undone.push('截圖（' + String((sh && sh.error) || '沒有圖') + '）');
+            } else if (p.type === 'reason') undone.push('比較／判斷（需要小模型推理，這一版離線沒做）');
+            else if (p.type === 'pick_item') undone.push('取指定那一則（這一版離線沒做）');
+        }
+        return { extra, undone, summary, found, shots: ctx.shots || [] };
+    }
+    // 理解閘：規則命中後、執行前。回傳 { plan, reply? }；reply 有值＝不執行，直接回這段話
+    _otGateApply(plan, text) {
+        const d = plan.decision || {}; const c = d.chosen; const planned = d.status === 'planned' || d.status === 'cache';
+        const gt = FaIntentGate.gate(text, { rule: c ? { id: c.pattern, tool: c.tool } : null });
+        plan.gate = gt;
+        if (gt.advice === 'passthrough') return { plan };
+        const ruleOpenRead = planned && c && c.pattern === 'browser_open_read';
+        // 規則是「語意」勉強對上、或信心低、而且工具跟理解出的開啟工具不同＝不可靠，讓理解閘接手（例如「打開 合約.docx」被語意配到 merge_pdfs）；字面規則（regex）命中就尊重
+        const weak = !planned || (!!c && c.tool !== gt.openTool && (c.via !== '規則' || Number(c.score) < 0.8) && c.pattern !== 'browser_open_read');
+        if (gt.action === 'open' && gt.kind === 'url' && gt.url && (ruleOpenRead || weak)) {
+            if (!ruleOpenRead) plan.decision = Object.assign({}, d, { status: 'planned', reason: '理解閘：要用瀏覽器開網址', chosen: { kind: 'steps', domain: 'intent_gate', pattern: 'gate_browser_open', intent: '用瀏覽器開啟網址並讀取頁面', score: 0.9, via: '理解閘', steps: [{ tool: 'browser_create_tab', args: { url: gt.url } }, { tool: 'browser_get_page_text', args: { tab_id: '{step1.tab_id}' } }, { tool: 'browser_close', args: { tab_id: '{step1.tab_id}' }, cleanup: true }] } });
+            return { plan };
+        }
+        if ((gt.action === 'open' || gt.action === 'play') && gt.kind && gt.kind !== 'url' && weak) {
+            if (gt.advice === 'open' || gt.advice === 'open_post' || gt.advice === 'partial') {
+                if (!this.tools[gt.openTool]) return { plan, reply: '要開' + gt.label + '，但這個版本沒有「' + gt.openTool + '」工具（網頁版可能不支援）。' };
+                plan.decision = Object.assign({}, d, { status: 'planned', reason: '理解閘：' + gt.reason, chosen: { kind: 'tool', tool: gt.openTool, args: gt.openArgs || {}, risk: 'safe', domain: 'intent_gate', pattern: 'gate_open_' + gt.kind, intent: '開啟' + gt.label, score: 0.9, via: '理解閘' } });
+                return { plan };
+            }
+            if (gt.advice === 'need_file' || (gt.advice === 'ask' && gt.kind === 'editor')) return { plan, reply: '🧭 ' + gt.reason + '。' };
+        }
+        return { plan };
     }
     async _otBumpHit(plan) {
         const c = plan.decision && plan.decision.chosen;
@@ -67986,6 +68092,9 @@ ${fnData.code}
         }
         let plan;
         try { plan = await this._otPlan(text); } catch (e) { say('⚠️ 離線訓練器出錯：' + String((e && e.message) || e), null); this._persistChatHistory(); this._renderMessageHistory(); return cap ? cap.join('\n\n') : undefined; }
+        let gateReply = null;
+        try { const ga = this._otGateApply(plan, text); plan = ga.plan; gateReply = ga.reply || null; } catch (e) { console.warn('理解閘出錯，退回原本流程', e); }
+        if (gateReply) { say(gateReply); this._persistChatHistory(); this._renderMessageHistory(); return cap ? cap.join('\n\n') : undefined; }
         const d = plan.decision;
         const c = d.chosen;
         const errLines = opts.errors && opts.errors.length ? '\n' + opts.errors.map((e) => `- ${e.model}：${e.err}`).join('\n') : '';
