@@ -80,3 +80,116 @@
 調查題目因此調整：
 - 「指令衝突策略」已定案為 FIFO 加向前管理，不再問；調查改查「1000 token 切段規則」與「提示音設計與設定項」。
 - 網頁版必做：調查要明確列出桌面版與網頁版在收音、聲紋模型、回音消除、TTS 上的差異與限制。
+
+## 調查結果（2026-11-05，Haiku 唯讀調查；只寫有證據的，未證實的標「未確認」）
+
+路徑皆相對於 desktop-app/。行號以調查當下的檔案為準。
+
+### 1. 現有收音
+- 輸入框 🎤 語音輸入：`renderer/src/floating-assistant.js` 的 `_handleMicButtonClick`（約 101396 行）用 `getUserMedia({audio:true})` 加 `MediaRecorder` 錄音，停止後交給 `_recognizeVoiceInput`。是「按一下開始、再按一下停止」的整段錄音，不是持續收音。
+- 原始樣本收音（聲音複製用）：`floating-assistant.js` 約 73342–73346 行，關掉回音消除、降噪、自動增益，用 `ScriptProcessor` 收原始樣本。**全專案沒有 AudioWorklet**（Grep 無結果）。ScriptProcessor 已淘汰，持續收音要改用 AudioWorklet 或保留它並標明限制（待階段 B 決定，需要使用者同意）。
+- 桌面原生麥克風：無（與 native-runner 調查一致，`systemPreferences`、`desktopCapturer` 無結果）。桌面版與網頁版都是渲染程序的 `getUserMedia`。
+
+### 2. 現有語音辨識（Whisper）
+- 模型：`onnx-community/whisper-base`，q8 量化約 77MB（`floating-assistant.js` 約 47027 行 `WHISPER_MODEL_ID`；`renderer/src/vlm/vlm_core.js` 約 63 行登記為 `managedOnly`，約 80MB）。在瀏覽器端用 transformers.js 執行，**快取後可離線**（第一次下載需要網路，確認框文字寫明不上傳到任何伺服器）。
+- 呼叫：`_recognizeVoiceInput` 與 `_transcribeMedia` 共用 `_runWhisperWindowed`（30 秒一段），語言來自 `advancedSettings.voiceInputLanguage`（zh／en／auto，預設 zh；約 57936、59427 行）。裝置偏好 `whisperDevicePreference`（auto／cpu）。
+- 斷句與文字校正：**未找到獨立模組**（Grep 「斷句」「校正」無專用實作；Whisper 輸出直接使用）。全語音 Live 的斷句與校正需要新寫，不能宣稱可重用。
+
+### 3. 語音合成（TTS，三套都在）
+- Microsoft Edge 神經網路語音：`edge-tts.js`（主行程，Node WebSocket，桌面版直接連線）；網頁版走 Cloudflare Worker 的 `/edge-tts` 路由（私有 repo，見 `floating-assistant.js` 約 47073 行註解）。**需要網路**。
+- Kokoro TTS：`floating-assistant.js` 約 47915–47946 行 `_ttsEngine`，`KokoroTTS.from_pretrained`，本機推論（模型需下載，快取後可離線）。
+- MOSS-TTS-Nano（聲音複製）：`renderer/src/tts/moss_core.js`、`moss_worker.js`，onnxruntime-web 在 worker 跑（約 47136 行）。
+- **AI 回覆朗讀時選哪一套的分派邏輯，本次未追到，標「未確認」**；階段 F 前要先查清楚（Grep `speakReply`、`朗讀` 相關呼叫點）。
+
+### 4. 降噪與回音消除
+- `renderer/src/tts/voice_clean.js`：頻譜閘控降噪，但是**離線整段處理的純函式**（參考錄音清理用），不是即時串流降噪。可參考演算法，不能直接當即時降噪用。
+- 回音消除：語音輸入路徑 `getUserMedia({audio:true})` 使用瀏覽器預設（Chromium 預設會開回音消除，**這是一般瀏覽器行為推測，未在本專案實測**）；聲音複製路徑明確關掉。
+- 「AI 自己的聲音不要聽進去」的做法：本專案沒有現成實作。候選做法是播放期間比對（TTS 播放的時間區間，錄音中該段的文字或聲紋直接丟棄）與瀏覽器回音消除二選一或併用，需要實測，階段 D 前由使用者決定。
+
+### 5. 聲紋（說話者嵌入）
+- 全專案沒有聲紋相關程式（Grep `聲紋`、`speaker`、`ecapa`、`wespeaker`、`voiceprint` 在 renderer/src、main、skills、scripts 只命中本計畫與共識檔）。是**從零開始**。
+- 候選模型（外部資料，**未在本專案驗證**，來源：網路搜尋）：
+  - ECAPA-TDNN ONNX 轉換版 `astrolabos/ecapa-tdnn`（Hugging Face）：約 83,404,680 位元組（約 80MB），授權 Apache-2.0（沿襲 SpeechBrain 原模型）；是第三方轉換，不是官方發布。來源：https://huggingface.co/astrolabos/ecapa-tdnn
+  - 3D-Speaker 工具套件（阿里達摩院，Apache-2.0）：含 ECAPA-TDNN 預訓練模型與 ONNX 推論腳本（2024 年 4 月加入）。模型單檔大小與可否單獨下載未確認。來源：https://github.com/modelscope/3D-Speaker
+  - 未找到官方 wespeaker ECAPA 的 ONNX 發布，授權與大小未確認。
+- **任何模型下載都要先問使用者**（檔名、來源、大小）。目前沒有下載任何東西。
+
+### 6. 「多媒體輸入」設定頁
+- 分頁定義：`floating-assistant.js` 約 50132 行 `multimedia` 群組，`cats: ['input','multimedia','voice','image-gen','youtube']`。
+- 設定預設值在 `advancedSettings`（約 57936–58016 行），清理函式約 59427 行。
+- **「input」分類 UI 的建構函式尚未定位**（本次只確認群組與預設值）。階段 A 第一步要先 Grep 找到它的渲染位置，再決定「全語音Live」開關與聲紋上限、主詞、提示音的 UI 放哪裡。
+
+### 7. 確認與權限卡片
+- 互動卡片：`ask_user_card` 註冊於約 61272 行，實際繪製在 `askCard`（約 78247 行）與 `askCardFlow`（約 78263 行）。**只在根對話**（子對話會被拒絕，見 61278 行）。
+- 卡片需要點擊或表單輸入；**沒有語音回答路徑**。純語音時的回答方式要在階段 E 設計（例如語音說「第二個」「確認」「取消」）。
+- 「權限卡片」：Grep「權限卡」無專屬字串；權限被擋的訊息在 `floating-assistant.js` 約 13788 行，只是錯誤分類，不是卡片。未確認是否有獨立權限卡。
+
+### 8. 桌面版與網頁版差異表
+| 項目 | 桌面版（Electron） | 網頁版 |
+|---|---|---|
+| 收音 | 渲染程序 `getUserMedia`，同網頁版 | 同左，需使用者在瀏覽器給麥克風權限 |
+| 辨識模型 | Whisper（同一份 transformers.js 與快取） | 同左；快取在瀏覽器站台儲存空間 |
+| 聲紋模型 | 同一份 ONNX（同樣走渲染程序） | 同左，但網頁版首次下載體積與等待時間較難控制 |
+| 回音消除 | 同瀏覽器引擎（Chromium），預設開；聲音複製路徑關閉 | 同左（瀏覽器不同，Safari 等行為未實測） |
+| TTS：Edge 神經語音 | 主行程 `edge-tts.js` 直接連線 | 需要 Cloudflare Worker 的 `/edge-tts`（私有 repo） |
+| TTS：Kokoro／MOSS | 本機 | 本機（瀏覽器內） |
+| 原生優勢 | 可用原生程序執行長任務、不佔網頁主執行緒（native-runner 已有基礎）；麥克風目前沒用原生路徑 | 無 |
+
+**結論**：收音、聲紋、Whisper 三者在兩版都在渲染程序，差異主要在 Edge TTS 的網路路徑與回音消除的瀏覽器差異。桌面版吃效能的部分（持續辨識、聲紋比對）可放到原生子程序，網頁版保留渲染程序路徑當退路。
+
+## 分階段實作計畫（依調查修正順序）
+
+階段順序沿用需求的 A→F。理由：A 只是設定與開關，風險最小，且其他階段都要讀它的設定；B（佇列與切段）不依賴聲紋，可先用文字測試；C（聲紋）是獨立模型，要先取得使用者同意才能下載；D（閘門）依賴 B 與 C；E（確認與語音卡片）依賴 B；F（音樂、網頁、故事）依賴 B。
+
+每階段都需要：Windows 實機驗證（真 Electron，隔離 user-data，換埠，絕不用 17923）；Linux 沒有環境，標「未實跑」。
+
+### 階段 A：設定與開關
+- 目標：多媒體輸入新增「全語音Live」（預設關閉）、聲紋上限（8–128，預設 8，只能 Configure 改）、主詞（預設 AI，可選 欸哀）、提示音（叮咚／科技感／語音播報，預設叮咚）。
+- 要改的地方：`advancedSettings` 預設值（約 57936 行）、清理函式（約 59427 行）、`input` 分類 UI（**位置待 Grep 確認**）。
+- 步驟與驗收：
+  1. Grep 找到 `input` 分類的 UI 建構函式；驗收：記錄檔名與行號於本文件。
+  2. 加入四個設定鍵與預設值；驗收：`node` 單元測試讀取預設值、超出 8–128 的聲紋上限被夾回範圍。
+  3. 加入 Configure 控制項；驗收：真 Electron 打開 Configure，四項都能改、重開後保留。
+  4. 「全語音Live」關閉時，其他階段的程式不得啟動麥克風；驗收：開關關閉時 `getUserMedia` 呼叫數為 0（以 spy 測）。
+- 不准做的事：不得加入「用語音改聲紋上限」的任何指令；不得讓開關預設為開。
+
+### 階段 B：指令佇列與切段
+- 目標：連續文字蒐集到 1000 token 成一個指令；成形時播放提示音；先進先出（FIFO）；向前管理（取消前一個、停止前面的動作、取消前面所有指令）。
+- 要改的地方：新檔 `renderer/src/voice/live_queue.js`（純函式，UMD，node 可測）；`floating-assistant.js` 只做接線（改來源模組後以 `node scripts/embed-code-ui.js` 與 `node build-assistant.js` 重建嵌入區塊）。
+- 步驟與驗收：
+  1. 純函式佇列：入隊、出隊、取消指定、取消前一個、停止前面、取消全部；驗收：node 單元測試全過，FIFO 順序測試。
+  2. 1000 token 切段：用既有 tokenizer 計數（**待確認是否有可用 tokenizer**，沒有則以字元估計並標明）；驗收：1000 token 邊界測試。
+  3. 提示音：三種聲響可選；驗收：真 Electron 播放各一次（以事件計數驗證，不靠聽）。
+  4. 接線到既有 LLM 執行流程；驗收：前一指令執行中排入的第二指令在前一個結束後才執行。
+- 不准做的事：不得有「佇列滿」的上限分支（使用者已決定沒有滿的狀況）。
+- 需要使用者決定：無（已定案）。
+
+### 階段 C：聲紋
+- 目標：錄入、比對、最多 N 個（8–128）、第一次開啟沒有聲紋就強制錄入、語音「新增聲紋」「刪除聲紋」、記錄後以文字加語音回報 ID。
+- 前置條件：**需使用者同意下載聲紋模型**（檔名、來源、大小見調查第 5 節）。未同意前只能寫不依賴模型的部分（儲存格式、上限夾限、ID 配發）並以假向量測試。
+- 驗收：真模型比對同一人高於不同人的閾值（閾值待實測決定，不先寫死）。
+
+### 階段 D：持續收音與閘門
+- 目標：持續收音；聲紋不符的聲音無視；AI 自己的聲音無視；主詞比對。
+- 依賴：B、C。收音改用 AudioWorklet（ScriptProcessor 淘汰）；需要使用者同意是否以原生子程序跑辨識（桌面版優勢）。
+- 驗收：用錄好的測試音檔餵入（真麥克風在無人值守環境不可行，如實標明）。
+
+### 階段 E：危險動作二次確認與語音回答卡片
+- 目標：刪檔、寄信、付款等一律二次確認；確認卡片支援語音回答（「確認」「取消」「第二個」）。
+- 依賴：B；卡片現在只在根對話（`floating-assistant.js` 約 61278 行），語音路徑要接在 `askCard`。
+- 驗收：二次確認沒有通過時動作不執行（測試以假動作計數）。
+
+### 階段 F：全語音可做的事
+- 目標：自動播放音樂、要求自動開啟網頁、唸故事。
+- 依賴：B、AI 回覆朗讀分派（調查第 3 節「未確認」項）。
+- 驗收：三個動作各有一個單元測試（以工具呼叫計數）。
+
+### 不准做的事（全部階段）
+- 不得用語音改聲紋上限；不得把危險動作排除在二次確認之外；不得在未同意時下載模型；不得讓全語音預設開啟。
+
+### 驗證方式（Windows／Linux）
+- Windows：真 Electron 隔離環境（獨立 `--user-data-dir`、`FA_DISABLE_MAIN_OVERLAY=1`、預寫 `main-ext-rev.txt`、換埠、絕不用 17923、低優先權，逐項進度輸出到結果檔）。
+- Linux：未實跑（本機無 Linux 環境）。
+
+## 交接
+（尚無；上下文到 30% 時在此更新）
