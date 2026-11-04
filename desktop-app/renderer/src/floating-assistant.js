@@ -8578,6 +8578,54 @@ const holder = {};
         const c = Number(opts.contextTokens); const ctxTok = Number.isFinite(c) && c > 0 ? c : 4096;
         return { enabled: true, maxTokens: Math.round(Math.min(sp.max, Math.max(sp.min, ctxTok * sp.ratio))), timeoutMs: sp.timeoutMs };
     }
+    // ---------- CoLU+Thinking 反思（模型 thinking 反思；與「反思①②」程式流程、catalog/reflect_core.js 字詞反思都不同）----------
+    // 反思題是封閉題：「這個計畫有沒有缺口？A 沒有 B 有：缺口是…」。只在 thinkingPlan({stage:'reflect'}) 開啟時才問。
+    // 解析失敗、逾時、generate 拋錯一律視為「沒有缺口」（程式預設退路，不阻擋流程）。推理只回傳給呼叫端顯示，不進 messages。
+    function coluThinkBudget(opts) { opts = opts || {}; return { total: 0, max: opts.max != null ? opts.max : 2, perQ: {}, perQMax: opts.perQMax != null ? opts.perQMax : 1 }; }
+    // 回傳 { gap, note, reasoning, ok, error? }；沒有 thinking 時 skipped:true 且不呼叫 generate。
+    function coluThinkReflect(opts) {
+        opts = opts || {};
+        const th = thinkingPlan({ modelId: opts.modelId, stage: 'reflect', contextTokens: opts.contextTokens, enabled: opts.enabled });
+        if (!th.enabled || typeof opts.generate !== 'function') return Promise.resolve({ gap: false, note: '', reasoning: '', ok: false, skipped: true });
+        const timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : th.timeoutMs;
+        const msgs = [
+            { role: 'system', content: '你在檢查一個計畫有沒有缺口。只輸出一個 JSON 物件，格式：{"gap": true 或 false, "note": "缺口是什麼（一句話；沒有缺口就填空字串）"}。' },
+            { role: 'user', content: '計畫：\n' + String(opts.question || '').slice(0, 1200) + '\n\n這個計畫有沒有缺口？A 沒有 B 有：缺口是…' },
+        ];
+        const work = jsonStep({ generate: opts.generate, messages: msgs, maxTries: 2, maxTokens: 160, prefill: '{"gap":', thinking: th,
+            validate: (o) => { if (typeof o.gap !== 'boolean') return ['「gap」必須是 true 或 false']; if (o.gap && (typeof o.note !== 'string' || !o.note.trim())) return ['有缺口時「note」不能是空的']; return []; } })
+            .then((r) => r, (e) => ({ ok: false, error: String((e && e.message) || e), reasoning: '' }));
+        let timer = null;
+        const cut = new Promise((resolve) => { timer = setTimeout(() => resolve({ ok: false, error: '逾時', reasoning: '' }), timeoutMs); });
+        return Promise.race([work, cut]).then((r) => {
+            clearTimeout(timer); const reasoning = String(r.reasoning || '');
+            if (!r.ok) return { gap: false, note: '', reasoning, ok: false, error: r.error || '沒有合格的回覆' };
+            const gap = r.value.gap === true; return { gap, note: gap ? String(r.value.note).trim().slice(0, 200) : '', reasoning, ok: true };
+        });
+    }
+    // 反思後修正（一輪）：反思 → 有缺口就把 note 交回 redo(note) 重做一次 →（secondCheck 時）重做結果再反思一次，仍有缺口就用原本的。
+    // budget（coluThinkBudget）：整份計畫最多 max 次反思；qid 不是 'plan' 的題目（答案核對失敗那一種）每題最多 perQMax 次。
+    // opts: { qid, budget, generate, modelId, contextTokens, enabled, original, describe(value)→string, redo(note)→value|null（null＝重做也不合格）, secondCheck }
+    // 回傳 { value, reflected 次數, gap, note, redone, fallback, reasoning, unsure }；value 預設是 original，只有通過才換成重做結果。
+    async function coluThinkRevise(opts) {
+        const b = opts.budget || coluThinkBudget(); const qid = String(opts.qid || 'plan'); const perQ = qid !== 'plan';
+        const out = { value: opts.original, reflected: 0, gap: false, note: '', redone: false, fallback: false, reasoning: '', unsure: false };
+        if (!thinkingPlan({ modelId: opts.modelId, stage: 'reflect', contextTokens: opts.contextTokens, enabled: opts.enabled }).enabled) return out;
+        const take = () => { if (b.total >= b.max || (perQ && (b.perQ[qid] || 0) >= b.perQMax)) return false; b.total++; if (perQ) b.perQ[qid] = (b.perQ[qid] || 0) + 1; return true; };
+        const ask = (value) => coluThinkReflect({ generate: opts.generate, modelId: opts.modelId, contextTokens: opts.contextTokens, enabled: opts.enabled, question: opts.describe(value) });
+        if (!take()) { out.fallback = true; return out; }
+        const r1 = await ask(opts.original); out.reflected = 1; out.reasoning = r1.reasoning; out.unsure = !r1.ok;
+        if (!r1.gap) return out;
+        out.gap = true; out.note = r1.note;
+        let cand = null; try { cand = await opts.redo(r1.note); } catch (_) { cand = null; }
+        if (cand == null) { out.fallback = true; return out; }
+        out.redone = true;
+        if (!opts.secondCheck) { out.value = cand; return out; }
+        if (!take()) { out.fallback = true; return out; } // 第二次反思超過上限：用原計畫
+        const r2 = await ask(cand); out.reflected = 2;
+        if (r2.gap) { out.fallback = true; return out; } // 重做後仍有缺口：用原計畫
+        out.value = cand; return out;
+    }
     // 一個小而有型別的決策：ctx = { generate({messages,maxTokens})→string, messages, validate(obj)→[錯誤], maxTries=2, maxTokens=160 }
     // 回覆不合格 → 退回：模型只看到「它自己最後一次的回覆＋精確的錯誤」（不累積歷史）；連續兩次回覆完全相同就提前停止（小模型會原樣複誦錯誤答案）。
     // prefill：先替模型寫好回覆的開頭（例如 {"choice":），小模型就不會改用散文回答；generate 回傳的文字要包含這個開頭
@@ -8802,7 +8850,7 @@ const holder = {};
         return { ok: true, text: typeof res === 'string' ? res : JSON.stringify(res), vars: scope.vars };
     }
 
-    return { buildReferencePack, extractiveSummary, chunkText, splitSentences, parseAttachments, stripAttachments, kindOf, cleanQuery, narrowByEvidence, relevantOptional, slotsFromSchema, programFill, parseJsonLoose, stripThink, thinkingPlan, jsonStep,fillMessages, validateFill, modelFill, autoPick, menuMessages, chooseTool, tokensOf, checkExtractive, phraseMessages, newTrace, decide, pushRing, tracesToLines, validateRecipe, runRecipe, interp, MAX_STEPS };
+    return { buildReferencePack, extractiveSummary, chunkText, splitSentences, parseAttachments, stripAttachments, kindOf, cleanQuery, narrowByEvidence, relevantOptional, slotsFromSchema, programFill, parseJsonLoose, stripThink, thinkingPlan, coluThinkBudget, coluThinkReflect, coluThinkRevise, jsonStep,fillMessages, validateFill, modelFill, autoPick, menuMessages, chooseTool, tokensOf, checkExtractive, phraseMessages, newTrace, decide, pushRing, tracesToLines, validateRecipe, runRecipe, interp, MAX_STEPS };
 });
 
 }).call(null, undefined, holder);
@@ -9579,7 +9627,13 @@ class {{className}}Test {
             return { ok: true, model, dsl: toDsl(model), decisions, warnings, errors: errs0, fromHints: true }; } }
         // CoLU+Thinking：opts.thinking（來自 R.thinkingPlan，沒給或 enabled:false 就完全照舊）。推理只進 reasoning（給介面看），不進 messages、不進 decisions
         const thOn = !!(opts.thinking && opts.thinking.enabled); const reasoning = [];
-        const ask = async (stage, spec, label) => { if (thOn) emit({ type: 'thinking', phase: 'start', stage, label }); const r = await R.jsonStep({ generate: opts.generate, messages: spec.messages, validate: spec.validate, maxTries: opts.maxTries || 2, maxTokens: 400, prefill: PREFILL[stage], thinking: opts.thinking }); if (thOn) { if (r.reasoning) reasoning.push(r.reasoning); emit({ type: 'thinking', phase: 'done', stage, label, chars: String(r.reasoning || '').length }); } decisions.push({ stage, label, by: 'model', tries: r.tries, rejected: r.rejected, ok: r.ok }); emit({ type: 'stage', stage, label, ok: r.ok }); if (!r.ok) warnings.push(stage + (label ? '（' + label + '）' : '') + ' 模型沒給出合格的回覆：' + (r.error || '')); return r.ok ? r.value : null; };
+        const ask = async (stage, spec, label) => { if (thOn) emit({ type: 'thinking', phase: 'start', stage, label }); const r = await R.jsonStep({ generate: opts.generate, messages: spec.messages, validate: spec.validate, maxTries: opts.maxTries || 2, maxTokens: 400, prefill: PREFILL[stage], thinking: opts.thinking }); if (thOn) { if (r.reasoning) reasoning.push(r.reasoning); emit({ type: 'thinking', phase: 'done', stage, label, chars: String(r.reasoning || '').length }); } decisions.push({ stage, label, by: 'model', tries: r.tries, rejected: r.rejected, ok: r.ok }); emit({ type: 'stage', stage, label, ok: r.ok }); if (!r.ok) warnings.push(stage + (label ? '（' + label + '）' : '') + ' 模型沒給出合格的回覆：' + (r.error || ''));
+            // CoLU+Thinking 反思（答案層）：核對失敗才反思一次（每題最多 1 次）；有缺口就把 note 當反思提示重做一次。推理只進 reasoning（給介面看）
+            if (!r.ok && opts.reflect && opts.reflect.enabled) { const rv = await R.coluThinkRevise({ qid: 'ans:' + stage + ':' + (label || ''), budget: opts.reflect.budget, generate: opts.generate, modelId: opts.reflect.modelId, contextTokens: opts.reflect.contextTokens, enabled: true, original: null, describe: () => '階段「' + stage + '」' + (label ? '（' + label + '）' : '') + '的回覆沒有通過核對：' + String(r.error || '').slice(0, 160), redo: async (note) => { const again = await R.jsonStep({ generate: opts.generate, messages: spec.messages.concat([{ role: 'user', content: '反思提示：' + note + '。請依此修正，只輸出修正後的 JSON。' }]), validate: spec.validate, maxTries: opts.maxTries || 2, maxTokens: 400, prefill: PREFILL[stage], thinking: opts.thinking }); if (again.reasoning) reasoning.push(again.reasoning); return again.ok ? again.value : null; } });
+                if (rv.reflected) emit({ type: 'reflect', level: 'answer', gap: rv.gap, note: rv.note, count: rv.reflected, redone: rv.redone, fallback: rv.fallback, unsure: rv.unsure, chars: String(rv.reasoning || '').length });
+                if (rv.reasoning) reasoning.push(rv.reasoning);
+                if (rv.redone) return rv.value; }
+            return r.ok ? r.value : null; };
         // ① 參與者與使用案例
         const a1 = await ask('actors', stageSpec.actors(scenario)); if (!a1) return { ok: false, model, dsl: '', decisions, warnings, error: '找不到參與者與使用案例' };
         model.actors = a1.actors.slice(); model.usecases = a1.usecases.map((u) => ({ name: u.name, actor: u.actor, summary: u.summary || '', steps: [] }));
@@ -10783,7 +10837,17 @@ public class Application {
         const seed = opts.seed === false ? { model: U.emptyModel(), used: [], skipped: [] } : seedModel(scenario, opts); trail.push({ stage: 'seed', by: 'program', used: seed.used });
         let res;
         if (opts.model) res = { ok: true, model: opts.model, decisions: [], warnings: [] };
-        else { res = await U.scenarioToModelBig(scenario, { generate: opts.generate, onStage: opts.onStage, maxTries: opts.maxTries, program: opts.program, glossary: opts.glossary, thinking: opts.thinking }); if (!res.ok) return { ok: false, error: res.error, trail, decisions: res.decisions, warnings: res.warnings }; }
+        else {
+            // CoLU+Thinking 反思（計畫層）：opts.reflect 沒給（或 enabled 不是 true）就完全照舊。有缺口 → 把 note 當一輪修正請求重做一次；重做後仍有缺口 → 用原計畫
+            const rf = opts.reflect && opts.reflect.enabled ? Object.assign({ budget: R.coluThinkBudget() }, opts.reflect) : null;
+            const build = (sc) => U.scenarioToModelBig(sc, { generate: opts.generate, onStage: opts.onStage, maxTries: opts.maxTries, program: opts.program, glossary: opts.glossary, thinking: opts.thinking, reflect: rf });
+            res = await build(scenario); if (!res.ok) return { ok: false, error: res.error, trail, decisions: res.decisions, warnings: res.warnings };
+            if (rf) {
+                const rv = await R.coluThinkRevise({ qid: 'plan', budget: rf.budget, generate: opts.generate, modelId: rf.modelId, contextTokens: rf.contextTokens, enabled: true, original: res, describe: (x) => String(U.toDsl(x.model) || '').slice(0, 1500), secondCheck: true, redo: async (note) => { const again = await build(scenario + '\n\n（反思提示，請修正這個缺口：' + note + '）'); return again.ok ? again : null; } });
+                if (opts.onStage) try { opts.onStage({ type: 'reflect', level: 'plan', gap: rv.gap, note: rv.note, count: rv.reflected, redone: rv.redone, fallback: rv.fallback, unsure: rv.unsure, chars: String(rv.reasoning || '').length }); } catch (_) {}
+                res = rv.value; trail.push({ stage: 'reflect', by: 'model', count: rv.reflected, gap: rv.gap, redone: rv.redone, fallback: rv.fallback });
+            }
+        }
         const model = res.model; // 種子片段的類別補進來（名稱不衝突的）
         for (const c of seed.model.classes) if (!model.classes.some((x) => x.name === c.name) && model.classes.length < 10) model.classes.push(c); for (const r of seed.model.relations) if (!model.relations.some((x) => x.from === r.from && x.to === r.to && x.kind === r.kind)) model.relations.push(r);
         normalize(model); let rw = { rounds: [], remaining: findIssues(model) }; if (opts.generate && opts.rework !== false) rw = await reworkModel(model, scenario, { generate: opts.generate, maxRounds: opts.maxRounds || 2 }); trail.push({ stage: 'rework', rounds: rw.rounds.length, remaining: rw.remaining.length });
@@ -100251,10 +100315,12 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (!M || M.online || !M.model) return null;
         return FaRecipe.thinkingPlan({ modelId: M.model.id, stage: 'plan', contextTokens: M.model.contextTokens, enabled: this.advancedSettings.coluThinking !== false });
     }
+    // CoLU+Thinking 反思（與「反思①②」程式流程不同）：和 _coluThinkingFor 同一條件；其他模型或開關關閉回傳 null，反思完全不跑
+    _coluReflectFor(M) { const th = this._coluThinkingFor(M); return th && th.enabled ? { modelId: M.model.id, contextTokens: M.model.contextTokens, enabled: true } : null; }
     async _umlDesign(a) {
         const scenario = String(a.scenario || '').trim(); if (!scenario) return { ok: false, error: '缺少 scenario' }; const lang = ['python', 'typescript', 'java'].includes(a.language) ? a.language : 'python';
         const M = await this._umlModel(a.model); if (M.error) return { ok: false, error: M.error };
-        const prog = this._createProgressWidget('情境→UML→程式骨架（' + M.label + '）'); const r = await FaDesign.designProject(scenario, { generate: M.gen, language: lang, package: a.package, constraints: a.constraints, prefs: this.advancedSettings.designPrefs || {}, glossary: this.advancedSettings.umlGlossary || {}, userGlue: this.advancedSettings.userGlue || [], experience: this.advancedSettings.glueExperience || {}, thinking: this._coluThinkingFor(M), onStage: (e) => { if (e.type === 'thinking') { prog.log(e.phase === 'start' ? '🧠 思考中…（' + e.stage + '）' : '🧠 思考完成（' + e.chars + ' 字）'); return; } if (e.type === 'stage') prog.log('✔ ' + e.stage + (e.label ? '：' + e.label : '') + (e.ok ? '' : '（模型沒給出合格回覆，用保守預設）')); } });
+        const prog = this._createProgressWidget('情境→UML→程式骨架（' + M.label + '）'); const r = await FaDesign.designProject(scenario, { generate: M.gen, language: lang, package: a.package, constraints: a.constraints, prefs: this.advancedSettings.designPrefs || {}, glossary: this.advancedSettings.umlGlossary || {}, userGlue: this.advancedSettings.userGlue || [], experience: this.advancedSettings.glueExperience || {}, thinking: this._coluThinkingFor(M), reflect: this._coluReflectFor(M), onStage: (e) => { if (e.type === 'reflect') { prog.log('🪞 反思（' + e.chars + ' 字）：' + (e.gap ? (e.redone ? '有缺口，已依此重做一次：' : '有缺口（重做沒有通過，用原本的）：') + e.note : (e.unsure ? '沒有定論（逾時或格式不對），照原本的' : '沒有缺口'))); return; } if (e.type === 'thinking') { prog.log(e.phase === 'start' ? '🧠 思考中…（' + e.stage + '）' : '🧠 思考完成（' + e.chars + ' 字）'); return; } if (e.type === 'stage') prog.log('✔ ' + e.stage + (e.label ? '：' + e.label : '') + (e.ok ? '' : '（模型沒給出合格回覆，用保守預設）')); } });
         if (!r.ok) { prog.fail(r.error); return { ok: false, error: r.error, warnings: r.warnings }; }
         const sess = await this._umlStartSession(r.model, lang, a.package, scenario, r.design); const z = await this._umlZip(sess.proj.files, r.model.name || 'design', lang); prog.finish('完成：' + sess.proj.files.length + ' 個檔案');
         const res = this._umlResult(r.model, lang, { files: sess.proj.files, design: r.design }, z, { uml: r.dsl, seededFrom: r.seedUsed, rework: r.rework.rounds.map((x) => x.issues.length + ' 個問題'), warnings: r.warnings.slice(0, 8) });

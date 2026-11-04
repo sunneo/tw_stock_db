@@ -494,7 +494,17 @@ public class Application {
         const seed = opts.seed === false ? { model: U.emptyModel(), used: [], skipped: [] } : seedModel(scenario, opts); trail.push({ stage: 'seed', by: 'program', used: seed.used });
         let res;
         if (opts.model) res = { ok: true, model: opts.model, decisions: [], warnings: [] };
-        else { res = await U.scenarioToModelBig(scenario, { generate: opts.generate, onStage: opts.onStage, maxTries: opts.maxTries, program: opts.program, glossary: opts.glossary, thinking: opts.thinking }); if (!res.ok) return { ok: false, error: res.error, trail, decisions: res.decisions, warnings: res.warnings }; }
+        else {
+            // CoLU+Thinking 反思（計畫層）：opts.reflect 沒給（或 enabled 不是 true）就完全照舊。有缺口 → 把 note 當一輪修正請求重做一次；重做後仍有缺口 → 用原計畫
+            const rf = opts.reflect && opts.reflect.enabled ? Object.assign({ budget: R.coluThinkBudget() }, opts.reflect) : null;
+            const build = (sc) => U.scenarioToModelBig(sc, { generate: opts.generate, onStage: opts.onStage, maxTries: opts.maxTries, program: opts.program, glossary: opts.glossary, thinking: opts.thinking, reflect: rf });
+            res = await build(scenario); if (!res.ok) return { ok: false, error: res.error, trail, decisions: res.decisions, warnings: res.warnings };
+            if (rf) {
+                const rv = await R.coluThinkRevise({ qid: 'plan', budget: rf.budget, generate: opts.generate, modelId: rf.modelId, contextTokens: rf.contextTokens, enabled: true, original: res, describe: (x) => String(U.toDsl(x.model) || '').slice(0, 1500), secondCheck: true, redo: async (note) => { const again = await build(scenario + '\n\n（反思提示，請修正這個缺口：' + note + '）'); return again.ok ? again : null; } });
+                if (opts.onStage) try { opts.onStage({ type: 'reflect', level: 'plan', gap: rv.gap, note: rv.note, count: rv.reflected, redone: rv.redone, fallback: rv.fallback, unsure: rv.unsure, chars: String(rv.reasoning || '').length }); } catch (_) {}
+                res = rv.value; trail.push({ stage: 'reflect', by: 'model', count: rv.reflected, gap: rv.gap, redone: rv.redone, fallback: rv.fallback });
+            }
+        }
         const model = res.model; // 種子片段的類別補進來（名稱不衝突的）
         for (const c of seed.model.classes) if (!model.classes.some((x) => x.name === c.name) && model.classes.length < 10) model.classes.push(c); for (const r of seed.model.relations) if (!model.relations.some((x) => x.from === r.from && x.to === r.to && x.kind === r.kind)) model.relations.push(r);
         normalize(model); let rw = { rounds: [], remaining: findIssues(model) }; if (opts.generate && opts.rework !== false) rw = await reworkModel(model, scenario, { generate: opts.generate, maxRounds: opts.maxRounds || 2 }); trail.push({ stage: 'rework', rounds: rw.rounds.length, remaining: rw.remaining.length });

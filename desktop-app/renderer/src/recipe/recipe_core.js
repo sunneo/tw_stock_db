@@ -108,6 +108,54 @@
         const c = Number(opts.contextTokens); const ctxTok = Number.isFinite(c) && c > 0 ? c : 4096;
         return { enabled: true, maxTokens: Math.round(Math.min(sp.max, Math.max(sp.min, ctxTok * sp.ratio))), timeoutMs: sp.timeoutMs };
     }
+    // ---------- CoLU+Thinking 反思（模型 thinking 反思；與「反思①②」程式流程、catalog/reflect_core.js 字詞反思都不同）----------
+    // 反思題是封閉題：「這個計畫有沒有缺口？A 沒有 B 有：缺口是…」。只在 thinkingPlan({stage:'reflect'}) 開啟時才問。
+    // 解析失敗、逾時、generate 拋錯一律視為「沒有缺口」（程式預設退路，不阻擋流程）。推理只回傳給呼叫端顯示，不進 messages。
+    function coluThinkBudget(opts) { opts = opts || {}; return { total: 0, max: opts.max != null ? opts.max : 2, perQ: {}, perQMax: opts.perQMax != null ? opts.perQMax : 1 }; }
+    // 回傳 { gap, note, reasoning, ok, error? }；沒有 thinking 時 skipped:true 且不呼叫 generate。
+    function coluThinkReflect(opts) {
+        opts = opts || {};
+        const th = thinkingPlan({ modelId: opts.modelId, stage: 'reflect', contextTokens: opts.contextTokens, enabled: opts.enabled });
+        if (!th.enabled || typeof opts.generate !== 'function') return Promise.resolve({ gap: false, note: '', reasoning: '', ok: false, skipped: true });
+        const timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : th.timeoutMs;
+        const msgs = [
+            { role: 'system', content: '你在檢查一個計畫有沒有缺口。只輸出一個 JSON 物件，格式：{"gap": true 或 false, "note": "缺口是什麼（一句話；沒有缺口就填空字串）"}。' },
+            { role: 'user', content: '計畫：\n' + String(opts.question || '').slice(0, 1200) + '\n\n這個計畫有沒有缺口？A 沒有 B 有：缺口是…' },
+        ];
+        const work = jsonStep({ generate: opts.generate, messages: msgs, maxTries: 2, maxTokens: 160, prefill: '{"gap":', thinking: th,
+            validate: (o) => { if (typeof o.gap !== 'boolean') return ['「gap」必須是 true 或 false']; if (o.gap && (typeof o.note !== 'string' || !o.note.trim())) return ['有缺口時「note」不能是空的']; return []; } })
+            .then((r) => r, (e) => ({ ok: false, error: String((e && e.message) || e), reasoning: '' }));
+        let timer = null;
+        const cut = new Promise((resolve) => { timer = setTimeout(() => resolve({ ok: false, error: '逾時', reasoning: '' }), timeoutMs); });
+        return Promise.race([work, cut]).then((r) => {
+            clearTimeout(timer); const reasoning = String(r.reasoning || '');
+            if (!r.ok) return { gap: false, note: '', reasoning, ok: false, error: r.error || '沒有合格的回覆' };
+            const gap = r.value.gap === true; return { gap, note: gap ? String(r.value.note).trim().slice(0, 200) : '', reasoning, ok: true };
+        });
+    }
+    // 反思後修正（一輪）：反思 → 有缺口就把 note 交回 redo(note) 重做一次 →（secondCheck 時）重做結果再反思一次，仍有缺口就用原本的。
+    // budget（coluThinkBudget）：整份計畫最多 max 次反思；qid 不是 'plan' 的題目（答案核對失敗那一種）每題最多 perQMax 次。
+    // opts: { qid, budget, generate, modelId, contextTokens, enabled, original, describe(value)→string, redo(note)→value|null（null＝重做也不合格）, secondCheck }
+    // 回傳 { value, reflected 次數, gap, note, redone, fallback, reasoning, unsure }；value 預設是 original，只有通過才換成重做結果。
+    async function coluThinkRevise(opts) {
+        const b = opts.budget || coluThinkBudget(); const qid = String(opts.qid || 'plan'); const perQ = qid !== 'plan';
+        const out = { value: opts.original, reflected: 0, gap: false, note: '', redone: false, fallback: false, reasoning: '', unsure: false };
+        if (!thinkingPlan({ modelId: opts.modelId, stage: 'reflect', contextTokens: opts.contextTokens, enabled: opts.enabled }).enabled) return out;
+        const take = () => { if (b.total >= b.max || (perQ && (b.perQ[qid] || 0) >= b.perQMax)) return false; b.total++; if (perQ) b.perQ[qid] = (b.perQ[qid] || 0) + 1; return true; };
+        const ask = (value) => coluThinkReflect({ generate: opts.generate, modelId: opts.modelId, contextTokens: opts.contextTokens, enabled: opts.enabled, question: opts.describe(value) });
+        if (!take()) { out.fallback = true; return out; }
+        const r1 = await ask(opts.original); out.reflected = 1; out.reasoning = r1.reasoning; out.unsure = !r1.ok;
+        if (!r1.gap) return out;
+        out.gap = true; out.note = r1.note;
+        let cand = null; try { cand = await opts.redo(r1.note); } catch (_) { cand = null; }
+        if (cand == null) { out.fallback = true; return out; }
+        out.redone = true;
+        if (!opts.secondCheck) { out.value = cand; return out; }
+        if (!take()) { out.fallback = true; return out; } // 第二次反思超過上限：用原計畫
+        const r2 = await ask(cand); out.reflected = 2;
+        if (r2.gap) { out.fallback = true; return out; } // 重做後仍有缺口：用原計畫
+        out.value = cand; return out;
+    }
     // 一個小而有型別的決策：ctx = { generate({messages,maxTokens})→string, messages, validate(obj)→[錯誤], maxTries=2, maxTokens=160 }
     // 回覆不合格 → 退回：模型只看到「它自己最後一次的回覆＋精確的錯誤」（不累積歷史）；連續兩次回覆完全相同就提前停止（小模型會原樣複誦錯誤答案）。
     // prefill：先替模型寫好回覆的開頭（例如 {"choice":），小模型就不會改用散文回答；generate 回傳的文字要包含這個開頭
@@ -332,5 +380,5 @@
         return { ok: true, text: typeof res === 'string' ? res : JSON.stringify(res), vars: scope.vars };
     }
 
-    return { buildReferencePack, extractiveSummary, chunkText, splitSentences, parseAttachments, stripAttachments, kindOf, cleanQuery, narrowByEvidence, relevantOptional, slotsFromSchema, programFill, parseJsonLoose, stripThink, thinkingPlan, jsonStep,fillMessages, validateFill, modelFill, autoPick, menuMessages, chooseTool, tokensOf, checkExtractive, phraseMessages, newTrace, decide, pushRing, tracesToLines, validateRecipe, runRecipe, interp, MAX_STEPS };
+    return { buildReferencePack, extractiveSummary, chunkText, splitSentences, parseAttachments, stripAttachments, kindOf, cleanQuery, narrowByEvidence, relevantOptional, slotsFromSchema, programFill, parseJsonLoose, stripThink, thinkingPlan, coluThinkBudget, coluThinkReflect, coluThinkRevise, jsonStep,fillMessages, validateFill, modelFill, autoPick, menuMessages, chooseTool, tokensOf, checkExtractive, phraseMessages, newTrace, decide, pushRing, tracesToLines, validateRecipe, runRecipe, interp, MAX_STEPS };
 });

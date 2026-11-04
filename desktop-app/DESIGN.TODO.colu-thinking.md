@@ -325,3 +325,54 @@ Level 判斷的設定位置：模型表加一個欄位（例如 `thinking: 'nati
 - `harness skill 可攜` 失敗來自 `skills/weak-model-harness/scripts/vendor/recipe_core.js` 與來源不一致，**從階段 1（4d30a0c0）就開始**（那時就決定不同步，留給發布階段）。這次沒有同步，需要決定：同步 vendor 副本（會讓這個檢查通過）或刪掉這條檢查。
 - 計畫階段每一題都可能等 30 秒，一次 UML 設計的題數多（類別、成員、關係、呼叫順序各一題）時，總時間會變長；尚未量測真機時間。
 - 評估裡另有 6 次生成沒有 thinking（呼叫來源沒有逐一查明，推測是設計流程的重整／歧義判斷，`designProject` 內的 `opts.generate`）。依設計只有計畫階段開 thinking，這 6 次行為不變。
+
+---
+
+## 階段 4 記錄（2026-11-04，反思：CoLU+Thinking 反思，設計 5(c)；只對 qwen3-0.6b，預設開）
+
+**命名與區分**：函式一律叫「CoLU+Thinking 反思」（`coluThinkReflect`、`coluThinkRevise`、`coluThinkBudget`），和 `floating-assistant.js` 的「反思①②」（程式流程：找工具、達成路線）、`catalog/reflect_core.js`（字詞反思）都不同。
+
+**改了哪些檔**：
+- `renderer/src/recipe/recipe_core.js`（新增約 50 行，匯出加三個）：
+  - `coluThinkReflect({generate, modelId, contextTokens, enabled, question, timeoutMs?})`：封閉題「這個計畫有沒有缺口？A 沒有 B 有：缺口是…」，走 `thinkingPlan({stage:'reflect'})` 的預算（ratio 0.075、300～600）與 15 秒逾時、`jsonStep` 的 `maxTries: 2`。回傳 `{gap, note, reasoning, ok}`。解析失敗、逾時、generate 拋錯一律 `gap:false`（`ok:false`）；沒有 thinking 時 `skipped:true` 且不呼叫 generate。`note` 最長 200 字。
+  - `coluThinkRevise({qid, budget, generate, modelId, contextTokens, enabled, original, describe, redo, secondCheck})`：反思 → 有缺口就 `redo(note)` 重做一次 →（`secondCheck` 時）重做結果再反思一次，仍有缺口就用原本的。上限：整份計畫（`budget.total`）最多 2 次反思；`qid` 不是 `'plan'` 的題目（答案核對失敗那一種）每題最多 1 次。超過上限、重做失敗、重做後仍有缺口一律 `fallback`，`value` 是原本的。
+  - `coluThinkBudget({max?, perQMax?})`：預設 `max 2`、`perQMax 1`。
+- `renderer/src/recipe/think_reflect.test.js`（新檔）：24 項，全過。涵蓋沒缺口、有缺口重做一次、重做仍失敗用原計畫、計畫層上限、每題上限、整體上限為 0、逾時、解析失敗、拋錯、其他模型不變、開關關閉、推理不進重試的 messages、預算 307（4096 上下文）。
+- `renderer/src/uml/design_core.js`（計畫層）：`designProject` 在 `opts.reflect.enabled` 時，計畫產生後反思；有缺口就把 note 以「（反思提示，請修正這個缺口：…）」加在情境後重做一次；`onStage` 送 `{type:'reflect', level:'plan', …}`；`trail` 記一筆。沒給 `reflect` 時呼叫與以前相同。
+- `renderer/src/uml/uml_core.js`（答案層）：`scenarioToModel` 的 `ask` 在答案核對失敗（`jsonStep` 回 `ok:false`）且 `opts.reflect.enabled` 時，反思一次；有缺口就把 note 當反思提示重做該題一次（重做的結果照常過 `validate`）；推理只 push 進 `reasoning`。
+- `renderer/src/floating-assistant.js`（**來源**，不是建置檔）：
+  - 新增 `_coluReflectFor(M)`：和 `_coluThinkingFor(M)` 同一條件（只有 qwen3-0.6b 且開關不是 false），其他情況 `null`，反思完全不跑。
+  - `_umlDesign` 傳入 `reflect: this._coluReflectFor(M)`；`onStage` 多一個 `reflect` 分支，進度列一行：「🪞 反思（N 字）：有缺口，已依此重做一次：…／沒有缺口／沒有定論（逾時或格式不對），照原本的」。
+  - `node scripts/embed-code-ui.js` 重新嵌入 uml／design／recipe 區塊；`git diff` 確認只有上面這些變動（137 行新增、7 行刪除，跨 4 個檔）。
+- `skills/weak-model-harness/scripts/vendor/recipe_core.js`：同步為新的 `recipe_core.js`（改前已確認與 HEAD 一致）。`harness skill 可攜` 仍然通過。
+- `scripts/run-core-tests.js`：登記 `think_reflect.test.js` 一行。
+- `scripts/eval/colu_think_reflect.eval.js`（新檔）：真 Electron，走 `fa._umlDesign` 整條路徑，假的 `_vlmRpc`，不下載模型。
+
+**測試結果**：
+- `think_reflect.test.js`：24 passed, 0 failed。
+- 既有：`recipe_core.test.js` 89、`plan_core.test.js` 57、`skill_compile_core.test.js` 48、`think_plan.test.js` 41、`plan_think.test.js` 25、`vlm_core.test.js` 135、`uml_core.test.js` 76，全部 0 failed。`node --check renderer/src/floating-assistant.js` 通過。
+- `node scripts/run-core-tests.js`：174／176 組通過。失敗只有既有的兩個：`tray_dialog`（系統匣對話框）與 `computer-remote` 的 RFB 探測。（報告上標「新增」只是因為它們不在 `known-failures.json` 裡，不是新壞的。）`harness skill 可攜` 通過。
+- 真 Electron 評估 `scripts/eval/colu_think_reflect.eval.js`：**PASS**。
+  - A（gap-once）：計畫後反思 2 次（計畫層＋重做後），有缺口 → 重做請求確實出現；反思帶 thinking；推理標記不在工具結果，也不在任何非反思請求的 messages。
+  - B（gap-always）：計畫層反思剛好 2 次，第二次仍有缺口 → 用原計畫。
+  - C（garbage）：反思輸出壞掉 → 3 次 RPC（thinking 兩次＋退路一次），沒有重做，流程照常完成。
+  - D（開關 false）：0 次反思、0 個 thinking 請求。
+  - E（classes-fail）：類別答案核對失敗 → 答案層反思一次（請求含「沒有通過核對」）；計畫層又反思一次（共 2）。
+- 評估是在隔離副本跑的（`%TEMP%\colu-iso4\desktop-app`，node_modules 用 junction，在那裡 `node build-assistant.js` 後跑 `run_eval.js`，埠 17942，不用 17923）。工作目錄沒有重建建置檔。
+
+**Grep 證明推理不進 messages／工具結果**：
+- `uml_core.js` 的 `reasoning` 只出現在：`scenarioToModel` 的 `reasoning` 陣列與回傳欄位（第 495 行）、`scenarioToModelBig` 串接（第 525、528 行）、`ask` 裡的 `reasoning.push`（推理）。`decisions` 與 `warnings` 不含推理。
+- `design_core.js` 的 `reasoning` 只在 `designProject` 回傳欄位（`res.reasoning`），`_umlResult` 不取它。
+- `floating-assistant.js` 的 `_umlDesign` 只用 `e.chars`（字數）與 `e.note`（結論），推理文字本身不進進度列。
+
+**遇到的坑與教訓**：
+- **第一次評估 0 次反思，原因不在功能**：評估載入的是建置檔 `renderer/floating-assistant.js`，它沒有階段 2～4 的任何程式（`_coluThinkingFor` 也找不到）。建置檔要在隔離副本建置，這跟階段 3 的做法一樣。工作目錄的建置檔仍然是舊的，發布時要照 `publish-live-update-patch` 流程重建（會改 `.min.js` 與 `update-manifest.json`，這一階段沒有做）。
+- **測試抓到的真 bug**：`coluThinkBudget({max:0})` 因為寫成 `opts.max || 2` 被當成 2。改成 `!= null` 判斷，並留了一項測試。
+- `node scripts/run-core-tests.js` 會覆寫 `test-reports/core-tests-latest.*`，而這兩個檔本來就有使用者未提交的變動。這次先備份、跑完後還原（sha1 驗證），沒有動到它們。
+- `scripts/embed-code-ui.js` 會重寫所有嵌入區塊，改前改後都要看 `git diff`，這次確認只有預期的變動。
+
+**沒做、需要知道的事**：
+- 真模型（`qwen3-0.6b`）的反思耗時與正確率還沒量測，屬於階段 6（需要使用者先確認下載）。
+- 反思的預算（300～600）與逾時（15 秒）是依上一階段的決定，沒有量測。
+- 進度列會顯示缺口的一句話（`note`）。這是「結論」，不是推理全文；推理全文留給階段 5 的介面。
+- 反思在計畫層與答案層共用同一份預算（整份計畫最多 2 次），所以答案層先反思過，計畫層就只剩一次反思的額度；重做後可能就用不到第二次反思。這是依「整個計畫最多 2 次」的字面意思做的，如果要分開算，請管理層決定。
