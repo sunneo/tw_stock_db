@@ -638,6 +638,8 @@ require("./fsx-sync.js").register(ipcMain, { find: (id) => { try { if (Date.now(
 // 之後要新增或修改這類 IPC 只要發 patch（下次啟動生效），不用重新安裝。main.js 本身（入口）仍然只能靠重新安裝更新，所以新的 IPC 一律寫進 main-ext.js。
 const { rawFsPath } = require("./main-ext.js").register(ipcMain, { fs, path, execConfirmGate, net, dialog, BrowserWindow, electron: require("electron"), getMainWindow: () => mainWindow, getDesktopSettings, patchDesktopSettings, userDataDir: USER_DATA_DIR, secretsFile: SECRETS_FILE });
 const sqliteEngine = require("./sqlite-engine.js").register(ipcMain, { resolvePath: (p) => path.resolve(rawFsPath(p)) });
+// 原生執行器（階段 3）：子程序推論的 IPC；目前子程序是假引擎，懶啟動，不影響既有流程
+require("./native-runner/ipc.js").register(ipcMain, { app, getMainWindow: () => mainWindow });
 app.on("before-quit", () => { try { sqliteEngine.closeAll(); } catch (_) { /* 退出時盡力關閉 */ } });
 
 // tw_stock_db客製: 2026-09-26使用者要求——對話清單（左邊的chat list）在單機版存成檔案，位置是

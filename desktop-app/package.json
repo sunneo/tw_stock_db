@@ -34,6 +34,7 @@
       "*.js",
       "!build-assistant.js",
       "build-config.json",
+      "native-runner/**/*.js",
       "renderer/**/*",
       "!renderer/src/**",
       "build/icon.png",
