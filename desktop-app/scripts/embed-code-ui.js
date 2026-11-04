@@ -487,5 +487,17 @@ function embedComputer() {
 }
 embedComputer();
 
+// 全語音 Live（階段 B）：三個純邏輯模組，各自夾在 <NAME>-BEGIN／<NAME>-END 之間，結果是同名全域常數。
+function embedLiveModule(markName, globalName, relPath) {
+    const core = fs.readFileSync(path.join(root, relPath), 'utf8').replace(/\r\n/g, '\n');
+    const a = src.indexOf('/* ' + markName + '-BEGIN */'), b = src.indexOf('/* ' + markName + '-END */');
+    if (a < 0 || b < 0) throw new Error('找不到 ' + markName + ' 標記');
+    src = src.slice(0, a) + '/* ' + markName + '-BEGIN */\nconst ' + globalName + ' = (function () {\nconst holder = {};\n(function (module, self) {\n' + core + '\n}).call(null, undefined, holder);\nreturn holder.' + globalName + ';\n})();\n' + src.slice(b);
+    console.log('已更新 ' + globalName + '（' + core.length + ' 字元）');
+}
+embedLiveModule('LIVEQ', 'FaLiveQueue', 'renderer/src/voice/live_queue.js');
+embedLiveModule('LIVECTRL', 'FaLiveController', 'renderer/src/voice/live_controller.js');
+embedLiveModule('LIVELOOP', 'FaLiveLoop', 'renderer/src/voice/live_loop.js');
+
 if (crlf) src = src.replace(/\n/g, '\r\n');
 fs.writeFileSync(file, src);

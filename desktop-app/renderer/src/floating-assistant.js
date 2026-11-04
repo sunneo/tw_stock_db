@@ -8265,6 +8265,460 @@ const holder = {};
 return holder.FaVoiceClean;
 })();
 /* VCLEAN-END */
+/* LIVEQ-BEGIN */
+const FaLiveQueue = (function () {
+const holder = {};
+(function (module, self) {
+/* 全語音 Live 的指令佇列與切段（UMD，純函式，不碰 DOM、麥克風、網路、模型；桌面版與網頁版共用）。
+ * 測試：scripts/voice-tests/live_queue.test.js。設計見 DESIGN.TODO.live-voice.md「階段 B」。
+ *
+ * 規則（使用者決定 2026-11-04）：
+ *   - 連續收進來的文字先蒐集；蒐集到 maxTokens（預設 1000）就切成一個指令排入佇列。
+ *   - 所有指令都是先進先出（FIFO）。佇列沒有「滿」的上限。
+ *   - 每次排入都呼叫 onEnqueue（用來播放提示音）。
+ *   - 每個指令都可以向前管理：取消最後排入的（cancelLast）、停止正在跑的（stopRunning）、取消全部（cancelAll）。
+ *
+ * 注意：token 數由呼叫端注入 countTokens；沒注入時用字元數估計（每字元算 1），這不是真的 token 數，
+ * 階段 B 接線前要換成專案實際的 tokenizer（尚未確認有哪一個可用）。
+ */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory();
+  else root.FaLiveQueue = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  var DEFAULT_MAX_TOKENS = 1000;
+
+  function defaultCount(text) { return String(text).length; }
+
+  // 在 text 裡找最長的前綴，其 token 數不超過 max；回傳前綴的字元長度（至少 1，避免死循環）。
+  function prefixLenWithin(text, max, count) {
+    var lo = 1, hi = text.length, best = 1;
+    while (lo <= hi) {
+      var mid = (lo + hi) >> 1;
+      if (count(text.slice(0, mid)) <= max) { best = mid; lo = mid + 1; } else { hi = mid - 1; }
+    }
+    return best;
+  }
+
+  function createLiveQueue(opts) {
+    opts = opts || {};
+    var maxTokens = Number(opts.maxTokens) > 0 ? Number(opts.maxTokens) : DEFAULT_MAX_TOKENS;
+    var count = typeof opts.countTokens === 'function' ? opts.countTokens : defaultCount;
+    var onEnqueue = typeof opts.onEnqueue === 'function' ? opts.onEnqueue : function () {};
+    var nextId = 1;
+    var buffer = '';          // 還在蒐集、尚未成為指令的文字
+    var items = [];           // 全部指令，依排入順序（FIFO）；狀態：queued／running／done／cancelled
+    var log = [];             // 事件紀錄（測試與除錯用）
+
+    function newItem(text) {
+      var it = { id: nextId++, text: text, status: 'queued' };
+      items.push(it);
+      log.push({ type: 'enqueue', id: it.id });
+      onEnqueue(it);
+      return it;
+    }
+
+    // 收進一段文字：蒐集；每累積到 maxTokens 就切一個指令出來。回傳這次新排入的指令陣列。
+    function feed(text) {
+      buffer += String(text == null ? '' : text);
+      var made = [];
+      while (buffer.length && count(buffer) > maxTokens) {
+        var n = prefixLenWithin(buffer, maxTokens, count);
+        made.push(newItem(buffer.slice(0, n)));
+        buffer = buffer.slice(n);
+      }
+      return made;
+    }
+
+    // 把目前蒐集到的文字當成一個指令排入（例如斷句偵測到句尾、使用者停頓）。沒有文字就不動作。
+    function flush() {
+      if (!buffer.length) return null;
+      var it = newItem(buffer);
+      buffer = '';
+      return it;
+    }
+
+    // 取出佇列最前面的一個開始執行（FIFO）。已經有正在跑的就不取出（一次只跑一個）。
+    function next() {
+      if (items.some(function (x) { return x.status === 'running'; })) return null;
+      var it = items.find(function (x) { return x.status === 'queued'; });
+      if (!it) return null;
+      it.status = 'running';
+      log.push({ type: 'start', id: it.id });
+      return it;
+    }
+
+    // 正在跑的指令完成。
+    function complete(id) {
+      var it = find(id);
+      if (it && it.status === 'running') { it.status = 'done'; log.push({ type: 'done', id: id }); }
+      return !!it && it.status === 'done';
+    }
+
+    function find(id) { return items.find(function (x) { return x.id === id; }) || null; }
+
+    // 「取消前一個指令」：取消最後排入、還沒開始的那一個；沒有排隊中的，就取消正在跑的那一個。回傳被取消的指令或 null。
+    function cancelLast() {
+      var queued = items.filter(function (x) { return x.status === 'queued'; });
+      var target = queued.length ? queued[queued.length - 1] : items.find(function (x) { return x.status === 'running'; });
+      if (!target) return null;
+      target.status = 'cancelled';
+      log.push({ type: 'cancel', id: target.id });
+      return target;
+    }
+
+    // 「停止前面的動作」：停止正在跑的那一個（排隊中的不動）。回傳被停止的指令或 null。
+    function stopRunning() {
+      var target = items.find(function (x) { return x.status === 'running'; });
+      if (!target) return null;
+      target.status = 'cancelled';
+      log.push({ type: 'stop', id: target.id });
+      return target;
+    }
+
+    // 「取消前面所有指令」：取消全部排隊中與正在跑的指令，並清掉還在蒐集的文字。回傳被取消的數量。
+    function cancelAll() {
+      var n = 0;
+      items.forEach(function (x) {
+        if (x.status === 'queued' || x.status === 'running') { x.status = 'cancelled'; n++; }
+      });
+      buffer = '';
+      log.push({ type: 'cancelAll', count: n });
+      return n;
+    }
+
+    function pending() { return items.filter(function (x) { return x.status === 'queued' || x.status === 'running'; }).map(function (x) { return x.id; }); }
+
+    return {
+      feed: feed,
+      flush: flush,
+      next: next,
+      complete: complete,
+      cancelLast: cancelLast,
+      stopRunning: stopRunning,
+      cancelAll: cancelAll,
+      pending: pending,
+      buffered: function () { return buffer; },
+      items: function () { return items.map(function (x) { return { id: x.id, text: x.text, status: x.status }; }); },
+      log: function () { return log.slice(); },
+      maxTokens: maxTokens
+    };
+  }
+
+  return { createLiveQueue: createLiveQueue, DEFAULT_MAX_TOKENS: DEFAULT_MAX_TOKENS };
+});
+
+}).call(null, undefined, holder);
+return holder.FaLiveQueue;
+})();
+/* LIVEQ-END */
+/* LIVECTRL-BEGIN */
+const FaLiveController = (function () {
+const holder = {};
+(function (module, self) {
+/* 全語音 Live 的控制器（UMD，純邏輯；不碰麥克風、不碰 DOM、不直接送聊天）。
+ * 接收「一段一段的辨識文字」，決定：是不是給 AI 的（主詞）、是不是取消指令、要不要排入佇列；
+ * 排入後依先進先出（FIFO）一個一個交給 submit 執行，並在排入時呼叫 chime。
+ * 測試：scripts/voice-tests/live_controller.test.js。設計見 DESIGN.TODO.live-voice.md「階段 B」。
+ *
+ * 依賴（全部注入，方便測試；桌面版與網頁版共用）：
+ *   queue   ：renderer/src/voice/live_queue.js 的 createLiveQueue 回傳物件
+ *   submit  ：async (text, ctl) => void；ctl.isCancelled() 在被取消後回 true，讓執行端中途停止
+  （提示音不在這裡：呼叫端建立 queue 時傳 onEnqueue 播放提示音即可）
+ *   accept  ：(utterance) => boolean；階段 D 的聲紋閘門接在這裡，預設全部接受
+ *   wakeWords：主詞清單，預設 ['AI', '欸哀']（主詞設定由呼叫端決定，只用其中一個時傳單一個）
+ *
+ * 規則：
+ *   - 只有以主詞開頭的一段話才是指令；主詞後面的標點與空白會被去掉。沒有主詞的話直接忽略。
+ *   - 三句取消指令（主詞後完整比對，忽略標點）：「取消前一個指令」「停止前面的動作」「取消前面所有指令」。
+ *   - 其他指令先經 queue.feed 蒐集（超過 1000 token 會切段），再 flush 成一個指令排入。
+ */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory();
+  else root.FaLiveController = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  var CANCEL_LAST = '取消前一個指令';
+  var STOP_RUNNING = '停止前面的動作';
+  var CANCEL_ALL = '取消前面所有指令';
+
+  function norm(s) { return String(s || '').replace(/[\s，。！？、,.!?：:；;]+/g, ''); }
+
+  // 回傳 { word, rest }：文字是否以某個主詞開頭；rest 是主詞後面的內容（已去掉開頭標點與空白）。
+  function matchWake(text, wakeWords) {
+    var t = String(text || '').replace(/^[\s，。！？、,.!?：:；;]+/, '');
+    var words = (wakeWords || []).slice().sort(function (a, b) { return b.length - a.length; }); // 長的先比
+    for (var i = 0; i < words.length; i++) {
+      var w = words[i];
+      if (w && t.toLowerCase().indexOf(w.toLowerCase()) === 0) {
+        return { word: w, rest: t.slice(w.length).replace(/^[\s，。！？、,.!?：:；;]+/, '') };
+      }
+    }
+    return null;
+  }
+
+  function createLiveController(opts) {
+    opts = opts || {};
+    if (!opts.queue) throw new Error('需要 queue');
+    if (typeof opts.submit !== 'function') throw new Error('需要 submit');
+    var queue = opts.queue;
+    var submit = opts.submit;
+    var accept = typeof opts.accept === 'function' ? opts.accept : function () { return true; };
+    var wakeWords = Array.isArray(opts.wakeWords) && opts.wakeWords.length ? opts.wakeWords : ['AI', '欸哀'];
+    var enabled = false;
+    var running = null;          // 目前執行中的指令 { item, cancelled }
+    var pumping = false;
+    var ignored = 0;
+
+    function setEnabled(v) { enabled = !!v; if (!enabled) { cancelAll(); } }
+
+    // 一段辨識結果（一次說完的話）。回傳這段做了什麼：{ action: 'ignored'|'queued'|'cancel'|'stop'|'cancelAll'|'disabled', ... }
+    function onUtterance(text) {
+      if (!enabled) return { action: 'disabled' };
+      var u = { text: String(text || '') };
+      if (!accept(u)) { ignored++; return { action: 'ignored', reason: 'gate' }; }
+      var m = matchWake(u.text, wakeWords);
+      if (!m) { ignored++; return { action: 'ignored', reason: 'no_wake' }; }
+      var cmd = norm(m.rest);
+      if (cmd === norm(CANCEL_LAST)) { var c = cancelLast(); return { action: 'cancel', item: c }; }
+      if (cmd === norm(STOP_RUNNING)) { var s = stopRunning(); return { action: 'stop', item: s }; }
+      if (cmd === norm(CANCEL_ALL)) { return { action: 'cancelAll', count: cancelAll() }; }
+      if (!m.rest) { ignored++; return { action: 'ignored', reason: 'empty' }; }
+      queue.feed(m.rest);
+      var it = queue.flush();
+      pump();
+      return { action: 'queued', item: it };
+    }
+
+    function cancelLast() {
+      var it = queue.cancelLast();
+      if (it && running && running.item.id === it.id) running.cancelled = true;
+      return it;
+    }
+    function stopRunning() {
+      var it = queue.stopRunning();
+      if (it && running && running.item.id === it.id) running.cancelled = true;
+      return it;
+    }
+    function cancelAll() {
+      var n = queue.cancelAll();
+      if (running) running.cancelled = true;
+      return n;
+    }
+
+    // 依 FIFO 一個一個執行；同時間只跑一個。
+    async function pump() {
+      if (pumping) return;
+      pumping = true;
+      try {
+        for (;;) {
+          var item = queue.next();
+          if (!item) break;
+          running = { item: item, cancelled: false };
+          var ctl = { isCancelled: function () { return !!(running && running.cancelled); } };
+          try { await submit(item.text, ctl); } catch (e) { /* 執行失敗：指令標記完成，不卡住後面的指令 */ }
+          queue.complete(item.id);
+          running = null;
+        }
+      } finally {
+        pumping = false;
+      }
+    }
+
+    return {
+      setEnabled: setEnabled,
+      isEnabled: function () { return enabled; },
+      onUtterance: onUtterance,
+      cancelLast: cancelLast,
+      stopRunning: stopRunning,
+      cancelAll: cancelAll,
+      pump: pump,
+      isRunning: function () { return !!running; },
+      ignoredCount: function () { return ignored; }
+    };
+  }
+
+  return { createLiveController: createLiveController, matchWake: matchWake, CANCEL_LAST: CANCEL_LAST, STOP_RUNNING: STOP_RUNNING, CANCEL_ALL: CANCEL_ALL };
+});
+
+}).call(null, undefined, holder);
+return holder.FaLiveController;
+})();
+/* LIVECTRL-END */
+/* LIVELOOP-BEGIN */
+const FaLiveLoop = (function () {
+const holder = {};
+(function (module, self) {
+/* 全語音 Live 的收音迴圈（UMD，純邏輯；不碰麥克風、不碰模型）。
+ * 負責：把連續的音訊區塊切成「一句話」（簡單能量門檻的語音活動偵測 VAD）、
+ * 重採樣到 16kHz、依序交給辨識函式、把辨識出的文字交給 onText。
+ * 測試：scripts/voice-tests/live_loop.test.js。
+ *
+ * 注入的依賴：
+ *   startCapture(onChunk) → Promise<{ stop(): Promise<void> }>
+ *       onChunk(mono: Float32Array, rate: number) 每收到一個區塊就呼叫一次。
+ *   transcribe(pcm16k: Float32Array) → Promise<string>
+ *   onText(text: string)    辨識出一段非空文字時呼叫
+ *   onError(err)            辨識失敗時呼叫（不會中斷收音）
+ *
+ * 限制（誠實標明）：能量門檻 VAD 只看音量，不分人聲與噪音；環境吵的時候會誤切。
+ * 聲紋閘門（階段 D）會接在 onText 之前，不在這裡判斷。
+ */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory();
+  else root.FaLiveLoop = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  var WHISPER_RATE = 16000;
+
+  function rms(x) {
+    if (!x || !x.length) return 0;
+    var s = 0;
+    for (var i = 0; i < x.length; i++) s += x[i] * x[i];
+    return Math.sqrt(s / x.length);
+  }
+
+  // 線性內插重採樣。fromRate／toRate 必須是正數。
+  function resampleLinear(samples, fromRate, toRate) {
+    if (!(fromRate > 0) || !(toRate > 0)) throw new Error('取樣率必須是正數');
+    if (fromRate === toRate) return Float32Array.from(samples);
+    var outLen = Math.floor(samples.length * toRate / fromRate);
+    var out = new Float32Array(outLen);
+    var ratio = fromRate / toRate;
+    for (var i = 0; i < outLen; i++) {
+      var pos = i * ratio, i0 = Math.floor(pos), i1 = Math.min(i0 + 1, samples.length - 1);
+      var frac = pos - i0;
+      out[i] = samples[i0] * (1 - frac) + samples[i1] * frac;
+    }
+    return out;
+  }
+
+  function concat(parts) {
+    var n = 0;
+    for (var i = 0; i < parts.length; i++) n += parts[i].length;
+    var out = new Float32Array(n), o = 0;
+    for (var j = 0; j < parts.length; j++) { out.set(parts[j], o); o += parts[j].length; }
+    return out;
+  }
+
+  // 能量門檻的語音活動偵測。用取樣計數當時鐘（不用 Date.now），方便測試。
+  // feed(mono, rate) 回傳 null 或 { samples, rate, durationMs }（一句話結束時）。
+  function createVad(opts) {
+    opts = opts || {};
+    var threshold = opts.threshold != null ? opts.threshold : 0.01;
+    var silenceMs = opts.silenceMs != null ? opts.silenceMs : 800;
+    var maxMs = opts.maxMs != null ? opts.maxMs : 15000;
+    var minMs = opts.minMs != null ? opts.minMs : 300;
+    var clockSamples = 0;     // 已看過的取樣數（以目前的 rate 計）
+    var rate = 0;
+    var inSpeech = false, buf = [], segStartMs = 0, lastVoiceMs = 0, bufSamples = 0;
+
+    function segment(endMs) {
+      var samples = concat(buf);
+      var durMs = (samples.length / rate) * 1000;
+      var r = rate;
+      inSpeech = false; buf = []; bufSamples = 0;
+      if (durMs < minMs) return null;
+      return { samples: samples, rate: r, durationMs: durMs, endMs: endMs };
+    }
+
+    function feed(mono, sampleRate) {
+      if (!(sampleRate > 0)) throw new Error('取樣率必須是正數');
+      rate = sampleRate;
+      var tStart = (clockSamples / rate) * 1000;
+      clockSamples += mono.length;
+      var tEnd = (clockSamples / rate) * 1000;
+      var voiced = rms(mono) > threshold;
+      if (!inSpeech) {
+        if (!voiced) return null;
+        inSpeech = true; buf = [mono]; bufSamples = mono.length;
+        segStartMs = tStart; lastVoiceMs = tEnd;
+        return null;
+      }
+      buf.push(mono); bufSamples += mono.length;
+      if (voiced) lastVoiceMs = tEnd;
+      if (tEnd - lastVoiceMs >= silenceMs) return segment(tEnd);
+      if (tEnd - segStartMs >= maxMs) return segment(tEnd);
+      return null;
+    }
+
+    // 收音停止時把沒結束的那一句收掉（如果夠長）。
+    function flush() {
+      if (!inSpeech || !buf.length) { inSpeech = false; buf = []; return null; }
+      return segment((clockSamples / rate) * 1000);
+    }
+
+    return { feed: feed, flush: flush, isSpeaking: function () { return inSpeech; } };
+  }
+
+  function createLiveLoop(opts) {
+    opts = opts || {};
+    if (typeof opts.startCapture !== 'function') throw new Error('需要 startCapture');
+    if (typeof opts.transcribe !== 'function') throw new Error('需要 transcribe');
+    var onText = typeof opts.onText === 'function' ? opts.onText : function () {};
+    var onError = typeof opts.onError === 'function' ? opts.onError : function () {};
+    var vad = createVad(opts.vad);
+    var capture = null;
+    var chain = Promise.resolve();   // 辨識一句一句依序做，不並行
+    var pendingCount = 0;
+    var stats = { segments: 0, texts: 0, errors: 0 };
+
+    function runSegment(seg) {
+      pendingCount++;
+      stats.segments++;
+      chain = chain.then(async function () {
+        try {
+          var pcm = resampleLinear(seg.samples, seg.rate, WHISPER_RATE);
+          var text = String((await opts.transcribe(pcm)) || '').trim();
+          if (text) { stats.texts++; onText(text); }
+        } catch (e) {
+          stats.errors++;
+          onError(e);
+        } finally {
+          pendingCount--;
+        }
+      });
+    }
+
+    function ingest(mono, rate) {
+      var seg = vad.feed(mono, rate);
+      if (seg) runSegment(seg);
+    }
+
+    async function start() {
+      if (capture) return;
+      capture = await opts.startCapture(ingest);
+    }
+
+    async function stop() {
+      if (capture) {
+        var c = capture; capture = null;
+        await c.stop();
+      }
+      var last = vad.flush();
+      if (last) runSegment(last);
+      await chain;
+    }
+
+    return {
+      start: start,
+      stop: stop,
+      ingest: ingest,           // 測試與無麥克風的情境（例如測試音檔）直接餵區塊
+      idle: function () { return pendingCount === 0 && !vad.isSpeaking(); },
+      stats: function () { return Object.assign({}, stats); }
+    };
+  }
+
+  return { createLiveLoop: createLiveLoop, createVad: createVad, resampleLinear: resampleLinear, rms: rms, WHISPER_RATE: WHISPER_RATE };
+});
+
+}).call(null, undefined, holder);
+return holder.FaLiveLoop;
+})();
+/* LIVELOOP-END */
 /* TTSPRON-BEGIN */
 const FaTtsPron = (function () {
 const holder = {};
@@ -73357,12 +73811,12 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     async _vsDelete(id) { return this._vsTx('readwrite', (st) => st.delete(id)); }
     _vsNewId() { return 'vs_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
     // 麥克風錄音：關掉回音消除、降噪、自動增益（這些處理會改變聲音特徵）；用 ScriptProcessor 收原始樣本（不經過 MediaRecorder 的有損壓縮）。回 { stop(): Promise<{mono,rate}>, cancel() }
-    async _vsRecordStart(onLevel) {
+    async _vsRecordStart(onLevel, onChunk) {
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('這個瀏覽器不支援麥克風錄音');
         const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
         const AC = window.AudioContext || window.webkitAudioContext, ctx = new AC(), src = ctx.createMediaStreamSource(stream), proc = ctx.createScriptProcessor(4096, 1, 1), mute = ctx.createGain(); mute.gain.value = 0;
         const chunks = []; let n = 0, live = true;
-        proc.onaudioprocess = (e) => { if (!live) return; const d = e.inputBuffer.getChannelData(0), c = new Float32Array(d); chunks.push(c); n += c.length; if (onLevel) { let m = 0; for (let i = 0; i < c.length; i++) { const x = Math.abs(c[i]); if (x > m) m = x; } onLevel(m, n / ctx.sampleRate); } };
+        proc.onaudioprocess = (e) => { if (!live) return; const d = e.inputBuffer.getChannelData(0), c = new Float32Array(d); if (onChunk) onChunk(c, ctx.sampleRate); else chunks.push(c); n += c.length; if (onLevel) { let m = 0; for (let i = 0; i < c.length; i++) { const x = Math.abs(c[i]); if (x > m) m = x; } onLevel(m, n / ctx.sampleRate); } };
         src.connect(proc); proc.connect(mute); mute.connect(ctx.destination);
         const close = async () => { live = false; try { proc.disconnect(); src.disconnect(); } catch (_) { /* */ } stream.getTracks().forEach((t) => t.stop()); const rate = ctx.sampleRate; try { await ctx.close(); } catch (_) { /* */ } return rate; };
         return {
@@ -101550,6 +102004,127 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     // 辨識出來的文字語言會跟實際講的語言一致（選en講英文，結果就是英文
     // 原文）；'auto'時不傳language參數給transformers.js pipeline，讓它自己
     // 偵測（見_runWhisperWindowed的`if (language) opts.language = language;`）。
+    // ───── 全語音Live（2026-11-05 階段 B 接線）─────
+    // 收音迴圈（FaLiveLoop）→ 辨識（同一套 Whisper）→ 控制器（主詞／取消指令）→ 佇列（FaLiveQueue，先進先出）→ _submitChatInput 送進聊天。
+    // 面向使用者的開關要等聲紋（階段 C）完成才啟用；目前只能用 _liveVoiceStart({skipVoiceprint:true}) 測試。
+    _liveVoiceStatus(msg) {
+        try { const el = document.getElementById('ai-live-voice-status'); if (el) el.textContent = msg; } catch (_) { /* 設定頁沒開也沒關係 */ }
+        if (msg) this._log('全語音Live：' + msg);
+    }
+
+    _liveVoiceChime() {
+        try {
+            const style = (this.advancedSettings && this.advancedSettings.liveVoiceChime) || 'ding';
+            if (style === 'speech') {
+                // 語音播報：目前用瀏覽器內建語音（尚未改用專案的 TTS，待階段 F 前統一）
+                if (window.speechSynthesis && typeof SpeechSynthesisUtterance !== 'undefined') window.speechSynthesis.speak(new SpeechSynthesisUtterance('已排入任務'));
+                return;
+            }
+            const AC = window.AudioContext || window.webkitAudioContext;
+            if (!AC) return;
+            const ctx = this._liveChimeCtx || (this._liveChimeCtx = new AC());
+            const freqs = style === 'tech' ? [880, 1320, 1760] : [1046, 784];
+            freqs.forEach((f, i) => {
+                const o = ctx.createOscillator(), g = ctx.createGain();
+                o.frequency.value = f; o.connect(g); g.connect(ctx.destination);
+                const t0 = ctx.currentTime + i * 0.12;
+                g.gain.setValueAtTime(0.0001, t0);
+                g.gain.exponentialRampToValueAtTime(0.2, t0 + 0.01);
+                g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.2);
+                o.start(t0); o.stop(t0 + 0.22);
+            });
+        } catch (_) { /* 提示音失敗不影響排入 */ }
+    }
+
+    async _liveVoiceTranscribe(pcm) {
+        const cpuOnly = this.advancedSettings.whisperDevicePreference === 'cpu' || this.advancedSettings.offlineDevicePreference === 'cpu';
+        const device = (!cpuOnly && await this._isWebGpuAvailable()) ? 'webgpu' : 'wasm';
+        const configuredLang = this.advancedSettings.voiceInputLanguage || 'zh';
+        const lang = configuredLang === 'auto' ? null : configuredLang;
+        const transcriber = await this._getWhisperTranscriber(device, () => {});
+        try {
+            const r = await this._runWhisperWindowed(transcriber, pcm, lang, device, () => {});
+            return String((r && r.text) || '');
+        } catch (err) {
+            this._whisperTranscriber = null; this._whisperTranscriberDevice = null;
+            throw err;
+        }
+    }
+
+    _liveVoiceOnText(t) {
+        const lv = this._liveVoice; if (!lv) return;
+        const r = lv.controller.onUtterance(t);
+        const label = (s) => String(s || '').slice(0, 40);
+        if (r.action === 'queued') this._liveVoiceStatus('已排入「' + label(r.item && r.item.text) + '」，等待中 ' + lv.queue.pending().length + ' 個');
+        else if (r.action === 'cancel') this._liveVoiceStatus(r.item ? '已取消「' + label(r.item.text) + '」' : '沒有可取消的指令');
+        else if (r.action === 'stop') this._liveVoiceStatus(r.item ? '已停止正在執行的指令' : '沒有正在執行的指令');
+        else if (r.action === 'cancelAll') this._liveVoiceStatus('已取消全部指令（' + r.count + ' 個）');
+    }
+
+    // 佇列每次只送出一個：前一個 AI 回覆還沒結束就等（先進先出，不插進去）；被取消時停止正在跑的 AI。
+    async _liveVoiceSubmit(text, ctl) {
+        const ctx = this._ctx;
+        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+        while (ctx && ctx.isResponding && !ctl.isCancelled()) await sleep(200);
+        if (ctl.isCancelled()) return;
+        this._liveVoiceStatus('執行中「' + String(text).slice(0, 40) + '」');
+        this._submitChatInput({ value: text, dispatchEvent() {}, focus() {} }, null);
+        const t0 = Date.now();   // 不是每個指令都會呼叫模型，最多等 3 秒看它有沒有開始
+        while (ctx && !ctx.isResponding && Date.now() - t0 < 3000 && !ctl.isCancelled()) await sleep(100);
+        while (ctx && ctx.isResponding) {
+            if (ctl.isCancelled()) {
+                ctx.stopRequested = true;
+                try { if (ctx.currentAbortController) ctx.currentAbortController.abort(); } catch (_) { /* 已經結束 */ }
+                break;
+            }
+            await sleep(200);
+        }
+        if (!ctl.isCancelled()) this._liveVoiceStatus('完成「' + String(text).slice(0, 40) + '」');
+    }
+
+    // 開始全語音Live。skipVoiceprint 只給測試用（聲紋未完成前不得從使用者開關啟用）。
+    _liveVoiceStart(opts) {
+        opts = opts || {};
+        if (this._liveVoice) return { ok: true, already: true };
+        if (!opts.skipVoiceprint) return { ok: false, error: '聲紋尚未完成，全語音Live 暫不可啟用' };
+        if (typeof FaLiveQueue === 'undefined' || typeof FaLiveController === 'undefined' || typeof FaLiveLoop === 'undefined') return { ok: false, error: '全語音Live 模組未載入' };
+        const queue = FaLiveQueue.createLiveQueue({ onEnqueue: () => this._liveVoiceChime() });
+        const wake = this.advancedSettings.liveVoiceWakeWord === '欸哀' ? ['欸哀'] : ['AI'];
+        const controller = FaLiveController.createLiveController({
+            queue: queue,
+            wakeWords: wake,
+            submit: (text, ctl) => this._liveVoiceSubmit(text, ctl),
+        });
+        controller.setEnabled(true);
+        const loop = FaLiveLoop.createLiveLoop({
+            vad: { threshold: 0.02, silenceMs: 700, maxMs: 15000, minMs: 300 },
+            startCapture: async (onChunk) => {
+                const rec = await this._vsRecordStart(null, onChunk);
+                return { stop: async () => { await rec.stop(); } };
+            },
+            transcribe: (pcm) => this._liveVoiceTranscribe(pcm),
+            onText: (t) => this._liveVoiceOnText(t),
+            onError: (e) => this._liveVoiceStatus('辨識失敗：' + String((e && e.message) || e)),
+        });
+        this._liveVoice = { queue: queue, controller: controller, loop: loop };
+        this._liveVoiceStatus('收音中（主詞：' + wake[0] + '）');
+        loop.start().catch((e) => {
+            this._liveVoiceStatus('無法開始收音：' + String((e && e.message) || e));
+            this._liveVoice = null;
+            controller.setEnabled(false);
+        });
+        return { ok: true };
+    }
+
+    async _liveVoiceStop() {
+        const lv = this._liveVoice; if (!lv) return { ok: true, already: true };
+        this._liveVoice = null;
+        lv.controller.setEnabled(false);   // 取消全部；正在跑的 AI 會被要求停止
+        try { await lv.loop.stop(); } catch (_) { /* 麥克風已經關了 */ }
+        this._liveVoiceStatus('已停止');
+        return { ok: true };
+    }
+
     async _recognizeVoiceInput(blob, btn, inputText) {
         btn.disabled = true;
         btn.textContent = '⏳';
@@ -106931,6 +107506,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                         <option value="tech">科技感</option>
                                         <option value="speech">語音播報</option>
                                     </select>
+                                    <p id="ai-live-voice-status" class="ai-advanced-hint" style="margin-top:6px;"></p>
                                 </div>
                             </div>
                             <div class="ai-advanced-pane hidden" data-pane="functions">
@@ -110554,6 +111130,12 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const liveVoiceEnabledChkEl = document.getElementById('ai-live-voice-enabled-chk');
         if (liveVoiceEnabledChkEl) {
             liveVoiceEnabledChkEl.addEventListener('change', () => {
+                if (liveVoiceEnabledChkEl.checked) {
+                    const r = this._liveVoiceStart();
+                    if (!r.ok) { liveVoiceEnabledChkEl.checked = false; this._liveVoiceStatus(r.error); }
+                } else {
+                    this._liveVoiceStop();
+                }
                 this.advancedSettings.liveVoiceEnabled = !!liveVoiceEnabledChkEl.checked;
                 this._saveAdvancedSettings();
             });
