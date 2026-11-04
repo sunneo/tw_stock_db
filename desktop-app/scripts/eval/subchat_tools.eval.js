@@ -99,12 +99,14 @@ R.checks.childCaptured = !!childCap && Array.isArray(childCap.names);
 const SUB3 = ['chat_list_children', 'chat_send_to_child', 'chat_get_child_summary', 'chat_delete_children'];
 const pnBase = pn.filter((n) => SUB3.indexOf(n) < 0);
 R.checks.sameNameSet = R.checks.parentCaptured && R.checks.childCaptured && pnBase.join('|') === cn.join('|') && SUB3.every((n) => pn.indexOf(n) >= 0) && cn.every((n) => SUB3.indexOf(n) < 0);
-R.checks.parentHasAskCard = pn.indexOf('ask_user_card') >= 0;
-R.checks.childHasAskCard = cn.indexOf('ask_user_card') >= 0;
+// S8 步驟 F（使用者 2026-11-04：「ask_user_card只在parent」）：ask_user_card 回到 domain-gated（registerOptional，與 d12293d1^ 相同）。
+// 沒有啟用領域的父對話不含它（同 d12293d1^）；子對話永遠不含它（subchat_no_ask.eval.js 另外檢查領域委派與呼叫路徑）。
+R.checks.parentPlainNoAskCard = pn.indexOf('ask_user_card') < 0; // 這個情境（沒有啟用領域）應不含，與 d12293d1^ 一致
+R.checks.childNoAskCard = cn.indexOf('ask_user_card') < 0; // 子對話必須不含
 // 載入的是工作目錄的實作（字串常值，不用變數名）
-// 建置會把引號改成雙引號，所以兩種引號都接受；舊版（gated）寫法不能再出現
-const regSrc = String(fa._registerBuiltinAiTools);
-R.checks.loadedWorkdirImpl = /register_openai_tool\(["']ask_user_card["']/.test(regSrc) && !/registerOptional\(["']ask_user_card["']/.test(regSrc);
+// 建置會把引號改成雙引號，所以兩種引號都接受；S4b 的根層級寫法（register_openai_tool）不能再出現
+// 建置會把 registerOptional 改成短名（壓縮），所以不能看註冊呼叫的字串；改看行為：ask_user_card 在 domain-gated 集合裡，且子對話過濾函式含它的名字。
+R.checks.loadedWorkdirImpl = fa._domainGatedToolNames.has('ask_user_card') === true && String(fa._subchatToolFilter).indexOf('ask_user_card') >= 0;
 
 // 還原
 fa.advancedSettings.topicShiftCheck = false;

@@ -148,6 +148,44 @@
 - 限制：前綴比對只對「完整名稱」（節點名/對話名）做，不對對話名單獨做（遠端對話名單獨對上時仍是 `needNode`，維持原行為）。
 - 限制：`@` 候選的 App 層（輸入框自動完成）沒有另做 Electron 評估，只靠模組測試與 `chat_mention.eval.js`。
 
+## 步驟 F：ask_user_card 只在父對話（2026-11-04 管理層更新）
+
+使用者原話：「ask_user_card只在parent」。這取代先前「不要動 ask_user_card 的根層級歸類」的指示。
+
+### F.1 決定與理由
+
+- (1) 根層級註冊還原：`ask_user_card` 回到 `registerOptional`（domain-gated），與 `d12293d1^` 相同（`floating-assistant.js` 61087）。理由：使用者的原則是「只在 parent」，根層級註冊會讓所有對話都有它，包括子對話。
+- (2) 子對話永遠沒有它：不靠「不送進清單」一招，而是三層擋：清單過濾、領域委派過濾、工具實作本身擋下（executor 擋下才能涵蓋所有取得路徑）。
+- (3) 評估：`subchat_no_ask.eval.js`（新）與 `subchat_tools.eval.js`（更新）。
+
+### F.2 路徑盤點（子對話內可能取得 ask_user_card 的每一條路徑，附行號）
+
+| 路徑 | 位置 | 處理 |
+|---|---|---|
+| 根層級清單 | `_getRootToolNames`（74856）只取非 gated 工具；`FA_TASK_TOOL_HINTS`（47197）不含它（Grep 確認） | 還原後不在根層級清單；子對話清單另由 `_subchatToolFilter`（74835、過濾在 74838）移除 |
+| 領域委派 | 領域清單含它：`toolNames`（1558，uml 領域）、`ph_design` 階段（25211）；子代理取得領域工具於 `_resolveDomainToolNames`（104524） | `_resolveDomainToolNames` 在子對話回傳前過濾（104530） |
+| 技能包 | 技能步驟的工具提示（14757，`st(ask, …, { tool: ask_user_card })`）；路由正則（11972）；說明文字（1041） | 只是提示或說明，不會把工具送進子對話；實際呼叫仍被下一條擋下 |
+| `get_tool_details`／`request_additional_tools` | 補工具的機制；取得說明後呼叫仍走同一個工具實作 | 不改；呼叫時在工具實作擋下（61091） |
+| 工具實作（所有路徑的共同終點） | `registerOptional(ask_user_card, …)` 的 async 函式（61087、61091） | 子對話呼叫 → `ok:false`，訊息：「這個對話是子對話，提問由根對話負責；需要使用者決定的事請直接用文字寫在回覆裡，系統會顯示在根對話的連結卡片上」 |
+
+判斷子對話：`_subchatIsChild()`（74830）。有有效 `parentId` 的 ctx 都是子對話，包括收件對話底下的遠端子對話。
+
+### F.3 修前與修後（真桌面版）
+
+- 修前（`subchat_no_ask.eval.js`，修改前的建置）：`rootListNoAsk`、`gatedRegistration`、`childDomainNoAsk`、`childListNoAsk`、`childCallNotOk`、`childCallExplains`、`noCardLeft`、`loadedWorkdirImpl` 失敗；子對話呼叫會卡在等使用者（逾時 4 秒才回來，證明它確實開了卡片）。`parentDomainHasAsk` 修前就通過（父對話經領域拿得到，符合「只在 parent」）。
+- 修後：`subchat_no_ask.eval.js` allPass；`subchat_tools.eval.js` allPass。
+- 判準改動（有意，理由：規則改變）：`subchat_bubble.eval.js` 的案例 A 原本測「子對話用 ask_user_card 開卡片、冒泡到父對話、父對話回答」。新規則下子對話不能開卡片，所以案例 A 改為測「子對話呼叫被擋下（工具結果含「提問由根對話負責」）、子對話不等待、父對話連結卡片沒有問題、在父對話回答會被拒絕」。舊的四個判準（`aStatusWaitingUser`、`aParentLinkShowsQuestion`、`aAnswerAccepted`、`aChildGotAnswer`）移到 info，不再計入 allPass。
+- F 之後的回歸重跑（見步驟 E 的表）：全部 allPass 或無 false；`subchat_bubble` 改判準後 allPass。
+
+### F.4 與管理層指示的落差（需要知道）
+
+管理層第 (1) 項要求「父對話清單與 d12293d1^ 一致」，第 (3) 項又說父子差異「包含子對話沒有 ask_user_card」。在沒有啟用領域的父對話情境（`subchat_tools` 的情境）下，父對話本來就不含 `ask_user_card`（與 d12293d1^ 相同），所以那個情境的父子差異不含它。父對話只在領域啟用時才有它，這是 `subchat_no_ask` 的 `parentDomainHasAsk` 所檢查的。我依 (1) 的機制與證據實作，並以使用者的原話「只在 parent」寫成領域路徑的評估，不把差異硬塞進沒有領域的情境。
+
+### F.5 限制
+
+- 子對話呼叫在評估中是直接呼叫工具實作（不是經由假模型的工具呼叫）。模型實際收到的清單由 `subchat_tools` 的假模型請求檢查。
+- `request_additional_tools` 等補工具機制沒有逐一用真實的模型流程測試，依賴工具實作的擋下。
+
 ## 步驟 E：回歸
 
 真桌面版（`scripts/eval/run_eval.js`，工作目錄實作，已建置）：

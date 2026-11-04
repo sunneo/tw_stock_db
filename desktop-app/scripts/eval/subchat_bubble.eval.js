@@ -69,25 +69,31 @@ R.info.kidA = kidA ? { id: kidA.id, title: kidA.title, status: kidA.status } : n
 R.checks.aChildOpened = !!kidA;
 
 const waitingReached = await sleepUntil(() => !!kidA && (fa._chatIndex.chats.find((c) => c.id === kidA.id) || {}).status === 'waiting_user', 20000);
-R.checks.aStatusWaitingUser = waitingReached;
+// S8 步驟 F（ask_user_card 只在父對話）：子對話呼叫 ask_user_card 會被擋下，所以子對話不再等待使用者，父對話不出現問題卡片。
+R.info.aStatusWaitingUser = waitingReached; // 舊判準（已取代，見 aChildNotWaiting）
+R.checks.aChildNotWaiting = !waitingReached;
 R.info.aStatusNow = kidA ? ((fa._chatIndex.chats.find((c) => c.id === kidA.id) || {}).status) : null;
 await sleep(400);
 const linkTextWaiting = linkEls().map((e) => e.textContent).join(' | ');
 R.info.aLinkText = linkTextWaiting.slice(0, 200);
-R.checks.aParentLinkShowsQuestion = linkTextWaiting.indexOf('等你回應') >= 0 && linkTextWaiting.indexOf('配色') >= 0;
+R.info.aParentLinkShowsQuestion = linkTextWaiting.indexOf('等你回應') >= 0 && linkTextWaiting.indexOf('配色') >= 0; // 舊判準（已取代，見 aParentNoQuestion）
+R.checks.aParentNoQuestion = linkTextWaiting.indexOf('等你回應') < 0;
 R.checks.aParentHasAnswerBox = linkEls().some((e) => !!e.querySelector('input'));
 
 // 在父對話回答（不是切到子對話）
 let ansRes = null;
 if (typeof fa._subchatAnswer === 'function' && kidA) ansRes = fa._subchatAnswer(kidA.id, '紅色');
 R.info.ansRes = ansRes;
-R.checks.aAnswerAccepted = !!ansRes && ansRes.ok === true;
+R.info.aAnswerAccepted = !!ansRes && ansRes.ok === true; // 舊判準（已取代，見 aAnswerRejected）
+R.checks.aAnswerRejected = !!ansRes && ansRes.ok === false;
 
 const doneReached = await sleepUntil(() => !!kidA && (fa._chatIndex.chats.find((c) => c.id === kidA.id) || {}).status === 'done', 20000);
 R.checks.aStatusDone = doneReached;
 const kidCtx = kidA ? fa._chatCtxs.get(kidA.id) : null;
 const kidMsgs = kidCtx ? kidCtx.messages : [];
-R.checks.aChildGotAnswer = kidMsgs.some((m) => m && m.role === 'tool' && String(m.content || '').indexOf('紅色') >= 0);
+R.info.aChildGotAnswer = kidMsgs.some((m) => m && m.role === 'tool' && String(m.content || '').indexOf('紅色') >= 0); // 舊判準（已取代，見 aChildGotBlockedNote）
+// 子對話的工具結果應是擋下的說明（工作目錄的實作）
+R.checks.aChildGotBlockedNote = kidMsgs.some((m) => m && m.role === 'tool' && String(m.content || '').indexOf('提問由根對話負責') >= 0);
 R.checks.aChildContinuedReply = kidMsgs.some((m) => m && m.role === 'assistant' && m.content === '完成');
 R.checks.aParentNotResponding = fa.isResponding === false;
 

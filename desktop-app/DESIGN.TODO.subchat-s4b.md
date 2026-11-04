@@ -55,6 +55,8 @@
 
 ## 步驟 2：修根因，工具清單一致（已驗證）
 
+> **已由使用者決定取代（2026-11-04，「ask_user_card只在parent」）**：本段的「根層級註冊」改回 `registerOptional`（domain-gated），子對話永遠沒有 `ask_user_card`。細節與行號見 `DESIGN.TODO.subchat-s8.md` 步驟 F。
+
 ### 改了什麼（源頭 `renderer/src/floating-assistant.js`）
 
 - `_registerBuiltinAiTools` 裡 `ask_user_card` 從 `registerOptional(...)` 改成 `this.register_openai_tool(...)`（約 61073 行，附註解）。它不再屬於 `_domainGatedToolNames`，所以 `_getRootToolNames()` 在 `full`／`router` 模式下會列出它。說明、參數、回傳格式都沒改。
