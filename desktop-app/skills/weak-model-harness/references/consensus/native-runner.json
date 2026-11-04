@@ -5,7 +5,8 @@
   "must": [
     "標準輸入輸出",
     "progress.jsonl",
-    "直接實作"
+    "直接實作",
+    "選cpu才走原生"
   ],
   "forbid": [
     "http",

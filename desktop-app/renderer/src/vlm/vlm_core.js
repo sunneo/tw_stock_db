@@ -103,15 +103,20 @@
         const requested = Math.max(1, want);
         return { requested, effective: isolated ? requested : 1, hardware: hw, isolated: !!isolated, note: isolated ? '' : (reason || '這個環境不能多執行緒（沒有可用的 SharedArrayBuffer）') + '，CPU 路徑實際只會用 1 個執行緒；設定的核心數在能多執行緒的環境才會生效。' };
     }
-    // 統一推論後端順序（原生執行器階段 2）：原生（子程序）→ WebGPU → WASM。
-    // nativeAvailable 為真且模型不是 gpuOnly 時，把 'native' 排在最前面；其餘完全交給 resolveDevice。
-    // 目前尚未接線：呼叫端（_vlmEnsureLoaded）仍用 resolveDevice；nativeAvailable 在階段 3 之前永遠是 false，所以行為與改動前相同。
-    // 回傳形狀與 resolveDevice 相同 { order, reason }，多一個 native 布林欄位（只有原生可用時為 true）。
+    // 統一推論後端順序（原生執行器）：依使用者選的裝置決定，不是「原生先試」：
+    //   · 選 WebGPU（偏好 gpu）：只走網頁版 WebGPU（或 resolveDevice 原本的退路），完全不碰原生。
+    //   · 選 CPU（偏好 cpu）：原生可用時先試原生，失敗退回網頁版 WASM。
+    //   · 選 auto：有 WebGPU 就走 WebGPU（不碰原生）；沒有 WebGPU 就按 CPU 處理。
+    // nativeAvailable 為假（沒安裝或不可用）時，結果與 resolveDevice 完全相同（舊行為）。gpuOnly 模型永遠不加 native。
+    // 回傳形狀與 resolveDevice 相同 { order, reason }，多一個 native 布林欄位（只有原生會被嘗試時為 true）。
     function backendOrder(model, preference, gpuAvailable, f16, nativeAvailable) {
         const base = resolveDevice(model, preference, gpuAvailable, f16);
-        if (!nativeAvailable || !base.order.length || (model && model.gpuOnly)) return base;
-        return { order: ['native'].concat(base.order), reason: '原生執行器可用，先試原生；失敗依序退回 ' + base.order.join('→'), native: true };
+        const wantsNative = preference === 'cpu' || (preference === 'auto' && !gpuAvailable);
+        if (!nativeAvailable || !wantsNative || !base.order.length || (model && model.gpuOnly)) return base;
+        return { order: ['native'].concat(base.order), reason: '選 CPU：先試原生；失敗退回 ' + base.order.join('→'), native: true };
     }
+    // 這次呼叫要不要去問原生（只有選 CPU，或 auto 且沒有 WebGPU 時才問；選 WebGPU 不去問主程序）
+    function wantsNativeBackend(preference, gpuAvailable) { return preference === 'cpu' || (preference === 'auto' && !gpuAvailable); }
 
     // ---------- 任務與提示詞 ----------
     const TASKS = { caption: '簡短描述', detailed: '詳細描述', ocr: '辨識文字（OCR）', objects: '列出物件', ask: '問問題（自訂提示詞）' };
@@ -463,5 +468,5 @@
     // 估算這次下載量（依裝置組合）；已經在快取裡的部分不用再下載
     function estimateDownload(model, device, cachedBytes) { const total = (model.bytes && model.bytes[device === 'webgpu' ? 'gpu' : 'cpu']) || 0; return Math.max(0, total - (Number(cachedBytes) || 0)); }
 
-    return { MODELS, byId, imageModels, textModels, depthModels, DEFAULT_DEPTH_MODEL, segmentModels, DEFAULT_SEGMENT_MODEL, poseModels, DEFAULT_POSE_MODEL, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, backendOrder, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
+    return { MODELS, byId, imageModels, textModels, depthModels, DEFAULT_DEPTH_MODEL, segmentModels, DEFAULT_SEGMENT_MODEL, poseModels, DEFAULT_POSE_MODEL, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, backendOrder, wantsNativeBackend, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
 });

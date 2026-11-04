@@ -7344,15 +7344,20 @@ const holder = {};
         const requested = Math.max(1, want);
         return { requested, effective: isolated ? requested : 1, hardware: hw, isolated: !!isolated, note: isolated ? '' : (reason || '這個環境不能多執行緒（沒有可用的 SharedArrayBuffer）') + '，CPU 路徑實際只會用 1 個執行緒；設定的核心數在能多執行緒的環境才會生效。' };
     }
-    // 統一推論後端順序（原生執行器階段 2）：原生（子程序）→ WebGPU → WASM。
-    // nativeAvailable 為真且模型不是 gpuOnly 時，把 'native' 排在最前面；其餘完全交給 resolveDevice。
-    // 目前尚未接線：呼叫端（_vlmEnsureLoaded）仍用 resolveDevice；nativeAvailable 在階段 3 之前永遠是 false，所以行為與改動前相同。
-    // 回傳形狀與 resolveDevice 相同 { order, reason }，多一個 native 布林欄位（只有原生可用時為 true）。
+    // 統一推論後端順序（原生執行器）：依使用者選的裝置決定，不是「原生先試」：
+    //   · 選 WebGPU（偏好 gpu）：只走網頁版 WebGPU（或 resolveDevice 原本的退路），完全不碰原生。
+    //   · 選 CPU（偏好 cpu）：原生可用時先試原生，失敗退回網頁版 WASM。
+    //   · 選 auto：有 WebGPU 就走 WebGPU（不碰原生）；沒有 WebGPU 就按 CPU 處理。
+    // nativeAvailable 為假（沒安裝或不可用）時，結果與 resolveDevice 完全相同（舊行為）。gpuOnly 模型永遠不加 native。
+    // 回傳形狀與 resolveDevice 相同 { order, reason }，多一個 native 布林欄位（只有原生會被嘗試時為 true）。
     function backendOrder(model, preference, gpuAvailable, f16, nativeAvailable) {
         const base = resolveDevice(model, preference, gpuAvailable, f16);
-        if (!nativeAvailable || !base.order.length || (model && model.gpuOnly)) return base;
-        return { order: ['native'].concat(base.order), reason: '原生執行器可用，先試原生；失敗依序退回 ' + base.order.join('→'), native: true };
+        const wantsNative = preference === 'cpu' || (preference === 'auto' && !gpuAvailable);
+        if (!nativeAvailable || !wantsNative || !base.order.length || (model && model.gpuOnly)) return base;
+        return { order: ['native'].concat(base.order), reason: '選 CPU：先試原生；失敗退回 ' + base.order.join('→'), native: true };
     }
+    // 這次呼叫要不要去問原生（只有選 CPU，或 auto 且沒有 WebGPU 時才問；選 WebGPU 不去問主程序）
+    function wantsNativeBackend(preference, gpuAvailable) { return preference === 'cpu' || (preference === 'auto' && !gpuAvailable); }
 
     // ---------- 任務與提示詞 ----------
     const TASKS = { caption: '簡短描述', detailed: '詳細描述', ocr: '辨識文字（OCR）', objects: '列出物件', ask: '問問題（自訂提示詞）' };
@@ -7704,7 +7709,7 @@ const holder = {};
     // 估算這次下載量（依裝置組合）；已經在快取裡的部分不用再下載
     function estimateDownload(model, device, cachedBytes) { const total = (model.bytes && model.bytes[device === 'webgpu' ? 'gpu' : 'cpu']) || 0; return Math.max(0, total - (Number(cachedBytes) || 0)); }
 
-    return { MODELS, byId, imageModels, textModels, depthModels, DEFAULT_DEPTH_MODEL, segmentModels, DEFAULT_SEGMENT_MODEL, poseModels, DEFAULT_POSE_MODEL, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, backendOrder, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
+    return { MODELS, byId, imageModels, textModels, depthModels, DEFAULT_DEPTH_MODEL, segmentModels, DEFAULT_SEGMENT_MODEL, poseModels, DEFAULT_POSE_MODEL, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, backendOrder, wantsNativeBackend, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
 });
 
 }).call(null, undefined, holder);
@@ -100712,7 +100717,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         // 原生執行器（桌面版，先試）：只支援純文字生成（沒有工具、沒有預填）。失敗或不可用就退回 WebGPU／WASM，並把實際後端與原因寫進 log。
         const NATIVE_MODEL_ID = 'qwen3-0.6b';
         let nativeOk = false, nativeWhy = '';
-        if (model.id !== NATIVE_MODEL_ID || !this._nrOptIn()) nativeWhy = ''; // 其他模型或未安裝：不走原生，也不記 log
+        // 選 WebGPU（或 auto 且有 WebGPU）：完全不碰原生（連狀態都不問主程序），也不記 log
+        if (model.id !== NATIVE_MODEL_ID || !this._nrOptIn() || !FaVlm.wantsNativeBackend(this._omDevicePrefOf(model), gpu.available)) nativeWhy = '';
         else if (a.tools && a.tools.length) nativeWhy = '這次呼叫有工具，原生只做純文字生成';
         else if (a.prefill) nativeWhy = '這次呼叫有預填，原生不支援';
         else { const st = await this._nrNativeState(); nativeOk = !!st.ok; if (!st.ok) nativeWhy = st.reason; }
@@ -101039,6 +101045,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
               <div data-om-native-progress style="display:none; color:#cbd5e1; margin-top:4px;"></div>
               <div style="margin-top:6px;"><button style="${btn}" data-om="native-install">安裝原生執行包</button> <button style="${btn}" data-om="native-remove">移除執行包</button> <button style="${btn}" data-om="native-reenable">重新啟用</button> <button style="${btn}" data-om="native-dispose">關閉子程序</button></div>
               <div style="color:#94a3b8;">預設是未安裝，不點就完全走原本的 WebGPU／WASM 路徑。安裝前會先顯示確認對話框，按同意後才下載（npm 官方庫優先，失敗才改用 GitHub 分支，會顯示原因）。</div>
+              <div style="color:#94a3b8;">只有離線模型的「運算裝置」選 CPU（或選自動、而且沒有 WebGPU）時才會走原生；選 WebGPU 完全不碰原生。原生失敗時退回網頁版 WASM，並顯示實際後端與原因。</div>
             </div>`;
     }
     async _omNativeRefresh() {
@@ -106904,21 +106911,22 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                     <p class="ai-advanced-hint">告訴Whisper模型你講的是哪種語言，幫助辨識準確度——不是翻譯，辨識出來的文字語言會跟你實際講的語言一致（選中文、講中文，辨識結果就是中文；選English、講英文，結果就是英文原文，不會被翻譯成中文）。「自動偵測」讓模型自己判斷，通常準確度會比明確指定語言稍低。</p>
                                 </div>
                                 <div class="ai-advanced-stack">
-                                    <label class="ai-advanced-label">全語音Live（隨時收音，預設關閉）</label>
+                                    <label class="ai-advanced-label">全語音Live（開發中，尚未可用）</label>
+                                    <p class="ai-advanced-hint">這個功能還在開發中，目前不能使用。下面的設定已停用，只顯示預設值；等之後版本開放後才能改。</p>
                                     <div style="display:flex; align-items:center; gap:6px;">
-                                        <input type="checkbox" id="ai-live-voice-enabled-chk" style="cursor:pointer;">
+                                        <input type="checkbox" id="ai-live-voice-enabled-chk" style="cursor:pointer;" disabled>
                                         <label for="ai-live-voice-enabled-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">啟用全語音Live</label>
                                     </div>
                                     <p class="ai-advanced-hint">開啟後麥克風會隨時收音。聲音先比對聲紋，不符合的聲音一律無視；AI 自己回應的聲音也會無視。指令要先說主詞才會執行。聲紋上限只能在這裡修改，不能用語音改。</p>
                                     <label class="ai-advanced-label" for="ai-live-voice-speaker-limit" style="font-weight:normal; margin-top:8px;">聲紋上限（8 到 128，預設 8）</label>
-                                    <input type="number" id="ai-live-voice-speaker-limit" class="ai-advanced-input" min="8" max="128" step="1">
+                                    <input type="number" id="ai-live-voice-speaker-limit" class="ai-advanced-input" min="8" max="128" step="1" disabled>
                                     <label class="ai-advanced-label" for="ai-live-voice-wake" style="font-weight:normal; margin-top:8px;">主詞</label>
-                                    <select id="ai-live-voice-wake" class="ai-advanced-input">
+                                    <select id="ai-live-voice-wake" class="ai-advanced-input" disabled>
                                         <option value="AI">AI</option>
                                         <option value="欸哀">欸哀（同音字）</option>
                                     </select>
                                     <label class="ai-advanced-label" for="ai-live-voice-chime" style="font-weight:normal; margin-top:8px;">指令排入佇列時的提示音</label>
-                                    <select id="ai-live-voice-chime" class="ai-advanced-input">
+                                    <select id="ai-live-voice-chime" class="ai-advanced-input" disabled>
                                         <option value="ding">叮咚</option>
                                         <option value="tech">科技感</option>
                                         <option value="speech">語音播報</option>

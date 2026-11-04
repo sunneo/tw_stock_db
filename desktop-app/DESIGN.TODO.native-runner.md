@@ -461,3 +461,51 @@
   - `main-ext.js` 的 `startNativeMailbox` 的 `run` 要改由執行包的 `nr-host.js` 呼叫子程序（用標準輸入輸出與 progress.jsonl，不開網路通道）。
   - `renderer/src/floating-assistant.js` 的 `_llmGenerate` 接 `FaVlm.backendOrder`；改完跑 `node scripts/embed-code-ui.js` 與 `node build-assistant.js`，改動只用 Edit 小段。
 - 共識檢查輸出：`全部通過`（執行指令見 (5)）。
+
+## 最終狀態（2026-11-05，原生執行器）
+
+### 完成清單（commit 為準）
+
+| 項目 | commit | 內容與驗證 |
+|---|---|---|
+| 舊版安裝模擬 | ccc5866a | 舊版 96292810 套用新版 main-ext.js，信箱 ready 與 status 正常；對照組無信箱 |
+| 執行包機制 | 7416daee | nr-*.js 與 onnxruntime-node 1.22.0 放在 userData/native-runtime；逐檔 md5；正常、竄改、沒有 三情況通過 |
+| 真推論與信箱接線 | de7a7882 | nr-engine.js 真推論；子程序端到端 16/16 與參考、WASM 文字相同 |
+| 渲染程序接線 | ace6287b | _llmGenerate 先試原生，失敗退回；真 Electron 16/16；退回測試通過 |
+| 核心測試與端到端 | ec52493a | 核心測試 178／180，只有 tray_dialog 與 RFB 兩個已知失敗 |
+| 按需安裝（來源與分割包） | f265dbcd、0fe726be | npm 優先、GitHub 分支備援；本機假來源 8 項通過；信箱 install→run 真推論相同 |
+| 安裝進度與移除 | 5d051cd5 | install-progress.json；remove 操作 |
+| 設定頁安裝按鈕 | 7284a97a | 確認對話框、進度、來源與切換原因、失敗原因、移除；預設未安裝；介面測試 7 項通過 |
+| 真下載評估腳本 | 997c713a | scripts/eval/native_real_install_eval.js；本機假來源驗證通過；真下載由管理層執行 |
+
+### 整合後速度重量測：取消，不採用
+
+- 依使用者決定跳過，原因：後端規則改為「選 CPU 才走原生」，原生只需要贏 WASM；已有的交錯量測（全部 1.31 倍、低負載 1.54 倍）與同版本逐 logit 相同的證據足夠，不用重測。
+- 本次途中已跑完的 16 題整合完整路徑結果（原生 130,854 毫秒、WASM 131,322 毫秒，比值 1.004，文字 16/16 一致）標記為「取消，不採用」，不作為效能結論。它量的是舊的「原生先試」規則下的完整路徑。
+- 文字一致性（與本次無關的正確性證據）仍有效：原生 16/16 與參考相同（見 native_llm_e2e.eval.js 的記錄）。
+
+### 後端選擇規則（最終）
+
+- 規則摘要：選cpu才走原生；選 WebGPU 完全不碰原生。
+
+- 選 WebGPU（偏好 gpu）：只走網頁版 WebGPU（或原本的降級路徑），完全不碰原生，也不去問主程序。
+- 選 CPU（偏好 cpu）：原生已安裝且可用時先試原生；失敗或不可用就退回網頁版 WASM，log 寫實際後端與原因。
+- 選自動（auto）：有 WebGPU 就走 WebGPU（不碰原生）；沒有 WebGPU 就按 CPU 處理。
+- 原生沒有安裝時，結果與改動前完全相同（測試逐組確認）。
+- 單元測試：vlm_core.test.js 的所有組合（偏好 gpu／cpu／auto × 有無 WebGPU × f16 × 原生有無 × 一般／gpuOnly 模型）共 48 組，加上失敗退回等於舊行為的檢查。
+
+### 未完成
+
+- 真網路下載的端到端（npm 路徑與封鎖 npm 後切到 GitHub 分支）：腳本已完成，待管理層執行。
+- Linux 未在 Linux 實跑：只驗證了分割包的檔案完整與清單。
+- onnxruntime-common 1.22.0 的來源是本機既有安裝，不在 npm tgz 內；待管理層確認。
+- 完整路徑的加速（見上）。
+
+### 已知限制
+
+- 信箱遇到逾時會自動重送；`run` 若逾時重送，同一題可能跑兩次。
+- 模型檔位置目前由環境變數指定（FA_NATIVE_MODEL_PATH、FA_NATIVE_TOKENIZER_PATH），產品的位置還沒定。
+- 安裝按鈕只在離線模型面板，index.html 沒有原生區塊。
+- DirectML 不提供（同一模型在 SkipSimplifiedLayerNormalization 失敗）。
+- 「全語音Live」設定區塊目前停用、標示開發中（它與原生無關，同批發布前由管理層確認）。
+- 實際下載的分割包：GitHub 備援路徑對單一平台約 21.7 MB（win32-x64）或 31.4 MB（linux-x64），整個分支含兩個平台共 53.0 MB；管理層先前說的 50.6 MB 是另一個計算方式。

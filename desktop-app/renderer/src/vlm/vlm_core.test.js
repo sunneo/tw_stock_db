@@ -270,8 +270,28 @@ check('pose model is registered (full fp32, not int8), not an image model, never
   const combos = [[m, 'gpu', true, true], [m, 'gpu', true, false], [m, 'gpu', false, false], [m, 'cpu', true, true], [m, 'cpu', false, true], [g, 'gpu', true, true], [gpuOnlyM, 'gpu', true, true], [gpuOnlyM, 'gpu', false, false]];
   check('backendOrder 沒有原生時與 resolveDevice 完全相同（所有組合）', combos.every(([mm, p, gpu, f]) => JSON.stringify(V.backendOrder(mm, p, gpu, f, false)) === JSON.stringify(V.resolveDevice(mm, p, gpu, f))));
   check('backendOrder 未傳 nativeAvailable 時同樣不含 native', JSON.stringify(V.backendOrder(m, 'gpu', true, true)) === JSON.stringify(V.resolveDevice(m, 'gpu', true, true)));
-  const nat = V.backendOrder(m, 'gpu', true, true, true);
-  check('原生可用時 native 排第一，其後接 resolveDevice 順序', nat.order.join(',') === 'native,webgpu,wasm' && nat.native === true, nat);
+  // 規則（管理層＋使用者原話）：選 WebGPU 完全不碰原生；選 CPU 才走原生；auto 有 WebGPU 就不碰原生，沒有就按 CPU。
+  // 所有組合：偏好 gpu／cpu／auto × 有無 WebGPU × f16 × 原生可用（已安裝且可用）與否 × 一般模型／gpuOnly 模型。
+  const prefs = ['gpu', 'cpu', 'auto'], gpus = [true, false], f16s = [true, false], nats = [true, false], models = [m, gpuOnlyM];
+  let comboCount = 0, comboBad = [];
+  for (const mm of models) for (const p of prefs) for (const gpu of gpus) for (const f of f16s) for (const nat of nats) {
+    comboCount++;
+    const base = V.resolveDevice(mm, p, gpu, f);
+    const got = V.backendOrder(mm, p, gpu, f, nat);
+    const wantNative = nat && p === 'cpu' && base.order.length > 0 && !mm.gpuOnly || nat && p === 'auto' && !gpu && base.order.length > 0 && !mm.gpuOnly;
+    const expectOrder = wantNative ? ['native'].concat(base.order) : base.order;
+    const tag = mm.id + '/' + p + '/gpu=' + gpu + '/f16=' + f + '/native=' + nat;
+    if (got.order.join(',') !== expectOrder.join(',')) comboBad.push(tag + ' got ' + got.order.join(',') + ' want ' + expectOrder.join(','));
+    if (!!got.native !== !!wantNative) comboBad.push(tag + ' native flag');
+    if (p === 'gpu' && got.order.indexOf('native') >= 0) comboBad.push(tag + ' WebGPU choice touched native');
+    if (!nat && JSON.stringify(got) !== JSON.stringify(base)) comboBad.push(tag + ' not installed differs from old behavior');
+    // 失敗退回：拿掉 native 後要與 resolveDevice 完全相同（原生失敗＝舊行為）
+    if (JSON.stringify(got.order.filter((x) => x !== 'native')) !== JSON.stringify(base.order)) comboBad.push(tag + ' fallback differs');
+  }
+  check('後端規則所有組合（' + comboCount + ' 組）全部符合：WebGPU 不碰原生、CPU 先原生、auto 依 WebGPU 決定、未安裝與失敗退回都等於舊行為', comboBad.length === 0, comboBad.slice(0, 6));
+  check('wantsNativeBackend：只有 cpu，或 auto 且沒有 WebGPU', V.wantsNativeBackend('cpu', true) === true && V.wantsNativeBackend('cpu', false) === true && V.wantsNativeBackend('auto', false) === true && V.wantsNativeBackend('auto', true) === false && V.wantsNativeBackend('gpu', true) === false && V.wantsNativeBackend('gpu', false) === false);
+  const nat = V.backendOrder(m, 'cpu', true, true, true);
+  check('選 CPU 且原生可用時 native 排第一，其後接 resolveDevice 順序', nat.order.join(',') === 'native,wasm' && nat.native === true, nat);
   const natCpu = V.backendOrder(m, 'cpu', false, false, true);
   check('原生可用、只有 CPU 時順序為 native,wasm', natCpu.order.join(',') === 'native,wasm', natCpu);
   check('gpuOnly 模型即使原生可用也不加 native（只能 GPU）', JSON.stringify(V.backendOrder(gpuOnlyM, 'gpu', true, true, true)) === JSON.stringify(V.resolveDevice(gpuOnlyM, 'gpu', true, true)));
