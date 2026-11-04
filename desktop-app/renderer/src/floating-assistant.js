@@ -108902,7 +108902,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                 </div>
                                 <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label">全語音Live（預設關閉）</label>
-                                    <p class="ai-advanced-hint">預設關閉。第一次開啟時如果還沒有聲紋，會強制先錄入一組（不能跳過；取消錄入就會維持關閉）。聲紋模型約 80MB，第一次會先問你再下載。為了隱私，重新開啟程式後不會自動收音，需要再勾選一次。</p>
+                                    <p class="ai-advanced-hint">預設關閉。第一次開啟時如果還沒有聲紋，會強制先錄入一組（不能跳過；取消錄入就會維持關閉）。聲紋模型約 80MB，第一次會先問你再下載。為了隱私，重新開啟程式後不會自動收音，需要再勾選一次。網頁版也能用：需要在瀏覽器允許麥克風，模型快取在瀏覽器的儲存空間（清除網站資料後要重新下載）；桌面版與網頁版目前都用瀏覽器內的模型推論，沒有原生聲紋路徑。朗讀優先用專案的語音合成，不能用時退回瀏覽器內建語音。</p>
                                     <div style="display:flex; align-items:center; gap:6px;">
                                         <input type="checkbox" id="ai-live-voice-enabled-chk" style="cursor:pointer;">
                                         <label for="ai-live-voice-enabled-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">啟用全語音Live</label>
