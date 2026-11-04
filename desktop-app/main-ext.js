@@ -710,6 +710,8 @@ function startNativeMailbox(ctx) {
     } catch (_) { /* 下一輪再試 */ } finally { busy = false; }
   }, 200);
   if (timer.unref) timer.unref();
+  // 就緒訊號：輪詢已經開始，渲染程序看到 ready.json 才送請求（避免第一次請求等到超時）
+  try { fsSync.writeFileSync(pathM.join(box, "ready.json"), JSON.stringify({ at: Date.now(), pid: process.pid, v: 1 })); } catch (_) { /* 寫不了就由渲染程序超時重試 */ }
   return { ok: true, box };
 }
 

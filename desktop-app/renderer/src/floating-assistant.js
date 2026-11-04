@@ -100912,10 +100912,26 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         return segs.join(sep) + sep + 'native-runner-box';
     }
     // op：status／reenable／dispose。寫 req-<id>.json，等 resp-<id>.json；逾時回傳 { ok:false, code:'mailbox_timeout' }（主程序沒有回應：舊版安裝或主程序未載入）。
+    // 先等主程序的就緒檔（ready.json，最多 15 秒），再送請求；逾時的請求自動重試最多 2 次（每次新的請求 id）。
     async _nrCall(op, payload, timeoutMs) {
         if (!this._nrAvailable()) return { ok: false, code: 'no_bridge', message: '這個環境沒有桌面版橋接' };
         const box = await this._nrBox(); if (!box) return { ok: false, code: 'no_box', message: '找不到使用者資料夾' };
         const sep = box.indexOf(String.fromCharCode(92)) >= 0 ? String.fromCharCode(92) : '/';
+        const readyPath = box + sep + 'ready.json';
+        const tReady = Date.now(); let ready = false;
+        while (Date.now() - tReady < 15000) {
+            try { const r = await window.desktopAPI.rawfs.readFile(readyPath, 'utf8'); if (r && (typeof r === 'object' ? r.text : r)) { ready = true; break; } } catch (_) { /* 還沒就緒 */ }
+            await new Promise((res) => setTimeout(res, 200));
+        }
+        if (!ready) return { ok: false, code: 'not_ready', message: '主程序在 15 秒內沒有就緒（原生執行器信箱未啟動）' };
+        let last = null;
+        for (let attempt = 0; attempt < 3; attempt++) {
+            last = await this._nrCallOnce(op, payload, timeoutMs || 5000, box, sep);
+            if (last.code !== 'mailbox_timeout') return last;
+        }
+        return last;
+    }
+    async _nrCallOnce(op, payload, timeoutMs, box, sep) {
         const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
         await window.desktopAPI.rawfs.writeFile(box + sep + 'req-' + id + '.json', { text: JSON.stringify({ op, payload: payload || {} }) });
         const t0 = Date.now(), limit = timeoutMs || 10000; // 主程序剛啟動時第一次可能較慢
