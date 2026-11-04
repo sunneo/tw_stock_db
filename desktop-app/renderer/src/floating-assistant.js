@@ -8677,13 +8677,17 @@ const holder = {};
     var capture = null;
     var chain = Promise.resolve();   // 辨識一句一句依序做，不並行
     var pendingCount = 0;
-    var stats = { segments: 0, texts: 0, errors: 0 };
+    var stats = { segments: 0, texts: 0, errors: 0, rejected: 0, muted: 0 };
+
+    var accept = typeof opts.accept === 'function' ? opts.accept : null;   // 聲紋閘門：(samples, rate) → Promise<boolean>
+    var muted = typeof opts.muted === 'function' ? opts.muted : function () { return false; };   // AI 自己說話時為真，收音丟棄
 
     function runSegment(seg) {
       pendingCount++;
       stats.segments++;
       chain = chain.then(async function () {
         try {
+          if (accept && !(await accept(seg.samples, seg.rate))) { stats.rejected++; return; }
           var pcm = resampleLinear(seg.samples, seg.rate, WHISPER_RATE);
           var text = String((await opts.transcribe(pcm)) || '').trim();
           if (text) { stats.texts++; onText(text); }
@@ -8700,6 +8704,13 @@ const holder = {};
 
     function ingest(mono, rate) {
       if (diverter) { diverter(mono, rate); return; }
+      if (muted()) {
+        // AI 自己在說話：丟掉這段，並把正在說的一句收掉（不能把 AI 的聲音接進去）
+        stats.muted++;
+        var pending = vad.flush();
+        if (pending) runSegment(pending);
+        return;
+      }
       var seg = vad.feed(mono, rate);
       if (seg) runSegment(seg);
     }
@@ -102329,6 +102340,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     }
 
     _liveVoiceChime() {
+        this._vpMuteFor(700);   // 提示音本身也會被麥克風收到，先靜音
         try {
             const style = (this.advancedSettings && this.advancedSettings.liveVoiceChime) || 'ding';
             if (style === 'speech') {
@@ -102415,6 +102427,12 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         controller.setEnabled(true);
         const loop = FaLiveLoop.createLiveLoop({
             vad: { threshold: 0.02, silenceMs: 700, maxMs: 15000, minMs: 300 },
+            // 聲紋閘門（階段 D）：與已錄聲紋不符就無視；AI 自己說話的時段（語音輸出中）整段丟棄。
+            accept: async (samples, rate) => {
+                try { const m = await this._vpMatchSamples(samples, rate); return m.accepted === true; }
+                catch (_) { return false; }   // 比對失敗一律當作不是本人
+            },
+            muted: () => Date.now() < (this._vpMuteUntil || 0),
             startCapture: async (onChunk) => {
                 const rec = await this._vsRecordStart(null, onChunk);
                 return { stop: async () => { await rec.stop(); } };
@@ -102600,7 +102618,11 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         return r;
     }
 
+    // 語音輸出時先標記靜音時段（估計播放長度），收音不接 AI 自己的聲音。
+    _vpMuteFor(ms) { this._vpMuteUntil = Math.max(this._vpMuteUntil || 0, Date.now() + ms); }
+
     _vpSpeak(text) {
+        this._vpMuteFor(800 + String(text).length * 350);
         try { if (window.speechSynthesis && typeof SpeechSynthesisUtterance !== 'undefined') window.speechSynthesis.speak(new SpeechSynthesisUtterance(text)); } catch (_) { /* 沒有語音就只顯示文字 */ }
     }
 

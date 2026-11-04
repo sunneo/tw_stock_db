@@ -111,13 +111,17 @@
     var capture = null;
     var chain = Promise.resolve();   // 辨識一句一句依序做，不並行
     var pendingCount = 0;
-    var stats = { segments: 0, texts: 0, errors: 0 };
+    var stats = { segments: 0, texts: 0, errors: 0, rejected: 0, muted: 0 };
+
+    var accept = typeof opts.accept === 'function' ? opts.accept : null;   // 聲紋閘門：(samples, rate) → Promise<boolean>
+    var muted = typeof opts.muted === 'function' ? opts.muted : function () { return false; };   // AI 自己說話時為真，收音丟棄
 
     function runSegment(seg) {
       pendingCount++;
       stats.segments++;
       chain = chain.then(async function () {
         try {
+          if (accept && !(await accept(seg.samples, seg.rate))) { stats.rejected++; return; }
           var pcm = resampleLinear(seg.samples, seg.rate, WHISPER_RATE);
           var text = String((await opts.transcribe(pcm)) || '').trim();
           if (text) { stats.texts++; onText(text); }
@@ -134,6 +138,13 @@
 
     function ingest(mono, rate) {
       if (diverter) { diverter(mono, rate); return; }
+      if (muted()) {
+        // AI 自己在說話：丟掉這段，並把正在說的一句收掉（不能把 AI 的聲音接進去）
+        stats.muted++;
+        var pending = vad.flush();
+        if (pending) runSegment(pending);
+        return;
+      }
       var seg = vad.feed(mono, rate);
       if (seg) runSegment(seg);
     }

@@ -192,6 +192,80 @@ check('改道：設定時會先把正在說的一句收掉', async () => {
   assert.deepStrictEqual(texts, ['先前那句']);
 });
 
+check('聲紋閘門：不接受的一句不送去辨識，計入 rejected', async () => {
+  const texts = [];
+  let calls = 0;
+  const loop = L.createLiveLoop({
+    vad: { threshold: 0.05, silenceMs: 200, minMs: 100 },
+    startCapture: async () => ({ stop: async () => {} }),
+    accept: async () => false,
+    transcribe: async () => { calls++; return '不該出現'; },
+    onText: (t) => texts.push(t),
+  });
+  await loop.start();
+  loop.ingest(tone(400, 16000), 16000); loop.ingest(silence(400, 16000), 16000);
+  await loop.stop();
+  assert.strictEqual(calls, 0);
+  assert.deepStrictEqual(texts, []);
+  assert.strictEqual(loop.stats().rejected, 1);
+});
+
+check('聲紋閘門：接受的一句才送去辨識（閘門收到的是原始取樣與取樣率）', async () => {
+  const texts = [];
+  let seenRate = 0, seenLen = 0;
+  const loop = L.createLiveLoop({
+    vad: { threshold: 0.05, silenceMs: 200, minMs: 100 },
+    startCapture: async () => ({ stop: async () => {} }),
+    accept: async (samples, rate) => { seenRate = rate; seenLen = samples.length; return true; },
+    transcribe: async () => 'AI 播放音樂',
+    onText: (t) => texts.push(t),
+  });
+  await loop.start();
+  loop.ingest(tone(400, 16000), 16000); loop.ingest(silence(400, 16000), 16000);
+  await loop.stop();
+  assert.deepStrictEqual(texts, ['AI 播放音樂']);
+  assert.strictEqual(seenRate, 16000);
+  assert.ok(seenLen > 6000);
+});
+
+check('靜音閘（AI 自己說話）：muted 期間的音訊丟掉，不進切段', async () => {
+  const texts = [];
+  let muted = false;
+  const loop = L.createLiveLoop({
+    vad: { threshold: 0.05, silenceMs: 200, minMs: 100 },
+    startCapture: async () => ({ stop: async () => {} }),
+    muted: () => muted,
+    transcribe: async () => '文字',
+    onText: (t) => texts.push(t),
+  });
+  await loop.start();
+  muted = true;
+  loop.ingest(tone(400, 16000), 16000); loop.ingest(silence(400, 16000), 16000);
+  muted = false;
+  await loop.stop();
+  assert.deepStrictEqual(texts, [], '靜音期間的語音不應被辨識');
+  assert.ok(loop.stats().muted >= 2);
+});
+
+check('靜音閘：正在說的一句在靜音開始時被收掉（不會跟 AI 的聲音接在一起）', async () => {
+  const texts = [];
+  let muted = false;
+  const loop = L.createLiveLoop({
+    vad: { threshold: 0.05, silenceMs: 5000, minMs: 100 },
+    startCapture: async () => ({ stop: async () => {} }),
+    muted: () => muted,
+    transcribe: async () => '先前那句',
+    onText: (t) => texts.push(t),
+  });
+  await loop.start();
+  loop.ingest(tone(400, 16000), 16000);
+  muted = true;
+  loop.ingest(tone(400, 16000), 16000);
+  muted = false;
+  await loop.stop();
+  assert.deepStrictEqual(texts, ['先前那句']);
+});
+
 (async () => {
   let pass = 0, fail = 0;
   for (const [name, fn] of tests) {
