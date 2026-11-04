@@ -64488,6 +64488,11 @@ ${fnData.code}
         const bub = isChild ? this._subchatFapBubble(subId, rec, mode, dialogKey) : null;
         let granted = false;
         try { granted = await pending; } finally { if (bub) bub.clear(); }
+        // 子對話 S8 步驟 B：權限式問題的紀錄寫明「授權」或「拒絕」
+        if (isChild && subId) {
+            const byRoot = !!(this._fapRootKeys && this._fapRootKeys.delete(dialogKey));
+            try { this._subchatQARecord(subId, { kind: 'fap', q: '需要資料夾授權：' + String(rec.label || '') + '（' + (mode === 'readwrite' ? '讀寫' : '讀取') + '）', where: byRoot ? 'root' : 'child', a: granted ? '授權' : '拒絕' }).catch(() => { /* 紀錄失敗不影響授權 */ }); } catch (_) { /* 紀錄失敗不影響授權 */ }
+        }
         if (!granted) {
             throw new Error(`「${rec.label}」目前沒有${mode === 'readwrite' ? '讀寫' : '讀取'}權限——使用者在授權對話框裡選擇了拒絕，或沒有完成授權。`);
         }
@@ -78054,7 +78059,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         // 子對話 S4：這張卡片屬於子對話時，子對話狀態變 waiting_user，父對話的連結卡片顯示問題與回答欄；回答後回到 running
         const subId = ctx && ctx.id; const subEntry = subId && this._chatEntry(subId); const isChild = !!(subEntry && subEntry.parentId);
         return new Promise((resolve) => {
-            this._cardWaitersMap().set(msg, (r) => { if (bg && ctx) { ctx.waitingForUser = false; try { this._renderChatList(); } catch (_) {} } if (isChild) { this._subchatPendingMap().delete(subId); this._subchatSetStatus(subId, 'answer'); } resolve(r); });
+            this._cardWaitersMap().set(msg, (r) => { if (bg && ctx) { ctx.waitingForUser = false; try { this._renderChatList(); } catch (_) {} } if (isChild) { this._subchatPendingMap().delete(subId); this._subchatSetStatus(subId, 'answer'); try { this._subchatQARecord(subId, { kind: 'card', q: String(title || '問題'), where: r && r.answeredBy === 'root' ? 'root' : 'child', a: this._subchatCardAnswerText(r) }).catch(() => { /* 紀錄失敗不影響回答 */ }); } catch (_) { /* 紀錄失敗不影響回答 */ } } resolve(r); });
             this.messages.push(msg); if (bg && ctx) { ctx.waitingForUser = true; try { this._renderChatList(); } catch (_) {} }
             if (isChild) { this._subchatPendingMap().set(subId, msg); this._subchatSetStatus(subId, 'ask', { question: title }); }
             this._persistChatHistory(); this._renderMessageHistory();
@@ -96317,13 +96322,26 @@ _result
     // 輸入列永遠有：等待中且記憶體裡有卡片時，按鈕是「回答」（答案交給卡片）；否則是「傳給子對話」（S5）。父對話自己的輸入框不經過這裡。
     _subchatLinkDecorate(w, childId) {
         const host = this._faHost || this;
-        w.querySelectorAll('.fa-subchat-status, .fa-subchat-answer-row').forEach((n) => n.remove());
+        w.querySelectorAll('.fa-subchat-status, .fa-subchat-answer-row, .fa-subchat-qa').forEach((n) => n.remove());
         const info = host._subchatLinkInfo(childId);
         const st = document.createElement('div');
         st.className = 'fa-subchat-status';
         st.style.cssText = 'flex:1 1 100%; font-size:12px; opacity:0.9; overflow-wrap:anywhere;';
         st.textContent = info.text;
         w.appendChild(st);
+        // 子對話 S8 步驟 B：問答紀錄（問了什麼、在哪邊回答、答案摘要）；提問都保留在根對話，子對話回答後根對話也看得到
+        const qaList = host._subchatQAFor(childId);
+        if (qaList.length) {
+            const qaBox = document.createElement('div');
+            qaBox.className = 'fa-subchat-qa';
+            qaBox.style.cssText = 'flex:1 1 100%; font-size:12px; opacity:0.85; overflow-wrap:anywhere; border-top:1px dashed rgba(99,102,241,0.35); padding-top:4px;';
+            qaList.forEach((x) => {
+                const line = document.createElement('div');
+                line.textContent = '❓ ' + x.q + ' → ' + (x.where === 'root' ? '在根對話回答' : '在子對話回答') + '：' + x.a;
+                qaBox.appendChild(line);
+            });
+            w.appendChild(qaBox);
+        }
         // 子對話 S7：子對話已刪除 → 只顯示「已刪除」，不再給回答欄或傳訊息
         if (info.gone) return;
         // 子對話 S4b：等待中的是表單 → 父對話直接顯示表單的選項／欄位（不是文字輸入列）
@@ -96398,9 +96416,11 @@ _result
             const opts = Object.assign({}, options || {}, { isCancelled: () => done });
             const removeDom = () => { try { if (pf && ctx.pendingForm === pf) { pf.container.remove(); ctx.pendingForm = null; } } catch (_) { /* 畫面已經不在也沒關係 */ } };
             const rec = { kind: 'form', options: opts };
-            const settle = (r) => {
+            const settle = (r, by) => {
                 if (done) return; done = true;
                 removeDom();
+                // 子對話 S8 步驟 B：問答紀錄（只記第一次回答；根對話回答 by='root'，子對話自己回答 by 為空）
+                try { host._subchatQARecord(subId, { kind: 'form', q: String((options && options.title) || '問題'), where: by === 'root' ? 'root' : 'child', a: host._subchatFormAnswerText(r) }).catch(() => { /* 紀錄失敗不影響回答 */ }); } catch (_) { /* 紀錄失敗不影響回答 */ }
                 if (host._subchatPendingMap().get(subId) === rec) host._subchatPendingMap().delete(subId);
                 try { host._subchatSetStatus(subId, 'answer'); } catch (_) { /* 狀態更新失敗不影響等待者 */ }
                 resolve(r);
@@ -96433,7 +96453,7 @@ _result
         }
         else if (p.kind === 'values') { if (!fields) return { ok: false, error: '這題不是填欄位的表單' }; r = { confirmed: true, values: p.values && typeof p.values === 'object' ? p.values : {} }; }
         else return { ok: false, error: '不認得的回答種類' };
-        rec.settle(r);
+        rec.settle(r, 'root');
         try { host._renderMessageHistory(); } catch (_) { /* 重畫失敗不影響回答 */ }
         return { ok: true };
     }
@@ -96452,6 +96472,9 @@ _result
         if (!bub || bub.kind !== 'fap') return { ok: false, error: '子對話目前沒有等待中的授權' };
         const ctl = host._fapPermCtl && host._fapPermCtl.get(bub.key);
         if (!ctl) return { ok: false, error: '授權框已經不在了（可能已經回答）' };
+        // 子對話 S8 步驟 B：這次授權是在根對話按的（問答紀錄的「在哪邊回答」）
+        if (!host._fapRootKeys) host._fapRootKeys = new Set();
+        host._fapRootKeys.add(bub.key);
         if (allow) ctl.allow(); else ctl.deny();
         return { ok: true };
     }
@@ -96499,6 +96522,45 @@ _result
         row.appendChild(err); w.appendChild(row);
     }
 
+    // 子對話 S8 步驟 B：根對話連結卡片的問答紀錄。每筆 {kind, q, where:'root'|'child', a, at}，存在連結訊息 m._subchatLink.qa（可列舉，存檔後仍在），最多留最近 20 筆。
+    _subchatQAFor(childId) {
+        const host = this._faHost || this; const e = host._chatEntry(childId); if (!e || !e.parentId) return [];
+        if (!host._ctx || host._ctx.id !== e.parentId) return [];
+        const m = (host.messages || []).find((x) => x && x._subchatLink && x._subchatLink.childId === childId);
+        return m && Array.isArray(m._subchatLink.qa) ? m._subchatLink.qa : [];
+    }
+    async _subchatQARecord(childId, rec) {
+        const host = this._faHost || this; const e = host._chatEntry(childId); if (!e || !e.parentId) return;
+        const pid = e.parentId; const MAX = 20;
+        const pctx = host._ctx && host._ctx.id === pid ? host._ctx : (host._chatCtxs.get(pid) || await host._chatCtxLoad(pid));
+        host._chatCtxs.set(pid, pctx); // 修改的必須是快取裡那一份（_chatCtxPrune 可能已經清掉、之後會重讀）
+        let changed = false;
+        (pctx.messages || []).forEach((m) => {
+            if (!m || !m._subchatLink || m._subchatLink.childId !== childId) return;
+            const qa = Array.isArray(m._subchatLink.qa) ? m._subchatLink.qa.slice() : [];
+            qa.push({ kind: rec.kind, q: String(rec.q || ''), where: rec.where === 'root' ? 'root' : 'child', a: String(rec.a || '').slice(0, 120), at: Date.now() });
+            m._subchatLink.qa = qa.slice(-MAX); changed = true;
+        });
+        if (!changed) return;
+        if (host._ctx && host._ctx.id === pid) host._persistChatHistory();
+        else { host._chatRunner(pctx)._persistChatHistory(); await host._flushChatWrite(); } // 父對話不在畫面上：立刻落盤，切回父對話時不會讀到舊版
+        document.querySelectorAll('.fa-subchat-link[data-child-id="' + childId + '"]').forEach((el) => host._subchatLinkDecorate(el, childId));
+    }
+    _subchatFormAnswerText(r) {
+        if (!r) return ''; if (r.confirmed === false) return '（取消）';
+        if (r.supplement) return String(r.supplement);
+        if (r.values && typeof r.values === 'object') return Object.entries(r.values).map(([k, v]) => k + '：' + v).join('；');
+        if (r.answer != null) return String(r.answer);
+        return '（已回答）';
+    }
+    _subchatCardAnswerText(r) {
+        if (!r) return '';
+        if (r.supplement) return String(r.supplement);
+        if (Array.isArray(r.summary) && r.summary.length) return r.summary.map((x) => String(x)).join('；'); // 卡片自己的摘要（FaCard.summaryLines）
+        if (r.answers && typeof r.answers === 'object' && Object.keys(r.answers).length) return Object.values(r.answers).map((v) => (Array.isArray(v) ? v.join('、') : String(v))).join('；');
+        return r.skipped ? '（略過）' : '（已回答）';
+    }
+
     // 子對話 S4：在父對話回答子對話等待中的問題。答案走「略過選項、直接打字回答」（skipped＋supplement，與 ask_user_card 的工具說明相同），子對話接著跑。
     _subchatAnswer(childId, text) {
         const msg = this._subchatPendingMap().get(childId);
@@ -96513,6 +96575,7 @@ _result
         const r = Object.assign(this._cardResult(msg), { confirmed: true, skipped: true, status: 'skipped', supplement: t, answers: {} });
         try { FaCard.cancel(msg._card.state); } catch (_) { /* 卡片關閉失敗不影響回答 */ }
         this._cardWaitersMap().delete(msg); this._subchatPendingMap().delete(childId);
+        r.answeredBy = 'root';
         try { w(r); } catch (_) { /* 等待者出錯不影響父對話 */ }
         try { this._renderMessageHistory(); } catch (_) { /* 重畫失敗不影響對話 */ }
         return { ok: true };
