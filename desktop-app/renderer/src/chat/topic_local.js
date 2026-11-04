@@ -61,7 +61,25 @@
   // 延續的開頭：中文「再／又／也／還」可加可不加，接「加／多／來／改／換成／換一／同樣／一樣／繼續／接著」；
   // 英文整詞開頭 also／again／another／more／add／continue。
   // 注意：「再畫一張狗的圖」不符合（畫不在清單內），交給候選話題比對處理。
-  var CONTINUATION_RE = /^((再|又|也|還)?(加|多|來|改|換成|換一|同樣|一樣|繼續|接著))|^(also|again|another|more|add|continue|one more)\b/i;
+  // S8 步驟 D 補上「然後」「還要」「也說」「也講」開頭（語料中「然後呢」「還要再詳細一點」「也說說它的經濟」是明確的接續語，原清單漏了）。
+  // 這四個前綴也會漏掉以它們開頭的短新需求（例如「還要幫我寫一首詩」），語料裡留有這個反例，見 topic_corpus.json。
+  var CONTINUATION_RE = /^((再|又|也|還)?(加|多|來|改|換成|換一|同樣|一樣|繼續|接著))|^(然後|還要|也說|也講)|^(also|again|another|more|add|continue|one more)\b/i;
+  // S8 步驟 D：延續句必須「短」才算。超過這個字數的通常是完整的新需求（例如「來個新的題目：寫一個猜數字遊戲」），不是接續語。
+  // 12 字：語料中最長的延續句是「再來一個範例」（6 字）、「還要再詳細一點」（7 字）；12 字留足餘裕，又不會把一整句新需求當延續。
+  var CONTINUATION_MAX_LEN = 12;
+  // 單獨的「來」開頭（不是「再來」「又來」「也來」「還來」）只有很短才是延續：「來一個」「來一份」是接續，「來一首音樂的歌」「來聊聊投資」是新需求。
+  // 4 字：「來一個」「來一份」3 字、「來兩張」4 字；「來一首音樂的歌」7 字。
+  var BARE_LAI_MAX_LEN = 4;
+  function isContinuation(text) {
+    var t = String(text == null ? '' : text).trim();
+    if (!CONTINUATION_RE.test(t)) return false;
+    // 中文以字元數計；英文字元數偏長，改以單字數計（上限 6 字，例如 "add another dog" 3 字、"one more please" 3 字）
+    if (/[一-鿿]/.test(t)) {
+      if (t.length > CONTINUATION_MAX_LEN) return false;
+      if (/^來/.test(t) && t.length > BARE_LAI_MAX_LEN) return false;
+    } else if (t.split(/\s+/).length > 6) return false;
+    return true;
+  }
 
   var CJK_RUN = /[㐀-鿿豈-﫿]+/g;
   var ASCII_RUN = /[a-z0-9]+/g;
@@ -168,7 +186,7 @@
     }
     if (best) return { isShifted: true, score: sCur, matchedTopicId: best.id, reason: 'returned-to-earlier-topic' };
 
-    if (CONTINUATION_RE.test(String(text).trim())) {
+    if (isContinuation(text)) {
       return { isShifted: false, score: sCur, matchedTopicId: null, reason: 'continuation-phrase' };
     }
     return { isShifted: true, score: sCur, matchedTopicId: null, reason: 'new-topic' };
