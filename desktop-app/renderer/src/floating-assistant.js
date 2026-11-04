@@ -100872,6 +100872,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
               <div style="margin-top:6px;"><label><input type="checkbox" data-om-set="silentDl" ${this._omSilent() ? 'checked' : ''}> 靜默下載：離線模型用到才載入，需要而還沒下載時直接在背景下載、不跳確認視窗（取消勾選＝每次下載前先問）</label></div>
               <div style="margin-top:6px;">看圖（vision）的優先順序：<select data-om-set="policy" style="${inp}">${Object.entries(FaVlm.VISION_POLICIES).map(([k, v]) => `<option value="${k}" ${this._visionPolicy() === k ? 'selected' : ''}>${esc(v.label)}</option>`).join('')}</select><div style="color:#94a3b8;">Python 腳本的圖片訊息、interpret_image、離線路由都依這個順序；沒有可用的線上視覺模型或全部失敗時，離線模型已下載才會當備援（不會偷偷下載）。提示詞格式（OCR／描述／問答、各模型自己的格式）由這一層處理。</div></div>
             </div>
+            ${this._omNativeBoxHtml()}
             <div style="border:1px solid #334155; border-radius:8px; padding:8px; margin-bottom:10px;">
               <div style="font-weight:600; margin-bottom:4px;">文字生成（離線聊天）設定</div>
               <div><label><input type="checkbox" data-om-set="llmFallback" ${S.llmFallback ? 'checked' : ''}> 離線訓練器信心不足時，交給離線文字模型回答</label></div>
@@ -100897,6 +100898,34 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
               <input type="file" accept="image/*" data-om="testfile" style="${inp}"> <select data-om-set="testtask" style="${inp}">${Object.entries(FaVlm.TASKS).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('')}</select> <input type="text" placeholder="提示詞（選填，問問題用）" data-om-set="testprompt" style="${inp} width:220px;"> <button style="${btn}" data-om="test">執行</button>
               <pre data-om-out style="white-space:pre-wrap; background:#0f172a; border-radius:6px; padding:6px; margin:6px 0 0; min-height:20px;">${esc(keepOut)}</pre>
             </div>`;
+    }
+    // 原生執行器（階段 5）：離線設定頁的小區塊。只在桌面版（有 desktopAPI.nativeRunner）顯示；網頁版回傳空字串。
+    _omNativeBoxHtml() {
+        if (!(typeof window !== 'undefined' && window.desktopAPI && window.desktopAPI.nativeRunner)) return '';
+        setTimeout(() => { try { this._omNativeRefresh(); } catch (_) { /* 頁面已切換 */ } }, 0);
+        const btn = 'padding:3px 10px; border-radius:6px; border:1px solid #475569; background:#1e293b; color:#e2e8f0; cursor:pointer; font-size:12px;';
+        return `<div style="border:1px solid #334155; border-radius:8px; padding:8px; margin-bottom:10px;">
+              <div style="font-weight:600; margin-bottom:4px;">原生執行器（實驗，桌面版）</div>
+              <div data-om-native-status style="color:#94a3b8;">讀取中…</div>
+              <div style="margin-top:6px;"><button style="${btn}" data-om="native-reenable">重新啟用</button> <button style="${btn}" data-om="native-dispose">關閉子程序</button></div>
+              <div style="color:#94a3b8;">子程序目前是假引擎（尚未載入模型），用來驗證啟動、取消、逾時、崩潰重啟與停用流程。通訊只走標準輸入輸出（一行一則 JSON）。</div>
+            </div>`;
+    }
+    async _omNativeRefresh() {
+        const root = this._omPaneRoot; const nr = typeof window !== 'undefined' && window.desktopAPI && window.desktopAPI.nativeRunner;
+        if (!root || !nr) return;
+        const el = root.querySelector('[data-om-native-status]');
+        if (!el) return;
+        try {
+            const st = await nr.status();
+            el.textContent = '子程序：' + (st.alive ? '執行中（pid ' + st.pid + '）' : '未啟動（需要時才啟動）') + '；' + (st.disabled ? '已停用：' + st.disabledReason : '可用') + '；連續崩潰 ' + st.consecutiveCrashes + ' 次';
+        } catch (e) { el.textContent = '原生執行器狀態讀取失敗：' + String((e && e.message) || e); }
+    }
+    async _omNativeAct(act, root) {
+        const nr = typeof window !== 'undefined' && window.desktopAPI && window.desktopAPI.nativeRunner; if (!nr) return;
+        if (act === 'reenable') await nr.reenable();
+        else if (act === 'dispose') await nr.dispose();
+        await this._omNativeRefresh();
     }
     _omWirePane(root) {
         root.addEventListener('change', (e) => {
@@ -100932,6 +100961,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             const b = e.target.closest && e.target.closest('[data-om]'); if (!b) return; const act = b.getAttribute('data-om'); const id = b.getAttribute('data-id');
             const stat = (sid, s) => { const el = root.querySelector(`[data-om-status="${sid}"]`); if (el) el.textContent = s || ''; };
             if (act === 'refresh') return this._omRenderPane();
+            if (act && act.indexOf('native-') === 0) return this._omNativeAct(act.slice(7), root);
             if (act === 'default') { const dm = FaVlm.byId(id); if (dm && dm.task === 'text-generation') this.advancedSettings.offlineTextModel = id; else this.advancedSettings.imageToTextModel = id; this._saveAdvancedSettings(); return this._omRenderPane(); }
             if (act === 'exporttrace') { const lines = FaRecipe.tracesToLines(this._recipeTraces()); const blob = new Blob([lines || ''], { type: 'application/x-ndjson' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'recipe-traces-' + Date.now() + '.jsonl'; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000); return; }
             if (act === 'cleartrace') { try { localStorage.removeItem('fa_recipe_traces_v1'); } catch (_) {} return this._omRenderPane(); }
