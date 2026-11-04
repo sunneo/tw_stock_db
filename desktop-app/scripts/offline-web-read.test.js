@@ -15,8 +15,9 @@ const digestObj = new Function('_faOtWebGoal', '_faOtWebFilter', '_faSemSentence
     // A 規則步驟
     const steps = [{ tool: 'browser_create_tab', args: { url: '{url}' } }, { tool: 'browser_get_page_text', args: { tab_id: '{step1.tab_id}' } }, { tool: 'browser_close', args: { tab_id: '{step1.tab_id}' }, cleanup: true }];
     const vis = lib._faOtAdjustSteps(steps, '瀏覽器打開 https://tw.yahoo.com 並找美國選舉新聞');
-    ok(vis[0].args.active === true && vis[0].args.keep_open === true, 'A 打開：前景＋保留分頁');
-    ok(!vis.some((s) => s.tool === 'browser_close'), 'A 打開：不關閉分頁');
+    ok(vis[0].args.active === true && vis[0].args.keep_open === false, 'A 打開：前景開分頁、不保留');
+    ok(vis.some((s) => s.tool === 'browser_close' && s.cleanup && s.args.tab_id === '{step1.tab_id}'), 'A 打開：仍有關閉自己開的分頁這一步');
+    ok(vis.length === 3 && vis[2].tool === 'browser_close', 'A 打開：關閉在最後');
     ok(steps[0].args.active === undefined && steps.length === 3, 'A 不改動原規則');
     const quiet = lib._faOtAdjustSteps(steps, '用瀏覽器讀一下 https://example.com');
     ok(quiet === steps && quiet.length === 3, 'A 只讀不看：維持原狀');
@@ -58,6 +59,19 @@ const digestObj = new Function('_faOtWebGoal', '_faOtWebFilter', '_faSemSentence
     ok(trail.length === 1 && /2 頁/.test(trail[0]), 'D fetch 路線也記錄步驟');
     const bad = JSON.stringify({ ok: false, error: 'x' });
     ok(await lib._faOtFollowAll(null, tools2, 'fetch_web_page', {}, bad, []) === bad, 'C 失敗結果原樣回傳');
+
+    // 階段0：執行器真的呼叫 browser_close（只關自己開的分頁），模擬執行器迴圈
+    {
+        const log = [];
+        const subst = (v, r) => (typeof v === 'string' && v === '{step1.tab_id}' ? r : v);
+        let tabId = null;
+        const fake = { browser_create_tab: (a) => { tabId = 77; log.push(['create', a]); return { tab_id: 77 }; }, browser_get_page_text: (a) => { log.push(['text', a]); return { ok: true }; }, browser_close: (a) => { log.push(['close', a]); return { ok: true }; } };
+        for (const st of vis) { const args = Object.fromEntries(Object.entries(st.args).map(([k, v]) => [k, subst(v, tabId)])); fake[st.tool](args); }
+        const cl = log.find((x) => x[0] === 'close');
+        ok(!!cl && cl[1].tab_id === 77 && log[0][1].active === true, '階段0 執行：前景開 77 號分頁，最後 browser_close(77)');
+    }
+    ok(/做完會自己關閉/.test(src) && !/切到前景，保留分頁/.test(src), '階段0 卡片文字與實際動作一致（不再寫保留分頁）');
+    ok(src.includes("trail.push(ok === false ? '🧹") && /已關閉自己開的分頁/.test(src), '階段0 卡片列出關閉步驟');
 
     // D 卡片顯示步驟（原始碼接線）
     ok(/做了這些步驟/.test(src) && /開啟 ' \+ args\.url/.test(src) && /_faOtFollowAll\(this, this\.tools, cand\.tool/.test(src), 'D 卡片顯示步驟並接上食譜路線');

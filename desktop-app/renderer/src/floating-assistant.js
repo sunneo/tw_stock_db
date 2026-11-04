@@ -3485,7 +3485,7 @@ function _faOtWebFilter(lines, goal) {
     for (const l of lines) { if (seen.has(l)) continue; if (goal.terms.some((t) => l.indexOf(t) >= 0)) { seen.add(l); hit.push(l); } }
     return hit;
 }
-// 使用者說「打開／開啟／前往」→ 要讓使用者看得到：前景＋保留分頁、不關掉；只說「讀」則維持背景讀完就關
+// 使用者說「打開／開啟／前往」→ 要讓使用者看得到：前景開分頁；AI 自己開的分頁做完（步驟結束）一定自己關掉，不保留；只說「讀」則背景開、讀完就關
 function _faOtWantsVisible(text) {
     const t = String(text || '');
     return /(?:打開|開啟|前往|開一下|開個|開到|瀏覽器開|幫我開|open\s)/i.test(t);
@@ -3493,7 +3493,7 @@ function _faOtWantsVisible(text) {
 function _faOtAdjustSteps(steps, text) {
     if (!Array.isArray(steps) || !_faOtWantsVisible(text)) return steps;
     if (!steps.some((s) => s && s.tool === 'browser_create_tab')) return steps;
-    return steps.filter((s) => !(s && s.tool === 'browser_close' && s.cleanup)).map((s) => (s && s.tool === 'browser_create_tab' ? Object.assign({}, s, { args: Object.assign({}, s.args, { active: true, keep_open: true }) }) : s));
+    return steps.map((s) => (s && s.tool === 'browser_create_tab' ? Object.assign({}, s, { args: Object.assign({}, s.args, { active: true, keep_open: false }) }) : s));
 }
 // has_more 為真就用 offset 續讀（最多 maxPages 頁），合併成一份結果；沒讀完會標 has_more 並寫明讀了多少字
 async function _faOtFollowAll(ctx, tools, tool, args, raw, trail, maxPages) {
@@ -67700,9 +67700,10 @@ ${fnData.code}
                 if (Object.values(args).some((x) => x === '')) { failed = failed || (st.tool === 'browser_screenshot' && (c.steps[0] || {}).tool === 'browser_list_tabs' ? '目前沒有AI開啟的分頁可以截圖。請在指令裡附上網址，例如：截圖 https://example.com 上方 800x400' : `${st.tool}缺少前一步的結果（例如分頁id），前面的步驟可能沒成功`); results.push({ tool: st.tool, skipped: true }); continue; }
                 let raw, json = null, ok = true;
                 try { raw = await t.callback.call(this, JSON.stringify(args)); } catch (e) { raw = JSON.stringify({ error: String((e && e.message) || e) }); }
-                if (st.tool === 'browser_create_tab' && args.url) trail.push('🌐 開啟 ' + args.url + (args.active ? '（切到前景，保留分頁）' : '（背景開啟）'));
+                if (st.tool === 'browser_create_tab' && args.url) trail.push('🌐 開啟 ' + args.url + (args.active ? '（切到前景，做完會自己關閉）' : '（背景開啟，做完會自己關閉）'));
                 if (/^(?:browser_get_page_text|fetch_web_page)$/.test(st.tool)) raw = await _faOtFollowAll(this, this.tools, st.tool, args, raw, trail);
                 try { json = JSON.parse(raw); if (json && (json.ok === false || json.error)) ok = false; } catch (_) {}
+                if (st.tool === 'browser_close' && st.cleanup) trail.push(ok === false ? '🧹 關閉自己開的分頁（呼叫了，但回報失敗）' : '🧹 已關閉自己開的分頁');
                 if (json && json.type === 'image' && json.dataUrl) { this._otShowImage(json); shots.push(json.meta || {}); results.push({ tool: st.tool, ok: true, shown: true }); continue; }
                 results.push({ tool: st.tool, raw, json, ok });
                 if (!ok && !st.cleanup) failed = failed || (json && json.error ? String(json.error).slice(0, 300) : st.tool + '失敗');
