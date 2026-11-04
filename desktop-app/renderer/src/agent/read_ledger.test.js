@@ -98,4 +98,13 @@ t('record 不改傳入的帳本（純函式）', () => {
   assert.strictEqual(L.pending(g1).length, 1);
 });
 
+t('沒有來源欄位時，續讀參數（offset）不影響來源鍵，三頁讀完後清空', () => {
+  let g = L.createLedger();
+  g = L.record(g, 'test_paged_read', { offset: 0 }, { ok: true, has_more: true, next_offset: 1 });
+  g = L.record(g, 'test_paged_read', { offset: 1 }, { ok: true, has_more: true, next_offset: 2 });
+  assert.strictEqual(L.pending(g).length, 1, '兩頁讀完前仍只有一個未完成來源');
+  g = L.record(g, 'test_paged_read', { offset: 2 }, { ok: true, has_more: false });
+  assert.strictEqual(L.pending(g).length, 0);
+});
+
 console.log(n + ' tests passed');

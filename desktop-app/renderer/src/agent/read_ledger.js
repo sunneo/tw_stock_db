@@ -12,6 +12,7 @@
 }(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
   var SOURCE_FIELDS = ['ref', 'path', 'url', 'file_id', 'fileId', 'attachment_id', 'attachmentId', 'id'];
+  var PAGING_ARGS = ['offset', 'start', 'start_line', 'startLine', 'page', 'cursor', 'limit', 'max_chars', 'max_lines', 'chunk', 'from', 'to', 'next_offset', 'nextOffset'];
 
   function isObj(x) { return x !== null && typeof x === 'object' && !Array.isArray(x); }
   function pick() { for (var i = 0; i < arguments.length; i++) if (arguments[i] != null && arguments[i] !== '') return arguments[i]; return null; }
@@ -30,7 +31,10 @@
       var f = SOURCE_FIELDS[i], v = a[f];
       if (v != null && v !== '') return (cwd && f === 'path' ? cwd + '|' : '') + f + '=' + String(v);
     }
-    return 'args=' + stableStr(a);
+    // 沒有來源欄位時，用其餘參數當身分；續讀參數（offset、page、cursor ……）每頁都會變，不能算進身分，否則同一來源永遠清不掉
+    var rest = {};
+    Object.keys(a).forEach(function (k) { if (PAGING_ARGS.indexOf(k) < 0) rest[k] = a[k]; });
+    return 'args=' + stableStr(rest);
   }
 
   function sourceKey(toolName, args) { return String(toolName || '') + '\u0001' + sourceOf(args); }

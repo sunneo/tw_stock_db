@@ -83,6 +83,26 @@ Redmine 端的修正設計：工具迴圈每次工具回傳 `has_more: true` 就
 - 不要提交 `renderer/floating-assistant*.js`、`update-manifest.json`、`web-lazy/*`、`test-reports/*`。
 - 驗證「載入的是工作目錄」時，不能用壓縮後的變數名，要用字串常值或行為。
 
+## 步驟 4 結果（真桌面版評估）
+
+評估檔：`scripts/eval/read_ledger.eval.js`，執行：`node scripts/eval/run_eval.js scripts/eval/read_ledger.eval.js 17941`（獨立使用者資料夾、換埠、FA_DISABLE_MAIN_OVERLAY=1；輸出存在 scratchpad）。
+
+- 真 Electron 驗證過：載入的是工作目錄的實作（閘門方法的字串常值「只讀了一部分」、嵌入模組的 `reminderText`／`record` 都在）。
+- A 修前（閘門換成 null，等同舊行為；這是模擬，不是拿舊 commit 重跑）：只呼叫一次工具（offset 0）就被接受，最終回答「報告都正確，沒有錯誤。」。重現使用者的 bug。
+- B 修後、順從的模型：呼叫 offset 0、1、2 讀完三頁；被擋兩次、提醒兩次；最終回答沒有警語。
+- C 修後、固執的模型：只讀第一頁，三次提醒後放行；最終回答前面有固定警語「注意：以下來源只讀了一部分，結論可能不完整：…」。
+- 只跑 node 的：`read_ledger.test.js` 12 項全過。
+- 沒驗證的：真的線上模型是否聽從提醒（評估用的是假模型）；串流文字式路徑；離線 runAgentLoop。
+
+## 待辦（步驟 4 之後）
+
+- [ ] 串流文字式路徑（`_loopFetch`，`[CALL:...]` 模型）接上帳本。
+- [ ] 離線 `runAgentLoop`（第 7563 行）是否接上帳本。
+- [ ] 警語的來源顯示：沒有來源欄位的工具，顯示成 `args={}`，應改成工具名稱。
+- [ ] 帳本只在放行的最終回答時歸零；中斷的那一輪殘留到下一輪，待評估。
+- [ ] 發布前才跑 `node scripts/build-web-lazy.js`（建置產物，留給發布）。
+
 ## 教訓
 
-（尚無。走歪時在這裡新增一條：錯在哪、下次怎麼做。）
+- 2026-11-04：第一版後備來源鍵把 `offset` 算進身分，同一來源每頁的鍵都不同，帳本永遠清不掉，三頁讀完還是被警告。單元測試沒抓到（測試用的工具有 `path`），只有真桌面版評估的情境 B 抓到。下次：來源身分不能包含續讀參數；寫評估時，假工具要刻意沒有來源欄位，測後備路徑。
+- 2026-11-04：評估用 `scripts/eval/read_ledger.eval.js` 的假工具有 `offset`，不是 `path`，正好逼出上面的缺陷。
