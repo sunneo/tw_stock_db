@@ -98,6 +98,46 @@
    "size": 6244,
    "md5": "7c789ec5c8f7effed72b535afdfe6e56"
   },
+  "liveq": {
+   "file": "chunks/liveq.js",
+   "names": [
+    "FaLiveQueue"
+   ],
+   "size": 2162,
+   "md5": "e570119e7581e99ea47e9f4e2af6173b"
+  },
+  "livectrl": {
+   "file": "chunks/livectrl.js",
+   "names": [
+    "FaLiveController"
+   ],
+   "size": 2680,
+   "md5": "4a847326ba86f30ac7f5b85d6a5932bf"
+  },
+  "liveloop": {
+   "file": "chunks/liveloop.js",
+   "names": [
+    "FaLiveLoop"
+   ],
+   "size": 2469,
+   "md5": "54182df59246eef62c8607d13b15344d"
+  },
+  "fbank": {
+   "file": "chunks/fbank.js",
+   "names": [
+    "FaFbank"
+   ],
+   "size": 1688,
+   "md5": "458ff0ca8794dd704769c342fd838911"
+  },
+  "vpstore": {
+   "file": "chunks/vpstore.js",
+   "names": [
+    "FaVoiceprintStore"
+   ],
+   "size": 2503,
+   "md5": "3b6ab29a16be54e2144513154d3a4bb5"
+  },
   "moss": {
    "file": "chunks/moss.js",
    "names": [
@@ -1100,7 +1140,7 @@
   }
  },
  "core": {
-  "size": 5449706,
-  "md5": "8751adf0af604d7cf1a6176cdae5c381"
+  "size": 5463165,
+  "md5": "92c96c25b2ed6dfbc98fecef68531b7d"
  }
 }
