@@ -107,7 +107,8 @@
   - 套件大小：npm 中位資料 `onnxruntime-node` 最新 1.31.1 的 unpackedSize 約 307.6 MB（全平台合計，`npm view` 取得，未下載）；1.22.0 約 247 MB。單一平台的原生檔大小未知，**需先量測再請使用者同意**。
 - 不要求重新安裝的限制（實測查證）：
   - `main.js` 的 live-patch 清單只收 `update-manifest.json` 裡頂層的 `*.js`（`main.js:91–97`），**子目錄 `native-runner/*.js` 不會被熱更新送達**。因此執行器檔案要用頂層名稱（例如 `native-runner-host.js`）並加入清單，或由 `main-ext.js` 載入。
-  - 目前 `main.js` 與 `preload.js` 的改動（階段 3、4）需要一次安裝才會到達使用者。若要完全不重裝，需找出能在熱更新中替換的入口（`main-ext.js` 已在清單中，可以承接 IPC 註冊；但渲染程序的 `desktopAPI` 橋接在 `preload.js`，目前無通用通道）。**這是需要使用者決定的事（第 5 節）。**
+  - **查證（2026-11-04）**：`main.js` 與 `preload.js` 都不能熱更新。`main.js:91–97` 的 `LIVE_PATCH_MAIN_FILES` 過濾掉 `preload.js`，`main.js` 本身也不在清單中。因此**任何寫在 `main.js` 或 `preload.js` 的新功能，對舊版安裝都不會生效，這違反不重裝的鐵則**。下面第 9-C 節是不重裝的設計。
+  - **對 233005ef 之前已提交的 main.js／preload.js 改動的影響**（見第 9-C 節的表格）：舊版安裝不會收到這些改動；熱更新後的渲染程序碼若呼叫 `window.desktopAPI.nativeRunner`，在舊版會是 `undefined`。目前的程式都有 `typeof` 守護，所以是「不顯示原生區塊」，不會崩潰；但功能也不會生效。
 - 驗收（Windows 與 Linux 各自）：
   - 下載驗證：sha256 不符時拒絕安裝並回報；中途斷線可續傳或重來。
   - 真 Electron：Windows 實跑；Linux 未在 Linux 實跑（標示限制，見階段 3 的說明）。
@@ -179,7 +180,7 @@
 ## 5. 要使用者決定的事（每項附推薦）
 
 1. **是否同意下載 onnxruntime-node（階段 5）？** 檔名：`onnxruntime-node`（npm）；來源：registry.npmjs.org；大小：全平台約 307.6 MB（最新版，metadata），單平台待量測。推薦：先量單平台大小後再同意。
-2. **不重裝的做法**：要不要接受「第一次改動 main.js／preload.js 需要重裝一次」，還是改用 `main-ext.js` 承接 IPC、並在 preload 加一個通用通道（同樣要一次重裝）？推薦：先把執行器檔案改成頂層名稱並由 `main-ext.js` 承接；preload 的通用通道是一次性的成本，請決定是否接受。
+2. **不重裝的設計（已決定方向，見第 9-C 節，不再需要使用者決定）**：不改 `main.js`、不改 `preload.js`；原生執行器的 IPC 由 `main-ext.js` 承接；渲染程序經由 `preload.js` 既有的 `rawfs` 通道（`readFile`、`writeFile`、`mkdir`）用檔案信箱（spool）與主程序溝通。這不是 HTTP，也不開埠。
 3. **COI 評估（階段 1 步驟 3）**：是否允許改用 `fa-local://` 載入頁面（影響開機與熱更新覆蓋目錄）？推薦：先做評估，不直接切換；若 ORT 多執行緒已在階段 1 生效，就不切。
 4. **Linux 驗證方式**：本機沒有 Linux。推薦：WSL 或 CI 上的 Linux 環境實跑；在那之前標示「未在 Linux 實跑」。
 5. **閒置關閉時間**：推薦 10 分鐘。
@@ -204,3 +205,70 @@
 | 4 設定與介面 | 完成（區塊已接） | `14bbd6af` |
 | 5 原生執行包 | 未開始，等使用者同意 | — |
 | 6 量測 | 部分完成（原生 CPU 真量測；WASM 對照未做） | 見本次提交 |
+
+## 8. 2026-11-04 後續量測與結論（A、B、C）
+
+### 8-A 一致性重做（樣板與 token id 已對齊後）
+
+- 輸入：同一串 token id（`native-runner/template.js`＋`tokenizer.js` 產生，已逐 id 與 WASM 側對齊，22/22）。
+- 解碼設定（查證）：桌面版 WASM 的 `textGenParams`（`vlm_core.js:257`）在 `deterministic: true` 時 `do_sample: false`（貪婪），但**保留 `repetition_penalty: 1.08`**。原生端的第一步比對不需要重複懲罰（第一步沒有已生成的 token）；完整生成比對時兩邊都要套用。
+- **第一步比對（真量測，16 題，同一串 ids，無重複懲罰）**：`scripts/eval/first_step_native.js`（原生 CPU）、`scripts/eval/first_step_wasm.eval.js`（真 Electron，transformers.js 3.7.5，`qwen3-0.6b` cpu q8、wasm 裝置）、`scripts/eval/first_step_compare.js`（比對）。結果檔：`test-reports/native-vs-wasm/first-step.json`。
+  - top-1 相同：**12/16**
+  - top-5 重疊平均：**4.19 / 5**
+  - 餘弦相似度：平均 **0.937**，最小 **0.823**
+- **準確率（真量測，對標準答案）**：8 封閉題，原生 **2/8**、WASM **2/8**；計畫題（8 題）輸出可解析為 `choice` 的：原生 8/8、WASM 8/8。注意：這兩組文字來自先前的生成（原生無重複懲罰，WASM 有），不是同一設定的重跑。
+- **結論（A）**：原生與 WASM **行為不等價**。餘弦 0.82–0.99 的差距不是「近似平手的翻轉」能解釋的：如果只是 argmax 在平手附近翻轉，第一步 logits 的餘弦應該接近 1，top-5 也應該幾乎全部重疊。實際的 top-5 只重疊 4.2 個，表示整個分布有系統性的差異。可能原因（未查證）：ORT-web 1.22 與 ORT-node 1.31 的量化矩陣乘法實作不同；或兩邊的輸入（position_ids、attention_mask 的傳遞方式）有差異。在找到原因前，不能宣稱原生與 WASM 等價。
+- 尚未做：完整 16 步生成比對（同一串 ids、兩邊都套用重複懲罰）；第一步的差異原因查證。
+
+### 8-B 加速裝置（DirectML）
+
+- 套件：onnxruntime-node 1.31.1（隔離資料夾，沒有安裝新套件）。
+- 載入（真量測）：`executionProviders: ['dml', 'cpu']` 可以建立 session（約 10.7–20.9 秒，依測量），但載入時有警告：部分節點沒有分配到 DML（ORT 自動交給 CPU）。
+- **執行失敗（真量測，真實錯誤）**：預填第一步就失敗：
+  `Non-zero status code returned while running SkipSimplifiedLayerNormalization node. Name:'/model/layers.0/post_attention_layernorm/SkipLayerNorm' ... DmlExecutionProvider ... MLOperatorAuthorImpl.cpp(2591) ... (80070057)`
+  （80070057 是 E_INVALIDARG。）關閉圖最佳化（`graphOptimizationLevel: 'disabled'`）與關閉記憶體模式後，錯誤相同。結果檔：`test-reports/native-vs-wasm/ep-bench-2026-11-04T15-16-06-852Z.json`；探測腳本：`scripts/eval/ort_dml_probe.js`。
+- **結論（B）**：在 onnxruntime-node 1.31.1 上，這個 q8 模型的 DirectML 路徑**不能執行**，所以沒有 DML 的每題耗時與正確率；CPU 仍是唯一可用的原生路徑。要突破這點需要：(a) 換 ORT 版本（需使用者同意下載）、(b) 換模型匯出格式（fp16 或不同的量化方式）、或 (c) 只在 DML 支援的子圖上用 DML。都還沒做。
+- Linux CUDA：**未實跑**（本機沒有 Linux 環境）。
+
+### 8-C 不重裝的設計
+
+**查證（實測於程式碼，Grep）**：
+- `preload.js` 的 `desktopAPI` 有 85 個 `ipcRenderer.invoke`。沒有泛用的通道（沒有「依名稱呼叫任意 IPC」的入口）。
+- 渲染程序能用的既有通道：`desktopAPI.rawfs.{stat, readdir, mkdir, readFile, writeFile, remove}`（`preload.js:85–91`）。這些是通用的檔案通道，不需要改 preload 就能用。
+- `main-ext.js` 已在熱更新清單中（`main.js` 的 `LIVE_PATCH_MAIN_FILES_BASE`），而且 `main.js` 已經用 `require("./main-ext.js").register(ipcMain, {...})` 把它掛上。
+- 熱更新清單只收頂層 `*.js`（`main.js:91–97` 的規則：`/^[\w.-]+\.js$/`，且排除 `renderer/*` 與 `preload.js`）。子目錄 `native-runner/*.js` 不會被送達。
+
+**設計（不重裝）**：
+1. **執行器檔案改為頂層名稱**（`nr-protocol.js`、`nr-child.js`、`nr-host.js`、`nr-ipc.js`、`nr-template.js`、`nr-tokenizer.js`），並加入熱更新清單（清單由 `update-manifest.json` 的頂層 `*.js` 產生，建置時自動帶入）。
+2. **IPC 註冊移到 `main-ext.js`**：`main-ext.js` 的 `register(ipcMain, deps)` 內呼叫 `nr-ipc.js` 的 `register`。`main.js` 還原成 233005ef 之前的樣子（移除 stage 3 加的那一行）。
+3. **渲染程序不用 `desktopAPI.nativeRunner`**，改用既有的 `desktopAPI.rawfs` 做檔案信箱：
+   - 請求：渲染程序 `rawfs.writeFile(<userData>/native-runner/spool/req-<id>.json)`。
+   - 主程序（`main-ext.js` 的 watcher，輪詢約 200 毫秒）讀取請求、呼叫 `nr-host.js`、寫回 `resp-<id>.json` 與 `progress.jsonl`。
+   - 渲染程序輪詢 `rawfs.readFile(resp-<id>.json)`。
+   - 取消：寫入 `cancel-<id>` 檔。
+4. **守護**：`floating-assistant.js` 的 `_omNativeBoxHtml` 等函式目前檢查 `window.desktopAPI.nativeRunner`。改為檢查「是否有 `desktopAPI.rawfs`」並執行信箱協定；沒有或信箱逾時就回退 WebGPU／WASM，並顯示實際後端與原因。
+
+**對既有安裝的影響（如實）**：
+| 改動 | 舊版安裝（沒有重裝）| 新版安裝（有重裝）|
+|---|---|---|
+| `main.js` 的 `require("./native-runner/ipc.js")`（stage 3）| 不存在，IPC 不註冊 | 註冊 |
+| `preload.js` 的 `nativeRunner`（stage 3、4）| 不存在 | 存在 |
+| `package.json` 的 `native-runner/**/*.js`（stage 3）| 不影響（打包清單，不影響執行）| 同上 |
+| 熱更新後的 `floating-assistant.js` 呼叫 `desktopAPI.nativeRunner` | `undefined`，`typeof` 守護→不顯示原生區塊，不崩潰 | 正常 |
+
+**不能做到的部分（如實）**：
+- 若要讓舊版安裝「使用原生路徑」，主程序必須有 `nr-ipc.js` 的註冊。在 `main-ext.js` 掛上後，舊版安裝的 `main-ext.js` 會被熱更新換掉，所以這一點可以做到；但 `main-ext.js` 在啟動時載入的順序與 overlay 機制需要實測（尚未驗證）。
+- 子程序的執行檔路徑：子程序以 `process.execPath` 執行 `nr-child.js`。熱更新的覆蓋目錄（`userData/live-patch`）是否會被子程序看到，需要確認（尚未驗證）；若不行，子程序要用覆蓋目錄的絕對路徑。
+- 上述設計**尚未實作**。目前程式碼仍是 233005ef 之前的版本（`main.js` 與 `preload.js` 有 stage 3、4 的改動）。實作要另開提交，並在真 Electron 中用「舊版 → 熱更新」的流程驗證。
+
+**不要求重新安裝的保證**：本設計只使用 `main-ext.js`（可熱更新）與 `rawfs`（既有通道）。`main.js`、`preload.js` 不再新增任何改動。
+
+### 進度紀錄（追加）
+
+| 項目 | 結果 | commit |
+|---|---|---|
+| 樣板與分詞（22/22 逐 id 相同） | 完成 | `0dec127c` |
+| A 第一步比對（16 題）| top-1 12/16、top-5 重疊 4.19、餘弦 0.937（最小 0.823）：不等價 | 本次提交 |
+| A 準確率（8 封閉）| 原生 2/8、WASM 2/8（指標：標準答案）| 本次提交 |
+| B DirectML | 可載入，執行失敗（E_INVALIDARG）| 本次提交 |
+| C 不重裝設計 | 設計完成，未實作 | 本次提交 |

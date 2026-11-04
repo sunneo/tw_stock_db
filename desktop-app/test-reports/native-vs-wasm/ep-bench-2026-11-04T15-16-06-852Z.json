@@ -1,0 +1,423 @@
+{
+ "started": "2026-11-04T15:16:06.854Z",
+ "load": {
+  "cpu": {
+   "ok": true,
+   "ms": 1605
+  },
+  "dml": {
+   "ok": true,
+   "ms": 20872
+  }
+ },
+ "total_ms": 127677,
+ "rows": [
+  {
+   "i": 0,
+   "id": "c0",
+   "group": "closed",
+   "prompt_tokens": 84,
+   "cpu": {
+    "ms": 3193,
+    "step_med": 223,
+    "text": "{\"answer\": \"C\"}",
+    "ids": [
+     4913,
+     9217,
+     788,
+     330,
+     34,
+     9207,
+     151645
+    ]
+   },
+   "dml": {
+    "error": "Non-zero status code returned while running SkipSimplifiedLayerNormalization node. Name:'/model/layers.0/post_attention_layernorm/SkipLayerNorm' Status Message: N:\\_work\\1\\s\\onnxruntime\\core\\providers\\dml\\DmlExecutionProvider\\src\\MLOperatorAuthorImpl.cpp(2591)\\onnxruntime.dll!00007FFE59169E29: (caller: 00007FFE591694CA) Exception(3) tid(355c) 80070057 �Ѽƿ��~�C\r\n"
+   },
+   "correct": {
+    "cpu": false
+   }
+  },
+  {
+   "i": 1,
+   "id": "c1",
+   "group": "closed",
+   "prompt_tokens": 75,
+   "cpu": {
+    "ms": 3066,
+    "step_med": 223,
+    "text": "{\n  \"answer\": \"C\"\n}",
+    "ids": [
+     515,
+     220,
+     330,
+     9217,
+     788,
+     330,
+     34,
+     698,
+     92,
+     151645
+    ]
+   },
+   "dml": {
+    "error": "Non-zero status code returned while running SkipSimplifiedLayerNormalization node. Name:'/model/layers.0/post_attention_layernorm/SkipLayerNorm' Status Message: N:\\_work\\1\\s\\onnxruntime\\core\\providers\\dml\\DmlExecutionProvider\\src\\MLOperatorAuthorImpl.cpp(2591)\\onnxruntime.dll!00007FFE59169E29: (caller: 00007FFE591694CA) Exception(6) tid(355c) 80070057 �Ѽƿ��~�C\r\n"
+   },
+   "correct": {
+    "cpu": true
+   }
+  },
+  {
+   "i": 2,
+   "id": "c2",
+   "group": "closed",
+   "prompt_tokens": 107,
+   "cpu": {
+    "ms": 2855,
+    "step_med": 227,
+    "text": "{\"answer\": \"D\"}",
+    "ids": [
+     4913,
+     9217,
+     788,
+     330,
+     35,
+     9207,
+     151645
+    ]
+   },
+   "dml": {
+    "error": "Non-zero status code returned while running SkipSimplifiedLayerNormalization node. Name:'/model/layers.0/post_attention_layernorm/SkipLayerNorm' Status Message: N:\\_work\\1\\s\\onnxruntime\\core\\providers\\dml\\DmlExecutionProvider\\src\\MLOperatorAuthorImpl.cpp(2591)\\onnxruntime.dll!00007FFE59169E29: (caller: 00007FFE591694CA) Exception(9) tid(355c) 80070057 �Ѽƿ��~�C\r\n"
+   },
+   "correct": {
+    "cpu": false
+   }
+  },
+  {
+   "i": 3,
+   "id": "c3",
+   "group": "closed",
+   "prompt_tokens": 82,
+   "cpu": {
+    "ms": 2215,
+    "step_med": 216,
+    "text": "{\"answer\":\"B\"}",
+    "ids": [
+     4913,
+     9217,
+     3252,
+     33,
+     9207,
+     151645
+    ]
+   },
+   "dml": {
+    "error": "Non-zero status code returned while running SkipSimplifiedLayerNormalization node. Name:'/model/layers.0/post_attention_layernorm/SkipLayerNorm' Status Message: N:\\_work\\1\\s\\onnxruntime\\core\\providers\\dml\\DmlExecutionProvider\\src\\MLOperatorAuthorImpl.cpp(2591)\\onnxruntime.dll!00007FFE59169E29: (caller: 00007FFE591694CA) Exception(12) tid(355c) 80070057 �Ѽƿ��~�C\r\n"
+   },
+   "correct": {
+    "cpu": false
+   }
+  },
+  {
+   "i": 4,
+   "id": "c4",
+   "group": "closed",
+   "prompt_tokens": 80,
+   "cpu": {
+    "ms": 2194,
+    "step_med": 222,
+    "text": "{\"answer\":\"D\"}",
+    "ids": [
+     4913,
+     9217,
+     3252,
+     35,
+     9207,
+     151645
+    ]
+   },
+   "dml": {
+    "error": "Non-zero status code returned while running SkipSimplifiedLayerNormalization node. Name:'/model/layers.0/post_attention_layernorm/SkipLayerNorm' Status Message: N:\\_work\\1\\s\\onnxruntime\\core\\providers\\dml\\DmlExecutionProvider\\src\\MLOperatorAuthorImpl.cpp(2591)\\onnxruntime.dll!00007FFE59169E29: (caller: 00007FFE591694CA) Exception(15) tid(355c) 80070057 �Ѽƿ��~�C\r\n"
+   },
+   "correct": {
+    "cpu": false
+   }
+  },
+  {
+   "i": 5,
+   "id": "c5",
+   "group": "closed",
+   "prompt_tokens": 73,
+   "cpu": {
+    "ms": 2248,
+    "step_med": 268,
+    "text": "{\"answer\":\"D\"}",
+    "ids": [
+     4913,
+     9217,
+     3252,
+     35,
+     9207,
+     151645
+    ]
+   },
+   "dml": {
+    "error": "Non-zero status code returned while running SkipSimplifiedLayerNormalization node. Name:'/model/layers.0/post_attention_layernorm/SkipLayerNorm' Status Message: N:\\_work\\1\\s\\onnxruntime\\core\\providers\\dml\\DmlExecutionProvider\\src\\MLOperatorAuthorImpl.cpp(2591)\\onnxruntime.dll!00007FFE59169E29: (caller: 00007FFE591694CA) Exception(18) tid(355c) 80070057 �Ѽƿ��~�C\r\n"
+   },
+   "correct": {
+    "cpu": false
+   }
+  },
+  {
+   "i": 6,
+   "id": "c6",
+   "group": "closed",
+   "prompt_tokens": 110,
+   "cpu": {
+    "ms": 3111,
+    "step_med": 269,
+    "text": "{\"answer\": \"B\"}",
+    "ids": [
+     4913,
+     9217,
+     788,
+     330,
+     33,
+     9207,
+     151645
+    ]
+   },
+   "dml": {
+    "error": "Non-zero status code returned while running SkipSimplifiedLayerNormalization node. Name:'/model/layers.0/post_attention_layernorm/SkipLayerNorm' Status Message: N:\\_work\\1\\s\\onnxruntime\\core\\providers\\dml\\DmlExecutionProvider\\src\\MLOperatorAuthorImpl.cpp(2591)\\onnxruntime.dll!00007FFE59169E29: (caller: 00007FFE591694CA) Exception(21) tid(355c) 80070057 �Ѽƿ��~�C\r\n"
+   },
+   "correct": {
+    "cpu": false
+   }
+  },
+  {
+   "i": 7,
+   "id": "c7",
+   "group": "closed",
+   "prompt_tokens": 80,
+   "cpu": {
+    "ms": 2549,
+    "step_med": 257,
+    "text": "{\"answer\":\"C\"}",
+    "ids": [
+     4913,
+     9217,
+     3252,
+     34,
+     9207,
+     151645
+    ]
+   },
+   "dml": {
+    "error": "Non-zero status code returned while running SkipSimplifiedLayerNormalization node. Name:'/model/layers.0/post_attention_layernorm/SkipLayerNorm' Status Message: N:\\_work\\1\\s\\onnxruntime\\core\\providers\\dml\\DmlExecutionProvider\\src\\MLOperatorAuthorImpl.cpp(2591)\\onnxruntime.dll!00007FFE59169E29: (caller: 00007FFE591694CA) Exception(24) tid(355c) 80070057 �Ѽƿ��~�C\r\n"
+   },
+   "correct": {
+    "cpu": false
+   }
+  },
+  {
+   "i": 8,
+   "id": "p0",
+   "group": "plan",
+   "prompt_tokens": 390,
+   "cpu": {
+    "ms": 7109,
+    "step_med": 297,
+    "text": "{\"choice\": 1}",
+    "ids": [
+     4913,
+     11746,
+     788,
+     220,
+     16,
+     92,
+     151645
+    ]
+   },
+   "dml": {
+    "error": "Non-zero status code returned while running SkipSimplifiedLayerNormalization node. Name:'/model/layers.0/post_attention_layernorm/SkipLayerNorm' Status Message: N:\\_work\\1\\s\\onnxruntime\\core\\providers\\dml\\DmlExecutionProvider\\src\\MLOperatorAuthorImpl.cpp(2591)\\onnxruntime.dll!00007FFE59169E29: (caller: 00007FFE591694CA) Exception(27) tid(355c) 80070057 �Ѽƿ��~�C\r\n"
+   }
+  },
+  {
+   "i": 9,
+   "id": "p1",
+   "group": "plan",
+   "prompt_tokens": 370,
+   "cpu": {
+    "ms": 7643,
+    "step_med": 291,
+    "text": "{\n  \"choice\": 2\n}",
+    "ids": [
+     515,
+     220,
+     330,
+     11746,
+     788,
+     220,
+     17,
+     198,
+     92,
+     151645
+    ]
+   },
+   "dml": {
+    "error": "Non-zero status code returned while running SkipSimplifiedLayerNormalization node. Name:'/model/layers.0/post_attention_layernorm/SkipLayerNorm' Status Message: N:\\_work\\1\\s\\onnxruntime\\core\\providers\\dml\\DmlExecutionProvider\\src\\MLOperatorAuthorImpl.cpp(2591)\\onnxruntime.dll!00007FFE59169E29: (caller: 00007FFE591694CA) Exception(30) tid(355c) 80070057 �Ѽƿ��~�C\r\n"
+   }
+  },
+  {
+   "i": 10,
+   "id": "p2",
+   "group": "plan",
+   "prompt_tokens": 313,
+   "cpu": {
+    "ms": 10811,
+    "step_med": 313,
+    "text": "```json\n{\n  \"choice\": 1\n}\n```",
+    "ids": [
+     73594,
+     2236,
+     198,
+     515,
+     220,
+     330,
+     11746,
+     788,
+     220,
+     16,
+     198,
+     532,
+     73594,
+     151645
+    ]
+   },
+   "dml": {
+    "error": "Non-zero status code returned while running SkipSimplifiedLayerNormalization node. Name:'/model/layers.0/post_attention_layernorm/SkipLayerNorm' Status Message: N:\\_work\\1\\s\\onnxruntime\\core\\providers\\dml\\DmlExecutionProvider\\src\\MLOperatorAuthorImpl.cpp(2591)\\onnxruntime.dll!00007FFE59169E29: (caller: 00007FFE591694CA) Exception(33) tid(355c) 80070057 �Ѽƿ��~�C\r\n"
+   }
+  },
+  {
+   "i": 11,
+   "id": "p3",
+   "group": "plan",
+   "prompt_tokens": 277,
+   "cpu": {
+    "ms": 5886,
+    "step_med": 298,
+    "text": "{\"choice\": 1}",
+    "ids": [
+     4913,
+     11746,
+     788,
+     220,
+     16,
+     92,
+     151645
+    ]
+   },
+   "dml": {
+    "error": "Non-zero status code returned while running SkipSimplifiedLayerNormalization node. Name:'/model/layers.0/post_attention_layernorm/SkipLayerNorm' Status Message: N:\\_work\\1\\s\\onnxruntime\\core\\providers\\dml\\DmlExecutionProvider\\src\\MLOperatorAuthorImpl.cpp(2591)\\onnxruntime.dll!00007FFE59169E29: (caller: 00007FFE591694CA) Exception(36) tid(355c) 80070057 �Ѽƿ��~�C\r\n"
+   }
+  },
+  {
+   "i": 12,
+   "id": "p4",
+   "group": "plan",
+   "prompt_tokens": 441,
+   "cpu": {
+    "ms": 9414,
+    "step_med": 303,
+    "text": "{\"choice\": 2}",
+    "ids": [
+     4913,
+     11746,
+     788,
+     220,
+     17,
+     92,
+     151645
+    ]
+   },
+   "dml": {
+    "error": "Non-zero status code returned while running SkipSimplifiedLayerNormalization node. Name:'/model/layers.0/post_attention_layernorm/SkipLayerNorm' Status Message: N:\\_work\\1\\s\\onnxruntime\\core\\providers\\dml\\DmlExecutionProvider\\src\\MLOperatorAuthorImpl.cpp(2591)\\onnxruntime.dll!00007FFE59169E29: (caller: 00007FFE591694CA) Exception(39) tid(355c) 80070057 �Ѽƿ��~�C\r\n"
+   }
+  },
+  {
+   "i": 13,
+   "id": "p5",
+   "group": "plan",
+   "prompt_tokens": 343,
+   "cpu": {
+    "ms": 7605,
+    "step_med": 286,
+    "text": "{\n  \"choice\": 1\n}",
+    "ids": [
+     515,
+     220,
+     330,
+     11746,
+     788,
+     220,
+     16,
+     198,
+     92,
+     151645
+    ]
+   },
+   "dml": {
+    "error": "Non-zero status code returned while running SkipSimplifiedLayerNormalization node. Name:'/model/layers.0/post_attention_layernorm/SkipLayerNorm' Status Message: N:\\_work\\1\\s\\onnxruntime\\core\\providers\\dml\\DmlExecutionProvider\\src\\MLOperatorAuthorImpl.cpp(2591)\\onnxruntime.dll!00007FFE59169E29: (caller: 00007FFE591694CA) Exception(42) tid(355c) 80070057 �Ѽƿ��~�C\r\n"
+   }
+  },
+  {
+   "i": 14,
+   "id": "p6",
+   "group": "plan",
+   "prompt_tokens": 345,
+   "cpu": {
+    "ms": 7900,
+    "step_med": 301,
+    "text": "{\n  \"choice\": 3\n}",
+    "ids": [
+     515,
+     220,
+     330,
+     11746,
+     788,
+     220,
+     18,
+     198,
+     92,
+     151645
+    ]
+   },
+   "dml": {
+    "error": "Non-zero status code returned while running SkipSimplifiedLayerNormalization node. Name:'/model/layers.0/post_attention_layernorm/SkipLayerNorm' Status Message: N:\\_work\\1\\s\\onnxruntime\\core\\providers\\dml\\DmlExecutionProvider\\src\\MLOperatorAuthorImpl.cpp(2591)\\onnxruntime.dll!00007FFE59169E29: (caller: 00007FFE591694CA) Exception(45) tid(355c) 80070057 �Ѽƿ��~�C\r\n"
+   }
+  },
+  {
+   "i": 15,
+   "id": "p7",
+   "group": "plan",
+   "prompt_tokens": 509,
+   "cpu": {
+    "ms": 9844,
+    "step_med": 335,
+    "text": "{\"choice\": 1}",
+    "ids": [
+     4913,
+     11746,
+     788,
+     220,
+     16,
+     92,
+     151645
+    ]
+   },
+   "dml": {
+    "error": "Non-zero status code returned while running SkipSimplifiedLayerNormalization node. Name:'/model/layers.0/post_attention_layernorm/SkipLayerNorm' Status Message: N:\\_work\\1\\s\\onnxruntime\\core\\providers\\dml\\DmlExecutionProvider\\src\\MLOperatorAuthorImpl.cpp(2591)\\onnxruntime.dll!00007FFE59169E29: (caller: 00007FFE591694CA) Exception(48) tid(355c) 80070057 �Ѽƿ��~�C\r\n"
+   }
+  }
+ ]
+}

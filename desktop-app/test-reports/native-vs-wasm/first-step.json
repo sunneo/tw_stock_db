@@ -1,0 +1,156 @@
+{
+ "note": "同一串 token id、第一步（整段預填）、最後位置 logits、無重複懲罰；原生=onnxruntime-node CPU；WASM=transformers.js(cpu q8, wasm)",
+ "summary": {
+  "n": 16,
+  "top1_same": 12,
+  "top5_overlap_mean": 4.19,
+  "cosine_min": 0.822558,
+  "cosine_mean": 0.93654
+ },
+ "rows": [
+  {
+   "id": "c0",
+   "n_tokens": 84,
+   "top1_same": true,
+   "top1_native": 4913,
+   "top1_wasm": 4913,
+   "top5_overlap": 4,
+   "cosine": 0.971239
+  },
+  {
+   "id": "c1",
+   "n_tokens": 75,
+   "top1_same": true,
+   "top1_native": 4913,
+   "top1_wasm": 4913,
+   "top5_overlap": 5,
+   "cosine": 0.956158
+  },
+  {
+   "id": "c2",
+   "n_tokens": 107,
+   "top1_same": true,
+   "top1_native": 4913,
+   "top1_wasm": 4913,
+   "top5_overlap": 4,
+   "cosine": 0.954215
+  },
+  {
+   "id": "c3",
+   "n_tokens": 82,
+   "top1_same": true,
+   "top1_native": 4913,
+   "top1_wasm": 4913,
+   "top5_overlap": 3,
+   "cosine": 0.957414
+  },
+  {
+   "id": "c4",
+   "n_tokens": 80,
+   "top1_same": true,
+   "top1_native": 4913,
+   "top1_wasm": 4913,
+   "top5_overlap": 5,
+   "cosine": 0.822558
+  },
+  {
+   "id": "c5",
+   "n_tokens": 73,
+   "top1_same": true,
+   "top1_native": 4913,
+   "top1_wasm": 4913,
+   "top5_overlap": 4,
+   "cosine": 0.97312
+  },
+  {
+   "id": "c6",
+   "n_tokens": 110,
+   "top1_same": true,
+   "top1_native": 4913,
+   "top1_wasm": 4913,
+   "top5_overlap": 4,
+   "cosine": 0.966506
+  },
+  {
+   "id": "c7",
+   "n_tokens": 80,
+   "top1_same": true,
+   "top1_native": 4913,
+   "top1_wasm": 4913,
+   "top5_overlap": 4,
+   "cosine": 0.929627
+  },
+  {
+   "id": "p0",
+   "n_tokens": 390,
+   "top1_same": true,
+   "top1_native": 4913,
+   "top1_wasm": 4913,
+   "top5_overlap": 4,
+   "cosine": 0.93234
+  },
+  {
+   "id": "p1",
+   "n_tokens": 370,
+   "top1_same": false,
+   "top1_native": 515,
+   "top1_wasm": 4913,
+   "top5_overlap": 4,
+   "cosine": 0.918803
+  },
+  {
+   "id": "p2",
+   "n_tokens": 313,
+   "top1_same": false,
+   "top1_native": 73594,
+   "top1_wasm": 515,
+   "top5_overlap": 4,
+   "cosine": 0.950963
+  },
+  {
+   "id": "p3",
+   "n_tokens": 277,
+   "top1_same": false,
+   "top1_native": 4913,
+   "top1_wasm": 515,
+   "top5_overlap": 5,
+   "cosine": 0.939561
+  },
+  {
+   "id": "p4",
+   "n_tokens": 441,
+   "top1_same": true,
+   "top1_native": 4913,
+   "top1_wasm": 4913,
+   "top5_overlap": 4,
+   "cosine": 0.90281
+  },
+  {
+   "id": "p5",
+   "n_tokens": 343,
+   "top1_same": true,
+   "top1_native": 4913,
+   "top1_wasm": 4913,
+   "top5_overlap": 4,
+   "cosine": 0.935439
+  },
+  {
+   "id": "p6",
+   "n_tokens": 345,
+   "top1_same": true,
+   "top1_native": 515,
+   "top1_wasm": 515,
+   "top5_overlap": 5,
+   "cosine": 0.961164
+  },
+  {
+   "id": "p7",
+   "n_tokens": 509,
+   "top1_same": false,
+   "top1_native": 4913,
+   "top1_wasm": 515,
+   "top5_overlap": 4,
+   "cosine": 0.912717
+  }
+ ]
+}
