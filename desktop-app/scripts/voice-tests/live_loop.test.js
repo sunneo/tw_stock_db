@@ -155,6 +155,43 @@ check('收音迴圈：stop 會停止擷取並呼叫擷取端的 stop', async () 
   assert.strictEqual(stopped, 1, '重複 stop 不會重複停止');
 });
 
+check('改道：設定後音訊送給改道函式，不進語音切段；清除後恢復', async () => {
+  const texts = [];
+  const loop = L.createLiveLoop({
+    vad: { threshold: 0.05, silenceMs: 200, minMs: 100 },
+    startCapture: async () => ({ stop: async () => {} }),
+    transcribe: async () => '文字',
+    onText: (t) => texts.push(t),
+  });
+  await loop.start();
+  let got = 0;
+  loop.setDiverter((mono, rate) => { got += mono.length; });
+  loop.ingest(tone(400, 16000), 16000);
+  loop.ingest(silence(400, 16000), 16000);
+  assert.ok(got > 0, '改道函式應該收到音訊');
+  assert.deepStrictEqual(texts, [], '改道期間不能切出語音');
+  loop.clearDiverter();
+  loop.ingest(tone(400, 16000), 16000);
+  loop.ingest(silence(400, 16000), 16000);
+  await loop.stop();
+  assert.deepStrictEqual(texts, ['文字'], '清除後應恢復切段');
+});
+
+check('改道：設定時會先把正在說的一句收掉', async () => {
+  const texts = [];
+  const loop = L.createLiveLoop({
+    vad: { threshold: 0.05, silenceMs: 2000, minMs: 100 },
+    startCapture: async () => ({ stop: async () => {} }),
+    transcribe: async () => '先前那句',
+    onText: (t) => texts.push(t),
+  });
+  await loop.start();
+  loop.ingest(tone(400, 16000), 16000);   // 還在說，還沒結束
+  loop.setDiverter(() => {});
+  await loop.stop();
+  assert.deepStrictEqual(texts, ['先前那句']);
+});
+
 (async () => {
   let pass = 0, fail = 0;
   for (const [name, fn] of tests) {

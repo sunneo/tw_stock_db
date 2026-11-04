@@ -8467,6 +8467,8 @@ const holder = {};
     var submit = opts.submit;
     var accept = typeof opts.accept === 'function' ? opts.accept : function () { return true; };
     var wakeWords = Array.isArray(opts.wakeWords) && opts.wakeWords.length ? opts.wakeWords : ['AI', '欸哀'];
+    var vpCmd = typeof opts.voiceprintCommand === 'function' ? opts.voiceprintCommand : null;
+    var pendingDelete = null;   // 等待「確認」的聲紋 ID
     var enabled = false;
     var running = null;          // 目前執行中的指令 { item, cancelled }
     var pumping = false;
@@ -8482,6 +8484,17 @@ const holder = {};
       var m = matchWake(u.text, wakeWords);
       if (!m) { ignored++; return { action: 'ignored', reason: 'no_wake' }; }
       var cmd = norm(m.rest);
+      // 聲紋指令（階段 C）：新增聲紋；刪除聲紋N 要再說一次「確認」才真的刪（危險動作二次確認）。其他指令會取消待確認的刪除。
+      if (cmd === '新增聲紋') { pendingDelete = null; if (vpCmd) vpCmd({ kind: 'enroll' }); return { action: 'vp', kind: 'enroll' }; }
+      var dm = /^刪除聲紋(\d+)$/.exec(cmd);
+      if (dm) { pendingDelete = Number(dm[1]); return { action: 'vpPendingDelete', id: pendingDelete }; }
+      if (cmd === '確認') {
+        if (pendingDelete === null) { ignored++; return { action: 'ignored', reason: 'no_pending_confirm' }; }
+        var did = pendingDelete; pendingDelete = null;
+        if (vpCmd) vpCmd({ kind: 'delete', id: did });
+        return { action: 'vp', kind: 'delete', id: did };
+      }
+      pendingDelete = null;
       if (cmd === norm(CANCEL_LAST)) { var c = cancelLast(); return { action: 'cancel', item: c }; }
       if (cmd === norm(STOP_RUNNING)) { var s = stopRunning(); return { action: 'stop', item: s }; }
       if (cmd === norm(CANCEL_ALL)) { return { action: 'cancelAll', count: cancelAll() }; }
@@ -8683,10 +8696,22 @@ const holder = {};
       });
     }
 
+    var diverter = null;   // 錄入聲紋時，音訊改送給這裡，不進語音切段
+
     function ingest(mono, rate) {
+      if (diverter) { diverter(mono, rate); return; }
       var seg = vad.feed(mono, rate);
       if (seg) runSegment(seg);
     }
+
+    // 把收音改道（例如錄入聲紋）。進入前先把正在說的一句收掉，避免混在一起。
+    function setDiverter(fn) {
+      if (typeof fn !== 'function') throw new Error('需要函式');
+      var last = vad.flush();
+      if (last) runSegment(last);
+      diverter = fn;
+    }
+    function clearDiverter() { diverter = null; }
 
     async function start() {
       if (capture) return;
@@ -8707,6 +8732,8 @@ const holder = {};
       start: start,
       stop: stop,
       ingest: ingest,           // 測試與無麥克風的情境（例如測試音檔）直接餵區塊
+      setDiverter: setDiverter, // 錄入聲紋時把音訊改道
+      clearDiverter: clearDiverter,
       idle: function () { return pendingCount === 0 && !vad.isSpeaking(); },
       stats: function () { return Object.assign({}, stats); }
     };
@@ -8719,6 +8746,294 @@ const holder = {};
 return holder.FaLiveLoop;
 })();
 /* LIVELOOP-END */
+/* FBANK-BEGIN */
+const FaFbank = (function () {
+const holder = {};
+(function (module, self) {
+/* 聲紋模型的輸入特徵：16kHz 單聲道 → 80 維 log-mel 能量（UMD，純函式，不碰模型與 DOM）。
+ * 測試：scripts/voice-tests/fbank.test.js。
+ *
+ * 參數（與常見的 SpeechBrain 前處理相同的慣例，但**尚未與來源模型的前處理逐位元比對**）：
+ *   取樣率 16000、視窗 25ms（400 點）、位移 10ms（160 點）、FFT 512 點、Hann 視窗、80 個 mel 濾波器（0–8000Hz，HTK mel）、log 取 1e-10 下限。
+ * 誠實限制：Hann 視窗與來源模型訓練時的前處理是否一致未確認；不一致會降低比對準確度，要在真模型上量測確認。
+ */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory();
+  else root.FaFbank = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  var RATE = 16000, WIN = 400, HOP = 160, NFFT = 512, NMELS = 80, FMIN = 0, FMAX = 8000;
+
+  function hz2mel(f) { return 2595 * Math.log10(1 + f / 700); }
+  function mel2hz(m) { return 700 * (Math.pow(10, m / 2595) - 1); }
+
+  // 迭代式 radix-2 FFT（in-place，長度須為 2 的冪）。
+  function fftInPlace(re, im) {
+    var n = re.length;
+    for (var i = 1, j = 0; i < n; i++) {
+      var bit = n >> 1;
+      for (; j & bit; bit >>= 1) j ^= bit;
+      j ^= bit;
+      if (i < j) { var tr = re[i]; re[i] = re[j]; re[j] = tr; var ti = im[i]; im[i] = im[j]; im[j] = ti; }
+    }
+    for (var len = 2; len <= n; len <<= 1) {
+      var ang = -2 * Math.PI / len, wr = Math.cos(ang), wi = Math.sin(ang);
+      for (var k = 0; k < n; k += len) {
+        var cr = 1, ci = 0;
+        for (var m = 0; m < len / 2; m++) {
+          var a = k + m, b = a + len / 2;
+          var xr = re[b] * cr - im[b] * ci, xi = re[b] * ci + im[b] * cr;
+          re[b] = re[a] - xr; im[b] = im[a] - xi;
+          re[a] += xr; im[a] += xi;
+          var ncr = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = ncr;
+        }
+      }
+    }
+  }
+
+  var HANN = (function () { var w = new Float64Array(WIN); for (var i = 0; i < WIN; i++) w[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (WIN - 1)); return w; })();
+
+  // 三角濾波器組：NMELS × (NFFT/2+1)
+  var FILTERS = (function () {
+    var nb = NFFT / 2 + 1, mlo = hz2mel(FMIN), mhi = hz2mel(FMAX);
+    var pts = []; for (var i = 0; i < NMELS + 2; i++) pts.push(mel2hz(mlo + (mhi - mlo) * i / (NMELS + 1)));
+    var bins = pts.map(function (f) { return f * NFFT / RATE; });
+    var F = [];
+    for (var m = 0; m < NMELS; m++) {
+      var row = new Float64Array(nb), l = bins[m], c = bins[m + 1], r = bins[m + 2];
+      for (var k = 0; k < nb; k++) {
+        if (k > l && k <= c) row[k] = (k - l) / (c - l);
+        else if (k > c && k < r) row[k] = (r - k) / (r - c);
+      }
+      F.push(row);
+    }
+    return F;
+  })();
+
+  // 回傳 { frames, data }：data 是 frames×80 的 Float32Array（列為時間，行為 mel）。
+  function fbank(samples, rate) {
+    if (rate !== RATE) throw new Error('只支援 16000Hz，收到 ' + rate);
+    var x = samples;
+    var frames = x.length < WIN ? 0 : Math.floor((x.length - WIN) / HOP) + 1;
+    var out = new Float32Array(frames * NMELS);
+    var re = new Float64Array(NFFT), im = new Float64Array(NFFT);
+    for (var t = 0; t < frames; t++) {
+      re.fill(0); im.fill(0);
+      var off = t * HOP;
+      for (var i = 0; i < WIN; i++) re[i] = x[off + i] * HANN[i];
+      fftInPlace(re, im);
+      var power = new Float64Array(NFFT / 2 + 1);
+      for (var k = 0; k <= NFFT / 2; k++) power[k] = re[k] * re[k] + im[k] * im[k];
+      for (var mi = 0; mi < NMELS; mi++) {
+        var row = FILTERS[mi], e = 0;
+        for (var kk = 0; kk <= NFFT / 2; kk++) e += row[kk] * power[kk];
+        out[t * NMELS + mi] = Math.log(Math.max(e, 1e-10));
+      }
+    }
+    return { frames: frames, data: out, nMels: NMELS };
+  }
+
+  return { fbank: fbank, RATE: RATE, WIN: WIN, HOP: HOP, NMELS: NMELS, NFFT: NFFT, hz2mel: hz2mel, mel2hz: mel2hz, fftInPlace: fftInPlace };
+});
+
+}).call(null, undefined, holder);
+return holder.FaFbank;
+})();
+/* FBANK-END */
+/* ECAPA-BEGIN */
+const FaEcapaEmbed = (function () {
+const holder = {};
+(function (module, self) {
+/* ECAPA 聲紋嵌入（UMD，純邏輯；ort 與 session 由呼叫端注入，不自己載入模型）。
+ * 測試：scripts/voice-tests/ecapa_embed.test.js。真模型探測：scripts/eval/ecapa_probe.eval.js（已確認）。
+ *
+ * 已確認（真 Electron，onnxruntime-web 1.22.0）：輸入名 "feats"、形狀 [1, T, 80]；輸出名 "emb"、形狀 [1, 1, 192]。
+ * 未確認：前處理是否與來源模型訓練時一致（log-mel 參數、是否做每句平均正規化）。cmn 參數可開關，用真音檔量測決定。
+ */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory();
+  else root.FaEcapaEmbed = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  var DIM = 192, NMELS = 80, MIN_FRAMES = 50;   // 約 0.5 秒以上才有意義
+
+  // 每個 mel 維度減去整句的平均（沿時間方向）。
+  function cmnInPlace(data, frames, nMels) {
+    for (var m = 0; m < nMels; m++) {
+      var s = 0;
+      for (var t = 0; t < frames; t++) s += data[t * nMels + m];
+      var mean = s / frames;
+      for (var t2 = 0; t2 < frames; t2++) data[t2 * nMels + m] -= mean;
+    }
+    return data;
+  }
+
+  function l2(vec) {
+    var s = 0;
+    for (var i = 0; i < vec.length; i++) s += vec[i] * vec[i];
+    var n = Math.sqrt(s);
+    if (!(n > 0)) throw new Error('嵌入向量是零向量');
+    var out = new Float32Array(vec.length);
+    for (var j = 0; j < vec.length; j++) out[j] = vec[j] / n;
+    return out;
+  }
+
+  // opts：{ ort, session, fbank（FaFbank 模組）, cmn（預設 true）}
+  function createEmbedder(opts) {
+    opts = opts || {};
+    if (!opts.ort || !opts.session || !opts.fbank) throw new Error('需要 ort、session、fbank');
+    var ort = opts.ort, session = opts.session, fb = opts.fbank;
+    var cmn = opts.cmn !== false;
+    var inputName = (session.inputNames && session.inputNames[0]) || 'feats';
+    var outputName = (session.outputNames && session.outputNames[0]) || 'emb';
+
+    // samples：16kHz 單聲道 Float32Array。回傳 L2 正規化後的 192 維向量。
+    async function embed(samples) {
+      var f = fb.fbank(samples, 16000);
+      if (f.frames < MIN_FRAMES) throw new Error('語音太短（需要至少約 0.5 秒）');
+      var data = Float32Array.from(f.data);
+      if (cmn) cmnInPlace(data, f.frames, NMELS);
+      var x = new ort.Tensor('float32', data, [1, f.frames, NMELS]);
+      var out = await session.run({ [inputName]: x });
+      var emb = out[outputName].data;
+      if (emb.length !== DIM) throw new Error('嵌入維度不符：' + emb.length);
+      return l2(Float32Array.from(emb));
+    }
+
+    return { embed: embed, dim: DIM, cmn: cmn, inputName: inputName, outputName: outputName };
+  }
+
+  return { createEmbedder: createEmbedder, cmnInPlace: cmnInPlace, DIM: DIM, NMELS: NMELS, MIN_FRAMES: MIN_FRAMES };
+});
+
+}).call(null, undefined, holder);
+return holder.FaEcapaEmbed;
+})();
+/* ECAPA-END */
+/* VPSTORE-BEGIN */
+const FaVoiceprintStore = (function () {
+const holder = {};
+(function (module, self) {
+/* 聲紋儲存與比對（UMD，純邏輯；不碰麥克風、不碰模型、不碰 IndexedDB——持久化由呼叫端注入）。
+ * 測試：scripts/voice-tests/voiceprint_store.test.js。設計見 DESIGN.TODO.live-voice.md「階段 C」。
+ *
+ * 規則：
+ *   - 上限 N 介於 8 到 128，預設 8。只能由設定頁（Configure）改，這個模組沒有語音入口。
+ *   - ID 從 1 開始遞增，刪除後不重用（避免誤指到別人的聲紋）。
+ *   - 每筆聲紋記錄產生它的模型版本（modelId＋sha256）；版本不符的聲紋不參與比對，要求重新錄入。
+ *   - 比對：與每筆聲紋做餘弦相似度，取最大值；超過門檻才算是本人。門檻由呼叫端傳入（實測後訂）。
+ *   - 同一人可以錄多筆樣本；比對取最大值，不平均。
+ */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory();
+  else root.FaVoiceprintStore = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  var LIMIT_MIN = 8, LIMIT_MAX = 128, LIMIT_DEFAULT = 8;
+
+  function clampLimit(n) {
+    var v = Math.round(Number(n));
+    if (!Number.isFinite(v)) return LIMIT_DEFAULT;
+    return Math.min(LIMIT_MAX, Math.max(LIMIT_MIN, v));
+  }
+
+  function normalize(vec) {
+    var s = 0;
+    for (var i = 0; i < vec.length; i++) s += vec[i] * vec[i];
+    var n = Math.sqrt(s);
+    if (!(n > 0)) throw new Error('聲紋向量是零向量，無法使用');
+    var out = new Float32Array(vec.length);
+    for (var j = 0; j < vec.length; j++) out[j] = vec[j] / n;
+    return out;
+  }
+
+  function cosine(a, b) {
+    if (a.length !== b.length) throw new Error('向量維度不同');
+    var s = 0;
+    for (var i = 0; i < a.length; i++) s += a[i] * b[i];
+    return s;   // 兩個都已正規化，內積就是餘弦
+  }
+
+  // data：{ limit, nextId, entries:[{id,name,createdAt,modelId,modelSha256,vector:number[]}] }，可由 JSON 還原。
+  function createVoiceprintStore(opts) {
+    opts = opts || {};
+    var model = opts.model || {};
+    if (!model.id || !model.sha256) throw new Error('需要模型 id 與 sha256');
+    var data = opts.data && typeof opts.data === 'object' ? opts.data : {};
+    var limit = clampLimit(data.limit != null ? data.limit : LIMIT_DEFAULT);
+    var nextId = Math.max(1, Math.floor(Number(data.nextId) || 1));
+    var entries = Array.isArray(data.entries) ? data.entries.slice() : [];
+    // 還原時 nextId 至少要大於現有最大 id，避免重用
+    entries.forEach(function (e) { if (e && e.id >= nextId) nextId = e.id + 1; });
+
+    function sameModel(e) { return e.modelId === model.id && e.modelSha256 === model.sha256; }
+
+    function setLimit(n) { limit = clampLimit(n); return limit; }
+    function getLimit() { return limit; }
+
+    // 還沒有任何可用的聲紋（強制錄入的判斷用）
+    function needsEnrollment() { return entries.filter(sameModel).length === 0; }
+
+    function count() { return entries.length; }
+
+    // 新增一筆。達到上限回傳 { ok:false, error }，不會自動刪除任何聲紋。
+    function add(name, vector) {
+      if (entries.length >= limit) return { ok: false, error: '已達聲紋上限（' + limit + '），請到設定提高上限或先刪除', limit: limit };
+      var v = normalize(vector);
+      var id = nextId++;
+      entries.push({ id: id, name: String(name || ('聲紋' + id)), createdAt: Date.now(), modelId: model.id, modelSha256: model.sha256, vector: Array.from(v) });
+      return { ok: true, id: id, report: '已將聲紋記錄為 ID ' + id };
+    }
+
+    // 刪除必須指定 ID。回傳是否真的刪到。ID 不會再被配發。
+    function remove(id) {
+      var idx = -1;
+      for (var i = 0; i < entries.length; i++) if (entries[i].id === Number(id)) { idx = i; break; }
+      if (idx < 0) return { ok: false, error: '沒有 ID ' + id + ' 的聲紋' };
+      var gone = entries.splice(idx, 1)[0];
+      return { ok: true, id: gone.id };
+    }
+
+    function list() { return entries.map(function (e) { return { id: e.id, name: e.name, usable: sameModel(e), createdAt: e.createdAt }; }); }
+
+    // 比對：只跟目前模型版本的聲紋比。回傳 { accepted, bestId, score, threshold, compared }。
+    function match(vector, threshold) {
+      var t = Number(threshold);
+      if (!Number.isFinite(t)) throw new Error('需要門檻');
+      var v = normalize(vector);
+      var best = null, compared = 0;
+      entries.forEach(function (e) {
+        if (!sameModel(e)) return;
+        compared++;
+        var s = cosine(v, e.vector);
+        if (best === null || s > best.score) best = { id: e.id, score: s };
+      });
+      if (!best) return { accepted: false, bestId: null, score: null, threshold: t, compared: 0, reason: 'no_enrollment' };
+      return { accepted: best.score >= t, bestId: best.id, score: best.score, threshold: t, compared: compared, reason: best.score >= t ? 'match' : 'below_threshold' };
+    }
+
+    // 可序列化的狀態（給呼叫端存進 IndexedDB）。
+    function toJSON() {
+      return { limit: limit, nextId: nextId, entries: entries.map(function (e) { return Object.assign({}, e, { vector: e.vector.slice() }); }) };
+    }
+
+    return {
+      add: add, remove: remove, list: list, match: match, count: count,
+      needsEnrollment: needsEnrollment, setLimit: setLimit, getLimit: getLimit, toJSON: toJSON,
+      model: { id: model.id, sha256: model.sha256 }
+    };
+  }
+
+  return { createVoiceprintStore: createVoiceprintStore, clampLimit: clampLimit, LIMIT_MIN: LIMIT_MIN, LIMIT_MAX: LIMIT_MAX, LIMIT_DEFAULT: LIMIT_DEFAULT };
+});
+
+}).call(null, undefined, holder);
+return holder.FaVoiceprintStore;
+})();
+/* VPSTORE-END */
 /* TTSPRON-BEGIN */
 const FaTtsPron = (function () {
 const holder = {};
@@ -82778,6 +83093,7 @@ ${sourceTool.handlerScript}
         if (liveVoiceWakeSelect) liveVoiceWakeSelect.value = this.advancedSettings.liveVoiceWakeWord || 'AI';
         const liveVoiceChimeSelect = document.getElementById('ai-live-voice-chime');
         if (liveVoiceChimeSelect) liveVoiceChimeSelect.value = this.advancedSettings.liveVoiceChime || 'ding';
+        this._vpRefreshUi();
         const browserSearchEnabledChk = document.getElementById('ai-browser-search-enabled-chk');
         if (browserSearchEnabledChk) browserSearchEnabledChk.checked = this.advancedSettings.browserSearchEnabled === true;
         const bcEnabledChkR = document.getElementById('ai-bc-enabled-chk');
@@ -102094,6 +102410,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             queue: queue,
             wakeWords: wake,
             submit: (text, ctl) => this._liveVoiceSubmit(text, ctl),
+            voiceprintCommand: (cmd) => { this._vpHandleVoiceCommand(cmd); },
         });
         controller.setEnabled(true);
         const loop = FaLiveLoop.createLiveLoop({
@@ -102123,6 +102440,203 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         try { await lv.loop.stop(); } catch (_) { /* 麥克風已經關了 */ }
         this._liveVoiceStatus('已停止');
         return { ok: true };
+    }
+
+    // ───── 聲紋（2026-11-05 階段 C）─────
+    // 模型：ECAPA-TDNN ONNX（astrolabos 轉換版，Apache-2.0，第三方；sha256 核對）。下載前要使用者同意；存在本機 IndexedDB。
+    // 推論：onnxruntime-web 1.22.0（CDN，與既有音訊模型相同的來源）。桌面版原生路徑尚未接（那需要改 nr-*.js，不在本階段範圍）。
+    _vpModelInfo() {
+        return { id: 'ecapa-tdnn-onnx', sha256: '9acb086d5d9efca07266930ce03772f13cad5fd5a415bcf014ee4d82bed26311', url: 'https://huggingface.co/astrolabos/ecapa-tdnn/resolve/main/ecapa_tdnn.onnx', bytes: 83404680, threshold: 0.75 };
+    }
+
+    _vpIdbOpen() {
+        return new Promise((resolve, reject) => {
+            const rq = indexedDB.open('FloatingAssistantVoiceprints', 1);
+            rq.onupgradeneeded = () => { if (!rq.result.objectStoreNames.contains('kv')) rq.result.createObjectStore('kv'); };
+            rq.onsuccess = () => resolve(rq.result);
+            rq.onerror = () => reject(rq.error || new Error('打不開聲紋資料庫'));
+        });
+    }
+    async _vpIdbGet(key) {
+        const db = await this._vpIdbOpen();
+        return new Promise((resolve, reject) => {
+            const rq = db.transaction('kv', 'readonly').objectStore('kv').get(key);
+            rq.onsuccess = () => { db.close(); resolve(rq.result); };
+            rq.onerror = () => { db.close(); reject(rq.error); };
+        });
+    }
+    async _vpIdbSet(key, value) {
+        const db = await this._vpIdbOpen();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction('kv', 'readwrite');
+            tx.objectStore('kv').put(value, key);
+            tx.oncomplete = () => { db.close(); resolve(); };
+            tx.onerror = () => { db.close(); reject(tx.error); };
+        });
+    }
+
+    // 模型位元組：測試時可由 this._vpModelOverride 注入（只給真 Electron 評估用，正式流程不會設定）。
+    async _vpModelBytes() {
+        if (this._vpModelOverride) return this._vpModelOverride;
+        const info = this._vpModelInfo();
+        const cached = await this._vpIdbGet('ecapa-model');
+        if (cached && cached.byteLength === info.bytes) return new Uint8Array(cached);
+        return null;
+    }
+
+    // 下載模型：先問使用者（說明來源、大小、授權），下載後核對大小與 sha256，不符就丟棄。
+    async _vpDownloadModel() {
+        const info = this._vpModelInfo();
+        const ok = confirm('聲紋辨識需要下載 ECAPA 聲紋模型（約 80MB，Apache-2.0；來源是 Hugging Face 的 astrolabos/ecapa-tdnn，第三方轉換，原始模型是 SpeechBrain 的）。下載後存在這個瀏覽器的資料庫，之後不用重複下載。要下載嗎？');
+        if (!ok) return { ok: false, error: '沒有下載聲紋模型' };
+        const res = await fetch(info.url);
+        if (!res.ok) return { ok: false, error: '下載聲紋模型失敗（HTTP ' + res.status + '）' };
+        const buf = await res.arrayBuffer();
+        if (buf.byteLength !== info.bytes) return { ok: false, error: '聲紋模型大小不符（' + buf.byteLength + ' 位元組），已丟棄' };
+        const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', buf))).map((b) => b.toString(16).padStart(2, '0')).join('');
+        if (hash !== info.sha256) return { ok: false, error: '聲紋模型校驗碼不符，已丟棄' };
+        await this._vpIdbSet('ecapa-model', buf);
+        return { ok: true };
+    }
+
+    async _vpEnsureSession() {
+        if (this._vpEmbedder) return this._vpEmbedder;
+        let bytes = await this._vpModelBytes();
+        if (!bytes) {
+            const d = await this._vpDownloadModel();
+            if (!d.ok) throw new Error(d.error);
+            bytes = await this._vpModelBytes();
+        }
+        const ort = await import('https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.wasm.min.mjs');
+        ort.env.wasm.numThreads = 1;
+        const session = await ort.InferenceSession.create(new Uint8Array(bytes), { executionProviders: ['wasm'] });
+        this._vpEmbedder = FaEcapaEmbed.createEmbedder({ ort: ort, session: session, fbank: FaFbank, cmn: true });
+        return this._vpEmbedder;
+    }
+
+    async _vpLoadStore() {
+        if (this._vpStore) return this._vpStore;
+        const data = await this._vpIdbGet('store');
+        const limit = this.advancedSettings.liveVoiceSpeakerLimit;
+        this._vpStore = FaVoiceprintStore.createVoiceprintStore({ model: this._vpModelInfo(), data: data ? Object.assign({}, data, { limit: limit }) : { limit: limit } });
+        return this._vpStore;
+    }
+
+    async _vpSaveStore() {
+        await this._vpIdbSet('store', this._vpStore.toJSON());
+        this._vpRefreshUi();
+    }
+
+    async _vpEmbedSamples(mono, rate) {
+        const emb = await this._vpEnsureSession();
+        return emb.embed(FaLiveLoop.resampleLinear(mono, rate, 16000));
+    }
+
+    _vpRms(mono) { let s = 0; for (let i = 0; i < mono.length; i++) s += mono[i] * mono[i]; return Math.sqrt(s / Math.max(1, mono.length)); }
+
+    // 錄入：got = { mono, rate }（由呼叫端提供：一般錄音或收音改道）。
+    async _vpEnrollFrom(name, got) {
+        const store = await this._vpLoadStore();
+        store.setLimit(this.advancedSettings.liveVoiceSpeakerLimit);
+        if (store.count() >= store.getLimit()) return { ok: false, error: '已達聲紋上限（' + store.getLimit() + '），請到設定提高上限或先刪除' };
+        if (!got || !got.mono || got.mono.length === 0) return { ok: false, error: '沒有錄到聲音' };
+        if (got.mono.length / got.rate < 3) return { ok: false, error: '錄到的聲音太短（不到 3 秒），請再說一次' };
+        if (this._vpRms(got.mono) < 0.01) return { ok: false, error: '聲音太小，請靠近麥克風再錄一次' };
+        const vec = await this._vpEmbedSamples(got.mono, got.rate);
+        const r = store.add(name || '', vec);
+        if (!r.ok) return r;
+        await this._vpSaveStore();
+        return { ok: true, id: r.id, report: r.report };
+    }
+
+    // 一般錄入（設定頁按鈕）：錄 5 秒。
+    async _vpEnrollRecorded(name) {
+        const rec = await this._vsRecordStart(null);
+        await new Promise((r) => setTimeout(r, 5000));
+        const got = await rec.stop();
+        return this._vpEnrollFrom(name, got);
+    }
+
+    // 語音錄入（說「新增聲紋」）：收音改道 5 秒，不另開麥克風。
+    _vpEnrollFromLive(name) {
+        const lv = this._liveVoice;
+        if (!lv) return Promise.resolve({ ok: false, error: '全語音Live 沒有在收音' });
+        return new Promise((resolve) => {
+            const chunks = []; let n = 0, rate = 0, done = false;
+            const finish = (result) => { if (done) return; done = true; lv.loop.clearDiverter(); resolve(result); };
+            const timer = setTimeout(() => finish({ ok: false, error: '錄入逾時' }), 15000);
+            lv.loop.setDiverter((mono, r) => {
+                rate = r; chunks.push(mono); n += mono.length;
+                if (n >= r * 5) {
+                    clearTimeout(timer);
+                    const all = new Float32Array(n); let o = 0;
+                    for (const c of chunks) { all.set(c, o); o += c.length; }
+                    this._vpEnrollFrom(name, { mono: all, rate: rate }).then(finish, (e) => finish({ ok: false, error: String((e && e.message) || e) }));
+                }
+            });
+        });
+    }
+
+    // 使用者要開啟全語音Live：沒有聲紋就強制先錄入（不能跳過）；模型要先就緒。
+    // 注意：閘門（階段 D：聲紋不符無視）完成前，這條路徑仍不會從 UI 開啟（checkbox 停用中）。
+    async _liveVoiceEnableFromUi() {
+        const store = await this._vpLoadStore();
+        if (store.needsEnrollment()) return { ok: false, needEnroll: true, error: '第一次開啟要先錄入聲紋（按下方「錄入聲紋」）' };
+        await this._vpEnsureSession();
+        return this._liveVoiceStart({ skipVoiceprint: true });
+    }
+
+    async _vpMatchSamples(mono, rate) {
+        const store = await this._vpLoadStore();
+        if (store.needsEnrollment()) return { accepted: false, reason: 'no_enrollment' };
+        const vec = await this._vpEmbedSamples(mono, rate);
+        return store.match(vec, this._vpModelInfo().threshold);
+    }
+
+    async _vpDelete(id) {
+        const store = await this._vpLoadStore();
+        const r = store.remove(id);
+        if (r.ok) await this._vpSaveStore();
+        return r;
+    }
+
+    _vpSpeak(text) {
+        try { if (window.speechSynthesis && typeof SpeechSynthesisUtterance !== 'undefined') window.speechSynthesis.speak(new SpeechSynthesisUtterance(text)); } catch (_) { /* 沒有語音就只顯示文字 */ }
+    }
+
+    _vpAnnounce(r) {
+        if (r && r.ok) { this._liveVoiceStatus(r.report || '完成'); this._vpSpeak(r.report || '完成'); }
+        else { this._liveVoiceStatus((r && r.error) || '失敗'); }
+    }
+
+    // 語音指令（由控制器轉過來）。刪除已在控制器內經過「確認」。
+    async _vpHandleVoiceCommand(cmd) {
+        try {
+            if (cmd.kind === 'enroll') { this._liveVoiceStatus('請開始說話，約 5 秒（錄入聲紋）'); this._vpAnnounce(await this._vpEnrollFromLive('')); }
+            else if (cmd.kind === 'delete') {
+                const r = await this._vpDelete(cmd.id);
+                this._vpAnnounce(r.ok ? { ok: true, report: '已刪除聲紋 ID ' + cmd.id } : r);
+            }
+        } catch (e) { this._liveVoiceStatus('聲紋指令失敗：' + String((e && e.message) || e)); }
+    }
+
+    // 設定頁：顯示聲紋列表與按鈕狀態。頁面沒開時什麼都不做。
+    async _vpRefreshUi() {
+        const box = document.getElementById('ai-vp-list');
+        if (!box) return;
+        try {
+            const store = await this._vpLoadStore();
+            const items = store.list();
+            box.textContent = '';
+            if (!items.length) { const p = document.createElement('p'); p.className = 'ai-advanced-hint'; p.textContent = '還沒有聲紋。第一次開啟全語音Live前要先錄入一組。'; box.appendChild(p); }
+            items.forEach((it) => {
+                const row = document.createElement('div'); row.style.cssText = 'display:flex; align-items:center; gap:6px;';
+                const label = document.createElement('span'); label.textContent = 'ID ' + it.id + '　' + it.name + (it.usable ? '' : '（模型已更換，需重錄）');
+                const del = document.createElement('button'); del.type = 'button'; del.className = 'ai-advanced-btn'; del.textContent = '刪除';
+                del.addEventListener('click', async () => { if (!confirm('要刪除聲紋 ID ' + it.id + ' 嗎？')) return; this._vpAnnounce(await this._vpDelete(it.id)); });
+                row.appendChild(label); row.appendChild(del); box.appendChild(row);
+            });
+        } catch (e) { box.textContent = '讀取聲紋失敗：' + String((e && e.message) || e); }
     }
 
     async _recognizeVoiceInput(blob, btn, inputText) {
@@ -107507,6 +108021,10 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                         <option value="speech">語音播報</option>
                                     </select>
                                     <p id="ai-live-voice-status" class="ai-advanced-hint" style="margin-top:6px;"></p>
+                                    <label class="ai-advanced-label" style="margin-top:8px;">聲紋（本機保存，最多依上限）</label>
+                                    <p class="ai-advanced-hint">錄入時請說一句話約 5 秒。之後在全語音Live 裡可以說「新增聲紋」，或「刪除聲紋 N」再說「確認」。</p>
+                                    <div id="ai-vp-list" class="ai-advanced-stack"></div>
+                                    <button type="button" id="ai-vp-enroll-btn" class="ai-advanced-btn primary" style="align-self:flex-start;">錄入聲紋（5 秒）</button>
                                 </div>
                             </div>
                             <div class="ai-advanced-pane hidden" data-pane="functions">
@@ -111125,6 +111643,16 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     this.advancedSettings.voiceInputLanguage = voiceInputLangSelect.value;
                 }
                 this._saveAdvancedSettings();
+            });
+        }
+        const vpEnrollBtn = document.getElementById('ai-vp-enroll-btn');
+        if (vpEnrollBtn) {
+            vpEnrollBtn.addEventListener('click', async () => {
+                const name = prompt('這組聲紋的名稱（例如：我）', '我');
+                if (name === null) return;
+                this._liveVoiceStatus('請開始說話，約 5 秒（錄入聲紋）');
+                try { this._vpAnnounce(await this._vpEnrollRecorded(name)); }
+                catch (e) { this._liveVoiceStatus('錄入失敗：' + String((e && e.message) || e)); }
             });
         }
         const liveVoiceEnabledChkEl = document.getElementById('ai-live-voice-enabled-chk');

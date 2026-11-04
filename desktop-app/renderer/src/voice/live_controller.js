@@ -48,6 +48,8 @@
     var submit = opts.submit;
     var accept = typeof opts.accept === 'function' ? opts.accept : function () { return true; };
     var wakeWords = Array.isArray(opts.wakeWords) && opts.wakeWords.length ? opts.wakeWords : ['AI', '欸哀'];
+    var vpCmd = typeof opts.voiceprintCommand === 'function' ? opts.voiceprintCommand : null;
+    var pendingDelete = null;   // 等待「確認」的聲紋 ID
     var enabled = false;
     var running = null;          // 目前執行中的指令 { item, cancelled }
     var pumping = false;
@@ -63,6 +65,17 @@
       var m = matchWake(u.text, wakeWords);
       if (!m) { ignored++; return { action: 'ignored', reason: 'no_wake' }; }
       var cmd = norm(m.rest);
+      // 聲紋指令（階段 C）：新增聲紋；刪除聲紋N 要再說一次「確認」才真的刪（危險動作二次確認）。其他指令會取消待確認的刪除。
+      if (cmd === '新增聲紋') { pendingDelete = null; if (vpCmd) vpCmd({ kind: 'enroll' }); return { action: 'vp', kind: 'enroll' }; }
+      var dm = /^刪除聲紋(\d+)$/.exec(cmd);
+      if (dm) { pendingDelete = Number(dm[1]); return { action: 'vpPendingDelete', id: pendingDelete }; }
+      if (cmd === '確認') {
+        if (pendingDelete === null) { ignored++; return { action: 'ignored', reason: 'no_pending_confirm' }; }
+        var did = pendingDelete; pendingDelete = null;
+        if (vpCmd) vpCmd({ kind: 'delete', id: did });
+        return { action: 'vp', kind: 'delete', id: did };
+      }
+      pendingDelete = null;
       if (cmd === norm(CANCEL_LAST)) { var c = cancelLast(); return { action: 'cancel', item: c }; }
       if (cmd === norm(STOP_RUNNING)) { var s = stopRunning(); return { action: 'stop', item: s }; }
       if (cmd === norm(CANCEL_ALL)) { return { action: 'cancelAll', count: cancelAll() }; }

@@ -498,6 +498,10 @@ function embedLiveModule(markName, globalName, relPath) {
 embedLiveModule('LIVEQ', 'FaLiveQueue', 'renderer/src/voice/live_queue.js');
 embedLiveModule('LIVECTRL', 'FaLiveController', 'renderer/src/voice/live_controller.js');
 embedLiveModule('LIVELOOP', 'FaLiveLoop', 'renderer/src/voice/live_loop.js');
+// 聲紋（階段 C）：特徵、嵌入、儲存與比對
+embedLiveModule('FBANK', 'FaFbank', 'renderer/src/voice/fbank.js');
+embedLiveModule('ECAPA', 'FaEcapaEmbed', 'renderer/src/voice/ecapa_embed.js');
+embedLiveModule('VPSTORE', 'FaVoiceprintStore', 'renderer/src/voice/voiceprint_store.js');
 
 if (crlf) src = src.replace(/\n/g, '\r\n');
 fs.writeFileSync(file, src);

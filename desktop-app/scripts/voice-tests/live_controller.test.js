@@ -191,6 +191,65 @@ check('setEnabled(false) 會取消全部，之後的話被忽略', async () => {
   assert.deepStrictEqual(submitted, ['甲']);
 });
 
+// ---- 聲紋指令（階段 C）----
+function makeVp() {
+  const calls = [];
+  const queue = Q.createLiveQueue({ countTokens: oneTok });
+  const ctrl = C.createLiveController({
+    queue: queue,
+    submit: async () => {},
+    voiceprintCommand: (cmd) => calls.push(cmd),
+  });
+  ctrl.setEnabled(true);
+  return { ctrl, queue, calls };
+}
+
+check('「新增聲紋」：送出 enroll 指令，不排入佇列', () => {
+  const { ctrl, queue, calls } = makeVp();
+  const r = ctrl.onUtterance('AI 新增聲紋');
+  assert.strictEqual(r.action, 'vp');
+  assert.deepStrictEqual(calls, [{ kind: 'enroll' }]);
+  assert.deepStrictEqual(queue.items(), []);
+});
+
+check('「刪除聲紋N」不會立刻刪，要再說「確認」才送出 delete', () => {
+  const { ctrl, calls } = makeVp();
+  assert.strictEqual(ctrl.onUtterance('AI 刪除聲紋2').action, 'vpPendingDelete');
+  assert.deepStrictEqual(calls, [], '還沒確認，不能刪');
+  assert.strictEqual(ctrl.onUtterance('AI 確認').action, 'vp');
+  assert.deepStrictEqual(calls, [{ kind: 'delete', id: 2 }]);
+});
+
+check('沒有待確認的刪除時，「確認」被忽略', () => {
+  const { ctrl, calls } = makeVp();
+  const r = ctrl.onUtterance('AI 確認');
+  assert.strictEqual(r.action, 'ignored');
+  assert.strictEqual(r.reason, 'no_pending_confirm');
+  assert.deepStrictEqual(calls, []);
+});
+
+check('待確認的刪除被其他指令取消：之後的「確認」不會刪', () => {
+  const { ctrl, calls } = makeVp();
+  ctrl.onUtterance('AI 刪除聲紋2');
+  ctrl.onUtterance('AI 播放音樂');
+  ctrl.onUtterance('AI 確認');
+  assert.deepStrictEqual(calls, []);
+});
+
+check('沒有主詞的「新增聲紋」不是指令（忽略）', () => {
+  const { ctrl, calls } = makeVp();
+  assert.strictEqual(ctrl.onUtterance('新增聲紋').action, 'ignored');
+  assert.deepStrictEqual(calls, []);
+});
+
+check('沒有設定 voiceprintCommand 時仍不排入佇列（聲紋指令只在這裡處理）', () => {
+  const queue = Q.createLiveQueue({ countTokens: oneTok });
+  const ctrl = C.createLiveController({ queue: queue, submit: async () => {} });
+  ctrl.setEnabled(true);
+  assert.strictEqual(ctrl.onUtterance('AI 新增聲紋').action, 'vp');
+  assert.deepStrictEqual(queue.items(), []);
+});
+
 (async () => {
   for (const [name, fn] of tests) {
     try { await fn(); pass++; console.log('[通過] ' + name); }

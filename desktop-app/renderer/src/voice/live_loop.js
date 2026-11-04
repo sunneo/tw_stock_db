@@ -130,10 +130,22 @@
       });
     }
 
+    var diverter = null;   // 錄入聲紋時，音訊改送給這裡，不進語音切段
+
     function ingest(mono, rate) {
+      if (diverter) { diverter(mono, rate); return; }
       var seg = vad.feed(mono, rate);
       if (seg) runSegment(seg);
     }
+
+    // 把收音改道（例如錄入聲紋）。進入前先把正在說的一句收掉，避免混在一起。
+    function setDiverter(fn) {
+      if (typeof fn !== 'function') throw new Error('需要函式');
+      var last = vad.flush();
+      if (last) runSegment(last);
+      diverter = fn;
+    }
+    function clearDiverter() { diverter = null; }
 
     async function start() {
       if (capture) return;
@@ -154,6 +166,8 @@
       start: start,
       stop: stop,
       ingest: ingest,           // 測試與無麥克風的情境（例如測試音檔）直接餵區塊
+      setDiverter: setDiverter, // 錄入聲紋時把音訊改道
+      clearDiverter: clearDiverter,
       idle: function () { return pendingCount === 0 && !vad.isSpeaking(); },
       stats: function () { return Object.assign({}, stats); }
     };
