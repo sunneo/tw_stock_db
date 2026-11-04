@@ -67765,6 +67765,16 @@ ${fnData.code}
         return /^\s*(⚠️|❌|🚫)/.test(lastA.content) ? lastA.content.replace(/\s+/g, ' ').slice(0, 200) : '';
     }
 
+    // 輸入框歷史（上下鍵與歷史清單）：去重、上限50、存 localStorage、游標歸位。所有送出路徑（離線、翻譯、斜線、遠端群組、線上）共用
+    _recordCommandHistory(text) {
+        if (text && !this.commandHistory.includes(text)) {
+            this.commandHistory.unshift(text);
+            if (this.commandHistory.length > 50) this.commandHistory.pop();
+            try { localStorage.setItem(this.HISTORY_KEY, JSON.stringify(this.commandHistory)); } catch (_) { /* */ }
+        }
+        this.historyIndex = -1;
+    }
+
     async _offlineRespond(userText, opts) {
         opts = opts || {};
         // opts.capture：橋接（FaLlm）用——整套離線流程（訓練器規則、計畫、食譜、離線文字模型）照跑，但不往聊天裡貼，回覆文字收集起來回傳
@@ -102261,12 +102271,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 // 只會叫出更早之前的一般訊息。這裡補上同一份記錄邏輯，讓斜線
                 // 指令跟一般訊息共用同一份輸入框recall歷史，行為一致。
                 this._chatMarkTouched(textToSend);
-                if (textToSend && !this.commandHistory.includes(textToSend)) {
-                    this.commandHistory.unshift(textToSend);
-                    if (this.commandHistory.length > 50) this.commandHistory.pop();
-                    localStorage.setItem(this.HISTORY_KEY, JSON.stringify(this.commandHistory));
-                }
-                this.historyIndex = -1;
+                this._recordCommandHistory(textToSend);
                 let argsText = textToSend.slice(firstToken.length).trim();
                 // 2026-10-05：技能包指令（例如 /image-decompose-redraw）先貼圖再打指令時，待送的附件要一起帶進去，不然附件留在輸入框上方被忽略
                 if (hasAttachments) { // 有附件就一律帶進指令（不挑哪個指令）
@@ -102343,6 +102348,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         }
 
         if (this._tryFeedPendingAsk(textToSend)) return; // 有選擇題在等
+        this._recordCommandHistory(textToSend); // 翻譯、單句不要再問、離線模式等提前 return 的路徑也要進輸入框歷史（線上路徑 executeChat 結尾會再記一次，已去重）
         { const tr = !hasAttachments ? FaTranslate.intent(textToSend) : null; if (tr) { this._runTranslateIntent(textToSend, tr); return; } } // 「把這句翻成英文：…」：程式直接翻，譯文就是回覆
         { const ti = !hasAttachments && !this.advancedSettings.offlineMode ? FaTtsIntent.parse(textToSend) : null; if (ti) { this._runTtsIntent(textToSend, ti); return; } } // 「用英文語音說…」「把「…」念出來」：程式直接認得、直接合成，不經過模型（念的字一個字都不改）
         if (!hasAttachments && this._handleAskModeIntent(textToSend)) return; // 單獨一句「不要再問」「統一走建議」：記成偏好，不送給模型
