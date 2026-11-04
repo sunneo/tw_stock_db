@@ -375,10 +375,14 @@
    - 覆蓋方式：讀 `main.js` 的 `mainOverlaySources`（約第 99–132 行）與 `LIVE_PATCH_MAIN_FILES`（第 61–97 行）。覆蓋檔放在 `<userData>/live-patch/`，`state.json` 的 `baselineVersion` 必須等於 `renderer/update-manifest.json` 的 `baseVersion`，每個檔的 md5 要對得上。
    - 預期：舊版主程式載入新版 `main-ext.js`（在清單內）後，信箱能運作；`ready.json` 出現；`status` 回 ok。
    - 注意：`LIVE_PATCH_MAIN_FILES` 只來自安裝包內建的 manifest，所以頂層 `nr-*.js` 送不到舊安裝（見第 8-C 節）。
-2. **執行包一併帶 nr-*.js 與 onnxruntime-node 1.22.0**（尚未做）
-   - 設計：`<userData>/native-runtime/<版本>/` 放 `nr-*.js` 與 `onnxruntime-node`（Windows x64、Linux x64 原生檔）；`main-ext.js` 從這個路徑 `require`，不依賴安裝包清單。
-   - 起點：`main-ext.js` 的 `startNativeMailbox`（約第 675–715 行）目前回報 `no_engine`；改為先檢查執行包是否存在，存在就用它的 `nr-host.js` 等。
-   - 要先問使用者：onnxruntime-node 1.22.0 的 Windows x64 與 Linux x64 原生檔大小（目前只有 `%TEMP%\ort-node-test122` 的 239 MB 整包，單平台大小未量）。
+2. **執行包一併帶 nr-*.js 與 onnxruntime-node 1.22.0**（已做，真 Electron 驗證通過；Linux 未在 Linux 實跑）
+   - 做法：`scripts/native-runtime-pack.js` 只讀本機檔案建包（nr-*.js、onnxruntime-node 1.22.0 的 dist 與單一平台原生檔、onnxruntime-common、manifest.json 記每個檔案的大小與 md5）；放在 `userData/native-runtime/1.22.0-1/`。
+   - 大小（只算執行時要用的檔案，不含 DirectML 與 DXC 的 DLL，產品不提供 DirectML）：Windows x64 約 20.8 MB；Linux x64 約 30.0 MB（建包已驗證，未在 Linux 載入）。
+   - `main-ext.js`：`checkNativeRuntimeDir` 載入前逐檔核對大小與 md5，平台不符或任何檔案對不上就當作沒有執行包；載入後 `require` 執行包內的 `nr-protocol.js`。`status` 回傳 `runtime`（ok、版本、原因）。
+   - 本機假來源：環境變數 `FA_NATIVE_RUNTIME_LOCAL_SRC` 指到一個資料夾時，先複製到 `.partial`、核對後才改名（測試用，不是真的下載）。
+   - 真 Electron 結果（隔離 userData、換埠）：正常來源 → `runtime.ok=true`、版本 1.22.0-1、`protocolOk=true`；竄改一個位元組的 DLL → 「檔案核對失敗」且不留 `.partial`；沒有來源 → 「沒有執行包」。
+   - 載入驗證：Windows x64 的 Electron（以 `ELECTRON_RUN_AS_NODE` 執行）可以 `require` 執行包內的 onnxruntime-node，版本 1.22.0。注意：本機的一般 node 是 32 位元（ia32），不能用來測 x64 原生檔。
+   - 還沒做：`run` 仍回 `no_engine`（item 3 接真引擎）；執行包還沒有從網路下載（item 4）。
 3. **接真引擎進 `_llmGenerate` 的 backendOrder**（尚未做）
    - 起點：`renderer/src/floating-assistant.js` 的 `_llmGenerate`（搜尋該函式名）與 `FaVlm.backendOrder`（`renderer/src/vlm/vlm_core.js`）。目前 `_vlmEnsureLoaded` 仍用 `resolveDevice`。
    - 做法：order 為 `native` 時經 `_nrCall('run', {messages, template, gen, maxTokens})` 送出；`gen` 必須是 `FaVlm.textGenParams(model, {deterministic})` 的結果，不另外定義預設；失敗或 `no_engine` 時退回 webgpu／wasm，並把實際後端與原因寫進 log。

@@ -672,6 +672,37 @@ function installTray(ctx, ipcMain) {
   });
 }
 
+// 執行包（見 DESIGN.TODO.native-runner.md 交接第 (2) 節）：子程序程式（nr-*.js）與 onnxruntime-node 1.22.0 原生檔放在
+// userData/native-runtime/<版本>/，manifest.json 記錄每個檔案的大小與 md5。載入前全部核對；任何一個對不上就當作沒有執行包（不用半個）。
+const NATIVE_RUNTIME_VERSION = "1.22.0-1";
+function checkNativeRuntimeDir(dir) {
+  const fsSync = require("fs"), pathM = require("path"), crypto = require("crypto");
+  let manifest = null;
+  try { manifest = JSON.parse(fsSync.readFileSync(pathM.join(dir, "manifest.json"), "utf8")); } catch (_) { return { ok: false, dir, reason: "沒有執行包" }; }
+  if (!manifest || manifest.runtimeVersion !== NATIVE_RUNTIME_VERSION || !manifest.files) return { ok: false, dir, reason: "執行包清單版本不符" };
+  if (manifest.platform !== process.platform || manifest.arch !== process.arch) return { ok: false, dir, reason: "執行包是 " + manifest.platform + "-" + manifest.arch + "，這台電腦是 " + process.platform + "-" + process.arch };
+  for (const rel of Object.keys(manifest.files)) {
+    const exp = manifest.files[rel];
+    let buf = null;
+    try { buf = fsSync.readFileSync(pathM.join(dir, ...rel.split("/"))); } catch (_) { return { ok: false, dir, reason: "缺少檔案：" + rel }; }
+    if (buf.length !== exp.size || crypto.createHash("md5").update(buf).digest("hex") !== exp.md5) return { ok: false, dir, reason: "檔案核對失敗：" + rel };
+  }
+  return { ok: true, dir, version: NATIVE_RUNTIME_VERSION, ortVersion: manifest.ortVersion };
+}
+function nativeRuntimeDir(userData) { return require("path").join(userData, "native-runtime", NATIVE_RUNTIME_VERSION); }
+// 從本機資料夾安裝執行包（先複製到 .partial、核對通過才改名）。目前只給測試用（環境變數 FA_NATIVE_RUNTIME_LOCAL_SRC）；真正的下載見第 4 項。
+function installNativeRuntimeFromLocal(userData, srcDir) {
+  const fsSync = require("fs"), dst = nativeRuntimeDir(userData), tmp = dst + ".partial";
+  fsSync.mkdirSync(require("path").dirname(dst), { recursive: true });
+  fsSync.rmSync(tmp, { recursive: true, force: true });
+  fsSync.cpSync(srcDir, tmp, { recursive: true });
+  const check = checkNativeRuntimeDir(tmp);
+  if (!check.ok) { fsSync.rmSync(tmp, { recursive: true, force: true }); return check; }
+  fsSync.rmSync(dst, { recursive: true, force: true });
+  fsSync.renameSync(tmp, dst);
+  return checkNativeRuntimeDir(dst);
+}
+
 // 原生執行器的主程序信箱（見 DESIGN.TODO.native-runner.md 第 8-C 節）。
 // 渲染程序把請求寫成 <userData>/native-runner-box/req-<id>.json（用既有的 desktopAPI.rawfs），這裡每 200 毫秒輪詢，
 // 寫回 resp-<id>.json（先寫 .tmp 再改名）。真引擎尚未接上：status 回報沒有子程序，run 回傳 no_engine（不假裝成功）。
@@ -683,8 +714,16 @@ function startNativeMailbox(ctx) {
   if (!userData) return { ok: false, reason: "沒有 userData 路徑" };
   const box = pathM.join(userData, "native-runner-box");
   try { fsSync.mkdirSync(box, { recursive: true }); } catch (_) { /* 之後每輪再試 */ }
+  let runtime = checkNativeRuntimeDir(nativeRuntimeDir(userData));
+  const localSrc = process.env.FA_NATIVE_RUNTIME_LOCAL_SRC;
+  if (!runtime.ok && localSrc) {
+    try { runtime = installNativeRuntimeFromLocal(userData, localSrc); } catch (e) { runtime = { ok: false, reason: "本機來源安裝失敗：" + String((e && e.message) || e) }; }
+  }
+  let protocolOk = false;
+  if (runtime.ok) { try { require(require("path").join(runtime.dir, "nr-protocol.js")); protocolOk = true; } catch (e) { runtime = { ok: false, reason: "載入子程序協定失敗：" + String((e && e.message) || e) }; } }
+  console.log("[main-ext] 執行包：" + (runtime.ok ? "就緒 " + runtime.version + "（onnxruntime-node " + runtime.ortVersion + "）" : "沒有可用（" + runtime.reason + "）"));
   async function handle(op, payload) {
-    if (op === "status") return { ok: true, status: { alive: false, pid: null, pending: 0, consecutiveCrashes: 0, disabled: false, disabledReason: "" }, engine: "none", box };
+    if (op === "status") return { ok: true, status: { alive: false, pid: null, pending: 0, consecutiveCrashes: 0, disabled: false, disabledReason: "" }, engine: "none", box, runtime: { ok: runtime.ok, version: runtime.version || null, reason: runtime.ok ? "" : runtime.reason, protocolOk } };
     if (op === "reenable" || op === "dispose") return { ok: true, status: { alive: false, engine: "none" } };
     if (op === "run") return { ok: false, code: "no_engine", message: "原生引擎還沒有接上（沒有可用的執行包）" };
     return { ok: false, code: "bad_op", message: "未知的操作：" + String(op) };
