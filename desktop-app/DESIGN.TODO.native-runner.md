@@ -395,7 +395,10 @@
    - 做法：order 為 `native` 時經 `_nrCall('run', {messages, template, gen, maxTokens})` 送出；`gen` 必須是 `FaVlm.textGenParams(model, {deterministic})` 的結果，不另外定義預設；失敗或 `no_engine` 時退回 webgpu／wasm，並把實際後端與原因寫進 log。
    - 真引擎程式：`nr-child.js` 目前是假引擎；要改為真的 ORT 推論（參考 `scripts/eval/nvw_live.js` 與 `scripts/eval/native_det_batch.js` 的 KV 迴圈，兩者都已驗證）。
 4. **按需下載，用本機假來源測**（尚未做）：下載前要先回報檔名、來源、大小，等使用者同意；真網路下載不能在未同意前進行。
-5. **完整核心測試與原生對 WASM 端到端**（尚未做）：核心測試只允許 tray_dialog、RFB 兩個已知失敗；端到端要求原生與 WASM 同題答案一致（用 `scripts/eval/native_det_batch.js` 與 `scripts/eval/native_vs_wasm_live.eval.js` 的做法）。
+5. **完整核心測試與原生對 WASM 端到端**（已做）
+   - 核心測試：`node scripts/run-core-tests.js` 通過 178／180；失敗只有 tray_dialog（系統匣對話框，新增標記）與電腦操作的 RFB 協定探測（既有），都在允許的兩個已知失敗之內。`test-reports/core-tests-latest.*` 是跑測試時重寫的，沒有提交（它原本就有別人未提交的變更）。
+   - 原生對 WASM：真 Electron 經 `fa._llmGenerate` 跑 16 題，文字與原生參考 16/16 相同（`native_llm_e2e.eval.js`）；原生參考與 WASM 的 16 題文字也相同（`native_engine_parity.js` 的比對）。WASM 文字取自 `test-reports/native-vs-wasm/wasm-app-default-threads4.jsonl`（較早的 WASM 執行結果，沒有重跑 WASM）。
+   - 執行包與模型檔目前只用本機假來源（`%TEMP%\ort-node-test122` 與 `%TEMP%\ort-node-test`）。真的下載與模型檔位置（第 4 項）仍等使用者決定；Linux 還沒在 Linux 實跑。
 
 ### (3) 踩過的坑
 
