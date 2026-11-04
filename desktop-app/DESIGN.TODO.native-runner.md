@@ -144,6 +144,12 @@
   - 背景負載：開頭系統忙碌 20.3%，結尾 4.8%。第 0–14 題的背景負載 0–9.7%。
   - **有干擾的題目：第 15 題（WASM 與原生兩個視窗）。** 該題的本量測程序 CPU 時間合計在視窗中減少（程序集合改變，推測是應用程式內的子程序結束），計算出的背景負載為 730%／747%，不可信，已標記為有干擾，不納入低負載子集。
   - 注意：先前的 WASM 中位數（單執行緒 17,903 ms、預設 4 執行緒 12,925 ms）是另外的執行，兩者的提示內容相同，但執行條件（與其他程序的重疊、首題含載入時間）不同，不應直接與本次交錯量測的數字混用。本次交錯量測的數字才是同一條件下的比較。
+- 指標更正（2026-11-04，依使用者質疑）：
+  - 「文字完全相同」不適用於 LLM 比對：貪婪解碼下，只要某一步兩個候選機率相近，浮點差異就會讓後面全部分歧，這是正常現象，不代表其中一邊算錯。上面 4/16 的數字因此標注「指標不適用」，只保留作為紀錄。
+  - 桌面版 WASM 路徑的解碼設定（`vlm_core.js` 的 `textGenParams`，第 257 行）：`deterministic: true` 時 `do_sample: false`（貪婪），但**仍然保留 `repetition_penalty: 1.08`**。先前的原生端沒有套用重複懲罰，這是造成輸出分歧的已知差異之一，需要在原生端補上（尚未做）。
+  - 提示樣板與分詞（真量測）：原生端新增 `native-runner/template.js`（Qwen3 ChatML，支援 enable_thinking、多輪、prefill）與 `native-runner/tokenizer.js`（位元組級 BPE，讀 tokenizer.json）。以 WASM 側的 transformers.js（3.7.5，真 Electron，同一份快取的分詞器檔）對 `scripts/eval/template_cases.json` 的 22 組 messages 比對：**樣板文字與 input ids 全部完全相同（22/22）**。比對腳本：`scripts/eval/template_validate.js`；WASM 側：`scripts/eval/template_validate.eval.js`。
+  - 協定：run 訊息新增可選的 `template` 欄位（預設 `qwen3-chatml`，未知名稱直接報錯）；其他模型各自加一個樣板進 `TEMPLATES`。
+  - 尚未做：(a) 第一步 top-1、top-5 重疊與 logits 餘弦相似度（需要 WASM 側的 logits，目前應用程式的工作者沒有提供這個介面）；(b) 原生端補上 repetition_penalty 1.08 後重跑任務正確率對照（8 封閉題＋8 計畫題，比較兩邊答對數，不比文字）。
 - 結論（真量測範圍內）：
   - 速度：原生比應用程式預設的 WASM 快約 2.5 倍（每題中位數），比單執行緒 WASM 快約 1.3 倍。
   - 正確性：答案只有 4/16 完全一致，還不能說原生與 WASM 行為等價。這是目前最大的風險，比速度更需要先解決。

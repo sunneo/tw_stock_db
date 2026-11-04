@@ -165,7 +165,7 @@ function createNativeRunnerHost(opts) {
                 }, req.timeoutMs);
             }
             try {
-                writeMsg({ type: 'run', id, messages: req.messages || [], max_tokens: req.maxTokens || 512, timeout_ms: req.timeoutMs || 0, stream: !!req.stream, fake: req.fake });
+                writeMsg({ type: 'run', id, messages: req.messages || [], template: req.template || 'qwen3-chatml', max_tokens: req.maxTokens || 512, timeout_ms: req.timeoutMs || 0, stream: !!req.stream, fake: req.fake });
             } catch (e) { pending.delete(id); clearTimeout(job.timeoutTimer); reject(e); }
         }));
     }

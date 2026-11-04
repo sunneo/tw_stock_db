@@ -32,6 +32,7 @@ function register(ipcMain, deps) {
         try {
             const r = await getHost().run({
                 messages: req && req.messages,
+                template: req && req.template,
                 maxTokens: req && req.maxTokens,
                 timeoutMs: req && req.timeoutMs,
                 stream: !!(req && req.stream),

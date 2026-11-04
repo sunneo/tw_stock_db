@@ -37,6 +37,8 @@ function validate(msg) {
         if (msg[k] === undefined) return { ok: false, error: '缺少必填欄位 ' + k + '（' + msg.type + '）' };
     }
     if (msg.type === 'error' && ERROR_CODES.indexOf(msg.code) < 0) return { ok: false, error: 'error.code 不合法：' + String(msg.code) };
+    // run 的 template 欄位是可選的（提示樣板名稱，預設 'qwen3-chatml'；由 template.js 登記，其他模型各自一個樣板）
+    if (msg.type === 'run' && msg.template !== undefined && typeof msg.template !== 'string') return { ok: false, error: 'run.template 必須是字串' };
     return { ok: true, error: '' };
 }
 

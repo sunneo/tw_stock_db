@@ -77,7 +77,13 @@ function handle(msg) {
         send({ type: 'done', id: msg.id, ok: true, text: '', ms: 0, finish_reason: 'loaded' });
         return;
     }
-    if (msg.type === 'run') { runFake(msg).catch((e) => send({ type: 'error', id: msg.id, code: 'internal', message: String((e && e.message) || e) })); return; }
+    if (msg.type === 'run') {
+        // 提示樣板：假引擎不使用文字，但仍要驗證樣板名稱存在、messages 能套用（與真引擎行為一致）
+        try { require('./template.js').applyTemplate(msg.template || 'qwen3-chatml', msg.messages || [], { enable_thinking: false }); }
+        catch (e) { send({ type: 'error', id: msg.id, code: 'internal', message: String((e && e.message) || e) }); return; }
+        runFake(msg).catch((e) => send({ type: 'error', id: msg.id, code: 'internal', message: String((e && e.message) || e) }));
+        return;
+    }
     if (msg.type === 'cancel') { cancelled.add(msg.id); return; }
     if (msg.type === 'dispose') { send({ type: 'done', id: msg.id, ok: true, text: '', ms: 0, finish_reason: 'disposed' }); process.exit(0); }
     send({ type: 'error', id: msg.id, code: 'internal', message: '子程序不處理的訊息：' + msg.type });
