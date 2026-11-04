@@ -108,4 +108,104 @@ t('空輸入與壞輸入不丟例外', () => {
   assert.deepStrictEqual(T.rootChats(null), []);
 });
 
+const SELF = '本機';
+const M = [
+  { id: 'l1', title: '畫貓', createdAt: 1 },
+  { id: 'l2', title: '寫 作業', createdAt: 2 },
+  { id: 'l3', title: 'a/b', createdAt: 3 },
+  { id: 'l4', title: '重複名', createdAt: 4 },
+  { id: 'r1', title: '寫程式', nodeName: 'B機', createdAt: 5 },
+  { id: 'r2', title: 'a/b', nodeName: 'n', createdAt: 6 }, // 完整名稱 n/a/b，對話名本身含 /
+  { id: 'r3', title: '重複名', nodeName: 'B機', createdAt: 7 },
+  { id: 'r4', title: '重複名', nodeName: 'C機', createdAt: 8 },
+  { id: 'r5', title: '重複名', nodeName: 'B機', createdAt: 9 },
+];
+
+t('@ 解析：本機對話省略節點名', () => {
+  const r = T.resolveMention(M, '@畫貓', SELF);
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.chatId, 'l1');
+  assert.strictEqual(r.remote, false);
+  assert.strictEqual(r.nodeName, null);
+});
+
+t('@ 解析：遠端對話用「節點名/對話名」', () => {
+  const r = T.resolveMention(M, '@B機/寫程式', SELF);
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.chatId, 'r1');
+  assert.strictEqual(r.remote, true);
+  assert.strictEqual(r.nodeName, 'B機');
+  assert.strictEqual(r.title, '寫程式');
+});
+
+t('@ 解析：遠端對話只寫對話名 → needNode，不會誤指', () => {
+  const r = T.resolveMention(M, '@寫程式', SELF);
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.needNode, true);
+  assert.deepStrictEqual(r.candidates.map((c) => c.label), ['B機/寫程式']);
+});
+
+t('@ 解析：同名本機對話 → ambiguous 並列出候選', () => {
+  const r = T.resolveMention([{ id: 'x1', title: 'dup', createdAt: 1 }, { id: 'x2', title: 'dup', createdAt: 2 }], '@dup', SELF);
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.ambiguous, true);
+  assert.deepStrictEqual(r.candidates.map((c) => c.chatId).sort(), ['x1', 'x2']);
+});
+
+t('@ 解析：同一節點內同名 → ambiguous；加上不同節點名就唯一', () => {
+  const amb = T.resolveMention(M, '@B機/重複名', SELF);
+  assert.strictEqual(amb.ambiguous, true);
+  assert.deepStrictEqual(amb.candidates.map((c) => c.chatId).sort(), ['r3', 'r5']);
+  const one = T.resolveMention(M, '@C機/重複名', SELF);
+  assert.strictEqual(one.ok, true);
+  assert.strictEqual(one.chatId, 'r4');
+});
+
+t('@ 解析：找不到與不是 @ 開頭', () => {
+  assert.strictEqual(T.resolveMention(M, '@不存在', SELF).notFound, true);
+  assert.strictEqual(T.resolveMention(M, 'hello', SELF).notMention, true);
+  assert.strictEqual(T.resolveMention(M, '@', SELF).notMention, true);
+  assert.strictEqual(T.resolveMention(M, '@   ', SELF).notMention, true);
+});
+
+t('@ 解析：忽略大小寫與前後空白', () => {
+  const chats = [{ id: 'h', title: 'Hello World', createdAt: 1 }];
+  assert.strictEqual(T.resolveMention(chats, '@  hello world  ', SELF).chatId, 'h');
+});
+
+t('@ 解析：含空白的名稱用方括號', () => {
+  assert.strictEqual(T.resolveMention(M, '@[寫 作業]', SELF).chatId, 'l2');
+  assert.strictEqual(T.resolveMention(M, '@[B機/寫程式]', SELF).chatId, 'r1');
+});
+
+t('@ 解析：對話名稱本身含 "/" 時，本機與遠端不互相誤指', () => {
+  assert.strictEqual(T.resolveMention(M, '@a/b', SELF).chatId, 'l3');
+  assert.strictEqual(T.resolveMention(M, '@n/a/b', SELF).chatId, 'r2');
+});
+
+t('@ 解析：節點名等於本機名稱的對話視為本機', () => {
+  const chats = [{ id: 'me', title: '甲', nodeName: '本機', createdAt: 1 }];
+  const r = T.resolveMention(chats, '@甲', SELF);
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.remote, false);
+});
+
+t('listMentionCandidates：空前綴列出全部，本機在前；含空白用方括號插入', () => {
+  const all = T.listMentionCandidates(M, '@', SELF);
+  assert.strictEqual(all.length, M.length);
+  assert.strictEqual(all[0].remote, false);
+  assert.strictEqual(all[all.length - 1].remote, true);
+  const sp = all.find((c) => c.chatId === 'l2');
+  assert.strictEqual(sp.insert, '@[寫 作業]');
+  assert.strictEqual(all.find((c) => c.chatId === 'l1').insert, '@畫貓');
+});
+
+t('listMentionCandidates：前綴比對完整名稱（遠端用節點名開頭）', () => {
+  const r = T.listMentionCandidates(M, '@b機/', SELF).map((c) => c.chatId).sort();
+  assert.deepStrictEqual(r, ['r1', 'r3', 'r5']);
+  assert.deepStrictEqual(T.listMentionCandidates(M, '寫', SELF).map((c) => c.chatId), ['l2']);
+  assert.deepStrictEqual(T.listMentionCandidates(M, '[寫', SELF).map((c) => c.chatId), ['l2']);
+  assert.deepStrictEqual(T.listMentionCandidates(M, 'zzz', SELF), []);
+});
+
 console.log(n + ' tests passed');

@@ -132,7 +132,93 @@
     return rows;
   }
 
+  // ---- @ 指名解析 ----
+  // 格式（決定）：
+  //   本機對話：@對話名          或  @[對話名 有空白]
+  //   遠端對話：@節點名/對話名   或  @[節點名/對話名]   （遠端對話不能省略節點名）
+  // 方括號只在名稱含空白、方括號、或要保險時使用；不用引號（中文輸入法常把引號換成全形）。
+  // 對話名稱本身可以含 "/"：比對是拿整段字串跟「節點名/對話名」全文比，不是切字串。
+  // 比對忽略大小寫與前後空白。
+
+  function normMention(s) { return String(s == null ? '' : s).trim().toLowerCase(); }
+
+  function isRemoteChat(c, selfNodeName) {
+    const nn = typeof c.nodeName === 'string' ? c.nodeName.trim() : '';
+    return nn !== '' && nn !== String(selfNodeName || '').trim();
+  }
+
+  // 這個對話在 @ 裡的完整名稱：本機＝對話名；遠端＝節點名/對話名
+  function mentionLabel(c, selfNodeName) {
+    const title = String(c.title || '新對話');
+    return isRemoteChat(c, selfNodeName) ? c.nodeName.trim() + '/' + title : title;
+  }
+
+  // 去掉開頭的 @ 與方括號，得到查詢字串（不含 @）
+  function stripMentionSyntax(text) {
+    let s = String(text == null ? '' : text).trim();
+    if (s.charAt(0) !== '@') return null;
+    s = s.slice(1);
+    if (s.charAt(0) === '[' && s.charAt(s.length - 1) === ']') s = s.slice(1, -1);
+    else if (s.charAt(0) === '[') s = s.slice(1);
+    return s;
+  }
+
+  function candidateOf(c, selfNodeName) {
+    const remote = isRemoteChat(c, selfNodeName);
+    const label = mentionLabel(c, selfNodeName);
+    const needsBrackets = /[\s\[\]]/.test(label);
+    return {
+      chatId: c.id,
+      nodeName: remote ? c.nodeName.trim() : null,
+      title: String(c.title || '新對話'),
+      label: label,
+      remote: remote,
+      insert: needsBrackets ? '@[' + label + ']' : '@' + label,
+    };
+  }
+
+  // 解析一個 @ 指名。
+  //   成功：{ ok:true, chatId, nodeName, title, label, remote }
+  //   同名（或完整名稱重複）：{ ok:false, ambiguous:true, candidates:[…] }，要求使用者用更完整的名稱
+  //   遠端對話只用對話名、沒寫節點名：{ ok:false, needNode:true, candidates:[…] }
+  //   找不到：{ ok:false, notFound:true }；不是 @ 開頭或空字串：{ ok:false, notMention:true }
+  function resolveMention(chats, text, selfNodeName) {
+    const q = stripMentionSyntax(text);
+    if (q === null) return { ok: false, notMention: true };
+    const key = normMention(q);
+    if (!key) return { ok: false, notMention: true };
+    const list = (Array.isArray(chats) ? chats : []).filter(isObj);
+
+    const exact = list.filter((c) => normMention(mentionLabel(c, selfNodeName)) === key);
+    if (exact.length === 1) {
+      const cand = candidateOf(exact[0], selfNodeName);
+      return { ok: true, chatId: cand.chatId, nodeName: cand.nodeName, title: cand.title, label: cand.label, remote: cand.remote };
+    }
+    if (exact.length > 1) return { ok: false, ambiguous: true, candidates: exact.map((c) => candidateOf(c, selfNodeName)) };
+
+    // 只用對話名就能對上的遠端對話：要求補上節點名
+    const bare = list.filter((c) => isRemoteChat(c, selfNodeName) && normMention(c.title || '新對話') === key);
+    if (bare.length) return { ok: false, needNode: true, candidates: bare.map((c) => candidateOf(c, selfNodeName)) };
+    return { ok: false, notFound: true };
+  }
+
+  // 輸入框自動完成：prefix 是使用者打到 @ 之後的字（可含 [ 、可為空）。
+  // 會比對完整名稱（節點名/對話名）開頭，或本機對話名開頭；遠端對話的名稱只能用完整名稱開頭比對。
+  // 排序：本機在前，其次依完整名稱字典序。
+  function listMentionCandidates(chats, prefix, selfNodeName) {
+    const raw = String(prefix == null ? '' : prefix);
+    let s = raw.charAt(0) === '@' ? raw.slice(1) : raw;
+    if (s.charAt(0) === '[') s = s.slice(1);
+    const p = normMention(s);
+    const list = (Array.isArray(chats) ? chats : []).filter(isObj);
+    const out = list.filter((c) => normMention(mentionLabel(c, selfNodeName)).indexOf(p) === 0).map((c) => candidateOf(c, selfNodeName));
+    out.sort((a, b) => (a.remote === b.remote ? 0 : a.remote ? 1 : -1) || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0));
+    return out;
+  }
+
   return {
+    resolveMention: resolveMention,
+    listMentionCandidates: listMentionCandidates,
     STATUSES: STATUSES,
     normalizeChatEntry: normalizeChatEntry,
     normalizeChats: normalizeChats,
