@@ -8,6 +8,37 @@
 
 ---
 
+## 0-A 桌面版專屬優勢盤點（2026-11-04，Grep 與讀程式核對）
+
+原則：網頁版做不到的事，桌面版要用；只寫有證據的項目。「已用」＝專案程式實際在用；「未用」＝程式沒有，但桌面版技術上可做。
+
+| 優勢 | 狀態 | 證據（本次核對） |
+|---|---|---|
+| 主程序開子程序（`child_process`） | 已用（shell 指令）；未用於推論 | `main.js:34` 引入 `execFile`、`spawn`；`main.js:1073` `runShellCommand` |
+| 子程序的 utilityProcess／worker_threads | 未用 | Grep `utilityProcess`、`worker_threads` 在 `main.js` 無結果 |
+| 直接讀寫本機檔案（主程序 `fs`） | 已用 | `main.js:94`、`103`、`147`、`105`、`114` 讀寫 `renderer/update-manifest.json` 與 live-patch 狀態檔；`ipcMain.handle` 共 51 個 |
+| 不受網頁跨來源限制（file:// 載入） | 已用（目前唯一的頁面載入方式） | `main.js:1676`、`1855` `loadFile()` |
+| SharedArrayBuffer 功能旗標 | 已用 | `main.js:29` `appendSwitch("enable-features","SharedArrayBuffer")` |
+| COOP／COEP 標頭（跨來源隔離） | 已設但不生效 | `main.js:1837–1845` 設了標頭；註解 `main.js:1825–1836` 記載 file:// 下 `crossOriginIsolated` 仍為 false |
+| 本機 HTTP 伺服器（只綁 127.0.0.1） | 已用（做代理，不載入頁面） | `local-proxy.js:378` `listen(port, "127.0.0.1")`；`local-proxy.js:86–87` 已帶 COOP／COEP 標頭 |
+| 原生推論套件（onnxruntime-node、node-llama-cpp） | 未用 | `package.json` 依賴只有 `terser`（與 devDependencies） |
+| 顯示卡原生路徑（DirectML、CUDA） | 未用（只用瀏覽器 WebGPU） | 專案內無 `onnxruntime-node`、`directml` 的程式引用（只有行為資料誤中） |
+| 主程序取得真實記憶體與核心數 | 已用 | `main.js:586` `fa:system:info` 回傳 `os.totalmem()`、`os.freemem()`、`os.cpus()`；`preload.js` 暴露 `desktopAPI.systemInfo` |
+| 不受瀏覽器記憶體與執行緒上限（Node 層級的 JS 旗標） | 未用 | Grep `js-flags`、`max-old-space` 在 `main.js` 無結果 |
+| 麥克風與音訊裝置的原生存取（主程序） | 未用（只用渲染程序的 getUserMedia，與網頁相同） | Grep `systemPreferences`、`desktopCapturer` 在 `main.js` 無結果；`floating-assistant.js` 內 `getUserMedia` 出現於 `13363` 附近的行為資料與功能程式 |
+| 模型快取放在使用者資料夾（不受瀏覽器配額） | 未用（目前在瀏覽器 CacheStorage） | colu 階段 6 記錄：快取在 `Service Worker\CacheStorage`（`DESIGN.TODO.colu-thinking.md`） |
+| 預載腳本的 contextBridge 窄接口 | 已用 | `preload.js:8` `contextBridge.exposeInMainWorld("desktopAPI", …)` |
+
+重點（推測與依據）：
+- 跑模型或吃效能的功能，最大的桌面版優勢是「原生推論」與「主程序不受瀏覽器限制」，目前兩者都未用。
+- 網頁版沒有這些能力，所以網頁版只能走 WebAssembly 與 WebGPU，這是退路，不是上限。
+
+## 0-B 設計原則（依使用者要求，2026-11-04）
+
+1. **凡是跑模型或吃效能的功能，先走桌面版原生路徑**（子程序，之後才是原生 ORT）；網頁版維持現有 WebAssembly／WebGPU 路徑當退路。
+2. **不為了網頁版而限制桌面版**：網頁版不能做的，桌面版照做，只要網頁版的退路不被破壞。
+3. 每個原生路徑都要有開關與退路（第 7 節）。
+
 ## 0. 結論摘要（先看這裡）
 
 1. **第一件事不是寫原生程序，而是量清楚現在的 Qwen CPU 路徑到底用幾個執行緒。** 本次核對發現：第 0 步實測量的是 `loadOrt`（音訊、音樂路徑），但文字與看圖模型走的 `_vlmEnsureLoaded` 用的執行緒判斷是 `_omThreadSupport`，**不要求 crossOriginIsolated**，只要求 SharedArrayBuffer 存在且 WebAssembly 執行緒指令驗證通過（實測：`typeof SharedArrayBuffer` 在桌面版是 `function`）。所以 Qwen CPU 路徑**有可能已經是多執行緒**，這一點必須先量（階段 1），不能直接假設它是單執行緒。
