@@ -101,6 +101,7 @@
   // 給側欄用的扁平清單。父在前、子在後（深度優先）。
   //   expanded：{ [chatId]: true } 表示該父對話展開；沒有記錄或不是 true 都視為收合（預設收合）。
   //   opts.revealId：指定的對話若藏在收合的父對話底下，會連同祖先一起展開（例如目前正在看的子對話）。
+  //                  但 expanded[祖先] === false（使用者明確收合過）的不會被展開。
   // 回傳 [{ chat, depth, childCount, open }]；childCount 是直接子對話數（收合時也顯示）。
   // 收合的父對話，其子對話不出現在結果裡。
   function flattenTree(chats, expanded, opts) {
@@ -114,7 +115,8 @@
       while (cur && guard <= tree.list.length) {
         var pk = tree.effParent.get(cur);
         if (pk === null || pk === undefined) break;
-        open[pk] = true;
+        // 使用者明確收合過的（expanded[pk] === false）不再被自動展開；只有從沒設定過的才展開
+        if (open[pk] === undefined) open[pk] = true;
         cur = tree.byId[pk];
         guard++;
       }

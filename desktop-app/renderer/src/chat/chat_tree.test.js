@@ -94,6 +94,8 @@ t('expanded 只認 true；revealId 會展開祖先', () => {
   const chats = [{ id: 'p', createdAt: 1 }, { id: 'c', parentId: 'p', createdAt: 2 }, { id: 'g', parentId: 'c', createdAt: 3 }];
   assert.deepStrictEqual(ids(T.flattenTree(chats, { p: 'yes' })), ['p@0']);
   assert.deepStrictEqual(ids(T.flattenTree(chats, {}, { revealId: 'g' })), ['p@0', 'c@1', 'g@2']);
+  // 使用者明確收合（false）過的父對話，不會被目前對話的路徑自動展開
+  assert.deepStrictEqual(ids(T.flattenTree(chats, { p: false }, { revealId: 'g' })), ['p@0']);
 });
 
 t('沒有任何子對話時，扁平結果與舊側欄的根清單順序一致（回歸）', () => {
