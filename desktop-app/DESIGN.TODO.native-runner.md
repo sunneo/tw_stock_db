@@ -123,11 +123,29 @@
     - 執行緒 1：每步中位數 367 ms，16 步總時間 6,937 ms
     - 執行緒 4：每步中位數 267 ms，16 步總時間 4,759 ms
     - 1 與 4 執行緒的 16 個輸出 token 完全相同：30,358,2776,1588,311,1492,498,448,4113,13,1416,498,614,894,4755,11
-  - 結論（真量測範圍內）：原生 CPU 4 執行緒比 1 執行緒快約 1.37 倍（每步）。**沒有量測 WASM 的速度，所以「原生比 WASM 快幾倍」目前不能回答。**
+  - WASM 對照（真量測，同一個桌面版 `fa._llmGenerate` 路徑，隔離 profile，相同 16 題：8 封閉題＋8 計畫題，貪婪解碼，最多 16 個新 token，思考關）：
+    - 單執行緒（`offlineMaxCpuCores=1`）：每題中位數 17,903 ms，16 題總計 245,702 ms（腳本 `scripts/eval/native_vs_wasm_t1.eval.js`，結果 `test-reports/native-vs-wasm/wasm-threads1.jsonl`）
+    - 應用程式預設（4 執行緒）：每題中位數 12,925 ms，總計 175,177 ms（腳本 `scripts/eval/native_vs_wasm.eval.js`，結果 `test-reports/native-vs-wasm/wasm-app-default-threads4.jsonl`；提示內容與上列相同）
+  - 原生 onnxruntime-node 同題（`scripts/eval/native_vs_onnx_node.js`，結果 `test-reports/native-vs-wasm/native-threads{1,4}.json`）：
+    - 1 執行緒：每題中位數 13,848 ms；總計 196,996 ms
+    - 4 執行緒：每題中位數 5,107 ms；總計 175,331 ms
+  - 倍數（真量測）：
+    - 同為 1 執行緒：WASM 17,903 ÷ 原生 13,848 ≈ **1.29 倍**
+    - 應用程式預設的 4 執行緒（WASM 12,925 ÷ 原生 5,107）≈ **2.53 倍**
+    - 原生 4 執行緒對 WASM 1 執行緒約 3.5 倍，但這不是應用程式實際的對照。
+  - 答案一致率（真量測，逐字串比對，16 題）：原生 1 執行緒與 4 執行緒各為 **4/16** 完全相同；其餘 12 題文字不同（例如第一題 WASM 答 `C`，原生答 `B`）。**沒有查出差異原因**，候選：數值差異（WASM 與 ORT-node 的累加順序與量化路徑不同，在貪婪解碼中可能翻轉接近的 argmax）、或樣板細節。沒有比對 logits，所以無法區分。
+  - 思考樣板：`enable_thinking=false` 的樣板（含空的 `<think>` 區塊）才得到 4/16；不加該區塊時模型會開始思考（`<think>`），0/16。所以樣板取前者。
+  - 記憶體（真量測，有限）：原生子程序的 `process.memoryUsage().rss` 約 2.6 GB（包含 Electron 的 node 執行環境與模型）；WASM 的記憶體沒有量到（renderer 的 JS 堆積 26 MB 不能代表 WASM 記憶體）。
+- 結論（真量測範圍內）：
+  - 速度：原生比應用程式預設的 WASM 快約 2.5 倍（每題中位數），比單執行緒 WASM 快約 1.3 倍。
+  - 正確性：答案只有 4/16 完全一致，還不能說原生與 WASM 行為等價。這是目前最大的風險，比速度更需要先解決。
+  - 值不值得完整整合：速度數字值得，但在一致率查出原因之前，不建議直接接上真引擎。建議先做 logits 層級比對（同一 prompt 的第一步 logits），確認差異來源。
+- 分詞器：從快取 %TEMP%\colu-real-ud\Service Worker\CacheStorage（key 為 `onnx-community/Qwen3-0.6B-ONNX/resolve/main/tokenizer.json`，151,643 個詞、151,387 條 merges）讀出，已用於原生端的位元組級 BPE 編碼與解碼。沒有下載任何檔案。
 - 未做（如實）：
-  - WASM 單執行緒與多執行緒的對照（需要 onnxruntime-web 或桌面版同一路徑；本次只被授權安裝 onnxruntime-node，未安裝或下載 onnxruntime-web）。
-  - 8 封閉題加 8 計畫題的正確率（需要分詞器與完整生成流程；快取中沒有分詞器檔，未下載）。
-  - 記憶體峰值、WebGPU 對照、DirectML 實測。
+  - 一致率的原因未查（需要 logits 比對）。
+  - WebGPU 對照（機器上的 WebGPU 不能載入這個模型，見 colu 階段 6）。
+  - DirectML 實測（套件內有 DirectML.dll，但沒有測能否使用）。
+  - WASM 記憶體峰值（未量）。
 - Linux：未在 Linux 實跑（本機沒有 Linux 環境）。
 - 推測（未量測）：單執行緒與多執行緒的差距小於 4 倍，可能是因為單步的矩陣運算只有部分可平行化。
 - 結論：要不要做完整整合，要等 WASM 對照與正確率數字。目前只能說：原生 CPU 能載入這個模型，以 4 執行緒運作，速度數字是真量測，但還沒有與 WASM 比較。
