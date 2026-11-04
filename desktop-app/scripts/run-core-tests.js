@@ -74,6 +74,7 @@ const suites = [
     ['harness skill 可攜（vendor 與來源一致、搬到 repo 外仍能跑迴圈、經驗閘門、離線訓練器乾跑與規則比對、行為分析引擎載入）', 'scripts/harness-tests/portable.test.js'],
     ['harness 共識閘門（中文字面與正規表達式條款、行號、allow 遮罩、必須缺漏、結束碼 0／1／2、--root 與 scope、--json）', 'scripts/harness-tests/consensus.test.js'],
     ['harness 老師端閘門（派工紀錄、提交範圍、共識在提交內容上檢查、驗收指令結束碼、宣稱檢查、原話逐條對照預設否、observe、命令列結束碼）', 'scripts/harness-tests/teacher_gate.test.js'],
+    ['harness 速度守則（派工附上守則與上限、報告與新增行的超限等待／逾時／排程警告、警告不改變通過與否、舊派工紀錄相容）', 'skills/weak-model-harness/scripts/teacher_speed.test.js'],
     ['計畫的分歧偵測（沒有分歧不問、分數接近／取捨／勉強合格／找不到、題數上限、套用回答、打字補充撿網址、摘要）', 'renderer/src/catalog/branch_core.test.js'],
     ['採用／退回的回饋累積（壓縮卡片、計畫轉標註、權重、覆蓋規則、轉成訓練資料、可不可以訓練、樣本權重）', 'renderer/src/catalog/feedback_core.test.js'],
     ['缺口驅動探索（缺口、搜尋關鍵字、候選排名、錯誤歸類與換做法、整個迴圈用假主機）', 'renderer/src/catalog/discover_core.test.js'],
