@@ -102421,6 +102421,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         this._writeEvidence = { n: 0 };
         this._fakeWriteGuard = { count: 0 };
         this._claimPathGuard = { count: 0 };
+        this._readLedger = null; this._readReminders = null; // 讀取帳本：新的使用者訊息從零開始，上一輪沒讀完的不算到這一輪
         this._intentGuard = { count: 0 };
         this._capPending = null; this._capAliasLoad(); // 別名先載好（非同步，之後同步使用）
         this._toolCallLog = { calls: [], blocked: 0 }; this._turnDelivered = {}; this._hintCardShown = {}; // 每一輪重新算：交付過的檔案卡片、專用工具卡片
@@ -103502,7 +103503,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             { const nx = this._agentReducerNext(toolCalls.map((t) => t.function && t.function.name), { apiKey, apiUrl, apiModel, genOverrides }); return await this._loopFetchNative(nx.apiKey, nx.apiUrl, nx.apiModel, 1, nx.genOverrides); }
 
         } catch (err) {
-            if (err.name === 'AbortError' || this.stopRequested) return "";
+            if (err.name === 'AbortError' || this.stopRequested) { this._readLedger = null; this._readReminders = null; return ""; }
             // tw_stock_db客製: 見_loopFetch串流路徑同樣位置的詳細說明——跟那邊
             // 同樣的理由，native路徑（非串流）一樣要記錄診斷、重試次數用完時
             // 一樣要push一則真正看得到的錯誤訊息，不能只寫進會被蓋掉的狀態列。
@@ -103511,6 +103512,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 await this._sleep(this.retryBaseDelayMs * retryAttempt);
                 return await this._loopFetchNative(apiKey, apiUrl, apiModel, retryAttempt + 1, genOverrides);
             }
+            this._readLedger = null; this._readReminders = null; // 這一輪失敗收尾：帳本歸零
             this._log("錯誤: " + err.message);
             const content = `⚠️ **這一輪請求完全無法完成，不是端點回應空白，是連線本身失敗**（已重試${this.retryLimit}次）。\n\n🔍 診斷資訊：${this._escapeHtml(String(err.message || err))}\n\n若這是桌面版且錯誤內容像是連線被拒絕，可能是本機proxy(local-proxy.js)沒有正常啟動，可以重新開啟應用程式，或到 Advance 設定「LLM Debug」分頁查看最近的請求記錄。`;
             this._pushAssistantMessage(content, null);

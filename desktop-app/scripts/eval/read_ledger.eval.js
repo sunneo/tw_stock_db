@@ -80,6 +80,65 @@ R.loaded = {
 R.A_before_fix = await scenario('lazy', 'off')();
 R.B_obedient = await scenario('obedient', 'on')();
 R.C_stubborn = await scenario('stubborn', 'on')();
+// D/E：新的使用者訊息（executeChat 入口）與中止收尾，帳本都要歸零。
+// 修前模擬：把 _readLedger 換成 setter，忽略「設成 null」（等同修前的程式沒有歸零）；修後：不套用 setter，程式自己歸零。
+const L = fa._faReadLedgerMod();
+let ledgerStore; let ignoreNull = false;
+function installLedgerSetter(ignore) {
+    ignoreNull = ignore; ledgerStore = undefined; delete fa._readLedger;
+    Object.defineProperty(fa, '_readLedger', { configurable: true, get() { return ledgerStore; }, set(v) { if (v === null && ignoreNull) return; ledgerStore = v; } });
+}
+function removeLedgerSetter() { delete fa._readLedger; fa._readLedger = null; }
+function chatTurn(text, mock) {
+    return async () => {
+        const realFetch = window.fetch.bind(window); window.fetch = mock;
+        let status = 'ok';
+        try { await fa.executeChat(text); } catch (e) { status = 'threw:' + String((e && e.message) || e); } finally { window.fetch = realFetch; }
+        return status;
+    };
+}
+function fakeMk(msg) { return new Response(JSON.stringify({ choices: [{ message: Object.assign({ role: 'assistant', content: '' }, msg), finish_reason: msg.tool_calls ? 'tool_calls' : 'stop' }], usage: {} }), { status: 200, headers: { 'content-type': 'application/json' } }); }
+// 第一輪：讀第一頁後中止（AbortError）
+const abortMock = async (url, init) => {
+    if (!String(url).startsWith('http://fake.local/')) return window.__realFetch(url, init);
+    const body = JSON.parse(init.body); const msgs = body.messages || []; const last = msgs[msgs.length - 1] || {};
+    if (/工具領域路由器/.test(String((msgs[0] || {}).content || ''))) return fakeMk({ content: JSON.stringify({ domains: [] }) });
+    if (last.role === 'user') return fakeMk({ tool_calls: [{ id: 'a1', type: 'function', function: { name: TOOL, arguments: JSON.stringify({ offset: 0 }) } }] });
+    const e = new Error('aborted'); e.name = 'AbortError'; throw e;
+};
+// 第二輪：問別的問題，模型直接回答；統計請求裡有幾則提醒
+let reminderCounts = [];
+const freshMock = async (url, init) => {
+    if (!String(url).startsWith('http://fake.local/')) return window.__realFetch(url, init);
+    const body = JSON.parse(init.body); const msgs = body.messages || [];
+    if (/工具領域路由器/.test(String((msgs[0] || {}).content || ''))) return fakeMk({ content: JSON.stringify({ domains: [] }) });
+    reminderCounts.push(msgs.filter((m) => m.role === 'system' && /讀取尚未完成/.test(String(m.content || ''))).length);
+    return fakeMk({ content: '今天天氣晴朗。' });
+};
+window.__realFetch = window.fetch.bind(window);
+async function entryCase(name, ignore, mode) {
+    installLedgerSetter(ignore); fa.messages = [{ role: 'system', content: '你是測試助理。' }]; reminderCounts = [];
+    fa._readReminders = null;
+    let residueAfterTurn1 = null;
+    if (mode === 'abort') {
+        await chatTurn('查一下這份 log 裡有什麼錯誤', abortMock)();
+        residueAfterTurn1 = L.pending(fa._readLedger || L.createLedger()).length;
+    } else {
+        // 入口案例：上一輪留下的殘留（模擬中止前已記下第一頁）
+        fa._readLedger = L.record(L.createLedger(), TOOL, { offset: 0 }, { ok: true, has_more: true, next_offset: 1 });
+        residueAfterTurn1 = L.pending(fa._readLedger).length;
+    }
+    const status = await chatTurn('今天天氣如何？', freshMock)();
+    const asst = fa.messages.filter((m) => m.role === 'assistant').map((m) => String(m.content || ''));
+    const out = { residue_after_prev_turn: residueAfterTurn1, status, reminders_in_request: Math.max(0, ...reminderCounts), final_text: asst.length ? asst[asst.length - 1] : null, warned: asst.some((t) => t.indexOf('注意：以下來源只讀了一部分') >= 0) };
+    R[name] = out;
+}
+await entryCase('D_entry_before_fix', true, 'residue');
+await entryCase('D_entry_after_fix', false, 'residue');
+await entryCase('E_abort_before_fix', true, 'abort');
+await entryCase('E_abort_after_fix', false, 'abort');
+removeLedgerSetter();
+
 delete fa.tools[TOOL];
 fa._getRootToolNames = origRoot;
 return R;
