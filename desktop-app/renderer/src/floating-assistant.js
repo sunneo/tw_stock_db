@@ -79622,6 +79622,8 @@ ${sourceTool.handlerScript}
         if (!idx.chats.length) idx.chats.push({ id: this._chatNewId('c'), title: '新對話', groupId: null, createdAt: Date.now(), updatedAt: Date.now() });
         if (!idx.chats.some((c) => c.id === idx.currentId)) idx.currentId = idx.chats[0].id;
         this._chatIndex = idx;
+        // 子對話 S4b：重新整理後，記憶體裡的等待與執行中的一輪都已經不存在，狀態要修正成 failed（原因寫清楚），不然父對話會永遠顯示「等你回應」
+        try { if (this._subchatRecoverAfterReload(idx.chats)) this._saveChatIndex(); } catch (err) { console.warn('子對話重新整理後的狀態修正失敗（保留原樣）:', err); }
         // 建構子建立的暫時ctx（id='__pending__'）正式變成「目前對話」的ctx
         this._chatCtxs.delete(this._activeCtx.id);
         this._activeCtx.id = idx.currentId;
@@ -95993,6 +95995,18 @@ _result
 
     // 子對話 S4：所有狀態變化（start／finish／error／ask／answer）都經過這裡。status 寫進索引；
     // 問題或失敗原因放在 entry.subInfo（只在進入等待或失敗時設定）。狀態有變才寫存檔、重畫側欄；父對話可見時重畫連結卡片。
+    // 子對話 S4b：重新整理（重新載入頁面）後修正子對話狀態。等待中的問題與執行中的一輪都只存在記憶體裡，重新載入後已經不存在。
+    // 決定：標成 failed（終態，不自動重試、不復活），原因寫清楚；使用者要繼續，就在父對話的連結卡片傳訊息（failed 可由 start 離開，會開新一輪）。
+    // 回傳修正的筆數（有修正才需要存檔）。
+    _subchatRecoverAfterReload(chats) {
+        const M = this._subchatStatusMod(); let n = 0;
+        for (const c of (chats || [])) {
+            if (!c || !c.parentId) continue;
+            if (c.status === M.WAITING) { c.status = M.FAILED; c.subInfo = { reason: '頁面重新整理，等待中的問題已失效' }; n++; }
+            else if (c.status === M.RUNNING) { c.status = M.FAILED; c.subInfo = { reason: '頁面重新整理，這一輪被中斷' }; n++; }
+        }
+        return n;
+    }
     _subchatSetStatus(childId, event, info) {
         const e = childId && this._chatEntry(childId); if (!e) return;
         const M = this._subchatStatusMod();

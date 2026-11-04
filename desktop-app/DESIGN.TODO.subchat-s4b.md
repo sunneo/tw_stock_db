@@ -159,6 +159,42 @@
 - 同一子對話同時有兩件等待（例如一張卡片加一個授權）時，連結卡片只顯示先到的那一件；另一件的框仍在畫面上可以按，但連結卡片上沒有它的按鈕。這種情況子對話的工具呼叫本來就很少同時發生，本次沒有測。
 - 「重新整理後的權限等待」見步驟 5（記憶體等待消失）。
 
+## 步驟 5：重新整理後的等待狀態（已驗證）
+
+### 決定（自己決定，理由）
+
+- 選項：(a) 標成 `failed`，原因寫清楚；(b) 保留可重新提問。**採 (a)**。理由：等待中的問題與執行中的一輪都只存在記憶體（卡片的 Promise、表單的 resolve、權限框的 DOM），重新載入後**無法**恢復，所以不可能真的繼續等；(b) 需要重新送出問題，等於替模型重做一次，且可能重複執行有副作用的工具。(a) 是終態但不復活，使用者要繼續，就在父對話的連結卡片傳訊息（`failed` 可由 `start` 離開，會開新一輪；步驟 5 的評估 R4 已驗證）。
+- 執行中的一輪（`running`）同樣在重新整理後消失，索引仍寫著 `running`，連結卡片會永遠顯示「進行中」。這不在管理層列的缺口裡，但是同一個機制，照「限制都必須修正」的原則一起修：改成 `failed`，原因「頁面重新整理，這一輪被中斷」。**這是我自己擴大的範圍**，在此明說。
+
+### 改了什麼（源頭 `renderer/src/floating-assistant.js`）
+
+- `_chatListInit`：索引建好（`this._chatIndex = idx`）之後呼叫 `_subchatRecoverAfterReload(idx.chats)`，有修正才 `_saveChatIndex()`。失敗只寫 log，不影響載入。
+- `_subchatRecoverAfterReload(chats)`（`_subchatSetStatus` 上方）：只處理有 `parentId` 的子對話；`waiting_user` → `failed`（原因「頁面重新整理，等待中的問題已失效」）；`running` → `failed`（原因「頁面重新整理，這一輪被中斷」）。`done`、`failed` 與根對話不動。回傳修正筆數。
+- 連結卡片：載入後索引已是 `failed`，`_subchatLinkInfo` 顯示「失敗：…」，不再是「等你回應」。原本的「等你回應已失效」分支保留（只在同一次執行中出現「等待但記憶體沒有」的情況才會走到，不是重新整理後的主要路徑）。
+- 沒有新增 ctx 狀態欄位，不用進 `FA_CHAT_CTX_KEYS`。
+
+### 評估
+
+`scripts/eval/subchat_reload.eval.js`，真桌面版，埠 17970，假 LLM。流程：子對話設成等待（或執行中）→ `await _saveChatIndex()` → 清掉記憶體等待 → 呼叫真正的 `_chatListInit`（開頁面時走的同一條路）→ 檢查。最終結果 `allPass: true`（9 項全過）：
+
+- R1 `waiting_user` → 重新載入後 `failed`，原因正確；父對話連結卡片文字「失敗：頁面重新整理，等待中的問題已失效」，不含「等你回應」。
+- R2 `running` → `failed`，原因「頁面重新整理，這一輪被中斷」。
+- R3 修正函式不動 `done`、不動沒有父對話的項目（回傳 0）。
+- R4 `failed` 的子對話仍可繼續：父對話傳「繼續」→ 模式 `turn` → 最後 `done`。
+- `loadedWorkdirImpl`。
+
+修前（HEAD 源頭重建，同一份評估）：`beforeR1: waiting_user` 重新載入後仍是 `waiting_user`，連結卡片顯示「等你回應已失效（重新整理後請到子對話處理）」，`r1_failedAfterReload`、`r1_reasonText`、`r1_linkShowsFailedNotWaiting`、`r1_notSavedAsWaiting`、`r2_failedRunning`、`r3_untouchedDoneAndRoot`、`loadedWorkdirImpl` 都 false，`allPass: false`。這正是管理層指出的「永遠顯示等你回應」的狀態（文字有「已失效」，但狀態本身仍停在 `waiting_user`，側欄也會持續標示等待）。`r4_*` 修前也通過，是防回歸的判準，不是修正證據。
+
+### 評估過程踩到的坑
+
+- 第一次評估（修前與修後）都失敗：`_saveChatIndex()` 回傳 Promise（寫入是非同步的），評估沒有 `await`，重新載入讀到的是舊索引（`done`）。這是**評估**的時序問題，改成 `await` 後重跑。修前的第一次結果因此混了時序問題，所以修前用同一份最新評估重跑一次，上面的數字是這一次的。
+- 真實頁面的注意事項：索引存檔是非同步的。使用者在狀態剛改變的那一瞬間重新整理，可能讀到舊狀態（例如還是 `running`，或還是 `waiting_user` 但實際上已在 `done`）。這個小窗口本次沒有處理（不影響正常路徑，要處理的話需要存檔佇列，範圍超出 S4b），照實列為已知限制。
+
+### 已知限制
+
+- 存檔與重新整理之間的競態（見上）。
+- 重新整理後，子對話的「卡片」（`_card` 訊息）會留在子對話的歷史裡變成唯讀（S4 已知，本次沒有改）。
+
 ## 教訓
 
 - 步驟 1：`ask_user_card` 被歸為 domain-gated 是分類錯誤，不是子對話的錯。之後遇到「子對話少了某工具」先確認父對話有沒有，不要直接在子對話加。
