@@ -46743,6 +46743,199 @@ const holder = {};
 return holder.FaFapFsTransport;
 })();
 /* FAPT-END */
+/* OTGATE-BEGIN */
+const FaIntentGate = (function () {
+const holder = {};
+(function (module, self) {
+/* 離線理解閘（FaIntentGate）：規則命中之後、執行之前，先看「這句話還有沒有規則沒吃到的部分」。
+ * 輸入：句子（可含附件標記）、命中規則（可省略）、選用的 FaIntent 推導結果。
+ * 輸出：動作、目標種類（網址／音樂／文件…）、要用的開啟工具、剩餘目標（後置步驟）、處理建議。
+ * 為什麼自己帶中文詞表：FaNlu／FaIntent 目前只做英文（見 DESIGN.TODO.offline-intent-pipeline.md 第 10.3 節疑點），
+ * 所以中文用小詞表切「動作＋目標」；有給 opts.intents 時，英文推導結果只用來補中文沒認出的後置步驟。
+ * 純函式（UMD），不連網、不呼叫模型、不碰 DOM。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaIntentGate = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+
+    const URL_RE = /https?:\/\/[^\s，。,、）)]+/gi;
+    const BARE_RE = /(?<![\w@./-])(?:[a-z0-9-]+\.)+(?:com|tw|org|net|io|gov|edu|jp|cn|co|dev|app|info|tv|me|ai|uk|us|hk|kr)(?:\/[^\s，。,、）)]*)?(?![\w-])/gi;
+    const ATTACH_RE = /\[附件：([^\]]*)\]/g;
+    const FILE_ID_RE = /([^、（()\s]+?)（file_id=([^）]+)）/g;
+    const EXT_RE = /([\w一-鿿().-]+?)\.(deck\.yaml|3dscene\.yaml|pptx?|docx?|xlsx?|csv|pdf|midi?|mp3|wav|flac|ogg|m4a|mp4|mov|mkv|webm|svg|png|jpe?g|gif|webp|md|markdown|txt|glb|gltf|obj|stl|fbx)(?![\w])/i;
+
+    // 種類 → 開啟工具（都是既有工具；沒有就寫 null，並在 note 老實說）
+    const KINDS = {
+        url: { label: '網頁', tool: 'browser_create_tab' },
+        music: { label: '音樂（MIDI 編輯器）', tool: 'midi_edit_open' },
+        pdf: { label: 'PDF', tool: 'parse_uploaded_file', note: '目前沒有專用的 PDF 檢視器，只能讀出文字內容' },
+        docx: { label: 'Word 文件', tool: 'edit_docx_open' },
+        xlsx: { label: 'Excel 試算表', tool: 'edit_xlsx_open' },
+        csv: { label: 'CSV 表格', tool: 'edit_csv_open' },
+        model3d: { label: '3D 場景編輯器', tool: 'edit_3d_open' },
+        deck: { label: '簡報', tool: 'open_existing_presentation' },
+        svg: { label: 'SVG 編輯器', tool: 'edit_svg_open' },
+        picture: { label: '圖片編輯器', tool: 'edit_picture_open' },
+        video: { label: '影片編輯器', tool: 'edit_video_open' },
+        markdown: { label: 'Markdown 編輯器', tool: 'edit_markdown_open' },
+        text: { label: '文字編輯器', tool: 'edit_text_open' },
+        editor: { label: '編輯器', tool: null }
+    };
+    const EXT_KIND = { 'deck.yaml': 'deck', '3dscene.yaml': 'model3d', ppt: 'deck', pptx: 'deck', doc: 'docx', docx: 'docx', xls: 'xlsx', xlsx: 'xlsx', csv: 'csv', pdf: 'pdf', mid: 'music', midi: 'music', mp3: 'music', wav: 'music', flac: 'music', ogg: 'music', m4a: 'music', mp4: 'video', mov: 'video', mkv: 'video', webm: 'video', svg: 'svg', png: 'picture', jpg: 'picture', jpeg: 'picture', gif: 'picture', webp: 'picture', md: 'markdown', markdown: 'markdown', txt: 'text', glb: 'model3d', gltf: 'model3d', obj: 'model3d', stl: 'model3d', fbx: 'model3d' };
+    const NOUN_KIND = [
+        ['deck', /簡報|投影片|deck|powerpoint|pptx?\b/i], ['music', /音樂|歌曲|曲子|旋律|配樂|midi|鋼琴捲簾|作曲|樂譜/i], ['pdf', /pdf/i],
+        ['docx', /word|docx?\b|文件檔|文書/i], ['xlsx', /excel|xlsx?\b|試算表/i], ['csv', /csv|表格/i], ['model3d', /3d|三維|立體場景|場景編輯/i],
+        ['video', /影片|video|剪輯/i], ['svg', /svg|向量圖/i], ['picture', /圖片|照片|圖檔|相片/i], ['markdown', /markdown|筆記/i], ['text', /純文字|文字檔|記事本/i]
+    ];
+    const BROWSER_RE = /瀏覽器|browser|chrome|網頁|網站|網址/i;
+
+    const OPEN_RE = /(?:打開|開啟|開一下|開個|開到|前往|瀏覽|(?<![a-z])open(?![a-z])|launch|開(?![始會心車機關獎放發頭場玩笑支票戶學])|看一下|看看)/i;
+    const PLAY_RE = /播放|播一下|聽一下|聽聽|播出/;
+    const SHOT_RE = /截取|截圖|截個圖|截一張|螢幕截圖|screenshot/i;
+    const SEARCH_RE = /(?:搜尋|搜索|查詢|查一下|查找|尋找|找出|找到|找一下|找|查|google)/i;
+    const READ_RE = /(?:讀取|讀一下|讀|抓取|抓一下|抓|擷取內容|讀出)/;
+    const SUM_RE = /(?:摘要|總結|重點|整理|歸納|summar)/i;
+    const REASON_RE = /(?:比較|判斷|分析|評估|為什麼|是否|哪個比較|優缺點|推理)/;
+    const PICK_RE = /第\s*[0-9一二三四五六七八九十]+\s*(?:則|條|篇|個|項)|最新一則|最上面|頭條那則/;
+    const FILLER_RE = /^(?:請|幫我|麻煩|謝謝|一下|順便|也|可以|好嗎|吧|喔|啊|的|了|它|他|這個|那個|然後|就)*$/;
+    const SPLIT_RE = /(?:，|,|；|;|。|並且|並|然後|接著|之後|再來|再|而且|同時|順便|且|and then|then)/i;
+
+    function cleanKeyword(s) {
+        let kw = String(s || '').replace(/^(?:一下|有關|關於|跟|和)/, '').trim();
+        kw = kw.replace(/(?:的)?(?:相關)?(?:最新)?(?:新聞|消息|報導|資料|資訊|文章|頭條|內容|標題)\s*$/, '').replace(/[的]$/, '').trim();
+        return kw;
+    }
+    function takeKeyword(clause) {
+        const m = /(?:搜尋|搜索|查詢|查一下|查找|尋找|找出|找到|找一下|找|查|google)\s*(?:一下)?(?:有關|關於)?\s*(.+)$/i.exec(clause);
+        if (!m) return null;
+        const kw = cleanKeyword(m[1]);
+        return kw.length >= 2 ? kw : null;
+    }
+
+    function parseSources(text) {
+        let s = String(text || '');
+        const files = [];
+        s = s.replace(ATTACH_RE, (_, inner) => { let m; FILE_ID_RE.lastIndex = 0; while ((m = FILE_ID_RE.exec(inner))) files.push({ name: m[1], id: m[2] }); return ' '; });
+        const urls = [];
+        s = s.replace(URL_RE, (u) => { urls.push(u); return ' \u0001 '; });
+        const names = [];
+        const em = EXT_RE.exec(s);
+        if (em) names.push({ name: em[0], ext: em[2].toLowerCase() });
+        else s = s.replace(BARE_RE, (u) => { if (/^\d+(\.\d+)+$/.test(u)) return u; urls.push('https://' + u); return ' \u0001 '; });
+        return { stripped: s, urls, files, names };
+    }
+
+    function detectKind(text, src) {
+        const t = String(text || '');
+        const fe = src.files[0] && EXT_RE.exec(src.files[0].name);
+        const ext = (fe && fe[2]) || (src.names[0] && src.names[0].ext);
+        if (ext && EXT_KIND[ext.toLowerCase()]) return { kind: EXT_KIND[ext.toLowerCase()], by: '副檔名' };
+        if (src.urls.length) return { kind: 'url', by: '網址' };
+        if (BROWSER_RE.test(t)) return { kind: 'url', by: '提到瀏覽器／網頁' };
+        for (const [k, re] of NOUN_KIND) if (re.test(t)) return { kind: k, by: '名詞' };
+        if (/編輯器/.test(t)) return { kind: 'editor', by: '只說編輯器' };
+        return { kind: null, by: '' };
+    }
+
+    function gate(text, opts) {
+        opts = opts || {};
+        const original = String(text || '').trim();
+        const out = { ok: true, text: original, action: null, kind: null, kindBy: '', label: '', openTool: null, openArgs: null, url: null, fileId: null, fileName: null, mustBrowser: false, visible: false, closeWhenDone: false, keyword: null, post: [], unhandled: [], advice: 'direct', reason: '', note: '' };
+        if (!original) { out.ok = false; out.advice = 'passthrough'; out.reason = '空句子'; return out; }
+        if (original.charAt(0) === '/') { out.advice = 'passthrough'; out.reason = '斜線指令是使用者明確指定的，不做目標分析'; return out; }
+
+        const src = parseSources(original);
+        const clauses = src.stripped.split(SPLIT_RE).map((x) => x.replace(/\u0001/g, ' ').trim()).filter(Boolean);
+        const kd = detectKind(original, src);
+        out.kind = kd.kind; out.kindBy = kd.by;
+        if (src.urls[0]) out.url = src.urls[0];
+        if (src.files[0]) { out.fileId = src.files[0].id; out.fileName = src.files[0].name; } else if (src.names[0]) out.fileName = src.names[0].name;
+        out.mustBrowser = /瀏覽器|browser|chrome/i.test(original) && kd.kind === 'url';
+
+        let sawMain = false;
+        const pushPost = (p) => { if (!out.post.some((x) => x.type === p.type && x.keyword === p.keyword)) out.post.push(p); };
+        for (const c of clauses) {
+            const isOpen = OPEN_RE.test(c), isShot = SHOT_RE.test(c), isPlay = PLAY_RE.test(c);
+            const isSearch = SEARCH_RE.test(c), isSum = SUM_RE.test(c), isReason = REASON_RE.test(c), isRead = READ_RE.test(c);
+            if (!sawMain && (isOpen || isPlay || isShot || (isRead && !isSearch))) {
+                sawMain = true;
+                out.action = isPlay ? 'play' : (isOpen ? 'open' : (isShot ? 'screenshot' : 'read'));
+                if (isOpen && isShot) pushPost({ type: 'screenshot' });
+                const kw = isSearch ? takeKeyword(c.replace(OPEN_RE, ' ')) : null;
+                if (kw && out.action === 'open') { out.keyword = kw; pushPost({ type: 'find_topic', keyword: kw }); }
+                if (isSum && out.action !== 'screenshot') pushPost({ type: 'summarize' });
+                continue;
+            }
+            if (isSearch) {
+                const kw = takeKeyword(c);
+                if (!sawMain) { sawMain = true; out.action = 'search'; if (kw) out.keyword = kw; else out.unhandled.push(c); }
+                else if (kw) { out.keyword = out.keyword || kw; pushPost({ type: 'find_topic', keyword: kw }); }
+                else out.unhandled.push(c);
+                if (isSum) pushPost({ type: 'summarize' });
+                continue;
+            }
+            if (isShot) { pushPost({ type: 'screenshot' }); continue; }
+            if (isSum) { if (!sawMain) { sawMain = true; out.action = 'summarize'; } pushPost({ type: 'summarize' }); if (isReason) pushPost({ type: 'reason', text: c }); continue; }
+            if (isReason) { if (!sawMain) { sawMain = true; out.action = 'reason'; } pushPost({ type: 'reason', text: c }); continue; }
+            if (PICK_RE.test(c)) { pushPost({ type: 'pick_item', text: c }); continue; }
+            const rest = c.replace(/^(?:請|幫我|麻煩|也|順便)+/, '').trim();
+            if (rest && !FILLER_RE.test(rest) && rest.length >= 2) out.unhandled.push(rest);
+        }
+        // 英文推導結果（FaIntent）只補中文詞表沒認出的後置步驟
+        if (!out.action) out.unhandled = []; // 沒認出任何動作＝閘沒有意見，交回原本的規則／食譜
+        if (Array.isArray(opts.intents) && out.unhandled.length) {
+            const before = out.post.length;
+            for (const it of opts.intents) {
+                if (!it || (it.confidence != null && it.confidence < 0.5)) continue;
+                if (it.action === 'summarize' && !out.post.some((p) => p.type === 'summarize')) out.post.push({ type: 'summarize', by: 'FaIntent' });
+                if (it.action === 'compare' && !out.post.some((p) => p.type === 'reason')) out.post.push({ type: 'reason', by: 'FaIntent' });
+            }
+            if (out.post.length > before) out.unhandled = [];
+        }
+        if (!out.action && kd.kind && kd.by !== '提到瀏覽器／網頁') out.action = 'open'; // 只有名詞（「簡報」「音樂編輯器」）時當作要開
+        out.visible = out.action === 'open' || out.action === 'play';
+        out.closeWhenDone = out.kind === 'url' && (out.action === 'open' || out.action === 'read' || out.action === 'screenshot'); // 舊共識：自己開的分頁自己關
+
+        const K = out.kind && KINDS[out.kind];
+        if (K) {
+            out.label = K.label; out.openTool = K.tool; out.note = K.note || '';
+            if (out.kind === 'music' && out.action === 'play') out.openTool = 'midi_play';
+            if (out.kind === 'deck' && /\.pptx?$/i.test(out.fileName || '')) out.openTool = 'pptx_to_deck';
+            if (out.kind === 'url' && out.url) out.openArgs = { url: out.url, active: out.visible, keep_open: false };
+            else if (out.fileId && out.openTool) out.openArgs = { file_id: out.fileId };
+            else if (out.kind === 'music' && out.openTool === 'midi_edit_open') out.openArgs = {};
+        }
+
+        // 處理建議
+        if (out.action === 'open' || out.action === 'play') {
+            if (!out.kind) { out.advice = 'ask'; out.reason = '說了要開，但看不出要開什麼（沒有網址、檔案或種類）'; }
+            else if (out.kind === 'editor') { out.advice = 'ask'; out.reason = '只說「編輯器」，要先問是哪一種（文件、試算表、3D、音樂、簡報…）'; }
+            else if (out.kind === 'url' && !out.url) { out.advice = 'ask'; out.reason = '要開網頁但句子裡沒有網址'; }
+            else if (out.kind !== 'url' && !out.fileId && out.kind !== 'music') { out.advice = 'need_file'; out.reason = KINDS[out.kind].label + '需要檔案：請附上檔案（或給 file_id）'; }
+            else if (!out.openTool) { out.advice = 'no_tool'; out.reason = '沒有對應的開啟工具'; }
+            else out.advice = 'open';
+        }
+        const base = out.advice === 'direct' || out.advice === 'open';
+        if (out.post.length && base) {
+            out.advice = out.advice === 'open' ? 'open_post' : 'post';
+            out.reason = '動作之外還有目標：' + out.post.map((p) => p.type + (p.keyword ? '（' + p.keyword + '）' : '')).join('、');
+        } else if (out.post.length && out.advice === 'ask') out.reason += '；另有目標：' + out.post.map((p) => p.type).join('、');
+        if (out.unhandled.length) {
+            if (base && !out.post.length) { out.advice = 'partial'; out.reason = '只做了動作，沒處理：' + out.unhandled.join('；'); }
+            else out.reason += '；沒處理：' + out.unhandled.join('；');
+        }
+        if (out.advice === 'direct' && !out.reason) out.reason = '沒有剩餘目標，照規則直接執行';
+        return out;
+    }
+
+    return { gate, parseSources, detectKind, KINDS, cleanKeyword };
+});
+
+}).call(null, undefined, holder);
+return holder.FaIntentGate;
+})();
+/* OTGATE-END */
 /* UMLVIEW-BEGIN */
 const FA_UMLVIEW_HTML = "<!doctype html>\n<html lang=\"zh-Hant\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>設計檢視器</title>\n<style>\n:root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--bd:#d0d7de;--ac:#0969da;--sf:#f6f8fa;--hl:#fff8c5;--ok:#1a7f37;--er:#cf222e;--ai:#8250df;--box:#fff;--boxh:#ddf4ff}\n@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--bd:#30363d;--ac:#58a6ff;--sf:#161b22;--hl:#3b2e00;--ok:#3fb950;--er:#f85149;--ai:#d2a8ff;--box:#161b22;--boxh:#0c2d6b}}\n*{box-sizing:border-box}html,body{height:100%}body{margin:0;background:var(--bg);color:var(--fg);font:13.5px/1.5 -apple-system,\"Segoe UI\",\"Noto Sans TC\",sans-serif;display:flex;flex-direction:column}\nheader{display:flex;align-items:center;gap:8px;padding:6px 12px;border-bottom:1px solid var(--bd);background:var(--sf);flex-wrap:wrap}\nheader b{font-size:14px}.badge{padding:0 8px;border-radius:10px;border:1px solid var(--bd);font-size:12px;color:var(--mut)}.sp{flex:1}\nbutton{font:inherit;padding:3px 10px;border:1px solid var(--bd);background:var(--bg);color:var(--fg);border-radius:6px;cursor:pointer}button:hover{border-color:var(--ac)}button.ai{border-color:var(--ai);color:var(--ai)}\n#app{flex:1;display:flex;min-height:0}\n#nav{width:250px;border-right:1px solid var(--bd);display:flex;flex-direction:column;background:var(--sf);min-height:0}\n#q{margin:6px;padding:5px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg)}\n#tree{flex:1;overflow:auto;padding:0 4px 10px}\n.tn{display:block;padding:2px 6px;border-radius:5px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tn:hover{background:var(--bd)}.tn.on{background:var(--ac);color:#fff}.tn .k{opacity:.6;font-size:11px;margin-right:4px}\n#mid{flex:1;display:flex;flex-direction:column;min-width:0}\n#crumb{padding:5px 12px;border-bottom:1px solid var(--bd);font-size:12.5px;color:var(--mut);display:flex;gap:4px;flex-wrap:wrap}#crumb a{color:var(--ac);cursor:pointer}\n#diag{flex:1.2;min-height:160px;overflow:hidden;position:relative;border-bottom:1px solid var(--bd);background:var(--bg)}#diag svg{width:100%;height:100%;cursor:grab}\n#tabs{display:flex;gap:4px;padding:5px 10px;border-bottom:1px solid var(--bd);background:var(--sf)}#tabs button.on{border-color:var(--ac);color:var(--ac);font-weight:600}\n#info{flex:1;overflow:auto;padding:10px 14px;min-height:100px}\n#src{width:44%;min-width:300px;border-left:1px solid var(--bd);display:flex;flex-direction:column;min-height:0}\n#srchead{padding:5px 8px;border-bottom:1px solid var(--bd);background:var(--sf);display:flex;gap:6px;align-items:center;flex-wrap:wrap}\n#flist{padding:4px 8px;border-bottom:1px solid var(--bd);max-height:130px;overflow:auto;font-size:12.5px}#flist a{display:block;color:var(--ac);cursor:pointer;word-break:break-all}#flist .r{color:var(--mut);margin-right:6px}\n#code{flex:1;overflow:auto;font:12px/1.5 ui-monospace,Consolas,monospace;padding:4px 0}\n.ln{display:flex}.ln i{flex:none;width:44px;text-align:right;padding-right:8px;color:var(--mut);user-select:none;font-style:normal}.ln span{white-space:pre;flex:1;padding-right:12px}.ln.h{background:var(--hl)}.ln.s{cursor:pointer;border-left:3px solid var(--ac)}.ln.s:hover{background:var(--boxh)}\nh3{font-size:14px;margin:10px 0 4px}.mut{color:var(--mut)}pre.t{white-space:pre-wrap;margin:0;font:inherit}\n.dec{border:1px solid var(--bd);border-radius:6px;padding:4px 8px;margin:4px 0}.who{font-size:11px;padding:0 6px;border-radius:8px;border:1px solid var(--bd);margin-right:6px}.who.model{color:var(--ai);border-color:var(--ai)}.who.program{color:var(--ok);border-color:var(--ok)}\n.act{display:inline-block;margin:3px 6px 3px 0}\n#modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center}#modal div{background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:14px;width:min(560px,92vw)}#modal textarea{width:100%;height:150px;background:var(--sf);color:var(--fg);border:1px solid var(--bd);border-radius:6px;padding:6px;font:12px ui-monospace,Consolas,monospace}\nsvg text{font:12px -apple-system,\"Segoe UI\",\"Noto Sans TC\",sans-serif;fill:var(--fg)}svg .box{fill:var(--box);stroke:var(--fg);stroke-width:1}svg .foc .box{fill:var(--boxh);stroke:var(--ac);stroke-width:2}svg .cls{cursor:pointer}svg .cls:hover .box{stroke:var(--ac)}svg .ed{stroke:var(--fg);fill:none;stroke-width:1.2}svg .dash{stroke-dasharray:5 4}svg .mut{fill:var(--mut)}svg .hlop{fill:var(--hl)}\n</style></head><body>\n<header><b id=\"title\"></b><span class=\"badge\" id=\"b-lang\"></span><span class=\"badge\" id=\"b-arch\"></span><span class=\"badge\" id=\"b-glue\"></span><span class=\"sp\"></span><button id=\"b-dsl\" title=\"複製 UML 文字（可以貼給任何 AI）\">複製 UML</button><button id=\"b-zip\" title=\"下載目前的專案 zip（在 App 裡開啟時可用）\">下載專案</button><button id=\"b-fit\">適合視窗</button></header>\n<div id=\"app\"><div id=\"nav\"><input id=\"q\" placeholder=\"搜尋類別、使用案例、檔案…\"><div id=\"tree\"></div></div>\n<div id=\"mid\"><div id=\"crumb\"></div><div id=\"diag\"></div><div id=\"tabs\"><button data-t=\"design\" class=\"on\">設計</button><button data-t=\"ref\">參考</button><button data-t=\"act\">動作</button></div><div id=\"info\"></div></div>\n<div id=\"src\"><div id=\"srchead\"><b id=\"fname\">原始碼</b><span class=\"mut\" id=\"fmeta\"></span></div><div id=\"flist\"></div><div id=\"code\"></div></div></div>\n<div id=\"modal\"><div><b id=\"mt\"></b><p class=\"mut\" id=\"mp\"></p><textarea id=\"mta\" readonly></textarea><p><button id=\"mcopy\">複製</button> <button id=\"mclose\">關閉</button></p></div></div>\n<script>\nlet B = __BUNDLE__;\nconst $ = (s) => document.querySelector(s); const esc = (s) => String(s == null ? '' : s).replace(/[&<>\"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;' }[c]));\nconst LV = { system: '◆', package: '▣', class: 'C', usecase: '◯', op: 'ƒ' };\nlet cur = 'system', tab = 'design', curFile = null, curLines = null, vb = null;\nconst N = () => B.nodes;\nconst ACTIONS = {\n  'rework-region': { label: '重新設計這一區', help: '只重做這個節點的設計（程式找出問題，模型一次只回答一個封閉的小問題），其他地方不動。' },\n  'add-members': { label: '補充屬性與操作', help: '針對這個類別再補幾個屬性與操作（封閉的小問題，型別必須是基本型別或已知類別）。' },\n  'rework-system': { label: '重新檢查整個設計', help: '由上而下檢查整個系統的問題（孤兒類別、空類別、呼叫順序…），只重做有問題的區域。' },\n  'add-usecase': { label: '新增使用案例', help: '用一句話描述新的使用案例，程式依詞彙表與動作表展開呼叫順序。' },\n  'show-code': { label: '看對應的程式碼', help: '' },\n};\nfunction crumbOf(id) { const out = []; let n = N()[id]; while (n) { out.unshift(n); n = n.parent ? N()[n.parent] : null; } return out; }\nfunction renderTree(filter) {\n  const f = (filter || '').toLowerCase(); const out = [];\n  const walk = (id, depth) => { const n = N()[id]; if (!n) return; const hit = !f || (n.title + ' ' + id).toLowerCase().includes(f) || (n.reference.files || []).some((x) => x.path.toLowerCase().includes(f)); const kids = n.children.map((c) => walk(c, depth + 1)).join(''); if (!hit && !kids) return ''; return '<a class=\"tn' + (id === cur ? ' on' : '') + '\" data-id=\"' + esc(id) + '\" style=\"padding-left:' + (6 + depth * 14) + 'px\"><span class=\"k\">' + (LV[n.level] || '') + '</span>' + esc(n.title) + '</a>' + kids; };\n  $('#tree').innerHTML = walk(B.root, 0);\n}\n// ---------- 圖 ----------\nconst BW = 150, LH = 16, HH = 26;\nfunction boxOf(c) { const lines = c.kind === 'enum' ? (c.values || []).map((v) => v) : c.attrs.map((a) => (a.visibility || '+') + a.name + ':' + tstr(a.type)).concat(['—']).concat(c.ops.map((o) => (o.visibility || '+') + o.name + '(' + o.params.map((p) => p.name).join(',') + '):' + tstr(o.returns))); const attrs = c.kind === 'enum' ? c.values : c.attrs; const ops = c.kind === 'enum' ? [] : c.ops; const w = Math.max(BW, 7.2 * Math.max(c.name.length + 4, ...lines.map((l) => l.length)) + 16); const h = HH + (c.kind === 'class' ? 0 : 14) + Math.max(1, attrs.length) * LH + 6 + (ops.length ? ops.length * LH + 6 : 0); return { w, h, attrs, ops }; }\nfunction tstr(t) { return !t ? 'any' : (t.args && t.args.length ? t.base + '<' + t.args.map(tstr).join(',') + '>' : t.base); }\nfunction layout(classes, rels) {\n  const names = classes.map((c) => c.name); const rank = {}; names.forEach((n) => { rank[n] = 0; });\n  const edges = rels.filter((r) => names.includes(r.from) && names.includes(r.to)).map((r) => (r.kind === 'inherit' || r.kind === 'implement' ? [r.to, r.from] : [r.from, r.to]));\n  for (let it = 0; it < names.length + 2; it++) for (const [a, b] of edges) if (rank[b] <= rank[a] && rank[a] + 1 < names.length) rank[b] = rank[a] + 1;\n  const rows = {}; names.forEach((n) => { (rows[rank[n]] = rows[rank[n]] || []).push(n); });\n  const pos = {}; let y = 20; const maxW = 760;\n  Object.keys(rows).map(Number).sort((a, b) => a - b).forEach((r) => { let list = rows[r]; if (r > 0) list = list.slice().sort((a, b) => { const bc = (n) => { const ns = edges.filter((e) => e[1] === n).map((e) => pos[e[0]] && pos[e[0]].x).filter((v) => v != null); return ns.length ? ns.reduce((s, v) => s + v, 0) / ns.length : 0; }; return bc(a) - bc(b); });\n    let x = 20, rowH = 0, cy = y; for (const n of list) { const c = classes.find((k) => k.name === n); const bx = boxOf(c); if (x + bx.w > maxW && x > 20) { x = 20; cy += rowH + 40; rowH = 0; } pos[n] = { x, y: cy, w: bx.w, h: bx.h, b: bx }; x += bx.w + 36; rowH = Math.max(rowH, bx.h); } y = cy + rowH + 50; });\n  return { pos, edges };\n}\nconst DEFS = '<defs><marker id=\"tri\" markerWidth=\"12\" markerHeight=\"12\" refX=\"11\" refY=\"6\" orient=\"auto\"><path d=\"M1 1 L11 6 L1 11 Z\" fill=\"var(--bg)\" stroke=\"var(--fg)\"/></marker><marker id=\"dia\" markerWidth=\"14\" markerHeight=\"12\" refX=\"1\" refY=\"6\" orient=\"auto-start-reverse\"><path d=\"M1 6 L7 1 L13 6 L7 11 Z\" fill=\"var(--fg)\" stroke=\"var(--fg)\"/></marker><marker id=\"dio\" markerWidth=\"14\" markerHeight=\"12\" refX=\"1\" refY=\"6\" orient=\"auto-start-reverse\"><path d=\"M1 6 L7 1 L13 6 L7 11 Z\" fill=\"var(--bg)\" stroke=\"var(--fg)\"/></marker><marker id=\"arr\" markerWidth=\"10\" markerHeight=\"10\" refX=\"9\" refY=\"5\" orient=\"auto\"><path d=\"M1 1 L9 5 L1 9\" fill=\"none\" stroke=\"var(--fg)\"/></marker></defs>';\nfunction edgePt(p, q) { const cx = p.x + p.w / 2, cy = p.y + p.h / 2, dx = q.x + q.w / 2 - cx, dy = q.y + q.h / 2 - cy; const s = Math.min(Math.abs(dx) > 0 ? (p.w / 2) / Math.abs(dx) : 1e9, Math.abs(dy) > 0 ? (p.h / 2) / Math.abs(dy) : 1e9); return [cx + dx * s, cy + dy * s]; }\nfunction classSvg(names, focus, opNode) {\n  const cls = names.map((n) => B.model.classes.find((c) => c.name === n)).filter(Boolean); const L = layout(cls, B.model.relations); let g = '', ed = '';\n  for (const r of B.model.relations) { const p = L.pos[r.from], q = L.pos[r.to]; if (!p || !q) continue; const a = edgePt(p, q), b2 = edgePt(q, p); const mk = r.kind === 'inherit' || r.kind === 'implement' ? ' marker-end=\"url(#tri)\"' : (r.kind === 'compose' ? ' marker-start=\"url(#dia)\"' : (r.kind === 'aggregate' ? ' marker-start=\"url(#dio)\"' : ' marker-end=\"url(#arr)\"')); const dash = r.kind === 'implement' || r.kind === 'depend' ? ' dash' : ''; ed += '<line class=\"ed' + dash + '\" x1=\"' + a[0] + '\" y1=\"' + a[1] + '\" x2=\"' + b2[0] + '\" y2=\"' + b2[1] + '\"' + mk + '/>' + (r.label || r.mult ? '<text class=\"mut\" x=\"' + (a[0] + b2[0]) / 2 + '\" y=\"' + ((a[1] + b2[1]) / 2 - 4) + '\" text-anchor=\"middle\">' + esc([r.label, r.mult].filter(Boolean).join(' ')) + '</text>' : ''); }\n  for (const c of cls) { const p = L.pos[c.name], bx = p.b; let y = p.y + 18; g += '<g class=\"cls' + (c.name === focus ? ' foc' : '') + '\" data-id=\"class:' + esc(c.name) + '\"><rect class=\"box\" x=\"' + p.x + '\" y=\"' + p.y + '\" width=\"' + p.w + '\" height=\"' + p.h + '\" rx=\"3\"/>' + (c.kind !== 'class' ? '<text class=\"mut\" x=\"' + (p.x + p.w / 2) + '\" y=\"' + (p.y + 13) + '\" text-anchor=\"middle\">«' + esc(c.kind) + '»</text>' : '') + '<text x=\"' + (p.x + p.w / 2) + '\" y=\"' + (p.y + (c.kind !== 'class' ? 27 : 17)) + '\" text-anchor=\"middle\" font-weight=\"700\">' + esc(c.name) + '</text>'; y = p.y + HH + (c.kind !== 'class' ? 14 : 0) - 2; g += '<line x1=\"' + p.x + '\" y1=\"' + (y - 11) + '\" x2=\"' + (p.x + p.w) + '\" y2=\"' + (y - 11) + '\" stroke=\"var(--fg)\"/>';\n    if (c.kind === 'enum') (c.values || []).forEach((v) => { g += '<text x=\"' + (p.x + 8) + '\" y=\"' + y + '\">' + esc(v) + '</text>'; y += LH; }); else { c.attrs.forEach((a) => { g += '<text x=\"' + (p.x + 8) + '\" y=\"' + y + '\">' + esc((a.visibility || '+') + a.name + ': ' + tstr(a.type)) + '</text>'; y += LH; }); if (!c.attrs.length) y += LH; if (c.ops.length) { g += '<line x1=\"' + p.x + '\" y1=\"' + (y - 11) + '\" x2=\"' + (p.x + p.w) + '\" y2=\"' + (y - 11) + '\" stroke=\"var(--fg)\"/>'; c.ops.forEach((o) => { const hot = opNode && opNode === o.name; if (hot) g += '<rect class=\"hlop\" x=\"' + (p.x + 2) + '\" y=\"' + (y - 12) + '\" width=\"' + (p.w - 4) + '\" height=\"' + LH + '\"/>'; g += '<text x=\"' + (p.x + 8) + '\" y=\"' + y + '\" data-op=\"' + esc(c.name + '.' + o.name) + '\">' + esc((o.visibility || '+') + o.name + '(' + o.params.map((q) => q.name + ': ' + tstr(q.type)).join(', ') + '): ' + tstr(o.returns)) + '</text>'; y += LH; }); } }\n    g += '</g>'; }\n  const W = Math.max(...Object.values(L.pos).map((p) => p.x + p.w), 200) + 30, H = Math.max(...Object.values(L.pos).map((p) => p.y + p.h), 100) + 30; return { svg: ed + g, w: W, h: H };\n}\nfunction seqSvg(uc) {\n  const parts = [uc.actor].concat(uc.steps.map((s) => s.to)).filter((x, i, a) => a.indexOf(x) === i); const gap = 150; let g = ''; const X = {}; parts.forEach((p, i) => { X[p] = 70 + i * gap; });\n  const H = 80 + uc.steps.length * 40 + 30;\n  parts.forEach((p) => { const isA = B.model.actors.includes(p); g += '<g class=\"cls\" data-id=\"' + (isA ? '' : 'class:' + esc(p)) + '\"><rect class=\"box\" x=\"' + (X[p] - 52) + '\" y=\"10\" width=\"104\" height=\"26\" rx=\"3\"/><text x=\"' + X[p] + '\" y=\"28\" text-anchor=\"middle\" font-weight=\"700\">' + (isA ? '👤 ' : '') + esc(p) + '</text></g><line class=\"ed dash\" x1=\"' + X[p] + '\" y1=\"36\" x2=\"' + X[p] + '\" y2=\"' + (H - 10) + '\"/>'; });\n  uc.steps.forEach((s, i) => { const y = 66 + i * 40; const a = X[s.from], b = X[s.to]; const self = a === b; g += self ? '<path class=\"ed\" d=\"M' + a + ' ' + (y - 8) + ' h30 v16 h-30\" marker-end=\"url(#arr)\"/><text x=\"' + (a + 36) + '\" y=\"' + (y + 3) + '\" data-op=\"' + esc(s.to + '.' + s.msg) + '\" class=\"cls\">' + (i + 1) + '. ' + esc(s.msg) + '()</text>' : '<line class=\"ed\" x1=\"' + a + '\" y1=\"' + y + '\" x2=\"' + b + '\" y2=\"' + y + '\" marker-end=\"url(#arr)\"/><text class=\"cls\" data-op=\"' + esc(s.to + '.' + s.msg) + '\" x=\"' + (a + b) / 2 + '\" y=\"' + (y - 5) + '\" text-anchor=\"middle\">' + (i + 1) + '. ' + esc(s.msg) + '(' + esc((s.args || []).join(', ')) + ')</text>'; });\n  return { svg: g, w: 70 + parts.length * gap, h: H };\n}\nfunction overviewSvg() {\n  const ucs = B.model.usecases; const actors = B.model.actors.length ? B.model.actors : Array.from(new Set(ucs.map((u) => u.actor))); let g = ''; const ay = {}; actors.forEach((a, i) => { ay[a] = 50 + i * 90; g += '<circle cx=\"50\" cy=\"' + (ay[a] - 14) + '\" r=\"9\" fill=\"none\" stroke=\"var(--fg)\"/><line class=\"ed\" x1=\"50\" y1=\"' + (ay[a] - 5) + '\" x2=\"50\" y2=\"' + (ay[a] + 18) + '\"/><line class=\"ed\" x1=\"34\" y1=\"' + (ay[a] + 4) + '\" x2=\"66\" y2=\"' + (ay[a] + 4) + '\"/><text x=\"50\" y=\"' + (ay[a] + 38) + '\" text-anchor=\"middle\">' + esc(a) + '</text>'; });\n  ucs.forEach((u, i) => { const x = 250 + (i % 3) * 200, y = 40 + Math.floor(i / 3) * 70; if (ay[u.actor] != null) g += '<line class=\"ed\" x1=\"66\" y1=\"' + (ay[u.actor] + 4) + '\" x2=\"' + (x - 70) + '\" y2=\"' + y + '\"/>'; g += '<g class=\"cls\" data-id=\"usecase:' + esc(u.name) + '\"><ellipse class=\"box\" cx=\"' + x + '\" cy=\"' + y + '\" rx=\"72\" ry=\"24\"/><text x=\"' + x + '\" y=\"' + (y + 4) + '\" text-anchor=\"middle\">' + esc(u.name) + '</text></g>'; });\n  const rows = Math.max(Math.ceil(ucs.length / 3) * 70, actors.length * 90) + 30; const cs = classSvg(B.model.classes.map((c) => c.name), null); return { svg: g + '<g transform=\"translate(0,' + rows + ')\">' + cs.svg + '</g>', w: Math.max(700, cs.w), h: rows + cs.h };\n}\nfunction drawDiagram(n) {\n  const d = n.diagram; let r; if (d.kind === 'overview') r = overviewSvg(); else if (d.kind === 'sequence') r = seqSvg(B.model.usecases.find((u) => u.name === d.usecase)); else r = classSvg(d.classes, d.focus, d.kind === 'ops' ? d.focus : null);\n  vb = { x: 0, y: 0, w: r.w, h: r.h, fw: r.w, fh: r.h }; $('#diag').innerHTML = '<svg id=\"sv\" viewBox=\"0 0 ' + r.w + ' ' + r.h + '\" preserveAspectRatio=\"xMidYMin meet\">' + DEFS + r.svg + '</svg>'; bindSvg();\n}\nfunction bindSvg() {\n  const sv = $('#sv'); if (!sv) return; sv.addEventListener('click', (e) => { const el = e.target.closest('[data-op],[data-id]'); if (!el) return; const op = e.target.closest('[data-op]'); if (op && op.dataset.op) { const id = 'op:' + op.dataset.op; if (N()[id]) return go(id); } const c = e.target.closest('[data-id]'); if (c && c.dataset.id && N()[c.dataset.id]) go(c.dataset.id); });\n  sv.addEventListener('wheel', (e) => { e.preventDefault(); const k = e.deltaY > 0 ? 1.12 : 0.89; vb.w *= k; vb.h *= k; setVb(); }, { passive: false });\n  let drag = null; sv.addEventListener('mousedown', (e) => { drag = { x: e.clientX, y: e.clientY, vx: vb.x, vy: vb.y }; sv.style.cursor = 'grabbing'; }); window.addEventListener('mouseup', () => { drag = null; if (sv) sv.style.cursor = 'grab'; }); window.addEventListener('mousemove', (e) => { if (!drag) return; const r = sv.getBoundingClientRect(); vb.x = drag.vx - (e.clientX - drag.x) * (vb.w / r.width); vb.y = drag.vy - (e.clientY - drag.y) * (vb.h / r.height); setVb(); });\n}\nfunction setVb() { const sv = $('#sv'); if (sv) sv.setAttribute('viewBox', vb.x + ' ' + vb.y + ' ' + vb.w + ' ' + vb.h); }\n// ---------- 資訊 ----------\nfunction renderInfo() {\n  const n = N()[cur]; let h = '';\n  if (tab === 'design') { h += '<h3>設計</h3><pre class=\"t\">' + esc(n.design.summary) + '</pre>'; if (n.design.decisions.length) { h += '<h3>設計決策</h3>'; for (const d of n.design.decisions) h += '<div class=\"dec\"><span class=\"who ' + esc(d.who) + '\">' + esc(d.who) + '</span><b>' + esc(d.what) + '</b><div class=\"mut\">' + esc(d.why || '') + '</div></div>'; } if (n.level === 'system' && B.scenario) h += '<h3>原始情境</h3><pre class=\"t mut\">' + esc(B.scenario) + '</pre>'; }\n  else if (tab === 'ref') { h += '<h3>對應的程式碼</h3>' + (n.reference.files.length ? n.reference.files.map((f) => '<div><a href=\"#\" data-file=\"' + esc(f.path) + '\" data-line=\"' + f.line + '\">' + esc(f.roleLabel) + '</a> <span class=\"mut\">' + esc(f.path) + ':' + f.line + (f.symbol ? ' · ' + esc(f.symbol) : '') + '</span></div>').join('') : '<div class=\"mut\">（沒有直接對應的檔案）</div>'); if (n.reference.libs.length) h += '<h3>用到的 library</h3>' + n.reference.libs.map((l) => '<div><b>' + esc(l.name) + '</b> <span class=\"mut\">' + esc(l.concern) + '</span> ' + (l.doc ? '<a href=\"' + esc(l.doc) + '\" target=\"_blank\" rel=\"noopener\">文件</a>' : '') + '</div>').join(''); if (n.level === 'system' && B.glue.length) h += '<h3>膠水</h3>' + B.glue.map((g) => '<div>' + esc(g.id) + ' <span class=\"mut\">' + esc(g.label || '') + (g.verified && Object.keys(g.verified).length ? '　驗證過：' + esc(Object.entries(g.verified).map(([k, v]) => k + ' ' + v).join('、')) : '　未驗證') + '</span></div>').join(''); if (n.reference.related.length) h += '<h3>相關節點</h3>' + n.reference.related.filter((x) => N()[x]).map((x) => '<a class=\"act\" href=\"#\" data-go=\"' + esc(x) + '\">' + esc(N()[x].title) + '</a>').join(''); }\n  else { h += '<h3>動作（切細、重新設計這一區）</h3><div class=\"mut\">每個動作都是封閉的小操作：程式找出問題、模型（或離線訓練器）一次只回答一個小問題、結果會被驗證。可以由任何強弱的 AI 或你自己逐步進行。</div>'; for (const a of n.actions) { const A = ACTIONS[a]; if (!A) continue; h += '<div><button class=\"act ai\" data-act=\"' + esc(a) + '\">' + esc(A.label) + '</button> <span class=\"mut\">' + esc(A.help) + '</span></div>'; } h += '<div class=\"mut\" id=\"actmsg\" style=\"margin-top:8px\"></div>'; }\n  $('#info').innerHTML = h;\n}\n// ---------- 原始碼 ----------\nfunction fileOf(p) { return B.files.find((f) => f.path === p); }\nfunction showFile(path, line, nodeId) {\n  const f = fileOf(path); if (!f) return; curFile = path; $('#fname').textContent = path; const syms = B.symbols.filter((s) => s.file === path); const hl = new Set(); const nid = nodeId || cur; syms.filter((s) => s.node === nid).forEach((s) => hl.add(s.line)); const bySym = {}; syms.forEach((s) => { (bySym[s.line] = bySym[s.line] || []).push(s); });\n  $('#fmeta').textContent = syms.length ? '標記的行可以點，跳到對應的 UML 節點' : '';\n  const lines = f.content.split('\\n'); $('#code').innerHTML = lines.map((l, i) => { const k = i + 1; const sy = bySym[k]; return '<div class=\"ln' + (hl.has(k) ? ' h' : '') + (sy ? ' s' : '') + '\" data-l=\"' + k + '\"' + (sy ? ' data-node=\"' + esc(sy[0].node) + '\" title=\"' + esc(sy.map((x) => x.node).join('、')) + '\"' : '') + '><i>' + k + '</i><span>' + esc(l) + '</span></div>'; }).join('');\n  if (line) { const el = $('#code').querySelector('[data-l=\"' + line + '\"]'); if (el) el.scrollIntoView({ block: 'center' }); }\n}\nfunction renderFiles() { const n = N()[cur]; const fl = n.reference.files; $('#flist').innerHTML = (fl.length ? fl.map((f) => '<a data-file=\"' + esc(f.path) + '\" data-line=\"' + f.line + '\"><span class=\"r\">' + esc(f.roleLabel) + '</span>' + esc(f.path) + ':' + f.line + '</a>').join('') : '<span class=\"mut\">這個節點沒有直接對應的檔案</span>') + '<details><summary class=\"mut\">全部檔案（' + B.files.length + '）</summary>' + B.files.map((f) => '<a data-file=\"' + esc(f.path) + '\">' + esc(f.path) + '</a>').join('') + '</details>'; if (fl.length) showFile(fl[0].path, fl[0].line); else if (curFile) showFile(curFile); }\nfunction go(id) { if (!N()[id]) return; cur = id; const n = N()[id]; $('#crumb').innerHTML = crumbOf(id).map((x, i, a) => (i < a.length - 1 ? '<a data-go=\"' + esc(x.id) + '\">' + esc(x.title) + '</a> ›' : '<b>' + esc(x.title) + '</b>')).join(' '); renderTree($('#q').value); drawDiagram(n); renderInfo(); renderFiles(); }\n// ---------- 動作：嵌在 App 裡由 App 執行；單獨開啟時給一段可以貼給 AI 的指令 ----------\nlet hostWait = null;\nfunction doAction(a) {\n  const n = N()[cur]; const msg = { __fa_uml: 1, type: 'action', node: cur, action: a, level: n.level };\n  if (a === 'show-code') { tab = 'ref'; document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.t === 'ref')); renderInfo(); return; }\n  let extra = ''; if (a === 'add-usecase') { extra = prompt('用一句話描述新的使用案例（例如：顧客可以取消訂單）'); if (!extra) return; msg.args = { text: extra }; }\n  const out = $('#actmsg'); const embedded = window.parent && window.parent !== window; const instr = '請對這份 UML 設計的節點「' + n.id + '」執行動作「' + ACTIONS[a].label + '」。' + (extra ? '內容：' + extra + '。' : '') + '做法：用 design_choices／uml_to_code 工具的 UML 文字格式，只修改這一區（' + n.id + '）與受它影響的關係與呼叫順序，其他保持不變；改完重新呼叫 uml_to_code。目前的 UML：\\n\\n' + B.dsl;\n  if (embedded) { if (out) out.textContent = '已送給 App 處理…'; window.parent.postMessage(msg, '*'); clearTimeout(hostWait); hostWait = setTimeout(() => { if (out) out.textContent = ''; showModal(ACTIONS[a].label, 'App 沒有回應（可能是單獨開啟）。把下面這段貼給 AI（任何強弱的 AI 或離線訓練器都可以）：', instr); }, 4000); } else showModal(ACTIONS[a].label, '單獨開啟的檢視器不能自己執行這個動作。把下面這段貼給 AI（任何強弱的 AI 或離線訓練器都可以）：', instr);\n}\nfunction showModal(t, p, text) { $('#mt').textContent = t; $('#mp').textContent = p; $('#mta').value = text; $('#modal').style.display = 'flex'; }\nwindow.addEventListener('message', (e) => { const d = e.data; if (!d || d.__fa_uml_r !== 1) return; clearTimeout(hostWait); if (d.type === 'bundle' && d.bundle) { const keep = cur; B = d.bundle; init(N()[keep] ? keep : B.root); const out = $('#actmsg'); if (out && d.note) out.textContent = d.note; } else if (d.type === 'note') { const out = $('#actmsg'); if (out) out.textContent = d.note || ''; } });\ndocument.addEventListener('click', (e) => { const t = e.target; const a = t.closest('[data-go]'); if (a) { e.preventDefault(); return go(a.dataset.go); } const f = t.closest('[data-file]'); if (f) { e.preventDefault(); return showFile(f.dataset.file, f.dataset.line ? Number(f.dataset.line) : null); } const tn = t.closest('.tn'); if (tn) return go(tn.dataset.id); const ln = t.closest('.ln.s'); if (ln) return go(ln.dataset.node); const tb = t.closest('#tabs button'); if (tb) { tab = tb.dataset.t; document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b === tb)); return renderInfo(); } const ab = t.closest('[data-act]'); if (ab) return doAction(ab.dataset.act); });\n$('#q').addEventListener('input', () => renderTree($('#q').value)); $('#mclose').onclick = () => { $('#modal').style.display = 'none'; }; $('#mcopy').onclick = () => { $('#mta').select(); try { document.execCommand('copy'); } catch (_) {} };\n$('#b-dsl').onclick = () => showModal('UML 文字', '一行一件事的 UML；任何 AI 都能讀、能改，改完用 uml_to_code 重新產生。', B.dsl); $('#b-zip').onclick = () => { if (window.parent && window.parent !== window) window.parent.postMessage({ __fa_uml: 1, type: 'action', node: cur, action: 'download-zip', level: 'system' }, '*'); else showModal('下載專案', '這個檢視器已經在專案 zip 裡了（viewer.html），不需要再下載。', 'zip 裡的 viewer.html 就是這個頁面；用瀏覽器直接打開即可。'); };\n$('#b-fit').onclick = () => { if (vb) { vb.x = 0; vb.y = 0; vb.w = vb.fw; vb.h = vb.fh; setVb(); } };\nfunction init(start) { document.title = B.title + '　設計檢視器'; $('#title').textContent = B.title; $('#b-lang').textContent = B.language; $('#b-arch').textContent = B.design.architecture ? B.design.architecture.label : ''; $('#b-glue').textContent = '膠水 ' + B.glue.length; go(start || B.root); }\ninit(B.root);\n</script></body></html>\n";
 /* UMLVIEW-END */
