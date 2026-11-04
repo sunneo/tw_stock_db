@@ -106697,6 +106697,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         // 轉移話題」。清除對話在語意上就等於「回到全新對話開始」，這裡一併
         // 重設回建構子的初始值，維持跟「完全沒有對話」狀態一致。
         this.topicData.currentTopic = "無（新對話開始）";
+        // 子對話 S2：本地話題指紋與舊話題也要一併清掉，否則新對話會拿舊指紋比對（同樣的誤判來源）
+        this.topicData.fingerprint = null;
+        this.topicData.pastTopics = [];
         if (this._chatListEnabled) this._writeChatBlob(JSON.stringify({ messages: [], archivedDisplayBlocks: [] }));
         else localStorage.removeItem(this.CHAT_HISTORY_KEY);
         // insertSuggestionChipsMessage()在chipsProvider沒回傳任何建議時會
