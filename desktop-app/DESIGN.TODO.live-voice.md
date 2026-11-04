@@ -252,3 +252,11 @@
 - 未開始：階段 C（聲紋，需使用者同意下載模型）、D、E、F。
 - 需要使用者決定：(1) 聲紋模型要不要下載，候選見調查第 5 節（ECAPA-TDNN ONNX 第三方轉換約 83MB，Apache-2.0）；(2) 「取消前一個」的解釋是否正確；(3) 持續收音改用 AudioWorklet（ScriptProcessor 已淘汰）是否同意。
 - 下一步：等原生執行器那邊把 floating-assistant.js 提交後，重建嵌入產物，做階段 A 的真 Electron 實測，再接線階段 B。
+
+### 2026-11-05 第二段（管理層解除暫停後）
+- 新增純邏輯控制器 `renderer/src/voice/live_controller.js`：主詞判斷（AI、欸哀）、三句取消指令、閘門掛點（階段 D 用）、FIFO 依序送出、停止前面的動作透過 `ctl.isCancelled()` 通知執行端。測試 `scripts/voice-tests/live_controller.test.js` 16 項全過。
+- **尚未做**（所以階段 B 還不算完成）：
+  1. 把 controller 接到 `floating-assistant.js` 的真實流程（持續收音、Whisper 分段、`_submitChatInput` 送出、提示音播放、佇列狀態顯示）。
+  2. 真 Electron 評估（隔離環境、用錄好的測試音檔，或 Chromium 假音訊輸入）。
+  3. 設定區塊目前是原生團隊加的「開發中」標示且停用，要在真的可用後拿掉。
+- 階段 C 到 F 尚未開始；聲紋模型已下載到工作階段暫存，尚未在程式裡使用。
