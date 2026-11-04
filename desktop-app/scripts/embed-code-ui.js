@@ -69,6 +69,8 @@ embed('renderer/src/chat/chat_tree.js', 'CHATTREE-BEGIN', 'CHATTREE-END', 'FA_CH
 embed('renderer/src/chat/topic_local.js', 'TOPICLOCAL-BEGIN', 'TOPICLOCAL-END', 'FA_TOPIC_LOCAL_SRC');
 // 子對話交接內文（renderer/src/chat/handoff.js，純函式、UMD）：子對話 S3，開子對話時產生標題與交接內文。同上，嵌入後用 new Function 載入。
 embed('renderer/src/chat/handoff.js', 'SUBCHATHANDOFF-BEGIN', 'SUBCHATHANDOFF-END', 'FA_SUBCHAT_HANDOFF_SRC');
+// 子對話狀態模型（renderer/src/chat/sub_status.js，純函式、UMD）：子對話 S4，status 轉換與連結卡片文字。同上，嵌入後用 new Function 載入。
+embed('renderer/src/chat/sub_status.js', 'SUBCHATSTATUS-BEGIN', 'SUBCHATSTATUS-END', 'FA_SUBCHAT_STATUS_SRC');
 function embedBehavior() {
     const data = require('./behavior-data.js').load(root);
     const a = src.indexOf('/* BEHAVIOR-BEGIN */'), b = src.indexOf('/* BEHAVIOR-END */');

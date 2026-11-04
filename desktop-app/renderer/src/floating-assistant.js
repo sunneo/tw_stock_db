@@ -4509,6 +4509,9 @@ const FA_TOPIC_LOCAL_SRC = "// 本地話題偵測（純函式，不碰 DOM、不
 /* SUBCHATHANDOFF-BEGIN */
 const FA_SUBCHAT_HANDOFF_SRC = "// 子對話交接內文（純函式，不碰 DOM、不做 I/O、不呼叫模型）。\n// 偵測到新話題、開出子對話時，用這裡的結果：子對話標題，以及一段交接 system 訊息。\n// 交接只放「從哪個父對話分出來」與舊話題最近幾則使用者訊息的短摘錄，不載入整段歷史。\n//\n// 所有數字都是上限，超過就截斷：\n//   TITLE_MAX      子對話標題（含省略號）最多幾個字\n//   PARENT_MAX     父對話標題在交接內文裡最多幾個字\n//   EXCERPT_MAX    每則摘錄最多幾個字\n//   EXCERPT_COUNT  最多摘錄幾則舊話題的使用者訊息（取最近的）\n//   TOTAL_MAX      交接內文總長上限（字）\n(function (root, factory) {\n  if (typeof module === 'object' && module.exports) { module.exports = factory(); } else { root.AiChatHandoff = factory(); }\n}(typeof self !== 'undefined' ? self : this, function () {\n  'use strict';\n\n  var TITLE_MAX = 20;\n  var PARENT_MAX = 30;\n  var EXCERPT_MAX = 80;\n  var EXCERPT_COUNT = 3;\n  var TOTAL_MAX = 600;\n  var DEFAULT_TITLE = '新對話';\n\n  // 把任意文字壓成單行：換行、tab、連續空白都收成一個空白，前後去掉\n  function oneLine(s) {\n    return String(s == null ? '' : s).replace(/\\s+/g, ' ').trim();\n  }\n\n  // 依「字元」（code point）截斷，不切斷字；超過就在結尾加省略號，總長不超過 max\n  function clip(s, max) {\n    var chars = Array.from(s);\n    if (chars.length <= max) return s;\n    if (max <= 1) return chars.slice(0, Math.max(0, max)).join('');\n    return chars.slice(0, max - 1).join('') + '…';\n  }\n\n  // 子對話標題：新訊息前 TITLE_MAX 字（去掉換行與多餘空白）；空的話用預設名稱\n  function titleOf(newText) {\n    var t = oneLine(newText);\n    return t ? clip(t, TITLE_MAX) : DEFAULT_TITLE;\n  }\n\n  // 舊話題最近幾則使用者訊息（只取 role === 'user' 且內容為字串的）\n  function recentUserTexts(oldTopicMessages) {\n    var list = Array.isArray(oldTopicMessages) ? oldTopicMessages : [];\n    var texts = [];\n    for (var i = 0; i < list.length; i++) {\n      var m = list[i];\n      if (!m || m.role !== 'user' || typeof m.content !== 'string') continue;\n      var t = oneLine(m.content);\n      if (t) texts.push(t);\n    }\n    return texts.slice(-EXCERPT_COUNT);\n  }\n\n  // 交接內文：第一行說明來源，之後是舊話題的摘錄（沒有舊話題就只有第一行）\n  function handoffText(parentTitle, oldTopicMessages) {\n    var parent = clip(oneLine(parentTitle) || '（未命名對話）', PARENT_MAX);\n    var lines = ['這個子對話是從〈' + parent + '〉分出來的。'];\n    var excerpts = recentUserTexts(oldTopicMessages);\n    if (excerpts.length) {\n      lines.push('前一個話題裡使用者最近說過：');\n      for (var i = 0; i < excerpts.length; i++) {\n        lines.push('・' + clip(excerpts[i], EXCERPT_MAX));\n      }\n    }\n    lines.push('請只針對下面的新問題回答；需要舊話題的細節時再問使用者。');\n    return clip(lines.join('\\n'), TOTAL_MAX);\n  }\n\n  // 對外入口：回傳 { title, handoff }。newText 是觸發轉移的那則使用者訊息。\n  function buildHandoff(parentTitle, oldTopicMessages, newText) {\n    return {\n      title: titleOf(newText),\n      handoff: handoffText(parentTitle, oldTopicMessages),\n    };\n  }\n\n  return {\n    buildHandoff: buildHandoff,\n    titleOf: titleOf,\n    TITLE_MAX: TITLE_MAX,\n    PARENT_MAX: PARENT_MAX,\n    EXCERPT_MAX: EXCERPT_MAX,\n    EXCERPT_COUNT: EXCERPT_COUNT,\n    TOTAL_MAX: TOTAL_MAX,\n  };\n}));\n";
 /* SUBCHATHANDOFF-END */
+/* SUBCHATSTATUS-BEGIN */
+const FA_SUBCHAT_STATUS_SRC = "// 子對話狀態模型（純函式，不碰 DOM、不做 I/O、不呼叫模型）。\n// 子對話索引的 status 只會是下面四種之一；連結卡片用 summarize 產生顯示文字。\n//\n// 狀態：\n//   running       進行中\n//   done          已完成（終態）\n//   waiting_user  等使用者回應（子對話出現需要使用者回答的卡片／對話框／權限確認）\n//   failed        失敗（終態）\n//\n// 事件：\n//   start   開始（或重新開始）一輪執行 → 任何狀態都回到 running\n//   finish  這一輪正常結束 → running／waiting_user 變 done；終態不動\n//   error   出錯 → running／waiting_user 變 failed；終態不動\n//   ask     子對話出現需要使用者回應的東西 → running 變 waiting_user；終態不復活\n//   answer  使用者已回應 → waiting_user 變 running；其他狀態不動\n//\n// 規則（測試會逐條驗證）：\n//   - done 與 failed 是終態：之後收到 finish／error／ask／answer 都忽略，只有 start 能離開（「不復活」）。\n//   - 未知的事件或狀態：原樣保留，不丟例外。\n//   - prev 為 null／undefined 視為尚未開始，等同 running 前的狀態（只有 start 有意義，其他事件忽略）。\n(function (root, factory) {\n  if (typeof module === 'object' && module.exports) { module.exports = factory(); } else { root.AiChatSubStatus = factory(); }\n}(typeof self !== 'undefined' ? self : this, function () {\n  'use strict';\n\n  var RUNNING = 'running';\n  var DONE = 'done';\n  var WAITING = 'waiting_user';\n  var FAILED = 'failed';\n  var STATUSES = [RUNNING, DONE, WAITING, FAILED];\n  var EVENTS = ['start', 'finish', 'error', 'ask', 'answer'];\n\n  var QUESTION_MAX = 30; // 等待回應時顯示的問題前幾個字\n  var REASON_MAX = 40;   // 失敗時顯示的原因前幾個字\n\n  function isTerminal(s) { return s === DONE || s === FAILED; }\n\n  // 下一個狀態。不認得的組合原樣回傳 prev。\n  function nextStatus(prev, event) {\n    var s = prev == null ? null : prev;\n    switch (event) {\n      case 'start':\n        return RUNNING;\n      case 'finish':\n        if (s === RUNNING || s === WAITING) return DONE;\n        return s;\n      case 'error':\n        if (s === RUNNING || s === WAITING) return FAILED;\n        return s;\n      case 'ask':\n        if (s === RUNNING) return WAITING;\n        return s;\n      case 'answer':\n        if (s === WAITING) return RUNNING;\n        return s;\n      default:\n        return s;\n    }\n  }\n\n  // 把任意文字壓成單行並依「字元」截斷（不切斷字）；超過就加省略號\n  function clip(s, max) {\n    var t = String(s == null ? '' : s).replace(/\\s+/g, ' ').trim();\n    var chars = Array.from(t);\n    if (chars.length <= max) return t;\n    return chars.slice(0, max).join('') + '…';\n  }\n\n  // 連結卡片顯示文字。info 可選：{ question } 等待回應時的問題，{ reason } 失敗時的原因。\n  function summarize(status, info) {\n    var i = info || {};\n    if (status === RUNNING) return '進行中';\n    if (status === DONE) return '已完成';\n    if (status === WAITING) {\n      var q = clip(i.question, QUESTION_MAX);\n      return q ? '等你回應：' + q : '等你回應';\n    }\n    if (status === FAILED) {\n      var r = clip(i.reason, REASON_MAX);\n      return r ? '失敗：' + r : '失敗';\n    }\n    return '';\n  }\n\n  return {\n    RUNNING: RUNNING,\n    DONE: DONE,\n    WAITING: WAITING,\n    FAILED: FAILED,\n    STATUSES: STATUSES,\n    EVENTS: EVENTS,\n    QUESTION_MAX: QUESTION_MAX,\n    REASON_MAX: REASON_MAX,\n    isTerminal: isTerminal,\n    nextStatus: nextStatus,\n    summarize: summarize\n  };\n}));\n";
+/* SUBCHATSTATUS-END */
 /* GUIPYASYNC-BEGIN */
 const FA_GUI_PYASYNC_SRC = "// 判斷 Python 原始碼要不要走非同步路徑（只有會開視窗的程式才走，既有的 python 行為不動）。\n// 做法：先把字串與註解抹成空白（保留換行，讓行首的比對仍然有效），再只看「行首的 import／from」有沒有 gui 或 pygame。\n// 所以字串或註解裡出現 import gui 不會誤判，import guitar 也不會（比對到單字邊界為止）。\n(function (root, factory) {\n  if (typeof module === 'object' && module.exports) { module.exports = factory(); } else { root.AiChatPyAsync = factory(); }\n}(typeof self !== 'undefined' ? self : this, function () {\n  'use strict';\n\n  // 把字串內容與 # 註解換成空白；換行保留。支援單引號、雙引號、三引號與字首（r、b、f、u 等）。\n  function blankOut(src) {\n    var s = String(src || ''), out = '', i = 0, n = s.length;\n    while (i < n) {\n      var c = s[i];\n      if (c === '#') { // 註解：到行尾為止\n        while (i < n && s[i] !== '\\n') { out += ' '; i++; }\n        continue;\n      }\n      if (c === '\"' || c === \"'\") {\n        var triple = s.substr(i, 3) === c + c + c;\n        var q = triple ? c + c + c : c;\n        out += q.replace(/./g, ' ');\n        i += q.length;\n        while (i < n) {\n          if (s[i] === '\\\\' && i + 1 < n) { out += (s[i + 1] === '\\n' ? '\\n' : '  '); i += 2; continue; }\n          if (s.substr(i, q.length) === q) { out += q.replace(/./g, ' '); i += q.length; break; }\n          if (!triple && s[i] === '\\n') break; // 單行字串遇到換行就結束（不完整的語法交給 Python 報錯）\n          out += (s[i] === '\\n' ? '\\n' : ' ');\n          i++;\n        }\n        continue;\n      }\n      out += c;\n      i++;\n    }\n    return out;\n  }\n\n  // 行首（允許縮排）的 import：import gui／import os, pygame.locals；行首的 from：from gui import …／from pygame.locals import …\n  var GUI_IMPORT = /^[ \\t]*(?:import[ \\t]+(?:[\\w.]+[ \\t]*,[ \\t]*)*(?:gui|pygame)(?![\\w])|from[ \\t]+(?:gui|pygame)(?![\\w]))/m;\n\n  // 讀使用者輸入（input()、sys.stdin）也要走 Worker：同步的 python 沒辦法在呼叫處等一行輸入\n  var STDIN_USE = /(?:^|[^\\w.])input[ \\t]*\\(|\\bsys\\.stdin\\b/;\n\n  function needsAsync(src) {\n    var code = blankOut(src);\n    return GUI_IMPORT.test(code) || STDIN_USE.test(code);\n  }\n\n  return { needsAsync: needsAsync, blankOut: blankOut };\n}));\n";
 /* GUIPYASYNC-END */
@@ -77955,9 +77958,12 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const msg = { role: 'assistant', content: '（互動卡片：' + title + '）' };
         Object.defineProperty(msg, '_card', { value: { spec: s, state: FaCard.createState(s), uid: Math.random().toString(36).slice(2, 8) }, enumerable: false, configurable: true });
         const ctx = this._ctx; const bg = !this._chatIsVisible();
+        // 子對話 S4：這張卡片屬於子對話時，子對話狀態變 waiting_user，父對話的連結卡片顯示問題與回答欄；回答後回到 running
+        const subId = ctx && ctx.id; const subEntry = subId && this._chatEntry(subId); const isChild = !!(subEntry && subEntry.parentId);
         return new Promise((resolve) => {
-            this._cardWaitersMap().set(msg, (r) => { if (bg && ctx) { ctx.waitingForUser = false; try { this._renderChatList(); } catch (_) {} } resolve(r); });
+            this._cardWaitersMap().set(msg, (r) => { if (bg && ctx) { ctx.waitingForUser = false; try { this._renderChatList(); } catch (_) {} } if (isChild) { this._subchatPendingMap().delete(subId); this._subchatSetStatus(subId, 'answer'); } resolve(r); });
             this.messages.push(msg); if (bg && ctx) { ctx.waitingForUser = true; try { this._renderChatList(); } catch (_) {} }
+            if (isChild) { this._subchatPendingMap().set(subId, msg); this._subchatSetStatus(subId, 'ask', { question: title }); }
             this._persistChatHistory(); this._renderMessageHistory();
         });
     }
@@ -79485,6 +79491,8 @@ ${sourceTool.handlerScript}
         ctx.runner = new Proxy(this, {
             get(target, prop, receiver) {
                 if (prop === '_ctx') return ctx;
+                // 子對話 S4：真正的 app 實例（畫面與父對話的連結卡片要用它重畫，不能用 proxy 的 messages）
+                if (prop === '_faHost') return target;
                 if (typeof prop === 'string' && FA_CHAT_CTX_KEYS.has(prop)) return ctx[prop];
                 const v = Reflect.get(target, prop, receiver);
                 if (typeof v === 'function' && typeof prop === 'string' && v.name && v.name.startsWith('bound ') && typeof proto[prop] === 'function') return proto[prop];
@@ -95963,6 +95971,84 @@ _result
     }
 
     // 子對話交接模組（renderer/src/chat/handoff.js）：嵌入時用頂層的 FA_SUBCHAT_HANDOFF_SRC（new Function），只載入一次。
+    // 子對話 S4：狀態模型（renderer/src/chat/sub_status.js）。嵌入時用頂層的 FA_SUBCHAT_STATUS_SRC（new Function），只載入一次。
+    _subchatStatusMod() {
+        if (!this._subchatStatusModule) { const holder = { exports: {} }; new Function('module', FA_SUBCHAT_STATUS_SRC)(holder); this._subchatStatusModule = holder.exports; }
+        return this._subchatStatusModule;
+    }
+
+    // 子對話 S4：所有狀態變化（start／finish／error／ask／answer）都經過這裡。status 寫進索引；
+    // 問題或失敗原因放在 entry.subInfo（只在進入等待或失敗時設定）。狀態有變才寫存檔、重畫側欄；父對話可見時重畫連結卡片。
+    _subchatSetStatus(childId, event, info) {
+        const e = childId && this._chatEntry(childId); if (!e) return;
+        const M = this._subchatStatusMod();
+        const before = e.status; const next = M.nextStatus(before, event);
+        if (next === before) return;
+        e.status = next;
+        e.subInfo = next === M.WAITING ? { question: String((info && info.question) || '') } : next === M.FAILED ? { reason: String((info && info.reason) || '') } : undefined;
+        e.updatedAt = Date.now();
+        // 呼叫端可能是子對話的 proxy（this.messages 是子對話的），畫面一律用真正的 app 實例
+        const host = this._faHost || this;
+        try { host._saveChatIndex(); host._renderChatList(); } catch (_) { /* 側欄更新失敗不影響對話 */ }
+        // 父對話的連結卡片若已在畫面上，只更新它的狀態列與回答欄（增量重畫不會重建舊卡片）
+        try { document.querySelectorAll('.fa-subchat-link[data-child-id="' + childId + '"]').forEach((el) => host._subchatLinkDecorate(el, childId)); } catch (_) { /* 卡片更新失敗不影響對話 */ }
+    }
+
+    // 子對話 S4：連結卡片的狀態列與回答欄。可重複呼叫（先清掉舊的再畫）；回答欄只在等待中且記憶體裡有卡片時出現。
+    _subchatLinkDecorate(w, childId) {
+        const host = this._faHost || this;
+        w.querySelectorAll('.fa-subchat-status, .fa-subchat-answer-row').forEach((n) => n.remove());
+        const info = host._subchatLinkInfo(childId);
+        const st = document.createElement('div');
+        st.className = 'fa-subchat-status';
+        st.style.cssText = 'flex:1 1 100%; font-size:12px; opacity:0.9; overflow-wrap:anywhere;';
+        st.textContent = info.text;
+        w.appendChild(st);
+        if (info.canAnswer) {
+            const row = document.createElement('div');
+            row.className = 'fa-subchat-answer-row';
+            row.style.cssText = 'flex:1 1 100%; display:flex; gap:6px;';
+            const inp = document.createElement('input');
+            inp.type = 'text'; inp.className = 'fa-subchat-answer'; inp.placeholder = '回答子對話…';
+            inp.style.cssText = 'flex:1 1 auto; min-width:0; padding:4px 8px; border-radius:6px; border:1px solid rgba(99,102,241,0.5); font-size:12px;';
+            const send = document.createElement('button');
+            send.type = 'button'; send.className = 'fa-subchat-answer-send'; send.textContent = '回答';
+            send.style.cssText = 'cursor:pointer; padding:4px 10px; border-radius:6px; border:1px solid rgba(99,102,241,0.5); background:transparent; color:#6366f1; font-size:12px;';
+            const submit = () => { const r = host._subchatAnswer(childId, inp.value); if (!r.ok) { st.textContent = '回答失敗：' + r.error; } };
+            send.addEventListener('click', (ev) => { ev.preventDefault(); submit(); });
+            inp.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); submit(); } });
+            row.appendChild(inp); row.appendChild(send); w.appendChild(row);
+        }
+    }
+
+    // 子對話 S4：目前在等使用者回應的卡片（子對話 id → 卡片訊息）。只在記憶體裡，不存檔；重新整理後等待已失效。
+    _subchatPendingMap() { if (!this._subchatPending) this._subchatPending = new Map(); return this._subchatPending; }
+
+    // 子對話 S4：父對話連結卡片要顯示的狀態文字，以及是否可以在父對話回答。
+    _subchatLinkInfo(childId) {
+        const e = this._chatEntry(childId); if (!e) return { status: null, text: '', canAnswer: false };
+        const M = this._subchatStatusMod();
+        const canAnswer = e.status === M.WAITING && this._subchatPendingMap().has(childId);
+        const stale = e.status === M.WAITING && !canAnswer;
+        const text = stale ? '等你回應已失效（重新整理後請到子對話處理）' : M.summarize(e.status, e.subInfo || {});
+        return { status: e.status, text, canAnswer };
+    }
+
+    // 子對話 S4：在父對話回答子對話等待中的問題。答案走「略過選項、直接打字回答」（skipped＋supplement，與 ask_user_card 的工具說明相同），子對話接著跑。
+    _subchatAnswer(childId, text) {
+        const msg = this._subchatPendingMap().get(childId);
+        const w = msg && this._cardWaitersMap().get(msg);
+        if (!w) return { ok: false, error: '子對話目前沒有等待中的問題' };
+        const t = String(text == null ? '' : text).trim();
+        if (!t) return { ok: false, error: '回答不能是空的' };
+        const r = Object.assign(this._cardResult(msg), { confirmed: true, skipped: true, status: 'skipped', supplement: t, answers: {} });
+        try { FaCard.cancel(msg._card.state); } catch (_) { /* 卡片關閉失敗不影響回答 */ }
+        this._cardWaitersMap().delete(msg); this._subchatPendingMap().delete(childId);
+        try { w(r); } catch (_) { /* 等待者出錯不影響父對話 */ }
+        try { this._renderMessageHistory(); } catch (_) { /* 重畫失敗不影響對話 */ }
+        return { ok: true };
+    }
+
     _subchatHandoffMod() {
         if (!this._subchatHandoffModule) { const holder = { exports: {} }; new Function('module', FA_SUBCHAT_HANDOFF_SRC)(holder); this._subchatHandoffModule = holder.exports; }
         return this._subchatHandoffModule;
@@ -95988,11 +96074,13 @@ _result
         const child = this._chatRunner(cctx);
         cctx.messages = [{ role: 'system', content: this._getFinalSystemPrompt() }, { role: 'system', content: handoff }];
         cctx.topicData = { currentTopic: title, fingerprint: fp, pastTopics: [] };
-        const finish = (status) => {
-            const e = this._chatEntry(childId); if (e) { e.status = status; e.updatedAt = Date.now(); }
-            try { this._saveChatIndex(); this._renderChatList(); } catch (_) { /* 側欄更新失敗不影響對話 */ }
-        };
-        Promise.resolve().then(() => child.executeChat(userText)).then(() => finish('done'), (err) => { this._log('⚠️ 子對話執行失敗：' + String((err && err.message) || err)); finish('failed'); });
+        // 子對話 S4：執行結束／出錯都經過 _subchatSetStatus（狀態模型在 sub_status.js）
+        // executeChat 出錯時通常不 reject，而是在子對話裡留下 ⚠️／❌ 開頭的 assistant 訊息（_turnFailureText 的判準），所以完成時也要看這個
+        Promise.resolve().then(() => child.executeChat(userText)).then(() => {
+            const ui = cctx.messages.map((m) => m && m.role).lastIndexOf('user');
+            const why = ui >= 0 ? child._turnFailureText(ui) : '';
+            if (why) { this._log('⚠️ 子對話回應失敗：' + why); this._subchatSetStatus(childId, 'error', { reason: why }); } else this._subchatSetStatus(childId, 'finish');
+        }, (err) => { this._log('⚠️ 子對話執行失敗：' + String((err && err.message) || err)); this._subchatSetStatus(childId, 'error', { reason: String((err && err.message) || err) }); });
         // 父對話的連結卡片：_subchatLink 是可列舉屬性，存檔後重新載入仍在
         const m = this._buildToolResultMessage('display', JSON.stringify({ ok: true, note: '子對話' }), {});
         m.content = '↳ 子對話：' + title;
@@ -107061,6 +107149,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             btn.style.cssText = 'cursor:pointer; padding:4px 10px; border-radius:6px; border:1px solid rgba(99,102,241,0.5); background:transparent; color:#6366f1; font-size:12px;';
             btn.addEventListener('click', (ev) => { ev.preventDefault(); Promise.resolve(this._chatSwitch(link.childId)).catch(() => { /* 切換失敗不影響畫面 */ }); });
             w.appendChild(label); w.appendChild(btn);
+            // 子對話 S4：狀態文字（進行中／已完成／等你回應：…／失敗：…）；等待中且記憶體裡有卡片時，展開回答欄，回答在父對話送出
+            w.setAttribute('data-child-id', link.childId);
+            this._subchatLinkDecorate(w, link.childId);
             container.appendChild(w);
             return;
         }

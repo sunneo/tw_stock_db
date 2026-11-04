@@ -98,7 +98,60 @@
 | FAP 權限框 | 立即跳出，無對話名稱 | 框可見，等點擊 | 視情況（權限確認） |
 | `askBranchChoice` | 沒查 | 沒查 | 沒查 |
 
+## 步驟 4：監控與冒泡（已驗證，見下方已知缺口）
+
+### 改了什麼
+
+- 來源：`renderer/src/floating-assistant.js`（這是源頭；`renderer/floating-assistant*.js` 是建置產物，不提交）。
+- 純函式：`renderer/src/chat/sub_status.js`（步驟 2）嵌入主檔，標記 `SUBCHATSTATUS-BEGIN／END` 放在 `SUBCHATHANDOFF-END` 後面；`scripts/embed-code-ui.js` 新增一行 `embed(...)`；`scripts/build-web-lazy.js` 的 EXCLUDE 加 `SUBCHATSTATUS`（留在網頁版核心，與 `SUBCHATHANDOFF` 相同）。
+- 新方法（源頭檔）：
+  - `_subchatStatusMod()`：載入狀態模型（new Function，只載入一次）。
+  - `_subchatSetStatus(childId, event, info)`：所有狀態變化的入口。狀態有變才寫索引、重畫側欄；父對話的連結卡片若已在畫面上，呼叫 `_subchatLinkDecorate` 只更新它。`entry.subInfo` 只在進入 waiting_user（問題）或 failed（原因）時設定。
+  - `_subchatPendingMap()`：子對話 id → 等待中的卡片訊息（只在記憶體，不存檔）。
+  - `_subchatLinkInfo(childId)`：連結卡片要顯示的文字與 `canAnswer`。等待中但記憶體裡沒有卡片（重新整理後）顯示「等你回應已失效」。
+  - `_subchatAnswer(childId, text)`：父對話回答。用「略過選項＋直接打字回答」的結果（`skipped:true`、`supplement`，與 `ask_user_card` 工具說明相同）交給卡片的等待者，子對話接著跑。
+  - `_subchatLinkDecorate(w, childId)`：連結卡片的狀態列與回答欄（可重複呼叫，先清再畫）。
+- 既有函式的改動：
+  - `_subchatOpenFor`：完成時先用既有的 `_turnFailureText(使用者訊息位置)` 判斷；有失敗文字（⚠️／❌／🚫 開頭的 assistant 訊息）就記 `error`，否則 `finish`。`executeChat` 出錯時通常**不 reject**，只留下訊息，所以只靠 reject 會漏判。
+  - `askCard`：卡片屬於子對話（`ctx.id` 的索引有 `parentId`）時，進入等待前記 `ask`（問題＝卡片標題），等待者回應後記 `answer`。
+  - `_chatRunner`：新增 `_faHost`（proxy 取得真正的 app 實例）。原因見下方教訓。
+  - 連結卡片渲染分支：加 `data-child-id`，改用 `_subchatLinkDecorate`。
+
+### 評估
+
+`scripts/eval/subchat_bubble.eval.js`，真桌面版，換埠 17965，假 LLM。最終結果 `allPass: true`（14 項全過）：
+
+- 案例 A（問使用者 → 父對話回答 → 完成）：子對話 `waiting_user`；父對話連結卡片顯示「等你回應：要用哪種配色？」與回答欄；在父對話回答後 `_subchatAnswer` 回 ok；子對話收到答案（工具結果含「紅色」）、模型接著回「完成」，最後 `done`；父對話沒有卡在回應中。
+- 案例 B（executeChat 拋錯）：`failed`，連結卡片顯示「失敗：fake boom」。
+- 案例 C（executeChat 正常結束但最後一則是 ⚠️ 失敗訊息）：`failed`，連結卡片顯示「失敗：⚠️ 模型回應失敗…」。
+- `loadedWorkdirImpl`：函式原始碼含 `fa-subchat-answer-row`（工作目錄的實作）。
+
+修前證明：步驟 4 第一次跑（改程式前，評估的 A 段與現在相同）：`aStatusWaitingUser: false`、`aParentLinkShowsQuestion: false`、`aParentHasAnswerBox: false`、`aAnswerAccepted: false`、`aStatusDone: false`（子對話沒有停在等待上，也沒有完成）。B／C 案例是後來才改成替換 executeChat 的版本，修前沒有單獨跑過；這點照實說明。
+
+### 評估過程中改掉的東西（都是評估或實作的問題，不是判準被放寬）
+
+1. 假 LLM 回 HTTP 500：應用會重試（約 8 次、間隔逐漸拉長，約 20 秒以上），不是失敗。
+2. 假 LLM 回 HTTP 400：應用把它當成「上下文過長」，做歷史摘要後再試，摘要請求得到的預設「完成」被當成成功。
+3. 假 LLM 失敗時，應用的離線食譜會接住，子對話變成「🍳 離線食譜…」的正常回覆，判成 done。這是應用既有的離線備援，不是 S4 要改的。所以 B／C 改成替換 `executeChat`，測的是 S4 自己的失敗判斷。
+4. 案例 B 一開始找到的是案例 A 的子對話（同一個父對話底下，`[0]` 取到錯的）。改成用標題找。
+
+### 已知缺口（沒有冒泡的等待種類）
+
+1. `requestUserForm`（表單）：子對話在背景時會在 `visibleWaiters` 等待，**使用者切回子對話才會出現**，父對話的連結卡片不會冒泡。會卡住子對話。
+2. FAP 檔案權限框（`_showFapPermissionDialog`）與下載位置選擇（`_showUserFormDialog` 直接呼叫）：是全畫面的 modal，看得見、子對話會等點擊，但框上沒有對話名稱，不知道是哪個子對話在要。沒有改。
+3. `askBranchChoice`：步驟 3 沒查完，沒有改。
+4. 重新整理後：等待中的卡片記憶體消失，子對話索引仍是 `waiting_user`，連結卡片顯示「等你回應已失效」。卡片本身在重新整理後會變成唯讀「已結束」。沒有自動把子對話改成失敗或完成。
+5. **重要（給步驟 5 與管理層）**：子對話送出的工具清單（實測 8～13 項）**不含 `ask_user_card`**。所以真實模型在子對話裡不一定能呼叫它，冒泡在真實使用中可能很少觸發。評估是假模型直接回傳這個工具呼叫，驗證的是執行端與冒泡，不是「模型會不會主動問」。這一點需要管理層決定：要不要讓子對話的工具清單包含 `ask_user_card`。
+6. 錯誤判斷靠 ⚠️／❌／🚫 開頭的文字（`_turnFailureText` 既有判準）。離線備援會把失敗包成正常回覆，子對話會判成 done。
+7. 新增的狀態欄位：`entry.subInfo`（索引欄位，會存檔）、`_subchatPending`（FA 層，不存檔）、`_subchatStatusModule`（FA 層快取）。**沒有**新增 ctx 狀態欄位，所以沒有加進 `FA_CHAT_CTX_KEYS`。
+
 ## 教訓
 
 - 第一次評估失敗的原因是評估設計（第四則觸發了新話題），不是程式。之後看到「沒抓到請求」先印出呼叫類型與子對話清單，不要直接改判準。
+- 主檔是長行，`grep -n` 的行號沒有意義；用 `node` 讀檔後 `indexOf` 定位，回報用字元位置。源頭 `renderer/src/floating-assistant.js` 是排過版的，可以用行號。
+- 在對話 proxy（`_chatRunner`）上呼叫 `_renderMessageHistory` 會畫到**子對話**的訊息；畫面要用真正的 app 實例（`_faHost`）。
+- 增量重畫不會重建已經在畫面上的舊卡片；狀態變了要自己更新那張卡片（`_subchatLinkDecorate`）。
+- `executeChat` 出錯通常不 reject，要看子對話訊息裡的失敗文字；假模型的 500／400 會觸發應用的重試、摘要、離線備援，評估時要替換 `executeChat` 才能測到 S4 自己的分支。
+- 評估跑太久會超過 `run_eval.js` 的 170 秒上限，輸出會是空的。等待時間要縮短到整段在上限內。
+- 工作目錄裡別人未提交的建置產物（`renderer/floating-assistant*.js`、`web-lazy/*`、`update-manifest.json`、`test-reports/*`）在建置時會被覆寫。建置前先備份到暫存資料夾。
 - 主檔是長行，`grep -n` 的行號沒有意義；用 `node` 讀檔後 `indexOf` 定位，回報用字元位置。
