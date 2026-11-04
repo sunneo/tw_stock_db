@@ -161,6 +161,63 @@ CoLU（封閉題外殼）的核心是 `recipe/recipe_core.js` 的 `jsonStep`：
 
 ---
 
+## 補充（管理層 2026-11-04）：全部離線文字模型與無 thinking 的退化
+
+範圍從 Qwen 擴大到專案內**所有離線文字生成模型**（`task: 'text-generation'`，`vlm_core.js:30–50`）。另外的離線模型（圖像轉文字、深度、分割、姿態、語音）不屬於文字生成，不列入 CoLU+Thinking，理由見下表。
+
+### 補充 1：離線文字模型盤點（全部 7 個）
+
+依 `vlm_core.js:30–50` 的 `MODELS` 表。thinking 欄是**程式現況**與**外部已知的模型能力**分開標示；外部能力沒有在本專案實測。
+
+| 模型 id | 行號 | 參數量（概略，label 或註解） | 大小 GPU / CPU | 支援 thinking？ | 工具呼叫 | contextTokens | 目前用途 |
+|---|---|---|---|---|---|---|---|
+| `qwen3-0.6b`（預設） | 30–32 | 0.6B | 543 MB / 589 MB | **支援**（Qwen3 有 `enable_thinking`，程式目前設 false：`floating-assistant.js:50832`、`:50834`） | hermes | 4096 | chat、rag、tools |
+| `qwen3-1.7b` | 48–50 | 1.7B | 1360 MB / 1662 MB | **支援**（同上，程式目前關） | hermes | 8192 | chat、rag、tools |
+| `qwen2.5-0.5b` | 33–35 | 0.5B | 461 MB / 488 MB | **不支援**（Qwen2.5 Instruct 無 thinking 模式；外部已知，沒查範本） | hermes | 4096 | chat、rag、tools，`verified: false` |
+| `qwen2.5-1.5b` | 45–47 | 1.5B | 1165 MB / 1506 MB | **不支援**（同上） | hermes | 8192 | chat、rag、tools |
+| `smollm2-360m` | 36–38 | 360M | 260 MB / 348 MB | **不支援**（外部已知） | 無（`toolCalling: null`） | 2048 | chat、rag，英文為主 |
+| `granite-4.0-350m` | 39–41 | 350M | 336 MB / 551 MB | **不支援**（外部已知，IBM 小模型未標 thinking；沒查） | hermes | 4096 | chat、rag、tools，`verified: false`，註解寫「適合工具階段」 |
+| `granite-4.0-1b` | 42–44 | 1B | 1192 MB / 1702 MB | **不支援**（同上，沒查） | hermes | 8192 | chat、rag、tools，`verified: false` |
+
+結論：全部 7 個中，只有 Qwen3 系列（`qwen3-0.6b`、`qwen3-1.7b`）可能支援 thinking。其餘 5 個在 CoLU+Thinking 裡一律走退化路線（補充 2）。
+
+不列入文字模型（用途不同，`vlm_core.js:12–63`）：`florence-2-base-ft`（12）、`smolvlm-256m`（16）、`vit-gpt2`（20）、`llava-interleave-qwen-0.5b`（24，圖像轉文字，它底下的語言模型是 Qwen 0.5B，但不是文字生成入口）、`depth-anything-v2-small`（52）、`slimsam-77-uniform`（55）、`movenet-thunder`（60）、`whisper-base`（63，`managedOnly`）。
+
+注意：`vlm_core.js:282–287` 的 `weather_zh`、`calc_zh`、`search_zh`、`chat_none` 等是意圖標籤，不是模型。
+
+### 補充 2：沒有 thinking 能力的模型，在 CoLU+Thinking 裡怎麼退化
+
+設計原則：**能力分三級**，程式依模型表決定走哪一級，不靠呼叫端猜。
+
+- **Level 1：內建 thinking**（`qwen3-0.6b`、`qwen3-1.7b`）：`enable_thinking: true`，思考區塊由 (b) 的解析函式去掉，推理紀錄另存。
+- **Level 2：多輪封閉題模擬 thinking**（`qwen2.5-*`、`smollm2-360m`、`granite-4.0-*`）：不開思考。計畫與反思改成**一連串封閉題**，每題仍是字母選擇或短欄位 JSON，程式把前一題答案串成下一題的提示詞。
+- **Level 3：只用 CoLU 外殼**（`smollm2-360m`，英文為主、無工具呼叫）：只做單題封閉題，不做計畫與反思；計畫由程式規則產生，模型只回字母選擇。
+
+Level 2 的具體做法（草案）：
+1. **計畫拆成封閉題鏈**：程式先列出候選步驟（規則產生，例如 `route_core.js` 的做法清單），模型每次只回答「下一步選哪一個 A/B/C」（`maxTokens: 40`，`prefill: '{"choice":'`，沿用 `recipe_core.js` 的 `jsonStep`）。最多 N 步（草案 N=5），每步的答案由程式記入計畫，不讓模型自由寫長段計畫。
+2. **反思用多輪封閉題代替內建 thinking**：核對失敗或計畫完成後，程式問三題（草案）：
+   - 「這個計畫有沒有缺口？A 沒有 B 有」
+   - 若 B：「缺口屬於哪一類？A 欄位缺 B 步驟缺 C 順序錯」
+   - 「修正後要不要重排？A 要 B 不要」
+   每題 `maxTokens` 40，總次數上限 3。這些題都是字母選擇，不要求模型寫理由。
+3. **不讓模型寫自由理由**：封閉題不要求「先想一下再答」。若硬要模擬思考，只允許一個 `{"reason": "…", "choice": "字母"}` 欄位且 `reason` 限 40 字，超過就截斷，只取 `choice`。這一點是草案，沒有實測；小模型寫理由容易偏題，風險高，預設關。
+4. **預算不靠 thinking token**：Level 2 的計畫總耗時由「封閉題數 × 每題上限」決定，不再需要 (d) 的大預算。離線速度風險反而降低（但多輪仍慢於單題，每題都要重新過一次 `_llmGenerate`，見 `floating-assistant.js:100376`）。
+5. **品質退化（預期，沒實測）**：Level 2 的計畫只能到「選步驟」的粒度，拿不到長推理；Level 3 只能做單題。文件要求 UI 明示「這個模型沒有思考能力，計畫為程式輔助」。
+
+Level 判斷的設定位置：模型表加一個欄位（例如 `thinking: 'native' | 'none'`），由 vlm_core 的 `MODELS` 決定，不在呼叫端寫死。`qwen3-*` 設 `native`，其餘設 `none`。未來要加新模型時只改模型表。
+
+風險：
+- 多輪封閉題會讓 `_llmGenerate` 被呼叫多次，每次都會經過 `_vlmEnsureLoaded` 與 worker 派送（`floating-assistant.js:100376–100395`）。要確認連續呼叫時不會重複載入（沒查 `_vlmEnsureLoaded` 的快取行為）。
+- `looksLikeGarbage` 的 64 字檢查（`:100390`）對很短的封閉題可能誤判，要另設門檻（沒實測）。
+
+### 補充 3：對 CoLU+Thinking 的影響
+
+- 只有 Qwen3 兩個模型能走 Level 1，使用者若選 `qwen2.5-1.5b` 或 `granite-4.0-1b`，計畫與反思會走 Level 2。
+- 設定 UI 要顯示目前模型的級別（Level 1／2／3），避免使用者以為離線 thinking 開了就一定有效。
+- 預設模型 `qwen3-0.6b` 是 Level 1，但 contextTokens 只有 4096，多輪與 thinking 都會吃上下文，要沿用 (d) 的比例縮放（`textBudget`，`vlm_core.js` 附近）。
+
+---
+
 ## 沒查的事項
 
 - `index.html` 的 AI 設定 UI 實際位置（只有記憶檔提到，沒讀）。
