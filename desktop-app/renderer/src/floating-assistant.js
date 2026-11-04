@@ -81669,6 +81669,8 @@ ${sourceTool.handlerScript}
         if (slashMenuChk) slashMenuChk.checked = this.advancedSettings.slashCommandMenuEnabled !== false;
         const dragDropSkipConfirmChk = document.getElementById('ai-dragdrop-skip-confirm-chk');
         if (dragDropSkipConfirmChk) dragDropSkipConfirmChk.checked = this.advancedSettings.dragDropAttachSkipConfirm !== false;
+        const topicShiftChk = document.getElementById('ai-topic-shift-chk');
+        if (topicShiftChk) topicShiftChk.checked = this.advancedSettings.topicShiftCheck === true;
         const festivalChk = document.getElementById('ai-festival-chk');
         if (festivalChk) festivalChk.checked = this.advancedSettings.festivalThemeEnabled !== false;
         this._updateFestivalStatusText();
@@ -105486,6 +105488,11 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                     </div>
                                     <p class="ai-advanced-hint">關掉的話，拖曳檔案時會先跳出確認對話框（對話框裡也可以勾選「之後都不再詢問」，效果等同這裡）。拖到 /run-terminal 終端機視窗裡一律直接複製進沙盒檔案系統，不受這個開關影響。</p>
                                     <div style="margin-top:6px; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                                        <input type="checkbox" id="ai-topic-shift-chk" ${this.advancedSettings.topicShiftCheck === true ? 'checked' : ''} style="cursor:pointer;">
+                                        <label for="ai-topic-shift-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">話題更動檢查（每則訊息會多等一次模型判斷，預設關閉）</label>
+                                    </div>
+                                    <p class="ai-advanced-hint">開啟後，每則訊息會先由模型判斷是否換了話題；判定換題時，舊內容會被摘要縮起來。關閉時不判斷、不摘要，每則訊息直接送出，回覆較快。</p>
+                                    <div style="margin-top:6px; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
                                         <input type="checkbox" id="ai-festival-chk" ${this.advancedSettings.festivalThemeEnabled !== false ? 'checked' : ''} style="cursor:pointer;">
                                         <label for="ai-festival-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">啟用台灣節慶套版（春節、元宵、端午、中秋、國慶、聖誕…依台灣行事曆自動換裝，連假期間都算同一個節慶）</label>
                                         <span id="ai-festival-status" class="ai-advanced-hint" style="margin:0;"></span>
@@ -108394,6 +108401,13 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (dragDropSkipConfirmChkBx) {
             dragDropSkipConfirmChkBx.addEventListener('change', (e) => {
                 this.advancedSettings.dragDropAttachSkipConfirm = e.target.checked;
+                this._saveAdvancedSettings();
+            });
+        }
+        const topicShiftChkBx = document.getElementById('ai-topic-shift-chk');
+        if (topicShiftChkBx) {
+            topicShiftChkBx.addEventListener('change', (e) => {
+                this.advancedSettings.topicShiftCheck = e.target.checked === true;
                 this._saveAdvancedSettings();
             });
         }

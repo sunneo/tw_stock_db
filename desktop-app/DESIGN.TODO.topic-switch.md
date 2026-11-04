@@ -33,10 +33,13 @@
 
 `image3dMaxFaces` 另外出現在 `renderer/src/edit/edit3d_host.js:211–220`、`:327` 與 `floating-assistant.js:37667–37783`，那些是圖片轉 3D 的面數 UI，與本功能無關，不動。
 
-## 步驟 3 待確認
+## 步驟 3 — 核取方塊（已完成，2026-11-04）
 
-- Configure → LLM 基礎設定面板的位置：尚未核對（之前記錄約 57589、79087、100399 行，需以 Grep `LLM基礎設定` 重新確認）。
-- 另一份獨立維護的 AI 設定 UI（`index.html` 的 AI 助理設定分頁）是否有「LLM 基礎設定」：尚未查。
+- 面板代號：`llm-basic`（「LLM 基礎設定」，約 81596 行的標籤對照；`data-pane="llm-basic"` 在 105475 行）。使用者說的 Configure 即此對話框（`_openAdvancedModal` 在 80980 行）。
+- 新增核取方塊 `#ai-topic-shift-chk`：105488 行起的 HTML（checkbox＋標籤＋說明）；同步在 `_renderAdvancedSettings` 的 81672–81673 行；點擊寫入事件在 108407 行起（呼叫 `_saveAdvancedSettings`）。
+- 另一份 UI 查證：`renderer/index.html` 只有 CSS 覆蓋（`.ai-advanced-*`），沒有「LLM 基礎設定」或任何 `ai-*-chk` 控制項，對話框 DOM 來自 `floating-assistant.js`。因此沒有第二份需要改的面板。
+- 評估：`scripts/eval/topic_shift_ui.eval.js`（真 Electron）通過：控制項存在、標籤正確、預設未勾、點擊後設定值 true、再點回 false。
+- 注意：`renderer/floating-assistant.js` 必須重建（`node scripts/embed-code-ui.js && node build-assistant.js`）後評估才看得到新控制項。
 
 ## 步驟 4 待確認
 
