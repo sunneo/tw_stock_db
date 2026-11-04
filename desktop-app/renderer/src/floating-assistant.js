@@ -57693,6 +57693,7 @@ class FloatingAssistant {
             repoIndexMaxFiles: 0, // 專案索引：最多分析幾個原始碼檔（0＝不限，預設）
             repoIndexMaxMb: 0, // 專案索引：索引大小上限（MB）（0＝不限，預設）
             image3dMaxFaces: 60000, // 圖片轉 3D：「最細」用到的最大面數（1,000～2,000,000）
+            topicShiftCheck: false, // 話題更動檢查：每則訊息會多等一次模型判斷；預設關閉（關閉時不判斷、不產生話題摘要）
             repoExplainModel: 'on', // 離線更新說明（語法樹＋函式語意）：'on'＝再用離線文字模型潤飾沒有註解的說明，'off'＝只用程式組出來的
             repoIndexDisk: {}, // 專案索引：每個專案「要不要把索引寫進專案資料夾的 .floating-assistant/index/」的決定 { <root>: 'yes'|'no' }（第一次建索引時問，見 _repoIndexAskDisk；沒有這個專案的鍵＝還沒問過）；'no'＝退回記憶體索引並套用保護上限
             repoIndexAutoSave: 'all', // 專案索引：完成後自動存回專案資料夾的 .floating-assistant/index/（'notes'＝只存說明、'all'＝說明＋索引資料、'off'＝不存）；2026-10-13 預設改 'all'：索引直接建立在資料夾裡，不用手動存／載／匯出入
@@ -59123,6 +59124,7 @@ class FloatingAssistant {
             offlineAutoTrain: ['auto', 'manual', 'off'].indexOf(raw.offlineAutoTrain) >= 0 ? raw.offlineAutoTrain : (raw.offlineAutoTrain === true ? 'auto' : 'off'),
             repoIndexMaxFiles: (() => { const n = Math.floor(Number(raw.repoIndexMaxFiles)); return Number.isFinite(n) && n >= 1 && n !== 50000 ? n : 0; })(),
             image3dMaxFaces: (() => { const n = Math.floor(Number(raw.image3dMaxFaces)); return Number.isFinite(n) && n >= 1000 ? Math.min(2000000, n) : 60000; })(),
+            topicShiftCheck: raw.topicShiftCheck === true,
             repoExplainModel: raw.repoExplainModel === 'off' ? 'off' : 'on',
             repoIndexDisk: (() => { const o = {}; if (raw.repoIndexDisk && typeof raw.repoIndexDisk === 'object') for (const [k, v] of Object.entries(raw.repoIndexDisk)) if (k && (v === 'yes' || v === 'no')) o[k] = v; return o; })(),
             repoIndexAutoSave: ['off', 'notes', 'all'].indexOf(raw.repoIndexAutoSave) >= 0 ? raw.repoIndexAutoSave : 'all',
