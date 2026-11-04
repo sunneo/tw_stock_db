@@ -55,6 +55,44 @@
 - 現有保守規則（95953「判斷有疑慮時一律 isShifted:false」）依使用者決定「不用保留」，S2 的本地偵測偏向判成新話題。
 - 現有 `topicData.currentTopic` 會在不轉移時也被更新（96051），S2 要的指紋應另存，不共用這個字串。
 
-## 步驟 2 起
+## 步驟 2：純函式 `renderer/src/chat/topic_local.js`（commit `a85577c4`）
 
-（待寫）
+- `fingerprintOf(text)`：中文取二元組（單字取一元組），英文與數字取小寫單字；虛詞清單 `STOP_CJK_BIGRAMS`、`STOP_EN_WORDS` 不計入。回傳純物件詞頻表。
+- `mergeFingerprint(fp, text, max)`：累加後只留次數最多的 `max` 個詞，預設 40。理由：話題核心詞會反覆出現，次數高者留下；40 個詞約容納十來則內容訊息，比對成本可忽略。同次數依字典序，結果確定。
+- `similarity(a, b)`：餘弦相似度，0–1。
+- `detectShift(current, candidates, text, opts)`：判斷順序見檔頭註解。門檻 `sameThreshold = 0.25`、`matchThreshold = 0.25`，偏向判轉移（使用者決定「誤判寧可多開」）。0.25 是經驗值，由測試案例校準，可由 `opts` 覆寫。
+- 太短的判定：去掉句尾標點後不到 2 個字，或在 `TRIVIAL` 清單內（「好」「繼續」「謝謝」等），不判轉移。
+- 延續句：`CONTINUATION_RE` 只涵蓋「（再／又／也／還）＋加／多／來／改／換成／換一／同樣／一樣／繼續／接著」開頭，以及英文 also／again／another／more／add／continue 開頭。這是為了讓「再加一隻狗」不被判成新話題。
+
+測試：`node renderer/src/chat/topic_local.test.js` 12 項全過，含使用者案例序列、英文序列、中英混合序列，以及 1000 次判斷總耗時（實測約 10 ms，門檻 50 ms）。
+
+## 步驟 3：接進 `executeChat`（commit `42fc6b68`，補丁 `2604b09b`）
+
+- 主檔新增 `_topicLocalMod()`（比照 `_chatTreeMod`，用 `new Function` 載入嵌入的 `FA_TOPIC_LOCAL_SRC`）與 `_localTopicCheck(userText)`（同步、不 await、不改 `this.messages`）。插在 `_checkTopicTransition` 前面。
+- 呼叫點：`executeChat` 內原本的 `await this._checkTopicTransition(userText)` 改為 `this._localTopicCheck(userText)`，仍由 `topicShiftCheck === true` 把關。開關關閉時完全不呼叫。
+- 狀態：`this._lastTopicShift = { isShifted, score, matchedTopicId, reason, at }`；`topicData.fingerprint` 是目前話題指紋；`topicData.pastTopics` 是轉出的舊話題（上限 20 筆，S5 比對用）。
+- 嵌入：`scripts/embed-code-ui.js` 新增 TOPICLOCAL 區塊；`scripts/build-web-lazy.js` 的 EXCLUDE 加入 `TOPICLOCAL`，與 `CHATTREE` 相同，留在網頁版核心。
+- 清除對話（`_clearChatHistory`）也會清掉 `fingerprint` 與 `pastTopics`（補丁 `2604b09b`）。
+- 未改：`_checkTopicTransition` 本體保留（S3 決定是否刪）；摘要與整批替換 `this.messages` 的程式碼仍在它裡面，只是不再被呼叫（開關開啟時）。
+
+## 步驟 4：真桌面版評估（`scripts/eval/topic_local.eval.js`）
+
+- 指令：`node scripts/eval/run_eval.js scripts/eval/topic_local.eval.js 17961`，結果寫在 `[eval-file] result`。
+- 修後（commit 之後的工作目錄建置）：13 項判準全部通過（`allPass: true`）。每則偵測耗時 0.1–2.8 ms，皆小於 5 ms。開關開啟時，模型呼叫序列只有 `main_chat`；`_lastTopicShift` 依序為 不轉移（`no-current-topic`）／不轉移（`continuation-phrase`）／轉移（`new-topic`）／轉移（`returned-to-earlier-topic`，matchedTopicId 有值）／不轉移（`trivial`）。`this.messages` 沒有摘要、`archivedDisplayBlocks` 沒有新增。
+- 修前對照：暫時把建置產物換成步驟 3 之前的備份建置，跑同一個評估，結果不同：開關開啟時每則都有 `topic_check`＋`shift_summary`＋`main_chat` 三次呼叫，`_lastTopicShift` 不存在，判準全數失敗。跑完已還原修後建置（以 `cmp` 確認）。
+- 來源檢查：`loadedWorkdirImpl` 用字串常值「判定新話題」檢查工作目錄載入的實作，`loadedBehaviorOk` 用行為檢查。
+
+## 驗證範圍（誠實列出）
+
+- 真桌面版驗證過：送出流程的模型呼叫序列、`_lastTopicShift` 結果序列、偵測耗時、開關關閉時行為不變、修前修後對照。
+- 只有 node 測試：`topic_local.js` 的判斷規則（12 項）。
+- 既有測試：`chat_tree.test.js` 22 項、`read_ledger.test.js` 12 項通過。
+- 沒有驗證：真實使用者訊息上的誤判率沒有量測。門檻與延續句清單只用上述案例校準，遇到真實對話可能要調整。
+- 沒有驗證：`topicShiftCheck` 開啟時整個 UI 行為（側欄、畫面）。S2 只改偵測，不改畫面。
+- 建置產物（`renderer/floating-assistant*.js`、`update-manifest.json`、`web-lazy/*`、`test-reports/*`）是建置的副產品，沒有提交；原本的建置產物備份在 scratchpad `s2-backup` 目錄下。
+
+## 教訓
+
+1. 新增一個對話狀態（`topicData.fingerprint`、`pastTopics`）時，要同時檢查所有重設點。這次漏了 `_clearChatHistory`，是在步驟 3 之後才補上（補丁 `2604b09b`）。下次新增狀態欄位，先 Grep 該物件的重設處（`topicData`）再寫。
+2. 評估檔若依賴新函式（如 `_topicLocalMod`），要先用防呆寫法，否則修前版本會在最後一步拋錯、拿不到對照結果。
+3. 主檔是 CRLF 行尾，Edit 工具替換多行時要注意行尾。這次新增的多行片段沒有出問題，但 git 顯示 LF 會轉成 CRLF 的警告。
