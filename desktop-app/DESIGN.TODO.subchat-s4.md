@@ -178,6 +178,24 @@
 - 插話文字只進子對話的訊息，不會自動在父對話顯示（父對話的連結卡片沒有列出傳過去的內容）。
 - 步驟 4 的已知缺口（表單、權限框、重新整理後的等待）沒有因為這一步改變。
 
+## 步驟 6：回歸（已驗證）
+
+真桌面版，各評估各自換埠、並行跑，改動後的最新建置（步驟 5 之後）。
+
+| 評估 | 結果 | 說明 |
+|---|---|---|
+| `subchat_open.eval.js` | `allPass: true`（18 項） | 含「開關關閉」段：`offNoChild`、`offNoLinkCard`、`offEachTurnOneParentCall`（三則都只在父對話、每則一次父對話呼叫） |
+| `subchat_link.eval.js` | `allPass: true`（14 項） | 連結卡片的打開、存檔重讀、側欄樹狀 |
+| `subchat_card_request.eval.js` | `allPass: true`（6 項） | 步驟 1 的連結卡片不進請求 |
+| `subchat_bubble.eval.js` | `allPass: true`（14 項） | 步驟 4 冒泡，步驟 5 之後重跑 |
+| `subchat_send.eval.js` | `allPass: true`（19 項） | 步驟 5 傳訊息 |
+| `topic_local.eval.js` | 全部 true（13 項） | 開關關閉的呼叫數與開啟時一致 |
+| `chat_tree.eval.js` | 全部判準 true | 含 `regression_no_children`、`regression_class_names` |
+| `chat_tree_index.eval.js` | 各欄位符合預期，沒有 false | 沒有內建 `allPass`，人工判讀 |
+| `read_ledger.eval.js` | 數值符合 S3 記錄的方向 | **沒有內建判準**，人工判讀，不算通過（與 S3 相同） |
+
+結論：開關關閉時，三則訊息只在父對話處理，沒有子對話與連結卡片（`subchat_open` 關閉段、`topic_local` 關閉段）；既有的子對話、樹狀、索引功能沒有變紅。
+
 ## 教訓
 
 - 第一次評估失敗的原因是評估設計（第四則觸發了新話題），不是程式。之後看到「沒抓到請求」先印出呼叫類型與子對話清單，不要直接改判準。
