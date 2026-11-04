@@ -52428,6 +52428,8 @@ function faVlmWorkerMain() {
 const FA_DEDUP_EXACT_TOOLS = new Set(['images_to_pdf', 'merge_pdfs']);
 const FA_DEDUP_TOOLS = new Set(['images_to_pdf', 'merge_pdfs', 'delegate_to_subagent', 'delegate_subtask', 'burn_subtitles', 'transcribe_media', 'extract_audio', 'text_to_speech', 'export_document', 'render_3d_scene', 'render_interactive_viewer', 'render_2d_animation', 'convert_media', 'compress_media']);
 const FA_WRITE_EVIDENCE_TOOLS = new Set(['fap_write_file', 'fap_apply_patch', 'attachment_apply_patch', 'fs_write_file', 'fs_mkdir', 'fs_remove', 'apply_git_patch', 'git_commit', 'git_push', 'coding_workspace', 'fap_copy_from_storage', 'fap_download_url', 'skill_create', 'export_document', 'bash_execute', 'python_execute', 'run_command', 'tmux_send_keys', 'browser_type_text', 'terminal_create', 'terminal_run', 'terminal_cp_to', 'terminal_cp_from', 'render_presentation', 'begin_presentation', 'add_chapters', 'finish_presentation', 'render_3d_scene', 'render_drawing', 'render_interactive_viewer', 'render_2d_animation']);
+// 全語音Live：指令要求「唸／念／讀／講故事給我聽」時，AI 的回覆要用 TTS 唸出來
+const FA_LIVE_READ_RE = /(?:[唸念讀朗]|說|講)[\s\S]{0,8}(?:故事|給我聽|出來|一遍)|朗讀|故事[\s\S]{0,6}(?:唸|念|讀|說|講)/;
 const BROWSER_CONTROL_TOOL_NAMES = ['browser_status', 'browser_create_tab_group', 'browser_create_tab', 'browser_list_tabs', 'browser_navigate', 'browser_close', 'browser_activate_tab', 'browser_scroll', 'browser_screenshot', 'browser_get_page_text', 'browser_get_page_structure', 'browser_get_elements', 'browser_mouse', 'browser_click', 'browser_type_text', 'browser_press_key', 'browser_wait_download', 'browser_set_download_behavior', 'browser_upload', 'browser_list_downloads', 'browser_task'];
 const BROWSER_CONTROL_HINT = '\n\n【瀏覽器控制已啟用】你另外有browser_*工具可以操控使用者的Chrome（先browser_status確認連線）：所有分頁一律放在同一個「AI Controlled」分頁群組（browser_create_tab/browser_create_tab_group會自動放進去）；找不到分頁（tab_id過期或被關掉）就直接開新分頁，不要回報失敗；用browser_get_page_structure（首選，結構化）/browser_get_elements讀頁面、browser_click(selector或text)點擊（同一種頁面結構要跑很多個網址時可以重用同一個selector，不用每次重新screenshot算座標）、browser_type_text操作、browser_screenshot截圖給使用者看；**會觸發下載的點擊一定要帶wait_download:true，看到download.path才算真的成功，不能假設已下載**；不要輸入密碼/付款資料，登入或付款頁面交還使用者。需要查網頁、看網站實際畫面、操作網頁時優先使用；讀完網頁後回答時盡量結構化（結論→條列/表格→來源連結），不要貼整段原文。';
 const FA_BROWSER_EXTENSION_FALLBACK_BASE = 'https://raw.githubusercontent.com/sunneo/tw_stock_db/desktop-app/web/browser-control-extension/';
@@ -103203,6 +103205,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         while (ctx && ctx.isResponding && !ctl.isCancelled()) await sleep(200);
         if (ctl.isCancelled()) return;
         this._liveVoiceStatus('執行中「' + String(text).slice(0, 40) + '」');
+        const n0 = ctx && ctx.messages ? ctx.messages.length : 0;
         this._submitChatInput({ value: text, dispatchEvent() {}, focus() {} }, null);
         const t0 = Date.now();   // 不是每個指令都會呼叫模型，最多等 3 秒看它有沒有開始
         while (ctx && !ctx.isResponding && Date.now() - t0 < 3000 && !ctl.isCancelled()) await sleep(100);
@@ -103215,6 +103218,42 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             await sleep(200);
         }
         if (!ctl.isCancelled()) this._liveVoiceStatus('完成「' + String(text).slice(0, 40) + '」');
+        // 唸故事／朗讀：指令要求「唸、念、讀、講給我聽」時，把這個指令產生的 AI 回覆用專案的 TTS 唸出來（文字來源就是對話回覆）。
+        if (!ctl.isCancelled() && FA_LIVE_READ_RE.test(String(text)) && ctx && ctx.messages) {
+            const reply = ctx.messages.slice(n0).filter((m) => m && m.role === 'assistant' && typeof m.content === 'string' && m.content.trim()).map((m) => m.content.trim()).join('\n');
+            if (reply) await this._liveVoiceSpeakText(reply, ctl);
+        }
+    }
+
+    // 把一段文字用專案 TTS 唸出來並播放；唸的期間收音靜音（AI 自己的聲音不收進去）。專案 TTS 失敗就退回瀏覽器內建語音。
+    async _liveVoiceSpeakText(text, ctl) {
+        const plain = String(text).replace(/```[\s\S]*?```/g, ' ').replace(/[#*_`>|~\[\]]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 1200);
+        if (!plain) return { ok: false, error: '沒有可唸的文字' };
+        this._liveVoiceStatus('朗讀中（' + plain.length + ' 字）');
+        try {
+            const r = await this._synthesizeSpeech(plain, '', () => {}, undefined, { format: 'wav' });
+            if (r && r.ok && r.audio_file_id) {
+                const rec = await this.fileCache.get(r.audio_file_id);
+                if (rec && rec.blob) {
+                    const url = URL.createObjectURL(rec.blob);
+                    const a = new Audio(url);
+                    this._vpMuteFor((r.durationSeconds || 5) * 1000 + 1500);
+                    await new Promise((res) => {
+                        const poll = setInterval(() => { if (ctl && ctl.isCancelled()) { try { a.pause(); } catch (_) { /* */ } clearInterval(poll); res(); } }, 200);
+                        const end = () => { clearInterval(poll); res(); };
+                        a.onended = end; a.onerror = end;
+                        a.play().catch(end);
+                    });
+                    URL.revokeObjectURL(url);
+                    this._vpMuteFor(600);
+                    try { if (this.fileCache.delete) await this.fileCache.delete(r.audio_file_id); } catch (_) { /* 暫存檔刪不掉不影響 */ }
+                    return { ok: true, engine: 'project-tts' };
+                }
+            }
+            this._liveVoiceStatus('專案語音合成沒成功（' + String((r && r.error) || '未知').slice(0, 80) + '），改用瀏覽器內建語音');
+        } catch (e) { this._liveVoiceStatus('專案語音合成出錯（' + String((e && e.message) || e).slice(0, 80) + '），改用瀏覽器內建語音'); }
+        this._vpSpeak(plain.slice(0, 300));
+        return { ok: true, engine: 'speechSynthesis' };
     }
 
     // 語音回答卡片：把確認提問與結果以文字顯示在聊天（語音由控制器另外唸）。
