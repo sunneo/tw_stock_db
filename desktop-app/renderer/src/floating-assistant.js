@@ -83908,7 +83908,7 @@ ${sourceTool.handlerScript}
         const voiceInputLangSelect = document.getElementById('ai-voice-input-lang');
         if (voiceInputLangSelect) voiceInputLangSelect.value = this.advancedSettings.voiceInputLanguage || 'zh';
         const liveVoiceEnabledChk = document.getElementById('ai-live-voice-enabled-chk');
-        if (liveVoiceEnabledChk) liveVoiceEnabledChk.checked = this.advancedSettings.liveVoiceEnabled === true;
+        if (liveVoiceEnabledChk) liveVoiceEnabledChk.checked = !!this._liveVoice;
         const liveVoiceLimitInput = document.getElementById('ai-live-voice-speaker-limit');
         if (liveVoiceLimitInput) liveVoiceLimitInput.value = String(this.advancedSettings.liveVoiceSpeakerLimit || 8);
         const liveVoiceWakeSelect = document.getElementById('ai-live-voice-wake');
@@ -103307,6 +103307,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             this._liveVoiceStatus('無法開始收音：' + String((e && e.message) || e));
             this._liveVoice = null;
             controller.setEnabled(false);
+            try { const chk = document.getElementById('ai-live-voice-enabled-chk'); if (chk) chk.checked = false; this.advancedSettings.liveVoiceEnabled = false; this._saveAdvancedSettings(); } catch (_) { /* 設定頁沒開 */ }
         });
         return { ok: true };
     }
@@ -103462,6 +103463,24 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (store.needsEnrollment()) return { ok: false, needEnroll: true, error: '第一次開啟要先錄入聲紋（按下方「錄入聲紋」）' };
         await this._vpEnsureSession();
         return this._liveVoiceStart({ skipVoiceprint: true });
+    }
+
+    // 設定頁開關打開時的完整流程：沒有聲紋就強制先錄入（取消或失敗＝維持關閉），錄入成功再開始收音。
+    async _liveVoiceTurnOn() {
+        try {
+            if (this._liveVoice) return { ok: true, already: true };
+            const store = await this._vpLoadStore();
+            if (store.needsEnrollment()) {
+                this._liveVoiceStatus('第一次開啟全語音Live，要先錄入聲紋');
+                const name = (typeof prompt === 'function') ? prompt('第一次開啟全語音Live要先錄入聲紋。這組聲紋的名稱（例如：我）；按取消就維持關閉', '我') : null;
+                if (name === null) return { ok: false, error: '已取消錄入聲紋，全語音Live 維持關閉' };
+                this._liveVoiceStatus('請開始說話，約 5 秒（錄入聲紋）');
+                const e = await this._vpEnrollRecorded(name);
+                this._vpAnnounce(e);
+                if (!e.ok) return { ok: false, error: '錄入聲紋沒成功（' + e.error + '），全語音Live 維持關閉' };
+            }
+            return await this._liveVoiceEnableFromUi();
+        } catch (e) { return { ok: false, error: '無法開啟全語音Live：' + String((e && e.message) || e) }; }
     }
 
     async _vpMatchSamples(mono, rate) {
@@ -108882,22 +108901,22 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                     <p class="ai-advanced-hint">告訴Whisper模型你講的是哪種語言，幫助辨識準確度——不是翻譯，辨識出來的文字語言會跟你實際講的語言一致（選中文、講中文，辨識結果就是中文；選English、講英文，結果就是英文原文，不會被翻譯成中文）。「自動偵測」讓模型自己判斷，通常準確度會比明確指定語言稍低。</p>
                                 </div>
                                 <div class="ai-advanced-stack">
-                                    <label class="ai-advanced-label">全語音Live（開發中，尚未可用）</label>
-                                    <p class="ai-advanced-hint">這個功能還在開發中，目前不能使用。下面的設定已停用，只顯示預設值；等之後版本開放後才能改。</p>
+                                    <label class="ai-advanced-label">全語音Live（預設關閉）</label>
+                                    <p class="ai-advanced-hint">預設關閉。第一次開啟時如果還沒有聲紋，會強制先錄入一組（不能跳過；取消錄入就會維持關閉）。聲紋模型約 80MB，第一次會先問你再下載。為了隱私，重新開啟程式後不會自動收音，需要再勾選一次。</p>
                                     <div style="display:flex; align-items:center; gap:6px;">
-                                        <input type="checkbox" id="ai-live-voice-enabled-chk" style="cursor:pointer;" disabled>
+                                        <input type="checkbox" id="ai-live-voice-enabled-chk" style="cursor:pointer;">
                                         <label for="ai-live-voice-enabled-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">啟用全語音Live</label>
                                     </div>
                                     <p class="ai-advanced-hint">開啟後麥克風會隨時收音。聲音先比對聲紋，不符合的聲音一律無視；AI 自己回應的聲音也會無視。指令要先說主詞才會執行。聲紋上限只能在這裡修改，不能用語音改。</p>
                                     <label class="ai-advanced-label" for="ai-live-voice-speaker-limit" style="font-weight:normal; margin-top:8px;">聲紋上限（8 到 128，預設 8）</label>
-                                    <input type="number" id="ai-live-voice-speaker-limit" class="ai-advanced-input" min="8" max="128" step="1" disabled>
+                                    <input type="number" id="ai-live-voice-speaker-limit" class="ai-advanced-input" min="8" max="128" step="1">
                                     <label class="ai-advanced-label" for="ai-live-voice-wake" style="font-weight:normal; margin-top:8px;">主詞</label>
-                                    <select id="ai-live-voice-wake" class="ai-advanced-input" disabled>
+                                    <select id="ai-live-voice-wake" class="ai-advanced-input">
                                         <option value="AI">AI</option>
                                         <option value="欸哀">欸哀（同音字）</option>
                                     </select>
                                     <label class="ai-advanced-label" for="ai-live-voice-chime" style="font-weight:normal; margin-top:8px;">指令排入佇列時的提示音</label>
-                                    <select id="ai-live-voice-chime" class="ai-advanced-input" disabled>
+                                    <select id="ai-live-voice-chime" class="ai-advanced-input">
                                         <option value="ding">叮咚</option>
                                         <option value="tech">科技感</option>
                                         <option value="speech">語音播報</option>
@@ -112539,14 +112558,16 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         }
         const liveVoiceEnabledChkEl = document.getElementById('ai-live-voice-enabled-chk');
         if (liveVoiceEnabledChkEl) {
-            liveVoiceEnabledChkEl.addEventListener('change', () => {
+            liveVoiceEnabledChkEl.addEventListener('change', async () => {
                 if (liveVoiceEnabledChkEl.checked) {
-                    const r = this._liveVoiceStart();
+                    liveVoiceEnabledChkEl.disabled = true;
+                    const r = await this._liveVoiceTurnOn();
+                    liveVoiceEnabledChkEl.disabled = false;
                     if (!r.ok) { liveVoiceEnabledChkEl.checked = false; this._liveVoiceStatus(r.error); }
                 } else {
-                    this._liveVoiceStop();
+                    await this._liveVoiceStop();
                 }
-                this.advancedSettings.liveVoiceEnabled = !!liveVoiceEnabledChkEl.checked;
+                this.advancedSettings.liveVoiceEnabled = !!this._liveVoice;
                 this._saveAdvancedSettings();
             });
         }
