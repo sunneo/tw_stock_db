@@ -395,7 +395,7 @@
    - 做法：order 為 `native` 時經 `_nrCall('run', {messages, template, gen, maxTokens})` 送出；`gen` 必須是 `FaVlm.textGenParams(model, {deterministic})` 的結果，不另外定義預設；失敗或 `no_engine` 時退回 webgpu／wasm，並把實際後端與原因寫進 log。
    - 真引擎程式：`nr-child.js` 目前是假引擎；要改為真的 ORT 推論（參考 `scripts/eval/nvw_live.js` 與 `scripts/eval/native_det_batch.js` 的 KV 迴圈，兩者都已驗證）。
 4. **按需下載**（已做到本機驗證；branch 尚未推送）
-   - 來源順序：1 npm 官方庫（onnxruntime-node-1.22.0.tgz，93,267,589 位元組，integrity sha512 相符）；2 GitHub 分支 `native-runtime-1.22.0`（單一 commit `9702b977`，釘住完整 SHA 的 raw 網址，49 個檔案，分割段每段 ≤5 MB、逐段 md5、合併後整檔 sha256）。npm 連線失敗、逾時、HTTP 非 200、integrity 不符才切換，log 寫明來源與原因。
+   - 來源順序：1 npm 官方庫（onnxruntime-node-1.22.0.tgz，93,267,589 位元組，integrity sha512 相符）；2 GitHub 分支 `native-runtime-1.22.0`（單一 commit `9702b977`，釘住完整 SHA 的 raw 網址，49 個檔案，分割段每段 ≤5 MB、逐段 md5、合併後整檔 sha256）。npm 連線失敗、逾時、回應狀態碼不是 200、integrity 不符才切換，log 寫明來源與原因。
    - 抽取：只取 win32-x64 與 linux-x64 的 onnxruntime 原生檔與 binding，排除 DirectML、dxcompiler、dxil；onnxruntime-common 1.22.0 的 dist/cjs 與 package.json 也放進分割包。`adm-zip`、`global-agent` 不需要（dist/index.js 只 require 三個本地模組與 onnxruntime-common）。
    - 大小：win32-x64 約 21.7 MB、linux-x64 約 31.4 MB（分割包內的全部檔案，含子程序程式）。
    - 驗證（真 Electron，假來源＝本機檔案）：(1) npm 與 GitHub 兩條路徑得到的每個檔案 sha256 相同，且等於清單（`scripts/eval/native_runtime_install_test.js`，8 項全部通過，含 npm 不可用與 integrity 錯誤時改走來源 2）；(2) 信箱 `install` → `status` → `run` 真推論，c0 題與參考文字相同（sourceCounts：npm 7、GitHub 23、本機 7）；(3) 安裝後的 onnxruntime.dll 與 binding 的 sha256 與本機 ort-node-test122 相同。
