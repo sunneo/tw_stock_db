@@ -424,3 +424,24 @@
 - 預期：最後一行 `全部通過`，exit 0。提交前必須跑。
 - 規則：必須出現「標準輸入輸出」「progress.jsonl」「直接實作」；禁止詞清單在共識檔中（見上一行的指令，不在此重複列出）。
 - 寫這份文件時，禁止詞要避開，例如用「網路通道」「本機服務」代替。
+
+### (6) 第二位接手（2026-11-05，Haiku，超過 30% 門檻）
+
+- 已提交：第 1 項舊版安裝模擬 `ccc5866a`；第 2 項執行包 `7416daee`。
+- 還沒做：第 3 項（接真引擎）、第 4 項（真網路下載）、第 5 項（完整核心測試與端到端）。
+- **第 4 項要使用者決定，請先停下回報**（沒有使用者同意前，不下載、不安裝）：
+  1. 執行包要從哪裡下載（來源位置）？請使用者指定，不要自己選。
+  2. 大小（只算執行時要用的檔案）：Windows x64 約 20.8 MB；Linux x64 約 30.0 MB；nr-*.js 很小，另計。
+  3. 是否同意下載？下載前要先報檔名與來源。
+- 新發現的坑：
+  - 這台的一般 node 是 32 位元（ia32），載不了 x64 原生檔；要用 Electron 執行檔加 `ELECTRON_RUN_AS_NODE=1` 測（見 `scripts/native-runtime-pack.js` 的驗證做法）。
+  - 執行包不含 DirectML、dxcompiler、dxil 三個 DLL（產品不提供 DirectML）；打包時用 `skipFile` 排除。
+  - 原生檔來源是 `%TEMP%\ort-node-test122`（使用者 2026-11-04 同意安裝的 1.22.0）；打包工具只讀本機，不會自己下載。
+  - `FA_NATIVE_RUNTIME_LOCAL_SRC` 只給測試用；第 4 項之後要確認正式版不會設定它。
+  - `scripts/eval/native_old_install_sim.js` 固定用埠 17941，參數是 `<舊安裝 desktop-app 資料夾> <userData 資料夾> [control]`；舊安裝的 worktree 已移除。
+  - `status` 回傳多了 `runtime` 欄位；`run` 仍回 `no_engine`，`native_mailbox.eval.js` 通過（pass 為真）。
+- 第 3 項的起點：
+  - `nr-child.js` 目前是假引擎，要換成真的 ORT 推論（參考 `scripts/eval/nvw_live.js` 與 `scripts/eval/native_det_batch.js` 的 KV 迴圈）。
+  - `main-ext.js` 的 `startNativeMailbox` 的 `run` 要改由執行包的 `nr-host.js` 呼叫子程序（用標準輸入輸出與 progress.jsonl，不開網路通道）。
+  - `renderer/src/floating-assistant.js` 的 `_llmGenerate` 接 `FaVlm.backendOrder`；改完跑 `node scripts/embed-code-ui.js` 與 `node build-assistant.js`，改動只用 Edit 小段。
+- 共識檢查輸出：`全部通過`（執行指令見 (5)）。
