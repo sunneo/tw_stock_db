@@ -376,3 +376,38 @@ Level 判斷的設定位置：模型表加一個欄位（例如 `thinking: 'nati
 - 反思的預算（300～600）與逾時（15 秒）是依上一階段的決定，沒有量測。
 - 進度列會顯示缺口的一句話（`note`）。這是「結論」，不是推理全文；推理全文留給階段 5 的介面。
 - 反思在計畫層與答案層共用同一份預算（整份計畫最多 2 次），所以答案層先反思過，計畫層就只剩一次反思的額度；重做後可能就用不到第二次反思。這是依「整個計畫最多 2 次」的字面意思做的，如果要分開算，請管理層決定。
+
+---
+## 階段 5 記錄（2026-11-04，設定介面與推理顯示）
+
+**設定位置（只有一份 UI）**：`#ai-topic-shift-chk`（話題更動檢查）只在 `renderer/src/floating-assistant.js` 的 AI 進階設定 `llm-basic` 分頁裡；`renderer/index.html` 沒有這個開關（grep `topicShiftCheck` 整個 `renderer/` 只有 floating-assistant.js）。所以 CoLU+Thinking 的開關也只加在同一個分頁、話題更動檢查的下面，**沒有第二份要同步**。
+
+**改了哪些檔**：
+- `renderer/src/floating-assistant.js`（來源）：
+  - 預設 `advancedSettings.coluThinking: true`（`topicShiftCheck` 預設那行上方）；讀設定時 `FaRecipe.coluThinkingSetting(raw.coluThinking)`（未設定視為開）。
+  - 面板新增 `#ai-colu-think-chk`＋說明文字（只對離線 qwen3-0.6b、計畫最多約 30 秒、關閉維持快速流程）；面板同步與 `change` 事件寫回 `advancedSettings.coluThinking` 並存檔。
+  - `_createProgressWidget`：卡片狀態多 `reasoning` 陣列；回傳物件多 `reasoning(block)`（編輯器靜默路徑是 no-op）；`_faUpdate` 把每段推理畫成一個收合的「思考過程」區塊（`FaRecipe.reasoningBlockHtml`）。
+  - `_umlDesign` 的 `onStage`：`thinking` 的 done 與 `reflect` 事件把推理文字交給卡片（`prog.reasoning`）。
+- `renderer/src/recipe/recipe_core.js`：新增純函式 `coluThinkingSetting`、`escapeHtml`、`reasoningView`（空白→不顯示；超過 20000 字截斷並記總字數）、`reasoningBlockHtml`（`<details>` 收合，摘要「思考過程（階段）」，內容先跳脫 HTML，截斷註明）；匯出清單加入。
+- `renderer/src/uml/uml_core.js`、`renderer/src/uml/design_core.js`：進度事件多帶 `text`（推理全文）與 `label`；`chars` 不變，既有測試不受影響。
+- 內嵌區塊：`node scripts/embed-code-ui.js` 重新嵌入（RECIPE、uml、design 區塊）；`git diff -U0` 確認 floating-assistant.js 的 hunk 只有上面這些與嵌入的對應區塊。**沒有在工作目錄跑 build-assistant.js**（會改 `.min.js` 與 manifest，發布才做）。
+- `skills/weak-model-harness/scripts/vendor/recipe_core.js`：同步為新的 recipe_core.js（改前已確認與 HEAD 一致）。
+- `renderer/src/recipe/colu_think_ui.test.js`（新檔，20 項，全過）；`scripts/run-core-tests.js` 登記一行。
+- `scripts/eval/colu_think_ui.eval.js`（新檔，真 Electron）。
+
+**推理三項證明（Grep）**：
+- 不進 messages：推理只存在進度卡片的 `state.reasoning`，而 `state` 是掛在 msg 上的**不可列舉**屬性（`Object.defineProperty(..., enumerable:false)`），存檔的 JSON 不會帶；卡片 `content` 仍是空字串。`grep -n "reasoning" renderer/src/floating-assistant.js` 的新增行只出現在設定、卡片與 `_umlDesign` 進度回呼。
+- 不送回模型：推理文字只在 `jsonStep`／`scenarioToModel` 的 `reasoning` 陣列與進度事件的 `text` 裡流動；重試與反思的 `messages` 只用 `stripThink` 後的答案（階段 3、4 已證明）。eval 第 4 項確認標記不在任何後續請求的 messages。
+- 不進工具結果：`_umlResult(...)` 沒有 `reasoning` 欄位；eval 確認 `JSON.stringify(result)` 不含標記。
+
+**測試結果**：
+- `colu_think_ui.test.js`：20 passed, 0 failed。
+- 既有：`recipe_core` 89、`plan_core` 57、`skill_compile_core` 48、`think_plan` 41、`plan_think` 25、`think_reflect` 24、`vlm_core` 135、`uml_core` 76，全部 0 failed。`node --check renderer/src/floating-assistant.js` 通過。
+- 真 Electron `colu_think_ui.eval.js`：**PASS**（在隔離副本 `%TEMP%\colu-iso5\desktop-app` 建置後跑，埠 17952，不用 17923）。驗證：checkbox 存在、標籤含 CoLU+Thinking、預設打開、點擊切換寫回設定；關閉時計畫無 thinking 請求、沒有推理區塊；開啟時有 thinking 請求，8 個收合區塊預設收合、摘要以「思考過程」開頭，展開後含標記，推理內的 `<img>` 被跳脫（沒有產生元素、沒有執行）。
+- `node scripts/run-core-tests.js`（隔離副本）：175／177。失敗只有已知的兩個：`tray_dialog`（標為新增，因為不在 known-failures）與 `computer-remote` RFB 探測。新測試通過。
+
+**沒做、需要知道的事**：
+- 推理區塊目前掛在**進度卡片**上（每次設計呼叫的每段推理一個收合區塊），不是獨立的對話泡泡；「每次回應各有自己的推理」在這裡指「每次 UML 設計呼叫各有自己的卡片與推理」。若要放進 AI 回覆泡泡，需要另外設計（留給管理層決定）。
+- 重新載入頁面或重開對話後，卡片與推理一起消失（允許的）。
+- 工作目錄的 `renderer/floating-assistant.js` 與 `.min.js` 仍是舊建置，發布前要照 `publish-live-update-patch` 流程建置。
+- `test-reports/*` 與 `.claude/launch.json`、`features/FEATURES.md`、`parts_builtin.json` 是使用者既有的未提交變動，本階段沒有提交。

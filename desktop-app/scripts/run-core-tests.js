@@ -24,6 +24,7 @@ const suites = [
     ['UML → 程式骨架（DSL、驗證、圖、template、情境到 UML）', 'renderer/src/uml/uml_core.test.js'],
     ['CoLU+Thinking 階段 3（計畫階段接上 thinking：開關、逾時退路、推理不進 messages）', 'renderer/src/uml/plan_think.test.js'],
     ['CoLU+Thinking 階段 4（反思：有缺口重做一次、上限、逾時與解析失敗退路、其他模型不變）', 'renderer/src/recipe/think_reflect.test.js'],
+    ['CoLU+Thinking 階段 5（設定開關預設值、推理區塊跳脫 HTML、空推理不顯示、長推理截斷）', 'renderer/src/recipe/colu_think_ui.test.js'],
     ['設計抉擇與 framework 目錄（推薦、片段、rework、專案展開）', 'renderer/src/uml/design_core.test.js'],
     ['膠水（接到真正的 library、經驗、登記）', 'renderer/src/uml/glue_core.test.js'],
     ['設計檢視器資料（節點樹、UML↔原始碼對應）', 'renderer/src/uml/view_core.test.js'],

@@ -8850,7 +8850,27 @@ const holder = {};
         return { ok: true, text: typeof res === 'string' ? res : JSON.stringify(res), vars: scope.vars };
     }
 
-    return { buildReferencePack, extractiveSummary, chunkText, splitSentences, parseAttachments, stripAttachments, kindOf, cleanQuery, narrowByEvidence, relevantOptional, slotsFromSchema, programFill, parseJsonLoose, stripThink, thinkingPlan, coluThinkBudget, coluThinkReflect, coluThinkRevise, jsonStep,fillMessages, validateFill, modelFill, autoPick, menuMessages, chooseTool, tokensOf, checkExtractive, phraseMessages, newTrace, decide, pushRing, tracesToLines, validateRecipe, runRecipe, interp, MAX_STEPS };
+    // ---------- CoLU+Thinking 介面（設定開關與推理區塊；純函式，設定面板、進度卡片與測試共用）----------
+    // 開關值：未設定（undefined／null）或 true 都視為開（預設打開）；只有明確的 false 才關。
+    function coluThinkingSetting(raw) { return raw !== false; }
+    const REASONING_SHOW_MAX = 20000;
+    function escapeHtml(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
+    // 推理內容的顯示規則：去掉頭尾空白後為空就不顯示；超過 max 字（預設 20000）就截斷，並記下總字數。
+    function reasoningView(text, max) {
+        const lim = max != null && max > 0 ? max : REASONING_SHOW_MAX;
+        const full = String(text == null ? '' : text).replace(/\r\n/g, '\n').trim();
+        if (!full) return { show: false, text: '', truncated: false, total: 0, limit: lim };
+        if (full.length <= lim) return { show: true, text: full, truncated: false, total: full.length, limit: lim };
+        return { show: true, text: full.slice(0, lim), truncated: true, total: full.length, limit: lim };
+    }
+    // 推理區塊（預設收合）：摘要寫「思考過程」（可加階段名）；內容是純文字、先跳脫 HTML；截斷時註明已截斷與總字數。空推理回傳空字串（不顯示區塊）。
+    function reasoningBlockHtml(text, label, max) {
+        const v = reasoningView(text, max); if (!v.show) return '';
+        const cut = v.truncated ? '<div class="colu-think-note" style="opacity:.75; margin-top:4px;">（已截斷：只顯示前 ' + v.limit + ' 字，共 ' + v.total + ' 字）</div>' : '';
+        return '<details class="colu-think-block" style="margin-top:6px;"><summary style="cursor:pointer; opacity:.85;">思考過程' + (label ? '（' + escapeHtml(label) + '）' : '') + '</summary>' +
+            '<pre class="colu-think-text" style="white-space:pre-wrap; word-break:break-word; margin:6px 0 0; max-height:320px; overflow:auto; font:11px/1.5 ui-monospace,Consolas,monospace; color:#475569;">' + escapeHtml(v.text) + '</pre>' + cut + '</details>';
+    }
+    return { buildReferencePack, extractiveSummary, chunkText, splitSentences, parseAttachments, stripAttachments, kindOf, cleanQuery, narrowByEvidence, relevantOptional, slotsFromSchema, programFill, parseJsonLoose, stripThink, thinkingPlan, coluThinkBudget, coluThinkReflect, coluThinkRevise, coluThinkingSetting, escapeHtml, reasoningView, reasoningBlockHtml, REASONING_SHOW_MAX, jsonStep,fillMessages, validateFill, modelFill, autoPick, menuMessages, chooseTool, tokensOf, checkExtractive, phraseMessages, newTrace, decide, pushRing, tracesToLines, validateRecipe, runRecipe, interp, MAX_STEPS };
 });
 
 }).call(null, undefined, holder);
@@ -9627,10 +9647,10 @@ class {{className}}Test {
             return { ok: true, model, dsl: toDsl(model), decisions, warnings, errors: errs0, fromHints: true }; } }
         // CoLU+Thinking：opts.thinking（來自 R.thinkingPlan，沒給或 enabled:false 就完全照舊）。推理只進 reasoning（給介面看），不進 messages、不進 decisions
         const thOn = !!(opts.thinking && opts.thinking.enabled); const reasoning = [];
-        const ask = async (stage, spec, label) => { if (thOn) emit({ type: 'thinking', phase: 'start', stage, label }); const r = await R.jsonStep({ generate: opts.generate, messages: spec.messages, validate: spec.validate, maxTries: opts.maxTries || 2, maxTokens: 400, prefill: PREFILL[stage], thinking: opts.thinking }); if (thOn) { if (r.reasoning) reasoning.push(r.reasoning); emit({ type: 'thinking', phase: 'done', stage, label, chars: String(r.reasoning || '').length }); } decisions.push({ stage, label, by: 'model', tries: r.tries, rejected: r.rejected, ok: r.ok }); emit({ type: 'stage', stage, label, ok: r.ok }); if (!r.ok) warnings.push(stage + (label ? '（' + label + '）' : '') + ' 模型沒給出合格的回覆：' + (r.error || ''));
+        const ask = async (stage, spec, label) => { if (thOn) emit({ type: 'thinking', phase: 'start', stage, label }); const r = await R.jsonStep({ generate: opts.generate, messages: spec.messages, validate: spec.validate, maxTries: opts.maxTries || 2, maxTokens: 400, prefill: PREFILL[stage], thinking: opts.thinking }); if (thOn) { if (r.reasoning) reasoning.push(r.reasoning); emit({ type: 'thinking', phase: 'done', stage, label, chars: String(r.reasoning || '').length, text: r.reasoning || '' }); } decisions.push({ stage, label, by: 'model', tries: r.tries, rejected: r.rejected, ok: r.ok }); emit({ type: 'stage', stage, label, ok: r.ok }); if (!r.ok) warnings.push(stage + (label ? '（' + label + '）' : '') + ' 模型沒給出合格的回覆：' + (r.error || ''));
             // CoLU+Thinking 反思（答案層）：核對失敗才反思一次（每題最多 1 次）；有缺口就把 note 當反思提示重做一次。推理只進 reasoning（給介面看）
             if (!r.ok && opts.reflect && opts.reflect.enabled) { const rv = await R.coluThinkRevise({ qid: 'ans:' + stage + ':' + (label || ''), budget: opts.reflect.budget, generate: opts.generate, modelId: opts.reflect.modelId, contextTokens: opts.reflect.contextTokens, enabled: true, original: null, describe: () => '階段「' + stage + '」' + (label ? '（' + label + '）' : '') + '的回覆沒有通過核對：' + String(r.error || '').slice(0, 160), redo: async (note) => { const again = await R.jsonStep({ generate: opts.generate, messages: spec.messages.concat([{ role: 'user', content: '反思提示：' + note + '。請依此修正，只輸出修正後的 JSON。' }]), validate: spec.validate, maxTries: opts.maxTries || 2, maxTokens: 400, prefill: PREFILL[stage], thinking: opts.thinking }); if (again.reasoning) reasoning.push(again.reasoning); return again.ok ? again.value : null; } });
-                if (rv.reflected) emit({ type: 'reflect', level: 'answer', gap: rv.gap, note: rv.note, count: rv.reflected, redone: rv.redone, fallback: rv.fallback, unsure: rv.unsure, chars: String(rv.reasoning || '').length });
+                if (rv.reflected) emit({ type: 'reflect', level: 'answer', gap: rv.gap, note: rv.note, count: rv.reflected, redone: rv.redone, fallback: rv.fallback, unsure: rv.unsure, chars: String(rv.reasoning || '').length, text: rv.reasoning || '', label: stage + (label ? '（' + label + '）' : '') });
                 if (rv.reasoning) reasoning.push(rv.reasoning);
                 if (rv.redone) return rv.value; }
             return r.ok ? r.value : null; };
@@ -10844,7 +10864,7 @@ public class Application {
             res = await build(scenario); if (!res.ok) return { ok: false, error: res.error, trail, decisions: res.decisions, warnings: res.warnings };
             if (rf) {
                 const rv = await R.coluThinkRevise({ qid: 'plan', budget: rf.budget, generate: opts.generate, modelId: rf.modelId, contextTokens: rf.contextTokens, enabled: true, original: res, describe: (x) => String(U.toDsl(x.model) || '').slice(0, 1500), secondCheck: true, redo: async (note) => { const again = await build(scenario + '\n\n（反思提示，請修正這個缺口：' + note + '）'); return again.ok ? again : null; } });
-                if (opts.onStage) try { opts.onStage({ type: 'reflect', level: 'plan', gap: rv.gap, note: rv.note, count: rv.reflected, redone: rv.redone, fallback: rv.fallback, unsure: rv.unsure, chars: String(rv.reasoning || '').length }); } catch (_) {}
+                if (opts.onStage) try { opts.onStage({ type: 'reflect', level: 'plan', gap: rv.gap, note: rv.note, count: rv.reflected, redone: rv.redone, fallback: rv.fallback, unsure: rv.unsure, chars: String(rv.reasoning || '').length, text: rv.reasoning || '', label: '計畫' }); } catch (_) {}
                 res = rv.value; trail.push({ stage: 'reflect', by: 'model', count: rv.reflected, gap: rv.gap, redone: rv.redone, fallback: rv.fallback });
             }
         }
@@ -57834,6 +57854,8 @@ class FloatingAssistant {
             repoIndexMaxFiles: 0, // 專案索引：最多分析幾個原始碼檔（0＝不限，預設）
             repoIndexMaxMb: 0, // 專案索引：索引大小上限（MB）（0＝不限，預設）
             image3dMaxFaces: 60000, // 圖片轉 3D：「最細」用到的最大面數（1,000～2,000,000）
+            // CoLU+Thinking：只對離線 qwen3-0.6b 生效（計畫與反思會先思考，較慢；關閉則維持原本的快速流程）。預設打開（未設定也視為開）。
+            coluThinking: true,
             topicShiftCheck: false, // 話題更動檢查：每則訊息會多等一次模型判斷；預設關閉（關閉時不判斷、不產生話題摘要）
             repoExplainModel: 'on', // 離線更新說明（語法樹＋函式語意）：'on'＝再用離線文字模型潤飾沒有註解的說明，'off'＝只用程式組出來的
             repoIndexDisk: {}, // 專案索引：每個專案「要不要把索引寫進專案資料夾的 .floating-assistant/index/」的決定 { <root>: 'yes'|'no' }（第一次建索引時問，見 _repoIndexAskDisk；沒有這個專案的鍵＝還沒問過）；'no'＝退回記憶體索引並套用保護上限
@@ -59265,6 +59287,7 @@ class FloatingAssistant {
             offlineAutoTrain: ['auto', 'manual', 'off'].indexOf(raw.offlineAutoTrain) >= 0 ? raw.offlineAutoTrain : (raw.offlineAutoTrain === true ? 'auto' : 'off'),
             repoIndexMaxFiles: (() => { const n = Math.floor(Number(raw.repoIndexMaxFiles)); return Number.isFinite(n) && n >= 1 && n !== 50000 ? n : 0; })(),
             image3dMaxFaces: (() => { const n = Math.floor(Number(raw.image3dMaxFaces)); return Number.isFinite(n) && n >= 1000 ? Math.min(2000000, n) : 60000; })(),
+            coluThinking: FaRecipe.coluThinkingSetting(raw.coluThinking),
             topicShiftCheck: raw.topicShiftCheck === true,
             repoExplainModel: raw.repoExplainModel === 'off' ? 'off' : 'on',
             repoIndexDisk: (() => { const o = {}; if (raw.repoIndexDisk && typeof raw.repoIndexDisk === 'object') for (const [k, v] of Object.entries(raw.repoIndexDisk)) if (k && (v === 'yes' || v === 'no')) o[k] = v; return o; })(),
@@ -78337,9 +78360,10 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const q = this._edQuiet;
         if (q && typeof q.sink === 'function') {
             let last = ''; const say = (t) => { t = String(t == null ? '' : t).replace(/\s+/g, ' ').trim(); if (!t || t === last) return; last = t; try { q.sink(String(title || '') + '：' + t.slice(0, 160)); } catch (_) { /* 記錄送不出去也不影響工作 */ } };
-            return { msg: { role: 'tool', content: '' }, update: (p = {}) => { if (p.status != null) say(p.status); }, log: (line) => say(line), finish: (s) => say(s), fail: (e) => say('⚠️ ' + (e || '失敗')), remove: () => {} };
+            return { msg: { role: 'tool', content: '' }, update: (p = {}) => { if (p.status != null) say(p.status); }, log: (line) => say(line), finish: (s) => say(s), fail: (e) => say('⚠️ ' + (e || '失敗')), reasoning: () => {}, remove: () => {} };
         }
-        const state = { title: String(title || '處理中'), pct: null, status: '準備中…', done: false, error: null, startedAt: Date.now(), trace: [], traceOpen: true };
+        // reasoning：CoLU+Thinking 的推理區塊（只給卡片顯示；不進 messages、不送回模型；用不可列舉屬性存在 msg 上，不會被存進對話檔）
+        const state = { title: String(title || '處理中'), pct: null, status: '準備中…', done: false, error: null, startedAt: Date.now(), trace: [], traceOpen: true, reasoning: [] };
         const msg = { role: 'tool', content: '' };
         Object.defineProperty(msg, '_progressWidget', { value: state, enumerable: false, configurable: true });
         this.messages.push(msg);
@@ -78380,6 +78404,15 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
                 state.trace.push({ t: Date.now(), line: String(line == null ? '' : line) });
                 if (state.trace.length > 400) state.trace.splice(0, state.trace.length - 400);
                 rerender(false);
+            },
+            // CoLU+Thinking 推理區塊：{label, text}；空推理不加區塊（reasoningBlockHtml 回傳空字串）
+            reasoning: (block) => {
+                const b = block || {}; const text = String(b.text == null ? '' : b.text);
+                if (!FaRecipe.reasoningView(text).show) return;
+                if (!Array.isArray(state.reasoning)) state.reasoning = [];
+                state.reasoning.push({ label: String(b.label || ''), text });
+                if (state.reasoning.length > 40) state.reasoning.splice(0, state.reasoning.length - 40);
+                rerender(true);
             },
             finish: (finalStatus, actions) => {
                 state.done = true;
@@ -82161,6 +82194,8 @@ ${sourceTool.handlerScript}
         if (dragDropSkipConfirmChk) dragDropSkipConfirmChk.checked = this.advancedSettings.dragDropAttachSkipConfirm !== false;
         const topicShiftChk = document.getElementById('ai-topic-shift-chk');
         if (topicShiftChk) topicShiftChk.checked = this.advancedSettings.topicShiftCheck === true;
+        const coluThinkChk = document.getElementById('ai-colu-think-chk');
+        if (coluThinkChk) coluThinkChk.checked = FaRecipe.coluThinkingSetting(this.advancedSettings.coluThinking);
         const festivalChk = document.getElementById('ai-festival-chk');
         if (festivalChk) festivalChk.checked = this.advancedSettings.festivalThemeEnabled !== false;
         this._updateFestivalStatusText();
@@ -100320,7 +100355,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     async _umlDesign(a) {
         const scenario = String(a.scenario || '').trim(); if (!scenario) return { ok: false, error: '缺少 scenario' }; const lang = ['python', 'typescript', 'java'].includes(a.language) ? a.language : 'python';
         const M = await this._umlModel(a.model); if (M.error) return { ok: false, error: M.error };
-        const prog = this._createProgressWidget('情境→UML→程式骨架（' + M.label + '）'); const r = await FaDesign.designProject(scenario, { generate: M.gen, language: lang, package: a.package, constraints: a.constraints, prefs: this.advancedSettings.designPrefs || {}, glossary: this.advancedSettings.umlGlossary || {}, userGlue: this.advancedSettings.userGlue || [], experience: this.advancedSettings.glueExperience || {}, thinking: this._coluThinkingFor(M), reflect: this._coluReflectFor(M), onStage: (e) => { if (e.type === 'reflect') { prog.log('🪞 反思（' + e.chars + ' 字）：' + (e.gap ? (e.redone ? '有缺口，已依此重做一次：' : '有缺口（重做沒有通過，用原本的）：') + e.note : (e.unsure ? '沒有定論（逾時或格式不對），照原本的' : '沒有缺口'))); return; } if (e.type === 'thinking') { prog.log(e.phase === 'start' ? '🧠 思考中…（' + e.stage + '）' : '🧠 思考完成（' + e.chars + ' 字）'); return; } if (e.type === 'stage') prog.log('✔ ' + e.stage + (e.label ? '：' + e.label : '') + (e.ok ? '' : '（模型沒給出合格回覆，用保守預設）')); } });
+        const prog = this._createProgressWidget('情境→UML→程式骨架（' + M.label + '）'); const r = await FaDesign.designProject(scenario, { generate: M.gen, language: lang, package: a.package, constraints: a.constraints, prefs: this.advancedSettings.designPrefs || {}, glossary: this.advancedSettings.umlGlossary || {}, userGlue: this.advancedSettings.userGlue || [], experience: this.advancedSettings.glueExperience || {}, thinking: this._coluThinkingFor(M), reflect: this._coluReflectFor(M), onStage: (e) => { if (e.type === 'reflect') { prog.log('🪞 反思（' + e.chars + ' 字）：' + (e.gap ? (e.redone ? '有缺口，已依此重做一次：' : '有缺口（重做沒有通過，用原本的）：') + e.note : (e.unsure ? '沒有定論（逾時或格式不對），照原本的' : '沒有缺口'))); prog.reasoning({ label: '反思·' + (e.label || e.level || ''), text: e.text }); return; } if (e.type === 'thinking') { prog.log(e.phase === 'start' ? '🧠 思考中…（' + e.stage + '）' : '🧠 思考完成（' + e.chars + ' 字）'); if (e.phase === 'done') prog.reasoning({ label: e.stage, text: e.text }); return; } if (e.type === 'stage') prog.log('✔ ' + e.stage + (e.label ? '：' + e.label : '') + (e.ok ? '' : '（模型沒給出合格回覆，用保守預設）')); } });
         if (!r.ok) { prog.fail(r.error); return { ok: false, error: r.error, warnings: r.warnings }; }
         const sess = await this._umlStartSession(r.model, lang, a.package, scenario, r.design); const z = await this._umlZip(sess.proj.files, r.model.name || 'design', lang); prog.finish('完成：' + sess.proj.files.length + ' 個檔案');
         const res = this._umlResult(r.model, lang, { files: sess.proj.files, design: r.design }, z, { uml: r.dsl, seededFrom: r.seedUsed, rework: r.rework.rounds.map((x) => x.issues.length + ' 個問題'), warnings: r.warnings.slice(0, 8) });
@@ -106496,6 +106531,11 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                     </div>
                                     <p class="ai-advanced-hint">開啟後，每則訊息會先由模型判斷是否換了話題；判定換題時，舊內容會被摘要縮起來。關閉時不判斷、不摘要，每則訊息直接送出，回覆較快。</p>
                                     <div style="margin-top:6px; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                                        <input type="checkbox" id="ai-colu-think-chk" ${FaRecipe.coluThinkingSetting(this.advancedSettings.coluThinking) ? 'checked' : ''} style="cursor:pointer;">
+                                        <label for="ai-colu-think-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">CoLU+Thinking（離線 qwen3-0.6b 的計畫與反思先思考，預設打開）</label>
+                                    </div>
+                                    <p class="ai-advanced-hint">只對離線模型 qwen3-0.6b 生效，其他模型與線上模型不受影響。開啟時，UML 設計的計畫與反思會先思考再回答，比較慢（計畫最多約 30 秒，逾時會退回原本的做法）；推理過程可在進度卡片裡展開查看，不會進入對話紀錄。關閉則維持原本的快速流程。</p>
+                                    <div style="margin-top:6px; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
                                         <input type="checkbox" id="ai-festival-chk" ${this.advancedSettings.festivalThemeEnabled !== false ? 'checked' : ''} style="cursor:pointer;">
                                         <label for="ai-festival-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">啟用台灣節慶套版（春節、元宵、端午、中秋、國慶、聖誕…依台灣行事曆自動換裝，連假期間都算同一個節慶）</label>
                                         <span id="ai-festival-status" class="ai-advanced-hint" style="margin:0;"></span>
@@ -108376,7 +108416,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     w.style.cssText = 'margin-bottom:12px; max-width:95%; padding:12px 14px; border-radius:8px; background:rgba(99,102,241,0.08); border:1px solid rgba(99,102,241,0.28); font-size:12px; color:#6366f1;';
                     w.innerHTML = '<div class="fa-pw-head" style="font-weight:bold;"></div><div class="fa-pw-status" style="margin-top:4px; opacity:0.85;"></div><div class="fa-pw-bar" style="margin-top:8px; height:6px; border-radius:999px; background:rgba(99,102,241,0.18); overflow:hidden; display:none;"><div class="fa-pw-fill" style="height:100%; width:0%; background:#6366f1; border-radius:999px; transition:width .2s linear;"></div></div>';
                     const head = w.querySelector('.fa-pw-head'), statusEl = w.querySelector('.fa-pw-status'), barEl = w.querySelector('.fa-pw-bar'), fillEl = w.querySelector('.fa-pw-fill');
-                    let det = null, sum = null, box = null, actionsDone = false;
+                    let det = null, sum = null, box = null, actionsDone = false, rsnBox = null;
                     w._faUpdate = () => {
                         const icon = st.error ? '❌' : (st.done ? '✅' : '<span style="display:inline-block; animation:fa-spin 1s linear infinite;">🔄</span>');
                         const elapsed = Math.round((Date.now() - st.startedAt) / 1000);
@@ -108404,6 +108444,11 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                             const t0 = st.startedAt;
                             const text = st.trace.slice(-120).map((e) => '+' + Math.round((e.t - t0) / 1000) + 's ' + e.line).join('\n');
                             if (box._t !== text) { box.textContent = text; box._t = text; if (!st.done && nearBottom) box.scrollTop = box.scrollHeight; }
+                        }
+                        // CoLU+Thinking 推理區塊：每段推理一個收合區塊（預設收合），內容已跳脫 HTML；沒有推理就不顯示區塊
+                        if (Array.isArray(st.reasoning) && st.reasoning.length) {
+                            if (!rsnBox) { rsnBox = document.createElement('div'); rsnBox.className = 'fa-pw-reasoning'; w.appendChild(rsnBox); }
+                            if (rsnBox._n !== st.reasoning.length) { rsnBox.innerHTML = st.reasoning.map((x) => FaRecipe.reasoningBlockHtml(x.text, x.label)).join(''); rsnBox._n = st.reasoning.length; }
                         }
                         if (st.done && !st.error && Array.isArray(st.actions) && st.actions.length && !actionsDone) {
                             actionsDone = true;
@@ -109441,6 +109486,13 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (topicShiftChkBx) {
             topicShiftChkBx.addEventListener('change', (e) => {
                 this.advancedSettings.topicShiftCheck = e.target.checked === true;
+                this._saveAdvancedSettings();
+            });
+        }
+        const coluThinkChkBx = document.getElementById('ai-colu-think-chk');
+        if (coluThinkChkBx) {
+            coluThinkChkBx.addEventListener('change', (e) => {
+                this.advancedSettings.coluThinking = e.target.checked === true;
                 this._saveAdvancedSettings();
             });
         }

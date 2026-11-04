@@ -380,5 +380,25 @@
         return { ok: true, text: typeof res === 'string' ? res : JSON.stringify(res), vars: scope.vars };
     }
 
-    return { buildReferencePack, extractiveSummary, chunkText, splitSentences, parseAttachments, stripAttachments, kindOf, cleanQuery, narrowByEvidence, relevantOptional, slotsFromSchema, programFill, parseJsonLoose, stripThink, thinkingPlan, coluThinkBudget, coluThinkReflect, coluThinkRevise, jsonStep,fillMessages, validateFill, modelFill, autoPick, menuMessages, chooseTool, tokensOf, checkExtractive, phraseMessages, newTrace, decide, pushRing, tracesToLines, validateRecipe, runRecipe, interp, MAX_STEPS };
+    // ---------- CoLU+Thinking 介面（設定開關與推理區塊；純函式，設定面板、進度卡片與測試共用）----------
+    // 開關值：未設定（undefined／null）或 true 都視為開（預設打開）；只有明確的 false 才關。
+    function coluThinkingSetting(raw) { return raw !== false; }
+    const REASONING_SHOW_MAX = 20000;
+    function escapeHtml(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
+    // 推理內容的顯示規則：去掉頭尾空白後為空就不顯示；超過 max 字（預設 20000）就截斷，並記下總字數。
+    function reasoningView(text, max) {
+        const lim = max != null && max > 0 ? max : REASONING_SHOW_MAX;
+        const full = String(text == null ? '' : text).replace(/\r\n/g, '\n').trim();
+        if (!full) return { show: false, text: '', truncated: false, total: 0, limit: lim };
+        if (full.length <= lim) return { show: true, text: full, truncated: false, total: full.length, limit: lim };
+        return { show: true, text: full.slice(0, lim), truncated: true, total: full.length, limit: lim };
+    }
+    // 推理區塊（預設收合）：摘要寫「思考過程」（可加階段名）；內容是純文字、先跳脫 HTML；截斷時註明已截斷與總字數。空推理回傳空字串（不顯示區塊）。
+    function reasoningBlockHtml(text, label, max) {
+        const v = reasoningView(text, max); if (!v.show) return '';
+        const cut = v.truncated ? '<div class="colu-think-note" style="opacity:.75; margin-top:4px;">（已截斷：只顯示前 ' + v.limit + ' 字，共 ' + v.total + ' 字）</div>' : '';
+        return '<details class="colu-think-block" style="margin-top:6px;"><summary style="cursor:pointer; opacity:.85;">思考過程' + (label ? '（' + escapeHtml(label) + '）' : '') + '</summary>' +
+            '<pre class="colu-think-text" style="white-space:pre-wrap; word-break:break-word; margin:6px 0 0; max-height:320px; overflow:auto; font:11px/1.5 ui-monospace,Consolas,monospace; color:#475569;">' + escapeHtml(v.text) + '</pre>' + cut + '</details>';
+    }
+    return { buildReferencePack, extractiveSummary, chunkText, splitSentences, parseAttachments, stripAttachments, kindOf, cleanQuery, narrowByEvidence, relevantOptional, slotsFromSchema, programFill, parseJsonLoose, stripThink, thinkingPlan, coluThinkBudget, coluThinkReflect, coluThinkRevise, coluThinkingSetting, escapeHtml, reasoningView, reasoningBlockHtml, REASONING_SHOW_MAX, jsonStep,fillMessages, validateFill, modelFill, autoPick, menuMessages, chooseTool, tokensOf, checkExtractive, phraseMessages, newTrace, decide, pushRing, tracesToLines, validateRecipe, runRecipe, interp, MAX_STEPS };
 });
