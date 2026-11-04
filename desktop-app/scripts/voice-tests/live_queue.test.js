@@ -125,5 +125,98 @@ check('已完成的指令不會被 cancelAll 改成取消', () => {
   assert.strictEqual(q.items()[0].status, 'done');
 });
 
+// ---- 邊界測試（管理層 2026-11-05 要求補齊）----
+check('空輸入：feed("") 不排入、不改收集區，flush 回 null', () => {
+  const q = Q.createLiveQueue({ countTokens: oneTokenPerChar });
+  assert.deepStrictEqual(q.feed(''), []);
+  assert.deepStrictEqual(q.feed(null), []);
+  assert.strictEqual(q.buffered(), '');
+  assert.strictEqual(q.flush(), null);
+  assert.strictEqual(q.items().length, 0);
+});
+
+check('剛好 1000 token：不切段（上限是「不超過」），flush 後成為一個指令', () => {
+  const q = Q.createLiveQueue({ countTokens: oneTokenPerChar });
+  assert.strictEqual(q.feed('b'.repeat(1000)).length, 0);
+  assert.strictEqual(q.buffered().length, 1000);
+  const it = q.flush();
+  assert.strictEqual(it.text.length, 1000);
+});
+
+check('1001 token：切出恰好 1000 的一段，留 1 個字', () => {
+  const q = Q.createLiveQueue({ countTokens: oneTokenPerChar });
+  const made = q.feed('c'.repeat(1001));
+  assert.strictEqual(made.length, 1);
+  assert.strictEqual(made[0].text.length, 1000);
+  assert.strictEqual(q.buffered().length, 1);
+});
+
+check('多次零碎 feed 累積後照樣切段（不會因為分次輸入漏切）', () => {
+  const q = Q.createLiveQueue({ countTokens: oneTokenPerChar });
+  let made = 0;
+  for (let i = 0; i < 25; i++) made += q.feed('d'.repeat(100)).length; // 共 2500 字
+  assert.strictEqual(made, 2);
+  assert.strictEqual(q.buffered().length, 500);
+});
+
+check('非字串輸入（數字）會轉成字串蒐集，不會當掉', () => {
+  const q = Q.createLiveQueue({ countTokens: oneTokenPerChar });
+  q.feed(12345);
+  assert.strictEqual(q.buffered(), '12345');
+});
+
+check('空佇列上的取消操作：cancelLast、stopRunning 回 null，cancelAll 回 0', () => {
+  const q = Q.createLiveQueue({ countTokens: oneTokenPerChar });
+  assert.strictEqual(q.cancelLast(), null);
+  assert.strictEqual(q.stopRunning(), null);
+  assert.strictEqual(q.cancelAll(), 0);
+  assert.deepStrictEqual(q.log().filter((e) => e.type === 'cancelAll').map((e) => e.count), [0]);
+});
+
+check('連續取消：連按兩次取消前一個，依序取消最後兩個排隊中的', () => {
+  const q = Q.createLiveQueue({ countTokens: oneTokenPerChar });
+  q.feed('甲'); q.flush();
+  q.feed('乙'); q.flush();
+  q.feed('丙'); q.flush();
+  assert.strictEqual(q.cancelLast().text, '丙');
+  assert.strictEqual(q.cancelLast().text, '乙');
+  assert.strictEqual(q.cancelLast().text, '甲');
+  assert.strictEqual(q.cancelLast(), null);
+  assert.strictEqual(q.next(), null);
+});
+
+check('取消時佇列為空，但收集區還有文字：cancelAll 清掉收集區、回 0', () => {
+  const q = Q.createLiveQueue({ countTokens: oneTokenPerChar });
+  q.feed('還在蒐集');
+  assert.strictEqual(q.cancelAll(), 0);
+  assert.strictEqual(q.buffered(), '');
+});
+
+check('complete 傳入不存在或不是執行中的 id 會回 false，不改狀態', () => {
+  const q = Q.createLiveQueue({ countTokens: oneTokenPerChar });
+  q.feed('甲'); q.flush();
+  assert.strictEqual(q.complete(999), false);
+  assert.strictEqual(q.complete(1), false, '還沒開始（queued）的不能直接標成完成');
+  assert.strictEqual(q.items()[0].status, 'queued');
+});
+
+check('stopRunning 之後佇列仍可繼續取出下一個，且 stop 的那一個不會再被取出', () => {
+  const q = Q.createLiveQueue({ countTokens: oneTokenPerChar });
+  q.feed('甲'); q.flush();
+  q.feed('乙'); q.flush();
+  q.next();
+  q.stopRunning();
+  const b = q.next();
+  assert.strictEqual(b.text, '乙');
+  assert.strictEqual(q.next(), null);
+});
+
+check('onEnqueue 收到的是該指令本身（提示音可依內容判斷）', () => {
+  const seen = [];
+  const q = Q.createLiveQueue({ countTokens: oneTokenPerChar, onEnqueue: (it) => seen.push(it.text) });
+  q.feed('播放音樂'); q.flush();
+  assert.deepStrictEqual(seen, ['播放音樂']);
+});
+
 console.log('\n合計：' + pass + ' 通過，' + fail + ' 失敗');
 process.exit(fail ? 1 : 0);
