@@ -58014,6 +58014,11 @@ class FloatingAssistant {
             // 任意語言」的功能，只有task:'translate'能把任何語言轉成英文，
             // 這裡刻意不用，維持「辨識結果=你實際講的語言」的直覺行為）。
             voiceInputLanguage: 'zh',
+            // 全語音Live（2026-11-05 階段 A）：預設關閉；聲紋上限 8–128 預設 8，只能在 Configure 改（不能用語音改）；主詞預設 AI 或同音字 欸哀；提示音 叮咚／科技感／語音播報。
+            liveVoiceEnabled: false,
+            liveVoiceSpeakerLimit: 8,
+            liveVoiceWakeWord: 'AI',
+            liveVoiceChime: 'ding',
             // tw_stock_db客製: 2026-09-11——burn_subtitles的字幕外觀（見
             // _getSubtitleStyle）。fontScale＝字級占影片高度的比例。
             subtitleFontScale: SUBTITLE_DEFAULT_STYLE.fontScale,
@@ -59425,6 +59430,13 @@ class FloatingAssistant {
             })(),
             voiceInputEnabled: raw.voiceInputEnabled === true,
             voiceInputLanguage: ['zh', 'en', 'auto'].includes(raw.voiceInputLanguage) ? raw.voiceInputLanguage : 'zh',
+            liveVoiceEnabled: raw.liveVoiceEnabled === true,
+            liveVoiceSpeakerLimit: (() => {
+                const n = Math.round(Number(raw.liveVoiceSpeakerLimit));
+                return Number.isFinite(n) ? Math.min(128, Math.max(8, n)) : 8;
+            })(),
+            liveVoiceWakeWord: ['AI', '欸哀'].includes(raw.liveVoiceWakeWord) ? raw.liveVoiceWakeWord : 'AI',
+            liveVoiceChime: ['ding', 'tech', 'speech'].includes(raw.liveVoiceChime) ? raw.liveVoiceChime : 'ding',
             subtitleFontScale: (() => {
                 const n = Number(raw.subtitleFontScale);
                 return Number.isFinite(n) && n >= 0.02 && n <= 0.15 ? n : SUBTITLE_DEFAULT_STYLE.fontScale;
@@ -82299,6 +82311,14 @@ ${sourceTool.handlerScript}
         if (voiceInputEnabledChk) voiceInputEnabledChk.checked = this.advancedSettings.voiceInputEnabled === true;
         const voiceInputLangSelect = document.getElementById('ai-voice-input-lang');
         if (voiceInputLangSelect) voiceInputLangSelect.value = this.advancedSettings.voiceInputLanguage || 'zh';
+        const liveVoiceEnabledChk = document.getElementById('ai-live-voice-enabled-chk');
+        if (liveVoiceEnabledChk) liveVoiceEnabledChk.checked = this.advancedSettings.liveVoiceEnabled === true;
+        const liveVoiceLimitInput = document.getElementById('ai-live-voice-speaker-limit');
+        if (liveVoiceLimitInput) liveVoiceLimitInput.value = String(this.advancedSettings.liveVoiceSpeakerLimit || 8);
+        const liveVoiceWakeSelect = document.getElementById('ai-live-voice-wake');
+        if (liveVoiceWakeSelect) liveVoiceWakeSelect.value = this.advancedSettings.liveVoiceWakeWord || 'AI';
+        const liveVoiceChimeSelect = document.getElementById('ai-live-voice-chime');
+        if (liveVoiceChimeSelect) liveVoiceChimeSelect.value = this.advancedSettings.liveVoiceChime || 'ding';
         const browserSearchEnabledChk = document.getElementById('ai-browser-search-enabled-chk');
         if (browserSearchEnabledChk) browserSearchEnabledChk.checked = this.advancedSettings.browserSearchEnabled === true;
         const bcEnabledChkR = document.getElementById('ai-bc-enabled-chk');
@@ -106829,6 +106849,27 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                     </select>
                                     <p class="ai-advanced-hint">告訴Whisper模型你講的是哪種語言，幫助辨識準確度——不是翻譯，辨識出來的文字語言會跟你實際講的語言一致（選中文、講中文，辨識結果就是中文；選English、講英文，結果就是英文原文，不會被翻譯成中文）。「自動偵測」讓模型自己判斷，通常準確度會比明確指定語言稍低。</p>
                                 </div>
+                                <div class="ai-advanced-stack">
+                                    <label class="ai-advanced-label">全語音Live（隨時收音，預設關閉）</label>
+                                    <div style="display:flex; align-items:center; gap:6px;">
+                                        <input type="checkbox" id="ai-live-voice-enabled-chk" style="cursor:pointer;">
+                                        <label for="ai-live-voice-enabled-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">啟用全語音Live</label>
+                                    </div>
+                                    <p class="ai-advanced-hint">開啟後麥克風會隨時收音。聲音先比對聲紋，不符合的聲音一律無視；AI 自己回應的聲音也會無視。指令要先說主詞才會執行。聲紋上限只能在這裡修改，不能用語音改。</p>
+                                    <label class="ai-advanced-label" for="ai-live-voice-speaker-limit" style="font-weight:normal; margin-top:8px;">聲紋上限（8 到 128，預設 8）</label>
+                                    <input type="number" id="ai-live-voice-speaker-limit" class="ai-advanced-input" min="8" max="128" step="1">
+                                    <label class="ai-advanced-label" for="ai-live-voice-wake" style="font-weight:normal; margin-top:8px;">主詞</label>
+                                    <select id="ai-live-voice-wake" class="ai-advanced-input">
+                                        <option value="AI">AI</option>
+                                        <option value="欸哀">欸哀（同音字）</option>
+                                    </select>
+                                    <label class="ai-advanced-label" for="ai-live-voice-chime" style="font-weight:normal; margin-top:8px;">指令排入佇列時的提示音</label>
+                                    <select id="ai-live-voice-chime" class="ai-advanced-input">
+                                        <option value="ding">叮咚</option>
+                                        <option value="tech">科技感</option>
+                                        <option value="speech">語音播報</option>
+                                    </select>
+                                </div>
                             </div>
                             <div class="ai-advanced-pane hidden" data-pane="functions">
                                 <div class="ai-advanced-stack">
@@ -110445,6 +110486,36 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 if (['zh', 'en', 'auto'].includes(voiceInputLangSelect.value)) {
                     this.advancedSettings.voiceInputLanguage = voiceInputLangSelect.value;
                 }
+                this._saveAdvancedSettings();
+            });
+        }
+        const liveVoiceEnabledChkEl = document.getElementById('ai-live-voice-enabled-chk');
+        if (liveVoiceEnabledChkEl) {
+            liveVoiceEnabledChkEl.addEventListener('change', () => {
+                this.advancedSettings.liveVoiceEnabled = !!liveVoiceEnabledChkEl.checked;
+                this._saveAdvancedSettings();
+            });
+        }
+        const liveVoiceLimitEl = document.getElementById('ai-live-voice-speaker-limit');
+        if (liveVoiceLimitEl) {
+            liveVoiceLimitEl.addEventListener('change', () => {
+                const n = Math.round(Number(liveVoiceLimitEl.value));
+                this.advancedSettings.liveVoiceSpeakerLimit = Number.isFinite(n) ? Math.min(128, Math.max(8, n)) : 8;
+                liveVoiceLimitEl.value = String(this.advancedSettings.liveVoiceSpeakerLimit);
+                this._saveAdvancedSettings();
+            });
+        }
+        const liveVoiceWakeEl = document.getElementById('ai-live-voice-wake');
+        if (liveVoiceWakeEl) {
+            liveVoiceWakeEl.addEventListener('change', () => {
+                if (['AI', '欸哀'].includes(liveVoiceWakeEl.value)) this.advancedSettings.liveVoiceWakeWord = liveVoiceWakeEl.value;
+                this._saveAdvancedSettings();
+            });
+        }
+        const liveVoiceChimeEl = document.getElementById('ai-live-voice-chime');
+        if (liveVoiceChimeEl) {
+            liveVoiceChimeEl.addEventListener('change', () => {
+                if (['ding', 'tech', 'speech'].includes(liveVoiceChimeEl.value)) this.advancedSettings.liveVoiceChime = liveVoiceChimeEl.value;
                 this._saveAdvancedSettings();
             });
         }
