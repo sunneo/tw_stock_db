@@ -148,7 +148,44 @@
 - 限制：前綴比對只對「完整名稱」（節點名/對話名）做，不對對話名單獨做（遠端對話名單獨對上時仍是 `needNode`，維持原行為）。
 - 限制：`@` 候選的 App 層（輸入框自動完成）沒有另做 Electron 評估，只靠模組測試與 `chat_mention.eval.js`。
 
-## 教訓
+## 步驟 E：回歸
 
-- 守衛要放在「寫入前」與「寫入後」兩邊。只檢查寫入前，遇到 await 中間的刪除就會漏。
+真桌面版（`scripts/eval/run_eval.js`，工作目錄實作，已建置）：
+
+| 評估 | 結果 |
+|---|---|
+| `subchat_link`、`subchat_open`、`subchat_tools`、`subchat_tools_ai`、`subchat_remote`、`subchat_reload` | 全過（`subchat_reload` 沒有 allPass 欄位，逐項無 false） |
+| `subchat_remote_bubble`、`subchat_pullback`、`subchat_form`、`subchat_fap`、`subchat_bubble`、`subchat_card_request`、`subchat_send` | 全過 |
+| `subchat_delete`、`subchat_delete_ai`、`subchat_delete_ui`、`subchat_resurrect`、`subchat_qa_sync` | 全過 |
+| `chat_mention` | 全過 |
+| `chat_tree`、`chat_tree_index` | 沒有 allPass 欄位，逐項無 false |
+| `topic_local`、`topic_shift_setting`、`topic_shift_ui` | 全過 |
+| `tool-budget` | 違規數仍是 1（`domain_too_many_tools:skill_54f871ce…`，與 S7 基線相同）；`flat_all_tools` 54866（與 S7 相同，本階段沒有新增工具） |
+| `read_ledger` | 沒有內建判準，人工判讀：`A_before_fix` 到 `H_attach_after_fix` 各欄位與 S7 記錄的形狀一致；但 S6 的基線數值沒有在本次文件逐項列出，**無法嚴格逐欄比對**，如實寫明 |
+
+- 「topicShiftCheck 關閉時行為不變」：`topic_shift_setting` 全過。
+- 「沒有子對話時工具清單與側欄與現在相同」：`subchat_delete_ai` 的「沒有子對話時工具清單不含 `chat_delete_children`」與 S7 `regressionNoBoxes` 再次通過。
+- 節點測試：`chat_tree` 26（S8 新增 4 項）、`topic_local` 12、`topic_corpus` 6、`chat_delete` 19。
+- 網頁版：`scripts/web-lazy-check.js` 本機檢查通過。
+
+## 已知缺口（S8 收尾後的最後狀態）
+
+1. **嵌入式網頁版（沒有對話清單的路徑）**：沒有跑真實載入驗證（步驟 C 缺口 4，S6 也列過）。理由：需要沒有對話清單的建置，這次沒有做。
+2. **遠端子對話的 `chat_send_to_child`**：保留拒絕（C.2）。理由：遠端需求的回報經群組傳輸，本機追問沒有回報路徑；需要新協定。
+3. **問答紀錄的子對話端卡片回答**：用 `FaCard` API 與 `_cardFinish` 模擬，沒有逐一點 DOM 按鈕（B.5）。
+4. **話題偵測是合成語料**：真實誤判率沒量（D.6）。「還要幫我寫一首詩」這類以延續前綴開頭的新需求會漏判（D.4）。
+5. **`read_ledger` 沒有逐欄對 S6 基線**（步驟 E）。
+6. **`@` 候選的輸入框自動完成**沒有另做 Electron 評估，只有模組測試與 `chat_mention` 評估（C.3）。
+7. **被刪子對話的情境 2 是人為拖慢寫入**（A.4）；真實磁碟寫入通常很快，修法不依賴時序。
+8. **`ask_user_card` 根層級歸類**：本階段沒有改動，也沒有依賴（管理層指示）。
+
+## 教訓（S8 過程）
+
+- 守衛要放在「寫入前」與「寫入後」兩邊。只檢查寫入前，遇到 await 中間的刪除就會漏（步驟 A）。
+- 模擬「已 abort 但仍會回來」與「寫入中途被刪」是兩種不同情境；只做前者會得到假的通過（步驟 A）。
+- 快取有兩份時，修改的必須是「UI 會讀的那一份」。`_chatCtxPrune` 會清掉不在畫面上的對話快取，之後會從磁碟重讀；修改後要立刻落盤，不能等 350ms 的延遲寫入（步驟 B）。
+- 評估裡的過期物件會覆蓋真正的狀態：收尾時用 `fa._chatActivate(parentCtx)` 把開頭那份舊物件換回來，導致假失敗。要用 `_chatCtxs.get(id)` 取當前的（步驟 B）。
+- 評估之間要等延遲寫檔完成（sleep 700ms）再切換對話，否則讀到舊版（步驟 B）。
+- 延續句的長度上限要分語言：中文用字元數，英文用單字數。字元數會把 `add another dog` 誤判成新話題（步驟 D）。
+- 校準時，門檻調整改不了的誤判（所有門檻都 21.4%）要先找原因，多半是判準本身缺條件，不是門檻問題（步驟 D）。只檢查寫入前，遇到 await 中間的刪除就會漏。
 - 模擬「已 abort 但仍會回來」與「寫入中途被刪」是兩種不同情境；只做前者會得到假的通過。
