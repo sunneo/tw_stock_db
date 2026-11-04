@@ -78254,6 +78254,9 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     requestUserForm(options = {}) {
         // Configure（設定）視窗開著時，聊天裡的卡片會被視窗擋住、使用者看不到，等他回到對話才處理就太遲了：直接在最上層跳出對話框
         if (this._isModalOpen(document.getElementById('ai-advanced-modal'))) return new Promise((resolve) => this._showUserFormDialog(options, resolve));
+        // 子對話 S4b：子對話要表單時冒泡到父對話的連結卡片（不論子對話在不在畫面上），父對話可回答
+        const subCtxId = this._ctx && this._ctx.id; const subEntry = subCtxId && this._chatEntry(subCtxId);
+        if (subEntry && subEntry.parentId) return this._subchatAskForm(subCtxId, options);
         // 背景對話（使用者已切走）的AI想確認事情：表單是畫在目前對話的畫面上的，不能憑空蓋在別的對話上，
         // 也不能自動當成使用者同意。標成「等你確認」，等使用者切回這個對話再顯示表單。
         if (!this._chatIsVisible()) {
@@ -78411,6 +78414,8 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     _showUserForm(options, resolve) {
         {
             const { title = '🧭 AI 想確認一下', description = '', choices = null, fields = null, allowSupplement = false } = options;
+            // 子對話 S4b：這張表單已被父對話回答（isCancelled）→ 不再畫出來（切換對話時的重新顯示等待者也會走到這裡）
+            if (typeof options.isCancelled === 'function' && options.isCancelled()) { resolve({ confirmed: false, cancelled: true }); return; }
             const chatBody = document.getElementById('ai-chat-body');
             if (!chatBody) { resolve({ confirmed: true }); return; } // 理論上不該發生(呼叫這個方法時對話視窗一定已經開著)，保守起見不卡住整個工具呼叫流程
             const palette = this._getThemePalette();
@@ -96006,6 +96011,8 @@ _result
         st.style.cssText = 'flex:1 1 100%; font-size:12px; opacity:0.9; overflow-wrap:anywhere;';
         st.textContent = info.text;
         w.appendChild(st);
+        // 子對話 S4b：等待中的是表單 → 父對話直接顯示表單的選項／欄位（不是文字輸入列）
+        if (info.pending === 'form' && info.canAnswer) { host._subchatFormRow(w, childId, info.form || {}); return; }
         const row = document.createElement('div');
         row.className = 'fa-subchat-answer-row';
         row.style.cssText = 'flex:1 1 100%; display:flex; gap:6px;';
@@ -96059,12 +96066,93 @@ _result
         const canAnswer = e.status === M.WAITING && this._subchatPendingMap().has(childId);
         const stale = e.status === M.WAITING && !canAnswer;
         const text = stale ? '等你回應已失效（重新整理後請到子對話處理）' : M.summarize(e.status, e.subInfo || {});
-        return { status: e.status, text, canAnswer };
+        const rec = this._subchatPendingMap().get(childId);
+        return { status: e.status, text, canAnswer, pending: rec ? (rec.kind === 'form' ? 'form' : 'card') : null, form: rec && rec.kind === 'form' ? rec.options : null };
+    }
+
+    // 子對話 S4b：子對話的表單（requestUserForm）冒泡。等待記錄存在 _subchatPendingMap（kind:'form'，只在記憶體）。
+    // 子對話在畫面上 → 表單照常顯示在子對話，同時也能在父對話回答；先回答的一方算數，另一方的畫面會收掉。
+    // 子對話不在畫面上 → 不靠使用者切回來才看得到，父對話連結卡片就能回答；使用者切回子對話時才補顯示表單（沒被回答才顯示）。
+    _subchatAskForm(subId, options) {
+        const host = this._faHost || this; const ctx = this._ctx;
+        return new Promise((resolve) => {
+            let done = false; let pf = null;
+            // opts 會存進 pendingForm；切換對話時的重新顯示會用到它，isCancelled 讓已被父對話回答的表單不再顯示
+            const opts = Object.assign({}, options || {}, { isCancelled: () => done });
+            const removeDom = () => { try { if (pf && ctx.pendingForm === pf) { pf.container.remove(); ctx.pendingForm = null; } } catch (_) { /* 畫面已經不在也沒關係 */ } };
+            const rec = { kind: 'form', options: opts };
+            const settle = (r) => {
+                if (done) return; done = true;
+                removeDom();
+                if (host._subchatPendingMap().get(subId) === rec) host._subchatPendingMap().delete(subId);
+                try { host._subchatSetStatus(subId, 'answer'); } catch (_) { /* 狀態更新失敗不影響等待者 */ }
+                resolve(r);
+            };
+            rec.settle = settle;
+            host._subchatPendingMap().set(subId, rec);
+            host._subchatSetStatus(subId, 'ask', { question: String((options && options.title) || '問題') });
+            const show = () => {
+                if (done) return; ctx.waitingForUser = false; try { host._renderChatList(); } catch (_) { /* */ }
+                const p = this._requestUserFormNow(opts); pf = ctx.pendingForm || null; p.then(settle);
+            };
+            if (this._chatIsVisible()) show();
+            else { ctx.waitingForUser = true; try { host._renderChatList(); } catch (_) { /* */ } ctx.visibleWaiters.push(show); }
+        });
+    }
+    // 子對話 S4b：父對話回答表單。payload：{kind:'choice',answer}｜{kind:'supplement',text}（只有 allowSupplement 才接受）｜{kind:'values',values}｜{kind:'cancel'}
+    // 回傳形狀與子對話自己按的一樣：choices → {confirmed,answer}；補充 → {confirmed,answer:null,skipped,supplement}；fields → {confirmed,values}；取消 → {confirmed:false}
+    _subchatAnswerForm(childId, payload) {
+        const host = this._faHost || this; const rec = host._subchatPendingMap().get(childId);
+        if (!rec || rec.kind !== 'form') return { ok: false, error: '子對話目前沒有等待中的表單' };
+        const o = rec.options || {}; const p = payload || {};
+        const choices = Array.isArray(o.choices) && o.choices.length ? o.choices : null; const fields = Array.isArray(o.fields) && o.fields.length ? o.fields : null;
+        let r = null;
+        if (p.kind === 'cancel') r = { confirmed: false };
+        else if (p.kind === 'choice') { if (!choices || choices.indexOf(p.answer) < 0) return { ok: false, error: '沒有這個選項' }; r = { confirmed: true, answer: p.answer }; }
+        else if (p.kind === 'supplement') {
+            const t = String(p.text == null ? '' : p.text).trim(); if (!t) return { ok: false, error: '回答不能是空的' };
+            if (!choices || !o.allowSupplement) return { ok: false, error: '這題只能按選項回答（不接受打字）' };
+            r = { confirmed: true, answer: null, skipped: true, supplement: t };
+        }
+        else if (p.kind === 'values') { if (!fields) return { ok: false, error: '這題不是填欄位的表單' }; r = { confirmed: true, values: p.values && typeof p.values === 'object' ? p.values : {} }; }
+        else return { ok: false, error: '不認得的回答種類' };
+        rec.settle(r);
+        try { host._renderMessageHistory(); } catch (_) { /* 重畫失敗不影響回答 */ }
+        return { ok: true };
+    }
+    // 子對話 S4b：父對話連結卡片上的表單控制項（選項按鈕、欄位輸入、取消、允許補充時的文字輸入）
+    _subchatFormRow(w, childId, form) {
+        const host = this._faHost || this;
+        const row = document.createElement('div'); row.className = 'fa-subchat-answer-row';
+        row.style.cssText = 'flex:1 1 100%; display:flex; flex-wrap:wrap; gap:6px;';
+        const err = document.createElement('div'); err.style.cssText = 'flex:1 1 100%; font-size:12px; color:#f87171;';
+        const btn = (label, fn) => {
+            const b = document.createElement('button'); b.type = 'button'; b.className = 'fa-subchat-answer-send'; b.textContent = label;
+            b.style.cssText = 'cursor:pointer; padding:4px 10px; border-radius:6px; border:1px solid rgba(99,102,241,0.5); background:transparent; color:#6366f1; font-size:12px; white-space:nowrap;';
+            b.addEventListener('click', (ev) => { ev.preventDefault(); const r = fn(); if (r && !r.ok) err.textContent = '回答失敗：' + r.error; });
+            return b;
+        };
+        const inputStyle = 'flex:1 1 auto; min-width:0; padding:4px 8px; border-radius:6px; border:1px solid rgba(99,102,241,0.5); font-size:12px;';
+        const choices = Array.isArray(form.choices) && form.choices.length ? form.choices : null;
+        const fields = Array.isArray(form.fields) && form.fields.length ? form.fields : null;
+        if (choices) choices.forEach((c) => row.appendChild(btn(String(c), () => host._subchatAnswerForm(childId, { kind: 'choice', answer: String(c) }))));
+        if (fields) {
+            const inputs = fields.map((f) => { const i = document.createElement('input'); i.type = 'text'; i.dataset.key = String(f.key); i.placeholder = String(f.label || f.key); i.value = f.value == null ? '' : String(f.value); i.style.cssText = inputStyle; row.appendChild(i); return i; });
+            row.appendChild(btn('送出', () => { const values = {}; inputs.forEach((i) => { values[i.dataset.key] = i.value; }); return host._subchatAnswerForm(childId, { kind: 'values', values }); }));
+        }
+        if (choices) row.appendChild(btn('取消', () => host._subchatAnswerForm(childId, { kind: 'cancel' })));
+        if (choices && form.allowSupplement) {
+            const inp = document.createElement('input'); inp.type = 'text'; inp.placeholder = '都不是？打字補充…'; inp.style.cssText = inputStyle; row.appendChild(inp);
+            row.appendChild(btn('用文字回答', () => host._subchatAnswerForm(childId, { kind: 'supplement', text: inp.value })));
+        }
+        row.appendChild(err); w.appendChild(row);
     }
 
     // 子對話 S4：在父對話回答子對話等待中的問題。答案走「略過選項、直接打字回答」（skipped＋supplement，與 ask_user_card 的工具說明相同），子對話接著跑。
     _subchatAnswer(childId, text) {
         const msg = this._subchatPendingMap().get(childId);
+        // 子對話 S4b：等待中是表單 → 文字只在表單允許補充時才接受（當成補充），否則要求按選項
+        if (msg && msg.kind === 'form') return this._subchatAnswerForm(childId, { kind: 'supplement', text: text });
         const w = msg && this._cardWaitersMap().get(msg);
         if (!w) return { ok: false, error: '子對話目前沒有等待中的問題' };
         const t = String(text == null ? '' : text).trim();
