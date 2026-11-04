@@ -14,6 +14,7 @@ const CC = require('./consensus_check.js');
 
 const SKILL_DIR = path.resolve(__dirname, '..');
 const EXP_FILE = path.join(SKILL_DIR, 'references', 'path-experiences.json');
+const SPEED_FILE = path.join(SKILL_DIR, 'references', 'consensus', 'speed-rules.json');
 // 宣稱詞：報告裡出現這些字，就必須附證據（指令輸出或提交 hash）。
 const CLAIM_WORDS = ['沒有出入', '沒有什麼出入', '一致', '已完成', '全過', '全部通過', '都通過', '完全相同', '與先前一致', '無誤', '沒問題', '已驗證'];
 const COMPARE_WORDS = ['沒有出入', '沒有什麼出入', '一致', '完全相同', '與先前一致'];
@@ -31,6 +32,37 @@ function safeTask(name) {
 
 function dispatchFile(dir, task) { return path.join(dir, 'dispatch', safeTask(task) + '.json'); }
 
+// ---- 速度守則：派工時附上，驗收時掃描超限數字（只是警告，不影響通過與否） ----
+function loadSpeed(file) {
+  const j = JSON.parse(fs.readFileSync(file || SPEED_FILE, 'utf8'));
+  return { name: j.name || '', source: j.source || '', limits: j.limits, rules: (j.rules || []).map((r) => ({ id: r.id, text: r.text })) };
+}
+
+// 提交新增的行（不含刪除的行）。
+function addedLines(root, hash) {
+  const d = git(['diff-tree', '-p', '--no-commit-id', '--root', '-U0', hash], root);
+  return d.split(/\r?\n/).filter((l) => l.startsWith('+') && !l.startsWith('+++')).map((l) => l.slice(1)).join('\n');
+}
+
+// 掃描報告文字與新增的程式行，超過上限的等待、逾時、排程都列出來。
+function speedWarnings(report, added, limits) {
+  const L = limits || loadSpeed().limits;
+  const W = L.wait_seconds, T = L.timeout_ms, S = L.schedule_seconds;
+  const rep = String(report || '');
+  const code = String(added || '');
+  const out = [];
+  for (const m of rep.matchAll(/delaySeconds\s*[:=]\s*(\d+)/g)) if (+m[1] > S) out.push('報告：排程喚醒 ' + m[1] + ' 秒（上限 ' + S + ' 秒）');
+  for (const m of rep.matchAll(/(\d+)\s*分鐘後/g)) if (+m[1] * 60 > S) out.push('報告：' + m[1] + ' 分鐘後再看（排程上限 ' + S / 60 + ' 分鐘）');
+  for (const m of rep.matchAll(/(?:等待|等了?|靜置|空等)\s*(\d+)\s*分鐘/g)) if (+m[1] * 60 > W) out.push('報告：等待 ' + m[1] + ' 分鐘（等待上限 ' + W / 60 + ' 分鐘）');
+  for (const m of rep.matchAll(/timeout\s*[:=]\s*(\d+)/g)) if (+m[1] > T) out.push('報告：逾時 ' + m[1] + ' 毫秒（上限 ' + T + ' 毫秒）');
+  for (const m of code.matchAll(/delaySeconds\s*[:=]\s*(\d+)/g)) if (+m[1] > S) out.push('程式：排程喚醒 ' + m[1] + ' 秒（上限 ' + S + ' 秒）');
+  for (const m of code.matchAll(/timeout\s*[:=]\s*(\d+)/g)) if (+m[1] > T) out.push('程式：逾時 ' + m[1] + ' 毫秒（上限 ' + T + ' 毫秒）');
+  for (const m of code.matchAll(/sleep\(\s*(\d+)\s*\)/g)) if (+m[1] > W * 1000) out.push('程式：sleep(' + m[1] + ') 毫秒（等待上限 ' + W + ' 秒）');
+  for (const m of code.matchAll(/setTimeout\([^,()]*,\s*(\d+)\s*\)/g)) if (+m[1] > W * 1000) out.push('程式：setTimeout ' + m[1] + ' 毫秒（等待上限 ' + W + ' 秒）');
+  for (const m of code.matchAll(/\bsleep\s+(\d+)\b/g)) if (+m[1] > W) out.push('腳本：sleep ' + m[1] + ' 秒（等待上限 ' + W + ' 秒）');
+  return out;
+}
+
 // ---- dispatch：寫派工紀錄 ----
 function dispatchTask(o) {
   const spec = {
@@ -39,6 +71,7 @@ function dispatchTask(o) {
     consensus: o.consensus || null,
     allow: (o.allow || []).map(String),
     verify: (o.verify || []).map(String),
+    speed: loadSpeed(o.speedFile),
     created: new Date().toISOString(),
   };
   if (!spec.quotes.length) throw new Error('派工至少要有一句使用者原話（--quote）');
@@ -116,7 +149,7 @@ function verifyTask(o) {
 
   // 3 驗收指令
   sec.commands = spec.verify.map((cmd) => {
-    const r = spawnSync(cmd, { cwd: root, shell: true, encoding: 'utf8', timeout: 600000 });
+    const r = spawnSync(cmd, { cwd: root, shell: true, encoding: 'utf8', timeout: 300000 });
     const out = ((r.stdout || '') + (r.stderr || '')).trim();
     return { cmd, exit: r.status === null ? -1 : r.status, tail: out.slice(-200) };
   });
@@ -129,6 +162,9 @@ function verifyTask(o) {
     const rows = claimRows(o.report, root);
     sec.claims = { ok: rows.every((r) => r.proven), missing: false, rows };
   }
+
+  // 4b 速度檢查（警告，不影響通過與否）；舊的派工紀錄沒有 speed 欄位時用預設上限
+  sec.speed = { ok: true, warnings: speedWarnings(typeof o.report === 'string' ? o.report : '', addedLines(root, hash), spec.speed && spec.speed.limits) };
 
   // 5 原話逐條對照（預設「否」，必須老師填「是」）
   const confirm = o.confirm || {};
@@ -158,6 +194,10 @@ function renderVerdict(spec, hash, sec, pass) {
   for (const c of sec.commands) L.push('- [' + (c.exit === 0 ? '通過' : '違反') + '] 驗收指令 `' + c.cmd + '` 結束碼 ' + c.exit);
   L.push('- [' + (sec.claims.ok ? '通過' : '違反') + '] 宣稱檢查' + (sec.claims.missing ? '：沒有提供報告文字' : ''));
   for (const r of sec.claims.rows) L.push('  - ' + (r.proven ? '[已證]' : '[宣稱未證，需要' + r.needs + ']') + ' 第 ' + r.index + ' 句（' + r.word + '）：' + r.text);
+  if (sec.speed.warnings.length) L.push('- [警告] 速度檢查：' + sec.speed.warnings.length + ' 項（不影響結論，見下）');
+  L.push('', '## 速度檢查（警告，不影響結論）', '');
+  if (sec.speed.warnings.length) for (const w of sec.speed.warnings) L.push('- ' + w);
+  else L.push('- 沒有發現超過上限的等待、逾時或排程（上限見 references/consensus/speed-rules.json）。');
   L.push('', '## 與使用者原話逐條對照', '', '| 編號 | 使用者原話 | 已對照 |', '|---|---|---|');
   for (const q of sec.quotes) L.push('| ' + q.id + ' | ' + q.quote.replace(/\|/g, '/') + ' | ' + q.status + ' |');
   L.push('', '（只有老師填「是」才算通過；預設「否」。）', '');
@@ -180,7 +220,7 @@ function observeRecord(o, expFile) {
   return rec;
 }
 
-module.exports = { dispatchTask, verifyTask, observeRecord, renderVerdict, claimRows, CLAIM_WORDS, EXP_FILE };
+module.exports = { dispatchTask, verifyTask, observeRecord, renderVerdict, claimRows, speedWarnings, loadSpeed, CLAIM_WORDS, EXP_FILE, SPEED_FILE };
 
 // ---- 命令列 ----
 function parseArgs(argv) {

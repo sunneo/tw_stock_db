@@ -1264,6 +1264,30 @@
       "lesson": "老師只確認提交存在與測試通過，就接受了「與先前一致、沒有什麼出入」的文字，沒有拿使用者原話逐條對照，HTTP 偏離因此沒被發現。之後的驗收一律先跑 verify，比較型宣稱沒有比對輸出就不收",
       "evidence": "提交 88116691；驗收單 .weak-harness/dispatch/native-runner-design-88116691.verdict.md 的共識違反與原話對照欄（預設否）",
       "verified": false
+    },
+    {
+      "id": "T-speed-rules-branch-1",
+      "observer": "teacher",
+      "task": "speed-rules",
+      "kind": "branch",
+      "stage": "派工（速度守則）",
+      "steps": [],
+      "alternatives": [],
+      "lesson": "派工時沒有附速度守則，Haiku 因此沒有上限可依循；派工紀錄應由 dispatch 自動附上守則與上限，不靠老師記得加。",
+      "evidence": ".weak-harness/dispatch/native-runner-design-88116691.json 沒有 speed 欄位（派工當時沒有速度守則）；DESIGN.TODO.path-experience.md 第 8 節 S1、S2",
+      "verified": false
+    },
+    {
+      "id": "T-speed-rules-reflection-1",
+      "observer": "teacher",
+      "task": "speed-rules",
+      "kind": "reflection",
+      "stage": "驗收（卡住偵測）",
+      "steps": [],
+      "alternatives": [],
+      "lesson": "老師沒有及早發現卡住：安裝模擬的子程序等待 25 分鐘（timeout 1500000）且沒有逐步輸出，直到使用者催促才處理。驗收時應掃描 timeout 數值，超過 5 分鐘就要求拆小或加進度輸出。",
+      "evidence": "scripts/eval/native_old_layout_install.js:62（工作樹未提交）；管理層回報卡 13 分鐘才被催促，時長未由逐字稿核實；DESIGN.TODO.path-experience.md 第 8 節 S3",
+      "verified": false
     }
   ],
   "observer_values": [
