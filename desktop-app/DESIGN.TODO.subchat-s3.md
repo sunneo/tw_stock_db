@@ -98,6 +98,43 @@
 - 步驟 4：點擊卡片、存檔還原、側欄樹狀。
 - 步驟 5：開關關閉回歸；`topic_local.eval.js`、`chat_tree.eval.js`、`chat_tree_index.eval.js`、`read_ledger.eval.js` 重跑。
 
+## 步驟 2–5 結果
+
+- 步驟 2（`2b62a0f4`）：`renderer/src/chat/handoff.js` 與 `handoff.test.js`，`node renderer/src/chat/handoff.test.js` 12 項全過。
+- 步驟 3（`bb025243`）：
+  - 嵌入：`scripts/embed-code-ui.js` 新增 SUBCHATHANDOFF 區塊，主檔加 `SUBCHATHANDOFF-BEGIN`／`END` 標記，`scripts/build-web-lazy.js` 的 EXCLUDE 加入 `SUBCHATHANDOFF`（與 TOPICLOCAL 相同，留在網頁版核心）。
+  - `_chatNew`（主檔約 79705）新增 `opts.title`、`opts.status`／`summary`／`fingerprint`（只在 `parentId` 時寫入）、`opts.noActivate`（不切換畫面），並改為回傳新對話 id。
+  - `_subchatOpenFor(userText)`（主檔約 95974 起）：由 `executeChat` 在推入使用者訊息之後呼叫（主檔約 102716）。`_lastTopicShift` 加入 `FA_CHAT_CTX_KEYS`，讓父子各自一份。
+  - 連結卡片：`_buildToolResultMessage('display', …)`，`_subchatLink` 為可列舉屬性；`_renderSingleMessageInner` 最前面加分支（約 107046 起）。
+  - 評估 `scripts/eval/subchat_open.eval.js`（換埠 17962）：修前 `onOneChild`、`onChildCalledModel`、`onParentCallsFirstTwoOnly` 等 9 項不成立（父對話三則都呼叫模型）；修後 18 項全過（`allPass: true`），`loadedWorkdirImpl` 修前 false、修後 true。
+- 步驟 4（`68bb3452`）：`scripts/eval/subchat_link.eval.js`（換埠 17963）14 項全過：停留父對話、點「打開」切到子對話、切回後按鈕還在、JSON 往返保留連結、從存檔重讀後按鈕仍在且可點、側欄樹狀預設收合、點開關出現子對話列、點開關不切換。
+- 步驟 5：開關關閉的回歸由 `subchat_open.eval.js` 的關閉段證明（沒有子對話、沒有連結卡片、每則一次父對話呼叫）。既有評估：
+  - `topic_local.eval.js`：`allPass: true`（13 項）。
+  - `chat_tree.eval.js`：全部判準為 true（其中 `shape_after_delete` 是字串記錄，不是判準）。
+  - `chat_tree_index.eval.js`：各欄位符合預期，沒有 false。
+  - `read_ledger.eval.js`：**沒有內建的通過／失敗判準**，只印出修前修後的數值。數值與設計方向一致（例如 C_stubborn `warned: true`，修後 D／E 的 `reminders_in_request` 為 0），但這是人工判讀，不是機器判定，回報時不算通過。
+
+## 驗證範圍（誠實列出）
+
+- 真桌面版驗證過：送出流程的父子模型呼叫歸屬、子對話索引欄位（`parentId`、`title`、`status`）、子對話訊息（交接 system、使用者訊息、回覆）、父對話不呼叫模型、連結卡片的點擊與存檔重讀、側欄樹狀、關閉時的回歸、修前修後對照。
+- 只有 node 測試：`handoff.js` 的標題與交接規則（12 項）。
+- 沒驗證：
+  - 連結卡片（`role:'tool'` 的 display 訊息）在父對話**下一則**送出時，是否被送進模型請求。`_buildToolResultMessage` 會補 `tool_call_id`（主檔約 78637），但沒有 assistant 的 `tool_calls` 前導，不確定模型端是否接受。既有的 `_pushDisplayToolMessage` 走同一條路，屬既有行為，本次沒有單獨測。
+  - 真實的遠端需求、拉回舊話題（S5）、狀態冒泡（S4）都沒碰。
+  - 真實模型的回覆品質與交接摘要的內容品質。
+
+## 風險（給 S4–S5 接手者）
+
+1. **`executeChat` 對 `this._activeCtx`**：executeChat 本體沒有直接寫 `_activeCtx`，所有畫面路徑都先看 `_chatIsVisible()`。但 executeChat 可達的方法若新增了寫入、且欄位不在 `FA_CHAT_CTX_KEYS`，會寫到實例上（＝目前顯示的對話）。S3 只新增 `_lastTopicShift` 進清單，其餘沒有審查。
+2. **子對話 status 只有 done／failed**：`finish` 以 executeChat 的 Promise 結束為準。executeChat 內部模型失敗（`_otAllModelsFailed`）時仍會 resolve，所以會標成 done。S4 的 `waiting_user` 與冒泡要改成讀真正的結果。
+3. **應用程式中途關閉**：子對話的 `status` 可能停在 `running`，沒有重啟後的修復。
+4. **`_lastTopicShift` 只在父對話的執行中被讀**：`_subchatOpenFor` 在同步區段內讀取，所以父子並行不會誤讀；但若將來有人在 await 之後才讀，會讀到子對話寫的值。
+5. **`_chatNew` 的 `forChild` 路徑跳過空對話檢查**：同一個父對話連續三則新話題，會開三個子對話（沒有去重）。這是預期（每個新話題一個子對話），但 S5 拉回時要用指紋比對，避免重複。
+
 ## 教訓
 
-（執行過程中有走錯的地方，會在這裡新增。）
+1. **背景執行的呼叫會被記到前一輪**：`subchat_open.eval.js` 第一次跑，`onParentCallsFirstTwoOnly` 失敗。原因是子對話的模型呼叫在父對話 `executeChat` 回傳前就發出，所以被記到父對話第三則那一列。修正是只數「不帶交接內文」的呼叫（父對話），子對話的呼叫另外用 `onChildCalledModel` 證明。這是記錄歸屬的修正，不是放寬判準；修前版本仍然 `onChild*` 全不成立。下次：評估要判斷「是誰的呼叫」時，用請求內容的特徵分辨，不要用時間順序。
+2. **`_chatNew` 預設會切換畫面**：要 `noActivate` 才能留在父對話。也因此 `_chatNew` 改成回傳 id，之後呼叫方不必再找「最後一筆」。
+3. **狀態欄位要進 `FA_CHAT_CTX_KEYS`**：`_lastTopicShift` 原本不在清單內，父子共用同一份。S2 的教訓（新增狀態要查所有重設點）在這次又適用：`_clearChatHistory` 要不要清 `_lastTopicShift`，目前沒有處理（它只在下一則訊息前被重新寫入，風險低，但要記住）。
+4. 寫入主檔後跑 `scripts/embed-code-ui.js` 會重寫所有嵌入區塊；提交前用 `git diff --stat` 確認只有自己的變更（本次確認過，只有 `renderer/src/floating-assistant.js` 的 81 行與嵌入一行）。
+5. 建置前先把 `renderer/floating-assistant*.js`、`update-manifest.json`、`web-lazy/`、`test-reports/` 備份到 scratchpad；修前對照時把備份的建置換進去跑評估，之後把新建置放回（先用 `cp` 另存一份當作新建置）。
