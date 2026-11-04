@@ -111,16 +111,16 @@
    "names": [
     "FaLiveController"
    ],
-   "size": 2680,
-   "md5": "4a847326ba86f30ac7f5b85d6a5932bf"
+   "size": 4328,
+   "md5": "b75e834bf092ce7eba4d23d5385bd04e"
   },
   "liveloop": {
    "file": "chunks/liveloop.js",
    "names": [
     "FaLiveLoop"
    ],
-   "size": 2469,
-   "md5": "54182df59246eef62c8607d13b15344d"
+   "size": 2695,
+   "md5": "5742f60a00eb3c6c54045e9f44e8973a"
   },
   "fbank": {
    "file": "chunks/fbank.js",
@@ -1140,7 +1140,7 @@
   }
  },
  "core": {
-  "size": 5463165,
-  "md5": "92c96c25b2ed6dfbc98fecef68531b7d"
+  "size": 5468588,
+  "md5": "bce598cf61eb74fbbe8c4e67c809ee13"
  }
 }
