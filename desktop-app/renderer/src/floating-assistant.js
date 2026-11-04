@@ -4506,6 +4506,9 @@ const FA_CHAT_TREE_SRC = "// 對話樹（純函式，不碰 DOM、不做 I/O）�
 /* TOPICLOCAL-BEGIN */
 const FA_TOPIC_LOCAL_SRC = "// 本地話題偵測（純函式，不碰 DOM、不做 I/O、不呼叫模型）。\n// 取代「每則訊息都等模型判斷話題轉移」的 _checkTopicTransition（子對話 S2）。\n// 所有函式都回傳新值，不修改傳入的物件。\n//\n// 指紋（fingerprint）：可序列化的詞頻表 { token: count }，JSON 友善。\n//   - 中文（CJK）：連續中文字取二元組（bigram）；單一中文字取一元組\n//   - 英文與數字：小寫單字\n//   - 常見虛詞與口頭禪（見 STOP_TOKENS）不計入，避免「幫我」「一張」讓所有話題都像\n//\n// 判斷流程（detectShift）：\n//   1. 沒有目前話題（對話剛開始）→ 不判轉移（呼叫端把這則設為目前話題）\n//   2. 沒有實質內容（只有「好」「繼續」「謝謝」等）→ 不判轉移\n//   3. 與目前話題相似度 >= sameThreshold → 同話題，不轉移\n//   4. 與某個候選話題（舊話題的指紋）相似度 >= matchThreshold → 轉移，matchedTopicId 指向它\n//   5. 以「再／又／加／改／換成／also／again…」開頭的短句 → 視為延續（例如「再加一隻狗」），不轉移\n//   6. 其餘 → 轉移（新話題）\n//\n// 門檻自己決定的理由（使用者決定「選速度快的方式，誤判寧可多開」，所以偏向判轉移）：\n//   - sameThreshold = 0.25：兩則訊息的餘弦相似度要有四分之一的詞重疊才算同話題。\n//     手算「再畫一張狗的圖」與畫圖話題約 0.34，「幫我創作一首音樂」與畫圖約 0（測試中可驗證）。\n//     0.25 比 0.5 寬鬆，能接住「同一任務換個東西」的訊息，但不會讓無關話題被算成同一個。\n//   - matchThreshold = 0.25：與舊話題的判定門檻與 sameThreshold 相同，避免兩套標準互相打架。\n//   - 這兩個值是經驗值，用測試案例校準，可由 opts 覆寫；真實使用者訊息的誤判率尚未量測。\n//\n// 指紋大小：mergeFingerprint 預設只保留前 40 個詞。理由：話題的核心詞會反覆出現，\n//   次數高的留下，一次性的詞被擠掉；40 個詞大約能容納十來則內容訊息，又不會讓比對變慢。\n\n(function (root, factory) {\n  if (typeof module === 'object' && module.exports) { module.exports = factory(); } else { root.AiTopicLocal = factory(); }\n}(typeof self !== 'undefined' ? self : this, function () {\n  'use strict';\n\n  var DEFAULT_MAX_TERMS = 40;\n  var DEFAULT_SAME_THRESHOLD = 0.25;\n  var DEFAULT_MATCH_THRESHOLD = 0.25;\n\n  // 中文二元組停用：虛詞、量詞組、客套語。這些出現在幾乎所有話題裡，不代表話題內容。\n  var STOP_CJK_BIGRAMS = [\n    '幫我', '我的', '你的', '請你', '可以', '一張', '一隻', '一首', '一個', '一下',\n    '這個', '那個', '什麼', '怎麼', '一些', '還是', '然後', '但是', '因為', '所以',\n    '如果', '就是', '我們', '你們', '這樣', '那樣', '不要', '需要', '已經', '謝謝',\n    '繼續', '好的', '我要', '要的', '麻煩'\n  ];\n  var STOP_EN_WORDS = [\n    'the', 'a', 'an', 'and', 'or', 'to', 'of', 'in', 'on', 'for', 'with', 'is', 'are',\n    'it', 'this', 'that', 'please', 'can', 'you', 'me', 'my', 'i', 'be', 'do'\n  ];\n  var STOP_CJK = {};\n  STOP_CJK_BIGRAMS.forEach(function (w) { STOP_CJK[w] = true; });\n  var STOP_EN = {};\n  STOP_EN_WORDS.forEach(function (w) { STOP_EN[w] = true; });\n\n  // 整句就是這些（去掉句尾標點、小寫後比對）→ 沒有新話題內容，不判轉移\n  var TRIVIAL = {\n    '好': 1, '好的': 1, '好啊': 1, '繼續': 1, '謝謝': 1, '謝謝你': 1, '對': 1, '對的': 1,\n    '是': 1, '是的': 1, '不是': 1, '嗯': 1, '喔': 1, '了解': 1, '再來一個': 1, '改一下': 1,\n    'ok': 1, 'okay': 1, 'yes': 1, 'no': 1, 'thanks': 1, 'thank you': 1, 'continue': 1,\n    'sure': 1, 'good': 1, 'cool': 1, 'right': 1\n  };\n\n  // 延續的開頭：中文「再／又／也／還」可加可不加，接「加／多／來／改／換成／換一／同樣／一樣／繼續／接著」；\n  // 英文整詞開頭 also／again／another／more／add／continue。\n  // 注意：「再畫一張狗的圖」不符合（畫不在清單內），交給候選話題比對處理。\n  var CONTINUATION_RE = /^((再|又|也|還)?(加|多|來|改|換成|換一|同樣|一樣|繼續|接著))|^(also|again|another|more|add|continue|one more)\\b/i;\n\n  var CJK_RUN = /[㐀-鿿豈-﫿]+/g;\n  var ASCII_RUN = /[a-z0-9]+/g;\n\n  function tokensOf(text) {\n    var s = String(text == null ? '' : text).toLowerCase();\n    var out = [];\n    var m;\n    CJK_RUN.lastIndex = 0;\n    while ((m = CJK_RUN.exec(s)) !== null) {\n      var run = m[0];\n      if (run.length === 1) {\n        out.push(run);\n      } else {\n        for (var i = 0; i + 1 < run.length; i++) {\n          var bg = run.substr(i, 2);\n          if (!STOP_CJK[bg]) out.push(bg);\n        }\n      }\n    }\n    ASCII_RUN.lastIndex = 0;\n    while ((m = ASCII_RUN.exec(s)) !== null) {\n      if (!STOP_EN[m[0]]) out.push(m[0]);\n    }\n    return out;\n  }\n\n  // 文字 → 詞頻表（純物件，可 JSON 序列化）\n  function fingerprintOf(text) {\n    var fp = {};\n    var toks = tokensOf(text);\n    for (var i = 0; i < toks.length; i++) {\n      fp[toks[i]] = (fp[toks[i]] || 0) + 1;\n    }\n    return fp;\n  }\n\n  function isEmptyFp(fp) {\n    return !fp || typeof fp !== 'object' || Object.keys(fp).length === 0;\n  }\n\n  // 把新訊息併入話題指紋，並只保留次數最多的 max 個詞（同次數依詞字典序，結果確定）\n  function mergeFingerprint(fp, text, max) {\n    var limit = typeof max === 'number' && max > 0 ? max : DEFAULT_MAX_TERMS;\n    var merged = {};\n    var src = fp && typeof fp === 'object' ? fp : {};\n    Object.keys(src).forEach(function (k) { merged[k] = src[k]; });\n    var add = fingerprintOf(text);\n    Object.keys(add).forEach(function (k) { merged[k] = (merged[k] || 0) + add[k]; });\n    var keys = Object.keys(merged);\n    if (keys.length <= limit) return merged;\n    keys.sort(function (a, b) {\n      if (merged[b] !== merged[a]) return merged[b] - merged[a];\n      return a < b ? -1 : a > b ? 1 : 0;\n    });\n    var kept = {};\n    keys.slice(0, limit).forEach(function (k) { kept[k] = merged[k]; });\n    return kept;\n  }\n\n  // 餘弦相似度，範圍 0–1；任一邊為空回傳 0\n  function similarity(a, b) {\n    if (isEmptyFp(a) || isEmptyFp(b)) return 0;\n    var small = Object.keys(a).length <= Object.keys(b).length ? a : b;\n    var large = small === a ? b : a;\n    var dot = 0;\n    Object.keys(small).forEach(function (k) {\n      if (large[k]) dot += small[k] * large[k];\n    });\n    if (dot === 0) return 0;\n    var na = 0; Object.keys(a).forEach(function (k) { na += a[k] * a[k]; });\n    var nb = 0; Object.keys(b).forEach(function (k) { nb += b[k] * b[k]; });\n    return dot / (Math.sqrt(na) * Math.sqrt(nb));\n  }\n\n  function isTrivial(text) {\n    var t = String(text == null ? '' : text).trim().toLowerCase().replace(/[。！？!?．,，、~～]+$/g, '').trim();\n    // 少於 2 個字元（例如單獨一個「我」）視為太短，不足以代表一個新話題\n    return t.length < 2 || TRIVIAL[t] === 1;\n  }\n\n  // candidates：[{ id, fingerprint }]，通常是舊的（已被轉出的）話題或子對話\n  function detectShift(current, candidates, text, opts) {\n    var o = opts || {};\n    var sameT = typeof o.sameThreshold === 'number' ? o.sameThreshold : DEFAULT_SAME_THRESHOLD;\n    var matchT = typeof o.matchThreshold === 'number' ? o.matchThreshold : DEFAULT_MATCH_THRESHOLD;\n    var none = { isShifted: false, score: 0, matchedTopicId: null, reason: '' };\n\n    if (isEmptyFp(current)) { none.reason = 'no-current-topic'; return none; }\n\n    var fp = fingerprintOf(text);\n    if (isTrivial(text) || isEmptyFp(fp)) { none.reason = 'trivial'; return none; }\n\n    var sCur = similarity(fp, current);\n    if (sCur >= sameT) return { isShifted: false, score: sCur, matchedTopicId: null, reason: 'same-topic' };\n\n    var best = null;\n    var list = Array.isArray(candidates) ? candidates : [];\n    for (var i = 0; i < list.length; i++) {\n      var c = list[i];\n      if (!c || isEmptyFp(c.fingerprint)) continue;\n      var s = similarity(fp, c.fingerprint);\n      if (s >= matchT && (best === null || s > best.score)) best = { id: c.id, score: s };\n    }\n    if (best) return { isShifted: true, score: sCur, matchedTopicId: best.id, reason: 'returned-to-earlier-topic' };\n\n    if (CONTINUATION_RE.test(String(text).trim())) {\n      return { isShifted: false, score: sCur, matchedTopicId: null, reason: 'continuation-phrase' };\n    }\n    return { isShifted: true, score: sCur, matchedTopicId: null, reason: 'new-topic' };\n  }\n\n  return {\n    fingerprintOf: fingerprintOf,\n    mergeFingerprint: mergeFingerprint,\n    similarity: similarity,\n    detectShift: detectShift,\n    DEFAULT_MAX_TERMS: DEFAULT_MAX_TERMS,\n    DEFAULT_SAME_THRESHOLD: DEFAULT_SAME_THRESHOLD,\n    DEFAULT_MATCH_THRESHOLD: DEFAULT_MATCH_THRESHOLD\n  };\n}));\n";
 /* TOPICLOCAL-END */
+/* SUBCHATHANDOFF-BEGIN */
+const FA_SUBCHAT_HANDOFF_SRC = "// 子對話交接內文（純函式，不碰 DOM、不做 I/O、不呼叫模型）。\n// 偵測到新話題、開出子對話時，用這裡的結果：子對話標題，以及一段交接 system 訊息。\n// 交接只放「從哪個父對話分出來」與舊話題最近幾則使用者訊息的短摘錄，不載入整段歷史。\n//\n// 所有數字都是上限，超過就截斷：\n//   TITLE_MAX      子對話標題（含省略號）最多幾個字\n//   PARENT_MAX     父對話標題在交接內文裡最多幾個字\n//   EXCERPT_MAX    每則摘錄最多幾個字\n//   EXCERPT_COUNT  最多摘錄幾則舊話題的使用者訊息（取最近的）\n//   TOTAL_MAX      交接內文總長上限（字）\n(function (root, factory) {\n  if (typeof module === 'object' && module.exports) { module.exports = factory(); } else { root.AiChatHandoff = factory(); }\n}(typeof self !== 'undefined' ? self : this, function () {\n  'use strict';\n\n  var TITLE_MAX = 20;\n  var PARENT_MAX = 30;\n  var EXCERPT_MAX = 80;\n  var EXCERPT_COUNT = 3;\n  var TOTAL_MAX = 600;\n  var DEFAULT_TITLE = '新對話';\n\n  // 把任意文字壓成單行：換行、tab、連續空白都收成一個空白，前後去掉\n  function oneLine(s) {\n    return String(s == null ? '' : s).replace(/\\s+/g, ' ').trim();\n  }\n\n  // 依「字元」（code point）截斷，不切斷字；超過就在結尾加省略號，總長不超過 max\n  function clip(s, max) {\n    var chars = Array.from(s);\n    if (chars.length <= max) return s;\n    if (max <= 1) return chars.slice(0, Math.max(0, max)).join('');\n    return chars.slice(0, max - 1).join('') + '…';\n  }\n\n  // 子對話標題：新訊息前 TITLE_MAX 字（去掉換行與多餘空白）；空的話用預設名稱\n  function titleOf(newText) {\n    var t = oneLine(newText);\n    return t ? clip(t, TITLE_MAX) : DEFAULT_TITLE;\n  }\n\n  // 舊話題最近幾則使用者訊息（只取 role === 'user' 且內容為字串的）\n  function recentUserTexts(oldTopicMessages) {\n    var list = Array.isArray(oldTopicMessages) ? oldTopicMessages : [];\n    var texts = [];\n    for (var i = 0; i < list.length; i++) {\n      var m = list[i];\n      if (!m || m.role !== 'user' || typeof m.content !== 'string') continue;\n      var t = oneLine(m.content);\n      if (t) texts.push(t);\n    }\n    return texts.slice(-EXCERPT_COUNT);\n  }\n\n  // 交接內文：第一行說明來源，之後是舊話題的摘錄（沒有舊話題就只有第一行）\n  function handoffText(parentTitle, oldTopicMessages) {\n    var parent = clip(oneLine(parentTitle) || '（未命名對話）', PARENT_MAX);\n    var lines = ['這個子對話是從〈' + parent + '〉分出來的。'];\n    var excerpts = recentUserTexts(oldTopicMessages);\n    if (excerpts.length) {\n      lines.push('前一個話題裡使用者最近說過：');\n      for (var i = 0; i < excerpts.length; i++) {\n        lines.push('・' + clip(excerpts[i], EXCERPT_MAX));\n      }\n    }\n    lines.push('請只針對下面的新問題回答；需要舊話題的細節時再問使用者。');\n    return clip(lines.join('\\n'), TOTAL_MAX);\n  }\n\n  // 對外入口：回傳 { title, handoff }。newText 是觸發轉移的那則使用者訊息。\n  function buildHandoff(parentTitle, oldTopicMessages, newText) {\n    return {\n      title: titleOf(newText),\n      handoff: handoffText(parentTitle, oldTopicMessages),\n    };\n  }\n\n  return {\n    buildHandoff: buildHandoff,\n    titleOf: titleOf,\n    TITLE_MAX: TITLE_MAX,\n    PARENT_MAX: PARENT_MAX,\n    EXCERPT_MAX: EXCERPT_MAX,\n    EXCERPT_COUNT: EXCERPT_COUNT,\n    TOTAL_MAX: TOTAL_MAX,\n  };\n}));\n";
+/* SUBCHATHANDOFF-END */
 /* GUIPYASYNC-BEGIN */
 const FA_GUI_PYASYNC_SRC = "// 判斷 Python 原始碼要不要走非同步路徑（只有會開視窗的程式才走，既有的 python 行為不動）。\n// 做法：先把字串與註解抹成空白（保留換行，讓行首的比對仍然有效），再只看「行首的 import／from」有沒有 gui 或 pygame。\n// 所以字串或註解裡出現 import gui 不會誤判，import guitar 也不會（比對到單字邊界為止）。\n(function (root, factory) {\n  if (typeof module === 'object' && module.exports) { module.exports = factory(); } else { root.AiChatPyAsync = factory(); }\n}(typeof self !== 'undefined' ? self : this, function () {\n  'use strict';\n\n  // 把字串內容與 # 註解換成空白；換行保留。支援單引號、雙引號、三引號與字首（r、b、f、u 等）。\n  function blankOut(src) {\n    var s = String(src || ''), out = '', i = 0, n = s.length;\n    while (i < n) {\n      var c = s[i];\n      if (c === '#') { // 註解：到行尾為止\n        while (i < n && s[i] !== '\\n') { out += ' '; i++; }\n        continue;\n      }\n      if (c === '\"' || c === \"'\") {\n        var triple = s.substr(i, 3) === c + c + c;\n        var q = triple ? c + c + c : c;\n        out += q.replace(/./g, ' ');\n        i += q.length;\n        while (i < n) {\n          if (s[i] === '\\\\' && i + 1 < n) { out += (s[i + 1] === '\\n' ? '\\n' : '  '); i += 2; continue; }\n          if (s.substr(i, q.length) === q) { out += q.replace(/./g, ' '); i += q.length; break; }\n          if (!triple && s[i] === '\\n') break; // 單行字串遇到換行就結束（不完整的語法交給 Python 報錯）\n          out += (s[i] === '\\n' ? '\\n' : ' ');\n          i++;\n        }\n        continue;\n      }\n      out += c;\n      i++;\n    }\n    return out;\n  }\n\n  // 行首（允許縮排）的 import：import gui／import os, pygame.locals；行首的 from：from gui import …／from pygame.locals import …\n  var GUI_IMPORT = /^[ \\t]*(?:import[ \\t]+(?:[\\w.]+[ \\t]*,[ \\t]*)*(?:gui|pygame)(?![\\w])|from[ \\t]+(?:gui|pygame)(?![\\w]))/m;\n\n  // 讀使用者輸入（input()、sys.stdin）也要走 Worker：同步的 python 沒辦法在呼叫處等一行輸入\n  var STDIN_USE = /(?:^|[^\\w.])input[ \\t]*\\(|\\bsys\\.stdin\\b/;\n\n  function needsAsync(src) {\n    var code = blankOut(src);\n    return GUI_IMPORT.test(code) || STDIN_USE.test(code);\n  }\n\n  return { needsAsync: needsAsync, blankOut: blankOut };\n}));\n";
 /* GUIPYASYNC-END */
@@ -51016,7 +51019,7 @@ const FA_CHAT_CTX_KEYS = new Set([
     '_autoFallbackActive', '_autoFallbackGroups', '_autoFallbackGroupIndex', '_autoFallbackGroupAttempts',
     '_turnPruneCount', '_currentTurnUserText',
     '_latestScene3DYaml', '_latestViewerYaml', '_latestAnim2DYaml', '_latestDeckUrl', '_rgTarget',
-    '_steeringLog',
+    '_steeringLog', '_lastTopicShift',
     '_bcUsedThisTurn',
 ]);
 
@@ -79718,18 +79721,21 @@ ${sourceTool.handlerScript}
             await this._flushChatWrite();
             const id = this._chatNewId('c');
             const now = Date.now();
-            const entry = { id, title: '新對話', groupId, createdAt: now, updatedAt: now };
+            const entry = { id, title: (opts && typeof opts.title === 'string' && opts.title.trim()) ? opts.title.trim() : '新對話', groupId, createdAt: now, updatedAt: now };
             if (forChild) entry.parentId = String(opts.parentId);
+            // 子對話 S3：開子對話時寫入狀態、摘要、話題指紋（只有 forChild 才有）
+            if (forChild) { entry.status = opts.status || null; entry.summary = typeof opts.summary === 'string' ? opts.summary : null; entry.fingerprint = opts.fingerprint || null; }
             if (opts && typeof opts.nodeName === 'string' && opts.nodeName.trim()) entry.nodeName = opts.nodeName.trim();
             this._chatIndex.chats.push(entry);
             const g = groupId && this._chatIndex.groups.find((x) => x.id === groupId);
             if (g) g.collapsed = false;
             const ctx = this._chatCtxNew(id);
             this._chatCtxs.set(id, ctx);
-            this._chatActivate(ctx);
-            if (!ctx.messages.length) this._renderMessageHistory();
+            // 子對話 S3：noActivate 時不切換畫面（使用者停在父對話）
+            if (!(opts && opts.noActivate)) { this._chatActivate(ctx); if (!ctx.messages.length) this._renderMessageHistory(); }
             await this._saveChatIndex();
-            const input = document.getElementById('ai-input-text'); if (input) input.focus();
+            const input = document.getElementById('ai-input-text'); if (input && !(opts && opts.noActivate)) input.focus();
+            return id;
         } finally { this._chatSwitching = false; }
     }
 
@@ -95956,6 +95962,48 @@ _result
         this._lastTopicShift = { isShifted: r.isShifted, score: r.score, matchedTopicId: r.matchedTopicId, reason: r.reason, at: Date.now() };
     }
 
+    // 子對話交接模組（renderer/src/chat/handoff.js）：嵌入時用頂層的 FA_SUBCHAT_HANDOFF_SRC（new Function），只載入一次。
+    _subchatHandoffMod() {
+        if (!this._subchatHandoffModule) { const holder = { exports: {} }; new Function('module', FA_SUBCHAT_HANDOFF_SRC)(holder); this._subchatHandoffModule = holder.exports; }
+        return this._subchatHandoffModule;
+    }
+
+    // 子對話 S3：目前這則使用者訊息被判成「全新話題」時開出子對話，並在背景送出。回傳 true＝已接手（呼叫端不再呼叫父對話模型）。
+    // 只處理全新話題：matchedTopicId 有值（拉回舊話題）是 S5，這裡回傳 false，照舊在父對話處理。
+    // 子對話本身不再開子對話（索引有 parentId 就不開）。建立失敗也回傳 false，退回照舊的父對話流程。
+    async _subchatOpenFor(userText) {
+        const st = this._lastTopicShift;
+        if (!st || !st.isShifted || st.matchedTopicId) return false;
+        const pid = this._ctx && this._ctx.id;
+        const parent = pid && this._chatEntry(pid);
+        if (!parent || parent.parentId) return false;
+        const H = this._subchatHandoffMod(), L = this._topicLocalMod();
+        const oldMsgs = this.messages.slice(0, -1); // 不含剛推入的這則使用者訊息
+        const { title, handoff } = H.buildHandoff(parent.title, oldMsgs, userText);
+        const fp = L.mergeFingerprint(null, userText, L.DEFAULT_MAX_TERMS);
+        const childId = await this._chatNew(parent.groupId || null, { parentId: pid, title, noActivate: true, status: 'running', summary: handoff.slice(0, 200), fingerprint: fp });
+        const cctx = childId ? this._chatCtxs.get(childId) : null;
+        if (!cctx) return false;
+        // 子對話的 ctx：system 提示＋交接內文；話題指紋以新訊息初始化（子對話自己的偵測不會再判轉移）
+        const child = this._chatRunner(cctx);
+        cctx.messages = [{ role: 'system', content: this._getFinalSystemPrompt() }, { role: 'system', content: handoff }];
+        cctx.topicData = { currentTopic: title, fingerprint: fp, pastTopics: [] };
+        const finish = (status) => {
+            const e = this._chatEntry(childId); if (e) { e.status = status; e.updatedAt = Date.now(); }
+            try { this._saveChatIndex(); this._renderChatList(); } catch (_) { /* 側欄更新失敗不影響對話 */ }
+        };
+        Promise.resolve().then(() => child.executeChat(userText)).then(() => finish('done'), (err) => { this._log('⚠️ 子對話執行失敗：' + String((err && err.message) || err)); finish('failed'); });
+        // 父對話的連結卡片：_subchatLink 是可列舉屬性，存檔後重新載入仍在
+        const m = this._buildToolResultMessage('display', JSON.stringify({ ok: true, note: '子對話' }), {});
+        m.content = '↳ 子對話：' + title;
+        m._subchatLink = { childId, title };
+        this.messages.push(m);
+        this._renderMessageHistory();
+        this._persistChatHistory();
+        this._log('🔀 偵測到新話題，已開出子對話：' + title);
+        return true;
+    }
+
     async _checkTopicTransition(newUserPrompt) {
         const { apiKey, apiUrl, apiModel } = this._getApiConfig();
         if (this.messages.length < 3) {
@@ -102664,6 +102712,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         this.messages.push({ role: "user", content: userText });
         this._renderMessageHistory();
 
+        // 子對話 S3：偵測到全新話題（topicShiftCheck 開啟）→ 開子對話；父對話只留使用者訊息與連結卡片，不呼叫父對話模型
+        if (this.advancedSettings.topicShiftCheck === true && await this._subchatOpenFor(userText)) { this._setRespondingState(false, '', 'completed'); return; }
+
         let aiFullResponseContent = "";
         const __otUserIdx = this.messages.length - 1;
 
@@ -106993,6 +107044,26 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         for (let i = before; i < container.children.length; i++) { const el = container.children[i]; if (!el || el._fwin || el.nodeType !== 1) continue; FaWin.decorate(el, { title: hit[1], minW: 420, minH: 260 }); }
     }
     _renderSingleMessageInner(msg, container, palette) {
+        // 子對話 S3：連結卡片「↳ 子對話：〈標題〉」＋「打開」按鈕（點了切到子對話）。放在最前面，避免被一般 tool 訊息分支先吃掉。
+        if (msg && msg._subchatLink) {
+            const link = msg._subchatLink;
+            const w = document.createElement('div');
+            w.className = 'fa-subchat-link';
+            w.style.cssText = 'margin-bottom:12px; max-width:95%; padding:10px 12px; border-radius:8px; background:rgba(99,102,241,0.08); border:1px solid rgba(99,102,241,0.28); font-size:13px; color:#6366f1; display:flex; align-items:center; gap:8px; flex-wrap:wrap;';
+            const label = document.createElement('span');
+            label.className = 'fa-subchat-title';
+            label.style.cssText = 'flex:1 1 auto; min-width:0; overflow-wrap:anywhere;';
+            label.textContent = '↳ 子對話：' + (link.title || '新對話');
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'fa-subchat-open';
+            btn.textContent = '打開';
+            btn.style.cssText = 'cursor:pointer; padding:4px 10px; border-radius:6px; border:1px solid rgba(99,102,241,0.5); background:transparent; color:#6366f1; font-size:12px;';
+            btn.addEventListener('click', (ev) => { ev.preventDefault(); Promise.resolve(this._chatSwitch(link.childId)).catch(() => { /* 切換失敗不影響畫面 */ }); });
+            w.appendChild(label); w.appendChild(btn);
+            container.appendChild(w);
+            return;
+        }
         // 隱藏最基礎無關的 System Prompt，避免畫面雜亂
         if (
             msg.role === 'system' &&

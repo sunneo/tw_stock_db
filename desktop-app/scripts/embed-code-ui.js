@@ -67,6 +67,8 @@ embed('renderer/src/agent/read_ledger.js', 'READLEDGER-BEGIN', 'READLEDGER-END',
 embed('renderer/src/chat/chat_tree.js', 'CHATTREE-BEGIN', 'CHATTREE-END', 'FA_CHAT_TREE_SRC');
 // 本地話題偵測（renderer/src/chat/topic_local.js，純函式、UMD）：子對話 S2，取代每則訊息等模型判斷話題轉移。同上，嵌入後用 new Function 載入。
 embed('renderer/src/chat/topic_local.js', 'TOPICLOCAL-BEGIN', 'TOPICLOCAL-END', 'FA_TOPIC_LOCAL_SRC');
+// 子對話交接內文（renderer/src/chat/handoff.js，純函式、UMD）：子對話 S3，開子對話時產生標題與交接內文。同上，嵌入後用 new Function 載入。
+embed('renderer/src/chat/handoff.js', 'SUBCHATHANDOFF-BEGIN', 'SUBCHATHANDOFF-END', 'FA_SUBCHAT_HANDOFF_SRC');
 function embedBehavior() {
     const data = require('./behavior-data.js').load(root);
     const a = src.indexOf('/* BEHAVIOR-BEGIN */'), b = src.indexOf('/* BEHAVIOR-END */');
