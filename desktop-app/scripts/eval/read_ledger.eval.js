@@ -139,6 +139,67 @@ await entryCase('E_abort_before_fix', true, 'abort');
 await entryCase('E_abort_after_fix', false, 'abort');
 removeLedgerSetter();
 
+// F：串流文字式路徑（[CALL:...] 的模型）。修前＝閘門換成 null；修後順從的模型讀完三頁。
+function sseResp(content) {
+    const chunk = (d, f) => 'data: ' + JSON.stringify({ id: 'x', object: 'chat.completion.chunk', created: 0, model: 'm', choices: [{ index: 0, delta: d, finish_reason: f }] }) + '\n\n';
+    return new Response(chunk({ role: 'assistant', content }, null) + chunk({}, 'stop') + 'data: [DONE]\n\n', { status: 200, headers: { 'content-type': 'text/event-stream' } });
+}
+async function streamScenario(name, mode, gateOff) {
+    const origGate = fa._readLedgerGate; const origNative = fa._shouldUseNativeToolCalls;
+    if (gateOff) fa._readLedgerGate = () => null;
+    fa._shouldUseNativeToolCalls = () => false;
+    fa._readLedger = null; fa._readReminders = null; window.__toolOffsets = []; window.__lastPage = null;
+    const realFetch = window.fetch.bind(window); const seen = [];
+    window.fetch = async (url, init) => {
+        if (!String(url).startsWith('http://fake.local/')) return realFetch(url, init);
+        const body = JSON.parse(init.body); const msgs = body.messages || []; const last = msgs[msgs.length - 1] || {};
+        if (/工具領域路由器/.test(String((msgs[0] || {}).content || ''))) return sseResp(JSON.stringify({ domains: [] }));
+        seen.push(last.role);
+        const callPage = (off) => sseResp('[CALL:' + TOOL + '({"offset":' + off + '})]');
+        if (last.role === 'user') return callPage(0);
+        if (last.role === 'tool') return sseResp('報告都正確，沒有錯誤。');
+        if (last.role === 'system') {
+            if (mode === 'obedient' && window.__lastPage && window.__lastPage.has_more) return callPage(window.__lastPage.next_offset);
+            return sseResp('報告都正確，沒有錯誤。');
+        }
+        return sseResp('報告都正確，沒有錯誤。');
+    };
+    fa.messages = [{ role: 'system', content: '你是測試助理。' }, { role: 'user', content: '查一下這份 log 裡有什麼錯誤' }];
+    let status = 'ok';
+    try { await fa._loopFetch('k', 'http://fake.local/v1', 'm', 1, null); } catch (e) { status = 'threw:' + String((e && e.message) || e); }
+    finally { window.fetch = realFetch; fa._readLedgerGate = origGate; fa._shouldUseNativeToolCalls = origNative; }
+    const asst = fa.messages.filter((m) => m.role === 'assistant').map((m) => String(m.content || ''));
+    R[name] = { status, tool_offsets: window.__toolOffsets.slice(), request_last_roles: seen, final_text: asst.length ? asst[asst.length - 1] : null, warned: asst.some((t) => t.indexOf('注意：以下來源只讀了一部分') >= 0) };
+}
+await streamScenario('F_stream_before_fix', 'lazy', true);
+await streamScenario('F_stream_after_fix', 'obedient', false);
+
+// G：離線小模型迴圈 FaVlm.runAgentLoop。修前＝opts.readLedger=false（關閉帳本的對照）；修後順從的模型讀完三頁。
+async function offlineScenario(name, mode, readLedgerOpt) {
+    window.__toolOffsets = []; window.__lastPage = null;
+    const reminders = [];
+    const generate = async ({ messages }) => {
+        const last = messages[messages.length - 1] || {};
+        reminders.push(messages.filter((m) => m.role === 'system' && /讀取尚未完成/.test(String(m.content || ''))).length);
+        const callPage = (off) => '<tool_call>{"name":"' + TOOL + '","arguments":{"offset":' + off + '}}</tool_call>';
+        if (last.role === 'user') return callPage(0);
+        if (last.role === 'tool') return '報告都正確，沒有錯誤。';
+        if (last.role === 'system') { if (mode === 'obedient' && window.__lastPage && window.__lastPage.has_more) return callPage(window.__lastPage.next_offset); return '報告都正確，沒有錯誤。'; }
+        return '報告都正確，沒有錯誤。';
+    };
+    const execTool = async ({ name: n, args }) => { const t = await fa.tools[TOOL].callback(JSON.stringify(args || {})); window.__lastRaw = t; return { ok: true, text: t }; };
+    const opts = { messages: [{ role: 'system', content: '你是測試助理。' }, { role: 'user', content: '查一下這份 log 裡有什麼錯誤' }], tools: [{ type: 'function', function: { name: TOOL, description: 'x', parameters: { type: 'object' } } }], toolNames: new Set([TOOL]), budget: { prompt: 100000, reply: 1000, rag: 4000 }, maxRounds: 8, generate, execTool };
+    if (readLedgerOpt !== undefined) opts.readLedger = readLedgerOpt;
+    const res = await FaVlm.runAgentLoop(opts);
+    R[name] = { reason: res.reason, tool_offsets: window.__toolOffsets.slice(), reminders_max: Math.max(0, ...reminders), final_text: res.text, warned: String(res.text || '').indexOf('注意：以下來源只讀了一部分') >= 0, notes: res.notes, calls: (res.calls || []).map((c) => ({ name: c.name, ok: c.ok, head: String(c.text || '').slice(0, 60) })) };
+    if (name === 'G_offline_after_fix') {
+        const Lm = fa._faReadLedgerMod(); const pr = JSON.parse(window.__lastRaw || '{}');
+        R.G_probe = { parsed_has_more: pr.has_more, pending_after_record: Lm.pending(Lm.record(Lm.createLedger(), TOOL, { offset: 0 }, pr)).length, raw_head: String(window.__lastRaw || '').slice(0, 80) };
+    }
+}
+await offlineScenario('G_offline_before_fix', 'lazy', false);
+await offlineScenario('G_offline_after_fix', 'obedient', undefined);
+
 delete fa.tools[TOOL];
 fa._getRootToolNames = origRoot;
 return R;

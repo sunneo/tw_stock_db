@@ -7563,13 +7563,21 @@ const holder = {};
     // opts: { messages, tools:[spec], toolNames:Set（可呼叫的工具名稱）, budget（textBudget）, generate: async({messages,tools,strict,maxTokens}) → string, execTool: async({name,args}) → {ok,text},
     //         summarize?: async(text, maxTokens) → string, maxRounds=4, maxCalls=6, maxCallsPerRound=3, onEvent?: (e) → void }
     // 回傳 { ok, text, reason:'answer'|'forced'|'garbage'|'empty'|'exhausted', rounds, calls:[{name,args,ok,skipped?}], notes:[…] }
+    // 讀取帳本模組：嵌入在 floating-assistant 時用頂層的 FA_READ_LEDGER_SRC（new Function）；節點測試時用 require。都沒有就回傳 null（不接帳本）。
+    function readLedgerLib() {
+        if (typeof FA_READ_LEDGER_SRC === 'string') { const h = { exports: {} }; new Function('module', FA_READ_LEDGER_SRC)(h); return h.exports; }
+        if (typeof require === 'function') { try { return require('../agent/read_ledger.js'); } catch (_) { return null; } }
+        return null;
+    }
     async function runAgentLoop(opts) {
         const b = opts.budget; const maxRounds = opts.maxRounds || 4, maxCalls = opts.maxCalls || 6, perRound = opts.maxCallsPerRound || 3;
         const emit = (e) => { if (opts.onEvent) try { opts.onEvent(e); } catch (_) {} };
         let messages = opts.messages.map((m) => Object.assign({}, m)); for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === 'user') { messages[i]._keep = true; break; }
         let tools = (opts.tools || []).slice(); const names = opts.toolNames || new Set(tools.map((t) => t.function.name));
         const calls = []; const seen = new Set(); const notes = []; let invalid = 0; const hasResults = () => calls.some((c) => c.ok && c.text); const handoff = (round) => ({ ok: true, text: '', reason: 'handoff', handoff: true, rounds: round, calls, notes }); let forceFinal = tools.length === 0; let garbageRetried = false;
-        const finishFrom = (text, reason, rounds) => ({ ok: true, text, reason, rounds, calls, notes });
+        // 讀取帳本：opts.readLedger === false 時關閉（評估用的修前對照）
+        const RL = readLedgerLib(); const useLedger = opts.readLedger !== false && !!RL; let ledger = RL ? RL.createLedger() : null; const remindersBy = {}; let warnPrefix = '';
+        const finishFrom = (text, reason, rounds) => ({ ok: true, text: warnPrefix + text, reason, rounds, calls, notes });
         for (let round = 1; round <= maxRounds + 1; round++) {
             if (opts.handoff && (forceFinal || round > maxRounds) && hasResults()) return handoff(round - 1); // 要強制收尾了：有工具結果就交給寫回答的模型
             const useTools = !forceFinal && round <= maxRounds ? tools : [];
@@ -7587,6 +7595,13 @@ const holder = {};
                 }
             }
             const pc = parseToolCalls(text);
+            if (useLedger && !pc.calls.length) { // 還有分頁沒讀完就不接受這個回答（在 handoff 之前檢查）
+                const pend = RL.pending(ledger).filter((e) => e.blocking);
+                const due = pend.filter((e) => (remindersBy[e.key] || 0) < 3);
+                if (due.length) { due.forEach((e) => { remindersBy[e.key] = (remindersBy[e.key] || 0) + 1; }); messages.push({ role: 'system', content: RL.reminderText(due) }); notes.push('讀取未完成，已提醒模型繼續讀'); continue; }
+                if (pend.length) warnPrefix = '注意：以下來源只讀了一部分，結論可能不完整：' + pend.map((e) => e.label + '（已讀到 ' + (e.nextOffset != null ? 'offset ' + e.nextOffset : '第 ' + e.nextStartLine + ' 行') + '）').join('、') + '\n';
+                ledger = RL.createLedger();
+            }
             if (opts.handoff && !pc.calls.length && hasResults()) return handoff(round);
             if (pc.calls.length && !useTools.length) { notes.push('工具已收回，模型還在輸出工具呼叫'); break; } // 不給工具了還在呼叫＝沒有收斂，走下面的收尾
             if (!pc.calls.length || !useTools.length) return Object.assign(finishFrom(pc.text || String(text).replace(/<\/?tool_call>/g, '').trim(), forceFinal && calls.length ? 'forced' : 'answer', round), { plain: !calls.length });
@@ -7602,6 +7617,7 @@ const holder = {};
                 let body = String((r && r.text) == null ? '' : r.text); const limit = Math.max(120, Math.floor(b.rag * 0.8));
                 if (estimateTokens(body) > limit) { let s = null; if (opts.summarize) { try { s = await opts.summarize(body, Math.floor(limit / 2)); } catch (_) { s = null; } } body = s && !looksLikeGarbage(s).garbage ? '（內容太長，摘要如下）' + trimToTokens(s, limit) : trimToTokens(body, limit); notes.push('工具 ' + c.name + ' 的結果太長，已' + (s ? '摘要' : '截短')); }
                 rec.ok = !!(r && r.ok); rec.text = body; calls.push(rec); did++;
+                if (useLedger) { let parsed = null; try { parsed = JSON.parse(String(r && r.text == null ? '' : r.text)); } catch (_) { parsed = null; } ledger = RL.record(ledger, c.name, c.args || {}, parsed); }
                 messages.push({ role: 'tool', name: c.name, content: (r && r.ok ? '' : '（執行失敗）') + body });
                 emit({ type: 'tool_done', name: c.name, ok: rec.ok });
             }
@@ -103089,6 +103105,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                         if (hintCard && hintCard.finish) hintCard.finish('完成');
                         this._noteWriteEvidence(this._writeEvidence, task.fnName, result);
 
+                        this._noteReadLedger(task.fnName, JSON.stringify(parsedArgs), result);
                         this._pushToolResultMessage(task.fnName, result);
                         this._renderMessageHistory();
                         invokedCount++;
@@ -103128,6 +103145,16 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             } else {
                 // 完全沒有[CALL:的純文字回答，contentForMessage就是fullContent本身，
                 // 不需要截斷。
+                // 讀取帳本的閘門（與原生路徑同一套）：還有分頁沒讀完就不接受，提醒後再跑一輪；提醒用完就加警語放行。
+                const rl = this._readLedgerGate();
+                if (rl && rl.remind) {
+                    this._log('📖 還有分頁來源沒讀完，已提醒模型繼續讀取（文字式路徑）。');
+                    this.messages.push({ role: 'system', content: rl.remind });
+                    this._renderMessageHistory();
+                    return await this._loopFetch(apiKey, apiUrl, apiModel, 1, genOverrides);
+                }
+                if (rl && rl.warn) contentForMessage = rl.warn + '\n' + contentForMessage;
+                this._readLedger = null; this._readReminders = null;
                 this._pushAssistantMessage(contentForMessage, reasoningContent);
             }
 
