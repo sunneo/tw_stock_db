@@ -200,6 +200,47 @@ async function offlineScenario(name, mode, readLedgerOpt) {
 await offlineScenario('G_offline_before_fix', 'lazy', false);
 await offlineScenario('G_offline_after_fix', 'obedient', undefined);
 
+// H：上傳附件（使用者回報的情境：上傳 log、讀附件沒讀完就說報告都正確）。假工具 test_attachment_read 的分頁用真的 fa._pageText
+// （與 parse_uploaded_file 相同的分頁函式），來源身分是 file_id。修前只讀第一頁；修後順從的模型讀完所有頁。
+const ATT = 'test_attachment_read';
+const LOGTXT = Array.from({ length: 40 }, (_, i) => '2026-11-04 INFO 第' + (i + 1) + '筆 服務正常').join('\n') + '\nERROR 磁碟已滿，寫入失敗';
+fa.tools[ATT] = {
+    description: '假的上傳附件讀取（評估用）：分頁用真的 _pageText，續讀用 offset。',
+    parametersSchema: { type: 'object', properties: { file_id: { type: 'string' }, offset: { type: 'integer' } }, required: ['file_id'] },
+    callback: async (rawArgs) => {
+        let a = {}; try { a = JSON.parse(rawArgs || '{}'); } catch (_) { a = {}; }
+        const page = fa._pageText(LOGTXT, { offset: Number(a.offset) || 0, maxChars: 300 });
+        window.__lastPage = page; window.__toolOffsets.push(page.offset);
+        return JSON.stringify(Object.assign({ ok: true, filename: 'upload.log' }, page));
+    }
+};
+async function attachScenario(name, mode, gateOff) {
+    const origGate = fa._readLedgerGate;
+    if (gateOff) fa._readLedgerGate = () => null;
+    const prevRoot = fa._getRootToolNames; fa._getRootToolNames = () => Array.from(new Set(prevRoot().concat([ATT])));
+    fa._readLedger = null; fa._readReminders = null; window.__toolOffsets = []; window.__lastPage = null;
+    const realFetch = window.fetch.bind(window);
+    const toolMsg = (off) => new Response(JSON.stringify({ choices: [{ message: { role: 'assistant', content: '', tool_calls: [{ id: 'att' + off + '_' + Math.random().toString(36).slice(2, 6), type: 'function', function: { name: ATT, arguments: JSON.stringify({ file_id: 'att-9', offset: off }) } }] }, finish_reason: 'tool_calls' }], usage: {} }), { status: 200, headers: { 'content-type': 'application/json' } });
+    const answer = () => new Response(JSON.stringify({ choices: [{ message: { role: 'assistant', content: '報告都正確，沒有錯誤。' }, finish_reason: 'stop' }], usage: {} }), { status: 200, headers: { 'content-type': 'application/json' } });
+    window.fetch = async (url, init) => {
+        if (!String(url).startsWith('http://fake.local/')) return realFetch(url, init);
+        const body = JSON.parse(init.body); const msgs = body.messages || []; const last = msgs[msgs.length - 1] || {};
+        if (last.role === 'user') return toolMsg(0);
+        if (last.role === 'tool') return answer();
+        if (last.role === 'system' && mode === 'obedient' && window.__lastPage && window.__lastPage.has_more) return toolMsg(window.__lastPage.next_offset);
+        return answer();
+    };
+    fa.messages = [{ role: 'system', content: '你是測試助理。' }, { role: 'user', content: '上傳的 log 裡有什麼錯誤？' }];
+    let status = 'ok';
+    try { await fa._loopFetchNative('k', 'http://fake.local/v1', 'm', 1, null); } catch (e) { status = 'threw:' + String((e && e.message) || e); }
+    finally { window.fetch = realFetch; fa._readLedgerGate = origGate; fa._getRootToolNames = prevRoot; }
+    const asst = fa.messages.filter((m) => m.role === 'assistant').map((m) => String(m.content || ''));
+    R[name] = { status, tool_offsets: window.__toolOffsets.slice(), last_page_has_more: window.__lastPage ? window.__lastPage.has_more : null, total_chars: window.__lastPage ? window.__lastPage.total_chars : null, final_text: asst.length ? asst[asst.length - 1] : null, warned: asst.some((t) => t.indexOf('注意：以下來源只讀了一部分') >= 0) };
+}
+await attachScenario('H_attach_before_fix', 'lazy', true);
+await attachScenario('H_attach_after_fix', 'obedient', false);
+delete fa.tools[ATT];
+
 delete fa.tools[TOOL];
 fa._getRootToolNames = origRoot;
 return R;

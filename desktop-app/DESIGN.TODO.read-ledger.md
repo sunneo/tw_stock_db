@@ -74,6 +74,43 @@ Redmine 端的修正設計：工具迴圈每次工具回傳 `has_more: true` 就
 - 工具執行出錯（catch 分支）不記帳本，也不影響帳本。
 - 帳本只在「放行的最終回答」時歸零；如果這一輪因錯誤或停止而中斷，帳本會殘留到下一輪（待評估）。
 
+## 步驟 5 結果（新訊息入口與中止收尾歸零）
+
+- 歸零位置：`executeChat` 入口（與 `_writeEvidence` 同一處，約 102424 行）；原生迴圈的中止分支（AbortError）與失敗收尾（錯誤紀錄前）。提交 d3739203。
+- 評估 D（新訊息入口）、E（中止收尾）：修前（用 setter 忽略歸零來模擬）第二輪被提醒三次並帶警語；修後提醒 0 次、無警語。
+- 誠實註記：修前是模擬（setter），不是拿舊 commit 重跑。
+
+## 步驟 6 結果（串流文字式路徑與離線迴圈）
+
+- 串流文字式路徑：`_loopFetch` 的純文字回答分支（`else`，約 103130 行）。工具結果在 `_noteReadLedger(task.fnName, JSON.stringify(parsedArgs), result)`（約 103090 行）。評估 F：修前只讀第一頁；修後讀完三頁、無警語。
+- 離線 `runAgentLoop`：來源在 `renderer/src/vlm/vlm_core.js`（不是 floating-assistant 的 VLM 區塊直接改）。接受點在 `pc.calls` 為空的回答，handoff 之前。評估 G：修前只讀第一頁；修後讀完三頁、兩次提醒、無警語。
+- 離線路徑的 `opts.readLedger === false` 只給評估當修前對照，正式路徑不傳。
+- 提交 9f07a267。
+
+## 步驟 7：分頁工具表（會回傳 has_more／hasMore／truncated 的地方）
+
+圖例：已驗證＝讀過來源與參數；未驗證＝只確認回傳格式，參數名稱沒有逐一確認。
+
+| 工具／來源 | 位置（floating-assistant.js，除非註明） | 回傳格式 | 帳本是否涵蓋 | 依據與備註 |
+|---|---|---|---|---|
+| `parse_uploaded_file`（上傳附件、log） | 60701 起；分頁走 `_pageText` 64555 | `has_more`／`next_offset`（頂層） | 涵蓋（已驗證） | 參數 `file_id`（60716）是來源身分。評估 H 用真的 `_pageText` 驗證：修前只讀一頁，修後讀完四頁。 |
+| `coding_read_file` | 60070–60077（參數）；實作 72586–72610 | `has_more`、`next_start_line` | 涵蓋（已驗證參數） | 來源身分 `cwd_abs`＋`path`（ledger 的 `cwd_abs|path`）。`start_line` 不是來源身分，會被排除。 |
+| `browser_get_page_text`（瀏覽器分頁） | 60598 起；回傳 66451 | `has_more`（字串提示） | 部分涵蓋（未驗證） | 參數是 `tab_id`，不在來源欄位清單內；後備鍵用其餘參數，所以同一個分頁可以涵蓋，但沒有 `tab_id` 時所有分頁共用 `args={}`。待確認。 |
+| `fap_read_file`（File Access Point 檔案） | 讀檔 `_fapReadFile` 約 64560 起；回傳 64580–64604 | `has_more`、`next_offset`、`truncated` | 未驗證 | 參數名稱（預期 `ref`／`path`）還沒有逐一確認。若是 `path`／`ref` 就會涵蓋。 |
+| `article_section`（長文章章節） | `renderer/src/tools/article_outline.js` 136 行（`sectionText`） | `has_more`、`next_offset` | 未驗證 | 工具參數（預期 `file_id`）還沒確認。 |
+| 技能包參考檔讀取（`chunk.hasMore`／`chunk.nextOffset`，駝峰） | 58319–58324（工具名稱函式 `_syncSkillBundleDomains` 附近） | `chunk: {hasMore, nextOffset}` | 未驗證（格式已涵蓋） | 解析器認駝峰格式（已有 node 測試）。來源身分要看參數是否含 bundle 與檔名，還沒確認。 |
+| 文章大綱內部分頁迴圈 | 61476–61477 | 迴圈內讀 `has_more` | 不需涵蓋 | 程式內自己讀到底，不把中間結果交給模型。 |
+| 目錄內部分頁迴圈（fap 清單） | 68458–68459 | 迴圈內讀 `has_more` | 不需涵蓋 | 同上，程式內讀完。 |
+| 清單輸出截斷（`out.has_more`／`next_offset`） | 71064、71177、71512、71716 | `has_more`、`next_offset` | 未驗證 | 這些是清單輸出的預算截斷，所屬工具沒有逐一確認。 |
+| PDF 頁文字 | 94450 附近 | `has_more` | 未驗證 | 所屬工具沒有確認。 |
+
+重點：使用者回報的情境（上傳 log 後讀附件沒讀完）已由評估 H 驗證涵蓋。其他未驗證的項目要在後續逐一確認，不能當成已涵蓋。
+
+## 步驟 7 之後的待辦
+
+- [ ] 逐一確認表中「未驗證」的工具參數，並補上對應評估（尤其 `fap_read_file`、`article_section`、技能包參考檔）。
+- [ ] 警語來源顯示 `args={}` 的問題（沒有來源欄位的工具）。
+
 ## 陷阱
 
 - 不要用 `grep` 直接搜 `renderer/src/floating-assistant.js` 的嵌入常數名（例如 `FA_GUI_BRIDGE_SRC`）：會把整段壓縮字串印出來，吃掉大量上下文。要加 `-l`，或只用 `cut -c1-160` 截斷。
@@ -106,3 +143,6 @@ Redmine 端的修正設計：工具迴圈每次工具回傳 `has_more: true` 就
 
 - 2026-11-04：第一版後備來源鍵把 `offset` 算進身分，同一來源每頁的鍵都不同，帳本永遠清不掉，三頁讀完還是被警告。單元測試沒抓到（測試用的工具有 `path`），只有真桌面版評估的情境 B 抓到。下次：來源身分不能包含續讀參數；寫評估時，假工具要刻意沒有來源欄位，測後備路徑。
 - 2026-11-04：評估用 `scripts/eval/read_ledger.eval.js` 的假工具有 `offset`，不是 `path`，正好逼出上面的缺陷。
+- 2026-11-04：離線 `runAgentLoop` 的改動兩度消失。原因：它位於 `floating-assistant.js` 的 `VLM-BEGIN`～`VLM-END` 區塊，`embed-code-ui.js` 每次重建都用 `renderer/src/vlm/vlm_core.js` 整段覆蓋該區塊。下次：改來源模組（`vlm_core.js`），改完跑 `embed-code-ui.js` 後用 grep 確認改動還在。
+- 2026-11-04：編輯工具曾回報「檔案在磁碟上被改過」，同一資料夾可能有別的工作階段在改同一個檔。下次：每次編輯後立刻用 grep 驗證，提交前看 `git diff` 只含自己的改動。
+- 2026-11-04：評估 G 第一次失敗，是因為評估寫的工具呼叫格式錯了（用 `[CALL:...]`，離線路徑認的是 `<tool_call>` JSON）。下次：寫假模型前先看對應路徑的 `parseToolCalls` 格式。
