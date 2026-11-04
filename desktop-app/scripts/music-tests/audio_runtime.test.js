@@ -16,6 +16,8 @@ const check = (name, ok, extra) => { if (ok) pass++; else { fail++; console.log(
   check('重複載入後兩邊 proxy 仍各自不變', gpu1.env.wasm.proxy === false && cpu1.env.wasm.proxy === true);
   check('proxy 預設(沒指定)是開', (await R.loadOrt({ importFn })).env.wasm.proxy === true);
   check('wasmPaths 兩個實例都設了', !!gpu1.env.wasm.wasmPaths && !!cpu1.env.wasm.wasmPaths && gpu1.env.wasm.numThreads >= 1);
+  // 階段 1（原生執行器）：SharedArrayBuffer 能傳給 Worker 時就多執行緒，不要求 crossOriginIsolated（桌面版實測：頁面 crossOriginIsolated 為 false 仍可多執行緒）
+  check('SAB 可用時 numThreads > 1（不要求 crossOriginIsolated）', cpu1.env.wasm.numThreads > 1, cpu1.env.wasm.numThreads);
 
   // 相反順序(全新的快取要用新的 URL 才能模擬,所以換 ortUrl)
   const importFn2 = async (u) => made[u] || (made[u] = { url: u, env: { wasm: {} } });

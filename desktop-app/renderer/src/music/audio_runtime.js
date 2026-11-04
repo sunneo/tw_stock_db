@@ -9,7 +9,16 @@
   // 所以兩種模式用不同網址查詢字串各拿一個獨立實例,各自設定一次後快取,不再互相改。
   const _ortCache = {};
   async function importOrt(url, proxy, imp) { const u = proxy ? url : url + (url.indexOf('?') < 0 ? '?' : '&') + 'np=1'; if (!_ortCache[u]) _ortCache[u] = (imp ? Promise.resolve().then(() => imp(u)) : import(u)).catch((e) => { delete _ortCache[u]; throw e; }); return _ortCache[u]; }
-  async function loadOrt(opts) { opts = opts || {}; const proxy = opts.proxy !== false; const ort = opts.ort || await importOrt(opts.ortUrl || ORT_URL, proxy, opts.importFn); ort.env.wasm.wasmPaths = opts.wasmBase || ORT_BASE; ort.env.wasm.proxy = proxy; ort.env.wasm.numThreads = (typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated) ? Math.min(4, (navigator.hardwareConcurrency || 2)) : 1; return ort; }
+  // 執行緒數：與文字／看圖路徑（floating-assistant.js 的 _omThreadSupport）同一條規則——SharedArrayBuffer 存在、能傳給 Worker、WebAssembly 執行緒指令驗證通過就用，不要求 crossOriginIsolated。
+  // 桌面版實測（scripts/eval/native_threads_baseline.eval.js）：頁面 crossOriginIsolated 為 false，但 postMessage(SharedArrayBuffer) 成功，文字路徑 resolveThreads 為 4。
+  function ortThreadCount() {
+    let ok = false;
+    try {
+      if (typeof SharedArrayBuffer !== 'undefined') { new MessageChannel().port1.postMessage(new SharedArrayBuffer(1)); ok = WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 96, 0, 0, 3, 2, 1, 0, 5, 4, 1, 3, 1, 1, 10, 11, 1, 9, 0, 65, 0, 254, 16, 2, 0, 26, 11])); }
+    } catch (_) { ok = false; }
+    return ok ? Math.min(4, ((typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 2)) : 1;
+  }
+  async function loadOrt(opts) { opts = opts || {}; const proxy = opts.proxy !== false; const ort = opts.ort || await importOrt(opts.ortUrl || ORT_URL, proxy, opts.importFn); ort.env.wasm.wasmPaths = opts.wasmBase || ORT_BASE; ort.env.wasm.proxy = proxy; ort.env.wasm.numThreads = ortThreadCount(); return ort; }
   // 建立工作階段:依序試 eps(預設 webgpu、wasm),回傳 { session, ep, tried }
   async function createSession(ort, bytes, eps, opts) { const tried = []; const list = eps || ['webgpu', 'wasm']; /* 多種執行方式時每次給一份副本:proxy 模式建 session 會把傳入的緩衝轉移掉(detached),失敗後換下一種就沒資料了 */ for (const ep of list) { try { if (ep === 'webgpu' && !(typeof navigator !== 'undefined' && navigator.gpu)) throw new Error('沒有 WebGPU'); const session = await ort.InferenceSession.create(list.length > 1 && bytes && bytes.slice ? bytes.slice(0) : bytes, { executionProviders: [ep], graphOptimizationLevel: (opts && opts.opt) || 'all' }); return { session, ep, tried }; } catch (e) { tried.push(ep + ':' + (e && e.message || e)); } } throw new Error('所有執行方式都失敗:' + tried.join(';')); }
   function makeTranscriber(ort, session, onFrame) {
