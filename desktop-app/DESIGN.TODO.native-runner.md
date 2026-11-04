@@ -199,3 +199,39 @@ ORT 全域設定的關鍵點（本專案實測）：
 - 未讀取 `web-lazy/chunks/mossworker.js` 與 `floating-assistant.js` 的大部分，只用 Grep 找到呼叫點。
 - 未量測任何速度，所有速度數字都是推測。
 - 未檢查 Electron 44 的 `utilityProcess` 實際 API，需要在實作前確認。
+
+---
+
+## 第 0 步實測結果
+
+量測腳本：`scripts/eval/wasm_threads.eval.js`，用真 Electron（`scripts/eval/run_eval.js`，獨立使用者資料夾、換埠），不下載任何模型。
+
+**真量測（本機、file:// 載入桌面版頁面）：**
+
+| 項目 | 結果 |
+|---|---|
+| 頁面協定 | `file:` |
+| `crossOriginIsolated` | `false` |
+| `navigator.hardwareConcurrency` | `4` |
+| `typeof SharedArrayBuffer` | `function`（存在，但因非隔離狀態不能用於多執行緒 WASM） |
+| 工作者（Worker，Blob 來源）內 `crossOriginIsolated` | `false`，`SharedArrayBuffer` 為 `function` |
+| `navigator.gpu` 是否存在 | 存在（只量到物件存在，未驗證能否取得 adapter） |
+| `loadOrt({})` 之後 `ort.env.wasm.numThreads` | `1` |
+| `loadOrt({})` 之後 `ort.env.wasm.proxy` | `true` |
+| `loadOrt({proxy:false})` 之後 `numThreads` / `proxy` | `1` / `false` |
+| ORT 版本 | onnxruntime-web `1.22.0`（common、web 皆同） |
+| `wasmPaths` | `https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/` |
+
+結論（真量測）：這台機器上桌面版頁面不是跨來源隔離狀態，`loadOrt` 因此把 `numThreads` 設為 1，WASM 是單執行緒。這跟第 1.1 節的推測一致，**單執行緒已確認**。
+
+**推測（未直接量到）：**
+
+- 單執行緒是 CPU 很慢的主因之一（推測；需要以同一題比較單執行緒與多執行緒的耗時才能確認）。
+- `main.js` 1818–1832 行設定的 COOP／COEP 標頭，在 `file://` 下仍未讓頁面變成隔離狀態（與該處註解的實測一致；本次未檢查標頭是否真的送出，只量到結果）。
+- Transformers.js（vlm 用）內部是否也用 `numThreads` 同一組設定，本次未量測；推測它沿用同一個全域 ORT 實例，所以同樣是 1 執行緒。
+
+**若要啟用多執行緒，最小改動建議（只建議，本次未改）：**
+
+1. 先解決隔離狀態：改用自訂 `protocol.handle()` scheme 或本機 HTTP server＋`loadURL`，讓頁面以 http(s) 來源載入（與 `main.js` 1818–1832 註解提到的方向相同）。這是影響開機流程的架構層改動，需要使用者決定。
+2. 驗證條件：`crossOriginIsolated === true` 後，`loadOrt` 會自動設 `numThreads = min(4, hardwareConcurrency)`，不需要改 `loadOrt`。
+3. 預期影響（推測，未量測）：WASM 矩陣運算可能加速，但 4 執行緒通常不會到 4 倍；記憶體會增加（每個執行緒各有一份 WASM 堆疊）；`file://` 改為自訂 scheme 後，網頁版路徑與現有快取行為要重新確認。
