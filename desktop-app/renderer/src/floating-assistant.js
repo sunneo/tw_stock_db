@@ -100660,9 +100660,52 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     _omDevicePrefOf(model) { const c = (this._omSettings().roles || {})[model.id]; return c && (c.device === 'gpu' || c.device === 'cpu') ? c.device : this._omSettings().device; }
     async _omInstalled() { const usage = await this._omUsage(); return { usage, set: new Set(FaVlm.MODELS.filter((m) => ((usage.byModel[m.id] || {}).files || 0) > 0).map((m) => m.id)) }; }
     // 一次生成：載入（必要時）→ 在對應裝置的 Worker 生成 → 串流中偵測垃圾／逾時就中斷。cb: { update, log, onToken }
+    // 原生執行器能不能用（主程序的執行包＋模型檔都就緒）。結果快取 5 秒，避免每次生成都打一次信箱；不可用時回傳白話原因。
+    async _nrNativeState() {
+        if (!this._nrAvailable()) return { ok: false, reason: '這個環境沒有桌面版橋接' };
+        const now = Date.now();
+        if (this._nrStateCache && now - this._nrStateCache.at < 5000) return this._nrStateCache.v;
+        const r = await this._nrCall('status');
+        let v;
+        if (!r || !r.ok) v = { ok: false, reason: '原生執行器：' + ((r && (r.message || r.code)) || '沒有回應') };
+        else {
+            const rt = r.runtime || {};
+            if (!rt.ok) v = { ok: false, reason: '沒有可用的執行包（' + (rt.reason || '未知') + '）' };
+            else if (!rt.modelReady) v = { ok: false, reason: '原生執行器沒有設定模型檔' };
+            else v = { ok: true, reason: '' };
+        }
+        this._nrStateCache = { at: now, v };
+        return v;
+    }
+    // 送一次原生生成：逐 token 交給 cb.onToken（累積文字）。成功回傳 { ok:true, text }；失敗回傳 { ok:false, why }（why 是實際原因，會寫進 log）。
+    async _nrRunNative(a, cb, gen) {
+        let acc = '';
+        const timeoutMs = a.timeoutMs > 0 ? a.timeoutMs : 240000;
+        const messages = a.messages.map((m) => ({ role: m.role, content: String(m.content == null ? '' : m.content) }));
+        const r = await this._nrCall('run', { messages, template: 'qwen3-chatml', gen, maxTokens: a.maxTokens || 512, stream: true, timeoutMs }, timeoutMs + 10000, (t) => { acc += t; if (cb.onToken) cb.onToken(acc); });
+        if (r && r.ok) return { ok: true, text: String(r.text == null ? acc : r.text) };
+        return { ok: false, why: '原生失敗（' + ((r && r.code) || '未知') + '）：' + ((r && r.message) || '沒有訊息') };
+    }
     async _llmGenerate(model, a, cb) {
         cb = cb || {}; const gpu = await this._omGpuInfo();
-        const dev = FaVlm.resolveDevice(model, this._omDevicePrefOf(model), gpu.available, gpu.f16);
+        // 原生執行器（桌面版，先試）：只支援純文字生成（沒有工具、沒有預填）。失敗或不可用就退回 WebGPU／WASM，並把實際後端與原因寫進 log。
+        const NATIVE_MODEL_ID = 'qwen3-0.6b';
+        let nativeOk = false, nativeWhy = '';
+        if (model.id !== NATIVE_MODEL_ID) nativeWhy = ''; // 其他模型不走原生，不記 log
+        else if (a.tools && a.tools.length) nativeWhy = '這次呼叫有工具，原生只做純文字生成';
+        else if (a.prefill) nativeWhy = '這次呼叫有預填，原生不支援';
+        else { const st = await this._nrNativeState(); nativeOk = !!st.ok; if (!st.ok) nativeWhy = st.reason; }
+        const bo = FaVlm.backendOrder(model, this._omDevicePrefOf(model), gpu.available, gpu.f16, nativeOk);
+        if (bo.native) {
+            const gen0 = Object.assign(FaVlm.textGenParams(model, { deterministic: !!(a.strict || a.deterministic) }), a.strict ? { repetition_penalty: 1.2, no_repeat_ngram_size: 5 } : {});
+            const r = await this._nrRunNative(a, cb, gen0);
+            if (r.ok) { if (cb.log) cb.log('後端：原生（onnxruntime-node 1.22.0，CPU）'); console.log('[llm] 後端：原生'); return r.text; }
+            nativeWhy = r.why;
+        }
+        const order = bo.order.filter((x) => x !== 'native');
+        if (!order.length) throw new Error(bo.reason);
+        if (nativeWhy) { const msg = '原生未使用：' + nativeWhy + '；改用 ' + order.join('→'); if (cb.log) cb.log(msg); console.log('[llm] ' + msg); }
+        const dev = { order, reason: bo.reason };
         if (!dev.order.length) throw new Error(dev.reason);
         const ld = await this._vlmEnsureLoaded(model, dev.order, cb.update || (() => {}), cb.log);
         const slot = this._vlmSlotOf(ld.device); this._omLastDevice = this._omLastDevice || {}; this._omLastDevice[model.id] = ld.device;
@@ -100913,7 +100956,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     }
     // op：status／reenable／dispose。寫 req-<id>.json，等 resp-<id>.json；逾時回傳 { ok:false, code:'mailbox_timeout' }（主程序沒有回應：舊版安裝或主程序未載入）。
     // 先等主程序的就緒檔（ready.json，最多 15 秒），再送請求；逾時的請求自動重試最多 2 次（每次新的請求 id）。
-    async _nrCall(op, payload, timeoutMs) {
+    async _nrCall(op, payload, timeoutMs, onToken) {
         if (!this._nrAvailable()) return { ok: false, code: 'no_bridge', message: '這個環境沒有桌面版橋接' };
         const box = await this._nrBox(); if (!box) return { ok: false, code: 'no_box', message: '找不到使用者資料夾' };
         const sep = box.indexOf(String.fromCharCode(92)) >= 0 ? String.fromCharCode(92) : '/';
@@ -100926,21 +100969,40 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (!ready) return { ok: false, code: 'not_ready', message: '主程序在 15 秒內沒有就緒（原生執行器信箱未啟動）' };
         let last = null;
         for (let attempt = 0; attempt < 3; attempt++) {
-            last = await this._nrCallOnce(op, payload, timeoutMs || 5000, box, sep);
+            last = await this._nrCallOnce(op, payload, timeoutMs || 5000, box, sep, onToken);
             if (last.code !== 'mailbox_timeout') return last;
         }
         return last;
     }
-    async _nrCallOnce(op, payload, timeoutMs, box, sep) {
+    // 串流：主程序把每個 token 追加到 tok-<id>.jsonl（一行一個 {text}）。這裡讀新增的完整行並交給 onToken；state.seen 記住已經處理到第幾行。
+    async _nrPollTokens(tokPath, state, onToken) {
+        let r = null;
+        try { r = await window.desktopAPI.rawfs.readFile(tokPath, 'utf8'); } catch (_) { return; }
+        const text = r && typeof r === 'object' ? r.text : r;
+        if (!text) return;
+        const lines = String(text).split('\n'); lines.pop(); // 最後一行可能還沒寫完
+        for (let i = state.seen; i < lines.length; i++) {
+            try { const o = JSON.parse(lines[i]); if (o && typeof o.text === 'string') onToken(o.text); } catch (_) { /* 壞行略過 */ }
+        }
+        state.seen = Math.max(state.seen, lines.length);
+    }
+    async _nrCallOnce(op, payload, timeoutMs, box, sep, onToken) {
         const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
         await window.desktopAPI.rawfs.writeFile(box + sep + 'req-' + id + '.json', { text: JSON.stringify({ op, payload: payload || {} }) });
         const t0 = Date.now(), limit = timeoutMs || 10000; // 主程序剛啟動時第一次可能較慢
-        const respPath = box + sep + 'resp-' + id + '.json';
+        const respPath = box + sep + 'resp-' + id + '.json', tokPath = box + sep + 'tok-' + id + '.jsonl';
+        const tokState = { seen: 0 };
         while (Date.now() - t0 < limit) {
+            if (onToken) await this._nrPollTokens(tokPath, tokState, onToken);
             try {
                 const r = await window.desktopAPI.rawfs.readFile(respPath, 'utf8');
                 const text = r && typeof r === 'object' ? r.text : r;
-                if (text) { try { await window.desktopAPI.rawfs.remove(respPath, false); } catch (_) { /* 已移除 */ } return JSON.parse(text); }
+                if (text) {
+                    if (onToken) await this._nrPollTokens(tokPath, tokState, onToken); // 回應到達時把剩下的 token 補齊
+                    try { await window.desktopAPI.rawfs.remove(respPath, false); } catch (_) { /* 已移除 */ }
+                    if (onToken) { try { await window.desktopAPI.rawfs.remove(tokPath, false); } catch (_) { /* 沒有串流檔 */ } }
+                    return JSON.parse(text);
+                }
             } catch (_) { /* 還沒有回應 */ }
             await new Promise((res) => setTimeout(res, 150));
         }
