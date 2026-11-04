@@ -100682,6 +100682,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     // 一次生成：載入（必要時）→ 在對應裝置的 Worker 生成 → 串流中偵測垃圾／逾時就中斷。cb: { update, log, onToken }
     // 原生執行器能不能用（主程序的執行包＋模型檔都就緒）。結果快取 5 秒，避免每次生成都打一次信箱；不可用時回傳白話原因。
     async _nrNativeState() {
+        if (!this._nrOptIn()) return { ok: false, reason: '原生執行包未安裝' }; // 預設不探測主程序，完全走原路徑
         if (!this._nrAvailable()) return { ok: false, reason: '這個環境沒有桌面版橋接' };
         const now = Date.now();
         if (this._nrStateCache && now - this._nrStateCache.at < 5000) return this._nrStateCache.v;
@@ -100711,7 +100712,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         // 原生執行器（桌面版，先試）：只支援純文字生成（沒有工具、沒有預填）。失敗或不可用就退回 WebGPU／WASM，並把實際後端與原因寫進 log。
         const NATIVE_MODEL_ID = 'qwen3-0.6b';
         let nativeOk = false, nativeWhy = '';
-        if (model.id !== NATIVE_MODEL_ID) nativeWhy = ''; // 其他模型不走原生，不記 log
+        if (model.id !== NATIVE_MODEL_ID || !this._nrOptIn()) nativeWhy = ''; // 其他模型或未安裝：不走原生，也不記 log
         else if (a.tools && a.tools.length) nativeWhy = '這次呼叫有工具，原生只做純文字生成';
         else if (a.prefill) nativeWhy = '這次呼叫有預填，原生不支援';
         else { const st = await this._nrNativeState(); nativeOk = !!st.ok; if (!st.ok) nativeWhy = st.reason; }
@@ -100719,7 +100720,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (bo.native) {
             const gen0 = Object.assign(FaVlm.textGenParams(model, { deterministic: !!(a.strict || a.deterministic) }), a.strict ? { repetition_penalty: 1.2, no_repeat_ngram_size: 5 } : {});
             const r = await this._nrRunNative(a, cb, gen0);
-            if (r.ok) { if (cb.log) cb.log('後端：原生（onnxruntime-node 1.22.0，CPU）'); console.log('[llm] 後端：原生'); return r.text; }
+            if (r.ok) { this._nrLastBackend = 'native'; if (cb.log) cb.log('後端：原生（onnxruntime-node 1.22.0，CPU）'); console.log('[llm] 後端：原生'); return r.text; }
             nativeWhy = r.why;
         }
         const order = bo.order.filter((x) => x !== 'native');
@@ -100728,7 +100729,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const dev = { order, reason: bo.reason };
         if (!dev.order.length) throw new Error(dev.reason);
         const ld = await this._vlmEnsureLoaded(model, dev.order, cb.update || (() => {}), cb.log);
-        const slot = this._vlmSlotOf(ld.device); this._omLastDevice = this._omLastDevice || {}; this._omLastDevice[model.id] = ld.device;
+        const slot = this._vlmSlotOf(ld.device); this._omLastDevice = this._omLastDevice || {}; this._omLastDevice[model.id] = ld.device; this._nrLastBackend = ld.device;
         const msgs = a.messages.map((m) => ({ role: m.role, content: String(m.content == null ? '' : m.content) }));
         const gen = Object.assign(FaVlm.textGenParams(model, { deterministic: !!(a.strict || a.deterministic) }), a.strict ? { repetition_penalty: 1.2, no_repeat_ngram_size: 5 } : {});
         let acc = '', since = 0, stopped = null; const rec = this._vlmWorkerGet(slot);
@@ -101035,8 +101036,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         return `<div style="border:1px solid #334155; border-radius:8px; padding:8px; margin-bottom:10px;">
               <div style="font-weight:600; margin-bottom:4px;">原生執行器（實驗，桌面版）</div>
               <div data-om-native-status style="color:#94a3b8;">讀取中…</div>
-              <div style="margin-top:6px;"><button style="${btn}" data-om="native-reenable">重新啟用</button> <button style="${btn}" data-om="native-dispose">關閉子程序</button></div>
-              <div style="color:#94a3b8;">子程序目前是假引擎（尚未載入模型），用來驗證啟動、取消、逾時、崩潰重啟與停用流程。通訊只走標準輸入輸出（一行一則 JSON）。</div>
+              <div data-om-native-progress style="display:none; color:#cbd5e1; margin-top:4px;"></div>
+              <div style="margin-top:6px;"><button style="${btn}" data-om="native-install">安裝原生執行包</button> <button style="${btn}" data-om="native-remove">移除執行包</button> <button style="${btn}" data-om="native-reenable">重新啟用</button> <button style="${btn}" data-om="native-dispose">關閉子程序</button></div>
+              <div style="color:#94a3b8;">預設是未安裝，不點就完全走原本的 WebGPU／WASM 路徑。安裝前會先顯示確認對話框，按同意後才下載（npm 官方庫優先，失敗才改用 GitHub 分支，會顯示原因）。</div>
             </div>`;
     }
     async _omNativeRefresh() {
@@ -101044,15 +101046,67 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (!root || !this._nrAvailable()) return;
         const el = root.querySelector('[data-om-native-status]');
         if (!el) return;
+        if (!this._nrOptIn()) { el.textContent = '狀態：未安裝（預設，走原本的 WebGPU／WASM 路徑）'; return; }
         try {
             const r = await this._nrCall('status');
             if (!r.ok) { el.textContent = '原生執行器：' + (r.message || r.code); return; }
-            const st = r.status || {};
-            el.textContent = '子程序：' + (st.alive ? '執行中（pid ' + st.pid + '）' : '未啟動（需要時才啟動）') + '；' + (st.disabled ? '已停用：' + st.disabledReason : '可用') + '；連續崩潰 ' + st.consecutiveCrashes + ' 次';
+            const st = r.status || {}, rt = r.runtime || {};
+            const be = this._nrLastBackend ? '；上次生成的實際後端：' + this._nrBackendLabel(this._nrLastBackend) : '；尚未生成過';
+            if (!rt.ok) { el.textContent = '狀態：已開啟但不可用（' + (rt.reason || '未知') + '）' + be; return; }
+            el.textContent = '狀態：已安裝（版本 ' + (rt.version || '?') + '）；子程序：' + (st.alive ? '執行中（pid ' + st.pid + '）' : '未啟動（需要時才啟動）') + '；' + (st.disabled ? '已停用：' + st.disabledReason : '可用') + be;
         } catch (e) { el.textContent = '原生執行器狀態讀取失敗：' + String((e && e.message) || e); }
+    }
+    _nrOptIn() { try { return localStorage.getItem('fa.native.enabled') === '1'; } catch (_) { return false; } }
+    _nrSetOptIn(v) { try { localStorage.setItem('fa.native.enabled', v ? '1' : '0'); } catch (_) { /* 寫不了就維持預設（未開啟） */ } this._nrStateCache = null; }
+    _nrBackendLabel(d) { return d === 'native' ? '原生（onnxruntime-node 1.22.0，CPU）' : d === 'webgpu' ? 'WebGPU' : d === 'cpu' ? 'WASM（CPU）' : String(d); }
+    // 安裝：先顯示確認對話框（檔名、來源、授權、大小），按同意才下載；進度每半秒從主程序的進度檔讀一次。
+    async _omNativeInstall() {
+        const desc = '將安裝原生執行包（子程序與 onnxruntime-node 1.22.0）。\n\n' +
+            '檔名：onnxruntime-node-1.22.0.tgz（npm 官方庫），以及分割包（GitHub 分支 native-runtime-1.22.0）\n' +
+            '來源：registry.npmjs.org 優先；npm 失敗（連線、逾時、狀態碼不是 200、驗證失敗）時改用 GitHub 分支，並顯示原因\n' +
+            '授權：MIT\n' +
+            '大小：npm 壓縮檔約 89 MB；安裝後 Windows 約 21 MB、Linux 約 30 MB\n\n' +
+            '不同意就什麼都不會下載。';
+        let ans = null;
+        try { ans = await this.requestUserForm({ title: '安裝原生執行包', description: desc, choices: ['同意安裝', '取消'] }); } catch (_) { ans = null; }
+        if (!ans || !ans.confirmed || ans.answer !== '同意安裝') return;
+        const root = this._omPaneRoot, pEl = root && root.querySelector('[data-om-native-progress]');
+        const show = (t) => { if (pEl) { pEl.style.display = ''; pEl.textContent = t; } };
+        show('開始安裝…');
+        let timer = null;
+        try {
+            const box = await this._nrBox(); const sep = box && box.indexOf(String.fromCharCode(92)) >= 0 ? String.fromCharCode(92) : '/';
+            timer = setInterval(async () => {
+                try { const r = await window.desktopAPI.rawfs.readFile(box + sep + 'install-progress.json', 'utf8'); const o = JSON.parse(r && typeof r === 'object' ? r.text : r); show('進度：' + (o.detail || o.stage) + (o.source ? '（來源：' + o.source + '）' : '')); } catch (_) { /* 還沒有進度檔 */ }
+            }, 500);
+            const r = await this._nrCall('install', {}, 900000);
+            clearInterval(timer); timer = null;
+            if (r && r.ok) {
+                this._nrSetOptIn(true);
+                const c = r.sourceCounts || {};
+                show('安裝完成：npm 取得 ' + (c.npm || 0) + ' 個檔案、GitHub 分支 ' + (c.github || 0) + ' 個、本機 ' + (c.local || 0) + ' 個。之後的生成會先試原生，失敗時會顯示實際後端與原因。');
+            } else {
+                show('安裝失敗：' + ((r && (r.message || r.code)) || '沒有回應') + '。已保留原本路徑，沒有改動。');
+            }
+        } catch (e) { show('安裝失敗：' + String((e && e.message) || e)); }
+        finally { if (timer) clearInterval(timer); }
+        await this._omNativeRefresh();
+    }
+    // 移除：先確認，再刪除執行包並關閉子程序；之後回到原本路徑。
+    async _omNativeRemove() {
+        let ans = null;
+        try { ans = await this.requestUserForm({ title: '移除原生執行包', description: '會刪除 userData 內的原生執行包與子程序，之後回到原本的 WebGPU／WASM 路徑。之後可以再安裝。', choices: ['移除', '取消'] }); } catch (_) { ans = null; }
+        if (!ans || !ans.confirmed || ans.answer !== '移除') return;
+        const r = await this._nrCall('remove');
+        this._nrSetOptIn(false);
+        const root = this._omPaneRoot, pEl = root && root.querySelector('[data-om-native-progress]');
+        if (pEl) { pEl.style.display = ''; pEl.textContent = r && r.ok ? '已移除執行包，回到原本路徑。' : '移除失敗：' + ((r && (r.message || r.code)) || '沒有回應'); }
+        await this._omNativeRefresh();
     }
     async _omNativeAct(act, root) {
         if (!this._nrAvailable()) return;
+        if (act === 'install') return this._omNativeInstall();
+        if (act === 'remove') return this._omNativeRemove();
         if (act === 'reenable') await this._nrCall('reenable');
         else if (act === 'dispose') await this._nrCall('dispose');
         await this._omNativeRefresh();
