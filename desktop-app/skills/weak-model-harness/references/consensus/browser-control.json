@@ -1,0 +1,16 @@
+{
+  "name": "瀏覽器控制共識（早在設計 browser extension 時就定案；2026-11-05 使用者再次指出）",
+  "source": "使用者原話（2026-11-05）：「AI自己開的要自己關閉 這個要求很早很早在設計browser extension就決定了」。程式裡的原始依據：`browser_create_tab` 工具說明「新分頁不會切到前景（不打擾使用者）；用完要自己用browser_close關掉，回合結束時沒關的也會被自動關閉」，以及子任務系統提示「只能操作你自己建立的分頁」。",
+  "scope": ["renderer/src/floating-assistant.js", "DESIGN.TODO.offline-intent-pipeline.md"],
+  "must": [
+    "browser_close",
+    "自己開的分頁自己關"
+  ],
+  "forbid": [],
+  "rules": [
+    {"id": "own-tabs-only", "text": "只能操作 AI 自己建立的分頁，不碰使用者原本的分頁。"},
+    {"id": "close-own-tabs", "text": "AI 自己開的分頁用完要自己 browser_close；回合結束沒關的由系統自動關。離線路徑也一樣，不是新決定。"},
+    {"id": "default-background", "text": "預設在背景開，不打擾使用者；只有使用者明確要「看到頁面」才切前景（active）。是否保留（keep_open）只有使用者明說才保留。"},
+    {"id": "reuse-first", "text": "新增離線或規則路徑前，先查既有工具說明與系統提示已有的約定，不要把舊共識當新問題問使用者。"}
+  ]
+}
