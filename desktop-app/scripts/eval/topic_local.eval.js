@@ -99,9 +99,11 @@ R.checks.onNoTopicCheckOrSummaryCalls = on.rows.every((r) => r.calls.every((k) =
 R.checks.noBlockingJudgeCall = blockingCalls === 0;
 
 // 3. 開：_lastTopicShift 依序 不轉移／不轉移／轉移／轉移（有 matchedTopicId）／不轉移
-const expect = [false, false, true, true, false];
+// 第四則（「再畫一張狗的圖」）：子對話 S5 起，開出音樂子對話時父話題會還原成貓，所以貓再出現是「同一話題」（父對話處理），不再是「命中舊話題」。
+// 這是 S5 有意的改變（見 DESIGN.TODO.subchat-s5.md 的回歸段落），結果不變：不轉移、不開新子對話、沒有摘要。
+const expect = [false, false, true, false, false];
 R.checks.onShiftSequence = on.rows.every((r, i) => r.shift && r.shift.isShifted === expect[i]);
-R.checks.onMatchedOnReturn = !!(on.rows[3].shift && on.rows[3].shift.matchedTopicId);
+R.checks.onReturnStaysInParent = !!(on.rows[3].shift && on.rows[3].shift.isShifted === false && on.rows[3].shift.reason === 'same-topic');
 R.checks.onNoMatchOnNewTopic = !!(on.rows[2].shift && on.rows[2].shift.matchedTopicId === null);
 
 // 4. 開：this.messages 沒被縮成摘要，archivedDisplayBlocks 沒有新增

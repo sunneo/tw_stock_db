@@ -93,7 +93,11 @@ R.info.onlyChild = cn.filter((n) => pn.indexOf(n) < 0);
 
 R.checks.parentCaptured = !!parentCap && Array.isArray(parentCap.names);
 R.checks.childCaptured = !!childCap && Array.isArray(childCap.names);
-R.checks.sameNameSet = R.checks.parentCaptured && R.checks.childCaptured && pn.join('|') === cn.join('|');
+// 子對話 S5 起，父對話多出三個子對話工具（chat_list_children 等），子對話不會有（子對話不再有子對話）。
+// 判準：父對話扣掉這三個後，與子對話工具清單完全相同；三個工具只出現在父對話。
+const SUB3 = ['chat_list_children', 'chat_send_to_child', 'chat_get_child_summary'];
+const pnBase = pn.filter((n) => SUB3.indexOf(n) < 0);
+R.checks.sameNameSet = R.checks.parentCaptured && R.checks.childCaptured && pnBase.join('|') === cn.join('|') && SUB3.every((n) => pn.indexOf(n) >= 0) && cn.every((n) => SUB3.indexOf(n) < 0);
 R.checks.parentHasAskCard = pn.indexOf('ask_user_card') >= 0;
 R.checks.childHasAskCard = cn.indexOf('ask_user_card') >= 0;
 // 載入的是工作目錄的實作（字串常值，不用變數名）
