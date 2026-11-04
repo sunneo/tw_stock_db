@@ -103,6 +103,8 @@ const Q = '瀏覽器打開 https://tw.yahoo.com 並找美國選舉新聞';
     ok(g.reply && /需要檔案/.test(g.reply), '沒附檔案：明說需要檔案');
     g = fa._otGateApply(plan0('no_match'), '打開 3D 場景編輯器');
     ok(g.reply && /3D/.test(g.reply) && !g.plan.decision.chosen, '沒有 3D 工具或沒檔案：回報而不是亂做');
+    g = fa._otGateApply(plan0('planned', { pattern: 'feat_edit-3d-model', tool: 'edit_3d_open', via: '語意', score: 0.57, kind: 'tool', args: { starter: '整句' } }), '打開 room.glb [附件：room.glb（file_id=g1）]');
+    ok(g.plan.decision.chosen.tool === 'edit_3d_open' && g.plan.decision.chosen.args.file_id === 'g1' && g.plan.decision.chosen.args.starter === undefined, '規則是同一個開啟工具但只塞整句：改用附件 file_id');
     const keep = plan0('planned', { pattern: 'screenshot_rule', kind: 'steps', steps: [] });
     g = fa._otGateApply(keep, '截圖 https://a.com');
     ok(g.plan.decision.chosen.pattern === 'screenshot_rule', '其他規則命中（截圖）：不被理解閘改掉');

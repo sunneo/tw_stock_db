@@ -89,6 +89,77 @@
         return { kind: null, by: '' };
     }
 
+    // ---------- 記憶、理解題、核對（階段 4）----------
+    // 後置步驟的類型：給使用者選、給小模型選的封閉題都用同一份
+    const POST_CHOICES = [
+        { n: 1, type: 'find_topic', label: '找某個主題的內容（在頁面上找相關標題）' },
+        { n: 2, type: 'summarize', label: '摘要、整理重點' },
+        { n: 3, type: 'reason', label: '比較、判斷、分析（需要推理）' },
+        { n: 4, type: 'pick_item', label: '取其中某一則／某一項' },
+        { n: 5, type: 'skip', label: '都不是，這句不用處理' }
+    ];
+    function memKey(s) { return String(s || '').replace(/[\s，。,.!！?？「」『』"']/g, '').toLowerCase(); }
+    function recall(memory, clause) {
+        const k = memKey(clause); if (k.length < 2) return null;
+        if (memory[k]) return memory[k];
+        for (const key of Object.keys(memory)) if (key.length >= 3 && (k.indexOf(key) >= 0 || key.indexOf(k) >= 0)) return memory[key];
+        return null;
+    }
+    function applyType(out, type, clause, by) {
+        const has = (t) => out.post.some((p) => p.type === t);
+        if (type === 'skip') return;
+        if (type === 'find_topic') {
+            const kw = cleanKeyword(clause.replace(/^(?:請|幫我|麻煩|也|順便)+/, '').replace(/^(?:弄一下|看一下|處理一下|搞一下|找出|找到|找|搜尋|查)/, ''));
+            if (kw.length >= 2 && !out.post.some((p) => p.type === 'find_topic' && p.keyword === kw)) { out.keyword = out.keyword || kw; out.post.push({ type: 'find_topic', keyword: kw, by }); }
+        } else if (!has(type)) out.post.push({ type, text: clause, by });
+        if (out.advice === 'partial' || out.advice === 'open') out.advice = 'open_post'; else if (out.advice === 'direct') out.advice = 'post';
+        out.reason = '動作之外還有目標：' + out.post.map((p) => p.type + (p.keyword ? '（' + p.keyword + '）' : '')).join('、');
+    }
+    // 把使用者（或小模型）對「沒處理的那句」的回答套回結果；要記進記憶的 key／type 由呼叫端存
+    function resolveClause(g, clause, type, by) {
+        g.unhandled = g.unhandled.filter((u) => u !== clause);
+        applyType(g, type, clause, by || 'user');
+        return g;
+    }
+    // 給小模型（CoLU＋Thinking）與使用者共用的理解題：這句話想做什麼？
+    function interpretMessages(clause, gate) {
+        const lines = POST_CHOICES.map((c) => c.n + '. ' + c.label).join('\n');
+        return [
+            { role: 'system', content: '你負責判斷使用者說的一句話想做什麼。只輸出一個 JSON 物件，格式：{"choice": 編號}。編號只能是選單裡有的數字。' },
+            { role: 'user', content: '前面已經做的動作：' + (gate && gate.action === 'open' ? '開啟' + (gate.label || '') : (gate && gate.action) || '（無）') + '\n選單：\n' + lines + '\n\n使用者這句話：\n' + String(clause).slice(0, 300) }
+        ];
+    }
+    function validateChoice(o) { const c = o && o.choice; if (!Number.isInteger(c)) return ['「choice」必須是整數']; if (c < 1 || c > POST_CHOICES.length) return ['「choice」必須是 1～' + POST_CHOICES.length + ' 之間的整數']; return []; }
+    function choiceType(n) { const c = POST_CHOICES.find((x) => x.n === n); return c ? c.type : null; }
+    // 最後核對（程式先判）：結果有沒有回答使用者的目標。outcome：{ hits, searched, hasMore, readChars, summary, undone }
+    function verify(gate, outcome) {
+        outcome = outcome || {};
+        const want = ((gate && gate.post) || []).find((p) => p.type === 'find_topic');
+        const warn = [];
+        if (outcome.hasMore) warn.push('沒有讀完' + (outcome.readChars ? '（只讀了前 ' + outcome.readChars + ' 字）' : '') + '，結論只根據已讀到的部分');
+        const res = { verdict: 'n/a', conclusion: '', warn, ask: false };
+        if (want) {
+            const n = Number(outcome.hits) || 0; const where = outcome.searched && n ? '站內搜尋結果頁' : '頁面';
+            if (n >= 2) { res.verdict = 'answered'; res.conclusion = '✅ 結論：在' + where + '篩出 ' + n + ' 則跟「' + want.keyword + '」有關的標題。'; }
+            else if (n === 1) { res.verdict = 'unsure'; res.ask = true; res.conclusion = '❓ 結論：只篩出 1 則跟「' + want.keyword + '」有關的標題，可能只是剛好含有關鍵字，不一定回答了你的問題。'; }
+            else { res.verdict = 'not_answered'; res.conclusion = '⚠️ 結論：沒有找到跟「' + want.keyword + '」有關的內容' + (outcome.searched ? '（頁面與站內搜尋都沒有）' : '') + '，所以沒有可以回答你的結果。'; }
+        } else if (((gate && gate.post) || []).some((p) => p.type === 'summarize')) {
+            res.verdict = outcome.summary ? 'answered' : 'not_answered';
+            res.conclusion = outcome.summary ? '✅ 結論：已做機械摘要（TextRank 挑重點句，不是 AI 歸納）。' : '⚠️ 結論：沒有可摘要的內容。';
+        }
+        if (outcome.undone && outcome.undone.length) warn.push('有步驟沒做到：' + outcome.undone.join('；'));
+        if (warn.length && res.conclusion) res.conclusion += '\n⚠️ ' + warn.join('；') + '。';
+        return res;
+    }
+    // 不確定時問小模型的核對題（字母 A／B）
+    function verifyMessages(keyword, lines) {
+        return [
+            { role: 'system', content: '你在核對搜尋結果有沒有回答使用者。只輸出一個 JSON 物件，格式：{"answer": "A" 或 "B"}。A＝這些標題確實跟主題有關，回答了使用者；B＝只是剛好含有關鍵字或不相關，沒有回答。' },
+            { role: 'user', content: '使用者要找的主題：' + keyword + '\n篩出的標題：\n' + lines.map((l) => '- ' + String(l).slice(0, 120)).join('\n') + '\n\n這些有回答嗎？A 有 B 沒有' }
+        ];
+    }
+    function validateAB(o) { return o && (o.answer === 'A' || o.answer === 'B') ? [] : ['「answer」必須是 "A" 或 "B"']; }
+
     function gate(text, opts) {
         opts = opts || {};
         const original = String(text || '').trim();
@@ -135,6 +206,11 @@
         }
         // 英文推導結果（FaIntent）只補中文詞表沒認出的後置步驟
         if (!out.action) out.unhandled = []; // 沒認出任何動作＝閘沒有意見，交回原本的規則／食譜
+        if (opts.memory && out.unhandled.length) { // 使用者以前回答過的說法（問過、自動記下的），直接懂
+            const left = [];
+            for (const u of out.unhandled) { const t = recall(opts.memory, u); if (!t) { left.push(u); continue; } out.pendingMemory = (out.pendingMemory || []).concat([[u, t]]); }
+            out.unhandled = left;
+        }
         if (Array.isArray(opts.intents) && out.unhandled.length) {
             const before = out.post.length;
             for (const it of opts.intents) {
@@ -177,8 +253,9 @@
             else out.reason += '；沒處理：' + out.unhandled.join('；');
         }
         if (out.advice === 'direct' && !out.reason) out.reason = '沒有剩餘目標，照規則直接執行';
+        if (out.pendingMemory) { for (const [u, t] of out.pendingMemory) applyType(out, t, u, 'memory'); delete out.pendingMemory; }
         return out;
     }
 
-    return { gate, parseSources, detectKind, KINDS, cleanKeyword };
+    return { gate, parseSources, detectKind, KINDS, cleanKeyword, POST_CHOICES, memKey, recall, resolveClause, interpretMessages, validateChoice, choiceType, verify, verifyMessages, validateAB };
 });

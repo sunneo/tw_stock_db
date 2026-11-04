@@ -46860,6 +46860,77 @@ const holder = {};
         return { kind: null, by: '' };
     }
 
+    // ---------- 記憶、理解題、核對（階段 4）----------
+    // 後置步驟的類型：給使用者選、給小模型選的封閉題都用同一份
+    const POST_CHOICES = [
+        { n: 1, type: 'find_topic', label: '找某個主題的內容（在頁面上找相關標題）' },
+        { n: 2, type: 'summarize', label: '摘要、整理重點' },
+        { n: 3, type: 'reason', label: '比較、判斷、分析（需要推理）' },
+        { n: 4, type: 'pick_item', label: '取其中某一則／某一項' },
+        { n: 5, type: 'skip', label: '都不是，這句不用處理' }
+    ];
+    function memKey(s) { return String(s || '').replace(/[\s，。,.!！?？「」『』"']/g, '').toLowerCase(); }
+    function recall(memory, clause) {
+        const k = memKey(clause); if (k.length < 2) return null;
+        if (memory[k]) return memory[k];
+        for (const key of Object.keys(memory)) if (key.length >= 3 && (k.indexOf(key) >= 0 || key.indexOf(k) >= 0)) return memory[key];
+        return null;
+    }
+    function applyType(out, type, clause, by) {
+        const has = (t) => out.post.some((p) => p.type === t);
+        if (type === 'skip') return;
+        if (type === 'find_topic') {
+            const kw = cleanKeyword(clause.replace(/^(?:請|幫我|麻煩|也|順便)+/, '').replace(/^(?:弄一下|看一下|處理一下|搞一下|找出|找到|找|搜尋|查)/, ''));
+            if (kw.length >= 2 && !out.post.some((p) => p.type === 'find_topic' && p.keyword === kw)) { out.keyword = out.keyword || kw; out.post.push({ type: 'find_topic', keyword: kw, by }); }
+        } else if (!has(type)) out.post.push({ type, text: clause, by });
+        if (out.advice === 'partial' || out.advice === 'open') out.advice = 'open_post'; else if (out.advice === 'direct') out.advice = 'post';
+        out.reason = '動作之外還有目標：' + out.post.map((p) => p.type + (p.keyword ? '（' + p.keyword + '）' : '')).join('、');
+    }
+    // 把使用者（或小模型）對「沒處理的那句」的回答套回結果；要記進記憶的 key／type 由呼叫端存
+    function resolveClause(g, clause, type, by) {
+        g.unhandled = g.unhandled.filter((u) => u !== clause);
+        applyType(g, type, clause, by || 'user');
+        return g;
+    }
+    // 給小模型（CoLU＋Thinking）與使用者共用的理解題：這句話想做什麼？
+    function interpretMessages(clause, gate) {
+        const lines = POST_CHOICES.map((c) => c.n + '. ' + c.label).join('\n');
+        return [
+            { role: 'system', content: '你負責判斷使用者說的一句話想做什麼。只輸出一個 JSON 物件，格式：{"choice": 編號}。編號只能是選單裡有的數字。' },
+            { role: 'user', content: '前面已經做的動作：' + (gate && gate.action === 'open' ? '開啟' + (gate.label || '') : (gate && gate.action) || '（無）') + '\n選單：\n' + lines + '\n\n使用者這句話：\n' + String(clause).slice(0, 300) }
+        ];
+    }
+    function validateChoice(o) { const c = o && o.choice; if (!Number.isInteger(c)) return ['「choice」必須是整數']; if (c < 1 || c > POST_CHOICES.length) return ['「choice」必須是 1～' + POST_CHOICES.length + ' 之間的整數']; return []; }
+    function choiceType(n) { const c = POST_CHOICES.find((x) => x.n === n); return c ? c.type : null; }
+    // 最後核對（程式先判）：結果有沒有回答使用者的目標。outcome：{ hits, searched, hasMore, readChars, summary, undone }
+    function verify(gate, outcome) {
+        outcome = outcome || {};
+        const want = ((gate && gate.post) || []).find((p) => p.type === 'find_topic');
+        const warn = [];
+        if (outcome.hasMore) warn.push('沒有讀完' + (outcome.readChars ? '（只讀了前 ' + outcome.readChars + ' 字）' : '') + '，結論只根據已讀到的部分');
+        const res = { verdict: 'n/a', conclusion: '', warn, ask: false };
+        if (want) {
+            const n = Number(outcome.hits) || 0; const where = outcome.searched && n ? '站內搜尋結果頁' : '頁面';
+            if (n >= 2) { res.verdict = 'answered'; res.conclusion = '✅ 結論：在' + where + '篩出 ' + n + ' 則跟「' + want.keyword + '」有關的標題。'; }
+            else if (n === 1) { res.verdict = 'unsure'; res.ask = true; res.conclusion = '❓ 結論：只篩出 1 則跟「' + want.keyword + '」有關的標題，可能只是剛好含有關鍵字，不一定回答了你的問題。'; }
+            else { res.verdict = 'not_answered'; res.conclusion = '⚠️ 結論：沒有找到跟「' + want.keyword + '」有關的內容' + (outcome.searched ? '（頁面與站內搜尋都沒有）' : '') + '，所以沒有可以回答你的結果。'; }
+        } else if (((gate && gate.post) || []).some((p) => p.type === 'summarize')) {
+            res.verdict = outcome.summary ? 'answered' : 'not_answered';
+            res.conclusion = outcome.summary ? '✅ 結論：已做機械摘要（TextRank 挑重點句，不是 AI 歸納）。' : '⚠️ 結論：沒有可摘要的內容。';
+        }
+        if (outcome.undone && outcome.undone.length) warn.push('有步驟沒做到：' + outcome.undone.join('；'));
+        if (warn.length && res.conclusion) res.conclusion += '\n⚠️ ' + warn.join('；') + '。';
+        return res;
+    }
+    // 不確定時問小模型的核對題（字母 A／B）
+    function verifyMessages(keyword, lines) {
+        return [
+            { role: 'system', content: '你在核對搜尋結果有沒有回答使用者。只輸出一個 JSON 物件，格式：{"answer": "A" 或 "B"}。A＝這些標題確實跟主題有關，回答了使用者；B＝只是剛好含有關鍵字或不相關，沒有回答。' },
+            { role: 'user', content: '使用者要找的主題：' + keyword + '\n篩出的標題：\n' + lines.map((l) => '- ' + String(l).slice(0, 120)).join('\n') + '\n\n這些有回答嗎？A 有 B 沒有' }
+        ];
+    }
+    function validateAB(o) { return o && (o.answer === 'A' || o.answer === 'B') ? [] : ['「answer」必須是 "A" 或 "B"']; }
+
     function gate(text, opts) {
         opts = opts || {};
         const original = String(text || '').trim();
@@ -46906,6 +46977,11 @@ const holder = {};
         }
         // 英文推導結果（FaIntent）只補中文詞表沒認出的後置步驟
         if (!out.action) out.unhandled = []; // 沒認出任何動作＝閘沒有意見，交回原本的規則／食譜
+        if (opts.memory && out.unhandled.length) { // 使用者以前回答過的說法（問過、自動記下的），直接懂
+            const left = [];
+            for (const u of out.unhandled) { const t = recall(opts.memory, u); if (!t) { left.push(u); continue; } out.pendingMemory = (out.pendingMemory || []).concat([[u, t]]); }
+            out.unhandled = left;
+        }
         if (Array.isArray(opts.intents) && out.unhandled.length) {
             const before = out.post.length;
             for (const it of opts.intents) {
@@ -46948,10 +47024,11 @@ const holder = {};
             else out.reason += '；沒處理：' + out.unhandled.join('；');
         }
         if (out.advice === 'direct' && !out.reason) out.reason = '沒有剩餘目標，照規則直接執行';
+        if (out.pendingMemory) { for (const [u, t] of out.pendingMemory) applyType(out, t, u, 'memory'); delete out.pendingMemory; }
         return out;
     }
 
-    return { gate, parseSources, detectKind, KINDS, cleanKeyword };
+    return { gate, parseSources, detectKind, KINDS, cleanKeyword, POST_CHOICES, memKey, recall, resolveClause, interpretMessages, validateChoice, choiceType, verify, verifyMessages, validateAB };
 });
 
 }).call(null, undefined, holder);
@@ -67908,14 +67985,15 @@ ${fnData.code}
             const trail = [];
             const stepList = _faOtAdjustSteps(c.steps || [], plan.text);
             const gateOn = plan.gate && c && (c.pattern === 'browser_open_read' || c.pattern === 'gate_browser_open') && (plan.gate.post.length || plan.gate.unhandled.length);
-            let gatePostDone = false, gateOut = null;
-            if (plan.gate && c && (c.pattern === 'browser_open_read' || c.pattern === 'gate_browser_open')) trail.push('🧭 理解：' + (plan.gate.action === 'open' ? '開啟' + (plan.gate.label || '') : plan.gate.action) + (plan.gate.post.length ? '；目標＝' + plan.gate.post.map((p) => (p.type === 'find_topic' ? '找「' + p.keyword + '」' : p.type)).join('、') : '；沒有其他目標'));
+            let gatePostDone = false, gateOut = null, gateUsed = null;
+            if (plan.gate && c && (c.pattern === 'browser_open_read' || c.pattern === 'gate_browser_open')) (plan.gate.trace || []).forEach((x) => trail.push(x));
+            if (plan.gate && c && (c.pattern === 'browser_open_read' || c.pattern === 'gate_browser_open')) trail.push('🧭 理解：' + (plan.gate.action === 'open' ? '開啟' + (plan.gate.label || '') : plan.gate.action) + (plan.gate.post.length ? '；目標＝' + plan.gate.post.map((p) => (p.type === 'find_topic' ? '找「' + p.keyword + '」' : ({ summarize: '摘要', screenshot: '截圖', reason: '比較／判斷', pick_item: '取指定那一則' }[p.type] || p.type))).join('、') : '；沒有其他目標'));
             for (const st of stepList) {
                 if (gateOn && !gatePostDone && st.cleanup && st.tool === 'browser_close') {
                     gatePostDone = true;
                     const pg = [...results].reverse().find((r) => r.tool === 'browser_get_page_text' && r.json);
                     const tab = results[0] && results[0].json && results[0].json.tab_id;
-                    if (!failed && pg && plan.gate.post.length) { try { gateOut = await this._otGatePost(plan.gate, { tabId: tab, page: pg.json, plan, trail }); gateOut.extra.forEach((x) => results.push(x)); if (gateOut.extra.some((x) => x.search)) pg.superseded = true; if (gateOut.shots) gateOut.shots.forEach((m) => shots.push(m)); } catch (e) { trail.push('⚠️ 後置步驟出錯：' + String((e && e.message) || e).slice(0, 100)); } }
+                    if (!failed && pg && plan.gate.post.length) { try { gateUsed = pg; gateOut = await this._otGatePost(plan.gate, { tabId: tab, page: pg.json, plan, trail }); gateOut.extra.forEach((x) => results.push(x)); if (gateOut.extra.some((x) => x.search)) pg.superseded = true; if (gateOut.shots) gateOut.shots.forEach((m) => shots.push(m)); } catch (e) { trail.push('⚠️ 後置步驟出錯：' + String((e && e.message) || e).slice(0, 100)); } }
                     else if (plan.gate.post.length) gateOut = { undone: plan.gate.post.map((p) => p.type + '（前面的步驟沒成功，沒做）'), extra: [], summary: '' };
                 }
                 if (failed && !st.cleanup) { results.push({ tool: st.tool, skipped: true }); continue; }
@@ -67935,10 +68013,22 @@ ${fnData.code}
             }
             if (plan.gate && plan.gate.unhandled.length && (c.pattern === 'browser_open_read' || c.pattern === 'gate_browser_open')) trail.push('⚠️ 只做了動作，沒處理：' + plan.gate.unhandled.join('；'));
             if (gateOut && gateOut.undone && gateOut.undone.length) trail.push('⚠️ 沒做到：' + gateOut.undone.join('；'));
+            // 最後核對：結果有沒有回答目標（程式先判，不確定才問小模型的 A／B 題）；has_more 沒讀完一定有警語
+            let verdict = null;
+            if (gateOut && plan.gate && plan.gate.post.length) {
+                const searchPg = (gateOut.extra || []).find((x) => x.search); const usedJson = searchPg ? searchPg.json : (gateUsed && gateUsed.json) || {};
+                verdict = FaIntentGate.verify(plan.gate, { hits: gateOut.found ? gateOut.found.length : 0, searched: !!searchPg, hasMore: !!usedJson.has_more, readChars: usedJson.read_chars || (usedJson.has_more ? String(usedJson.text || '').length : 0), summary: gateOut.summary, undone: gateOut.undone });
+                if (verdict.ask && gateOut.found && gateOut.found.length) {
+                    const kw = (plan.gate.post.find((p) => p.type === 'find_topic') || {}).keyword || ''; const ab = await this._otGateVerifyAsk(kw, gateOut.found);
+                    if (ab === 'A') { verdict.verdict = 'answered'; verdict.conclusion = '✅ 結論：只篩出 1 則，離線小模型核對後認為有回答「' + kw + '」。' + (verdict.warn.length ? '\n⚠️ ' + verdict.warn.join('；') + '。' : ''); trail.push('🧾 核對：程式不確定（只有 1 則），問離線小模型，回答 A（有回答）'); }
+                    else if (ab === 'B') { verdict.verdict = 'not_answered'; verdict.conclusion = '⚠️ 結論：只篩出 1 則，離線小模型核對後認為沒有真的回答「' + kw + '」（可能只是剛好含有關鍵字）。' + (verdict.warn.length ? '\n⚠️ ' + verdict.warn.join('；') + '。' : ''); trail.push('🧾 核對：程式不確定（只有 1 則），問離線小模型，回答 B（沒有回答）'); }
+                    else trail.push('🧾 核對：只有 1 則，程式不確定；離線小模型沒載入或沒有合格回答，所以結論保守處理');
+                } else if (verdict.verdict !== 'n/a') trail.push('🧾 核對：程式判斷「' + ({ answered: '有回答目標', not_answered: '沒有回答目標', unsure: '不確定' }[verdict.verdict]) + '」');
+            }
             const shotText = shots.map((m) => '📸 已截圖' + (m.width ? '（' + m.width + '×' + m.height + '）' : '') + (m.title ? '：' + m.title : '') + (m.url ? ' ' + m.url : '') + (m.region_applied ? '，範圍 ' + m.region_applied.width + '×' + m.region_applied.height + '（x=' + m.region_applied.x + ',y=' + m.region_applied.y + (m.region_applied.by === 'local' ? '，本機裁切' : '') + '）' : '') + (m.warning ? '\n⚠️ ' + m.warning : '')).join('\n');
             const trailText = trail.length ? '📋 做了這些步驟：\n' + trail.map((x) => '- ' + x).join('\n') : '';
             const sumText = gateOut && gateOut.summary ? '📝 摘要（機械摘要，TextRank 挑的重點句）：\n' + gateOut.summary : '';
-            const body = [trailText, shotText, sumText].concat(results.filter((r) => r.raw && r.ok && !r.superseded && !/^browser_(create_tab|close|list_tabs)$/.test(r.tool)).map((r) => this._otPretty(r.raw, plan.text))).filter(Boolean).join('\n\n') + (shots.length ? '\n\n（離線模式不看圖片內容，只負責截圖；要說明畫面內容請切回線上模式。）' : '');
+            const body = [trailText, verdict && verdict.conclusion, shotText, sumText].concat(results.filter((r) => r.raw && r.ok && !r.superseded && !/^browser_(create_tab|close|list_tabs)$/.test(r.tool)).map((r) => this._otPretty(r.raw, plan.text))).filter(Boolean).join('\n\n') + (shots.length ? '\n\n（離線模式不看圖片內容，只負責截圖；要說明畫面內容請切回線上模式。）' : '');
             if (failed) return { ok: false, kind: 'steps', error: failed, text: body, results };
             return { ok: true, kind: 'steps', text: body || '（步驟都執行了，但沒有可顯示的內容）', results };
         }
@@ -67967,6 +68057,60 @@ ${fnData.code}
         }
         return { ok: false, error: '不認得的動作類型' };
     }
+    // ---- 階段4：理解不了時先思考（CoLU＋Thinking，qwen3-0.6b）、仍不懂才問使用者並記進記憶、最後核對 ----
+    // 離線小模型：只用「已安裝」的（不在這裡偷偷下載）；沒有就回傳 null（呼叫端直接問使用者）。_otGateGen 是測試用的注入點
+    async _otGateModel() {
+        if (typeof this._otGateGen === 'function') return { generate: this._otGateGen, thinking: this._otGateThinking || null, injected: true };
+        try {
+            const S = this._omSettings(); const inst = await this._omInstalled();
+            const route = FaVlm.routeStages({ config: S.roles, bench: S.bench, installed: inst.set, requireInstalled: true, defaultId: S.textModel, hasTools: false });
+            const model = route && route.answer; if (!model || !inst.set.has(model.id)) return null;
+            const th = FaRecipe.thinkingPlan({ modelId: model.id, stage: 'plan', contextTokens: model.contextTokens, enabled: this.advancedSettings.coluThinking !== false, device: await this._coluDeviceOf({ model }) });
+            return { generate: (a) => this._llmGenerate(model, Object.assign({}, a, { tools: [], deterministic: true }), {}), thinking: th && th.enabled ? th : null, modelId: model.id };
+        } catch (_) { return null; }
+    }
+    // 使用者回答過的說法記憶：沿用 set_synonyms 的存法（離線訓練器的 meta 表），下次同類說法直接懂
+    async _otGateLoadMemory() {
+        try { await this._otLoad(); if (!this._ot.gateMemory) { const r = await this._otDb().get('meta', 'gate_memory'); this._ot.gateMemory = (r && r.v) || {}; } } catch (_) { if (this._ot && !this._ot.gateMemory) this._ot.gateMemory = {}; }
+    }
+    async _otGateRemember(clause, type) {
+        const key = FaIntentGate.memKey(clause); if (key.length < 2) return false;
+        if (!this._ot.gateMemory) this._ot.gateMemory = {};
+        this._ot.gateMemory[key] = type;
+        const keys = Object.keys(this._ot.gateMemory); if (keys.length > 200) delete this._ot.gateMemory[keys[0]];
+        try { await this._otDb().put('meta', { k: 'gate_memory', v: this._ot.gateMemory }); } catch (_) { /* 存不進去也不影響這一輪 */ }
+        return true;
+    }
+    // 理解不了的句子：先用小模型思考（封閉題）→ 思考後仍不懂才問使用者 → 使用者回答自動記進記憶
+    async _otGateResolve(plan, text) {
+        const g = plan.gate; if (!g || !g.unhandled || !g.unhandled.length) return;
+        g.trace = g.trace || [];
+        const M = await this._otGateModel();
+        for (const clause of g.unhandled.slice()) {
+            let type = null, by = '';
+            if (M) {
+                try {
+                    const r = await FaRecipe.jsonStep({ generate: M.generate, messages: FaIntentGate.interpretMessages(clause, g), validate: FaIntentGate.validateChoice, maxTries: 2, maxTokens: 40, prefill: '{"choice":', thinking: M.thinking || undefined });
+                    const t = r.ok ? FaIntentGate.choiceType(r.value.choice) : null;
+                    if (t && t !== 'skip') { type = t; by = 'model'; g.trace.push('🧠 沒看懂「' + clause + '」：先用離線小模型' + (M.thinking ? '（開啟 Thinking）' : '') + '想過，判斷是「' + (FaIntentGate.POST_CHOICES.find((c) => c.type === t) || {}).label + '」'); }
+                    else g.trace.push('🧠 沒看懂「' + clause + '」：離線小模型想過了' + (r.ok ? '，但還是無法確定' : '，沒有得到合格的回答') + '，改問使用者');
+                } catch (e) { g.trace.push('🧠 沒看懂「' + clause + '」：離線小模型出錯（' + String((e && e.message) || e).slice(0, 60) + '），改問使用者'); }
+            } else g.trace.push('🧠 沒看懂「' + clause + '」：離線小模型沒載入，沒辦法先思考，直接問使用者');
+            if (!type) {
+                let ans = null;
+                try { ans = await this.requestUserForm({ title: '🧭 離線模式：這一句我沒看懂', description: '你說：「' + text + '」\n前面的動作我做得到，但「' + clause + '」這一段沒看懂。它是要做什麼？\n回答後我會記住，下次同類說法就直接懂。', choices: FaIntentGate.POST_CHOICES.map((c) => c.label) }); } catch (_) { ans = null; }
+                const c = ans && ans.confirmed ? FaIntentGate.POST_CHOICES.find((x) => x.label === ans.answer) : null;
+                if (c) { type = c.type; by = 'user'; await this._otGateRemember(clause, type); g.trace.push('📝 你回答「' + c.label + '」，已記住「' + clause + '」，下次同類說法直接懂'); }
+                else g.trace.push('⚠️ 「' + clause + '」沒有得到回答，只做了動作');
+            }
+            if (type) FaIntentGate.resolveClause(g, clause, type, by);
+        }
+    }
+    // 核對題（字母 A／B）：程式判斷不確定時才問小模型；沒有模型回傳 null
+    async _otGateVerifyAsk(keyword, hits) {
+        const M = await this._otGateModel(); if (!M) return null;
+        try { const r = await FaRecipe.jsonStep({ generate: M.generate, messages: FaIntentGate.verifyMessages(keyword, hits.slice(0, 5)), validate: FaIntentGate.validateAB, maxTries: 2, maxTokens: 30, prefill: '{"answer":' }); return r.ok ? r.value.answer : null; } catch (_) { return null; }
+    }
     // 使用者自訂的同義詞組（Configure → 離線訓練器 → set_synonyms），每組拆成詞陣列
     _otSynGroups() { return Object.values((this._ot && this._ot.synonyms) || {}).map((v) => String(v).split(/\s+/).filter(Boolean)); }
     // 理解閘的後置步驟：找主題（篩不到就站內搜尋）、摘要、截圖；做不到的記在 undone，不假裝做完
@@ -67977,7 +68121,7 @@ ${fnData.code}
         const lex = typeof FA_SEM_LEX !== 'undefined' ? FA_SEM_LEX : null;
         for (const p of gate.post || []) {
             if (p.type === 'find_topic') {
-                const goal = _faOtWebGoal(plan.text, lex, this._otSynGroups()) || _faOtWebGoal('找' + p.keyword, lex, this._otSynGroups());
+                const goal = _faOtWebGoal('找' + p.keyword, lex, this._otSynGroups()) || _faOtWebGoal(plan.text, lex, this._otSynGroups());
                 if (!goal) { undone.push('找主題（沒有抓到關鍵字）'); continue; }
                 let hits = _faOtWebFilter(_faOtGoodLines(latest.text), goal);
                 if (hits.length) { trail.push('🔎 在頁面上篩出 ' + hits.length + ' 則跟「' + goal.keyword + '」有關的標題'); found = hits; continue; }
@@ -68017,7 +68161,7 @@ ${fnData.code}
     // 理解閘：規則命中後、執行前。回傳 { plan, reply? }；reply 有值＝不執行，直接回這段話
     _otGateApply(plan, text) {
         const d = plan.decision || {}; const c = d.chosen; const planned = d.status === 'planned' || d.status === 'cache';
-        const gt = FaIntentGate.gate(text, { rule: c ? { id: c.pattern, tool: c.tool } : null });
+        const gt = FaIntentGate.gate(text, { rule: c ? { id: c.pattern, tool: c.tool } : null, memory: (this._ot && this._ot.gateMemory) || null });
         plan.gate = gt;
         if (gt.advice === 'passthrough') return { plan };
         const ruleOpenRead = planned && c && c.pattern === 'browser_open_read';
@@ -68027,6 +68171,8 @@ ${fnData.code}
             if (!ruleOpenRead) plan.decision = Object.assign({}, d, { status: 'planned', reason: '理解閘：要用瀏覽器開網址', chosen: { kind: 'steps', domain: 'intent_gate', pattern: 'gate_browser_open', intent: '用瀏覽器開啟網址並讀取頁面', score: 0.9, via: '理解閘', steps: [{ tool: 'browser_create_tab', args: { url: gt.url } }, { tool: 'browser_get_page_text', args: { tab_id: '{step1.tab_id}' } }, { tool: 'browser_close', args: { tab_id: '{step1.tab_id}' }, cleanup: true }] } });
             return { plan };
         }
+        // 規則對上同一個開啟工具、但參數只是把整句話塞進去，而使用者其實附了檔案：用理解閘認出的 file_id
+        if (planned && c && c.kind === 'tool' && gt.action === 'open' && gt.openTool && c.tool === gt.openTool && gt.fileId && gt.advice === 'open' && !(c.args && c.args.file_id)) c.args = Object.assign({}, gt.openArgs);
         if ((gt.action === 'open' || gt.action === 'play') && gt.kind && gt.kind !== 'url' && weak) {
             if (gt.advice === 'open' || gt.advice === 'open_post' || gt.advice === 'partial') {
                 if (!this.tools[gt.openTool]) return { plan, reply: '要開' + gt.label + '，但這個版本沒有「' + gt.openTool + '」工具（網頁版可能不支援）。' };
@@ -68093,7 +68239,7 @@ ${fnData.code}
         let plan;
         try { plan = await this._otPlan(text); } catch (e) { say('⚠️ 離線訓練器出錯：' + String((e && e.message) || e), null); this._persistChatHistory(); this._renderMessageHistory(); return cap ? cap.join('\n\n') : undefined; }
         let gateReply = null;
-        try { const ga = this._otGateApply(plan, text); plan = ga.plan; gateReply = ga.reply || null; } catch (e) { console.warn('理解閘出錯，退回原本流程', e); }
+        try { await this._otGateLoadMemory(); const ga = this._otGateApply(plan, text); plan = ga.plan; gateReply = ga.reply || null; if (!gateReply) await this._otGateResolve(plan, text); } catch (e) { console.warn('理解閘出錯，退回原本流程', e); }
         if (gateReply) { say(gateReply); this._persistChatHistory(); this._renderMessageHistory(); return cap ? cap.join('\n\n') : undefined; }
         const d = plan.decision;
         const c = d.chosen;
