@@ -264,6 +264,19 @@ check('depth model is registered but is not an image/text/managed model', V.byId
 check('depth model is never picked for an image-to-text task', V.pickModel('caption', {}, 'depth-anything-v2-small', { available: true, f16: true }).model.id !== 'depth-anything-v2-small');
 check('segmentation model is registered, not an image model, never picked for captions', V.segmentModels().length === 1 && V.byId('slimsam-77-uniform').arch === 'sam' && !V.imageModels().some((m) => m.task === 'segmentation') && V.pickModel('caption', {}, 'slimsam-77-uniform', { available: true, f16: true }).model.id !== 'slimsam-77-uniform');
 check('pose model is registered (full fp32, not int8), not an image model, never picked for captions', V.poseModels().length === 1 && V.DEFAULT_POSE_MODEL === 'movenet-thunder' && V.byId('movenet-thunder').arch === 'pose' && V.byId('movenet-thunder').dtype.cpu === 'fp32' && !V.byId('movenet-thunder').managedOnly && !V.imageModels().some((m) => m.task === 'pose-estimation') && V.pickModel('caption', {}, 'movenet-thunder', { available: true, f16: true }).model.id !== 'movenet-thunder');
+// 原生執行器階段 2：backendOrder（統一後端順序）
+{
+  const m = V.byId('qwen3-0.6b'), g = V.byId('llava-interleave-qwen-0.5b'), gpuOnlyM = { id: 'x', gpuOnly: true };
+  const combos = [[m, 'gpu', true, true], [m, 'gpu', true, false], [m, 'gpu', false, false], [m, 'cpu', true, true], [m, 'cpu', false, true], [g, 'gpu', true, true], [gpuOnlyM, 'gpu', true, true], [gpuOnlyM, 'gpu', false, false]];
+  check('backendOrder 沒有原生時與 resolveDevice 完全相同（所有組合）', combos.every(([mm, p, gpu, f]) => JSON.stringify(V.backendOrder(mm, p, gpu, f, false)) === JSON.stringify(V.resolveDevice(mm, p, gpu, f))));
+  check('backendOrder 未傳 nativeAvailable 時同樣不含 native', JSON.stringify(V.backendOrder(m, 'gpu', true, true)) === JSON.stringify(V.resolveDevice(m, 'gpu', true, true)));
+  const nat = V.backendOrder(m, 'gpu', true, true, true);
+  check('原生可用時 native 排第一，其後接 resolveDevice 順序', nat.order.join(',') === 'native,webgpu,wasm' && nat.native === true, nat);
+  const natCpu = V.backendOrder(m, 'cpu', false, false, true);
+  check('原生可用、只有 CPU 時順序為 native,wasm', natCpu.order.join(',') === 'native,wasm', natCpu);
+  check('gpuOnly 模型即使原生可用也不加 native（只能 GPU）', JSON.stringify(V.backendOrder(gpuOnlyM, 'gpu', true, true, true)) === JSON.stringify(V.resolveDevice(gpuOnlyM, 'gpu', true, true)));
+  check('沒有任何可用裝置時（order 為空）不加 native', V.backendOrder(gpuOnlyM, 'gpu', false, false, true).order.length === 0);
+}
 console.log(ok + ' passed, ' + bad.length + ' failed', bad);
 process.exit(bad.length ? 1 : 0);
 })();
