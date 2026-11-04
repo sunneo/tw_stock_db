@@ -192,4 +192,15 @@
 - Linux：未實跑（本機無 Linux 環境）。
 
 ## 交接
-（尚無；上下文到 30% 時在此更新）
+
+### 2026-11-05 狀態（Haiku 工作階段）
+- 第 0 步完成：共識檔與調查、計畫（commit 5b55c4f3）。共識檢查全通過。
+- 階段 A 完成（commit 05500180）：設定鍵 liveVoiceEnabled（預設 false）、liveVoiceSpeakerLimit（8–128，預設 8）、liveVoiceWakeWord（AI／欸哀）、liveVoiceChime（ding／tech／speech）；Configure 多媒體 > 輸入 頁。
+  - **未驗證**：還沒有重建嵌入產物（`node build-assistant.js`），也沒有真 Electron 實測。原因：同一個檔案 `renderer/src/floating-assistant.js` 上另一位工作階段（原生執行器）有未提交的修改，重建會把那些修改一起打包。只提交了本階段的 5 段 hunk。
+  - 語音沒有任何程式會讀取上述設定，目前只是設定，不會啟動麥克風。
+- 階段 B 部分完成：純函式佇列 `renderer/src/voice/live_queue.js`（FIFO、1000 token 切段、cancelLast／stopRunning／cancelAll、每次排入呼叫 onEnqueue）。測試 `scripts/voice-tests/live_queue.test.js` 12 項全過。
+  - 未做：接到 floating-assistant（需要重建）；token 數目前是字元估計，要換成專案實際的 tokenizer（尚未確認有哪一個）。
+  - 「取消前一個」的解釋：取消最後排入、還沒開始的那一個；沒有的話取消正在跑的。使用者若要的是別的意思，要改這裡。
+- 未開始：階段 C（聲紋，需使用者同意下載模型）、D、E、F。
+- 需要使用者決定：(1) 聲紋模型要不要下載，候選見調查第 5 節（ECAPA-TDNN ONNX 第三方轉換約 83MB，Apache-2.0）；(2) 「取消前一個」的解釋是否正確；(3) 持續收音改用 AudioWorklet（ScriptProcessor 已淘汰）是否同意。
+- 下一步：等原生執行器那邊把 floating-assistant.js 提交後，重建嵌入產物，做階段 A 的真 Electron 實測，再接線階段 B。
