@@ -95994,7 +95994,8 @@ _result
         try { document.querySelectorAll('.fa-subchat-link[data-child-id="' + childId + '"]').forEach((el) => host._subchatLinkDecorate(el, childId)); } catch (_) { /* 卡片更新失敗不影響對話 */ }
     }
 
-    // 子對話 S4：連結卡片的狀態列與回答欄。可重複呼叫（先清掉舊的再畫）；回答欄只在等待中且記憶體裡有卡片時出現。
+    // 子對話 S4／S5：連結卡片的狀態列與下方的輸入列。可重複呼叫（先清掉舊的再畫）。
+    // 輸入列永遠有：等待中且記憶體裡有卡片時，按鈕是「回答」（答案交給卡片）；否則是「傳給子對話」（S5）。父對話自己的輸入框不經過這裡。
     _subchatLinkDecorate(w, childId) {
         const host = this._faHost || this;
         w.querySelectorAll('.fa-subchat-status, .fa-subchat-answer-row').forEach((n) => n.remove());
@@ -96004,21 +96005,47 @@ _result
         st.style.cssText = 'flex:1 1 100%; font-size:12px; opacity:0.9; overflow-wrap:anywhere;';
         st.textContent = info.text;
         w.appendChild(st);
-        if (info.canAnswer) {
-            const row = document.createElement('div');
-            row.className = 'fa-subchat-answer-row';
-            row.style.cssText = 'flex:1 1 100%; display:flex; gap:6px;';
-            const inp = document.createElement('input');
-            inp.type = 'text'; inp.className = 'fa-subchat-answer'; inp.placeholder = '回答子對話…';
-            inp.style.cssText = 'flex:1 1 auto; min-width:0; padding:4px 8px; border-radius:6px; border:1px solid rgba(99,102,241,0.5); font-size:12px;';
-            const send = document.createElement('button');
-            send.type = 'button'; send.className = 'fa-subchat-answer-send'; send.textContent = '回答';
-            send.style.cssText = 'cursor:pointer; padding:4px 10px; border-radius:6px; border:1px solid rgba(99,102,241,0.5); background:transparent; color:#6366f1; font-size:12px;';
-            const submit = () => { const r = host._subchatAnswer(childId, inp.value); if (!r.ok) { st.textContent = '回答失敗：' + r.error; } };
-            send.addEventListener('click', (ev) => { ev.preventDefault(); submit(); });
-            inp.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); submit(); } });
-            row.appendChild(inp); row.appendChild(send); w.appendChild(row);
-        }
+        const row = document.createElement('div');
+        row.className = 'fa-subchat-answer-row';
+        row.style.cssText = 'flex:1 1 100%; display:flex; gap:6px;';
+        const inp = document.createElement('input');
+        inp.type = 'text'; inp.className = 'fa-subchat-answer'; inp.placeholder = info.canAnswer ? '回答子對話…' : '傳給子對話…';
+        inp.style.cssText = 'flex:1 1 auto; min-width:0; padding:4px 8px; border-radius:6px; border:1px solid rgba(99,102,241,0.5); font-size:12px;';
+        const send = document.createElement('button');
+        send.type = 'button'; send.className = 'fa-subchat-answer-send'; send.textContent = info.canAnswer ? '回答' : '傳給子對話';
+        send.style.cssText = 'cursor:pointer; padding:4px 10px; border-radius:6px; border:1px solid rgba(99,102,241,0.5); background:transparent; color:#6366f1; font-size:12px; white-space:nowrap;';
+        const submit = async () => {
+            const text = inp.value;
+            const r = info.canAnswer ? host._subchatAnswer(childId, text) : await host._subchatSend(childId, text);
+            if (!r.ok) { st.textContent = (info.canAnswer ? '回答' : '傳送') + '失敗：' + r.error; return; }
+            inp.value = '';
+        };
+        send.addEventListener('click', (ev) => { ev.preventDefault(); submit(); });
+        inp.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); submit(); } });
+        row.appendChild(inp); row.appendChild(send); w.appendChild(row);
+    }
+
+    // 子對話 S4：在子對話執行一輪（開子對話、父對話傳訊息共用）。開始記 start（閒置的子對話回到 running），完成記 finish，出錯記 error。
+    // executeChat 出錯時通常不 reject，而是在子對話裡留下 ⚠️／❌／🚫 開頭的 assistant 訊息（_turnFailureText 的判準），所以完成時也要看這個。
+    _subchatRun(childId, cctx, text) {
+        const child = this._chatRunner(cctx);
+        this._subchatSetStatus(childId, 'start');
+        return Promise.resolve().then(() => child.executeChat(text)).then(() => {
+            const ui = cctx.messages.map((m) => m && m.role).lastIndexOf('user');
+            const why = ui >= 0 ? child._turnFailureText(ui) : '';
+            if (why) { this._log('⚠️ 子對話回應失敗：' + why); this._subchatSetStatus(childId, 'error', { reason: why }); } else this._subchatSetStatus(childId, 'finish');
+        }, (err) => { this._log('⚠️ 子對話執行失敗：' + String((err && err.message) || err)); this._subchatSetStatus(childId, 'error', { reason: String((err && err.message) || err) }); });
+    }
+
+    // 子對話 S5：父對話連結卡片的「傳給子對話」。子對話正在回應 → 走既有的插話規則（executeChat 在 isResponding 時加一則 [Steering]）；閒置 → 當成子對話的新一輪（狀態回 running）。父對話自己的輸入框不經過這裡。
+    async _subchatSend(childId, text) {
+        const t = String(text == null ? '' : text).trim();
+        if (!t) return { ok: false, error: '訊息不能是空的' };
+        const e = this._chatEntry(childId); if (!e || !e.parentId) return { ok: false, error: '找不到這個子對話' };
+        const cctx = await this._chatCtxLoad(childId);
+        if (cctx.isResponding) { const r = this._chatRunner(cctx); Promise.resolve().then(() => r.executeChat(t)).catch(() => { /* 插話失敗不影響父對話 */ }); return { ok: true, mode: 'steer' }; }
+        this._subchatRun(childId, cctx, t);
+        return { ok: true, mode: 'turn' };
     }
 
     // 子對話 S4：目前在等使用者回應的卡片（子對話 id → 卡片訊息）。只在記憶體裡，不存檔；重新整理後等待已失效。
@@ -96071,16 +96098,9 @@ _result
         const cctx = childId ? this._chatCtxs.get(childId) : null;
         if (!cctx) return false;
         // 子對話的 ctx：system 提示＋交接內文；話題指紋以新訊息初始化（子對話自己的偵測不會再判轉移）
-        const child = this._chatRunner(cctx);
         cctx.messages = [{ role: 'system', content: this._getFinalSystemPrompt() }, { role: 'system', content: handoff }];
         cctx.topicData = { currentTopic: title, fingerprint: fp, pastTopics: [] };
-        // 子對話 S4：執行結束／出錯都經過 _subchatSetStatus（狀態模型在 sub_status.js）
-        // executeChat 出錯時通常不 reject，而是在子對話裡留下 ⚠️／❌ 開頭的 assistant 訊息（_turnFailureText 的判準），所以完成時也要看這個
-        Promise.resolve().then(() => child.executeChat(userText)).then(() => {
-            const ui = cctx.messages.map((m) => m && m.role).lastIndexOf('user');
-            const why = ui >= 0 ? child._turnFailureText(ui) : '';
-            if (why) { this._log('⚠️ 子對話回應失敗：' + why); this._subchatSetStatus(childId, 'error', { reason: why }); } else this._subchatSetStatus(childId, 'finish');
-        }, (err) => { this._log('⚠️ 子對話執行失敗：' + String((err && err.message) || err)); this._subchatSetStatus(childId, 'error', { reason: String((err && err.message) || err) }); });
+        this._subchatRun(childId, cctx, userText);
         // 父對話的連結卡片：_subchatLink 是可列舉屬性，存檔後重新載入仍在
         const m = this._buildToolResultMessage('display', JSON.stringify({ ok: true, note: '子對話' }), {});
         m.content = '↳ 子對話：' + title;

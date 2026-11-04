@@ -145,6 +145,39 @@
 6. 錯誤判斷靠 ⚠️／❌／🚫 開頭的文字（`_turnFailureText` 既有判準）。離線備援會把失敗包成正常回覆，子對話會判成 done。
 7. 新增的狀態欄位：`entry.subInfo`（索引欄位，會存檔）、`_subchatPending`（FA 層，不存檔）、`_subchatStatusModule`（FA 層快取）。**沒有**新增 ctx 狀態欄位，所以沒有加進 `FA_CHAT_CTX_KEYS`。
 
+## 步驟 5：父對話傳訊息給子對話（已驗證）
+
+### 改了什麼（源頭 `renderer/src/floating-assistant.js`）
+
+- `_subchatRun(childId, cctx, text)`：開子對話（`_subchatOpenFor`）與傳訊息共用的執行段。開始記 `start`（閒置的子對話回到 running）；完成記 `finish`；出錯記 `error`（失敗判斷仍是 `_turnFailureText`）。`_subchatOpenFor` 的執行段改成呼叫它。
+- `_subchatSend(childId, text)`：連結卡片的「傳給子對話」。
+  - 子對話 `isResponding` 為真 → 走既有插話規則（`executeChat` 開頭的 `_addSteeringMessage`，子對話訊息多一則 `[Steering]`），回 `mode: 'steer'`。
+  - 閒置 → `_subchatRun` 當成新一輪（狀態回 running），回 `mode: 'turn'`。
+  - 子對話不在記憶體 → 用 `_chatCtxLoad` 載入。
+- `_subchatLinkDecorate`：輸入列永遠存在。等待中且記憶體有卡片 → 按鈕是「回答」（交給卡片）；否則「傳給子對話」。父對話自己的輸入框沒有改，仍然只問父對話。
+
+### 評估
+
+`scripts/eval/subchat_send.eval.js`，真桌面版，換埠 17966，假 LLM。`allPass: true`（19 項全過）：
+
+- 案例 1（閒置 → 新一輪）：`mode: 'turn'`，狀態確實觀察到 running，最後 done；子對話有使用者訊息與「完成」回覆；父對話模型呼叫數不變。
+- 案例 2（回應中 → 插話）：子對話 `isResponding` 為真時送出，`mode: 'steer'`，子對話訊息含 `[Steering]` 與原文；最後 done。
+- 案例 3（父對話輸入框）：父對話模型多一次呼叫，父對話有該則使用者訊息，子對話訊息數不變、沒有新子對話。
+- 案例 4（畫面按鈕）：連結卡片有「傳給子對話」按鈕與輸入框；輸入後點擊，子對話收到文字，輸入框清空。
+- `loadedWorkdirImpl`：函式原始碼含 `steer`。
+
+修前：`_subchatSend` 這個方法在改程式前不存在，整個評估的前提不成立（沒有另外跑修前版本，這是新功能，不是修正）。
+
+### 回歸
+
+步驟 4 的 `subchat_bubble.eval.js` 在 `_subchatOpenFor` 改成 `_subchatRun` 後重跑：`allPass: true`（14 項全過）。
+
+### 已知限制
+
+- 子對話在等待使用者回答（`waiting_user` 且記憶體有卡片）時，連結卡片的按鈕是「回答」，不會把文字當成一般訊息送出。要補充說明就得用回答的文字。
+- 插話文字只進子對話的訊息，不會自動在父對話顯示（父對話的連結卡片沒有列出傳過去的內容）。
+- 步驟 4 的已知缺口（表單、權限框、重新整理後的等待）沒有因為這一步改變。
+
 ## 教訓
 
 - 第一次評估失敗的原因是評估設計（第四則觸發了新話題），不是程式。之後看到「沒抓到請求」先印出呼叫類型與子對話清單，不要直接改判準。
