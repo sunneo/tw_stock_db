@@ -117,3 +117,58 @@
 
 - 步驟 4：側欄多選 UI。步驟 5：AI 工具 `chat_delete_children`（確認用原生 `confirm()`，預覽退路）。步驟 6：回歸。
 - 已知缺口（步驟 3）：被刪子對話若正在背景跑、已 abort，它的 `_persistChatHistory` 可能在刪除後又寫回一次存檔（會復活檔案）。目前沒有防護，步驟 6 要決定如何處理並驗證。
+
+## 10. 步驟 4：側欄多選（已完成，真桌面版驗證過）
+
+- 入口：子對話的父對話右鍵選單「批次刪除子對話…」（只有有子對話時才出現），進入選取模式：父對話展開、子對話列前面出現核取方塊 `.cl-select`，列表頂端出現工具列 `.cl-batch`（已選數、「刪除選取的（n）」、「刪除已完成／失敗的」、「取消」）。
+- 沒有選取模式時列表 DOM 與現在相同（回歸）：`.cl-select`、`.cl-batch` 都不存在。
+- 確認：`_chatBatchDelete(pid, opts)`：先 `confirm` 列出將刪除的標題與數量（含子孫數）；有略過項目就列出；選到進行中的另問一次「連它們一起刪？」（確定＝`includeRunning`，取消＝只刪其餘）。取消任何一步都不動資料。
+- 判準（管理層決定的解讀）：「也刪除進行中的」做成第二個確認框，不做自訂對話框（理由：沿用 `_chatDelete` 的 `confirm`，不新增 DOM）。快捷「刪除已完成／失敗的」不會把進行中的算進去，所以不問第二次。
+- 評估：`scripts/eval/subchat_delete_ui.eval.js` allPass（讀 DOM、假 confirm）。修前沒有另外跑（功能不存在就沒有 DOM），這是缺口。
+
+## 11. 步驟 5：AI 工具 `chat_delete_children`（已完成，真桌面版驗證過）
+
+- 參數：`parent_id?`（省略＝目前對話）、`filter`（done／failed／done_or_failed／all／ids，必填）、`ids?`、`include_running?`、`dry_run?`。一行說明。只在目前對話有子對話時送進工具清單（`_subchatToolFilter` 的 `SUB` 清單加入此名稱）。
+- 流程：`_chatDeleteChildrenTool`（源碼 `floating-assistant.js`，緊接 `_chatBatchDelete` 之前）：計畫 → 若 `dry_run` 或沒有子對話可刪 → 回預覽 → 沒有 `window.confirm` 時只回預覽 → `confirm` 列出標題與數量 → 按確認才 `_chatDeleteMany`。
+- 不能刪正在執行這個工具的對話本身（回 ok:false）。
+- 確認機制選擇：`window.confirm`（與側欄、`_chatDelete` 相同），不用 `ask_user_card`（管理層指示）。理由：卡片要等使用者在對話裡答，工具要同步拿到答案；原生確認直接回傳布林。缺點：是阻塞式對話框。
+- 評估：`scripts/eval/subchat_delete_ai.eval.js` allPass：工具清單有／無子對話、dry_run 不跳確認不刪、未確認 ok:false 不刪、根與不存在的 id 列 skipped、假模型 TOOLDEL 呼叫 → 確認框 → 按確認才刪、工具結果 JSON 可讀。
+- 缺口：修前沒有另外跑（工具不存在時第一個檢查就會失敗，本次沒有單獨留下修前紀錄）。
+
+## 12. 步驟 6：回歸（已完成）
+
+### 12.1 回歸結果（真桌面版，工作目錄；2026-11-04）
+
+- 沒有子對話時：工具清單不含 `chat_delete_children`（`notInRootListNoKids`）；側欄沒有 `.cl-select`／`.cl-batch`（`regressionNoBoxes`）。
+- 有 allPass 的評估全數 allPass：`chat_mention`、`subchat_bubble`、`subchat_card_request`、`subchat_fap`、`subchat_link`、`subchat_open`、`subchat_pullback`、`subchat_remote`、`subchat_remote_bubble`、`subchat_send`、`subchat_tools_ai`、`topic_local`、`topic_shift_setting`、`topic_shift_ui`。
+- `chat_tree`、`chat_tree_index`：沒有 allPass 欄位，逐項檢查，全部為 true。
+- `subchat_form`、`subchat_reload`：第一次跑時失敗（F6 區段／`currentId` 讀取），同一份程式重跑即通過；與背景上一輪評估同時跑有關，未再重現。如實記錄為「不穩」，不是 S7 造成。
+- `subchat_tools`：判準改動（見 12.2），重跑 allPass。
+- `tool-budget`：違規數仍是 1（與基線相同，`domain_too_many_tools:skill_54f871ce…`）；`flat_all_tools` 由 54676 增加到 54866（+190，新工具的說明與參數）。
+- `read_ledger`：與 S6 基線逐欄相同（reminders、final_text、warned）。
+- `chat-incremental`：沒有 allPass，輸出的 checks 全部為 true（未另外比對基線）。
+- 節點測試：`chat_tree` 22、`topic_local` 12、`handoff` 12、`remote_inbox` 16、`sub_status` 20、`chat_delete` 19，全過。
+
+### 12.2 判準改動（有意）
+
+- `subchat_tools.eval.js` 的 `SUB3` 加入 `chat_delete_children`：S7 起父對話多一個子對話工具（只在有子對話時）。使用者看得到的結果：父對話的 AI 多一個批次刪除工具；子對話的工具清單不變（`cn.every(SUB3 不含)` 仍成立）。
+
+### 12.3 基線比對方法
+
+- 用 `git worktree` 在 `77c6a037`（S7 之前）建了暫時工作樹，`node_modules` 用 junction 連到工作目錄，建置後跑 `subchat_form`、`tool-budget`、`read_ledger`；用完已移除 junction 與工作樹（原本的 `node_modules` 確認完好）。
+
+## 13. 教訓（S7 過程）
+
+- 連結卡片的 DOM 會被重用：`_renderMessageHistory()` 不保證重建，所以被刪子對話的卡片要直接改 DOM（步驟 3）。
+- 建置會去掉註解：評估要檢查的載入標記要用字串常值（`res.tag`、`'AI 要求刪除'`），不能靠註解。
+- `build-web-lazy` 會把純定義的新區塊搬成 lazy chunk：同步要用的區塊要加進 `EXCLUDE`（步驟 3）。
+- 嵌入模組不能 `require`：樹模組由呼叫端傳入（步驟 2b）。
+- 評估的前置條件要自己保證：`_chatNew()` 會重用空對話，評估裡要先讓父對話有內容（步驟 5）。
+- 背景跑一串評估時，若跟另一組評估同時跑，會出現不穩；要一個一個跑（步驟 6）。
+
+## 14. 已知缺口（最後狀態）
+
+1. 被刪子對話若正在背景跑、已 abort，它的 `_persistChatHistory` 可能在刪除後又寫回存檔（會復活檔案）。目前沒有防護，也沒有評估涵蓋這個情境。理由：要模擬「abort 後仍寫檔」需要新的假模型時序，本次沒有做。後續要做：刪除前等 `isResponding` 變 false（有時限），或在 ctx 上加一個 `_deleted` 旗標擋寫入（要進 `FA_CHAT_CTX_KEYS`）。
+2. 步驟 4、5 沒有跑修前紀錄（步驟 3 有）。理由：功能不存在時介面就不會出現，評估的第一個檢查就會失敗；這是口頭推論，沒有實際留下紀錄。
+3. 確認機制是阻塞式 `window.confirm`。如果工作階段在無視窗環境執行，工具會退回預覽（已做，但沒有實際在無視窗環境驗證）。
+4. 網頁版：`CHATDELETE` 已加入 EXCLUDE，沒有實際跑網頁版載入驗證。

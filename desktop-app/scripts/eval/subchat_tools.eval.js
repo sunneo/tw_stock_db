@@ -95,7 +95,8 @@ R.checks.parentCaptured = !!parentCap && Array.isArray(parentCap.names);
 R.checks.childCaptured = !!childCap && Array.isArray(childCap.names);
 // 子對話 S5 起，父對話多出三個子對話工具（chat_list_children 等），子對話不會有（子對話不再有子對話）。
 // 判準：父對話扣掉這三個後，與子對話工具清單完全相同；三個工具只出現在父對話。
-const SUB3 = ['chat_list_children', 'chat_send_to_child', 'chat_get_child_summary'];
+// S7 起父對話的子對話工具多一個 chat_delete_children（只在有子對話時；子對話清單不含）。判準改為含它：使用者看得到的結果是父對話多一個批次刪除工具，子對話不變。
+const SUB3 = ['chat_list_children', 'chat_send_to_child', 'chat_get_child_summary', 'chat_delete_children'];
 const pnBase = pn.filter((n) => SUB3.indexOf(n) < 0);
 R.checks.sameNameSet = R.checks.parentCaptured && R.checks.childCaptured && pnBase.join('|') === cn.join('|') && SUB3.every((n) => pn.indexOf(n) >= 0) && cn.every((n) => SUB3.indexOf(n) < 0);
 R.checks.parentHasAskCard = pn.indexOf('ask_user_card') >= 0;
