@@ -136,3 +136,5 @@
 - 共用：同一個 `trail`（步驟記錄）、`_faOtFollowAll`（續讀）、`_otPageDigest`（篩選）、`FaRecipe` 的字母題／封閉 JSON 輔助函式、`coluThinkBudget`。
 - 階段 2（理解閘模組）與階段 3（後置步驟）只動「規則命中的路徑」；其餘路徑（食譜、離線文字模型）改接同一函式建議放階段 4 之後，並每條路徑補一個測試。
 - 疑點記錄：①理解閘依賴的 `FaNlu`／`FaIntent` 目前只做英文（`logmine/intent_core.js` 檔頭「只做英文」），中文句子要靠閘自己的小詞表切「動作＋目標」，不能期待 `FaIntent.derive` 直接給出中文目標；②規則結構沒有「目標」欄位，所以後置步驟要由閘輸出、不由規則攜帶。
+
+- 共識備註（階段0）：「自己開的分頁自己關」是設計 browser extension 時就定案的舊共識（見 skills/weak-model-harness/references/consensus/browser-control.json），不是新決定；預設背景開，使用者說「打開」才切前景（active），是否保留（keep_open）只有使用者明說才保留。

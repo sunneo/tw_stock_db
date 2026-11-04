@@ -3485,7 +3485,7 @@ function _faOtWebFilter(lines, goal) {
     for (const l of lines) { if (seen.has(l)) continue; if (goal.terms.some((t) => l.indexOf(t) >= 0)) { seen.add(l); hit.push(l); } }
     return hit;
 }
-// 使用者說「打開／開啟／前往」→ 要讓使用者看得到：前景開分頁；AI 自己開的分頁做完（步驟結束）一定自己關掉，不保留；只說「讀」則背景開、讀完就關
+// 使用者說「打開／開啟／前往」→ 要讓使用者看得到：前景開分頁；舊共識「自己開的分頁自己關」：AI 自己開的分頁做完（步驟結束）一定自己關掉，不保留；只說「讀」則背景開、讀完就關
 function _faOtWantsVisible(text) {
     const t = String(text || '');
     return /(?:打開|開啟|前往|開一下|開個|開到|瀏覽器開|幫我開|open\s)/i.test(t);
