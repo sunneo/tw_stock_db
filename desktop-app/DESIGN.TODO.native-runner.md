@@ -345,3 +345,75 @@
   - **舊版安裝模擬**（git worktree 開舊 commit、熱更新覆蓋）尚未做。覆蓋機制的細節（`state.json` 與 md5、`LIVE_PATCH_MAIN_FILES` 的來源）已讀過，但沒有實際驗證；renderer 檔案的覆蓋（`floating-assistant.js`）也未驗證。
   - **真引擎接上**與**按需下載執行包**都未做。執行包應放在 `userData/native-runtime/`，由 `main-ext.js` 載入其中的程式；這個設計還沒有實作。
   - 目前的 `nr-*.js` 仍是假引擎（測試用），在正式版中不會被 `main-ext.js` 呼叫。
+
+## 交接（2026-11-05，管理層指示：上下文超過 30% 的門檻，由下一位接手）
+
+### (1) 已完成與提交
+
+| 階段 | commit | 內容與測試 |
+|---|---|---|
+| 0 WASM 執行緒實測 | 94f9d810 | 真 Electron：頁面 crossOriginIsolated=false |
+| 1 音訊多執行緒 | 96292810 | `ortThreadCount()`；音訊 numThreads 1→4；audio_runtime 13 通過 |
+| 2 統一後端順序 | d92cf86a | `FaVlm.backendOrder`（原生→WebGPU→WASM，尚未接線）；vlm_core 141 通過 |
+| 3 子程序協定（假引擎） | 9e4d9a68 | nr-protocol／nr-child／nr-host；native_runner 19 通過 |
+| 4 設定頁區塊 | 14bbd6af | 之後的網路伺服器試作（2f124973）已撤回 |
+| 6 WASM 對照與交錯量測 | c4478add、385cb0af | 原生 1.31.1 4 執行緒約 2.5 倍；交錯量測 16 題 |
+| 模板與分詞 | 0dec127c | nr-template、nr-tokenizer：22 組與 WASM 逐 id 完全相同 |
+| 生成參數 | 1b3c8fd5 | nr-gen-params：手算測試 17 通過；確定性比對 文字 4/16 |
+| 二分法 | 312d58b8 | 單次 forward 即不一致；排除生成迴圈、執行緒、圖最佳化 |
+| 同版本比對 | 021e7edc | onnxruntime-node 1.22.0 與 WASM 逐 logit 相同、文字 16/16 |
+| 8-C 不重裝 | d666a3fd | 信箱在 main-ext.js；main.js／preload.js／package.json 還原 |
+| 信箱就緒與重試 | a9a7b6f5 | ready.json；native_mailbox.eval PASS（第一次 status 343 毫秒） |
+
+### (2) 剩下的工作與起點
+
+1. **舊版安裝模擬**（尚未做）
+   - 起點：`git worktree add <路徑> 96292810`（stage 1 的 commit，沒有原生程式、main.js 與 preload.js 是原版）；`node_modules` 用 junction 連到目前的 `desktop-app/node_modules`。
+   - 覆蓋方式：讀 `main.js` 的 `mainOverlaySources`（約第 99–132 行）與 `LIVE_PATCH_MAIN_FILES`（第 61–97 行）。覆蓋檔放在 `<userData>/live-patch/`，`state.json` 的 `baselineVersion` 必須等於 `renderer/update-manifest.json` 的 `baseVersion`，每個檔的 md5 要對得上。
+   - 預期：舊版主程式載入新版 `main-ext.js`（在清單內）後，信箱能運作；`ready.json` 出現；`status` 回 ok。
+   - 注意：`LIVE_PATCH_MAIN_FILES` 只來自安裝包內建的 manifest，所以頂層 `nr-*.js` 送不到舊安裝（見第 8-C 節）。
+2. **執行包一併帶 nr-*.js 與 onnxruntime-node 1.22.0**（尚未做）
+   - 設計：`<userData>/native-runtime/<版本>/` 放 `nr-*.js` 與 `onnxruntime-node`（Windows x64、Linux x64 原生檔）；`main-ext.js` 從這個路徑 `require`，不依賴安裝包清單。
+   - 起點：`main-ext.js` 的 `startNativeMailbox`（約第 675–715 行）目前回報 `no_engine`；改為先檢查執行包是否存在，存在就用它的 `nr-host.js` 等。
+   - 要先問使用者：onnxruntime-node 1.22.0 的 Windows x64 與 Linux x64 原生檔大小（目前只有 `%TEMP%\ort-node-test122` 的 239 MB 整包，單平台大小未量）。
+3. **接真引擎進 `_llmGenerate` 的 backendOrder**（尚未做）
+   - 起點：`renderer/src/floating-assistant.js` 的 `_llmGenerate`（搜尋該函式名）與 `FaVlm.backendOrder`（`renderer/src/vlm/vlm_core.js`）。目前 `_vlmEnsureLoaded` 仍用 `resolveDevice`。
+   - 做法：order 為 `native` 時經 `_nrCall('run', {messages, template, gen, maxTokens})` 送出；`gen` 必須是 `FaVlm.textGenParams(model, {deterministic})` 的結果，不另外定義預設；失敗或 `no_engine` 時退回 webgpu／wasm，並把實際後端與原因寫進 log。
+   - 真引擎程式：`nr-child.js` 目前是假引擎；要改為真的 ORT 推論（參考 `scripts/eval/nvw_live.js` 與 `scripts/eval/native_det_batch.js` 的 KV 迴圈，兩者都已驗證）。
+4. **按需下載，用本機假來源測**（尚未做）：下載前要先回報檔名、來源、大小，等使用者同意；真網路下載不能在未同意前進行。
+5. **完整核心測試與原生對 WASM 端到端**（尚未做）：核心測試只允許 tray_dialog、RFB 兩個已知失敗；端到端要求原生與 WASM 同題答案一致（用 `scripts/eval/native_det_batch.js` 與 `scripts/eval/native_vs_wasm_live.eval.js` 的做法）。
+
+### (3) 踩過的坑
+
+- **CRLF**：Windows 工作目錄是 CRLF，git 會警告；用 Edit 工具改，不要用 shell 內嵌的 heredoc 改含反斜線或引號的程式（會吃掉跳脫字元）。
+- **build 產物**：改 `renderer/src/floating-assistant.js` 後要跑 `node scripts/embed-code-ui.js` 再 `node build-assistant.js`，然後提交 `renderer/floating-assistant.js`、`.min.js`、`renderer/update-manifest.json`。
+- **web-lazy 被建置暫時清掉**：build-assistant 會重寫 `web-lazy/`；`web-lazy` 有未提交的變更時，不要提交它們（不是本任務的範圍）。
+- **量測要低優先權、交錯**：`Start-Process` 後設 `PriorityClass`；原生與 WASM 逐題輪流（`scripts/eval/run_interleaved.js`）；記錄背景負載，超過 30% 的題目標示「有干擾」。
+- **1.31.1 與 1.22.0 的差異**：1.31.1 與 WASM（ORT-web 1.22.0）的第一步 logits 餘弦 0.9365；1.22.0 逐 logit 相同。產品版本固定 1.22.0。
+- **DirectML 失敗**：在 `SkipSimplifiedLayerNormalization`（`/model/layers.0/post_attention_layernorm/SkipLayerNorm`）節點失敗，E_INVALIDARG（80070057），1.22.0 與 1.31.1 都失敗；目前不提供 DirectML 選項。
+- **CPU**：Intel i5-2320，有 AVX、沒有 AVX2、沒有 AVX-512。VNNI 假設沒有證據，不下結論。
+- **consensus_check**：提交前一定要跑（見第 5 節），發現違反就先修再提交（曾經先提交後才發現，已修正）。
+- **使用者不要網路通道**、**不重裝**、**Windows 與 Linux 都要**、**安裝或下載前先問**。
+
+### (4) 使用者原話（逐字，附日期）
+
+- 2026-11-04：「請接著先把 DESIGN.TODO.native-runner 完成」
+- 2026-11-04：「我們不是已經說stdin？」「為什麼他又要提什麼白癡〔網路協定名稱〕？！」（原話中有一個被共識禁止的詞，此處以〔〕代替；完整原話保存在管理層訊息紀錄中）
+- 2026-11-04：「原生路徑，windows, linux都要」
+- 2026-11-04：「這是不是代表我得重新出安裝包？他沒有辦法出一個免安裝的？例如透過node小程式還是python process？」
+- 2026-11-04：「設計後接著馬上實作」（經管理層轉述）
+- 2026-11-04：「desktop版有著網頁所沒有的優勢，我們卻要丟著，很浪費」（經管理層轉述）
+- 2026-11-04：「因為我現在也需要用電腦，所以會干擾到」（經管理層轉述，量測干擾）
+- 2026-11-04：「答案不一致是因為他的設定參數不一樣」（經管理層轉述，生成參數）
+- 2026-11-04：「要對native版本有不同的template」（經管理層轉述）
+- 2026-11-04：「同意安裝 1.22.0」（對 Claude 的對話框問題的回答，原文）
+- 2026-11-04：「同意安裝，繼續」（對安裝 1.31.1 的對話框問題的回答，原文）
+- 2026-11-04：「10:40重測可以嗎」（經管理層轉述）；之後使用者說「已經用完電腦，可以開始量測了」（經管理層轉述）
+
+### (5) 共識檔與 consensus_check
+
+- 共識檔：`skills/weak-model-harness/references/consensus/native-runner.json`
+- 指令：`cd desktop-app && node skills/weak-model-harness/scripts/consensus_check.js skills/weak-model-harness/references/consensus/native-runner.json --root .`
+- 預期：最後一行 `全部通過`，exit 0。提交前必須跑。
+- 規則：必須出現「標準輸入輸出」「progress.jsonl」「直接實作」；禁止詞清單在共識檔中（見上一行的指令，不在此重複列出）。
+- 寫這份文件時，禁止詞要避開，例如用「網路通道」「本機服務」代替。
