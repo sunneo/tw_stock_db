@@ -24,12 +24,21 @@ const T = '把那份財報叫出來 [附件：q1（file_id=f1）]';
     ok(G.pickDerived(G.deriveTool(T, [], {})) === null, '前提：工具目錄推導不夠確定（兩個候選分數接近）');
 
     // ③ 小模型字母題
-    let fa = mkFa({ _otGateGen: gen(1), _otGateThinking: { enabled: true, maxTokens: 1500, timeoutMs: 30000 }, requestUserForm: async () => { throw new Error('不該問使用者'); } });
+    let fa = mkFa({ _otGateGen: gen(1), _otGateThinking: { enabled: true, maxTokens: 1500, timeoutMs: 30000 }, requestUserForm: async (o) => ({ confirmed: true, answer: o.choices[0] }) });
     let plan = prep(fa, T);
     ok(await fa._otGateExplore(plan, T) === true && plan.gate.explored.by.indexOf('離線小模型') >= 0, '③ 程式不確定：小模型字母題挑種類（' + plan.gate.kind + '）');
     ok(plan.decision.chosen && plan.decision.chosen.pattern === 'gate_open_' + plan.gate.kind && /探索③/.test(plan.gate.trace.join('|')), '探索結果接成可執行的動作，過程列在卡片');
     ok(plan.gate.explored.alts.length >= 1, '留下備選種類給反思換路線用');
 
+    // 小模型猜的種類要先問使用者確認：說不對就改讓使用者選（猜錯不會直接開）
+    let confirms = 0;
+    fa = mkFa({ _otGateGen: gen(1), requestUserForm: async (o) => { if (/對嗎/.test(o.title)) { confirms++; return { confirmed: true, answer: o.choices[1] }; } return { confirmed: true, answer: o.choices[2] }; } });
+    plan = prep(fa, T);
+    ok(await fa._otGateExplore(plan, T) === true && confirms === 1 && /你說不對/.test(plan.gate.trace.join('|')) && plan.gate.explored.by === '使用者回答', '小模型猜錯：使用者說不對→改讓使用者選，不直接開');
+    // 小模型選的不在程式推導前三名：不採用（直接問使用者）
+    fa = mkFa({ _otGateGen: async () => '{"choice": 99}', requestUserForm: async (o) => ({ confirmed: true, answer: o.choices[0] }) });
+    plan = prep(fa, T);
+    ok(await fa._otGateExplore(plan, T) === true && /沒有得到合格的回答|不在程式推導/.test(plan.gate.trace.join('|')), '小模型選不出合格的：不採用，問使用者');
     // ② 知識庫（使用者自己的文件）
     fa = mkFa({ tools: Object.assign(toolDefs(['edit_xlsx_open', 'edit_docx_open']), { knowledge_ask: { callback: async () => JSON.stringify({ hits: [{ quote: '財報一律放在 Excel 試算表 xlsx 裡，每季更新' }] }) } }), requestUserForm: async () => { throw new Error('不該問使用者'); } });
     plan = prep(fa, T);
@@ -57,14 +66,14 @@ const T = '把那份財報叫出來 [附件：q1（file_id=f1）]';
     ok(await fa._otGateExplore(plan, '看一下今天天氣') === false, '不是明確的「打開」說法：不探索（不搶其他流程）');
 
     // 規則語意勉強配到別的工具（merge_pdfs 0.54）：不算數，照樣探索
-    fa = mkFa({ _otGateGen: gen(1), requestUserForm: async () => null });
+    fa = mkFa({ _otGateGen: gen(1), requestUserForm: async (o) => (/對嗎/.test(o.title) ? { confirmed: true, answer: o.choices[0] } : null) });
     plan = prep(fa, T); plan.decision = { status: 'planned', chosen: { pattern: 'feat_merge-pdfs', tool: 'merge_pdfs', via: '語意', score: 0.54, kind: 'tool' } };
     ok(await fa._otGateExplore(plan, T) === true && plan.decision.chosen.pattern.indexOf('gate_open_') === 0, '弱規則（語意 0.54 的 merge_pdfs）：不算數，探索後接手');
     plan = prep(fa, T); plan.decision = { status: 'planned', chosen: { pattern: 'x', tool: 'merge_pdfs', via: '規則', score: 0.95, kind: 'tool' } };
     ok(await fa._otGateExplore(plan, T) === false, '字面規則高信心：尊重規則，不探索');
     // 反思：第一條路線失敗 → 換路線；上限 2 次；成功寫進記憶
     const says = [];
-    fa = mkFa({ _otGateGen: gen(1), requestUserForm: async () => null });
+    fa = mkFa({ _otGateGen: gen(1), requestUserForm: async (o) => (/對嗎/.test(o.title) ? { confirmed: true, answer: o.choices[0] } : null) });
     plan = prep(fa, T); await fa._otGateExplore(plan, T);
     const firstKind = plan.gate.kind; const tried = [];
     fa._otExecute = async (p) => { const k = p.decision.chosen.pattern; tried.push(k); return tried.length >= 1 ? { ok: true, text: '開好了' } : { ok: false, error: '工具回報失敗' }; };
@@ -80,7 +89,7 @@ const T = '把那份財報叫出來 [附件：q1（file_id=f1）]';
     // 下次直接懂：不探索
     ok(G.gate(T, { memory: fa._ot.gateMemory }).kind !== null && /記憶/.test(G.gate(T, { memory: fa._ot.gateMemory }).kindBy), '下次同樣說法：直接用記憶，不用再探索');
     // 上限：一直失敗最多換 2 次就停
-    fa = mkFa({ _otGateGen: gen(1), requestUserForm: async () => null });
+    fa = mkFa({ _otGateGen: gen(1), requestUserForm: async (o) => (/對嗎/.test(o.title) ? { confirmed: true, answer: o.choices[0] } : null) });
     plan = prep(fa, T); await fa._otGateExplore(plan, T);
     let n = 0; fa._otExecute = async () => { n++; return { ok: false, error: '一直失敗' }; };
     r = await fa._otGateReflect(plan, T, { ok: false, error: '第一次失敗' }, () => { });

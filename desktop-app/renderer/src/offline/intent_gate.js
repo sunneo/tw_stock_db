@@ -222,11 +222,12 @@
     }
     function exploreMessages(text, options) {
         return [
-            { role: 'system', content: '你負責判斷使用者想打開哪一種東西。只輸出一個 JSON 物件，格式：{"choice": 編號}。編號只能是選單裡有的數字；0 代表都不是。' },
-            { role: 'user', content: '選單：\n' + options.map((o, i) => (i + 1) + '. ' + o.label).join('\n') + '\n0. 都不是\n\n使用者的話：\n' + String(text).slice(0, 200) }
+            // 強迫選擇（沒有「都不是」）：實測 0.6b 有「都不是」可選時 16 句有 14 句選它；程式端再用候選排名核對（見 floating-assistant 的 _otGateExplore）
+            { role: 'system', content: '你負責判斷使用者想打開哪一種東西。從選單裡選最接近的一個。只輸出一個 JSON 物件，格式：{"choice": 編號}。編號只能是選單裡有的數字。' },
+            { role: 'user', content: '使用者的話：' + String(text).replace(/\[附件：[^\]]*\]/g, ' ').trim().slice(0, 200) + '\n\n選單：\n' + options.map((o, i) => (i + 1) + '. ' + o.label).join('\n') }
         ];
     }
-    function validateExplore(n) { return (o) => { const c = o && o.choice; if (!Number.isInteger(c)) return ['「choice」必須是整數']; if (c < 0 || c > n) return ['「choice」必須是 0～' + n + ' 之間的整數']; return []; }; }
+    function validateExplore(n) { return (o) => { const c = o && o.choice; if (!Number.isInteger(c)) return ['「choice」必須是整數']; if (c < 1 || c > n) return ['「choice」必須是 1～' + n + ' 之間的整數']; return []; }; }
     // ---------- 記憶、理解題、核對（階段 4）----------
     // 後置步驟的類型：給使用者選、給小模型選的封閉題都用同一份
     const POST_CHOICES = [

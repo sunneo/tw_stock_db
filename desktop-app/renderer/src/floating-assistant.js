@@ -46994,11 +46994,12 @@ const holder = {};
     }
     function exploreMessages(text, options) {
         return [
-            { role: 'system', content: '你負責判斷使用者想打開哪一種東西。只輸出一個 JSON 物件，格式：{"choice": 編號}。編號只能是選單裡有的數字；0 代表都不是。' },
-            { role: 'user', content: '選單：\n' + options.map((o, i) => (i + 1) + '. ' + o.label).join('\n') + '\n0. 都不是\n\n使用者的話：\n' + String(text).slice(0, 200) }
+            // 強迫選擇（沒有「都不是」）：實測 0.6b 有「都不是」可選時 16 句有 14 句選它；程式端再用候選排名核對（見 floating-assistant 的 _otGateExplore）
+            { role: 'system', content: '你負責判斷使用者想打開哪一種東西。從選單裡選最接近的一個。只輸出一個 JSON 物件，格式：{"choice": 編號}。編號只能是選單裡有的數字。' },
+            { role: 'user', content: '使用者的話：' + String(text).replace(/\[附件：[^\]]*\]/g, ' ').trim().slice(0, 200) + '\n\n選單：\n' + options.map((o, i) => (i + 1) + '. ' + o.label).join('\n') }
         ];
     }
-    function validateExplore(n) { return (o) => { const c = o && o.choice; if (!Number.isInteger(c)) return ['「choice」必須是整數']; if (c < 0 || c > n) return ['「choice」必須是 0～' + n + ' 之間的整數']; return []; }; }
+    function validateExplore(n) { return (o) => { const c = o && o.choice; if (!Number.isInteger(c)) return ['「choice」必須是整數']; if (c < 1 || c > n) return ['「choice」必須是 1～' + n + ' 之間的整數']; return []; }; }
     // ---------- 記憶、理解題、核對（階段 4）----------
     // 後置步驟的類型：給使用者選、給小模型選的封閉題都用同一份
     const POST_CHOICES = [
@@ -68283,10 +68284,20 @@ ${fnData.code}
             if (M) {
                 try {
                     const r = await FaRecipe.jsonStep({ generate: M.generate, messages: FaIntentGate.exploreMessages(text, options), validate: FaIntentGate.validateExplore(options.length), maxTries: 2, maxTokens: 40, prefill: '{"choice":', thinking: M.thinking || undefined });
-                    if (r.ok && r.value.choice >= 1) { pick = options[r.value.choice - 1]; by = '離線小模型' + (M.thinking ? '（Thinking）' : '') + '字母題'; g.trace.push('🔍 探索③離線小模型選了「' + pick.label + '」'); }
-                    else g.trace.push('🔍 探索③離線小模型想過了，' + (r.ok ? '說都不是' : '沒有得到合格的回答') + '，改問使用者');
+                    const chosen = r.ok && r.value.choice >= 1 ? options[r.value.choice - 1] : null;
+                    // 程式核對：小模型選的要在程式推導的前 3 名候選裡（0.6b 單獨猜不可靠，實測會把「叫出明天要講的那份」猜成網頁）；程式完全沒有線索時也不採用
+                    const inTop = chosen && cands.slice(0, 3).some((c) => c.kind === chosen.kind);
+                    if (inTop) { pick = chosen; by = '離線小模型' + (M.thinking ? '（Thinking）' : '') + '字母題（程式核對：在推導前三名內）'; g.trace.push('🔍 探索③離線小模型選了「' + pick.label + '」，程式核對過在推導的前三名候選內'); }
+                    else g.trace.push('🔍 探索③離線小模型' + (chosen ? '選了「' + chosen.label + '」，但不在程式推導的前三名候選內（' + (cands.length ? '候選：' + cands.slice(0, 3).map((c) => c.label).join('、') : '程式沒有任何線索') + '），不採用' : (r.ok ? '沒有選出' : '沒有得到合格的回答')) + '，改問使用者');
                 } catch (e) { g.trace.push('🔍 探索③離線小模型出錯，改問使用者'); }
             } else g.trace.push('🔍 探索③離線小模型沒載入，直接問使用者');
+            // 小模型只是猜（實測強迫選擇時 16 句只猜對 4 句），所以先問使用者「我猜是 X，對嗎？」，確認才用；不對就讓使用者自己選
+            if (pick && /小模型/.test(by)) {
+                const yes = '對，開' + pick.label; let c = null;
+                try { c = await this.requestUserForm({ title: '🧭 離線模式：我猜你要開「' + pick.label + '」，對嗎？', description: '你說：「' + text + '」\\n離線小模型猜的，不一定對，所以先跟你確認。', choices: [yes, '不對，我來選'] }); } catch (_) { c = null; }
+                if (c && c.confirmed && c.answer === yes) { by += '＋使用者確認'; g.trace.push('✅ 你確認了「' + pick.label + '」'); }
+                else { g.trace.push('↩️ 你說不對（或沒回答），改讓你自己選'); pick = null; }
+            }
         }
         if (!pick) {
             let ans = null;
