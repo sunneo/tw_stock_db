@@ -48,6 +48,18 @@ function register(ipcMain, deps) {
     ipcMain.handle('fa:native:cancel', (_event, req) => getHost().cancel(req && req.id));
     ipcMain.handle('fa:native:dispose', () => getHost().dispose('渲染程序要求'));
     ipcMain.handle('fa:native:reenable', () => { getHost().reenable(); return getHost().status(); });
+    // 階段 4：選用的本機伺服器（預設不啟動；只綁 127.0.0.1，金鑰檔在使用者資料夾）
+    let srv = null;
+    const keyFile = () => path.join(app.getPath('userData'), 'native-runner', 'server-key.txt');
+    ipcMain.handle('fa:native:server:start', async (_event, req) => {
+        if (srv) return { ok: true, port: srv.port, key: srv.key, already: true };
+        try {
+            srv = await require('./server.js').createServer({ host: getHost(), port: req && req.port, keyFile: keyFile() });
+            return { ok: true, port: srv.port, address: srv.address, key: srv.key, already: false };
+        } catch (e) { srv = null; return { ok: false, message: String((e && e.message) || e) }; }
+    });
+    ipcMain.handle('fa:native:server:stop', async () => { if (!srv) return { ok: true, stopped: false }; const s = srv; srv = null; await s.close(); return { ok: true, stopped: true }; });
+    ipcMain.handle('fa:native:server:status', () => ({ running: !!srv, port: srv ? srv.port : null }));
 }
 
 module.exports = { register };

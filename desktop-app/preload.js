@@ -15,6 +15,11 @@ contextBridge.exposeInMainWorld("desktopAPI", {
     cancel: (id) => ipcRenderer.invoke("fa:native:cancel", { id }),
     dispose: () => ipcRenderer.invoke("fa:native:dispose"),
     reenable: () => ipcRenderer.invoke("fa:native:reenable"),
+    server: {
+      start: (req) => ipcRenderer.invoke("fa:native:server:start", req || {}),
+      stop: () => ipcRenderer.invoke("fa:native:server:stop"),
+      status: () => ipcRenderer.invoke("fa:native:server:status"),
+    },
     onEvent: (fn) => { const h = (_e, data) => fn(data); ipcRenderer.on("fa:native:event", h); return () => ipcRenderer.removeListener("fa:native:event", h); },
   },
   // preload script本身一直都有Node的`process`可用（跟renderer的
