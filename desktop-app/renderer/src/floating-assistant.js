@@ -100445,6 +100445,94 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         return k >= 0 ? candidates[k] : null;
     }
 
+    // 子對話 S5：@對話名稱 解析（給模型的提示，不改使用者看到的文字）。
+    // 回傳 { blocked, message, hint }：同名或遠端只用對話名（歧義）→ blocked，不送出；找到的對話 → hint（隱藏的 system 訊息，開頭是 [提及對話]）；找不到 → 當一般文字，沒有 hint。
+    _mentionPrepare(text) {
+        const s = String(text == null ? '' : text);
+        if (s.indexOf('@') < 0 || s.charAt(0) === '/') return { blocked: false, hint: '' };
+        const T = this._chatTreeMod();
+        const chats = (this._chatIndex && Array.isArray(this._chatIndex.chats)) ? this._chatIndex.chats : [];
+        const toks = s.match(/@\[[^\]\n]+\]|@[^\s@\[\]]+/g) || [];
+        const parts = [];
+        for (const tok of toks) {
+            const r = T.resolveMention(chats, tok, '');
+            if (r.ambiguous || r.needNode) {
+                const names = (r.candidates || []).map((c) => c.insert).join('、');
+                const why = r.needNode ? '遠端對話要寫成 @節點名/對話名' : '有多個同名對話';
+                return { blocked: true, message: '⚠️ 「' + tok + '」' + why + '（' + names + '），請補上完整名稱後再送出。', hint: '' };
+            }
+            if (r.ok) {
+                const e = this._chatEntry(r.chatId) || {};
+                parts.push('使用者提到對話〈' + r.label + '〉(id=' + r.chatId + ',節點=' + (r.nodeName || '本機') + ',狀態=' + (e.status || '無') + ',摘要:' + (String(e.summary || '').slice(0, 200) || '無') + ')');
+            }
+        }
+        return { blocked: false, hint: parts.length ? '[提及對話] ' + parts.join('；') : '' };
+    }
+
+    // 子對話 S5：輸入 @ 時的對話名稱自動完成（清單來自 AiChatTree.listMentionCandidates，本機對話在前）。
+    // 清單列的 data-insert 是要插入的文字（名稱含空白時是 @[…]）。Enter／Tab 選取、Up／Down 移動、Escape 關閉。
+    // 監聽放在 document 捕捉階段，選取時先於送出的 Enter 處理，所以選取時不會送出。
+    _mentionMenuInit(inputText, slashMenu) {
+        if (!inputText || !slashMenu || !slashMenu.parentNode) return;
+        const menu = document.createElement('div');
+        menu.id = 'ai-mention-menu';
+        menu.style.cssText = slashMenu.style.cssText;
+        menu.style.display = 'none';
+        slashMenu.parentNode.appendChild(menu);
+        let st = null; // { atPos, caret, items, idx }
+        const hide = () => { menu.style.display = 'none'; menu.innerHTML = ''; st = null; };
+        const render = () => {
+            menu.innerHTML = '';
+            st.items.forEach((it, i) => {
+                const row = document.createElement('div');
+                row.className = 'ai-mention-item';
+                row.dataset.insert = it.insert;
+                row.style.cssText = 'padding:6px 10px; cursor:pointer; font-size:12px;' + (i === st.idx ? ' background:rgba(99,102,241,0.25);' : '');
+                row.textContent = it.label + (it.remote ? '（遠端）' : '');
+                menu.appendChild(row);
+            });
+        };
+        const pick = (i) => {
+            if (!st || !st.items[i]) return;
+            const ins = st.items[i].insert + ' ';
+            const v = inputText.value;
+            const before = v.slice(0, st.atPos), after = v.slice(st.caret);
+            inputText.value = before + ins + after;
+            const p = before.length + ins.length;
+            try { inputText.setSelectionRange(p, p); } catch (_) { /* 不影響送出 */ }
+            hide();
+        };
+        const onInput = () => {
+            const caret = inputText.selectionStart;
+            if (typeof caret !== 'number') return hide();
+            const m = /(^|\s)@(\[[^\]\n]*|[^\s@\[\]]*)$/.exec(inputText.value.slice(0, caret));
+            if (!m) return hide();
+            const chats = (this._chatIndex && Array.isArray(this._chatIndex.chats)) ? this._chatIndex.chats : [];
+            const items = this._chatTreeMod().listMentionCandidates(chats, '@' + m[2], '');
+            if (!items.length) return hide();
+            st = { atPos: caret - m[2].length - 1, caret: caret, items: items.slice(0, 8), idx: 0 };
+            menu.style.display = 'block';
+            render();
+        };
+        inputText.addEventListener('input', onInput);
+        inputText.addEventListener('blur', () => setTimeout(hide, 150));
+        menu.addEventListener('mousedown', (e) => {
+            const row = e.target && e.target.closest ? e.target.closest('.ai-mention-item') : null;
+            if (!row || !st) return;
+            e.preventDefault();
+            pick(st.items.findIndex((it) => it.insert === row.dataset.insert));
+        });
+        document.addEventListener('keydown', (e) => {
+            if (!st || e.target !== inputText || menu.style.display === 'none') return;
+            if (e.key === 'ArrowDown') { st.idx = (st.idx + 1) % st.items.length; render(); }
+            else if (e.key === 'ArrowUp') { st.idx = (st.idx - 1 + st.items.length) % st.items.length; render(); }
+            else if (e.key === 'Enter' || e.key === 'Tab') pick(st.idx);
+            else if (e.key === 'Escape') hide();
+            else return;
+            e.preventDefault(); e.stopPropagation();
+        }, true);
+    }
+
     async _submitChatInput(inputText, suggestBar) {
         let textToSend = inputText.value.trim();
         // tw_stock_db客製: 階段2——如果有📎附加的檔案，就算輸入框是空的也
@@ -100452,6 +100540,12 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         // 情境），沒有附件時維持原本「空白不送出」的行為。
         const hasAttachments = this._pendingAttachments.length > 0;
         if (!textToSend && !hasAttachments) return;
+
+        // 子對話 S5：@對話名稱。歧義就不送出（保留原文）；找到的對話只以隱藏的 system 提示給模型。提示只活一輪：每次送出先清掉上一則的提示。
+        const mention = this._mentionPrepare(textToSend);
+        if (mention.blocked) { this._log(mention.message); return; }
+        this.messages = this.messages.filter((m) => !(m && m._mentionHint));
+        if (mention.hint) this.messages.push({ role: 'system', content: mention.hint, _mentionHint: true });
 
         inputText.value = '';
         if (suggestBar) suggestBar.style.display = 'none';
@@ -108532,6 +108626,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
 
         inputText.addEventListener('input', renderMenu);
         inputText.addEventListener('focus', renderMenu);
+        this._mentionMenuInit(inputText, slashMenu); // 子對話 S5：@對話名稱自動完成
 
         slashMenu.addEventListener('mousedown', (e) => {
             // mousedown（而不是click）先於textarea的blur觸發，避免blur把選單
