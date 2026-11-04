@@ -1,7 +1,7 @@
 // node renderer/src/chat/chat_delete.test.js
 'use strict';
 const assert = require('assert');
-const D = require('./chat_delete.js');
+const D = require('./chat_delete.js').createDelete(require('./chat_tree.js'));
 
 let n = 0;
 function t(name, fn) { fn(); n++; console.log('ok - ' + name); }

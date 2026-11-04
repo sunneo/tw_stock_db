@@ -89,3 +89,31 @@
 ## 5. 教訓
 
 （尚無）
+
+## 6. 步驟 2：純函式（已完成，node 測試 19 項全過）
+
+- `renderer/src/chat/chat_delete.js`：`createDelete(AiChatTree 模組)` 回傳 `{planDelete, FILTERS}`。樹模組由呼叫端傳入（嵌入時用 `new Function`，不能 `require`）。
+- `planDelete(chats, {parentId, filter, ids, includeRunning, busyIds})` → `{toDelete, skipped, descendantsDeleted, error?}`。
+- 規則：只刪有效子對話；根、孤兒（視為根）、`kind:'remote-inbox'` 不刪；子樹任一筆進行中（`running`／`waiting_user`／`busyIds`）整棵跳過（reason `in_progress` 或 `descendant_in_progress`），`includeRunning` 才包含。
+- 測試：`node renderer/src/chat/chat_delete.test.js`。
+
+## 7. 步驟 3：執行與清理（已完成，真桌面版驗證過）
+
+- `_chatDeleteMod()`（源碼 `floating-assistant.js`，緊接 `_chatBackend` 之前）：`new Function(FA_CHAT_DELETE_SRC)` 載入一次。
+- `_chatDeleteMany(plan)`（緊接 `_chatDelete` 之後）：逐項 abort 進行中的 → 先刪存檔（失敗記入 `failed`，索引不動）→ 移出索引、`expanded`、pending map。目前對話被刪時改停在父對話（沒被刪的），否則最近更新的一筆，否則新對話。被刪的 ctx 移出記憶體。
+- 連結卡片：`_subchatLinkInfo` 查不到子對話時回 `{gone:true, text:'已刪除'}`；`_subchatLinkDecorate` 遇到 `gone` 直接返回（沒有回答欄）；`_renderSingleMessageInner` 的「打開」按鈕顯示「已刪除」且停用，點擊守衛 `if (!this._chatEntry(...)) return`。
+- 建置：`scripts/embed-code-ui.js` 加 `CHATDELETE` 區塊；`scripts/build-web-lazy.js` 的 `EXCLUDE` 加 `CHATDELETE`（與 `CHATTREE` 同理：開頁就會同步用到，不能分成lazy區塊）。
+- 評估：`scripts/eval/subchat_delete.eval.js`，修前 `fa._chatDeleteMod is not a function`（fatal，allPass 假）；修後 allPass 真，`uncaught` 空。
+- 驗證的事實（Grep / 執行結果）：`planDelete` 刪 c1,c2,c4,c5,g1；c3 留下；存檔與 ctx 清掉；父對話 5 張卡片，4 張「已刪除」停用，c3 可用；側欄與 `@` 候選更新。
+
+## 8. 步驟 3 的教訓
+
+- 連結卡片的節點會沿用既有 DOM，`_renderMessageHistory()` 不保證重建。刪除後要直接改現有卡片（已在 `_chatDeleteMany` 做），不能只靠重畫。
+- 建置會移除註解，源碼裡要讓評估檢查到的標記用「字串常值」（`res.tag = 'S7:chat_delete_many'`），不能只用註解。
+- `build-web-lazy` 會把純定義的新區塊自動搬成 lazy chunk；若同步要用，必須加進 `EXCLUDE`，否則 `web-lazy/chunks/chatdelete.js` 會被產生。
+- 新的 UMD 模組不能 `require`：嵌入後是 `new Function('module', …)`，樹模組要由呼叫端傳入。
+
+## 9. 還沒做（後續步驟）
+
+- 步驟 4：側欄多選 UI。步驟 5：AI 工具 `chat_delete_children`（確認用原生 `confirm()`，預覽退路）。步驟 6：回歸。
+- 已知缺口（步驟 3）：被刪子對話若正在背景跑、已 abort，它的 `_persistChatHistory` 可能在刪除後又寫回一次存檔（會復活檔案）。目前沒有防護，步驟 6 要決定如何處理並驗證。

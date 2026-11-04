@@ -65,6 +65,8 @@ embed('renderer/src/gui/js_program.js', 'GUIJSPROGRAM-BEGIN', 'GUIJSPROGRAM-END'
 embed('renderer/src/agent/read_ledger.js', 'READLEDGER-BEGIN', 'READLEDGER-END', 'FA_READ_LEDGER_SRC');
 // 對話樹（renderer/src/chat/chat_tree.js，純函式、UMD）：子對話的索引欄位、側欄樹狀、@ 指名解析。同上，嵌入後用 new Function 載入。
 embed('renderer/src/chat/chat_tree.js', 'CHATTREE-BEGIN', 'CHATTREE-END', 'FA_CHAT_TREE_SRC');
+// 批次刪除子對話的純函式（renderer/src/chat/chat_delete.js，UMD）：子對話 S7，計畫要刪哪些、跳過哪些。同上，嵌入後用 new Function 載入。
+embed('renderer/src/chat/chat_delete.js', 'CHATDELETE-BEGIN', 'CHATDELETE-END', 'FA_CHAT_DELETE_SRC');
 // 本地話題偵測（renderer/src/chat/topic_local.js，純函式、UMD）：子對話 S2，取代每則訊息等模型判斷話題轉移。同上，嵌入後用 new Function 載入。
 embed('renderer/src/chat/topic_local.js', 'TOPICLOCAL-BEGIN', 'TOPICLOCAL-END', 'FA_TOPIC_LOCAL_SRC');
 // 子對話交接內文（renderer/src/chat/handoff.js，純函式、UMD）：子對話 S3，開子對話時產生標題與交接內文。同上，嵌入後用 new Function 載入。

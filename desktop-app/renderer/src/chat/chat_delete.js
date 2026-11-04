@@ -12,13 +12,8 @@
 //   opts.busyIds         執行端額外標記為進行中的 id 清單（例如 ctx.isResponding）
 //
 // skipped 的 reason：not_found | not_child | not_under_parent | remote_inbox | in_progress | descendant_in_progress | remote_inbox_descendant
-(function (root, factory) {
-  if (typeof module === 'object' && module.exports) {
-    module.exports = factory(require('./chat_tree.js'));
-  } else {
-    root.AiChatDelete = factory(root.AiChatTree);
-  }
-}(typeof self !== 'undefined' ? self : this, function (Tree) {
+// 嵌入時用 new Function('module', SRC) 載入，不能 require；樹模組由呼叫端傳入：createDelete(AiChatTree 模組)。
+(function (root) {
   'use strict';
 
   var FILTERS = ['done', 'failed', 'done_or_failed', 'all', 'ids'];
@@ -26,6 +21,7 @@
 
   function isRemoteInbox(c) { return !!c && c.kind === 'remote-inbox'; }
 
+  function createDelete(Tree) {
   function planDelete(chats, opts) {
     var o = opts || {};
     var out = { toDelete: [], skipped: [], descendantsDeleted: 0 };
@@ -119,4 +115,8 @@
   }
 
   return { planDelete: planDelete, FILTERS: FILTERS };
-}));
+  }
+
+  var api = { createDelete: createDelete };
+  if (typeof module === 'object' && module.exports) { module.exports = api; } else { root.AiChatDelete = api; }
+}(typeof self !== 'undefined' ? self : this));
