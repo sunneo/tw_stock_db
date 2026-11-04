@@ -26,7 +26,10 @@ const NEW = ['parentId', 'status', 'topicId', 'fingerprint', 'summary', 'nodeNam
 const byId = (id) => fa._chatIndex.chats.find((c) => c.id === id);
 const a1 = byId('c_old1'), a2 = byId('c_old2');
 R.count_after_load = fa._chatIndex.chats.length;
-R.new_fields_filled = !!a1 && !!a2 && NEW.every((f) => a1[f] === null && a2[f] === null);
+// S6 有意改變：舊格式的遠端對話（有 remote、沒有 parentId）會被遷移收進來源節點的收件對話底下（parentId＝收件對話、nodeName＝來源節點）。
+// 本機舊對話仍然是所有新欄位補 null。遷移的結果另外用 remote_migrated_to_inbox 驗證。
+R.new_fields_filled = !!a1 && NEW.every((f) => a1[f] === null) && !!a2 && ['status', 'topicId', 'fingerprint', 'summary'].every((f) => a2[f] === null);
+R.remote_migrated_to_inbox = !!a2 && !!a2.parentId && a2.nodeName === 'B機' && ((fa._chatIndex.chats.find((c) => c.id === a2.parentId) || {}).kind === 'remote-inbox');
 // 既有欄位逐一比對（與舊索引的原始值相等）
 // updatedAt 不比：目前對話在載入時會被既有的「訊息變動才更新時間」邏輯（floating-assistant.js 約 79543）改掉，與補欄位無關
 const kept = (orig, now) => Object.keys(orig).filter((k) => k !== 'updatedAt').every((k) => JSON.stringify(orig[k]) === JSON.stringify(now[k]));

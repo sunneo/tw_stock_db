@@ -176,6 +176,42 @@ rg 收到 task(sub=false, fromName=N)
 - `@` 候選會包含收件對話本身（`B機/遠端需求 · B機`）。收件對話不接受直接對話，所以這個候選送出後會被守衛擋下。是否要從候選移除，本步驟沒改，列為缺口。
 - 遠端子對話的 `chat_send_to_child`（父對話工具）仍然拒絕遠端子對話（S5 規則，`_subchatToolTarget` 的「遠端對話不能用這個工具」）。是否支援遠端子對話的工具，留給之後，列為缺口。
 
+## 6.7 步驟 5：回歸（已完成）
+
+真桌面版，建置為步驟 4 之後的工作目錄（`8bfc3a8e`）。預設 `topicShiftCheck` 為 false（評估檔沒有改它）。
+
+| 評估 | 結果 | 說明 |
+|---|---|---|
+| `topic_local` | allPass true | |
+| `chat_tree` | 21 個布林全為 true，0 個 false | 沒有 `allPass` 欄位，人工判讀 |
+| `chat_tree_index` | 全部 true（修正判準後，見下） | 第一次跑 `new_fields_filled` 為 false，原因見下 |
+| `read_ledger` | 沒有內建判準，人工判讀 | 見下 |
+| `subchat_open`、`subchat_link`、`subchat_card_request`、`subchat_bubble`、`subchat_send`、`subchat_tools`、`subchat_form`、`subchat_fap`、`subchat_reload`、`subchat_pullback`、`chat_mention`、`subchat_tools_ai` | allPass true | |
+| `subchat_remote`（S6 步驟 3） | allPass true | |
+| `subchat_remote_bubble`（S6 步驟 4） | allPass true | |
+| `tool-budget` | `ok: false`，1 筆 `domain_too_many_tools:skill_54f871ce-e55a-4b2a-a8b6-a67609186012` | 與 S5 文件記錄的違規 ID 相同，數量沒有增加（S5 的基準也是 1 筆）。S6 沒有新增工具 |
+
+### 修改判準的一處（S6 有意改變，不是放寬）
+
+`chat_tree_index.eval.js` 的 `new_fields_filled`：原本要求舊索引的所有新欄位（含遠端的 `c_old2`）都是 null。S6 的遷移（`migrateRemoteChats`，載入時執行）會把舊遠端對話收進收件對話底下，`parentId` 與 `nodeName` 因此不再是 null，這是管理層決定的行為。
+
+- 使用者看得到的結果：舊遠端對話在側欄收進來源節點的收件對話底下（`B機`），`remote` 欄位與標題不變。
+- 改了什麼判準：本機舊對話仍要求所有新欄位為 null；遠端舊對話改為要求 `status`、`topicId`、`fingerprint`、`summary` 為 null，另外新增 `remote_migrated_to_inbox`（`parentId` 指向 `kind:'remote-inbox'`、`nodeName` 為 `B機`）。
+- 修改後：`new_fields_filled`、`remote_migrated_to_inbox` 都為 true，其餘（`existing_fields_kept`、`remote_kept`、`persisted_*`、`child_new_chat`）不變且全為 true。
+
+### `read_ledger`（人工判讀，照實寫）
+
+- 輸出中有 12 個 false：10 個 `warned:false`、2 個 `has_more:false`（`parsed_has_more`、`last_page_has_more`）。
+- 判讀：`warned:false` 與 `has_more:false` 是「沒有警告」「沒有下一頁」的正常值。
+- **數字對不上**：S5 文件記的是 3 個 false，這次是 12 個。`read_ledger.js` 與 `read_ledger.eval.js` 在 S6 沒有改動（`git diff` 沒有這兩個檔），所以這不是 S6 造成的；但我沒有重跑 S5 的建置來做逐項比對，所以「不是 S6 造成的」是依檔案沒有改動推論，不是量測結果。
+
+### 步驟 5 的範圍與缺口
+
+- 所有評估都是真桌面版、假 LLM。
+- 「`topicShiftCheck` 關閉時行為不變」：評估檔沒有改開關，等於在預設（關閉）下跑。沒有另外用開啟狀態跑一次作為對照。
+- 嵌入式網頁版（沒有對話清單）路徑：沒有評估覆蓋（步驟 3 已列為缺口）。
+- 真實遠端節點與真實需求：沒有驗證（所有遠端需求都是用 `_rgCreateRemoteChat` / `_rgChatRecord` 模擬）。
+
 ## 7. 沒驗證、目前的缺口
 
 - 步驟 1 的行號是讀程式與 Grep 驗證，沒有真桌面版驗證。
