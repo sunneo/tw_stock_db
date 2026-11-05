@@ -56,9 +56,14 @@
         inputNames: L.input_names, outputNames: L.output_names, backend: 'native', loadMs: L.ms,
         async run(feeds) {
           // 小張量（輸入合計不到 6 MB）直接放在請求裡、輸出也直接放在回應裡（少幾次檔案讀寫與行程間通訊，每窗一次呼叫的小模型才不會被固定成本吃掉）；大張量才寫成檔
-          const tStart = Date.now(), names = Object.keys(feeds); let bytes = 0;
+          // 快取模式（opts.kv，midigenai 的 CPU 版）：past_k0／past_v0… 這些過去的快取留在原生子程序，請求只帶新的輸入（ids）與快取位置；子程序回傳的 new_* 新列照原樣還給呼叫端
+          const tStart = Date.now(); let names = Object.keys(feeds), kv = null, bytes = 0;
+          if (opts.kv) {
+            const past = names.filter((n) => /^past_[kv]\d+$/.test(n)), rest = names.filter((n) => past.indexOf(n) < 0);
+            if (past.length && rest.length) { const p0 = feeds[past[0]], d0 = feeds[rest[0]].dims; kv = { past, neu: past.map((n) => 'new_' + n.slice(5)), h: p0.dims[2], d: p0.dims[3], pos: p0.dims[1], rows: d0[d0.length - 1], reset: p0.dims[1] === 0 }; names = rest; }
+          }
           for (const name of names) { const t = feeds[name], C = TYPED[t.type]; if (!C || !(t.data instanceof C)) throw new Error('輸入 ' + name + ' 的型別不支援或與 dtype 不符：' + t.type); bytes += t.data.byteLength; }
-          const small = bytes <= 6 * 1048576, dirName = small ? '' : 't-' + uid(), dir = box + sep + dirName, inputs = [], timeout = opts.runTimeoutMs || 120000;
+          let leftover = null; const small = bytes <= 6 * 1048576, dirName = small ? '' : 't-' + uid(), dir = box + sep + dirName, inputs = [], timeout = opts.runTimeoutMs || 120000;
           try {
             let i = 0;
             for (const name of names) {
@@ -66,8 +71,8 @@
               if (small) inputs.push({ name, dtype: t.type, dims: Array.from(t.dims), b64: toB64(u8) });
               else { const file = 'in-' + (i++) + '.bin'; await rawfs.writeFile(dir + sep + file, { base64: toB64(u8) }); inputs.push({ name, dtype: t.type, dims: Array.from(t.dims), file }); }
             }
-            const payload = { id: entry.id, inputs, timeout_ms: timeout }; if (small) payload.inline_out = true; else payload.dir = dirName;
-            const tCall = Date.now(); const r = await call('onnx_run', payload, timeout + 15000);
+            const payload = { id: entry.id, inputs, timeout_ms: timeout }; if (small) payload.inline_out = true; else payload.dir = dirName; if (kv) payload.kv = kv;
+            const tCall = Date.now(); const r = await call('onnx_run', payload, timeout + 15000); if (r && r.dir && small) leftover = box + sep + r.dir;
             session.lastRun = { childMs: r && r.ms, callMs: Date.now() - tCall, prepMs: tCall - tStart };
             if (!r || !r.ok) { const e = new Error((r && (r.message || r.code)) || '沒有回應'); e.code = (r && r.code) || 'internal'; throw e; }
             const out = {};
@@ -79,7 +84,7 @@
               out[o.name] = new Tensor(o.dtype, new C(u.buffer.slice(u.byteOffset, u.byteOffset + u.byteLength)), o.dims);
             }
             return out;
-          } finally { if (!small) { try { await rawfs.remove(dir, true); } catch (_) { /* 暫存資料夾刪不掉不影響結果 */ } } }
+          } finally { if (leftover) { try { await rawfs.remove(leftover, true); } catch (_) { /* 刪不掉不影響結果 */ } } if (!small) { try { await rawfs.remove(dir, true); } catch (_) { /* 暫存資料夾刪不掉不影響結果 */ } } }
         },
         async release() { try { await call('onnx_release', { id: entry.id }, 8000); } catch (_) { /* 已結束 */ } },
       };

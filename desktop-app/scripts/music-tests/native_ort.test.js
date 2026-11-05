@@ -58,6 +58,14 @@ async function call(op, payload, timeoutMs) {
   // subarray 輸入（byteOffset 不為 0）要只送自己那一段
   const big = new Float32Array([9, 9, 3, 5, 9]); const o2 = await s.run({ x: new N.Tensor('float32', big.subarray(2, 4), [2]) });
   check('subarray 輸入只送自己的範圍（[3,5]→[6,10]）', o2.y.data[0] === 6 && o2.y.data[1] === 10 && o2.y.data.length === 2, Array.from(o2.y.data));
+
+  // 快取模式（midigenai）：past_* 不送，只送 ids 與快取參數；位置 0 才是 reset
+  const sk = await api.open({ id: 'm', file: 'm.onnx', bytes: 10 }, { kv: true });
+  const mkKv = (P) => ({ ids: new N.Tensor('float32', new Float32Array([1, 2, 3]), [1, 3]), past_k0: new N.Tensor('float32', new Float32Array(P * 4), [1, P, 2, 2]), past_v0: new N.Tensor('float32', new Float32Array(P * 4), [1, P, 2, 2]) });
+  await sk.run(mkKv(0)); const k0 = calls.filter((c) => c.op === 'onnx_run').pop().payload; await sk.run(mkKv(3)); const k1 = calls.filter((c) => c.op === 'onnx_run').pop().payload;
+  check('快取模式：past_* 不送，只送 ids', k0.inputs.length === 1 && k0.inputs[0].name === 'ids' && k1.inputs.length === 1, k0.inputs.map((x) => x.name));
+  check('快取模式：參數（名稱、h／d、位置、列數、reset）', JSON.stringify(k0.kv) === JSON.stringify({ past: ['past_k0', 'past_v0'], neu: ['new_k0', 'new_v0'], h: 2, d: 2, pos: 0, rows: 3, reset: true }) && k1.kv.pos === 3 && k1.kv.reset === false, k1.kv);
+  const kn = calls.length; await s.run(mkKv(2)); check('沒開快取模式的 session 不帶 kv', calls.filter((c) => c.op === 'onnx_run').pop().payload.kv === undefined && calls.length > kn);
   let e2 = null; try { await s.run({ x: new N.Tensor('float32', [1, 2], [2]) }); } catch (e) { e2 = e; }
   check('輸入不是對應的 TypedArray 就丟錯', e2 && /不支援|不符/.test(e2.message), e2 && e2.message);
   // 載入失敗：錯誤碼與訊息帶出來

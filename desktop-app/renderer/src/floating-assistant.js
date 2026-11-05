@@ -36241,9 +36241,14 @@ const holder = {};
         inputNames: L.input_names, outputNames: L.output_names, backend: 'native', loadMs: L.ms,
         async run(feeds) {
           // 小張量（輸入合計不到 6 MB）直接放在請求裡、輸出也直接放在回應裡（少幾次檔案讀寫與行程間通訊，每窗一次呼叫的小模型才不會被固定成本吃掉）；大張量才寫成檔
-          const tStart = Date.now(), names = Object.keys(feeds); let bytes = 0;
+          // 快取模式（opts.kv，midigenai 的 CPU 版）：past_k0／past_v0… 這些過去的快取留在原生子程序，請求只帶新的輸入（ids）與快取位置；子程序回傳的 new_* 新列照原樣還給呼叫端
+          const tStart = Date.now(); let names = Object.keys(feeds), kv = null, bytes = 0;
+          if (opts.kv) {
+            const past = names.filter((n) => /^past_[kv]\d+$/.test(n)), rest = names.filter((n) => past.indexOf(n) < 0);
+            if (past.length && rest.length) { const p0 = feeds[past[0]], d0 = feeds[rest[0]].dims; kv = { past, neu: past.map((n) => 'new_' + n.slice(5)), h: p0.dims[2], d: p0.dims[3], pos: p0.dims[1], rows: d0[d0.length - 1], reset: p0.dims[1] === 0 }; names = rest; }
+          }
           for (const name of names) { const t = feeds[name], C = TYPED[t.type]; if (!C || !(t.data instanceof C)) throw new Error('輸入 ' + name + ' 的型別不支援或與 dtype 不符：' + t.type); bytes += t.data.byteLength; }
-          const small = bytes <= 6 * 1048576, dirName = small ? '' : 't-' + uid(), dir = box + sep + dirName, inputs = [], timeout = opts.runTimeoutMs || 120000;
+          let leftover = null; const small = bytes <= 6 * 1048576, dirName = small ? '' : 't-' + uid(), dir = box + sep + dirName, inputs = [], timeout = opts.runTimeoutMs || 120000;
           try {
             let i = 0;
             for (const name of names) {
@@ -36251,8 +36256,8 @@ const holder = {};
               if (small) inputs.push({ name, dtype: t.type, dims: Array.from(t.dims), b64: toB64(u8) });
               else { const file = 'in-' + (i++) + '.bin'; await rawfs.writeFile(dir + sep + file, { base64: toB64(u8) }); inputs.push({ name, dtype: t.type, dims: Array.from(t.dims), file }); }
             }
-            const payload = { id: entry.id, inputs, timeout_ms: timeout }; if (small) payload.inline_out = true; else payload.dir = dirName;
-            const tCall = Date.now(); const r = await call('onnx_run', payload, timeout + 15000);
+            const payload = { id: entry.id, inputs, timeout_ms: timeout }; if (small) payload.inline_out = true; else payload.dir = dirName; if (kv) payload.kv = kv;
+            const tCall = Date.now(); const r = await call('onnx_run', payload, timeout + 15000); if (r && r.dir && small) leftover = box + sep + r.dir;
             session.lastRun = { childMs: r && r.ms, callMs: Date.now() - tCall, prepMs: tCall - tStart };
             if (!r || !r.ok) { const e = new Error((r && (r.message || r.code)) || '沒有回應'); e.code = (r && r.code) || 'internal'; throw e; }
             const out = {};
@@ -36264,7 +36269,7 @@ const holder = {};
               out[o.name] = new Tensor(o.dtype, new C(u.buffer.slice(u.byteOffset, u.byteOffset + u.byteLength)), o.dims);
             }
             return out;
-          } finally { if (!small) { try { await rawfs.remove(dir, true); } catch (_) { /* 暫存資料夾刪不掉不影響結果 */ } } }
+          } finally { if (leftover) { try { await rawfs.remove(leftover, true); } catch (_) { /* 刪不掉不影響結果 */ } } if (!small) { try { await rawfs.remove(dir, true); } catch (_) { /* 暫存資料夾刪不掉不影響結果 */ } } }
         },
         async release() { try { await call('onnx_release', { id: entry.id }, 8000); } catch (_) { /* 已結束 */ } },
       };
@@ -77438,6 +77443,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
                 load: async (d) => {
                     const ort = await FaAudioRuntime.loadOrt({ proxy: d !== 'webgpu' }); const bytes = bytesOf[d];
                     const model = await web.loadModel({ ort, engine: d === 'webgpu' ? 'gpu' : 'cpu', base: 'https://midigenai.local/', manifest: FaMidigenBridge.MANIFEST, cache: false, fetchImpl: async () => new Response(bytes) });
+                    if (d === 'wasm') await this._midigenNativeAttach(model, bytes);
                     const mg = await mod.loadMidigen({ model }); return { accompany: (b, op) => mg.accompany(b, op) };
                 },
                 smoke: (e) => FaMidigenBridge.smoke(e)
@@ -77446,6 +77452,36 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             if (!r.engine) return { engine: null, reason: r.reason };
             return (this._midigenOk = { engine: r.engine, id: FaMidigenBridge.DEV_FILE[r.device], eng: r.device === 'webgpu' ? 'gpu' : 'cpu', device: r.device });
         } catch (e) { return { engine: null, reason: '模型載入失敗:' + msg(e) }; }
+    }
+    // midigenai CPU 版的原生路徑：把 MidigenModel 的 session 換成原生混合 session（過去的 KV 快取留在原生子程序，每步只送新的 ids）。
+    // 原生第一次失敗（含子程序重啟後快取位置不符）就永久改回網頁版 WASM session；每步的 feeds 都帶完整快取，所以中途退回不用重做這次生成。
+    async _midigenNativeAttach(model, bytes) {
+        const ID = 'midigenai-v5-cpu', say = (t) => { this._midigenNativeNote = t; console.log('[midigen] ' + t); };
+        if (typeof FaNativeOrt === 'undefined' || !this._nrOptIn() || !this._nrAvailable() || !model || !model.session) return null;
+        if (!FaNativeOrt.routed(ID, (k) => localStorage.getItem(k)).native) return null;
+        try {
+            const reg = FaAudioModels.REGISTRY[ID], box = await this._nrBox(); if (!box) return null;
+            const sep = box.indexOf(String.fromCharCode(92)) >= 0 ? String.fromCharCode(92) : '/';
+            const entry = { id: ID, file: String(reg.url).split('/').pop(), bytes: reg.bytes, sha256: reg.sha256 };
+            const api = FaNativeOrt.create({ call: (op, payload, t) => this._nrCall(op, payload, t), rawfs: window.desktopAPI.rawfs, box, sep });
+            const st = await api.state(entry); if (!st.ok) { say('midigenai 維持網頁版：' + st.reason); return null; }
+            if (!st.installed) await api.installFromBlob(entry, new Blob([bytes]), {});
+            const nat = await api.open(entry, { threads: 4, kv: true, runTimeoutMs: 60000 });
+            const web = model.session; let native = true;
+            model.session = {
+                inputNames: web.inputNames, outputNames: web.outputNames,
+                get backend() { return native ? 'native' : 'wasm'; },
+                async run(feeds) {
+                    if (native) {
+                        try { const t = {}; for (const k of Object.keys(feeds)) { const x = feeds[k]; t[k] = new FaNativeOrt.Tensor(x.type, x.data, x.dims); } const out = await nat.run(t), r = {}; for (const k of Object.keys(out)) r[k] = new model.ort.Tensor(out[k].type, out[k].data, out[k].dims); return r; }
+                        catch (e) { native = false; say('midigenai 原生執行失敗，已退回網頁版 WASM：' + String((e && e.message) || e).slice(0, 200)); try { await nat.release(); } catch (_) { /* */ } }
+                    }
+                    return web.run(feeds);
+                },
+                async release() { try { await nat.release(); } catch (_) { /* */ } return web.release(); },
+            };
+            say('midigenai：原生 CPU（onnxruntime-node，載入 ' + nat.loadMs + ' 毫秒，KV 快取在子程序）'); return model.session;
+        } catch (e) { say('midigenai 維持網頁版：' + String((e && e.message) || e).slice(0, 200)); return null; }
     }
     async _midigenCompose(res, sd, say) {
         if (typeof FaMidigenBridge === 'undefined' || typeof FaComposeTree === 'undefined') return null;

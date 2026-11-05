@@ -1473,7 +1473,7 @@ const NRT = (function () {
     const fs = require('fs'), path = require('path');
     const TYPED = { float32: Float32Array, float64: Float64Array, int32: Int32Array, int64: BigInt64Array, uint8: Uint8Array };
     const send = (o) => process.stdout.write(JSON.stringify(o) + '\n');
-    let ort = null, session = null;
+    let ort = null, session = null, kvStore = null;
     const fail = (id, code, e) => send({ type: 'error', id, code, message: String((e && e.message) || e) });
     async function load(m) {
       const t0 = Date.now();
@@ -1495,7 +1495,23 @@ const NRT = (function () {
           feeds[it.name] = new ort.Tensor(it.dtype, new C(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)), it.dims);
           try { fs.unlinkSync(it.path); } catch (_) { /* 讀完即刪，刪不掉不影響結果 */ }
         }
+        // 快取模式（midigenai 這類逐字生成）：過去的 key／value 快取留在子程序，請求只帶新的輸入；m.kv = { past:[名稱], neu:[新列輸出名稱], h, d, pos, rows, reset }
+        // 快取位置 pos 必須跟子程序記的一致（不一致＝子程序重啟過或步驟漏了），回 kv_mismatch，呼叫端改用網頁版重做這一步
+        const kv = m.kv; let kvNext = null;
+        if (kv) {
+          const row = kv.h * kv.d;
+          if (kv.reset) kvStore = { P: 0, cap: 64, bufs: kv.past.map(() => new Float32Array(64 * row)) };
+          if (!kvStore || kvStore.P !== kv.pos || kvStore.bufs.length !== kv.past.length) return fail(m.id, 'kv_mismatch', '快取位置不符：子程序 ' + (kvStore ? kvStore.P : '無') + ' / 要求 ' + kv.pos);
+          kv.past.forEach((n, j) => { feeds[n] = new ort.Tensor('float32', kvStore.bufs[j].subarray(0, kv.pos * row), [1, kv.pos, kv.h, kv.d]); });
+          kvNext = { row, rows: kv.rows };
+        }
         const outs = await session.run(feeds);
+        if (kvNext) {
+          const need = kvStore.P + kvNext.rows;
+          if (need > kvStore.cap) { const cap = Math.max(need, Math.ceil(kvStore.cap * 1.5)); kvStore.bufs = kvStore.bufs.map((b) => { const nb = new Float32Array(cap * kvNext.row); nb.set(b.subarray(0, kvStore.P * kvNext.row)); return nb; }); kvStore.cap = cap; }
+          kv.neu.forEach((n, j) => { kvStore.bufs[j].set(outs[n].data, kvStore.P * kvNext.row); });
+          kvStore.P = need;
+        }
         fs.mkdirSync(m.out_dir, { recursive: true });
         const outputs = [];
         session.outputNames.forEach((name, i) => {
@@ -1580,7 +1596,7 @@ const NRT = (function () {
       async run(m) {
         // 子程序因閒置、逾時或崩潰被結束過：自動重新載入同一個模型再跑（呼叫端手上的 session 物件不用重建）
         if (!loaded && lastLoad) await this.load(lastLoad);
-        return send('tensor_run', { inputs: m.inputs, out_dir: m.out_dir }, m.timeoutMs || 120000);
+        return send('tensor_run', { inputs: m.inputs, out_dir: m.out_dir, kv: m.kv }, m.timeoutMs || 120000);
       },
       dispose() { lastLoad = null; if (child) { try { child.stdin.write(JSON.stringify({ type: 'dispose', id: 'd' }) + '\n'); } catch (_) { /* 已結束 */ } } killChild(); },
       status() { return { alive: !!child, pid: child ? child.pid : null, pending: pending.size, loaded: loaded ? loaded.model_path : null }; },
@@ -1685,7 +1701,9 @@ function startNativeMailbox(ctx) {
         try {
           fsSync.mkdirSync(tdir, { recursive: true });
           const ins = p.inputs.map((i, k) => { let fp; if (typeof i.b64 === "string") { fp = pathM.join(tdir, "in-" + k + ".bin"); fsSync.writeFileSync(fp, Buffer.from(i.b64, "base64")); } else fp = pathM.join(tdir, i.file); return { name: i.name, dtype: i.dtype, dims: i.dims, path: fp }; });
-          const r = await host.run({ inputs: ins, out_dir: tdir, timeoutMs: p.timeout_ms || 120000 });
+          let kv; // 快取模式（見 NRT 子程序）：名稱只收安全字元、數字只收有限整數
+          if (p.kv) { const k = p.kv, okN = (a) => Array.isArray(a) && a.length > 0 && a.length <= 256 && a.every((s) => safeName(s)), okI = (v) => Number.isInteger(v) && v >= 0 && v <= 1e7; if (!okN(k.past) || !okN(k.neu) || k.past.length !== k.neu.length || !okI(k.h) || !okI(k.d) || !okI(k.pos) || !okI(k.rows) || !k.h || !k.d) return { ok: false, code: "bad_request", message: "快取參數不合法" }; kv = { past: k.past, neu: k.neu, h: k.h, d: k.d, pos: k.pos, rows: k.rows, reset: !!k.reset }; }
+          const r = await host.run({ inputs: ins, out_dir: tdir, kv, timeoutMs: p.timeout_ms || 120000 });
           const total = r.outputs.reduce((a2, o) => a2 + o.bytes, 0);
           if (p.inline_out && total <= 8 * 1048576) return { ok: true, ms: r.ms, outputs: r.outputs.map((o) => ({ name: o.name, dtype: o.dtype, dims: o.dims, bytes: o.bytes, b64: fsSync.readFileSync(o.path).toString("base64") })) };
           keep = true; return { ok: true, ms: r.ms, outputs: r.outputs.map((o) => ({ name: o.name, dtype: o.dtype, dims: o.dims, file: pathM.basename(o.path), bytes: o.bytes })), dir: pathM.basename(tdir) };
