@@ -68295,43 +68295,82 @@ ${fnData.code}
         const cc = d.chosen; const weakRule = (d.status === 'planned' || d.status === 'cache') && !!cc && cc.via !== '規則' && Number(cc.score) < 0.8 && !(cc.tool && /open|viewer|editor|player|preview|terminal_create/.test(cc.tool));
         if (!g || ((d.status === 'planned' || d.status === 'cache') && !weakRule) || g.kind || !g.explicit) return false;
         g.trace = g.trace || [];
+        // 速度守則：每一步都有短逾時（知識庫、檢查模型各 5 秒；小模型選擇題 20 秒、關 Thinking），逾時就略過；每一步的進展即時顯示在進度卡，結束後留在理解過程裡
+        const prog = this._otGateProgress(); const tr = (t) => { g.trace.push(t); prog.step(t); };
+        tr.end = prog.end;
+        try { return await this._otGateExploreRun(plan, text, g, d, tr); } finally { prog.end(); }
+    }
+    // 逾時包裝：ms 內沒回來就回 { timeout: true }（背景工作可能還在跑，但不再等）；_otGateTimer 是測試用的假計時器注入點
+    _otGateRace(p, ms) {
+        const T = this._otGateTimer || { set: (f, m) => setTimeout(f, m), clear: (h) => clearTimeout(h) };
+        return new Promise((res) => {
+            let h = null; let done = false;
+            const fin = (v) => { if (done) return; done = true; if (h != null) T.clear(h); res(v); };
+            h = T.set(() => fin({ timeout: true }), ms);
+            Promise.resolve(p).then((v) => fin({ value: v }), (e) => fin({ error: e }));
+        });
+    }
+    _otGateLimits() { return Object.assign({ kbMs: 5000, modelCheckMs: 5000, askMs: 20000 }, this._otGateLimitOverride || {}); }
+    // 探索進度卡（逐步顯示在對話裡）；沒有畫面（測試、橋接）時什麼都不做
+    _otGateProgress() {
+        let w = null;
+        try { if (typeof this._createProgressWidget === 'function' && !this._otGateNoProgress) w = this._createProgressWidget('🧭 離線模式：理解這一句'); } catch (_) { w = null; }
+        return { step: (t) => { try { if (w) { w.update({ status: String(t).slice(0, 120) }); w.log(String(t)); } } catch (_) { /* 顯示失敗不影響探索 */ } }, end: () => { try { const x = w; w = null; if (x) x.remove(); } catch (_) { /* */ } } };
+    }
+    async _otGateExploreRun(plan, text, g, d, tr) {
+        const L = this._otGateLimits();
         const index = Object.entries(this.tools).map(([n, t]) => ({ name: n, desc: String((t && t.description) || '') }));
         const syn = Object.values(typeof FA_SEM_GROUPS !== 'undefined' ? FA_SEM_GROUPS : {}).map((v) => String(v).toLowerCase().split(/\s+/).filter(Boolean)).concat(this._otSynGroups());
         let cands = FaIntentGate.deriveTool(text, index, { synonyms: syn, memory: this._ot && this._ot.gateMemory });
-        g.trace.push('🔍 探索①工具目錄：' + (cands.length ? '候選 ' + cands.slice(0, 3).map((c) => c.label + '（' + c.score + '）').join('、') : '沒有對上的候選'));
+        tr('🔍 探索①工具目錄：' + (cands.length ? '候選 ' + cands.slice(0, 3).map((c) => c.label + '（' + c.score + '）').join('、') : '沒有對上的候選'));
         let pick = FaIntentGate.pickDerived(cands); let by = '工具目錄（程式）';
         if (!pick && this.tools.knowledge_ask) {
-            try {
-                const kr = JSON.parse(await this.tools.knowledge_ask.callback.call(this, JSON.stringify({ question: String(text).replace(/打開|開啟|叫出來|叫出|調出|秀出|請|幫我|一下/g, ' ').trim() || text, limit: 3 })));
-                const quotes = ((kr && kr.hits) || []).map((h) => String(h.quote || '')).join(' ').slice(0, 600);
-                g.trace.push('🔍 探索②知識庫：' + (quotes ? '找到 ' + kr.hits.length + ' 個相關片段，拿來再推導一次' : '沒有相關片段'));
-                if (quotes) { const c2 = FaIntentGate.deriveTool(text + ' ' + quotes, index, { synonyms: syn, memory: this._ot && this._ot.gateMemory }); if (c2.length) cands = c2; pick = FaIntentGate.pickDerived(c2); by = '知識庫（使用者的文件）＋工具目錄'; }
-            } catch (e) { g.trace.push('🔍 探索②知識庫：查詢失敗（' + String((e && e.message) || e).slice(0, 50) + '）'); }
+            tr('🔍 探索②知識庫：查詢中（最多等 ' + Math.round(L.kbMs / 1000) + ' 秒）…');
+            // no_expand：不要為了查這一句去請模型想同義詞（實測會卡 50 秒以上）；只用關鍵字與語意向量
+            const kq = await this._otGateRace(this.tools.knowledge_ask.callback.call(this, JSON.stringify({ question: String(text).replace(/打開|開啟|叫出來|叫出|調出|秀出|請|幫我|一下/g, ' ').trim() || text, limit: 3, no_expand: true })), L.kbMs);
+            if (kq.timeout) tr('⏱️ 探索②知識庫：超過 ' + Math.round(L.kbMs / 1000) + ' 秒，這一步逾時略過');
+            else if (kq.error) tr('🔍 探索②知識庫：查詢失敗（' + String((kq.error && kq.error.message) || kq.error).slice(0, 50) + '），略過');
+            else {
+                try {
+                    const kr = JSON.parse(kq.value);
+                    const quotes = ((kr && kr.hits) || []).map((h) => String(h.quote || '')).join(' ').slice(0, 600);
+                    tr('🔍 探索②知識庫：' + (quotes ? '找到 ' + kr.hits.length + ' 個相關片段，拿來再推導一次' : '沒有相關片段'));
+                    if (quotes) { const c2 = FaIntentGate.deriveTool(text + ' ' + quotes, index, { synonyms: syn, memory: this._ot && this._ot.gateMemory }); if (c2.length) cands = c2; pick = FaIntentGate.pickDerived(c2); by = '知識庫（使用者的文件）＋工具目錄'; }
+                } catch (e) { tr('🔍 探索②知識庫：結果讀不懂（' + String((e && e.message) || e).slice(0, 50) + '），略過'); }
+            }
         }
         const options = FaIntentGate.exploreOptions(cands);
         if (!pick) {
-            const M = await this._otGateModel();
+            tr('🔍 探索③離線小模型：檢查有沒有安裝（最多等 ' + Math.round(L.modelCheckMs / 1000) + ' 秒）…');
+            const mq = await this._otGateRace(this._otGateModel(), L.modelCheckMs);
+            const M = mq.value || null;
+            if (mq.timeout) tr('⏱️ 探索③離線小模型：檢查超過 ' + Math.round(L.modelCheckMs / 1000) + ' 秒，這一步逾時略過，改問使用者');
             if (M) {
                 try {
-                    const r = await FaRecipe.jsonStep({ generate: M.generate, messages: FaIntentGate.exploreMessages(text, options), validate: FaIntentGate.validateExplore(options.length), maxTries: 2, maxTokens: 40, prefill: '{"choice":', thinking: M.thinking || undefined });
+                    tr('🔍 探索③離線小模型：選擇題進行中（最多等 ' + Math.round(L.askMs / 1000) + ' 秒，關閉 Thinking）…');
+                    const jr = await this._otGateRace(FaRecipe.jsonStep({ generate: M.generate, messages: FaIntentGate.exploreMessages(text, options), validate: FaIntentGate.validateExplore(options.length), maxTries: 1, maxTokens: 40, prefill: '{"choice":' }), L.askMs);
+                    if (jr.timeout) { tr('⏱️ 探索③離線小模型：超過 ' + Math.round(L.askMs / 1000) + ' 秒，這一步逾時略過，改問使用者'); }
+                    if (jr.error) throw jr.error;
+                    const r = jr.value || { ok: false };
                     const chosen = r.ok && r.value.choice >= 1 ? options[r.value.choice - 1] : null;
                     // 程式核對：小模型選的要在程式推導的前 3 名候選裡（0.6b 單獨猜不可靠，實測會把「叫出明天要講的那份」猜成網頁）；程式完全沒有線索時也不採用
                     const inTop = chosen && cands.slice(0, 3).some((c) => c.kind === chosen.kind);
-                    if (inTop) { pick = chosen; by = '離線小模型' + (M.thinking ? '（Thinking）' : '') + '字母題（程式核對：在推導前三名內）'; g.trace.push('🔍 探索③離線小模型選了「' + pick.label + '」，程式核對過在推導的前三名候選內'); }
-                    else g.trace.push('🔍 探索③離線小模型' + (chosen ? '選了「' + chosen.label + '」，但不在程式推導的前三名候選內（' + (cands.length ? '候選：' + cands.slice(0, 3).map((c) => c.label).join('、') : '程式沒有任何線索') + '），不採用' : (r.ok ? '沒有選出' : '沒有得到合格的回答')) + '，改問使用者');
-                } catch (e) { g.trace.push('🔍 探索③離線小模型出錯，改問使用者'); }
-            } else g.trace.push('🔍 探索③離線小模型沒載入，直接問使用者');
+                    if (inTop) { pick = chosen; by = '離線小模型字母題（關閉 Thinking；程式核對：在推導前三名內）'; tr('🔍 探索③離線小模型選了「' + pick.label + '」，程式核對過在推導的前三名候選內'); }
+                    else if (!jr.timeout) tr('🔍 探索③離線小模型' + (chosen ? '選了「' + chosen.label + '」，但不在程式推導的前三名候選內（' + (cands.length ? '候選：' + cands.slice(0, 3).map((c) => c.label).join('、') : '程式沒有任何線索') + '），不採用' : (r.ok ? '沒有選出' : '沒有得到合格的回答')) + '，改問使用者');
+                } catch (e) { tr('🔍 探索③離線小模型出錯，改問使用者'); }
+            } else if (!mq.timeout) tr('🔍 探索③離線小模型沒安裝，這一步略過，直接問使用者');
             // 小模型只是猜（實測強迫選擇時 16 句只猜對 4 句），所以先問使用者「我猜是 X，對嗎？」，確認才用；不對就讓使用者自己選
             if (pick && /小模型/.test(by)) {
-                const yes = '對，開' + pick.label; let c = null;
+                const yes = '對，開' + pick.label; let c = null; tr.end();
                 try { c = await this.requestUserForm({ title: '🧭 離線模式：我猜你要開「' + pick.label + '」，對嗎？', description: '你說：「' + text + '」\\n離線小模型猜的，不一定對，所以先跟你確認。', choices: [yes, '不對，我來選'] }); } catch (_) { c = null; }
                 if (c && c.confirmed && c.answer === yes) { by += '＋使用者確認'; g.trace.push('✅ 你確認了「' + pick.label + '」'); }
                 else { g.trace.push('↩️ 你說不對（或沒回答），改讓你自己選'); pick = null; }
             }
         }
         if (!pick) {
-            let ans = null;
-            try { ans = await this.requestUserForm({ title: '🧭 離線模式：要打開哪一種？', description: '你說：「' + text + '」\n我查了工具目錄' + (this.tools.knowledge_ask ? '與知識庫' : '') + '還是不確定要開哪一種。回答後我會記住這個說法。', choices: options.map((o) => o.label).concat(['都不是']) }); } catch (_) { ans = null; }
+            let ans = null; tr.end();
+            const tried = g.trace.filter((x) => /^(?:🔍|⏱️)/.test(x)).map((x) => '・' + x.replace(/^(?:🔍|⏱️)\s*/, '')).join('\n');
+            try { ans = await this.requestUserForm({ title: '🧭 離線模式：要打開哪一種？', description: '你說：「' + text + '」\n我已經試過：\n' + tried + '\n還是不確定要開哪一種。回答後我會記住這個說法。', choices: options.map((o) => o.label).concat(['都不是']) }); } catch (_) { ans = null; }
             const o = ans && ans.confirmed ? options.find((x) => x.label === ans.answer) : null;
             if (o) { pick = o; by = '使用者回答'; g.trace.push('📝 你選了「' + o.label + '」'); } else { g.trace.push('⚠️ 沒有確定要開哪一種，沒有動作'); return false; }
         }

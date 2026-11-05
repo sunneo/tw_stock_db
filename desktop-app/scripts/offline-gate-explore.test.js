@@ -48,7 +48,7 @@ const T = '把那份財報叫出來 [附件：q1（file_id=f1）]';
     let asked = 0;
     fa = mkFa({ requestUserForm: async (o) => { asked++; return { confirmed: true, answer: o.choices[1] }; } });
     plan = prep(fa, T);
-    ok(await fa._otGateExplore(plan, T) === true && asked === 1 && /沒載入，直接問使用者/.test(plan.gate.trace.join('|')) && plan.gate.explored.by === '使用者回答', '④ 小模型沒載入：直接問使用者，採用回答');
+    ok(await fa._otGateExplore(plan, T) === true && asked === 1 && /沒安裝，這一步略過，直接問使用者/.test(plan.gate.trace.join('|')) && plan.gate.explored.by === '使用者回答', '④ 小模型沒載入：直接問使用者，採用回答');
     // 使用者不選 → 沒有動作
     fa = mkFa({ requestUserForm: async () => null });
     plan = prep(fa, T);
