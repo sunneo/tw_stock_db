@@ -379,3 +379,44 @@
 - Kokoro 與 MOSS-TTS-Nano 的檔案大小與位置：未查證。
 - 所有原生與 WebGPU 的速度：沒有實測，全部標推測，留給階段 1 量測。
 - Linux 的任何驗證：未實跑。
+
+---
+
+## 7. 階段 1 量測結果（2026-11-05，實測）
+
+> 狀態：第一批（Basic Pitch、YAMNet）已量。其餘模型見 7.4（進行中，量完會更新本節）。以下數字全部是這台機器的實測，標明「推測」的才是推測。
+
+### 7.1 做法與環境
+
+- 機器：Windows 10，Intel Core i5-2320（4 核心 4 執行緒，3.0 GHz），同一台、同一時段、同一份輸入檔。**機器上同時有其他工作階段在跑，單次計時抖動很大**（YAMNet 原生單次從 9 到 142 毫秒），所以看中位數與整體倍率，不要看單次。
+- 原生：`onnxruntime-node` 1.22.0（使用者安裝版的執行包 `native-runtime/1.22.0-1`），以 Electron 44.4.0 的 node 模式執行，CPU、`intraOpNumThreads=4`，圖形最佳化 `all`。
+- 瀏覽器端：真的 Electron（隔離 `--user-data-dir`、`FA_BROWSER_CONTROL_PORT` 換埠、`FA_DISABLE_MAIN_OVERLAY=1`），用跟產品相同的設定載入 `onnxruntime-web` 1.22.0（CDN 版，proxy 開，WASM 4 執行緒，頁面 `crossOriginIsolated` 為 false 但 SharedArrayBuffer 可傳）。
+- 每題 1 次暖機（不計）＋ 7 次計時取中位數（小模型多量幾次降低抖動）；每模型 3 題，輸入由固定種子產生（`scripts/eval/native_all_models_bench/gen_inputs.js`），原生與 WASM 讀同一份檔。
+- 兩邊都用一般優先權（早期版本曾把原生設成低優先權，結果對 WASM 不公平，已拿掉）。
+- 記憶體：原生用 `process.resourceUsage().maxRSS`（該行程峰值）；WASM 用每 0.5 秒輪詢整個 Electron 行程樹的工作集峰值。**兩者不能直接相減**：Electron 本身（不載模型）的行程樹峰值是 624 MB（實測基線），原生子程序單獨載入模型是 136～163 MB。
+- 輸出一致性：兩邊的輸出張量逐元素比對最大絕對誤差。
+- 模型檔來源：這兩個模型本來就在使用者安裝版的瀏覽器資料庫（IndexedDB `fa-a2m-models`）裡；我只讀取複本（沒有動原資料、沒有下載、沒有網路），把 8 MB 分片（Basic Pitch 是 Snappy 壓縮過的）還原成整檔，**還原後的 SHA-256 與登錄檔釘住的值完全相同**（Basic Pitch 230,444 位元組、YAMNet 16,093,355 位元組）。還原用的暫存檔放在工作階段暫存資料夾，不在倉庫內。
+- 程式：`scripts/eval/native_all_models_bench/`（`bench-config.json`、`gen_inputs.js`、`native_bench.js`、`wasm_bench.eval.js`、`run_wasm.js`、`compare.js`）；原始結果在 `test-reports/native-all-models/`。
+- 重現指令（Windows，`E` 為 desktop-app 資料夾，`W` 為工作資料夾，`M` 為放模型檔的資料夾）：先 `node gen_inputs.js W/inputs`；原生 `ELECTRON_RUN_AS_NODE=1 NAB_ORT=<執行包>/node_modules/onnxruntime-node NAB_MODELS=M NAB_WORK=W NAB_OUT=W/native.jsonl electron.exe native_bench.js`；WASM `node run_wasm.js W M electron.exe E`；最後 `node compare.js W`。
+
+### 7.2 第一批結果（Basic Pitch、YAMNet）
+
+| 模型 | 原生 CPU 中位數（毫秒） | WASM 中位數（毫秒） | 原生比 WASM 快 | 最大絕對誤差 | 原生載入（毫秒） | WASM 載入（毫秒） | 原生子程序峰值記憶體 |
+|---|---|---|---|---|---|---|---|
+| Basic Pitch（一窗 43,844 樣本） | 115 | 195 | 約 1.7 倍 | 1.0e-6 | 192 | 1,719 | 136 MB |
+| YAMNet（3 秒音訊） | 58 | 206 | 約 3.6 倍 | 6.2e-6 | 143 | 168 | 163 MB |
+
+- 逐題：Basic Pitch 原生 106／115／122、WASM 334／195／171；YAMNet 原生 63／58／43、WASM 179／219／206（毫秒）。
+- 一致性：兩邊輸出的最大絕對誤差在 1e-5 以內，遠小於階段 2 驗收門檻 1e-4；位元不完全相同（浮點運算順序不同），同一後端重跑的輸出雜湊相同（可重現，實測）。
+- 還有一次早期量測（原生被設成低優先權）原生反而比 WASM 慢（Basic Pitch 約 370 對 190 毫秒），原因是優先權不公平加上抖動；修正後才是上表。這說明小模型的速度差「在這台忙碌的機器上」會被雜訊影響，倍率的方向（原生較快）兩次修正後都一致，但確切倍數要保守看。
+- Basic Pitch 第一次載入原生執行包時曾花 16 秒（推測：Windows 第一次載入原生 DLL 被掃毒；之後 0.2～0.3 秒），首次使用的體驗要在階段 2 注意，不要把它當成每次的成本。
+- 對應到產品：Basic Pitch 一首歌是很多窗（每窗約 2 秒音訊），原生每窗約省 80 毫秒；絕對時間本來就小，**收益是真的但不大**，這批的價值如設計文件所說，主要是驗證張量協定。
+
+### 7.3 結論（第一批，實測）
+
+- Basic Pitch、YAMNet：原生 CPU 比 WASM 快、輸出誤差在 1e-5 內、記憶體只有一個小子程序 → **符合階段 2 前提，可以做試點**。
+- 還沒有證據的（見 7.4）不下結論。
+
+### 7.4 其餘模型（待量）
+
+（量測完成後在這裡補表。）

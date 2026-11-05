@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "note": "原生 CPU（onnxruntime-node 1.22.0）對瀏覽器端 WASM（onnxruntime-web 1.22.0）的量測設定。模型檔不在倉庫內；本機沒有的只列來源與大小，量測腳本絕不自己下載。",
+  "threads": 4,
+  "warmup": 1,
+  "runs": 3,
+  "queries": 3,
+  "timeout_ms": 120000,
+  "time_cap_ms": 2700000,
+  "models": [
+    {
+      "id": "basic-pitch", "runs": 7, "label": "Basic Pitch（nmp.onnx）", "file": "nmp.onnx", "bytes": 230444,
+      "sha256": "2c3c1d144bfa61ad236e92e169c13535c880469a12a047d4e73451f2c059a0ec",
+      "source": "https://huggingface.co/daserge/basic-pitch-onnx/resolve/main/nmp.onnx",
+      "inputs": [{ "name": "auto0", "dtype": "float32", "dims": [1, 43844, 1], "gen": "audio22k" }]
+    },
+    {
+      "id": "yamnet", "runs": 7, "label": "YAMNet（yamnet.onnx）", "file": "yamnet.onnx", "bytes": 16093355,
+      "sha256": "d3835ffbbd4a1bb3e777f0ca217b5007907f5171dd5d17c4236b95b2af8f908e",
+      "source": "https://huggingface.co/audiomagic/yamnet-onnx/resolve/main/yamnet.onnx",
+      "inputs": [{ "name": "waveform", "dtype": "float32", "dims": [48000], "gen": "audio16k" }]
+    },
+    {
+      "id": "depth-anything-v2-small", "label": "Depth Anything V2 Small（CPU fp32）", "file": "depth_anything_v2_small.onnx", "bytes": null,
+      "source": "https://huggingface.co/onnx-community/depth-anything-v2-small（onnx/model.onnx，登錄約 99 MB）",
+      "inputs": [{ "name": "pixel_values", "dtype": "float32", "dims": [1, 3, 518, 518], "gen": "image" }]
+    },
+    {
+      "id": "demucs-6s", "label": "Demucs 6 軌（htdemucs_6s fp16 權重）", "file": "htdemucs_6s_fp16weights.onnx", "bytes": 136428532,
+      "sha256": "7ce55792e2231c93fbf92de95f5fd5b3a5e6c89f7db690dfd693e8f1dce56869", "graph_opt": "disabled",
+      "source": "https://huggingface.co/adowu/htdemucs-6s-onnx/resolve/main/htdemucs_6s_fp16weights.onnx",
+      "inputs": [{ "name": "mix", "dtype": "float32", "dims": [1, 2, 343980], "gen": "audio44k_stereo" }]
+    },
+    {
+      "id": "whisper-base-encoder", "label": "Whisper base 編碼器（q8）", "file": "whisper_base_encoder_q8.onnx", "bytes": null,
+      "source": "https://huggingface.co/onnx-community/whisper-base（onnx/encoder_model_quantized.onnx；登錄 q8，整體約 80 MB）",
+      "inputs": [{ "name": "input_features", "dtype": "float32", "dims": [1, 80, 3000], "gen": "logmel" }]
+    },
+    {
+      "id": "slimsam-encoder", "label": "SlimSAM 77 編碼器（q8）", "file": "slimsam_vision_encoder_q8.onnx", "bytes": null,
+      "source": "https://huggingface.co/Xenova/slimsam-77-uniform（onnx/vision_encoder_quantized.onnx，約 8.9 MB）",
+      "inputs": [{ "name": "pixel_values", "dtype": "float32", "dims": [1, 3, 1024, 1024], "gen": "image" }]
+    },
+    {
+      "id": "sdxs-unet-1step", "label": "SDXS-512 unet 一步（CPU int8）", "file": "sdxs-int8/unet.onnx", "bytes": 873388448,
+      "source": "https://huggingface.co/lequangky/tipsy-sdxs-512-int8 @ 41203dc02882252d74bb683dedc9bfde08641b55",
+      "license": "CreativeML Open RAIL++-M",
+      "inputs": "from_session"
+    },
+    {
+      "id": "midigenai-16steps", "label": "midigenai v5 CPU int8，量 16 步", "file": "midigenai-v5-decoder-wasm-int8.onnx", "bytes": 114561179,
+      "sha256": "5ca00f42ba3900aeb6d98821d4e8b559a880c8d99d62dbdc0d1555a38c1eed65",
+      "source": "https://huggingface.co/nicholasbien/midigenai/resolve/main/v5/onnx/decoder-wasm-int8.onnx",
+      "inputs": "kv_loop"
+    }
+  ]
+}
