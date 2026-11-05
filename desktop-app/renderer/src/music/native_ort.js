@@ -150,5 +150,21 @@
     }
     return { targetSize, toChw, resizeBilinear, estimate, MEAN, STD };
   })();
-  return { create, withFallback, Tensor, toB64, fromB64, TYPED, depth };
+  // ---- 逐模型的原生註冊表（部分原生）：只有「已實作並驗證」的模型才列在這裡，才會走原生；不在表裡的模型一律維持舊做法（瀏覽器端／WASM），不報錯、不影響其他功能。
+  // 每個模型另有開關（localStorage 的 fa.native.model.<id>，'0'＝關；預設開）。核心的聊天／呼叫工具／食譜的原生（qwen3-0.6b）有自己的路徑與判斷，不經過這張表。
+  // 新增模型的規則：實作並用真 Electron 驗證（含退回）之後，才把它加進這張表。
+  const REGISTRY = {
+    'basic-pitch': { kind: 'audio', verified: '2026-11-05' },
+    'yamnet': { kind: 'audio', verified: '2026-11-05' },
+    'demucs-6s': { kind: 'audio', verified: '2026-11-05' },
+    'depth-anything-v2-small': { kind: 'depth', verified: '2026-11-05' },
+  };
+  const switchKey = (id) => 'fa.native.model.' + id;
+  // getFlag(key) → 字串或 null（呼叫端傳 localStorage 讀取；讀不到就當沒設定＝開）。回傳 { native, why }
+  function routed(id, getFlag) {
+    if (!Object.prototype.hasOwnProperty.call(REGISTRY, id)) return { native: false, why: '這個模型還沒有原生實作，維持舊做法' };
+    let f = null; try { f = getFlag ? getFlag(switchKey(id)) : null; } catch (_) { f = null; }
+    return f === '0' ? { native: false, why: '這個模型的原生開關被關閉' } : { native: true, why: '' };
+  }
+  return { create, withFallback, Tensor, toB64, fromB64, TYPED, depth, REGISTRY, routed, switchKey };
 });

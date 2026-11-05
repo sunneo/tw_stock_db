@@ -36335,7 +36335,23 @@ const holder = {};
     }
     return { targetSize, toChw, resizeBilinear, estimate, MEAN, STD };
   })();
-  return { create, withFallback, Tensor, toB64, fromB64, TYPED, depth };
+  // ---- 逐模型的原生註冊表（部分原生）：只有「已實作並驗證」的模型才列在這裡，才會走原生；不在表裡的模型一律維持舊做法（瀏覽器端／WASM），不報錯、不影響其他功能。
+  // 每個模型另有開關（localStorage 的 fa.native.model.<id>，'0'＝關；預設開）。核心的聊天／呼叫工具／食譜的原生（qwen3-0.6b）有自己的路徑與判斷，不經過這張表。
+  // 新增模型的規則：實作並用真 Electron 驗證（含退回）之後，才把它加進這張表。
+  const REGISTRY = {
+    'basic-pitch': { kind: 'audio', verified: '2026-11-05' },
+    'yamnet': { kind: 'audio', verified: '2026-11-05' },
+    'demucs-6s': { kind: 'audio', verified: '2026-11-05' },
+    'depth-anything-v2-small': { kind: 'depth', verified: '2026-11-05' },
+  };
+  const switchKey = (id) => 'fa.native.model.' + id;
+  // getFlag(key) → 字串或 null（呼叫端傳 localStorage 讀取；讀不到就當沒設定＝開）。回傳 { native, why }
+  function routed(id, getFlag) {
+    if (!Object.prototype.hasOwnProperty.call(REGISTRY, id)) return { native: false, why: '這個模型還沒有原生實作，維持舊做法' };
+    let f = null; try { f = getFlag ? getFlag(switchKey(id)) : null; } catch (_) { f = null; }
+    return f === '0' ? { native: false, why: '這個模型的原生開關被關閉' } : { native: true, why: '' };
+  }
+  return { create, withFallback, Tensor, toB64, fromB64, TYPED, depth, REGISTRY, routed, switchKey };
 });
 
 }).call(null, undefined, holder);
@@ -101896,6 +101912,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     // 前處理（縮放、正規化）與後處理在渲染程序，只有 session.run 在原生子程序。回傳 { ok:true, depth, ... }、{ ok:false, why }（為什麼沒用上，交給呼叫端走網頁版）或 null（沒啟用原生，完全不碰）。
     async _depthNative(img, model, p) {
         if (typeof FaNativeOrt === 'undefined' || model.id !== 'depth-anything-v2-small' || !this._nrOptIn() || !this._nrAvailable()) return null;
+        if (!FaNativeOrt.routed(model.id, (k) => localStorage.getItem(k)).native) return null; // 不在原生註冊表（或開關關閉）：維持舊做法
         const gpu = await this._omGpuInfo();
         if (!FaVlm.wantsNativeBackend(p.device || this._omSettings().device, gpu.available)) return null;
         const t0 = Date.now(); let prog = null;
@@ -103034,6 +103051,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const label = c.REG[id].label;
         try {
             if (typeof FaNativeOrt === 'undefined' || !this._nrOptIn() || !this._nrAvailable()) return null;
+            if (!FaNativeOrt.routed(id, (k) => localStorage.getItem(k)).native) return null; // 不在原生註冊表（或開關關閉）：維持舊做法，連信箱都不問
             const gpu = await this._omGpuInfo();
             if (!FaVlm.wantsNativeBackend(this._omDevicePrefOf({ id: 'audio-' + id }), gpu.available)) return null;
             const box = await this._nrBox(); if (!box) return null;

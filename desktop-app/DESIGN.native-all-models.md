@@ -537,3 +537,35 @@
 - Linux 全部未實跑（子程序啟動方式、路徑分隔字元、原生執行包都沒在 Linux 試過）。
 - 真實歌曲、真實照片的端對端結果（分軌聽感、深度圖視覺、3D 成品）；這次的輸入是合成音訊與合成圖。
 - 長音訊（接近 15 分鐘上限）連續分段時的記憶體與時間；使用者安裝版（非隔離 profile）按「安裝原生執行包」後的實際流程。
+
+---
+
+## 9. 部分原生：逐模型註冊表（使用者原則，2026-11-05）
+
+使用者原話：「最根本的、核心的聊天／呼叫 tool／recipe 的有加速，其他的是 nice to have。我希望當我打開 native offline，如果實作還沒做好，就必須維持舊的作法，就是可以 partial native。」另：「速度有變快、保持正確性，這樣就有價值，所以我偏好能接得就都上」；「很少有原生會比 WASM 肥的，這很怪。有的話肯定 WASM 版偷偷改了什麼」。
+
+### 9.1 規則
+
+1. **部分原生**：打開原生離線時，只有「已實作並驗證」的模型走原生；沒實作的模型一律維持舊做法（瀏覽器端／WASM），不報錯、不要求使用者關掉原生、不影響其他功能。
+2. **逐模型註冊表**決定路由：`FaNativeOrt.REGISTRY`（`renderer/src/music/native_ort.js`）只列已完成並驗證的模型（目前：`basic-pitch`、`yamnet`、`demucs-6s`、`depth-anything-v2-small`）；不在表裡就是舊路（`routed(id)` 回 `{native:false, why}`，呼叫端連信箱都不問）。每個模型另有開關 `localStorage['fa.native.model.<id>']`（`'0'`＝關，預設開）。新增模型的規則：實作並用真 Electron 驗證（含下面三種退回）之後才加進表。
+3. **退回**：已在表裡的模型，原生失敗（執行包沒裝、載入失敗、執行到一半出錯）都退回舊路，輸出格式相同；執行到一半出錯時只有出錯的那一次呼叫（Basic Pitch 一窗、Demucs 一段）改由網頁版重做，已完成的窗／段不重做；失敗原因寫進結果的「沒做到的部分」或進度卡，不顯示莫名錯誤。
+4. **核心不受影響**：聊天／呼叫工具／食譜的原生（`qwen3-0.6b`）有自己的路徑（`_nrNativeState`、`backendOrder`）與判斷，不經過這張表；這次的改動沒有碰它，既有 `tests/native/native_runner.test.js`（19 項）與 `renderer/src/vlm/vlm_core.test.js`（143 項，含 `backendOrder`／`wantsNativeBackend`）每次改動後都重跑，全過。
+5. **判準改為**：原生能載入並跑通、輸出與瀏覽器端一致、速度沒有變慢，就納入註冊表，不再用「快多少倍」當門檻（SlimSAM 編碼器、SDXS 也要納入；輸出不一致的才暫緩並寫明差異原因）。原生比 WASM 慢或吃更多記憶體視為異常，要逐項對照瀏覽器端的 session 設定查原因。
+
+### 9.2 驗證（真 Electron、隔離 profile，`scripts/eval/native_audio_e2e*.js` 的 `partial_native` 步驟）
+
+| 情況 | 結果（實測） |
+|---|---|
+| 註冊表外的模型（用 midigenai 代表） | 回 `null`，信箱呼叫 0 次，沒有任何訊息；`routed('whisper-base')` 為 false |
+| 逐模型開關關掉（YAMNet） | 回 `null`，信箱呼叫 0 次；其他模型不受影響 |
+| 執行包沒裝 | 整條音訊轉 MIDI 照常完成；「沒做到的部分」寫「原生不可用（沒有可用的執行包…真實原因），改用網頁版 WASM」 |
+| 載入失敗（原生資料夾的模型檔被換成同大小垃圾） | 回 `null`，原因寫出 onnxruntime 的載入錯誤，改用網頁版 |
+| 執行到一半出錯（第二次呼叫前釋放主程序端的模型） | 同一個 session 物件自動切到網頁版，輸出與原生的最大絕對差 5.1e-7，原因「這個模型還沒載入」寫進 notes |
+
+單元測試：`scripts/music-tests/native_ort.test.js` 34 項（含註冊表：表內四個走原生、表外含 `constructor`／`__proto__` 等一律不走、逐模型開關、讀開關失敗當沒設定）。
+
+### 9.3 接續點（尚未做）
+
+- **SlimSAM 編碼器**：要納入註冊表（輸出已驗證一致，6e-8）。先查原生峰值記憶體 3.6 GB 對 WASM 2.3 GB 的差：逐項對照 `enableCpuMemArena`、`enableMemPattern`、`executionMode`、執行緒數、圖形最佳化等級（`native_bench.js` 目前只設 `intraOpNumThreads` 與 `graphOptimizationLevel`，其餘是 onnxruntime-node 預設）；找到原因就調整 `NRT.tensorChildMain` 的 session 選項並重量。使用端是 `faVlmWorkerMain` 的 `sam` 分支（`transformers.js`，編碼器一次、解碼器每點一次），原生只接編碼器要把 `image_embeddings` 與 `image_positional_embeddings` 交回 Worker，需要另寫橋接。
+- **SDXS**：unet 輸出訊噪比 34.8 dB，要用同一份輸入逐層或逐輸出比對 int8 算子差異；納入前仍須完整生圖（text encoder＋unet＋VAE）比對，不下載新模型（暫存資料夾裡已有使用者同意下載的那份）。
+- 其餘（Whisper 編碼器、midigenai）本機沒有檔案，沒下載，維持舊路。

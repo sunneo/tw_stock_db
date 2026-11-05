@@ -89,6 +89,36 @@ return (async () => {
         const strip = (r) => Object.assign({}, r, { data: undefined, n: r.data ? r.data.length : 0 });
         await note({ step: 'depth', runs: [n1, n2, w1, w2].map(strip), compare: cmp, same_size: !!(n2.data && w2.data && n2.w === w2.w && n2.h === w2.h) });
     }
+    // ⑤ 部分原生與退回（只有 Basic Pitch 在清單內才跑；執行包沒裝的情況由「不給執行包」的那一次執行驗證）
+    if (IDS.indexOf('basic-pitch') >= 0) {
+        const P5 = { step: 'partial_native' }, id = 'basic-pitch', reg = REG[id];
+        const ctx = (notes) => ({ REG, store, dl: async () => bytesOf(id), say: () => {}, notes, ort, opt: undefined });
+        try { localStorage.setItem('fa.native.enabled', '1'); } catch (_) { /* */ }
+        P5.routed_in = FaNativeOrt.routed('yamnet', (k) => localStorage.getItem(k)).native; P5.routed_out = FaNativeOrt.routed('whisper-base', (k) => localStorage.getItem(k)).native;
+        // 註冊表外的模型：_nrAudioSession 回 null，而且完全沒打信箱（呼叫次數不變）；用 REG 裡有、但註冊表沒有的 midigenai 當代表
+        let calls = 0; const orig = fa._nrCall.bind(fa); fa._nrCall = (...a2) => { calls++; return orig(...a2); };
+        const outN = []; const outSess = await fa._nrAudioSession('midigenai-v5-cpu', ctx(outN)); P5.outside_null = outSess === null; P5.outside_mailbox_calls = calls; P5.outside_notes = outN.length;
+        // 逐模型開關：關掉 YAMNet → null、沒打信箱
+        localStorage.setItem('fa.native.model.yamnet', '0'); calls = 0; const swN = []; const swSess = await fa._nrAudioSession('yamnet', ctx(swN)); P5.switch_off_null = swSess === null; P5.switch_off_calls = calls; localStorage.removeItem('fa.native.model.yamnet');
+        fa._nrCall = orig;
+        // 情況 B：載入失敗（原生資料夾裡的模型檔被換成同大小的垃圾，執行包還在）→ 回 null 並寫原因；整條流程仍用網頁版完成
+        const box = await fa._nrBox(), sep = box.indexOf(String.fromCharCode(92)) >= 0 ? String.fromCharCode(92) : '/', ud = box.slice(0, box.lastIndexOf(sep));
+        const mp = ud + sep + 'native-models' + sep + id + sep + 'nmp.onnx';
+        await fa._nrCall('onnx_release', { id }, 8000);
+        await fsx.writeFile(mp, { base64: btoa('x'.repeat(reg.bytes)) });
+        const bN = []; const bSess = await fa._nrAudioSession(id, ctx(bN)); P5.load_fail_null = bSess === null; P5.load_fail_notes = bN;
+        // 情況 C：執行到一半出錯（載入成功、跑第二次前把主程序那邊的模型釋放掉）→ 退回網頁版，輸入同樣的資料結果仍正確，原因寫進 notes
+        await fsx.remove(mp, false); await fsx.remove(mp + '.ok', false); await fa._nrCall('onnx_release', { id }, 8000);
+        const cN = []; const cs = await fa._nrAudioSession(id, ctx(cN)); P5.midrun_started_native = !!cs && cs.session.backend === 'native';
+        if (cs) {
+            const x = mkInput(id, 1), feed = () => ({ [cs.session.inputNames[0]]: new cs.ort.Tensor('float32', x.slice(), SPEC[id].dims) });
+            const r1 = await cs.session.run(feed()); P5.midrun_first_native = cs.session.backend === 'native';
+            await fa._nrCall('onnx_release', { id }, 8000);
+            const r2 = await cs.session.run(feed()); let worst = 0; for (const nm of cs.session.outputNames) { const p1 = r1[nm].data, p2 = r2[nm].data; for (let i = 0; i < p1.length; i++) worst = Math.max(worst, Math.abs(p1[i] - p2[i])); }
+            P5.midrun_fell_back = cs.session.backend === 'wasm'; P5.midrun_max_abs_diff = worst; P5.midrun_notes = cN; P5.midrun_reason = cs.session.lastError;
+        }
+        await note(P5);
+    }
     R.total_ms = Date.now() - R.t0; await note({ step: 'done' });
     return { ok: true, steps: R.steps.length };
 })();
