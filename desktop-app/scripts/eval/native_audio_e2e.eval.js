@@ -50,7 +50,7 @@ return (async () => {
     }
     // ③ 完整流程（只有 Basic Pitch 在清單內才跑）：合成 12 秒立體聲（C 和弦 → G 和弦），原生開與關各跑一次
     if (IDS.indexOf('basic-pitch') >= 0) {
-        const sr = 44100, secs = 40, n = sr * secs, ac = new OfflineAudioContext(2, n, sr), buf = ac.createBuffer(2, n, sr);
+        const sr = 44100, secs = IDS.indexOf('demucs-6s') >= 0 ? 16 : 40, n = sr * secs, ac = new OfflineAudioContext(2, n, sr), buf = ac.createBuffer(2, n, sr);
         for (let c = 0; c < 2; c++) { const d = buf.getChannelData(c); for (let i = 0; i < n; i++) { const t = i / sr, ch = (t % 12) < 6 ? [261.63, 329.63, 392] : [196, 246.94, 293.66]; let v = 0; for (const f of ch) v += Math.sin(2 * Math.PI * f * t) * 0.18; d[i] = v * Math.min(1, (t % 6) * 6); } }
         const wavHeader = (len) => { const b = new ArrayBuffer(44), v = new DataView(b), s = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); }; s(0, 'RIFF'); v.setUint32(4, 36 + len, true); s(8, 'WAVEfmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 2, true); v.setUint32(24, sr, true); v.setUint32(28, sr * 4, true); v.setUint16(32, 4, true); v.setUint16(34, 16, true); s(36, 'data'); v.setUint32(40, len, true); return b; };
         const pcm = new Int16Array(n * 2); const L = buf.getChannelData(0), Rr = buf.getChannelData(1); for (let i = 0; i < n; i++) { pcm[2 * i] = Math.max(-1, Math.min(1, L[i])) * 32767; pcm[2 * i + 1] = Math.max(-1, Math.min(1, Rr[i])) * 32767; }
@@ -61,9 +61,9 @@ return (async () => {
             const t = performance.now(); const r = await fa._audioToMidi({ file_id: fid, stems: !!stems });
             return { label, native: nativeOn, ms: Math.round(performance.now() - t), ok: r.ok, error: r.error, tempo: r.tempo, tracks: r.tracks, skipped: r.skipped };
         };
-        const a = await runOnce('原生開（第一次，含安裝模型到原生資料夾）', true, false); await note({ step: 'e2e', run: a });
-        const a2 = await runOnce('原生開（第二次，模型已安裝）', true, false); await note({ step: 'e2e', run: a2 });
-        const b = await runOnce('原生關（網頁版 WASM）', false, false); await note({ step: 'e2e', run: b });
+        const a = await runOnce('原生開（第一次，含安裝模型到原生資料夾）', true, IDS.indexOf('demucs-6s') >= 0); await note({ step: 'e2e', run: a });
+        const a2 = await runOnce('原生開（第二次，模型已安裝）', true, IDS.indexOf('demucs-6s') >= 0); await note({ step: 'e2e', run: a2 });
+        const b = await runOnce('原生關（網頁版 WASM）', false, IDS.indexOf('demucs-6s') >= 0); await note({ step: 'e2e', run: b });
     }
     R.total_ms = Date.now() - R.t0; await note({ step: 'done' });
     return { ok: true, steps: R.steps.length };
