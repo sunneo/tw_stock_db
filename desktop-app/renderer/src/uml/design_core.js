@@ -579,5 +579,24 @@ public class Application {
         return { model, language: f1.lang || 'python', package: f1.pkg || undefined, constraints, notes, remember: !!(r3 && r3.flat && [].concat(r3.flat.remember || []).includes('yes')) };
     }
 
-    return { guideStart, guideConcerns, guideSummary, guideApply, pruneUsecases, GUIDE_LANGS, addMembers, reworkRegion, addUsecaseFromText, dslOfClass, ARCH, CONCERNS, PKG, FRAGMENTS, detectTags, recommend, resolveAmbiguous, manifestFor, buildProject, matchFragments, seedModel, trainerPatterns, findIssues, normalize, reworkModel, packagesOf, designProject };
+    // ===== 攤平成 JSONL（任何窗口大小的模型都讀得完；原本的模型結構不變）=====
+    // 模型（classes／relations／usecases…）照原結構留著；這裡只多一組「可以正確還原」的轉換：
+    //   modelToJsonl(model, { levels, pager })  → { lines }：一個節點一行 {path,depth,type,value|keys|length}（path 是 JSON Pointer）；
+    //       levels＝只攤前幾層，更深的容器收成 {collapsed:true,size}（先看全貌）
+    //   modelExpand(model, path, { levels, pager }) → { lines }：把某個收合的節點再往下鑽，行的 path 是完整路徑，直接接在先前的行後面
+    //   modelFromJsonl(lines, { pager }) → { ok, model, collapsedPaths, errors }：還原；沒展開的節點留空容器並列在 collapsedPaths；
+    //       errors 是還原後的模型驗證結果（不改模型）——收合的部分還沒讀到時 errors 不代表設計有問題，要等 collapsedPaths 為空再看。
+    // pager＝jsonl_pager.js 的模組（宿主給 _jsonlPagerMod()；node 測試不給就 require）。
+    function pagerOf(o) { const p = (o && o.pager) || (typeof AiChatJsonlPager !== 'undefined' && AiChatJsonlPager) || (typeof require === 'function' ? require('../agent/jsonl_pager.js') : null); if (!p) throw new Error('需要 JSONL 分頁器模組（pager）'); return p; }
+    function modelToJsonl(model, o) { o = o || {}; return pagerOf(o).flatten(model, { maxDepth: o.levels }); }
+    function modelExpand(model, path, o) { o = o || {}; return pagerOf(o).expand(model, path, { levels: o.levels }); }
+    function modelFromJsonl(lines, o) {
+        const r = pagerOf(o).unflattenInfo(lines); const m = r.value;
+        if (!m || typeof m !== 'object' || !Array.isArray(m.classes)) return { ok: false, error: '這些行還原不出模型（缺少 classes）', collapsedPaths: r.collapsedPaths };
+        for (const k of ['relations', 'usecases']) if (!Array.isArray(m[k])) m[k] = [];
+        let errors = []; try { errors = U.validateModel(m).filter((e) => e && (e.level === 'error' || e.severity === 'error' || !e.level)); } catch (_) { /* 還沒展開完整 */ }
+        return { ok: true, model: m, collapsedPaths: r.collapsedPaths, errors };
+    }
+
+    return { modelToJsonl, modelExpand, modelFromJsonl, guideStart, guideConcerns, guideSummary, guideApply, pruneUsecases, GUIDE_LANGS, addMembers, reworkRegion, addUsecaseFromText, dslOfClass, ARCH, CONCERNS, PKG, FRAGMENTS, detectTags, recommend, resolveAmbiguous, manifestFor, buildProject, matchFragments, seedModel, trainerPatterns, findIssues, normalize, reworkModel, packagesOf, designProject };
 });

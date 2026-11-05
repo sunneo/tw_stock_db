@@ -7,8 +7,10 @@ const pagerSrc = fs.readFileSync(path.join(__dirname, '..', 'renderer/src/agent/
 const P = require('../renderer/src/agent/jsonl_pager.js');
 const a = src.indexOf('    _bigStash(text, label) {'), b = src.indexOf('    _formatToolResult(result, toolName) {');
 assert.ok(a > 0 && b > a, '找不到要切的原始碼');
-const Cls = new Function('FA_JSONL_PAGER_SRC', 'REASONING_DEADEND_CHARS_PER_TOKEN_ESTIMATE', 'return (class {\n' + src.slice(a, b) + '\n})')(pagerSrc, 3);
+const webSrc = fs.readFileSync(path.join(__dirname, '..', 'renderer/src/agent/web_blocks.js'), 'utf8');
+const Cls = new Function('FA_JSONL_PAGER_SRC', 'FA_WEB_BLOCKS_SRC', 'REASONING_DEADEND_CHARS_PER_TOKEN_ESTIMATE', 'return (class {\n' + src.slice(src.indexOf('    _bigStashRecords('), src.indexOf('    // 線上視覺模型看圖：每個候選')) + src.slice(a, b) + '\n})')(pagerSrc, webSrc, 3);
 const mk = (ctx, auto) => Object.assign(new Cls(), {
+  _log: (m) => console.log('LOG', m),
   _getGenerationSettings: () => ({ contextWindowTokens: ctx }),
   _isAutoAgentMode: () => !!auto,
   _toolResultBudgetChars() { return auto ? Math.max(16000, ctx * 0.25 * 3) : Math.max(8000, ctx * 0.15 * 3); },
@@ -40,6 +42,22 @@ t('VLM 風格：8000 個物件的大回應，截斷後第一頁就是 JSONL，�
     assert.deepStrictEqual(r.all, data.objects); assert.strictEqual(r.last.done, true); assert.strictEqual(r.last.read_records, 8000);
     assert.ok(r.pages > 1);
   });
+});
+
+t('長網頁三層：章節索引 → 區塊 → 參照文件偏移，讀完區塊與原文一致', () => {
+  let md = '# 大標\n\n前言段落。\n\n'; for (let c = 0; c < 40; c++) { md += '## 章' + c + '\n\n'; for (let k = 0; k < 30; k++) md += '第' + c + '章第' + k + '段，內容 [連結' + k + '](http://x/' + c + '/' + k + ') 結尾。\n\n'; }
+  const fa = mk(4096, true);
+  const out = fa._webPageLayers(md, { title: 'T', url: 'http://x', file_id: 'f1' }); assert.ok(out, '要回第 0 層');
+  let pp = P.parsePage(out); assert.strictEqual(pp.meta.head.layer, 'sections'); assert.strictEqual(pp.meta.head.file_id, 'f1');
+  const secs = pp.records.slice(); const sid = pp.meta.source;
+  while (pp.meta.has_more) { pp = P.parsePage(fa._bigPage(sid, pp.meta.next_cursor).text); secs.push(...pp.records); }
+  assert.strictEqual(secs.length, 41); const s5 = secs.find((x) => x.title === '章5');
+  // 第 2 層：原文偏移
+  assert.ok(md.slice(s5.doc.offset, s5.doc.offset + s5.doc.chars).startsWith('## 章5')); assert.ok(!md.slice(s5.doc.offset, s5.doc.offset + s5.doc.chars).includes('## 章6'));
+  // 第 1 層：用 blocks_cursor 直接跳到那一章，讀到章尾
+  let bp = P.parsePage(fa._bigPage(P.decodeCursor(s5.blocks_cursor).source ? s5.blocks_cursor.split(':')[1] : '', s5.blocks_cursor).text); const got = bp.records.slice(); const bid = bp.meta.source;
+  while (bp.meta.has_more && got.filter((r) => r.sec === s5.ref).length < 31) { bp = P.parsePage(fa._bigPage(bid, bp.meta.next_cursor).text); got.push(...bp.records); }
+  const mine = got.filter((r) => r.sec === s5.ref); assert.strictEqual(mine.length, 31); assert.strictEqual(mine[1].links[0].url, 'http://x/5/0');
 });
 
 t('窗口越小分頁越多（按比例縮放，不是固定常數）', () => {

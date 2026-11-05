@@ -69,7 +69,108 @@
 
   // 把一個結果轉成「一行一筆」的記錄。input：JSON 文字、JSONL 文字或已解析的值。
   // 回傳 { lines:[每筆一行的字串], shape, head, bad, path } 或 null（不是記錄清單，呼叫者退回原本的截斷）。
-  function toRecords(input) {
+
+  // 超深的結構攤平成 JSONL：每個節點一行 {"path":"/a/b/0/c","type":"string","value":…}（JSON Pointer；容器行只有 type 與 keys／length，
+  // 沒有 value），先序、鍵順序不變，所以 unflatten 可以逐字還原。單行不含實體換行（JSON.stringify），單一葉子太大由分頁器分段。
+  function ptrEsc(k) { return String(k).replace(/~/g, '~0').replace(/\//g, '~1'); }
+  // maxDepth：只攤到這一層，更深的容器變成一行 {collapsed:true,size:子孫節點數}（先看全貌，要哪裡再用 expand 往下鑽）；沒給就攤到底。
+  function dkeys(o) { return Object.keys(o).filter(function (k) { return o[k] !== undefined && typeof o[k] !== 'function'; }); } // 跟 JSON.stringify 一樣：值是 undefined／函式的欄位不存在
+  function countNodes(v) { var n = 1; if (Array.isArray(v)) for (var i = 0; i < v.length; i++) n += countNodes(v[i]); else if (isObj(v)) { var dk = dkeys(v); for (var q = 0; q < dk.length; q++) n += countNodes(v[dk[q]]); } return n; }
+  function flatten(value, opts) {
+    opts = opts || {}; var maxNodes = Number(opts.maxNodes) > 0 ? Number(opts.maxNodes) : 2000000;
+    var limit = opts.maxDepth != null && Number(opts.maxDepth) >= 0 ? Number(opts.maxDepth) : Infinity, base = opts.basePath || '', d0 = Number(opts.baseDepth) || 0;
+    var out = [], count = 0, truncated = false;
+    (function walk(v, path, depth) {
+      if (truncated) return;
+      if (++count > maxNodes) { truncated = true; return; }
+      var isArr = Array.isArray(v), isO = isObj(v);
+      if (isArr || isO) {
+        var row = { path: path, depth: depth, type: isArr ? 'array' : 'object' }; if (isArr) row.length = v.length; else row.keys = dkeys(v).length;
+        if (depth - d0 >= limit && (isArr ? v.length : row.keys)) { row.collapsed = true; row.size = countNodes(v) - 1; out.push(safeStringify(row)); return; }
+        out.push(safeStringify(row));
+        if (isArr) for (var i = 0; i < v.length; i++) walk(v[i], path + '/' + i, depth + 1);
+        else { var ks = dkeys(v); for (var j = 0; j < ks.length; j++) walk(v[ks[j]], path + '/' + ptrEsc(ks[j]), depth + 1); }
+      } else out.push(safeStringify({ path: path, depth: depth, type: v === null ? 'null' : typeof v, value: v === undefined ? null : v }));
+    })(value, base, d0);
+    return { lines: out, nodes: out.length, truncated: truncated };
+  }
+  // 往下鑽：把 path（JSON Pointer）那個節點再攤開 levels 層（預設 1），行的 path 是從根算起的完整路徑，可以直接接在先前的行後面一起 unflatten。
+  function getByPointer(value, path) {
+    var cur = value; if (path === '' || path == null) return { ok: true, value: cur };
+    var segs = String(path).split('/').slice(1).map(function (x) { return x.replace(/~1/g, '/').replace(/~0/g, '~'); });
+    for (var i = 0; i < segs.length; i++) { if (cur === null || typeof cur !== 'object' || !(segs[i] in cur)) return { ok: false, error: '找不到路徑 ' + path }; cur = cur[segs[i]]; }
+    return { ok: true, value: cur };
+  }
+  function expand(value, path, opts) {
+    opts = opts || {}; var g = getByPointer(value, path); if (!g.ok) return g;
+    var base = path || '', depth = base ? base.split('/').length - 1 : 0;
+    var f = flatten(g.value, { maxDepth: opts.levels == null ? 1 : opts.levels, basePath: base, baseDepth: depth, maxNodes: opts.maxNodes });
+    return { ok: true, lines: f.lines, nodes: f.nodes, truncated: f.truncated };
+  }
+  // 反向：把 flatten／expand 的行還原成原本的值。同一路徑的行後來的覆蓋前面的（collapsed 的占位行會被 expand 的行取代，已有的子節點不清掉）；
+  // 還有 collapsed 沒展開的節點會留下空容器，並列在回傳的 collapsedPaths（用 unflattenInfo 取得）。
+  function unflattenInfo(lines) {
+    var root, have = false, collapsed = {};
+    for (var n = 0; n < lines.length; n++) {
+      var r = typeof lines[n] === 'string' ? JSON.parse(lines[n]) : lines[n];
+      var isC = r.type === 'array' || r.type === 'object';
+      var node = r.type === 'array' ? [] : r.type === 'object' ? {} : r.value;
+      if (isC) { if (r.collapsed) collapsed[r.path] = r.size || 1; else delete collapsed[r.path]; }
+      if (r.path === '') { if (!have || !isC || typeof root !== 'object' || root === null) root = node; have = true; continue; }
+      var segs = r.path.split('/').slice(1).map(function (x) { return x.replace(/~1/g, '/').replace(/~0/g, '~'); });
+      var cur = root; for (var i = 0; i < segs.length - 1; i++) cur = cur[segs[i]];
+      var last = segs[segs.length - 1], prev = cur[last];
+      if (isC && prev !== null && typeof prev === 'object' && Array.isArray(prev) === Array.isArray(node)) continue; // 已有同型容器（含已展開的子節點）：保留
+      cur[last] = node;
+    }
+    return { value: have ? root : undefined, collapsedPaths: Object.keys(collapsed) };
+  }
+  function unflatten(lines) { return unflattenInfo(lines).value; }
+
+  // 程式結構（AST／語法樹／任何「有 type 或 kind 的節點巢狀」）攤平：一個節點一行
+  //   {"id":n,"parent":p,"field":"body","index":0,"type":"IfStatement","depth":d,"props":{純量屬性…},"children":k}
+  // id 從 0 起、先序；parent＝上層節點的 id（根是 null）；field／index＝它掛在上層的哪個欄位（第幾個）。
+  // 位置資訊（loc／range／start／end／span）留在 props，方便用行號回頭找原始碼。非節點的巢狀（普通物件／陣列）掛在最近的節點底下，欄位路徑放 field。
+  function isAstNode(v) { return isObj(v) && (typeof v.type === 'string' || typeof v.kind === 'string' || typeof v.node_type === 'string'); }
+  function nodeType(v) { return typeof v.type === 'string' ? v.type : typeof v.kind === 'string' ? v.kind : v.node_type; }
+  function flattenAst(root, opts) {
+    opts = opts || {}; var maxNodes = Number(opts.maxNodes) > 0 ? Number(opts.maxNodes) : 2000000;
+    var out = [], truncated = false;
+    function emit(v, parent, field, index, depth, path) {
+      if (out.length >= maxNodes) { truncated = true; return; }
+      var id = out.length, props = {}, kids = [];
+      var tp = nodeType(v), mypath = (path ? path + '>' : '') + tp;
+      var line = { id: id, parent: parent, field: field, index: index, type: tp, path: mypath, depth: depth, props: props, children: 0, size: 1 };
+      out.push(null);
+      Object.keys(v).forEach(function (k) {
+        var x = v[k];
+        if (k === 'type' && typeof x === 'string' && nodeType(v) === x) return;
+        if (x !== null && typeof x === 'object') {
+          if (Array.isArray(x)) { if (x.some(function (e) { return e !== null && typeof e === 'object'; })) { kids.push({ k: k, arr: x }); return; } props[k] = x; return; }
+          if (isAstNode(x)) { kids.push({ k: k, one: x }); return; }
+          if (hasNode(x, 3)) { kids.push({ k: k, plain: x }); return; }
+          props[k] = x; return; // 位置、小型設定物件（loc、range…）
+        }
+        props[k] = x;
+      });
+      var n = 0;
+      kids.forEach(function (c) {
+        if (c.one) { n++; emit(c.one, id, c.k, null, depth + 1, mypath); }
+        else if (c.arr) c.arr.forEach(function (e, i) { if (isAstNode(e)) { n++; emit(e, id, c.k, i, depth + 1, mypath); } else if (e !== null && typeof e === 'object' && hasNode(e, 3)) { Object.keys(e).forEach(function (kk) { if (isAstNode(e[kk])) { n++; emit(e[kk], id, c.k + '[' + i + '].' + kk, null, depth + 1, mypath); } }); } else { (line.props[c.k + '[' + i + ']'] = e); } });
+        else Object.keys(c.plain).forEach(function (kk) { var e = c.plain[kk]; if (isAstNode(e)) { n++; emit(e, id, c.k + '.' + kk, null, depth + 1, mypath); } else if (Array.isArray(e)) e.forEach(function (z, i) { if (isAstNode(z)) { n++; emit(z, id, c.k + '.' + kk, i, depth + 1, mypath); } }); else props[c.k + '.' + kk] = e; });
+      });
+      line.children = n; line.size = out.length - id; out[id] = safeStringify(line);
+    }
+    emit(root, null, null, null, 0, '');
+    return { lines: out.filter(function (l) { return l !== null; }), nodes: out.length, truncated: truncated };
+  }
+  function hasNode(v, d) { if (d <= 0 || v === null || typeof v !== 'object') return false; if (isAstNode(v)) return true; var ks = Object.keys(v); for (var i = 0; i < ks.length && i < 50; i++) if (hasNode(v[ks[i]], d - 1)) return true; return false; }
+  function maxDepth(v, cap) {
+    var m = 0; (function w(x, d) { if (d > m) m = d; if (m >= cap) return; if (Array.isArray(x)) for (var i = 0; i < x.length && m < cap; i++) w(x[i], d + 1); else if (isObj(x)) for (var k in x) { w(x[k], d + 1); if (m >= cap) return; } })(v, 0);
+    return m;
+  }
+  function toRecords(input, opts) {
+    opts = opts || {};
     var value, jsonlRes = null;
     if (typeof input === 'string') {
       var t = input.replace(/^﻿/, '').trim();
@@ -96,6 +197,13 @@
     if (isObj(value)) {
       var totalLen = (safeStringify(value) || '').length;
       var dom = dominantArray(value, totalLen);
+      if (opts.flatten !== false && isAstNode(value) && maxDepth(value, 5) >= 4) {
+        var fa = flattenAst(value); if (fa.lines.length >= 2) return { lines: fa.lines, shape: 'ast', head: fa.truncated ? { note: '節點太多，只攤平了前 ' + fa.nodes + ' 個' } : null, bad: 0, path: [] };
+      }
+      if ((opts.flatten || (!dom && maxDepth(value, 6) >= 5)) && !(opts.flatten === false)) {
+        // 超深的巢狀（沒有占大宗的陣列，或明確要求）：攤平成一個節點一行
+        var fl = flatten(value); if (fl.lines.length >= 2 && fl.lines.indexOf(null) < 0) return { lines: fl.lines, shape: 'flat', head: fl.truncated ? { note: '節點太多，只攤平了前 ' + fl.nodes + ' 個' } : null, bad: 0, path: [] };
+      }
       if (!dom) {
         // 沒有占大宗的陣列（例如 id→物件的對照表、很多欄位的大物件）：一個欄位一行 {"key":…,"value":…}；單一欄位太大由分頁器分段
         var keys = Object.keys(value); if (keys.length < 3) return null;
@@ -181,6 +289,22 @@
     if (cur.index === 0 && cur.part === 0 && opts.head != null) {
       var hs = safeStringify(opts.head) || '';
       if (hs.length <= Math.floor(budget * 0.25)) meta.head = opts.head; else meta.head_omitted = true; // 其餘欄位太大就不塞進第一頁
+    }
+    // 樹狀記錄（flattenAst：先序，每個節點有 id 與 size＝子樹節點數）：這一頁切在樹的中間時，列出「子節點還沒讀完」的節點，
+    // 不完整的節點會讓人誤讀（例如 if 只看到條件沒看到 else），所以提醒不要對它下結論，並附要接著讀的位置。
+    if (!partInfo && out.length) {
+      var openNodes = []; var lastId = null, firstId = null;
+      for (var oi = 0; oi < out.length; oi++) {
+        var nd = null; try { nd = JSON.parse(out[oi]); } catch (e0) { nd = null; }
+        if (!nd || typeof nd.id !== 'number' || typeof nd.size !== 'number') { openNodes = null; break; }
+        if (firstId === null) firstId = nd.id; lastId = nd.id;
+        if (nd.size > 1) openNodes.push({ id: nd.id, type: nd.type, last_id: nd.id + nd.size - 1 });
+      }
+      if (openNodes && lastId !== null) {
+        var inc = openNodes.filter(function (x) { return x.last_id > lastId; });
+        if (inc.length) { meta.incomplete = inc.slice(0, 20).map(function (x) { return { id: x.id, type: x.type, missing: [lastId + 1, x.last_id] }; }); meta.incomplete_note = '這一頁切在樹的中間：incomplete 裡的節點，子節點還有（missing 的 id 範圍）在後面的頁，先不要對它們下結論，讀完下一頁再看。'; }
+        if (firstId > 0 || (out.length && JSON.parse(out[0]).parent != null)) meta.starts_inside = '這一頁從樹的中間開始：每個節點的 path 是從根到它的類型鏈，parent 是上層節點的 id（可能在前一頁）。';
+      }
     }
     if (opts.continueWith && hasMore) meta.continue = String(opts.continueWith).replace('<CURSOR>', nextCursor);
     meta.digest = digest(out.join('\n'));
@@ -285,6 +409,7 @@
   }
 
   return {
+    flatten: flatten, unflatten: unflatten, unflattenInfo: unflattenInfo, expand: expand, flattenAst: flattenAst, isAstNode: isAstNode,
     VERSION: VERSION, budgetChars: budgetChars, digest: digest, parseLines: parseLines,
     streamPrompt: streamPrompt, continuePrompt: continuePrompt, newStream: newStream, absorb: absorb, runStream: runStream,
     toRecords: toRecords, page: page, parsePage: parsePage, encodeCursor: encodeCursor, decodeCursor: decodeCursor

@@ -120,6 +120,18 @@ function check(name, cond, info) { if (cond) ok++; else { bad.push(name); consol
     const given = await D.designProject('網站 api', { model: model, language: 'typescript', package: 'shop', rework: false });
     check('designProject: a ready-made model (e.g. written by a strong online AI) skips the model stages entirely', given.ok && given.files.some((f) => f.path === 'src/domain/Book.ts') && given.decisions.length === 0);
 
+    // ---- 攤平成 JSONL 與還原 ----
+    {
+        const m = D.FRAGMENTS.map((f) => U.parseDsl(f.dsl).model).sort((a, b) => JSON.stringify(b).length - JSON.stringify(a).length)[0];
+        const full = D.modelToJsonl(m); check('jsonl: lossless full round trip', JSON.stringify(D.modelFromJsonl(full.lines).model) === JSON.stringify(m) && D.modelFromJsonl(full.lines).collapsedPaths.length === 0);
+        const top = D.modelToJsonl(m, { levels: 1 }); const r0 = D.modelFromJsonl(top.lines);
+        check('jsonl: levels=1 collapses, lines fewer, collapsedPaths lists them', top.lines.length < full.lines.length && r0.collapsedPaths.length > 0 && r0.collapsedPaths.includes('/classes'), r0.collapsedPaths);
+        let lines = top.lines.slice(), pend = r0.collapsedPaths.slice(), g = 0;
+        while (pend.length && g++ < 500) { lines = lines.concat(D.modelExpand(m, pend.shift(), { levels: 1 }).lines); pend = D.modelFromJsonl(lines).collapsedPaths; }
+        const back = D.modelFromJsonl(lines); check('jsonl: drill down level by level restores the exact model', JSON.stringify(back.model) === JSON.stringify(m) && back.collapsedPaths.length === 0);
+        check('jsonl: restored model validates like the original', JSON.stringify(back.errors) === JSON.stringify(U.validateModel(m).filter((e) => e && (e.level === 'error' || e.severity === 'error' || !e.level))));
+        check('jsonl: junk lines rejected clearly', D.modelFromJsonl(['{"path":"","type":"object","keys":0}']).ok === false);
+    }
     console.log(ok + ' passed, ' + bad.length + ' failed', bad);
     process.exit(bad.length ? 1 : 0);
 })();

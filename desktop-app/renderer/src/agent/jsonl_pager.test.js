@@ -149,4 +149,58 @@ t('head 太大就不塞；continue 提示帶 cursor', () => {
   assert.ok(p1.continue.indexOf(p1.next_cursor) > 0 && p1.continue.indexOf('<CURSOR>') < 0);
 });
 
+t('超深結構攤平成 JSONL：節點一行、可逐字還原、自動判斷', () => {
+  let d = { x: 1 }, c = d; for (let i = 0; i < 40; i++) { c.n = { a: [i, '中\n文', { 'k/~': null }], b: i % 2 === 0 }; c = c.n; }
+  const f = P.flatten(d); assert.strictEqual(JSON.stringify(P.unflatten(f.lines)), JSON.stringify(d));
+  assert.ok(f.lines.every((l) => l.indexOf('\n') < 0));
+  const r = P.toRecords(JSON.stringify(d)); assert.strictEqual(r.shape, 'flat'); assert.strictEqual(r.lines.length, f.lines.length);
+  assert.strictEqual(P.toRecords({ a: { b: 1 }, c: 2, d: 3 }).shape, 'entries'); // 不深就維持原本
+  assert.strictEqual(P.toRecords(d, { flatten: true }).shape, 'flat');
+  // 逐頁讀完能還原
+  let cur = null, ls = []; for (let g = 0; g < 999; g++) { const pg = P.page(r.lines, { source: 'z', cursor: cur, chars: 600 }); ls = ls.concat(pg.text.split('\n').slice(1)); if (!pg.meta.has_more) break; cur = pg.meta.next_cursor; }
+  assert.strictEqual(JSON.stringify(P.unflatten(ls)), JSON.stringify(d));
+});
+
+t('程式結構（AST）攤平：一個節點一行，帶 id／parent／field', () => {
+  const ast = { type: 'Program', body: [
+    { type: 'IfStatement', loc: { start: { line: 1 }, end: { line: 3 } }, test: { type: 'Identifier', name: 'a' },
+      consequent: { type: 'BlockStatement', body: [{ type: 'ExpressionStatement', expression: { type: 'CallExpression', callee: { type: 'Identifier', name: 'f' }, arguments: [{ type: 'Literal', value: 1 }] } }] }, alternate: null },
+    { type: 'ReturnStatement', argument: { type: 'Literal', value: 2 } }] };
+  const f = P.flattenAst(ast); const ns = f.lines.map((l) => JSON.parse(l));
+  assert.strictEqual(ns.length, 10); assert.deepStrictEqual(ns.map((n) => n.id), ns.map((_, i) => i));
+  assert.strictEqual(ns[0].parent, null); assert.strictEqual(ns[0].children, 2);
+  const iff = ns.find((n) => n.type === 'IfStatement'); assert.strictEqual(iff.parent, 0); assert.strictEqual(iff.field, 'body'); assert.strictEqual(iff.index, 0); assert.strictEqual(iff.props.loc.end.line, 3); assert.strictEqual(iff.props.alternate, null);
+  const call = ns.find((n) => n.type === 'CallExpression'); assert.strictEqual(ns[call.parent].type, 'ExpressionStatement'); assert.strictEqual(call.field, 'expression');
+  assert.strictEqual(ns.find((n) => n.type === 'Literal' && n.props.value === 1).field, 'arguments');
+  assert.strictEqual(P.toRecords(ast).shape, 'ast');
+});
+
+t('AST 分頁：切在樹中間時標出不完整的節點，分頁讀完串回去等於整棵樹', () => {
+  const mkn = (i) => ({ type: 'IfStatement', test: { type: 'Identifier', name: 'v' + i }, consequent: { type: 'BlockStatement', body: [{ type: 'ReturnStatement', argument: { type: 'Literal', value: i } }] } });
+  const ast = { type: 'Program', body: Array.from({ length: 60 }, (_, i) => mkn(i)) };
+  const f = P.flattenAst(ast); const all = f.lines.map((l) => JSON.parse(l));
+  assert.strictEqual(all[0].size, all.length); assert.strictEqual(all[2].path, 'Program>IfStatement>Identifier');
+  let cur = null, seen = [], sawInc = 0;
+  for (let g = 0; g < 999; g++) {
+    const pg = P.page(f.lines, { source: 'ast', cursor: cur, chars: 1500 }); const ls = pg.text.split('\n').slice(1).map((l) => JSON.parse(l)); seen = seen.concat(ls);
+    if (pg.meta.incomplete) { sawInc++; const lastId = ls[ls.length - 1].id; pg.meta.incomplete.forEach((x) => { assert.ok(x.missing[0] === lastId + 1 && x.missing[1] >= x.missing[0]); const nd = all[x.id]; assert.strictEqual(nd.id + nd.size - 1, x.missing[1]); }); assert.ok(pg.meta.incomplete_note); }
+    if (!pg.meta.has_more) { assert.ok(!pg.meta.incomplete); break; }
+    cur = pg.meta.next_cursor;
+  }
+  assert.ok(sawInc > 0); assert.strictEqual(seen.length, all.length); assert.deepStrictEqual(seen.map((x) => x.id), all.map((x) => x.id));
+  const p0 = P.page(f.lines, { source: 'ast', chars: 1500 }); assert.ok(!p0.meta.starts_inside);
+  assert.ok(P.page(f.lines, { source: 'ast', cursor: p0.meta.next_cursor, chars: 1500 }).meta.starts_inside);
+});
+t('先看全貌再往下鑽：maxDepth 收合、expand 展開、合起來逐字還原', () => {
+  const model = { name: 'M', classes: [{ name: 'A', attrs: [{ n: 'x', t: 'int' }], ops: [{ n: 'f', params: [{ n: 'p' }] }] }, { name: 'B', attrs: [], ops: [] }], relations: [{ from: 'A', to: 'B', kind: 'uses' }], meta: { a: { b: { c: [1, 2, { d: '深' }] } } } };
+  const top = P.flatten(model, { maxDepth: 1 }); const tops = top.lines.map((l) => JSON.parse(l));
+  assert.ok(tops.every((x) => x.depth <= 1)); assert.ok(tops.find((x) => x.path === '/classes').collapsed); assert.ok(tops.find((x) => x.path === '/classes').size > 5);
+  const u0 = P.unflattenInfo(top.lines); assert.deepStrictEqual(u0.value.classes, []); assert.ok(u0.collapsedPaths.indexOf('/classes') >= 0);
+  // 往下鑽幾次後（每次只多一層）還原成完整
+  let lines = top.lines.slice(), pending = u0.collapsedPaths.slice(), guard = 0;
+  while (pending.length && guard++ < 100) { const pth = pending.shift(); const ex = P.expand(model, pth, { levels: 1 }); assert.ok(ex.ok); lines = lines.concat(ex.lines); pending = P.unflattenInfo(lines).collapsedPaths; }
+  assert.strictEqual(JSON.stringify(P.unflatten(lines)), JSON.stringify(model));
+  assert.strictEqual(P.expand(model, '/nope').ok, false);
+  assert.strictEqual(JSON.stringify(P.unflatten(P.expand(model, '', { levels: 99 }).lines)), JSON.stringify(model));
+});
 console.log(n + ' passed, 0 failed');

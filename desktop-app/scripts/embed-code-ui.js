@@ -65,6 +65,7 @@ embed('renderer/src/gui/js_program.js', 'GUIJSPROGRAM-BEGIN', 'GUIJSPROGRAM-END'
 embed('renderer/src/agent/read_ledger.js', 'READLEDGER-BEGIN', 'READLEDGER-END', 'FA_READ_LEDGER_SRC');
 // JSONL 分頁器（renderer/src/agent/jsonl_pager.js，純函式、UMD）：超大的記錄清單回應一頁一頁（每行一筆）給模型。同上，嵌入後用 new Function 載入。
 embed('renderer/src/agent/jsonl_pager.js', 'JSONLPAGER-BEGIN', 'JSONLPAGER-END', 'FA_JSONL_PAGER_SRC');
+embed('renderer/src/agent/web_blocks.js', 'WEBBLOCKS-BEGIN', 'WEBBLOCKS-END', 'FA_WEB_BLOCKS_SRC');
 // 對話樹（renderer/src/chat/chat_tree.js，純函式、UMD）：子對話的索引欄位、側欄樹狀、@ 指名解析。同上，嵌入後用 new Function 載入。
 embed('renderer/src/chat/chat_tree.js', 'CHATTREE-BEGIN', 'CHATTREE-END', 'FA_CHAT_TREE_SRC');
 // 批次刪除子對話的純函式（renderer/src/chat/chat_delete.js，UMD）：子對話 S7，計畫要刪哪些、跳過哪些。同上，嵌入後用 new Function 載入。
