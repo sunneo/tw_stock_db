@@ -46773,7 +46773,7 @@ const holder = {};
 /* 離線理解閘（FaIntentGate）：規則命中之後、執行之前，先看「這句話還有沒有規則沒吃到的部分」。
  * 輸入：句子（可含附件標記）、命中規則（可省略）、選用的 FaIntent 推導結果。
  * 輸出：動作、目標種類（網址／音樂／文件…）、要用的開啟工具、剩餘目標（後置步驟）、處理建議。
- * 為什麼自己帶中文詞表：FaNlu／FaIntent 目前只做英文（見 DESIGN.TODO.offline-intent-pipeline.md 第 10.3 節疑點），
+ * 為什麼自己帶中文詞表：FaNlu／FaIntent 目前只做英文（見 DESIGN.offline-intent-pipeline.md 第 10.3 節疑點），
  * 所以中文用小詞表切「動作＋目標」；有給 opts.intents 時，英文推導結果只用來補中文沒認出的後置步驟。
  * 純函式（UMD），不連網、不呼叫模型、不碰 DOM。 */
 (function (root, factory) {
