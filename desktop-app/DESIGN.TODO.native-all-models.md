@@ -384,39 +384,93 @@
 
 ## 7. 階段 1 量測結果（2026-11-05，實測）
 
-> 狀態：第一批（Basic Pitch、YAMNet）已量。其餘模型見 7.4（進行中，量完會更新本節）。以下數字全部是這台機器的實測，標明「推測」的才是推測。
+> 狀態：階段 1 量測完成（8 個模型中 6 個實測，Whisper 與 midigenai 本機沒有檔案未量）。以下數字全部是這台機器的實測，標明「推測」的才是推測。
 
 ### 7.1 做法與環境
 
 - 機器：Windows 10，Intel Core i5-2320（4 核心 4 執行緒，3.0 GHz），同一台、同一時段、同一份輸入檔。**機器上同時有其他工作階段在跑，單次計時抖動很大**（YAMNet 原生單次從 9 到 142 毫秒），所以看中位數與整體倍率，不要看單次。
 - 原生：`onnxruntime-node` 1.22.0（使用者安裝版的執行包 `native-runtime/1.22.0-1`），以 Electron 44.4.0 的 node 模式執行，CPU、`intraOpNumThreads=4`，圖形最佳化 `all`。
 - 瀏覽器端：真的 Electron（隔離 `--user-data-dir`、`FA_BROWSER_CONTROL_PORT` 換埠、`FA_DISABLE_MAIN_OVERLAY=1`），用跟產品相同的設定載入 `onnxruntime-web` 1.22.0（CDN 版，proxy 開，WASM 4 執行緒，頁面 `crossOriginIsolated` 為 false 但 SharedArrayBuffer 可傳）。
-- 每題 1 次暖機（不計）＋ 7 次計時取中位數（小模型多量幾次降低抖動）；每模型 3 題，輸入由固定種子產生（`scripts/eval/native_all_models_bench/gen_inputs.js`），原生與 WASM 讀同一份檔。
+- 每題 1 次暖機（不計）＋ 計時取中位數：Basic Pitch、YAMNet 7 次，Depth、SlimSAM 3 次，Demucs、SDXS 2 次（單次太久）。每個模型各用獨立的行程量（原生一個行程、WASM 一個全新的 Electron），記憶體峰值才不會被前一個模型墊高；每模型 3 題，輸入由固定種子產生（`scripts/eval/native_all_models_bench/gen_inputs.js`），原生與 WASM 讀同一份檔。
 - 兩邊都用一般優先權（早期版本曾把原生設成低優先權，結果對 WASM 不公平，已拿掉）。
 - 記憶體：原生用 `process.resourceUsage().maxRSS`（該行程峰值）；WASM 用每 0.5 秒輪詢整個 Electron 行程樹的工作集峰值。**兩者不能直接相減**：Electron 本身（不載模型）的行程樹峰值是 624 MB（實測基線），原生子程序單獨載入模型是 136～163 MB。
 - 輸出一致性：兩邊的輸出張量逐元素比對最大絕對誤差。
 - 模型檔來源：這兩個模型本來就在使用者安裝版的瀏覽器資料庫（IndexedDB `fa-a2m-models`）裡；我只讀取複本（沒有動原資料、沒有下載、沒有網路），把 8 MB 分片（Basic Pitch 是 Snappy 壓縮過的）還原成整檔，**還原後的 SHA-256 與登錄檔釘住的值完全相同**（Basic Pitch 230,444 位元組、YAMNet 16,093,355 位元組）。還原用的暫存檔放在工作階段暫存資料夾，不在倉庫內。
-- 程式：`scripts/eval/native_all_models_bench/`（`bench-config.json`、`gen_inputs.js`、`native_bench.js`、`wasm_bench.eval.js`、`run_wasm.js`、`compare.js`）；原始結果在 `test-reports/native-all-models/`。
-- 重現指令（Windows，`E` 為 desktop-app 資料夾，`W` 為工作資料夾，`M` 為放模型檔的資料夾）：先 `node gen_inputs.js W/inputs`；原生 `ELECTRON_RUN_AS_NODE=1 NAB_ORT=<執行包>/node_modules/onnxruntime-node NAB_MODELS=M NAB_WORK=W NAB_OUT=W/native.jsonl electron.exe native_bench.js`；WASM `node run_wasm.js W M electron.exe E`；最後 `node compare.js W`。
+- 程式：`scripts/eval/native_all_models_bench/`（`bench-config.json`、`gen_inputs.js`、`native_bench.js`、`wasm_bench.eval.js`、`run_wasm.js`、`run_each.js`、`compare.js`）；原始結果在 `test-reports/native-all-models/`。
+- 重現指令（Windows，`E` 為 desktop-app 資料夾，`W` 為工作資料夾，`M` 為放模型檔的資料夾）：先 `node gen_inputs.js W/inputs`；原生 `ELECTRON_RUN_AS_NODE=1 NAB_ORT=<執行包>/node_modules/onnxruntime-node NAB_MODELS=M NAB_WORK=W NAB_OUT=W/native.jsonl electron.exe native_bench.js`；WASM `node run_wasm.js W M electron.exe E`；最後 `node compare.js W`；逐模型各開行程的總控是 `run_each.js`。
 
-### 7.2 第一批結果（Basic Pitch、YAMNet）
+### 7.2 量測表（全部實測，這台機器，4 執行緒對 4 執行緒）
 
-| 模型 | 原生 CPU 中位數（毫秒） | WASM 中位數（毫秒） | 原生比 WASM 快 | 最大絕對誤差 | 原生載入（毫秒） | WASM 載入（毫秒） | 原生子程序峰值記憶體 |
-|---|---|---|---|---|---|---|---|
-| Basic Pitch（一窗 43,844 樣本） | 115 | 195 | 約 1.7 倍 | 1.0e-6 | 192 | 1,719 | 136 MB |
-| YAMNet（3 秒音訊） | 58 | 206 | 約 3.6 倍 | 6.2e-6 | 143 | 168 | 163 MB |
+「快幾倍」＝ WASM 中位數 ÷ 原生中位數（大於 1 表示原生較快）。每個模型 3 題，表中是 3 題中位數的中位數。
 
-- 逐題：Basic Pitch 原生 106／115／122、WASM 334／195／171；YAMNet 原生 63／58／43、WASM 179／219／206（毫秒）。
-- 一致性：兩邊輸出的最大絕對誤差在 1e-5 以內，遠小於階段 2 驗收門檻 1e-4；位元不完全相同（浮點運算順序不同），同一後端重跑的輸出雜湊相同（可重現，實測）。
-- 還有一次早期量測（原生被設成低優先權）原生反而比 WASM 慢（Basic Pitch 約 370 對 190 毫秒），原因是優先權不公平加上抖動；修正後才是上表。這說明小模型的速度差「在這台忙碌的機器上」會被雜訊影響，倍率的方向（原生較快）兩次修正後都一致，但確切倍數要保守看。
-- Basic Pitch 第一次載入原生執行包時曾花 16 秒（推測：Windows 第一次載入原生 DLL 被掃毒；之後 0.2～0.3 秒），首次使用的體驗要在階段 2 注意，不要把它當成每次的成本。
-- 對應到產品：Basic Pitch 一首歌是很多窗（每窗約 2 秒音訊），原生每窗約省 80 毫秒；絕對時間本來就小，**收益是真的但不大**，這批的價值如設計文件所說，主要是驗證張量協定。
+| 模型（輸入） | 原生 CPU（毫秒） | WASM（毫秒） | 原生快幾倍 | 輸出誤差（最大絕對誤差／訊噪比） | 原生子程序峰值記憶體 | WASM 整個 Electron 峰值（基線 624 MB） |
+|---|---|---|---|---|---|---|
+| Basic Pitch（一窗 43,844 樣本） | 101 | 193 | 1.9 | 1.0e-6／127 dB | 136 MB | 975 MB |
+| YAMNet（3 秒 16 kHz） | 45 | 470 | 見下方說明 | 6.2e-6／118 dB | 155 MB | 1,023 MB |
+| Depth Anything V2 Small（fp32，518×518） | 4,392 | 7,355 | 1.7 | 1.9e-6／131 dB | 491 MB | 1,617 MB |
+| Demucs 6 軌（一段 7.8 秒立體聲，圖形最佳化關閉） | 18,032 | 31,550 | 1.75 | 6.7e-4／57.7 dB | 1,940 MB | 1,865 MB |
+| SlimSAM 77 編碼器（q8，1024×1024） | 7,975 | 10,152 | 1.27 | 6e-8／151 dB | 3,610 MB | 2,272 MB |
+| SDXS-512 unet 一步（int8，隨機輸入） | 7,682 | 13,466 | 1.75 | 2.1e-1／34.8 dB（最大值 4.15） | 1,632 MB | 4,555 MB |
+| Whisper base 編碼器 | 未量：本機沒有檔案，未下載 | | | | | |
+| midigenai v5 16 步 | 未量：本機沒有檔案，未下載 | | | | | |
 
-### 7.3 結論（第一批，實測）
+- **Basic Pitch、YAMNet 有三次量測**（早期含低優先權版本、第一批、逐模型獨立行程版）：Basic Pitch 原生比 WASM 快 1.7～1.9 倍；YAMNet 快 3.6 倍（第一批）到 10 倍（最後一批，因為那次 WASM 特別慢，從 200 變 470 毫秒）。YAMNet 的絕對值只有幾十到幾百毫秒，這台忙碌機器上雜訊比差距還大，**方向一致（原生較快），倍數不要當真，保守取 3 到 4 倍以上**。
+- 其餘模型單次計時之間差距小（Depth 與 SlimSAM 同題各次差不到 10%），倍數可信度較高。Demucs 與 SDXS 每題只計 2 次（單次太久），倍數可信度中等。
+- 逐題數字在 `test-reports/native-all-models/table-final.md`；原始逐行結果在 `native-final.jsonl`、`wasm-final.jsonl`。
+- **載入時間不能拿來比較**：原生是 `InferenceSession.create(檔案路徑)`；WASM 要先經行程間通訊把整個檔案讀進來再編譯，包含了讀檔。原生載入 Demucs 約 20 秒、SDXS unet 約 4 秒，是一次性的成本。
+- **記憶體只供參考**：原生是單一行程的峰值（`maxRSS`）；WASM 是整個 Electron（渲染、主程序、背景執行緒）每 0.5 秒輪詢的峰值，可能漏掉短暫高點，而且含基線 624 MB，兩者不能直接相減。方向性：SlimSAM 的原生峰值（3.6 GB）比 WASM（2.3 GB）高，推測是原生的記憶體配置策略（未驗證，沒有試關閉）；SDXS 的 WASM 整體峰值 4.6 GB 遠高於原生 1.6 GB。
+- **誤差的意義**：Basic Pitch、YAMNet、Depth、SlimSAM 的差異在浮點誤差範圍（訊噪比超過 100 dB）。Demucs 57.7 dB，過了階段 3 的 40 dB 門檻。**SDXS unet 在隨機輸入下訊噪比只有 34.8 dB**：int8 量化的矩陣乘法在原生與 WASM 內核的捨入不同，誤差被放大；這不等於影像品質差，但**階段 5 的驗收（影像 PSNR ≥ 35 dB）必須用真的生圖逐張比**，現在不能預先宣稱通過。
+- 沒有量到 DirectML、WebGPU（依共識第 9 條，WebGPU 不經原生，也不影響取捨；本次沒有量，標「未量」）。Linux：**未實跑**，全部數字只代表 Windows。
 
-- Basic Pitch、YAMNet：原生 CPU 比 WASM 快、輸出誤差在 1e-5 內、記憶體只有一個小子程序 → **符合階段 2 前提，可以做試點**。
-- 還沒有證據的（見 7.4）不下結論。
+### 7.3 結論：哪些值得走原生（只比 cpu 路徑）
 
-### 7.4 其餘模型（待量）
+| 模型 | 結論 | 依據（實測） | 風險／保留 |
+|---|---|---|---|
+| Demucs 6 軌 | **值得，優先**（單次省的絕對時間最多） | 每段 7.8 秒音訊省約 13.5 秒（31.6→18.0 秒），1.75 倍，訊噪比 57.7 dB；三首歌段數多時累積省很多（推測：3 分鐘約 24 段，約省 5 分鐘，未實跑整首歌） | 峰值記憶體約 1.9 GB、載入約 20 秒；圖形最佳化仍須關閉；取消的最壞延遲是一段約 18 秒；段界有無接縫仍未確認（見附錄） |
+| Depth Anything V2 Small | **值得** | 4.4 對 7.4 秒，1.7 倍，誤差極小（131 dB） | 491 MB；輸入尺寸這次用 518×518 的固定值，產品實際輸入尺寸不同時倍數可能略異（推測） |
+| SDXS unet | **值得，但要先過影像比對** | 一步 7.7 對 13.5 秒，1.75 倍；原生記憶體 1.6 GB 遠低於 WASM 整體 4.6 GB | unet 輸出訊噪比 34.8 dB；要完整生圖（text encoder＋unet＋VAE）後比 PSNR；text encoder 與 VAE 本次未量 |
+| Basic Pitch | **值得當試點** | 1.7～1.9 倍、誤差 1e-6、記憶體 136 MB | 每窗省約 80～90 毫秒，絕對收益小；價值在驗證張量協定 |
+| YAMNet | **值得當試點** | 原生較快（3.6～10 倍，倍數不穩）、誤差 6e-6 | 同上，絕對值小 |
+| SlimSAM 編碼器 | **效益小，往後排** | 只快 1.27 倍（8.0 對 10.2 秒） | 原生峰值 3.6 GB，高於 WASM；除非日後找到降低原生記憶體的設定，否則不急 |
+| Whisper base 編碼器 | **無資料，不下結論** | 本機沒有檔案 | 見 7.4 |
+| midigenai v5 | **無資料，不下結論** | 本機沒有檔案 | 見 7.4 |
 
-（量測完成後在這裡補表。）
+整體：**同樣是 CPU，原生比 WASM 約快 1.3 到 1.9 倍**（Qwen3 0.6B 先前量到 1.3～1.5 倍），模型越大、單次計算越重，絕對省下的時間越多；小模型倍數大但絕對值小。
+
+### 7.4 本機沒有、未量的模型（只列出，沒有下載）
+
+| 模型 | 檔名 | 來源 | 大小 |
+|---|---|---|---|
+| Whisper base 編碼器（q8） | `onnx/encoder_model_quantized.onnx` | `https://huggingface.co/onnx-community/whisper-base` | 登錄寫整個 Whisper base（編碼器＋解碼器）約 80 MB，編碼器單檔大小未查證；使用者瀏覽器快取裡沒有 Whisper 的檔案（實查快取清單） |
+| midigenai v5 CPU 版 | `decoder-wasm-int8.onnx` | `https://huggingface.co/nicholasbien/midigenai/resolve/main/v5/onnx/decoder-wasm-int8.onnx` | 114,561,179 位元組，SHA-256 `5ca00f42ba3900aeb6d98821d4e8b559a880c8d99d62dbdc0d1555a38c1eed65`；使用者資料庫裡沒有 |
+
+量測腳本裡這兩項已寫好設定（`bench-config.json`），midigenai 的「逐步迴圈（KV 快取）」輸入尚未實作（`inputs: "kv_loop"`），拿到檔案後要先補；Whisper 輸入是 `input_features [1,80,3000]`，已可直接量。
+
+### 7.5 這次下載的檔案紀錄（使用者 2026-11-05 同意，僅此一項）
+
+- 放在工作階段暫存資料夾（不在倉庫內、不在使用者安裝版資料夾），只拿來量測，不散佈。
+- SDXS-512 CPU int8 版，來源 `lequangky/tipsy-sdxs-512-int8`，commit `41203dc02882252d74bb683dedc9bfde08641b55`（下載網址直接用這個 commit，不是 `main`）。授權 CreativeML Open RAIL++-M（有使用限制，說明照 `renderer/src/imagegen/local_sd.js` 的 `LICENSE`）。位元組數核對全部相符：
+
+| 檔案 | 位元組 | SHA-256 |
+|---|---|---|
+| `text_encoder.onnx` | 237,811,651 | `7c99acee71d4a604c60591c5ed9e19b7bcd9f8ee589c07584639a85f1e2e7afa` |
+| `unet.onnx` | 873,388,448 | `d311df495bb008b82c3c8f50767d042efab97aaf59b2592fbdb4e5044baac568` |
+| `vae_decoder.onnx` | 4,912,820 | `801e913994dc73d9ec68643d555d4325a70b72f431ffbf33b2b1c278dd5da72f` |
+
+- 這三個檔案登錄檔只釘了位元組數，沒有釘 SHA-256；上表是這次實際下載的檔案算出來的，可以補進登錄（`local_sd.js` 的 `MODELS`）。
+- TAESD（MIT 授權，`julienkay/taesd`，commit `c8a437fd0201c21c3bcd298fcf3181b063bcc1eb`）：`vae_encoder/model.onnx` 4,910,437 位元組、`vae_decoder/model.onnx` 4,912,312 位元組，皆與登錄相符。本次未量測（SDXS 只量 unet 一步）。
+- 其他模型沒有下載：Basic Pitch、YAMNet、Demucs 從使用者安裝版的瀏覽器資料庫唯讀還原（SHA-256 全部與登錄釘住的值相同）；Depth Anything V2 Small 與 SlimSAM 編碼器從使用者瀏覽器的快取唯讀還原（登錄沒有檢查碼，只核對大小：99,060,839 與 8,882,165 位元組，且 ONNX 能載入；SHA-256 為 `afb6a5c2…10c`、`cce23c7b…2971`）。
+
+### 7.6 這次沒驗證的部分（誠實列出）
+
+- Linux 全部未實跑。DirectML、CUDA、WebGPU 都沒量。
+- 是在有其他工作階段同時跑的機器上量的，單次計時有雜訊（特別是 YAMNet、Basic Pitch 這類幾十毫秒的），沒有關掉背景程式重量。
+- 輸入是固定種子的合成資料（音訊用正弦加雜訊、影像用漸層加方塊），不是真實歌曲或照片；速度對輸入內容不敏感（推測），但誤差數字（尤其 SDXS）換成真實輸入可能不同。
+- WASM 端用 CDN 版 `onnxruntime-web` 1.22.0 的 WebGPU 打包檔但只走 wasm 後端，與產品相同；沒有量 `crossOriginIsolated` 為真時的多執行緒差異（這個桌面版頁面為 false）。
+- 記憶體輪詢間隔 0.5 秒，WASM 峰值可能偏低。
+- Demucs 段界有無重疊相加、Whisper 80 對 77 MB 的差異，都因為沒有檔案或沒有進一步查而維持原狀。
+
+### 7.7 待真人驗證（不算待辦）
+
+- Linux 環境補量（沒有 Linux 機器）。
+- 真實歌曲／照片／圖片的端對端結果比對（分軌聽感、深度圖視覺、SDXS 生圖 PSNR）。

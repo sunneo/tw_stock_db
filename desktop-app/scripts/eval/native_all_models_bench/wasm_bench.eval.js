@@ -24,7 +24,13 @@ return (async () => {
         let st = null; try { st = await fsx.stat(fp); } catch (_) { st = null; }
         if (!st || st.error || st.exists === false) { await emit({ model: m.id, skipped: 'needs_download', needs_download: { file: m.file, source: m.source, bytes: m.bytes } }); continue; }
         try {
-            const bytes = await b64(fp);
+            let bytes;
+            if (st.size > 150 * 1048576) { // 超過字串上限的大檔：先用 copyChunked 切成 64 MB 小片，再一片一片讀進同一個緩衝區（片檔讀完就刪）
+                const pd = WORK + '/parts/' + m.id + '/'; const cc = await fsx.copyChunked(fp, pd + 'p', 64 * 1048576);
+                bytes = new Uint8Array(cc.size); let o = 0;
+                for (const p of cc.parts) { const u = await b64(pd + p.name); bytes.set(u, o); o += u.length; }
+                await fsx.remove(pd, true);
+            } else bytes = await b64(fp);
             if (m.bytes && bytes.length !== m.bytes) { await emit({ model: m.id, ok: false, error: '位元組數不符 ' + bytes.length + ' / ' + m.bytes }); continue; }
             const tl = Date.now();
             const so = { executionProviders: ['wasm'], graphOptimizationLevel: m.graph_opt || 'all' };

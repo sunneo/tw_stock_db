@@ -16,7 +16,7 @@ function audio(n, sr, q, seed) {
   }
   return a;
 }
-function gen(kind, dims, q) {
+function gen(kind, dims, q, inp) {
   const n = total(dims);
   if (kind === 'audio22k') return audio(n, 22050, q, 11);
   if (kind === 'audio16k') return audio(n, 16000, q, 12);
@@ -28,6 +28,10 @@ function gen(kind, dims, q) {
     return o;
   }
   if (kind === 'logmel') { const o = new Float32Array(n), r = rng(30 + q); for (let i = 0; i < n; i++) o[i] = -0.6 + (r() - 0.5) * 0.8; return o; }
+  if (kind === 'randn') { const o = new Float32Array(n), r = rng(40 + q + (inp.seed || 0)), std = inp.std || 1; for (let i = 0; i < n; i++) { const u1 = Math.max(r(), 1e-12), u2 = r(); o[i] = std * Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2); } return o; }
+  if (kind === 'int64const') return BigInt64Array.from({ length: n }, () => BigInt(inp.value));
+  if (kind === 'float32const') return new Float32Array(n).fill(inp.value);
+  if (kind === 'int64tokens') { const o = new BigInt64Array(n), r = rng(50 + q); for (let i = 0; i < n; i++) o[i] = i === 0 ? 49406n : BigInt(1000 + Math.floor(r() * 40000)); return o; }
   throw new Error('不認得的產生器 ' + kind);
 }
 const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
@@ -36,7 +40,7 @@ fs.mkdirSync(out, { recursive: true });
 for (const m of cfg.models) {
   if (!Array.isArray(m.inputs)) continue;
   for (let q = 0; q < cfg.queries; q++) for (const inp of m.inputs) {
-    const f = gen(inp.gen, inp.dims, q), buf = Buffer.from(f.buffer, f.byteOffset, f.byteLength);
+    const f = gen(inp.gen, inp.dims, q, inp), buf = Buffer.from(f.buffer, f.byteOffset, f.byteLength);
     const rel = m.id + '_q' + q + '_' + inp.name + '.bin';
     fs.writeFileSync(path.join(out, rel), buf);
     manifest.items.push({ model: m.id, q, input: inp.name, dtype: inp.dtype, dims: inp.dims, file: rel, bytes: buf.length, sha256: sha(buf) });
