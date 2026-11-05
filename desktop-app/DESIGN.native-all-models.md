@@ -1,6 +1,6 @@
 # 其他模型是否也走原生執行器（唯讀調查，2026-11-05）
 
-> 狀態：調查文件，尚未實作。本次只讀程式、不改程式、不下載、不安裝模型。
+> 狀態：階段 1～3 已實作並驗證（見第 7、8 節）；第 1～6 節是 2026-11-05 的調查與計畫原文（其中「不改 nr-protocol」等做法與第 8.1 節不同，以第 8 節為準）。
 > 標記：「實測」＝有實際跑過或文件記有量測結果；「推測」＝沒有量測，只是依模型結構或經驗估計；「未查證」＝本次沒有追到證據。
 
 ## 開頭：共識（must）
@@ -474,3 +474,66 @@
 
 - Linux 環境補量（沒有 Linux 機器）。
 - 真實歌曲／照片／圖片的端對端結果比對（分軌聽感、深度圖視覺、SDXS 生圖 PSNR）。
+
+---
+
+## 8. 階段 2～3 實作結果（2026-11-05，已實作並用真 Electron 驗證）
+
+> 做完的部分：Basic Pitch、YAMNet、Demucs 6 軌、Depth Anything V2 Small 都能走原生（只有使用者選 CPU，或選自動而且沒有 WebGPU 時才試；選 WebGPU 完全不碰原生），失敗自動退回網頁版並寫出真實原因。這份文件因此改名為 `DESIGN.native-all-models.md`；沒做的部分列在 8.6「待改善」，需要真人驗證的列在 8.7，都不算待辦。
+
+### 8.1 架構（跟第 2 節原設計的差異與理由）
+
+- **張量協定寫在 `main-ext.js` 的 `NRT` 區塊，沒有改 `nr-protocol.js`／`nr-child.js`**：那兩個檔屬於執行包，有 md5 釘在清單裡並從 GitHub 分支下載，改了會讓已安裝的執行包核對失敗；`main-ext.js` 會被熱更新送達，舊安裝也收得到。
+- 子程序用 `ELECTRON_RUN_AS_NODE=1 electron -e <原始碼>` 啟動（原始碼就是 `NRT.tensorChildMain` 的 `toString`，不另寫檔），`onnxruntime-node` 從已安裝的執行包載入。每個模型一個子程序、一次一個要求；逾時就強制結束；崩潰時等待中的要求收到 `crashed`；閒置 10 分鐘結束，之後下一次 `run` 自動重新載入同一個模型（呼叫端手上的 session 不用重建）。
+- 控制訊息走標準輸入輸出（一行一則 JSON），張量走暫存檔；**小張量（輸入合計不到 6 MB、輸出不到 8 MB）直接放在信箱請求／回應裡（base64）**，少幾次檔案讀寫與行程間通訊——這是測出來的：信箱往返最低約 20 毫秒，每窗一次呼叫的小模型會被固定成本吃掉。信箱輪詢從 200 毫秒縮到 10 毫秒（主程序）與 5 毫秒（渲染程序，用列目錄確認回應檔出現才讀，因為對不存在的檔案 `readFile` 每次都會讓主程序記一筆錯誤日誌）。寫到一半的請求檔不再被當成壞檔丟掉（輪詢變密後真的發生過，測試抓到）。
+- 信箱新增 `onnx_status`、`onnx_install`、`onnx_load`、`onnx_run`、`onnx_release`。模型檔放 `<userData>/native-models/<id>/<檔名>`，旁邊的 `.ok` 記大小與 SHA-256，核對過才算裝好；名稱一律限制成 `[A-Za-z0-9._-]`，不接受路徑。
+- 渲染端 `renderer/src/music/native_ort.js`（`FaNativeOrt`）：把原生子程序包成跟 onnxruntime-web 同介面的 session（`inputNames`、`outputNames`、`run`），所以 `makeTranscriber`／`makeClassifier`／`makeSeparator` 一行都沒改；`withFallback` 在原生 `run` 第一次失敗時永久切到網頁版 WASM（原因記在 `lastError`），結果格式不變。
+- 音訊三個模型：`_nrAudioSession`（`floating-assistant.js`）把 IndexedDB 裡已下載好的分片一片一片寫到原生資料夾（不重新下載、不整個放進記憶體），SHA-256 全部核對。深度：`_depthNative` 從瀏覽器快取（transformers.js 已下載好的 `onnx/model.onnx`）取檔寫進原生資料夾，沒有就回報原因並走網頁版（原生不自己下載）。
+- 深度的前後處理在渲染程序：短邊對到 518、保持長寬比、取 14 的倍數、正規化（照 `preprocessor_config.json`），輸出用雙線性縮回原圖大小（與網頁版 Worker 回傳的形狀約定一致）。
+
+### 8.2 真 Electron 驗證（隔離 `--user-data-dir`、`FA_BROWSER_CONTROL_PORT` 換埠、沒有用 17923；模型用使用者現有的檔案，沒有下載）
+
+腳本：`scripts/eval/native_audio_e2e.js`（用法在檔頭）。同一組輸入、原生與網頁版交錯呼叫，這台機器同時有其他程式在跑，單次計時抖動很大，看中位數。
+
+| 模型 | 原生（毫秒，端對端含信箱） | 網頁版 WASM（毫秒） | 原生快幾倍 | 輸出差異 |
+|---|---|---|---|---|
+| Basic Pitch（每窗一次呼叫） | 約 190～250 | 約 130～180 | **約 0.7～0.9（原生略慢）** | 最大絕對誤差 7.5e-7 |
+| YAMNet（3 秒音訊） | 74～124 | 140～180 | 約 1.5～2.4 | 最大絕對誤差 9.1e-6 |
+| Demucs 6 軌（每段 7.8 秒） | 26,903 | 32,779 | 約 1.2（單獨量測是 1.75，App 內 CPU 被 Electron 自己分走） | 最大絕對誤差 9.9e-4，訊噪比 56.3 dB（門檻 40 dB） |
+| Depth Anything V2 Small（640×480 圖，含前後處理） | 6,055 | 8,658 | 約 1.4 | 與網頁版相關係數 0.998，平均絕對差為值域的 1.3%（差別來自縮放：畫布對 transformers.js） |
+
+- **整條音訊轉 MIDI 流程**（40 秒合成音訊，Basic Pitch＋YAMNet）：原生（模型已裝進原生資料夾）約 0.65 秒，網頁版約 1.4 秒，兩邊轉出同樣的音軌與 10 個音。較快主要來自原生子程序常駐、不用每次重建工作階段；第一次使用要把模型寫進原生資料夾，多花約 6 秒（Demucs 另加載入約 22 秒）。
+- Demucs 開分軌的流程（16 秒音訊）原生開、關兩次都轉出同樣的 4 個音軌；注意流程本身會把分軌結果存起來續用，所以第二、三次的時間不能拿來比速度，速度以上表「每段」為準。
+- **退回路徑真的走過**：①刻意不給執行包 → 進度卡與結果的「沒做到的部分」寫出「原生不可用（沒有可用的執行包…真實原因），改用網頁版 WASM」，流程照常完成；②測試期間有一次請求驗證寫錯，原生 `run` 失敗，自動退回網頁版並寫出原因，結果正確。
+- 單元測試：`tests/native/tensor_host.test.js`（20 項：載入失敗、輸入位元組不符、逾時強制結束後可重載、崩潰、閒置關閉後自動重載、dispose）、`scripts/music-tests/native_ort.test.js`（30 項：分片安裝、小／大張量、subarray、退回、深度前後處理手算值）；既有 `audio_runtime`、`audio_models`、`audio_pipeline`、`native_runner`、`vlm_core` 測試全過。
+
+### 8.3 對 7.3 預測的修正（誠實）
+
+- Basic Pitch 在 App 內**沒有淨收益**（原生單獨量測 1.9 倍，但端對端扣掉信箱固定成本與 Electron 搶 CPU 後略慢）。保留原生路徑是因為整條流程仍較快（子程序常駐），而且它驗證了整條張量路徑；若日後只在乎單窗速度，可以把 Basic Pitch 從原生名單拿掉（改 `_nrAudioSession` 的條件即可）。
+- Demucs 的收益在 App 內比單獨量測小（1.2 對 1.75），仍是絕對省時最多的（每段約省 6 秒）。
+
+### 8.4 要注意的行為
+
+- 原生模型檔放在使用者資料夾 `native-models`，**目前沒有清除介面**；移除執行包只會關掉子程序，不會刪模型檔（Demucs 約 130 MB）。
+- 深度只認瀏覽器快取裡 CPU 版（`onnx/model.onnx`，fp32）；只下載過 GPU 版（fp16）的使用者，原生會回報「快取裡沒有」並走網頁版。
+- `floating-assistant.js` 裡 `_audioToMidi` 有兩份重複定義（後面那份生效），這次兩份都改了同一處；之後應該刪掉其中一份（與本功能無關，沒動）。
+
+### 8.5 完成的檔案
+
+`main-ext.js`（NRT、信箱操作）、`renderer/src/music/native_ort.js`、`renderer/src/floating-assistant.js`（`_nrAudioSession`、`_depthNative`、兩處 `load` 閉包、`_depthEstimate` 的一行接線、輪詢間隔）、`scripts/embed-code-ui.js`（嵌入新模組）、`tests/native/tensor_host.test.js`、`scripts/music-tests/native_ort.test.js`、`scripts/eval/native_audio_e2e*.js`。重建產物 `renderer/floating-assistant.js`、`.min.js`、`web-lazy/` 一併更新；`renderer/update-manifest.json` 沒動。
+
+### 8.6 待改善（不是待辦：已知的下一步，沒達標或沒做的原因寫在這裡）
+
+- **SDXS unet**：單獨量測原生快 1.75 倍，但 unet 輸出訊噪比 34.8 dB（int8 內核差異），要用完整生圖比 PSNR 才能決定；text encoder 與 VAE 還沒量。
+- **SlimSAM 編碼器**：只快 1.27 倍、原生峰值記憶體 3.6 GB，效益小，往後排。
+- **Whisper 編碼器、midigenai**：本機沒有檔案，沒下載所以沒量；midigenai 的逐步迴圈（KV 快取）輸入還沒實作。
+- **Demucs**：取消只能在兩段之間生效（最壞延遲一段約 20～30 秒）；段與段之間有無接縫仍未確認。
+- **小模型的信箱固定成本**：可以再降（例如一次送多窗），目前沒做。
+- **原生模型檔清除介面**、**深度模型 SHA-256 釘住**（登錄沒有檢查碼，目前只核對大小）。
+- **Basic Pitch 是否留在原生名單**（見 8.3）。
+
+### 8.7 待真人驗證（不算待辦）
+
+- Linux 全部未實跑（子程序啟動方式、路徑分隔字元、原生執行包都沒在 Linux 試過）。
+- 真實歌曲、真實照片的端對端結果（分軌聽感、深度圖視覺、3D 成品）；這次的輸入是合成音訊與合成圖。
+- 長音訊（接近 15 分鐘上限）連續分段時的記憶體與時間；使用者安裝版（非隔離 profile）按「安裝原生執行包」後的實際流程。

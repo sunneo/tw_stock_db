@@ -34,6 +34,19 @@
       if (!r || !r.ok) throw new Error('原生模型安裝失敗：' + ((r && (r.message || r.code)) || '沒有回應'));
       return r;
     }
+    // 把一個 Blob（例如瀏覽器快取裡 transformers.js 已經下載好的模型檔）依序切片寫到信箱，請主程序串接放進 native-models。不下載、不重複佔記憶體（一次一片）。
+    async function installFromBlob(entry, blob, o) {
+      o = o || {}; const chunk = o.chunk || 8 * 1048576, n = Math.ceil(blob.size / chunk), dir = box + sep + 'models-in' + sep + entry.id, parts = [];
+      if (entry.bytes && blob.size !== entry.bytes) throw new Error('模型檔大小不符：' + blob.size + ' / ' + entry.bytes);
+      for (let i = 0; i < n; i++) {
+        const u8 = new Uint8Array(await blob.slice(i * chunk, Math.min(blob.size, (i + 1) * chunk)).arrayBuffer());
+        await rawfs.writeFile(dir + sep + pad(i) + '.part', { base64: toB64(u8) }); parts.push(pad(i) + '.part');
+        if (o.onProgress) o.onProgress({ done: Math.min(blob.size, (i + 1) * chunk), total: blob.size });
+      }
+      const r = await call('onnx_install', { id: entry.id, file: entry.file, bytes: blob.size, sha256: entry.sha256, parts }, 600000);
+      if (!r || !r.ok) throw new Error('原生模型安裝失敗：' + ((r && (r.message || r.code)) || '沒有回應'));
+      return r;
+    }
     // 載入並回傳 session。opts：{ threads, graphOpt, timeoutMs }
     async function open(entry, opts) {
       opts = opts || {};
@@ -72,7 +85,7 @@
       };
       return session;
     }
-    return { state, installFromStore, open };
+    return { state, installFromStore, installFromBlob, open };
   }
 
   // 原生優先、失敗退回：native 是 open() 回傳的 session；fallbackFactory() → Promise<{ session, ort }>（網頁版 WASM，晚點才建）。
@@ -95,5 +108,47 @@
     };
     return s;
   }
-  return { create, withFallback, Tensor, toB64, fromB64, TYPED };
+  // ---- 深度估計（Depth Anything V2 Small）的前後處理：跟 transformers.js 的 DPTImageProcessor 同一套規則（preprocessor_config：短邊對到 518、保持長寬比、取 14 的倍數、
+  // 縮放用雙三次、值除以 255 再用 ImageNet 平均與標準差正規化）。縮放本身用瀏覽器畫布（跟 transformers.js 在瀏覽器裡做的一樣），所以像素值會有細微差別。
+  const depth = (function () {
+    const MEAN = [0.485, 0.456, 0.406], STD = [0.229, 0.224, 0.225], MULT = 14, SIZE = 518;
+    const constrain = (val) => Math.round(val / MULT) * MULT;
+    // 原圖寬高 → 模型輸入寬高。scale 取離 1 較近的那一個，兩邊共用（保持長寬比）
+    function targetSize(srcW, srcH) {
+      let sh = SIZE / srcH, sw = SIZE / srcW;
+      if (Math.abs(1 - sw) < Math.abs(1 - sh)) sh = sw; else sw = sh;
+      return { w: Math.max(MULT, constrain(sw * srcW)), h: Math.max(MULT, constrain(sh * srcH)) };
+    }
+    // RGBA（已縮到目標尺寸）→ Float32 NCHW 正規化
+    function toChw(rgba, w, h) {
+      const out = new Float32Array(3 * w * h), plane = w * h;
+      for (let i = 0; i < plane; i++) for (let c = 0; c < 3; c++) out[c * plane + i] = (rgba[i * 4 + c] / 255 - MEAN[c]) / STD[c];
+      return out;
+    }
+    // 雙線性縮放（半像素中心、邊界夾住，與 PyTorch 的 align_corners=False 相同）：transformers.js 的深度管線會把模型輸出縮回原圖大小，網頁版 Worker 回傳的就是縮回後的
+    function resizeBilinear(src, sw, sh, dw, dh) {
+      if (sw === dw && sh === dh) return Float32Array.from(src);
+      const out = new Float32Array(dw * dh), xs = sw / dw, ys = sh / dh;
+      for (let y = 0; y < dh; y++) {
+        let fy = (y + 0.5) * ys - 0.5; if (fy < 0) fy = 0; const y0 = Math.min(sh - 1, Math.floor(fy)), y1 = Math.min(sh - 1, y0 + 1), wy = fy - y0;
+        for (let x = 0; x < dw; x++) {
+          let fx = (x + 0.5) * xs - 0.5; if (fx < 0) fx = 0; const x0 = Math.min(sw - 1, Math.floor(fx)), x1 = Math.min(sw - 1, x0 + 1), wx = fx - x0;
+          out[y * dw + x] = (src[y0 * sw + x0] * (1 - wx) + src[y0 * sw + x1] * wx) * (1 - wy) + (src[y1 * sw + x0] * (1 - wx) + src[y1 * sw + x1] * wx) * wy;
+        }
+      }
+      return out;
+    }
+    // deps：{ decode(blob) → { width, height, close() }, resize(img, w, h) → RGBA Uint8ClampedArray }。回傳跟網頁版 Worker 相同形狀 { w, h, data, srcW, srcH }
+    async function estimate(blob, session, deps) {
+      const img = await deps.decode(blob);
+      try {
+        const t = targetSize(img.width, img.height), rgba = deps.resize(img, t.w, t.h), name = session.inputNames[0];
+        const out = await session.run({ [name]: new Tensor('float32', toChw(rgba, t.w, t.h), [1, 3, t.h, t.w]) });
+        const o = out[session.outputNames[0]], d = o.dims, h = d[d.length - 2], w = d[d.length - 1];
+        return { w: img.width, h: img.height, data: resizeBilinear(o.data, w, h, img.width, img.height), srcW: img.width, srcH: img.height };
+      } finally { if (img.close) img.close(); }
+    }
+    return { targetSize, toChw, resizeBilinear, estimate, MEAN, STD };
+  })();
+  return { create, withFallback, Tensor, toB64, fromB64, TYPED, depth };
 });

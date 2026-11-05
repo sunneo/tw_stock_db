@@ -66,6 +66,16 @@ const writeIn = (name, arr) => { const p = path.join(tmp, name); fs.writeFileSyn
   const h2 = NRT.createTensorHost({ ortDir: path.join(tmp, 'no-such-ort'), idleMs: 0 });
   let e6 = null; try { await h2.load({ model_path: 'x.onnx' }); } catch (e) { e6 = e; }
   check('找不到 onnxruntime-node：load_failed', e6 && e6.code === 'load_failed' && /onnxruntime-node/.test(e6.message), e6 && e6.message);
+  // 7b. 閒置關閉後下一次 run 自動重新載入（呼叫端不用重建 session）；逾時被強制結束後也一樣
+  const h4 = NRT.createTensorHost({ ortDir, idleMs: 150 }); await h4.load({ model_path: path.join(tmp, 'ok.onnx'), threads: 2 });
+  await new Promise((r) => setTimeout(r, 600));
+  check('閒置 150 毫秒後子程序被關掉', !h4.status().alive);
+  const r4 = await h4.run({ inputs: [{ name: 'x', dtype: 'float32', dims: [1], path: writeIn('in6.bin', new Float32Array([6])) }], out_dir: path.join(tmp, 'o7') });
+  const z4 = fs.readFileSync(r4.outputs[1].path);
+  check('閒置關閉後 run 自動重載，且 threads 參數保留（z 第一個值為 2）', new BigInt64Array(z4.buffer, z4.byteOffset, 2)[0] === 2n);
+  h4.dispose();
+  let e7 = null; try { await h4.run({ inputs: [{ name: 'x', dtype: 'float32', dims: [1], path: writeIn('in7.bin', new Float32Array([1])) }], out_dir: path.join(tmp, 'o8') }); } catch (e) { e7 = e; }
+  check('主動 dispose 後不會偷偷重載（回「還沒載入模型」）', e7 && /還沒載入/.test(e7.message), e7 && e7.message);
   // 8. dispose
   const h3 = NRT.createTensorHost({ ortDir, idleMs: 0 }); await h3.load({ model_path: path.join(tmp, 'ok.onnx') });
   check('載入後子程序存活', h3.status().alive); h3.dispose();

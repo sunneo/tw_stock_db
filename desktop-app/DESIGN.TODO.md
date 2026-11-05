@@ -1,6 +1,6 @@
 # DESIGN.TODO（合併檔）
 
-這份合併了原本分散的 32 份 `DESIGN.TODO.<名稱>.md`，內容逐字保留，各節標題為「原檔：名稱」。今天進行中的 `DESIGN.TODO.native-all-models.md` 與 `DESIGN.TODO.native-runner.md` 仍單獨存在。完成的項目請改成 `DESIGN.<名稱>.md`；需要真人驗證的另列，不算待辦。
+這份合併了原本分散的 32 份 `DESIGN.TODO.<名稱>.md`，內容逐字保留，各節標題為「原檔：名稱」。`DESIGN.TODO.native-runner.md` 仍單獨存在（`native-all-models` 已完成，改名為 `DESIGN.native-all-models.md`）。完成的項目請改成 `DESIGN.<名稱>.md`；需要真人驗證的另列，不算待辦。
 
 ## 目錄
 

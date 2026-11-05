@@ -2,10 +2,11 @@
 // 做三件事：①把使用者現有的模型檔（不下載）放進這個隔離 profile 的 IndexedDB 分片；②同一組輸入，原生 session（fa._nrAudioSession）對 WASM session 比輸出誤差與每次呼叫的端對端時間；
 // ③用 fa._audioToMidi 對一段合成音訊跑完整流程兩次（原生開／關），比較結果與耗時。③只在 IDS 含 basic-pitch 時跑。
 return (async () => {
-    const MODELS = '__MODELS__', IDS = '__IDS__'.split(','), OUT = '__OUT__';
+    const MODELS = '__MODELS__', ALL_IDS = '__IDS__'.split(','), OUT = '__OUT__';
     const fsx = window.desktopAPI.rawfs, R = { steps: [], t0: Date.now() };
     const note = async (o) => { R.steps.push(o); try { await fsx.writeFile(OUT, { text: JSON.stringify(R, null, 1) }); } catch (_) { /* 寫不了就只靠回傳值 */ } };
     const store = FaAudioModels.idbStore(), REG = FaAudioModels.REGISTRY, CH = FaAudioModels.CHUNK;
+    const IDS = ALL_IDS.filter((id) => REG[id]), DEPTH = ALL_IDS.indexOf('depth-anything-v2-small') >= 0; // 音訊模型走 IndexedDB 分片；深度走瀏覽器快取
     const b64u8 = (b64) => { const bin = atob(b64), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; };
     const median = (a) => { const s = a.slice().sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
     // ① 放分片（從使用者現有檔案，不下載）
@@ -64,6 +65,29 @@ return (async () => {
         const a = await runOnce('原生開（第一次，含安裝模型到原生資料夾）', true, IDS.indexOf('demucs-6s') >= 0); await note({ step: 'e2e', run: a });
         const a2 = await runOnce('原生開（第二次，模型已安裝）', true, IDS.indexOf('demucs-6s') >= 0); await note({ step: 'e2e', run: a2 });
         const b = await runOnce('原生關（網頁版 WASM）', false, IDS.indexOf('demucs-6s') >= 0); await note({ step: 'e2e', run: b });
+    }
+    // ④ 深度估計：把使用者現有的模型檔放進這個 profile 的 transformers 快取（不下載），原生對網頁版跑同一張圖
+    if (DEPTH) {
+        const durl = 'https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model.onnx', dfile = MODELS + '/depth_anything_v2_small.onnx';
+        const cc = await fsx.copyChunked(dfile, MODELS + '/../seed-depth/p', 8 * 1048576), parts = [];
+        for (const p of cc.parts) parts.push(b64u8((await fsx.readFile(MODELS + '/../seed-depth/' + p.name, 'base64')).base64));
+        const all = new Uint8Array(cc.size); let o = 0; for (const u of parts) { all.set(u, o); o += u.length; } await fsx.remove(MODELS + '/../seed-depth', true);
+        const dc = await caches.open('transformers-cache'); await dc.put(durl, new Response(all, { headers: { 'content-length': String(all.length), 'content-type': 'application/octet-stream' } }));
+        await note({ step: 'depth_seed', bytes: all.length });
+        const cv = new OffscreenCanvas(640, 480), cx = cv.getContext('2d'); const g = cx.createLinearGradient(0, 0, 640, 480); g.addColorStop(0, '#3366aa'); g.addColorStop(1, '#ddaa44'); cx.fillStyle = g; cx.fillRect(0, 0, 640, 480);
+        cx.fillStyle = '#cc2222'; cx.fillRect(100, 120, 180, 220); cx.fillStyle = '#22cc55'; cx.beginPath(); cx.arc(430, 300, 90, 0, 7); cx.fill(); cx.fillStyle = '#ffffff'; cx.fillRect(300, 40, 260, 60);
+        const blob = await cv.convertToBlob({ type: 'image/png' });
+        const runD = async (label, nativeOn) => { try { localStorage.setItem('fa.native.enabled', nativeOn ? '1' : '0'); } catch (_) { /* */ } const t = performance.now(); const r = await fa._depthEstimate({ blob, filename: 'e2e.png', silent: true, confirmed: true }); return { label, ms: Math.round(performance.now() - t), ok: r.ok, error: r.error, backend: r.backend || 'web', device: r.device, w: r.depth && r.depth.w, h: r.depth && r.depth.h, data: r.depth && r.depth.data }; };
+        const n1 = await runD('原生（第一次，含安裝）', true), n2 = await runD('原生（第二次）', true), w1 = await runD('網頁版 WASM', false), w2 = await runD('網頁版 WASM（第二次）', false);
+        let cmp = null;
+        if (n2.data && w2.data && n2.data.length === w2.data.length) {
+            const a = n2.data, b = w2.data, N = a.length; let ma = 0, mb = 0; for (let i = 0; i < N; i++) { ma += a[i]; mb += b[i]; } ma /= N; mb /= N; let sab = 0, saa = 0, sbb = 0, mx = 0, sd = 0;
+            for (let i = 0; i < N; i++) { const x = a[i] - ma, y = b[i] - mb; sab += x * y; saa += x * x; sbb += y * y; const d = Math.abs(a[i] - b[i]); if (d > mx) mx = d; sd += d; }
+            let lo = Infinity, hi = -Infinity; for (let i = 0; i < N; i++) { if (b[i] < lo) lo = b[i]; if (b[i] > hi) hi = b[i]; }
+            cmp = { pearson: sab / Math.sqrt(saa * sbb), max_abs_diff: mx, mean_abs_diff: sd / N, web_range: [lo, hi], mean_abs_diff_over_range: (sd / N) / (hi - lo) };
+        }
+        const strip = (r) => Object.assign({}, r, { data: undefined, n: r.data ? r.data.length : 0 });
+        await note({ step: 'depth', runs: [n1, n2, w1, w2].map(strip), compare: cmp, same_size: !!(n2.data && w2.data && n2.w === w2.w && n2.h === w2.h) });
     }
     R.total_ms = Date.now() - R.t0; await note({ step: 'done' });
     return { ok: true, steps: R.steps.length };

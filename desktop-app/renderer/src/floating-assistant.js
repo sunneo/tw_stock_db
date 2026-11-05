@@ -36219,6 +36219,19 @@ const holder = {};
       if (!r || !r.ok) throw new Error('原生模型安裝失敗：' + ((r && (r.message || r.code)) || '沒有回應'));
       return r;
     }
+    // 把一個 Blob（例如瀏覽器快取裡 transformers.js 已經下載好的模型檔）依序切片寫到信箱，請主程序串接放進 native-models。不下載、不重複佔記憶體（一次一片）。
+    async function installFromBlob(entry, blob, o) {
+      o = o || {}; const chunk = o.chunk || 8 * 1048576, n = Math.ceil(blob.size / chunk), dir = box + sep + 'models-in' + sep + entry.id, parts = [];
+      if (entry.bytes && blob.size !== entry.bytes) throw new Error('模型檔大小不符：' + blob.size + ' / ' + entry.bytes);
+      for (let i = 0; i < n; i++) {
+        const u8 = new Uint8Array(await blob.slice(i * chunk, Math.min(blob.size, (i + 1) * chunk)).arrayBuffer());
+        await rawfs.writeFile(dir + sep + pad(i) + '.part', { base64: toB64(u8) }); parts.push(pad(i) + '.part');
+        if (o.onProgress) o.onProgress({ done: Math.min(blob.size, (i + 1) * chunk), total: blob.size });
+      }
+      const r = await call('onnx_install', { id: entry.id, file: entry.file, bytes: blob.size, sha256: entry.sha256, parts }, 600000);
+      if (!r || !r.ok) throw new Error('原生模型安裝失敗：' + ((r && (r.message || r.code)) || '沒有回應'));
+      return r;
+    }
     // 載入並回傳 session。opts：{ threads, graphOpt, timeoutMs }
     async function open(entry, opts) {
       opts = opts || {};
@@ -36257,7 +36270,7 @@ const holder = {};
       };
       return session;
     }
-    return { state, installFromStore, open };
+    return { state, installFromStore, installFromBlob, open };
   }
 
   // 原生優先、失敗退回：native 是 open() 回傳的 session；fallbackFactory() → Promise<{ session, ort }>（網頁版 WASM，晚點才建）。
@@ -36280,7 +36293,49 @@ const holder = {};
     };
     return s;
   }
-  return { create, withFallback, Tensor, toB64, fromB64, TYPED };
+  // ---- 深度估計（Depth Anything V2 Small）的前後處理：跟 transformers.js 的 DPTImageProcessor 同一套規則（preprocessor_config：短邊對到 518、保持長寬比、取 14 的倍數、
+  // 縮放用雙三次、值除以 255 再用 ImageNet 平均與標準差正規化）。縮放本身用瀏覽器畫布（跟 transformers.js 在瀏覽器裡做的一樣），所以像素值會有細微差別。
+  const depth = (function () {
+    const MEAN = [0.485, 0.456, 0.406], STD = [0.229, 0.224, 0.225], MULT = 14, SIZE = 518;
+    const constrain = (val) => Math.round(val / MULT) * MULT;
+    // 原圖寬高 → 模型輸入寬高。scale 取離 1 較近的那一個，兩邊共用（保持長寬比）
+    function targetSize(srcW, srcH) {
+      let sh = SIZE / srcH, sw = SIZE / srcW;
+      if (Math.abs(1 - sw) < Math.abs(1 - sh)) sh = sw; else sw = sh;
+      return { w: Math.max(MULT, constrain(sw * srcW)), h: Math.max(MULT, constrain(sh * srcH)) };
+    }
+    // RGBA（已縮到目標尺寸）→ Float32 NCHW 正規化
+    function toChw(rgba, w, h) {
+      const out = new Float32Array(3 * w * h), plane = w * h;
+      for (let i = 0; i < plane; i++) for (let c = 0; c < 3; c++) out[c * plane + i] = (rgba[i * 4 + c] / 255 - MEAN[c]) / STD[c];
+      return out;
+    }
+    // 雙線性縮放（半像素中心、邊界夾住，與 PyTorch 的 align_corners=False 相同）：transformers.js 的深度管線會把模型輸出縮回原圖大小，網頁版 Worker 回傳的就是縮回後的
+    function resizeBilinear(src, sw, sh, dw, dh) {
+      if (sw === dw && sh === dh) return Float32Array.from(src);
+      const out = new Float32Array(dw * dh), xs = sw / dw, ys = sh / dh;
+      for (let y = 0; y < dh; y++) {
+        let fy = (y + 0.5) * ys - 0.5; if (fy < 0) fy = 0; const y0 = Math.min(sh - 1, Math.floor(fy)), y1 = Math.min(sh - 1, y0 + 1), wy = fy - y0;
+        for (let x = 0; x < dw; x++) {
+          let fx = (x + 0.5) * xs - 0.5; if (fx < 0) fx = 0; const x0 = Math.min(sw - 1, Math.floor(fx)), x1 = Math.min(sw - 1, x0 + 1), wx = fx - x0;
+          out[y * dw + x] = (src[y0 * sw + x0] * (1 - wx) + src[y0 * sw + x1] * wx) * (1 - wy) + (src[y1 * sw + x0] * (1 - wx) + src[y1 * sw + x1] * wx) * wy;
+        }
+      }
+      return out;
+    }
+    // deps：{ decode(blob) → { width, height, close() }, resize(img, w, h) → RGBA Uint8ClampedArray }。回傳跟網頁版 Worker 相同形狀 { w, h, data, srcW, srcH }
+    async function estimate(blob, session, deps) {
+      const img = await deps.decode(blob);
+      try {
+        const t = targetSize(img.width, img.height), rgba = deps.resize(img, t.w, t.h), name = session.inputNames[0];
+        const out = await session.run({ [name]: new Tensor('float32', toChw(rgba, t.w, t.h), [1, 3, t.h, t.w]) });
+        const o = out[session.outputNames[0]], d = o.dims, h = d[d.length - 2], w = d[d.length - 1];
+        return { w: img.width, h: img.height, data: resizeBilinear(o.data, w, h, img.width, img.height), srcW: img.width, srcH: img.height };
+      } finally { if (img.close) img.close(); }
+    }
+    return { targetSize, toChw, resizeBilinear, estimate, MEAN, STD };
+  })();
+  return { create, withFallback, Tensor, toB64, fromB64, TYPED, depth };
 });
 
 }).call(null, undefined, holder);
@@ -101813,6 +101868,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const gpu = await this._omGpuInfo(); const dev = FaVlm.resolveDevice(model, p.device || set.device, gpu.available, gpu.f16);
         if (!dev.order.length) return { ok: false, error: dev.reason };
         const img = await this._vlmResolveImage(p); if (!img.blob) return { ok: false, cancelled: img.cancelled, error: img.error };
+        // 原生優先（只有選 CPU，或 auto 且沒有 WebGPU；選 WebGPU 完全不碰原生）：不可用或失敗就繼續走下面原本的網頁版路徑，並在進度卡寫出真實原因
+        const nat = await this._depthNative(img, model, p); if (nat && nat.ok) return nat; const nativeWhy = nat && !nat.ok ? nat.why : '';
         const usage = await this._omUsage(); const need = FaVlm.estimateDownload(model, dev.order[0], (usage.byModel[model.id] || { bytes: 0 }).bytes);
         if (need > 20 * 1048576 && !p.confirmed) {
             const okDl = await this._omAskDownload('要下載深度模型嗎？', '「' + model.label + '」\n來源：huggingface.co/' + model.repo + '\n大小：約 ' + FaVlm.fmtBytes(need) + '（只下載這一次，存在瀏覽器快取，可以在 Configure →「離線模型管理」清除）。', '下載並使用');
@@ -101821,7 +101878,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const prog = p.silent ? null : this._createProgressWidget('離線深度估計（' + model.label + '）');
         const update = (x) => { if (prog) prog.update(x); }; const log = (s) => { if (prog) prog.log(s); };
         try {
-            log('裝置：' + dev.reason); update({ status: '準備中…' });
+            log('裝置：' + dev.reason); update({ status: '準備中…' }); if (nativeWhy) log('⚠️ 原生路徑沒用上（' + nativeWhy + '），改用網頁版');
             let order = dev.order.slice(), res = null, lastErr = null, used = null;
             for (let attempt = 0; attempt < 2 && !res; attempt++) {
                 const ld = await this._vlmEnsureLoaded(model, order, update, log); used = ld;
@@ -101834,6 +101891,35 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             if (prog) prog.finish('完成：' + (used.device === 'webgpu' ? 'GPU' : 'CPU') + '，' + ((res.ms || 0) / 1000).toFixed(1) + ' 秒，深度圖 ' + res.depth.w + '×' + res.depth.h);
             return { ok: true, depth: res.depth, model: model.id, device: used.device === 'webgpu' ? 'gpu' : 'cpu', ms: res.ms };
         } catch (e) { if (prog) prog.fail(String((e && e.message) || e)); return { ok: false, error: String((e && e.message) || e), model: model.id, tried: e && e.tried }; }
+    }
+    // 深度估計的原生路徑（Depth Anything V2 Small，CPU fp32）：模型檔取自瀏覽器快取裡 transformers.js 已經下載好的那一份（不下載、不重複下載），第一次寫進原生資料夾；
+    // 前處理（縮放、正規化）與後處理在渲染程序，只有 session.run 在原生子程序。回傳 { ok:true, depth, ... }、{ ok:false, why }（為什麼沒用上，交給呼叫端走網頁版）或 null（沒啟用原生，完全不碰）。
+    async _depthNative(img, model, p) {
+        if (typeof FaNativeOrt === 'undefined' || model.id !== 'depth-anything-v2-small' || !this._nrOptIn() || !this._nrAvailable()) return null;
+        const gpu = await this._omGpuInfo();
+        if (!FaVlm.wantsNativeBackend(p.device || this._omSettings().device, gpu.available)) return null;
+        const t0 = Date.now(); let prog = null;
+        try {
+            const box = await this._nrBox(); if (!box) return null;
+            const sep = box.indexOf(String.fromCharCode(92)) >= 0 ? String.fromCharCode(92) : '/';
+            const url = 'https://huggingface.co/' + model.repo + '/resolve/main/onnx/model.onnx'; let resp = null;
+            for (const name of (await caches.keys()).filter((x) => /transformers/i.test(x))) { const c = await caches.open(name); resp = await c.match(url); if (resp) break; }
+            if (!resp) return { ok: false, why: '瀏覽器快取裡沒有這個模型的 CPU 版檔案（原生不自己下載，要先用網頁版下載一次）' };
+            const len = Number(resp.headers.get('content-length')) || (await resp.clone().blob()).size;
+            const entry = { id: model.id, file: 'model.onnx', bytes: len };
+            const api = FaNativeOrt.create({ call: (op, payload, t) => this._nrCall(op, payload, t), rawfs: window.desktopAPI.rawfs, box, sep });
+            const st = await api.state(entry); if (!st.ok) return { ok: false, why: st.reason };
+            prog = p.silent ? null : this._createProgressWidget('離線深度估計（' + model.label + '，原生 CPU）');
+            if (!st.installed) { if (prog) prog.log('把瀏覽器快取裡的模型寫進原生資料夾（只做一次）…'); await api.installFromBlob(entry, await resp.blob(), {}); }
+            if (!this._nrDepthSess || this._nrDepthSess.bytes !== len) this._nrDepthSess = { bytes: len, session: await api.open(entry, { threads: 4, runTimeoutMs: 180000 }) };
+            if (prog) prog.update({ pct: 60, status: '估計深度中（原生 CPU）…' });
+            const depth = await FaNativeOrt.depth.estimate(img.blob, this._nrDepthSess.session, {
+                decode: async (b) => { const bm = await createImageBitmap(b); return { width: bm.width, height: bm.height, bm, close: () => bm.close() }; },
+                resize: (im, w, h) => { const cv = new OffscreenCanvas(w, h), cx = cv.getContext('2d'); cx.imageSmoothingEnabled = true; cx.imageSmoothingQuality = 'high'; cx.drawImage(im.bm, 0, 0, w, h); return cx.getImageData(0, 0, w, h).data; },
+            });
+            const ms = Date.now() - t0; if (prog) prog.finish('完成：原生 CPU，' + (ms / 1000).toFixed(1) + ' 秒，深度圖 ' + depth.w + '×' + depth.h); console.log('[depth] 後端：原生，' + ms + ' 毫秒');
+            return { ok: true, depth, model: model.id, device: 'cpu', backend: 'native', ms };
+        } catch (e) { this._nrDepthSess = null; const why = String((e && e.message) || e).slice(0, 300); if (prog) { try { prog.fail('原生失敗，改用網頁版：' + why); } catch (_) { /* */ } } console.log('[depth] 原生失敗：' + why); return { ok: false, why }; }
     }
     // 離線分割（/image-to-3d --segment 用）。p：{image?, blob?, model?, device?, grid?}。回傳 { ok, segments:[{w,h,data(Uint8Array,1＝在裡面),score}], model, device, ms }
     async _segmentObjects(p) {

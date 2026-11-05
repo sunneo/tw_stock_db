@@ -1462,7 +1462,7 @@ function httpsFetchBytes(url, timeoutMs) {
 return { installRuntime, tgzEntries, sha256, sha512Integrity, localFetchBytes, httpsFetchBytes, NPM_PREFIX };
 })();
 
-// ===== 通用 ONNX 張量執行（NRT；見 DESIGN.TODO.native-all-models.md 第 8 節）=====
+// ===== 通用 ONNX 張量執行（NRT；見 DESIGN.native-all-models.md 第 8 節）=====
 // 子程序只做三件事：載入 ONNX 檔（onnxruntime-node，CPU）、讀輸入張量檔、session.run 後把輸出張量寫成檔。前後處理留在渲染程序。
 // 控制訊息走標準輸入輸出（一行一則 JSON），張量走暫存檔（原始二進位）；不開任何埠、不用任何網路通道。
 // 為什麼寫在本檔、不放進 nr-protocol.js／nr-child.js：那兩個檔是執行包的一部分，有 md5 釘住並從 GitHub 分支下載，改了會讓已安裝的執行包核對失敗；
@@ -1530,7 +1530,7 @@ const NRT = (function () {
     o = o || {};
     const spawnFn = o.spawnFn || require('child_process').spawn, execPath = o.execPath || process.execPath, log = o.log || (() => {});
     const idleMs = o.idleMs != null ? o.idleMs : 10 * 60 * 1000;
-    let child = null, seq = 0, chain = Promise.resolve(), idleTimer = null, loaded = null;
+    let child = null, seq = 0, chain = Promise.resolve(), idleTimer = null, loaded = null, lastLoad = null; // lastLoad：閒置關閉或崩潰後下一次 run 要自動重新載入的參數
     const pending = new Map(), tail = [];
     function killChild() { const c = child; child = null; loaded = null; if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; } if (c) { c._expected = true; try { c.kill(); } catch (_) { /* 已結束 */ } } }
     function touch() { if (idleTimer) clearTimeout(idleTimer); idleTimer = null; if (idleMs > 0 && child) { idleTimer = setTimeout(() => { if (pending.size === 0) { log('[native] 張量子程序閒置關閉'); killChild(); } }, idleMs); if (idleTimer.unref) idleTimer.unref(); } }
@@ -1575,10 +1575,14 @@ const NRT = (function () {
       async load(m) {
         if (loaded && loaded.model_path === m.model_path) return loaded;
         const r = await send('tensor_load', { model_path: m.model_path, threads: m.threads || 4, graph_opt: m.graph_opt || 'all' }, m.timeoutMs || 120000);
-        loaded = { model_path: m.model_path, input_names: r.input_names, output_names: r.output_names, ms: r.ms }; return loaded;
+        loaded = { model_path: m.model_path, input_names: r.input_names, output_names: r.output_names, ms: r.ms }; lastLoad = { model_path: m.model_path, threads: m.threads, graph_opt: m.graph_opt, timeoutMs: m.timeoutMs }; return loaded;
       },
-      async run(m) { return send('tensor_run', { inputs: m.inputs, out_dir: m.out_dir }, m.timeoutMs || 120000); },
-      dispose() { if (child) { try { child.stdin.write(JSON.stringify({ type: 'dispose', id: 'd' }) + '\n'); } catch (_) { /* 已結束 */ } } killChild(); },
+      async run(m) {
+        // 子程序因閒置、逾時或崩潰被結束過：自動重新載入同一個模型再跑（呼叫端手上的 session 物件不用重建）
+        if (!loaded && lastLoad) await this.load(lastLoad);
+        return send('tensor_run', { inputs: m.inputs, out_dir: m.out_dir }, m.timeoutMs || 120000);
+      },
+      dispose() { lastLoad = null; if (child) { try { child.stdin.write(JSON.stringify({ type: 'dispose', id: 'd' }) + '\n'); } catch (_) { /* 已結束 */ } } killChild(); },
       status() { return { alive: !!child, pid: child ? child.pid : null, pending: pending.size, loaded: loaded ? loaded.model_path : null }; },
     };
   }

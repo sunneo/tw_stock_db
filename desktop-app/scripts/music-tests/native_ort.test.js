@@ -81,5 +81,28 @@ async function call(op, payload, timeoutMs) {
   const h2 = N.withFallback(nat3, async () => { throw new Error('CDN 連不上'); });
   let e4 = null; try { await h2.run({ x: new N.Tensor('float32', new Float32Array([1]), [1]) }); } catch (e) { e4 = e; }
   check('兩邊都失敗：訊息含原生與退路兩個原因', e4 && /意外結束/.test(e4.message) && /CDN 連不上/.test(e4.message), e4 && e4.message);
+  // ---- 深度估計前後處理（手算期望值）----
+  const D = N.depth, ts = (w, h) => JSON.stringify(D.targetSize(w, h));
+  check('尺寸 640×480：縮放 518/480=1.0792（離 1 較近），寬 690.6→49×14=686、高 518（手算）', ts(640, 480) === '{"w":686,"h":518}', ts(640, 480));
+  check('尺寸 518×518 不變', ts(518, 518) === '{"w":518,"h":518}');
+  check('尺寸 1920×1080：縮放 518/1080=0.4796，寬 920.9→66×14=924（手算）', ts(1920, 1080) === '{"w":924,"h":518}', ts(1920, 1080));
+  check('尺寸 100×100：放大到 518×518', ts(100, 100) === '{"w":518,"h":518}');
+  const chw = D.toChw(new Uint8ClampedArray([255, 0, 0, 255, 0, 255, 0, 255]), 2, 1); // 兩個像素：紅、綠
+  const near = (a2, b, e) => Math.abs(a2 - b) < (e || 1e-4);
+  check('正規化：紅色像素 R=(1-0.485)/0.229=2.2489、G=(0-0.456)/0.224=-2.0357、B=(0-0.406)/0.225=-1.8044（手算）', near(chw[0], 2.2489) && near(chw[2], -2.0357) && near(chw[4], -1.8044), Array.from(chw));
+  check('正規化：排成 NCHW（先 R 平面、再 G、再 B）：綠色像素的 G=(1-0.456)/0.224=2.4286 在 G 平面第 2 個位置', near(chw[3], 2.4286), Array.from(chw));
+  let seen = null; const fsess = { inputNames: ['pixel_values'], outputNames: ['predicted_depth'], async run(f) { seen = f.pixel_values; return { predicted_depth: new N.Tensor('float32', new Float32Array(seen.dims[2] * seen.dims[3]).fill(0.5), [1, seen.dims[2], seen.dims[3]]) }; } };
+  let closed = false; const est = await D.estimate({}, fsess, { decode: async () => ({ width: 640, height: 480, close() { closed = true; } }), resize: (img, w, h) => new Uint8ClampedArray(w * h * 4).fill(128) });
+  check('估計：輸入張量 [1,3,518,686]，輸出縮回原圖大小 640×480（網頁版 Worker 的約定）', seen.dims.join() === '1,3,518,686' && est.w === 640 && est.h === 480 && est.srcW === 640 && est.srcH === 480 && est.data.length === 640 * 480 && near(est.data[0], 0.5) && near(est.data[640 * 480 - 1], 0.5), est && [est.w, est.h]);
+  // 雙線性縮放（手算）：2×2 [0,10;20,30] 放大到 4×4，半像素中心。第一列 x：fx=(x+.5)*.5-.5 = -0.25→夾 0、0.25、0.75、1.25→（x0=1,x1夾1）wx=.25...
+  const up = D.resizeBilinear(Float32Array.from([0, 10, 20, 30]), 2, 2, 4, 4);
+  check('雙線性放大 2×2→4×4：四個角保持原值 0、10、20、30，(1,1) 的位置是 (0.25,0.25) 加權：10×.75×.25+20×.25×.75+30×.25×.25＝7.5（手算）', up[0] === 0 && up[3] === 10 && up[12] === 20 && up[15] === 30 && near(up[5], 7.5, 1e-4), Array.from(up));
+  check('縮放到同大小直接複製', D.resizeBilinear(Float32Array.from([1, 2, 3, 4]), 2, 2, 2, 2).join() === '1,2,3,4');
+  check('估計：用完關閉解碼後的圖', closed === true);
+  // installFromBlob：Blob 依序切片
+  const { Blob } = require('buffer'); const blob = new Blob([Buffer.from([1, 2, 3, 4, 5, 6, 7])]);
+  await api.installFromBlob({ id: 'm', file: 'm.onnx', bytes: 0 }, blob, { chunk: 3 });
+  const ib = calls.filter((c) => c.op === 'onnx_install').pop().payload;
+  check('Blob 安裝：7 位元組切 3 片，大小用實際值', JSON.stringify(ib.parts) === '["00000.part","00001.part","00002.part"]' && ib.bytes === 7, ib);
   console.log(ok + ' 通過，' + bad.length + ' 失敗'); process.exit(bad.length ? 1 : 0);
 })().catch((e) => { console.log('測試程式錯誤', e); process.exit(2); });
