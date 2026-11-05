@@ -46880,7 +46880,7 @@ const holder = {};
 
     const OPEN_RE = /(?:打開|開啟|開一下|開個|開到|前往|瀏覽|叫出|調出|秀出|顯示出|查看|檢視|(?<![a-z])open(?![a-z])|launch|開(?![始會心車機關獎放發頭場玩笑支票戶學])|看一下|看看)/i;
     const PLAY_RE = /播放|播一下|聽一下|聽聽|播出/;
-    const EXPLICIT_OPEN_RE = /打開|開啟|叫出|調出|秀出|顯示出|查看|檢視|開一下|開個|前往/;
+    const EXPLICIT_OPEN_RE = /打開|開啟|叫出|調出|秀出|顯示出|查看|檢視|開一下|開個|前往|再開一?次?$|重新開|重開/;
     const SHOT_RE = /截取|截圖|截個圖|截一張|螢幕截圖|screenshot/i;
     const SEARCH_RE = /(?:搜尋|搜索|查詢|查一下|查找|尋找|找出|找到|找一下|找|查|google)/i;
     const READ_RE = /(?:讀取|讀一下|讀|抓取|抓一下|抓|擷取內容|讀出)/;
@@ -47039,6 +47039,52 @@ const holder = {};
     function pickEmbedded(ranked, o) {
         o = Object.assign({}, EMBED_PICK, o || {}); if (!ranked || !ranked.length) return null; const a = ranked[0], b = ranked[1];
         return a.z >= o.minZ && (!b || a.z - b.z >= o.minGap) ? a : null;
+    }
+    // ===== 對話上下文：句子本身模糊（沒決定、或前兩名種類太近）時才用，順序在向量檢索之後、小模型字母題之前 =====
+    // 線索由程式從對話自動抽取（檔名副檔名、網址、附件、提到的種類名詞），不寫死句子；句子自己有明確結果時一律以句子為準（這裡根本不會被呼叫）。
+    const ANAPHOR_RE = /它|他|這個|那個|這份|那份|這支|那支|這首|那首|這張|那張|這些|那些|剛剛|剛才|上一個|前一個|上次|同一個|同樣的|再開|再打開|再叫出|再秀出|再調出|重新開|重開|也開/;
+    const AGAIN_RE = /再開|再打開|再叫出|再秀出|再調出|再看|重新開|重開|上次|再一次|再一遍/;
+    // 去掉指示詞、動詞、助詞之後還剩下的內容字；剩下 0 個＝純指代（「把它打開」），有內容（「叫出那份企劃書」）就是句子自己在說種類，不能被上下文蓋過
+    function contentResidue(text) {
+        return String(text || '').replace(/\[附件：[^\]]*\]/g, ' ').replace(DERIVE_STOP, ' ').replace(ANAPHOR_RE, ' ').replace(/再|重新|一次|一遍|也|同樣|這|那|它|他|剛|才|上|前|個|份|支|首|張|些|次|還有|然後|就|好|嗎|吧|喔|啊|呢|給我|讓我|看看|看/g, ' ').replace(/[\s，。,.!！?？「」『』"']/g, '');
+    }
+    function isAnaphoric(text) { return ANAPHOR_RE.test(String(text || '')) && contentResidue(text).length === 0; }
+    // 最近 N 則訊息（新的在前）裡出現的種類線索：[{kind, who, from, detail}]；history＝[{role, content}]（content 可能不是字串，略過）
+    function contextClues(history, n) {
+        const out = []; const list = (history || []).filter((m) => m && typeof m.content === 'string').slice(-(n || 6)).reverse();
+        for (const m of list) {
+            const src = parseSources(m.content); let kd = null, detail = '';
+            if (src.files[0]) { const k = kindFromName(src.files[0].name); if (k) { kd = k; detail = src.files[0].name; } }
+            if (!kd && src.names[0]) { const k = kindFromName(src.names[0].name); if (k) { kd = k; detail = src.names[0].name; } }
+            if (!kd && src.urls[0]) { kd = 'url'; detail = src.urls[0]; }
+            if (!kd) { const d = detectKind(m.content.replace(/\[附件：[^\]]*\]/g, ' '), src); if (d.kind && d.by !== '網址') { kd = d.kind; detail = d.by; } }
+            if (kd && kd !== 'editor') out.push({ kind: kd, who: m.role === 'user' ? '你' : '我', detail });
+        }
+        return out;
+    }
+    function kindFromName(name) { const m = /\.([a-z0-9]+)$/i.exec(String(name || '')); if (!m) return null; const e = m[1].toLowerCase(); return EXT_KIND[e] || null; }
+    // 純指代句的種類：①「再開一次」類 → 最近開過的種類 ②對話裡最近的線索（最新兩則線索種類一致才算數；不一致回傳 ambiguous 讓呼叫端問使用者，不猜）
+    // ctx：{ history, recentKinds（新的在前）}。回傳 { kind, by } | { ambiguous: [kinds] } | null
+    function contextResolve(text, ctx) {
+        ctx = ctx || {}; if (!isAnaphoric(text)) return null;
+        const rec = (ctx.recentKinds || []).filter((k) => KINDS[k]);
+        if (AGAIN_RE.test(text) && rec[0]) return { kind: rec[0], by: '對話上下文（你最近一次開的是' + KINDS[rec[0]].label + '）' };
+        const cl = contextClues(ctx.history, 6);
+        if (cl.length) {
+            const a = cl[0], b = cl[1];
+            if (!b || b.kind === a.kind) return { kind: a.kind, by: '對話上下文（' + a.who + '剛提到 ' + String(a.detail || KINDS[a.kind].label).slice(0, 40) + '）' };
+            return { ambiguous: [a.kind, b.kind] };
+        }
+        if (rec[0]) return { kind: rec[0], by: '對話上下文（你最近一次開的是' + KINDS[rec[0]].label + '）' };
+        return null;
+    }
+    // 句子有內容但模糊（向量前兩名很接近）：對話最近的線索種類若剛好在前兩名之內，就用它打破平手；不在前兩名內就不碰
+    function contextBreakTie(ranked, ctx, o) {
+        o = Object.assign({ gap: 0.5 }, o || {}); if (!ranked || ranked.length < 2) return null;
+        const a = ranked[0], b = ranked[1]; if (a.z - b.z >= o.gap) return null;
+        const cl = contextClues((ctx || {}).history, 6); const k = cl.length ? cl[0].kind : ((ctx || {}).recentKinds || [])[0];
+        if (k && (k === a.kind || k === b.kind)) return { kind: k, by: '對話上下文打破平手（' + a.label + '與' + b.label + '很接近，你' + (cl.length ? '剛提到的是' : '最近開的是') + KINDS[k].label + '）' };
+        return null;
     }
     function kindEntry(kind) { const k = KINDS[kind]; return k ? { kind, label: k.label, tool: k.tool, slash: k.slash, score: 0 } : null; }
     function exploreOptions(cands) {
@@ -47229,7 +47275,7 @@ const holder = {};
         return out;
     }
 
-    return { gate, embedTerms, embedQuery, rankEmbedded, pickEmbedded, kindEntry, EMBED_PICK, parseSources, detectKind, KINDS, exploreOptions, exploreMessages, validateExplore, OPEN_TABLE, EXEMPT, kindOfMime, scanTools, coverageGaps, deriveTool, pickDerived, terminalCommand, DANGER_RE, cleanKeyword, POST_CHOICES, memKey, recall, resolveClause, interpretMessages, validateChoice, choiceType, verify, verifyMessages, validateAB };
+    return { gate, embedTerms, contextClues, contextResolve, contextBreakTie, isAnaphoric, embedQuery, rankEmbedded, pickEmbedded, kindEntry, EMBED_PICK, parseSources, detectKind, KINDS, exploreOptions, exploreMessages, validateExplore, OPEN_TABLE, EXEMPT, kindOfMime, scanTools, coverageGaps, deriveTool, pickDerived, terminalCommand, DANGER_RE, cleanKeyword, POST_CHOICES, memKey, recall, resolveClause, interpretMessages, validateChoice, choiceType, verify, verifyMessages, validateAB };
 });
 
 }).call(null, undefined, holder);
@@ -68373,14 +68419,22 @@ ${fnData.code}
         const syn = Object.values(typeof FA_SEM_GROUPS !== 'undefined' ? FA_SEM_GROUPS : {}).map((v) => String(v).toLowerCase().split(/\s+/).filter(Boolean)).concat(this._otSynGroups());
         let cands = FaIntentGate.deriveTool(text, index, { synonyms: syn, memory: this._ot && this._ot.gateMemory });
         tr('🔍 探索①工具目錄：' + (cands.length ? '候選 ' + cands.slice(0, 3).map((c) => c.label + '（' + c.score + '）').join('、') : '沒有對上的候選'));
-        let pick = FaIntentGate.pickDerived(cands); let by = '工具目錄（程式）';
-        if (!pick && typeof this._unitCatalogEmbedder === 'function') {
+        let pick = FaIntentGate.isAnaphoric(text) ? null : FaIntentGate.pickDerived(cands); let by = '工具目錄（程式）'; // 純指代句（沒有內容字）字面推導只會對到雜訊
+        // 對話上下文（句子本身模糊時才用）：最近幾則訊息裡提到的檔案／網址／種類，與最近成功開過的種類；當前這一句不算線索
+        const ctxv = { history: (this.messages || []).slice(-9).filter((m, i, a) => !(i === a.length - 1 && m && m.role === 'user' && m.content === text)), recentKinds: (this._ot && this._ot.recentKinds) || [] };
+        if (!pick && typeof this._unitCatalogEmbedder === 'function' && !FaIntentGate.isAnaphoric(text)) {
             let rk = null; try { rk = await this._otGateEmbedRank(text, tr); } catch (e) { tr('🔍 探索①-2 語意向量出錯（' + String((e && e.message) || e).slice(0, 60) + '），略過'); }
             if (rk && rk.length) {
                 tr('🔍 探索①-2 語意向量：' + rk.slice(0, 3).map((c) => c.label + '（z=' + c.z.toFixed(2) + '）').join('、') + '（' + (this._otGateEmbedMs || 0) + 'ms）');
                 const ep = FaIntentGate.pickEmbedded(rk); cands = rk.slice(0, 4).map((c) => FaIntentGate.kindEntry(c.kind)).filter(Boolean);
                 if (ep) { pick = FaIntentGate.kindEntry(ep.kind); by = '語意向量（multilingual-e5-small，z=' + ep.z.toFixed(2) + '）'; }
+                else { const cb = FaIntentGate.contextBreakTie(rk, ctxv); if (cb) { pick = FaIntentGate.kindEntry(cb.kind); by = cb.by; tr('🔍 探索①-3 ' + cb.by); } }
             }
+        }
+        if (!pick) {
+            const cr = FaIntentGate.contextResolve(text, ctxv);
+            if (cr && cr.kind) { pick = FaIntentGate.kindEntry(cr.kind); by = cr.by; tr('🔍 探索①-3 ' + cr.by); }
+            else if (cr && cr.ambiguous) { cands = cr.ambiguous.map((k) => FaIntentGate.kindEntry(k)).filter(Boolean); tr('🔍 探索①-3 對話上下文：最近提到兩種（' + cands.map((c) => c.label).join('、') + '），不猜，後面問你'); }
         }
         if (!pick && this.tools.knowledge_ask) {
             tr('🔍 探索②知識庫：查詢中（最多等 ' + Math.round(L.kbMs / 1000) + ' 秒）…');
@@ -68606,6 +68660,7 @@ ${fnData.code}
             this._persistChatHistory(); this._renderMessageHistory();
             let r = await this._otExecute(plan);
             try { r = await this._otGateReflect(plan, text, r, say); } catch (e) { console.warn('反思出錯', e); }
+            if (r && r.ok && this._ot && plan.gate && plan.gate.kind && plan.gate.action === 'open') { this._ot.recentKinds = [plan.gate.kind].concat((this._ot.recentKinds || []).filter((k) => k !== plan.gate.kind)).slice(0, 5); }
             await this._otBumpHit(plan);
             if (!r.ok && !r.cancelled) this._otNoteUnresolved(text, '執行失敗：' + String(r.error || '').slice(0, 120));
             if (!r.silent) say(r.ok ? r.text : (r.cancelled ? '已取消。' : `⚠️ ${r.error || '執行失敗'}\n\n${r.text || ''}`));
