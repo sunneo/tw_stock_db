@@ -1479,7 +1479,7 @@ const NRT = (function () {
       const t0 = Date.now();
       try { ort = ort || require(process.env.NRT_ORT_DIR); } catch (e) { return fail(m.id, 'load_failed', '載入 onnxruntime-node 失敗：' + ((e && e.message) || e)); }
       try {
-        session = await ort.InferenceSession.create(m.model_path, { executionProviders: ['cpu'], intraOpNumThreads: m.threads || 4, graphOptimizationLevel: m.graph_opt || 'all' });
+        session = await ort.InferenceSession.create(m.model_path, { executionProviders: ['cpu'], intraOpNumThreads: m.threads || 4, graphOptimizationLevel: m.graph_opt || 'all', enableMemPattern: false });
       } catch (e) { return fail(m.id, 'load_failed', e); }
       send({ type: 'tensor_loaded', id: m.id, input_names: session.inputNames, output_names: session.outputNames, ms: Date.now() - t0 });
     }

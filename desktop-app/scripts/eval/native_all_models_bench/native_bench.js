@@ -30,7 +30,7 @@ function loadInputs(m, q, sess) {
     if (m.bytes && st.size !== m.bytes) { emit({ model: m.id, ok: false, error: '位元組數不符 ' + st.size + ' / ' + m.bytes }); continue; }
     try {
       const tl = Date.now();
-      const sess = await ort.InferenceSession.create(fp, { executionProviders: ['cpu'], intraOpNumThreads: cfg.threads, graphOptimizationLevel: m.graph_opt || 'all' });
+      const sess = await ort.InferenceSession.create(fp, { executionProviders: ['cpu'], intraOpNumThreads: cfg.threads, graphOptimizationLevel: m.graph_opt || 'all', enableMemPattern: false });
       const loadMs = Date.now() - tl;
       emit({ model: m.id, event: 'loaded', load_ms: loadMs, inputs: sess.inputNames, outputs: sess.outputNames, maxrss_mb: Math.round(process.resourceUsage().maxRSS / 1024) });
       if (!Array.isArray(m.inputs)) { emit({ model: m.id, skipped: 'special_inputs_not_implemented' }); continue; }
