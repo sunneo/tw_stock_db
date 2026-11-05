@@ -1127,8 +1127,8 @@
    "names": [
     "FaIntentGate"
    ],
-   "size": 28430,
-   "md5": "6f3eacdf2d4f23bdb14acc46cc94fd55"
+   "size": 30803,
+   "md5": "a240bef32f25a28535de8de0b768b52c"
   },
   "umlview": {
    "file": "chunks/umlview.js",
@@ -1148,7 +1148,7 @@
   }
  },
  "core": {
-  "size": 5496928,
-  "md5": "a9e9f31e1c444c6dc67c35e7f9b8352f"
+  "size": 5497783,
+  "md5": "61a15645d7a6440b2bac7374dc79c852"
  }
 }
