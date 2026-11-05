@@ -150,8 +150,8 @@ try {
 // 完整40字元SHA，且必須跟 web/index.html 的一模一樣（兩頁共用同一個 floating-assistant.js，
 // 改了 desktop-app 分支的檔案後兩邊一起調）。
 function loadAssistantScript() {
-  window.__FA_LAZY_BASE = RAW + '/d7f7ebcc2b6f161fa44743249c69932a1954f715/desktop-app/web-lazy/chunks/';
-  return fetch(RAW + '/d7f7ebcc2b6f161fa44743249c69932a1954f715/desktop-app/web-lazy/core.js')
+  window.__FA_LAZY_BASE = RAW + '/1459ece98c6aeafc4ca6b27441110e0bc72106f0/desktop-app/web-lazy/chunks/';
+  return fetch(RAW + '/1459ece98c6aeafc4ca6b27441110e0bc72106f0/desktop-app/web-lazy/core.js')
     .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
     .then(text => new Promise((resolve, reject) => {
       const url = URL.createObjectURL(new Blob([text], { type: 'application/javascript' }));
