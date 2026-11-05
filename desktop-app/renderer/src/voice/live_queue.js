@@ -1,5 +1,5 @@
 /* 全語音 Live 的指令佇列與切段（UMD，純函式，不碰 DOM、麥克風、網路、模型；桌面版與網頁版共用）。
- * 測試：scripts/voice-tests/live_queue.test.js。設計見 DESIGN.TODO.live-voice.md「階段 B」。
+ * 測試：scripts/voice-tests/live_queue.test.js。設計見 DESIGN.live-voice.md「階段 B」。
  *
  * 規則（使用者決定 2026-11-04）：
  *   - 連續收進來的文字先蒐集；蒐集到 maxTokens（預設 1000）就切成一個指令排入佇列。

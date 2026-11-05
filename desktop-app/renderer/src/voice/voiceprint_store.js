@@ -1,5 +1,5 @@
 /* 聲紋儲存與比對（UMD，純邏輯；不碰麥克風、不碰模型、不碰 IndexedDB——持久化由呼叫端注入）。
- * 測試：scripts/voice-tests/voiceprint_store.test.js。設計見 DESIGN.TODO.live-voice.md「階段 C」。
+ * 測試：scripts/voice-tests/voiceprint_store.test.js。設計見 DESIGN.live-voice.md「階段 C」。
  *
  * 規則：
  *   - 上限 N 介於 8 到 128，預設 8。只能由設定頁（Configure）改，這個模組沒有語音入口。

@@ -8360,7 +8360,7 @@ const FaLiveQueue = (function () {
 const holder = {};
 (function (module, self) {
 /* 全語音 Live 的指令佇列與切段（UMD，純函式，不碰 DOM、麥克風、網路、模型；桌面版與網頁版共用）。
- * 測試：scripts/voice-tests/live_queue.test.js。設計見 DESIGN.TODO.live-voice.md「階段 B」。
+ * 測試：scripts/voice-tests/live_queue.test.js。設計見 DESIGN.live-voice.md「階段 B」。
  *
  * 規則（使用者決定 2026-11-04）：
  *   - 連續收進來的文字先蒐集；蒐集到 maxTokens（預設 1000）就切成一個指令排入佇列。
@@ -8510,7 +8510,7 @@ const holder = {};
 /* 全語音 Live 的控制器（UMD，純邏輯；不碰麥克風、不碰 DOM、不直接送聊天）。
  * 接收「一段一段的辨識文字」，決定：是不是給 AI 的（主詞）、是不是取消指令、要不要排入佇列；
  * 排入後依先進先出（FIFO）一個一個交給 submit 執行，並在排入時呼叫 chime。
- * 測試：scripts/voice-tests/live_controller.test.js。設計見 DESIGN.TODO.live-voice.md「階段 B」。
+ * 測試：scripts/voice-tests/live_controller.test.js。設計見 DESIGN.live-voice.md「階段 B」。
  *
  * 依賴（全部注入，方便測試；桌面版與網頁版共用）：
  *   queue   ：renderer/src/voice/live_queue.js 的 createLiveQueue 回傳物件
@@ -9061,7 +9061,7 @@ const FaVoiceprintStore = (function () {
 const holder = {};
 (function (module, self) {
 /* 聲紋儲存與比對（UMD，純邏輯；不碰麥克風、不碰模型、不碰 IndexedDB——持久化由呼叫端注入）。
- * 測試：scripts/voice-tests/voiceprint_store.test.js。設計見 DESIGN.TODO.live-voice.md「階段 C」。
+ * 測試：scripts/voice-tests/voiceprint_store.test.js。設計見 DESIGN.live-voice.md「階段 C」。
  *
  * 規則：
  *   - 上限 N 介於 8 到 128，預設 8。只能由設定頁（Configure）改，這個模組沒有語音入口。

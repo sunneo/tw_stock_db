@@ -1,7 +1,7 @@
 {
   "name": "全語音 Live 共識（2026-11-04 使用者原話與決定，2026-11-05 管理層核對）",
   "source": "使用者原話：隨時收音、聲紋閘門、主詞、先進先出、向前管理、二次確認、網頁版也做、提示音、全語音Live預設關閉；聲紋上限不能用語音改",
-  "scope": ["DESIGN.TODO.live-voice.md"],
+  "scope": ["DESIGN.live-voice.md"],
   "must": [
     "全語音Live",
     "聲紋",
