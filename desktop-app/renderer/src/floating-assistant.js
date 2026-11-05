@@ -46791,6 +46791,31 @@ const holder = {};
     // 這張表是「底線」不是全部：說法沒對上時，由 deriveTool 從工具目錄的說明自動推導（見下面），不靠一句一句手寫規則。
     // 覆蓋測試（scripts/offline-gate-open.test.js）會掃程式裡所有名稱含 open／viewer／editor／player／preview 的工具與斜線指令，
     // 每個都必須出現在這張表（tool／slashes／alsoTools）或 EXEMPT（寫明不適用的原因）；新增工具沒登記就測試失敗。
+    // 種類的「相關詞彙」（一般常識的詞典，不是評測句子；用途跟 FA_SEM_GROUPS 同類）：只進入 deriveTool 的比對文字，不是規則。
+    // 使用者確認過的新說法由記憶（gate_memory／set_synonyms）累積，不寫在這裡。
+    const KIND_VOCAB = {
+        url: '官方網站 首頁 入口網站 部落格 網路商店 電商 連結 線上 網路 平台',
+        music: '歌 歌曲 流行歌 古典樂 交響曲 樂曲 曲目 節拍 樂器 鋼琴譜 五線譜 簡譜 編曲 配器 音符',
+        audio: '錄音檔 語音 播客 廣播 有聲書 音源 音軌',
+        pdf: '電子書 掃描檔 手冊 白皮書 型錄 講義',
+        docx: '文章 文稿 計畫書 提案書 求職信 書信 信函 自傳 講稿 契約 協議書 簽呈 通知單 聲明 日誌',
+        xlsx: '資產負債表 現金流量表 預算表 薪資表 帳本 帳務 記帳 統計表 對帳單 清單表 排程表 報價單 庫存表 試算 公式 儲存格 圖表 成績單',
+        csv: '聯絡人 資料表 欄位 逗號分隔',
+        deck: '講義簡報 提案簡報 演講稿 上台 幻燈片 slide',
+        markdown: 'readme 技術文件 筆記本 部落格文章 文檔 md',
+        text: '隨筆 便條 便條紙 記事 草稿 文字記錄 txt',
+        code: '原始碼 函式 模組 程式檔',
+        html: '首頁 網頁設計 網站原型 登陸頁 前端 版面',
+        data: '配置 參數 環境設定 資料格式 結構化資料',
+        svg: '圖示 icon logo 圖標 矢量',
+        picture: '圖片 圖像 相片 縮圖 截圖 彩圖 畫作 繪圖 修圖 美工',
+        video: '影集 實況 動畫 電影 微電影 片段',
+        model3d: '角色模型 渲染 網格',
+        viewerdoc: '互動表單 互動文件 問卷 填寫表',
+        worksheet: '試卷 題目 習作 教學 題庫 期中考 期末考',
+        sqlite: 'db 資料表',
+        terminal: 'powershell cmd 指令 主控台 console'
+    };
     const OPEN_TABLE = [
         { kind: 'url', label: '網頁', mimes: ['text/uri-list'], exts: [], nouns: '網頁|網站|網址|瀏覽器|browser|chrome', tool: 'browser_create_tab', viewer: '瀏覽器控制（AI Controlled 分頁群組）' },
         { kind: 'terminal', label: '終端機', mimes: ['application/x-sh'], exts: [], nouns: '終端機|terminal|命令列|指令列|shell|bash', tool: 'terminal_create', viewer: 'WASM 沙盒終端機（busybox ash）', noFile: true },
@@ -46951,15 +46976,18 @@ const holder = {};
         const q = q0.slice();
         (opts.synonyms || []).forEach((g) => { if (Array.isArray(g) && g.some((t) => t.length >= 2 && q0.indexOf(String(t).toLowerCase()) >= 0)) g.forEach((t) => { if (t.length >= 2) bigramsOf(t).forEach((b) => { if (q.indexOf(b) < 0) q.push(b); }); }); });
         const descOf = {}; (index || []).forEach((t) => { descOf[t.name] = t.desc || ''; });
-        const docs = OPEN_TABLE.filter((e) => e.kind !== 'editor').map((e) => { const txt = [e.label, e.nouns.replace(/\\b|[|?]/g, ' '), e.exts.join(' '), e.viewer || '', e.tool ? descOf[e.tool] || '' : '', e.tool || '', e.slash || ''].join(' '); return { e, docText: txt, docSet: new Set(bigramsOf(txt).concat((e.slashes || []).map((s) => s.replace(/[^a-z0-9]+/g, ' ')))) }; });
+        // 學到的說法：使用者確認過的「句子→種類」（記憶 's:' 開頭、值 'kind:xxx'），把句子的內容詞併進該種類的比對文字，之後換個說法提到同一個名詞也認得（累積，不是規則）
+        const learned = {}; const mem = opts.memory || {};
+        Object.keys(mem).forEach((k) => { const v = mem[k]; if (k.indexOf('s:') === 0 && typeof v === 'string' && v.indexOf('kind:') === 0) { const kd = v.slice(5); learned[kd] = (learned[kd] || '') + ' ' + k.slice(2).replace(DERIVE_STOP, ' '); } });
+        const docs =OPEN_TABLE.filter((e) => e.kind !== 'editor').map((e) => { const txt = [e.label, e.nouns.replace(/\\b|[|?]/g, ' '), e.exts.join(' '), e.viewer || '', KIND_VOCAB[e.kind] || '', learned[e.kind] || '', e.tool ? descOf[e.tool] || '' : '', e.tool || '', e.slash || ''].join(' '); return { e, docText: txt, docSet: new Set(bigramsOf(txt).concat((e.slashes || []).map((s) => s.replace(/[^a-z0-9]+/g, ' ')))) }; });
         const df = {}; docs.forEach((d) => d.docSet.forEach((b) => { df[b] = (df[b] || 0) + 1; }));
         const res = docs.map((d) => { let score = 0; const hit = []; new Set(q).forEach((b) => { if (d.docSet.has(b)) { score += Math.log(1 + docs.length / df[b]) * (b.length >= 3 ? 1.5 : 1); hit.push(b); } }); return { kind: d.e.kind, label: d.e.label, tool: d.e.tool, slash: d.e.slash || null, score: Math.round(score * 100) / 100, hit, d }; });
         // 中文名詞多半「尾字表示類別」（損益『表』、企劃『書』、推薦『信』、短『片』）：拿句子裡各詞的尾字，去對各種類說明裡詞語的尾字
-        docs.forEach((d) => { d.heads = new Set(String(d.docText).split(/[、，,（）()\/|\s]+/).filter((w) => /^[一-鿿]{2,}$/.test(w)).map((w) => w.slice(-1))); });
+        docs.forEach((d) => { d.headN = {}; const ws0 = Array.from(new Set(String(d.docText).split(/[、，,（）()\/|\s]+/))).filter((w) => /^[一-鿿]{2,5}$/.test(w)); ws0.filter((w) => !ws0.some((v) => v !== w && w.endsWith(v))).forEach((w) => { const c = w.slice(-1); d.headN[c] = (d.headN[c] || 0) + 1; }); d.heads = new Set(Object.keys(d.headN)); });
         const hdf = {}; docs.forEach((d) => d.heads.forEach((c) => { hdf[c] = (hdf[c] || 0) + 1; }));
         const lastRun = (String(text).replace(DERIVE_STOP, ' ').match(/[一-鿿]{2,}/g) || []).slice(-1); // 「動詞＋修飾＋的＋名詞」的中心詞在最後面
         const qheads = new Set(lastRun.map((r) => r.slice(-1)));
-        res.forEach((r) => qheads.forEach((c) => { if (r.d.heads.has(c)) { r.score = Math.round((r.score + 1.4 * Math.log(1 + docs.length / hdf[c])) * 100) / 100; r.hit.push('尾字' + c); } }));
+        res.forEach((r) => qheads.forEach((c) => { if (r.d.heads.has(c)) { r.score = Math.round((r.score + 1.4 * Math.log(1 + docs.length / hdf[c]) * (1 + 0.35 * Math.log(r.d.headN[c]))) * 100) / 100; r.hit.push('尾字' + c); r.tn = Math.max(r.tn || 0, r.d.headN[c]); } }));
         // 雙字詞都沒對上時，退一步用單字（權重低、要求比第二名明顯高才採用）：財報→報表、紀錄→錄音…
         if (!res.some((r) => r.score > 0)) {
             const uni = {}; docs.forEach((d) => { const cs = new Set((d.docText || '').match(/[一-鿿]/g) || []); d.chars = cs; cs.forEach((c) => { uni[c] = (uni[c] || 0) + 1; }); });
@@ -46971,7 +46999,7 @@ const holder = {};
         return res.filter((r) => r.score > 0).sort((a, b) => b.score - a.score);
     }
     // 程式先決定的門檻：最高分夠高、且明顯高於第二名
-    function pickDerived(cands) { if (!cands.length) return null; const a = cands[0], b = cands[1]; if (a.uni) return null; // 只靠單字湊出來的分數不自動採用（通訊錄→音訊 這種），留給小模型或使用者
+    function pickDerived(cands) { if (!cands.length) return null; const a = cands[0], b = cands[1]; if (a.uni) { const tailOk = a.hit.some((h) => h.indexOf('尾字') === 0) && (a.tn || 0) >= 2 && a.score >= 3.4 && (!b || a.score >= b.score * 1.25); if (!tailOk) return null; } // 只靠單字湊出來的分數不自動採用（通訊錄→音訊 這種），留給小模型或使用者
         return a.score >= 3 && (!b || a.score >= b.score * 1.4) ? a : null; }
     const DANGER_RE = /(?:^|[\s;&|])(?:rm|sudo|mkfs|dd|shutdown|reboot|halt|format|del|rmdir|chmod|chown|kill|killall)(?:\s|$)|>\s*\/dev\/|:\(\)\s*\{|curl[^|]*\|\s*(?:sh|bash)|wget[^|]*\|\s*(?:sh|bash)/i;
     // 終端機要跑的指令：句子裡「跑／執行／運行 xxx」，或常見的自然說法（看目錄→ls、目前位置→pwd）
@@ -68269,7 +68297,7 @@ ${fnData.code}
         g.trace = g.trace || [];
         const index = Object.entries(this.tools).map(([n, t]) => ({ name: n, desc: String((t && t.description) || '') }));
         const syn = Object.values(typeof FA_SEM_GROUPS !== 'undefined' ? FA_SEM_GROUPS : {}).map((v) => String(v).toLowerCase().split(/\s+/).filter(Boolean)).concat(this._otSynGroups());
-        let cands = FaIntentGate.deriveTool(text, index, { synonyms: syn });
+        let cands = FaIntentGate.deriveTool(text, index, { synonyms: syn, memory: this._ot && this._ot.gateMemory });
         g.trace.push('🔍 探索①工具目錄：' + (cands.length ? '候選 ' + cands.slice(0, 3).map((c) => c.label + '（' + c.score + '）').join('、') : '沒有對上的候選'));
         let pick = FaIntentGate.pickDerived(cands); let by = '工具目錄（程式）';
         if (!pick && this.tools.knowledge_ask) {
@@ -68277,7 +68305,7 @@ ${fnData.code}
                 const kr = JSON.parse(await this.tools.knowledge_ask.callback.call(this, JSON.stringify({ question: String(text).replace(/打開|開啟|叫出來|叫出|調出|秀出|請|幫我|一下/g, ' ').trim() || text, limit: 3 })));
                 const quotes = ((kr && kr.hits) || []).map((h) => String(h.quote || '')).join(' ').slice(0, 600);
                 g.trace.push('🔍 探索②知識庫：' + (quotes ? '找到 ' + kr.hits.length + ' 個相關片段，拿來再推導一次' : '沒有相關片段'));
-                if (quotes) { const c2 = FaIntentGate.deriveTool(text + ' ' + quotes, index, { synonyms: syn }); if (c2.length) cands = c2; pick = FaIntentGate.pickDerived(c2); by = '知識庫（使用者的文件）＋工具目錄'; }
+                if (quotes) { const c2 = FaIntentGate.deriveTool(text + ' ' + quotes, index, { synonyms: syn, memory: this._ot && this._ot.gateMemory }); if (c2.length) cands = c2; pick = FaIntentGate.pickDerived(c2); by = '知識庫（使用者的文件）＋工具目錄'; }
             } catch (e) { g.trace.push('🔍 探索②知識庫：查詢失敗（' + String((e && e.message) || e).slice(0, 50) + '）'); }
         }
         const options = FaIntentGate.exploreOptions(cands);

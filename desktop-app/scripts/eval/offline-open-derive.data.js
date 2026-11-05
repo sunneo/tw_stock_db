@@ -29,6 +29,21 @@ const heldout = [
     ['叫出系統設定檔', 'data'], ['秀出那份讀我檔', 'markdown'], ['叫出那篇隨手記', 'text'],
     ['調出孩子的作業單', 'worksheet'], ['叫出期末測驗卷', 'worksheet'], ['秀出那個官網', 'html']
 ];
+
+// heldout2：做完「尾字／類別字」改進之前先寫好、之後只量一次，用來檢查前一組有沒有被調過頭（過擬合）。詞同樣不在說明或同義詞組裡。
+const heldout2 = [
+    ['叫出季度結算表', 'xlsx'], ['調出薪資清冊', 'xlsx'], ['秀出每月開銷的明細表', 'xlsx'],
+    ['叫出畢業論文', 'docx'], ['調出請假申請書', 'docx'], ['秀出給客戶的道歉信', 'docx'], ['叫出會議逐字稿', 'docx'],
+    ['調出下週報告用的投影檔', 'deck'], ['叫出行銷提案的簡報稿', 'deck'],
+    ['叫出那首搖籃曲', 'music'], ['調出吉他譜', 'music'], ['秀出這段節奏', 'music'],
+    ['叫出那座城堡的立體模型', 'model3d'], ['秀出機器人的三維外型', 'model3d'],
+    ['叫出封面的設計圖', 'picture'], ['調出旅行拍的相簿照', 'picture'], ['秀出商標的向量圖形', 'svg'],
+    ['叫出那段訪談的影音', 'video'], ['調出預告片來剪', 'video'],
+    ['開個命令提示字元', 'terminal'], ['叫出 powershell', 'terminal'],
+    ['叫出應用程式的組態檔', 'data'], ['秀出那份說明文件的 md 稿', 'markdown'], ['叫出那篇日記', 'text'],
+    ['調出數學習題', 'worksheet'], ['叫出小考卷', 'worksheet'], ['秀出品牌網站', 'html']
+];
 module.exports = seen.concat(heldout);
+module.exports.heldout2 = heldout2;
 module.exports.seen = seen;
 module.exports.heldout = heldout;
