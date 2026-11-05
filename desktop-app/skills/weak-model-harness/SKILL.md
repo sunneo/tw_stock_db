@@ -63,7 +63,7 @@ node scripts/harness.js behavior 某個原始碼檔
 
 **與 `experience.json` 的差別**：`experience.json`（放在目前資料夾的 `.weak-harness/`）只收 `learn` 時 `status` 為 ok 的封閉題成功經驗，由程式驗證，每筆是「一題怎麼答對」。路線經驗是人工整理的任務層級記錄，不由 `learn` 寫入，也不經程式核對，所以 `verified` 欄位要如實標示（只有重跑過測試才標 true）。兩者不要混用：封閉題經驗給離線的答題用，路線經驗給開工前的人與模型讀。
 
-詳細整理與待辦建議見 `DESIGN.TODO.path-experience.md`。
+詳細整理與待辦建議見 `DESIGN.TODO.md（原檔：path-experience）`。
 
 ### 共識閘門
 
@@ -102,7 +102,7 @@ node scripts/harness.js behavior 某個原始碼檔
 
 ## 速度守則
 
-弱模型做事慢，常見原因是等待方式錯誤：長間隔排程空等、逾時設得很大、每改一點就跑完整測試、真評估前沒有先乾跑、互不依賴的步驟排隊進行。證據與來源見 `DESIGN.TODO.path-experience.md` 第 8 節。下列條款寫在 `references/consensus/speed-rules.json`，每個數字都是上限：
+弱模型做事慢，常見原因是等待方式錯誤：長間隔排程空等、逾時設得很大、每改一點就跑完整測試、真評估前沒有先乾跑、互不依賴的步驟排隊進行。證據與來源見 `DESIGN.TODO.md（原檔：path-experience）` 第 8 節。下列條款寫在 `references/consensus/speed-rules.json`，每個數字都是上限：
 
 1. **等待間隔**：不超過 3 分鐘，等待期間要有逐步進度（進度檔或逐行輸出），不准空等。
 2. **逾時**：任何逾時設定不超過預期耗時的 4 倍，且不超過 5 分鐘，除非使用者批准。

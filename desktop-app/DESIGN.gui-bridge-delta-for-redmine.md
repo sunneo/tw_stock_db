@@ -1,7 +1,7 @@
 # GUI 橋接：桌面版移植時解決、但 Redmine 設計文件沒有交代的問題
 
 > 日期：2026-11-03。比對對象：`C:\Users\sunneo\Downloads\redmine_ai_chat\DESIGN.skill-gui-bridge.md`（2026-11-03 完整版）。
-> 來源：桌面版的 `DESIGN.TODO.gui-bridge.md`（第 8、9、11、13、15 節）與提交紀錄。每項附出處；「實機」指真 Electron 評估檔（`scripts/eval/run_eval.js`）驗證過，「只有測試」指 node 或 Python 測試。
+> 來源：桌面版的 `DESIGN.TODO.md（原檔：gui-bridge）`（第 8、9、11、13、15 節）與提交紀錄。每項附出處；「實機」指真 Electron 評估檔（`scripts/eval/run_eval.js`）驗證過，「只有測試」指 node 或 Python 測試。
 > 說明：這份清單只列「Redmine 文件沒寫」的。Redmine 外掛本身可能已經處理了其中幾項但文件沒寫；回頭強化時請先到 Redmine 程式碼實測，不要直接當成它有這些毛病。
 
 ## A. 行為缺口（Redmine 文件的「已知缺口」沒列，桌面版修掉了）

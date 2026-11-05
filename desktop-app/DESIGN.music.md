@@ -1,6 +1,6 @@
 # 音樂領域設計與查證（階段 0，2026-11-01）
 
-標「未驗證」的是沒親眼確認的事。交接文件：`DESIGN.TODO.music.md`。
+標「未驗證」的是沒親眼確認的事。交接文件：`DESIGN.TODO.md（原檔：music）`。
 
 ## 1. 音色庫分析（已實測）
 工具：`node scripts/sf-analyze.js <sf2 或 piano-web 的 soundfont-gs-b64.js> [--json 輸出] [--corr 0.98]`。對象：GeneralUser GS 2.0.3 BETA，檔案 30.82 MB，16 位元，無 24 位元擴充。
@@ -95,7 +95,7 @@ Roland SC-88 的資料只當大小目標，不抽取、不轉換。注意：pian
 
 
 ## 音色庫取代原版（2026-11-01）
-使用者決定用瘦身版（22 kHz、SF3 品質 3、6.6 MB，scripts/sf-slim.js --max-rate=22050 --sf3 --hi-share-db=-35）取代 32 MB 原版當預設，並接受七項波形門檻中 10 個位置未過：頻譜距離 GM 72、5、12、15；重心位移 GM 61、116、7、88；包絡相關 GM 110、83；高頻損失 GM 42（9.4 dB）。分片放在 soundfont-assets 分支 commit 9ee509dd06ec0e9c0bcebaaea7c7645294a5edff（單片，md5 c6f01d650e1ba739f1a7c84bacf2d661），floating-assistant.js 的 FA_ASSET_URLS.gsSoundbankBase 指向它，失敗時退回原始 sf2 網址。重現與進一步改善見 DESIGN.TODO.music.md「音色庫驗證結果」。
+使用者決定用瘦身版（22 kHz、SF3 品質 3、6.6 MB，scripts/sf-slim.js --max-rate=22050 --sf3 --hi-share-db=-35）取代 32 MB 原版當預設，並接受七項波形門檻中 10 個位置未過：頻譜距離 GM 72、5、12、15；重心位移 GM 61、116、7、88；包絡相關 GM 110、83；高頻損失 GM 42（9.4 dB）。分片放在 soundfont-assets 分支 commit 9ee509dd06ec0e9c0bcebaaea7c7645294a5edff（單片，md5 c6f01d650e1ba739f1a7c84bacf2d661），floating-assistant.js 的 FA_ASSET_URLS.gsSoundbankBase 指向它，失敗時退回原始 sf2 網址。重現與進一步改善見 DESIGN.TODO.md（原檔：music）「音色庫驗證結果」。
 
 ## 作曲樹：AI 是作曲家（2026-11-02 起）
 **問題**：現行流程 AI 只逐欄選範本與參數（compose_plan.js），音符全由 music_compose.js 的範本產生，AI 沒有真的寫音。使用者要的是像拆 UML 一樣由上而下切分、每層只問小而封閉的問題、程式驗證、最後組裝。

@@ -37,7 +37,7 @@
         }
       ],
       "lesson": "大檔先 Grep 定位再小段讀；每條盤點結論附行號，並標明是來源檔還是建置檔。",
-      "evidence": "工作階段 local_fd90132f-f163-4806-b98d-7d29f560daa8（調查 Haiku）步驟 1、2 的 Grep／Read 順序；DESIGN.TODO.colu-thinking.md 步驟 1、2",
+      "evidence": "工作階段 local_fd90132f-f163-4806-b98d-7d29f560daa8（調查 Haiku）步驟 1、2 的 Grep／Read 順序；DESIGN.TODO.md（原檔：colu-thinking） 步驟 1、2",
       "verified": false,
       "observer": "self"
     },
@@ -89,7 +89,7 @@
       "steps": [
         {
           "do": "讀設計草案步驟 3、5(b) 與「使用者決定」，確認規格",
-          "check": "DESIGN.TODO.colu-thinking.md 含「使用者決定」小節"
+          "check": "DESIGN.TODO.md（原檔：colu-thinking） 含「使用者決定」小節"
         },
         {
           "do": "在 recipe_core.js 的 jsonStep 之前加 stripThink，回傳 answer、reasoning、unclosed",
@@ -105,7 +105,7 @@
         },
         {
           "do": "只加三個檔並提交，行尾維持 LF",
-          "check": "git show --stat 4d30a0c0 只列 recipe_core.js、recipe_core.test.js、DESIGN.TODO.colu-thinking.md；git ls-files --eol 顯示 lf"
+          "check": "git show --stat 4d30a0c0 只列 recipe_core.js、recipe_core.test.js、DESIGN.TODO.md（原檔：colu-thinking）；git ls-files --eol 顯示 lf"
         }
       ],
       "alternatives": [
@@ -189,7 +189,7 @@
         },
         {
           "do": "提交前列出 git diff --stat，確認只動預期的檔",
-          "check": "git show --stat adea8058 只含 recipe_core.js、floating-assistant.js、think_plan.test.js、run-core-tests.js、DESIGN.TODO.colu-thinking.md"
+          "check": "git show --stat adea8058 只含 recipe_core.js、floating-assistant.js、think_plan.test.js、run-core-tests.js、DESIGN.TODO.md（原檔：colu-thinking）"
         }
       ],
       "alternatives": [
@@ -1274,7 +1274,7 @@
       "steps": [],
       "alternatives": [],
       "lesson": "派工時沒有附速度守則，Haiku 因此沒有上限可依循；派工紀錄應由 dispatch 自動附上守則與上限，不靠老師記得加。",
-      "evidence": ".weak-harness/dispatch/native-runner-design-88116691.json 沒有 speed 欄位（派工當時沒有速度守則）；DESIGN.TODO.path-experience.md 第 8 節 S1、S2",
+      "evidence": ".weak-harness/dispatch/native-runner-design-88116691.json 沒有 speed 欄位（派工當時沒有速度守則）；DESIGN.TODO.md（原檔：path-experience） 第 8 節 S1、S2",
       "verified": false
     },
     {
@@ -1286,7 +1286,7 @@
       "steps": [],
       "alternatives": [],
       "lesson": "老師沒有及早發現卡住：安裝模擬的子程序等待 25 分鐘（timeout 1500000）且沒有逐步輸出，直到使用者催促才處理。驗收時應掃描 timeout 數值，超過 5 分鐘就要求拆小或加進度輸出。",
-      "evidence": "scripts/eval/native_old_layout_install.js:62（工作樹未提交）；管理層回報卡 13 分鐘才被催促，時長未由逐字稿核實；DESIGN.TODO.path-experience.md 第 8 節 S3",
+      "evidence": "scripts/eval/native_old_layout_install.js:62（工作樹未提交）；管理層回報卡 13 分鐘才被催促，時長未由逐字稿核實；DESIGN.TODO.md（原檔：path-experience） 第 8 節 S3",
       "verified": false
     }
   ],

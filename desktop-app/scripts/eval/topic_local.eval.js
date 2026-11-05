@@ -100,7 +100,7 @@ R.checks.noBlockingJudgeCall = blockingCalls === 0;
 
 // 3. 開：_lastTopicShift 依序 不轉移／不轉移／轉移／轉移（有 matchedTopicId）／不轉移
 // 第四則（「再畫一張狗的圖」）：子對話 S5 起，開出音樂子對話時父話題會還原成貓，所以貓再出現是「同一話題」（父對話處理），不再是「命中舊話題」。
-// 這是 S5 有意的改變（見 DESIGN.TODO.subchat-s5.md 的回歸段落），結果不變：不轉移、不開新子對話、沒有摘要。
+// 這是 S5 有意的改變（見 DESIGN.TODO.md（原檔：subchat-s5） 的回歸段落），結果不變：不轉移、不開新子對話、沒有摘要。
 const expect = [false, false, true, false, false];
 R.checks.onShiftSequence = on.rows.every((r, i) => r.shift && r.shift.isShifted === expect[i]);
 R.checks.onReturnStaysInParent = !!(on.rows[3].shift && on.rows[3].shift.isShifted === false && on.rows[3].shift.reason === 'same-topic');
