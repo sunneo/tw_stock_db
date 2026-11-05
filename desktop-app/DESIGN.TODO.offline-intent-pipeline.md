@@ -220,3 +220,11 @@
 - 修法：探索呼叫 `knowledge_ask` 時帶 `no_expand: true`；知識庫查詢與「檢查小模型」各最多 5 秒、小模型選擇題最多 20 秒且關 Thinking、`maxTries` 1；逾時就在卡片寫「這一步逾時略過」並跳下一步；沒安裝小模型直接略過；問使用者前先列出已試過的步驟；探索期間有進度卡逐步顯示，問使用者前收掉。逾時限制是 `_otGateLimits()`，測試用假計時器（`_otGateTimer`）。
 - 實測（真 Electron，同一句）：有小模型 89430 毫秒 → 4975 毫秒；沒有小模型（模擬未安裝）11 毫秒。測試：`scripts/offline-gate-explore-timeout.test.js`（14 項）；量測：`scripts/eval/offline-explore-timing.electron.eval.js`。
 - 限制：逾時只是「不再等」，背景的查詢或生成可能還在跑（沒有取消機制）。
+
+## 15. 語意向量檢索（2026-11-05，子工作階段）
+
+- 做法：`deriveTool`（字面）決定不了時，在探索②知識庫之前插入探索①-2：把句子（去掉動詞與附件標記）對各種類的**逐詞**（名稱、名詞、相關詞彙，239 段，不加種類名）用 multilingual-e5-small 算相似度，種類取最高分，再做 z 分數（扣這句對所有種類的平均、除以標準差），第 1 名 z≥2 且比第 2 名高 0.5 以上才採用（`pickEmbedded`）；不夠把握的只重排候選給小模型字母題與使用者。原始餘弦太擠（第 1、2 名常差 0.01 以內），單靠餘弦門檻做不到。
+- 模型沿用 `_vendorEmbedPipe`／`_unitCatalogEmbedder`（vendor-models 固定 commit，核對 sha256，Cache Storage）。**第一次要先問使用者**（寫明檔名、約 118MB、來源；同意記在 localStorage `fa_gate_embed_consent`，或單元檢索已啟用也算），沒同意就不下載、退回字面推導（`scripts/offline-gate-embed.test.js` 檢查「同意檢查在載入模型之前」）。
+- 真 Electron 實測（持久評估資料夾 `%TEMP%\fa-embed-eval-profile`，埠 17951；`scripts/eval/offline-open-embed.electron.eval.js`），程式端命中率「字面 → 字面＋向量」：seen 41→42/42；**held-out 14→21/28（75%）**；heldout2 14→18/27（67%）。錯 2 句／2 句。
+- 耗時：模型已在快取時載入約 9 秒（第一次下載加載入約 29 秒）；載入後每句約 32ms（最大 35ms），遠低於 2 秒。
+- 誠實限制：門檻與「不加種類名、逐詞取最高」是在這三組評測上挑的（heldout2 不是完全沒看過），實際泛化可能略低；剩下沒對上的（例如「備忘錄」「請假申請書」「日記」）向量也不夠突出，仍交給小模型字母題或問使用者。向量的選擇不自動寫進記憶（不是使用者確認的）。

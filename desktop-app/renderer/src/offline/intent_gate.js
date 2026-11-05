@@ -242,6 +242,33 @@
 
     // 探索第③步給小模型的封閉題：候選裡挑一個（0＝都不是）。候選沒有時用常見種類當選單
     const COMMON_KINDS = ['docx', 'xlsx', 'deck', 'picture', 'video', 'text'];
+    // ===== 語意向量檢索（multilingual-e5-small；模型在頁面端載入，這裡只管文字怎麼組、怎麼排、門檻怎麼定）=====
+    // 逐詞：每個種類的名稱、名詞、相關詞彙各自成一段短文字（不加種類名；實測加了反而變差），句子對每個詞算相似度，種類取最高分
+    function embedTerms() {
+        const out = [];
+        OPEN_TABLE.filter((e) => e.kind !== 'editor').forEach((e) => {
+            const words = [e.label].concat(e.nouns.split('\\b').join('').split(/[|?]/).filter((w) => w.length >= 2 && !/[\\()]/.test(w)), (KIND_VOCAB[e.kind] || '').split(/\s+/).filter((w) => w.length >= 2));
+            Array.from(new Set(words)).forEach((w) => out.push({ kind: e.kind, text: w }));
+        });
+        return out;
+    }
+    function embedQuery(text) { return String(text || '').replace(/\[附件：[^\]]*\]/g, ' ').replace(DERIVE_STOP, ' ').replace(/\s+/g, ' ').trim() || String(text || ''); }
+    // qvec 與 terms（[{kind, v}]）的向量都已正規化，內積＝餘弦；種類取最高分，再做 z 分數（扣掉這一句對所有種類的平均、除以標準差），回傳由高到低 [{kind, label, score(餘弦), z}]
+    function rankEmbedded(qvec, terms) {
+        const best = new Map();
+        (terms || []).forEach((t) => { let d = 0; const v = t.v; const n = Math.min(v.length, qvec.length); for (let i = 0; i < n; i++) d += v[i] * qvec[i]; if (!best.has(t.kind) || best.get(t.kind) < d) best.set(t.kind, d); });
+        const vals = Array.from(best.values()); const m = vals.reduce((a, b) => a + b, 0) / (vals.length || 1); const sd = Math.sqrt(vals.reduce((a, b) => a + (b - m) * (b - m), 0) / (vals.length || 1)) || 1;
+        const out = []; best.forEach((s, kind) => out.push({ kind, label: KINDS[kind] ? KINDS[kind].label : kind, score: s, z: (s - m) / sd }));
+        return out.sort((a, b) => b.z - a.z);
+    }
+    // 門檻：multilingual-e5-small 的相似度很擠（相關 0.86–0.92、無關也有 0.78–0.82），原始餘弦的差距太小（實測第 1、2 名常差 0.01 以內），
+    // 所以用 z 分數：第 1 名要夠突出（z ≥ 2）而且比第 2 名明顯高（差 ≥ 0.5）才採用；不夠把握的只拿來重排候選給小模型／使用者
+    const EMBED_PICK = { minZ: 2, minGap: 0.5 };
+    function pickEmbedded(ranked, o) {
+        o = Object.assign({}, EMBED_PICK, o || {}); if (!ranked || !ranked.length) return null; const a = ranked[0], b = ranked[1];
+        return a.z >= o.minZ && (!b || a.z - b.z >= o.minGap) ? a : null;
+    }
+    function kindEntry(kind) { const k = KINDS[kind]; return k ? { kind, label: k.label, tool: k.tool, slash: k.slash, score: 0 } : null; }
     function exploreOptions(cands) {
         const list = (cands || []).filter((c) => c.kind && c.kind !== 'editor').slice(0, 4);
         if (list.length >= 2) return list;
@@ -430,5 +457,5 @@
         return out;
     }
 
-    return { gate, parseSources, detectKind, KINDS, exploreOptions, exploreMessages, validateExplore, OPEN_TABLE, EXEMPT, kindOfMime, scanTools, coverageGaps, deriveTool, pickDerived, terminalCommand, DANGER_RE, cleanKeyword, POST_CHOICES, memKey, recall, resolveClause, interpretMessages, validateChoice, choiceType, verify, verifyMessages, validateAB };
+    return { gate, embedTerms, embedQuery, rankEmbedded, pickEmbedded, kindEntry, EMBED_PICK, parseSources, detectKind, KINDS, exploreOptions, exploreMessages, validateExplore, OPEN_TABLE, EXEMPT, kindOfMime, scanTools, coverageGaps, deriveTool, pickDerived, terminalCommand, DANGER_RE, cleanKeyword, POST_CHOICES, memKey, recall, resolveClause, interpretMessages, validateChoice, choiceType, verify, verifyMessages, validateAB };
 });

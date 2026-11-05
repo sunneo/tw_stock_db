@@ -47014,6 +47014,33 @@ const holder = {};
 
     // 探索第③步給小模型的封閉題：候選裡挑一個（0＝都不是）。候選沒有時用常見種類當選單
     const COMMON_KINDS = ['docx', 'xlsx', 'deck', 'picture', 'video', 'text'];
+    // ===== 語意向量檢索（multilingual-e5-small；模型在頁面端載入，這裡只管文字怎麼組、怎麼排、門檻怎麼定）=====
+    // 逐詞：每個種類的名稱、名詞、相關詞彙各自成一段短文字（不加種類名；實測加了反而變差），句子對每個詞算相似度，種類取最高分
+    function embedTerms() {
+        const out = [];
+        OPEN_TABLE.filter((e) => e.kind !== 'editor').forEach((e) => {
+            const words = [e.label].concat(e.nouns.split('\\b').join('').split(/[|?]/).filter((w) => w.length >= 2 && !/[\\()]/.test(w)), (KIND_VOCAB[e.kind] || '').split(/\s+/).filter((w) => w.length >= 2));
+            Array.from(new Set(words)).forEach((w) => out.push({ kind: e.kind, text: w }));
+        });
+        return out;
+    }
+    function embedQuery(text) { return String(text || '').replace(/\[附件：[^\]]*\]/g, ' ').replace(DERIVE_STOP, ' ').replace(/\s+/g, ' ').trim() || String(text || ''); }
+    // qvec 與 terms（[{kind, v}]）的向量都已正規化，內積＝餘弦；種類取最高分，再做 z 分數（扣掉這一句對所有種類的平均、除以標準差），回傳由高到低 [{kind, label, score(餘弦), z}]
+    function rankEmbedded(qvec, terms) {
+        const best = new Map();
+        (terms || []).forEach((t) => { let d = 0; const v = t.v; const n = Math.min(v.length, qvec.length); for (let i = 0; i < n; i++) d += v[i] * qvec[i]; if (!best.has(t.kind) || best.get(t.kind) < d) best.set(t.kind, d); });
+        const vals = Array.from(best.values()); const m = vals.reduce((a, b) => a + b, 0) / (vals.length || 1); const sd = Math.sqrt(vals.reduce((a, b) => a + (b - m) * (b - m), 0) / (vals.length || 1)) || 1;
+        const out = []; best.forEach((s, kind) => out.push({ kind, label: KINDS[kind] ? KINDS[kind].label : kind, score: s, z: (s - m) / sd }));
+        return out.sort((a, b) => b.z - a.z);
+    }
+    // 門檻：multilingual-e5-small 的相似度很擠（相關 0.86–0.92、無關也有 0.78–0.82），原始餘弦的差距太小（實測第 1、2 名常差 0.01 以內），
+    // 所以用 z 分數：第 1 名要夠突出（z ≥ 2）而且比第 2 名明顯高（差 ≥ 0.5）才採用；不夠把握的只拿來重排候選給小模型／使用者
+    const EMBED_PICK = { minZ: 2, minGap: 0.5 };
+    function pickEmbedded(ranked, o) {
+        o = Object.assign({}, EMBED_PICK, o || {}); if (!ranked || !ranked.length) return null; const a = ranked[0], b = ranked[1];
+        return a.z >= o.minZ && (!b || a.z - b.z >= o.minGap) ? a : null;
+    }
+    function kindEntry(kind) { const k = KINDS[kind]; return k ? { kind, label: k.label, tool: k.tool, slash: k.slash, score: 0 } : null; }
     function exploreOptions(cands) {
         const list = (cands || []).filter((c) => c.kind && c.kind !== 'editor').slice(0, 4);
         if (list.length >= 2) return list;
@@ -47202,7 +47229,7 @@ const holder = {};
         return out;
     }
 
-    return { gate, parseSources, detectKind, KINDS, exploreOptions, exploreMessages, validateExplore, OPEN_TABLE, EXEMPT, kindOfMime, scanTools, coverageGaps, deriveTool, pickDerived, terminalCommand, DANGER_RE, cleanKeyword, POST_CHOICES, memKey, recall, resolveClause, interpretMessages, validateChoice, choiceType, verify, verifyMessages, validateAB };
+    return { gate, embedTerms, embedQuery, rankEmbedded, pickEmbedded, kindEntry, EMBED_PICK, parseSources, detectKind, KINDS, exploreOptions, exploreMessages, validateExplore, OPEN_TABLE, EXEMPT, kindOfMime, scanTools, coverageGaps, deriveTool, pickDerived, terminalCommand, DANGER_RE, cleanKeyword, POST_CHOICES, memKey, recall, resolveClause, interpretMessages, validateChoice, choiceType, verify, verifyMessages, validateAB };
 });
 
 }).call(null, undefined, holder);
@@ -68287,6 +68314,29 @@ ${fnData.code}
         const M = await this._otGateModel(); if (!M) return null;
         try { const r = await FaRecipe.jsonStep({ generate: M.generate, messages: FaIntentGate.verifyMessages(keyword, hits.slice(0, 5)), validate: FaIntentGate.validateAB, maxTries: 2, maxTokens: 30, prefill: '{"answer":' }); return r.ok ? r.value.answer : null; } catch (_) { return null; }
     }
+    // 語意向量檢索（multilingual-e5-small，跟單元檢索共用同一個模型與載入程式）：把句子對各「種類」的說明做向量排名。
+    // 第一次用要先問使用者要不要下載（沒同意就不下載、回傳 null，退回字面推導）；之後模型留在記憶體，每句只算一次句子向量。
+    async _otGateEmbedRank(text, tr) {
+        if (this._otGateEmbedOff) return null;
+        let ok = false; try { ok = localStorage.getItem('fa_gate_embed_consent') === '1'; } catch (_) { ok = false; }
+        if (!ok) { try { const st = await this._unitCatalogEmbedStoreLoad(); ok = !!(st && st.enabled); } catch (_) { ok = false; } }
+        if (!ok) {
+            if (this._otGateEmbedAsked) return null; this._otGateEmbedAsked = true; const M = FaCatalogEmbed.MODEL; const yes = '下載並啟用'; let c = null; tr.end();
+            try { c = await this.requestUserForm({ title: '📥 要下載語意向量模型嗎？', description: '離線模式聽不懂新說法（例如「叫出損益表」要開哪一種）時，可以用語意向量模型來判斷。\n檔案：' + M.repo + '（' + M.dtype + '量化版）\n大小：約 ' + M.approxMB + 'MB\n來源：專案的 vendor-models 分支（固定版本、核對 sha256），取不到才走 HuggingFace。\n只下載一次，之後離線也能用；不同意就繼續用字面推導。', choices: [yes, '先不要'] }); } catch (_) { c = null; }
+            if (!(c && c.confirmed && c.answer === yes)) { tr('🔍 探索①-2 語意向量：你沒有同意下載，略過'); return null; }
+            try { localStorage.setItem('fa_gate_embed_consent', '1'); } catch (_) { /* 記不住下次再問 */ }
+        }
+        const t0 = Date.now();
+        if (!this._otGateEmbedVecs) {
+            tr('🔍 探索①-2 語意向量：載入模型中（第一次會比較久）…');
+            let pipe = null; try { pipe = await this._unitCatalogEmbedder(); } catch (_) { pipe = null; }
+            if (!pipe) { this._otGateEmbedOff = true; tr('🔍 探索①-2 語意向量：模型載入失敗（' + String(this._unitCatalogEmbedError || this._unitCatalogEmbedVendorError || '').slice(0, 80) + '），略過'); return null; }
+            const ps = FaIntentGate.embedTerms(); const vs = await this._unitCatalogEmbedTexts(pipe, ps.map((x) => x.text), FaCatalogEmbed.MODEL.passagePrefix);
+            this._otGateEmbedVecs = ps.map((x, i) => ({ kind: x.kind, v: vs[i] })); this._otGateEmbedLoadMs = Date.now() - t0;
+        }
+        const t1 = Date.now(); const q = await this._unitCatalogEmbedTexts(this._unitCatalogEmbedPipe, [FaIntentGate.embedQuery(text)], FaCatalogEmbed.MODEL.queryPrefix);
+        this._otGateEmbedMs = Date.now() - t1; return FaIntentGate.rankEmbedded(q[0], this._otGateEmbedVecs);
+    }
     // 探索（內建在迴圈裡）：說了「打開」卻看不出要開哪一種時，①工具目錄（程式）→ ②知識庫（knowledge_ask，查使用者自己的文件）→ ③離線小模型字母題（CoLU＋Thinking）→ ④問使用者。
     // 回傳 true＝已經決定了種類（plan.gate 與 plan.decision 已更新）；備選種類留在 plan.gate.explored.alts 給反思換路線用
     async _otGateExplore(plan, text) {
@@ -68324,6 +68374,14 @@ ${fnData.code}
         let cands = FaIntentGate.deriveTool(text, index, { synonyms: syn, memory: this._ot && this._ot.gateMemory });
         tr('🔍 探索①工具目錄：' + (cands.length ? '候選 ' + cands.slice(0, 3).map((c) => c.label + '（' + c.score + '）').join('、') : '沒有對上的候選'));
         let pick = FaIntentGate.pickDerived(cands); let by = '工具目錄（程式）';
+        if (!pick && typeof this._unitCatalogEmbedder === 'function') {
+            let rk = null; try { rk = await this._otGateEmbedRank(text, tr); } catch (e) { tr('🔍 探索①-2 語意向量出錯（' + String((e && e.message) || e).slice(0, 60) + '），略過'); }
+            if (rk && rk.length) {
+                tr('🔍 探索①-2 語意向量：' + rk.slice(0, 3).map((c) => c.label + '（z=' + c.z.toFixed(2) + '）').join('、') + '（' + (this._otGateEmbedMs || 0) + 'ms）');
+                const ep = FaIntentGate.pickEmbedded(rk); cands = rk.slice(0, 4).map((c) => FaIntentGate.kindEntry(c.kind)).filter(Boolean);
+                if (ep) { pick = FaIntentGate.kindEntry(ep.kind); by = '語意向量（multilingual-e5-small，z=' + ep.z.toFixed(2) + '）'; }
+            }
+        }
         if (!pick && this.tools.knowledge_ask) {
             tr('🔍 探索②知識庫：查詢中（最多等 ' + Math.round(L.kbMs / 1000) + ' 秒）…');
             // no_expand：不要為了查這一句去請模型想同義詞（實測會卡 50 秒以上）；只用關鍵字與語意向量
