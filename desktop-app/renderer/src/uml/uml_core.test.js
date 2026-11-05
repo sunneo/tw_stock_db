@@ -161,6 +161,23 @@ usecase Checkout: Customer -> Cart.add(book) -> Order.pay(total):bool -> Order.s
     check('切塊流程：小情境直接走一次（chunks=1），結果與原本相同', oneChunk.ok && oneChunk.chunks === 1 && oneChunk.fromHints);
     const allBad = await U.scenarioToModelBig('綜合平台：火星人可以做一些事。金星人可以做一些事。木星人可以做一些事。土星人可以做一些事。天王星人可以做一些事。', { generate: async () => '不是 JSON', maxTries: 1 });
     check('切塊流程：每一塊都拆不出來 → 沒完成，講出原因，不當掉', !allBad.ok && /找不到/.test(allBad.error) && allBad.warnings.length >= 2 && allBad.chunks >= 2, allBad);
+    // ---- 思考堆疊接進一次一小題的流程 ----
+    {
+        const seenU = []; const sc = '顧客可以瀏覽書籍、加入購物車並結帳付款，管理員可以上架書籍。';
+        const gen = async (a) => { const last = a.messages[a.messages.length - 1].content; seenU.push(last); const sys = a.messages[0].content;
+            if (/規劃深入解題/.test(sys)) return '{"checks":[{"check":"每個類別都有成員","standard":"至少一個屬性或操作"}]}';
+            if (/核對剛做完的結果/.test(sys)) return '{"results":[{"i":1,"ok":false,"fix":"Status 沒有值"}]}';
+            return script(a.messages); };
+        const r = await U.scenarioToModel(sc, { program: false, generate: gen });
+        const mem = seenU.filter((x) => x.includes('列出屬性與操作') || x.includes('屬性與操作'));
+        const first = seenU.find((x) => x.includes('【現在這題】補這個類別的屬性與操作：Book'));
+        check('stack/uml_core: member prompts carry goal, path and earlier decisions', !!first && first.startsWith('【目標】' + sc.slice(0, 10)) && first.includes('design > members > members:Book') && first.includes('【已定，不要改】') && first.includes('類別 Book'), first && first.slice(0, 300));
+        check('stack/uml_core: checks planned once and reviewed once per loop; problems become warnings', r.decisions.filter((d) => d.stage === 'plan_checks').length === 2 && r.decisions.filter((d) => d.stage === 'review').length === 2 && r.warnings.some((w) => /核對發現：每個類別都有成員（標準：至少一個屬性或操作）/.test(w)), r.decisions.map((d) => d.stage));
+        const off = []; await U.scenarioToModel(sc, { program: false, generate: async (a) => { off.push(a.messages[a.messages.length - 1].content); return script(a.messages); }, thinkStack: false });
+        check('stack/uml_core: thinkStack:false → no header, no extra calls', off.length > 0 && off.every((x) => !x.includes('【目標】')) && seenU.length > off.length, [off.length, seenU.length]);
+        const shared = require('../recipe/think_stack.js').create('外層目標'); await U.scenarioToModel(sc, { program: false, generate: async (a) => script(a.messages), stack: shared });
+        check('stack/uml_core: shared stack is restored to empty with design decisions recorded', shared.frames.length === 0 && shared.done.some((f) => f.path === 'design' && f.state === 'done'), shared.done.map((f) => f.path));
+    }
     console.log(ok + ' passed, ' + bad.length + ' failed', bad);
     process.exit(bad.length ? 1 : 0);
 })();

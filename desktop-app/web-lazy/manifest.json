@@ -159,8 +159,8 @@
    "names": [
     "FaPlan"
    ],
-   "size": 18534,
-   "md5": "e6df99fbffa37ed2550db5b222544d0b"
+   "size": 19588,
+   "md5": "91ebd86646e726bc80cb92f41f5ca184"
   },
   "thinkstack": {
    "file": "chunks/thinkstack.js",
@@ -1164,7 +1164,7 @@
   }
  },
  "core": {
-  "size": 5577493,
-  "md5": "007a87148342fa7796fe383eca8aa87b"
+  "size": 5582004,
+  "md5": "d3f8818ae7110538dcc071d365e88df3"
  }
 }

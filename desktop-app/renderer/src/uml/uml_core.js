@@ -443,7 +443,18 @@ class {{className}}Test {
     };
     // 整條管線。opts: { generate({messages,maxTokens})→string, onStage(e), maxTries }
     // 回傳 { ok, model, dsl, decisions:[{stage,by,tries,rejected}], warnings:[…] }；任何一個階段模型連續失敗，該階段退回「程式的保守預設」並記在 warnings，不會整條掛掉
+    // 思考堆疊（think_stack.js，DESIGN.think-stack.md）：lazy 取得（FaThinkStack 在嵌入版晚於本模組定義）；opts.thinkStack===false 關閉，opts.stack 可與外層共用
+    function getThinkStack(opts) { if (opts && opts.thinkStack === false) return null; if (opts && opts.stackMod) return opts.stackMod; try { if (typeof FaThinkStack !== 'undefined' && FaThinkStack) return FaThinkStack; } catch (_) { /* 還沒定義 */ } try { return typeof require === 'function' ? require('../recipe/think_stack.js') : null; } catch (_) { return null; } }
+    const STAGE_Q = { actors: '找出參與者與使用案例', classes: '找出需要的類別', members: '補這個類別的屬性與操作', relations: '補這個類別和其他類別的關係', sequence: '排這個使用案例的呼叫順序' };
+    const stageSummary = (stage, label, v) => { if (!v) return '沒有結果'; const arrN = (a, f) => (Array.isArray(a) ? a.slice(0, 6).map(f).join('、') : ''); if (stage === 'actors') return '參與者 ' + arrN(v.actors, (x) => x) + '；使用案例 ' + arrN(v.usecases, (u) => u.name); if (stage === 'classes') return '類別 ' + arrN(v.classes, (c) => c.name); if (stage === 'members') return (v.values ? '值 ' + arrN(v.values, (x) => x) : '屬性 ' + arrN(v.attrs, (a) => a.name) + '；操作 ' + arrN(v.ops, (o) => o.name)); if (stage === 'relations') return arrN(v.relations, (r) => label + ' ' + r.kind + ' ' + r.to) || '沒有關係'; if (stage === 'sequence') return arrN(v.steps, (x) => x.to + '.' + x.op); return '已完成'; };
     async function scenarioToModel(scenario, opts) {
+        opts = opts || {}; const T = getThinkStack(opts); if (!T || typeof opts.generate !== 'function') return scenarioToModelCore(scenario, opts);
+        const st = opts.stack || T.create(scenario, { maxDecisions: 8 }); const base = st.frames.length;
+        T.push(st, { path: 'design', question: '把情境一步一步設計成 UML（參與者→類別→成員→關係→呼叫順序）', note: opts.chunkLabel });
+        let res = null; try { res = await scenarioToModelCore(scenario, Object.assign({}, opts, { stack: st, stackMod: T })); return res; }
+        finally { while (st.frames.length > base + 1) T.pop(st, { ok: false, summary: '中斷' }); if (st.frames.length > base) T.pop(st, { ok: !!(res && res.ok), summary: res && res.ok ? '設計完成：' + res.model.classes.length + ' 個類別、' + res.model.usecases.length + ' 個使用案例' : '沒有完成' }); }
+    }
+    async function scenarioToModelCore(scenario, opts) {
         const decisions = []; const warnings = []; const model = emptyModel(); const emit = (e) => { if (opts.onStage) try { opts.onStage(e); } catch (_) {} };
         // ⓪ 程式先讀情境（詞彙表＋動作表）：讀得出參與者、使用案例、至少一個類別，整份設計就由程式決定（模型 0 次呼叫）；讀不出才走下面一次一個小問題的模型階段
         if (opts.program !== false) { const h = scenarioHints(scenario, opts.glossary); if (h.actors.length && h.usecases.length && h.classes.length >= 1) {
@@ -455,7 +466,22 @@ class {{className}}Test {
             return { ok: true, model, dsl: toDsl(model), decisions, warnings, errors: errs0, fromHints: true }; } }
         // CoLU+Thinking：opts.thinking（來自 R.thinkingPlan，沒給或 enabled:false 就完全照舊）。推理只進 reasoning（給介面看），不進 messages、不進 decisions
         const thOn = !!(opts.thinking && opts.thinking.enabled); const reasoning = [];
-        const ask = async (stage, spec, label) => { if (thOn) emit({ type: 'thinking', phase: 'start', stage, label }); const r = await R.jsonStep({ generate: opts.generate, messages: spec.messages, validate: spec.validate, maxTries: opts.maxTries || 2, maxTokens: 400, prefill: PREFILL[stage], thinking: opts.thinking }); if (thOn) { if (r.reasoning) reasoning.push(r.reasoning); emit({ type: 'thinking', phase: 'done', stage, label, chars: String(r.reasoning || '').length, text: r.reasoning || '' }); } decisions.push({ stage, label, by: 'model', tries: r.tries, rejected: r.rejected, ok: r.ok }); emit({ type: 'stage', stage, label, ok: r.ok }); if (!r.ok) warnings.push(stage + (label ? '（' + label + '）' : '') + ' 模型沒給出合格的回覆：' + (r.error || ''));
+        const stk = opts.stack || null, TS = opts.stackMod || null; const askOf = (messages, validate) => R.jsonStep({ generate: opts.generate, messages, validate, maxTries: 2, maxTokens: 160, prefill: '{' }).then((r) => (r && r.ok ? r.value : null), () => null);
+        const ask = async (stage, spec, label) => {
+            if (!stk || !TS) return askInner(stage, spec, label);
+            TS.push(stk, { path: stage + (label ? ':' + label : ''), question: STAGE_Q[stage] + (label ? '：' + label : '') }); let v = null;
+            try { v = await askInner(stage, spec, label); return v; } finally { TS.pop(stk, { ok: !!v, summary: stageSummary(stage, label, v) }); }
+        };
+        // 迴圈（逐一補成員／逐一排呼叫順序）：往下之前列檢查與標準，做完回來核對一次；有問題記進 warnings 與 decisions（不重跑，離線小模型的呼叫很貴）
+        const loopGroup = async (path, question, next, defaults, fn) => {
+            if (!stk || !TS || opts.stackChecks === false || (thOn && opts.stackChecks !== true)) return fn(); // 思考模式本來就貴（每題 1500+ token），列檢查／核對預設不加；要的話 stackChecks:true
+            TS.push(stk, { path, question }); const pc = await TS.planChecks(stk, { ask: askOf, next, defaults, repeat: thOn }); decisions.push({ stage: 'plan_checks', label: path, by: 'stack', source: pc.by, ok: true, checks: pc.checks });
+            let r; try { r = await fn(); } finally { /* 先核對再 pop */ }
+            const rv = await TS.reviewReturn(stk, { ask: askOf, returned: path + ' 全部做完', repeat: thOn }); decisions.push({ stage: 'review', label: path, by: 'stack', ok: !rv.problems.length, unsure: rv.unsure, problems: rv.problems });
+            for (const pr of rv.problems) warnings.push(path + ' 核對發現：' + pr.check + (pr.standard ? '（標準：' + pr.standard + '）' : '') + '，' + pr.fix);
+            TS.pop(stk, { ok: !rv.problems.length, summary: rv.problems.length ? '核對有 ' + rv.problems.length + ' 個問題' : '已完成' }); return r;
+        };
+        const askInner = async (stage, spec, label) => { if (thOn) emit({ type: 'thinking', phase: 'start', stage, label }); const r = await R.jsonStep({ stack: stk, stackMod: TS, generate: opts.generate, messages: spec.messages, validate: spec.validate, maxTries: opts.maxTries || 2, maxTokens: 400, prefill: PREFILL[stage], thinking: opts.thinking }); if (thOn) { if (r.reasoning) reasoning.push(r.reasoning); emit({ type: 'thinking', phase: 'done', stage, label, chars: String(r.reasoning || '').length, text: r.reasoning || '' }); } decisions.push({ stage, label, by: 'model', tries: r.tries, rejected: r.rejected, ok: r.ok }); emit({ type: 'stage', stage, label, ok: r.ok }); if (!r.ok) warnings.push(stage + (label ? '（' + label + '）' : '') + ' 模型沒給出合格的回覆：' + (r.error || ''));
             // CoLU+Thinking 反思（答案層）：核對失敗才反思一次（每題最多 1 次）；有缺口就把 note 當反思提示重做一次。推理只進 reasoning（給介面看）
             if (!r.ok && opts.reflect && opts.reflect.enabled) { const rv = await R.coluThinkRevise({ qid: 'ans:' + stage + ':' + (label || ''), budget: opts.reflect.budget, generate: opts.generate, modelId: opts.reflect.modelId, contextTokens: opts.reflect.contextTokens, device: opts.reflect.device, enabled: true, original: null, describe: () => '階段「' + stage + '」' + (label ? '（' + label + '）' : '') + '的回覆沒有通過核對：' + String(r.error || '').slice(0, 160), redo: async (note) => { const again = await R.jsonStep({ generate: opts.generate, messages: spec.messages.concat([{ role: 'user', content: '反思提示：' + note + '。請依此修正，只輸出修正後的 JSON。' }]), validate: spec.validate, maxTries: opts.maxTries || 2, maxTokens: 400, prefill: PREFILL[stage], thinking: opts.thinking }); if (again.reasoning) reasoning.push(again.reasoning); return again.ok ? again.value : null; } });
                 if (rv.reflected) emit({ type: 'reflect', level: 'answer', gap: rv.gap, note: rv.note, count: rv.reflected, redone: rv.redone, fallback: rv.fallback, unsure: rv.unsure, chars: String(rv.reasoning || '').length, text: rv.reasoning || '', label: stage + (label ? '（' + label + '）' : '') });
@@ -470,13 +496,13 @@ class {{className}}Test {
         model.classes = a2.classes.map((c) => ({ name: c.name, kind: c.kind, label: c.label || '', attrs: [], ops: [], values: [] }));
         const names = model.classes.map((c) => c.name); const kinds = Object.fromEntries(model.classes.map((c) => [c.name, c.kind]));
         // ③ 每個類別的成員（一次一個類別，沒有前面類別的記憶，只給已知類別名稱）
-        for (const c of model.classes) {
+        await loopGroup('members', '逐一補每個類別的屬性與操作', '逐一補 ' + model.classes.length + ' 個類別的屬性與操作', [{ check: '每個類別都有成員', standard: '每個類別至少有一個屬性或操作（enum 要有值）' }, { check: '成員名稱合理', standard: '屬性與操作名稱是英文識別字、不和別的類別混在一起' }], async () => { for (const c of model.classes) {
             const used = model.usecases.map((u) => u.name).join('、'); const r = await ask('members', stageSpec.members(scenario, { cls: c, classNames: names, usedBy: used }), c.name);
             if (!r) continue; if (c.kind === 'enum') { c.values = r.values.slice(); continue; }
             for (const a of arr(r.attrs)) c.attrs.push({ name: a.name, type: parseType(a.type), visibility: '+' });
             for (const o of arr(r.ops)) c.ops.push({ name: o.name, params: arr(o.params).map((p) => ({ name: p.name, type: parseType(p.type) })), returns: o.returns && o.returns !== 'void' ? parseType(o.returns) : { base: 'void', args: [] }, visibility: '+', static: false });
             if (c.kind === 'interface') c.attrs = [];
-        }
+        } });
         // ④ 每個類別的關係
         for (const c of model.classes) {
             const others = names.filter((n) => n !== c.name); if (!others.length) continue; const r = await ask('relations', stageSpec.relations(scenario, { cls: c, others, kinds }), c.name); if (!r) continue;
@@ -484,10 +510,10 @@ class {{className}}Test {
         }
         // ⑤ 每個使用案例的呼叫順序（選單：類別與它真的有的操作）
         const ops = Object.fromEntries(model.classes.filter((c) => c.kind !== 'enum').map((c) => [c.name, c.ops.map((o) => o.name)])); const menu = Object.entries(ops).map(([k, v]) => k + '（' + (v.length ? v.join('、') : '還沒有操作') + '）').join('；');
-        for (const u of model.usecases) {
+        await loopGroup('sequence', '逐一排每個使用案例的呼叫順序', '逐一排 ' + model.usecases.length + ' 個使用案例的呼叫順序', [{ check: '每個使用案例都有步驟', standard: '每個使用案例至少有兩個呼叫步驟' }, { check: '呼叫的操作存在', standard: '每個步驟呼叫的類別與操作都在選單裡' }], async () => { for (const u of model.usecases) {
             const r = await ask('sequence', stageSpec.sequence(scenario, { uc: u, ops, menu }), u.name); if (!r) continue; let prev = u.actor;
             for (const s of arr(r.steps)) { u.steps.push({ from: prev, to: s.to, msg: s.op, args: [], returns: '' }); prev = s.to; }
-        }
+        } });
         const added = ensureOps(model); if (added.length) warnings.push('使用案例呼叫了還沒有的操作，已自動補進類別：' + added.join('、'));
         // 整體驗證；把不合法的關係／步驟拿掉（不要讓一個壞回覆毀掉整份模型）
         let errs = validateModel(model); if (errs.length) { const names2 = new Set(names); model.relations = model.relations.filter((r) => names2.has(r.from) && names2.has(r.to) && !(r.kind === 'implement' && kinds[r.to] !== 'interface')); errs = validateModel(model); if (errs.length) warnings.push('驗證仍有 ' + errs.length + ' 個問題：' + errs.slice(0, 3).join('；')); }
@@ -522,7 +548,7 @@ class {{className}}Test {
     async function scenarioToModelBig(scenario, opts) {
         opts = opts || {}; const parts = opts.split === false ? [String(scenario || '')] : splitScenario(scenario, opts); if (parts.length <= 1) { const r = await scenarioToModel(scenario, opts); return Object.assign(r, { chunks: 1 }); }
         const decisions = [], warnings = [], models = [], reasons = []; let okAny = false, firstErr = '';
-        for (let i = 0; i < parts.length; i++) { const r = await scenarioToModel(parts[i], opts); if (r.reasoning) reasons.push(r.reasoning); for (const d of r.decisions || []) decisions.push(Object.assign({ chunk: i + 1 }, d)); for (const w of r.warnings || []) warnings.push('第 ' + (i + 1) + ' 塊：' + w); if (r.ok && r.model && (r.model.classes.length || r.model.usecases.length)) { okAny = true; models.push(r.model); } else { if (!firstErr) firstErr = r.error || '這一塊沒有結果'; warnings.push('第 ' + (i + 1) + ' 塊沒有拆出來：' + (r.error || '沒有結果')); } }
+        for (let i = 0; i < parts.length; i++) { const r = await scenarioToModel(parts[i], Object.assign({}, opts, { chunkLabel: '大問題第 ' + (i + 1) + '／' + parts.length + ' 塊：' + String(parts[i]).slice(0, 30) })); if (r.reasoning) reasons.push(r.reasoning); for (const d of r.decisions || []) decisions.push(Object.assign({ chunk: i + 1 }, d)); for (const w of r.warnings || []) warnings.push('第 ' + (i + 1) + ' 塊：' + w); if (r.ok && r.model && (r.model.classes.length || r.model.usecases.length)) { okAny = true; models.push(r.model); } else { if (!firstErr) firstErr = r.error || '這一塊沒有結果'; warnings.push('第 ' + (i + 1) + ' 塊沒有拆出來：' + (r.error || '沒有結果')); } }
         if (!okAny) return { ok: false, model: emptyModel(), dsl: '', decisions, warnings, error: firstErr || '找不到參與者與使用案例', chunks: parts.length };
         const model = mergeModels(models); model.name = String(scenario || '').split(/[：:。\n]/)[0].trim().slice(0, 24) || model.name; const errs = validateModel(model); if (errs.length) warnings.push('合併後驗證有 ' + errs.length + ' 個問題：' + errs.slice(0, 3).join('；'));
         decisions.push({ stage: 'merge', by: 'program', ok: true, chunks: parts.length }); return { ok: true, model, dsl: toDsl(model), decisions, warnings, errors: errs, chunks: parts.length, partial: models.length < parts.length, reasoning: reasons.join('\n\n') };

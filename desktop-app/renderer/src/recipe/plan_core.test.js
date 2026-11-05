@@ -152,6 +152,22 @@ const tools = (plan) => plan.steps.map((s) => s.tool).join('>');
     const arts = P.collectArtifacts(step, { audio_file_id: 'A1', filename: 'a.wav', text: '內容', other_file_id: 'Z9' }, '');
     check('artifacts: declared key, inline text and undeclared *_file_id are all registered', arts.some((a) => a.kind === 'audio' && a.id === 'A1') && arts.some((a) => a.kind === 'text' && a.value === '內容') && arts.some((a) => a.id === 'Z9'), arts);
 
+    // ---- 思考堆疊：每一步 push／pop，fill 收到第三個參數 ----
+    {
+        const TS = require('./think_stack.js'); const f2 = F({ attachments: [att('talk.mp4', 'v1')], text: '整理摘要' }); const pl2 = P.buildPlan({ target: 'summary' }, f2); const run2 = P.createRun({ id: 'video_summary', label: '影片做摘要' }, f2, pl2, '整理摘要');
+        const seenSk = []; const stk = TS.create('整理這部影片的摘要');
+        const env2 = mkEnv({ transcribe_media: () => jr({ ok: true, text: '這是逐字稿內容。', language: 'zh' }) }, { stackMod: TS, stack: stk, fns: { local_summarize: async () => ({ ok: true, text: JSON.stringify({ summary: '摘要：內容' }), json: { summary: '摘要：內容' } }) }, fill: async (step, missing, sk) => { seenSk.push(sk); return { values: {}, missing: [] }; } });
+        await P.advance(run2, env2);
+        check('plan stack: one frame per step, all closed at the end, summaries recorded', stk.frames.length === 0 && stk.done.map((f) => f.path).join().startsWith('s1:transcribe_media') && stk.done.some((f) => f.path === 'plan' && f.state === 'done') && stk.done.find((f) => f.path.startsWith('s1:')).summary.includes('transcribe_media 完成'), stk.done.map((f) => f.path + '|' + f.summary));
+        {
+            const t2 = TS.create('整理這部影片的摘要'); let hdr = null;
+            const env3 = mkEnv({ transcribe_media: () => jr({ ok: true, text: '逐字稿', language: 'zh' }) }, { stackMod: TS, stack: t2, fns: { local_summarize: async () => { hdr = TS.header(t2); return { ok: true, text: '{"summary":"s"}', json: { summary: 's' } }; } } });
+            await P.advance(P.createRun({ id: 'video_summary', label: 'x' }, f2, P.buildPlan({ target: 'summary' }, f2), '整理摘要'), env3);
+            check('plan stack: step 2 header shows the goal, the path and what step 1 did', !!hdr && hdr.includes('【目標】整理這部影片的摘要') && hdr.includes('transcribe_media 完成') && hdr.includes('plan > s2:local_summarize'), hdr);
+        }
+        const noStack = mkEnv({ transcribe_media: () => jr({ ok: true, text: 't', language: 'zh' }) }, { fns: { local_summarize: async () => ({ ok: true, text: '{"summary":"s"}', json: { summary: 's' } }) } }); const r3 = P.createRun({ id: 'video_summary', label: 'x' }, f2, P.buildPlan({ target: 'summary' }, f2), '整理摘要'); await P.advance(r3, noStack);
+        check('plan stack: without stackMod everything is as before', r3.state === 'done');
+    }
     console.log(ok + ' passed, ' + bad.length + ' failed', bad);
     process.exit(bad.length ? 1 : 0);
 })();

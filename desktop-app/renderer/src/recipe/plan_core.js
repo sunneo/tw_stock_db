@@ -219,7 +219,22 @@
     // ---------- 驅動：一直做到完成／等使用者／失敗 ----------
     // env: { tool(name,args)→{ok,text,json}, fns:{name(inputs,run)→{ok,text,json}}, defsOf(tool)→[slot def]（工具自己的欄位定義，用來補 extra 欄位）,
     //        fill(step, missingDefs)→{values,missing}（模型補空）, save(run), onEvent(e), limits:{maxSteps,maxReplans} }
+    // 思考堆疊（think_stack.js）：env.stackMod 有給（宿主注入）就在每一步前後 push／pop，並把 {stack, stackMod} 當第三個參數交給 env.fill，
+    // 小模型補欄位時才看得到「使用者要什麼、前面步驟做了什麼」；沒給＝跟以前完全一樣。env.stack 可共用外層的堆疊。
     async function advance(run, env) {
+        const T = env && env.stackMod; if (!T) return advanceCore(run, env);
+        const st = env.stack || T.create(String((run.facts && run.facts.text) || (run.goal && run.goal.target) || '完成使用者的需求'), { maxDecisions: 8 }); const base = st.frames.length;
+        T.push(st, { path: 'plan', question: '照計畫一步一步完成：' + run.steps.map((s) => s.tool).join(' → ').slice(0, 100) });
+        let open = null; const closeStep = () => { if (!open) return; const s = run.steps.find((x) => x.id === open); const sum = s ? (s.state === 'done' ? (s.tool + ' 完成' + (s.result ? '：' + String(s.result).slice(0, 40) : '')) : (s.tool + ' ' + s.state + (s.error ? '：' + String(s.error).slice(0, 40) : ''))) : '完成'; T.pop(st, { ok: !s || s.state === 'done', summary: sum }); open = null; };
+        const env2 = Object.assign({}, env, {
+            stack: st,
+            fill: env.fill ? (step, missing) => env.fill(step, missing, { stack: st, stackMod: T }) : undefined,
+            onEvent: (e) => { if (e.type === 'step_start') { closeStep(); T.push(st, { path: e.step + ':' + e.tool, question: '做這一步：' + e.tool }); open = e.step; } if (env.onEvent) env.onEvent(e); },
+        });
+        try { return await advanceCore(run, env2); }
+        finally { closeStep(); while (st.frames.length > base + 1) T.pop(st, { ok: false, summary: '中斷' }); if (st.frames.length > base) T.pop(st, { ok: run.state === 'done', summary: run.state === 'done' ? '計畫完成' : '計畫停在 ' + run.state }); }
+    }
+    async function advanceCore(run, env) {
         const lim = Object.assign({ maxCalls: 16, maxReplans: 2 }, env.limits || {}); const emit = (e) => { log(run, e); if (env.onEvent) try { env.onEvent(e); } catch (_) {} };
         run.state = 'running'; if (env.save) env.save(run);
         let guard = 0;

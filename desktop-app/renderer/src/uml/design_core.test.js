@@ -186,6 +186,23 @@ function check(name, cond, info) { if (cond) ok++; else { bad.push(name); consol
             check('stack: stackChecks:false skips plan／review／self-check calls', !off.some((x) => x.includes('往下一層做') || x.includes('要檢查的項目') || x.includes('結果有回答這一題嗎')), off.length);
         }
     }
+    // ---- designProject 共用一個堆疊：產生模型→rework 都帶得到整體目標 ----
+    {
+        const sc = '顧客可以瀏覽書籍、加入購物車並結帳付款，管理員可以上架書籍。'; const seenP = [];
+        const gen = async (a) => { seenP.push(a.messages[a.messages.length - 1].content); const sys = a.messages[0].content;
+            if (/規劃深入解題|核對剛做完的結果|自我檢查/.test(sys)) return '{}';
+            if (/參與者（人或外部系統）/.test(sys)) return '{"actors":["Customer"],"usecases":[{"name":"Checkout","actor":"Customer","summary":"結帳"}]}';
+            if (/找出系統需要的類別/.test(sys)) return '{"classes":[{"name":"Book","kind":"class","label":"書"},{"name":"Cart","kind":"class","label":"購物車"}]}';
+            if (/列出屬性與操作/.test(sys)) return '{"attrs":[{"name":"id","type":"int"}],"ops":[{"name":"run","params":[],"returns":"void"}]}';
+            if (/跟其他類別的關係/.test(sys)) return '{"relations":[]}'; if (/呼叫順序/.test(sys)) return '{"steps":[{"to":"Cart","op":"run"}]}'; return '{}'; };
+        const r = await D.designProject(sc, { generate: gen, program: false, seed: false, language: 'python' });
+        const mem = seenP.find((x) => x.includes('【現在這題】補這個類別的屬性與操作：Cart'));
+        check('stack/designProject: member prompt shows project > design > members path and the overall goal', !!mem && mem.startsWith('【目標】' + sc.slice(0, 12)) && mem.includes('project > design > members > members:Cart') && mem.includes('類別 Book'), mem && mem.slice(0, 260));
+        const T2 = require('../recipe/think_stack.js'); const shared = T2.create(sc); const r2 = await D.designProject(sc, { generate: gen, program: false, seed: false, stack: shared });
+        check('stack/designProject: shared stack ends empty after the whole design', shared.frames.length === 0 && shared.done.some((f) => f.path === 'project' && f.state === 'done'), shared.frames.map((f) => f.path));
+        const seenOff = []; await D.designProject(sc, { generate: async (a) => { seenOff.push(a.messages[a.messages.length - 1].content); return gen(a); }, program: false, seed: false, thinkStack: false });
+        check('stack/designProject: thinkStack:false → prompts have no header', seenOff.length > 0 && seenOff.every((x) => !x.includes('【目標】')));
+    }
     console.log(ok + ' passed, ' + bad.length + ' failed', bad);
     process.exit(bad.length ? 1 : 0);
 })();

@@ -1,5 +1,5 @@
 /* UML 拆解題（UMD，純函式＋注入的 generate）：評估一個語言模型「把情境拆成極小的 UML 單元」的能力。設計見 DESIGN.unit-catalog.md 第三十二節。
- * 這是弱模型走 CoLU 路線（計畫 → UML 拆成極小單元 → 接線）最依賴的能力，所以直接用真正的拆解流程（uml_core.scenarioToModel，強制走模型、不讓程式讀情境代勞）
+ * 這是弱模型走 CoLU 路線（計畫 → UML 拆成極小單元 → 接線）最依賴的能力，所以直接用真正的拆解流程（uml_core.scenarioToModel，強制走模型、不讓程式讀情境代勞；評分不計思考堆疊的額外檢查呼叫：stackChecks:false，焦點標頭照常）
  * 一次一個封閉的小問題（參與者與使用案例 → 類別 → 每個類別的成員 → 關係 → 每個使用案例的呼叫順序），每個回覆由程式驗證，不合格退回重來。
  * 固定幾個情境，每個情境的「該有的東西」由人事先寫好（參與者、類別、使用案例的關鍵字，同義詞都算），評分全由程式判定：
  *   完成率、驗證通過率、各階段第一次就合格的比例、最終合格的比例（含退回重來）、該有的參與者／類別／使用案例找到幾成、使用案例呼叫順序有沒有 2 步以上、退化（空白、重複）。
@@ -56,7 +56,7 @@
     // 跑一個情境；回傳這個情境的結果列
     async function runScenario(fx, generate, opts) {
         const o = Object.assign({}, DEFAULTS, opts || {}); const stats = { calls: 0, failed: 0, degenerate: 0, degenerateKinds: [], errors: [], ms: [] };
-        let res; try { res = await U.scenarioToModelBig(fx.scenario, { generate: wrapGenerate(generate, stats, o.degenerate), program: false, maxTries: o.maxTries }); } catch (e) { res = { ok: false, error: String((e && e.message) || e), model: U.emptyModel ? U.emptyModel() : { actors: [], classes: [], usecases: [] }, decisions: [], warnings: [], errors: [] }; }
+        let res; try { res = await U.scenarioToModelBig(fx.scenario, { generate: wrapGenerate(generate, stats, o.degenerate), program: false, maxTries: o.maxTries, stackChecks: false }); } catch (e) { res = { ok: false, error: String((e && e.message) || e), model: U.emptyModel ? U.emptyModel() : { actors: [], classes: [], usecases: [] }, decisions: [], warnings: [], errors: [] }; }
         const dec = (res.decisions || []).filter((d) => d.by === 'model'); const g = gradeModel(fx, res.model || {});
         return { id: fx.id, completed: !!res.ok, valid: !!res.ok && !(res.errors && res.errors.length), error: res.ok ? '' : res.error, stages: dec.map((d) => ({ stage: d.stage, label: d.label, ok: !!d.ok, tries: d.tries, rejected: (d.rejected || []).slice(0, 2).map((x) => (x.errors || []).join('；').slice(0, 120)) })),
             firstTry: dec.filter((d) => d.ok && d.tries === 1).length, eventual: dec.filter((d) => d.ok).length, stageN: dec.length, recall: g, warnings: (res.warnings || []).length, stats };

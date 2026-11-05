@@ -457,6 +457,8 @@ public class Application {
     // 思考堆疊（think_stack.js）：每個區域是一個框架，往下鑽（套件→類別→成員）就 push，做完 pop 並把一行結果記給上層；
     // 每次問模型前把「目標／路徑／現在這題／上層已定」放進提示，小模型深入時才不會忘記在做什麼。opts.stack 可由呼叫端給（共用一個堆疊）；opts.thinkStack===false 關閉。
     // 給思考堆疊用的「問一個封閉小題」：訊息已經帶好標頭，這裡不再包一次
+    // 列檢查／回來核對／自問是額外的模型呼叫：stackChecks:false 全關；思考模式（每題 1500+ token）預設不加，stackChecks:true 才開
+    const checksOn = (opts) => opts.stackChecks === true || (opts.stackChecks !== false && !(opts.thinking && opts.thinking.enabled));
     const askOf = (opts) => (messages, validate) => R.jsonStep({ generate: opts.generate, messages, validate, maxTries: 2, maxTokens: 160, prefill: '{' }).then((r) => (r && r.ok ? r.value : null), () => null);
     async function reworkRegion(model, scenario, region, opts) {
         opts = Object.assign({}, opts || {});
@@ -465,7 +467,7 @@ public class Application {
         const [rk, rn] = String(region).split(':'); T.push(st, { path: region, question: rk === 'system' ? '檢查整個設計並修正有問題的地方' : rk === 'package' ? '重新設計套件 ' + rn + ' 裡的每個類別' : rk === 'class' ? '補好類別 ' + rn + ' 的屬性、操作與關係' : rk === 'usecase' ? '修正使用案例 ' + rn + ' 的呼叫順序' : '重做 ' + region, note: opts.reason });
         let res; try { res = await reworkRegionInner(model, scenario, region, opts);
             // 自問：離開這一層之前，結果有回答這一題嗎？沒有就帶著缺的東西重做一次（每個區域最多一次）
-            if (res && res.ok && opts.stackChecks !== false && !opts.noSelfCheck && typeof opts.generate === 'function' && (rk === 'class' || rk === 'usecase')) {
+            if (res && res.ok && checksOn(opts) && !opts.noSelfCheck && typeof opts.generate === 'function' && (rk === 'class' || rk === 'usecase')) {
                 const sv = await T.selfValidate(st, { ask: askOf(opts), result: doneSummary(model, rk, rn, res), repeat: !!opts.thinkingRepeat });
                 res.self_check = sv.unsure ? 'unsure' : sv.ok ? 'ok' : 'missing:' + sv.missing;
                 if (sv.ok === false) { const again = await reworkRegionInner(model, scenario, region, Object.assign({}, opts, { reason: '上一次做完自我檢查發現缺：' + sv.missing })); res = Object.assign({}, again, { self_check: res.self_check, redone: true }); }
@@ -481,7 +483,7 @@ public class Application {
     async function reworkRegionInner(model, scenario, region, opts) {
         opts = opts || {}; const [kind, name] = String(region).split(':'); const log = [];
         if (region === 'system') { const r = await reworkModel(model, scenario, { generate: opts.generate, maxRounds: opts.maxRounds || 2, stack: opts.stack }); return { ok: true, log: r.rounds, remaining: r.remaining.length }; }
-        if (kind === 'package') { const pk = packagesOf(model).find((p) => p.name === name); if (!pk) return { ok: false, error: '沒有這個套件：' + name }; const useChecks = opts.stack && T && opts.stackChecks !== false && typeof opts.generate === 'function';
+        if (kind === 'package') { const pk = packagesOf(model).find((p) => p.name === name); if (!pk) return { ok: false, error: '沒有這個套件：' + name }; const useChecks = opts.stack && T && checksOn(opts) && typeof opts.generate === 'function';
             if (useChecks) { const pc = await T.planChecks(opts.stack, { ask: askOf(opts), next: '逐一重做這個套件裡的 ' + pk.classes.length + ' 個類別', defaults: [{ check: '每個類別都有成員', standard: '每個類別至少有一個屬性或操作' }, { check: '類別名稱不重複', standard: '整份設計裡沒有兩個類別同名' }, { check: '關係的兩端都在', standard: '每條關係的 from 與 to 都是現有的類別' }], repeat: !!opts.thinkingRepeat }); log.push({ region, stage: 'plan_checks', by: pc.by, checks: pc.checks }); }
             for (const cn of pk.classes) {
                 const r = await reworkRegion(model, scenario, 'class:' + cn, opts); const ent = { region: 'class:' + cn, ok: r.ok }; log.push(ent);
@@ -526,7 +528,15 @@ public class Application {
         return Object.values(groups).map((cs) => { const head = cs.slice().sort((a, b) => (deg[b] || 0) - (deg[a] || 0))[0]; return { name: head.replace(/(Service|Repository|Controller)$/, '').toLowerCase() || head.toLowerCase(), classes: cs }; });
     }
     // 整條：種子（片段）→ 情境到 UML → rework → 推薦與抉擇 → 專案；模型只做封閉的小決策
+    // 整個「情境→UML→程式骨架」共用一個思考堆疊（目標＝使用者的原情境）：產生模型（含大問題切塊）、計畫反思、rework 都在同一個堆疊底下，
+    // 每一步問模型時都帶得到「整體目標、走到哪、前面已定什麼」。opts.stack 可由外面給；opts.thinkStack===false 關閉。
     async function designProject(scenario, opts) {
+        opts = Object.assign({}, opts || {}); if (opts.thinkStack === false || !T || typeof opts.generate !== 'function') return designProjectCore(scenario, opts);
+        const st = opts.stack || T.create(scenario, { maxDecisions: 8 }); const base = st.frames.length; T.push(st, { path: 'project', question: '把情境設計成 UML 並產生程式骨架' });
+        let res = null; try { res = await designProjectCore(scenario, Object.assign({}, opts, { stack: st })); return res; }
+        finally { while (st.frames.length > base + 1) T.pop(st, { ok: false, summary: '中斷' }); if (st.frames.length > base) T.pop(st, { ok: !!(res && res.ok), summary: res && res.ok ? '完成' : '沒有完成' }); }
+    }
+    async function designProjectCore(scenario, opts) {
         opts = opts || {}; const lang = opts.language || 'python'; const trail = [];
         const seed = opts.seed === false ? { model: U.emptyModel(), used: [], skipped: [] } : seedModel(scenario, opts); trail.push({ stage: 'seed', by: 'program', used: seed.used });
         let res;
@@ -534,17 +544,18 @@ public class Application {
         else {
             // CoLU+Thinking 反思（計畫層）：opts.reflect 沒給（或 enabled 不是 true）就完全照舊。有缺口 → 把 note 當一輪修正請求重做一次；重做後仍有缺口 → 用原計畫
             const rf = opts.reflect && opts.reflect.enabled ? Object.assign({ budget: R.coluThinkBudget() }, opts.reflect) : null;
-            const build = (sc) => U.scenarioToModelBig(sc, { generate: opts.generate, onStage: opts.onStage, maxTries: opts.maxTries, program: opts.program, glossary: opts.glossary, thinking: opts.thinking, reflect: rf });
+            const build = (sc) => U.scenarioToModelBig(sc, { generate: opts.generate, onStage: opts.onStage, maxTries: opts.maxTries, program: opts.program, glossary: opts.glossary, thinking: opts.thinking, reflect: rf, stack: opts.stack, stackMod: opts.stack ? T : null, thinkStack: opts.thinkStack });
             res = await build(scenario); if (!res.ok) return { ok: false, error: res.error, trail, decisions: res.decisions, warnings: res.warnings };
             if (rf) {
-                const ts = T && opts.thinkStack !== false ? T.create(scenario) : null; if (ts) T.push(ts, { path: 'plan', question: '這個設計有沒有缺口（類別、關係、呼叫順序）' }); const rv = await R.coluThinkRevise({ stack: ts, stackMod: ts ? T : null, qid: 'plan', budget: rf.budget, generate: opts.generate, modelId: rf.modelId, contextTokens: rf.contextTokens, device: rf.device, enabled: true, original: res, describe: (x) => String(U.toDsl(x.model) || '').slice(0, 1500), secondCheck: true, redo: async (note) => { const again = await build(scenario + '\n\n（反思提示，請修正這個缺口：' + note + '）'); return again.ok ? again : null; } });
+                const ts = T && opts.thinkStack !== false ? (opts.stack || T.create(scenario)) : null; const tsBase = ts ? ts.frames.length : 0; if (ts) T.push(ts, { path: 'plan', question: '這個設計有沒有缺口（類別、關係、呼叫順序）' }); const rv = await R.coluThinkRevise({ stack: ts, stackMod: ts ? T : null, qid: 'plan', budget: rf.budget, generate: opts.generate, modelId: rf.modelId, contextTokens: rf.contextTokens, device: rf.device, enabled: true, original: res, describe: (x) => String(U.toDsl(x.model) || '').slice(0, 1500), secondCheck: true, redo: async (note) => { const again = await build(scenario + '\n\n（反思提示，請修正這個缺口：' + note + '）'); return again.ok ? again : null; } });
                 if (opts.onStage) try { opts.onStage({ type: 'reflect', level: 'plan', gap: rv.gap, note: rv.note, count: rv.reflected, redone: rv.redone, fallback: rv.fallback, unsure: rv.unsure, chars: String(rv.reasoning || '').length, text: rv.reasoning || '', label: '計畫' }); } catch (_) {}
+                if (ts) while (ts.frames.length > tsBase) T.pop(ts, { ok: true, summary: rv.gap ? '計畫有缺口：' + String(rv.note || '').slice(0, 40) : '計畫沒有缺口' });
                 res = rv.value; trail.push({ stage: 'reflect', by: 'model', count: rv.reflected, gap: rv.gap, redone: rv.redone, fallback: rv.fallback });
             }
         }
         const model = res.model; // 種子片段的類別補進來（名稱不衝突的）
         for (const c of seed.model.classes) if (!model.classes.some((x) => x.name === c.name) && model.classes.length < 10) model.classes.push(c); for (const r of seed.model.relations) if (!model.relations.some((x) => x.from === r.from && x.to === r.to && x.kind === r.kind)) model.relations.push(r);
-        normalize(model); let rw = { rounds: [], remaining: findIssues(model) }; if (opts.generate && opts.rework !== false) rw = await reworkModel(model, scenario, { generate: opts.generate, maxRounds: opts.maxRounds || 2 }); trail.push({ stage: 'rework', rounds: rw.rounds.length, remaining: rw.remaining.length });
+        normalize(model); let rw = { rounds: [], remaining: findIssues(model) }; if (opts.generate && opts.rework !== false) rw = await reworkModel(model, scenario, { generate: opts.generate, maxRounds: opts.maxRounds || 2, stack: opts.stack }); trail.push({ stage: 'rework', rounds: rw.rounds.length, remaining: rw.remaining.length });
         const frag = seed.used.map((id) => FRAGMENTS.find((f) => f.id === id)).filter(Boolean); const fragChoices = Object.assign({}, ...frag.map((f) => f.choices || {}));
         const rec = recommend(scenario, lang, { prefs: Object.assign({}, fragChoices, opts.prefs || {}), constraints: opts.constraints || {} });
         const dec = opts.generate ? await resolveAmbiguous(rec, scenario, opts.generate) : []; trail.push({ stage: 'design', by: 'program', ambiguous: dec.length });
