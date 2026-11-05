@@ -119,5 +119,27 @@ const mkVlm = (total, capChars) => {
   // 被截斷時 _visionChat 的 meta 要看得到 finish_reason（原本回字串，呼叫端完全不知道被截斷）
   const m1 = mkVlm(8000, 9000); const mc = await m1.fa._visionChat({ apiUrl: 'http://x', apiKey: 'k', apiModel: 'm' }, [{ role: 'user', content: [{ type: 'text', text: 'q' }] }], 4096, { meta: true });
   assert.strictEqual(mc.finishReason, 'length'); assert.ok(typeof mc.ms === 'number'); n++; console.log('ok - _visionChat meta：回報 finish_reason=length 與耗時');
+  // ===== 讀取帳本：總截斷也進帳本、跳頁不能清掉、最終閘門 =====
+  const l0 = src.indexOf('    _faReadLedgerMod() {'), l1 = src.indexOf('    // 每個終端機 session 一個視窗主機');
+  assert.ok(l0 > 0 && l1 > l0);
+  const ledgerSrc = fs.readFileSync(path.join(__dirname, '..', 'renderer/src/agent/read_ledger.js'), 'utf8');
+  const Cl = new Function('FA_READ_LEDGER_SRC', 'FA_JSONL_PAGER_SRC', 'REASONING_DEADEND_CHARS_PER_TOKEN_ESTIMATE', 'return (class {\n' + src.slice(a, b) + '\n' + src.slice(l0, l1) + '\n})')(ledgerSrc, pagerSrc, 3);
+  const mkG = () => Object.assign(new Cl(), { _getGenerationSettings: () => ({ contextWindowTokens: 4096 }), _isAutoAgentMode: () => false, _toolResultBudgetChars() { return 8000; } });
+  const g1 = mkG(); const big = JSON.stringify(objs(3000));
+  const first = g1._truncateToolResultForContext(big, 'some_tool');   // 工具原始結果在截斷之前記帳本時看不到 has_more；現在截斷時一併記
+  const pm1 = P.parsePage(first).meta;
+  assert.ok(g1._readLedgerGate() && g1._readLedgerGate().remind, '只看了第一頁：最終回答前要被擋下來並提醒');
+  assert.ok(g1._readLedgerGate().remind.indexOf('c1:' + pm1.source + ':' + pm1.to + ':0:0') > 0, '提醒要附缺口的 cursor');
+  // AI 直接跳到最後一頁（big_content page 回傳字串）→ 缺口仍在
+  const last = P.encodeCursor({ source: pm1.source, index: 2990, part: 0, page: 99 });
+  const lastPg = g1._bigPage(pm1.source, last); g1._noteReadLedger('big_content', JSON.stringify({ id: pm1.source, action: 'page', cursor: last }), lastPg.text);
+  const gate = g1._readLedgerGate(); assert.ok(gate && gate.remind && /還沒讀：第 \d+～\d+ 筆/.test(gate.remind), '跳到最後一頁不能清掉中間的缺口');
+  n++; console.log('ok - 帳本：總截斷進帳本、只讀第一頁被擋、跳到最後一頁缺口仍在');
+  // 補讀所有缺口 → 放行
+  let cur = pm1.next_cursor; while (cur) { const r = g1._bigPage(pm1.source, cur); g1._noteReadLedger('big_content', JSON.stringify({ id: pm1.source, action: 'page', cursor: cur }), r.text); cur = P.parsePage(r.text).meta.next_cursor; }
+  assert.strictEqual(g1._readLedgerGate(), null); n++; console.log('ok - 帳本：讀完全部 → 閘門放行');
+  // 提醒用完仍沒讀：由程式附警語（不靠模型）
+  const g2 = mkG(); g2._truncateToolResultForContext(big, 'some_tool'); let w = null; for (let i = 0; i < 8; i++) { w = g2._readLedgerGate(); if (w && w.warn) break; }
+  assert.ok(w && w.warn && /只讀了 \d+／3000 筆/.test(w.warn), w && w.warn); n++; console.log('ok - 帳本：提醒用完後由程式附警語，寫明讀了多少筆');
   console.log(n + ' passed, 0 failed');
 })().catch((e) => { console.error(e); process.exit(1); });
