@@ -620,3 +620,11 @@
   - 因為使用者原則是「速度有變快、保持正確性才有價值」，兩項都沒達到，`REGISTRY` 沒有 `midigenai-v5-cpu`，`_midigenNativeAttach` 一開始就因為不在表裡而回 null（連信箱都不問）；程式留著，將來有 AVX2 的機器實測確認一致再加進表即可。
 - **退回路徑真的走過**（臨時把它放進表裡驗證）：不在表（GPU 版）、逐模型開關關閉、原生離線總開關關閉 → 都回 null、信箱 0 次、session 沒被換掉；載入失敗（同大小垃圾檔）→ 維持網頁版、原因寫出 onnxruntime 載入錯誤、網頁版 session 照常解碼；執行到一半出錯（第 10 步前釋放主程序端模型）→ 自動退回，原因「這個模型還沒載入」。
 - **發現的既有問題（與原生無關，要處理）**：網頁版 CPU 路徑在 `onnxruntime-web` 的 `proxy: true`（`_midigenEngine` 載入 CPU 版時用的設定）下，第一次解碼就丟 `Cannot perform %TypedArray%.prototype.set on a detached or out-of-bounds ArrayBuffer`（`midigen-web.mjs` 的 `cpuStep` 把 `bufs[j].subarray()` 交給 ort，代理模式會轉移整個緩衝區使 `bufs[j]` 失效）。真 Electron 實測：`proxy: false` 能完整解碼（96 token 約 7 秒），`proxy: true` 一開始就失敗；`_midigenEngine` 的冒煙測試因此會失敗，作曲退回作曲樹。修法的取捨（CPU 版不用代理，或 `cpuStep` 交給 ort 的是複本）會牽涉音訊模型共用同一個 ort 實例的代理旗標（`audio_runtime.js` 第 8 行的註解），這次沒有動，交給管理層決定。
+
+#### 9.6.3 接續點（接手的工作階段上下文用到 30%，在這裡停；2026-11-05）
+
+- 已做：Whisper 編碼器（納入註冊表，提交 d35c0238）、midigenai（實測後暫緩，提交 458ef5cd）。
+- **下一項 SlimSAM**：見 9.4 的橋接說明。使用端是 `faVlmWorkerMain` 的 `sam` 分支（transformers.js 的 `get_image_embeddings`），原生只接編碼器，把 `image_embeddings`、`image_positional_embeddings` 交回 Worker；記憶體已修（`enableMemPattern:false`），輸出已驗證一致（6e-8），模型檔在使用者瀏覽器快取（8,882,165 位元組，SHA-256 `cce23c7b…2971`，只核對過大小與可載入）。Worker 在另一個執行環境，拿不到 `FaNativeOrt`／信箱，要想清楚橋接位置（建議：編碼器在渲染程序端先算好，透過訊息把兩個張量傳給 Worker，Worker 裡的 `get_image_embeddings` 用已算好的結果跳過）；不重新下載。
+- **再下一項 SDXS**：需要完整生圖（text encoder＋unet＋VAE）原生對網頁版 PSNR 比對；unet 單獨量測 int8 輸出訊噪比 34.8 dB。**midigenai 的結果提示 int8 模型在這台沒有 AVX2 的機器上原生與 WASM 內核不一致**，SDXS 的 int8 很可能同樣不一致，先用同一份輸入逐步比對再決定；暫存資料夾裡已有使用者同意下載的檔案（`lequangky/tipsy-sdxs-512-int8`，commit `41203dc0…`），不下載新檔。
+- 暫存資料夾（不在倉庫）：本工作階段的 Whisper 編碼器與 midigenai 模型檔在 `%TEMP%\claude\…\scratchpad\dl-whisper`、`dl-midi`、`models`、`models-mg`，驗證完可刪。
+- 待改善（不是待辦）：midigenai 在有 AVX2 的機器重測；Whisper 真實轉錄文字比對（需要解碼器與分詞器，沒有取得下載同意）；Whisper 網頁版編碼器 session 仍會載入（約 23 MB），可改成原生可用時延後建立。
