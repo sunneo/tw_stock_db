@@ -596,3 +596,16 @@
 接續順序：Whisper 編碼器 → midigenai → SlimSAM（橋接，見 9.4）→ SDXS（完整生圖比對）。每項：量測原生對 WASM（同機同輸入）、輸出一致且沒變慢才加進註冊表（9.1），失敗退回舊路、核心聊天／工具／食譜不受影響；不一致就暫緩並寫明原因。做完一項提交一次，完成的部分把檔名維持 `DESIGN.native-all-models.md`。
 
 注意事項（踩過的坑）：用 Edit／Write 寫檔，不要用 shell 內嵌（反引號與反斜線會被吃掉，這份文件曾因此被破壞一次）；`git show X > 同一個檔案` 會先把檔案清空；`renderer/src/floating-assistant.js` 改完 `node scripts/embed-code-ui.js && node build-assistant.js`，再 `git checkout renderer/update-manifest.json`；測試用 Electron 一律獨立 `--user-data-dir` 並換埠（`scripts/eval/native_audio_e2e.js` 已處理，埠 17990 以上）。
+
+### 9.6 接手工作階段的進度（2026-11-05）
+
+#### 9.6.1 Whisper 編碼器：已完成並納入註冊表（`whisper-base-encoder`）
+
+- **下載（使用者同意的範圍）**：`onnx-community/whisper-base` 的 `onnx/encoder_model_quantized.onnx`，23,201,314 位元組，SHA-256 `5862993336bf33acd23736071aae2b32261d3b1b2f37780194460d4ef974dd46`（下載後實算；已釘進 `_whisperNativeAttach`，不符就不用原生）。放工作階段暫存資料夾，不在倉庫、不在使用者安裝版資料夾；解碼器、分詞器等其他檔案沒有下載。
+- **量測（單獨，4 執行緒對 4 執行緒，輸入 `[1,80,3000]`）**：原生中位數 2,946／2,972／2,894 毫秒，WASM 3,843／3,993／3,943 毫秒，**原生快約 1.34 倍**；輸出**位元相同**（雜湊相同，誤差 0）；載入 280 對 1,908 毫秒；記憶體：原生子程序峰值 240 MB，WASM 整個 Electron 行程樹 863 MB（基線 624 MB，兩者不能直接相減）。
+- **接法**：Whisper 在主執行緒用 transformers.js 的 pipeline，`_getWhisperTranscriber` 建好之後呼叫 `_whisperNativeAttach`：把 `transcriber.model.sessions.model`（編碼器）的 `run` 換成原生子程序，解碼器（逐字迴圈、KV 快取）維持網頁版，所以所有呼叫 Whisper 的地方（轉錄工具、影片逐字稿編輯器、即時聽寫）一次接上。模型檔取自 transformers.js 放在瀏覽器快取的那一份（不另外下載），核對後寫進原生資料夾。只有 CPU 才接（WebGPU 不碰）；原生第一次失敗就永久改回原本的網頁版 `run`，原因寫進進度訊息與主控台。網頁版編碼器 session 仍照常載入（約 23 MB），作為退路。
+- **真 Electron 驗證**（`scripts/eval/native_whisper_e2e.eval.js`，由 `NAB_EVAL_FILE=native_whisper_e2e.eval.js node scripts/eval/native_audio_e2e.js …` 啟動；隔離 `--user-data-dir`、埠 17990，沒用 17923）：
+  - 原生對網頁版（App 內，含信箱往返，三組輸入各取中位數）：**3,338 對 3,952 毫秒，約 1.18 倍**，最大絕對誤差 0，回傳的是 `ort.Tensor`（transformers.js 要求）。
+  - WebGPU 裝置、逐模型開關關閉、原生離線總開關關閉：全部回 null、信箱呼叫 0 次、`run` 沒被換掉。
+  - 退回三種：瀏覽器快取沒有編碼器檔 → 維持網頁版並寫原因；原生資料夾的檔被換成同大小垃圾 → 載入失敗、寫出 onnxruntime 的載入錯誤、網頁版 `run` 照常（輸出形狀 `[1,1500,512]`）；執行到一半原生出錯（釋放主程序那邊的模型）→ 同一個 session 自動退回網頁版，「這個模型還沒載入」寫進原因，輸出與原生的差 0。
+- **沒驗證的部分（誠實）**：①沒有跑「真的轉錄一段音訊、比對文字」——那需要下載解碼器、分詞器與設定檔，使用者只同意下載編碼器。驗證用的是跟 transformers.js 相同介面的替身（真的 onnxruntime-web 編碼器 session，輸入輸出都是 `ort.Tensor`），由於編碼器輸出位元相同，解碼器輸入與網頁版完全一致，推論文字會相同，但這是推論不是實測。②`transcriber.model.sessions.model` 與 transformers.js 3.7.5 內部命名一致是讀原始碼得到的判斷，沒有在真的 pipeline 上跑過；對不上時 `_whisperNativeAttach` 會回報「找不到編碼器 session」並維持網頁版，不會壞。③Linux 未實跑。

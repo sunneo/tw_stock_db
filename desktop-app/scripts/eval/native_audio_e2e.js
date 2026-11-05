@@ -7,7 +7,7 @@ if (!RUNTIME) { console.error('用法見檔頭'); process.exit(2); }
 const fwd = (p) => p.replace(/\\/g, '/');
 const OUT = fwd(path.join(WORK, 'e2e-result.json'));
 fs.mkdirSync(WORK, { recursive: true });
-const src = fs.readFileSync(path.join(__dirname, 'native_audio_e2e.eval.js'), 'utf8').split('__MODELS__').join(fwd(MODELS)).split('__IDS__').join(IDS).split('__OUT__').join(OUT);
+const src = fs.readFileSync(path.join(__dirname, process.env.NAB_EVAL_FILE || 'native_audio_e2e.eval.js'), 'utf8').split('__MODELS__').join(fwd(MODELS)).split('__IDS__').join(IDS).split('__OUT__').join(OUT);
 const evalFile = path.join(WORK, 'e2e.run.eval.js'); fs.writeFileSync(evalFile, src);
 try { fs.unlinkSync(OUT); } catch (_) { /* 沒有就算了 */ }
 const PORT = String(17990 + Math.floor(Math.random() * 9)); // 絕不用 17923

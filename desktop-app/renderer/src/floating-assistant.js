@@ -36343,6 +36343,7 @@ const holder = {};
     'yamnet': { kind: 'audio', verified: '2026-11-05' },
     'demucs-6s': { kind: 'audio', verified: '2026-11-05' },
     'depth-anything-v2-small': { kind: 'depth', verified: '2026-11-05' },
+    'whisper-base-encoder': { kind: 'whisper-encoder', verified: '2026-11-05' },
   };
   const switchKey = (id) => 'fa.native.model.' + id;
   // getFlag(key) → 字串或 null（呼叫端傳 localStorage 讀取；讀不到就當沒設定＝開）。回傳 { native, why }
@@ -66058,9 +66059,47 @@ ${fnData.code}
             if (!fb.ok) throw new Error((err && err.message || err) + '；備份分支也失敗：' + fb.error);
             transcriber = await buildPipeline();
         }
+        try { await this._whisperNativeAttach(transcriber, device, onProgress); } catch (_) { /* 原生接不上就維持網頁版，原因已記在 _whisperNativeNote */ }
         this._whisperTranscriber = transcriber;
         this._whisperTranscriberDevice = device;
         return transcriber;
+    }
+    // Whisper 編碼器的原生路徑（桌面版、啟用原生執行包、CPU 時）：把 transformers.js 的編碼器 session（transcriber.model.sessions.model）的 run 換成原生子程序，
+    // 解碼器（逐字迴圈、KV 快取）維持網頁版。模型檔取自 transformers.js 已經放進瀏覽器快取的那一份（不另外下載），核對位元組數與 SHA-256 後寫進原生資料夾。
+    // 原生第一次失敗就永久改回原本的網頁版 run，結果格式不變；不在註冊表或開關關閉時完全不碰（連信箱都不問）。
+    async _whisperNativeAttach(transcriber, device, onProgress) {
+        const ID = 'whisper-base-encoder', say = (t) => { this._whisperNativeNote = t; console.log('[whisper] ' + t); if (onProgress) { try { onProgress(t); } catch (_) { /* */ } } };
+        if (typeof FaNativeOrt === 'undefined' || device === 'webgpu' || !this._nrOptIn() || !this._nrAvailable()) return null;
+        if (!FaNativeOrt.routed(ID, (k) => localStorage.getItem(k)).native) return null;
+        try {
+            const sess = transcriber && transcriber.model && transcriber.model.sessions && transcriber.model.sessions.model;
+            if (!sess || typeof sess.run !== 'function' || sess.__faNative) return null;
+            const box = await this._nrBox(); if (!box) return null;
+            const sep = box.indexOf(String.fromCharCode(92)) >= 0 ? String.fromCharCode(92) : '/';
+            const url = WHISPER_HF_RESOLVE_BASE + 'onnx/encoder_model_quantized.onnx'; let resp = null;
+            for (const name of (await caches.keys()).filter((x) => /transformers/i.test(x))) { const c = await caches.open(name); resp = await c.match(url); if (resp) break; }
+            if (!resp) { say('Whisper 編碼器維持網頁版：瀏覽器快取裡沒有編碼器檔案'); return null; }
+            const entry = { id: ID, file: 'encoder_model_quantized.onnx', bytes: 23201314, sha256: '5862993336bf33acd23736071aae2b32261d3b1b2f37780194460d4ef974dd46' };
+            const api = FaNativeOrt.create({ call: (op, payload, t) => this._nrCall(op, payload, t), rawfs: window.desktopAPI.rawfs, box, sep });
+            const st = await api.state(entry); if (!st.ok) { say('Whisper 編碼器維持網頁版：' + st.reason); return null; }
+            if (!st.installed) await api.installFromBlob(entry, await resp.blob(), {});
+            const nat = await api.open(entry, { threads: 4, runTimeoutMs: 120000 });
+            const origRun = sess.run.bind(sess); let native = true;
+            sess.run = async (feeds) => {
+                if (native) {
+                    try {
+                        const names = Object.keys(feeds), f = {}; for (const k of names) { const t = feeds[k]; f[k] = new FaNativeOrt.Tensor(t.type, t.data, t.dims); }
+                        const out = await nat.run(f), Ctor = feeds[names[0]].constructor, r = {};
+                        for (const k of Object.keys(out)) r[k] = new Ctor(out[k].type, out[k].data, out[k].dims);   // 還給 transformers.js 的必須是它自己的 ort Tensor
+                        return r;
+                    } catch (e) { native = false; say('Whisper 編碼器原生執行失敗，已退回網頁版：' + String((e && e.message) || e).slice(0, 200)); try { await nat.release(); } catch (_) { /* */ } }
+                }
+                return origRun(feeds);
+            };
+            sess.__faNative = { nat, get native() { return native; } }; this._whisperNat = sess.__faNative;
+            say('Whisper 編碼器：原生 CPU（onnxruntime-node，載入 ' + nat.loadMs + ' 毫秒）；解碼器維持網頁版');
+            return sess.__faNative;
+        } catch (e) { say('Whisper 編碼器維持網頁版：' + String((e && e.message) || e).slice(0, 200)); return null; }
     }
 
     // tw_stock_db客製: 2026-09-11——把 whisper-base q8 模型檔從自家 repo 的

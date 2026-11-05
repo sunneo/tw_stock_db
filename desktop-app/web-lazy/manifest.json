@@ -1047,8 +1047,8 @@
    "names": [
     "FaNativeOrt"
    ],
-   "size": 6852,
-   "md5": "2ee777743e40d331352e10ad9bb3f1bf"
+   "size": 6922,
+   "md5": "ff2bf65592ab2c7ccb667b36a7575ed6"
   },
   "musicui": {
    "file": "chunks/musicui.js",
@@ -1156,7 +1156,7 @@
   }
  },
  "core": {
-  "size": 5505558,
-  "md5": "230ec56b10e4a998f7f223014cda3b9e"
+  "size": 5507682,
+  "md5": "456d8caa148c921d20f926d08af899dd"
  }
 }
