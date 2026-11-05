@@ -12,10 +12,11 @@
 (function (root, factory) {
     const R = (typeof FaRecipe !== 'undefined' && FaRecipe) || (root && root.FaRecipe) || (typeof require === 'function' ? require('../recipe/recipe_core.js') : null);
     const U = (typeof FaUml !== 'undefined' && FaUml) || (root && root.FaUml) || (typeof require === 'function' ? require('./uml_core.js') : null);
+    const T = (typeof FaThinkStack !== 'undefined' && FaThinkStack) || (root && root.FaThinkStack) || (typeof require === 'function' ? require('../recipe/think_stack.js') : null);
     const G = (typeof FaGlue !== 'undefined' && FaGlue) || (root && root.FaGlue) || (typeof require === 'function' ? require('./glue_core.js') : null);
-    if (typeof module === 'object' && module.exports) module.exports = factory(R, U, G);
-    else root.FaDesign = factory(R, U, G);
-})(typeof self !== 'undefined' ? self : this, function (R, U, G) {
+    if (typeof module === 'object' && module.exports) module.exports = factory(R, U, G, T);
+    else root.FaDesign = factory(R, U, G, T);
+})(typeof self !== 'undefined' ? self : this, function (R, U, G, T) {
     'use strict';
 
     // ---------- ① 目錄 ----------
@@ -420,14 +421,16 @@ public class Application {
             const issues = findIssues(model); if (!issues.length) break; const log = [];
             for (const iss of issues.slice(0, opts.maxIssues || 6)) {
                 const [kind, name] = iss.region.split(':'); let did = false;
+                if (opts.stack && T) T.push(opts.stack, { path: iss.region, question: '修正：' + String(iss.msg || iss.kind || '').slice(0, 80) });
                 if (kind === 'class' && model.classes.some((c) => c.name === name)) {
                     const c = model.classes.find((x) => x.name === name);
-                    if (iss.kind === 'orphan' || iss.kind === 'invalid' && /關係/.test(iss.msg)) { const others = names().filter((n) => n !== name); if (others.length) { const spec = withIssue(U.stageSpec.relations(scenario, { cls: c, others, kinds: Object.fromEntries(model.classes.map((x) => [x.name, x.kind])) }), dslOfClass(model, name), iss); const r = await R.jsonStep({ generate: opts.generate, messages: spec.messages, validate: spec.validate, maxTries: 2, maxTokens: 300, prefill: U.PREFILL.relations }); log.push({ region: iss.region, issue: iss.kind, by: 'model', ok: r.ok, tries: r.tries, rejected: r.rejected }); if (r.ok) { for (const x of r.value.relations || []) if (!model.relations.some((y) => y.from === name && y.to === x.to && y.kind === x.kind)) model.relations.push({ from: name, to: x.to, kind: x.kind }); did = true; } } }
-                    else if (iss.kind === 'empty' || iss.kind === 'god_class' || iss.kind === 'invalid') { const spec = withIssue(U.stageSpec.members(scenario, { cls: c, classNames: names(), usedBy: model.usecases.map((u) => u.name).join('、') }), dslOfClass(model, name), iss); const r = await R.jsonStep({ generate: opts.generate, messages: spec.messages, validate: spec.validate, maxTries: 2, maxTokens: 400, prefill: U.PREFILL.members }); log.push({ region: iss.region, issue: iss.kind, by: 'model', ok: r.ok, tries: r.tries, rejected: r.rejected }); if (r.ok && c.kind !== 'enum') { c.attrs = (r.value.attrs || []).map((a) => ({ name: a.name, type: U.parseType(a.type), visibility: '+' })); c.ops = (r.value.ops || []).map((o) => ({ name: o.name, params: (o.params || []).map((p) => ({ name: p.name, type: U.parseType(p.type) })), returns: o.returns && o.returns !== 'void' ? U.parseType(o.returns) : { base: 'void', args: [] }, visibility: '+', static: false })); did = true; } }
+                    if (iss.kind === 'orphan' || iss.kind === 'invalid' && /關係/.test(iss.msg)) { const others = names().filter((n) => n !== name); if (others.length) { const spec = withIssue(U.stageSpec.relations(scenario, { cls: c, others, kinds: Object.fromEntries(model.classes.map((x) => [x.name, x.kind])) }), dslOfClass(model, name), iss); const r = await R.jsonStep({ stack: opts.stack, stackMod: opts.stack ? T : null, generate: opts.generate, messages: spec.messages, validate: spec.validate, maxTries: 2, maxTokens: 300, prefill: U.PREFILL.relations }); log.push({ region: iss.region, issue: iss.kind, by: 'model', ok: r.ok, tries: r.tries, rejected: r.rejected }); if (r.ok) { for (const x of r.value.relations || []) if (!model.relations.some((y) => y.from === name && y.to === x.to && y.kind === x.kind)) model.relations.push({ from: name, to: x.to, kind: x.kind }); did = true; } } }
+                    else if (iss.kind === 'empty' || iss.kind === 'god_class' || iss.kind === 'invalid') { const spec = withIssue(U.stageSpec.members(scenario, { cls: c, classNames: names(), usedBy: model.usecases.map((u) => u.name).join('、') }), dslOfClass(model, name), iss); const r = await R.jsonStep({ stack: opts.stack, stackMod: opts.stack ? T : null, generate: opts.generate, messages: spec.messages, validate: spec.validate, maxTries: 2, maxTokens: 400, prefill: U.PREFILL.members }); log.push({ region: iss.region, issue: iss.kind, by: 'model', ok: r.ok, tries: r.tries, rejected: r.rejected }); if (r.ok && c.kind !== 'enum') { c.attrs = (r.value.attrs || []).map((a) => ({ name: a.name, type: U.parseType(a.type), visibility: '+' })); c.ops = (r.value.ops || []).map((o) => ({ name: o.name, params: (o.params || []).map((p) => ({ name: p.name, type: U.parseType(p.type) })), returns: o.returns && o.returns !== 'void' ? U.parseType(o.returns) : { base: 'void', args: [] }, visibility: '+', static: false })); did = true; } }
                 } else if (kind === 'usecase') {
-                    const u = model.usecases.find((x) => x.name === name); if (u) { const ops = Object.fromEntries(model.classes.filter((c) => c.kind !== 'enum').map((c) => [c.name, c.ops.map((o) => o.name)])); const menu = Object.entries(ops).map(([k, v]) => k + '（' + (v.length ? v.join('、') : '還沒有操作') + '）').join('；'); const spec = withIssue(U.stageSpec.sequence(scenario, { uc: u, ops, menu }), u.steps.map((s) => s.to + '.' + s.msg).join(' -> ') || '（空）', iss); const r = await R.jsonStep({ generate: opts.generate, messages: spec.messages, validate: spec.validate, maxTries: 2, maxTokens: 300, prefill: U.PREFILL.sequence }); log.push({ region: iss.region, issue: iss.kind, by: 'model', ok: r.ok, tries: r.tries, rejected: r.rejected }); if (r.ok) { u.steps = []; let prev = u.actor; for (const s of r.value.steps || []) { u.steps.push({ from: prev, to: s.to, msg: s.op, args: [], returns: '' }); prev = s.to; } did = true; } }
+                    const u = model.usecases.find((x) => x.name === name); if (u) { const ops = Object.fromEntries(model.classes.filter((c) => c.kind !== 'enum').map((c) => [c.name, c.ops.map((o) => o.name)])); const menu = Object.entries(ops).map(([k, v]) => k + '（' + (v.length ? v.join('、') : '還沒有操作') + '）').join('；'); const spec = withIssue(U.stageSpec.sequence(scenario, { uc: u, ops, menu }), u.steps.map((s) => s.to + '.' + s.msg).join(' -> ') || '（空）', iss); const r = await R.jsonStep({ stack: opts.stack, stackMod: opts.stack ? T : null, generate: opts.generate, messages: spec.messages, validate: spec.validate, maxTries: 2, maxTokens: 300, prefill: U.PREFILL.sequence }); log.push({ region: iss.region, issue: iss.kind, by: 'model', ok: r.ok, tries: r.tries, rejected: r.rejected }); if (r.ok) { u.steps = []; let prev = u.actor; for (const s of r.value.steps || []) { u.steps.push({ from: prev, to: s.to, msg: s.op, args: [], returns: '' }); prev = s.to; } did = true; } }
                 } else if (iss.kind === 'too_many_classes') { log.push({ region: 'model', issue: iss.kind, by: 'program', ok: true, note: '分成套件（packagesOf）' }); }
                 if (did) { const nl = normalize(model); if (nl.length) log.push({ region: 'model', issue: 'normalize', by: 'program', ok: true, note: nl.join('；') }); }
+                if (opts.stack && T) T.pop(opts.stack, { ok: did, summary: did ? '已修正' : '沒有修成' });
             }
             rounds.push({ round, issues: issues.map((i) => i.region + ':' + i.kind), log });
         }
@@ -447,25 +450,59 @@ public class Application {
     async function addMembers(model, scenario, className, opts) {
         const c = model.classes.find((x) => x.name === className); if (!c) return { ok: false, error: '沒有這個類別：' + className };
         const names = model.classes.map((x) => x.name); const spec = memberMsg(U.stageSpec.members(scenario, { cls: c, classNames: names, usedBy: model.usecases.map((u) => u.name).join('、') }), dslOfClass(model, className), '請列出還缺的「新增」成員（屬性最多 3 個、操作最多 3 個），不要重複已有的。');
-        const r = await R.jsonStep({ generate: opts.generate, messages: spec.messages, validate: spec.validate, maxTries: 2, maxTokens: 400, prefill: U.PREFILL.members }); if (!r.ok) return { ok: false, error: r.error, rejected: r.rejected };
+        const r = await R.jsonStep({ stack: opts.stack, stackMod: opts.stack ? T : null, generate: opts.generate, messages: spec.messages, validate: spec.validate, maxTries: 2, maxTokens: 400, prefill: U.PREFILL.members }); if (!r.ok) return { ok: false, error: r.error, rejected: r.rejected };
         const added = applyMembers(c, r.value, true); const nl = normalize(model); return { ok: true, added, rejected: r.rejected, normalized: nl };
     }
     // 重做一個區域：'class:X'（成員與關係）、'usecase:U'（呼叫順序）、'package:p'（套件內每個有問題的類別）、'system'（整份由上而下檢查）；reason 會附在問題裡
+    // 思考堆疊（think_stack.js）：每個區域是一個框架，往下鑽（套件→類別→成員）就 push，做完 pop 並把一行結果記給上層；
+    // 每次問模型前把「目標／路徑／現在這題／上層已定」放進提示，小模型深入時才不會忘記在做什麼。opts.stack 可由呼叫端給（共用一個堆疊）；opts.thinkStack===false 關閉。
+    // 給思考堆疊用的「問一個封閉小題」：訊息已經帶好標頭，這裡不再包一次
+    const askOf = (opts) => (messages, validate) => R.jsonStep({ generate: opts.generate, messages, validate, maxTries: 2, maxTokens: 160, prefill: '{' }).then((r) => (r && r.ok ? r.value : null), () => null);
     async function reworkRegion(model, scenario, region, opts) {
+        opts = Object.assign({}, opts || {});
+        if (opts.thinkStack === false) opts.stack = null; else if (!opts.stack && T) opts.stack = T.create(scenario);
+        const st = opts.stack; if (!st || !T) return reworkRegionInner(model, scenario, region, opts);
+        const [rk, rn] = String(region).split(':'); T.push(st, { path: region, question: rk === 'system' ? '檢查整個設計並修正有問題的地方' : rk === 'package' ? '重新設計套件 ' + rn + ' 裡的每個類別' : rk === 'class' ? '補好類別 ' + rn + ' 的屬性、操作與關係' : rk === 'usecase' ? '修正使用案例 ' + rn + ' 的呼叫順序' : '重做 ' + region, note: opts.reason });
+        let res; try { res = await reworkRegionInner(model, scenario, region, opts);
+            // 自問：離開這一層之前，結果有回答這一題嗎？沒有就帶著缺的東西重做一次（每個區域最多一次）
+            if (res && res.ok && opts.stackChecks !== false && !opts.noSelfCheck && typeof opts.generate === 'function' && (rk === 'class' || rk === 'usecase')) {
+                const sv = await T.selfValidate(st, { ask: askOf(opts), result: doneSummary(model, rk, rn, res), repeat: !!opts.thinkingRepeat });
+                res.self_check = sv.unsure ? 'unsure' : sv.ok ? 'ok' : 'missing:' + sv.missing;
+                if (sv.ok === false) { const again = await reworkRegionInner(model, scenario, region, Object.assign({}, opts, { reason: '上一次做完自我檢查發現缺：' + sv.missing })); res = Object.assign({}, again, { self_check: res.self_check, redone: true }); }
+            }
+        } finally { T.pop(st, { ok: !!(res && res.ok), summary: res && res.ok ? doneSummary(model, rk, rn, res) : (res && res.error) || '失敗' }); }
+        return res;
+    }
+    // 一行結果（變成上層的「已定」）：類別列屬性與操作名，其餘只說完成
+    function doneSummary(model, kind, name, res) {
+        if (kind === 'class') { const c = model.classes.find((x) => x.name === name); if (c) return (c.attrs.length ? '屬性 ' + c.attrs.slice(0, 5).map((a) => a.name).join('、') : '') + (c.ops.length ? (c.attrs.length ? '；' : '') + '操作 ' + c.ops.slice(0, 5).map((o) => o.name).join('、') : '') || '已完成'; }
+        return '已完成' + (res && res.remaining != null ? '，剩 ' + res.remaining + ' 個問題' : '');
+    }
+    async function reworkRegionInner(model, scenario, region, opts) {
         opts = opts || {}; const [kind, name] = String(region).split(':'); const log = [];
-        if (region === 'system') { const r = await reworkModel(model, scenario, { generate: opts.generate, maxRounds: opts.maxRounds || 2 }); return { ok: true, log: r.rounds, remaining: r.remaining.length }; }
-        if (kind === 'package') { const pk = packagesOf(model).find((p) => p.name === name); if (!pk) return { ok: false, error: '沒有這個套件：' + name }; for (const cn of pk.classes) { const r = await reworkRegion(model, scenario, 'class:' + cn, opts); log.push({ region: 'class:' + cn, ok: r.ok }); } return { ok: true, log }; }
+        if (region === 'system') { const r = await reworkModel(model, scenario, { generate: opts.generate, maxRounds: opts.maxRounds || 2, stack: opts.stack }); return { ok: true, log: r.rounds, remaining: r.remaining.length }; }
+        if (kind === 'package') { const pk = packagesOf(model).find((p) => p.name === name); if (!pk) return { ok: false, error: '沒有這個套件：' + name }; const useChecks = opts.stack && T && opts.stackChecks !== false && typeof opts.generate === 'function';
+            if (useChecks) { const pc = await T.planChecks(opts.stack, { ask: askOf(opts), next: '逐一重做這個套件裡的 ' + pk.classes.length + ' 個類別', defaults: [{ check: '每個類別都有成員', standard: '每個類別至少有一個屬性或操作' }, { check: '類別名稱不重複', standard: '整份設計裡沒有兩個類別同名' }, { check: '關係的兩端都在', standard: '每條關係的 from 與 to 都是現有的類別' }], repeat: !!opts.thinkingRepeat }); log.push({ region, stage: 'plan_checks', by: pc.by, checks: pc.checks }); }
+            for (const cn of pk.classes) {
+                const r = await reworkRegion(model, scenario, 'class:' + cn, opts); const ent = { region: 'class:' + cn, ok: r.ok }; log.push(ent);
+                if (useChecks) { // 回來後逐項核對上層當初列的檢查；有問題就帶著要修的事重做這個類別一次
+                    const rv = await T.reviewReturn(opts.stack, { ask: askOf(opts), returned: 'class:' + cn + ' ' + doneSummary(model, 'class', cn, r), repeat: !!opts.thinkingRepeat });
+                    ent.review = rv.unsure ? 'unsure' : rv.problems.length ? rv.problems : 'ok';
+                    if (rv.problems.length && !r.redone) { const again = await reworkRegion(model, scenario, 'class:' + cn, Object.assign({}, opts, { reason: '回到上層核對發現：' + rv.problems.map((p) => p.check + (p.standard ? '，標準：' + p.standard : '') + '，問題：' + p.fix).join('；'), noSelfCheck: true })); ent.redone = true; ent.ok = again.ok; }
+                }
+            }
+            return { ok: true, log }; }
         if (kind === 'class') {
             const c = model.classes.find((x) => x.name === name); if (!c) return { ok: false, error: '沒有這個類別：' + name }; const iss = { msg: opts.reason || '使用者要求重新設計這個類別', kind: 'user' };
             const spec = memberMsg(U.stageSpec.members(scenario, { cls: c, classNames: model.classes.map((x) => x.name), usedBy: model.usecases.map((u) => u.name).join('、') }), dslOfClass(model, name), '要修正的問題：' + iss.msg);
-            const r = await R.jsonStep({ generate: opts.generate, messages: spec.messages, validate: spec.validate, maxTries: 2, maxTokens: 400, prefill: U.PREFILL.members }); log.push({ region, stage: 'members', by: 'model', ok: r.ok, tries: r.tries, rejected: r.rejected }); if (r.ok) applyMembers(c, r.value, false);
-            const others = model.classes.map((x) => x.name).filter((n) => n !== name); if (others.length) { const rs = U.stageSpec.relations(scenario, { cls: c, others, kinds: Object.fromEntries(model.classes.map((x) => [x.name, x.kind])) }); const r2 = await R.jsonStep({ generate: opts.generate, messages: rs.messages, validate: rs.validate, maxTries: 2, maxTokens: 300, prefill: U.PREFILL.relations }); log.push({ region, stage: 'relations', by: 'model', ok: r2.ok, tries: r2.tries, rejected: r2.rejected }); if (r2.ok) { model.relations = model.relations.filter((x) => x.from !== name || ['inherit', 'implement'].includes(x.kind) && false); for (const x of r2.value.relations || []) if (!model.relations.some((y) => y.from === name && y.to === x.to && y.kind === x.kind)) model.relations.push({ from: name, to: x.to, kind: x.kind }); } }
+            const r = await R.jsonStep({ stack: opts.stack, stackMod: opts.stack ? T : null, generate: opts.generate, messages: spec.messages, validate: spec.validate, maxTries: 2, maxTokens: 400, prefill: U.PREFILL.members }); log.push({ region, stage: 'members', by: 'model', ok: r.ok, tries: r.tries, rejected: r.rejected }); if (r.ok) applyMembers(c, r.value, false);
+            const others = model.classes.map((x) => x.name).filter((n) => n !== name); if (others.length) { const rs = U.stageSpec.relations(scenario, { cls: c, others, kinds: Object.fromEntries(model.classes.map((x) => [x.name, x.kind])) }); const r2 = await R.jsonStep({ stack: opts.stack, stackMod: opts.stack ? T : null, generate: opts.generate, messages: rs.messages, validate: rs.validate, maxTries: 2, maxTokens: 300, prefill: U.PREFILL.relations }); log.push({ region, stage: 'relations', by: 'model', ok: r2.ok, tries: r2.tries, rejected: r2.rejected }); if (r2.ok) { model.relations = model.relations.filter((x) => x.from !== name || ['inherit', 'implement'].includes(x.kind) && false); for (const x of r2.value.relations || []) if (!model.relations.some((y) => y.from === name && y.to === x.to && y.kind === x.kind)) model.relations.push({ from: name, to: x.to, kind: x.kind }); } }
             const nl = normalize(model); if (nl.length) log.push({ region: 'model', stage: 'normalize', by: 'program', note: nl.join('；') }); return { ok: true, log };
         }
         if (kind === 'usecase') {
             const u = model.usecases.find((x) => x.name === name); if (!u) return { ok: false, error: '沒有這個使用案例：' + name }; const ops = Object.fromEntries(model.classes.filter((c) => c.kind !== 'enum').map((c) => [c.name, c.ops.map((o) => o.name)])); const menu = Object.entries(ops).map(([k, v]) => k + '（' + (v.length ? v.join('、') : '還沒有操作') + '）').join('；');
             const spec = memberMsg(U.stageSpec.sequence(scenario, { uc: u, ops, menu }), u.steps.map((s) => s.to + '.' + s.msg).join(' -> ') || '（空）', '要修正的問題：' + (opts.reason || '使用者要求重新設計這個呼叫順序'));
-            const r = await R.jsonStep({ generate: opts.generate, messages: spec.messages, validate: spec.validate, maxTries: 2, maxTokens: 300, prefill: U.PREFILL.sequence }); log.push({ region, stage: 'sequence', by: 'model', ok: r.ok, tries: r.tries, rejected: r.rejected });
+            const r = await R.jsonStep({ stack: opts.stack, stackMod: opts.stack ? T : null, generate: opts.generate, messages: spec.messages, validate: spec.validate, maxTries: 2, maxTokens: 300, prefill: U.PREFILL.sequence }); log.push({ region, stage: 'sequence', by: 'model', ok: r.ok, tries: r.tries, rejected: r.rejected });
             if (r.ok) { u.steps = []; let prev = u.actor; for (const s of r.value.steps || []) { u.steps.push({ from: prev, to: s.to, msg: s.op, args: [], returns: '' }); prev = s.to; } } const nl = normalize(model); if (nl.length) log.push({ region: 'model', stage: 'normalize', by: 'program', note: nl.join('；') }); return { ok: true, log };
         }
         return { ok: false, error: '不認得的區域：' + region };
@@ -500,7 +537,7 @@ public class Application {
             const build = (sc) => U.scenarioToModelBig(sc, { generate: opts.generate, onStage: opts.onStage, maxTries: opts.maxTries, program: opts.program, glossary: opts.glossary, thinking: opts.thinking, reflect: rf });
             res = await build(scenario); if (!res.ok) return { ok: false, error: res.error, trail, decisions: res.decisions, warnings: res.warnings };
             if (rf) {
-                const rv = await R.coluThinkRevise({ qid: 'plan', budget: rf.budget, generate: opts.generate, modelId: rf.modelId, contextTokens: rf.contextTokens, device: rf.device, enabled: true, original: res, describe: (x) => String(U.toDsl(x.model) || '').slice(0, 1500), secondCheck: true, redo: async (note) => { const again = await build(scenario + '\n\n（反思提示，請修正這個缺口：' + note + '）'); return again.ok ? again : null; } });
+                const ts = T && opts.thinkStack !== false ? T.create(scenario) : null; if (ts) T.push(ts, { path: 'plan', question: '這個設計有沒有缺口（類別、關係、呼叫順序）' }); const rv = await R.coluThinkRevise({ stack: ts, stackMod: ts ? T : null, qid: 'plan', budget: rf.budget, generate: opts.generate, modelId: rf.modelId, contextTokens: rf.contextTokens, device: rf.device, enabled: true, original: res, describe: (x) => String(U.toDsl(x.model) || '').slice(0, 1500), secondCheck: true, redo: async (note) => { const again = await build(scenario + '\n\n（反思提示，請修正這個缺口：' + note + '）'); return again.ok ? again : null; } });
                 if (opts.onStage) try { opts.onStage({ type: 'reflect', level: 'plan', gap: rv.gap, note: rv.note, count: rv.reflected, redone: rv.redone, fallback: rv.fallback, unsure: rv.unsure, chars: String(rv.reasoning || '').length, text: rv.reasoning || '', label: '計畫' }); } catch (_) {}
                 res = rv.value; trail.push({ stage: 'reflect', by: 'model', count: rv.reflected, gap: rv.gap, redone: rv.redone, fallback: rv.fallback });
             }

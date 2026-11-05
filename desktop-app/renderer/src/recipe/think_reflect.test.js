@@ -129,6 +129,14 @@ const base = (extra) => Object.assign({ modelId: Q, contextTokens: 4096, enabled
     r = await R.coluThinkReflect({ modelId: Q, contextTokens: 4096, enabled: true, question: 'x' });
     check('23 missing generate → skipped, no exception', r.skipped === true && r.gap === false, r);
 
+    // 思考堆疊：反思題帶焦點標頭（目標、現在這題），沒給堆疊時提示跟以前一樣
+    {
+        const TS = require('./think_stack.js'); const st = TS.create('做一個線上商店'); TS.push(st, { path: 'plan', question: '這個計畫有沒有缺口' }); let got = null;
+        await R.coluThinkReflect({ modelId: Q, contextTokens: 4096, enabled: true, question: '計畫內容', stack: st, stackMod: TS, generate: async (req) => { got = req.messages[req.messages.length - 1].content; return '<think>x</think>{"gap": false, "note": ""}'; } });
+        check('24 reflect prompt carries the focus header when a stack is given', got && got.startsWith('【目標】做一個線上商店') && got.includes('【現在這題】這個計畫有沒有缺口'), got && got.slice(0, 120));
+        let got2 = null; await R.coluThinkReflect({ modelId: Q, contextTokens: 4096, enabled: true, question: '計畫內容', generate: async (req) => { got2 = req.messages[req.messages.length - 1].content; return '{"gap": false, "note": ""}'; } });
+        check('25 no stack → prompt unchanged', got2 && !got2.includes('【目標】'), got2 && got2.slice(0, 60));
+    }
     console.log(ok + ' passed, ' + bad.length + ' failed' + (bad.length ? ': ' + bad.join(', ') : ''));
     if (bad.length) process.exitCode = 1;
 })();

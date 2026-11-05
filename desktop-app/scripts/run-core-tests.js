@@ -158,6 +158,7 @@ const suites = [
     ['系統匣縮小時的對話框處理（子視窗取消、原生對話框擋住、顯示視窗帶回）', 'scripts/main-tests/tray_dialog.test.js'],
     ['JSONL 分頁器（一行一筆、cursor、單筆過大分段、壞行保留、窗口按比例）', 'renderer/src/agent/jsonl_pager.test.js'],
     ['網頁內文區塊化（章節索引、區塊、連結、參照文件偏移）', 'renderer/src/agent/web_blocks.test.js'],
+    ['思考堆疊（push／pop、焦點標頭與字元上限、wrap、verify 重試、JSONL 往返）', 'renderer/src/recipe/think_stack.test.js'],
     ['模型輸出成 JSONL 並自動續傳（被截斷接著寫、壞行保留、去重、重試、停損）', 'renderer/src/agent/jsonl_stream.test.js'],
     ['超大回應轉 JSONL 的接線（截斷改回第 1 頁、頁頁讀完相等、窗口越小頁越多）', 'scripts/jsonl-paging.test.js'],
     ['本地中文語音：文字轉音素（1379 個音節與 misaki 逐字相同）', 'scripts/tts-tests/zh_g2p.test.js'],

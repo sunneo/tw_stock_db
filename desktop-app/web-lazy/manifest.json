@@ -162,6 +162,14 @@
    "size": 18534,
    "md5": "e6df99fbffa37ed2550db5b222544d0b"
   },
+  "thinkstack": {
+   "file": "chunks/thinkstack.js",
+   "names": [
+    "FaThinkStack"
+   ],
+   "size": 7911,
+   "md5": "61121f453e6e0c0aaaa12305c5966cd9"
+  },
   "view": {
    "file": "chunks/view.js",
    "names": [
@@ -1156,7 +1164,7 @@
   }
  },
  "core": {
-  "size": 5573982,
-  "md5": "52789b95a4452056df730f3a7089955c"
+  "size": 5577493,
+  "md5": "007a87148342fa7796fe383eca8aa87b"
  }
 }

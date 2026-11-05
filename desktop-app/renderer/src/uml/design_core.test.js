@@ -132,6 +132,60 @@ function check(name, cond, info) { if (cond) ok++; else { bad.push(name); consol
         check('jsonl: restored model validates like the original', JSON.stringify(back.errors) === JSON.stringify(U.validateModel(m).filter((e) => e && (e.level === 'error' || e.severity === 'error' || !e.level))));
         check('jsonl: junk lines rejected clearly', D.modelFromJsonl(['{"path":"","type":"object","keys":0}']).ok === false);
     }
+    // ---- 思考堆疊：每次問模型都帶焦點標頭，往下鑽時路徑變長，做完的結果變成上層的已定 ----
+    {
+        const m = D.FRAGMENTS.map((f) => U.parseDsl(f.dsl).model).sort((a, b) => b.classes.length - a.classes.length)[0]; const names = m.classes.filter((c) => c.kind === 'class').map((c) => c.name);
+        const seen = []; const gen = async (req) => { seen.push(req.messages[req.messages.length - 1].content); return JSON.stringify({ attrs: [{ name: 'id', type: 'int' }], ops: [{ name: 'run', params: [], returns: 'void' }] }); };
+        const r = await D.reworkRegion(JSON.parse(JSON.stringify(m)), '做一個測試系統', 'class:' + names[0], { generate: gen });
+        check('stack: model prompt starts with the focus header (goal, path, question)', seen.length >= 1 && seen[0].startsWith('【目標】做一個測試系統') && seen[0].includes('【路徑】class:' + names[0]) && seen[0].includes('【現在這題】補好類別 ' + names[0]), seen[0] && seen[0].slice(0, 200));
+        const seen2 = []; const gen2 = async (req) => { seen2.push(req.messages[req.messages.length - 1].content); return JSON.stringify({ attrs: [{ name: 'id', type: 'int' }], ops: [{ name: 'run', params: [], returns: 'void' }], relations: [] }); };
+        const pk = D.packagesOf ? null : null; const T = require('../recipe/think_stack.js'); const st = T.create('做一個測試系統');
+        await D.reworkRegion(JSON.parse(JSON.stringify(m)), '做一個測試系統', 'class:' + names[0], { generate: gen2, stack: st });
+        check('stack: shared stack ends empty and records the finished frame', st.frames.length === 0 && st.done.length >= 1 && st.done[0].state === 'done', st);
+        const seen3 = []; await D.reworkRegion(JSON.parse(JSON.stringify(m)), '做一個測試系統', 'class:' + names[0], { generate: async (req) => { seen3.push(req.messages[req.messages.length - 1].content); return gen2(req); }, thinkStack: false });
+        check('stack: thinkStack:false leaves prompts as before', seen3.length >= 1 && !seen3[0].includes('【目標】'), seen3[0] && seen3[0].slice(0, 80));
+        const stN = T.create('G'); T.push(stN, { path: 'system', question: '整體' }); const seen4 = [];
+        await D.reworkRegion(JSON.parse(JSON.stringify(m)), 'G', 'class:' + names[0], { generate: async (req) => { seen4.push(req.messages[req.messages.length - 1].content); return gen2(req); }, stack: stN });
+        check('stack: nested region shows the parent in the path', seen4.length >= 1 && seen4[0].includes('【路徑】system > class:' + names[0]) && seen4[0].includes('【做完回到】整體'), seen4[0] && seen4[0].slice(0, 200));
+    }
+    // ---- 模擬「會忘記的小模型」：只有看到標頭裡的已定決定才會跟兄弟一致；沒有標頭就各寫各的 ----
+    {
+        const T = require('../recipe/think_stack.js'); const m = D.FRAGMENTS.map((f) => U.parseDsl(f.dsl).model).sort((a, b) => b.classes.length - a.classes.length)[0];
+        const cls = m.classes.filter((c) => c.kind === 'class').slice(0, 3).map((c) => c.name); if (cls.length >= 3) {
+            const run = async (useStack) => {
+                const st = T.create('做一個測試系統'); const ids = []; let n = 0, first = true;
+                const gen = async (req) => { const p = req.messages[req.messages.length - 1].content; const m1 = /屬性 (\w+)/.exec(p); n++; const idName = m1 ? m1[1] : 'id' + n; if (first) { ids.push(idName); first = false; } return JSON.stringify({ attrs: [{ name: idName, type: 'int' }], ops: [{ name: 'run', params: [], returns: 'void' }] }); };
+                T.push(st, { path: 'package:all', question: '重新設計這個套件的每個類別' }); const mm = JSON.parse(JSON.stringify(m));
+                for (const c of cls) { first = true; await D.reworkRegion(mm, '做一個測試系統', 'class:' + c, { generate: gen, stack: st, thinkStack: useStack }); }
+                return new Set(ids).size;
+            };
+            const withS = await run(true), without = await run(false);
+            check('stack(sim): amnesiac model stays consistent with the stack, drifts without it', withS === 1 && without === cls.length, { withS, without });
+        }
+    }
+    // ---- 思考堆疊：往下一層前列檢查、回來核對、離開前自問 ----
+    {
+        const m = D.FRAGMENTS.map((f) => U.parseDsl(f.dsl).model).sort((a, b) => b.classes.length - a.classes.length)[0];
+        const pkgs = D.packagesOf(m); const pk = pkgs.find((p) => p.classes.length >= 2) || pkgs[0];
+        if (pk) {
+            const log = []; let reviewCalls = 0, selfCalls = 0, planCalls = 0, redoReasons = [];
+            const gen = async (req) => {
+                const p = req.messages[req.messages.length - 1].content; log.push(p.slice(0, 40));
+                if (p.includes('往下一層做')) { planCalls++; return JSON.stringify({ checks: [{ check: '每個類別名稱不能重複', standard: '全部類別名稱互不相同' }] }); }
+                if (p.includes('要檢查的項目')) { reviewCalls++; return JSON.stringify({ results: [{ i: 1, ok: reviewCalls !== 1, fix: reviewCalls === 1 ? '第一個類別名稱怪怪的' : '' }] }); }
+                if (p.includes('結果有回答這一題嗎')) { selfCalls++; return JSON.stringify({ ok: true, missing: '' }); }
+                if (/要修正的問題：(回到上層核對|上一次做完)/.test(p)) redoReasons.push(p.match(/要修正的問題：([^\n]{0,40})/)[1]);
+                return JSON.stringify({ attrs: [{ name: 'id', type: 'int' }], ops: [{ name: 'run', params: [], returns: 'void' }], relations: [] });
+            };
+            const r = await D.reworkRegion(JSON.parse(JSON.stringify(m)), '做一個測試系統', 'package:' + pk.name, { generate: gen });
+            check('stack: plans checks once before descending into the package', planCalls === 1 && r.log.some((x) => x.stage === 'plan_checks' && x.checks[0].check === '每個類別名稱不能重複' && x.checks[0].standard === '全部類別名稱互不相同'), r.log[0]);
+            check('stack: reviews on every return, a problem triggers one redo with the reason', reviewCalls === pk.classes.length + 1 - 1 + 0 || reviewCalls >= pk.classes.length, { reviewCalls });
+            check('stack: redo prompt carries the review problem', redoReasons.some((x) => x.startsWith('回到上層核對')), redoReasons);
+            check('stack: leaf self-check asked for each class', selfCalls >= pk.classes.length, { selfCalls });
+            const off = []; await D.reworkRegion(JSON.parse(JSON.stringify(m)), '做一個測試系統', 'package:' + pk.name, { generate: async (req) => { off.push(req.messages[req.messages.length - 1].content); return gen(req); }, stackChecks: false });
+            check('stack: stackChecks:false skips plan／review／self-check calls', !off.some((x) => x.includes('往下一層做') || x.includes('要檢查的項目') || x.includes('結果有回答這一題嗎')), off.length);
+        }
+    }
     console.log(ok + ' passed, ' + bad.length + ' failed', bad);
     process.exit(bad.length ? 1 : 0);
 })();
