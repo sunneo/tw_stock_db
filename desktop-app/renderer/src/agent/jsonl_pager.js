@@ -199,8 +199,88 @@
     return res;
   }
 
+  // ===== 模型輸出成 JSONL 並自動續傳 =====
+  // 線上視覺模型一次輸出有上限（max_tokens），拆解一張圖可能有幾千個物件，一次寫不完就會在半行斷掉。
+  // 做法：要求「一行一個 JSON 物件」、完整一行才算一筆；被截斷（finish_reason 是 length）就丟掉最後那半行，
+  // 用「已經輸出 N 筆，從第 N+1 筆接著輸出」再要一次，累積到模型說完（_end 標記或自然結束）或達上限。壞行保留標示不丟。
+  var END_KEY = '_end';
+  function streamPrompt(userQuestion) {
+    return String(userQuestion || '').trim() + '\n\n【輸出格式——一定要照這個寫】\n' +
+      '1. 一行一個 JSON 物件（JSON Lines）：不要用陣列包起來、不要 markdown 的程式碼區塊、不要行尾逗號、不要任何前言或結語。\n' +
+      '2. 每個物件都要有 "id"（從 1 開始連續編號），其餘欄位（label、bbox 等）依問題需要。\n' +
+      '3. 一個物件只佔一行，寫完整才換行；全部輸出完，最後一行寫 {"' + END_KEY + '":true}。\n' +
+      '4. 內容太多寫不完也沒關係，寫到哪算哪，我會要你接著寫。';
+  }
+  function continuePrompt(userQuestion, st) {
+    var last = st.lines.length ? st.lines[st.lines.length - 1] : '';
+    var lastId = st.lastId;
+    return streamPrompt(userQuestion) + '\n\n【接續】你上一次輸出到一半被截斷了。目前已經收到 ' + st.lines.length + ' 筆' +
+      (lastId != null ? '（最後一筆的 id 是 ' + lastId + '）' : '') + '，最後一筆是：\n' + (last.length > 300 ? last.slice(0, 300) + '…' : last) +
+      '\n請從下一筆' + (typeof lastId === 'number' ? '（id 從 ' + (lastId + 1) + ' 開始）' : '') + '接著輸出，格式一樣，不要重複前面已輸出的。';
+  }
+  function newStream() { return { lines: [], ids: {}, bad: 0, dup: 0, partial: 0, ended: false, lastId: null, badSeq: 0 }; }
+  // 吸收模型這一次的輸出。finishReason：'length'＝被截斷；'stop'＝自然結束；其他／空＝不確定。回傳這一次的統計。
+  function absorb(st, text, finishReason) {
+    var res = { added: 0, dup: 0, bad: 0, partial: 0, ended: false };
+    var whole = String(text == null ? '' : text);
+    var rows = whole.replace(/\r/g, '').split('\n');
+    var cut = finishReason === 'length' || (finishReason !== 'stop' && !/\n\s*$/.test(whole));
+    for (var i = 0; i < rows.length; i++) {
+      var raw = rows[i].trim(); var isLast = i === rows.length - 1;
+      if (!raw || raw.indexOf('```') === 0 || raw === '[' || raw === ']') continue;
+      if (raw.charAt(raw.length - 1) === ',') raw = raw.slice(0, -1);
+      var v = null, ok = false;
+      try { v = JSON.parse(raw); ok = true; } catch (e) { ok = false; }
+      if (!ok) {
+        if (isLast && cut) { res.partial++; st.partial++; continue; } // 被截斷的半行：丟掉，下一次從這一筆重來
+        st.bad++; res.bad++; st.badSeq++;
+        st.lines.push(safeStringify({ _bad_line: st.badSeq, error: 'JSON 解析失敗', raw: raw.length > 300 ? raw.slice(0, 300) + '…' : raw }));
+        continue;
+      }
+      if (isObj(v)) {
+        if (v[END_KEY] === true) { st.ended = true; res.ended = true; continue; }
+        if (v.id != null) {
+          var key = typeof v.id + ':' + v.id;
+          if (st.ids[key]) { st.dup++; res.dup++; continue; }
+          st.ids[key] = true; if (typeof v.id === 'number') st.lastId = v.id;
+        }
+        st.lines.push(safeStringify(v)); res.added++;
+      } else { st.bad++; res.bad++; st.badSeq++; st.lines.push(safeStringify({ _bad_line: st.badSeq, error: '不是物件', raw: raw.slice(0, 300) })); }
+    }
+    return res;
+  }
+  // 整個續傳流程。opts：{ question, generate: async({prompt, round}) → {content, finishReason}, maxRounds, maxRecords, deadlineMs, retries, sleep, shouldStop, onRound }
+  // 回傳 { lines, complete, stop_reason, rounds, bad, dup, partial_dropped, errors:[…] }；complete 只有在模型真的說完（_end 或自然結束）時才是 true。
+  async function runStream(opts) {
+    var st = newStream(), errors = [], rounds = 0, stall = 0, stop = null, uncertain = 0;
+    var maxRounds = opts.maxRounds || 400, maxRecords = opts.maxRecords || 100000, retries = opts.retries == null ? 3 : opts.retries;
+    var deadline = opts.deadlineMs ? Date.now() + opts.deadlineMs : 0;
+    while (true) {
+      if (rounds >= maxRounds) { stop = 'max_rounds'; break; }
+      if (st.lines.length >= maxRecords) { stop = 'max_records'; break; }
+      if (deadline && Date.now() > deadline) { stop = 'deadline'; break; }
+      if (opts.shouldStop && opts.shouldStop()) { stop = 'user_stop'; break; }
+      var prompt = rounds === 0 ? streamPrompt(opts.question) : continuePrompt(opts.question, st), out = null;
+      for (var a = 0; a <= retries; a++) {
+        try { out = await opts.generate({ prompt: prompt, round: rounds + 1, attempt: a + 1 }); break; }
+        catch (e) { errors.push({ round: rounds + 1, attempt: a + 1, error: String(e && e.message || e) }); if (opts.sleep) await opts.sleep(Math.min(8000, 1000 * (a + 1))); }
+      }
+      rounds++;
+      if (!out) { stop = 'error'; break; }
+      var r = absorb(st, out.content, out.finishReason);
+      if (opts.onRound) { try { opts.onRound({ round: rounds, total: st.lines.length, added: r.added, finishReason: out.finishReason }); } catch (e) { /* */ } }
+      if (r.ended) { stop = 'ended'; break; }
+      if (out.finishReason === 'stop') { stop = 'finished'; break; } // 模型自己說完了（沒寫 _end 也算完成，但 end_marker 會是 false）
+      stall = r.added === 0 ? stall + 1 : 0;
+      if (stall >= 2) { stop = 'stalled'; break; }
+      if (out.finishReason !== 'length') { uncertain++; if (uncertain >= 3) { stop = 'unsure'; break; } }
+    }
+    return { lines: st.lines, complete: stop === 'ended' || stop === 'finished', stop_reason: stop, end_marker: st.ended, rounds: rounds, bad: st.bad, dup: st.dup, partial_dropped: st.partial, errors: errors };
+  }
+
   return {
     VERSION: VERSION, budgetChars: budgetChars, digest: digest, parseLines: parseLines,
+    streamPrompt: streamPrompt, continuePrompt: continuePrompt, newStream: newStream, absorb: absorb, runStream: runStream,
     toRecords: toRecords, page: page, parsePage: parsePage, encodeCursor: encodeCursor, decodeCursor: decodeCursor
   };
 }));

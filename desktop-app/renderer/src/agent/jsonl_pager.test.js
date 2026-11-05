@@ -141,4 +141,4 @@ t('head 太大就不塞；continue 提示帶 cursor', () => {
   assert.ok(p1.continue.indexOf(p1.next_cursor) > 0 && p1.continue.indexOf('<CURSOR>') < 0);
 });
 
-console.log('全部通過：' + n);
+console.log(n + ' passed, 0 failed');

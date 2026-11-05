@@ -77,4 +77,47 @@ t('單筆記錄比一頁還大：分段續傳，接回去相等', () => {
   assert.deepStrictEqual(recs.map((x) => x.id), [0, 2]); assert.deepStrictEqual(JSON.parse(parts.map((p) => p.text).join('')), big);
 });
 
-console.log('全部通過：' + n);
+// ===== VLM 拆解：逐行輸出、被截斷自動接著寫、最後用分頁器讀完 =====
+const v0 = src.indexOf('    // vopts（選填）：{ timeoutMs, meta }'), v1 = src.indexOf('    // 線上視覺模型看圖：每個候選 row');
+assert.ok(v0 > 0 && v1 > v0, '找不到 _visionChat 區段');
+const mkVlm = (total, capChars) => {
+  const sent = [];
+  const FaLlm = { fetch: async (url, o) => {
+    const req = JSON.parse(o.body); const prompt = req.messages[0].content[0].text; sent.push({ max_tokens: req.max_tokens, prompt });
+    const m = /id 從 (\d+) 開始/.exec(prompt); let id = m ? Number(m[1]) : 1, out = '';
+    for (; id <= total; id++) {
+      const line = JSON.stringify({ id, label: '物件' + id, bbox: [id, id, 4, 4] }) + '\n';
+      if (out.length + line.length > capChars) { out += line.slice(0, capChars - out.length); return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: out }, finish_reason: 'length' }], model: 'fake' }) }; }
+      out += line;
+    }
+    return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: out + '{"_end":true}\n' }, finish_reason: 'stop' }], model: 'fake' }) };
+  } };
+  const C = new Function('FaLlm', 'FA_JSONL_PAGER_SRC', 'REASONING_DEADEND_CHARS_PER_TOKEN_ESTIMATE', 'return (class {\n' + src.slice(a, b) + '\n' + src.slice(v0, v1) + '\n})')(FaLlm, pagerSrc, 3);
+  const fa = Object.assign(new C(), {
+    _getGenerationSettings: () => ({ contextWindowTokens: 8192 }), _isAutoAgentMode: () => false, _toolResultBudgetChars: () => 8000,
+    _createAbortController: () => new AbortController(), _isOpenRouter: () => false,
+    _orderedVisionCandidateRows: () => [{ abilityTags: { vision: true } }], _resolveModelRowConfig: () => ({ apiUrl: 'http://x', apiKey: 'k', apiModel: 'fake-vlm' }), _ensureRowVisionVerified: async () => true,
+  });
+  return { fa, sent };
+};
+(async () => {
+  const { fa, sent } = mkVlm(8000, 9000);
+  const r = await fa._visionJsonlStream('data:image/png;base64,AAAA', '請拆解這張圖的所有物件', {});
+  assert.strictEqual(r.complete, true); assert.strictEqual(r.lines.length, 8000); assert.ok(r.rounds > 30); assert.ok(sent.every((x) => x.max_tokens === 4096));
+  const sid = fa._bigStashRecords(r.lines, { ok: true, complete: r.complete, rounds: r.rounds }, 'interpret_image');
+  let pg = fa._bigPage(sid, null), pp = P.parsePage(pg.text); const got = pp.records.slice(); assert.strictEqual(pp.meta.head.complete, true);
+  while (pp.meta.has_more) { pg = fa._bigPage(sid, pp.meta.next_cursor); pp = P.parsePage(pg.text); got.push(...pp.records); }
+  assert.deepStrictEqual(got.map((x) => x.id), Array.from({ length: 8000 }, (_, i) => i + 1)); n++; console.log('ok - VLM 拆解 8000 個物件（每輪被截斷）：自動接著寫到說完，分頁器一頁頁讀完全部');
+
+  // 中途一直失敗：不假裝完成（已拿到的保留、complete:false、附真實錯誤）
+  const bad = mkVlm(8000, 9000); const orig = bad.fa._visionChat; let calls = 0;
+  bad.fa._visionChat = async function (...x) { if (++calls > 3) throw new Error('HTTP 503'); return orig.apply(this, x); };
+  const origJ = bad.fa._jsonlPagerMod().runStream;
+  const r2 = await bad.fa._visionJsonlStream('data:x', 'q', { deadlineMs: 60000 }).catch((e) => e);
+  assert.ok(r2 instanceof Error || r2.complete === false, '中途失敗不能回報完成'); n++; console.log('ok - 中途一直失敗：不回報完成（' + (r2 instanceof Error ? '明確錯誤' : 'complete:false，stop_reason=' + r2.stop_reason) + '）');
+
+  // 被截斷時 _visionChat 的 meta 要看得到 finish_reason（原本回字串，呼叫端完全不知道被截斷）
+  const m1 = mkVlm(8000, 9000); const mc = await m1.fa._visionChat({ apiUrl: 'http://x', apiKey: 'k', apiModel: 'm' }, [{ role: 'user', content: [{ type: 'text', text: 'q' }] }], 4096, { meta: true });
+  assert.strictEqual(mc.finishReason, 'length'); assert.ok(typeof mc.ms === 'number'); n++; console.log('ok - _visionChat meta：回報 finish_reason=length 與耗時');
+  console.log(n + ' passed, 0 failed');
+})().catch((e) => { console.error(e); process.exit(1); });
