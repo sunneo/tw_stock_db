@@ -36349,6 +36349,7 @@ const holder = {};
     'demucs-6s': { kind: 'audio', verified: '2026-11-05' },
     'depth-anything-v2-small': { kind: 'depth', verified: '2026-11-05' },
     'whisper-base-encoder': { kind: 'whisper-encoder', verified: '2026-11-05' },
+    'slimsam-encoder': { kind: 'sam-encoder', verified: '2026-11-05' },
   };
   const switchKey = (id) => 'fa.native.model.' + id;
   // getFlag(key) → 字串或 null（呼叫端傳 localStorage 讀取；讀不到就當沒設定＝開）。回傳 { native, why }
@@ -52572,7 +52573,7 @@ function faIdrWorkerMain() {
 // 離線圖像轉文字的 Worker（2026-10-06）：transformers.js 的載入、模型下載、推論全部在這個獨立的 Worker 裡，不碰主執行緒（畫面不會卡住）。
 // 主執行緒只傳 {type:'load'|'run'|'dispose'} 與圖片 Blob，收進度與結果。裝置（webgpu／wasm）與執行緒數由主執行緒決定，失敗時由主執行緒降級重試。
 function faVlmWorkerMain() {
-    let lib = null, libUrl = null, cur = null;
+    let lib = null, libUrl = null, cur = null; const nativeWait = new Map(); let nativeSeq = 0;
     const post = (m) => self.postMessage(m);
     const errText = (e) => { try { if (e && e.message) return String(e.message); if (typeof e === 'number') return 'WebAssembly／WebGPU 錯誤碼 ' + e + '（通常是記憶體不足或這個裝置不支援這個模型）'; return String(e); } catch (_) { return '未知錯誤'; } };
     async function importLib(url) { if (lib && libUrl === url) return lib; lib = await import(url); libUrl = url; return lib; }
@@ -52668,7 +52669,15 @@ function faVlmWorkerMain() {
         else if (cur.arch === 'sam') {
             // 自動分物件：在圖上撒 grid×grid 個點，每個點取三個候選遮罩裡 IoU 分數最高的；去重與過濾由呼叫端的 FaImage3d.labelsFromMasks 做。遮罩縮到最長邊 maxSide 再送回主執行緒
             const grid = Math.max(2, Math.min(8, m.grid | 0 || 4)), maxSide = m.maxSide || 128;
-            const emb = await cur.model.get_image_embeddings(await cur.processor(image)); const segs = [];
+            // 編碼器（最重的一步）：主程序開了原生就把前處理後的張量交給主程序用原生算（Worker 拿不到信箱）；原生沒給結果就用這裡的網頁版編碼器，輸出格式相同
+            const pxIn = await cur.processor(image); let emb = null, nativeNote = '';
+            if (m.nativeEnc && pxIn.pixel_values) {
+                try {
+                    const rid = ++nativeSeq, r = await new Promise((res) => { nativeWait.set(rid, res); post({ type: 'native_enc', tid: m.tid, rid, dims: pxIn.pixel_values.dims, data: pxIn.pixel_values.data }); });
+                    if (r && r.ok) emb = { image_embeddings: new L.Tensor('float32', r.e, r.ed), image_positional_embeddings: new L.Tensor('float32', r.p, r.pd) }; else nativeNote = String((r && r.error) || '原生沒有回覆');
+                } catch (e) { nativeNote = errText(e); }
+            }
+            const encBackend = emb ? 'native' : 'wasm'; if (!emb) emb = await cur.model.get_image_embeddings(pxIn); const segs = [];
             for (let gy = 0; gy < grid; gy++) for (let gx = 0; gx < grid; gx++) {
                 const pin = await cur.processor(image, { input_points: [[[(gx + 0.5) * image.width / grid, (gy + 0.5) * image.height / grid]]] });
                 const out = await cur.model({ ...emb, input_points: pin.input_points });
@@ -52679,7 +52688,7 @@ function faVlmWorkerMain() {
                 for (let y = 0; y < h2; y++) for (let x = 0; x < w2; x++) data[y * w2 + x] = mt.data[best * per + Math.min(mh - 1, Math.floor((y + 0.5) * mh / h2)) * mw + Math.min(mw - 1, Math.floor((x + 0.5) * mw / w2))] ? 1 : 0;
                 segs.push({ w: w2, h: h2, data, score: Number(scores[best]) || 0 });
             }
-            return { raw: null, segments: segs, ms: Date.now() - t0 };
+            return { raw: null, segments: segs, ms: Date.now() - t0, encBackend, nativeNote };
         } else if (cur.arch === 'pose') {
             // 姿態：照官方範例把圖補成正方形（黑邊）縮到 256×256，整數 NHWC；輸出 [1,1,17,3] ＝ (y, x, 信心值)，換回原圖的比例（0..1，y 向下）
             const SZ = 256, sq = Math.max(image.width, image.height), ox = (sq - image.width) / 2, oy = (sq - image.height) / 2;
@@ -52701,10 +52710,11 @@ function faVlmWorkerMain() {
     self.onmessage = async (ev) => {
         const m = ev.data || {};
         if (m.type === 'interrupt') { try { if (cur && cur.stopper) cur.stopper.interrupt(); } catch (_) {} return; }
+        if (m.type === 'native_enc_reply') { const w = nativeWait.get(m.rid); if (w) { nativeWait.delete(m.rid); w(m); } return; }
         try {
             if (m.type === 'chat') { const r = await chat(m); post({ type: 'result', tid: m.tid, raw: r.raw, ms: r.ms, info: r.info }); return; }
             if (m.type === 'load') { await load(m); post({ type: 'loaded', tid: m.tid, device: m.device, modelId: m.modelId }); }
-            else if (m.type === 'run') { const r = await run(m); post({ type: 'result', tid: m.tid, raw: r.raw, ms: r.ms, depth: r.depth, segments: r.segments, pose: r.pose }); }
+            else if (m.type === 'run') { const r = await run(m); post({ type: 'result', tid: m.tid, raw: r.raw, ms: r.ms, depth: r.depth, segments: r.segments, pose: r.pose, encBackend: r.encBackend, nativeNote: r.nativeNote }); }
             else if (m.type === 'dispose') { await disposeCur(); post({ type: 'disposed', tid: m.tid }); }
         } catch (e) { post({ type: 'error', tid: m.tid, error: errText(e) }); }
     };
@@ -101773,7 +101783,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const worker = new Worker(blobUrl, { type: 'module' }); const rec = { worker, pending: new Map(), tid: 0, slot };
         const die = (msg) => { for (const p of rec.pending.values()) p.reject(new Error(msg)); rec.pending.clear(); try { worker.terminate(); } catch (_) {} if (this._vlmWks[slot] === rec) { this._vlmWks[slot] = null; this._vlmLoadedBy[slot] = null; } };
         worker.onmessage = (ev) => {
-            const m = ev.data || {}; const p = rec.pending.get(m.tid); if (!p) return;
+            const m = ev.data || {};
+            if (m.type === 'native_enc') { this._samNativeEnc(m).then((r) => { try { worker.postMessage(Object.assign({ type: 'native_enc_reply', rid: m.rid }, r)); } catch (_) { /* Worker 已結束 */ } }); return; }
+            const p = rec.pending.get(m.tid); if (!p) return;
             if (m.type === 'progress') { if (p.onProgress) try { p.onProgress(m.p); } catch (_) {} return; }
             if (m.type === 'stream') { if (p.onStream) try { p.onStream(m.t); } catch (_) {} return; }
             rec.pending.delete(m.tid); if (m.type === 'error') p.reject(new Error(m.error || 'worker error')); else p.resolve(m);
@@ -102013,6 +102025,32 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             return { ok: true, depth, model: model.id, device: 'cpu', backend: 'native', ms };
         } catch (e) { this._nrDepthSess = null; const why = String((e && e.message) || e).slice(0, 300); if (prog) { try { prog.fail('原生失敗，改用網頁版：' + why); } catch (_) { /* */ } } console.log('[depth] 原生失敗：' + why); return { ok: false, why }; }
     }
+    // 分割（SlimSAM）編碼器的原生路徑：Worker 把前處理後的 pixel_values 傳來（Worker 拿不到信箱），這裡用原生算編碼器，回傳 image_embeddings／image_positional_embeddings；
+    // 解碼器（每個點一次，很輕）留在 Worker。不在註冊表／開關關閉／沒啟用原生時不會被問到（_segmentObjects 不會要求）；任何失敗回 { ok:false, error }，Worker 改用自己的網頁版編碼器。
+    async _samNativeReady(model, device) {
+        if (typeof FaNativeOrt === 'undefined' || model.id !== 'slimsam-77-uniform' || device === 'webgpu' || !this._nrOptIn() || !this._nrAvailable()) return false;
+        return !!FaNativeOrt.routed('slimsam-encoder', (k) => localStorage.getItem(k)).native;
+    }
+    async _samNativeEnc(m) {
+        const ID = 'slimsam-encoder';
+        try {
+            if (!this._nrSamSess) {
+                const box = await this._nrBox(); if (!box) throw new Error('沒有原生資料夾');
+                const sep = box.indexOf(String.fromCharCode(92)) >= 0 ? String.fromCharCode(92) : '/';
+                const url = 'https://huggingface.co/Xenova/slimsam-77-uniform/resolve/main/onnx/vision_encoder_quantized.onnx'; let resp = null;
+                for (const name of (await caches.keys()).filter((x) => /transformers/i.test(x))) { const c = await caches.open(name); resp = await c.match(url); if (resp) break; }
+                if (!resp) throw new Error('瀏覽器快取裡沒有 SlimSAM 編碼器檔案');
+                const entry = { id: ID, file: 'vision_encoder_quantized.onnx', bytes: 8882165, sha256: 'cce23c7b2e5d4f330932738fb67ba518e04b0d99ccdd1cccd22a7da4e01f2971' };
+                const api = FaNativeOrt.create({ call: (op, payload, t) => this._nrCall(op, payload, t), rawfs: window.desktopAPI.rawfs, box, sep });
+                const st = await api.state(entry); if (!st.ok) throw new Error(st.reason);
+                if (!st.installed) await api.installFromBlob(entry, await resp.blob(), {});
+                this._nrSamSess = await api.open(entry, { threads: 4, runTimeoutMs: 180000 });
+            }
+            const out = await this._nrSamSess.run({ pixel_values: new FaNativeOrt.Tensor('float32', m.data, m.dims) });
+            const e = out.image_embeddings, pe = out.image_positional_embeddings; if (!e || !pe) throw new Error('原生編碼器少了輸出');
+            return { ok: true, e: e.data, ed: e.dims, p: pe.data, pd: pe.dims };
+        } catch (err) { this._nrSamSess = null; return { ok: false, error: String((err && err.message) || err).slice(0, 300) }; }
+    }
     // 離線分割（/image-to-3d --segment 用）。p：{image?, blob?, model?, device?, grid?}。回傳 { ok, segments:[{w,h,data(Uint8Array,1＝在裡面),score}], model, device, ms }
     async _segmentObjects(p) {
         p = p || {}; const set = this._omSettings();
@@ -102034,7 +102072,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             for (let attempt = 0; attempt < 2 && !res; attempt++) {
                 const ld = await this._vlmEnsureLoaded(model, order, update, log); used = ld;
                 update({ pct: 99, status: '找物件中（' + (ld.device === 'webgpu' ? 'GPU' : 'CPU') + '）…' });
-                try { res = await this._vlmRpc('run', { image: img.blob, grid: p.grid || 4 }, null, null, this._vlmSlotOf(ld.device)); }
+                try { res = await this._vlmRpc('run', { image: img.blob, grid: p.grid || 4, nativeEnc: await this._samNativeReady(model, ld.device) }, null, null, this._vlmSlotOf(ld.device)); if (res.nativeNote) log('⚠️ 編碼器原生沒用上，改用網頁版：' + res.nativeNote); else if (res.encBackend === 'native') log('編碼器：原生 CPU'); }
                 catch (e) { lastErr = e; log('⚠️ ' + (ld.device === 'webgpu' ? 'GPU' : 'CPU') + ' 推論失敗：' + String((e && e.message) || e)); this._vlmTerminate(this._vlmSlotOf(ld.device)); if (ld.device === 'webgpu') { order = ['wasm']; log('降級成 CPU 重試'); } else break; }
             }
             if (!res || !res.segments) throw lastErr || new Error('分割模型沒有輸出');

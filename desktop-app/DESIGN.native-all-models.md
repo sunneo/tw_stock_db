@@ -547,7 +547,7 @@
 ### 9.1 規則
 
 1. **部分原生**：打開原生離線時，只有「已實作並驗證」的模型走原生；沒實作的模型一律維持舊做法（瀏覽器端／WASM），不報錯、不要求使用者關掉原生、不影響其他功能。
-2. **逐模型註冊表**決定路由：`FaNativeOrt.REGISTRY`（`renderer/src/music/native_ort.js`）只列已完成並驗證的模型（目前：`basic-pitch`、`yamnet`、`demucs-6s`、`depth-anything-v2-small`）；不在表裡就是舊路（`routed(id)` 回 `{native:false, why}`，呼叫端連信箱都不問）。每個模型另有開關 `localStorage['fa.native.model.<id>']`（`'0'`＝關，預設開）。新增模型的規則：實作並用真 Electron 驗證（含下面三種退回）之後才加進表。
+2. **逐模型註冊表**決定路由：`FaNativeOrt.REGISTRY`（`renderer/src/music/native_ort.js`）只列已完成並驗證的模型（目前：`basic-pitch`、`yamnet`、`demucs-6s`、`depth-anything-v2-small`、`whisper-base-encoder`、`slimsam-encoder`）；不在表裡就是舊路（`routed(id)` 回 `{native:false, why}`，呼叫端連信箱都不問）。每個模型另有開關 `localStorage['fa.native.model.<id>']`（`'0'`＝關，預設開）。新增模型的規則：實作並用真 Electron 驗證（含下面三種退回）之後才加進表。
 3. **退回**：已在表裡的模型，原生失敗（執行包沒裝、載入失敗、執行到一半出錯）都退回舊路，輸出格式相同；執行到一半出錯時只有出錯的那一次呼叫（Basic Pitch 一窗、Demucs 一段）改由網頁版重做，已完成的窗／段不重做；失敗原因寫進結果的「沒做到的部分」或進度卡，不顯示莫名錯誤。
 4. **核心不受影響**：聊天／呼叫工具／食譜的原生（`qwen3-0.6b`）有自己的路徑（`_nrNativeState`、`backendOrder`）與判斷，不經過這張表；這次的改動沒有碰它，既有 `tests/native/native_runner.test.js`（19 項）與 `renderer/src/vlm/vlm_core.test.js`（143 項，含 `backendOrder`／`wantsNativeBackend`）每次改動後都重跑，全過。
 5. **判準改為**：原生能載入並跑通、輸出與瀏覽器端一致、速度沒有變慢，就納入註冊表，不再用「快多少倍」當門檻（SlimSAM 編碼器、SDXS 也要納入；輸出不一致的才暫緩並寫明差異原因）。原生比 WASM 慢或吃更多記憶體視為異常，要逐項對照瀏覽器端的 session 設定查原因。
@@ -620,6 +620,12 @@
   - 因為使用者原則是「速度有變快、保持正確性才有價值」，兩項都沒達到，`REGISTRY` 沒有 `midigenai-v5-cpu`，`_midigenNativeAttach` 一開始就因為不在表裡而回 null（連信箱都不問）；程式留著，將來有 AVX2 的機器實測確認一致再加進表即可。
 - **退回路徑真的走過**（臨時把它放進表裡驗證）：不在表（GPU 版）、逐模型開關關閉、原生離線總開關關閉 → 都回 null、信箱 0 次、session 沒被換掉；載入失敗（同大小垃圾檔）→ 維持網頁版、原因寫出 onnxruntime 載入錯誤、網頁版 session 照常解碼；執行到一半出錯（第 10 步前釋放主程序端模型）→ 自動退回，原因「這個模型還沒載入」。
 - **發現的既有問題（與原生無關，要處理）**：網頁版 CPU 路徑在 `onnxruntime-web` 的 `proxy: true`（`_midigenEngine` 載入 CPU 版時用的設定）下，第一次解碼就丟 `Cannot perform %TypedArray%.prototype.set on a detached or out-of-bounds ArrayBuffer`（`midigen-web.mjs` 的 `cpuStep` 把 `bufs[j].subarray()` 交給 ort，代理模式會轉移整個緩衝區使 `bufs[j]` 失效）。真 Electron 實測：`proxy: false` 能完整解碼（96 token 約 7 秒），`proxy: true` 一開始就失敗；`_midigenEngine` 的冒煙測試因此會失敗，作曲退回作曲樹。修法的取捨（CPU 版不用代理，或 `cpuStep` 交給 ort 的是複本）會牽涉音訊模型共用同一個 ort 實例的代理旗標（`audio_runtime.js` 第 8 行的註解），這次沒有動，交給管理層決定。
+
+#### 9.7 SlimSAM 編碼器：已完成並納入註冊表（`slimsam-encoder`；第三個接手工作階段，2026-11-05）
+
+- **橋接**：Worker 拿不到信箱，所以 `sam` 分支先用 Worker 自己的處理器算出 `pixel_values`，若主程序在 `run` 訊息裡帶了 `nativeEnc:true`，就送 `native_enc` 訊息（含張量）給主程序；主程序 `_samNativeEnc` 用原生子程序算編碼器，回傳 `image_embeddings`、`image_positional_embeddings`；Worker 組成 `Tensor` 後走原本的解碼迴圈（每點一次，留在 Worker）。原生沒給結果（沒啟用、檔案缺、載入或執行失敗）就用 Worker 自己的網頁版 `get_image_embeddings`，結果的 `encBackend`／`nativeNote` 寫出實際走哪條與原因。是否要求原生由 `_samNativeReady` 決定（註冊表、逐模型開關、原生總開關、CPU 才接）。模型檔取自瀏覽器快取裡 transformers.js 的那一份（`vision_encoder_quantized.onnx`，8,882,165 位元組，SHA-256 `cce23c7b…2971` 已釘進程式），不另外下載。
+- **真 Electron 實測**（`scripts/eval/native_slimsam_e2e.eval.js`，隔離 `--user-data-dir`、埠 17996）：同一份 `[1,3,1024,1024]` 輸入，原生中位數 **9,129 毫秒**（9,129／8,840／9,151；首次含載入 14,178）對網頁版 **9,788 毫秒**，約 1.07 倍；`image_embeddings` 誤差 0、`image_positional_embeddings` 誤差 6e-8。閘門：WebGPU、別的模型、逐模型開關關、原生總開關關 → 都不要求原生、信箱 0 次。退回：快取沒有檔 → 回原因；原生資料夾檔案被換成同大小垃圾 → 回 onnxruntime 載入錯誤（Protobuf parsing failed）；執行到一半釋放模型 → 回「這個模型還沒載入」，下一次呼叫自動重新載入並成功（輸出與第一次相同）。
+- **沒驗證的部分（誠實）**：沒有完整的 SlimSAM（解碼器、處理器設定）也沒有下載，所以 **Worker 端的訊息往返（`native_enc`／`native_enc_reply`）與整條 `_segmentObjects` 沒有實跑**；驗證的是主程序端 `_samNativeEnc`／`_samNativeReady`。Worker 端只多了十幾行（訊息往返與張量重組），已 `node --check`，退路是原本的 `get_image_embeddings`。Linux 未實跑。
 
 #### 9.6.3 接續點（接手的工作階段上下文用到 30%，在這裡停；2026-11-05）
 
