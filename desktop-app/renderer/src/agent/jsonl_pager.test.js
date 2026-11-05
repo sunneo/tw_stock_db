@@ -134,4 +134,11 @@ t('每一頁的記錄行都是單行（內容的換行已跳脫）', () => {
   r.text.split('\n').forEach((l, i) => { if (l) JSON.parse(l); });
 });
 
+t('head 太大就不塞；continue 提示帶 cursor', () => {
+  const rec = P.toRecords(mk(50));
+  const p1 = P.parsePage(P.page(rec.lines, { source: 'a', chars: 3000, head: { big: 'x'.repeat(5000) }, continueWith: 'big_content({"id":"a","action":"page","cursor":"<CURSOR>"})' }).text).meta;
+  assert.strictEqual(p1.head_omitted, true); assert.ok(!p1.head);
+  assert.ok(p1.continue.indexOf(p1.next_cursor) > 0 && p1.continue.indexOf('<CURSOR>') < 0);
+});
+
 console.log('全部通過：' + n);

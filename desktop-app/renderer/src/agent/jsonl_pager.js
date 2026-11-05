@@ -172,7 +172,11 @@
     };
     if (partInfo) { meta.record_part = partInfo; meta.to = part === 0 ? i : cur.index; }
     if (!hasMore) { meta.done = true; meta.read_records = total; }
-    if (cur.index === 0 && cur.part === 0 && opts.head != null) meta.head = opts.head;
+    if (cur.index === 0 && cur.part === 0 && opts.head != null) {
+      var hs = safeStringify(opts.head) || '';
+      if (hs.length <= Math.floor(budget * 0.25)) meta.head = opts.head; else meta.head_omitted = true; // 其餘欄位太大就不塞進第一頁
+    }
+    if (opts.continueWith && hasMore) meta.continue = String(opts.continueWith).replace('<CURSOR>', nextCursor);
     meta.digest = digest(out.join('\n'));
     meta.hint = hasMore
       ? (partInfo ? '這一筆太大，分成 ' + partInfo.of + ' 段，這是第 ' + (partInfo.part + 1) + ' 段；把各段 text 依序接起來才是完整的一筆。' : '') + '還沒讀完（已到第 ' + i + ' 筆，共 ' + total + ' 筆）：用 next_cursor 原樣帶回再讀下一頁，讀完才可以下結論。'
