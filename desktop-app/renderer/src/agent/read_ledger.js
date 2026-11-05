@@ -53,7 +53,7 @@
     };
   }
 
-  // ===== 覆蓋範圍（JSONL 分頁，見 jsonl_pager.js 與 DESIGN.TODO.md「JSONL 分頁器與檢視器」）=====
+  // ===== 覆蓋範圍（JSONL 分頁，見 jsonl_pager.js 與 DESIGN.jsonl-paging.md）=====
   // 一頁的 meta（_page）帶 source、from、to（半開區間，單位＝第幾筆）、total、has_more、done。
   // 帳本記「已讀過哪些區間」，而不只是「下一個位置」：跳到最後一頁不會把中間沒讀的部分清掉，要整份從 0 連續覆蓋到 total，而且收到最後一頁，才算讀完。
   // 以 meta.source 當身分（不分哪個工具回的第一頁），所以 interpret_image 回的第 1 頁與 big_content 讀的第 2 頁會算同一份。

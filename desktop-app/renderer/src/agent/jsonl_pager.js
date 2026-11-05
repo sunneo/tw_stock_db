@@ -1,6 +1,6 @@
 // JSONL 分頁器（純函式，無 DOM、無 I/O、UMD；嵌入 floating-assistant 後用 new Function 載入）。
 // 用途：很大的 JSON 回應（記錄清單）不再「只放開頭就截斷」，而是一頁一頁、每行一筆記錄地給模型，模型可以用 cursor 一直讀到完。
-// 設計見 DESIGN.TODO.md「JSONL 分頁器與檢視器」。
+// 設計與實證見 DESIGN.jsonl-paging.md。
 //
 // 一頁的文字格式：第一行是 meta：{"_page":{...}}，其後每行一筆記錄（單行 JSON，內容裡的換行都已跳脫）。
 //   單筆比一頁還大：不丟、不截斷，拆成多頁，每段一行 {"_part":{"record":i,"part":k,"of":n,"text":"…"}}，把 text 依序接起來就是那一筆的原文。

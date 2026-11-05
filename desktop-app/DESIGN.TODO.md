@@ -4381,7 +4381,9 @@ rg 收到 task(sub=false, fromName=N)
 
 ---
 
-## JSONL 分頁器與檢視器（2026-11-05，唯讀調查後的設計；尚未實作）
+## JSONL 分頁器與檢視器（2026-11-05，唯讀調查後的設計）
+
+**進度（2026-11-05）**：分頁器、總截斷轉 JSONL、`big_content page`、讀取帳本四個缺口、VLM 拆解的 JSONL 續傳**已實作並移到 `DESIGN.jsonl-paging.md`**（含調查實證與測試）。下面的設計全文保留；**還沒做、仍是待改善的**：2.6 檢視器（`.jsonl`／`.ndjson`／`.jsonc` 與離線種類表）、2.5 的「一次問答最多讀幾頁」預估與離線小模型的比例調校、`knowledge_ask`／`repo_*` 帶 `_page` meta。
 
 使用者原話（2026-11-05）：「tool 的超大 json 回應都統一 jsonl 格式，並提供 paginator，要有辦法讓 ai 可以完整讀完。然後我們 viewer 也要支援 jsonl、jsonc」。
 標記：【確認】＝這次讀程式確認過；【推測】＝沒親眼驗證。行號是 `renderer/src/floating-assistant.js`（簡稱 FA）在 2026-11-05 的行號，會漂移，改之前先用內容搜尋。
