@@ -77476,7 +77476,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             const api = FaNativeOrt.create({ call: (op, payload, t) => this._nrCall(op, payload, t), rawfs: window.desktopAPI.rawfs, box, sep });
             const st = await api.state(entry); if (!st.ok) { say('midigenai 維持網頁版：' + st.reason); return null; }
             if (!st.installed) await api.installFromBlob(entry, new Blob([bytes]), {});
-            const nat = await api.open(entry, { threads: 4, kv: true, runTimeoutMs: 60000 });
+            const nat = await api.open(entry, { threads: 1, kv: true, runTimeoutMs: 60000 });
             const web = model.session; let native = true;
             model.session = {
                 inputNames: web.inputNames, outputNames: web.outputNames,

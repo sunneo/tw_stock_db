@@ -14,6 +14,7 @@ return (async () => {
     await fsx.remove(MODELS + '/../seed-mg', true);
     await note({ step: 'seed', bytes: all.length, complete: (await FaAudioModels.status(ID, store)).complete });
     try { localStorage.setItem('fa.native.enabled', '1'); } catch (_) { /* */ }
+    if (!FaNativeOrt.REGISTRY[ID]) FaNativeOrt.REGISTRY[ID] = { kind: 'eval-temp' };   // 暫緩期間不在註冊表；評估時臨時放進去（只在這個隔離行程）
     fa.advancedSettings = fa.advancedSettings || {}; fa.advancedSettings.offlineDevicePreference = 'cpu';
     const base = new URL('vendor/midigenai/', document.baseURI).href, web = await import(base + 'midigen-web.mjs');
     const ort = await FaAudioRuntime.loadOrt({ proxy: false });
