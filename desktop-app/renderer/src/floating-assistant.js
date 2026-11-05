@@ -36350,6 +36350,7 @@ const holder = {};
     'depth-anything-v2-small': { kind: 'depth', verified: '2026-11-05' },
     'whisper-base-encoder': { kind: 'whisper-encoder', verified: '2026-11-05' },
     'slimsam-encoder': { kind: 'sam-encoder', verified: '2026-11-05' },
+    'sdxs-512-cpu-int8': { kind: 'sdxs', verified: '2026-11-05' },   // 輸出與網頁版不位元相同（整條 PSNR 21.7～24.5 dB，int8 對浮點細節敏感），使用者看圖同意
   };
   const switchKey = (id) => 'fa.native.model.' + id;
   // getFlag(key) → 字串或 null（呼叫端傳 localStorage 讀取；讀不到就當沒設定＝開）。回傳 { native, why }
@@ -78924,13 +78925,48 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         await this._localSdUnload();
         const ORT = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/', imp = async (url) => { try { return await import(/* webpackIgnore: true */ url); } catch (e1) { try { return await import(/* webpackIgnore: true */ this._viaAssetProxy(url)); } catch (_) { throw e1; } } };
         onProgress && onProgress('載入執行環境（onnxruntime-web）…'); const ort = await imp(ORT + 'ort.webgpu.min.mjs'); ort.env.wasm.wasmPaths = ORT; ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.min(8, navigator.hardwareConcurrency || 4) : 1;
-        const c = await caches.open('fa-localsd'), sess = {};
+        const c = await caches.open('fa-localsd'), sess = {}; const nat = await this._localSdNativeApi(model, ep, onProgress);
         for (const f of model.files) {
+            if (nat) { try { sess[f.role] = await this._localSdNativeWrap(nat, model, f, ort, c, ep, onProgress); continue; } catch (e) { this._localSdNativeNote = 'SDXS ' + f.role + ' 維持網頁版：' + String((e && e.message) || e).slice(0, 200); console.log('[localsd] ' + this._localSdNativeNote); } }   // 這一段原生載不起來就單獨用網頁版，其他段不受影響
             const r = await c.match(FaLocalSd.urlOf(model, f.name)); if (!r) throw new Error('模型檔 ' + f.name + ' 不在快取裡，要先下載');
             onProgress && onProgress('載入 ' + f.name + '（' + FaLocalSd.fmtBytes(f.bytes) + '）…'); const buf = new Uint8Array(await r.arrayBuffer());
             sess[f.role] = await ort.InferenceSession.create(buf, { executionProviders: [ep], graphOptimizationLevel: 'all' });
         }
         this._localSdSess = { key, ort, sess }; this._localSdTouch(); return this._localSdSess;
+    }
+    // 本機生圖（SDXS CPU int8 版）的原生路徑：文字編碼器、unet、VAE 三段各自一個原生 session（圖形最佳化固定 'all'、4 執行緒：量測用的設定，輸出跟這組設定綁定，別隨意改）。
+    // 只有選 CPU 版（ep 為 wasm）、原生已啟用、註冊表與開關允許才走；GPU 版（WebGPU）完全不碰。模型檔取自 fa-localsd 快取，第一次寫進原生資料夾。
+    // 每一段的 run：原生失敗就只改那一段用網頁版（惰性建立 onnxruntime-web session），同一次呼叫當場重做那一段，已完成的段落不重做；原因寫在 _localSdNativeNote。
+    async _localSdNativeApi(model, ep, onProgress) {
+        this._localSdNativeNote = '';
+        if (typeof FaNativeOrt === 'undefined' || model.id !== 'sdxs-512-cpu-int8' || ep === 'webgpu' || !this._nrOptIn() || !this._nrAvailable()) return null;
+        if (!FaNativeOrt.routed(model.id, (k) => localStorage.getItem(k)).native) return null;
+        try {
+            const box = await this._nrBox(); if (!box) return null;
+            const sep = box.indexOf(String.fromCharCode(92)) >= 0 ? String.fromCharCode(92) : '/';
+            return FaNativeOrt.create({ call: (op, payload, t) => this._nrCall(op, payload, t), rawfs: window.desktopAPI.rawfs, box, sep });
+        } catch (e) { this._localSdNativeNote = 'SDXS 維持網頁版：' + String((e && e.message) || e).slice(0, 200); return null; }
+    }
+    async _localSdNativeWrap(api, model, f, ort, cache, ep, onProgress) {
+        const url = FaLocalSd.urlOf(model, f.name), entry = { id: model.id + '-' + f.role, file: f.name, bytes: f.bytes };
+        const st = await api.state(entry); if (!st.ok) throw new Error(st.reason);
+        if (!st.installed) { const r = await cache.match(url); if (!r) throw new Error('模型檔 ' + f.name + ' 不在快取裡，要先下載'); onProgress && onProgress('把 ' + f.name + ' 寫進原生資料夾（只做一次）…'); await api.installFromBlob(entry, await r.blob(), {}); }
+        onProgress && onProgress('載入 ' + f.name + '（原生 CPU）…');
+        const ns = await api.open(entry, { threads: 4, graphOpt: 'all', runTimeoutMs: 300000, loadTimeoutMs: 300000 });
+        const w = { native: true, web: null, inputNames: ns.inputNames, outputNames: ns.outputNames, backend: 'native' };
+        const webSess = async () => { if (!w.web) { const r = await cache.match(url); if (!r) throw new Error('模型檔 ' + f.name + ' 不在快取裡'); w.web = await ort.InferenceSession.create(new Uint8Array(await r.arrayBuffer()), { executionProviders: [ep], graphOptimizationLevel: 'all' }); } return w.web; };
+        w.run = async (feeds) => {
+            if (w.native) {
+                try {
+                    const f2 = {}; for (const k of Object.keys(feeds)) { const t = feeds[k]; f2[k] = new FaNativeOrt.Tensor(t.type, t.data, t.dims); }
+                    const out = await ns.run(f2), r = {}; for (const k of Object.keys(out)) r[k] = new ort.Tensor(out[k].type, out[k].data, out[k].dims);
+                    return r;
+                } catch (e) { w.native = false; w.backend = 'web'; this._localSdNativeNote = 'SDXS ' + f.role + ' 原生執行失敗，已退回網頁版：' + String((e && e.message) || e).slice(0, 200); console.log('[localsd] ' + this._localSdNativeNote); try { await ns.release(); } catch (_) { /* */ } }
+            }
+            return (await webSess()).run(feeds);
+        };
+        w.release = async () => { try { await ns.release(); } catch (_) { /* */ } if (w.web) { try { await w.web.release(); } catch (_) { /* */ } } };
+        return w;
     }
     async _localSdTokenize(prompt) {
         if (!this._localSdTok) { const imp = async (url) => { try { return await import(/* webpackIgnore: true */ url); } catch (e1) { try { return await import(/* webpackIgnore: true */ this._viaAssetProxy(url)); } catch (_) { throw e1; } } }; const L = await imp('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.5/+esm'); L.env.allowLocalModels = false; L.env.useBrowserCache = true; this._localSdTok = await L.AutoTokenizer.from_pretrained(FaLocalSd.TOKENIZER.repo); }

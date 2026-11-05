@@ -165,6 +165,7 @@
     'depth-anything-v2-small': { kind: 'depth', verified: '2026-11-05' },
     'whisper-base-encoder': { kind: 'whisper-encoder', verified: '2026-11-05' },
     'slimsam-encoder': { kind: 'sam-encoder', verified: '2026-11-05' },
+    'sdxs-512-cpu-int8': { kind: 'sdxs', verified: '2026-11-05' },   // 輸出與網頁版不位元相同（整條 PSNR 21.7～24.5 dB，int8 對浮點細節敏感），使用者看圖同意
   };
   const switchKey = (id) => 'fa.native.model.' + id;
   // getFlag(key) → 字串或 null（呼叫端傳 localStorage 讀取；讀不到就當沒設定＝開）。回傳 { native, why }

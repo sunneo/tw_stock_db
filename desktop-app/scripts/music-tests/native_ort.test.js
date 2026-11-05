@@ -114,8 +114,8 @@ async function call(op, payload, timeoutMs) {
   check('Blob 安裝：7 位元組切 3 片，大小用實際值', JSON.stringify(ib.parts) === '["00000.part","00001.part","00002.part"]' && ib.bytes === 7, ib);
   // ---- 原生註冊表（部分原生）----
   const R = N.routed, flags = {}, get = (k) => (k in flags ? flags[k] : null);
-  check('註冊表：已驗證的六個模型走原生', ['basic-pitch', 'yamnet', 'demucs-6s', 'depth-anything-v2-small', 'whisper-base-encoder', 'slimsam-encoder'].every((id) => R(id, get).native === true));
-  check('註冊表外的模型（Whisper、SDXS、SlimSAM、midigenai、Florence、未知 id）一律不走原生，並說明原因', ['whisper-base', 'sdxs-512-cpu-int8', 'slimsam-77', 'midigenai-v5-cpu', 'florence-2-base', 'nope', 'constructor', '__proto__'].every((id) => { const r = R(id, get); return r.native === false && /維持舊做法/.test(r.why); }));
+  check('註冊表：已驗證的七個模型走原生', ['basic-pitch', 'yamnet', 'demucs-6s', 'depth-anything-v2-small', 'whisper-base-encoder', 'slimsam-encoder', 'sdxs-512-cpu-int8'].every((id) => R(id, get).native === true));
+  check('註冊表外的模型（Whisper 原名、SlimSAM 原名、midigenai、Florence、未知 id）一律不走原生，並說明原因', ['whisper-base', 'sdxs-512-webgpu', 'slimsam-77', 'midigenai-v5-cpu', 'florence-2-base', 'nope', 'constructor', '__proto__'].every((id) => { const r = R(id, get); return r.native === false && /維持舊做法/.test(r.why); }));
   flags[N.switchKey('yamnet')] = '0';
   check('逐模型開關：關掉 YAMNet 只影響 YAMNet', R('yamnet', get).native === false && R('basic-pitch', get).native === true && /開關/.test(R('yamnet', get).why));
   check('讀開關丟例外或沒給讀取函式＝當沒設定（走原生）', R('basic-pitch', () => { throw new Error('x'); }).native === true && R('basic-pitch').native === true);
