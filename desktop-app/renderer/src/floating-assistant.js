@@ -68215,9 +68215,21 @@ ${fnData.code}
         if (!c) return { ok: false, error: '沒有可以執行的動作' };
         if (c.kind === 'answer' || c.kind === 'qa') return { ok: true, kind: c.kind, text: c.answer || '' };
         if (c.kind === 'cache') {
-            const outs = [];
-            for (const call of c.calls || []) { const t = this.tools[call.tool]; if (!t) { outs.push({ tool: call.tool, error: '工具已不存在' }); continue; } outs.push({ tool: call.tool, raw: await t.callback.call(this, JSON.stringify(call.args || {})) }); }
-            return { ok: true, kind: 'cache', results: outs, text: outs.map((o) => (o.error ? `⚠️ ${o.tool}：${o.error}` : this._otPretty(o.raw, plan.text))).join('\n\n') };
+            // 重放已存的工具呼叫：跟其他路徑一樣——有副作用的工具先確認、讀取類續讀（has_more）、步驟記進同一份 trail、失敗不報成功
+            const outs = []; const ctrail = []; let allOk = true;
+            for (const call of c.calls || []) {
+                const t = this.tools[call.tool]; if (!t) { outs.push({ tool: call.tool, error: '工具已不存在' }); allOk = false; continue; }
+                if (FA_OT_RISKY_TOOL.test(call.tool) && !opts.assumeYes) {
+                    const ans = await this.requestUserForm({ title: '🔌 離線訓練器要重放有副作用的工具', description: '工具：' + call.tool + '\n參數：' + JSON.stringify(call.args || {}).slice(0, 400) + '\n依據：之前學到的做法（快取）', choices: ['執行', '取消'] });
+                    if (!ans || !ans.confirmed || ans.answer !== '執行') return { ok: false, error: '使用者取消', cancelled: true };
+                }
+                let raw; try { raw = await t.callback.call(this, JSON.stringify(call.args || {})); } catch (e) { outs.push({ tool: call.tool, error: String((e && e.message) || e) }); allOk = false; continue; }
+                ctrail.push('🔁 重放 ' + call.tool);
+                if (/^(?:browser_get_page_text|fetch_web_page)$/.test(call.tool)) raw = await _faOtFollowAll(this, this.tools, call.tool, call.args || {}, raw, ctrail);
+                try { const j = JSON.parse(raw); if (j && (j.ok === false || j.error)) allOk = false; } catch (_) { /* 不是 JSON 就當文字 */ }
+                outs.push({ tool: call.tool, raw });
+            }
+            return { ok: allOk, kind: 'cache', results: outs, text: (ctrail.length ? '📋 做了這些步驟：\n' + ctrail.map((x) => '- ' + x).join('\n') + '\n\n' : '') + outs.map((o) => (o.error ? `⚠️ ${o.tool}：${o.error}` : this._otPretty(o.raw, plan.text))).join('\n\n') };
         }
         if (c.kind === 'fsm') return await this._otExecFsm(plan, c, opts);
         if (c.kind === 'steps') {
@@ -68845,6 +68857,7 @@ ${fnData.code}
         }
         let raw;
         try { raw = await t.callback.call(this, JSON.stringify(args || {})); } catch (e) { return { ok: false, result: { error: String((e && e.message) || e) } }; }
+        if (/^(?:browser_get_page_text|fetch_web_page)$/.test(name)) raw = await _faOtFollowAll(this, this.tools, name, args || {}, raw, null); // 狀態機裡讀網頁也要把 has_more 讀完
         let j = null;
         try { j = JSON.parse(raw); } catch (_) {}
         if (j && j.type === 'image' && j.dataUrl) { this._otShowImage(j); j = { ok: true, shown_image: true, title: j.meta && j.meta.title, url: j.meta && j.meta.url, width: j.meta && j.meta.width, height: j.meta && j.meta.height }; }
@@ -102606,7 +102619,11 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             const devOf = (m) => ((this._omLastDevice || {})[m.id] === 'webgpu' ? 'GPU' : 'CPU');
             const ms = Date.now() - t0; if (prog) prog.finish('完成：' + (ms / 1000).toFixed(1) + ' 秒');
             const header = '🔌 離線文字模型｜' + used.map((u) => ({ tools: '工具', 'tools+answer': '工具＋回答', answer: '回答' }[u.role]) + '：' + u.model.id + '（' + devOf(u.model) + '）').join(' → ') + (calls.filter((c) => !c.skipped).length ? '｜呼叫了 ' + calls.filter((c) => !c.skipped).map((c) => c.name).join('、') : '') + '｜' + (ms / 1000).toFixed(1) + ' 秒' + (notes.length ? '\n（' + Array.from(new Set(notes)).join('；') + '）' : '');
-            return { ok: true, text: String(result.text).trim(), header, route, calls, notes, ms };
+            // 最後退路也要核對：有參考資料或工具結果時，回答用 checkExtractive 對來源檢查（編造的數字、來源沒提的整段內容），沒過就在回答後面明說，不當成可靠答案；沒有任何來源的閒聊不檢查
+            let ansText = String(result.text).trim(); let verifyNote = null;
+            const srcs = [].concat(rag || [], (calls || []).filter((x) => !x.skipped).map((x) => String((x && x.text) || '')).filter(Boolean));
+            if (srcs.length) { const chk = FaRecipe.checkExtractive(ansText, srcs, { maxChars: 4000 }); verifyNote = chk.ok ? '核對：與參考資料／工具結果相符' : '核對沒過（' + chk.reason + '）'; if (!chk.ok) ansText += '\n\n⚠️ 離線文字模型的這段回答沒有通過與參考資料的核對（' + chk.reason + '），請當作推測，不要直接採信。'; }
+            return { ok: true, text: ansText, header, route, calls, notes, ms, verified: verifyNote };
         } catch (e) { if (prog) prog.fail(String((e && e.message) || e)); return { ok: false, error: String((e && e.message) || e), route }; }
     }
     // 工具呼叫基準測試：固定題目、假工具、確定性生成；結果存起來，決定這個模型能不能被選去呼叫工具
