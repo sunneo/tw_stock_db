@@ -1462,6 +1462,129 @@ function httpsFetchBytes(url, timeoutMs) {
 return { installRuntime, tgzEntries, sha256, sha512Integrity, localFetchBytes, httpsFetchBytes, NPM_PREFIX };
 })();
 
+// ===== 通用 ONNX 張量執行（NRT；見 DESIGN.TODO.native-all-models.md 第 8 節）=====
+// 子程序只做三件事：載入 ONNX 檔（onnxruntime-node，CPU）、讀輸入張量檔、session.run 後把輸出張量寫成檔。前後處理留在渲染程序。
+// 控制訊息走標準輸入輸出（一行一則 JSON），張量走暫存檔（原始二進位）；不開任何埠、不用任何網路通道。
+// 為什麼寫在本檔、不放進 nr-protocol.js／nr-child.js：那兩個檔是執行包的一部分，有 md5 釘住並從 GitHub 分支下載，改了會讓已安裝的執行包核對失敗；
+// 本檔會被熱更新送達，舊安裝也收得到。子程序用 `electron -e <原始碼>`（ELECTRON_RUN_AS_NODE=1）啟動，原始碼就是下面 tensorChildMain 的 toString，不另寫檔。
+const NRT = (function () {
+  // 子程序入口：必須完全自給自足（只能用 require 與全域），因為它會被轉成字串在另一個行程執行。
+  function tensorChildMain() {
+    const fs = require('fs'), path = require('path');
+    const TYPED = { float32: Float32Array, float64: Float64Array, int32: Int32Array, int64: BigInt64Array, uint8: Uint8Array };
+    const send = (o) => process.stdout.write(JSON.stringify(o) + '\n');
+    let ort = null, session = null;
+    const fail = (id, code, e) => send({ type: 'error', id, code, message: String((e && e.message) || e) });
+    async function load(m) {
+      const t0 = Date.now();
+      try { ort = ort || require(process.env.NRT_ORT_DIR); } catch (e) { return fail(m.id, 'load_failed', '載入 onnxruntime-node 失敗：' + ((e && e.message) || e)); }
+      try {
+        session = await ort.InferenceSession.create(m.model_path, { executionProviders: ['cpu'], intraOpNumThreads: m.threads || 4, graphOptimizationLevel: m.graph_opt || 'all' });
+      } catch (e) { return fail(m.id, 'load_failed', e); }
+      send({ type: 'tensor_loaded', id: m.id, input_names: session.inputNames, output_names: session.outputNames, ms: Date.now() - t0 });
+    }
+    async function run(m) {
+      if (!session) return fail(m.id, 'internal', '還沒載入模型');
+      const t0 = Date.now();
+      try {
+        const feeds = {};
+        for (const it of m.inputs) {
+          const C = TYPED[it.dtype]; if (!C) return fail(m.id, 'bad_input', '不支援的 dtype：' + it.dtype);
+          const buf = fs.readFileSync(it.path); const want = it.dims.reduce((a, b) => a * b, 1) * C.BYTES_PER_ELEMENT;
+          if (buf.length !== want) return fail(m.id, 'bad_input', '輸入 ' + it.name + ' 位元組數不符：' + buf.length + ' / ' + want);
+          feeds[it.name] = new ort.Tensor(it.dtype, new C(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)), it.dims);
+          try { fs.unlinkSync(it.path); } catch (_) { /* 讀完即刪，刪不掉不影響結果 */ }
+        }
+        const outs = await session.run(feeds);
+        fs.mkdirSync(m.out_dir, { recursive: true });
+        const outputs = [];
+        session.outputNames.forEach((name, i) => {
+          const t = outs[name], d = t.data, p = path.join(m.out_dir, 'out-' + i + '.bin');
+          fs.writeFileSync(p, Buffer.from(d.buffer, d.byteOffset, d.byteLength));
+          outputs.push({ name, dtype: t.type, dims: Array.from(t.dims), path: p, bytes: d.byteLength });
+        });
+        send({ type: 'tensor_done', id: m.id, outputs, ms: Date.now() - t0 });
+      } catch (e) { fail(m.id, /memory|alloc/i.test(String((e && e.message) || e)) ? 'oom' : 'internal', e); }
+    }
+    let buf = '', chain = Promise.resolve();
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (chunk) => {
+      buf += chunk; const parts = buf.split('\n'); buf = parts.pop();
+      for (const line of parts) {
+        if (!line.trim()) continue;
+        let m; try { m = JSON.parse(line); } catch (e) { fail('', 'internal', '不是合法的 JSON'); continue; }
+        if (m.type === 'tensor_load') chain = chain.then(() => load(m));
+        else if (m.type === 'tensor_run') chain = chain.then(() => run(m));
+        else if (m.type === 'dispose') { process.exit(0); }
+        else fail(m.id || '', 'internal', '子程序不處理的訊息：' + m.type);
+      }
+    });
+    process.stdin.on('end', () => process.exit(0));
+  }
+  const childSource = '(' + tensorChildMain.toString() + ')()';
+  const DTYPE_BYTES = { float32: 4, float64: 8, int32: 4, int64: 8, uint8: 1 };
+  const SAFE = /^[A-Za-z0-9._-]+$/;
+
+  // 主程序端：一個 host 管一個子程序（一個模型）。要求一次一個；逾時就強制結束子程序；子程序崩潰時所有等待中的要求都收到 crashed。
+  function createTensorHost(o) {
+    o = o || {};
+    const spawnFn = o.spawnFn || require('child_process').spawn, execPath = o.execPath || process.execPath, log = o.log || (() => {});
+    const idleMs = o.idleMs != null ? o.idleMs : 10 * 60 * 1000;
+    let child = null, seq = 0, chain = Promise.resolve(), idleTimer = null, loaded = null;
+    const pending = new Map(), tail = [];
+    function killChild() { const c = child; child = null; loaded = null; if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; } if (c) { c._expected = true; try { c.kill(); } catch (_) { /* 已結束 */ } } }
+    function touch() { if (idleTimer) clearTimeout(idleTimer); idleTimer = null; if (idleMs > 0 && child) { idleTimer = setTimeout(() => { if (pending.size === 0) { log('[native] 張量子程序閒置關閉'); killChild(); } }, idleMs); if (idleTimer.unref) idleTimer.unref(); } }
+    function ensure() {
+      if (child) return child;
+      const c = spawnFn(execPath, ['-e', o.source || childSource], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env: Object.assign({}, process.env, o.env || {}, { ELECTRON_RUN_AS_NODE: '1', NRT_ORT_DIR: o.ortDir || '' }) });
+      child = c; let buf = '';
+      c.stdout.setEncoding('utf8'); c.stderr.setEncoding('utf8');
+      c.stdout.on('data', (chunk) => {
+        buf += chunk; const parts = buf.split('\n'); buf = parts.pop();
+        for (const line of parts) {
+          if (!line.trim()) continue; let m; try { m = JSON.parse(line); } catch (_) { log('[native] 張量子程序輸出不合法'); continue; }
+          const job = pending.get(m.id); if (!job) continue; clearTimeout(job.timer); pending.delete(m.id);
+          if (m.type === 'error') { const e = new Error(m.message || m.code); e.code = m.code; job.reject(e); } else job.resolve(m);
+          touch();
+        }
+      });
+      c.stderr.on('data', (chunk) => { for (const l of String(chunk).split('\n')) if (l.trim()) { tail.push(l.trim()); if (tail.length > 10) tail.shift(); } });
+      c.on('error', (e) => log('[native] 張量子程序 spawn 失敗：' + ((e && e.message) || e)));
+      c.on('exit', (code, signal) => {
+        if (child === c) { child = null; loaded = null; }
+        if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+        if (c._expected) { for (const [id, j] of pending) { if (j.c !== c) continue; clearTimeout(j.timer); j.reject(Object.assign(new Error('子程序已結束'), { code: 'cancelled' })); pending.delete(id); } return; }
+        const why = '張量子程序意外結束（退出碼 ' + code + '，signal ' + (signal || '無') + '）' + (tail.length ? '；最後的日誌：' + tail.slice(-3).join(' | ') : '');
+        log('[native] ' + why);
+        for (const [id, j] of pending) { if (j.c !== c) continue; clearTimeout(j.timer); j.reject(Object.assign(new Error(why), { code: 'crashed' })); pending.delete(id); }
+      });
+      return c;
+    }
+    function send(type, fields, timeoutMs) {
+      const job = chain.then(() => new Promise((resolve, reject) => {
+        const id = 't' + (++seq), c = ensure(); if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+        const timer = timeoutMs > 0 ? setTimeout(() => { if (!pending.has(id)) return; pending.delete(id); killChild(); reject(Object.assign(new Error('逾時（' + timeoutMs + ' 毫秒），已強制結束子程序'), { code: 'timeout' })); }, timeoutMs) : null;
+        pending.set(id, { resolve, reject, timer, c });
+        try { c.stdin.write(JSON.stringify(Object.assign({ type, id }, fields)) + '\n'); } catch (e) { pending.delete(id); clearTimeout(timer); reject(Object.assign(new Error(String((e && e.message) || e)), { code: 'internal' })); }
+      }));
+      chain = job.catch(() => {});
+      return job;
+    }
+    return {
+      // 載入模型；同一個檔案已載入就直接回上次的名稱
+      async load(m) {
+        if (loaded && loaded.model_path === m.model_path) return loaded;
+        const r = await send('tensor_load', { model_path: m.model_path, threads: m.threads || 4, graph_opt: m.graph_opt || 'all' }, m.timeoutMs || 120000);
+        loaded = { model_path: m.model_path, input_names: r.input_names, output_names: r.output_names, ms: r.ms }; return loaded;
+      },
+      async run(m) { return send('tensor_run', { inputs: m.inputs, out_dir: m.out_dir }, m.timeoutMs || 120000); },
+      dispose() { if (child) { try { child.stdin.write(JSON.stringify({ type: 'dispose', id: 'd' }) + '\n'); } catch (_) { /* 已結束 */ } } killChild(); },
+      status() { return { alive: !!child, pid: child ? child.pid : null, pending: pending.size, loaded: loaded ? loaded.model_path : null }; },
+    };
+  }
+  return { tensorChildMain, childSource, createTensorHost, DTYPE_BYTES, SAFE };
+})();
+
 function startNativeMailbox(ctx) {
   const fsSync = require("fs"), pathM = require("path");
   const app = ctx.electron && ctx.electron.app;
@@ -1509,6 +1632,65 @@ function startNativeMailbox(ctx) {
       return { ok: false, code: (e && e.code) || "internal", message: String((e && e.message) || e), backend: "native" };
     }
   }
+  // ---- 通用 ONNX 張量執行（見 NRT）：模型檔放在 <userData>/native-models/<id>/<檔名>，旁邊的 .ok 檔記大小與 SHA-256（核對過才算裝好）----
+  const modelsDir = pathM.join(userData, "native-models"), nrtHosts = new Map();
+  const safeName = (s) => typeof s === "string" && NRT.SAFE.test(s) && s !== "." && s !== "..";
+  const ortDirOf = () => pathM.join(runtime.dir, "node_modules", "onnxruntime-node");
+  function onnxState(p) {
+    if (!runtime.ok) return { ok: false, code: "no_engine", message: "原生引擎沒有可用的執行包（" + (runtime.reason || "未知") + "）" };
+    if (!safeName(p.id) || !safeName(p.file)) return { ok: false, code: "bad_request", message: "模型 id 或檔名不合法" };
+    return null;
+  }
+  function onnxInstalled(p) {
+    const f = pathM.join(modelsDir, p.id, p.file);
+    try { const st = fsSync.statSync(f), ok = JSON.parse(fsSync.readFileSync(f + ".ok", "utf8")); return st.size === Number(p.bytes) && ok.bytes === st.size && (!p.sha256 || ok.sha256 === p.sha256) ? f : ""; } catch (_) { return ""; }
+  }
+  async function handleOnnx(op, p) {
+    const bad = (op === "onnx_release" || op === "onnx_run") ? (safeName(p.id) ? null : { ok: false, code: "bad_request", message: "模型 id 不合法" }) : onnxState(p);
+    if (bad) return bad;
+    try {
+      if (op === "onnx_status") { const f = onnxInstalled(p); return { ok: true, installed: !!f, path: f || "" }; }
+      if (op === "onnx_install") {
+        // 渲染程序把 IndexedDB 的分片依序寫到 <信箱>/models-in/<id>/（檔名清單在 parts）；這裡串接、核對大小與 SHA-256、改名到位
+        const crypto = require("crypto"), fsp = fsSync.promises, dir = pathM.join(modelsDir, p.id), dst = pathM.join(dir, p.file), tmp = dst + ".partial", src = pathM.join(box, "models-in", p.id);
+        if (!Array.isArray(p.parts) || !p.parts.length || !p.parts.every(safeName)) return { ok: false, code: "bad_request", message: "分片清單不合法" };
+        await fsp.mkdir(dir, { recursive: true });
+        const h = crypto.createHash("sha256"); let total = 0; const wfd = await fsp.open(tmp, "w");
+        try { for (const n of p.parts) { const b = await fsp.readFile(pathM.join(src, n)); h.update(b); total += b.length; await wfd.write(b); } } finally { await wfd.close(); }
+        const sha = h.digest("hex");
+        if (total !== Number(p.bytes) || (p.sha256 && sha !== p.sha256)) { try { fsSync.unlinkSync(tmp); } catch (_) { /* */ } return { ok: false, code: "verify_failed", message: "模型檔核對失敗：大小 " + total + " / " + p.bytes + "，SHA-256 " + sha.slice(0, 12) + "…" }; }
+        try { fsSync.rmSync(dst, { force: true }); } catch (_) { /* */ }
+        fsSync.renameSync(tmp, dst); fsSync.writeFileSync(dst + ".ok", JSON.stringify({ bytes: total, sha256: sha, at: Date.now() }));
+        try { fsSync.rmSync(src, { recursive: true, force: true }); } catch (_) { /* 分片刪不掉不影響結果 */ }
+        return { ok: true, path: dst };
+      }
+      if (op === "onnx_load") {
+        const f = onnxInstalled(p); if (!f) return { ok: false, code: "no_model", message: "原生模型檔還沒安裝或核對不符：" + p.id + "/" + p.file };
+        let host = nrtHosts.get(p.id);
+        if (!host) { host = NRT.createTensorHost({ execPath: process.execPath, ortDir: ortDirOf(), log: (s) => console.log("[main-ext] " + s) }); nrtHosts.set(p.id, host); }
+        const r = await host.load({ model_path: f, threads: p.threads || 4, graph_opt: p.graph_opt || "all" });
+        return { ok: true, input_names: r.input_names, output_names: r.output_names, ms: r.ms };
+      }
+      if (op === "onnx_run") {
+        const host = nrtHosts.get(p.id); if (!host) return { ok: false, code: "internal", message: "這個模型還沒載入" };
+        // 輸入兩種：file（渲染程序已寫好的檔，檔名在 p.dir 底下）或 b64（小張量直接放在請求裡，省掉一次寫檔與一次行程間通訊）；p.inline_out 為真且輸出不大時，輸出也直接放在回應裡（b64）
+        const okIn = (i) => i && typeof i.name === "string" && NRT.DTYPE_BYTES[i.dtype] && Array.isArray(i.dims) && (typeof i.b64 === "string" || safeName(i.file));
+        if (!Array.isArray(p.inputs) || !p.inputs.every(okIn) || (p.dir !== undefined && !safeName(p.dir))) return { ok: false, code: "bad_request", message: "張量清單不合法" };
+        let keep = false; // 回應用檔案交付（沒有 inline_out 或輸出太大）時，資料夾留給渲染程序讀完再刪
+        const tdir = p.dir ? pathM.join(box, p.dir) : pathM.join(box, "t-m" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6));
+        try {
+          fsSync.mkdirSync(tdir, { recursive: true });
+          const ins = p.inputs.map((i, k) => { let fp; if (typeof i.b64 === "string") { fp = pathM.join(tdir, "in-" + k + ".bin"); fsSync.writeFileSync(fp, Buffer.from(i.b64, "base64")); } else fp = pathM.join(tdir, i.file); return { name: i.name, dtype: i.dtype, dims: i.dims, path: fp }; });
+          const r = await host.run({ inputs: ins, out_dir: tdir, timeoutMs: p.timeout_ms || 120000 });
+          const total = r.outputs.reduce((a2, o) => a2 + o.bytes, 0);
+          if (p.inline_out && total <= 8 * 1048576) return { ok: true, ms: r.ms, outputs: r.outputs.map((o) => ({ name: o.name, dtype: o.dtype, dims: o.dims, bytes: o.bytes, b64: fsSync.readFileSync(o.path).toString("base64") })) };
+          keep = true; return { ok: true, ms: r.ms, outputs: r.outputs.map((o) => ({ name: o.name, dtype: o.dtype, dims: o.dims, file: pathM.basename(o.path), bytes: o.bytes })), dir: pathM.basename(tdir) };
+        } finally { if (!keep) { try { fsSync.rmSync(tdir, { recursive: true, force: true }); } catch (_) { /* 暫存資料夾刪不掉不影響結果 */ } } }
+      }
+      if (op === "onnx_release") { const host = nrtHosts.get(p.id); if (host) { host.dispose(); nrtHosts.delete(p.id); } return { ok: true }; }
+      return { ok: false, code: "bad_op", message: "未知的操作：" + op };
+    } catch (e) { return { ok: false, code: (e && e.code) || "internal", message: String((e && e.message) || e), backend: "native" }; }
+  }
   async function handle(op, payload, id) {
     const p = payload || {};
     if (op === "status") return { ok: true, status: host ? host.status() : idleStatus, engine: runtime.ok && modelPath ? "native" : "none", box, runtime: { ok: runtime.ok, version: runtime.version || null, reason: runtime.ok ? "" : runtime.reason, protocolOk, modelReady: !!(runtime.ok && modelPath && tokenizerPath) } };
@@ -1555,11 +1737,12 @@ function startNativeMailbox(ctx) {
     if (op === "remove") {
       // 移除執行包：先關掉子程序，再刪除 userData/native-runtime/<版本>/。不會動安裝目錄。
       if (installing) return { ok: false, code: "busy", message: "安裝中，不能移除" };
-      if (host) { try { host.dispose("移除執行包"); } catch (_) { /* */ } host = null; }
+      if (host) { try { host.dispose("移除執行包"); } catch (_) { /* */ } host = null; } for (const h of nrtHosts.values()) { try { h.dispose(); } catch (_) { /* */ } } nrtHosts.clear();
       try { fsSync.rmSync(nativeRuntimeDir(userData), { recursive: true, force: true }); } catch (e) { return { ok: false, code: "remove_failed", message: String((e && e.message) || e) }; }
       runtime = checkNativeRuntimeDir(nativeRuntimeDir(userData));
       return { ok: true, runtime: { ok: runtime.ok, version: null, reason: runtime.reason || "" } };
     }
+    if (op.indexOf("onnx_") === 0) return handleOnnx(op, p);
     if (op === "run") {
       if (!runtime.ok) return { ok: false, code: "no_engine", message: "原生引擎沒有可用的執行包（" + runtime.reason + "）" };
       if (!modelPath || !tokenizerPath) return { ok: false, code: "no_model", message: "原生引擎沒有模型檔路徑（環境變數 FA_NATIVE_MODEL_PATH／FA_NATIVE_TOKENIZER_PATH 未設定）" };
@@ -1577,6 +1760,8 @@ function startNativeMailbox(ctx) {
       const id = n.slice(4, -5), reqPath = pathM.join(box, n);
       let req = null;
       try { req = JSON.parse(fsSync.readFileSync(reqPath, "utf8")); } catch (_) { req = null; }
+      // 寫到一半的請求檔（大請求不是一次寫完，輪詢又很密）：解析失敗且檔案還很新就先留著，下一輪再讀；超過 10 秒還是壞的才丟掉
+      if (!req) { let age = 1e9; try { age = Date.now() - fsSync.statSync(reqPath).mtimeMs; } catch (_) { /* 已被移除 */ } if (age < 10000) continue; }
       try { fsSync.unlinkSync(reqPath); } catch (_) { /* 已移除 */ }
       if (!req) continue;
       Promise.resolve().then(() => handle(String(req.op || ""), req.payload, id))
@@ -1589,11 +1774,11 @@ function startNativeMailbox(ctx) {
           } catch (_) { /* 寫回失敗：渲染程序會逾時重試 */ }
         });
     }
-  }, 200);
+  }, 10); // 每 10 毫秒看一次信箱：張量呼叫（每窗一次）靠它降低延遲；資料夾很小，讀一次幾乎沒成本
   if (timer.unref) timer.unref();
   // 就緒訊號：輪詢已經開始，渲染程序看到 ready.json 才送請求（避免第一次請求等到超時）
   try { fsSync.writeFileSync(pathM.join(box, "ready.json"), JSON.stringify({ at: Date.now(), pid: process.pid, v: 1 })); } catch (_) { /* 寫不了就由渲染程序超時重試 */ }
   return { ok: true, box };
 }
 
-module.exports = { register, _NRI: NRI };
+module.exports = { register, _NRI: NRI, _NRT: NRT };

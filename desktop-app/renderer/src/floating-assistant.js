@@ -36179,6 +36179,114 @@ const holder = {};
 return holder.FaAudioRuntime;
 })();
 /* MUSICRT-END */
+/* MUSICNATIVE-BEGIN */
+const FaNativeOrt = (function () {
+const holder = {};
+(function (module, self) {
+// 原生 ONNX 工作階段（桌面版）：把「onnxruntime-node 子程序（main-ext.js 的 NRT）」包成跟 onnxruntime-web 的 InferenceSession 同介面的物件
+// （inputNames、outputNames、run(feeds)→{名稱:{data,dims,type}}），這樣 audio_runtime.js 的 makeTranscriber／makeClassifier／makeSeparator 不用改。
+// 控制訊息與張量都走主程序的信箱（見 floating-assistant.js 的 _nrCall）：張量寫成 <信箱>/t-<編號>/ 下的原始二進位檔，用完就刪。
+// 純邏輯（UMD）：依賴全部由呼叫端傳入（call、rawfs、box、sep），所以能用假的橋接做單元測試。
+// 失敗不靜默：run 失敗時 withFallback 會切到呼叫端給的網頁版（WASM）工作階段並回報原因（backend、lastError），結果格式不變。
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaNativeOrt = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  const TYPED = { float32: Float32Array, float64: Float64Array, int32: Int32Array, int64: BigInt64Array, uint8: Uint8Array };
+  class Tensor { constructor(type, data, dims) { this.type = type; this.data = data; this.dims = dims; } }
+  function toB64(u8) { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); }
+  function fromB64(b64) { const bin = atob(b64), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; }
+  const pad = (i) => String(i).padStart(5, '0');
+  const msgOf = (e) => String((e && e.message) || e);
+
+  // deps：{ call(op, payload, timeoutMs) → {ok, ...}, rawfs（readFile(path,'base64')、writeFile(path,{base64})、remove(path,recursive)）, box（信箱資料夾）, sep（路徑分隔字元）, uid() → 字串 }
+  function create(deps) {
+    const { call, rawfs, box, sep } = deps; const uid = deps.uid || (() => Date.now().toString(36) + Math.random().toString(36).slice(2, 6));
+    // 原生能不能用（執行包有沒有、模型檔裝好沒）。entry：{ id, file, bytes, sha256 }。回傳 { ok, installed, reason }
+    async function state(entry) {
+      const r = await call('onnx_status', { id: entry.id, file: entry.file, bytes: entry.bytes, sha256: entry.sha256 }, 8000);
+      if (!r || !r.ok) return { ok: false, installed: false, reason: '原生執行器：' + ((r && (r.message || r.code)) || '沒有回應') };
+      return { ok: true, installed: !!r.installed, reason: '' };
+    }
+    // 把 IndexedDB 裡已下載好的分片（FaAudioModels 的 model:<id>:<sha8>:<i>）依序寫到信箱，請主程序串接、核對大小與 SHA-256、放進 native-models。一次只讀一片，不把整個檔放進記憶體。
+    async function installFromStore(entry, o) {
+      const chunk = o.chunk, n = Math.ceil(entry.bytes / chunk), dir = box + sep + 'models-in' + sep + entry.id, parts = [];
+      for (let i = 0; i < n; i++) {
+        const want = Math.min(entry.bytes, (i + 1) * chunk) - i * chunk, c = await o.store.get(o.keyOf(i));
+        if (!c || c.length !== want) throw new Error('瀏覽器裡的模型分片 ' + (i + 1) + '/' + n + ' 不完整（' + (c ? c.length : 0) + ' / ' + want + ' 位元組）');
+        await rawfs.writeFile(dir + sep + pad(i) + '.part', { base64: toB64(c) }); parts.push(pad(i) + '.part');
+        if (o.onProgress) o.onProgress({ done: Math.min(entry.bytes, (i + 1) * chunk), total: entry.bytes });
+      }
+      const r = await call('onnx_install', { id: entry.id, file: entry.file, bytes: entry.bytes, sha256: entry.sha256, parts }, 600000);
+      if (!r || !r.ok) throw new Error('原生模型安裝失敗：' + ((r && (r.message || r.code)) || '沒有回應'));
+      return r;
+    }
+    // 載入並回傳 session。opts：{ threads, graphOpt, timeoutMs }
+    async function open(entry, opts) {
+      opts = opts || {};
+      const L = await call('onnx_load', { id: entry.id, file: entry.file, bytes: entry.bytes, sha256: entry.sha256, threads: opts.threads || 4, graph_opt: opts.graphOpt || 'all' }, opts.loadTimeoutMs || 180000);
+      if (!L || !L.ok) { const e = new Error((L && (L.message || L.code)) || '沒有回應'); e.code = (L && L.code) || 'internal'; throw e; }
+      const session = {
+        inputNames: L.input_names, outputNames: L.output_names, backend: 'native', loadMs: L.ms,
+        async run(feeds) {
+          // 小張量（輸入合計不到 6 MB）直接放在請求裡、輸出也直接放在回應裡（少幾次檔案讀寫與行程間通訊，每窗一次呼叫的小模型才不會被固定成本吃掉）；大張量才寫成檔
+          const tStart = Date.now(), names = Object.keys(feeds); let bytes = 0;
+          for (const name of names) { const t = feeds[name], C = TYPED[t.type]; if (!C || !(t.data instanceof C)) throw new Error('輸入 ' + name + ' 的型別不支援或與 dtype 不符：' + t.type); bytes += t.data.byteLength; }
+          const small = bytes <= 6 * 1048576, dirName = small ? '' : 't-' + uid(), dir = box + sep + dirName, inputs = [], timeout = opts.runTimeoutMs || 120000;
+          try {
+            let i = 0;
+            for (const name of names) {
+              const t = feeds[name], u8 = new Uint8Array(t.data.buffer, t.data.byteOffset, t.data.byteLength);
+              if (small) inputs.push({ name, dtype: t.type, dims: Array.from(t.dims), b64: toB64(u8) });
+              else { const file = 'in-' + (i++) + '.bin'; await rawfs.writeFile(dir + sep + file, { base64: toB64(u8) }); inputs.push({ name, dtype: t.type, dims: Array.from(t.dims), file }); }
+            }
+            const payload = { id: entry.id, inputs, timeout_ms: timeout }; if (small) payload.inline_out = true; else payload.dir = dirName;
+            const tCall = Date.now(); const r = await call('onnx_run', payload, timeout + 15000);
+            session.lastRun = { childMs: r && r.ms, callMs: Date.now() - tCall, prepMs: tCall - tStart };
+            if (!r || !r.ok) { const e = new Error((r && (r.message || r.code)) || '沒有回應'); e.code = (r && r.code) || 'internal'; throw e; }
+            const out = {};
+            for (const o of r.outputs) {
+              const C = TYPED[o.dtype]; if (!C) throw new Error('輸出 ' + o.name + ' 的型別不支援：' + o.dtype);
+              let b64 = o.b64; if (b64 === undefined) { const rd = await rawfs.readFile((r.dir ? box + sep + r.dir : dir) + sep + o.file, 'base64'); b64 = rd.base64 !== undefined ? rd.base64 : rd; }
+              const u = fromB64(b64);
+              if (u.length !== o.bytes) throw new Error('輸出 ' + o.name + ' 位元組數不符：' + u.length + ' / ' + o.bytes);
+              out[o.name] = new Tensor(o.dtype, new C(u.buffer.slice(u.byteOffset, u.byteOffset + u.byteLength)), o.dims);
+            }
+            return out;
+          } finally { if (!small) { try { await rawfs.remove(dir, true); } catch (_) { /* 暫存資料夾刪不掉不影響結果 */ } } }
+        },
+        async release() { try { await call('onnx_release', { id: entry.id }, 8000); } catch (_) { /* 已結束 */ } },
+      };
+      return session;
+    }
+    return { state, installFromStore, open };
+  }
+
+  // 原生優先、失敗退回：native 是 open() 回傳的 session；fallbackFactory() → Promise<{ session, ort }>（網頁版 WASM，晚點才建）。
+  // run 第一次失敗就記下原因、永久切到退路（不在兩者之間來回），結果格式（{名稱:{data,dims}}）不變。onEvent({ type:'fallback', reason })。
+  function withFallback(native, fallbackFactory, onEvent) {
+    let fb = null, mode = 'native', lastError = '';
+    const s = {
+      inputNames: native.inputNames, outputNames: native.outputNames,
+      get backend() { return mode === 'native' ? 'native' : 'wasm'; }, get lastError() { return lastError; }, get lastRun() { return native.lastRun; },
+      async run(feeds) {
+        if (mode === 'native') {
+          try { return await native.run(feeds); }
+          catch (e) { lastError = msgOf(e); mode = 'fallback'; if (onEvent) onEvent({ type: 'fallback', reason: lastError }); try { await native.release(); } catch (_) { /* */ } }
+        }
+        if (!fb) { try { fb = await fallbackFactory(); } catch (e) { throw new Error('原生失敗（' + lastError + '），退回網頁版也失敗：' + msgOf(e)); } }
+        const f2 = {}; for (const k of Object.keys(feeds)) { const t = feeds[k]; f2[k] = new fb.ort.Tensor(t.type, t.data, t.dims); }
+        return fb.session.run(f2);
+      },
+      async release() { try { await native.release(); } catch (_) { /* */ } if (fb && fb.session && fb.session.release) { try { await fb.session.release(); } catch (_) { /* */ } } },
+    };
+    return s;
+  }
+  return { create, withFallback, Tensor, toB64, fromB64, TYPED };
+});
+
+}).call(null, undefined, holder);
+return holder.FaNativeOrt;
+})();
+/* MUSICNATIVE-END */
 /* MUSICUI-BEGIN */
 const FaMidiUI = (function () {
 const holder = {};
@@ -77429,8 +77537,8 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             const store = FaAudioModels.idbStore(), REG = FaAudioModels.REGISTRY;
             const dl = (id, lo, hi) => FaAudioModels.fetchModel(id, { fetchFn: (u, h) => fetch(u, { headers: h }), store, sha256: FaAudioModels.webSha256, sleep: (ms) => new Promise((r) => setTimeout(r, ms)), onProgress: (p) => say(lo + (hi - lo) * p.done / p.total, '【下載模型】' + REG[id].label + ' ' + Math.round(p.done / 1048576) + '/' + Math.round(p.total / 1048576) + ' MB' + (p.resumed ? '(' + p.resumed + ' 片來自本機快取)' : '')) });
             const o = { store, title: String(a.title || rec.filename || '從音訊轉出').replace(/\.[a-z0-9]+$/i, ''), onProgress: (p) => say(20 + 70 * p.done / Math.max(1, p.total), '【' + p.chapter + '】' + p.message) };
-            let ort = null; try { ort = await FaAudioRuntime.loadOrt(); } catch (e) { notes.push('無法載入 onnxruntime-web(' + String((e && e.message) || e) + '),全部改用規則做法'); }
-            const load = async (id, lo, hi, make, eps, opt, what) => { if (!ort) return null; try { const bytes = await dl(id, lo, hi); say(hi, '【載入模型】' + REG[id].label); const s = await FaAudioRuntime.createSession(ort, bytes, eps || ['wasm'], { opt }); return make(ort, s.session); } catch (e) { notes.push(REG[id].label + ' 沒能用(' + String((e && e.message) || e).slice(0, 200) + '):' + what); return null; } };
+            let ort = null, ortErr = '', ortNoted = false; try { ort = await FaAudioRuntime.loadOrt(); } catch (e) { ortErr = String((e && e.message) || e); }
+            const load = async (id, lo, hi, make, eps, opt, what) => { const nat = await this._nrAudioSession(id, { REG, store, dl: () => dl(id, lo, hi), say: (t) => say(hi, t), notes, ort, opt }); if (nat) { try { return make(nat.ort, nat.session); } catch (e) { notes.push(REG[id].label + ' 沒能用(' + String((e && e.message) || e).slice(0, 200) + '):' + what); return null; } } if (!ort) { if (!ortNoted) { ortNoted = true; notes.push('無法載入 onnxruntime-web(' + ortErr + '),全部改用規則做法'); } return null; } try { const bytes = await dl(id, lo, hi); say(hi, '【載入模型】' + REG[id].label); const s = await FaAudioRuntime.createSession(ort, bytes, eps || ['wasm'], { opt }); return make(ort, s.session); } catch (e) { notes.push(REG[id].label + ' 沒能用(' + String((e && e.message) || e).slice(0, 200) + '):' + what); return null; } };
             o.transcriber = await load('basic-pitch', 4, 8, FaAudioRuntime.makeTranscriber, ['wasm'], undefined, '改用單音音高追蹤(同時只能抓一個音)');
             o.classifier = await load('yamnet', 8, 12, FaAudioRuntime.makeClassifier, ['wasm'], undefined, '音色改用音域規則挑');
             if (a.stems) o.separator = await load('demucs-6s', 12, 20, FaAudioRuntime.makeSeparator, ['wasm'], FaAudioRuntime.DEMUCS_OPT, '不分軌,整個混音當一軌'); if (o.separator) o.stems = FaAudioRuntime.STEMS;
@@ -77454,8 +77562,8 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             const store = FaAudioModels.idbStore(), REG = FaAudioModels.REGISTRY;
             const dl = (id, lo, hi) => FaAudioModels.fetchModel(id, { fetchFn: (u, h) => fetch(u, { headers: h }), store, sha256: FaAudioModels.webSha256, sleep: (ms) => new Promise((r) => setTimeout(r, ms)), onProgress: (p) => say(lo + (hi - lo) * p.done / p.total, '【下載模型】' + REG[id].label + ' ' + Math.round(p.done / 1048576) + '/' + Math.round(p.total / 1048576) + ' MB' + (p.resumed ? '(' + p.resumed + ' 片來自本機快取)' : '')) });
             const o = { store, title: String(a.title || rec.filename || '從音訊轉出').replace(/\.[a-z0-9]+$/i, ''), onProgress: (p) => say(20 + 70 * p.done / Math.max(1, p.total), '【' + p.chapter + '】' + p.message) };
-            let ort = null; try { ort = await FaAudioRuntime.loadOrt(); } catch (e) { notes.push('無法載入 onnxruntime-web(' + String((e && e.message) || e) + '),全部改用規則做法'); }
-            const load = async (id, lo, hi, make, eps, opt, what) => { if (!ort) return null; try { const bytes = await dl(id, lo, hi); say(hi, '【載入模型】' + REG[id].label); const s = await FaAudioRuntime.createSession(ort, bytes, eps || ['wasm'], { opt }); return make(ort, s.session); } catch (e) { notes.push(REG[id].label + ' 沒能用(' + String((e && e.message) || e).slice(0, 200) + '):' + what); return null; } };
+            let ort = null, ortErr = '', ortNoted = false; try { ort = await FaAudioRuntime.loadOrt(); } catch (e) { ortErr = String((e && e.message) || e); }
+            const load = async (id, lo, hi, make, eps, opt, what) => { const nat = await this._nrAudioSession(id, { REG, store, dl: () => dl(id, lo, hi), say: (t) => say(hi, t), notes, ort, opt }); if (nat) { try { return make(nat.ort, nat.session); } catch (e) { notes.push(REG[id].label + ' 沒能用(' + String((e && e.message) || e).slice(0, 200) + '):' + what); return null; } } if (!ort) { if (!ortNoted) { ortNoted = true; notes.push('無法載入 onnxruntime-web(' + ortErr + '),全部改用規則做法'); } return null; } try { const bytes = await dl(id, lo, hi); say(hi, '【載入模型】' + REG[id].label); const s = await FaAudioRuntime.createSession(ort, bytes, eps || ['wasm'], { opt }); return make(ort, s.session); } catch (e) { notes.push(REG[id].label + ' 沒能用(' + String((e && e.message) || e).slice(0, 200) + '):' + what); return null; } };
             o.transcriber = await load('basic-pitch', 4, 8, FaAudioRuntime.makeTranscriber, ['wasm'], undefined, '改用單音音高追蹤(同時只能抓一個音)');
             o.classifier = await load('yamnet', 8, 12, FaAudioRuntime.makeClassifier, ['wasm'], undefined, '音色改用音域規則挑');
             if (a.stems) o.separator = await load('demucs-6s', 12, 20, FaAudioRuntime.makeSeparator, ['wasm'], FaAudioRuntime.DEMUCS_OPT, '不分軌,整個混音當一軌'); if (o.separator) o.stems = FaAudioRuntime.STEMS;
@@ -102833,6 +102941,35 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         }
         state.seen = Math.max(state.seen, lines.length);
     }
+    // 音訊模型（Basic Pitch／YAMNet／Demucs）的原生路徑：只有使用者選 CPU（或 auto 且沒有 WebGPU）、已啟用原生執行包時才試；選 WebGPU 完全不碰原生（連狀態都不問）。
+    // 回傳 { session, ort }（session 與 onnxruntime-web 的 InferenceSession 同介面，ort 只提供 Tensor）；不可用或失敗回傳 null，並把真實原因寫進 c.notes，由呼叫端走原本的 WASM 路徑。
+    // 原生跑到一半失敗：自動退回網頁版 WASM（FaNativeOrt.withFallback），原因寫進 c.notes，結果格式不變。
+    async _nrAudioSession(id, c) {
+        const label = c.REG[id].label;
+        try {
+            if (typeof FaNativeOrt === 'undefined' || !this._nrOptIn() || !this._nrAvailable()) return null;
+            const gpu = await this._omGpuInfo();
+            if (!FaVlm.wantsNativeBackend(this._omDevicePrefOf({ id: 'audio-' + id }), gpu.available)) return null;
+            const box = await this._nrBox(); if (!box) return null;
+            const sep = box.indexOf(String.fromCharCode(92)) >= 0 ? String.fromCharCode(92) : '/', reg = c.REG[id];
+            const entry = { id, file: String(reg.url).split('/').pop(), bytes: reg.bytes, sha256: reg.sha256 };
+            const api = FaNativeOrt.create({ call: (op, payload, t) => this._nrCall(op, payload, t), rawfs: window.desktopAPI.rawfs, box, sep });
+            const st = await api.state(entry);
+            if (!st.ok) { c.notes.push(label + ' 原生不可用（' + st.reason + '），改用網頁版 WASM'); return null; }
+            if (!st.installed) {
+                const have = await FaAudioModels.status(id, c.store); if (!have.complete) await c.dl();
+                c.say('【安裝原生模型】' + label);
+                await api.installFromStore(entry, { store: c.store, chunk: FaAudioModels.CHUNK, keyOf: (i) => 'model:' + id + ':' + reg.sha256.slice(0, 8) + ':' + i });
+            }
+            const nat = await api.open(entry, { threads: 4, graphOpt: id === 'demucs-6s' ? FaAudioRuntime.DEMUCS_OPT : 'all', runTimeoutMs: 120000 });
+            const hybrid = FaNativeOrt.withFallback(nat, async () => {
+                if (!c.ort) throw new Error('網頁版 onnxruntime 也沒載入');
+                const bytes = await c.dl(); const s = await FaAudioRuntime.createSession(c.ort, bytes, ['wasm'], { opt: c.opt }); return { session: s.session, ort: c.ort };
+            }, (ev) => { c.notes.push(label + ' 原生執行失敗，已退回網頁版 WASM：' + String(ev.reason).slice(0, 200)); console.log('[audio] ' + label + ' 原生失敗，退回 WASM：' + ev.reason); });
+            c.say('【後端】' + label + '：原生 CPU（onnxruntime-node 1.22.0，載入 ' + nat.loadMs + ' 毫秒）'); console.log('[audio] ' + label + ' 後端：原生');
+            return { session: hybrid, ort: { Tensor: FaNativeOrt.Tensor } };
+        } catch (e) { c.notes.push(label + ' 原生路徑失敗（' + String((e && e.message) || e).slice(0, 200) + '），改用網頁版 WASM'); return null; }
+    }
     async _nrCallOnce(op, payload, timeoutMs, box, sep, onToken) {
         const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
         await window.desktopAPI.rawfs.writeFile(box + sep + 'req-' + id + '.json', { text: JSON.stringify({ op, payload: payload || {} }) });
@@ -102842,6 +102979,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         while (Date.now() - t0 < limit) {
             if (onToken) await this._nrPollTokens(tokPath, tokState, onToken);
             try {
+                // 張量呼叫輪詢很密（5 毫秒），用列目錄確認回應檔出現了再讀；對不存在的檔案 readFile 每次都會讓主程序記一筆錯誤日誌，太貴
+                if (op.indexOf('onnx_') === 0) { const ls = await window.desktopAPI.rawfs.readdir(box); if (!ls.some((e) => e.name === 'resp-' + id + '.json')) throw new Error('尚無回應'); }
                 const r = await window.desktopAPI.rawfs.readFile(respPath, 'utf8');
                 const text = r && typeof r === 'object' ? r.text : r;
                 if (text) {
@@ -102851,7 +102990,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     return JSON.parse(text);
                 }
             } catch (_) { /* 還沒有回應 */ }
-            await new Promise((res) => setTimeout(res, 150));
+            await new Promise((res) => setTimeout(res, op.indexOf('onnx_') === 0 ? 5 : 150));
         }
         return { ok: false, code: 'mailbox_timeout', message: '主程序沒有在 ' + limit + ' 毫秒內回應（舊版安裝或主程序尚未載入原生執行器）' };
     }
