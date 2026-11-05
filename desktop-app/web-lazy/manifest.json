@@ -943,8 +943,8 @@
    "names": [
     "FaMidi"
    ],
-   "size": 8972,
-   "md5": "da355ab422f9fb18ce78367524ba6418"
+   "size": 11655,
+   "md5": "52583ce66bdb76987fd54d724bb1e14c"
   },
   "musicplay": {
    "file": "chunks/musicplay.js",
@@ -1156,7 +1156,7 @@
   }
  },
  "core": {
-  "size": 5565769,
-  "md5": "a1202185ab4531bfde8666a0d92c919f"
+  "size": 5572069,
+  "md5": "57482abb8182dc9d093063cb70e4ad8e"
  }
 }

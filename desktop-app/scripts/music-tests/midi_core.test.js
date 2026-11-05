@@ -60,5 +60,19 @@ check('validate: out-of-range values are clamped, nulls dropped, the first tempo
 check('validate: garbage in gives an empty valid song, never an exception', M.validate(null).tracks.length === 0 && M.validate('x').tempos.length === 1);
 check('summary: mentions track count, drum label and note range', (() => { const t = M.summary(s); return /3 軌/.test(t) && /鼓組/.test(t) && /C4–G4/.test(t); })(), M.summary(s));
 check('noteName: middle C is C4', M.noteName(60) === 'C4' && M.noteName(21) === 'A0');
+// 多層 JSONL：攤平與還原
+{
+  let big = M.emptySong(); big.title = '大曲'; big.timesig = { n: 3, d: 4 }; big = M.addTrack(big, '旋律', 0); big = M.addTrack(big, '鼓', 0, true);
+  for (let i = 0; i < 400; i++) big = M.addNote(big, 0, { t: i * 240, d: 200, n: 48 + (i * 7) % 30, v: 60 + i % 50 });
+  for (let i = 0; i < 100; i++) big = M.addNote(big, 1, { t: i * 480, d: 100, n: 36 + i % 3, v: 100 });
+  const full = M.toJsonl(big); const back = M.fromJsonl(full.lines);
+  check('jsonl: full round trip equals the song', back.ok && JSON.stringify(back.song) === JSON.stringify(big) || (back.ok && require('assert').deepStrictEqual(back.song, big) === undefined), back.missing);
+  check('jsonl: levels give layers (song+tracks < +bars < +notes)', M.toJsonl(big, { levels: 0 }).count === 3 && M.toJsonl(big, { levels: 1 }).count > 3 && M.toJsonl(big, { levels: 1 }).count < full.count);
+  const top = M.fromJsonl(M.toJsonl(big, { levels: 1 }).lines); check('jsonl: top levels restore with missing notes reported', top.ok && top.missing.length === 2 && top.missing[0].have === 0 && top.missing[0].declared === 400, top.missing);
+  const l = M.toJsonl(big, { levels: 1 }).lines.concat(M.expandNotes(big, 0).lines, M.expandNotes(big, 1).lines); const b2 = M.fromJsonl(l);
+  check('jsonl: drill down per track restores everything', b2.ok && b2.missing.length === 0 && b2.song.tracks[0].notes.length === 400 && b2.song.tracks[1].notes[99].t === 99 * 480);
+  const eb = M.expandNotes(big, 0, 2); check('jsonl: expand one bar gives its notes with bar/beat/name', eb.lines.length === 6 && JSON.parse(eb.lines[0]).bar === 2 && JSON.parse(eb.lines[0]).beat === 1 && JSON.parse(eb.lines[0]).name.length >= 2, eb.lines);
+  check('jsonl: bad track and garbage handled', M.expandNotes(big, 9).ok === false && M.fromJsonl(['x']).ok === false);
+}
 
 console.log(ok + ' passed, ' + bad.length + ' failed'); bad.forEach((b) => console.log('FAIL: ' + b)); process.exit(bad.length ? 1 : 0);

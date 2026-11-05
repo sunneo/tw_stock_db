@@ -24,4 +24,9 @@ check('index parents', si.length === 3 && si[0].parent === null && si[1].parent 
 check('index doc offsets cover reference doc', md.slice(si[1].doc.offset, si[1].doc.offset + si[1].doc.chars).startsWith('## 第一章') && si[2].doc.offset + si[2].doc.chars === md.length, si);
 check('index blocks ranges', si[1].blocks[0] === 2 && si[1].blocks[1] === 8, si[1]);
 check('index no headings', W.sectionIndex(W.toBlocks('只有一段'), 4)[0].ref === 's0');
+const plain = Array.from({ length: 300 }, (_, i) => '這是第' + i + '行網頁文字內容，沒有任何標題標記。').join('\n\n');
+const pb = W.toBlocks(plain); const ps = W.sectionIndex(pb, plain.length, { chunkChars: 800 });
+check('headingless text is chunked', ps.length > 5 && ps[0].blocks[0] === 0 && ps[ps.length - 1].blocks[1] === 299 && ps.every((x, i) => i === 0 || x.blocks[0] === ps[i - 1].blocks[1] + 1), ps.length);
+check('chunk doc offsets cover text', ps[0].doc.offset === 0 && ps[1].doc.offset > 0 && plain.slice(ps[1].doc.offset).startsWith('這是第' + ps[1].blocks[0] + '行') && ps.reduce((a, x) => a + x.doc.chars, 0) === plain.length, ps.slice(0, 2));
+const si2 = W.sectionIndex(W.toBlocks(md), md.length); check('block starts line up with markdown', W.toBlocks(md).starts[2] === md.indexOf('## 第一章'));
 console.log(bad.length ? 'FAIL\n' + bad.join('\n') : 'web_blocks: ' + ok + ' passed'); process.exit(bad.length ? 1 : 0);

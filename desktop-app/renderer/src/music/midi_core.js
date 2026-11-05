@@ -213,5 +213,52 @@
   const NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
   function noteName(n) { return NAMES[n % 12] + (Math.floor(n / 12) - 1); }
 
-  return { PPQ, LIM, emptySong, emptyTrack, parse, write, validate, ticksToSec, secToTicks, endTick, durationSec, noteCount, transpose, quantize, shiftTime, setTempo, scaleTempo, scaleVelocity, addTrack, removeTrack, setProgram, mergeTracks, splitByPitch, addNote, removeNotes, summary, noteName };
+
+  // ───────────────────────── 攤平成多層 JSONL（任何窗口大小的模型都讀得完、寫得完；跟 song 物件可以互相還原）
+  // 第 0 層：{k:'song',…} 一行（標題、ppq、拍號、速度變化、軌數、小節數、音符數）＋每軌一行 {k:'track',track,name,channel,program,drum,volume,pan,notes,bars}
+  // 第 1 層：每軌每個有音符的小節一行 {k:'bar',track,bar,t0,notes,lo,hi}（音域與密度，看全貌用）
+  // 第 2 層：音符，一個音符一行 {k:'note',track,i,bar,beat,t,d,n,v,name}；t／d／n／v 是原值（還原只看這四個與 track、i），bar／beat／name 是方便讀的推導欄位
+  // levels：0＝只有第 0 層；1＝加小節；2（預設）＝全部。expand 只取某軌（某小節）的音符行。fromJsonl 還原並回報 missing（宣告的音符數比拿到的多的軌）。
+  function ticksPerBar(song) { const ts = song.timesig || { n: 4, d: 4 }; return Math.max(1, Math.round((song.ppq || PPQ) * 4 * (ts.n || 4) / (ts.d || 4))); }
+  function noteRow(song, ti, i, nt, tpb) { const bar = Math.floor(nt.t / tpb); return { k: 'note', track: ti, i: i, bar: bar + 1, beat: Math.round((nt.t - bar * tpb) / (song.ppq || PPQ) * 1000) / 1000 + 1, t: nt.t, d: nt.d, n: nt.n, v: nt.v, name: noteName(nt.n) }; }
+  function toJsonl(song, o) {
+    o = o || {}; const lv = o.levels == null ? 2 : o.levels; const tpb = ticksPerBar(song); const out = [];
+    const endBar = Math.floor(Math.max(0, endTick(song) - 1) / tpb) + 1;
+    out.push(JSON.stringify({ k: 'song', title: song.title, ppq: song.ppq, timesig: song.timesig, tempos: song.tempos, tracks: song.tracks.length, bars: endBar, notes: noteCount(song), ticks_per_bar: tpb }));
+    song.tracks.forEach(function (tr, ti) {
+      const bars = {}; tr.notes.forEach(function (nt) { const b = Math.floor(nt.t / tpb) + 1; bars[b] = 1; });
+      const bl = Object.keys(bars).map(Number).sort(function (a, b) { return a - b; });
+      const row = { k: 'track', track: ti, notes: tr.notes.length, bars: bl.length ? [bl[0], bl[bl.length - 1]] : null }; Object.keys(tr).forEach(function (key) { if (key !== 'notes') row[key] = tr[key]; });
+      out.push(JSON.stringify(row));
+    });
+    if (lv >= 1) song.tracks.forEach(function (tr, ti) {
+      const g = {}; tr.notes.forEach(function (nt) { const b = Math.floor(nt.t / tpb) + 1; const x = g[b] || (g[b] = { k: 'bar', track: ti, bar: b, t0: (b - 1) * tpb, notes: 0, lo: 127, hi: 0 }); x.notes++; if (nt.n < x.lo) x.lo = nt.n; if (nt.n > x.hi) x.hi = nt.n; });
+      Object.keys(g).map(Number).sort(function (a, b) { return a - b; }).forEach(function (b) { out.push(JSON.stringify(g[b])); });
+    });
+    if (lv >= 2) song.tracks.forEach(function (tr, ti) { tr.notes.forEach(function (nt, i) { out.push(JSON.stringify(noteRow(song, ti, i, nt, tpb))); }); });
+    return { lines: out, count: out.length };
+  }
+  // 往下鑽：只取某軌（可再限定某小節）的音符行
+  function expandNotes(song, track, bar) {
+    const tr = song.tracks[track]; if (!tr) return { ok: false, error: '沒有第 ' + track + ' 軌（0 起算，共 ' + song.tracks.length + ' 軌）' };
+    const tpb = ticksPerBar(song), out = [];
+    tr.notes.forEach(function (nt, i) { if (bar == null || Math.floor(nt.t / tpb) + 1 === Number(bar)) out.push(JSON.stringify(noteRow(song, track, i, nt, tpb))); });
+    return { ok: true, lines: out };
+  }
+  function fromJsonl(lines) {
+    var song = null, tracks = [], got = {}, errors = [];
+    lines.forEach(function (l, idx) {
+      var r; try { r = typeof l === 'string' ? JSON.parse(l) : l; } catch (e) { errors.push({ line: idx + 1, error: '不是 JSON' }); return; }
+      if (!r || typeof r !== 'object') return;
+      if (r.k === 'song') song = { ppq: r.ppq, tempos: r.tempos, timesig: r.timesig, title: r.title, tracks: [] };
+      else if (r.k === 'track') { var t = {}; Object.keys(r).forEach(function (key) { if (key !== 'k' && key !== 'track' && key !== 'bars') t[key] = r[key]; }); t.declared = r.notes; delete t.notes; t.notes = []; tracks[r.track] = t; }
+      else if (r.k === 'note') { var tr = tracks[r.track]; if (!tr) { errors.push({ line: idx + 1, error: '音符屬於還沒宣告的軌 ' + r.track }); return; } (got[r.track] = got[r.track] || {})[r.i] = { t: r.t, d: r.d, n: r.n, v: r.v }; }
+    });
+    if (!song) return { ok: false, error: '缺少 song 行' };
+    var missing = [];
+    tracks.forEach(function (tr, ti) { if (!tr) return; var g = got[ti] || {}; var keys = Object.keys(g).map(Number).sort(function (a, b) { return a - b; }); tr.notes = keys.map(function (k) { return g[k]; }); if (tr.declared != null && tr.notes.length < tr.declared) missing.push({ track: ti, have: tr.notes.length, declared: tr.declared }); delete tr.declared; song.tracks.push(tr); });
+    return { ok: true, song: song, missing: missing, errors: errors };
+  }
+
+    return { toJsonl, expandNotes, fromJsonl, PPQ, LIM, emptySong, emptyTrack, parse, write, validate, ticksToSec, secToTicks, endTick, durationSec, noteCount, transpose, quantize, shiftTime, setTempo, scaleTempo, scaleVelocity, addTrack, removeTrack, setProgram, mergeTracks, splitByPitch, addNote, removeNotes, summary, noteName };
 });
