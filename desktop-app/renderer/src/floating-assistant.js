@@ -63285,7 +63285,7 @@ ${fnData.code}
                 let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 try { return JSON.stringify(await this._umlEdit(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
             },
-            { type: 'object', properties: { session: { type: 'string', description: '工作階段 id（不給就用最近一個）' }, ops: { type: 'array', items: { type: 'object' }, description: '編修指令' }, auto_fix: { type: 'boolean', description: '讓程式找問題、小模型挑修法' }, use_model: { type: 'boolean', description: 'false＝不問模型，全用程式的預設修法' } } }
+            { type: 'object', properties: { session: { type: 'string', description: '工作階段 id（不給就用最近一個）' }, ops: { type: 'array', items: { type: 'object' }, description: '編修指令' }, model_jsonl_read: { type: 'boolean', description: '把模型攤平成 JSONL 讀（levels 只攤前幾層、path 往下鑽某個節點）' }, levels: { type: 'number' }, path: { type: 'string', description: 'model_jsonl_read：要往下鑽的節點（JSON Pointer，例如 /classes）' }, model_jsonl: { type: 'array', items: { type: 'string' }, description: '整份模型的 JSONL 行（必須全部展開）；還原後取代目前的模型' }, auto_fix: { type: 'boolean', description: '讓程式找問題、小模型挑修法' }, use_model: { type: 'boolean', description: 'false＝不問模型，全用程式的預設修法' } } }
         );
         // domain-gated 工具（registerOptional）：不出現在根層級的工具清單（不佔每一輪的 context），一般 AI 要用時透過 delegate_to_subagent 進 file_analysis／media_av domain 才看得到；離線訓練器規則與 /media-image-to-pdf 則直接呼叫。
         registerOptional('images_to_pdf',
@@ -102734,6 +102734,23 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const s = this._umlSessions && this._umlSessions.get(a.session || this._umlLastSession);
         if (!s) return { ok: false, error: '沒有進行中的 UML 設計（先用 uml_design 或 uml_guide 產生一份，或給 session）' };
         const before = JSON.parse(JSON.stringify(s.model)); let ops = Array.isArray(a.ops) ? a.ops : []; let steps = null;
+        // 模型的多層 JSONL（任何窗口大小都做得完）：read＝攤平讀（levels 只攤前幾層、path 往下鑽），write＝整份換成還原後的模型（沒展開完整就退回）
+        if (a.model_jsonl_read) {
+            const PG = this._jsonlPagerMod(); const lv = a.levels == null ? undefined : Math.max(1, Math.floor(Number(a.levels)));
+            const r = a.path != null && a.path !== '' ? FaDesign.modelExpand(s.model, String(a.path), { levels: lv, pager: PG }) : FaDesign.modelToJsonl(s.model, { levels: lv, pager: PG });
+            if (r.ok === false) return { ok: false, error: r.error };
+            const head = { ok: true, layer: 'uml_model', session: s.id, levels: lv, path: a.path || '', how_to_read: '一行一個節點：{path,depth,type,value｜keys｜length}；collapsed:true 的還沒展開，要看用 uml_edit({"model_jsonl_read":true,"path":"<那行的 path>"})。改完整份模型用 uml_edit({"model_jsonl":[…全部行…]}) 換掉；也可以只用 ops 小幅編修。' };
+            const sid = this._bigStashRecords(r.lines, head, 'uml_model'); const pg = this._bigPage(sid, null);
+            return { ok: true, session: s.id, jsonl_page: pg && pg.ok ? pg.text : undefined, records: r.lines.length };
+        }
+        if (a.model_jsonl != null) {
+            const ls = Array.isArray(a.model_jsonl) ? a.model_jsonl : String(a.model_jsonl).split(/\r?\n/).filter((x) => x.trim());
+            const r = FaDesign.modelFromJsonl(ls, { pager: this._jsonlPagerMod() });
+            if (!r.ok) return { ok: false, error: r.error };
+            if (r.collapsedPaths.length) return { ok: false, error: '還有沒展開的節點，不能換掉整份模型：' + r.collapsedPaths.slice(0, 10).join('、') + '（用 model_jsonl_read 加 path 展開，把行補齊再一起給）' };
+            const before0 = JSON.parse(JSON.stringify(s.model)); s.model = r.model; this._umlSessionBuild(s);
+            return { ok: true, session: s.id, replaced: true, changes: FaUmlEdit.diff(before0, s.model), errors: FaUml.validateModel(s.model).slice(0, 5), uml: FaUml.toDsl(s.model) };
+        }
         if (a.auto_fix || (Array.isArray(a.issues) && a.issues.length)) {
             const kinds = ['orphan', 'empty', 'short_sequence']; const issues = Array.isArray(a.issues) && a.issues.length ? a.issues : FaDesign.findIssues(s.model).filter((i) => kinds.includes(i.kind));
             const M = a.use_model === false ? { error: 'skip' } : await this._umlModel(a.model); const res = await FaUmlEdit.resolve(s.model, issues, { generate: M.error ? null : M.gen });
