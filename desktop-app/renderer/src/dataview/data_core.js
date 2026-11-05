@@ -15,15 +15,60 @@
     // ===== 格式判斷 =====
     function detectFormat(text, hint) {
         const h = String(hint || '').toLowerCase();
-        if (h === 'json' || h === 'jsonc' || h === 'json5') return 'json';
+        if (h === 'jsonl' || h === 'ndjson' || h === 'jsonlines') return 'jsonl';
+        if (h === 'jsonc') return 'jsonc';
+        if (h === 'json' || h === 'json5') return 'json';
         if (h === 'yaml' || h === 'yml') return 'yaml';
         if (h === 'toml') return 'toml';
         if (h === 'csv' || h === 'tsv') return h;
         const t = String(text || '').trimStart();
+        if (t[0] === '{' && looksJsonl(t)) return 'jsonl';
+        if ((t[0] === '{' || t[0] === '[') && looksJsonc(t)) return 'jsonc';
         if (t[0] === '{') return 'json';
         if (/^\[\[?[A-Za-z0-9_."' -]+\]\]?\s*$/m.test(t) && /^\s*[\w."-]+\s*=/m.test(t)) return 'toml';
         if (t[0] === '[') return 'json';
         return 'yaml';
+    }
+
+
+    // ===== JSONC（註解、結尾逗號）與 JSONL（一行一筆）=====
+    // 把註解與結尾逗號換成空白（保留換行與位置，錯誤行號不會跑掉）
+    function stripJsonc(text) {
+        const s = String(text); let out = '', i = 0; const n = s.length;
+        while (i < n) {
+            const c = s[i];
+            if (c === '"') { let j = i + 1; while (j < n && s[j] !== '"') { if (s[j] === '\\') j++; j++; } out += s.slice(i, j + 1); i = j + 1; continue; }
+            if (c === '/' && s[i + 1] === '/') { while (i < n && s[i] !== '\n') { out += ' '; i++; } continue; }
+            if (c === '/' && s[i + 1] === '*') { const e = s.indexOf('*/', i + 2); const end = e < 0 ? n : e + 2; out += s.slice(i, end).replace(/[^\n]/g, ' '); i = end; continue; }
+            out += c; i++;
+        }
+        // 結尾逗號：逗號後面（略過空白）緊接 } 或 ]；字串內的不動
+        let r = '', k = 0; const m = out.length;
+        while (k < m) {
+            const c = out[k];
+            if (c === '"') { let j = k + 1; while (j < m && out[j] !== '"') { if (out[j] === '\\') j++; j++; } r += out.slice(k, j + 1); k = j + 1; continue; }
+            if (c === ',') { let j = k + 1; while (j < m && /\s/.test(out[j])) j++; if (out[j] === '}' || out[j] === ']') { r += ' '; k++; continue; } }
+            r += c; k++;
+        }
+        return r;
+    }
+    function looksJsonc(t) {
+        if (!/\/\/|\/\*|,\s*[}\]]/.test(t)) return false;
+        try { JSON.parse(t); return false; } catch (_) { /* 不是純 JSON */ }
+        try { JSON.parse(stripJsonc(t)); return true; } catch (_) { return false; }
+    }
+    function looksJsonl(t) {
+        const ls = String(t).split('\n').filter((l) => l.trim()).slice(0, 2); if (ls.length < 2) return false;
+        return ls.every((l) => { const x = l.trim(); if (x[0] !== '{' || x[x.length - 1] !== '}') return false; try { JSON.parse(x); return true; } catch (_) { return false; } });
+    }
+    // 逐行解析；壞行不讓整份失敗：保留成 {_bad_line, error, raw}，並回報行號
+    function parseJsonl(text) {
+        const data = [], bad = []; const ls = String(text).split('\n');
+        for (let i = 0; i < ls.length; i++) {
+            const l = ls[i].replace(/\r$/, ''); if (!l.trim()) continue;
+            try { data.push(JSON.parse(l)); } catch (e) { bad.push({ line: i + 1, message: String(e.message || e).split('\n')[0] }); data.push({ _bad_line: i + 1, error: String(e.message || e).split('\n')[0], raw: l.length > 2000 ? l.slice(0, 2000) : l }); }
+        }
+        return { data, bad };
     }
 
     // ===== TOML 解析（子集：表、表陣列、點鍵、四種字串、數字、布林、日期時間（當字串）、陣列、行內表）=====
@@ -183,10 +228,25 @@
         function str() { i++; while (i < n) { var c = t[i]; if (c === '"') { i++; return true; } if (c === '\\') { i += 2; continue; } if (c < ' ') return false; i++; } return false; }
         return val() ? (ws(), i < n ? i : -1) : i;
     }
+    // 註解數（不含字串內的 //、/*）：樹狀／表格檢視看不到註解，畫面要提醒
+    function countComments(text) {
+        const s = String(text); let n = 0, i = 0;
+        while (i < s.length) {
+            const c = s[i];
+            if (c === '"') { i++; while (i < s.length && s[i] !== '"') { if (s[i] === '\\') i++; i++; } i++; continue; }
+            if (c === '/' && s[i + 1] === '/') { n++; while (i < s.length && s[i] !== '\n') i++; continue; }
+            if (c === '/' && s[i + 1] === '*') { n++; const e = s.indexOf('*/', i + 2); i = e < 0 ? s.length : e + 2; continue; }
+            i++;
+        }
+        return n;
+    }
     function parse(text, fmt, deps) {
         deps = deps || {};
+        if (typeof text === 'string' && text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
         try {
-            if (fmt === 'json') return { ok: true, data: JSON.parse(text) };
+            if (fmt === 'json') { try { return { ok: true, data: JSON.parse(text) }; } catch (e0) { if (!looksJsonc(text)) throw e0; return { ok: true, data: JSON.parse(stripJsonc(text)), asJsonc: true, comments: countComments(text) }; } }
+            if (fmt === 'jsonc') return { ok: true, data: JSON.parse(stripJsonc(text)), comments: countComments(text) };
+            if (fmt === 'jsonl') { const r = parseJsonl(text); return { ok: true, data: r.data, badLines: r.bad }; }
             if (fmt === 'yaml') {
                 if (!deps.yamlLoad) return { ok: false, error: { message: 'YAML 解析器還沒載入' }, needDeps: 'yaml' };
                 const docs = []; try { deps.yamlLoadAll ? deps.yamlLoadAll(text, (d) => docs.push(d)) : docs.push(deps.yamlLoad(text)); } catch (e) { throw e; }
@@ -203,7 +263,8 @@
     }
     function stringify(data, fmt, deps) {
         deps = deps || {};
-        if (fmt === 'json') return JSON.stringify(data, null, 2) + '\n';
+        if (fmt === 'json' || fmt === 'jsonc') return JSON.stringify(data, null, 2) + '\n';
+        if (fmt === 'jsonl') return (Array.isArray(data) ? data : [data]).map((r) => JSON.stringify(r)).join('\n') + '\n';
         if (fmt === 'yaml') { if (!deps.yamlDump) throw new Error('YAML 輸出器還沒載入'); return deps.yamlDump(data, { lineWidth: -1, noRefs: true }); }
         if (fmt === 'toml') return stringifyToml(data);
         throw new Error('不支援輸出 ' + fmt);
@@ -219,6 +280,23 @@
             else if (m[6] !== undefined) out.push({ c: 'p', t: m[6] }); else out.push({ c: 'x', t: m[0] });
         }
         return out;
+    }
+    // JSONC：行註解、區塊註解（跨行要記狀態）
+    function tokJsoncLines(lines) {
+        let inBlock = false;
+        return lines.map((s) => {
+            const out = []; let i = 0, buf = '';
+            const flush = () => { if (buf) { for (const t of tokJsonLine(buf)) out.push(t); buf = ''; } };
+            while (i < s.length) {
+                if (inBlock) { const e = s.indexOf('*/', i); if (e < 0) { out.push({ c: 'c', t: s.slice(i) }); i = s.length; } else { out.push({ c: 'c', t: s.slice(i, e + 2) }); i = e + 2; inBlock = false; } continue; }
+                const c = s[i];
+                if (c === '"') { let j = i + 1; while (j < s.length && s[j] !== '"') { if (s[j] === '\\') j++; j++; } buf += s.slice(i, j + 1); i = j + 1; continue; }
+                if (c === '/' && s[i + 1] === '/') { flush(); out.push({ c: 'c', t: s.slice(i) }); i = s.length; continue; }
+                if (c === '/' && s[i + 1] === '*') { flush(); inBlock = true; const e = s.indexOf('*/', i + 2); if (e < 0) { out.push({ c: 'c', t: s.slice(i) }); i = s.length; } else { out.push({ c: 'c', t: s.slice(i, e + 2) }); i = e + 2; inBlock = false; } continue; }
+                buf += c; i++;
+            }
+            flush(); return out;
+        });
     }
     function scalarTok(v) {
         const t = v.trim(); if (!t) return { c: 'x', t: v };
@@ -282,7 +360,8 @@
     }
     function highlight(text, fmt) {
         const lines = String(text).split('\n').map((l) => l.replace(/\r$/, ''));
-        if (fmt === 'json') return lines.map(tokJsonLine);
+        if (fmt === 'json' || fmt === 'jsonl') return lines.map(tokJsonLine);
+        if (fmt === 'jsonc') return tokJsoncLines(lines);
         if (fmt === 'yaml') return tokYamlLines(lines);
         if (fmt === 'toml') return tokTomlLines(lines);
         if (fmt === 'csv' || fmt === 'tsv') return lines.map((l) => tokCsvLine(l, fmt === 'tsv' ? '\t' : ','));
@@ -488,5 +567,5 @@
         const s = JSON.stringify(walk(data, 0)); return s.length > (opts.maxChars || 3000) ? s.slice(0, opts.maxChars || 3000) + '…' : s;
     }
 
-    return { detectFormat, parse, stringify, parseToml, stringifyToml, parseCsv, sheetToCsv, highlight, prettyIfMinified, toTables, buildXlsx, readXlsx, visibleRows, defaultExpanded, searchTree, searchText, getByPath, outline, preview, typeOf, colLetter, isObj };
+    return { detectFormat, stripJsonc, countComments, parseJsonl, parse, stringify, parseToml, stringifyToml, parseCsv, sheetToCsv, highlight, prettyIfMinified, toTables, buildXlsx, readXlsx, visibleRows, defaultExpanded, searchTree, searchText, getByPath, outline, preview, typeOf, colLetter, isObj };
 });

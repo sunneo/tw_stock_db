@@ -575,16 +575,16 @@
    "names": [
     "FaDataCore"
    ],
-   "size": 24695,
-   "md5": "5809da37243d4edac188b7ee12fadf4e"
+   "size": 27609,
+   "md5": "5a3fa408a286443a122db8c2f4279211"
   },
   "dataui": {
    "file": "chunks/dataui.js",
    "names": [
     "FaDataView"
    ],
-   "size": 26360,
-   "md5": "967fda839b19d4e41624887ef1b503e7"
+   "size": 27166,
+   "md5": "e7c14f473cdd45d53f7d93501fdc683f"
   },
   "lr": {
    "file": "chunks/lr.js",
@@ -1156,7 +1156,7 @@
   }
  },
  "core": {
-  "size": 5544444,
-  "md5": "44244dabc6b43f5c4dd15487d741fea6"
+  "size": 5544518,
+  "md5": "9beaff25e8bb65a4d324936eb94a9030"
  }
 }

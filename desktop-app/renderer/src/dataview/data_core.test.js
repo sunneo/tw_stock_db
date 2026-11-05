@@ -98,6 +98,21 @@ const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
         check('xlsx number/bool/escaped text', r2.sheets[0].rows[0][0] === 1.5 && r2.sheets[0].rows[0][1] === true && r2.sheets[0].rows[0][2] === 'a<&>"z', r2.sheets[0].rows[0]);
     }
 
+    // --- JSONC／JSONL
+    const jc = '{\n  // 註解\n  "a": 1, /* 區塊\n 註解 */\n  "u": "http://x//y,]",\n  "b": [1, 2,],\n}\n';
+    check('jsonc detected', C.detectFormat(jc) === 'jsonc' && C.detectFormat('{}', 'jsonc') === 'jsonc');
+    const jp = C.parse(jc, 'jsonc'); check('jsonc parse keeps strings', jp.ok && jp.data.a === 1 && jp.data.u === 'http://x//y,]' && jp.data.b.length === 2, jp);
+    const jh = C.highlight(jc, 'jsonc'); check('jsonc highlight comments', jh[1].some((x) => x.c === 'c') && jh[3].some((x) => x.c === 'c') && jh[2].some((x) => x.c === 'k'), jh);
+    const jl = '{"id":1,"n":"a"}\n{"id":2,"n":"b"}\n\nnot json\n{"id":3}\n';
+    check('jsonl detected', C.detectFormat(jl) === 'jsonl' && C.detectFormat('1', 'ndjson') === 'jsonl');
+    const jr = C.parse(jl, 'jsonl'); check('jsonl parse keeps bad line', jr.ok && jr.data.length === 4 && jr.data[2]._bad_line === 4 && jr.badLines[0].line === 4, jr);
+    check('jsonl stringify one per line', C.stringify([{ a: 1 }, { a: 2 }], 'jsonl') === '{"a":1}\n{"a":2}\n');
+    check('jsonl to table', C.toTables(C.parse('{"x":1}\n{"x":2}', 'jsonl').data).sheets[0].rows.length === 2);
+
+    const jb = C.parse('{"a":1, // c\n}', 'json'); check('json fallback to jsonc flagged', jb.ok && jb.asJsonc && jb.comments === 1, jb);
+    check('plain json bad stays error', !C.parse('{"a":}', 'json').ok);
+    check('bom ok + comment count skips strings', C.parse('\ufeff{"u":"//x"}', 'jsonc').comments === 0);
+
     // --- 樹與搜尋
     const data = { a: { b: [1, { c: 'needle' }], d: 'x' }, e: 2 };
     let rows = C.visibleRows(data, new Set(['']), {}); check('tree: root expanded shows children only', rows.map((r) => r.path).join('|') === '|/a|/e', rows.map((r) => r.path));
