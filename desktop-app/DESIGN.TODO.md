@@ -4377,3 +4377,171 @@ rg 收到 task(sub=false, fromName=N)
 ## 教訓
 
 （若走歪，在此新增一條：錯在哪、下次怎麼做）
+
+
+---
+
+## JSONL 分頁器與檢視器（2026-11-05，唯讀調查後的設計；尚未實作）
+
+使用者原話（2026-11-05）：「tool 的超大 json 回應都統一 jsonl 格式，並提供 paginator，要有辦法讓 ai 可以完整讀完。然後我們 viewer 也要支援 jsonl、jsonc」。
+標記：【確認】＝這次讀程式確認過；【推測】＝沒親眼驗證。行號是 `renderer/src/floating-assistant.js`（簡稱 FA）在 2026-11-05 的行號，會漂移，改之前先用內容搜尋。
+
+### 一、現況（調查結果）
+
+**1. 大回應現在怎麼處理**
+
+分頁欄位已經有，但各工具各說各話：
+
+| 工具／來源 | 分頁欄位 | 單位 | 單頁上限 | 位置 |
+|---|---|---|---|---|
+| `parse_uploaded_file`、`fetch_web_page`（抓下來變 file_id 再讀） | `has_more`、`next_offset` | 字元 | 內容窗口 10%（下限 8000 字元） | FA 66516 `_pageText` 【確認】 |
+| `browser_get_page_text` | `has_more`、`next_offset` | 字元 | 預設 12000 | FA 62449、擴充功能 `background.js:111-145` 【確認】 |
+| `article_section` | `has_more`、`next_offset` | 字元 | 參數 | `tools/article_outline.js:136` 【確認】 |
+| `repo_read_doc` | `has_more`、`next_offset` | 字元 | 同 `_pageText` | FA 73051 【確認】 |
+| `repo_wiki` 單頁 | `has_more`、`next_offset` | 字元 | 3500～14000 | FA 74055 【確認】 |
+| `repo_wiki` 頁面清單 | `has_more`、`next_offset` | 筆（固定 40） | 40 筆寫死 | FA 73854 【確認】 |
+| `repo_*` 清單類（results、nodes、entries…） | `has_more`、`next_offset`、`<欄位>_total`、`paging_note` | 筆 | 工具結果預算 60% | FA 73383 `_repoApplyBudget` 【確認】 |
+| `coding_read_file` | `has_more`、`next_start_line` | 行 | 內容窗口 10%（下限 6000） | FA 74950 【確認】 |
+| `knowledge_detail` | `truncated`、`next_line` | 行 | 來源模組內決定 | FA 20981、21238 【確認】 |
+| `knowledge_ask` | **沒有**，只有 `limit`（預設 5） | — | 無續讀 | FA 57824 【確認：參數只有 question、sources、limit】 |
+| 其他沒有自己分頁的工具 | 沒有 | — | 超過就被總截斷 | 見下 |
+
+同一個欄位名 `next_offset` 有兩種意思：字元位置，或第幾筆。AI 與讀取帳本都得靠工具名猜，這是缺口之一。【確認】
+
+**總截斷與暫存**（所有沒分頁的大回應最後都走這裡）：`_toolResultBudgetChars()`（FA 80284）= 自動代理模式內容窗口 25%（下限 16000 字元），一般模式 15%（下限 8000）；字元／token 估 3 比 1（FA 1372）。超過就 `_truncateToolResultForContext`（FA 80309）：完整內容放進 `_bigStash`（代號 `bc_N`，總量上限 120 MB，滿了丟最舊的），只回開頭＋JSON 結構概要；AI 要用 `big_content` 工具（FA 63838）讀，動作有 `info`、`read`（offset＋length）、`grep`、`json`（路徑）、`js`（15 秒 Worker）。【確認】
+
+**離線自動讀完**：`_faOtFollowAll`（FA 3503）只服務 `fetch_web_page`、`browser_get_page_text`，最多 `FA_OT_MAX_PAGES = 5` 頁（FA 3467，寫死常數）；沒讀完會回 `has_more:true`＋`read_chars`。python 橋 `pw.text` 最多 40 頁×100000 字（FA 70790）。【確認】
+
+**讀取帳本**（`agent/read_ledger.js`，純函式，嵌入版 `FA_READ_LEDGER_SRC` FA 4593）：看到 `has_more:true`、`chunk.hasMore` 或「`truncated` 且有續讀位置」就記下來源，同來源回一個沒有 `has_more` 的結果就清掉（`read_ledger.js:46-72`）。最終回答前 `_readLedgerGate`（FA 89715）最多提醒 3 次，之後放行並附警語。【確認】
+
+**帳本的四個缺口**（這是「讓 AI 完整讀完」真正要補的地方）：
+1. **沒有覆蓋範圍**：只記「下一個位置」。AI 跳到最後一頁（沒有 `has_more`）會把整個來源清掉，中間沒讀的部分不會被發現（`read_ledger.js:62-66`）。【確認】
+2. **總截斷看不到**：帳本是在 `_pushToolResultMessage` 之前用「工具原始結果」記的（FA 107451），截斷發生在後面的 `_formatToolResult`，所以被 `bc_N` 截斷的大回應完全不在帳本裡，AI 沒讀完也不會被提醒。【確認】
+3. **`big_content` 的 `read` 沒有 `has_more`**，只有 `next_offset`（FA 63850 附近），帳本不認得。【確認】
+4. **提醒 3 次就放行**，沒有「一定要讀完或明確回報讀不完的原因」的硬條件。【確認】
+
+**2. 檢視器現況**
+
+- `dataview/data_core.js:18`：`detectFormat` 把 `jsonc`、`json5` 的提示都歸成 `json`；但 `parse` 用嚴格 `JSON.parse`（`data_core.js:189`）。所以 `.jsonc` 有註解或尾逗號會**解析失敗**，只是副檔名表放行了。【確認】
+- **`.jsonl`／`.ndjson` 完全沒有檢視器支援**：`_dataViewOpenFile` 只放行 `csv、tsv、json、jsonc、yaml、yml、toml`，其他走「格式還不能用檢視器開」（FA 100997 一帶）；`_mountDataViewers` 的 `LANGS`（FA 100972）、`VIEWABLE`（FA 101024）、離線「打開」種類表 `offline/intent_gate.js:61`（`exts` 有 `jsonc`、沒有 `jsonl`／`ndjson`；FA 47022 是嵌入的同一份）、`/view` 判斷（FA 55119，只認 `jsonc?`）都一樣。【確認】
+- 已有的零星處理：知識庫匯入把 `jsonl`／`ndjson` 當「每行一筆記錄」，位置標記是 `record`（FA 20826、57024）；`TEXT_EXT` 認 `jsonl`（FA 26419）；MCP 設定檔安裝認 `.json`／`.jsonc`（FA 100720，註解怎麼處理由 `FaMcp.parseConfigText` 決定，【推測】沒讀）；匯出追蹤用 `application/x-ndjson`（FA 103369）。這些都不是檢視器。
+- `parse_uploaded_file` 的說明沒列 `jsonl`（FA 62561 附近）【確認】；實際行為【推測】會被當純文字。
+- 上色器已有註解類別 `c`（`data_core.js:212`），可重用。
+
+**3. 弱模型與離線小模型**
+
+現有「自適應」是 `_getAdaptiveContentBudgetChars(fraction, floor)` = `max(floor, 內容窗口token × fraction × 3)`（FA 59835）。比例對了，但**下限寫死**：8000／6000／3500 字元對只有 4096 token 的離線小模型已經是整個窗口的 2/3，會直接炸。新分頁器的下限必須是「一筆記錄」而不是固定字元數。
+
+### 二、設計
+
+**原則**：①只有「超大且結構是記錄清單」的 JSON 才轉 JSONL；字串／文字類（網頁、PDF、程式碼）本質不是記錄，維持字元或行分頁，只統一欄位與覆蓋追蹤。②舊欄位全部保留，新欄位只加不改（舊版已安裝的使用者收得到熱更新、舊對話與舊帳本資料照常運作，不要求重裝）。③大小一律跟 `contextWindowTokens` 按比例，不寫死常數。④「讀完」由程式判斷，不聽模型說。
+
+**2.1 統一回應格式（給模型看的）**
+
+大 JSON 的分頁結果＝**第一行是 meta 的 JSON 物件，其後每行一筆記錄**：
+
+```
+{"_page":{"source":"bc_3","page":2,"from":41,"to":80,"returned":40,"total":312,"total_exact":true,"has_more":true,"next_cursor":"c1.bc_3.80","limit":40,"limit_basis":"ctx*0.1","digest":"a1b2c3"}}
+{"id":41,"name":"..."}
+{"id":42,"name":"..."}
+```
+
+- `from`／`to`：第幾筆（0 起算，半開區間 `[from,to)`）；`total` 已知給確切值，只能估時給 `total_estimate` 並讓 `total_exact:false`。
+- `next_cursor` 是不透明字串（格式版本＋來源＋位置），模型只能原樣帶回；程式端驗證，亂填回錯誤而不是亂讀。最後一頁 `has_more:false`、`next_cursor:null`、多一個 `done:true` 與 `read_records`／`total`。
+- 同時保留舊欄位 `has_more`、`next_offset`（語意同該工具原本的），不遷移、不改名；新欄位 `next_cursor` 與 `next_offset` 並存，舊帳本只認 `has_more` 照樣有效。理由：`next_offset` 目前有「字元」「筆」兩種意思，硬統一會讓 `_repoApplyBudget`、`_faOtFollowAll`、python 橋同時壞；風險是欄位重複佔幾十字元，可接受。
+- 單筆記錄比一頁還大：不丟棄、不截斷，用 `part` 續傳（`next_cursor` 指到同一筆的第 N 段，meta 標 `record_part`）；模型看到 `record_part` 就知道這筆沒完。
+- 回應整個是字串、第一行起不是單一 JSON 時，內部呼叫者（`_faOtFollowAll`、python 橋）仍可用舊路徑；所以分頁格式**只套在「給模型看的最後一步」**（見 2.3），工具內部傳遞的 JSON 結構不變。
+
+**2.2 分頁器模組（純函式）`renderer/src/agent/jsonl_pager.js`**
+
+UMD、無 DOM、無 I/O、可 `new Function` 載入（跟 `read_ledger.js` 一樣），測試檔 `jsonl_pager.test.js`。介面（暫定）：
+
+- `toRecords(text|value)` → `{ records, shape }`：頂層是陣列→每筆一個元素；頂層是物件且有唯一占大宗的陣列欄位→記錄是該陣列，其餘欄位進 `head`（第一頁一併給）；JSONL／NDJSON 文字→逐行（壞行保留為 `{"_bad_line":n,"raw":"…"}`，不丟）；其餘（純量、沒有大陣列的物件）→回 `null`，呼叫者退回現行截斷。
+- `pageSize({ ctxTokens, fraction, avgRecordChars })` → 筆數：`max(1, floor(ctxTokens × fraction × 3 / avgRecordChars))`，**沒有字元下限，只有至少 1 筆**；`fraction` 沿用 `_toolResultBudgetChars` 的 0.15／0.25，離線小模型另外給更小的比例（待實測，不先寫死）。
+- `page(records, cursor, opts)` → `{ meta, lines, nextCursor }`；`encodeCursor`／`decodeCursor`（含檢查來源、版本、範圍）。
+- `digest(lines)`：短雜湊，給帳本核對「這一頁真的拿到過」。
+- 壞輸入（空、循環、超深）回明確錯誤物件，不拋例外。
+
+**2.3 接線（最小改動順序）**
+
+1. **`_truncateToolResultForContext`（FA 80309）**：超過預算且 `toRecords` 成功時，不再「只放開頭＋概要」，改回**第 1 頁 JSONL**（meta 裡 `source` 就是 `bc_N`）。`toRecords` 回 null 才走原本的截斷。
+2. **`big_content` 加 `page` 動作**（`cursor` 參數）；`info` 回應加 `records`、`shape`；`read` 回應補 `has_more`。`json` 動作遇到 JSONL 文字改逐行解析而不是整體 `JSON.parse`（現在會直接報「不是合法 JSON」，FA 63860 附近）。
+3. **帳本改在格式化後的版本再記一次**：`_noteReadLedger` 現在吃原始結果；新增「截斷／分頁後的 meta」記錄，補缺口 2。
+4. 有自己分頁的工具（`repo_*` 清單、`repo_wiki` 清單、`knowledge_ask` 加 `offset`）：結果照舊，只多帶 `_page` meta 與 `next_cursor`；`knowledge_ask` 目前根本不能續讀，是最小風險的補丁。
+5. 文字類工具（`parse_uploaded_file`、`fetch_web_page`、`browser_get_page_text`、`article_section`、`repo_read_doc`、`coding_read_file`、`knowledge_detail`）**不轉 JSONL**，只讓帳本的覆蓋追蹤吃它們的 `offset`／`next_start_line`／`next_line`。
+
+**2.4 讀取帳本升級（相容）**
+
+`read_ledger.js` 的 entry 加選用欄位：`covered`（已讀範圍的區間陣列，單位在 `unit`：`record`／`char`／`line`）、`total`、`totalExact`、`digests`。舊 entry（沒有這些欄位）照舊邏輯運作；新欄位缺席時不報錯。
+
+「讀完」的**程式可檢查條件**（全部成立才算）：
+1. 有 `total` 且 `totalExact` 時，`covered` 合併後恰好覆蓋 `[0,total)`；`total` 只是估計時，改要求「已收到 `done:true` 的最後一頁」且區間從 0 連續到最後。
+2. 中間有洞（跳頁）→ 回報洞的範圍（「第 41～80 筆還沒讀」），仍是 blocking，不會因為讀到最後一頁而清掉。
+3. 帶 `record_part` 的記錄必須讀到該筆最後一段。
+4. 最終回答的閘門：條件 1～3 不成立就**一律擋**，模型必須續讀、或明確回報無法讀完的原因（例如被使用者停止、來源被清掉）；現行「提醒 3 次就放行」改成：3 次後仍擋一次並要求模型在答案前段寫出「只讀了第 a～b 筆，共 n 筆」，且這段警語由程式附加，不靠模型自己寫。
+5. `bc_N` 被 `_bigStash` 淘汰（超過 120 MB）時，cursor 解析失敗要回「來源已清掉，請重新呼叫原工具」，帳本把該來源標為失效而不是已讀完。
+
+**2.5 上限**
+
+- 單頁：`pageSize` 算出的筆數，至少 1 筆。
+- 一次問答最多讀幾頁：不寫死；以「模型內容窗口＋已用量」估算還容得下幾頁，容不下就由程式提示「請先摘要已讀內容再繼續」（跟既有 `fitToBudget` 的 placeholder 機制銜接，FA 7674），而不是無限續讀。【這段要實測，先寫成待改善】
+- 暫存總量沿用 120 MB；單一來源超過就只分頁暫存的前段，meta 標 `source_truncated:true` 與實際收了多少。
+- `FA_OT_MAX_PAGES = 5`（離線自動讀網頁）維持，但 `has_more` 回報要帶 `covered`，離線流程才不會把 5 頁當全部。
+
+**2.6 檢視器**
+
+*共通*：`data_core.js` 新增格式 `jsonl`、`jsonc`（不再把 jsonc 併進 json）。`detectFormat` 提示 `jsonl`／`ndjson`→`jsonl`；`jsonc`→`jsonc`；`json5` 暫時維持現狀並在說明中寫明不支援尾逗號之外的語法。`.json` 嚴格解析失敗時，**不悄悄重試**：重試為 jsonc 成功就顯示徽章「這份 JSON 含註解／尾逗號，以 JSONC 解析」。
+
+*`.jsonl`／`.ndjson`*：
+- 逐行解析，空行略過但計入行號；每筆記下原始行號；`\r\n`、BOM、最後一行沒換行都要處理。
+- **壞行不讓整檔失敗**：壞行進「壞行」清單（行號＋錯誤訊息＋原文前 200 字元），主表格照樣顯示好的；畫面頂端顯示「共 N 行，M 行無法解析」。
+- 記錄是物件→套現有「JSON→表格」（設計文件第二節）；不是物件→單一 `value` 欄；欄位聯集上限沿用現有表格規則。
+- 大檔：用 `Blob.slice` 分塊掃描建「行起點索引」（只存 Uint32 位移），表格虛擬捲動，每次只解析可見視窗±緩衝的行；現行 100 MB 上限（FA 100997）對 JSONL 放寬到按索引記憶體估算（待量，先維持 100 MB 並明說）。
+- 複製／匯出一律輸出**原始行**，不重新序列化（避免改鍵順序、大數字精度）。檢視器是唯讀，不做「格式化」。
+
+*`.jsonc`*：
+- 專用解析：字串內的 `//`、`/*` 不算註解（`"http://x"`）；支援 `//` 單行、`/* */` 區塊（不巢狀）、物件／陣列尾逗號；未結束的區塊註解回錯誤並帶行列。解析結果除了 `data`，另回 `comments:[{line,col,kind,text}]` 與 `trailingCommas`。
+- **不能悄悄丟註解**：原文檢視（上色，註解用既有類別 `c`）永遠保留全部註解；樹狀／表格檢視因為資料模型沒有註解，頂端顯示「含 N 則註解，原文檢視可看」；任何會重新序列化的動作（現有格式化，`data_core.js:295` 的 `JSON.stringify(JSON.parse(…))`）對 jsonc 一律停用並說明原因，不得輸出沒有註解的版本當成「格式化結果」。
+- 檢視器的「儲存／匯出」若有，匯出原文。
+
+*同步位置（改來源模組，不要改嵌入後的 `floating-assistant.js`；做完用 `scripts/embed-code-ui.js` 重產，見記憶「嵌入的來源模組」）*：`dataview/data_core.js`、`dataview/data_ui.js`、`offline/intent_gate.js:61`（`exts` 加 `jsonl`、`ndjson`，`nouns` 加 `jsonl|ndjson|jsonc`，label 改成「資料檢視器（JSON／JSONL／JSONC／YAML／TOML）」）、`DESIGN.data-viewers.md` 第二、四節、FA 內 `LANGS`／`VIEWABLE`／`_dataViewOpenFile` 清單／`/view` 判斷（FA 55119）／失敗訊息（列出可開格式）。`parse_uploaded_file` 說明補上 `jsonl`，行為為每行一筆並走分頁器。兩份 AI 設定畫面無關，這次不涉及。
+
+### 三、先做哪些、風險
+
+| 順序 | 內容 | 大小風險 | 備註 |
+|---|---|---|---|
+| 1 | `jsonl_pager.js` 純函式＋測試 | 小 | 無接線，零風險，可單獨發布 |
+| 2 | 檢視器 `jsonc` 容忍解析、`jsonl` 檢視（含壞行、虛擬捲動）、種類表同步 | 中（虛擬捲動） | 與分頁器無相依，可平行 |
+| 3 | `big_content` 加 `page`／`read` 補 `has_more`；`_truncateToolResultForContext` 對記錄清單改回第 1 頁 | 中 | 最大收益：目前所有沒分頁的大 JSON 都走這裡 |
+| 4 | 帳本覆蓋範圍＋截斷後記帳＋最終閘門條件 | 中高（會改行為，可能讓舊對話多擋幾次） | 先只對有 `_page` meta 的來源生效，舊來源行為不變 |
+| 5 | `knowledge_ask` 加 `offset`；`repo_*` 清單帶 `_page` | 低 | 欄位只加不改 |
+| 6 | 離線小模型的 `fraction` 實測調校、頁數預估（2.5） | 待量 | 列待改善，不阻擋 1～5 |
+
+主要風險：①把回應第一行改成 meta，會讓**只解析整串 JSON 的呼叫者**壞掉——所以分頁格式只套在給模型看的最後一步，內部呼叫路徑不變，並加測試鎖住；②模型可能對 JSONL 不熟，meta 的 `next_cursor` 要在說明裡用一句話講清楚，並在每頁尾端附一行中文提示（跟現有 `page_hint` 同風格）；③雜湊／區間記帳讓帳本變大，要限制每來源區間數並合併；④熱更新：新模組是新增檔案、舊用戶端沒有就維持舊行為，帳本資料新欄位全選用，不必重裝；不動 `renderer/update-manifest.json` 的決定交給管理層發版時處理。
+
+### 四、測試計畫
+
+**分頁器**（`jsonl_pager.test.js`，`new Function` 載入，語料如下）：
+- 頂層陣列 1／40／10000 筆；頂層物件含一個大陣列＋其他欄位；巢狀大陣列；純量；空陣列；非記錄物件（回 null）。
+- 單筆比一頁大（`record_part` 續傳，串回去逐字相等）；中文、emoji、含換行的字串（JSONL 一筆不能含實體換行，序列化要用 `JSON.stringify`）。
+- 內容窗口 2048／4096／32768／1000000 token：每頁至少 1 筆、頁大小隨窗口單調增加、沒有出現寫死的下限常數（掃描原始碼斷言）。
+- 逐頁讀完串回去 ＝ 原資料（逐筆相等，總筆數＝total）；cursor 竄改、過期、來源不符都回明確錯誤。
+- 反例：中途丟掉一頁、重複讀同一頁、反向讀、跳到最後一頁。
+
+**帳本**：覆蓋區間合併（相鄰、重疊、重複、亂序）；跳到最後一頁**不得清掉**中間的洞（現行行為的回歸測試，這是缺口 1）；`total` 估計與確切兩種；舊 entry 沒有新欄位時行為與現在完全相同（把現有 `read_ledger.test.js` 全部保留跑一遍）；`bc_N` 被淘汰後標失效。
+
+**整合**：假工具回 5 MB 記錄清單，經 `_formatToolResult` 得到第 1 頁；用假模型逐頁呼叫 `big_content page` 到讀完，閘門放行；中途想結束就被擋；內部呼叫者（`_faOtFollowAll`、python 橋）對同一工具輸出照常 `JSON.parse`。
+
+**檢視器**（`data_core.test.js` 擴充）：
+- `jsonl`：好行＋壞行混合、全壞、空檔、只有空行、`\r\n`、BOM、最後沒換行、記錄為純量／陣列／巢狀物件、10 萬行（索引建立時間與記憶體量測）、單行 1 MB。
+- `jsonc`：行註解、區塊註解、字串裡的 `//` 與 `/*`、轉義引號後接 `//`、尾逗號（物件與陣列）、未結束區塊註解（帶行列）、註解在最前／最後、空檔、純註解；解析後 `comments` 數量正確；格式化動作被停用。
+- 反例：把有註解的 `.json` 以嚴格模式解析→明確錯誤並顯示徽章；`json5` 的單引號、無引號鍵→維持報錯，不假裝支援。
+- 種類表：離線說「打開 log.jsonl／config.jsonc」→ 命中 `data`；`intent_gate` 既有測試全過。
+
+**真人驗證（另列，不放待辦）**：1 GB 級 JSONL 的實際捲動順暢度；離線小模型（4096 token）實際逐頁讀完一份 5 MB 清單並正確回答。
+
+### 五、工作量、同意事項、建議第一階段
+
+- 工作量：分頁器＋測試約 0.5 天；檢視器（jsonc 解析＋jsonl 檢視含虛擬捲動＋種類表）約 1.5 天；`big_content`／截斷接線約 0.5 天；帳本覆蓋與閘門約 1 天；其餘小項各 0.25 天。總計約 4 天。
+- 使用者同意：本案**不涉及下載**，不需要新的同意流程；行為變化（最終回答被擋得更嚴）寫進發版說明。
+- **建議第一個可發布的小階段**：步驟 1＋2 的 `jsonc` 部分——`jsonl_pager.js` 純函式（無接線、可測）加 `data_core.js` 的 `jsonc` 容忍解析與「註解不丟」規則、`jsonl`／`ndjson`／`jsonc` 同步進離線種類表。理由：不碰工具回應與帳本，不會影響既有對話；現況 `.jsonc` 有註解就解析失敗是現在就看得到的缺陷；`jsonl` 檢視（含虛擬捲動）可緊接為第二階段，再來才接 `big_content` 與帳本。
