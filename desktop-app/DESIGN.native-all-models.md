@@ -585,3 +585,14 @@
 - **SlimSAM 編碼器**：記憶體異常已查明並處理（見 9.3），輸出已驗證一致（6e-8）；尚未納入註冊表，因為使用端是 `faVlmWorkerMain` 的 `sam` 分支（transformers.js 的 `get_image_embeddings`，解碼器每點一次），原生只接編碼器要把 `image_embeddings` 與 `image_positional_embeddings` 交回 Worker，需另寫橋接與真 Electron 驗證，做完才加進表。
 - **SDXS**：unet 輸出訊噪比 34.8 dB，要用同一份輸入逐輸出比對 int8 算子差異（原因還沒查）；納入前仍須完整生圖（text encoder＋unet＋VAE）比對，不下載新模型（暫存資料夾裡已有使用者同意下載的那份）。
 - 其餘（Whisper 編碼器、midigenai）本機沒有檔案，沒下載，維持舊路。
+
+### 9.5 使用者追加的下載同意與接續順序（2026-11-05，給接手的工作階段）
+
+使用者同意下載（僅這兩項，其他一律不下載；放工作階段暫存資料夾，不在倉庫、不在使用者安裝版資料夾，釘版本或核對登錄的 SHA-256，不符就丟掉）：
+
+1. Whisper base 編碼器：`onnx/encoder_model_quantized.onnx`，來源 `onnx-community/whisper-base`（大小約 30 MB，未核對；下載後記實際位元組數與 SHA-256）。輸入 `input_features [1,80,3000]`，量測腳本設定已備好（`bench-config.json` 的 `whisper-base-encoder`）。驗收：編碼器輸出誤差照第 5 節階段 4 的門檻（≤ 1e-3），轉錄文字與網頁版一致。
+2. midigenai v5 CPU 版：`v5/onnx/decoder-wasm-int8.onnx`，來源 `nicholasbien/midigenai`，位元組數 114,561,179、SHA-256 `5ca00f42…eed65`（以 `renderer/src/music/audio_models.js` 登錄為準）。授權註記照記：「訓練資料集授權未確認」，不得宣稱已確認。需要維持 KV 快取在子程序（`NRT` 目前每次 `tensor_run` 無狀態，要新增 session 內保留 KV 的規則）、逐步迴圈輸入（`bench-config.json` 的 `kv_loop` 尚未實作）；驗收：每步 logits 誤差 ≤ 1e-3，同種子音符序列完全相同。
+
+接續順序：Whisper 編碼器 → midigenai → SlimSAM（橋接，見 9.4）→ SDXS（完整生圖比對）。每項：量測原生對 WASM（同機同輸入）、輸出一致且沒變慢才加進註冊表（9.1），失敗退回舊路、核心聊天／工具／食譜不受影響；不一致就暫緩並寫明原因。做完一項提交一次，完成的部分把檔名維持 `DESIGN.native-all-models.md`。
+
+注意事項（踩過的坑）：用 Edit／Write 寫檔，不要用 shell 內嵌（反引號與反斜線會被吃掉，這份文件曾因此被破壞一次）；`git show X > 同一個檔案` 會先把檔案清空；`renderer/src/floating-assistant.js` 改完 `node scripts/embed-code-ui.js && node build-assistant.js`，再 `git checkout renderer/update-manifest.json`；測試用 Electron 一律獨立 `--user-data-dir` 並換埠（`scripts/eval/native_audio_e2e.js` 已處理，埠 17990 以上）。
