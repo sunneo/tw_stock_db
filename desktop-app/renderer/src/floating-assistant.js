@@ -3492,6 +3492,8 @@ function _faOtWantsVisible(text) {
     const t = String(text || '');
     return /(?:打開|開啟|前往|開一下|開個|開到|瀏覽器開|幫我開|open\s)/i.test(t);
 }
+// 離線各路徑共用的「步驟記錄」輸出：steps／tool／cache／fsm／食譜都用這個函式組卡片上的「做了這些步驟」，格式只在這裡定義
+function _faOtTrailText(trail, sep) { return trail && trail.length ? '📋 做了這些步驟：\n' + trail.map((x) => '- ' + x).join('\n') + (sep === undefined ? '\n\n' : sep) : ''; }
 function _faOtAdjustSteps(steps, text) {
     if (!Array.isArray(steps) || !_faOtWantsVisible(text)) return steps;
     if (!steps.some((s) => s && s.tool === 'browser_create_tab')) return steps;
@@ -68229,7 +68231,7 @@ ${fnData.code}
                 try { const j = JSON.parse(raw); if (j && (j.ok === false || j.error)) allOk = false; } catch (_) { /* 不是 JSON 就當文字 */ }
                 outs.push({ tool: call.tool, raw });
             }
-            return { ok: allOk, kind: 'cache', results: outs, text: (ctrail.length ? '📋 做了這些步驟：\n' + ctrail.map((x) => '- ' + x).join('\n') + '\n\n' : '') + outs.map((o) => (o.error ? `⚠️ ${o.tool}：${o.error}` : this._otPretty(o.raw, plan.text))).join('\n\n') };
+            return { ok: allOk, kind: 'cache', results: outs, text: _faOtTrailText(ctrail) + outs.map((o) => (o.error ? `⚠️ ${o.tool}：${o.error}` : this._otPretty(o.raw, plan.text))).join('\n\n') };
         }
         if (c.kind === 'fsm') return await this._otExecFsm(plan, c, opts);
         if (c.kind === 'steps') {
@@ -68275,19 +68277,9 @@ ${fnData.code}
             if (plan.gate && plan.gate.unhandled.length && (c.pattern === 'browser_open_read' || c.pattern === 'gate_browser_open')) trail.push('⚠️ 只做了動作，沒處理：' + plan.gate.unhandled.join('；'));
             if (gateOut && gateOut.undone && gateOut.undone.length) trail.push('⚠️ 沒做到：' + gateOut.undone.join('；'));
             // 最後核對：結果有沒有回答目標（程式先判，不確定才問小模型的 A／B 題）；has_more 沒讀完一定有警語
-            let verdict = null;
-            if (gateOut && plan.gate && plan.gate.post.length) {
-                const searchPg = (gateOut.extra || []).find((x) => x.search); const usedJson = searchPg ? searchPg.json : (gateUsed && gateUsed.json) || {};
-                verdict = FaIntentGate.verify(plan.gate, { hits: gateOut.found ? gateOut.found.length : 0, searched: !!searchPg, hasMore: !!usedJson.has_more, readChars: usedJson.read_chars || (usedJson.has_more ? String(usedJson.text || '').length : 0), summary: gateOut.summary, undone: gateOut.undone });
-                if (verdict.ask && gateOut.found && gateOut.found.length) {
-                    const kw = (plan.gate.post.find((p) => p.type === 'find_topic') || {}).keyword || ''; const ab = await this._otGateVerifyAsk(kw, gateOut.found);
-                    if (ab === 'A') { verdict.verdict = 'answered'; verdict.conclusion = '✅ 結論：只篩出 1 則，離線小模型核對後認為有回答「' + kw + '」。' + (verdict.warn.length ? '\n⚠️ ' + verdict.warn.join('；') + '。' : ''); trail.push('🧾 核對：程式不確定（只有 1 則），問離線小模型，回答 A（有回答）'); }
-                    else if (ab === 'B') { verdict.verdict = 'not_answered'; verdict.conclusion = '⚠️ 結論：只篩出 1 則，離線小模型核對後認為沒有真的回答「' + kw + '」（可能只是剛好含有關鍵字）。' + (verdict.warn.length ? '\n⚠️ ' + verdict.warn.join('；') + '。' : ''); trail.push('🧾 核對：程式不確定（只有 1 則），問離線小模型，回答 B（沒有回答）'); }
-                    else trail.push('🧾 核對：只有 1 則，程式不確定；離線小模型沒載入或沒有合格回答，所以結論保守處理');
-                } else if (verdict.verdict !== 'n/a') trail.push('🧾 核對：程式判斷「' + ({ answered: '有回答目標', not_answered: '沒有回答目標', unsure: '不確定' }[verdict.verdict]) + '」');
-            }
+            const verdict = await this._otGateVerdict(plan, gateOut, gateUsed && gateUsed.json, trail);
             const shotText = shots.map((m) => '📸 已截圖' + (m.width ? '（' + m.width + '×' + m.height + '）' : '') + (m.title ? '：' + m.title : '') + (m.url ? ' ' + m.url : '') + (m.region_applied ? '，範圍 ' + m.region_applied.width + '×' + m.region_applied.height + '（x=' + m.region_applied.x + ',y=' + m.region_applied.y + (m.region_applied.by === 'local' ? '，本機裁切' : '') + '）' : '') + (m.warning ? '\n⚠️ ' + m.warning : '')).join('\n');
-            const trailText = trail.length ? '📋 做了這些步驟：\n' + trail.map((x) => '- ' + x).join('\n') : '';
+            const trailText = _faOtTrailText(trail, '');
             const sumText = gateOut && gateOut.summary ? '📝 摘要（機械摘要，TextRank 挑的重點句）：\n' + gateOut.summary : '';
             const body = [trailText, verdict && verdict.conclusion, shotText, sumText].concat(results.filter((r) => r.raw && r.ok && !r.superseded && !/^browser_(create_tab|close|list_tabs)$/.test(r.tool)).map((r) => this._otPretty(r.raw, plan.text))).filter(Boolean).join('\n\n') + (shots.length ? '\n\n（離線模式不看圖片內容，只負責截圖；要說明畫面內容請切回線上模式。）' : '');
             if (failed) return { ok: false, kind: 'steps', error: failed, text: body, results };
@@ -68313,8 +68305,12 @@ ${fnData.code}
             if (/^(?:browser_get_page_text|fetch_web_page)$/.test(c.tool)) raw = await _faOtFollowAll(this, this.tools, c.tool, c.args || {}, raw, trail1);
             let ok = true;
             try { const j = JSON.parse(raw); if (j && (j.ok === false || j.error)) ok = false; } catch (_) {}
-            if (plan.gate && c.pattern && /^gate_open_/.test(c.pattern)) { trail1.unshift('🧭 理解：開啟' + plan.gate.label + '（' + plan.gate.kindBy + '）'); (plan.gate.trace || []).slice().reverse().forEach((x) => trail1.unshift(x)); trail1.push(ok ? '✅ 已用 ' + c.tool + ' 開啟' + plan.gate.label + '（結果卡片在對話裡）' : '⚠️ ' + c.tool + ' 沒有成功'); if (plan.gate.note) trail1.push('ℹ️ ' + plan.gate.note); if (plan.gate.post.length || plan.gate.unhandled.length) trail1.push('⚠️ 已開啟，但後面的目標沒處理：' + plan.gate.post.map((p) => p.type).concat(plan.gate.unhandled).join('、')); }
-            return { ok, kind: 'tool', raw, text: (trail1.length ? '📋 做了這些步驟：\n' + trail1.map((x) => '- ' + x).join('\n') + '\n\n' : '') + this._otPretty(raw, plan.text) };
+            if (plan.gate && c.pattern && /^gate_open_/.test(c.pattern)) { trail1.unshift('🧭 理解：開啟' + plan.gate.label + '（' + plan.gate.kindBy + '）'); (plan.gate.trace || []).slice().reverse().forEach((x) => trail1.unshift(x)); trail1.push(ok ? '✅ 已用 ' + c.tool + ' 開啟' + plan.gate.label + '（結果卡片在對話裡）' : '⚠️ ' + c.tool + ' 沒有成功'); if (plan.gate.note) trail1.push('ℹ️ ' + plan.gate.note); }
+            // 開啟之後的剩餘目標（「打開 x.docx 並摘要」）：跟 steps 路徑同一套後置步驟與核對；做不到的明寫「沒做到」
+            let gout = null, gverdict = null;
+            if (ok && plan.gate && c.pattern && /^gate_open_/.test(c.pattern) && ((plan.gate.post || []).length || (plan.gate.unhandled || []).length)) ({ gout, verdict: gverdict } = await this._otGateAfterOpen(plan, trail1));
+            const extraText = [gverdict && gverdict.conclusion, gout && gout.summary ? '📝 摘要（機械摘要，TextRank 挑的重點句）：\n' + gout.summary : ''].filter(Boolean).join('\n\n');
+            return { ok, kind: 'tool', raw, text: _faOtTrailText(trail1) + (extraText ? extraText + '\n\n' : '') + this._otPretty(raw, plan.text) };
         }
         return { ok: false, error: '不認得的動作類型' };
     }
@@ -68528,6 +68524,37 @@ ${fnData.code}
     // 使用者自訂的同義詞組（Configure → 離線訓練器 → set_synonyms），每組拆成詞陣列
     _otSynGroups() { return Object.values((this._ot && this._ot.synonyms) || {}).map((v) => String(v).split(/\s+/).filter(Boolean)); }
     // 理解閘的後置步驟：找主題（篩不到就站內搜尋）、摘要、截圖；做不到的記在 undone，不假裝做完
+    // 最後核對（steps 與 tool 路徑共用）：結果有沒有回答目標。程式先判，不確定才問小模型的 A／B 題；回傳 verdict 或 null
+    async _otGateVerdict(plan, gateOut, usedBase, trail) {
+        let verdict = null;
+        if (gateOut && plan.gate && plan.gate.post.length) {
+            const searchPg = (gateOut.extra || []).find((x) => x.search); const usedJson = searchPg ? searchPg.json : usedBase || {};
+            verdict = FaIntentGate.verify(plan.gate, { hits: gateOut.found ? gateOut.found.length : 0, searched: !!searchPg, hasMore: !!usedJson.has_more, readChars: usedJson.read_chars || (usedJson.has_more ? String(usedJson.text || '').length : 0), summary: gateOut.summary, undone: gateOut.undone });
+            if (verdict.ask && gateOut.found && gateOut.found.length) {
+                const kw = (plan.gate.post.find((p) => p.type === 'find_topic') || {}).keyword || ''; const ab = await this._otGateVerifyAsk(kw, gateOut.found);
+                if (ab === 'A') { verdict.verdict = 'answered'; verdict.conclusion = '✅ 結論：只篩出 1 則，離線小模型核對後認為有回答「' + kw + '」。' + (verdict.warn.length ? '\n⚠️ ' + verdict.warn.join('；') + '。' : ''); trail.push('🧾 核對：程式不確定（只有 1 則），問離線小模型，回答 A（有回答）'); }
+                else if (ab === 'B') { verdict.verdict = 'not_answered'; verdict.conclusion = '⚠️ 結論：只篩出 1 則，離線小模型核對後認為沒有真的回答「' + kw + '」（可能只是剛好含有關鍵字）。' + (verdict.warn.length ? '\n⚠️ ' + verdict.warn.join('；') + '。' : ''); trail.push('🧾 核對：程式不確定（只有 1 則），問離線小模型，回答 B（沒有回答）'); }
+                else trail.push('🧾 核對：只有 1 則，程式不確定；離線小模型沒載入或沒有合格回答，所以結論保守處理');
+            } else if (verdict.verdict !== 'n/a') trail.push('🧾 核對：程式判斷「' + ({ answered: '有回答目標', not_answered: '沒有回答目標', unsure: '不確定' }[verdict.verdict]) + '」');
+        }
+        return verdict;
+    }
+    // tool 路徑開啟成功之後：把理解閘記下的剩餘目標接著做（檔案內容用 parse_uploaded_file 讀、續讀到完；摘要／找主題走 _otGatePost），
+    // 做不到的（沒有可讀的檔案內容、截圖需要瀏覽器分頁、比較判斷）明寫「沒做到」，最後用同一個核對函式
+    async _otGateAfterOpen(plan, trail) {
+        const g = plan.gate; let gout = null, page = null; const name = { summarize: '摘要', find_topic: '找主題', screenshot: '截圖', reason: '比較／判斷', pick_item: '取指定那一則' };
+        if ((g.post || []).length) {
+            if (g.fileId && this.tools.parse_uploaded_file) {
+                try { const raw = await _faOtFollowAll(this, this.tools, 'fetch_web_page', {}, JSON.stringify({ ok: true, file_id: g.fileId }), trail); const j = JSON.parse(raw); if (j && typeof j.text === 'string' && j.text.trim()) page = j; } catch (_) { page = null; }
+            }
+            if (page) { try { gout = await this._otGatePost(g, { tabId: null, page, plan, trail }); } catch (e) { trail.push('⚠️ 後置步驟出錯：' + String((e && e.message) || e).slice(0, 80)); } }
+            if (!gout) gout = { extra: [], undone: g.post.map((p) => (name[p.type] || p.type) + '（' + (page ? '後置步驟出錯' : '沒有可讀的檔案內容，這一種開啟只負責打開') + '）'), summary: '', found: null };
+        }
+        if ((g.unhandled || []).length) trail.push('⚠️ 只做了動作，沒處理：' + g.unhandled.join('；'));
+        if (gout && gout.undone && gout.undone.length) trail.push('⚠️ 沒做到：' + gout.undone.join('；'));
+        const verdict = gout ? await this._otGateVerdict(plan, gout, page, trail) : null;
+        return { gout, verdict };
+    }
     async _otGatePost(gate, ctx) {
         const { tabId, plan, trail } = ctx; const extra = []; const undone = []; let summary = '';
         let latest = ctx.page || {}; let found = null;
@@ -68848,7 +68875,7 @@ ${fnData.code}
     // 構想照 DomainResolver：AI 用 offline_trainer 的 add_tool／add_state／add_pattern 把「自己想出來的做法」寫回離線訓練器，
     // 之後同類問題不需要AI就能得到一樣的結果；長期對話的成功做法也會由背景worker自動整理成同樣的東西（只有勾了「自動訓練」才會做）。
     _otWorkers() { return this._otWk || (this._otWk = new FaOtWorkerHost()); }
-    async _otCallAssistantTool(name, args, opts) {
+    async _otCallAssistantTool(name, args, opts, trail) {
         const t = this.tools[name];
         if (!t) return { ok: false, result: { error: '工具「' + name + '」不存在（可能是這個版本沒有，或網頁版不支援）' } };
         if (FA_OT_RISKY_TOOL.test(name) && !(opts && opts.assumeYes)) {
@@ -68857,7 +68884,7 @@ ${fnData.code}
         }
         let raw;
         try { raw = await t.callback.call(this, JSON.stringify(args || {})); } catch (e) { return { ok: false, result: { error: String((e && e.message) || e) } }; }
-        if (/^(?:browser_get_page_text|fetch_web_page)$/.test(name)) raw = await _faOtFollowAll(this, this.tools, name, args || {}, raw, null); // 狀態機裡讀網頁也要把 has_more 讀完
+        if (/^(?:browser_get_page_text|fetch_web_page)$/.test(name)) raw = await _faOtFollowAll(this, this.tools, name, args || {}, raw, trail || null); // 狀態機裡讀網頁也要把 has_more 讀完
         let j = null;
         try { j = JSON.parse(raw); } catch (_) {}
         if (j && j.type === 'image' && j.dataUrl) { this._otShowImage(j); j = { ok: true, shown_image: true, title: j.meta && j.meta.title, url: j.meta && j.meta.url, width: j.meta && j.meta.width, height: j.meta && j.meta.height }; }
@@ -68883,13 +68910,15 @@ ${fnData.code}
         if (!d || !d.states || !d.states.states) return { ok: false, error: '這個領域沒有狀態機' };
         const slots = _faOtSlots(plan.text);
         const scope = Object.assign({ slots, text: plan.text, context: {} }, slots);
-        const io = { callTool: async (name, args) => { const jt = this._otFindJsTool(d, name); return jt ? await this._otRunJsTool(jt, scope, opts) : await this._otCallAssistantTool(name, args, opts); } };
+        const ftrail = []; // 狀態機步驟與讀網頁續讀都併進同一份 trail，卡片只有一份步驟記錄
+        const io = { callTool: async (name, args) => { const jt = this._otFindJsTool(d, name); return jt ? await this._otRunJsTool(jt, scope, opts) : await this._otCallAssistantTool(name, args, opts, ftrail); } };
         const r = await _faOtFsmRun(d.states, c.state, scope, io);
         const trace = r.trace.map((x) => `${x.state}${x.tool ? ' → ' + x.tool : ''}${x.ok === false ? ' ✗' : ''}`).join('，');
+        ftrail.push(...r.trace.map((x) => '🧩 狀態機步驟：' + x.state + (x.tool ? ' → ' + x.tool : '') + (x.ok === false ? ' ✗（失敗）' : '')));
         if (r.status === 'cancelled') return { ok: false, cancelled: true, error: '使用者取消' };
         if (r.status === 'needs_input') return { ok: false, error: '缺少參數：' + (r.missing || []).join('、') + '（文字裡找不到，請補上，例如函式名稱、網址或檔案路徑）', trace };
         const last = scope.last_tool_result;
-        const text = last ? this._otPretty(typeof last === 'string' ? last : JSON.stringify(last), plan.text) : '';
+        const text = _faOtTrailText(ftrail) + (last ? this._otPretty(typeof last === 'string' ? last : JSON.stringify(last), plan.text) : '');
         if (r.status === 'solved') return { ok: true, kind: 'fsm', text, trace, results: r.context };
         const lastErr = last && typeof last === 'object' && last.error ? String(last.error).slice(0, 300) : '';
         return { ok: false, kind: 'fsm', error: (r.status === 'error' ? r.error : '狀態機沒有解決（走到 ' + (r.final_state || '?') + '）') + (lastErr ? '：' + lastErr : ''), text, trace };
@@ -102450,7 +102479,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             try { const j = JSON.parse(raw); if (j && (j.ok === false || j.error)) ok = false; } catch (_) {}
             const rtrail = []; if (ok && /^(?:browser_get_page_text|fetch_web_page)$/.test(cand.tool)) raw = await _faOtFollowAll(this, this.tools, cand.tool, args, raw, rtrail);
             if (args && args.url) rtrail.unshift('🌐 抓取 ' + args.url);
-            const pretty = (rtrail.length ? '📋 做了這些步驟：\n' + rtrail.map((x) => '- ' + x).join('\n') + '\n\n' : '') + this._otPretty(raw, question); FaRecipe.decide(trace, { stage: 'run', tool: cand.tool, answer: ok ? 'ok' : 'failed', by: 'program' }); steps.push('執行：' + cand.tool + (ok ? '' : '（失敗）'));
+            const pretty = _faOtTrailText(rtrail) + this._otPretty(raw, question); FaRecipe.decide(trace, { stage: 'run', tool: cand.tool, answer: ok ? 'ok' : 'failed', by: 'program' }); steps.push('執行：' + cand.tool + (ok ? '' : '（失敗）'));
             // ④ 措辭（只對資訊類結果；通過檢查才用）
             let text = pretty; let phraseBy = '程式';
             if (ok && S.recipePhrase && /search|fetch|lookup|query|read|parse|get_|summar|ask|explain/.test(cand.tool) && pretty.length > 80) {

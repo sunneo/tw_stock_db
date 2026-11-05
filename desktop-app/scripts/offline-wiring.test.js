@@ -5,11 +5,11 @@ const src = fs.readFileSync(path.join(__dirname, '..', 'renderer/src/floating-as
 const G = require('../renderer/src/offline/intent_gate.js');
 let pass = 0, fail = 0; const ok = (c, n) => { if (c) { pass++; console.log('ok   ' + n); } else { fail++; console.log('FAIL ' + n); } };
 const a = src.indexOf('/* OT-WEB-BEGIN */'), b = src.indexOf('/* OT-WEB-END */');
-const lib = new Function('_faSemSentences', '_faSummarize', src.slice(a, b) + '\nreturn { _faOtFollowAll };')((t) => t.split(/\n/).filter(Boolean), (s) => s.slice(0, 5));
+const lib = new Function('_faSemSentences', '_faSummarize', src.slice(a, b) + '\nreturn { _faOtFollowAll, _faOtTrailText };')((t) => t.split(/\n/).filter(Boolean), (s) => s.slice(0, 5));
 const RISKY = new Function('return ' + /const FA_OT_RISKY_TOOL = (\/.*\/i);/.exec(src)[1])();
 const e0 = src.indexOf('    async _otExecute(plan, opts) {'), e1 = src.indexOf('    // ---- 階段4', e0);
-const f0 = src.indexOf('    async _otCallAssistantTool(name, args, opts) {'), f1 = src.indexOf('    async _otExecFsm(', f0);
-const Cls = new Function('_faOtFollowAll', 'FA_OT_RISKY_TOOL', 'FaIntentGate', '_faOtAdjustSteps', '_faOtWantsVisible', 'return (class {\n' + src.slice(e0, e1) + '\n' + src.slice(f0, f1) + '\n});')(lib._faOtFollowAll, RISKY, G, (s) => s, () => false);
+const f0 = src.indexOf('    async _otCallAssistantTool(name, args, opts, trail) {'), f1 = src.indexOf('    async _otExecFsm(', f0);
+const Cls = new Function('_faOtFollowAll', '_faOtTrailText', 'FA_OT_RISKY_TOOL', 'FaIntentGate', '_faOtAdjustSteps', '_faOtWantsVisible', 'return (class {\n' + src.slice(e0, e1) + '\n' + src.slice(f0, f1) + '\n});')(lib._faOtFollowAll, lib._faOtTrailText, RISKY, G, (s) => s, () => false);
 const methods = {}; Object.getOwnPropertyNames(Cls.prototype).filter((n) => n !== 'constructor').forEach((n) => { methods[n] = Cls.prototype[n]; });
 const mkFa = (tools, extra) => Object.assign({ tools, _otPretty: (raw) => String(raw).slice(0, 80), _otShowImage() { } }, methods, extra || {});
 const T = (log, name, fn) => ({ callback: async (s) => { const args = JSON.parse(s); log.push([name, args]); return JSON.stringify(fn(args)); } });

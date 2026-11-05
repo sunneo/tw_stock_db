@@ -281,3 +281,19 @@
 - tool 路徑沒有「剩餘目標」的後置步驟（例如「打開 x.docx 並摘要」只做了打開）：理解閘會把剩餘部分記成 `unhandled`，但 tool 分支不像 steps 分支那樣顯示「沒做到」。這一項**未接**，沒有補。
 - 食譜／steps／tool 各自組裝 trail 陣列（格式相同，函式 `_faOtFollowAll` 共用）；抽成單一函式屬重構，沒做。
 - 稽核用假工具與切出來的函式，**沒有**在真 Electron 逐條打一遍；真 Electron 只重跑了離線打開的四組評測（見回報數字）。
+
+### 17.1 第 17 節三項「仍未接」的接續（2026-11-05，子工作階段）
+
+| 原本未接 | 現在 | 證據 |
+| --- | --- | --- |
+| tool 路徑沒有剩餘目標的後置步驟 | **已接**：開啟成功後 `_otGateAfterOpen`：用 `parse_uploaded_file` 把附件內容讀完（續讀），接著走跟 steps 同一個 `_otGatePost`（摘要＝機械摘要 TextRank、找主題）與同一個核對函式 `_otGateVerdict`（從 steps 分支抽出共用）；做不到的明寫「⚠️ 沒做到：…」（沒有可讀的檔案內容、截圖需要瀏覽器分頁、比較判斷離線沒做），理解閘沒處理的寫「只做了動作，沒處理：…」；`risk:confirm` 仍在開啟之前確認，取消就開啟與後置都不執行；開啟失敗不接後置、不報成功。移除了原本一律印「已開啟，但後面的目標沒處理」的舊提示（做了摘要還印沒處理是錯的） | `scripts/offline-open-post.test.js` 8 項；真 Electron 走真的 `_offlineRespond` |
+| 食譜／steps／tool 各自組步驟記錄 | **已接**：步驟記錄的輸出格式抽成單一函式 `_faOtTrailText`，steps、tool、cache、fsm、食譜五處共用（輸出與原本逐字相同）；steps 的核對區塊抽成 `_otGateVerdict`（steps 與 tool 共用）。trail 陣列仍由各路徑自己收集（內容本來就不同），但格式與核對只剩一份 | `offline-open-post.test.js` 第 1 項鎖格式；既有 `offline-gate-exec`／`offline-web-read`／`offline-gate*` 全過 |
+| fsm 的 trace 與 trail 是兩份 | **已接**：不動狀態機內部，外層把狀態機每一步以「🧩 狀態機步驟：…」附到同一份 trail，狀態機內呼叫的讀網頁工具續讀也寫進同一份；卡片只有一份「做了這些步驟」。原本 fsm 的 trace 根本沒顯示在卡片上 | `offline-open-post.test.js` 2 項（卡片只有 1 個步驟記錄標題） |
+
+仍做不到的：
+- 「打開 x.docx 並**截圖**」被核心規則 `browser_screenshot`（字面信心 0.92）接走，理解閘尊重字面規則，結果是嘗試截瀏覽器畫面（真 Electron 實測：`NOT_CONNECTED`）。這是規則與閘的優先序問題，不是 tool 路徑；沒改。
+- 開啟後的「截圖」只有網頁有分頁可截；檔案類（docx 等）編輯器卡片沒有截圖工具，會明寫沒做到。
+- 摘要是機械摘要（TextRank），不是 AI 歸納；「比較／判斷」「取第 N 則」離線仍沒做（明寫沒做到）。
+- fsm 只有單元測試（假的狀態機執行器）驗證，真 Electron 沒有打：專案內沒有現成可用的真實狀態機領域可以不改資料就觸發。
+
+真 Electron 實打（走真的 `_offlineRespond`，假工具；`scripts/eval/offline-open-post.electron.eval.js`）：「打開 合約.docx 並摘要」（開啟→讀 2 頁→機械摘要→核對，卡片一份步驟記錄）、「打開那個試算表然後告訴我哪個月最高」（只做了動作，沒處理）、「瀏覽器打開 … 並找美國選舉新聞」（steps，輸出不變）、cache 重放讀網頁（續讀＋步驟）、cache 重放有副作用工具（使用者不回答＝已取消、工具沒被呼叫）。「打開Word文件編輯器並摘要」（沒附檔案）在真流程裡由理解閘先回「請附上檔案」，所以「沒做到：摘要（沒有可讀的檔案內容）」只有單元測試覆蓋。四組命中評測不變：seen 42/42、held-out 21/28（錯 2）、heldout2 18/27（錯 2）、帶上下文 26/26（錯 0）。
