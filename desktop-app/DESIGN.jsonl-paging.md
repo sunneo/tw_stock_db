@@ -86,3 +86,19 @@ cursor 格式 `c1:<來源>:<第幾筆>:<第幾段>:<第幾頁>`，解碼時驗�
 - 一次問答最多讀幾頁的預估（要跟 `fitToBudget` 的 placeholder 銜接），離線小模型（4096 token）的 `fraction` 調校。
 - `knowledge_ask`、`repo_*` 清單類工具帶 `_page` meta 與 `offset`（目前只有總截斷會轉 JSONL）。
 - 用真的線上視覺模型量一次實際回多少物件、斷在第幾輪（需要使用者的金鑰與一張複雜的圖，列真人驗證）。
+
+## 七、各種大回應的覆蓋現況（2026-11-05 稽核）
+
+所有工具結果最後都經 `_formatToolResult`，超過預算就進 `_truncateToolResultForContext`；所以下面每一種都有「讀得完」的路：
+
+| 回應形狀 | 處理 | 帳本 |
+|---|---|---|
+| 記錄清單（頂層陣列、含占大宗陣列的物件、JSONL 文字） | 第 1 頁 JSONL＋`big_content page` | 覆蓋區間，缺口由程式算 |
+| id→物件對照表、很多欄位的大物件（`entries`，一個欄位一行 `{key,value}`；單一欄位太大自動分段） | 同上 | 同上 |
+| 大文字（終端機輸出、網頁、記錄檔） | 開頭＋概要＋暫存，`big_content read`（有 `has_more`）、`grep`、`json`、`js` | `has_more` 型：`read` 到最後一段才放行；`grep`／`json`／`js` 視為有目的的取用 |
+| 自己有分頁的工具（`parse_uploaded_file`、`fetch_web_page`、`browser_get_page_text`、`article_section`、`repo_*`、`coding_read_file`、`knowledge_detail`） | 原本的 `has_more`＋`next_offset`／`next_start_line`／`next_line` | 原本的「下一個位置」型 |
+| `interpret_image`（一般描述） | 單次最多 2048 token；輸出被截斷時答案尾端附警語（原本完全不知道） | — |
+| `interpret_image`（拆解、列出所有物件） | `output:'jsonl'`＋自動續傳（第四節） | 覆蓋區間 |
+| `knowledge_ask`（只有 `limit`，沒有 `offset`） | 命中很多、超過預算時走總截斷的 `hits` 陣列分頁 | 覆蓋區間 |
+
+仍然只有「下一個位置」而沒有覆蓋範圍的是第四列那些自帶分頁的文字工具（跳頁讀仍會清掉缺口）；這些是文字不是記錄，要補得改各工具回應加 `_page`，列待改善。

@@ -141,5 +141,13 @@ const mkVlm = (total, capChars) => {
   // 提醒用完仍沒讀：由程式附警語（不靠模型）
   const g2 = mkG(); g2._truncateToolResultForContext(big, 'some_tool'); let w = null; for (let i = 0; i < 8; i++) { w = g2._readLedgerGate(); if (w && w.warn) break; }
   assert.ok(w && w.warn && /只讀了 \d+／3000 筆/.test(w.warn), w && w.warn); n++; console.log('ok - 帳本：提醒用完後由程式附警語，寫明讀了多少筆');
+  // 大文字（不是記錄清單）：也進帳本；用 big_content read 讀到最後一段才放行
+  const g3 = mkG(); const longText = '很長的文字行。\n'.repeat(20000); const out3 = g3._truncateToolResultForContext(longText, 'terminal_run');
+  const id3 = /代號 (bc_\d+)/.exec(out3)[1];
+  assert.ok(g3._readLedgerGate() && g3._readLedgerGate().remind.indexOf('offset') > 0, '大文字只看開頭：最終回答前要被擋');
+  g3._noteReadLedger('big_content', JSON.stringify({ id: id3, action: 'read', offset: 5000 }), JSON.stringify({ ok: true, offset: 5000, has_more: true, next_offset: 9000, total: longText.length }));
+  assert.ok(g3._readLedgerGate().remind);
+  g3._noteReadLedger('big_content', JSON.stringify({ id: id3, action: 'read', offset: 9000 }), JSON.stringify({ ok: true, offset: 9000, has_more: false, next_offset: null, total: longText.length }));
+  assert.strictEqual(g3._readLedgerGate(), null); n++; console.log('ok - 大文字截斷進帳本，read 到最後一段放行');
   console.log(n + ' passed, 0 failed');
 })().catch((e) => { console.error(e); process.exit(1); });

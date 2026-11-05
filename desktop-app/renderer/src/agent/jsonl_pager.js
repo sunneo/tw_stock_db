@@ -96,7 +96,13 @@
     if (isObj(value)) {
       var totalLen = (safeStringify(value) || '').length;
       var dom = dominantArray(value, totalLen);
-      if (!dom) return null;
+      if (!dom) {
+        // 沒有占大宗的陣列（例如 id→物件的對照表、很多欄位的大物件）：一個欄位一行 {"key":…,"value":…}；單一欄位太大由分頁器分段
+        var keys = Object.keys(value); if (keys.length < 3) return null;
+        var le = keys.map(function (k) { return safeStringify({ key: k, value: value[k] }); });
+        if (le.indexOf(null) >= 0) return null;
+        return { lines: le, shape: 'entries', head: null, bad: 0, path: [] };
+      }
       var ls2 = dom.arr.map(safeStringify);
       if (ls2.indexOf(null) >= 0) return null;
       return { lines: ls2, shape: 'field:' + dom.path.join('.'), head: withoutPath(value, dom.path), bad: 0, path: dom.path };

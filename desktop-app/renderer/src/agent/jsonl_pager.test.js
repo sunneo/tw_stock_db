@@ -134,6 +134,14 @@ t('每一頁的記錄行都是單行（內容的換行已跳脫）', () => {
   r.text.split('\n').forEach((l, i) => { if (l) JSON.parse(l); });
 });
 
+t('id→物件的對照表、很多欄位的大物件：一個欄位一行，逐頁讀完相等', () => {
+  const map = {}; for (let i = 0; i < 400; i++) map['k' + i] = { name: '項目' + i, tags: ['a', 'b'], n: i };
+  const rec = P.toRecords(JSON.stringify(map)); assert.strictEqual(rec.shape, 'entries'); assert.strictEqual(rec.lines.length, 400);
+  const r = readAll(rec.lines, { source: 'm', chars: 3000 });
+  const back = {}; r.records.forEach((x) => { back[x.key] = x.value; }); assert.deepStrictEqual(back, map);
+  assert.strictEqual(P.toRecords({ a: 1, b: 2 }), null, '欄位太少不當清單');
+});
+
 t('head 太大就不塞；continue 提示帶 cursor', () => {
   const rec = P.toRecords(mk(50));
   const p1 = P.parsePage(P.page(rec.lines, { source: 'a', chars: 3000, head: { big: 'x'.repeat(5000) }, continueWith: 'big_content({"id":"a","action":"page","cursor":"<CURSOR>"})' }).text).meta;
