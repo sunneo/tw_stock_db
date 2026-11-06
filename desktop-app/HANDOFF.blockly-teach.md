@@ -30,7 +30,7 @@
 - 已完成：G2／G18（0a2bc959）；領域包 algo2／os／ds（97231841）、linuxtext（下一個提交）；思考堆疊缺口 A、B、H（`DESIGN.think-stack.md` 末節）。數字見 `DESIGN.blockly-curriculum.md` §3。核心測試 212/212、Linux 題庫 37/37＋21/27、原 60 題 59/60、holdout_blockly 28/31、Electron 20/20。
 - 新增領域包的做法：寫 `domain_X_core.js`（骨架）＋`domain_X.test.js`（種子，用 `domain_harness.js`），在 `scripts/embed-code-ui.js` 清單、`renderer/src/floating-assistant.js` 的 BEGIN/END 標記與 `_pyDomainsInit` 清單、`scripts/run-core-tests.js` 各加一行；embed／build 要用 `ssh hungfu.lee@127.0.0.1`（檔案屬於 hungfu.lee）。`c.<槽位>` 是選項的**值**不是 id（pascal 曾因此踩雷）。
 - 讀取器的坑：領域條目標 `pri:true` 才能壓過內建工具詞彙（lines-map 會搶「每行」）；單行字串輸入要寫成「輸入一個字串 s」；指令序列用「第一行 q，之後 q 行指令：…」；兩個清單要分別寫「第二行 n 個…，第三行 q 個…」。
-- 下週待辦（優先序）：(1) 多矩陣輸入形狀（銀行家演算法、分頁位址轉換）；(2) diff／join／cat-two 的「兩段輸入」；(3) 同步原語事件模擬、檔案系統（inode／FAT）、進階圖樹（MST／SCC／Bellman-Ford／LCA）；(4) 真 Linux 語意模擬（fd 表、dup2、pipe 緩衝、信號遮罩、socket 狀態機；純函式）；(5) 思考堆疊 C／E／F／I；(6) holdout 未解：Linux 6 題（cat-two、exec-env、tar-blocks、canonical-huffman、xz-header、bmp-write8）與各包 holdout 各 1 題（輸入措辭；補時要用新出的 holdout，不要拿現有的當教材）。
+- 下週待辦（優先序）：(1) 多矩陣輸入形狀（銀行家演算法、分頁位址轉換）；(2) ✔diff／join／cat-two 的「兩段輸入」已做（v322：`domain_twofile_core.js`＋讀取器把「兩個檔案，每個是一行 k 加上 k 行」改寫成兩段輸入）；(3) 同步原語事件模擬、檔案系統（inode／FAT）、進階圖樹（MST／SCC／Bellman-Ford／LCA）；(4) 真 Linux 語意模擬（fd 表、dup2、pipe 緩衝、信號遮罩、socket 狀態機；純函式）；(5) 思考堆疊 C／E／F／I；(6) holdout 未解：Linux 6 題（cat-two、exec-env、tar-blocks、canonical-huffman、xz-header、bmp-write8）與各包 holdout 各 1 題（輸入措辭；補時要用新出的 holdout，不要拿現有的當教材）。
 
 ## 3b. 最新進度（blockly-teach-4，2026-11-07 06:10 CST；比 §3a 新，先看這裡）
 

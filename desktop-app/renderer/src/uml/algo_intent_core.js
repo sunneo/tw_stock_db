@@ -177,7 +177,9 @@
         return out.length ? out : null;
     }
     function read(statement) {
-        const text = String(statement || '').trim(); const inputs = []; const names = new Set(); let strCount = 0;
+        let text = String(statement || '').trim(); const inputs = []; const names = new Set(); let strCount = 0;
+        // 「兩個檔案（段落）：每個是一行 k 加上 k 行文字」→ 改寫成已支援的兩段輸入（第一行 k，接著 k 行；再來一行 k2，接著 k2 行）
+        text = text.replace(new RegExp('(?:輸入)?\\s*(?:兩|2)\\s*(?:個|份)[「『]?(?:檔案|文件|文字檔|段落|區塊|區段|清單|文字)[」』]?\\s*[，,：:]?\\s*每(?:個|份)[^，。；;：:]{0,10}?(?:都)?(?:是|為)?\\s*(?:先)?\\s*一行(?:整數)?\\s*(' + NAME + ')\\s*[，,]?\\s*(?:加上|再加|接著|再|後面接|後面跟著?)\\s*\\1\\s*行[^，。；;（(]{0,6}(?:[（(][^）)]*[）)])?'), (all, k) => '第一行 ' + k + '，接著 ' + k + ' 行是第一個的內容，再來一行 ' + k + '2，接著 ' + k + '2 行是第二個的內容');
         const addNames = (ns) => ns.forEach((n) => names.add(n));
         // 切成子句：句號、逗號、分號、冒號都切；括號註解先拿掉（不然「（0<=n<=90）」會干擾）
         const clauses = stripNote(text.replace(/只含\s*\S+\s*的/g, '只含括號的')).split(/[。，,；;：:]+/).map((c) => c.trim()).filter(Boolean);
