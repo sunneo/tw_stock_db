@@ -56,9 +56,9 @@
         const names = umlOps.map((x) => x.name); for (const need of ['read_input', 'solve', 'main']) if (!names.includes(need)) return { ok: false, reason: 'UML 沒有操作 ' + need };
         const parse = (cnl) => { const pr = B.parseCNL(cnl); if (!pr.ok) throw new Error('區塊解析失敗：' + JSON.stringify(pr.errors.slice(0, 2)) + '\n' + cnl); return B.toIR(pr.blocks); };
         const cnl = { read_input: readInputCNL(intent), main: mainCNL(intent) }; const bodies = { read_input: parse(cnl.read_input), main: parse(cnl.main) };
-        const mkModel = (solveIR, imports) => {
+        const mkModel = (solveIR, imports, helpers) => {
             const mk = (name, params, body, ret) => ({ name, params: params.map((n) => ({ name: n, type: { base: 'any', args: [] } })), returns: { base: 'any', args: [] }, visibility: '+', static: true, body });
-            const ops = [mk('read_input', [], bodies.read_input), mk('solve', intent.vars.map((v) => v.name), solveIR), mk('main', [], bodies.main)];
+            const ops = [mk('read_input', [], bodies.read_input)].concat((helpers || []).map((h) => mk(h.name, h.params, h.body)), [mk('solve', intent.vars.map((v) => v.name), solveIR), mk('main', [], bodies.main)]); // helpers：骨架的輔助操作（G2），與 solve 並列的模組函式
             const model = { name: 'Module', actors: ['User'], relations: [], usecases: [], prelude: imports || [], order: [], classes: [{ name: 'Module', kind: 'class', attrs: [], values: [], ops }] };
             model.order = model.prelude.map((x) => ({ t: 's', s: x })).concat(ops.map((o2) => ({ t: 'f', o: o2 }))); return model;
         };
@@ -82,7 +82,7 @@
         // ---- 範式骨架（每個範式一個帶槽位的區塊骨架；槽位選單很小，由程式窮舉組合、逐個交沙盒，第一個 AC 就用，不問模型）----
         if (o.Paradigms && o.Paradigms.forIntent(intent, o.statement).length) {
             let lastModel = null;
-            const pj = async (solveCnl) => { const model = mkModel(parse(solveCnl)); const source = o.C2U.toPython(model); lastModel = { model, source }; return o.judge ? o.judge(source) : { verdict: 'UNCHECKED', detail: '' }; };
+            const pj = async (solveCnl, extra) => { const model = mkModel(parse(solveCnl), undefined, (extra || []).map((h) => ({ name: h.name, params: h.params, body: parse(h.cnl) }))); const source = o.C2U.toPython(model); lastModel = { model, source }; return o.judge ? o.judge(source) : { verdict: 'UNCHECKED', detail: '' }; };
             const ps = await o.Paradigms.solve({ intent, statement: o.statement, judge: pj, limit: o.paradigmLimit, rank: o.paradigmRank });
             res.rounds.push({ by: 'paradigm', ok: ps.ok, skeleton: ps.skeleton, tried: ps.tried, verdict: ps.verdict });
             if (ps.ok) return Object.assign(res, { source: lastModel.source, model: lastModel.model, paradigm: ps.skeleton, slots: ps.choice, tried: ps.tried, cnl: Object.assign(cnl, { solve: ps.cnl }), verdict: ps.verdict });

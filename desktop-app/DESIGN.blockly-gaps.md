@@ -216,3 +216,30 @@ LZMA 的 match／rep0–3／距離槽／狀態轉移機、LZMA2 區塊分塊、B
 - 重新產生：`python3 scripts/eval/gen_bench_linux.py`（固定亂數種子，輸出可重現）。產生器內含自我驗證：CRC32／Adler 與 `zlib` 一致；tar 標頭可被 `tarfile` 讀回；gzip 成員可被 `gzip.decompress` 解；固定霍夫曼流可被 `zlib.decompress(..., -15)` 解；LZMA 範圍編碼器與解碼參考解往返一致；BMP 寫入器與測資產生器一致；且每題每筆測資的輸出都不是空的（避免「什麼都不印」過關）。
 - 與既有基準不重複：id 皆 `lx-` 前綴，題材不與既有 L0–L6 題重疊。
 - 未涵蓋（刻意）：動態霍夫曼 inflate、LZMA match 解碼與 LZMA2、BMP RLE4／RLE8 與 32 位元／位元欄遮罩、tar 的 PAX／GNU 長檔名、真實檔案 IO、真行程。這些在 §4 對應 G14／G15／G16 或列為下一輪。
+
+## 7. 階段 2 進度（blockly-teach，2026-11-07；逐項標已補與提交）
+
+完整進度與後續領域擴充見 `DESIGN.blockly-curriculum.md`。量測（無模型）：bench_linux_all **train 37/37、holdout 21/27**（起點 0/64）。
+
+| # | 狀態 | 提交／做法 |
+|---|---|---|
+| G1 | **已補** | dfed1565、73deb981：`readToolInput`（hex／lines／rest／樣式／旗標行／多段）、`TOOLS`＋`TOOL_FAMILIES`＋`intent.algos` |
+| G2 | **已補（輔助操作）** | 本批：骨架可宣告 `helpers`，`Paradigms.renderHelpers` → `judge(cnl, extra)` → `mkModel(solveIR, imports, helpers)`；共用 `crc32(data)` 單元被 crc32／gunzip／gzip-member／xz-header 四個骨架 call（測試檢查產出只有一個 `def crc32`）。`codec`／`pipeline`／`state-machine` 三種切法以骨架內的階段呈現（lex→rpn→eval、讀→算→寫），尚未各自拆成多操作；其餘共用單元（bit-reader、le_pack）可比照 `crcHelper` 逐步抽出 |
+| G3 | **已補** | 73deb981：35 個運算式積木＋`try_ignore`（雙本體 try/except 仍走通用程式區塊） |
+| G4 | **已補** | 73deb981：`ftTable` 從敘述抽欄位位移，抽不到用標準位移 |
+| G5 | **已補** | dfed1565 |
+| G6 | **已補（無 def 改寫）** | 73deb981：regex 狀態集、調度場＋RPN、inflate、VM 全不含 def；(a) 保留 def 不做 |
+| G7 | **已補** | 73deb981 |
+| G8 | **已補** | 73deb981 |
+| G9 | **已補** | 73deb981（`align.up`、`bmp.stride-pad`） |
+| G10 | **已補** | 73deb981（`lexer.expr-tokens`、`lexer.shell-args`） |
+| G11 | **已補** | 73deb981 |
+| G12 | **已補** | 73deb981（`interp.stack-vm`、`interp.assign-env`、`interp.pipeline`、`str.env-expand`） |
+| G13 | **已補** | 73deb981（LZ77 編解碼、霍夫曼合併、範式霍夫曼、DP 比對、Delta、RLE） |
+| G14 | 超出 Blockly | LZMA match／rep／距離槽狀態機、LZMA2、BCJ：待補教學／上網 |
+| G15 | 超出 Blockly | 判題器二進位 IO、檔案、argv、結束碼、環境變數：判題器維護者 |
+| G16 | 超出 Blockly | 真行程：待補教學 |
+| G17 | **已補** | dfed1565、73deb981 |
+| G18 | **已補（讀取器偵測）** | 本批：`intent.specLike`（長敘述／多張表／多條公式）；模型／老師部分超出 Blockly |
+
+holdout 未解 6 題：cat-two、exec-env、tar-blocks、canonical-huffman、xz-header、bmp-write8（輸入措辭或輸出格式猜不到，沒有讀 holdout 敘述；需老師教）。holdout 對「家族」不乾淨（缺口表已點名單元），21/27 代表「缺口表家族＋沒看過的措辭／格式」的泛化。

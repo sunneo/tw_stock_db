@@ -67,7 +67,7 @@
 | # | 狀態 | 提交／備註 |
 |---|---|---|
 | G1 讀取器形狀 | ✔ 已補 | dfed1565、73deb981（`readToolInput`、`TOOLS`、`TOOL_FAMILIES`、`intent.algos`） |
-| G2 切割模板（輔助操作） | ✗ 待補 | 計畫見 HANDOFF 待辦 1（`helpers`＋`mkModel` 第三參數；共用 `crc32` 單元） |
+| G2 切割模板（輔助操作） | ✔ 已補（helpers；共用 crc32 單元） | 見 DESIGN.blockly-gaps.md §7 |
 | G3 積木 | ✔ 已補（`try` 以 `try_ignore` 單本體積木處理；雙本體 try/except 仍走通用程式區塊） | 73deb981 |
 | G4 欄位表範式 | ✔ 已補 | 73deb981（`ftTable` 從敘述抽欄位位移，抽不到用標準位移） |
 | G5 行過濾器 | ✔ 已補 | dfed1565 |
@@ -83,6 +83,6 @@
 | G15 判題器二進位 IO 等 | 超出（判題器維護者） | — |
 | G16 真行程 | 超出（待補教學） | — |
 | G17 讀取器假陽性 | ✔ 已補 | dfed1565、73deb981 |
-| G18 規格即題目 | ◐ 偵測 `intent.specLike` 待做；模型／老師部分超出 | — |
+| G18 規格即題目 | ✔ 偵測 `intent.specLike` 已補；模型／老師部分超出 | 見 DESIGN.blockly-gaps.md §7 |
 
 量測（無模型）：bench_linux_all **train 37/37、holdout 21/27**（起點 0/64）；holdout 未解：cat-two、exec-env、tar-blocks、canonical-huffman、xz-header、bmp-write8（輸入措辭／輸出格式猜不到，需老師教）。holdout 對「家族」不乾淨（缺口表已點名單元），數字代表「家族＋沒看過的措辭／格式」的泛化。

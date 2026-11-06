@@ -32,6 +32,11 @@ const NEG = ['lx-huffman-cost', 'lx-xz-delta'];
     }
     console.log('Linux 工具 train 題：原敘述 ' + ok + '/' + SOLVE_IDS.length + '、換名稱 ' + rn + '/' + SOLVE_IDS.length + '、選項反序 ' + rv + '/' + SOLVE_IDS.length); bad.forEach((b) => console.log('  ✗ ' + b));
     for (const id of NEG) { const it = AI.read(probs[id].statement); assert.ok(it.algo !== 'list-sum' && it.algo !== 'kth-largest', id + ' 被認成通用算法 ' + it.algo); assert.ok(!PAR.forIntent(it, probs[id].statement).some((sk) => sk.algo === 'list-sum' || sk.algo === 'kth-largest'), id + ' 不可套通用骨架（sort.kth-largest 等）'); const o = await run(probs[id], probs[id].statement); assert.ok(o.ok, id + ' 要由對的工具型骨架解出：' + o.err); }
+    // G18 規格即題目：長敘述／多張表／多條公式標 specLike；短題不標
+    assert.ok(AI.read(probs['lx-inflate-fixed'].statement).specLike, 'inflate-fixed 應標 specLike'); assert.ok(AI.read(probs['lx-lzma-literals'].statement).specLike, 'lzma-literals 應標 specLike'); assert.ok(!AI.read(probs['lx-crc32'].statement).specLike && !AI.read(probs['lx-grep-i'].statement).specLike, '短題不應標 specLike');
+    // G2 切割：共用單元寫成輔助操作（模組函式），整合題用 call 組合
+    for (const id of ['lx-crc32', 'lx-gunzip-stored']) { const p = probs[id]; const uml = await UC.scenarioToModel(p.statement, { readers: [AI.reader] }); const judge = async (src) => { const j = await J.judge({ lang: 'python', source: src + '\nmain()\n', problem: p }); return { verdict: j.verdict, detail: j.detail }; };
+        const r = await PL.buildFromUML({ statement: p.statement, uml: { hints: uml.hints, model: uml.model }, B, R, C2U, FaPyBody: PB, Choose: CH, judge, Paradigms: PAR }); assert.ok(r.ok && r.verdict === 'AC', id + ' 要解出'); assert.ok(/def crc32\(data\)/.test(r.source) && /= crc32\(/.test(r.source), id + ' 的 crc32 要是獨立的輔助操作並被 call：\n' + r.source); assert.strictEqual((r.source.match(/def crc32\(/g) || []).length, 1); }
     // 近鄰但不同題：真正的「第 k 大」「總和」仍要認得（否決條件不可太寬）
     assert.strictEqual(AI.read('第一行 n k，第二行 n 個整數。輸出第 k 大的數。').algo, 'kth-largest'); assert.strictEqual(AI.read('第一行 n，第二行 n 個整數。輸出總和。').algo, 'list-sum');
     // 輸入形狀：n 行文字不丟行內容；樣式字串不是整數；十六進位單行
@@ -42,5 +47,5 @@ const NEG = ['lx-huffman-cost', 'lx-xz-delta'];
     assert.strictEqual(sh('第一行「寬 高」，接著 高 行，每行 寬 個像素。輸出總數。'), 'str:s | rest:lines');
     assert.strictEqual(sh('第一行是 a，接著 a 行為檔案一；第二行是 b，接著 b 行為檔案二。輸出連接。'), 'scalars:a | lines:lines | scalars:b | lines:lines2');
     if (bad.length) { console.log('✗ Linux 範式測試失敗 ' + bad.length + ' 項'); process.exit(1); }
-    console.log('Linux 工具範式測試：' + (SOLVE_IDS.length * 3 + NEG.length * 3 + 7) + ' passed, 0 failed'); process.exit(0);
+    console.log('Linux 工具範式測試：' + (SOLVE_IDS.length * 3 + NEG.length * 3 + 14) + ' passed, 0 failed'); process.exit(0);
 })().catch((e) => { console.error('FAIL', e && e.stack || e); process.exit(1); });
