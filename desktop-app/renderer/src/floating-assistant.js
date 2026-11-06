@@ -15318,7 +15318,7 @@ const holder = {};
  * 詞彙（資料，可擴充）：NUM（一二三…）、ELEM（整數／面額／查詢→int；單字／字元→str）、GOALS（動作表：中文動詞或名詞 → 配方）。 */
 (function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaAlgoIntent = factory(); })(typeof self !== 'undefined' ? self : this, function () {
     'use strict';
-    const NAME = '[a-zA-Z][a-z0-9]{0,4}'; const NAMES = NAME + '(?:\\s+' + NAME + ')*';
+    const NAME = '[a-zA-Z][a-z0-9]{0,4}'; const NAMES = NAME + '(?:[\\s、]+' + NAME + ')*';
     const CN = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
     const INT_WORDS = /整數|面額|查詢(?!字串|單字|文字)|數字|價值|重量/; const FLOAT_WORDS = /小數|實數|取樣值|取樣點|振幅/; const STR_WORDS = /單字|字串|字元|文字/;
     // 動作表：關鍵字（中文）→ 目的。recipe 是「語言中立的配方」：which＝作用在哪一種輸入（list／words／str）、op＝要做的運算
@@ -15443,7 +15443,7 @@ const holder = {};
     // ---- 工具型題目（cat／grep／xxd／tar／gzip／xz／bmp…）的輸入形狀：文字行串流、十六進位位元組、旗標行、多段 ----
     // 只看「輸入區」（開頭連續以 輸入／第N行／接著／再 起頭的句子），逐子句分類成：hex（單行十六進位）、str（一行原樣文字，含樣式 pat／旗標 flags）、
     // scalars（一行整數）、list（一行 k 個整數／一串整數）、lines（n 行原樣文字，行內容不丟）、rest（其餘所有行，行數由第一行決定）。
-    const ZONE_START = /^(?:輸入|第[一二三四五六七八九\d]+(?:行|份|段|個)|接著|再|然後|之後)/;
+    const ZONE_START = /^(?:輸入|第[一二三四五六七八九\d]+(?:行|份|段|個)|接下來|接著|緊接著|隨後|最後(?=\s*(?:[一二兩\d]+|[a-z][a-z0-9]{0,4})\s*行)|再接著|再來|再|然後|之後)/;
     function readToolInput(text) {
         const sents = stripNote(String(text)).split(/。/).map((x) => x.trim()).filter(Boolean); const zone = [];
         for (const s of sents) { if (ZONE_START.test(s)) zone.push(s); else break; }
@@ -15452,9 +15452,9 @@ const holder = {};
         const clauses = zone.join('，').split(/[，,；;：:]+/).map((c) => c.trim()).filter(Boolean); const out = []; const used = { s: 0, h: 0, lines: 0 };
         const nm = (k) => { const i = used[k]++; return k === 'lines' ? (i ? 'lines' + (i + 1) : 'lines') : k === 'h' ? (i ? 'h' + (i + 1) : 'h') : (i ? 't' : 's'); };
         let m;
-        const A_RE = new RegExp('(?:接著|再給|再來|然後|之後|再)\\s*(' + NAME + ')\\s*行');
+        const A_RE = new RegExp('(?:接下來|接著|緊接著|隨後|再給|再來|然後|之後|最後|再)\\s*(' + NAME + ')\\s*行');
         const one = (c) => { // 一個子句（已拿掉「輸入」）→ 0～1 個輸入描述
-            const head = /^(?:再來|再給|再|然後|接著|之後)?\s*(?:[^，，]{0,6}?第[一二三四五六七八九\d]+行|[一二兩]行)\s*(?:是|為)?\s*(.*)$/.exec(c); if (!head) return null; const d = head[1].trim(); let m;
+            const head = /^(?:再來|再給|再|然後|接下來|接著|緊接著|隨後|之後|最後)?\s*(?:[^，，]{0,6}?第[一二三四五六七八九\d]+行|[一二兩]行)\s*(?:是|為)?\s*(.*)$/.exec(c); if (!head) return null; const d = head[1].trim(); let m;
             if (/十六進位/.test(d)) return { k: 'hex', name: nm('h') };
             if (/^base64|^[Bb]ase\s*64/.test(d)) return { k: 'str', name: nm('s'), raw: true };
             if (/^pat$/.test(d)) return { k: 'str', name: 'pat', raw: true, role: 'pat' };
@@ -15472,7 +15472,7 @@ const holder = {};
         };
         for (let c of clauses) {
             c = c.replace(/^輸入(?=第|一行|(?:一|兩|二)行)/, '').replace(/^輸入\s*/, ''); if (!c) continue; let m;
-            if (!/^(?:再來|再給|再|然後|接著|之後)?\s*[一二兩]行/.test(c) && (m = new RegExp('^(?:接著|再|然後|之後)\\s*(' + NAME + '|[一-龥]{1,2})\\s*行').exec(c))) { out.push({ k: /^[a-zA-Z]/.test(m[1]) ? 'lines' : 'rest', count: /^[a-zA-Z]/.test(m[1]) ? m[1] : null, name: nm('lines'), raw: true }); continue; }
+            if (!/^(?:再來|再給|再|然後|接下來|接著|緊接著|隨後|之後|最後)?\s*[一二兩]行/.test(c) && (m = new RegExp('^(?:接下來|接著|緊接著|隨後|然後|之後|最後|再接著|再來|再)\\s*(' + NAME + '|[一-龥]{1,2})\\s*行').exec(c))) { out.push({ k: /^[a-zA-Z]/.test(m[1]) ? 'lines' : 'rest', count: /^[a-zA-Z]/.test(m[1]) ? m[1] : null, name: nm('lines'), raw: true }); continue; }
             const mA = A_RE.exec(c); const pre = mA ? c.slice(0, mA.index) : c; const r = pre.trim() ? one(pre.trim()) : null; if (r) out.push(r);
             if (mA) out.push({ k: 'lines', count: mA[1], name: nm('lines'), raw: true });
         }
@@ -15490,21 +15490,21 @@ const holder = {};
             const c = clauses[i]; if (/^(輸出|求|找出|判斷|把|只看|對每個|每個|若|保證|有多組)/.test(c)) { seenOutput = true; }
             if (seenOutput) continue;
             if ((m = /^輸入(?:一行)?(兩|三|四|五)個(?:正)?整數$/.exec(c))) { const ns = 'abcde'.slice(0, { 兩: 2, 三: 3, 四: 4, 五: 5 }[m[1]]).split(''); inputs.push({ k: 'scalars', names: ns, type: 'int', line: true }); addNames(ns); continue; } // 輸入三個整數（沒有名字：a b c）
-            if ((m = new RegExp('^(?:接著|再|然後|之後)\\s*(' + NAME + ')\\s*行字元').exec(c))) { inputs.push({ k: 'grid', count: m[1], width: null, name: 'g' }); addNames(['g']); continue; } // 接著 n 行字元 "." 或 "#"
-            if ((m = new RegExp('^(?:接著|再|然後|之後)\\s*(' + NAME + ')\\s*行(?:指令|操作|事件|動作)$').exec(c))) { inputs.push({ k: 'grid', count: m[1], width: null, name: 'g' }); addNames(['g']); continue; } // 之後 q 行指令（每行一個字串，由程式自己拆）
-            if ((m = new RegExp('^(?:接著|再|然後|之後)\\s*(' + NAME + ')\\s*行\\s*(' + NAMES + ')(?:\\s*(?:表示|代表).*)?$').exec(c))) { const ns = m[2].split(/\s+/); const rn_ = rowName(); inputs.push({ k: 'rows', count: m[1], names: ns, name: rn_ }); addNames([rn_]); continue; } // 接著 m 行 a b／再 q 行 x y
-            if ((m = new RegExp('^輸入(?:一行)?(?:(?:兩|三|四|五)個)?(?:正)?(整數|小數)\\s*(' + NAMES + ')$').exec(c))) { const ns = m[2].split(/\s+/); inputs.push({ k: 'scalars', names: ns, type: m[1] === '小數' ? 'float' : 'int', line: true }); addNames(ns); continue; }
+            if ((m = new RegExp('^(?:接下來|接著|緊接著|隨後|然後|之後|最後|再接著|再來|再)\\s*(' + NAME + ')\\s*行字元').exec(c))) { inputs.push({ k: 'grid', count: m[1], width: null, name: 'g' }); addNames(['g']); continue; } // 接著 n 行字元 "." 或 "#"
+            if ((m = new RegExp('^(?:接下來|接著|緊接著|隨後|然後|之後|最後|再接著|再來|再)\\s*(' + NAME + ')\\s*行(?:指令|操作|事件|動作)$').exec(c))) { inputs.push({ k: 'grid', count: m[1], width: null, name: 'g' }); addNames(['g']); continue; } // 之後 q 行指令（每行一個字串，由程式自己拆）
+            if ((m = new RegExp('^(?:接下來|接著|緊接著|隨後|然後|之後|最後|再接著|再來|再)\\s*(' + NAME + ')\\s*行\\s*(' + NAMES + ')(?:\\s*(?:表示|代表).*)?$').exec(c))) { const ns = m[2].split(/[\s、]+/); const rn_ = rowName(); inputs.push({ k: 'rows', count: m[1], names: ns, name: rn_ }); addNames([rn_]); continue; } // 接著 m 行 a b／再 q 行 x y
+            if ((m = new RegExp('^輸入(?:一行)?(?:(?:兩|三|四|五)個)?(?:正)?(整數|小數)\\s*(' + NAMES + ')$').exec(c))) { const ns = m[2].split(/[\s、]+/); inputs.push({ k: 'scalars', names: ns, type: m[1] === '小數' ? 'float' : 'int', line: true }); addNames(ns); continue; }
             if ((m = new RegExp('^接著\\s*(' + NAME + ')\\s*行(?:每行|各)\\s*(.+)$').exec(c))) {
                 const cnt = m[1]; const rest = m[2].trim(); let g;
                 if ((g = new RegExp('^(' + NAME + ')\\s*個字元').exec(rest))) { inputs.push({ k: 'grid', count: cnt, width: g[1], name: 'g' }); addNames(['g']); continue; }
-                const rn = new RegExp('^(' + NAMES + ')(?:\\s*(?:表示|代表).*)?$').exec(rest); if (rn) { const ns = rn[1].split(/\s+/); const rn_ = rowName(); inputs.push({ k: 'rows', count: cnt, names: ns, name: rn_ }); addNames([rn_]); continue; }
+                const rn = new RegExp('^(' + NAMES + ')(?:\\s*(?:表示|代表).*)?$').exec(rest); if (rn) { const ns = rn[1].split(/[\s、]+/); const rn_ = rowName(); inputs.push({ k: 'rows', count: cnt, names: ns, name: rn_ }); addNames([rn_]); continue; }
             }
             if ((m = new RegExp('^第([一二三四五六七八九\\d]+)行\\s*(' + NAME + ')\\s*(?:個|種)(.*)$').exec(c))) { // 第二行 n 個整數／第三行 q 個查詢 x
                 const tail = m[3]; const nm = (new RegExp('(?:查詢|每個|記為|稱為)\\s*(' + NAME + ')\\s*$').exec(tail) || [])[1];
                 const isStr = STR_WORDS.test(tail) && !INT_WORDS.test(tail); const isFloat = !isStr && FLOAT_WORDS.test(tail) && !INT_WORDS.test(tail); const freshName = (cands) => cands.find((x) => !names.has(x)) || cands[0] + '2'; const listName = nm || (isStr ? freshName(['w', 'w2', 'w3']) : freshName(['a', 'b', 'c', 'd'])); inputs.push({ k: 'list', name: listName, size: m[2], elem: isStr ? 'str' : isFloat ? 'float' : 'int' }); addNames([listName, m[2]]); continue;
             }
-            if ((m = new RegExp('^第([一二三四五六七八九\\d]+)行(?:一個|兩個|三個|四個|五個|六個)?小數\\s*(' + NAMES + ')$').exec(c))) { const ns = m[2].split(/\s+/); inputs.push({ k: 'scalars', names: ns, type: 'float', line: true }); addNames(ns); continue; } // 第二行小數 alpha／第二行五個小數 b0 b1 b2 a1 a2
-            if ((m = new RegExp('^第([一二三四五六七八九\\d]+)行(?:一個|兩個|三個|四個)?(?:正)?(?:整數)?\\s*(' + NAMES + ')$').exec(c))) { const ns = m[2].split(/\s+/); inputs.push({ k: 'scalars', names: ns, type: 'int', line: true }); addNames(ns); continue; }
+            if ((m = new RegExp('^第([一二三四五六七八九\\d]+)行(?:一個|兩個|三個|四個|五個|六個)?小數\\s*(' + NAMES + ')$').exec(c))) { const ns = m[2].split(/[\s、]+/); inputs.push({ k: 'scalars', names: ns, type: 'float', line: true }); addNames(ns); continue; } // 第二行小數 alpha／第二行五個小數 b0 b1 b2 a1 a2
+            if ((m = new RegExp('^第([一二三四五六七八九\\d]+)行(?:有|是|為)?(?:一個|兩個|三個|四個)?(?:正)?(?:整數)?\\s*(' + NAMES + ')$').exec(c))) { const ns = m[2].split(/[\s、]+/); inputs.push({ k: 'scalars', names: ns, type: 'int', line: true }); addNames(ns); continue; }
             if ((m = new RegExp('^輸入\\s*(' + NAME + ')$').exec(c))) { inputs.push({ k: 'scalars', names: [m[1]], type: 'int', line: true }); addNames([m[1]]); continue; }
             if (/^由若干單字組成/.test(c) && inputs.length && inputs[inputs.length - 1].k === 'pending') { inputs[inputs.length - 1] = { k: 'words', name: 'w' }; addNames(['w']); continue; }
             if (/^輸入一行$/.test(c)) { inputs.push({ k: 'pending' }); continue; }
@@ -15513,12 +15513,12 @@ const holder = {};
             if (/^輸入一行.*(字串|文字)/.test(c)) { inputs.push({ k: 'str', name: 's' }); addNames(['s']); continue; }
             if (new RegExp('^第([一二三四五六七八九\\d]+)行(?:小寫|大寫)?(?:英文)?(?:字串|文字)$').test(c)) { inputs.push({ k: 'str', name: 's' }); addNames(['s']); continue; } // 第二行小寫英文字串
             if ((m = new RegExp('^第([一二三四五六七八九\\d]+)行\\s*(' + NAME + ')\\s*(?:與|和)\\s*[^a-zA-Z\\s]*\\s*(' + NAME + ')$').exec(c))) { inputs.push({ k: 'scalars', names: [m[2], m[3]], type: 'int', line: true }); addNames([m[2], m[3]]); continue; } // 第一行 k 與目標 t
-            if ((m = new RegExp('^第([一二三四五六七八九\\d]+)行[^a-zA-Z0-9]{1,8}\\s*(' + NAMES + ')$').exec(c))) { const ns = m[2].split(/\s+/); inputs.push({ k: 'scalars', names: ns, type: 'int', line: true }); addNames(ns); continue; } // 第一行偏移量 k
+            if ((m = new RegExp('^第([一二三四五六七八九\\d]+)行[^a-zA-Z0-9]{1,8}\\s*(' + NAMES + ')$').exec(c))) { const ns = m[2].split(/[\s、]+/); inputs.push({ k: 'scalars', names: ns, type: 'int', line: true }); addNames(ns); continue; } // 第一行偏移量 k
             if ((m = /^輸入(?:一行|一個)?[^，]*?(?:字串|文字|羅馬數字)(?:\s*([a-z][a-z0-9]{0,3}))?$/.exec(c)) || /^輸入一個很長的.*整數$/.test(c)) { const sn = (m && m[1]) || 's'; inputs.push({ k: 'str', name: sn }); addNames([sn]); continue; } // 輸入一個由 0、1 組成的字串／輸入小寫字串／輸入一個很長的非負整數（以字串給）
             if (/^輸入(?:一行)?以空格分隔的/.test(c)) { inputs.push({ k: 'words', name: 'w' }); addNames(['w']); continue; } // 輸入以空格分隔的後序運算式
-            if ((m = new RegExp('^輸入[^a-zA-Z0-9]{0,14}?\\s*(' + NAMES + ')$').exec(c)) && !/小數|字串|文字/.test(c)) { const ns = m[1].split(/\s+/); inputs.push({ k: 'scalars', names: ns, type: 'int', line: true }); addNames(ns); continue; } // 輸入 a e m／輸入三個點的整數座標 x1 y1 x2 y2 x3 y3
+            if ((m = new RegExp('^輸入[^a-zA-Z0-9]{0,14}?\\s*(' + NAMES + ')$').exec(c)) && !/小數|字串|文字/.test(c)) { const ns = m[1].split(/[\s、]+/); inputs.push({ k: 'scalars', names: ns, type: 'int', line: true }); addNames(ns); continue; } // 輸入 a e m／輸入三個點的整數座標 x1 y1 x2 y2 x3 y3
         }
-        { const ti = readToolInput(text); if (ti && !inputs.some((x) => x.k === 'grid' || x.k === 'rows') && (!inputs.length || ti.some((x) => (x.k === 'list' && x.size === null) || x.k === 'hex' || x.k === 'lines' || x.k === 'rest' || (x.k === 'str' && x.role)))) { const keep = ti.length === 1 && ti[0].k === 'lines' && inputs.length === 1 && inputs[0].k === 'scalars' && inputs[0].line ? inputs[0] : null; inputs.length = 0; names.clear(); if (keep) { inputs.push(keep); keep.names.forEach((n) => names.add(n)); } ti.forEach((x) => inputs.push(x)); } } // 工具型題目的輸入形狀（文字行串流、十六進位、旗標行、多段）
+        { const ti = readToolInput(text); if (ti && !inputs.some((x) => x.k === 'grid' || x.k === 'rows') && (!inputs.length || ti.some((x) => (x.k === 'list' && x.size === null) || x.k === 'hex' || x.k === 'lines' || x.k === 'rest' || (x.k === 'str' && x.role)))) { const lead = ti.length >= 2 && ti[0].k === 'str' && !ti[0].role && inputs.length >= 1 && inputs[0].k === 'scalars' && inputs[0].line && ti.slice(1).every((x) => x.k === 'lines' || x.k === 'rest' || (x.k === 'list' && x.size)) ? inputs[0] : null; const keep = lead || ti.length >= 1 && ti.every((x) => x.k === 'lines' || x.k === 'rest' || (x.k === 'list' && x.size)) && ti.some((x) => x.k === 'lines' || x.k === 'rest') && inputs.length >= 1 && inputs[0].k === 'scalars' && inputs[0].line ? inputs[0] : null; inputs.length = 0; names.clear(); if (keep) { inputs.push(keep); keep.names.forEach((n) => names.add(n)); } (lead ? ti.slice(1) : ti).forEach((x) => inputs.push(x)); } } // 工具型題目的輸入形狀（文字行串流、十六進位、旗標行、多段）
         if (!inputs.length && /檔案/.test(text) && /行/.test(text) && /連接|串接|接在|依序|行號/.test(text)) { inputs.push({ k: 'rest', count: null, name: 'lines', raw: true, fallback: true }); } // 多段檔案的輸入措辭讀不出來：整份輸入當成行串流，由範式依「行數＋內容」逐段解析
         if (!inputs.length) { const im = /(?:≤|<=)\s*([a-z][a-z0-9]{0,3})\s*(?:≤|<=)/.exec(text); if (im) { inputs.push({ k: 'scalars', names: [im[1]], type: 'int', line: true }); addNames([im[1]]); } } // 沒寫「輸入」只在範圍裡出現變數（爬到第 n 階（1≤n≤80））：一個整數
         // ---- 輸出 ----
@@ -16298,6 +16298,10 @@ const holder = {};
         // 「保留 k 位小數」→ k（預設 2）；抽不到不猜
         const dig = (I) => { const m = /(?:保留|小數點後|四捨五入到小數)\s*(?:第)?\s*([0-9一二三四五六])\s*位/.exec(String(I.statement)); return m ? ({ 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6 }[m[1]] || +m[1]) : 2; };
         const cols = (I) => { const r = I.inputs.find((x) => x.k === 'rows'); return r && r.names ? r.names.length : 2; };
+        const q = (x) => JSON.stringify(x);
+        const ynOf = (I) => { if (I.facts && I.facts.yn) return I.facts.yn; const m = /輸出\s*([^\s，,。；]+?)\s*[，,]\s*(?:否則|不然|其餘)\s*(?:輸出|印)?\s*([^\s，,。；]+)/.exec(String(I.statement)); if (m) return [m[1], m[2]]; const m2 = /輸出\s*([A-Za-z_]+|[^\s，,。；：:]{1,8})\s*[，,；;]\s*[^，,。；]{0,8}?輸出\s*([A-Za-z_]+|[^\s，,。；：:]{1,8})/.exec(String(I.statement)); return m2 ? [m2[1], m2[2]] : ['YES', 'NO']; };
+        // 頁不在記憶體時要印的標籤：敘述裡「不在記憶體／缺頁／無效」附近「輸出 X」的 X（全大寫英文）；抽不到就回 null（骨架選到 label 會拒絕渲染，不猜）
+        const faultLabel = (I) => { const m = /(?:不在記憶體|不在實體記憶體|缺頁|無效|不存在|沒有對應)[^。；]{0,24}?(?:輸出|印出|輸出為|回報)\s*([A-Za-z_]{2,})/.exec(String(I.statement)) || /(?:輸出|印出)\s*([A-Z_]{3,})[^。；]{0,12}(?:表示|代表)\s*(?:缺頁|不在|無效)/.exec(String(I.statement)); if (m) return m[1]; const caps = [...new Set([...String(I.statement).matchAll(/(?:輸出|印出)\s*([A-Z][A-Z_]{2,})/g)].map((x) => x[1]))]; return caps.length === 1 ? caps[0] : null; };
         const PR = (c, d) => c.out === 'wait' ? 'print("%.' + d + 'f" % (wait / n))' : c.out === 'turn' ? 'print("%.' + d + 'f" % (turn / n))' : 'print(" ".join(str(v) for v in order))';
         const skeletons = [
             D('os.sched-np', 'cpu-sched', 'simulation', 'CPU 排程（非搶先）：每次從已到達的工作挑一個跑到完；挑法（FCFS／SJF／優先權）由窮舉決定；輸出平均等待、平均週轉或執行順序',
@@ -16318,12 +16322,25 @@ const holder = {};
             D('os.disk-sched', 'disk-sched', 'simulation', '磁碟排程：磁頭起點與請求序列；FCFS／SSTF／SCAN／C-SCAN／LOOK 由窮舉決定；輸出總移動距離或服務順序',
                 [S('pol', '政策', [['fcfs', 'fcfs'], ['sstf', 'sstf'], ['scan-up', 'scan-up'], ['scan-down', 'scan-down'], ['cscan', 'cscan'], ['look-up', 'look-up'], ['look-down', 'look-down']]), S('out', '輸出', [['total', 'total'], ['order', 'order']])],
                 (c, N) => { const n = N.sc.length > 1 ? N.sc[0] : null, h = N.sc[N.sc.length - 1], reqs = N.ls[0]; const mx = N.sc.length > 2 ? N.sc[1] : null; const body = { fcfs: ['seq = list(' + reqs + ')'], sstf: ['seq = []', 'rest = list(' + reqs + ')', 'cur = ' + h, 'while rest:', '    bi = 0', '    for i in range(len(rest)):', '        if abs(rest[i] - cur) < abs(rest[bi] - cur):', '            bi = i', '    cur = rest.pop(bi)', '    seq.append(cur)'], 'scan-up': ['seq = [v for v in sorted(' + reqs + ') if v >= ' + h + ']', 'seq = seq + [v for v in sorted(' + reqs + ', reverse=True) if v < ' + h + ']'], 'scan-down': ['seq = [v for v in sorted(' + reqs + ', reverse=True) if v <= ' + h + ']', 'seq = seq + [v for v in sorted(' + reqs + ') if v > ' + h + ']'], cscan: ['seq = [v for v in sorted(' + reqs + ') if v >= ' + h + ']', 'seq = seq + [v for v in sorted(' + reqs + ') if v < ' + h + ']'], 'look-up': ['seq = [v for v in sorted(' + reqs + ') if v >= ' + h + ']', 'seq = seq + [v for v in sorted(' + reqs + ', reverse=True) if v < ' + h + ']'], 'look-down': ['seq = [v for v in sorted(' + reqs + ', reverse=True) if v <= ' + h + ']', 'seq = seq + [v for v in sorted(' + reqs + ') if v > ' + h + ']'] }[c.pol]; void n; void mx; return code(body.concat(['cur = ' + h, 'total = 0', 'for v in seq:', '    total = total + abs(v - cur)', '    cur = v', c.out === 'total' ? 'print(total)' : 'print(" ".join(str(v) for v in seq))'])); }, { limit: 14 }),
+            D('os.banker', 'banker', 'simulation', '銀行家演算法：n 個行程、m 種資源；已配置矩陣、最大需求矩陣、可用向量；需求＝最大需求−已配置；反覆找一個需求都能被現有資源滿足的行程讓它跑完並還回資源；輸出是否安全，或安全序列（兩個矩陣的順序、找行程的方式、編號起點由窮舉決定）',
+                [S('ord', '兩個矩陣的順序', [['alloc-max', 'alloc-max'], ['max-alloc', 'max-alloc']]), S('scan', '找行程的方式', [['restart', 'restart'], ['sweep', 'sweep']]), S('out', '輸出', [['safe', 'safe'], ['seq', 'seq']]), S('base', '行程編號從幾開始', [['1', '1'], ['0', '0']]), S('bad', '不安全時', [['label', 'label'], ['minus1', 'minus1']])],
+                (c, N, I) => { const n = N.sc[0], m = N.sc[1], av = N.ls[0], A = N.L[0], B = N.L[1]; if (!n || !m || !av || !A || !B) throw new Error('銀行家演算法要有 n m、可用向量、兩個矩陣'); const yn = ynOf(I);
+                    const L = ['al = [list(map(int, s.split())) for s in ' + A + ']', 'mx = [list(map(int, s.split())) for s in ' + B + ']']; if (c.ord === 'max-alloc') L.push('al, mx = mx, al');
+                    L.push('need = [[mx[i][j] - al[i][j] for j in range(' + m + ')] for i in range(' + n + ')]', 'work = list(' + av + ')', 'done = [False] * ' + n, 'seq = []', 'prog = True', 'while prog:', '    prog = False', '    for i in range(' + n + '):', '        if not done[i] and all(need[i][j] <= work[j] for j in range(' + m + ')):', '            for j in range(' + m + '):', '                work[j] = work[j] + al[i][j]', '            done[i] = True', '            seq.append(i + ' + c.base + ')', '            prog = True'); if (c.scan === 'restart') L.push('            break');
+                    L.push('ok = len(seq) == ' + n); if (c.out === 'safe') L.push('print(' + q(yn[0]) + ' if ok else ' + q(yn[1]) + ')'); else L.push('if ok:', '    print(" ".join(str(v) for v in seq))', 'else:', '    print(' + (c.bad === 'label' ? q(yn[1]) : '-1') + ')'); return code(L); }, { limit: 40 }),
+            D('os.page-translate', 'page-translate', 'simulation', '分頁位址轉換：頁大小 ps、頁表（虛擬頁→實體框，負數表示不在記憶體）；虛擬位址的頁號＝位址 // 頁大小、位移＝位址 % 頁大小；實體位址＝框編號 × 頁大小 + 位移；頁不在記憶體時輸出標籤或 -1',
+                [S('out', '輸出', [['phys', 'phys'], ['frame', 'frame'], ['offset', 'offset']]), S('bad', '頁不在記憶體時', [['label', 'label'], ['minus1', 'minus1']]), S('col', '頁表每列取哪個數', [['first', '0'], ['last', '-1']])],
+                (c, N, I) => { const ps = N.sc[1], T = N.L[0], Q = N.L[1]; if (!ps || !T || !Q) throw new Error('分頁位址轉換要有頁大小、頁表與位址兩段輸入'); const lab = faultLabel(I); if (c.bad === 'label' && !lab) throw new Error('敘述裡抽不到缺頁標籤');
+                    const bad = c.bad === 'label' ? q(lab) : '-1'; const val = { phys: 'pt[pg] * ' + ps + ' + off', frame: 'pt[pg]', offset: 'off' }[c.out];
+                    return code(['pt = [int(s.split()[' + c.col + ']) for s in ' + T + ']', 'for s in ' + Q + ':', '    v = int(s.split()[0])', '    pg = v // ' + ps, '    off = v % ' + ps, '    if pg < 0 or pg >= len(pt) or pt[pg] < 0:', '        print(' + bad + ')', '    else:', '        print(' + val + ')']); }, { limit: 24 }),
         ];
-        const algos = [
+        const algos0 = [
             ['rr-sched', /(Round\s*Robin|輪轉|時間片|時間量子|time\s*quantum)/i], ['srtf-sched', /SRTF|最短剩餘時間|搶先式?\s*SJF|可搶先的最短/i], ['cpu-sched', /^(?=[\s\S]*(?:到達|抵達|到來))(?=[\s\S]*(?:執行時間|CPU|服務時間|所需時間|需要的))[\s\S]*(?:排程|等待時間|週轉時間|先來先服務|FCFS|SJF|優先權|優先等級)|FCFS|先來先服務|SJF/i],
             ['page-replace', /(缺頁|頁面錯誤|page\s*fault).{0,20}(次數|幾次|多少)|分頁置換|頁面置換|頁框.{0,20}參照串|參照串.{0,20}頁框/i], ['mem-alloc', /(?:分割區|空洞|記憶體區塊|空閒區).{0,50}(?:行程|請求|程序).{0,50}(?:放進|放入|配置|配到|分配|使用)|(?:放進|配置|分配).{0,12}(?:最大|最小|第一個)(?:的)?(?:那個)?(?:分割區|空洞|區塊)|(首次|最佳|最差|下次)配適|first[- ]fit|best[- ]fit|worst[- ]fit|分割區.{0,24}(行程|程序).{0,16}(配置|配到|分配)/i],
             ['disk-sched', /磁碟排程|磁頭.{0,16}(移動|請求|柱面)|SCAN|SSTF|LOOK|C-SCAN|電梯演算法/],
         ].map(([key, re]) => ({ key, re }));
+        // 多矩陣輸入的作業系統題：要壓過讀取器裡會搶「每行」的內建工具詞彙（pri）
+        const algos = [['banker', /銀行家演算法|banker'?s?\s*algorithm|安全(?:狀態|序列).{0,30}(?:資源|行程)|(?:資源|行程).{0,30}安全(?:狀態|序列)|資源[\s\S]{0,240}(?:執行順序|執行次序|安全序列)[\s\S]{0,120}(?:都能|全部|所有|皆能)[\s\S]{0,14}(?:完成|執行完|結束)/i], ['page-translate', /(?:虛擬|邏輯)位址.{0,30}(?:實體|物理)位址|位址轉換|頁表.{0,40}(?:位址|位移)|頁表[^。]{0,200}(?:虛擬|邏輯)位址|(?:虛擬|邏輯)位址[^。]{0,200}頁表|頁表[\s\S]{0,260}(?:實體框|框編號|頁框編號)|分頁.{0,12}轉換/]].map(([key, re]) => ({ key, re, pri: true })).concat(algos0);
         const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = [sk.paradigm];
         return { id: 'os', label: '作業系統（模擬型）', requires: [], judge: { checker: 'tokens' }, algos, paradigms, skeletons };
     }
