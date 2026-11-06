@@ -295,8 +295,8 @@
    "names": [
     "FaAlgoIntent"
    ],
-   "size": 24704,
-   "md5": "a0d2d487480a6f69e1c88f01c9a3cc00"
+   "size": 24860,
+   "md5": "5548f42107187c9bef7c584648ad6026"
   },
   "pylessons": {
    "file": "chunks/pylessons.js",
@@ -361,6 +361,14 @@
    ],
    "size": 9262,
    "md5": "45dee8f60ba76b7c71ec50b88119f715"
+  },
+  "domainsy": {
+   "file": "chunks/domainsy.js",
+   "names": [
+    "FaDomainSync"
+   ],
+   "size": 5341,
+   "md5": "e73e5c7e99d8b3e5e33070911f2dc904"
   },
   "pyumlpipeline": {
    "file": "chunks/pyumlpipeline.js",
@@ -1372,7 +1380,7 @@
   }
  },
  "core": {
-  "size": 5621668,
-  "md5": "d4cd055a290ceee64cc0d7b034263470"
+  "size": 5621726,
+  "md5": "2ca11388bea14183f5580e40db827916"
  }
 }
