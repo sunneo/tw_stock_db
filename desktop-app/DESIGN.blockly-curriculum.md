@@ -31,20 +31,20 @@
 | 子領域 | 狀態 | 範式／內容 | 提交 |
 |---|---|---|---|
 | 堆疊／佇列／雙端佇列指令模擬 | ✔ | `seq.cmd-sim` | 49f2547f |
-| 堆積（優先佇列）操作序列、第 k 小 | ◐ | 第 k 小✔；操作序列模擬✗ | P1 |
-| 雜湊表（開放定址、鏈結）、LRU 快取 | ✗ | 操作序列＋雜湊函數槽位 | P0 |
-| 鏈結串列（插入／刪除／反轉／環偵測）、環狀佇列 | ✗ | 以陣列模擬指標 | P1 |
-| 二元搜尋樹（插入／刪除／走訪／高度）、AVL／旋轉 | ✗ | | P1 |
-| Trie、並查集（路徑壓縮／按秩）、區間樹 | ◐ | 並查集✔；Trie✗ | P1 |
+| 堆積（優先佇列）操作序列、第 k 小 | ✔ | 第 k 小✔；操作序列（最小／最大堆）✔ | 97231841 |
+| 雜湊表（開放定址、鏈結）、LRU 快取 | ◐ | 開放定址✔、LRU✔（`domain_ds_core.js`）；鏈結法✗ | 97231841 |
+| 鏈結串列（插入／刪除／反轉／環偵測）、環狀佇列 | ◐ | 操作序列✔；環偵測、環狀佇列✗ | 97231841 |
+| 二元搜尋樹（插入／刪除／走訪／高度）、AVL／旋轉 | ◐ | 插入＋走訪／高度／葉數✔；刪除、AVL✗ | 97231841 |
+| Trie、並查集（路徑壓縮／按秩）、區間樹 | ◐ | 並查集✔（含操作序列）、Trie✔；區間樹✗ | 97231841 |
 | 稀疏表、單調佇列、跳躍表 | ✗ | | P3 |
 
 ### C. 作業系統（模擬型：輸入工作／請求，輸出排程或結果）
 | 子領域 | 狀態 | 範式／內容 | 提交 |
 |---|---|---|---|
-| CPU 排程：FCFS／SJF／SRTF／優先權／RR／MLFQ（平均等待、週轉、甘特圖） | ✗ | `os.sched`（槽位：搶先、時間片、平手規則） | P0 |
-| 記憶體：首次／最佳／最差配適、夥伴系統、分頁表位址轉換 | ✗ | `os.alloc`、`os.paging` | P0 |
-| 分頁置換：FIFO／LRU／OPT／Clock／LFU（缺頁次數） | ✗ | `os.page-replace` | P0 |
-| 磁碟排程：FCFS／SSTF／SCAN／C-SCAN／LOOK | ✗ | | P1 |
+| CPU 排程：FCFS／SJF／SRTF／優先權／RR／MLFQ（平均等待、週轉、甘特圖） | ◐ | `os.sched-np／rr／srtf`✔；MLFQ、甘特圖✗ | 97231841 |
+| 記憶體：首次／最佳／最差配適、夥伴系統、分頁表位址轉換 | ◐ | 配適✔；夥伴系統、位址轉換✗（多矩陣輸入形狀） | 97231841 |
+| 分頁置換：FIFO／LRU／OPT／Clock／LFU（缺頁次數） | ✔ | `os.page-replace` | 97231841 |
+| 磁碟排程：FCFS／SSTF／SCAN／C-SCAN／LOOK | ✔ | `os.disk-sched` | 97231841 |
 | 同步原語：訊號量／互斥鎖／條件變數的事件序列模擬、生產者消費者、哲學家、死結偵測（資源配置圖）、銀行家演算法 | ✗ | 事件序列模擬，輸出確定 | P1 |
 | 檔案系統：inode／區塊配置、FAT 鏈、目錄解析、路徑正規化 | ✗ | | P1 |
 | 行程樹／fork 次數推算、信號傳遞序列 | ✗ | 純計算（不真 fork） | P2 |
@@ -56,7 +56,7 @@
 | tar／gzip／xz／BMP 二進位格式（讀寫對偶） | ✔ | `tar.*`、`gzip.*`、`bmp.*`、`xz.*` | 73deb981 |
 | 校驗碼／位元流／LZ77／霍夫曼／固定霍夫曼 inflate／LZMA 範圍解碼 | ✔ | | 73deb981 |
 | 樣式比對（glob、正規式子集）、算式求值、直譯器、堆疊 VM、argv 切分、環境展開 | ✔ | | 73deb981 |
-| sed／awk／cut／sort／uniq／wc／tr／head／tail／diff／join 行為 | ✗ | `lines.*` 延伸：欄位分割、取代、排序鍵、diff（LCS） | P0 |
+| sed／awk／cut／sort／uniq／wc／tr／head／tail／diff／join 行為 | ◐ | `domain_linuxtext_core.js`：除 diff／join 外✔；diff／join（兩段輸入）✗ | 本批 |
 | 文字剖析：CSV／JSON 子集／INI／log 解析、printf 格式化、strftime | ✗ | | P1 |
 | 檔案 IO／行程／管線／信號／socket 的**語意模擬**（open flags、fd 表、dup2 重導向、pipe 緩衝、信號遮罩、socket 狀態機） | ✗ | 輸入「系統呼叫序列」，輸出狀態／輸出（純函式，不真呼叫） | P1 |
 | 動態霍夫曼 inflate、LZMA match 解碼、LZMA2、BCJ、BMP RLE／32 位元遮罩、tar PAX | ✗ | 超出多半（DESIGN.blockly-gaps.md G14） | P3 |
@@ -86,3 +86,16 @@
 | G18 規格即題目 | ✔ 偵測 `intent.specLike` 已補；模型／老師部分超出 | 見 DESIGN.blockly-gaps.md §7 |
 
 量測（無模型）：bench_linux_all **train 37/37、holdout 21/27**（起點 0/64）；holdout 未解：cat-two、exec-env、tar-blocks、canonical-huffman、xz-header、bmp-write8（輸入措辭／輸出格式猜不到，需老師教）。holdout 對「家族」不乾淨（缺口表已點名單元），數字代表「家族＋沒看過的措辭／格式」的泛化。
+
+## 3. 領域包進度（2026-11-07 批次 1–2；全部無模型、不給課）
+
+| 包（檔） | 內容 | train（原敘述＋改寫＋選項反序） | holdout（另寫措辭，只量測） | 提交 |
+|---|---|---|---|---|
+| `domain_algo2_core.js` | §9.7 A② 的 15 家族：歐拉函數、完全數、步數、k 進位、直方圖最大矩形、更暖天數、巢狀展開、最長合法括號、約瑟夫、視窗聚合、區間聯集、配對計數、RLE 解碼、回文子串、巴斯卡 | 30/30 | 無（原 `heldout_all.jsonl` 凍結，只在 scripts/eval 看判決；因本包依缺口表點名的家族寫成，那 17 題對這些家族已不乾淨） | 97231841 |
+| `domain_os_core.js` | CPU 排程（非搶先 FCFS／SJF／優先權、RR、SRTF）、分頁置換（FIFO／LRU／OPT／LFU／Clock）、記憶體配適（首／最佳／最差／下次）、磁碟排程（FCFS／SSTF／SCAN／C-SCAN／LOOK） | 22/22 | 4/5（未解：「接下來 n 行各有三個整數」的輸入措辭讀不出，未補以免污染） | 97231841 |
+| `domain_ds_core.js` | 雜湊表（開放定址）、LRU、堆積操作、BST（走訪／高度／葉數）、Trie、並查集操作、鏈結串列操作 | 24/24 | 4/5（未解：`add／extract／peek` 的指令字不在讀取器詞彙裡） | 97231841 |
+| `domain_linuxtext_core.js` | cut／sort／uniq（-c）／wc／head／tail／tr／sed s///／awk 分組聚合 | 28/28 | 4/5（未解：「欄位以分號分隔」措辭沒抽到分隔符） | 本批 |
+
+- 共用測試 harness：`domain_harness.js`（種子 `{id, want, st, rw, ref, gen, split}`，`split:'holdout'` 只量測；`DBG=1`／`ONLY=id,...` 環境變數除錯）。新包只要寫骨架檔＋種子檔。
+- 讀取器配套小修：字串輸入可帶名稱（「輸入一個字串 s」）、同名重複清單改名（a、b…）、「查詢字串」不再當整數、`rle-pair` 對解碼題否決、領域條目可標 `pri:true` 比內建工具詞彙（lines-map）優先。
+- 台面上還沒做：銀行家演算法／分頁位址轉換（多矩陣輸入形狀）、diff／join（兩段輸入）、同步原語事件模擬、檔案系統（inode／FAT）、程序／fd／管線／信號／socket 的語意模擬、進階圖與樹（MST、SCC、Bellman-Ford、LCA…）、資料結構的 AVL／跳躍表／稀疏表。見 `DESIGN.TODO.md`。

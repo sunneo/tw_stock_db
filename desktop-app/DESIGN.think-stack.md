@@ -83,3 +83,19 @@
 - 樣本：16 組成對、4 個有效情境、單一模型與溫度；`off` 的 0.99 本來就高，天花板效應明顯，不能推論到「完成率」或「正確性」——標頭沒有讓更多組做完（都是 16/16，天花板），一次合格率 0.69→0.72 在雜訊內。
 - 還沒量：真的離線跑 CoLU 計畫階段、`chooseTool` 路由堆疊的效果（這次只量 UML 拆解）；開思考模式；不同溫度（0 的結果會是確定的）。
 
+
+## 離線寫程式路徑的缺口（blockly-teach，2026-11-07；唯讀調查＋我覆核）
+
+調查原文在協調 session 的 notes（`blockly-teach-thinkstack-colu-gaps.md`）；我覆核過的事實：`py_uml_pipeline_core.js`、`py_cnl_choose_core.js` 沒有任何 `stackMod`／`FaThinkStack`／stackChecks；`runCode` 的 `stackMod` 只傳給模型路線（`Loop.solve`、`Proj.solveProject`、`Ed.editCode`），離線 `a.offline(...)` 在這些之前執行、沒收到它；`siblingConsistency` 只有基準腳本 `uml_bench_core.js` 呼叫。行號因嵌入重建一直在飄，以符號名為準。結論成立：**離線路徑沒有堆疊框、沒有一致性檢查、沒呼叫 CoLU 規劃路由；失敗時「卡在哪一層」原本被丟掉**。
+
+| # | 缺口 | 狀態 | 說明／下一步 |
+|---|---|---|---|
+| A | 離線失敗時 `rounds` 被丟掉 | **已補（97231841）** | `_codeOffline` 失敗與成功都帶回 `rounds`；`runCode` 外層把「配方✘→課✘→範式✘(試 N 個)→矩陣✘」摘進 `gaps`（後面的路線會整個換掉 gaps，所以在最外層補回）；`code_agent_core.test.js` 有測試 |
+| B | 成功時也帶回 rounds | **已補（97231841）** | `offline.rounds` |
+| C | 離線沒有思考堆疊框（`buildFromUML` 每層 push／失敗 pop） | **未做（大）** | 離線全是純程式層、沒有模型呼叫，框的價值只在診斷；要先設計「層」對應哪種框（recipe／lesson／paradigm／matrix／blocks）與結果寫回格式。進 renderer：否 |
+| D | 離線失敗轉模型路線時，已試過的層沒交給模型 | **部分**：A 把各層摘要放進 `gaps`，但沒進模型提示 | 要把 `kept` 的各層摘要塞進 `Stack.decide` 的前置「已試」；等 C |
+| E | 離線沒有 stackChecks | **未做（中）** | 只對 `writeBlocks` 外層加一次 `selfValidate`，預設跟隨 `stack_checks`；先看 C |
+| F | 兄弟一致性只在基準腳本 | **未做（小）** | 對離線輸出補「函式名／變數命名風格」純程式檢查；離線模型固定單類別，跨類別需設計 |
+| G | CoLU 規劃路由未接到寫程式流程 | **不建議接** | `FaRoute` 是「找不到工具」的路線，離線組合不是它的場景；只在 gap 說明。若要接，先釐清需求 |
+| H | `DESIGN.colu.md` 沒有堆疊／一致性／規劃路由的定義 | **已補（本批）** | 在該檔加交叉引用，註明離線尚未接線 |
+| I | `chooseTool` 路由堆疊、CoLU 計畫階段實測 | **未做（中）** | `scripts/eval/stack_consistency.js` 加離線變體 |

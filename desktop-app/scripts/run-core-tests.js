@@ -34,6 +34,7 @@ const suites = [
     ['領域包 algo2：矩陣層沒解出的 15 個演算法家族（歐拉函數、完全數、步數、k 進位、直方圖、更暖天數、巢狀展開、最長合法括號、約瑟夫、視窗聚合、區間聯集、配對計數、RLE 解碼、回文子串、巴斯卡）；train 30/30（需 tree-sitter 快取）', 'renderer/src/uml/domain_algo2.test.js'],
     ['領域包 os（作業系統模擬）：CPU 排程（非搶先／RR／SRTF）、分頁置換、記憶體配適、磁碟排程；train 全過、holdout 只量測（需 tree-sitter 快取）', 'renderer/src/uml/domain_os.test.js'],
     ['領域包 ds（資料結構操作序列）：雜湊表、LRU、堆積、BST、Trie、並查集、鏈結串列；train 全過、holdout 只量測（需 tree-sitter 快取）', 'renderer/src/uml/domain_ds.test.js'],
+    ['領域包 linuxtext（cut／sort／uniq／wc／head／tail／tr／sed／awk 行為）：train 全過、holdout 只量測（需 tree-sitter 快取）', 'renderer/src/uml/domain_linuxtext.test.js'],
     ['區塊的庫存與範本規則（三區、型別、終止條件、模組需求；需 tree-sitter 快取）', 'renderer/src/uml/py_blocks_rules.test.js'],
     ['UML 遞迴切割寫 body（假模型：補全式逐行、縮排結構、退回重寫、區塊版；需 tree-sitter 快取）', 'renderer/src/uml/py_body.test.js'],
     ['AST 建樹：隨機建樹與真 tree-sitter 一致、種子程式重放（需 tree-sitter 快取）', 'renderer/src/ast/ast_replay.test.js'],

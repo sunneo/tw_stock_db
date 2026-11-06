@@ -15533,6 +15533,7 @@ const holder = {};
         }
         for (const g of GOALS) if (g.key.test(text)) goal.verbs.push(g.op);
         const toolAlgos = TOOLS.filter((a) => a.re.test(text) && a.sh(inputs)).map((a) => a.key).filter((k, i, arr) => arr.indexOf(k) === i); for (const fam of TOOL_FAMILIES) if (toolAlgos.some((k) => fam.includes(k))) for (const k of fam) if (!toolAlgos.includes(k)) toolAlgos.push(k); // 同家族的算法種類互為候選（敘述措辭抓不到時，由沙盒判決擇一）
+        if (ALGOS.some((a) => a.pri && a.re.test(text) && !(a.veto && a.veto.test(text)))) toolAlgos.length = 0; // 領域包的條目標 pri:true＝比內建工具詞彙更具體（例如 sort／uniq／sed 的行為題），命中時不讓 lines-map 等通用工具詞彙搶走
         const toolAlgo = toolAlgos[0]; const algo = toolAlgo || (ALGOS.find((a) => a.re.test(text) && !(a.veto && a.veto.test(text))) || {}).key || null; const paradigms = (algo && PARADIGMS[algo]) || (toolAlgo ? ['text-lines'] : []);
         const pend = inputs.findIndex((x) => x.k === 'pending'); if (pend >= 0) inputs.splice(pend, 1);
         const vars = []; for (const inp of inputs) { if (inp.k === 'scalars') inp.names.forEach((n) => vars.push({ name: n, type: inp.type })); else if (inp.k === 'list') { if (inp.size && !vars.some((v) => v.name === inp.size)) vars.push({ name: inp.size, type: 'int' }); vars.push({ name: inp.name, type: 'list' }); } else if (inp.k === 'rows') vars.push({ name: inp.name, type: 'list' }); else if (inp.k === 'grid') vars.push({ name: inp.name, type: 'list' }); else if (inp.k === 'str' || inp.k === 'hex') vars.push({ name: inp.name, type: 'str' }); else if (inp.k === 'lines' || inp.k === 'rest') vars.push({ name: inp.name, type: 'list' }); else if (inp.k === 'words') vars.push({ name: inp.name, type: 'list' }); }
@@ -16386,6 +16387,62 @@ const holder = {};
 return holder.FaDomainDs;
 })();
 /* DOMAINDS-END */
+/* DOMAINLT-BEGIN */
+const FaDomainLinuxText = (function () {
+const holder = {};
+(function (module, self) {
+/* 領域包：Linux 文字工具行為（cut／sort／uniq／wc／head／tail／tr／sed s///／awk 欄位聚合）。格式見 domain_registry_core.js。
+ * 輸入是「第一行 n，接著 n 行文字」（讀成 lines，N.L[0] 是行串列）；參數（分隔符、欄位、k、字集、取代的兩個字串）由敘述抽（抽不到就 throw、不渲染），行為差異（遞增／遞減、數值排序、uniq -c 格式、取代第一個或全部…）是槽位，沙盒窮舉。
+ * 不含 def。diff／join 等需要「兩段輸入」的工具還沒做（cat-two 的輸入措辭讀不出，見 DESIGN.TODO.md）。 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaDomainLinuxText = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    function make(PAR) {
+        const { S, code } = PAR.dsl;
+        const D = (id, algo, paradigm, label, slots, py, extra) => Object.assign({ id, algo, paradigm, label, slots, py, shape: (I) => I.inputs.some((x) => x.k === 'lines') }, extra || {});
+        const q = (s) => JSON.stringify(s);
+        const NAMED = { 逗號: ',', 冒號: ':', 分號: ';', 豎線: '|', 直線: '|', 空白: ' ', 空格: ' ', 'Tab': '\t', 'tab': '\t', 斜線: '/', 等號: '=', 句點: '.', 減號: '-', 底線: '_' };
+        const delimOf = (t) => { const m = /(?:以|用|依)\s*(?:[「"“'『]\s*(.)\s*[」"”'』]|(逗號|冒號|分號|豎線|直線|空白|空格|Tab|tab|斜線|等號|句點|減號|底線))\s*(?:字元)?(?:當作|作為|當|為)?\s*(?:欄位)?(?:分隔|切開|切分|分欄|隔開)/.exec(t); if (!m) throw new Error('敘述沒有分隔符'); return m[1] || NAMED[m[2]]; };
+        const quoted = (t) => { const out = []; const re = /[「"“'『]([^」"”'』]*)[」"”'』]/g; let m; while ((m = re.exec(t))) out.push(m[1]); return out; };
+        const nums = (t, re) => { const m = re.exec(t); if (!m) throw new Error('敘述抽不到數字'); return m.slice(1).filter((x) => x != null).map(Number); };
+        const body = (N) => N.L[0];
+        const skeletons = [
+            D('lt.cut', 'text-cut', 'text-lines', 'cut：每行依分隔符切欄，輸出指定的欄位（單一欄或多欄，用輸出分隔符接起來）；缺欄位時輸出空字串或略過該行',
+                [S('base', '欄位編號從幾起算', [['1', '1'], ['0', '0']]), S('miss', '缺少該欄', [['empty', 'empty'], ['skip', 'skip']])],
+                (c, N, I) => { const t = String(I.statement); const d = delimOf(t); const ks = (/第\s*([0-9、，, 和與及]+)\s*(?:欄|個欄位)/.exec(t) || [])[1]; if (!ks) throw new Error('敘述沒有欄位編號'); const fs = ks.split(/[^0-9]+/).filter(Boolean).map(Number); const od = /(?:用|以)\s*(?:空白|空格)\s*(?:接起來|連接|隔開輸出|串接)/.test(t) ? ' ' : /(?:用|以)\s*(?:逗號)\s*(?:接起來|連接|串接)/.test(t) ? ',' : d; return code(['for t in ' + body(N) + ':', '    p = t.split(' + q(d) + ')', '    out = []', '    for f in ' + JSON.stringify(fs) + ':', '        i = f - 1 + (1 - ' + c.base + ')', '        if i < len(p):', '            out.append(p[i])', '        elif ' + q(c.miss) + ' == "empty":', '            out.append("")', '    if ' + q(c.miss) + ' == "skip" and len(out) < ' + fs.length + ':', '        continue', '    print(' + q(od) + '.join(out))']); }, { limit: 4 }),
+            D('lt.sort-uniq', 'text-sort', 'text-lines', 'sort／uniq：排序（遞增／遞減、字典序／數值）、去重（sort -u、相鄰 uniq、uniq -c 的計數前綴）',
+                [S('mode', '動作', [['sort', 'sort'], ['sort-u', 'sort-u'], ['uniq', 'uniq'], ['uniq-c', 'uniq-c'], ['sort-uniq-c', 'sort-uniq-c']]), S('ord', '順序', [['asc', 'asc'], ['desc', 'desc']]), S('key', '比較', [['lex', 'lex'], ['num', 'num']]), S('fmt', 'uniq -c 計數格式', [['w7', '"%7d %s"'], ['w0', '"%d %s"']])],
+                (c, N) => { const key = c.key === 'num' ? 'int(x)' : 'x'; const rev = c.ord === 'desc' ? 'True' : 'False'; const L = body(N); const seq = { sort: ['res = sorted(' + L + ', key=lambda x: ' + key + ', reverse=' + rev + ')'], 'sort-u': ['res = sorted(set(' + L + '), key=lambda x: ' + key + ', reverse=' + rev + ')'], uniq: ['res = []', 'for t in ' + L + ':', '    if not res or res[-1] != t:', '        res.append(t)'], 'uniq-c': ['res = list(' + L + ')'], 'sort-uniq-c': ['res = sorted(' + L + ', key=lambda x: ' + key + ', reverse=' + rev + ')'] }[c.mode]; const tail = c.mode === 'uniq-c' || c.mode === 'sort-uniq-c' ? ['i = 0', 'while i < len(res):', '    j = i', '    while j < len(res) and res[j] == res[i]:', '        j += 1', '    print(' + c.fmt + ' % (j - i, res[i]))', '    i = j'] : ['for t in res:', '    print(t)']; return code(seq.concat(tail)); }, { limit: 40 }),
+            D('lt.wc', 'text-wc', 'text-lines', 'wc：行數、單字數、字元數（含每行的換行）；輸出其中一個或三個（-l -w -c）',
+                [S('out', '輸出', [['l', 'l'], ['w', 'w'], ['c', 'c'], ['lwc', 'lwc']]), S('nl', '字元數含換行', [['yes', 'y'], ['no', 'n']])],
+                (c, N) => code(['nl = 0', 'nw = 0', 'nc = 0', 'for t in ' + body(N) + ':', '    nl += 1', '    nw += len(t.split())', '    nc += len(t) + (1 if ' + q(c.nl) + ' == "y" else 0)', 'print(' + ({ l: 'nl', w: 'nw', c: 'nc', lwc: 'nl, nw, nc' }[c.out]) + ')']), { limit: 8 }),
+            D('lt.head-tail', 'text-headtail', 'text-lines', 'head／tail：前 k 行、後 k 行、跳過前 k 行（tail -n +k）、去掉最後 k 行（head -n -k）',
+                [S('mode', '輸出哪些行', [['head', 'head'], ['tail', 'tail'], ['skip-first', 'skip-first'], ['skip-last', 'skip-last']])],
+                (c, N, I) => { const k = nums(String(I.statement), /(?:前|後|最後|開頭|結尾|跳過|略過|去掉|不要)\s*(?:的)?\s*(?:前|最後|最後的|後)?\s*(\d+)\s*行/)[0]; const L = body(N); const sl = { head: L + '[:' + k + ']', tail: '(' + L + '[-' + k + ':] if ' + k + ' > 0 else [])', 'skip-first': L + '[' + k + ':]', 'skip-last': L + '[:len(' + L + ') - ' + k + ']' }[c.mode]; return code(['for t in ' + sl + ':', '    print(t)']); }, { limit: 4 }),
+            D('lt.tr', 'text-tr', 'text-lines', 'tr：字集 A 的字元換成字集 B（逐位對應）、刪除字集 A、或壓縮連續重複的字集 A；字集支援 a-z 範圍，字集取自敘述的引號文字',
+                [S('mode', '動作', [['map', 'map'], ['delete', 'delete'], ['squeeze', 'squeeze'], ['complement-delete', 'complement-delete']])],
+                (c, N, I) => { const qs = quoted(String(I.statement)); if (!qs.length) throw new Error('敘述沒有字集'); const a = qs[0], b = qs[1] || ''; if (c.mode === 'map' && !qs[1]) throw new Error('map 需要兩個字集'); return code(['def_a = ' + q(a), 'seta = ""', 'i = 0', 'while i < len(def_a):', '    if i + 2 < len(def_a) and def_a[i + 1] == "-":', '        for o in range(ord(def_a[i]), ord(def_a[i + 2]) + 1):', '            seta += chr(o)', '        i += 3', '    else:', '        seta += def_a[i]', '        i += 1', 'def_b = ' + q(b), 'setb = ""', 'i = 0', 'while i < len(def_b):', '    if i + 2 < len(def_b) and def_b[i + 1] == "-":', '        for o in range(ord(def_b[i]), ord(def_b[i + 2]) + 1):', '            setb += chr(o)', '        i += 3', '    else:', '        setb += def_b[i]', '        i += 1', 'for t in ' + body(N) + ':', '    res = ""', '    for ch in t:', '        if ' + q(c.mode) + ' == "map":', '            if ch in seta:', '                k = seta.index(ch)', '                res += setb[k] if k < len(setb) else setb[-1]', '            else:', '                res += ch', '        elif ' + q(c.mode) + ' == "delete":', '            if ch not in seta:', '                res += ch', '        elif ' + q(c.mode) + ' == "complement-delete":', '            if ch in seta:', '                res += ch', '        else:', '            if not (ch in seta and len(res) > 0 and res[-1] == ch):', '                res += ch', '    print(res)']); }, { limit: 4 }),
+            D('lt.sed-subst', 'text-sed', 'text-lines', 'sed s/舊/新/：每行把第一個或全部的「舊」換成「新」；全部輸出，或只輸出有被改到的行（sed -n 的 p）',
+                [S('scope', '換幾個', [['first', '1'], ['all', '-1']]), S('only', '輸出哪些行', [['all', 'all'], ['changed', 'changed']])],
+                (c, N, I) => { const t0 = String(I.statement); const sm = /\bs\/([^/]+)\/([^/]*)\//.exec(t0); const qs = sm ? [sm[1], sm[2]] : quoted(t0); if (qs.length < 2) throw new Error('敘述沒有「舊」「新」兩個字串'); return code(['for t in ' + body(N) + ':', '    u = t.replace(' + q(qs[0]) + ', ' + q(qs[1]) + ', ' + c.scope + ')', '    if ' + q(c.only) + ' == "changed" and u == t:', '        continue', '    print(u)']); }, { limit: 4 }),
+            D('lt.awk-group', 'text-awk', 'text-lines', 'awk：以空白切欄，依第一欄分組（或不分組）對指定欄做加總／計數／最大／最小；分組輸出「鍵 值」，鍵依字典序或第一次出現的順序',
+                [S('agg', '聚合', [['sum', 'sum'], ['count', 'count'], ['max', 'max'], ['min', 'min']]), S('grp', '分組', [['key', 'key'], ['none', 'none']]), S('ord', '鍵的順序', [['sorted', 'sorted'], ['first', 'first']])],
+                (c, N, I) => { const m = /(?:把|對)?第\s*(\d+)\s*欄(?:的)?(?:數值|數字|值)?/.exec(String(I.statement)); const k = m ? Number(m[1]) : 2; return code(['acc = {}', 'seen = []', 'for t in ' + body(N) + ':', '    p = t.split()', '    if len(p) < ' + k + ':', '        continue', '    key = p[0] if ' + q(c.grp) + ' == "key" else ""', '    v = int(p[' + (k - 1) + ']) if ' + q(c.agg) + ' != "count" else 1', '    if key not in acc:', '        acc[key] = v', '        seen.append(key)', '    elif ' + q(c.agg) + ' in ("sum", "count"):', '        acc[key] = acc[key] + v', '    elif ' + q(c.agg) + ' == "max":', '        acc[key] = max(acc[key], v)', '    else:', '        acc[key] = min(acc[key], v)', 'keys = sorted(seen) if ' + q(c.ord) + ' == "sorted" else seen', 'for key in keys:', '    if ' + q(c.grp) + ' == "key":', '        print(key, acc[key])', '    else:', '        print(acc[key])']); }, { limit: 12 }),
+        ];
+        const algos = [
+            ['text-cut', /\bcut\b|分隔(?:成|為)?欄位.{0,12}輸出(?:第|指定)|依.{1,6}切欄|切欄.{0,10}輸出第/i], ['text-sort', /\bsort\b|\buniq\b|排序(?:後|並).{0,10}(?:去除|去重|計數)|去除相鄰重複|相鄰.{0,4}重複.{0,6}(?:行|合併)|出現次數.{0,6}前綴/i],
+            ['text-wc', /\bwc\b|行數.{0,6}單字數.{0,6}(?:字元|位元組)數/i], ['text-headtail', /\bhead\b|\btail\b|(?:輸出|印出)\s*(?:前|最後|後)\s*\d+\s*行|跳過前\s*\d+\s*行|略過前\s*\d+\s*行|去掉最後\s*\d+\s*行/i],
+            ['text-tr', /\btr\b|字元(?:對應|轉換|替換).{0,10}(?:字集|集合)|刪除(?:字集|集合).{0,6}字元|壓縮連續重複/i], ['text-sed', /\bsed\b|s\/[^/]+\/[^/]*\/|每行.{0,10}(?:第一個|所有|全部).{0,12}換成/i], ['text-awk', /\bawk\b|依第一欄分組|按第一欄分組|第一欄(?:相同)?.{0,6}(?:分組|為鍵)/i],
+        ].map(([key, re]) => ({ key, re, pri: true }));
+        const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = ['text-lines'];
+        return { id: 'linuxtext', label: 'Linux 文字工具行為', requires: [], judge: { checker: 'tokens' }, algos, paradigms, skeletons };
+    }
+    return { make };
+});
+
+}).call(null, undefined, holder);
+return holder.FaDomainLinuxText;
+})();
+/* DOMAINLT-END */
 /* PYUMLPIPELINE-BEGIN */
 const FaPyUmlPipeline = (function () {
 const holder = {};
@@ -107969,7 +108026,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const host = this._behTsHost(); const PC = await host.loadTreeSitter(); const lang = await PC.Language.load(await host.loadLanguageWasm('python')); const P = new PC(); P.setLanguage(lang); this._pyParser = P; return P;
     }
     // 領域包（DSP…）：第一次用到時註冊進算法詞彙與範式骨架表；判題用領域的容差設定（DSP＝float）
-    _pyDomainsInit() { if (this._pyDomainsDone) return; this._pyDomainsDone = true; for (const pk of [FaDomainDsp, FaDomainAlgo2, FaDomainOs, FaDomainDs]) { try { FaDomains.register(pk.make(FaPyParadigms), { AI: FaAlgoIntent, PAR: FaPyParadigms }); } catch (_) { /* 領域包註冊失敗不影響通用範式 */ } } }
+    _pyDomainsInit() { if (this._pyDomainsDone) return; this._pyDomainsDone = true; for (const pk of [FaDomainDsp, FaDomainAlgo2, FaDomainOs, FaDomainDs, FaDomainLinuxText]) { try { FaDomains.register(pk.make(FaPyParadigms), { AI: FaAlgoIntent, PAR: FaPyParadigms }); } catch (_) { /* 領域包註冊失敗不影響通用範式 */ } } }
     async _codeOffline(o, bridge) {
         this._pyDomainsInit();
         const P = await this._pyParserSync(); const B = FaPyBlocks.makeBlocks({ parseTree: (s) => P.parse(s), C2U: FaPyCode2Uml }); const R = FaPyBlocksRules.makeRules(B);
