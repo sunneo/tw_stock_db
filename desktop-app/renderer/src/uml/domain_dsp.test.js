@@ -51,7 +51,7 @@ const SEEDS = [
 (async () => {
     if (!fs.existsSync(path.join(DIR, 'tree-sitter-python.wasm'))) { console.log('略過：找不到 ' + DIR); process.exit(0); }
     const reg = DR.register(DSP.make(PAR), { AI, PAR }); assert.ok(reg.ok, reg.reason); assert.ok(reg.skeletons >= 17);
-    for (const sk of PAR.PARADIGMS) assert.ok(PAR.combos(sk, { limit: 999 }).length <= 18, sk.id + ' 組合太多');
+    for (const sk of PAR.PARADIGMS) assert.ok(PAR.combos(sk, { limit: 999 }).length <= Math.max(18, sk.limit || 0), sk.id + ' 組合太多');
     assert.deepStrictEqual(DR.judgeOf('fir-conv'), { checker: 'float', eps: 1e-4 });
     const Parser = require(path.join(DIR, 'tree-sitter.js')); await Parser.init({ locateFile: () => path.join(DIR, 'tree-sitter.wasm') });
     const lang = await Parser.Language.load(path.join(DIR, 'tree-sitter-python.wasm')); const P = new Parser(); P.setLanguage(lang);

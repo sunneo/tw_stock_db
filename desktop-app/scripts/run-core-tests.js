@@ -28,6 +28,7 @@ const suites = [
     ['內建的課泛化：沒見過的改寫（換變數名稱、隨機測資）離線自己做對，不認得的算法不亂套（需 tree-sitter 快取）', 'renderer/src/uml/py_lessons.test.js'],
     ['uml_design 先讀情境：算法題讀成 UML（0 次模型）→ 骨架 → 區塊 → 沙盒；含沒見過的寫法（需 tree-sitter 快取）', 'renderer/src/uml/py_uml_pipeline.test.js'],
     ['範式骨架庫：不給課，範式骨架＋槽位窮舉＋沙盒解出種子題與沒見過的改寫（選項順序反過來也找得到；需 tree-sitter 快取）', 'renderer/src/uml/py_paradigms.test.js'],
+    ['Linux 工具題（cat／grep／xxd／tar／gzip／xz／bmp）：輸入形狀、否決條件、範式（只用 train 題；需 tree-sitter 快取）', 'renderer/src/uml/linux_paradigms.test.js'],
     ['領域包 DSP：18 題種子（原敘述＋改寫＋選項反序），不給課、0 次模型，float 容差判題，含隱藏大測資（需 tree-sitter 快取）', 'renderer/src/uml/domain_dsp.test.js'],
     ['區塊的庫存與範本規則（三區、型別、終止條件、模組需求；需 tree-sitter 快取）', 'renderer/src/uml/py_blocks_rules.test.js'],
     ['UML 遞迴切割寫 body（假模型：補全式逐行、縮排結構、退回重寫、區塊版；需 tree-sitter 快取）', 'renderer/src/uml/py_body.test.js'],

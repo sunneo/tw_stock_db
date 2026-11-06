@@ -20,6 +20,10 @@
             if (inp.k === 'scalars') L.push(inp.names.length === 1 ? (inp.type === 'float' ? '讀入小數 ' : '讀入整數 ') + inp.names[0] : inp.type === 'float' ? '程式：' + inp.names.join(', ') + ' = map(float, input().split())' : '讀入一行整數 ' + inp.names.join(', '));
             else if (inp.k === 'list') L.push(inp.elem === 'str' ? '讀入一行並切成單字 ' + inp.name : inp.elem === 'float' ? '程式：' + inp.name + ' = list(map(float, input().split()))' : '讀入一行整數成清單 ' + inp.name);
             else if (inp.k === 'words') L.push('讀入一行並切成單字 ' + inp.name);
+            else if (inp.k === 'str' && inp.raw) L.push('程式：' + inp.name + ' = input()'); // 工具型題目：整行原樣（不去空白）
+            else if (inp.k === 'hex') L.push('程式：' + inp.name + ' = input().strip()');
+            else if (inp.k === 'lines') L.push('程式：' + inp.name + ' = [input() for _ in range(' + inp.count + ')]');
+            else if (inp.k === 'rest') L.push('程式：import sys', '程式：' + inp.name + ' = sys.stdin.read().split(\'\\n\')', '程式：' + inp.name + ' = [x for x in ' + inp.name + '[:-1]] if ' + inp.name + ' and ' + inp.name + '[-1] == \'\' else ' + inp.name);
             else if (inp.k === 'str') L.push('讀入一行文字並去掉首尾空白 ' + inp.name);
             else if (inp.k === 'grid') L.push('讀入 ' + inp.count + ' 行文字（去空白）成清單 ' + inp.name);
             else if (inp.k === 'rows') L.push(inp.names.length === 2 ? '讀入 ' + inp.count + ' 行兩個整數成清單 ' + inp.name : '程式：' + inp.name + ' = [tuple(map(int, input().split())) for _ in range(' + inp.count + ')]');
@@ -29,6 +33,7 @@
     function mainCNL(intent) { const vs = intent.vars.map((v) => v.name); return (vs.length ? '令 ' + vs.join(', ') + ' 等於 read_input()\n' : '') + '程式：solve(' + vs.join(', ') + ')'; }
     // 動作表配方：敘述裡直接寫出運算式、或單一清單上的最大值／最小值／總和、單字反轉。只在「很明確」時給；是否正確由沙盒驗證決定
     function recipeCNL(intent) {
+        if (/霍夫曼|合併|編碼|解碼|還原|位元組|位元數|十六進位|過濾器|碼長/.test(intent.statement || '')) return null; // 工具型題目不是「清單上的最大／總和」（G17）
         const g = intent.goal; const lists = intent.vars.filter((v) => v.type === 'list'); const only = intent.inputs.length;
         if (g.expr) return { name: '敘述裡的運算式', cnl: '印出 ' + g.expr };
         const hasRows = intent.inputs.some((i) => i.k === 'rows' || i.k === 'grid'); const oneList = lists.length === 1 && !hasRows;

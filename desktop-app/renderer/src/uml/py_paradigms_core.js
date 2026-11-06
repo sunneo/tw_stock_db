@@ -177,14 +177,40 @@
         { id: 'str.roman', paradigm: 'string', algo: 'roman', label: '字串：羅馬數字轉整數', slots: [S('sub', '減法規則', [['sub', 'True'], ['add', 'False']])],
             py: (c, N) => { const s = N.s[0]; return code(["v = {'I': 1, 'V': 5, 'X': 10, 'L': 50, 'C': 100, 'D': 500, 'M': 1000}", 't = 0', 'for i in range(len(' + s + ')):', '    if ' + c.sub + ' and i + 1 < len(' + s + ') and v[' + s + '[i]] < v[' + s + '[i + 1]]:', '        t -= v[' + s + '[i]]', '    else:', '        t += v[' + s + '[i]]', 'print(t)']); } },
     ];
+    // ---- 工具型題目（cat／grep…；2026-11-07，DESIGN.blockly-gaps.md G5）：文字行串流的行過濾／行轉換範式族。骨架不含 def；旗標是槽位，由沙盒窮舉 ----
+    const BOOL = (id, label) => S(id, label, [['0', 'no'], ['1', 'yes']]);
+    const LL = (N) => N.L.join(' + ');
+    // 行號格式：寬度與分隔字元由敘述抽（「寬度 6、接一個 Tab」「行號:」）；抽不到就用 cat -n 的慣例
+    const numFmt = (I) => { const t = String((I && I.statement) || ''); const w = /寬度\s*(\d+)/.exec(t); const sep = /接一個\s*Tab|後接\s*Tab|Tab\s*分隔|Tab 隔開/.test(t) ? '\\t' : /接一個空白|後接空白/.test(t) ? ' ' : /行號\s*[:：]|「行號:」/.test(t) ? ':' : w ? '\\t' : ':'; return { w: w ? +w[1] : 0, sep }; };
+    const numExpr = (I, v) => { const f = numFmt(I); return 'str(' + v + ')' + (f.w ? '.rjust(' + f.w + ')' : '') + " + '" + f.sep + "'"; };
+    const LX = [
+        { id: 'lines.cat', paradigm: 'text-lines', algo: 'lines-map', label: '行轉換（cat）：行號、Tab 顯示、行尾標記、壓縮連續空行；多段輸入會接成一份', limit: 24,
+            shape: (I) => I.inputs.some((x) => x.k === 'lines' || x.k === 'rest') && !I.inputs.some((x) => x.k === 'str' && x.role),
+            slots: [BOOL('num', '加行號'), BOOL('tab', 'Tab 顯示成 ^I'), BOOL('eol', '行尾加 $'), BOOL('sq', '連續空行壓成一行')],
+            py: (c, N, I) => { const L = ['k = 0', 'prev_blank = False', 'for t in ' + LL(N) + ':']; if (c.sq === 'yes') L.push("    if t == '' and prev_blank:", '        continue'); L.push("    prev_blank = (t == '')", '    k += 1', '    u = t'); if (c.tab === 'yes') L.push("    u = u.replace('\\t', '^I')"); if (c.eol === 'yes') L.push("    u = u + '$'"); if (c.num === 'yes') L.push('    u = ' + numExpr(I, 'k') + ' + u'); L.push('    print(u)'); return code(L); } },
+        { id: 'lines.grep', paradigm: 'text-lines', algo: 'lines-filter', label: '行過濾（grep）：忽略大小寫、取反、行號前綴、只計數、整字；旗標行（flags）會在執行時解析', limit: 64,
+            shape: (I) => I.inputs.some((x) => x.k === 'lines') && I.inputs.some((x) => x.k === 'str' && x.role === 'pat'),
+            slots: [BOOL('ic', '忽略大小寫（-i）'), BOOL('inv', '取反（-v）'), BOOL('num', '行號前綴（-n）'), BOOL('cnt', '只輸出符合的行數（-c）'), S('word', '整字比對（-w）', [['0', 'no'], ['1', 'split'], ['2', 'bound']])],
+            py: (c, N, I) => { const fl = I.inputs.find((x) => x.k === 'str' && x.role === 'flags'); const pv = N.role.pat; const flg = fl ? '\u0001flags\u0002' : null; const letters = flg ? "set(ch for tok in " + flg + ".split() for ch in tok if ch.isalpha())" : null;
+                const B = (id, ch) => (flg ? "'" + ch + "' in fl" : c[id] === 'yes' ? 'True' : 'False'); const wd = flg ? "'w' in fl" : c.word !== 'no' ? 'True' : 'False'; const wmode = c.word === 'bound' ? 'bound' : 'split';
+                const L = []; if (flg) L.push('fl = ' + letters); L.push('ic = ' + B('ic', 'i'), 'inv = ' + B('inv', 'v'), 'num = ' + B('num', 'n'), 'cnt = ' + B('cnt', 'c'), 'word = ' + wd, 'key = ' + pv + ' if not ic else ' + pv + '.lower()', 'k = 0', 'hits = 0', 'for t in ' + LL(N) + ':', '    k += 1', '    u = t if not ic else t.lower()');
+                if (wmode === 'split') L.push("    found = key in u.split(' ') if word else key in u"); else L.push("    v = ''.join(ch if ch.isalnum() or ch == '_' else ' ' for ch in u)", '    found = key in v.split() if word else key in u');
+                L.push('    if found != inv:', '        hits += 1', '        if not cnt:', "            print((str(k) + ':' if num else '') + t)", 'if cnt:', '    print(hits)'); return code(L); } },
+        { id: 'lines.grep-o', paradigm: 'text-lines', algo: 'lines-grep-o', label: '行過濾（grep -o）：逐行找出樣式的所有出現（可重疊／不重疊），最後可加總數行', limit: 8,
+            shape: (I) => I.inputs.some((x) => x.k === 'lines') && I.inputs.some((x) => x.k === 'str' && x.role === 'pat'),
+            slots: [S('step', '找到後往右跳', [['len', 'len({P})'], ['one', '1']]), S('tot', '最後一行', [['total', 'total='], ['none', '']])],
+            py: (c, N, I) => { const p = N.role.pat; const pre = (/「([A-Za-z_]+)=次數」/.exec(String((I && I.statement) || '')) || [])[1]; const L = ['total = 0', 'for t in ' + LL(N) + ':', '    i = 0', '    while i <= len(t) - len(' + p + '):', '        if t[i:i + len(' + p + ')] == ' + p + ':', '            print(' + p + ')', '            total += 1', '            i += ' + c.step.replace('{P}', p), '        else:', '            i += 1']; if (c.tot !== '') L.push("print('" + (pre ? pre + '=' : c.tot) + "' + str(total))"); return code(L); } },
+    ];
     PARADIGMS.push(...GEN);
+    PARADIGMS.push(...LX);
     const byId = {}; PARADIGMS.forEach((p) => { byId[p.id] = p; });
     // 領域包註冊：把領域的骨架加進骨架表（id 不可重複）
     function addSkeletons(list, domain) { let n = 0; for (const sk of list || []) { if (byId[sk.id]) continue; if (domain) sk.domain = domain; PARADIGMS.push(sk); byId[sk.id] = sk; n++; } return n; }
-    const forIntent = (intent, statement) => (intent && intent.algo ? PARADIGMS.filter((p) => p.algo === intent.algo && (!p.when || statement == null || p.when.test(String(statement)))) : []);
+    const forIntent = (intent, statement) => (intent && intent.algo ? PARADIGMS.filter((p) => p.algo === intent.algo && (!p.when || statement == null || p.when.test(String(statement))) && (!p.shape || p.shape(intent))) : []);
     const namesOf = (intent) => {
         const N = { sc: [], ls: [], s: [], g: null }; for (const v of intent.vars) { if (v.type === 'list') N.ls.push(v.name); else if (v.type === 'str') N.s.push(v.name); else N.sc.push(v.name); }
         const grid = intent.inputs.find((i) => i.k === 'grid'); if (grid) { N.g = grid.name; N.ls = N.ls.filter((x) => x !== grid.name); }
+        N.L = intent.inputs.filter((i) => i.k === 'lines' || i.k === 'rest').map((i) => i.name); N.ls = N.ls.filter((x) => !N.L.includes(x));
         return N;
     };
     // 窮舉組合（各槽位選項的笛卡兒積）；rank 越高越先試；超過 limit 只留前 limit 個
@@ -198,7 +224,7 @@
     const MARK = /\u0001([^\u0002]*)\u0002/g;
     function render(sk, choice, intent) {
         const N0 = namesOf(intent); const params = intent.vars.map((v) => v.name); const w = (x) => '\u0001' + x + '\u0002';
-        const N = { sc: N0.sc.map(w), ls: N0.ls.map(w), s: N0.s.map(w), g: N0.g && w(N0.g) }; const vals = {};
+        const N = { sc: N0.sc.map(w), ls: N0.ls.map(w), s: N0.s.map(w), g: N0.g && w(N0.g), L: N0.L.map(w), by: {}, role: {} }; for (const p_ of params) N.by[p_] = w(p_); for (const i_ of intent.inputs) if (i_.role) N.role[i_.role] = w(i_.name); const vals = {};
         for (const sl of sk.slots) { const op = sl.options.find((x) => x.id === choice[sl.id]); if (!op) throw new Error('槽位 ' + sl.id + ' 沒有選項 ' + choice[sl.id]); vals[sl.id] = op.v; }
         const P = new Set(params); let py = sk.py(vals, N, intent);
         py = py.replace(/\u0001[^\u0002]*\u0002|'[^']*'|"[^"]*"|\b[A-Za-z_]\w*\b/g, (t) => (P.has(t) && !KEEP.has(t) ? t + '_2' : t)).replace(MARK, '$1');
@@ -208,7 +234,7 @@
         const intent = o.intent; const sks = o.skeleton ? [o.skeleton] : forIntent(intent, o.statement); const trace = []; let tried = 0;
         if (!sks.length) return { ok: false, reason: '這題的算法（' + (intent && intent.algo) + '）沒有範式骨架', tried, trace };
         for (const sk of sks) {
-            for (const choice of combos(sk, { limit: o.limit, rank: o.rank })) {
+            for (const choice of combos(sk, { limit: o.limit || sk.limit, rank: o.rank })) {
                 let cnl; try { cnl = render(sk, choice, intent); } catch (e) { trace.push({ skeleton: sk.id, choice, verdict: 'RENDER_ERROR', detail: String(e.message || e) }); continue; }
                 tried++; let v; try { v = await o.judge(cnl); } catch (e) { v = { verdict: 'JUDGE_ERROR', detail: String(e.message || e) }; }
                 trace.push({ skeleton: sk.id, choice, verdict: v.verdict, detail: v.detail });

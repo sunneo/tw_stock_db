@@ -39,7 +39,7 @@ const VARIANTS = [
     const probs = Object.fromEntries(fs.readFileSync(path.join(__dirname, '..', 'recipe', 'seed', 'problems.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).map((p) => [p.id, p]));
     const runRef = (id, input) => { const r = cp.spawnSync('python3', ['-I', '-c', probs[id].ref.python + '\nmain()\n'], { input, encoding: 'utf8', timeout: 10000 }); return r.status === 0 ? r.stdout : null; };
     // 骨架庫本身：每個骨架的選單都 ≤ 12 個組合
-    for (const sk of PAR.PARADIGMS) assert.ok(PAR.combos(sk, { limit: 999 }).length <= 18, sk.id + ' 組合太多');
+    for (const sk of PAR.PARADIGMS) assert.ok(PAR.combos(sk, { limit: 999 }).length <= Math.max(18, sk.limit || 0), sk.id + ' 組合太多');
     const run = async (id, statement, tests, rank) => {
         const uml = await UC.scenarioToModel(statement, { readers: [AI.reader] }); if (!uml.ok || !uml.fromHints) return { err: 'uml_design 讀不出' };
         const judge = async (src) => { const j = await J.judge({ lang: 'python', source: src + '\nmain()\n', problem: { id, tests } }); return { verdict: j.verdict, detail: j.detail }; };
