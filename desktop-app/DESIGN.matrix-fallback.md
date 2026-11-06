@@ -262,3 +262,58 @@ fallback: { stage: 'reader'|'recipe'|'lesson'|'paradigm'|'matrix'|'online'|'colu
 - 分母要誠實：這批題是我（同一個作者）寫的，雖然沒用來調整，但不是第三方題庫；48 題的信賴區間很寬。
 - L0 的 ho-avg4／ho-leap／ho-clock／ho-range3 沒解出：只有 2 筆範例，公式枚舉會湊出範例都對但隱藏測資錯的公式，沙盒擋下（過度擬合，如設計預期）；需要「主動要更多範例／生成輸入」（§5），這是已知缺口。
 - 解不出的完整清單見 `/tmp` 的跑分輸出（每題原因）；非本批可解的類型：圖題（邊表輸入）、多行清單輸入、迴圈型模擬（約瑟夫）、巢狀字串展開。
+
+### 9.7 未解題分類報告（2026-11-07；只分析，沒改核心程式）
+
+資料：held-out 48 題模式 B 的 27 個沒解出（見 §9.6）、Linux 題庫 train 37 題（`bench_linux_all.jsonl`，模式 B 目前 0/37）。「卡在哪」欄的原因是看跑分輸出（`程式讀不出…[matrix:false]`＝讀取器沒意圖、沒有範式／課／配方、矩陣層回 false）加上我讀題目與範例形狀的判斷；**增益是預估，沒有實作驗證**。
+
+#### A. held-out 27 題
+
+三類統計：**矩陣層補得到 10 題、應交給 Blockly 補教學 17 題、應交給第三層 0 題**。
+
+**① 矩陣層補得到（10）**
+
+| 題 | 卡在哪 | 建議 |
+|---|---|---|
+| ho-dag-paths、ho-bfs-dist、ho-cycle、ho-longest-dag、ho-reach-from1（L3，5 題） | 輸入形狀：「n m ＋ m 行邊」矩陣層沒有；沒有半環範本 | **邊表形狀推斷**（首行 2 整數、後 m 行 2～3 整數；有向／無向由敘述「無向／→」判斷）＋ **L3 半環範本**（路徑計數＝DAG 上的 (+,×)、最短步數＝(min,+)／BFS、有環＝閉包對角線、最長路＝(max,+)、可達數＝布林閉包）；選哪個範本由敘述關鍵字＋範例驗證。預期 +5（最有把握，是設計 §3 的 L3 本業） |
+| ho-avg4、ho-range3、ho-clock、ho-leap（L0，4 題） | 只有 2 筆範例，公式枚舉湊出範例對、隱藏測資錯（過度擬合，沙盒擋下）；clock 是兩個整數輸出、leap 需要比較／布林運算與標籤輸出 | 不是範本問題：要**主動要更多範例**（讀取器生成輸入＋使用者卡片確認／補輸出，設計 §5），並擴充算子（`==`、`and`、`or`、多輸出）。預期 +2～4（取決於範例取得；沒有更多範例就是 0） |
+| ho-transpose（other，1 題） | 輸入形狀：格子（首行 r c＋r 行）；輸出也是格子 | **格子形狀推斷**＋矩陣層恆等變換範本（轉置／翻轉／旋轉，由範例驗證）。預期 +1 |
+
+預期增益合計 **+8～10（模式 B 約 29～31／48）**，其中 L3 的 5 題有把握，其餘取決於範例。
+
+**② 應交給 Blockly 補教學（17）**——缺的範式（給 blockly-teach）
+
+| 題 | 卡在哪 | 缺的範式／問題 |
+|---|---|---|
+| ho-phi | 沒有範式 | `nt.phi`（歐拉函數，質因數分解迴圈） |
+| ho-perfect | 沒有範式 | `nt.perfect`（真因數和＝自己；可重用 divisor-sum） |
+| ho-halve | 沒有範式 | `sim.step-count`（迴圈到 0 的步數，偶除奇減） |
+| ho-base-k | 沒有範式／輸入兩行整數 | `nt.base-convert`（k 進位表示，字串輸出） |
+| ho-postfix | **讀取器沒讀出意圖**（範式庫已有 `stack.rpn`，但這個說法「後序（RPN）、個位數、+ - *」沒命中） | 讀取器關鍵字擴充（後序／RPN／逆波蘭） |
+| ho-anagram | **讀取器沒讀出意圖** | `str.anagram`（兩行排序比較）＋讀取器說法「變位詞／重新排列」 |
+| ho-hist | 沒有範式 | `stack.histogram-max`（單調堆疊最大矩形） |
+| ho-warmer | 沒有範式（`stack.next-greater` 是輸出「值」，這題輸出「距離」） | `stack.next-greater` 加「距離」變體 |
+| ho-decode | 沒有範式；巢狀展開要堆疊（且範式骨架不支援巢狀 def，見 HANDOFF 陷阱） | `stack.nested-expand`（k[…]） |
+| ho-longest-paren | 沒有範式 | `stack.longest-valid-paren` |
+| ho-josephus | 沒有範式（佇列／陣列模擬） | `sim.josephus`（list＋取模索引） |
+| ho-window-max | **配方誤判**：`recipe:WA`（配方吻合了但答案錯，沒有退到範式） | 修配方比對條件；缺 `win.max-sum`（滑動視窗最大值之和） |
+| ho-intervals | 沒有範式 | `sweep.merge-intervals`（排序＋掃描） |
+| ho-two-sum | **課誤判**：`lesson:WA` | 修課比對條件；缺 `cnt.pair-sum`（配對計數） |
+| ho-rle-dec | 沒有範式（encode 有，decode 沒有） | `str.rle-decode` |
+| ho-pal-sub | 沒有範式 | `str.palindrome-substrings`（中心展開計數） |
+| ho-pascal | 沒有範式（`comb.binom` 有，但輸出整列） | `comb.pascal-row` |
+
+另外值得回報：**配方／課「吻合但答案錯」(WA) 就算數、不再往下走**的行為（ho-window-max、ho-two-sum 兩題）會擋住後面的後備，建議 `buildFromUML` 在配方／課沙盒失敗時繼續往範式→矩陣層走（目前日誌上是繼續走但最終無解，需 blockly-teach 確認）。
+
+**③ 應交給第三層（上網找／湊 CoLU）：0 題。** 這 27 題都是教科書題，不需要找外部資源；是我們自己的範式庫沒有。第三層應留給下一節的 Linux 規格型題目。
+
+**其實不該由矩陣層解**：ho-decode、ho-longest-paren、ho-hist（需要堆疊的非正規語言；可用 VM 堆疊但可讀性差，應由 Blockly 範式）、ho-josephus（迴圈模擬）。這與設計 §2 一致：矩陣層的長處是「由範例決定的函數」（L0～L3），不是知識型的演算法。
+
+#### B. Linux train 37 題（簡短歸類）
+
+三類統計：**矩陣層補得到 11、Blockly 補教學 24、第三層 2**（模式 B 目前 0/37，原因幾乎都是「讀取器沒意圖」＋輸入是十六進位／多行／格式規格）。
+
+- **矩陣層補得到（11）**：lx-xxd-encode、lx-xxd-bits（逐字元映射）、lx-endian-pack、lx-rle-encode、lx-adler32（敘述給了遞推式）、lx-xz-delta（視窗公式）、lx-cat-n、lx-cat-A、lx-grep-fixed、lx-grep-i、lx-grep-n。需要的是新形狀：**「首行 n＋n 行文字」的逐行轉換形狀**與**位元組／十六進位字串形狀**，加上「逐行變換」範本（前綴行號、替換、篩選）。預期保守 +5～8（只靠範例會過度擬合，需要敘述當先驗，等於範本庫手寫知識，與範式重疊）。
+- **Blockly 補教學（24）**：需要領域包（位元流讀取、格式解析、整數碼、分詞器、標頭組裝）：lx-xxd-reverse、lx-grep-o、lx-regex-class、lx-glob、lx-eval-rpn、lx-eval-tokenize、lx-eval-vars、lx-exec-argv、lx-exec-pipeline、lx-tar-checksum、lx-tar-offsets、lx-tar-parse、lx-crc32（Python 有 `zlib.crc32`，可直接用）、lx-lz77-decode、lx-huffman-cost、lx-bit-reader、lx-deflate-stored、lx-gunzip-stored、lx-xz-varint-dec、lx-bmp-header、lx-bmp-write24、lx-bmp-read8、lx-bmp-gray、lx-base64-decode（`base64` 模組）。
+- **第三層（2）**：lx-lzma-literals（LZMA 範圍解碼器，規格長）、lx-inflate-fixed（固定霍夫曼表，需要規格表）——題目敘述已含大部分規則，但自動從敘述組出需要外部實作參考。
+- 注意：Linux 題多半是「依規格實作」，不是「由範例推函數」，**矩陣層對它們的邊際價值很小**；估計值保守，且這 11 題做成範本後仍是手寫知識（與 Blockly 範式的差別只在入口）。
