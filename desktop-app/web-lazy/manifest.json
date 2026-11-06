@@ -295,8 +295,8 @@
    "names": [
     "FaAlgoIntent"
    ],
-   "size": 24437,
-   "md5": "e20134fd693c6c3485e8463e3e5d8f6d"
+   "size": 24632,
+   "md5": "c174753bbfd62aa412575d5c1db23d5b"
   },
   "pylessons": {
    "file": "chunks/pylessons.js",
@@ -330,6 +330,30 @@
    "size": 9525,
    "md5": "7baa99e3654a97e8303bea4cfecf60a2"
   },
+  "domainalgo2": {
+   "file": "chunks/domainalgo2.js",
+   "names": [
+    "FaDomainAlgo2"
+   ],
+   "size": 11480,
+   "md5": "bcf06bc2d3ce560c8d570237cead33c6"
+  },
+  "domainos": {
+   "file": "chunks/domainos.js",
+   "names": [
+    "FaDomainOs"
+   ],
+   "size": 10582,
+   "md5": "54ba17a9cb7a9032a22b4e44cf0ae5be"
+  },
+  "domainds": {
+   "file": "chunks/domainds.js",
+   "names": [
+    "FaDomainDs"
+   ],
+   "size": 9467,
+   "md5": "6c50cd01e98859959f908004358f758d"
+  },
   "pyumlpipeline": {
    "file": "chunks/pyumlpipeline.js",
    "names": [
@@ -343,8 +367,8 @@
    "names": [
     "FaCodeAgent"
    ],
-   "size": 13944,
-   "md5": "9b8d866f01f1d42193aaf9ba9866f4a5"
+   "size": 14757,
+   "md5": "477cd4a26424fe7cd9aae23cf2202a6e"
   },
   "view": {
    "file": "chunks/view.js",
@@ -1340,7 +1364,7 @@
   }
  },
  "core": {
-  "size": 5621379,
-  "md5": "9d641b68f805d5f72398c1f53aa1099b"
+  "size": 5621600,
+  "md5": "298250572f722a148ca2041ab6221745"
  }
 }
