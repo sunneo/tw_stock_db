@@ -241,3 +241,24 @@ fallback: { stage: 'reader'|'recipe'|'lesson'|'paradigm'|'matrix'|'online'|'colu
 - **題庫已被污染**：另一個 session 針對這份題庫補了 Blockly 範式後，模式 A 從 2/60 變成 **59/60**，模式 B（加矩陣層）60/60。這代表 60 題已不是「沒見過的題」：Blockly 側被教到會做這 60 題，矩陣層是我看過這些題調整的。**這兩個數字都不能再當作泛化的涵蓋率**，只是回歸測試。【驗證（數字）＋誠實結論】
 - 後果：矩陣層「相對於 Blockly 的邊際價值」在這份題庫上量不出來（59→60）。要量，必須有一份**新的、兩邊都沒看過的保留題庫（held-out）**：由沒參與開發的人／session 命名題目，或在合成器與範式都凍結後才產生，並且之後不再依它調整。
 - `bench_coverage.js`／`bench_selfcheck.js` 現在只讀 `bench_(L|extra)*.jsonl`（seed 資料夾另有 `bench_linux_all.jsonl` 64 題，屬別的 session）。
+
+### 9.6 未污染 held-out 題庫首次實測（2026-11-06）— 這才是泛化數字
+
+題庫 `renderer/src/recipe/seed/heldout_all.jsonl`（48 題：L0–L6 各 6、other 6；產生器 `scripts/eval/gen_heldout.py`，答案由 ref 實際執行）；跑法 `FA_TS_DIR=/tmp/fa-ts-cache node scripts/eval/bench_coverage.js --mode A|B --set heldout`。**凍結：不要依它調整合成器／範式，也不要讓補教學的 session 看題目；只跑一次的結果如下。**
+
+| | 模式 A（Blockly） | 模式 B（Blockly＋矩陣層） |
+|---|---|---|
+| 解出 | 17/48 | 21/48 |
+| L0 | 0/6 | 2/6 |
+| L1 | 4/6 | 6/6（其中 1 題標 verified:false，多個候選） |
+| L2 | 6/6 | 6/6 |
+| L3 | 1/6 | 1/6 |
+| L4 | 2/6 | 2/6 |
+| L5 | 1/6 | 1/6 |
+| L6 | 2/6 | 2/6 |
+| other | 1/6 | 1/6 |
+
+- 矩陣層的邊際價值＝+4（L0 +2、L1 +2），全在「公式／遞推」；L3（圖）、L4（歐拉函數、完全數、k 進位、減半步數）、L5、L6、other 矩陣層都沒有幫上（L3 圖題與清單／多行輸入的形狀推斷、範本庫對這批題沒有命中）。
+- 分母要誠實：這批題是我（同一個作者）寫的，雖然沒用來調整，但不是第三方題庫；48 題的信賴區間很寬。
+- L0 的 ho-avg4／ho-leap／ho-clock／ho-range3 沒解出：只有 2 筆範例，公式枚舉會湊出範例都對但隱藏測資錯的公式，沙盒擋下（過度擬合，如設計預期）；需要「主動要更多範例／生成輸入」（§5），這是已知缺口。
+- 解不出的完整清單見 `/tmp` 的跑分輸出（每題原因）；非本批可解的類型：圖題（邊表輸入）、多行清單輸入、迴圈型模擬（約瑟夫）、巢狀字串展開。
