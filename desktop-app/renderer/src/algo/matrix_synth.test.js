@@ -44,5 +44,15 @@ const T = [
         const r = await S.synth({ statement: t.st, examples: ex, judge: async (src) => { const j = await J.judge({ lang: 'python', source: src + '\nmain()\n', problem }); return { verdict: j.verdict, detail: j.detail }; } });
         assert.ok(r.ok && r.kind === 'template' && r.verdict === 'AC', '範本 ' + t.id + '：' + (r.reason || r.verdict)); console.log('  ✓ 範本 ' + t.id + '：' + r.desc);
     }
-    assert.ok(ok >= 5, '獨立題至少解出 5 題，實際 ' + ok); console.log((ok + 4 + TP.length) + ' passed, 0 failed'); process.exit(0);
+    // 註冊表：補一種範本＝註冊一個模組；順序、取代、取消、例外隔離、失敗模組不影響其他模組
+    {
+        const names0 = S.list().map((x) => x.name); assert.deepStrictEqual(names0, ['recurrence', 'dfa', 'template', 'formula'], '預設順序');
+        S.register('plug-boom', () => { throw new Error('壞掉的模組'); }, { order: 5 }); S.register('plug-hello', ({ statement }) => (/哈囉測試/.test(statement) ? { ok: true, source: 'def main():\n    print("hi")\n', kind: 'plugin', level: 'L9', size: 1, tried: 1, ambiguous: false, desc: '外掛' } : { ok: false, reason: '不是我的題' }), { order: 6, level: 'L9' });
+        assert.deepStrictEqual(S.list().map((x) => x.name).slice(0, 2), ['plug-boom', 'plug-hello'], 'order 小的先');
+        const r1 = await S.synth({ statement: '哈囉測試：輸出 hi', examples: [{ in: '', out: 'hi\n' }], judge: async (src) => { const j = await J.judge({ lang: 'python', source: src + '\nmain()\n', problem: { id: 'h', tests: [{ in: '', out: 'hi\n' }] } }); return { verdict: j.verdict }; } });
+        assert.ok(r1.ok && r1.kind === 'plugin' && r1.verified, '外掛要能被呼叫，且壞掉的模組（order 更前）不能拖垮它：' + (r1.reason || '')); assert.ok(r1.steps.some((x) => x.by === 'plug-boom' && !x.ok && /壞掉的模組/.test(x.reason)), '壞模組的例外要記在 steps');
+        S.register('plug-hello', () => ({ ok: false, reason: '改過了' }), { order: 6 }); assert.strictEqual(S.list().filter((x) => x.name === 'plug-hello').length, 1, '同名是取代不是重複');
+        assert.ok(S.unregister('plug-boom') && S.unregister('plug-hello') && !S.unregister('plug-hello')); assert.deepStrictEqual(S.list().map((x) => x.name), names0, '取消後回到預設');
+    }
+    assert.ok(ok >= 5, '獨立題至少解出 5 題，實際 ' + ok); console.log((ok + 5 + TP.length) + ' passed, 0 failed'); process.exit(0);
 })().catch((e) => { console.error('FAIL', e && e.stack || e); console.log('0 passed, 1 failed'); process.exit(1); });

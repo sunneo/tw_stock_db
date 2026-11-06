@@ -231,11 +231,20 @@
         const src = ['def main():'].concat(rd, t.py, [pr]).map((l, i) => (i === 0 ? l : '    ' + l)).join('\n') + '\n';
         return { ok: true, source: src, kind: 'template', level: t.shape === 'nl' ? 'L5' : 'L4', size: t.py.length, tried, ambiguous: !unique, desc: '範本：' + t.name, matrixForm: { kind: 'template', name: t.name } };
     }
-    // ---- 入口：子順序 L1 → L2；每個候選交 judge（若有）驗證 ----
+    // ---- 註冊表：矩陣層「認多少補多少」——補一種範本／一種形狀＝註冊一個模組（FaMatrixSynth.register），不必改 synth() ----
+    // 模組合約：fn({statement, examples, budget}) → 同步或 Promise 的 {ok, source, kind, level, size, tried, ambiguous, desc, matrixForm, reason}。
+    // order 小的先試（便宜、保證會停的先；容易過度擬合的公式枚舉放最後）；模組丟例外只算它自己失敗，不影響其他模組。
+    const REGISTRY = [];
+    function register(name, fn, opts) { const i = REGISTRY.findIndex((x) => x.name === name); const ent = { name, fn, order: (opts && opts.order != null) ? opts.order : 50, level: (opts && opts.level) || null, note: (opts && opts.note) || '' }; if (i >= 0) REGISTRY[i] = ent; else REGISTRY.push(ent); REGISTRY.sort((a, b) => a.order - b.order); return ent; }
+    function unregister(name) { const i = REGISTRY.findIndex((x) => x.name === name); if (i >= 0) REGISTRY.splice(i, 1); return i >= 0; }
+    const list = () => REGISTRY.map((x) => ({ name: x.name, order: x.order, level: x.level, note: x.note }));
+    register('recurrence', synthRecurrence, { order: 10, level: 'L1', note: '線性遞推（矩陣冪）' }); register('dfa', synthDFA, { order: 20, level: 'L2', note: '有限狀態自動機家族' });
+    register('template', synthTemplate, { order: 40, level: 'L4/L5', note: '小範本庫（數字／字串／清單）' }); register('formula', synthFormula, { order: 90, level: 'L0', note: '整數公式枚舉（最後才試，容易過度擬合）' });
+    // ---- 入口：依註冊表的順序試；每個候選交 judge（若有）驗證 ----
     async function synth(o) {
         const t0 = Date.now(); const ex = o.examples || []; const steps = []; let best = null;
-        for (const [name, fn] of [['recurrence', synthRecurrence], ['dfa', synthDFA], ['template', synthTemplate], ['formula', synthFormula]]) {
-            let r; try { r = fn({ statement: String(o.statement || ''), examples: ex, budget: o.budget }); } catch (e) { r = { ok: false, reason: '例外：' + String((e && e.message) || e) }; }
+        for (const { name, fn } of REGISTRY.slice()) {
+            let r; try { r = await fn({ statement: String(o.statement || ''), examples: ex, budget: o.budget }); } catch (e) { r = { ok: false, reason: '例外：' + String((e && e.message) || e) }; }
             steps.push({ by: name, ok: r.ok, reason: r.reason, tried: r.tried }); if (!r.ok) continue;
             let v = { verdict: 'UNCHECKED' }; if (o.judge) v = await o.judge(r.source); steps[steps.length - 1].verdict = v.verdict;
             if (v.verdict === 'AC' || v.verdict === 'UNCHECKED') { best = Object.assign(r, { explain: r.desc, blocks: null, matrixForm: r.matrixForm || null, verdict: v.verdict, verified: v.verdict === 'AC' && !r.ambiguous, holdout: ex.length, steps, ms: Date.now() - t0 }); break; }
@@ -243,5 +252,5 @@
         if (best) return best;
         return { ok: false, reason: steps.map((s) => s.by + '：' + (s.reason || s.verdict)).join('；'), steps, ms: Date.now() - t0 };
     }
-    return { synth, synthRecurrence, synthDFA, synthFormula, synthTemplate, inferShape, kmpDFA };
+    return { synth, register, unregister, list, synthRecurrence, synthDFA, synthFormula, synthTemplate, inferShape, kmpDFA };
 });

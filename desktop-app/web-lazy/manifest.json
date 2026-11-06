@@ -202,6 +202,14 @@
    "size": 20029,
    "md5": "4ee911e73e640ccecabdb4d3c340c6b0"
   },
+  "matrixsynth": {
+   "file": "chunks/matrixsynth.js",
+   "names": [
+    "FaMatrixSynth"
+   ],
+   "size": 23102,
+   "md5": "fa222e84080a502ea660c118c4462313"
+  },
   "teachercheck": {
    "file": "chunks/teachercheck.js",
    "names": [
@@ -247,16 +255,16 @@
    "names": [
     "FaPyBlocksLib"
    ],
-   "size": 17862,
-   "md5": "57fe3209fbbe4ee8e65b09754fd5ebdf"
+   "size": 21967,
+   "md5": "3660af3438063c40039f3fbfb8afcf3a"
   },
   "pyblocks": {
    "file": "chunks/pyblocks.js",
    "names": [
     "FaPyBlocks"
    ],
-   "size": 18473,
-   "md5": "5e1f96125cbf11d29d78610dca878eae"
+   "size": 18510,
+   "md5": "2a071700186bb0fc924f18d0b9fb5180"
   },
   "pyblocksrules": {
    "file": "chunks/pyblocksrules.js",
@@ -287,8 +295,8 @@
    "names": [
     "FaAlgoIntent"
    ],
-   "size": 18988,
-   "md5": "f991b92f85fae21e8ac078545b3f82f0"
+   "size": 24280,
+   "md5": "f342f71d6b92386301087b1f93ecb274"
   },
   "pylessons": {
    "file": "chunks/pylessons.js",
@@ -311,8 +319,8 @@
    "names": [
     "FaPyParadigms"
    ],
-   "size": 44081,
-   "md5": "e96592dbc108e214a47ccf6371ca742d"
+   "size": 89255,
+   "md5": "d8cb9b44bfadd735a8ca1fca973ac241"
   },
   "domaindsp": {
    "file": "chunks/domaindsp.js",
@@ -335,8 +343,8 @@
    "names": [
     "FaCodeAgent"
    ],
-   "size": 13714,
-   "md5": "ee6002b6c5b5f2627220da1629f07e47"
+   "size": 13944,
+   "md5": "9b8d866f01f1d42193aaf9ba9866f4a5"
   },
   "view": {
    "file": "chunks/view.js",
@@ -1332,7 +1340,7 @@
   }
  },
  "core": {
-  "size": 5620733,
-  "md5": "288145ba744b6aca7d3080fe8da68b49"
+  "size": 5621379,
+  "md5": "9d641b68f805d5f72398c1f53aa1099b"
  }
 }
