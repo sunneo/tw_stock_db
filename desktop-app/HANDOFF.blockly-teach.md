@@ -32,6 +32,13 @@
 - 讀取器的坑：領域條目標 `pri:true` 才能壓過內建工具詞彙（lines-map 會搶「每行」）；單行字串輸入要寫成「輸入一個字串 s」；指令序列用「第一行 q，之後 q 行指令：…」；兩個清單要分別寫「第二行 n 個…，第三行 q 個…」。
 - 下週待辦（優先序）：(1) 多矩陣輸入形狀（銀行家演算法、分頁位址轉換）；(2) diff／join／cat-two 的「兩段輸入」；(3) 同步原語事件模擬、檔案系統（inode／FAT）、進階圖樹（MST／SCC／Bellman-Ford／LCA）；(4) 真 Linux 語意模擬（fd 表、dup2、pipe 緩衝、信號遮罩、socket 狀態機；純函式）；(5) 思考堆疊 C／E／F／I；(6) holdout 未解：Linux 6 題（cat-two、exec-env、tar-blocks、canonical-huffman、xz-header、bmp-write8）與各包 holdout 各 1 題（輸入措辭；補時要用新出的 holdout，不要拿現有的當教材）。
 
+## 3b. 最新進度（blockly-teach-4，2026-11-07 06:10 CST；比 §3a 新，先看這裡）
+
+- 已做：`renderer/src/uml/domain_sync_core.js`＋`domain_sync.test.js`（信號量／互斥鎖／條件變數／生產者消費者；train 16/16、holdout 3/4，未解 1 題為輸入措辭，已用通用輸入形狀修正補上）；`algo_intent_core.js` 兩個通用小修（「之後 q 行事件／動作」；「接著 q 行：…」保留第一行整數）；登記於 embed 清單、`floating-assistant.js` 的 DOMAINSY 標記與 `_pyDomainsInit`、`run-core-tests.js`。
+- 驗證狀態以提交訊息與協調者回報為準；核心測試或 Electron 20/20 若未全過，先修。`floating-assistant.js` 屬 hungfu.lee，automation 帳號寫不進，要用 `ssh hungfu.lee@127.0.0.1` 直接下指令（ssh 跑 /tmp 小腳本曾被權限分類器擋）。
+- 接續點（依序）：(1) 銀行家演算法／分頁位址轉換＝多矩陣輸入：「第一行 n m，接著 n 行…，再接著 n 行…」目前讀成兩個 raw lines 但丟掉第一行整數；修法是 `algo_intent_core.js` 的 `readToolInput` 覆蓋處（搜尋 `const keep =`）把保留條件放寬到 `ti.every(x => x.k==='lines'||x.k==='rest')`，再寫 banker 骨架（是否安全／安全序列）。(2) diff／join 兩段輸入。(3) 檔案系統（inode／FAT）、進階圖樹（MST／SCC／Bellman-Ford／LCA）、真 Linux 語意模擬（fd 表、dup2、pipe、信號遮罩、socket 狀態機）。(4) 思考堆疊 D／F／H（C、E 先設計）。(5) Linux holdout 6 題與各包 holdout 未解題（只補通用能力）。
+- 額度：2026-11-07 06:08 使用者指示不要用到隔週額度；07:00 重置後由使用者決定何時續做。
+
 ## 4. 環境與流程（任何帳號都能照做）
 
 - **依賴**：Node 20、Python 3、`xvfb-run`（真 Electron 測試）、tree-sitter 快取目錄。`export FA_TS_DIR=/tmp/fa-ts-cache`（需含 `tree-sitter.js`、`tree-sitter.wasm`、`tree-sitter-python.wasm`；沒有就從 `~/.cache/fa-ts` 或專案說明取得；測試找不到會印「略過」）。

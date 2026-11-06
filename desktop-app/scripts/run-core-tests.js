@@ -35,6 +35,7 @@ const suites = [
     ['領域包 os（作業系統模擬）：CPU 排程（非搶先／RR／SRTF）、分頁置換、記憶體配適、磁碟排程；train 全過、holdout 只量測（需 tree-sitter 快取）', 'renderer/src/uml/domain_os.test.js'],
     ['領域包 ds（資料結構操作序列）：雜湊表、LRU、堆積、BST、Trie、並查集、鏈結串列；train 全過、holdout 只量測（需 tree-sitter 快取）', 'renderer/src/uml/domain_ds.test.js'],
     ['領域包 linuxtext（cut／sort／uniq／wc／head／tail／tr／sed／awk 行為）：train 全過、holdout 只量測（需 tree-sitter 快取）', 'renderer/src/uml/domain_linuxtext.test.js'],
+    ['領域包 sync（同步原語事件模擬）：信號量、互斥鎖、條件變數、生產者消費者；train 全過、holdout 只量測（需 tree-sitter 快取）', 'renderer/src/uml/domain_sync.test.js'],
     ['區塊的庫存與範本規則（三區、型別、終止條件、模組需求；需 tree-sitter 快取）', 'renderer/src/uml/py_blocks_rules.test.js'],
     ['UML 遞迴切割寫 body（假模型：補全式逐行、縮排結構、退回重寫、區塊版；需 tree-sitter 快取）', 'renderer/src/uml/py_body.test.js'],
     ['AST 建樹：隨機建樹與真 tree-sitter 一致、種子程式重放（需 tree-sitter 快取）', 'renderer/src/ast/ast_replay.test.js'],

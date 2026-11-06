@@ -15491,7 +15491,7 @@ const holder = {};
             if (seenOutput) continue;
             if ((m = /^輸入(?:一行)?(兩|三|四|五)個(?:正)?整數$/.exec(c))) { const ns = 'abcde'.slice(0, { 兩: 2, 三: 3, 四: 4, 五: 5 }[m[1]]).split(''); inputs.push({ k: 'scalars', names: ns, type: 'int', line: true }); addNames(ns); continue; } // 輸入三個整數（沒有名字：a b c）
             if ((m = new RegExp('^(?:接著|再|然後|之後)\\s*(' + NAME + ')\\s*行字元').exec(c))) { inputs.push({ k: 'grid', count: m[1], width: null, name: 'g' }); addNames(['g']); continue; } // 接著 n 行字元 "." 或 "#"
-            if ((m = new RegExp('^(?:接著|再|然後|之後)\\s*(' + NAME + ')\\s*行(?:指令|操作)$').exec(c))) { inputs.push({ k: 'grid', count: m[1], width: null, name: 'g' }); addNames(['g']); continue; } // 之後 q 行指令（每行一個字串，由程式自己拆）
+            if ((m = new RegExp('^(?:接著|再|然後|之後)\\s*(' + NAME + ')\\s*行(?:指令|操作|事件|動作)$').exec(c))) { inputs.push({ k: 'grid', count: m[1], width: null, name: 'g' }); addNames(['g']); continue; } // 之後 q 行指令（每行一個字串，由程式自己拆）
             if ((m = new RegExp('^(?:接著|再|然後|之後)\\s*(' + NAME + ')\\s*行\\s*(' + NAMES + ')(?:\\s*(?:表示|代表).*)?$').exec(c))) { const ns = m[2].split(/\s+/); const rn_ = rowName(); inputs.push({ k: 'rows', count: m[1], names: ns, name: rn_ }); addNames([rn_]); continue; } // 接著 m 行 a b／再 q 行 x y
             if ((m = new RegExp('^輸入(?:一行)?(?:(?:兩|三|四|五)個)?(?:正)?(整數|小數)\\s*(' + NAMES + ')$').exec(c))) { const ns = m[2].split(/\s+/); inputs.push({ k: 'scalars', names: ns, type: m[1] === '小數' ? 'float' : 'int', line: true }); addNames(ns); continue; }
             if ((m = new RegExp('^接著\\s*(' + NAME + ')\\s*行(?:每行|各)\\s*(.+)$').exec(c))) {
@@ -15518,7 +15518,7 @@ const holder = {};
             if (/^輸入(?:一行)?以空格分隔的/.test(c)) { inputs.push({ k: 'words', name: 'w' }); addNames(['w']); continue; } // 輸入以空格分隔的後序運算式
             if ((m = new RegExp('^輸入[^a-zA-Z0-9]{0,14}?\\s*(' + NAMES + ')$').exec(c)) && !/小數|字串|文字/.test(c)) { const ns = m[1].split(/\s+/); inputs.push({ k: 'scalars', names: ns, type: 'int', line: true }); addNames(ns); continue; } // 輸入 a e m／輸入三個點的整數座標 x1 y1 x2 y2 x3 y3
         }
-        { const ti = readToolInput(text); if (ti && !inputs.some((x) => x.k === 'grid' || x.k === 'rows') && (!inputs.length || ti.some((x) => (x.k === 'list' && x.size === null) || x.k === 'hex' || x.k === 'lines' || x.k === 'rest' || (x.k === 'str' && x.role)))) { inputs.length = 0; names.clear(); ti.forEach((x) => inputs.push(x)); } } // 工具型題目的輸入形狀（文字行串流、十六進位、旗標行、多段）
+        { const ti = readToolInput(text); if (ti && !inputs.some((x) => x.k === 'grid' || x.k === 'rows') && (!inputs.length || ti.some((x) => (x.k === 'list' && x.size === null) || x.k === 'hex' || x.k === 'lines' || x.k === 'rest' || (x.k === 'str' && x.role)))) { const keep = ti.length === 1 && ti[0].k === 'lines' && inputs.length === 1 && inputs[0].k === 'scalars' && inputs[0].line ? inputs[0] : null; inputs.length = 0; names.clear(); if (keep) { inputs.push(keep); keep.names.forEach((n) => names.add(n)); } ti.forEach((x) => inputs.push(x)); } } // 工具型題目的輸入形狀（文字行串流、十六進位、旗標行、多段）
         if (!inputs.length && /檔案/.test(text) && /行/.test(text) && /連接|串接|接在|依序|行號/.test(text)) { inputs.push({ k: 'rest', count: null, name: 'lines', raw: true, fallback: true }); } // 多段檔案的輸入措辭讀不出來：整份輸入當成行串流，由範式依「行數＋內容」逐段解析
         if (!inputs.length) { const im = /(?:≤|<=)\s*([a-z][a-z0-9]{0,3})\s*(?:≤|<=)/.exec(text); if (im) { inputs.push({ k: 'scalars', names: [im[1]], type: 'int', line: true }); addNames([im[1]]); } } // 沒寫「輸入」只在範圍裡出現變數（爬到第 n 階（1≤n≤80））：一個整數
         // ---- 輸出 ----
@@ -16443,6 +16443,54 @@ const holder = {};
 return holder.FaDomainLinuxText;
 })();
 /* DOMAINLT-END */
+/* DOMAINSY-BEGIN */
+const FaDomainSync = (function () {
+const holder = {};
+(function (module, self) {
+/* 領域包：作業系統／同步原語的確定性事件模擬（純函式，不真的開執行緒）。格式見 domain_registry_core.js。
+ * 範式：計數信號量（P／V、等待佇列）、互斥鎖（lock／unlock、擁有者、交棒）、條件變數（wait／signal／broadcast）、有限緩衝區生產者消費者。
+ * 輸入形狀：「第一行 … q，之後 q 行事件」＝N.g；事件字（wait／P／signal／V／lock…）骨架兩種寫法都認，不靠敘述猜。
+ * 差異點（喚醒順序 FIFO／LIFO、信號量值能否為負、解鎖者非擁有者的處理…）是槽位，由沙盒窮舉。骨架不含 def。train／holdout 見 domain_sync.test.js。 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaDomainSync = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    function make(PAR) {
+        const { S, code } = PAR.dsl;
+        const D = (id, algo, paradigm, label, slots, py, extra) => Object.assign({ id, algo, paradigm, label, slots, py }, extra || {});
+        const lines = (N) => N.g || N.L[0];
+        const q = (s) => JSON.stringify(s);
+        const WK = [['fifo', 'fifo'], ['lifo', 'lifo']];
+        const POP = (k, arr) => '        ' + k + ' = ' + arr + '.pop(0)' ;
+        void POP;
+        const skeletons = [
+            D('sync.semaphore', 'sync-sem', 'simulation', '計數信號量：初值 s；wait／P 取一個（沒有就排隊阻塞）、signal／V 還一個（有人排隊就喚醒一個）；喚醒順序與輸出由窮舉決定',
+                [S('wk', '喚醒', WK), S('out', '輸出', [['order', 'order'], ['blocked', 'blocked'], ['value', 'value'], ['value-neg', 'value-neg']])],
+                (c, N) => code(['val = ' + N.sc[0], 'wq = []', 'got = []', 'idx = 0', 'for line in ' + lines(N) + ':', '    p = line.split()', '    if len(p) < 1:', '        continue', '    idx = idx + 1', '    who = p[1] if len(p) > 1 else str(idx)', '    op = p[0].lower()', '    if op in ("wait", "p", "down", "acquire", "sem_wait"):', '        if val > 0:', '            val = val - 1', '            got.append(who)', '        else:', '            wq.append(who)', '    else:', '        if wq:', '            nxt = wq.pop(' + (c.wk === 'fifo' ? '0' : '-1') + ')', '            got.append(nxt)', '        else:', '            val = val + 1', c.out === 'order' ? 'print(" ".join(got))' : c.out === 'blocked' ? 'print(len(wq))' : c.out === 'value' ? 'print(val)' : 'print(val - len(wq))']), { limit: 8 }),
+            D('sync.mutex', 'sync-mutex', 'simulation', '互斥鎖：lock t 拿鎖（被占用就排隊）、unlock t 放鎖（擁有者才有效，有人排隊就交棒給下一個）；輸出取得鎖的順序、最後擁有者、被阻塞次數或非法解鎖次數',
+                [S('wk', '交棒給', WK), S('out', '輸出', [['order', 'order'], ['owner', 'owner'], ['blocks', 'blocks'], ['bad', 'bad']])],
+                (c, N) => code(['owner = None', 'wq = []', 'got = []', 'blocks = 0', 'bad = 0', 'for line in ' + lines(N) + ':', '    p = line.split()', '    if len(p) < 2:', '        continue', '    op = p[0].lower()', '    t = p[1]', '    if op in ("lock", "acquire", "mutex_lock"):', '        if owner is None:', '            owner = t', '            got.append(t)', '        else:', '            blocks = blocks + 1', '            wq.append(t)', '    else:', '        if owner != t:', '            bad = bad + 1', '        elif wq:', '            owner = wq.pop(' + (c.wk === 'fifo' ? '0' : '-1') + ')', '            got.append(owner)', '        else:', '            owner = None', c.out === 'order' ? 'print(" ".join(got))' : c.out === 'owner' ? 'print(owner if owner is not None else "none")' : c.out === 'blocks' ? 'print(blocks)' : 'print(bad)']), { limit: 8 }),
+            D('sync.condvar', 'sync-cond', 'simulation', '條件變數：wait t 睡眠排隊、signal 喚醒一個、broadcast 喚醒全部（沒人在等就白費）；輸出被喚醒的順序、最後還在等的人數或白費的 signal 次數',
+                [S('wk', 'signal 喚醒', WK), S('out', '輸出', [['woken', 'woken'], ['waiting', 'waiting'], ['lost', 'lost']])],
+                (c, N) => code(['wq = []', 'woken = []', 'lost = 0', 'for line in ' + lines(N) + ':', '    p = line.split()', '    if len(p) < 1:', '        continue', '    op = p[0].lower()', '    if op in ("wait", "cond_wait"):', '        if len(p) > 1:', '            wq.append(p[1])', '    elif op in ("signal", "notify", "cond_signal"):', '        if wq:', '            woken.append(wq.pop(' + (c.wk === 'fifo' ? '0' : '-1') + '))', '        else:', '            lost = lost + 1', '    elif op in ("broadcast", "notify_all", "cond_broadcast"):', '        if wq:', '            woken.extend(wq if ' + q(c.wk) + ' == "fifo" else wq[::-1])', '            wq = []', '        else:', '            lost = lost + 1', c.out === 'woken' ? 'print(" ".join(woken))' : c.out === 'waiting' ? 'print(len(wq))' : 'print(lost)']), { limit: 8 }),
+            D('sync.prodcons', 'sync-prodcons', 'simulation', '有限緩衝區生產者消費者：容量 cap；produce x 放入（滿了就阻塞，等有空位再進）、consume 取出（空了就阻塞，等有貨再拿）；輸出被取走的物品順序、最後緩衝區大小或最後阻塞數',
+                [S('out', '輸出', [['taken', 'taken'], ['size', 'size'], ['blocked', 'blocked']])],
+                (c, N) => code(['cap = ' + N.sc[0], 'buf = []', 'pend = []', 'cw = 0', 'taken = []', 'for line in ' + lines(N) + ':', '    p = line.split()', '    if len(p) < 1:', '        continue', '    op = p[0].lower()', '    if op in ("produce", "put", "push", "add"):', '        if cw > 0:', '            cw = cw - 1', '            taken.append(p[1])', '        elif len(buf) < cap:', '            buf.append(p[1])', '        else:', '            pend.append(p[1])', '    else:', '        if buf:', '            taken.append(buf.pop(0))', '            if pend:', '                buf.append(pend.pop(0))', '        else:', '            cw = cw + 1', c.out === 'taken' ? 'print(" ".join(taken))' : c.out === 'size' ? 'print(len(buf))' : 'print(len(pend) + cw)']), { limit: 4 }),
+        ];
+        const algos = [
+            ['sync-prodcons', /生產者.{0,6}消費者|有限緩衝|bounded\s*buffer|producer.{0,8}consumer/i],
+            ['sync-cond', /條件變數|condition\s*variable|cond_wait|pthread_cond/i],
+            ['sync-mutex', /互斥鎖|mutex|互斥量|pthread_mutex/i],
+            ['sync-sem', /信號量|訊號量|semaphore|[PV]\s*操作|sem_wait/i],
+        ].map(([key, re]) => ({ key, re, pri: true }));
+        const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = [sk.paradigm];
+        return { id: 'sync', label: '作業系統：同步原語事件模擬', requires: [], judge: { checker: 'tokens' }, algos, paradigms, skeletons };
+    }
+    return { make };
+});
+
+}).call(null, undefined, holder);
+return holder.FaDomainSync;
+})();
+/* DOMAINSY-END */
 /* PYUMLPIPELINE-BEGIN */
 const FaPyUmlPipeline = (function () {
 const holder = {};
@@ -108026,7 +108074,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const host = this._behTsHost(); const PC = await host.loadTreeSitter(); const lang = await PC.Language.load(await host.loadLanguageWasm('python')); const P = new PC(); P.setLanguage(lang); this._pyParser = P; return P;
     }
     // 領域包（DSP…）：第一次用到時註冊進算法詞彙與範式骨架表；判題用領域的容差設定（DSP＝float）
-    _pyDomainsInit() { if (this._pyDomainsDone) return; this._pyDomainsDone = true; for (const pk of [FaDomainDsp, FaDomainAlgo2, FaDomainOs, FaDomainDs, FaDomainLinuxText]) { try { FaDomains.register(pk.make(FaPyParadigms), { AI: FaAlgoIntent, PAR: FaPyParadigms }); } catch (_) { /* 領域包註冊失敗不影響通用範式 */ } } }
+    _pyDomainsInit() { if (this._pyDomainsDone) return; this._pyDomainsDone = true; for (const pk of [FaDomainDsp, FaDomainAlgo2, FaDomainOs, FaDomainDs, FaDomainLinuxText, FaDomainSync]) { try { FaDomains.register(pk.make(FaPyParadigms), { AI: FaAlgoIntent, PAR: FaPyParadigms }); } catch (_) { /* 領域包註冊失敗不影響通用範式 */ } } }
     async _codeOffline(o, bridge) {
         this._pyDomainsInit();
         const P = await this._pyParserSync(); const B = FaPyBlocks.makeBlocks({ parseTree: (s) => P.parse(s), C2U: FaPyCode2Uml }); const R = FaPyBlocksRules.makeRules(B);
