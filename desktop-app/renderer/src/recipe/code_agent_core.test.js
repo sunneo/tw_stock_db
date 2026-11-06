@@ -128,5 +128,13 @@ const checkOK = async () => ({ verdict: 'CHECKED', passed: 0, total: 0, failedIn
     const W = require('./guided_write_core.js'); let seen = null; await W.guidedWriteFunction({ lang: 'python', node: { name: 'f', signature: 'def f(a)', purpose: '' }, choose: async (m, o) => { seen = o; return null; } });
     assert.ok(seen && seen.some((o) => o.kind === 'group' && Array.isArray(o.aliases) && o.aliases.length), '引導寫作給的選項帶別名（類別選項的別名是它底下所有項目的內容）');
   });
+  await t('離線失敗時各層結果（配方→課→範式→矩陣→區塊）摘進 gap，成功時 offline.rounds 帶回', async () => {
+    const rounds = [{ by: 'recipe', ok: false, reason: '沒有配方' }, { by: 'paradigm', ok: false, tried: 3 }, { by: 'matrix', ok: false, reason: null }];
+    assert.strictEqual(A.roundsNote(rounds), '配方✘：沒有配方→範式✘(試 3 個)→矩陣✘'); assert.strictEqual(A.roundsNote(null), '');
+    const bad = await A.runCode({ text: '寫一個 python 程式讀兩個整數印出和', problem: { statement: 's', tests: [{ in: '1 2\n', out: '3\n' }] }, opts: { writeMode: 'free' }, offline: async () => ({ ok: false, reason: '沒解出', rounds }), generate: fakeGen({ plan: PLAN, codes: CODES }), judge: judgeAC, check: checkOK });
+    assert.ok(bad.gaps.some((g) => g.indexOf('各層：配方✘') >= 0 && g.indexOf('範式✘(試 3 個)') >= 0), JSON.stringify(bad.gaps));
+    const good = await A.runCode({ text: '寫一個 python 程式讀兩個整數印出和', problem: { statement: 's', tests: [{ in: '1 2\n', out: '3\n' }] }, opts: { writeMode: 'free' }, offline: async () => ({ ok: true, source: 'print(3)', verdict: 'AC', by: 'paradigm', rounds: [{ by: 'paradigm', ok: true, tried: 1 }] }), generate: fakeGen({ plan: PLAN, codes: CODES }), judge: judgeAC, check: checkOK });
+    assert.ok(good.offline && good.offline.rounds && good.offline.rounds[0].by === 'paradigm');
+  });
   console.log('\n' + n + ' passed');
 })().catch((e) => { console.error('FAIL', e && e.stack || e); process.exit(1); });

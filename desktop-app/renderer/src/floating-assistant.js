@@ -15320,7 +15320,7 @@ const holder = {};
     'use strict';
     const NAME = '[a-zA-Z][a-z0-9]{0,4}'; const NAMES = NAME + '(?:\\s+' + NAME + ')*';
     const CN = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
-    const INT_WORDS = /整數|面額|查詢|數字|價值|重量/; const FLOAT_WORDS = /小數|實數|取樣值|取樣點|振幅/; const STR_WORDS = /單字|字串|字元|文字/;
+    const INT_WORDS = /整數|面額|查詢(?!字串|單字|文字)|數字|價值|重量/; const FLOAT_WORDS = /小數|實數|取樣值|取樣點|振幅/; const STR_WORDS = /單字|字串|字元|文字/;
     // 動作表：關鍵字（中文）→ 目的。recipe 是「語言中立的配方」：which＝作用在哪一種輸入（list／words／str）、op＝要做的運算
     const GOALS = [
         { key: /最大值|最大的|最大總/, op: 'max', which: ['list'] }, { key: /最小值|最小的/, op: 'min', which: ['list'] }, { key: /總和|的和|加總/, op: 'sum', which: ['list'] },
@@ -15390,7 +15390,7 @@ const holder = {};
         { key: 'base64', re: /base64/i, sh: (ins) => ins.length === 1 && has(ins, 'str') },
         { key: 'lz77', re: /LZ77|<L\s*,\s*d>/, sh: (ins) => ins.length === 1 && has(ins, 'str') },
         { key: 'endian-pack', re: /小端|大端/, sh: (ins) => ins.length === 1 && has(ins, 'str') },
-        { key: 'rle-pair', re: /行程長度|連續相同字元/, sh: (ins) => ins.length === 1 && has(ins, 'str') },
+        { key: 'rle-pair', re: /^(?![\s\S]*(?:解碼|還原|展開|解壓))[\s\S]*(?:行程長度|連續相同字元)/, sh: (ins) => ins.length === 1 && has(ins, 'str') },
         { key: 'bits-expand', re: /ASCII[^。]*二進位|二進位[^。]*(?:高位在前|低位在前)|\d+\s*位二進位/, sh: (ins) => ins.length === 1 && has(ins, 'str') },
         { key: 'hex-encode', re: /每個位元組.*十六進位|兩位.*十六進位|十六進位/, sh: (ins) => ins.length === 1 && has(ins, 'str') },
         { key: 'varint', re: /多位元組整數|varint|LEB128/i, sh: (ins) => !ins.some((x) => x.role) },
@@ -15501,7 +15501,7 @@ const holder = {};
             }
             if ((m = new RegExp('^第([一二三四五六七八九\\d]+)行\\s*(' + NAME + ')\\s*(?:個|種)(.*)$').exec(c))) { // 第二行 n 個整數／第三行 q 個查詢 x
                 const tail = m[3]; const nm = (new RegExp('(?:查詢|每個|記為|稱為)\\s*(' + NAME + ')\\s*$').exec(tail) || [])[1];
-                const isStr = STR_WORDS.test(tail) && !INT_WORDS.test(tail); const isFloat = !isStr && FLOAT_WORDS.test(tail) && !INT_WORDS.test(tail); const listName = nm || (isStr ? 'w' : 'a'); inputs.push({ k: 'list', name: listName, size: m[2], elem: isStr ? 'str' : isFloat ? 'float' : 'int' }); addNames([listName, m[2]]); continue;
+                const isStr = STR_WORDS.test(tail) && !INT_WORDS.test(tail); const isFloat = !isStr && FLOAT_WORDS.test(tail) && !INT_WORDS.test(tail); const freshName = (cands) => cands.find((x) => !names.has(x)) || cands[0] + '2'; const listName = nm || (isStr ? freshName(['w', 'w2', 'w3']) : freshName(['a', 'b', 'c', 'd'])); inputs.push({ k: 'list', name: listName, size: m[2], elem: isStr ? 'str' : isFloat ? 'float' : 'int' }); addNames([listName, m[2]]); continue;
             }
             if ((m = new RegExp('^第([一二三四五六七八九\\d]+)行(?:一個|兩個|三個|四個|五個|六個)?小數\\s*(' + NAMES + ')$').exec(c))) { const ns = m[2].split(/\s+/); inputs.push({ k: 'scalars', names: ns, type: 'float', line: true }); addNames(ns); continue; } // 第二行小數 alpha／第二行五個小數 b0 b1 b2 a1 a2
             if ((m = new RegExp('^第([一二三四五六七八九\\d]+)行(?:一個|兩個|三個|四個)?(?:正)?(?:整數)?\\s*(' + NAMES + ')$').exec(c))) { const ns = m[2].split(/\s+/); inputs.push({ k: 'scalars', names: ns, type: 'int', line: true }); addNames(ns); continue; }
@@ -15514,7 +15514,7 @@ const holder = {};
             if (new RegExp('^第([一二三四五六七八九\\d]+)行(?:小寫|大寫)?(?:英文)?(?:字串|文字)$').test(c)) { inputs.push({ k: 'str', name: 's' }); addNames(['s']); continue; } // 第二行小寫英文字串
             if ((m = new RegExp('^第([一二三四五六七八九\\d]+)行\\s*(' + NAME + ')\\s*(?:與|和)\\s*[^a-zA-Z\\s]*\\s*(' + NAME + ')$').exec(c))) { inputs.push({ k: 'scalars', names: [m[2], m[3]], type: 'int', line: true }); addNames([m[2], m[3]]); continue; } // 第一行 k 與目標 t
             if ((m = new RegExp('^第([一二三四五六七八九\\d]+)行[^a-zA-Z0-9]{1,8}\\s*(' + NAMES + ')$').exec(c))) { const ns = m[2].split(/\s+/); inputs.push({ k: 'scalars', names: ns, type: 'int', line: true }); addNames(ns); continue; } // 第一行偏移量 k
-            if (/^輸入(?:一行|一個)?[^，]*?(?:字串|文字|羅馬數字)$/.test(c) || /^輸入一個很長的.*整數$/.test(c)) { inputs.push({ k: 'str', name: 's' }); addNames(['s']); continue; } // 輸入一個由 0、1 組成的字串／輸入小寫字串／輸入一個很長的非負整數（以字串給）
+            if ((m = /^輸入(?:一行|一個)?[^，]*?(?:字串|文字|羅馬數字)(?:\s*([a-z][a-z0-9]{0,3}))?$/.exec(c)) || /^輸入一個很長的.*整數$/.test(c)) { const sn = (m && m[1]) || 's'; inputs.push({ k: 'str', name: sn }); addNames([sn]); continue; } // 輸入一個由 0、1 組成的字串／輸入小寫字串／輸入一個很長的非負整數（以字串給）
             if (/^輸入(?:一行)?以空格分隔的/.test(c)) { inputs.push({ k: 'words', name: 'w' }); addNames(['w']); continue; } // 輸入以空格分隔的後序運算式
             if ((m = new RegExp('^輸入[^a-zA-Z0-9]{0,14}?\\s*(' + NAMES + ')$').exec(c)) && !/小數|字串|文字/.test(c)) { const ns = m[1].split(/\s+/); inputs.push({ k: 'scalars', names: ns, type: 'int', line: true }); addNames(ns); continue; } // 輸入 a e m／輸入三個點的整數座標 x1 y1 x2 y2 x3 y3
         }
@@ -16217,6 +16217,175 @@ const holder = {};
 return holder.FaDomainDsp;
 })();
 /* DOMAINDSP-END */
+/* DOMAINALGO2-BEGIN */
+const FaDomainAlgo2 = (function () {
+const holder = {};
+(function (module, self) {
+/* 領域包：演算法補齊（第二批）。格式見 domain_registry_core.js。
+ * 來源：DESIGN.matrix-fallback.md §9.7 A②（矩陣層沒解出、缺範式的 17 個家族）。這裡只依缺口表點名的「家族」寫通用範式，沒有讀 heldout_all.jsonl 的敘述；
+ * train 題在 domain_algo2.test.js（自己出題、自己寫獨立參考解）。骨架不含 def、不用 a = b = 0；槽位交沙盒窮舉（≤16 組）。 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaDomainAlgo2 = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    function make(PAR) {
+        const { S, code } = PAR.dsl;
+        const D = (id, algo, paradigm, label, slots, py, extra) => Object.assign({ id, algo, paradigm, label, slots, py }, extra || {});
+        // 從敘述抽「是／否」字樣：先用讀取器抽到的 facts.yn，再退到「輸出 X，否則輸出 Y」；抽不到就 throw（不亂猜）
+        const ynOf = (I) => { if (I.facts && I.facts.yn) return I.facts.yn; const m = /輸出\s*([^\s，,。；]+?)\s*[，,]\s*(?:否則|不然|其餘)\s*(?:輸出|印)?\s*([^\s，,。；]+)/.exec(String(I.statement)); if (m) return [m[1], m[2]]; throw new Error('敘述沒有「輸出 X，否則輸出 Y」'); };
+        const q = (s) => JSON.stringify(s);
+        const skeletons = [
+            D('nt.phi', 'euler-phi', 'number-theory', '歐拉函數 φ(n)：質因數分解迴圈，每個質因數 res -= res // p', [S('tail', '剩下的大質因數', [['fix', 'yes'], ['none', 'no']]), S('cond', '試除到哪', [['le', '<='], ['lt', '<']])],
+                (c, N) => code(['x = ' + N.sc[0], 'res = x', 'p = 2', 'while p * p ' + c.cond + ' x:', '    if x % p == 0:', '        while x % p == 0:', '            x = x // p', '        res = res - res // p', '    p = p + 1'].concat(c.tail === 'yes' ? ['if x > 1:', '    res = res - res // x'] : []).concat(['print(res)'])), { limit: 4 }),
+            D('nt.perfect', 'perfect-number', 'number-theory', '完全數：真因數和等於自己', [S('hi', '找真因數的範圍', [['n', 'x'], ['half', 'x // 2 + 1']]), S('one', '1 要不要算完全數', [['no', 'x > 1 and '], ['plain', '']])],
+                (c, N, I) => { const [y, n] = ynOf(I); return code(['x = ' + N.sc[0], 't = 0', 'for d in range(1, ' + c.hi + '):', '    if x % d == 0:', '        t = t + d', 'if ' + c.one + 't == x:', '    print(' + q(y) + ')', 'else:', '    print(' + q(n) + ')']); }, { limit: 4 }),
+            D('sim.step-count', 'step-count', 'simulation', '迴圈步數：偶數、奇數各一種操作，數到 0（或 1）為止', [S('ev', '偶數時', [['half', 'x // 2'], ['dec', 'x - 1']]), S('od', '奇數時', [['dec', 'x - 1'], ['inc', 'x + 1'], ['triple', '3 * x + 1']]), S('stop', '繼續的條件', [['pos', 'x > 0'], ['gt1', 'x > 1']])],
+                (c, N) => code(['x = ' + N.sc[0], 'cnt = 0', 'while ' + c.stop + ':', '    if x % 2 == 0:', '        x = ' + c.ev, '    else:', '        x = ' + c.od, '    cnt = cnt + 1', 'print(cnt)']), { limit: 12 }),
+            D('nt.base-convert', 'base-convert', 'number-theory', 'k 進位表示（字串輸出）：反覆除以 k 取餘數，再反轉', [S('ord', '兩個整數的順序', [['nk', 'nk'], ['kn', 'kn']]), S('ch', '大於 9 的數字符號', [['up', '"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"'], ['low', '"0123456789abcdefghijklmnopqrstuvwxyz"']])],
+                (c, N) => { const a = N.sc[0], b = N.sc[1]; const [x, k] = c.ord === 'nk' ? [a, b] : [b, a]; return code(['x = ' + x, 'ds = []', 'if x == 0:', '    ds.append("0")', 'while x > 0:', '    ds.append(' + c.ch + '[x % ' + k + '])', '    x = x // ' + k, 'print("".join(reversed(ds)))']); }, { limit: 4 }),
+            D('stack.histogram-max', 'histogram-max', 'monotonic-stack', '單調堆疊：直方圖最大矩形（哨兵 0 收尾）', [S('cmp', '彈出的條件', [['>=', '>='], ['>', '>']]), S('wid', '寬度', [['gap', 'i - st[-1] - 1'], ['plain', 'i - st[-1]']])],
+                (c, N) => { const a = N.ls[0]; return code(['h = list(' + a + ') + [0]', 'st = []', 'best = 0', 'for i in range(len(h)):', '    while st and h[st[-1]] ' + c.cmp + ' h[i]:', '        top = h[st.pop()]', '        w = i', '        if st:', '            w = ' + c.wid, '        best = max(best, top * w)', '    st.append(i)', 'print(best)']); }, { limit: 4 }),
+            D('stack.next-greater-dist', 'next-greater-dist', 'monotonic-stack', '單調堆疊：到右邊第一個更大的數還要幾格（沒有就輸出預設值）', [S('cmp', '更大的判斷', [['>', '>'], ['>=', '>=']]), S('none', '沒有時', [['0', '0'], ['-1', '-1']])],
+                (c, N) => { const a = N.ls[0]; return code(['h = list(' + a + ')', 'res = [' + c.none + '] * len(h)', 'st = []', 'for i in range(len(h)):', '    while st and h[i] ' + c.cmp + ' h[st[-1]]:', '        j = st.pop()', '        res[j] = i - j', '    st.append(i)', 'print(" ".join(str(v) for v in res))']); }, { limit: 4 }),
+            D('stack.nested-expand', 'nested-expand', 'stack', '堆疊：巢狀重複字串展開（k[ … ]，數字可多位、括號可巢狀；用明確的堆疊，不用遞迴函式）', [S('br', '括號', [['sq', '[]'], ['pa', '()'], ['cu', '{}']])],
+                (c, N) => { const s = N.s[0] || N.L[0]; return code(['st = []', 'cur = ""', 'num = 0', 'for ch in ' + s + ':', '    if ch.isdigit():', '        num = num * 10 + int(ch)', '    elif ch == ' + q(c.br[0]) + ':', '        st.append((cur, num))', '        cur = ""', '        num = 0', '    elif ch == ' + q(c.br[1]) + ':', '        prev, k = st.pop()', '        cur = prev + cur * k', '    else:', '        cur = cur + ch', 'print(cur)']); }, { limit: 4 }),
+            D('stack.longest-valid-paren', 'longest-paren', 'stack', '堆疊（索引）：最長的合法括號子字串長度', [S('base', '堆疊起始的哨兵', [['-1', '-1'], ['0', '0']]), S('what', '答案', [['len', 'i - st[-1]'], ['pairs', '(i - st[-1]) // 2']])],
+                (c, N) => { const s = N.s[0] || N.L[0]; return code(['st = [' + c.base + ']', 'best = 0', 'for i in range(len(' + s + ')):', '    if ' + s + '[i] == "(":', '        st.append(i)', '    else:', '        st.pop()', '        if not st:', '            st.append(i)', '        else:', '            best = max(best, ' + c.what + ')', 'print(best)']); }, { limit: 4 }),
+            D('sim.josephus', 'josephus', 'simulation', '約瑟夫問題：圍成一圈每數到第 k 個出列（用 list＋取模索引模擬）', [S('ord', '兩個整數的順序', [['nk', 'nk'], ['kn', 'kn']]), S('mode', '輸出', [['last', 'last'], ['order', 'order']]), S('base', '編號從幾開始', [['1', '1'], ['0', '0']])],
+                (c, N) => { const a = N.sc[0], b = N.sc[1]; const [n, k] = c.ord === 'nk' ? [a, b] : [b, a]; return code(['p = list(range(' + c.base + ', ' + n + ' + ' + c.base + '))', 'idx = 0', 'gone = []', 'while len(p) > 0:', '    idx = (idx + ' + k + ' - 1) % len(p)', '    gone.append(p.pop(idx))'].concat(c.mode === 'last' ? ['print(gone[-1])'] : ['print(" ".join(str(v) for v in gone))'])); }, { limit: 8 }),
+            D('win.agg', 'window-agg', 'sliding-window', '滑動視窗：每個長 k 的視窗取最大／最小，再輸出清單、總和或其中的極值', [S('fn', '視窗內取', [['max', 'max'], ['min', 'min']]), S('out', '輸出', [['list', 'list'], ['sum', 'sum'], ['best', 'best']])],
+                (c, N) => { const n = N.sc[0], k = N.sc[1], a = N.ls[0]; const pr = c.out === 'list' ? 'print(" ".join(str(v) for v in w))' : c.out === 'sum' ? 'print(sum(w))' : 'print(' + (c.fn === 'max' ? 'max' : 'min') + '(w))'; return code(['w = []', 'for i in range(' + n + ' - ' + k + ' + 1):', '    w.append(' + c.fn + '(' + a + '[i:i + ' + k + ']))', pr]); }, { limit: 6 }),
+            D('sweep.interval-union', 'interval-union', 'sort-and-sweep', '排序後掃描：區間聯集（合併後的段數或覆蓋總長）', [S('touch', '端點相接算重疊嗎', [['<=', '<='], ['<', '<']]), S('out', '輸出', [['count', 'count'], ['length', 'length']])],
+                (c, N) => { const R = N.ls[0]; return code(['iv = sorted(' + R + ')', 'cnt = 0', 'tot = 0', 'cs = iv[0][0]', 'ce = iv[0][1]', 'for l, r in iv[1:]:', '    if l ' + c.touch + ' ce:', '        ce = max(ce, r)', '    else:', '        cnt = cnt + 1', '        tot = tot + ce - cs', '        cs = l', '        ce = r', 'cnt = cnt + 1', 'tot = tot + ce - cs', 'print(' + (c.out === 'count' ? 'cnt' : 'tot') + ')']); }, { limit: 4 }),
+            D('cnt.pair-sum', 'pair-count', 'brute-force', '配對計數：i<j 且 a[i]+a[j] 與目標值滿足關係的對數', [S('rel', '關係', [['==', '=='], ['<=', '<='], ['>=', '>='], ['<', '<'], ['>', '>']]), S('idx', '配對', [['ij', 'i < j'], ['any', 'i != j']])],
+                (c, N) => { const n = N.sc[0], t = N.sc[1], a = N.ls[0]; const tg = N.sc.length > 1 ? t : null; if (!tg) throw new Error('沒有目標值'); return code(['cnt = 0', 'for i in range(' + n + '):', '    for j in range(' + (c.idx === 'i < j' ? 'i + 1' : '0') + ', ' + n + '):', '        if i != j and ' + a + '[i] + ' + a + '[j] ' + c.rel + ' ' + tg + ':', '            cnt = cnt + 1', 'print(cnt)']); }, { limit: 10 }),
+            D('str.rle-decode', 'rle-decode', 'string', '字串：行程長度解碼（字元＋次數，或次數＋字元；次數可多位數）', [S('ord', '次數在哪', [['after', 'after'], ['before', 'before']])],
+                (c, N) => { const s = N.s[0] || N.L[0]; return code(c.ord === 'after' ? ['out = ""', 'i = 0', 'while i < len(' + s + '):', '    ch = ' + s + '[i]', '    i = i + 1', '    k = 0', '    while i < len(' + s + ') and ' + s + '[i].isdigit():', '        k = k * 10 + int(' + s + '[i])', '        i = i + 1', '    out = out + ch * k', 'print(out)'] : ['out = ""', 'k = 0', 'for ch in ' + s + ':', '    if ch.isdigit():', '        k = k * 10 + int(ch)', '    else:', '        out = out + ch * k', '        k = 0', 'print(out)']); }, { limit: 2 }),
+            D('str.palindrome-substrings', 'pal-substr', 'two-pointers', '中心展開：回文子字串的個數（奇偶中心；全部位置或相異內容）', [S('cen', '中心', [['both', 'both'], ['odd', 'odd']]), S('dist', '算什麼', [['all', 'all'], ['distinct', 'distinct']])],
+                (c, N) => { const s = N.s[0] || N.L[0]; return code(['cnt = 0', 'seen = set()', 'for c in range(len(' + s + ')):', '    for par in range(' + (c.cen === 'both' ? '2' : '1') + '):', '        l = c', '        r = c + par', '        while l >= 0 and r < len(' + s + ') and ' + s + '[l] == ' + s + '[r]:', '            cnt = cnt + 1', '            seen.add(' + s + '[l:r + 1])', '            l = l - 1', '            r = r + 1', 'print(' + (c.dist === 'all' ? 'cnt' : 'len(seen)') + ')']); }, { limit: 4 }),
+            D('comb.pascal-row', 'pascal-row', 'dynamic-programming', '巴斯卡三角形的一整列（逐列相加）', [S('idx', '第 n 列從幾開始算', [['0', '{n}'], ['1', '{n} - 1']])],
+                (c, N) => { const n = N.sc[0]; return code(['row = [1]', 'for _ in range(' + c.idx.replace(/\{n\}/g, n) + '):', '    nx = [1]', '    for i in range(len(row) - 1):', '        nx.append(row[i] + row[i + 1])', '    nx.append(1)', '    row = nx', 'print(" ".join(str(v) for v in row))']); }, { limit: 2 }),
+        ];
+        const algos = [
+            ['euler-phi', /歐拉.*函數|φ\s*\(|\bphi\b|與\s*n\s*互質的.*個數/i], ['perfect-number', /完全數|(?:真因數|因數).{0,12}(?:之和|的和|總和).{0,8}(?:等於|恰為|剛好是)\s*(?:本身|自己|[a-z]\b)/], ['step-count', /(偶數|奇數).*(除以?\s*2|減\s*1|加\s*1).*(幾步|步數|多少步|幾次)|(幾步|多少步|最少步數).*(偶數|奇數)/],
+            ['base-convert', /(k|K|b|B|任意|\d+)\s*進位(?:表示|制)?.*(字串|輸出)|轉成\s*(k|b)\s*進位|轉換成\s*(k|b)\s*進位|進位轉換/], ['histogram-max', /直方圖.*(最大)?矩形|最大矩形/], ['next-greater-dist', /(更高|更大|更暖|更熱|更溫暖).*(等幾天|幾天|多久|距離|天數|幾格|幾步)|(幾天|等幾天|多久|距離|天數).*(更高|更大|更暖|更熱|更溫暖)|每日溫度/],
+            ['nested-expand', /[a-z]\s*\[[^\]]{1,8}\]\s*(?:表示|代表|就是).{0,12}(?:重複|複製)|k\s*\[\s*(?:encoded|…|\.\.\.|[a-z_]+)\s*\]|\d+\[[a-z]+\].*展開|巢狀.*(重複|展開)|(解碼|展開).*\d+\[/i], ['longest-paren', /最長.*(合法|有效|正確).*括號|最長.*括號.*(子字串|子串)/], ['josephus', /約瑟夫|圍成一圈.*(報數|數到).*(出列|淘汰)|(出列|淘汰).*報數/],
+            ['window-agg', /(滑動|固定長度|長度為\s*k\s*的)?視窗.*(最大值|最小值).*(總和|之和|每個|輸出)|每個長度為\s*k\s*的(?:連續)?(?:子陣列|視窗).*(最大|最小)/], ['interval-union', /(區間|線段).*(聯集|覆蓋.*(總長|長度)|被覆蓋.*長度|覆蓋的總長)|聯集.*(長度|段數)/],
+            ['pair-count', /多少\s*(?:對|組).*\ba\[i\]\s*\+\s*a\[j\]|(多少|幾)\s*(?:對|組).*(和|相加|總和).*(等於|為|不超過|至少|大於|小於)|和(?:等於|為)\s*\S+\s*的(?:數對|配對)(?:個數|數量)?|數對.*(個數|數量)/], ['rle-decode', /(行程長度|RLE|run-length|游程).*(解碼|還原|展開)|(解碼|還原|展開).*(行程長度|RLE|run-length|游程)/i], ['pal-substr', /回文(?:子字串|子串).*(個數|幾個|多少|數量)|(個數|幾個|多少|數量).*回文(?:子字串|子串)/],
+            ['pascal-row', /巴斯卡|帕斯卡|楊輝|Pascal/i],
+        ].map(([key, re]) => ({ key, re }));
+        const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = [sk.paradigm];
+        return { id: 'algo2', label: '演算法補齊（第二批）', requires: [], judge: { checker: 'tokens' }, algos, paradigms, skeletons };
+    }
+    return { make };
+});
+
+}).call(null, undefined, holder);
+return holder.FaDomainAlgo2;
+})();
+/* DOMAINALGO2-END */
+/* DOMAINOS-BEGIN */
+const FaDomainOs = (function () {
+const holder = {};
+(function (module, self) {
+/* 領域包：作業系統（模擬型）。格式見 domain_registry_core.js。輸入「工作／請求／參照串」，輸出排程或結果的確定性模擬——純函式，不真的 fork／排程。
+ * 範式：CPU 排程（非搶先 FCFS／SJF／優先權；Round Robin；SRTF）、分頁置換（FIFO／LRU／OPT／Clock／LFU）、記憶體配適（首次／最佳／最差／下次）、磁碟排程（FCFS／SSTF／SCAN／C-SCAN／LOOK）。銀行家演算法、分頁位址轉換等多矩陣輸入的題目還沒做（輸入形狀讀不出，見 DESIGN.TODO.md）。
+ * 政策本身是槽位（由沙盒窮舉，不是由敘述猜）；骨架不含 def。train／holdout 見 domain_os.test.js。 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaDomainOs = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    function make(PAR) {
+        const { S, code } = PAR.dsl;
+        const D = (id, algo, paradigm, label, slots, py, extra) => Object.assign({ id, algo, paradigm, label, slots, py }, extra || {});
+        // 「保留 k 位小數」→ k（預設 2）；抽不到不猜
+        const dig = (I) => { const m = /(?:保留|小數點後|四捨五入到小數)\s*(?:第)?\s*([0-9一二三四五六])\s*位/.exec(String(I.statement)); return m ? ({ 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6 }[m[1]] || +m[1]) : 2; };
+        const cols = (I) => { const r = I.inputs.find((x) => x.k === 'rows'); return r && r.names ? r.names.length : 2; };
+        const PR = (c, d) => c.out === 'wait' ? 'print("%.' + d + 'f" % (wait / n))' : c.out === 'turn' ? 'print("%.' + d + 'f" % (turn / n))' : 'print(" ".join(str(v) for v in order))';
+        const skeletons = [
+            D('os.sched-np', 'cpu-sched', 'simulation', 'CPU 排程（非搶先）：每次從已到達的工作挑一個跑到完；挑法（FCFS／SJF／優先權）由窮舉決定；輸出平均等待、平均週轉或執行順序',
+                [S('pol', '挑哪一個', [['fcfs', 'rows[i][0] < rows[best][0]'], ['sjf', 'rows[i][1] < rows[best][1]'], ['sjf-arr', 'rows[i][1] < rows[best][1] or (rows[i][1] == rows[best][1] and rows[i][0] < rows[best][0])'], ['prio-low', 'rows[i][2] < rows[best][2]'], ['prio-low-arr', 'rows[i][2] < rows[best][2] or (rows[i][2] == rows[best][2] and rows[i][0] < rows[best][0])'], ['prio-high', 'rows[i][2] > rows[best][2]'], ['prio-high-arr', 'rows[i][2] > rows[best][2] or (rows[i][2] == rows[best][2] and rows[i][0] < rows[best][0])']]), S('out', '輸出', [['wait', 'wait'], ['turn', 'turn'], ['order', 'order']])],
+                (c, N, I) => { if (c.pol.indexOf('[2]') >= 0 && cols(I) < 3) throw new Error('沒有優先權欄'); const rows = N.ls[0]; return code(['rows = ' + rows, 'n = len(rows)', 'done = [False] * n', 't = 0', 'wait = 0', 'turn = 0', 'order = []', 'while len(order) < n:', '    best = -1', '    for i in range(n):', '        if not done[i] and rows[i][0] <= t:', '            if best < 0 or ' + c.pol + ':', '                best = i', '    if best < 0:', '        for i in range(n):', '            if not done[i] and (best < 0 or rows[i][0] < rows[best][0]):', '                best = i', '        t = rows[best][0]', '        continue', '    done[best] = True', '    wait = wait + t - rows[best][0]', '    t = t + rows[best][1]', '    turn = turn + t - rows[best][0]', '    order.append(best + 1)', PR(c, dig(I))]); }, { limit: 21 }),
+            D('os.sched-rr', 'rr-sched', 'simulation', 'Round Robin：時間片 q；新到達的與被搶走的誰先排隊由窮舉決定；輸出平均等待、平均週轉或完成順序',
+                [S('req', '同時發生時', [['arrive-first', 'a'], ['requeue-first', 'r']]), S('out', '輸出', [['wait', 'wait'], ['turn', 'turn'], ['order', 'order']])],
+                (c, N, I) => { const n0 = N.sc[0], q = N.sc[1], rows = N.ls[0]; const enq = ['    while p < n and rows[idx[p]][0] <= t:', '        queue.append(idx[p])', '        p = p + 1']; const back = ['    if rem[i] > 0:', '        queue.append(i)']; return code(['rows = ' + rows, 'n = ' + n0, 'idx = sorted(range(n), key=lambda i: (rows[i][0], i))', 'rem = [r[1] for r in rows]', 't = 0', 'p = 0', 'queue = []', 'wait = 0', 'turn = 0', 'order = []', 'while p < n or queue:', '    if not queue:', '        t = max(t, rows[idx[p]][0])'].concat(['    while p < n and rows[idx[p]][0] <= t:', '        queue.append(idx[p])', '        p = p + 1'], ['    i = queue.pop(0)', '    run = min(' + q + ', rem[i])', '    t = t + run', '    rem[i] = rem[i] - run'], c.req === 'a' ? enq.concat(back) : back.concat(enq), ['    if rem[i] == 0:', '        turn = turn + t - rows[i][0]', '        wait = wait + t - rows[i][0] - rows[i][1]', '        order.append(i + 1)', PR(c, dig(I))])); }, { limit: 6 }),
+            D('os.sched-srtf', 'srtf-sched', 'simulation', 'SRTF（最短剩餘時間優先，搶先）：一個時間單位一個時間單位推進；輸出平均等待、平均週轉或完成順序',
+                [S('cmp', '剩餘時間相同', [['keep', '<'], ['switch', '<=']]), S('out', '輸出', [['wait', 'wait'], ['turn', 'turn'], ['order', 'order']])],
+                (c, N, I) => { const rows = N.ls[0]; return code(['rows = ' + rows, 'n = len(rows)', 'rem = [r[1] for r in rows]', 't = 0', 'finished = 0', 'wait = 0', 'turn = 0', 'order = []', 'while finished < n:', '    best = -1', '    for i in range(n):', '        if rows[i][0] <= t and rem[i] > 0:', '            if best < 0 or rem[i] ' + c.cmp + ' rem[best]:', '                best = i', '    t = t + 1', '    if best >= 0:', '        rem[best] = rem[best] - 1', '        if rem[best] == 0:', '            finished = finished + 1', '            turn = turn + t - rows[best][0]', '            wait = wait + t - rows[best][0] - rows[best][1]', '            order.append(best + 1)', PR(c, dig(I))]); }, { limit: 6 }),
+            D('os.page-replace', 'page-replace', 'simulation', '分頁置換：m 個框、參照串；政策（FIFO／LRU／OPT／LFU／Clock）由窮舉決定；輸出缺頁次數、命中次數或最後框內容',
+                [S('pol', '置換誰', [['fifo', 'fifo'], ['lru', 'lru'], ['opt', 'opt'], ['lfu', 'lfu'], ['clock', 'clock']]), S('out', '輸出', [['faults', 'faults'], ['hits', 'hits']])],
+                (c, N) => { const m = N.sc[0], refs = N.ls[0]; const pick = { fifo: ['            victim = 0'], lru: ['            victim = 0', '            for j in range(len(fr)):', '                if last[fr[j]] < last[fr[victim]]:', '                    victim = j'], opt: ['            victim = 0', '            far = -1', '            for j in range(len(fr)):', '                nx = len(rs) + 1', '                for k in range(idx + 1, len(rs)):', '                    if rs[k] == fr[j]:', '                        nx = k', '                        break', '                if nx > far:', '                    far = nx', '                    victim = j'], lfu: ['            victim = 0', '            for j in range(len(fr)):', '                if cnt[fr[j]] < cnt[fr[victim]]:', '                    victim = j'], clock: ['            while ref[hand]:', '                ref[hand] = False', '                hand = (hand + 1) % len(fr)', '            victim = hand', '            hand = (hand + 1) % len(fr)'] }[c.pol]; const head = ['rs = list(' + refs + ')', 'fr = []', 'faults = 0', 'hits = 0', 'last = {}', 'cnt = {}', 'ref = []', 'hand = 0', 'for idx in range(len(rs)):', '    p = rs[idx]', '    last[p] = idx', '    cnt[p] = cnt.get(p, 0) + 1', '    if p in fr:', '        hits = hits + 1', '        ref[fr.index(p)] = True', '    else:', '        faults = faults + 1', '        if len(fr) < ' + m + ':', '            fr.append(p)', '            ref.append(True)', '        else:']; const tail = c.pol === 'clock' ? ['            fr[victim] = p', '            ref[victim] = True'] : ['            fr[victim] = p']; return code(head.concat(pick, tail, ['print(' + c.out + ')'])); }, { limit: 10 }),
+            D('os.mem-alloc', 'mem-alloc', 'simulation', '記憶體配適：分割區與行程依序配置；首次／最佳／最差／下次配適由窮舉決定；輸出每個行程配到哪個分割區（0 起或 1 起，沒配到 -1）或配到幾個',
+                [S('pol', '挑哪個分割區', [['first', 'first'], ['best', 'best'], ['worst', 'worst'], ['next', 'next']]), S('base', '編號從幾開始', [['1', '1'], ['0', '0']]), S('out', '輸出', [['each', 'each'], ['count', 'count']])],
+                (c, N) => { const hl = N.ls[0], pl = N.ls[1]; const cmp = { first: 'False', best: 'hole[j] < hole[pick]', worst: 'hole[j] > hole[pick]', next: 'False' }[c.pol]; return code(['hole = list(' + hl + ')', 'res = []', 'cur = 0', 'for sz in ' + pl + ':', '    pick = -1', '    order = list(range(len(hole)))', '    if ' + JSON.stringify(c.pol) + ' == "next":', '        order = list(range(cur, len(hole))) + list(range(0, cur))', '    for j in order:', '        if hole[j] >= sz:', '            if pick < 0:', '                pick = j', '            elif ' + cmp + ':', '                pick = j', '            if ' + JSON.stringify(c.pol) + ' in ("first", "next"):', '                break', '    if pick >= 0:', '        hole[pick] = hole[pick] - sz', '        cur = pick', '        res.append(pick + ' + c.base + ')', '    else:', '        res.append(-1)', c.out === 'each' ? 'print(" ".join(str(v) for v in res))' : 'print(sum(1 for v in res if v >= 0))']); }, { limit: 16 }),
+            D('os.disk-sched', 'disk-sched', 'simulation', '磁碟排程：磁頭起點與請求序列；FCFS／SSTF／SCAN／C-SCAN／LOOK 由窮舉決定；輸出總移動距離或服務順序',
+                [S('pol', '政策', [['fcfs', 'fcfs'], ['sstf', 'sstf'], ['scan-up', 'scan-up'], ['scan-down', 'scan-down'], ['cscan', 'cscan'], ['look-up', 'look-up'], ['look-down', 'look-down']]), S('out', '輸出', [['total', 'total'], ['order', 'order']])],
+                (c, N) => { const n = N.sc.length > 1 ? N.sc[0] : null, h = N.sc[N.sc.length - 1], reqs = N.ls[0]; const mx = N.sc.length > 2 ? N.sc[1] : null; const body = { fcfs: ['seq = list(' + reqs + ')'], sstf: ['seq = []', 'rest = list(' + reqs + ')', 'cur = ' + h, 'while rest:', '    bi = 0', '    for i in range(len(rest)):', '        if abs(rest[i] - cur) < abs(rest[bi] - cur):', '            bi = i', '    cur = rest.pop(bi)', '    seq.append(cur)'], 'scan-up': ['seq = [v for v in sorted(' + reqs + ') if v >= ' + h + ']', 'seq = seq + [v for v in sorted(' + reqs + ', reverse=True) if v < ' + h + ']'], 'scan-down': ['seq = [v for v in sorted(' + reqs + ', reverse=True) if v <= ' + h + ']', 'seq = seq + [v for v in sorted(' + reqs + ') if v > ' + h + ']'], cscan: ['seq = [v for v in sorted(' + reqs + ') if v >= ' + h + ']', 'seq = seq + [v for v in sorted(' + reqs + ') if v < ' + h + ']'], 'look-up': ['seq = [v for v in sorted(' + reqs + ') if v >= ' + h + ']', 'seq = seq + [v for v in sorted(' + reqs + ', reverse=True) if v < ' + h + ']'], 'look-down': ['seq = [v for v in sorted(' + reqs + ', reverse=True) if v <= ' + h + ']', 'seq = seq + [v for v in sorted(' + reqs + ') if v > ' + h + ']'] }[c.pol]; void n; void mx; return code(body.concat(['cur = ' + h, 'total = 0', 'for v in seq:', '    total = total + abs(v - cur)', '    cur = v', c.out === 'total' ? 'print(total)' : 'print(" ".join(str(v) for v in seq))'])); }, { limit: 14 }),
+        ];
+        const algos = [
+            ['rr-sched', /(Round\s*Robin|輪轉|時間片|時間量子|time\s*quantum)/i], ['srtf-sched', /SRTF|最短剩餘時間|搶先式?\s*SJF|可搶先的最短/i], ['cpu-sched', /^(?=[\s\S]*(?:到達|抵達|到來))(?=[\s\S]*(?:執行時間|CPU|服務時間|所需時間|需要的))[\s\S]*(?:排程|等待時間|週轉時間|先來先服務|FCFS|SJF|優先權|優先等級)|FCFS|先來先服務|SJF/i],
+            ['page-replace', /(缺頁|頁面錯誤|page\s*fault).{0,20}(次數|幾次|多少)|分頁置換|頁面置換|頁框.{0,20}參照串|參照串.{0,20}頁框/i], ['mem-alloc', /(?:分割區|空洞|記憶體區塊|空閒區).{0,50}(?:行程|請求|程序).{0,50}(?:放進|放入|配置|配到|分配|使用)|(?:放進|配置|分配).{0,12}(?:最大|最小|第一個)(?:的)?(?:那個)?(?:分割區|空洞|區塊)|(首次|最佳|最差|下次)配適|first[- ]fit|best[- ]fit|worst[- ]fit|分割區.{0,24}(行程|程序).{0,16}(配置|配到|分配)/i],
+            ['disk-sched', /磁碟排程|磁頭.{0,16}(移動|請求|柱面)|SCAN|SSTF|LOOK|C-SCAN|電梯演算法/],
+        ].map(([key, re]) => ({ key, re }));
+        const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = [sk.paradigm];
+        return { id: 'os', label: '作業系統（模擬型）', requires: [], judge: { checker: 'tokens' }, algos, paradigms, skeletons };
+    }
+    return { make };
+});
+
+}).call(null, undefined, holder);
+return holder.FaDomainOs;
+})();
+/* DOMAINOS-END */
+/* DOMAINDS-BEGIN */
+const FaDomainDs = (function () {
+const holder = {};
+(function (module, self) {
+/* 領域包：資料結構（實作型：給操作序列或資料，輸出結果）。格式見 domain_registry_core.js。
+ * 範式：雜湊表（開放定址：線性／二次探測、墓碑）、LRU 快取、堆積操作（最小／最大）、二元搜尋樹（走訪／高度／葉數）、前綴樹、並查集操作、鏈結串列操作。
+ * 政策差異（探測法、get 是否更新新舊、重複鍵、高度算節點或邊…）是槽位，由沙盒窮舉；指令行用「第一行 q，之後 q 行指令：…」（讀成 N.g 行串列），資料用「第二行 n 個…」。骨架不含 def。train／holdout 見 domain_ds.test.js。 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaDomainDs = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    function make(PAR) {
+        const { S, code } = PAR.dsl;
+        const D = (id, algo, paradigm, label, slots, py, extra) => Object.assign({ id, algo, paradigm, label, slots, py }, extra || {});
+        const emptyOf = (I) => (I.facts && I.facts.empty) || 'empty';
+        const ynOf = (I) => { if (I.facts && I.facts.yn) return I.facts.yn; const m = /輸出\s*([^\s，,。；]+?)\s*[，,]\s*(?:否則|不然|其餘)\s*(?:輸出|印)?\s*([^\s，,。；]+)/.exec(String(I.statement)); return m ? [m[1], m[2]] : ['YES', 'NO']; };
+        const q = (s) => JSON.stringify(s);
+        const lines = (N) => N.g || N.L[0];
+        const skeletons = [
+            D('ds.hash-open', 'hash-table', 'data-structure-mapping', '雜湊表（開放定址，大小 m）：insert／find／delete；探測（線性／二次）、刪除（墓碑／直接清空）、find 輸出（位置／探測次數）由窮舉決定',
+                [S('probe', '探測', [['lin', 's'], ['quad', 's * s']]), S('del', '刪除', [['tomb', 'T'], ['clear', 'C']]), S('out', 'find 輸出', [['pos', 'pos'], ['probes', 'probes']])],
+                (c, N, I) => { const m = N.sc[0]; return code(['tab = [None] * ' + m, 'for line in ' + lines(N) + ':', '    p = line.split()', '    if len(p) < 2:', '        continue', '    op = p[0].lower()', '    x = int(p[1])', '    found = -1', '    probes = 0', '    free = -1', '    for s in range(' + m + '):', '        i = (x % ' + m + ' + ' + c.probe + ') % ' + m, '        probes = probes + 1', '        if tab[i] is None:', '            if free < 0:', '                free = i', '            break', '        if tab[i] == "T":', '            if free < 0:', '                free = i', '        elif tab[i] == x:', '            found = i', '            break', '    if op == "insert":', '        if found < 0 and free >= 0:', '            tab[free] = x', '    elif op == "delete":', '        if found >= 0:', '            tab[found] = ' + (c.del === 'T' ? '"T"' : 'None'), '    else:', '        print(' + (c.out === 'pos' ? 'found' : 'probes') + ')']); }, { limit: 8 }),
+            D('ds.lru', 'lru-cache', 'data-structure-mapping', 'LRU 快取（容量 cap）：get／put；get 與 put 既有鍵是否算「最近使用」由窮舉決定；滿了淘汰最久沒用的',
+                [S('tg', 'get 命中時更新新舊', [['yes', 'y'], ['no', 'n']]), S('tp', 'put 既有鍵時更新新舊', [['yes', 'y'], ['no', 'n']])],
+                (c, N) => code(['cap = ' + N.sc[0], 'val = {}', 'order = []', 'for line in ' + lines(N) + ':', '    p = line.split()', '    if len(p) < 2:', '        continue', '    op = p[0].lower()', '    k = int(p[1])', '    if op == "get":', '        if k in val:', '            if ' + q(c.tg) + ' == "y":', '                order.remove(k)', '                order.append(k)', '            print(val[k])', '        else:', '            print(-1)', '    else:', '        v = int(p[2])', '        if k in val:', '            val[k] = v', '            if ' + q(c.tp) + ' == "y":', '                order.remove(k)', '                order.append(k)', '        else:', '            if len(order) >= cap:', '                old = order.pop(0)', '                del val[old]', '            val[k] = v', '            order.append(k)']), { limit: 4 }),
+            D('ds.heap-ops', 'heap-ops', 'heap', '堆積（優先佇列）操作序列：push／pop／top；最小堆或最大堆由窮舉決定；空時輸出字樣取自敘述',
+                [S('kind', '堆的種類', [['min', '1'], ['max', '-1']])],
+                (c, N, I) => code(['import heapq', 'h = []', 'for line in ' + lines(N) + ':', '    p = line.split()', '    if len(p) == 0:', '        continue', '    op = p[0].lower()', '    if op in ("push", "add", "insert"):', '        heapq.heappush(h, ' + c.kind + ' * int(p[1]))', '    elif h:', '        if op == "pop":', '            print(' + c.kind + ' * heapq.heappop(h))', '        else:', '            print(' + c.kind + ' * h[0])', '    else:', '        print(' + q(emptyOf(I)) + ')']), { limit: 2 }),
+            D('ds.bst', 'bst', 'tree-traversal', '二元搜尋樹：依序插入 n 個整數（重複的略過或放右邊），輸出中序／前序／後序、高度（節點數或邊數）或葉子數（陣列模擬，走訪用明確堆疊）',
+                [S('dup', '重複的值', [['skip', 'skip'], ['right', 'right']]), S('out', '輸出', [['in', 'in'], ['pre', 'pre'], ['post', 'post'], ['h-nodes', 'h-nodes'], ['h-edges', 'h-edges'], ['leaves', 'leaves']])],
+                (c, N) => { const a = N.ls[0]; const walk = { pre: ['out = []', 'st = [0]', 'while st:', '    u = st.pop()', '    if u < 0:', '        continue', '    out.append(key[u])', '    st.append(rt[u])', '    st.append(lt[u])'], in: ['out = []', 'st = []', 'u = 0', 'while st or u >= 0:', '    while u >= 0:', '        st.append(u)', '        u = lt[u]', '    u = st.pop()', '    out.append(key[u])', '    u = rt[u]'], post: ['out = []', 'st = [0]', 'while st:', '    u = st.pop()', '    if u < 0:', '        continue', '    out.append(key[u])', '    st.append(lt[u])', '    st.append(rt[u])', 'out.reverse()'] }; const res = { in: 'print(" ".join(str(v) for v in out))', pre: 'print(" ".join(str(v) for v in out))', post: 'print(" ".join(str(v) for v in out))', 'h-nodes': 'print(max(dep) + 1)', 'h-edges': 'print(max(dep))', leaves: 'print(sum(1 for i in range(len(key)) if lt[i] < 0 and rt[i] < 0))' }[c.out]; return code(['key = []', 'lt = []', 'rt = []', 'dep = []', 'for v in ' + a + ':', '    if not key:', '        key.append(v)', '        lt.append(-1)', '        rt.append(-1)', '        dep.append(0)', '        continue', '    u = 0', '    placed = False', '    while True:', '        if v == key[u] and ' + q(c.dup) + ' == "skip":', '            break', '        if v < key[u]:', '            nxt = lt[u]', '        else:', '            nxt = rt[u]', '        if nxt < 0:', '            key.append(v)', '            lt.append(-1)', '            rt.append(-1)', '            dep.append(dep[u] + 1)', '            if v < key[u]:', '                lt[u] = len(key) - 1', '            else:', '                rt[u] = len(key) - 1', '            break', '        u = nxt'].concat(walk[c.out] || [], [res])); }, { limit: 12 }),
+            D('ds.trie', 'trie', 'data-structure-mapping', '前綴樹（Trie）：插入 n 個單字，對每個查詢輸出以它為前綴的單字數（重複單字算幾次由窮舉）或單字是否存在',
+                [S('dup', '重複的單字', [['count', 'count'], ['once', 'once']]), S('out', '輸出', [['prefix', 'prefix'], ['exact', 'exact']])],
+                (c, N) => { const w = N.ls[0], qs = N.ls[1]; return code(['root = {}', 'for s in ' + w + ':', '    node = root', '    for ch in s:', '        if ch not in node:', '            node[ch] = {}', '        node = node[ch]', '        node[0] = node.get(0, 0) + 1', '    node[1] = node.get(1, 0) + 1', 'for s in ' + qs + ':', '    node = root', '    ok = True', '    for ch in s:', '        if ch in node:', '            node = node[ch]', '        else:', '            ok = False', '            break', '    if not ok:', '        print(0)', '    elif ' + q(c.out) + ' == "prefix":', '        print(' + (c.dup === 'count' ? 'node.get(0, 0)' : 'node.get(0, 0) if ' + q(c.dup) + ' != "once" else 0') + ')', '    else:', '        print(' + (c.dup === 'count' ? 'node.get(1, 0)' : '1 if node.get(1, 0) > 0 else 0') + ')']); }, { limit: 4 }),
+            D('ds.dsu-ops', 'dsu-ops', 'union-find', '並查集操作：union a b／same a b（是否同一集合，輸出敘述指定的是／否字樣）；路徑壓縮與否由窮舉決定（結果相同）',
+                [S('pc', '路徑壓縮', [['yes', 'y'], ['no', 'n']]), S('base', '編號範圍', [['1', '1'], ['0', '0']])],
+                (c, N, I) => { const [y, no] = ynOf(I); return code(['par = list(range(' + N.sc[0] + ' + 1))', 'for line in ' + lines(N) + ':', '    p = line.split()', '    if len(p) < 3:', '        continue', '    a = int(p[1])', '    b = int(p[2])', '    ra = a', '    while par[ra] != ra:', '        if ' + q(c.pc) + ' == "y":', '            par[ra] = par[par[ra]]', '        ra = par[ra]', '    rb = b', '    while par[rb] != rb:', '        if ' + q(c.pc) + ' == "y":', '            par[rb] = par[par[rb]]', '        rb = par[rb]', '    if p[0].lower() in ("union", "merge", "unite"):', '        par[ra] = rb', '    elif ra == rb:', '        print(' + q(y) + ')', '    else:', '        print(' + q(no) + ')']); }, { limit: 4 }),
+            D('ds.linked-list', 'linked-list-ops', 'data-structure-mapping', '鏈結串列操作：addfirst／addlast／remove（第一個或全部相等的）／reverse／print；空串列的 print 輸出字樣取自敘述',
+                [S('rm', 'remove 刪幾個', [['first', 'first'], ['all', 'all']]), S('sep', 'print 分隔', [['sp', '" "'], ['arrow', '" -> "']])],
+                (c, N, I) => code(['L = []', 'for line in ' + lines(N) + ':', '    p = line.split()', '    if len(p) == 0:', '        continue', '    op = p[0].lower()', '    if op == "addfirst":', '        L.insert(0, int(p[1]))', '    elif op == "addlast":', '        L.append(int(p[1]))', '    elif op == "remove":', '        v = int(p[1])', '        if v in L:', '            if ' + q(c.rm) + ' == "first":', '                L.remove(v)', '            else:', '                L = [x for x in L if x != v]', '    elif op == "reverse":', '        L.reverse()', '    else:', '        if L:', '            print(' + c.sep + '.join(str(x) for x in L))', '        else:', '            print(' + q(emptyOf(I)) + ')']), { limit: 4 }),
+        ];
+        const algos = [
+            ['hash-table', /雜湊表|散列表|hash\s*table|開放定址|線性探測/i], ['lru-cache', /LRU|最近最少使用|最久沒(?:有)?(?:被)?(?:使用|存取|用到)/i], ['heap-ops', /(?:最小|最大)堆積|堆積.{0,20}(?:push|pop|top|插入|取出)|優先佇列|priority\s*queue|min-?heap|max-?heap/i], ['bst', /二元搜尋樹|二叉搜索樹|二叉搜尋樹|\bBST\b/i],
+            ['trie', /前綴樹|字典樹|\bTrie\b/i], ['dsu-ops', /並查集|union.?find|(?:union|合併)\s*a\s*b.*(?:same|同(?:一)?(?:組|集合))/i], ['linked-list-ops', /鏈結串列|連結串列|鏈表|linked\s*list|addfirst/i],
+        ].map(([key, re]) => ({ key, re }));
+        const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = [sk.paradigm];
+        return { id: 'ds', label: '資料結構（操作序列）', requires: [], judge: { checker: 'tokens' }, algos, paradigms, skeletons };
+    }
+    return { make };
+});
+
+}).call(null, undefined, holder);
+return holder.FaDomainDs;
+})();
+/* DOMAINDS-END */
 /* PYUMLPIPELINE-BEGIN */
 const FaPyUmlPipeline = (function () {
 const holder = {};
@@ -16365,6 +16534,9 @@ const holder = {};
     else root.FaCodeAgent = factory(R, T, L, P, Fix, Ed);
 })(typeof self !== 'undefined' ? self : this, function (R, T, Loop, Proj, Fix, Ed) {
     'use strict';
+    // 離線組合每一層的結果（buildFromUML 的 rounds：{by, ok, tried, reason}）摘成一行「卡在哪一層」：配方→課→範式（試 N 個）→矩陣→區塊
+    const ROUND_NAME = { recipe: '配方', lesson: '課', paradigm: '範式', matrix: '矩陣', blocks: '區塊迴圈' };
+    const roundsNote = (rounds) => (Array.isArray(rounds) ? rounds : []).filter((r) => r && r.by).map((r) => (ROUND_NAME[r.by] || r.by) + (r.ok ? '✔' : '✘') + (r.tried ? '(試 ' + r.tried + ' 個)' : '') + (!r.ok && r.reason ? '：' + String(r.reason).replace(/\s+/g, ' ').slice(0, 30) : '')).join('→');
     const clip = (s, n) => { s = String(s == null ? '' : s).replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, Math.max(1, n - 1)) + '…' : s; };
 
     function detectLang(text, fallback) {
@@ -16440,7 +16612,12 @@ const holder = {};
         };
     }
 
+    // 離線沒解出來的各層結果要留到最終結果的 gaps（後面的路線會整個換掉 gaps，所以在最外層補回去）
     async function runCode(a) {
+        const kept = []; const a2 = a && typeof a.offline === 'function' ? Object.assign({}, a, { offline: async (x) => { const o = await a.offline(x); if (o && !o.ok) kept.push('離線組合沒解出來（' + clip(o.reason || '不明', 100) + '）' + (roundsNote(o.rounds) ? '；各層：' + clip(roundsNote(o.rounds), 200) : '')); return o; } }) : a;
+        const r = await runCode0(a2); if (r && kept.length) r.gaps = kept.concat((r.gaps || []).filter((g) => kept.indexOf(g) < 0 && !/^離線組合沒解出來/.test(g))); return r;
+    }
+    async function runCode0(a) {
         const lang = a.lang || (a.source ? (detectLangFromCode(a.source) || detectLang(a.text, 'python')) : detectLang(a.text, 'python')); const backend = a.backend || (a.generate ? makeBackend({ generate: a.generate, R, askTokens: a.askTokens, writeTokens: a.writeTokens }) : null);
         const base = { ok: false, verified: false, lang, gaps: [], calls: { ask: 0, write: 0, judge: 0 }, source: '' };
         const stackMod = a.stackMod || T; const opts = a.opts || {};
@@ -16454,8 +16631,8 @@ const holder = {};
         const offlineGaps = [];
         if (typeof a.offline === 'function' && !a.model && lang === 'python' && a.problem && a.problem.tests && a.problem.tests.length && a.judge) {
             let o = null; try { o = await a.offline({ text: a.text, lang, problem: a.problem, backend }); } catch (e) { offlineGaps.push('離線組合出錯：' + clip((e && e.message) || e, 100)); }
-            if (o && o.ok && o.source && (o.verdict === 'AC')) { if (typeof a.onEvent === 'function') { try { a.onEvent({ t: 'offline', by: o.by, paradigm: o.paradigm, tried: o.tried }); } catch (_) { /* 進度回報壞了不影響流程 */ } } return Object.assign(base, { ok: true, verified: o.verified !== false, verdict: 'AC', mode: 'offline', source: o.source, offline: { by: o.by, paradigm: o.paradigm || null, slots: o.slots || null, lesson: o.lesson || null, recipe: o.recipe || null, matrix: o.matrix || null, onlyExamples: !!o.onlyExamples, tried: o.tried || 0, usedModel: !!o.usedModel }, calls: Object.assign({}, base.calls, { judge: o.tried || 1 }) }); }
-            if (o && !o.ok) offlineGaps.push('離線組合沒解出來（' + clip(o.reason || '不明', 100) + '），改用模型');
+            if (o && o.ok && o.source && (o.verdict === 'AC')) { if (typeof a.onEvent === 'function') { try { a.onEvent({ t: 'offline', by: o.by, paradigm: o.paradigm, tried: o.tried }); } catch (_) { /* 進度回報壞了不影響流程 */ } } return Object.assign(base, { ok: true, verified: o.verified !== false, verdict: 'AC', mode: 'offline', source: o.source, offline: { rounds: Array.isArray(o.rounds) ? o.rounds : null, by: o.by, paradigm: o.paradigm || null, slots: o.slots || null, lesson: o.lesson || null, recipe: o.recipe || null, matrix: o.matrix || null, onlyExamples: !!o.onlyExamples, tried: o.tried || 0, usedModel: !!o.usedModel }, calls: Object.assign({}, base.calls, { judge: o.tried || 1 }) }); }
+            if (o && !o.ok) offlineGaps.push('離線組合沒解出來（' + clip(o.reason || '不明', 100) + '）' + (roundsNote(o.rounds) ? '；各層：' + clip(roundsNote(o.rounds), 200) : '') + '，改用模型');
         }
         base.gaps = base.gaps.concat(offlineGaps);
         if (!backend) return Object.assign(base, { mode: a.model ? 'project' : 'problem', verdict: 'NONE', reason: 'no_model', gaps: ['沒有可用的模型（generate 或 backend）'] });
@@ -16510,7 +16687,7 @@ const holder = {};
         return L1.join('\n');
     }
 
-    return { detectLang, detectLangFromCode, routeOf, makeBackend, runCode, formatReport };
+    return { detectLang, detectLangFromCode, routeOf, makeBackend, runCode, formatReport, roundsNote };
 });
 
 }).call(null, undefined, holder);
@@ -107792,7 +107969,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const host = this._behTsHost(); const PC = await host.loadTreeSitter(); const lang = await PC.Language.load(await host.loadLanguageWasm('python')); const P = new PC(); P.setLanguage(lang); this._pyParser = P; return P;
     }
     // 領域包（DSP…）：第一次用到時註冊進算法詞彙與範式骨架表；判題用領域的容差設定（DSP＝float）
-    _pyDomainsInit() { if (this._pyDomainsDone) return; this._pyDomainsDone = true; try { FaDomains.register(FaDomainDsp.make(FaPyParadigms), { AI: FaAlgoIntent, PAR: FaPyParadigms }); } catch (_) { /* 領域包註冊失敗不影響通用範式 */ } }
+    _pyDomainsInit() { if (this._pyDomainsDone) return; this._pyDomainsDone = true; for (const pk of [FaDomainDsp, FaDomainAlgo2, FaDomainOs, FaDomainDs]) { try { FaDomains.register(pk.make(FaPyParadigms), { AI: FaAlgoIntent, PAR: FaPyParadigms }); } catch (_) { /* 領域包註冊失敗不影響通用範式 */ } } }
     async _codeOffline(o, bridge) {
         this._pyDomainsInit();
         const P = await this._pyParserSync(); const B = FaPyBlocks.makeBlocks({ parseTree: (s) => P.parse(s), C2U: FaPyCode2Uml }); const R = FaPyBlocksRules.makeRules(B);
@@ -107806,10 +107983,10 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const judge = async (src) => { const j = await bridge.judge({ lang: 'python', source: src + '\nmain()\n', problem }); if (j.verdict === 'UNAVAILABLE') throw new Error('判題器不能用：' + String(j.detail || '').slice(0, 100)); return { verdict: j.verdict, detail: j.detail }; };
         const lessons = o.onlyLessons ? o.onlyLessons : this._pyNoLessons ? [] : (FaPyLessonsBuiltin.lessons || []).concat(this._pyLessonsLoad()); // _pyNoLessons：評測用，不給課、只靠範式骨架
         const r = await FaPyUmlPipeline.buildFromUML({ statement: o.text, uml: readOk ? { hints: uml.hints, model: uml.model } : { hints: null, model: null }, B, R, C2U: FaPyCode2Uml, FaPyBody, Choose: FaPyCnlChoose, judge, Lessons: FaPyLessons, lessons, Paradigms: FaPyParadigms, Matrix: hasMatrix ? FaMatrixSynth : undefined, examples: exs });
-        if (!r.ok) return { ok: false, reason: r.reason, tried: r.tried };
+        if (!r.ok) return { ok: false, reason: r.reason, tried: r.tried, rounds: r.rounds };
         // 誠實標示：矩陣層是「用範例合成」的，只對著範例驗證時 AC 不是獨立驗證（範例是學的資料）；有獨立的隱藏測資並通過、且沒有多個候選，才算 verified
         const mx = r.matrix || null; const independent = !!(o.problem && Array.isArray(o.problem.hidden) && o.problem.hidden.length); const mxVerified = !!(mx && mx.verified && !mx.ambiguous && independent);
-        return { ok: true, source: r.source + '\nmain()\n', verdict: r.verdict, by: mx ? 'matrix' : r.recipe ? 'recipe' : r.lesson ? 'lesson' : r.paradigm ? 'paradigm' : 'blocks', recipe: r.recipe, lesson: r.lesson, paradigm: r.paradigm, slots: r.slots, tried: r.tried, usedModel: r.usedModel, matrix: mx ? { level: mx.level, kind: mx.kind, desc: mx.desc, verified: mxVerified, ambiguous: !!mx.ambiguous } : undefined, verified: mx ? mxVerified : true, onlyExamples: mx ? !mxVerified : false };
+        return { ok: true, rounds: r.rounds, source: r.source + '\nmain()\n', verdict: r.verdict, by: mx ? 'matrix' : r.recipe ? 'recipe' : r.lesson ? 'lesson' : r.paradigm ? 'paradigm' : 'blocks', recipe: r.recipe, lesson: r.lesson, paradigm: r.paradigm, slots: r.slots, tried: r.tried, usedModel: r.usedModel, matrix: mx ? { level: mx.level, kind: mx.kind, desc: mx.desc, verified: mxVerified, ambiguous: !!mx.ambiguous } : undefined, verified: mx ? mxVerified : true, onlyExamples: mx ? !mxVerified : false };
     }
     // a: { task（需求文字）, language, tests:[{in,out}], uml（DSL 文字）, use_last_design, source（任意現有程式碼）, goal, driver, model, _gen（CoLU 計畫裡直接給模型） }
     async _codeAgent(a) {

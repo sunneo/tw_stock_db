@@ -16,7 +16,7 @@
     'use strict';
     const NAME = '[a-zA-Z][a-z0-9]{0,4}'; const NAMES = NAME + '(?:\\s+' + NAME + ')*';
     const CN = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
-    const INT_WORDS = /整數|面額|查詢|數字|價值|重量/; const FLOAT_WORDS = /小數|實數|取樣值|取樣點|振幅/; const STR_WORDS = /單字|字串|字元|文字/;
+    const INT_WORDS = /整數|面額|查詢(?!字串|單字|文字)|數字|價值|重量/; const FLOAT_WORDS = /小數|實數|取樣值|取樣點|振幅/; const STR_WORDS = /單字|字串|字元|文字/;
     // 動作表：關鍵字（中文）→ 目的。recipe 是「語言中立的配方」：which＝作用在哪一種輸入（list／words／str）、op＝要做的運算
     const GOALS = [
         { key: /最大值|最大的|最大總/, op: 'max', which: ['list'] }, { key: /最小值|最小的/, op: 'min', which: ['list'] }, { key: /總和|的和|加總/, op: 'sum', which: ['list'] },
@@ -86,7 +86,7 @@
         { key: 'base64', re: /base64/i, sh: (ins) => ins.length === 1 && has(ins, 'str') },
         { key: 'lz77', re: /LZ77|<L\s*,\s*d>/, sh: (ins) => ins.length === 1 && has(ins, 'str') },
         { key: 'endian-pack', re: /小端|大端/, sh: (ins) => ins.length === 1 && has(ins, 'str') },
-        { key: 'rle-pair', re: /行程長度|連續相同字元/, sh: (ins) => ins.length === 1 && has(ins, 'str') },
+        { key: 'rle-pair', re: /^(?![\s\S]*(?:解碼|還原|展開|解壓))[\s\S]*(?:行程長度|連續相同字元)/, sh: (ins) => ins.length === 1 && has(ins, 'str') },
         { key: 'bits-expand', re: /ASCII[^。]*二進位|二進位[^。]*(?:高位在前|低位在前)|\d+\s*位二進位/, sh: (ins) => ins.length === 1 && has(ins, 'str') },
         { key: 'hex-encode', re: /每個位元組.*十六進位|兩位.*十六進位|十六進位/, sh: (ins) => ins.length === 1 && has(ins, 'str') },
         { key: 'varint', re: /多位元組整數|varint|LEB128/i, sh: (ins) => !ins.some((x) => x.role) },
@@ -197,7 +197,7 @@
             }
             if ((m = new RegExp('^第([一二三四五六七八九\\d]+)行\\s*(' + NAME + ')\\s*(?:個|種)(.*)$').exec(c))) { // 第二行 n 個整數／第三行 q 個查詢 x
                 const tail = m[3]; const nm = (new RegExp('(?:查詢|每個|記為|稱為)\\s*(' + NAME + ')\\s*$').exec(tail) || [])[1];
-                const isStr = STR_WORDS.test(tail) && !INT_WORDS.test(tail); const isFloat = !isStr && FLOAT_WORDS.test(tail) && !INT_WORDS.test(tail); const listName = nm || (isStr ? 'w' : 'a'); inputs.push({ k: 'list', name: listName, size: m[2], elem: isStr ? 'str' : isFloat ? 'float' : 'int' }); addNames([listName, m[2]]); continue;
+                const isStr = STR_WORDS.test(tail) && !INT_WORDS.test(tail); const isFloat = !isStr && FLOAT_WORDS.test(tail) && !INT_WORDS.test(tail); const freshName = (cands) => cands.find((x) => !names.has(x)) || cands[0] + '2'; const listName = nm || (isStr ? freshName(['w', 'w2', 'w3']) : freshName(['a', 'b', 'c', 'd'])); inputs.push({ k: 'list', name: listName, size: m[2], elem: isStr ? 'str' : isFloat ? 'float' : 'int' }); addNames([listName, m[2]]); continue;
             }
             if ((m = new RegExp('^第([一二三四五六七八九\\d]+)行(?:一個|兩個|三個|四個|五個|六個)?小數\\s*(' + NAMES + ')$').exec(c))) { const ns = m[2].split(/\s+/); inputs.push({ k: 'scalars', names: ns, type: 'float', line: true }); addNames(ns); continue; } // 第二行小數 alpha／第二行五個小數 b0 b1 b2 a1 a2
             if ((m = new RegExp('^第([一二三四五六七八九\\d]+)行(?:一個|兩個|三個|四個)?(?:正)?(?:整數)?\\s*(' + NAMES + ')$').exec(c))) { const ns = m[2].split(/\s+/); inputs.push({ k: 'scalars', names: ns, type: 'int', line: true }); addNames(ns); continue; }
@@ -210,7 +210,7 @@
             if (new RegExp('^第([一二三四五六七八九\\d]+)行(?:小寫|大寫)?(?:英文)?(?:字串|文字)$').test(c)) { inputs.push({ k: 'str', name: 's' }); addNames(['s']); continue; } // 第二行小寫英文字串
             if ((m = new RegExp('^第([一二三四五六七八九\\d]+)行\\s*(' + NAME + ')\\s*(?:與|和)\\s*[^a-zA-Z\\s]*\\s*(' + NAME + ')$').exec(c))) { inputs.push({ k: 'scalars', names: [m[2], m[3]], type: 'int', line: true }); addNames([m[2], m[3]]); continue; } // 第一行 k 與目標 t
             if ((m = new RegExp('^第([一二三四五六七八九\\d]+)行[^a-zA-Z0-9]{1,8}\\s*(' + NAMES + ')$').exec(c))) { const ns = m[2].split(/\s+/); inputs.push({ k: 'scalars', names: ns, type: 'int', line: true }); addNames(ns); continue; } // 第一行偏移量 k
-            if (/^輸入(?:一行|一個)?[^，]*?(?:字串|文字|羅馬數字)$/.test(c) || /^輸入一個很長的.*整數$/.test(c)) { inputs.push({ k: 'str', name: 's' }); addNames(['s']); continue; } // 輸入一個由 0、1 組成的字串／輸入小寫字串／輸入一個很長的非負整數（以字串給）
+            if ((m = /^輸入(?:一行|一個)?[^，]*?(?:字串|文字|羅馬數字)(?:\s*([a-z][a-z0-9]{0,3}))?$/.exec(c)) || /^輸入一個很長的.*整數$/.test(c)) { const sn = (m && m[1]) || 's'; inputs.push({ k: 'str', name: sn }); addNames([sn]); continue; } // 輸入一個由 0、1 組成的字串／輸入小寫字串／輸入一個很長的非負整數（以字串給）
             if (/^輸入(?:一行)?以空格分隔的/.test(c)) { inputs.push({ k: 'words', name: 'w' }); addNames(['w']); continue; } // 輸入以空格分隔的後序運算式
             if ((m = new RegExp('^輸入[^a-zA-Z0-9]{0,14}?\\s*(' + NAMES + ')$').exec(c)) && !/小數|字串|文字/.test(c)) { const ns = m[1].split(/\s+/); inputs.push({ k: 'scalars', names: ns, type: 'int', line: true }); addNames(ns); continue; } // 輸入 a e m／輸入三個點的整數座標 x1 y1 x2 y2 x3 y3
         }

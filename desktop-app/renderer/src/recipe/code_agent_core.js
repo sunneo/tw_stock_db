@@ -22,6 +22,9 @@
     else root.FaCodeAgent = factory(R, T, L, P, Fix, Ed);
 })(typeof self !== 'undefined' ? self : this, function (R, T, Loop, Proj, Fix, Ed) {
     'use strict';
+    // 離線組合每一層的結果（buildFromUML 的 rounds：{by, ok, tried, reason}）摘成一行「卡在哪一層」：配方→課→範式（試 N 個）→矩陣→區塊
+    const ROUND_NAME = { recipe: '配方', lesson: '課', paradigm: '範式', matrix: '矩陣', blocks: '區塊迴圈' };
+    const roundsNote = (rounds) => (Array.isArray(rounds) ? rounds : []).filter((r) => r && r.by).map((r) => (ROUND_NAME[r.by] || r.by) + (r.ok ? '✔' : '✘') + (r.tried ? '(試 ' + r.tried + ' 個)' : '') + (!r.ok && r.reason ? '：' + String(r.reason).replace(/\s+/g, ' ').slice(0, 30) : '')).join('→');
     const clip = (s, n) => { s = String(s == null ? '' : s).replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, Math.max(1, n - 1)) + '…' : s; };
 
     function detectLang(text, fallback) {
@@ -97,7 +100,12 @@
         };
     }
 
+    // 離線沒解出來的各層結果要留到最終結果的 gaps（後面的路線會整個換掉 gaps，所以在最外層補回去）
     async function runCode(a) {
+        const kept = []; const a2 = a && typeof a.offline === 'function' ? Object.assign({}, a, { offline: async (x) => { const o = await a.offline(x); if (o && !o.ok) kept.push('離線組合沒解出來（' + clip(o.reason || '不明', 100) + '）' + (roundsNote(o.rounds) ? '；各層：' + clip(roundsNote(o.rounds), 200) : '')); return o; } }) : a;
+        const r = await runCode0(a2); if (r && kept.length) r.gaps = kept.concat((r.gaps || []).filter((g) => kept.indexOf(g) < 0 && !/^離線組合沒解出來/.test(g))); return r;
+    }
+    async function runCode0(a) {
         const lang = a.lang || (a.source ? (detectLangFromCode(a.source) || detectLang(a.text, 'python')) : detectLang(a.text, 'python')); const backend = a.backend || (a.generate ? makeBackend({ generate: a.generate, R, askTokens: a.askTokens, writeTokens: a.writeTokens }) : null);
         const base = { ok: false, verified: false, lang, gaps: [], calls: { ask: 0, write: 0, judge: 0 }, source: '' };
         const stackMod = a.stackMod || T; const opts = a.opts || {};
@@ -111,8 +119,8 @@
         const offlineGaps = [];
         if (typeof a.offline === 'function' && !a.model && lang === 'python' && a.problem && a.problem.tests && a.problem.tests.length && a.judge) {
             let o = null; try { o = await a.offline({ text: a.text, lang, problem: a.problem, backend }); } catch (e) { offlineGaps.push('離線組合出錯：' + clip((e && e.message) || e, 100)); }
-            if (o && o.ok && o.source && (o.verdict === 'AC')) { if (typeof a.onEvent === 'function') { try { a.onEvent({ t: 'offline', by: o.by, paradigm: o.paradigm, tried: o.tried }); } catch (_) { /* 進度回報壞了不影響流程 */ } } return Object.assign(base, { ok: true, verified: o.verified !== false, verdict: 'AC', mode: 'offline', source: o.source, offline: { by: o.by, paradigm: o.paradigm || null, slots: o.slots || null, lesson: o.lesson || null, recipe: o.recipe || null, matrix: o.matrix || null, onlyExamples: !!o.onlyExamples, tried: o.tried || 0, usedModel: !!o.usedModel }, calls: Object.assign({}, base.calls, { judge: o.tried || 1 }) }); }
-            if (o && !o.ok) offlineGaps.push('離線組合沒解出來（' + clip(o.reason || '不明', 100) + '），改用模型');
+            if (o && o.ok && o.source && (o.verdict === 'AC')) { if (typeof a.onEvent === 'function') { try { a.onEvent({ t: 'offline', by: o.by, paradigm: o.paradigm, tried: o.tried }); } catch (_) { /* 進度回報壞了不影響流程 */ } } return Object.assign(base, { ok: true, verified: o.verified !== false, verdict: 'AC', mode: 'offline', source: o.source, offline: { rounds: Array.isArray(o.rounds) ? o.rounds : null, by: o.by, paradigm: o.paradigm || null, slots: o.slots || null, lesson: o.lesson || null, recipe: o.recipe || null, matrix: o.matrix || null, onlyExamples: !!o.onlyExamples, tried: o.tried || 0, usedModel: !!o.usedModel }, calls: Object.assign({}, base.calls, { judge: o.tried || 1 }) }); }
+            if (o && !o.ok) offlineGaps.push('離線組合沒解出來（' + clip(o.reason || '不明', 100) + '）' + (roundsNote(o.rounds) ? '；各層：' + clip(roundsNote(o.rounds), 200) : '') + '，改用模型');
         }
         base.gaps = base.gaps.concat(offlineGaps);
         if (!backend) return Object.assign(base, { mode: a.model ? 'project' : 'problem', verdict: 'NONE', reason: 'no_model', gaps: ['沒有可用的模型（generate 或 backend）'] });
@@ -167,5 +175,5 @@
         return L1.join('\n');
     }
 
-    return { detectLang, detectLangFromCode, routeOf, makeBackend, runCode, formatReport };
+    return { detectLang, detectLangFromCode, routeOf, makeBackend, runCode, formatReport, roundsNote };
 });
