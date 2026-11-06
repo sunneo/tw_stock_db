@@ -4553,22 +4553,21 @@ UMD、無 DOM、無 I/O、可 `new Function` 載入（跟 `read_ledger.js` 一�
 
 ## 原檔：block-writer（程式區塊寫程式）
 
-> 2026-11-06。設計與現況見 `DESIGN.ast-nodes.md` 第六、七節；程式在 `renderer/src/uml/`（`algo_intent_core.js`、`py_uml_pipeline_core.js`、`py_blocks_*_core.js`、`py_cnl_choose_core.js`、`py_code2uml_core.js`、`py_body_core.js`）；測試 `py_uml_pipeline.test.js`、`py_blocks.test.js`、`py_blocks_rules.test.js`、`py_body.test.js`、`py_code2uml.test.js`、`ast_*.test.js`。**還沒有接進 write_code／renderer（所以沒有行為變化）。**
+> 2026-11-06。設計與現況見 `DESIGN.ast-nodes.md` 第六、七節（7.2 是課與內建）與 `DESIGN.offline-trainer.md` 5.1（老師迴圈的驗證擴充）；程式在 `renderer/src/uml/`（`algo_intent_core.js`、`py_uml_pipeline_core.js`、`py_lessons_core.js`、`py_lessons_builtin.js`、`py_blocks_*_core.js`、`py_cnl_choose_core.js`、`py_code2uml_core.js`）與 `renderer/src/harness/teacher_check_core.js`；測試與端到端見各 `*.test.js`、`scripts/e2e/teacher_loop.e2e.mjs`、`scripts/teach-builtin-lessons.js`。`/teacher-loop` 是 `/offline-trainer-by-ai` 的別名。
 
-**使用者定的流程**：UML 任務切割（`uml_design`）→ 程式骨架（UML codegen）→ 區塊迴圈〔程式算符號表（庫存）→ 庫存過濾合法選項 → 嚴格範本（For／While 防呆）〕→ 模型只在合法庫存內做微型選擇 → 沙盒驗證 ⇄ 錯誤回饋。函式 body 固定三區：引入區、宣告區、邏輯與流程區。積木庫越大越豐富，從小程式開始。
+**使用者定的流程**：UML 任務切割（`uml_design`）→ 程式骨架（UML codegen）→ 區塊迴圈〔程式算符號表（庫存）→ 庫存過濾合法選項 → 嚴格範本（For／While 防呆）〕→ 模型只在合法庫存內做微型選擇 → 沙盒驗證 ⇄ 錯誤回饋；函式 body 固定三區（引入、宣告、邏輯與流程）；Claude 教會之後要內建進去。
 
 **已完成**
-- `uml_design` 讀算法題（`opts.readers` 擴充點＋`FaAlgoIntent`）：20 題種子全部讀出 UML，0 次模型、驗證無錯；沒見過的 4 種寫法也讀得出。
-- 程式讀情境直接解出並過沙盒：a-plus-b、max-of-array、reverse-words（3/20）＋沒見過的 4/4。`read_input`、`main` 的 body 由程式生成。
-- 區塊庫 127 個陳述範本＋99 個運算式積木（含科學：math、numpy、statistics、random、scipy 積分、matplotlib 繪圖 20 種），區塊↔程式↔受控自然語言雙向，種子程式往返 20/20。
-- 庫存與範本規則（三區、型別槽位、for／while 終止條件、break 只在迴圈、模組要先引入、輔助函式要回傳）與 9 項測試；管線能從頭跑到尾（含沙盒回饋外圈）。
-- 程式碼 → tree-sitter → UML（指令層級）→ Python：46 個真實檔 AST 全相同。
+- `uml_design` 讀算法題（`opts.readers`＋`FaAlgoIntent`）：20 題全部讀出 UML，0 次模型；動作表給算法種類與範式。
+- 老師教、內建進去：17 堂課（判題器含隱藏測資驗證、回歸、無退回），**離線自己解決（不問任何模型）3/20 → 20/20**；沒見過的改寫 16/16。
+- `/offline-trainer-by-ai`（別名 `/teacher-loop`）擴充：項目可帶 `check`（contains／regex／equals／judge），離線做對＝通過驗證；老師教完離線要自己重做通過；回歸；回滾；真 Electron 端到端驗證。
+- 區塊庫 130 個陳述範本＋103 個運算式積木（科學：math、numpy、statistics、random、scipy、matplotlib 繪圖；矩陣：mat_mul／mat_pow／numpy 矩陣乘冪），庫存與範本規則（三區、型別、終止條件、模組要先引入）；程式碼→UML→程式 46 個真實檔 AST 全相同。
 
 **未完成（依序）**
-1. **17/20 題需要模型，而 0.6B 的語意選擇仍接近隨機**（同一題只換選項順序答案就變；逐項是／否 0/4；開思考每題 15～70 秒且 8 次只對 2 次）。要把選單壓到 1～4 個再問：(a) 動作表擴充——目前只有最大值、最小值、總和、反轉單字、敘述裡的運算式；要加更多「動詞＋輸入型態 → 運算式或多區塊配方」（排序取第 k 個、計次、迴文、質數個數、gcd/lcm、前綴和、二分搜尋、BFS、DP…），這其實就是第二階段的「意圖→範本庫」；(b) 目標動詞過濾選單（讀到「排序」就只留排序相關的範本）；(c) 規則再緊：題目有輸入就一定要先有讀入、常數只能來自題目、輸出區塊在邏輯寫完後才出現；(d) 逐項評分／思考只用在剩 2～4 個選項的關鍵點。
-2. **讀取器覆蓋範圍小**：只認種子題規整的句型；要擴充輸入格式（多組測資 T、二維陣列、字串含空白、整數範圍…）、輸出格式（多行、YES/NO 變體、保留小數）與更多題型寫法，並用沒見過的題目持續驗證（不能只對種子題調）。
-3. **積木庫擴充（越大越好）**：更多陳述範本（字串處理、二維陣列走訪、DP 表、圖演算法、遞迴、類別方法）、更多科學與繪圖函式（scipy、pandas、matplotlib 子圖、3D）、更多運算式積木；每個新積木要補型別表（`py_blocks_lib_core.js` 的 `TYPES`／`ETYPES`／`REQ`）與反推測試。槽位型別再細（list 元素型別、dict 鍵值型別）。
-4. **其他語言**：tree-sitter 的 wasm 已有（nodejs、c、c++、java、ruby、perl、bash、C#）；每個語言各自一份區塊庫、規則與 codegen，不共用。
-5. **接進產品**：`write_code`（AI 自己判斷走不走 UML）、設計檢視器顯示區塊樹、`uml_edit` 的編修指令對區塊生效；renderer 要用 `embed-code-ui.js` 嵌入並發 live-update patch。
-6. **效能**：選擇題每題 2 次前向（正倒序）、提示每次重新編碼；之後用 KV 快取共用前綴，開發期間步數上限維持無限大，做完再 profile。
-7. **大模型**：wasm 跑不動較大的模型（除非 transformer 的記憶體能用 IndexedDB 模擬分頁）；Qwen2.5-Coder-1.5B 已下載驗證（`~/.cache/fa-eval/models/qwen2.5-coder-1.5b`）但目前不用。
+1. **範式骨架庫（處理模型）**：分治（divide-and-conquer）、DFS、BFS、樹走訪（前序／中序／後序／層序）、資料結構對應（雜湊、堆疊、佇列、堆積、並查集）、動態規劃（一維、二維、背包、區間）、矩陣快速冪（線性遞推、轉移矩陣、路徑計數）、前綴和、二分、雙指標…；每個範式一個帶槽位的區塊骨架（槽位用小選單選：狀態是什麼、轉移是什麼、終止條件是什麼），動作表從敘述的特徵挑範式；課變成範式的實例。這是讓「新題」不必逐題教課的關鍵。
+2. **宿主接線**：`write_code` 接 `uml_design → 課／配方 → 區塊迴圈 → 沙盒`（`py_*` 模組要用 `embed-code-ui.js` 嵌入、前端要有 tree-sitter 解析）；內建的課要載入；`/teacher-loop` 對寫程式項目要能「離線試做」走這條管線，老師成功後用 `deriveLesson` 抽成課存進訓練器（執行期的課，另外存、可匯出成內建）。目前老師迴圈的驗證擴充已通用（contains／regex／equals／judge），但寫程式的離線組合還沒接進產品。
+3. **模型的選擇仍弱**：0.6B 在合法選單裡接近隨機（同題換選項順序答案就變；逐項是／否 0/4；開思考 8 次只對 2 次）。現在能靠內建的課避開，但新算法仍需要：範式骨架把選單壓到 1～4 個；目標動詞過濾選單；規則再緊（題目有輸入就一定先讀入、常數只能來自題目）。
+4. **讀取器覆蓋範圍小**：輸入格式只認種子題規整的句型；要擴充（多組測資、二維陣列、含空白字串、整數範圍）、輸出格式（多行、保留小數、YES/NO 變體）與更多寫法，並用沒見過的題目持續驗證。
+5. **積木庫擴充（越大越好）**：字串處理、二維走訪、DP 表、圖演算法、遞迴、類別方法；scipy、pandas、matplotlib 子圖、3D；每個新積木補型別表（`py_blocks_lib_core.js` 的 `TYPES`／`ETYPES`／`REQ`）與反推測試；槽位型別再細（list 元素型別）。
+6. **其他語言**：tree-sitter 的 wasm 已有（nodejs、c、c++、java、ruby、perl、bash、C#）；每個語言各自一份區塊庫、規則、課與 codegen，不共用。
+7. **效能與大模型**：選擇題每題 2 次前向、提示每次重新編碼，之後用 KV 快取共用前綴；開發期間步數上限維持無限大，做完再 profile。wasm 跑不動較大的模型（除非 transformer 的記憶體能用 IndexedDB 模擬分頁）；Qwen2.5-Coder-1.5B 已下載驗證但目前不用。
