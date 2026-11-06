@@ -15538,7 +15538,8 @@ const holder = {};
         const vars = []; for (const inp of inputs) { if (inp.k === 'scalars') inp.names.forEach((n) => vars.push({ name: n, type: inp.type })); else if (inp.k === 'list') { if (inp.size && !vars.some((v) => v.name === inp.size)) vars.push({ name: inp.size, type: 'int' }); vars.push({ name: inp.name, type: 'list' }); } else if (inp.k === 'rows') vars.push({ name: inp.name, type: 'list' }); else if (inp.k === 'grid') vars.push({ name: inp.name, type: 'list' }); else if (inp.k === 'str' || inp.k === 'hex') vars.push({ name: inp.name, type: 'str' }); else if (inp.k === 'lines' || inp.k === 'rest') vars.push({ name: inp.name, type: 'list' }); else if (inp.k === 'words') vars.push({ name: inp.name, type: 'list' }); }
         // 同一個名稱在不同行出現（第一行 n，第二行 n 個…）只留一個
         const seen = new Set(); const uvars = vars.filter((v) => (seen.has(v.name) ? false : seen.add(v.name)));
-        return { ok: inputs.length > 0, algo, algos: toolAlgos.length ? toolAlgos : undefined, paradigms, inputs, vars: uvars, goal, facts: extractFacts(text), statement: text, ops: [{ name: 'readInput', params: [], returns: 'any' }, { name: 'solve', params: uvars.map((v) => v.name), returns: 'void' }] };
+        const arrs = (text.match(/\[\d+(?:\s*,\s*\d+)+\]/g) || []).length; const eqs = (text.match(/[=＝]/g) || []).length; const specLike = text.length > 300 || arrs >= 2 || eqs >= 6 ? { len: text.length, arrays: arrs, eqs } : null; // 規格即題目（G18）：敘述自帶完整演算法（大量步驟／公式／表格）：照規格翻譯，不是挑演算法；Blockly 側只偵測，沒有範式命中時應分流到老師／模型迴圈
+        return { ok: inputs.length > 0, algo, specLike, algos: toolAlgos.length ? toolAlgos : undefined, paradigms, inputs, vars: uvars, goal, facts: extractFacts(text), statement: text, ops: [{ name: 'readInput', params: [], returns: 'any' }, { name: 'solve', params: uvars.map((v) => v.name), returns: 'void' }] };
     }
     const UMLTYPE = { int: 'int', float: 'float', str: 'str', list: 'List<any>' };
     function umlHints(intent) {
@@ -15854,6 +15855,8 @@ const holder = {};
     // CRC-32 位元式迴圈（資料位元組在變數 dv，結果放 cv）；多項式／初值／結尾互斥或由敘述裡的 0x 常數抽（依序：多項式、初值、結尾）；抽不到就用 gzip 的慣例
     const crcLines = (dv, cv, I, c) => { const k = FA(I).crc || {}; const poly = (c && c.refl === 'normal') ? '0x04C11DB7' : (k.poly || '0xEDB88320'); const init = k.init || '0xFFFFFFFF'; const fin = k.fin || (/取反/.test(String((I && I.statement) || '')) ? '0xFFFFFFFF' : k.init || '0xFFFFFFFF'); const refl = !(c && c.refl === 'normal');
         return [cv + ' = ' + init, 'for b_ in ' + dv + ':'].concat(refl ? ['    ' + cv + ' ^= b_', '    for _ in range(8):', '        if ' + cv + ' & 1:', '            ' + cv + ' = (' + cv + ' >> 1) ^ ' + poly, '        else:', '            ' + cv + ' >>= 1'] : ['    ' + cv + ' ^= b_ << 24', '    for _ in range(8):', '        if ' + cv + ' & 0x80000000:', '            ' + cv + ' = ((' + cv + ' << 1) ^ ' + poly + ') & 0xFFFFFFFF', '        else:', '            ' + cv + ' = (' + cv + ' << 1) & 0xFFFFFFFF'], [cv + ' = ' + cv + ' ^ ' + fin]); };
+    // 輔助操作（G2 切割）：共用的單元寫成獨立的模組函式（helpers），多個骨架／整合題用 call 組合，不再每個骨架各抄一份迴圈
+    const crcHelper = (I, c) => ({ name: 'crc32', params: ['data'], py: crcLines('data', 'crc', I, c).concat(['return crc']) });
     const B64 = '"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"';
     const LX2 = [
         { id: 'str.hex-encode', paradigm: 'bytes-text', algo: 'hex-encode', label: '逐位元組轉十六進位（xxd 編碼）：兩位、大小寫、分隔', shape: oneStr,
@@ -15870,7 +15873,8 @@ const holder = {};
             py: (c, N) => { const p = c.perm.split(', '); return code(['parts = ' + N.s[0] + '.split()', 'v = int(parts[' + p[0] + '])', 'w = int(parts[' + p[1] + '])', 'o = parts[' + p[2] + ']', 'print(v.to_bytes(w, ' + c.map + ').hex())']); } },
         { id: 'checksum.crc32', paradigm: 'checksum', algo: 'crc32', label: 'CRC-32（位元式迴圈；多項式／初值／結尾互斥或由敘述的 0x 常數抽）', shape: oneStr, limit: 8,
             slots: [S('refl', '位元序', [['reflected', 'reflected'], ['normal', 'normal']]), S('fmt', '輸出格式', [['%08x', '%08x'], ['%08X', '%08X']])],
-            py: (c, N, I) => code(['data = ' + N.s[0] + '.encode()'].concat(crcLines('data', 'crc', I, c), ['print("' + c.fmt + '" % crc)'])) },
+            helpers: (c, N, I) => [crcHelper(I, c)],
+            py: (c, N, I) => code(['data = ' + N.s[0] + '.encode()', 'crc = crc32(data)', 'print("' + c.fmt + '" % crc)']) },
         { id: 'checksum.adler32', paradigm: 'checksum', algo: 'adler32', label: 'Adler-32：兩個累加器對模數取餘', shape: oneStr,
             slots: [S('ord', '組合方式', [['ba', 'b * 65536 + a'], ['ab', 'a * 65536 + b']]), S('init', 'a 的初值', [['1', '1'], ['0', '0']])],
             py: (c, N, I) => code(['a = ' + c.init, 'b = 0', 'for ch in ' + N.s[0] + '.encode():', '    a = (a + ch) % ' + (FA(I).mod || 65521), '    b = (b + a) % ' + (FA(I).mod || 65521), 'print("%08x" % (' + c.ord + '))']) },
@@ -15945,7 +15949,8 @@ const holder = {};
             py: (c, N, I) => { const m = /位元組\s*(\d+)\s*[～~\-–]\s*(\d+)/.exec(String(I.statement)); const a = m ? +m[1] : 124; const b = m ? +m[2] + 1 : +c.end; return code(['raw_ = bytes.fromhex(' + N.s[0] + ')', 'pos = 0', 'while pos + 512 <= len(raw_):', '    blk = raw_[pos:pos + 512]', '    nm = blk[0:100].split(b"\\x00")[0].decode()', '    if nm == "":', '        break', '    sz = int(blk[' + a + ':' + b + '].decode().strip("\\x00 ") or "0", 8)', '    print(nm, sz)', '    pos += 512 + (sz + 511) // 512 * 512']); } },
         { id: 'gzip.stored-member', paradigm: 'binary-format', algo: 'gunzip-stored', label: 'gzip 成員（讀）：標頭＋未壓縮區塊＋CRC-32／ISIZE 尾端；驗證 CRC 後輸出文字或錯誤字樣', shape: hexOnly, limit: 4,
             slots: [S('hl', '標頭長度', [['10', '10']])],
-            py: (c, N, I) => { const er = (/(?:否則|不符|錯誤)[^，。]*?輸出\s*([A-Z][A-Z ]*[A-Z])/.exec(String(I.statement)) || [])[1]; if (!er) throw new Error('敘述沒有錯誤字樣'); return code(['raw_ = bytes.fromhex(' + N.s[0] + ')', 'body = raw_[' + c.hl + ':-8]', 'n_ = int.from_bytes(body[1:3], "little")', 'data = body[5:5 + n_]', 'want = int.from_bytes(raw_[-8:-4], "little")'].concat(crcLines('data', 'crc', I), ['if crc == want:', '    print(data.decode())', 'else:', '    print("' + er + '")'])); } },
+            helpers: (c, N, I) => [crcHelper(I, null)],
+            py: (c, N, I) => { const er = (/(?:否則|不符|錯誤)[^，。]*?輸出\s*([A-Z][A-Z ]*[A-Z])/.exec(String(I.statement)) || [])[1]; if (!er) throw new Error('敘述沒有錯誤字樣'); return code(['raw_ = bytes.fromhex(' + N.s[0] + ')', 'body = raw_[' + c.hl + ':-8]', 'n_ = int.from_bytes(body[1:3], "little")', 'data = body[5:5 + n_]', 'want = int.from_bytes(raw_[-8:-4], "little")', 'crc = crc32(data)'].concat(['if crc == want:', '    print(data.decode())', 'else:', '    print("' + er + '")'])); } },
         { id: 'xxd.reverse-dump', paradigm: 'text-lines', algo: 'xxd-reverse', label: 'xxd 傾印還原：每行固定欄位切片（十六進位欄）、去空白後相連', shape: (I) => I.inputs.some((x) => x.k === 'lines'), limit: 8,
             slots: [S('c0', '十六進位欄起點（0 起算）', [['10', '10'], ['9', '9'], ['11', '11']]), S('c1', '欄終點（不含）', [['49', '49'], ['50', '50']])],
             py: (c, N, I) => { const m = /第\s*(\d+)\s*[～~\-–]\s*(\d+)\s*個字元/.exec(String(I.statement)); const a = m ? +m[1] - 1 : +c.c0; const b = m ? +m[2] : +c.c1; return code(['out = ""', 'for t in ' + N.L[0] + ':', '    out += t[' + a + ':' + b + '].replace(" ", "")', 'print(out)']); } },
@@ -16019,11 +16024,13 @@ const holder = {};
             py: (c, N) => { const sz = N.sc.length ? N.sc[0] : 'int(' + N.s[0] + '.split()[0])'; const outs = c.outs; return code(['sz = ' + sz, 'blocks = (sz + 511) // 512', 'padded = blocks * 512', 'total = ' + c.tot, 'print(str(' + outs.split(', ').join(') + ' + c.sep + ' + str(') + '))'].map((l) => l)); } },
         { id: 'xz.stream-header', paradigm: 'binary-format', algo: 'xz-header', label: 'xz 串流標頭（12 位元組）：魔術數字＋旗標＋CRC-32；依檢查結果輸出敘述裡的判決字樣（字樣對應由窮舉挑）', shape: oneHex, limit: 12,
             slots: [S('perm', '判決字樣對應（魔術不符、CRC 不符、通過）', [['012', '0, 1, 2'], ['021', '0, 2, 1'], ['102', '1, 0, 2'], ['120', '1, 2, 0'], ['201', '2, 0, 1'], ['210', '2, 1, 0']]), S('crcof', 'CRC 範圍', [['flags', 'raw_[6:8]'], ['hdr', 'raw_[0:8]']])],
+            helpers: (c, N, I) => [crcHelper({ facts: {}, statement: '' }, null)],
             py: (c, N, I) => { const words = (String(I.statement).match(/輸出\s*([A-Za-z][A-Za-z_ ]*[A-Za-z])/g) || []).map((x) => x.replace(/^輸出\s*/, '')); const uniq = words.filter((w, i) => words.indexOf(w) === i); if (uniq.length < 3) throw new Error('敘述沒有三種判決字樣'); const p = c.perm.split(', ');
-                return code(['raw_ = bytes.fromhex(' + N.s[0] + ')', 'magic = bytes([0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00])', 'data = ' + c.crcof].concat(crcLines('data', 'crc', { facts: {}, statement: '' }), ['want = int.from_bytes(raw_[8:12], "little")', 'if raw_[0:6] != magic:', '    print("' + uniq[+p[0]] + '")', 'elif crc != want:', '    print("' + uniq[+p[1]] + '")', 'else:', '    print("' + uniq[+p[2]] + '")'])); } },
+                return code(['raw_ = bytes.fromhex(' + N.s[0] + ')', 'magic = bytes([0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00])', 'data = ' + c.crcof, 'crc = crc32(data)'].concat(['want = int.from_bytes(raw_[8:12], "little")', 'if raw_[0:6] != magic:', '    print("' + uniq[+p[0]] + '")', 'elif crc != want:', '    print("' + uniq[+p[1]] + '")', 'else:', '    print("' + uniq[+p[2]] + '")'])); } },
         { id: 'gzip.member-write', paradigm: 'binary-format', algo: 'gzip-member', label: 'gzip 成員（寫）：10 位元組標頭＋未壓縮區塊＋CRC-32＋ISIZE（小端）', shape: oneStr, limit: 8,
             slots: [S('os', '標頭最後一個位元組（作業系統）', [['03', '03'], ['ff', 'ff'], ['00', '00']]), S('nl', 'NLEN', [['not', '0xFFFF - n'], ['same', 'n']])],
-            py: (c, N, I) => { const hm = /\b(1f8b[0-9a-f]{16}[0-9a-f]{2})\b/i.exec(String(I.statement)); const hdr = hm ? hm[1].toLowerCase() : '1f8b08000000000000' + c.os; return code(['data = ' + N.s[0] + '.encode()', 'n = len(data)'].concat(crcLines('data', 'crc', I), ['print("' + hdr + '" + "01" + n.to_bytes(2, "little").hex() + (' + c.nl + ').to_bytes(2, "little").hex() + data.hex() + crc.to_bytes(4, "little").hex() + n.to_bytes(4, "little").hex())'])); } },
+            helpers: (c, N, I) => [crcHelper(I, null)],
+            py: (c, N, I) => { const hm = /\b(1f8b[0-9a-f]{16}[0-9a-f]{2})\b/i.exec(String(I.statement)); const hdr = hm ? hm[1].toLowerCase() : '1f8b08000000000000' + c.os; return code(['data = ' + N.s[0] + '.encode()', 'n = len(data)', 'crc = crc32(data)'].concat(['print("' + hdr + '" + "01" + n.to_bytes(2, "little").hex() + (' + c.nl + ').to_bytes(2, "little").hex() + data.hex() + crc.to_bytes(4, "little").hex() + n.to_bytes(4, "little").hex())'])); } },
         { id: 'lz77.greedy', paradigm: 'lz77', algo: 'lz77', label: 'LZ77 貪婪編碼：視窗、最短匹配長度、可重疊；平手取最近或最遠；輸出字面字元與 <長度,距離>', shape: oneStr, limit: 8,
             slots: [S('tie', '同長度時', [['near', 'L > best'], ['far', 'L >= best']]), S('sep', '輸出分隔', [['sp', ' '], ['', '']])],
             py: (c, N, I) => { const t = String(I.statement); const W = (/視窗[^\d]{0,6}(\d+)/.exec(t) || [])[1] || 16; const M = (/最短[^\d]{0,6}(\d+)/.exec(t) || [])[1] || 3; return code(['t = ' + N.s[0], 'out = []', 'i = 0', 'while i < len(t):', '    best = 0', '    bd = 0', '    for d in range(1, min(' + W + ', i) + 1):', '        L = 0', '        while i + L < len(t) and t[i + L - d] == t[i + L]:', '            L += 1', '        if ' + c.tie + ':', '            best = L', '            bd = d', '    if best >= ' + M + ':', '        out.append("<" + str(best) + "," + str(bd) + ">")', '        i += best', '    else:', '        out.append(t[i])', '        i += 1', 'print("' + c.sep + '".join(out))']); } },
@@ -16088,20 +16095,25 @@ const holder = {};
         py = py.replace(/\u0001[^\u0002]*\u0002|'[^']*'|"[^"]*"|\b[A-Za-z_]\w*\b/g, (t) => (P.has(t) && !KEEP.has(t) ? t + '_2' : t)).replace(MARK, '$1');
         return '程式區塊：\n' + py.split('\n').map((l) => '  ' + l).join('\n');
     }
+    // 骨架的輔助操作（helpers）：[{name, params, py}] → [{name, params, cnl}]；各自是模組層的獨立函式（與 solve 並列）
+    function renderHelpers(sk, choice, intent) {
+        if (!sk.helpers) return undefined; const N = namesOf(intent); const vals = {}; for (const sl of sk.slots) { const op = sl.options.find((x) => x.id === choice[sl.id]); vals[sl.id] = op && op.v; }
+        return sk.helpers(vals, N, intent).map((h) => ({ name: h.name, params: h.params, cnl: '程式區塊：\n' + h.py.map((l) => '  ' + l).join('\n') }));
+    }
     async function solve(o) {
         const intent = o.intent; const sks = o.skeleton ? [o.skeleton] : forIntent(intent, o.statement); const trace = []; let tried = 0;
         if (!sks.length) return { ok: false, reason: '這題的算法（' + (intent && intent.algo) + '）沒有範式骨架', tried, trace };
         for (const sk of sks) {
             for (const choice of combos(sk, { limit: o.limit || sk.limit, rank: o.rank })) {
-                let cnl; try { cnl = render(sk, choice, intent); } catch (e) { trace.push({ skeleton: sk.id, choice, verdict: 'RENDER_ERROR', detail: String(e.message || e) }); continue; }
-                tried++; let v; try { v = await o.judge(cnl); } catch (e) { v = { verdict: 'JUDGE_ERROR', detail: String(e.message || e) }; }
+                let cnl, extra; try { cnl = render(sk, choice, intent); extra = renderHelpers(sk, choice, intent); } catch (e) { trace.push({ skeleton: sk.id, choice, verdict: 'RENDER_ERROR', detail: String(e.message || e) }); continue; }
+                tried++; let v; try { v = await o.judge(cnl, extra); } catch (e) { v = { verdict: 'JUDGE_ERROR', detail: String(e.message || e) }; }
                 trace.push({ skeleton: sk.id, choice, verdict: v.verdict, detail: v.detail });
                 if (v.verdict === 'AC' || v.verdict === 'UNCHECKED') return { ok: true, skeleton: sk.id, paradigm: sk.paradigm, choice, cnl, tried, verdict: v.verdict, trace };
             }
         }
         return { ok: false, reason: '範式骨架的所有槽位組合（' + tried + ' 個）都沒通過沙盒', tried, trace };
     }
-    return { PARADIGMS, byId, forIntent, combos, render, solve, namesOf, addSkeletons, dsl: { S, O, code } };
+    return { PARADIGMS, byId, forIntent, combos, render, renderHelpers, solve, namesOf, addSkeletons, dsl: { S, O, code } };
 });
 
 }).call(null, undefined, holder);
@@ -16267,9 +16279,9 @@ const holder = {};
         const names = umlOps.map((x) => x.name); for (const need of ['read_input', 'solve', 'main']) if (!names.includes(need)) return { ok: false, reason: 'UML 沒有操作 ' + need };
         const parse = (cnl) => { const pr = B.parseCNL(cnl); if (!pr.ok) throw new Error('區塊解析失敗：' + JSON.stringify(pr.errors.slice(0, 2)) + '\n' + cnl); return B.toIR(pr.blocks); };
         const cnl = { read_input: readInputCNL(intent), main: mainCNL(intent) }; const bodies = { read_input: parse(cnl.read_input), main: parse(cnl.main) };
-        const mkModel = (solveIR, imports) => {
+        const mkModel = (solveIR, imports, helpers) => {
             const mk = (name, params, body, ret) => ({ name, params: params.map((n) => ({ name: n, type: { base: 'any', args: [] } })), returns: { base: 'any', args: [] }, visibility: '+', static: true, body });
-            const ops = [mk('read_input', [], bodies.read_input), mk('solve', intent.vars.map((v) => v.name), solveIR), mk('main', [], bodies.main)];
+            const ops = [mk('read_input', [], bodies.read_input)].concat((helpers || []).map((h) => mk(h.name, h.params, h.body)), [mk('solve', intent.vars.map((v) => v.name), solveIR), mk('main', [], bodies.main)]); // helpers：骨架的輔助操作（G2），與 solve 並列的模組函式
             const model = { name: 'Module', actors: ['User'], relations: [], usecases: [], prelude: imports || [], order: [], classes: [{ name: 'Module', kind: 'class', attrs: [], values: [], ops }] };
             model.order = model.prelude.map((x) => ({ t: 's', s: x })).concat(ops.map((o2) => ({ t: 'f', o: o2 }))); return model;
         };
@@ -16293,7 +16305,7 @@ const holder = {};
         // ---- 範式骨架（每個範式一個帶槽位的區塊骨架；槽位選單很小，由程式窮舉組合、逐個交沙盒，第一個 AC 就用，不問模型）----
         if (o.Paradigms && o.Paradigms.forIntent(intent, o.statement).length) {
             let lastModel = null;
-            const pj = async (solveCnl) => { const model = mkModel(parse(solveCnl)); const source = o.C2U.toPython(model); lastModel = { model, source }; return o.judge ? o.judge(source) : { verdict: 'UNCHECKED', detail: '' }; };
+            const pj = async (solveCnl, extra) => { const model = mkModel(parse(solveCnl), undefined, (extra || []).map((h) => ({ name: h.name, params: h.params, body: parse(h.cnl) }))); const source = o.C2U.toPython(model); lastModel = { model, source }; return o.judge ? o.judge(source) : { verdict: 'UNCHECKED', detail: '' }; };
             const ps = await o.Paradigms.solve({ intent, statement: o.statement, judge: pj, limit: o.paradigmLimit, rank: o.paradigmRank });
             res.rounds.push({ by: 'paradigm', ok: ps.ok, skeleton: ps.skeleton, tried: ps.tried, verdict: ps.verdict });
             if (ps.ok) return Object.assign(res, { source: lastModel.source, model: lastModel.model, paradigm: ps.skeleton, slots: ps.choice, tried: ps.tried, cnl: Object.assign(cnl, { solve: ps.cnl }), verdict: ps.verdict });
