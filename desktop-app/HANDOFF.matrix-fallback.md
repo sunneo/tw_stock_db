@@ -73,3 +73,19 @@
 - 2026-11-06：「個別完成都要回來發布」（完成一個階段、提交後回報協調 session）
 - 2026-11-07：「好」（同意對保留題庫未解題做分類報告）；「矩陣補齊我想要交給其他session，例如stevenyc.huang」（矩陣層後續交給另一位使用者的 session；Blockly 教學範本由 blockly-teach 擴充）
 - 寫程式流程（`DESIGN.ast-nodes.md` 第六、七節）：UML 任務切割 → 程式骨架生成 → Block 產生迴圈（程式端算 Inventory → 過濾合法區塊 → 嚴格 Template）→ 模型僅在合法 Inventory 內做微型選擇 → 沙盒驗證 ⇄ 錯誤回饋。
+
+## 宿主接線的分工與步驟（2026-11-07，協調 session 補）
+
+現況：`FaMatrixSynth` 還沒接到前端。`floating-assistant.js`、`web-lazy/core.js` 裡都沒有它；`py_uml_pipeline_core.js` 的 `buildFromUML` 只有一個要由呼叫端傳入的 `o.Matrix` 參數，沒人傳，所以 v312／v313 帶著矩陣層程式，但使用者端沒有作用。
+
+接線步驟：
+1. 把 `renderer/src/algo/matrix_synth_core.js` 加進 `scripts/embed-code-ui.js`（內嵌區塊清單）、`build-assistant.js`、web-lazy 區塊清單（`web-lazy/manifest.json`，`node scripts/web-lazy-check.js` 要通過）。
+2. `floating-assistant.js` 的 `_codeOffline`：呼叫 `buildFromUML` 時傳 `Matrix: FaMatrixSynth` 和題目的 tests 當 `examples`；`write_code` 結果要標示用了哪一層（配方／課／Blockly 範式／矩陣層），只被範例驗證或 `ambiguous` 的標 `verified:false`，不能當成已驗證回給使用者。
+3. 真 Electron 評估：`FA_TS_DIR=/tmp/fa-ts-cache xvfb-run -a node scripts/eval/run_eval.js scripts/eval/offline-code.eval.js <空的port>`，20 題種子必須維持 20/20；再用保留題庫跑模式 A／B 看實際增益。
+4. 核心測試 `FA_TS_DIR=/tmp/fa-ts-cache node scripts/run-core-tests.js` 全過（不要用 `ulimit -v`，WASM 測試會因此失敗）。
+
+跟 blockly-teach 的分工（同一個 checkout、同一批共用檔，最容易互踩）：
+- 你只改接線那幾行（`embed-code-ui.js` 清單、`_codeOffline`、`code_agent_core.js` 的傳參）與 `renderer/src/algo/*`；不要碰 `algo_intent_core.js`、`py_paradigms_core.js`、`py_uml_pipeline_core.js`、`py_blocks_*`（blockly-teach 在改）。
+- embed／build 會改寫 `renderer/floating-assistant*.js`、`web-lazy/`，整個檔案都會變：build 前先確認 `git status` 沒有別人未提交的 `renderer/src` 變更；build 與提交盡量連續做完，不要讓半途的 build 產物留在工作樹。
+- 發布（`scripts/publish.sh`）由協調 session（hungfu.lee 帳號）統一做，因為它會 `git add -A renderer scripts web-lazy`，把工作樹裡所有未提交的東西一起發出去（v313 就因此誤發了別人做到一半的改動）。你提交完通知協調 session，等它發。
+- 若你用的是 stevenyc.huang 帳號，沒有 `ssh hungfu.lee`：提交用你自己的帳號在同一個倉庫提交（需要該目錄的寫入權限與 git `safe.directory` 設定）；做不到就把變更留在工作樹並通知協調 session 代為提交。
