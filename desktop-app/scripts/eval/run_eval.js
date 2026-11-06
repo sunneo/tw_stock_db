@@ -12,6 +12,6 @@ const ud = fs.mkdtempSync(path.join(os.tmpdir(), 'fa-eval-'));
 fs.writeFileSync(path.join(ud, 'main-ext-rev.txt'), m[1]);
 const exe = path.join(root, 'node_modules', 'electron', 'dist', process.platform === 'win32' ? 'electron.exe' : 'electron');
 const env = Object.assign({}, process.env, { FA_DISABLE_MAIN_OVERLAY: '1', FA_DEBUG_EVAL_FILE: evalFile, FA_BROWSER_CONTROL_PORT: String(process.argv[3] || 17931) });
-const r = cp.spawnSync(exe, [root, '--no-sandbox', '--disable-gpu', '--user-data-dir=' + ud], { env, encoding: 'utf8', timeout: 170000, maxBuffer: 1 << 26 });
+const r = cp.spawnSync(exe, [root, '--no-sandbox', '--disable-gpu', '--user-data-dir=' + ud], { env, encoding: 'utf8', timeout: Number(process.env.FA_EVAL_TIMEOUT_MS) || 170000, maxBuffer: 1 << 26 });
 const out = String(r.stdout || '') + String(r.stderr || '');
 out.split('\n').filter((l) => /\[eval-file\]/.test(l)).forEach((l) => console.log(l));

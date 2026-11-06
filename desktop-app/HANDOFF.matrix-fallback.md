@@ -23,12 +23,12 @@
 
 ## 4. 待辦（依序）
 
-1. **先寫設計＋涵蓋論證（不寫產品程式）**：`DESIGN.matrix-fallback.md`（繁體中文，誠實分「證明過的／實驗驗證的／推測」）。要回答：
+1. **【已完成，未提交】`DESIGN.matrix-fallback.md` 已寫（分級 L0～L6、涵蓋表、後備鏈接口、無測資方案、風險、實作契約）。以下為原要求：**`DESIGN.matrix-fallback.md`（繁體中文，誠實分「證明過的／實驗驗證的／推測」）。要回答：
    - **「所有可解問題」的定義與界線**：可計算＝圖靈機可解；停機問題等不可判定的、以及「沒有規格／範例就不知道要什麼」的需求都不可能保證涵蓋。用 `DESIGN.matrix-algorithms.md` 第 13 節的階層（控制 FSM＋矩陣 ＜ ＋計數器 ＜ ＋堆疊 ＜ ＋佇列／陣列／帶子＝圖靈完備）把題目分級，每一級對應一個矩陣層的元件與一個「保證會停」的求解策略；寫出涵蓋表（等級×元件×求解方式×是否保證會停×是否需要範例）。
    - **後備鏈與接口**：`buildFromUML` 的新順序＝配方 → 課 → Blockly 範式骨架 →（新）矩陣層 → 區塊迴圈（模型）。矩陣層的輸入＝意圖（讀取器）＋範例（題目的 `tests`、讀取器能算出的、或使用者給的）；輸出＝VM／矩陣程式 → 反編譯 → CNL → Python → 沙盒（含隱藏測資）。矩陣層內的子順序：遞推（Berlekamp–Massey→矩陣冪）→ 有限自動機（Hankel／狀態合併）→ 半環圖（路徑計數／最短路／閉包）→ VM（控制 FSM＋小矩陣＋堆疊／佇列／陣列）枚舉合成（小指令集、有預算）。
    - **使用者只有需求、沒有測資怎麼辦**：這是產品上最大的缺口。方案要寫清楚：由讀取器從敘述生成範例輸入、請使用者（卡片）確認或補期望輸出、用參考解（若有）、或標 `verified:false` 並誠實說明。不能假裝驗證過。
    - 風險與誠實的界線：範例太少會推錯、過度擬合；枚舉合成的預算與指數爆炸；可讀性（第 14 節的守則：小區塊、命名、反編譯）。
-2. **量涵蓋率的基準**：不要只靠種子 20 題。寫一組「沒見過的」題目（至少 60 題，分級：FSM／遞推／半環圖／計數器／堆疊／佇列／陣列／其他），每題有敘述、`tests`、`hidden`、參考解；分三種跑：只用 Blockly（現況）、Blockly＋矩陣層、全部加模型（沒有模型時跳過）。輸出涵蓋矩陣（每級題數、解出數、用到哪一層、嘗試次數、耗時）。**如實列出解不出的與原因**。放在 `renderer/src/recipe/seed/` 或新資料夾（先看現有 `problems.jsonl` 格式，沿用）。
+2. **【進行中】量涵蓋率的基準。題庫已寫完（60 題，未提交）：`scripts/eval/gen_bench_*.py`（共用 `bench_lib.py`；答案由 ref 執行得出）→ `renderer/src/recipe/seed/bench_L1_L2.jsonl`、`bench_L3_L4.jsonl`、`bench_L0_L5_L6.jsonl`、`bench_extra.jsonl`（L0:6 L1:8 L2:8 L3:8 L4:10 L5:7 L6:9 other:4）。【下一步】寫跑分器（Node，例如 `scripts/eval/bench_coverage.js`，仿 `scripts/eval/offline-code.eval.js` 的做法，用 judge-core 當 judge），只跑模式 A＝Blockly 現況（buildFromUML，無 pick），輸出每級題數／解出數／用到哪層（recipe／lesson／paradigm）／tried／耗時／解不出清單與原因，存成報告檔；之後矩陣層做完再加模式 B、C。原要求：**（DESIGN.matrix-fallback.md §7 有契約；分批寫題，每批 10 題一個檔，例如 `renderer/src/recipe/seed/bench_L1_L2.jsonl`，格式沿用 problems.jsonl；每題附 `level` 欄）：不要只靠種子 20 題。寫一組「沒見過的」題目（至少 60 題，分級：FSM／遞推／半環圖／計數器／堆疊／佇列／陣列／其他），每題有敘述、`tests`、`hidden`、參考解；分三種跑：只用 Blockly（現況）、Blockly＋矩陣層、全部加模型（沒有模型時跳過）。輸出涵蓋矩陣（每級題數、解出數、用到哪一層、嘗試次數、耗時）。**如實列出解不出的與原因**。放在 `renderer/src/recipe/seed/` 或新資料夾（先看現有 `problems.jsonl` 格式，沿用）。
 3. **實作矩陣層後備**：新檔（純函式 UMD）例如 `renderer/src/algo/matrix_synth_core.js`（從範例合成矩陣／VM 程式）＋接進 `py_uml_pipeline_core.js` 的 `buildFromUML`（在範式骨架之後、區塊迴圈之前，回傳結果加 `matrix:{kind, size, tried}`）；反編譯用 `matrix_decompile_core.js`；先把待辦 2 的基準跑出「Blockly 解不出、矩陣層能解」的題目，逐級做，每做一級就跑核心測試與基準。每級要有：隨機輸入對照參考解的測試、沙盒驗證、錯誤範例（過度擬合）的防護（隱藏測資、範例切分驗證：用一部分範例推、另一部分驗證）。
 4. **宿主接線與真 Electron 評估**：`_codeOffline` 走新的後備鏈（沒有模型也能走），`write_code` 結果要標清楚用了哪一層；`scripts/eval/offline-code.eval.js` 擴充；`embed-code-ui.js` 嵌入新模組（記得：改嵌入區塊要改來源檔，不要直接改 `floating-assistant.js`）；`xvfb-run -a node scripts/eval/run_eval.js <評估檔> <埠>`。
 5. 文件與收尾：`DESIGN.TODO.md` 現況總覽一列、`DESIGN.ast-nodes.md`（新增 7.5 或指向新文件）、`STATUS.md`；`node scripts/embed-code-ui.js && node build-assistant.js`；`FA_TS_DIR=/tmp/fa-ts-cache node scripts/run-core-tests.js` 全過。**不提交發布，除非使用者說「提交並發布」。**
@@ -41,7 +41,7 @@
 - 有多少 release 多少；下載與安裝先取得同意並列出檔名、來源、大小；**不使用埠 17923**；版號單調遞增。
 - 提交與發布一律用 `hungfu.lee`（`ssh hungfu.lee@127.0.0.1`，cd 到同資料夾）；建置要先用自己的帳號做完再 `scripts/publish.sh -m "…" --skip-build --no-web`（帶 `PUBLISH_TRAILER="Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"`）；`publish.sh` 會把 `renderer`／`scripts`／`web-lazy` 三個資料夾裡所有改動一起提交，發布前先看 `git status`；根目錄的檔案（`main-ext.js`、文件）要另外先提交。
 - 只有使用者說「提交並發布」才提交發布（他曾經誤把這句送給子工作階段，發布前先確認沒有別的工作階段已經在發）。
-- **週額度 84%（交接時）：到 88% 就停手、寫交接，不要硬做**；背景的大量真模型評測會吃額度，能用純函式與假資料驗證的就不要用真模型。
+- **週額度規則（2026-11-06 更新，取代舊的「84%→88% 就停手」）**：平時（週六 07:00 CST 週額度重置後，到下週五 19:00 前）週額度到 88% 就停手、寫交接、不要啟動接手者（等使用者續）；**只有「週五 19:00 → 週六 07:00（CST）」可以放心用光週額度**（可跑真模型評測與較大基準）。判斷用 `date` 查本機時間；5 小時額度到上限會自己暫停，再繼續即可。context 到 30% 仍照交接程序交給接手者。
 
 ## 6. 使用者原話（逐字，附日期）
 
@@ -50,11 +50,12 @@
 - 2026-11-06（Blockly writer）：「接著完成 offline model的DESIGN.TODO的block writer的項目 範式骨架庫(每個範式一個帶槽位的區塊谷架) 寫程式的離線組合(uml_design、課、區塊迴圈、沙河)接進wrie_code」；「先做一個程式語言，第二步是做llvmir，然後llvm ir => code gen」；多領域：「接著是要多領域的block-writer，像是數位訊號處理的演算法」「影像處理的演算法」「分散式運算、平行運算的演算法」「虛擬化設計概念的演算法」「尋求問題並接起現有應用的演算法呢?例如螞蟻演算法，貪婪演算法」「平行運算與同步的演算法也要」「記憶體配置是屬於...? 樹狀節點與平衡嗎」；「應該是blockly writer」；「block-writer整合到write-code完成了嗎，完成了可以先發布」（已發布 v311）；「例如增修功能 block-writer有具備從現有的code走tree sitter，反射到blockly，來支援code edit嗎?」
 - 2026-11-06：「上述是實現的順序的宣告，請依序完成」（接在上面那句 blockly-writer -> matrix-algorithms 之後）
 - 2026-11-05：「可以都完工再來發布」、「提交並發布」（發布只在他明確說這句時才做）
+- 2026-11-06（週額度規則，三則）：「週額度要重啟了，請放心用光」；「這個週額度可以用光的規則僅用於禮拜五晚上7點後」；「平時禮拜六七點後，到隔週的禮拜五晚上七點前，不能這樣做」
 - 寫程式流程（`DESIGN.ast-nodes.md` 第六、七節，使用者逐字重點）：UML 任務切割 → 程式骨架生成（Boilerplate）→ 進入 Block 產生迴圈〔① 程式端計算當前 Symbol Table（Inventory）② 用 Inventory 過濾合法區塊選項 ③ 套嚴格 Template（For／While 結構防呆）〕→ 模型僅在合法 Inventory 內做微型選擇 → 沙盒編譯驗證 ⇄ 錯誤回饋。
 
 ## 7. 交接程序（自我遞迴）
 
-執行 low-context-long-run 技能，門檻 30%（`mcp__ccd_session_mgmt__get_usage`，只在一個完成的工作單位之後檢查）；**週額度到 88% 就停手**，把狀態寫進本檔與 `STATUS.md`，不要啟動接手者（等額度重置再由使用者續）。到 context 門檻而額度還夠：改寫這份文件（保留逐字使用者原話）→ 提交（`ssh hungfu.lee@127.0.0.1`，只加自己的檔案）→ `mcp__ccd_session__start_session`（`user_asked`、`fresh`、同資料夾、標題「matrix-fallback · handoff N」）→ 等接手者確認 → `mark_completed` 再 `archive_session`（被拒就停，告訴使用者）。待辦清空且驗證完就不要再交接，直接報告完成。
+執行 low-context-long-run 技能，門檻 30%（`mcp__ccd_session_mgmt__get_usage`，只在一個完成的工作單位之後檢查）；**週額度規則見 §5（平時 88% 停手、不啟動接手者）**，把狀態寫進本檔與 `STATUS.md`，不要啟動接手者（等額度重置再由使用者續）。到 context 門檻而額度還夠：改寫這份文件（保留逐字使用者原話）→ 提交（`ssh hungfu.lee@127.0.0.1`，只加自己的檔案）→ `mcp__ccd_session__start_session`（`user_asked`、`fresh`、同資料夾、標題「matrix-fallback · handoff N」）→ 等接手者確認 → `mark_completed` 再 `archive_session`（被拒就停，告訴使用者）。待辦清空且驗證完就不要再交接，直接報告完成。
 
 ## 8. 陷阱
 
