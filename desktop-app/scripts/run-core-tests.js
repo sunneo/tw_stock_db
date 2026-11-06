@@ -38,6 +38,7 @@ const suites = [
     ['領域包 sync（同步原語事件模擬）：信號量、互斥鎖、條件變數、生產者消費者；train 全過、holdout 只量測（需 tree-sitter 快取）', 'renderer/src/uml/domain_sync.test.js'],
     ['領域包 graph2（進階圖與樹）：最小生成樹、強連通、Bellman-Ford、樹直徑、LCA、二分圖、最大流；train 全過、holdout 只量測（需 tree-sitter 快取）', 'renderer/src/uml/domain_graph2.test.js'],
     ['領域包 twofile（Linux 兩段輸入）：cat -n 兩檔、comm／diff、join、paste、cmp；train 全過、holdout 只量測（需 tree-sitter 快取）', 'renderer/src/uml/domain_twofile.test.js'],
+    ['領域包 fs（檔案系統）：FAT 簇鏈／空閒簇、inode 區塊階層與佔用區塊數；train 全過、holdout 只量測（需 tree-sitter 快取）', 'renderer/src/uml/domain_fs.test.js'],
     ['區塊的庫存與範本規則（三區、型別、終止條件、模組需求；需 tree-sitter 快取）', 'renderer/src/uml/py_blocks_rules.test.js'],
     ['UML 遞迴切割寫 body（假模型：補全式逐行、縮排結構、退回重寫、區塊版；需 tree-sitter 快取）', 'renderer/src/uml/py_body.test.js'],
     ['AST 建樹：隨機建樹與真 tree-sitter 一致、種子程式重放（需 tree-sitter 快取）', 'renderer/src/ast/ast_replay.test.js'],
