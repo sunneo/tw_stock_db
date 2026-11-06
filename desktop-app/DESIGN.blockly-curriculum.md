@@ -42,10 +42,10 @@
 | 子領域 | 狀態 | 範式／內容 | 提交 |
 |---|---|---|---|
 | CPU 排程：FCFS／SJF／SRTF／優先權／RR／MLFQ（平均等待、週轉、甘特圖） | ◐ | `os.sched-np／rr／srtf`✔；MLFQ、甘特圖✗ | 97231841 |
-| 記憶體：首次／最佳／最差配適、夥伴系統、分頁表位址轉換 | ◐ | 配適✔；夥伴系統、位址轉換✗（多矩陣輸入形狀） | 97231841 |
+| 記憶體：首次／最佳／最差配適、夥伴系統、分頁表位址轉換 | ◐ | 配適✔；分頁位址轉換✔（`os.page-translate`：輸出實體位址／框編號／位移，頁不在記憶體印標籤或 -1；train 3/3、holdout 1/1，但這題 holdout 的句型我診斷時看過，已不獨立）；夥伴系統✗ | 97231841、本批 |
 | 分頁置換：FIFO／LRU／OPT／Clock／LFU（缺頁次數） | ✔ | `os.page-replace` | 97231841 |
 | 磁碟排程：FCFS／SSTF／SCAN／C-SCAN／LOOK | ✔ | `os.disk-sched` | 97231841 |
-| 同步原語：訊號量／互斥鎖／條件變數的事件序列模擬、生產者消費者、哲學家、死結偵測（資源配置圖）、銀行家演算法 | ◐ | `domain_sync_core.js`：信號量／互斥鎖／條件變數／生產者消費者✔（train 16/16、holdout 3/4）；哲學家、死結偵測、銀行家✗（多矩陣輸入，見 HANDOFF §3b） | 本批 |
+| 同步原語：訊號量／互斥鎖／條件變數的事件序列模擬、生產者消費者、哲學家、死結偵測（資源配置圖）、銀行家演算法 | ◐ | `domain_sync_core.js`：信號量／互斥鎖／條件變數／生產者消費者✔（train 16/16、holdout 3/4）；銀行家演算法✔（`os.banker` 在 `domain_os_core.js`：安全狀態／安全序列，兩個矩陣的順序、找行程的方式、編號起點由窮舉決定；train 3/3、holdout 0/1：holdout 的第二行 Available 沒寫「m 個整數」，讀取器不知道那行有幾個數，**輸入措辭缺口**）；哲學家、死結偵測（資源配置圖）✗ | 本批 |
 | 檔案系統：inode／區塊配置、FAT 鏈、目錄解析、路徑正規化 | ✗ | | P1 |
 | 行程樹／fork 次數推算、信號傳遞序列 | ✗ | 純計算（不真 fork） | P2 |
 
@@ -98,4 +98,4 @@
 
 - 共用測試 harness：`domain_harness.js`（種子 `{id, want, st, rw, ref, gen, split}`，`split:'holdout'` 只量測；`DBG=1`／`ONLY=id,...` 環境變數除錯）。新包只要寫骨架檔＋種子檔。
 - 讀取器配套小修：字串輸入可帶名稱（「輸入一個字串 s」）、同名重複清單改名（a、b…）、「查詢字串」不再當整數、`rle-pair` 對解碼題否決、領域條目可標 `pri:true` 比內建工具詞彙（lines-map）優先。
-- 台面上還沒做：銀行家演算法／分頁位址轉換（多矩陣輸入形狀）、diff／join（兩段輸入）、同步原語事件模擬、檔案系統（inode／FAT）、程序／fd／管線／信號／socket 的語意模擬、進階圖與樹（MST、SCC、Bellman-Ford、LCA…）、資料結構的 AVL／跳躍表／稀疏表。見 `DESIGN.TODO.md`。
+- 台面上還沒做：diff／join（兩段輸入）、檔案系統（inode／FAT）、程序／fd／管線／信號／socket 的語意模擬、進階圖與樹（MST、SCC、Bellman-Ford、LCA…）、資料結構的 AVL／跳躍表／稀疏表。見 `DESIGN.TODO.md`。
