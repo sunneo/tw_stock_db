@@ -56,3 +56,4 @@
 - `bench_coverage.js` 已被 matrix-fallback-1 改成只讀 `bench_(L|extra)`／`--files`／`--set`；`bench_linux_all.jsonl` 要用 `--files` 指定。
 - 我另寫的 holdout（`holdout_blockly.jsonl`）已被看過，不再乾淨；Linux holdout 27 題不可教。
 - 內嵌指令寫修補程式會吃掉反斜線與引號：寫成檔案再跑。
+- **記憶體上限（2026-11-07 全域 OOM：某個 python3 吃到約 78GB 把 swap 用光、桌面版被重啟，swap 已縮成 4GB）**：所有 Python／評測腳本一律加上限：`systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0 <指令>`（或 `ulimit -v 16000000`）。出題器（如 `gen_holdout_blockly.py`）的 `while len(ins) < …` 在輸入空間太小時會無限重試，新寫生成器要設重試上限。
