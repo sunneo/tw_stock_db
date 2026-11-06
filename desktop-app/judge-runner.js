@@ -14,7 +14,8 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const core = require('./renderer/src/recipe/judge_core.js');
+// 根目錄的 judge-core.js 是 build-assistant.js 從 renderer/src/recipe/judge_core.js 同步產生的（熱更新只認根目錄的主行程模組）；開發時沒有就退回原檔
+const core = (() => { try { return require('./judge-core.js'); } catch (e) { return require('./renderer/src/recipe/judge_core.js'); } })();
 
 const sh = (cmd, args) => ({ cmd, args });
 // 每種語言：file（原始檔名）、compile(dir)→null 或 {cmd,args}、run(dir)→{cmd,args}、detect（版本探測）、probe（可選，真的跑一個空程式，證明這台機器跑得起來）

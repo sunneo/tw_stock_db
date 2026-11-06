@@ -51,6 +51,10 @@ const INDEX_HTML_PATH = path.join(__dirname, "renderer", "index.html");
 const UPDATE_MANIFEST_PATH = path.join(__dirname, "renderer", "update-manifest.json");
 // 可以被熱更新覆蓋的檔案：renderer 四個檔案 + 主行程「會載入到的所有本地模組」（從 main.js、main-ext.js 順著 require("./xxx.js") 一路找出來）+ preload.js。
 // 不再手動維護名單：以前新增模組要記得同步兩份名單（main.js 與這裡），忘了就會發生「模組存在、卻被當成不能覆蓋」。main.js 本身是入口，不在其中（只能靠重新安裝）。
+// judge-core.js：judge_core.js 的根目錄副本（judge-runner.js 在主行程用；熱更新只認根目錄的模組）。每次建置都從原檔重產，不手改。
+(function syncJudgeCore() {
+  try { const src = fs.readFileSync(path.join(__dirname, "renderer", "src", "recipe", "judge_core.js"), "utf8"); const out = "// 自動產生：由 build-assistant.js 從 renderer/src/recipe/judge_core.js 複製，請改原檔。\n" + src; const f = path.join(__dirname, "judge-core.js"); if (!fs.existsSync(f) || fs.readFileSync(f, "utf8") !== out) fs.writeFileSync(f, out); } catch (e) { console.warn("[build-assistant] judge-core.js 同步失敗：", e.message); }
+})();
 function collectMainModules() {
   const seen = new Set(), queue = ["main.js", "main-ext.js", "preload.js"];
   const re = /require\(\s*["']\.\/([\w.-]+\.js)["']\s*\)/g;

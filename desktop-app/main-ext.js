@@ -26,6 +26,74 @@ function register(ipcMain, ctx) {
   const overlay = installModuleOverlay(ctx); // 必須最先做：後面的 require("./computer-use-ipc.js") 之類要靠它
   const { fs, path } = ctx;
   const electron = ctx.electron || null;
+  // ---------- 判題器 IPC（寫程式／修程式；從 main.js 搬到這裡，才能用 patch 熱更新給已安裝的使用者；preload.js 的 judge 橋在白名單內）----------
+  {
+  const os = require("os");
+  // <judge-begin>
+// ---------- IPC: 判題器（寫程式／修程式：本機編譯並執行程式來驗收，judge-runner.js）----------
+// 這會在本機編譯並執行 AI 產生（或使用者貼來）的程式，所以：
+//  1) 一律要「允許AI執行程式」（execEnabled）；
+//  2) 第一次呼叫（同一個視窗、10 分鐘內沒有授權過）走既有的 execConfirmGate 跳確認框，顯示語言與程式開頭；確認後同一視窗 10 分鐘內的後續驗收（迴圈每輪都要判題）不再重複詢問；
+//  3) 輸入有上限（程式 200KB、測試筆數與大小、逾時），避免被拿來吃光資源。
+// 誠實的限制（回傳裡的 sandbox 欄位也會帶）：判題器不是安全沙盒——沒有記憶體上限、沒有檔案與網路隔離，只有時間與輸出上限與精簡環境變數。所以只該跑自己或本機模型產生的程式。
+const JUDGE_LIMITS = { sourceBytes: 200 * 1024, tests: 60, testBytes: 64 * 1024, timeoutMs: 20000, grantMs: 10 * 60 * 1000 };
+const JUDGE_SANDBOX_NOTE = "判題器不是安全沙盒：只有時間與輸出上限、精簡環境變數、獨立暫存目錄；沒有記憶體上限、沒有檔案與網路隔離。";
+const judgeGrants = new Map(); // webContents.id -> 授權到期時間
+let _judgeRunner = null;
+function judgeRunner() { if (!_judgeRunner) _judgeRunner = require("./judge-runner.js"); return _judgeRunner; }
+function judgeFail(error) { return { ok: false, error, sandbox: JUDGE_SANDBOX_NOTE }; }
+function judgeCheckLang(lang) { const R = judgeRunner(); return R.ORDER.includes(lang) ? null : `不支援的語言：${String(lang).slice(0, 30)}（支援：${R.ORDER.join("、")}）`; }
+function judgeCheckSource(source) {
+  if (typeof source !== "string") return "source 必須是字串";
+  if (Buffer.byteLength(source, "utf8") > JUDGE_LIMITS.sourceBytes) return `程式太長（上限 ${JUDGE_LIMITS.sourceBytes / 1024}KB）`;
+  return null;
+}
+function judgeCleanTests(list, name) {
+  if (list == null) return { list: [] };
+  if (!Array.isArray(list) || list.length > JUDGE_LIMITS.tests) return { error: `${name} 必須是陣列且不超過 ${JUDGE_LIMITS.tests} 筆` };
+  const out = [];
+  for (const t of list) {
+    if (!t || typeof t.in !== "string" || typeof t.out !== "string") return { error: `${name} 每筆都要有字串 in 與 out` };
+    if (t.in.length > JUDGE_LIMITS.testBytes || t.out.length > JUDGE_LIMITS.testBytes) return { error: `${name} 單筆太大（上限 ${JUDGE_LIMITS.testBytes / 1024}KB）` };
+    out.push({ in: t.in, out: t.out });
+  }
+  return { list: out };
+}
+async function judgeGate(senderId, lang, source) {
+  if (!ctx.getDesktopSettings || !ctx.execConfirmGate) throw new Error("這個版本的主程式沒有提供執行確認，無法執行判題器");
+  const exp = judgeGrants.get(senderId);
+  if (exp && exp > Date.now()) { const st = await ctx.getDesktopSettings(); if (!st.execEnabled) throw new Error("執行程式功能目前未啟用，請在Advance設定的「桌面版設定」分頁開啟「允許AI執行程式」。"); return; }
+  const head = String(source).split("\n").slice(0, 6).join("\n").slice(0, 400);
+  await ctx.execConfirmGate(`［編譯並執行 ${lang} 程式來驗收］（${JUDGE_SANDBOX_NOTE}）\n${head}${String(source).length > head.length ? "\n…" : ""}`, os.tmpdir(), senderId);
+  judgeGrants.set(senderId, Date.now() + JUDGE_LIMITS.grantMs);
+}
+ipcMain.handle("fa:judge:available", async (_evt, { lang } = {}) => {
+  try { const bad = judgeCheckLang(lang); if (bad) return judgeFail(bad); const r = await judgeRunner().available(lang); return { ok: !!r.ok, version: r.version, reason: r.reason, sandbox: JUDGE_SANDBOX_NOTE }; }
+  catch (err) { return judgeFail(String((err && err.message) || err)); }
+});
+ipcMain.handle("fa:judge:check", async (_evt, { lang, source } = {}) => {
+  try {
+    const bad = judgeCheckLang(lang) || judgeCheckSource(source); if (bad) return judgeFail(bad);
+    await judgeGate(_evt.sender.id, lang, source); // check 也會呼叫編譯器（編譯期巨集、C# 等可能執行程式碼），一樣要把關
+    return Object.assign({ sandbox: JUDGE_SANDBOX_NOTE }, await judgeRunner().check({ lang, source }));
+  } catch (err) { return judgeFail(String((err && err.message) || err)); }
+});
+ipcMain.handle("fa:judge:run", async (_evt, { lang, source, problem, timeoutMs } = {}) => {
+  try {
+    const bad = judgeCheckLang(lang) || judgeCheckSource(source); if (bad) return judgeFail(bad);
+    if (!problem || typeof problem !== "object") return judgeFail("缺少 problem（要有 id 與 tests）");
+    const t1 = judgeCleanTests(problem.tests, "tests"); if (t1.error) return judgeFail(t1.error);
+    const t2 = judgeCleanTests(problem.hidden, "hidden"); if (t2.error) return judgeFail(t2.error);
+    if (!t1.list.length) return judgeFail("tests 至少要一筆（沒有測試請改用 fa:judge:check）");
+    const clean = { id: String(problem.id || "task").replace(/[^\w.-]/g, "_").slice(0, 60) || "task", tests: t1.list, hidden: t2.list, checker: ["lines", "tokens", "float", "unordered-lines", "unordered-tokens"].includes(problem.checker) ? problem.checker : "tokens", eps: typeof problem.eps === "number" ? problem.eps : undefined };
+    const tm = Math.max(200, Math.min(JUDGE_LIMITS.timeoutMs, Number(timeoutMs) || Number(problem.timeoutMs) || 3000));
+    await judgeGate(_evt.sender.id, lang, source);
+    return Object.assign({ sandbox: JUDGE_SANDBOX_NOTE }, await judgeRunner().judge({ lang, source, problem: clean, timeoutMs: tm }));
+  } catch (err) { return judgeFail(String((err && err.message) || err)); }
+});
+  // <judge-end>
+
+  }
   // ---------- IPC: raw filesystem（完全不做root範圍檢查，2026-09-15使用者 ----------
   // 明確要求「桌面版不應該有任何限制」——這組handler直接吃使用者/AI給的
   // 絕對路徑，不透過fap_*那套「先授權root、再用相對路徑」的模型，唯一的

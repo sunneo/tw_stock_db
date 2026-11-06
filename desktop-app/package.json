@@ -36,6 +36,9 @@
       "build-config.json",
       "renderer/**/*",
       "!renderer/src/**",
+      "renderer/src/recipe/judge_core.js",
+      "!*.test.js",
+      "!judge-fixtures.js",
       "build/icon.png",
       "builtin-secrets.json"
     ],

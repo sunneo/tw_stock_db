@@ -19,6 +19,12 @@ contextBridge.exposeInMainWorld("desktopAPI", {
     isLinux: process.platform === "linux",
     isMac: process.platform === "darwin",
   },
+  // 判題器（寫程式／修程式的驗收）：在本機編譯並執行程式。需要「允許AI執行程式」，第一次會跳確認框；不是安全沙盒（回傳裡有 sandbox 說明）。
+  judge: {
+    available: (lang) => ipcRenderer.invoke("fa:judge:available", { lang }),
+    run: ({ lang, source, problem, timeoutMs } = {}) => ipcRenderer.invoke("fa:judge:run", { lang, source, problem, timeoutMs }),
+    check: ({ lang, source } = {}) => ipcRenderer.invoke("fa:judge:check", { lang, source }),
+  },
   roots: {
     list: () => ipcRenderer.invoke("fa:roots:list"),
     add: (label) => ipcRenderer.invoke("fa:roots:add", { label }),
