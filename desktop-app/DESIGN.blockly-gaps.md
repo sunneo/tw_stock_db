@@ -156,7 +156,7 @@ LZMA 的 match／rep0–3／距離槽／狀態轉移機、LZMA2 區塊分塊、B
 | 輸入形狀 | 多數錯 | n＋n 行文字→`scalars:int`（grep／cat／regex／glob／pipeline／env）；`lx-vm-exec`→`scalars:int,grid`；`lx-bmp-write8`→`list`；`lx-grep-*`→`scalars:int,scalars:int`（把樣式字串當整數） |
 | 命中範式骨架 | 1（錯認那題） | 27 個範式沒有任何一個與這批題同型 |
 | 配方／課 | 0 | 配方只認運算式、單清單 max/min/sum、單字反轉 |
-| 矩陣層（模式 B） | 0 | 全部以「不是一個整數進一個整數出／輸入輸出形狀不是單行單詞」拒絕；其中 `dfa` 候選對 crc32／lz77 等「單行字串」題**嘗試過並被判題擋下**（WA／RE），沒有誤收 |
+| 矩陣層（模式 B） | 0 | 全部以「不是一個整數進一個整數出／輸入輸出形狀不是單行單詞」拒絕；其中 `dfa` 候選對 crc32、crc32-table、base64、inflate-fixed、gunzip-stored 等「單行字串」題嘗試過並被判題器擋下（RE／WA），沒有誤收 |
 | 「CNL 程式區塊」路徑 | **巢狀 `def` 被丟掉** | 實測 `程式區塊：` 含 `def f(x)…` 後只剩 `print(f(2))`（`def` 不見）——這就是 DESIGN.ast-nodes §7.3「骨架不能含 def」；閉包（`pos=[0]; def g()`）同樣；`try/except` 在 CNL 路徑保得住 |
 
 標記為 train 的 37 題可拿來教；27 題 holdout 在補完範式後用來驗證泛化（`py_paradigms.test.js` 的作法：換變數名稱＋換測資，不給課）。
