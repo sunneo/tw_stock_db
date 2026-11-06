@@ -317,3 +317,92 @@ fallback: { stage: 'reader'|'recipe'|'lesson'|'paradigm'|'matrix'|'online'|'colu
 - **Blockly 補教學（24）**：需要領域包（位元流讀取、格式解析、整數碼、分詞器、標頭組裝）：lx-xxd-reverse、lx-grep-o、lx-regex-class、lx-glob、lx-eval-rpn、lx-eval-tokenize、lx-eval-vars、lx-exec-argv、lx-exec-pipeline、lx-tar-checksum、lx-tar-offsets、lx-tar-parse、lx-crc32（Python 有 `zlib.crc32`，可直接用）、lx-lz77-decode、lx-huffman-cost、lx-bit-reader、lx-deflate-stored、lx-gunzip-stored、lx-xz-varint-dec、lx-bmp-header、lx-bmp-write24、lx-bmp-read8、lx-bmp-gray、lx-base64-decode（`base64` 模組）。
 - **第三層（2）**：lx-lzma-literals（LZMA 範圍解碼器，規格長）、lx-inflate-fixed（固定霍夫曼表，需要規格表）——題目敘述已含大部分規則，但自動從敘述組出需要外部實作參考。
 - 注意：Linux 題多半是「依規格實作」，不是「由範例推函數」，**矩陣層對它們的邊際價值很小**；估計值保守，且這 11 題做成範本後仍是手寫知識（與 Blockly 範式的差別只在入口）。
+
+## 12. 各領域矩陣化可行性與缺口（2026-11-07；只做評估，沒動核心程式）
+
+問題：資料結構、作業系統、真實 Linux programming（cat／grep／xxd／tar／gzip／xz／BMP）、演算法各領域，能不能也「矩陣化」，矩陣層還缺什麼。標記：**【實測】**＝我用現有原型或獨立腳本跑過並對照參考（腳本在 `scripts/eval/matrix_domains_exp/`）；**【既有】**＝`renderer/src/algo/*` 已有並有測試；**【推論】**＝只是推理，沒跑。先講原則：矩陣 VM 加記憶體是圖靈完備（§13 階層），所以「能不能」幾乎總是「能」；真正的問題是**可讀性、成本、能不能由範例／規格合成**。
+
+### 12.1 四個實測（驗證或推翻協調者的猜測）
+
+| 實測 | 結果 |
+|---|---|
+| **CRC32 的 GF(2) 矩陣**（`crc_gf2.py`、`crc_js.js`） | 一個位元組的更新是 GF(2) 上的仿射映射（32 維狀態＋8 維輸入＋常數）。從黑箱用單位向量探測學出 32×40 矩陣，500 個隨機字串對 `zlib.crc32` **500/500**；用現有 `matrix_forms_core.matMul` 在 `SR.count(2)` 上跑 `123456789` 得 0xCBF43926＝zlib。固定 4 位元組輸入，120 筆隨機範例的方程組秩＝33＝維度（可唯一解出矩陣，沒有真的跑消去法）。**推翻「缺 GF(2) 半環」：`SR.count(2)`（加＝XOR、乘＝AND）就是 GF(2)，現有元件夠用。**整數加法下 CRC 不線性（實測 false），必須用 GF(2)。注意：只給「整段輸入→CRC」的範例只能學固定長度；變長要有「逐位元組更新」這個步驟結構（＝Mealy／狀態轉移，見缺口 G1）。 |
+| **LRU 的置換矩陣**（`lru_dead.js`） | 槽位內容 S（k×V，0/1），查詢＝`S·e_x`（one-hot 乘矩陣，**線性的關聯查詢**），命中位置 p 之後把 S 換成置換矩陣 `P_p·S`（移到最前）；未命中＝`P_{k-1}·S` 後覆寫第 0 列。300 個隨機（容量 1～4、字母表 2～8、序列 5～34）對字典版 **300/300**。結論：資料搬移是置換矩陣、查詢是線性的；**只有「由 hit 向量取索引 p」是控制步（argmax）**，不是矩陣運算。成本是 V（鍵空間要有界，用 one-hot）。 |
+| **死結偵測＝布林閉包**（`lru_dead.js`） | 等待圖的布林半環閉包，500 個隨機有向圖對 DFS 判環：**500/500**。**踩到一個坑（已實測重現）**：`matrix_forms_core.transitiveClosure(A)` 是 `A^(2^k)`，**不含 A 本身的非 2 冪長度**，直接拿它的對角線判環錯 4/500；正確做法是 `reach=(A∨I)^(2^k)`（`boolAdj` 已含單位矩陣），再看 `A·reach` 的對角線。寫範本時照這個。 |
+| **DEFLATE 固定霍夫曼＝位元 DFA**（`huff.py`） | 固定碼表建成位元 trie：575 個狀態、288 個葉。300 個只含字面字元的小寫字串，用 zlib `Z_FIXED` 壓縮後，DFA 逐位元解出與原文一致 **300/300**（這 300 串都沒有 LZ77 匹配；含匹配的情況沒測，推論需要視窗陣列）。所以霍夫曼解碼＝有輸出的 DFA（Mealy）；長度／距離符號之後的「往回複製」要**陣列記憶體（視窗）**，DFA 做不到。 |
+
+### 12.2 逐領域逐子領域
+
+矩陣形式縮寫：**SR**＝半環矩陣（count／bool／min-plus／max-plus）、**DFA**＝自動機轉移矩陣、**Mealy**＝有輸出的轉換器、**LIN**＝線性映射（整數或 GF(2)）、**VM**＝控制 FSM＋小矩陣＋堆疊／佇列／陣列的矩陣 VM。
+
+**資料結構**
+
+| 子領域 | 矩陣形式 | 現有 | 缺什麼 |
+|---|---|---|---|
+| 堆疊、佇列 | VM（push／pop、enq／deq） | 【既有】`matrix_vm_core` 的 `push pop enq deq jqe`，`bracketsVM` 等 | 無 |
+| 陣列、區間和／前綴和 | LIN（前綴和＝下三角全 1 矩陣）／VM 陣列 | 【既有】`oneHotMemVM`、`range-sum` 種子 | 無 |
+| 並查集 | VM（陣列＋迴圈） | 【既有】`unionFindVM`、`pointerJumpVM`（布林矩陣冪做指標跳躍） | 無 |
+| Trie／字典樹 | DFA（trie 就是 DFA） | 【實測】霍夫曼 trie 575 狀態 DFA 正確；【既有】`kmpDFA`、`dfaMatrices` | 由一組字串自動建 trie→DFA 的合成器（簡單，沒寫） |
+| BIT／線段樹 | VM（陣列＋位元運算迴圈） | 【推論】陣列有、`iarith` 只有 `+ - >>1` | **缺整數運算元：`& | ^ << %  //`**（`lowbit`、取模、除法） |
+| 堆／優先佇列 | VM（陣列＋索引運算） | 【既有】`kth-largest` 種子 | 同上（`//2` 可用 `>>1`；比較交換有 `jlt`） |
+| 雜湊表 | VM（陣列＋`%` ＋鏈／探測）；鍵空間有界時是 one-hot 關聯記憶體 | 【實測】one-hot 查詢是線性的（LRU 實驗） | 缺 `%`（同上）；**不需要新「關聯記憶體」元件**，成本是鍵空間大小 |
+| 樹（BST／AVL）、鏈結串列、圖的指標 | VM 陣列當堆（child／next 索引陣列＋空閒串列） | 【推論】陣列＋`get/set` 夠，`pointerJumpVM` 是同構概念 | **不是缺元件而是缺「配置」慣例**：結點配置（free list）、遞迴改顯式堆疊（VM 有 push／pop）。可讀性差（§14 守則要靠反編譯成類別／結構體的 UML）。協調者猜「雜湊／樹／指標需要新元件」**部分推翻**：圖靈完備的 VM 已能表達，缺的是整數運算元與配置慣例、以及可讀的反編譯。 |
+
+**作業系統**
+
+| 子領域 | 矩陣形式 | 現有 | 缺什麼 |
+|---|---|---|---|
+| 排程（FCFS／RR／優先權） | VM（佇列＋計數器） | 【既有】`enq deq`；`seq.cmd-sim` 範式 | 時間片模擬的範本 |
+| LRU／FIFO 頁面置換 | 置換矩陣＋one-hot 查詢 | 【實測】LRU 300/300 | 把 hit 向量轉索引（控制步）要放進 VM 範本；FIFO 是環形移位矩陣 |
+| 死結偵測 | SR（bool 閉包） | 【實測】500/500；【既有】`transitiveClosure`（坑：見上） | 修正版閉包函式（`A·reach` 對角線）；銀行家演算法是迴圈＋比較（VM，無新元件） |
+| 同步（信號量／互斥／生產者消費者） | 計數器＋佇列的 VM；**Petri 網＝count 半環線性：`M' = M + C·f`** | 【推論】VM 有計數；沒有 Petri 網 | Petri 網／向量加法系統模擬器（給定發射序列是純矩陣乘）；「是否可能死結／互斥是否成立」是可達性＝乘積狀態空間上的 bool 閉包（指數大小，只能小系統） |
+| 記憶體配置器（first／best-fit、buddy） | VM 陣列＋掃描迴圈 | 【推論】 | 整數運算元（`& ^ >>`，buddy 要）；沒有新元件 |
+| 檔案系統／inode／路徑解析 | 樹（同上）＋字串 DFA | 【推論】 | 與資料結構「樹」同 |
+| **exec／fork／系統呼叫／I/O 副作用** | **不能矩陣化**（外部世界的副作用） | — | 只能矩陣化其純函式部分（參數解析 DFA、管線資料流）；真正的 syscall 留在宿主，不是矩陣層的事。**明說：不可行。** |
+
+**真實 Linux programming**
+
+| 子領域 | 矩陣形式 | 現有 | 缺什麼 |
+|---|---|---|---|
+| cat -n／-A、grep（固定字串、-i、-n）、tr 類逐行處理 | DFA／Mealy（逐行；grep 固定字串＝KMP DFA）＋行號計數器 | 【既有】`kmpDFA`；`synthDFA` 只輸出是／否／整數 | **G1 Mealy**、**G5 輸入形狀（首行 n＋n 行文字）** |
+| grep -o／glob／簡單 regex | DFA（regex→NFA→DFA 子集構造；glob 是特例） | 【既有】`dfaToRegex` 是反方向；`matrix_forms` 有 DFA 工具 | **regex／glob→DFA 編譯器**（由規格而非範例，G6） |
+| xxd（編碼／位元表示／反向）、base64、endian pack | 位元組→定寬輸出的 Mealy／LIN（查表）；endian＝定寬切片的整數 LIN（權重 256^i，**【實測】BMP 欄位 `Σ byte_i·256^i` 對 `int.from_bytes` 一致**） | 【既有】無 Mealy | **G1 Mealy、G4 位元組／十六進位輸入形狀**、定寬切片範本 |
+| tar（標頭欄位、位移、checksum） | 欄位＝定寬切片 LIN；checksum＝全部位元組求和＝count 半環的一列全 1 內積；位移＝前綴和（LIN） | 【推論】 | 八進位／十進位格式化需要 `%`、`//`（**G3 整數運算元**）；512 補齊＝`ceil` |
+| BMP（標頭解析、寫 24 位元、灰階、列由下到上） | 欄位＝定寬切片 LIN；灰階＝像素 3→1 的 LIN（權重）；列順序反轉＝置換矩陣；寫檔＝串接（Mealy） | 【推論】 | G4、G3（取整）；置換矩陣可直接用 |
+| CRC32／Adler-32 | **CRC32＝GF(2) 仿射映射【實測】**；Adler-32＝count 半環取模的線性遞推（`a`、`b` 兩個狀態）【既有】`synthRecurrence` 同族 | `SR.count(2)`、`matMul` | G1（逐位元組更新的轉移結構才能做變長）；**由規格合成**：敘述給了多項式／初值，合成器要能把「位元運算步驟」**符號執行**成矩陣（探測法需要黑箱＝先有程式，等於從 Python 反推矩陣；沒有參考程式時要自己寫位元步驟，這是 G6） |
+| DEFLATE（stored、固定霍夫曼、LZ77、位元讀取器） | stored＝切片；位元讀取器＝低位先讀的 Mealy；霍夫曼解碼＝位元 DFA【實測 300/300】；LZ77 往回複製＝**需要視窗陣列（VM 陣列）** | 【既有】VM 陣列 | G1、G4、G7（動態霍夫曼表要先建表＝演算法計算，不是定表） |
+| xz／LZMA（varint、delta、範圍解碼器） | varint＝有計數器的 Mealy（累加位移）；delta＝視窗線性（`out[i]=in[i]+out[i-d] mod 256`）；LZMA 範圍解碼＝帶自適應機率的狀態機（機率表是可變陣列） | 【推論】 | G1、G3（`>>`、`&`、乘法移位）、可變陣列（VM 有） |
+| 管線（`upper｜rev｜sort｜uniq`）、argv 解析（引號／跳脫） | 管線＝Mealy／函數的合成（轉換器可串接，矩陣＝直和／乘積）；引號解析＝DFA（含跳脫狀態）＋輸出 | 【推論】 | G1；規格寫在敘述裡，需要「由規格合成」G6 |
+| exec／環境變數／實際進程 | 不可行（副作用） | — | 同 OS：明說不可行 |
+
+**演算法各領域**
+
+| 子領域 | 矩陣形式 | 現有 |
+|---|---|---|
+| DP（硬幣、背包、LIS、格子） | (min,+)／(max,+)／count 半環；格子最短路 | 【既有】`coinMinPlus`、`gridShortestMinPlus`、`lis`、`knapsack` 種子 |
+| 圖（可達、最短路、成分、路徑計數、環） | 布林／min-plus／count 半環閉包 | 【既有】`transitiveClosure`、`minPlusClosure`、`floyd`、`componentsViaClosure`（**輸入形狀 G5 沒接，所以 held-out L3 5 題全沒解**） |
+| 數論（遞推、快速冪、gcd、質數、模運算） | count 半環＋`matPow`；遞推用 Berlekamp–Massey | 【既有】`synthRecurrence`、`berlekampMassey`、`gcdVM`、`primeCountProgram`；`iarith` 缺 `%`／`//`（G3）影響 φ、進位轉換、完全數 |
+| 字串（模式、取模、計數） | DFA／Hankel 學習 | 【既有】`synthDFA`、`learnDFA`、`hankel`；轉換類（RLE 解碼、凱薩）要 Mealy（G1） |
+| 排序／搜尋／二分 | VM（比較交換網路 `bitonicVM`、`lowerBoundVM`） | 【既有】 |
+| 解析／文法（LR、CYK、括號巢狀） | 堆疊 VM／LR 表矩陣 | 【既有】`lrDriveByMatrix`、`cfgRecognize`、`bracketsVM`；巢狀展開（`3[ab]`）要有輸出的 PDA（Mealy＋堆疊，G1） |
+| 模擬（約瑟夫、佇列題） | VM 佇列／陣列 | 【既有】`enq deq`；範本沒有 |
+| 浮點／幾何／優化／啟發式（螞蟻、貪婪） | 線性代數部分可矩陣化；隨機／搜尋不是矩陣的事 | 【推論】矩陣層不負責 |
+
+### 12.3 缺口清單（矩陣補齊的待辦，依價值排序）
+
+| # | 缺口 | 內容 | 現況／證據 | 影響題 |
+|---|---|---|---|---|
+| **G5** | **輸入形狀前端** | 把敘述＋範例的輸入區轉成矩陣層的輸入：邊表、格子、n＋清單、逐行文字、十六進位位元組串 | `inferShape` 只認單行單詞（§9.7：held-out L3 5 題、transpose 因此全沒解） | held-out +6 題、Linux 11 題 |
+| **G1** | **Mealy 轉換器**（有輸出的機器） | DFA 加輸出函數；變長 CRC／霍夫曼／varint／base64／RLE／xxd／管線都需要 | 現有 `synthDFA` 只輸出是／否／整數；**【實測】霍夫曼 trie 與 CRC 逐位元組更新都是 Mealy** | Linux 約 10 題＋字串轉換題 |
+| **G3** | **VM 的整數運算元** | `iarith` 只有 `+ - >>1`；缺 `* // % & | ^ <<` | 影響 φ、進位轉換、完全數、tar 八進位、BIT、buddy | held-out L4 約 4 題 |
+| **G6** | **由規格而非範例合成** | 敘述給出多項式／格式／文法（CRC、tar、xz、regex／glob）；要把規格編譯成矩陣／DFA，不能只靠範例（會過度擬合或根本學不出變長結構） | 無；CRC 探測法需要黑箱 | Linux 規格型題（約 20 題） |
+| G4 | 位元組／位元級輸入輸出 | 十六進位字串→位元組向量→位元流（低位先讀）；輸出反向 | 無 | Linux 約 15 題 |
+| G2 | **GF(2) 半環** | **已存在**：`SR.count(2)`；缺的是範本與合成器（用單位向量探測、高斯消去由範例解線性映射） | 【實測】`crc_js.js` | CRC 類 |
+| G7 | 可變／動態表（動態霍夫曼建表、LZMA 機率表） | VM 陣列夠，缺範本 | 【推論】 | DEFLATE 動態 |
+| G8 | 閉包函式修正版 | `transitiveClosure` 只給 `A^(2^k)`；加 `reflexiveReach` 與 `hasCycle`＝`A·reach` 對角線 | 【實測】錯 4/500 | 圖題、死結 |
+| G9 | Petri 網／向量加法系統模擬器 | count 半環線性 `M'=M+C·f` | 【推論】 | OS 同步 |
+| G10 | 結點配置慣例＋可讀反編譯（樹／鏈結／雜湊） | VM 陣列堆＋free list；反編譯回結構體 UML | 【推論】 | 資料結構樹類 |
+
+**推翻／修正協調者的猜測**：①「缺 GF(2) 半環」——**推翻**，`SR.count(2)` 就是；②「雜湊表／樹／指標需要新的關聯記憶體／指標堆元件」——**部分推翻**，one-hot 查詢是線性的（LRU 實測）、陣列堆已夠，缺的是整數運算元（G3）與配置慣例／可讀性（G10）；③「死結偵測是布林閉包」——**成立，但現成 `transitiveClosure` 直接用會錯**（G8）；④「exec／系統呼叫在矩陣之外」——**成立**；⑤「CRC32 是 GF(2) 真矩陣」——**成立**（實測），但變長要 Mealy／逐位元組結構，且需要規格（G6）；⑥「DEFLATE 要位元讀取器＋霍夫曼查表」——**成立**，霍夫曼解碼是位元 DFA（實測），LZ77 往回複製需要視窗陣列；⑦「輸入形狀前端」「由規格合成」——**成立且是最大的兩項**：現有矩陣層對 held-out／Linux 題的失敗大多是這兩個，不是矩陣表達力不夠。
+
+**可行性結論（誠實）**：表達力上，資料結構／OS／演算法／Linux 的純計算部分都能矩陣化（有 3 個實測加既有原型支持）；不可行的是副作用（exec／系統呼叫／I/O）。**真正的瓶頸不是矩陣，而是「從敘述與少量範例推出該用哪個矩陣」**（G5、G6）與可讀性（G10、反編譯）。矩陣層補齊的順序建議：G5 → G8＋L3 半環範本 → G3 → G1 → G4 → G6。這些都沒實作，增益是預估。

@@ -40,6 +40,8 @@
 8. **第三層介面**：Blockly＋矩陣層都解不出時「上網找答案、湊 CoLU、或等補教學」（DESIGN §10；`catalog_discover` 已實作探索端，介面實作待做）。優先對象：Linux 題中的 lx-lzma-literals、lx-inflate-fixed 這類依規格實作的題目。
 9. 文件收尾：`DESIGN.TODO.md` 現況一列、`DESIGN.ast-nodes.md`、`STATUS.md`；`FA_TS_DIR=/tmp/fa-ts-cache node scripts/run-core-tests.js` 全過。
 
+**領域矩陣化缺口（2026-11-07，DESIGN §12，附實測腳本 `scripts/eval/matrix_domains_exp/`）**——矩陣補齊的待辦清單，建議順序 G5 → G8＋L3 半環範本 → G3 → G1 → G4 → G6：G5 輸入形狀前端（邊表／格子／逐行／十六進位）；G8 修 `transitiveClosure`（只給 `A^(2^k)`，判環要 `A·((A∨I)^(2^k))` 的對角線）；G3 VM 整數運算元（`iarith` 只有 `+ - >>1`，缺 `* // % & | ^ <<`）；G1 Mealy 轉換器（有輸出的自動機；CRC 逐位元組、霍夫曼、varint、base64、RLE、管線）；G4 位元組／位元級 I/O；G6 由規格而非範例合成（CRC 多項式、tar／xz 格式、regex／glob→DFA）；G2 GF(2) 已有（`SR.count(2)`，缺範本）；G7 動態表、G9 Petri 網、G10 結點配置慣例與可讀反編譯。實測：CRC32 GF(2) 矩陣 500/500、LRU 置換矩陣 300/300、死結布林閉包 500/500（修正版）、固定霍夫曼位元 DFA 300/300；exec／系統呼叫等副作用不可矩陣化。
+
 不屬於矩陣層、已交給 blockly-teach：held-out 27 題中的 17 題缺範式（清單在 DESIGN §9.7 A②，含兩題「配方／課 WA 擋住後備」與兩題讀取器沒讀出意圖）。
 
 ## 5. 環境與陷阱
