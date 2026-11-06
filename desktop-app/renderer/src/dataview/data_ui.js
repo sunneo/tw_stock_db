@@ -58,6 +58,9 @@
         const st = { fmt, mode: isXlsx ? 'viewer' : 'source', q: '', hits: [], hi: -1, expanded: null, sel: null, data: undefined, parsed: null, tables: null, ai: [], aiOpen: false, extraSheets: [], sheets: [], si: 0 };
         if (isXlsx) { st.sheets = opts.sheets.map((s) => ({ name: s.name, columns: s.columns, rows: s.rows, kind: 'data', sort: null, colW: [] })); st.parsed = { ok: true, data: null }; }
         const pre = isXlsx ? { text: '', pretty: false } : C.prettyIfMinified(text0, fmt); const text = pre.text; const lines = isXlsx ? [] : text.split('\n').map((l) => l.replace(/\r$/, '')); if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
+        // 超大 JSONL（行數多）：Source 照常（虛擬捲動），Viewer／表格只解析一個視窗（一批 JSONL_WINDOW 筆，可前後翻批）；匯出才解析整份
+        const LARGE = fmt === 'jsonl' && lines.length > C.LARGE_JSONL_LINES; st.win = { from: 0, to: 0, stack: [] };
+        let maxLenCache = -1; const maxLineLen = () => (maxLenCache >= 0 ? maxLenCache : (maxLenCache = lines.reduce((m, l) => (l.length > m ? l.length : m), 0))); // 最長行只算一次（以前每次捲動都掃全部行）
         let tok = null; const getTokAll = () => tok || (tok = (lines.length <= 40000 ? C.highlight(lines.join('\n'), fmt) : C.highlight(lines.slice(0, 40000).join('\n'), fmt).concat(lines.slice(40000).map((l) => [{ c: 'x', t: l }]))));
         const rootEl = h('div', { class: 'fdv' + (pal.dark === false ? ' light' : '') });
         const title = h('span', { class: 'ttl', text: isXlsx ? 'XLSX · ' + (opts.name || '') : FMT_LABEL[fmt] + ' · ' + lines.length.toLocaleString() + ' 行 · ' + fmtSize(text0.length) + (pre.pretty ? ' · 已排版' : '') });
@@ -65,7 +68,8 @@
         const qin = h('input', { class: 'q', placeholder: '🔎 搜尋…', type: 'text' }); const cnt = h('span', { class: 'cnt' });
         const bPrev = h('button', { text: '◂', title: '上一個 (Shift+Enter)' }), bNext = h('button', { text: '▸', title: '下一個 (Enter)' });
         const bExp = h('button', { text: 'Export ▾', title: '匯出成別的格式' }), bAi = h('button', { text: '🤖 Ask AI', title: '用一句話問你想要什麼資料' });
-        const bar = h('div', { class: 'bar' }, title, h('span', { class: 'seg' }, bSrc, bView), qin, bPrev, bNext, cnt, h('span', { class: 'sp' }), bExp, bAi);
+        const bWinPrev = h('button', { text: '◂ 上一批', title: '大檔：上一批資料（Viewer／表格一次只載入一批）' }), bWinNext = h('button', { text: '下一批 ▸', title: '大檔：下一批資料' }); bWinPrev.style.display = bWinNext.style.display = 'none';
+        const bar = h('div', { class: 'bar' }, title, h('span', { class: 'seg' }, bSrc, bView), qin, bPrev, bNext, cnt, bWinPrev, bWinNext, h('span', { class: 'sp' }), bExp, bAi);
         const errbar = h('div', { class: 'errbar' }); errbar.style.display = 'none';
         const tabs = h('div', { class: 'tabs' }); tabs.style.display = 'none';
         const sc = h('div', { class: 'sc' }); const winEl = h('div', { class: 'win' }); sc.append(winEl);
@@ -80,12 +84,14 @@
         let depsP = null; const deps = () => depsP || (depsP = Promise.resolve(host.deps ? host.deps() : {}).catch(() => ({})));
         async function ensureParsed() {
             if (st.parsed) return st.parsed;
-            const d = fmt === 'yaml' ? await deps() : {}; st.parsed = C.parse(text0, fmt, d);
+            const d = fmt === 'yaml' ? await deps() : {};
+            if (LARGE) { const w = C.parseJsonlWindow(lines, st.win.from, C.JSONL_WINDOW); st.win.to = w.to; st.parsed = { ok: true, data: w.data, badLines: w.bad, windowed: true }; } else st.parsed = C.parse(text0, fmt, d);
             if (st.parsed.ok) {
                 st.data = st.parsed.data;
                 const pp = st.parsed, notes = [];
                 if (pp.asJsonc) notes.push('這份 JSON 含註解／尾逗號，以 JSONC 解析');
                 if (pp.comments) notes.push('含 ' + pp.comments + ' 則註解，Viewer 看不到，Source 可看；匯出的 JSON／JSONL 不含註解');
+                if (pp.windowed) notes.push('大檔（' + lines.length.toLocaleString() + ' 行）：Viewer／表格只載入第 ' + (st.win.from + 1).toLocaleString() + '～' + st.win.to.toLocaleString() + ' 行（用上方的 ◂ ▸ 翻批）；Source 與匯出是整份');
                 if (pp.badLines && pp.badLines.length) notes.push('共 ' + lines.length.toLocaleString() + ' 行，' + pp.badLines.length + ' 行無法解析（第 ' + pp.badLines.slice(0, 5).map((b) => b.line).join('、') + (pp.badLines.length > 5 ? '…' : '') + ' 行：' + pp.badLines[0].message + '）；壞行在 Viewer 以 _bad_line 記錄顯示');
                 if (notes.length) { errbar.style.display = ''; errbar.textContent = 'ℹ ' + notes.join('；'); }
                 if (!isTable) st.expanded = C.defaultExpanded(st.data, lines.length > 5000 ? 1 : 2, 3000);
@@ -93,7 +99,11 @@
             } else { errbar.style.display = ''; errbar.textContent = '⚠ ' + (st.parsed.error.line ? '第 ' + st.parsed.error.line + ' 行' + (st.parsed.error.col ? ' 第 ' + st.parsed.error.col + ' 欄' : '') + '：' : '') + st.parsed.error.message + '（仍可看 Source、搜尋；Viewer、Export 需要先修正格式）'; }
             return st.parsed;
         }
-        ensureParsed().then(() => { if (st.parsed && !st.parsed.ok) { bView.disabled = true; bView.title = st.parsed.error.message; } buildTabs(); render(); }).catch(() => {});
+        // 超大檔的批次：Viewer 模式才顯示 ◂ ▸；翻批＝換一個視窗重新解析（Source 與匯出是整份，不受影響）
+        const syncWin = () => { const on = LARGE && st.mode === 'viewer'; bWinPrev.style.display = bWinNext.style.display = on ? '' : 'none'; bWinPrev.disabled = !st.win.stack.length; bWinNext.disabled = !st.win.to || st.win.to >= lines.length; };
+        async function moveWin(dir) { if (dir > 0) { if (st.win.to >= lines.length) return; st.win.stack.push(st.win.from); st.win.from = st.win.to; } else st.win.from = st.win.stack.pop() || 0; st.parsed = null; st.tables = null; st.data = undefined; st.sel = null; gridRows = null; sc.scrollTop = 0; errbar.style.display = 'none'; await ensureParsed(); syncWin(); buildTabs(); render(); }
+        bWinPrev.onclick = () => moveWin(-1); bWinNext.onclick = () => moveWin(1);
+        ensureParsed().then(() => { if (st.parsed && !st.parsed.ok) { bView.disabled = true; bView.title = st.parsed.error.message; } syncWin(); buildTabs(); render(); }).catch(() => {});
 
         // ---- 工作表頁籤（表格類；只有一張也顯示，AI 的回答會變成另一張）
         function buildTabs() {
@@ -132,7 +142,7 @@
                 const errLine = st.parsed && !st.parsed.ok && st.parsed.error.line ? st.parsed.error.line - 1 : -1;
                 for (let i = a; i < b; i++) html += '<div class="row' + (i === errLine ? ' err' : '') + '" style="top:' + i * LH + 'px;height:' + LH + 'px"><span class="ln">' + (i + 1) + '</span><span class="code">' + tokHtml(all[i] || [], i) + '</span></div>';
                 winEl.innerHTML = html;
-                const maxLen = lines.reduce((m, l) => (l.length > m ? l.length : m), 0); winEl.style.minWidth = 'calc(' + Math.min(maxLen, 4000) + 'ch + ' + (GUTTER + 30) + 'px)';
+                const maxLen = maxLineLen(); winEl.style.minWidth = 'calc(' + Math.min(maxLen, 4000) + 'ch + ' + (GUTTER + 30) + 'px)';
             } else if (isTable) renderGrid(top, vh);
             else {
                 if (!st.data && st.data !== null) { winEl.innerHTML = '<div style="padding:10px;color:var(--mut)">解析中…</div>'; return; }
@@ -188,7 +198,7 @@
             if (m === 'viewer' && st.parsed && !st.parsed.ok) return; if (m === 'source' && isXlsx) return;
             st.mode = m; bSrc.classList.toggle('on', m === 'source'); bView.classList.toggle('on', m === 'viewer'); bCopy.style.display = 'none'; pathEl.textContent = '';
             gridRows = null; sc.scrollTop = 0; buildTabs(); runSearch(true);
-            ensureParsed().then(() => { buildTabs(); render(); });
+            ensureParsed().then(() => { syncWin(); buildTabs(); render(); });
         }
         bSrc.onclick = () => setMode('source'); bView.onclick = () => setMode('viewer');
 
@@ -225,20 +235,23 @@
         const baseName = (opts.name || 'data').replace(/\.[^.]+$/, '') || 'data';
         const note = (m) => { const o = foot.querySelector('.note'); if (o) o.remove(); const s = h('span', { class: 'note', text: m }); foot.append(s); setTimeout(() => s.remove(), 4000); };
         const rowsToObjects = (t) => t.rows.map((r) => { const o = {}; t.columns.forEach((c, i) => { o[c] = r[i] === undefined ? '' : r[i]; }); return o; });
-        function allSheets() {
+        function allSheets(full) {
             if (isTable) return st.sheets.map((s) => ({ name: s.name, columns: s.columns, rows: s.rows, kind: s.kind }));
+            if (full && full.ok) { st.fullTables = st.fullTables || C.toTables(full.data, { rootName: 'data' }); return st.fullTables.sheets.concat(st.extraSheets); } // 大檔匯出：用整份，不是目前這一批
             if (!st.tables) { const p = st.parsed; st.tables = p && p.ok ? C.toTables(p.data, { rootName: 'data' }) : { sheets: [] }; }
             return st.tables.sheets.concat(st.extraSheets);
         }
         async function doExport(kind, arg) {
             try {
-                const p = await ensureParsed(); if (!p.ok) { note('格式有錯，先修正才能匯出'); return; } const d = await deps(); const data = p.data;
+                let p = await ensureParsed(); if (!p.ok) { note('格式有錯，先修正才能匯出'); return; } const d = await deps();
+                if (LARGE && kind !== 'jsonl') { note('大檔：正在解析整份（' + lines.length.toLocaleString() + ' 行）…'); await new Promise((r) => setTimeout(r, 30)); st.full = st.full || C.parse(text0, 'jsonl', d); p = st.full; if (!p.ok) { note('整份解析失敗'); return; } }
+                const data = p.data;
                 if (kind === 'json') { const out = isTable ? rowsToObjects(sheetNow()) : data; host.download(JSON.stringify(out, null, 2) + '\n', baseName + (isTable && st.sheets.length > 1 ? '-' + sheetNow().name : '') + '.json', 'application/json'); }
                 else if (kind === 'jsonl') host.download(fmt === 'jsonl' ? lines.filter((l) => l.trim()).join('\n') + '\n' : C.stringify(data, 'jsonl'), baseName + '.jsonl', 'application/x-ndjson');
                 else if (kind === 'yaml') { if (!d.yamlDump) { note('YAML 輸出器載入失敗'); return; } host.download(C.stringify(data, 'yaml', d), baseName + '.yaml', 'text/yaml'); }
-                else if (kind === 'csv') { const sheets = allSheets(); const sh = sheets.find((s) => s.name === arg) || sheets[0]; host.download(C.sheetToCsv(sh), baseName + (sheets.length > 1 ? '-' + sh.name : '') + '.csv', 'text/csv'); }
-                else if (kind === 'xlsx') { if (!d.JSZip) { note('XLSX 工具載入失敗'); return; } const bytes = await C.buildXlsx(allSheets(), d); host.download(bytes, baseName + '.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); }
-                else if (kind === 'sqlite') { const bytes = await host.exportSqlite(allSheets()); host.download(bytes, baseName + '.sqlite3', 'application/vnd.sqlite3'); }
+                else if (kind === 'csv') { const sheets = allSheets(LARGE ? p : null); const sh = sheets.find((s) => s.name === arg) || sheets[0]; host.download(C.sheetToCsv(sh), baseName + (sheets.length > 1 ? '-' + sh.name : '') + '.csv', 'text/csv'); }
+                else if (kind === 'xlsx') { if (!d.JSZip) { note('XLSX 工具載入失敗'); return; } const bytes = await C.buildXlsx(allSheets(LARGE ? p : null), d); host.download(bytes, baseName + '.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); }
+                else if (kind === 'sqlite') { const bytes = await host.exportSqlite(allSheets(LARGE ? p : null)); host.download(bytes, baseName + '.sqlite3', 'application/vnd.sqlite3'); }
                 note('已匯出');
             } catch (e) { note('匯出失敗：' + (e && e.message || e)); }
         }

@@ -299,8 +299,11 @@
         return [{ role: 'system', content: '你負責替使用者的話挑一個合適的工具。只輸出一個 JSON 物件，格式：{"choice": 編號}。編號只能是選單裡有的數字；0 代表「這些都不合適，只是一般聊天或問答」。' }, { role: 'user', content: '選單：\n' + lines + '\n0. 都不是（一般聊天或問答）\n\n使用者的話：\n' + String(question).slice(0, 800) }];
     }
     async function chooseTool(opts) {
+        // 思考堆疊：選工具是路由的一層；框架記下「選了哪個」，之後補欄位、計畫階段的標頭就看得到（先前的選擇不會被忘記）
+        const T = opts.stack && opts.stackMod; if (T) T.push(opts.stack, { path: opts.label || '選工具', question: '從選單挑一個合適的（或 0＝都不合適）' });
         const n = opts.cands.length; const r = await jsonStep({ stack: opts.stack, stackMod: opts.stackMod, generate: opts.generate, messages: menuMessages(opts.question, opts.cands), maxTokens: 40, maxTries: opts.maxTries || 2, prefill: '{"choice":', validate: (o) => { const c = o.choice; if (!Number.isInteger(c)) return ['「choice」必須是整數']; if (c < 0 || c > n) return ['「choice」必須是 0～' + n + ' 之間的整數']; return []; } });
-        if (!r.ok) return { ok: false, rejected: r.rejected, tries: r.tries, error: r.error };
+        if (!r.ok) { if (T) T.pop(opts.stack, { ok: false, summary: '' }); return { ok: false, rejected: r.rejected, tries: r.tries, error: r.error }; }
+        if (T) { const c = opts.cands[r.value.choice - 1]; T.pop(opts.stack, { summary: r.value.choice === 0 ? '都不合適，當一般問答' : '選了 ' + (c ? c.tool : r.value.choice) }); }
         return { ok: true, index: r.value.choice - 1, none: r.value.choice === 0, by: 'model', tries: r.tries, rejected: r.rejected };
     }
 

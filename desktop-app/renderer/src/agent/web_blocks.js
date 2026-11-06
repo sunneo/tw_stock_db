@@ -103,5 +103,26 @@
     return out;
   }
 
-  return { sectionIndex: sectionIndex, toBlocks: toBlocks, splitLinks: splitLinks, outlineForHead: outlineForHead };
+
+  // 讀完整頁文字：一段一段向擴充功能要（call(args) → Promise<{ok,text,has_more,next_offset,total_length|total_chars}>），接成全文。
+  // 欄位名稱兩種都認：真的 Chrome 擴充功能（background.js 的 pageTextExtractor）回 total_length，舊的／其他實作回 total_chars——
+  // 以前只認 total_chars，長頁面永遠不會走分層（用真 Chrome 實測才發現）。
+  function totalOf(r) { var t = Number(r && (r.total_chars != null ? r.total_chars : r.total_length)); return isFinite(t) && t >= 0 ? t : (r && typeof r.text === 'string' ? r.text.length : 0); }
+  function readAll(call, args, o) {
+    o = o || {}; var chunk = o.chunk || 150000, maxChars = o.maxChars || 3000000, maxCalls = o.maxCalls || 40;
+    return Promise.resolve(call(Object.assign({}, args, { max_chars: chunk }))).then(function (first) {
+      if (!first || !first.ok || typeof first.text !== 'string') return { ok: false, first: first };
+      var out = { ok: true, first: first, text: first.text, total: Math.max(totalOf(first), first.text.length), calls: 1, complete: !first.has_more, truncated: false };
+      function next(r) {
+        if (!(r.has_more && r.next_offset != null)) { out.complete = !r.has_more; return out; }
+        if (out.text.length >= maxChars || out.calls >= maxCalls) { out.complete = false; out.truncated = true; return out; }
+        return Promise.resolve(call(Object.assign({}, args, { max_chars: chunk, offset: r.next_offset }))).then(function (r2) {
+          out.calls++; if (!r2 || !r2.ok || typeof r2.text !== 'string') { out.complete = false; out.truncated = true; return out; }
+          out.text += r2.text; return next(r2);
+        });
+      }
+      return next(first);
+    });
+  }
+  return { readAll: readAll, totalOf: totalOf, sectionIndex: sectionIndex, toBlocks: toBlocks, splitLinks: splitLinks, outlineForHead: outlineForHead };
 }));

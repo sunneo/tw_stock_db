@@ -16,7 +16,7 @@
     'use strict';
     const NAME = '[a-zA-Z][a-z0-9]{0,4}'; const NAMES = NAME + '(?:\\s+' + NAME + ')*';
     const CN = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
-    const INT_WORDS = /整數|面額|查詢|數字|價值|重量/; const STR_WORDS = /單字|字串|字元|文字/;
+    const INT_WORDS = /整數|面額|查詢|數字|價值|重量/; const FLOAT_WORDS = /小數|實數|取樣值|取樣點|振幅/; const STR_WORDS = /單字|字串|字元|文字/;
     // 動作表：關鍵字（中文）→ 目的。recipe 是「語言中立的配方」：which＝作用在哪一種輸入（list／words／str）、op＝要做的運算
     const GOALS = [
         { key: /最大值|最大的|最大總/, op: 'max', which: ['list'] }, { key: /最小值|最小的/, op: 'min', which: ['list'] }, { key: /總和|的和|加總/, op: 'sum', which: ['list'] },
@@ -26,6 +26,7 @@
     ];
     // 動作表（算法種類）：敘述的關鍵字 → 這題屬於哪一種算法。語言中立；各語言的區塊白名單（FOCUS）用這個 key 查。由具體到籠統，第一個符合的算數
     const ALGOS = [
+        { key: 'inversions', re: /逆序對/ }, { key: 'n-queens', re: /皇后/ }, { key: 'dijkstra', re: /最短距離|加權.*最短|Dijkstra/i }, { key: 'fenwick', re: /樹狀陣列|線段樹|單點.*(修改|更新)|把\s*a\[\w+\]\s*加上/ }, { key: 'str-match', re: /KMP|出現的次數|出現幾次|出現的位置/ }, { key: 'tree-traversal', re: /走訪/ }, { key: 'kth-smallest', re: /第\s*[a-zA-Z]\s*小/ }, { key: 'lps', re: /回文子序列/ }, { key: 'lcs', re: /公共子序列|LCS/ },
         { key: 'palindrome', re: /迴文/ }, { key: 'anagram', re: /重新排列|變位詞|字母異位/ }, { key: 'brackets', re: /括號.*(配對|匹配)/ }, { key: 'gcd-lcm', re: /gcd|lcm|最大公因數|最小公倍數/i },
         { key: 'fib', re: /費氏/ }, { key: 'primes', re: /質數/ }, { key: 'kth-largest', re: /由大到小.*第\s*[a-zA-Z]\s*個|第\s*[a-zA-Z]\s*(大|個)/ }, { key: 'word-count', re: /每個不同的單字|單字.*次數|次數.*單字/ },
         { key: 'lower-bound', re: /第一個滿足.*(>=|≥|大於等於)|二分|lower_bound/ }, { key: 'pair-sum', re: /i\s*<\s*j.*a\[i\]\s*\+\s*a\[j\]|兩數之和|兩數相加等於/ }, { key: 'range-sum', re: /a\[\w+\.\.\w+\]|區間.*(和|總和)|每個查詢輸出.*和/ },
@@ -35,7 +36,7 @@
     // 處理模型（範式）：算法種類 → 它屬於哪些解題範式（分治、DFS、BFS、樹走訪、資料結構對應、動態規劃、矩陣相乘…）。一種算法可以有多個範式（例如費氏數：DP 或矩陣快速冪）。
     // 之後的「範式骨架」（每個範式一個帶槽位的區塊骨架）用這個 key 查；新題只要套到某個範式、填幾個槽位，不必每題各教一堂課。
     const PARADIGMS = {
-        'fib': ['dynamic-programming', 'matrix-power'], 'coin-min': ['dynamic-programming'], 'lis': ['dynamic-programming'], 'knapsack': ['dynamic-programming'],
+        'fib': ['dynamic-programming', 'matrix-power'], 'n-queens': ['backtracking'], 'dijkstra': ['shortest-path', 'heap'], 'fenwick': ['fenwick-tree', 'segment-tree'], 'str-match': ['kmp', 'string'], 'inversions': ['divide-and-conquer'], 'tree-traversal': ['tree-traversal', 'dfs'], 'kth-smallest': ['heap', 'data-structure-mapping'], 'lps': ['dynamic-programming', 'interval-dp'], 'lcs': ['dynamic-programming', '2d-dp'], 'coin-min': ['dynamic-programming'], 'lis': ['dynamic-programming'], 'knapsack': ['dynamic-programming'],
         'grid-bfs': ['bfs'], 'components': ['dfs', 'union-find'], 'lower-bound': ['divide-and-conquer', 'binary-search'], 'range-sum': ['prefix-sum', 'data-structure-mapping'],
         'word-count': ['data-structure-mapping'], 'brackets': ['data-structure-mapping'], 'intervals-merge': ['sort-and-sweep'], 'pair-sum': ['brute-force'], 'kth-largest': ['sort'],
         'primes': ['sieve', 'number-theory'], 'gcd-lcm': ['number-theory', 'divide-and-conquer'], 'palindrome': ['two-pointers', 'string'], 'anagram': ['data-structure-mapping', 'string'],
@@ -59,9 +60,10 @@
                 const rn = new RegExp('^(' + NAMES + ')(?:\\s*(?:表示|代表).*)?$').exec(rest); if (rn) { const ns = rn[1].split(/\s+/); inputs.push({ k: 'rows', count: cnt, names: ns, name: 'rows' }); addNames(['rows']); continue; }
             }
             if ((m = new RegExp('^第([一二三四五六七八九\\d]+)行\\s*(' + NAME + ')\\s*(?:個|種)(.*)$').exec(c))) { // 第二行 n 個整數／第三行 q 個查詢 x
-                const tail = m[3]; const nm = (new RegExp('(?:查詢|每個)\\s*(' + NAME + ')\\s*$').exec(tail) || [])[1];
-                const isStr = STR_WORDS.test(tail) && !INT_WORDS.test(tail); const listName = nm || (isStr ? 'w' : 'a'); inputs.push({ k: 'list', name: listName, size: m[2], elem: isStr ? 'str' : 'int' }); addNames([listName, m[2]]); continue;
+                const tail = m[3]; const nm = (new RegExp('(?:查詢|每個|記為|稱為)\\s*(' + NAME + ')\\s*$').exec(tail) || [])[1];
+                const isStr = STR_WORDS.test(tail) && !INT_WORDS.test(tail); const isFloat = !isStr && FLOAT_WORDS.test(tail) && !INT_WORDS.test(tail); const listName = nm || (isStr ? 'w' : 'a'); inputs.push({ k: 'list', name: listName, size: m[2], elem: isStr ? 'str' : isFloat ? 'float' : 'int' }); addNames([listName, m[2]]); continue;
             }
+            if ((m = new RegExp('^第([一二三四五六七八九\\d]+)行(?:一個|兩個|三個|四個|五個|六個)?小數\\s*(' + NAMES + ')$').exec(c))) { const ns = m[2].split(/\s+/); inputs.push({ k: 'scalars', names: ns, type: 'float', line: true }); addNames(ns); continue; } // 第二行小數 alpha／第二行五個小數 b0 b1 b2 a1 a2
             if ((m = new RegExp('^第([一二三四五六七八九\\d]+)行(?:一個|兩個|三個|四個)?(?:正)?(?:整數)?\\s*(' + NAMES + ')$').exec(c))) { const ns = m[2].split(/\s+/); inputs.push({ k: 'scalars', names: ns, type: 'int', line: true }); addNames(ns); continue; }
             if ((m = new RegExp('^輸入\\s*(' + NAME + ')$').exec(c))) { inputs.push({ k: 'scalars', names: [m[1]], type: 'int', line: true }); addNames([m[1]]); continue; }
             if (/^由若干單字組成/.test(c) && inputs.length && inputs[inputs.length - 1].k === 'pending') { inputs[inputs.length - 1] = { k: 'words', name: 'w' }; addNames(['w']); continue; }
@@ -92,5 +94,7 @@
         return { actors: ['User'], classes: [cls], relations: [], unknown: [], usecases: [{ name: 'RunSolver', actor: 'User', summary: '讀入資料並輸出答案', steps: [{ to: 'Solver', op: 'main' }, { to: 'Solver', op: 'readInput' }, { to: 'Solver', op: 'solve' }] }] };
     }
     const reader = (statement) => { const it = read(statement); return it.ok ? Object.assign(umlHints(it), { intent: it }) : null; };
-    return { read, umlHints, reader, GOALS, ALGOS, PARADIGMS };
+    // 領域包（domain pack）註冊：新領域的算法種類插在最前面（領域詞彙比通用詞彙具體），並補上它的範式對照
+    function addAlgos(list, paradigms) { const have = new Set(ALGOS.map((x) => x.key)); const fresh = (list || []).filter((x) => !have.has(x.key)); ALGOS.unshift(...fresh); Object.assign(PARADIGMS, paradigms || {}); return fresh.length; }
+    return { read, umlHints, reader, GOALS, ALGOS, PARADIGMS, addAlgos };
 });

@@ -107,6 +107,14 @@
             const problem = a.problem || null; const e = await Ed.editCode({ source: String(a.source), lang, goal: a.text, problem, check: a.check, judge: a.judge, ask: backend && backend.ask, write: backend && backend.write, repair: makeRepair(problem) || undefined, stackMod, opts, onEvent: a.onEvent });
             return Object.assign(e, { mode: 'edit', lang });
         }
+        // 離線組合（Python）：uml_design → 配方／課／範式骨架 → 區塊迴圈 → 沙盒，由宿主注入 offline({text, lang, problem}) → {ok, source, verdict, ...}；要有測試與判題器才試，通過就不用模型，沒過就往下走模型路線
+        const offlineGaps = [];
+        if (typeof a.offline === 'function' && !a.model && lang === 'python' && a.problem && a.problem.tests && a.problem.tests.length && a.judge) {
+            let o = null; try { o = await a.offline({ text: a.text, lang, problem: a.problem, backend }); } catch (e) { offlineGaps.push('離線組合出錯：' + clip((e && e.message) || e, 100)); }
+            if (o && o.ok && o.source && (o.verdict === 'AC')) { if (typeof a.onEvent === 'function') { try { a.onEvent({ t: 'offline', by: o.by, paradigm: o.paradigm, tried: o.tried }); } catch (_) { /* 進度回報壞了不影響流程 */ } } return Object.assign(base, { ok: true, verified: true, verdict: 'AC', mode: 'offline', source: o.source, offline: { by: o.by, paradigm: o.paradigm || null, slots: o.slots || null, lesson: o.lesson || null, recipe: o.recipe || null, tried: o.tried || 0, usedModel: !!o.usedModel }, calls: Object.assign({}, base.calls, { judge: o.tried || 1 }) }); }
+            if (o && !o.ok) offlineGaps.push('離線組合沒解出來（' + clip(o.reason || '不明', 100) + '），改用模型');
+        }
+        base.gaps = base.gaps.concat(offlineGaps);
         if (!backend) return Object.assign(base, { mode: a.model ? 'project' : 'problem', verdict: 'NONE', reason: 'no_model', gaps: ['沒有可用的模型（generate 或 backend）'] });
         let model = a.model || null, route = null, designed = null; const preGaps = [];
         if (!model) {
@@ -147,7 +155,7 @@
     function formatReport(r) {
         if (!r) return '沒有結果';
         const how = r.verified ? '已用測試驗證（全部通過）' : (r.verdict === 'CHECKED' ? '**只通過編譯／語法檢查，沒有驗證行為是否正確**' : (r.ok ? '未驗證' : '沒有完成'));
-        const L1 = [(r.mode === 'edit' ? '修改現有程式（' : '寫程式（' + (r.mode === 'project' ? '依 UML 專案模式' : '題目模式') + '，') + r.lang + '）：' + (r.ok ? (r.mode === 'edit' ? '修改完成' : '產生完成') : '沒有完成') + '；' + how + '。'];
+        const L1 = [(r.mode === 'edit' ? '修改現有程式（' : '寫程式（' + (r.mode === 'offline' ? '離線組合' + (r.offline && r.offline.paradigm ? '：範式 ' + r.offline.paradigm : r.offline && r.offline.lesson ? '：課 ' + r.offline.lesson : r.offline && r.offline.recipe ? '：配方 ' + r.offline.recipe : '') : r.mode === 'project' ? '依 UML 專案模式' : '題目模式') + '，') + r.lang + '）：' + (r.ok ? (r.mode === 'edit' ? '修改完成' : '產生完成') : '沒有完成') + '；' + how + '。'];
         if (r.mode === 'edit' && r.edits && r.edits.length) L1.push('改了 ' + r.edits.length + ' 處：\n' + r.edits.map((e) => '- ' + (e.by === 'rewrite' ? '重寫函式 ' + e.fn : (e.desc || '語法修正')) + (e.line ? '（第 ' + e.line + ' 行）' : '')).join('\n'));
         if (r.route && r.mode !== 'edit') L1.push('路線：' + (r.route.route === 'uml' ? '需求偏大，先設計 UML' + (r.design ? '（' + r.design.classes.length + ' 個類別）' : '') + '，再逐類別實作' : '直接切成函式寫') + (r.route.by === 'model' ? '（模型決定）' : r.route.by === 'caller' ? '（呼叫端指定）' : '') + (r.route.reasons && r.route.reasons.length ? '：' + r.route.reasons.slice(0, 3).join('、') : '') + '。');
         if (r.plan && r.plan.length) L1.push('函式：' + r.plan.map((x) => x.name).join(' → '));

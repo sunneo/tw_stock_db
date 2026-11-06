@@ -8,7 +8,7 @@
  *               區塊迴圈（庫存＋範本，模型只在合法選單裡微選擇；參數就是庫存的起點）
  *   ④ 沙盒驗證：判題器跑範例，沒過把判決回饋給區塊迴圈重寫
  *
- *   buildFromUML({statement, uml:{hints, model}, B, R, C2U, FaPyBody, Choose, pick?, judge?, rounds?, Lessons?, lessons?}) → {ok, source, model, cnl, usedModel, recipe, rounds, steps, forced}
+ *   buildFromUML({statement, uml:{hints, model}, B, R, C2U, FaPyBody, Choose, pick?, judge?, rounds?, Lessons?, lessons?, Paradigms?, paradigmLimit?, paradigmRank?}) → {ok, source, model, cnl, usedModel, recipe, paradigm, slots, tried, rounds, steps, forced}
  * judge(source) → Promise<{verdict, detail}>；pick 只有走模型路徑才會用到。 */
 (function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaPyUmlPipeline = factory(); })(typeof self !== 'undefined' ? self : this, function () {
     'use strict';
@@ -17,8 +17,8 @@
     function readInputCNL(intent) {
         const L = [];
         for (const inp of intent.inputs) {
-            if (inp.k === 'scalars') L.push(inp.names.length === 1 ? (inp.type === 'float' ? '讀入小數 ' : '讀入整數 ') + inp.names[0] : '讀入一行整數 ' + inp.names.join(', '));
-            else if (inp.k === 'list') L.push(inp.elem === 'str' ? '讀入一行並切成單字 ' + inp.name : '讀入一行整數成清單 ' + inp.name);
+            if (inp.k === 'scalars') L.push(inp.names.length === 1 ? (inp.type === 'float' ? '讀入小數 ' : '讀入整數 ') + inp.names[0] : inp.type === 'float' ? '程式：' + inp.names.join(', ') + ' = map(float, input().split())' : '讀入一行整數 ' + inp.names.join(', '));
+            else if (inp.k === 'list') L.push(inp.elem === 'str' ? '讀入一行並切成單字 ' + inp.name : inp.elem === 'float' ? '程式：' + inp.name + ' = list(map(float, input().split()))' : '讀入一行整數成清單 ' + inp.name);
             else if (inp.k === 'words') L.push('讀入一行並切成單字 ' + inp.name);
             else if (inp.k === 'str') L.push('讀入一行文字並去掉首尾空白 ' + inp.name);
             else if (inp.k === 'grid') L.push('讀入 ' + inp.count + ' 行文字（去空白）成清單 ' + inp.name);
@@ -59,11 +59,22 @@
             if (v.verdict === 'AC' || v.verdict === 'UNCHECKED') return Object.assign(res, { source, model, recipe: rec.name, cnl: Object.assign(cnl, { solve: rec.cnl }), verdict: v.verdict });
         }
         // ---- 課（老師教過、驗證過的做法）：同一種算法、同樣的輸入形狀就直接套用，不問模型；沙盒驗證沒過才退回 ----
-        const lesson = o.Lessons && o.Lessons.matchLesson(o.lessons || [], intent);
+        let lesson = o.Lessons && o.Lessons.matchLesson(o.lessons || [], intent);
+        // 課若記了範式（paradigm）、而這題的敘述挑出的骨架不含它（例如費氏「取餘數」要矩陣快速冪、不能用滾動兩個值的 DP），就不先試課：直接走範式，免得 n 很大時課逾時
+        if (lesson && lesson.paradigm && o.Paradigms) { const sk = o.Paradigms.forIntent(intent, o.statement); if (sk.length && !sk.some((x) => x.id === lesson.paradigm)) lesson = null; }
         if (lesson) {
             const ap = o.Lessons.applyLesson(lesson, intent); const model = mkModel(ap.body, ap.prelude); const source = o.C2U.toPython(model); let v = { verdict: 'UNCHECKED', detail: '' }; if (o.judge) v = await o.judge(source);
             res.rounds.push({ by: 'lesson', lesson: lesson.id, verdict: v.verdict, detail: v.detail });
             if (v.verdict === 'AC' || v.verdict === 'UNCHECKED') return Object.assign(res, { source, model, lesson: lesson.id, cnl: Object.assign(cnl, { solve: lesson.cnl || '' }), verdict: v.verdict });
+        }
+        // ---- 範式骨架（每個範式一個帶槽位的區塊骨架；槽位選單很小，由程式窮舉組合、逐個交沙盒，第一個 AC 就用，不問模型）----
+        if (o.Paradigms && o.Paradigms.forIntent(intent, o.statement).length) {
+            let lastModel = null;
+            const pj = async (solveCnl) => { const model = mkModel(parse(solveCnl)); const source = o.C2U.toPython(model); lastModel = { model, source }; return o.judge ? o.judge(source) : { verdict: 'UNCHECKED', detail: '' }; };
+            const ps = await o.Paradigms.solve({ intent, statement: o.statement, judge: pj, limit: o.paradigmLimit, rank: o.paradigmRank });
+            res.rounds.push({ by: 'paradigm', ok: ps.ok, skeleton: ps.skeleton, tried: ps.tried, verdict: ps.verdict });
+            if (ps.ok) return Object.assign(res, { source: lastModel.source, model: lastModel.model, paradigm: ps.skeleton, slots: ps.choice, tried: ps.tried, cnl: Object.assign(cnl, { solve: ps.cnl }), verdict: ps.verdict });
+            res.tried = ps.tried;
         }
         // ---- 區塊迴圈（模型微選擇）----
         if (!o.pick) return Object.assign(res, { ok: false, reason: rec ? '配方沒通過沙盒驗證，而且沒有提供模型' : '程式讀不出這題的解法（沒有配方），需要模型' });

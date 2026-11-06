@@ -11,7 +11,7 @@
     'use strict';
     const KINDS = ['contains', 'notcontains', 'regex', 'equals', 'judge']; const CHECKERS = ['lines', 'tokens', 'float', 'unordered-lines', 'unordered-tokens'];
     const LANGS = ['python', 'nodejs', 'c', 'cpp', 'java', 'ruby', 'perl', 'bash', 'asm-x64', 'asm-x86', 'csharp'];
-    const cleanTests = (list) => { if (!Array.isArray(list)) return []; return list.filter((t) => t && typeof t.in === 'string' && typeof t.out === 'string' && t.in.length <= 65536 && t.out.length <= 65536).slice(0, 60).map((t) => ({ in: t.in, out: t.out })); };
+    const cleanTests = (list) => { if (!Array.isArray(list)) return []; return list.filter((t) => t && typeof t.in === 'string' && typeof t.out === 'string' && t.in.length <= 262144 && t.out.length <= 262144).slice(0, 60).map((t) => ({ in: t.in, out: t.out })); };
     function normalize(raw) {
         if (raw == null) return { ok: true, check: null };
         if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (_) { return { ok: false, error: 'check 要是 JSON 物件' }; } }

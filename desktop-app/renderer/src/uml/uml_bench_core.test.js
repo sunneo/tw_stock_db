@@ -16,6 +16,16 @@ const oracle = async (req) => {
     if ((m = /列出使用案例「(\w+)」/.exec(t))) { const u = ref.usecases.find((x) => x.name === m[1]); const steps = (u ? u.steps : []).map((s) => ({ to: s.to, op: s.op })); const cls = ref.classes[0]; return JSON.stringify({ steps: steps.length >= 2 ? steps : steps.concat([{ to: cls.name, op: cls.ops[0] ? cls.ops[0].name : 'get' }]) }); }
     return '???';
 };
+// ---- 兄弟一致性（純程式評分）----
+{
+    const good = { actors: ['User', 'Admin'], classes: [{ name: 'Order', attrs: [{ name: 'orderId' }], ops: [{ name: 'placeOrder' }] }, { name: 'Product', attrs: [{ name: 'unitPrice' }], ops: [{ name: 'getPrice' }] }], relations: [{ from: 'Order', to: 'Product' }], usecases: [{ name: 'BuyItem', actor: 'User', steps: [{ to: 'Order', op: 'placeOrder' }] }, { name: 'ViewItem', actor: 'User', steps: [{ to: 'Product', op: 'getPrice' }] }] };
+    const bad = { actors: ['User', 'user'], classes: [{ name: 'Order', attrs: [{ name: 'orderId' }], ops: [{ name: 'place_order' }] }, { name: 'product_item', attrs: [{ name: '價格' }], ops: [] }], relations: [{ from: 'Order', to: 'Ghost' }], usecases: [{ name: 'Buy', actor: 'Nobody', steps: [{ to: 'Order', op: 'nope' }] }] };
+    const g = B.siblingConsistency(good), b = B.siblingConsistency(bad);
+    check('一致性：整齊的模型滿分', g.score === 1 && g.refs === 1 && g.naming === 1, g);
+    check('一致性：風格不齊、參照不存在、重複的模型分數明顯較低', b.score < 0.7 && b.refs < 0.5 && b.unique < 1 && b.naming === 0.5, b);
+    check('一致性：空模型沒有分數而不是 0', B.siblingConsistency({}).score === null && B.siblingConsistency(null).score === null);
+    check('一致性：單字小寫方法跟 camel 相容', B.siblingConsistency({ classes: [{ name: 'A', ops: [{ name: 'add' }, { name: 'getItem' }] }, { name: 'B', ops: [] }] }).style === 1);
+}
 (async () => {
     let r = await B.runScenario(shop, oracle);
     check('完美模型：完成、驗證通過、每個階段第一次就合格', r.completed && r.valid && r.firstTry === r.stageN && r.eventual === r.stageN && r.stageN >= 8, { completed: r.completed, valid: r.valid, first: r.firstTry, n: r.stageN, err: r.error, stages: r.stages.filter((s) => !s.ok || s.tries > 1) });

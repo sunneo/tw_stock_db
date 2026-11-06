@@ -45,6 +45,24 @@
         const r = (groups, names) => (groups.length ? groups.filter((g) => hit(g, names)).length / groups.length : 1);
         const ucs = model.usecases || []; return { actors: r(fx.actors, actorNames.concat(ucs.map((u) => u.actor))), classes: r(fx.classes, classNames), usecases: r(fx.usecases, ucNames), sequences: ucs.length ? ucs.filter((u) => (u.steps || []).length >= 2).length / ucs.length : 0 };
     }
+    // 兄弟一致性（思考堆疊要解的問題：深入做後面的項目時，忘了前面兄弟的命名／風格／參照）。純程式評分，不用模型：
+    //  naming＝類別名同一種寫法（PascalCase／中文）的占比；style＝方法與屬性名最多的那種寫法（camel／snake／中文）的占比；
+    //  ucStyle＝使用案例名同一種寫法的占比；refs＝步驟指到的類別與方法、關係兩端、使用案例的參與者都真的存在的占比；
+    //  unique＝沒有重複（同名或只差大小寫）的占比。沒有可評的項目就是 null，總分取有值的平均。
+    const styleOf = (n) => { n = String(n || ''); if (/[\u4e00-\u9fff]/.test(n)) return 'cjk'; if (/^[A-Z][A-Za-z0-9]*$/.test(n) && /[a-z]/.test(n)) return 'Pascal'; if (/^[a-z][a-z0-9]*[A-Z][A-Za-z0-9]*$/.test(n)) return 'camel'; if (/^[a-z0-9]+(_[a-z0-9]+)+$/.test(n)) return 'snake'; if (/^[a-z][a-z0-9]*$/.test(n)) return 'lower'; if (/^[A-Z0-9_]+$/.test(n)) return 'UPPER'; return 'other'; };
+    const domShare = (names) => { if (names.length < 2) return null; const c = {}; names.forEach((n) => { const k = styleOf(n); c[k] = (c[k] || 0) + 1; }); // lower（單字）跟 camel／snake 相容，不算不一致
+        if (c.lower) { const top = Object.entries(c).filter(([k]) => k !== 'lower').sort((a, b) => b[1] - a[1])[0]; if (top) { c[top[0]] += c.lower; delete c.lower; } } return Math.max.apply(null, Object.values(c)) / names.length; };
+    function siblingConsistency(model) {
+        model = model || {}; const cls = model.classes || [], ucs = model.usecases || [], rels = model.relations || [], actors = model.actors || [];
+        const clsNames = cls.map((c) => c.name); const members = [].concat(...cls.map((c) => [].concat((c.attrs || []).map((a) => a.name), (c.ops || []).map((o) => o.name))));
+        const refsAll = []; const opsOf = {}; cls.forEach((c) => { opsOf[c.name] = new Set((c.ops || []).map((o) => low(o.name))); });
+        const actorSet = new Set(actors.map(low)); ucs.forEach((u) => { if (u.actor) refsAll.push(actorSet.has(low(u.actor))); (u.steps || []).forEach((s) => { if (s.to) { const ok = clsNames.some((n) => low(n) === low(s.to)); refsAll.push(ok); if (s.op) refsAll.push(ok && opsOf[clsNames.find((n) => low(n) === low(s.to))].has(low(s.op))); } }); });
+        rels.forEach((r) => { refsAll.push(clsNames.includes(r.from), clsNames.includes(r.to)); });
+        const dup = (names) => { if (names.length < 2) return null; const seen = new Set(names.map(low)); return seen.size / names.length; };
+        const parts = { naming: domShare(clsNames), style: domShare(members), ucStyle: domShare(ucs.map((u) => u.name)), refs: refsAll.length ? refsAll.filter(Boolean).length / refsAll.length : null, unique: [dup(clsNames), dup(ucs.map((u) => u.name)), dup(actors)].filter((x) => x != null).reduce((a, x, _, arr) => a + x / arr.length, 0) };
+        if (!(clsNames.length > 1 || ucs.length > 1 || actors.length > 1)) parts.unique = null; const vals = Object.values(parts).filter((x) => x != null); const r2 = (x) => (x == null ? null : Math.round(x * 100) / 100);
+        return { naming: r2(parts.naming), style: r2(parts.style), ucStyle: r2(parts.ucStyle), refs: r2(parts.refs), unique: r2(parts.unique), score: vals.length ? r2(vals.reduce((a, x) => a + x, 0) / vals.length) : null };
+    }
     // 包一層 generate：記次數、耗時、失敗、退化（呼叫端給的 generate 要回傳字串，或丟錯誤）
     function wrapGenerate(generate, stats, degenerate) {
         return async (req) => {
@@ -56,10 +74,10 @@
     // 跑一個情境；回傳這個情境的結果列
     async function runScenario(fx, generate, opts) {
         const o = Object.assign({}, DEFAULTS, opts || {}); const stats = { calls: 0, failed: 0, degenerate: 0, degenerateKinds: [], errors: [], ms: [] };
-        let res; try { res = await U.scenarioToModelBig(fx.scenario, { generate: wrapGenerate(generate, stats, o.degenerate), program: false, maxTries: o.maxTries, stackChecks: false }); } catch (e) { res = { ok: false, error: String((e && e.message) || e), model: U.emptyModel ? U.emptyModel() : { actors: [], classes: [], usecases: [] }, decisions: [], warnings: [], errors: [] }; }
+        let res; try { res = await U.scenarioToModelBig(fx.scenario, { generate: wrapGenerate(generate, stats, o.degenerate), program: false, maxTries: o.maxTries, stackChecks: o.stackChecks === true, thinkStack: o.thinkStack === false ? false : undefined }); } catch (e) { res = { ok: false, error: String((e && e.message) || e), model: U.emptyModel ? U.emptyModel() : { actors: [], classes: [], usecases: [] }, decisions: [], warnings: [], errors: [] }; }
         const dec = (res.decisions || []).filter((d) => d.by === 'model'); const g = gradeModel(fx, res.model || {});
         return { id: fx.id, completed: !!res.ok, valid: !!res.ok && !(res.errors && res.errors.length), error: res.ok ? '' : res.error, stages: dec.map((d) => ({ stage: d.stage, label: d.label, ok: !!d.ok, tries: d.tries, rejected: (d.rejected || []).slice(0, 2).map((x) => (x.errors || []).join('；').slice(0, 120)) })),
-            firstTry: dec.filter((d) => d.ok && d.tries === 1).length, eventual: dec.filter((d) => d.ok).length, stageN: dec.length, recall: g, warnings: (res.warnings || []).length, stats };
+            firstTry: dec.filter((d) => d.ok && d.tries === 1).length, eventual: dec.filter((d) => d.ok).length, stageN: dec.length, recall: g, consistency: siblingConsistency(res.model || {}), warnings: (res.warnings || []).length, stats };
     }
     // ===== 路線 A：直接做——一次要模型寫出整份 UML 文字（一行一件事，程式解析）；不合格就把精確的錯誤退回，最多 maxTries 次 =====
     const SYNTAX = ['model: 部落格', 'actor: Reader, Author', 'class Post { +id:int; +title:str; +body:str; +publish():void; +list():list<Post> }', 'class Comment { +id:int; +text:str; +add():void }', 'Post o-- Comment', 'usecase WritePost: Author -> Post.publish()', 'usecase ReadPost: Reader -> Post.list() -> Comment.add()'].join('\n');
@@ -136,5 +154,5 @@
         if (advice === 'stepwise') return '【UML 輔助】你拆 UML 時第一次常常不合格。需要設計系統時，不要整份一次寫完：用 uml_design 或 uml_guide 一次處理一小塊（參與者、類別、成員、關係、呼叫順序），每塊檢查過再做下一塊。';
         return '';
     }
-    return { DEFAULTS, FIXTURES, BIG, gradeModel, wrapGenerate, runScenario, runDirect, success, summarizeRoute, routeText, dslOf, summarize, toText, hintFor, ADVICE_LABEL, ROUTE_LABEL };
+    return { DEFAULTS, FIXTURES, BIG, gradeModel, siblingConsistency, styleOf, wrapGenerate, runScenario, runDirect, success, summarizeRoute, routeText, dslOf, summarize, toText, hintFor, ADVICE_LABEL, ROUTE_LABEL };
 });

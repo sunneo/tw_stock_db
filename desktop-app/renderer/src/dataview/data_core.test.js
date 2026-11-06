@@ -122,5 +122,14 @@ const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
     check('defaultExpanded limits depth', !C.defaultExpanded({ a: { b: { c: {} } } }, 2, 100).has('/a/b'));
     const st = C.searchText(['abc', 'xAbCx abc'], 'abc'); check('text search case-insensitive', st.length === 3 && st[1].col === 1, st);
     check('outline', C.outline(spdx).includes('packages'));
+    // 超大 JSONL：只解析一個視窗（行號是整份的行號，壞行保留，空行不算）
+    {
+        const L = []; for (let i = 0; i < 120; i++) L.push(i === 7 ? '{壞' : i % 25 === 3 ? '' : JSON.stringify({ i }));
+        const w1 = C.parseJsonlWindow(L, 0, 50); check('window：第一批 50 筆非空行，下一批從 to 開始', w1.nonEmpty === 50 && w1.data.length === 50 && w1.to > 50 && w1.total === 120, { n: w1.nonEmpty, to: w1.to });
+        check('window：壞行保留成 _bad_line 並用整份的行號', w1.bad.length === 1 && w1.bad[0].line === 8 && w1.data.some((d) => d._bad_line === 8), w1.bad);
+        const w2 = C.parseJsonlWindow(L, w1.to, 50), w3 = C.parseJsonlWindow(L, w2.to, 50);
+        check('window：三批合起來剛好是整份解析的結果', JSON.stringify(w1.data.concat(w2.data, w3.data)) === JSON.stringify(C.parseJsonl(L.join('\n')).data) && w3.to === 120, { to: w3.to });
+        check('window：from 超過尾端回空；size 預設有值', C.parseJsonlWindow(L, 999, 10).data.length === 0 && C.JSONL_WINDOW > 1000 && C.LARGE_JSONL_LINES >= C.JSONL_WINDOW);
+    }
     console.log(bad.length ? 'FAIL\n' + bad.join('\n') : 'data_core: ' + ok + ' passed'); process.exit(bad.length ? 1 : 0);
 })().catch((e) => { console.log('EXC', e && e.stack || e); process.exit(1); });

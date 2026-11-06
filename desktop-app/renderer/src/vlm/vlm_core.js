@@ -389,7 +389,7 @@
             if (useLedger && !pc.calls.length) { // 還有分頁沒讀完就不接受這個回答（在 handoff 之前檢查）
                 const pend = RL.pending(ledger).filter((e) => e.blocking);
                 const due = pend.filter((e) => (remindersBy[e.key] || 0) < 3);
-                if (due.length) { due.forEach((e) => { remindersBy[e.key] = (remindersBy[e.key] || 0) + 1; }); messages.push({ role: 'system', content: RL.reminderText(due) }); notes.push('讀取未完成，已提醒模型繼續讀'); continue; }
+                if (due.length) { due.forEach((e) => { remindersBy[e.key] = (remindersBy[e.key] || 0) + 1; }); const lastTool = messages.slice().reverse().find((m) => m.role === 'tool'); messages.push({ role: 'system', content: RL.reminderText(due, { room: b.prompt - messagesTokens(messages, useTools), pageTokens: lastTool ? estimateTokens(lastTool.content) : 0 }) }); notes.push('讀取未完成，已提醒模型繼續讀'); continue; }
                 if (pend.length) warnPrefix = '注意：以下來源只讀了一部分，結論可能不完整：' + pend.map((e) => e.label + '（已讀到 ' + (e.nextOffset != null ? 'offset ' + e.nextOffset : '第 ' + e.nextStartLine + ' 行') + '）').join('、') + '\n';
                 ledger = RL.createLedger();
             }

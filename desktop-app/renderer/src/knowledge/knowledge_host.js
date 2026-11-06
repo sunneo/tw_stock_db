@@ -273,7 +273,8 @@ const FaKnowledgeHost = (function () {
             step('🔎 檢索：關鍵字（BM25）' + (this._kiSettings().embedConsent ? '＋語意向量' : '（語意索引沒開）') + (ids ? '，限定 ' + ids.length + ' 個來源' : ''));
             const qv = await this._kiQueryVec(q).catch(() => ({ vec: null, why: '語意檢索出錯' }));
             const lim = Math.min(Math.max(Number(a.limit) || 5, 1), 12), model = this._kiModelId();
-            let res = await this._kiRun((store) => store.answer(q, { limit: lim, sources: ids, queryVec: qv.vec || undefined, model }));
+            const off = Math.min(Math.max(Math.floor(Number(a.offset)) || 0, 0), 48), want = lim + off; // offset：往後翻頁（排名第 off+1 起的 limit 筆）；檢索端多取 off 筆再切掉前面的
+            let res = await this._kiRun((store) => store.answer(q, { limit: want, sources: ids, queryVec: qv.vec || undefined, model }));
             // 問法跟文件用字對不上（中文問英文文件、換個說法）：請模型替問題想幾個「文件裡可能出現的詞」，再用這些詞多找一輪。
             // 模型只出主意；找到的永遠是原文，詞對不上就找不到，不會因此編出內容。已經有「關鍵字與語意都命中」的結果就不必問模型。
             const strong = (r) => (r.hits || []).some((h) => /＋/.test(h.found_by || ''));
@@ -285,14 +286,18 @@ const FaKnowledgeHost = (function () {
                 step(terms.length ? '　模型提的詞：' + terms.join('、') : '　（模型沒有回應，維持第一輪的結果）');
                 if (terms.length) {
                     const q2 = q + ' ' + terms.join(' '); const qv2 = qv.vec ? await this._kiQueryVec(q2).catch(() => ({ vec: null })) : { vec: null };
-                    const r2 = await this._kiRun((store) => store.answer(q2, { minCoverage: 0.06, limit: lim, sources: ids, queryVec: qv2.vec || qv.vec || undefined, model }));
+                    const r2 = await this._kiRun((store) => store.answer(q2, { minCoverage: 0.06, limit: want, sources: ids, queryVec: qv2.vec || qv.vec || undefined, model }));
                     const hasKw = (r) => (r.hits || []).some((h) => /關鍵字/.test(h.found_by || '')); const take = r2.found && (!res.found || strong(r2) || (hasKw(r2) && !hasKw(res)) || (r2.hits[0] && r2.hits[0].score > ((res.hits[0] && res.hits[0].score) || 0)));
                     step('　第二輪：' + (r2.found ? '找到 ' + r2.hits.length + ' 筆，' + (take ? '採用這一輪' : '不比第一輪好，維持第一輪') : '沒有找到，維持第一輪'));
                     if (take) { res = r2; expanded = terms; }
                 }
             }
+            // 分頁資訊（_page，格式同 JSONL 分頁器的 meta）：知識問答是排名搜尋，翻頁是選擇性的，所以 blocking:false——讀取帳本不會因此逼模型翻完
+            const fetched = (res.hits || []).length; const pageHits = (res.hits || []).slice(off, off + lim); const hasMore = fetched >= want && want < 60;
+            if (res.hits) res.hits = pageHits; if (off && !pageHits.length) res.found = false;
+            const pageMeta = { source: 'ki_ask:' + FaKnowledge.fold(q).slice(0, 40) + (ids ? ':' + ids.join(',') : ''), page: Math.floor(off / lim) + 1, from: off, to: off + pageHits.length, returned: pageHits.length, total: off + pageHits.length, total_exact: false, has_more: hasMore, blocking: false, next_offset: hasMore ? off + lim : null, hint: hasMore ? '可能還有更後面的相符片段：要看就帶 offset=' + (off + lim) + '（同樣的 question），不需要的話不用翻。' : '已經是最後面的相符片段。' };
             if (res.found) for (const h of res.hits) { try { const rel = await this._kiRun((store) => store.relatedOf(h.source_id, h.line_start, h.line_end)); if (rel.length) h.related = rel; } catch (_) { /* */ } }
-            return Object.assign(res, { expanded_terms: expanded || undefined, semantic: !!qv.vec, semantic_note: qv.vec ? undefined : qv.why + '（只用關鍵字檢索）', how_to_answer: res.found ? '只能根據 hits 裡的 quote 回答，每個說法後面標出處（label：來源、第幾行）；quote 沒講到的就說沒有，不要補充或推測。' : '沒有找到，就照實說在知識庫裡找不到，不要用自己的知識代替。' });
+            return Object.assign(res, { _page: pageMeta, expanded_terms: expanded || undefined, semantic: !!qv.vec, semantic_note: qv.vec ? undefined : qv.why + '（只用關鍵字檢索）', how_to_answer: res.found ? '只能根據 hits 裡的 quote 回答，每個說法後面標出處（label：來源、第幾行）；quote 沒講到的就說沒有，不要補充或推測。' : '沒有找到，就照實說在知識庫裡找不到，不要用自己的知識代替。' });
         },
         // AI 整理：把找到的原文片段編號交給模型，請它只用這些回答、每句結尾標 [編號]。
         // 程式逐句核對：沒標編號、編號不存在、句子裡的指令／數字／英文識別字在被引用的原文裡找不到的句子，一律丟掉（並告訴使用者丟了幾句）。
@@ -808,7 +813,7 @@ const FaKnowledgeHost = (function () {
             const tool = (name, desc, props, required, fn) => registerOptional(name, desc, async function (raw) { const a = await parse(raw); try { return JSON.stringify(await fn.call(this, a)); } catch (e) { return JSON.stringify({ ok: false, error: String((e && e.message) || e) }); } }, { type: 'object', properties: props, required: required || [], additionalProperties: false });
             const SRC = { type: 'string', description: '來源的名稱（可以只寫一部分）或編號，knowledge_sources 看清單' };
             tool('knowledge_ask', '問 Knowledge Inventory（使用者自己放進去的文件、網頁、講義、錄音轉錄…）。回傳最相關的**原文片段**與出處（哪個來源、第幾行、章節／頁／投影片／時間），不生成、不改寫。回答時只能根據 hits 的 quote，每個說法標出處；找不到就說找不到。檢索是關鍵字（BM25）加語意（小型向量模型，已啟用時）。sources 可限定來源。',
-                { question: { type: 'string', description: '問題或關鍵字' }, sources: { type: 'array', items: { type: 'string' }, description: '選填：只在這些來源裡找（名稱或編號）' }, limit: { type: 'integer', description: '最多幾個片段，預設 5' } }, ['question'], function (a) { return this._kiAsk(a); });
+                { question: { type: 'string', description: '問題或關鍵字' }, sources: { type: 'array', items: { type: 'string' }, description: '選填：只在這些來源裡找（名稱或編號）' }, limit: { type: 'integer', description: '最多幾個片段，預設 5' }, offset: { type: 'integer', description: '選填：跳過排名前幾個片段，往後翻頁（看上一次回傳的 _page.next_offset）' } }, ['question'], function (a) { return this._kiAsk(a); });
             tool('knowledge_sources', '列出 Knowledge Inventory 裡的來源（編號、名稱、格式、有沒有啟用、片段數、向量數）與知識庫放在哪裡、總量。', {}, [], function () { return this._kiSources(); });
             tool('knowledge_outline', '看一個來源的目錄（章節標題、層級、每節從第幾行到第幾行）。再用 knowledge_detail 讀某一節。', { source: SRC }, ['source'], function (a) { return this._kiWithSource(a.source, (store, s) => store.outline(s.id)); });
             tool('knowledge_detail', '讀一個來源的原文並逐行附行號：section＝章節編號或標題的一部分，或給 line_start／line_end。長的會分段（truncated／next_line）。', { source: SRC, section: { description: '章節編號或標題的一部分' }, line_start: { type: 'integer' }, line_end: { type: 'integer' }, max_lines: { type: 'integer', description: '最多幾行，預設 200' } }, ['source'], function (a) { return this._kiWithSource(a.source, (store, s) => store.detail(s.id, a.line_start ? { line_start: a.line_start, line_end: a.line_end || a.line_start } : (a.section != null ? a.section : 1), { maxLines: a.max_lines })); });

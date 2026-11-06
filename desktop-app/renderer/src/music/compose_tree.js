@@ -293,8 +293,8 @@
     return t;
   }
   function usable(t) { return Object.keys(t.nodes).some((id) => t.nodes[id].source !== 'template'); }
-  function setNode(t, id, value) { // 使用者給值(標 user);回傳 { tree } 或 { error }
-    const r = validateNode(t, id, value); if (r.problem) return { error: r.problem }; const t2 = JSON.parse(JSON.stringify(t)); t2.nodes[id] = { value: r.value, source: 'user', tries: 0, raw: '', error: '', done: true };
+  function setNode(t, id, value, by) { // 使用者給值(標 user；by:'ai' 是小窗口的模型逐節點寫,標 ai);回傳 { tree } 或 { error }
+    const r = validateNode(t, id, value); if (r.problem) return { error: r.problem }; const t2 = JSON.parse(JSON.stringify(t)); t2.nodes[id] = { value: r.value, source: by === 'ai' ? (r.fixed ? 'fixed' : 'ai') : 'user', tries: 0, raw: '', error: '', done: true };
     nodeIds(t2).forEach((x) => { if (!t2.nodes[x]) t2.nodes[x] = { value: templateValue(t2, x), source: 'template', tries: 0, raw: '', error: '', done: true }; }); return { tree: t2 };
   }
 
@@ -383,6 +383,31 @@
       const c = C.compose(Object.assign({}, optionsOf(t), { seed })); c.warnings = (c.warnings || []).concat(['作曲樹組裝失敗(' + String((e && e.message) || e) + '),這次改用範本作曲']); c.fixes = { melody: 0 }; c.fallback = true; return c;
     }
   }
+  // ---------- 多層 JSONL（小窗口：一次讀一個節點、一次寫一個節點；DESIGN.jsonl-paging.md）----------
+  // 第 0 層 tree 行（規格與還沒決定的節點）→ 一個節點一行（form → harmony.組 → voices.組.*；motif 在根下）。pending 的節點可帶 ask（單獨就答得出來的一題）。
+  // fromJsonl 還原成同一棵樹（value／source／tries／error／raw 逐項相同）；節點行的 value 會重新核對，不合格的列在 problems。
+  const DECIDED = { ai: 1, fixed: 1, user: 1, learned: 1 };
+  const parentOf = (id) => { const p = id.split('.'); if (id === 'form' || id === 'motif') return 'tree'; if (p[0] === 'harmony') return 'form'; return 'harmony.' + p[1]; };
+  function pendingIds(t) { return nodeIds(t).filter((id) => !(t.nodes[id] && DECIDED[t.nodes[id].source])); }
+  function toJsonl(t, o) {
+    o = o || {}; const ids = nodeIds(t), pend = pendingIds(t); const rows = [];
+    rows.push(JSON.stringify({ t: 'tree', v: t.v, style: t.style, key: t.key, tempo: t.tempo, bars: t.bars, mode: t.mode, lead: t.lead == null ? null : t.lead, title: t.title || '', task: t.task || '', purpose: t.purpose || '', moodName: t.moodName || '', nodes: ids.length, decided: ids.length - pend.length, pending: pend }));
+    ids.forEach((id) => {
+      if (o.pendingOnly && pend.indexOf(id) < 0) return; const n = t.nodes[id] || { value: templateValue(t, id), source: 'template' }; const ok = !!DECIDED[n.source];
+      const r = { t: 'node', id, parent: parentOf(id), depth: id === 'form' || id === 'motif' ? 1 : id.split('.').length, label: LABEL(id), value: n.value, source: n.source, tries: n.tries || 0, decided: ok };
+      if (n.error) r.error = n.error; if (n.raw) r.raw = n.raw; if (o.ask && !ok) r.ask = batchItem(t, id); rows.push(JSON.stringify(r));
+    }); return { lines: rows, pending: pend, decided: ids.length - pend.length, total: ids.length };
+  }
+  function fromJsonl(lines) {
+    const rows = []; for (const l of [].concat(lines || [])) { const x = typeof l === 'string' ? l.trim() : l; if (!x) continue; try { rows.push(typeof x === 'string' ? JSON.parse(x) : x); } catch (e) { return { ok: false, error: '不是合法的 JSON 行：' + String(x).slice(0, 60) }; } }
+    const h = rows.find((r) => r && r.t === 'tree'); if (!h) return { ok: false, error: '缺少 tree 行（第 0 層）' };
+    const t = { v: h.v || 1, style: h.style, key: h.key, tempo: h.tempo, bars: h.bars, mode: h.mode, lead: h.lead == null ? null : h.lead, title: h.title || '', task: h.task || '', purpose: h.purpose || '', moodName: h.moodName || '', nodes: {} };
+    if (!C.STYLES[t.style]) return { ok: false, error: '不認得的風格：' + t.style };
+    const problems = []; rows.filter((r) => r && r.t === 'node' && r.id).forEach((r) => { const v = validateNode(t, r.id, r.value); if (v.problem) { problems.push({ id: r.id, problem: v.problem }); return; } t.nodes[r.id] = { value: r.value, source: r.source || 'user', tries: r.tries || 0, raw: r.raw || '', error: r.error || '', done: true }; });
+    const missing = nodeIds(t).filter((id) => !t.nodes[id]); missing.forEach((id) => { t.nodes[id] = { value: templateValue(t, id), source: 'template', tries: 0, raw: '', error: '', done: true }; });
+    return { ok: true, tree: t, missing, problems };
+  }
+
   function optionsOf(t) { return { style: t.style, key: t.key, tempo: t.tempo, bars: t.bars, progression: 0, lead: t.lead == null ? undefined : t.lead, title: t.title }; }
 
   // ---------- 說明 ----------
@@ -396,5 +421,5 @@
     const counts = {}; rows.forEach((r) => { counts[r.source] = (counts[r.source] || 0) + 1; }); return { rows, counts };
   }
   function learnNodes(t) { return nodeIds(t).filter((id) => t.nodes[id] && (t.nodes[id].source === 'ai' || t.nodes[id].source === 'user') && (id === 'motif' || id.indexOf('harmony.') === 0)).map((id) => ({ id, value: t.nodes[id].value })); }
-  return { estTokens, batchQuestion, parseBatch, allIds, rebase, usable, plan, compose, redo, setNode, describe, learnNodes, parseChords, parseMotif, checkMotif, checkChords, checkForm, layout, validateNode, questionOf, nodeIds, templateValue, FORMS, VOC, TEXTURES, BASSES, drumChoices, fill, newTree };
+  return { toJsonl, fromJsonl, pendingIds, batchItem, estTokens, batchQuestion, parseBatch, allIds, rebase, usable, plan, compose, redo, setNode, describe, learnNodes, parseChords, parseMotif, checkMotif, checkChords, checkForm, layout, validateNode, questionOf, nodeIds, templateValue, FORMS, VOC, TEXTURES, BASSES, drumChoices, fill, newTree };
 });

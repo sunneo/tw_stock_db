@@ -207,8 +207,8 @@
    "names": [
     "FaTeacherCheck"
    ],
-   "size": 2808,
-   "md5": "00dc22d815292ab2fab62928c3a464c5"
+   "size": 2810,
+   "md5": "7bd17424bb2a4f00087b8ab66af859d7"
   },
   "codeloop": {
    "file": "chunks/codeloop.js",
@@ -234,13 +234,109 @@
    "size": 10244,
    "md5": "5e598b40501a65b41f230e3188699041"
   },
+  "pycode2uml": {
+   "file": "chunks/pycode2uml.js",
+   "names": [
+    "FaPyCode2Uml"
+   ],
+   "size": 18491,
+   "md5": "82bd69d567ec52ad3d70ff0335afd33e"
+  },
+  "pyblockslib": {
+   "file": "chunks/pyblockslib.js",
+   "names": [
+    "FaPyBlocksLib"
+   ],
+   "size": 17862,
+   "md5": "57fe3209fbbe4ee8e65b09754fd5ebdf"
+  },
+  "pyblocks": {
+   "file": "chunks/pyblocks.js",
+   "names": [
+    "FaPyBlocks"
+   ],
+   "size": 18473,
+   "md5": "5e1f96125cbf11d29d78610dca878eae"
+  },
+  "pyblocksrules": {
+   "file": "chunks/pyblocksrules.js",
+   "names": [
+    "FaPyBlocksRules"
+   ],
+   "size": 7170,
+   "md5": "25519210aa8e4001dc0cb4917a0f6943"
+  },
+  "pybody": {
+   "file": "chunks/pybody.js",
+   "names": [
+    "FaPyBody"
+   ],
+   "size": 7646,
+   "md5": "fa3bef0c67c7194b4ee6daad8639cebd"
+  },
+  "pycnlchoose": {
+   "file": "chunks/pycnlchoose.js",
+   "names": [
+    "FaPyCnlChoose"
+   ],
+   "size": 13360,
+   "md5": "3ee2a02ec756cd346b7eaa8e5430f519"
+  },
+  "algointent": {
+   "file": "chunks/algointent.js",
+   "names": [
+    "FaAlgoIntent"
+   ],
+   "size": 7906,
+   "md5": "0aad15633c9cc7377f6a6b77304d5462"
+  },
+  "pylessons": {
+   "file": "chunks/pylessons.js",
+   "names": [
+    "FaPyLessons"
+   ],
+   "size": 3147,
+   "md5": "902f806a995b86dc249b2333e48b1d87"
+  },
+  "pylessonsbuiltin": {
+   "file": "chunks/pylessonsbuiltin.js",
+   "names": [
+    "FaPyLessonsBuiltin"
+   ],
+   "size": 22640,
+   "md5": "53012e11828147d36559b1b82e373eff"
+  },
+  "pyparadigms": {
+   "file": "chunks/pyparadigms.js",
+   "names": [
+    "FaPyParadigms"
+   ],
+   "size": 19561,
+   "md5": "d237db8992b3ba64c494fb09c5aafc8c"
+  },
+  "domaindsp": {
+   "file": "chunks/domaindsp.js",
+   "names": [
+    "FaDomainDsp"
+   ],
+   "size": 9525,
+   "md5": "7baa99e3654a97e8303bea4cfecf60a2"
+  },
+  "pyumlpipeline": {
+   "file": "chunks/pyumlpipeline.js",
+   "names": [
+    "FaPyUmlPipeline"
+   ],
+   "size": 6388,
+   "md5": "316f82205359eccf43a4242189741170"
+  },
   "codeagent": {
    "file": "chunks/codeagent.js",
    "names": [
     "FaCodeAgent"
    ],
-   "size": 12664,
-   "md5": "b95849df0fec26982c96bac2920af2a4"
+   "size": 13714,
+   "md5": "ee6002b6c5b5f2627220da1629f07e47"
   },
   "view": {
    "file": "chunks/view.js",
@@ -431,8 +527,8 @@
    "names": [
     "FaUmlEdit"
    ],
-   "size": 12284,
-   "md5": "403776b986c5470af4713ebdc5daef34"
+   "size": 15367,
+   "md5": "0768b905a7d99e12fa9c3933655048df"
   },
   "route": {
    "file": "chunks/route.js",
@@ -655,16 +751,16 @@
    "names": [
     "FaDataCore"
    ],
-   "size": 27609,
-   "md5": "5a3fa408a286443a122db8c2f4279211"
+   "size": 28097,
+   "md5": "de65997271b0112763d1dc809ac5c3c2"
   },
   "dataui": {
    "file": "chunks/dataui.js",
    "names": [
     "FaDataView"
    ],
-   "size": 27166,
-   "md5": "e7c14f473cdd45d53f7d93501fdc683f"
+   "size": 28756,
+   "md5": "696f7bf5f9bac37e60250251e25c1d25"
   },
   "lr": {
    "file": "chunks/lr.js",
@@ -1071,8 +1167,8 @@
    "names": [
     "FaComposeTree"
    ],
-   "size": 31279,
-   "md5": "4fb14c0b37309373d5f15e0de2fd3543"
+   "size": 33352,
+   "md5": "c66d424d8e0329aa03dec7e9ce764e63"
   },
   "musicbridge": {
    "file": "chunks/musicbridge.js",
@@ -1236,7 +1332,7 @@
   }
  },
  "core": {
-  "size": 5598555,
-  "md5": "6ea8611537d8221c4da3ca2abc428600"
+  "size": 5620733,
+  "md5": "288145ba744b6aca7d3080fe8da68b49"
  }
 }

@@ -199,6 +199,21 @@ function check(name, cond, info) { if (cond) ok++; else { bad.push(name); consol
     check('jsonStep: existing behavior unchanged without think blocks (reasoning empty)', !r.ok && r.reasoning === '', r);
     r = await R.jsonStep({ generate: gen(['{"choice": 1}']), messages: [], validate: (o) => (o.choice === 1 ? [] : ['bad']) });
     check('jsonStep: existing success shape unchanged plus reasoning field', r.ok && r.value.choice === 1 && r.tries === 1 && Array.isArray(r.rejected) && r.reasoning === '', r);
+    // 思考堆疊：選工具是路由的一層，選了哪個要留給後面（補欄位）看
+    {
+        const T = require('./think_stack.js'); const st = T.create('把這個網址的重點唸出來', { maxDecisions: 8 }); T.push(st, { path: '路由', question: '判斷這句話要用哪個工具' });
+        const seen = []; const spy = async (req) => { seen.push(req.messages.map((m) => m.content).join('\n')); return '{"choice": 2}'; };
+        const c2 = [{ tool: 'a', intent: 'A', score: 0 }, { tool: 'b', intent: 'B', score: 0 }];
+        const r1 = await R.chooseTool({ cands: c2, question: 'q', generate: spy, stack: st, stackMod: T, label: '選工具' });
+        check('chooseTool+stack: 提示有標頭（目標、路徑、這題），選完框架關閉', r1.ok && r1.index === 1 && /【目標】把這個網址的重點唸出來/.test(seen[0]) && /路由 > 選工具/.test(seen[0]) && st.frames.length === 1, { seen: seen[0], frames: st.frames.length });
+        check('chooseTool+stack: 選了哪個變成上層的「已定」', st.frames[0].decisions.some((d) => /選了 b/.test(d)), st.frames[0].decisions);
+        seen.length = 0; await R.modelFill({ missing: [{ name: 'text', type: 'string', required: true, description: '要唸的文字' }], question: 'q', toolName: 'b', generate: async (req) => { seen.push(req.messages.map((m) => m.content).join('\n')); return '{"text":"x"}'; }, stack: st, stackMod: T });
+        check('補欄位看得到前面選了 b', /【已定，不要改】[\s\S]*選工具：選了 b/.test(seen[0]), seen[0]);
+        const st2 = T.create('g'); T.push(st2, { path: '路由', question: 'x' }); await R.chooseTool({ cands: c2, question: 'q', generate: async () => '{"choice": 0}', stack: st2, stackMod: T });
+        check('chooseTool+stack: 都不合適也記下來', st2.frames[0].decisions.some((d) => /都不合適/.test(d)), st2.frames[0].decisions);
+        const r3 = await R.chooseTool({ cands: c2, question: 'q', generate: async () => '亂答' , maxTries: 1, stack: st2, stackMod: T });
+        check('chooseTool+stack: 選不出來也要把框架關掉（堆疊不外漏）', !r3.ok && st2.frames.length === 1, st2.frames.length);
+    }
     console.log(ok + ' passed, ' + bad.length + ' failed', bad);
     process.exit(bad.length ? 1 : 0);
 })();

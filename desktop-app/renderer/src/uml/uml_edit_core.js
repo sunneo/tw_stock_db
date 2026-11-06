@@ -240,5 +240,32 @@
         return { model: cur, steps, diff: diff(model, cur), applied: steps.reduce((n, s) => n + s.applied.length, 0), rejected: steps.reduce((n, s) => n + s.rejected.length, 0) };
     }
 
-    return { pickIndex, OPS, REL_KINDS, parseMemberText, parseStepText, applyOne, apply, diff, candidates, chooseMessages, choose, resolve };
+    // ---------- 小窗口分段寫：一次只給一個「下一格」（DESIGN.think-stack.md、DESIGN.jsonl-paging.md）----------
+    // 程式從目前的模型決定下一個該補的單位（參與者與使用案例 → 類別 → 每個空類別的成員 → 每個太短的使用案例 → 沒接上的類別），
+    // 每格帶焦點標頭（目標、已定的、這格要做什麼）與兄弟已經用的命名（前後一致），模型只回這一格的 ops；apply 之後再問下一格。
+    // 模型的窗口多小都做得完：它不需要記得整份設計，標頭每次由程式重組。
+    const memberNames = (m) => [].concat(...m.classes.map((c) => [].concat((c.attrs || []).map((a) => a.name), (c.ops || []).map((o) => o.name))));
+    function styleHint(m) {
+        const names = memberNames(m).filter((n) => /^[A-Za-z_]/.test(n)); if (names.length < 2) return '';
+        const k = (n) => (/_/.test(n) ? 'snake_case' : /^[a-z]+[A-Z]/.test(n) ? 'camelCase' : /^[A-Z]/.test(n) ? 'PascalCase' : '單字小寫'); const c = {}; names.forEach((n) => { const x = k(n); c[x] = (c[x] || 0) + 1; });
+        const top = Object.entries(c).filter(([x]) => x !== '單字小寫').sort((a, b) => b[1] - a[1])[0]; const ex = names.filter((n) => top && k(n) === top[0]).slice(0, 3);
+        return top ? '兄弟類別的成員用 ' + top[0] + '（例如 ' + ex.join('、') + '），照同樣的寫法' : '';
+    }
+    function nextUnit(model, opts) {
+        const m = model || { actors: [], classes: [], usecases: [], relations: [] }; const classes = m.classes || [], ucs = m.usecases || [], rels = m.relations || [], actors = m.actors || [];
+        const decided = [classes.length ? '類別：' + classes.map((c) => c.name).slice(0, 12).join('、') : '', ucs.length ? '使用案例：' + ucs.map((u) => u.name).slice(0, 10).join('、') : '', actors.length ? '參與者：' + actors.join('、') : ''].filter(Boolean).join('；');
+        const total = { classes: classes.length, usecases: ucs.length };
+        const mk = (unit, q, ex, why) => ({ done: false, unit, header: { goal: String((opts && opts.goal) || m.name || '把情境設計成 UML'), decided: decided || '（還沒有）', now: q }, question: q, answer_with: ex, why, style: styleHint(m) || undefined });
+        if (!actors.length || !ucs.length) return mk('usecases', '列出參與者與使用案例（每個使用案例是參與者想完成的一件事）', { ops: [{ op: 'add_actor', name: 'Customer' }, { op: 'add_usecase', name: 'Checkout', actor: 'Customer', steps: [] }] }, '還沒有' + (!actors.length ? '參與者' : '使用案例'));
+        if (!classes.length) return mk('classes', '列出系統需要的類別（名詞，PascalCase；先不用成員）', { ops: [{ op: 'add_class', name: 'Order', kind: 'class', members: [] }] }, '還沒有類別');
+        const empty = classes.find((c) => c.kind !== 'enum' && !(c.attrs || []).length && !(c.ops || []).length);
+        if (empty) return mk('class:' + empty.name, '替類別「' + empty.name + '」補上屬性與操作（2～5 個；只做這一個類別）', { ops: [{ op: 'add_member', cls: empty.name, member: 'total:float' }, { op: 'add_member', cls: empty.name, member: 'pay(amount:float):bool' }] }, '類別「' + empty.name + '」還是空的');
+        const short = ucs.find((u) => (u.steps || []).length < 2);
+        if (short) { const menu = [].concat(...classes.map((c) => (c.ops || []).slice(0, 4).map((o) => c.name + '.' + o.name))).slice(0, 14); return mk('usecase:' + short.name, '寫使用案例「' + short.name + '」（' + (short.actor || '') + '）的呼叫順序：至少 2 步，用已經有的類別與操作', { ops: [{ op: 'add_step', usecase: short.name, step: menu[0] || 'Order.pay(x)' }, { op: 'add_step', usecase: short.name, step: menu[1] || menu[0] || 'Order.pay(x)' }] }, '「' + short.name + '」只有 ' + (short.steps || []).length + ' 步（可用：' + (menu.join('、') || '還沒有操作') + '）'); }
+        const used = new Set([].concat(...rels.map((r) => [r.from, r.to]), ...ucs.map((u) => (u.steps || []).map((s) => s.to))));
+        const loose = classes.find((c) => c.kind !== 'enum' && !used.has(c.name)); if (loose && classes.length > 1) return mk('relation:' + loose.name, '類別「' + loose.name + '」沒有跟任何類別有關係、也沒被使用案例用到：接上一條關係，或刪掉它', { ops: [{ op: 'add_relation', from: classes.find((c) => c.name !== loose.name).name, to: loose.name, kind: 'assoc' }] }, '「' + loose.name + '」是孤立的');
+        return { done: true, total, note: '每一格都補齊了；用 uml_edit({"auto_fix":true}) 再檢查一次問題，或 uml_to_code 產生程式骨架' };
+    }
+
+    return { nextUnit, styleHint, pickIndex, OPS, REL_KINDS, parseMemberText, parseStepText, applyOne, apply, diff, candidates, chooseMessages, choose, resolve };
 });

@@ -203,4 +203,23 @@ t('先看全貌再往下鑽：maxDepth 收合、expand 展開、合起來逐字�
   assert.strictEqual(P.expand(model, '/nope').ok, false);
   assert.strictEqual(JSON.stringify(P.unflatten(P.expand(model, '', { levels: 99 }).lines)), JSON.stringify(model));
 });
+t('頁面 meta 帶 pages_left 估計；最後一頁與分段單筆不帶', () => {
+  const lines = []; for (let i = 0; i < 100; i++) lines.push(JSON.stringify({ id: i, text: 'x'.repeat(40) }));
+  const p1 = P.page(lines, { source: 's', chars: 1200 }); assert.ok(p1.meta.pages_left >= 1 && p1.meta.pages_left === Math.ceil((100 - p1.to) / (p1.to - p1.from)), p1.meta);
+  let cur = p1.nextCursor, last = p1; while (cur) { last = P.page(lines, { source: 's', cursor: cur, chars: 1200 }); cur = last.nextCursor; }
+  assert.strictEqual(last.meta.pages_left, undefined);
+  const big = [JSON.stringify({ a: 'y'.repeat(3000) }), JSON.stringify({ b: 1 })]; const pb = P.page(big, { source: 'b', chars: 600 }); assert.strictEqual(pb.meta.pages_left, undefined);
+});
+t('token 預算：中文 JSON 不再低估（4096 窗口一頁不超過比例），分段與全部讀完仍成立', () => {
+  const est = (x) => { let c = 0; for (const ch of String(x)) { const k = ch.charCodeAt(0); if (k >= 0x3000 && k <= 0x9fff) c++; } return Math.ceil(c + (String(x).length - c) / 3.5); };
+  const recs = []; for (let i = 0; i < 200; i++) recs.push({ id: i, name: '項目' + i, desc: '這是第' + i + '個項目的說明文字，大約三十個字左右。' });
+  const rc = P.toRecords(JSON.stringify(recs)); const maxTokens = Math.floor(4096 * 0.15 * 0.9);
+  const old = P.page(rc.lines, { source: 'b', chars: Math.floor(4096 * 0.15 * 3 * 0.9) });
+  const pg = P.page(rc.lines, { source: 'b', maxTokens, tokensOf: est });
+  assert.ok(est(pg.text) <= maxTokens + 10 && est(old.text) > maxTokens, [est(pg.text), est(old.text), maxTokens]);
+  let cur = pg.nextCursor, got = pg.to - pg.from, guard = 0; while (cur && guard++ < 200) { const n = P.page(rc.lines, { source: 'b', cursor: cur, maxTokens, tokensOf: est }); got += n.to - n.from; cur = n.nextCursor; }
+  assert.strictEqual(got, 200);
+  const huge = [JSON.stringify({ t: '中'.repeat(3000) })]; const hp = P.page(huge, { source: 'h', maxTokens: 400, tokensOf: est });
+  assert.ok(hp.meta.record_part && hp.meta.record_part.of > 1 && est(hp.text) <= 400 + 20, [hp.meta.record_part, est(hp.text)]);
+});
 console.log(n + ' passed, 0 failed');

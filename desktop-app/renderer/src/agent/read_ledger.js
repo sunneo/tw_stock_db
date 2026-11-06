@@ -87,8 +87,8 @@
     if (complete) { delete entries[key]; var done2 = Object.assign({}, base.completed); done2[key] = true; return { entries: entries, completed: done2 }; } // 讀完的來源記下來：之後再重讀其中一頁，不能又把它變成「沒讀完」
     entries[key] = {
       key: key, toolName: 'jsonl', label: String(m.source || ''), source: String(m.source || ''), unit: 'record',
-      covered: covered, total: total, totalExact: exact, gaps: gaps, done: done, pendingPart: part,
-      nextCursor: m.next_cursor || (prev && prev.nextCursor) || null, nextOffset: null, nextStartLine: null, blocking: true
+      covered: covered, total: total, totalExact: exact, gaps: gaps, done: done, pendingPart: part, pages: ((prev && prev.pages) || 0) + 1,
+      nextCursor: m.next_cursor || (prev && prev.nextCursor) || null, viaOffset: m.next_cursor == null && m.next_offset != null || !!(prev && prev.viaOffset && m.next_cursor == null), nextOffset: null, nextStartLine: null, blocking: true
     };
     return { entries: entries, completed: base.completed };
   }
@@ -97,7 +97,7 @@
   function record(ledger, toolName, args, resultObj) {
     var base = isObj(ledger) && isObj(ledger.entries) ? ledger : createLedger();
     if (!isObj(resultObj) || resultObj.ok === false) return { entries: Object.assign({}, base.entries), completed: base.completed };
-    if (isObj(resultObj._page) && resultObj._page.source != null) return recordPage(base, resultObj._page);
+    if (isObj(resultObj._page) && resultObj._page.source != null) { if (resultObj._page.blocking === false) return { entries: Object.assign({}, base.entries), completed: base.completed }; return recordPage(base, resultObj._page); } // blocking:false＝選擇性翻頁（排名搜尋），不逼模型讀完
     var entries = Object.assign({}, base.entries);
     var key = sourceKey(toolName, args), p = paging(resultObj);
     var hasNext = p.nextOffset != null || p.nextStartLine != null;
@@ -126,9 +126,19 @@
   // Chinese reminder that lists each unfinished source and where to continue. Empty list gives an empty string.
   // 覆蓋範圍型來源（單位＝第幾筆）的缺口描述：「第 a～b 筆」（人看的是 1 起算，區間是 0 起算半開）
   function gapText(e, cursorFor) {
-    var gs = (e.gaps || []).slice(0, 6).map(function (g) { return '第 ' + (g[0] + 1) + '～' + g[1] + ' 筆' + (typeof cursorFor === 'function' ? '（cursor：' + cursorFor(e.source, g[0]) + '）' : ''); });
+    var gs = (e.gaps || []).slice(0, 6).map(function (g) { return '第 ' + (g[0] + 1) + '～' + g[1] + ' 筆' + (e.viaOffset ? '（offset：' + g[0] + '）' : typeof cursorFor === 'function' ? '（cursor：' + cursorFor(e.source, g[0]) + '）' : ''); });
     if ((e.gaps || []).length > 6) gs.push('…還有 ' + (e.gaps.length - 6) + ' 段');
     return gs.join('、');
+  }
+  // 頁數預估：記錄清單還要幾頁（沒讀的筆數 ÷ 平均每頁讀到幾筆）；opts.room（上下文還剩幾 token）與 opts.pageTokens（一頁約幾 token）
+  // 給了就一併算「放得下幾頁」。放不下就別無止盡續讀：先用 grep／json 只取需要的，或把已讀的重點寫成摘要（舊頁會被換成 placeholder）。
+  function estimate(e, opts) {
+    if (!e || e.unit !== 'record' || !(e.total > 0)) return null;
+    var got = (e.covered || []).reduce(function (s, r) { return s + (r[1] - r[0]); }, 0), pages = e.pages || 0;
+    var left = Math.max(0, e.total - got); if (!left) return { pagesLeft: 0, fits: null, enough: true };
+    var per = pages > 0 && got > 0 ? got / pages : 0; var pagesLeft = per > 0 ? Math.ceil(left / per) : null;
+    var fits = opts && opts.room > 0 && opts.pageTokens > 0 ? Math.max(0, Math.floor(opts.room / opts.pageTokens)) : null;
+    return { pagesLeft: pagesLeft, fits: fits, enough: pagesLeft == null || fits == null ? null : fits >= pagesLeft };
   }
   function reminderText(list, opts) {
     var items = Array.isArray(list) ? list : [];
@@ -138,7 +148,9 @@
       if (e.unit === 'record') {
         var got = (e.covered || []).reduce(function (s, r) { return s + (r[1] - r[0]); }, 0);
         var miss = (e.gaps || []).length ? '還沒讀：' + gapText(e, cursorFor) : (e.pendingPart ? '第 ' + (e.pendingPart.record + 1) + ' 筆太大分成 ' + e.pendingPart.of + ' 段，還有第 ' + (e.pendingPart.next + 1) + ' 段以後沒讀' : '還沒收到最後一頁');
-        return '・來源 ' + e.label + '（記錄清單，已讀 ' + got + '／' + e.total + ' 筆）：' + miss + (e.nextCursor && !(e.gaps || []).length ? '；下一頁 cursor：' + e.nextCursor : '');
+        var est = estimate(e, opts), estText = '';
+        if (est && est.pagesLeft != null) estText = '；約還要 ' + est.pagesLeft + ' 頁' + (est.fits != null ? '，現在的上下文只放得下約 ' + est.fits + ' 頁' + (est.enough ? '' : '：放不下，別一頁頁全讀——先用 big_content 的 grep／json 只取需要的，或先把已讀的重點寫成一小段摘要再繼續（舊的頁會被省略）') : '');
+        return '・來源 ' + e.label + '（記錄清單，已讀 ' + got + '／' + e.total + ' 筆）：' + miss + estText + (e.nextCursor && !(e.gaps || []).length ? '；下一頁 cursor：' + e.nextCursor : '');
       }
       var where = e.nextOffset != null ? '下一個 offset：' + e.nextOffset
         : e.nextStartLine != null ? '下一個起始行：' + e.nextStartLine
@@ -164,6 +176,7 @@
     record: record,
     pending: pending,
     reminderText: reminderText,
+    estimate: estimate,
     describe: describe,
     sourceKey: sourceKey
   };

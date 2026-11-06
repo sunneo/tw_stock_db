@@ -110,5 +110,20 @@ const fake = (choice) => async () => JSON.stringify({ choice });
     const res2 = await E.resolve(model, [orphan], { generate: fake(3) });
     check('resolve：模型選不改 → 沒有差異', res2.diff.length === 0 && res2.applied === 0);
 
+    // ---- 小窗口分段寫：程式一次只給下一格，照著做就能從空白做到完整 ----
+    {
+        let m = { name: 'shop', actors: [], classes: [], usecases: [], relations: [] }; const seen = []; let n = 0;
+        for (; n < 20; n++) { const u = E.nextUnit(m); if (u.done) break; seen.push(u.unit); const r = E.apply(m, u.answer_with.ops); if (r.rejected.length) { seen.push('REJECTED'); break; } m = r.model; }
+        check('nextUnit：從空白依序是 參與者與使用案例 → 類別 → 空類別的成員 → 太短的使用案例', seen.join('>') === 'usecases>classes>class:Order>usecase:Checkout', seen);
+        check('nextUnit：照著做完的模型沒有驗證錯誤，最後 done', n === 4 && E.nextUnit(m).done === true && U.validateModel(m).length === 0, { n, errs: U.validateModel(m) });
+        const u0 = E.nextUnit({ name: 'x', actors: ['A'], usecases: [{ name: 'U', actor: 'A', steps: [] }], classes: [{ name: 'Cart', kind: 'class', attrs: [{ name: 'itemList' }], ops: [{ name: 'addItem' }, { name: 'removeItem' }] }, { name: 'Order', kind: 'class', attrs: [], ops: [] }], relations: [] }, { goal: '網路商店' });
+        check('nextUnit：標頭有目標與已定的、題目只有這一格，並提示兄弟的命名風格', u0.unit === 'class:Order' && u0.header.goal === '網路商店' && /Cart/.test(u0.header.decided) && /camelCase/.test(u0.style) && u0.header.now === u0.question, u0);
+        const uShort = E.nextUnit(model2()); check('nextUnit：太短的使用案例列出可用的呼叫（用已有的類別與操作）', /Cart\.add/.test(uShort.why) && uShort.answer_with.ops[0].step === 'Cart.add', uShort.why);
+        const loose = E.nextUnit({ name: 'x', actors: ['A'], usecases: [{ name: 'U', actor: 'A', steps: [{ to: 'Cart', msg: 'add' }, { to: 'Cart', msg: 'add' }] }], classes: [{ name: 'Cart', kind: 'class', attrs: [], ops: [{ name: 'add' }] }, { name: 'Tag', kind: 'class', attrs: [{ name: 't' }], ops: [] }], relations: [] });
+        check('nextUnit：孤立的類別要接上關係', loose.unit === 'relation:Tag' && loose.answer_with.ops[0].op === 'add_relation', loose);
+        function model2() { return { name: 'x', actors: ['A'], usecases: [{ name: 'U', actor: 'A', steps: [{ to: 'Cart', msg: 'add' }] }], classes: [{ name: 'Cart', kind: 'class', attrs: [], ops: [{ name: 'add' }] }], relations: [] }; }
+        check('nextUnit：沒有樣式可比時不亂給風格', E.styleHint({ classes: [{ attrs: [{ name: 'a' }], ops: [] }] }) === '');
+    }
+
     console.log('uml_edit_core: ' + ok + ' passed, ' + bad.length + ' failed'); if (bad.length) { console.log(bad.join('\n')); process.exit(1); }
 })();

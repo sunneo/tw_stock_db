@@ -169,4 +169,30 @@ t('覆蓋：失敗結果不改帳本；舊式 has_more 來源與新式並存', (
   g = L.record(g, 'fap_read_file', A, { ok: true, has_more: true, next_offset: 100 }); assert.strictEqual(L.pending(g).length, 2);
 });
 
+t('頁數預估：還要幾頁、上下文放得下幾頁、放不下就提示改用 grep／摘要', () => {
+  const ms = metas(mkLines(500), 3000); const g = rec(L.createLedger(), ms[0]); const e = L.pending(g)[0];
+  const perPage = ms[0].to - ms[0].from; const est = L.estimate(e, { room: 5000, pageTokens: 1000 });
+  assert.strictEqual(est.pagesLeft, Math.ceil((500 - perPage) / perPage)); assert.strictEqual(est.fits, 5); assert.strictEqual(est.enough, est.fits >= est.pagesLeft);
+  const small = L.reminderText([e], { room: 2000, pageTokens: 1000 }); assert.ok(/只放得下約 2 頁/.test(small) && /放不下/.test(small) && /grep/.test(small), small);
+  const big = L.reminderText([e], { room: 10000000, pageTokens: 1000 }); assert.ok(/約還要 \d+ 頁/.test(big) && !/放不下/.test(big), big);
+  assert.ok(!/約還要/.test(L.reminderText([e])) === false); // 沒給 room 也有「還要幾頁」
+  assert.strictEqual(L.estimate({ unit: 'record', total: 10, covered: [[0, 10]], pages: 1 }).pagesLeft, 0);
+  assert.strictEqual(L.estimate({ toolName: 'x' }), null);
+});
+
+t('blocking:false 的 _page（排名搜尋翻頁）不進帳本，也不清掉別的來源的缺口', () => {
+  const ms = metas(mkLines(300), 2500); let g = rec(L.createLedger(), ms[0]); const before = L.pending(g).length;
+  g = L.record(g, 'knowledge_ask', { question: 'q' }, { ok: true, _page: { source: 'ki_ask:q', from: 0, to: 5, total: 5, has_more: true, blocking: false } });
+  assert.strictEqual(L.pending(g).length, before); assert.ok(!L.pending(g).some((e) => /ki_ask/.test(e.label)));
+});
+
+t('repo_* 清單的 _page（用 offset 續讀）：缺口提示用 offset 而不是 cursor，讀完才放行', () => {
+  let g = L.record(L.createLedger(), 'repo_map', { action: 'find' }, { ok: true, _page: { source: 'repo_map:find|r|x|results', from: 40, to: 80, total: 120, total_exact: true, has_more: true, next_offset: 80 } });
+  const e = L.pending(g)[0]; assert.ok(e.viaOffset); const txt = L.reminderText([e], { cursorFor: () => 'CUR' });
+  assert.ok(/offset：0/.test(txt) && /offset：80|第 81～120 筆（offset：80）/.test(txt) && !/CUR/.test(txt), txt);
+  g = L.record(g, 'repo_map', { action: 'find' }, { ok: true, _page: { source: 'repo_map:find|r|x|results', from: 0, to: 40, total: 120, has_more: true, next_offset: 40 } });
+  g = L.record(g, 'repo_map', { action: 'find' }, { ok: true, _page: { source: 'repo_map:find|r|x|results', from: 80, to: 120, total: 120, has_more: false, done: true } });
+  assert.strictEqual(L.pending(g).length, 0);
+});
+
 console.log(n + ' tests passed');

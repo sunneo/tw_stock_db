@@ -144,5 +144,24 @@ const byNode = (per, log) => async (sys, user, op) => { const id = nodeOf(sys); 
     check('批次解析:JSON 備案', T.parseBatch('{"form":"C","harmony.main":"i VI III VII"}', ids3).form === 'C');
     console.log('批次問法量測(假資料):整棵樹 1 次呼叫、提示約 ' + T.estTokens(T.batchQuestion(tb, T.allIds(tb)).system) + ' 估計 token;一次一題 10 次呼叫;中等預留 ' + cwMid + ' 時 ' + (batches.length + singles.length) + ' 次');
   }
+  // 多層 JSONL：攤平、還原相等、一次寫一個節點（小窗口的模型）
+  {
+    const tj = await T.plan(RES(), { ask: byNode(GOOD), attempts: 2 }); const tp0 = await T.plan(RES(), {});
+    const jl = T.toJsonl(tj); const head = JSON.parse(jl.lines[0]);
+    check('JSONL：第 0 層 tree 行＋每節點一行，全部已決定', head.t === 'tree' && head.nodes === T.nodeIds(tj).length && jl.lines.length === 1 + head.nodes && head.pending.length === 0, head);
+    const same = (a, b) => ['v', 'style', 'key', 'tempo', 'bars', 'mode', 'lead', 'title', 'task', 'purpose', 'moodName'].every((k) => JSON.stringify(a[k] == null ? null : a[k]) === JSON.stringify(b[k] == null ? null : b[k])) && JSON.stringify(a.nodes) === JSON.stringify(b.nodes); // 執行時的帳（calls、batchInfo）不屬於樹的內容
+    const back = T.fromJsonl(jl.lines); check('JSONL：還原後規格與每個節點逐項相同（組出的曲子也相同）', back.ok && same(back.tree, tj) && JSON.stringify(T.compose(back.tree, 5).song) === JSON.stringify(T.compose(tj, 5).song) && !back.missing.length && !back.problems.length, back.ok ? back.problems : back.error);
+    const j0 = T.toJsonl(tp0, { ask: true }); const n0 = j0.lines.slice(1).map((l) => JSON.parse(l));
+    check('JSONL：範本節點是 pending，帶單獨就答得出來的一題（ask）', j0.pending.length === T.nodeIds(tp0).length && n0.every((r) => !r.decided && /【/.test(r.ask) && r.parent), n0.map((r) => r.id + '>' + r.parent));
+    check('JSONL：階層（form→harmony→voices，motif 在根下）', n0.find((r) => r.id === 'harmony.main').parent === 'form' && n0.find((r) => r.id === 'voices.main.texture').parent === 'harmony.main' && n0.find((r) => r.id === 'motif').parent === 'tree');
+    check('JSONL：pendingOnly 只列沒決定的', T.toJsonl(tj, { pendingOnly: true }).lines.length === 1 && T.toJsonl(tp0, { pendingOnly: true }).lines.length === 1 + T.nodeIds(tp0).length);
+    const bk0 = T.fromJsonl(j0.lines); check('JSONL：範本樹也能還原（error 一併保留）', bk0.ok && same(bk0.tree, tp0), bk0.ok ? '' : bk0.error);
+    // 一次寫一個節點：模型只看一行 ask、回一個值，標 ai；不合格的值被擋並說明原因
+    let cur = tp0; const w1 = T.setNode(cur, 'form', 'B', 'ai'); check('逐節點：寫入標 ai，其餘節點仍是範本', !w1.error && w1.tree.nodes.form.source === 'ai' && w1.tree.nodes['harmony.main'].source === 'template', w1.error);
+    check('逐節點：不合格的值被擋', !!T.setNode(w1.tree, 'harmony.main', 'XX YY').error && !!T.setNode(w1.tree, 'motif', '9:q').error);
+    check('逐節點：寫完整棵樹後 pending 清空且可組裝', (() => { let t = w1.tree; for (const id of T.nodeIds(t)) { if (id === 'form') continue; const r = T.setNode(t, id, GOOD[id] || (id === 'motif' ? GOOD.motif : 'A'), 'ai'); if (r.error) return r.error; t = r.tree; } return T.pendingIds(t).length === 0 && T.compose(t, 3).song.tracks[0].notes.length > 20; })());
+    const bad = T.fromJsonl(['{"t":"tree","style":"pop","key":"C","tempo":100,"bars":16,"mode":"major"}', '{"t":"node","id":"harmony.main","value":"XX"}']); check('JSONL：壞的節點值列在 problems，缺的節點補範本', bad.ok && bad.problems.length === 1 && bad.missing.length === T.nodeIds(bad.tree).length, bad);
+    check('JSONL：沒有 tree 行／壞 JSON 回錯誤', T.fromJsonl(['{"t":"node","id":"form","value":"B"}']).ok === false && T.fromJsonl(['{壞']).ok === false);
+  }
   console.log(ok + ' passed, ' + bad.length + ' failed'); if (bad.length) { console.log(bad.join('\n')); process.exit(1); }
 })();

@@ -10,6 +10,7 @@
 }(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
   var VERSION = 'c1';
+  var META_TOKENS = 130; // 同上，以 token 計（JSON 標點與中文提示分詞很碎）
   var META_OVERHEAD = 320; // meta 那一行大約佔多少字元（含 hint），從預算裡先扣掉
 
   function isObj(x) { return x !== null && typeof x === 'object' && !Array.isArray(x); }
@@ -248,14 +249,19 @@
     var total = lines.length;
     var cur = decodeCursor(opts.cursor, { source: opts.source, total: total });
     if (!cur.ok) return { ok: false, error: cur.error };
-    var budget = Math.max(1, budgetChars(opts) - META_OVERHEAD);
+    // 預算單位：給了 maxTokens＋tokensOf（宿主的 token 估計）就用 token 算——中文 JSON 大約 1 字 1 token，用「3 字元＝1 token」會低估 3 倍，
+    // 小窗口（4096）一頁就吃掉四成；沒給就照字元算（跟以前完全一樣）
+    var tokMode = typeof opts.tokensOf === 'function' && Number(opts.maxTokens) > 0;
+    var cost = function (str) { return tokMode ? Number(opts.tokensOf(str)) + 1 : str.length + 1; };
+    var budget = tokMode ? Math.max(1, Math.floor(Number(opts.maxTokens)) - META_TOKENS) : Math.max(1, budgetChars(opts) - META_OVERHEAD);
     var i = cur.index, part = cur.part, out = [], used = 0, partInfo = null;
     if (i >= total) return { ok: true, text: safeStringify({ _page: { source: cleanSource(opts.source), page: cur.page + 1, from: total, to: total, returned: 0, total: total, total_exact: true, has_more: false, next_cursor: null, done: true, read_records: total } }), meta: { done: true }, nextCursor: null, from: total, to: total, hasMore: false };
-    if (part > 0 || lines[i].length + 1 > budget) {
+    if (part > 0 || cost(lines[i]) > budget) {
       // 這一筆放不進一頁（或上次讀到一半）：只送這一筆的一段
       var rec = lines[i]; var from = 0;
       // 每段的 text 因 JSON 跳脫會變長，抓一個保守比例讓整行不超過預算
-      var perPart = Math.max(1, Math.floor((budget - 80) / 2));
+      var ratio = tokMode ? Math.max(0.05, cost(rec) / Math.max(1, rec.length)) : 1; // 每個字元約幾個單位
+      var perPart = Math.max(1, Math.floor(((budget - (tokMode ? 40 : 80)) / 2) / ratio));
       var starts = [0];
       for (var pos = 0; pos < rec.length;) { var piece = sliceSafe(rec, pos, perPart); pos += piece.length; if (pos < rec.length) starts.push(pos); }
       var nParts = starts.length;
@@ -269,7 +275,7 @@
       if (lastPart) { i++; part = 0; } else part++;
     } else {
       while (i < total) {
-        var len = lines[i].length + 1;
+        var len = cost(lines[i]);
         if (out.length && used + len > budget) break;
         if (!out.length && len > budget) break; // 第一筆就放不下：下一輪走分段
         out.push(lines[i]); used += len; i++;
@@ -288,7 +294,7 @@
     if (!hasMore) { meta.done = true; meta.read_records = total; }
     if (cur.index === 0 && cur.part === 0 && opts.head != null) {
       var hs = safeStringify(opts.head) || '';
-      if (hs.length <= Math.floor(budget * 0.25)) meta.head = opts.head; else meta.head_omitted = true; // 其餘欄位太大就不塞進第一頁
+      if ((tokMode ? Number(opts.tokensOf(hs)) : hs.length) <= Math.floor(budget * 0.25)) meta.head = opts.head; else meta.head_omitted = true; // 其餘欄位太大就不塞進第一頁
     }
     // 樹狀記錄（flattenAst：先序，每個節點有 id 與 size＝子樹節點數）：這一頁切在樹的中間時，列出「子節點還沒讀完」的節點，
     // 不完整的節點會讓人誤讀（例如 if 只看到條件沒看到 else），所以提醒不要對它下結論，並附要接著讀的位置。
@@ -306,6 +312,7 @@
         if (firstId > 0 || (out.length && JSON.parse(out[0]).parent != null)) meta.starts_inside = '這一頁從樹的中間開始：每個節點的 path 是從根到它的類型鏈，parent 是上層節點的 id（可能在前一頁）。';
       }
     }
+    if (hasMore && !partInfo && out.length) meta.pages_left = Math.ceil((total - i) / out.length); // 估計：照這一頁讀到的筆數，後面大約還有幾頁（上下文放得下幾頁要跟這個比）
     if (opts.continueWith && hasMore) meta.continue = String(opts.continueWith).replace('<CURSOR>', nextCursor);
     meta.digest = digest(out.join('\n'));
     meta.hint = hasMore

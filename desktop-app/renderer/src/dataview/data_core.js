@@ -71,6 +71,18 @@
         return { data, bad };
     }
 
+    // 超大 JSONL：只解析 lines 裡第 from 起的 size 筆（非空行；壞行照舊保留）。行號是整份檔案的行號（from 是 lines 的 0 起算索引）。
+    // 回傳 { data, bad, from, to, total, nonEmpty }：from／to 是 lines 的索引區間（to 是下一批的起點）；不必把整份 100 MB 都 JSON.parse 成物件。
+    const LARGE_JSONL_LINES = 50000, JSONL_WINDOW = 20000;
+    function parseJsonlWindow(lines, from, size) {
+        from = Math.max(0, Math.floor(from) || 0); size = Math.max(1, Math.floor(size) || JSONL_WINDOW); const data = [], bad = []; let i = from, got = 0;
+        for (; i < lines.length && got < size; i++) {
+            const l = String(lines[i]).replace(/\r$/, ''); if (!l.trim()) continue; got++;
+            try { data.push(JSON.parse(l)); } catch (e) { const m = String(e.message || e).split('\n')[0]; bad.push({ line: i + 1, message: m }); data.push({ _bad_line: i + 1, error: m, raw: l.length > 2000 ? l.slice(0, 2000) + '…' : l }); }
+        }
+        return { data, bad, from, to: i, total: lines.length, nonEmpty: got };
+    }
+
     // ===== TOML 解析（子集：表、表陣列、點鍵、四種字串、數字、布林、日期時間（當字串）、陣列、行內表）=====
     function parseToml(src) {
         let i = 0; const n = src.length; let line = 1;
@@ -567,5 +579,5 @@
         const s = JSON.stringify(walk(data, 0)); return s.length > (opts.maxChars || 3000) ? s.slice(0, opts.maxChars || 3000) + '…' : s;
     }
 
-    return { detectFormat, stripJsonc, countComments, parseJsonl, parse, stringify, parseToml, stringifyToml, parseCsv, sheetToCsv, highlight, prettyIfMinified, toTables, buildXlsx, readXlsx, visibleRows, defaultExpanded, searchTree, searchText, getByPath, outline, preview, typeOf, colLetter, isObj };
+    return { detectFormat, stripJsonc, countComments, parseJsonl, parseJsonlWindow, LARGE_JSONL_LINES, JSONL_WINDOW, parse, stringify, parseToml, stringifyToml, parseCsv, sheetToCsv, highlight, prettyIfMinified, toTables, buildXlsx, readXlsx, visibleRows, defaultExpanded, searchTree, searchText, getByPath, outline, preview, typeOf, colLetter, isObj };
 });

@@ -2,7 +2,7 @@
  * 一堂課 = 一種算法（動作表的 algo key）＋輸入形狀＋「solve 的區塊配方」（變數角色化：輸入變數叫 v0、v1…，套用時換成題目讀出來的名稱）。
  * 老師的解答格式：一段 Python，內含 `def solve(<輸入變數>):`（輸入已由 read_input 讀好；解答裡可以有輔助函式與 import）。
  *
- *   deriveLesson({statement, intent, source, B, C2U, parseTree}) → {ok, lesson, reason}
+ *   deriveLesson({statement, intent, source, B, C2U, parseTree, serial?, createdBy?, note?, paradigm?, slots?}) → {ok, lesson, reason}
  *     lesson = { id, algo, shape, nparams, roles:[…], body:[敘述 IR（輸入變數已改成 v0..）], prelude:[import 敘述 IR], cnl（給人看）, createdBy, note }
  *   matchLesson(lessons, intent) → lesson | null          algo 與輸入形狀都相同才算
  *   applyLesson(lesson, intent) → { body, prelude }       把 v0.. 換成題目的變數名稱；區域變數若跟題目變數撞名就改名
@@ -41,7 +41,7 @@
         const helpers = ops.filter((x) => x.name !== 'solve' && x.name !== 'main').map((h) => ({ k: 'def', name: h.name, ps: h.params.map((p) => Object.assign({ name: p.name }, p.default ? { default: p.default } : {})), a: h.body }));
         const body = clone(helpers.concat(solve.body)); const prelude = clone(u.model.prelude || []);
         const lesson = { id: intent.algo + '#' + (o.serial || 1), algo: intent.algo, shape: shapeOf(intent), nparams: pnames.length, roles: pnames.map((_, i) => 'v' + i), paradigms: intent.paradigms || [], body: renameIR(body, roles), prelude, createdBy: o.createdBy || 'teacher', note: o.note || '' };
-        try { const bl = B.fromIR(lesson.body); lesson.cnl = B.toCNL(bl); } catch (_) { lesson.cnl = ''; }
+        if (o.paradigm) { lesson.paradigm = o.paradigm; if (o.slots) lesson.slots = o.slots; } try { const bl = B.fromIR(lesson.body); lesson.cnl = B.toCNL(bl); } catch (_) { lesson.cnl = ''; }
         return { ok: true, lesson };
     }
     function matchLesson(lessons, intent) {

@@ -1468,7 +1468,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     music: {
         enabled: true,
         label: '音樂(MIDI 播放、MIDI 轉 mp3、音樂知識:音階和弦節奏音域配器與各風格;音色一律用 GS 音色庫)',
-        toolNames: ['midi_play', 'midi_edit_open', 'midi_compose', 'midi_song_jsonl', 'midi_to_mp3', 'audio_to_midi', 'soundtrack_make', 'music_topic', 'music_work_learn', 'list_uploaded_files', 'browser_search', 'fetch_web_page'],
+        toolNames: ['midi_play', 'midi_edit_open', 'midi_compose', 'midi_compose_tree', 'midi_song_jsonl', 'midi_to_mp3', 'audio_to_midi', 'soundtrack_make', 'music_topic', 'music_work_learn', 'list_uploaded_files', 'browser_search', 'fetch_web_page'],
         systemPrompt: '你負責音樂:播放 MIDI、把 MIDI 轉成 mp3、把使用者上傳的 mp3/wav 轉成 MIDI(audio_to_midi,結果要誠實說沒做到的部分)、回答音樂知識、依描述組一首短曲讓使用者聽。做法:0) 使用者要你作曲、寫一首曲子、做背景音樂 → midi_compose({description,或 style／key／tempo／bars})(程式依風格範本產生並檢查音域與跳進,結果直接進編輯器;不要自己一個音一個音寫,除非使用者給了明確的旋律);1) 使用者上傳了 .mid 檔 → midi_play({file_id}) 放播放卡片;要 mp3 → midi_to_mp3({file_id})。2) 要你寫一段曲子 → 先 music_topic 查需要的知識(和弦進行、音域、鼓型、風格),再自己組 song 呼叫 midi_play({song}):速度與拍號合風格,音高在樂器合理音域內,旋律音落在調內、強拍用和弦內音,貝斯彈根音,鼓用 drum:true 的軌(底鼓 36、小鼓 38、閉合踩鈸 42),每軌 program 用 GM 編號;小節數取 4 的倍數。3) 不確定某個風格的細節 → browser_search 查維基再回答,不要憑印象講數字。4) 音色只有 GS 音色庫的 GM 128 音色與鼓組;不能承諾做不到的(例如任意樂器分離、錄音轉譜目前還沒有)。5) 誠實說明:播放卡片第一次要下載瘦身版音色庫(大小會顯示在下載進度)。',
         dynamicNote: '路由建議:使用者提到 MIDI、.mid、播放音樂、轉 mp3、作曲、和弦、音階、節奏、配樂、某種音樂風格的特色時,委派這個領域。'
     },
@@ -4590,13 +4590,13 @@ const FA_GUI_HOST_SRC = "// GUI 視窗主機：擁有一個終端機 session 的
 const FA_GUI_PYWORKER_SRC = "// 會開視窗的 Python 程式（py_async.js 判斷為 true 的）在 module Worker 裡跑：這裡只放純函式與要送進 Worker 的程式。\n// 為什麼要 Worker：同步的 runPython 內不能等 JS 的 Promise；Worker 裡用 JSPI（pyodide.ffi.run_sync）可以在 Python 呼叫處等頁面回覆。\n// 為什麼 Worker 是 module：classic Worker 裡 Pyodide 會報「Classic web workers are not supported」（2026-11-03 實測）。\n// 為什麼頁面不用 SharedArrayBuffer：頁面 crossOriginIsolated 是 false，所以只能用 Promise 與 postMessage。\n(function (root, factory) {\n  if (typeof module === 'object' && module.exports) { module.exports = factory(); } else { root.AiChatPyWorker = factory(); }\n}(typeof self !== 'undefined' ? self : this, function () {\n  'use strict';\n\n  // 送進 Worker 的主程式。用 Function.prototype.toString 取出原始碼，所以函式內不能用外部變數，只能用參數 base（Pyodide 的網址）。\n  // 訊息：主執行緒 → Worker：init（檔案、程式、Python 前置程式）、reply（對 call 的回覆）；Worker → 主執行緒：out／err（輸出）、call（橋接請求）、done（結束碼）。\n  function workerMain(base) {\n    var pending = {}, nextId = 1;\n    function request(op, args) {\n      return new Promise(function (resolve) {\n        var id = nextId++;\n        pending[id] = resolve;\n        self.postMessage({ type: 'call', id: id, op: op, args: args });\n      });\n    }\n    async function run(m) {\n      try {\n        var mod = await import(base + 'pyodide.mjs');\n        var py = await mod.loadPyodide({ indexURL: base });\n        py.setStdout({ batched: function (s) { self.postMessage({ type: 'out', text: s + '\\n' }); } });\n        py.setStderr({ batched: function (s) { self.postMessage({ type: 'err', text: s + '\\n' }); } });\n        py.setStdin({ stdin: function () { return null; } });\n        // _fa_pybridge：fa_bridge.call 在網頁版直接呼叫它（同步的 run_sync 會等這裡的 Promise）\n        py.registerJsModule('_fa_pybridge', {\n          call: function (op, argsJson) { return request(String(op), JSON.parse(String(argsJson || '{}'))); },\n          sleep: function (ms) { return new Promise(function (r) { setTimeout(r, Number(ms) || 0); }); }\n        });\n        Object.keys(m.files).forEach(function (k) {\n          var full = '/fa_pybridge/' + k, dir = full.slice(0, full.lastIndexOf('/'));\n          py.FS.mkdirTree(dir);\n          py.FS.writeFile(full, m.files[k]);\n        });\n        py.FS.mkdirTree('/work');\n        m.inputs.forEach(function (f) {\n          var full = '/work/' + f.rel, dir = full.slice(0, full.lastIndexOf('/'));\n          if (dir !== '/work') py.FS.mkdirTree(dir);\n          py.FS.writeFile(full, f.bytes);\n        });\n        py.FS.chdir('/work');\n        py.runPython(m.prelude);\n        py.globals.set('__fa_src__', m.src);\n        py.globals.set('__fa_path__', '/work/' + m.scriptName);\n        py.runPython(m.runner);\n        // 程式寫在目前目錄（/work）的檔案送回頁面，讓終端機的 ls 看得到（例如 missile 範例寫出的貼圖）\n        function syncBack() {\n          var files = [];\n          py.FS.readdir('/work').forEach(function (n) {\n            var p = '/work/' + n;\n            if (n === '.' || n === '..' || !py.FS.isFile(py.FS.stat(p).mode)) { return; }\n            files.push({ rel: n, bytes: py.FS.readFile(p) });\n          });\n          self.postMessage({ type: 'files', files: files });\n        }\n        var go = py.globals.get('go');\n        try {\n          var rc = await go.callPromising();   // go() 回傳程式的結束碼（SystemExit 的值，或正常結束的 0）\n          syncBack();\n          self.postMessage({ type: 'done', code: typeof rc === 'number' ? rc : 0 });\n        } catch (e) {\n          self.postMessage({ type: 'err', text: String((e && e.message) || e) + '\\n' });\n          syncBack();\n          self.postMessage({ type: 'done', code: 1 });\n        } finally {\n          go.destroy();\n        }\n      } catch (e) {\n        self.postMessage({ type: 'err', text: '無法啟動 Python（' + String((e && e.message) || e) + '）\\n' });\n        self.postMessage({ type: 'done', code: 1 });\n      }\n    }\n    self.onmessage = function (ev) {\n      var m = ev.data || {};\n      if (m.type === 'reply') { var p = pending[m.id]; delete pending[m.id]; if (p) p(m.raw); return; }\n      if (m.type === 'init') run(m);\n    };\n  }\n\n  // 要放進 Worker 執行的原始碼（module）。base 是 Pyodide 的網址，要與頁面用的相同（FA_ASSET_URLS.pyodideJsBase）。\n  function workerSource(base) {\n    return '(' + workerMain.toString() + ')(' + JSON.stringify(String(base)) + ');';\n  }\n\n  // Worker 內先執行：轉接層的路徑、橋接版 fa_bridge（網頁版：IN_BROWSER 時 call 用 run_sync）。sys.path 把 /work 放最前面，跟桌面版的 python 一樣。\n  // install_hooks 不放這裡：它會呼叫 run_sync，頂層不在 callPromising 裡會報「Cannot stack switch」，所以放進 RUNNER_PY 的 go() 裡。\n  var PRELUDE_PY = [\n    'import sys',\n    \"if '/fa_pybridge' not in sys.path:\",\n    \"    sys.path.insert(0, '/fa_pybridge')\",\n    \"sys.path.insert(0, '/work')\",\n    'import fa_bridge',\n    'fa_bridge.ACTIVE = True',\n  ].join('\\n');\n\n  // 把程式包在 go() 裡執行：整支程式在 callPromising 裡，頂層的 gui 呼叫才能同步等待。__name__ 設成 __main__，__file__ 指向 /work 內的路徑。\n  var RUNNER_PY = [\n    'def go():',\n    '    fa_bridge.install_hooks()',\n    '    import builtins, io',\n    '    def _readline(prompt=\"\"):',\n    '        return fa_bridge.call(\"stdin.readline\", {\"prompt\": str(prompt)})',\n    '    def _input(prompt=\"\"):',\n    '        r = _readline(prompt)',\n    '        if r is None:',\n    '            raise EOFError(\"EOF when reading a line\")',\n    '        return r[:-1] if r.endswith(\"\\\\n\") else r',\n    '    class _Stdin(io.TextIOBase):',\n    '        def readable(self): return True',\n    '        def isatty(self): return False',\n    '        def readline(self, size=-1):',\n    '            r = _readline(\"\")',\n    '            return \"\" if r is None else r',\n    '        def read(self, size=-1):',\n    '            parts = []',\n    '            while True:',\n    '                r = _readline(\"\")',\n    '                if r is None: break',\n    '                parts.append(r)',\n    '            return \"\".join(parts)',\n    '    builtins.input = _input',\n    '    sys.stdin = _Stdin()',\n    \"    g = {'__name__': '__main__', '__file__': __fa_path__}\",\n    // SystemExit 與 Python 的 sys.exit 一樣：整數是結束碼，None 是 0，其他值印到 stderr 後結束碼 1；未捕捉的例外仍是 1（由 JS 端的 catch 處理）\n    '    try:',\n    '        exec(compile(__fa_src__, __fa_path__, \"exec\"), g)',\n    '    except SystemExit as e:',\n    '        c = e.code',\n    '        if c is None: return 0',\n    '        if isinstance(c, int): return c',\n    '        sys.stderr.write(str(c) + \"\\\\n\")',\n    '        return 1',\n    '    return 0',\n  ].join('\\n');\n\n  // gui.* 橋接操作（gui.py 呼叫的名字，去掉 gui. 前綴）。與 gui_bridge.js 的 OPS 對應，另外 poll／wait／image 由頁面處理。\n  var GUI_OPS = ['open', 'add', 'set', 'remove', 'close', 'draw', 'image', 'poll', 'wait'];\n\n  // 把 gui.py 送來的參數轉成 \"@gui\" 協定訊息（v:1 + op + 其餘欄位，欄位名與 gui.py 一致）\n  function guiMessage(op, args) {\n    var m = { v: 1, op: String(op) };\n    Object.keys(args || {}).forEach(function (k) { m[k] = args[k]; });\n    return m;\n  }\n\n  // 等待視窗的下一個事件（gui.wait）。host.wait 的 resolver 不能取消，超時後下一個事件會被丟掉，所以改成輪詢佇列（host.poll）。\n  // 視窗已關閉且佇列空的，回傳 close 事件；超時回傳 null（視窗保持開著，程式可以再等）。\n  async function waitEvent(host, winId, timeoutSec, o) {\n    var stepMs = (o && o.stepMs) || 15;\n    var deadline = o.now() + Math.max(0, Number(timeoutSec) || 0) * 1000;\n    for (;;) {\n      var line = host.poll(winId);\n      if (line !== null && line !== undefined) return JSON.parse(line);\n      if (!host.isOpen(winId)) return { event: 'close', id: winId };\n      if (o.now() >= deadline) return null;\n      await o.sleep(stepMs);\n    }\n  }\n\n  return {\n    workerSource: workerSource,\n    workerMain: workerMain,\n    PRELUDE_PY: PRELUDE_PY,\n    RUNNER_PY: RUNNER_PY,\n    GUI_OPS: GUI_OPS,\n    guiMessage: guiMessage,\n    waitEvent: waitEvent,\n  };\n}));\n";
 /* GUIPYWORKER-END */
 /* READLEDGER-BEGIN */
-const FA_READ_LEDGER_SRC = "// Read ledger (pure, no DOM, no I/O): remembers paged reads that the model has not finished.\n// A tool result that says there is more (has_more:true, or chunk.hasMore:true, or truncated:true with a continuation offset)\n// is recorded under its source. The same source returning a result without has_more (its last page) clears the entry.\n// The tool loop asks pending(ledger) before accepting a final answer and uses reminderText(pending) to tell the model what is still unread.\n// Every function returns new values; the ledger is plain JSON-serializable data: { entries: { [key]: entry } }.\n//\n// entry: { key, toolName, label, nextOffset, nextStartLine, total, blocking }\n//   blocking:true  -> has_more, or truncated with a continuation offset (the loop may refuse a final answer)\n//   blocking:false -> truncated with no continuation offset (only a reminder; never refuses an answer)\n(function (root, factory) {\n  if (typeof module === 'object' && module.exports) { module.exports = factory(); } else { root.AiChatReadLedger = factory(); }\n}(typeof self !== 'undefined' ? self : this, function () {\n  'use strict';\n  var SOURCE_FIELDS = ['ref', 'path', 'url', 'file_id', 'fileId', 'attachment_id', 'attachmentId', 'id'];\n  var PAGING_ARGS = ['offset', 'start', 'start_line', 'startLine', 'page', 'cursor', 'limit', 'max_chars', 'max_lines', 'chunk', 'from', 'to', 'next_offset', 'nextOffset'];\n\n  function isObj(x) { return x !== null && typeof x === 'object' && !Array.isArray(x); }\n  function pick() { for (var i = 0; i < arguments.length; i++) if (arguments[i] != null && arguments[i] !== '') return arguments[i]; return null; }\n\n  function stableStr(x) {\n    if (x === null || typeof x !== 'object') return JSON.stringify(x === undefined ? null : x);\n    if (Array.isArray(x)) return '[' + x.map(stableStr).join(',') + ']';\n    return '{' + Object.keys(x).sort().map(function (k) { return JSON.stringify(k) + ':' + stableStr(x[k]); }).join(',') + '}';\n  }\n\n  // Source identity: the first known id field (ref, path, url, file_id, attachment id ...). A path is qualified by cwd_abs when given.\n  function sourceOf(args) {\n    var a = isObj(args) ? args : {};\n    var cwd = typeof a.cwd_abs === 'string' ? a.cwd_abs : '';\n    for (var i = 0; i < SOURCE_FIELDS.length; i++) {\n      var f = SOURCE_FIELDS[i], v = a[f];\n      if (v != null && v !== '') return (cwd && f === 'path' ? cwd + '|' : '') + f + '=' + String(v);\n    }\n    // 沒有來源欄位時，用其餘參數當身分；續讀參數（offset、page、cursor ……）每頁都會變，不能算進身分，否則同一來源永遠清不掉\n    var rest = {};\n    Object.keys(a).forEach(function (k) { if (PAGING_ARGS.indexOf(k) < 0) rest[k] = a[k]; });\n    return 'args=' + stableStr(rest);\n  }\n\n  function sourceKey(toolName, args) { return String(toolName || '') + '\\u0001' + sourceOf(args); }\n\n  function createLedger() { return { entries: {} }; }\n\n  // Reads the paging fields in both snake_case and camelCase forms (the skill reference reader uses chunk.hasMore / chunk.nextOffset).\n  function paging(res) {\n    var ch = isObj(res.chunk) ? res.chunk : null;\n    return {\n      more: res.has_more === true || !!(ch && ch.hasMore === true),\n      truncated: res.truncated === true || !!(ch && ch.truncated === true),\n      nextOffset: pick(res.next_offset, ch && ch.nextOffset),\n      nextStartLine: pick(res.next_start_line, ch && ch.nextStartLine),\n      total: pick(res.total, ch && ch.total)\n    };\n  }\n\n  // ===== 覆蓋範圍（JSONL 分頁，見 jsonl_pager.js 與 DESIGN.jsonl-paging.md）=====\n  // 一頁的 meta（_page）帶 source、from、to（半開區間，單位＝第幾筆）、total、has_more、done。\n  // 帳本記「已讀過哪些區間」，而不只是「下一個位置」：跳到最後一頁不會把中間沒讀的部分清掉，要整份從 0 連續覆蓋到 total，而且收到最後一頁，才算讀完。\n  // 以 meta.source 當身分（不分哪個工具回的第一頁），所以 interpret_image 回的第 1 頁與 big_content 讀的第 2 頁會算同一份。\n  function mergeRange(list, a, b) {\n    if (!(b > a)) return list.slice();\n    var out = [];\n    list.concat([[a, b]]).sort(function (x, y) { return x[0] - y[0] || x[1] - y[1]; }).forEach(function (r) {\n      var last = out[out.length - 1];\n      if (last && r[0] <= last[1]) last[1] = Math.max(last[1], r[1]); else out.push([r[0], r[1]]);\n    });\n    return out;\n  }\n  function gapsOf(covered, total) {\n    var gaps = [], pos = 0;\n    covered.forEach(function (r) { if (r[0] > pos) gaps.push([pos, Math.min(r[0], total)]); pos = Math.max(pos, r[1]); });\n    if (pos < total) gaps.push([pos, total]);\n    return gaps.filter(function (g) { return g[1] > g[0]; });\n  }\n  function recordPage(base, m) {\n    var entries = Object.assign({}, base.entries), key = 'page\\u0001' + String(m.source || '');\n    if (base.completed && base.completed[key]) return { entries: entries, completed: base.completed };\n    var prev = entries[key];\n    var total = Number(m.total); if (!isFinite(total) || total < 0) total = 0;\n    var from = Number(m.from) || 0, to = Number(m.to) || 0;\n    var covered = mergeRange(prev && Array.isArray(prev.covered) ? prev.covered : [], from, to);\n    var done = !!(prev && prev.done) || m.done === true;\n    var part = m.record_part && m.record_part.part + 1 < m.record_part.of ? { record: m.record_part.record, next: m.record_part.part + 1, of: m.record_part.of } : null; // 單筆太大分段：沒讀到最後一段不算讀過\n    var exact = m.total_exact !== false;\n    var gaps = gapsOf(covered, total);\n    var complete = done && gaps.length === 0 && !part;\n    if (complete) { delete entries[key]; var done2 = Object.assign({}, base.completed); done2[key] = true; return { entries: entries, completed: done2 }; } // 讀完的來源記下來：之後再重讀其中一頁，不能又把它變成「沒讀完」\n    entries[key] = {\n      key: key, toolName: 'jsonl', label: String(m.source || ''), source: String(m.source || ''), unit: 'record',\n      covered: covered, total: total, totalExact: exact, gaps: gaps, done: done, pendingPart: part,\n      nextCursor: m.next_cursor || (prev && prev.nextCursor) || null, nextOffset: null, nextStartLine: null, blocking: true\n    };\n    return { entries: entries, completed: base.completed };\n  }\n\n  // Returns a new ledger after one tool result. Failed results (ok:false) change nothing.\n  function record(ledger, toolName, args, resultObj) {\n    var base = isObj(ledger) && isObj(ledger.entries) ? ledger : createLedger();\n    if (!isObj(resultObj) || resultObj.ok === false) return { entries: Object.assign({}, base.entries), completed: base.completed };\n    if (isObj(resultObj._page) && resultObj._page.source != null) return recordPage(base, resultObj._page);\n    var entries = Object.assign({}, base.entries);\n    var key = sourceKey(toolName, args), p = paging(resultObj);\n    var hasNext = p.nextOffset != null || p.nextStartLine != null;\n    if (p.more || (p.truncated)) {\n      entries[key] = {\n        key: key,\n        toolName: String(toolName || ''),\n        label: sourceOf(args),\n        nextOffset: p.nextOffset,\n        nextStartLine: p.nextStartLine,\n        total: p.total,\n        blocking: p.more || hasNext\n      };\n    } else {\n      delete entries[key]; // last page of this source: nothing left to read\n    }\n    return { entries: entries, completed: base.completed };\n  }\n\n  // Unfinished reads, oldest first (insertion order).\n  function pending(ledger) {\n    var entries = isObj(ledger) && isObj(ledger.entries) ? ledger.entries : {};\n    return Object.keys(entries).map(function (k) { return entries[k]; });\n  }\n\n  // Chinese reminder that lists each unfinished source and where to continue. Empty list gives an empty string.\n  // 覆蓋範圍型來源（單位＝第幾筆）的缺口描述：「第 a～b 筆」（人看的是 1 起算，區間是 0 起算半開）\n  function gapText(e, cursorFor) {\n    var gs = (e.gaps || []).slice(0, 6).map(function (g) { return '第 ' + (g[0] + 1) + '～' + g[1] + ' 筆' + (typeof cursorFor === 'function' ? '（cursor：' + cursorFor(e.source, g[0]) + '）' : ''); });\n    if ((e.gaps || []).length > 6) gs.push('…還有 ' + (e.gaps.length - 6) + ' 段');\n    return gs.join('、');\n  }\n  function reminderText(list, opts) {\n    var items = Array.isArray(list) ? list : [];\n    if (!items.length) return '';\n    var cursorFor = opts && opts.cursorFor;\n    var lines = items.map(function (e) {\n      if (e.unit === 'record') {\n        var got = (e.covered || []).reduce(function (s, r) { return s + (r[1] - r[0]); }, 0);\n        var miss = (e.gaps || []).length ? '還沒讀：' + gapText(e, cursorFor) : (e.pendingPart ? '第 ' + (e.pendingPart.record + 1) + ' 筆太大分成 ' + e.pendingPart.of + ' 段，還有第 ' + (e.pendingPart.next + 1) + ' 段以後沒讀' : '還沒收到最後一頁');\n        return '・來源 ' + e.label + '（記錄清單，已讀 ' + got + '／' + e.total + ' 筆）：' + miss + (e.nextCursor && !(e.gaps || []).length ? '；下一頁 cursor：' + e.nextCursor : '');\n      }\n      var where = e.nextOffset != null ? '下一個 offset：' + e.nextOffset\n        : e.nextStartLine != null ? '下一個起始行：' + e.nextStartLine\n        : '沒有提供續讀位置，可能只讀了一部分';\n      var total = e.total != null ? '（總量 ' + e.total + '）' : '';\n      return '・來源 ' + e.label + '（工具 ' + e.toolName + '）：' + where + total;\n    });\n    return '【讀取尚未完成】以下來源還沒有讀到最後一頁：\\n' + lines.join('\\n') +\n      '\\n請用上面的續讀位置繼續呼叫工具讀完。讀完之前不可下結論，不要說「報告都正確」之類的話。';\n  }\n\n  // 給最終回答前面由程式附加的警語用：一個沒讀完的來源讀到哪、缺什麼（不靠模型自己說）\n  function describe(e) {\n    if (e.unit === 'record') {\n      var got = (e.covered || []).reduce(function (s, r) { return s + (r[1] - r[0]); }, 0);\n      return e.label + '（只讀了 ' + got + '／' + e.total + ' 筆' + ((e.gaps || []).length ? '，沒讀到：' + gapText(e) : '') + '）';\n    }\n    return e.label + '（已讀到 ' + (e.nextOffset != null ? 'offset ' + e.nextOffset : '第 ' + e.nextStartLine + ' 行') + '）';\n  }\n\n  return {\n    createLedger: createLedger,\n    record: record,\n    pending: pending,\n    reminderText: reminderText,\n    describe: describe,\n    sourceKey: sourceKey\n  };\n}));\n";
+const FA_READ_LEDGER_SRC = "// Read ledger (pure, no DOM, no I/O): remembers paged reads that the model has not finished.\n// A tool result that says there is more (has_more:true, or chunk.hasMore:true, or truncated:true with a continuation offset)\n// is recorded under its source. The same source returning a result without has_more (its last page) clears the entry.\n// The tool loop asks pending(ledger) before accepting a final answer and uses reminderText(pending) to tell the model what is still unread.\n// Every function returns new values; the ledger is plain JSON-serializable data: { entries: { [key]: entry } }.\n//\n// entry: { key, toolName, label, nextOffset, nextStartLine, total, blocking }\n//   blocking:true  -> has_more, or truncated with a continuation offset (the loop may refuse a final answer)\n//   blocking:false -> truncated with no continuation offset (only a reminder; never refuses an answer)\n(function (root, factory) {\n  if (typeof module === 'object' && module.exports) { module.exports = factory(); } else { root.AiChatReadLedger = factory(); }\n}(typeof self !== 'undefined' ? self : this, function () {\n  'use strict';\n  var SOURCE_FIELDS = ['ref', 'path', 'url', 'file_id', 'fileId', 'attachment_id', 'attachmentId', 'id'];\n  var PAGING_ARGS = ['offset', 'start', 'start_line', 'startLine', 'page', 'cursor', 'limit', 'max_chars', 'max_lines', 'chunk', 'from', 'to', 'next_offset', 'nextOffset'];\n\n  function isObj(x) { return x !== null && typeof x === 'object' && !Array.isArray(x); }\n  function pick() { for (var i = 0; i < arguments.length; i++) if (arguments[i] != null && arguments[i] !== '') return arguments[i]; return null; }\n\n  function stableStr(x) {\n    if (x === null || typeof x !== 'object') return JSON.stringify(x === undefined ? null : x);\n    if (Array.isArray(x)) return '[' + x.map(stableStr).join(',') + ']';\n    return '{' + Object.keys(x).sort().map(function (k) { return JSON.stringify(k) + ':' + stableStr(x[k]); }).join(',') + '}';\n  }\n\n  // Source identity: the first known id field (ref, path, url, file_id, attachment id ...). A path is qualified by cwd_abs when given.\n  function sourceOf(args) {\n    var a = isObj(args) ? args : {};\n    var cwd = typeof a.cwd_abs === 'string' ? a.cwd_abs : '';\n    for (var i = 0; i < SOURCE_FIELDS.length; i++) {\n      var f = SOURCE_FIELDS[i], v = a[f];\n      if (v != null && v !== '') return (cwd && f === 'path' ? cwd + '|' : '') + f + '=' + String(v);\n    }\n    // 沒有來源欄位時，用其餘參數當身分；續讀參數（offset、page、cursor ……）每頁都會變，不能算進身分，否則同一來源永遠清不掉\n    var rest = {};\n    Object.keys(a).forEach(function (k) { if (PAGING_ARGS.indexOf(k) < 0) rest[k] = a[k]; });\n    return 'args=' + stableStr(rest);\n  }\n\n  function sourceKey(toolName, args) { return String(toolName || '') + '\\u0001' + sourceOf(args); }\n\n  function createLedger() { return { entries: {} }; }\n\n  // Reads the paging fields in both snake_case and camelCase forms (the skill reference reader uses chunk.hasMore / chunk.nextOffset).\n  function paging(res) {\n    var ch = isObj(res.chunk) ? res.chunk : null;\n    return {\n      more: res.has_more === true || !!(ch && ch.hasMore === true),\n      truncated: res.truncated === true || !!(ch && ch.truncated === true),\n      nextOffset: pick(res.next_offset, ch && ch.nextOffset),\n      nextStartLine: pick(res.next_start_line, ch && ch.nextStartLine),\n      total: pick(res.total, ch && ch.total)\n    };\n  }\n\n  // ===== 覆蓋範圍（JSONL 分頁，見 jsonl_pager.js 與 DESIGN.jsonl-paging.md）=====\n  // 一頁的 meta（_page）帶 source、from、to（半開區間，單位＝第幾筆）、total、has_more、done。\n  // 帳本記「已讀過哪些區間」，而不只是「下一個位置」：跳到最後一頁不會把中間沒讀的部分清掉，要整份從 0 連續覆蓋到 total，而且收到最後一頁，才算讀完。\n  // 以 meta.source 當身分（不分哪個工具回的第一頁），所以 interpret_image 回的第 1 頁與 big_content 讀的第 2 頁會算同一份。\n  function mergeRange(list, a, b) {\n    if (!(b > a)) return list.slice();\n    var out = [];\n    list.concat([[a, b]]).sort(function (x, y) { return x[0] - y[0] || x[1] - y[1]; }).forEach(function (r) {\n      var last = out[out.length - 1];\n      if (last && r[0] <= last[1]) last[1] = Math.max(last[1], r[1]); else out.push([r[0], r[1]]);\n    });\n    return out;\n  }\n  function gapsOf(covered, total) {\n    var gaps = [], pos = 0;\n    covered.forEach(function (r) { if (r[0] > pos) gaps.push([pos, Math.min(r[0], total)]); pos = Math.max(pos, r[1]); });\n    if (pos < total) gaps.push([pos, total]);\n    return gaps.filter(function (g) { return g[1] > g[0]; });\n  }\n  function recordPage(base, m) {\n    var entries = Object.assign({}, base.entries), key = 'page\\u0001' + String(m.source || '');\n    if (base.completed && base.completed[key]) return { entries: entries, completed: base.completed };\n    var prev = entries[key];\n    var total = Number(m.total); if (!isFinite(total) || total < 0) total = 0;\n    var from = Number(m.from) || 0, to = Number(m.to) || 0;\n    var covered = mergeRange(prev && Array.isArray(prev.covered) ? prev.covered : [], from, to);\n    var done = !!(prev && prev.done) || m.done === true;\n    var part = m.record_part && m.record_part.part + 1 < m.record_part.of ? { record: m.record_part.record, next: m.record_part.part + 1, of: m.record_part.of } : null; // 單筆太大分段：沒讀到最後一段不算讀過\n    var exact = m.total_exact !== false;\n    var gaps = gapsOf(covered, total);\n    var complete = done && gaps.length === 0 && !part;\n    if (complete) { delete entries[key]; var done2 = Object.assign({}, base.completed); done2[key] = true; return { entries: entries, completed: done2 }; } // 讀完的來源記下來：之後再重讀其中一頁，不能又把它變成「沒讀完」\n    entries[key] = {\n      key: key, toolName: 'jsonl', label: String(m.source || ''), source: String(m.source || ''), unit: 'record',\n      covered: covered, total: total, totalExact: exact, gaps: gaps, done: done, pendingPart: part, pages: ((prev && prev.pages) || 0) + 1,\n      nextCursor: m.next_cursor || (prev && prev.nextCursor) || null, viaOffset: m.next_cursor == null && m.next_offset != null || !!(prev && prev.viaOffset && m.next_cursor == null), nextOffset: null, nextStartLine: null, blocking: true\n    };\n    return { entries: entries, completed: base.completed };\n  }\n\n  // Returns a new ledger after one tool result. Failed results (ok:false) change nothing.\n  function record(ledger, toolName, args, resultObj) {\n    var base = isObj(ledger) && isObj(ledger.entries) ? ledger : createLedger();\n    if (!isObj(resultObj) || resultObj.ok === false) return { entries: Object.assign({}, base.entries), completed: base.completed };\n    if (isObj(resultObj._page) && resultObj._page.source != null) { if (resultObj._page.blocking === false) return { entries: Object.assign({}, base.entries), completed: base.completed }; return recordPage(base, resultObj._page); } // blocking:false＝選擇性翻頁（排名搜尋），不逼模型讀完\n    var entries = Object.assign({}, base.entries);\n    var key = sourceKey(toolName, args), p = paging(resultObj);\n    var hasNext = p.nextOffset != null || p.nextStartLine != null;\n    if (p.more || (p.truncated)) {\n      entries[key] = {\n        key: key,\n        toolName: String(toolName || ''),\n        label: sourceOf(args),\n        nextOffset: p.nextOffset,\n        nextStartLine: p.nextStartLine,\n        total: p.total,\n        blocking: p.more || hasNext\n      };\n    } else {\n      delete entries[key]; // last page of this source: nothing left to read\n    }\n    return { entries: entries, completed: base.completed };\n  }\n\n  // Unfinished reads, oldest first (insertion order).\n  function pending(ledger) {\n    var entries = isObj(ledger) && isObj(ledger.entries) ? ledger.entries : {};\n    return Object.keys(entries).map(function (k) { return entries[k]; });\n  }\n\n  // Chinese reminder that lists each unfinished source and where to continue. Empty list gives an empty string.\n  // 覆蓋範圍型來源（單位＝第幾筆）的缺口描述：「第 a～b 筆」（人看的是 1 起算，區間是 0 起算半開）\n  function gapText(e, cursorFor) {\n    var gs = (e.gaps || []).slice(0, 6).map(function (g) { return '第 ' + (g[0] + 1) + '～' + g[1] + ' 筆' + (e.viaOffset ? '（offset：' + g[0] + '）' : typeof cursorFor === 'function' ? '（cursor：' + cursorFor(e.source, g[0]) + '）' : ''); });\n    if ((e.gaps || []).length > 6) gs.push('…還有 ' + (e.gaps.length - 6) + ' 段');\n    return gs.join('、');\n  }\n  // 頁數預估：記錄清單還要幾頁（沒讀的筆數 ÷ 平均每頁讀到幾筆）；opts.room（上下文還剩幾 token）與 opts.pageTokens（一頁約幾 token）\n  // 給了就一併算「放得下幾頁」。放不下就別無止盡續讀：先用 grep／json 只取需要的，或把已讀的重點寫成摘要（舊頁會被換成 placeholder）。\n  function estimate(e, opts) {\n    if (!e || e.unit !== 'record' || !(e.total > 0)) return null;\n    var got = (e.covered || []).reduce(function (s, r) { return s + (r[1] - r[0]); }, 0), pages = e.pages || 0;\n    var left = Math.max(0, e.total - got); if (!left) return { pagesLeft: 0, fits: null, enough: true };\n    var per = pages > 0 && got > 0 ? got / pages : 0; var pagesLeft = per > 0 ? Math.ceil(left / per) : null;\n    var fits = opts && opts.room > 0 && opts.pageTokens > 0 ? Math.max(0, Math.floor(opts.room / opts.pageTokens)) : null;\n    return { pagesLeft: pagesLeft, fits: fits, enough: pagesLeft == null || fits == null ? null : fits >= pagesLeft };\n  }\n  function reminderText(list, opts) {\n    var items = Array.isArray(list) ? list : [];\n    if (!items.length) return '';\n    var cursorFor = opts && opts.cursorFor;\n    var lines = items.map(function (e) {\n      if (e.unit === 'record') {\n        var got = (e.covered || []).reduce(function (s, r) { return s + (r[1] - r[0]); }, 0);\n        var miss = (e.gaps || []).length ? '還沒讀：' + gapText(e, cursorFor) : (e.pendingPart ? '第 ' + (e.pendingPart.record + 1) + ' 筆太大分成 ' + e.pendingPart.of + ' 段，還有第 ' + (e.pendingPart.next + 1) + ' 段以後沒讀' : '還沒收到最後一頁');\n        var est = estimate(e, opts), estText = '';\n        if (est && est.pagesLeft != null) estText = '；約還要 ' + est.pagesLeft + ' 頁' + (est.fits != null ? '，現在的上下文只放得下約 ' + est.fits + ' 頁' + (est.enough ? '' : '：放不下，別一頁頁全讀——先用 big_content 的 grep／json 只取需要的，或先把已讀的重點寫成一小段摘要再繼續（舊的頁會被省略）') : '');\n        return '・來源 ' + e.label + '（記錄清單，已讀 ' + got + '／' + e.total + ' 筆）：' + miss + estText + (e.nextCursor && !(e.gaps || []).length ? '；下一頁 cursor：' + e.nextCursor : '');\n      }\n      var where = e.nextOffset != null ? '下一個 offset：' + e.nextOffset\n        : e.nextStartLine != null ? '下一個起始行：' + e.nextStartLine\n        : '沒有提供續讀位置，可能只讀了一部分';\n      var total = e.total != null ? '（總量 ' + e.total + '）' : '';\n      return '・來源 ' + e.label + '（工具 ' + e.toolName + '）：' + where + total;\n    });\n    return '【讀取尚未完成】以下來源還沒有讀到最後一頁：\\n' + lines.join('\\n') +\n      '\\n請用上面的續讀位置繼續呼叫工具讀完。讀完之前不可下結論，不要說「報告都正確」之類的話。';\n  }\n\n  // 給最終回答前面由程式附加的警語用：一個沒讀完的來源讀到哪、缺什麼（不靠模型自己說）\n  function describe(e) {\n    if (e.unit === 'record') {\n      var got = (e.covered || []).reduce(function (s, r) { return s + (r[1] - r[0]); }, 0);\n      return e.label + '（只讀了 ' + got + '／' + e.total + ' 筆' + ((e.gaps || []).length ? '，沒讀到：' + gapText(e) : '') + '）';\n    }\n    return e.label + '（已讀到 ' + (e.nextOffset != null ? 'offset ' + e.nextOffset : '第 ' + e.nextStartLine + ' 行') + '）';\n  }\n\n  return {\n    createLedger: createLedger,\n    record: record,\n    pending: pending,\n    reminderText: reminderText,\n    estimate: estimate,\n    describe: describe,\n    sourceKey: sourceKey\n  };\n}));\n";
 /* READLEDGER-END */
 /* JSONLPAGER-BEGIN */
-const FA_JSONL_PAGER_SRC = "// JSONL 分頁器（純函式，無 DOM、無 I/O、UMD；嵌入 floating-assistant 後用 new Function 載入）。\n// 用途：很大的 JSON 回應（記錄清單）不再「只放開頭就截斷」，而是一頁一頁、每行一筆記錄地給模型，模型可以用 cursor 一直讀到完。\n// 設計與實證見 DESIGN.jsonl-paging.md。\n//\n// 一頁的文字格式：第一行是 meta：{\"_page\":{...}}，其後每行一筆記錄（單行 JSON，內容裡的換行都已跳脫）。\n//   單筆比一頁還大：不丟、不截斷，拆成多頁，每段一行 {\"_part\":{\"record\":i,\"part\":k,\"of\":n,\"text\":\"…\"}}，把 text 依序接起來就是那一筆的原文。\n// 大小跟內容窗口按比例（budgetChars），沒有字元下限；一頁至少 1 筆（或 1 段）。\n(function (root, factory) {\n  if (typeof module === 'object' && module.exports) { module.exports = factory(); } else { root.AiChatJsonlPager = factory(); }\n}(typeof self !== 'undefined' ? self : this, function () {\n  'use strict';\n  var VERSION = 'c1';\n  var META_OVERHEAD = 320; // meta 那一行大約佔多少字元（含 hint），從預算裡先扣掉\n\n  function isObj(x) { return x !== null && typeof x === 'object' && !Array.isArray(x); }\n  function safeStringify(v) { try { var s = JSON.stringify(v); return s === undefined ? 'null' : s; } catch (e) { return null; } }\n\n  // 一頁可以放多少字元：內容窗口 token × 比例 × 每 token 約幾個字元。沒有下限常數。\n  function budgetChars(o) {\n    o = o || {};\n    if (Number(o.chars) > 0) return Math.floor(Number(o.chars));\n    var ctx = Number(o.ctxTokens) || 0, fr = Number(o.fraction) || 0.15, cpt = Number(o.charsPerToken) || 3;\n    return Math.max(1, Math.floor(ctx * fr * cpt));\n  }\n\n  // 短雜湊（FNV-1a 32 位元），讓帳本核對「這一頁真的拿到過」\n  function digest(text) {\n    var h = 0x811c9dc5; text = String(text);\n    for (var i = 0; i < text.length; i++) { h ^= text.charCodeAt(i); h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0; }\n    return ('00000000' + h.toString(16)).slice(-8);\n  }\n\n  // 逐行解析 JSONL 文字：回傳 { values:[{line, value}], bad:[{line, raw, error}], lines } ；空行略過但行號照算，壞行保留不丟\n  function parseLines(text) {\n    var out = { values: [], bad: [], lines: 0 };\n    var rows = String(text == null ? '' : text).replace(/^﻿/, '').split(/\\r?\\n/);\n    for (var i = 0; i < rows.length; i++) {\n      var s = rows[i]; if (!s.trim()) continue;\n      out.lines++;\n      try { out.values.push({ line: i + 1, value: JSON.parse(s) }); }\n      catch (e) { out.bad.push({ line: i + 1, raw: s.length > 200 ? s.slice(0, 200) + '…' : s, error: String(e && e.message || e).split('\\n')[0] }); }\n    }\n    return out;\n  }\n\n  // 找頂層物件裡「占大宗」的陣列欄位（最多往下兩層）：回傳 { path:[...], arr }；沒有回 null\n  function dominantArray(obj, totalLen) {\n    var best = null;\n    function visit(o, path, depth) {\n      Object.keys(o).forEach(function (k) {\n        var v = o[k];\n        if (Array.isArray(v) && v.length >= 2) {\n          var s = safeStringify(v); var len = s ? s.length : 0;\n          if (!best || len > best.len) best = { path: path.concat(k), arr: v, len: len };\n        } else if (isObj(v) && depth < 1) visit(v, path.concat(k), depth + 1);\n      });\n    }\n    visit(obj, [], 0);\n    if (!best || best.len < totalLen * 0.5) return null;\n    return best;\n  }\n\n  function withoutPath(obj, path) {\n    var copy = Array.isArray(obj) ? obj.slice() : Object.assign({}, obj);\n    if (path.length === 1) { copy[path[0]] = '[見後面的記錄]'; return copy; }\n    copy[path[0]] = withoutPath(obj[path[0]], path.slice(1));\n    return copy;\n  }\n\n  // 把一個結果轉成「一行一筆」的記錄。input：JSON 文字、JSONL 文字或已解析的值。\n  // 回傳 { lines:[每筆一行的字串], shape, head, bad, path } 或 null（不是記錄清單，呼叫者退回原本的截斷）。\n\n  // 超深的結構攤平成 JSONL：每個節點一行 {\"path\":\"/a/b/0/c\",\"type\":\"string\",\"value\":…}（JSON Pointer；容器行只有 type 與 keys／length，\n  // 沒有 value），先序、鍵順序不變，所以 unflatten 可以逐字還原。單行不含實體換行（JSON.stringify），單一葉子太大由分頁器分段。\n  function ptrEsc(k) { return String(k).replace(/~/g, '~0').replace(/\\//g, '~1'); }\n  // maxDepth：只攤到這一層，更深的容器變成一行 {collapsed:true,size:子孫節點數}（先看全貌，要哪裡再用 expand 往下鑽）；沒給就攤到底。\n  function dkeys(o) { return Object.keys(o).filter(function (k) { return o[k] !== undefined && typeof o[k] !== 'function'; }); } // 跟 JSON.stringify 一樣：值是 undefined／函式的欄位不存在\n  function countNodes(v) { var n = 1; if (Array.isArray(v)) for (var i = 0; i < v.length; i++) n += countNodes(v[i]); else if (isObj(v)) { var dk = dkeys(v); for (var q = 0; q < dk.length; q++) n += countNodes(v[dk[q]]); } return n; }\n  function flatten(value, opts) {\n    opts = opts || {}; var maxNodes = Number(opts.maxNodes) > 0 ? Number(opts.maxNodes) : 2000000;\n    var limit = opts.maxDepth != null && Number(opts.maxDepth) >= 0 ? Number(opts.maxDepth) : Infinity, base = opts.basePath || '', d0 = Number(opts.baseDepth) || 0;\n    var out = [], count = 0, truncated = false;\n    (function walk(v, path, depth) {\n      if (truncated) return;\n      if (++count > maxNodes) { truncated = true; return; }\n      var isArr = Array.isArray(v), isO = isObj(v);\n      if (isArr || isO) {\n        var row = { path: path, depth: depth, type: isArr ? 'array' : 'object' }; if (isArr) row.length = v.length; else row.keys = dkeys(v).length;\n        if (depth - d0 >= limit && (isArr ? v.length : row.keys)) { row.collapsed = true; row.size = countNodes(v) - 1; out.push(safeStringify(row)); return; }\n        out.push(safeStringify(row));\n        if (isArr) for (var i = 0; i < v.length; i++) walk(v[i], path + '/' + i, depth + 1);\n        else { var ks = dkeys(v); for (var j = 0; j < ks.length; j++) walk(v[ks[j]], path + '/' + ptrEsc(ks[j]), depth + 1); }\n      } else out.push(safeStringify({ path: path, depth: depth, type: v === null ? 'null' : typeof v, value: v === undefined ? null : v }));\n    })(value, base, d0);\n    return { lines: out, nodes: out.length, truncated: truncated };\n  }\n  // 往下鑽：把 path（JSON Pointer）那個節點再攤開 levels 層（預設 1），行的 path 是從根算起的完整路徑，可以直接接在先前的行後面一起 unflatten。\n  function getByPointer(value, path) {\n    var cur = value; if (path === '' || path == null) return { ok: true, value: cur };\n    var segs = String(path).split('/').slice(1).map(function (x) { return x.replace(/~1/g, '/').replace(/~0/g, '~'); });\n    for (var i = 0; i < segs.length; i++) { if (cur === null || typeof cur !== 'object' || !(segs[i] in cur)) return { ok: false, error: '找不到路徑 ' + path }; cur = cur[segs[i]]; }\n    return { ok: true, value: cur };\n  }\n  function expand(value, path, opts) {\n    opts = opts || {}; var g = getByPointer(value, path); if (!g.ok) return g;\n    var base = path || '', depth = base ? base.split('/').length - 1 : 0;\n    var f = flatten(g.value, { maxDepth: opts.levels == null ? 1 : opts.levels, basePath: base, baseDepth: depth, maxNodes: opts.maxNodes });\n    return { ok: true, lines: f.lines, nodes: f.nodes, truncated: f.truncated };\n  }\n  // 反向：把 flatten／expand 的行還原成原本的值。同一路徑的行後來的覆蓋前面的（collapsed 的占位行會被 expand 的行取代，已有的子節點不清掉）；\n  // 還有 collapsed 沒展開的節點會留下空容器，並列在回傳的 collapsedPaths（用 unflattenInfo 取得）。\n  function unflattenInfo(lines) {\n    var root, have = false, collapsed = {};\n    for (var n = 0; n < lines.length; n++) {\n      var r = typeof lines[n] === 'string' ? JSON.parse(lines[n]) : lines[n];\n      var isC = r.type === 'array' || r.type === 'object';\n      var node = r.type === 'array' ? [] : r.type === 'object' ? {} : r.value;\n      if (isC) { if (r.collapsed) collapsed[r.path] = r.size || 1; else delete collapsed[r.path]; }\n      if (r.path === '') { if (!have || !isC || typeof root !== 'object' || root === null) root = node; have = true; continue; }\n      var segs = r.path.split('/').slice(1).map(function (x) { return x.replace(/~1/g, '/').replace(/~0/g, '~'); });\n      var cur = root; for (var i = 0; i < segs.length - 1; i++) cur = cur[segs[i]];\n      var last = segs[segs.length - 1], prev = cur[last];\n      if (isC && prev !== null && typeof prev === 'object' && Array.isArray(prev) === Array.isArray(node)) continue; // 已有同型容器（含已展開的子節點）：保留\n      cur[last] = node;\n    }\n    return { value: have ? root : undefined, collapsedPaths: Object.keys(collapsed) };\n  }\n  function unflatten(lines) { return unflattenInfo(lines).value; }\n\n  // 程式結構（AST／語法樹／任何「有 type 或 kind 的節點巢狀」）攤平：一個節點一行\n  //   {\"id\":n,\"parent\":p,\"field\":\"body\",\"index\":0,\"type\":\"IfStatement\",\"depth\":d,\"props\":{純量屬性…},\"children\":k}\n  // id 從 0 起、先序；parent＝上層節點的 id（根是 null）；field／index＝它掛在上層的哪個欄位（第幾個）。\n  // 位置資訊（loc／range／start／end／span）留在 props，方便用行號回頭找原始碼。非節點的巢狀（普通物件／陣列）掛在最近的節點底下，欄位路徑放 field。\n  function isAstNode(v) { return isObj(v) && (typeof v.type === 'string' || typeof v.kind === 'string' || typeof v.node_type === 'string'); }\n  function nodeType(v) { return typeof v.type === 'string' ? v.type : typeof v.kind === 'string' ? v.kind : v.node_type; }\n  function flattenAst(root, opts) {\n    opts = opts || {}; var maxNodes = Number(opts.maxNodes) > 0 ? Number(opts.maxNodes) : 2000000;\n    var out = [], truncated = false;\n    function emit(v, parent, field, index, depth, path) {\n      if (out.length >= maxNodes) { truncated = true; return; }\n      var id = out.length, props = {}, kids = [];\n      var tp = nodeType(v), mypath = (path ? path + '>' : '') + tp;\n      var line = { id: id, parent: parent, field: field, index: index, type: tp, path: mypath, depth: depth, props: props, children: 0, size: 1 };\n      out.push(null);\n      Object.keys(v).forEach(function (k) {\n        var x = v[k];\n        if (k === 'type' && typeof x === 'string' && nodeType(v) === x) return;\n        if (x !== null && typeof x === 'object') {\n          if (Array.isArray(x)) { if (x.some(function (e) { return e !== null && typeof e === 'object'; })) { kids.push({ k: k, arr: x }); return; } props[k] = x; return; }\n          if (isAstNode(x)) { kids.push({ k: k, one: x }); return; }\n          if (hasNode(x, 3)) { kids.push({ k: k, plain: x }); return; }\n          props[k] = x; return; // 位置、小型設定物件（loc、range…）\n        }\n        props[k] = x;\n      });\n      var n = 0;\n      kids.forEach(function (c) {\n        if (c.one) { n++; emit(c.one, id, c.k, null, depth + 1, mypath); }\n        else if (c.arr) c.arr.forEach(function (e, i) { if (isAstNode(e)) { n++; emit(e, id, c.k, i, depth + 1, mypath); } else if (e !== null && typeof e === 'object' && hasNode(e, 3)) { Object.keys(e).forEach(function (kk) { if (isAstNode(e[kk])) { n++; emit(e[kk], id, c.k + '[' + i + '].' + kk, null, depth + 1, mypath); } }); } else { (line.props[c.k + '[' + i + ']'] = e); } });\n        else Object.keys(c.plain).forEach(function (kk) { var e = c.plain[kk]; if (isAstNode(e)) { n++; emit(e, id, c.k + '.' + kk, null, depth + 1, mypath); } else if (Array.isArray(e)) e.forEach(function (z, i) { if (isAstNode(z)) { n++; emit(z, id, c.k + '.' + kk, i, depth + 1, mypath); } }); else props[c.k + '.' + kk] = e; });\n      });\n      line.children = n; line.size = out.length - id; out[id] = safeStringify(line);\n    }\n    emit(root, null, null, null, 0, '');\n    return { lines: out.filter(function (l) { return l !== null; }), nodes: out.length, truncated: truncated };\n  }\n  function hasNode(v, d) { if (d <= 0 || v === null || typeof v !== 'object') return false; if (isAstNode(v)) return true; var ks = Object.keys(v); for (var i = 0; i < ks.length && i < 50; i++) if (hasNode(v[ks[i]], d - 1)) return true; return false; }\n  function maxDepth(v, cap) {\n    var m = 0; (function w(x, d) { if (d > m) m = d; if (m >= cap) return; if (Array.isArray(x)) for (var i = 0; i < x.length && m < cap; i++) w(x[i], d + 1); else if (isObj(x)) for (var k in x) { w(x[k], d + 1); if (m >= cap) return; } })(v, 0);\n    return m;\n  }\n  function toRecords(input, opts) {\n    opts = opts || {};\n    var value, jsonlRes = null;\n    if (typeof input === 'string') {\n      var t = input.replace(/^﻿/, '').trim();\n      if (!t) return null;\n      var first = t[0];\n      if (first !== '{' && first !== '[') return null;\n      try { value = JSON.parse(t); }\n      catch (e) {\n        // 整串不是合法 JSON：看是不是一行一筆的 JSONL\n        jsonlRes = parseLines(t);\n        var nonEmpty = jsonlRes.values.length + jsonlRes.bad.length;\n        if (jsonlRes.values.length < 2 || jsonlRes.values.length < nonEmpty * 0.5) return null;\n        var ls = jsonlRes.values.map(function (r) { return safeStringify(r.value); });\n        jsonlRes.bad.forEach(function (b) { ls.push(safeStringify({ _bad_line: b.line, error: b.error, raw: b.raw })); });\n        return { lines: ls, shape: 'jsonl', head: null, bad: jsonlRes.bad.length, path: [] };\n      }\n    } else value = input;\n    if (Array.isArray(value)) {\n      if (value.length < 2) return null;\n      var lines = value.map(safeStringify);\n      if (lines.indexOf(null) >= 0) return null;\n      return { lines: lines, shape: 'array', head: null, bad: 0, path: [] };\n    }\n    if (isObj(value)) {\n      var totalLen = (safeStringify(value) || '').length;\n      var dom = dominantArray(value, totalLen);\n      if (opts.flatten !== false && isAstNode(value) && maxDepth(value, 5) >= 4) {\n        var fa = flattenAst(value); if (fa.lines.length >= 2) return { lines: fa.lines, shape: 'ast', head: fa.truncated ? { note: '節點太多，只攤平了前 ' + fa.nodes + ' 個' } : null, bad: 0, path: [] };\n      }\n      if ((opts.flatten || (!dom && maxDepth(value, 6) >= 5)) && !(opts.flatten === false)) {\n        // 超深的巢狀（沒有占大宗的陣列，或明確要求）：攤平成一個節點一行\n        var fl = flatten(value); if (fl.lines.length >= 2 && fl.lines.indexOf(null) < 0) return { lines: fl.lines, shape: 'flat', head: fl.truncated ? { note: '節點太多，只攤平了前 ' + fl.nodes + ' 個' } : null, bad: 0, path: [] };\n      }\n      if (!dom) {\n        // 沒有占大宗的陣列（例如 id→物件的對照表、很多欄位的大物件）：一個欄位一行 {\"key\":…,\"value\":…}；單一欄位太大由分頁器分段\n        var keys = Object.keys(value); if (keys.length < 3) return null;\n        var le = keys.map(function (k) { return safeStringify({ key: k, value: value[k] }); });\n        if (le.indexOf(null) >= 0) return null;\n        return { lines: le, shape: 'entries', head: null, bad: 0, path: [] };\n      }\n      var ls2 = dom.arr.map(safeStringify);\n      if (ls2.indexOf(null) >= 0) return null;\n      return { lines: ls2, shape: 'field:' + dom.path.join('.'), head: withoutPath(value, dom.path), bad: 0, path: dom.path };\n    }\n    return null;\n  }\n\n  // ===== cursor =====\n  function cleanSource(s) { return String(s == null ? '' : s).replace(/[^A-Za-z0-9_\\-.]/g, '_'); }\n  function encodeCursor(c) { return [VERSION, cleanSource(c.source), c.index | 0, c.part | 0, c.page | 0].join(':'); }\n  // 驗證：版本、來源（有給才比對）、位置範圍；失敗回 { ok:false, error }，不亂讀\n  function decodeCursor(cursor, expect) {\n    expect = expect || {};\n    if (cursor == null || cursor === '') return { ok: true, index: 0, part: 0, page: 0, source: expect.source != null ? cleanSource(expect.source) : '' };\n    var p = String(cursor).split(':');\n    if (p.length !== 5 || p[0] !== VERSION) return { ok: false, error: 'cursor 格式不對：請原樣帶回上一頁 _page.next_cursor 的值，不要自己改。' };\n    var idx = Number(p[2]), part = Number(p[3]), page = Number(p[4]);\n    if (![idx, part, page].every(function (n) { return isFinite(n) && n >= 0 && Math.floor(n) === n; })) return { ok: false, error: 'cursor 的位置不是整數。' };\n    if (expect.source != null && p[1] !== cleanSource(expect.source)) return { ok: false, error: 'cursor 屬於另一份內容（' + p[1] + '），不是 ' + cleanSource(expect.source) + '。' };\n    if (expect.total != null && idx > expect.total) return { ok: false, error: 'cursor 超出範圍（第 ' + idx + ' 筆，共 ' + expect.total + ' 筆）。' };\n    return { ok: true, source: p[1], index: idx, part: part, page: page };\n  }\n\n  // 單筆太大時切一段（不切在代理對中間）\n  function sliceSafe(s, from, len) {\n    var end = Math.min(s.length, from + Math.max(1, len));\n    if (end < s.length) { var c = s.charCodeAt(end - 1); if (c >= 0xD800 && c <= 0xDBFF && end - from > 1) end--; }\n    return s.slice(from, end);\n  }\n\n  // 取一頁。lines＝toRecords().lines；opts：{ source, cursor, budgetChars|ctxTokens+fraction, head, total_exact, hintTool }\n  // 回傳 { ok, text, meta, nextCursor, from, to, hasMore }；cursor 不合法回 { ok:false, error }\n  function page(lines, opts) {\n    opts = opts || {};\n    var total = lines.length;\n    var cur = decodeCursor(opts.cursor, { source: opts.source, total: total });\n    if (!cur.ok) return { ok: false, error: cur.error };\n    var budget = Math.max(1, budgetChars(opts) - META_OVERHEAD);\n    var i = cur.index, part = cur.part, out = [], used = 0, partInfo = null;\n    if (i >= total) return { ok: true, text: safeStringify({ _page: { source: cleanSource(opts.source), page: cur.page + 1, from: total, to: total, returned: 0, total: total, total_exact: true, has_more: false, next_cursor: null, done: true, read_records: total } }), meta: { done: true }, nextCursor: null, from: total, to: total, hasMore: false };\n    if (part > 0 || lines[i].length + 1 > budget) {\n      // 這一筆放不進一頁（或上次讀到一半）：只送這一筆的一段\n      var rec = lines[i]; var from = 0;\n      // 每段的 text 因 JSON 跳脫會變長，抓一個保守比例讓整行不超過預算\n      var perPart = Math.max(1, Math.floor((budget - 80) / 2));\n      var starts = [0];\n      for (var pos = 0; pos < rec.length;) { var piece = sliceSafe(rec, pos, perPart); pos += piece.length; if (pos < rec.length) starts.push(pos); }\n      var nParts = starts.length;\n      if (part >= nParts) part = 0; // 防呆\n      from = starts[part];\n      var seg = rec.slice(from, part + 1 < nParts ? starts[part + 1] : rec.length);\n      var row = safeStringify({ _part: { record: i, part: part, of: nParts, text: seg } });\n      out.push(row);\n      var lastPart = from + seg.length >= rec.length;\n      partInfo = { record: i, part: part, of: nParts };\n      if (lastPart) { i++; part = 0; } else part++;\n    } else {\n      while (i < total) {\n        var len = lines[i].length + 1;\n        if (out.length && used + len > budget) break;\n        if (!out.length && len > budget) break; // 第一筆就放不下：下一輪走分段\n        out.push(lines[i]); used += len; i++;\n      }\n    }\n    var hasMore = i < total;\n    var nextCursor = hasMore ? encodeCursor({ source: opts.source, index: i, part: part, page: cur.page + 1 }) : null;\n    var pageNo = cur.page + 1;\n    var meta = {\n      source: cleanSource(opts.source), page: pageNo,\n      from: cur.index, to: partInfo ? (part === 0 ? i : cur.index) : i, returned: partInfo ? 0 : out.length,\n      total: total, total_exact: opts.total_exact !== false,\n      has_more: hasMore, next_cursor: nextCursor, limit: partInfo ? 1 : out.length\n    };\n    if (partInfo) { meta.record_part = partInfo; meta.to = part === 0 ? i : cur.index; }\n    if (!hasMore) { meta.done = true; meta.read_records = total; }\n    if (cur.index === 0 && cur.part === 0 && opts.head != null) {\n      var hs = safeStringify(opts.head) || '';\n      if (hs.length <= Math.floor(budget * 0.25)) meta.head = opts.head; else meta.head_omitted = true; // 其餘欄位太大就不塞進第一頁\n    }\n    // 樹狀記錄（flattenAst：先序，每個節點有 id 與 size＝子樹節點數）：這一頁切在樹的中間時，列出「子節點還沒讀完」的節點，\n    // 不完整的節點會讓人誤讀（例如 if 只看到條件沒看到 else），所以提醒不要對它下結論，並附要接著讀的位置。\n    if (!partInfo && out.length) {\n      var openNodes = []; var lastId = null, firstId = null;\n      for (var oi = 0; oi < out.length; oi++) {\n        var nd = null; try { nd = JSON.parse(out[oi]); } catch (e0) { nd = null; }\n        if (!nd || typeof nd.id !== 'number' || typeof nd.size !== 'number') { openNodes = null; break; }\n        if (firstId === null) firstId = nd.id; lastId = nd.id;\n        if (nd.size > 1) openNodes.push({ id: nd.id, type: nd.type, last_id: nd.id + nd.size - 1 });\n      }\n      if (openNodes && lastId !== null) {\n        var inc = openNodes.filter(function (x) { return x.last_id > lastId; });\n        if (inc.length) { meta.incomplete = inc.slice(0, 20).map(function (x) { return { id: x.id, type: x.type, missing: [lastId + 1, x.last_id] }; }); meta.incomplete_note = '這一頁切在樹的中間：incomplete 裡的節點，子節點還有（missing 的 id 範圍）在後面的頁，先不要對它們下結論，讀完下一頁再看。'; }\n        if (firstId > 0 || (out.length && JSON.parse(out[0]).parent != null)) meta.starts_inside = '這一頁從樹的中間開始：每個節點的 path 是從根到它的類型鏈，parent 是上層節點的 id（可能在前一頁）。';\n      }\n    }\n    if (opts.continueWith && hasMore) meta.continue = String(opts.continueWith).replace('<CURSOR>', nextCursor);\n    meta.digest = digest(out.join('\\n'));\n    meta.hint = hasMore\n      ? (partInfo ? '這一筆太大，分成 ' + partInfo.of + ' 段，這是第 ' + (partInfo.part + 1) + ' 段；把各段 text 依序接起來才是完整的一筆。' : '') + '還沒讀完（已到第 ' + i + ' 筆，共 ' + total + ' 筆）：用 next_cursor 原樣帶回再讀下一頁，讀完才可以下結論。'\n      : '已讀到最後一頁（共 ' + total + ' 筆）。';\n    var text = safeStringify({ _page: meta }) + (out.length ? '\\n' + out.join('\\n') : '');\n    return { ok: true, text: text, meta: meta, nextCursor: nextCursor, from: cur.index, to: i, hasMore: hasMore };\n  }\n\n  // 解析一頁的文字（帳本、測試、模型輸出核對用）：回傳 { meta, records:[值], parts:[...], bad:[...] }；第一行不是 _page 回 null\n  function parsePage(text) {\n    var rows = String(text || '').split('\\n'); if (!rows.length) return null;\n    var m; try { m = JSON.parse(rows[0]); } catch (e) { return null; }\n    if (!m || !m._page) return null;\n    var res = { meta: m._page, records: [], parts: [], bad: [] };\n    for (var i = 1; i < rows.length; i++) {\n      if (!rows[i]) continue;\n      try { var v = JSON.parse(rows[i]); if (v && v._part && Object.keys(v).length === 1) res.parts.push(v._part); else res.records.push(v); }\n      catch (e) { res.bad.push({ row: i, raw: rows[i].slice(0, 200) }); }\n    }\n    return res;\n  }\n\n  // ===== 模型輸出成 JSONL 並自動續傳 =====\n  // 線上視覺模型一次輸出有上限（max_tokens），拆解一張圖可能有幾千個物件，一次寫不完就會在半行斷掉。\n  // 做法：要求「一行一個 JSON 物件」、完整一行才算一筆；被截斷（finish_reason 是 length）就丟掉最後那半行，\n  // 用「已經輸出 N 筆，從第 N+1 筆接著輸出」再要一次，累積到模型說完（_end 標記或自然結束）或達上限。壞行保留標示不丟。\n  var END_KEY = '_end';\n  function streamPrompt(userQuestion) {\n    return String(userQuestion || '').trim() + '\\n\\n【輸出格式——一定要照這個寫】\\n' +\n      '1. 一行一個 JSON 物件（JSON Lines）：不要用陣列包起來、不要 markdown 的程式碼區塊、不要行尾逗號、不要任何前言或結語。\\n' +\n      '2. 每個物件都要有 \"id\"（從 1 開始連續編號），其餘欄位（label、bbox 等）依問題需要。\\n' +\n      '3. 一個物件只佔一行，寫完整才換行；全部輸出完，最後一行寫 {\"' + END_KEY + '\":true}。\\n' +\n      '4. 內容太多寫不完也沒關係，寫到哪算哪，我會要你接著寫。';\n  }\n  function continuePrompt(userQuestion, st) {\n    var last = st.lines.length ? st.lines[st.lines.length - 1] : '';\n    var lastId = st.lastId;\n    return streamPrompt(userQuestion) + '\\n\\n【接續】你上一次輸出到一半被截斷了。目前已經收到 ' + st.lines.length + ' 筆' +\n      (lastId != null ? '（最後一筆的 id 是 ' + lastId + '）' : '') + '，最後一筆是：\\n' + (last.length > 300 ? last.slice(0, 300) + '…' : last) +\n      '\\n請從下一筆' + (typeof lastId === 'number' ? '（id 從 ' + (lastId + 1) + ' 開始）' : '') + '接著輸出，格式一樣，不要重複前面已輸出的。';\n  }\n  function newStream() { return { lines: [], ids: {}, bad: 0, dup: 0, partial: 0, ended: false, lastId: null, badSeq: 0 }; }\n  // 吸收模型這一次的輸出。finishReason：'length'＝被截斷；'stop'＝自然結束；其他／空＝不確定。回傳這一次的統計。\n  function absorb(st, text, finishReason) {\n    var res = { added: 0, dup: 0, bad: 0, partial: 0, ended: false };\n    var whole = String(text == null ? '' : text);\n    var rows = whole.replace(/\\r/g, '').split('\\n');\n    var cut = finishReason === 'length' || (finishReason !== 'stop' && !/\\n\\s*$/.test(whole));\n    for (var i = 0; i < rows.length; i++) {\n      var raw = rows[i].trim(); var isLast = i === rows.length - 1;\n      if (!raw || raw.indexOf('```') === 0 || raw === '[' || raw === ']') continue;\n      if (raw.charAt(raw.length - 1) === ',') raw = raw.slice(0, -1);\n      var v = null, ok = false;\n      try { v = JSON.parse(raw); ok = true; } catch (e) { ok = false; }\n      if (!ok) {\n        if (isLast && cut) { res.partial++; st.partial++; continue; } // 被截斷的半行：丟掉，下一次從這一筆重來\n        st.bad++; res.bad++; st.badSeq++;\n        st.lines.push(safeStringify({ _bad_line: st.badSeq, error: 'JSON 解析失敗', raw: raw.length > 300 ? raw.slice(0, 300) + '…' : raw }));\n        continue;\n      }\n      if (isObj(v)) {\n        if (v[END_KEY] === true) { st.ended = true; res.ended = true; continue; }\n        if (v.id != null) {\n          var key = typeof v.id + ':' + v.id;\n          if (st.ids[key]) { st.dup++; res.dup++; continue; }\n          st.ids[key] = true; if (typeof v.id === 'number') st.lastId = v.id;\n        }\n        st.lines.push(safeStringify(v)); res.added++;\n      } else { st.bad++; res.bad++; st.badSeq++; st.lines.push(safeStringify({ _bad_line: st.badSeq, error: '不是物件', raw: raw.slice(0, 300) })); }\n    }\n    return res;\n  }\n  // 整個續傳流程。opts：{ question, generate: async({prompt, round}) → {content, finishReason}, maxRounds, maxRecords, deadlineMs, retries, sleep, shouldStop, onRound }\n  // 回傳 { lines, complete, stop_reason, rounds, bad, dup, partial_dropped, errors:[…] }；complete 只有在模型真的說完（_end 或自然結束）時才是 true。\n  async function runStream(opts) {\n    var st = newStream(), errors = [], rounds = 0, stall = 0, stop = null, uncertain = 0;\n    var maxRounds = opts.maxRounds || 400, maxRecords = opts.maxRecords || 100000, retries = opts.retries == null ? 3 : opts.retries;\n    var deadline = opts.deadlineMs ? Date.now() + opts.deadlineMs : 0;\n    while (true) {\n      if (rounds >= maxRounds) { stop = 'max_rounds'; break; }\n      if (st.lines.length >= maxRecords) { stop = 'max_records'; break; }\n      if (deadline && Date.now() > deadline) { stop = 'deadline'; break; }\n      if (opts.shouldStop && opts.shouldStop()) { stop = 'user_stop'; break; }\n      var prompt = rounds === 0 ? streamPrompt(opts.question) : continuePrompt(opts.question, st), out = null;\n      for (var a = 0; a <= retries; a++) {\n        try { out = await opts.generate({ prompt: prompt, round: rounds + 1, attempt: a + 1 }); break; }\n        catch (e) { errors.push({ round: rounds + 1, attempt: a + 1, error: String(e && e.message || e) }); if (opts.sleep) await opts.sleep(Math.min(8000, 1000 * (a + 1))); }\n      }\n      rounds++;\n      if (!out) { stop = 'error'; break; }\n      var r = absorb(st, out.content, out.finishReason);\n      if (opts.onRound) { try { opts.onRound({ round: rounds, total: st.lines.length, added: r.added, finishReason: out.finishReason }); } catch (e) { /* */ } }\n      if (r.ended) { stop = 'ended'; break; }\n      if (out.finishReason === 'stop') { stop = 'finished'; break; } // 模型自己說完了（沒寫 _end 也算完成，但 end_marker 會是 false）\n      stall = r.added === 0 ? stall + 1 : 0;\n      if (stall >= 2) { stop = 'stalled'; break; }\n      if (out.finishReason !== 'length') { uncertain++; if (uncertain >= 3) { stop = 'unsure'; break; } }\n    }\n    return { lines: st.lines, complete: stop === 'ended' || stop === 'finished', stop_reason: stop, end_marker: st.ended, rounds: rounds, bad: st.bad, dup: st.dup, partial_dropped: st.partial, errors: errors };\n  }\n\n  return {\n    flatten: flatten, unflatten: unflatten, unflattenInfo: unflattenInfo, expand: expand, flattenAst: flattenAst, isAstNode: isAstNode,\n    VERSION: VERSION, budgetChars: budgetChars, digest: digest, parseLines: parseLines,\n    streamPrompt: streamPrompt, continuePrompt: continuePrompt, newStream: newStream, absorb: absorb, runStream: runStream,\n    toRecords: toRecords, page: page, parsePage: parsePage, encodeCursor: encodeCursor, decodeCursor: decodeCursor\n  };\n}));\n";
+const FA_JSONL_PAGER_SRC = "// JSONL 分頁器（純函式，無 DOM、無 I/O、UMD；嵌入 floating-assistant 後用 new Function 載入）。\n// 用途：很大的 JSON 回應（記錄清單）不再「只放開頭就截斷」，而是一頁一頁、每行一筆記錄地給模型，模型可以用 cursor 一直讀到完。\n// 設計與實證見 DESIGN.jsonl-paging.md。\n//\n// 一頁的文字格式：第一行是 meta：{\"_page\":{...}}，其後每行一筆記錄（單行 JSON，內容裡的換行都已跳脫）。\n//   單筆比一頁還大：不丟、不截斷，拆成多頁，每段一行 {\"_part\":{\"record\":i,\"part\":k,\"of\":n,\"text\":\"…\"}}，把 text 依序接起來就是那一筆的原文。\n// 大小跟內容窗口按比例（budgetChars），沒有字元下限；一頁至少 1 筆（或 1 段）。\n(function (root, factory) {\n  if (typeof module === 'object' && module.exports) { module.exports = factory(); } else { root.AiChatJsonlPager = factory(); }\n}(typeof self !== 'undefined' ? self : this, function () {\n  'use strict';\n  var VERSION = 'c1';\n  var META_TOKENS = 130; // 同上，以 token 計（JSON 標點與中文提示分詞很碎）\n  var META_OVERHEAD = 320; // meta 那一行大約佔多少字元（含 hint），從預算裡先扣掉\n\n  function isObj(x) { return x !== null && typeof x === 'object' && !Array.isArray(x); }\n  function safeStringify(v) { try { var s = JSON.stringify(v); return s === undefined ? 'null' : s; } catch (e) { return null; } }\n\n  // 一頁可以放多少字元：內容窗口 token × 比例 × 每 token 約幾個字元。沒有下限常數。\n  function budgetChars(o) {\n    o = o || {};\n    if (Number(o.chars) > 0) return Math.floor(Number(o.chars));\n    var ctx = Number(o.ctxTokens) || 0, fr = Number(o.fraction) || 0.15, cpt = Number(o.charsPerToken) || 3;\n    return Math.max(1, Math.floor(ctx * fr * cpt));\n  }\n\n  // 短雜湊（FNV-1a 32 位元），讓帳本核對「這一頁真的拿到過」\n  function digest(text) {\n    var h = 0x811c9dc5; text = String(text);\n    for (var i = 0; i < text.length; i++) { h ^= text.charCodeAt(i); h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0; }\n    return ('00000000' + h.toString(16)).slice(-8);\n  }\n\n  // 逐行解析 JSONL 文字：回傳 { values:[{line, value}], bad:[{line, raw, error}], lines } ；空行略過但行號照算，壞行保留不丟\n  function parseLines(text) {\n    var out = { values: [], bad: [], lines: 0 };\n    var rows = String(text == null ? '' : text).replace(/^﻿/, '').split(/\\r?\\n/);\n    for (var i = 0; i < rows.length; i++) {\n      var s = rows[i]; if (!s.trim()) continue;\n      out.lines++;\n      try { out.values.push({ line: i + 1, value: JSON.parse(s) }); }\n      catch (e) { out.bad.push({ line: i + 1, raw: s.length > 200 ? s.slice(0, 200) + '…' : s, error: String(e && e.message || e).split('\\n')[0] }); }\n    }\n    return out;\n  }\n\n  // 找頂層物件裡「占大宗」的陣列欄位（最多往下兩層）：回傳 { path:[...], arr }；沒有回 null\n  function dominantArray(obj, totalLen) {\n    var best = null;\n    function visit(o, path, depth) {\n      Object.keys(o).forEach(function (k) {\n        var v = o[k];\n        if (Array.isArray(v) && v.length >= 2) {\n          var s = safeStringify(v); var len = s ? s.length : 0;\n          if (!best || len > best.len) best = { path: path.concat(k), arr: v, len: len };\n        } else if (isObj(v) && depth < 1) visit(v, path.concat(k), depth + 1);\n      });\n    }\n    visit(obj, [], 0);\n    if (!best || best.len < totalLen * 0.5) return null;\n    return best;\n  }\n\n  function withoutPath(obj, path) {\n    var copy = Array.isArray(obj) ? obj.slice() : Object.assign({}, obj);\n    if (path.length === 1) { copy[path[0]] = '[見後面的記錄]'; return copy; }\n    copy[path[0]] = withoutPath(obj[path[0]], path.slice(1));\n    return copy;\n  }\n\n  // 把一個結果轉成「一行一筆」的記錄。input：JSON 文字、JSONL 文字或已解析的值。\n  // 回傳 { lines:[每筆一行的字串], shape, head, bad, path } 或 null（不是記錄清單，呼叫者退回原本的截斷）。\n\n  // 超深的結構攤平成 JSONL：每個節點一行 {\"path\":\"/a/b/0/c\",\"type\":\"string\",\"value\":…}（JSON Pointer；容器行只有 type 與 keys／length，\n  // 沒有 value），先序、鍵順序不變，所以 unflatten 可以逐字還原。單行不含實體換行（JSON.stringify），單一葉子太大由分頁器分段。\n  function ptrEsc(k) { return String(k).replace(/~/g, '~0').replace(/\\//g, '~1'); }\n  // maxDepth：只攤到這一層，更深的容器變成一行 {collapsed:true,size:子孫節點數}（先看全貌，要哪裡再用 expand 往下鑽）；沒給就攤到底。\n  function dkeys(o) { return Object.keys(o).filter(function (k) { return o[k] !== undefined && typeof o[k] !== 'function'; }); } // 跟 JSON.stringify 一樣：值是 undefined／函式的欄位不存在\n  function countNodes(v) { var n = 1; if (Array.isArray(v)) for (var i = 0; i < v.length; i++) n += countNodes(v[i]); else if (isObj(v)) { var dk = dkeys(v); for (var q = 0; q < dk.length; q++) n += countNodes(v[dk[q]]); } return n; }\n  function flatten(value, opts) {\n    opts = opts || {}; var maxNodes = Number(opts.maxNodes) > 0 ? Number(opts.maxNodes) : 2000000;\n    var limit = opts.maxDepth != null && Number(opts.maxDepth) >= 0 ? Number(opts.maxDepth) : Infinity, base = opts.basePath || '', d0 = Number(opts.baseDepth) || 0;\n    var out = [], count = 0, truncated = false;\n    (function walk(v, path, depth) {\n      if (truncated) return;\n      if (++count > maxNodes) { truncated = true; return; }\n      var isArr = Array.isArray(v), isO = isObj(v);\n      if (isArr || isO) {\n        var row = { path: path, depth: depth, type: isArr ? 'array' : 'object' }; if (isArr) row.length = v.length; else row.keys = dkeys(v).length;\n        if (depth - d0 >= limit && (isArr ? v.length : row.keys)) { row.collapsed = true; row.size = countNodes(v) - 1; out.push(safeStringify(row)); return; }\n        out.push(safeStringify(row));\n        if (isArr) for (var i = 0; i < v.length; i++) walk(v[i], path + '/' + i, depth + 1);\n        else { var ks = dkeys(v); for (var j = 0; j < ks.length; j++) walk(v[ks[j]], path + '/' + ptrEsc(ks[j]), depth + 1); }\n      } else out.push(safeStringify({ path: path, depth: depth, type: v === null ? 'null' : typeof v, value: v === undefined ? null : v }));\n    })(value, base, d0);\n    return { lines: out, nodes: out.length, truncated: truncated };\n  }\n  // 往下鑽：把 path（JSON Pointer）那個節點再攤開 levels 層（預設 1），行的 path 是從根算起的完整路徑，可以直接接在先前的行後面一起 unflatten。\n  function getByPointer(value, path) {\n    var cur = value; if (path === '' || path == null) return { ok: true, value: cur };\n    var segs = String(path).split('/').slice(1).map(function (x) { return x.replace(/~1/g, '/').replace(/~0/g, '~'); });\n    for (var i = 0; i < segs.length; i++) { if (cur === null || typeof cur !== 'object' || !(segs[i] in cur)) return { ok: false, error: '找不到路徑 ' + path }; cur = cur[segs[i]]; }\n    return { ok: true, value: cur };\n  }\n  function expand(value, path, opts) {\n    opts = opts || {}; var g = getByPointer(value, path); if (!g.ok) return g;\n    var base = path || '', depth = base ? base.split('/').length - 1 : 0;\n    var f = flatten(g.value, { maxDepth: opts.levels == null ? 1 : opts.levels, basePath: base, baseDepth: depth, maxNodes: opts.maxNodes });\n    return { ok: true, lines: f.lines, nodes: f.nodes, truncated: f.truncated };\n  }\n  // 反向：把 flatten／expand 的行還原成原本的值。同一路徑的行後來的覆蓋前面的（collapsed 的占位行會被 expand 的行取代，已有的子節點不清掉）；\n  // 還有 collapsed 沒展開的節點會留下空容器，並列在回傳的 collapsedPaths（用 unflattenInfo 取得）。\n  function unflattenInfo(lines) {\n    var root, have = false, collapsed = {};\n    for (var n = 0; n < lines.length; n++) {\n      var r = typeof lines[n] === 'string' ? JSON.parse(lines[n]) : lines[n];\n      var isC = r.type === 'array' || r.type === 'object';\n      var node = r.type === 'array' ? [] : r.type === 'object' ? {} : r.value;\n      if (isC) { if (r.collapsed) collapsed[r.path] = r.size || 1; else delete collapsed[r.path]; }\n      if (r.path === '') { if (!have || !isC || typeof root !== 'object' || root === null) root = node; have = true; continue; }\n      var segs = r.path.split('/').slice(1).map(function (x) { return x.replace(/~1/g, '/').replace(/~0/g, '~'); });\n      var cur = root; for (var i = 0; i < segs.length - 1; i++) cur = cur[segs[i]];\n      var last = segs[segs.length - 1], prev = cur[last];\n      if (isC && prev !== null && typeof prev === 'object' && Array.isArray(prev) === Array.isArray(node)) continue; // 已有同型容器（含已展開的子節點）：保留\n      cur[last] = node;\n    }\n    return { value: have ? root : undefined, collapsedPaths: Object.keys(collapsed) };\n  }\n  function unflatten(lines) { return unflattenInfo(lines).value; }\n\n  // 程式結構（AST／語法樹／任何「有 type 或 kind 的節點巢狀」）攤平：一個節點一行\n  //   {\"id\":n,\"parent\":p,\"field\":\"body\",\"index\":0,\"type\":\"IfStatement\",\"depth\":d,\"props\":{純量屬性…},\"children\":k}\n  // id 從 0 起、先序；parent＝上層節點的 id（根是 null）；field／index＝它掛在上層的哪個欄位（第幾個）。\n  // 位置資訊（loc／range／start／end／span）留在 props，方便用行號回頭找原始碼。非節點的巢狀（普通物件／陣列）掛在最近的節點底下，欄位路徑放 field。\n  function isAstNode(v) { return isObj(v) && (typeof v.type === 'string' || typeof v.kind === 'string' || typeof v.node_type === 'string'); }\n  function nodeType(v) { return typeof v.type === 'string' ? v.type : typeof v.kind === 'string' ? v.kind : v.node_type; }\n  function flattenAst(root, opts) {\n    opts = opts || {}; var maxNodes = Number(opts.maxNodes) > 0 ? Number(opts.maxNodes) : 2000000;\n    var out = [], truncated = false;\n    function emit(v, parent, field, index, depth, path) {\n      if (out.length >= maxNodes) { truncated = true; return; }\n      var id = out.length, props = {}, kids = [];\n      var tp = nodeType(v), mypath = (path ? path + '>' : '') + tp;\n      var line = { id: id, parent: parent, field: field, index: index, type: tp, path: mypath, depth: depth, props: props, children: 0, size: 1 };\n      out.push(null);\n      Object.keys(v).forEach(function (k) {\n        var x = v[k];\n        if (k === 'type' && typeof x === 'string' && nodeType(v) === x) return;\n        if (x !== null && typeof x === 'object') {\n          if (Array.isArray(x)) { if (x.some(function (e) { return e !== null && typeof e === 'object'; })) { kids.push({ k: k, arr: x }); return; } props[k] = x; return; }\n          if (isAstNode(x)) { kids.push({ k: k, one: x }); return; }\n          if (hasNode(x, 3)) { kids.push({ k: k, plain: x }); return; }\n          props[k] = x; return; // 位置、小型設定物件（loc、range…）\n        }\n        props[k] = x;\n      });\n      var n = 0;\n      kids.forEach(function (c) {\n        if (c.one) { n++; emit(c.one, id, c.k, null, depth + 1, mypath); }\n        else if (c.arr) c.arr.forEach(function (e, i) { if (isAstNode(e)) { n++; emit(e, id, c.k, i, depth + 1, mypath); } else if (e !== null && typeof e === 'object' && hasNode(e, 3)) { Object.keys(e).forEach(function (kk) { if (isAstNode(e[kk])) { n++; emit(e[kk], id, c.k + '[' + i + '].' + kk, null, depth + 1, mypath); } }); } else { (line.props[c.k + '[' + i + ']'] = e); } });\n        else Object.keys(c.plain).forEach(function (kk) { var e = c.plain[kk]; if (isAstNode(e)) { n++; emit(e, id, c.k + '.' + kk, null, depth + 1, mypath); } else if (Array.isArray(e)) e.forEach(function (z, i) { if (isAstNode(z)) { n++; emit(z, id, c.k + '.' + kk, i, depth + 1, mypath); } }); else props[c.k + '.' + kk] = e; });\n      });\n      line.children = n; line.size = out.length - id; out[id] = safeStringify(line);\n    }\n    emit(root, null, null, null, 0, '');\n    return { lines: out.filter(function (l) { return l !== null; }), nodes: out.length, truncated: truncated };\n  }\n  function hasNode(v, d) { if (d <= 0 || v === null || typeof v !== 'object') return false; if (isAstNode(v)) return true; var ks = Object.keys(v); for (var i = 0; i < ks.length && i < 50; i++) if (hasNode(v[ks[i]], d - 1)) return true; return false; }\n  function maxDepth(v, cap) {\n    var m = 0; (function w(x, d) { if (d > m) m = d; if (m >= cap) return; if (Array.isArray(x)) for (var i = 0; i < x.length && m < cap; i++) w(x[i], d + 1); else if (isObj(x)) for (var k in x) { w(x[k], d + 1); if (m >= cap) return; } })(v, 0);\n    return m;\n  }\n  function toRecords(input, opts) {\n    opts = opts || {};\n    var value, jsonlRes = null;\n    if (typeof input === 'string') {\n      var t = input.replace(/^﻿/, '').trim();\n      if (!t) return null;\n      var first = t[0];\n      if (first !== '{' && first !== '[') return null;\n      try { value = JSON.parse(t); }\n      catch (e) {\n        // 整串不是合法 JSON：看是不是一行一筆的 JSONL\n        jsonlRes = parseLines(t);\n        var nonEmpty = jsonlRes.values.length + jsonlRes.bad.length;\n        if (jsonlRes.values.length < 2 || jsonlRes.values.length < nonEmpty * 0.5) return null;\n        var ls = jsonlRes.values.map(function (r) { return safeStringify(r.value); });\n        jsonlRes.bad.forEach(function (b) { ls.push(safeStringify({ _bad_line: b.line, error: b.error, raw: b.raw })); });\n        return { lines: ls, shape: 'jsonl', head: null, bad: jsonlRes.bad.length, path: [] };\n      }\n    } else value = input;\n    if (Array.isArray(value)) {\n      if (value.length < 2) return null;\n      var lines = value.map(safeStringify);\n      if (lines.indexOf(null) >= 0) return null;\n      return { lines: lines, shape: 'array', head: null, bad: 0, path: [] };\n    }\n    if (isObj(value)) {\n      var totalLen = (safeStringify(value) || '').length;\n      var dom = dominantArray(value, totalLen);\n      if (opts.flatten !== false && isAstNode(value) && maxDepth(value, 5) >= 4) {\n        var fa = flattenAst(value); if (fa.lines.length >= 2) return { lines: fa.lines, shape: 'ast', head: fa.truncated ? { note: '節點太多，只攤平了前 ' + fa.nodes + ' 個' } : null, bad: 0, path: [] };\n      }\n      if ((opts.flatten || (!dom && maxDepth(value, 6) >= 5)) && !(opts.flatten === false)) {\n        // 超深的巢狀（沒有占大宗的陣列，或明確要求）：攤平成一個節點一行\n        var fl = flatten(value); if (fl.lines.length >= 2 && fl.lines.indexOf(null) < 0) return { lines: fl.lines, shape: 'flat', head: fl.truncated ? { note: '節點太多，只攤平了前 ' + fl.nodes + ' 個' } : null, bad: 0, path: [] };\n      }\n      if (!dom) {\n        // 沒有占大宗的陣列（例如 id→物件的對照表、很多欄位的大物件）：一個欄位一行 {\"key\":…,\"value\":…}；單一欄位太大由分頁器分段\n        var keys = Object.keys(value); if (keys.length < 3) return null;\n        var le = keys.map(function (k) { return safeStringify({ key: k, value: value[k] }); });\n        if (le.indexOf(null) >= 0) return null;\n        return { lines: le, shape: 'entries', head: null, bad: 0, path: [] };\n      }\n      var ls2 = dom.arr.map(safeStringify);\n      if (ls2.indexOf(null) >= 0) return null;\n      return { lines: ls2, shape: 'field:' + dom.path.join('.'), head: withoutPath(value, dom.path), bad: 0, path: dom.path };\n    }\n    return null;\n  }\n\n  // ===== cursor =====\n  function cleanSource(s) { return String(s == null ? '' : s).replace(/[^A-Za-z0-9_\\-.]/g, '_'); }\n  function encodeCursor(c) { return [VERSION, cleanSource(c.source), c.index | 0, c.part | 0, c.page | 0].join(':'); }\n  // 驗證：版本、來源（有給才比對）、位置範圍；失敗回 { ok:false, error }，不亂讀\n  function decodeCursor(cursor, expect) {\n    expect = expect || {};\n    if (cursor == null || cursor === '') return { ok: true, index: 0, part: 0, page: 0, source: expect.source != null ? cleanSource(expect.source) : '' };\n    var p = String(cursor).split(':');\n    if (p.length !== 5 || p[0] !== VERSION) return { ok: false, error: 'cursor 格式不對：請原樣帶回上一頁 _page.next_cursor 的值，不要自己改。' };\n    var idx = Number(p[2]), part = Number(p[3]), page = Number(p[4]);\n    if (![idx, part, page].every(function (n) { return isFinite(n) && n >= 0 && Math.floor(n) === n; })) return { ok: false, error: 'cursor 的位置不是整數。' };\n    if (expect.source != null && p[1] !== cleanSource(expect.source)) return { ok: false, error: 'cursor 屬於另一份內容（' + p[1] + '），不是 ' + cleanSource(expect.source) + '。' };\n    if (expect.total != null && idx > expect.total) return { ok: false, error: 'cursor 超出範圍（第 ' + idx + ' 筆，共 ' + expect.total + ' 筆）。' };\n    return { ok: true, source: p[1], index: idx, part: part, page: page };\n  }\n\n  // 單筆太大時切一段（不切在代理對中間）\n  function sliceSafe(s, from, len) {\n    var end = Math.min(s.length, from + Math.max(1, len));\n    if (end < s.length) { var c = s.charCodeAt(end - 1); if (c >= 0xD800 && c <= 0xDBFF && end - from > 1) end--; }\n    return s.slice(from, end);\n  }\n\n  // 取一頁。lines＝toRecords().lines；opts：{ source, cursor, budgetChars|ctxTokens+fraction, head, total_exact, hintTool }\n  // 回傳 { ok, text, meta, nextCursor, from, to, hasMore }；cursor 不合法回 { ok:false, error }\n  function page(lines, opts) {\n    opts = opts || {};\n    var total = lines.length;\n    var cur = decodeCursor(opts.cursor, { source: opts.source, total: total });\n    if (!cur.ok) return { ok: false, error: cur.error };\n    // 預算單位：給了 maxTokens＋tokensOf（宿主的 token 估計）就用 token 算——中文 JSON 大約 1 字 1 token，用「3 字元＝1 token」會低估 3 倍，\n    // 小窗口（4096）一頁就吃掉四成；沒給就照字元算（跟以前完全一樣）\n    var tokMode = typeof opts.tokensOf === 'function' && Number(opts.maxTokens) > 0;\n    var cost = function (str) { return tokMode ? Number(opts.tokensOf(str)) + 1 : str.length + 1; };\n    var budget = tokMode ? Math.max(1, Math.floor(Number(opts.maxTokens)) - META_TOKENS) : Math.max(1, budgetChars(opts) - META_OVERHEAD);\n    var i = cur.index, part = cur.part, out = [], used = 0, partInfo = null;\n    if (i >= total) return { ok: true, text: safeStringify({ _page: { source: cleanSource(opts.source), page: cur.page + 1, from: total, to: total, returned: 0, total: total, total_exact: true, has_more: false, next_cursor: null, done: true, read_records: total } }), meta: { done: true }, nextCursor: null, from: total, to: total, hasMore: false };\n    if (part > 0 || cost(lines[i]) > budget) {\n      // 這一筆放不進一頁（或上次讀到一半）：只送這一筆的一段\n      var rec = lines[i]; var from = 0;\n      // 每段的 text 因 JSON 跳脫會變長，抓一個保守比例讓整行不超過預算\n      var ratio = tokMode ? Math.max(0.05, cost(rec) / Math.max(1, rec.length)) : 1; // 每個字元約幾個單位\n      var perPart = Math.max(1, Math.floor(((budget - (tokMode ? 40 : 80)) / 2) / ratio));\n      var starts = [0];\n      for (var pos = 0; pos < rec.length;) { var piece = sliceSafe(rec, pos, perPart); pos += piece.length; if (pos < rec.length) starts.push(pos); }\n      var nParts = starts.length;\n      if (part >= nParts) part = 0; // 防呆\n      from = starts[part];\n      var seg = rec.slice(from, part + 1 < nParts ? starts[part + 1] : rec.length);\n      var row = safeStringify({ _part: { record: i, part: part, of: nParts, text: seg } });\n      out.push(row);\n      var lastPart = from + seg.length >= rec.length;\n      partInfo = { record: i, part: part, of: nParts };\n      if (lastPart) { i++; part = 0; } else part++;\n    } else {\n      while (i < total) {\n        var len = cost(lines[i]);\n        if (out.length && used + len > budget) break;\n        if (!out.length && len > budget) break; // 第一筆就放不下：下一輪走分段\n        out.push(lines[i]); used += len; i++;\n      }\n    }\n    var hasMore = i < total;\n    var nextCursor = hasMore ? encodeCursor({ source: opts.source, index: i, part: part, page: cur.page + 1 }) : null;\n    var pageNo = cur.page + 1;\n    var meta = {\n      source: cleanSource(opts.source), page: pageNo,\n      from: cur.index, to: partInfo ? (part === 0 ? i : cur.index) : i, returned: partInfo ? 0 : out.length,\n      total: total, total_exact: opts.total_exact !== false,\n      has_more: hasMore, next_cursor: nextCursor, limit: partInfo ? 1 : out.length\n    };\n    if (partInfo) { meta.record_part = partInfo; meta.to = part === 0 ? i : cur.index; }\n    if (!hasMore) { meta.done = true; meta.read_records = total; }\n    if (cur.index === 0 && cur.part === 0 && opts.head != null) {\n      var hs = safeStringify(opts.head) || '';\n      if ((tokMode ? Number(opts.tokensOf(hs)) : hs.length) <= Math.floor(budget * 0.25)) meta.head = opts.head; else meta.head_omitted = true; // 其餘欄位太大就不塞進第一頁\n    }\n    // 樹狀記錄（flattenAst：先序，每個節點有 id 與 size＝子樹節點數）：這一頁切在樹的中間時，列出「子節點還沒讀完」的節點，\n    // 不完整的節點會讓人誤讀（例如 if 只看到條件沒看到 else），所以提醒不要對它下結論，並附要接著讀的位置。\n    if (!partInfo && out.length) {\n      var openNodes = []; var lastId = null, firstId = null;\n      for (var oi = 0; oi < out.length; oi++) {\n        var nd = null; try { nd = JSON.parse(out[oi]); } catch (e0) { nd = null; }\n        if (!nd || typeof nd.id !== 'number' || typeof nd.size !== 'number') { openNodes = null; break; }\n        if (firstId === null) firstId = nd.id; lastId = nd.id;\n        if (nd.size > 1) openNodes.push({ id: nd.id, type: nd.type, last_id: nd.id + nd.size - 1 });\n      }\n      if (openNodes && lastId !== null) {\n        var inc = openNodes.filter(function (x) { return x.last_id > lastId; });\n        if (inc.length) { meta.incomplete = inc.slice(0, 20).map(function (x) { return { id: x.id, type: x.type, missing: [lastId + 1, x.last_id] }; }); meta.incomplete_note = '這一頁切在樹的中間：incomplete 裡的節點，子節點還有（missing 的 id 範圍）在後面的頁，先不要對它們下結論，讀完下一頁再看。'; }\n        if (firstId > 0 || (out.length && JSON.parse(out[0]).parent != null)) meta.starts_inside = '這一頁從樹的中間開始：每個節點的 path 是從根到它的類型鏈，parent 是上層節點的 id（可能在前一頁）。';\n      }\n    }\n    if (hasMore && !partInfo && out.length) meta.pages_left = Math.ceil((total - i) / out.length); // 估計：照這一頁讀到的筆數，後面大約還有幾頁（上下文放得下幾頁要跟這個比）\n    if (opts.continueWith && hasMore) meta.continue = String(opts.continueWith).replace('<CURSOR>', nextCursor);\n    meta.digest = digest(out.join('\\n'));\n    meta.hint = hasMore\n      ? (partInfo ? '這一筆太大，分成 ' + partInfo.of + ' 段，這是第 ' + (partInfo.part + 1) + ' 段；把各段 text 依序接起來才是完整的一筆。' : '') + '還沒讀完（已到第 ' + i + ' 筆，共 ' + total + ' 筆）：用 next_cursor 原樣帶回再讀下一頁，讀完才可以下結論。'\n      : '已讀到最後一頁（共 ' + total + ' 筆）。';\n    var text = safeStringify({ _page: meta }) + (out.length ? '\\n' + out.join('\\n') : '');\n    return { ok: true, text: text, meta: meta, nextCursor: nextCursor, from: cur.index, to: i, hasMore: hasMore };\n  }\n\n  // 解析一頁的文字（帳本、測試、模型輸出核對用）：回傳 { meta, records:[值], parts:[...], bad:[...] }；第一行不是 _page 回 null\n  function parsePage(text) {\n    var rows = String(text || '').split('\\n'); if (!rows.length) return null;\n    var m; try { m = JSON.parse(rows[0]); } catch (e) { return null; }\n    if (!m || !m._page) return null;\n    var res = { meta: m._page, records: [], parts: [], bad: [] };\n    for (var i = 1; i < rows.length; i++) {\n      if (!rows[i]) continue;\n      try { var v = JSON.parse(rows[i]); if (v && v._part && Object.keys(v).length === 1) res.parts.push(v._part); else res.records.push(v); }\n      catch (e) { res.bad.push({ row: i, raw: rows[i].slice(0, 200) }); }\n    }\n    return res;\n  }\n\n  // ===== 模型輸出成 JSONL 並自動續傳 =====\n  // 線上視覺模型一次輸出有上限（max_tokens），拆解一張圖可能有幾千個物件，一次寫不完就會在半行斷掉。\n  // 做法：要求「一行一個 JSON 物件」、完整一行才算一筆；被截斷（finish_reason 是 length）就丟掉最後那半行，\n  // 用「已經輸出 N 筆，從第 N+1 筆接著輸出」再要一次，累積到模型說完（_end 標記或自然結束）或達上限。壞行保留標示不丟。\n  var END_KEY = '_end';\n  function streamPrompt(userQuestion) {\n    return String(userQuestion || '').trim() + '\\n\\n【輸出格式——一定要照這個寫】\\n' +\n      '1. 一行一個 JSON 物件（JSON Lines）：不要用陣列包起來、不要 markdown 的程式碼區塊、不要行尾逗號、不要任何前言或結語。\\n' +\n      '2. 每個物件都要有 \"id\"（從 1 開始連續編號），其餘欄位（label、bbox 等）依問題需要。\\n' +\n      '3. 一個物件只佔一行，寫完整才換行；全部輸出完，最後一行寫 {\"' + END_KEY + '\":true}。\\n' +\n      '4. 內容太多寫不完也沒關係，寫到哪算哪，我會要你接著寫。';\n  }\n  function continuePrompt(userQuestion, st) {\n    var last = st.lines.length ? st.lines[st.lines.length - 1] : '';\n    var lastId = st.lastId;\n    return streamPrompt(userQuestion) + '\\n\\n【接續】你上一次輸出到一半被截斷了。目前已經收到 ' + st.lines.length + ' 筆' +\n      (lastId != null ? '（最後一筆的 id 是 ' + lastId + '）' : '') + '，最後一筆是：\\n' + (last.length > 300 ? last.slice(0, 300) + '…' : last) +\n      '\\n請從下一筆' + (typeof lastId === 'number' ? '（id 從 ' + (lastId + 1) + ' 開始）' : '') + '接著輸出，格式一樣，不要重複前面已輸出的。';\n  }\n  function newStream() { return { lines: [], ids: {}, bad: 0, dup: 0, partial: 0, ended: false, lastId: null, badSeq: 0 }; }\n  // 吸收模型這一次的輸出。finishReason：'length'＝被截斷；'stop'＝自然結束；其他／空＝不確定。回傳這一次的統計。\n  function absorb(st, text, finishReason) {\n    var res = { added: 0, dup: 0, bad: 0, partial: 0, ended: false };\n    var whole = String(text == null ? '' : text);\n    var rows = whole.replace(/\\r/g, '').split('\\n');\n    var cut = finishReason === 'length' || (finishReason !== 'stop' && !/\\n\\s*$/.test(whole));\n    for (var i = 0; i < rows.length; i++) {\n      var raw = rows[i].trim(); var isLast = i === rows.length - 1;\n      if (!raw || raw.indexOf('```') === 0 || raw === '[' || raw === ']') continue;\n      if (raw.charAt(raw.length - 1) === ',') raw = raw.slice(0, -1);\n      var v = null, ok = false;\n      try { v = JSON.parse(raw); ok = true; } catch (e) { ok = false; }\n      if (!ok) {\n        if (isLast && cut) { res.partial++; st.partial++; continue; } // 被截斷的半行：丟掉，下一次從這一筆重來\n        st.bad++; res.bad++; st.badSeq++;\n        st.lines.push(safeStringify({ _bad_line: st.badSeq, error: 'JSON 解析失敗', raw: raw.length > 300 ? raw.slice(0, 300) + '…' : raw }));\n        continue;\n      }\n      if (isObj(v)) {\n        if (v[END_KEY] === true) { st.ended = true; res.ended = true; continue; }\n        if (v.id != null) {\n          var key = typeof v.id + ':' + v.id;\n          if (st.ids[key]) { st.dup++; res.dup++; continue; }\n          st.ids[key] = true; if (typeof v.id === 'number') st.lastId = v.id;\n        }\n        st.lines.push(safeStringify(v)); res.added++;\n      } else { st.bad++; res.bad++; st.badSeq++; st.lines.push(safeStringify({ _bad_line: st.badSeq, error: '不是物件', raw: raw.slice(0, 300) })); }\n    }\n    return res;\n  }\n  // 整個續傳流程。opts：{ question, generate: async({prompt, round}) → {content, finishReason}, maxRounds, maxRecords, deadlineMs, retries, sleep, shouldStop, onRound }\n  // 回傳 { lines, complete, stop_reason, rounds, bad, dup, partial_dropped, errors:[…] }；complete 只有在模型真的說完（_end 或自然結束）時才是 true。\n  async function runStream(opts) {\n    var st = newStream(), errors = [], rounds = 0, stall = 0, stop = null, uncertain = 0;\n    var maxRounds = opts.maxRounds || 400, maxRecords = opts.maxRecords || 100000, retries = opts.retries == null ? 3 : opts.retries;\n    var deadline = opts.deadlineMs ? Date.now() + opts.deadlineMs : 0;\n    while (true) {\n      if (rounds >= maxRounds) { stop = 'max_rounds'; break; }\n      if (st.lines.length >= maxRecords) { stop = 'max_records'; break; }\n      if (deadline && Date.now() > deadline) { stop = 'deadline'; break; }\n      if (opts.shouldStop && opts.shouldStop()) { stop = 'user_stop'; break; }\n      var prompt = rounds === 0 ? streamPrompt(opts.question) : continuePrompt(opts.question, st), out = null;\n      for (var a = 0; a <= retries; a++) {\n        try { out = await opts.generate({ prompt: prompt, round: rounds + 1, attempt: a + 1 }); break; }\n        catch (e) { errors.push({ round: rounds + 1, attempt: a + 1, error: String(e && e.message || e) }); if (opts.sleep) await opts.sleep(Math.min(8000, 1000 * (a + 1))); }\n      }\n      rounds++;\n      if (!out) { stop = 'error'; break; }\n      var r = absorb(st, out.content, out.finishReason);\n      if (opts.onRound) { try { opts.onRound({ round: rounds, total: st.lines.length, added: r.added, finishReason: out.finishReason }); } catch (e) { /* */ } }\n      if (r.ended) { stop = 'ended'; break; }\n      if (out.finishReason === 'stop') { stop = 'finished'; break; } // 模型自己說完了（沒寫 _end 也算完成，但 end_marker 會是 false）\n      stall = r.added === 0 ? stall + 1 : 0;\n      if (stall >= 2) { stop = 'stalled'; break; }\n      if (out.finishReason !== 'length') { uncertain++; if (uncertain >= 3) { stop = 'unsure'; break; } }\n    }\n    return { lines: st.lines, complete: stop === 'ended' || stop === 'finished', stop_reason: stop, end_marker: st.ended, rounds: rounds, bad: st.bad, dup: st.dup, partial_dropped: st.partial, errors: errors };\n  }\n\n  return {\n    flatten: flatten, unflatten: unflatten, unflattenInfo: unflattenInfo, expand: expand, flattenAst: flattenAst, isAstNode: isAstNode,\n    VERSION: VERSION, budgetChars: budgetChars, digest: digest, parseLines: parseLines,\n    streamPrompt: streamPrompt, continuePrompt: continuePrompt, newStream: newStream, absorb: absorb, runStream: runStream,\n    toRecords: toRecords, page: page, parsePage: parsePage, encodeCursor: encodeCursor, decodeCursor: decodeCursor\n  };\n}));\n";
 /* JSONLPAGER-END */
 /* WEBBLOCKS-BEGIN */
-const FA_WEB_BLOCKS_SRC = "// 網頁內文 → 區塊記錄（純函式，無 DOM、無 I/O、UMD；嵌入 floating-assistant 後用 new Function 載入）。\n// 用途：很長的網頁內文（Markdown）不再「整份一大段」，而是一個區塊一行 JSONL，交給 JSONL 分頁器一頁頁讀，\n// 每筆都有所屬章節（sec）、類型、連結參照，另外附一份章節參照表（outline）。設計見 DESIGN.jsonl-paging.md 第九節。\n//   toBlocks(markdown, { maxRecordChars }) → { lines:[JSON 字串], blocks:n, outline:[{ref,level,title,from,to,chars}], links:n, total_chars }\n// 記錄：{i, t:'h'|'p'|'li'|'code'|'table'|'quote', sec:'s3', level?, text, links?:[{text,url}], lang?}\n(function (root, factory) {\n  if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaWebBlocks = factory();\n}(typeof self !== 'undefined' ? self : this, function () {\n  'use strict';\n\n  var LINK_RE = /!?\\[([^\\]]*)\\]\\(([^)\\s]+)(?:\\s+\"[^\"]*\")?\\)/g;\n  // 連結拆成 text＋links：內文只留連結文字，網址放 links（省字元，也方便模型照網址再抓）\n  function splitLinks(s) {\n    var links = [];\n    var text = s.replace(LINK_RE, function (m, t, u) {\n      if (m.charAt(0) === '!') return t ? '[圖：' + t + ']' : '[圖]';\n      if (t) links.push({ text: t, url: u });\n      return t || u;\n    });\n    return { text: text, links: links };\n  }\n\n  function toBlocks(markdown, opts) {\n    opts = opts || {};\n    var maxRec = Number(opts.maxRecordChars) > 0 ? Number(opts.maxRecordChars) : 0; // 0＝不切；單筆過大由分頁器的 record_part 處理\n    var rows = String(markdown == null ? '' : markdown).replace(/^﻿/, '').split(/\\r?\\n/);\n    var recs = [], starts = [], pend = -1, outline = [], secCount = 0, curSec = 's0', linkTotal = 0;\n    var para = [], list = [], table = [], quote = [];\n    function push(r, at) { r.i = recs.length; recs.push(r); starts.push(at != null ? at : (pend >= 0 ? pend : 0)); }\n    function withLinks(t, r) { var x = splitLinks(t); r.text = x.text; if (x.links.length) { r.links = x.links; linkTotal += x.links.length; } return r; }\n    function flush() {\n      var at = pend; pend = -1;\n      if (para.length) { push(withLinks(para.join(' ').replace(/\\s+/g, ' ').trim(), { t: 'p', sec: curSec }), at); para = []; }\n      if (list.length) { for (var i = 0; i < list.length; i++) push(withLinks(list[i].text, { t: 'li', sec: curSec, depth: list[i].depth }), list[i].at); list = []; }\n      if (table.length) { push({ t: 'table', sec: curSec, text: table.join('\\n') }, at); table = []; }\n      if (quote.length) { push(withLinks(quote.join(' ').trim(), { t: 'quote', sec: curSec }), at); quote = []; }\n    }\n    var fence = null, code = [], off = 0;\n    for (var n = 0; n < rows.length; n++) {\n      var line = rows[n], lineOff = off; off += line.length + 1;\n      var fm = /^\\s*(```|~~~)\\s*([\\w+-]*)/.exec(line);\n      if (fence) {\n        if (fm && fm[1] === fence.mark) { push({ t: 'code', sec: curSec, lang: fence.lang || undefined, text: code.join('\\n') }, fence.at); fence = null; code = []; } else code.push(line);\n        continue;\n      }\n      if (fm) { flush(); fence = { mark: fm[1], lang: fm[2], at: lineOff }; code = []; continue; }\n      if (!line.trim()) { flush(); continue; }\n      var hm = /^(#{1,6})\\s+(.+?)\\s*#*\\s*$/.exec(line);\n      if (hm) {\n        flush(); secCount++; curSec = 's' + secCount;\n        var ht = splitLinks(hm[2]).text; var r = { t: 'h', sec: curSec, level: hm[1].length, text: ht }; push(r, lineOff);\n        outline.push({ ref: curSec, level: r.level, title: ht, from: r.i, to: r.i, chars: 0, from_char: lineOff, to_char: 0 });\n        continue;\n      }\n      var lm = /^(\\s*)(?:[-*+]|\\d+[.)])\\s+(.*)$/.exec(line);\n      if (lm) { if (para.length || table.length || quote.length) flush(); list.push({ text: lm[2], depth: Math.floor(lm[1].replace(/\\t/g, '  ').length / 2), at: lineOff }); continue; }\n      if (/^\\s*\\|/.test(line)) { if (para.length || list.length || quote.length) flush(); if (pend < 0) pend = lineOff; table.push(line.trim()); continue; }\n      var qm = /^\\s*>\\s?(.*)$/.exec(line);\n      if (qm) { if (para.length || list.length || table.length) flush(); if (pend < 0) pend = lineOff; quote.push(qm[1]); continue; }\n      if (list.length || table.length || quote.length) flush();\n      if (pend < 0) pend = lineOff; para.push(line.trim());\n    }\n    if (fence) push({ t: 'code', sec: curSec, lang: fence.lang || undefined, text: code.join('\\n') }, fence.at);\n    flush();\n    // 章節的涵蓋範圍與字數\n    var os = {}; for (var k = 0; k < outline.length; k++) os[outline[k].ref] = outline[k];\n    for (var q = 0; q < outline.length; q++) outline[q].to_char = q + 1 < outline.length ? outline[q + 1].from_char : off; // 章節在原文（參照文件）裡的字元範圍\n    var total = 0;\n    for (var j = 0; j < recs.length; j++) { var o = os[recs[j].sec]; var len = (recs[j].text || '').length; total += len; if (o) { o.to = j; o.chars += len; } }\n    var lines = recs.map(function (r) { return JSON.stringify(r); });\n    void maxRec;\n    return { lines: lines, starts: starts, lens: recs.map(function (r) { return (r.text || '').length; }), blocks: recs.length, outline: outline, links: linkTotal, total_chars: total };\n  }\n\n  // 章節參照表壓成一小段（放第一頁的 head）：最多 maxItems 筆，超過就只留最上層標題並註明\n  function outlineForHead(outline, maxItems) {\n    maxItems = maxItems || 60;\n    var o = outline.slice();\n    if (o.length > maxItems) { var minL = Math.min.apply(null, o.map(function (x) { return x.level; })); var top = o.filter(function (x) { return x.level <= minL + 1; }); o = top.length > maxItems ? top.slice(0, maxItems) : top; }\n    return o.map(function (x) { return { ref: x.ref, level: x.level, title: x.title.slice(0, 60), from: x.from, to: x.to, chars: x.chars }; });\n  }\n\n  // 第 0 層（章節索引，一章一行）：{ref,level,title,parent,blocks:[from,to],chars,doc:{offset,chars}}；parent＝上一個比它淺的標題。\n  // 沒有任何標題時給一個 s0 假章節涵蓋全部，確保有索引可讀。\n  function sectionIndex(built, docChars, opts) {\n    var out = [], stack = [], ol = built.outline;\n    if (!ol.length) {\n      var target = Number(opts && opts.chunkChars) > 0 ? Number(opts.chunkChars) : 6000, st = built.starts || [], parts = [], from = 0, acc = 0, lens = built.lens || [];\n      if (built.blocks <= 1 || built.total_chars <= target) return [{ ref: 's0', level: 0, title: '（全文，沒有標題）', parent: null, blocks: [0, Math.max(0, built.blocks - 1)], chars: built.total_chars, doc: { offset: 0, chars: docChars || built.total_chars } }];\n      for (var b = 0; b < built.blocks; b++) { acc += lens[b] || 0; if (acc >= target || b === built.blocks - 1) { parts.push({ from: b - (b - from), to: b, chars: acc }); from = b + 1; acc = 0; } }\n      return parts.map(function (pt, n) {\n        var off = st[pt.from] || 0, end = n + 1 < parts.length ? (st[parts[n + 1].from] || docChars || 0) : (docChars || built.total_chars);\n        return { ref: 's' + (n + 1), level: 1, title: '第 ' + (n + 1) + ' 段（區塊 ' + pt.from + '–' + pt.to + '）', parent: null, blocks: [pt.from, pt.to], chars: pt.chars, doc: { offset: off, chars: Math.max(0, end - off) } };\n      });\n    }\n    var lead = ol[0].from_char > 0 && ol[0].from > 0; // 第一個標題之前有內容\n    if (lead) out.push({ ref: 's0', level: 0, title: '（開頭，第一個標題之前）', parent: null, blocks: [0, ol[0].from - 1], chars: 0, doc: { offset: 0, chars: ol[0].from_char } });\n    for (var i = 0; i < ol.length; i++) {\n      var o = ol[i]; while (stack.length && stack[stack.length - 1].level >= o.level) stack.pop();\n      out.push({ ref: o.ref, level: o.level, title: o.title, parent: stack.length ? stack[stack.length - 1].ref : null, blocks: [o.from, o.to], chars: o.chars, doc: { offset: o.from_char, chars: Math.max(0, Math.min(o.to_char, docChars || o.to_char) - o.from_char) } });\n      stack.push(o);\n    }\n    return out;\n  }\n\n  return { sectionIndex: sectionIndex, toBlocks: toBlocks, splitLinks: splitLinks, outlineForHead: outlineForHead };\n}));\n";
+const FA_WEB_BLOCKS_SRC = "// 網頁內文 → 區塊記錄（純函式，無 DOM、無 I/O、UMD；嵌入 floating-assistant 後用 new Function 載入）。\n// 用途：很長的網頁內文（Markdown）不再「整份一大段」，而是一個區塊一行 JSONL，交給 JSONL 分頁器一頁頁讀，\n// 每筆都有所屬章節（sec）、類型、連結參照，另外附一份章節參照表（outline）。設計見 DESIGN.jsonl-paging.md 第九節。\n//   toBlocks(markdown, { maxRecordChars }) → { lines:[JSON 字串], blocks:n, outline:[{ref,level,title,from,to,chars}], links:n, total_chars }\n// 記錄：{i, t:'h'|'p'|'li'|'code'|'table'|'quote', sec:'s3', level?, text, links?:[{text,url}], lang?}\n(function (root, factory) {\n  if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaWebBlocks = factory();\n}(typeof self !== 'undefined' ? self : this, function () {\n  'use strict';\n\n  var LINK_RE = /!?\\[([^\\]]*)\\]\\(([^)\\s]+)(?:\\s+\"[^\"]*\")?\\)/g;\n  // 連結拆成 text＋links：內文只留連結文字，網址放 links（省字元，也方便模型照網址再抓）\n  function splitLinks(s) {\n    var links = [];\n    var text = s.replace(LINK_RE, function (m, t, u) {\n      if (m.charAt(0) === '!') return t ? '[圖：' + t + ']' : '[圖]';\n      if (t) links.push({ text: t, url: u });\n      return t || u;\n    });\n    return { text: text, links: links };\n  }\n\n  function toBlocks(markdown, opts) {\n    opts = opts || {};\n    var maxRec = Number(opts.maxRecordChars) > 0 ? Number(opts.maxRecordChars) : 0; // 0＝不切；單筆過大由分頁器的 record_part 處理\n    var rows = String(markdown == null ? '' : markdown).replace(/^﻿/, '').split(/\\r?\\n/);\n    var recs = [], starts = [], pend = -1, outline = [], secCount = 0, curSec = 's0', linkTotal = 0;\n    var para = [], list = [], table = [], quote = [];\n    function push(r, at) { r.i = recs.length; recs.push(r); starts.push(at != null ? at : (pend >= 0 ? pend : 0)); }\n    function withLinks(t, r) { var x = splitLinks(t); r.text = x.text; if (x.links.length) { r.links = x.links; linkTotal += x.links.length; } return r; }\n    function flush() {\n      var at = pend; pend = -1;\n      if (para.length) { push(withLinks(para.join(' ').replace(/\\s+/g, ' ').trim(), { t: 'p', sec: curSec }), at); para = []; }\n      if (list.length) { for (var i = 0; i < list.length; i++) push(withLinks(list[i].text, { t: 'li', sec: curSec, depth: list[i].depth }), list[i].at); list = []; }\n      if (table.length) { push({ t: 'table', sec: curSec, text: table.join('\\n') }, at); table = []; }\n      if (quote.length) { push(withLinks(quote.join(' ').trim(), { t: 'quote', sec: curSec }), at); quote = []; }\n    }\n    var fence = null, code = [], off = 0;\n    for (var n = 0; n < rows.length; n++) {\n      var line = rows[n], lineOff = off; off += line.length + 1;\n      var fm = /^\\s*(```|~~~)\\s*([\\w+-]*)/.exec(line);\n      if (fence) {\n        if (fm && fm[1] === fence.mark) { push({ t: 'code', sec: curSec, lang: fence.lang || undefined, text: code.join('\\n') }, fence.at); fence = null; code = []; } else code.push(line);\n        continue;\n      }\n      if (fm) { flush(); fence = { mark: fm[1], lang: fm[2], at: lineOff }; code = []; continue; }\n      if (!line.trim()) { flush(); continue; }\n      var hm = /^(#{1,6})\\s+(.+?)\\s*#*\\s*$/.exec(line);\n      if (hm) {\n        flush(); secCount++; curSec = 's' + secCount;\n        var ht = splitLinks(hm[2]).text; var r = { t: 'h', sec: curSec, level: hm[1].length, text: ht }; push(r, lineOff);\n        outline.push({ ref: curSec, level: r.level, title: ht, from: r.i, to: r.i, chars: 0, from_char: lineOff, to_char: 0 });\n        continue;\n      }\n      var lm = /^(\\s*)(?:[-*+]|\\d+[.)])\\s+(.*)$/.exec(line);\n      if (lm) { if (para.length || table.length || quote.length) flush(); list.push({ text: lm[2], depth: Math.floor(lm[1].replace(/\\t/g, '  ').length / 2), at: lineOff }); continue; }\n      if (/^\\s*\\|/.test(line)) { if (para.length || list.length || quote.length) flush(); if (pend < 0) pend = lineOff; table.push(line.trim()); continue; }\n      var qm = /^\\s*>\\s?(.*)$/.exec(line);\n      if (qm) { if (para.length || list.length || table.length) flush(); if (pend < 0) pend = lineOff; quote.push(qm[1]); continue; }\n      if (list.length || table.length || quote.length) flush();\n      if (pend < 0) pend = lineOff; para.push(line.trim());\n    }\n    if (fence) push({ t: 'code', sec: curSec, lang: fence.lang || undefined, text: code.join('\\n') }, fence.at);\n    flush();\n    // 章節的涵蓋範圍與字數\n    var os = {}; for (var k = 0; k < outline.length; k++) os[outline[k].ref] = outline[k];\n    for (var q = 0; q < outline.length; q++) outline[q].to_char = q + 1 < outline.length ? outline[q + 1].from_char : off; // 章節在原文（參照文件）裡的字元範圍\n    var total = 0;\n    for (var j = 0; j < recs.length; j++) { var o = os[recs[j].sec]; var len = (recs[j].text || '').length; total += len; if (o) { o.to = j; o.chars += len; } }\n    var lines = recs.map(function (r) { return JSON.stringify(r); });\n    void maxRec;\n    return { lines: lines, starts: starts, lens: recs.map(function (r) { return (r.text || '').length; }), blocks: recs.length, outline: outline, links: linkTotal, total_chars: total };\n  }\n\n  // 章節參照表壓成一小段（放第一頁的 head）：最多 maxItems 筆，超過就只留最上層標題並註明\n  function outlineForHead(outline, maxItems) {\n    maxItems = maxItems || 60;\n    var o = outline.slice();\n    if (o.length > maxItems) { var minL = Math.min.apply(null, o.map(function (x) { return x.level; })); var top = o.filter(function (x) { return x.level <= minL + 1; }); o = top.length > maxItems ? top.slice(0, maxItems) : top; }\n    return o.map(function (x) { return { ref: x.ref, level: x.level, title: x.title.slice(0, 60), from: x.from, to: x.to, chars: x.chars }; });\n  }\n\n  // 第 0 層（章節索引，一章一行）：{ref,level,title,parent,blocks:[from,to],chars,doc:{offset,chars}}；parent＝上一個比它淺的標題。\n  // 沒有任何標題時給一個 s0 假章節涵蓋全部，確保有索引可讀。\n  function sectionIndex(built, docChars, opts) {\n    var out = [], stack = [], ol = built.outline;\n    if (!ol.length) {\n      var target = Number(opts && opts.chunkChars) > 0 ? Number(opts.chunkChars) : 6000, st = built.starts || [], parts = [], from = 0, acc = 0, lens = built.lens || [];\n      if (built.blocks <= 1 || built.total_chars <= target) return [{ ref: 's0', level: 0, title: '（全文，沒有標題）', parent: null, blocks: [0, Math.max(0, built.blocks - 1)], chars: built.total_chars, doc: { offset: 0, chars: docChars || built.total_chars } }];\n      for (var b = 0; b < built.blocks; b++) { acc += lens[b] || 0; if (acc >= target || b === built.blocks - 1) { parts.push({ from: b - (b - from), to: b, chars: acc }); from = b + 1; acc = 0; } }\n      return parts.map(function (pt, n) {\n        var off = st[pt.from] || 0, end = n + 1 < parts.length ? (st[parts[n + 1].from] || docChars || 0) : (docChars || built.total_chars);\n        return { ref: 's' + (n + 1), level: 1, title: '第 ' + (n + 1) + ' 段（區塊 ' + pt.from + '–' + pt.to + '）', parent: null, blocks: [pt.from, pt.to], chars: pt.chars, doc: { offset: off, chars: Math.max(0, end - off) } };\n      });\n    }\n    var lead = ol[0].from_char > 0 && ol[0].from > 0; // 第一個標題之前有內容\n    if (lead) out.push({ ref: 's0', level: 0, title: '（開頭，第一個標題之前）', parent: null, blocks: [0, ol[0].from - 1], chars: 0, doc: { offset: 0, chars: ol[0].from_char } });\n    for (var i = 0; i < ol.length; i++) {\n      var o = ol[i]; while (stack.length && stack[stack.length - 1].level >= o.level) stack.pop();\n      out.push({ ref: o.ref, level: o.level, title: o.title, parent: stack.length ? stack[stack.length - 1].ref : null, blocks: [o.from, o.to], chars: o.chars, doc: { offset: o.from_char, chars: Math.max(0, Math.min(o.to_char, docChars || o.to_char) - o.from_char) } });\n      stack.push(o);\n    }\n    return out;\n  }\n\n\n  // 讀完整頁文字：一段一段向擴充功能要（call(args) → Promise<{ok,text,has_more,next_offset,total_length|total_chars}>），接成全文。\n  // 欄位名稱兩種都認：真的 Chrome 擴充功能（background.js 的 pageTextExtractor）回 total_length，舊的／其他實作回 total_chars——\n  // 以前只認 total_chars，長頁面永遠不會走分層（用真 Chrome 實測才發現）。\n  function totalOf(r) { var t = Number(r && (r.total_chars != null ? r.total_chars : r.total_length)); return isFinite(t) && t >= 0 ? t : (r && typeof r.text === 'string' ? r.text.length : 0); }\n  function readAll(call, args, o) {\n    o = o || {}; var chunk = o.chunk || 150000, maxChars = o.maxChars || 3000000, maxCalls = o.maxCalls || 40;\n    return Promise.resolve(call(Object.assign({}, args, { max_chars: chunk }))).then(function (first) {\n      if (!first || !first.ok || typeof first.text !== 'string') return { ok: false, first: first };\n      var out = { ok: true, first: first, text: first.text, total: Math.max(totalOf(first), first.text.length), calls: 1, complete: !first.has_more, truncated: false };\n      function next(r) {\n        if (!(r.has_more && r.next_offset != null)) { out.complete = !r.has_more; return out; }\n        if (out.text.length >= maxChars || out.calls >= maxCalls) { out.complete = false; out.truncated = true; return out; }\n        return Promise.resolve(call(Object.assign({}, args, { max_chars: chunk, offset: r.next_offset }))).then(function (r2) {\n          out.calls++; if (!r2 || !r2.ok || typeof r2.text !== 'string') { out.complete = false; out.truncated = true; return out; }\n          out.text += r2.text; return next(r2);\n        });\n      }\n      return next(first);\n    });\n  }\n  return { readAll: readAll, totalOf: totalOf, sectionIndex: sectionIndex, toBlocks: toBlocks, splitLinks: splitLinks, outlineForHead: outlineForHead };\n}));\n";
 /* WEBBLOCKS-END */
 /* CHATTREE-BEGIN */
 const FA_CHAT_TREE_SRC = "// 對話樹（純函式，不碰 DOM、不做 I/O）：子對話收在父對話底下的資料模型。\n// 索引的 chats 陣列是平的；父子關係只靠每筆的 parentId 表示。\n// 所有函式都回傳新值，不修改傳入的物件。\n//\n// 索引欄位（normalizeChatEntry 會補齊；舊資料沒有就補 null，既有欄位不動）：\n//   parentId    父對話的 id；null＝根對話\n//   status      running | done | waiting_user | failed | null\n//   topicId     話題識別（S2 起使用）\n//   fingerprint 話題指紋（S5 起使用）\n//   summary     摘要（S3 起使用）\n//   nodeName    所屬節點名稱（遠端需求建立的對話才有；本機為 null）\n//\n// 容錯規則：\n//   - parentId 指向不存在的對話 → 視為根（孤兒子對話提升為根）\n//   - parentId 形成環（含自己指自己）→ 環上每一筆都視為根，不無限迴圈\n//   - 同層排序：根依建立時間新到舊（與側欄既有順序一致）；子對話依建立時間舊到新（第一個子對話在最上面）\n(function (root, factory) {\n  if (typeof module === 'object' && module.exports) { module.exports = factory(); } else { root.AiChatTree = factory(); }\n}(typeof self !== 'undefined' ? self : this, function () {\n  'use strict';\n\n  var STATUSES = ['running', 'done', 'waiting_user', 'failed'];\n  var PLAIN_NULL_FIELDS = ['topicId', 'fingerprint', 'summary', 'nodeName'];\n\n  function isObj(x) { return x !== null && typeof x === 'object' && !Array.isArray(x); }\n\n  // 只接受非空字串當 parentId；其餘（undefined、空字串、數字、物件）一律視為根\n  function parentKeyOf(node) {\n    var p = node && node.parentId;\n    return typeof p === 'string' && p !== '' ? p : null;\n  }\n\n  // 補齊新欄位。不改既有欄位；status 不在允許清單內就當 null。\n  function normalizeChatEntry(entry) {\n    if (!isObj(entry)) return entry;\n    var out = Object.assign({}, entry);\n    out.parentId = parentKeyOf(entry);\n    out.status = STATUSES.indexOf(entry.status) >= 0 ? entry.status : null;\n    PLAIN_NULL_FIELDS.forEach(function (f) { if (out[f] === undefined) out[f] = null; });\n    return out;\n  }\n\n  function normalizeChats(chats) {\n    return (Array.isArray(chats) ? chats : []).filter(isObj).map(normalizeChatEntry);\n  }\n\n  function keyOf(node) { return String(node.id); }\n\n  // 建立樹的內部結構。\n  //   byId       id → 第一個擁有該 id 的節點\n  //   effParent  節點 → 有效父節點的 id（null＝根；環上的節點與孤兒都是 null）\n  //   children   有效父 id → 子節點陣列（未排序）\n  //   roots      根節點陣列（未排序）\n  function buildTree(chats) {\n    var list = (Array.isArray(chats) ? chats : []).filter(isObj);\n    var byId = Object.create(null);\n    list.forEach(function (c) { var k = keyOf(c); if (!(k in byId)) byId[k] = c; });\n\n    // 找出所有位於環上的 id：從 start 沿 parentId 走，若走回 start，路徑上的 id 都在環上\n    var onCycle = Object.create(null);\n    list.forEach(function (c) {\n      var start = keyOf(c), path = [start], cur = parentKeyOf(byId[start]), steps = 0;\n      while (cur !== null && byId[cur] && steps <= list.length) {\n        if (cur === start) { path.forEach(function (k) { onCycle[k] = true; }); break; }\n        path.push(cur); cur = parentKeyOf(byId[cur]); steps++;\n      }\n    });\n\n    var effParent = new Map();\n    var children = Object.create(null);\n    var roots = [];\n    list.forEach(function (c) {\n      var p = parentKeyOf(c);\n      var eff = (onCycle[keyOf(c)] || p === null || !byId[p]) ? null : p;\n      effParent.set(c, eff);\n      if (eff === null) roots.push(c); else (children[eff] || (children[eff] = [])).push(c);\n    });\n    return { list: list, byId: byId, effParent: effParent, children: children, roots: roots };\n  }\n\n  // 新到舊（根用）\n  function byNewest(a, b) {\n    var d = (b.createdAt || 0) - (a.createdAt || 0);\n    if (d !== 0) return d;\n    return keyOf(a) < keyOf(b) ? -1 : keyOf(a) > keyOf(b) ? 1 : 0;\n  }\n  // 舊到新（子對話用）\n  function byOldest(a, b) { return -byNewest(a, b); }\n\n  // 直接子對話（舊到新）。id 不存在或沒有子對話時回傳空陣列。\n  function childrenOf(chats, id) {\n    var tree = buildTree(chats);\n    return (tree.children[String(id)] || []).slice().sort(byOldest);\n  }\n\n  // 根對話（新到舊）\n  function rootChats(chats) {\n    return buildTree(chats).roots.slice().sort(byNewest);\n  }\n\n  // 給側欄用的扁平清單。父在前、子在後（深度優先）。\n  //   expanded：{ [chatId]: true } 表示該父對話展開；沒有記錄或不是 true 都視為收合（預設收合）。\n  //   opts.revealId：指定的對話若藏在收合的父對話底下，會連同祖先一起展開（例如目前正在看的子對話）。\n  //                  但 expanded[祖先] === false（使用者明確收合過）的不會被展開。\n  // 回傳 [{ chat, depth, childCount, open }]；childCount 是直接子對話數（收合時也顯示）。\n  // 收合的父對話，其子對話不出現在結果裡。\n  function flattenTree(chats, expanded, opts) {\n    var tree = buildTree(chats);\n    var open = Object.assign({}, isObj(expanded) ? expanded : {});\n    var rows = [];\n    var seen = new Set();\n\n    if (opts && opts.revealId != null) {\n      var cur = tree.byId[String(opts.revealId)], guard = 0;\n      while (cur && guard <= tree.list.length) {\n        var pk = tree.effParent.get(cur);\n        if (pk === null || pk === undefined) break;\n        // 使用者明確收合過的（expanded[pk] === false）不再被自動展開；只有從沒設定過的才展開\n        if (open[pk] === undefined) open[pk] = true;\n        cur = tree.byId[pk];\n        guard++;\n      }\n    }\n\n    function visit(node, depth) {\n      if (seen.has(node)) return; // 防禦：重複 id 或異常資料時不重複輸出\n      seen.add(node);\n      var kids = (tree.children[keyOf(node)] || []).slice().sort(byOldest);\n      var isOpen = open[keyOf(node)] === true;\n      rows.push({ chat: node, depth: depth, childCount: kids.length, open: isOpen });\n      if (isOpen) kids.forEach(function (k) { visit(k, depth + 1); });\n    }\n    tree.roots.slice().sort(byNewest).forEach(function (r) { visit(r, 0); });\n    return rows;\n  }\n\n  // ---- @ 指名解析 ----\n  // 格式（決定）：\n  //   本機對話：@對話名          或  @[對話名 有空白]\n  //   遠端對話：@節點名/對話名   或  @[節點名/對話名]   （遠端對話不能省略節點名）\n  // 方括號只在名稱含空白、方括號、或要保險時使用；不用引號（中文輸入法常把引號換成全形）。\n  // 對話名稱本身可以含 \"/\"：比對是拿整段字串跟「節點名/對話名」全文比，不是切字串。\n  // 比對忽略大小寫與前後空白。\n\n  function normMention(s) { return String(s == null ? '' : s).trim().toLowerCase(); }\n\n  // S8 步驟 C：遠端收件對話（kind:'remote-inbox'）不是可以 @ 的對話（送出會被守衛擋下），所以不進 @ 的候選與解析。\n  function isInbox(c) { return !!c && c.kind === 'remote-inbox'; }\n\n  function isRemoteChat(c, selfNodeName) {\n    const nn = typeof c.nodeName === 'string' ? c.nodeName.trim() : '';\n    return nn !== '' && nn !== String(selfNodeName || '').trim();\n  }\n\n  // 這個對話在 @ 裡的完整名稱：本機＝對話名；遠端＝節點名/對話名\n  function mentionLabel(c, selfNodeName) {\n    const title = String(c.title || '新對話');\n    return isRemoteChat(c, selfNodeName) ? c.nodeName.trim() + '/' + title : title;\n  }\n\n  // 去掉開頭的 @ 與方括號，得到查詢字串（不含 @）\n  function stripMentionSyntax(text) {\n    let s = String(text == null ? '' : text).trim();\n    if (s.charAt(0) !== '@') return null;\n    s = s.slice(1);\n    if (s.charAt(0) === '[' && s.charAt(s.length - 1) === ']') s = s.slice(1, -1);\n    else if (s.charAt(0) === '[') s = s.slice(1);\n    return s;\n  }\n\n  function candidateOf(c, selfNodeName) {\n    const remote = isRemoteChat(c, selfNodeName);\n    const label = mentionLabel(c, selfNodeName);\n    const needsBrackets = /[\\s\\[\\]]/.test(label);\n    return {\n      chatId: c.id,\n      nodeName: remote ? c.nodeName.trim() : null,\n      title: String(c.title || '新對話'),\n      label: label,\n      remote: remote,\n      insert: needsBrackets ? '@[' + label + ']' : '@' + label,\n    };\n  }\n\n  // 解析一個 @ 指名。\n  //   成功：{ ok:true, chatId, nodeName, title, label, remote }\n  //   同名（或完整名稱重複）：{ ok:false, ambiguous:true, candidates:[…] }，要求使用者用更完整的名稱\n  //   遠端對話只用對話名、沒寫節點名：{ ok:false, needNode:true, candidates:[…] }\n  //   找不到：{ ok:false, notFound:true }；不是 @ 開頭或空字串：{ ok:false, notMention:true }\n  function resolveMention(chats, text, selfNodeName) {\n    const q = stripMentionSyntax(text);\n    if (q === null) return { ok: false, notMention: true };\n    const key = normMention(q);\n    if (!key) return { ok: false, notMention: true };\n    const list = (Array.isArray(chats) ? chats : []).filter(isObj).filter((c) => !isInbox(c));\n\n    const exact = list.filter((c) => normMention(mentionLabel(c, selfNodeName)) === key);\n    if (exact.length === 1) {\n      const cand = candidateOf(exact[0], selfNodeName);\n      return { ok: true, chatId: cand.chatId, nodeName: cand.nodeName, title: cand.title, label: cand.label, remote: cand.remote };\n    }\n    if (exact.length > 1) return { ok: false, ambiguous: true, candidates: exact.map((c) => candidateOf(c, selfNodeName)) };\n\n    // 只用對話名就能對上的遠端對話：要求補上節點名\n    const bare = list.filter((c) => isRemoteChat(c, selfNodeName) && normMention(c.title || '新對話') === key);\n    if (bare.length) return { ok: false, needNode: true, candidates: bare.map((c) => candidateOf(c, selfNodeName)) };\n\n    // S8 步驟 C：沒有精準比對時，接受完整名稱（節點名/對話名，本機為對話名）的唯一前綴。遠端標題含空白與冒號，手打不方便。\n    // 前綴至少 2 個字（單一字太寬）；有歧義就列出候選，要求補長。\n    if (key.length >= 2) {\n      const pre = list.filter((c) => normMention(mentionLabel(c, selfNodeName)).indexOf(key) === 0);\n      if (pre.length === 1) {\n        const cand = candidateOf(pre[0], selfNodeName);\n        return { ok: true, chatId: cand.chatId, nodeName: cand.nodeName, title: cand.title, label: cand.label, remote: cand.remote, viaPrefix: true };\n      }\n      if (pre.length > 1) return { ok: false, ambiguous: true, prefix: true, candidates: pre.map((c) => candidateOf(c, selfNodeName)) };\n    }\n    return { ok: false, notFound: true };\n  }\n\n  // 輸入框自動完成：prefix 是使用者打到 @ 之後的字（可含 [ 、可為空）。\n  // 會比對完整名稱（節點名/對話名）開頭，或本機對話名開頭；遠端對話的名稱只能用完整名稱開頭比對。\n  // 排序：本機在前，其次依完整名稱字典序。\n  function listMentionCandidates(chats, prefix, selfNodeName) {\n    const raw = String(prefix == null ? '' : prefix);\n    let s = raw.charAt(0) === '@' ? raw.slice(1) : raw;\n    if (s.charAt(0) === '[') s = s.slice(1);\n    const p = normMention(s);\n    const list = (Array.isArray(chats) ? chats : []).filter(isObj).filter((c) => !isInbox(c));\n    const out = list.filter((c) => normMention(mentionLabel(c, selfNodeName)).indexOf(p) === 0).map((c) => candidateOf(c, selfNodeName));\n    out.sort((a, b) => (a.remote === b.remote ? 0 : a.remote ? 1 : -1) || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0));\n    return out;\n  }\n\n  return {\n    resolveMention: resolveMention,\n    listMentionCandidates: listMentionCandidates,\n    STATUSES: STATUSES,\n    normalizeChatEntry: normalizeChatEntry,\n    normalizeChats: normalizeChats,\n    buildTree: buildTree,\n    childrenOf: childrenOf,\n    rootChats: rootChats,\n    flattenTree: flattenTree,\n  };\n}));\n";
@@ -7728,7 +7728,7 @@ const holder = {};
             if (useLedger && !pc.calls.length) { // 還有分頁沒讀完就不接受這個回答（在 handoff 之前檢查）
                 const pend = RL.pending(ledger).filter((e) => e.blocking);
                 const due = pend.filter((e) => (remindersBy[e.key] || 0) < 3);
-                if (due.length) { due.forEach((e) => { remindersBy[e.key] = (remindersBy[e.key] || 0) + 1; }); messages.push({ role: 'system', content: RL.reminderText(due) }); notes.push('讀取未完成，已提醒模型繼續讀'); continue; }
+                if (due.length) { due.forEach((e) => { remindersBy[e.key] = (remindersBy[e.key] || 0) + 1; }); const lastTool = messages.slice().reverse().find((m) => m.role === 'tool'); messages.push({ role: 'system', content: RL.reminderText(due, { room: b.prompt - messagesTokens(messages, useTools), pageTokens: lastTool ? estimateTokens(lastTool.content) : 0 }) }); notes.push('讀取未完成，已提醒模型繼續讀'); continue; }
                 if (pend.length) warnPrefix = '注意：以下來源只讀了一部分，結論可能不完整：' + pend.map((e) => e.label + '（已讀到 ' + (e.nextOffset != null ? 'offset ' + e.nextOffset : '第 ' + e.nextStartLine + ' 行') + '）').join('、') + '\n';
                 ledger = RL.createLedger();
             }
@@ -9704,8 +9704,11 @@ const holder = {};
         return [{ role: 'system', content: '你負責替使用者的話挑一個合適的工具。只輸出一個 JSON 物件，格式：{"choice": 編號}。編號只能是選單裡有的數字；0 代表「這些都不合適，只是一般聊天或問答」。' }, { role: 'user', content: '選單：\n' + lines + '\n0. 都不是（一般聊天或問答）\n\n使用者的話：\n' + String(question).slice(0, 800) }];
     }
     async function chooseTool(opts) {
+        // 思考堆疊：選工具是路由的一層；框架記下「選了哪個」，之後補欄位、計畫階段的標頭就看得到（先前的選擇不會被忘記）
+        const T = opts.stack && opts.stackMod; if (T) T.push(opts.stack, { path: opts.label || '選工具', question: '從選單挑一個合適的（或 0＝都不合適）' });
         const n = opts.cands.length; const r = await jsonStep({ stack: opts.stack, stackMod: opts.stackMod, generate: opts.generate, messages: menuMessages(opts.question, opts.cands), maxTokens: 40, maxTries: opts.maxTries || 2, prefill: '{"choice":', validate: (o) => { const c = o.choice; if (!Number.isInteger(c)) return ['「choice」必須是整數']; if (c < 0 || c > n) return ['「choice」必須是 0～' + n + ' 之間的整數']; return []; } });
-        if (!r.ok) return { ok: false, rejected: r.rejected, tries: r.tries, error: r.error };
+        if (!r.ok) { if (T) T.pop(opts.stack, { ok: false, summary: '' }); return { ok: false, rejected: r.rejected, tries: r.tries, error: r.error }; }
+        if (T) { const c = opts.cands[r.value.choice - 1]; T.pop(opts.stack, { summary: r.value.choice === 0 ? '都不合適，當一般問答' : '選了 ' + (c ? c.tool : r.value.choice) }); }
         return { ok: true, index: r.value.choice - 1, none: r.value.choice === 0, by: 'model', tries: r.tries, rejected: r.rejected };
     }
 
@@ -13274,7 +13277,7 @@ const holder = {};
     'use strict';
     const KINDS = ['contains', 'notcontains', 'regex', 'equals', 'judge']; const CHECKERS = ['lines', 'tokens', 'float', 'unordered-lines', 'unordered-tokens'];
     const LANGS = ['python', 'nodejs', 'c', 'cpp', 'java', 'ruby', 'perl', 'bash', 'asm-x64', 'asm-x86', 'csharp'];
-    const cleanTests = (list) => { if (!Array.isArray(list)) return []; return list.filter((t) => t && typeof t.in === 'string' && typeof t.out === 'string' && t.in.length <= 65536 && t.out.length <= 65536).slice(0, 60).map((t) => ({ in: t.in, out: t.out })); };
+    const cleanTests = (list) => { if (!Array.isArray(list)) return []; return list.filter((t) => t && typeof t.in === 'string' && typeof t.out === 'string' && t.in.length <= 262144 && t.out.length <= 262144).slice(0, 60).map((t) => ({ in: t.in, out: t.out })); };
     function normalize(raw) {
         if (raw == null) return { ok: true, check: null };
         if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (_) { return { ok: false, error: 'check 要是 JSON 物件' }; } }
@@ -13896,6 +13899,1649 @@ const holder = {};
 return holder.FaCodeEdit;
 })();
 /* CODEEDIT-END */
+/* PYCODE2UML-BEGIN */
+const FaPyCode2Uml = (function () {
+const holder = {};
+(function (module, self) {
+/* Python：程式碼 → tree-sitter → UML（含指令層級的敘述樹 body）→ 程式碼。純函式 UMD，Python 專屬（每個語言各自一份，不共用）。
+ * 輸入的節點是 tree-sitter（web-tree-sitter 或 node-tree-sitter）的節點：type、children、namedChildren、childForFieldName、text。
+ *
+ *   fromTree(rootNode, {moduleName}) → { model, coverage:{stmts, raws, rawKinds} }
+ *     model 是 uml_core 的模型形狀（actors／classes／relations／usecases），再加：
+ *       model.prelude : [S]   模組層的敘述（import、常數、其他）
+ *       class.ops[i].body : [S]  操作內部的敘述樹（指令層級）；op.params[i].default／kind；op.static
+ *       名為 moduleName（預設 Module）的類別放模組層函式（static 操作）
+ *   toPython(model) → 原始碼
+ *
+ * 敘述 S：assign{t,v} aug{t,op,v} expr{e} if{c,a,b} for{t,i,a,b} while{c,a} ret{e} break cont pass def{name,ps,a} raw{src}
+ * 運算式 E：name int float str const call attr idx slice bin un cmp bool not cond list tuple set dict comp lambda star dstar kw raw
+ * 沒有轉成結構的語法（try／with／import…）收成 raw（保留原文），coverage.raws 會如實計數——那是指令層級還沒到的地方。 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaPyCode2Uml = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const ANY = { base: 'any', args: [] };
+    function fromTree(rootNode, opts) {
+        const src = String((opts && opts.source) || ''); const modName = String((opts && opts.moduleName) || 'Module').replace(/(^|[^A-Za-z0-9]+)([A-Za-z0-9])/g, (m, a, b) => b.toUpperCase()).replace(/^[^A-Za-z]+/, '') || 'Module'; const cov = { stmts: 0, raws: 0, rawKinds: {} };
+        const txt = (n) => (n.text != null ? n.text : src.slice(n.startIndex, n.endIndex));
+        const named = (n) => (n.namedChildren || n.children.filter((c) => c.isNamed())).filter((c) => c.type !== 'comment');
+        const f = (n, name) => n.childForFieldName(name);
+        const raw = (n, kind) => { cov.raws++; cov.rawKinds[kind || n.type] = (cov.rawKinds[kind || n.type] || 0) + 1; const t = txt(n); const col = n.startPosition ? n.startPosition.column : 0; const lines = t.split('\n').map((l, i) => (i === 0 ? l : l.slice(Math.min(col, l.length - l.trimStart().length)))); return { src: lines.join('\n') }; };
+        const rawE = (n) => Object.assign({ n: 'raw' }, raw(n));
+        const tokensBetween = (n, a, b) => { const out = []; for (const c of n.children) { if (c.startIndex >= a.endIndex && c.endIndex <= b.startIndex && !c.isNamed()) out.push(c.type); } return out; };
+        function expr(n) {
+            if (!n) return null; const t = n.type;
+            switch (t) {
+                case 'identifier': return { n: 'name', v: txt(n) };
+                case 'integer': return { n: 'int', v: txt(n) };
+                case 'float': return { n: 'float', v: txt(n) };
+                case 'string': return { n: 'str', v: txt(n) };
+                case 'concatenated_string': return { n: 'str', v: named(n).map(txt).join(' ') };
+                case 'true': case 'false': case 'none': return { n: 'const', v: txt(n) };
+                case 'parenthesized_expression': { const k = named(n); return k.length === 1 ? expr(k[0]) : rawE(n); }
+                case 'call': { const fn = expr(f(n, 'function')); const a = f(n, 'arguments'); const args = []; if (a && a.type === 'argument_list') for (const c of named(a)) args.push(c.type === 'keyword_argument' ? { n: 'kw', k: txt(f(c, 'name')), v: expr(f(c, 'value')) } : expr(c)); else if (a) args.push(expr(a)); return { n: 'call', f: fn, a: args }; }
+                case 'attribute': return { n: 'attr', o: expr(f(n, 'object')), a: txt(f(n, 'attribute')) };
+                case 'subscript': { const k = named(n); const v = f(n, 'value'); return { n: 'idx', o: expr(v), i: k.filter((c) => c.id !== v.id && c.startIndex !== v.startIndex).map(expr) }; }
+                case 'slice': { const parts = [[], [], []]; let p = 0; for (const c of n.children) { if (!c.isNamed() && c.type === ':') p++; else if (c.isNamed()) parts[p].push(expr(c)); } return { n: 'slice', lo: parts[0][0] || null, hi: parts[1][0] || null, st: p >= 2 ? (parts[2][0] || null) : undefined }; }
+                case 'binary_operator': return { n: 'bin', op: txt(f(n, 'operator')), l: expr(f(n, 'left')), r: expr(f(n, 'right')) };
+                case 'unary_operator': return { n: 'un', op: txt(f(n, 'operator')), e: expr(f(n, 'argument')) };
+                case 'not_operator': return { n: 'not', e: expr(f(n, 'argument')) };
+                case 'boolean_operator': return { n: 'bool', op: txt(f(n, 'operator')), l: expr(f(n, 'left')), r: expr(f(n, 'right')) };
+                case 'comparison_operator': { const xs = named(n); const ops = []; for (let i = 0; i + 1 < xs.length; i++) { const toks = tokensBetween(n, xs[i], xs[i + 1]); let o = toks.join(' '); const h = toks.length; if (h === 2 && toks[0] === toks[1] && / /.test(toks[0])) o = toks[0]; ops.push(o); } return { n: 'cmp', ops, xs: xs.map(expr) }; }
+                case 'conditional_expression': { const k = named(n); return { n: 'cond', a: expr(k[0]), c: expr(k[1]), b: expr(k[2]) }; }
+                case 'list': return { n: 'list', xs: named(n).map(expr) };
+                case 'tuple': case 'expression_list': case 'pattern_list': case 'tuple_pattern': return { n: 'tuple', xs: named(n).map(expr) };
+                case 'list_pattern': return { n: 'list', xs: named(n).map(expr) };
+                case 'set': return { n: 'set', xs: named(n).map(expr) };
+                case 'dictionary': return { n: 'dict', ps: named(n).map((c) => (c.type === 'pair' ? { k: expr(f(c, 'key')), v: expr(f(c, 'value')) } : null)) };
+                case 'list_comprehension': case 'set_comprehension': case 'generator_expression': case 'dictionary_comprehension': {
+                    const body = f(n, 'body'); const cl = named(n).filter((c) => c.type === 'for_in_clause' || c.type === 'if_clause').map((c) => (c.type === 'if_clause' ? { if: expr(named(c)[0]) } : { t: expr(f(c, 'left')), i: expr(f(c, 'right')), async: /^async/.test(txt(c)) }));
+                    const kind = t === 'list_comprehension' ? 'list' : t === 'set_comprehension' ? 'set' : t === 'generator_expression' ? 'gen' : 'dict';
+                    if (kind === 'dict') return { n: 'comp', kind, k: expr(f(body, 'key')), v: expr(f(body, 'value')), cl }; return { n: 'comp', kind, e: expr(body), cl };
+                }
+                case 'lambda': { const ps = f(n, 'parameters'); return { n: 'lambda', ps: ps ? named(ps).map(param) : [], e: expr(f(n, 'body')) }; }
+                case 'ellipsis': return { n: 'const', v: '...' };
+                case 'await': return { n: 'await', e: expr(named(n)[0]) };
+                case 'yield': { const k = named(n); const fr = /^yield\s+from\b/.test(txt(n)); return { n: 'yield', e: k.length ? (k.length === 1 ? expr(k[0]) : { n: 'tuple', xs: k.map(expr) }) : null, from: fr }; }
+                case 'named_expression': return { n: 'walrus', t: txt(f(n, 'name')), v: expr(f(n, 'value')) };
+                case 'list_splat': return { n: 'star', e: expr(named(n)[0]) };
+                case 'dictionary_splat': return { n: 'dstar', e: expr(named(n)[0]) };
+                case 'list_splat_pattern': return { n: 'star', e: expr(named(n)[0]) };
+                default: return rawE(n);
+            }
+        }
+        function param(c) {
+            const t = c.type; if (t === 'identifier') return { name: txt(c), type: ANY };
+            if (t === 'default_parameter') return { name: txt(f(c, 'name')), type: ANY, default: expr(f(c, 'value')) };
+            if (t === 'typed_parameter') return { name: txt(named(c)[0]), type: ANY, annotation: txt(f(c, 'type')) };
+            if (t === 'typed_default_parameter') return { name: txt(f(c, 'name')), type: ANY, annotation: txt(f(c, 'type')), default: expr(f(c, 'value')) };
+            if (t === 'list_splat_pattern') return { name: txt(named(c)[0]), type: ANY, kind: '*' };
+            if (t === 'dictionary_splat_pattern') return { name: txt(named(c)[0]), type: ANY, kind: '**' };
+            return { name: txt(c), type: ANY, kind: 'raw' };
+        }
+        function block(n) { if (!n) return []; const out = []; for (const c of named(n)) for (const s of stmt(c)) out.push(s); return out; }
+        function stmt(n) {
+            cov.stmts++; const t = n.type;
+            if (t === 'expression_statement') { const k = named(n); if (!k.length) return [Object.assign({ k: 'raw' }, raw(n))]; if (k.length > 1 || (k.length === 1 && n.children.some((c) => !c.isNamed() && c.type === ','))) return [{ k: 'expr', e: { n: 'tuple', xs: k.map(expr) } }]; const e = k[0];
+                if (e.type === 'assignment') { // a = b = c（右邊只算一次）；有型別註解的先收成 raw
+                    if (f(e, 'type')) { const r0 = f(e, 'right'); if (r0 && r0.type === 'assignment') return [Object.assign({ k: 'raw' }, raw(n))]; return [{ k: 'ann', t: expr(f(e, 'left')), ty: txt(f(e, 'type')), v: r0 ? expr(r0) : null }]; }
+                    const lefts = []; let cur = e, rhs = null; for (;;) { lefts.push(f(cur, 'left')); const r = f(cur, 'right'); if (r && r.type === 'assignment' && !f(r, 'type')) { cur = r; continue; } rhs = r; break; }
+                    if (!rhs) return [Object.assign({ k: 'raw' }, raw(n))];
+                    return [{ k: 'assign', t: expr(lefts[0]), ts: lefts.length > 1 ? lefts.map(expr) : undefined, v: expr(rhs) }];
+                }
+                if (e.type === 'augmented_assignment') return [{ k: 'aug', t: expr(f(e, 'left')), op: txt(f(e, 'operator')).replace(/=$/, ''), v: expr(f(e, 'right')) }];
+                return [{ k: 'expr', e: expr(e) }]; }
+            if (t === 'return_statement') { const k = named(n); return [{ k: 'ret', e: k.length ? (k.length === 1 ? expr(k[0]) : { n: 'tuple', xs: k.map(expr) }) : null }]; }
+            if (t === 'pass_statement') return [{ k: 'pass' }]; if (t === 'break_statement') return [{ k: 'break' }]; if (t === 'continue_statement') return [{ k: 'cont' }];
+            if (t === 'if_statement') {
+                const node = { k: 'if', c: expr(f(n, 'condition')), a: block(f(n, 'consequence')), b: [] }; let tail = node.b; const alts = named(n).filter((c) => c.type === 'elif_clause' || c.type === 'else_clause');
+                for (const c of alts) { if (c.type === 'elif_clause') { const sub = { k: 'if', c: expr(f(c, 'condition')), a: block(f(c, 'consequence')), b: [] }; tail.push(sub); tail = sub.b; } else tail.push(...block(f(c, 'body'))); } return [node];
+            }
+            if (t === 'for_statement') { const alt = named(n).find((c) => c.type === 'else_clause'); return [{ k: 'for', t: expr(f(n, 'left')), i: expr(f(n, 'right')), a: block(f(n, 'body')), b: alt ? block(f(alt, 'body')) : [] }]; }
+            if (t === 'while_statement') { const alt = named(n).find((c) => c.type === 'else_clause'); return [{ k: 'while', c: expr(f(n, 'condition')), a: block(f(n, 'body')), b: alt ? block(f(alt, 'body')) : [] }]; }
+            if (t === 'assert_statement') { const k = named(n); return [{ k: 'assert', c: expr(k[0]), m: k[1] ? expr(k[1]) : null }]; }
+            if (t === 'raise_statement') { const k = named(n); const fr = f(n, 'cause'); const e = k.find((c) => !fr || c.startIndex !== fr.startIndex); return [{ k: 'raise', e: e ? expr(e) : null, cause: fr ? expr(fr) : null }]; }
+            if (t === 'global_statement' || t === 'nonlocal_statement') return [{ k: 'global', kind: t === 'global_statement' ? 'global' : 'nonlocal', names: named(n).map(txt) }];
+            if (t === 'delete_statement') { const k = named(n); const x = k.length === 1 && k[0].type === 'expression_list' ? named(k[0]) : k; return [{ k: 'del', es: x.map(expr) }]; }
+            if (t === 'try_statement') {
+                const node = { k: 'try', a: block(f(n, 'body')), h: [], els: [], fin: [] };
+                for (const c of named(n)) {
+                    if (c.type === 'except_clause' || c.type === 'except_group_clause') { const kids = named(c); const bl = kids[kids.length - 1]; const first = kids.length > 1 ? kids[0] : null; let ty = null, as = null; if (first) { if (first.type === 'as_pattern') { ty = expr(named(first)[0]); const al = f(first, 'alias') || named(first)[1]; as = al ? txt(al) : null; } else ty = expr(first); } node.h.push({ ty, as, star: c.type === 'except_group_clause', a: block(bl) }); }
+                    else if (c.type === 'else_clause') node.els = block(f(c, 'body')); else if (c.type === 'finally_clause') node.fin = block(named(c)[0]);
+                } return [node];
+            }
+            if (t === 'with_statement') { const wc = named(n).find((c) => c.type === 'with_clause'); const items = []; for (const it of wc ? named(wc) : []) { const v = it.type === 'with_item' ? f(it, 'value') : it; if (v && v.type === 'as_pattern') { const al = f(v, 'alias') || named(v)[1]; items.push({ e: expr(named(v)[0]), as: al ? expr(al.type === 'as_pattern_target' ? named(al)[0] : al) : null }); } else items.push({ e: expr(v), as: null }); } return [{ k: 'with', async: /^async\b/.test(txt(n)), items, a: block(f(n, 'body')) }]; }
+            if (t === 'class_definition') { const sup = f(n, 'superclasses'); return [{ k: 'class', name: txt(f(n, 'name')), bases: sup ? named(sup).map((c) => (c.type === 'keyword_argument' ? { n: 'kw', k: txt(f(c, 'name')), v: expr(f(c, 'value')) } : expr(c))) : [], a: block(f(n, 'body')) }]; }
+            if (t === 'decorated_definition') { const inner = stmt(f(n, 'definition'))[0]; inner.dec = named(n).filter((c) => c.type === 'decorator').map((c) => expr(named(c)[0])); cov.stmts--; return [inner]; }
+            if (t === 'import_statement' || t === 'import_from_statement') { const mod = f(n, 'module_name'); const names = named(n).filter((c) => c !== mod && (!mod || c.startIndex !== mod.startIndex)).map((c) => (c.type === 'aliased_import' ? { name: txt(f(c, 'name')), as: txt(f(c, 'alias')) } : { name: txt(c) })); const wild = named(n).some((c) => c.type === 'wildcard_import'); return [{ k: 'import', from: mod ? txt(mod) : null, names: wild ? [{ name: '*' }] : names }]; }
+            if (t === 'function_definition') return [{ k: 'def', name: txt(f(n, 'name')), async: /^async\b/.test(txt(n)), ret: f(n, 'return_type') ? txt(f(n, 'return_type')) : undefined, ps: named(f(n, 'parameters')).map(param), a: block(f(n, 'body')) }];
+            return [Object.assign({ k: 'raw' }, raw(n))];
+        }
+        // ---- UML 組裝 ----
+        const model = { name: modName, actors: ['User'], classes: [], relations: [], usecases: [], prelude: [], order: [] };
+        const mod = { name: modName, kind: 'class', attrs: [], ops: [], values: [] }; const classNames = new Set(); const fnNames = new Set();
+        const unwrap = (c) => (c.type === 'decorated_definition' ? { node: f(c, 'definition'), dec: named(c).filter((x) => x.type === 'decorator').map((x) => expr(named(x)[0])) } : { node: c, dec: [] });
+        const top = named(rootNode).map((c) => { const u = unwrap(c); u.node._dec = u.dec; return u.node; });
+        for (const c of top) { if (c.type === 'class_definition') classNames.add(txt(f(c, 'name'))); if (c.type === 'function_definition') fnNames.add(txt(f(c, 'name'))); }
+        const isStaticDec = (c) => (c._dec || []).some((d) => d.n === 'name' && d.v === 'staticmethod');
+        const mkOp = (c, isStatic) => ({ name: txt(f(c, 'name')), async: /^async\b/.test(txt(c)), dec: c._dec || [], ret: f(c, 'return_type') ? txt(f(c, 'return_type')) : undefined, params: named(f(c, 'parameters')).map(param).filter((p) => !(p.name === 'self' && !isStatic)), returns: ANY, visibility: '+', static: !!isStatic, body: block(f(c, 'body')) });
+        for (const c of top) {
+            if (c.type === 'function_definition') { const o = mkOp(c, true); mod.ops.push(o); model.order.push({ t: 'f', o }); }
+            else if (c.type === 'class_definition') {
+                const name = txt(f(c, 'name')); const cls = { name, kind: 'class', attrs: [], ops: [], values: [], dec: c._dec || [] }; const sup = f(c, 'superclasses');
+                if (sup) for (const b of named(sup)) { const bn = txt(b); if (classNames.has(bn)) model.relations.push({ from: name, to: bn, kind: 'inherit', label: '' }); else cls.extern = (cls.extern || []).concat([bn]); }
+                for (const m0 of named(f(c, 'body') || { namedChildren: [], children: [] })) { const um = unwrap(m0); const m = um.node; m._dec = um.dec;
+                    if (m.type === 'function_definition') { const op = mkOp(m, isStaticDec(m)); cls.ops.push(op); (cls.order = cls.order || []).push({ t: 'o', o: op }); }
+                    else if (m.type === 'expression_statement' && named(m)[0] && named(m)[0].type === 'assignment' && f(named(m)[0], 'left').type === 'identifier' && !f(named(m)[0], 'type') && f(named(m)[0], 'right').type !== 'assignment') { const l = f(named(m)[0], 'left'); const at = { name: txt(l), type: ANY, visibility: '+', static: true, default: txt(f(named(m)[0], 'right')) }; cls.attrs.push(at); (cls.order = cls.order || []).push({ t: 'a', a: at }); }
+                    else { const ss = stmt(m0); cls.classBody = (cls.classBody || []).concat(ss); for (const x of ss) (cls.order = cls.order || []).push({ t: 's', s: x }); }
+                }
+                const init = cls.ops.find((o) => o.name === '__init__'); const seen = new Set();
+                for (const o of cls.ops) walkS(o.body, (s) => { if (s.k === 'assign' && s.t.n === 'attr' && s.t.o.n === 'name' && s.t.o.v === 'self' && !seen.has(s.t.a)) { seen.add(s.t.a); cls.attrs.push({ name: s.t.a, type: ANY, visibility: '+', static: false }); } });
+                model.classes.push(cls); model.order.push({ t: 'c', c: cls });
+            } else for (const s of stmt(c)) { model.prelude.push(s); model.order.push({ t: 's', s }); }
+        }
+        model.classes.unshift(mod);
+        // 依賴與使用案例（從 main 的呼叫順序）
+        for (const o of mod.ops.concat(...model.classes.map((c) => c.ops))) walkE(o.body, (e) => { if (e.n === 'call' && e.f.n === 'name' && classNames.has(e.f.v)) { const owner = ownerOf(o); if (owner && owner !== e.f.v && !model.relations.some((r) => r.from === owner && r.to === e.f.v && r.kind === 'depend')) model.relations.push({ from: owner, to: e.f.v, kind: 'depend', label: '' }); } });
+        function ownerOf(op) { for (const c of model.classes) if (c.ops.includes(op)) return c.name; return null; }
+        const main = mod.ops.find((o) => o.name === 'main');
+        if (main) { const steps = []; let prev = 'User'; walkE(main.body, (e) => { if (e.n !== 'call' || e.f.n !== 'name') return; const nm = e.f.v; if (fnNames.has(nm)) { steps.push({ from: prev, to: modName, msg: nm, args: [], returns: '' }); prev = modName; } else if (classNames.has(nm)) { steps.push({ from: prev, to: nm, msg: '__init__', args: [], returns: '' }); prev = nm; } }); model.usecases.push({ name: 'main', actor: 'User', steps }); }
+        return { model, coverage: cov };
+    }
+    // 走訪：先序，依原始碼順序
+    function walkS(list, fn) { for (const s of list || []) { fn(s); walkS(s.a, fn); walkS(s.b, fn); walkS(s.els, fn); walkS(s.fin, fn); for (const h of s.h || []) walkS(h.a, fn); } }
+    function walkE(list, fn) {
+        const E = (e) => { if (!e || typeof e !== 'object') return; if (Array.isArray(e)) return e.forEach(E); if (e.n) { for (const k of ['f', 'o', 'l', 'r', 'e', 'c', 'a', 'b', 'lo', 'hi', 'st', 'k', 'v', 'i']) if (e[k] && typeof e[k] === 'object') E(e[k]); ['xs', 'ps', 'cl'].forEach((k) => { if (Array.isArray(e[k])) e[k].forEach((x) => x && E(x.k || x.v || x.t || x.i || x.if ? Object.assign({}, x, { n: 'box' }) : x)); }); if (e.n === 'call') { fn(e); } else fn(e); } else { for (const k of Object.keys(e)) if (e[k] && typeof e[k] === 'object') E(e[k]); } };
+        const S = (l) => { for (const s of l || []) { for (const k of ['t', 'v', 'e', 'c', 'i']) if (s[k] && typeof s[k] === 'object') E(s[k]); S(s.a); S(s.b); } };
+        // 為了保持原始碼順序：呼叫的外層先於引數內的呼叫
+        const E2 = (e) => { if (!e || typeof e !== 'object') return; if (Array.isArray(e)) return e.forEach(E2); if (e.n === 'call') { fn(e); E2(e.f); E2(e.a); return; } if (e.n) fn(e); for (const k of Object.keys(e)) if (k !== 'n' && e[k] && typeof e[k] === 'object') E2(e[k]); };
+        const S2 = (l) => { for (const s of l || []) { for (const k of ['t', 'v', 'e', 'c', 'i', 'm', 'cause']) if (s[k] && typeof s[k] === 'object' && !Array.isArray(s[k])) E2(s[k]); (s.es || []).forEach(E2); (s.items || []).forEach((it) => { E2(it.e); if (it.as) E2(it.as); }); S2(s.a); S2(s.b); S2(s.els); S2(s.fin); for (const h of s.h || []) { if (h.ty) E2(h.ty); S2(h.a); } } };
+        void E; void S; S2(list);
+    }
+
+    // ---------- 回程 codegen：UML＋body → Python ----------
+    const PREC = { lambda: 0, cond: 1, or: 2, and: 3, not: 4, cmp: 5, '|': 6, '^': 7, '&': 8, '<<': 9, '>>': 9, '+': 10, '-': 10, '*': 11, '/': 11, '//': 11, '%': 11, '@': 11, '@': 11, un: 12, '**': 13, post: 15, atom: 16 };
+    function toPython(model) {
+        const P = (e, min) => { const [s, p] = ex(e); return p < min ? '(' + s + ')' : s; };
+        const args = (a) => a.map((x) => (x.n === 'kw' ? x.k + '=' + P(x.v, 1) : x.n === 'star' ? '*' + P(x.e, 5) : x.n === 'dstar' ? '**' + P(x.e, 5) : P(x, 1))).join(', ');
+        const ps = (l) => l.map((p) => (p.kind === '*' ? '*' : p.kind === '**' ? '**' : '') + p.name + (p.annotation ? ': ' + p.annotation : '') + (p.default ? (p.annotation ? ' = ' : '=') + P(p.default, 1) : '')).join(', ');
+        function ex(e) {
+            switch (e.n) {
+                case 'name': case 'int': case 'float': case 'str': case 'const': return [e.v, PREC.atom];
+                case 'raw': return [e.src, PREC.lambda];
+                case 'call': return [P(e.f, PREC.post) + '(' + args(e.a) + ')', PREC.post];
+                case 'attr': return [(e.o.n === 'int' ? '(' + e.o.v + ')' : P(e.o, PREC.post)) + '.' + e.a, PREC.post];
+                case 'idx': return [P(e.o, PREC.post) + '[' + e.i.map((x) => P(x, 1)).join(', ') + (e.i.length === 1 && e.i[0].n === 'tuple' ? '' : '') + ']', PREC.post];
+                case 'slice': return [(e.lo ? P(e.lo, 1) : '') + ':' + (e.hi ? P(e.hi, 1) : '') + (e.st !== undefined ? ':' + (e.st ? P(e.st, 1) : '') : ''), PREC.atom];
+                case 'bin': { const p = PREC[e.op]; const right = e.op === '**'; return [P(e.l, right ? p + 1 : p) + ' ' + e.op + ' ' + P(e.r, right ? p : p + 1), p]; }
+                case 'un': return [e.op + P(e.e, PREC.un), PREC.un];
+                case 'not': return ['not ' + P(e.e, PREC.not), PREC.not];
+                case 'bool': { const p = PREC[e.op]; return [P(e.l, p) + ' ' + e.op + ' ' + P(e.r, p + 1), p]; }
+                case 'cmp': return [e.xs.map((x, i) => P(x, PREC.cmp + 1) + (i < e.ops.length ? ' ' + e.ops[i] + ' ' : '')).join(''), PREC.cmp];
+                case 'cond': return [P(e.a, PREC.cond + 1) + ' if ' + P(e.c, PREC.cond + 1) + ' else ' + P(e.b, PREC.cond), PREC.cond];
+                case 'list': return ['[' + e.xs.map((x) => P(x, 1)).join(', ') + ']', PREC.atom];
+                case 'tuple': return ['(' + e.xs.map((x) => P(x, 1)).join(', ') + (e.xs.length === 1 ? ',' : '') + ')', PREC.atom];
+                case 'set': return ['{' + e.xs.map((x) => P(x, 1)).join(', ') + '}', PREC.atom];
+                case 'dict': return ['{' + e.ps.map((x) => (x ? P(x.k, 1) + ': ' + P(x.v, 1) : '')).join(', ') + '}', PREC.atom];
+                case 'comp': { const cl = e.cl.map((c) => (c.if ? ' if ' + P(c.if, PREC.cond + 1) : (c.async ? ' async' : '') + ' for ' + P(c.t, PREC.or) + ' in ' + P(c.i, PREC.or))).join(''); const body = e.kind === 'dict' ? P(e.k, 1) + ': ' + P(e.v, 1) : P(e.e, 1); const [o, c2] = e.kind === 'list' ? ['[', ']'] : e.kind === 'gen' ? ['(', ')'] : ['{', '}']; return [o + body + cl + c2, PREC.atom]; }
+                case 'await': return ['await ' + P(e.e, PREC.post), 14];
+                case 'yield': return ['yield' + (e.from ? ' from ' : e.e ? ' ' : '') + (e.e ? P(e.e, 1) : ''), PREC.lambda];
+                case 'walrus': return [e.t + ' := ' + P(e.v, 1), PREC.lambda];
+                case 'lambda': return ['lambda' + (e.ps.length ? ' ' + ps(e.ps) : '') + ': ' + P(e.e, 1), PREC.lambda];
+                case 'star': return ['*' + P(e.e, 5), PREC.lambda]; case 'dstar': return ['**' + P(e.e, 5), PREC.lambda];
+                default: return ['None', PREC.atom];
+            }
+        }
+        const lines = [];
+        const pad = (d) => '    '.repeat(d);
+        function body(list, d) { if (!list || !list.length) { lines.push(pad(d) + 'pass'); return; } for (const s of list) st(s, d); }
+        function st(s, d) {
+            const I = pad(d);
+            switch (s.k) {
+                case 'assign': lines.push(I + (s.ts || [s.t]).map((x) => (x.n === 'tuple' && x.xs.length > 1 ? x.xs.map((y) => P(y, 1)).join(', ') : P(x, 1))).join(' = ') + ' = ' + P(s.v, 1)); break;
+                case 'ann': lines.push(I + P(s.t, 1) + ': ' + s.ty + (s.v ? ' = ' + P(s.v, 1) : '')); break;
+                case 'aug': lines.push(I + P(s.t, 1) + ' ' + s.op + '= ' + P(s.v, 1)); break;
+                case 'expr': lines.push(I + P(s.e, 1)); break;
+                case 'ret': lines.push(I + 'return' + (s.e ? ' ' + P(s.e, 1) : '')); break;
+                case 'pass': lines.push(I + 'pass'); break; case 'break': lines.push(I + 'break'); break; case 'cont': lines.push(I + 'continue'); break;
+                case 'if': { lines.push(I + 'if ' + P(s.c, 1) + ':'); body(s.a, d + 1); let b = s.b; while (b.length === 1 && b[0].k === 'if') { lines.push(I + 'elif ' + P(b[0].c, 1) + ':'); body(b[0].a, d + 1); b = b[0].b; } if (b.length) { lines.push(I + 'else:'); body(b, d + 1); } break; }
+                case 'for': lines.push(I + 'for ' + (s.t.n === 'tuple' && s.t.xs.length > 1 ? s.t.xs.map((x) => P(x, 1)).join(', ') : P(s.t, 1)) + ' in ' + P(s.i, 1) + ':'); body(s.a, d + 1); if (s.b && s.b.length) { lines.push(I + 'else:'); body(s.b, d + 1); } break;
+                case 'while': lines.push(I + 'while ' + P(s.c, 1) + ':'); body(s.a, d + 1); if (s.b && s.b.length) { lines.push(I + 'else:'); body(s.b, d + 1); } break;
+                case 'assert': lines.push(I + 'assert ' + P(s.c, 1) + (s.m ? ', ' + P(s.m, 1) : '')); break;
+                case 'raise': lines.push(I + 'raise' + (s.e ? ' ' + P(s.e, 1) : '') + (s.cause ? ' from ' + P(s.cause, 1) : '')); break;
+                case 'global': lines.push(I + s.kind + ' ' + s.names.join(', ')); break;
+                case 'del': lines.push(I + 'del ' + s.es.map((x) => P(x, 1)).join(', ')); break;
+                case 'try': { lines.push(I + 'try:'); body(s.a, d + 1); for (const h of s.h) { lines.push(I + 'except' + (h.star ? '*' : '') + (h.ty ? ' ' + P(h.ty, 1) : '') + (h.as ? ' as ' + h.as : '') + ':'); body(h.a, d + 1); } if (s.els.length) { lines.push(I + 'else:'); body(s.els, d + 1); } if (s.fin.length) { lines.push(I + 'finally:'); body(s.fin, d + 1); } break; }
+                case 'with': lines.push(I + (s.async ? 'async ' : '') + 'with ' + s.items.map((it) => P(it.e, 1) + (it.as ? ' as ' + P(it.as, 1) : '')).join(', ') + ':'); body(s.a, d + 1); break;
+                case 'class': { for (const dd of s.dec || []) lines.push(I + '@' + P(dd, 1)); lines.push(I + 'class ' + s.name + (s.bases.length ? '(' + args(s.bases) + ')' : '') + ':'); body(s.a, d + 1); break; }
+                case 'def': for (const dd of s.dec || []) lines.push(I + '@' + P(dd, 1)); lines.push(I + (s.async ? 'async ' : '') + 'def ' + s.name + '(' + ps(s.ps) + ')' + (s.ret ? ' -> ' + s.ret : '') + ':'); body(s.a, d + 1); break;
+                case 'import': { const nm = s.names.map((x) => x.name + (x.as ? ' as ' + x.as : '')).join(', '); lines.push(I + (s.from ? 'from ' + s.from + ' import ' + nm : 'import ' + nm)); break; }
+                case 'raw': for (const l of String(s.src).split('\n')) lines.push(I + l); break;
+                default: lines.push(I + 'pass');
+            }
+        }
+        const decs = (x, ind) => { for (const dd of x.dec || []) lines.push(ind + '@' + P(dd, 1)); };
+        const emitF = (o) => { decs(o, ''); lines.push((o.async ? 'async ' : '') + 'def ' + o.name + '(' + ps(o.params) + ')' + (o.ret ? ' -> ' + o.ret : '') + ':'); body(o.body, 1); lines.push(''); };
+        const bases = (c) => model.relations.filter((r) => r.from === c.name && r.kind === 'inherit').map((r) => r.to).concat(c.extern || []);
+        const emitO = (o) => { const decNames = (o.dec || []).map((x) => (x.n === 'name' ? x.v : '')); decs(o, '    '); const needSelf = !o.static && !decNames.includes('classmethod'); lines.push('    ' + (o.async ? 'async ' : '') + 'def ' + o.name + '(' + ps((needSelf ? [{ name: 'self' }] : []).concat(o.params)) + ')' + (o.ret ? ' -> ' + o.ret : '') + ':'); body(o.body, 2); };
+        const emitC = (c) => {
+            const bs = bases(c); decs(c, ''); lines.push('class ' + c.name + (bs.length ? '(' + bs.join(', ') + ')' : '') + ':'); let any = false;
+            if (c.order) { for (const it of c.order) { any = true; if (it.t === 'o') emitO(it.o); else if (it.t === 'a') lines.push('    ' + it.a.name + ' = ' + it.a.default); else st(it.s, 1); } }
+            else { for (const a of c.attrs.filter((x) => x.static)) { lines.push('    ' + a.name + ' = ' + a.default); any = true; } for (const x of c.classBody || []) { st(x, 1); any = true; } for (const o of c.ops) { emitO(o); any = true; } }
+            if (!any) lines.push('    pass'); lines.push('');
+        };
+        if (model.order && model.order.length) { for (const it of model.order) { if (it.t === 's') st(it.s, 0); else if (it.t === 'f') emitF(it.o); else emitC(it.c); } }
+        else {
+            for (const x of model.prelude || []) st(x, 0);
+            const order = []; const seen = new Set(); const byName = {}; model.classes.forEach((c) => { byName[c.name] = c; });
+            const visit = (c) => { if (seen.has(c.name)) return; seen.add(c.name); for (const b of bases(c)) if (byName[b]) visit(byName[b]); order.push(c); }; model.classes.forEach(visit);
+            for (const c of order) { if (c.name === model.name && c.ops.every((o) => o.static)) { for (const o of c.ops) emitF(o); continue; } emitC(c); }
+        }
+        return lines.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\s+$/, '') + '\n';
+    }
+    return { fromTree, toPython };
+});
+
+}).call(null, undefined, holder);
+return holder.FaPyCode2Uml;
+})();
+/* PYCODE2UML-END */
+/* PYBLOCKSLIB-BEGIN */
+const FaPyBlocksLib = (function () {
+const holder = {};
+(function (module, self) {
+/* Python 區塊庫的資料：額外的陳述範本、運算式積木（科學函式與繪圖）、型別表、模組需求表。純資料，UMD，Python 專屬。
+ *   SPEC_EXTRA / EXPR_EXTRA  跟 py_blocks_core 的 SPEC / EXPR_SPEC 同格式
+ *   TYPES  範本 id → { decl:{槽位:型別}, use:{槽位:型別} }
+ *          decl：這個槽位宣告（新增）一個變數，型別為：int float str list dict set any、'int*'（多個整數）、'elem'（it 槽位的元素型別）
+ *          use ：這個槽位要填 → 'v:num|list|dict|set|str|any'＝已宣告的變數（型別相容）；'int|num|str|list|dict|iter|cond|any'＝運算式（型別相容）
+ *   ETYPES 運算式積木 id → { ret, p:{槽位:型別} }
+ *   REQ    範本／運算式積木 id → 需要先引入的模組（引入之後才能用）
+ *   IMPORTS 引入積木 id → 它提供的模組名稱 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaPyBlocksLib = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const SPEC_EXTRA = [
+        // ---- 結構化迴圈：初始化、條件、遞增都在範本裡，不會忘記終止 ----
+        'for_counter|迴圈|從 {i:name} = {a} 開始，當 {i} < {b} 時重複，每輪最後 {i} 加 {s}：|$i = $a\nwhile $i < $b:\n    $$body\n    $i += $s',
+        'for_countdown|迴圈|從 {i:name} = {a} 開始，當 {i} > {b} 時重複，每輪最後 {i} 減 {s}：|$i = $a\nwhile $i > $b:\n    $$body\n    $i -= $s',
+        'while_counter|迴圈|當 {i} < {n} 時重複，每輪最後 {i} 加 {s}：|while $i < $n:\n    $$body\n    $i += $s',
+        'while_countdown|迴圈|當 {i} > {n} 時重複，每輪最後 {i} 減 {s}：|while $i > $n:\n    $$body\n    $i -= $s',
+        'for_range_down|迴圈|讓 {i:name} 從 {a} 倒數到 {b} 加一（每次減 1）：|for $i in range($a, $b, -1):\n    $$body',
+        // ---- 引入模組（引入後才能用該模組的函式）----
+        'import_math|引入|引入數學函式庫 math|import math',
+        'import_numpy|引入|引入數值函式庫 numpy（用 np 稱呼）|import numpy as np',
+        'import_plt|引入|引入繪圖函式庫 matplotlib.pyplot（用 plt 稱呼）|import matplotlib.pyplot as plt',
+        'import_stat|引入|引入統計函式庫 statistics|import statistics',
+        'import_random|引入|引入亂數函式庫 random|import random',
+        'import_scipy|引入|引入科學計算函式庫 scipy 的積分與最佳化|from scipy import integrate, optimize',
+        'import_collections|引入|引入集合函式庫 collections 的 deque 與 Counter|from collections import deque, Counter',
+        'import_heapq|引入|引入堆積函式庫 heapq|import heapq',
+        'import_bisect|引入|引入二分搜尋函式庫 bisect|import bisect',
+        // ---- 繪圖（matplotlib.pyplot）----
+        'plt_figure|繪圖|建立新圖|plt.figure()',
+        'plt_plot|繪圖|畫折線圖：x 是 {x}，y 是 {y}|plt.plot($x, $y)',
+        'plt_plot_label|繪圖|畫折線圖（圖例名稱 {lab}）：x 是 {x}，y 是 {y}|plt.plot($x, $y, label=$lab)',
+        'plt_scatter|繪圖|畫散佈圖：x 是 {x}，y 是 {y}|plt.scatter($x, $y)',
+        'plt_bar|繪圖|畫長條圖：位置 {x}，高度 {h}|plt.bar($x, $h)',
+        'plt_hist|繪圖|畫直方圖：資料 {x}，分成 {n} 組|plt.hist($x, bins=$n)',
+        'plt_pie|繪圖|畫圓餅圖：大小 {x}，標籤 {lab}|plt.pie($x, labels=$lab)',
+        'plt_imshow|繪圖|顯示影像或矩陣 {a}|plt.imshow($a)',
+        'plt_xlabel|繪圖|設定 x 軸名稱 {s}|plt.xlabel($s)',
+        'plt_ylabel|繪圖|設定 y 軸名稱 {s}|plt.ylabel($s)',
+        'plt_title|繪圖|設定圖的標題 {s}|plt.title($s)',
+        'plt_legend|繪圖|顯示圖例|plt.legend()',
+        'plt_grid|繪圖|顯示格線|plt.grid(True)',
+        'plt_xlim|繪圖|設定 x 軸範圍從 {a} 到 {b}|plt.xlim($a, $b)',
+        'plt_ylim|繪圖|設定 y 軸範圍從 {a} 到 {b}|plt.ylim($a, $b)',
+        'plt_savefig|繪圖|把圖存成檔案 {path}|plt.savefig($path)',
+        'plt_show|繪圖|顯示圖|plt.show()',
+        'plt_subplots|繪圖|建立圖 {fig:name} 與座標軸 {ax:name}|$fig, $ax = plt.subplots()',
+        'ax_plot|繪圖|在座標軸 {ax:name} 畫折線圖：x 是 {x}，y 是 {y}|$ax.plot($x, $y)',
+        'ax_set_title|繪圖|設定座標軸 {ax:name} 的標題 {s}|$ax.set_title($s)',
+        // ---- 矩陣（把問題映射成矩陣、用矩陣相乘求解：線性遞推、轉移矩陣、路徑計數）----
+        'mat_mul|演算法|令 {c:name} 為矩陣 {a} 與 {b} 相乘（純 Python）|$c = [[sum(x * y for x, y in zip(row, col)) for col in zip(*$b)] for row in $a]',
+        'mat_identity|資料|令 {x:name} 為 {n} 階單位矩陣（純 Python）|$x = [[1 if i == j else 0 for j in range(int($n))] for i in range(int($n))]',
+        'mat_pow|演算法|用快速冪求方陣 {a} 的 {e} 次方，結果放在 {r:name}，（{a} 和 {e} 會被用掉），迴圈用 {i:name}、{j:name}|$r = [[1 if $i == $j else 0 for $j in range(len($a))] for $i in range(len($a))]\nwhile $e > 0:\n    if $e % 2 == 1:\n        $r = [[sum(x * y for x, y in zip(row, col)) for col in zip(*$a)] for row in $r]\n    $a = [[sum(x * y for x, y in zip(row, col)) for col in zip(*$a)] for row in $a]\n    $e //= 2',
+        // ---- 亂數 ----
+        'random_seed|科學|設定亂數種子為 {n}|random.seed($n)',
+        'random_shuffle|科學|打亂清單 {l}|random.shuffle($l)',
+        'np_seed|科學|設定 numpy 亂數種子為 {n}|np.random.seed($n)',
+    ];
+    const EXPR_EXTRA = [
+        // ---- 科學函式（要先引入對應模組）----
+        '平方根|科學·數學|{a} 的平方根|math.sqrt($a)', '正弦|科學·數學|{a}（弧度）的正弦|math.sin($a)', '餘弦|科學·數學|{a}（弧度）的餘弦|math.cos($a)', '正切|科學·數學|{a}（弧度）的正切|math.tan($a)', '反正切2|科學·數學|{a} 與 {b} 的 atan2（弧度）|math.atan2($a, $b)', '指數|科學·數學|e 的 {a} 次方|math.exp($a)', '自然對數|科學·數學|{a} 的自然對數|math.log($a)', '對數底10|科學·數學|{a} 的以 10 為底對數|math.log10($a)', '對數底2|科學·數學|{a} 的以 2 為底對數|math.log2($a)', '無條件捨去|科學·數學|{a} 無條件捨去成整數|math.floor($a)', '無條件進位|科學·數學|{a} 無條件進位成整數|math.ceil($a)', '最大公因數|科學·數學|{a} 與 {b} 的最大公因數|math.gcd($a, $b)', '階乘|科學·數學|{a} 的階乘|math.factorial($a)', '斜邊|科學·數學|{a} 與 {b} 的斜邊長|math.hypot($a, $b)', '弧度|科學·數學|{a} 度換成弧度|math.radians($a)', '度|科學·數學|{a} 弧度換成度|math.degrees($a)', '圓周率|科學·數學|圓周率 π|math.pi', '自然常數|科學·數學|自然常數 e|math.e',
+        '陣列|科學·數值|{a} 轉成 numpy 陣列|np.array($a)', '零陣列|科學·數值|{a} 個 0 的 numpy 陣列|np.zeros($a)', '一陣列|科學·數值|{a} 個 1 的 numpy 陣列|np.ones($a)', '等差陣列|科學·數值|從 {a} 到 {b}（不含）每次 {s} 的 numpy 陣列|np.arange($a, $b, $s)', '等分陣列|科學·數值|從 {a} 到 {b} 平均分成 {n} 點的 numpy 陣列|np.linspace($a, $b, $n)', '內積|科學·數值|{a} 與 {b} 的內積|np.dot($a, $b)', '陣列平均|科學·數值|{a} 的平均|np.mean($a)', '陣列標準差|科學·數值|{a} 的標準差|np.std($a)', '陣列總和|科學·數值|{a} 的總和（numpy）|np.sum($a)', '累積和|科學·數值|{a} 的累積和|np.cumsum($a)', '陣列正弦|科學·數值|{a} 每個元素的正弦|np.sin($a)', '陣列餘弦|科學·數值|{a} 每個元素的餘弦|np.cos($a)', '陣列指數|科學·數值|{a} 每個元素的指數|np.exp($a)', '陣列平方根|科學·數值|{a} 每個元素的平方根|np.sqrt($a)', '向量長度|科學·數值|{a} 的向量長度（範數）|np.linalg.norm($a)', '反矩陣|科學·數值|矩陣 {a} 的反矩陣|np.linalg.inv($a)', '解線性方程|科學·數值|解線性方程組 {a} x = {b}|np.linalg.solve($a, $b)', '轉置|科學·數值|{a} 的轉置|np.transpose($a)', '最大值位置|科學·數值|{a} 最大值的位置|np.argmax($a)', '隨機陣列|科學·數值|{a} 個 0 到 1 的隨機數|np.random.rand($a)',
+        '平均數|科學·統計|{a} 的平均數|statistics.mean($a)', '中位數|科學·統計|{a} 的中位數|statistics.median($a)', '樣本標準差|科學·統計|{a} 的標準差（樣本）|statistics.stdev($a)', '變異數|科學·統計|{a} 的變異數（樣本）|statistics.variance($a)', '眾數|科學·統計|{a} 的眾數|statistics.mode($a)',
+        '隨機小數|科學·亂數|0 到 1 的隨機小數|random.random()', '隨機整數|科學·亂數|{a} 到 {b} 的隨機整數（含兩端）|random.randint($a, $b)', '隨機挑一個|科學·亂數|從 {a} 隨機挑一個|random.choice($a)',
+        '矩陣相乘|科學·數值|矩陣 {a} 乘矩陣 {b}（numpy）|$a @ $b', '矩陣乘冪|科學·數值|方陣 {a} 的 {n} 次方（numpy）|np.linalg.matrix_power($a, $n)', '單位矩陣|科學·數值|{n} 階單位矩陣（numpy）|np.eye($n)', '矩陣行列式|科學·數值|方陣 {a} 的行列式|np.linalg.det($a)',
+        '定積分|科學·微積分|函式 {f} 從 {a} 到 {b} 的定積分|integrate.quad($f, $a, $b)[0]',
+        '佇列|科學·集合|從 {a} 建立的佇列|deque($a)', '計數器|科學·集合|{a} 的計數器|Counter($a)', '二分位置|科學·集合|{a} 裡第一個不小於 {b} 的位置|bisect.bisect_left($a, $b)',
+    ];
+    const MATRIX_NOTE = '矩陣：mat_mul／mat_pow／mat_identity 是純 Python，不需要引入模組；矩陣相乘等 numpy 積木要先引入 numpy';
+    const IMPORTS = { import_math: 'math', import_numpy: 'np', import_plt: 'plt', import_stat: 'statistics', import_random: 'random', import_scipy: 'integrate', import_collections: 'deque', import_heapq: 'heapq', import_bisect: 'bisect' };
+    // 模組需求：id → 需要的模組（引入積木提供的名稱）
+    const REQ = {};
+    for (const id of Object.keys({ 平方根: 1, 正弦: 1, 餘弦: 1, 正切: 1, 反正切2: 1, 指數: 1, 自然對數: 1, 對數底10: 1, 對數底2: 1, 無條件捨去: 1, 無條件進位: 1, 最大公因數: 1, 階乘: 1, 斜邊: 1, 弧度: 1, 度: 1, 圓周率: 1, 自然常數: 1 })) REQ[id] = 'math';
+    for (const id of ['矩陣相乘', '矩陣乘冪', '單位矩陣', '矩陣行列式', '陣列', '零陣列', '一陣列', '等差陣列', '等分陣列', '內積', '陣列平均', '陣列標準差', '陣列總和', '累積和', '陣列正弦', '陣列餘弦', '陣列指數', '陣列平方根', '向量長度', '反矩陣', '解線性方程', '轉置', '最大值位置', '隨機陣列', 'np_seed']) REQ[id] = 'np';
+    for (const id of ['平均數', '中位數', '樣本標準差', '變異數', '眾數']) REQ[id] = 'statistics';
+    for (const id of ['隨機小數', '隨機整數', '隨機挑一個', 'random_seed', 'random_shuffle']) REQ[id] = 'random';
+    REQ['定積分'] = 'integrate'; REQ['佇列'] = 'deque'; REQ['計數器'] = 'deque'; REQ['二分位置'] = 'bisect'; REQ['init_deque'] = 'deque'; REQ['bfs_loop'] = 'deque';
+    for (const id of ['plt_figure', 'plt_plot', 'plt_plot_label', 'plt_scatter', 'plt_bar', 'plt_hist', 'plt_pie', 'plt_imshow', 'plt_xlabel', 'plt_ylabel', 'plt_title', 'plt_legend', 'plt_grid', 'plt_xlim', 'plt_ylim', 'plt_savefig', 'plt_show', 'plt_subplots', 'ax_plot', 'ax_set_title']) REQ[id] = 'plt';
+
+    const V = (t) => 'v:' + t;
+    const TYPES = {
+        // 輸入：宣告
+        read_int: { decl: { n: 'int' } }, read_ints: { decl: { t: 'int*' } }, read_list: { decl: { a: 'list' } }, read_floats: { decl: { a: 'list' } }, read_float: { decl: { n: 'float' } }, read_str: { decl: { s: 'str' } }, read_strip: { decl: { s: 'str' } }, read_words: { decl: { w: 'list' } },
+        read_n_ints: { decl: { a: 'list' }, use: { n: 'int' } }, read_n_lines: { decl: { a: 'list' }, use: { n: 'int' } }, read_n_strips: { decl: { a: 'list' }, use: { n: 'int' } }, read_matrix: { decl: { g: 'list' }, use: { n: 'int' } }, read_n_pairs: { decl: { a: 'list' }, use: { n: 'int' } },
+        // 輸出
+        print_value: { use: { e: 'any' } }, print_two: { use: { a: 'any', b: 'any' } }, print_star: { use: { e: 'iter' } }, print_join: { use: { e: 'iter' } }, print_join_sep: { use: { sep: 'str', e: 'iter' } }, print_join_str: { use: { sep: 'str', e: 'iter' } }, print_yesno: { use: { c: 'cond' } },
+        // 資料：宣告
+        init_list: { decl: { x: 'list' } }, init_dict: { decl: { x: 'dict' } }, init_set: { decl: { x: 'set' } }, init_zeros: { decl: { x: 'list' }, use: { n: 'int' } }, init_fill: { decl: { x: 'list' }, use: { n: 'int', v: 'any' } }, init_grid: { decl: { x: 'list' }, use: { n: 'int', m: 'int' } }, init_grid_fill: { decl: { x: 'list' }, use: { n: 'int', m: 'int', v: 'any' } }, init_deque: { decl: { q: 'list' }, use: { e: 'any' } },
+        swap: { use: { a: V('any'), b: V('any') } }, fib_step: { use: { a: V('num'), b: V('num') } },
+        len_of: { decl: { x: 'int' }, use: { e: 'iter' } }, sum_of: { decl: { x: 'any' }, use: { e: 'iter' } }, max_of: { decl: { x: 'any' }, use: { e: 'iter' } }, min_of: { decl: { x: 'any' }, use: { e: 'iter' } }, to_int: { decl: { x: 'int' }, use: { e: 'any' } }, to_str: { decl: { x: 'str' }, use: { e: 'any' } },
+        split_by: { decl: { x: 'list' }, use: { s: 'str', sep: 'str' } }, join_by: { decl: { x: 'str' }, use: { sep: 'str', l: 'iter' } }, lower_of: { decl: { x: 'str' }, use: { s: 'str' } }, upper_of: { decl: { x: 'str' }, use: { s: 'str' } }, divmod_of: { decl: { q: 'int', r: 'int' }, use: { a: 'num', b: 'num' } },
+        sorted_of: { decl: { x: 'list' }, use: { e: 'iter' } }, sorted_key: { decl: { x: 'list' }, use: { e: 'iter', k: 'any' } }, sorted_rev: { decl: { x: 'list' }, use: { e: 'iter' } }, reversed_of: { decl: { x: 'any' }, use: { e: 'iter' } },
+        list_map: { decl: { x: 'list', v: 'elem:l' }, use: { l: 'iter', e: 'any' } }, list_filter: { decl: { x: 'list', v: 'elem:l' }, use: { l: 'iter', c: 'cond' } }, list_map_filter: { decl: { x: 'list', v: 'elem:l' }, use: { l: 'iter', c: 'cond', e: 'any' } }, set_of: { decl: { x: 'set' }, use: { e: 'iter' } },
+        assign: { decl: { x: 'any' }, use: { e: 'any' } },
+        // 更新
+        incr: { use: { x: V('num') } }, decr: { use: { x: V('num') } }, add_to: { use: { x: V('num'), e: 'num' } }, sub_from: { use: { x: V('num'), e: 'num' } }, mul_by: { use: { x: V('num'), e: 'num' } }, floordiv_by: { use: { x: V('num'), e: 'num' } }, mod_by: { use: { x: V('num'), e: 'num' } },
+        max_update: { use: { x: V('num'), e: 'num' } }, min_update: { use: { x: V('num'), e: 'num' } }, count_inc: { use: { d: V('dict'), k: 'any' } }, count_add: { use: { d: V('dict'), k: 'any', v: 'num' } }, group_append: { use: { d: V('dict'), k: 'any', v: 'any' } },
+        // 集合
+        append: { use: { l: V('list'), e: 'any' } }, extend: { use: { l: V('list'), e: 'iter' } }, pop_last: { use: { l: V('list') } }, add_set: { use: { s: V('set'), e: 'any' } }, sort_inplace: { use: { l: V('list') } }, sort_key: { use: { l: V('list'), k: 'any' } }, sort_rev: { use: { l: V('list') } }, reverse_inplace: { use: { l: V('list') } },
+        // 迴圈：宣告迴圈變數
+        for_range: { decl: { i: 'int' }, use: { n: 'int' } }, for_range_from: { decl: { i: 'int' }, use: { a: 'int', b: 'int' } }, for_range_step: { decl: { i: 'int' }, use: { a: 'int', b: 'int', s: 'int' } }, for_range_down: { decl: { i: 'int' }, use: { a: 'int', b: 'int' } },
+        for_each: { decl: { x: 'elem:it' }, use: { it: 'iter' } }, for_enumerate: { decl: { i: 'int', x: 'elem:it' }, use: { it: 'iter' } }, for_items: { decl: { k: 'any', v: 'any' }, use: { d: V('dict') } }, for_zip: { decl: { x: 'any', y: 'any' }, use: { a: 'iter', b: 'iter' } },
+        for_counter: { decl: { i: 'int' }, use: { a: 'num', b: 'num', s: 'num' } }, for_countdown: { decl: { i: 'int' }, use: { a: 'num', b: 'num', s: 'num' } }, while_counter: { use: { i: V('num'), n: 'num', s: 'num' } }, while_countdown: { use: { i: V('num'), n: 'num', s: 'num' } },
+        while_do: { use: { c: 'cond' } }, while_forever: {}, bfs_loop: { decl: { u: 'any' }, use: { q: V('list') } },
+        // 流程
+        return_value: { use: { e: 'any' } }, return_none: {}, break_loop: {}, continue_loop: {}, do_nothing: {},
+        // 演算法
+        gcd_loop: { use: { a: V('num'), b: V('num') } }, binary_search: { decl: { lo: 'int', hi: 'int', mid: 'int' }, use: { a: 'int', b: 'int', c: 'cond' } }, sieve: { decl: { p: 'list', i: 'int', j: 'int' }, use: { n: 'int' } }, prefix_sums: { decl: { p: 'list', i: 'int' }, use: { a: V('list') } },
+        // 繪圖
+        plt_plot: { use: { x: 'iter', y: 'iter' } }, plt_plot_label: { use: { x: 'iter', y: 'iter', lab: 'str' } }, plt_scatter: { use: { x: 'iter', y: 'iter' } }, plt_bar: { use: { x: 'iter', h: 'iter' } }, plt_hist: { use: { x: 'iter', n: 'int' } }, plt_pie: { use: { x: 'iter', lab: 'iter' } }, plt_imshow: { use: { a: 'iter' } },
+        plt_xlabel: { use: { s: 'str' } }, plt_ylabel: { use: { s: 'str' } }, plt_title: { use: { s: 'str' } }, plt_xlim: { use: { a: 'num', b: 'num' } }, plt_ylim: { use: { a: 'num', b: 'num' } }, plt_savefig: { use: { path: 'str' } }, plt_subplots: { decl: { fig: 'any', ax: 'any' } }, ax_plot: { use: { ax: V('any'), x: 'iter', y: 'iter' } }, ax_set_title: { use: { ax: V('any'), s: 'str' } },
+        mat_mul: { decl: { c: 'list' }, use: { a: V('list'), b: V('list') } }, mat_identity: { decl: { x: 'list' }, use: { n: 'int' } }, mat_pow: { decl: { r: 'list', i: 'int', j: 'int' }, use: { a: V('list'), e: V('int') } },
+        random_seed: { use: { n: 'int' } }, random_shuffle: { use: { l: V('list') } }, np_seed: { use: { n: 'int' } },
+    };
+    const ET = (ret, p) => ({ ret, p: p || {} });
+    const ETYPES = {
+        加: ET('any', { a: 'any', b: 'any' }), 減: ET('num', { a: 'num', b: 'num' }), 乘: ET('any', { a: 'any', b: 'int' }), 整除: ET('num', { a: 'num', b: 'num' }), 餘數: ET('num', { a: 'num', b: 'num' }), 次方: ET('num', { a: 'num', b: 'num' }), 負: ET('num', { a: 'num' }),
+        等於: ET('cond', { a: 'any', b: 'any' }), 不等於: ET('cond', { a: 'any', b: 'any' }), 小於: ET('cond', { a: 'any', b: 'any' }), 小於等於: ET('cond', { a: 'any', b: 'any' }), 大於: ET('cond', { a: 'any', b: 'any' }), 大於等於: ET('cond', { a: 'any', b: 'any' }), 在裡面: ET('cond', { a: 'any', b: 'iter' }), 不在裡面: ET('cond', { a: 'any', b: 'iter' }),
+        而且: ET('cond', { a: 'cond', b: 'cond' }), 或者: ET('cond', { a: 'cond', b: 'cond' }), 不是: ET('cond', { a: 'cond' }), 條件式: ET('any', { a: 'any', c: 'cond', b: 'any' }),
+        第幾個: ET('any', { a: 'iter', i: 'int' }), 最後一個: ET('any', { a: 'iter' }), 切片: ET('iter', { a: 'iter', i: 'int', j: 'int' }), 從頭到: ET('iter', { a: 'iter', j: 'int' }), 從第幾個起: ET('iter', { a: 'iter', i: 'int' }), 反轉: ET('iter', { a: 'iter' }),
+        長度: ET('int', { a: 'iter' }), 轉整數: ET('int', { a: 'any' }), 轉字串: ET('str', { a: 'any' }), 絕對值: ET('num', { a: 'num' }), 總和: ET('num', { a: 'iter' }), 最大值: ET('any', { a: 'iter' }), 最小值: ET('any', { a: 'iter' }), 較大: ET('num', { a: 'num', b: 'num' }), 較小: ET('num', { a: 'num', b: 'num' }),
+        排序後: ET('list', { a: 'iter' }), 由大到小: ET('list', { a: 'iter' }), 轉清單: ET('list', { a: 'iter' }), 轉集合: ET('set', { a: 'iter' }), 範圍1: ET('iter', { a: 'int' }), 範圍2: ET('iter', { a: 'int', b: 'int' }),
+        切單字: ET('list', { a: 'str' }), 依分隔切: ET('list', { a: 'str', b: 'str' }), 去空白: ET('str', { a: 'str' }), 小寫: ET('str', { a: 'str' }), 大寫: ET('str', { a: 'str' }), 出現次數: ET('int', { a: 'iter', b: 'any' }), 字典取值: ET('any', { a: 'dict', k: 'any', d: 'any' }), 所有鍵: ET('iter', { a: 'dict' }), 所有值: ET('iter', { a: 'dict' }), 所有鍵值: ET('iter', { a: 'dict' }), 連接: ET('str', { a: 'str', b: 'iter' }),
+        二元組: ET('any', { a: 'any', b: 'any' }), 清單2: ET('list', { a: 'any', b: 'any' }), 空清單: ET('list'), 空字典: ET('dict'),
+        平方根: ET('num', { a: 'num' }), 正弦: ET('num', { a: 'num' }), 餘弦: ET('num', { a: 'num' }), 正切: ET('num', { a: 'num' }), 反正切2: ET('num', { a: 'num', b: 'num' }), 指數: ET('num', { a: 'num' }), 自然對數: ET('num', { a: 'num' }), 對數底10: ET('num', { a: 'num' }), 對數底2: ET('num', { a: 'num' }), 無條件捨去: ET('int', { a: 'num' }), 無條件進位: ET('int', { a: 'num' }), 最大公因數: ET('int', { a: 'int', b: 'int' }), 階乘: ET('int', { a: 'int' }), 斜邊: ET('num', { a: 'num', b: 'num' }), 弧度: ET('num', { a: 'num' }), 度: ET('num', { a: 'num' }), 圓周率: ET('num'), 自然常數: ET('num'),
+        陣列: ET('list', { a: 'iter' }), 零陣列: ET('list', { a: 'int' }), 一陣列: ET('list', { a: 'int' }), 等差陣列: ET('list', { a: 'num', b: 'num', s: 'num' }), 等分陣列: ET('list', { a: 'num', b: 'num', n: 'int' }), 內積: ET('num', { a: 'iter', b: 'iter' }), 陣列平均: ET('num', { a: 'iter' }), 陣列標準差: ET('num', { a: 'iter' }), 陣列總和: ET('num', { a: 'iter' }), 累積和: ET('list', { a: 'iter' }), 陣列正弦: ET('list', { a: 'iter' }), 陣列餘弦: ET('list', { a: 'iter' }), 陣列指數: ET('list', { a: 'iter' }), 陣列平方根: ET('list', { a: 'iter' }), 向量長度: ET('num', { a: 'iter' }), 反矩陣: ET('list', { a: 'iter' }), 解線性方程: ET('list', { a: 'iter', b: 'iter' }), 轉置: ET('list', { a: 'iter' }), 最大值位置: ET('int', { a: 'iter' }), 隨機陣列: ET('list', { a: 'int' }),
+        平均數: ET('num', { a: 'iter' }), 中位數: ET('num', { a: 'iter' }), 樣本標準差: ET('num', { a: 'iter' }), 變異數: ET('num', { a: 'iter' }), 眾數: ET('any', { a: 'iter' }),
+        矩陣相乘: ET('list', { a: 'iter', b: 'iter' }), 矩陣乘冪: ET('list', { a: 'iter', n: 'int' }), 單位矩陣: ET('list', { n: 'int' }), 矩陣行列式: ET('num', { a: 'iter' }),
+        隨機小數: ET('num'), 隨機整數: ET('int', { a: 'int', b: 'int' }), 隨機挑一個: ET('any', { a: 'iter' }), 定積分: ET('num', { f: 'any', a: 'num', b: 'num' }), 佇列: ET('list', { a: 'iter' }), 計數器: ET('dict', { a: 'iter' }), 二分位置: ET('int', { a: 'iter', b: 'any' }),
+    };
+    return { SPEC_EXTRA, EXPR_EXTRA, TYPES, ETYPES, REQ, IMPORTS };
+});
+
+}).call(null, undefined, holder);
+return holder.FaPyBlocksLib;
+})();
+/* PYBLOCKSLIB-END */
+/* PYBLOCKS-BEGIN */
+const FaPyBlocks = (function () {
+const holder = {};
+(function (module, self) {
+/* Python：Blockly 式的「程式區塊」body。純函式 UMD，Python 專屬（每個語言各自一份範本庫，不共用）。
+ * 一個範本只定義一次：一行中文的受控自然語言（line）＋ 一小段 Python（py，用 $x 當槽位、$$body 當子區塊）。
+ * 同一份定義兩個方向都用：
+ *   區塊 → 程式：槽位填進 IR 圖樣（codegen）
+ *   程式 → 區塊：把敘述 IR 跟圖樣做結構比對（反推）；比不到的收成通用的「程式」區塊（任何程式都表達得了）
+ * 區塊樹：{t:範本id, slots:{名稱:IR}, bodies:{名稱:[區塊]}}；if 鏈用 {t:'if', branches:[{c, body}], els}；通用 {t:'stmt', ir}
+ * 受控自然語言（CNL）：一行一個區塊，縮排兩格表示子區塊，模型只要寫這些已知的行（槽位是短的 Python 運算式）。
+ *
+ *   makeBlocks({parseTree, C2U}) → B
+ *   B.TEMPLATES                        範本表（id、類別、line、py）
+ *   B.fromIR(stmts) → blocks           程式 → 區塊（反推）
+ *   B.toIR(blocks) → stmts             區塊 → 程式（codegen 的 IR）
+ *   B.toCNL(blocks) → 文字             區塊 → 受控自然語言
+ *   B.parseCNL(text) → {ok, blocks, errors}   受控自然語言 → 區塊（槽位用 tree-sitter 檢查）
+ *   B.stats(blocks) → {blocks, generic, byTemplate}
+ */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaPyBlocks = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    // id | 類別 | line（{槽位:種類}；種類 name＝名稱或名稱元組、省略＝運算式）| py（$槽位、$$子區塊；多行用 \n）
+    const SPEC = [
+        // ---- 輸入 ----
+        'read_int|輸入|讀入整數 {n:name}|$n = int(input())',
+        'read_ints|輸入|讀入一行整數 {t:name}|$t = map(int, input().split())',
+        'read_list|輸入|讀入一行整數成清單 {a:name}|$a = list(map(int, input().split()))',
+        'read_floats|輸入|讀入一行小數成清單 {a:name}|$a = list(map(float, input().split()))',
+        'read_float|輸入|讀入小數 {n:name}|$n = float(input())',
+        'read_str|輸入|讀入一行文字 {s:name}|$s = input()',
+        'read_strip|輸入|讀入一行文字並去掉首尾空白 {s:name}|$s = input().strip()',
+        'read_words|輸入|讀入一行並切成單字 {w:name}|$w = input().split()',
+        'read_n_ints|輸入|讀入 {n} 行整數成清單 {a:name}|$a = [int(input()) for _ in range($n)]',
+        'read_n_lines|輸入|讀入 {n} 行文字成清單 {a:name}|$a = [input() for _ in range($n)]',
+        'read_n_strips|輸入|讀入 {n} 行文字（去空白）成清單 {a:name}|$a = [input().strip() for _ in range($n)]',
+        'read_matrix|輸入|讀入 {n} 行整數成二維陣列 {g:name}|$g = [list(map(int, input().split())) for _ in range($n)]',
+        'read_n_pairs|輸入|讀入 {n} 行兩個整數成清單 {a:name}|$a = [tuple(map(int, input().split())) for _ in range($n)]',
+        // ---- 輸出 ----
+        'print_value|輸出|印出 {e}|print($e)',
+        'print_two|輸出|印出 {a} 和 {b}|print($a, $b)',
+        'print_star|輸出|用空白分隔印出清單 {e}|print(*$e)',
+        'print_join|輸出|用空白連接後印出清單 {e}|print(" ".join(map(str, $e)))',
+        'print_join_sep|輸出|用 {sep} 連接後印出清單 {e}|print($sep.join(map(str, $e)))',
+        'print_join_str|輸出|用 {sep} 連接字串清單 {e} 後印出|print($sep.join($e))',
+        'print_yesno|輸出|如果 {c} 就印出 YES，否則印出 NO|print("YES" if $c else "NO")',
+        'print_blank|輸出|印出空行|print()',
+        // ---- 變數與資料 ----
+        'init_list|資料|令 {x:name} 為空清單|$x = []',
+        'init_dict|資料|令 {x:name} 為空字典|$x = {}',
+        'init_set|資料|令 {x:name} 為空集合|$x = set()',
+        'init_zeros|資料|令 {x:name} 為 {n} 個 0 的清單|$x = [0] * $n',
+        'init_fill|資料|令 {x:name} 為 {n} 個 {v} 的清單|$x = [$v] * $n',
+        'init_grid|資料|令 {x:name} 為 {n} 列 {m} 行都是 0 的二維陣列|$x = [[0] * $m for _ in range($n)]',
+        'init_grid_fill|資料|令 {x:name} 為 {n} 列 {m} 行都是 {v} 的二維陣列|$x = [[$v] * $m for _ in range($n)]',
+        'init_deque|資料|令 {q:name} 為從 {e} 開始的佇列|$q = deque([$e])',
+        'swap|資料|交換 {a} 和 {b}|$a, $b = $b, $a',
+        'fib_step|資料|同時更新：{a} 變成 {b}，{b} 變成 {a} 加 {b}|$a, $b = $b, $a + $b',
+        'len_of|資料|令 {x:name} 為 {e} 的長度|$x = len($e)',
+        'sum_of|資料|令 {x:name} 為 {e} 的總和|$x = sum($e)',
+        'max_of|資料|令 {x:name} 為 {e} 的最大值|$x = max($e)',
+        'min_of|資料|令 {x:name} 為 {e} 的最小值|$x = min($e)',
+        'to_int|資料|令 {x:name} 為 {e} 轉成整數|$x = int($e)',
+        'to_str|資料|令 {x:name} 為 {e} 轉成字串|$x = str($e)',
+        'split_by|資料|令 {x:name} 為 {s} 依 {sep} 切開的清單|$x = $s.split($sep)',
+        'join_by|資料|令 {x:name} 為用 {sep} 連接 {l} 的字串|$x = $sep.join($l)',
+        'lower_of|資料|令 {x:name} 為 {s} 的小寫|$x = $s.lower()',
+        'upper_of|資料|令 {x:name} 為 {s} 的大寫|$x = $s.upper()',
+        'divmod_of|資料|令 {q:name} 和 {r:name} 為 {a} 除以 {b} 的商與餘數|$q, $r = divmod($a, $b)',
+        'sorted_of|資料|令 {x:name} 為 {e} 排序後的新清單|$x = sorted($e)',
+        'sorted_key|資料|令 {x:name} 為 {e} 依 {k} 排序後的新清單|$x = sorted($e, key=$k)',
+        'sorted_rev|資料|令 {x:name} 為 {e} 由大到小排序後的新清單|$x = sorted($e, reverse=True)',
+        'reversed_of|資料|令 {x:name} 為 {e} 反轉|$x = $e[::-1]',
+        'list_map|資料|令 {x:name} 為 {l} 中每個 {v:name} 的 {e} 組成的清單|$x = [$e for $v in $l]',
+        'list_filter|資料|令 {x:name} 為 {l} 中滿足 {c} 的每個 {v:name} 組成的清單|$x = [$v for $v in $l if $c]',
+        'list_map_filter|資料|令 {x:name} 為 {l} 中滿足 {c} 的每個 {v:name} 的 {e} 組成的清單|$x = [$e for $v in $l if $c]',
+        'set_of|資料|令 {x:name} 為 {e} 的集合|$x = set($e)',
+        'assign|資料|令 {x} 等於 {e}|$x = $e',
+        // ---- 更新 ----
+        'incr|更新|{x} 加 1|$x += 1',
+        'decr|更新|{x} 減 1|$x -= 1',
+        'add_to|更新|{x} 加上 {e}|$x += $e',
+        'sub_from|更新|{x} 減去 {e}|$x -= $e',
+        'mul_by|更新|{x} 乘以 {e}|$x *= $e',
+        'floordiv_by|更新|{x} 整除 {e}|$x //= $e',
+        'mod_by|更新|{x} 取除以 {e} 的餘數|$x %= $e',
+        'max_update|更新|{x} 取 {x} 與 {e} 的較大值|$x = max($x, $e)',
+        'min_update|更新|{x} 取 {x} 與 {e} 的較小值|$x = min($x, $e)',
+        'count_inc|更新|計數：{d} 的 {k} 加 1|$d[$k] = $d.get($k, 0) + 1',
+        'count_add|更新|計數：{d} 的 {k} 加上 {v}|$d[$k] = $d.get($k, 0) + $v',
+        'group_append|更新|把 {v} 放進 {d} 的 {k} 這一組|$d.setdefault($k, []).append($v)',
+        // ---- 集合操作 ----
+        'append|集合|把 {e} 加到清單 {l} 最後|$l.append($e)',
+        'extend|集合|把 {e} 全部加到清單 {l} 最後|$l.extend($e)',
+        'pop_last|集合|刪掉清單 {l} 的最後一個|$l.pop()',
+        'add_set|集合|把 {e} 加入集合 {s}|$s.add($e)',
+        'sort_inplace|集合|排序清單 {l}|$l.sort()',
+        'sort_key|集合|依 {k} 排序清單 {l}|$l.sort(key=$k)',
+        'sort_rev|集合|由大到小排序清單 {l}|$l.sort(reverse=True)',
+        'reverse_inplace|集合|反轉清單 {l}|$l.reverse()',
+        // ---- 迴圈 ----
+        'for_range|迴圈|重複 {n} 次，用 {i:name} 計數：|for $i in range($n):\n    $$body',
+        'for_range_from|迴圈|讓 {i:name} 從 {a} 到 {b} 減一：|for $i in range($a, $b):\n    $$body',
+        'for_range_step|迴圈|讓 {i:name} 從 {a} 到 {b} 減一，每次加 {s}：|for $i in range($a, $b, $s):\n    $$body',
+        'for_each|迴圈|對 {it} 裡的每個 {x:name}：|for $x in $it:\n    $$body',
+        'for_enumerate|迴圈|對 {it} 的每個（編號 {i:name}、元素 {x:name}）：|for $i, $x in enumerate($it):\n    $$body',
+        'for_items|迴圈|對字典 {d} 的每個（鍵 {k:name}、值 {v:name}）：|for $k, $v in $d.items():\n    $$body',
+        'for_zip|迴圈|對 {a} 和 {b} 配對的每組（{x:name}、{y:name}）：|for $x, $y in zip($a, $b):\n    $$body',
+        'while_do|迴圈|當 {c} 時重複：|while $c:\n    $$body',
+        'while_forever|迴圈|一直重複（用 break 離開）：|while True:\n    $$body',
+        'bfs_loop|迴圈|當佇列 {q} 不是空的就取出最前面的 {u:name} 處理：|while $q:\n    $u = $q.popleft()\n    $$body',
+        // ---- 流程 ----
+        'return_value|流程|回傳 {e}|return $e',
+        'return_none|流程|結束函式|return',
+        'break_loop|流程|跳出迴圈|break',
+        'continue_loop|流程|略過這一輪|continue',
+        'do_nothing|流程|什麼都不做|pass',
+        // ---- 演算法片段 ----
+        'gcd_loop|演算法|用輾轉相除法讓 {a:name} 變成 {a} 與 {b:name} 的最大公因數|while $b:\n    $a, $b = $b, $a % $b',
+        'binary_search|演算法|二分搜尋：{lo:name} 從 {a}、{hi:name} 從 {b}，中點 {mid:name}，如果 {c} 就往右（{lo} 變成中點加 1），否則往左（{hi} 變成中點）|$lo, $hi = $a, $b\nwhile $lo < $hi:\n    $mid = ($lo + $hi) // 2\n    if $c:\n        $lo = $mid + 1\n    else:\n        $hi = $mid',
+        'sieve|演算法|用篩法在 {p:name} 標出 0 到 {n} 的質數（True 是質數），迴圈變數 {i:name}、{j:name}|$p = [True] * ($n + 1)\n$p[0] = $p[1] = False\nfor $i in range(2, int($n ** 0.5) + 1):\n    if $p[$i]:\n        for $j in range($i * $i, $n + 1, $i):\n            $p[$j] = False',
+        'prefix_sums|演算法|令 {p:name} 為 {a} 的前綴和（長度多 1），迴圈變數 {i:name}|$p = [0] * (len($a) + 1)\nfor $i in range(len($a)):\n    $p[$i + 1] = $p[$i] + $a[$i]',
+    ];
+
+    // 運算式積木（槽位的值也用選擇題選）：id | 類別 | line | py（$槽位）
+    const EXPR_SPEC = [
+        '加|算術|{a} + {b}|$a + $b', '減|算術|{a} - {b}|$a - $b', '乘|算術|{a} * {b}|$a * $b', '整除|算術|{a} // {b}|$a // $b', '餘數|算術|{a} % {b}|$a % $b', '次方|算術|{a} 的 {b} 次方|$a ** $b', '負|算術|-{a}|-$a',
+        '等於|比較|{a} == {b}|$a == $b', '不等於|比較|{a} != {b}|$a != $b', '小於|比較|{a} < {b}|$a < $b', '小於等於|比較|{a} <= {b}|$a <= $b', '大於|比較|{a} > {b}|$a > $b', '大於等於|比較|{a} >= {b}|$a >= $b', '在裡面|比較|{a} 在 {b} 裡面|$a in $b', '不在裡面|比較|{a} 不在 {b} 裡面|$a not in $b',
+        '而且|邏輯|{a} 而且 {b}|$a and $b', '或者|邏輯|{a} 或者 {b}|$a or $b', '不是|邏輯|不是 {a}|not $a', '條件式|邏輯|{a} 如果 {c} 否則 {b}|$a if $c else $b',
+        '第幾個|取值|{a} 的第 {i} 個（從 0 算起）|$a[$i]', '最後一個|取值|{a} 的最後一個|$a[-1]', '切片|取值|{a} 從 {i} 到 {j} 之前|$a[$i:$j]', '從頭到|取值|{a} 的前 {j} 個|$a[:$j]', '從第幾個起|取值|{a} 從 {i} 開始到結尾|$a[$i:]', '反轉|取值|{a} 反轉|$a[::-1]',
+        '長度|函式|{a} 的長度|len($a)', '轉整數|函式|{a} 轉成整數|int($a)', '轉字串|函式|{a} 轉成字串|str($a)', '絕對值|函式|{a} 的絕對值|abs($a)', '總和|函式|{a} 的總和|sum($a)', '最大值|函式|{a} 的最大值|max($a)', '最小值|函式|{a} 的最小值|min($a)', '較大|函式|{a} 和 {b} 較大的|max($a, $b)', '較小|函式|{a} 和 {b} 較小的|min($a, $b)',
+        '排序後|函式|{a} 排序後|sorted($a)', '由大到小|函式|{a} 由大到小排序後|sorted($a, reverse=True)', '轉清單|函式|{a} 轉成清單|list($a)', '轉集合|函式|{a} 轉成集合|set($a)', '範圍1|函式|0 到 {a} 減一的範圍|range($a)', '範圍2|函式|{a} 到 {b} 減一的範圍|range($a, $b)',
+        '切單字|方法|{a} 切成單字的清單|$a.split()', '依分隔切|方法|{a} 依 {b} 切開的清單|$a.split($b)', '去空白|方法|{a} 去掉首尾空白|$a.strip()', '小寫|方法|{a} 的小寫|$a.lower()', '大寫|方法|{a} 的大寫|$a.upper()', '出現次數|方法|{a} 裡 {b} 出現的次數|$a.count($b)', '字典取值|方法|字典 {a} 的 {k}（沒有就是 {d}）|$a.get($k, $d)', '所有鍵|方法|字典 {a} 的所有鍵|$a.keys()', '所有值|方法|字典 {a} 的所有值|$a.values()', '所有鍵值|方法|字典 {a} 的所有（鍵, 值）|$a.items()', '連接|方法|用 {a} 連接 {b}|$a.join($b)',
+        '二元組|組合|（{a}, {b}）|($a, $b)', '清單2|組合|[{a}, {b}]|[$a, $b]', '空清單|組合|空清單|[]', '空字典|組合|空字典|{}',
+    ];
+
+    const PRE_H = '__h_', PRE_B = '__B_';
+    const isHole = (e) => e && e.n === 'name' && typeof e.v === 'string' && e.v.startsWith(PRE_H);
+    const isBodyStmt = (s) => s && s.k === 'expr' && s.e && s.e.n === 'call' && s.e.f && s.e.f.n === 'name' && String(s.e.f.v).startsWith(PRE_B) && !s.e.a.length;
+    const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    const isNameLike = (e) => e && (e.n === 'name' || (e.n === 'tuple' && e.xs.length > 0 && e.xs.every((x) => x.n === 'name')));
+    const clone = (x) => JSON.parse(JSON.stringify(x));
+    const count = (x) => (x && typeof x === 'object' ? 1 + Object.values(x).reduce((s, v) => s + count(v), 0) : 0);
+
+    function makeBlocks(env) {
+        const { parseTree, C2U } = env; const LIB = env.lib || (typeof module === 'object' && module.exports ? require('./py_blocks_lib_core.js') : (typeof FaPyBlocksLib !== 'undefined' ? FaPyBlocksLib : { SPEC_EXTRA: [], EXPR_EXTRA: [], TYPES: {}, ETYPES: {}, REQ: {}, IMPORTS: {} }));
+        const stmtsOfSource = (src) => { const tree = parseTree(src); if (!tree || tree.rootNode.hasError()) return null; const u = C2U.fromTree(tree.rootNode, { source: src }); return u.model.prelude; };
+        const exprOf = (text) => { const body = stmtsOfSource(String(text).trim() + '\n'); if (!body || body.length !== 1 || body[0].k !== 'expr') return null; return body[0].e; };
+        const exprText = (e) => { const t = C2U.toPython({ name: 'M', classes: [], relations: [], prelude: [{ k: 'expr', e }], order: [] }).trim(); return t; };
+        const targetText = (e) => (e && e.n === 'tuple' && e.xs.length > 1 ? e.xs.map(exprText).join(', ') : exprText(e));
+        const slotText = (kind, ir) => (kind === 'name' ? targetText(ir) : exprText(ir));
+
+        // ---- 範本編譯 ----
+        const TEMPLATES = SPEC.concat(LIB.SPEC_EXTRA).map((row) => {
+            const [id, cat, line, py] = row.split('|'); const slots = {}; const lineRe = /\{(\w+)(?::(\w+))?\}/g; let m; while ((m = lineRe.exec(line))) { if (!slots[m[1]]) slots[m[1]] = m[2] || 'expr'; }
+            const src = py.replace(/\$\$(\w+)/g, PRE_B + '$1()').replace(/\$(\w+)/g, PRE_H + '$1').replace(/\\n/g, '\n') + '\n';
+            const pat = stmtsOfSource(src); if (!pat) throw new Error('範本 ' + id + ' 的 Python 解析失敗：' + py);
+            const bodies = []; const walk = (l) => { for (const s of l) { if (isBodyStmt(s)) bodies.push(String(s.e.f.v).slice(PRE_B.length)); for (const k of ['a', 'b']) if (Array.isArray(s[k])) walk(s[k]); } }; walk(pat);
+            return { id, cat, line, py, slots, pat, bodies, size: count(pat) };
+        });
+        const byId = {}; TEMPLATES.forEach((t) => { byId[t.id] = t; });
+        const EXPRS = EXPR_SPEC.concat(LIB.EXPR_EXTRA).map((row) => { const [id, cat, line, py] = row.split('|'); const slots = []; const re = /\{(\w+)\}/g; let m; while ((m = re.exec(line))) if (!slots.includes(m[1])) slots.push(m[1]); const pat = exprOf(py.replace(/\$(\w+)/g, PRE_H + '$1')); if (!pat) throw new Error('運算式積木 ' + id + ' 解析失敗：' + py); return { id, cat, line, py, slots, pat }; });
+        const exprById = {}; EXPRS.forEach((e) => { exprById[e.id] = e; });
+        const fillHoles = (x, fills) => { if (Array.isArray(x)) return x.map((y) => fillHoles(y, fills)); if (x && typeof x === 'object') { if (isHole(x)) return clone(fills[x.v.slice(PRE_H.length)]); const o = {}; for (const k of Object.keys(x)) o[k] = fillHoles(x[k], fills); return o; } return x; };
+        const buildExpr = (id, fills) => fillHoles(exprById[id].pat, fills);
+        const ORDER = TEMPLATES.slice().sort((a, b) => b.size - a.size);
+        // 運算式 IR → 是哪一個運算式積木、槽位各是什麼（反推用；沒有積木對得上就回 null）
+        const matchExpr = (ir) => { for (const e of EXPRS) { const ctx = { tpl: { slots: Object.fromEntries(e.slots.map((n) => [n, 'expr'])) }, slots: {}, bodies: {} }; if (unify(e.pat, ir, ctx) && e.slots.every((n) => n in ctx.slots)) return { id: e.id, fills: ctx.slots }; } return null; };
+
+        // ---- 結構比對（程式 → 區塊）----
+        function unify(p, x, ctx) {
+            if (isHole(p)) { if (x == null || typeof x !== 'object') return false; const name = p.v.slice(PRE_H.length); const kind = ctx.tpl.slots[name]; if (kind === 'name' && !isNameLike(x)) return false; if (x && x.n === 'name' && x.v && String(x.v).startsWith(PRE_H)) return false; if (name in ctx.slots) return eq(ctx.slots[name], x); ctx.slots[name] = x; return true; }
+            if (Array.isArray(p)) {
+                if (!Array.isArray(x)) return false;
+                const bi = p.findIndex(isBodyStmt);
+                if (bi >= 0) { // 子區塊洞：前面 bi 句、後面 tail 句固定，中間（至少一句）都是子區塊
+                    const tail = p.length - bi - 1; if (x.length < bi + 1 + tail) return false;
+                    for (let i = 0; i < bi; i++) if (!unify(p[i], x[i], ctx)) return false;
+                    for (let i = 0; i < tail; i++) if (!unify(p[bi + 1 + i], x[x.length - tail + i], ctx)) return false;
+                    ctx.bodies[String(p[bi].e.f.v).slice(PRE_B.length)] = x.slice(bi, x.length - tail); return true;
+                }
+                if (p.length !== x.length) return false; for (let i = 0; i < p.length; i++) if (!unify(p[i], x[i], ctx)) return false; return true;
+            }
+            if (p && typeof p === 'object') {
+                if (!x || typeof x !== 'object' || Array.isArray(x)) return false;
+                const keys = new Set(Object.keys(p).concat(Object.keys(x))); for (const k of keys) { const pv = p[k], xv = x[k]; if (pv === undefined && xv === undefined) continue; if (pv === undefined || xv === undefined) return false; if (!unify(pv, xv, ctx)) return false; } return true;
+            }
+            return p === x;
+        }
+        function matchAt(stmts, i) {
+            for (const tpl of ORDER) {
+                if (i + tpl.pat.length > stmts.length) continue;
+                const ctx = { tpl, slots: {}, bodies: {} }; let ok = true;
+                for (let j = 0; j < tpl.pat.length; j++) { if (!unify(tpl.pat[j], stmts[i + j], ctx)) { ok = false; break; } }
+                if (ok && Object.keys(tpl.slots).every((k) => k in ctx.slots)) { const bodies = {}; for (const b of Object.keys(ctx.bodies)) bodies[b] = fromIR(ctx.bodies[b]); return { block: { t: tpl.id, slots: ctx.slots, bodies }, len: tpl.pat.length }; }
+            }
+            return null;
+        }
+        function fromIR(stmts) {
+            const out = []; let i = 0;
+            while (i < stmts.length) {
+                const m = matchAt(stmts, i); if (m) { out.push(m.block); i += m.len; continue; }
+                const s = stmts[i];
+                if (s.k === 'if') { const branches = []; let cur = s, els = null; for (;;) { branches.push({ c: cur.c, body: fromIR(cur.a) }); if (cur.b.length === 1 && cur.b[0].k === 'if') { cur = cur.b[0]; continue; } els = cur.b.length ? fromIR(cur.b) : null; break; } out.push({ t: 'if', branches, els }); }
+                else out.push({ t: 'stmt', ir: s });
+                i++;
+            }
+            return out;
+        }
+
+        // ---- 區塊 → 程式 ----
+        function subst(x, blk, tpl) {
+            if (Array.isArray(x)) { const out = []; for (const s of x) { if (isBodyStmt(s)) { const name = String(s.e.f.v).slice(PRE_B.length); out.push(...toIR(blk.bodies[name] || [])); } else out.push(subst(s, blk, tpl)); } return out; }
+            if (x && typeof x === 'object') { if (isHole(x)) return clone(blk.slots[x.v.slice(PRE_H.length)]); const o = {}; for (const k of Object.keys(x)) o[k] = subst(x[k], blk, tpl); return o; }
+            return x;
+        }
+        function toIR(blocks) {
+            const out = [];
+            for (const b of blocks || []) {
+                if (b.t === 'stmt') out.push(clone(b.ir));
+                else if (b.t === 'if') { let node = null; const br = b.branches; const build = (i) => ({ k: 'if', c: clone(br[i].c), a: toIR(br[i].body), b: i + 1 < br.length ? [build(i + 1)] : (b.els ? toIR(b.els) : []) }); node = build(0); out.push(node); }
+                else { const tpl = byId[b.t]; if (!tpl) throw new Error('不認得的區塊：' + b.t); out.push(...subst(tpl.pat, b, tpl)); }
+            }
+            return out;
+        }
+
+        // ---- 受控自然語言 ----
+        const lineRes = TEMPLATES.map((t) => { let re = '^'; let last = 0; const r = /\{(\w+)(?::(\w+))?\}/g; let m; const order = []; while ((m = r.exec(t.line))) { re += t.line.slice(last, m.index).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); re += '(.+?)'; order.push(m[1]); last = r.lastIndex; } re += t.line.slice(last).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$'; const lit = t.line.replace(/\{[^}]*\}/g, '').length; return { t, re: new RegExp(re), order, lit }; }).sort((a, b) => b.lit - a.lit);
+        function lineOf(t, slots) { return t.line.replace(/\{(\w+)(?::(\w+))?\}/g, (m0, n, k) => slotText(k || 'expr', slots[n])); }
+        function toCNL(blocks, depth) {
+            depth = depth || 0; const pad = '  '.repeat(depth); const out = [];
+            for (const b of blocks) {
+                if (b.t === 'stmt') { const py = C2U.toPython({ name: 'M', classes: [], relations: [], prelude: [b.ir], order: [] }).replace(/\s+$/, '').split('\n'); if (py.length === 1 && !/:\s*$/.test(py[0])) out.push(pad + '程式：' + py[0]); else { out.push(pad + '程式區塊：'); for (const l of py) out.push(pad + '  ' + l); } }
+                else if (b.t === 'if') { b.branches.forEach((br, i) => { out.push(pad + (i === 0 ? '如果 ' : '否則如果 ') + exprText(br.c) + ' 就：'); out.push(toCNL(br.body, depth + 1)); }); if (b.els) { out.push(pad + '否則：'); out.push(toCNL(b.els, depth + 1)); } }
+                else { const t = byId[b.t]; out.push(pad + lineOf(t, b.slots)); for (const name of t.bodies) out.push(toCNL(b.bodies[name] || [], depth + 1)); }
+            }
+            return out.filter((l) => l !== '').join('\n');
+        }
+        function parseCNL(text) {
+            const rows = String(text || '').split('\n').filter((l) => l.trim().length).map((l) => ({ ind: Math.floor((l.length - l.trimStart().length) / 2), s: l.trim(), raw: l })); const errors = []; let pos = 0;
+            const slotIR = (kind, str, lineNo) => { const e = exprOf(str); if (!e) { errors.push({ line: lineNo, msg: '槽位「' + str + '」不是合法的 Python 運算式' }); return null; } if (kind === 'name' && !isNameLike(e)) { errors.push({ line: lineNo, msg: '槽位「' + str + '」要是變數名稱（或用逗號分開的名稱）' }); return null; } return e; };
+            function block(ind) {
+                const out = [];
+                while (pos < rows.length && rows[pos].ind >= ind) {
+                    const r = rows[pos]; if (r.ind > ind) { errors.push({ line: pos + 1, msg: '縮排不對：' + r.s }); pos++; continue; } const ln = pos + 1; pos++;
+                    let m;
+                    if ((m = /^程式區塊：$/.exec(r.s))) { const raw = []; while (pos < rows.length && rows[pos].ind > ind) { raw.push(rows[pos].raw.slice(2 * (ind + 1))); pos++; } const st = stmtsOfSource(raw.join('\n') + '\n'); if (!st || !st.length) errors.push({ line: ln, msg: '程式區塊裡的 Python 解析失敗' }); else st.forEach((ir) => out.push({ t: 'stmt', ir })); continue; }
+                    if ((m = /^程式：(.+)$/.exec(r.s))) { const st = stmtsOfSource(m[1] + '\n'); if (!st || st.length !== 1) errors.push({ line: ln, msg: '「程式：」後面要剛好一個 Python 敘述' }); else out.push({ t: 'stmt', ir: st[0] }); continue; }
+                    if ((m = /^如果 (.+) 就：$/.exec(r.s))) {
+                        const c = slotIR('expr', m[1], ln); const branches = [{ c, body: block(ind + 1) }]; let els = null;
+                        while (pos < rows.length && rows[pos].ind === ind) { const n = rows[pos]; let mm; if ((mm = /^否則如果 (.+) 就：$/.exec(n.s))) { pos++; branches.push({ c: slotIR('expr', mm[1], pos), body: block(ind + 1) }); continue; } if (/^否則：$/.test(n.s)) { pos++; els = block(ind + 1); } break; }
+                        out.push({ t: 'if', branches, els }); continue;
+                    }
+                    let hit = null; for (const L of lineRes) { const mm = L.re.exec(r.s); if (mm) { hit = { L, mm }; break; } }
+                    if (!hit) { errors.push({ line: ln, msg: '看不懂這一行（不是已知的區塊）：' + r.s.slice(0, 40) }); while (pos < rows.length && rows[pos].ind > ind) pos++; continue; }
+                    const slots = {}; const seenTxt = {}; hit.L.order.forEach((n, i) => { const tx = hit.mm[i + 1].trim(); if (n in seenTxt) { if (seenTxt[n] !== tx) errors.push({ line: ln, msg: '「' + n + '」這個槽位在同一行出現兩次，內容要一樣' }); return; } seenTxt[n] = tx; const ir = slotIR(hit.L.t.slots[n], tx, ln); if (ir) slots[n] = ir; });
+                    const bodies = {}; for (const name of hit.L.t.bodies) { bodies[name] = (pos < rows.length && rows[pos].ind > ind) ? block(ind + 1) : []; if (!bodies[name].length) errors.push({ line: ln, msg: '「' + r.s.slice(0, 30) + '」下面要有縮排的內容' }); }
+                    if (Object.keys(slots).length === Object.keys(hit.L.t.slots).length) out.push({ t: hit.L.t.id, slots, bodies });
+                }
+                return out;
+            }
+            const blocks = block(0); return { ok: !errors.length, blocks, errors };
+        }
+        function stats(blocks) { const st = { blocks: 0, generic: 0, byTemplate: {} }; const walk = (bl) => { for (const b of bl) { st.blocks++; if (b.t === 'stmt') st.generic++; else st.byTemplate[b.t] = (st.byTemplate[b.t] || 0) + 1; if (b.t === 'if') { b.branches.forEach((x) => walk(x.body)); if (b.els) walk(b.els); } else if (b.bodies) Object.values(b.bodies).forEach(walk); } }; walk(blocks); return st; }
+        return { TEMPLATES, EXPRS, LIB, matchExpr, buildExpr, fromIR, toIR, toCNL, parseCNL, stats, exprOf, exprText, stmtsOfSource, byId };
+    }
+    return { makeBlocks, SPEC, EXPR_SPEC };
+});
+
+}).call(null, undefined, holder);
+return holder.FaPyBlocks;
+})();
+/* PYBLOCKS-END */
+/* PYBLOCKSRULES-BEGIN */
+const FaPyBlocksRules = (function () {
+const holder = {};
+(function (module, self) {
+/* Python 區塊的「庫存與範本」規則：每一步能放什麼區塊，由程式從目前的狀態算出來，模型只在合法的選單裡選。純函式 UMD，Python 專屬。
+ *
+ * 狀態（state）：
+ *   vars     已宣告的變數 名稱 → 型別（int float num str list dict set range cond any）；參數一開始就在裡面
+ *   imports  已引入的模組名稱（math、np、plt、statistics、random、integrate、deque、heapq、bisect）
+ *   frames   目前開著的區塊（最外層是函式本身）：{kind: func|for|while|forever|if|else, header, count, writes, condVars, hasBreak, terminal}
+ *   hasReturn  這個函式裡有沒有 return 值
+ *
+ * 規則（使用者的要求）：
+ *   什麼都沒宣告 → 只能宣告（輸入、資料的初始化、引入模組）或 return
+ *   while 要有終止條件：用 while_counter／for_counter 這類範本（遞增在範本裡），或 while_do 結束前檢查「迴圈裡有改到條件用到的變數，或有 break」；while True 一定要有 break
+ *   for 要有初始化、條件、遞增（for_counter），或「重複 n 次、用 i 計數」（for_range）；迴圈變數一定是新的名稱
+ *   break／continue 只能在迴圈裡；return／break／continue 後同一層不能再放區塊（只能結束區塊）
+ *   用到變數的槽位（更新、集合操作…）要有型別相容的已宣告變數才會出現；模組函式要先引入模組
+ *   輔助函式（不是 main）一定要 return 值；空的區塊不能結束
+ *
+ *   makeRules(B) → R
+ *   R.initState(op) → state
+ *   R.legal(state) → {templates:[tpl], cats:[類別], canEnd, endWhy, canDone, doneWhy, ifOptions:{if, elif, else}}
+ *   R.slotPlan(tpl) → [{slot, mode:'decl'|'var'|'expr', type, tuple?}]
+ *   R.exprMenu(type, state) → {vars:[{name,type}], num:bool, str:bool, cats:[{id, blocks:[expr]}]}
+ *   R.compat(slotType, valType) → boolean
+ *   R.apply(state, {tpl|special, slots:{名稱:{ir,type}}, ir}) → 更新 state
+ *   R.canEnd(state) → {ok, why} */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaPyBlocksRules = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const ECAT_ORDER = ['算術', '比較', '邏輯', '取值', '函式', '方法', '組合', '科學·數學', '科學·數值', '科學·統計', '科學·亂數', '科學·微積分', '科學·集合'];
+    const ITER = new Set(['list', 'str', 'dict', 'set', 'range', 'iter']);
+    function compat(slot, val) {
+        if (!slot || slot === 'any' || !val || val === 'any') return true;
+        switch (slot) {
+            case 'num': return val === 'int' || val === 'float' || val === 'num';
+            case 'int': return val === 'int' || val === 'num';
+            case 'float': return val === 'float' || val === 'num' || val === 'int';
+            case 'str': return val === 'str';
+            case 'list': return val === 'list';
+            case 'dict': return val === 'dict';
+            case 'set': return val === 'set';
+            case 'iter': return ITER.has(val);
+            case 'cond': return val === 'cond' || val === 'bool';
+            default: return slot === val;
+        }
+    }
+    const LOOPS = new Set(['for', 'while', 'forever']);
+    // 從敘述 IR 找「被寫到的名稱」（指派目標、複合指派目標、for 目標、對名稱呼叫方法）
+    function writesOf(list, out) {
+        out = out || new Set(); const target = (e) => { if (!e) return; if (e.n === 'name') out.add(e.v); else if (e.n === 'tuple' || e.n === 'list') (e.xs || []).forEach(target); else if (e.n === 'idx' || e.n === 'attr') { let b = e; while (b && (b.n === 'idx' || b.n === 'attr')) b = b.o; if (b && b.n === 'name') out.add(b.v); } else if (e.n === 'star') target(e.e); };
+        const callTarget = (e) => { if (!e || typeof e !== 'object') return; if (Array.isArray(e)) return e.forEach(callTarget); if (e.n === 'call' && e.f && e.f.n === 'attr' && e.f.o && e.f.o.n === 'name') out.add(e.f.o.v); for (const k of Object.keys(e)) if (e[k] && typeof e[k] === 'object') callTarget(e[k]); };
+        for (const s of list || []) { if (s.k === 'assign') (s.ts || [s.t]).forEach(target); else if (s.k === 'aug') target(s.t); else if (s.k === 'for') target(s.t); else if (s.k === 'expr') callTarget(s.e); writesOf(s.a, out); writesOf(s.b, out); }
+        return out;
+    }
+    function makeRules(B) {
+        const L = B.LIB; const TYPES = L.TYPES || {}, ETYPES = L.ETYPES || {}, REQ = L.REQ || {}, IMPORTS = L.IMPORTS || {};
+        const tinfo = (id) => TYPES[id] || {};
+        const isVarUse = (t) => typeof t === 'string' && t.startsWith('v:');
+        function initState(op, o) { const vars = new Map(); for (const p of op.params || []) vars.set(p, (op.paramTypes && op.paramTypes[p]) || 'any'); return { op, zone: (o && o.zone) || 'import', vars, imports: new Set(), frames: [{ kind: 'func', header: 'def ' + op.name, count: 0, writes: new Set(), terminal: false }], hasReturn: false }; }
+        const top = (st) => st.frames[st.frames.length - 1];
+        const needsReturn = (st) => st.op.name !== 'main' && st.op.returns !== 'void'; // 有回傳型別的輔助函式一定要 return 值；main／void 的操作（例如 solve）不用
+        const inLoop = (st) => st.frames.some((f) => LOOPS.has(f.kind));
+        const varsOf = (st, type) => [...st.vars].filter(([n, t]) => compat(type, t)).map(([name, t]) => ({ name, type: t }));
+        const declOnly = (t) => { if (t.cat !== '輸入' && t.cat !== '資料') return false; const ti = tinfo(t.id); const dk = Object.keys(ti.decl || {}); if (!dk.length || t.bodies.length) return false; return !Object.values(ti.use || {}).some(isVarUse); };
+
+        function legal(st) {
+            const f = top(st); const empty = st.vars.size === 0; const res = { templates: [], cats: [], canEnd: false, endWhy: '', canDone: false, doneWhy: '', ifOptions: { if: false, elif: false, else: false } };
+            const e = R.canEnd(st); res.canEnd = e.ok; res.endWhy = e.why;
+            const d = R.canDone(st); res.canDone = d.ok; res.doneWhy = d.why;
+            const zone = st.frames.length > 1 ? 'logic' : st.zone; res.zone = zone; res.zoneNext = []; // 區只能往後走：引入區 → 宣告區 → 邏輯與流程區
+            if (st.frames.length === 1) { if (zone === 'import') res.zoneNext.push('declare', 'logic'); else if (zone === 'declare') res.zoneNext.push('logic'); }
+            if (f.terminal) return res; // return／break／continue 之後，這一層只能結束
+            for (const t of B.TEMPLATES) {
+                const ti = tinfo(t.id);
+                if (zone === 'import' && t.cat !== '引入') continue; if (zone !== 'import' && t.cat === '引入') continue;
+                if (zone === 'declare' && !(t.cat === '輸入' || t.cat === '資料')) continue;
+                if (REQ[t.id] && !st.imports.has(REQ[t.id])) continue;
+                if (empty && zone === 'logic' && !(declOnly(t) || t.id.startsWith('return_') || t.cat === '引入')) continue;
+                if (t.id === 'break_loop' || t.id === 'continue_loop') { if (!inLoop(st)) continue; }
+                if (t.id === 'return_none' && needsReturn(st) && !st.hasReturn) continue;
+                if (t.id === 'return_value' && false) continue;
+                const uses = ti.use || {}; let ok = true;
+                for (const [slot, ty] of Object.entries(uses)) if (isVarUse(ty) && !varsOf(st, ty.slice(2)).length) { ok = false; break; }
+                if (!ok) continue;
+                if (t.id === 'while_do' || t.id === 'while_counter' || t.id === 'while_countdown') { if (st.vars.size === 0) continue; }
+                if ((t.id === 'for_items') && !varsOf(st, 'dict').length) continue;
+                res.templates.push(t);
+            }
+            const cats = new Set(res.templates.map((t) => t.cat)); // 條件：宣告過變數才有意義
+            res.ifOptions = zone !== 'logic' ? { if: false, elif: false, else: false } : { if: !empty, elif: !!(f.sibOK && f.sibOK === 'if'), else: !!(f.sibOK && f.sibOK === 'if') };
+            res.cats = [...cats]; if (res.ifOptions.if || res.ifOptions.elif || res.ifOptions.else) res.cats.push('條件');
+            return res;
+        }
+        function canEnd(st) {
+            if (st.frames.length < 2) return { ok: false, why: '最外層不能用「結束區塊」，要用「函式寫完」' };
+            const f = top(st); if (!f.count) return { ok: false, why: '區塊是空的，至少要放一個區塊' };
+            if (f.kind === 'while') { const hit = [...(f.condVars || [])].some((n) => f.writes.has(n)); if (!hit && !f.hasBreak) return { ok: false, why: 'while 要有終止條件：迴圈裡要改變條件用到的變數（' + [...(f.condVars || [])].join('、') + '）或 break' }; }
+            if (f.kind === 'forever' && !f.hasBreak) return { ok: false, why: '一直重複的迴圈裡一定要有「跳出迴圈」' };
+            return { ok: true, why: '' };
+        }
+        function canDone(st) {
+            if (st.frames.length > 1) return { ok: false, why: '還有沒結束的區塊' };
+            const f = top(st); if (!f.count) return { ok: false, why: '函式還沒有任何區塊' };
+            if (needsReturn(st) && !st.hasReturn) return { ok: false, why: '輔助函式一定要回傳值' };
+            return { ok: true, why: '' };
+        }
+        function slotPlan(t) {
+            const ti = tinfo(t.id); const plan = [];
+            for (const slot of Object.keys(t.slots)) {
+                const decl = (ti.decl || {})[slot]; const use = (ti.use || {})[slot];
+                if (decl) plan.push({ slot, mode: 'decl', type: decl, tuple: decl === 'int*', reassign: t.id === 'assign' });
+                else if (isVarUse(use)) plan.push({ slot, mode: 'var', type: use.slice(2) });
+                else if (t.slots[slot] === 'name') plan.push({ slot, mode: 'decl', type: 'any' });
+                else plan.push({ slot, mode: 'expr', type: use || 'any' });
+            }
+            return plan;
+        }
+        function exprMenu(type, st) {
+            const menu = { vars: varsOf(st, type), num: ['int', 'num', 'float', 'any'].includes(type), str: ['str', 'any'].includes(type), cats: [] };
+            if (type === 'cond') { menu.num = false; menu.str = false; menu.vars = menu.vars.filter((v) => v.type === 'cond' || v.type === 'bool'); }
+            for (const cid of ECAT_ORDER) {
+                const blocks = B.EXPRS.filter((x) => x.cat === cid).filter((x) => { const et = ETYPES[x.id]; if (REQ[x.id] && !st.imports.has(REQ[x.id])) return false; if (type === 'cond') return !!et && (et.ret === 'cond' || et.ret === 'bool'); return !et || compat(type, et.ret); });
+                if (blocks.length) menu.cats.push({ id: cid, blocks });
+            }
+            return menu;
+        }
+        const exprRet = (id) => (ETYPES[id] ? ETYPES[id].ret : 'any');
+        const exprParamType = (id, slot) => ((ETYPES[id] && ETYPES[id].p) || {})[slot] || 'any';
+        // 套用一個區塊到狀態
+        function apply(st, b) {
+            const f = top(st); const ti = b.tpl ? tinfo(b.tpl.id) : {}; const ir = b.ir || [];
+            const writes = writesOf(ir); const isHeader = !!b.header;
+            if (b.tpl && IMPORTS[b.tpl.id]) st.imports.add(IMPORTS[b.tpl.id]);
+            if (b.tpl) for (const [slot, ty] of Object.entries(ti.decl || {})) {
+                const s = b.slots && b.slots[slot]; if (!s) continue; const names = s.ir.n === 'tuple' ? s.ir.xs.map((x) => x.v) : [s.ir.v];
+                let vt = ty; if (ty === 'int*') vt = 'int'; else if (typeof ty === 'string' && ty.startsWith('elem')) { const src = b.slots[ty.split(':')[1] || 'it']; const st0 = src && src.type; vt = st0 === 'str' ? 'str' : st0 === 'range' ? 'int' : 'any'; } else if (b.tpl.id === 'assign') vt = (b.slots.e && b.slots.e.type) || 'any';
+                for (const n of names) { if (n && n !== '_') { st.vars.set(n, vt); writes.add(n); } }
+            }
+            for (const fr of st.frames) for (const n of writes) fr.writes.add(n);
+            if (b.special === 'break' || (b.tpl && b.tpl.id === 'break_loop')) { for (let i = st.frames.length - 1; i >= 0; i--) if (LOOPS.has(st.frames[i].kind)) { st.frames[i].hasBreak = true; break; } }
+            if (b.tpl && b.tpl.id === 'return_value') st.hasReturn = true;
+            f.count++; f.sibOK = null;
+            if (b.tpl && (b.tpl.id.startsWith('return_') || b.tpl.id === 'break_loop' || b.tpl.id === 'continue_loop')) f.terminal = true;
+            if (isHeader) {
+                let kind = 'for'; if (b.special === 'if' || b.special === 'elif') kind = 'if'; else if (b.special === 'else') kind = 'else'; else if (b.tpl && b.tpl.id === 'while_do') kind = 'while'; else if (b.tpl && b.tpl.id === 'while_forever') kind = 'forever';
+                const fr = { kind, header: b.line, count: 0, writes: new Set(), terminal: false, hasBreak: false };
+                if (kind === 'while') { const cs = b.slots && b.slots.c && b.slots.c.ir; fr.condVars = new Set(); const walk = (e) => { if (!e || typeof e !== 'object') return; if (Array.isArray(e)) return e.forEach(walk); if (e.n === 'name') fr.condVars.add(e.v); for (const k of Object.keys(e)) if (e[k] && typeof e[k] === 'object') walk(e[k]); }; walk(cs); }
+                st.frames.push(fr);
+            }
+        }
+        function endBlock(st) { const c = st.frames.pop(); const f = top(st); f.sibOK = c.kind === 'if' ? 'if' : (c.kind === 'else' ? null : null); return c; }
+        function advanceZone(st, to) { const order = ['import', 'declare', 'logic']; if (order.indexOf(to) <= order.indexOf(st.zone)) return false; st.zone = to; return true; }
+        const R = { advanceZone, initState, legal, canEnd, canDone, slotPlan, exprMenu, compat, apply, endBlock, writesOf, exprRet, exprParamType, tinfo, varsOf, top };
+        return R;
+    }
+    return { makeRules, compat, writesOf };
+});
+
+}).call(null, undefined, holder);
+return holder.FaPyBlocksRules;
+})();
+/* PYBLOCKSRULES-END */
+/* PYBODY-BEGIN */
+const FaPyBody = (function () {
+const holder = {};
+(function (module, self) {
+/* Python：用 UML 遞迴切割讓模型寫 body（指令層級）。純函式 UMD，Python 專屬。
+ * 切割的層次：題目 → 函式簽名（UML 的操作，輔助函式先、main 最後）→ 每個操作的 body → 一次一個敘述；
+ * 敘述若是區塊標頭（for／if／while／try／with／else…，以冒號結尾）就往下一層區塊遞迴；縮排變淺 = 結束區塊。
+ * 補全式：把「已經寫好的程式」當成助手回覆的開頭請模型續寫，只取第一行（0.5B 的 coder 聽不懂「只輸出下一行」這種指令，但會續寫程式）。
+ * 每個敘述都用 tree-sitter 解析（不能有 ERROR、剛好一個敘述）並檢查用到的名稱已經定義，不合格就連同原因再問（有次數上限）。
+ * 最後把所有函式組起來，交給 py_code2uml_core.fromTree 變成帶 body 的 UML 模型（toPython 可以再輸出）。
+ *
+ *   designOps({problem, ask}) → [{name, params, sig}]
+ *   writeBody({op, ops, problem, complete, validate, before, plan}) → {ok, lines, steps, retries, reason}
+ *   writeProgram({problem, ask, complete, validate, parseTree, C2U, plan, onOp}) → {ok, source, model, ops, steps, retries, reason}
+ *   namesOf(body) → {used, defined}；makeValidator({parseTree, C2U}) → validate({text, isHeader, sibling})
+ * ask(messages, maxTokens) → Promise<string>；complete(messages, prefill, maxTokens) → Promise<續寫的部分> */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaPyBody = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const BUILTINS = new Set('abs all any bin bool chr dict divmod enumerate filter float frozenset hex input int isinstance len list map max min next oct open ord pow print range reversed round set sorted str sum tuple type zip iter repr id hash format callable getattr hasattr setattr super object Exception ValueError KeyError IndexError StopIteration True False None self cls __name__'.split(' '));
+    const clean = (t) => String(t || '').replace(/<think>[\s\S]*?<\/think>/g, '').replace(/```[a-zA-Z]*/g, '').trim();
+    const SIB = /^(elif\b|else\s*:|except\b|finally\s*:)/;
+
+    async function designOps(o) {
+        const user = '題目：' + String(o.problem.statement || o.problem.title || '').slice(0, 700) + '\n\n列出完成這題需要的 Python 函式簽名，每行一個，格式 def 名稱(參數):。一定要有 def main():（從標準輸入讀資料、用 print 輸出答案），可以另外有 0 到 3 個輔助函式。只輸出簽名行。';
+        const text = clean(await o.ask([{ role: 'system', content: '你是 Python 程式設計助手。' }, { role: 'user', content: user }], 120));
+        const ops = []; const seen = new Set();
+        for (const l of text.split('\n')) {
+            const m = /^def\s+([A-Za-z_]\w*)\s*\(([^)]*)\)\s*(?:->\s*[^:]+)?:?\s*$/.exec(l.trim()); if (!m || seen.has(m[1])) continue; seen.add(m[1]);
+            const params = m[2].split(',').map((x) => x.trim().split(':')[0].split('=')[0].trim()).filter(Boolean); ops.push({ name: m[1], params, sig: 'def ' + m[1] + '(' + params.join(', ') + '):' });
+        }
+        if (!seen.has('main')) ops.push({ name: 'main', params: [], sig: 'def main():' });
+        const main = ops.find((x) => x.name === 'main'); main.params = []; main.sig = 'def main():';
+        return ops.filter((x) => x.name !== 'main').slice(0, 3).concat([main]);
+    }
+
+    async function writeBody(o) {
+        const maxStmts = o.maxStmts || 60, maxTry = o.maxTry || 3, maxDepth = o.maxDepth || 5;
+        const lines = []; const stack = []; const scope = new Set(o.op.params); for (const x of o.ops || []) scope.add(x.name);
+        let steps = 0, retries = 0, lastLine = '', same = 0, allowSibling = null;
+        const render = () => lines.map((l) => '    '.repeat(l.d + 1) + l.t).join('\n');
+        for (;;) {
+            if (steps >= maxStmts) return { ok: false, lines, steps, retries, reason: '敘述太多（上限 ' + maxStmts + '）' };
+            let err = '', got = null;
+            for (let k = 0; k < maxTry; k++) {
+                const depth = stack.length;
+                const user = '題目：' + String(o.problem.statement || o.problem.title || '').slice(0, 700) + (o.plan ? '\n\n解法想法：\n' + o.plan : '') + '\n\n請寫出完整的 Python 程式：要有 def main()（從標準輸入讀資料、用 print 輸出答案）' + ((o.ops || []).length > 1 ? '，函式有：' + o.ops.map((x) => x.sig.replace(/:$/, '')).join('、') : '') + '。只輸出程式碼。' + (err ? '\n\n（上一行不合格：' + err + '，請改寫那一行。）' : '');
+                const prefill = '```python\n' + (o.before ? o.before + '\n\n' : '') + o.op.sig + '\n' + (lines.length ? render() + '\n' : '');
+                const cont = String(await o.complete([{ role: 'system', content: '你是 Python 程式設計助手。' }, { role: 'user', content: user }], prefill, o.maxTokens || 48) || '').replace(/<think>[\s\S]*?<\/think>/g, ''); steps++;
+                const first = cont.split('\n').find((l) => l.trim().length) || ''; const trimmed = first.replace(/\t/g, '    '); const text = trimmed.trim();
+                const lead = trimmed.length - trimmed.trimStart().length;
+                if (!text || /^```/.test(text) || lead < 4) { // 函式寫完（圍欄、空白、或回到頂層）
+                    if (!lines.length) { err = '函式還沒有任何內容'; retries++; continue; } if (stack.some((b) => !b.count)) { err = '還有空的區塊'; retries++; continue; } got = { kind: 'done' }; break;
+                }
+                let want = Math.floor(lead / 4) - 1; if (want > depth) want = depth; if (want < 0) want = 0;
+                if (want < depth) { if (stack.slice(want).some((b) => !b.count)) { err = '區塊不能是空的'; retries++; continue; } got = { kind: 'dedent', to: want }; break; }
+                if (/^(def|class|async\s+def)\b/.test(text)) { err = '函式的簽名已經寫好了，不要再寫 def 或 class'; retries++; continue; }
+                const isHeader = /:\s*$/.test(text); if (isHeader && depth + 1 > maxDepth) { err = '區塊太深（上限 ' + maxDepth + ' 層）'; retries++; continue; }
+                const sib = SIB.test(text); if (sib && !(allowSibling && allowSibling.depth === depth)) { err = text.split(/\s|:/)[0] + ' 要接在對應的 if／try 區塊之後'; retries++; continue; }
+                const v = o.validate({ text, isHeader, sibling: sib ? allowSibling.header : null }); if (!v.ok) { err = v.error; retries++; continue; }
+                const bad = [...v.names.used].filter((n) => !scope.has(n) && !v.names.defined.has(n) && !BUILTINS.has(n)); if (bad.length) { err = '名稱 ' + bad.slice(0, 3).join('、') + ' 還沒有定義'; retries++; continue; }
+                if (text === lastLine && ++same >= 2) { err = '和上一行一樣，請寫下一件事'; retries++; continue; }
+                got = { kind: 'line', text, isHeader, defined: v.names.defined }; break;
+            }
+            if (!got) return { ok: false, lines, steps, retries, reason: '連續 ' + maxTry + ' 次寫不出合格的下一行：' + err };
+            if (got.kind === 'done') return { ok: true, lines, steps, retries };
+            if (got.kind === 'dedent') { while (stack.length > got.to) { const c = stack.pop(); allowSibling = { depth: stack.length, header: c.header }; } continue; }
+            const depth = stack.length; lines.push({ d: depth, t: got.text }); lastLine = got.text; same = 0; if (depth > 0) stack[stack.length - 1].count++; allowSibling = null;
+            for (const n of got.defined) scope.add(n); if (got.isHeader) stack.push({ header: got.text, count: 0 });
+        }
+    }
+
+    // 從敘述樹算出用到與定義的名稱（指派目標、for 目標、生成式變數、lambda 參數、with／except 的 as、import、def 都算定義）
+    function namesOf(list) {
+        const used = new Set(), defined = new Set();
+        const target = (e) => { if (!e) return; if (e.n === 'name') defined.add(e.v); else if (e.n === 'tuple' || e.n === 'list') (e.xs || []).forEach(target); else if (e.n === 'star') target(e.e); else expr(e); };
+        const expr = (e) => {
+            if (!e || typeof e !== 'object') return; if (Array.isArray(e)) { e.forEach(expr); return; }
+            if (e.n === 'name') { used.add(e.v); return; }
+            if (e.n === 'comp') { for (const c of e.cl || []) { if (c.t) target(c.t); if (c.i) expr(c.i); if (c.if) expr(c.if); } expr(e.e); expr(e.k); expr(e.v); return; }
+            if (e.n === 'lambda') { for (const p of e.ps || []) defined.add(p.name); expr(e.e); return; }
+            if (e.n === 'walrus') { defined.add(e.t); expr(e.v); return; }
+            if (e.n === 'kw') { expr(e.v); return; }
+            for (const k of Object.keys(e)) { const v = e[k]; if (v && typeof v === 'object') { if (Array.isArray(v)) v.forEach((x) => (x && x.k !== undefined && x.v !== undefined && !x.n ? (expr(x.k), expr(x.v)) : expr(x))); else expr(v); } }
+        };
+        for (const s of list || []) {
+            switch (s.k) {
+                case 'assign': expr(s.v); (s.ts || [s.t]).forEach(target); break;
+                case 'aug': expr(s.t); expr(s.v); break;
+                case 'ann': target(s.t); expr(s.v); break;
+                case 'for': target(s.t); expr(s.i); break;
+                case 'with': for (const it of s.items) { expr(it.e); if (it.as) target(it.as); } break;
+                case 'try': for (const h of s.h || []) { if (h.ty) expr(h.ty); if (h.as) defined.add(h.as); } break;
+                case 'def': defined.add(s.name); for (const p of s.ps || []) defined.add(p.name); break;
+                case 'import': for (const n of s.names) defined.add(n.as || String(n.name).split('.')[0]); break;
+                case 'del': (s.es || []).forEach(expr); break;
+                default: expr(s.e); expr(s.c); expr(s.m); expr(s.cause);
+            }
+        }
+        return { used, defined };
+    }
+
+    // 逐行驗證器：tree-sitter 要解析得過、剛好一個敘述，並算出名稱。else／elif／except／finally 前面墊一個假的 if／try 讓它能單獨解析。
+    function makeValidator(o) {
+        return ({ text, isHeader, sibling }) => {
+            const pre = [];
+            if (sibling) { if (/^(elif\b|else\s*:)/.test(text)) pre.push('    if 1:', '        pass'); else pre.push('    try:', '        pass'); }
+            const src = ['def f():'].concat(pre, ['    ' + text], isHeader ? ['        pass'] : []).join('\n') + '\n';
+            const tree = o.parseTree(src); if (!tree) return { ok: false, error: '無法解析' };
+            if (tree.rootNode.hasError()) { let at = ''; const find = (n) => { if (n.type === 'ERROR' || n.isMissing()) { at = n.isMissing() ? '缺少 ' + n.type : '看不懂「' + String(n.text || '').slice(0, 30) + '」'; return true; } for (let i = 0; i < n.childCount; i++) if (find(n.child(i))) return true; return false; }; find(tree.rootNode); return { ok: false, error: '語法錯誤（' + (at || '無法解析') + '）' }; }
+            const u = o.C2U.fromTree(tree.rootNode, { source: src }); const op = u.model.classes[0] && u.model.classes[0].ops[0]; const body = op ? op.body : [];
+            if (body.length !== 1) return { ok: false, error: '一行只能有一個敘述（有 ' + body.length + ' 個）' };
+            if (u.coverage.raws) return { ok: false, error: '這種寫法目前不支援' };
+            if (sibling) { // 只檢查它自己帶的運算式（elif 的條件、except 的型別與 as）
+                const st = body[0]; const none = { ok: true, names: { used: new Set(), defined: new Set() } };
+                if (/^elif\b/.test(text)) return st.k === 'if' && st.b[0] && st.b[0].k === 'if' ? { ok: true, names: namesOf([{ k: 'expr', e: st.b[0].c }]) } : none;
+                if (/^except\b/.test(text)) return st.k === 'try' && st.h[0] ? { ok: true, names: namesOf([{ k: 'try', h: [st.h[0]] }]) } : none;
+                return none;
+            }
+            return { ok: true, names: namesOf(body) };
+        };
+    }
+
+    async function writeProgram(o) {
+        const ops = await designOps(o); const bodies = []; let steps = 0, retries = 0;
+        for (const op of ops) {
+            const r = await writeBody({ op, ops, problem: o.problem, complete: o.complete, validate: o.validate, plan: o.plan, maxStmts: o.maxStmts, maxTry: o.maxTry, before: bodies.join('\n\n') });
+            steps += r.steps; retries += r.retries; if (o.onOp) o.onOp(op, r);
+            if (!r.ok) return { ok: false, ops, steps, retries, reason: op.name + '：' + r.reason, partial: r.lines.map((l) => '    '.repeat(l.d + 1) + l.t).join('\n') };
+            bodies.push([op.sig].concat(r.lines.map((l) => '    '.repeat(l.d + 1) + l.t)).join('\n'));
+        }
+        const source = bodies.join('\n\n') + '\n'; const tree = o.parseTree(source);
+        if (!tree || tree.rootNode.hasError()) return { ok: false, ops, steps, retries, reason: '組起來的程式有語法錯誤', source };
+        const u = o.C2U.fromTree(tree.rootNode, { source }); return { ok: true, source: o.C2U.toPython(u.model), model: u.model, ops, steps, retries };
+    }
+    return { designOps, writeBody, writeProgram, namesOf, makeValidator, BUILTINS };
+});
+
+}).call(null, undefined, holder);
+return holder.FaPyBody;
+})();
+/* PYBODY-END */
+/* PYCNLCHOOSE-BEGIN */
+const FaPyCnlChoose = (function () {
+const holder = {};
+(function (module, self) {
+/* Python：UML 任務切割 → 骨架 → 區塊迴圈（庫存過濾＋嚴格範本）→ 模型只做微選擇 → 沙盒驗證 ⇄ 錯誤回饋。純函式 UMD，Python 專屬。
+ *
+ *   UML 任務切割     操作（函式）清單來自 UML 模型（uml_design／code→UML／預設只有 main）
+ *   程式骨架         由 UML 模型 codegen 產生（每個操作先是空殼），區塊迴圈把 body 填進去
+ *   區塊迴圈         ① 程式算出目前的符號表（庫存）② 用庫存過濾合法的類別與範本 ③ 套嚴格範本（for／while 的初始化、條件、遞增，break 只在迴圈裡…）
+ *                    ④ 模型只在合法的選單裡選：類別 → 範本 → 每個槽位（名稱、變數、運算式積木，全部都是選擇題）；只有一個選項就不問模型
+ *   沙盒驗證與回饋   組好的程式交給判題器（編譯＋執行範例）；沒過就把「判決與差異」連同上一版的區塊回饋，重寫（有輪數上限）
+ * 選擇題只比較選項字母的機率（pick），正序倒序各問一次抵銷位置偏誤。
+ *
+ *   writeBlocks({op, ops, problem, plan, feedback, pick, B, R, namesOf, builtins}) → {ok, cnl, lines, steps, forced, trace, reason}
+ *   writeProgramChoose({problem, umlOps?, pick, B, R, FaPyBody, C2U, judge?, rounds?}) → {ok, source, model, cnl, rounds:[...], ...}
+ * pick(messages, labels[]) → Promise<{logprobs[]}>；judge(source) → Promise<{verdict, detail}> */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaPyCnlChoose = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const LET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'.split('');
+    const CAT_DESC = { 輸入: '輸入（讀取標準輸入的資料）', 輸出: '輸出（印出結果）', 資料: '資料（建立變數、轉換、計算出新的值）', 更新: '更新（改變已有變數的值、計數）', 集合: '集合（清單、集合的加入、刪除、排序）', 迴圈: '迴圈（重複做）', 流程: '流程（回傳、跳出、略過）', 演算法: '演算法（成套的演算法片段：二分搜尋、篩法、前綴和…）', 條件: '條件（如果／否則如果／否則）', 引入: '引入（引入函式庫，之後才能用它的函式）', 繪圖: '繪圖（matplotlib 畫圖）', 科學: '科學（亂數、種子）' };
+    const CAT_ORDER = ['輸入', '資料', '引入', '更新', '集合', '條件', '迴圈', '輸出', '繪圖', '科學', '演算法', '流程'];
+    const ECAT_DESC = { 算術: '算術（加減乘除餘）', 比較: '比較（等於、大於、在裡面…）', 邏輯: '邏輯（而且、或者、不是、條件式）', 取值: '取值（第幾個、切片、反轉）', 函式: '函式（長度、轉整數、總和、最大值…）', 方法: '方法（切單字、去空白、字典取值、連接…）', 組合: '組合（二元組、清單、空清單、空字典）', '科學·數學': '科學：數學（開根號、三角函數、對數…）', '科學·數值': '科學：numpy 陣列與線性代數', '科學·統計': '科學：統計（平均、中位數、標準差）', '科學·亂數': '科學：亂數', '科學·微積分': '科學：定積分', '科學·集合': '集合：佇列、計數器、二分位置' };
+    const KW = new Set('False None True and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield'.split(' '));
+    const POOL = ['n', 'm', 'a', 'b', 's', 'x', 'y', 'i', 'j', 'k', 't', 'c', 'd', 'l', 'r', 'p', 'q', 'u', 'v', 'w', 'res', 'ans', 'cnt', 'total', 'lst', 'dp', 'ws'];
+    const PAIRS = ['a, b', 'n, m', 'n, k', 'l, r', 'x, y', 'i, j', 'n, t', 'a, b, c'];
+    const SPLIT = /\{(\w+)(?::(\w+))?\}/g;
+    const gloss = (t) => t.line.replace(SPLIT, '〔$1〕');
+    const render = (lines) => lines.map((l) => '  '.repeat(l.d) + l.t).join('\n');
+    const ZONE_NAME = { import: '引入區', declare: '宣告區', logic: '邏輯與流程區' };
+    // 給模型看的樣子：函式 body 固定三區，依序是 引入區 → 宣告區 → 邏輯與流程區
+    const renderZ = (lines, zone) => { const out = []; let cur = null; for (const l of lines) { if (l.z !== cur) { cur = l.z; out.push('【' + ZONE_NAME[cur] + '】'); } out.push('  '.repeat(l.d) + l.t); } if (zone !== cur) out.push('【' + ZONE_NAME[zone] + '】（現在在這一區）'); return out.join('\n'); };
+    const byZone = (lines) => { const z = { import: [], declare: [], logic: [] }; for (const l of lines) z[l.z].push(l); return { import: render(z.import), declare: render(z.declare), logic: render(z.logic) }; };
+    const uniq = (xs) => { const o = []; for (const x of xs) if (!o.includes(x)) o.push(x); return o; };
+
+    async function writeBlocks(o) {
+        const B = o.B, R = o.R, maxStmts = o.maxStmts || 40, maxLineTry = o.maxLineTry || 3, exprDepth = o.exprDepth || 3;
+        const st = R.initState(o.op); const lines = []; const trace = []; let steps = 0, forced = 0, retries = 0, lastText = ''; const sizes = []; const hk = (f, a, b) => { const h = o.oracleHooks; if (h && h[f]) h[f](a, b); };
+        const builtins = o.builtins || new Set(); const log = (r) => { trace.push(r); if (o.onTrace) o.onTrace(r); };
+        const stmt = String(o.problem.statement || ''); const nums = uniq((stmt.match(/-?\d+(?:\.\d+)?/g) || []).concat(['0', '1', '2'])).slice(0, 10);
+        const strs = uniq(((stmt.match(/\b[A-Z]{2,}\b/g) || []).concat((stmt.match(/["'「」]([^"'「」\n]{1,12})["'「」]/g) || []).map((x) => x.replace(/^["'「」]|["'「」]$/g, '')))).concat(['', ' '])).slice(0, 8);
+        const stmtNames = uniq((stmt.match(/\b[a-zA-Z]\w{0,5}\b/g) || []).filter((w) => !KW.has(w) && /^[a-z]/.test(w) && w.length <= 5));
+        const fresh = (k) => uniq([...stmtNames.slice(0, 8), ...POOL]).filter((n) => !st.vars.has(n)).slice(0, k || 4); // 新名稱的選單最多 4 個（名稱本身不影響對錯）
+        const inv = () => [...st.vars].map(([n, t]) => n + ':' + t).join('、');
+        const head = (extra) => '題目：' + stmt.slice(0, 700) + (o.plan ? '\n解題步驟：\n' + o.plan : '') + (o.feedback ? '\n\n' + o.feedback : '') + '\n\n目前宣告的變數（庫存）：' + (inv() || '（沒有）') + (st.imports.size ? '\n已引入：' + [...st.imports].join('、') : '') + '\n目前已寫好的區塊（函式固定分三區：引入區、宣告區、邏輯與流程區，只能往後走）：\n' + renderZ(lines, st.zone) + (extra ? '\n\n' + extra : '');
+        const SYS = '你是 Python 程式設計助手。我們用「區塊」一步一步寫程式，每一步只能在給你的選項裡選，你只回答選項前面的字母。';
+        // 選擇題：只有一個選項不問；否則正序＋倒序各一次，機率相加
+        async function choose(question, items, kind, metas) {
+            const n = Math.min(items.length, LET.length); sizes.push({ kind, n, items: o.keepItems ? items.slice(0, n) : undefined });
+            if (o.oracle) { const k = o.oracle({ kind, metas: metas || [], items }); if (n === 1) forced++; else steps++; return Math.max(0, Math.min(k, n - 1)); }
+            if (n === 1) { forced++; return 0; } steps++;
+            const id = Array.from({ length: n }, (_, i) => i); const orders = o.noDebias ? [id] : [id, id.slice().reverse()]; const sum = new Array(n).fill(0);
+            for (const ord of orders) { const body = ord.map((j, i) => LET[i] + '. ' + items[j]).join('\n'); const r = await o.pick([{ role: 'system', content: SYS }, { role: 'user', content: question + '\n' + body + '\n只回答選項的字母。' }], LET.slice(0, n)); r.logprobs.forEach((lp, pos) => { sum[ord[pos]] += lp; }); }
+            let k = 0; for (let i = 1; i < n; i++) if (sum[i] > sum[k]) k = i; log({ t: 'choose', kind, pick: items[k].slice(0, 40), n }); return k;
+        }
+        // ---- 槽位 ----
+        async function pickDecl(p, tplText) {
+            if (p.tuple) { const cand = uniq([stmtNames.slice(0, 2).join(', '), ...PAIRS]).filter((c) => c.split(', ').every((x) => x && !st.vars.has(x))); const k = await choose(head('區塊「' + tplText + '」要同時宣告幾個新的變數名稱，選哪一組？'), cand.map((c) => c + '（新的名稱）'), 'name', cand.map((c) => ({ v: c }))); return { ir: B.exprOf(cand[k]), type: 'int' }; }
+            const exist = p.reassign ? [...st.vars.keys()].filter((n) => !o.ops.some((x) => x.name === n)) : []; const fr = fresh(4);
+            const items = exist.map((n) => n + '（已有，重新指定）').concat(fr.map((n) => n + '（新的名稱）')); const vals = exist.concat(fr);
+            const k = await choose(head('區塊「' + tplText + '」的槽位「' + p.slot + '」要宣告一個新的變數名稱，選哪一個？'), items, 'name', vals.map((v, i) => ({ v, existing: i < exist.length }))); return { ir: { n: 'name', v: vals[k] }, type: p.type };
+        }
+        async function pickVar(p, tplText) {
+            const vs = R.varsOf(st, p.type).filter((v) => !o.ops.some((x) => x.name === v.name)); const k = await choose(head('區塊「' + tplText + '」的槽位「' + p.slot + '」要用哪一個已宣告的變數？'), vs.map((v) => v.name + '（' + v.type + '）'), 'var', vs.map((v) => ({ v: v.name })));
+            return { ir: { n: 'name', v: vs[k].name }, type: vs[k].type };
+        }
+        async function pickExpr(slot, type, tplText, depth) {
+            const M = R.exprMenu(type, st); M.vars = M.vars.filter((v) => !o.ops.some((x) => x.name === v.name));
+            if (o.focus && o.focus.exprs) M.cats = M.cats.map((c) => ({ id: c.id, blocks: c.blocks.filter((b) => o.focus.exprs.has(b.id)) })).filter((c) => c.blocks.length); // 動作表的白名單：這個算法會用到的運算積木
+            const menu = []; if (M.vars.length) menu.push({ k: 'var', label: '變數（已宣告的）' }); if (M.num) menu.push({ k: 'num', label: '數字' }); if (M.str) menu.push({ k: 'str', label: '文字' });
+            if (depth < exprDepth) for (const c of M.cats) menu.push({ k: 'cat', id: c.id, blocks: c.blocks, label: ECAT_DESC[c.id] || c.id });
+            if (!menu.length) return null;
+            const m = menu[await choose(head('區塊「' + tplText + '」的槽位「' + slot + '」要填一個「' + type + '」的值，是哪一種？'), menu.map((x) => x.label), 'expr-kind', menu)];
+            if (m.k === 'var') { const items = M.vars.slice(0, LET.length); const k = await choose(head('槽位「' + slot + '」填哪一個變數？'), items.map((v) => v.name + '（' + v.type + '）'), 'var', items.map((v) => ({ v: v.name }))); return { ir: { n: 'name', v: items[k].name }, type: items[k].type }; }
+            if (m.k === 'num') { const k = await choose(head('槽位「' + slot + '」填哪一個數字？'), nums, 'num', nums.map((v) => ({ v }))); return { ir: B.exprOf(nums[k]), type: /\./.test(nums[k]) ? 'float' : 'int' }; }
+            if (m.k === 'str') { const k = await choose(head('槽位「' + slot + '」填哪一段文字？'), strs.map((x) => JSON.stringify(x)), 'str', strs.map((v) => ({ v }))); return { ir: B.exprOf(JSON.stringify(strs[k])), type: 'str' }; }
+            const e = m.blocks[await choose(head('槽位「' + slot + '」要填「' + m.id + '」類的運算，選哪一個？'), m.blocks.map((x) => x.line.replace(SPLIT, '〔$1〕')), 'expr', m.blocks)];
+            hk('exprBlock', e); const fills = {}; for (const sl of e.slots) { hk('begin', sl); const sub = await pickExpr(sl, R.exprParamType(e.id, sl), e.line.replace(SPLIT, '〔$1〕'), depth + 1); hk('end'); if (!sub) return null; fills[sl] = sub.ir; }
+            return { ir: B.buildExpr(e.id, fills), type: R.exprRet(e.id) };
+        }
+        const text = (kind, ir) => (kind === 'name' && ir.n === 'tuple' && ir.xs.length > 1 ? ir.xs.map(B.exprText).join(', ') : B.exprText(ir));
+        for (;;) {
+            if (steps >= (o.maxSteps || 900) || lines.length >= maxStmts) return { ok: false, lines, steps, forced, trace, reason: '區塊太多或選擇太多' };
+            let got = null, lastErr = ''; const banned = new Set();
+            for (let attempt = 0; attempt < maxLineTry && !got; attempt++) {
+                const L0 = R.legal(st); const depth = st.frames.length - 1; const f = R.top(st);
+                const fpl = o.focus && o.focus.templates ? L0.templates.filter((t) => o.focus.templates.has(t.id)) : L0.templates; // 動作表的白名單：這個算法會用到的區塊
+                const L = Object.assign({}, L0, { templates: fpl, cats: [...new Set(fpl.map((t) => t.cat))].concat(L0.ifOptions.if || L0.ifOptions.elif || L0.ifOptions.else ? ['條件'] : []) });
+                const where = depth === 0 ? '目前在函式「' + o.op.name + '」的最外層。' : '目前在「' + f.header + '」這個區塊裡面。';
+                const menu = []; for (const c of CAT_ORDER) if (L.cats.includes(c) && (c === '條件' || L.templates.some((t) => t.cat === c && !banned.has(t.id)))) menu.push({ k: 'cat', id: c, label: CAT_DESC[c] || c });
+                if (L.canEnd) menu.push({ k: 'end', label: '結束這個區塊（回到上一層）' });
+                for (const to of L.zoneNext) menu.push({ k: 'zone', to, label: to === 'declare' ? '進入「宣告區」（引入完了，開始宣告變數）' : '進入「邏輯與流程區」（宣告完了，開始寫運算與流程）' });
+                if (L.canDone && L.zone === 'logic') menu.push({ k: 'done', label: '函式寫完了' });
+                if (!menu.length) return { ok: false, lines, steps, forced, trace, reason: '沒有任何合法的下一步（' + (L.endWhy || L.doneWhy || '庫存不足') + '）' };
+                const m = menu[await choose(head(where + '\n下一步要寫哪一類區塊？只有符合目前庫存與規則的類別列在這裡。'), menu.map((x) => x.label), 'category', menu)];
+                if (m.k === 'end') { got = { kind: 'end' }; break; } if (m.k === 'done') { got = { kind: 'done' }; break; } if (m.k === 'zone') { got = { kind: 'zone', to: m.to }; break; }
+                let tpl = null, line = null, header = false, special = null, slots = {};
+                if (m.id === '條件') {
+                    const opts = []; if (L.ifOptions.if) opts.push({ id: 'if', label: '如果〔條件〕就：' }); if (L.ifOptions.elif) opts.push({ id: 'elif', label: '否則如果〔條件〕就：（接在上面的如果後面）' }); if (L.ifOptions.else) opts.push({ id: 'else', label: '否則：（接在上面的如果後面）' });
+                    special = opts[await choose(head(where + '\n選哪一個？'), opts.map((x) => x.label), 'cond', opts)].id;
+                    if (special === 'else') { line = '否則：'; header = true; }
+                    else { hk('begin', '條件', null); const c = await pickExpr('條件', 'cond', '如果〔條件〕就：', 0); hk('end'); if (!c) { lastErr = '條件選不出來'; retries++; continue; } slots = { c }; line = (special === 'if' ? '如果 ' : '否則如果 ') + B.exprText(c.ir) + ' 就：'; header = true; }
+                } else {
+                    const list = L.templates.filter((t) => t.cat === m.id && !banned.has(t.id));
+                    tpl = list[await choose(head(where + '\n「' + m.id + '」類的區塊，選哪一個？'), list.map(gloss), 'template', list)];
+                    let okSlots = true;
+                    for (const p of R.slotPlan(tpl)) {
+                        hk('begin', p.slot, tpl); const v = p.mode === 'decl' ? await pickDecl(p, gloss(tpl)) : p.mode === 'var' ? await pickVar(p, gloss(tpl)) : await pickExpr(p.slot, p.type, gloss(tpl), 0); hk('end');
+                        if (!v) { okSlots = false; break; } slots[p.slot] = v;
+                    }
+                    if (!okSlots) { lastErr = '槽位選不出來'; banned.add(tpl.id); retries++; continue; }
+                    line = tpl.line.replace(SPLIT, (m0, n, kind) => text(kind, slots[n].ir)); header = tpl.bodies.length > 0;
+                }
+                if (line === lastText && !header) { lastErr = '和上一行一樣'; if (tpl) banned.add(tpl.id); retries++; continue; }
+                const sib = special === 'elif' || special === 'else'; const src = (sib ? '如果 True 就：\n  什麼都不做\n' : '') + line + (header ? '\n  什麼都不做' : '');
+                const pr = B.parseCNL(src); if (!pr.ok || pr.blocks.length !== 1) { lastErr = pr.errors[0] ? pr.errors[0].msg : '一行只能是一個區塊'; if (tpl) banned.add(tpl.id); retries++; continue; }
+                let ir; try { ir = B.toIR(pr.blocks); } catch (e) { lastErr = '轉不成程式'; retries++; continue; }
+                got = { kind: 'line', line, header, tpl, special, slots, ir: sib ? [] : ir };
+            }
+            if (!got) return { ok: false, lines, steps, forced, trace, reason: '連續 ' + maxLineTry + ' 次選不出合格的一行：' + lastErr };
+            if (got.kind === 'zone') { R.advanceZone(st, got.to); continue; }
+            if (got.kind === 'done') return { ok: true, lines, cnl: render(lines), zones: byZone(lines), steps, forced, retries, trace, sizes };
+            if (got.kind === 'end') { R.endBlock(st); continue; }
+            const depth = st.frames.length - 1; lines.push({ d: depth, t: got.line, z: depth === 0 ? st.zone : 'logic' }); lastText = got.line; hk('lineDone', got);
+            R.apply(st, { tpl: got.tpl, special: got.special, slots: got.slots, ir: got.ir, header: got.header, line: got.line });
+        }
+    }
+
+    // 整條管線：UML 切割（操作清單）→ 骨架 → 區塊迴圈 → 沙盒驗證 ⇄ 回饋
+    async function writeProgramChoose(o) {
+        const P = o.FaPyBody; const umlOps = (o.umlOps && o.umlOps.length ? o.umlOps : [{ name: 'main', params: [] }]).map((x) => ({ name: x.name, params: x.params || [], sig: 'def ' + x.name + '(' + (x.params || []).join(', ') + '):' }));
+        const rounds = []; let feedback = '', last = null; let imports = []; const maxRounds = o.rounds || 2;
+        for (let round = 0; round < maxRounds; round++) {
+            const parts = []; let steps = 0, forced = 0; const cnls = {}; let fail = null; imports = [];
+            for (const op of umlOps) {
+                const R = o.R; const r = await writeBlocks({ op, ops: umlOps, plan: o.plan, feedback, problem: o.problem, pick: o.pick, B: o.B, R, namesOf: P.namesOf, builtins: P.BUILTINS, maxStmts: o.maxStmts, onTrace: o.onTrace, noDebias: o.noDebias });
+                steps += r.steps; forced += r.forced; if (o.onOp) o.onOp(op, r);
+                if (!r.ok) { fail = op.name + '：' + r.reason + (r.lines.length ? '\n' + render(r.lines) : ''); break; }
+                const zir = {}; let bad = false; for (const z of ['import', 'declare', 'logic']) { const txt = r.zones[z]; if (!txt) { zir[z] = []; continue; } const pr = o.B.parseCNL(txt); if (!pr.ok) { bad = true; break; } zir[z] = o.B.toIR(pr.blocks); }
+                if (bad) { fail = op.name + '：組起來的區塊解析失敗'; break; } cnls[op.name] = ['【引入區】', r.zones.import, '【宣告區】', r.zones.declare, '【邏輯與流程區】', r.zones.logic].filter((x) => x !== '').join('\n'); imports.push(...zir.import); parts.push({ op, body: zir.declare.concat(zir.logic) });
+            }
+            if (fail) { rounds.push({ round, ok: false, reason: fail, steps, forced }); last = { ok: false, reason: fail, rounds, steps }; break; }
+            // 骨架：UML 模型 → codegen；body 是區塊轉出來的敘述
+            const model = { name: 'Module', actors: ['User'], relations: [], usecases: [], prelude: [], order: [], classes: [{ name: 'Module', kind: 'class', attrs: [], values: [], ops: parts.map((p) => ({ name: p.op.name, params: p.op.params.map((n) => ({ name: n, type: { base: 'any', args: [] } })), returns: { base: 'any', args: [] }, visibility: '+', static: true, body: p.body })) }] };
+            const seenImp = new Set(); model.prelude = imports.filter((x) => { const k = JSON.stringify(x); if (seenImp.has(k)) return false; seenImp.add(k); return true; }); model.order = model.prelude.map((x) => ({ t: 's', s: x })).concat(model.classes[0].ops.map((o2) => ({ t: 'f', o: o2 }))); const source = o.C2U.toPython(model);
+            let v = { verdict: 'UNCHECKED', detail: '' }; if (o.judge) v = await o.judge(source);
+            rounds.push({ round, ok: v.verdict === 'AC' || v.verdict === 'UNCHECKED', verdict: v.verdict, detail: v.detail, steps, forced, cnl: cnls });
+            last = { ok: true, source, model, cnl: cnls, ops: umlOps, steps, forced, verdict: v.verdict, rounds };
+            if (v.verdict === 'AC' || v.verdict === 'UNCHECKED') break;
+            feedback = '上一版的區塊：\n' + Object.values(cnls).join('\n') + '\n上一版驗證結果：' + v.verdict + (v.detail ? '（' + String(v.detail).slice(0, 160) + '）' : '') + '。請改正。';
+        }
+        return last;
+    }
+    return { writeBlocks, writeProgramChoose, CAT_ORDER };
+});
+
+}).call(null, undefined, holder);
+return holder.FaPyCnlChoose;
+})();
+/* PYCNLCHOOSE-END */
+/* ALGOINTENT-BEGIN */
+const FaAlgoIntent = (function () {
+const holder = {};
+(function (module, self) {
+/* 算法題的「程式讀情境」：把題目敘述（中文）用規則讀成結構，不問模型。純函式 UMD，語言中立（輸出的是意圖，不是某種語言的程式）。
+ * 接在 uml_design 的「程式先讀情境」入口（uml_core 的 opts.readers）：算法題讀得出來，整份 UML 設計由程式決定（模型 0 次呼叫）。
+ *
+ *   read(statement) → { ok, inputs:[…], vars:[{name,type}], goal:{ expr?, verbs:[…], yesno?, lines? }, ops:[…] }
+ *     inputs 的種類：
+ *       {k:'scalars', names:[..]}            一行幾個整數（第一行 n t）
+ *       {k:'list', name, size, elem}         一行 size 個 elem（整數／文字）
+ *       {k:'rows', count, names, name}       接著 count 行，每行幾個整數（l r）
+ *       {k:'grid', count, name}              接著 count 行，每行一個字串（網格）
+ *       {k:'str', name} {k:'words', name}    一行字串／一行由單字組成
+ *   umlHints(intent) → 跟 uml_core.scenarioHints 同形狀（actors／usecases／classes／relations／unknown），給 uml_design 用
+ *   reader(statement) → hints | null        直接放進 uml_design 的 opts.readers
+ *
+ * 詞彙（資料，可擴充）：NUM（一二三…）、ELEM（整數／面額／查詢→int；單字／字元→str）、GOALS（動作表：中文動詞或名詞 → 配方）。 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaAlgoIntent = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const NAME = '[a-zA-Z][a-z0-9]{0,4}'; const NAMES = NAME + '(?:\\s+' + NAME + ')*';
+    const CN = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+    const INT_WORDS = /整數|面額|查詢|數字|價值|重量/; const FLOAT_WORDS = /小數|實數|取樣值|取樣點|振幅/; const STR_WORDS = /單字|字串|字元|文字/;
+    // 動作表：關鍵字（中文）→ 目的。recipe 是「語言中立的配方」：which＝作用在哪一種輸入（list／words／str）、op＝要做的運算
+    const GOALS = [
+        { key: /最大值|最大的|最大總/, op: 'max', which: ['list'] }, { key: /最小值|最小的/, op: 'min', which: ['list'] }, { key: /總和|的和|加總/, op: 'sum', which: ['list'] },
+        { key: /順序反過來|反過來|反轉/, op: 'reverse', which: ['words', 'str'] }, { key: /排序|由大到小|由小到大/, op: 'sort', which: ['list', 'words'] },
+        { key: /迴文/, op: 'palindrome', which: ['str'] }, { key: /質數/, op: 'primes', which: [] }, { key: /最大公因數|gcd/, op: 'gcd', which: [] }, { key: /費氏/, op: 'fib', which: [] },
+        { key: /最少|最短|最長|個數|幾個|次數|連通分量/, op: 'search', which: [] },
+    ];
+    // 動作表（算法種類）：敘述的關鍵字 → 這題屬於哪一種算法。語言中立；各語言的區塊白名單（FOCUS）用這個 key 查。由具體到籠統，第一個符合的算數
+    const ALGOS = [
+        { key: 'inversions', re: /逆序對/ }, { key: 'n-queens', re: /皇后/ }, { key: 'dijkstra', re: /最短距離|加權.*最短|Dijkstra/i }, { key: 'fenwick', re: /樹狀陣列|線段樹|單點.*(修改|更新)|把\s*a\[\w+\]\s*加上/ }, { key: 'str-match', re: /KMP|出現的次數|出現幾次|出現的位置/ }, { key: 'tree-traversal', re: /走訪/ }, { key: 'kth-smallest', re: /第\s*[a-zA-Z]\s*小/ }, { key: 'lps', re: /回文子序列/ }, { key: 'lcs', re: /公共子序列|LCS/ },
+        { key: 'palindrome', re: /迴文/ }, { key: 'anagram', re: /重新排列|變位詞|字母異位/ }, { key: 'brackets', re: /括號.*(配對|匹配)/ }, { key: 'gcd-lcm', re: /gcd|lcm|最大公因數|最小公倍數/i },
+        { key: 'fib', re: /費氏/ }, { key: 'primes', re: /質數/ }, { key: 'kth-largest', re: /由大到小.*第\s*[a-zA-Z]\s*個|第\s*[a-zA-Z]\s*(大|個)/ }, { key: 'word-count', re: /每個不同的單字|單字.*次數|次數.*單字/ },
+        { key: 'lower-bound', re: /第一個滿足.*(>=|≥|大於等於)|二分|lower_bound/ }, { key: 'pair-sum', re: /i\s*<\s*j.*a\[i\]\s*\+\s*a\[j\]|兩數之和|兩數相加等於/ }, { key: 'range-sum', re: /a\[\w+\.\.\w+\]|區間.*(和|總和)|每個查詢輸出.*和/ },
+        { key: 'coin-min', re: /硬幣|面額/ }, { key: 'lis', re: /遞增子序列/ }, { key: 'grid-bfs', re: /最少步數|最短路/ }, { key: 'components', re: /連通分量|連通塊/ }, { key: 'intervals-merge', re: /合併.*區間|區間.*合併|重疊.*合併/ }, { key: 'knapsack', re: /每件物品最多選一次|背包/ },
+        { key: 'reverse-words', re: /單字順序反過來/ }, { key: 'list-max', re: /最大值/ }, { key: 'list-min', re: /最小值/ }, { key: 'list-sum', re: /總和|的和/ },
+    ];
+    // 處理模型（範式）：算法種類 → 它屬於哪些解題範式（分治、DFS、BFS、樹走訪、資料結構對應、動態規劃、矩陣相乘…）。一種算法可以有多個範式（例如費氏數：DP 或矩陣快速冪）。
+    // 之後的「範式骨架」（每個範式一個帶槽位的區塊骨架）用這個 key 查；新題只要套到某個範式、填幾個槽位，不必每題各教一堂課。
+    const PARADIGMS = {
+        'fib': ['dynamic-programming', 'matrix-power'], 'n-queens': ['backtracking'], 'dijkstra': ['shortest-path', 'heap'], 'fenwick': ['fenwick-tree', 'segment-tree'], 'str-match': ['kmp', 'string'], 'inversions': ['divide-and-conquer'], 'tree-traversal': ['tree-traversal', 'dfs'], 'kth-smallest': ['heap', 'data-structure-mapping'], 'lps': ['dynamic-programming', 'interval-dp'], 'lcs': ['dynamic-programming', '2d-dp'], 'coin-min': ['dynamic-programming'], 'lis': ['dynamic-programming'], 'knapsack': ['dynamic-programming'],
+        'grid-bfs': ['bfs'], 'components': ['dfs', 'union-find'], 'lower-bound': ['divide-and-conquer', 'binary-search'], 'range-sum': ['prefix-sum', 'data-structure-mapping'],
+        'word-count': ['data-structure-mapping'], 'brackets': ['data-structure-mapping'], 'intervals-merge': ['sort-and-sweep'], 'pair-sum': ['brute-force'], 'kth-largest': ['sort'],
+        'primes': ['sieve', 'number-theory'], 'gcd-lcm': ['number-theory', 'divide-and-conquer'], 'palindrome': ['two-pointers', 'string'], 'anagram': ['data-structure-mapping', 'string'],
+    };
+    const toNum = (s) => (/^\d+$/.test(s) ? +s : CN[s] || 0);
+    const stripNote = (s) => String(s).replace(/（[^）]*）/g, '').replace(/\([^)]*\)/g, '');
+
+    function read(statement) {
+        const text = String(statement || '').trim(); const inputs = []; const names = new Set(); let strCount = 0;
+        const addNames = (ns) => ns.forEach((n) => names.add(n));
+        // 切成子句：句號、逗號、分號、冒號都切；括號註解先拿掉（不然「（0<=n<=90）」會干擾）
+        const clauses = stripNote(text.replace(/只含\s*\S+\s*的/g, '只含括號的')).split(/[。，,；;：:]+/).map((c) => c.trim()).filter(Boolean);
+        let m; let seenOutput = false;
+        for (let i = 0; i < clauses.length; i++) {
+            const c = clauses[i]; if (/^(輸出|求|找出|判斷|把|只看|對每個|每個|若|保證|有多組)/.test(c)) { seenOutput = true; }
+            if (seenOutput) continue;
+            if ((m = new RegExp('^輸入(?:一行)?(?:(?:兩|三|四|五)個)?(?:正)?(整數|小數)\\s*(' + NAMES + ')$').exec(c))) { const ns = m[2].split(/\s+/); inputs.push({ k: 'scalars', names: ns, type: m[1] === '小數' ? 'float' : 'int', line: true }); addNames(ns); continue; }
+            if ((m = new RegExp('^接著\\s*(' + NAME + ')\\s*行(?:每行|各)\\s*(.+)$').exec(c))) {
+                const cnt = m[1]; const rest = m[2].trim(); let g;
+                if ((g = new RegExp('^(' + NAME + ')\\s*個字元').exec(rest))) { inputs.push({ k: 'grid', count: cnt, width: g[1], name: 'g' }); addNames(['g']); continue; }
+                const rn = new RegExp('^(' + NAMES + ')(?:\\s*(?:表示|代表).*)?$').exec(rest); if (rn) { const ns = rn[1].split(/\s+/); inputs.push({ k: 'rows', count: cnt, names: ns, name: 'rows' }); addNames(['rows']); continue; }
+            }
+            if ((m = new RegExp('^第([一二三四五六七八九\\d]+)行\\s*(' + NAME + ')\\s*(?:個|種)(.*)$').exec(c))) { // 第二行 n 個整數／第三行 q 個查詢 x
+                const tail = m[3]; const nm = (new RegExp('(?:查詢|每個|記為|稱為)\\s*(' + NAME + ')\\s*$').exec(tail) || [])[1];
+                const isStr = STR_WORDS.test(tail) && !INT_WORDS.test(tail); const isFloat = !isStr && FLOAT_WORDS.test(tail) && !INT_WORDS.test(tail); const listName = nm || (isStr ? 'w' : 'a'); inputs.push({ k: 'list', name: listName, size: m[2], elem: isStr ? 'str' : isFloat ? 'float' : 'int' }); addNames([listName, m[2]]); continue;
+            }
+            if ((m = new RegExp('^第([一二三四五六七八九\\d]+)行(?:一個|兩個|三個|四個|五個|六個)?小數\\s*(' + NAMES + ')$').exec(c))) { const ns = m[2].split(/\s+/); inputs.push({ k: 'scalars', names: ns, type: 'float', line: true }); addNames(ns); continue; } // 第二行小數 alpha／第二行五個小數 b0 b1 b2 a1 a2
+            if ((m = new RegExp('^第([一二三四五六七八九\\d]+)行(?:一個|兩個|三個|四個)?(?:正)?(?:整數)?\\s*(' + NAMES + ')$').exec(c))) { const ns = m[2].split(/\s+/); inputs.push({ k: 'scalars', names: ns, type: 'int', line: true }); addNames(ns); continue; }
+            if ((m = new RegExp('^輸入\\s*(' + NAME + ')$').exec(c))) { inputs.push({ k: 'scalars', names: [m[1]], type: 'int', line: true }); addNames([m[1]]); continue; }
+            if (/^由若干單字組成/.test(c) && inputs.length && inputs[inputs.length - 1].k === 'pending') { inputs[inputs.length - 1] = { k: 'words', name: 'w' }; addNames(['w']); continue; }
+            if (/^輸入一行$/.test(c)) { inputs.push({ k: 'pending' }); continue; }
+            if (/^輸入一行.*單字/.test(c)) { inputs.push({ k: 'words', name: 'w' }); addNames(['w']); continue; }
+            if ((m = /^輸入(一|兩|二)行(?:小寫)?(?:字串|文字)$/.exec(c))) { const cnt = m[1] === '一' ? 1 : 2; for (let j = 0; j < cnt; j++) { const nm = strCount++ === 0 ? 's' : 't'; inputs.push({ k: 'str', name: nm }); addNames([nm]); } continue; }
+            if (/^輸入一行.*(字串|文字)/.test(c)) { inputs.push({ k: 'str', name: 's' }); addNames(['s']); continue; }
+        }
+        // ---- 輸出 ----
+        const goal = { verbs: [], yesno: /YES\s*(?:或|或者)\s*NO|YES，否則|輸出\s*YES/.test(text) };
+        const om = /輸出\s*([^，。；;\n（(]+)/.exec(stripNote(text));
+        if (om) { // 「輸出 a+b」：敘述裡直接寫了運算式
+            const raw = om[1].trim().replace(/[　]/g, ' '); if (/^[a-z0-9_+\-*/%() .]+$/.test(raw) && /[a-z]/.test(raw) && /[+\-*/%]/.test(raw)) { const used = raw.match(/[a-z][a-z0-9]*/g) || []; if (used.every((u) => names.has(u))) goal.expr = raw; }
+        }
+        for (const g of GOALS) if (g.key.test(text)) goal.verbs.push(g.op);
+        const algo = (ALGOS.find((a) => a.re.test(text)) || {}).key || null; const paradigms = (algo && PARADIGMS[algo]) || [];
+        const pend = inputs.findIndex((x) => x.k === 'pending'); if (pend >= 0) inputs.splice(pend, 1);
+        const vars = []; for (const inp of inputs) { if (inp.k === 'scalars') inp.names.forEach((n) => vars.push({ name: n, type: inp.type })); else if (inp.k === 'list') { if (!vars.some((v) => v.name === inp.size)) vars.push({ name: inp.size, type: 'int' }); vars.push({ name: inp.name, type: 'list' }); } else if (inp.k === 'rows') vars.push({ name: inp.name, type: 'list' }); else if (inp.k === 'grid') vars.push({ name: inp.name, type: 'list' }); else if (inp.k === 'str') vars.push({ name: inp.name, type: 'str' }); else if (inp.k === 'words') vars.push({ name: inp.name, type: 'list' }); }
+        // 同一個名稱在不同行出現（第一行 n，第二行 n 個…）只留一個
+        const seen = new Set(); const uvars = vars.filter((v) => (seen.has(v.name) ? false : seen.add(v.name)));
+        return { ok: inputs.length > 0, algo, paradigms, inputs, vars: uvars, goal, ops: [{ name: 'readInput', params: [], returns: 'any' }, { name: 'solve', params: uvars.map((v) => v.name), returns: 'void' }] };
+    }
+    const UMLTYPE = { int: 'int', float: 'float', str: 'str', list: 'List<any>' };
+    function umlHints(intent) {
+        if (!intent || !intent.ok) return { actors: [], usecases: [], classes: [], relations: [], unknown: [] };
+        const solve = { name: 'solve', params: intent.vars.map((v) => ({ name: v.name, type: UMLTYPE[v.type] || 'any' })), returns: 'void' };
+        const cls = { name: 'Solver', kind: 'class', label: '解題程式', attrs: [], ops: [{ name: 'main', params: [], returns: 'void' }, { name: 'readInput', params: [], returns: 'any' }, solve] };
+        return { actors: ['User'], classes: [cls], relations: [], unknown: [], usecases: [{ name: 'RunSolver', actor: 'User', summary: '讀入資料並輸出答案', steps: [{ to: 'Solver', op: 'main' }, { to: 'Solver', op: 'readInput' }, { to: 'Solver', op: 'solve' }] }] };
+    }
+    const reader = (statement) => { const it = read(statement); return it.ok ? Object.assign(umlHints(it), { intent: it }) : null; };
+    // 領域包（domain pack）註冊：新領域的算法種類插在最前面（領域詞彙比通用詞彙具體），並補上它的範式對照
+    function addAlgos(list, paradigms) { const have = new Set(ALGOS.map((x) => x.key)); const fresh = (list || []).filter((x) => !have.has(x.key)); ALGOS.unshift(...fresh); Object.assign(PARADIGMS, paradigms || {}); return fresh.length; }
+    return { read, umlHints, reader, GOALS, ALGOS, PARADIGMS, addAlgos };
+});
+
+}).call(null, undefined, holder);
+return holder.FaAlgoIntent;
+})();
+/* ALGOINTENT-END */
+/* PYLESSONS-BEGIN */
+const FaPyLessons = (function () {
+const holder = {};
+(function (module, self) {
+/* Python：離線訓練器的「課」（lesson）——老師（線上模型或 Claude）教出來、驗證過、之後離線自己就能用的做法。純函式 UMD，Python 專屬。
+ * 一堂課 = 一種算法（動作表的 algo key）＋輸入形狀＋「solve 的區塊配方」（變數角色化：輸入變數叫 v0、v1…，套用時換成題目讀出來的名稱）。
+ * 老師的解答格式：一段 Python，內含 `def solve(<輸入變數>):`（輸入已由 read_input 讀好；解答裡可以有輔助函式與 import）。
+ *
+ *   deriveLesson({statement, intent, source, B, C2U, parseTree, serial?, createdBy?, note?, paradigm?, slots?}) → {ok, lesson, reason}
+ *     lesson = { id, algo, shape, nparams, roles:[…], body:[敘述 IR（輸入變數已改成 v0..）], prelude:[import 敘述 IR], cnl（給人看）, createdBy, note }
+ *   matchLesson(lessons, intent) → lesson | null          algo 與輸入形狀都相同才算
+ *   applyLesson(lesson, intent) → { body, prelude }       把 v0.. 換成題目的變數名稱；區域變數若跟題目變數撞名就改名
+ *   shapeOf(intent) → 字串                                輸入形狀：每種輸入的種類與數量，例如 scalars2|list|rows2
+ * 內建的課在 py_lessons_builtin.js（由 scripts/teach-builtin-lessons.js 跑老師迴圈產生，每一堂都過判題器與回歸）。 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaPyLessons = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const clone = (x) => JSON.parse(JSON.stringify(x));
+    const shapeOf = (intent) => intent.inputs.map((i) => (i.k === 'scalars' ? 'scalars' + i.names.length : i.k === 'rows' ? 'rows' + i.names.length : i.k)).join('|');
+    // 名稱改寫（IR 層：變數節點、for／生成式目標、lambda 與 def 的參數）
+    function renameIR(x, map) {
+        if (Array.isArray(x)) return x.map((y) => renameIR(y, map));
+        if (x && typeof x === 'object') {
+            const o = {}; for (const k of Object.keys(x)) o[k] = renameIR(x[k], map);
+            if (x.n === 'name' && Object.prototype.hasOwnProperty.call(map, x.v)) o.v = map[x.v];
+            if (x.k === 'def' && Object.prototype.hasOwnProperty.call(map, x.name)) o.name = map[x.name];
+            if ((x.k === 'def' || x.n === 'lambda') && Array.isArray(x.ps)) o.ps = x.ps.map((p) => (Object.prototype.hasOwnProperty.call(map, p.name) ? Object.assign({}, p, { name: map[p.name] }) : renameIR(p, map)));
+            if (x.n === 'walrus' && Object.prototype.hasOwnProperty.call(map, x.t)) o.t = map[x.t];
+            return o;
+        }
+        return x;
+    }
+    // 敘述樹裡所有出現的名稱（用來找區域變數）
+    function allNames(x, out) { out = out || new Set(); if (Array.isArray(x)) { x.forEach((y) => allNames(y, out)); return out; } if (x && typeof x === 'object') { if (x.n === 'name') out.add(x.v); if (x.k === 'def') { out.add(x.name); (x.ps || []).forEach((p) => out.add(p.name)); } if (x.n === 'lambda') (x.ps || []).forEach((p) => out.add(p.name)); for (const k of Object.keys(x)) allNames(x[k], out); } return out; }
+
+    function deriveLesson(o) {
+        const { intent, B, C2U, parseTree } = o;
+        if (!intent || !intent.algo) return { ok: false, reason: '動作表認不出這題是哪一種算法（intent.algo 是空的），沒辦法歸類成課' };
+        const tree = parseTree(o.source); if (!tree || tree.rootNode.hasError()) return { ok: false, reason: '老師的解答有語法錯誤' };
+        const u = C2U.fromTree(tree.rootNode, { source: o.source }); const ops = u.model.classes[0].ops; const solve = ops.find((x) => x.name === 'solve');
+        if (!solve) return { ok: false, reason: '老師的解答裡沒有 def solve(...)；請照約定寫：輸入已由 read_input 讀好，變數是 ' + intent.vars.map((v) => v.name).join(', ') };
+        const pnames = solve.params.map((p) => p.name); if (pnames.length !== intent.vars.length) return { ok: false, reason: 'solve 的參數數量（' + pnames.length + '）和題目讀出來的輸入變數數量（' + intent.vars.length + '）不同；變數是 ' + intent.vars.map((v) => v.name).join(', ') };
+        // 輸入變數 → 角色（v0, v1, …）；參數名稱不管老師取什麼都可以
+        const roles = {}; pnames.forEach((n, i) => { roles[n] = 'v' + i; });
+        // 輔助函式（solve 以外的 def）變成 solve 裡面的巢狀函式；模組層的 import 等放進 prelude
+        const helpers = ops.filter((x) => x.name !== 'solve' && x.name !== 'main').map((h) => ({ k: 'def', name: h.name, ps: h.params.map((p) => Object.assign({ name: p.name }, p.default ? { default: p.default } : {})), a: h.body }));
+        const body = clone(helpers.concat(solve.body)); const prelude = clone(u.model.prelude || []);
+        const lesson = { id: intent.algo + '#' + (o.serial || 1), algo: intent.algo, shape: shapeOf(intent), nparams: pnames.length, roles: pnames.map((_, i) => 'v' + i), paradigms: intent.paradigms || [], body: renameIR(body, roles), prelude, createdBy: o.createdBy || 'teacher', note: o.note || '' };
+        if (o.paradigm) { lesson.paradigm = o.paradigm; if (o.slots) lesson.slots = o.slots; } try { const bl = B.fromIR(lesson.body); lesson.cnl = B.toCNL(bl); } catch (_) { lesson.cnl = ''; }
+        return { ok: true, lesson };
+    }
+    function matchLesson(lessons, intent) {
+        if (!intent || !intent.algo) return null; const sh = shapeOf(intent);
+        return (lessons || []).find((l) => l.algo === intent.algo && l.shape === sh && l.nparams === intent.vars.length) || null;
+    }
+    function applyLesson(lesson, intent) {
+        const map = {}; intent.vars.forEach((v, i) => { map['v' + i] = v.name; });
+        // 區域變數（教案裡宣告、但不是 v0..）若跟題目的變數撞名，改成 name_2
+        const taken = new Set(intent.vars.map((v) => v.name)); const locals = [...allNames(lesson.body)].filter((n) => !/^v\d+$/.test(n)); const used = new Set(taken);
+        for (const n of locals) { if (taken.has(n)) { let k = 2; while (used.has(n + '_' + k)) k++; map[n] = n + '_' + k; used.add(map[n]); } else used.add(n); }
+        return { body: renameIR(clone(lesson.body), map), prelude: clone(lesson.prelude || []) };
+    }
+    return { deriveLesson, matchLesson, applyLesson, shapeOf, renameIR };
+});
+
+}).call(null, undefined, holder);
+return holder.FaPyLessons;
+})();
+/* PYLESSONS-END */
+/* PYLESSONSBUILTIN-BEGIN */
+const FaPyLessonsBuiltin = (function () {
+const holder = {};
+(function (module, self) {
+/* 內建的課（lesson）：老師（Claude）教、判題器（含隱藏測資）驗證、對先前會的題做過回歸才收的做法。由 scripts/teach-builtin-lessons.js 產生，不要手改。
+ * 離線時 py_uml_pipeline_core.buildFromUML 直接套用（同一種算法 + 同樣的輸入形狀），不問任何模型。 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaPyLessonsBuiltin = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    return { generatedAt: "2026-11-06", verified: {"tasks":20,"offlineAfter":20,"offlineBefore":3}, lessons: [{"id":"palindrome#1","algo":"palindrome","shape":"str","nparams":1,"roles":["v0"],"paradigms":["two-pointers","string"],"body":[{"k":"assign","t":{"n":"name","v":"t"},"v":{"n":"comp","kind":"list","e":{"n":"call","f":{"n":"attr","o":{"n":"name","v":"c"},"a":"lower"},"a":[]},"cl":[{"t":{"n":"name","v":"c"},"i":{"n":"name","v":"v0"},"async":false},{"if":{"n":"call","f":{"n":"attr","o":{"n":"name","v":"c"},"a":"isalnum"},"a":[]}}]}},{"k":"expr","e":{"n":"call","f":{"n":"name","v":"print"},"a":[{"n":"cond","a":{"n":"str","v":"\"YES\""},"c":{"n":"cmp","ops":["=="],"xs":[{"n":"name","v":"t"},{"n":"idx","o":{"n":"name","v":"t"},"i":[{"n":"slice","lo":null,"hi":null,"st":{"n":"un","op":"-","e":{"n":"int","v":"1"}}}]}]},"b":{"n":"str","v":"\"NO\""}}]}}],"prelude":[],"cnl":"令 t 為 v0 中滿足 c.isalnum() 的每個 c 的 c.lower() 組成的清單\n如果 t == t[::-1] 就印出 YES，否則印出 NO","createdBy":"claude","note":"is-palindrome"},{"id":"pair-sum#1","algo":"pair-sum","shape":"scalars2|list","nparams":3,"roles":["v0","v1","v2"],"paradigms":["brute-force"],"body":[{"k":"for","t":{"n":"name","v":"i"},"i":{"n":"call","f":{"n":"name","v":"range"},"a":[{"n":"name","v":"v0"}]},"a":[{"k":"for","t":{"n":"name","v":"j"},"i":{"n":"call","f":{"n":"name","v":"range"},"a":[{"n":"bin","op":"+","l":{"n":"name","v":"i"},"r":{"n":"int","v":"1"}},{"n":"name","v":"v0"}]},"a":[{"k":"if","c":{"n":"cmp","ops":["=="],"xs":[{"n":"bin","op":"+","l":{"n":"idx","o":{"n":"name","v":"v2"},"i":[{"n":"name","v":"i"}]},"r":{"n":"idx","o":{"n":"name","v":"v2"},"i":[{"n":"name","v":"j"}]}},{"n":"name","v":"v1"}]},"a":[{"k":"expr","e":{"n":"call","f":{"n":"name","v":"print"},"a":[{"n":"name","v":"i"},{"n":"name","v":"j"}]}},{"k":"ret","e":null}],"b":[]}],"b":[]}],"b":[]}],"prelude":[],"cnl":"重複 v0 次，用 i 計數：\n  讓 j 從 i + 1 到 v0 減一：\n    如果 v2[i] + v2[j] == v1 就：\n      印出 i 和 j\n      結束函式","createdBy":"claude","note":"two-sum"},{"id":"word-count#1","algo":"word-count","shape":"scalars1|list","nparams":2,"roles":["v0","v1"],"paradigms":["data-structure-mapping"],"body":[{"k":"assign","t":{"n":"name","v":"c"},"v":{"n":"dict","ps":[]}},{"k":"for","t":{"n":"name","v":"x"},"i":{"n":"name","v":"v1"},"a":[{"k":"assign","t":{"n":"idx","o":{"n":"name","v":"c"},"i":[{"n":"name","v":"x"}]},"v":{"n":"bin","op":"+","l":{"n":"call","f":{"n":"attr","o":{"n":"name","v":"c"},"a":"get"},"a":[{"n":"name","v":"x"},{"n":"int","v":"0"}]},"r":{"n":"int","v":"1"}}}],"b":[]},{"k":"for","t":{"n":"tuple","xs":[{"n":"name","v":"k"},{"n":"name","v":"v"}]},"i":{"n":"call","f":{"n":"name","v":"sorted"},"a":[{"n":"call","f":{"n":"attr","o":{"n":"name","v":"c"},"a":"items"},"a":[]},{"n":"kw","k":"key","v":{"n":"lambda","ps":[{"name":"kv","type":{"base":"any","args":[]}}],"e":{"n":"tuple","xs":[{"n":"un","op":"-","e":{"n":"idx","o":{"n":"name","v":"kv"},"i":[{"n":"int","v":"1"}]}},{"n":"idx","o":{"n":"name","v":"kv"},"i":[{"n":"int","v":"0"}]}]}}}]},"a":[{"k":"expr","e":{"n":"call","f":{"n":"name","v":"print"},"a":[{"n":"name","v":"k"},{"n":"name","v":"v"}]}}],"b":[]}],"prelude":[],"cnl":"令 c 為空字典\n對 v1 裡的每個 x：\n  計數：c 的 x 加 1\n對 sorted(c.items(), key=(lambda kv: (-kv[1], kv[0]))) 裡的每個 k, v：\n  印出 k 和 v","createdBy":"claude","note":"word-frequency"},{"id":"lower-bound#1","algo":"lower-bound","shape":"scalars2|list|list","nparams":4,"roles":["v0","v1","v2","v3"],"paradigms":["divide-and-conquer","binary-search"],"body":[{"k":"for","t":{"n":"name","v":"v"},"i":{"n":"name","v":"v3"},"a":[{"k":"assign","t":{"n":"tuple","xs":[{"n":"name","v":"lo"},{"n":"name","v":"hi"}]},"v":{"n":"tuple","xs":[{"n":"int","v":"0"},{"n":"name","v":"v0"}]}},{"k":"while","c":{"n":"cmp","ops":["<"],"xs":[{"n":"name","v":"lo"},{"n":"name","v":"hi"}]},"a":[{"k":"assign","t":{"n":"name","v":"mid"},"v":{"n":"bin","op":"//","l":{"n":"bin","op":"+","l":{"n":"name","v":"lo"},"r":{"n":"name","v":"hi"}},"r":{"n":"int","v":"2"}}},{"k":"if","c":{"n":"cmp","ops":[">="],"xs":[{"n":"idx","o":{"n":"name","v":"v2"},"i":[{"n":"name","v":"mid"}]},{"n":"name","v":"v"}]},"a":[{"k":"assign","t":{"n":"name","v":"hi"},"v":{"n":"name","v":"mid"}}],"b":[{"k":"assign","t":{"n":"name","v":"lo"},"v":{"n":"bin","op":"+","l":{"n":"name","v":"mid"},"r":{"n":"int","v":"1"}}}]}],"b":[]},{"k":"expr","e":{"n":"call","f":{"n":"name","v":"print"},"a":[{"n":"name","v":"lo"}]}}],"b":[]}],"prelude":[],"cnl":"對 v3 裡的每個 v：\n  令 (lo, hi) 等於 (0, v0)\n  當 lo < hi 時重複：\n    令 mid 等於 (lo + hi) // 2\n    如果 v2[mid] >= v 就：\n      令 hi 等於 mid\n    否則：\n      令 lo 等於 mid + 1\n  印出 lo","createdBy":"claude","note":"lower-bound"},{"id":"range-sum#1","algo":"range-sum","shape":"scalars2|list|rows2","nparams":4,"roles":["v0","v1","v2","v3"],"paradigms":["prefix-sum","data-structure-mapping"],"body":[{"k":"assign","t":{"n":"name","v":"p"},"v":{"n":"list","xs":[{"n":"int","v":"0"}]}},{"k":"for","t":{"n":"name","v":"v"},"i":{"n":"name","v":"v2"},"a":[{"k":"expr","e":{"n":"call","f":{"n":"attr","o":{"n":"name","v":"p"},"a":"append"},"a":[{"n":"bin","op":"+","l":{"n":"idx","o":{"n":"name","v":"p"},"i":[{"n":"un","op":"-","e":{"n":"int","v":"1"}}]},"r":{"n":"name","v":"v"}}]}}],"b":[]},{"k":"for","t":{"n":"tuple","xs":[{"n":"name","v":"l"},{"n":"name","v":"r"}]},"i":{"n":"name","v":"v3"},"a":[{"k":"expr","e":{"n":"call","f":{"n":"name","v":"print"},"a":[{"n":"bin","op":"-","l":{"n":"idx","o":{"n":"name","v":"p"},"i":[{"n":"name","v":"r"}]},"r":{"n":"idx","o":{"n":"name","v":"p"},"i":[{"n":"bin","op":"-","l":{"n":"name","v":"l"},"r":{"n":"int","v":"1"}}]}}]}}],"b":[]}],"prelude":[],"cnl":"令 p 等於 [0]\n對 v2 裡的每個 v：\n  把 p[-1] + v 加到清單 p 最後\n對 v3 裡的每個 l, r：\n  印出 p[r] - p[l - 1]","createdBy":"claude","note":"range-sum"},{"id":"fib#1","algo":"fib","paradigm":"dp.fib","shape":"scalars1","nparams":1,"roles":["v0"],"paradigms":["dynamic-programming","matrix-power"],"body":[{"k":"assign","t":{"n":"tuple","xs":[{"n":"name","v":"a"},{"n":"name","v":"b"}]},"v":{"n":"tuple","xs":[{"n":"int","v":"0"},{"n":"int","v":"1"}]}},{"k":"for","t":{"n":"name","v":"_"},"i":{"n":"call","f":{"n":"name","v":"range"},"a":[{"n":"name","v":"v0"}]},"a":[{"k":"assign","t":{"n":"tuple","xs":[{"n":"name","v":"a"},{"n":"name","v":"b"}]},"v":{"n":"tuple","xs":[{"n":"name","v":"b"},{"n":"bin","op":"+","l":{"n":"name","v":"a"},"r":{"n":"name","v":"b"}}]}}],"b":[]},{"k":"expr","e":{"n":"call","f":{"n":"name","v":"print"},"a":[{"n":"name","v":"a"}]}}],"prelude":[],"cnl":"令 (a, b) 等於 (0, 1)\n重複 v0 次，用 _ 計數：\n  同時更新：a 變成 b，b 變成 a 加 b\n印出 a","createdBy":"claude","note":"fibonacci"},{"id":"coin-min#1","algo":"coin-min","shape":"scalars2|list","nparams":3,"roles":["v0","v1","v2"],"paradigms":["dynamic-programming"],"body":[{"k":"assign","t":{"n":"name","v":"INF"},"v":{"n":"call","f":{"n":"name","v":"float"},"a":[{"n":"str","v":"\"inf\""}]}},{"k":"assign","t":{"n":"name","v":"dp"},"v":{"n":"bin","op":"+","l":{"n":"list","xs":[{"n":"int","v":"0"}]},"r":{"n":"bin","op":"*","l":{"n":"list","xs":[{"n":"name","v":"INF"}]},"r":{"n":"name","v":"v1"}}}},{"k":"for","t":{"n":"name","v":"s"},"i":{"n":"call","f":{"n":"name","v":"range"},"a":[{"n":"int","v":"1"},{"n":"bin","op":"+","l":{"n":"name","v":"v1"},"r":{"n":"int","v":"1"}}]},"a":[{"k":"for","t":{"n":"name","v":"c"},"i":{"n":"name","v":"v2"},"a":[{"k":"if","c":{"n":"bool","op":"and","l":{"n":"cmp","ops":["<="],"xs":[{"n":"name","v":"c"},{"n":"name","v":"s"}]},"r":{"n":"cmp","ops":["<"],"xs":[{"n":"bin","op":"+","l":{"n":"idx","o":{"n":"name","v":"dp"},"i":[{"n":"bin","op":"-","l":{"n":"name","v":"s"},"r":{"n":"name","v":"c"}}]},"r":{"n":"int","v":"1"}},{"n":"idx","o":{"n":"name","v":"dp"},"i":[{"n":"name","v":"s"}]}]}},"a":[{"k":"assign","t":{"n":"idx","o":{"n":"name","v":"dp"},"i":[{"n":"name","v":"s"}]},"v":{"n":"bin","op":"+","l":{"n":"idx","o":{"n":"name","v":"dp"},"i":[{"n":"bin","op":"-","l":{"n":"name","v":"s"},"r":{"n":"name","v":"c"}}]},"r":{"n":"int","v":"1"}}}],"b":[]}],"b":[]}],"b":[]},{"k":"expr","e":{"n":"call","f":{"n":"name","v":"print"},"a":[{"n":"cond","a":{"n":"idx","o":{"n":"name","v":"dp"},"i":[{"n":"name","v":"v1"}]},"c":{"n":"cmp","ops":["!="],"xs":[{"n":"idx","o":{"n":"name","v":"dp"},"i":[{"n":"name","v":"v1"}]},{"n":"name","v":"INF"}]},"b":{"n":"un","op":"-","e":{"n":"int","v":"1"}}}]}}],"prelude":[],"cnl":"令 INF 等於 float(\"inf\")\n令 dp 等於 [0] + [INF] * v1\n讓 s 從 1 到 v1 + 1 減一：\n  對 v2 裡的每個 c：\n    如果 c <= s and dp[s - c] + 1 < dp[s] 就：\n      令 dp[s] 等於 dp[s - c] + 1\n印出 dp[v1] if dp[v1] != INF else -1","createdBy":"claude","note":"coin-change"},{"id":"lis#1","algo":"lis","shape":"scalars1|list","nparams":2,"roles":["v0","v1"],"paradigms":["dynamic-programming"],"body":[{"k":"assign","t":{"n":"name","v":"dp"},"v":{"n":"bin","op":"*","l":{"n":"list","xs":[{"n":"int","v":"1"}]},"r":{"n":"name","v":"v0"}}},{"k":"for","t":{"n":"name","v":"i"},"i":{"n":"call","f":{"n":"name","v":"range"},"a":[{"n":"name","v":"v0"}]},"a":[{"k":"for","t":{"n":"name","v":"j"},"i":{"n":"call","f":{"n":"name","v":"range"},"a":[{"n":"name","v":"i"}]},"a":[{"k":"if","c":{"n":"bool","op":"and","l":{"n":"cmp","ops":["<"],"xs":[{"n":"idx","o":{"n":"name","v":"v1"},"i":[{"n":"name","v":"j"}]},{"n":"idx","o":{"n":"name","v":"v1"},"i":[{"n":"name","v":"i"}]}]},"r":{"n":"cmp","ops":[">"],"xs":[{"n":"bin","op":"+","l":{"n":"idx","o":{"n":"name","v":"dp"},"i":[{"n":"name","v":"j"}]},"r":{"n":"int","v":"1"}},{"n":"idx","o":{"n":"name","v":"dp"},"i":[{"n":"name","v":"i"}]}]}},"a":[{"k":"assign","t":{"n":"idx","o":{"n":"name","v":"dp"},"i":[{"n":"name","v":"i"}]},"v":{"n":"bin","op":"+","l":{"n":"idx","o":{"n":"name","v":"dp"},"i":[{"n":"name","v":"j"}]},"r":{"n":"int","v":"1"}}}],"b":[]}],"b":[]}],"b":[]},{"k":"expr","e":{"n":"call","f":{"n":"name","v":"print"},"a":[{"n":"call","f":{"n":"name","v":"max"},"a":[{"n":"name","v":"dp"}]}]}}],"prelude":[],"cnl":"令 dp 為 v0 個 1 的清單\n重複 v0 次，用 i 計數：\n  重複 i 次，用 j 計數：\n    如果 v1[j] < v1[i] and dp[j] + 1 > dp[i] 就：\n      令 dp[i] 等於 dp[j] + 1\n印出 max(dp)","createdBy":"claude","note":"lis"},{"id":"brackets#1","algo":"brackets","shape":"str","nparams":1,"roles":["v0"],"paradigms":["data-structure-mapping"],"body":[{"k":"assign","t":{"n":"name","v":"st"},"v":{"n":"list","xs":[]}},{"k":"assign","t":{"n":"name","v":"pair"},"v":{"n":"dict","ps":[{"k":{"n":"str","v":"\")\""},"v":{"n":"str","v":"\"(\""}},{"k":{"n":"str","v":"\"]\""},"v":{"n":"str","v":"\"[\""}},{"k":{"n":"str","v":"\"}\""},"v":{"n":"str","v":"\"{\""}}]}},{"k":"for","t":{"n":"name","v":"c"},"i":{"n":"name","v":"v0"},"a":[{"k":"if","c":{"n":"cmp","ops":["in"],"xs":[{"n":"name","v":"c"},{"n":"str","v":"\"([{\""}]},"a":[{"k":"expr","e":{"n":"call","f":{"n":"attr","o":{"n":"name","v":"st"},"a":"append"},"a":[{"n":"name","v":"c"}]}}],"b":[{"k":"if","c":{"n":"bool","op":"or","l":{"n":"not","e":{"n":"name","v":"st"}},"r":{"n":"cmp","ops":["!="],"xs":[{"n":"call","f":{"n":"attr","o":{"n":"name","v":"st"},"a":"pop"},"a":[]},{"n":"idx","o":{"n":"name","v":"pair"},"i":[{"n":"name","v":"c"}]}]}},"a":[{"k":"expr","e":{"n":"call","f":{"n":"name","v":"print"},"a":[{"n":"str","v":"\"NO\""}]}},{"k":"ret","e":null}],"b":[]}]}],"b":[]},{"k":"expr","e":{"n":"call","f":{"n":"name","v":"print"},"a":[{"n":"cond","a":{"n":"str","v":"\"YES\""},"c":{"n":"not","e":{"n":"name","v":"st"}},"b":{"n":"str","v":"\"NO\""}}]}}],"prelude":[],"cnl":"令 st 為空清單\n令 pair 等於 {\")\": \"(\", \"]\": \"[\", \"}\": \"{\"}\n對 v0 裡的每個 c：\n  如果 c in \"([{\" 就：\n    把 c 加到清單 st 最後\n  否則如果 not st or st.pop() != pair[c] 就：\n    印出 \"NO\"\n    結束函式\n如果 not st 就印出 YES，否則印出 NO","createdBy":"claude","note":"valid-brackets"},{"id":"gcd-lcm#1","algo":"gcd-lcm","shape":"scalars2","nparams":2,"roles":["v0","v1"],"paradigms":["number-theory","divide-and-conquer"],"body":[{"k":"def","name":"gcd","ps":[{"name":"x"},{"name":"y"}],"a":[{"k":"while","c":{"n":"name","v":"y"},"a":[{"k":"assign","t":{"n":"tuple","xs":[{"n":"name","v":"x"},{"n":"name","v":"y"}]},"v":{"n":"tuple","xs":[{"n":"name","v":"y"},{"n":"bin","op":"%","l":{"n":"name","v":"x"},"r":{"n":"name","v":"y"}}]}}],"b":[]},{"k":"ret","e":{"n":"name","v":"x"}}]},{"k":"assign","t":{"n":"name","v":"g"},"v":{"n":"call","f":{"n":"name","v":"gcd"},"a":[{"n":"name","v":"v0"},{"n":"name","v":"v1"}]}},{"k":"expr","e":{"n":"call","f":{"n":"name","v":"print"},"a":[{"n":"name","v":"g"},{"n":"bin","op":"*","l":{"n":"bin","op":"//","l":{"n":"name","v":"v0"},"r":{"n":"name","v":"g"}},"r":{"n":"name","v":"v1"}}]}}],"prelude":[],"cnl":"程式區塊：\n  def gcd(x, y):\n      while y:\n          x, y = (y, x % y)\n      return x\n令 g 等於 gcd(v0, v1)\n印出 g 和 v0 // g * v1","createdBy":"claude","note":"gcd-lcm"},{"id":"primes#1","algo":"primes","shape":"scalars1","nparams":1,"roles":["v0"],"paradigms":["sieve","number-theory"],"body":[{"k":"if","c":{"n":"cmp","ops":["<"],"xs":[{"n":"name","v":"v0"},{"n":"int","v":"2"}]},"a":[{"k":"expr","e":{"n":"call","f":{"n":"name","v":"print"},"a":[{"n":"int","v":"0"}]}},{"k":"ret","e":null}],"b":[]},{"k":"assign","t":{"n":"name","v":"s"},"v":{"n":"bin","op":"*","l":{"n":"list","xs":[{"n":"const","v":"True"}]},"r":{"n":"bin","op":"+","l":{"n":"name","v":"v0"},"r":{"n":"int","v":"1"}}}},{"k":"assign","t":{"n":"idx","o":{"n":"name","v":"s"},"i":[{"n":"int","v":"0"}]},"ts":[{"n":"idx","o":{"n":"name","v":"s"},"i":[{"n":"int","v":"0"}]},{"n":"idx","o":{"n":"name","v":"s"},"i":[{"n":"int","v":"1"}]}],"v":{"n":"const","v":"False"}},{"k":"assign","t":{"n":"name","v":"i"},"v":{"n":"int","v":"2"}},{"k":"while","c":{"n":"cmp","ops":["<="],"xs":[{"n":"bin","op":"*","l":{"n":"name","v":"i"},"r":{"n":"name","v":"i"}},{"n":"name","v":"v0"}]},"a":[{"k":"if","c":{"n":"idx","o":{"n":"name","v":"s"},"i":[{"n":"name","v":"i"}]},"a":[{"k":"for","t":{"n":"name","v":"j"},"i":{"n":"call","f":{"n":"name","v":"range"},"a":[{"n":"bin","op":"*","l":{"n":"name","v":"i"},"r":{"n":"name","v":"i"}},{"n":"bin","op":"+","l":{"n":"name","v":"v0"},"r":{"n":"int","v":"1"}},{"n":"name","v":"i"}]},"a":[{"k":"assign","t":{"n":"idx","o":{"n":"name","v":"s"},"i":[{"n":"name","v":"j"}]},"v":{"n":"const","v":"False"}}],"b":[]}],"b":[]},{"k":"aug","t":{"n":"name","v":"i"},"op":"+","v":{"n":"int","v":"1"}}],"b":[]},{"k":"expr","e":{"n":"call","f":{"n":"name","v":"print"},"a":[{"n":"call","f":{"n":"name","v":"sum"},"a":[{"n":"name","v":"s"}]}]}}],"prelude":[],"cnl":"如果 v0 < 2 就：\n  印出 0\n  結束函式\n令 s 為 v0 + 1 個 True 的清單\n程式：s[0] = s[1] = False\n令 i 等於 2\n當 i * i <= v0 時重複：\n  如果 s[i] 就：\n    讓 j 從 i * i 到 v0 + 1 減一，每次加 i：\n      令 s[j] 等於 False\n  i 加 1\n印出 sum(s)","createdBy":"claude","note":"count-primes"},{"id":"grid-bfs#1","algo":"grid-bfs","shape":"scalars2|grid","nparams":3,"roles":["v0","v1","v2"],"paradigms":["bfs"],"body":[{"k":"for","t":{"n":"name","v":"i"},"i":{"n":"call","f":{"n":"name","v":"range"},"a":[{"n":"name","v":"v0"}]},"a":[{"k":"for","t":{"n":"name","v":"j"},"i":{"n":"call","f":{"n":"name","v":"range"},"a":[{"n":"name","v":"v1"}]},"a":[{"k":"if","c":{"n":"cmp","ops":["=="],"xs":[{"n":"idx","o":{"n":"idx","o":{"n":"name","v":"v2"},"i":[{"n":"name","v":"i"}]},"i":[{"n":"name","v":"j"}]},{"n":"str","v":"\"S\""}]},"a":[{"k":"assign","t":{"n":"name","v":"s"},"v":{"n":"tuple","xs":[{"n":"name","v":"i"},{"n":"name","v":"j"}]}}],"b":[]},{"k":"if","c":{"n":"cmp","ops":["=="],"xs":[{"n":"idx","o":{"n":"idx","o":{"n":"name","v":"v2"},"i":[{"n":"name","v":"i"}]},"i":[{"n":"name","v":"j"}]},{"n":"str","v":"\"T\""}]},"a":[{"k":"assign","t":{"n":"name","v":"t"},"v":{"n":"tuple","xs":[{"n":"name","v":"i"},{"n":"name","v":"j"}]}}],"b":[]}],"b":[]}],"b":[]},{"k":"assign","t":{"n":"name","v":"dist"},"v":{"n":"dict","ps":[{"k":{"n":"name","v":"s"},"v":{"n":"int","v":"0"}}]}},{"k":"assign","t":{"n":"name","v":"q"},"v":{"n":"call","f":{"n":"name","v":"deque"},"a":[{"n":"list","xs":[{"n":"name","v":"s"}]}]}},{"k":"while","c":{"n":"name","v":"q"},"a":[{"k":"assign","t":{"n":"tuple","xs":[{"n":"name","v":"x"},{"n":"name","v":"y"}]},"v":{"n":"call","f":{"n":"attr","o":{"n":"name","v":"q"},"a":"popleft"},"a":[]}},{"k":"if","c":{"n":"cmp","ops":["=="],"xs":[{"n":"tuple","xs":[{"n":"name","v":"x"},{"n":"name","v":"y"}]},{"n":"name","v":"t"}]},"a":[{"k":"expr","e":{"n":"call","f":{"n":"name","v":"print"},"a":[{"n":"idx","o":{"n":"name","v":"dist"},"i":[{"n":"name","v":"t"}]}]}},{"k":"ret","e":null}],"b":[]},{"k":"for","t":{"n":"tuple","xs":[{"n":"name","v":"dx"},{"n":"name","v":"dy"}]},"i":{"n":"tuple","xs":[{"n":"tuple","xs":[{"n":"int","v":"1"},{"n":"int","v":"0"}]},{"n":"tuple","xs":[{"n":"un","op":"-","e":{"n":"int","v":"1"}},{"n":"int","v":"0"}]},{"n":"tuple","xs":[{"n":"int","v":"0"},{"n":"int","v":"1"}]},{"n":"tuple","xs":[{"n":"int","v":"0"},{"n":"un","op":"-","e":{"n":"int","v":"1"}}]}]},"a":[{"k":"assign","t":{"n":"tuple","xs":[{"n":"name","v":"nx"},{"n":"name","v":"ny"}]},"v":{"n":"tuple","xs":[{"n":"bin","op":"+","l":{"n":"name","v":"x"},"r":{"n":"name","v":"dx"}},{"n":"bin","op":"+","l":{"n":"name","v":"y"},"r":{"n":"name","v":"dy"}}]}},{"k":"if","c":{"n":"bool","op":"and","l":{"n":"bool","op":"and","l":{"n":"bool","op":"and","l":{"n":"cmp","ops":["<=","<"],"xs":[{"n":"int","v":"0"},{"n":"name","v":"nx"},{"n":"name","v":"v0"}]},"r":{"n":"cmp","ops":["<=","<"],"xs":[{"n":"int","v":"0"},{"n":"name","v":"ny"},{"n":"name","v":"v1"}]}},"r":{"n":"cmp","ops":["!="],"xs":[{"n":"idx","o":{"n":"idx","o":{"n":"name","v":"v2"},"i":[{"n":"name","v":"nx"}]},"i":[{"n":"name","v":"ny"}]},{"n":"str","v":"\"#\""}]}},"r":{"n":"cmp","ops":["not in"],"xs":[{"n":"tuple","xs":[{"n":"name","v":"nx"},{"n":"name","v":"ny"}]},{"n":"name","v":"dist"}]}},"a":[{"k":"assign","t":{"n":"idx","o":{"n":"name","v":"dist"},"i":[{"n":"tuple","xs":[{"n":"name","v":"nx"},{"n":"name","v":"ny"}]}]},"v":{"n":"bin","op":"+","l":{"n":"idx","o":{"n":"name","v":"dist"},"i":[{"n":"tuple","xs":[{"n":"name","v":"x"},{"n":"name","v":"y"}]}]},"r":{"n":"int","v":"1"}}},{"k":"expr","e":{"n":"call","f":{"n":"attr","o":{"n":"name","v":"q"},"a":"append"},"a":[{"n":"tuple","xs":[{"n":"name","v":"nx"},{"n":"name","v":"ny"}]}]}}],"b":[]}],"b":[]}],"b":[]},{"k":"expr","e":{"n":"call","f":{"n":"name","v":"print"},"a":[{"n":"un","op":"-","e":{"n":"int","v":"1"}}]}}],"prelude":[{"k":"import","from":"collections","names":[{"name":"deque"}]}],"cnl":"重複 v0 次，用 i 計數：\n  重複 v1 次，用 j 計數：\n    如果 v2[i][j] == \"S\" 就：\n      令 s 等於 (i, j)\n    如果 v2[i][j] == \"T\" 就：\n      令 t 等於 (i, j)\n令 dist 等於 {s: 0}\n令 q 為從 s 開始的佇列\n當佇列 q 不是空的就取出最前面的 x, y 處理：\n  如果 (x, y) == t 就：\n    印出 dist[t]\n    結束函式\n  對 ((1, 0), (-1, 0), (0, 1), (0, -1)) 裡的每個 dx, dy：\n    令 (nx, ny) 等於 (x + dx, y + dy)\n    如果 0 <= nx < v0 and 0 <= ny < v1 and v2[nx][ny] != \"#\" and (nx, ny) not in dist 就：\n      令 dist[(nx, ny)] 等於 dist[(x, y)] + 1\n      把 (nx, ny) 加到清單 q 最後\n印出 -1","createdBy":"claude","note":"grid-bfs"},{"id":"components#1","algo":"components","shape":"scalars2|rows2","nparams":3,"roles":["v0","v1","v2"],"paradigms":["dfs","union-find"],"body":[{"k":"assign","t":{"n":"name","v":"adj"},"v":{"n":"comp","kind":"list","e":{"n":"list","xs":[]},"cl":[{"t":{"n":"name","v":"_"},"i":{"n":"call","f":{"n":"name","v":"range"},"a":[{"n":"bin","op":"+","l":{"n":"name","v":"v0"},"r":{"n":"int","v":"1"}}]},"async":false}]}},{"k":"for","t":{"n":"tuple","xs":[{"n":"name","v":"u"},{"n":"name","v":"v"}]},"i":{"n":"name","v":"v2"},"a":[{"k":"expr","e":{"n":"call","f":{"n":"attr","o":{"n":"idx","o":{"n":"name","v":"adj"},"i":[{"n":"name","v":"u"}]},"a":"append"},"a":[{"n":"name","v":"v"}]}},{"k":"expr","e":{"n":"call","f":{"n":"attr","o":{"n":"idx","o":{"n":"name","v":"adj"},"i":[{"n":"name","v":"v"}]},"a":"append"},"a":[{"n":"name","v":"u"}]}}],"b":[]},{"k":"assign","t":{"n":"name","v":"seen"},"v":{"n":"bin","op":"*","l":{"n":"list","xs":[{"n":"const","v":"False"}]},"r":{"n":"bin","op":"+","l":{"n":"name","v":"v0"},"r":{"n":"int","v":"1"}}}},{"k":"assign","t":{"n":"name","v":"cnt"},"v":{"n":"int","v":"0"}},{"k":"for","t":{"n":"name","v":"s"},"i":{"n":"call","f":{"n":"name","v":"range"},"a":[{"n":"int","v":"1"},{"n":"bin","op":"+","l":{"n":"name","v":"v0"},"r":{"n":"int","v":"1"}}]},"a":[{"k":"if","c":{"n":"idx","o":{"n":"name","v":"seen"},"i":[{"n":"name","v":"s"}]},"a":[{"k":"cont"}],"b":[]},{"k":"aug","t":{"n":"name","v":"cnt"},"op":"+","v":{"n":"int","v":"1"}},{"k":"assign","t":{"n":"idx","o":{"n":"name","v":"seen"},"i":[{"n":"name","v":"s"}]},"v":{"n":"const","v":"True"}},{"k":"assign","t":{"n":"name","v":"st"},"v":{"n":"list","xs":[{"n":"name","v":"s"}]}},{"k":"while","c":{"n":"name","v":"st"},"a":[{"k":"assign","t":{"n":"name","v":"x"},"v":{"n":"call","f":{"n":"attr","o":{"n":"name","v":"st"},"a":"pop"},"a":[]}},{"k":"for","t":{"n":"name","v":"y"},"i":{"n":"idx","o":{"n":"name","v":"adj"},"i":[{"n":"name","v":"x"}]},"a":[{"k":"if","c":{"n":"not","e":{"n":"idx","o":{"n":"name","v":"seen"},"i":[{"n":"name","v":"y"}]}},"a":[{"k":"assign","t":{"n":"idx","o":{"n":"name","v":"seen"},"i":[{"n":"name","v":"y"}]},"v":{"n":"const","v":"True"}},{"k":"expr","e":{"n":"call","f":{"n":"attr","o":{"n":"name","v":"st"},"a":"append"},"a":[{"n":"name","v":"y"}]}}],"b":[]}],"b":[]}],"b":[]}],"b":[]},{"k":"expr","e":{"n":"call","f":{"n":"name","v":"print"},"a":[{"n":"name","v":"cnt"}]}}],"prelude":[],"cnl":"令 adj 為 range(v0 + 1) 中每個 _ 的 [] 組成的清單\n對 v2 裡的每個 u, v：\n  把 v 加到清單 adj[u] 最後\n  把 u 加到清單 adj[v] 最後\n令 seen 為 v0 + 1 個 False 的清單\n令 cnt 等於 0\n讓 s 從 1 到 v0 + 1 減一：\n  如果 seen[s] 就：\n    略過這一輪\n  cnt 加 1\n  令 seen[s] 等於 True\n  令 st 等於 [s]\n  當 st 時重複：\n    令 x 等於 st.pop()\n    對 adj[x] 裡的每個 y：\n      如果 not seen[y] 就：\n        令 seen[y] 等於 True\n        把 y 加到清單 st 最後\n印出 cnt","createdBy":"claude","note":"components"},{"id":"intervals-merge#1","algo":"intervals-merge","shape":"scalars1|rows2","nparams":2,"roles":["v0","v1"],"paradigms":["sort-and-sweep"],"body":[{"k":"assign","t":{"n":"name","v":"out"},"v":{"n":"list","xs":[]}},{"k":"for","t":{"n":"tuple","xs":[{"n":"name","v":"l"},{"n":"name","v":"r"}]},"i":{"n":"call","f":{"n":"name","v":"sorted"},"a":[{"n":"name","v":"v1"}]},"a":[{"k":"if","c":{"n":"bool","op":"and","l":{"n":"name","v":"out"},"r":{"n":"cmp","ops":["<="],"xs":[{"n":"name","v":"l"},{"n":"idx","o":{"n":"idx","o":{"n":"name","v":"out"},"i":[{"n":"un","op":"-","e":{"n":"int","v":"1"}}]},"i":[{"n":"int","v":"1"}]}]}},"a":[{"k":"assign","t":{"n":"idx","o":{"n":"idx","o":{"n":"name","v":"out"},"i":[{"n":"un","op":"-","e":{"n":"int","v":"1"}}]},"i":[{"n":"int","v":"1"}]},"v":{"n":"call","f":{"n":"name","v":"max"},"a":[{"n":"idx","o":{"n":"idx","o":{"n":"name","v":"out"},"i":[{"n":"un","op":"-","e":{"n":"int","v":"1"}}]},"i":[{"n":"int","v":"1"}]},{"n":"name","v":"r"}]}}],"b":[{"k":"expr","e":{"n":"call","f":{"n":"attr","o":{"n":"name","v":"out"},"a":"append"},"a":[{"n":"list","xs":[{"n":"name","v":"l"},{"n":"name","v":"r"}]}]}}]}],"b":[]},{"k":"for","t":{"n":"tuple","xs":[{"n":"name","v":"l"},{"n":"name","v":"r"}]},"i":{"n":"name","v":"out"},"a":[{"k":"expr","e":{"n":"call","f":{"n":"name","v":"print"},"a":[{"n":"name","v":"l"},{"n":"name","v":"r"}]}}],"b":[]}],"prelude":[],"cnl":"令 out 為空清單\n對 sorted(v1) 裡的每個 l, r：\n  如果 out and l <= out[-1][1] 就：\n    out[-1][1] 取 out[-1][1] 與 r 的較大值\n  否則：\n    把 [l, r] 加到清單 out 最後\n對 out 裡的每個 l, r：\n  印出 l 和 r","createdBy":"claude","note":"merge-intervals"},{"id":"kth-largest#1","algo":"kth-largest","shape":"scalars2|list","nparams":3,"roles":["v0","v1","v2"],"paradigms":["sort"],"body":[{"k":"assign","t":{"n":"name","v":"b"},"v":{"n":"call","f":{"n":"name","v":"sorted"},"a":[{"n":"name","v":"v2"},{"n":"kw","k":"reverse","v":{"n":"const","v":"True"}}]}},{"k":"expr","e":{"n":"call","f":{"n":"name","v":"print"},"a":[{"n":"idx","o":{"n":"name","v":"b"},"i":[{"n":"bin","op":"-","l":{"n":"name","v":"v1"},"r":{"n":"int","v":"1"}}]}]}}],"prelude":[],"cnl":"令 b 為 v2 由大到小排序後的新清單\n印出 b[v1 - 1]","createdBy":"claude","note":"kth-largest"},{"id":"anagram#1","algo":"anagram","shape":"str|str","nparams":2,"roles":["v0","v1"],"paradigms":["data-structure-mapping","string"],"body":[{"k":"expr","e":{"n":"call","f":{"n":"name","v":"print"},"a":[{"n":"cond","a":{"n":"str","v":"\"YES\""},"c":{"n":"cmp","ops":["=="],"xs":[{"n":"call","f":{"n":"name","v":"sorted"},"a":[{"n":"name","v":"v0"}]},{"n":"call","f":{"n":"name","v":"sorted"},"a":[{"n":"name","v":"v1"}]}]},"b":{"n":"str","v":"\"NO\""}}]}}],"prelude":[],"cnl":"如果 sorted(v0) == sorted(v1) 就印出 YES，否則印出 NO","createdBy":"claude","note":"anagram"},{"id":"knapsack#1","algo":"knapsack","shape":"scalars2|rows2","nparams":3,"roles":["v0","v1","v2"],"paradigms":["dynamic-programming"],"body":[{"k":"assign","t":{"n":"name","v":"dp"},"v":{"n":"bin","op":"*","l":{"n":"list","xs":[{"n":"int","v":"0"}]},"r":{"n":"bin","op":"+","l":{"n":"name","v":"v1"},"r":{"n":"int","v":"1"}}}},{"k":"for","t":{"n":"tuple","xs":[{"n":"name","v":"w"},{"n":"name","v":"v"}]},"i":{"n":"name","v":"v2"},"a":[{"k":"for","t":{"n":"name","v":"c"},"i":{"n":"call","f":{"n":"name","v":"range"},"a":[{"n":"name","v":"v1"},{"n":"bin","op":"-","l":{"n":"name","v":"w"},"r":{"n":"int","v":"1"}},{"n":"un","op":"-","e":{"n":"int","v":"1"}}]},"a":[{"k":"if","c":{"n":"cmp","ops":[">"],"xs":[{"n":"bin","op":"+","l":{"n":"idx","o":{"n":"name","v":"dp"},"i":[{"n":"bin","op":"-","l":{"n":"name","v":"c"},"r":{"n":"name","v":"w"}}]},"r":{"n":"name","v":"v"}},{"n":"idx","o":{"n":"name","v":"dp"},"i":[{"n":"name","v":"c"}]}]},"a":[{"k":"assign","t":{"n":"idx","o":{"n":"name","v":"dp"},"i":[{"n":"name","v":"c"}]},"v":{"n":"bin","op":"+","l":{"n":"idx","o":{"n":"name","v":"dp"},"i":[{"n":"bin","op":"-","l":{"n":"name","v":"c"},"r":{"n":"name","v":"w"}}]},"r":{"n":"name","v":"v"}}}],"b":[]}],"b":[]}],"b":[]},{"k":"expr","e":{"n":"call","f":{"n":"name","v":"print"},"a":[{"n":"idx","o":{"n":"name","v":"dp"},"i":[{"n":"name","v":"v1"}]}]}}],"prelude":[],"cnl":"令 dp 為 v1 + 1 個 0 的清單\n對 v2 裡的每個 w, v：\n  讓 c 從 v1 倒數到 w - 1 加一（每次減 1）：\n    如果 dp[c - w] + v > dp[c] 就：\n      令 dp[c] 等於 dp[c - w] + v\n印出 dp[v1]","createdBy":"claude","note":"knapsack"}] };
+});
+
+}).call(null, undefined, holder);
+return holder.FaPyLessonsBuiltin;
+})();
+/* PYLESSONSBUILTIN-END */
+/* PYPARADIGMS-BEGIN */
+const FaPyParadigms = (function () {
+const holder = {};
+(function (module, self) {
+/* Python：範式骨架庫。純函式 UMD，Python 專屬（每個語言各自一份，不共用）。
+ * 一個範式骨架 = 一個「帶槽位的區塊骨架」：骨架固定（這種算法該有的迴圈／資料結構／輸出），槽位是 1～3 個小選單
+ *（初值、比較方向、邊界、索引起點…）。選單很小，所以由程式窮舉組合（上限 limit，預設 12）交沙盒判題，第一個 AC 就用——
+ * 不靠 0.6B 那種接近隨機的選擇。pick（模型）只決定窮舉順序（可省略）。
+ * 新題只要套到某個範式、填幾個槽位，不必每題各教一堂課；課是範式的實例（deriveLesson 可記 paradigm＋slots）。
+ *
+ *   PARADIGMS                      骨架表：{id, paradigm, algo, label, slots:[{id,label,options:[{id,label,v}]}], py(c, N)}
+ *   forIntent(intent, statement?) → 骨架[]   這題的算法有哪些骨架（用 intent.algo 查；有 when 的骨架再用敘述篩，例如費氏「取餘數」才用矩陣快速冪）
+ *   combos(skeleton, {limit, rank}) → [choice]   窮舉組合（choice = {槽位id: 選項id}）；rank(skeleton, choice) 給分數，高的先試
+ *   render(skeleton, choice, intent) → CNL   solve 的受控自然語言（用「程式區塊：」包 Python；之後走 parseCNL → 區塊 → IR）
+ *   solve({intent, skeleton?, judge, parse, limit, rank}) → Promise<{ok, skeleton, choice, cnl, tried, verdict, trace}>
+ *        judge(cnl) → Promise<{verdict, detail}>（呼叫端把 CNL 組成完整程式交沙盒）；第一個 AC 就停
+ * N = 題目讀出來的變數：N.sc（整數變數依序）、N.ls（清單變數依序）、N.s（字串變數依序）、N.g（網格）。 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaPyParadigms = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const O = (id, v, label) => ({ id, v, label: label || String(v) });
+    const S = (id, label, opts) => ({ id, label, options: opts.map((x) => (Array.isArray(x) ? O(x[0], x[1], x[2]) : O(x, x))) });
+    const KEEP = new Set(['range', 'min', 'max', 'sum', 'len', 'sorted', 'print', 'set', 'list', 'int', 'float', 'abs', 'enumerate', 'zip', 'map', 'str', 'dict', 'tuple', 'any', 'all', 'lambda', 'for', 'in', 'if', 'else', 'elif', 'while', 'return', 'break', 'continue', 'def', 'not', 'and', 'or', 'is', 'True', 'False', 'None', 'import', 'from', 'pass', 'deque']);
+    const code = (lines) => lines.join('\n');
+    // 每個骨架的 py(c, N)：c = 選項值（槽位 id → v）；N = 題目的變數。回傳 solve 的 Python 本文（多行）
+    const PARADIGMS = [
+        { id: 'dp.fib', paradigm: 'dynamic-programming', algo: 'fib', when: /^(?![\s\S]*(餘數|取模|mod))/i, label: '一維 DP：費氏數（滾動兩個值）', slots: [S('init', '起始兩個值', [['01', '0, 1'], ['11', '1, 1']]), S('loops', '迴圈次數', [['n', '{n}'], ['n-1', '{n} - 1'], ['n+1', '{n} + 1']]), S('out', '輸出哪一個', [['a', 'a'], ['b', 'b']])],
+            py: (c, N) => code(['a, b = ' + c.init, 'for _ in range(' + c.loops.replace('{n}', N.sc[0]) + '):', '    a, b = b, a + b', 'print(' + c.out + ')']) },
+        { id: 'dp.coin-min', paradigm: 'dynamic-programming', algo: 'coin-min', label: '一維 DP：硬幣最少（dp[金額]）', slots: [S('order', '迴圈順序', ['amount', 'coin']), S('inf', '「湊不出」的值', [['T+1', '{T} + 1'], ['inf', 'float("inf")']]), S('step', '轉移加幾', [['1', '1'], ['0', '0']])],
+            py: (c, N) => { const T = N.sc[1], a = N.ls[0]; const tr = c.order === 'amount' ? ['for x in range(1, ' + T + ' + 1):', '    for c in ' + a + ':', '        if c <= x:', '            dp[x] = min(dp[x], dp[x - c] + ' + c.step + ')'] : ['for c in ' + a + ':', '    for x in range(c, ' + T + ' + 1):', '        dp[x] = min(dp[x], dp[x - c] + ' + c.step + ')']; return code(['INF = ' + c.inf.replace('{T}', T), 'dp = [INF] * (' + T + ' + 1)', 'dp[0] = 0'].concat(tr, ['print(dp[' + T + '] if dp[' + T + '] < INF else -1)'])); } },
+        { id: 'dp.lis', paradigm: 'dynamic-programming', algo: 'lis', label: '一維 DP：最長遞增子序列（dp[i] = 以 i 結尾）', slots: [S('cmp', '前一個與目前的比較', [['<', '<'], ['<=', '<=']]), S('init', 'dp 初值', [['1', '1'], ['0', '0']])],
+            py: (c, N) => { const n = N.sc[0], a = N.ls[0]; return code(['dp = [' + c.init + '] * ' + n, 'for i in range(' + n + '):', '    for j in range(i):', '        if ' + a + '[j] ' + c.cmp + ' ' + a + '[i]:', '            dp[i] = max(dp[i], dp[j] + 1)', 'print(max(dp))']); } },
+        { id: 'dp.knapsack', paradigm: 'dynamic-programming', algo: 'knapsack', label: '一維 DP：0/1 背包（容量由大到小）', slots: [S('dir', '容量走向', [['down', 'down'], ['up', 'up']]), S('ans', '答案', [['dp[W]', 'W'], ['max', 'max']])],
+            py: (c, N) => { const W = N.sc[1], rows = N.ls[0]; const rg = c.dir === 'down' ? 'range(' + W + ', w - 1, -1)' : 'range(w, ' + W + ' + 1)'; return code(['dp = [0] * (' + W + ' + 1)', 'for w, v in ' + rows + ':', '    for j in ' + rg + ':', '        dp[j] = max(dp[j], dp[j - w] + v)', 'print(' + (c.ans === 'W' ? 'dp[' + W + ']' : 'max(dp)') + ')']); } },
+        { id: 'bfs.grid', paradigm: 'bfs', algo: 'grid-bfs', label: 'BFS：網格最短步數', slots: [S('dirs', '可走的方向', [['4', '(1, 0), (-1, 0), (0, 1), (0, -1)'], ['8', '(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)'], ['rd', '(1, 0), (0, 1)']]), S('pass', '哪些格子能走', [['not-wall', "!= '#'"], ['dot', "== '.'"]])],
+            py: (c, N) => { const r = N.sc[0], cc = N.sc[1], g = N.g; return code(['from collections import deque', 'for i in range(' + r + '):', '    for j in range(' + cc + '):', "        if " + g + "[i][j] == 'S':", '            si, sj = i, j', "        if " + g + "[i][j] == 'T':", '            ti, tj = i, j', 'dist = [[-1] * ' + cc + ' for _ in range(' + r + ')]', 'dist[si][sj] = 0', 'q = deque([(si, sj)])', 'while q:', '    x, y = q.popleft()', '    for dx, dy in [' + c.dirs + ']:', '        nx, ny = x + dx, y + dy', '        if 0 <= nx < ' + r + ' and 0 <= ny < ' + cc + ' and ' + g + '[nx][ny] ' + c.pass + ' and dist[nx][ny] == -1:', '            dist[nx][ny] = dist[x][y] + 1', '            q.append((nx, ny))', 'print(dist[ti][tj])']); } },
+        { id: 'dfs.components', paradigm: 'dfs', algo: 'components', label: 'DFS／並查集：連通分量個數', slots: [S('method', '做法', ['dfs', 'union-find']), S('base', '節點編號從幾開始', [['1', '1'], ['0', '0']])],
+            py: (c, N) => { const n = N.sc[0], rows = N.ls[0]; if (c.method === 'dfs') return code(['adj = [[] for _ in range(' + n + ' + 1)]', 'for u, v in ' + rows + ':', '    adj[u].append(v)', '    adj[v].append(u)', 'seen = [False] * (' + n + ' + 1)', 'cnt = 0', 'for s in range(' + c.base + ', ' + n + ' + ' + (c.base === '1' ? '1' : '0') + '):', '    if not seen[s]:', '        cnt += 1', '        seen[s] = True', '        st = [s]', '        while st:', '            u = st.pop()', '            for w in adj[u]:', '                if not seen[w]:', '                    seen[w] = True', '                    st.append(w)', 'print(cnt)']);
+                return code(['p = list(range(' + n + ' + 1))', 'def find(x):', '    while p[x] != x:', '        p[x] = p[p[x]]', '        x = p[x]', '    return x', 'for u, v in ' + rows + ':', '    a1, b1 = find(u), find(v)', '    if a1 != b1:', '        p[a1] = b1', 'print(sum(1 for x in range(' + c.base + ', ' + n + ' + ' + (c.base === '1' ? '1' : '0') + ') if find(x) == x))']); } },
+        { id: 'dc.inversions', paradigm: 'divide-and-conquer', algo: 'inversions', label: '分治：由下而上歸併排序數逆序對（不用巢狀函式，區塊寫得出）', slots: [S('cmp', '左右相等時先取誰', [['<=', '<='], ['<', '<']]), S('add', '取右邊時加多少', [['rest', 'len(l) - i'], ['one', '1']])],
+            py: (c, N) => code(['b = list(' + N.ls[0] + ')', 'w = 1', 'cnt = 0', 'while w < len(b):', '    for lo in range(0, len(b), 2 * w):', '        mid = min(lo + w, len(b))', '        hi = min(lo + 2 * w, len(b))', '        l = b[lo:mid]', '        r = b[mid:hi]', '        res = []', '        i = 0', '        j = 0', '        while i < len(l) and j < len(r):', '            if l[i] ' + c.cmp + ' r[j]:', '                res.append(l[i])', '                i += 1', '            else:', '                res.append(r[j])', '                j += 1', '                cnt += ' + c.add, '        res += l[i:]', '        res += r[j:]', '        b[lo:hi] = res', '    w *= 2', 'print(cnt)']) },
+        { id: 'tree.traversal', paradigm: 'tree-traversal', algo: 'tree-traversal', label: '樹走訪：前序／中序／後序（用明確的堆疊模擬遞迴）', slots: [S('visit', '什麼時候記下節點', ['pre', 'in', 'post']), S('kids', '先走哪個子樹', [['lr', 'l, r'], ['rl', 'r, l']])],
+            py: (c, N) => { const rows = N.ls[0]; const [k1, k2] = c.kids.split(', '); const seq = c.visit === 'pre' ? ['v', k1, k2] : c.visit === 'in' ? [k1, 'v', k2] : [k1, k2, 'v']; const push = seq.slice().reverse().map((x) => '    st.append(' + (x === 'v' ? '(u, 1)' : '(' + x + ', 0)') + ')'); return code(['out = []', 'st = [(1, 0)]', 'while st:', '    u, vis = st.pop()', '    if vis:', '        out.append(u)', '    elif u != 0:', '        l, r = ' + rows + '[u - 1]'].concat(push.map((x) => '    ' + x), ['print(*out)'])); } },
+        { id: 'heap.kth-smallest', paradigm: 'heap', algo: 'kth-smallest', label: '堆積：第 k 小', slots: [S('method', '做法', ['pop', 'nsmallest']), S('off', 'k 的位移', [['0', '0'], ['-1', '-1']])],
+            py: (c, N) => { const k = N.sc[1], a = N.ls[0]; if (c.method === 'pop') return code(['import heapq', 'h = list(' + a + ')', 'heapq.heapify(h)', 'for _ in range(' + k + ' + (' + c.off + ')):', '    x = heapq.heappop(h)', 'print(x)']); return code(['import heapq', 'print(heapq.nsmallest(' + k + ' + (' + c.off + '), ' + a + ')[-1])']); } },
+        { id: 'dp.lps', paradigm: 'dynamic-programming', algo: 'lps', label: '區間 DP：最長回文子序列', slots: [S('base', 'dp[i][i]', [['1', '1'], ['0', '0']]), S('add', '兩端相同時加多少', [['2', '2'], ['1', '1']])],
+            py: (c, N) => { const s = N.s[0]; return code(['n_ = len(' + s + ')', 'dp = [[0] * n_ for _ in range(n_)]', 'for i in range(n_ - 1, -1, -1):', '    dp[i][i] = ' + c.base, '    for j in range(i + 1, n_):', '        if ' + s + '[i] == ' + s + '[j]:', '            dp[i][j] = dp[i + 1][j - 1] + ' + c.add, '        else:', '            dp[i][j] = max(dp[i + 1][j], dp[i][j - 1])', 'print(dp[0][n_ - 1])']); } },
+        { id: 'dp.lcs', paradigm: 'dynamic-programming', algo: 'lcs', label: '二維 DP：最長公共子序列', slots: [S('add', '字元相同時加多少', [['1', '1'], ['2', '2']]), S('miss', '字元不同時', [['max', 'max(dp[i - 1][j], dp[i][j - 1])'], ['up', 'dp[i - 1][j]']])],
+            py: (c, N) => { const s = N.s[0], t = N.s[1]; return code(['n_ = len(' + s + ')', 'm_ = len(' + t + ')', 'dp = [[0] * (m_ + 1) for _ in range(n_ + 1)]', 'for i in range(1, n_ + 1):', '    for j in range(1, m_ + 1):', '        if ' + s + '[i - 1] == ' + t + '[j - 1]:', '            dp[i][j] = dp[i - 1][j - 1] + ' + c.add, '        else:', '            dp[i][j] = ' + c.miss, 'print(dp[n_][m_])']); } },
+        { id: 'matrix.fib-mod', paradigm: 'matrix-power', algo: 'fib', when: /餘數|取模|mod/i, label: '矩陣快速冪：費氏數（n 很大、取餘數；2x2 矩陣用四個變數）', slots: [S('mod', '模數', [['1e9+7', '1000000007'], ['998244353', '998244353']]), S('el', '答案取哪一格', [['rb', 'rb'], ['ra', 'ra']])],
+            py: (c, N) => code(['M = ' + c.mod, 'ra, rb, rc, rd = 1, 0, 0, 1', 'ma, mb, mc, md = 1, 1, 1, 0', 'k = ' + N.sc[0], 'while k:', '    if k & 1:', '        ra, rb, rc, rd = (ra * ma + rb * mc) % M, (ra * mb + rb * md) % M, (rc * ma + rd * mc) % M, (rc * mb + rd * md) % M', '    ma, mb, mc, md = (ma * ma + mb * mc) % M, (ma * mb + mb * md) % M, (mc * ma + md * mc) % M, (mc * mb + md * md) % M', '    k >>= 1', 'print(' + c.el + ' % M)']) },
+        { id: 'bs.lower-bound', paradigm: 'binary-search', algo: 'lower-bound', label: '二分：第一個滿足條件的位置', slots: [S('cmp', '往左收的條件', [['>=', '>='], ['>', '>']]), S('hi', 'hi 的初值', [['n', 'n'], ['n-1', 'n - 1']])],
+            py: (c, N) => { const n = N.sc[0], a = N.ls[0], xs = N.ls[1]; return code(['for xq in ' + xs + ':', '    lo, hi = 0, ' + (c.hi === 'n' ? n : n + ' - 1'), '    while lo < hi:', '        mid = (lo + hi) // 2', '        if ' + a + '[mid] ' + c.cmp + ' xq:', '            hi = mid', '        else:', '            lo = mid + 1', '    print(lo)']); } },
+        { id: 'prefix.range-sum', paradigm: 'prefix-sum', algo: 'range-sum', label: '前綴和：區間和', slots: [S('lo', '左端用哪個索引', [['l-1', 'l - 1'], ['l', 'l']]), S('hi', '右端用哪個索引', [['r', 'r'], ['r+1', 'r + 1']])],
+            py: (c, N) => { const a = N.ls[0], rows = N.ls[1]; return code(['p = [0]', 'for v in ' + a + ':', '    p.append(p[-1] + v)', 'for l, r in ' + rows + ':', '    print(p[' + c.hi + '] - p[' + c.lo + '])']); } },
+        { id: 'hash.word-count', paradigm: 'data-structure-mapping', algo: 'word-count', label: '雜湊計數：字典＋排序輸出', slots: [S('key', '排序依據', [['cnt-desc-word', '-kv[1], kv[0]'], ['cnt-asc-word', 'kv[1], kv[0]'], ['word', 'kv[0]']])],
+            py: (c, N) => { const w = N.ls[0]; return code(['cnt = {}', 'for tok in ' + w + ':', '    cnt[tok] = cnt.get(tok, 0) + 1', 'for k, v in sorted(cnt.items(), key=lambda kv: (' + c.key + ')):', '    print(k, v)']); } },
+        { id: 'stack.brackets', paradigm: 'data-structure-mapping', algo: 'brackets', label: '堆疊：括號配對', slots: [S('match', '遇到右括號時', [['top-match', 'st and st[-1] == pair[ch]'], ['any', 'st']]), S('fin', '最後要求', [['empty', 'not st'], ['true', 'True']])],
+            py: (c, N) => { const s = N.s[0]; return code(['st = []', "pair = {')': '(', ']': '[', '}': '{'}", 'ok = True', 'for ch in ' + s + ':', "    if ch in '([{':", '        st.append(ch)', '    elif ' + c.match + ':', '        st.pop()', '    else:', '        ok = False', '        break', 'print("YES" if ok and ' + c.fin + ' else "NO")']); } },
+        { id: 'sweep.merge-intervals', paradigm: 'sort-and-sweep', algo: 'intervals-merge', label: '排序後掃描：合併區間', slots: [S('touch', '端點相接算重疊嗎', [['<=', '<='], ['<', '<']]), S('sort', '先怎麼排', [['asc', 'sorted({R})'], ['desc', 'sorted({R}, key=lambda t: -t[0])']])],
+            py: (c, N) => { const rows = N.ls[0]; return code(['res = []', 'for l, r in ' + c.sort.replace(/\{R\}/g, rows) + ':', '    if res and l ' + c.touch + ' res[-1][1]:', '        res[-1][1] = max(res[-1][1], r)', '    else:', '        res.append([l, r])', 'for l, r in res:', '    print(l, r)']); } },
+        { id: 'brute.pair-sum', paradigm: 'brute-force', algo: 'pair-sum', label: '暴力雙迴圈：找兩數之和', slots: [S('start', 'j 從哪裡開始', [['i+1', 'i + 1'], ['i', 'i']])],
+            py: (c, N) => { const n = N.sc[0], t = N.sc[1], a = N.ls[0]; return code(['for i in range(' + n + '):', '    for j in range(' + c.start + ', ' + n + '):', '        if ' + a + '[i] + ' + a + '[j] == ' + t + ':', '            print(i, j)', '            return']); } },
+        { id: 'sort.kth-largest', paradigm: 'sort', algo: 'kth-largest', label: '排序後取第 k 個', slots: [S('dedupe', '重複的數怎麼算', [['keep', '{A}'], ['set', 'set({A})']]), S('dir', '排序方向', [['desc', 'True'], ['asc', 'False']]), S('idx', '第 k 個的索引', [['k-1', '{k} - 1'], ['k', '{k}']])],
+            py: (c, N) => { const k = N.sc[1], a = N.ls[0]; return code(['b = sorted(' + c.dedupe.replace('{A}', a) + ', reverse=' + c.dir + ')', 'print(b[' + c.idx.replace('{k}', k) + '])']); } },
+        { id: 'sieve.primes', paradigm: 'sieve', algo: 'primes', label: '篩法：質數個數', slots: [S('lim', '外層迴圈到哪', [['sqrt+1', 'int({n} ** 0.5) + 1'], ['sqrt', 'int({n} ** 0.5)'], ['n+1', '{n} + 1']]), S('start', '劃掉從哪開始', [['i*i', 'i * i'], ['2i', '2 * i']])],
+            py: (c, N) => { const n = N.sc[0]; return code(['p = [True] * (' + n + ' + 1)', 'p[0] = p[1] = False', 'for i in range(2, ' + c.lim.replace(/\{n\}/g, n) + '):', '    if p[i]:', '        for j in range(' + c.start + ', ' + n + ' + 1, i):', '            p[j] = False', 'print(sum(p))']); } },
+        { id: 'nt.gcd-lcm', paradigm: 'number-theory', algo: 'gcd-lcm', label: '數論：輾轉相除求 gcd、由 gcd 求 lcm', slots: [S('lcm', 'lcm 公式', [['a//g*b', '{a} // g * {b}'], ['a*b//g', '{a} * {b} // g'], ['a*b', '{a} * {b}']]), S('order', '輸出順序', [['gl', 'g, l'], ['lg', 'l, g']])],
+            py: (c, N) => { const a = N.sc[0], b = N.sc[1]; return code(['x, y = ' + a + ', ' + b, 'while y:', '    x, y = y, x % y', 'g = x', 'l = ' + c.lcm.replace(/\{a\}/g, a).replace(/\{b\}/g, b), 'print(' + c.order + ')']); } },
+        { id: 'tp.palindrome', paradigm: 'two-pointers', algo: 'palindrome', label: '雙指標／反轉比較：迴文', slots: [S('filt', '保留哪些字元', [['isalnum', 'isalnum()'], ['isalpha', 'isalpha()']]), S('case', '大小寫', [['lower', 'c.lower()'], ['same', 'c']])],
+            py: (c, N) => { const s = N.s[0]; return code(['t = [' + c.case + ' for c in ' + s + ' if c.' + c.filt + ']', 'print("YES" if t == t[::-1] else "NO")']); } },
+        { id: 'hash.anagram', paradigm: 'data-structure-mapping', algo: 'anagram', label: '雜湊／排序：變位詞', slots: [S('eq', '比什麼', [['sorted', 'sorted({s}) == sorted({t})'], ['set', 'set({s}) == set({t})'], ['len', 'len({s}) == len({t})']])],
+            py: (c, N) => { const s = N.s[0], t = N.s[1]; return 'print("YES" if ' + c.eq.replace(/\{s\}/g, s).replace(/\{t\}/g, t) + ' else "NO")'; } },
+        { id: 'bt.n-queens', paradigm: 'backtracking', algo: 'n-queens', label: '回溯：N 皇后方案數（用 p[row] 與 row 指標模擬遞迴）', slots: [S('diag', '斜線衝突', [['both', 'abs(p[i] - p[row]) == row - i'], ['one', 'p[i] - p[row] == row - i']]), S('last', '放完最後一列的判斷', [['n-1', 'row == {n} - 1'], ['n', 'row == {n}']])],
+            py: (c, N) => { const n = N.sc[0]; return code(['p = [-1] * ' + n, 'row = 0', 'cnt = 0', 'while row >= 0:', '    p[row] = p[row] + 1', '    if p[row] >= ' + n + ':', '        p[row] = -1', '        row -= 1', '    else:', '        ok = True', '        for i in range(row):', '            if p[i] == p[row] or ' + c.diag + ':', '                ok = False', '        if ok:', '            if ' + c.last.replace('{n}', n) + ':', '                cnt += 1', '            else:', '                row += 1', 'print(cnt)']); } },
+        { id: 'sp.dijkstra', paradigm: 'shortest-path', algo: 'dijkstra', label: '圖最短路：Dijkstra（堆積）', slots: [S('dir', '邊的方向', [['undirected', 'undirected'], ['directed', 'directed']]), S('un', '不可達輸出', [['-1', '-1'], ['INF', 'INF']]), S('base', '輸出節點範圍', [['1', '1'], ['0', '0']])],
+            py: (c, N) => { const n = N.sc[0], s = N.sc[2], rows = N.ls[0]; return code(['import heapq', 'adj = [[] for _ in range(' + n + ' + 1)]', 'for u, v, w in ' + rows + ':', '    adj[u].append((v, w))'].concat(c.dir === 'undirected' ? ['    adj[v].append((u, w))'] : [], ['INF = 10 ** 18', 'dist = [INF] * (' + n + ' + 1)', 'dist[' + s + '] = 0', 'h = [(0, ' + s + ')]', 'while h:', '    d, u = heapq.heappop(h)', '    if d > dist[u]:', '        continue', '    for v, w in adj[u]:', '        if d + w < dist[v]:', '            dist[v] = d + w', '            heapq.heappush(h, (d + w, v))', 'out = []', 'for i in range(' + c.base + ', ' + n + ' + 1):', '    if dist[i] < INF:', '        out.append(dist[i])', '    else:', '        out.append(' + c.un + ')', 'print(*out)'])); } },
+        { id: 'fenwick.point-range', paradigm: 'fenwick-tree', algo: 'fenwick', label: '樹狀陣列：單點加、區間和', slots: [S('lo', '區間左端扣掉', [['x-1', 'x - 1'], ['x', 'x']]), S('hi', '區間右端', [['y', 'y'], ['y+1', 'y + 1']])],
+            py: (c, N) => { const n = N.sc[0], a = N.ls[0], rows = N.ls[1]; return code(['bit = [0] * (' + n + ' + 1)', 'for i in range(' + n + '):', '    j = i + 1', '    while j <= ' + n + ':', '        bit[j] = bit[j] + ' + a + '[i]', '        j = j + (j & -j)', 'for tp, x, y in ' + rows + ':', '    if tp == 1:', '        j = x', '        while j <= ' + n + ':', '            bit[j] = bit[j] + y', '            j = j + (j & -j)', '    else:', '        hi_s = 0', '        j = ' + c.hi, '        while j > 0:', '            hi_s = hi_s + bit[j]', '            j = j - (j & -j)', '        lo_s = 0', '        j = ' + c.lo, '        while j > 0:', '            lo_s = lo_s + bit[j]', '            j = j - (j & -j)', '        print(hi_s - lo_s)']); } },
+        { id: 'str.kmp-count', paradigm: 'kmp', algo: 'str-match', label: '字串匹配：KMP 數出現次數', slots: [S('ov', '配到一次後 j 回到', [['f[j-1]', 'f[j - 1]'], ['0', '0']]), S('fb', '失配時退幾次', [['while', 'while'], ['if', 'if']])],
+            py: (c, N) => { const s = N.s[0], t = N.s[1]; return code(['f = [0] * len(' + t + ')', 'k = 0', 'for i in range(1, len(' + t + ')):', '    ' + c.fb + ' k > 0 and ' + t + '[i] != ' + t + '[k]:', '        k = f[k - 1]', '    if ' + t + '[i] == ' + t + '[k]:', '        k = k + 1', '    f[i] = k', 'cnt = 0', 'j = 0', 'for i in range(len(' + s + ')):', '    ' + c.fb + ' j > 0 and ' + s + '[i] != ' + t + '[j]:', '        j = f[j - 1]', '    if ' + s + '[i] == ' + t + '[j]:', '        j = j + 1', '    if j == len(' + t + '):', '        cnt = cnt + 1', '        j = ' + c.ov.replace('j-1', 'j - 1'), 'print(cnt)']); } },
+    ];
+    const byId = {}; PARADIGMS.forEach((p) => { byId[p.id] = p; });
+    // 領域包註冊：把領域的骨架加進骨架表（id 不可重複）
+    function addSkeletons(list, domain) { let n = 0; for (const sk of list || []) { if (byId[sk.id]) continue; if (domain) sk.domain = domain; PARADIGMS.push(sk); byId[sk.id] = sk; n++; } return n; }
+    const forIntent = (intent, statement) => (intent && intent.algo ? PARADIGMS.filter((p) => p.algo === intent.algo && (!p.when || statement == null || p.when.test(String(statement)))) : []);
+    const namesOf = (intent) => {
+        const N = { sc: [], ls: [], s: [], g: null }; for (const v of intent.vars) { if (v.type === 'list') N.ls.push(v.name); else if (v.type === 'str') N.s.push(v.name); else N.sc.push(v.name); }
+        const grid = intent.inputs.find((i) => i.k === 'grid'); if (grid) { N.g = grid.name; N.ls = N.ls.filter((x) => x !== grid.name); }
+        return N;
+    };
+    // 窮舉組合（各槽位選項的笛卡兒積）；rank 越高越先試；超過 limit 只留前 limit 個
+    function combos(sk, o) {
+        o = o || {}; const limit = o.limit || 12; let out = [{}];
+        for (const sl of sk.slots) { const nx = []; for (const c of out) for (const op of sl.options) nx.push(Object.assign({}, c, { [sl.id]: op.id })); out = nx; }
+        if (o.rank) out = out.map((c, i) => ({ c, i, r: o.rank(sk, c) || 0 })).sort((a, b) => b.r - a.r || a.i - b.i).map((x) => x.c);
+        return out.slice(0, limit);
+    }
+    // 題目的變數名稱先用 \u0001名稱\u0002 包起來；骨架裡的局部變數若撞到某個題目變數的名稱，就改成 名稱_2，最後拿掉標記
+    const MARK = /\u0001([^\u0002]*)\u0002/g;
+    function render(sk, choice, intent) {
+        const N0 = namesOf(intent); const params = intent.vars.map((v) => v.name); const w = (x) => '\u0001' + x + '\u0002';
+        const N = { sc: N0.sc.map(w), ls: N0.ls.map(w), s: N0.s.map(w), g: N0.g && w(N0.g) }; const vals = {};
+        for (const sl of sk.slots) { const op = sl.options.find((x) => x.id === choice[sl.id]); if (!op) throw new Error('槽位 ' + sl.id + ' 沒有選項 ' + choice[sl.id]); vals[sl.id] = op.v; }
+        const P = new Set(params); let py = sk.py(vals, N);
+        py = py.replace(/\u0001[^\u0002]*\u0002|'[^']*'|"[^"]*"|\b[A-Za-z_]\w*\b/g, (t) => (P.has(t) && !KEEP.has(t) ? t + '_2' : t)).replace(MARK, '$1');
+        return '程式區塊：\n' + py.split('\n').map((l) => '  ' + l).join('\n');
+    }
+    async function solve(o) {
+        const intent = o.intent; const sks = o.skeleton ? [o.skeleton] : forIntent(intent, o.statement); const trace = []; let tried = 0;
+        if (!sks.length) return { ok: false, reason: '這題的算法（' + (intent && intent.algo) + '）沒有範式骨架', tried, trace };
+        for (const sk of sks) {
+            for (const choice of combos(sk, { limit: o.limit, rank: o.rank })) {
+                let cnl; try { cnl = render(sk, choice, intent); } catch (e) { trace.push({ skeleton: sk.id, choice, verdict: 'RENDER_ERROR', detail: String(e.message || e) }); continue; }
+                tried++; let v; try { v = await o.judge(cnl); } catch (e) { v = { verdict: 'JUDGE_ERROR', detail: String(e.message || e) }; }
+                trace.push({ skeleton: sk.id, choice, verdict: v.verdict, detail: v.detail });
+                if (v.verdict === 'AC' || v.verdict === 'UNCHECKED') return { ok: true, skeleton: sk.id, paradigm: sk.paradigm, choice, cnl, tried, verdict: v.verdict, trace };
+            }
+        }
+        return { ok: false, reason: '範式骨架的所有槽位組合（' + tried + ' 個）都沒通過沙盒', tried, trace };
+    }
+    return { PARADIGMS, byId, forIntent, combos, render, solve, namesOf, addSkeletons, dsl: { S, O, code } };
+});
+
+}).call(null, undefined, holder);
+return holder.FaPyParadigms;
+})();
+/* PYPARADIGMS-END */
+/* DOMAINREG-BEGIN */
+const FaDomains = (function () {
+const holder = {};
+(function (module, self) {
+/* 領域包（domain pack）註冊：block-writer 從競賽算法題擴成多領域。純函式 UMD，Python 專屬（每個語言各自一份）。
+ * 一個領域包是一份資料＋骨架，格式（make(PAR) 回傳）：
+ *   { id, label, requires:[領域 id], judge:{checker, eps}, algos:[{key, re}], paradigms:{algo: [範式名…]}, skeletons:[骨架…], seeds:[種子題…] }
+ *     algos       這個領域的「算法種類」詞彙（敘述的關鍵字 → key）；register 時插在通用詞彙之前（領域詞彙比通用詞彙具體）
+ *     skeletons   跟 py_paradigms_core.PARADIGMS 同格式 {id, paradigm, algo, label, slots, py(c, N), when?}，每個 ≤12 個槽位組合
+ *     judge       這個領域的判題方式（DSP＝float 容差）；host 組判題題目時用 judgeOf(algo)
+ *     requires    領域之間的積木相依：被相依的領域要先註冊；骨架可用 uses(領域 id, 骨架 id) 引用別的領域的片段（snippet）
+ *     seeds       自帶的種子題 {id, st, ref, gen, rw?, want, hidden?}；領域測試用同一個驗證流程（不給課、0 次模型、原敘述＋改寫＋選項反序）
+ *   register(pack, {AI, PAR}) → {ok, algos, skeletons}     先檢查 requires、id 不重複，再把 algos 加進 AI、skeletons 加進 PAR
+ *   judgeOf(algo) → {checker, eps} | null                  算法種類屬於哪個領域、該怎麼判
+ *   snippet(領域 id, 名稱) → 字串                           領域公開的程式片段（供相依它的領域引用）
+ *   list() → [{id, label, algos, skeletons}] */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaDomains = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const packs = new Map(); const algoDomain = new Map();
+    function register(pack, env) {
+        if (!pack || !pack.id) return { ok: false, reason: '領域包要有 id' };
+        if (packs.has(pack.id)) return { ok: true, already: true, algos: 0, skeletons: 0 };
+        for (const r of pack.requires || []) if (!packs.has(r)) return { ok: false, reason: '領域 ' + pack.id + ' 相依 ' + r + '，要先註冊它' };
+        const na = env.AI.addAlgos(pack.algos, pack.paradigms); const ns = env.PAR.addSkeletons(pack.skeletons, pack.id);
+        packs.set(pack.id, pack); for (const a of pack.algos || []) algoDomain.set(a.key, pack.id);
+        return { ok: true, algos: na, skeletons: ns };
+    }
+    const judgeOf = (algo) => { const d = packs.get(algoDomain.get(algo)); return d && d.judge ? d.judge : null; };
+    const snippet = (domain, name) => { const d = packs.get(domain); return d && d.snippets && d.snippets[name] || ''; };
+    const list = () => [...packs.values()].map((p) => ({ id: p.id, label: p.label, algos: (p.algos || []).length, skeletons: (p.skeletons || []).length }));
+    const get = (id) => packs.get(id) || null;
+    return { register, judgeOf, snippet, list, get };
+});
+
+}).call(null, undefined, holder);
+return holder.FaDomains;
+})();
+/* DOMAINREG-END */
+/* DOMAINDSP-BEGIN */
+const FaDomainDsp = (function () {
+const holder = {};
+(function (module, self) {
+/* 領域包：數位訊號處理（DSP）。格式見 domain_registry_core.js。判題用 float 容差（相對誤差，逐詞比對數字；複數就輸出實部、虛部兩個詞）。
+ * 17 個範式骨架（每個 ≤12 個槽位組合）。DFT＝矩陣乘法、FIR 卷積＝Toeplitz 矩陣乘法、IIR＝狀態空間遞推，所以這個領域的範式多半也是矩陣範式（見 DESIGN.matrix-algorithms.md）。
+ * 骨架用 numpy 以外的純 Python（只用 math），因為骨架走「程式區塊：」→ parseCNL，且判題沙盒不保證有 numpy。 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaDomainDsp = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    function make(PAR) {
+        const { S, code } = PAR.dsl; const PR = 'print(" ".join("%.6f" % v for v in out))';
+        const D = (id, algo, paradigm, label, slots, py) => ({ id, algo, paradigm, label, slots, py });
+        const skeletons = [
+            D('dsp.moving-average', 'moving-average', 'sliding-window', '滑動平均（視窗長 k，只輸出完整視窗）', [S('rng', '輸出幾個', [['n-k+1', 'n - k + 1'], ['n-k', 'n - k']]), S('div', '除以', [['k', 'k'], ['k-1', 'k - 1']])],
+                (c, N) => { const n = N.sc[0], k = N.sc[1], a = N.ls[0]; return code(['out = []', 'for i in range(' + c.rng.replace(/n/g, n).replace(/k/g, k) + '):', '    t = 0.0', '    for j in range(' + k + '):', '        t = t + ' + a + '[i + j]', '    out.append(t / (' + c.div.replace(/k/g, k) + '))', PR]); }),
+            D('dsp.fir-conv', 'fir-conv', 'matrix-toeplitz', 'FIR 濾波＝線性卷積（輸出長度 n+m-1）', [S('len', '輸出長度', [['n+m-1', 'n + m - 1'], ['n+m', 'n + m'], ['max', 'max(n, m)']]), S('tap', '係數索引', [['h[j]', 'h[j]'], ['h[m-1-j]', 'h[m - 1 - j]']])],
+                (c, N) => { const n = N.sc[0], m = N.sc[1], x = N.ls[0], h = N.ls[1]; const L = c.len.replace(/\bn\b/g, n).replace(/\bm\b/g, m); const tap = c.tap.replace(/\bh\b/g, h).replace(/\bm\b/g, m); return code(['out = [0.0] * (' + L + ')', 'for i in range(' + n + '):', '    for j in range(' + m + '):', '        out[i + j] = out[i + j] + ' + x + '[i] * ' + tap, PR]); }),
+            D('dsp.dft-magnitude', 'dft-mag', 'matrix-dft', 'DFT 的幅度（O(N²) 的 DFT 矩陣乘法）', [S('sign', '指數的正負號', [['-', '-'], ['+', '+']]), S('norm', '係數', [['1', '1'], ['1/n', '1 / {n}']]), S('hi', '輸出幾個頻率', [['n', '{n}'], ['n/2+1', '{n} // 2 + 1']])],
+                (c, N) => { const n = N.sc[0], x = N.ls[0]; return code(['import math', 'out = []', 'for k in range(' + c.hi.replace(/\{n\}/g, n) + '):', '    re = 0.0', '    im = 0.0', '    for t in range(' + n + '):', '        ang = ' + c.sign + ' 2 * math.pi * k * t / ' + n, '        re = re + ' + x + '[t] * math.cos(ang)', '        im = im + ' + x + '[t] * math.sin(ang)', '    out.append(math.sqrt(re * re + im * im) * ' + c.norm.replace(/\{n\}/g, n) + ')', PR]); }),
+            D('dsp.dominant-freq', 'dominant-freq', 'matrix-dft', '主頻：DFT 幅度最大的頻率（Hz）', [S('lo', '從哪個頻率格開始', [['1', '1'], ['0', '0']]), S('hi', '到哪', [['n/2+1', '{n} // 2 + 1'], ['n', '{n}']]), S('cmp', '幅度相同時', [['>', '>'], ['>=', '>=']])],
+                (c, N) => { const fs = N.sc[0], n = N.sc[1], x = N.ls[0]; return code(['import math', 'best = -1.0', 'bk = 0', 'for k in range(' + c.lo + ', ' + c.hi.replace(/\{n\}/g, n) + '):', '    re = 0.0', '    im = 0.0', '    for t in range(' + n + '):', '        ang = 2 * math.pi * k * t / ' + n, '        re = re + ' + x + '[t] * math.cos(ang)', '        im = im - ' + x + '[t] * math.sin(ang)', '    mag = math.sqrt(re * re + im * im)', '    if mag ' + c.cmp + ' best:', '        best = mag', '        bk = k', 'print("%.6f" % (bk * ' + fs + ' / ' + n + '))']); }),
+            D('dsp.autocorr', 'autocorr', 'matrix-toeplitz', '自相關 r[k]＝Σ x[i]·x[i+k]（未歸一化）', [S('cnt', '每個落差加幾項', [['n-k', '{n} - k'], ['n-k-1', '{n} - k - 1']]), S('div', '除以', [['1', '1'], ['n', '{n}']])],
+                (c, N) => { const n = N.sc[0], L = N.sc[1], x = N.ls[0]; return code(['out = []', 'for k in range(' + L + ' + 1):', '    t = 0.0', '    for i in range(' + c.cnt.replace(/\{n\}/g, n) + '):', '        t = t + ' + x + '[i] * ' + x + '[i + k]', '    out.append(t / ' + c.div.replace(/\{n\}/g, n) + ')', PR]); }),
+            D('dsp.xcorr-lag', 'xcorr-lag', 'matrix-toeplitz', '互相關的最佳落差（r[l]＝Σ x[i]·y[i+l]，取最大者；同分取較小的 l）', [S('sgn', 'y 的索引', [['i+l', 'i + lag'], ['i-l', 'i - lag']]), S('tie', '同分時換不換', [['>', '>'], ['>=', '>=']])],
+                (c, N) => { const n = N.sc[0], x = N.ls[0], y = N.ls[1]; return code(['best = -1e30', 'bl = 0', 'for lag in range(-(' + n + ' - 1), ' + n + '):', '    t = 0.0', '    for i in range(' + n + '):', '        j = ' + c.sgn.replace(/\bi\b/, 'i'), '        if 0 <= j < ' + n + ':', '            t = t + ' + x + '[i] * ' + y + '[j]', '    if t ' + c.tie + ' best:', '        best = t', '        bl = lag', 'print(bl)']).replace(/j = i \+ l\b|j = i - l\b/, (m) => m); }),
+            D('dsp.iir-lowpass', 'iir-lowpass', 'state-space', '一階 IIR 低通（指數平滑）：y[i]＝α·x[i]＋(1−α)·y[i−1]', [S('init', 'y 的初值', [['0', '0.0'], ['x0', '{x}[0]']]), S('form', '哪一項乘 α', [['x', 'alpha * {x}[i] + (1 - alpha) * prev'], ['prev', '(1 - alpha) * {x}[i] + alpha * prev']])],
+                (c, N) => { const n = N.sc[0], al = N.sc[1], x = N.ls[0]; return code(['out = []', 'prev = ' + c.init.replace(/\{x\}/g, x), 'for i in range(' + n + '):', '    prev = ' + c.form.replace(/\balpha\b/g, al).replace(/\{x\}/g, x), '    out.append(prev)', PR]); }),
+            D('dsp.biquad', 'biquad', 'state-space', '二階 IIR（雙二階，直接 I 型）：y＝b0·x＋b1·x1＋b2·x2 ∓ a1·y1 ∓ a2·y2', [S('sgn', 'a 係數項的正負號', [['-', '-'], ['+', '+']])],
+                (c, N) => { const n = N.sc[0], b0 = N.sc[1], b1 = N.sc[2], b2 = N.sc[3], a1 = N.sc[4], a2 = N.sc[5], x = N.ls[0]; return code(['x1 = 0.0', 'x2 = 0.0', 'y1 = 0.0', 'y2 = 0.0', 'out = []', 'for i in range(' + n + '):', '    y = ' + b0 + ' * ' + x + '[i] + ' + b1 + ' * x1 + ' + b2 + ' * x2 ' + c.sgn + ' ' + a1 + ' * y1 ' + c.sgn + ' ' + a2 + ' * y2', '    x2 = x1', '    x1 = ' + x + '[i]', '    y2 = y1', '    y1 = y', '    out.append(y)', PR]); }),
+            D('dsp.window', 'window', 'pointwise', '加窗（漢寧／漢明）：x[i]·(a−b·cos(2πi/(N−1)))', [S('den', '分母', [['n-1', '{n} - 1'], ['n', '{n}']]), S('form', '窗的種類', [['hann', '0.5 - 0.5'], ['hamming', '0.54 - 0.46']])],
+                (c, N) => { const n = N.sc[0], x = N.ls[0]; return code(['import math', 'out = []', 'for i in range(' + n + '):', '    w = ' + c.form + ' * math.cos(2 * math.pi * i / (' + c.den.replace(/\{n\}/g, n) + '))', '    out.append(' + x + '[i] * w)', PR]); }),
+            D('dsp.peaks', 'peaks', 'sliding-window', '峰值偵測：比左右鄰居都大的位置', [S('cmp', '比較', [['>', '>'], ['>=', '>=']]), S('none', '沒有峰值時輸出', [['-1', '-1'], ['empty', '']])],
+                (c, N) => { const n = N.sc[0], x = N.ls[0]; return code(['out = []', 'for i in range(1, ' + n + ' - 1):', '    if ' + x + '[i] ' + c.cmp + ' ' + x + '[i - 1] and ' + x + '[i] ' + c.cmp + ' ' + x + '[i + 1]:', '        out.append(i)', 'if out:', '    print(*out)', 'else:', '    print(' + (c.none === '-1' ? '-1' : '') + ')']); }),
+            D('dsp.downsample', 'downsample', 'pointwise', '降取樣（每 M 點取一點）', [S('off', '從第幾點開始', [['0', '0'], ['m-1', '{m} - 1']])],
+                (c, N) => { const m = N.sc[1], x = N.ls[0]; return code(['out = ' + x + '[' + c.off.replace(/\{m\}/g, m) + '::' + m + ']', PR]); }),
+            D('dsp.upsample', 'upsample', 'pointwise', '升取樣（每點後補 L−1 個 0）', [S('pos', '補零的位置', [['after', 'after', '每點後面補零'], ['before', 'before', '每點前面補零']])],
+                (c, N) => { const n = N.sc[0], L = N.sc[1], x = N.ls[0]; return code(['out = []', 'for i in range(' + n + '):'].concat(c.pos === 'after' ? ['    out.append(' + x + '[i])', '    for j in range(' + L + ' - 1):', '        out.append(0.0)'] : ['    for j in range(' + L + ' - 1):', '        out.append(0.0)', '    out.append(' + x + '[i])'], [PR])); }),
+            D('dsp.rms', 'rms', 'reduction', '均方根（RMS）', [S('den', '除以', [['n', '{n}'], ['n-1', '{n} - 1']]), S('root', '開根號嗎', [['sqrt', 'math.sqrt(t / ({d}))'], ['none', '(t / ({d}))']])],
+                (c, N) => { const n = N.sc[0], x = N.ls[0]; const d = c.den.replace(/\{n\}/g, n); return code(['import math', 't = 0.0', 'for v in ' + x + ':', '    t = t + v * v', 'print("%.6f" % ' + c.root.replace(/\{d\}/g, d) + ')']); }),
+            D('dsp.zero-cross', 'zero-cross', 'sliding-window', '過零次數（相鄰兩點一正一負）', [S('cmp', '判斷', [['<0', '< 0'], ['<=0', '<= 0']])],
+                (c, N) => { const n = N.sc[0], x = N.ls[0]; return code(['cnt = 0', 'for i in range(1, ' + n + '):', '    if ' + x + '[i - 1] * ' + x + '[i] ' + c.cmp + ':', '        cnt = cnt + 1', 'print(cnt)']); }),
+            D('dsp.diff', 'diff', 'pointwise', '一階差分', [S('first', '第一點', [['x0', '{x}[0]'], ['zero', '0.0']]), S('ord', '誰減誰', [['cur-prev', '{x}[i] - {x}[i - 1]'], ['prev-cur', '{x}[i - 1] - {x}[i]']])],
+                (c, N) => { const n = N.sc[0], x = N.ls[0]; return code(['out = [' + c.first.replace(/\{x\}/g, x) + ']', 'for i in range(1, ' + n + '):', '    out.append(' + c.ord.replace(/\{x\}/g, x) + ')', PR]); }),
+            D('dsp.integrate', 'integrate', 'state-space', '累積梯形積分（取樣間隔 dt）', [S('rule', '積分法', [['trap', '({x}[i] + {x}[i - 1]) / 2 * {dt}'], ['rect', '{x}[i] * {dt}']]), S('y0', '起點', [['0', '0.0'], ['x0dt', '{x}[0] * {dt}']])],
+                (c, N) => { const n = N.sc[0], dt = N.sc[1], x = N.ls[0]; const f = (s) => s.replace(/\{x\}/g, x).replace(/\{dt\}/g, dt); return code(['out = [' + f(c.y0) + ']', 'for i in range(1, ' + n + '):', '    out.append(out[i - 1] + ' + f(c.rule) + ')', PR]); }),
+            D('dsp.frame-energy', 'frame-energy', 'sliding-window', '分幀：每一幀（長 L、跳 H）的能量（平方和）', [S('rng', '幀的個數', [['n-L+1', '{n} - {L} + 1'], ['n', '{n}']]), S('sq', '能量', [['sq', 'v * v'], ['abs', 'abs(v)']])],
+                (c, N) => { const n = N.sc[0], L = N.sc[1], H = N.sc[2], x = N.ls[0]; return code(['out = []', 'for st in range(0, ' + c.rng.replace(/\{n\}/g, n).replace(/\{L\}/g, L) + ', ' + H + '):', '    t = 0.0', '    for v in ' + x + '[st:st + ' + L + ']:', '        t = t + ' + c.sq, '    out.append(t)', PR]); }),
+        ];
+        const algos = [['moving-average', /滑動平均|移動平均/], ['fir-conv', /卷積/], ['dominant-freq', /主頻|主要頻率|最大振幅的頻率/], ['dft-mag', /(DFT|離散傅立葉).*(幅度|振幅)|(幅度|振幅).*(DFT|離散傅立葉)/], ['xcorr-lag', /互相關/], ['autocorr', /自相關/], ['biquad', /雙二階|二階.*IIR|biquad/i], ['iir-lowpass', /一階.*低通|低通.*一階|指數平滑/], ['window', /漢寧|漢明|Hann|Hamming|加窗/i], ['peaks', /峰值|局部極大/], ['downsample', /降取樣/], ['upsample', /升取樣/], ['rms', /均方根|RMS/i], ['zero-cross', /過零|零交越/], ['diff', /差分/], ['integrate', /梯形.*積分|積分.*梯形/], ['frame-energy', /分幀|幀.*能量/]].map(([key, re]) => ({ key, re }));
+        const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = [sk.paradigm];
+        return { id: 'dsp', label: '數位訊號處理', requires: [], judge: { checker: 'float', eps: 1e-4 }, algos, paradigms, skeletons };
+    }
+    return { make };
+});
+
+}).call(null, undefined, holder);
+return holder.FaDomainDsp;
+})();
+/* DOMAINDSP-END */
+/* PYUMLPIPELINE-BEGIN */
+const FaPyUmlPipeline = (function () {
+const holder = {};
+(function (module, self) {
+/* Python：uml_design → 骨架 → 區塊 → 沙盒驗證。純函式 UMD，Python 專屬。
+ *
+ *   ① uml_design（FaUml.scenarioToModel + 算法題讀取器 FaAlgoIntent.reader）把題目讀成 UML：Solver.main／readInput／solve(參數)，0 次模型呼叫
+ *   ② 骨架：UML 模型 → Python（toPython）：每個操作是一個函式；引入區提升到模組最上面
+ *   ③ body：
+ *        readInput、main：程式直接用區塊生成（輸入格式來自程式讀情境，不問模型）
+ *        solve：先試「動作表配方」（敘述裡直接寫出運算式、最大值／最小值／總和／反轉單字…）；配方交沙盒驗證，沒過就退回
+ *               區塊迴圈（庫存＋範本，模型只在合法選單裡微選擇；參數就是庫存的起點）
+ *   ④ 沙盒驗證：判題器跑範例，沒過把判決回饋給區塊迴圈重寫
+ *
+ *   buildFromUML({statement, uml:{hints, model}, B, R, C2U, FaPyBody, Choose, pick?, judge?, rounds?, Lessons?, lessons?, Paradigms?, paradigmLimit?, paradigmRank?}) → {ok, source, model, cnl, usedModel, recipe, paradigm, slots, tried, rounds, steps, forced}
+ * judge(source) → Promise<{verdict, detail}>；pick 只有走模型路徑才會用到。 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaPyUmlPipeline = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const snake = (s) => String(s).replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
+    // 程式讀情境得到的輸入格式 → 區塊（受控自然語言）
+    function readInputCNL(intent) {
+        const L = [];
+        for (const inp of intent.inputs) {
+            if (inp.k === 'scalars') L.push(inp.names.length === 1 ? (inp.type === 'float' ? '讀入小數 ' : '讀入整數 ') + inp.names[0] : inp.type === 'float' ? '程式：' + inp.names.join(', ') + ' = map(float, input().split())' : '讀入一行整數 ' + inp.names.join(', '));
+            else if (inp.k === 'list') L.push(inp.elem === 'str' ? '讀入一行並切成單字 ' + inp.name : inp.elem === 'float' ? '程式：' + inp.name + ' = list(map(float, input().split()))' : '讀入一行整數成清單 ' + inp.name);
+            else if (inp.k === 'words') L.push('讀入一行並切成單字 ' + inp.name);
+            else if (inp.k === 'str') L.push('讀入一行文字並去掉首尾空白 ' + inp.name);
+            else if (inp.k === 'grid') L.push('讀入 ' + inp.count + ' 行文字（去空白）成清單 ' + inp.name);
+            else if (inp.k === 'rows') L.push(inp.names.length === 2 ? '讀入 ' + inp.count + ' 行兩個整數成清單 ' + inp.name : '程式：' + inp.name + ' = [tuple(map(int, input().split())) for _ in range(' + inp.count + ')]');
+        }
+        const vs = intent.vars.map((v) => v.name); L.push('回傳 ' + vs.join(', ')); return L.join('\n');
+    }
+    function mainCNL(intent) { const vs = intent.vars.map((v) => v.name); return (vs.length ? '令 ' + vs.join(', ') + ' 等於 read_input()\n' : '') + '程式：solve(' + vs.join(', ') + ')'; }
+    // 動作表配方：敘述裡直接寫出運算式、或單一清單上的最大值／最小值／總和、單字反轉。只在「很明確」時給；是否正確由沙盒驗證決定
+    function recipeCNL(intent) {
+        const g = intent.goal; const lists = intent.vars.filter((v) => v.type === 'list'); const only = intent.inputs.length;
+        if (g.expr) return { name: '敘述裡的運算式', cnl: '印出 ' + g.expr };
+        const hasRows = intent.inputs.some((i) => i.k === 'rows' || i.k === 'grid'); const oneList = lists.length === 1 && !hasRows;
+        if (oneList && g.verbs.includes('max') && !g.verbs.includes('search')) return { name: '單一清單的最大值', cnl: '印出 max(' + lists[0].name + ')' };
+        if (oneList && g.verbs.includes('min') && !g.verbs.includes('search')) return { name: '單一清單的最小值', cnl: '印出 min(' + lists[0].name + ')' };
+        if (oneList && g.verbs.includes('sum') && !g.verbs.includes('search')) return { name: '單一清單的總和', cnl: '印出 sum(' + lists[0].name + ')' };
+        const words = intent.inputs.find((i) => i.k === 'words'); if (only === 1 && words && g.verbs.includes('reverse')) return { name: '單字順序反過來', cnl: '印出 " ".join(' + words.name + '[::-1])' };
+        return null;
+    }
+    async function buildFromUML(o) {
+        const B = o.B, R = o.R; const intent = o.uml.hints && o.uml.hints.intent; if (!intent) return { ok: false, reason: '這份 UML 不是算法題讀取器讀出來的（沒有意圖）' };
+        const umlOps = o.uml.model.classes.flatMap((c) => c.ops.map((x) => ({ name: snake(x.name), params: x.params.map((p) => p.name) })));
+        const names = umlOps.map((x) => x.name); for (const need of ['read_input', 'solve', 'main']) if (!names.includes(need)) return { ok: false, reason: 'UML 沒有操作 ' + need };
+        const parse = (cnl) => { const pr = B.parseCNL(cnl); if (!pr.ok) throw new Error('區塊解析失敗：' + JSON.stringify(pr.errors.slice(0, 2)) + '\n' + cnl); return B.toIR(pr.blocks); };
+        const cnl = { read_input: readInputCNL(intent), main: mainCNL(intent) }; const bodies = { read_input: parse(cnl.read_input), main: parse(cnl.main) };
+        const mkModel = (solveIR, imports) => {
+            const mk = (name, params, body, ret) => ({ name, params: params.map((n) => ({ name: n, type: { base: 'any', args: [] } })), returns: { base: 'any', args: [] }, visibility: '+', static: true, body });
+            const ops = [mk('read_input', [], bodies.read_input), mk('solve', intent.vars.map((v) => v.name), solveIR), mk('main', [], bodies.main)];
+            const model = { name: 'Module', actors: ['User'], relations: [], usecases: [], prelude: imports || [], order: [], classes: [{ name: 'Module', kind: 'class', attrs: [], values: [], ops }] };
+            model.order = model.prelude.map((x) => ({ t: 's', s: x })).concat(ops.map((o2) => ({ t: 'f', o: o2 }))); return model;
+        };
+        const res = { ok: true, cnl, usedModel: false, recipe: null, rounds: [], steps: 0, forced: 0 };
+        // ---- 配方（程式讀情境）：能直接對出來就不問模型；沙盒驗證沒過才退回 ----
+        const rec = recipeCNL(intent);
+        if (rec) {
+            const ir = parse(rec.cnl); const model = mkModel(ir); const source = o.C2U.toPython(model); let v = { verdict: 'UNCHECKED', detail: '' }; if (o.judge) v = await o.judge(source);
+            res.rounds.push({ by: 'recipe', recipe: rec.name, verdict: v.verdict, detail: v.detail });
+            if (v.verdict === 'AC' || v.verdict === 'UNCHECKED') return Object.assign(res, { source, model, recipe: rec.name, cnl: Object.assign(cnl, { solve: rec.cnl }), verdict: v.verdict });
+        }
+        // ---- 課（老師教過、驗證過的做法）：同一種算法、同樣的輸入形狀就直接套用，不問模型；沙盒驗證沒過才退回 ----
+        let lesson = o.Lessons && o.Lessons.matchLesson(o.lessons || [], intent);
+        // 課若記了範式（paradigm）、而這題的敘述挑出的骨架不含它（例如費氏「取餘數」要矩陣快速冪、不能用滾動兩個值的 DP），就不先試課：直接走範式，免得 n 很大時課逾時
+        if (lesson && lesson.paradigm && o.Paradigms) { const sk = o.Paradigms.forIntent(intent, o.statement); if (sk.length && !sk.some((x) => x.id === lesson.paradigm)) lesson = null; }
+        if (lesson) {
+            const ap = o.Lessons.applyLesson(lesson, intent); const model = mkModel(ap.body, ap.prelude); const source = o.C2U.toPython(model); let v = { verdict: 'UNCHECKED', detail: '' }; if (o.judge) v = await o.judge(source);
+            res.rounds.push({ by: 'lesson', lesson: lesson.id, verdict: v.verdict, detail: v.detail });
+            if (v.verdict === 'AC' || v.verdict === 'UNCHECKED') return Object.assign(res, { source, model, lesson: lesson.id, cnl: Object.assign(cnl, { solve: lesson.cnl || '' }), verdict: v.verdict });
+        }
+        // ---- 範式骨架（每個範式一個帶槽位的區塊骨架；槽位選單很小，由程式窮舉組合、逐個交沙盒，第一個 AC 就用，不問模型）----
+        if (o.Paradigms && o.Paradigms.forIntent(intent, o.statement).length) {
+            let lastModel = null;
+            const pj = async (solveCnl) => { const model = mkModel(parse(solveCnl)); const source = o.C2U.toPython(model); lastModel = { model, source }; return o.judge ? o.judge(source) : { verdict: 'UNCHECKED', detail: '' }; };
+            const ps = await o.Paradigms.solve({ intent, statement: o.statement, judge: pj, limit: o.paradigmLimit, rank: o.paradigmRank });
+            res.rounds.push({ by: 'paradigm', ok: ps.ok, skeleton: ps.skeleton, tried: ps.tried, verdict: ps.verdict });
+            if (ps.ok) return Object.assign(res, { source: lastModel.source, model: lastModel.model, paradigm: ps.skeleton, slots: ps.choice, tried: ps.tried, cnl: Object.assign(cnl, { solve: ps.cnl }), verdict: ps.verdict });
+            res.tried = ps.tried;
+        }
+        // ---- 區塊迴圈（模型微選擇）----
+        if (!o.pick) return Object.assign(res, { ok: false, reason: rec ? '配方沒通過沙盒驗證，而且沒有提供模型' : '程式讀不出這題的解法（沒有配方），需要模型' });
+        res.usedModel = true; const paramTypes = {}; for (const v of intent.vars) paramTypes[v.name] = v.type === 'list' ? 'list' : v.type;
+        const solveOp = { name: 'solve', params: intent.vars.map((v) => v.name), paramTypes, returns: 'void' }; let feedback = '', last = null;
+        for (let round = 0; round < (o.rounds || 2); round++) {
+            const r = await o.Choose.writeBlocks({ op: solveOp, ops: [{ name: 'read_input' }, { name: 'solve' }, { name: 'main' }], problem: { statement: o.statement }, feedback, pick: o.pick, B, R, namesOf: o.FaPyBody.namesOf, builtins: o.FaPyBody.BUILTINS, noDebias: o.noDebias, onTrace: o.onTrace });
+            res.steps += r.steps; res.forced += r.forced;
+            if (!r.ok) { res.rounds.push({ by: 'blocks', ok: false, reason: r.reason }); last = r; break; }
+            const zir = {}; for (const z of ['import', 'declare', 'logic']) zir[z] = r.zones[z] ? parse(r.zones[z]) : [];
+            const model = mkModel(zir.declare.concat(zir.logic), zir.import); const source = o.C2U.toPython(model); let v = { verdict: 'UNCHECKED', detail: '' }; if (o.judge) v = await o.judge(source);
+            res.rounds.push({ by: 'blocks', verdict: v.verdict, detail: v.detail }); last = { source, model, solveCnl: r.cnl, verdict: v.verdict };
+            if (v.verdict === 'AC' || v.verdict === 'UNCHECKED') break;
+            feedback = '上一版 solve 的區塊：\n' + r.cnl + '\n驗證結果：' + v.verdict + (v.detail ? '（' + String(v.detail).slice(0, 160) + '）' : '') + '。請改正。';
+        }
+        if (!last || !last.source) return Object.assign(res, { ok: false, reason: (last && last.reason) || '區塊迴圈沒有產生程式' });
+        return Object.assign(res, { source: last.source, model: last.model, verdict: last.verdict, cnl: Object.assign(cnl, { solve: last.solveCnl }) });
+    }
+    return { buildFromUML, readInputCNL, mainCNL, recipeCNL, snake };
+});
+
+}).call(null, undefined, holder);
+return holder.FaPyUmlPipeline;
+})();
+/* PYUMLPIPELINE-END */
 /* CODEAGENT-BEGIN */
 const FaCodeAgent = (function () {
 const holder = {};
@@ -14009,6 +15655,14 @@ const holder = {};
             const problem = a.problem || null; const e = await Ed.editCode({ source: String(a.source), lang, goal: a.text, problem, check: a.check, judge: a.judge, ask: backend && backend.ask, write: backend && backend.write, repair: makeRepair(problem) || undefined, stackMod, opts, onEvent: a.onEvent });
             return Object.assign(e, { mode: 'edit', lang });
         }
+        // 離線組合（Python）：uml_design → 配方／課／範式骨架 → 區塊迴圈 → 沙盒，由宿主注入 offline({text, lang, problem}) → {ok, source, verdict, ...}；要有測試與判題器才試，通過就不用模型，沒過就往下走模型路線
+        const offlineGaps = [];
+        if (typeof a.offline === 'function' && !a.model && lang === 'python' && a.problem && a.problem.tests && a.problem.tests.length && a.judge) {
+            let o = null; try { o = await a.offline({ text: a.text, lang, problem: a.problem, backend }); } catch (e) { offlineGaps.push('離線組合出錯：' + clip((e && e.message) || e, 100)); }
+            if (o && o.ok && o.source && (o.verdict === 'AC')) { if (typeof a.onEvent === 'function') { try { a.onEvent({ t: 'offline', by: o.by, paradigm: o.paradigm, tried: o.tried }); } catch (_) { /* 進度回報壞了不影響流程 */ } } return Object.assign(base, { ok: true, verified: true, verdict: 'AC', mode: 'offline', source: o.source, offline: { by: o.by, paradigm: o.paradigm || null, slots: o.slots || null, lesson: o.lesson || null, recipe: o.recipe || null, tried: o.tried || 0, usedModel: !!o.usedModel }, calls: Object.assign({}, base.calls, { judge: o.tried || 1 }) }); }
+            if (o && !o.ok) offlineGaps.push('離線組合沒解出來（' + clip(o.reason || '不明', 100) + '），改用模型');
+        }
+        base.gaps = base.gaps.concat(offlineGaps);
         if (!backend) return Object.assign(base, { mode: a.model ? 'project' : 'problem', verdict: 'NONE', reason: 'no_model', gaps: ['沒有可用的模型（generate 或 backend）'] });
         let model = a.model || null, route = null, designed = null; const preGaps = [];
         if (!model) {
@@ -14049,7 +15703,7 @@ const holder = {};
     function formatReport(r) {
         if (!r) return '沒有結果';
         const how = r.verified ? '已用測試驗證（全部通過）' : (r.verdict === 'CHECKED' ? '**只通過編譯／語法檢查，沒有驗證行為是否正確**' : (r.ok ? '未驗證' : '沒有完成'));
-        const L1 = [(r.mode === 'edit' ? '修改現有程式（' : '寫程式（' + (r.mode === 'project' ? '依 UML 專案模式' : '題目模式') + '，') + r.lang + '）：' + (r.ok ? (r.mode === 'edit' ? '修改完成' : '產生完成') : '沒有完成') + '；' + how + '。'];
+        const L1 = [(r.mode === 'edit' ? '修改現有程式（' : '寫程式（' + (r.mode === 'offline' ? '離線組合' + (r.offline && r.offline.paradigm ? '：範式 ' + r.offline.paradigm : r.offline && r.offline.lesson ? '：課 ' + r.offline.lesson : r.offline && r.offline.recipe ? '：配方 ' + r.offline.recipe : '') : r.mode === 'project' ? '依 UML 專案模式' : '題目模式') + '，') + r.lang + '）：' + (r.ok ? (r.mode === 'edit' ? '修改完成' : '產生完成') : '沒有完成') + '；' + how + '。'];
         if (r.mode === 'edit' && r.edits && r.edits.length) L1.push('改了 ' + r.edits.length + ' 處：\n' + r.edits.map((e) => '- ' + (e.by === 'rewrite' ? '重寫函式 ' + e.fn : (e.desc || '語法修正')) + (e.line ? '（第 ' + e.line + ' 行）' : '')).join('\n'));
         if (r.route && r.mode !== 'edit') L1.push('路線：' + (r.route.route === 'uml' ? '需求偏大，先設計 UML' + (r.design ? '（' + r.design.classes.length + ' 個類別）' : '') + '，再逐類別實作' : '直接切成函式寫') + (r.route.by === 'model' ? '（模型決定）' : r.route.by === 'caller' ? '（呼叫端指定）' : '') + (r.route.reasons && r.route.reasons.length ? '：' + r.route.reasons.slice(0, 3).join('、') : '') + '。');
         if (r.plan && r.plan.length) L1.push('函式：' + r.plan.map((x) => x.name).join(' → '));
@@ -17556,6 +19210,24 @@ const holder = {};
         const r = (groups, names) => (groups.length ? groups.filter((g) => hit(g, names)).length / groups.length : 1);
         const ucs = model.usecases || []; return { actors: r(fx.actors, actorNames.concat(ucs.map((u) => u.actor))), classes: r(fx.classes, classNames), usecases: r(fx.usecases, ucNames), sequences: ucs.length ? ucs.filter((u) => (u.steps || []).length >= 2).length / ucs.length : 0 };
     }
+    // 兄弟一致性（思考堆疊要解的問題：深入做後面的項目時，忘了前面兄弟的命名／風格／參照）。純程式評分，不用模型：
+    //  naming＝類別名同一種寫法（PascalCase／中文）的占比；style＝方法與屬性名最多的那種寫法（camel／snake／中文）的占比；
+    //  ucStyle＝使用案例名同一種寫法的占比；refs＝步驟指到的類別與方法、關係兩端、使用案例的參與者都真的存在的占比；
+    //  unique＝沒有重複（同名或只差大小寫）的占比。沒有可評的項目就是 null，總分取有值的平均。
+    const styleOf = (n) => { n = String(n || ''); if (/[\u4e00-\u9fff]/.test(n)) return 'cjk'; if (/^[A-Z][A-Za-z0-9]*$/.test(n) && /[a-z]/.test(n)) return 'Pascal'; if (/^[a-z][a-z0-9]*[A-Z][A-Za-z0-9]*$/.test(n)) return 'camel'; if (/^[a-z0-9]+(_[a-z0-9]+)+$/.test(n)) return 'snake'; if (/^[a-z][a-z0-9]*$/.test(n)) return 'lower'; if (/^[A-Z0-9_]+$/.test(n)) return 'UPPER'; return 'other'; };
+    const domShare = (names) => { if (names.length < 2) return null; const c = {}; names.forEach((n) => { const k = styleOf(n); c[k] = (c[k] || 0) + 1; }); // lower（單字）跟 camel／snake 相容，不算不一致
+        if (c.lower) { const top = Object.entries(c).filter(([k]) => k !== 'lower').sort((a, b) => b[1] - a[1])[0]; if (top) { c[top[0]] += c.lower; delete c.lower; } } return Math.max.apply(null, Object.values(c)) / names.length; };
+    function siblingConsistency(model) {
+        model = model || {}; const cls = model.classes || [], ucs = model.usecases || [], rels = model.relations || [], actors = model.actors || [];
+        const clsNames = cls.map((c) => c.name); const members = [].concat(...cls.map((c) => [].concat((c.attrs || []).map((a) => a.name), (c.ops || []).map((o) => o.name))));
+        const refsAll = []; const opsOf = {}; cls.forEach((c) => { opsOf[c.name] = new Set((c.ops || []).map((o) => low(o.name))); });
+        const actorSet = new Set(actors.map(low)); ucs.forEach((u) => { if (u.actor) refsAll.push(actorSet.has(low(u.actor))); (u.steps || []).forEach((s) => { if (s.to) { const ok = clsNames.some((n) => low(n) === low(s.to)); refsAll.push(ok); if (s.op) refsAll.push(ok && opsOf[clsNames.find((n) => low(n) === low(s.to))].has(low(s.op))); } }); });
+        rels.forEach((r) => { refsAll.push(clsNames.includes(r.from), clsNames.includes(r.to)); });
+        const dup = (names) => { if (names.length < 2) return null; const seen = new Set(names.map(low)); return seen.size / names.length; };
+        const parts = { naming: domShare(clsNames), style: domShare(members), ucStyle: domShare(ucs.map((u) => u.name)), refs: refsAll.length ? refsAll.filter(Boolean).length / refsAll.length : null, unique: [dup(clsNames), dup(ucs.map((u) => u.name)), dup(actors)].filter((x) => x != null).reduce((a, x, _, arr) => a + x / arr.length, 0) };
+        if (!(clsNames.length > 1 || ucs.length > 1 || actors.length > 1)) parts.unique = null; const vals = Object.values(parts).filter((x) => x != null); const r2 = (x) => (x == null ? null : Math.round(x * 100) / 100);
+        return { naming: r2(parts.naming), style: r2(parts.style), ucStyle: r2(parts.ucStyle), refs: r2(parts.refs), unique: r2(parts.unique), score: vals.length ? r2(vals.reduce((a, x) => a + x, 0) / vals.length) : null };
+    }
     // 包一層 generate：記次數、耗時、失敗、退化（呼叫端給的 generate 要回傳字串，或丟錯誤）
     function wrapGenerate(generate, stats, degenerate) {
         return async (req) => {
@@ -17567,10 +19239,10 @@ const holder = {};
     // 跑一個情境；回傳這個情境的結果列
     async function runScenario(fx, generate, opts) {
         const o = Object.assign({}, DEFAULTS, opts || {}); const stats = { calls: 0, failed: 0, degenerate: 0, degenerateKinds: [], errors: [], ms: [] };
-        let res; try { res = await U.scenarioToModelBig(fx.scenario, { generate: wrapGenerate(generate, stats, o.degenerate), program: false, maxTries: o.maxTries, stackChecks: false }); } catch (e) { res = { ok: false, error: String((e && e.message) || e), model: U.emptyModel ? U.emptyModel() : { actors: [], classes: [], usecases: [] }, decisions: [], warnings: [], errors: [] }; }
+        let res; try { res = await U.scenarioToModelBig(fx.scenario, { generate: wrapGenerate(generate, stats, o.degenerate), program: false, maxTries: o.maxTries, stackChecks: o.stackChecks === true, thinkStack: o.thinkStack === false ? false : undefined }); } catch (e) { res = { ok: false, error: String((e && e.message) || e), model: U.emptyModel ? U.emptyModel() : { actors: [], classes: [], usecases: [] }, decisions: [], warnings: [], errors: [] }; }
         const dec = (res.decisions || []).filter((d) => d.by === 'model'); const g = gradeModel(fx, res.model || {});
         return { id: fx.id, completed: !!res.ok, valid: !!res.ok && !(res.errors && res.errors.length), error: res.ok ? '' : res.error, stages: dec.map((d) => ({ stage: d.stage, label: d.label, ok: !!d.ok, tries: d.tries, rejected: (d.rejected || []).slice(0, 2).map((x) => (x.errors || []).join('；').slice(0, 120)) })),
-            firstTry: dec.filter((d) => d.ok && d.tries === 1).length, eventual: dec.filter((d) => d.ok).length, stageN: dec.length, recall: g, warnings: (res.warnings || []).length, stats };
+            firstTry: dec.filter((d) => d.ok && d.tries === 1).length, eventual: dec.filter((d) => d.ok).length, stageN: dec.length, recall: g, consistency: siblingConsistency(res.model || {}), warnings: (res.warnings || []).length, stats };
     }
     // ===== 路線 A：直接做——一次要模型寫出整份 UML 文字（一行一件事，程式解析）；不合格就把精確的錯誤退回，最多 maxTries 次 =====
     const SYNTAX = ['model: 部落格', 'actor: Reader, Author', 'class Post { +id:int; +title:str; +body:str; +publish():void; +list():list<Post> }', 'class Comment { +id:int; +text:str; +add():void }', 'Post o-- Comment', 'usecase WritePost: Author -> Post.publish()', 'usecase ReadPost: Reader -> Post.list() -> Comment.add()'].join('\n');
@@ -17647,7 +19319,7 @@ const holder = {};
         if (advice === 'stepwise') return '【UML 輔助】你拆 UML 時第一次常常不合格。需要設計系統時，不要整份一次寫完：用 uml_design 或 uml_guide 一次處理一小塊（參與者、類別、成員、關係、呼叫順序），每塊檢查過再做下一塊。';
         return '';
     }
-    return { DEFAULTS, FIXTURES, BIG, gradeModel, wrapGenerate, runScenario, runDirect, success, summarizeRoute, routeText, dslOf, summarize, toText, hintFor, ADVICE_LABEL, ROUTE_LABEL };
+    return { DEFAULTS, FIXTURES, BIG, gradeModel, siblingConsistency, styleOf, wrapGenerate, runScenario, runDirect, success, summarizeRoute, routeText, dslOf, summarize, toText, hintFor, ADVICE_LABEL, ROUTE_LABEL };
 });
 
 }).call(null, undefined, holder);
@@ -17900,7 +19572,34 @@ const holder = {};
         return { model: cur, steps, diff: diff(model, cur), applied: steps.reduce((n, s) => n + s.applied.length, 0), rejected: steps.reduce((n, s) => n + s.rejected.length, 0) };
     }
 
-    return { pickIndex, OPS, REL_KINDS, parseMemberText, parseStepText, applyOne, apply, diff, candidates, chooseMessages, choose, resolve };
+    // ---------- 小窗口分段寫：一次只給一個「下一格」（DESIGN.think-stack.md、DESIGN.jsonl-paging.md）----------
+    // 程式從目前的模型決定下一個該補的單位（參與者與使用案例 → 類別 → 每個空類別的成員 → 每個太短的使用案例 → 沒接上的類別），
+    // 每格帶焦點標頭（目標、已定的、這格要做什麼）與兄弟已經用的命名（前後一致），模型只回這一格的 ops；apply 之後再問下一格。
+    // 模型的窗口多小都做得完：它不需要記得整份設計，標頭每次由程式重組。
+    const memberNames = (m) => [].concat(...m.classes.map((c) => [].concat((c.attrs || []).map((a) => a.name), (c.ops || []).map((o) => o.name))));
+    function styleHint(m) {
+        const names = memberNames(m).filter((n) => /^[A-Za-z_]/.test(n)); if (names.length < 2) return '';
+        const k = (n) => (/_/.test(n) ? 'snake_case' : /^[a-z]+[A-Z]/.test(n) ? 'camelCase' : /^[A-Z]/.test(n) ? 'PascalCase' : '單字小寫'); const c = {}; names.forEach((n) => { const x = k(n); c[x] = (c[x] || 0) + 1; });
+        const top = Object.entries(c).filter(([x]) => x !== '單字小寫').sort((a, b) => b[1] - a[1])[0]; const ex = names.filter((n) => top && k(n) === top[0]).slice(0, 3);
+        return top ? '兄弟類別的成員用 ' + top[0] + '（例如 ' + ex.join('、') + '），照同樣的寫法' : '';
+    }
+    function nextUnit(model, opts) {
+        const m = model || { actors: [], classes: [], usecases: [], relations: [] }; const classes = m.classes || [], ucs = m.usecases || [], rels = m.relations || [], actors = m.actors || [];
+        const decided = [classes.length ? '類別：' + classes.map((c) => c.name).slice(0, 12).join('、') : '', ucs.length ? '使用案例：' + ucs.map((u) => u.name).slice(0, 10).join('、') : '', actors.length ? '參與者：' + actors.join('、') : ''].filter(Boolean).join('；');
+        const total = { classes: classes.length, usecases: ucs.length };
+        const mk = (unit, q, ex, why) => ({ done: false, unit, header: { goal: String((opts && opts.goal) || m.name || '把情境設計成 UML'), decided: decided || '（還沒有）', now: q }, question: q, answer_with: ex, why, style: styleHint(m) || undefined });
+        if (!actors.length || !ucs.length) return mk('usecases', '列出參與者與使用案例（每個使用案例是參與者想完成的一件事）', { ops: [{ op: 'add_actor', name: 'Customer' }, { op: 'add_usecase', name: 'Checkout', actor: 'Customer', steps: [] }] }, '還沒有' + (!actors.length ? '參與者' : '使用案例'));
+        if (!classes.length) return mk('classes', '列出系統需要的類別（名詞，PascalCase；先不用成員）', { ops: [{ op: 'add_class', name: 'Order', kind: 'class', members: [] }] }, '還沒有類別');
+        const empty = classes.find((c) => c.kind !== 'enum' && !(c.attrs || []).length && !(c.ops || []).length);
+        if (empty) return mk('class:' + empty.name, '替類別「' + empty.name + '」補上屬性與操作（2～5 個；只做這一個類別）', { ops: [{ op: 'add_member', cls: empty.name, member: 'total:float' }, { op: 'add_member', cls: empty.name, member: 'pay(amount:float):bool' }] }, '類別「' + empty.name + '」還是空的');
+        const short = ucs.find((u) => (u.steps || []).length < 2);
+        if (short) { const menu = [].concat(...classes.map((c) => (c.ops || []).slice(0, 4).map((o) => c.name + '.' + o.name))).slice(0, 14); return mk('usecase:' + short.name, '寫使用案例「' + short.name + '」（' + (short.actor || '') + '）的呼叫順序：至少 2 步，用已經有的類別與操作', { ops: [{ op: 'add_step', usecase: short.name, step: menu[0] || 'Order.pay(x)' }, { op: 'add_step', usecase: short.name, step: menu[1] || menu[0] || 'Order.pay(x)' }] }, '「' + short.name + '」只有 ' + (short.steps || []).length + ' 步（可用：' + (menu.join('、') || '還沒有操作') + '）'); }
+        const used = new Set([].concat(...rels.map((r) => [r.from, r.to]), ...ucs.map((u) => (u.steps || []).map((s) => s.to))));
+        const loose = classes.find((c) => c.kind !== 'enum' && !used.has(c.name)); if (loose && classes.length > 1) return mk('relation:' + loose.name, '類別「' + loose.name + '」沒有跟任何類別有關係、也沒被使用案例用到：接上一條關係，或刪掉它', { ops: [{ op: 'add_relation', from: classes.find((c) => c.name !== loose.name).name, to: loose.name, kind: 'assoc' }] }, '「' + loose.name + '」是孤立的');
+        return { done: true, total, note: '每一格都補齊了；用 uml_edit({"auto_fix":true}) 再檢查一次問題，或 uml_to_code 產生程式骨架' };
+    }
+
+    return { nextUnit, styleHint, pickIndex, OPS, REL_KINDS, parseMemberText, parseStepText, applyOne, apply, diff, candidates, chooseMessages, choose, resolve };
 });
 
 }).call(null, undefined, holder);
@@ -24859,6 +26558,18 @@ const holder = {};
         return { data, bad };
     }
 
+    // 超大 JSONL：只解析 lines 裡第 from 起的 size 筆（非空行；壞行照舊保留）。行號是整份檔案的行號（from 是 lines 的 0 起算索引）。
+    // 回傳 { data, bad, from, to, total, nonEmpty }：from／to 是 lines 的索引區間（to 是下一批的起點）；不必把整份 100 MB 都 JSON.parse 成物件。
+    const LARGE_JSONL_LINES = 50000, JSONL_WINDOW = 20000;
+    function parseJsonlWindow(lines, from, size) {
+        from = Math.max(0, Math.floor(from) || 0); size = Math.max(1, Math.floor(size) || JSONL_WINDOW); const data = [], bad = []; let i = from, got = 0;
+        for (; i < lines.length && got < size; i++) {
+            const l = String(lines[i]).replace(/\r$/, ''); if (!l.trim()) continue; got++;
+            try { data.push(JSON.parse(l)); } catch (e) { const m = String(e.message || e).split('\n')[0]; bad.push({ line: i + 1, message: m }); data.push({ _bad_line: i + 1, error: m, raw: l.length > 2000 ? l.slice(0, 2000) + '…' : l }); }
+        }
+        return { data, bad, from, to: i, total: lines.length, nonEmpty: got };
+    }
+
     // ===== TOML 解析（子集：表、表陣列、點鍵、四種字串、數字、布林、日期時間（當字串）、陣列、行內表）=====
     function parseToml(src) {
         let i = 0; const n = src.length; let line = 1;
@@ -25355,7 +27066,7 @@ const holder = {};
         const s = JSON.stringify(walk(data, 0)); return s.length > (opts.maxChars || 3000) ? s.slice(0, opts.maxChars || 3000) + '…' : s;
     }
 
-    return { detectFormat, stripJsonc, countComments, parseJsonl, parse, stringify, parseToml, stringifyToml, parseCsv, sheetToCsv, highlight, prettyIfMinified, toTables, buildXlsx, readXlsx, visibleRows, defaultExpanded, searchTree, searchText, getByPath, outline, preview, typeOf, colLetter, isObj };
+    return { detectFormat, stripJsonc, countComments, parseJsonl, parseJsonlWindow, LARGE_JSONL_LINES, JSONL_WINDOW, parse, stringify, parseToml, stringifyToml, parseCsv, sheetToCsv, highlight, prettyIfMinified, toTables, buildXlsx, readXlsx, visibleRows, defaultExpanded, searchTree, searchText, getByPath, outline, preview, typeOf, colLetter, isObj };
 });
 
 }).call(null, undefined, holder);
@@ -25426,6 +27137,9 @@ const holder = {};
         const st = { fmt, mode: isXlsx ? 'viewer' : 'source', q: '', hits: [], hi: -1, expanded: null, sel: null, data: undefined, parsed: null, tables: null, ai: [], aiOpen: false, extraSheets: [], sheets: [], si: 0 };
         if (isXlsx) { st.sheets = opts.sheets.map((s) => ({ name: s.name, columns: s.columns, rows: s.rows, kind: 'data', sort: null, colW: [] })); st.parsed = { ok: true, data: null }; }
         const pre = isXlsx ? { text: '', pretty: false } : C.prettyIfMinified(text0, fmt); const text = pre.text; const lines = isXlsx ? [] : text.split('\n').map((l) => l.replace(/\r$/, '')); if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
+        // 超大 JSONL（行數多）：Source 照常（虛擬捲動），Viewer／表格只解析一個視窗（一批 JSONL_WINDOW 筆，可前後翻批）；匯出才解析整份
+        const LARGE = fmt === 'jsonl' && lines.length > C.LARGE_JSONL_LINES; st.win = { from: 0, to: 0, stack: [] };
+        let maxLenCache = -1; const maxLineLen = () => (maxLenCache >= 0 ? maxLenCache : (maxLenCache = lines.reduce((m, l) => (l.length > m ? l.length : m), 0))); // 最長行只算一次（以前每次捲動都掃全部行）
         let tok = null; const getTokAll = () => tok || (tok = (lines.length <= 40000 ? C.highlight(lines.join('\n'), fmt) : C.highlight(lines.slice(0, 40000).join('\n'), fmt).concat(lines.slice(40000).map((l) => [{ c: 'x', t: l }]))));
         const rootEl = h('div', { class: 'fdv' + (pal.dark === false ? ' light' : '') });
         const title = h('span', { class: 'ttl', text: isXlsx ? 'XLSX · ' + (opts.name || '') : FMT_LABEL[fmt] + ' · ' + lines.length.toLocaleString() + ' 行 · ' + fmtSize(text0.length) + (pre.pretty ? ' · 已排版' : '') });
@@ -25433,7 +27147,8 @@ const holder = {};
         const qin = h('input', { class: 'q', placeholder: '🔎 搜尋…', type: 'text' }); const cnt = h('span', { class: 'cnt' });
         const bPrev = h('button', { text: '◂', title: '上一個 (Shift+Enter)' }), bNext = h('button', { text: '▸', title: '下一個 (Enter)' });
         const bExp = h('button', { text: 'Export ▾', title: '匯出成別的格式' }), bAi = h('button', { text: '🤖 Ask AI', title: '用一句話問你想要什麼資料' });
-        const bar = h('div', { class: 'bar' }, title, h('span', { class: 'seg' }, bSrc, bView), qin, bPrev, bNext, cnt, h('span', { class: 'sp' }), bExp, bAi);
+        const bWinPrev = h('button', { text: '◂ 上一批', title: '大檔：上一批資料（Viewer／表格一次只載入一批）' }), bWinNext = h('button', { text: '下一批 ▸', title: '大檔：下一批資料' }); bWinPrev.style.display = bWinNext.style.display = 'none';
+        const bar = h('div', { class: 'bar' }, title, h('span', { class: 'seg' }, bSrc, bView), qin, bPrev, bNext, cnt, bWinPrev, bWinNext, h('span', { class: 'sp' }), bExp, bAi);
         const errbar = h('div', { class: 'errbar' }); errbar.style.display = 'none';
         const tabs = h('div', { class: 'tabs' }); tabs.style.display = 'none';
         const sc = h('div', { class: 'sc' }); const winEl = h('div', { class: 'win' }); sc.append(winEl);
@@ -25448,12 +27163,14 @@ const holder = {};
         let depsP = null; const deps = () => depsP || (depsP = Promise.resolve(host.deps ? host.deps() : {}).catch(() => ({})));
         async function ensureParsed() {
             if (st.parsed) return st.parsed;
-            const d = fmt === 'yaml' ? await deps() : {}; st.parsed = C.parse(text0, fmt, d);
+            const d = fmt === 'yaml' ? await deps() : {};
+            if (LARGE) { const w = C.parseJsonlWindow(lines, st.win.from, C.JSONL_WINDOW); st.win.to = w.to; st.parsed = { ok: true, data: w.data, badLines: w.bad, windowed: true }; } else st.parsed = C.parse(text0, fmt, d);
             if (st.parsed.ok) {
                 st.data = st.parsed.data;
                 const pp = st.parsed, notes = [];
                 if (pp.asJsonc) notes.push('這份 JSON 含註解／尾逗號，以 JSONC 解析');
                 if (pp.comments) notes.push('含 ' + pp.comments + ' 則註解，Viewer 看不到，Source 可看；匯出的 JSON／JSONL 不含註解');
+                if (pp.windowed) notes.push('大檔（' + lines.length.toLocaleString() + ' 行）：Viewer／表格只載入第 ' + (st.win.from + 1).toLocaleString() + '～' + st.win.to.toLocaleString() + ' 行（用上方的 ◂ ▸ 翻批）；Source 與匯出是整份');
                 if (pp.badLines && pp.badLines.length) notes.push('共 ' + lines.length.toLocaleString() + ' 行，' + pp.badLines.length + ' 行無法解析（第 ' + pp.badLines.slice(0, 5).map((b) => b.line).join('、') + (pp.badLines.length > 5 ? '…' : '') + ' 行：' + pp.badLines[0].message + '）；壞行在 Viewer 以 _bad_line 記錄顯示');
                 if (notes.length) { errbar.style.display = ''; errbar.textContent = 'ℹ ' + notes.join('；'); }
                 if (!isTable) st.expanded = C.defaultExpanded(st.data, lines.length > 5000 ? 1 : 2, 3000);
@@ -25461,7 +27178,11 @@ const holder = {};
             } else { errbar.style.display = ''; errbar.textContent = '⚠ ' + (st.parsed.error.line ? '第 ' + st.parsed.error.line + ' 行' + (st.parsed.error.col ? ' 第 ' + st.parsed.error.col + ' 欄' : '') + '：' : '') + st.parsed.error.message + '（仍可看 Source、搜尋；Viewer、Export 需要先修正格式）'; }
             return st.parsed;
         }
-        ensureParsed().then(() => { if (st.parsed && !st.parsed.ok) { bView.disabled = true; bView.title = st.parsed.error.message; } buildTabs(); render(); }).catch(() => {});
+        // 超大檔的批次：Viewer 模式才顯示 ◂ ▸；翻批＝換一個視窗重新解析（Source 與匯出是整份，不受影響）
+        const syncWin = () => { const on = LARGE && st.mode === 'viewer'; bWinPrev.style.display = bWinNext.style.display = on ? '' : 'none'; bWinPrev.disabled = !st.win.stack.length; bWinNext.disabled = !st.win.to || st.win.to >= lines.length; };
+        async function moveWin(dir) { if (dir > 0) { if (st.win.to >= lines.length) return; st.win.stack.push(st.win.from); st.win.from = st.win.to; } else st.win.from = st.win.stack.pop() || 0; st.parsed = null; st.tables = null; st.data = undefined; st.sel = null; gridRows = null; sc.scrollTop = 0; errbar.style.display = 'none'; await ensureParsed(); syncWin(); buildTabs(); render(); }
+        bWinPrev.onclick = () => moveWin(-1); bWinNext.onclick = () => moveWin(1);
+        ensureParsed().then(() => { if (st.parsed && !st.parsed.ok) { bView.disabled = true; bView.title = st.parsed.error.message; } syncWin(); buildTabs(); render(); }).catch(() => {});
 
         // ---- 工作表頁籤（表格類；只有一張也顯示，AI 的回答會變成另一張）
         function buildTabs() {
@@ -25500,7 +27221,7 @@ const holder = {};
                 const errLine = st.parsed && !st.parsed.ok && st.parsed.error.line ? st.parsed.error.line - 1 : -1;
                 for (let i = a; i < b; i++) html += '<div class="row' + (i === errLine ? ' err' : '') + '" style="top:' + i * LH + 'px;height:' + LH + 'px"><span class="ln">' + (i + 1) + '</span><span class="code">' + tokHtml(all[i] || [], i) + '</span></div>';
                 winEl.innerHTML = html;
-                const maxLen = lines.reduce((m, l) => (l.length > m ? l.length : m), 0); winEl.style.minWidth = 'calc(' + Math.min(maxLen, 4000) + 'ch + ' + (GUTTER + 30) + 'px)';
+                const maxLen = maxLineLen(); winEl.style.minWidth = 'calc(' + Math.min(maxLen, 4000) + 'ch + ' + (GUTTER + 30) + 'px)';
             } else if (isTable) renderGrid(top, vh);
             else {
                 if (!st.data && st.data !== null) { winEl.innerHTML = '<div style="padding:10px;color:var(--mut)">解析中…</div>'; return; }
@@ -25556,7 +27277,7 @@ const holder = {};
             if (m === 'viewer' && st.parsed && !st.parsed.ok) return; if (m === 'source' && isXlsx) return;
             st.mode = m; bSrc.classList.toggle('on', m === 'source'); bView.classList.toggle('on', m === 'viewer'); bCopy.style.display = 'none'; pathEl.textContent = '';
             gridRows = null; sc.scrollTop = 0; buildTabs(); runSearch(true);
-            ensureParsed().then(() => { buildTabs(); render(); });
+            ensureParsed().then(() => { syncWin(); buildTabs(); render(); });
         }
         bSrc.onclick = () => setMode('source'); bView.onclick = () => setMode('viewer');
 
@@ -25593,20 +27314,23 @@ const holder = {};
         const baseName = (opts.name || 'data').replace(/\.[^.]+$/, '') || 'data';
         const note = (m) => { const o = foot.querySelector('.note'); if (o) o.remove(); const s = h('span', { class: 'note', text: m }); foot.append(s); setTimeout(() => s.remove(), 4000); };
         const rowsToObjects = (t) => t.rows.map((r) => { const o = {}; t.columns.forEach((c, i) => { o[c] = r[i] === undefined ? '' : r[i]; }); return o; });
-        function allSheets() {
+        function allSheets(full) {
             if (isTable) return st.sheets.map((s) => ({ name: s.name, columns: s.columns, rows: s.rows, kind: s.kind }));
+            if (full && full.ok) { st.fullTables = st.fullTables || C.toTables(full.data, { rootName: 'data' }); return st.fullTables.sheets.concat(st.extraSheets); } // 大檔匯出：用整份，不是目前這一批
             if (!st.tables) { const p = st.parsed; st.tables = p && p.ok ? C.toTables(p.data, { rootName: 'data' }) : { sheets: [] }; }
             return st.tables.sheets.concat(st.extraSheets);
         }
         async function doExport(kind, arg) {
             try {
-                const p = await ensureParsed(); if (!p.ok) { note('格式有錯，先修正才能匯出'); return; } const d = await deps(); const data = p.data;
+                let p = await ensureParsed(); if (!p.ok) { note('格式有錯，先修正才能匯出'); return; } const d = await deps();
+                if (LARGE && kind !== 'jsonl') { note('大檔：正在解析整份（' + lines.length.toLocaleString() + ' 行）…'); await new Promise((r) => setTimeout(r, 30)); st.full = st.full || C.parse(text0, 'jsonl', d); p = st.full; if (!p.ok) { note('整份解析失敗'); return; } }
+                const data = p.data;
                 if (kind === 'json') { const out = isTable ? rowsToObjects(sheetNow()) : data; host.download(JSON.stringify(out, null, 2) + '\n', baseName + (isTable && st.sheets.length > 1 ? '-' + sheetNow().name : '') + '.json', 'application/json'); }
                 else if (kind === 'jsonl') host.download(fmt === 'jsonl' ? lines.filter((l) => l.trim()).join('\n') + '\n' : C.stringify(data, 'jsonl'), baseName + '.jsonl', 'application/x-ndjson');
                 else if (kind === 'yaml') { if (!d.yamlDump) { note('YAML 輸出器載入失敗'); return; } host.download(C.stringify(data, 'yaml', d), baseName + '.yaml', 'text/yaml'); }
-                else if (kind === 'csv') { const sheets = allSheets(); const sh = sheets.find((s) => s.name === arg) || sheets[0]; host.download(C.sheetToCsv(sh), baseName + (sheets.length > 1 ? '-' + sh.name : '') + '.csv', 'text/csv'); }
-                else if (kind === 'xlsx') { if (!d.JSZip) { note('XLSX 工具載入失敗'); return; } const bytes = await C.buildXlsx(allSheets(), d); host.download(bytes, baseName + '.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); }
-                else if (kind === 'sqlite') { const bytes = await host.exportSqlite(allSheets()); host.download(bytes, baseName + '.sqlite3', 'application/vnd.sqlite3'); }
+                else if (kind === 'csv') { const sheets = allSheets(LARGE ? p : null); const sh = sheets.find((s) => s.name === arg) || sheets[0]; host.download(C.sheetToCsv(sh), baseName + (sheets.length > 1 ? '-' + sh.name : '') + '.csv', 'text/csv'); }
+                else if (kind === 'xlsx') { if (!d.JSZip) { note('XLSX 工具載入失敗'); return; } const bytes = await C.buildXlsx(allSheets(LARGE ? p : null), d); host.download(bytes, baseName + '.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); }
+                else if (kind === 'sqlite') { const bytes = await host.exportSqlite(allSheets(LARGE ? p : null)); host.download(bytes, baseName + '.sqlite3', 'application/vnd.sqlite3'); }
                 note('已匯出');
             } catch (e) { note('匯出失敗：' + (e && e.message || e)); }
         }
@@ -37844,8 +39568,8 @@ const holder = {};
     return t;
   }
   function usable(t) { return Object.keys(t.nodes).some((id) => t.nodes[id].source !== 'template'); }
-  function setNode(t, id, value) { // 使用者給值(標 user);回傳 { tree } 或 { error }
-    const r = validateNode(t, id, value); if (r.problem) return { error: r.problem }; const t2 = JSON.parse(JSON.stringify(t)); t2.nodes[id] = { value: r.value, source: 'user', tries: 0, raw: '', error: '', done: true };
+  function setNode(t, id, value, by) { // 使用者給值(標 user；by:'ai' 是小窗口的模型逐節點寫,標 ai);回傳 { tree } 或 { error }
+    const r = validateNode(t, id, value); if (r.problem) return { error: r.problem }; const t2 = JSON.parse(JSON.stringify(t)); t2.nodes[id] = { value: r.value, source: by === 'ai' ? (r.fixed ? 'fixed' : 'ai') : 'user', tries: 0, raw: '', error: '', done: true };
     nodeIds(t2).forEach((x) => { if (!t2.nodes[x]) t2.nodes[x] = { value: templateValue(t2, x), source: 'template', tries: 0, raw: '', error: '', done: true }; }); return { tree: t2 };
   }
 
@@ -37934,6 +39658,31 @@ const holder = {};
       const c = C.compose(Object.assign({}, optionsOf(t), { seed })); c.warnings = (c.warnings || []).concat(['作曲樹組裝失敗(' + String((e && e.message) || e) + '),這次改用範本作曲']); c.fixes = { melody: 0 }; c.fallback = true; return c;
     }
   }
+  // ---------- 多層 JSONL（小窗口：一次讀一個節點、一次寫一個節點；DESIGN.jsonl-paging.md）----------
+  // 第 0 層 tree 行（規格與還沒決定的節點）→ 一個節點一行（form → harmony.組 → voices.組.*；motif 在根下）。pending 的節點可帶 ask（單獨就答得出來的一題）。
+  // fromJsonl 還原成同一棵樹（value／source／tries／error／raw 逐項相同）；節點行的 value 會重新核對，不合格的列在 problems。
+  const DECIDED = { ai: 1, fixed: 1, user: 1, learned: 1 };
+  const parentOf = (id) => { const p = id.split('.'); if (id === 'form' || id === 'motif') return 'tree'; if (p[0] === 'harmony') return 'form'; return 'harmony.' + p[1]; };
+  function pendingIds(t) { return nodeIds(t).filter((id) => !(t.nodes[id] && DECIDED[t.nodes[id].source])); }
+  function toJsonl(t, o) {
+    o = o || {}; const ids = nodeIds(t), pend = pendingIds(t); const rows = [];
+    rows.push(JSON.stringify({ t: 'tree', v: t.v, style: t.style, key: t.key, tempo: t.tempo, bars: t.bars, mode: t.mode, lead: t.lead == null ? null : t.lead, title: t.title || '', task: t.task || '', purpose: t.purpose || '', moodName: t.moodName || '', nodes: ids.length, decided: ids.length - pend.length, pending: pend }));
+    ids.forEach((id) => {
+      if (o.pendingOnly && pend.indexOf(id) < 0) return; const n = t.nodes[id] || { value: templateValue(t, id), source: 'template' }; const ok = !!DECIDED[n.source];
+      const r = { t: 'node', id, parent: parentOf(id), depth: id === 'form' || id === 'motif' ? 1 : id.split('.').length, label: LABEL(id), value: n.value, source: n.source, tries: n.tries || 0, decided: ok };
+      if (n.error) r.error = n.error; if (n.raw) r.raw = n.raw; if (o.ask && !ok) r.ask = batchItem(t, id); rows.push(JSON.stringify(r));
+    }); return { lines: rows, pending: pend, decided: ids.length - pend.length, total: ids.length };
+  }
+  function fromJsonl(lines) {
+    const rows = []; for (const l of [].concat(lines || [])) { const x = typeof l === 'string' ? l.trim() : l; if (!x) continue; try { rows.push(typeof x === 'string' ? JSON.parse(x) : x); } catch (e) { return { ok: false, error: '不是合法的 JSON 行：' + String(x).slice(0, 60) }; } }
+    const h = rows.find((r) => r && r.t === 'tree'); if (!h) return { ok: false, error: '缺少 tree 行（第 0 層）' };
+    const t = { v: h.v || 1, style: h.style, key: h.key, tempo: h.tempo, bars: h.bars, mode: h.mode, lead: h.lead == null ? null : h.lead, title: h.title || '', task: h.task || '', purpose: h.purpose || '', moodName: h.moodName || '', nodes: {} };
+    if (!C.STYLES[t.style]) return { ok: false, error: '不認得的風格：' + t.style };
+    const problems = []; rows.filter((r) => r && r.t === 'node' && r.id).forEach((r) => { const v = validateNode(t, r.id, r.value); if (v.problem) { problems.push({ id: r.id, problem: v.problem }); return; } t.nodes[r.id] = { value: r.value, source: r.source || 'user', tries: r.tries || 0, raw: r.raw || '', error: r.error || '', done: true }; });
+    const missing = nodeIds(t).filter((id) => !t.nodes[id]); missing.forEach((id) => { t.nodes[id] = { value: templateValue(t, id), source: 'template', tries: 0, raw: '', error: '', done: true }; });
+    return { ok: true, tree: t, missing, problems };
+  }
+
   function optionsOf(t) { return { style: t.style, key: t.key, tempo: t.tempo, bars: t.bars, progression: 0, lead: t.lead == null ? undefined : t.lead, title: t.title }; }
 
   // ---------- 說明 ----------
@@ -37947,7 +39696,7 @@ const holder = {};
     const counts = {}; rows.forEach((r) => { counts[r.source] = (counts[r.source] || 0) + 1; }); return { rows, counts };
   }
   function learnNodes(t) { return nodeIds(t).filter((id) => t.nodes[id] && (t.nodes[id].source === 'ai' || t.nodes[id].source === 'user') && (id === 'motif' || id.indexOf('harmony.') === 0)).map((id) => ({ id, value: t.nodes[id].value })); }
-  return { estTokens, batchQuestion, parseBatch, allIds, rebase, usable, plan, compose, redo, setNode, describe, learnNodes, parseChords, parseMotif, checkMotif, checkChords, checkForm, layout, validateNode, questionOf, nodeIds, templateValue, FORMS, VOC, TEXTURES, BASSES, drumChoices, fill, newTree };
+  return { toJsonl, fromJsonl, pendingIds, batchItem, estTokens, batchQuestion, parseBatch, allIds, rebase, usable, plan, compose, redo, setNode, describe, learnNodes, parseChords, parseMotif, checkMotif, checkChords, checkForm, layout, validateNode, questionOf, nodeIds, templateValue, FORMS, VOC, TEXTURES, BASSES, drumChoices, fill, newTree };
 });
 
 }).call(null, undefined, holder);
@@ -51397,7 +53146,7 @@ FA_TASK_TOOL_HINTS.push({
     id: 'midi_compose',
     re: /^(?=[\s\S]*(寫|作|創作|譜|編|做|產生|生成|來|弄|給我|想要|compose|write|make|create))(?=[\s\S]*(曲子|樂曲|曲風|歌曲|一首|一段|配樂|背景音樂|旋律|midi|\.mid|melody|tune|song))/i,
     neg: /(播放|放出來|放一下|轉成?\s*mp3|mp3\s*轉|音訊轉|轉譜|轉成?\s*midi|上傳|附件|怎麼|如何|為什麼|是什麼|教我|說明|知識|樂理)|(詩|文章|程式|報告|信件|故事|小說|文案|code|腳本|python|文件|簡報|摘要|笑話)/i,
-    tools: ['midi_compose', 'midi_song_jsonl', 'midi_edit_open', 'midi_to_mp3', 'midi_play', 'music_topic'],
+    tools: ['midi_compose', 'midi_compose_tree', 'midi_song_jsonl', 'midi_edit_open', 'midi_to_mp3', 'midi_play', 'music_topic'],
     note: '【這個需求有專用工具：midi_compose】使用者要你作曲或產生 MIDI：直接呼叫 midi_compose({description: 使用者的原話})——程式依風格範本產生並檢查音域與跳進，結果會變成對話裡的 MIDI 編輯器卡片（可試聽、改、下載 MIDI、轉 mp3、轉成配樂）。不要自己寫 Python／mido 腳本、不要把 .mid 寫到資料夾後只報路徑——成品一律用卡片交付。作曲家、樂派或沒有專屬範本的風格（例如貝多芬、重金屬）工具會自動挑最接近的範本並在結果裡寫 style_note，回覆時照實轉述這句話，不要說成真的是那位作曲家的作品。',
 });
 function _faTaskToolHints(task) { const t = String(task || ''); return FA_TASK_TOOL_HINTS.filter((h) => h.re.test(t) && !(h.neg && h.neg.test(t))); }
@@ -59580,7 +61329,8 @@ const FaKnowledgeHost = (function () {
             step('🔎 檢索：關鍵字（BM25）' + (this._kiSettings().embedConsent ? '＋語意向量' : '（語意索引沒開）') + (ids ? '，限定 ' + ids.length + ' 個來源' : ''));
             const qv = await this._kiQueryVec(q).catch(() => ({ vec: null, why: '語意檢索出錯' }));
             const lim = Math.min(Math.max(Number(a.limit) || 5, 1), 12), model = this._kiModelId();
-            let res = await this._kiRun((store) => store.answer(q, { limit: lim, sources: ids, queryVec: qv.vec || undefined, model }));
+            const off = Math.min(Math.max(Math.floor(Number(a.offset)) || 0, 0), 48), want = lim + off; // offset：往後翻頁（排名第 off+1 起的 limit 筆）；檢索端多取 off 筆再切掉前面的
+            let res = await this._kiRun((store) => store.answer(q, { limit: want, sources: ids, queryVec: qv.vec || undefined, model }));
             // 問法跟文件用字對不上（中文問英文文件、換個說法）：請模型替問題想幾個「文件裡可能出現的詞」，再用這些詞多找一輪。
             // 模型只出主意；找到的永遠是原文，詞對不上就找不到，不會因此編出內容。已經有「關鍵字與語意都命中」的結果就不必問模型。
             const strong = (r) => (r.hits || []).some((h) => /＋/.test(h.found_by || ''));
@@ -59592,14 +61342,18 @@ const FaKnowledgeHost = (function () {
                 step(terms.length ? '　模型提的詞：' + terms.join('、') : '　（模型沒有回應，維持第一輪的結果）');
                 if (terms.length) {
                     const q2 = q + ' ' + terms.join(' '); const qv2 = qv.vec ? await this._kiQueryVec(q2).catch(() => ({ vec: null })) : { vec: null };
-                    const r2 = await this._kiRun((store) => store.answer(q2, { minCoverage: 0.06, limit: lim, sources: ids, queryVec: qv2.vec || qv.vec || undefined, model }));
+                    const r2 = await this._kiRun((store) => store.answer(q2, { minCoverage: 0.06, limit: want, sources: ids, queryVec: qv2.vec || qv.vec || undefined, model }));
                     const hasKw = (r) => (r.hits || []).some((h) => /關鍵字/.test(h.found_by || '')); const take = r2.found && (!res.found || strong(r2) || (hasKw(r2) && !hasKw(res)) || (r2.hits[0] && r2.hits[0].score > ((res.hits[0] && res.hits[0].score) || 0)));
                     step('　第二輪：' + (r2.found ? '找到 ' + r2.hits.length + ' 筆，' + (take ? '採用這一輪' : '不比第一輪好，維持第一輪') : '沒有找到，維持第一輪'));
                     if (take) { res = r2; expanded = terms; }
                 }
             }
+            // 分頁資訊（_page，格式同 JSONL 分頁器的 meta）：知識問答是排名搜尋，翻頁是選擇性的，所以 blocking:false——讀取帳本不會因此逼模型翻完
+            const fetched = (res.hits || []).length; const pageHits = (res.hits || []).slice(off, off + lim); const hasMore = fetched >= want && want < 60;
+            if (res.hits) res.hits = pageHits; if (off && !pageHits.length) res.found = false;
+            const pageMeta = { source: 'ki_ask:' + FaKnowledge.fold(q).slice(0, 40) + (ids ? ':' + ids.join(',') : ''), page: Math.floor(off / lim) + 1, from: off, to: off + pageHits.length, returned: pageHits.length, total: off + pageHits.length, total_exact: false, has_more: hasMore, blocking: false, next_offset: hasMore ? off + lim : null, hint: hasMore ? '可能還有更後面的相符片段：要看就帶 offset=' + (off + lim) + '（同樣的 question），不需要的話不用翻。' : '已經是最後面的相符片段。' };
             if (res.found) for (const h of res.hits) { try { const rel = await this._kiRun((store) => store.relatedOf(h.source_id, h.line_start, h.line_end)); if (rel.length) h.related = rel; } catch (_) { /* */ } }
-            return Object.assign(res, { expanded_terms: expanded || undefined, semantic: !!qv.vec, semantic_note: qv.vec ? undefined : qv.why + '（只用關鍵字檢索）', how_to_answer: res.found ? '只能根據 hits 裡的 quote 回答，每個說法後面標出處（label：來源、第幾行）；quote 沒講到的就說沒有，不要補充或推測。' : '沒有找到，就照實說在知識庫裡找不到，不要用自己的知識代替。' });
+            return Object.assign(res, { _page: pageMeta, expanded_terms: expanded || undefined, semantic: !!qv.vec, semantic_note: qv.vec ? undefined : qv.why + '（只用關鍵字檢索）', how_to_answer: res.found ? '只能根據 hits 裡的 quote 回答，每個說法後面標出處（label：來源、第幾行）；quote 沒講到的就說沒有，不要補充或推測。' : '沒有找到，就照實說在知識庫裡找不到，不要用自己的知識代替。' });
         },
         // AI 整理：把找到的原文片段編號交給模型，請它只用這些回答、每句結尾標 [編號]。
         // 程式逐句核對：沒標編號、編號不存在、句子裡的指令／數字／英文識別字在被引用的原文裡找不到的句子，一律丟掉（並告訴使用者丟了幾句）。
@@ -60115,7 +61869,7 @@ const FaKnowledgeHost = (function () {
             const tool = (name, desc, props, required, fn) => registerOptional(name, desc, async function (raw) { const a = await parse(raw); try { return JSON.stringify(await fn.call(this, a)); } catch (e) { return JSON.stringify({ ok: false, error: String((e && e.message) || e) }); } }, { type: 'object', properties: props, required: required || [], additionalProperties: false });
             const SRC = { type: 'string', description: '來源的名稱（可以只寫一部分）或編號，knowledge_sources 看清單' };
             tool('knowledge_ask', '問 Knowledge Inventory（使用者自己放進去的文件、網頁、講義、錄音轉錄…）。回傳最相關的**原文片段**與出處（哪個來源、第幾行、章節／頁／投影片／時間），不生成、不改寫。回答時只能根據 hits 的 quote，每個說法標出處；找不到就說找不到。檢索是關鍵字（BM25）加語意（小型向量模型，已啟用時）。sources 可限定來源。',
-                { question: { type: 'string', description: '問題或關鍵字' }, sources: { type: 'array', items: { type: 'string' }, description: '選填：只在這些來源裡找（名稱或編號）' }, limit: { type: 'integer', description: '最多幾個片段，預設 5' } }, ['question'], function (a) { return this._kiAsk(a); });
+                { question: { type: 'string', description: '問題或關鍵字' }, sources: { type: 'array', items: { type: 'string' }, description: '選填：只在這些來源裡找（名稱或編號）' }, limit: { type: 'integer', description: '最多幾個片段，預設 5' }, offset: { type: 'integer', description: '選填：跳過排名前幾個片段，往後翻頁（看上一次回傳的 _page.next_offset）' } }, ['question'], function (a) { return this._kiAsk(a); });
             tool('knowledge_sources', '列出 Knowledge Inventory 裡的來源（編號、名稱、格式、有沒有啟用、片段數、向量數）與知識庫放在哪裡、總量。', {}, [], function () { return this._kiSources(); });
             tool('knowledge_outline', '看一個來源的目錄（章節標題、層級、每節從第幾行到第幾行）。再用 knowledge_detail 讀某一節。', { source: SRC }, ['source'], function (a) { return this._kiWithSource(a.source, (store, s) => store.outline(s.id)); });
             tool('knowledge_detail', '讀一個來源的原文並逐行附行號：section＝章節編號或標題的一部分，或給 line_start／line_end。長的會分段（truncated／next_line）。', { source: SRC, section: { description: '章節編號或標題的一部分' }, line_start: { type: 'integer' }, line_end: { type: 'integer' }, max_lines: { type: 'integer', description: '最多幾行，預設 200' } }, ['source'], function (a) { return this._kiWithSource(a.source, (store, s) => store.detail(s.id, a.line_start ? { line_start: a.line_start, line_end: a.line_end || a.line_start } : (a.section != null ? a.section : 1), { maxLines: a.max_lines })); });
@@ -64320,7 +66074,7 @@ ${fnData.code}
                 root: { type: 'string', description: '專案資料夾：fap:<名稱或id>[/<子路徑>]；桌面版也可以是絕對路徑' },
                 question: { type: 'string', description: '要問的問題（自然語言）' },
                 action: { type: 'string', enum: ['ask', 'search', 'stats', 'locate', 'callers', 'check_citations'], description: 'locate：除錯定位器，text 放貼上的堆疊或 log 全文，回傳發生點、呼叫鏈、印出該訊息的程式行；callers：name 放函式名，回傳誰呼叫它；check_citations：text 放你的說明，核對引用的 檔案:行 是否都是定位器找到的' }, text: { type: 'string', description: 'locate／check_citations：全文' }, name: { type: 'string', description: 'callers：函式名稱' },
-                n: { type: 'number', description: '最多回幾筆（預設8）' }, kind: { type: 'string', enum: ['symbol', 'file'], description: 'search：只找定義或只找檔案' }, snippets: { type: 'boolean', description: '是否附程式碼片段（預設true）' },
+                n: { type: 'number', description: '最多回幾筆（預設8）' }, offset: { type: 'number', description: 'search：跳過排名前幾筆往後翻（回傳的 _page.next_offset）' }, kind: { type: 'string', enum: ['symbol', 'file'], description: 'search：只找定義或只找檔案' }, snippets: { type: 'boolean', description: '是否附程式碼片段（預設true）' },
             }, required: ['root'], additionalProperties: false }
         );
 
@@ -64651,11 +66405,9 @@ ${fnData.code}
                     }
                     // 頁面文字很長（或要求 output:'jsonl'）：讀完整頁，回三層結構的第 0 層（章節索引 JSONL），不是只回第一段
                     if (cmd === 'get_page_text' && parsed.output !== 'text' && parsed.offset == null && parsed.start_line == null) {
-                        const first = await this._bcCall(cmd, Object.assign({}, parsed, { max_chars: 150000 }), timeoutMs || 30000);
-                        if (first && first.ok && typeof first.text === 'string' && (parsed.output === 'jsonl' || (first.has_more && first.total_chars > this._pagerBudgetChars()) || first.total_chars > this._pagerBudgetChars())) {
-                            let full = first.text, r = first, guard = 0;
-                            while (r.has_more && r.next_offset != null && full.length < 3000000 && guard++ < 40) { r = await this._bcCall(cmd, Object.assign({}, parsed, { max_chars: 150000, offset: r.next_offset }), timeoutMs || 30000); if (!r || !r.ok || typeof r.text !== 'string') break; full += r.text; }
-                            const layered = this._webPageLayers(full, { title: first.title || first.url || '', url: first.url, tab_id: parsed.tab_id }, { chunkChars: Math.max(1000, Math.floor(this._pagerBudgetChars() * 0.8)) });
+                        const W0 = this._webBlocksMod(); const rr = await W0.readAll((a) => this._bcCall(cmd, a, timeoutMs || 30000), parsed, { chunk: 150000 }); const first = rr.first;
+                        if (rr.ok && (parsed.output === 'jsonl' || rr.total > this._pagerBudgetChars() || rr.text.length > this._pagerBudgetChars())) {
+                            const layered = this._webPageLayers(rr.text, { title: first.title || first.url || '', url: first.url, tab_id: parsed.tab_id }, { chunkChars: Math.max(1000, Math.floor(this._pagerBudgetChars() * 0.8)) });
                             if (layered) return layered;
                         }
                         return JSON.stringify(this._bcShapeResult(cmd, await this._bcPostprocess(cmd, parsed, first && first.ok ? await this._bcCall(cmd, parsed, timeoutMs || 30000) : first))); // 不夠長：照舊一段一段讀
@@ -65188,6 +66940,43 @@ ${fnData.code}
             },
             { type: 'object', properties: { description: { type: 'string', description: '使用者的中文描述,例如「輕快的爵士,D 調,16 小節」' }, style: { type: 'string', enum: ['pop', 'rock', 'jazz', 'blues', 'waltz', 'folk', 'lofi', 'edm', 'classical'] }, key: { type: 'string', description: 'C、D、Eb、F#… 大調或(小調風格)的主音' }, tempo: { type: 'number' }, bars: { type: 'number', description: '4 到 64,16 以上有前奏／主歌／副歌結構' }, progression: { type: 'number', description: '風格內的和弦進行編號,從 0 起算' }, seed: { type: 'number' }, title: { type: 'string' } }, additionalProperties: false }
         );
+        registerOptional('midi_compose_tree',
+            '作曲樹，一次一個節點（給窗口很小的模型用：不必一次想完整首曲子）。流程：action="start"（description 描述曲子，可帶 style／key／tempo／bars）→ 回傳 tree_id、規格、還沒決定的節點清單（pending），以及第一個節點的題目（ask：單獨就答得出來的一題，選項與後果都寫在裡面）；action="set"（tree_id、node、value）一次寫一個節點，程式馬上核對，不合格會退回並說明原因，合格就回下一題；action="read"（tree_id，可帶 node）看目前每個節點（階層：form → harmony.組 → voices.組.*；motif 在根下，每行有 parent、value、source、decided）；action="assemble"（tree_id、可選 seed）程式展開動機、配和弦與聲部、整體檢查，開 MIDI 編輯器並回 song_id。沒決定的節點用範本預設，所以任何時候 assemble 都做得出曲子；想讓每個節點都由你決定，就把 pending 清空再 assemble。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try {
+                    if (typeof FaComposeTree === 'undefined') return JSON.stringify({ ok: false, error: '這個環境沒有作曲樹' });
+                    this._composeTrees = this._composeTrees || new Map(); const act = String(a.action || 'read');
+                    const progress = (rec) => { const j = FaComposeTree.toJsonl(rec.res.tree, { ask: true, pendingOnly: true }); const rows = j.lines.slice(1).map((l) => JSON.parse(l)); return { decided: j.decided, total: j.total, pending: j.pending, next: rows.length ? rows[0] : null, done: !rows.length }; };
+                    if (act === 'start') {
+                        const text = String(a.description || '來一首曲子'); const ex = {}; if (a.style) ex.style = a.style; if (a.key) ex.key = a.key; if (a.tempo) ex.tempo = a.tempo; if (a.bars) ex.bars = a.bars;
+                        try { FaMidiCompose.setLearnedWorks(JSON.parse(localStorage.getItem('fa_music_works') || '[]')); } catch (_) { /* 沒有學到的作品 */ }
+                        const res = await FaComposePlan.decide(text, { hint: FaMidiCompose.workHints(text), ask: null, explicit: ex, noAiReason: '小窗口：由呼叫的模型逐節點決定', timeoutMs: 25000, attempts: 1, learned: (t) => this._composeLearnedFor(t) });
+                        res.task = text; res.tree = await FaComposeTree.plan(res, { task: text, noAiReason: '還沒決定（範本預設）' });
+                        const id = 'ct_' + (this._composeTrees.size + 1) + '_' + Date.now().toString(36); this._composeTrees.set(id, { res }); while (this._composeTrees.size > 8) this._composeTrees.delete(this._composeTrees.keys().next().value);
+                        const t = res.tree; return JSON.stringify(Object.assign({ ok: true, tree_id: id, spec: { style: t.style, key: t.key, tempo: t.tempo, bars: t.bars, mode: t.mode }, note: '用 action="set" 一次寫一個節點（node＋value），先回答 next.ask 這題；不想逐個決定就直接 assemble（沒決定的用範本）。' }, progress(this._composeTrees.get(id))));
+                    }
+                    const rec = this._composeTrees.get(String(a.tree_id || '')); if (!rec) return JSON.stringify({ ok: false, error: '找不到這棵作曲樹（tree_id 不對，或太久沒用被清掉）；先 action="start"' });
+                    if (act === 'read') {
+                        const j = FaComposeTree.toJsonl(rec.res.tree, { ask: false }); let rows = j.lines.slice(1).map((l) => JSON.parse(l)); if (a.node) { rows = rows.filter((r) => r.id === a.node); if (!rows.length) return JSON.stringify({ ok: false, error: '沒有這個節點：' + a.node + '（現在有：' + FaComposeTree.nodeIds(rec.res.tree).join('、') + '）' }); }
+                        const pr = progress(rec); return JSON.stringify({ ok: true, tree_id: a.tree_id, layer: 'compose_tree', how_to_read: '一個節點一行：parent 是上層；decided=false 的是範本預設（還沒有人決定）；用 set 寫 node＋value。', header: JSON.parse(j.lines[0]), rows, next: pr.next });
+                    }
+                    if (act === 'set') {
+                        const node = String(a.node || ''); if (!node) return JSON.stringify({ ok: false, error: '缺少 node（要寫哪個節點）' });
+                        if (FaComposeTree.nodeIds(rec.res.tree).indexOf(node) < 0) return JSON.stringify({ ok: false, error: '沒有這個節點：' + node + '（現在有：' + FaComposeTree.nodeIds(rec.res.tree).join('、') + '）' });
+                        const r = FaComposeTree.setNode(rec.res.tree, node, String(a.value == null ? '' : a.value), 'ai');
+                        if (r.error) return JSON.stringify({ ok: false, error: r.error, node, retry: FaComposeTree.toJsonl(rec.res.tree, { ask: true }).lines.slice(1).map((l) => JSON.parse(l)).find((x) => x.id === node) });
+                        rec.res.tree = r.tree; return JSON.stringify(Object.assign({ ok: true, node, saved: r.tree.nodes[node].value }, progress(rec)));
+                    }
+                    if (act === 'assemble') {
+                        const pr = progress(rec); const out = this._midiComposeFinish(rec.res, a.seed ? Number(a.seed) : 0);
+                        return JSON.stringify({ ok: true, song_id: out.id, seed: out.c.seed, warnings: out.c.warnings, undecided: pr.pending, note: pr.pending.length ? '還有 ' + pr.pending.length + ' 個節點是範本預設：' + pr.pending.join('、') + '；想自己決定就 set 之後再 assemble 一次' : '每個節點都是你決定的' });
+                    }
+                    return JSON.stringify({ ok: false, error: 'action 只有 start／read／set／assemble' });
+                } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+            },
+            { type: 'object', properties: { action: { type: 'string', enum: ['start', 'read', 'set', 'assemble'] }, description: { type: 'string', description: 'start：曲子的中文描述' }, style: { type: 'string', enum: ['pop', 'rock', 'jazz', 'blues', 'waltz', 'folk', 'lofi', 'edm', 'classical'] }, key: { type: 'string' }, tempo: { type: 'number' }, bars: { type: 'number' }, tree_id: { type: 'string' }, node: { type: 'string', description: 'set／read：節點代號，例如 form、harmony.main、voices.main.texture、motif' }, value: { type: 'string', description: 'set：這個節點的答案（曲式與聲部是一個字母；和聲是羅馬數字和弦串；motif 是「音級:時值」串）' }, seed: { type: 'number' } }, required: ['action'], additionalProperties: false }
+        );
         registerOptional('music_work_learn',
             '把「上網查到的作品音樂特徵」記進離線目錄(使用者機器上),下次作曲遇到同名作品直接查表、不必再上網。只收事實:調、調式、速度、風格範本、一句話特徵(樂器、和弦進行),不收旋律;一定要附出處網址;程式會逐欄核對,不合格會說明哪裡不對,請照訊息改了再呼叫。',
             async function (rawArgs) {
@@ -65438,12 +67227,12 @@ ${fnData.code}
         registerOptional('uml_edit',
             '編修進行中的 UML 設計（uml_design／uml_guide 產生的那一份）：反思或決策的結論要對應到「補哪裡、刪哪裡」，這個工具就是把它套上去並重建專案。ops＝編修指令陣列（每個都被程式驗證，會讓設計出錯的會被退回並說明原因）：' +
             'add_actor／remove_actor（name）、add_class（name、kind、members:["pay(amount:float):bool","total:float"]）、remove_class（name；相關關係與呼叫步驟程式一併收拾）、rename_class（from、to）、add_member（cls、member）、remove_member（cls、name）、add_relation（from、to、kind: assoc/inherit/implement/compose/aggregate/depend）、remove_relation（from、to）、' +
-            'add_usecase（name、actor、steps:["Cart.add(item)","Order.pay(x)"]）、remove_usecase（name）、add_step（usecase、step、at）、remove_step（usecase、to、msg 或 at）。auto_fix＝true 會讓程式找出問題（沒人用的類別、空類別、太短的呼叫順序），每個問題列出候選編修給小模型挑編號（挑不出來用程式的預設）。回傳改了什麼（changes）、被退回的原因、剩下的問題、編修後的 UML。',
+            'add_usecase（name、actor、steps:["Cart.add(item)","Order.pay(x)"]）、remove_usecase（name）、add_step（usecase、step、at）、remove_step（usecase、to、msg 或 at）。auto_fix＝true 會讓程式找出問題（沒人用的類別、空類別、太短的呼叫順序），每個問題列出候選編修給小模型挑編號（挑不出來用程式的預設）。【窗口很小的模型】next＝true 只回程式算出的「下一格」（先參與者與使用案例、再類別、再每個空類別的成員、再每個太短的使用案例、最後沒接上的類別；附焦點標頭、兄弟已用的命名、答法範例），你只回這一格的 ops；queue＝true 讓每次套完 ops 自動附上下一格（next_unit），直到 done。回傳改了什麼（changes）、被退回的原因、剩下的問題、編修後的 UML。',
             async function (rawArgs) {
                 let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 try { return JSON.stringify(await this._umlEdit(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
             },
-            { type: 'object', properties: { session: { type: 'string', description: '工作階段 id（不給就用最近一個）' }, ops: { type: 'array', items: { type: 'object' }, description: '編修指令' }, model_jsonl_read: { type: 'boolean', description: '把模型攤平成 JSONL 讀（levels 只攤前幾層、path 往下鑽某個節點）' }, levels: { type: 'number' }, path: { type: 'string', description: 'model_jsonl_read：要往下鑽的節點（JSON Pointer，例如 /classes）' }, model_jsonl: { type: 'array', items: { type: 'string' }, description: '整份模型的 JSONL 行（必須全部展開）；還原後取代目前的模型' }, auto_fix: { type: 'boolean', description: '讓程式找問題、小模型挑修法' }, use_model: { type: 'boolean', description: 'false＝不問模型，全用程式的預設修法' } } }
+            { type: 'object', properties: { session: { type: 'string', description: '工作階段 id（不給就用最近一個）' }, ops: { type: 'array', items: { type: 'object' }, description: '編修指令' }, model_jsonl_read: { type: 'boolean', description: '把模型攤平成 JSONL 讀（levels 只攤前幾層、path 往下鑽某個節點）' }, levels: { type: 'number' }, path: { type: 'string', description: 'model_jsonl_read：要往下鑽的節點（JSON Pointer，例如 /classes）' }, model_jsonl: { type: 'array', items: { type: 'string' }, description: '整份模型的 JSONL 行（必須全部展開）；還原後取代目前的模型' }, next: { type: 'boolean', description: '小窗口分段寫：只回程式算出的下一格（焦點標頭、兄弟的命名、答法範例）；一次只做這一格' }, queue: { type: 'boolean', description: '套完 ops 後自動附上下一格（next_unit）；每次只回這一格的 ops，直到 done' }, auto_fix: { type: 'boolean', description: '讓程式找問題、小模型挑修法' }, use_model: { type: 'boolean', description: 'false＝不問模型，全用程式的預設修法' } } }
         );
         // domain-gated 工具（registerOptional）：不出現在根層級的工具清單（不佔每一輪的 context），一般 AI 要用時透過 delegate_to_subagent 進 file_analysis／media_av domain 才看得到；離線訓練器規則與 /media-image-to-pdf 則直接呼叫。
         registerOptional('images_to_pdf',
@@ -71903,7 +73692,12 @@ ${fnData.code}
         return { ok: true, stopping: list.map((s) => s.id), note: list.length ? '會在目前這一項處理完之後停止，進度已存，之後 resume 接續。' : '沒有在跑的教學任務。' };
     }
     // 離線訓練器先試這一項：解得掉（狀態機走到 report_success、工具都成功）就不需要AI
-    async _otTeacherTryOffline(text, s) {
+    async _otTeacherTryOffline(text, s, item) {
+        // 寫程式（Python、判題器驗證）的項目：先走離線組合（uml_design → 配方／課／範式骨架 → 沙盒），做得出來就不必動用離線訓練器的工具
+        const C = item && item.check;
+        if (C && C.kind === 'judge' && (C.lang || 'python') === 'python' && typeof FaTeacherCheck !== 'undefined') {
+            try { const bridge = this._codeJudgeBridge(); if (bridge.judge) { const r = await this._codeOffline({ text: (item.key && /[。.]/.test(item.key)) ? item.key : text, problem: FaTeacherCheck.judgeProblem(C, item.key) }, bridge); if (r && r.ok) return { ok: true, preview: r.source.slice(0, 300), output: r.source, by: '離線組合：' + r.by + (r.paradigm ? '（' + r.paradigm + '）' : r.lesson ? '（' + r.lesson + '）' : '') }; } } catch (_) { /* 離線組合出錯就走離線訓練器 */ }
+        }
         let d;
         try { d = await this._otDryRun(text, { execute: true, assumeYes: !!s.opts.unattended }); } catch (e) { return { ok: false, why: '離線訓練器出錯：' + String((e && e.message) || e) }; }
         const dec = d.decision || {};
@@ -71932,7 +73726,7 @@ ${fnData.code}
     // 回歸檢查：先前離線做對（通過驗證）的項目，在新的一課之後還要一樣能做對
     async _otTeacherRegress(s, current) {
         const prev = s.items.filter((x) => x !== current && x.check && x.verified && x.status === 'done').slice(-(s.opts.regressLimit || 15)); const bad = [];
-        for (const x of prev) { if (s.stop) break; const r = await this._otTeacherTryOffline(x.text || x.key, s); const v = r.ok ? await this._otTeacherCheck(x, r.output) : { ok: false, detail: r.why }; if (!v.ok) bad.push({ key: x.key, why: String(v.detail || '').slice(0, 120) }); }
+        for (const x of prev) { if (s.stop) break; const r = await this._otTeacherTryOffline(x.text || x.key, s, x); const v = r.ok ? await this._otTeacherCheck(x, r.output) : { ok: false, detail: r.why }; if (!v.ok) bad.push({ key: x.key, why: String(v.detail || '').slice(0, 120) }); }
         s.regressChecked = (s.regressChecked || 0) + prev.length; return bad;
     }
     _otTeacherVerdict(text) {
@@ -71958,7 +73752,7 @@ ${fnData.code}
                 tick();
                 const t0 = Date.now();
                 // 1) 離線訓練器先試
-                let off = await this._otTeacherTryOffline(text, s);
+                let off = await this._otTeacherTryOffline(text, s, item);
                 // 有 check 的項目：離線「做出來」還不算，結果要通過驗證才算離線自己做對
                 if (off.ok && item.check) { const cv = await this._otTeacherCheck(item, off.output); if (cv.ok) item.verified = true; else off = { ok: false, why: '離線做出來了，但驗證沒過：' + String(cv.detail || '').slice(0, 200), wrong: true }; }
                 if (off.ok) {
@@ -71987,16 +73781,21 @@ ${fnData.code}
                     Object.assign(item, { status: okStatus, offline: false, extended, summary: String((verdict && verdict.summary) || (r && r.text) || '').slice(0, 300), limits: verdict && verdict.limits ? String(verdict.limits).slice(0, 200) : undefined, tools_changed: verdict && Array.isArray(verdict.extended) ? verdict.extended.slice(0, 8) : undefined, ms: Date.now() - t0, at: Date.now() });
                     // 有 check 的項目：老師教完，離線要「自己」重做並通過驗證（不是老師做完就算）；不過就請老師改進（最多 maxTeach 次），還是不過就回滾這堂課
                     if (item.check && okStatus !== 'failed') {
-                        const maxT = s.opts.maxTeach || 2; let rv = { ok: false, detail: '' };
+                        const maxT = s.opts.maxTeach || 2; let rv = { ok: false, detail: '' }, lastOut = '';
                         for (let k = 0; k <= maxT && !s.stop; k++) {
-                            const re = await this._otTeacherTryOffline(text, s); rv = re.ok ? await this._otTeacherCheck(item, re.output) : { ok: false, detail: re.why };
+                            const re = await this._otTeacherTryOffline(text, s, item); rv = re.ok ? await this._otTeacherCheck(item, re.output) : { ok: false, detail: re.why }; if (rv.ok && re.output) lastOut = re.output;
                             if (rv.ok || k === maxT) break;
                             try { await this._runSubAgentTask(mk('你把解法教給離線訓練器了，但離線自己重做的結果驗證沒過：' + String(rv.detail || '').slice(0, 200) + '。請改進你寫回離線訓練器的做法（工具、狀態、規則），用 dry_run／run_tool 驗證到離線自己做得對，再回報。\n\n'), Math.min(20, s.opts.maxRounds), { systemPrompt: FA_OT_TEACHER_PROTOCOL, allowedToolNames: this._otTeacherAllowedTools(), collectCalls: calls }); } catch (_) { /* 老師出錯就用現有結果判定 */ }
                         }
+                        // 離線沒自己重做出來，但老師回報的 Python 解答（程式碼圍欄）可能本身就能抽成課：_pyLearnLesson 自己會驗證「只靠這堂課重做過判題」才收，過了就視同教會
+                        if (!rv.ok && !s.stop && item.check.kind === 'judge' && (item.check.lang || 'python') === 'python' && r && /```/.test(String(r.text || ''))) {
+                            try { const tcode = FaTeacherCheck.extractCode(String(r.text)); const ls = tcode ? await this._pyLearnLesson(text, tcode, item) : null; if (ls && ls.ok) { rv = { ok: true, detail: '老師的解答抽成課 ' + ls.lesson.id }; item.lesson = ls.lesson.id; item.lessonFrom = 'teacher-code'; } } catch (_) { /* 抽不成就照原本的失敗流程 */ }
+                        }
                         if (rv.ok) {
                             item.relearned = true; item.verified = true;
+                            if (lastOut && item.check.kind === 'judge' && (item.check.lang || 'python') === 'python') { try { const ls = await this._pyLearnLesson(text, lastOut, item); if (ls && ls.ok) item.lesson = ls.lesson.id; } catch (_) { /* 抽不成課不影響老師迴圈 */ } }
                             const bad = await this._otTeacherRegress(s, item);
-                            if (bad.length) { s.regressions = (s.regressions || 0) + bad.length; const rr = await this._otTeacherRestore(snap); item.rolledBack = rr.ok || 'failed'; item.verified = false; item.relearned = false; okStatus = 'failed'; item.summary = '這堂課讓已會的項目退步：' + bad.slice(0, 3).map((b) => b.key.slice(0, 20)).join('、') + (rr.ok ? '（已回滾）' : '（回滾失敗：' + String(rr.error || '').slice(0, 60) + '，請手動檢查）'); }
+                            if (bad.length) { if (item.lesson) { try { const L = this._pyLessonsLoad(); const ix = L.findIndex((x) => x.id === item.lesson); if (ix >= 0) { L.splice(ix, 1); this._pyLessonsSave(); } } catch (_) {} item.lesson = undefined; } s.regressions = (s.regressions || 0) + bad.length; const rr = await this._otTeacherRestore(snap); item.rolledBack = rr.ok || 'failed'; item.verified = false; item.relearned = false; okStatus = 'failed'; item.summary = '這堂課讓已會的項目退步：' + bad.slice(0, 3).map((b) => b.key.slice(0, 20)).join('、') + (rr.ok ? '（已回滾）' : '（回滾失敗：' + String(rr.error || '').slice(0, 60) + '，請手動檢查）'); }
                         } else { const rr = await this._otTeacherRestore(snap); item.rolledBack = rr.ok || 'failed'; okStatus = 'failed'; item.summary = '老師教了，但離線自己重做驗證還是沒過：' + String(rv.detail || '').slice(0, 120) + (rr.ok ? '（已回滾）' : '（回滾失敗：' + String(rr.error || '').slice(0, 60) + '）'); }
                         if (okStatus === 'failed') { item.status = 'failed'; item.offline = false; item.extended = false; }
                     }
@@ -74887,7 +76686,9 @@ ${fnData.code}
         const q = String(parsed.question || parsed.query || parsed.q || '').trim();
         if (!q) return { ok: false, error: '缺少question（例如「foo_bar 是做什麼的」「parse_config 在哪裡定義」「誰用到 Logger」「登入流程相關的檔案」）' };
         const mst = st.sql ? await this._idxMini(key, q) : st;
-        const r = action === 'search' ? { intent: 'search', hits: _faCodeSearch(mst.ix, q, { n: Math.min(20, Math.floor(Number(parsed.n) || 8)), kind: parsed.kind }).map((x) => ({ type: x.type, id: x.id, score: x.score })), targets: {}, evidence: [], answer: '' } : _faCodeAsk(mst.ix, q, { n: Math.min(20, Math.floor(Number(parsed.n) || 8)) });
+        const nWant = Math.min(20, Math.floor(Number(parsed.n) || 8)), offSearch = action === 'search' ? Math.min(Math.max(Math.floor(Number(parsed.offset)) || 0, 0), 40) : 0; // search 可以用 offset 往後翻（排名搜尋，翻頁是選擇性的）
+        const r = action === 'search' ? { intent: 'search', hits: _faCodeSearch(mst.ix, q, { n: Math.min(60, nWant + offSearch), kind: parsed.kind }).slice(offSearch).map((x) => ({ type: x.type, id: x.id, score: x.score })), targets: {}, evidence: [], answer: '' } : _faCodeAsk(mst.ix, q, { n: Math.min(20, Math.floor(Number(parsed.n) || 8)) });
+        if (action === 'search') { const got = r.hits.length; r._page = { source: 'repo_search:' + key + ':' + q.slice(0, 40), page: Math.floor(offSearch / nWant) + 1, from: offSearch, to: offSearch + got, returned: got, total: offSearch + got, total_exact: false, has_more: got >= nWant, blocking: false, next_offset: got >= nWant ? offSearch + nWant : null }; }
         if (action === 'search') r.answer = r.hits.map((h) => h.type === 'symbol' ? `- ${mst.db.syms[h.id][0]}（${mst.db.syms[h.id][1]}）${mst.db.files[mst.db.syms[h.id][2]][0]}:${mst.db.syms[h.id][3]}` : `- 檔案 ${mst.db.files[h.id][0]}`).join('\n');
         const out = { ok: true, intent: r.intent, answer: r.answer, stats };
         if (partial) out.warning = '索引還不完整（只涵蓋已分析的' + stats.files + '個檔案）' + (job && job.state === 'running' ? '，背景索引還在進行，稍後再問會更完整。' : '。要完整先 repo_map index_start。');
@@ -75827,6 +77628,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             }
             out[f] = kept;
             out[f + '_total'] = all.length;
+            if (f === fields[0] || all.length > (out._page ? out._page.total : -1)) { const more = kept.length < arr.length; out._page = { source: 'repo_map:' + [parsed.action, parsed.root, parsed.query || parsed.from || parsed.path || '', f].join('|').slice(0, 120), page: limit ? Math.floor(offset / limit) + 1 : (offset ? 2 : 1), from: offset, to: offset + kept.length, returned: kept.length, total: all.length, total_exact: true, has_more: more, next_offset: more ? offset + kept.length : null, done: !more, field: f }; } // 覆蓋範圍帳本用：跳著讀的缺口會被記住
             if (kept.length < arr.length) {
                 out.has_more = true; out.next_offset = offset + kept.length;
                 out.paging_note = `「${f}」共${all.length}筆，這次回了第${offset + 1}～${offset + kept.length}筆；要看後面的就再呼叫一次並帶 "offset":${offset + kept.length}（結果太長會被系統直接截掉，所以我分頁給你）。`;
@@ -82803,6 +84605,12 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         if (!ctx) return Math.floor(this._toolResultBudgetChars() * 0.9);
         return this._jsonlPagerMod().budgetChars({ ctxTokens: ctx, fraction: this._isAutoAgentMode() ? 0.25 : 0.15, charsPerToken: REASONING_DEADEND_CHARS_PER_TOKEN_ESTIMATE }) * 0.9 | 0;
     }
+    // 分頁預算：知道窗口大小就用 token 算（中文 JSON 大約 1 字 1 token，用字元估會低估 3 倍，4096 的小窗口一頁會吃掉四成）；不知道才退回字元
+    _pagerBudgetOpts() {
+        const ctx = Number(this._getGenerationSettings().contextWindowTokens) || 0;
+        if (!ctx || typeof FaVlm === 'undefined' || !FaVlm.estimateTokens) return { chars: this._pagerBudgetChars() };
+        return { maxTokens: Math.floor(ctx * (this._isAutoAgentMode() ? 0.25 : 0.15) * 0.9), tokensOf: FaVlm.estimateTokens };
+    }
     // 暫存內容的記錄清單（第一次用到才解析，之後快取在暫存項目上）；不是記錄清單回 null
     _bigRecords(id) {
         const rec = this._bigStore && this._bigStore.get(String(id || '')); if (!rec) return null;
@@ -82812,7 +84620,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     // 取暫存內容的一頁：cursor 空＝第一頁。回傳分頁器的結果（{ok,text,meta,…}）；不是記錄清單回 null
     _bigPage(id, cursor) {
         const recs = this._bigRecords(id); if (!recs) return null;
-        return this._jsonlPagerMod().page(recs.lines, { source: id, cursor: cursor || null, chars: this._pagerBudgetChars(), head: recs.head, continueWith: 'big_content({"id":"' + id + '","action":"page","cursor":"<CURSOR>"})' });
+        return this._jsonlPagerMod().page(recs.lines, Object.assign({ source: id, cursor: cursor || null, head: recs.head, continueWith: 'big_content({"id":"' + id + '","action":"page","cursor":"<CURSOR>"})' }, this._pagerBudgetOpts()));
     }
     _truncateToolResultForContext(text, label) {
         const limit = this._toolResultBudgetChars();
@@ -104933,6 +106741,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const s = this._umlSessions && this._umlSessions.get(a.session || this._umlLastSession);
         if (!s) return { ok: false, error: '沒有進行中的 UML 設計（先用 uml_design 或 uml_guide 產生一份，或給 session）' };
         const before = JSON.parse(JSON.stringify(s.model)); let ops = Array.isArray(a.ops) ? a.ops : []; let steps = null;
+        // 小窗口分段寫：next＝只回程式算出的下一格（帶焦點標頭、兄弟的命名、答法範例）；queue＝套完 ops 後自動附上下一格，模型不必記得整份設計
+        if (a.next && !ops.length && a.model_jsonl == null && !a.model_jsonl_read) return { ok: true, session: s.id, layer: 'uml_queue', unit: FaUmlEdit.nextUnit(s.model, { goal: s.scenario || s.model.name }) };
         // 模型的多層 JSONL（任何窗口大小都做得完）：read＝攤平讀（levels 只攤前幾層、path 往下鑽），write＝整份換成還原後的模型（沒展開完整就退回）
         if (a.model_jsonl_read) {
             const PG = this._jsonlPagerMod(); const lv = a.levels == null ? undefined : Math.max(1, Math.floor(Number(a.levels)));
@@ -104960,7 +106770,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (ops.length) { const r = FaUmlEdit.apply(s.model, ops); applied = r.applied.map((x) => x.msg); rejected = r.rejected.map((x) => x.msg); if (r.applied.length) { s.model = r.model; this._umlSessionBuild(s); } }
         const changes = FaUmlEdit.diff(before, s.model);
         if (changes.length) { const v = this._umlViews && this._umlViews.get(s.id); if (v && v.win && v.win.isConnected) { try { v.post({ type: 'bundle', bundle: s.bundle, note: '已編修：' + changes.slice(0, 3).join('、') }); } catch (_) {} } }
-        return { ok: true, session: s.id, changes, applied, rejected, auto: steps, remaining_issues: FaDesign.findIssues(s.model).slice(0, 8).map((i) => i.msg), errors: FaUml.validateModel(s.model).slice(0, 5), uml: FaUml.toDsl(s.model), file_count: s.proj.files.length };
+        const nextUnit = a.queue ? FaUmlEdit.nextUnit(s.model, { goal: s.scenario || s.model.name }) : undefined;
+        return { ok: true, session: s.id, next_unit: nextUnit, changes, applied, rejected, auto: steps, remaining_issues: FaDesign.findIssues(s.model).slice(0, 8).map((i) => i.msg), errors: FaUml.validateModel(s.model).slice(0, 5), uml: FaUml.toDsl(s.model), file_count: s.proj.files.length };
     }
     async _umlZip(files, name, lang) {
         await this._ensureJSZipLoaded(); const zip = new JSZip(); for (const f of files) zip.file(f.path, f.content);
@@ -105157,6 +106968,48 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const wrap = (r) => (r && r.ok === false && r.error ? { verdict: 'UNAVAILABLE', passed: 0, total: 0, visible: { passed: 0, total: 0 }, hidden: { passed: 0, total: 0 }, failedIndex: -1, maxMs: 0, detail: r.error } : r);
         return { available: true, judge: async ({ lang, source, problem }) => wrap(await api.run({ lang, source, problem, timeoutMs: problem && problem.timeoutMs })), check: async ({ lang, source }) => wrap(await api.check({ lang, source })), probe: (lang) => api.available(lang) };
     }
+    // ===== 執行期的課（老師教成功後，用 deriveLesson 從解答抽成課；另外存、可匯出成內建 py_lessons_builtin.js）=====
+    _pyLessonsLoad() {
+        if (this._pyRuntimeLessons) return this._pyRuntimeLessons;
+        let arr = []; try { const raw = typeof localStorage !== 'undefined' && localStorage.getItem('fa_py_runtime_lessons'); if (raw) arr = JSON.parse(raw) || []; } catch (_) { arr = []; }
+        this._pyRuntimeLessons = Array.isArray(arr) ? arr : []; return this._pyRuntimeLessons;
+    }
+    _pyLessonsSave() { try { localStorage.setItem('fa_py_runtime_lessons', JSON.stringify(this._pyRuntimeLessons || [])); } catch (_) { /* 存不了就只留在記憶體 */ } }
+    // 匯出成內建（py_lessons_builtin.js 的 lessons 陣列內容；資料檔由腳本產生，這裡給的是 JSON，讓開發者貼進 scripts/teach-builtin-lessons.js 的流程）
+    _pyLessonsExport() { return JSON.stringify({ generatedAt: new Date().toISOString().slice(0, 10), lessons: this._pyLessonsLoad() }); }
+    // 老師的解答（一段 Python：def solve(輸入變數)，或整支含 read_input／main 的程式）→ 課；要先通過「只靠這一堂課」的驗證才收
+    async _pyLearnLesson(text, source, item) {
+        const P = await this._pyParserSync(); const B = FaPyBlocks.makeBlocks({ parseTree: (x) => P.parse(x), C2U: FaPyCode2Uml });
+        const intent = FaAlgoIntent.read(text); if (!intent.ok || !intent.algo) return { ok: false, reason: '動作表認不出這題的算法種類' };
+        const src = String(source).replace(/\n?main\(\)\s*$/, '\n');
+        const d = FaPyLessons.deriveLesson({ statement: text, intent, source: src, B, C2U: FaPyCode2Uml, parseTree: (x) => P.parse(x), serial: (FaPyLessonsBuiltin.lessons || []).concat(this._pyLessonsLoad()).filter((x) => x.algo === intent.algo).length + 1, createdBy: 'teacher', note: item && item.key });
+        if (!d.ok) return { ok: false, reason: d.reason };
+        // 只靠這堂課重做一次並過判題器，才收
+        const bridge = this._codeJudgeBridge(); if (!bridge.judge || !item || !item.check) return { ok: false, reason: '沒有判題器，不收未驗證的課' };
+        const prev = this._pyNoLessons, prevRt = this._pyRuntimeLessons; this._pyRuntimeLessons = [d.lesson]; this._pyNoLessons = false;
+        let r; try { r = await this._codeOffline({ text, problem: FaTeacherCheck.judgeProblem(item.check, item.key), onlyLessons: [d.lesson] }, bridge); } finally { this._pyNoLessons = prev; this._pyRuntimeLessons = prevRt; }
+        if (!r || !r.ok || r.verdict !== 'AC' || r.lesson !== d.lesson.id) return { ok: false, reason: '這堂課自己重做沒過驗證（或題目由配方/其他做法解出，用不到這堂課）' };
+        this._pyLessonsLoad().push(d.lesson); this._pyLessonsSave(); return { ok: true, lesson: d.lesson };
+    }
+    // ===== 離線組合（Python）：uml_design（算法題讀取器）→ 配方／課／範式骨架 → 區塊迴圈 → 沙盒。設計見 DESIGN.ast-nodes.md 第七節；不問模型（沒有 pick）=====
+    async _pyParserSync() {
+        if (this._pyParser) return this._pyParser;
+        const host = this._behTsHost(); const PC = await host.loadTreeSitter(); const lang = await PC.Language.load(await host.loadLanguageWasm('python')); const P = new PC(); P.setLanguage(lang); this._pyParser = P; return P;
+    }
+    // 領域包（DSP…）：第一次用到時註冊進算法詞彙與範式骨架表；判題用領域的容差設定（DSP＝float）
+    _pyDomainsInit() { if (this._pyDomainsDone) return; this._pyDomainsDone = true; try { FaDomains.register(FaDomainDsp.make(FaPyParadigms), { AI: FaAlgoIntent, PAR: FaPyParadigms }); } catch (_) { /* 領域包註冊失敗不影響通用範式 */ } }
+    async _codeOffline(o, bridge) {
+        this._pyDomainsInit();
+        const P = await this._pyParserSync(); const B = FaPyBlocks.makeBlocks({ parseTree: (s) => P.parse(s), C2U: FaPyCode2Uml }); const R = FaPyBlocksRules.makeRules(B);
+        const uml = await FaUml.scenarioToModel(o.text, { readers: [FaAlgoIntent.reader] });
+        if (!uml.ok || !uml.fromHints) return { ok: false, reason: '程式讀不出這題（不是算法題的敘述格式）' };
+        const jd = FaDomains.judgeOf((FaAlgoIntent.read(o.text) || {}).algo); const problem = jd ? Object.assign({}, o.problem, { checker: o.problem.checker || jd.checker, eps: o.problem.eps != null ? o.problem.eps : jd.eps }) : o.problem;
+        const judge = async (src) => { const j = await bridge.judge({ lang: 'python', source: src + '\nmain()\n', problem }); if (j.verdict === 'UNAVAILABLE') throw new Error('判題器不能用：' + String(j.detail || '').slice(0, 100)); return { verdict: j.verdict, detail: j.detail }; };
+        const lessons = o.onlyLessons ? o.onlyLessons : this._pyNoLessons ? [] : (FaPyLessonsBuiltin.lessons || []).concat(this._pyLessonsLoad()); // _pyNoLessons：評測用，不給課、只靠範式骨架
+        const r = await FaPyUmlPipeline.buildFromUML({ statement: o.text, uml: { hints: uml.hints, model: uml.model }, B, R, C2U: FaPyCode2Uml, FaPyBody, Choose: FaPyCnlChoose, judge, Lessons: FaPyLessons, lessons, Paradigms: FaPyParadigms });
+        if (!r.ok) return { ok: false, reason: r.reason, tried: r.tried };
+        return { ok: true, source: r.source + '\nmain()\n', verdict: r.verdict, by: r.recipe ? 'recipe' : r.lesson ? 'lesson' : r.paradigm ? 'paradigm' : 'blocks', recipe: r.recipe, lesson: r.lesson, paradigm: r.paradigm, slots: r.slots, tried: r.tried, usedModel: r.usedModel };
+    }
     // a: { task（需求文字）, language, tests:[{in,out}], uml（DSL 文字）, use_last_design, source（任意現有程式碼）, goal, driver, model, _gen（CoLU 計畫裡直接給模型） }
     async _codeAgent(a) {
         a = a || {}; const task = String(a.task || a.scenario || a.goal || '').trim(); const source = a.source != null ? String(a.source) : null;
@@ -105168,11 +107021,11 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             const pr = FaUml.parseDsl(dsl); if (pr.errors && pr.errors.length && !pr.model.classes.length) return { ok: false, error: 'UML 讀不懂：' + pr.errors.slice(0, 3).map((e) => '第 ' + e.line + ' 行 ' + e.msg).join('；') };
             model = pr.model; if (pr.errors && pr.errors.length) umlNote = 'UML 有 ' + pr.errors.length + ' 處讀不懂，已略過';
         }
-        let tests = null; if (Array.isArray(a.tests) && a.tests.length) { tests = a.tests.filter((t) => t && typeof t.in === 'string' && typeof t.out === 'string').slice(0, 20); if (!tests.length) tests = null; }
+        let tests = null, testNote = ''; if (Array.isArray(a.tests) && a.tests.length) { tests = a.tests.filter((t) => t && typeof t.in === 'string' && typeof t.out === 'string'); const big = tests.filter((t) => t.in.length > 250000 || t.out.length > 250000).length; tests = tests.filter((t) => t.in.length <= 250000 && t.out.length <= 250000).slice(0, 20); if (big) testNote = '有 ' + big + ' 筆測試單筆超過 250KB（判題器上限 256KB），已略過'; if (!tests.length) tests = null; }
         const bridge = this._codeJudgeBridge();
         // 修既有程式碼（edit 模式）若只有語法修正，不需要模型；寫程式一定要模型
         let M = a._gen ? { gen: a._gen, label: '（計畫指定的模型）' } : null;
-        if (!M && (source == null || a.model)) { M = await this._umlModel(a.model); if (M.error) return { ok: false, error: M.error }; }
+        if (!M && (source == null || a.model)) { M = await this._umlModel(a.model); if (M.error) { if (source == null && !a.model && !model && tests && (!lang || lang === 'python')) { M = null; } else return { ok: false, error: M.error }; } }
         else if (!M && source != null) { try { const m2 = await this._umlModel(undefined); if (!m2.error) M = m2; } catch (_) { M = null; } }
         // write_code 領域不開思考（使用者決定）：不計算 CoLU 思考設定
         // 「要不要先設計 UML」由 FaCodeAgent.runCode 依需求規模決定；宿主只提供設計能力（同一份需求最近設計過就沿用，不重做）
@@ -105183,14 +107036,14 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             this._umlPlanDesign = { dsl: r.dsl, design: r.design, warnings: r.warnings, scenario: text }; return { ok: true, model: r.model, dsl: r.dsl, warnings: r.warnings };
         } : undefined;
         const prog = this._createProgressWidget((source != null ? '修改現有程式' : '寫程式') + (M ? '（' + (M.label || '模型') + '）' : '（只有程式端的語法修正）'));
-        const onEvent = (e) => { try { if (e.t === 'route') prog.log('🧭 路線：' + (e.route === 'uml' ? '需求偏大，先設計 UML 再逐類別實作' : '直接切成函式寫') + (e.by === 'model' ? '（模型決定）' : '') + (e.reasons && e.reasons.length ? '——' + e.reasons.slice(0, 2).join('、') : '') + (e.fallback ? '（退回直接寫）' : '')); else if (e.t === 'plan') prog.log('📐 切割：' + (e.functions || e.classes || []).join(' → ')); else if (e.t === 'write') prog.log((e.kind === 'rewrite' ? '✏️ 重寫 ' : '✍️ 寫 ') + (e.fn || '') + (e.thinking ? '（思考）' : '')); else if (e.t === 'judge' || e.t === 'check') prog.log('🧪 驗收：' + e.verdict + (e.detail ? '（' + String(e.detail).slice(0, 80) + '）' : '')); else if (e.t === 'rethink') prog.log('🔁 第 ' + e.n + ' 次重想（' + e.verdict + '）'); else if (e.t === 'syntax' || e.t === 'syntax_fixed') prog.log('🔧 語法修正' + (e.edits != null ? '：' + e.edits + ' 處' : '')); } catch (_) { /* 進度回報壞了不影響流程 */ } };
+        const onEvent = (e) => { try { if (e.t === 'offline') prog.log('🧩 離線組合解出（不問模型）：' + (e.paradigm ? '範式 ' + e.paradigm + '，試了 ' + e.tried + ' 個槽位組合' : e.by || '')); else if (e.t === 'route') prog.log('🧭 路線：' + (e.route === 'uml' ? '需求偏大，先設計 UML 再逐類別實作' : '直接切成函式寫') + (e.by === 'model' ? '（模型決定）' : '') + (e.reasons && e.reasons.length ? '——' + e.reasons.slice(0, 2).join('、') : '') + (e.fallback ? '（退回直接寫）' : '')); else if (e.t === 'plan') prog.log('📐 切割：' + (e.functions || e.classes || []).join(' → ')); else if (e.t === 'write') prog.log((e.kind === 'rewrite' ? '✏️ 重寫 ' : '✍️ 寫 ') + (e.fn || '') + (e.thinking ? '（思考）' : '')); else if (e.t === 'judge' || e.t === 'check') prog.log('🧪 驗收：' + e.verdict + (e.detail ? '（' + String(e.detail).slice(0, 80) + '）' : '')); else if (e.t === 'rethink') prog.log('🔁 第 ' + e.n + ' 次重想（' + e.verdict + '）'); else if (e.t === 'syntax' || e.t === 'syntax_fixed') prog.log('🔧 語法修正' + (e.edits != null ? '：' + e.edits + ' 處' : '')); } catch (_) { /* 進度回報壞了不影響流程 */ } };
         try {
             const problem = tests ? { id: 'task', title: task.slice(0, 40), statement: task || (a.goal || ''), tests } : (task && source == null && !model ? { id: 'task', title: task.slice(0, 40), statement: task } : (source != null && a.goal ? { id: 'task', statement: String(a.goal) } : null));
-            const res = await FaCodeAgent.runCode({ text: task || a.goal || '', lang: lang || undefined, source: source != null ? source : undefined, model: model || undefined, problem, driver: a.driver, design, generate: M ? M.gen : undefined, judge: bridge.judge, check: bridge.check, stackMod: this.advancedSettings.thinkStack === false ? null : FaThinkStack, opts: { maxRethink: Math.min(5, Math.max(0, +a.max_rethink || 3)), maxCalls: M && M.online ? 40 : 60, stackChecks: !!a.stack_checks }, onEvent });
-            if (umlNote) (res.gaps = res.gaps || []).push(umlNote);
+            const res = await FaCodeAgent.runCode({ text: task || a.goal || '', lang: lang || undefined, source: source != null ? source : undefined, model: model || undefined, problem, driver: a.driver, design, generate: M ? M.gen : undefined, offline: (source == null && !model && tests && bridge.judge) ? (o) => this._codeOffline(o, bridge) : undefined, judge: bridge.judge, check: bridge.check, stackMod: this.advancedSettings.thinkStack === false ? null : FaThinkStack, opts: { maxRethink: Math.min(5, Math.max(0, +a.max_rethink || 3)), maxCalls: M && M.online ? 40 : 60, stackChecks: !!a.stack_checks }, onEvent });
+            if (umlNote) (res.gaps = res.gaps || []).push(umlNote); if (testNote) (res.gaps = res.gaps || []).push(testNote);
             if (!bridge.available) (res.gaps = res.gaps || []).push('這個環境沒有本機判題器（網頁版）：沒有編譯、沒有執行，產生的程式完全沒有驗證過');
             if (res.ok) prog.finish(res.verified ? '完成（測試通過）' : '完成（沒有驗證行為）'); else prog.fail(String((res.gaps && res.gaps[0]) || res.reason || '沒有完成').slice(0, 160));
-            const out = { ok: !!res.ok, verified: !!res.verified, verdict: res.verdict, mode: res.mode, lang: res.lang, source: res.source, diff: res.diff || undefined, edits: res.edits, gaps: res.gaps, reason: res.reason, calls: res.calls, rethinks: res.rethinks, plan: res.plan && res.plan.map((x) => x.name), classes: res.order, route: res.route, uml: res.design ? res.design.dsl : undefined, report: FaCodeAgent.formatReport(res), sandbox: '判題器不是安全沙盒：只有時間與輸出上限，沒有記憶體上限、檔案與網路隔離', model_used: M ? M.label : undefined };
+            const out = { ok: !!res.ok, verified: !!res.verified, verdict: res.verdict, mode: res.mode, offline: res.offline, lang: res.lang, source: res.source, diff: res.diff || undefined, edits: res.edits, gaps: res.gaps, reason: res.reason, calls: res.calls, rethinks: res.rethinks, plan: res.plan && res.plan.map((x) => x.name), classes: res.order, route: res.route, uml: res.design ? res.design.dsl : undefined, report: FaCodeAgent.formatReport(res), sandbox: '判題器不是安全沙盒：只有時間與輸出上限，沒有記憶體上限、檔案與網路隔離', model_used: M ? M.label : undefined };
             if (!res.ok && !res.source) out.error = String((res.gaps && res.gaps[0]) || res.reason || '沒有完成'); return out;
         } catch (e) { prog.fail(String((e && e.message) || e)); return { ok: false, error: String((e && e.message) || e) }; }
     }
@@ -105268,6 +107121,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         }
         const summary = parts.filter(Boolean).join('\n'); return { ok: true, text: summary, json: { summary, method: usedModel && usedProgram ? 'mixed' : (usedModel ? 'model' : 'extractive'), chunks: chunks.length } };
     }
+    // 思考堆疊（DESIGN.think-stack.md）：路由用同一個堆疊——先選目標／工具、再補欄位、再跑計畫，後面的步驟看得到「前面選了什麼」；thinkStack:false 關閉
+    _routeStack(question) { if (this.advancedSettings.thinkStack === false || typeof FaThinkStack === 'undefined' || !FaThinkStack) return null; const st = FaThinkStack.create(String(question || '').slice(0, 200), { maxDecisions: 8 }); FaThinkStack.push(st, { path: '路由', question: '判斷這句話要用哪個工具或計畫，並完成它' }); return { T: FaThinkStack, st }; }
     _planEnv(run, userText, ctx) {
         const M = ctx.M; const question = ctx.question; const calls = ctx.calls; const trace = ctx.trace; const prog = ctx.prog;
         return {
@@ -105289,6 +107144,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 pick_urls: async (args) => { const urls = [].concat(args.results || []).filter((u) => /^https?:\/\//.test(u) && !/(?:google|bing|duckduckgo|baidu)\.[a-z.]+\/(?:search|url|\?)/i.test(u)); const first = urls[0]; return first ? { ok: true, text: first, json: { urls: [first] } } : { ok: false, text: '搜尋結果裡沒有可以抓的網址' }; },
             },
             stackMod: this.advancedSettings.thinkStack === false ? null : (typeof FaThinkStack !== 'undefined' ? FaThinkStack : null),
+            stack: ctx.stack || undefined,
             defsOf: (name) => FaRecipe.slotsFromSchema((this.tools[name] && this.tools[name].parametersSchema) || {}),
             fill: async (step, missing, sk) => { const mf = await FaRecipe.modelFill({ missing, question, toolName: step.tool, generate: M.gen, numbers: (run.slots && run.slots.numbers) || [], stack: sk && sk.stack, stackMod: sk && sk.stackMod }); FaRecipe.decide(trace, { stage: 'plan_fill', step: step.id, tool: step.tool, answer: Object.keys(mf.values), by: 'model', tries: mf.tries, rejected: mf.rejected }); return { values: mf.values, missing: mf.missing }; },
             onEvent: (e) => { if (e.type === 'decision' || e.type === 'replan' || e.type === 'ask') FaRecipe.decide(trace, Object.assign({ stage: 'plan_' + e.type, by: 'program' }, e)); if (prog) { if (e.type === 'step_start') prog.log('▶ ' + e.step + ' ' + e.tool); else if (e.type === 'step_done') prog.log('✅ ' + e.step); else if (e.type === 'step_failed') prog.log('❌ ' + e.step + '：' + e.error); else if (e.type === 'decision') prog.log('決策：' + e.rule + ' → ' + e.action + '（' + e.why + '）'); else if (e.type === 'replan') prog.log('🔁 重新規劃（排除 ' + e.excluded.join('、') + '）：' + e.steps.join(' → ')); } },
@@ -105313,16 +107169,17 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const planAtts = (hereAtts.length || slots.url || !/這(?:份|個|張|支|些|幾|篇)|上面|剛剛|剛才|那(?:份|個|張|支)|前面/.test(question)) ? hereAtts : await this._recipeAttachments(userText); // 對話裡更早附的檔案，只有使用者用「這份／上面那個／剛剛」指它時才算
         const facts = FaPlan.factsFrom({ attachments: planAtts, url: slots.url, query: FaRecipe.cleanQuery(userText), text: question, online: false, lang: FaCodeAgent.detectLang(question, 'python') }); // 語言決定 CoLU 看得到哪些能力（每種語言各自一套）
         const goals = FaPlan.matchGoals(question, facts); if (!goals.length) return { handled: false };
-        const trace = FaRecipe.newTrace(userText, { recipe: 'plan' }); const M = await this._planModel(opts); let goal = goals[0]; let by = '程式';
+        const trace = FaRecipe.newTrace(userText, { recipe: 'plan' }); const M = await this._planModel(opts); let goal = goals[0]; let by = '程式'; const rs = this._routeStack(question);
         try {
-            if (goals.length > 1) { const ch = await FaRecipe.chooseTool({ cands: FaPlan.goalMenu(goals), question, generate: M.gen }); FaRecipe.decide(trace, { stage: 'plan_goal', options: goals.map((g) => g.id), answer: ch.ok && !ch.none ? goals[ch.index].id : null, by: 'model', tries: ch.tries, rejected: ch.rejected }); if (!ch.ok || ch.none) { this._recipeSaveTrace(trace); return { handled: false }; } goal = goals[ch.index]; by = '模型'; }
+            if (goals.length > 1) { const ch = await FaRecipe.chooseTool({ cands: FaPlan.goalMenu(goals), question, generate: M.gen, label: '選計畫目標', stack: rs && rs.st, stackMod: rs && rs.T }); FaRecipe.decide(trace, { stage: 'plan_goal', options: goals.map((g) => g.id), answer: ch.ok && !ch.none ? goals[ch.index].id : null, by: 'model', tries: ch.tries, rejected: ch.rejected }); if (!ch.ok || ch.none) { this._recipeSaveTrace(trace); return { handled: false }; } goal = goals[ch.index]; by = '模型'; }
             else FaRecipe.decide(trace, { stage: 'plan_goal', options: [goal.id], answer: goal.id, by: 'program' });
+            if (rs) rs.T.decide(rs.st, '計畫目標＝' + goal.label + '（' + by + '決定）');
             const pr = FaPlan.buildPlan(goal, facts, { inputKinds: goal.id === 'speak_summary' && /摘要|重點|總結/.test(question) ? { 'text_to_speech.text': ['summary'] } : undefined });
             if (!pr.ok || (pr.steps.length < 2 && !pr.steps[0].local)) { FaRecipe.decide(trace, { stage: 'plan_build', answer: pr.ok ? 'single_step' : pr.reason, by: 'program' }); this._recipeSaveTrace(trace); return { handled: false }; } // 單步驟交給單一工具食譜
             const run = FaPlan.createRun(goal, facts, pr, userText); run.slots = slots; FaRecipe.decide(trace, { stage: 'plan_build', answer: pr.steps.map((s) => s.tool), by: 'program', cost: pr.cost });
             const slow = run.steps.filter((s) => s.slow);
             if (slow.length) { const ans = await this.requestUserForm({ title: '🗺️ 離線計畫（目標：' + goal.label + '，由' + by + '決定）', description: FaPlan.renderPlan(run) + '\n\n' + slow.map((s) => s.tool).join('、') + ' 比較慢（第一次會下載模型、在這台電腦上算）。要執行嗎？', choices: ['執行', '取消'] }); if (!ans || !ans.confirmed || ans.answer !== '執行') { this._recipeSaveTrace(trace); return { handled: true, ok: false, header: '🍳 離線計畫', text: '已取消。' }; } }
-            return await this._planRun(run, userText, { question, M, trace });
+            return await this._planRun(run, userText, { question, M, trace, stack: rs && rs.st });
         } catch (e) { FaRecipe.decide(trace, { stage: 'error', answer: String((e && e.message) || e).slice(0, 200), by: 'program' }); this._recipeSaveTrace(trace); return { handled: false, error: String((e && e.message) || e) }; }
     }
     async _planRun(run, userText, ctx) {
@@ -105359,7 +107216,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         opts = opts || {}; const S = this._omSettings(); if (!S.recipes) return { handled: false };
         const question = FaRecipe.stripAttachments(userText) || String(userText);
         if (S.plans && !opts.forceTool && !opts.planOnly) { const pr = await this._planAnswer(userText, plan, opts); if (pr && pr.handled) return pr; } // 多步驟：有明確的目標（影片做摘要、網頁摘要、上網查資料…）就先走計畫
-        const trace = FaRecipe.newTrace(userText, { recipe: 'tool_auto' });
+        const trace = FaRecipe.newTrace(userText, { recipe: 'tool_auto' }); const rs = this._routeStack(question);
         const cands = this._recipeCandidates(plan, opts.forceTool, opts.extraTools, opts.onlyTools, opts.extraScores); if (!cands.length) return { handled: false };
         const inst = await this._omInstalled(); const route = FaVlm.routeStages({ config: S.roles, bench: S.bench, installed: inst.set, requireInstalled: !!opts.fallback, defaultId: S.textModel, hasTools: false });
         const model = route.answer; let modelErr = undefined; this._omDeclined = this._omDeclined || new Set();
@@ -105388,13 +107245,13 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 const ap = (evidenceUsed && cands.length === 1) ? { index: 0, by: 'program' } : FaRecipe.autoPick(cands, { minScore: 0.5, margin: 0.12 });
                 if (ap) { idx = ap.index; by = '程式'; FaRecipe.decide(trace, { stage: 'route', options: cands.map((c) => c.tool + ':' + c.score), answer: cands[idx].tool, by: 'program' }); }
                 else {
-                    const ch = await FaRecipe.chooseTool({ cands, question, generate: gen });
+                    const ch = await FaRecipe.chooseTool({ cands, question, generate: gen, label: '選工具', stack: rs && rs.st, stackMod: rs && rs.T });
                     FaRecipe.decide(trace, { stage: 'route', options: cands.map((c) => c.tool), answer: ch.ok ? (ch.none ? 'none' : cands[ch.index].tool) : null, by: 'model', tries: ch.tries, rejected: ch.rejected });
                     if (!ch.ok || ch.none) { this._recipeSaveTrace(trace); return { handled: false }; } // 模型說都不是／選不出來 → 交給文字生成
                     idx = ch.index; by = '模型（第 ' + (idx + 1) + ' 個）';
                 }
             }
-            const cand = cands[idx]; const tool = this.tools[cand.tool]; steps.push('路由：' + by + ' → ' + cand.tool);
+            const cand = cands[idx]; const tool = this.tools[cand.tool]; steps.push('路由：' + by + ' → ' + cand.tool); if (rs && !/^模型/.test(by)) rs.T.decide(rs.st, '選了 ' + cand.tool + '（' + by + '）'); // 模型選的，chooseTool 已記
             // ② 欄位
             const defs = FaRecipe.slotsFromSchema(tool.parametersSchema || {});
             const pf = FaRecipe.programFill(defs, evCtx);
@@ -105405,7 +107262,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             FaRecipe.decide(trace, { stage: 'slots', tool: cand.tool, answer: Object.keys(pf.values), by: 'program', missing: pf.missing.map((d) => d.name) });
             let remaining = pf.missing;
             if (remaining.length) {
-                const mf = await FaRecipe.modelFill({ missing: remaining, question, toolName: cand.tool, generate: gen, numbers: (plan && plan.slots && plan.slots.numbers) || [] });
+                const mf = await FaRecipe.modelFill({ missing: remaining, question, toolName: cand.tool, generate: gen, numbers: (plan && plan.slots && plan.slots.numbers) || [], stack: rs && rs.st, stackMod: rs && rs.T });
                 FaRecipe.decide(trace, { stage: 'slots', tool: cand.tool, answer: Object.keys(mf.values), by: 'model', tries: mf.tries, rejected: mf.rejected, error: mf.error });
                 Object.assign(args, mf.values); Object.keys(mf.values).forEach((k) => fieldBy.push(k + '（模型）')); remaining = mf.ok ? mf.missing : remaining;
             }
@@ -105414,7 +107271,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 const nums = ((plan && plan.slots && plan.slots.numbers) || []).length;
                 const opt = FaRecipe.relevantOptional(defs.filter((d) => !d.required && args[d.name] === undefined && (((d.type === 'integer' || d.type === 'number') && nums > 0) || (d.enum && d.enum.length) || d.type === 'boolean')), question);
                 if (opt.length) {
-                    const of = await FaRecipe.modelFill({ missing: opt, question, toolName: cand.tool, generate: gen, numbers: (plan && plan.slots && plan.slots.numbers) || [] });
+                    const of = await FaRecipe.modelFill({ missing: opt, question, toolName: cand.tool, generate: gen, numbers: (plan && plan.slots && plan.slots.numbers) || [], stack: rs && rs.st, stackMod: rs && rs.T });
                     FaRecipe.decide(trace, { stage: 'slots_optional', tool: cand.tool, answer: Object.keys(of.values), by: 'model', tries: of.tries, rejected: of.rejected, error: of.error });
                     if (of.ok) { Object.assign(args, of.values); Object.keys(of.values).forEach((k) => fieldBy.push(k + '（模型）')); }
                 }
