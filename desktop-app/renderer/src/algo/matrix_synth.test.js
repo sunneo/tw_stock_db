@@ -31,5 +31,18 @@ const T = [
     const bad = await S.synth({ statement: '輸入三個整數，由小到大輸出', examples: [{ in: '3 1 2\n', out: '1 2 3\n' }] }); assert.strictEqual(bad.ok, false); const empty = await S.synth({ statement: 'x', examples: [] }); assert.strictEqual(empty.ok, false);
     const sq = { statement: '輸入 n，輸出 n 的平方', examples: [{ in: '3\n', out: '9\n' }, { in: '10\n', out: '100\n' }] }; assert.strictEqual(S.synthRecurrence(sq).ok, false, 'n^2 不是階數≤4、係數0..2的線性遞推，遞推枚舉不該硬湊'); const sqr = await S.synth(sq); assert.ok(sqr.ok && sqr.level === 'L0', 'n^2 由 L0 公式枚舉解出');
     const med = await S.synth({ statement: '輸入三個整數，輸出中位數', examples: [{ in: '2 1 3\n', out: '2\n' }, { in: '9 8 7\n', out: '8\n' }] }); assert.ok(med.ok && med.level === 'L0', 'L0 公式：中位數');
-    assert.ok(ok >= 5, '獨立題至少解出 5 題，實際 ' + ok); console.log((ok + 4) + ' passed, 0 failed'); process.exit(0);
+    // 範本庫（L4/L5）：只給敘述＋2 筆範例，對 20 筆隱藏測資
+    const TP = [
+        { id: 'digit-prod', st: '輸入正整數 n（≤10^9），輸出各位數字的積。', gen: () => String(rnd(10, 999999999)) + '\n', ref: (s) => String([...s].reduce((a, c) => a * Number(c), 1)) },
+        { id: 'vowels', st: '輸入一行小寫英文字串，輸出其中母音（a e i o u）的個數。', gen: () => str('abcdefghij', rnd(1, 15)) + '\n', ref: (s) => String([...s].filter((c) => 'aeiou'.includes(c)).length) },
+        { id: 'is-pow2', st: '輸入正整數 n，若是 2 的冪印 YES，否則印 NO。', gen: () => String(rnd(0, 1) ? 2 ** rnd(0, 20) : rnd(1, 3000)) + '\n', ref: (s) => ((BigInt(s) & (BigInt(s) - 1n)) === 0n ? 'YES' : 'NO') },
+        { id: 'next-greater', st: '第一行 n，第二行 n 個整數。對每個位置輸出它右邊第一個比它大的數，沒有則輸出 0，以空格分隔。', gen: () => { const n = rnd(2, 8); return n + '\n' + Array.from({ length: n }, () => rnd(1, 20)).join(' ') + '\n'; }, ref: (s) => { const a = s.split('\n')[1].split(' ').map(Number); return a.map((x, i) => a.slice(i + 1).find((y) => y > x) || 0).join(' '); }, multi: true },
+    ];
+    for (const t of TP) {
+        const mk = (n) => { const out = []; const seen = new Set(); while (out.length < n) { const i = t.gen(); if (seen.has(i)) continue; seen.add(i); out.push({ in: i, out: t.ref(t.multi ? i : i.trim()) + '\n' }); } return out; };
+        const ex = mk(3), hid = mk(20); const problem = { id: t.id, tests: ex, hidden: hid, checker: 'tokens' };
+        const r = await S.synth({ statement: t.st, examples: ex, judge: async (src) => { const j = await J.judge({ lang: 'python', source: src + '\nmain()\n', problem }); return { verdict: j.verdict, detail: j.detail }; } });
+        assert.ok(r.ok && r.kind === 'template' && r.verdict === 'AC', '範本 ' + t.id + '：' + (r.reason || r.verdict)); console.log('  ✓ 範本 ' + t.id + '：' + r.desc);
+    }
+    assert.ok(ok >= 5, '獨立題至少解出 5 題，實際 ' + ok); console.log((ok + 4 + TP.length) + ' passed, 0 failed'); process.exit(0);
 })().catch((e) => { console.error('FAIL', e && e.stack || e); console.log('0 passed, 1 failed'); process.exit(1); });

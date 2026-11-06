@@ -146,10 +146,95 @@
         const h = hits[0]; const vars = Array.from({ length: k }, (_, i) => 'x' + i).join(', ');
         return { ok: true, source: 'def main():\n    ' + vars + (k === 1 ? ', ' : '') + ' = map(int, input().split())\n    print(' + h.expr + ')\n', kind: 'formula', level: 'L0', size: h.expr.length, tried, ambiguous: hits.length > 1 && new Set(hits.map((x) => x.vals.join(','))).size > 1, desc: '公式 ' + h.expr, matrixForm: { kind: 'formula', expr: h.expr } };
     }
+    // ---- L3～L6：範本庫（計數器／堆疊／字串／清單的小範本；每個範本＝JS 預言機＋Python 程式，敘述關鍵字當先驗，對所有範例驗證）----
+    // 這不是證明涵蓋：只是把「Blockly 範式骨架沒有、但常見」的小題型放進去，輸入形狀固定四種（int／str／k＋str／n＋清單）。
+    const isqrtB = (n) => { if (n < 2n) return n; let x = BigInt(Math.floor(Math.sqrt(Number(n)))); while (x * x > n) x--; while ((x + 1n) * (x + 1n) <= n) x++; return x; };
+    const digitsOf = (n) => [...String(n)].map(Number);
+    const popc = (n, bit) => { let c = 0; for (const ch of n.toString(2)) if (ch === bit) c++; return c; };
+    const smallN = (n) => n <= 10000000n;
+    const divisorsOf = (n) => { const N = Number(n); const ds = []; for (let i = 1; i * i <= N; i++) if (N % i === 0) { ds.push(i); if (i * i !== N) ds.push(N / i); } return ds; };
+    const isPrimeB = (n) => { if (n < 2n) return false; const N = Number(n); if (N > 1e12) return null; if (N < 4) return true; if (N % 2 === 0 || N % 3 === 0) return false; for (let i = 5; i * i <= N; i += 6) if (N % i === 0 || N % (i + 2) === 0) return false; return true; };
+    const romanOf = (n) => { const T = [[1000, 'M'], [900, 'CM'], [500, 'D'], [400, 'CD'], [100, 'C'], [90, 'XC'], [50, 'L'], [40, 'XL'], [10, 'X'], [9, 'IX'], [5, 'V'], [4, 'IV'], [1, 'I']]; let r = ''; let x = Number(n); for (const [v, t] of T) while (x >= v) { r += t; x -= v; } return r; };
+    const ngRight = (a) => { const out = a.map(() => 0); const st = []; for (let i = a.length - 1; i >= 0; i--) { while (st.length && st[st.length - 1] <= a[i]) st.pop(); out[i] = st.length ? st[st.length - 1] : 0; st.push(a[i]); } return out; };
+    const PYPRIME = ['def isp(n):', '    if n < 2: return False', '    if n < 4: return True', '    if n % 2 == 0 or n % 3 == 0: return False', '    i = 5', '    while i * i <= n:', '        if n % i == 0 or n % (i + 2) == 0: return False', '        i += 6', '    return True'];
+    const PYDIV = ['ds = []', 'i = 1', 'while i * i <= n:', '    if n % i == 0:', '        ds.append(i)', '        if i * i != n: ds.append(n // i)', '    i += 1'];
+    // shape: int／str／ks（k 一行、字串一行）／nl（n 一行、清單一行）；out: int／bool／str／list
+    const TEMPLATES = [
+        { name: '各位數字和', shape: 'int', out: 'int', kw: /各位.*和|數字和|digit\s*sum/i, js: (n) => digitsOf(n).reduce((a, b) => a + b, 0), py: ['r = sum(int(c) for c in str(n))'] },
+        { name: '各位數字積', shape: 'int', out: 'int', kw: /各位.*積|數字.*積|digit\s*prod/i, js: (n) => digitsOf(n).reduce((a, b) => a * b, 1), py: ['r = 1', 'for c in str(n): r *= int(c)'] },
+        { name: '位數', shape: 'int', out: 'int', kw: /幾位|位數|有幾個數字/, js: (n) => String(n).length, py: ['r = len(str(n))'] },
+        { name: '二進位 1 的個數', shape: 'int', out: 'int', kw: /二進位.*(1|一).*個數|popcount|1 的個數/i, js: (n) => popc(n, '1'), py: ['r = bin(n).count("1")'] },
+        { name: '二進位 0 的個數', shape: 'int', out: 'int', kw: /二進位.*0 的個數|0 的個數/, js: (n) => (n === 0n ? 1 : popc(n, '0')), py: ['r = bin(n)[2:].count("0")'] },
+        { name: '二進位位數', shape: 'int', out: 'int', kw: /二進位.*(位數|長度)|bit.?length/i, js: (n) => n.toString(2).length, py: ['r = n.bit_length()'] },
+        { name: '因數個數', shape: 'int', out: 'int', kw: /因數.*(個數|幾個)|幾個因數|約數.*(個數|幾個)/, js: (n) => (smallN(n) && n > 0n ? divisorsOf(n).length : null), py: PYDIV.concat(['r = len(ds)']) },
+        { name: '因數和', shape: 'int', out: 'int', kw: /因數.*和|約數.*和/, js: (n) => (smallN(n) && n > 0n ? divisorsOf(n).reduce((a, b) => a + b, 0) : null), py: PYDIV.concat(['r = sum(ds)']) },
+        { name: '反轉數字', shape: 'int', out: 'int', kw: /反轉|倒過來|reverse/i, js: (n) => BigInt([...String(n)].reverse().join('')), py: ['r = int(str(n)[::-1])'] },
+        { name: '整數平方根', shape: 'int', out: 'int', kw: /平方根|sqrt/i, js: (n) => isqrtB(n), py: ['import math', 'r = math.isqrt(n)'] },
+        { name: '尾端 0 的個數（n!）', shape: 'int', out: 'int', kw: /階乘.*(尾|末).*0|n!.*0/, js: (n) => { let c = 0n, x = n; while (x >= 5n) { x /= 5n; c += x; } return c; }, py: ['r = 0', 'x = n', 'while x >= 5:', '    x //= 5', '    r += x'] },
+        { name: '是質數', shape: 'int', out: 'bool', kw: /質數|素數|prime/i, js: (n) => isPrimeB(n), py: PYPRIME.concat(['r = isp(n)']) },
+        { name: '是偶數', shape: 'int', out: 'bool', kw: /偶數|even/i, js: (n) => n % 2n === 0n, py: ['r = n % 2 == 0'] },
+        { name: '是 2 的冪', shape: 'int', out: 'bool', kw: /2\s*的(冪|次方)|power of two/i, js: (n) => n > 0n && (n & (n - 1n)) === 0n, py: ['r = n > 0 and (n & (n - 1)) == 0'] },
+        { name: '是完全平方數', shape: 'int', out: 'bool', kw: /完全平方/, js: (n) => { const q = isqrtB(n); return q * q === n; }, py: ['import math', 'r = math.isqrt(n) ** 2 == n'] },
+        { name: '是回文數', shape: 'int', out: 'bool', kw: /回文/, js: (n) => { const t = String(n); return t === [...t].reverse().join(''); }, py: ['r = str(n) == str(n)[::-1]'] },
+        { name: '羅馬數字', shape: 'int', out: 'str', kw: /羅馬/, js: (n) => (n >= 1n && n <= 3999n ? romanOf(n) : null), py: ['T = [(1000, "M"), (900, "CM"), (500, "D"), (400, "CD"), (100, "C"), (90, "XC"), (50, "L"), (40, "XL"), (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I")]', 'r = ""', 'x = n', 'for v, t in T:', '    while x >= v:', '        r += t', '        x -= v'] },
+        { name: '母音個數', shape: 'str', out: 'int', kw: /母音|vowel/i, js: (s) => [...s].filter((c) => 'aeiouAEIOU'.includes(c)).length, py: ['r = sum(1 for c in s if c in "aeiouAEIOU")'] },
+        { name: '大寫字母個數', shape: 'str', out: 'int', kw: /大寫/, js: (s) => [...s].filter((c) => /[A-Z]/.test(c)).length, py: ['r = sum(1 for c in s if c.isupper())'] },
+        { name: '數字字元個數', shape: 'str', out: 'int', kw: /數字(字元|個數)/, js: (s) => [...s].filter((c) => /\d/.test(c)).length, py: ['r = sum(1 for c in s if c.isdigit())'] },
+        { name: '不同字元個數', shape: 'str', out: 'int', kw: /不同.*(字元|字母)|相異|distinct|unique/i, js: (s) => new Set(s).size, py: ['r = len(set(s))'] },
+        { name: '字串長度', shape: 'str', out: 'int', kw: /長度|length/i, js: (s) => s.length, py: ['r = len(s)'] },
+        { name: '是回文字串', shape: 'str', out: 'bool', kw: /回文|palindrome/i, js: (s) => s === [...s].reverse().join(''), py: ['r = s == s[::-1]'] },
+        { name: '反轉字串', shape: 'str', out: 'str', kw: /反轉|倒過來|reverse/i, js: (s) => [...s].reverse().join(''), py: ['r = s[::-1]'] },
+        { name: '轉大寫', shape: 'str', out: 'str', kw: /大寫|upper/i, js: (s) => s.toUpperCase(), py: ['r = s.upper()'] },
+        { name: '轉小寫', shape: 'str', out: 'str', kw: /小寫|lower/i, js: (s) => s.toLowerCase(), py: ['r = s.lower()'] },
+        { name: '去掉母音', shape: 'str', out: 'str', kw: /(去掉|刪除|移除).*母音/, js: (s) => [...s].filter((c) => !'aeiouAEIOU'.includes(c)).join(''), py: ['r = "".join(c for c in s if c not in "aeiouAEIOU")'] },
+        { name: '字元排序', shape: 'str', out: 'str', kw: /排序|sort/i, js: (s) => [...s].sort().join(''), py: ['r = "".join(sorted(s))'] },
+        { name: '凱薩加密（往後移 k）', shape: 'ks', out: 'str', kw: /往後|後移|向後|加密|shift/i, js: (k, s) => [...s].map((c) => (/[a-z]/.test(c) ? String.fromCharCode(97 + ((c.charCodeAt(0) - 97 + k) % 26 + 26) % 26) : c)).join(''), py: ['r = "".join(chr(97 + (ord(c) - 97 + k) % 26) if "a" <= c <= "z" else c for c in s)'] },
+        { name: '凱薩解密（往前移 k）', shape: 'ks', out: 'str', kw: /往前|前移|向前|解密/, js: (k, s) => [...s].map((c) => (/[a-z]/.test(c) ? String.fromCharCode(97 + ((c.charCodeAt(0) - 97 - k) % 26 + 26) % 26) : c)).join(''), py: ['r = "".join(chr(97 + (ord(c) - 97 - k) % 26) if "a" <= c <= "z" else c for c in s)'] },
+        { name: '右邊第一個更大的數', shape: 'nl', out: 'list', kw: /右邊第一個.*大|next greater|下一個更大/i, js: (n, a) => ngRight(a), py: ['r = [0] * n', 'st = []', 'for i in range(n - 1, -1, -1):', '    while st and st[-1] <= a[i]: st.pop()', '    r[i] = st[-1] if st else 0', '    st.append(a[i])'] },
+        { name: '右邊第一個更小的數', shape: 'nl', out: 'list', kw: /右邊第一個.*小|next smaller|下一個更小/i, js: (n, a) => ngRight(a.map((x) => -x)).map((v, i) => (v === 0 ? 0 : -v)), py: ['r = [0] * n', 'st = []', 'for i in range(n - 1, -1, -1):', '    while st and st[-1] >= a[i]: st.pop()', '    r[i] = st[-1] if st else 0', '    st.append(a[i])'] },
+        { name: '前綴和', shape: 'nl', out: 'list', kw: /前綴|prefix/i, js: (n, a) => { let t = 0; return a.map((x) => (t += x)); }, py: ['r = []', 't = 0', 'for x in a:', '    t += x', '    r.append(t)'] },
+        { name: '到目前為止的最大值', shape: 'nl', out: 'list', kw: /目前為止|prefix max|running max|累積最大/i, js: (n, a) => { let m = -Infinity; return a.map((x) => (m = Math.max(m, x))); }, py: ['r = []', 'm = a[0]', 'for x in a:', '    m = max(m, x)', '    r.append(m)'] },
+        { name: '最大值', shape: 'nl', out: 'int', kw: /最大/, js: (n, a) => Math.max(...a), py: ['r = max(a)'] },
+        { name: '總和', shape: 'nl', out: 'int', kw: /總和|加總|和/, js: (n, a) => a.reduce((x, y) => x + y, 0), py: ['r = sum(a)'] },
+        { name: '不同數字個數', shape: 'nl', out: 'int', kw: /不同|相異|distinct/i, js: (n, a) => new Set(a).size, py: ['r = len(set(a))'] },
+    ];
+    function parseShape(shape, raw) {
+        const ls = String(raw).replace(/\s+$/, '').split('\n'); const T = (x) => x.trim();
+        if (shape === 'int') { if (ls.length !== 1 || !isInt(T(ls[0]))) return null; return [BigInt(T(ls[0]))]; }
+        if (shape === 'str') { if (ls.length !== 1) return null; return [T(ls[0])]; }
+        if (shape === 'ks') { if (ls.length !== 2 || !isInt(T(ls[0]))) return null; return [Number(T(ls[0])), T(ls[1])]; }
+        if (shape === 'nl') { if (ls.length !== 2 || !isInt(T(ls[0]))) return null; const a = T(ls[1]) ? T(ls[1]).split(/\s+/) : []; if (!a.every(isInt) || a.length !== Number(T(ls[0]))) return null; return [Number(T(ls[0])), a.map(Number)]; }
+        return null;
+    }
+    function synthTemplate(o) {
+        const st = String(o.statement); const exs = o.examples; if (!exs || !exs.length) return { ok: false, reason: '沒有範例' };
+        const labels = [...new Set(exs.map((e) => e.out.trim()))]; const stLabels = [...new Set([...st.matchAll(/印\s*([A-Za-z]+)/g)].map((m) => m[1]))];
+        const hits = []; let tried = 0;
+        for (const t of TEMPLATES) {
+            const ins = exs.map((e) => parseShape(t.shape, e.in)); if (ins.some((x) => !x)) continue; tried++;
+            let outs; try { outs = ins.map((a) => t.js(...a)); } catch (e) { continue; } if (outs.some((v) => v === null || v === undefined)) continue;
+            let yes = null, no = null;
+            if (t.out === 'bool') {
+                const ls = labels.concat(stLabels.filter((x) => !labels.includes(x))); if (ls.length > 2 || labels.length > 2 || ls.some(isInt)) continue; if (ls.length < 2) continue;
+                const order = st.indexOf(ls[0]) <= st.indexOf(ls[1]) || st.indexOf(ls[1]) < 0 ? [[ls[0], ls[1]], [ls[1], ls[0]]] : [[ls[1], ls[0]], [ls[0], ls[1]]];
+                const inSt = ls.some((l) => st.indexOf(l) >= 0); let found = false;
+                for (const [y, n] of (inSt ? order.slice(0, 1) : order)) { if (exs.every((e, i) => e.out.trim() === (outs[i] ? y : n))) { yes = y; no = n; found = true; break; } } if (!found) continue;
+            } else if (t.out === 'list') { if (!exs.every((e, i) => e.out.trim().split(/\s+/).join(' ') === outs[i].join(' '))) continue; }
+            else if (!exs.every((e, i) => e.out.trim() === String(outs[i]))) continue;
+            hits.push({ t, yes, no, score: (t.kw.test(st) ? 2 : 0) });
+        }
+        if (!hits.length) return { ok: false, reason: '範本庫（' + TEMPLATES.length + ' 個）裡沒有符合所有範例的', tried };
+        hits.sort((a, b) => b.score - a.score); const h = hits[0]; const t = h.t;
+        const unique = hits.length === 1 || hits[0].score > hits[1].score;
+        const rd = { int: ['n = int(input())'], str: ['s = input().strip()'], ks: ['k = int(input())', 's = input().strip()'], nl: ['n = int(input())', 'a = list(map(int, input().split()))'] }[t.shape];
+        const pr = { int: 'print(r)', str: 'print(r)', bool: 'print(' + JSON.stringify(h.yes) + ' if r else ' + JSON.stringify(h.no) + ')', list: "print(' '.join(map(str, r)))" }[t.out];
+        const src = ['def main():'].concat(rd, t.py, [pr]).map((l, i) => (i === 0 ? l : '    ' + l)).join('\n') + '\n';
+        return { ok: true, source: src, kind: 'template', level: t.shape === 'nl' ? 'L5' : 'L4', size: t.py.length, tried, ambiguous: !unique, desc: '範本：' + t.name, matrixForm: { kind: 'template', name: t.name } };
+    }
     // ---- 入口：子順序 L1 → L2；每個候選交 judge（若有）驗證 ----
     async function synth(o) {
         const t0 = Date.now(); const ex = o.examples || []; const steps = []; let best = null;
-        for (const [name, fn] of [['recurrence', synthRecurrence], ['dfa', synthDFA], ['formula', synthFormula]]) {
+        for (const [name, fn] of [['recurrence', synthRecurrence], ['dfa', synthDFA], ['template', synthTemplate], ['formula', synthFormula]]) {
             let r; try { r = fn({ statement: String(o.statement || ''), examples: ex, budget: o.budget }); } catch (e) { r = { ok: false, reason: '例外：' + String((e && e.message) || e) }; }
             steps.push({ by: name, ok: r.ok, reason: r.reason, tried: r.tried }); if (!r.ok) continue;
             let v = { verdict: 'UNCHECKED' }; if (o.judge) v = await o.judge(r.source); steps[steps.length - 1].verdict = v.verdict;
@@ -158,5 +243,5 @@
         if (best) return best;
         return { ok: false, reason: steps.map((s) => s.by + '：' + (s.reason || s.verdict)).join('；'), steps, ms: Date.now() - t0 };
     }
-    return { synth, synthRecurrence, synthDFA, synthFormula, inferShape, kmpDFA };
+    return { synth, synthRecurrence, synthDFA, synthFormula, synthTemplate, inferShape, kmpDFA };
 });
