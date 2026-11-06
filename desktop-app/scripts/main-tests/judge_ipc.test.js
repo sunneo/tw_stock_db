@@ -1,9 +1,9 @@
 // node scripts/main-tests/judge_ipc.test.js
-// main.js 依賴 electron、不能直接載入：這裡把「判題器 IPC」那一段（JUDGE 區塊）原文切出來，用桩的 ipcMain／確認閘門／設定執行，驗證：
+// main-ext.js 的 register 會啟動系統匣、模組覆蓋等：這裡把「判題器 IPC」那一段（<judge-begin>～<judge-end>）原文切出來，用桩的 ipcMain／確認閘門／設定執行，驗證：
 // 輸入驗證與上限、execEnabled 把關、第一次要確認、授權期間不重複問、被拒絕時回 {ok:false}、sandbox 說明有帶、真的呼叫 judge-runner（python）。
 const fs = require('fs'); const path = require('path'); const os = require('os'); const assert = require('assert');
-const root = path.join(__dirname, '..', '..'); const src = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
-const a = src.indexOf('// ---------- IPC: 判題器'); const b = src.indexOf('// ---------- IPC: git patch'); assert.ok(a > 0 && b > a, '找不到判題器 IPC 區塊');
+const root = path.join(__dirname, '..', '..'); const src = fs.readFileSync(path.join(root, 'main-ext.js'), 'utf8');
+const a = src.indexOf('// <judge-begin>'); const b = src.indexOf('// <judge-end>'); assert.ok(a > 0 && b > a, '找不到判題器 IPC 區塊');
 const block = src.slice(a, b);
 let n = 0; const t = async (name, fn) => { await fn(); n++; console.log('ok - ' + name); };
 function load(opts) {
@@ -12,7 +12,7 @@ function load(opts) {
   const execConfirmGate = async (line) => { if (!settings.execEnabled) throw new Error('執行程式功能目前未啟用'); gate.asked.push(line); if (!gate.allow) throw new Error('使用者拒絕了這個執行請求。'); };
   const getDesktopSettings = async () => settings;
   const require2 = (p) => (p === './judge-runner.js' ? require(path.join(root, 'judge-runner.js')) : require(p));
-  new Function('ipcMain', 'execConfirmGate', 'getDesktopSettings', 'os', 'require', 'Buffer', 'Date', block)(ipcMain, execConfirmGate, getDesktopSettings, os, require2, Buffer, Date);
+  new Function('ipcMain', 'ctx', 'os', 'require', 'Buffer', 'Date', block)(ipcMain, { execConfirmGate, getDesktopSettings }, os, require2, Buffer, Date);
   return { handlers, gate, settings };
 }
 const evt = (id) => ({ sender: { id: id || 1 } });

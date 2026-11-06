@@ -105,8 +105,8 @@
         ph_research: { phase: 'research', label: '階段・查資料與學新語言：知識卡、網路搜尋、抓網頁', tools: ['language_explore', 'programming_knowledge', 'browser_search', 'fetch_web_page'] },
         ph_sandbox: { phase: 'experiment', label: '階段・試驗：沙盒（HTML／Worker／Python／模擬後端）與腳本執行', tools: ['sandbox_capabilities', 'sandbox_html', 'sandbox_worker', 'sandbox_mock', 'sandbox_py_app', 'python_execute', 'bash_execute'] },
         ph_design: { phase: 'design', label: '階段・設計：UML、設計抉擇、骨架產生、互動確認', tools: ['uml_to_code', 'design_choices', 'uml_design', 'uml_guide', 'ask_user_card', 'render_uml_diagram', 'glue_list', 'glue_define', 'glue_report'] },
-        ph_edit: { phase: 'implement', label: '階段・實作：暫存工作區、改檔、套 patch、commit', tools: ['coding_workspace', 'coding_edit', 'coding_patch_tool', 'apply_git_patch', 'git_inspect', 'git_commit'] },
-        ph_verify: { phase: 'verify', label: '階段・驗證：語法檢查、跑測試、終端機', tools: ['coding_run_check', 'coding_run_tests', 'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'run_command'] },
+        ph_edit: { phase: 'implement', label: '階段・實作：暫存工作區、改檔、套 patch、commit', tools: ['coding_workspace', 'coding_edit', 'coding_patch_tool', 'apply_git_patch', 'git_inspect', 'git_commit', 'write_code'] },
+        ph_verify: { phase: 'verify', label: '階段・驗證：語法檢查、跑測試、終端機', tools: ['coding_run_check', 'coding_run_tests', 'fix_code', 'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'run_command'] },
         ph_ci: { phase: 'ci', label: '階段・CI／Review：Gerrit、GitHub、Jenkins、失敗分診、pipeline', tools: ['ci_connections', 'gerrit', 'github_ci', 'jenkins', 'ci_triage', 'pipeline_inspect', 'ci_guide'] },
         ph_logs: { phase: 'logs', label: '階段・日誌與混合內容：學日誌、問答、讀混合輸入', tools: ['log_learn', 'log_ask', 'mix_understand', 'mix_highlight'] },
     };

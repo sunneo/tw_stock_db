@@ -13,9 +13,10 @@
  */
 (function (root, factory) {
     const R = (typeof FaRecipe !== 'undefined' && FaRecipe) || (root && root.FaRecipe) || (typeof require === 'function' ? require('./recipe_core.js') : null);
-    if (typeof module === 'object' && module.exports) module.exports = factory(R);
-    else root.FaPlan = factory(R);
-})(typeof self !== 'undefined' ? self : this, function (R) {
+    const LC = (typeof FaLangColu !== 'undefined' && FaLangColu) || (root && root.FaLangColu) || (typeof require === 'function' ? require('./lang_colu_core.js') : null);
+    if (typeof module === 'object' && module.exports) module.exports = factory(R, LC);
+    else root.FaPlan = factory(R, LC);
+})(typeof self !== 'undefined' ? self : this, function (R, LC) {
     'use strict';
 
     // ---------- 檔案種類 ----------
@@ -49,6 +50,8 @@
         { tool: 'uml_to_code', stage: 'produce', cost: 1, in: [{ slot: 'uml', kinds: ['uml'] }], extra: ['scenario', 'language'], out: [{ kind: 'code', keys: ['zip_file_id'] }], label: 'UML→程式碼骨架（template）' },
         { tool: 'text_to_speech', stage: 'produce', cost: 2, in: [{ slot: 'text', kinds: ['summary', 'usertext', 'text'] }], out: [{ kind: 'audio', keys: ['audio_file_id', 'file_id'] }], label: '文字轉語音' },
     ];
+    // 各語言自己的「寫程式」能力（lang_colu_core 的資料；每條有 langs 欄位，只在那個語言時才看得到）。不同語言不共用：python 的計畫與 c++ 的計畫是不同的工具、不同的失敗規則
+    if (LC) for (const c of LC.allCaps()) CAPS.push(c);
     const STAGES = [['acquire', '取得資料'], ['prepare', '準備素材'], ['analyze', '分析處理'], ['produce', '產出成品']];
     const capOf = (tool, caps) => (caps || CAPS).find((c) => c.tool === tool);
 
@@ -67,6 +70,7 @@
         { id: 'pdf_pages', label: '取出 PDF 頁面', target: 'pdf', needs: ['pdf'], triggers: [/(取出|抽出|擷取|extract)[^]{0,8}頁|第\s*\d+\s*(?:到|-|~)?\s*\d*\s*頁/i], extra: { tool: 'extract_pdf_pages' } },
         { id: 'uml_code', label: '設計情境→UML→程式碼骨架', target: 'code', needs: ['usertext'], triggers: [/(uml|類別圖|循序圖|使用案例|user\s*story|情境|需求)[^]*(程式|code|骨架|framework|scaffold|架構)|(設計|產生|生成|建立|做)[^]{0,16}(系統|程式|應用|app)[^]{0,16}(骨架|framework|架構|uml|scaffold)|骨架|scaffold/i] },
         { id: 'uml_only', label: '情境→UML', target: 'uml', needs: ['usertext'], triggers: [/(類別圖|循序圖|使用案例圖|uml)/i] },
+        { id: 'code_program', label: '依需求寫程式', target: 'program', needs: ['usertext'], triggers: [/^(?![^]*(骨架|scaffold|framework))[^]*((寫|撰寫|編寫|實作)[^]{0,12}(程式|函式|函數|腳本|演算法|function|script|program|algorithm)|write\s+(a|an|the)?\s*(program|function|script)|leetcode|(解|做)(這|這道|一道)?(題|演算法題))/i] },
         { id: 'speak_summary', label: '讀出來／轉語音', target: 'audio', needs: ['doc', 'pdf', 'text', 'file', 'usertext'], triggers: [/念出來|唸出來|朗讀|轉語音|唸給我|念給我|text.?to.?speech|tts/i] },
     ];
 
@@ -79,7 +83,7 @@
         if (input.url) add('url', { value: input.url, from: 'text' });
         if (input.query) add('query', { value: input.query, from: 'text' });
         if (input.text) add('usertext', { value: input.text, from: 'text' });
-        return { items, kinds, online: input.online === true, text: input.text || '' };
+        return { items, kinds, online: input.online === true, text: input.text || '', lang: input.lang || null };
     }
     const has = (facts, kinds, min) => kinds.some((k) => (facts.kinds[k] || 0) >= (min || 1));
 
@@ -92,7 +96,7 @@
             out.push(g);
         }
         // 有影音附件時，「摘要」類不要被文件摘要搶走：影音目標優先於一般文件目標；有網址時網頁優先
-        const rank = (g) => ({ video_subtitled: 0, video_gif: 0, media_transcript: 1, video_summary: 1, web_summary: 2, web_research: 3, pdf_merge: 2, pdf_pages: 2, images_pdf: 2, speak_summary: 2, uml_code: 1, uml_only: 2, doc_summary: 5 }[g.id] ?? 4);
+        const rank = (g) => ({ video_subtitled: 0, video_gif: 0, media_transcript: 1, video_summary: 1, web_summary: 2, web_research: 3, pdf_merge: 2, pdf_pages: 2, images_pdf: 2, speak_summary: 2, uml_code: 1, uml_only: 2, code_program: 3, doc_summary: 5 }[g.id] ?? 4);
         out.sort((a, b) => rank(a) - rank(b));
         // 同一目標種類更特定的留下（例如有影片就不要同時留 doc_summary）
         const keepRank = out.length ? rank(out[0]) : 0; const specific = out.filter((g) => rank(g) <= Math.max(keepRank, 2));
@@ -103,10 +107,10 @@
     // ---------- 規劃：對有型別的能力表做倒推 ----------
     // 回傳 { ok:true, steps:[{id,tool,label,stage,cost,bind:{slot:{kind,from:'fact'|'step',ref}},extra,out}], cost } 或 { ok:false, missing:[kind], reason }
     function buildPlan(goal, facts, opts) {
-        opts = opts || {};
+        opts = opts || {}; const lang = opts.lang || (facts && facts.lang) || null; // 語言決定哪些能力看得到：沒有 langs 欄位的是通用的；有的只屬於那個語言
         // 規劃只從這個目標「要的輸入」出發（goal.needs＋使用者的話）：使用者說的是網址，就不能因為對話裡剛好有別的文字檔就跳過抓網頁
         if (goal && Array.isArray(goal.needs) && goal.needs.length) { const keep = new Set(goal.needs.concat(['usertext'])); const kinds = {}; for (const k of Object.keys(facts.kinds)) if (keep.has(k)) kinds[k] = facts.kinds[k]; facts = Object.assign({}, facts, { kinds }); }
-        const caps = opts.caps || CAPS; const excluded = new Set(opts.excluded || []); const online = facts.online === true; const kindsFor = (c, inp) => (opts.inputKinds && opts.inputKinds[c.tool + '.' + inp.slot]) || inp.kinds;
+        const caps = (opts.caps || CAPS).filter((c) => !c.langs || (lang && c.langs.includes(lang))); const excluded = new Set(opts.excluded || []); const online = facts.online === true; const kindsFor = (c, inp) => (opts.inputKinds && opts.inputKinds[c.tool + '.' + inp.slot]) || inp.kinds;
         const capCost = (c) => c.cost + (c.online && !online ? 50 : 0) + (c.slow ? 0.5 : 0);
         let counter = 0; const memo = new Map();
         // 需要一個種類 kind（many 則需要 min 個）：回傳 { steps, cost, from }
@@ -176,7 +180,9 @@
         { id: 'any_other', test: () => true, action: 'replan', why: '失敗，嘗試別條路' },
     ];
     function decideFailure(run, step, err) {
-        const msg = String(err || '');
+        const msg = String(err || ''); const lang = (run && (run.lang || (run.facts && run.facts.lang))) || null;
+        // 這個語言自己的失敗規則先判斷（只對寫程式的那一步；別的語言的規則看不到）
+        if (lang && LC && step && /^local_write_code_/.test(step.tool)) for (const r of LC.failureRulesFor(lang)) if (r.re.test(msg) && step.attempts < 2) return { action: r.action, rule: lang + ':' + r.id, why: r.why, lang };
         for (const r of FAILURE_RULES) if (r.test(msg, step, run)) return { action: r.action, rule: r.id, why: r.why };
         return { action: 'abort', rule: 'none', why: '沒有規則' };
     }

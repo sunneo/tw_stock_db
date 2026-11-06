@@ -1,12 +1,12 @@
 {
   "schema": 1,
   "baseVersion": "1.1.0",
-  "generatedAt": "2026-11-05T12:34:42.006Z",
+  "generatedAt": "2026-11-06T01:14:40.763Z",
   "files": {
     "renderer/index.html": "039acc67493d2d42bae493dc9822621a",
     "renderer/bootstrap.js": "a9953cd7275f9fe213f27d062f660e1a",
-    "renderer/floating-assistant.js": "b9f0631e653f1b445e52d9dca17c4405",
-    "renderer/floating-assistant.min.js": "b9f0631e653f1b445e52d9dca17c4405",
+    "renderer/floating-assistant.js": "8516cb63666c525569fa66cb2f729daa",
+    "renderer/floating-assistant.min.js": "8516cb63666c525569fa66cb2f729daa",
     "renderer/vendor/midigenai/LICENSE": "99eb9c75e3dddbe23104e4cb8e5d8168",
     "renderer/vendor/midigenai/attributes.mjs": "1596c456f30ac128b844544d0ddcc47e",
     "renderer/vendor/midigenai/generator.mjs": "09f3c65bda0308b5f4998301edda2c8c",
@@ -49,18 +49,20 @@
     "computer-ws.js": "1b25bb55f5f1334fa5f041408f3009af",
     "edge-tts.js": "135b186b61de5963ae2d3852fb70de5b",
     "fsx-sync.js": "f14777175ba4a3b4d3197c00befc7e82",
+    "judge-core.js": "94f3bdfd43f2da943628bdec06427029",
+    "judge-runner.js": "bd225b8c18a98712fceca91a440746c0",
     "local-proxy.js": "079907734ca86f14e31fb6be41b8e2ca",
-    "main-ext.js": "fb2b4c7ba81ed56a49552dc2ee753aa3",
+    "main-ext.js": "6e473a8945047722835037804e0b9813",
     "rfb-client.js": "1ad7d8a545166f0e965d3f5008b94ccb",
     "rfb-codec.js": "08f2ada7bc710642e7d29fbff63ee4f1",
     "sqlite-engine.js": "ff9d39366459c465271e617b00abb76e",
-    "preload.js": "edc03acff577324858ec3ef67c310489"
+    "preload.js": "652cf48492c9044c6e48ba162ba1f151"
   },
   "sizes": {
     "renderer/index.html": 5741,
     "renderer/bootstrap.js": 202259,
-    "renderer/floating-assistant.js": 10568651,
-    "renderer/floating-assistant.min.js": 10568651,
+    "renderer/floating-assistant.js": 10705971,
+    "renderer/floating-assistant.min.js": 10705971,
     "renderer/vendor/midigenai/LICENSE": 1070,
     "renderer/vendor/midigenai/attributes.mjs": 9065,
     "renderer/vendor/midigenai/generator.mjs": 11160,
@@ -103,11 +105,13 @@
     "computer-ws.js": 7495,
     "edge-tts.js": 7363,
     "fsx-sync.js": 5425,
+    "judge-core.js": 5947,
+    "judge-runner.js": 14987,
     "local-proxy.js": 26808,
-    "main-ext.js": 120974,
+    "main-ext.js": 126859,
     "rfb-client.js": 27415,
     "rfb-codec.js": 14601,
     "sqlite-engine.js": 22797,
-    "preload.js": 15022
+    "preload.js": 15542
   }
 }

@@ -154,13 +154,21 @@
    "size": 22892,
    "md5": "b0a50dd92e88d423c255f57f7907c125"
   },
+  "langcolu": {
+   "file": "chunks/langcolu.js",
+   "names": [
+    "FaLangColu"
+   ],
+   "size": 7743,
+   "md5": "a2dc15625621d6fcd1df1ad1c0ea02af"
+  },
   "plan": {
    "file": "chunks/plan.js",
    "names": [
     "FaPlan"
    ],
-   "size": 19588,
-   "md5": "91ebd86646e726bc80cb92f41f5ca184"
+   "size": 20446,
+   "md5": "ec320b70b1772508813dc977fdbec19f"
   },
   "thinkstack": {
    "file": "chunks/thinkstack.js",
@@ -169,6 +177,62 @@
    ],
    "size": 7911,
    "md5": "61121f453e6e0c0aaaa12305c5966cd9"
+  },
+  "grammar": {
+   "file": "chunks/grammar.js",
+   "names": [
+    "FaGrammar"
+   ],
+   "size": 15246,
+   "md5": "79519bea1640c4bd974ff0300866e793"
+  },
+  "syntaxfix": {
+   "file": "chunks/syntaxfix.js",
+   "names": [
+    "FaSyntaxFix"
+   ],
+   "size": 34042,
+   "md5": "e8fe10c9f0fb9b5e6118a7078d67aaf0"
+  },
+  "guidedwrite": {
+   "file": "chunks/guidedwrite.js",
+   "names": [
+    "FaGuidedWrite"
+   ],
+   "size": 20029,
+   "md5": "4ee911e73e640ccecabdb4d3c340c6b0"
+  },
+  "codeloop": {
+   "file": "chunks/codeloop.js",
+   "names": [
+    "FaCodeLoop"
+   ],
+   "size": 15528,
+   "md5": "3f7b27c989d6e1300d39fe016985a2ab"
+  },
+  "codeproject": {
+   "file": "chunks/codeproject.js",
+   "names": [
+    "FaCodeProject"
+   ],
+   "size": 10188,
+   "md5": "08059f368a925a4a83ce47625fa221ec"
+  },
+  "codeedit": {
+   "file": "chunks/codeedit.js",
+   "names": [
+    "FaCodeEdit"
+   ],
+   "size": 10244,
+   "md5": "5e598b40501a65b41f230e3188699041"
+  },
+  "codeagent": {
+   "file": "chunks/codeagent.js",
+   "names": [
+    "FaCodeAgent"
+   ],
+   "size": 12664,
+   "md5": "b95849df0fec26982c96bac2920af2a4"
   },
   "view": {
    "file": "chunks/view.js",
@@ -1164,7 +1228,7 @@
   }
  },
  "core": {
-  "size": 5582004,
-  "md5": "d3f8818ae7110538dcc071d365e88df3"
+  "size": 5593387,
+  "md5": "a4f79340a29bd75fb36396dff3bfc9b3"
  }
 }

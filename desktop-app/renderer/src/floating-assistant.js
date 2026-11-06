@@ -1555,7 +1555,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     coding: {
         enabled: true,
         label: '程式設計（評估／需求分析／設計計畫／git patch實作／語法檢查／測試／發佈，可中斷恢復）',
-        toolNames: ['uml_to_code', 'design_choices', 'uml_design', 'uml_guide', 'uml_edit', 'intent_parse', 'uml_to_wasm', 'plan_route', 'ask_user_card', 'log_learn', 'log_ask', 'mix_understand', 'mix_highlight', 'glue_list', 'glue_define', 'glue_report', 'list_file_access_points', 'fap_list_files', 'fap_find_file', 'repo_map', 'repo_ask', 'repo_sql', 'repo_read_doc', 'repo_wiki', 'explain_code', 'behavior_define', 'coding_workspace', 'coding_read_file', 'apply_git_patch', 'git_inspect', 'git_commit', 'git_push', 'coding_task_state', 'coding_run_check', 'coding_run_tests', 'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'terminal_cp_to', 'terminal_cp_from', 'browser_search', 'fetch_web_page', 'article_outline', 'article_section'],
+        toolNames: ['uml_to_code', 'design_choices', 'uml_design', 'uml_guide', 'uml_edit', 'write_code', 'fix_code', 'intent_parse', 'uml_to_wasm', 'plan_route', 'ask_user_card', 'log_learn', 'log_ask', 'mix_understand', 'mix_highlight', 'glue_list', 'glue_define', 'glue_report', 'list_file_access_points', 'fap_list_files', 'fap_find_file', 'repo_map', 'repo_ask', 'repo_sql', 'repo_read_doc', 'repo_wiki', 'explain_code', 'behavior_define', 'coding_workspace', 'coding_read_file', 'apply_git_patch', 'git_inspect', 'git_commit', 'git_push', 'coding_task_state', 'coding_run_check', 'coding_run_tests', 'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'terminal_cp_to', 'terminal_cp_from', 'browser_search', 'fetch_web_page', 'article_outline', 'article_section'],
         systemPrompt: _faBuildCodingSystemPrompt({ kind: 'web' }),
     },
     // tw_stock_db客製: 2026-09-20使用者要求——skills domain：建立Claude格式的skill（SKILL.md＋scripts/references）。
@@ -9841,6 +9841,73 @@ const holder = {};
 return holder.FaRecipe;
 })();
 /* RECIPE-END */
+/* LANGCOLU-BEGIN */
+const FaLangColu = (function () {
+const holder = {};
+(function (module, self) {
+/* 每種語言各自的 CoLU 集合（資料，不是程式；純函式，UMD）。使用者規定：不同語言要有不同的 CoLU，不能共用（python 跟 c++ 更不能共用）；
+ * 一種語言裡出現別的語言，只能是字串或註解；C／C++ 可以用 asm／__asm__ 或 pragma 內嵌組語，但那專屬於 C／C++ 各自的 CoLU。
+ * 每一份集合包含：
+ *   writer      寫程式的方式（guided＝文法引導的逐 token 選擇題；free＝模型自由寫整個函式，只給沒有文法的語言）、是否支援專案模式（UML→逐類別）
+ *   caps        這個語言的 CoLU 能力（工具名稱，plan_core 的 CAPS 會用）
+ *   failureRules這個語言自己的失敗決策（regex 與動作；動作沿用 plan_core 的 retry／ask／skip／replan／abort）
+ *   rules       寫程式時給模型的語言規則（文字）
+ *   toolchain   這個語言的檢查／執行／（尚未實作的）除錯器——資料，供之後的步驟使用
+ *   inlineAsm   只有 c／cpp 有：內嵌組語的寫法（asm／__asm__／__asm、GNU 擴充的輸出入 clobber、#pragma），其他語言是 null
+ * 誠實的範圍：failureRules 目前只管「寫程式這一步」的失敗（編譯訊息、縮排、找不到符號…）；除錯器步驟（gdb／pdb／jdb…）還沒實作，段錯誤這類只能回報。
+ *   LANG_COLU                {語言: 集合}
+ *   get(lang)                → 集合 | null
+ *   toolName(lang, kind)     → 'local_write_code_python' 這種每個語言各自的工具名
+ *   capsFor(lang)            → plan_core 用的 CAPS 項目（只屬於這個語言）
+ *   allCaps()                → 全部語言的能力（plan_core 並進 CAPS，用 langs 欄位隔離）
+ *   failureRulesFor(lang)    → 這個語言的失敗規則（regex 已編譯）
+ *   languages                支援的語言清單 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaLangColu = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const ASM_C = { keywords: ['asm', '__asm__', '__asm'], volatile: ['volatile', '__volatile__'], syntax: 'GNU 擴充：asm("樣板" : 輸出 : 輸入 : clobber)', pragma: '#pragma（前處理行，詞法視為不透明）', coluOnly: true, note: '內嵌組語只屬於 C／C++ 各自的 CoLU；預設不給選項，任務明說要內嵌組語時才開（opts.allowInlineAsm）' };
+    const mkRules = (arr) => arr.map((r) => ({ id: r.id, re: new RegExp(r.re, 'i'), action: r.action, why: r.why }));
+    const LANG_COLU = {
+        python: { id: 'python', label: 'Python', grammar: true, writer: { mode: 'guided', project: true }, rules: '用 def 定義；從標準輸入讀（input() 或 sys.stdin），用 print 輸出；縮排用 4 個空白。', toolchain: { check: 'python3 -m py_compile', run: 'python3', debug: ['python3 -m pdb'], note: '解釋型：語法錯誤在啟動時報' }, inlineAsm: null,
+            failureRules: [{ id: 'py_indent', re: 'IndentationError|TabError|unexpected indent', action: 'retry', why: 'Python 縮排錯誤：重寫（引導寫作的縮排由「同層／進入／退回」選擇題決定，不會憑空多縮）' }, { id: 'py_name', re: 'NameError|UnboundLocalError', action: 'retry', why: 'Python 用到沒定義的名稱：重寫（名稱選項來自作用域）' }] },
+        c: { id: 'c', label: 'C', grammar: true, writer: { mode: 'guided', project: false }, rules: '標準 C11；入口是 int main(void)；函式要定義在被呼叫之前；整數用 long long。', toolchain: { check: 'gcc -fsyntax-only', run: 'gcc -O2', debug: ['gdb', 'valgrind'], note: '編譯型：名稱與型別由編譯器檢查' }, inlineAsm: ASM_C,
+            failureRules: [{ id: 'c_decl', re: "implicit declaration|undeclared|undefined reference", action: 'retry', why: 'C 沒宣告／沒連結到：補 #include 或函式順序，重寫' }, { id: 'c_segv', re: 'Segmentation fault|SIGSEGV|core dumped', action: 'abort', why: 'C 段錯誤：需要 gdb／valgrind 的除錯步驟（尚未實作），只能回報' }] },
+        cpp: { id: 'cpp', label: 'C++', grammar: true, writer: { mode: 'guided', project: true }, rules: '標準 C++17；入口是 int main()；函式要定義在被呼叫之前；整數用 long long；使用 std::。', toolchain: { check: 'g++ -std=c++17 -fsyntax-only', run: 'g++ -O2 -std=c++17', debug: ['gdb', 'valgrind'], note: '編譯型' }, inlineAsm: ASM_C,
+            failureRules: [{ id: 'cpp_scope', re: "was not declared in this scope|no matching function|undefined reference", action: 'retry', why: 'C++ 找不到符號：補 include／using，重寫' }, { id: 'cpp_segv', re: 'Segmentation fault|SIGSEGV|core dumped|terminate called', action: 'abort', why: 'C++ 段錯誤／例外終止：需要 gdb／valgrind 的除錯步驟（尚未實作），只能回報' }] },
+        java: { id: 'java', label: 'Java', grammar: true, writer: { mode: 'guided', project: true }, rules: '每個函式都是 public static；入口是 public static void main(String[] args)；公開類別叫 Main。', toolchain: { check: 'javac', run: 'java', debug: ['jdb'], note: '編譯型；公開類別名要和檔名一致' }, inlineAsm: null,
+            failureRules: [{ id: 'java_symbol', re: 'cannot find symbol|incompatible types|missing return', action: 'retry', why: 'Java 找不到符號／型別不合：補 import、改型別，重寫' }, { id: 'java_class', re: 'should be declared in a file named|class .* is public', action: 'retry', why: 'Java 公開類別名與檔名不符：公開類別一律叫 Main，重寫' }] },
+        csharp: { id: 'csharp', label: 'C#', grammar: true, writer: { mode: 'guided', project: true }, rules: '每個函式都是 static；入口是 static void Main()；用 Console.ReadLine 讀、Console.WriteLine 輸出。', toolchain: { check: 'mcs -target:library', run: 'mcs + mono', debug: [], note: '編譯型（mono）；沒有除錯器步驟' }, inlineAsm: null,
+            failureRules: [{ id: 'cs_name', re: 'CS0103|CS0246|does not exist in the current context|could not be found', action: 'retry', why: 'C# 找不到名稱或型別：補 using，重寫' }] },
+        nodejs: { id: 'nodejs', label: 'Node.js', grammar: true, writer: { mode: 'guided', project: true }, rules: '用 function 宣告；用 require("fs").readFileSync(0, "utf8") 讀標準輸入、console.log 輸出。', toolchain: { check: 'node --check', run: 'node', debug: ['node inspect'], note: '解釋型：語法錯誤在啟動時報' }, inlineAsm: null,
+            failureRules: [{ id: 'js_ref', re: 'ReferenceError|is not defined|is not a function', action: 'retry', why: 'JS 用到沒定義的名稱或不是函式：重寫' }] },
+        ruby: { id: 'ruby', label: 'Ruby', grammar: false, writer: { mode: 'free', project: true }, rules: '用 def 定義；用 gets 讀標準輸入、puts 輸出。', toolchain: { check: 'ruby -c', run: 'ruby', debug: [], note: '沒有文法：只能自由寫＋編譯檢查＋備援詞彙修語法；沒有 rdbg' }, inlineAsm: null,
+            failureRules: [{ id: 'rb_name', re: 'NameError|NoMethodError', action: 'retry', why: 'Ruby 沒定義的名稱或方法：重寫' }] },
+        perl: { id: 'perl', label: 'Perl', grammar: false, writer: { mode: 'free', project: true }, rules: '用 sub 定義；用 <STDIN> 讀標準輸入、print 輸出；變數用 my。', toolchain: { check: 'perl -c', run: 'perl', debug: ['perl -d'], note: '沒有文法：自由寫' }, inlineAsm: null,
+            failureRules: [{ id: 'pl_strict', re: 'Global symbol .* requires explicit package name|Undefined subroutine', action: 'retry', why: 'Perl 沒宣告的變數或副程式：重寫' }] },
+        bash: { id: 'bash', label: 'Bash', grammar: false, writer: { mode: 'free', project: false }, rules: '用 name() { ... } 定義；用 read 讀標準輸入、echo 輸出；整數運算用 $(( ))。', toolchain: { check: 'bash -n', run: 'bash', debug: [], note: '沒有文法：自由寫' }, inlineAsm: null,
+            failureRules: [{ id: 'sh_cmd', re: 'command not found|unbound variable', action: 'retry', why: 'Bash 找不到指令或變數：重寫' }] },
+        'asm-x64': { id: 'asm-x64', label: 'x86-64 組語（GNU as）', grammar: false, writer: { mode: 'free', project: false }, rules: '第一行 .intel_syntax noprefix；進入點 _start（.globl _start）；不連 libc，直接用 Linux 系統呼叫（read=0、write=1、exit=60，用 syscall）；結束前一定要 exit。', toolchain: { check: 'as --64', run: 'as + ld', debug: ['gdb'], note: '沒有文法：自由寫；這是組語語言本身，不是內嵌在 C／C++ 裡的 asm' }, inlineAsm: null,
+            failureRules: [{ id: 'asm_op', re: 'no such instruction|operand type mismatch|junk at end', action: 'retry', why: '組語指令或運算元不合：重寫' }, { id: 'asm_segv', re: 'Segmentation fault', action: 'abort', why: '組語段錯誤：需要 gdb 的除錯步驟（尚未實作），只能回報' }] },
+        'asm-x86': { id: 'asm-x86', label: 'x86 32 位元組語（GNU as）', grammar: false, writer: { mode: 'free', project: false }, rules: '第一行 .intel_syntax noprefix；進入點 _start（.globl _start）；不連 libc，用 int 0x80（read=3、write=4、exit=1）；結束前一定要 exit。', toolchain: { check: 'as --32', run: 'as + ld', debug: ['gdb'], note: '沒有文法：自由寫；需要核心支援 32 位元執行檔' }, inlineAsm: null,
+            failureRules: [{ id: 'asm32_op', re: 'no such instruction|operand type mismatch|junk at end', action: 'retry', why: '組語指令或運算元不合：重寫' }] }
+    };
+    const languages = Object.keys(LANG_COLU);
+    const get = (lang) => LANG_COLU[lang] || null;
+    const slug = (lang) => String(lang).replace(/[^A-Za-z0-9]+/g, '_');
+    const toolName = (lang, kind) => 'local_' + (kind || 'write_code') + '_' + slug(lang);
+    // 每個語言各自一條「寫程式」能力：輸入使用者的需求，輸出 program；langs 欄位讓 plan_core 只在這個語言時才看得到它
+    function capsFor(lang) {
+        const c = get(lang); if (!c) return [];
+        return [{ tool: toolName(lang), local: true, langs: [lang], stage: 'produce', cost: 4, slow: true, in: [{ slot: 'spec', kinds: ['usertext', 'text'] }], out: [{ kind: 'program', inline: true }], label: c.label + '：' + (c.writer.mode === 'guided' ? '依需求寫程式（文法算出合法 token、模型做選擇題；編譯／判題驗收；語法錯誤由文法候選修）' : '依需求寫程式（這個語言沒有文法：模型自由寫、編譯／判題驗收、備援詞彙修語法）') }];
+    }
+    const allCaps = () => [].concat(...languages.map(capsFor));
+    const failureRulesFor = (lang) => { const c = get(lang); return c ? mkRules(c.failureRules).map((r) => Object.assign({ langs: [lang] }, r)) : []; };
+    return { LANG_COLU, languages, get, toolName, capsFor, allCaps, failureRulesFor, slug };
+});
+
+}).call(null, undefined, holder);
+return holder.FaLangColu;
+})();
+/* LANGCOLU-END */
 /* PLAN-BEGIN */
 const FaPlan = (function () {
 const holder = {};
@@ -9860,9 +9927,10 @@ const holder = {};
  */
 (function (root, factory) {
     const R = (typeof FaRecipe !== 'undefined' && FaRecipe) || (root && root.FaRecipe) || (typeof require === 'function' ? require('./recipe_core.js') : null);
-    if (typeof module === 'object' && module.exports) module.exports = factory(R);
-    else root.FaPlan = factory(R);
-})(typeof self !== 'undefined' ? self : this, function (R) {
+    const LC = (typeof FaLangColu !== 'undefined' && FaLangColu) || (root && root.FaLangColu) || (typeof require === 'function' ? require('./lang_colu_core.js') : null);
+    if (typeof module === 'object' && module.exports) module.exports = factory(R, LC);
+    else root.FaPlan = factory(R, LC);
+})(typeof self !== 'undefined' ? self : this, function (R, LC) {
     'use strict';
 
     // ---------- 檔案種類 ----------
@@ -9896,6 +9964,8 @@ const holder = {};
         { tool: 'uml_to_code', stage: 'produce', cost: 1, in: [{ slot: 'uml', kinds: ['uml'] }], extra: ['scenario', 'language'], out: [{ kind: 'code', keys: ['zip_file_id'] }], label: 'UML→程式碼骨架（template）' },
         { tool: 'text_to_speech', stage: 'produce', cost: 2, in: [{ slot: 'text', kinds: ['summary', 'usertext', 'text'] }], out: [{ kind: 'audio', keys: ['audio_file_id', 'file_id'] }], label: '文字轉語音' },
     ];
+    // 各語言自己的「寫程式」能力（lang_colu_core 的資料；每條有 langs 欄位，只在那個語言時才看得到）。不同語言不共用：python 的計畫與 c++ 的計畫是不同的工具、不同的失敗規則
+    if (LC) for (const c of LC.allCaps()) CAPS.push(c);
     const STAGES = [['acquire', '取得資料'], ['prepare', '準備素材'], ['analyze', '分析處理'], ['produce', '產出成品']];
     const capOf = (tool, caps) => (caps || CAPS).find((c) => c.tool === tool);
 
@@ -9914,6 +9984,7 @@ const holder = {};
         { id: 'pdf_pages', label: '取出 PDF 頁面', target: 'pdf', needs: ['pdf'], triggers: [/(取出|抽出|擷取|extract)[^]{0,8}頁|第\s*\d+\s*(?:到|-|~)?\s*\d*\s*頁/i], extra: { tool: 'extract_pdf_pages' } },
         { id: 'uml_code', label: '設計情境→UML→程式碼骨架', target: 'code', needs: ['usertext'], triggers: [/(uml|類別圖|循序圖|使用案例|user\s*story|情境|需求)[^]*(程式|code|骨架|framework|scaffold|架構)|(設計|產生|生成|建立|做)[^]{0,16}(系統|程式|應用|app)[^]{0,16}(骨架|framework|架構|uml|scaffold)|骨架|scaffold/i] },
         { id: 'uml_only', label: '情境→UML', target: 'uml', needs: ['usertext'], triggers: [/(類別圖|循序圖|使用案例圖|uml)/i] },
+        { id: 'code_program', label: '依需求寫程式', target: 'program', needs: ['usertext'], triggers: [/^(?![^]*(骨架|scaffold|framework))[^]*((寫|撰寫|編寫|實作)[^]{0,12}(程式|函式|函數|腳本|演算法|function|script|program|algorithm)|write\s+(a|an|the)?\s*(program|function|script)|leetcode|(解|做)(這|這道|一道)?(題|演算法題))/i] },
         { id: 'speak_summary', label: '讀出來／轉語音', target: 'audio', needs: ['doc', 'pdf', 'text', 'file', 'usertext'], triggers: [/念出來|唸出來|朗讀|轉語音|唸給我|念給我|text.?to.?speech|tts/i] },
     ];
 
@@ -9926,7 +9997,7 @@ const holder = {};
         if (input.url) add('url', { value: input.url, from: 'text' });
         if (input.query) add('query', { value: input.query, from: 'text' });
         if (input.text) add('usertext', { value: input.text, from: 'text' });
-        return { items, kinds, online: input.online === true, text: input.text || '' };
+        return { items, kinds, online: input.online === true, text: input.text || '', lang: input.lang || null };
     }
     const has = (facts, kinds, min) => kinds.some((k) => (facts.kinds[k] || 0) >= (min || 1));
 
@@ -9939,7 +10010,7 @@ const holder = {};
             out.push(g);
         }
         // 有影音附件時，「摘要」類不要被文件摘要搶走：影音目標優先於一般文件目標；有網址時網頁優先
-        const rank = (g) => ({ video_subtitled: 0, video_gif: 0, media_transcript: 1, video_summary: 1, web_summary: 2, web_research: 3, pdf_merge: 2, pdf_pages: 2, images_pdf: 2, speak_summary: 2, uml_code: 1, uml_only: 2, doc_summary: 5 }[g.id] ?? 4);
+        const rank = (g) => ({ video_subtitled: 0, video_gif: 0, media_transcript: 1, video_summary: 1, web_summary: 2, web_research: 3, pdf_merge: 2, pdf_pages: 2, images_pdf: 2, speak_summary: 2, uml_code: 1, uml_only: 2, code_program: 3, doc_summary: 5 }[g.id] ?? 4);
         out.sort((a, b) => rank(a) - rank(b));
         // 同一目標種類更特定的留下（例如有影片就不要同時留 doc_summary）
         const keepRank = out.length ? rank(out[0]) : 0; const specific = out.filter((g) => rank(g) <= Math.max(keepRank, 2));
@@ -9950,10 +10021,10 @@ const holder = {};
     // ---------- 規劃：對有型別的能力表做倒推 ----------
     // 回傳 { ok:true, steps:[{id,tool,label,stage,cost,bind:{slot:{kind,from:'fact'|'step',ref}},extra,out}], cost } 或 { ok:false, missing:[kind], reason }
     function buildPlan(goal, facts, opts) {
-        opts = opts || {};
+        opts = opts || {}; const lang = opts.lang || (facts && facts.lang) || null; // 語言決定哪些能力看得到：沒有 langs 欄位的是通用的；有的只屬於那個語言
         // 規劃只從這個目標「要的輸入」出發（goal.needs＋使用者的話）：使用者說的是網址，就不能因為對話裡剛好有別的文字檔就跳過抓網頁
         if (goal && Array.isArray(goal.needs) && goal.needs.length) { const keep = new Set(goal.needs.concat(['usertext'])); const kinds = {}; for (const k of Object.keys(facts.kinds)) if (keep.has(k)) kinds[k] = facts.kinds[k]; facts = Object.assign({}, facts, { kinds }); }
-        const caps = opts.caps || CAPS; const excluded = new Set(opts.excluded || []); const online = facts.online === true; const kindsFor = (c, inp) => (opts.inputKinds && opts.inputKinds[c.tool + '.' + inp.slot]) || inp.kinds;
+        const caps = (opts.caps || CAPS).filter((c) => !c.langs || (lang && c.langs.includes(lang))); const excluded = new Set(opts.excluded || []); const online = facts.online === true; const kindsFor = (c, inp) => (opts.inputKinds && opts.inputKinds[c.tool + '.' + inp.slot]) || inp.kinds;
         const capCost = (c) => c.cost + (c.online && !online ? 50 : 0) + (c.slow ? 0.5 : 0);
         let counter = 0; const memo = new Map();
         // 需要一個種類 kind（many 則需要 min 個）：回傳 { steps, cost, from }
@@ -10023,7 +10094,9 @@ const holder = {};
         { id: 'any_other', test: () => true, action: 'replan', why: '失敗，嘗試別條路' },
     ];
     function decideFailure(run, step, err) {
-        const msg = String(err || '');
+        const msg = String(err || ''); const lang = (run && (run.lang || (run.facts && run.facts.lang))) || null;
+        // 這個語言自己的失敗規則先判斷（只對寫程式的那一步；別的語言的規則看不到）
+        if (lang && LC && step && /^local_write_code_/.test(step.tool)) for (const r of LC.failureRulesFor(lang)) if (r.re.test(msg) && step.attempts < 2) return { action: r.action, rule: lang + ':' + r.id, why: r.why, lang };
         for (const r of FAILURE_RULES) if (r.test(msg, step, run)) return { action: r.action, rule: r.id, why: r.why };
         return { action: 'abort', rule: 'none', why: '沒有規則' };
     }
@@ -12169,6 +12242,1771 @@ public class Application {
 return holder.FaDesign;
 })();
 /* DESIGN-END */
+// 寫程式／修程式（第一階段，見 DESIGN.fn-template.md）：依賴順序 SyntaxFix → CodeLoop → CodeProject → CodeEdit → CodeAgent；都在 FaThinkStack／FaRecipe／FaUml 之後
+/* GRAMMAR-BEGIN */
+const FaGrammar = (function () {
+const holder = {};
+(function (module, self) {
+/* 文法驅動的「當下合法 token」預測（純函式，UMD，不碰 I/O）。
+ * 使用者的想法：不是靠手寫補丁清單，而是由 AST／文法分析「我現在在哪個位置、這裡可以選什麼關鍵字、符號、名詞」，再從合法的選項裡選。
+ * 做法：Earley 解析器（Aycock-Horspool 處理可空規則）＋各語言家族的語句級文法（EBNF 字串，編譯成 BNF）。
+ *   expectedAt(lang, tokens)  → { ok, consumed, failAt, expected:[terminal…], classes:{keywords,punct,names,literals} }
+ *       tokens 是 syntax_fix_core.lex 的結果（只取 t／v）。逐 token 掃描：全部吃完＝ok，expected 是「下一個可以接什麼」；
+ *       中途吃不下＝failAt 是第一個不合法的 token 的索引，expected 是「那個位置合法的終端」（關鍵字、符號、ID／NUM／STR 這類需要名詞或字面值的類別）。
+ *   parseOk(lang, tokens)     → 整段是否合法（給候選過濾：套用編輯後這段文法還吃不吃得下）
+ *   LANGS／supports(lang)     每種語言各有一份獨立的文法（python、c、cpp、java、csharp、nodejs）：不共用——C 的合法 token 不會出現 Java 的 instanceof，Java 沒有指標，C++ 才有 ::。python 以邏輯行為單位。
+ * 誠實的範圍：這是「語句級的子集文法」，不是完整語言規格（沒有模板、巨集、裝飾器參數細節、f-string 內部、正規表示式字面值…）。
+ * 吃不下合法程式時（文法有洞）呼叫端要以編譯器的位置為準、把文法預測當作加分的來源而不是唯一的來源——syntax_fix_core 就是這樣用的。
+ * 文法沒有涵蓋的語言（ruby、perl、bash、組語）expectedAt 回 {supported:false}。 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaGrammar = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    // 每種語言一份獨立的文法（使用者規定：不同語言不能共用；C 的合法 token 不能出現 Java 的 instanceof、Java 沒有指標、C++ 才有 ::）。
+    // 下面的 build(lang) 只是「把這一種語言的規則寫成文字」的文字巨集：每個語言各自編譯、各自快取，執行時彼此完全隔離。
+    const LANGS = ['python', 'c', 'cpp', 'java', 'csharp', 'nodejs'];
+    const FAMILY_OF = {}; LANGS.forEach((l) => { FAMILY_OF[l] = l; }); // 相容舊介面：每個語言自成一格，沒有「家族共用」
+    function buildBraceLang(L) {
+        const c = L === 'c', cpp = L === 'cpp', java = L === 'java', cs = L === 'csharp', js = L === 'nodejs';
+        const R = [];
+        R.push('Program -> Item*');
+        R.push("Item -> " + (c || cpp || cs ? ['PP'] : []).concat(c ? ['TypeDef'] : cpp ? ['Import', 'NsDecl', 'TypeDef'] : java ? ['Import', 'TypeDef'] : cs ? ['Import', 'NsDecl', 'TypeDef'] : ['Import', 'TypeDef']).concat(['FuncDef', 'Decl', 'Stmt']).join(' | '));
+        if (cpp) { R.push("Import -> 'using' 'namespace' QName ';' | 'using' QName ';'"); R.push("NsDecl -> 'namespace' QName Block"); }
+        if (java) R.push("Import -> ('import'|'package') 'static'? QName ';'");
+        if (cs) { R.push("Import -> 'using' 'static'? QName ';'"); R.push("NsDecl -> 'namespace' QName Block"); }
+        if (js) R.push("Import -> 'import' (ID | '*' 'as' ID | '{' ID (',' ID)* '}') 'from' STR ';'?");
+        R.push(c ? "QName -> ID" : (cpp ? "QName -> ID ('::' ID)*" : "QName -> ID ('.' (ID|'*'))*"));
+        if (!js) {
+            R.push(c ? "TypeDef -> ('struct'|'union'|'enum') ID? Block ID? ';'" : cpp ? "TypeDef -> Mod* ('class'|'struct'|'union'|'enum') ID TypeArgs? Bases? Block ';'" : java ? "TypeDef -> Mod* ('class'|'interface'|'enum') ID TypeArgs? Bases? Block" : "TypeDef -> Mod* ('class'|'struct'|'interface'|'enum') ID TypeArgs? Bases? Block ';'?");
+            if (!c) R.push(cpp ? "Bases -> ':' Mod* Type (',' Mod* Type)*" : java ? "Bases -> ('extends'|'implements') Type (',' Type)*" : "Bases -> ':' Type (',' Type)*");
+            const mods = c ? ['static', 'const', 'extern', 'unsigned', 'signed', 'volatile', 'register', 'inline'] : cpp ? ['public', 'private', 'protected', 'static', 'const', 'virtual', 'override', 'inline', 'extern', 'unsigned', 'signed', 'volatile', 'constexpr', 'explicit'] : java ? ['public', 'private', 'protected', 'static', 'final', 'abstract', 'synchronized'] : ['public', 'private', 'protected', 'internal', 'static', 'readonly', 'const', 'abstract', 'virtual', 'override', 'sealed', 'partial', 'async', 'unsafe'];
+            R.push('Mod -> ' + mods.map((m) => "'" + m + "'").join('|'));
+            const qual = c ? [] : cpp ? ["'const'", "'noexcept'", "'override'", "'final'"] : java ? ["'throws' QName (',' QName)*"] : [];
+            R.push("FuncDef -> Mod* Type" + (c ? '' : '?') + " QName '(' Params? ')'" + (qual.length ? " Qual*" : '') + " (Block | ';')"); if (qual.length) R.push('Qual -> ' + qual.join('|'));
+            R.push("Params -> Param (',' Param)*");
+            R.push(c ? "Param -> Mod* Type ID? ('[' Expr? ']')* | '...'" : cpp ? "Param -> Mod* Type ID? ('[' Expr? ']')* ('=' Expr)? | '...'" : java ? "Param -> Mod* Type '...'? ID" : "Param -> Mod* ('ref'|'out'|'params')? Type ID ('=' Expr)?");
+            R.push("Decl -> Mod* Type Declarator (',' Declarator)* ';'" + (c || cpp ? " | 'typedef' (Type | Agg) ID ';'" : '') + (cs ? " | 'var' Declarator (',' Declarator)* ';'" : ''));
+            if (c || cpp) R.push("Agg -> ('struct'|'union'|'enum') ID? Block");
+            R.push(c ? "Declarator -> '*'* ID ('[' Expr? ']')* ('=' Init)?" : cpp ? "Declarator -> ('*'|'&')* ID ('[' Expr? ']')* ('=' Init | '(' Args? ')' | Brace)?" : java ? "Declarator -> ID ('[' ']')* ('=' Init)?" : "Declarator -> ID ('=' Init)?");
+            R.push("Init -> Expr | Brace"); R.push("Brace -> '{' (Init (',' Init)* ','?)? '}'");
+            const prim = c ? ['int', 'long', 'short', 'char', 'double', 'float', 'void', 'unsigned', 'signed'] : cpp ? ['int', 'long', 'short', 'char', 'double', 'float', 'void', 'bool', 'unsigned', 'signed', 'auto'] : java ? ['int', 'long', 'short', 'char', 'double', 'float', 'void', 'boolean', 'byte'] : ['int', 'long', 'short', 'char', 'double', 'float', 'void', 'bool', 'byte', 'decimal', 'object'];
+            R.push('PrimType -> ' + prim.map((m) => "'" + m + "'").join('|'));
+            R.push(c ? "TypeName -> PrimType+ | ('struct'|'union'|'enum') ID | ID" : "TypeName -> PrimType+ | QName");
+            R.push(c ? "Type -> 'const'? TypeName '*'* ('const' '*'*)?" : cpp ? "Type -> 'const'? TypeName TypeArgs? ('[' ']')* ('*'|'&')*" : java ? "Type -> TypeName TypeArgs? ('[' ']')*" : "Type -> TypeName TypeArgs? ('[' ']')* '?'?");
+            if (!c) { R.push("TypeArgs -> '<' (TArg (',' TArg)*)? '>'"); R.push("TArg -> Type" + (java ? " | '?'" : '')); }
+        } else {
+            R.push("TypeDef -> 'class' ID ('extends' Postfix)? Block");
+            R.push("FuncDef -> ('async')? 'function' '*'? ID? '(' Params? ')' Block");
+            R.push("Params -> Param (',' Param)* ','?"); R.push("Param -> '...'? (ID | Pattern) ('=' Expr)?");
+            R.push("Decl -> ('var'|'let'|'const') Declarator (',' Declarator)* ';'?");
+            R.push("Declarator -> (ID | Pattern) ('=' Init)?"); R.push("Pattern -> '[' (ID? (',' ID?)*)? ']' | '{' (ID (',' ID)*)? '}'"); R.push("Init -> Expr");
+        }
+        R.push("Block -> '{' Item* '}'");
+        const forEach = cpp ? "ForInit ':' Expr" : java ? "Mod* Type ID ':' Expr" : cs ? "Type ID 'in' Expr" : js ? "('var'|'let'|'const') (ID | Pattern) ('of'|'in') Expr" : null;
+        R.push("Stmt -> Block | 'if' '(' Expr ')' Stmt ('else' Stmt)? | 'while' '(' Expr ')' Stmt | 'do' Stmt 'while' '(' Expr ')' ';' | " + (cs ? "('for'|'foreach')" : "'for'") + " '(' ForHead ')' Stmt | 'return' Expr? ';' | 'break' ';' | 'continue' ';' | 'switch' '(' Expr ')' '{' Case* '}'" + (c ? '' : " | 'throw' Expr ';' | 'try' Block Catch* ('finally' Block)?") + " | Expr ';' | ';'");
+        R.push("ForHead -> ForInit? ';' Expr? ';' ExprList?" + (forEach ? ' | ' + forEach : ''));
+        R.push(js ? "ForInit -> ('var'|'let'|'const') Declarator (',' Declarator)* | ExprList" : "ForInit -> Mod* Type Declarator (',' Declarator)* | ExprList");
+        R.push("Case -> ('case' Expr | 'default') ':' Item*");
+        if (!c) R.push(js ? "Catch -> 'catch' ('(' ID ')')? Block" : cpp ? "Catch -> 'catch' '(' (Param | '...') ')' Block" : "Catch -> 'catch' '(' Param? ')' Block");
+        if (c || cpp) { // 內聯組語屬於 C／C++ 各自的 CoLU：asm／__asm__／__asm 關鍵字、字串樣板、輸出／輸入／clobber 清單
+            R.push("Stmt -> AsmStmt"); R.push("AsmStmt -> ('asm'|'__asm__'|'__asm') ('volatile'|'__volatile__')? 'goto'? '(' STR+ AsmTail? ')' ';'");
+            R.push(cpp ? "AsmTail -> (AsmColon AsmList?)+" : "AsmTail -> (':' AsmList?)+"); if (cpp) R.push("AsmColon -> ':' | '::'");
+            R.push("AsmList -> AsmOp (',' AsmOp)*"); R.push("AsmOp -> ('[' ID ']')? STR ('(' Expr ')')?");
+        }
+        R.push("ExprList -> Expr (',' Expr)*"); R.push('Expr -> Assign');
+        R.push("Assign -> LValue AssignOp Assign | Ternary"); R.push(c || cpp ? "LValue -> Postfix | '*' Unary" : "LValue -> Postfix"); // 賦值左邊必須是可賦值的目標（不能是比較式）
+        R.push("AssignOp -> '='|'+='|'-='|'*='|'/='|'%='|'&='|'|='|'^='|'<<='|'>>='" + (java || js ? "|'>>>='" : ''));
+        R.push("Ternary -> LogOr ('?' Expr ':' Ternary)?");
+        R.push("LogOr -> LogAnd ('||' LogAnd)*"); R.push("LogAnd -> BitOr ('&&' BitOr)*"); R.push("BitOr -> BitXor ('|' BitXor)*"); R.push("BitXor -> BitAnd ('^' BitAnd)*"); R.push("BitAnd -> Eq ('&' Eq)*");
+        R.push(js ? "Eq -> Rel (('=='|'!='|'==='|'!==') Rel)*" : "Eq -> Rel (('=='|'!=') Rel)*");
+        R.push("Rel -> Shift (('<'|'>'|'<='|'>='" + (java ? "|'instanceof'" : cs ? "|'is'|'as'" : js ? "|'instanceof'|'in'" : '') + ") Shift)*");
+        R.push("Shift -> Add (('<<'|'>>'" + (java || js ? "|'>>>'" : '') + ") Add)*");
+        R.push("Add -> Mul (('+'|'-') Mul)*"); R.push("Mul -> Unary (('*'|'/'|'%') Unary)*");
+        const un = ["'!'", "'~'", "'-'", "'+'", "'++'", "'--'"].concat(c || cpp ? ["'*'", "'&'", "'sizeof'"] : []).concat(cpp ? ["'delete'"] : []).concat(js ? ["'typeof'", "'await'", "'void'", "'delete'"] : []).concat(cs ? ["'typeof'", "'await'"] : []);
+        R.push('Unary -> (' + un.join('|') + ') Unary | ' + (js ? '' : 'Cast | ') + 'Postfix');
+        if (!js) R.push("Cast -> '(' Type ')' Unary");
+        R.push("Postfix -> Primary Trailer*");
+        R.push("Trailer -> '(' Args? ')' | '[' Expr ']' | '.' ID | '++' | '--'" + (c || cpp ? " | '->' ID" : '') + (cpp ? " | '::' ID" : ''));
+        const lits = ["ID", "NUM", "STR+", "'true'", "'false'"].concat(c ? ["'NULL'"] : cpp ? ["'nullptr'", "'this'"] : java ? ["'null'", "'this'", "'super'"] : cs ? ["'null'", "'this'", "'base'"] : ["'null'", "'undefined'", "'this'", "'super'"]);
+        R.push('Primary -> ' + lits.join(' | ') + " | '(' Expr ')'" + (c ? " | 'sizeof' '(' (Type | Expr) ')'" : cpp ? " | 'sizeof' '(' (Type | Expr) ')' | New" : (java || cs) ? " | New | Lambda" + (cs ? " | PrimType '.' ID" : '') : " | New | Lambda | ArrLit | ObjLit"));
+        if (c) { R.push("Args -> Expr (',' Expr)*"); }
+        else {
+            R.push("Args -> Expr (',' Expr)*");
+            R.push(cpp ? "New -> 'new' Type ('(' Args? ')' | ('[' Expr? ']')+ Brace?)" : java ? "New -> 'new' Type ('(' Args? ')' ('{' Item* '}')? | ('[' Expr? ']')+ Brace?)" : cs ? "New -> 'new' Type? ('(' Args? ')' Brace? | ('[' Expr? ']')+ Brace? | Brace)" : "New -> 'new' Postfix");
+            if (java) R.push("Lambda -> (ID | '(' Params? ')') '->' (Expr | Block)");
+            if (cs) R.push("Lambda -> (ID | '(' Params? ')') '=>' (Expr | Block)");
+            if (js) { R.push("Lambda -> ('async')? (ID | '(' Params? ')') '=>' (Expr | Block) | ('async')? 'function' ID? '(' Params? ')' Block"); R.push("ArrLit -> '[' (Expr (',' Expr)* ','?)? ']'"); R.push("ObjLit -> '{' (Prop (',' Prop)* ','?)? '}'"); R.push("Prop -> (ID | STR | NUM) ':' Expr | ID"); }
+        }
+        return R;
+    }
+    const PYTHON = [
+        "Line -> Decorator | Header | Simple (';' Simple)* ';'?",
+        "Decorator -> '@' Dotted ('(' Args? ')')?",
+        "Dotted -> ID ('.' ID)*",
+        "Suite -> Simple (';' Simple)* ';'?",
+        "Header -> 'async'? 'def' ID '(' Params? ')' ('->' Expr)? ':' Suite? | 'class' ID ('(' Args? ')')? ':' Suite? | 'if' Expr ':' Suite? | 'elif' Expr ':' Suite? | 'else' ':' Suite? | 'async'? 'for' ExprList 'in' ExprList ':' Suite? | 'while' Expr ':' Suite? | 'try' ':' Suite? | 'except' (Expr ('as' ID)?)? ':' Suite? | 'finally' ':' Suite? | 'async'? 'with' WithItem (',' WithItem)* ':' Suite? | 'match' Expr ':' | 'case' Expr ('if' Expr)? ':' Suite?",
+        "WithItem -> Expr ('as' Expr)?",
+        "Params -> Param (',' Param)* ','?",
+        "Param -> ('*'|'**')? ID (':' Expr)? ('=' Expr)? | '*' | '/'",
+        "Simple -> 'pass' | 'break' | 'continue' | 'return' ExprList? | 'raise' (Expr ('from' Expr)?)? | Import | 'global' ID (',' ID)* | 'nonlocal' ID (',' ID)* | 'assert' Expr (',' Expr)? | 'del' ExprList | 'yield' ExprList? | ExprStmt",
+        "Import -> 'import' DottedAs (',' DottedAs)* | 'from' ('.'* Dotted | '.'+) 'import' ('*' | '(' ImpNames ')' | ImpNames)",
+        "DottedAs -> Dotted ('as' ID)?",
+        "ImpNames -> ImpName (',' ImpName)* ','?",
+        "ImpName -> ID ('as' ID)?",
+        "ExprStmt -> ExprList (AugOp ExprList | ('=' (ExprList | 'yield' ExprList?))+ | ':' Expr ('=' ExprList)?)?",
+        "AugOp -> '+='|'-='|'*='|'/='|'//='|'%='|'**='|'&='|'|='|'^='|'<<='|'>>='|'@='",
+        "ExprList -> StarExpr (',' StarExpr)* ','?",
+        "StarExpr -> '*'? Expr",
+        "Expr -> Lambda | OrTest ('if' OrTest 'else' Expr)? | ID ':=' Expr",
+        "Lambda -> 'lambda' Params? ':' Expr",
+        "OrTest -> AndTest ('or' AndTest)*",
+        "AndTest -> NotTest ('and' NotTest)*",
+        "NotTest -> 'not' NotTest | Comp",
+        "Comp -> BitOr (CompOp BitOr)*",
+        "CompOp -> '<'|'>'|'=='|'>='|'<='|'!='|'in'|'not' 'in'|'is' 'not'?",
+        "BitOr -> BitXor ('|' BitXor)*",
+        "BitXor -> BitAnd ('^' BitAnd)*",
+        "BitAnd -> Shift ('&' Shift)*",
+        "Shift -> Arith (('<<'|'>>') Arith)*",
+        "Arith -> Term (('+'|'-') Term)*",
+        "Term -> Factor (('*'|'/'|'//'|'%'|'@') Factor)*",
+        "Factor -> ('+'|'-'|'~') Factor | Power",
+        "Power -> Await ('**' Factor)?",
+        "Await -> 'await'? Atom Trailer*",
+        "Trailer -> '(' Args? ')' | '[' Subs ']' | '.' ID",
+        "Subs -> Sub (',' Sub)* ','?",
+        "Sub -> Expr? (':' Expr? (':' Expr?)?)?",
+        "Atom -> ID | NUM | STR+ | 'None' | 'True' | 'False' | '...' | '(' (Expr CompFor+ | ExprList | 'yield' ExprList?)? ')' | '[' (Expr CompFor+ | ExprList)? ']' | '{' (DictBody | ExprList | Expr CompFor+)? '}'",
+        "DictBody -> DictItem (',' DictItem)* ','? | DictItem CompFor+",
+        "DictItem -> Expr ':' Expr | '**' Expr",
+        "CompFor -> 'async'? 'for' ExprList 'in' OrTest ('if' OrTest)*",
+        "Args -> Arg (',' Arg)* ','?",
+        "Arg -> '*' Expr | '**' Expr | ID '=' Expr | Expr CompFor+ | Expr"
+    ];
+    const RULES = { python: PYTHON }; for (const l of LANGS) if (l !== 'python') RULES[l] = buildBraceLang(l);
+    // 軟關鍵字（contextual keyword）：文法裡有這個字面，但也可以當識別字用，所以不放進保留字集合——各語言自己的清單
+    const SOFT = { python: new Set(['match', 'case', 'async', 'await']), c: new Set([]), cpp: new Set(['override', 'final', 'auto']), java: new Set(['var']), csharp: new Set(['var', 'async', 'await', 'partial', 'is', 'as', 'in', 'readonly', 'sealed', 'object', 'decimal']), nodejs: new Set(['async', 'await', 'of', 'let', 'from', 'as']) };
+
+    // ---------- EBNF → BNF ----------
+    function compile(lines, soft) {
+        const prods = new Map(); let aux = 0;
+        const TOK = /'[^']*'|[A-Za-z_][A-Za-z0-9_]*|[()|*+?]/g;
+        const add = (nt, rhs) => { if (!prods.has(nt)) prods.set(nt, []); prods.get(nt).push(rhs); };
+        for (const line of lines) {
+            const [lhs, body] = line.split(' -> '); const toks = body.match(TOK); let p = 0;
+            const newAux = () => '_a' + (++aux);
+            const parseAlt = () => { const alts = [parseSeq()]; while (toks[p] === '|') { p++; alts.push(parseSeq()); } return alts; };
+            const parseSeq = () => { const seq = []; while (p < toks.length && toks[p] !== '|' && toks[p] !== ')') seq.push(parsePostfix()); return seq; };
+            const parsePostfix = () => {
+                let atom = parseAtom();
+                for (;;) {
+                    if (toks[p] === '*') { p++; const n = newAux(); add(n, []); add(n, [n, atom]); atom = n; }
+                    else if (toks[p] === '+') { p++; const n = newAux(); add(n, [atom]); add(n, [n, atom]); atom = n; }
+                    else if (toks[p] === '?') { p++; const n = newAux(); add(n, []); add(n, [atom]); atom = n; }
+                    else break;
+                }
+                return atom;
+            };
+            const parseAtom = () => { const t = toks[p++]; if (t === '(') { const alts = parseAlt(); p++; if (alts.length === 1 && alts[0].length === 1) return alts[0][0]; const n = newAux(); for (const a of alts) add(n, a); return n; } return t; };
+            const alts = parseAlt(); for (const a of alts) add(lhs.trim(), a);
+        }
+        // 終端與非終端的區分：prods 有的是非終端；其餘（單引號字面、全大寫類別）是終端
+        const nts = new Set(prods.keys());
+        const rules = []; for (const [lhs, list] of prods) for (const rhs of list) rules.push({ lhs, rhs, id: rules.length });
+        const byLhs = new Map(); for (const r of rules) { if (!byLhs.has(r.lhs)) byLhs.set(r.lhs, []); byLhs.get(r.lhs).push(r); }
+        const nullable = new Set(); let ch = true; while (ch) { ch = false; for (const r of rules) if (!nullable.has(r.lhs) && r.rhs.every((s) => nullable.has(s))) { nullable.add(r.lhs); ch = true; } }
+        const keywords = new Set(); for (const r of rules) for (const s of r.rhs) if (s[0] === "'" && /^'[A-Za-z_]+'$/.test(s)) keywords.add(s.slice(1, -1));
+        if (soft) for (const w of soft) keywords.delete(w);
+        return { rules, byLhs, nts, nullable, keywords };
+    }
+    const COMPILED = {}; const grammarOf = (fam) => COMPILED[fam] || (COMPILED[fam] = compile(RULES[fam], SOFT[fam]));
+
+    // ---------- 終端比對 ----------
+    function matches(G, term, tok) {
+        if (term[0] === "'") { const lit = term.slice(1, -1); return tok.v === lit && (tok.t === 'op' || tok.t === 'id'); }
+        if (term === 'ID') return tok.t === 'id' && !G.keywords.has(tok.v);
+        if (term === 'NUM') return tok.t === 'num';
+        if (term === 'STR') return tok.t === 'str' && !tok.bad;
+        if (term === 'PP') return tok.t === 'pp';
+        return false;
+    }
+
+    // ---------- Earley ----------
+    // 回傳 { ok, consumed, failAt, expected:Set<terminal> }。start：起始非終端；tokens：{t,v}[]
+    function earley(G, start, tokens, opts) {
+        opts = opts || {}; const n = tokens.length; const sets = []; const seen = [];
+        const itemKey = (r, d, o) => r + ':' + d + ':' + o;
+        const addItem = (i, r, d, o) => { const k = itemKey(r.id, d, o); if (seen[i].has(k)) return; seen[i].add(k); sets[i].push({ r, d, o }); };
+        for (let i = 0; i <= n; i++) { sets.push([]); seen.push(new Set()); }
+        for (const r of G.byLhs.get(start)) addItem(0, r, 0, 0);
+        let failAt = -1, expectedAtFail = null, maxSteps = opts.maxItems || 400000, steps = 0;
+        const expectedOf = (i) => { const e = new Set(); for (const it of sets[i]) { if (it.d < it.r.rhs.length) { const s = it.r.rhs[it.d]; if (!G.nts.has(s)) e.add(s); } } return e; };
+        for (let i = 0; i <= n; i++) {
+            for (let q = 0; q < sets[i].length; q++) {
+                if (++steps > maxSteps) return { ok: false, consumed: i, failAt: i, expected: new Set(), aborted: true };
+                const it = sets[i][q];
+                if (it.d < it.r.rhs.length) {
+                    const sym = it.r.rhs[it.d];
+                    if (G.nts.has(sym)) { for (const r of G.byLhs.get(sym)) addItem(i, r, 0, i); if (G.nullable.has(sym)) addItem(i, it.r, it.d + 1, it.o); }
+                    else if (i < n && matches(G, sym, tokens[i])) addItem(i + 1, it.r, it.d + 1, it.o);
+                } else {
+                    for (const p of sets[it.o]) if (p.d < p.r.rhs.length && p.r.rhs[p.d] === it.r.lhs) addItem(i, p.r, p.d + 1, p.o);
+                }
+            }
+            if (i < n && sets[i + 1].length === 0) { failAt = i; expectedAtFail = expectedOf(i); break; }
+        }
+        if (failAt >= 0) return { ok: false, consumed: failAt, failAt, expected: expectedAtFail };
+        return { ok: true, consumed: n, failAt: -1, expected: expectedOf(n), complete: sets[n].some((it) => it.r.lhs === start && it.o === 0 && it.d === it.r.rhs.length) };
+    }
+
+    // 把終端集合分成：關鍵字、符號、名詞（ID）、字面值（NUM／STR）、前處理
+    function classify(G, expected) {
+        const c = { keywords: [], punct: [], names: expected.has('ID'), literals: [], other: [] };
+        for (const t of expected) { if (t[0] === "'") { const v = t.slice(1, -1); (/^[A-Za-z_]+$/.test(v) ? c.keywords : c.punct).push(v); } else if (t === 'NUM' || t === 'STR') c.literals.push(t); else if (t !== 'ID') c.other.push(t); }
+        c.keywords.sort(); c.punct.sort(); return c;
+    }
+
+    // 泛型尾端的 `>>`／`>>>` 詞法分析器讀成位移運算子：在 cpp／java／csharp，若同一條敘述裡有 ≥2 個「接在識別字後、後面是型別開頭」的未收尾 `<`，就把它拆成多個 `>`
+    function splitGenericShifts(lang, tokens) {
+        if (lang !== 'cpp' && lang !== 'java' && lang !== 'csharp') return tokens;
+        const out = []; let open = 0;
+        for (let i = 0; i < tokens.length; i++) {
+            const t = tokens[i];
+            if (t.t === 'op' && (t.v === ';' || t.v === '{' || t.v === '}')) open = 0;
+            if (t.t === 'op' && t.v === '<' && out.length && out[out.length - 1].t === 'id' && tokens[i + 1] && (tokens[i + 1].t === 'id' || tokens[i + 1].v === '?' || tokens[i + 1].v === '>')) open++;
+            if (t.t === 'op' && t.v === '>') open = Math.max(0, open - 1);
+            if (t.t === 'op' && (t.v === '>>' || t.v === '>>>') && open >= t.v.length) { for (let k = 0; k < t.v.length; k++) out.push(Object.assign({}, t, { v: '>', splitFrom: t.v })); open -= t.v.length; continue; }
+            out.push(t);
+        }
+        return out;
+    }
+    // 語言入口。tokens：lex 的結果（clike 不含換行；python 傳入「一條邏輯行」的 token，不含 nl）
+    function expectedAt(lang, tokens, opts) {
+        const fam = FAMILY_OF[lang]; if (!fam) return { supported: false, ok: false, expected: [], classes: { keywords: [], punct: [], names: false, literals: [], other: [] } };
+        const G = grammarOf(fam); const start = fam === 'python' ? 'Line' : 'Program';
+        const toks2 = splitGenericShifts(lang, tokens); const r = earley(G, start, toks2.map((t) => ({ t: t.t, v: t.v, bad: t.bad })), opts);
+        return { supported: true, ok: r.ok, consumed: r.consumed, failAt: r.failAt, complete: !!r.complete, expected: Array.from(r.expected), classes: classify(G, r.expected), aborted: !!r.aborted };
+    }
+    // 整段是否是「合法而完整」的（clike：Program 完整；python：一條完整的行）
+    function parseOk(lang, tokens, opts) { const r = expectedAt(lang, tokens, opts); return r.supported && r.ok && r.complete; }
+    // 可以續寫到多遠：回傳吃掉的 token 數（吃不下就是 failAt）；給候選過濾比較「編輯前後文法進展」
+    function progress(lang, tokens, opts) { const r = expectedAt(lang, tokens, opts); return r.supported ? (r.ok ? tokens.length : r.failAt) : -1; }
+
+    const supports = (lang) => !!RULES[lang];
+    return { LANGS, supports, FAMILY_OF, compile, grammarOf, earley, expectedAt, parseOk, progress, classify, RULES };
+});
+
+}).call(null, undefined, holder);
+return holder.FaGrammar;
+})();
+/* GRAMMAR-END */
+/* SYNTAXFIX-BEGIN */
+const FaSyntaxFix = (function () {
+const holder = {};
+(function (module, self) {
+/* 語法錯誤自動修正（純函式，UMD；檢查器與模型都是注入的）。可以從「任意拿到的程式碼」開始，不需要知道它怎麼來的。
+ * 做法（使用者的想法：從語法錯誤找到當下的語法單元，再在錯誤位置選出最適合的 token 組合）：
+ *   1. check(source) 拿到編譯器／直譯器的錯誤訊息 → parseErrors 解出第一個錯誤的位置（行、欄）
+ *   2. lex 把程式切成 token（會處理字串、註解、前處理行、Python 縮排）→ unitOf 找出錯誤所在的語法單元（錯誤位置的那條敘述＋前一條，因為「缺分號」常在下一行才報錯）
+ *   3. candidates 在錯誤位置附近產生「極小的 token 編輯」候選：補括號（依未配對的括號堆疊決定該補哪一種）、補 ; : end fi done、補引號、刪掉多餘的 token、= 改 ==、Python 補 pass／調縮排…
+ *   4. 每個候選都交給**真的檢查器**驗證：整個通過最好；沒通過的看「第一個錯誤有沒有往後移」（有進展）。依 通過 > 進展 > 編輯成本 排序
+ *   5. 並列時（編輯不同、結果同樣好）用選擇題讓模型挑（ask 沒給或問不出來就選成本最低的）；套用後重複，最多 maxRounds 輪（一次可能不只一個錯）
+ * 只改必要的 token，其餘格式（縮排、換行符、註解）完全保留；回傳結構化的 edits 與統一格式的 diff，可以直接給使用者看或套用。
+ *   repairSyntax({lang, source, check, ask?, maxRounds?, maxTries?, concurrency?, semantic?, wrap?, verify?}) →
+ *     semantic：{symbols:{名稱:引數個數|null}, hints:[已定的設計文字]}——設計樹（計畫簽名／UML／思考堆疊決定）的語意；候選依「套用前後的語意問題集合」加減成本（識別字黏合、引數個數、printf 格式、直譯語言的未定義名稱）。wrap(messages)：把思考堆疊的焦點標頭放進選擇題。
+ * Promise<{ok, source, edits[], diff, rounds, tried, choices[], reason?, errors?}>
+ *     check({lang, source}) → Promise<{verdict:'CHECKED'|'AC'（通過）| 'CE'（有錯，要有 compileLog 或 detail）| 其他（UNAVAILABLE…）}>
+ *   支援語言：python、nodejs、c、cpp、java、csharp、perl、ruby、bash（組語沒有候選，回 unsupported_lang）。 */
+(function (root, factory) {
+    const Gm = (typeof FaGrammar !== 'undefined' && FaGrammar) || (root && root.FaGrammar) || (typeof require === 'function' ? require('./grammar_core.js') : null);
+    if (typeof module === 'object' && module.exports) module.exports = factory(Gm); else root.FaSyntaxFix = factory(Gm);
+})(typeof self !== 'undefined' ? self : this, function (Gm) {
+    'use strict';
+    const FAMILY = { python: 'python', nodejs: 'clike', c: 'clike', cpp: 'clike', java: 'clike', csharp: 'clike', perl: 'clike', ruby: 'ruby', bash: 'bash' };
+    // 備援詞彙：每種語言各自一份（使用者規定不共用，即使現在內容相近）。有文法的語言以文法算出的合法 token 為主，這裡只在文法分析不可用／與編譯器位置不一致時補足。
+    const VOCAB = {
+        c: { terminators: [';'], termCost: 1.0, separators: [','], openBrace: ' {', strayOpeners: true },
+        cpp: { terminators: [';'], termCost: 1.0, separators: [','], openBrace: ' {', strayOpeners: true },
+        java: { terminators: [';'], termCost: 1.0, separators: [','], openBrace: ' {', strayOpeners: true },
+        csharp: { terminators: [';'], termCost: 1.0, separators: [','], openBrace: ' {', strayOpeners: true },
+        nodejs: { terminators: [';'], termCost: 1.3, separators: [','], openBrace: ' {', strayOpeners: true }, // JS 的分號常可省略（ASI），所以補分號的成本較高
+        perl: { terminators: [';'], termCost: 1.0, separators: [','], openBrace: ' {', strayOpeners: true }
+    };
+    const CLOSE = { '(': ')', '[': ']', '{': '}' }; const OPEN = { ')': '(', ']': '[', '}': '{' };
+    const OPS = ['>>>=', '===', '!==', '<<=', '>>=', '>>>', '...', '**=', '//=', '<=>', '=>', '->', '::', '++', '--', '&&', '||', '==', '!=', '<=', '>=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<', '>>', '**', '//', '=~', '!~', '..'];
+    const OPS_NOSCOPE = OPS.filter((o) => o !== '::'); const OPS_PY = OPS_NOSCOPE.concat([':=']); // 沒有 :: 運算子的語言（c、nodejs、python）不產生 ::
+    const clip = (s, n) => { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n) + '…' : s; };
+
+    // ---------- 詞法：只求「括號、字串、註解、換行、縮排」切對，不求完整文法 ----------
+    function lex(lang, src) {
+        const fam = FAMILY[lang]; const toks = []; const n = src.length; let i = 0, line = 1, ls = 0;
+        const push = (t, v, off, l, c, extra) => { const k = { t, v, off, end: off + v.length, line: l, col: c }; if (extra) Object.assign(k, extra); toks.push(k); return k; };
+        const hashComment = fam === 'python' || fam === 'ruby' || fam === 'bash' || lang === 'perl'; const slashComment = fam === 'clike' && lang !== 'perl';
+        let lineHasTok = false;
+        while (i < n) {
+            const ch = src[i]; const col = i - ls + 1;
+            if (ch === '\n') { if (fam !== 'clike') push('nl', '\n', i, line, col); i++; line++; ls = i; lineHasTok = false; continue; }
+            if (ch === ' ' || ch === '\t' || ch === '\r') { i++; continue; }
+            if (slashComment && ch === '/' && src[i + 1] === '/') { while (i < n && src[i] !== '\n') i++; continue; }
+            if (slashComment && ch === '/' && src[i + 1] === '*') { const e = src.indexOf('*/', i + 2); const stop = e < 0 ? n : e + 2; for (let k = i; k < stop; k++) if (src[k] === '\n') { line++; ls = k + 1; } i = stop; continue; }
+            if (ch === '#') {
+                if ((lang === 'c' || lang === 'cpp' || lang === 'csharp') && !lineHasTok) { const st = i; while (i < n && src[i] !== '\n') { if (src[i] === '\\' && src[i + 1] === '\n') { i++; line++; ls = i + 1; } i++; } push('pp', src.slice(st, i), st, line, col); lineHasTok = true; continue; }
+                if (hashComment) { while (i < n && src[i] !== '\n') i++; continue; }
+            }
+            lineHasTok = true;
+            // 字串
+            if (ch === '"' || ch === "'" || (ch === '`' && (lang === 'nodejs' || lang === 'bash'))) {
+                const st = i, l0 = line, c0 = col; const q = ch;
+                if (fam === 'python' && (src.startsWith(q + q + q, i))) { const e = src.indexOf(q + q + q, i + 3); const stop = e < 0 ? n : e + 3; for (let k = i; k < stop; k++) if (src[k] === '\n') { line++; ls = k + 1; } push('str', src.slice(st, stop), st, l0, c0, e < 0 ? { bad: true, quote: q + q + q } : null); i = stop; continue; }
+                i++; let bad = false; const multi = q === '`';
+                for (;;) { if (i >= n) { bad = true; break; } const c = src[i]; if (c === '\\') { i += 2; continue; } if (c === q) { i++; break; } if (c === '\n' && !multi) { bad = true; break; } if (c === '\n') { line++; ls = i + 1; } i++; }
+                push('str', src.slice(st, i), st, l0, c0, bad ? { bad: true, quote: q } : null); continue;
+            }
+            const rest = src.slice(i, i + 64);
+            let m = /^[0-9][A-Za-z0-9_.]*/.exec(rest); if (m) { push('num', m[0], i, line, col); i += m[0].length; continue; }
+            m = (lang === 'perl' || lang === 'bash' ? /^[$@%&]?[A-Za-z_][A-Za-z0-9_]*/ : /^[A-Za-z_$][A-Za-z0-9_$]*/).exec(rest); if (m) { push('id', m[0], i, line, col); i += m[0].length; continue; }
+            // JS 的正則字面值：出現在「需要運算元」的位置（開頭、運算子或 ( [ { , ; 之後、return／typeof 等關鍵字之後）的 / 才是正則
+            if (lang === 'nodejs' && ch === '/') {
+                const pv = toks[toks.length - 1]; const operandNext = !pv || (pv.t === 'op' && !/^[)\]}]$/.test(pv.v)) || (pv.t === 'id' && /^(return|typeof|case|in|of|delete|void|throw|new|else|do|yield|await)$/.test(pv.v));
+                if (operandNext) { let k = i + 1, cls = false, ok = false; while (k < n && src[k] !== '\n') { const c = src[k]; if (c === '\\') { k += 2; continue; } if (c === '[') cls = true; else if (c === ']') cls = false; else if (c === '/' && !cls) { ok = true; break; } k++; } if (ok) { k++; while (k < n && /[a-z]/.test(src[k])) k++; push('str', src.slice(i, k), i, line, col, { regex: true }); i = k; continue; } }
+            }
+            let op = null; for (const o of (lang === 'python' ? OPS_PY : (lang === 'c' || lang === 'nodejs' ? OPS_NOSCOPE : OPS))) if (src.startsWith(o, i)) { op = o; break; }
+            if (!op) op = ch; push('op', op, i, line, col); i += op.length;
+        }
+        return toks;
+    }
+
+    // 括號堆疊：unmatched＝沒有收尾的開括號；mismatch＝收錯種類；strays＝多出來的收括號；depth[i]＝第 i 個 token 之前的括號深度
+    function brackets(toks) {
+        const stack = [], strays = [], mismatch = [], depth = [];
+        toks.forEach((t, idx) => {
+            depth.push(stack.length);
+            if (t.t !== 'op') return;
+            if (CLOSE[t.v]) stack.push({ ch: t.v, idx });
+            else if (OPEN[t.v]) { if (stack.length && stack[stack.length - 1].ch === OPEN[t.v]) stack.pop(); else if (stack.length) mismatch.push({ tok: t, idx, want: CLOSE[stack[stack.length - 1].ch] }); else strays.push({ tok: t, idx }); }
+        });
+        return { stack, strays, mismatch, depth };
+    }
+
+    // ---------- 錯誤訊息 → 位置 ----------
+    function parseErrors(lang, log, src) {
+        const out = []; const s = String(log || ''); const L = s.replace(/\r/g, '').split('\n');
+        const srcLines = src == null ? null : String(src).split('\n');
+        const add = (line, col, msg) => { if (line > 0 && !out.some((e) => e.line === line && e.col === col)) out.push({ line, col: col || null, msg: clip(String(msg || '').trim(), 160) }); };
+        if (lang === 'python') {
+            for (let i = 0; i < L.length; i++) {
+                const m = /File ".*", line (\d+)/.exec(L[i]); if (!m) continue; const line = +m[1]; let col = null, msg = '';
+                for (let j = i + 1; j < Math.min(L.length, i + 5); j++) { if (/^\s*\^+\s*$/.test(L[j])) { const caret = L[j].indexOf('^'); const stripped = srcLines && srcLines[line - 1] != null ? srcLines[line - 1] : null; const lead = stripped != null ? (/^\s*/.exec(stripped)[0].length) : 0; col = lead + Math.max(0, caret - 4) + 1; } const e = /^(\w*(Error|Exception)\w*):\s*(.*)$/.exec(L[j]); if (e) { msg = e[1] + ': ' + e[3]; break; } }
+                add(line, col, msg || 'SyntaxError');
+            }
+        } else if (lang === 'nodejs') {
+            for (let i = 0; i < L.length; i++) { const m = /^(?:.*[\\/])?[^\s:]+\.js:(\d+)\s*$/.exec(L[i]); if (!m) continue; let col = null, msg = ''; for (let j = i + 1; j < Math.min(L.length, i + 6); j++) { if (/^\s*\^+\s*$/.test(L[j])) col = L[j].indexOf('^') + 1; if (/^\w*Error:/.test(L[j])) { msg = L[j]; break; } } add(+m[1], col, msg || 'SyntaxError'); }
+        } else if (lang === 'c' || lang === 'cpp') {
+            for (const l of L) { const m = /^(?:.*[\\/])?[^\s:]+:(\d+):(\d+):\s*(?:fatal )?error:\s*(.*)$/.exec(l); if (m) add(+m[1], +m[2], m[3]); }
+        } else if (lang === 'java') {
+            for (let i = 0; i < L.length; i++) { const m = /^(?:.*[\\/])?[^\s:]+\.java:(\d+):\s*error:\s*(.*)$/.exec(L[i]); if (!m) continue; let col = null; for (let j = i + 1; j < Math.min(L.length, i + 4); j++) if (/^\s*\^\s*$/.test(L[j])) { col = L[j].indexOf('^') + 1; break; } add(+m[1], col, m[2]); }
+        } else if (lang === 'csharp') {
+            for (const l of L) { const m = /^(?:.*[\\/])?[^\s(]+\((\d+),(\d+)\):\s*error\s*(\w+):\s*(.*)$/.exec(l); if (m) add(+m[1], +m[2], m[3] + ' ' + m[4]); }
+        } else if (lang === 'ruby') {
+            for (const l of L) { const m = /^(?:.*[\\/])?[^\s:]+\.rb:(\d+):\s*(.*(?:syntax error|unexpected).*)$/.exec(l); if (m) add(+m[1], null, m[2]); }
+        } else if (lang === 'perl') {
+            for (const l of L) { const m = /(.*) at (?:.*[\\/])?[^\s]+\.pl line (\d+)/.exec(l); if (m && !/had compilation errors|did not compile/.test(l)) add(+m[2], null, m[1]); }
+        } else if (lang === 'bash') {
+            for (const l of L) { const m = /(?:.*[\\/])?[^\s:]+\.sh: line (\d+): (.*)$/.exec(l); if (m) add(+m[1], null, m[2]); }
+        }
+        return out;
+    }
+
+    // ---------- 語法單元 ----------
+    // 回傳錯誤所在的敘述＋前一條敘述（缺分號、缺冒號常在下一條才報錯）；clike 以 ; { } 切敘述（括號內的 ; 不算），其他以邏輯行切
+    function unitOf(lang, toks, src, errLine) {
+        const fam = FAMILY[lang]; const lo = (a, b) => ({ startOff: a, endOff: b, startLine: lineOf(src, a), endLine: lineOf(src, b), text: src.slice(a, b) });
+        if (!toks.length) return lo(0, src.length);
+        const br = brackets(toks);
+        let ranges = [];
+        if (fam === 'clike') { let st = 0; toks.forEach((t, i) => { if (t.t === 'op' && (t.v === ';' || t.v === '{' || t.v === '}') && !(t.v === ';' && br.depth[i] > 0 && inParen(toks, i))) { if (i >= st) ranges.push([st, i]); st = i + 1; } }); if (st < toks.length) ranges.push([st, toks.length - 1]); }
+        else { let st = 0; toks.forEach((t, i) => { if (t.t === 'nl' && br.depth[i] === 0) { if (i > st) ranges.push([st, i - 1]); st = i + 1; } }); if (st < toks.length) ranges.push([st, toks.length - 1]); }
+        if (!ranges.length) return lo(0, src.length);
+        let k = ranges.findIndex((r) => toks[r[1]].line >= errLine && toks[r[0]].line <= errLine); if (k < 0) k = ranges.findIndex((r) => toks[r[0]].line >= errLine); if (k < 0) k = ranges.length - 1;
+        const from = Math.max(0, k - 1); const a = toks[ranges[from][0]].off; const b = toks[ranges[k][1]].end;
+        return lo(a, b);
+    }
+    function inParen(toks, i) { let d = 0; for (let k = i - 1; k >= 0; k--) { const t = toks[k]; if (t.t !== 'op') continue; if (t.v === ')') d++; else if (t.v === '(') { if (d === 0) return true; d--; } else if (t.v === '{' || t.v === '}' || t.v === ';') { if (d === 0 && t.v !== ';') return false; } } return false; }
+    function lineOf(src, off) { let l = 1; for (let i = 0; i < off && i < src.length; i++) if (src[i] === '\n') l++; return l; }
+
+    // ---------- 文法分析：AST／文法算出「我現在在哪個位置、這裡合法的下一步有哪些」----------
+    // clike：從錯誤所在的最上層項目開頭，把錯誤 token 之前的 token 交給 Earley，得到「合法的下一個終端」集合；
+    // python：以邏輯行為單位（先看前一行是不是還沒寫完——缺冒號、缺括號常在下一行才報錯，再看錯誤那一行）。
+    // 文法吃不下的位置（failAt）比編譯器報的更準時，就用文法的位置。
+    function logicalLines(toks) { const br = brackets(toks); const lines = []; let cur = []; toks.forEach((t, i) => { if (t.t === 'nl') { if (br.depth[i] === 0) { if (cur.length) lines.push(cur); cur = []; } } else cur.push(t); }); if (cur.length) lines.push(cur); return lines; }
+    function topLevelStart(toks, k) { let depth = 0, start = 0; for (let i = 0; i < k && i < toks.length; i++) { const t = toks[i]; if (t.t === 'op' && t.v === '{') depth++; else if (t.t === 'op' && t.v === '}') { depth = Math.max(0, depth - 1); if (depth === 0) start = i + 1; } else if (t.t === 'op' && t.v === ';' && depth === 0) start = i + 1; else if (t.t === 'pp') { if (depth === 0) start = i + 1; } } return start; }
+    function grammarAnalysis(lang, toks, err, k) {
+        if (!Gm || !Gm.FAMILY_OF[lang]) return null; const fam = Gm.FAMILY_OF[lang];
+        const clip2 = (a) => ({ keywords: a.classes.keywords.slice(0, 40), punct: a.classes.punct.slice(0, 40), names: a.classes.names, literals: a.classes.literals });
+        if (fam === 'clike') {
+            const start = topLevelStart(toks, k); const prefix = toks.slice(start, k); const a = Gm.expectedAt(lang, prefix);
+            if (a.aborted) return { used: false, reason: '文法分析超過步數上限' };
+            const failAbs = a.ok ? k : start + a.failAt;
+            const consistent = a.ok ? !(toks[k] && a.expected.some((e) => (e[0] === "'" ? toks[k].v === e.slice(1, -1) : (e === 'ID' && toks[k].t === 'id') || (e === 'NUM' && toks[k].t === 'num') || (e === 'STR' && toks[k].t === 'str')))) : true;
+            return { used: true, family: fam, regionFrom: start, regionTo: k, failAt: failAbs, grammarFoundFailure: !a.ok, consistent, expected: clip2(a), expectedRaw: a.expected, rest: toks.slice(failAbs, Math.min(toks.length, failAbs + 12)), prefixOk: a.ok, start };
+        }
+        // python：邏輯行
+        const lines = logicalLines(toks); let li = lines.findIndex((l) => l[0].line <= err.line && l[l.length - 1].line >= err.line); if (li < 0) li = lines.findIndex((l) => l[0].line >= err.line); if (li < 0) li = lines.length - 1; if (li < 0) return null;
+        const tryLine = (idx) => { const ln = lines[idx]; const a = Gm.expectedAt(lang, ln); return { idx, ln, a }; };
+        const prev = li > 0 ? tryLine(li - 1) : null; const cur = tryLine(li);
+        const lineIncomplete = (r) => r && r.a.ok && !r.a.complete; // 整行吃完了但還沒寫完（缺 : 或缺括號收尾）：問題在這行的結尾
+        let pick = null, where = null;
+        if (prev && (!prev.a.ok || lineIncomplete(prev))) { pick = prev; where = prev.a.ok ? 'end' : 'fail'; } else if (!cur.a.ok || lineIncomplete(cur)) { pick = cur; where = cur.a.ok ? 'end' : 'fail'; }
+        if (!pick) return { used: true, family: fam, regionFrom: 0, regionTo: 0, failAt: -1, grammarFoundFailure: false, consistent: false, expected: clip2(cur.a), expectedRaw: cur.a.expected, rest: [], prefixOk: true, line: cur.ln };
+        const base = pick.ln[0]; const startAbs = toks.indexOf(base); const failRel = pick.a.ok ? pick.ln.length : pick.a.failAt;
+        return { used: true, family: fam, regionFrom: startAbs, regionTo: startAbs + pick.ln.length, failAt: startAbs + failRel, grammarFoundFailure: !pick.a.ok, consistent: true, expected: clip2(pick.a), expectedRaw: pick.a.expected, rest: pick.ln.slice(failRel, failRel + 12), prefixOk: pick.a.ok, line: pick.ln, atLineEnd: pick.a.ok, lineTokens: pick.ln };
+    }
+    // 文法候選：在文法判定的位置，把「合法的下一步」逐一試插／試換／試刪，用文法預先過濾（套用後要能往前多吃幾個 token），再交給編譯器
+    const synthTok = (txt) => ({ t: /^[A-Za-z_$]/.test(txt) ? 'id' : 'op', v: txt });
+    const spaceIns = (src, off, text) => { const prev = src[off - 1], next = src[off]; const word = /^[A-Za-z_$]/.test(text); let t = text; if (word) { if (prev && /[A-Za-z0-9_$]/.test(prev)) t = ' ' + t; if (next && /[A-Za-z0-9_$]/.test(next)) t = t + ' '; else if (next && next !== ' ' && next !== '\n' && next !== ')' && next !== ';' && next !== ',') t = t + ' '; else if (!next || next === '\n' || next === ';' || next === ')' || next === ',') { /* 不補 */ } } return t; };
+    function grammarCandidates(lang, src, toks, err, k, ga, sym, topIdent) {
+        if (!ga || !ga.used || !ga.expectedRaw) return [];
+        const out = []; const j = Math.max(0, Math.min(ga.failAt, toks.length)); const region = ga.family === 'clike' ? toks.slice(ga.regionFrom) : (ga.lineTokens || []);
+        const relJ = j - (ga.family === 'clike' ? ga.regionFrom : toks.indexOf(ga.lineTokens[0]));
+        const baseProg = (arr) => { const r = Gm.expectedAt(lang, arr.map((t) => ({ t: t.t, v: t.v, bad: t.bad })), { maxItems: 200000 }); return r.supported ? (r.ok ? arr.length + (r.complete ? 2 : 0) : r.failAt) : -1; };
+        const before = baseProg(region);
+        const lookahead = Math.min(region.length, relJ + 8);
+        const evalCand = (mut) => { const arr = mut(region.slice(0, lookahead)); return baseProg(arr); };
+        const tokAt = (i) => toks[i];
+        const insOff = (ga.atLineEnd || j >= toks.length) ? (toks[Math.min(j, toks.length) - 1] ? toks[Math.min(j, toks.length) - 1].end : src.length) : toks[j].off;
+        const insLine = (ga.atLineEnd || j >= toks.length) ? (toks[j - 1] ? toks[j - 1].line : err.line) : toks[j].line;
+        const add = (o) => { if (o.prog > Math.max(before, relJ) || o.prog >= (ga.family === 'python' ? (ga.lineTokens || []).length : relJ + 3)) out.push(Object.assign({ len: 0, text: '', src: 'grammar', gprog: o.prog, gbefore: relJ }, o.e)); };
+        const stackTopCloser = topIdent;
+        // 1) 插入合法的字面終端（關鍵字、符號）
+        for (const e of ga.expectedRaw) {
+            if (e[0] !== "'") continue; const lit = e.slice(1, -1); if (!lit) continue;
+            const prog = evalCand((a) => a.slice(0, relJ).concat([synthTok(lit)], a.slice(relJ))); const word = /^[A-Za-z_]+$/.test(lit);
+            const cost = stackTopCloser && lit === stackTopCloser ? 0.4 : (word ? 0.9 : 0.7);
+            // 收尾類符號（; ) ] } , :）緊貼前一個 token 的後面（不留空白）；其他符號與字詞插在文法判定的位置
+            const attach = !word && /^[;)\]},:]$/.test(lit) && j - 1 >= 0 && toks[j - 1] && toks[j - 1].t !== 'nl'; const off = attach ? toks[j - 1].end : insOff; const ln = attach ? toks[j - 1].line : insLine;
+            add({ prog, e: { op: 'insert', off, text: spaceIns(src, off, lit), line: ln, cost, kind: word ? 'keyword' : 'punct', desc: '在文法判定的位置插入合法的' + (word ? '關鍵字「' + lit + '」' : '符號「' + lit + '」') } });
+        }
+        // 2) 名詞：這裡合法的是識別字 → 從作用域已知的名稱裡挑（設計樹／已宣告的／出現過的）
+        if (ga.expectedRaw.includes('ID') && sym) {
+            const names = Array.from(new Set([...(sym.declared || []), ...Object.keys((sym.extSymbols) || {})])).filter((n) => !kwOf(lang).has(n) && /^[A-Za-z_]\w*$/.test(n)).slice(0, 12);
+            for (const nm of names) { const prog = evalCand((a) => a.slice(0, relJ).concat([synthTok(nm)], a.slice(relJ))); add({ prog, e: { op: 'insert', off: insOff, text: spaceIns(src, insOff, nm), line: insLine, cost: 1.3, kind: 'name', desc: '在文法判定的位置補上已知的名稱「' + nm + '」' } }); }
+        }
+        // 3) 取代／刪除錯誤位置的標點（只動 1～3 字元的符號）
+        const bad = tokAt(j);
+        if (bad && bad.t === 'op' && bad.v.length <= 3 && j < toks.length) {
+            for (const e of ga.expectedRaw) { if (e[0] !== "'") continue; const lit = e.slice(1, -1); if (!lit || /^[a-z]+$/.test(lit) || lit === bad.v) continue; const prog = evalCand((a) => a.slice(0, relJ).concat([synthTok(lit)], a.slice(relJ + 1))); add({ prog, e: { op: 'replace', off: bad.off, len: bad.v.length, text: lit, line: bad.line, cost: 1.4, kind: 'replace', desc: '把「' + bad.v + '」換成文法這裡合法的「' + lit + '」' } }); }
+            const progDel = evalCand((a) => a.slice(0, relJ).concat(a.slice(relJ + 1))); add({ prog: progDel, e: { op: 'delete', off: bad.off, len: bad.v.length, text: '', line: bad.line, cost: 2.0, kind: 'delete', desc: '刪掉文法不接受的「' + bad.v + '」' } });
+        }
+        return out;
+    }
+    function describeGrammar(ga) { if (!ga) return null; if (!ga.used) return { used: false, reason: ga.reason }; return { used: true, family: ga.family, grammarFoundFailure: ga.grammarFoundFailure, consistentWithCompiler: ga.consistent, failAtToken: ga.failAt, around: (ga.rest || []).slice(0, 6).map((t) => t.v).join(' '), legalNext: ga.expected }; }
+
+    // ---------- 候選 ----------
+    const HEADER = /^(def|class|if|elif|else|for|while|try|except|finally|with|async)\b/;
+    function applyEdit(src, e) { return src.slice(0, e.off) + e.text + src.slice(e.off + e.len); }
+    function candidates(lang, src, toks, err, hint) {
+        const fam = FAMILY[lang]; const eol = src.indexOf('\r\n') >= 0 ? '\r\n' : '\n'; const br = brackets(toks); const out = []; const seen = new Set();
+        const errLine = err.line;
+        // 錯誤 token：第一個在 (line,col) 之後的 token；沒有欄位就用該行第一個 token；超過最後一個 → EOF
+        let k = toks.findIndex((t) => (t.line > errLine) || (t.line === errLine && (err.col == null ? true : t.col >= err.col))); if (k < 0) k = toks.length;
+        while (k < toks.length && toks[k].t === 'nl' && err.col == null && toks[k].line === errLine && k + 1 < toks.length && toks[k + 1].line === errLine) k++;
+        const lastOfLine = {}; toks.forEach((t) => { if (t.t !== 'nl') lastOfLine[t.line] = t; });
+        const lineStartOff = (l) => { let off = 0, cur = 1; while (cur < l) { const nx = src.indexOf('\n', off); if (nx < 0) return src.length; off = nx + 1; cur++; } return off; };
+        const endOfLine = (l) => { const t = lastOfLine[l]; return t ? t.end : null; };
+        const prevLine = (() => { for (let l = errLine - 1; l >= 1; l--) if (lastOfLine[l]) return l; return null; })();
+        const nonNl = (i) => toks[i] && toks[i].t !== 'nl';
+        const unit = unitOf(lang, toks, src, errLine);
+        const eof = src.replace(/\s+$/, '').length;
+        const posList = []; const addPos = (off, line, tag) => { if (off == null || off < 0) return; if (!posList.some((p) => p.off === off)) posList.push({ off, line, tag }); };
+        // 成本相同時先試的順序＝偏好的位置：緊貼前一個 token 後面（`foo()` + `;` 這種）優先，其次才是錯誤 token 前面
+        if (k - 1 >= 0 && nonNl(k - 1)) addPos(toks[k - 1].end, toks[k - 1].line, 'after-prev');
+        if (prevLine) addPos(endOfLine(prevLine), prevLine, 'prev-line-end');
+        if (k < toks.length) { addPos(toks[k].off, toks[k].line, 'before'); addPos(toks[k].end, toks[k].line, 'after'); }
+        if (k - 1 >= 0 && nonNl(k - 1)) addPos(toks[k - 1].off, toks[k - 1].line, 'before-prev');
+        addPos(endOfLine(errLine), errLine, 'err-line-end'); addPos(unit.endOff, unit.endLine, 'unit-end'); addPos(eof, lineOf(src, eof), 'eof');
+        const lineDist = (l) => Math.abs((l || errLine) - errLine);
+        const add = (o) => { const e = Object.assign({ len: 0, text: '' }, o); const key = e.off + '|' + e.len + '|' + e.text; if (seen.has(key)) return; seen.add(key); e.cost = (e.cost || 1) + 0.4 * lineDist(e.line); out.push(e); };
+        const top = br.stack.length ? br.stack[br.stack.length - 1] : null;
+        // 0) 識別字黏合（刪掉了中間的符號，前後兩個詞黏成一個）：在拆點補回 ( 或空白——只有語意分析看得出來，編譯器看到的只是一個陌生的名字
+        if (!(hint && hint.semanticScoring === false)) for (const g of semanticIssues(lang, src, hint && hint.semantic).filter((x) => x.kind === 'glue')) {
+            const word = g.key.slice(5); const t = toks.find((x) => x.t === 'id' && x.v === word && Math.abs(x.line - errLine) <= 2); if (!t) continue;
+            const ks = new Set([...kwOf(lang), ...((BUILTINS[lang] || '').split(' '))]); for (const x of toks) if (x.t === 'id' && x.v !== word) ks.add(x.v);
+            for (let k2 = 2; k2 <= word.length - 1; k2++) { const a1 = word.slice(0, k2), b1 = word.slice(k2); if (!(ks.has(a1) && ks.has(b1))) continue; for (const [ins, nm] of [['(', '「(」'], [' ', '空白']]) add({ op: 'insert', off: t.off + k2, text: ins, line: t.line, cost: 0.6, desc: '把「' + word + '」拆成「' + a1 + '」和「' + b1 + '」（補上' + nm + '）' }); }
+        }
+        // 1) 字串沒收尾：補引號（成本低）
+        for (const t of toks) if (t.t === 'str' && t.bad && Math.abs(t.line - errLine) <= 1) add({ op: 'insert', off: t.end, text: t.quote, line: t.line, cost: 0.5, desc: '補上字串結尾的引號 ' + t.quote });
+        // 2) 補收括號：依堆疊最上面那個決定（最像）；位置：各候選位置
+        const closers = top ? [CLOSE[top.ch]] : [];
+        for (const p of posList) for (const c of closers) add({ op: 'insert', off: p.off, text: c, line: p.line, cost: 0.8, desc: '在' + tagName(p.tag) + '補上「' + c + '」（對應第 ' + toks[top.idx].line + ' 行的「' + top.ch + '」）' });
+        if (top && fam === 'python') { // 行尾有 ':' 時，收括號要放在 ':' 前面
+            const ll = lastOfLine[errLine] || lastOfLine[prevLine]; if (ll && ll.v === ':') add({ op: 'insert', off: ll.off, text: CLOSE[top.ch], line: ll.line, cost: 0.7, desc: '在「:」前補上「' + CLOSE[top.ch] + '」' });
+        }
+        // 3) 多出來或收錯的收括號：刪掉；或補上對應的開括號
+        for (const s of br.strays.concat(br.mismatch.map((m) => ({ tok: m.tok, idx: m.idx })))) if (Math.abs(s.tok.line - errLine) <= 2) { add({ op: 'delete', off: s.tok.off, len: s.tok.v.length, line: s.tok.line, cost: 1.8, desc: '刪掉多出來的「' + s.tok.v + '」' }); }
+        for (const m of br.mismatch) if (Math.abs(m.tok.line - errLine) <= 2) add({ op: 'replace', off: m.tok.off, len: 1, text: m.want, line: m.tok.line, cost: 0.9, desc: '把「' + m.tok.v + '」改成「' + m.want + '」' });
+        if (top && Math.abs(toks[top.idx].line - errLine) <= 2 && toks.length - top.idx < 40) add({ op: 'delete', off: toks[top.idx].off, len: 1, line: toks[top.idx].line, cost: 2.0, desc: '刪掉沒有收尾的「' + top.ch + '」' });
+        // 4) 家族專屬
+        const V = VOCAB[lang];
+        if (V) {
+            for (const tm of V.terminators) for (const p of posList) { add({ op: 'insert', off: p.off, text: tm, line: p.line, cost: V.termCost, desc: '在' + tagName(p.tag) + '補上「' + tm + '」' }); }
+            for (const sp of V.separators) for (const p of posList.filter((x) => x.tag !== 'eof')) { add({ op: 'insert', off: p.off, text: sp, line: p.line, cost: 1.6, desc: '在' + tagName(p.tag) + '補上「' + sp + '」' }); }
+            if (/expected '\{'|'\{' expected|expected .*\{/.test(err.msg || '')) for (const p of posList) add({ op: 'insert', off: p.off, text: V.openBrace, line: p.line, cost: 1.2, desc: '在' + tagName(p.tag) + '補上「{」' });
+            const wantClose = top ? [CLOSE[top.ch]] : [];
+            if (!top && V.strayOpeners) for (const s of br.strays) { const ch = OPEN[s.tok.v]; for (const t of toks.slice(Math.max(0, s.idx - 12), s.idx + 1)) if (t.line === s.tok.line) add({ op: 'insert', off: t.off, text: ch, line: t.line, cost: 1.4, desc: '在「' + clip(t.v, 12) + '」前補上「' + ch + '」' }); }
+            void wantClose;
+        }
+        if (fam === 'python') {
+            const hdr = [prevLine, errLine].map((l) => l && lastOfLine[l] && firstOfLine(toks, l)).filter(Boolean);
+            for (const f of hdr) { const l = lastOfLine[f.line]; if (HEADER.test(f.v) && l.v !== ':') add({ op: 'insert', off: l.end, text: ':', line: l.line, cost: 0.9, desc: '在第 ' + l.line + ' 行行尾補上「:」' }); }
+            if (/expected an indented block|IndentationError: expected/i.test(err.msg || '')) { const hl = prevLine; if (hl && lastOfLine[hl]) { const ind = /^[ \t]*/.exec(src.split('\n')[hl - 1])[0]; add({ op: 'insert', off: lastOfLine[hl].end, text: eol + ind + '    pass', line: hl, cost: 1.4, desc: '在第 ' + hl + ' 行下面補上縮排的 pass' }); } }
+            if (/unexpected indent|unindent does not match|IndentationError|TabError/i.test(err.msg || '')) {
+                const lines = src.split('\n'); const cur = /^[ \t]*/.exec(lines[errLine - 1] || '')[0]; const cands = new Set(); for (let l = errLine - 1; l >= 1 && cands.size < 4; l--) { if (!(lines[l - 1] || '').trim()) continue; cands.add(/^[ \t]*/.exec(lines[l - 1])[0]); const w = /^[ \t]*/.exec(lines[l - 1])[0]; cands.add(w + '    '); }
+                for (const w of cands) if (w !== cur) add({ op: 'replace', off: lineStartOff(errLine), len: cur.length, text: w, line: errLine, cost: 1.2, desc: '把第 ' + errLine + ' 行的縮排改成 ' + w.length + ' 格' });
+            }
+        }
+        if (fam === 'ruby') {
+            for (const p of posList) add({ op: 'insert', off: p.off, text: eol + 'end', line: p.line, cost: p.tag === 'eof' ? 0.9 : 1.2, desc: '在' + tagName(p.tag) + '補上 end' });
+            if (k < toks.length && toks[k].v === 'end') add({ op: 'delete', off: toks[k].off, len: 3, line: toks[k].line, cost: 1.1, desc: '刪掉多出來的 end' });
+        }
+        if (fam === 'bash') {
+            for (const w of ['fi', 'done', 'esac', '}']) for (const p of posList.filter((x) => x.tag === 'eof' || x.tag === 'unit-end')) add({ op: 'insert', off: p.off, text: eol + w, line: p.line, cost: 1.0, desc: '在' + tagName(p.tag) + '補上 ' + w });
+            for (let f = errLine; f >= Math.max(1, errLine - 6); f--) { if (!lastOfLine[f]) continue; const first = firstOfLine(toks, f); const l = lastOfLine[f]; const nxt = (() => { for (let g = f + 1; g <= f + 3; g++) if (lastOfLine[g]) return firstOfLine(toks, g); return null; })(); if (nxt && /^(then|do)$/.test(nxt.v)) continue; if (first && /^(if|elif)$/.test(first.v) && l.v !== 'then') add({ op: 'insert', off: l.end, text: '; then', line: f, cost: 0.9, desc: '在第 ' + f + ' 行補上 then' }); if (first && /^(while|for|until)$/.test(first.v) && l.v !== 'do') add({ op: 'insert', off: l.end, text: '; do', line: f, cost: 0.9, desc: '在第 ' + f + ' 行補上 do' }); }
+        }
+        // 5) 通用：刪掉錯誤位置的 token／前一個 token（亂入的符號）；= 改 ==
+        // 刪除是破壞性的（拿掉作者寫過的東西，常常語法過了但語意變了）：只刪標點，不刪字串、數字、識別字
+        for (const idx of [k, k - 1]) { const t = toks[idx]; if (!t || t.t !== 'op' || t.v.length > 3) continue; if (Math.abs(t.line - errLine) > 1) continue; add({ op: 'delete', off: t.off, len: t.v.length, line: t.line, cost: 2.0, desc: '刪掉「' + t.v + '」' }); }
+        for (let i = Math.max(0, k - 6); i < Math.min(toks.length, k + 6); i++) { const t = toks[i]; if (t.t === 'op' && t.v === '=' && br.depth[i] > 0 && Math.abs(t.line - errLine) <= 1) add({ op: 'replace', off: t.off, len: 1, text: '==', line: t.line, cost: 1.5, desc: '把「=」改成「==」' }); }
+        void hint;
+        // 文法驅動的候選（優先）：文法判定的位置合法的下一步；我手寫的詞彙表只當文法有洞時的備援（成本 +0.4，並標 src）
+        let ga = null, gc = [];
+        if (hint && hint.grammar !== false && Gm && Gm.FAMILY_OF[lang]) {
+            try {
+                ga = grammarAnalysis(lang, toks, err, k); const sym = symbolsOf(lang, toks, hint.semantic); sym.extSymbols = (hint.semantic && hint.semantic.symbols) || {};
+                gc = grammarCandidates(lang, src, toks, err, k, ga, sym, top ? CLOSE[top.ch] : null);
+            } catch (e) { ga = { used: false, reason: '文法分析出錯：' + String((e && e.message) || e) }; gc = []; }
+        }
+        out.forEach((c) => { c.src = c.src || 'vocab'; if (gc.length) c.cost += 0.4; });
+        const seenKeys = new Set(out.map((c) => c.off + '|' + c.len + '|' + c.text));
+        for (const c of gc) { const key = c.off + '|' + c.len + '|' + c.text; if (seenKeys.has(key)) { const ex = out.find((x) => x.off + '|' + x.len + '|' + x.text === key); if (ex) { ex.src = 'grammar+vocab'; ex.cost = Math.min(ex.cost - 0.4, c.cost); ex.gprog = c.gprog; } continue; } seenKeys.add(key); c.cost += 0.4 * lineDist(c.line); out.push(c); }
+        out.sort((a, b) => (a.cost - b.cost) || ((b.gprog || 0) - (a.gprog || 0)));
+        out.grammar = describeGrammar(ga);
+        return out;
+    }
+    function firstOfLine(toks, l) { return toks.find((t) => t.line === l && t.t !== 'nl'); }
+    function tagName(tag) { return { before: '錯誤位置前面', after: '錯誤位置後面', 'before-prev': '前一個 token 前面', 'after-prev': '前一個 token 後面', 'prev-line-end': '上一行行尾', 'err-line-end': '出錯那行行尾', 'unit-end': '這條敘述的結尾', eof: '檔案結尾' }[tag] || tag; }
+
+    // ---------- 語意評分 ----------
+    // 「編譯器接受」不等於「作者要的」。編譯型語言的編譯器已經會做名稱與型別檢查（所以未定義的名稱在那些語言是 CE，不必重複檢查）；
+    // 但它不知道意圖：`mainvoid()` 是合法的宣告、`scanf( &a, &b)` 能編譯、Python 的 `printa + b` 解析得過（執行時才 NameError）。
+    // 這裡用「設計樹」已知的語意（同一份程式裡的函式簽名、外部注入的計畫簽名／UML 類別與方法、思考堆疊的已定決定）評估候選：
+    // 比較套用前後的語意問題集合，新引入的問題扣分、解決掉的問題加分，併入候選的有效成本。
+    // 保留字：有文法的語言（python、c、cpp、java、csharp、nodejs）取自**各自文法**的關鍵字（C 的保留字沒有 Java 的 instanceof，Python 的 int 不是關鍵字）；
+    // 沒有文法的語言（ruby、perl、bash、組語）才用下面這份備援（不跨語言借用給有文法的語言）
+    const KEYWORDS_FALLBACK = new Set(['if', 'else', 'elif', 'for', 'while', 'do', 'return', 'def', 'class', 'function', 'var', 'let', 'const', 'import', 'from', 'as', 'in', 'is', 'not', 'and', 'or', 'new', 'void', 'int', 'long', 'char', 'short', 'double', 'float', 'bool', 'boolean', 'string', 'static', 'public', 'private', 'protected', 'final', 'struct', 'enum', 'typedef', 'unsigned', 'signed', 'try', 'catch', 'except', 'finally', 'throw', 'raise', 'with', 'yield', 'lambda', 'pass', 'break', 'continue', 'switch', 'case', 'default', 'end', 'then', 'fi', 'done', 'esac', 'sub', 'my', 'our', 'use', 'package', 'self', 'this', 'true', 'false', 'null', 'None', 'True', 'False', 'auto', 'using', 'namespace', 'extends', 'implements', 'interface', 'abstract', 'async', 'await', 'sizeof', 'echo', 'read', 'local', 'let', 'puts', 'print']);
+    const BUILTINS = { python: 'print input len range int str float list dict set tuple sum min max abs sorted reversed enumerate zip map filter open isinstance type bool any all round divmod pow ord chr bin hex format repr iter next super sys', nodejs: 'console log require parseInt parseFloat Number String Math JSON Array Object Map Set process Date Error Promise setTimeout', c: 'main printf scanf sscanf fprintf snprintf puts gets fgets getchar putchar malloc free calloc realloc memcpy memset strlen strcmp strcpy strcat atoi atol abs sqrt pow exit stdin stdout stderr NULL', cpp: 'main printf scanf cout cin cerr endl std vector string map set sort size push_back begin end max min abs sqrt pow getline', java: 'main System out in println print printf String Scanner nextInt nextLong nextLine Math Integer Long List ArrayList Map HashMap Arrays', csharp: 'Main Console WriteLine ReadLine Write Math Convert Parse List Dictionary', ruby: 'puts print gets p require each map select', perl: 'print printf shift push pop split join sort keys values scalar defined', bash: 'echo read printf test cd ls cat grep' };
+    function argCount(toks, open) { // toks[open] 是 '('；回傳 {n, close}（n＝最外層的引數個數；空括號＝0）
+        let d = 0, n = 0, any = false;
+        for (let i = open; i < toks.length; i++) { const t = toks[i]; if (t.t === 'op' && CLOSE[t.v]) d++; else if (t.t === 'op' && OPEN[t.v]) { d--; if (d === 0) return { n: any ? n + 1 : 0, close: i }; } else if (d === 1) { if (t.t === 'op' && t.v === ',') n++; else if (t.t !== 'nl') any = true; } }
+        return { n: -1, close: -1 };
+    }
+    function symbolsOf(lang, toks, ext) {
+        const defs = new Map(); const declared = new Set(); const all = new Map();
+        toks.forEach((t) => { if (t.t === 'id') all.set(t.v, (all.get(t.v) || 0) + 1); });
+        const DECL = /^(def|class|function|var|let|const|int|long|char|double|float|void|bool|boolean|string|String|auto|my|struct|enum|sub|import|from)$/;
+        toks.forEach((t, i) => {
+            if (t.t !== 'id') return; const prev = toks[i - 1], next = toks[i + 1];
+            if (prev && prev.t === 'id' && DECL.test(prev.v)) declared.add(t.v);
+            if (next && next.t === 'op' && next.v === '=' && !(toks[i + 2] && toks[i + 2].v === '=') && (!prev || prev.v !== '.')) declared.add(t.v);
+            if (prev && prev.t === 'id' && next && next.t === 'op' && (next.v === ',' || next.v === ')' || next.v === ';' || next.v === '=' || next.v === '[')) declared.add(t.v); // `type name` 形式的宣告／參數
+            if (next && next.t === 'op' && next.v === '(' && prev && (prev.v === 'def' || prev.v === 'sub' || prev.v === 'function' || (prev.t === 'id' && !kwOf(lang).has(prev.v) || (prev.t === 'id' && /^(int|long|char|double|float|void|bool|boolean|string|String|auto|static|public)$/.test(prev.v))))) {
+                const ac = argCount(toks, i + 1); if (ac.n >= 0) { let n = ac.n; if (ac.n === 1 && toks[i + 2] && toks[i + 2].v === 'void') n = 0; if (lang === 'python' && toks[i + 2] && /^(self|cls)$/.test(toks[i + 2].v)) n = Math.max(0, n - 1); if (/^[A-Za-z_]\w*$/.test(t.v)) { declared.add(t.v); if (!defs.has(t.v)) defs.set(t.v, n); } }
+            }
+        });
+        // 各語言自己的宣告位置（沒有型別關鍵字可看的語言要看語法位置）
+        if (lang === 'python') {
+            for (let i = 0; i < toks.length; i++) {
+                const t = toks[i];
+                if (t.t === 'id' && t.v === 'def') { let k = i + 2; if (toks[k] && toks[k].v === '(') { let d = 0, expectName = true; for (; k < toks.length; k++) { const x = toks[k]; if (x.t === 'op' && (x.v === '(' || x.v === '[' || x.v === '{')) { d++; continue; } if (x.t === 'op' && (x.v === ')' || x.v === ']' || x.v === '}')) { d--; if (d === 0) break; continue; } if (d === 1) { if (x.t === 'op' && x.v === ',') expectName = true; else if (x.t === 'op' && (x.v === '*' || x.v === '**' || x.v === '/')) { /* 星號參數 */ } else if (x.t === 'id' && expectName) { declared.add(x.v); expectName = false; } else expectName = false; } } } }
+                if (t.t === 'id' && t.v === 'for') { for (let k = i + 1; k < toks.length && !(toks[k].t === 'id' && toks[k].v === 'in') && toks[k].t !== 'nl'; k++) if (toks[k].t === 'id' && !(toks[k - 1] && toks[k - 1].v === '.')) declared.add(toks[k].v); }
+                if (t.t === 'id' && t.v === 'as' && toks[i + 1] && toks[i + 1].t === 'id') declared.add(toks[i + 1].v);
+                if (t.t === 'id' && t.v === 'import') for (let k = i + 1; k < toks.length && toks[k].t !== 'nl'; k++) if (toks[k].t === 'id' && toks[k].v !== 'as') declared.add(toks[k].v);
+                if (t.t === 'op' && t.v === '=' && !(toks[i + 1] && toks[i + 1].v === '=')) { let k = i - 1, d = 0; for (; k >= 0 && toks[k].t !== 'nl'; k--) { const x = toks[k]; if (x.t === 'op' && (x.v === ')' || x.v === ']' || x.v === '}')) d++; else if (x.t === 'op' && (x.v === '(' || x.v === '[' || x.v === '{')) d--; else if (x.t === 'id' && d <= 0 && !(toks[k - 1] && toks[k - 1].v === '.') && !(toks[k + 1] && (toks[k + 1].v === '(' || toks[k + 1].v === '[' || toks[k + 1].v === '.'))) declared.add(x.v); } }
+            }
+        }
+        if (lang === 'nodejs') {
+            for (let i = 0; i < toks.length; i++) {
+                const t = toks[i];
+                if (t.t === 'id' && /^(const|let|var)$/.test(t.v) && toks[i + 1] && toks[i + 1].t === 'op' && (toks[i + 1].v === '[' || toks[i + 1].v === '{')) { let d = 0; for (let k = i + 1; k < toks.length; k++) { const x = toks[k]; if (x.t === 'op' && (x.v === '[' || x.v === '{')) d++; else if (x.t === 'op' && (x.v === ']' || x.v === '}')) { d--; if (d === 0) break; } else if (x.t === 'id') declared.add(x.v); } }
+                if (t.t === 'op' && t.v === '=>') { const p = toks[i - 1]; if (p && p.t === 'id') declared.add(p.v); else if (p && p.v === ')') { let d = 0; for (let k = i - 1; k >= 0; k--) { const x = toks[k]; if (x.t === 'op' && x.v === ')') d++; else if (x.t === 'op' && x.v === '(') { d--; if (d === 0) break; } else if (x.t === 'id') declared.add(x.v); } } }
+                if (t.t === 'id' && t.v === 'function' && toks[i + 1] && toks[i + 1].v === '(' || (t.t === 'id' && t.v === 'function' && toks[i + 2] && toks[i + 2].v === '(')) { let k = toks[i + 1].v === '(' ? i + 1 : i + 2; let d = 0; for (; k < toks.length; k++) { const x = toks[k]; if (x.t === 'op' && x.v === '(') d++; else if (x.t === 'op' && x.v === ')') { d--; if (d === 0) break; } else if (x.t === 'id') declared.add(x.v); } }
+            }
+        }
+        const known = new Set([...declared, ...defs.keys(), ...kwOf(lang), ...((BUILTINS[lang] || '').split(' '))]);
+        if (ext && ext.symbols) for (const [k, v] of Object.entries(ext.symbols)) { known.add(k); declared.add(k); if (Number.isInteger(v)) defs.set(k, v); }
+        for (const [k, c] of all) if (c >= 2) known.add(k); // 出現兩次以上的識別字（使用過又出現在別處）當成已知
+        return { defs, declared, known, all };
+    }
+    const kwOf = (lang) => (Gm && Gm.supports(lang) ? Gm.grammarOf(lang).keywords : KEYWORDS_FALLBACK);
+    const INTERP = new Set(['python', 'nodejs', 'ruby', 'perl', 'bash']);
+    const FORMAT_FN = { printf: 0, scanf: 0, fprintf: 1, fscanf: 1, sprintf: 1, sscanf: 1, snprintf: 2 };
+    function semanticIssues(lang, text, ext) {
+        const toks = lex(lang, text); const sym = symbolsOf(lang, toks, ext); const issues = []; const knownSans = (self) => { const k = new Set([...kwOf(lang), ...((BUILTINS[lang] || '').split(' '))]); for (const [w, c] of sym.all) if (w !== self && c >= 1) k.add(w); for (const d of sym.declared) if (d !== self) k.add(d); if (ext && ext.symbols) Object.keys(ext.symbols).forEach((x) => k.add(x)); return k; };
+        const add = (kind, key, w, msg) => issues.push({ kind, key: kind + ':' + key, w, msg });
+        const interp = INTERP.has(lang);
+        for (let i = 0; i < toks.length; i++) {
+            const t = toks[i]; if (t.t !== 'id') continue; const prev = toks[i - 1], next = toks[i + 1]; const isCall = next && next.t === 'op' && next.v === '(';
+            // 識別字黏合：沒定義過、只出現一次、而且能拆成兩個已知的詞（printa＝print＋a、mainvoid＝main＋void）
+            if (sym.all.get(t.v) === 1 && t.v.length >= 4 && !kwOf(lang).has(t.v) && !(BUILTINS[lang] || '').split(' ').includes(t.v) && !(ext && ext.symbols && t.v in ext.symbols)) { for (let k = 2; k <= t.v.length - 1; k++) { const a = t.v.slice(0, k), b = t.v.slice(k); const ks = knownSans(t.v); if (ks.has(a) && ks.has(b) && (a.length >= 2 || kwOf(lang).has(a)) && (b.length >= 1)) { add('glue', t.v, 3, '「' + t.v + '」像是「' + a + '」和「' + b + '」黏在一起（少了分隔的符號）'); break; } } }
+            if (isCall && !(prev && prev.v === '.') && !(prev && prev.t === 'id' && /^(def|sub|function|new|class)$/.test(prev.v))) {
+                const ac = argCount(toks, i + 1); const isDef = sym.defs.has(t.v) && prev && prev.t === 'id' && !kwOf(lang).has(prev.v);
+                if (ac.n >= 0 && sym.defs.has(t.v) && !isDef && !(prev && prev.t === 'id' && /^(int|long|char|double|float|void|bool|boolean|string|String|auto|static|public)$/.test(prev.v)) && sym.defs.get(t.v) !== ac.n) add('arity', t.v + '/' + ac.n, 2.5, '呼叫「' + t.v + '」給了 ' + ac.n + ' 個引數，但它的簽名要 ' + sym.defs.get(t.v) + ' 個');
+                if (interp && !sym.known.has(t.v) && sym.all.get(t.v) === 1 && !(prev && prev.v === '.')) add('unknown_call', t.v, 0.8, '呼叫了沒有定義的名稱「' + t.v + '」（直譯語言要到執行時才會發現）');
+                // printf／scanf 家族：格式字串的轉換說明個數要和後面的引數個數一致
+                if ((lang === 'c' || lang === 'cpp') && FORMAT_FN[t.v] != null && ac.n >= 0) {
+                    const fi = FORMAT_FN[t.v]; let d = 0, argIdx = 0, fmtTok = null; for (let k = i + 1; k <= ac.close; k++) { const x = toks[k]; if (x.t === 'op' && CLOSE[x.v]) d++; else if (x.t === 'op' && OPEN[x.v]) d--; else if (d === 1 && x.t === 'op' && x.v === ',') argIdx++; else if (d === 1 && argIdx === fi && !fmtTok) fmtTok = x; }
+                    if (!fmtTok || fmtTok.t !== 'str') add('format_missing', t.v + '@' + i, 2.5, '「' + t.v + '」的第 ' + (fi + 1) + ' 個引數應該是格式字串');
+                    else { const specs = (fmtTok.v.match(/%(?:%|[-+ #0]*(?:\d+|\*)?(?:\.\d+)?(?:hh|h|ll|l|L|z|j|t)?[diuoxXfFeEgGaAcspn])/g) || []).filter((m) => m !== '%%' && m.indexOf('*') < 0).length; const given = ac.n - (fi + 1); if (specs !== given) add('format_count', t.v + '/' + specs + '/' + given, 2.5, '「' + t.v + '」的格式字串有 ' + specs + ' 個轉換說明，卻給了 ' + given + ' 個引數'); }
+                }
+            }
+        }
+        return issues;
+    }
+    // 套用前後的差：新引入的問題（扣）、被解決的問題（加）。base 是套用前的問題 key 集合
+    function semanticDelta(baseIssues, candIssues) {
+        const bk = new Set(baseIssues.map((x) => x.key)), ck = new Set(candIssues.map((x) => x.key));
+        const introduced = candIssues.filter((x) => !bk.has(x.key)), resolved = baseIssues.filter((x) => !ck.has(x.key));
+        return { delta: introduced.reduce((a, x) => a + x.w, 0) - 0.5 * resolved.reduce((a, x) => a + x.w, 0), introduced: introduced.map((x) => x.msg), resolved: resolved.map((x) => x.msg) };
+    }
+    // 外部語意（設計樹）：計畫的函式簽名、UML 的類別與方法、思考堆疊的已定決定 → { symbols:{名稱:引數個數|null}, hints:[文字] }
+    function symbolsFromSignatures(list) { const symbols = {}; for (const sg of list || []) { const m = /([A-Za-z_]\w*)\s*\(([^)]*)\)/.exec(String(sg)); if (!m) { const n = /^\s*(?:def\s+|function\s+)?([A-Za-z_]\w*)\s*$/.exec(String(sg)); if (n) symbols[n[1]] = null; continue; } const ps = m[2].split(',').map((x) => x.trim()).filter((x) => x && !/^(self|cls|void)$/.test(x)); symbols[m[1]] = ps.length; } return symbols; }
+    function symbolsFromModel(model) { const symbols = {}; for (const c of (model && model.classes) || []) { symbols[c.name] = null; for (const a of c.attrs || []) symbols[a.name] = null; for (const o of c.ops || []) symbols[o.name] = (o.params || []).length; } return symbols; }
+
+    // ---------- diff（單一區塊，保留前後各 2 行脈絡）----------
+    // 把修復過程的紀錄格式化成人看得懂的文字：編譯器說什麼 → 文法分析在哪裡判定出錯、合法的下一步有哪些 → 候選 → 選擇
+    function formatTrace(trace) {
+        const L = [];
+        for (const r of trace || []) {
+            L.push('— 第 ' + r.round + ' 輪 —'); L.push('編譯器：第 ' + r.error.line + ' 行' + (r.error.col ? ' 第 ' + r.error.col + ' 欄' : '') + '：' + r.error.msg);
+            const g = r.grammar;
+            if (!g) L.push('文法分析：這個語言沒有文法（只能用備援詞彙）');
+            else if (!g.used) L.push('文法分析：沒有用（' + g.reason + '）');
+            else { L.push('文法分析（' + g.family + '）：' + (g.grammarFoundFailure ? '在 token #' + g.failAtToken + '「' + (g.around.split(' ')[0] || '行尾') + '」判定語法不合法' : '前面都合法，但在這個位置還沒寫完／不該出現') + (g.consistentWithCompiler ? '，與編譯器的位置一致' : '，與編譯器的位置不一致（以備援詞彙補足）')); L.push('  這個位置合法的下一步：關鍵字[' + g.legalNext.keywords.slice(0, 14).join(' ') + (g.legalNext.keywords.length > 14 ? ' …' : '') + '] 符號[' + g.legalNext.punct.slice(0, 18).join(' ') + (g.legalNext.punct.length > 18 ? ' …' : '') + ']' + (g.legalNext.names ? ' 名詞(識別字)' : '') + (g.legalNext.literals.length ? ' 字面值[' + g.legalNext.literals.join(',') + ']' : '')); }
+            L.push('候選（前 ' + Math.min(6, r.candidates.length) + '／共 ' + r.candidates.length + '）：'); r.candidates.slice(0, 6).forEach((c) => L.push('  [' + c.src + '] ' + c.desc + '（成本 ' + c.cost + (c.grammarProgress != null ? '，文法預檢可吃到 token ' + c.grammarProgress : '') + '）'));
+            if (r.scored) { L.push('編譯器驗證後：'); r.scored.slice(0, 4).forEach((c) => L.push('  ' + (c.pass ? '✓通過' : '↗進展') + ' [' + c.src + '] ' + c.desc + '（有效成本 ' + c.effCost + (c.semantic && c.semantic.introduced.length ? '；語意：' + c.semantic.introduced.join('／') : '') + (c.semantic && c.semantic.resolved.length ? '；解決：' + c.semantic.resolved.join('／') : '') + '）')); }
+            if (r.picked) L.push('選擇（' + r.picked.by + '）：' + r.picked.desc + ' → ' + (r.outcome || '')); else L.push('結果：' + (r.outcome || ''));
+        }
+        return L.join('\n');
+    }
+
+    function unifiedDiff(a, b, name) {
+        if (a === b) return '';
+        const A = a.split('\n'), B = b.split('\n'); let p = 0; while (p < A.length && p < B.length && A[p] === B[p]) p++;
+        let sa = A.length, sb = B.length; while (sa > p && sb > p && A[sa - 1] === B[sb - 1]) { sa--; sb--; }
+        const c0 = Math.max(0, p - 2), c1a = Math.min(A.length, sa + 2), c1b = Math.min(B.length, sb + 2);
+        const L = ['--- ' + (name || 'a'), '+++ ' + (name || 'b'), '@@ -' + (c0 + 1) + ',' + (c1a - c0) + ' +' + (c0 + 1) + ',' + (c1b - c0) + ' @@'];
+        for (let i = c0; i < p; i++) L.push(' ' + A[i]); for (let i = p; i < sa; i++) L.push('-' + A[i]); for (let i = p; i < sb; i++) L.push('+' + B[i]); for (let i = sa; i < c1a; i++) L.push(' ' + A[i]);
+        return L.join('\n') + '\n';
+    }
+
+    // ---------- 修正 ----------
+    const passed = (r) => r && (r.verdict === 'CHECKED' || r.verdict === 'AC');
+    const posKey = (e) => (e ? e.line * 10000 + (e.col || 0) : 0);
+    async function repairSyntax(a) {
+        const lang = a.lang; const fam = FAMILY[lang]; const check = a.check; const o = Object.assign({ maxRounds: 4, maxTries: 30, concurrency: 4 }, a);
+        const base = { ok: false, source: String(a.source == null ? '' : a.source), edits: [], diff: '', rounds: 0, tried: 0, choices: [], trace: [] };
+        if (!fam) return Object.assign(base, { reason: 'unsupported_lang' }); if (typeof check !== 'function') return Object.assign(base, { reason: 'no_checker' });
+        let cur = base.source; let res = await check({ lang, source: cur }); const edits = []; const choices = []; let tried = 0; const sem = a.semantic || null; const useSem = a.semanticScoring !== false;
+        const finish = (ok, reason, extra) => Object.assign(base, { ok, source: ok ? cur : base.source, edits: ok ? edits : edits.slice(), diff: ok ? unifiedDiff(base.source, cur) : '', rounds: choices.length || edits.length, tried, choices, reason }, extra || {});
+        if (passed(res)) return finish(true, 'already_ok', { edits: [] });
+        if (!res || res.verdict !== 'CE') return finish(false, 'not_a_syntax_error:' + (res && res.verdict));
+        for (let round = 1; round <= o.maxRounds; round++) {
+            const log = (res.compileLog || '') + '\n' + (res.detail || ''); const errs = parseErrors(lang, log, cur); if (!errs.length) return finish(false, 'no_error_location', { errors: [] });
+            const e0 = errs[0]; const toks = lex(lang, cur); const cands = candidates(lang, cur, toks, e0, { semantic: sem, semanticScoring: useSem, grammar: a.grammar !== false }); const gram = cands.grammar || null; if (!cands.length) return finish(false, 'no_candidates', { errors: errs });
+            const unit = unitOf(lang, toks, cur, e0.line); const scored = []; let idx = 0; const baseIssues = useSem ? semanticIssues(lang, cur, sem) : [];
+            // 送去編譯前先用語意把候選排序（語意分析很便宜、不需要編譯器；編譯器驗證有次數上限，排前面的先驗）
+            for (const c of cands) { c.sd = useSem ? semanticDelta(baseIssues, semanticIssues(lang, applyEdit(cur, c), sem)) : { delta: 0, introduced: [], resolved: [] }; c.eff = c.cost + c.sd.delta; }
+            cands.sort((x, y) => x.eff - y.eff);
+            while (idx < cands.length && tried < o.maxTries * round && scored.filter((s) => s.pass).length < 4) {
+                const batch = cands.slice(idx, idx + o.concurrency); idx += batch.length;
+                const rs = await Promise.all(batch.map(async (c) => { const text = applyEdit(cur, c); let r; try { r = await check({ lang, source: text }); } catch (e) { r = { verdict: 'CE', compileLog: String(e && e.message || e) }; } return { c, text, r }; }));
+                for (const { c, text, r } of rs) { tried++; const sd = c.sd; const eff = c.eff; if (passed(r)) scored.push({ c, text, pass: true, pos: Infinity, r, eff, sd }); else if (r && r.verdict === 'CE') { const fe = parseErrors(lang, (r.compileLog || '') + '\n' + (r.detail || ''), text)[0]; const pos = fe ? posKey(fe) : 0; if (pos > posKey(e0)) scored.push({ c, text, pass: false, pos, r, fe, eff, sd }); } }
+            }
+            const roundTrace = { round, error: { line: e0.line, col: e0.col, msg: e0.msg }, unit: clip(unit.text, 200), grammar: gram, candidates: cands.slice(0, 12).map((c) => ({ desc: c.desc, src: c.src, cost: +c.cost.toFixed(2), grammarProgress: c.gprog })), tried: scored.length };
+            base.trace.push(roundTrace);
+            if (!scored.length) { roundTrace.outcome = '沒有候選讓檢查往前進'; return finish(false, 'no_progress', { errors: errs }); }
+            scored.sort((x, y) => (y.pass - x.pass) || (y.pos - x.pos) || (x.eff - y.eff));
+            let verified = null;
+            // 語法通過不代表語意對：有 verify（例如跑測試）時，在通過語法的候選裡依成本找第一個 verify 為真的
+            if (typeof a.verify === 'function' && scored[0].pass) { const passing = scored.filter((x) => x.pass).slice(0, 4); for (const cand of passing) { let ok = false; try { ok = !!(await a.verify({ lang, source: cand.text })); } catch (_) { ok = false; } if (ok) { verified = cand; break; } } if (verified) scored.unshift(...scored.splice(scored.indexOf(verified), 1)); }
+            const best = scored[0]; let pick = best; const group = verified ? [best] : scored.filter((s) => s.pass === best.pass && s.pos === best.pos).slice(0, 6); // 機械過濾（文法合法＋編譯器驗證）後剩下的選項，全部交給模型做選擇題
+            if (group.length > 1 && typeof a.ask === 'function') {
+                const letters = group.map((_, i) => String.fromCharCode(65 + i)); const lineOfEdit = (g) => g.text.split('\n').slice(Math.max(0, g.c.line - 1), g.c.line + (g.c.text.indexOf('\n') >= 0 ? 2 : 0)).join('⏎').trim();
+                let msgs = [{ role: 'system', content: '你在修程式的語法錯誤。只輸出 JSON：{"pick":"字母"}，選一個最像作者原本想寫的修法（要符合已定的設計：名稱、參數個數、格式字串）。' }, { role: 'user', content: '編譯器說：' + e0.msg + '（第 ' + e0.line + ' 行）\n出問題的程式片段：\n' + clip(unit.text, 300) + (sem && sem.hints && sem.hints.length ? '\n\n已定的設計：\n' + sem.hints.slice(0, 6).map((h) => '- ' + clip(h, 100)).join('\n') : '') + '\n\n選項：\n' + group.map((g, i) => letters[i] + '. ' + g.c.desc + ' → ' + clip(lineOfEdit(g), 100) + (g.sd.introduced.length ? '（注意：' + clip(g.sd.introduced.join('；'), 90) + '）' : '')).join('\n') }];
+                if (typeof a.wrap === 'function') { try { msgs = a.wrap(msgs) || msgs; } catch (_) { /* 包不起來就用原本的 */ } }
+                let v = null; try { v = await a.ask(msgs, (x) => (x && letters.indexOf(String(x.pick || '').toUpperCase()) >= 0 ? [] : ['「pick」必須是 ' + letters.join('、') + ' 其中一個'])); } catch (_) { v = null; }
+                if (v) { pick = group[letters.indexOf(String(v.pick).toUpperCase())]; choices.push({ round, by: 'model', options: group.map((g) => g.c.desc), picked: pick.c.desc }); } else choices.push({ round, by: 'program', reason: 'ask_failed', options: group.map((g) => g.c.desc), picked: pick.c.desc });
+            } else if (group.length > 1) choices.push({ round, by: 'program', reason: 'no_ask', options: group.map((g) => g.c.desc), picked: pick.c.desc });
+            roundTrace.scored = scored.slice(0, 8).map((x) => ({ desc: x.c.desc, src: x.c.src, pass: !!x.pass, effCost: +x.eff.toFixed(2), semantic: x.sd ? { introduced: x.sd.introduced, resolved: x.sd.resolved } : null })); roundTrace.picked = { desc: pick.c.desc, src: pick.c.src, by: choices.length && choices[choices.length - 1].round === round ? choices[choices.length - 1].by : 'program(最低有效成本)' }; roundTrace.outcome = pick.pass ? '修好了（檢查器通過）' : '往前進了一步（第一個錯誤移到後面），繼續下一輪';
+            const lineBefore = lineOf(cur, pick.c.off); edits.push({ round, op: pick.c.op, line: lineBefore, off: pick.c.off, removed: cur.slice(pick.c.off, pick.c.off + pick.c.len), text: pick.c.text, desc: pick.c.desc, error: e0.msg, verified: !!verified, semantic: { penalty: +(pick.sd ? pick.sd.delta : 0).toFixed(2), introduced: pick.sd ? pick.sd.introduced : [], resolved: pick.sd ? pick.sd.resolved : [] } });
+            cur = pick.text; res = pick.r; if (pick.pass) return finish(true, 'fixed');
+        }
+        return finish(false, 'max_rounds');
+    }
+
+    return { FAMILY, kwOf, BUILTINS, symbolsOf, lex, brackets, parseErrors, unitOf, candidates, applyEdit, unifiedDiff, repairSyntax, formatTrace, grammarAnalysis, semanticIssues, semanticDelta, symbolsFromSignatures, symbolsFromModel };
+});
+
+}).call(null, undefined, holder);
+return holder.FaSyntaxFix;
+})();
+/* SYNTAXFIX-END */
+/* GUIDEDWRITE-BEGIN */
+const FaGuidedWrite = (function () {
+const holder = {};
+(function (module, self) {
+/* 文法引導的逐 token 寫程式（純函式，UMD；模型是注入的）。使用者的想法：
+ *   「合法的語法節點可以用機械化演算法工具做到、過濾出合法的 token；qwen0.6b 開 thinking 做選擇題可以很精準」
+ * 所以分工是：機械演算法（Earley 文法）算出「當下位置合法的下一個 token」並過濾；模型只在過濾後的選項裡做選擇題（開思考）；
+ * 只有一個合法選項就自動補（不問模型）；名詞（變數、函式名）從作用域與設計樹選，真的要新名稱／數字／字串字面值才讓模型寫一小段。
+ *   guidedWriteFunction({lang, spec, node, plan?, symbols?, choose, free?, stack?, stackMod?, opts?, onEvent?}) → Promise<{ok, code, tokens, steps, calls, trace, reason?}>
+ *     node：{name, signature, purpose}（簽名是標頭，程式直接放進去，語法合法性由文法驗證）
+ *     choose(messages, options) → Promise<index|null>   選擇題：options 是 [{label, kind, text}]；回 null＝模型沒答出來
+ *     free(messages, kind)      → Promise<string|null>  新名稱（kind:'name'）、數字（'num'）、字串內容（'str'）：一小段文字
+ *     lm：{open(messages, assistantPrefix)→游標}（選用）：給了就走 rank 策略（約束解碼）——對每個合法選項用模型的下一個 token 機率打分、取最高，不需要回字母；opts.strategy:'choose' 可強制用選擇題。rules／langLabel：給 rank 的提示用
+ *     feedback：上一版的失敗訊息（重寫時給；放進每一題的題目裡）
+ *     opts：maxSteps、maxChoices——都是**每個函式**的上限，開發期間預設 Infinity（做完再 profile 後訂）；pageSize 8、flatMax 14（合法選項總數不超過它就給一層扁平選單，否則先分類別）、allowInlineAsm（只有 c／cpp；預設不給 asm 選項）
+ *   支援語言：python（以邏輯行為單位，縮排由「同層／退一層／函式結束」的選擇題決定）、c、cpp、java、csharp、nodejs（各自獨立的文法與各自的先驗／過濾表；大括號區塊只是排版方式）。
+ *   不支援的語言回 {ok:false, reason:'unsupported_lang'}。
+ * 誠實的範圍：文法是語句級子集；選項太多時分類別兩層（語句關鍵字／名稱／字面值／符號）；標準函式庫的 #include／import 由程式依用到的名稱補（importsFor），不是模型選的。 */
+(function (root, factory) {
+    const G = (typeof FaGrammar !== 'undefined' && FaGrammar) || (root && root.FaGrammar) || (typeof require === 'function' ? require('./grammar_core.js') : null);
+    const S = (typeof FaSyntaxFix !== 'undefined' && FaSyntaxFix) || (root && root.FaSyntaxFix) || (typeof require === 'function' ? require('./syntax_fix_core.js') : null);
+    const T = (typeof FaThinkStack !== 'undefined' && FaThinkStack) || (root && root.FaThinkStack) || (typeof require === 'function' ? require('./think_stack.js') : null);
+    if (typeof module === 'object' && module.exports) module.exports = factory(G, S, T); else root.FaGuidedWrite = factory(G, S, T);
+})(typeof self !== 'undefined' ? self : this, function (G, S, DefaultStack) {
+    'use strict';
+    const clip = (s, n) => { s = String(s == null ? '' : s).replace(/[ \t]+$/gm, '').trim(); return s.length > n ? s.slice(0, Math.max(1, n - 1)) + '…' : s; };
+    const WORD = /^[A-Za-z_$][\w$]*$/;
+    // 以下每一張表都是「每種語言各自一份」（使用者規定：不同語言不能共用；python 與 c++ 更不能共用）。
+    // 函式本體裡不會出現的宣告類關鍵字（機械過濾：寫函式本體時這些不是合理選項，不用浪費模型的注意力）。asm 類只有 C／C++ 有，而且預設也丟掉，任務明說要內聯組語時才開（opts.allowInlineAsm）
+    const DROP = {
+        python: new Set(['global', 'nonlocal', 'del', 'match', 'case', 'async', 'await', 'yield', 'class', 'def', 'import', 'from', 'with', 'assert', 'as']), // 只丟宣告類；else／elif／try／except／in／is 是流程與運算要用的
+        c: new Set(['typedef', 'extern', 'register', 'inline', 'volatile', 'union', 'enum', 'asm', '__asm__', '__asm', '__volatile__', 'goto']),
+        cpp: new Set(['typedef', 'using', 'namespace', 'extern', 'register', 'volatile', 'inline', 'union', 'explicit', 'virtual', 'constexpr', 'override', 'final', 'asm', '__asm__', '__asm', '__volatile__', 'goto']),
+        java: new Set(['import', 'package', 'class', 'interface', 'enum', 'abstract', 'synchronized', 'instanceof', 'extends', 'implements', 'throws']),
+        csharp: new Set(['using', 'namespace', 'class', 'struct', 'interface', 'enum', 'abstract', 'virtual', 'override', 'sealed', 'partial', 'async', 'await', 'unsafe', 'internal', 'readonly', 'is', 'as']),
+        nodejs: new Set(['import', 'class', 'function', 'typeof', 'await', 'async', 'void', 'delete', 'extends', 'from', 'as'])
+    };
+    // 先後順序（先驗）：寫函式本體時最常用的先列；不在表裡的排後面。每種語言各自一份
+    const PRIOR = {
+        python: ['ID', 'if', 'for', 'while', 'return', 'print', 'NUM', 'STR', '(', ')', '[', ']', ',', ':', '=', '==', '!=', '<', '>', '<=', '>=', '+', '-', '*', '/', '//', '%', '.', 'and', 'or', 'not', 'in', 'else', 'elif', 'break', 'continue', 'pass', 'True', 'False', 'None'],
+        c: ['ID', 'int', 'long', 'double', 'char', 'float', 'unsigned', 'if', 'for', 'while', 'return', '}', '(', 'else', 'break', 'continue', 'NUM', 'STR', '*', '&', '+', '-', '/', '%', '=', '==', '!=', '<', '>', '<=', '>=', '&&', '||', ')', ',', ';', ']', '[', '.', '->', '++', '--', '+=', '-=', '{', 'sizeof', 'struct'],
+        cpp: ['ID', 'int', 'long', 'double', 'char', 'auto', 'bool', 'if', 'for', 'while', 'return', '}', '(', 'else', 'break', 'continue', 'NUM', 'STR', '+', '-', '*', '/', '%', '=', '==', '!=', '<', '>', '<=', '>=', '&&', '||', '<<', '>>', ')', ',', ';', ']', '[', '.', '::', '++', '--', '+=', '-=', '{', 'new', 'true', 'false'],
+        java: ['ID', 'int', 'long', 'double', 'char', 'boolean', 'if', 'for', 'while', 'return', '}', '(', 'else', 'break', 'continue', 'new', 'NUM', 'STR', '+', '-', '*', '/', '%', '=', '==', '!=', '<', '>', '<=', '>=', '&&', '||', ')', ',', ';', ']', '[', '.', '++', '--', '+=', '-=', '{', 'true', 'false', 'null'],
+        csharp: ['ID', 'var', 'int', 'long', 'double', 'char', 'bool', 'if', 'for', 'foreach', 'while', 'return', '}', '(', 'else', 'break', 'continue', 'new', 'NUM', 'STR', '+', '-', '*', '/', '%', '=', '==', '!=', '<', '>', '<=', '>=', '&&', '||', ')', ',', ';', ']', '[', '.', '++', '--', '+=', '-=', '{', 'true', 'false', 'null', 'in'],
+        nodejs: ['ID', 'let', 'const', 'var', 'if', 'for', 'while', 'return', '}', '(', 'else', 'break', 'continue', 'NUM', 'STR', 'new', '+', '-', '*', '/', '%', '=', '===', '!==', '==', '!=', '<', '>', '<=', '>=', '&&', '||', ')', ',', ';', ']', '[', '.', '++', '--', '+=', '-=', '{', 'true', 'false', 'null', 'of', 'in', '=>']
+    };
+    // 常見成員名（接在 . 後面時，型別不明所以給一份常用的；真正的名稱讓模型寫）。每種語言各自一份；C 沒有成員函式所以是空的
+    const MEMBERS = {
+        python: ['append', 'split', 'strip', 'join', 'items', 'keys', 'values', 'get', 'sort', 'pop', 'add', 'lower', 'upper', 'extend', 'count', 'index', 'reverse', 'startswith', 'endswith', 'replace', 'format', 'popleft', 'appendleft', 'readline', 'read', 'write'],
+        c: [],
+        cpp: ['size', 'push_back', 'pop_back', 'begin', 'end', 'empty', 'front', 'back', 'insert', 'erase', 'find', 'first', 'second', 'length', 'substr', 'clear', 'count', 'at', 'push', 'pop', 'top'],
+        java: ['length', 'size', 'add', 'get', 'put', 'charAt', 'nextInt', 'nextLong', 'next', 'nextLine', 'equals', 'contains', 'containsKey', 'substring', 'toString', 'append', 'sort', 'push', 'pop', 'peek', 'poll', 'offer', 'isEmpty', 'intValue', 'println', 'print'],
+        csharp: ['Length', 'Count', 'Add', 'ToString', 'Parse', 'Split', 'Join', 'Contains', 'ContainsKey', 'Substring', 'Sort', 'Reverse', 'Push', 'Pop', 'Peek', 'Dequeue', 'Enqueue', 'ReadLine', 'WriteLine', 'Write', 'Trim', 'ToArray'],
+        nodejs: ['push', 'pop', 'shift', 'length', 'split', 'join', 'map', 'filter', 'reduce', 'slice', 'sort', 'indexOf', 'includes', 'trim', 'log', 'keys', 'values', 'entries', 'get', 'set', 'has', 'toString', 'parseInt', 'readFileSync']
+    };
+    // 用到的標準函式庫名稱 → 需要的 include／import（機械補，不問模型）
+    function importsFor(lang, idents) {
+        const has = (re) => idents.some((x) => re.test(x)); const out = [];
+        if (lang === 'c') { if (has(/^(printf|scanf|puts|gets|fgets|getchar|putchar|sscanf|fprintf|sprintf|snprintf|stdin|stdout|stderr)$/)) out.push('#include <stdio.h>'); if (has(/^(malloc|free|calloc|realloc|qsort|atoi|atol|abs|exit|rand|srand)$/)) out.push('#include <stdlib.h>'); if (has(/^(strlen|strcmp|strcpy|strcat|memcpy|memset|strncmp|strchr)$/)) out.push('#include <string.h>'); if (has(/^(sqrt|pow|floor|ceil|fabs|log|exp|sin|cos)$/)) out.push('#include <math.h>'); }
+        if (lang === 'cpp') { out.push('#include <bits/stdc++.h>'); out.push('using namespace std;'); }
+        if (lang === 'java') { if (has(/^(Scanner|List|ArrayList|Map|HashMap|Set|HashSet|Arrays|Collections|Deque|ArrayDeque|Queue|LinkedList|PriorityQueue|TreeMap|Stack)$/)) out.push('import java.util.*;'); }
+        if (lang === 'csharp') { out.push('using System;'); if (has(/^(List|Dictionary|HashSet|Queue|Stack)$/)) out.push('using System.Collections.Generic;'); }
+        if (lang === 'nodejs') { if (has(/^fs$/)) out.push("const fs = require('fs');"); }
+        if (lang === 'python') { if (has(/^sys$/)) out.push('import sys'); if (has(/^(deque)$/)) out.push('from collections import deque'); if (has(/^(defaultdict)$/)) out.push('from collections import defaultdict'); if (has(/^(Counter)$/)) out.push('from collections import Counter'); if (has(/^(heapq)$/)) out.push('import heapq'); if (has(/^(math)$/)) out.push('import math'); if (has(/^(bisect)$/)) out.push('import bisect'); }
+        return out;
+    }
+
+    // ---------- 渲染 ----------
+    const NOSP_BEFORE = new Set([')', ']', ',', ';', '.', '->', '::', '++', '--', ':']); const NOSP_AFTER = new Set(['(', '[', '.', '->', '::', '!', '~']);
+    const KW_SPACE = new Set(['if', 'for', 'while', 'switch', 'return', 'else', 'do', 'case', 'new', 'in', 'not', 'and', 'or', 'is', 'elif', 'throw', 'sizeof']);
+    function joinTokens(tokens, lang) {
+        let out = ''; let prev = null; let prevPrev = null;
+        const unaryCtx = (p, pp) => !p || (p.t === 'op' && !/^[)\]]$/.test(p.v) && !(p.v === '++' || p.v === '--')) || (p.t === 'id' && KW_SPACE.has(p.v) && p.v !== 'in');
+        for (let i = 0; i < tokens.length; i++) {
+            const t = tokens[i]; let sp = ' ';
+            if (!prev) sp = '';
+            else if (NOSP_BEFORE.has(t.v) && !(t.v === ':' && lang !== 'python' && false)) sp = '';
+            else if (NOSP_AFTER.has(prev.v)) sp = '';
+            else if (t.v === '(' && prev && prev.t === 'id' && !KW_SPACE.has(prev.v)) sp = '';
+            else if (t.v === '[' && prev && (prev.t === 'id' || prev.v === ')' || prev.v === ']' || prev.t === 'str')) sp = '';
+            else if ((prev.v === '-' || prev.v === '+' || prev.v === '*' || prev.v === '&' || prev.v === '++' || prev.v === '--') && unaryCtx(prevPrev, null) && prev.v !== '++' && prev.v !== '--') sp = '';
+            else if (prev.v === '++' || prev.v === '--') sp = unaryCtx(prevPrev) ? '' : ' ';
+            out += sp + t.v; prevPrev = prev; prev = t;
+        }
+        return out;
+    }
+    function renderBraces(tokens) {
+        const lines = []; let cur = []; let depth = 0; let paren = 0;
+        const flush = () => { if (cur.length) lines.push('    '.repeat(Math.max(0, depth)) + joinTokens(cur, 'brace')); cur = []; };
+        for (const t of tokens) {
+            if (t.t === 'op' && t.v === '(') paren++; if (t.t === 'op' && t.v === ')') paren = Math.max(0, paren - 1);
+            if (t.t === 'op' && t.v === '}') { flush(); depth = Math.max(0, depth - 1); lines.push('    '.repeat(depth) + '}'); continue; }
+            cur.push(t);
+            if (t.t === 'op' && t.v === '{') { flush(); depth++; } else if (t.t === 'op' && t.v === ';' && paren === 0) flush();
+        }
+        flush(); return lines.join('\n').replace(/\n(\s*)\{$/gm, ' {') + '\n';
+    }
+    function renderPython(lines) { return lines.map((l) => '    '.repeat(l.level) + joinTokens(l.tokens, 'python')).join('\n') + '\n'; }
+
+    // ---------- 選項 ----------
+    function scopeNames(lang, toks, plan, ext, own) {
+        const names = []; const seen = new Set(); const add = (n, kind, w) => { if (!n || seen.has(n) || !WORD.test(n) || (S.kwOf(lang).has(n) && kind !== 'builtin')) return; seen.add(n); names.push({ name: n, kind, w }); };
+        const sym = S.symbolsOf(lang, toks.map((t, i) => Object.assign({ off: 0, end: 0, line: 1, col: i + 1 }, t)), null);
+        const declared = Array.from(sym.declared).reverse(); declared.forEach((n, i) => { if (n !== own) add(n, 'local', i); });
+        for (const n of plan || []) if (n.name !== own) add(n.name, 'function', 200);
+        for (const n of Object.keys(ext || {})) add(n, 'symbol', 300);
+        for (const n of (S.BUILTINS ? (S.BUILTINS[lang] || '').split(' ') : [])) add(n, 'builtin', 400);
+        return names;
+    }
+    function buildOptions(lang, E, toks, ctx) {
+        // E：文法算出的合法終端。回傳 {groups:{關鍵字:[],名稱:[],字面值:[],符號:[]}, forced:token|null, total}
+        const drop = new Set(DROP[lang]); if (ctx.allowInlineAsm && (lang === 'c' || lang === 'cpp')) for (const w of ['asm', '__asm__', '__asm', '__volatile__', 'volatile']) drop.delete(w); const prior = PRIOR[lang]; const rank = (v) => { const i = prior.indexOf(v); return i < 0 ? 1000 + v.length : i; };
+        const kw = [], punct = [], names = [], lits = [];
+        const lastTok = toks[toks.length - 1]; const afterDot = lastTok && lastTok.t === 'op' && (lastTok.v === '.' || lastTok.v === '->' || lastTok.v === '::');
+        for (const e of E) {
+            if (e[0] === "'") { const v = e.slice(1, -1); if (/^[A-Za-z_]+$/.test(v)) { if (!drop.has(v)) kw.push(v); } else punct.push(v); }
+            else if (e === 'ID') {
+                if (afterDot) { for (const m of MEMBERS[lang] || []) names.push({ name: m, kind: 'member', w: 100 }); }
+                else for (const n of scopeNames(ctx.lang, toks, ctx.plan, ctx.ext, ctx.own)) names.push(n);
+                names.push({ name: null, kind: 'new', w: 150 }); // 「新名稱」緊跟在局部變數後面（常常需要），不要排到幾十個內建名稱的後面
+            }
+            else if (e === 'NUM') lits.push({ kind: 'num' }); else if (e === 'STR') lits.push({ kind: 'str' });
+        }
+        names.sort((x, y) => (x.w == null ? 0 : x.w) - (y.w == null ? 0 : y.w));
+        kw.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b)); punct.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+        return { kw, punct, names, lits };
+    }
+
+    // ---------- 家族適配 ----------
+    function makeBrace(lang, node) {
+        const head = S.lex(lang, node.signature); const toks = head.map((t) => ({ t: t.t, v: t.v }));
+        return {
+            fam: 'brace', toks, depth: 0, started: false,
+            expected() { return G.expectedAt(lang, this.toks); },
+            push(t) { this.toks.push(t); if (t.t === 'op' && t.v === '{') { this.depth++; this.started = true; } if (t.t === 'op' && t.v === '}') this.depth--; },
+            done() { return this.started && this.depth === 0; },
+            render() { return renderBraces(this.toks); }, flat() { return this.toks; },
+            raw() { return renderBraces(this.toks).replace(/\n$/, ''); }, previewTok(t) { return renderBraces(this.toks.concat([t])).replace(/\n$/, ''); }, previewPseudo() { return null; },
+            pseudo() { return []; }, applyPseudo() { return null; },
+            cursorText() { return renderBraces(this.toks).replace(/\n$/, '') + '▮'; }
+        };
+    }
+    function makePython(lang, node) {
+        const head = S.lex(lang, node.signature).filter((t) => t.t !== 'nl').map((t) => ({ t: t.t, v: t.v }));
+        const st = {
+            fam: 'python', lines: [{ level: 0, tokens: head }], levels: [0], fin: false, pendingNewLine: false,
+            cur() { return this.lines[this.lines.length - 1]; },
+            expected() { return G.expectedAt(lang, this.cur().tokens); },
+            push(t) { this.cur().tokens.push(t); },
+            done() { return this.fin; }, render() { return renderPython(this.lines); },
+            raw() { return renderPython(this.lines).replace(/\n$/, ''); },
+            previewTok(t) { const ls = this.lines.map((l, i) => (i === this.lines.length - 1 ? { level: l.level, tokens: l.tokens.concat([t]) } : l)); return renderPython(ls).replace(/\n$/, ''); },
+            // 函式寫完＝模型自己的結束符 <|im_end|>（不用程式碼圍欄）
+            previewPseudo(o) { const cur = this.cur(); if (o.kind === 'end') return this.raw() + '<|im_end|>'; const lv = o.kind === 'nl-in' ? cur.level + 1 : o.kind === 'nl-same' ? cur.level : o.to; return renderPython(this.lines.concat([{ level: lv, tokens: [] }])).replace(/\n$/, ''); },
+            flat() { return [].concat(...this.lines.map((l) => l.tokens)); },
+            cursorText() { return renderPython(this.lines).replace(/\n$/, '') + '▮'; },
+            // 一行寫完（文法判定 complete）之後的偽選項：換行並選縮排、或結束函式
+            pseudo(E) {
+                const cur = this.cur(); const opts = []; const endsColon = cur.tokens.length && cur.tokens[cur.tokens.length - 1].v === ':';
+                if (!E.complete) return opts;
+                if (this.lines.length === 1 && !endsColon) return opts; // 標頭還沒有冒號
+                if (endsColon) { opts.push({ kind: 'nl-in', label: '⏎ 換行，進入下一層縮排（這個區塊的第一條）' }); return opts; }
+                opts.push({ kind: 'nl-same', label: '⏎ 換行，同一層接著寫下一條' });
+                const lv = cur.level; for (let k = lv - 1; k >= 1; k--) opts.push({ kind: 'nl-to', to: k, label: '⇤ 換行，退回第 ' + k + ' 層縮排（結束內層的區塊）' });
+                opts.push({ kind: 'end', label: '■ 這個函式寫完了' }); return opts;
+            },
+            applyPseudo(o) {
+                const cur = this.cur();
+                if (o.kind === 'nl-in') this.lines.push({ level: cur.level + 1, tokens: [] });
+                else if (o.kind === 'nl-same') this.lines.push({ level: cur.level, tokens: [] });
+                else if (o.kind === 'nl-to') this.lines.push({ level: o.to, tokens: [] });
+                else if (o.kind === 'end') this.fin = true;
+                return o.kind;
+            }
+        };
+        return st;
+    }
+
+    // ---------- 主流程 ----------
+    async function guidedWriteFunction(a) {
+        const lang = a.lang; const fam = G && G.supports(lang) ? (lang === 'python' ? 'python' : 'brace') : null; const node = a.node; // 上限以「一個函式」為單位（使用者：例如 300 步、900 步）。開發期間先設無限大（使用者要求），做完再 profile 後決定實際上限
+        const o = Object.assign({ maxSteps: Infinity, maxChoices: Infinity, pageSize: 8, flatMax: 14, deadlineMs: Infinity }, a.opts || {}); // deadlineMs：按時間的安全閥（預設無限；基準腳本才設），避免退化成重複循環時永遠不結束；不是步數上限
+        const tStart = Date.now();
+        const Stack = a.stackMod || DefaultStack; const trace = []; const calls = { choose: 0, free: 0, rank: 0 }; let steps = 0;
+        if (!fam) return { ok: false, reason: 'unsupported_lang', code: '', tokens: [], steps: 0, calls, trace };
+        const emit = (e) => { trace.push(e); if (typeof a.onEvent === 'function') { try { a.onEvent(e); } catch (_) { /* 進度回報壞了不影響流程 */ } } };
+        const st = fam === 'brace' ? makeBrace(lang, node) : makePython(lang, node);
+        const ctx = { lang, plan: a.plan, ext: a.symbols, own: node.name, allowInlineAsm: !!(a.opts && a.opts.allowInlineAsm) };
+        const wrap = (msgs) => (Stack && a.stack ? Stack.wrap(msgs, a.stack, { repeat: !!(a.opts && a.opts.thinking) }) : msgs);
+        const head = (extra) => (a.spec ? '題目：' + clip(a.spec, 700) + '\n' : '') + (a.feedback ? '上一版的問題（這次要避免）：' + clip(a.feedback, 400) + '\n' : '') + (a.plan && a.plan.length ? '函式清單（已定）：\n' + a.plan.map((n) => '- ' + n.signature + (n.purpose ? '：' + n.purpose : '')).join('\n') + '\n' : '') + '正在寫：' + node.signature + (node.purpose ? '（' + node.purpose + '）' : '') + '\n' + (extra || '');
+        // 標頭之後一定要有本體：clike 自動補 '{'；python 自動補 ':'
+        const ensureBody = () => {
+            if (fam === 'brace') { const ex = st.expected(); if (!ex.ok) return { ok: false, reason: '簽名「' + node.signature + '」在文法上不合法（第 ' + ex.failAt + ' 個 token）' }; if (ex.expected.includes("'{'")) st.push({ t: 'op', v: '{' }); else return { ok: false, reason: '簽名後面不能接函式本體' }; }
+            else { const ex = st.expected(); if (!ex.ok) return { ok: false, reason: '簽名「' + node.signature + '」在文法上不合法' }; const last = st.cur().tokens[st.cur().tokens.length - 1]; if (!(last && last.v === ':')) { if (ex.expected.includes("':'")) st.push({ t: 'op', v: ':' }); else return { ok: false, reason: '簽名後面不能接冒號' }; } st.lines.push({ level: 1, tokens: [] }); }
+            return { ok: true };
+        };
+        const be = ensureBody(); if (!be.ok) return { ok: false, reason: 'bad_signature', detail: be.reason, code: '', tokens: [], steps: 0, calls, trace };
+        const finish = (ok, reason, extra) => { const toks = st.flat(); const idents = toks.filter((t) => t.t === 'id').map((t) => t.v); const imports = importsFor(lang, idents); return Object.assign({ ok, reason, code: st.render(), body: st.render(), imports, tokens: toks.length, steps, calls, trace }, extra || {}); };
+        // ---- rank 策略（約束解碼）：機械算出合法 token 集合，模型對每個合法選項用「下一個 token 的機率」打分，取最高。
+        // 對模型來說這和它平常自由寫程式時的預測一樣，只是不合法的 token 沒有機會被選到；不需要它回字母。需要呼叫端給 lm（有 KV 快取的游標）。
+        const useRank = !!(a.lm && typeof a.lm.open === 'function' && (o.strategy || 'rank') === 'rank');
+        let cursor = null, committedLen = 0;
+        const openCursor = async () => {
+            const full = st.raw(); committedLen = full.lastIndexOf('\n') + 1;
+            const msgs = wrap([{ role: 'system', content: '你是' + (a.langLabel || lang) + '程式設計師。只輸出一個程式碼區塊，裡面只有函式「' + node.name + '」的完整定義，不要其他函式、不要說明。不要把題目範例的數字或答案直接寫進程式，程式要從標準輸入讀資料。' + (a.rules || '') }, { role: 'user', content: head() + '現在寫：' + node.name + (node.purpose ? '（' + node.purpose + '）' : '') + '。' }]);
+            cursor = await a.lm.open(msgs, full.slice(0, committedLen)); // 助手的前綴就是「函式已寫的行」：不加程式碼圍欄（實測加圍欄會把 0.6B 推進另一種「貼程式」的模式，傾向抄範例數字；自由寫時它本來就不加圍欄）
+        };
+        const rankStep = async (opts, pseudo) => {
+            if (!cursor) await openCursor();
+            const full = st.raw(); const nlEnd = full.lastIndexOf('\n') + 1;
+            if (nlEnd > committedLen) { await cursor.commit(full.slice(committedLen, nlEnd)); committedLen = nlEnd; } // 已完成的行放進 KV 快取
+            const partial = full.slice(committedLen); const base = partial.replace(/\s+$/, ''); const trail = partial.slice(base.length);
+            const cands = []; const seenKey = new Set();
+            const addTok = (t, label, kind) => { const key = t.t + ':' + t.v; if (seenKey.has(key)) return; seenKey.add(key); const after = st.previewTok(t); if (!after.startsWith(full)) return; cands.push({ text: trail + after.slice(full.length), apply: () => st.push(t), label, kind }); };
+            for (const v of opts.kw) addTok({ t: 'id', v }, v, 'kw'); for (const v of opts.punct) addTok({ t: 'op', v }, v, 'punct');
+            for (const nm of opts.names) if (nm.name) addTok({ t: 'id', v: nm.name }, nm.name, 'name');
+            for (const p of pseudo) { const after = st.previewPseudo(p); if (!after || !after.startsWith(full)) continue; cands.push({ text: trail + after.slice(full.length), apply: () => st.applyPseudo(p), label: p.label, kind: 'pseudo' }); }
+            // 新名稱／數字／字串：用模型自己的貪婪續寫取一個字面（驗證過才當候選），讓它也能「想出」文法無法列舉的詞
+            const needNew = opts.names.some((x) => x.kind === 'new'), needNum = opts.lits.some((x) => x.kind === 'num'), needStr = opts.lits.some((x) => x.kind === 'str');
+            if (needNew || needNum || needStr) {
+                let rest = String(await cursor.greedy(12, { base })); if (trail && rest.startsWith(trail)) rest = rest.slice(trail.length); rest = rest.replace(/^[ \t]+/, ''); let mm;
+                if (needStr && (mm = /^("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')/.exec(rest))) addTok({ t: 'str', v: mm[1] }, mm[1], 'str');
+                else if (needNum && (mm = /^-?\d+(\.\d+)?/.exec(rest))) addTok({ t: 'num', v: mm[0] }, mm[0], 'num');
+                else if (needNew && (mm = /^[A-Za-z_][\w$]*/.exec(rest)) && !S.kwOf(lang).has(mm[0])) addTok({ t: 'id', v: mm[0] }, mm[0], 'name');
+            }
+            if (!cands.length) return false;
+            calls.rank++; const scored = await cursor.rank(cands.map((c) => c.text), { base, topK: 8 });
+            let bi = 0; scored.forEach((x, i) => { if (x.logprob > scored[bi].logprob) bi = i; });
+            const top = scored.map((x, i) => ({ t: cands[i].label, lp: +x.logprob.toFixed(2) })).sort((x, y) => y.lp - x.lp).slice(0, 3);
+            const best = cands[bi]; best.apply(); emit({ t: 'pick', kind: best.kind, text: best.label, via: 'rank', lp: top[0].lp, top }); return true;
+        };
+        let consecutiveFree = 0;
+        while (!st.done()) {
+            if (++steps > o.maxSteps) return finish(false, 'max_steps');
+            if (Date.now() - tStart > o.deadlineMs) return finish(false, 'deadline', { detail: '超過每個函式的時間安全閥（' + Math.round(o.deadlineMs / 1000) + ' 秒）' });
+            const E = st.expected(); if (E.aborted) return finish(false, 'grammar_aborted');
+            if (!E.ok) return finish(false, 'grammar_stuck', { detail: '文法吃不下已寫的部分（第 ' + E.failAt + ' 個 token）' });
+            let opts = buildOptions(lang, E.expected, st.flat(), ctx); const pseudo = st.pseudo(E);
+            // 機械可決定的：只有一個合法選項（且不是名稱／字面值）→ 自動補，不問模型
+            const total = opts.kw.length + opts.punct.length + opts.names.length + opts.lits.length + pseudo.length;
+            if (total === 0) return finish(false, 'no_legal_option', { detail: '文法在這個位置沒有任何合法的下一步' });
+            if (total === 1 && !opts.names.length && !opts.lits.length && !pseudo.length) { const v = opts.kw[0] || opts.punct[0]; st.push({ t: /^[A-Za-z_]/.test(v) ? 'id' : 'op', v }); emit({ t: 'auto', token: v }); continue; }
+            if (total === 1 && pseudo.length === 1) { st.applyPseudo(pseudo[0]); emit({ t: 'auto', token: pseudo[0].label }); continue; }
+            if (useRank) { let okRank = false; try { okRank = await rankStep(opts, pseudo); } catch (e) { if (e && e.budget) throw e; return finish(false, 'rank_failed', { detail: String((e && e.message) || e).slice(0, 120) }); } if (!okRank) return finish(false, 'no_legal_option', { detail: '沒有可以打分的合法選項' }); continue; }
+            if (calls.choose >= o.maxChoices) return finish(false, 'max_choices');
+            // 分類別兩層（選項多時）：先選「關鍵字／名稱／字面值／符號／換行」，再選項目
+            const groups = []; if (pseudo.length) groups.push({ key: 'pseudo', label: '換行／結束', items: pseudo.map((p) => ({ kind: p.kind, text: p.label, pseudo: p })) });
+            if (opts.names.length) groups.push({ key: 'names', label: '名稱（變數、函式、成員）', items: opts.names.map((n) => ({ kind: n.kind === 'new' ? 'new' : 'name', text: n.name == null ? '✍ 新名稱（我自己寫）' : n.name + (n.kind === 'function' ? '（函式）' : n.kind === 'builtin' ? '（內建）' : n.kind === 'member' ? '（常見成員）' : ''), name: n.name })) });
+            if (opts.lits.length) groups.push({ key: 'lits', label: '字面值（數字／字串）', items: opts.lits.map((l) => ({ kind: l.kind, text: l.kind === 'num' ? '✍ 數字（我自己寫）' : '✍ 字串（我自己寫）' })) });
+            if (opts.kw.length) groups.push({ key: 'kw', label: '關鍵字', items: opts.kw.map((v) => ({ kind: 'kw', text: '`' + v + '`', tok: v })) });
+            if (opts.punct.length) groups.push({ key: 'punct', label: '符號', items: opts.punct.map((v) => ({ kind: 'punct', text: '`' + v + '`', tok: v })) });
+            const ask = async (title, items, extra) => {
+                const page = items.slice(0, o.pageSize); const more = items.length > o.pageSize; const letters = page.map((_, i) => String.fromCharCode(65 + i)); if (more) letters.push('Z');
+                const msgs = [{ role: 'system', content: '你在一個 token 一個 token 地寫程式。合法的下一步已經由文法算好了，你只要從選項裡挑一個最符合需求的。只輸出 JSON：{"pick":"字母"}。' }, { role: 'user', content: head() + '目前寫到（▮ 是游標）：\n```\n' + st.cursorText() + '\n```\n' + (extra ? extra + '\n' : '') + title + '\n' + page.map((it, i) => letters[i] + '. ' + it.text).join('\n') + (more ? '\nZ. …更多選項（還有 ' + (items.length - o.pageSize) + ' 個）' : '') }];
+                calls.choose++; let idx = null; // aliases：小模型常常回「選項的內容」（例如 +、total）而不是字母；內容等於某個合法選項就算選了它（字母優先）
+                const aliasesOf = (it) => (it.kind === 'group' ? it.g.items.filter((x) => x.kind !== 'new').map((x) => String(x.tok || x.name || '').trim()).filter(Boolean) : [String(it.tok || it.name || '').trim()].filter(Boolean));
+                try { idx = await a.choose(wrap(msgs), page.map((it, i) => ({ label: letters[i], kind: it.kind, text: it.text, aliases: aliasesOf(it) })).concat(more ? [{ label: 'Z', kind: 'more', text: '更多', aliases: [] }] : [])); } catch (e) { if (e && e.budget) throw e; idx = null; }
+                if (idx == null || idx < 0 || idx >= page.length + (more ? 1 : 0)) return { none: true };
+                if (more && idx === page.length) return { more: true, rest: items.slice(o.pageSize) };
+                return { item: page[idx] };
+            };
+            let chosen = null; let pool = null;
+            const flatTotal = groups.reduce((x, g) => x + g.items.length, 0);
+            if (groups.length === 1) pool = groups[0].items;
+            else if (flatTotal <= o.flatMax) pool = [].concat(...groups.map((g) => g.items)); // 選項不多：一層扁平選單就好，省一次呼叫
+            else {
+                // 類別選項帶樣本（讓小模型看得出語意，而不是只看到「名稱（42 個選項）」這種抽象標籤）
+                const sample = (g) => { const xs = g.items.filter((it) => it.kind !== 'new').slice(0, g.key === 'punct' ? 10 : 6).map((it) => String(it.tok || it.name || it.text).replace(/（.*$/, '').replace(/`/g, '')); return xs.length ? '：' + xs.join('、') + (g.items.length > xs.length ? '…' : '') : ''; };
+                const gi = await ask('現在要寫哪一類？', groups.map((g) => ({ kind: 'group', text: g.label.replace(/（.*$/, '') + sample(g) + '（共 ' + g.items.length + ' 個選項）', g })), ''); if (gi.none) return finish(false, 'choose_failed', { detail: '模型沒有選出類別' }); if (gi.more) return finish(false, 'choose_failed'); pool = gi.item.g.items; }
+            let round = 0; for (;;) { const r = await ask('這個位置合法的下一步：', pool, ''); if (r.none) return finish(false, 'choose_failed', { detail: '模型沒有選出項目' }); if (r.more) { pool = r.rest; if (++round > 4) return finish(false, 'choose_failed'); continue; } chosen = r.item; break; }
+            // 套用
+            if (chosen.pseudo) { st.applyPseudo(chosen.pseudo); emit({ t: 'pick', kind: 'pseudo', text: chosen.text }); consecutiveFree = 0; continue; }
+            if (chosen.kind === 'kw' || chosen.kind === 'punct') { const v = chosen.tok; st.push({ t: chosen.kind === 'kw' ? 'id' : 'op', v }); emit({ t: 'pick', kind: chosen.kind, text: v }); consecutiveFree = 0; continue; }
+            if (chosen.kind === 'name') { st.push({ t: 'id', v: chosen.name }); emit({ t: 'pick', kind: 'name', text: chosen.name }); consecutiveFree = 0; continue; }
+            // 新名稱／數字／字串：讓模型寫一小段，並驗證
+            const kind = chosen.kind === 'new' ? 'name' : chosen.kind; calls.free++;
+            const fmsgs = [{ role: 'system', content: kind === 'name' ? '你要為程式取一個新名稱。只輸出 JSON：{"name":"識別字"}，只能用英文字母、數字、底線，不能是關鍵字。' : kind === 'num' ? '你要寫一個數字。只輸出 JSON：{"num":"數字"}（整數或小數，可帶負號）。' : '你要寫一個字串的內容（不含外面的引號；換行請寫成兩個字元 \\n）。只輸出 JSON：{"text":"內容"}。' }, { role: 'user', content: head() + '目前寫到（▮ 是游標）：\n```\n' + st.cursorText() + '\n```\n請寫這個位置要的' + (kind === 'name' ? '新名稱' : kind === 'num' ? '數字' : '字串內容') + '。' }];
+            let raw = null; try { raw = a.free ? await a.free(wrap(fmsgs), kind) : null; } catch (e) { if (e && e.budget) throw e; raw = null; }
+            let tok = null;
+            if (raw != null) { const s = kind === 'str' ? String(raw) : String(raw).trim(); /* 字串內容的空白是有意義的（例如 " "），不能 trim */ if (kind === 'name' && WORD.test(s) && !S.kwOf(lang).has(s)) tok = { t: 'id', v: s }; else if (kind === 'num' && /^-?\d+(\.\d+)?$/.test(s)) tok = { t: 'num', v: s }; else if (kind === 'str') tok = { t: 'str', v: '"' + s.replace(/\r?\n/g, '\\n').replace(/(^|[^\\])"/g, '$1\\"') + '"' }; }
+            if (!tok) { if (++consecutiveFree >= 3) return finish(false, 'free_failed', { detail: '模型連續寫不出合法的' + kind }); emit({ t: 'free_failed', kind }); continue; }
+            st.push(tok); emit({ t: 'pick', kind, text: tok.v }); consecutiveFree = 0;
+        }
+        return finish(true, 'done');
+    }
+
+    return { guidedWriteFunction, importsFor, buildOptions, joinTokens, renderBraces, renderPython, DROP, PRIOR, MEMBERS };
+});
+
+}).call(null, undefined, holder);
+return holder.FaGuidedWrite;
+})();
+/* GUIDEDWRITE-END */
+/* CODELOOP-BEGIN */
+const FaCodeLoop = (function () {
+const holder = {};
+(function (module, self) {
+/* 思考寫程式迴圈（第一階段，純函式，UMD，不碰 I/O；模型與判題器都由呼叫端注入）。設計見 DESIGN.fn-template.md 第八節。
+ * 需求 →（UML design 風格的切割）函式清單 → 依呼叫關係由葉往上逐一寫函式 → 組成完整程式 → 判題器驗收 →
+ * 沒過就帶著（不洩漏 hidden 的）判決回饋，讓模型用選擇題挑「要修哪個函式」再重寫。每一步都在思考堆疊的框架裡，提示帶焦點標頭。
+ *
+ *   solve({problem, lang, ask, write, judge, stackMod?, opts?}) → Promise<結果>
+ *     ask(messages, validate)  → Promise<通過 validate（回錯誤字串陣列，空＝通過）的 JSON 物件 | null>   切割、挑要修的函式、思考堆疊的檢查／自問
+ *     write(messages, {thinking, kind, fn}) → Promise<string | {text}>                                    寫程式：純文字＋程式碼區塊（不要求小模型把程式碼跳脫進 JSON）
+ *     judge({lang, source})    → Promise<judge_core.summarize 的結果（CE 帶 compileLog）>                  呼叫端把 problem 綁進去
+ *     onEvent(e)：進度回報（{t:'plan'|'ask'|'write'|'judge'|'rethink', …}）；壞掉不影響流程
+     *     opts：maxFunctions 6、maxRethink 3、maxCalls 40（ask＋write 總次數）、stackChecks false（開了才用 planChecks／reviewReturn／selfValidate）
+ *   結果：{ ok, verdict, source, plan:[{name,signature,purpose,calls}], codes, rethinks, calls:{ask,write,judge}, gaps:[…], reason?, stack:[jsonl…], trace:[…] }
+ *   不誠實的事不做：沒過就 ok:false 並列 gaps；預算用完回 reason:'budget'；hidden 測試的輸入與期望不會出現在給模型的任何提示裡。
+ * 其他：LANGS、extractCode、assemble、normalizePlan、buildSpec、feedback（單獨匯出，方便測試）。 */
+(function (root, factory) { const T = (typeof FaThinkStack !== 'undefined' && FaThinkStack) || (root && root.FaThinkStack) || (typeof require === 'function' ? require('./think_stack.js') : null); const Gd = (typeof FaGuidedWrite !== 'undefined' && FaGuidedWrite) || (root && root.FaGuidedWrite) || (typeof require === 'function' ? require('./guided_write_core.js') : null); const LC = (typeof FaLangColu !== 'undefined' && FaLangColu) || (root && root.FaLangColu) || (typeof require === 'function' ? require('./lang_colu_core.js') : null); if (typeof module === 'object' && module.exports) module.exports = factory(T, Gd, LC); else root.FaCodeLoop = factory(T, Gd, LC); })(typeof self !== 'undefined' ? self : this, function (DefaultStack, Guided, LC) {
+    'use strict';
+    const clip = (s, n) => { s = String(s == null ? '' : s).replace(/[ \t]+$/gm, '').trim(); return s.length > n ? s.slice(0, Math.max(1, n - 1)) + '…' : s; };
+    const IDENT = /^[A-Za-z_]\w*$/;
+
+    // 每種語言：name（給模型看）、entry（入口函式名）、hoist（要搬到檔案最上面並去重的行，只看第 0 欄）、call（組裝時補在最後的入口呼叫）、wrap（把函式包進類別）、rules（寫函式時的語言規則）、stripCall（模型自己寫的入口呼叫要拿掉，我們統一補）、noSplit（不切函式，整個檔案一個節點）
+    const LANGS = {
+        python: { name: 'Python 3', entry: 'main', hoist: /^(import|from)\s/, call: 'main()', stripCall: /^(main\(\)\s*;?|if\s+__name__\s*==\s*['"]__main__['"]\s*:\s*\n(?:[ \t]+.*\n?)*)\s*$/gm, rules: '用 def 定義；從標準輸入讀（input() 或 sys.stdin），用 print 輸出；import 寫在最前面。' },
+        nodejs: { name: 'Node.js', entry: 'main', hoist: /^(const|let|var)\s+\w+\s*=\s*require\(/, call: 'main();', stripCall: /^main\(\)\s*;?\s*$/gm, rules: '用 function 宣告；用 require("fs").readFileSync(0, "utf8") 讀標準輸入、console.log 輸出；require 寫在最前面。' },
+        c: { name: 'C', entry: 'main', hoist: /^#include\b/, rules: '標準 C11；入口是 int main(void)；函式要定義在被呼叫之前；整數用 long long；#include 寫在最前面。' },
+        cpp: { name: 'C++', entry: 'main', hoist: /^(#include\b|using\s+namespace\b)/, rules: '標準 C++17；入口是 int main()；函式要定義在被呼叫之前；整數用 long long；#include 與 using namespace std; 寫在最前面。' },
+        java: { name: 'Java', entry: 'main', hoist: /^import\s/, wrap: (b) => 'public class Main {\n' + b + '\n}\n', rules: '不要寫 class；每個函式都是 public static；入口是 public static void main(String[] args)；import 寫在最前面（例如 java.util.*）。' },
+        ruby: { name: 'Ruby', entry: 'main', hoist: /^require\b/, call: 'main', stripCall: /^main\s*$/gm, rules: '用 def 定義；用 gets 讀標準輸入、puts 輸出。' },
+        perl: { name: 'Perl', entry: 'main', hoist: /^use\s/, call: 'main();', stripCall: /^main\(\)\s*;?\s*$/gm, rules: '用 sub 定義；用 <STDIN> 讀標準輸入、print 輸出；變數用 my。' },
+        bash: { name: 'Bash', entry: 'main', call: 'main', stripCall: /^main(\s+.*)?$/gm, rules: '用 name() { ... } 定義；用 read 讀標準輸入、echo 輸出；整數運算用 $(( ))。' },
+        csharp: { name: 'C#', entry: 'Main', hoist: /^using\s/, wrap: (b) => 'class P {\n' + b + '\n}\n', rules: '不要寫 class；每個函式都是 static；入口是 static void Main()；用 Console.ReadLine 讀、Console.WriteLine 輸出；using 寫在最前面。' },
+        'asm-x64': { name: 'x86-64 組語（GNU as）', entry: '_start', noSplit: true, rules: '第一行 .intel_syntax noprefix；進入點 _start（.globl _start）；不連 libc，直接用 Linux 系統呼叫（read=0、write=1、exit=60，用 syscall）；結束前一定要 exit。' },
+        'asm-x86': { name: 'x86 32 位元組語（GNU as）', entry: '_start', noSplit: true, rules: '第一行 .intel_syntax noprefix；進入點 _start（.globl _start）；不連 libc，用 int 0x80（read=3、write=4、exit=1）；結束前一定要 exit。' }
+    };
+
+    function extractCode(text) {
+        let s = String(text == null ? '' : (text && text.text != null ? text.text : text)).replace(/<think>[\s\S]*?<\/think>/g, '');
+        let m = /```[\w+#.-]*[ \t]*\r?\n([\s\S]*?)```/.exec(s) || /```[\w+#.-]*[ \t]*\r?\n([\s\S]*)$/.exec(s);
+        return (m ? m[1] : s).replace(/\s+$/, '') + '\n';
+    }
+
+    // 組裝：hoist 的行（去重）放最上面，函式本體依序接上，必要時包進類別、補入口呼叫
+    function assemble(lang, codes) {
+        const L = LANGS[lang]; const parts = codes.map((c) => String(c));
+        if (L.noSplit) return parts.join('\n');
+        const hoisted = []; const seen = new Set(); const bodies = [];
+        for (let code of parts) {
+            if (L.stripCall) code = code.replace(L.stripCall, '');
+            const keep = [];
+            for (const line of code.split('\n')) { if (L.hoist && L.hoist.test(line)) { const k = line.trim(); if (!seen.has(k)) { seen.add(k); hoisted.push(k); } } else keep.push(line); }
+            bodies.push(keep.join('\n').replace(/^\s*\n+/, '').replace(/\s+$/, ''));
+        }
+        let body = bodies.join('\n\n');
+        if (L.wrap) body = L.wrap(body);
+        return (hoisted.length ? hoisted.join('\n') + '\n\n' : '') + body + '\n' + (L.call ? '\n' + L.call + '\n' : '');
+    }
+
+    // 切割結果整理：名稱合法且不重複、calls 只留存在的、入口函式一定在（沒有就補）、沒人呼叫的函式掛到入口底下、有環或太多就回 null（呼叫端退回單一函式）
+    function normalizePlan(obj, entry, maxFunctions) {
+        const list = obj && Array.isArray(obj.functions) ? obj.functions : null; if (!list || !list.length) return null;
+        const byName = new Map();
+        for (const f of list) { if (!f || !IDENT.test(String(f.name || ''))) continue; if (byName.has(f.name)) continue; byName.set(f.name, { name: f.name, signature: clip(f.signature || f.name, 80), purpose: clip(f.purpose || '', 100), calls: Array.isArray(f.calls) ? f.calls.filter((c) => typeof c === 'string') : [], complex: f.complex === true }); }
+        if (!byName.size) return null;
+        if (!byName.has(entry)) byName.set(entry, { name: entry, signature: entry, purpose: '讀入全部輸入、呼叫其他函式、輸出答案', calls: [], complex: false });
+        if (byName.size > maxFunctions) return null;
+        for (const n of byName.values()) n.calls = Array.from(new Set(n.calls.filter((c) => byName.has(c) && c !== n.name)));
+        const called = new Set(); for (const n of byName.values()) n.calls.forEach((c) => called.add(c));
+        const ent = byName.get(entry); for (const n of byName.values()) if (n.name !== entry && !called.has(n.name) && ent.calls.indexOf(n.name) < 0) ent.calls.push(n.name);
+        const order = [], state = {}; let cyc = false;
+        const visit = (name) => { if (state[name] === 2) return; if (state[name] === 1) { cyc = true; return; } state[name] = 1; for (const c of byName.get(name).calls) visit(c); state[name] = 2; order.push(name); };
+        visit(entry); if (cyc) return null;
+        return order.map((n) => byName.get(n)); // 被呼叫的在前、入口最後
+    }
+
+    function buildSpec(problem) {
+        let s = clip(problem.statement, 700);
+        const ex = (problem.tests || []).slice(0, 2).map((t) => '輸入：\n' + clip(t.in, 150) + '\n輸出：\n' + clip(t.out, 150)).join('\n');
+        return s + (ex ? '\n範例：\n' + ex : '');
+    }
+
+    // 給模型的回饋：不洩漏 hidden 的輸入與期望（summarize 的 detail 以 [hidden] 開頭，reason 裡有期望值）
+    function feedback(sum, problem) {
+        if (!sum || sum.verdict === 'AC') return '';
+        if (sum.verdict === 'CE') return '編譯失敗：' + clip(sum.compileLog || sum.detail, 400);
+        if (sum.verdict === 'UNAVAILABLE') return '';
+        const hiddenFail = /^\[hidden\]/.test(sum.detail || '') || sum.failedIndex >= ((problem.tests || []).length);
+        if (hiddenFail) return '範例都過了，但有隱藏測試沒過（判決 ' + sum.verdict + '；內容不公開）。常見原因：邊界情況、整數溢位、效能太慢、輸入格式的特殊情況。';
+        const t = (problem.tests || [])[sum.failedIndex];
+        return '範例測試 #' + (sum.failedIndex + 1) + ' 判決 ' + sum.verdict + '：' + clip(String(sum.detail || '').replace(/^#\d+\s*/, ''), 200) + (t ? '\n輸入：\n' + clip(t.in, 150) + '\n期望輸出：\n' + clip(t.out, 150) : '');
+    }
+
+    function verifyFn(code, node, lang) {
+        const c = String(code || '');
+        if (c.trim().length < 5) return { ok: false, reason: '沒有程式碼' };
+        if (c.indexOf('```') >= 0) return { ok: false, reason: '程式碼裡不能有 ``` 標記' };
+        if (!new RegExp('(^|[^A-Za-z0-9_])' + node.name.replace(/[$]/g, '\\$') + '([^A-Za-z0-9_]|$)').test(c)) return { ok: false, reason: '沒有定義函式「' + node.name + '」' };
+        return { ok: true };
+    }
+
+    // 設計樹的語意給語法修復用：計畫的函式簽名（名稱與引數個數）與已定的設計說明
+    function symbolsOfPlan(plan) { const out = {}; for (const n of plan || []) { const m = /\(([^)]*)\)/.exec(String(n.signature || '')); if (m) { const ps = m[1].split(',').map((x) => x.trim()).filter((x) => x && !/^(self|cls|void)$/.test(x)); out[n.name] = ps.length; } else out[n.name] = null; } return out; }
+    // 語法修補是對「組裝後的整份程式」做的；對應回各函式的程式碼，之後重新組裝才不會把修補弄丟。純插入新行（沒有舊行可定位）或舊行出現在多個函式裡就對應不回去，回 false
+    function patchCodes(codes, oldSrc, newSrc) {
+        const A = String(oldSrc).split('\n'), B = String(newSrc).split('\n'); let p = 0; while (p < A.length && p < B.length && A[p] === B[p]) p++;
+        let sa = A.length, sb = B.length; while (sa > p && sb > p && A[sa - 1] === B[sb - 1]) { sa--; sb--; }
+        const oldMid = A.slice(p, sa).join('\n'), newMid = B.slice(p, sb).join('\n'); if (!oldMid.trim()) return false;
+        const names = Object.keys(codes).filter((k) => String(codes[k]).indexOf(oldMid) >= 0); if (names.length !== 1) return false;
+        codes[names[0]] = codes[names[0]].replace(oldMid, () => newMid); return true;
+    }
+
+    class Budget extends Error { }
+    const DONE = { AC: 1, CHECKED: 1 }; // AC＝測試全過；CHECKED＝沒有測試可跑、只通過編譯／語法檢查（ok 但 verified:false）
+
+    async function solve(args) {
+        const problem = args.problem, lang = args.lang, L = LANGS[lang]; if (!L) throw new Error('不認得的語言：' + lang);
+        const Stack = args.stackMod || DefaultStack; const o = Object.assign({ maxFunctions: 6, maxRethink: 3, maxCalls: Infinity, maxDepth: 2, /* 開發期間不設上限（使用者要求），profile 後再訂 */ stackChecks: false, }, args.opts || {});
+        const calls = { ask: 0, write: 0, judge: 0, choose: 0, free: 0, rank: 0 }, trace = [], gaps = [];
+        const note = (e) => { trace.push(e); if (typeof args.onEvent === 'function') { try { args.onEvent(e); } catch (_) { /* 進度回報壞了不影響流程 */ } } };
+        const spend = (k) => { if (calls.ask + calls.write >= o.maxCalls) throw new Budget('呼叫次數用完（' + o.maxCalls + '）'); calls[k]++; };
+        const ask = args.ask ? async (msgs, validate, opts2) => { spend('ask'); const v = await args.ask(msgs, validate, opts2); note({ t: 'ask', ok: !!v }); return v; } : null;
+        const write = async (msgs, meta) => { spend('write'); const v = await args.write(msgs, meta); note({ t: 'write', fn: meta && meta.fn, thinking: !!(meta && meta.thinking), kind: meta && meta.kind }); return v; };
+        const stack = Stack.create(clip(problem.title ? problem.title + '：' + problem.statement : problem.statement, 200), { maxDecisions: 12, maxHeaderChars: 900 });
+        const spec = buildSpec(problem);
+        let plan = [], codes = {}, rethinks = 0, sum = null, source = '', reviews = null;
+        const result = (extra) => Object.assign({ ok: !!(sum && DONE[sum.verdict]), verified: !!(sum && sum.verdict === 'AC'), verdict: sum ? sum.verdict : 'NONE', source, plan, codes, rethinks, calls, gaps, trace, edits: fixEdits, stack: Stack.toJsonl(stack) }, extra || {});
+        const fixEdits = [];
+        const assembleAll = () => { source = assemble(lang, plan.map((n) => codes[n.name] || '')); return source; };
+        const judgeNow = async () => { calls.judge++; sum = await args.judge({ lang, source }); note({ t: 'judge', verdict: sum.verdict, detail: clip(sum.detail, 120) }); return sum; };
+        // 判題；編譯失敗（CE）時先讓程式修語法（不花模型呼叫；有 args.repair 才做），修好再判一次，並把修補對應回函式的程式碼
+        const judgeAndFix = async () => {
+            await judgeNow();
+            if (sum.verdict === 'CE' && typeof args.repair === 'function' && o.syntaxFix !== false) {
+                let r = null; try { r = await args.repair({ lang, source, ask, semantic: { symbols: symbolsOfPlan(plan), hints: plan.map((x) => '函式 ' + x.signature + (x.purpose ? '：' + x.purpose : '')) }, wrap: (m) => Stack.wrap(m, stack) }); } catch (e) { if (e instanceof Budget) throw e; r = null; }
+                if (r && r.ok && r.source !== source) {
+                    note({ t: 'syntax_fixed', edits: (r.edits || []).length, tried: r.tried }); fixEdits.push(...(r.edits || [])); const mapped = patchCodes(codes, source, r.source); source = r.source;
+                    if (!mapped) gaps.push('語法修補只套用在組裝後的程式，沒有對應回函式（之後重寫其他函式時可能再出現）');
+                    await judgeNow();
+                }
+            }
+            return sum;
+        };
+        try {
+            Stack.push(stack, { path: 'program', question: '用 ' + L.name + ' 寫出符合題目的完整程式', note: '切割→逐函式→驗收' });
+
+            // 1. 切割（UML design 風格）。組語等不切；問不出來或結果不合用就退回單一入口函式
+            const splitMsgs = (entryName, root, subOf) => [{ role: 'system', content: '你是軟體設計者。把題目切成幾個小函式，只輸出 JSON：{"functions":[{"name":"函式名","signature":"簽名","purpose":"一句話","calls":["它會呼叫的函式名"],"complex":false}]}。必須有函式「' + entryName + '」，負責' + (root ? '讀入全部輸入並輸出答案' : '把其他小函式串起來完成它的工作') + '。簡單的題目只要一個函式就好，不要切得太碎；某個函式還是很複雜才把它的 complex 填 true。' }, { role: 'user', content: spec + (subOf ? '\n\n現在要切的函式：' + subOf.name + (subOf.purpose ? '：' + subOf.purpose : '') + '（只切這一個）' : '') }];
+            const SPLIT_OK = (x) => (x && Array.isArray(x.functions) && x.functions.length ? [] : ['「functions」必須是非空陣列']);
+            // 巢狀：標了 complex 的函式再問一次切法（最多 o.maxDepth 層、名稱不可和別的函式衝突、有環或太多就保持原樣）
+            const expand = async (list, depth) => {
+                if (!ask || depth >= o.maxDepth) return list;
+                const known = new Set(plan.concat(list).map((x) => x.name)); const out = [];
+                for (const node of list) {
+                    if (!node.complex || node.name === L.entry) { out.push(node); continue; }
+                    Stack.push(stack, { path: 'split:' + node.name, question: '把函式 ' + node.name + ' 再切小（最多 ' + o.maxFunctions + ' 個）', note: '第 ' + (depth + 1) + ' 層' });
+                    const v = await ask(Stack.wrap(splitMsgs(node.name, false, node), stack), SPLIT_OK); const sub = v ? normalizePlan(v, node.name, o.maxFunctions) : null;
+                    const clash = sub && sub.some((x) => x.name !== node.name && known.has(x.name));
+                    if (sub && sub.length > 1 && !clash) { sub.forEach((x) => known.add(x.name)); const comp = sub[sub.length - 1]; comp.complex = false; comp.depth = depth + 1; const kids = await expand(sub.slice(0, -1).map((x) => Object.assign(x, { depth: depth + 1 })), depth + 1); Stack.pop(stack, { summary: '切成 ' + sub.length + ' 個' }); out.push(...kids, comp); }
+                    else { Stack.pop(stack, { summary: '不再切' }); node.complex = false; out.push(node); if (v && (clash || (sub && sub.length <= 1))) gaps.push('函式 ' + node.name + '：再切的結果不能用（' + (clash ? '名稱衝突' : '沒有切開') + '），維持單一函式'); }
+                }
+                return out;
+            };
+            if (L.noSplit) plan = [{ name: L.entry, signature: L.entry, purpose: '整個程式', calls: [], complex: false }];
+            else {
+                let norm = null;
+                if (ask) {
+                    Stack.push(stack, { path: 'split', question: '把題目切成幾個小函式（最多 ' + o.maxFunctions + ' 個）' });
+                    const v = await ask(Stack.wrap(splitMsgs(L.entry, true), stack), SPLIT_OK);
+                    norm = v ? normalizePlan(v, L.entry, o.maxFunctions) : null;
+                    if (norm) { plan = norm; norm = await expand(norm, 0); }
+                    Stack.pop(stack, { summary: norm ? norm.length + ' 個函式' : '用單一函式' });
+                }
+                plan = norm || [{ name: L.entry, signature: L.entry, purpose: '讀入全部輸入並輸出答案', calls: [], complex: false }];
+                if (!norm) gaps.push('切割：沒有取得可用的函式清單，退回單一入口函式');
+            }
+            note({ t: 'plan', functions: plan.map((x) => x.name) });
+            for (const n of plan) Stack.decide(stack, '函式 ' + n.signature + (n.purpose ? '：' + n.purpose : ''));
+
+            if (o.stackChecks && ask && plan.length > 1) await Stack.planChecks(stack, { ask, next: '逐一寫出每個函式', defaults: [{ check: '每個被呼叫的函式都有寫出來', standard: '函式清單裡每一項都有定義' }, { check: '簽名與清單一致', standard: '名稱與參數個數相同' }] });
+
+            // 2. 由葉往上逐函式寫
+            const listText = () => plan.map((n) => '- ' + n.signature + (n.purpose ? '：' + n.purpose : '')).join('\n');
+            // 這個語言的 CoLU 集合決定怎麼寫：有文法且給了 choose（選擇題）→ 文法算出合法 token、模型（開思考）做選擇題；否則模型自由寫（只給沒有文法的語言，或沒有 choose 的呼叫端）
+            const colu = LC ? LC.get(lang) : null; const writerMode = o.writeMode || (colu ? colu.writer.mode : 'free');
+            const guidedOn = writerMode === 'guided' && !!(Guided && colu && colu.grammar && (typeof args.choose === 'function' || (args.lm && typeof args.lm.open === 'function')));
+            const RULES_TEXT = (colu && colu.rules) || L.rules; // 規則文字取自這個語言自己的 CoLU 集合
+            const countedChoose = typeof args.choose === 'function' ? async (m, opts2) => { calls.choose++; return args.choose(m, opts2); } : undefined;
+            const countedFree = args.free ? async (m, kind) => { calls.free++; return args.free(m, kind); } : undefined;
+            const guidedWrite = async (node, extra, thinking) => {
+                const r = await Guided.guidedWriteFunction({ lang, spec, node, plan, symbols: symbolsOfPlan(plan), choose: countedChoose, free: countedFree, lm: args.lm, rules: RULES_TEXT, langLabel: (colu && colu.label) || L.name, stack, stackMod: Stack, feedback: extra || '', opts: Object.assign({ allowInlineAsm: !!o.allowInlineAsm, strategy: o.guidedStrategy }, o.guided || {}), onEvent: (e) => { if (e.t === 'pick' || e.t === 'auto') note({ t: 'token', fn: node.name, kind: e.kind || 'auto', text: e.text || e.token }); } });
+                note({ t: 'guided', fn: node.name, ok: r.ok, reason: r.reason, choose: r.calls && r.calls.choose, free: r.calls && r.calls.free, rank: r.calls && r.calls.rank, tokens: r.tokens });
+                if (!r.ok) { gaps.push('函式 ' + node.name + '：文法引導寫作沒完成（' + r.reason + (r.detail ? '：' + r.detail : '') + '），改成模型自由寫'); return null; }
+                return (r.imports && r.imports.length ? r.imports.join('\n') + '\n' : '') + r.code;
+            };
+            const writeFn = async (node, extra, thinking) => {
+                Stack.push(stack, { path: 'fn:' + node.name, question: (extra ? '重寫函式 ' : '寫函式 ') + node.name + (node.purpose ? '：' + node.purpose : '') });
+                let reason = extra || '', selfTried = false, code = '', failed = false, triedGuided = false;
+                for (;;) {
+                    const entryNote = node.calls && node.calls.length ? '它負責串起這些函式：' + node.calls.join('、') + (node.name === L.entry ? '，並讀入全部輸入、輸出答案。' : '。') : '';
+                    const msgs = [{ role: 'system', content: '你是' + L.name + '程式設計師，正在分步寫一個程式。只輸出一個程式碼區塊，裡面只有函式「' + node.name + '」的完整定義，不要其他函式、不要說明。' + RULES_TEXT }, { role: 'user', content: spec + (plan.length > 1 ? '\n\n函式清單（已定，簽名不要改）：\n' + listText() : '') + '\n\n現在寫：' + node.name + (node.purpose ? '（' + node.purpose + '）' : '') + '。' + entryNote + (reason ? '\n' + reason : '') }];
+                    let g = null; if (guidedOn && !triedGuided) { triedGuided = true; g = await guidedWrite(node, reason, thinking); } // 每次寫（含重寫）各試一次引導；重寫帶著失敗回饋，題目的上下文已經不同
+                    code = g != null ? g : extractCode(await write(Stack.wrap(msgs, stack, { repeat: !!thinking }), { thinking: !!thinking, kind: extra ? 'rewrite' : 'write', fn: node.name }));
+                    if (o.stackChecks && ask && !selfTried) { selfTried = true; const sv = await Stack.selfValidate(stack, { ask, result: code }); if (sv && sv.ok === false && !sv.unsure) { reason = '自問發現缺：' + sv.missing; continue; } }
+                    const r = Stack.pop(stack, { summary: '已寫好，約 ' + code.split('\n').length + ' 行', result: code, verify: (c) => verifyFn(c, node, lang) });
+                    if (r.ok) { failed = !!r.frame.failed; break; }
+                    reason = '上次的問題：' + r.reason;
+                }
+                if (failed) gaps.push('函式 ' + node.name + '：產生的程式碼沒通過基本檢查');
+                codes[node.name] = code; return code;
+            };
+            for (const n of plan) await writeFn(n, '', false);
+
+            if (o.stackChecks && ask && plan.length > 1) { reviews = await Stack.reviewReturn(stack, { ask, returned: '全部 ' + plan.length + ' 個函式' }); if (reviews && reviews.problems && reviews.problems.length) gaps.push('回來核對：' + reviews.problems.map((p) => p.check + '→' + p.fix).join('；')); }
+
+            // 3. 驗收；沒過就選擇題挑要修的函式、重寫（這一輪才開 thinking）
+            assembleAll(); await judgeAndFix();
+            while (!DONE[sum.verdict] && sum.verdict !== 'UNAVAILABLE' && rethinks < o.maxRethink) {
+                rethinks++; note({ t: 'rethink', n: rethinks, verdict: sum.verdict });
+                const fb = feedback(sum, problem);
+                Stack.push(stack, { path: 'rethink#' + rethinks, question: '程式判決 ' + sum.verdict + '，要修哪個函式？', note: clip(fb.split('\n')[0], 100) });
+                let node = plan[plan.length - 1];
+                if (plan.length > 1 && ask) {
+                    const letters = plan.map((_, i) => String.fromCharCode(65 + i));
+                    const msgs = [{ role: 'system', content: '你在除錯。只輸出 JSON：{"fix":"字母"}，選一個最可能有錯的函式。' }, { role: 'user', content: fb + '\n\n選項：\n' + plan.map((n, i) => letters[i] + '. ' + n.name + (n.signature && n.signature !== n.name ? '　' + n.signature : '') + (n.purpose ? '：' + n.purpose : '')).join('\n') }];
+                    const v = await ask(Stack.wrap(msgs, stack), (x) => (x && letters.indexOf(String(x.fix || '').toUpperCase()) >= 0 ? [] : ['「fix」必須是 ' + letters.join('、') + ' 其中一個']));
+                    if (v) node = plan[letters.indexOf(String(v.fix).toUpperCase())];
+                }
+                const extra = fb + '\n目前的函式程式碼：\n' + clip(codes[node.name], 800) + '\n請修正後重新寫出完整函式。';
+                await writeFn(node, extra, false);
+                assembleAll(); await judgeAndFix();
+                Stack.pop(stack, { summary: '重寫 ' + node.name + ' → ' + sum.verdict });
+            }
+            Stack.pop(stack, { summary: sum.verdict });
+            if (sum.verdict === 'CHECKED') gaps.push('只通過編譯／語法檢查，沒有測試驗證行為（verified:false）');
+            else if (!DONE[sum.verdict]) gaps.push(sum.verdict === 'UNAVAILABLE' ? '這台機器沒有 ' + lang + ' 的工具鏈，無法驗收' : '重寫 ' + rethinks + ' 次後仍是 ' + sum.verdict + '：' + clip(feedback(sum, problem).split('\n')[0], 160));
+            return result(reviews ? { reviews } : null);
+        } catch (e) {
+            if (e instanceof Budget) { gaps.push(e.message); return result({ ok: false, reason: 'budget' }); }
+            throw e;
+        }
+    }
+
+    return { LANGS, solve, patchCodes, symbolsOfPlan, assemble, extractCode, normalizePlan, buildSpec, feedback, verifyFn };
+});
+
+}).call(null, undefined, holder);
+return holder.FaCodeLoop;
+})();
+/* CODELOOP-END */
+/* CODEPROJECT-BEGIN */
+const FaCodeProject = (function () {
+const holder = {};
+(function (module, self) {
+/* 專案模式（第一階段，純函式，UMD；模型與檢查器都是注入的）：給一份 UML 模型（FaUml 的 {classes, relations}），
+ * 依「專案 → 套件 → 類別」遞迴切割，每個類別一個思考堆疊框架、各寫一次完整的 class，全部合成一個檔案後交給檢查器（編譯／語法，或呼叫端綁好的判題器）。
+ * 沒過就用選擇題挑「要重寫哪個類別」，帶著編譯訊息重寫。設計見 DESIGN.fn-template.md 第八節；題目式（stdin→stdout）的版本在 code_loop_core.js。
+ *
+ *   solveProject({model, lang, scenario, ask, write, judge, stackMod?, opts?}) → Promise<結果>
+ *     ask(messages, validate)、write(messages, {thinking, kind, fn})：同 code_loop_core。judge({lang, source}) 通常是 judge-runner 的 check（只編譯）；
+ *     opts：driver（附在所有 class 之後的進入點／測試程式碼，語言自己的；有給才會真的跑出行為）、maxRethink 3、maxCalls 60、opsPerClass 6（超過只記 gap，仍一次寫完）
+ *   支援語言：python、nodejs、java、csharp、cpp、ruby、perl（其他語言回 ok:false、reason:'unsupported_lang'）。
+ *   結果：{ ok, verified, verdict, source, order, classes:{名:程式}, rethinks, calls, gaps, reason?, stack, trace }
+ *     verified：只有判決是 AC（有 driver＋測試）才是 true；CHECKED（只編譯過）是 ok 但 verified:false，gaps 會說明。 */
+(function (root, factory) { const T = (typeof FaThinkStack !== 'undefined' && FaThinkStack) || (root && root.FaThinkStack) || (typeof require === 'function' ? require('./think_stack.js') : null); const L = (typeof FaCodeLoop !== 'undefined' && FaCodeLoop) || (root && root.FaCodeLoop) || (typeof require === 'function' ? require('./code_loop_core.js') : null); if (typeof module === 'object' && module.exports) module.exports = factory(T, L); else root.FaCodeProject = factory(T, L); })(typeof self !== 'undefined' ? self : this, function (DefaultStack, Loop) {
+    'use strict';
+    const clip = (s, n) => { s = String(s == null ? '' : s).replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, Math.max(1, n - 1)) + '…' : s; };
+    const PLANGS = {
+        python: { name: 'Python 3', hoist: /^(import|from)\s/, rules: '用 class 定義（含 __init__ 與每個操作）；不要寫 main、不要在檔案裡直接執行任何東西；import 寫在最前面。' },
+        nodejs: { name: 'Node.js', hoist: /^(const|let|var)\s+\w+\s*=\s*require\(/, rules: '用 class 定義（constructor 與每個操作）；不要在檔案裡直接執行任何東西；require 寫在最前面。' },
+        java: { name: 'Java', hoist: /^import\s/, rules: '寫成非 public 的 class（不要寫 public class）；不要 package、不要 main；成員用 public；import 寫在最前面。' },
+        csharp: { name: 'C#', hoist: /^using\s/, rules: '不要 namespace、不要 Main；成員用 public；using 寫在最前面。' },
+        cpp: { name: 'C++', hoist: /^(#include\b|using\s+namespace\b)/, rules: 'class 完整定義（成員函式寫在類別裡面，結尾要有分號）；不要 main；#include 與 using namespace std; 寫在最前面。' },
+        ruby: { name: 'Ruby', hoist: /^require\b/, rules: '用 class ... end 定義；不要在檔案裡直接執行任何東西。' },
+        perl: { name: 'Perl', hoist: /^use\s+(strict|warnings|utf8)\b/, rules: '用 package 名稱; 開頭，sub new 與每個操作用 sub 定義，最後一行 1;；use strict; use warnings; 寫在最前面。' }
+    };
+    const patchCodes = Loop.patchCodes;
+    class Budget extends Error { }
+    const DONE = { AC: 1, CHECKED: 1 };
+
+    const typeStr = (t) => { if (t == null) return ''; if (typeof t === 'string') return t; const a = t.args && t.args.length ? '<' + t.args.map(typeStr).join(', ') + '>' : ''; return (t.base || '') + a; };
+    const typeRefsOf = (t, out) => { out = out || []; if (t == null) return out; if (typeof t === 'string') { (t.match(/[A-Za-z_]\w*/g) || []).forEach((x) => out.push(x)); return out; } if (t.base) out.push(t.base); (t.args || []).forEach((a) => typeRefsOf(a, out)); return out; };
+    const attrLine = (a) => (a.visibility || '+') + a.name + ': ' + typeStr(a.type);
+    const opLine = (o) => (o.visibility || '+') + o.name + '(' + (o.params || []).map((p) => p.name + ': ' + typeStr(p.type)).join(', ') + ')' + (o.returns ? ': ' + typeStr(o.returns) : '');
+    function classSpec(c) {
+        if (c.kind === 'enum') return (c.kind) + ' ' + c.name + '：' + (c.values || []).join(', ');
+        return (c.kind === 'abstract' ? 'abstract class' : c.kind) + ' ' + c.name + (c.attrs && c.attrs.length ? '\n屬性：' + c.attrs.map(attrLine).join('；') : '') + (c.ops && c.ops.length ? '\n操作：' + c.ops.map(opLine).join('；') : '');
+    }
+    const norm = (s) => String(s).toLowerCase().replace(/_/g, '');
+
+    // 依賴：關係（from 依賴 to）與屬性／操作用到的型別；被依賴的排前面（有環時照模型原順序，不丟東西）
+    function dependencies(model) {
+        const names = new Set(model.classes.map((c) => c.name)); const deps = new Map(model.classes.map((c) => [c.name, new Set()]));
+        for (const r of model.relations || []) if (names.has(r.from) && names.has(r.to) && r.from !== r.to) deps.get(r.from).add(r.to);
+        for (const c of model.classes) { const refs = [].concat(...(c.attrs || []).map((a) => typeRefsOf(a.type)), ...(c.ops || []).map((o) => [].concat(typeRefsOf(o.returns), ...(o.params || []).map((p) => typeRefsOf(p.type))))); for (const x of refs) if (names.has(x) && x !== c.name) deps.get(c.name).add(x); }
+        return deps;
+    }
+    function orderClasses(model) {
+        const deps = dependencies(model); const byName = new Map(model.classes.map((c) => [c.name, c])); const out = [], state = {}; let cycle = false;
+        const visit = (n) => { if (state[n] === 2) return; if (state[n] === 1) { cycle = true; return; } state[n] = 1; for (const d of deps.get(n)) visit(d); state[n] = 2; out.push(byName.get(n)); };
+        for (const c of model.classes) visit(c.name);
+        return { list: out, cycle, deps };
+    }
+
+    // 設計樹的語意給語法修復用：類別名稱、屬性名稱（引數個數不明＝null）、方法名稱與它的引數個數
+    function modelSymbols(list) { const out = {}; for (const c of list || []) { out[c.name] = null; for (const a of c.attrs || []) out[a.name] = null; for (const o of c.ops || []) out[o.name] = (o.params || []).length; } return out; }
+    function assembleProject(lang, codes, driver) {
+        const P = PLANGS[lang]; const hoisted = [], seen = new Set(), bodies = [];
+        for (const code of codes) {
+            const keep = [];
+            for (const line of String(code).split('\n')) { if (P.hoist && P.hoist.test(line)) { const k = line.trim(); if (!seen.has(k)) { seen.add(k); hoisted.push(k); } } else keep.push(line); }
+            bodies.push(keep.join('\n').replace(/^\s*\n+/, '').replace(/\s+$/, ''));
+        }
+        return (hoisted.length ? hoisted.join('\n') + '\n\n' : '') + bodies.join('\n\n') + '\n' + (driver ? '\n' + String(driver).replace(/\s+$/, '') + '\n' : '');
+    }
+
+    function verifyClass(code, c) {
+        const s = String(code || ''); if (s.trim().length < 8) return { ok: false, reason: '沒有程式碼' }; if (s.indexOf('```') >= 0) return { ok: false, reason: '程式碼裡不能有 ``` 標記' };
+        if (!new RegExp('(^|[^A-Za-z0-9_])' + c.name + '([^A-Za-z0-9_]|$)').test(s)) return { ok: false, reason: '沒有定義 class「' + c.name + '」' };
+        const flat = norm(s); const missing = [];
+        for (const o of c.ops || []) if (flat.indexOf(norm(o.name)) < 0) missing.push(o.name);
+        if (missing.length) return { ok: false, reason: '缺少操作：' + missing.slice(0, 6).join('、') };
+        return { ok: true };
+    }
+
+    async function solveProject(args) {
+        const model = args.model, lang = args.lang, P = PLANGS[lang]; const Stack = args.stackMod || DefaultStack;
+        const o = Object.assign({ maxRethink: 3, maxCalls: Infinity, /* 開發期間不設上限，profile 後再訂 */ opsPerClass: 6, driver: '' }, args.opts || {});
+        const calls = { ask: 0, write: 0, judge: 0 }, trace = [], gaps = [];
+        const note = (e) => { trace.push(e); if (typeof args.onEvent === 'function') { try { args.onEvent(e); } catch (_) { /* 進度回報壞了不影響流程 */ } } };
+        if (!P) return { ok: false, verified: false, verdict: 'NONE', reason: 'unsupported_lang', gaps: ['專案模式不支援 ' + lang + '（支援：' + Object.keys(PLANGS).join('、') + '）'], calls, trace, source: '', classes: {}, order: [], rethinks: 0, stack: [] };
+        if (!model || !Array.isArray(model.classes) || !model.classes.length) return { ok: false, verified: false, verdict: 'NONE', reason: 'empty_model', gaps: ['UML 模型沒有任何類別'], calls, trace, source: '', classes: {}, order: [], rethinks: 0, stack: [] };
+        const spend = (k) => { if (calls.ask + calls.write >= o.maxCalls) throw new Budget('呼叫次數用完（' + o.maxCalls + '）'); calls[k]++; };
+        const ask = args.ask ? async (msgs, validate, opts2) => { spend('ask'); const v = await args.ask(msgs, validate, opts2); note({ t: 'ask', ok: !!v }); return v; } : null;
+        const write = async (msgs, meta) => { spend('write'); const v = await args.write(msgs, meta); note({ t: 'write', fn: meta && meta.fn, thinking: !!(meta && meta.thinking), kind: meta && meta.kind }); return v; };
+        const goal = clip((args.scenario || model.name || '實作這個 UML 設計'), 200);
+        const stack = Stack.create(goal, { maxDecisions: 12, maxHeaderChars: 900 });
+        const ord = orderClasses(model); const order = ord.list; if (ord.cycle) gaps.push('類別之間有循環依賴，照模型原順序處理（編譯順序可能有問題）');
+        const codes = {}; let sum = null, source = '', rethinks = 0;
+        const result = (extra) => Object.assign({ ok: !!(sum && DONE[sum.verdict]), verified: !!(sum && sum.verdict === 'AC'), verdict: sum ? sum.verdict : 'NONE', source, order: order.map((c) => c.name), classes: codes, rethinks, calls, gaps, trace, edits: fixEdits, stack: Stack.toJsonl(stack) }, extra || {});
+        const listText = () => order.map((c) => '- ' + classSpec(c).replace(/\n/g, '；')).join('\n');
+        const fixEdits = [];
+        const assembleAll = () => { source = assembleProject(lang, order.map((c) => codes[c.name] || ''), o.driver); return source; };
+        const judgeNow = async () => { calls.judge++; sum = await args.judge({ lang, source }); note({ t: 'judge', verdict: sum.verdict, detail: clip(sum.detail, 120) }); return sum; };
+        const judgeAndFix = async () => {
+            await judgeNow();
+            if (sum.verdict === 'CE' && typeof args.repair === 'function' && o.syntaxFix !== false) {
+                let r = null; try { r = await args.repair({ lang, source, ask, semantic: { symbols: modelSymbols(order), hints: order.map((c) => classSpec(c).replace(/\n/g, '；')) }, wrap: (m) => Stack.wrap(m, stack) }); } catch (e) { if (e instanceof Budget) throw e; r = null; }
+                if (r && r.ok && r.source !== source) { note({ t: 'syntax_fixed', edits: (r.edits || []).length, tried: r.tried }); fixEdits.push(...(r.edits || [])); const mapped = patchCodes(codes, source, r.source); source = r.source; if (!mapped) gaps.push('語法修補只套用在組裝後的程式，沒有對應回類別（之後重寫其他類別時可能再出現）'); await judgeNow(); }
+            }
+            return sum;
+        };
+        try {
+            Stack.push(stack, { path: 'project', question: '用 ' + P.name + ' 實作整個 UML 設計（' + order.length + ' 個類別）', note: '專案→套件→類別' });
+            note({ t: 'plan', classes: order.map((x) => x.name) });
+            for (const c of order) Stack.decide(stack, classSpec(c).replace(/\n/g, '；'));
+            const writeClass = async (c, extra, thinking) => {
+                Stack.push(stack, { path: 'class:' + c.name, question: (extra ? '重寫 class ' : '寫 class ') + c.name + '（' + (c.attrs || []).length + ' 個屬性、' + (c.ops || []).length + ' 個操作）' });
+                let reason = extra || '', code = '', failed = false; const dep = Array.from(ord.deps.get(c.name) || []);
+                for (;;) {
+                    const msgs = [{ role: 'system', content: '你是' + P.name + '程式設計師，正在分步實作一個 UML 設計。只輸出一個程式碼區塊，裡面只有 class「' + c.name + '」的完整實作，不要其他 class、不要說明。' + P.rules }, { role: 'user', content: '系統目標：' + goal + '\n\n所有類別（已定，名稱與成員不要改）：\n' + listText() + '\n\n現在寫：' + c.name + '\n' + classSpec(c) + (dep.length ? '\n它會用到：' + dep.join('、') : '') + (reason ? '\n' + reason : '') }];
+                    code = Loop.extractCode(await write(Stack.wrap(msgs, stack, { repeat: !!thinking }), { thinking: !!thinking, kind: extra ? 'rewrite' : 'write', fn: c.name }));
+                    const r = Stack.pop(stack, { summary: '已寫好，約 ' + code.split('\n').length + ' 行', result: code, verify: (x) => verifyClass(x, c) });
+                    if (r.ok) { failed = !!r.frame.failed; break; }
+                    reason = '上次的問題：' + r.reason;
+                }
+                if (failed) gaps.push('class ' + c.name + '：產生的程式碼沒通過基本檢查（' + verifyClass(code, c).reason + '）');
+                if ((c.ops || []).length > o.opsPerClass) gaps.push('class ' + c.name + ' 有 ' + c.ops.length + ' 個操作，超過 ' + o.opsPerClass + '，一次寫完可能不完整');
+                codes[c.name] = code; return code;
+            };
+            // 套件：有 package 欄位就多一層框架；沒有就只有專案層
+            const groups = new Map(); for (const c of order) { const k = c.package || ''; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(c); }
+            for (const [pkg, list] of groups) {
+                if (pkg && groups.size > 1) Stack.push(stack, { path: 'pkg:' + pkg, question: '實作套件 ' + pkg + ' 的 ' + list.length + ' 個類別' });
+                for (const c of list) await writeClass(c, '', false);
+                if (pkg && groups.size > 1) Stack.pop(stack, { summary: list.length + ' 個類別已寫好' });
+            }
+            assembleAll(); await judgeAndFix();
+            while (!DONE[sum.verdict] && sum.verdict !== 'UNAVAILABLE' && rethinks < o.maxRethink) {
+                rethinks++; note({ t: 'rethink', n: rethinks, verdict: sum.verdict }); const log = clip(sum.compileLog || sum.detail || '', 500);
+                Stack.push(stack, { path: 'rethink#' + rethinks, question: '程式判決 ' + sum.verdict + '，要修哪個類別？', note: clip(log, 100) });
+                let c = order.find((x) => new RegExp('\\b' + x.name + '\\b').test(log)) || order[order.length - 1]; // 預設：編譯訊息裡點名的第一個類別，否則最後一個
+                if (order.length > 1 && ask) {
+                    const letters = order.map((_, i) => String.fromCharCode(65 + i));
+                    const msgs = [{ role: 'system', content: '你在除錯。只輸出 JSON：{"fix":"字母"}，選一個最可能有錯的類別。' }, { role: 'user', content: '判決 ' + sum.verdict + '：' + log + '\n\n選項：\n' + order.map((x, i) => letters[i] + '. ' + x.name + (x.ops && x.ops.length ? '（' + x.ops.slice(0, 4).map((p) => p.name).join('、') + '）' : '')).join('\n') }];
+                    const v = await ask(Stack.wrap(msgs, stack), (x) => (x && letters.indexOf(String(x.fix || '').toUpperCase()) >= 0 ? [] : ['「fix」必須是 ' + letters.join('、') + ' 其中一個']));
+                    if (v) c = order[letters.indexOf(String(v.fix).toUpperCase())];
+                }
+                await writeClass(c, '判決 ' + sum.verdict + '：' + log + '\n目前的程式碼：\n' + clip(codes[c.name], 900) + '\n請修正後重新寫出完整的 class。', false);
+                assembleAll(); await judgeAndFix();
+                Stack.pop(stack, { summary: '重寫 ' + c.name + ' → ' + sum.verdict });
+            }
+            Stack.pop(stack, { summary: sum.verdict });
+            if (sum.verdict === 'CHECKED') gaps.push('只通過編譯／語法檢查，沒有執行測試驗證行為（verified:false）' + (o.driver ? '' : '；沒有給 driver，所以連執行都沒有'));
+            else if (sum.verdict === 'UNAVAILABLE') gaps.push('這台機器沒有 ' + lang + ' 的工具鏈，無法檢查');
+            else if (!DONE[sum.verdict]) gaps.push('重寫 ' + rethinks + ' 次後仍是 ' + sum.verdict + '：' + clip(sum.compileLog || sum.detail, 160));
+            return result();
+        } catch (e) { if (e instanceof Budget) { gaps.push(e.message); return result({ ok: false, reason: 'budget' }); } throw e; }
+    }
+
+    return { PLANGS, solveProject, orderClasses, classSpec, assembleProject, verifyClass };
+});
+
+}).call(null, undefined, holder);
+return holder.FaCodeProject;
+})();
+/* CODEPROJECT-END */
+/* CODEEDIT-BEGIN */
+const FaCodeEdit = (function () {
+const holder = {};
+(function (module, self) {
+/* 從「任意拿到的程式碼」接續修改（純函式，UMD；模型、檢查器、判題器都是注入的）。不需要知道這份碼是誰寫的、怎麼來的。
+ *   splitUnits(lang, source) → [{name, kind, startOff, endOff, startLine, endLine, indent, text}]   把程式切成函式（方法）單元；範圍用 offset，拼回去時只換這一段
+ *   spliceUnit(source, unit, newText) → string
+ *   editCode({source, lang, problem?, check, judge?, ask?, write?, repair?, stackMod?, opts?, onEvent?}) → Promise<結果>
+ *     1) 先修語法：check 說 CE → syntax_fix_core.repairSyntax（有測試時用測試在「都能過語法」的候選裡挑）。沒修好且有 write → 讓模型重寫出錯所在的單元（帶編譯訊息）
+ *     2) 有測試（problem.tests）且有 judge：判題 → 沒過就用選擇題挑單元、帶回饋重寫那個單元、拼回去、再修語法、再判題（最多 maxRethink 次）
+ *     只動必要的那一段，其餘位元組不變；結果有 diff 與結構化 edits。沒有測試就誠實標 verified:false。
+ *   opts：maxRethink 3、maxCalls 20、unitMaxLines 80（單元超過就不當作可重寫的單位，只能靠語法修）
+ *   結果：{ ok, verified, verdict, source, diff, edits[], units[], rethinks, calls:{ask,write,judge,check}, gaps[], reason?, trace[] } */
+(function (root, factory) {
+    const T = (typeof FaThinkStack !== 'undefined' && FaThinkStack) || (root && root.FaThinkStack) || (typeof require === 'function' ? require('./think_stack.js') : null);
+    const S = (typeof FaSyntaxFix !== 'undefined' && FaSyntaxFix) || (root && root.FaSyntaxFix) || (typeof require === 'function' ? require('./syntax_fix_core.js') : null);
+    const L = (typeof FaCodeLoop !== 'undefined' && FaCodeLoop) || (root && root.FaCodeLoop) || (typeof require === 'function' ? require('./code_loop_core.js') : null);
+    if (typeof module === 'object' && module.exports) module.exports = factory(T, S, L); else root.FaCodeEdit = factory(T, S, L);
+})(typeof self !== 'undefined' ? self : this, function (DefaultStack, Fix, Loop) {
+    'use strict';
+    const clip = (s, n) => { s = String(s == null ? '' : s).replace(/[ \t]+$/gm, '').trim(); return s.length > n ? s.slice(0, Math.max(1, n - 1)) + '…' : s; };
+    const lineOf = (src, off) => { let l = 1; for (let i = 0; i < off && i < src.length; i++) if (src[i] === '\n') l++; return l; };
+    const lineStartOf = (src, off) => src.lastIndexOf('\n', off - 1) + 1;
+    const mk = (src, name, kind, a, b, indent) => ({ name, kind, startOff: a, endOff: b, startLine: lineOf(src, a), endLine: lineOf(src, Math.max(a, b - 1)), indent: indent || '', text: src.slice(a, b) });
+
+    // ---------- 單元切分 ----------
+    function splitUnits(lang, src) {
+        src = String(src == null ? '' : src); const units = [];
+        const fam = Fix.FAMILY[lang]; if (!fam) return units;
+        if (lang === 'python') return pyUnits(src);
+        if (lang === 'ruby') return rubyUnits(src);
+        if (lang === 'bash') return braceUnits(src, lang, /^\s*(?:function\s+)?([A-Za-z_][\w-]*)\s*(?:\(\s*\))?\s*\{/m);
+        if (lang === 'perl') return braceUnits(src, lang, /^\s*sub\s+([A-Za-z_]\w*)\s*(?:\([^)]*\))?\s*\{/m);
+        return clikeUnits(lang, src, units);
+    }
+    function pyUnits(src) {
+        const lines = src.split('\n'); const offs = []; let o = 0; for (const l of lines) { offs.push(o); o += l.length + 1; }
+        const units = []; const ind = (l) => /^[ \t]*/.exec(l)[0].length;
+        for (let i = 0; i < lines.length; i++) {
+            const m = /^([ \t]*)(?:async[ \t]+)?def[ \t]+(\w+)/.exec(lines[i]); if (!m) continue;
+            let start = i; while (start > 0 && /^[ \t]*@/.test(lines[start - 1])) start--; // 裝飾器算在單元裡
+            const base = ind(lines[i]); let j = i + 1, last = i;
+            // 標頭可能跨行（括號沒收）：先找到以 ':' 結尾的那一行
+            let hdr = i; while (hdr < lines.length && hdr < i + 8 && !/:\s*(#.*)?$/.test(lines[hdr])) hdr++; if (hdr >= lines.length || !/:\s*(#.*)?$/.test(lines[hdr])) hdr = i; /* 標頭缺冒號（任意拿到的壞程式很常見）：就當標頭只有這一行 */ last = hdr; j = hdr + 1;
+            for (; j < lines.length; j++) { if (!lines[j].trim()) continue; if (ind(lines[j]) <= base) break; last = j; }
+            units.push(mk(src, m[2], 'function', offs[start], Math.min(src.length, offs[last] + lines[last].length), m[1]));
+        }
+        return units.filter((u) => !units.some((v) => v !== u && v.startOff <= u.startOff && v.endOff >= u.endOff && v.indent.length < u.indent.length && false));
+    }
+    function rubyUnits(src) {
+        const lines = src.split('\n'); const offs = []; let o = 0; for (const l of lines) { offs.push(o); o += l.length + 1; }
+        const units = []; const open = /^\s*(def|class|module|if|unless|while|until|case|begin|for)\b/; const doEnd = /\bdo(\s*\|[^|]*\|)?\s*$/;
+        for (let i = 0; i < lines.length; i++) {
+            const m = /^([ \t]*)def[ \t]+(?:self\.)?([\w?!=]+)/.exec(lines[i]); if (!m) continue; let depth = 0, end = -1;
+            for (let j = i; j < lines.length; j++) { const l = lines[j].replace(/#.*$/, ''); if (open.test(l) || doEnd.test(l)) depth++; if (/^\s*end\b/.test(l)) depth--; if (depth === 0) { end = j; break; } }
+            if (end >= 0) units.push(mk(src, m[2], 'function', offs[i], offs[end] + lines[end].length, m[1]));
+        }
+        return units;
+    }
+    function braceUnits(src, lang, headRe) {
+        const toks = Fix.lex(lang, src); const units = []; const re = new RegExp(headRe.source, 'gm'); let m;
+        while ((m = re.exec(src))) {
+            const bracePos = src.indexOf('{', m.index + m[0].length - 1); if (bracePos < 0) continue; const ti = toks.findIndex((t) => t.off === bracePos && t.v === '{'); if (ti < 0) continue;
+            let d = 0, end = -1; for (let k = ti; k < toks.length; k++) { if (toks[k].t === 'op' && toks[k].v === '{') d++; else if (toks[k].t === 'op' && toks[k].v === '}') { d--; if (d === 0) { end = toks[k].end; break; } } }
+            if (end < 0) continue; const ls = lineStartOf(src, m.index + (/^\s*/.exec(m[0])[0].length)); units.push(mk(src, m[1], 'function', ls, end, /^[ \t]*/.exec(src.slice(ls))[0]));
+        }
+        return units;
+    }
+    // c／c++／java／c#／nodejs：以 { 前面是 ) 當函式（方法）的標誌；c、c++、nodejs 只看最外層，java／c# 看類別裡面（深度 ≤ 2）
+    function clikeUnits(lang, src, units) {
+        const toks = Fix.lex(lang, src); const maxDepth = (lang === 'java' || lang === 'csharp') ? 1 : 0; let depth = 0;
+        const KW = new Set(['if', 'for', 'while', 'switch', 'catch', 'else', 'do', 'try', 'return', 'sizeof', 'new', 'synchronized', 'foreach', 'using', 'lock']);
+        for (let i = 0; i < toks.length; i++) {
+            const t = toks[i]; if (t.t !== 'op') continue;
+            if (t.v === '{') {
+                // 往前跳過 const／throws／noexcept／=>／:（建構子初始化）等，找到 )
+                let p = i - 1; while (p >= 0 && toks[p].t === 'id' && /^(const|noexcept|override|final|throws|where)$/.test(toks[p].v) || (p >= 0 && toks[p].t === 'id' && p - 1 >= 0 && toks[p - 1].v === 'throws')) p--;
+                if (depth <= maxDepth && p >= 0 && toks[p].t === 'op' && toks[p].v === ')') {
+                    let d = 0, q = p; for (; q >= 0; q--) { if (toks[q].v === ')') d++; else if (toks[q].v === '(') { d--; if (d === 0) break; } }
+                    const nameTok = q > 0 ? toks[q - 1] : null; let end = -1, dd = 0; for (let k = i; k < toks.length; k++) { if (toks[k].v === '{' && toks[k].t === 'op') dd++; else if (toks[k].v === '}' && toks[k].t === 'op') { dd--; if (dd === 0) { end = toks[k].end; break; } } }
+                    if (nameTok && nameTok.t === 'id' && !KW.has(nameTok.v) && end > 0) {
+                        // 單元從「這個宣告的第一個 token」開始：往前找上一個 ; { } 或前處理行
+                        let s = q - 1; while (s > 0 && !(toks[s - 1].t === 'pp') && !(toks[s - 1].t === 'op' && /^[;{}]$/.test(toks[s - 1].v))) s--; const startTok = toks[Math.max(0, s)]; const a = lineStartOf(src, startTok.off); units.push(mk(src, nameTok.v, 'function', a, end, /^[ \t]*/.exec(src.slice(a))[0]));
+                    }
+                }
+                depth++;
+            } else if (t.v === '}') depth = Math.max(0, depth - 1);
+        }
+        // 去掉被別的單元完整包含的（巢狀函式／lambda）
+        return units.filter((u) => !units.some((v) => v !== u && v.startOff <= u.startOff && v.endOff >= u.endOff && (v.endOff - v.startOff) > (u.endOff - u.startOff)));
+    }
+    const spliceUnit = (src, u, text) => src.slice(0, u.startOff) + text + src.slice(u.endOff);
+    // 模型寫的單元要放回原本的縮排（python／ruby 縮排有意義；其他語言只是好看）
+    function reindent(text, indent) {
+        const lines = String(text).replace(/\s+$/, '').split('\n'); let min = Infinity; for (const l of lines) if (l.trim()) min = Math.min(min, /^[ \t]*/.exec(l)[0].length); if (!isFinite(min)) min = 0;
+        return lines.map((l) => (l.trim() ? indent + l.slice(min) : l)).join('\n');
+    }
+
+    // ---------- 接續修改 ----------
+    class Budget extends Error { }
+    async function editCode(a) {
+        const lang = a.lang; const o = Object.assign({ maxRethink: 3, maxCalls: 20, unitMaxLines: 80 }, a.opts || {}); const Stack = a.stackMod || DefaultStack; const orig = String(a.source == null ? '' : a.source);
+        const calls = { ask: 0, write: 0, judge: 0, check: 0 }, trace = [], gaps = [], edits = []; let cur = orig, sum = null, rethinks = 0;
+        const note = (e) => { trace.push(e); if (typeof a.onEvent === 'function') { try { a.onEvent(e); } catch (_) { /* 進度回報壞了不影響流程 */ } } };
+        const out = (extra) => { const ok = !!(sum && (sum.verdict === 'AC' || sum.verdict === 'CHECKED')); return Object.assign({ ok, verified: !!(sum && sum.verdict === 'AC'), verdict: sum ? sum.verdict : 'NONE', source: cur, diff: Fix.unifiedDiff(orig, cur, 'code'), edits, units: splitUnits(lang, cur).map((u) => ({ name: u.name, startLine: u.startLine, endLine: u.endLine })), rethinks, calls, gaps, trace }, extra || {}); };
+        if (!Fix.FAMILY[lang]) return out({ ok: false, reason: 'unsupported_lang', gaps: ['不支援的語言：' + lang + '（支援：' + Object.keys(Fix.FAMILY).join('、') + '）'] });
+        if (typeof a.check !== 'function' && typeof a.judge !== 'function') return out({ ok: false, reason: 'no_checker', gaps: ['沒有檢查器也沒有判題器，無法驗證任何東西'] });
+        const spend = (k) => { if (calls.ask + calls.write >= o.maxCalls) throw new Budget('呼叫次數用完（' + o.maxCalls + '）'); calls[k]++; };
+        const ask = a.ask ? async (m, v, opts2) => { spend('ask'); const r = await a.ask(m, v, opts2); note({ t: 'ask', ok: !!r }); return r; } : null;
+        const check = async (x) => { calls.check++; return a.check ? a.check(x) : a.judge(Object.assign({ problem: Object.assign({}, a.problem, { tests: [], hidden: [] }) }, x)); };
+        const hasTests = !!(a.problem && a.problem.tests && a.problem.tests.length && a.judge);
+        const judgeNow = async () => { if (!hasTests) { sum = await check({ lang, source: cur }); note({ t: 'check', verdict: sum.verdict }); return sum; } calls.judge++; sum = await a.judge({ lang, source: cur, problem: a.problem }); note({ t: 'judge', verdict: sum.verdict, detail: clip(sum.detail, 120) }); return sum; };
+        const verifyFn = hasTests ? async ({ source }) => (await a.judge({ lang, source, problem: a.problem })).verdict === 'AC' : null;
+        const stack = Stack ? Stack.create(clip(a.goal || (a.problem && a.problem.statement) || '修好這份程式', 200), { maxDecisions: 10, maxHeaderChars: 800 }) : null;
+        // 語法：先程式修；不行再讓模型重寫出錯的那個單元
+        const fixSyntax = async (why) => {
+            const r0 = await check({ lang, source: cur }); if (r0.verdict !== 'CE') return r0;
+            note({ t: 'syntax', why });
+            const rep = a.repair ? await a.repair({ lang, source: cur, ask, verify: verifyFn, wrap: stack ? (m) => Stack.wrap(m, stack) : undefined }) : await Fix.repairSyntax({ lang, source: cur, check: (x) => check(x), ask, verify: verifyFn, wrap: stack ? (m) => Stack.wrap(m, stack) : undefined });
+            if (rep && rep.ok) { cur = rep.source; for (const e of rep.edits || []) edits.push(Object.assign({ by: 'syntax' }, e)); note({ t: 'syntax_fixed', edits: (rep.edits || []).length, tried: rep.tried }); return check({ lang, source: cur }); }
+            gaps.push('語法自動修正沒成功（' + (rep && rep.reason) + '）');
+            return r0;
+        };
+        try {
+            if (stack) Stack.push(stack, { path: 'edit', question: '修好這份 ' + lang + ' 程式（語法→行為）', note: '從現有程式碼接續' });
+            let r = await fixSyntax('開頭'); let guard = 0;
+            // 語法仍然壞、而且有 write：讓模型重寫出錯所在的單元（帶編譯訊息）
+            while (r.verdict === 'CE' && a.write && guard++ < 2) {
+                const errs = Fix.parseErrors(lang, (r.compileLog || '') + '\n' + (r.detail || ''), cur); const units = splitUnits(lang, cur); const line = errs.length ? errs[0].line : 0;
+                const u = units.find((x) => x.startLine <= line && line <= x.endLine); if (!u) { gaps.push('語法錯誤的位置不在任何函式裡，模型重寫無從下手'); break; }
+                if (!(await rewriteUnit(u, '編譯失敗：' + clip(r.compileLog || r.detail, 400)))) break;
+                r = await fixSyntax('重寫之後');
+            }
+            if (r.verdict === 'CE') { sum = r; gaps.push('仍然有語法錯誤：' + clip(r.detail, 160)); if (stack) Stack.pop(stack, { ok: false, summary: '語法沒修好' }); return out({ ok: false }); }
+            await judgeNow();
+            if (!hasTests) gaps.push(sum.verdict === 'CHECKED' ? '沒有測試，只確認能編譯／語法正確，沒有驗證行為（verified:false）' : '沒有測試，無法驗證行為');
+            while (hasTests && sum.verdict !== 'AC' && sum.verdict !== 'UNAVAILABLE' && rethinks < o.maxRethink && a.write) {
+                rethinks++; note({ t: 'rethink', n: rethinks, verdict: sum.verdict });
+                const units = splitUnits(lang, cur).filter((u) => u.text.split('\n').length <= o.unitMaxLines); if (!units.length) { gaps.push('找不到可以重寫的函式單元（太長或不是函式），只能靠語法修正'); break; }
+                const fb = Loop.feedback(sum, a.problem); let u = units[units.length - 1];
+                if (units.length > 1 && ask) {
+                    const letters = units.map((_, i) => String.fromCharCode(65 + i));
+                    const msgs = [{ role: 'system', content: '你在除錯。只輸出 JSON：{"fix":"字母"}，選一個最可能有錯的函式。' }, { role: 'user', content: fb + '\n\n選項：\n' + units.map((x, i) => letters[i] + '. ' + x.name + '（第 ' + x.startLine + '–' + x.endLine + ' 行）').join('\n') }];
+                    const v = await ask(stack ? Stack.wrap(msgs, stack) : msgs, (x) => (x && letters.indexOf(String(x.fix || '').toUpperCase()) >= 0 ? [] : ['「fix」必須是 ' + letters.join('、') + ' 其中一個'])); if (v) u = units[letters.indexOf(String(v.fix).toUpperCase())];
+                }
+                if (!(await rewriteUnit(u, fb, true))) break;
+                await fixSyntax('重寫之後'); await judgeNow();
+            }
+            if (sum.verdict === 'UNAVAILABLE') gaps.push('這台機器沒有 ' + lang + ' 的工具鏈，無法驗證');
+            else if (hasTests && sum.verdict !== 'AC') gaps.push('重寫 ' + rethinks + ' 次後仍是 ' + sum.verdict + '：' + clip(Loop.feedback(sum, a.problem).split('\n')[0], 160));
+            if (stack) Stack.pop(stack, { ok: true, summary: sum.verdict });
+            return out();
+        } catch (e) { if (e instanceof Budget) { gaps.push(e.message); return out({ ok: false, reason: 'budget' }); } throw e; }
+
+        async function rewriteUnit(u, feedback, isSemantic) {
+            if (!a.write) return false; spend('write');
+            if (stack) Stack.push(stack, { path: 'unit:' + u.name, question: '重寫函式 ' + u.name + '（第 ' + u.startLine + '–' + u.endLine + ' 行）' });
+            const rules = (Loop.LANGS[lang] && Loop.LANGS[lang].rules) || '';
+            const msgs = [{ role: 'system', content: '你是 ' + ((Loop.LANGS[lang] && Loop.LANGS[lang].name) || lang) + ' 程式設計師，正在修一份既有的程式。只輸出一個程式碼區塊，裡面只有函式「' + u.name + '」修正後的完整定義，不要其他函式、不要說明；保持它的名稱、參數與縮排風格。' + rules }, { role: 'user', content: (a.problem && a.problem.statement ? '題目：' + clip(a.problem.statement, 600) + '\n\n' : '') + (a.goal ? '目標：' + clip(a.goal, 300) + '\n\n' : '') + '現在要修：' + u.name + '\n目前的程式碼：\n' + clip(u.text, 1400) + '\n\n' + feedback + '\n請修正後重新寫出完整函式。' }];
+            const raw = await a.write(stack ? Stack.wrap(msgs, stack, { repeat: !!isSemantic }) : msgs, { thinking: false, kind: 'rewrite', fn: u.name });
+            note({ t: 'write', fn: u.name, thinking: !!isSemantic, kind: 'rewrite' });
+            const code = Loop.extractCode(raw); const okName = new RegExp('(^|[^A-Za-z0-9_])' + u.name + '([^A-Za-z0-9_]|$)').test(code);
+            if (stack) Stack.pop(stack, { ok: okName, summary: okName ? '已重寫' : '沒有定義 ' + u.name });
+            if (!okName || code.trim().length < 5) { gaps.push('函式 ' + u.name + '：模型沒有交出可用的程式碼'); return false; }
+            const text = (lang === 'python' || lang === 'ruby') ? reindent(code, u.indent) : (u.indent && !/^[ \t]/.test(code) ? reindent(code, u.indent) : code.replace(/\s+$/, ''));
+            const before = cur; cur = spliceUnit(cur, u, text); edits.push({ by: 'rewrite', fn: u.name, startLine: u.startLine, endLine: u.endLine, desc: '重寫函式 ' + u.name, removed: clip(before.slice(u.startOff, u.endOff), 200) });
+            return true;
+        }
+    }
+
+    return { splitUnits, spliceUnit, reindent, editCode };
+});
+
+}).call(null, undefined, holder);
+return holder.FaCodeEdit;
+})();
+/* CODEEDIT-END */
+/* CODEAGENT-BEGIN */
+const FaCodeAgent = (function () {
+const holder = {};
+(function (module, self) {
+/* 寫程式的統一入口（第一階段，純函式，UMD；模型、判題器、檢查器都是注入的）：宿主（`write_code` 工具）、CoLU（`local_write_code`／`local_write_project`）、基準腳本都走這裡。
+ *   detectLang(text, fallback)                  從使用者的話判斷語言（c++／c#／javascript 先於 c／java 判斷）
+ *   makeBackend({generate, R?, askTokens?, writeTokens?}) → {ask, write, choose, free, lm?}   （write_code 領域一律不開思考）
+  *       choose／free：文法引導寫作用的選擇題與「新名稱／數字／字串」（不開思考）。
+ *       generate(req)→string 是宿主的小模型呼叫（req：{messages,maxTokens,prefill,enableThinking,timeoutMs}）；
+ *       ask＝jsonStep 包起來（回通過 validate 的 JSON 或 null，不累積歷史）；write＝純文字（不用 JSON，小模型不必把程式碼跳脫）。thinking：{enabled,maxTokens,timeoutMs}，只在「重寫」那一輪才會用。
+ *   routeOf(text, {tests}) → {route:'direct'|'uml', score, ambiguous, reasons}   使用者只丟需求，這裡（程式端）判斷要不要先設計 UML
+ *   runCode({text, lang, model?, source?, problem, driver, design?, route?, generate|backend, judge, check, stackMod, opts, onEvent}) → Promise<結果>
+ *       source（任意現有程式碼）→ edit 模式。否則由 routeOf 決定：偏大 → design({text,lang}) 設計 UML → 專案模式（code_project_core）；設計不了／語言不支援／判成單純 → 題目模式（code_loop_core）。
+ *       呼叫端不需要（也不應該）自己區分；model（已有 UML）、route 是進階覆寫。problem 有 tests 且給 judge → 用判題器（verified:true 才算驗證過行為）；
+ *       沒有測試 → 只用 check（只編譯／語法檢查，verdict:CHECKED，verified:false）。判題器與檢查器都沒給 → 回 ok:false，不假裝驗證過。
+ *   formatReport(res) → 給使用者看的中文摘要（一定寫出驗證到哪裡、有哪些 gaps）
+ * 設計見 DESIGN.fn-template.md 第八節。 */
+(function (root, factory) {
+    const R = (typeof FaRecipe !== 'undefined' && FaRecipe) || (root && root.FaRecipe) || (typeof require === 'function' ? require('./recipe_core.js') : null);
+    const T = (typeof FaThinkStack !== 'undefined' && FaThinkStack) || (root && root.FaThinkStack) || (typeof require === 'function' ? require('./think_stack.js') : null);
+    const Fix = (typeof FaSyntaxFix !== 'undefined' && FaSyntaxFix) || (root && root.FaSyntaxFix) || (typeof require === 'function' ? require('./syntax_fix_core.js') : null);
+    const Ed = (typeof FaCodeEdit !== 'undefined' && FaCodeEdit) || (root && root.FaCodeEdit) || (typeof require === 'function' ? require('./code_edit_core.js') : null);
+    const L = (typeof FaCodeLoop !== 'undefined' && FaCodeLoop) || (root && root.FaCodeLoop) || (typeof require === 'function' ? require('./code_loop_core.js') : null);
+    const P = (typeof FaCodeProject !== 'undefined' && FaCodeProject) || (root && root.FaCodeProject) || (typeof require === 'function' ? require('./code_project_core.js') : null);
+    if (typeof module === 'object' && module.exports) module.exports = factory(R, T, L, P, Fix, Ed);
+    else root.FaCodeAgent = factory(R, T, L, P, Fix, Ed);
+})(typeof self !== 'undefined' ? self : this, function (R, T, Loop, Proj, Fix, Ed) {
+    'use strict';
+    const clip = (s, n) => { s = String(s == null ? '' : s).replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, Math.max(1, n - 1)) + '…' : s; };
+
+    function detectLang(text, fallback) {
+        const s = String(text || '');
+        const rules = [['csharp', /c#|c\s*sharp|csharp|\.net\b/i], ['cpp', /c\+\+|cpp\b/i], ['nodejs', /node\.?js|javascript|\bjs\b|typescript/i], ['java', /\bjava\b(?!\s*script)/i], ['python', /python|\bpy\b|python3/i], ['ruby', /\bruby\b/i], ['perl', /\bperl\b/i], ['bash', /\bbash\b|shell\s*script|shell 腳本|\bsh\b/i], ['asm-x86', /(x86(?!-?64)|32\s*位元|32-?bit|i386)[^]{0,12}(組語|assembly|asm)|(組語|assembly|asm)[^]{0,12}(x86(?!-?64)|32\s*位元|32-?bit)/i], ['asm-x64', /組語|assembly|\basm\b|x86-?64|x64/i], ['c', /(^|[^A-Za-z+#])c\s*語言|\bc\s*language\b|(用|寫|使用|以)\s*c\s*(寫|語|程式|來|實作|$)|\bANSI C\b/i]];
+        for (const [lang, re] of rules) if (re.test(s)) return lang;
+        return fallback || 'python';
+    }
+
+    // 從程式碼本身猜語言（拿到任意程式碼、使用者沒說語言時用）；猜不出來回 null，不亂猜
+    function detectLangFromCode(code) {
+        const s = String(code || ''); const first = s.split('\n', 1)[0];
+        if (/^#!.*\b(python)/.test(first)) return 'python'; if (/^#!.*\b(node)/.test(first)) return 'nodejs'; if (/^#!.*\b(ruby)/.test(first)) return 'ruby'; if (/^#!.*\bperl/.test(first)) return 'perl'; if (/^#!.*\b(ba)?sh\b/.test(first)) return 'bash';
+        if (/\.intel_syntax|^\s*\.globl\s+_start|^_start:/m.test(s)) return /\b(int\s+0x80|eax|ebx)\b/.test(s) && !/\b(rax|rdi|syscall)\b/.test(s) ? 'asm-x86' : 'asm-x64';
+        if (/^\s*using\s+System\b|\bConsole\.(WriteLine|ReadLine)\b|\bnamespace\s+\w+/m.test(s)) return 'csharp';
+        if (/\bpublic\s+static\s+void\s+main\s*\(|^\s*import\s+java\.|\bSystem\.out\.print/m.test(s)) return 'java';
+        if (/#include\s*<(iostream|vector|string|map|algorithm)>|\bstd::|using\s+namespace\s+std/.test(s)) return 'cpp';
+        if (/#include\s*<\w+\.h>|^\s*int\s+main\s*\(/m.test(s)) return 'c';
+        if (/^\s*def\s+\w+\s*\(.*\)\s*:|^\s*import\s+\w+\s*$|^\s*from\s+\w+\s+import\b|^\s*print\(/m.test(s)) return 'python';
+        if (/\bconsole\.log\(|\brequire\(|^\s*(const|let)\s+\w+\s*=|=>\s*[{(]|^\s*function\s+\w+\s*\(/m.test(s)) return 'nodejs';
+        if (/^\s*use\s+(strict|warnings)\b|^\s*sub\s+\w+\s*\{|\bmy\s+[$@%]\w+/m.test(s)) return 'perl';
+        if (/^\s*def\s+\w+[^:]*$|\bputs\s|^\s*end\s*$/m.test(s)) return 'ruby';
+        if (/^\s*(if|while|for)\b.*;\s*(then|do)\b|^\s*fi\s*$|\becho\s|^\s*\w+\(\)\s*\{/m.test(s)) return 'bash';
+        return null;
+    }
+
+    // ---- 路由：使用者只丟需求，這裡決定「直接切成函式寫」還是「先設計 UML、再逐類別寫」 ----
+    // 程式先用規模信號評分（系統／平台／多個功能句／多個領域名詞／條列 → 偏 UML；函式／演算法／輸入輸出／有測試／很短 → 偏直接）；
+    // 分數落在模糊帶才讓模型做一題選擇題（沒有 ask 就選直接寫：比較便宜，也不會憑空設計出一堆類別）。
+    function routeOf(text, o) {
+        o = o || {}; const s = String(text || ''); const reasons = []; let u = 0, d = 0;
+        const strong = (s.match(/管理系統|系統|平台|網站|後台|微服務|\bplatform\b/gi) || []).length; if (strong) { u += Math.min(strong, 2) * 2; reasons.push('提到系統／平台 ' + strong + ' 次'); }
+        const weak = (s.match(/專案|架構|模組|資料庫|CRUD|物件導向|類別|使用案例|user story|應用程式|\bAPI\b|\bapp\b/gi) || []).length; if (weak) { u += Math.min(weak, 3); reasons.push('提到架構類的詞 ' + weak + ' 次'); }
+        const can = (s.match(/可以|能夠|要能|需要能|支援|提供|功能|允許/g) || []).length; if (can >= 3) { u += 2; reasons.push('列了 ' + can + ' 個功能'); } else if (can >= 2) { u += 1; reasons.push('列了 ' + can + ' 個功能'); }
+        const nouns = new Set(s.match(/登入|註冊|訂單|購物車|庫存|會員|報表|帳號|權限|付款|預約|借書|商品|使用者|客戶|通知|排程/g) || []); if (nouns.size >= 3) { u += 2.5; reasons.push('涉及 ' + nouns.size + ' 個領域名詞'); } else if (nouns.size >= 2) { u += 1.5; reasons.push('涉及 ' + nouns.size + ' 個領域名詞'); }
+        const sentences = s.split(/[。.!?！？\n]/).map((x) => x.trim()).filter(Boolean); if (sentences.length >= 4) { u += 1.5; reasons.push(sentences.length + ' 句需求'); } if (s.length >= 200) { u += 1; reasons.push('需求很長（' + s.length + ' 字）'); }
+        const bullets = (s.match(/^\s*(?:[-*•]|\d+[.)、])\s+/gm) || []).length; if (bullets >= 3) { u += 1.5; reasons.push('條列 ' + bullets + ' 項'); }
+        if (/函式|函數|function|演算法|algorithm|leetcode|\bACM\b|題目|排序|二分|反轉|陣列|字串|回文|質數|最大公因數|費氏|遞迴|動態規劃|\bBFS\b|\bDFS\b|標準輸入|stdin/i.test(s)) { d += 2; reasons.push('像演算法／函式題'); }
+        if (/輸入[^]{0,40}輸出|input[^]{0,40}output/i.test(s)) { d += 2; reasons.push('有輸入輸出規格'); }
+        if (o.tests) { d += 2; reasons.push('附了測試'); }
+        // 短與句數少只在「沒有系統／多功能信號」時才當作偏直接的證據（一句話也能描述一整個系統）
+        if (u < 2) { if (s.length <= 80) { d += 1; reasons.push('需求很短'); } if (sentences.length <= 2) d += 1; }
+        const score = +(u - d).toFixed(2); const route = score >= 3 ? 'uml' : 'direct'; return { route, score, ambiguous: score > 0.5 && score < 3, reasons, by: 'program' };
+    }
+
+    function makeBackend(o) {
+        o = o || {}; const gen = o.generate; const Rc = o.R || R; if (typeof gen !== 'function') throw new Error('makeBackend 需要 generate');
+        // write_code 領域一律不開思考（使用者決定：實測開思考每題 20～50 秒、格式反而更不穩、沒有更準）。generate 的 enableThinking 一律明說 false，不靠預設值
+        return {
+            // 有 KV 快取游標的後端（原生評估適配器）才有 lm：約束解碼 rank 策略用
+            lm: typeof gen.openCursor === 'function' ? { open: (msgs, prefix) => gen.openCursor(msgs, prefix) } : undefined,
+            // jsonStep 自己會處理 prefill、退回重問；堆疊標頭由迴圈放進 messages，這裡不再傳 stack（避免標頭放兩次）
+            async ask(messages, validate) {
+                const r = await Rc.jsonStep({ generate: gen, messages, validate, maxTries: 2, maxTokens: o.askTokens || 400, prefill: '{"' });
+                return r && r.ok ? r.value : null;
+            },
+            // 選擇題：合法選項由文法算好（機械過濾），模型只挑字母（或選項內容）。不開思考。回傳選到的索引，沒答出來回 null
+            async choose(messages, options) {
+                const letters = options.map((x) => x.label); const pickIdx = (v) => { const p = String(v == null ? '' : v).trim(); const li = letters.indexOf(p.toUpperCase()); if (li >= 0) return li; const bare = p.replace(/[`'"]/g, '').trim(); if (!bare) return -1; for (let i = 0; i < options.length; i++) if ((options[i].aliases || []).some((al) => al === bare || al === p)) return i; return -1; }; // 字母優先；其次是「選項內容」（別名）
+                const r = await Rc.jsonStep({ generate: gen, messages, validate: (x) => (pickIdx(x.pick) >= 0 ? [] : ['「pick」必須是 ' + letters.join('、') + ' 其中一個字母（或選項的內容）']), maxTries: 2, maxTokens: o.chooseTokens || 40, prefill: '{"pick":"' });
+                return r && r.ok ? pickIdx(r.value.pick) : null;
+            },
+            // 新名稱／數字／字串內容：一小段文字（不開思考，便宜）；驗證由呼叫端（引導寫作）做
+            async free(messages, kind) {
+                const key = kind === 'name' ? 'name' : kind === 'num' ? 'num' : 'text';
+                const r = await Rc.jsonStep({ generate: gen, messages, validate: (x) => (x && x[key] != null && String(x[key]).length <= 200 ? [] : ['「' + key + '」必須是 200 字以內的字串']), maxTries: 2, maxTokens: o.freeTokens || 60, prefill: '{"' + key + '":"' });
+                return r && r.ok ? String(r.value[key]) : null;
+            },
+            async write(messages, meta) {
+                const req = { messages, maxTokens: o.writeTokens || 800, enableThinking: false };
+                const raw = await gen(req); return typeof raw === 'string' ? raw : (raw && raw.text) || '';
+            }
+        };
+    }
+
+    async function runCode(a) {
+        const lang = a.lang || (a.source ? (detectLangFromCode(a.source) || detectLang(a.text, 'python')) : detectLang(a.text, 'python')); const backend = a.backend || (a.generate ? makeBackend({ generate: a.generate, R, askTokens: a.askTokens, writeTokens: a.writeTokens }) : null);
+        const base = { ok: false, verified: false, lang, gaps: [], calls: { ask: 0, write: 0, judge: 0 }, source: '' };
+        const stackMod = a.stackMod || T; const opts = a.opts || {};
+        const hasTestsFor = (p) => !!(p && p.tests && p.tests.length && a.judge);
+        const makeRepair = (problem) => (a.check && Fix ? ({ lang: l, source, ask, semantic, wrap }) => Fix.repairSyntax({ lang: l, source, ask, semantic, wrap, check: a.check, verify: hasTestsFor(problem) ? async ({ source: sx }) => (await a.judge({ lang: l, source: sx, problem })).verdict === 'AC' : null }) : null);
+        if (a.source != null) { // 從任意拿到的程式碼接續：先修語法、再（有測試時）修行為；模型只在要重寫函式時才用
+            const problem = a.problem || null; const e = await Ed.editCode({ source: String(a.source), lang, goal: a.text, problem, check: a.check, judge: a.judge, ask: backend && backend.ask, write: backend && backend.write, repair: makeRepair(problem) || undefined, stackMod, opts, onEvent: a.onEvent });
+            return Object.assign(e, { mode: 'edit', lang });
+        }
+        if (!backend) return Object.assign(base, { mode: a.model ? 'project' : 'problem', verdict: 'NONE', reason: 'no_model', gaps: ['沒有可用的模型（generate 或 backend）'] });
+        let model = a.model || null, route = null, designed = null; const preGaps = [];
+        if (!model) {
+            route = a.route ? { route: a.route === 'uml' ? 'uml' : 'direct', by: 'caller', reasons: [], score: null } : routeOf(a.text, { tests: !!(a.problem && a.problem.tests && a.problem.tests.length) });
+            if (!a.route && route.ambiguous && backend && backend.ask) { // 模糊帶：讓模型挑
+                const msgs = [{ role: 'system', content: '你在決定寫程式的做法。只輸出 JSON：{"pick":"A 或 B"}。' }, { role: 'user', content: '需求：' + clip(a.text, 500) + '\n\nA. 單純：直接切成幾個函式寫\nB. 有多個實體與功能：先設計 UML（類別與關係），再逐類別實作' }];
+                let v = null; try { v = await backend.ask(msgs, (x) => (x && /^[AB]$/i.test(String(x.pick || '')) ? [] : ['「pick」必須是 A 或 B'])); } catch (_) { v = null; }
+                if (v) route = Object.assign({}, route, { route: String(v.pick).toUpperCase() === 'B' ? 'uml' : 'direct', by: 'model' }); else preGaps.push('路線判斷：需求規模落在模糊帶、模型沒回答，選了比較便宜的「直接寫」');
+            }
+            if (route.route === 'uml') {
+                if (!Proj || !Proj.PLANGS[lang]) { preGaps.push('這個需求偏大，但專案模式不支援 ' + lang + '，改直接切成函式寫'); route = Object.assign({}, route, { route: 'direct', fallback: 'lang' }); }
+                else if (typeof a.design !== 'function') { preGaps.push('這個需求偏大，但這個環境沒有 UML 設計能力，改直接切成函式寫'); route = Object.assign({}, route, { route: 'direct', fallback: 'no_design' }); }
+                else {
+                    let d = null; try { d = await a.design({ text: a.text, lang }); } catch (e) { d = { ok: false, error: String((e && e.message) || e) }; }
+                    if (d && d.ok !== false && d.model && d.model.classes && d.model.classes.length) { model = d.model; designed = { dsl: d.dsl || '', classes: d.model.classes.map((c) => c.name), warnings: d.warnings || [] }; if (d.warnings && d.warnings.length) preGaps.push('UML 設計有 ' + d.warnings.length + ' 個警告：' + clip(d.warnings.slice(0, 2).join('；'), 120)); if (a.problem && a.problem.tests && a.problem.tests.length) preGaps.push('有給測試，但專案模式沒有進入點程式碼，測試沒有被執行（只做了編譯檢查）'); }
+                    else { preGaps.push('先設計 UML 沒成功（' + clip((d && (d.error || (d.warnings && d.warnings[0]))) || '沒有類別', 100) + '），改直接切成函式寫'); route = Object.assign({}, route, { route: 'direct', fallback: 'design_failed' }); }
+                }
+            }
+        }
+        if (route && typeof a.onEvent === 'function') { try { a.onEvent({ t: 'route', route: model ? 'uml' : 'direct', by: route.by, score: route.score, reasons: route.reasons, fallback: route.fallback }); } catch (_) { /* 進度回報壞了不影響流程 */ } }
+        const withRoute = (r) => { r.route = route ? { route: model ? 'uml' : 'direct', by: route.by, score: route.score, reasons: route.reasons, fallback: route.fallback } : undefined; if (designed) r.design = designed; if (preGaps.length) r.gaps = (preGaps).concat(r.gaps || []); return r; };
+        if (model) {
+            const driver = a.driver || '';
+            const useJudge = !!(a.problem && a.problem.tests && a.problem.tests.length && driver && a.judge);
+            const verify = useJudge ? ({ lang: l, source }) => a.judge({ lang: l, source, problem: a.problem }) : (a.check ? ({ lang: l, source }) => a.check({ lang: l, source }) : null);
+            if (!verify) return Object.assign(base, { mode: 'project', verdict: 'NONE', reason: 'no_checker', gaps: ['沒有檢查器（check）也沒有判題器（judge），無法驗證任何東西'] });
+            const r = await Proj.solveProject({ model, lang, scenario: a.text, ask: backend.ask, write: backend.write, judge: verify, repair: makeRepair(a.problem), stackMod, opts: Object.assign({}, opts, { driver }), onEvent: a.onEvent });
+            return withRoute(Object.assign(r, { mode: 'project', lang }));
+        }
+        const problem = a.problem && a.problem.statement ? a.problem : { id: 'user-task', title: clip(a.text, 40), statement: String(a.text || '') };
+        const hasTests = !!(problem.tests && problem.tests.length);
+        const verify = hasTests && a.judge ? ({ lang: l, source }) => a.judge({ lang: l, source, problem }) : (a.check ? ({ lang: l, source }) => a.check({ lang: l, source }) : null);
+        if (!verify) return Object.assign(base, { mode: 'problem', verdict: 'NONE', reason: 'no_checker', gaps: ['沒有檢查器（check）也沒有判題器（judge），無法驗證任何東西'] });
+        const r = await Loop.solve({ problem, lang, ask: backend.ask, write: backend.write, judge: verify, repair: makeRepair(hasTests ? problem : null), choose: backend.choose, free: backend.free, lm: backend.lm, stackMod, opts, onEvent: a.onEvent });
+        return withRoute(Object.assign(r, { mode: 'problem', lang }));
+    }
+
+    function formatReport(r) {
+        if (!r) return '沒有結果';
+        const how = r.verified ? '已用測試驗證（全部通過）' : (r.verdict === 'CHECKED' ? '**只通過編譯／語法檢查，沒有驗證行為是否正確**' : (r.ok ? '未驗證' : '沒有完成'));
+        const L1 = [(r.mode === 'edit' ? '修改現有程式（' : '寫程式（' + (r.mode === 'project' ? '依 UML 專案模式' : '題目模式') + '，') + r.lang + '）：' + (r.ok ? (r.mode === 'edit' ? '修改完成' : '產生完成') : '沒有完成') + '；' + how + '。'];
+        if (r.mode === 'edit' && r.edits && r.edits.length) L1.push('改了 ' + r.edits.length + ' 處：\n' + r.edits.map((e) => '- ' + (e.by === 'rewrite' ? '重寫函式 ' + e.fn : (e.desc || '語法修正')) + (e.line ? '（第 ' + e.line + ' 行）' : '')).join('\n'));
+        if (r.route && r.mode !== 'edit') L1.push('路線：' + (r.route.route === 'uml' ? '需求偏大，先設計 UML' + (r.design ? '（' + r.design.classes.length + ' 個類別）' : '') + '，再逐類別實作' : '直接切成函式寫') + (r.route.by === 'model' ? '（模型決定）' : r.route.by === 'caller' ? '（呼叫端指定）' : '') + (r.route.reasons && r.route.reasons.length ? '：' + r.route.reasons.slice(0, 3).join('、') : '') + '。');
+        if (r.plan && r.plan.length) L1.push('函式：' + r.plan.map((x) => x.name).join(' → '));
+        if (r.order && r.order.length) L1.push('類別：' + r.order.join(' → '));
+        L1.push('模型呼叫 ' + ((r.calls && r.calls.ask || 0) + (r.calls && r.calls.write || 0)) + ' 次（問 ' + (r.calls ? r.calls.ask : 0) + '、寫 ' + (r.calls ? r.calls.write : 0) + '），驗收 ' + (r.calls ? r.calls.judge : 0) + ' 次，重寫 ' + (r.rethinks || 0) + ' 次。');
+        if (r.gaps && r.gaps.length) L1.push('注意：\n' + r.gaps.map((g) => '- ' + g).join('\n'));
+        if (r.mode === 'edit' && r.diff) L1.push('```diff\n' + String(r.diff).replace(/\s+$/, '') + '\n```');
+        else if (r.source) L1.push('```' + (r.lang === 'nodejs' ? 'javascript' : r.lang === 'cpp' ? 'cpp' : r.lang === 'csharp' ? 'csharp' : r.lang.indexOf('asm') === 0 ? 'asm' : r.lang) + '\n' + String(r.source).replace(/\s+$/, '') + '\n```');
+        return L1.join('\n');
+    }
+
+    return { detectLang, detectLangFromCode, routeOf, makeBackend, runCode, formatReport };
+});
+
+}).call(null, undefined, holder);
+return holder.FaCodeAgent;
+})();
+/* CODEAGENT-END */
 /* VIEW-BEGIN */
 const FaView = (function () {
 const holder = {};
@@ -26649,8 +28487,8 @@ const holder = {};
         ph_research: { phase: 'research', label: '階段・查資料與學新語言：知識卡、網路搜尋、抓網頁', tools: ['language_explore', 'programming_knowledge', 'browser_search', 'fetch_web_page'] },
         ph_sandbox: { phase: 'experiment', label: '階段・試驗：沙盒（HTML／Worker／Python／模擬後端）與腳本執行', tools: ['sandbox_capabilities', 'sandbox_html', 'sandbox_worker', 'sandbox_mock', 'sandbox_py_app', 'python_execute', 'bash_execute'] },
         ph_design: { phase: 'design', label: '階段・設計：UML、設計抉擇、骨架產生、互動確認', tools: ['uml_to_code', 'design_choices', 'uml_design', 'uml_guide', 'ask_user_card', 'render_uml_diagram', 'glue_list', 'glue_define', 'glue_report'] },
-        ph_edit: { phase: 'implement', label: '階段・實作：暫存工作區、改檔、套 patch、commit', tools: ['coding_workspace', 'coding_edit', 'coding_patch_tool', 'apply_git_patch', 'git_inspect', 'git_commit'] },
-        ph_verify: { phase: 'verify', label: '階段・驗證：語法檢查、跑測試、終端機', tools: ['coding_run_check', 'coding_run_tests', 'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'run_command'] },
+        ph_edit: { phase: 'implement', label: '階段・實作：暫存工作區、改檔、套 patch、commit', tools: ['coding_workspace', 'coding_edit', 'coding_patch_tool', 'apply_git_patch', 'git_inspect', 'git_commit', 'write_code'] },
+        ph_verify: { phase: 'verify', label: '階段・驗證：語法檢查、跑測試、終端機', tools: ['coding_run_check', 'coding_run_tests', 'fix_code', 'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'run_command'] },
         ph_ci: { phase: 'ci', label: '階段・CI／Review：Gerrit、GitHub、Jenkins、失敗分診、pipeline', tools: ['ci_connections', 'gerrit', 'github_ci', 'jenkins', 'ci_triage', 'pipeline_inspect', 'ci_guide'] },
         ph_logs: { phase: 'logs', label: '階段・日誌與混合內容：學日誌、問答、讀混合輸入', tools: ['log_learn', 'log_ask', 'mix_understand', 'mix_highlight'] },
     };
@@ -63424,6 +65262,26 @@ ${fnData.code}
                 try { return JSON.stringify(await this._umlGuide(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
             },
             { type: 'object', properties: { scenario: { type: 'string', description: '情境（使用者故事、需求文字）' }, language: { type: 'string', enum: ['python', 'typescript', 'java'], default: 'python' }, package: { type: 'string' }, constraints: { type: 'object', description: '（選填）已經決定的抉擇，卡片會用它當預設值' } }, required: ['scenario'], additionalProperties: false }
+        );
+        registerOptional('write_code',
+            '用「這台電腦上的離線小模型（或線上模型）」依需求一步一步寫出程式：程式把需求切成小函式（模型每次只回答一個封閉的小問題）、由被呼叫的往上逐一寫、組成完整程式後**真的編譯並執行測試來驗收**，沒過就帶著失敗訊息用選擇題挑出有問題的函式重寫；編譯失敗先由程式自動修語法、不花模型。**使用者只管把需求丟進來，不需要也不應該自己決定要不要先做 UML**：程式依需求規模自己判斷（單純的函式／演算法就直接切成函式寫；有多個實體與功能的系統，先自動設計 UML、再逐類別實作並合成一個檔案做編譯檢查），模糊時才讓模型選，設計不出來或語言不支援就退回直接寫，回傳的 route 與 report 會說明走了哪條路與原因。' +
+            '「驗證到哪裡」一定看回傳的 verified：verified=true 才表示附的 tests（含看不到的隱藏測試）都通過；沒給 tests 只能確認「能編譯／語法正確」（verdict=CHECKED、verified=false），**不代表行為正確**；走了 UML 的大需求目前只做編譯檢查（沒有進入點程式碼，給的 tests 不會被執行，gaps 會說明）。回傳 report 是給使用者看的中文摘要（含 gaps＝沒做到或沒驗證的地方，一定要轉達）。' +
+            '語言：python、nodejs、c、cpp、java、ruby、perl、bash、asm-x64、asm-x86、csharp（要先設計 UML 的大需求不含 c、bash、asm，會退回直接寫）；沒指定就從需求文字判斷。驗收在本機編譯並執行程式（需要「允許AI執行程式」，第一次會跳確認框）；**判題器不是安全沙盒**（沒有記憶體上限、沒有檔案與網路隔離），網頁版沒有本機工具鏈所以完全無法驗證。比較強的線上模型直接自己寫程式更快；這個工具是給離線小模型補救、以及需要「真的跑過測試」的情況。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try { return JSON.stringify(await this._codeAgent(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+            },
+            { type: 'object', properties: { task: { type: 'string', description: '要寫什麼（需求文字；有範例輸入輸出最好一起寫在裡面）' }, language: { type: 'string', enum: ['python', 'nodejs', 'c', 'cpp', 'java', 'ruby', 'perl', 'bash', 'asm-x64', 'asm-x86', 'csharp'], description: '（選填）不給就從 task 判斷，判斷不出來用 python' }, tests: { type: 'array', items: { type: 'object', properties: { in: { type: 'string', description: '標準輸入' }, out: { type: 'string', description: '期望的標準輸出' } }, required: ['in', 'out'] }, description: '（選填）範例測試（stdin→stdout，最多 20 筆）；有給才會真的執行驗收' }, model: { type: 'string', enum: ['offline', 'online'], description: '（選填）用離線小模型或線上模型；不指定就自動選' }, max_rethink: { type: 'integer', description: '（選填）驗收沒過最多重寫幾次，預設 3、最多 5' } }, required: ['task'], additionalProperties: false }
+        );
+        registerOptional('fix_code',
+            '修一份「任意拿到的程式碼」（不需要知道它怎麼來的）：先修語法——從編譯器／直譯器的錯誤訊息找到出錯的語法單元，在錯誤位置產生極小的 token 修法（補括號、分號、冒號、end、引號…），每個候選都交給真的編譯器驗證，並列時用選擇題讓模型挑；只改必要的 token，其餘格式原樣保留。有給 tests 時再修行為：判題不過就挑出有問題的函式、讓模型只重寫那個函式、拼回去再驗。回傳 diff 與 edits。' +
+            '「驗證到哪裡」看 verified：verified=true 才表示 tests 都通過；沒給 tests 只確認能編譯（verdict=CHECKED、verified=false）。語法修正只處理「缺／多一個標點或關鍵字」這類單一 token 的錯，**能編譯不代表語意對**（例如缺括號的位置猜錯，程式仍然能過編譯卻算錯）——有 tests 時才會在「都能過語法」的候選裡用測試挑。支援 python、nodejs、c、cpp、java、csharp、ruby、perl、bash 的語法修正；組語沒有。需要「允許AI執行程式」（編譯與執行都在本機），**判題器不是安全沙盒**；網頁版沒有本機工具鏈、無法使用。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                if (typeof a.source !== 'string' || !a.source.trim()) return JSON.stringify({ ok: false, error: '缺少 source（要修的程式碼）' });
+                try { return JSON.stringify(await this._codeAgent(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+            },
+            { type: 'object', properties: { source: { type: 'string', description: '要修的程式碼（整份）' }, language: { type: 'string', enum: ['python', 'nodejs', 'c', 'cpp', 'java', 'ruby', 'perl', 'bash', 'csharp'], description: '（選填）不給就從程式碼判斷' }, tests: { type: 'array', items: { type: 'object', properties: { in: { type: 'string' }, out: { type: 'string' } }, required: ['in', 'out'] }, description: '（選填）範例測試（stdin→stdout）；有給才會修行為' }, goal: { type: 'string', description: '（選填）這份程式應該做什麼（修行為時給模型看）' }, model: { type: 'string', enum: ['offline', 'online'], description: '（選填）需要重寫函式時用的模型' }, max_rethink: { type: 'integer', description: '（選填）行為驗收沒過最多重寫幾次，預設 3、最多 5' } }, required: ['source'], additionalProperties: false }
         );
         registerOptional('uml_design',
             '用「這台電腦上的離線小模型」把情境一步一步設計成 UML 再產生程式骨架：程式把設計拆成封閉的小問題（參與者與使用案例 → 類別 → 每個類別的屬性與操作 → 關係 → 呼叫順序），模型一次只回答一個、每個回覆都被驗證，之後只重做有問題的那一區（top-down rework），再用 design_choices 的規則選架構與 library。比較強的線上 AI 不需要這個：自己寫 UML 文字直接呼叫 uml_to_code 更快更準。這是線上模型的補救能力：大問題自己一次做不完時用它。大問題會先由程式切成小塊（依句子，每塊一個領域），每塊各自一次一小題拆完，再合併成一份。預設用目前的線上模型（體檢結果是「程式先讀情境」的除外，那種改用離線模型或 uml_guide）；model 可以指定 offline（離線小模型，第一次要下載）或 online。回傳的 model_used 說明這次用了哪個。',
@@ -103187,6 +105045,51 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     }
     // CoLU+Thinking 反思（與「反思①②」程式流程不同）：和 _coluThinkingFor 同一條件；其他模型或開關關閉回傳 null，反思完全不跑
     async _coluReflectFor(M) { const th = await this._coluThinkingFor(M); return th && th.enabled ? { modelId: M.model.id, contextTokens: M.model.contextTokens, enabled: true, device: th.device } : null; }
+    // ===== 寫程式／修程式（第一階段，設計見 DESIGN.fn-template.md）：需求→切割→逐函式寫→編譯／判題→重寫；或拿到任意程式碼→修語法→（有測試時）修行為。核心在 FaCodeAgent（code_agent_core.js） =====
+    // 驗收靠桌面版主程序的判題器（window.desktopAPI.judge：本機編譯並執行，需要「允許AI執行程式」、第一次會跳確認框；不是安全沙盒）。網頁版沒有本機工具鏈：judge／check 不傳，runCode 會誠實回 ok:false，不偽造驗證。
+    _codeJudgeBridge() {
+        const api = (typeof window !== 'undefined' && window.desktopAPI && window.desktopAPI.judge) || null; if (!api) return { judge: undefined, check: undefined, available: false };
+        // IPC 的失敗（使用者拒絕、沒開執行權限、輸入不合）回 {ok:false,error}：轉成判題結果 UNAVAILABLE（帶原因），不當成程式有錯
+        const wrap = (r) => (r && r.ok === false && r.error ? { verdict: 'UNAVAILABLE', passed: 0, total: 0, visible: { passed: 0, total: 0 }, hidden: { passed: 0, total: 0 }, failedIndex: -1, maxMs: 0, detail: r.error } : r);
+        return { available: true, judge: async ({ lang, source, problem }) => wrap(await api.run({ lang, source, problem, timeoutMs: problem && problem.timeoutMs })), check: async ({ lang, source }) => wrap(await api.check({ lang, source })), probe: (lang) => api.available(lang) };
+    }
+    // a: { task（需求文字）, language, tests:[{in,out}], uml（DSL 文字）, use_last_design, source（任意現有程式碼）, goal, driver, model, _gen（CoLU 計畫裡直接給模型） }
+    async _codeAgent(a) {
+        a = a || {}; const task = String(a.task || a.scenario || a.goal || '').trim(); const source = a.source != null ? String(a.source) : null;
+        if (source == null && !task && !a.uml && !a.use_last_design) return { ok: false, error: '缺少 task（要寫什麼）、uml 或 source（要修的程式碼）' };
+        let lang = a.language || null; if (lang && !FaCodeLoop.LANGS[lang]) return { ok: false, error: '不支援的語言：' + lang + '（支援：' + Object.keys(FaCodeLoop.LANGS).join('、') + '）' };
+        let model = null, umlNote = '';
+        if (a.uml || a.use_last_design) {
+            const dsl = String(a.uml || (this._umlPlanDesign && this._umlPlanDesign.dsl) || ''); if (!dsl.trim()) return { ok: false, error: '沒有 UML：給 uml（DSL 文字），或先用 uml_design 設計一份' };
+            const pr = FaUml.parseDsl(dsl); if (pr.errors && pr.errors.length && !pr.model.classes.length) return { ok: false, error: 'UML 讀不懂：' + pr.errors.slice(0, 3).map((e) => '第 ' + e.line + ' 行 ' + e.msg).join('；') };
+            model = pr.model; if (pr.errors && pr.errors.length) umlNote = 'UML 有 ' + pr.errors.length + ' 處讀不懂，已略過';
+        }
+        let tests = null; if (Array.isArray(a.tests) && a.tests.length) { tests = a.tests.filter((t) => t && typeof t.in === 'string' && typeof t.out === 'string').slice(0, 20); if (!tests.length) tests = null; }
+        const bridge = this._codeJudgeBridge();
+        // 修既有程式碼（edit 模式）若只有語法修正，不需要模型；寫程式一定要模型
+        let M = a._gen ? { gen: a._gen, label: '（計畫指定的模型）' } : null;
+        if (!M && (source == null || a.model)) { M = await this._umlModel(a.model); if (M.error) return { ok: false, error: M.error }; }
+        else if (!M && source != null) { try { const m2 = await this._umlModel(undefined); if (!m2.error) M = m2; } catch (_) { M = null; } }
+        // write_code 領域不開思考（使用者決定）：不計算 CoLU 思考設定
+        // 「要不要先設計 UML」由 FaCodeAgent.runCode 依需求規模決定；宿主只提供設計能力（同一份需求最近設計過就沿用，不重做）
+        const design = (source == null && !model && M && M.gen) ? async ({ text }) => {
+            const last = this._umlPlanDesign; if (last && last.scenario === text && last.dsl) { const pr0 = FaUml.parseDsl(last.dsl); if (pr0.model && pr0.model.classes.length) return { ok: true, model: pr0.model, dsl: last.dsl, warnings: last.warnings || [], reused: true }; }
+            const r = await FaDesign.designProject(text, { generate: M.gen, language: 'python', prefs: this.advancedSettings.designPrefs || {}, glossary: this.advancedSettings.umlGlossary || {}, rework: true });
+            if (!r.ok) return { ok: false, error: r.error, warnings: r.warnings };
+            this._umlPlanDesign = { dsl: r.dsl, design: r.design, warnings: r.warnings, scenario: text }; return { ok: true, model: r.model, dsl: r.dsl, warnings: r.warnings };
+        } : undefined;
+        const prog = this._createProgressWidget((source != null ? '修改現有程式' : '寫程式') + (M ? '（' + (M.label || '模型') + '）' : '（只有程式端的語法修正）'));
+        const onEvent = (e) => { try { if (e.t === 'route') prog.log('🧭 路線：' + (e.route === 'uml' ? '需求偏大，先設計 UML 再逐類別實作' : '直接切成函式寫') + (e.by === 'model' ? '（模型決定）' : '') + (e.reasons && e.reasons.length ? '——' + e.reasons.slice(0, 2).join('、') : '') + (e.fallback ? '（退回直接寫）' : '')); else if (e.t === 'plan') prog.log('📐 切割：' + (e.functions || e.classes || []).join(' → ')); else if (e.t === 'write') prog.log((e.kind === 'rewrite' ? '✏️ 重寫 ' : '✍️ 寫 ') + (e.fn || '') + (e.thinking ? '（思考）' : '')); else if (e.t === 'judge' || e.t === 'check') prog.log('🧪 驗收：' + e.verdict + (e.detail ? '（' + String(e.detail).slice(0, 80) + '）' : '')); else if (e.t === 'rethink') prog.log('🔁 第 ' + e.n + ' 次重想（' + e.verdict + '）'); else if (e.t === 'syntax' || e.t === 'syntax_fixed') prog.log('🔧 語法修正' + (e.edits != null ? '：' + e.edits + ' 處' : '')); } catch (_) { /* 進度回報壞了不影響流程 */ } };
+        try {
+            const problem = tests ? { id: 'task', title: task.slice(0, 40), statement: task || (a.goal || ''), tests } : (task && source == null && !model ? { id: 'task', title: task.slice(0, 40), statement: task } : (source != null && a.goal ? { id: 'task', statement: String(a.goal) } : null));
+            const res = await FaCodeAgent.runCode({ text: task || a.goal || '', lang: lang || undefined, source: source != null ? source : undefined, model: model || undefined, problem, driver: a.driver, design, generate: M ? M.gen : undefined, judge: bridge.judge, check: bridge.check, stackMod: this.advancedSettings.thinkStack === false ? null : FaThinkStack, opts: { maxRethink: Math.min(5, Math.max(0, +a.max_rethink || 3)), maxCalls: M && M.online ? 40 : 60, stackChecks: !!a.stack_checks }, onEvent });
+            if (umlNote) (res.gaps = res.gaps || []).push(umlNote);
+            if (!bridge.available) (res.gaps = res.gaps || []).push('這個環境沒有本機判題器（網頁版）：沒有編譯、沒有執行，產生的程式完全沒有驗證過');
+            if (res.ok) prog.finish(res.verified ? '完成（測試通過）' : '完成（沒有驗證行為）'); else prog.fail(String((res.gaps && res.gaps[0]) || res.reason || '沒有完成').slice(0, 160));
+            const out = { ok: !!res.ok, verified: !!res.verified, verdict: res.verdict, mode: res.mode, lang: res.lang, source: res.source, diff: res.diff || undefined, edits: res.edits, gaps: res.gaps, reason: res.reason, calls: res.calls, rethinks: res.rethinks, plan: res.plan && res.plan.map((x) => x.name), classes: res.order, route: res.route, uml: res.design ? res.design.dsl : undefined, report: FaCodeAgent.formatReport(res), sandbox: '判題器不是安全沙盒：只有時間與輸出上限，沒有記憶體上限、檔案與網路隔離', model_used: M ? M.label : undefined };
+            if (!res.ok && !res.source) out.error = String((res.gaps && res.gaps[0]) || res.reason || '沒有完成'); return out;
+        } catch (e) { prog.fail(String((e && e.message) || e)); return { ok: false, error: String((e && e.message) || e) }; }
+    }
     async _umlDesign(a) {
         const scenario = String(a.scenario || '').trim(); if (!scenario) return { ok: false, error: '缺少 scenario' }; const lang = ['python', 'typescript', 'java'].includes(a.language) ? a.language : 'python';
         const M = await this._umlModel(a.model); if (M.error) return { ok: false, error: M.error };
@@ -103275,6 +105178,10 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             fns: {
                 local_summarize: async (args) => this._planLocalSummarize(args.text, question, M),
                 local_uml_design: async (args) => { const sc = [].concat(args.scenario || question).join('\n'); const lang = /typescript|\bts\b/i.test(sc) ? 'typescript' : (/java(?!script)/i.test(sc) ? 'java' : 'python'); const r = await FaDesign.designProject(sc, { generate: M.gen, language: lang, prefs: this.advancedSettings.designPrefs || {}, glossary: this.advancedSettings.umlGlossary || {}, rework: true }); if (!r.ok) return { ok: false, text: r.error || '設計失敗' }; this._umlPlanDesign = { dsl: r.dsl, design: r.design, warnings: r.warnings, scenario: sc }; return { ok: true, text: r.dsl, json: { text: r.dsl, warnings: r.warnings } }; },
+                // 寫程式（第一階段）：本機函式。失敗一律回 ok:false（交給 CoLU 決策樹處理），不假裝成功；成功才把程式碼當成品
+                // 每種語言各自一個本機函式（FaLangColu 的資料；CoLU 的計畫只會選到這個語言自己的那一個）；寫程式本體都走 write_code 的同一個入口，
+                // 由那個語言自己的 CoLU 集合決定怎麼寫（有文法→文法引導的選擇題；沒文法→自由寫）。結果 ok 才回 source，失敗交給決策樹，不假裝成功
+                ...Object.fromEntries(FaLangColu.languages.map((lg) => [FaLangColu.toolName(lg), async (args) => { const sc = [].concat(args.spec || question).join('\n'); const r = await this._codeAgent({ task: sc, language: lg, _gen: M.gen }); if (!r.ok) return { ok: false, text: String(r.error || (r.gaps && r.gaps[0]) || r.reason || '寫程式沒有完成').slice(0, 300) }; return { ok: true, text: r.source, json: { text: r.source, verified: r.verified, verdict: r.verdict, gaps: r.gaps, report: r.report, lang: lg } }; }])),
                 pick_urls: async (args) => { const urls = [].concat(args.results || []).filter((u) => /^https?:\/\//.test(u) && !/(?:google|bing|duckduckgo|baidu)\.[a-z.]+\/(?:search|url|\?)/i.test(u)); const first = urls[0]; return first ? { ok: true, text: first, json: { urls: [first] } } : { ok: false, text: '搜尋結果裡沒有可以抓的網址' }; },
             },
             stackMod: this.advancedSettings.thinkStack === false ? null : (typeof FaThinkStack !== 'undefined' ? FaThinkStack : null),
@@ -103300,7 +105207,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const hereAtts = FaRecipe.parseAttachments(userText); for (const a of (this._pendingAttachments || []).filter((x) => x.status === 'done')) if (!hereAtts.some((x) => x.id === a.id)) hereAtts.push({ id: a.id, filename: a.filename });
         // 這一句話明確給的（附件、待送的附件、網址）優先；都沒有才退到對話裡最近一次附的檔案
         const planAtts = (hereAtts.length || slots.url || !/這(?:份|個|張|支|些|幾|篇)|上面|剛剛|剛才|那(?:份|個|張|支)|前面/.test(question)) ? hereAtts : await this._recipeAttachments(userText); // 對話裡更早附的檔案，只有使用者用「這份／上面那個／剛剛」指它時才算
-        const facts = FaPlan.factsFrom({ attachments: planAtts, url: slots.url, query: FaRecipe.cleanQuery(userText), text: question, online: false });
+        const facts = FaPlan.factsFrom({ attachments: planAtts, url: slots.url, query: FaRecipe.cleanQuery(userText), text: question, online: false, lang: FaCodeAgent.detectLang(question, 'python') }); // 語言決定 CoLU 看得到哪些能力（每種語言各自一套）
         const goals = FaPlan.matchGoals(question, facts); if (!goals.length) return { handled: false };
         const trace = FaRecipe.newTrace(userText, { recipe: 'plan' }); const M = await this._planModel(opts); let goal = goals[0]; let by = '程式';
         try {
