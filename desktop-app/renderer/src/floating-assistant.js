@@ -15052,11 +15052,20 @@ const holder = {};
     ];
     // 動作表（算法種類）：敘述的關鍵字 → 這題屬於哪一種算法。語言中立；各語言的區塊白名單（FOCUS）用這個 key 查。由具體到籠統，第一個符合的算數
     const ALGOS = [
+        // 通用補充（2026-11-06，依基準失敗原因分群補的；由具體到籠統）：遞推／封閉式／字串自動機／圖／數論／堆疊佇列字串
+        { key: 'linear-rec', re: /[A-Za-z]\(n\)\s*=\s*[^。]*[A-Za-z]\(n\s*-\s*\d+\)|每次(?:可以)?爬\s*[\d、或,，\s]+階|鋪滿\s*2\s*[×xX*]\s*n/ },
+        { key: 'series-sum', re: /1(?:\^[23]|[²³])?\s*\+\s*2(?:\^[23]|[²³])?\s*\+\s*(?:…|\.\.\.|⋯)\s*\+\s*n/ }, { key: 'tri-area', re: /三角形面積/ }, { key: 'order-stat', re: /中間大|中位數|夾在|輸入(?:兩|三|四|五)個整數.*由[小大]到[大小]/ },
+        { key: 'string-dfa', re: /能被\s*\d+\s*整除|不含連續|含有連續|出現(?:偶|奇)數次|以\s*["「“][^"」”]+["」”]\s*(?:結尾|開頭)|子字串\s*["「“]|個數除以\s*\d+\s*的餘數|整數.*除以\s*\d+\s*的餘數/ },
+        { key: 'walks-k', re: /走恰好\s*\w+\s*步/ }, { key: 'grid-paths', re: /只能向右或向下/ }, { key: 'closure-queries', re: /是否能走到|能否走到/ }, { key: 'conn-queries', re: /是否連通/ }, { key: 'reach-count', re: /能到達的點數|可以到達的點數/ },
+        { key: 'binom', re: /\bC\(\s*n\s*,\s*k\s*\)|二項式係數/ }, { key: 'coin-ways', re: /組合數/ }, { key: 'in-degree', re: /入度|出度/ }, { key: 'topo', re: /拓撲序/ },
+        { key: 'collatz', re: /3n\s*\+\s*1/ }, { key: 'digit-sum', re: /各位數字的(?:和|積)|數位和/ }, { key: 'isqrt', re: /r\s*\*\s*r\s*≤|整數平方根/ }, { key: 'power-mod', re: /a\^e\s*mod|模冪/ }, { key: 'count-divisors', re: /因數個數|因數的和|因數和/ }, { key: 'trailing-zeros', re: /末尾有幾個\s*0/ }, { key: 'bit-count', re: /二進位表示中\s*[01]\s*的個數/ },
+        { key: 'cmd-sim', re: /(?:push|enq)\s*x/ }, { key: 'rpn', re: /後序.*運算式|逆波蘭/ }, { key: 'max-depth', re: /巢狀最大深度|最大深度/ }, { key: 'next-greater', re: /右邊第一個比它大/ }, { key: 'valid-tags', re: /標籤.*配對/ }, { key: 'str-reverse', re: /反轉後的字串/ },
+        { key: 'word-top', re: /出現最多次的單字/ }, { key: 'caesar', re: /往(?:後|前)移\s*k\s*位|凱薩/ }, { key: 'rle', re: /連續相同字元壓縮/ }, { key: 'roman', re: /羅馬數字/ }, { key: 'sort-list', re: /由小到大(?:輸出|排序)|去重後/ },
         { key: 'inversions', re: /逆序對/ }, { key: 'n-queens', re: /皇后/ }, { key: 'dijkstra', re: /最短距離|加權.*最短|Dijkstra/i }, { key: 'fenwick', re: /樹狀陣列|線段樹|單點.*(修改|更新)|把\s*a\[\w+\]\s*加上/ }, { key: 'str-match', re: /KMP|出現的次數|出現幾次|出現的位置/ }, { key: 'tree-traversal', re: /走訪/ }, { key: 'kth-smallest', re: /第\s*[a-zA-Z]\s*小/ }, { key: 'lps', re: /回文子序列/ }, { key: 'lcs', re: /公共子序列|LCS/ },
         { key: 'palindrome', re: /迴文/ }, { key: 'anagram', re: /重新排列|變位詞|字母異位/ }, { key: 'brackets', re: /括號.*(配對|匹配)/ }, { key: 'gcd-lcm', re: /gcd|lcm|最大公因數|最小公倍數/i },
         { key: 'fib', re: /費氏/ }, { key: 'primes', re: /質數/ }, { key: 'kth-largest', re: /由大到小.*第\s*[a-zA-Z]\s*個|第\s*[a-zA-Z]\s*(大|個)/ }, { key: 'word-count', re: /每個不同的單字|單字.*次數|次數.*單字/ },
         { key: 'lower-bound', re: /第一個滿足.*(>=|≥|大於等於)|二分|lower_bound/ }, { key: 'pair-sum', re: /i\s*<\s*j.*a\[i\]\s*\+\s*a\[j\]|兩數之和|兩數相加等於/ }, { key: 'range-sum', re: /a\[\w+\.\.\w+\]|區間.*(和|總和)|每個查詢輸出.*和/ },
-        { key: 'coin-min', re: /硬幣|面額/ }, { key: 'lis', re: /遞增子序列/ }, { key: 'grid-bfs', re: /最少步數|最短路/ }, { key: 'components', re: /連通分量|連通塊/ }, { key: 'intervals-merge', re: /合併.*區間|區間.*合併|重疊.*合併/ }, { key: 'knapsack', re: /每件物品最多選一次|背包/ },
+        { key: 'coin-min', re: /硬幣|面額/ }, { key: 'lis', re: /遞增子序列/ }, { key: 'grid-bfs', re: /最少步數|最短路|最少幾步/ }, { key: 'components', re: /連通分量|連通塊/ }, { key: 'intervals-merge', re: /合併.*區間|區間.*合併|重疊.*合併/ }, { key: 'knapsack', re: /每件物品最多選一次|背包/ },
         { key: 'reverse-words', re: /單字順序反過來/ }, { key: 'list-max', re: /最大值/ }, { key: 'list-min', re: /最小值/ }, { key: 'list-sum', re: /總和|的和/ },
     ];
     // 處理模型（範式）：算法種類 → 它屬於哪些解題範式（分治、DFS、BFS、樹走訪、資料結構對應、動態規劃、矩陣相乘…）。一種算法可以有多個範式（例如費氏數：DP 或矩陣快速冪）。
@@ -15067,23 +15076,52 @@ const holder = {};
         'word-count': ['data-structure-mapping'], 'brackets': ['data-structure-mapping'], 'intervals-merge': ['sort-and-sweep'], 'pair-sum': ['brute-force'], 'kth-largest': ['sort'],
         'primes': ['sieve', 'number-theory'], 'gcd-lcm': ['number-theory', 'divide-and-conquer'], 'palindrome': ['two-pointers', 'string'], 'anagram': ['data-structure-mapping', 'string'],
     };
+    Object.assign(PARADIGMS, { 'linear-rec': ['dynamic-programming', 'matrix-power'], 'series-sum': ['closed-form'], 'tri-area': ['geometry'], 'order-stat': ['sort'], 'string-dfa': ['finite-automaton'], 'walks-k': ['matrix-power', 'dynamic-programming'], 'grid-paths': ['dynamic-programming'], 'closure-queries': ['dfs', 'transitive-closure'], 'conn-queries': ['union-find', 'dfs'], 'reach-count': ['dfs', 'bfs'], 'binom': ['combinatorics'], 'coin-ways': ['dynamic-programming'], 'in-degree': ['data-structure-mapping'], 'topo': ['topological-sort', 'heap'], 'collatz': ['simulation'], 'digit-sum': ['number-theory'], 'isqrt': ['number-theory', 'binary-search'], 'power-mod': ['number-theory', 'fast-power'], 'count-divisors': ['number-theory'], 'trailing-zeros': ['number-theory'], 'bit-count': ['bit-manipulation'], 'cmd-sim': ['data-structure-mapping'], 'rpn': ['stack'], 'max-depth': ['stack'], 'next-greater': ['monotonic-stack'], 'valid-tags': ['stack'], 'str-reverse': ['string'], 'word-top': ['data-structure-mapping'], 'caesar': ['string'], 'rle': ['string'], 'roman': ['string'], 'sort-list': ['sort'] });
     const toNum = (s) => (/^\d+$/.test(s) ? +s : CN[s] || 0);
     const stripNote = (s) => String(s).replace(/（[^）]*）/g, '').replace(/\([^)]*\)/g, '');
 
+    // 從敘述抽出「參數」（語言中立）：骨架的槽位外還需要的題目參數（模數、遞推式、字串條件、yes/no 字樣…）。抽不到就不給，骨架自己判斷（缺了就不渲染）
+    const parseBig = (t) => { const x = String(t).replace(/\s/g, ''); if (/^10\^9\+7$|^1e9\+7$|^1000000007$/i.test(x)) return 1000000007; if (/^998244353$/.test(x)) return 998244353; if (/^10\^9\+9$/.test(x)) return 1000000009; const p = /^10\^(\d+)$/.exec(x); if (p) return Math.pow(10, +p[1]); return /^\d+$/.test(x) ? +x : 0; };
+    function extractFacts(text) {
+        const f = {}; const t = String(text);
+        const yn2 = /(?:印|輸出)\s*([A-Za-z]+)\s*[，,]\s*(?:否則|不然|其餘)\s*(?:印|輸出)?\s*([A-Za-z]+)/.exec(t); const y = /\b(yes|YES|Yes)\b/.exec(t), n = /\b(no|NO|No)\b/.exec(t); if (yn2) f.yn = [yn2[1], yn2[2]]; else if (y && n) f.yn = [y[1], n[1]];
+        const nn = /沒有則輸出\s*(-?\d+|[A-Za-z]+)/.exec(t); if (nn) f.none = nn[1]; const ur = /(?:到不了|不可達|無法到達|走不到|不存在)[^，。]*輸出\s*(-?\d+|[A-Za-z]+)/.exec(t); if (ur) f.unreach = ur[1];
+        const em = /(?:空時|為空時)輸出\s*([A-Za-z]+)/.exec(t); if (em) f.empty = em[1];
+        const subs = []; let mm; const qre = /["“「]([A-Za-z0-9]+)["”」]/g; while ((mm = qre.exec(t))) subs.push(mm[1]);
+        const run = /連續(兩|二|三|四)個\s*([A-Za-z0-9])/.exec(t); if (run) subs.push(run[2].repeat({ 兩: 2, 二: 2, 三: 3, 四: 4 }[run[1]])); if (subs.length) f.subs = subs;
+        const ch = /([A-Za-z0-9])\s*出現(?:偶|奇)數次/.exec(t) || /([A-Za-z0-9])\s*的個數/.exec(t); if (ch) f.chr = ch[1];
+        const md = /除以\s*(10\s*\^\s*9\s*\+\s*7|10\s*\^\s*9\s*\+\s*9|998244353|1000000007|\d+)\s*(?:的餘數|取餘|的餘)/.exec(t) || /被\s*(\d+)\s*整除/.exec(t) || /\bmod\s*(\d+)/i.exec(t); if (md) { const v = parseBig(md[1]); if (v) f.mod = v; }
+        // 遞推：F(n)=c1F(n-1)+c2F(n-2)+…（係數可省略）＋初值 F(0)=… ；爬樓梯（每次爬 1、2 或 3 階）；2×n 鋪磚
+        const rm = /([A-Za-z])\(n\)\s*=\s*([^。，]*?)(?=。|，|$|輸入)/.exec(t.replace(/，/g, '，'));
+        if (rm) { const nm = rm[1]; const coef = []; const tre = new RegExp('(?:(\\d+)\\s*\\*?\\s*)?' + nm + '\\(n\\s*-\\s*(\\d+)\\)', 'g'); let tm, ok = rm[2].trim().length > 0; const rest = rm[2].replace(tre, (_a, c, d) => { const k = +d; while (coef.length < k) coef.push(0); coef[k - 1] += c ? +c : 1; return ''; }); if (/[^\s+]/.test(rest)) ok = false;
+            const init = {}; const ire = new RegExp(nm + '\\((\\d+)\\)\\s*=\\s*(-?\\d+)', 'g'); while ((tm = ire.exec(t))) init[+tm[1]] = +tm[2]; const K = coef.length; const iv = []; for (let i = 0; i < K; i++) { if (init[i] == null) ok = false; iv.push(init[i]); }
+            if (ok && K) f.rec = { coef, init: iv };
+        } else {
+            const st = /每次(?:可以)?爬\s*([\d、或,，\s]+)階/.exec(t);
+            if (st) { const steps = (st[1].match(/\d+/g) || []).map(Number); const K = Math.max.apply(null, steps); const coef = new Array(K).fill(0); steps.forEach((x) => { coef[x - 1] = 1; }); const g = [1]; for (let i = 1; i < K; i++) { let v = 0; for (let j = 0; j < K; j++) if (coef[j] && i - 1 - j >= 0) v += g[i - 1 - j]; g.push(v); } f.rec = { coef, init: g };
+            } else if (/鋪滿\s*2\s*[×xX*]\s*n/.test(t)) f.rec = { coef: [1, 1], init: [1, 1] };
+        }
+        if (f.rec && f.mod) f.rec.mod = f.mod; else if (f.rec && /餘數|取模|mod/i.test(t) && !f.mod) f.rec.mod = 1000000007;
+        return f;
+    }
     function read(statement) {
         const text = String(statement || '').trim(); const inputs = []; const names = new Set(); let strCount = 0;
         const addNames = (ns) => ns.forEach((n) => names.add(n));
         // 切成子句：句號、逗號、分號、冒號都切；括號註解先拿掉（不然「（0<=n<=90）」會干擾）
         const clauses = stripNote(text.replace(/只含\s*\S+\s*的/g, '只含括號的')).split(/[。，,；;：:]+/).map((c) => c.trim()).filter(Boolean);
-        let m; let seenOutput = false;
+        let m; let seenOutput = false; let rowsN = 0; const rowName = () => (rowsN++ ? 'rows' + rowsN : 'rows');
         for (let i = 0; i < clauses.length; i++) {
             const c = clauses[i]; if (/^(輸出|求|找出|判斷|把|只看|對每個|每個|若|保證|有多組)/.test(c)) { seenOutput = true; }
             if (seenOutput) continue;
+            if ((m = /^輸入(?:一行)?(兩|三|四|五)個(?:正)?整數$/.exec(c))) { const ns = 'abcde'.slice(0, { 兩: 2, 三: 3, 四: 4, 五: 5 }[m[1]]).split(''); inputs.push({ k: 'scalars', names: ns, type: 'int', line: true }); addNames(ns); continue; } // 輸入三個整數（沒有名字：a b c）
+            if ((m = new RegExp('^(?:接著|再|然後|之後)\\s*(' + NAME + ')\\s*行字元').exec(c))) { inputs.push({ k: 'grid', count: m[1], width: null, name: 'g' }); addNames(['g']); continue; } // 接著 n 行字元 "." 或 "#"
+            if ((m = new RegExp('^(?:接著|再|然後|之後)\\s*(' + NAME + ')\\s*行(?:指令|操作)$').exec(c))) { inputs.push({ k: 'grid', count: m[1], width: null, name: 'g' }); addNames(['g']); continue; } // 之後 q 行指令（每行一個字串，由程式自己拆）
+            if ((m = new RegExp('^(?:接著|再|然後|之後)\\s*(' + NAME + ')\\s*行\\s*(' + NAMES + ')(?:\\s*(?:表示|代表).*)?$').exec(c))) { const ns = m[2].split(/\s+/); const rn_ = rowName(); inputs.push({ k: 'rows', count: m[1], names: ns, name: rn_ }); addNames([rn_]); continue; } // 接著 m 行 a b／再 q 行 x y
             if ((m = new RegExp('^輸入(?:一行)?(?:(?:兩|三|四|五)個)?(?:正)?(整數|小數)\\s*(' + NAMES + ')$').exec(c))) { const ns = m[2].split(/\s+/); inputs.push({ k: 'scalars', names: ns, type: m[1] === '小數' ? 'float' : 'int', line: true }); addNames(ns); continue; }
             if ((m = new RegExp('^接著\\s*(' + NAME + ')\\s*行(?:每行|各)\\s*(.+)$').exec(c))) {
                 const cnt = m[1]; const rest = m[2].trim(); let g;
                 if ((g = new RegExp('^(' + NAME + ')\\s*個字元').exec(rest))) { inputs.push({ k: 'grid', count: cnt, width: g[1], name: 'g' }); addNames(['g']); continue; }
-                const rn = new RegExp('^(' + NAMES + ')(?:\\s*(?:表示|代表).*)?$').exec(rest); if (rn) { const ns = rn[1].split(/\s+/); inputs.push({ k: 'rows', count: cnt, names: ns, name: 'rows' }); addNames(['rows']); continue; }
+                const rn = new RegExp('^(' + NAMES + ')(?:\\s*(?:表示|代表).*)?$').exec(rest); if (rn) { const ns = rn[1].split(/\s+/); const rn_ = rowName(); inputs.push({ k: 'rows', count: cnt, names: ns, name: rn_ }); addNames([rn_]); continue; }
             }
             if ((m = new RegExp('^第([一二三四五六七八九\\d]+)行\\s*(' + NAME + ')\\s*(?:個|種)(.*)$').exec(c))) { // 第二行 n 個整數／第三行 q 個查詢 x
                 const tail = m[3]; const nm = (new RegExp('(?:查詢|每個|記為|稱為)\\s*(' + NAME + ')\\s*$').exec(tail) || [])[1];
@@ -15097,12 +15135,23 @@ const holder = {};
             if (/^輸入一行.*單字/.test(c)) { inputs.push({ k: 'words', name: 'w' }); addNames(['w']); continue; }
             if ((m = /^輸入(一|兩|二)行(?:小寫)?(?:字串|文字)$/.exec(c))) { const cnt = m[1] === '一' ? 1 : 2; for (let j = 0; j < cnt; j++) { const nm = strCount++ === 0 ? 's' : 't'; inputs.push({ k: 'str', name: nm }); addNames([nm]); } continue; }
             if (/^輸入一行.*(字串|文字)/.test(c)) { inputs.push({ k: 'str', name: 's' }); addNames(['s']); continue; }
+            if (new RegExp('^第([一二三四五六七八九\\d]+)行(?:小寫|大寫)?(?:英文)?(?:字串|文字)$').test(c)) { inputs.push({ k: 'str', name: 's' }); addNames(['s']); continue; } // 第二行小寫英文字串
+            if ((m = new RegExp('^第([一二三四五六七八九\\d]+)行\\s*(' + NAME + ')\\s*(?:與|和)\\s*[^a-zA-Z\\s]*\\s*(' + NAME + ')$').exec(c))) { inputs.push({ k: 'scalars', names: [m[2], m[3]], type: 'int', line: true }); addNames([m[2], m[3]]); continue; } // 第一行 k 與目標 t
+            if ((m = new RegExp('^第([一二三四五六七八九\\d]+)行[^a-zA-Z0-9]{1,8}\\s*(' + NAMES + ')$').exec(c))) { const ns = m[2].split(/\s+/); inputs.push({ k: 'scalars', names: ns, type: 'int', line: true }); addNames(ns); continue; } // 第一行偏移量 k
+            if (/^輸入(?:一行|一個)?[^，]*?(?:字串|文字|羅馬數字)$/.test(c) || /^輸入一個很長的.*整數$/.test(c)) { inputs.push({ k: 'str', name: 's' }); addNames(['s']); continue; } // 輸入一個由 0、1 組成的字串／輸入小寫字串／輸入一個很長的非負整數（以字串給）
+            if (/^輸入(?:一行)?以空格分隔的/.test(c)) { inputs.push({ k: 'words', name: 'w' }); addNames(['w']); continue; } // 輸入以空格分隔的後序運算式
+            if ((m = new RegExp('^輸入[^a-zA-Z0-9]{0,14}?\\s*(' + NAMES + ')$').exec(c)) && !/小數|字串|文字/.test(c)) { const ns = m[1].split(/\s+/); inputs.push({ k: 'scalars', names: ns, type: 'int', line: true }); addNames(ns); continue; } // 輸入 a e m／輸入三個點的整數座標 x1 y1 x2 y2 x3 y3
         }
+        if (!inputs.length) { const im = /(?:≤|<=)\s*([a-z][a-z0-9]{0,3})\s*(?:≤|<=)/.exec(text); if (im) { inputs.push({ k: 'scalars', names: [im[1]], type: 'int', line: true }); addNames([im[1]]); } } // 沒寫「輸入」只在範圍裡出現變數（爬到第 n 階（1≤n≤80））：一個整數
         // ---- 輸出 ----
         const goal = { verbs: [], yesno: /YES\s*(?:或|或者)\s*NO|YES，否則|輸出\s*YES/.test(text) };
         const om = /輸出\s*([^，。；;\n（(]+)/.exec(stripNote(text));
         if (om) { // 「輸出 a+b」：敘述裡直接寫了運算式
             const raw = om[1].trim().replace(/[　]/g, ' '); if (/^[a-z0-9_+\-*/%() .]+$/.test(raw) && /[a-z]/.test(raw) && /[+\-*/%]/.test(raw)) { const used = raw.match(/[a-z][a-z0-9]*/g) || []; if (used.every((u) => names.has(u))) goal.expr = raw; }
+        }
+        if (!goal.expr) { // 敘述裡的運算式夾在文字中間（輸出華氏溫度 c*9/5+32，無條件捨去…）：找第一段含變數的運算式；有「捨去」就把 / 當整數除法
+            const seg = (/輸出([^。]*)/.exec(stripNote(text)) || [])[1] || ''; const em2 = /[a-z0-9_]+(?:\s*[+\-*/%]\s*[a-z0-9_]+)+/.exec(seg);
+            if (em2 && /[a-z]/.test(em2[0])) { const used = em2[0].match(/[a-z][a-z0-9]*/g) || []; if (used.every((u) => names.has(u))) goal.expr = /捨去|向下取整|整數部分|取整/.test(seg) ? em2[0].replace(/\//g, '//') : em2[0]; }
         }
         for (const g of GOALS) if (g.key.test(text)) goal.verbs.push(g.op);
         const algo = (ALGOS.find((a) => a.re.test(text)) || {}).key || null; const paradigms = (algo && PARADIGMS[algo]) || [];
@@ -15110,7 +15159,7 @@ const holder = {};
         const vars = []; for (const inp of inputs) { if (inp.k === 'scalars') inp.names.forEach((n) => vars.push({ name: n, type: inp.type })); else if (inp.k === 'list') { if (!vars.some((v) => v.name === inp.size)) vars.push({ name: inp.size, type: 'int' }); vars.push({ name: inp.name, type: 'list' }); } else if (inp.k === 'rows') vars.push({ name: inp.name, type: 'list' }); else if (inp.k === 'grid') vars.push({ name: inp.name, type: 'list' }); else if (inp.k === 'str') vars.push({ name: inp.name, type: 'str' }); else if (inp.k === 'words') vars.push({ name: inp.name, type: 'list' }); }
         // 同一個名稱在不同行出現（第一行 n，第二行 n 個…）只留一個
         const seen = new Set(); const uvars = vars.filter((v) => (seen.has(v.name) ? false : seen.add(v.name)));
-        return { ok: inputs.length > 0, algo, paradigms, inputs, vars: uvars, goal, ops: [{ name: 'readInput', params: [], returns: 'any' }, { name: 'solve', params: uvars.map((v) => v.name), returns: 'void' }] };
+        return { ok: inputs.length > 0, algo, paradigms, inputs, vars: uvars, goal, facts: extractFacts(text), statement: text, ops: [{ name: 'readInput', params: [], returns: 'any' }, { name: 'solve', params: uvars.map((v) => v.name), returns: 'void' }] };
     }
     const UMLTYPE = { int: 'int', float: 'float', str: 'str', list: 'List<any>' };
     function umlHints(intent) {
@@ -15245,7 +15294,7 @@ const holder = {};
             py: (c, N) => { const n = N.sc[0], a = N.ls[0]; return code(['dp = [' + c.init + '] * ' + n, 'for i in range(' + n + '):', '    for j in range(i):', '        if ' + a + '[j] ' + c.cmp + ' ' + a + '[i]:', '            dp[i] = max(dp[i], dp[j] + 1)', 'print(max(dp))']); } },
         { id: 'dp.knapsack', paradigm: 'dynamic-programming', algo: 'knapsack', label: '一維 DP：0/1 背包（容量由大到小）', slots: [S('dir', '容量走向', [['down', 'down'], ['up', 'up']]), S('ans', '答案', [['dp[W]', 'W'], ['max', 'max']])],
             py: (c, N) => { const W = N.sc[1], rows = N.ls[0]; const rg = c.dir === 'down' ? 'range(' + W + ', w - 1, -1)' : 'range(w, ' + W + ' + 1)'; return code(['dp = [0] * (' + W + ' + 1)', 'for w, v in ' + rows + ':', '    for j in ' + rg + ':', '        dp[j] = max(dp[j], dp[j - w] + v)', 'print(' + (c.ans === 'W' ? 'dp[' + W + ']' : 'max(dp)') + ')']); } },
-        { id: 'bfs.grid', paradigm: 'bfs', algo: 'grid-bfs', label: 'BFS：網格最短步數', slots: [S('dirs', '可走的方向', [['4', '(1, 0), (-1, 0), (0, 1), (0, -1)'], ['8', '(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)'], ['rd', '(1, 0), (0, 1)']]), S('pass', '哪些格子能走', [['not-wall', "!= '#'"], ['dot', "== '.'"]])],
+        { id: 'bfs.grid', paradigm: 'bfs', algo: 'grid-bfs', when: /^(?![\s\S]*左上.*右下)/, label: 'BFS：網格最短步數', slots: [S('dirs', '可走的方向', [['4', '(1, 0), (-1, 0), (0, 1), (0, -1)'], ['8', '(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)'], ['rd', '(1, 0), (0, 1)']]), S('pass', '哪些格子能走', [['not-wall', "!= '#'"], ['dot', "== '.'"]])],
             py: (c, N) => { const r = N.sc[0], cc = N.sc[1], g = N.g; return code(['from collections import deque', 'for i in range(' + r + '):', '    for j in range(' + cc + '):', "        if " + g + "[i][j] == 'S':", '            si, sj = i, j', "        if " + g + "[i][j] == 'T':", '            ti, tj = i, j', 'dist = [[-1] * ' + cc + ' for _ in range(' + r + ')]', 'dist[si][sj] = 0', 'q = deque([(si, sj)])', 'while q:', '    x, y = q.popleft()', '    for dx, dy in [' + c.dirs + ']:', '        nx, ny = x + dx, y + dy', '        if 0 <= nx < ' + r + ' and 0 <= ny < ' + cc + ' and ' + g + '[nx][ny] ' + c.pass + ' and dist[nx][ny] == -1:', '            dist[nx][ny] = dist[x][y] + 1', '            q.append((nx, ny))', 'print(dist[ti][tj])']); } },
         { id: 'dfs.components', paradigm: 'dfs', algo: 'components', label: 'DFS／並查集：連通分量個數', slots: [S('method', '做法', ['dfs', 'union-find']), S('base', '節點編號從幾開始', [['1', '1'], ['0', '0']])],
             py: (c, N) => { const n = N.sc[0], rows = N.ls[0]; if (c.method === 'dfs') return code(['adj = [[] for _ in range(' + n + ' + 1)]', 'for u, v in ' + rows + ':', '    adj[u].append(v)', '    adj[v].append(u)', 'seen = [False] * (' + n + ' + 1)', 'cnt = 0', 'for s in range(' + c.base + ', ' + n + ' + ' + (c.base === '1' ? '1' : '0') + '):', '    if not seen[s]:', '        cnt += 1', '        seen[s] = True', '        st = [s]', '        while st:', '            u = st.pop()', '            for w in adj[u]:', '                if not seen[w]:', '                    seen[w] = True', '                    st.append(w)', 'print(cnt)']);
@@ -15269,16 +15318,16 @@ const holder = {};
         { id: 'hash.word-count', paradigm: 'data-structure-mapping', algo: 'word-count', label: '雜湊計數：字典＋排序輸出', slots: [S('key', '排序依據', [['cnt-desc-word', '-kv[1], kv[0]'], ['cnt-asc-word', 'kv[1], kv[0]'], ['word', 'kv[0]']])],
             py: (c, N) => { const w = N.ls[0]; return code(['cnt = {}', 'for tok in ' + w + ':', '    cnt[tok] = cnt.get(tok, 0) + 1', 'for k, v in sorted(cnt.items(), key=lambda kv: (' + c.key + ')):', '    print(k, v)']); } },
         { id: 'stack.brackets', paradigm: 'data-structure-mapping', algo: 'brackets', label: '堆疊：括號配對', slots: [S('match', '遇到右括號時', [['top-match', 'st and st[-1] == pair[ch]'], ['any', 'st']]), S('fin', '最後要求', [['empty', 'not st'], ['true', 'True']])],
-            py: (c, N) => { const s = N.s[0]; return code(['st = []', "pair = {')': '(', ']': '[', '}': '{'}", 'ok = True', 'for ch in ' + s + ':', "    if ch in '([{':", '        st.append(ch)', '    elif ' + c.match + ':', '        st.pop()', '    else:', '        ok = False', '        break', 'print("YES" if ok and ' + c.fin + ' else "NO")']); } },
+            py: (c, N, I) => { const s = N.s[0]; return code(['st = []', "pair = {')': '(', ']': '[', '}': '{'}", 'ok = True', 'for ch in ' + s + ':', "    if ch in '([{':", '        st.append(ch)', '    elif ' + c.match + ':', '        st.pop()', '    else:', '        ok = False', '        break', ynp('ok and ' + c.fin, I)]); } },
         { id: 'sweep.merge-intervals', paradigm: 'sort-and-sweep', algo: 'intervals-merge', label: '排序後掃描：合併區間', slots: [S('touch', '端點相接算重疊嗎', [['<=', '<='], ['<', '<']]), S('sort', '先怎麼排', [['asc', 'sorted({R})'], ['desc', 'sorted({R}, key=lambda t: -t[0])']])],
             py: (c, N) => { const rows = N.ls[0]; return code(['res = []', 'for l, r in ' + c.sort.replace(/\{R\}/g, rows) + ':', '    if res and l ' + c.touch + ' res[-1][1]:', '        res[-1][1] = max(res[-1][1], r)', '    else:', '        res.append([l, r])', 'for l, r in res:', '    print(l, r)']); } },
         { id: 'brute.pair-sum', paradigm: 'brute-force', algo: 'pair-sum', label: '暴力雙迴圈：找兩數之和', slots: [S('start', 'j 從哪裡開始', [['i+1', 'i + 1'], ['i', 'i']])],
             py: (c, N) => { const n = N.sc[0], t = N.sc[1], a = N.ls[0]; return code(['for i in range(' + n + '):', '    for j in range(' + c.start + ', ' + n + '):', '        if ' + a + '[i] + ' + a + '[j] == ' + t + ':', '            print(i, j)', '            return']); } },
         { id: 'sort.kth-largest', paradigm: 'sort', algo: 'kth-largest', label: '排序後取第 k 個', slots: [S('dedupe', '重複的數怎麼算', [['keep', '{A}'], ['set', 'set({A})']]), S('dir', '排序方向', [['desc', 'True'], ['asc', 'False']]), S('idx', '第 k 個的索引', [['k-1', '{k} - 1'], ['k', '{k}']])],
             py: (c, N) => { const k = N.sc[1], a = N.ls[0]; return code(['b = sorted(' + c.dedupe.replace('{A}', a) + ', reverse=' + c.dir + ')', 'print(b[' + c.idx.replace('{k}', k) + '])']); } },
-        { id: 'sieve.primes', paradigm: 'sieve', algo: 'primes', label: '篩法：質數個數', slots: [S('lim', '外層迴圈到哪', [['sqrt+1', 'int({n} ** 0.5) + 1'], ['sqrt', 'int({n} ** 0.5)'], ['n+1', '{n} + 1']]), S('start', '劃掉從哪開始', [['i*i', 'i * i'], ['2i', '2 * i']])],
+        { id: 'sieve.primes', paradigm: 'sieve', algo: 'primes', when: /^(?![\s\S]*(是質數|是否為質數|判斷.*質數))/, label: '篩法：質數個數', slots: [S('lim', '外層迴圈到哪', [['sqrt+1', 'int({n} ** 0.5) + 1'], ['sqrt', 'int({n} ** 0.5)'], ['n+1', '{n} + 1']]), S('start', '劃掉從哪開始', [['i*i', 'i * i'], ['2i', '2 * i']])],
             py: (c, N) => { const n = N.sc[0]; return code(['p = [True] * (' + n + ' + 1)', 'p[0] = p[1] = False', 'for i in range(2, ' + c.lim.replace(/\{n\}/g, n) + '):', '    if p[i]:', '        for j in range(' + c.start + ', ' + n + ' + 1, i):', '            p[j] = False', 'print(sum(p))']); } },
-        { id: 'nt.gcd-lcm', paradigm: 'number-theory', algo: 'gcd-lcm', label: '數論：輾轉相除求 gcd、由 gcd 求 lcm', slots: [S('lcm', 'lcm 公式', [['a//g*b', '{a} // g * {b}'], ['a*b//g', '{a} * {b} // g'], ['a*b', '{a} * {b}']]), S('order', '輸出順序', [['gl', 'g, l'], ['lg', 'l, g']])],
+        { id: 'nt.gcd-lcm', paradigm: 'number-theory', algo: 'gcd-lcm', label: '數論：輾轉相除求 gcd、由 gcd 求 lcm', slots: [S('lcm', 'lcm 公式', [['a//g*b', '{a} // g * {b}'], ['a*b//g', '{a} * {b} // g'], ['a*b', '{a} * {b}']]), S('order', '輸出', [['g', 'g'], ['l', 'l'], ['gl', 'g, l'], ['lg', 'l, g']])],
             py: (c, N) => { const a = N.sc[0], b = N.sc[1]; return code(['x, y = ' + a + ', ' + b, 'while y:', '    x, y = y, x % y', 'g = x', 'l = ' + c.lcm.replace(/\{a\}/g, a).replace(/\{b\}/g, b), 'print(' + c.order + ')']); } },
         { id: 'tp.palindrome', paradigm: 'two-pointers', algo: 'palindrome', label: '雙指標／反轉比較：迴文', slots: [S('filt', '保留哪些字元', [['isalnum', 'isalnum()'], ['isalpha', 'isalpha()']]), S('case', '大小寫', [['lower', 'c.lower()'], ['same', 'c']])],
             py: (c, N) => { const s = N.s[0]; return code(['t = [' + c.case + ' for c in ' + s + ' if c.' + c.filt + ']', 'print("YES" if t == t[::-1] else "NO")']); } },
@@ -15286,13 +15335,116 @@ const holder = {};
             py: (c, N) => { const s = N.s[0], t = N.s[1]; return 'print("YES" if ' + c.eq.replace(/\{s\}/g, s).replace(/\{t\}/g, t) + ' else "NO")'; } },
         { id: 'bt.n-queens', paradigm: 'backtracking', algo: 'n-queens', label: '回溯：N 皇后方案數（用 p[row] 與 row 指標模擬遞迴）', slots: [S('diag', '斜線衝突', [['both', 'abs(p[i] - p[row]) == row - i'], ['one', 'p[i] - p[row] == row - i']]), S('last', '放完最後一列的判斷', [['n-1', 'row == {n} - 1'], ['n', 'row == {n}']])],
             py: (c, N) => { const n = N.sc[0]; return code(['p = [-1] * ' + n, 'row = 0', 'cnt = 0', 'while row >= 0:', '    p[row] = p[row] + 1', '    if p[row] >= ' + n + ':', '        p[row] = -1', '        row -= 1', '    else:', '        ok = True', '        for i in range(row):', '            if p[i] == p[row] or ' + c.diag + ':', '                ok = False', '        if ok:', '            if ' + c.last.replace('{n}', n) + ':', '                cnt += 1', '            else:', '                row += 1', 'print(cnt)']); } },
-        { id: 'sp.dijkstra', paradigm: 'shortest-path', algo: 'dijkstra', label: '圖最短路：Dijkstra（堆積）', slots: [S('dir', '邊的方向', [['undirected', 'undirected'], ['directed', 'directed']]), S('un', '不可達輸出', [['-1', '-1'], ['INF', 'INF']]), S('base', '輸出節點範圍', [['1', '1'], ['0', '0']])],
+        { id: 'sp.dijkstra', paradigm: 'shortest-path', algo: 'dijkstra', when: /^(?![\s\S]*1\s*到\s*n)/, label: '圖最短路：Dijkstra（堆積）', slots: [S('dir', '邊的方向', [['undirected', 'undirected'], ['directed', 'directed']]), S('un', '不可達輸出', [['-1', '-1'], ['INF', 'INF']]), S('base', '輸出節點範圍', [['1', '1'], ['0', '0']])],
             py: (c, N) => { const n = N.sc[0], s = N.sc[2], rows = N.ls[0]; return code(['import heapq', 'adj = [[] for _ in range(' + n + ' + 1)]', 'for u, v, w in ' + rows + ':', '    adj[u].append((v, w))'].concat(c.dir === 'undirected' ? ['    adj[v].append((u, w))'] : [], ['INF = 10 ** 18', 'dist = [INF] * (' + n + ' + 1)', 'dist[' + s + '] = 0', 'h = [(0, ' + s + ')]', 'while h:', '    d, u = heapq.heappop(h)', '    if d > dist[u]:', '        continue', '    for v, w in adj[u]:', '        if d + w < dist[v]:', '            dist[v] = d + w', '            heapq.heappush(h, (d + w, v))', 'out = []', 'for i in range(' + c.base + ', ' + n + ' + 1):', '    if dist[i] < INF:', '        out.append(dist[i])', '    else:', '        out.append(' + c.un + ')', 'print(*out)'])); } },
         { id: 'fenwick.point-range', paradigm: 'fenwick-tree', algo: 'fenwick', label: '樹狀陣列：單點加、區間和', slots: [S('lo', '區間左端扣掉', [['x-1', 'x - 1'], ['x', 'x']]), S('hi', '區間右端', [['y', 'y'], ['y+1', 'y + 1']])],
             py: (c, N) => { const n = N.sc[0], a = N.ls[0], rows = N.ls[1]; return code(['bit = [0] * (' + n + ' + 1)', 'for i in range(' + n + '):', '    j = i + 1', '    while j <= ' + n + ':', '        bit[j] = bit[j] + ' + a + '[i]', '        j = j + (j & -j)', 'for tp, x, y in ' + rows + ':', '    if tp == 1:', '        j = x', '        while j <= ' + n + ':', '            bit[j] = bit[j] + y', '            j = j + (j & -j)', '    else:', '        hi_s = 0', '        j = ' + c.hi, '        while j > 0:', '            hi_s = hi_s + bit[j]', '            j = j - (j & -j)', '        lo_s = 0', '        j = ' + c.lo, '        while j > 0:', '            lo_s = lo_s + bit[j]', '            j = j - (j & -j)', '        print(hi_s - lo_s)']); } },
         { id: 'str.kmp-count', paradigm: 'kmp', algo: 'str-match', label: '字串匹配：KMP 數出現次數', slots: [S('ov', '配到一次後 j 回到', [['f[j-1]', 'f[j - 1]'], ['0', '0']]), S('fb', '失配時退幾次', [['while', 'while'], ['if', 'if']])],
             py: (c, N) => { const s = N.s[0], t = N.s[1]; return code(['f = [0] * len(' + t + ')', 'k = 0', 'for i in range(1, len(' + t + ')):', '    ' + c.fb + ' k > 0 and ' + t + '[i] != ' + t + '[k]:', '        k = f[k - 1]', '    if ' + t + '[i] == ' + t + '[k]:', '        k = k + 1', '    f[i] = k', 'cnt = 0', 'j = 0', 'for i in range(len(' + s + ')):', '    ' + c.fb + ' j > 0 and ' + s + '[i] != ' + t + '[j]:', '        j = f[j - 1]', '    if ' + s + '[i] == ' + t + '[j]:', '        j = j + 1', '    if j == len(' + t + '):', '        cnt = cnt + 1', '        j = ' + c.ov.replace('j-1', 'j - 1'), 'print(cnt)']); } },
     ];
+    // ======== 通用補充骨架（2026-11-06）：依基準失敗原因分群補的範式；題目參數（遞推式、模數、字串條件、yes/no 字樣）由讀取器抽進 intent.facts，骨架第三個參數 I 取用。
+    // 缺參數時 throw（render 記成 RENDER_ERROR、不浪費沙盒）。仍然只有 1～2 個小槽位，由沙盒挑對的那個。
+    const FA = (I) => (I && I.facts) || {};
+    const YN = (I) => FA(I).yn || ['YES', 'NO'];
+    const need = (v, what) => { if (v == null || v === '' || (Array.isArray(v) && !v.length)) throw new Error('敘述裡沒讀到：' + what); return v; };
+    const ynp = (cond, I) => 'print("' + YN(I)[0] + '" if ' + cond + ' else "' + YN(I)[1] + '")';
+    const EMPTY = (I) => FA(I).empty || 'empty';
+    const GEN = [
+        // ---- L0：公式／排序 ----
+        { id: 'closed.series-sum', paradigm: 'closed-form', algo: 'series-sum', label: '封閉公式：1+2+…+n 一類的級數和', slots: [S('f', '公式', [['tri', '{n} * ({n} + 1) // 2'], ['sq', '{n} * ({n} + 1) * (2 * {n} + 1) // 6'], ['cube', '({n} * ({n} + 1) // 2) ** 2'], ['sq-n', '{n} * {n}']])],
+            py: (c, N) => 'print(' + c.f.replace(/\{n\}/g, N.sc[0]) + ')' },
+        { id: 'order.sorted-scalars', paradigm: 'sort', algo: 'order-stat', label: '幾個整數排序後取全部／中間／最小／最大', slots: [S('dir', '方向', [['asc', 'False'], ['desc', 'True']]), S('out', '輸出', [['all', 'print(*v)'], ['mid', 'print(v[len(v) // 2])'], ['first', 'print(v[0])'], ['last', 'print(v[-1])']])],
+            py: (c, N) => code(['v = sorted([' + N.sc.join(', ') + '], reverse=' + c.dir + ')', c.out]) },
+        { id: 'geo.tri-area', paradigm: 'geometry', algo: 'tri-area', label: '幾何：三角形面積（叉積）', slots: [S('abs', '取絕對值', [['abs', 'abs(v)'], ['plain', 'v']]), S('out', '輸出', [['v', '{A}'], ['half', '{A} / 2'], ['half-i', '{A} // 2']])],
+            py: (c, N) => { if (N.sc.length !== 6) throw new Error('要 6 個座標'); const [x1, y1, x2, y2, x3, y3] = N.sc; return code(['v = (' + x2 + ' - ' + x1 + ') * (' + y3 + ' - ' + y1 + ') - (' + x3 + ' - ' + x1 + ') * (' + y2 + ' - ' + y1 + ')', 'print(' + c.out.replace('{A}', c.abs) + ')']); } },
+        // ---- L1：遞推（係數與初值由讀取器從敘述抽出）----
+        { id: 'rec.iterate', paradigm: 'dynamic-programming', algo: 'linear-rec', when: /^(?![\s\S]*(10\s*\^\s*(?:[7-9]|\d{2,})|\d{8,}))/, label: '線性遞推：逐項推（n 不大）', slots: [S('idx', '輸出第幾項', [['n', '{n}'], ['n-1', '{n} - 1'], ['n+1', '{n} + 1']])],
+            py: (c, N, I) => { const r = need(FA(I).rec, '遞推式'); const K = r.coef.length; const M = r.mod; return code(['f = [' + r.init.join(', ') + ']', 'for i in range(' + K + ', ' + c.idx.replace(/\{n\}/g, N.sc[0]) + ' + 1):', '    v = 0', '    for j in range(' + K + '):', '        v += [' + r.coef.join(', ') + '][j] * f[i - 1 - j]', '    f.append(v' + (M ? ' % ' + M : '') + ')', 'print(f[' + c.idx.replace(/\{n\}/g, N.sc[0]) + ']' + (M ? ' % ' + M : '') + ')']); } },
+        { id: 'rec.matrix', paradigm: 'matrix-power', algo: 'linear-rec', label: '線性遞推：伴隨矩陣快速冪（n 很大、取餘數）', slots: [S('mod', '模數', [['stmt', 'stmt'], ['none', 'none']]), S('shift', '指數位移', [['0', '+ 0'], ['-1', '- 1']])],
+            py: (c, N, I) => { const r = need(FA(I).rec, '遞推式'); const K = r.coef.length; const M = c.mod === 'stmt' ? (r.mod || 0) : 0; const mo = M ? ' % ' + M : ''; if (c.mod === 'none' && r.mod) throw new Error('有模數就不試不取模');
+                const T = []; for (let i = 0; i < K; i++) T.push('[' + Array.from({ length: K }, (_, j) => (i === 0 ? r.coef[j] : (j === i - 1 ? 1 : 0))).join(', ') + ']'); const s0 = r.init.slice().reverse();
+                return code(['T = [' + T.join(', ') + ']', 'R = [' + Array.from({ length: K }, (_, i) => '[' + Array.from({ length: K }, (_, j) => (i === j ? 1 : 0)).join(', ') + ']').join(', ') + ']', 'e = ' + N.sc[0] + ' ' + c.shift, 'while e > 0:', '    if e & 1:', '        R = [[sum(R[i][t] * T[t][j] for t in range(' + K + '))' + mo + ' for j in range(' + K + ')] for i in range(' + K + ')]', '    T = [[sum(T[i][t] * T[t][j] for t in range(' + K + '))' + mo + ' for j in range(' + K + ')] for i in range(' + K + ')]', '    e >>= 1', 'print(sum(R[' + (K - 1) + '][j] * [' + s0.join(', ') + '][j] for j in range(' + K + '))' + mo + ')']); } },
+        // ---- L2：字串條件（有限自動機的常見家族；參數由讀取器抽）----
+        { id: 'sd.presence', paradigm: 'finite-automaton', algo: 'string-dfa', when: /不含|含有|包含/, label: '字串條件：含不含某子字串（含連續 k 個同字元）', slots: [S('pol', '成立時', [['absent', 'not in'], ['present', 'in']])],
+            py: (c, N, I) => ynp('"' + need(FA(I).subs, '子字串')[0] + '" ' + c.pol + ' ' + N.s[0], I) },
+        { id: 'sd.affix', paradigm: 'finite-automaton', algo: 'string-dfa', when: /結尾|開頭/, label: '字串條件：以某字串結尾／開頭', slots: [S('kind', '哪一端', [['endswith', 'endswith'], ['startswith', 'startswith']])],
+            py: (c, N, I) => ynp(N.s[0] + '.' + c.kind + '("' + need(FA(I).subs, '子字串')[0] + '")', I) },
+        { id: 'sd.count-sub', paradigm: 'finite-automaton', algo: 'string-dfa', when: /次數|個數(?!除以)/, label: '字串條件：子字串出現次數（可重疊／不重疊）', slots: [S('ov', '重疊', [['overlap', 'overlap'], ['plain', 'plain']])],
+            py: (c, N, I) => { const sub = need(FA(I).subs, '子字串')[0]; const s = N.s[0]; if (c.ov === 'plain') return 'print(' + s + '.count("' + sub + '"))'; return code(['cnt = 0', 'for i in range(len(' + s + ') - ' + (sub.length - 1) + '):', '    if ' + s + '[i:i + ' + sub.length + '] == "' + sub + '":', '        cnt += 1', 'print(cnt)']); } },
+        { id: 'sd.char-parity', paradigm: 'finite-automaton', algo: 'string-dfa', when: /偶數次|奇數次|偶數個|奇數個/, label: '字串條件：某字元出現次數的奇偶', slots: [S('par', '成立時', [['even', '== 0'], ['odd', '== 1']])],
+            py: (c, N, I) => ynp(N.s[0] + '.count("' + need(FA(I).chr, '字元') + '") % 2 ' + c.par, I) },
+        { id: 'sd.char-count-mod', paradigm: 'finite-automaton', algo: 'string-dfa', when: /個數除以/, label: '字串條件：某字元個數除以 k 的餘數', slots: [S('out', '輸出', [['rem', '%'], ['floor', '//']])],
+            py: (c, N, I) => 'print(' + N.s[0] + '.count("' + need(FA(I).chr, '字元') + '") ' + c.out + ' ' + need(FA(I).mod, '模數') + ')' },
+        { id: 'sd.number-mod', paradigm: 'finite-automaton', algo: 'string-dfa', when: /整除|餘數/, label: '字串條件：把字串當成 b 進位數，除以 k 的餘數／能否整除', slots: [S('base', '進位', [['2', '2'], ['10', '10']]), S('out', '輸出', [['rem', 'rem'], ['div', 'div']])],
+            py: (c, N, I) => { const k = need(FA(I).mod, '除數'); const e = 'int(' + N.s[0] + ', ' + c.base + ') % ' + k; return c.out === 'rem' ? 'print(' + e + ')' : ynp(e + ' == 0', I); } },
+        // ---- L3：圖／格子 ----
+        { id: 'dp.grid-paths', paradigm: 'dynamic-programming', algo: 'grid-paths', label: '格子 DP：只能向右／下走的路徑數（牆是 #）', slots: [S('mod', '取餘數', [['none', 'none'], ['m', 'm']])],
+            py: (c, N, I) => { const n = N.sc[0], m = N.sc[1], g = N.g; const M = FA(I).mod; if (c.mod === 'm' && !M) throw new Error('沒有模數'); const mo = c.mod === 'm' ? ' % ' + M : ''; return code(['dp = [[0] * ' + m + ' for _ in range(' + n + ')]', 'for i in range(' + n + '):', '    for j in range(' + m + '):', "        if " + g + "[i][j] == '#':", '            continue', '        if i == 0 and j == 0:', '            dp[i][j] = 1', '        else:', '            up = 0', '            left = 0', '            if i > 0:', '                up = dp[i - 1][j]', '            if j > 0:', '                left = dp[i][j - 1]', '            dp[i][j] = (up + left)' + mo, 'print(dp[' + n + ' - 1][' + m + ' - 1])']); } },
+        { id: 'sp.dijkstra-1n', paradigm: 'shortest-path', algo: 'dijkstra', when: /1\s*到\s*n/, label: '圖最短路：Dijkstra，從 1 到 n', slots: [S('dir', '邊的方向', [['directed', 'directed'], ['undirected', 'undirected']]), S('un', '到不了輸出', [['-1', '-1'], ['INF', 'INF']])],
+            py: (c, N, I) => { const n = N.sc[0], rows = N.ls[0]; return code(['import heapq', 'adj = [[] for _ in range(' + n + ' + 1)]', 'for u, v, w in ' + rows + ':', '    adj[u].append((v, w))'].concat(c.dir === 'undirected' ? ['    adj[v].append((u, w))'] : [], ['INF = 10 ** 18', 'dist = [INF] * (' + n + ' + 1)', 'dist[1] = 0', 'h = [(0, 1)]', 'while h:', '    d, u = heapq.heappop(h)', '    if d > dist[u]:', '        continue', '    for v, w in adj[u]:', '        if d + w < dist[v]:', '            dist[v] = d + w', '            heapq.heappush(h, (d + w, v))', 'print(dist[' + n + '] if dist[' + n + '] < INF else ' + (c.un === '-1' ? (FA(I).unreach || '-1') : 'INF') + ')'])); } },
+        { id: 'graph.reach-count', paradigm: 'dfs', algo: 'reach-count', label: '圖：從 1 出發能到達的點數（堆疊 DFS）', slots: [S('dir', '邊的方向', [['directed', 'directed'], ['undirected', 'undirected']]), S('cnt', '輸出', [['all', 'sum(seen)'], ['minus1', 'sum(seen) - 1']])],
+            py: (c, N) => { const n = N.sc[0], rows = N.ls[0]; return code(['adj = [[] for _ in range(' + n + ' + 1)]', 'for u, v in ' + rows + ':', '    adj[u].append(v)'].concat(c.dir === 'undirected' ? ['    adj[v].append(u)'] : [], ['seen = [False] * (' + n + ' + 1)', 'seen[1] = True', 'st = [1]', 'while st:', '    u = st.pop()', '    for v in adj[u]:', '        if not seen[v]:', '            seen[v] = True', '            st.append(v)', 'print(' + c.cnt + ')'])); } },
+        ...['closure-queries', 'conn-queries'].map((algo) => ({ id: 'graph.reach-queries.' + algo, paradigm: algo === 'conn-queries' ? 'union-find' : 'transitive-closure', algo, label: '圖：多個詢問「x 能走到 y 嗎／x、y 連通嗎」（每個詢問從 x 做一次 DFS）', slots: [S('dir', '邊的方向', algo === 'conn-queries' ? [['undirected', 'undirected'], ['directed', 'directed']] : [['directed', 'directed'], ['undirected', 'undirected']])],
+            py: (c, N, I) => { const n = N.sc[0], rows = N.ls[0], qs = N.ls[1]; need(qs, '詢問'); return code(['adj = [[] for _ in range(' + n + ' + 1)]', 'for u, v in ' + rows + ':', '    adj[u].append(v)'].concat(c.dir === 'undirected' ? ['    adj[v].append(u)'] : [], ['for x, y in ' + qs + ':', '    seen = [False] * (' + n + ' + 1)', '    seen[x] = True', '    st = [x]', '    while st:', '        u = st.pop()', '        for v in adj[u]:', '            if not seen[v]:', '                seen[v] = True', '                st.append(v)', '    ' + ynp('seen[y]', I)])); } })),
+        { id: 'matrix.walks-k', paradigm: 'matrix-power', algo: 'walks-k', label: '鄰接矩陣的 k 次方：長度恰好 k 的路徑數（逐步推向量／快速冪）', slots: [S('method', '做法', [['iter', 'iter'], ['pow', 'pow']])],
+            py: (c, N, I) => { const n = N.sc[0], k = N.sc[2], rows = N.ls[0]; const M = FA(I).mod; const mo = M ? ' % ' + M : ''; const head = ['A = [[0] * ' + n + ' for _ in range(' + n + ')]', 'for u, v in ' + rows + ':', '    A[u - 1][v - 1] += 1'];
+                if (c.method === 'iter') return code(head.concat(['vec = [0] * ' + n, 'vec[0] = 1', 'for _ in range(' + k + '):', '    vec = [sum(vec[i] * A[i][j] for i in range(' + n + '))' + mo + ' for j in range(' + n + ')]', 'print(sum(vec)' + mo + ')']));
+                return code(head.concat(['R = [[1 if i == j else 0 for j in range(' + n + ')] for i in range(' + n + ')]', 'e = ' + k, 'while e > 0:', '    if e & 1:', '        R = [[sum(R[i][t] * A[t][j] for t in range(' + n + '))' + mo + ' for j in range(' + n + ')] for i in range(' + n + ')]', '    A = [[sum(A[i][t] * A[t][j] for t in range(' + n + '))' + mo + ' for j in range(' + n + ')] for i in range(' + n + ')]', '    e >>= 1', 'print(sum(R[0])' + mo + ')'])); } },
+        { id: 'dp.coin-ways', paradigm: 'dynamic-programming', algo: 'coin-ways', label: '一維 DP：湊出金額的方法數（組合／排列）', slots: [S('order', '迴圈順序', [['coin', 'coin'], ['amount', 'amount']])],
+            py: (c, N) => { const t = N.sc[1], a = N.ls[0]; return code(['dp = [0] * (' + t + ' + 1)', 'dp[0] = 1'].concat(c.order === 'coin' ? ['for c in ' + a + ':', '    for x in range(c, ' + t + ' + 1):', '        dp[x] += dp[x - c]'] : ['for x in range(1, ' + t + ' + 1):', '    for c in ' + a + ':', '        if c <= x:', '            dp[x] += dp[x - c]'], ['print(dp[' + t + '])'])); } },
+        { id: 'map.degree-max', paradigm: 'data-structure-mapping', algo: 'in-degree', label: '陣列計數：最大入度／出度', slots: [S('end', '算哪一端', [['in', 'v'], ['out', 'u']])],
+            py: (c, N) => { const n = N.sc[0], rows = N.ls[0]; return code(['deg = [0] * (' + n + ' + 1)', 'for u, v in ' + rows + ':', '    deg[' + c.end + '] += 1', 'print(max(deg))']); } },
+        { id: 'topo.kahn-heap', paradigm: 'topological-sort', algo: 'topo', label: '拓撲排序：Kahn＋堆積（字典序最小／最大）', slots: [S('sg', '堆積取向', [['1', '1'], ['-1', '-1']])],
+            py: (c, N) => { const n = N.sc[0], rows = N.ls[0]; return code(['import heapq', 'adj = [[] for _ in range(' + n + ' + 1)]', 'indeg = [0] * (' + n + ' + 1)', 'for u, v in ' + rows + ':', '    adj[u].append(v)', '    indeg[v] += 1', 'h = [' + c.sg + ' * i for i in range(1, ' + n + ' + 1) if indeg[i] == 0]', 'heapq.heapify(h)', 'out = []', 'while h:', '    u = ' + c.sg + ' * heapq.heappop(h)', '    out.append(u)', '    for v in adj[u]:', '        indeg[v] -= 1', '        if indeg[v] == 0:', '            heapq.heappush(h, ' + c.sg + ' * v)', 'print(*out)']); } },
+        { id: 'comb.binom', paradigm: 'combinatorics', algo: 'binom', label: '組合數 C(n,k)（連乘再除，不爆中間值）', slots: [S('k', 'k 取', [['k', '{k}'], ['min', 'min({k}, {n} - {k})']])],
+            py: (c, N) => { const n = N.sc[0], k = N.sc[1]; return code(['r = 1', 'for i in range(' + c.k.replace(/\{k\}/g, k).replace(/\{n\}/g, n) + '):', '    r = r * (' + n + ' - i) // (i + 1)', 'print(r)']); } },
+        // ---- L4：數論／迴圈 ----
+        { id: 'sim.collatz', paradigm: 'simulation', algo: 'collatz', label: '模擬：Collatz 步數', slots: [S('init', '起始步數', [['0', '0'], ['1', '1']])],
+            py: (c, N) => code(['x = ' + N.sc[0], 'c = ' + c.init, 'while x != 1:', '    if x % 2 == 0:', '        x = x // 2', '    else:', '        x = 3 * x + 1', '    c += 1', 'print(c)']) },
+        { id: 'nt.digit-sum', paradigm: 'number-theory', algo: 'digit-sum', label: '數論：各位數字的和／積', slots: [S('op', '運算', [['sum', 'sum'], ['prod', 'prod']]), S('src', '取法', [['str', 'str({n})'], ['abs', 'str(abs({n}))']])],
+            py: (c, N) => c.op === 'sum' ? 'print(sum(int(ch) for ch in ' + c.src.replace(/\{n\}/g, N.sc[0]) + '))' : code(['r = 1', 'for ch in ' + c.src.replace(/\{n\}/g, N.sc[0]) + ':', '    r *= int(ch)', 'print(r)']) },
+        { id: 'nt.isqrt', paradigm: 'number-theory', algo: 'isqrt', label: '數論：整數平方根（浮點估計後校正／二分）', slots: [S('m', '做法', [['float', 'float'], ['bin', 'bin']])],
+            py: (c, N) => { const n = N.sc[0]; return c.m === 'float' ? code(['r = int(' + n + ' ** 0.5)', 'while r * r > ' + n + ':', '    r -= 1', 'while (r + 1) * (r + 1) <= ' + n + ':', '    r += 1', 'print(r)']) : code(['lo = 0', 'hi = ' + n + ' + 1', 'while hi - lo > 1:', '    mid = (lo + hi) // 2', '    if mid * mid <= ' + n + ':', '        lo = mid', '    else:', '        hi = mid', 'print(lo)']); } },
+        { id: 'nt.power-mod', paradigm: 'fast-power', algo: 'power-mod', label: '數論：快速冪取餘', slots: [S('fin', '最後', [['mod', 'r % {m}'], ['raw', 'r']])],
+            py: (c, N) => { const [a, e, m] = N.sc; return code(['r = 1', 'b = ' + a + ' % ' + m, 'k2 = ' + e, 'while k2 > 0:', '    if k2 & 1:', '        r = r * b % ' + m, '    b = b * b % ' + m, '    k2 >>= 1', 'print(' + c.fin.replace(/\{m\}/g, m) + ')']); } },
+        { id: 'nt.count-divisors', paradigm: 'number-theory', algo: 'count-divisors', when: /^(?![\s\S]*因數(?:的和|和))/, label: '數論：因數個數（質因數分解）', slots: [S('tail', '剩下的大質數', [['x>1', 'x > 1'], ['none', 'False']])],
+            py: (c, N) => code(['x = ' + N.sc[0], 'cnt = 1', 'p = 2', 'while p * p <= x:', '    e = 0', '    while x % p == 0:', '        x = x // p', '        e += 1', '    cnt *= e + 1', '    p += 1', 'if ' + c.tail + ':', '    cnt *= 2', 'print(cnt)']) },
+        { id: 'nt.divisor-sum', paradigm: 'number-theory', algo: 'count-divisors', when: /因數的和|因數和/, label: '數論：所有正因數的和（成對枚舉到根號 n）', slots: [S('start', 'd 從幾開始', [['1', '1'], ['2', '2']])],
+            py: (c, N) => code(['x = ' + N.sc[0], 'tot = 0', 'd = ' + c.start, 'while d * d <= x:', '    if x % d == 0:', '        tot += d', '        if d * d != x:', '            tot += x // d', '    d += 1', 'print(tot)']) },
+        { id: 'nt.trailing-zeros', paradigm: 'number-theory', algo: 'trailing-zeros', label: '數論：n! 末尾 0 的個數（勒讓德公式）', slots: [S('base', '除數', [['5', '5'], ['2', '2'], ['10', '10']])],
+            py: (c, N) => code(['c = 0', 'p = ' + c.base, 'while ' + N.sc[0] + ' // p > 0:', '    c += ' + N.sc[0] + ' // p', '    p *= ' + c.base, 'print(c)']) },
+        { id: 'bit.count', paradigm: 'bit-manipulation', algo: 'bit-count', label: '位元：二進位 1 的個數', slots: [S('m', '做法', [['bin', 'bin'], ['loop', 'loop']]), S('bit', '數哪個位元', [['1', '1'], ['0', '0']])],
+            py: (c, N) => c.bit === '0' ? 'print(bin(' + N.sc[0] + ')[2:].count("0"))' : c.m === 'bin' ? 'print(bin(' + N.sc[0] + ').count("1"))' : code(['x = ' + N.sc[0], 'c = 0', 'while x > 0:', '    c += x & 1', '    x >>= 1', 'print(c)']) },
+        { id: 'nt.is-prime', paradigm: 'number-theory', algo: 'primes', when: /是質數|是否為質數|判斷.*質數/, label: '數論：試除判斷質數', slots: [S('lo', '小於幾不是質數', [['2', '>= 2'], ['1', '> 1']])],
+            py: (c, N, I) => code(['ok = ' + N.sc[0] + ' ' + c.lo, 'i = 2', 'while i * i <= ' + N.sc[0] + ':', '    if ' + N.sc[0] + ' % i == 0:', '        ok = False', '        break', '    i += 1', ynp('ok', I)]) },
+        // ---- L5：堆疊／佇列／字串 ----
+        { id: 'stack.max-depth', paradigm: 'stack', algo: 'max-depth', label: '堆疊（計數）：括號最大巢狀深度', slots: [S('open', '算哪種括號', [['(', '('], ['[', '['], ['{', '{']])],
+            py: (c, N) => code(['d = 0', 'best = 0', 'for ch in ' + N.s[0] + ':', '    if ch == "' + c.open + '":', '        d += 1', '        best = max(best, d)', '    elif ch == "' + { '(': ')', '[': ']', '{': '}' }[c.open] + '":', '        d -= 1', 'print(best)']) },
+        { id: 'str.reverse', paradigm: 'string', algo: 'str-reverse', label: '字串：反轉', slots: [S('m', '做法', [['slice', 'slice'], ['loop', 'loop']])],
+            py: (c, N) => c.m === 'slice' ? 'print(' + N.s[0] + '[::-1])' : code(['out = ""', 'for ch in ' + N.s[0] + ':', '    out = ch + out', 'print(out)']) },
+        { id: 'stack.rpn', paradigm: 'stack', algo: 'rpn', label: '堆疊：後序（逆波蘭）運算式求值', slots: [S('div', '除法', [['floor', 'a // b'], ['trunc', 'int(a / b)']]), S('ret', '答案', [['top', 'st[-1]'], ['pop', 'st.pop()']])],
+            py: (c, N) => code(['st = []', 'for t in ' + N.ls[0] + ':', "    if t in ('+', '-', '*', '/'):", '        b = st.pop()', '        a = st.pop()', "        if t == '+':", '            st.append(a + b)', "        elif t == '-':", '            st.append(a - b)', "        elif t == '*':", '            st.append(a * b)', '        else:', '            st.append(' + c.div + ')', '    else:', '        st.append(int(t))', 'print(' + c.ret + ')']) },
+        { id: 'stack.next-greater', paradigm: 'monotonic-stack', algo: 'next-greater', label: '單調堆疊：右邊第一個更大的數', slots: [S('cmp', '比較', [['<', '<'], ['<=', '<=']])],
+            py: (c, N, I) => { const n = N.sc[0], a = N.ls[0]; return code(['res = [' + (FA(I).none || '-1') + '] * ' + n, 'st = []', 'for i in range(' + n + '):', '    while st and ' + a + '[st[-1]] ' + c.cmp + ' ' + a + '[i]:', '        res[st.pop()] = ' + a + '[i]', '    st.append(i)', 'print(*res)']); } },
+        { id: 'stack.valid-tags', paradigm: 'stack', algo: 'valid-tags', label: '堆疊：標籤配對（<x> 與 </x>）', slots: [S('fin', '最後要求', [['empty', 'not st'], ['true', 'True']])],
+            py: (c, N, I) => code(['st = []', 'ok = True', 'for t in ' + N.ls[0] + ':', "    if t.startswith('</'):", '        if st and st[-1] == t[2:-1]:', '            st.pop()', '        else:', '            ok = False', '    else:', '        st.append(t[1:-1])', ynp('ok and ' + c.fin, I)]) },
+        { id: 'seq.cmd-sim', paradigm: 'data-structure-mapping', algo: 'cmd-sim', label: '指令模擬：堆疊（後進先出）／佇列（先進先出）', slots: [S('kind', '資料結構', [['stack', '-1'], ['queue', '0']])],
+            py: (c, N, I) => code(['st = []', 'for line in ' + N.g + ':', '    p = line.split()', '    if len(p) == 0:', '        continue', "    if p[0] in ('push', 'enq'):", '        st.append(p[1])', "    elif p[0] in ('pop', 'deq'):", '        if st:', '            print(st.pop(' + (c.kind === '-1' ? '' : '0') + '))', '        else:', '            print("' + EMPTY(I) + '")', '    else:', '        if st:', '            print(st[' + c.kind + '])', '        else:', '            print("' + EMPTY(I) + '")']) },
+        // ---- L6／其他 ----
+        { id: 'bfs.grid-corners', paradigm: 'bfs', algo: 'grid-bfs', when: /左上.*右下/, label: 'BFS：網格左上到右下最少步數（# 是牆）', slots: [S('dirs', '可走的方向', [['4', '(1, 0), (-1, 0), (0, 1), (0, -1)'], ['8', '(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)']])],
+            py: (c, N, I) => { const n = N.sc[0], m = N.sc[1], g = N.g; return code(['from collections import deque', 'dist = [[-1] * ' + m + ' for _ in range(' + n + ')]', 'q = deque()', "if " + g + "[0][0] != '#':", '    dist[0][0] = 0', '    q.append((0, 0))', 'while q:', '    x, y = q.popleft()', '    for dx, dy in [' + c.dirs + ']:', '        nx, ny = x + dx, y + dy', '        if 0 <= nx < ' + n + ' and 0 <= ny < ' + m + " and " + g + "[nx][ny] != '#' and dist[nx][ny] == -1:", '            dist[nx][ny] = dist[x][y] + 1', '            q.append((nx, ny))', 'print(dist[' + n + ' - 1][' + m + ' - 1])']); } },
+        { id: 'sort.list', paradigm: 'sort', algo: 'sort-list', label: '排序輸出（可去重、可由大到小）', slots: [S('dedupe', '重複的數', [['keep', '{A}'], ['set', 'set({A})']]), S('dir', '方向', [['asc', 'False'], ['desc', 'True']])],
+            py: (c, N) => 'print(*sorted(' + c.dedupe.replace('{A}', N.ls[0]) + ', reverse=' + c.dir + '))' },
+        { id: 'hash.word-top', paradigm: 'data-structure-mapping', algo: 'word-top', label: '雜湊計數：出現最多次的單字（並列取字典序最小）', slots: [S('key', '排序依據', [['cnt-desc-word', '-kv[1], kv[0]'], ['cnt-desc', '-kv[1]'], ['cnt-desc-word-desc', '-kv[1], [-ord(ch) for ch in kv[0]]']])],
+            py: (c, N) => code(['cnt = {}', 'for t in ' + N.ls[0] + ':', '    cnt[t] = cnt.get(t, 0) + 1', 'best = sorted(cnt.items(), key=lambda kv: (' + c.key + '))', 'print(best[0][0])']) },
+        { id: 'str.caesar', paradigm: 'string', algo: 'caesar', label: '字串：凱薩位移（小寫字母環狀）', slots: [S('dir', '方向', [['+', '+'], ['-', '-']])],
+            py: (c, N) => code(['out = []', 'for ch in ' + N.s[0] + ':', "    if 'a' <= ch <= 'z':", '        out.append(chr((ord(ch) - 97 ' + c.dir + ' ' + N.sc[0] + ') % 26 + 97))', '    else:', '        out.append(ch)', 'print("".join(out))']) },
+        { id: 'str.rle', paradigm: 'string', algo: 'rle', label: '字串：連續相同字元壓縮（字元＋次數）', slots: [S('one', '次數為 1 時', [['always', 'True'], ['skip', 'j - i > 1']])],
+            py: (c, N) => { const s = N.s[0]; return code(['out = ""', 'i = 0', 'while i < len(' + s + '):', '    j = i', '    while j < len(' + s + ') and ' + s + '[j] == ' + s + '[i]:', '        j += 1', '    out += ' + s + '[i]', '    if ' + c.one + ':', '        out += str(j - i)', '    i = j', 'print(out)']); } },
+        { id: 'str.roman', paradigm: 'string', algo: 'roman', label: '字串：羅馬數字轉整數', slots: [S('sub', '減法規則', [['sub', 'True'], ['add', 'False']])],
+            py: (c, N) => { const s = N.s[0]; return code(["v = {'I': 1, 'V': 5, 'X': 10, 'L': 50, 'C': 100, 'D': 500, 'M': 1000}", 't = 0', 'for i in range(len(' + s + ')):', '    if ' + c.sub + ' and i + 1 < len(' + s + ') and v[' + s + '[i]] < v[' + s + '[i + 1]]:', '        t -= v[' + s + '[i]]', '    else:', '        t += v[' + s + '[i]]', 'print(t)']); } },
+    ];
+    PARADIGMS.push(...GEN);
     const byId = {}; PARADIGMS.forEach((p) => { byId[p.id] = p; });
     // 領域包註冊：把領域的骨架加進骨架表（id 不可重複）
     function addSkeletons(list, domain) { let n = 0; for (const sk of list || []) { if (byId[sk.id]) continue; if (domain) sk.domain = domain; PARADIGMS.push(sk); byId[sk.id] = sk; n++; } return n; }
@@ -15315,7 +15467,7 @@ const holder = {};
         const N0 = namesOf(intent); const params = intent.vars.map((v) => v.name); const w = (x) => '\u0001' + x + '\u0002';
         const N = { sc: N0.sc.map(w), ls: N0.ls.map(w), s: N0.s.map(w), g: N0.g && w(N0.g) }; const vals = {};
         for (const sl of sk.slots) { const op = sl.options.find((x) => x.id === choice[sl.id]); if (!op) throw new Error('槽位 ' + sl.id + ' 沒有選項 ' + choice[sl.id]); vals[sl.id] = op.v; }
-        const P = new Set(params); let py = sk.py(vals, N);
+        const P = new Set(params); let py = sk.py(vals, N, intent);
         py = py.replace(/\u0001[^\u0002]*\u0002|'[^']*'|"[^"]*"|\b[A-Za-z_]\w*\b/g, (t) => (P.has(t) && !KEEP.has(t) ? t + '_2' : t)).replace(MARK, '$1');
         return '程式區塊：\n' + py.split('\n').map((l) => '  ' + l).join('\n');
     }
@@ -15450,7 +15602,7 @@ const holder = {};
  *               區塊迴圈（庫存＋範本，模型只在合法選單裡微選擇；參數就是庫存的起點）
  *   ④ 沙盒驗證：判題器跑範例，沒過把判決回饋給區塊迴圈重寫
  *
- *   buildFromUML({statement, uml:{hints, model}, B, R, C2U, FaPyBody, Choose, pick?, judge?, rounds?, Lessons?, lessons?, Paradigms?, paradigmLimit?, paradigmRank?}) → {ok, source, model, cnl, usedModel, recipe, paradigm, slots, tried, rounds, steps, forced}
+ *   buildFromUML({statement, uml:{hints, model}, B, R, C2U, FaPyBody, Choose, pick?, judge?, rounds?, Lessons?, lessons?, Paradigms?, paradigmLimit?, paradigmRank?, Matrix?, examples?, matrixBudget?}) → {ok, source, model, cnl, usedModel, recipe, paradigm, slots, tried, rounds, steps, forced, matrix?}
  * judge(source) → Promise<{verdict, detail}>；pick 只有走模型路徑才會用到。 */
 (function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaPyUmlPipeline = factory(); })(typeof self !== 'undefined' ? self : this, function () {
     'use strict';
@@ -15481,7 +15633,14 @@ const holder = {};
         return null;
     }
     async function buildFromUML(o) {
-        const B = o.B, R = o.R; const intent = o.uml.hints && o.uml.hints.intent; if (!intent) return { ok: false, reason: '這份 UML 不是算法題讀取器讀出來的（沒有意圖）' };
+        const B = o.B, R = o.R; const intent = o.uml.hints && o.uml.hints.intent;
+        // ---- 矩陣層後備（Matrix：只靠敘述＋範例合成；讀取器讀不出意圖、或配方／課／範式骨架都沒解出時才用；回傳 matrix:{kind,level,size,tried,ambiguous,verified}）----
+        const tryMatrix = async (prev) => {
+            if (!o.Matrix || !o.examples || !o.examples.length) return null; const m = await o.Matrix.synth({ statement: o.statement, examples: o.examples, judge: o.judge, budget: o.matrixBudget });
+            if (!m.ok) return { failed: true, reason: m.reason, steps: m.steps }; if (m.verdict !== 'AC' && m.verdict !== 'UNCHECKED') return { failed: true, reason: '矩陣層候選沒通過沙盒：' + m.verdict, steps: m.steps };
+            return Object.assign({}, prev || {}, { ok: true, source: m.source, model: null, usedModel: false, verdict: m.verdict, cnl: { solve: m.desc }, matrix: { kind: m.kind, level: m.level, size: m.size, tried: m.tried, ambiguous: m.ambiguous, verified: m.verified, desc: m.desc, steps: m.steps } });
+        };
+        if (!intent) { const mx = await tryMatrix(); if (mx && mx.ok) return Object.assign({ rounds: [{ by: 'matrix', kind: mx.matrix.kind, verdict: mx.verdict }], steps: 0, forced: 0 }, mx); return { ok: false, reason: '這份 UML 不是算法題讀取器讀出來的（沒有意圖）' + (mx && mx.reason ? '；矩陣層：' + mx.reason : '') }; }
         const umlOps = o.uml.model.classes.flatMap((c) => c.ops.map((x) => ({ name: snake(x.name), params: x.params.map((p) => p.name) })));
         const names = umlOps.map((x) => x.name); for (const need of ['read_input', 'solve', 'main']) if (!names.includes(need)) return { ok: false, reason: 'UML 沒有操作 ' + need };
         const parse = (cnl) => { const pr = B.parseCNL(cnl); if (!pr.ok) throw new Error('區塊解析失敗：' + JSON.stringify(pr.errors.slice(0, 2)) + '\n' + cnl); return B.toIR(pr.blocks); };
@@ -15518,6 +15677,8 @@ const holder = {};
             if (ps.ok) return Object.assign(res, { source: lastModel.source, model: lastModel.model, paradigm: ps.skeleton, slots: ps.choice, tried: ps.tried, cnl: Object.assign(cnl, { solve: ps.cnl }), verdict: ps.verdict });
             res.tried = ps.tried;
         }
+        // ---- 矩陣層（範式骨架之後、區塊迴圈之前）----
+        { const mx = await tryMatrix(res); res.rounds.push({ by: 'matrix', ok: !!(mx && mx.ok), reason: mx && mx.reason }); if (mx && mx.ok) return mx; if (mx && mx.reason) res.matrixReason = mx.reason; }
         // ---- 區塊迴圈（模型微選擇）----
         if (!o.pick) return Object.assign(res, { ok: false, reason: rec ? '配方沒通過沙盒驗證，而且沒有提供模型' : '程式讀不出這題的解法（沒有配方），需要模型' });
         res.usedModel = true; const paramTypes = {}; for (const v of intent.vars) paramTypes[v.name] = v.type === 'list' ? 'list' : v.type;
