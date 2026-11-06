@@ -64,7 +64,7 @@ add('b-pell', '佩爾數', 'L1', 'P(0)=0，P(1)=1，P(n)=2P(n-1)+P(n-2)。輸入
     seq_ref([0, 1], [2, 1]), nseq(0, 60), tags=['recurrence'])
 add('b-lucas-mod', '盧卡斯數取模', 'L1', 'L(0)=2，L(1)=1，L(n)=L(n-1)+L(n-2)。輸入 n（0≤n≤10^18），輸出 L(n) 除以 10^9+7 的餘數。',
     ('def main():\n    n = int(input())\n    M = 10**9 + 7\n    def mul(A, B):\n        return [[sum(A[i][k] * B[k][j] for k in range(2)) % M for j in range(2)] for i in range(2)]\n'
-     '    R = [[1, 0], [0, 1]]; A = [[1, 1], [1, 0]]\n    while n:\n        if n & 1: R = mul(R, A)\n        A = mul(A, A); n >>= 1\n    print((R[1][0] * 2 + R[1][1] * 1) % M)\n'),
+     '    R = [[1, 0], [0, 1]]; A = [[1, 1], [1, 0]]\n    while n:\n        if n & 1: R = mul(R, A)\n        A = mul(A, A); n >>= 1\n    print((R[1][0] * 1 + R[1][1] * 2) % M)\n'),
     lambda i: '%d\n' % random.choice([random.randint(0, 20), random.randint(10**9, 10**18)]), tags=['recurrence', 'big-n'])
 add('b-tiling-2xn', '多米諾鋪磚', 'L1', '用 2×1 的磚鋪滿 2×n 的長條（1≤n≤10^18），有幾種鋪法？輸出除以 10^9+7 的餘數。',
     ('def main():\n    n = int(input())\n    M = 10**9 + 7\n    def mul(A, B):\n        return [[sum(A[i][k] * B[k][j] for k in range(2)) % M for j in range(2)] for i in range(2)]\n'

@@ -16,7 +16,7 @@ const arg = (k) => { const i = process.argv.indexOf(k); return i > 0 ? process.a
     const lang = await Parser.Language.load(path.join(DIR, 'tree-sitter-python.wasm')); const P = new Parser(); P.setLanguage(lang);
     const B = PBL.makeBlocks({ parseTree: (s) => P.parse(s), C2U }); const R = RU.makeRules(B); const J = require('../../judge-runner.js');
     const seedDir = path.join(__dirname, '..', '..', 'renderer', 'src', 'recipe', 'seed');
-    const probs = []; for (const f of fs.readdirSync(seedDir).filter((x) => /^bench_.*\.jsonl$/.test(x)).sort()) for (const l of fs.readFileSync(path.join(seedDir, f), 'utf8').split('\n').filter(Boolean)) probs.push(JSON.parse(l));
+    const probs = []; const FILES = arg('--files') ? arg('--files').split(',') : null; for (const f of (FILES || fs.readdirSync(seedDir).filter((x) => /^bench_(L|extra).*\.jsonl$/.test(x)).sort())) for (const l of fs.readFileSync(path.join(seedDir, f), 'utf8').split('\n').filter(Boolean)) probs.push(JSON.parse(l));
     const rows = [];
     for (const p of probs) {
         const t0 = Date.now(); const row = { id: p.id, level: p.level, pass: false, by: '-', tried: 0, reason: '' };
