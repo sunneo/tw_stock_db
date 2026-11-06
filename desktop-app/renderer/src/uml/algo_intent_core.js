@@ -14,7 +14,7 @@
  * 詞彙（資料，可擴充）：NUM（一二三…）、ELEM（整數／面額／查詢→int；單字／字元→str）、GOALS（動作表：中文動詞或名詞 → 配方）。 */
 (function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaAlgoIntent = factory(); })(typeof self !== 'undefined' ? self : this, function () {
     'use strict';
-    const NAME = '[a-zA-Z][a-z0-9]{0,4}'; const NAMES = NAME + '(?:[\\s、]+' + NAME + ')*';
+    const NAME = '[a-zA-Z][a-z0-9]{0,4}'; const NAMES = NAME + '(?:[\\s、]+' + NAME + ')*'; const CNT = NAME + '(?:\\s*[-+]\\s*[0-9])?'; // 段落的行數：變數名，或 n-1／n+1（樹的 n-1 條邊）
     const CN = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
     const INT_WORDS = /整數|面額|查詢(?!字串|單字|文字)|數字|價值|重量/; const FLOAT_WORDS = /小數|實數|取樣值|取樣點|振幅/; const STR_WORDS = /單字|字串|字元|文字/;
     // 動作表：關鍵字（中文）→ 目的。recipe 是「語言中立的配方」：which＝作用在哪一種輸入（list／words／str）、op＝要做的運算
@@ -148,7 +148,7 @@
         const clauses = zone.join('，').split(/[，,；;：:]+/).map((c) => c.trim()).filter(Boolean); const out = []; const used = { s: 0, h: 0, lines: 0 };
         const nm = (k) => { const i = used[k]++; return k === 'lines' ? (i ? 'lines' + (i + 1) : 'lines') : k === 'h' ? (i ? 'h' + (i + 1) : 'h') : (i ? 't' : 's'); };
         let m;
-        const A_RE = new RegExp('(?:接下來|接著|緊接著|隨後|再給|再來|然後|之後|最後|再)\\s*(' + NAME + ')\\s*行');
+        const A_RE = new RegExp('(?:接下來|接著|緊接著|隨後|再給|再來|然後|之後|最後|再)\\s*(' + CNT + ')\\s*行');
         const one = (c) => { // 一個子句（已拿掉「輸入」）→ 0～1 個輸入描述
             const head = /^(?:再來|再給|再|然後|接下來|接著|緊接著|隨後|之後|最後)?\s*(?:[^，，]{0,6}?第[一二三四五六七八九\d]+行|[一二兩]行)\s*(?:是|為)?\s*(.*)$/.exec(c); if (!head) return null; const d = head[1].trim(); let m;
             if (/十六進位/.test(d)) return { k: 'hex', name: nm('h') };
@@ -186,14 +186,14 @@
             const c = clauses[i]; if (/^(輸出|求|找出|判斷|把|只看|對每個|每個|若|保證|有多組)/.test(c)) { seenOutput = true; }
             if (seenOutput) continue;
             if ((m = /^輸入(?:一行)?(兩|三|四|五)個(?:正)?整數$/.exec(c))) { const ns = 'abcde'.slice(0, { 兩: 2, 三: 3, 四: 4, 五: 5 }[m[1]]).split(''); inputs.push({ k: 'scalars', names: ns, type: 'int', line: true }); addNames(ns); continue; } // 輸入三個整數（沒有名字：a b c）
-            if ((m = new RegExp('^(?:接下來|接著|緊接著|隨後|然後|之後|最後|再接著|再來|再)\\s*(' + NAME + ')\\s*行字元').exec(c))) { inputs.push({ k: 'grid', count: m[1], width: null, name: 'g' }); addNames(['g']); continue; } // 接著 n 行字元 "." 或 "#"
-            if ((m = new RegExp('^(?:接下來|接著|緊接著|隨後|然後|之後|最後|再接著|再來|再)\\s*(' + NAME + ')\\s*行(?:指令|操作|事件|動作)$').exec(c))) { inputs.push({ k: 'grid', count: m[1], width: null, name: 'g' }); addNames(['g']); continue; } // 之後 q 行指令（每行一個字串，由程式自己拆）
-            if ((m = new RegExp('^(?:接下來|接著|緊接著|隨後|然後|之後|最後|再接著|再來|再)\\s*(' + NAME + ')\\s*行\\s*(' + NAMES + ')(?:\\s*(?:表示|代表).*)?$').exec(c))) { const ns = m[2].split(/[\s、]+/); const rn_ = rowName(); inputs.push({ k: 'rows', count: m[1], names: ns, name: rn_ }); addNames([rn_]); continue; } // 接著 m 行 a b／再 q 行 x y
+            if ((m = new RegExp('^(?:接下來|接著|緊接著|隨後|然後|之後|最後|再接著|再來|再)\\s*(' + CNT + ')\\s*行字元').exec(c))) { inputs.push({ k: 'grid', count: m[1], width: null, name: 'g' }); addNames(['g']); continue; } // 接著 n 行字元 "." 或 "#"
+            if ((m = new RegExp('^(?:接下來|接著|緊接著|隨後|然後|之後|最後|再接著|再來|再)\\s*(' + CNT + ')\\s*行(?:指令|操作|事件|動作)$').exec(c))) { inputs.push({ k: 'grid', count: m[1], width: null, name: 'g' }); addNames(['g']); continue; } // 之後 q 行指令（每行一個字串，由程式自己拆）
+            if ((m = new RegExp('^(?:接下來|接著|緊接著|隨後|然後|之後|最後|再接著|再來|再)\\s*(' + CNT + ')\\s*行\\s*(' + NAMES + ')(?:\\s*(?:表示|代表|描述|說明|給出|代表著).*)?$').exec(c))) { const ns = m[2].split(/[\s、]+/); const rn_ = rowName(); inputs.push({ k: 'rows', count: m[1], names: ns, name: rn_ }); addNames([rn_]); continue; } // 接著 m 行 a b／再 q 行 x y
             if ((m = new RegExp('^輸入(?:一行)?(?:(?:兩|三|四|五)個)?(?:正)?(整數|小數)\\s*(' + NAMES + ')$').exec(c))) { const ns = m[2].split(/[\s、]+/); inputs.push({ k: 'scalars', names: ns, type: m[1] === '小數' ? 'float' : 'int', line: true }); addNames(ns); continue; }
-            if ((m = new RegExp('^接著\\s*(' + NAME + ')\\s*行(?:每行|各)\\s*(.+)$').exec(c))) {
+            if ((m = new RegExp('^(?:接下來|接著|緊接著|隨後|然後|之後|最後|再接著|再來|再)\\s*(' + CNT + ')\\s*行(?:每行|各)\\s*(.+)$').exec(c))) {
                 const cnt = m[1]; const rest = m[2].trim(); let g;
                 if ((g = new RegExp('^(' + NAME + ')\\s*個字元').exec(rest))) { inputs.push({ k: 'grid', count: cnt, width: g[1], name: 'g' }); addNames(['g']); continue; }
-                const rn = new RegExp('^(' + NAMES + ')(?:\\s*(?:表示|代表).*)?$').exec(rest); if (rn) { const ns = rn[1].split(/[\s、]+/); const rn_ = rowName(); inputs.push({ k: 'rows', count: cnt, names: ns, name: rn_ }); addNames([rn_]); continue; }
+                const rn = new RegExp('^(' + NAMES + ')(?:\\s*(?:表示|代表|描述|說明|給出|代表著).*)?$').exec(rest); if (rn) { const ns = rn[1].split(/[\s、]+/); const rn_ = rowName(); inputs.push({ k: 'rows', count: cnt, names: ns, name: rn_ }); addNames([rn_]); continue; }
             }
             if ((m = new RegExp('^第([一二三四五六七八九\\d]+)行\\s*(' + NAME + ')\\s*(?:個|種)(.*)$').exec(c))) { // 第二行 n 個整數／第三行 q 個查詢 x
                 const tail = m[3]; const nm = (new RegExp('(?:查詢|每個|記為|稱為)\\s*(' + NAME + ')\\s*$').exec(tail) || [])[1];

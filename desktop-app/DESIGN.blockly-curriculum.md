@@ -23,7 +23,7 @@
 | 排序／二分／前綴和／雙指標／單調堆疊／區間合併 | ✔ | | 49f2547f |
 | 字串（KMP、迴文、字串自動機、RLE、凱薩、羅馬） | ✔ | | 49f2547f |
 | 樹（走訪）、線段樹／樹狀陣列 | ◐ | 走訪✔、樹狀陣列✔；線段樹區間更新✗；LCA、樹 DP✗ | P2 |
-| 進階圖（最小生成樹、強連通、最短路 Bellman-Ford／Floyd、二分圖匹配、網路流） | ✗ | | P2 |
+| 進階圖（最小生成樹、強連通、最短路 Bellman-Ford／Floyd、二分圖匹配、網路流） | ◐ | `domain_graph2_core.js`：Kruskal 最小生成樹、Kosaraju 強連通（迭代）、Bellman-Ford（負環標籤）、樹直徑、LCA、二分圖判定、Edmonds-Karp 最大流；train 13/13、新 holdout 4/4（只補同義詞彙，不教原句）；未做：Floyd、二分圖匹配（Hungarian／Hopcroft-Karp）、Dijkstra 以外的最短路輸出變體 | P2 |
 | 計算幾何、博弈、位元 DP、數論進階（CRT、Miller-Rabin） | ✗ | | P3 |
 | 讀取器未涵蓋的 holdout 失敗（b-seq-given、roman-rev、vowel-count） | ✗ | 見 DESIGN.blockly-gap.md §4 | P2 |
 

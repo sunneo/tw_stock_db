@@ -21,7 +21,7 @@ async function run({ name, packs, seeds, minSkeletons, judge: jd, trainOnly }) {
     const runOne = async (e, st, tests, hidden, rank) => {
         const uml = await UC.scenarioToModel(st, { readers: [AI.reader] }); if (!uml.ok || !uml.fromHints) return { err: 'uml_design 讀不出' };
         const problem = Object.assign({ id: e.id, tests, hidden }, jd || {});
-        const judge = async (src, extra) => { const j = await J.judge({ lang: 'python', source: src + '\nmain()\n', problem }); if (process.env.DBG && j.verdict !== 'AC') console.log('DBGJ', e.id, j.verdict, String(j.detail).slice(0, 200), '\n' + src.slice(0, 600)); return { verdict: j.verdict, detail: j.detail }; };
+        const judge = async (src, extra) => { const j = await J.judge({ lang: 'python', source: src + '\nmain()\n', problem }); if (process.env.DBG && j.verdict !== 'AC') require('fs').writeFileSync((process.env.CLAUDE_JOB_DIR || '/tmp') + '/tmp/dbg_src.py', src + '\nmain()\n'), console.log('DBGJ', e.id, j.verdict, String(j.detail).slice(0, +process.env.DBGN || 200), '\n' + src.slice(0, 600)); return { verdict: j.verdict, detail: j.detail }; };
         const r = await PL.buildFromUML({ statement: st, uml: { hints: uml.hints, model: uml.model }, B, R, C2U, FaPyBody: PB, Choose: CH, judge, Paradigms: PAR, paradigmRank: rank });
         if (!r.ok) { if (process.env.DBG) console.log('DBG', e.id, JSON.stringify(r).slice(0, 1500)); return { err: r.reason }; } const j = await J.judge({ lang: 'python', source: r.source + '\nmain()\n', problem }); return { r, v: j.verdict, detail: j.detail };
     };
