@@ -2,6 +2,24 @@
 
 這份合併了原本分散的 32 份 `DESIGN.TODO.<名稱>.md`，內容逐字保留，各節標題為「原檔：名稱」。`DESIGN.TODO.native-runner.md` 仍單獨存在（`native-all-models` 已完成，改名為 `DESIGN.native-all-models.md`）。完成的項目請改成 `DESIGN.<名稱>.md`；需要真人驗證的另列，不算待辦。
 
+## 現況總覽（2026-11-06 快照，先看這張）
+
+> 這份合併檔很長（32 份原檔），目錄只有標題、沒有狀態。這張表給「現在做到哪、下一步是什麼、細節在哪一節」。
+> **「已核對」＝我這個工作階段實際跑過測試或真 Electron；「另一條線盤點」＝來自另一個工作階段的報告，我沒有逐項核對；舊章節（下面「原檔：…」大部分）的狀態我沒有逐一核對，不要把它當成最新。**
+
+| 項目 | 狀態 | 下一步 | 在哪 |
+|---|---|---|---|
+| 寫程式：`uml_design` 讀算法題、內建的課、區塊庫 | **已核對**：內建課讓離線（不問模型）20/20；沒見過的改寫 16/16；核心測試全過 | 範式骨架庫（分治／DFS／BFS／樹走訪／資料結構對應／DP／矩陣快速冪）；把管線接進 `write_code` | 原檔：block-writer、`DESIGN.ast-nodes.md` 第六、七節 |
+| `/teacher-loop`（＝`/offline-trainer-by-ai`）的客觀驗證 | **已核對**：驗證、老師教完離線重做、回歸、回滾，真 Electron 端到端（假模型）通過 | 寫程式的離線組合接進來，才能對真任務跑 | `DESIGN.offline-trainer.md` 5.1、`scripts/e2e/teacher_loop.e2e.mjs` |
+| 發布 | **已核對**：patch v310；網頁版沒同步（這台機器找不到 `videos-嗨投資`） | 要同步請給 repo 路徑，或確認不需要 | `DESIGN.release.md` |
+| 核心測試 `tray_dialog.test` 整組失敗 | **已核對**：根因是最後一行 `N checks passed` 不符合跑器的 `N passed`，已改輸出格式 | — | `scripts/main-tests/tray_dialog.test.js` |
+| JSONL／JSONC 檢視器 | 另一條線盤點：只測過純函式與建置，沒有在真 Electron 畫面開過 | 在真 Electron 打開看一次 | `DESIGN.jsonl-paging.md` |
+| 思考堆疊「兄弟一致性」 | 另一條線盤點：只有假模型模擬，不能算效果證據 | 用真 qwen3-0.6b 在 `uml_bench_core` 加評分比較有無標頭 | `DESIGN.think-stack.md` |
+| `browser_get_page_text` 長頁面章節索引 | 另一條線盤點：沒用真 Chrome 擴充功能實測 | 實測 | `DESIGN.jsonl-paging.md` |
+| JSONL 分頁的舊待改善（`knowledge_ask`／`repo_*` 帶 `_page`、頁數預估接 `fitToBudget`、4096 fraction 調校、超大檔索引） | 另一條線盤點：未做 | 依序做 | `DESIGN.jsonl-paging.md` 第六節 |
+| `docs/HANDOFF.md` | 另一條線盤點：開頭停在 v299、待辦過期、後面補了很多段，不適合當起點頁 | 整理成一頁起點（版本、現況、下一步），歷史段落往後放 | `docs/HANDOFF.md` |
+| 其他（merge diff patcher、函式內部再切步驟、套件／類別層接 `design_core`、以樹為基礎的修復、其他語言） | 未做 | 見各文件「還沒做」 | `DESIGN.code-repair.md`、`DESIGN.fn-template.md`、`DESIGN.ast-nodes.md` |
+
 ## 目錄
 
 - 原檔：aidoc-locator-port

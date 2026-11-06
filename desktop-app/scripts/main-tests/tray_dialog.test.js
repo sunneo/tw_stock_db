@@ -59,5 +59,5 @@ function setup() {
     t.showItem()();
     check('顯示視窗：主視窗與還活著的子視窗一起顯示並取得焦點', t.main.visible && dlg.visible && dlg.focused);
   }
-  console.log(bad.length ? 'FAIL\n' + bad.join('\n') : 'tray_dialog.test: ' + ok + ' checks passed'); process.exit(bad.length ? 1 : 0);
+  console.log(bad.length ? 'FAIL\n' + bad.join('\n') : 'tray_dialog.test: ' + ok + ' checks passed\n' + ok + ' passed, 0 failed' /* 核心測試跑器只認最後一行的「N passed」或「0 failed」 */); process.exit(bad.length ? 1 : 0);
 })();
