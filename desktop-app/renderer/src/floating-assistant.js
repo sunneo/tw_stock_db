@@ -10668,6 +10668,12 @@ class {{className}}Test {
         out.unknown = Array.from(new Set(out.unknown)); return out;
     }
 
+    // 領域讀取器（opts.readers：[(scenario) → hints|null]）：先問各領域的讀取器（例如算法題 FaAlgoIntent.reader），讀得出來就用它的 hints；都讀不出才用上面的業務詞彙表
+    function readHints(scenario, opts) {
+        for (const r of (opts && opts.readers) || []) { try { const h = r(scenario); if (h && h.actors && h.actors.length && h.usecases && h.usecases.length && h.classes && h.classes.length) return h; } catch (_) { /* 這個讀取器壞了就換下一個 */ } }
+        return scenarioHints(scenario, opts && opts.glossary);
+    }
+
     // ---------- 情境 → UML（給弱模型：一次一個封閉的小問題，每個回覆都驗證）----------
     const KINDS = ['assoc', 'compose', 'aggregate', 'inherit', 'implement', 'depend'];
     const KIND_HELP = { assoc: '使用／關聯', compose: '組成（整體擁有部分，部分不能獨立存在）', aggregate: '聚合（整體包含部分，部分可獨立存在）', inherit: '繼承（是一種）', implement: '實作介面', depend: '暫時依賴' };
@@ -10701,13 +10707,13 @@ class {{className}}Test {
     async function scenarioToModelCore(scenario, opts) {
         const decisions = []; const warnings = []; const model = emptyModel(); const emit = (e) => { if (opts.onStage) try { opts.onStage(e); } catch (_) {} };
         // ⓪ 程式先讀情境（詞彙表＋動作表）：讀得出參與者、使用案例、至少一個類別，整份設計就由程式決定（模型 0 次呼叫）；讀不出才走下面一次一個小問題的模型階段
-        if (opts.program !== false) { const h = scenarioHints(scenario, opts.glossary); if (h.actors.length && h.usecases.length && h.classes.length >= 1) {
+        if (opts.program !== false) { const h = readHints(scenario, opts); if (h.actors.length && h.usecases.length && h.classes.length >= 1) {
             model.name = String(scenario || '').split(/[：:。\n]/)[0].replace(/^(?:請|幫我)?(?:設計|做|建立|產生)(?:一個|一套)?/, '').trim().slice(0, 24) || model.name; model.actors = h.actors.slice(); model.usecases = h.usecases.map((u) => ({ name: u.name, actor: u.actor, summary: u.summary, steps: [] })); model.classes = h.classes.map((c) => ({ name: c.name, kind: c.kind, label: c.label, attrs: c.attrs.map((a) => ({ name: a.name, type: parseType(a.type), visibility: '+' })), ops: c.ops.map((o) => ({ name: o.name, params: o.params.map((p) => ({ name: p.name, type: parseType(p.type) })), returns: parseType(o.returns), visibility: '+', static: false })), values: [] })); model.relations = h.relations.slice();
             h.usecases.forEach((u, i) => { let prev = u.actor; for (const s of u.steps) { model.usecases[i].steps.push({ from: prev, to: s.to, msg: s.op, args: [], returns: '' }); prev = s.to; } });
             decisions.push({ stage: 'hints', by: 'program', ok: true, actors: h.actors.length, usecases: h.usecases.length, classes: h.classes.length }); emit({ type: 'stage', stage: 'hints', ok: true });
             if (h.unknown.length) warnings.push('情境裡有程式不認得的參與者：' + h.unknown.join('、') + '（可以用詞彙表補上）');
             ensureOps(model); let errs0 = validateModel(model); if (errs0.length) warnings.push('驗證有 ' + errs0.length + ' 個問題：' + errs0.slice(0, 3).join('；'));
-            return { ok: true, model, dsl: toDsl(model), decisions, warnings, errors: errs0, fromHints: true }; } }
+            return { ok: true, model, dsl: toDsl(model), decisions, warnings, errors: errs0, fromHints: true, hints: h }; } }
         // CoLU+Thinking：opts.thinking（來自 R.thinkingPlan，沒給或 enabled:false 就完全照舊）。推理只進 reasoning（給介面看），不進 messages、不進 decisions
         const thOn = !!(opts.thinking && opts.thinking.enabled); const reasoning = [];
         const stk = opts.stack || null, TS = opts.stackMod || null; const askOf = (messages, validate) => R.jsonStep({ generate: opts.generate, messages, validate, maxTries: 2, maxTokens: 160, prefill: '{' }).then((r) => (r && r.ok ? r.value : null), () => null);
@@ -10797,7 +10803,7 @@ class {{className}}Test {
         const model = mergeModels(models); model.name = String(scenario || '').split(/[：:。\n]/)[0].trim().slice(0, 24) || model.name; const errs = validateModel(model); if (errs.length) warnings.push('合併後驗證有 ' + errs.length + ' 個問題：' + errs.slice(0, 3).join('；'));
         decisions.push({ stage: 'merge', by: 'program', ok: true, chunks: parts.length }); return { ok: true, model, dsl: toDsl(model), decisions, warnings, errors: errs, chunks: parts.length, partial: models.length < parts.length, reasoning: reasons.join('\n\n') };
     }
-    return { ACTORS, NOUNS, VERBS, splitScenario, mergeModels, scenarioToModelBig, scenarioHints, PREFILL, CLASS_NAME, MEMBER_NAME, PRIMS, KINDS, LANGS, parseType, typeToString, typeRefs, parseDsl, toDsl, validateModel, ensureOps, toMermaidClass, toMermaidSequence, toMermaidUseCase, toPlantUml, renderTpl, FILTERS, langType, genFiles, genReadme, scenarioToModel, stageSpec, emptyModel };
+    return { readHints, ACTORS, NOUNS, VERBS, splitScenario, mergeModels, scenarioToModelBig, scenarioHints, PREFILL, CLASS_NAME, MEMBER_NAME, PRIMS, KINDS, LANGS, parseType, typeToString, typeRefs, parseDsl, toDsl, validateModel, ensureOps, toMermaidClass, toMermaidSequence, toMermaidUseCase, toPlantUml, renderTpl, FILTERS, langType, genFiles, genReadme, scenarioToModel, stageSpec, emptyModel };
 });
 
 }).call(null, undefined, holder);

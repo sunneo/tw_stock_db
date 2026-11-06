@@ -75,7 +75,7 @@
         function block(n) { if (!n) return []; const out = []; for (const c of named(n)) for (const s of stmt(c)) out.push(s); return out; }
         function stmt(n) {
             cov.stmts++; const t = n.type;
-            if (t === 'expression_statement') { const k = named(n); if (k.length !== 1) return [Object.assign({ k: 'raw' }, raw(n))]; const e = k[0];
+            if (t === 'expression_statement') { const k = named(n); if (!k.length) return [Object.assign({ k: 'raw' }, raw(n))]; if (k.length > 1 || (k.length === 1 && n.children.some((c) => !c.isNamed() && c.type === ','))) return [{ k: 'expr', e: { n: 'tuple', xs: k.map(expr) } }]; const e = k[0];
                 if (e.type === 'assignment') { // a = b = c（右邊只算一次）；有型別註解的先收成 raw
                     if (f(e, 'type')) { const r0 = f(e, 'right'); if (r0 && r0.type === 'assignment') return [Object.assign({ k: 'raw' }, raw(n))]; return [{ k: 'ann', t: expr(f(e, 'left')), ty: txt(f(e, 'type')), v: r0 ? expr(r0) : null }]; }
                     const lefts = []; let cur = e, rhs = null; for (;;) { lefts.push(f(cur, 'left')); const r = f(cur, 'right'); if (r && r.type === 'assignment' && !f(r, 'type')) { cur = r; continue; } rhs = r; break; }
