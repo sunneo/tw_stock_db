@@ -15,6 +15,7 @@
         'while_counter|迴圈|當 {i} < {n} 時重複，每輪最後 {i} 加 {s}：|while $i < $n:\n    $$body\n    $i += $s',
         'while_countdown|迴圈|當 {i} > {n} 時重複，每輪最後 {i} 減 {s}：|while $i > $n:\n    $$body\n    $i -= $s',
         'for_range_down|迴圈|讓 {i:name} 從 {a} 倒數到 {b} 加一（每次減 1）：|for $i in range($a, $b, -1):\n    $$body',
+        'try_ignore|流程|嘗試執行，出錯就略過（except Exception）：|try:\n    $$body\nexcept Exception:\n    pass',
         // ---- 引入模組（引入後才能用該模組的函式）----
         'import_math|引入|引入數學函式庫 math|import math',
         'import_numpy|引入|引入數值函式庫 numpy（用 np 稱呼）|import numpy as np',
@@ -56,6 +57,12 @@
         'np_seed|科學|設定 numpy 亂數種子為 {n}|np.random.seed($n)',
     ];
     const EXPR_EXTRA = [
+        // ---- 位元／位元組／格式化／字串進階（G3，不需引入模組；一個積木一個 Python 運算式）----
+        '位元且|位元|{a} 位元且 {b}|$a & $b', '位元或|位元|{a} 位元或 {b}|$a | $b', '位元互斥或|位元|{a} 位元互斥或 {b}|$a ^ $b', '左移|位元|{a} 左移 {b} 位|$a << $b', '右移|位元|{a} 右移 {b} 位|$a >> $b', '位元取反|位元|{a} 位元取反|~$a',
+        '字元碼|位元組|字元 {a} 的碼（ord）|ord($a)', '碼轉字元|位元組|碼 {a} 對應的字元（chr）|chr($a)', '十六進位轉整數|位元組|十六進位字串 {a} 轉成整數|int($a, 16)', '二進位轉整數|位元組|二進位字串 {a} 轉成整數|int($a, 2)', '八進位轉整數|位元組|八進位字串 {a} 轉成整數|int($a, 8)', '依進位轉整數|位元組|字串 {a} 依 {b} 進位轉成整數|int($a, $b)',
+        '十六進位字串|格式|{a} 的十六進位字串（含 0x）|hex($a)', '二進位字串|格式|{a} 的二進位字串（含 0b）|bin($a)', '兩位十六進位|格式|{a} 寫成兩位小寫十六進位|"%02x" % $a', '八位十六進位|格式|{a} 寫成八位小寫十六進位|"%08x" % $a', '六位八進位|格式|{a} 寫成六位八進位（左補 0）|"%06o" % $a', '八位二進位|格式|{a} 寫成八位二進位（左補 0）|format($a, "08b")', '靠右對齊|格式|{a} 靠右對齊成寬度 {n}|str($a).rjust($n)',
+        '轉位元組串|位元組|十六進位字串 {a} 轉成位元組串|bytes.fromhex($a)', '位元組串轉十六進位|位元組|位元組串 {a} 轉成十六進位字串|$a.hex()', '字串編成位元組串|位元組|字串 {a} 編成 ASCII 位元組串|$a.encode()', '小端寫成位元組串|位元組|整數 {a} 寫成 {n} 個位元組（小端）|$a.to_bytes($n, "little")', '大端寫成位元組串|位元組|整數 {a} 寫成 {n} 個位元組（大端）|$a.to_bytes($n, "big")', '小端讀成整數|位元組|位元組串 {a} 依小端讀成整數|int.from_bytes($a, "little")', '大端讀成整數|位元組|位元組串 {a} 依大端讀成整數|int.from_bytes($a, "big")',
+        '開頭是|字串進階|{a} 以 {b} 開頭|$a.startswith($b)', '結尾是|字串進階|{a} 以 {b} 結尾|$a.endswith($b)', '尋找位置|字串進階|{a} 裡 {b} 第一次出現的位置（沒有就是 -1）|$a.find($b)', '取代|字串進階|{a} 把 {b} 換成 {c}|$a.replace($b, $c)', '全是數字|字串進階|{a} 全是數字|$a.isdigit()', '全是字母|字串進階|{a} 全是字母|$a.isalpha()', '全是英數|字串進階|{a} 全是英文字母或數字|$a.isalnum()', '靠左補空白|字串進階|{a} 靠左對齊成寬度 {n}|$a.ljust($n)', '左補零|字串進階|{a} 左邊補 0 成寬度 {n}|$a.zfill($n)',
         // ---- 科學函式（要先引入對應模組）----
         '平方根|科學·數學|{a} 的平方根|math.sqrt($a)', '正弦|科學·數學|{a}（弧度）的正弦|math.sin($a)', '餘弦|科學·數學|{a}（弧度）的餘弦|math.cos($a)', '正切|科學·數學|{a}（弧度）的正切|math.tan($a)', '反正切2|科學·數學|{a} 與 {b} 的 atan2（弧度）|math.atan2($a, $b)', '指數|科學·數學|e 的 {a} 次方|math.exp($a)', '自然對數|科學·數學|{a} 的自然對數|math.log($a)', '對數底10|科學·數學|{a} 的以 10 為底對數|math.log10($a)', '對數底2|科學·數學|{a} 的以 2 為底對數|math.log2($a)', '無條件捨去|科學·數學|{a} 無條件捨去成整數|math.floor($a)', '無條件進位|科學·數學|{a} 無條件進位成整數|math.ceil($a)', '最大公因數|科學·數學|{a} 與 {b} 的最大公因數|math.gcd($a, $b)', '階乘|科學·數學|{a} 的階乘|math.factorial($a)', '斜邊|科學·數學|{a} 與 {b} 的斜邊長|math.hypot($a, $b)', '弧度|科學·數學|{a} 度換成弧度|math.radians($a)', '度|科學·數學|{a} 弧度換成度|math.degrees($a)', '圓周率|科學·數學|圓周率 π|math.pi', '自然常數|科學·數學|自然常數 e|math.e',
         '陣列|科學·數值|{a} 轉成 numpy 陣列|np.array($a)', '零陣列|科學·數值|{a} 個 0 的 numpy 陣列|np.zeros($a)', '一陣列|科學·數值|{a} 個 1 的 numpy 陣列|np.ones($a)', '等差陣列|科學·數值|從 {a} 到 {b}（不含）每次 {s} 的 numpy 陣列|np.arange($a, $b, $s)', '等分陣列|科學·數值|從 {a} 到 {b} 平均分成 {n} 點的 numpy 陣列|np.linspace($a, $b, $n)', '內積|科學·數值|{a} 與 {b} 的內積|np.dot($a, $b)', '陣列平均|科學·數值|{a} 的平均|np.mean($a)', '陣列標準差|科學·數值|{a} 的標準差|np.std($a)', '陣列總和|科學·數值|{a} 的總和（numpy）|np.sum($a)', '累積和|科學·數值|{a} 的累積和|np.cumsum($a)', '陣列正弦|科學·數值|{a} 每個元素的正弦|np.sin($a)', '陣列餘弦|科學·數值|{a} 每個元素的餘弦|np.cos($a)', '陣列指數|科學·數值|{a} 每個元素的指數|np.exp($a)', '陣列平方根|科學·數值|{a} 每個元素的平方根|np.sqrt($a)', '向量長度|科學·數值|{a} 的向量長度（範數）|np.linalg.norm($a)', '反矩陣|科學·數值|矩陣 {a} 的反矩陣|np.linalg.inv($a)', '解線性方程|科學·數值|解線性方程組 {a} x = {b}|np.linalg.solve($a, $b)', '轉置|科學·數值|{a} 的轉置|np.transpose($a)', '最大值位置|科學·數值|{a} 最大值的位置|np.argmax($a)', '隨機陣列|科學·數值|{a} 個 0 到 1 的隨機數|np.random.rand($a)',
@@ -102,7 +109,7 @@
         for_counter: { decl: { i: 'int' }, use: { a: 'num', b: 'num', s: 'num' } }, for_countdown: { decl: { i: 'int' }, use: { a: 'num', b: 'num', s: 'num' } }, while_counter: { use: { i: V('num'), n: 'num', s: 'num' } }, while_countdown: { use: { i: V('num'), n: 'num', s: 'num' } },
         while_do: { use: { c: 'cond' } }, while_forever: {}, bfs_loop: { decl: { u: 'any' }, use: { q: V('list') } },
         // 流程
-        return_value: { use: { e: 'any' } }, return_none: {}, break_loop: {}, continue_loop: {}, do_nothing: {},
+        try_ignore: {}, return_value: { use: { e: 'any' } }, return_none: {}, break_loop: {}, continue_loop: {}, do_nothing: {},
         // 演算法
         gcd_loop: { use: { a: V('num'), b: V('num') } }, binary_search: { decl: { lo: 'int', hi: 'int', mid: 'int' }, use: { a: 'int', b: 'int', c: 'cond' } }, sieve: { decl: { p: 'list', i: 'int', j: 'int' }, use: { n: 'int' } }, prefix_sums: { decl: { p: 'list', i: 'int' }, use: { a: V('list') } },
         // 繪圖
@@ -127,5 +134,11 @@
         矩陣相乘: ET('list', { a: 'iter', b: 'iter' }), 矩陣乘冪: ET('list', { a: 'iter', n: 'int' }), 單位矩陣: ET('list', { n: 'int' }), 矩陣行列式: ET('num', { a: 'iter' }),
         隨機小數: ET('num'), 隨機整數: ET('int', { a: 'int', b: 'int' }), 隨機挑一個: ET('any', { a: 'iter' }), 定積分: ET('num', { f: 'any', a: 'num', b: 'num' }), 佇列: ET('list', { a: 'iter' }), 計數器: ET('dict', { a: 'iter' }), 二分位置: ET('int', { a: 'iter', b: 'any' }),
     };
+
+    Object.assign(ETYPES, { 位元且: ET('int', { a: 'int', b: 'int' }), 位元或: ET('int', { a: 'int', b: 'int' }), 位元互斥或: ET('int', { a: 'int', b: 'int' }), 左移: ET('int', { a: 'int', b: 'int' }), 右移: ET('int', { a: 'int', b: 'int' }), 位元取反: ET('int', { a: 'int' }),
+        字元碼: ET('int', { a: 'str' }), 碼轉字元: ET('str', { a: 'int' }), 十六進位轉整數: ET('int', { a: 'str' }), 二進位轉整數: ET('int', { a: 'str' }), 八進位轉整數: ET('int', { a: 'str' }), 依進位轉整數: ET('int', { a: 'str', b: 'int' }),
+        十六進位字串: ET('str', { a: 'int' }), 二進位字串: ET('str', { a: 'int' }), 兩位十六進位: ET('str', { a: 'int' }), 八位十六進位: ET('str', { a: 'int' }), 六位八進位: ET('str', { a: 'int' }), 八位二進位: ET('str', { a: 'int' }), 靠右對齊: ET('str', { a: 'any', n: 'int' }),
+        轉位元組串: ET('any', { a: 'str' }), 位元組串轉十六進位: ET('str', { a: 'any' }), 字串編成位元組串: ET('any', { a: 'str' }), 小端寫成位元組串: ET('any', { a: 'int', n: 'int' }), 大端寫成位元組串: ET('any', { a: 'int', n: 'int' }), 小端讀成整數: ET('int', { a: 'any' }), 大端讀成整數: ET('int', { a: 'any' }),
+        開頭是: ET('cond', { a: 'str', b: 'str' }), 結尾是: ET('cond', { a: 'str', b: 'str' }), 尋找位置: ET('int', { a: 'str', b: 'str' }), 取代: ET('str', { a: 'str', b: 'str', c: 'str' }), 全是數字: ET('cond', { a: 'str' }), 全是字母: ET('cond', { a: 'str' }), 全是英數: ET('cond', { a: 'str' }), 靠左補空白: ET('str', { a: 'str', n: 'int' }), 左補零: ET('str', { a: 'str', n: 'int' }) });
     return { SPEC_EXTRA, EXPR_EXTRA, TYPES, ETYPES, REQ, IMPORTS };
 });

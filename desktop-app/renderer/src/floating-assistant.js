@@ -15051,6 +15051,8 @@ const holder = {};
         { key: /最少|最短|最長|個數|幾個|次數|連通分量/, op: 'search', which: [] },
     ];
     // 動作表（算法種類）：敘述的關鍵字 → 這題屬於哪一種算法。語言中立；各語言的區塊白名單（FOCUS）用這個 key 查。由具體到籠統，第一個符合的算數
+    // 否決條件（G17）：工具型題目（霍夫曼合併、Delta 還原、位元組…）即使撞到通用關鍵字（總和、第 i 個）也不是通用算法題，不給通用骨架；用於 ALGOS 條目的 veto 欄
+    const TOOLISH = /霍夫曼|合併|編碼|解碼|還原|位元組|位元數|十六進位|過濾器|碼長/;
     const ALGOS = [
         // 通用補充（2026-11-06，依基準失敗原因分群補的；由具體到籠統）：遞推／封閉式／字串自動機／圖／數論／堆疊佇列字串
         { key: 'linear-rec', re: /[A-Za-z]\(n\)\s*=\s*[^。]*[A-Za-z]\(n\s*-\s*\d+\)|每次(?:可以)?爬\s*[\d、或,，\s]+階|鋪滿\s*2\s*[×xX*]\s*n/ },
@@ -15063,10 +15065,18 @@ const holder = {};
         { key: 'word-top', re: /出現最多次的單字/ }, { key: 'caesar', re: /往(?:後|前)移\s*k\s*位|凱薩/ }, { key: 'rle', re: /連續相同字元壓縮/ }, { key: 'roman', re: /羅馬數字/ }, { key: 'sort-list', re: /由小到大(?:輸出|排序)|去重後/ },
         { key: 'inversions', re: /逆序對/ }, { key: 'n-queens', re: /皇后/ }, { key: 'dijkstra', re: /最短距離|加權.*最短|Dijkstra/i }, { key: 'fenwick', re: /樹狀陣列|線段樹|單點.*(修改|更新)|把\s*a\[\w+\]\s*加上/ }, { key: 'str-match', re: /KMP|出現的次數|出現幾次|出現的位置/ }, { key: 'tree-traversal', re: /走訪/ }, { key: 'kth-smallest', re: /第\s*[a-zA-Z]\s*小/ }, { key: 'lps', re: /回文子序列/ }, { key: 'lcs', re: /公共子序列|LCS/ },
         { key: 'palindrome', re: /迴文/ }, { key: 'anagram', re: /重新排列|變位詞|字母異位/ }, { key: 'brackets', re: /括號.*(配對|匹配)/ }, { key: 'gcd-lcm', re: /gcd|lcm|最大公因數|最小公倍數/i },
-        { key: 'fib', re: /費氏/ }, { key: 'primes', re: /質數/ }, { key: 'kth-largest', re: /由大到小.*第\s*[a-zA-Z]\s*個|第\s*[a-zA-Z]\s*(大|個)/ }, { key: 'word-count', re: /每個不同的單字|單字.*次數|次數.*單字/ },
+        { key: 'fib', re: /費氏/ }, { key: 'primes', re: /質數/ }, { key: 'kth-largest', re: /由大到小.*第\s*[a-zA-Z]\s*個|第\s*[a-zA-Z]\s*大/, veto: TOOLISH }, { key: 'word-count', re: /每個不同的單字|單字.*次數|次數.*單字/ },
         { key: 'lower-bound', re: /第一個滿足.*(>=|≥|大於等於)|二分|lower_bound/ }, { key: 'pair-sum', re: /i\s*<\s*j.*a\[i\]\s*\+\s*a\[j\]|兩數之和|兩數相加等於/ }, { key: 'range-sum', re: /a\[\w+\.\.\w+\]|區間.*(和|總和)|每個查詢輸出.*和/ },
         { key: 'coin-min', re: /硬幣|面額/ }, { key: 'lis', re: /遞增子序列/ }, { key: 'grid-bfs', re: /最少步數|最短路|最少幾步/ }, { key: 'components', re: /連通分量|連通塊/ }, { key: 'intervals-merge', re: /合併.*區間|區間.*合併|重疊.*合併/ }, { key: 'knapsack', re: /每件物品最多選一次|背包/ },
-        { key: 'reverse-words', re: /單字順序反過來/ }, { key: 'list-max', re: /最大值/ }, { key: 'list-min', re: /最小值/ }, { key: 'list-sum', re: /總和|的和/ },
+        { key: 'reverse-words', re: /單字順序反過來/ }, { key: 'list-max', re: /最大值/, veto: TOOLISH }, { key: 'list-min', re: /最小值/, veto: TOOLISH }, { key: 'list-sum', re: /總和|的和/, veto: TOOLISH },
+    ];
+
+    // 工具型題目的算法種類（G1）：形狀（輸入區的種類組合）＋敘述關鍵字；先於通用 ALGOS 判斷。sh(inputs) 是形狀條件
+    const has = (ins, k, role) => ins.some((x) => x.k === k && (!role || x.role === role));
+    const TOOLS = [
+        { key: 'lines-grep-o', re: /grep\s*-o|不重疊|每個出現/, sh: (ins) => has(ins, 'lines') && has(ins, 'str', 'pat') },
+        { key: 'lines-filter', re: /grep|含有|包含|搜尋字串|符合/, sh: (ins) => has(ins, 'lines') && has(ins, 'str', 'pat') },
+        { key: 'lines-map', re: /行號|Tab|行尾|空行|連接|串接|每行|檔案|連續編號/, sh: (ins) => has(ins, 'lines') && !ins.some((x) => x.role) },
     ];
     // 處理模型（範式）：算法種類 → 它屬於哪些解題範式（分治、DFS、BFS、樹走訪、資料結構對應、動態規劃、矩陣相乘…）。一種算法可以有多個範式（例如費氏數：DP 或矩陣快速冪）。
     // 之後的「範式骨架」（每個範式一個帶槽位的區塊骨架）用這個 key 查；新題只要套到某個範式、填幾個槽位，不必每題各教一堂課。
@@ -15103,6 +15113,38 @@ const holder = {};
         }
         if (f.rec && f.mod) f.rec.mod = f.mod; else if (f.rec && /餘數|取模|mod/i.test(t) && !f.mod) f.rec.mod = 1000000007;
         return f;
+    }
+
+    // ---- 工具型題目（cat／grep／xxd／tar／gzip／xz／bmp…）的輸入形狀：文字行串流、十六進位位元組、旗標行、多段 ----
+    // 只看「輸入區」（開頭連續以 輸入／第N行／接著／再 起頭的句子），逐子句分類成：hex（單行十六進位）、str（一行原樣文字，含樣式 pat／旗標 flags）、
+    // scalars（一行整數）、list（一行 k 個整數／一串整數）、lines（n 行原樣文字，行內容不丟）、rest（其餘所有行，行數由第一行決定）。
+    const ZONE_START = /^(?:輸入|第[一二三四五六七八九\d]+行|接著|再|然後|之後)/;
+    function readToolInput(text) {
+        const sents = stripNote(String(text)).split(/。/).map((x) => x.trim()).filter(Boolean); const zone = [];
+        for (const s of sents) { if (ZONE_START.test(s)) zone.push(s); else break; }
+        if (!zone.length) return null;
+        const clauses = zone.join('，').split(/[，,；;：:]+/).map((c) => c.trim()).filter(Boolean); const out = []; const used = { s: 0, h: 0, lines: 0 };
+        const nm = (k) => { const i = used[k]++; return k === 'lines' ? (i ? 'lines' + (i + 1) : 'lines') : k === 'h' ? (i ? 'h' + (i + 1) : 'h') : (i ? 't' : 's'); };
+        let m;
+        for (let c of clauses) {
+            c = c.replace(/^輸入(?=第|一行|(?:一|兩|二)行)/, '').replace(/^輸入\s*/, ''); if (!c) continue;
+            if (!/^(?:再|然後|接著|之後)?\s*[一二兩]行/.test(c) && (m = new RegExp('^(?:接著|再|然後|之後)\\s*(' + NAME + '|[一-龥]{1,2})\\s*行').exec(c))) { out.push({ k: /^[a-zA-Z]/.test(m[1]) ? 'lines' : 'rest', count: /^[a-zA-Z]/.test(m[1]) ? m[1] : null, name: nm('lines'), raw: true }); continue; }
+            const head = /^(?:再|然後|接著|之後)?\s*(?:[^，，]{0,6}?第[一二三四五六七八九\d]+行|[一二兩]行)\s*(?:是|為)?\s*(.*)$/.exec(c); if (!head) continue; const d = head[1].trim();
+            if (/十六進位/.test(d)) { out.push({ k: 'hex', name: nm('h') }); continue; }
+            if (/^base64|^[Bb]ase\s*64/.test(d)) { out.push({ k: 'str', name: nm('s'), raw: true }); continue; }
+            if (/^pat$/.test(d)) { out.push({ k: 'str', name: 'pat', raw: true, role: 'pat' }); continue; }
+            if (/^一串/.test(d) && !new RegExp('^一串[^a-zA-Z]*' + NAME).test(d)) { out.push({ k: 'list', name: 'a', size: null, elem: 'int' }); continue; }
+            if ((m = /^(?:搜尋字串|樣式|旗標|管線)\s*([a-z][a-z0-9]*)?/.exec(d))) { const nmx = m[1] || (/旗標/.test(d) ? 'flags' : /管線/.test(d) ? 'pl' : 'pat'); out.push({ k: 'str', name: nmx, raw: true, role: /旗標/.test(d) ? 'flags' : /管線/.test(d) ? 'pl' : 'pat' }); continue; }
+            if (/^「[^」]*\s[^」]*」/.test(d)) { out.push({ k: 'str', name: nm('s'), raw: true }); continue; }
+            if ((m = new RegExp('^一串[^a-zA-Z]*(' + NAME + ')(?:\\s+' + NAME + ')*').exec(d))) { out.push({ k: 'list', name: m[1].replace(/\d+$/, '') || 'w', size: null, elem: 'int' }); continue; }
+            if ((m = new RegExp('^(' + NAME + ')\\s*個').exec(d))) { out.push({ k: 'list', name: 'a', size: m[1], elem: 'int' }); continue; }
+            if ((m = new RegExp('^[^a-zA-Z0-9]{0,8}?\\s*(' + NAME + ')$').exec(d)) && !/字串|文字/.test(d)) { out.push({ k: 'scalars', names: [m[1]], type: 'int', line: true }); continue; }
+            if ((m = new RegExp('^[^a-zA-Z0-9]{0,8}?\\s*(' + NAME + ')\\s*\\(?[^a-zA-Z]*$').exec(d)) && /^[a-z]/.test(m[1]) && !/字串|文字|算式|命令列|後序/.test(d)) { out.push({ k: 'scalars', names: [m[1]], type: 'int', line: true }); continue; }
+            if (/字串|文字|算式|命令列|後序|記號|式$|行$/.test(d) || /^只含|^由/.test(d)) { out.push({ k: 'str', name: nm('s'), raw: true }); continue; }
+        }
+        // 第一行只是個名稱（沒寫「樣式」「搜尋字串」）：若敘述把它當比對的字串用（含有 x、找出 x、x 的出現），它是樣式字串，不是整數
+        if (out.some((x) => x.k === 'lines') && out[0] && out[0].k === 'scalars') { const v = out[0].names[0]; if (new RegExp('(?:含有?|包含|找出|搜尋|比對|符合)\\s*' + v + '(?![a-z0-9])|(?<![a-z0-9])' + v + '\\s*(?:的(?:所有)?(?:「?不重疊」?)?出現|本身)').test(text)) out[0] = { k: 'str', name: v, raw: true, role: 'pat' }; }
+        return out.length ? out : null;
     }
     function read(statement) {
         const text = String(statement || '').trim(); const inputs = []; const names = new Set(); let strCount = 0;
@@ -15142,6 +15184,7 @@ const holder = {};
             if (/^輸入(?:一行)?以空格分隔的/.test(c)) { inputs.push({ k: 'words', name: 'w' }); addNames(['w']); continue; } // 輸入以空格分隔的後序運算式
             if ((m = new RegExp('^輸入[^a-zA-Z0-9]{0,14}?\\s*(' + NAMES + ')$').exec(c)) && !/小數|字串|文字/.test(c)) { const ns = m[1].split(/\s+/); inputs.push({ k: 'scalars', names: ns, type: 'int', line: true }); addNames(ns); continue; } // 輸入 a e m／輸入三個點的整數座標 x1 y1 x2 y2 x3 y3
         }
+        { const ti = readToolInput(text); if (ti && !inputs.some((x) => x.k === 'grid' || x.k === 'rows') && (!inputs.length || ti.some((x) => (x.k === 'list' && x.size === null) || x.k === 'hex' || x.k === 'lines' || x.k === 'rest' || (x.k === 'str' && x.role)))) { inputs.length = 0; names.clear(); ti.forEach((x) => inputs.push(x)); } } // 工具型題目的輸入形狀（文字行串流、十六進位、旗標行、多段）
         if (!inputs.length) { const im = /(?:≤|<=)\s*([a-z][a-z0-9]{0,3})\s*(?:≤|<=)/.exec(text); if (im) { inputs.push({ k: 'scalars', names: [im[1]], type: 'int', line: true }); addNames([im[1]]); } } // 沒寫「輸入」只在範圍裡出現變數（爬到第 n 階（1≤n≤80））：一個整數
         // ---- 輸出 ----
         const goal = { verbs: [], yesno: /YES\s*(?:或|或者)\s*NO|YES，否則|輸出\s*YES/.test(text) };
@@ -15154,9 +15197,9 @@ const holder = {};
             if (em2 && /[a-z]/.test(em2[0])) { const used = em2[0].match(/[a-z][a-z0-9]*/g) || []; if (used.every((u) => names.has(u))) goal.expr = /捨去|向下取整|整數部分|取整/.test(seg) ? em2[0].replace(/\//g, '//') : em2[0]; }
         }
         for (const g of GOALS) if (g.key.test(text)) goal.verbs.push(g.op);
-        const algo = (ALGOS.find((a) => a.re.test(text)) || {}).key || null; const paradigms = (algo && PARADIGMS[algo]) || [];
+        const toolAlgo = (TOOLS.find((a) => a.re.test(text) && a.sh(inputs)) || {}).key; const algo = toolAlgo || (ALGOS.find((a) => a.re.test(text) && !(a.veto && a.veto.test(text))) || {}).key || null; const paradigms = (algo && PARADIGMS[algo]) || (toolAlgo ? ['text-lines'] : []);
         const pend = inputs.findIndex((x) => x.k === 'pending'); if (pend >= 0) inputs.splice(pend, 1);
-        const vars = []; for (const inp of inputs) { if (inp.k === 'scalars') inp.names.forEach((n) => vars.push({ name: n, type: inp.type })); else if (inp.k === 'list') { if (!vars.some((v) => v.name === inp.size)) vars.push({ name: inp.size, type: 'int' }); vars.push({ name: inp.name, type: 'list' }); } else if (inp.k === 'rows') vars.push({ name: inp.name, type: 'list' }); else if (inp.k === 'grid') vars.push({ name: inp.name, type: 'list' }); else if (inp.k === 'str') vars.push({ name: inp.name, type: 'str' }); else if (inp.k === 'words') vars.push({ name: inp.name, type: 'list' }); }
+        const vars = []; for (const inp of inputs) { if (inp.k === 'scalars') inp.names.forEach((n) => vars.push({ name: n, type: inp.type })); else if (inp.k === 'list') { if (inp.size && !vars.some((v) => v.name === inp.size)) vars.push({ name: inp.size, type: 'int' }); vars.push({ name: inp.name, type: 'list' }); } else if (inp.k === 'rows') vars.push({ name: inp.name, type: 'list' }); else if (inp.k === 'grid') vars.push({ name: inp.name, type: 'list' }); else if (inp.k === 'str' || inp.k === 'hex') vars.push({ name: inp.name, type: 'str' }); else if (inp.k === 'lines' || inp.k === 'rest') vars.push({ name: inp.name, type: 'list' }); else if (inp.k === 'words') vars.push({ name: inp.name, type: 'list' }); }
         // 同一個名稱在不同行出現（第一行 n，第二行 n 個…）只留一個
         const seen = new Set(); const uvars = vars.filter((v) => (seen.has(v.name) ? false : seen.add(v.name)));
         return { ok: inputs.length > 0, algo, paradigms, inputs, vars: uvars, goal, facts: extractFacts(text), statement: text, ops: [{ name: 'readInput', params: [], returns: 'any' }, { name: 'solve', params: uvars.map((v) => v.name), returns: 'void' }] };
@@ -15444,14 +15487,40 @@ const holder = {};
         { id: 'str.roman', paradigm: 'string', algo: 'roman', label: '字串：羅馬數字轉整數', slots: [S('sub', '減法規則', [['sub', 'True'], ['add', 'False']])],
             py: (c, N) => { const s = N.s[0]; return code(["v = {'I': 1, 'V': 5, 'X': 10, 'L': 50, 'C': 100, 'D': 500, 'M': 1000}", 't = 0', 'for i in range(len(' + s + ')):', '    if ' + c.sub + ' and i + 1 < len(' + s + ') and v[' + s + '[i]] < v[' + s + '[i + 1]]:', '        t -= v[' + s + '[i]]', '    else:', '        t += v[' + s + '[i]]', 'print(t)']); } },
     ];
+    // ---- 工具型題目（cat／grep…；2026-11-07，DESIGN.blockly-gaps.md G5）：文字行串流的行過濾／行轉換範式族。骨架不含 def；旗標是槽位，由沙盒窮舉 ----
+    const BOOL = (id, label) => S(id, label, [['0', 'no'], ['1', 'yes']]);
+    const LL = (N) => N.L.join(' + ');
+    // 行號格式：寬度與分隔字元由敘述抽（「寬度 6、接一個 Tab」「行號:」）；抽不到就用 cat -n 的慣例
+    const numFmt = (I) => { const t = String((I && I.statement) || ''); const w = /寬度\s*(\d+)/.exec(t); const sep = /接一個\s*Tab|後接\s*Tab|Tab\s*分隔|Tab 隔開/.test(t) ? '\\t' : /接一個空白|後接空白/.test(t) ? ' ' : /行號\s*[:：]|「行號:」/.test(t) ? ':' : w ? '\\t' : ':'; return { w: w ? +w[1] : 0, sep }; };
+    const numExpr = (I, v) => { const f = numFmt(I); return 'str(' + v + ')' + (f.w ? '.rjust(' + f.w + ')' : '') + " + '" + f.sep + "'"; };
+    const LX = [
+        { id: 'lines.cat', paradigm: 'text-lines', algo: 'lines-map', label: '行轉換（cat）：行號、Tab 顯示、行尾標記、壓縮連續空行；多段輸入會接成一份', limit: 24,
+            shape: (I) => I.inputs.some((x) => x.k === 'lines' || x.k === 'rest') && !I.inputs.some((x) => x.k === 'str' && x.role),
+            slots: [BOOL('num', '加行號'), BOOL('tab', 'Tab 顯示成 ^I'), BOOL('eol', '行尾加 $'), BOOL('sq', '連續空行壓成一行')],
+            py: (c, N, I) => { const L = ['k = 0', 'prev_blank = False', 'for t in ' + LL(N) + ':']; if (c.sq === 'yes') L.push("    if t == '' and prev_blank:", '        continue'); L.push("    prev_blank = (t == '')", '    k += 1', '    u = t'); if (c.tab === 'yes') L.push("    u = u.replace('\\t', '^I')"); if (c.eol === 'yes') L.push("    u = u + '$'"); if (c.num === 'yes') L.push('    u = ' + numExpr(I, 'k') + ' + u'); L.push('    print(u)'); return code(L); } },
+        { id: 'lines.grep', paradigm: 'text-lines', algo: 'lines-filter', label: '行過濾（grep）：忽略大小寫、取反、行號前綴、只計數、整字；旗標行（flags）會在執行時解析', limit: 64,
+            shape: (I) => I.inputs.some((x) => x.k === 'lines') && I.inputs.some((x) => x.k === 'str' && x.role === 'pat'),
+            slots: [BOOL('ic', '忽略大小寫（-i）'), BOOL('inv', '取反（-v）'), BOOL('num', '行號前綴（-n）'), BOOL('cnt', '只輸出符合的行數（-c）'), S('word', '整字比對（-w）', [['0', 'no'], ['1', 'split'], ['2', 'bound']])],
+            py: (c, N, I) => { const fl = I.inputs.find((x) => x.k === 'str' && x.role === 'flags'); const pv = N.role.pat; const flg = fl ? '\u0001flags\u0002' : null; const letters = flg ? "set(ch for tok in " + flg + ".split() for ch in tok if ch.isalpha())" : null;
+                const B = (id, ch) => (flg ? "'" + ch + "' in fl" : c[id] === 'yes' ? 'True' : 'False'); const wd = flg ? "'w' in fl" : c.word !== 'no' ? 'True' : 'False'; const wmode = c.word === 'bound' ? 'bound' : 'split';
+                const L = []; if (flg) L.push('fl = ' + letters); L.push('ic = ' + B('ic', 'i'), 'inv = ' + B('inv', 'v'), 'num = ' + B('num', 'n'), 'cnt = ' + B('cnt', 'c'), 'word = ' + wd, 'key = ' + pv + ' if not ic else ' + pv + '.lower()', 'k = 0', 'hits = 0', 'for t in ' + LL(N) + ':', '    k += 1', '    u = t if not ic else t.lower()');
+                if (wmode === 'split') L.push("    found = key in u.split(' ') if word else key in u"); else L.push("    v = ''.join(ch if ch.isalnum() or ch == '_' else ' ' for ch in u)", '    found = key in v.split() if word else key in u');
+                L.push('    if found != inv:', '        hits += 1', '        if not cnt:', "            print((str(k) + ':' if num else '') + t)", 'if cnt:', '    print(hits)'); return code(L); } },
+        { id: 'lines.grep-o', paradigm: 'text-lines', algo: 'lines-grep-o', label: '行過濾（grep -o）：逐行找出樣式的所有出現（可重疊／不重疊），最後可加總數行', limit: 8,
+            shape: (I) => I.inputs.some((x) => x.k === 'lines') && I.inputs.some((x) => x.k === 'str' && x.role === 'pat'),
+            slots: [S('step', '找到後往右跳', [['len', 'len({P})'], ['one', '1']]), S('tot', '最後一行', [['total', 'total='], ['none', '']])],
+            py: (c, N, I) => { const p = N.role.pat; const pre = (/「([A-Za-z_]+)=次數」/.exec(String((I && I.statement) || '')) || [])[1]; const L = ['total = 0', 'for t in ' + LL(N) + ':', '    i = 0', '    while i <= len(t) - len(' + p + '):', '        if t[i:i + len(' + p + ')] == ' + p + ':', '            print(' + p + ')', '            total += 1', '            i += ' + c.step.replace('{P}', p), '        else:', '            i += 1']; if (c.tot !== '') L.push("print('" + (pre ? pre + '=' : c.tot) + "' + str(total))"); return code(L); } },
+    ];
     PARADIGMS.push(...GEN);
+    PARADIGMS.push(...LX);
     const byId = {}; PARADIGMS.forEach((p) => { byId[p.id] = p; });
     // 領域包註冊：把領域的骨架加進骨架表（id 不可重複）
     function addSkeletons(list, domain) { let n = 0; for (const sk of list || []) { if (byId[sk.id]) continue; if (domain) sk.domain = domain; PARADIGMS.push(sk); byId[sk.id] = sk; n++; } return n; }
-    const forIntent = (intent, statement) => (intent && intent.algo ? PARADIGMS.filter((p) => p.algo === intent.algo && (!p.when || statement == null || p.when.test(String(statement)))) : []);
+    const forIntent = (intent, statement) => (intent && intent.algo ? PARADIGMS.filter((p) => p.algo === intent.algo && (!p.when || statement == null || p.when.test(String(statement))) && (!p.shape || p.shape(intent))) : []);
     const namesOf = (intent) => {
         const N = { sc: [], ls: [], s: [], g: null }; for (const v of intent.vars) { if (v.type === 'list') N.ls.push(v.name); else if (v.type === 'str') N.s.push(v.name); else N.sc.push(v.name); }
         const grid = intent.inputs.find((i) => i.k === 'grid'); if (grid) { N.g = grid.name; N.ls = N.ls.filter((x) => x !== grid.name); }
+        N.L = intent.inputs.filter((i) => i.k === 'lines' || i.k === 'rest').map((i) => i.name); N.ls = N.ls.filter((x) => !N.L.includes(x));
         return N;
     };
     // 窮舉組合（各槽位選項的笛卡兒積）；rank 越高越先試；超過 limit 只留前 limit 個
@@ -15465,7 +15534,7 @@ const holder = {};
     const MARK = /\u0001([^\u0002]*)\u0002/g;
     function render(sk, choice, intent) {
         const N0 = namesOf(intent); const params = intent.vars.map((v) => v.name); const w = (x) => '\u0001' + x + '\u0002';
-        const N = { sc: N0.sc.map(w), ls: N0.ls.map(w), s: N0.s.map(w), g: N0.g && w(N0.g) }; const vals = {};
+        const N = { sc: N0.sc.map(w), ls: N0.ls.map(w), s: N0.s.map(w), g: N0.g && w(N0.g), L: N0.L.map(w), by: {}, role: {} }; for (const p_ of params) N.by[p_] = w(p_); for (const i_ of intent.inputs) if (i_.role) N.role[i_.role] = w(i_.name); const vals = {};
         for (const sl of sk.slots) { const op = sl.options.find((x) => x.id === choice[sl.id]); if (!op) throw new Error('槽位 ' + sl.id + ' 沒有選項 ' + choice[sl.id]); vals[sl.id] = op.v; }
         const P = new Set(params); let py = sk.py(vals, N, intent);
         py = py.replace(/\u0001[^\u0002]*\u0002|'[^']*'|"[^"]*"|\b[A-Za-z_]\w*\b/g, (t) => (P.has(t) && !KEEP.has(t) ? t + '_2' : t)).replace(MARK, '$1');
@@ -15475,7 +15544,7 @@ const holder = {};
         const intent = o.intent; const sks = o.skeleton ? [o.skeleton] : forIntent(intent, o.statement); const trace = []; let tried = 0;
         if (!sks.length) return { ok: false, reason: '這題的算法（' + (intent && intent.algo) + '）沒有範式骨架', tried, trace };
         for (const sk of sks) {
-            for (const choice of combos(sk, { limit: o.limit, rank: o.rank })) {
+            for (const choice of combos(sk, { limit: o.limit || sk.limit, rank: o.rank })) {
                 let cnl; try { cnl = render(sk, choice, intent); } catch (e) { trace.push({ skeleton: sk.id, choice, verdict: 'RENDER_ERROR', detail: String(e.message || e) }); continue; }
                 tried++; let v; try { v = await o.judge(cnl); } catch (e) { v = { verdict: 'JUDGE_ERROR', detail: String(e.message || e) }; }
                 trace.push({ skeleton: sk.id, choice, verdict: v.verdict, detail: v.detail });
@@ -15614,6 +15683,10 @@ const holder = {};
             if (inp.k === 'scalars') L.push(inp.names.length === 1 ? (inp.type === 'float' ? '讀入小數 ' : '讀入整數 ') + inp.names[0] : inp.type === 'float' ? '程式：' + inp.names.join(', ') + ' = map(float, input().split())' : '讀入一行整數 ' + inp.names.join(', '));
             else if (inp.k === 'list') L.push(inp.elem === 'str' ? '讀入一行並切成單字 ' + inp.name : inp.elem === 'float' ? '程式：' + inp.name + ' = list(map(float, input().split()))' : '讀入一行整數成清單 ' + inp.name);
             else if (inp.k === 'words') L.push('讀入一行並切成單字 ' + inp.name);
+            else if (inp.k === 'str' && inp.raw) L.push('程式：' + inp.name + ' = input()'); // 工具型題目：整行原樣（不去空白）
+            else if (inp.k === 'hex') L.push('程式：' + inp.name + ' = input().strip()');
+            else if (inp.k === 'lines') L.push('程式：' + inp.name + ' = [input() for _ in range(' + inp.count + ')]');
+            else if (inp.k === 'rest') L.push('程式：import sys', '程式：' + inp.name + ' = sys.stdin.read().split(\'\\n\')', '程式：' + inp.name + ' = [x for x in ' + inp.name + '[:-1]] if ' + inp.name + ' and ' + inp.name + '[-1] == \'\' else ' + inp.name);
             else if (inp.k === 'str') L.push('讀入一行文字並去掉首尾空白 ' + inp.name);
             else if (inp.k === 'grid') L.push('讀入 ' + inp.count + ' 行文字（去空白）成清單 ' + inp.name);
             else if (inp.k === 'rows') L.push(inp.names.length === 2 ? '讀入 ' + inp.count + ' 行兩個整數成清單 ' + inp.name : '程式：' + inp.name + ' = [tuple(map(int, input().split())) for _ in range(' + inp.count + ')]');
@@ -15623,6 +15696,7 @@ const holder = {};
     function mainCNL(intent) { const vs = intent.vars.map((v) => v.name); return (vs.length ? '令 ' + vs.join(', ') + ' 等於 read_input()\n' : '') + '程式：solve(' + vs.join(', ') + ')'; }
     // 動作表配方：敘述裡直接寫出運算式、或單一清單上的最大值／最小值／總和、單字反轉。只在「很明確」時給；是否正確由沙盒驗證決定
     function recipeCNL(intent) {
+        if (/霍夫曼|合併|編碼|解碼|還原|位元組|位元數|十六進位|過濾器|碼長/.test(intent.statement || '')) return null; // 工具型題目不是「清單上的最大／總和」（G17）
         const g = intent.goal; const lists = intent.vars.filter((v) => v.type === 'list'); const only = intent.inputs.length;
         if (g.expr) return { name: '敘述裡的運算式', cnl: '印出 ' + g.expr };
         const hasRows = intent.inputs.some((i) => i.k === 'rows' || i.k === 'grid'); const oneList = lists.length === 1 && !hasRows;

@@ -155,7 +155,7 @@
             return { id, cat, line, py, slots, pat, bodies, size: count(pat) };
         });
         const byId = {}; TEMPLATES.forEach((t) => { byId[t.id] = t; });
-        const EXPRS = EXPR_SPEC.concat(LIB.EXPR_EXTRA).map((row) => { const [id, cat, line, py] = row.split('|'); const slots = []; const re = /\{(\w+)\}/g; let m; while ((m = re.exec(line))) if (!slots.includes(m[1])) slots.push(m[1]); const pat = exprOf(py.replace(/\$(\w+)/g, PRE_H + '$1')); if (!pat) throw new Error('運算式積木 ' + id + ' 解析失敗：' + py); return { id, cat, line, py, slots, pat }; });
+        const EXPRS = EXPR_SPEC.concat(LIB.EXPR_EXTRA).map((row) => { const parts = row.split('|'); const id = parts[0], cat = parts[1], line = parts[2], py = parts.slice(3).join('|'); /* py 本身可含 | 運算子 */ const slots = []; const re = /\{(\w+)\}/g; let m; while ((m = re.exec(line))) if (!slots.includes(m[1])) slots.push(m[1]); const pat = exprOf(py.replace(/\$(\w+)/g, PRE_H + '$1')); if (!pat) throw new Error('運算式積木 ' + id + ' 解析失敗：' + py); return { id, cat, line, py, slots, pat }; });
         const exprById = {}; EXPRS.forEach((e) => { exprById[e.id] = e; });
         const fillHoles = (x, fills) => { if (Array.isArray(x)) return x.map((y) => fillHoles(y, fills)); if (x && typeof x === 'object') { if (isHole(x)) return clone(fills[x.v.slice(PRE_H.length)]); const o = {}; for (const k of Object.keys(x)) o[k] = fillHoles(x[k], fills); return o; } return x; };
         const buildExpr = (id, fills) => fillHoles(exprById[id].pat, fills);

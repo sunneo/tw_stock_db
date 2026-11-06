@@ -48,6 +48,20 @@
     // 工具型題目的算法種類（G1）：形狀（輸入區的種類組合）＋敘述關鍵字；先於通用 ALGOS 判斷。sh(inputs) 是形狀條件
     const has = (ins, k, role) => ins.some((x) => x.k === k && (!role || x.role === role));
     const TOOLS = [
+        { key: 'deflate-stored', re: /未壓縮區塊|stored/i, sh: (ins) => ins.length === 1 && has(ins, 'str') },
+        { key: 'adler32', re: /Adler/i, sh: (ins) => ins.length === 1 && has(ins, 'str') },
+        { key: 'crc32', re: /CRC/i, sh: (ins) => ins.length === 1 && has(ins, 'str') },
+        { key: 'base64', re: /base64/i, sh: (ins) => ins.length === 1 && has(ins, 'str') },
+        { key: 'lz77-decode', re: /LZ77|<L\s*,\s*d>/, sh: (ins) => ins.length === 1 && has(ins, 'str') },
+        { key: 'endian-pack', re: /小端|大端/, sh: (ins) => ins.length === 1 && has(ins, 'str') },
+        { key: 'rle-pair', re: /行程長度|連續相同字元/, sh: (ins) => ins.length === 1 && has(ins, 'str') },
+        { key: 'bits-expand', re: /二進位/, sh: (ins) => ins.length === 1 && has(ins, 'str') },
+        { key: 'hex-encode', re: /每個位元組.*十六進位|兩位.*十六進位|十六進位/, sh: (ins) => ins.length === 1 && has(ins, 'str') },
+        { key: 'varint', re: /多位元組整數|varint|LEB128/i, sh: (ins) => !ins.some((x) => x.role) },
+        { key: 'bit-reader', re: /位元序|由最低位元|位元欄位/, sh: (ins) => has(ins, 'hex') && has(ins, 'list') },
+        { key: 'delta-filter', re: /Delta|差分/i, sh: (ins) => has(ins, 'scalars') && has(ins, 'list') },
+        { key: 'huffman-cost', re: /霍夫曼|Huffman/i, sh: (ins) => has(ins, 'list') && !has(ins, 'hex') },
+        { key: 'hex-decode', re: /(?:還原|解碼|轉回).{0,6}文字|還原成.{0,4}字串|xxd\s*-r/, sh: (ins) => ins.length === 1 && has(ins, 'hex') },
         { key: 'lines-grep-o', re: /grep\s*-o|不重疊|每個出現/, sh: (ins) => has(ins, 'lines') && has(ins, 'str', 'pat') },
         { key: 'lines-filter', re: /grep|含有|包含|搜尋字串|符合/, sh: (ins) => has(ins, 'lines') && has(ins, 'str', 'pat') },
         { key: 'lines-map', re: /行號|Tab|行尾|空行|連接|串接|每行|檔案|連續編號/, sh: (ins) => has(ins, 'lines') && !ins.some((x) => x.role) },
@@ -70,6 +84,7 @@
         const f = {}; const t = String(text);
         const yn2 = /(?:印|輸出)\s*([A-Za-z]+)\s*[，,]\s*(?:否則|不然|其餘)\s*(?:印|輸出)?\s*([A-Za-z]+)/.exec(t); const y = /\b(yes|YES|Yes)\b/.exec(t), n = /\b(no|NO|No)\b/.exec(t); if (yn2) f.yn = [yn2[1], yn2[2]]; else if (y && n) f.yn = [y[1], n[1]];
         const nn = /沒有則輸出\s*(-?\d+|[A-Za-z]+)/.exec(t); if (nn) f.none = nn[1]; const ur = /(?:到不了|不可達|無法到達|走不到|不存在)[^，。]*輸出\s*(-?\d+|[A-Za-z]+)/.exec(t); if (ur) f.unreach = ur[1];
+        const h8 = t.match(/0x[0-9A-Fa-f]{8}/g); if (h8) f.hex8 = h8; // 敘述裡的 8 位十六進位常數（CRC 的多項式、初值、結尾互斥或…依出現順序）
         const em = /(?:空時|為空時)輸出\s*([A-Za-z]+)/.exec(t); if (em) f.empty = em[1];
         const subs = []; let mm; const qre = /["“「]([A-Za-z0-9]+)["”」]/g; while ((mm = qre.exec(t))) subs.push(mm[1]);
         const run = /連續(兩|二|三|四)個\s*([A-Za-z0-9])/.exec(t); if (run) subs.push(run[2].repeat({ 兩: 2, 二: 2, 三: 3, 四: 4 }[run[1]])); if (subs.length) f.subs = subs;
@@ -92,29 +107,36 @@
     // ---- 工具型題目（cat／grep／xxd／tar／gzip／xz／bmp…）的輸入形狀：文字行串流、十六進位位元組、旗標行、多段 ----
     // 只看「輸入區」（開頭連續以 輸入／第N行／接著／再 起頭的句子），逐子句分類成：hex（單行十六進位）、str（一行原樣文字，含樣式 pat／旗標 flags）、
     // scalars（一行整數）、list（一行 k 個整數／一串整數）、lines（n 行原樣文字，行內容不丟）、rest（其餘所有行，行數由第一行決定）。
-    const ZONE_START = /^(?:輸入|第[一二三四五六七八九\d]+行|接著|再|然後|之後)/;
+    const ZONE_START = /^(?:輸入|第[一二三四五六七八九\d]+(?:行|份|段|個)|接著|再|然後|之後)/;
     function readToolInput(text) {
         const sents = stripNote(String(text)).split(/。/).map((x) => x.trim()).filter(Boolean); const zone = [];
         for (const s of sents) { if (ZONE_START.test(s)) zone.push(s); else break; }
+        if (!zone.length) { for (const s of sents) { if (/^(?:輸出|依序|對每|仿|求|把)/.test(s)) break; zone.push(s); } } // 輸入描述不是開頭句時：取第一個動作句之前的所有句子
         if (!zone.length) return null;
         const clauses = zone.join('，').split(/[，,；;：:]+/).map((c) => c.trim()).filter(Boolean); const out = []; const used = { s: 0, h: 0, lines: 0 };
         const nm = (k) => { const i = used[k]++; return k === 'lines' ? (i ? 'lines' + (i + 1) : 'lines') : k === 'h' ? (i ? 'h' + (i + 1) : 'h') : (i ? 't' : 's'); };
         let m;
+        const A_RE = new RegExp('(?:接著|再給|再來|然後|之後|再)\\s*(' + NAME + ')\\s*行');
+        const one = (c) => { // 一個子句（已拿掉「輸入」）→ 0～1 個輸入描述
+            const head = /^(?:再來|再給|再|然後|接著|之後)?\s*(?:[^，，]{0,6}?第[一二三四五六七八九\d]+行|[一二兩]行)\s*(?:是|為)?\s*(.*)$/.exec(c); if (!head) return null; const d = head[1].trim(); let m;
+            if (/十六進位/.test(d)) return { k: 'hex', name: nm('h') };
+            if (/^base64|^[Bb]ase\s*64/.test(d)) return { k: 'str', name: nm('s'), raw: true };
+            if (/^pat$/.test(d)) return { k: 'str', name: 'pat', raw: true, role: 'pat' };
+            if (/^一串/.test(d) && !new RegExp('^一串[^a-zA-Z]*' + NAME).test(d)) return { k: 'list', name: 'a', size: null, elem: 'int' };
+            if ((m = /^(?:搜尋字串|樣式|旗標|管線)\s*([a-z][a-z0-9]*)?/.exec(d))) { const nmx = m[1] || (/旗標/.test(d) ? 'flags' : /管線/.test(d) ? 'pl' : 'pat'); return { k: 'str', name: nmx, raw: true, role: /旗標/.test(d) ? 'flags' : /管線/.test(d) ? 'pl' : 'pat' }; }
+            if (/^「[^」]*\s[^」]*」/.test(d)) return { k: 'str', name: nm('s'), raw: true };
+            if ((m = new RegExp('^一串[^a-zA-Z]*(' + NAME + ')(?:\\s+' + NAME + ')*').exec(d))) return { k: 'list', name: m[1].replace(/\d+$/, '') || 'w', size: null, elem: 'int' };
+            if ((m = new RegExp('^(' + NAME + ')\\s*個').exec(d))) return { k: 'list', name: 'a', size: m[1], elem: 'int' };
+            if ((m = new RegExp('^[^a-zA-Z0-9]{0,8}?\\s*(' + NAME + ')$').exec(d)) && !/字串|文字/.test(d)) return { k: 'scalars', names: [m[1]], type: 'int', line: true };
+            if ((m = new RegExp('^[^a-zA-Z0-9]{0,8}?\\s*(' + NAME + ')\\s*\\(?[^a-zA-Z]*$').exec(d)) && /^[a-z]/.test(m[1]) && !/字串|文字|算式|命令列|後序/.test(d)) return { k: 'scalars', names: [m[1]], type: 'int', line: true };
+            if (/字串|文字|算式|命令列|後序|記號|式$|行$/.test(d) || /^只含|^由/.test(d)) return { k: 'str', name: nm('s'), raw: true };
+            return null;
+        };
         for (let c of clauses) {
-            c = c.replace(/^輸入(?=第|一行|(?:一|兩|二)行)/, '').replace(/^輸入\s*/, ''); if (!c) continue;
-            if (!/^(?:再|然後|接著|之後)?\s*[一二兩]行/.test(c) && (m = new RegExp('^(?:接著|再|然後|之後)\\s*(' + NAME + '|[一-龥]{1,2})\\s*行').exec(c))) { out.push({ k: /^[a-zA-Z]/.test(m[1]) ? 'lines' : 'rest', count: /^[a-zA-Z]/.test(m[1]) ? m[1] : null, name: nm('lines'), raw: true }); continue; }
-            const head = /^(?:再|然後|接著|之後)?\s*(?:[^，，]{0,6}?第[一二三四五六七八九\d]+行|[一二兩]行)\s*(?:是|為)?\s*(.*)$/.exec(c); if (!head) continue; const d = head[1].trim();
-            if (/十六進位/.test(d)) { out.push({ k: 'hex', name: nm('h') }); continue; }
-            if (/^base64|^[Bb]ase\s*64/.test(d)) { out.push({ k: 'str', name: nm('s'), raw: true }); continue; }
-            if (/^pat$/.test(d)) { out.push({ k: 'str', name: 'pat', raw: true, role: 'pat' }); continue; }
-            if (/^一串/.test(d) && !new RegExp('^一串[^a-zA-Z]*' + NAME).test(d)) { out.push({ k: 'list', name: 'a', size: null, elem: 'int' }); continue; }
-            if ((m = /^(?:搜尋字串|樣式|旗標|管線)\s*([a-z][a-z0-9]*)?/.exec(d))) { const nmx = m[1] || (/旗標/.test(d) ? 'flags' : /管線/.test(d) ? 'pl' : 'pat'); out.push({ k: 'str', name: nmx, raw: true, role: /旗標/.test(d) ? 'flags' : /管線/.test(d) ? 'pl' : 'pat' }); continue; }
-            if (/^「[^」]*\s[^」]*」/.test(d)) { out.push({ k: 'str', name: nm('s'), raw: true }); continue; }
-            if ((m = new RegExp('^一串[^a-zA-Z]*(' + NAME + ')(?:\\s+' + NAME + ')*').exec(d))) { out.push({ k: 'list', name: m[1].replace(/\d+$/, '') || 'w', size: null, elem: 'int' }); continue; }
-            if ((m = new RegExp('^(' + NAME + ')\\s*個').exec(d))) { out.push({ k: 'list', name: 'a', size: m[1], elem: 'int' }); continue; }
-            if ((m = new RegExp('^[^a-zA-Z0-9]{0,8}?\\s*(' + NAME + ')$').exec(d)) && !/字串|文字/.test(d)) { out.push({ k: 'scalars', names: [m[1]], type: 'int', line: true }); continue; }
-            if ((m = new RegExp('^[^a-zA-Z0-9]{0,8}?\\s*(' + NAME + ')\\s*\\(?[^a-zA-Z]*$').exec(d)) && /^[a-z]/.test(m[1]) && !/字串|文字|算式|命令列|後序/.test(d)) { out.push({ k: 'scalars', names: [m[1]], type: 'int', line: true }); continue; }
-            if (/字串|文字|算式|命令列|後序|記號|式$|行$/.test(d) || /^只含|^由/.test(d)) { out.push({ k: 'str', name: nm('s'), raw: true }); continue; }
+            c = c.replace(/^輸入(?=第|一行|(?:一|兩|二)行)/, '').replace(/^輸入\s*/, ''); if (!c) continue; let m;
+            if (!/^(?:再來|再給|再|然後|接著|之後)?\s*[一二兩]行/.test(c) && (m = new RegExp('^(?:接著|再|然後|之後)\\s*(' + NAME + '|[一-龥]{1,2})\\s*行').exec(c))) { out.push({ k: /^[a-zA-Z]/.test(m[1]) ? 'lines' : 'rest', count: /^[a-zA-Z]/.test(m[1]) ? m[1] : null, name: nm('lines'), raw: true }); continue; }
+            const mA = A_RE.exec(c); const pre = mA ? c.slice(0, mA.index) : c; const r = pre.trim() ? one(pre.trim()) : null; if (r) out.push(r);
+            if (mA) out.push({ k: 'lines', count: mA[1], name: nm('lines'), raw: true });
         }
         // 第一行只是個名稱（沒寫「樣式」「搜尋字串」）：若敘述把它當比對的字串用（含有 x、找出 x、x 的出現），它是樣式字串，不是整數
         if (out.some((x) => x.k === 'lines') && out[0] && out[0].k === 'scalars') { const v = out[0].names[0]; if (new RegExp('(?:含有?|包含|找出|搜尋|比對|符合)\\s*' + v + '(?![a-z0-9])|(?<![a-z0-9])' + v + '\\s*(?:的(?:所有)?(?:「?不重疊」?)?出現|本身)').test(text)) out[0] = { k: 'str', name: v, raw: true, role: 'pat' }; }

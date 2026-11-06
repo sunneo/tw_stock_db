@@ -201,8 +201,64 @@
             slots: [S('step', '找到後往右跳', [['len', 'len({P})'], ['one', '1']]), S('tot', '最後一行', [['total', 'total='], ['none', '']])],
             py: (c, N, I) => { const p = N.role.pat; const pre = (/「([A-Za-z_]+)=次數」/.exec(String((I && I.statement) || '')) || [])[1]; const L = ['total = 0', 'for t in ' + LL(N) + ':', '    i = 0', '    while i <= len(t) - len(' + p + '):', '        if t[i:i + len(' + p + ')] == ' + p + ':', '            print(' + p + ')', '            total += 1', '            i += ' + c.step.replace('{P}', p), '        else:', '            i += 1']; if (c.tot !== '') L.push("print('" + (pre ? pre + '=' : c.tot) + "' + str(total))"); return code(L); } },
     ];
+    // ---- 工具型題目（xxd／base64／crc／xz／gzip 的單行字串與位元組類；G7、G8、G13 的一部分）----
+    const oneStr = (I) => I.inputs.length === 1 && I.inputs[0].k === 'str';
+    const oneHex = (I) => I.inputs.length === 1 && I.inputs[0].k === 'hex';
+    const hasK = (I, k) => I.inputs.some((x) => x.k === k);
+    // CRC-32 位元式迴圈（資料位元組在變數 dv，結果放 cv）；多項式／初值／結尾互斥或由敘述裡的 0x 常數抽（依序：多項式、初值、結尾）；抽不到就用 gzip 的慣例
+    const crcLines = (dv, cv, I, c) => { const h = (FA(I).hex8 || []); const poly = (c && c.refl === 'normal') ? '0x04C11DB7' : (h[0] || '0xEDB88320'); const init = h[1] || '0xFFFFFFFF'; const fin = h[2] || h[1] || '0xFFFFFFFF'; const refl = !(c && c.refl === 'normal');
+        return [cv + ' = ' + init, 'for b_ in ' + dv + ':'].concat(refl ? ['    ' + cv + ' ^= b_', '    for _ in range(8):', '        if ' + cv + ' & 1:', '            ' + cv + ' = (' + cv + ' >> 1) ^ ' + poly, '        else:', '            ' + cv + ' >>= 1'] : ['    ' + cv + ' ^= b_ << 24', '    for _ in range(8):', '        if ' + cv + ' & 0x80000000:', '            ' + cv + ' = ((' + cv + ' << 1) ^ ' + poly + ') & 0xFFFFFFFF', '        else:', '            ' + cv + ' = (' + cv + ' << 1) & 0xFFFFFFFF'], [cv + ' = ' + cv + ' ^ ' + fin]); };
+    const B64 = '"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"';
+    const LX2 = [
+        { id: 'str.hex-encode', paradigm: 'bytes-text', algo: 'hex-encode', label: '逐位元組轉十六進位（xxd 編碼）：兩位、大小寫、分隔', shape: oneStr,
+            slots: [S('fmt', '格式', [['%02x', '%02x'], ['%02X', '%02X']]), S('sep', '分隔', [['', ''], ['sp', ' ']])],
+            py: (c, N) => 'print("' + (c.sep === 'sp' ? ' ' : '') + '".join("' + c.fmt + '" % ord(ch) for ch in ' + N.s[0] + '))' },
+        { id: 'str.bits-expand', paradigm: 'bytes-text', algo: 'bits-expand', label: '逐字元轉二進位位元（xxd -b）：寬度、高位或低位在前、分隔', shape: oneStr, limit: 24,
+            slots: [S('w', '寬度', [['8', '08b'], ['7', '07b']]), S('ord', '位元順序', [['msb', ''], ['lsb', '[::-1]']]), S('sep', '分隔', [['sp', ' '], ['', '']])],
+            py: (c, N) => 'print("' + c.sep + '".join(format(ord(ch), "' + c.w + '")' + c.ord + ' for ch in ' + N.s[0] + '))' },
+        { id: 'str.rle-pair', paradigm: 'bytes-text', algo: 'rle-pair', label: '行程長度編碼：連續相同字元寫成（次數＋字元）或（字元＋次數）', shape: oneStr,
+            slots: [S('ord', '次數與字元的順序', [['cnt', 'str(j - i) + t[i]'], ['chr', 't[i] + str(j - i)']])],
+            py: (c, N) => code(['t = ' + N.s[0], 'out = ""', 'i = 0', 'while i < len(t):', '    j = i', '    while j < len(t) and t[j] == t[i]:', '        j += 1', '    out += ' + c.ord, '    i = j', 'print(out)']) },
+        { id: 'int.endian-pack', paradigm: 'binary-format', algo: 'endian-pack', label: '整數打包成位元組（小端／大端）再轉十六進位；一行三個欄位（值、位元組數、序）的順序與端序對應由窮舉挑', shape: oneStr, limit: 12,
+            slots: [S('perm', '三個欄位的順序（值、位元組數、序）', [['012', '0, 1, 2'], ['021', '0, 2, 1'], ['102', '1, 0, 2'], ['120', '1, 2, 0'], ['201', '2, 0, 1'], ['210', '2, 1, 0']]), S('map', '序字串對應', [['a', '"little" if o[0] in "lL" else "big"'], ['b', '"big" if o[0] in "lL" else "little"']])],
+            py: (c, N) => { const p = c.perm.split(', '); return code(['parts = ' + N.s[0] + '.split()', 'v = int(parts[' + p[0] + '])', 'w = int(parts[' + p[1] + '])', 'o = parts[' + p[2] + ']', 'print(v.to_bytes(w, ' + c.map + ').hex())']); } },
+        { id: 'checksum.crc32', paradigm: 'checksum', algo: 'crc32', label: 'CRC-32（位元式迴圈；多項式／初值／結尾互斥或由敘述的 0x 常數抽）', shape: oneStr, limit: 8,
+            slots: [S('refl', '位元序', [['reflected', 'reflected'], ['normal', 'normal']]), S('fmt', '輸出格式', [['%08x', '%08x'], ['%08X', '%08X']])],
+            py: (c, N, I) => code(['data = ' + N.s[0] + '.encode()'].concat(crcLines('data', 'crc', I, c), ['print("' + c.fmt + '" % crc)'])) },
+        { id: 'checksum.adler32', paradigm: 'checksum', algo: 'adler32', label: 'Adler-32：兩個累加器對模數取餘', shape: oneStr,
+            slots: [S('ord', '組合方式', [['ba', 'b * 65536 + a'], ['ab', 'a * 65536 + b']]), S('init', 'a 的初值', [['1', '1'], ['0', '0']])],
+            py: (c, N, I) => code(['a = ' + c.init, 'b = 0', 'for ch in ' + N.s[0] + '.encode():', '    a = (a + ch) % ' + (FA(I).mod || 65521), '    b = (b + a) % ' + (FA(I).mod || 65521), 'print("%08x" % (' + c.ord + '))']) },
+        { id: 'bits.base64', paradigm: 'bit-regroup', algo: 'base64', label: 'base64：8 位元組重組成 6 位元群（編碼）或反向（解碼）；方向、補 = 由窮舉挑', shape: oneStr, limit: 8,
+            slots: [S('dir', '方向', [['enc', 'enc'], ['dec', 'dec']]), S('pad', '編碼補 =', [['pad', 'pad'], ['nopad', 'nopad']])],
+            py: (c, N) => { const s = N.s[0]; if (c.dir === 'enc') return code(['A = ' + B64, 'bits = "".join(format(ord(ch), "08b") for ch in ' + s + ')', 'while len(bits) % 6:', '    bits += "0"', 'out = "".join(A[int(bits[i:i + 6], 2)] for i in range(0, len(bits), 6))'].concat(c.pad === 'pad' ? ['while len(out) % 4:', '    out += "="'] : [], ['print(out)'])); return code(['A = ' + B64, 'bits = "".join(format(A.index(ch), "06b") for ch in ' + s + '.strip().rstrip("="))', 'print("".join(chr(int(bits[i:i + 8], 2)) for i in range(0, len(bits) - 7, 8)))']); } },
+        { id: 'gzip.stored-block', paradigm: 'binary-format', algo: 'deflate-stored', label: 'DEFLATE 未壓縮區塊（旗標位元組＋LEN＋NLEN＋資料）：打包成十六進位', shape: oneStr, limit: 8,
+            slots: [S('hdr', '第一個位元組', [['01', '01'], ['00', '00']]), S('e', '端序', [['little', 'little'], ['big', 'big']]), S('nl', 'NLEN', [['not', '0xFFFF - n'], ['same', 'n']])],
+            py: (c, N) => code(['data = ' + N.s[0] + '.encode()', 'n = len(data)', 'print("' + c.hdr + '" + n.to_bytes(2, "' + c.e + '").hex() + (' + c.nl + ').to_bytes(2, "' + c.e + '").hex() + data.hex())']) },
+        { id: 'hex.decode-text', paradigm: 'bytes-text', algo: 'hex-decode', label: '十六進位還原成文字（xxd -r）', shape: oneHex,
+            slots: [S('m', '做法', [['chr', 'chr'], ['bytes', 'bytes']])],
+            py: (c, N) => c.m === 'chr' ? 'print("".join(chr(int(' + N.s[0] + '[i:i + 2], 16)) for i in range(0, len(' + N.s[0] + ') - 1, 2)))' : 'print(bytes.fromhex(' + N.s[0] + ').decode())' },
+        { id: 'varint.dec', paradigm: 'bit-regroup', algo: 'varint', label: '多位元組整數（每位元組 7 位資料＋續位旗標）解碼；低位在前或高位在前', shape: oneHex,
+            slots: [S('ord', '資料群順序', [['lo', 'cur |= (x & 127) << sh'], ['hi', 'cur = (cur << 7) | (x & 127)']])],
+            py: (c, N) => code(['vals = []', 'cur = 0', 'sh = 0', 'for x in bytes.fromhex(' + N.s[0] + '):', '    ' + c.ord, '    if x & 128:', '        sh += 7', '    else:', '        vals.append(cur)', '        cur = 0', '        sh = 0', 'print(*vals)']) },
+        { id: 'varint.enc', paradigm: 'bit-regroup', algo: 'varint', label: '整數編成多位元組整數（每位元組 7 位資料＋續位旗標）；低位在前或高位在前', shape: (I) => !hasK(I, 'hex') && (I.inputs.some((x) => x.k === 'str' || x.k === 'list' || x.k === 'scalars')), limit: 12,
+            slots: [S('ord', '群順序', [['lo', 'lo'], ['hi', 'hi']]), S('sep', '輸出分隔', [['', ''], ['sp', ' ']])],
+            py: (c, N) => { const src = N.ls.length ? N.ls[0] : N.s.length ? '[int(t) for t in ' + N.s[0] + '.split()]' : '[' + N.sc.join(', ') + ']'; return code(['res = []', 'for v in ' + src + ':', '    g = []', '    while True:', '        g.append(v & 127)', '        v >>= 7', '        if v == 0:', '            break'].concat(c.ord === 'hi' ? ['    g.reverse()'] : [], ['    bs = []', '    for k in range(len(g)):', '        bs.append(g[k] | (128 if k < len(g) - 1 else 0))', '    res.append("".join("%02x" % x for x in bs))', 'print("' + (c.sep === 'sp' ? ' ' : '') + '".join(res))'])); } },
+        { id: 'bits.reader-lsb', paradigm: 'bitstream', algo: 'bit-reader', label: '位元流讀取器：位元組內先讀低位或高位，欄位以先讀到的位元為低位或高位', shape: (I) => hasK(I, 'hex') && hasK(I, 'list'), limit: 8,
+            slots: [S('bo', '位元組內順序', [['lsb', '[::-1]'], ['msb', '']]), S('fo', '欄位位元順序', [['low', '[::-1]'], ['high', '']])],
+            py: (c, N) => code(['bits = "".join(format(x, "08b")' + c.bo + ' for x in bytes.fromhex(' + N.s[0] + '))', 'pos = 0', 'vals = []', 'for w in ' + N.ls[0] + ':', '    vals.append(int(bits[pos:pos + w]' + c.fo + ', 2))', '    pos += w', 'print(*vals)']) },
+        { id: 'filter.delta', paradigm: 'prefix-feedback', algo: 'delta-filter', label: 'Delta 過濾器：輸出＝輸入＋（前 d 個輸出）；或反向編碼', shape: (I) => I.inputs.some((x) => x.k === 'scalars') && I.inputs.some((x) => x.k === 'list'), limit: 8,
+            slots: [S('dir', '方向', [['dec', 'dec'], ['enc', 'enc']]), S('mod', '取餘', [['256', ' % 256'], ['none', '']])],
+            py: (c, N) => { const d = N.sc[0], a = N.ls[0]; if (c.dir === 'dec') return code(['out = []', 'for i in range(len(' + a + ')):', '    x = ' + a + '[i]', '    if i >= ' + d + ':', '        x = x + out[i - ' + d + ']', '    out.append((x)' + c.mod + ')', 'print(*out)']); return code(['out = []', 'for i in range(len(' + a + ')):', '    x = ' + a + '[i]', '    if i >= ' + d + ':', '        x = x - ' + a + '[i - ' + d + ']', '    out.append((x)' + c.mod + ')', 'print(*out)']); } },
+        { id: 'heap.huffman-merge', paradigm: 'heap', algo: 'huffman-cost', label: '霍夫曼：反覆合併最小的兩個權重，總位元數＝所有合併權重之和', shape: (I) => I.inputs.some((x) => x.k === 'list'),
+            slots: [S('one', '只有一個符號時', [['0', '0'], ['w', 'w']])],
+            py: (c, N) => code(['import heapq', 'h = list(' + N.ls[0] + ')', 'heapq.heapify(h)', 'cost = 0', 'while len(h) > 1:', '    x = heapq.heappop(h)', '    y = heapq.heappop(h)', '    cost += x + y', '    heapq.heappush(h, x + y)', 'print(cost)']) },
+        { id: 'lz77.copy', paradigm: 'lz77', algo: 'lz77-decode', label: 'LZ77 解碼：字面字元直接輸出；<長度,距離> 往回逐字元複製（可重疊）', shape: oneStr,
+            slots: [S('pair', '括號內順序', [['Ld', '0, 1'], ['dL', '1, 0']])],
+            py: (c, N) => { const p = c.pair.split(', '); return code(['out = []', 'for t in ' + N.s[0] + '.split():', '    if t[0] == "<":', '        q = t[1:-1].split(",")', '        L = int(q[' + p[0] + '])', '        d = int(q[' + p[1] + '])', '        for _ in range(L):', '            out.append(out[-d])', '    else:', '        out.extend(t)', 'print("".join(out))']); } },
+    ];
     PARADIGMS.push(...GEN);
     PARADIGMS.push(...LX);
+    PARADIGMS.push(...LX2);
     const byId = {}; PARADIGMS.forEach((p) => { byId[p.id] = p; });
     // 領域包註冊：把領域的骨架加進骨架表（id 不可重複）
     function addSkeletons(list, domain) { let n = 0; for (const sk of list || []) { if (byId[sk.id]) continue; if (domain) sk.domain = domain; PARADIGMS.push(sk); byId[sk.id] = sk; n++; } return n; }
