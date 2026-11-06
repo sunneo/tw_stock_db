@@ -25,5 +25,6 @@ function conv(n) { const kids = []; if (n.type === 'string') return { type: 'str
     console.log('隨機建樹 ' + N + ' 棵：OK ' + ok + '、解析錯誤 ' + err + '、結構不同 ' + diff);
     for (const x of bad.slice(0, +process.argv[3] || 4)) { console.log('--- seed ' + x.seed + ' ' + x.why); if (x.text) console.log(x.text.slice(0, 300)); if (x.a) { let i = 0; while (x.a[i] === x.b[i]) i++; console.log('建: …' + x.a.slice(Math.max(0, i - 40), i + 60) + '\n解: …' + x.b.slice(Math.max(0, i - 40), i + 60)); } }
     // 殘餘的不一致都是文法本身的歧義（with (x): 與元組、yield 後帶逗號、(*x) 括號等）；實際流程反解後會再用 tree-sitter 解析一次擋掉。門檻：95%。
+    console.log((ok / N >= 0.95 ? 1 : 0) + ' passed, ' + (ok / N >= 0.95 ? 0 : 1) + ' failed');
     process.exit(ok / N >= 0.95 ? 0 : 1);
 })().catch((e) => { console.error(e); process.exit(2); });

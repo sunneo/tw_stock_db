@@ -8,9 +8,13 @@
 const fs = require('fs'); const path = require('path');
 const REPO = path.join(__dirname, '..', '..');
 const { applyTemplate } = require(path.join(REPO, 'nr-template.js')); const { createTokenizer } = require(path.join(REPO, 'nr-tokenizer.js')); const { validateGen, pickToken, makeRng } = require(path.join(REPO, 'nr-gen-params.js'));
-const LAYERS = 28, KV = 8, HD = 128, EOS = [151645, 151643];
+const EOS = [151645, 151643];
 
 function makeNativeGenerate(o) {
+    // 模型維度從 config.json 讀（Qwen3-0.6B：28 層／8 KV 頭／128；Qwen2.5-Coder-0.5B：24／2／64）；Qwen2 系列沒有思考區塊，提示不補 <think>
+    let cfg = {}; try { cfg = JSON.parse(fs.readFileSync(path.join(o.modelDir, 'config.json'), 'utf8')); } catch (e) { /* 沒有就用 Qwen3-0.6B 預設 */ }
+    const LAYERS = cfg.num_hidden_layers || 28, KV = cfg.num_key_value_heads || 8, HD = cfg.head_dim || (cfg.hidden_size && cfg.num_attention_heads ? cfg.hidden_size / cfg.num_attention_heads : 128); const noThinkTag = cfg.model_type === 'qwen2';
+    const think0 = (v) => (noThinkTag ? undefined : v);
     const ort = require(path.join(o.ortDir, 'node_modules', 'onnxruntime-node'));
     const tok = createTokenizer(JSON.parse(fs.readFileSync(path.join(o.modelDir, 'tokenizer.json'), 'utf8')));
     let sess = null; const stats = { calls: 0, promptTokens: 0, newTokens: 0, ms: 0 };
@@ -19,7 +23,7 @@ function makeNativeGenerate(o) {
     async function generate(req) {
         const t0 = Date.now(); const s = await ensure(); const think = req.enableThinking === true;
         const gen = validateGen(Object.assign({ do_sample: false }, o.sampling || {})); const rng = gen.do_sample ? makeRng(o.seed != null ? o.seed : 1) : null;
-        const prompt = applyTemplate('qwen3-chatml', req.messages || [], { enable_thinking: think ? true : false, prefill: !think && req.prefill ? req.prefill : undefined });
+        const prompt = applyTemplate('qwen3-chatml', req.messages || [], { enable_thinking: think0(think ? true : false), prefill: !think && req.prefill ? req.prefill : undefined });
         const promptIds = tok.encode(prompt); const maxNew = Math.max(1, req.maxTokens || 512); const deadline = req.timeoutMs ? t0 + req.timeoutMs : 0;
         const empty = () => { const out = {}; for (let l = 0; l < LAYERS; l++) for (const k of ['key', 'value']) out['past_key_values.' + l + '.' + k] = new ort.Tensor('float32', new Float32Array(0), [1, KV, 0, HD]); return out; };
         let past = empty(), next = null, out = [], pastLen = 0;
@@ -42,7 +46,7 @@ function makeNativeGenerate(o) {
     //   openCursor(messages, assistantPrefix) → Promise<cursor>   cursor.rank(suffixes[], {topK}) → [{text, logprob}]   cursor.commit(suffix)   cursor.greedy(maxTokens) → 字串（不提交）
     async function openCursor(messages, assistantPrefix) {
         const s = await ensure(); const gen = validateGen({ do_sample: false });
-        const prompt = applyTemplate('qwen3-chatml', messages || [], { enable_thinking: false, prefill: assistantPrefix || '' }); const ids = tok.encode(prompt);
+        const prompt = applyTemplate('qwen3-chatml', messages || [], { enable_thinking: think0(false), prefill: assistantPrefix || '' }); const ids = tok.encode(prompt);
         const empty = () => { const out = {}; for (let l = 0; l < LAYERS; l++) for (const k of ['key', 'value']) out['past_key_values.' + l + '.' + k] = new ort.Tensor('float32', new Float32Array(0), [1, KV, 0, HD]); return out; };
         const run = async (past, pastLen, q) => { const len = pastLen + q.length; const feed = Object.assign({}, past); feed.input_ids = new ort.Tensor('int64', BigInt64Array.from(q.map(BigInt)), [1, q.length]); feed.attention_mask = new ort.Tensor('int64', BigInt64Array.from(Array(len).fill(1n)), [1, len]); feed.position_ids = new ort.Tensor('int64', BigInt64Array.from(Array.from({ length: q.length }, (_, j) => BigInt(pastLen + j))), [1, q.length]); const r = await s.run(feed); const V = r.logits.dims[2]; const np = {}; for (let l = 0; l < LAYERS; l++) { np['past_key_values.' + l + '.key'] = r['present.' + l + '.key']; np['past_key_values.' + l + '.value'] = r['present.' + l + '.value']; } return { past: np, pastLen: len, rows: Array.from({ length: q.length }, (_, i) => Float32Array.from(r.logits.data.subarray(i * V, (i + 1) * V))) }; };
         const lsm = (row) => { let m = -Infinity; for (let i = 0; i < row.length; i++) if (row[i] > m) m = row[i]; let z = 0; for (let i = 0; i < row.length; i++) z += Math.exp(row[i] - m); const lz = m + Math.log(z); return (id) => row[id] - lz; };
@@ -88,7 +92,7 @@ function makeNativeGenerate(o) {
     // ---- 受限選擇：對一組選項標籤（各自的第一個 token，例如 A、B、C…）只跑一次前向，取下一個位置機率最高的選項。不生成文字、不開思考。
     //   generate.pick(req, labels[]) → Promise<{index, logprobs[]}>；req 同 generate（messages；prefill 可選）
     async function pick(req, labels) {
-        const t0 = Date.now(); const s = await ensure(); const prompt = applyTemplate('qwen3-chatml', req.messages || [], { enable_thinking: false, prefill: req.prefill ? String(req.prefill) : undefined }); const ids = tok.encode(prompt);
+        const t0 = Date.now(); const s = await ensure(); const prompt = applyTemplate('qwen3-chatml', req.messages || [], { enable_thinking: think0(false), prefill: req.prefill ? String(req.prefill) : undefined }); const ids = tok.encode(prompt);
         const cand = labels.map((l) => tok.encode(l)[0]); const out = {}; for (let l = 0; l < LAYERS; l++) for (const k of ['key', 'value']) out['past_key_values.' + l + '.' + k] = new ort.Tensor('float32', new Float32Array(0), [1, KV, 0, HD]);
         out.input_ids = new ort.Tensor('int64', BigInt64Array.from(ids.map(BigInt)), [1, ids.length]); out.attention_mask = new ort.Tensor('int64', BigInt64Array.from(Array(ids.length).fill(1n)), [1, ids.length]); out.position_ids = new ort.Tensor('int64', BigInt64Array.from(ids.map((_, j) => BigInt(j))), [1, ids.length]);
         const r = await s.run(out); const V = r.logits.dims[2]; const row = r.logits.data.subarray((ids.length - 1) * V, ids.length * V);

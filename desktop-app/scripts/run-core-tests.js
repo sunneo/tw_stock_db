@@ -22,6 +22,8 @@ const suites = [
     ['CoLU+Thinking 階段 2（thinkingPlan 預算、jsonStep 的 thinking 參數與退路）', 'renderer/src/recipe/think_plan.test.js'],
     ['離線多步驟計畫（目標、規劃、狀態機、決策樹）', 'renderer/src/recipe/plan_core.test.js'],
     ['UML → 程式骨架（DSL、驗證、圖、template、情境到 UML）', 'renderer/src/uml/uml_core.test.js'],
+    ['程式碼 → tree-sitter → UML（指令層級）→ Python 往返（需 tree-sitter 快取，沒有就略過）', 'renderer/src/uml/py_code2uml.test.js'],
+    ['AST 建樹：隨機建樹與真 tree-sitter 一致、種子程式重放（需 tree-sitter 快取）', 'renderer/src/ast/ast_replay.test.js'],
     ['CoLU+Thinking 階段 3（計畫階段接上 thinking：開關、逾時退路、推理不進 messages）', 'renderer/src/uml/plan_think.test.js'],
     ['CoLU+Thinking 階段 4（反思：有缺口重做一次、上限、逾時與解析失敗退路、其他模型不變）', 'renderer/src/recipe/think_reflect.test.js'],
     ['CoLU+Thinking 階段 5（設定開關預設值、推理區塊跳脫 HTML、空推理不顯示、長推理截斷）', 'renderer/src/recipe/colu_think_ui.test.js'],

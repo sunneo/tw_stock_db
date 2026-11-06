@@ -23,5 +23,6 @@ function conv(n) { const kids = []; if (n.type === 'string') return { type: 'str
         } catch (e) { fails.push(p.id + ' 建樹失敗：' + String(e.message).slice(0, 160)); }
     }
     console.log('種子題 ' + probs.length + '：建成 ' + built + '、結構一致 ' + same + '、判題 AC ' + ac); fails.forEach((f) => console.log('  ✗ ' + f));
+    console.log(ac + ' passed, ' + (probs.length - ac) + ' failed');
     process.exit(ac === probs.length ? 0 : 1);
 })().catch((e) => { console.error(e); process.exit(2); });

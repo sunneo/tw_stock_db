@@ -39,3 +39,19 @@ qwen3-0.6b q8、CPU、**不開思考**（write_code 領域整個關思考）：
 - 把建樹接進 `write_code`／UML 遞迴切割迴圈、floating-assistant 與 `web-lazy`（renderer 目前沒有載入這些檔案，所以**沒有發布 live-update patch**——renderer 前端沒有變化）。
 - 其他語言（nodejs、c、c++、java、ruby、perl、bash、asm、C#）：tree-sitter-wasms 已有對應 wasm；每個語言要各自的 grammar.json 與反解規則（括號、分號、縮排）。
 - 以建樹為基礎的語法修復與編輯（從任意程式接續：把既有程式解析成樹，在某個節點重選）。
+
+## 五、反向路徑：程式碼 → tree-sitter → UML（含指令層級）→ 程式碼（2026-11-06）
+
+使用者的方向：還是走 **UML design 遞迴切割＋codegen／code converter**，converter 最後的粒度要到指令層級；缺的是「現有程式碼 → tree-sitter → UML」。盤點：現有 UML（`uml_core`）只到設計層級——類別、操作簽名、使用案例的呼叫順序；操作內部沒有地方放敘述（`llvm_core` 產出的是印軌跡的 stub）。
+
+`renderer/src/uml/py_code2uml_core.js`（`FaPyCode2Uml`，Python 專屬，每個語言各自一份，不共用）：
+- `fromTree(tree-sitter 根節點, {source, moduleName})` → `{model, coverage}`。`model` 保持 `uml_core` 的形狀（可過 `validateModel`、`toDsl`），並加上：`class.ops[i].body`（**指令層級的敘述樹**）、`op.params[i].default／kind`、`op.async／dec／ret`、`model.prelude`（模組層敘述）、`model.order`（保留原始頂層順序）、`class.order`（保留類別成員順序）。模組層函式放進與模組同名的類別（static 操作）。類別的 `attrs` 從 `self.x = …` 與類別層指派抽出，繼承→`inherit` 關係，建構呼叫→`depend` 關係，`main` 的呼叫順序→使用案例。
+- 敘述：assign（含連鎖指派，右邊只算一次）、ann、aug、expr、if（elif 攤成巢狀）、for／while（含 else）、ret、break、cont、pass、def（含 async、裝飾器、回傳型別）、class、try／except／else／finally、with、raise、assert、global／nonlocal、del、import。運算式：名稱、常數、呼叫（含 kw／star）、屬性、索引、切片、二元／一元／比較／布林／not、條件式、list／tuple／set／dict、四種生成式、lambda、await、yield、walrus。沒轉成結構的收成 `raw`（保留原文），`coverage.raws` 如實計數。
+- `toPython(model)`：回程 codegen（依運算子優先順序自動補括號）。
+
+**驗證**
+- 20 題種子程式：程式 → UML → Python → 判題 **20/20 AC**，且再轉一次結果逐字相同。
+- 專案裡 46 個真實 Python 檔（5983 句敘述，含 async、裝飾器、類別、try／with）：轉回去 **46/46 的 Python `ast.dump` 與原檔完全相同**（不受括號與排版影響，這是語意相同的強證據），raw 為 0。
+- 找到並修掉的真問題：`async def` 掉了 async、連鎖指派被拆成兩次（右邊會算兩次）、跨行的字串串接拆括號後縮排錯、頂層順序被改。
+
+**還沒做（下一步）**：(1) 其他語言的 `code→UML` 與 codegen（tree-sitter-wasms 已有 wasm；各語言各自一份）；(2) 用 UML 遞迴切割讓模型**寫** body：函式簽名 → 切成幾個敘述區塊 → 每個敘述一個小題（這時選單的粒度是「敘述範本」，不是單一節點）；(3) 把 body 接進 `llvm_core`（目前是 stub）與設計檢視器；(4) 接進 `uml_edit` 的編修指令（改某個敘述）。
