@@ -28,7 +28,8 @@ const T = [
     }
     console.log('獨立題 ' + ok + '/' + T.length + ' 解出；沒解出：' + (miss.join('、') || '無'));
     // 邊界：形狀不支援或範例不足時要明確失敗，不能亂生程式
-    const bad = await S.synth({ statement: '輸入三個整數，輸出中位數', examples: [{ in: '1 2 3\n', out: '2\n' }] }); assert.strictEqual(bad.ok, false); const empty = await S.synth({ statement: 'x', examples: [] }); assert.strictEqual(empty.ok, false);
-    const noMatch = await S.synth({ statement: '輸入 n，輸出 n 的平方', examples: [{ in: '3\n', out: '9\n' }, { in: '10\n', out: '100\n' }] }); assert.strictEqual(noMatch.ok, false, 'n^2 不是階數≤4、係數0..2的線性遞推，不該硬湊');
-    assert.ok(ok >= 5, '獨立題至少解出 5 題，實際 ' + ok); console.log((ok + 3) + ' passed, 0 failed'); process.exit(0);
+    const bad = await S.synth({ statement: '輸入三個整數，由小到大輸出', examples: [{ in: '3 1 2\n', out: '1 2 3\n' }] }); assert.strictEqual(bad.ok, false); const empty = await S.synth({ statement: 'x', examples: [] }); assert.strictEqual(empty.ok, false);
+    const sq = { statement: '輸入 n，輸出 n 的平方', examples: [{ in: '3\n', out: '9\n' }, { in: '10\n', out: '100\n' }] }; assert.strictEqual(S.synthRecurrence(sq).ok, false, 'n^2 不是階數≤4、係數0..2的線性遞推，遞推枚舉不該硬湊'); const sqr = await S.synth(sq); assert.ok(sqr.ok && sqr.level === 'L0', 'n^2 由 L0 公式枚舉解出');
+    const med = await S.synth({ statement: '輸入三個整數，輸出中位數', examples: [{ in: '2 1 3\n', out: '2\n' }, { in: '9 8 7\n', out: '8\n' }] }); assert.ok(med.ok && med.level === 'L0', 'L0 公式：中位數');
+    assert.ok(ok >= 5, '獨立題至少解出 5 題，實際 ' + ok); console.log((ok + 4) + ' passed, 0 failed'); process.exit(0);
 })().catch((e) => { console.error('FAIL', e && e.stack || e); console.log('0 passed, 1 failed'); process.exit(1); });

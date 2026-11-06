@@ -122,10 +122,34 @@
         else { L.push('    for ch in s:', '        q = T[q][ch]'); if (sh.out === 'int') L.push('    print(q)'); else { const acc = []; for (let q = 0; q < f.n; q++) if (f.accept(q)) acc.push(q); L.push('    print(' + JSON.stringify(h.yes) + ' if q in ' + JSON.stringify(acc) + ' else ' + JSON.stringify(h.no) + ')'); } }
         return { ok: true, source: L.join('\n') + '\n', kind: 'dfa', level: 'L2', size: f.n, tried, ambiguous: hits.length > 1, matrixForm: { kind: 'dfa', start: f.start, delta: f.delta, accept: f.accept ? f.delta.map((_, q) => q).filter((q) => f.accept(q)) : null }, desc: f.name };
     }
+    // ---- L0：公式枚舉（k 個整數進、1 個整數出）：由小到大枚舉運算式，用「觀察等價」剪枝（範例＋隨機探針上輸出相同的只留最小的）----
+    function synthFormula(o) {
+        const exs = o.examples.map((e) => ({ i: e.in.trim().split(/\s+/), o: e.out.trim() })); if (!exs.length || exs.some((e) => e.i.length !== exs[0].i.length || !e.i.every(isInt) || !isInt(e.o))) return { ok: false, reason: '不是「k 個整數進、一個整數出」' };
+        const k = exs[0].i.length; if (k < 1 || k > 6) return { ok: false, reason: '輸入整數個數不在 1..6' };
+        const stmt = String(o.statement).replace(/[（(][^）)]*[）)]/g, ''); const consts = [...new Set([1, 2].concat((stmt.match(/\d+/g) || []).map(Number).filter((x) => x <= 1000)))].slice(0, 8);
+        // 輸入：範例＋探針（固定的偽隨機小整數；只用來剪枝，不當正確性依據）
+        let sd = 99; const rn = (a, b) => { sd = (Math.imul(sd, 1103515245) + 12345) & 0x7fffffff; return a + ((sd >>> 8) % (b - a + 1)); };
+        const pts = exs.map((e) => e.i.map(Number)); const nEx = pts.length; for (let t = 0; t < 12; t++) pts.push(Array.from({ length: k }, () => rn(-9, 20)));
+        const want = exs.map((e) => Number(e.o)); const LIM = 2 ** 50; const ok = (v) => Number.isFinite(v) && Math.abs(v) < LIM;
+        const seen = new Map(); const bySize = []; let tried = 0; const budget = (o.budget && o.budget.candidates) || 300000; const hits = [];
+        const add = (size, expr, vals) => { if (!vals.every(ok)) return; const key = vals.join(','); if (seen.has(key)) return; seen.set(key, expr); (bySize[size] = bySize[size] || []).push({ expr, vals }); tried++; if (vals.slice(0, nEx).every((v, j) => v === want[j])) hits.push({ expr, vals }); };
+        for (let v = 0; v < k; v++) add(1, 'x' + v, pts.map((p) => p[v])); for (const c of consts) add(1, String(c), pts.map(() => c));
+        if (k >= 3) for (let r = 0; r < k; r++) add(2, 'sorted([' + Array.from({ length: k }, (_, i) => 'x' + i).join(', ') + '])[' + r + ']', pts.map((p) => p.slice().sort((a, b) => a - b)[r]));
+        const OPS = [['+', (a, b) => a + b, 1], ['-', (a, b) => a - b, 0], ['*', (a, b) => a * b, 1], ['//', (a, b) => (b === 0 ? NaN : Math.floor(a / b)), 0], ['%', (a, b) => (b === 0 ? NaN : ((a % b) + b) % b), 0], ['min', (a, b) => Math.min(a, b), 1], ['max', (a, b) => Math.max(a, b), 1]];
+        for (let n = 2; n <= 9 && !hits.length; n++) {
+            if (n >= 2) for (const a of bySize[n - 1] || []) { add(n, 'abs(' + a.expr + ')', a.vals.map(Math.abs)); }
+            for (let i = 1; i <= n - 2; i++) { const j = n - 1 - i; for (const a of bySize[i] || []) for (const b of bySize[j] || []) for (const [op, f, comm] of OPS) {
+                if (tried > budget) return { ok: false, reason: '枚舉預算用盡（大小 ' + n + '）', tried };
+                if (comm && i > j) continue; const vals = a.vals.map((x, t) => f(x, b.vals[t])); const m = op === 'min' || op === 'max'; add(n, m ? op + '(' + a.expr + ', ' + b.expr + ')' : '(' + a.expr + ' ' + op + ' ' + b.expr + ')', vals); } }
+        }
+        if (!hits.length) return { ok: false, reason: '大小≤9 的整數公式裡沒有符合所有範例的', tried };
+        const h = hits[0]; const vars = Array.from({ length: k }, (_, i) => 'x' + i).join(', ');
+        return { ok: true, source: 'def main():\n    ' + vars + (k === 1 ? ', ' : '') + ' = map(int, input().split())\n    print(' + h.expr + ')\n', kind: 'formula', level: 'L0', size: h.expr.length, tried, ambiguous: hits.length > 1 && new Set(hits.map((x) => x.vals.join(','))).size > 1, desc: '公式 ' + h.expr, matrixForm: { kind: 'formula', expr: h.expr } };
+    }
     // ---- 入口：子順序 L1 → L2；每個候選交 judge（若有）驗證 ----
     async function synth(o) {
         const t0 = Date.now(); const ex = o.examples || []; const steps = []; let best = null;
-        for (const [name, fn] of [['recurrence', synthRecurrence], ['dfa', synthDFA]]) {
+        for (const [name, fn] of [['recurrence', synthRecurrence], ['dfa', synthDFA], ['formula', synthFormula]]) {
             let r; try { r = fn({ statement: String(o.statement || ''), examples: ex, budget: o.budget }); } catch (e) { r = { ok: false, reason: '例外：' + String((e && e.message) || e) }; }
             steps.push({ by: name, ok: r.ok, reason: r.reason, tried: r.tried }); if (!r.ok) continue;
             let v = { verdict: 'UNCHECKED' }; if (o.judge) v = await o.judge(r.source); steps[steps.length - 1].verdict = v.verdict;
@@ -134,5 +158,5 @@
         if (best) return best;
         return { ok: false, reason: steps.map((s) => s.by + '：' + (s.reason || s.verdict)).join('；'), steps, ms: Date.now() - t0 };
     }
-    return { synth, synthRecurrence, synthDFA, inferShape, kmpDFA };
+    return { synth, synthRecurrence, synthDFA, synthFormula, inferShape, kmpDFA };
 });
