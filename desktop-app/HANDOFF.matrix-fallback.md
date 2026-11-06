@@ -51,6 +51,8 @@
 - 2026-11-06：「上述是實現的順序的宣告，請依序完成」（接在上面那句 blockly-writer -> matrix-algorithms 之後）
 - 2026-11-05：「可以都完工再來發布」、「提交並發布」（發布只在他明確說這句時才做）
 - 2026-11-06（週額度規則，三則）：「週額度要重啟了，請放心用光」；「這個週額度可以用光的規則僅用於禮拜五晚上7點後」；「平時禮拜六七點後，到隔週的禮拜五晚上七點前，不能這樣做」
+- 2026-11-06（完整備援鏈）：「blockly -> fallback matrix algorithms -> 這邊還沒效，就是要上網找答案，湊CoLU，或等我們補教學」；「uml-design+colu 無法切割的問題，會去找 sourceforge、github、codeproject 這些開源地方，變成 CoLU 後組裝」（已實作：catalog_discover，見 DESIGN.matrix-fallback.md §10，不另寫）
+- 2026-11-06（矩陣→UML／Blockly 支援 code edit）：「我們有matrix的decompiler，可以從這變成matrix -> uml/blockly來支援code edit吧」（設計在 DESIGN.matrix-fallback.md §11，實作排在矩陣層有進步之後）
 - 寫程式流程（`DESIGN.ast-nodes.md` 第六、七節，使用者逐字重點）：UML 任務切割 → 程式骨架生成（Boilerplate）→ 進入 Block 產生迴圈〔① 程式端計算當前 Symbol Table（Inventory）② 用 Inventory 過濾合法區塊選項 ③ 套嚴格 Template（For／While 結構防呆）〕→ 模型僅在合法 Inventory 內做微型選擇 → 沙盒編譯驗證 ⇄ 錯誤回饋。
 
 ## 7. 交接程序（自我遞迴）

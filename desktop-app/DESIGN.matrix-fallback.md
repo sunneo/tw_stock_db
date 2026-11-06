@@ -159,3 +159,73 @@
 2. 因此矩陣層的輸入改為 `{statement, examples}`，內含一個「從範例推輸入／輸出形狀」的小模組（程式推，不問模型），產生 read_input 的區塊與輸出格式。
 3. 矩陣層的進場價值從「Blockly 解不出、矩陣能解」變成「連意圖都讀不出的題，只要有範例就有機會」，這跟 L2（8/8 讀不出）、L1、L0 特別吻合：這幾級正好是 Hankel／BM／有限秩那種「只要範例就能學」的類型。【推測，要靠實作後的基準驗證】
 4. L4～L6 在沒有讀取器的情況下無法靠學習解出；這些級只能靠「骨架（範本）＋輸入形狀推斷」，或交模型。基準會如實顯示。
+
+## 10. 完整備援鏈與第三層出口（使用者 2026-11-06 補充）
+
+使用者原話：「blockly -> fallback matrix algorithms -> 這邊還沒效，就是要上網找答案，湊CoLU，或等我們補教學」。另：「uml-design+colu 無法切割的問題，會去找 sourceforge、github、codeproject 這些開源地方，變成 CoLU 後組裝」（這已經實作過，不另寫）。
+
+```
+配方 → 課 → Blockly 範式骨架 → 矩陣層（matrix_synth_core）→ 第三層（下）→ 區塊迴圈（模型）
+第三層：(a)(b) 既有 catalog_discover 流程；(c) 待補教學佇列（新）
+```
+
+| 出口 | 做什麼 | 接哪裡（已存在，不重寫） | 回報要標什麼 |
+|---|---|---|---|
+| (a) 上網找答案 | 缺口 → 搜尋（GitHub／SourceForge／CodeProject／維基／StackOverflow／DeepWiki）→ 讀 README → 能力卡片 → 排名 → 計畫 | `renderer/src/catalog/discover_core.js`、`DESIGN.unit-catalog.md`、`DESIGN.colu.md`（③ 探索，約第 30～38 行） | `source:`（網址、授權）、`verified:false`，結果仍必須過沙盒判題才算解出 |
+| (b) 湊 CoLU | 把找到的實作抽成單元，再用已驗證的矩陣／ReLU 區塊組裝接線 | 同上（抽成單元→再接線）、`relu_compile_core.js`、`matrix_machine_core.js` | 組合清單＋每個單元的驗證狀態 |
+| (c) 待補教學 | 記下：題目敘述、範例、卡在哪一級（讀取器／骨架／矩陣各層的 `reason`）、缺哪個範式或課 | **新**：佇列檔（JSONL，一題一行）；格式見下 | `needTeaching:true`，介面說「已記入待補教學」 |
+
+已知限制（來自既有實作，引用不另證）：搜尋要在進階設定開子 agent；StackOverflow 結果沒有網址時被略過；SourceForge／CodeProject 常回空或 403。所以 (a) 不保證有結果，(c) 是最後的誠實出口。
+
+### 10.1 介面預留（這次只定義，不實作 a／b）
+
+`buildFromUML` 的回傳在失敗時多帶 `fallback`：
+```
+fallback: { stage: 'reader'|'recipe'|'lesson'|'paradigm'|'matrix'|'online'|'colu',
+            reasons: { reader, paradigm, matrix },   // 各層 reason 字串（已有：res.rounds、res.matrixReason）
+            next: ['online','colu','teach'],          // 可走的下一層（宿主決定）
+            teach: { statement, examples, stuckAt, missing } }  // (c) 佇列的一筆
+```
+- 宿主（`_codeOffline`）：矩陣層失敗後，先走 (a)(b)（若使用者允許上網與子 agent），仍失敗才寫 (c)。任何來自網路的程式一律 `verified:false` 直到沙盒（含隱藏測資）通過，並附 `source`。
+- (c) 佇列檔預計路徑 `renderer/src/recipe/seed/teach_queue.jsonl`（使用者端為使用者資料夾下同名檔，尚未接線）。
+
+## 11. 矩陣 → UML／Blockly（支援 code edit）（使用者 2026-11-06 新增方向，只有設計，排在矩陣層有進步之後）
+
+使用者原話：「我們有matrix的decompiler，可以從這變成matrix -> uml/blockly來支援code edit吧」。
+
+### 11.1 現況（我讀過的）
+- `renderer/src/algo/matrix_decompile_core.js` 目前輸出：狀態圖文字／Graphviz dot、正規表示式、遞推式、if／else 原始碼、逐指令的中文 CNL（§14.2）。**沒有 UML，也沒有 Blockly 區塊。**【驗證：讀過檔案與 §14】
+- 既有的 code edit 路徑：Python → tree-sitter → `py_code2uml_core.js`／`py_blocks_core.js`（程式 → UML／區塊），區塊 → `toIR` → `toPython`（區塊 → 程式）。這條路徑**從程式碼出發**。矩陣層的產物是 Python 程式（§4.2），所以「合成出來的程式」本來就能走這條既有路徑進區塊編輯器。
+
+### 11.2 兩條路是否合流
+結論（設計）：**合流在 Python 這一層，不開第二套編輯模型。**
+- 路 A（既有）：Python 原始碼 → tree-sitter → 區塊／UML。
+- 路 B（新）：矩陣／VM／ReLU 樹 → 反編譯 → 區塊／UML **直接產生**（不經 Python 文字）。
+- 差別只在「來源是否已知結構」：路 B 知道每個格子的意義（狀態名、暫存器名），產生的區塊可以帶**有意義的名稱與註解**；路 A 從任意程式碼還原，只能靠命名猜。兩者輸出同一種中間表示（區塊 IR），之後的編輯、`toPython`、沙盒完全共用。
+- 因此路 B 只是「更高品質的區塊來源」，不是另一個編輯器；失敗時（反編譯不出）退回路 A（Python → 區塊）。
+
+### 11.3 對應表（要做的反編譯目標）
+| 矩陣層元件 | → UML | → Blockly（區塊 IR） | 現有基礎 |
+|---|---|---|---|
+| DFA／one-hot 轉移矩陣 | 狀態機圖（狀態、轉移、接受集） | 轉移表＋`for ch in s: q = T[q][ch]`（目前範式 `state-machine` 還沒有，要新增） | `dfaToText／dfaToDot` |
+| 遞推（伴隨矩陣） | 一個操作 `f(n)`＋註解寫遞推式 | `mat_pow` 區塊（`DESIGN.ast-nodes.md` 7.2）＋初始向量／係數槽位 | 遞推式反編譯、範式 `matrix-power` |
+| ReLU 決策樹 | 條件分支（活動圖） | `if／else` 區塊 | ReLU→if 反編譯 |
+| VM 程式 | 活動圖（指令＝動作、跳轉＝分支） | 區塊序列：`while`／`if`／清單操作（受巢狀 `def` 限制，見 HANDOFF §8） | VM→中文 CNL（逐指令） |
+
+### 11.4 編輯迴圈與往返（round trip）
+1. 使用者在 UML／區塊上改（例如改狀態轉移、改遞推係數、改 if 條件）。
+2. 重新編譯：區塊 → Python（既有 `toPython`）；若來源是矩陣型，同時**重建矩陣**（改的是表／係數就直接更新矩陣，不用重新合成）。
+3. 沙盒重驗（範例＋隱藏測資）；沒過就把判決回給使用者，不靜默覆蓋。
+4. **往返要求**：矩陣 → 區塊 → 矩陣，得到的矩陣與原矩陣在隨機輸入上輸出相同（測試條件，同 §14.7 第 3 條）。只能單向的（反編譯不出的稠密矩陣）不進編輯器，只當候選。
+- 限制：使用者改出矩陣型不能表示的邏輯（例如在 DFA 裡加入計數）→ 退出矩陣模式，改成一般 Python 區塊（降級而不是拒絕）。
+
+### 11.5 合成層輸出預留的欄位（這次實作；內容之後填）
+`synth()` 的回傳新增（目前只放可用的簡單版本，其餘為 null）：
+- `explain`：一句中文說明（目前＝`desc`，例如「階 2 遞推 係數 1,1 初值 0,1」「不含 11」）；
+- `blocks`：預留，之後放反編譯得到的區塊 CNL（路 B）；目前為 null；
+- `matrixForm`：預留，放機器可讀的矩陣／轉移表（`{kind, coef, init, mod}`／`{kind:'dfa', delta, start, accept}`），讓編輯迴圈能直接更新而不重新合成。
+
+### 11.6 順序與限制
+- 排在「矩陣層有進步」之後（待辦 3 的 L1～L3 做穩、基準有數字）才實作；不要先做。
+- 沒有 VM→結構化 CNL 的反編譯（§14.8），L4 以上的 `blocks` 暫時給不出來。
+- 區塊 IR 與 UML 的 mapping 只有表格，沒有實驗；風險在「狀態機 UML」是否能被現有 UML 模型（`uml_core`）表達，需要先讀 `uml_core` 的圖種類。【待查】

@@ -8,7 +8,7 @@
  *               區塊迴圈（庫存＋範本，模型只在合法選單裡微選擇；參數就是庫存的起點）
  *   ④ 沙盒驗證：判題器跑範例，沒過把判決回饋給區塊迴圈重寫
  *
- *   buildFromUML({statement, uml:{hints, model}, B, R, C2U, FaPyBody, Choose, pick?, judge?, rounds?, Lessons?, lessons?, Paradigms?, paradigmLimit?, paradigmRank?}) → {ok, source, model, cnl, usedModel, recipe, paradigm, slots, tried, rounds, steps, forced}
+ *   buildFromUML({statement, uml:{hints, model}, B, R, C2U, FaPyBody, Choose, pick?, judge?, rounds?, Lessons?, lessons?, Paradigms?, paradigmLimit?, paradigmRank?, Matrix?, examples?, matrixBudget?}) → {ok, source, model, cnl, usedModel, recipe, paradigm, slots, tried, rounds, steps, forced, matrix?}
  * judge(source) → Promise<{verdict, detail}>；pick 只有走模型路徑才會用到。 */
 (function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaPyUmlPipeline = factory(); })(typeof self !== 'undefined' ? self : this, function () {
     'use strict';
@@ -39,7 +39,14 @@
         return null;
     }
     async function buildFromUML(o) {
-        const B = o.B, R = o.R; const intent = o.uml.hints && o.uml.hints.intent; if (!intent) return { ok: false, reason: '這份 UML 不是算法題讀取器讀出來的（沒有意圖）' };
+        const B = o.B, R = o.R; const intent = o.uml.hints && o.uml.hints.intent;
+        // ---- 矩陣層後備（Matrix：只靠敘述＋範例合成；讀取器讀不出意圖、或配方／課／範式骨架都沒解出時才用；回傳 matrix:{kind,level,size,tried,ambiguous,verified}）----
+        const tryMatrix = async (prev) => {
+            if (!o.Matrix || !o.examples || !o.examples.length) return null; const m = await o.Matrix.synth({ statement: o.statement, examples: o.examples, judge: o.judge, budget: o.matrixBudget });
+            if (!m.ok) return { failed: true, reason: m.reason, steps: m.steps }; if (m.verdict !== 'AC' && m.verdict !== 'UNCHECKED') return { failed: true, reason: '矩陣層候選沒通過沙盒：' + m.verdict, steps: m.steps };
+            return Object.assign({}, prev || {}, { ok: true, source: m.source, model: null, usedModel: false, verdict: m.verdict, cnl: { solve: m.desc }, matrix: { kind: m.kind, level: m.level, size: m.size, tried: m.tried, ambiguous: m.ambiguous, verified: m.verified, desc: m.desc, steps: m.steps } });
+        };
+        if (!intent) { const mx = await tryMatrix(); if (mx && mx.ok) return Object.assign({ rounds: [{ by: 'matrix', kind: mx.matrix.kind, verdict: mx.verdict }], steps: 0, forced: 0 }, mx); return { ok: false, reason: '這份 UML 不是算法題讀取器讀出來的（沒有意圖）' + (mx && mx.reason ? '；矩陣層：' + mx.reason : '') }; }
         const umlOps = o.uml.model.classes.flatMap((c) => c.ops.map((x) => ({ name: snake(x.name), params: x.params.map((p) => p.name) })));
         const names = umlOps.map((x) => x.name); for (const need of ['read_input', 'solve', 'main']) if (!names.includes(need)) return { ok: false, reason: 'UML 沒有操作 ' + need };
         const parse = (cnl) => { const pr = B.parseCNL(cnl); if (!pr.ok) throw new Error('區塊解析失敗：' + JSON.stringify(pr.errors.slice(0, 2)) + '\n' + cnl); return B.toIR(pr.blocks); };
@@ -76,6 +83,8 @@
             if (ps.ok) return Object.assign(res, { source: lastModel.source, model: lastModel.model, paradigm: ps.skeleton, slots: ps.choice, tried: ps.tried, cnl: Object.assign(cnl, { solve: ps.cnl }), verdict: ps.verdict });
             res.tried = ps.tried;
         }
+        // ---- 矩陣層（範式骨架之後、區塊迴圈之前）----
+        { const mx = await tryMatrix(res); res.rounds.push({ by: 'matrix', ok: !!(mx && mx.ok), reason: mx && mx.reason }); if (mx && mx.ok) return mx; if (mx && mx.reason) res.matrixReason = mx.reason; }
         // ---- 區塊迴圈（模型微選擇）----
         if (!o.pick) return Object.assign(res, { ok: false, reason: rec ? '配方沒通過沙盒驗證，而且沒有提供模型' : '程式讀不出這題的解法（沒有配方），需要模型' });
         res.usedModel = true; const paramTypes = {}; for (const v of intent.vars) paramTypes[v.name] = v.type === 'list' ? 'list' : v.type;

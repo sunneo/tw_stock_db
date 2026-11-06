@@ -61,6 +61,7 @@ const suites = [
     ['ReLU 網路 → CoLU 決策樹／機器的編譯（精確等價、exact 與 domain 模式、JSONL、區域數 vs 神經元數、域外與浮點的反例、驗證會擋）', 'renderer/src/algo/relu_compile.test.js'],
     ['矩陣接不起來的地方的銜接（佇列 BFS、one-hot 記憶體＝矩陣、雙調排序不經意網路、並查集與指標跳躍、有界堆疊＝移位矩陣、種子 20 題最少記憶體）', 'renderer/src/algo/matrix_memory.test.js'],
     ['矩陣反編譯與可讀性（矩陣→遞推式、one-hot 矩陣→DFA→狀態圖／正規表示式、ReLU 樹→if／else、VM→中文 CNL；結構式 vs 稠密學出的矩陣）', 'renderer/src/algo/matrix_decompile.test.js'],
+    ['矩陣層後備（只靠敘述＋2 筆範例合成：L1 線性遞推枚舉＋矩陣冪、L2 自動機家族；形狀不支援／不是線性遞推要明確失敗；範例不足回報 ambiguous）', 'renderer/src/algo/matrix_synth.test.js'],
     ['型別接線矩陣與路徑搜尋（回傳型別推論、具體程度、布林矩陣連乘、前 K 條接線與得分、萬用結構強制轉型）', 'renderer/src/catalog/matrix_core.test.js'],
     ['單元目錄：Python 原型抽取（註解 → 型別、原型 → 單元、真實跑抽取腳本）', 'renderer/src/catalog/extract_py.test.js'],
     ['單元目錄：型別存根轉換（typeshed 風格的 .pyi → 型別表：TypeVar／別名展開、多載合併、版本與平台分支）與存根型別套進單元', 'renderer/src/catalog/stub_to_types.test.js'],
