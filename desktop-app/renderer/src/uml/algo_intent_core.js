@@ -47,19 +47,51 @@
 
     // 工具型題目的算法種類（G1）：形狀（輸入區的種類組合）＋敘述關鍵字；先於通用 ALGOS 判斷。sh(inputs) 是形狀條件
     const has = (ins, k, role) => ins.some((x) => x.k === k && (!role || x.role === role));
+    // 同一個領域的算法種類（工具型題目）：其中一個命中時，其餘當候選，骨架全試、沙盒擇一，避免因敘述措辭（中序／中綴、傾印／dump…）沒抓到就整題放棄
+    const TOOL_FAMILIES = [['infix-rpn', 'infix-eval', 'rpn-eval', 'lexer-expr'], ['crc32', 'adler32', 'gzip-member'], ['hex-encode', 'bits-expand', 'hex-decode', 'xxd-dump'], ['bmp-header', 'bmp-gray', 'bmp-read8', 'bmp-read1', 'bmp-pixel', 'bmp-stride'], ['tar-checksum', 'tar-write', 'tar-parse', 'tar-offsets', 'tar-blocks'], ['canonical-huffman', 'huffman-cost'], ['pattern-match', 'lines-filter'], ['lines-map', 'lines-filter']];
     const TOOLS = [
+        { key: 'exec-env', re: /\$\{?\w+\}?|環境變數|展開/, sh: (ins) => has(ins, 'lines') && !ins.some((x) => x.role) },
+        { key: 'vm-exec', re: /虛擬機|PUSH|指令集|直譯器/, sh: (ins) => ins.some((x) => x.k === 'lines' || x.k === 'grid') },
+        { key: 'bmp-read1', re: /1\s*位元\s*BMP|單色|1-bit/i, sh: (ins) => ins.length === 1 && has(ins, 'hex') },
+        { key: 'bmp-pixel', re: /BMP/, sh: (ins) => has(ins, 'hex') && (has(ins, 'lines') || has(ins, 'scalars')) },
+        { key: 'xz-header', re: /xz|魔術/i, sh: (ins) => ins.length === 1 && has(ins, 'hex') },
+        { key: 'xxd-dump', re: /傾印|dump|每\s*16\s*(?:個)?位元組/i, sh: (ins) => ins.length === 1 && has(ins, 'hex') },
+        { key: 'canonical-huffman', re: /範式|canonical|碼長/i, sh: (ins) => has(ins, 'list') },
+        { key: 'gzip-member', re: /gzip|\.gz|DEFLATE|stored|未壓縮/i, sh: (ins) => ins.length === 1 && has(ins, 'str') },
+        { key: 'tar-write', re: /tar|ustar|封存檔/i, sh: (ins) => ins.length <= 2 && ins.every((x) => x.k === 'str') },
+        { key: 'tar-blocks', re: /tar|封存檔|區塊/i, sh: (ins) => (has(ins, 'scalars') || has(ins, 'str')) && !has(ins, 'hex') && !has(ins, 'lines') && !has(ins, 'list') },
+        { key: 'bmp-stride', re: /stride|BMP/i, sh: (ins) => (has(ins, 'scalars') || has(ins, 'str')) && !has(ins, 'hex') && !has(ins, 'rest') && !has(ins, 'lines') },
+        { key: 'pipeline', re: /管線|\|/, sh: (ins) => ins.some((x) => x.k === 'str' && x.role === 'pl') && has(ins, 'lines') },
+        { key: 'pattern-match', re: /任一字元|代表任意|任意長度|glob|regex|正規|Kernighan|完全符合|\^\s*\$/i, sh: (ins) => has(ins, 'str', 'pat') && has(ins, 'lines') },
+        { key: 'assign-env', re: /賦值|變數名稱|環境/, sh: (ins) => has(ins, 'lines') && !ins.some((x) => x.role) },
+        { key: 'lexer-expr', re: /(?:整數|數字)輸出\s*[A-Za-z]+\s*:/, sh: (ins) => ins.length === 1 && has(ins, 'str') },
+        { key: 'shell-args', re: /命令列|argv|shell/i, sh: (ins) => ins.length === 1 && has(ins, 'str') },
+        { key: 'infix-rpn', re: /(?:中序|中綴|算式|infix)[^。]*(?:後序|後綴|postfix|RPN)|調度場|shunting/i, sh: (ins) => ins.length === 1 && has(ins, 'str') },
+        { key: 'rpn-eval', re: /後序|逆波蘭|RPN/i, sh: (ins) => ins.length === 1 && has(ins, 'str') },
+        { key: 'infix-eval', re: /(?:求值|計算)[^。]*(?:括號|算式)|(?:括號|算式)[^。]*(?:求值|計算|結果)/, sh: (ins) => ins.length === 1 && has(ins, 'str') },
+        { key: 'gunzip-stored', re: /gzip\s*成員/i, sh: (ins) => ins.length === 1 && has(ins, 'hex') },
+        { key: 'inflate-fixed', re: /固定霍夫曼|BTYPE\s*=\s*01/, sh: (ins) => ins.length === 1 && has(ins, 'hex') },
+        { key: 'tar-parse', re: /ustar|tar/i, sh: (ins) => ins.length === 1 && has(ins, 'hex') },
+        { key: 'bmp-header', re: /(?:width|height|bpp|offset)\s*=/i, sh: (ins) => ins.length === 1 && has(ins, 'hex') },
+        { key: 'bmp-gray', re: /BMP[\s\S]*灰階|灰階/, sh: (ins) => ins.length === 1 && has(ins, 'hex') },
+        { key: 'bmp-read8', re: /BMP[\s\S]*調色盤|8 位元 BMP/, sh: (ins) => ins.length === 1 && has(ins, 'hex') },
+        { key: 'bmp-write24', re: /BMP/, sh: (ins) => has(ins, 'rest') },
+        { key: 'lzma-literals', re: /LZMA|範圍編碼/, sh: (ins) => has(ins, 'hex') && has(ins, 'scalars') },
+        { key: 'tar-checksum', re: /檢查碼|chksum/, sh: (ins) => ins.length === 1 && has(ins, 'str') },
+        { key: 'tar-offsets', re: /標頭.*位移|tar/i, sh: (ins) => has(ins, 'lines') && !ins.some((x) => x.role) },
+        { key: 'xxd-reverse', re: /xxd|傾印/, sh: (ins) => has(ins, 'lines') && !ins.some((x) => x.role) },
         { key: 'deflate-stored', re: /未壓縮區塊|stored/i, sh: (ins) => ins.length === 1 && has(ins, 'str') },
         { key: 'adler32', re: /Adler/i, sh: (ins) => ins.length === 1 && has(ins, 'str') },
         { key: 'crc32', re: /CRC/i, sh: (ins) => ins.length === 1 && has(ins, 'str') },
         { key: 'base64', re: /base64/i, sh: (ins) => ins.length === 1 && has(ins, 'str') },
-        { key: 'lz77-decode', re: /LZ77|<L\s*,\s*d>/, sh: (ins) => ins.length === 1 && has(ins, 'str') },
+        { key: 'lz77', re: /LZ77|<L\s*,\s*d>/, sh: (ins) => ins.length === 1 && has(ins, 'str') },
         { key: 'endian-pack', re: /小端|大端/, sh: (ins) => ins.length === 1 && has(ins, 'str') },
         { key: 'rle-pair', re: /行程長度|連續相同字元/, sh: (ins) => ins.length === 1 && has(ins, 'str') },
-        { key: 'bits-expand', re: /二進位/, sh: (ins) => ins.length === 1 && has(ins, 'str') },
+        { key: 'bits-expand', re: /ASCII[^。]*二進位|二進位[^。]*(?:高位在前|低位在前)|\d+\s*位二進位/, sh: (ins) => ins.length === 1 && has(ins, 'str') },
         { key: 'hex-encode', re: /每個位元組.*十六進位|兩位.*十六進位|十六進位/, sh: (ins) => ins.length === 1 && has(ins, 'str') },
         { key: 'varint', re: /多位元組整數|varint|LEB128/i, sh: (ins) => !ins.some((x) => x.role) },
         { key: 'bit-reader', re: /位元序|由最低位元|位元欄位/, sh: (ins) => has(ins, 'hex') && has(ins, 'list') },
-        { key: 'delta-filter', re: /Delta|差分/i, sh: (ins) => has(ins, 'scalars') && has(ins, 'list') },
+        { key: 'delta-filter', re: /Delta\s*(?:解碼|編碼|過濾器|filter)|位元組值/i, sh: (ins) => has(ins, 'scalars') && has(ins, 'list') },
         { key: 'huffman-cost', re: /霍夫曼|Huffman/i, sh: (ins) => has(ins, 'list') && !has(ins, 'hex') },
         { key: 'hex-decode', re: /(?:還原|解碼|轉回).{0,6}文字|還原成.{0,4}字串|xxd\s*-r/, sh: (ins) => ins.length === 1 && has(ins, 'hex') },
         { key: 'lines-grep-o', re: /grep\s*-o|不重疊|每個出現/, sh: (ins) => has(ins, 'lines') && has(ins, 'str', 'pat') },
@@ -84,7 +116,7 @@
         const f = {}; const t = String(text);
         const yn2 = /(?:印|輸出)\s*([A-Za-z]+)\s*[，,]\s*(?:否則|不然|其餘)\s*(?:印|輸出)?\s*([A-Za-z]+)/.exec(t); const y = /\b(yes|YES|Yes)\b/.exec(t), n = /\b(no|NO|No)\b/.exec(t); if (yn2) f.yn = [yn2[1], yn2[2]]; else if (y && n) f.yn = [y[1], n[1]];
         const nn = /沒有則輸出\s*(-?\d+|[A-Za-z]+)/.exec(t); if (nn) f.none = nn[1]; const ur = /(?:到不了|不可達|無法到達|走不到|不存在)[^，。]*輸出\s*(-?\d+|[A-Za-z]+)/.exec(t); if (ur) f.unreach = ur[1];
-        const h8 = t.match(/0x[0-9A-Fa-f]{8}/g); if (h8) f.hex8 = h8; // 敘述裡的 8 位十六進位常數（CRC 的多項式、初值、結尾互斥或…依出現順序）
+        const h8 = t.match(/0x[0-9A-Fa-f]{8}/g); if (h8) f.hex8 = h8; const hx = '(0x[0-9A-Fa-f]{8})'; const pm = new RegExp('多項式\\s*' + hx).exec(t), im = new RegExp('初值\\s*' + hx).exec(t), fm = new RegExp('(?:與|和)\\s*' + hx + '\\s*(?:互斥或|XOR)|互斥或\\s*' + hx, 'i').exec(t); if (pm || im || fm) f.crc = { poly: pm && pm[1], init: im && im[1], fin: fm && (fm[1] || fm[2]) }; // 敘述裡的 8 位十六進位常數（CRC 的多項式、初值、結尾互斥或…依出現順序）
         const em = /(?:空時|為空時)輸出\s*([A-Za-z]+)/.exec(t); if (em) f.empty = em[1];
         const subs = []; let mm; const qre = /["“「]([A-Za-z0-9]+)["”」]/g; while ((mm = qre.exec(t))) subs.push(mm[1]);
         const run = /連續(兩|二|三|四)個\s*([A-Za-z0-9])/.exec(t); if (run) subs.push(run[2].repeat({ 兩: 2, 二: 2, 三: 3, 四: 4 }[run[1]])); if (subs.length) f.subs = subs;
@@ -129,7 +161,9 @@
             if ((m = new RegExp('^(' + NAME + ')\\s*個').exec(d))) return { k: 'list', name: 'a', size: m[1], elem: 'int' };
             if ((m = new RegExp('^[^a-zA-Z0-9]{0,8}?\\s*(' + NAME + ')$').exec(d)) && !/字串|文字/.test(d)) return { k: 'scalars', names: [m[1]], type: 'int', line: true };
             if ((m = new RegExp('^[^a-zA-Z0-9]{0,8}?\\s*(' + NAME + ')\\s*\\(?[^a-zA-Z]*$').exec(d)) && /^[a-z]/.test(m[1]) && !/字串|文字|算式|命令列|後序/.test(d)) return { k: 'scalars', names: [m[1]], type: 'int', line: true };
+            if (/以空白分隔|若干|多個|一串/.test(d) && /整數|數字|數值/.test(d)) return { k: 'list', name: 'a', size: null, elem: 'int' };
             if (/字串|文字|算式|命令列|後序|記號|式$|行$/.test(d) || /^只含|^由/.test(d)) return { k: 'str', name: nm('s'), raw: true };
+            if (d && !/^[a-z0-9\s]+$/i.test(d)) return { k: 'str', name: nm('s'), raw: true }; // 其餘「第N行是某某」：整行原樣（由範式自己解讀）
             return null;
         };
         for (let c of clauses) {
@@ -181,6 +215,7 @@
             if ((m = new RegExp('^輸入[^a-zA-Z0-9]{0,14}?\\s*(' + NAMES + ')$').exec(c)) && !/小數|字串|文字/.test(c)) { const ns = m[1].split(/\s+/); inputs.push({ k: 'scalars', names: ns, type: 'int', line: true }); addNames(ns); continue; } // 輸入 a e m／輸入三個點的整數座標 x1 y1 x2 y2 x3 y3
         }
         { const ti = readToolInput(text); if (ti && !inputs.some((x) => x.k === 'grid' || x.k === 'rows') && (!inputs.length || ti.some((x) => (x.k === 'list' && x.size === null) || x.k === 'hex' || x.k === 'lines' || x.k === 'rest' || (x.k === 'str' && x.role)))) { inputs.length = 0; names.clear(); ti.forEach((x) => inputs.push(x)); } } // 工具型題目的輸入形狀（文字行串流、十六進位、旗標行、多段）
+        if (!inputs.length && /檔案/.test(text) && /行/.test(text) && /連接|串接|接在|依序|行號/.test(text)) { inputs.push({ k: 'rest', count: null, name: 'lines', raw: true, fallback: true }); } // 多段檔案的輸入措辭讀不出來：整份輸入當成行串流，由範式依「行數＋內容」逐段解析
         if (!inputs.length) { const im = /(?:≤|<=)\s*([a-z][a-z0-9]{0,3})\s*(?:≤|<=)/.exec(text); if (im) { inputs.push({ k: 'scalars', names: [im[1]], type: 'int', line: true }); addNames([im[1]]); } } // 沒寫「輸入」只在範圍裡出現變數（爬到第 n 階（1≤n≤80））：一個整數
         // ---- 輸出 ----
         const goal = { verbs: [], yesno: /YES\s*(?:或|或者)\s*NO|YES，否則|輸出\s*YES/.test(text) };
@@ -193,12 +228,13 @@
             if (em2 && /[a-z]/.test(em2[0])) { const used = em2[0].match(/[a-z][a-z0-9]*/g) || []; if (used.every((u) => names.has(u))) goal.expr = /捨去|向下取整|整數部分|取整/.test(seg) ? em2[0].replace(/\//g, '//') : em2[0]; }
         }
         for (const g of GOALS) if (g.key.test(text)) goal.verbs.push(g.op);
-        const toolAlgo = (TOOLS.find((a) => a.re.test(text) && a.sh(inputs)) || {}).key; const algo = toolAlgo || (ALGOS.find((a) => a.re.test(text) && !(a.veto && a.veto.test(text))) || {}).key || null; const paradigms = (algo && PARADIGMS[algo]) || (toolAlgo ? ['text-lines'] : []);
+        const toolAlgos = TOOLS.filter((a) => a.re.test(text) && a.sh(inputs)).map((a) => a.key).filter((k, i, arr) => arr.indexOf(k) === i); for (const fam of TOOL_FAMILIES) if (toolAlgos.some((k) => fam.includes(k))) for (const k of fam) if (!toolAlgos.includes(k)) toolAlgos.push(k); // 同家族的算法種類互為候選（敘述措辭抓不到時，由沙盒判決擇一）
+        const toolAlgo = toolAlgos[0]; const algo = toolAlgo || (ALGOS.find((a) => a.re.test(text) && !(a.veto && a.veto.test(text))) || {}).key || null; const paradigms = (algo && PARADIGMS[algo]) || (toolAlgo ? ['text-lines'] : []);
         const pend = inputs.findIndex((x) => x.k === 'pending'); if (pend >= 0) inputs.splice(pend, 1);
         const vars = []; for (const inp of inputs) { if (inp.k === 'scalars') inp.names.forEach((n) => vars.push({ name: n, type: inp.type })); else if (inp.k === 'list') { if (inp.size && !vars.some((v) => v.name === inp.size)) vars.push({ name: inp.size, type: 'int' }); vars.push({ name: inp.name, type: 'list' }); } else if (inp.k === 'rows') vars.push({ name: inp.name, type: 'list' }); else if (inp.k === 'grid') vars.push({ name: inp.name, type: 'list' }); else if (inp.k === 'str' || inp.k === 'hex') vars.push({ name: inp.name, type: 'str' }); else if (inp.k === 'lines' || inp.k === 'rest') vars.push({ name: inp.name, type: 'list' }); else if (inp.k === 'words') vars.push({ name: inp.name, type: 'list' }); }
         // 同一個名稱在不同行出現（第一行 n，第二行 n 個…）只留一個
         const seen = new Set(); const uvars = vars.filter((v) => (seen.has(v.name) ? false : seen.add(v.name)));
-        return { ok: inputs.length > 0, algo, paradigms, inputs, vars: uvars, goal, facts: extractFacts(text), statement: text, ops: [{ name: 'readInput', params: [], returns: 'any' }, { name: 'solve', params: uvars.map((v) => v.name), returns: 'void' }] };
+        return { ok: inputs.length > 0, algo, algos: toolAlgos.length ? toolAlgos : undefined, paradigms, inputs, vars: uvars, goal, facts: extractFacts(text), statement: text, ops: [{ name: 'readInput', params: [], returns: 'any' }, { name: 'solve', params: uvars.map((v) => v.name), returns: 'void' }] };
     }
     const UMLTYPE = { int: 'int', float: 'float', str: 'str', list: 'List<any>' };
     function umlHints(intent) {

@@ -7,7 +7,7 @@
 const fs = require('fs'), path = require('path'), os = require('os'), assert = require('assert');
 const C2U = require('./py_code2uml_core.js'), PBL = require('./py_blocks_core.js'), RU = require('./py_blocks_rules_core.js'), PB = require('./py_body_core.js'), UC = require('./uml_core.js'), AI = require('./algo_intent_core.js'), PL = require('./py_uml_pipeline_core.js'), CH = require('./py_cnl_choose_core.js'), PAR = require('./py_paradigms_core.js');
 const DIR = process.env.FA_TS_DIR || path.join(os.homedir(), '.cache', 'fa-ts');
-const SOLVE = ['lx-cat-n', 'lx-cat-A', 'lx-grep-fixed', 'lx-grep-i', 'lx-grep-n', 'lx-grep-o'];
+const SOLVE = null; // null＝所有 train 題（階段 2 補完後 37/37）；holdout 不進測試
 const NEG = ['lx-huffman-cost', 'lx-xz-delta'];
 (async () => {
     if (!fs.existsSync(path.join(DIR, 'tree-sitter-python.wasm'))) { console.log('略過：找不到 ' + DIR); process.exit(0); }
@@ -15,7 +15,8 @@ const NEG = ['lx-huffman-cost', 'lx-xz-delta'];
     const lang = await Parser.Language.load(path.join(DIR, 'tree-sitter-python.wasm')); const P = new Parser(); P.setLanguage(lang);
     const B = PBL.makeBlocks({ parseTree: (s) => P.parse(s), C2U }); const R = RU.makeRules(B); const J = require('../../../judge-runner.js');
     const probs = {}; for (const l of fs.readFileSync(path.join(__dirname, '..', 'recipe', 'seed', 'bench_linux_all.jsonl'), 'utf8').split('\n').filter(Boolean)) { const p = JSON.parse(l); if (p.split === 'train') probs[p.id] = p; }
-    for (const id of SOLVE.concat(NEG)) assert.ok(probs[id], id + ' 必須是 train 題（holdout 不可拿來教／驗）');
+    const SOLVE_IDS = SOLVE || Object.keys(probs).filter((id) => !NEG.includes(id)); // NEG 另測 for (const id of SOLVE_IDS.concat(NEG)) assert.ok(probs[id], id + ' 必須是 train 題（holdout 不可拿來教／驗）');
+    for (const sk of PAR.PARADIGMS) assert.ok(PAR.combos(sk, { limit: 9999 }).length <= (sk.limit || 12), sk.id + ' 的槽位組合超過 limit，窮舉會被截斷');
     const run = async (p, statement, rank) => {
         const uml = await UC.scenarioToModel(statement, { readers: [AI.reader] }); if (!uml.ok || !uml.fromHints) return { err: '讀取器讀不出' };
         const judge = async (src) => { const j = await J.judge({ lang: 'python', source: src + '\nmain()\n', problem: p }); return { verdict: j.verdict, detail: j.detail }; };
@@ -24,13 +25,13 @@ const NEG = ['lx-huffman-cost', 'lx-xz-delta'];
     };
     const rev = (sk, c) => -PAR.combos(sk, { limit: 999 }).findIndex((x) => JSON.stringify(x) === JSON.stringify(c));
     const bad = []; let ok = 0, rn = 0, rv = 0;
-    for (const id of SOLVE) {
+    for (const id of SOLVE_IDS) {
         const p = probs[id]; const a = await run(p, p.statement); if (a.ok) ok++; else bad.push('原敘述 ' + id + '：' + a.err);
         const st2 = p.statement.replace(/\bn\b/g, 'm').replace(/\bpat\b/g, 'w'); const b = await run(p, st2); if (b.ok) rn++; else bad.push('換名稱 ' + id + '：' + b.err);
         const c = await run(p, p.statement, rev); if (c.ok) rv++; else bad.push('反序 ' + id + '：' + c.err);
     }
-    console.log('Linux 工具 train 題：原敘述 ' + ok + '/' + SOLVE.length + '、換名稱 ' + rn + '/' + SOLVE.length + '、選項反序 ' + rv + '/' + SOLVE.length); bad.forEach((b) => console.log('  ✗ ' + b));
-    for (const id of NEG) { const it = AI.read(probs[id].statement); assert.ok(it.algo !== 'list-sum' && it.algo !== 'kth-largest', id + ' 被認成通用算法 ' + it.algo); assert.ok(!PAR.forIntent(it, probs[id].statement).length, id + ' 不可套通用骨架'); }
+    console.log('Linux 工具 train 題：原敘述 ' + ok + '/' + SOLVE_IDS.length + '、換名稱 ' + rn + '/' + SOLVE_IDS.length + '、選項反序 ' + rv + '/' + SOLVE_IDS.length); bad.forEach((b) => console.log('  ✗ ' + b));
+    for (const id of NEG) { const it = AI.read(probs[id].statement); assert.ok(it.algo !== 'list-sum' && it.algo !== 'kth-largest', id + ' 被認成通用算法 ' + it.algo); assert.ok(!PAR.forIntent(it, probs[id].statement).some((sk) => sk.algo === 'list-sum' || sk.algo === 'kth-largest'), id + ' 不可套通用骨架（sort.kth-largest 等）'); const o = await run(probs[id], probs[id].statement); assert.ok(o.ok, id + ' 要由對的工具型骨架解出：' + o.err); }
     // 近鄰但不同題：真正的「第 k 大」「總和」仍要認得（否決條件不可太寬）
     assert.strictEqual(AI.read('第一行 n k，第二行 n 個整數。輸出第 k 大的數。').algo, 'kth-largest'); assert.strictEqual(AI.read('第一行 n，第二行 n 個整數。輸出總和。').algo, 'list-sum');
     // 輸入形狀：n 行文字不丟行內容；樣式字串不是整數；十六進位單行
@@ -41,5 +42,5 @@ const NEG = ['lx-huffman-cost', 'lx-xz-delta'];
     assert.strictEqual(sh('第一行「寬 高」，接著 高 行，每行 寬 個像素。輸出總數。'), 'str:s | rest:lines');
     assert.strictEqual(sh('第一行是 a，接著 a 行為檔案一；第二行是 b，接著 b 行為檔案二。輸出連接。'), 'scalars:a | lines:lines | scalars:b | lines:lines2');
     if (bad.length) { console.log('✗ Linux 範式測試失敗 ' + bad.length + ' 項'); process.exit(1); }
-    console.log('Linux 工具範式測試：' + (SOLVE.length * 3 + NEG.length + 7) + ' passed, 0 failed'); process.exit(0);
+    console.log('Linux 工具範式測試：' + (SOLVE_IDS.length * 3 + NEG.length * 3 + 7) + ' passed, 0 failed'); process.exit(0);
 })().catch((e) => { console.error('FAIL', e && e.stack || e); process.exit(1); });
