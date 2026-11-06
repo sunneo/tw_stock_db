@@ -22,7 +22,7 @@
 | 各領域矩陣化可行性與缺口（資料結構、作業系統、Linux、演算法） | **只是評估＋4 個實測，沒進 renderer**：純計算部分表達得出來；缺 Mealy 轉換器、GF(2)、位元級 IO、關聯記憶體／指標堆、輸入形狀前端、由規格合成 | 交給 stevenyc 那邊的矩陣 session | `DESIGN.matrix-fallback.md` §12 |
 | 矩陣 → UML／Blockly（支援 code edit） | **只有設計（§11）**；`matrix_decompile_core.js` 只輸出狀態圖／正規式／遞推式，沒有 UML 也沒有 Blockly | 排在矩陣層有進步之後 | `DESIGN.matrix-fallback.md` §11 |
 | 備援第三層（上網找答案、湊 CoLU、待補教學佇列） | **只有介面設計（§10），沒實作**；`catalog_discover` 探索端已實作 | 介面實作；網頁搜尋需開子 agent，SourceForge／CodeProject 常 403 | `DESIGN.matrix-fallback.md` §10、`DESIGN.unit-catalog.md` |
-| 交接文件索引 | `HANDOFF.blockly-teach.md`（Blockly 教學）、`HANDOFF.matrix-fallback.md`（矩陣，已寫成給 stevenyc 冷啟動）、`HANDOFF.matrix-algorithms.md`／`HANDOFF.block-writer.md`（已完成，僅供查）、`HANDOFF.edit-remote.md`（別條線） | — | 各檔 |
+| 交接文件索引（**別的 session 要接手，先讀這列**） | **協調／發布**：`HANDOFF.coordinator.md`（發布流程、驗證清單、使用者原話、陷阱）；**Blockly 教學**：`HANDOFF.blockly-teach.md`＋`DESIGN.blockly-curriculum.md`（可跨帳號冷啟動）；**矩陣**：`HANDOFF.matrix-fallback.md`（寫給 stevenyc.huang 的 session）；舊的 `HANDOFF.blockly-teach.md`（Blockly 教學）、`HANDOFF.matrix-fallback.md`（矩陣，已寫成給 stevenyc 冷啟動）、`HANDOFF.matrix-algorithms.md`／`HANDOFF.block-writer.md`（已完成，僅供查）、`HANDOFF.edit-remote.md`（別條線） | — | 各檔 |
 | 發布 | **已核對**：patch v313（桌面版）；網頁版沒同步（這台機器找不到 `videos-嗨投資`）；發布前要確認 renderer／scripts／web-lazy 工作樹乾淨（`publish.sh` 會 `git add -A`） | 要同步網頁版請給 repo 路徑 | `DESIGN.release.md` |
 | 核心測試 `tray_dialog.test` 整組失敗 | **已核對**：根因是最後一行 `N checks passed` 不符合跑器的 `N passed`，已改輸出格式 | — | `scripts/main-tests/tray_dialog.test.js` |
 | JSONL／JSONC 檢視器 | **已核對（2026-11-06）**：在真瀏覽器頁面載入 `data_ui.js`，15 萬行 JSONL：Source 捲到 14 萬行、Viewer 一批 2 萬筆可前後翻、匯出整份 JSON 17 MB；超大檔批次視窗已做 | Electron 對話區塊裡的畫面沒另外看（同一份程式） | `DESIGN.jsonl-paging.md` 第八、十節 |

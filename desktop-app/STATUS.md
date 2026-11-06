@@ -63,3 +63,8 @@
 - 追加（同日）：使用者命題「內層ReLU被實做出來、驗證各種輸入輸出都滿足，就足以被編譯成一個CoLU」→ `DESIGN.matrix-algorithms.md` 第 12 節＋`renderer/src/algo/relu_compile_core.js`／`relu_compile.test.js`（16 項，已登記）：ReLU→決策樹／CoLU 機器的編譯是精確等價、不靠驗證；驗證只負責「網路＝規格」，兩者合起來才成立，且限於有界整數域、整數語意、精確算術、網路夠小；排序 n=6：15 閘→720 葉、x mod 3（N=1000）666 葉。**待改善**：沒有 LP／SMT 剪枝與逐區域證明、沒有梯度學出的網路。
 - 追加（同日）：使用者問「無法用矩陣接起來的有什麼程式化的銜接?另一個矩陣?堆疊?」→ `DESIGN.matrix-algorithms.md` 第 13 節＋VM 新增 `tr onehot enq deq jqe`、`matrix_memory.test.js`（11 項，已登記）：四種缺口各有封閉的銜接（計數器／堆疊／佇列／陣列、控制狀態機、半環或 ReLU、one-hot 位址）；另一個矩陣能代替有界堆疊（移位矩陣，控制狀態線性成長，對照堆疊內容展開是指數）與陣列（one-hot，O(n)），不能代替無界堆疊（除非元素放無界整數）；種子 20 題最少記憶體：無 3、計數器 1、堆疊 2、陣列／佇列 14；雙調排序 n=16：80 vs 氣泡 120 比較。**待改善**：沒有靜態庫存規則；DFS／堆積／LRU 只是歸類。
 - 追加（同日）：使用者問「如果這個可行…核心會是很難解讀的黑盒子嗎」→ `DESIGN.matrix-algorithms.md` 第 14 節＋`renderer/src/algo/matrix_decompile_core.js`／`matrix_decompile.test.js`（15 項，已登記）：不必然；結構式矩陣可反編譯成遞推式／狀態圖／正規表示式／if-else／中文 CNL，稠密學出的矩陣才是黑盒子；可讀性隨大小下降（隨機 DFA 正規表示式 n=3→7：29→108 字元；30 狀態 DFA 91 行 vs 三個小機器 33 行）；VM 約人寫 Python 的 1～6 倍行數。**待改善**：CNL 沒接 py_blocks 的受控自然語言、沒有 VM→Python、命名要手動、門檻是判斷。
+
+
+## 別的 session 怎麼接手（2026-11-07）
+
+先讀 `DESIGN.TODO.md` 現況總覽（哪些進了 renderer、哪些沒做），再依你要接的線讀對應交接文件：協調／發布 `HANDOFF.coordinator.md`、Blockly 教學 `HANDOFF.blockly-teach.md`、矩陣 `HANDOFF.matrix-fallback.md`。每份都含：開場提示、待辦、工作風格、使用者原話、陷阱。子 session 只提交並回報，發布由協調 session 做。
