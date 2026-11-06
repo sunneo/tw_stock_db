@@ -8,7 +8,7 @@
  *               區塊迴圈（庫存＋範本，模型只在合法選單裡微選擇；參數就是庫存的起點）
  *   ④ 沙盒驗證：判題器跑範例，沒過把判決回饋給區塊迴圈重寫
  *
- *   buildFromUML({statement, uml:{hints, model}, B, R, C2U, FaPyBody, Choose, pick?, judge?, rounds?}) → {ok, source, model, cnl, usedModel, recipe, rounds, steps, forced}
+ *   buildFromUML({statement, uml:{hints, model}, B, R, C2U, FaPyBody, Choose, pick?, judge?, rounds?, Lessons?, lessons?}) → {ok, source, model, cnl, usedModel, recipe, rounds, steps, forced}
  * judge(source) → Promise<{verdict, detail}>；pick 只有走模型路徑才會用到。 */
 (function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaPyUmlPipeline = factory(); })(typeof self !== 'undefined' ? self : this, function () {
     'use strict';
@@ -57,6 +57,13 @@
             const ir = parse(rec.cnl); const model = mkModel(ir); const source = o.C2U.toPython(model); let v = { verdict: 'UNCHECKED', detail: '' }; if (o.judge) v = await o.judge(source);
             res.rounds.push({ by: 'recipe', recipe: rec.name, verdict: v.verdict, detail: v.detail });
             if (v.verdict === 'AC' || v.verdict === 'UNCHECKED') return Object.assign(res, { source, model, recipe: rec.name, cnl: Object.assign(cnl, { solve: rec.cnl }), verdict: v.verdict });
+        }
+        // ---- 課（老師教過、驗證過的做法）：同一種算法、同樣的輸入形狀就直接套用，不問模型；沙盒驗證沒過才退回 ----
+        const lesson = o.Lessons && o.Lessons.matchLesson(o.lessons || [], intent);
+        if (lesson) {
+            const ap = o.Lessons.applyLesson(lesson, intent); const model = mkModel(ap.body, ap.prelude); const source = o.C2U.toPython(model); let v = { verdict: 'UNCHECKED', detail: '' }; if (o.judge) v = await o.judge(source);
+            res.rounds.push({ by: 'lesson', lesson: lesson.id, verdict: v.verdict, detail: v.detail });
+            if (v.verdict === 'AC' || v.verdict === 'UNCHECKED') return Object.assign(res, { source, model, lesson: lesson.id, cnl: Object.assign(cnl, { solve: lesson.cnl || '' }), verdict: v.verdict });
         }
         // ---- 區塊迴圈（模型微選擇）----
         if (!o.pick) return Object.assign(res, { ok: false, reason: rec ? '配方沒通過沙盒驗證，而且沒有提供模型' : '程式讀不出這題的解法（沒有配方），需要模型' });

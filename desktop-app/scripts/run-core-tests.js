@@ -24,6 +24,8 @@ const suites = [
     ['UML → 程式骨架（DSL、驗證、圖、template、情境到 UML）', 'renderer/src/uml/uml_core.test.js'],
     ['程式碼 → tree-sitter → UML（指令層級）→ Python 往返（需 tree-sitter 快取，沒有就略過）', 'renderer/src/uml/py_code2uml.test.js'],
     ['程式區塊範本庫（90 個範本：程式↔區塊↔受控自然語言雙向、種子程式往返判題；需 tree-sitter 快取）', 'renderer/src/uml/py_blocks.test.js'],
+    ['老師迴圈的客觀驗證核心（check 種類、抽出程式碼、判題器問題形狀）', 'renderer/src/harness/teacher_check.test.js'],
+    ['內建的課泛化：沒見過的改寫（換變數名稱、隨機測資）離線自己做對，不認得的算法不亂套（需 tree-sitter 快取）', 'renderer/src/uml/py_lessons.test.js'],
     ['uml_design 先讀情境：算法題讀成 UML（0 次模型）→ 骨架 → 區塊 → 沙盒；含沒見過的寫法（需 tree-sitter 快取）', 'renderer/src/uml/py_uml_pipeline.test.js'],
     ['區塊的庫存與範本規則（三區、型別、終止條件、模組需求；需 tree-sitter 快取）', 'renderer/src/uml/py_blocks_rules.test.js'],
     ['UML 遞迴切割寫 body（假模型：補全式逐行、縮排結構、退回重寫、區塊版；需 tree-sitter 快取）', 'renderer/src/uml/py_body.test.js'],

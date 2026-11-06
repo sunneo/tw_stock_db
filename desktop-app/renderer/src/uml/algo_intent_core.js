@@ -24,6 +24,22 @@
         { key: /迴文/, op: 'palindrome', which: ['str'] }, { key: /質數/, op: 'primes', which: [] }, { key: /最大公因數|gcd/, op: 'gcd', which: [] }, { key: /費氏/, op: 'fib', which: [] },
         { key: /最少|最短|最長|個數|幾個|次數|連通分量/, op: 'search', which: [] },
     ];
+    // 動作表（算法種類）：敘述的關鍵字 → 這題屬於哪一種算法。語言中立；各語言的區塊白名單（FOCUS）用這個 key 查。由具體到籠統，第一個符合的算數
+    const ALGOS = [
+        { key: 'palindrome', re: /迴文/ }, { key: 'anagram', re: /重新排列|變位詞|字母異位/ }, { key: 'brackets', re: /括號.*(配對|匹配)/ }, { key: 'gcd-lcm', re: /gcd|lcm|最大公因數|最小公倍數/i },
+        { key: 'fib', re: /費氏/ }, { key: 'primes', re: /質數/ }, { key: 'kth-largest', re: /由大到小.*第\s*[a-zA-Z]\s*個|第\s*[a-zA-Z]\s*(大|個)/ }, { key: 'word-count', re: /每個不同的單字|單字.*次數|次數.*單字/ },
+        { key: 'lower-bound', re: /第一個滿足.*(>=|≥|大於等於)|二分|lower_bound/ }, { key: 'pair-sum', re: /i\s*<\s*j.*a\[i\]\s*\+\s*a\[j\]|兩數之和|兩數相加等於/ }, { key: 'range-sum', re: /a\[\w+\.\.\w+\]|區間.*(和|總和)|每個查詢輸出.*和/ },
+        { key: 'coin-min', re: /硬幣|面額/ }, { key: 'lis', re: /遞增子序列/ }, { key: 'grid-bfs', re: /最少步數|最短路/ }, { key: 'components', re: /連通分量|連通塊/ }, { key: 'intervals-merge', re: /合併.*區間|區間.*合併|重疊.*合併/ }, { key: 'knapsack', re: /每件物品最多選一次|背包/ },
+        { key: 'reverse-words', re: /單字順序反過來/ }, { key: 'list-max', re: /最大值/ }, { key: 'list-min', re: /最小值/ }, { key: 'list-sum', re: /總和|的和/ },
+    ];
+    // 處理模型（範式）：算法種類 → 它屬於哪些解題範式（分治、DFS、BFS、樹走訪、資料結構對應、動態規劃、矩陣相乘…）。一種算法可以有多個範式（例如費氏數：DP 或矩陣快速冪）。
+    // 之後的「範式骨架」（每個範式一個帶槽位的區塊骨架）用這個 key 查；新題只要套到某個範式、填幾個槽位，不必每題各教一堂課。
+    const PARADIGMS = {
+        'fib': ['dynamic-programming', 'matrix-power'], 'coin-min': ['dynamic-programming'], 'lis': ['dynamic-programming'], 'knapsack': ['dynamic-programming'],
+        'grid-bfs': ['bfs'], 'components': ['dfs', 'union-find'], 'lower-bound': ['divide-and-conquer', 'binary-search'], 'range-sum': ['prefix-sum', 'data-structure-mapping'],
+        'word-count': ['data-structure-mapping'], 'brackets': ['data-structure-mapping'], 'intervals-merge': ['sort-and-sweep'], 'pair-sum': ['brute-force'], 'kth-largest': ['sort'],
+        'primes': ['sieve', 'number-theory'], 'gcd-lcm': ['number-theory', 'divide-and-conquer'], 'palindrome': ['two-pointers', 'string'], 'anagram': ['data-structure-mapping', 'string'],
+    };
     const toNum = (s) => (/^\d+$/.test(s) ? +s : CN[s] || 0);
     const stripNote = (s) => String(s).replace(/（[^）]*）/g, '').replace(/\([^)]*\)/g, '');
 
@@ -61,11 +77,12 @@
             const raw = om[1].trim().replace(/[　]/g, ' '); if (/^[a-z0-9_+\-*/%() .]+$/.test(raw) && /[a-z]/.test(raw) && /[+\-*/%]/.test(raw)) { const used = raw.match(/[a-z][a-z0-9]*/g) || []; if (used.every((u) => names.has(u))) goal.expr = raw; }
         }
         for (const g of GOALS) if (g.key.test(text)) goal.verbs.push(g.op);
+        const algo = (ALGOS.find((a) => a.re.test(text)) || {}).key || null; const paradigms = (algo && PARADIGMS[algo]) || [];
         const pend = inputs.findIndex((x) => x.k === 'pending'); if (pend >= 0) inputs.splice(pend, 1);
         const vars = []; for (const inp of inputs) { if (inp.k === 'scalars') inp.names.forEach((n) => vars.push({ name: n, type: inp.type })); else if (inp.k === 'list') { if (!vars.some((v) => v.name === inp.size)) vars.push({ name: inp.size, type: 'int' }); vars.push({ name: inp.name, type: 'list' }); } else if (inp.k === 'rows') vars.push({ name: inp.name, type: 'list' }); else if (inp.k === 'grid') vars.push({ name: inp.name, type: 'list' }); else if (inp.k === 'str') vars.push({ name: inp.name, type: 'str' }); else if (inp.k === 'words') vars.push({ name: inp.name, type: 'list' }); }
         // 同一個名稱在不同行出現（第一行 n，第二行 n 個…）只留一個
         const seen = new Set(); const uvars = vars.filter((v) => (seen.has(v.name) ? false : seen.add(v.name)));
-        return { ok: inputs.length > 0, inputs, vars: uvars, goal, ops: [{ name: 'readInput', params: [], returns: 'any' }, { name: 'solve', params: uvars.map((v) => v.name), returns: 'void' }] };
+        return { ok: inputs.length > 0, algo, paradigms, inputs, vars: uvars, goal, ops: [{ name: 'readInput', params: [], returns: 'any' }, { name: 'solve', params: uvars.map((v) => v.name), returns: 'void' }] };
     }
     const UMLTYPE = { int: 'int', float: 'float', str: 'str', list: 'List<any>' };
     function umlHints(intent) {
@@ -75,5 +92,5 @@
         return { actors: ['User'], classes: [cls], relations: [], unknown: [], usecases: [{ name: 'RunSolver', actor: 'User', summary: '讀入資料並輸出答案', steps: [{ to: 'Solver', op: 'main' }, { to: 'Solver', op: 'readInput' }, { to: 'Solver', op: 'solve' }] }] };
     }
     const reader = (statement) => { const it = read(statement); return it.ok ? Object.assign(umlHints(it), { intent: it }) : null; };
-    return { read, umlHints, reader, GOALS };
+    return { read, umlHints, reader, GOALS, ALGOS, PARADIGMS };
 });

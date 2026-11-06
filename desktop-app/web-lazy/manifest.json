@@ -202,6 +202,14 @@
    "size": 20029,
    "md5": "4ee911e73e640ccecabdb4d3c340c6b0"
   },
+  "teachercheck": {
+   "file": "chunks/teachercheck.js",
+   "names": [
+    "FaTeacherCheck"
+   ],
+   "size": 2808,
+   "md5": "00dc22d815292ab2fab62928c3a464c5"
+  },
   "codeloop": {
    "file": "chunks/codeloop.js",
    "names": [
@@ -1228,7 +1236,7 @@
   }
  },
  "core": {
-  "size": 5593600,
-  "md5": "5c7221a8e53f8bfa2f932e3a53722a0e"
+  "size": 5598555,
+  "md5": "6ea8611537d8221c4da3ca2abc428600"
  }
 }

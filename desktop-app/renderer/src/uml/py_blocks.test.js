@@ -25,7 +25,14 @@ const C2U = require('./py_code2uml_core.js'); const PB = require('./py_blocks_co
             const j = await R.judge({ lang: 'python', source: C2U.toPython(m) + '\nmain()\n', problem: p }); if (j.verdict === 'AC') ac++; else fails.push(p.id + ' ' + j.verdict);
         } catch (e) { fails.push(p.id + ' 例外：' + String(e.stack || e.message).slice(0, 220)); }
     }
+    // 矩陣：把費氏數映射成轉移矩陣 [[1,1],[1,0]]，用區塊「快速冪求方陣的 n 次方」算出來，判題器驗證（純 Python 的 mat_pow，不用引入模組）
+    let extraFail = 0; { const cnl = ['令 a 等於 [[1, 1], [1, 0]]', '令 e 等於 n', '用快速冪求方陣 a 的 e 次方，結果放在 r，（a 和 e 會被用掉），迴圈用 i、j', '印出 r[0][1]'].join('\n'); const pr = B.parseCNL(cnl);
+        if (!pr.ok) { extraFail++; fails.push('矩陣區塊解析失敗：' + JSON.stringify(pr.errors)); } else {
+            const ir = B.toIR(pr.blocks); const mk = (name, params, body) => ({ name, params: params.map((x) => ({ name: x, type: { base: 'any', args: [] } })), returns: { base: 'any', args: [] }, visibility: '+', static: true, body });
+            const m = { name: 'M', actors: [], relations: [], usecases: [], prelude: [], order: [], classes: [{ name: 'M', kind: 'class', attrs: [], values: [], ops: [mk('main', [], B.toIR(B.parseCNL('令 n 等於 int(input())\n程式：solve(n)').blocks)), mk('solve', ['n'], ir)] }] }; m.order = m.classes[0].ops.map((o) => ({ t: 'f', o }));
+            const src = C2U.toPython(m); const j = await R.judge({ lang: 'python', source: src + '\nmain()\n', problem: { id: 'fibm', tests: [{ in: '10\n', out: '55\n' }, { in: '1\n', out: '1\n' }, { in: '50\n', out: '12586269025\n' }, { in: '90\n', out: '2880067194370816120\n' }] } });
+            if (j.verdict !== 'AC') extraFail++, fails.push('矩陣快速冪求費氏數：' + j.verdict + ' ' + (j.detail || '')); else console.log('矩陣快速冪求費氏數（區塊 mat_pow）：AC'); } }
     console.log('範本 ' + B.TEMPLATES.length + ' 個；種子題 ' + probs.length + '：IR 往返相同 ' + rev + '、CNL 往返相同 ' + cnl + '、區塊後 AC ' + ac);
     console.log('區塊 ' + blocks + '，通用「程式」區塊 ' + generic + '（' + (100 * generic / blocks).toFixed(1) + '%）；用到的範本 ' + Object.keys(tpl).length + ' 種');
-    fails.forEach((f) => console.log('  ✗ ' + f)); console.log(Math.min(rev, cnl, ac) + ' passed, ' + (probs.length - Math.min(rev, cnl, ac)) + ' failed'); process.exit(ac === probs.length && rev === probs.length && cnl === probs.length ? 0 : 1);
+    fails.forEach((f) => console.log('  ✗ ' + f)); const good = Math.min(rev, cnl, ac) - extraFail; console.log(good + ' passed, ' + (probs.length - good) + ' failed'); process.exit(ac === probs.length && rev === probs.length && cnl === probs.length && !extraFail ? 0 : 1);
 })().catch((e) => { console.error(e); process.exit(2); });

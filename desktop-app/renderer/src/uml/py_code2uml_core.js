@@ -153,7 +153,7 @@
     }
 
     // ---------- 回程 codegen：UML＋body → Python ----------
-    const PREC = { lambda: 0, cond: 1, or: 2, and: 3, not: 4, cmp: 5, '|': 6, '^': 7, '&': 8, '<<': 9, '>>': 9, '+': 10, '-': 10, '*': 11, '/': 11, '//': 11, '%': 11, '@': 11, un: 12, '**': 13, post: 15, atom: 16 };
+    const PREC = { lambda: 0, cond: 1, or: 2, and: 3, not: 4, cmp: 5, '|': 6, '^': 7, '&': 8, '<<': 9, '>>': 9, '+': 10, '-': 10, '*': 11, '/': 11, '//': 11, '%': 11, '@': 11, '@': 11, un: 12, '**': 13, post: 15, atom: 16 };
     function toPython(model) {
         const P = (e, min) => { const [s, p] = ex(e); return p < min ? '(' + s + ')' : s; };
         const args = (a) => a.map((x) => (x.n === 'kw' ? x.k + '=' + P(x.v, 1) : x.n === 'star' ? '*' + P(x.e, 5) : x.n === 'dstar' ? '**' + P(x.e, 5) : P(x, 1))).join(', ');

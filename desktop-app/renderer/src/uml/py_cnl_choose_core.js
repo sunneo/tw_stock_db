@@ -30,44 +30,47 @@
 
     async function writeBlocks(o) {
         const B = o.B, R = o.R, maxStmts = o.maxStmts || 40, maxLineTry = o.maxLineTry || 3, exprDepth = o.exprDepth || 3;
-        const st = R.initState(o.op); const lines = []; const trace = []; let steps = 0, forced = 0, retries = 0, lastText = '';
+        const st = R.initState(o.op); const lines = []; const trace = []; let steps = 0, forced = 0, retries = 0, lastText = ''; const sizes = []; const hk = (f, a, b) => { const h = o.oracleHooks; if (h && h[f]) h[f](a, b); };
         const builtins = o.builtins || new Set(); const log = (r) => { trace.push(r); if (o.onTrace) o.onTrace(r); };
         const stmt = String(o.problem.statement || ''); const nums = uniq((stmt.match(/-?\d+(?:\.\d+)?/g) || []).concat(['0', '1', '2'])).slice(0, 10);
         const strs = uniq(((stmt.match(/\b[A-Z]{2,}\b/g) || []).concat((stmt.match(/["'「」]([^"'「」\n]{1,12})["'「」]/g) || []).map((x) => x.replace(/^["'「」]|["'「」]$/g, '')))).concat(['', ' '])).slice(0, 8);
         const stmtNames = uniq((stmt.match(/\b[a-zA-Z]\w{0,5}\b/g) || []).filter((w) => !KW.has(w) && /^[a-z]/.test(w) && w.length <= 5));
-        const fresh = () => uniq([...stmtNames.slice(0, 8), ...POOL]).filter((n) => !st.vars.has(n)).slice(0, 16);
+        const fresh = (k) => uniq([...stmtNames.slice(0, 8), ...POOL]).filter((n) => !st.vars.has(n)).slice(0, k || 4); // 新名稱的選單最多 4 個（名稱本身不影響對錯）
         const inv = () => [...st.vars].map(([n, t]) => n + ':' + t).join('、');
         const head = (extra) => '題目：' + stmt.slice(0, 700) + (o.plan ? '\n解題步驟：\n' + o.plan : '') + (o.feedback ? '\n\n' + o.feedback : '') + '\n\n目前宣告的變數（庫存）：' + (inv() || '（沒有）') + (st.imports.size ? '\n已引入：' + [...st.imports].join('、') : '') + '\n目前已寫好的區塊（函式固定分三區：引入區、宣告區、邏輯與流程區，只能往後走）：\n' + renderZ(lines, st.zone) + (extra ? '\n\n' + extra : '');
         const SYS = '你是 Python 程式設計助手。我們用「區塊」一步一步寫程式，每一步只能在給你的選項裡選，你只回答選項前面的字母。';
         // 選擇題：只有一個選項不問；否則正序＋倒序各一次，機率相加
-        async function choose(question, items, kind) {
-            const n = Math.min(items.length, LET.length); if (n === 1) { forced++; return 0; } steps++;
+        async function choose(question, items, kind, metas) {
+            const n = Math.min(items.length, LET.length); sizes.push({ kind, n, items: o.keepItems ? items.slice(0, n) : undefined });
+            if (o.oracle) { const k = o.oracle({ kind, metas: metas || [], items }); if (n === 1) forced++; else steps++; return Math.max(0, Math.min(k, n - 1)); }
+            if (n === 1) { forced++; return 0; } steps++;
             const id = Array.from({ length: n }, (_, i) => i); const orders = o.noDebias ? [id] : [id, id.slice().reverse()]; const sum = new Array(n).fill(0);
             for (const ord of orders) { const body = ord.map((j, i) => LET[i] + '. ' + items[j]).join('\n'); const r = await o.pick([{ role: 'system', content: SYS }, { role: 'user', content: question + '\n' + body + '\n只回答選項的字母。' }], LET.slice(0, n)); r.logprobs.forEach((lp, pos) => { sum[ord[pos]] += lp; }); }
             let k = 0; for (let i = 1; i < n; i++) if (sum[i] > sum[k]) k = i; log({ t: 'choose', kind, pick: items[k].slice(0, 40), n }); return k;
         }
         // ---- 槽位 ----
         async function pickDecl(p, tplText) {
-            if (p.tuple) { const cand = uniq([stmtNames.slice(0, 2).join(', '), ...PAIRS]).filter((c) => c.split(', ').every((x) => x && !st.vars.has(x))); const k = await choose(head('區塊「' + tplText + '」要同時宣告幾個新的變數名稱，選哪一組？'), cand.map((c) => c + '（新的名稱）'), 'name'); return { ir: B.exprOf(cand[k]), type: 'int' }; }
-            const exist = p.reassign ? [...st.vars.keys()].filter((n) => !o.ops.some((x) => x.name === n)) : []; const fr = fresh();
+            if (p.tuple) { const cand = uniq([stmtNames.slice(0, 2).join(', '), ...PAIRS]).filter((c) => c.split(', ').every((x) => x && !st.vars.has(x))); const k = await choose(head('區塊「' + tplText + '」要同時宣告幾個新的變數名稱，選哪一組？'), cand.map((c) => c + '（新的名稱）'), 'name', cand.map((c) => ({ v: c }))); return { ir: B.exprOf(cand[k]), type: 'int' }; }
+            const exist = p.reassign ? [...st.vars.keys()].filter((n) => !o.ops.some((x) => x.name === n)) : []; const fr = fresh(4);
             const items = exist.map((n) => n + '（已有，重新指定）').concat(fr.map((n) => n + '（新的名稱）')); const vals = exist.concat(fr);
-            const k = await choose(head('區塊「' + tplText + '」的槽位「' + p.slot + '」要宣告一個新的變數名稱，選哪一個？'), items, 'name'); return { ir: { n: 'name', v: vals[k] }, type: p.type };
+            const k = await choose(head('區塊「' + tplText + '」的槽位「' + p.slot + '」要宣告一個新的變數名稱，選哪一個？'), items, 'name', vals.map((v, i) => ({ v, existing: i < exist.length }))); return { ir: { n: 'name', v: vals[k] }, type: p.type };
         }
         async function pickVar(p, tplText) {
-            const vs = R.varsOf(st, p.type).filter((v) => !o.ops.some((x) => x.name === v.name)); const k = await choose(head('區塊「' + tplText + '」的槽位「' + p.slot + '」要用哪一個已宣告的變數？'), vs.map((v) => v.name + '（' + v.type + '）'), 'var');
+            const vs = R.varsOf(st, p.type).filter((v) => !o.ops.some((x) => x.name === v.name)); const k = await choose(head('區塊「' + tplText + '」的槽位「' + p.slot + '」要用哪一個已宣告的變數？'), vs.map((v) => v.name + '（' + v.type + '）'), 'var', vs.map((v) => ({ v: v.name })));
             return { ir: { n: 'name', v: vs[k].name }, type: vs[k].type };
         }
         async function pickExpr(slot, type, tplText, depth) {
             const M = R.exprMenu(type, st); M.vars = M.vars.filter((v) => !o.ops.some((x) => x.name === v.name));
+            if (o.focus && o.focus.exprs) M.cats = M.cats.map((c) => ({ id: c.id, blocks: c.blocks.filter((b) => o.focus.exprs.has(b.id)) })).filter((c) => c.blocks.length); // 動作表的白名單：這個算法會用到的運算積木
             const menu = []; if (M.vars.length) menu.push({ k: 'var', label: '變數（已宣告的）' }); if (M.num) menu.push({ k: 'num', label: '數字' }); if (M.str) menu.push({ k: 'str', label: '文字' });
             if (depth < exprDepth) for (const c of M.cats) menu.push({ k: 'cat', id: c.id, blocks: c.blocks, label: ECAT_DESC[c.id] || c.id });
             if (!menu.length) return null;
-            const m = menu[await choose(head('區塊「' + tplText + '」的槽位「' + slot + '」要填一個「' + type + '」的值，是哪一種？'), menu.map((x) => x.label), 'expr-kind')];
-            if (m.k === 'var') { const items = M.vars.slice(0, LET.length); const k = await choose(head('槽位「' + slot + '」填哪一個變數？'), items.map((v) => v.name + '（' + v.type + '）'), 'var'); return { ir: { n: 'name', v: items[k].name }, type: items[k].type }; }
-            if (m.k === 'num') { const k = await choose(head('槽位「' + slot + '」填哪一個數字？'), nums, 'num'); return { ir: B.exprOf(nums[k]), type: /\./.test(nums[k]) ? 'float' : 'int' }; }
-            if (m.k === 'str') { const k = await choose(head('槽位「' + slot + '」填哪一段文字？'), strs.map((x) => JSON.stringify(x)), 'str'); return { ir: B.exprOf(JSON.stringify(strs[k])), type: 'str' }; }
-            const e = m.blocks[await choose(head('槽位「' + slot + '」要填「' + m.id + '」類的運算，選哪一個？'), m.blocks.map((x) => x.line.replace(SPLIT, '〔$1〕')), 'expr')];
-            const fills = {}; for (const sl of e.slots) { const sub = await pickExpr(sl, R.exprParamType(e.id, sl), e.line.replace(SPLIT, '〔$1〕'), depth + 1); if (!sub) return null; fills[sl] = sub.ir; }
+            const m = menu[await choose(head('區塊「' + tplText + '」的槽位「' + slot + '」要填一個「' + type + '」的值，是哪一種？'), menu.map((x) => x.label), 'expr-kind', menu)];
+            if (m.k === 'var') { const items = M.vars.slice(0, LET.length); const k = await choose(head('槽位「' + slot + '」填哪一個變數？'), items.map((v) => v.name + '（' + v.type + '）'), 'var', items.map((v) => ({ v: v.name }))); return { ir: { n: 'name', v: items[k].name }, type: items[k].type }; }
+            if (m.k === 'num') { const k = await choose(head('槽位「' + slot + '」填哪一個數字？'), nums, 'num', nums.map((v) => ({ v }))); return { ir: B.exprOf(nums[k]), type: /\./.test(nums[k]) ? 'float' : 'int' }; }
+            if (m.k === 'str') { const k = await choose(head('槽位「' + slot + '」填哪一段文字？'), strs.map((x) => JSON.stringify(x)), 'str', strs.map((v) => ({ v }))); return { ir: B.exprOf(JSON.stringify(strs[k])), type: 'str' }; }
+            const e = m.blocks[await choose(head('槽位「' + slot + '」要填「' + m.id + '」類的運算，選哪一個？'), m.blocks.map((x) => x.line.replace(SPLIT, '〔$1〕')), 'expr', m.blocks)];
+            hk('exprBlock', e); const fills = {}; for (const sl of e.slots) { hk('begin', sl); const sub = await pickExpr(sl, R.exprParamType(e.id, sl), e.line.replace(SPLIT, '〔$1〕'), depth + 1); hk('end'); if (!sub) return null; fills[sl] = sub.ir; }
             return { ir: B.buildExpr(e.id, fills), type: R.exprRet(e.id) };
         }
         const text = (kind, ir) => (kind === 'name' && ir.n === 'tuple' && ir.xs.length > 1 ? ir.xs.map(B.exprText).join(', ') : B.exprText(ir));
@@ -75,27 +78,29 @@
             if (steps >= (o.maxSteps || 900) || lines.length >= maxStmts) return { ok: false, lines, steps, forced, trace, reason: '區塊太多或選擇太多' };
             let got = null, lastErr = ''; const banned = new Set();
             for (let attempt = 0; attempt < maxLineTry && !got; attempt++) {
-                const L = R.legal(st); const depth = st.frames.length - 1; const f = R.top(st);
+                const L0 = R.legal(st); const depth = st.frames.length - 1; const f = R.top(st);
+                const fpl = o.focus && o.focus.templates ? L0.templates.filter((t) => o.focus.templates.has(t.id)) : L0.templates; // 動作表的白名單：這個算法會用到的區塊
+                const L = Object.assign({}, L0, { templates: fpl, cats: [...new Set(fpl.map((t) => t.cat))].concat(L0.ifOptions.if || L0.ifOptions.elif || L0.ifOptions.else ? ['條件'] : []) });
                 const where = depth === 0 ? '目前在函式「' + o.op.name + '」的最外層。' : '目前在「' + f.header + '」這個區塊裡面。';
                 const menu = []; for (const c of CAT_ORDER) if (L.cats.includes(c) && (c === '條件' || L.templates.some((t) => t.cat === c && !banned.has(t.id)))) menu.push({ k: 'cat', id: c, label: CAT_DESC[c] || c });
                 if (L.canEnd) menu.push({ k: 'end', label: '結束這個區塊（回到上一層）' });
                 for (const to of L.zoneNext) menu.push({ k: 'zone', to, label: to === 'declare' ? '進入「宣告區」（引入完了，開始宣告變數）' : '進入「邏輯與流程區」（宣告完了，開始寫運算與流程）' });
                 if (L.canDone && L.zone === 'logic') menu.push({ k: 'done', label: '函式寫完了' });
                 if (!menu.length) return { ok: false, lines, steps, forced, trace, reason: '沒有任何合法的下一步（' + (L.endWhy || L.doneWhy || '庫存不足') + '）' };
-                const m = menu[await choose(head(where + '\n下一步要寫哪一類區塊？只有符合目前庫存與規則的類別列在這裡。'), menu.map((x) => x.label), 'category')];
+                const m = menu[await choose(head(where + '\n下一步要寫哪一類區塊？只有符合目前庫存與規則的類別列在這裡。'), menu.map((x) => x.label), 'category', menu)];
                 if (m.k === 'end') { got = { kind: 'end' }; break; } if (m.k === 'done') { got = { kind: 'done' }; break; } if (m.k === 'zone') { got = { kind: 'zone', to: m.to }; break; }
                 let tpl = null, line = null, header = false, special = null, slots = {};
                 if (m.id === '條件') {
                     const opts = []; if (L.ifOptions.if) opts.push({ id: 'if', label: '如果〔條件〕就：' }); if (L.ifOptions.elif) opts.push({ id: 'elif', label: '否則如果〔條件〕就：（接在上面的如果後面）' }); if (L.ifOptions.else) opts.push({ id: 'else', label: '否則：（接在上面的如果後面）' });
-                    special = opts[await choose(head(where + '\n選哪一個？'), opts.map((x) => x.label), 'cond')].id;
+                    special = opts[await choose(head(where + '\n選哪一個？'), opts.map((x) => x.label), 'cond', opts)].id;
                     if (special === 'else') { line = '否則：'; header = true; }
-                    else { const c = await pickExpr('條件', 'cond', '如果〔條件〕就：', 0); if (!c) { lastErr = '條件選不出來'; retries++; continue; } slots = { c }; line = (special === 'if' ? '如果 ' : '否則如果 ') + B.exprText(c.ir) + ' 就：'; header = true; }
+                    else { hk('begin', '條件', null); const c = await pickExpr('條件', 'cond', '如果〔條件〕就：', 0); hk('end'); if (!c) { lastErr = '條件選不出來'; retries++; continue; } slots = { c }; line = (special === 'if' ? '如果 ' : '否則如果 ') + B.exprText(c.ir) + ' 就：'; header = true; }
                 } else {
                     const list = L.templates.filter((t) => t.cat === m.id && !banned.has(t.id));
-                    tpl = list[await choose(head(where + '\n「' + m.id + '」類的區塊，選哪一個？'), list.map(gloss), 'template')];
+                    tpl = list[await choose(head(where + '\n「' + m.id + '」類的區塊，選哪一個？'), list.map(gloss), 'template', list)];
                     let okSlots = true;
                     for (const p of R.slotPlan(tpl)) {
-                        const v = p.mode === 'decl' ? await pickDecl(p, gloss(tpl)) : p.mode === 'var' ? await pickVar(p, gloss(tpl)) : await pickExpr(p.slot, p.type, gloss(tpl), 0);
+                        hk('begin', p.slot, tpl); const v = p.mode === 'decl' ? await pickDecl(p, gloss(tpl)) : p.mode === 'var' ? await pickVar(p, gloss(tpl)) : await pickExpr(p.slot, p.type, gloss(tpl), 0); hk('end');
                         if (!v) { okSlots = false; break; } slots[p.slot] = v;
                     }
                     if (!okSlots) { lastErr = '槽位選不出來'; banned.add(tpl.id); retries++; continue; }
@@ -109,9 +114,9 @@
             }
             if (!got) return { ok: false, lines, steps, forced, trace, reason: '連續 ' + maxLineTry + ' 次選不出合格的一行：' + lastErr };
             if (got.kind === 'zone') { R.advanceZone(st, got.to); continue; }
-            if (got.kind === 'done') return { ok: true, lines, cnl: render(lines), zones: byZone(lines), steps, forced, retries, trace };
+            if (got.kind === 'done') return { ok: true, lines, cnl: render(lines), zones: byZone(lines), steps, forced, retries, trace, sizes };
             if (got.kind === 'end') { R.endBlock(st); continue; }
-            const depth = st.frames.length - 1; lines.push({ d: depth, t: got.line, z: depth === 0 ? st.zone : 'logic' }); lastText = got.line;
+            const depth = st.frames.length - 1; lines.push({ d: depth, t: got.line, z: depth === 0 ? st.zone : 'logic' }); lastText = got.line; hk('lineDone', got);
             R.apply(st, { tpl: got.tpl, special: got.special, slots: got.slots, ir: got.ir, header: got.header, line: got.line });
         }
     }

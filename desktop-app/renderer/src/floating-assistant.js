@@ -3882,11 +3882,11 @@ function _faOtParseItems(text, opts) {
     opts = opts || {};
     const raw = String(text || '');
     const items = [], seen = {};
-    const push = (key, ctx) => { key = String(key).trim(); if (!key || key.length > 800 || seen[key]) return; seen[key] = 1; items.push({ key, context: String(ctx || '').slice(0, 300), status: 'pending', attempts: 0 }); };
+    const push = (key, ctx, check) => { key = String(key).trim(); if (!key || key.length > 800 || seen[key]) return; seen[key] = 1; const it = { key, context: String(ctx || '').slice(0, 300), status: 'pending', attempts: 0 }; if (check != null) { const nc = (typeof FaTeacherCheck !== 'undefined' && FaTeacherCheck) ? FaTeacherCheck.normalize(check) : { ok: false, error: '驗證模組沒有載入' }; if (nc.ok && nc.check) it.check = nc.check; else if (!nc.ok) it.checkError = nc.error; } items.push(it); };
     let re = null;
     if (opts.regex) { try { re = new RegExp(opts.regex, 'g'); } catch (_) { re = null; } }
     if (!re && /^\s*\[/.test(raw)) {
-        try { const arr = JSON.parse(raw); if (Array.isArray(arr)) { arr.forEach((x) => push(typeof x === 'string' ? x : JSON.stringify(x), '')); return { mode: 'json', items }; } } catch (_) { /* 不是JSON就當一般文字 */ }
+        try { const arr = JSON.parse(raw); if (Array.isArray(arr)) { arr.forEach((x) => (typeof x === 'string' ? push(x, '') : (x && typeof x === 'object' && typeof x.key === 'string' ? push(x.key, x.context, x.check) : push(JSON.stringify(x), '')))); return { mode: 'json', items }; } } catch (_) { /* 不是JSON就當一般文字 */ }
     }
     for (const line of raw.split(/\r?\n/)) {
         const t = line.trim();
@@ -13257,6 +13257,61 @@ const holder = {};
 return holder.FaGuidedWrite;
 })();
 /* GUIDEDWRITE-END */
+/* TEACHERCHECK-BEGIN */
+const FaTeacherCheck = (function () {
+const holder = {};
+(function (module, self) {
+/* 老師迴圈的「客觀驗證」：/offline-trainer-by-ai（別名 /teacher-loop）的項目可以帶一個 check，離線做出來的結果要通過它才算「離線自己做對」。
+ * 純函式 UMD，領域中立。
+ *   normalize(raw) → {ok, check?, error?}      檢查規格的整理與限制（種類、大小）
+ *   checkSync(check, text) → {ok, detail}       不需要執行環境的檢查：contains／notcontains／regex／equals
+ *   isJudge(check) → boolean                    需要判題器的檢查（寫程式的任務：把程式碼交給判題器跑測資）
+ *   extractCode(text) → string                  從離線結果（工具的 JSON、```圍欄```、或純程式碼）抽出程式碼
+ *   judgeProblem(check, id) → problem           判題器的 problem 形狀
+ *   summary(check) → 字串                        給進度卡片看
+ * check 的形狀：{kind:'contains'|'notcontains'|'regex'|'equals', value} 或 {kind:'judge', lang?, tests:[{in,out}], hidden?:[{in,out}], checker?, entry?:'main'} */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaTeacherCheck = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const KINDS = ['contains', 'notcontains', 'regex', 'equals', 'judge']; const CHECKERS = ['lines', 'tokens', 'float', 'unordered-lines', 'unordered-tokens'];
+    const LANGS = ['python', 'nodejs', 'c', 'cpp', 'java', 'ruby', 'perl', 'bash', 'asm-x64', 'asm-x86', 'csharp'];
+    const cleanTests = (list) => { if (!Array.isArray(list)) return []; return list.filter((t) => t && typeof t.in === 'string' && typeof t.out === 'string' && t.in.length <= 65536 && t.out.length <= 65536).slice(0, 60).map((t) => ({ in: t.in, out: t.out })); };
+    function normalize(raw) {
+        if (raw == null) return { ok: true, check: null };
+        if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (_) { return { ok: false, error: 'check 要是 JSON 物件' }; } }
+        if (!raw || typeof raw !== 'object' || !KINDS.includes(raw.kind)) return { ok: false, error: 'check.kind 要是：' + KINDS.join('、') };
+        if (raw.kind === 'judge') {
+            const tests = cleanTests(raw.tests); if (!tests.length) return { ok: false, error: 'judge 檢查至少要一筆 tests（{in,out}）' };
+            const lang = LANGS.includes(raw.lang) ? raw.lang : 'python'; return { ok: true, check: { kind: 'judge', lang, tests, hidden: cleanTests(raw.hidden), checker: CHECKERS.includes(raw.checker) ? raw.checker : 'tokens', entry: raw.entry === 'main' ? 'main' : undefined } };
+        }
+        const value = String(raw.value == null ? '' : raw.value).slice(0, 4000); if (raw.kind === 'regex') { try { new RegExp(value); } catch (_) { return { ok: false, error: 'regex 不合法' }; } }
+        if (!value && raw.kind !== 'equals') return { ok: false, error: raw.kind + ' 要有 value' }; return { ok: true, check: { kind: raw.kind, value } };
+    }
+    const isJudge = (c) => !!c && c.kind === 'judge';
+    function checkSync(check, text) {
+        const t = String(text == null ? '' : text); if (!check) return { ok: true, detail: '沒有檢查' };
+        switch (check.kind) {
+            case 'contains': return t.includes(check.value) ? { ok: true } : { ok: false, detail: '結果裡沒有「' + check.value.slice(0, 40) + '」' };
+            case 'notcontains': return !t.includes(check.value) ? { ok: true } : { ok: false, detail: '結果裡不該出現「' + check.value.slice(0, 40) + '」' };
+            case 'regex': return new RegExp(check.value).test(t) ? { ok: true } : { ok: false, detail: '結果不符合 /' + check.value.slice(0, 40) + '/' };
+            case 'equals': return t.trim() === String(check.value).trim() ? { ok: true } : { ok: false, detail: '結果跟期望的不一樣（期望「' + String(check.value).slice(0, 40) + '」）' };
+            default: return { ok: false, detail: '這種檢查需要執行環境（' + check.kind + '）' };
+        }
+    }
+    function extractCode(text) {
+        const t = String(text == null ? '' : text);
+        try { const j = JSON.parse(t); const v = j && (j.source || j.code || j.python || (j.result && (j.result.source || j.result.code))); if (typeof v === 'string' && v.trim()) return v; } catch (_) { /* 不是 JSON */ }
+        const fences = [...t.matchAll(/```[a-zA-Z0-9_+-]*\r?\n([\s\S]*?)```/g)]; if (fences.length) return fences[fences.length - 1][1];
+        return t;
+    }
+    const judgeProblem = (check, id) => ({ id: String(id || 'task').replace(/[^\w.-]/g, '_').slice(0, 60) || 'task', tests: check.tests, hidden: check.hidden || [], checker: check.checker || 'tokens' });
+    const summary = (c) => (!c ? '' : c.kind === 'judge' ? '判題器 ' + c.lang + '（' + c.tests.length + ' 筆' + (c.hidden && c.hidden.length ? '＋隱藏 ' + c.hidden.length + ' 筆' : '') + '）' : c.kind + ' ' + String(c.value).slice(0, 30));
+    return { normalize, checkSync, isJudge, extractCode, judgeProblem, summary, KINDS };
+});
+
+}).call(null, undefined, holder);
+return holder.FaTeacherCheck;
+})();
+/* TEACHERCHECK-END */
 /* CODELOOP-BEGIN */
 const FaCodeLoop = (function () {
 const holder = {};
@@ -60749,6 +60804,8 @@ class FloatingAssistant {
                 await run._otTeacherCommand(argsText);
             }
         );
+        // /offline-trainer-by-ai 的別名：/teacher-loop（老師迴圈——線上模型當老師，確保「小模型＋離線訓練器＋FSM」離線自己能做對；做法完全沿用 /offline-trainer-by-ai）
+        { const e = this.slashCommands.get('/offline-trainer-by-ai'); if (e) ['/teacher-loop'].forEach((al) => this.slashCommands.set(al, Object.assign({}, e, { cmd: al, desc: '（等於 /offline-trainer-by-ai）' + e.desc }))); }
         this.register_slash_command(
             '/offline-dry', '<一句話>',
             '乾跑：顯示離線訓練器會怎麼判斷這句話（規則、語意、重排、要呼叫的工具與參數），不執行',
@@ -71205,7 +71262,7 @@ ${fnData.code}
         const out = { ok: true, text: plan.text, fingerprint: plan.fingerprint, slots: plan.slots, threshold: plan.threshold, stages: plan.stages, decision: { status: d.status, reason: d.reason, chosen: d.chosen ? { kind: d.chosen.kind, state: d.chosen.state, steps: d.chosen.steps, domain: d.chosen.domain, pattern: d.chosen.pattern, tool: d.chosen.tool, slash: d.chosen.slash, args: d.chosen.args, risk: d.chosen.risk, score: d.chosen.score, via: d.chosen.via, explain: d.chosen.explain, missing: d.chosen.missing } : null }, alternatives: plan.alternatives, rag: plan.rag };
         // 句子與混合內容的理解（意圖框架）：沒有規則命中時，看得出「要做什麼、對什麼、引用哪一段」
         try { if (!opts || opts.nlu !== false) { const cat = await this._nluCatalog(); const u = FaNlu.understand(plan.text, { catalog: cat, learn: false }); let sem = null; try { sem = FaIntent.derive(u, { catalog: cat, tools: this._intentTools(), userText: plan.text, online: false }); } catch (_) { sem = null; } out.nlu = { semantics: sem ? { entities: sem.entities, intents: sem.intents.slice(0, 3).map((i) => ({ action: i.action, theme: i.theme && { type: i.theme.type, lang: i.theme.lang }, target: i.target && { type: i.target.type, lang: i.target.lang }, entity: i.entity, neg: i.neg, executable: i.executable, missing: i.missing, confidence: i.confidence, matches: (i.matches || []).map((m) => ({ id: m.id, score: m.score })), rejected: i.rejected, plan: { feasible: i.plan.feasible, route: i.plan.route, goal: i.plan.goal, reason: i.plan.reason, steps: (i.plan.steps || []).map((x) => x.tool) } })), readable: FaIntent.describe(sem) } : null, languages: u.languages, summary: u.summary, asks: u.asks.slice(0, 4), intents: u.intents.slice(0, 3), sentences: u.sentences.slice(0, 4).map((s) => ({ text: s.text.slice(0, 120), type: s.frame.type, act: s.frame.act && s.frame.act.lemma, obj: s.frame.obj && s.frame.obj.head, parsed: s.frame.parsed, confidence: s.frame.confidence })) }; } } catch (e) { out.nlu = { error: String((e && e.message) || e).slice(0, 120) }; }
-        if (opts && opts.execute && (d.status === 'planned' || d.status === 'cache')) { const r = await this._otExecute(plan, opts); out.executed = { ok: r.ok, error: r.error, preview: String(r.text || '').slice(0, 1500) }; if (r.ok) await this._otBumpHit(plan); }
+        if (opts && opts.execute && (d.status === 'planned' || d.status === 'cache')) { const r = await this._otExecute(plan, opts); out.executed = { ok: r.ok, error: r.error, preview: String(r.text || '').slice(0, 1500), text: String(r.text || '').slice(0, 30000) }; if (r.ok) await this._otBumpHit(plan); }
         return out;
     }
 
@@ -71802,14 +71859,14 @@ ${fnData.code}
         const finished = s.items.filter((x) => x.status !== 'pending');
         const recent = finished.slice(-50);
         const offline = (arr) => arr.length ? Math.round(arr.filter((x) => x.offline).length / arr.length * 100) : 0;
-        return { total: s.items.length, pending: c.pending, solved_by_offline: finished.filter((x) => x.offline).length, solved_by_ai: finished.filter((x) => !x.offline && (x.status === 'done' || x.status === 'partial')).length, failed: c.failed, offline_rate_overall: offline(finished), offline_rate_recent50: offline(recent), extended_items: finished.filter((x) => x.extended).length, state: s.state };
+        return { total: s.items.length, pending: c.pending, solved_by_offline: finished.filter((x) => x.offline).length, solved_by_ai: finished.filter((x) => !x.offline && (x.status === 'done' || x.status === 'partial')).length, failed: c.failed, offline_rate_overall: offline(finished), offline_rate_recent50: offline(recent), extended_items: finished.filter((x) => x.extended).length, checked_total: s.items.filter((x) => x.check).length, verified_offline: finished.filter((x) => x.offline && x.verified).length, relearned: s.items.filter((x) => x.relearned).length, regressions: s.regressions || 0, rolled_back: s.items.filter((x) => x.rolledBack).length, state: s.state };
     }
     _otTeacherText(s) {
         const k = this._otTeacherStats(s);
         const done = k.total - k.pending;
         let eta = '';
         if (done > 3 && k.pending && s.started) { const per = (Date.now() - s.started - (s.pausedMs || 0)) / done; eta = ' · 預估剩 ' + this._repoJobFmtTime(per * k.pending / 1000); }
-        return `${s.goal.slice(0, 40)}\n已處理 ${done}/${k.total} · 離線自己解決 ${k.solved_by_offline}（最近50項 ${k.offline_rate_recent50}%）· AI解決 ${k.solved_by_ai} · 失敗 ${k.failed} · 擴充了技能的項目 ${k.extended_items}${eta}${s.current ? '\n目前：' + String(s.current).slice(0, 60) : ''}${s.state === 'paused' ? '\n⏸ ' + (s.pauseReason || '已暫停') : ''}`;
+        return `${s.goal.slice(0, 40)}\n已處理 ${done}/${k.total} · 離線自己解決 ${k.solved_by_offline}（最近50項 ${k.offline_rate_recent50}%）· AI解決 ${k.solved_by_ai} · 失敗 ${k.failed} · 擴充了技能的項目 ${k.extended_items}${k.checked_total ? `\n有驗證的項目 ${k.checked_total}：離線做對（通過驗證）${k.verified_offline} · 老師教完離線重做通過 ${k.relearned} · 讓已會的項目退步 ${k.regressions} · 回滾 ${k.rolled_back}` : ''}${eta}${s.current ? '\n目前：' + String(s.current).slice(0, 60) : ''}${s.state === 'paused' ? '\n⏸ ' + (s.pauseReason || '已暫停') : ''}`;
     }
     async _otTeacherStart(o) {
         o = o || {};
@@ -71823,7 +71880,7 @@ ${fnData.code}
         const goal = String(o.goal || '').trim() || '處理這個項目';
         const ans = await this.requestUserForm({ title: '🎓 AI 教離線訓練器：要開始嗎？', description: `共 ${items.length} 項（${{ regex: '依regex抽出', json: 'JSON陣列', single: '單一任務', line: '每行一項' }[parsed.mode] || parsed.mode}）。\n目標：${goal}\n\n每一項會先讓離線訓練器自己試；做不到才交給 AI，AI 成功後必須把做法寫回離線訓練器（原始碼工具＋狀態機＋規則）。會在背景長時間進行（可以隨時 /offline-trainer-by-ai stop，之後 resume 接續），這段時間會消耗 AI 額度。\n\n注意：AI 與離線訓練器會用到有副作用的工具（寫檔、git、終端機）。${o.unattended ? '你選了無人值守：離線訓練器自己呼叫的工具不再逐次詢問。' : '離線訓練器呼叫有副作用的工具時仍會逐次詢問你。'}`, choices: ['開始', '取消'] });
         if (!ans || !ans.confirmed || ans.answer !== '開始') return { ok: false, cancelled: true, error: '使用者取消' };
-        const s = { id: 's_' + Date.now().toString(36), goal, created: Date.now(), started: Date.now(), pausedMs: 0, state: 'running', mode: parsed.mode, items, idx: 0, opts: { unattended: !!o.unattended, maxFailures: Math.max(3, Number(o.max_failures) || 15), delayMs: Math.max(0, Number(o.delay_ms) || 1500), maxRounds: Math.max(8, Number(o.max_rounds) || 40), template: String(o.template || '') }, consecutiveFailures: 0, log: [] };
+        const s = { id: 's_' + Date.now().toString(36), goal, created: Date.now(), started: Date.now(), pausedMs: 0, state: 'running', mode: parsed.mode, items, idx: 0, opts: { unattended: !!o.unattended, maxFailures: Math.max(3, Number(o.max_failures) || 15), delayMs: Math.max(0, Number(o.delay_ms) || 1500), maxRounds: Math.max(8, Number(o.max_rounds) || 40), maxTeach: Math.max(1, Math.min(5, Number(o.max_teach) || 2)), template: String(o.template || '') }, consecutiveFailures: 0, log: [] };
         await this._otTeacherSave(s);
         this._otTeacherSessions().set(s.id, s);
         this._otTeacherLoop(s).catch((e) => { s.state = 'error'; s.pauseReason = String((e && e.message) || e); this._otTeacherSave(s); });
@@ -71853,9 +71910,31 @@ ${fnData.code}
         if (dec.status !== 'planned' && dec.status !== 'cache') return { ok: false, why: '離線訓練器沒有對應的做法（' + String(dec.reason || dec.status).slice(0, 120) + '）' };
         if (!d.executed) return { ok: false, why: '離線訓練器找到做法但沒有執行' };
         if (!d.executed.ok) return { ok: false, why: '離線訓練器執行失敗：' + String(d.executed.error || '').slice(0, 200), attempted: dec.chosen && (dec.chosen.pattern || dec.chosen.tool) };
-        return { ok: true, preview: String(d.executed.preview || '').slice(0, 300), by: dec.chosen && (dec.chosen.pattern || dec.chosen.tool) };
+        return { ok: true, preview: String(d.executed.preview || '').slice(0, 300), output: String(d.executed.text || d.executed.preview || ''), by: dec.chosen && (dec.chosen.pattern || dec.chosen.tool) };
     }
     _otTeacherAllowedTools() { return Object.keys(this.tools).filter((n) => /^(offline_trainer|fetch_web_page|browser_search|http_|git_|apply_git_patch|coding_|terminal_|fs_|fap_|repo_|list_file_access|python_execute|bash_execute|programming_knowledge|summarize_large_text|list_uploaded|parse_uploaded)/.test(n)); }
+    // ===== 客觀驗證（/offline-trainer-by-ai，別名 /teacher-loop）：項目可以帶 check；離線做出來的結果要通過驗證才算「離線自己做對」=====
+    async _otTeacherCheck(item, text) {
+        const C = item && item.check; if (!C) return { ok: true, detail: '沒有檢查' };
+        const TC = (typeof FaTeacherCheck !== 'undefined') ? FaTeacherCheck : null; if (!TC) return { ok: false, detail: '驗證模組沒有載入' };
+        if (!TC.isJudge(C)) return TC.checkSync(C, text);
+        const bridge = this._codeJudgeBridge ? this._codeJudgeBridge() : null; if (!bridge || !bridge.judge) return { ok: false, unavailable: true, detail: '判題器不可用（需要桌面版，並開啟「允許 AI 執行程式」）' };
+        let src = TC.extractCode(text); if (C.entry === 'main' && !/\bmain\(\)\s*$/.test(String(src).trim())) src += '\nmain()\n';
+        try { const r = await bridge.judge({ lang: C.lang, source: src, problem: TC.judgeProblem(C, item.key) }); return { ok: !!(r && r.verdict === 'AC'), detail: r ? r.verdict + (r.detail ? '：' + String(r.detail).slice(0, 160) : '') : '判題器沒有回應' }; }
+        catch (e) { return { ok: false, detail: '判題器出錯：' + String((e && e.message) || e).slice(0, 160) }; }
+    }
+    // 老師教之前先拍快照；教完驗證不過、或讓已會的項目退步，就還原（只還原使用者領域；老師新建的領域會留著，所以回報裡會誠實標示）
+    async _otTeacherSnapshot() { try { return await this._otBundleExport({ include_turns: false, include_solutions: true }); } catch (_) { return null; } }
+    async _otTeacherRestore(snap) {
+        if (!snap) return { ok: false, error: '沒有快照' };
+        try { const r = await this._otBundleImport(snap, { mode: 'replace', confirmed: true, force: true }); return r && r.ok !== false ? { ok: true } : { ok: false, error: String((r && r.error) || '匯入失敗') }; } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+    }
+    // 回歸檢查：先前離線做對（通過驗證）的項目，在新的一課之後還要一樣能做對
+    async _otTeacherRegress(s, current) {
+        const prev = s.items.filter((x) => x !== current && x.check && x.verified && x.status === 'done').slice(-(s.opts.regressLimit || 15)); const bad = [];
+        for (const x of prev) { if (s.stop) break; const r = await this._otTeacherTryOffline(x.text || x.key, s); const v = r.ok ? await this._otTeacherCheck(x, r.output) : { ok: false, detail: r.why }; if (!v.ok) bad.push({ key: x.key, why: String(v.detail || '').slice(0, 120) }); }
+        s.regressChecked = (s.regressChecked || 0) + prev.length; return bad;
+    }
     _otTeacherVerdict(text) {
         const t = String(text || '');
         const ms = t.match(/\{[^{}]*"status"[^{}]*\}/g) || [];
@@ -71872,13 +71951,16 @@ ${fnData.code}
                 if ((this.advancedSettings.offlineAutoTrain || 'off') === 'off') { s.state = 'paused'; s.pauseReason = '自動訓練被關掉了'; break; }
                 const item = s.items.find((x) => x.status === 'pending');
                 if (!item) { s.state = 'done'; break; }
+                if (item.checkError) { Object.assign(item, { status: 'failed', offline: false, summary: 'check 不合法：' + item.checkError, at: Date.now() }); s.log.push({ key: item.key, status: 'failed', offline: false, at: item.at }); continue; }
                 s.current = item.key;
                 const text = (s.opts.template ? s.opts.template.split('{item}').join(item.key).split('{context}').join(item.context || '') : `${s.goal}：${item.key}${item.context ? '（' + item.context + '）' : ''}`);
                 item.text = text.slice(0, 600);
                 tick();
                 const t0 = Date.now();
                 // 1) 離線訓練器先試
-                const off = await this._otTeacherTryOffline(text, s);
+                let off = await this._otTeacherTryOffline(text, s);
+                // 有 check 的項目：離線「做出來」還不算，結果要通過驗證才算離線自己做對
+                if (off.ok && item.check) { const cv = await this._otTeacherCheck(item, off.output); if (cv.ok) item.verified = true; else off = { ok: false, why: '離線做出來了，但驗證沒過：' + String(cv.detail || '').slice(0, 200), wrong: true }; }
                 if (off.ok) {
                     Object.assign(item, { status: 'done', offline: true, summary: off.preview, by: off.by, ms: Date.now() - t0, at: Date.now() });
                     s.consecutiveFailures = 0;
@@ -71886,8 +71968,9 @@ ${fnData.code}
                     // 2) 交給AI（每一項是全新的子任務、乾淨的上下文），AI成功後必須擴充離線訓練器
                     item.attempts++;
                     const before = await this._otFingerprint();
+                    const snap = item.check ? await this._otTeacherSnapshot() : null;
                     const calls = [];
-                    const mk = (extra) => `${extra || ''}項目：${item.key}\n背景：${item.context || '（無）'}\n目標：${s.goal}\n\n離線訓練器目前的情況：${off.why}\n\n處理完請照規範擴充離線訓練器，最後輸出一行JSON回報。`;
+                    const mk = (extra) => `${extra || ''}項目：${item.key}\n背景：${item.context || '（無）'}\n目標：${s.goal}${item.check && typeof FaTeacherCheck !== 'undefined' && FaTeacherCheck ? '\n驗證：離線自己做出來的結果要通過「' + FaTeacherCheck.summary(item.check) + '」才算數（教完之後會要求離線自己重做並驗證）。' : ''}\n\n離線訓練器目前的情況：${off.why}\n\n處理完請照規範擴充離線訓練器，最後輸出一行JSON回報。`;
                     let r, verdict;
                     try {
                         r = await this._runSubAgentTask(mk(), s.opts.maxRounds, { systemPrompt: FA_OT_TEACHER_PROTOCOL, allowedToolNames: this._otTeacherAllowedTools(), collectCalls: calls });
@@ -71900,8 +71983,23 @@ ${fnData.code}
                         try { const r2 = await this._runSubAgentTask(mk('你剛才處理成功了，但離線訓練器沒有任何變化（沒有新增／更新工具、狀態或規則）。現在照規範把可重複的做法寫回離線訓練器（add_tool→add_state→add_pattern，並用 run_tool／dry_run 驗證），再回報。\n\n'), Math.min(20, s.opts.maxRounds), { systemPrompt: FA_OT_TEACHER_PROTOCOL, allowedToolNames: this._otTeacherAllowedTools(), collectCalls: calls }); const v2 = this._otTeacherVerdict(r2 && r2.text); if (v2) verdict = v2; } catch (_) {}
                         after = await this._otFingerprint(); extended = this._otFpDiff(before, after);
                     }
-                    const okStatus = verdict && /solved/.test(String(verdict.status)) ? 'done' : (verdict && /partial/.test(String(verdict.status)) ? 'partial' : 'failed');
+                    let okStatus = verdict && /solved/.test(String(verdict.status)) ? 'done' : (verdict && /partial/.test(String(verdict.status)) ? 'partial' : 'failed');
                     Object.assign(item, { status: okStatus, offline: false, extended, summary: String((verdict && verdict.summary) || (r && r.text) || '').slice(0, 300), limits: verdict && verdict.limits ? String(verdict.limits).slice(0, 200) : undefined, tools_changed: verdict && Array.isArray(verdict.extended) ? verdict.extended.slice(0, 8) : undefined, ms: Date.now() - t0, at: Date.now() });
+                    // 有 check 的項目：老師教完，離線要「自己」重做並通過驗證（不是老師做完就算）；不過就請老師改進（最多 maxTeach 次），還是不過就回滾這堂課
+                    if (item.check && okStatus !== 'failed') {
+                        const maxT = s.opts.maxTeach || 2; let rv = { ok: false, detail: '' };
+                        for (let k = 0; k <= maxT && !s.stop; k++) {
+                            const re = await this._otTeacherTryOffline(text, s); rv = re.ok ? await this._otTeacherCheck(item, re.output) : { ok: false, detail: re.why };
+                            if (rv.ok || k === maxT) break;
+                            try { await this._runSubAgentTask(mk('你把解法教給離線訓練器了，但離線自己重做的結果驗證沒過：' + String(rv.detail || '').slice(0, 200) + '。請改進你寫回離線訓練器的做法（工具、狀態、規則），用 dry_run／run_tool 驗證到離線自己做得對，再回報。\n\n'), Math.min(20, s.opts.maxRounds), { systemPrompt: FA_OT_TEACHER_PROTOCOL, allowedToolNames: this._otTeacherAllowedTools(), collectCalls: calls }); } catch (_) { /* 老師出錯就用現有結果判定 */ }
+                        }
+                        if (rv.ok) {
+                            item.relearned = true; item.verified = true;
+                            const bad = await this._otTeacherRegress(s, item);
+                            if (bad.length) { s.regressions = (s.regressions || 0) + bad.length; const rr = await this._otTeacherRestore(snap); item.rolledBack = rr.ok || 'failed'; item.verified = false; item.relearned = false; okStatus = 'failed'; item.summary = '這堂課讓已會的項目退步：' + bad.slice(0, 3).map((b) => b.key.slice(0, 20)).join('、') + (rr.ok ? '（已回滾）' : '（回滾失敗：' + String(rr.error || '').slice(0, 60) + '，請手動檢查）'); }
+                        } else { const rr = await this._otTeacherRestore(snap); item.rolledBack = rr.ok || 'failed'; okStatus = 'failed'; item.summary = '老師教了，但離線自己重做驗證還是沒過：' + String(rv.detail || '').slice(0, 120) + (rr.ok ? '（已回滾）' : '（回滾失敗：' + String(rr.error || '').slice(0, 60) + '）'); }
+                        if (okStatus === 'failed') { item.status = 'failed'; item.offline = false; item.extended = false; }
+                    }
                     // 成功的做法也記成對話紀錄：累積多項之後，背景整理（distill）還能自動長出更多技能
                     if (okStatus !== 'failed') { try { await this._otRecordTurn(text, calls.filter((c) => c.ok), String((verdict && verdict.summary) || ''), { source: 'teacher' }); this._otTrainSchedule && this._otTrainSchedule(); } catch (_) {} }
                     if (okStatus === 'failed') s.consecutiveFailures++; else s.consecutiveFailures = 0;
@@ -71937,7 +72035,7 @@ ${fnData.code}
     _otTeacherParseArgs(raw) {
         let text = String(raw || '');
         const o = { text: '' };
-        const optRe = /--(file|regex|limit|goal|template|max-failures|max-rounds|delay)\s+("([^"]*)"|'([^']*)'|\S+)/g;
+        const optRe = /--(file|regex|limit|goal|template|max-failures|max-rounds|max-teach|delay)\s+("([^"]*)"|'([^']*)'|\S+)/g;
         text = text.replace(optRe, (m, k, v, d1, d2) => { o[k.replace(/-/g, '_')] = d1 != null ? d1 : (d2 != null ? d2 : v); return ''; });
         if (/--unattended/.test(text)) { o.unattended = true; text = text.replace(/--unattended/g, ''); }
         const lines = text.split(/\r?\n/);

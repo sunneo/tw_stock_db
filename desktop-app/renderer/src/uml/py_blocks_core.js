@@ -160,6 +160,8 @@
         const fillHoles = (x, fills) => { if (Array.isArray(x)) return x.map((y) => fillHoles(y, fills)); if (x && typeof x === 'object') { if (isHole(x)) return clone(fills[x.v.slice(PRE_H.length)]); const o = {}; for (const k of Object.keys(x)) o[k] = fillHoles(x[k], fills); return o; } return x; };
         const buildExpr = (id, fills) => fillHoles(exprById[id].pat, fills);
         const ORDER = TEMPLATES.slice().sort((a, b) => b.size - a.size);
+        // 運算式 IR → 是哪一個運算式積木、槽位各是什麼（反推用；沒有積木對得上就回 null）
+        const matchExpr = (ir) => { for (const e of EXPRS) { const ctx = { tpl: { slots: Object.fromEntries(e.slots.map((n) => [n, 'expr'])) }, slots: {}, bodies: {} }; if (unify(e.pat, ir, ctx) && e.slots.every((n) => n in ctx.slots)) return { id: e.id, fills: ctx.slots }; } return null; };
 
         // ---- 結構比對（程式 → 區塊）----
         function unify(p, x, ctx) {
@@ -256,7 +258,7 @@
             const blocks = block(0); return { ok: !errors.length, blocks, errors };
         }
         function stats(blocks) { const st = { blocks: 0, generic: 0, byTemplate: {} }; const walk = (bl) => { for (const b of bl) { st.blocks++; if (b.t === 'stmt') st.generic++; else st.byTemplate[b.t] = (st.byTemplate[b.t] || 0) + 1; if (b.t === 'if') { b.branches.forEach((x) => walk(x.body)); if (b.els) walk(b.els); } else if (b.bodies) Object.values(b.bodies).forEach(walk); } }; walk(blocks); return st; }
-        return { TEMPLATES, EXPRS, LIB, buildExpr, fromIR, toIR, toCNL, parseCNL, stats, exprOf, exprText, stmtsOfSource, byId };
+        return { TEMPLATES, EXPRS, LIB, matchExpr, buildExpr, fromIR, toIR, toCNL, parseCNL, stats, exprOf, exprText, stmtsOfSource, byId };
     }
     return { makeBlocks, SPEC, EXPR_SPEC };
 });

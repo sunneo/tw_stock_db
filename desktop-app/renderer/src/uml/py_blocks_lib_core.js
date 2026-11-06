@@ -46,6 +46,10 @@
         'plt_subplots|繪圖|建立圖 {fig:name} 與座標軸 {ax:name}|$fig, $ax = plt.subplots()',
         'ax_plot|繪圖|在座標軸 {ax:name} 畫折線圖：x 是 {x}，y 是 {y}|$ax.plot($x, $y)',
         'ax_set_title|繪圖|設定座標軸 {ax:name} 的標題 {s}|$ax.set_title($s)',
+        // ---- 矩陣（把問題映射成矩陣、用矩陣相乘求解：線性遞推、轉移矩陣、路徑計數）----
+        'mat_mul|演算法|令 {c:name} 為矩陣 {a} 與 {b} 相乘（純 Python）|$c = [[sum(x * y for x, y in zip(row, col)) for col in zip(*$b)] for row in $a]',
+        'mat_identity|資料|令 {x:name} 為 {n} 階單位矩陣（純 Python）|$x = [[1 if i == j else 0 for j in range(int($n))] for i in range(int($n))]',
+        'mat_pow|演算法|用快速冪求方陣 {a} 的 {e} 次方，結果放在 {r:name}，（{a} 和 {e} 會被用掉），迴圈用 {i:name}、{j:name}|$r = [[1 if $i == $j else 0 for $j in range(len($a))] for $i in range(len($a))]\nwhile $e > 0:\n    if $e % 2 == 1:\n        $r = [[sum(x * y for x, y in zip(row, col)) for col in zip(*$a)] for row in $r]\n    $a = [[sum(x * y for x, y in zip(row, col)) for col in zip(*$a)] for row in $a]\n    $e //= 2',
         // ---- 亂數 ----
         'random_seed|科學|設定亂數種子為 {n}|random.seed($n)',
         'random_shuffle|科學|打亂清單 {l}|random.shuffle($l)',
@@ -57,14 +61,16 @@
         '陣列|科學·數值|{a} 轉成 numpy 陣列|np.array($a)', '零陣列|科學·數值|{a} 個 0 的 numpy 陣列|np.zeros($a)', '一陣列|科學·數值|{a} 個 1 的 numpy 陣列|np.ones($a)', '等差陣列|科學·數值|從 {a} 到 {b}（不含）每次 {s} 的 numpy 陣列|np.arange($a, $b, $s)', '等分陣列|科學·數值|從 {a} 到 {b} 平均分成 {n} 點的 numpy 陣列|np.linspace($a, $b, $n)', '內積|科學·數值|{a} 與 {b} 的內積|np.dot($a, $b)', '陣列平均|科學·數值|{a} 的平均|np.mean($a)', '陣列標準差|科學·數值|{a} 的標準差|np.std($a)', '陣列總和|科學·數值|{a} 的總和（numpy）|np.sum($a)', '累積和|科學·數值|{a} 的累積和|np.cumsum($a)', '陣列正弦|科學·數值|{a} 每個元素的正弦|np.sin($a)', '陣列餘弦|科學·數值|{a} 每個元素的餘弦|np.cos($a)', '陣列指數|科學·數值|{a} 每個元素的指數|np.exp($a)', '陣列平方根|科學·數值|{a} 每個元素的平方根|np.sqrt($a)', '向量長度|科學·數值|{a} 的向量長度（範數）|np.linalg.norm($a)', '反矩陣|科學·數值|矩陣 {a} 的反矩陣|np.linalg.inv($a)', '解線性方程|科學·數值|解線性方程組 {a} x = {b}|np.linalg.solve($a, $b)', '轉置|科學·數值|{a} 的轉置|np.transpose($a)', '最大值位置|科學·數值|{a} 最大值的位置|np.argmax($a)', '隨機陣列|科學·數值|{a} 個 0 到 1 的隨機數|np.random.rand($a)',
         '平均數|科學·統計|{a} 的平均數|statistics.mean($a)', '中位數|科學·統計|{a} 的中位數|statistics.median($a)', '樣本標準差|科學·統計|{a} 的標準差（樣本）|statistics.stdev($a)', '變異數|科學·統計|{a} 的變異數（樣本）|statistics.variance($a)', '眾數|科學·統計|{a} 的眾數|statistics.mode($a)',
         '隨機小數|科學·亂數|0 到 1 的隨機小數|random.random()', '隨機整數|科學·亂數|{a} 到 {b} 的隨機整數（含兩端）|random.randint($a, $b)', '隨機挑一個|科學·亂數|從 {a} 隨機挑一個|random.choice($a)',
+        '矩陣相乘|科學·數值|矩陣 {a} 乘矩陣 {b}（numpy）|$a @ $b', '矩陣乘冪|科學·數值|方陣 {a} 的 {n} 次方（numpy）|np.linalg.matrix_power($a, $n)', '單位矩陣|科學·數值|{n} 階單位矩陣（numpy）|np.eye($n)', '矩陣行列式|科學·數值|方陣 {a} 的行列式|np.linalg.det($a)',
         '定積分|科學·微積分|函式 {f} 從 {a} 到 {b} 的定積分|integrate.quad($f, $a, $b)[0]',
         '佇列|科學·集合|從 {a} 建立的佇列|deque($a)', '計數器|科學·集合|{a} 的計數器|Counter($a)', '二分位置|科學·集合|{a} 裡第一個不小於 {b} 的位置|bisect.bisect_left($a, $b)',
     ];
+    const MATRIX_NOTE = '矩陣：mat_mul／mat_pow／mat_identity 是純 Python，不需要引入模組；矩陣相乘等 numpy 積木要先引入 numpy';
     const IMPORTS = { import_math: 'math', import_numpy: 'np', import_plt: 'plt', import_stat: 'statistics', import_random: 'random', import_scipy: 'integrate', import_collections: 'deque', import_heapq: 'heapq', import_bisect: 'bisect' };
     // 模組需求：id → 需要的模組（引入積木提供的名稱）
     const REQ = {};
     for (const id of Object.keys({ 平方根: 1, 正弦: 1, 餘弦: 1, 正切: 1, 反正切2: 1, 指數: 1, 自然對數: 1, 對數底10: 1, 對數底2: 1, 無條件捨去: 1, 無條件進位: 1, 最大公因數: 1, 階乘: 1, 斜邊: 1, 弧度: 1, 度: 1, 圓周率: 1, 自然常數: 1 })) REQ[id] = 'math';
-    for (const id of ['陣列', '零陣列', '一陣列', '等差陣列', '等分陣列', '內積', '陣列平均', '陣列標準差', '陣列總和', '累積和', '陣列正弦', '陣列餘弦', '陣列指數', '陣列平方根', '向量長度', '反矩陣', '解線性方程', '轉置', '最大值位置', '隨機陣列', 'np_seed']) REQ[id] = 'np';
+    for (const id of ['矩陣相乘', '矩陣乘冪', '單位矩陣', '矩陣行列式', '陣列', '零陣列', '一陣列', '等差陣列', '等分陣列', '內積', '陣列平均', '陣列標準差', '陣列總和', '累積和', '陣列正弦', '陣列餘弦', '陣列指數', '陣列平方根', '向量長度', '反矩陣', '解線性方程', '轉置', '最大值位置', '隨機陣列', 'np_seed']) REQ[id] = 'np';
     for (const id of ['平均數', '中位數', '樣本標準差', '變異數', '眾數']) REQ[id] = 'statistics';
     for (const id of ['隨機小數', '隨機整數', '隨機挑一個', 'random_seed', 'random_shuffle']) REQ[id] = 'random';
     REQ['定積分'] = 'integrate'; REQ['佇列'] = 'deque'; REQ['計數器'] = 'deque'; REQ['二分位置'] = 'bisect'; REQ['init_deque'] = 'deque'; REQ['bfs_loop'] = 'deque';
@@ -102,6 +108,7 @@
         // 繪圖
         plt_plot: { use: { x: 'iter', y: 'iter' } }, plt_plot_label: { use: { x: 'iter', y: 'iter', lab: 'str' } }, plt_scatter: { use: { x: 'iter', y: 'iter' } }, plt_bar: { use: { x: 'iter', h: 'iter' } }, plt_hist: { use: { x: 'iter', n: 'int' } }, plt_pie: { use: { x: 'iter', lab: 'iter' } }, plt_imshow: { use: { a: 'iter' } },
         plt_xlabel: { use: { s: 'str' } }, plt_ylabel: { use: { s: 'str' } }, plt_title: { use: { s: 'str' } }, plt_xlim: { use: { a: 'num', b: 'num' } }, plt_ylim: { use: { a: 'num', b: 'num' } }, plt_savefig: { use: { path: 'str' } }, plt_subplots: { decl: { fig: 'any', ax: 'any' } }, ax_plot: { use: { ax: V('any'), x: 'iter', y: 'iter' } }, ax_set_title: { use: { ax: V('any'), s: 'str' } },
+        mat_mul: { decl: { c: 'list' }, use: { a: V('list'), b: V('list') } }, mat_identity: { decl: { x: 'list' }, use: { n: 'int' } }, mat_pow: { decl: { r: 'list', i: 'int', j: 'int' }, use: { a: V('list'), e: V('int') } },
         random_seed: { use: { n: 'int' } }, random_shuffle: { use: { l: V('list') } }, np_seed: { use: { n: 'int' } },
     };
     const ET = (ret, p) => ({ ret, p: p || {} });
@@ -117,6 +124,7 @@
         平方根: ET('num', { a: 'num' }), 正弦: ET('num', { a: 'num' }), 餘弦: ET('num', { a: 'num' }), 正切: ET('num', { a: 'num' }), 反正切2: ET('num', { a: 'num', b: 'num' }), 指數: ET('num', { a: 'num' }), 自然對數: ET('num', { a: 'num' }), 對數底10: ET('num', { a: 'num' }), 對數底2: ET('num', { a: 'num' }), 無條件捨去: ET('int', { a: 'num' }), 無條件進位: ET('int', { a: 'num' }), 最大公因數: ET('int', { a: 'int', b: 'int' }), 階乘: ET('int', { a: 'int' }), 斜邊: ET('num', { a: 'num', b: 'num' }), 弧度: ET('num', { a: 'num' }), 度: ET('num', { a: 'num' }), 圓周率: ET('num'), 自然常數: ET('num'),
         陣列: ET('list', { a: 'iter' }), 零陣列: ET('list', { a: 'int' }), 一陣列: ET('list', { a: 'int' }), 等差陣列: ET('list', { a: 'num', b: 'num', s: 'num' }), 等分陣列: ET('list', { a: 'num', b: 'num', n: 'int' }), 內積: ET('num', { a: 'iter', b: 'iter' }), 陣列平均: ET('num', { a: 'iter' }), 陣列標準差: ET('num', { a: 'iter' }), 陣列總和: ET('num', { a: 'iter' }), 累積和: ET('list', { a: 'iter' }), 陣列正弦: ET('list', { a: 'iter' }), 陣列餘弦: ET('list', { a: 'iter' }), 陣列指數: ET('list', { a: 'iter' }), 陣列平方根: ET('list', { a: 'iter' }), 向量長度: ET('num', { a: 'iter' }), 反矩陣: ET('list', { a: 'iter' }), 解線性方程: ET('list', { a: 'iter', b: 'iter' }), 轉置: ET('list', { a: 'iter' }), 最大值位置: ET('int', { a: 'iter' }), 隨機陣列: ET('list', { a: 'int' }),
         平均數: ET('num', { a: 'iter' }), 中位數: ET('num', { a: 'iter' }), 樣本標準差: ET('num', { a: 'iter' }), 變異數: ET('num', { a: 'iter' }), 眾數: ET('any', { a: 'iter' }),
+        矩陣相乘: ET('list', { a: 'iter', b: 'iter' }), 矩陣乘冪: ET('list', { a: 'iter', n: 'int' }), 單位矩陣: ET('list', { n: 'int' }), 矩陣行列式: ET('num', { a: 'iter' }),
         隨機小數: ET('num'), 隨機整數: ET('int', { a: 'int', b: 'int' }), 隨機挑一個: ET('any', { a: 'iter' }), 定積分: ET('num', { f: 'any', a: 'num', b: 'num' }), 佇列: ET('list', { a: 'iter' }), 計數器: ET('dict', { a: 'iter' }), 二分位置: ET('int', { a: 'iter', b: 'any' }),
     };
     return { SPEC_EXTRA, EXPR_EXTRA, TYPES, ETYPES, REQ, IMPORTS };
