@@ -55,3 +55,16 @@
 - `pkill -f`／`pgrep -f` 會比對到自己的 bash 指令：用 `ps -eo pid,args | grep "[x]yz"`。
 - 用內嵌指令寫修補程式會吃掉反斜線與引號：寫成檔案再執行。
 - 生 qwen3-0.6b 的位置與本機服務見 `scripts/eval/mini_llama_server.py`；這個任務不需要模型。
+
+## 8. 完成紀錄（2026-11-06，接手者 matrix-algorithms · 第 1 棒）
+
+待辦 1、2、2b、3、4 全部完成，**沒有提交、沒有發布**：`DESIGN.matrix-algorithms.md`、`renderer/src/algo/matrix_forms_core.js`、`matrix_forms.test.js`（49 項）、`scripts/run-core-tests.js` 一行、`STATUS.md` 一段、`DESIGN.TODO.md` 一列。核心測試 `FA_TS_DIR=/tmp/fa-ts-cache node scripts/run-core-tests.js` 200/200。待辦清空，不需再交接。使用者要提交時請說「提交並發布」（只加上面這些檔案）。
+
+### 8.1 追加的使用者原話（2026-11-06，逐字；由 FloatingAssistant 轉來）
+- 「如果是不用一個巨大的，而是多個小的組織起來呢，中間用狀態機連接」
+- 「ReLU, CoLU的概念」
+- 「就像把矩陣運算當成一個虛擬機器一樣，類似CoLU的概念」
+已做：`DESIGN.matrix-algorithms.md` 第 9～11 節、`matrix_machine_core.js`、`relu_core.js`、`matrix_vm_core.js`、`matrix_machine.test.js`（28 項，已登記）、STATUS／TODO。仍不提交發布。
+- 「如果內層ReLU被實做出來，驗證可以各種輸入輸出都滿足，就足以被編譯成一個CoLU」（2026-11-06，逐字）→ 已做：第 12 節＋`relu_compile_core.js`、`relu_compile.test.js`（16 項，已登記）。
+- 「那對於我們無法用矩陣接起來的有什麼程式化的銜接的方式?另一個矩陣?堆疊?」（2026-11-06，逐字）→ 已做：第 13 節＋`matrix_memory.test.js`（11 項，已登記）。
+- 「幫我評估，如果這個可行，是各種應用都做的出來，但核心會是很難解讀的黑盒子嗎」（2026-11-06，逐字）→ 已做：第 14 節＋`matrix_decompile_core.js`、`matrix_decompile.test.js`（15 項，已登記）。

@@ -36,7 +36,7 @@ function register(ipcMain, ctx) {
 //  2) 第一次呼叫（同一個視窗、10 分鐘內沒有授權過）走既有的 execConfirmGate 跳確認框，顯示語言與程式開頭；確認後同一視窗 10 分鐘內的後續驗收（迴圈每輪都要判題）不再重複詢問；
 //  3) 輸入有上限（程式 200KB、測試筆數與大小、逾時），避免被拿來吃光資源。
 // 誠實的限制（回傳裡的 sandbox 欄位也會帶）：判題器不是安全沙盒——沒有記憶體上限、沒有檔案與網路隔離，只有時間與輸出上限與精簡環境變數。所以只該跑自己或本機模型產生的程式。
-const JUDGE_LIMITS = { sourceBytes: 200 * 1024, tests: 60, testBytes: 64 * 1024, timeoutMs: 20000, grantMs: 10 * 60 * 1000 };
+const JUDGE_LIMITS = { sourceBytes: 200 * 1024, tests: 60, testBytes: 256 * 1024, timeoutMs: 20000, grantMs: 10 * 60 * 1000 };
 const JUDGE_SANDBOX_NOTE = "判題器不是安全沙盒：只有時間與輸出上限、精簡環境變數、獨立暫存目錄；沒有記憶體上限、沒有檔案與網路隔離。";
 const judgeGrants = new Map(); // webContents.id -> 授權到期時間
 let _judgeRunner = null;

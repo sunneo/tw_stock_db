@@ -125,7 +125,7 @@
             { role: 'system', content: '你在檢查一個計畫有沒有缺口。只輸出一個 JSON 物件，格式：{"gap": true 或 false, "note": "缺口是什麼（一句話；沒有缺口就填空字串）"}。' },
             { role: 'user', content: '計畫：\n' + String(opts.question || '').slice(0, 1200) + '\n\n這個計畫有沒有缺口？A 沒有 B 有：缺口是…' },
         ];
-        const work = jsonStep({ generate: opts.generate, messages: msgs, maxTries: 2, maxTokens: 160, prefill: '{"gap":', thinking: th,
+        const work = jsonStep({ stack: opts.stack, stackMod: opts.stackMod, generate: opts.generate, messages: msgs, maxTries: 2, maxTokens: 160, prefill: '{"gap":', thinking: th,
             validate: (o) => { if (typeof o.gap !== 'boolean') return ['「gap」必須是 true 或 false']; if (o.gap && (typeof o.note !== 'string' || !o.note.trim())) return ['有缺口時「note」不能是空的']; return []; } })
             .then((r) => r, (e) => ({ ok: false, error: String((e && e.message) || e), reasoning: '' }));
         let timer = null;
@@ -145,7 +145,7 @@
         const out = { value: opts.original, reflected: 0, gap: false, note: '', redone: false, fallback: false, reasoning: '', unsure: false };
         if (!thinkingPlan({ modelId: opts.modelId, stage: 'reflect', contextTokens: opts.contextTokens, enabled: opts.enabled, device: opts.device }).enabled) return out;
         const take = () => { if (b.total >= b.max || (perQ && (b.perQ[qid] || 0) >= b.perQMax)) return false; b.total++; if (perQ) b.perQ[qid] = (b.perQ[qid] || 0) + 1; return true; };
-        const ask = (value) => coluThinkReflect({ generate: opts.generate, modelId: opts.modelId, contextTokens: opts.contextTokens, enabled: opts.enabled, device: opts.device, question: opts.describe(value) });
+        const ask = (value) => coluThinkReflect({ stack: opts.stack, stackMod: opts.stackMod, generate: opts.generate, modelId: opts.modelId, contextTokens: opts.contextTokens, enabled: opts.enabled, device: opts.device, question: opts.describe(value) });
         if (!take()) { out.fallback = true; return out; }
         const r1 = await ask(opts.original); out.reflected = 1; out.reasoning = r1.reasoning; out.unsure = !r1.ok;
         if (!r1.gap) return out;
@@ -197,7 +197,7 @@
         const failErr = () => rejected.length ? rejected[rejected.length - 1].errors.join('；') : '沒有回覆';
         // 一輪：最多 maxTries 次，回覆不合格就退回重問（同前）；generate 拋錯回傳 thrown
         async function round(maxTries, maxTokens, enableThinking) {
-            let last = null; let msgs = ctx.messages;
+            let last = null; let msgs = ctx.stack && ctx.stackMod ? ctx.stackMod.wrap(ctx.messages, ctx.stack, { repeat: !!enableThinking }) : ctx.messages; // 思考堆疊：每次呼叫都重新放進「目標／路徑／現在這題／已定」的焦點標頭（見 think_stack.js）
             for (let t = 1; t <= maxTries; t++) {
                 const req = { messages: msgs, maxTokens, prefill: ctx.prefill }; if (th) { req.enableThinking = enableThinking; req.timeoutMs = th.timeoutMs; if (enableThinking) delete req.prefill; } // 開 thinking 那一輪不帶 prefill：prefill 會把 JSON 開頭寫死，模型就沒機會先想（退路那一輪才帶）
                 calls++;
@@ -255,7 +255,7 @@
     // 讓模型補欄位。回傳 { ok, values（只含模型填了非 null 的）, missing（模型也填不出的）, tries, rejected, error? }
     async function modelFill(opts) {
         const defs = opts.missing; if (!defs.length) return { ok: true, values: {}, missing: [], tries: 0, rejected: [] };
-        const r = await jsonStep({ generate: opts.generate, messages: fillMessages(opts.question, defs, opts.toolName), validate: validateFill(defs, opts.numbers), maxTries: opts.maxTries || 2, prefill: '{"' + defs[0].name + '":' });
+        const r = await jsonStep({ stack: opts.stack, stackMod: opts.stackMod, generate: opts.generate, messages: fillMessages(opts.question, defs, opts.toolName), validate: validateFill(defs, opts.numbers), maxTries: opts.maxTries || 2, prefill: '{"' + defs[0].name + '":' });
         if (!r.ok) return { ok: false, values: {}, missing: defs, tries: r.tries, rejected: r.rejected, error: r.error };
         const values = {}; const still = [];
         for (const d of defs) { const v = r.value[d.name]; if (v === null || v === undefined) still.push(d); else values[d.name] = d.type === 'string' && typeof v === 'string' ? v.trim() : v; }
@@ -299,8 +299,11 @@
         return [{ role: 'system', content: '你負責替使用者的話挑一個合適的工具。只輸出一個 JSON 物件，格式：{"choice": 編號}。編號只能是選單裡有的數字；0 代表「這些都不合適，只是一般聊天或問答」。' }, { role: 'user', content: '選單：\n' + lines + '\n0. 都不是（一般聊天或問答）\n\n使用者的話：\n' + String(question).slice(0, 800) }];
     }
     async function chooseTool(opts) {
-        const n = opts.cands.length; const r = await jsonStep({ generate: opts.generate, messages: menuMessages(opts.question, opts.cands), maxTokens: 40, maxTries: opts.maxTries || 2, prefill: '{"choice":', validate: (o) => { const c = o.choice; if (!Number.isInteger(c)) return ['「choice」必須是整數']; if (c < 0 || c > n) return ['「choice」必須是 0～' + n + ' 之間的整數']; return []; } });
-        if (!r.ok) return { ok: false, rejected: r.rejected, tries: r.tries, error: r.error };
+        // 思考堆疊：選工具是路由的一層；框架記下「選了哪個」，之後補欄位、計畫階段的標頭就看得到（先前的選擇不會被忘記）
+        const T = opts.stack && opts.stackMod; if (T) T.push(opts.stack, { path: opts.label || '選工具', question: '從選單挑一個合適的（或 0＝都不合適）' });
+        const n = opts.cands.length; const r = await jsonStep({ stack: opts.stack, stackMod: opts.stackMod, generate: opts.generate, messages: menuMessages(opts.question, opts.cands), maxTokens: 40, maxTries: opts.maxTries || 2, prefill: '{"choice":', validate: (o) => { const c = o.choice; if (!Number.isInteger(c)) return ['「choice」必須是整數']; if (c < 0 || c > n) return ['「choice」必須是 0～' + n + ' 之間的整數']; return []; } });
+        if (!r.ok) { if (T) T.pop(opts.stack, { ok: false, summary: '' }); return { ok: false, rejected: r.rejected, tries: r.tries, error: r.error }; }
+        if (T) { const c = opts.cands[r.value.choice - 1]; T.pop(opts.stack, { summary: r.value.choice === 0 ? '都不合適，當一般問答' : '選了 ' + (c ? c.tool : r.value.choice) }); }
         return { ok: true, index: r.value.choice - 1, none: r.value.choice === 0, by: 'model', tries: r.tries, rejected: r.rejected };
     }
 

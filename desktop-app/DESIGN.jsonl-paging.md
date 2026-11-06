@@ -82,9 +82,8 @@ cursor 格式 `c1:<來源>:<第幾筆>:<第幾段>:<第幾頁>`，解碼時驗�
 
 ## 六、還沒做（待改善，仍在 DESIGN.TODO.md）
 
-- 檢視器 `.jsonl`／`.ndjson`／`.jsonc` 與離線「打開」種類表。
-- 一次問答最多讀幾頁的預估（要跟 `fitToBudget` 的 placeholder 銜接），離線小模型（4096 token）的 `fraction` 調校。
-- `knowledge_ask`、`repo_*` 清單類工具帶 `_page` meta 與 `offset`（目前只有總截斷會轉 JSONL）。
+- ~~檢視器 `.jsonl`／`.ndjson`／`.jsonc` 與離線「打開」種類表~~：**2026-11-05 已做**（見下）。
+- ~~一次問答最多讀幾頁的預估、離線小模型（4096 token）的 `fraction` 調校、`knowledge_ask`／`repo_*` 帶 `_page` 與 `offset`~~：**2026-11-06 已做**（第十節）。
 - 用真的線上視覺模型量一次實際回多少物件、斷在第幾輪（需要使用者的金鑰與一張複雜的圖，列真人驗證）。
 
 ## 七、各種大回應的覆蓋現況（2026-11-05 稽核）
@@ -102,3 +101,84 @@ cursor 格式 `c1:<來源>:<第幾筆>:<第幾段>:<第幾頁>`，解碼時驗�
 | `knowledge_ask`（只有 `limit`，沒有 `offset`） | 命中很多、超過預算時走總截斷的 `hits` 陣列分頁 | 覆蓋區間 |
 
 仍然只有「下一個位置」而沒有覆蓋範圍的是第四列那些自帶分頁的文字工具（跳頁讀仍會清掉缺口）；這些是文字不是記錄，要補得改各工具回應加 `_page`，列待改善。
+
+## 八、檢視器支援 JSONL／NDJSON／JSONC（2026-11-05 已實作）
+
+使用者原話：「json的檢視器，要支援階層view, source view, 以及table view (轉table,類似excel)，也要支援jsonl, jsonc格式。要可以匯出json, xlsx, sqlite3」。
+
+- `dataview/data_core.js`：新格式 `jsonl`（`ndjson` 同義）、`jsonc`。`detectFormat` 自動判斷（前兩行都是單行物件→jsonl；嚴格 JSON 失敗但去掉註解／尾逗號後成功→jsonc）。`stripJsonc` 保留換行位置、字串內的 `//`、`/*` 不算註解；`parseJsonl` 壞行不讓整份失敗，保留成 `{_bad_line,error,raw}` 並回 `badLines`；`.json` 嚴格解析失敗而 JSONC 成功時回 `asJsonc`（不悄悄重試，畫面加提示）；`countComments`；BOM 處理；jsonc 上色含跨行區塊註解。
+- `dataview/data_ui.js`：標題 JSONL／JSONC；頂端提示（含 N 則註解、共 N 行 M 行壞行、以 JSONC 解析）；Export 加「JSONL（一行一筆）」，JSONL 來源匯出**原始行**不重新序列化。Source／階層 Viewer／表格（JSONL 的物件陣列直接成一張表）／匯出 JSON、XLSX、SQLite3 沿用既有流程。
+- `floating-assistant.js`：對話區塊 `jsonl`、`ndjson`、`jsonc` 開檢視器；`/view` 開 `.jsonl`、`.ndjson`、`.jsonc`；離線種類表 `exts`／`nouns` 同步。
+- 測試：`data_core.test.js` 56 項全過（新增 jsonc／jsonl／壞行／上色／fallback）；`dataquery_core` 31、`jsonl-paging` 13 全過。
+
+**2026-11-06 補**：JSONL 超大檔的批次視窗與真瀏覽器實測見第十節；Electron 內嵌的對話區塊沒有另外實測（同一份 `data_ui.js`，在真瀏覽器頁面載入實測）。
+
+## 九、讓任意窗口的模型都讀得完／做得完：多層 JSONL、攤平與還原（2026-11-05）
+
+使用者原話：「讀取網頁內文，讀取網頁我也建議用paginator或複合結構，因為內文可能超長，要有使用參照文件跟jsonl的方式」「當處理參照文件，就可以是一般文件的paginator，結構則是用多層jsonl的方式設計」「要可以把原本超深的結構攤平成jsonl」「我覺得程式結構ast node也請參考這方式」「因為不完整的節點會有錯誤的解讀」「uml design與midi音樂設計也是」「我希望可以藉由這個形式來讓任意窗口的模型都能達成」「我們也可以對於uml-design的遞迴深入，保有原有的結構，但是提供一個flatten-jsonl converter，這個convert出來的結構可以正確對應回去」。
+
+### 已實作
+
+| 項目 | 做法 | 位置 |
+|---|---|---|
+| 長網頁三層 | 第 0 層章節索引（一章一行，`parent`、`blocks`、`doc:{offset,chars}`、`blocks_cursor`）→ 第 1 層區塊記錄（`t`＝h／p／li／table／code／quote，`sec`、`links`）→ 第 2 層參照文件（原文 Markdown 存 `file_id`，用一般分頁 `parse_uploaded_file`／`article_section` 的 offset 讀）。`fetch_web_page` 內文超過一頁預算就回第 0 層第 1 頁（`output:'text'` 可關） | `renderer/src/agent/web_blocks.js`、`_webPageLayers` |
+| 超深結構攤平 | `flatten`：一個節點一行 `{path(JSON Pointer),depth,type,value｜keys｜length}`；`unflatten` 逐字還原（含鍵順序、`~`／`/` 跳脫）；`toRecords` 在「沒有占大宗陣列、深度 ≥ 5」時自動用（shape `flat`） | `jsonl_pager.js` |
+| 收合與往下鑽 | `flatten(v,{maxDepth})` 更深的容器收成 `{collapsed:true,size}`（先看全貌）；`expand(v,path,{levels})` 再展開一層，行的 path 是完整路徑，接在先前的行後面一起 `unflattenInfo`，沒展開的列在 `collapsedPaths` | 同上 |
+| 程式結構（AST） | `flattenAst`：一個節點一行 `{id,parent,field,index,type,path(類型鏈),depth,props,children,size}`，先序，位置資訊留在 `props`；`toRecords` 對有 `type`／`kind` 的巢狀樹自動使用（shape `ast`） | 同上 |
+| 不完整節點 | 分頁切在樹中間時，頁面 meta 附 `incomplete:[{id,type,missing:[a,b]}]`＋`incomplete_note`（子節點還在後面的頁，先不要下結論），後面的頁附 `starts_inside`（每個節點有 `path` 類型鏈與 `parent`） | `page()` |
+| UML design | 模型結構完全不改；新增 `FaDesign.modelToJsonl(model,{levels})`／`modelExpand(model,path)`／`modelFromJsonl(lines)`，還原後的模型與原本逐字相等，驗證結果相同，`collapsedPaths` 為空才算讀完 | `renderer/src/uml/design_core.js` |
+| 缺陷修正 | `undefined`／函式欄位不輸出（跟 `JSON.stringify` 一致），否則 UML 模型的 `default` 欄位還原後多出 `null` | `flatten` |
+
+### 第二批（同日）：工具接線、MIDI、瀏覽器頁面文字
+
+| 項目 | 做法 | 位置 |
+|---|---|---|
+| UML／任何深層 JSON 往下鑽 | `big_content` 新增 `tree`（`levels` 層，預設 2；更深的收成 `collapsed` 一行）與 `expand`（`path`＋`levels`，預設 1）；結果是新的暫存，用 `page` 讀，每行 path 是完整 JSON Pointer，各次的行可接在一起還原。`uml_design` 結果太大被暫存時，模型用這兩個動作先看全貌再往下鑽 | `floating-assistant.js` `big_content` |
+| MIDI 多層 JSONL | `FaMidi.toJsonl(song,{levels})`：第 0 層 `song`／`track` 行、第 1 層每軌每小節一行（音域與音符數）、第 2 層一個音符一行（`t,d,n,v` 是原值，`bar,beat,name` 是推導）；`expandNotes(song,track,bar)` 只取某軌／某小節；`fromJsonl` 還原並回報 `missing`（宣告的音符數比拿到的多的軌）。工具 `midi_song_jsonl`：`read` 回第一頁、`write` 把 JSONL 還原成曲子並開編輯器，小窗口模型可以一軌一軌寫 | `renderer/src/music/midi_core.js` |
+| 瀏覽器頁面文字 | `browser_get_page_text` 沒指定 offset、頁面文字超過一頁預算（或 `output:'jsonl'`）時，讀完整頁（上限 300 萬字元）回章節索引；沒有標題的純文字依一頁預算 80% 切成「第 n 段」，`doc.offset／doc.chars` 對應頁面文字的偏移，原文再用 `browser_get_page_text` 的 offset 讀（頁面沒變動時才對得上）；`output:'text'` 維持舊行為 | `_bcPlan` 的 `bcTool`、`web_blocks.js`（`starts`、`chunkChars`） |
+
+| UML write 方向 | `uml_edit` 新增 `model_jsonl_read`（`levels`、`path` 往下鑽）與 `model_jsonl`（整份模型的 JSONL 行，必須全部展開；還有 `collapsed` 沒展開就退回並列出路徑；還原後取代模型並重建專案） | `_umlEdit` |
+
+**實機驗證（真 Electron，`scripts/eval/layers-jsonl.eval.js`，2026-11-05）**：`big_content tree／expand` 收合後逐一展開還原相等；`midi_song_jsonl` 讀第 0 層、某軌某小節、`write` 還原；網頁三層索引 31 章、每章有 `blocks_cursor`；`uml_edit` 讀全貌／往下鑽／整份換回（逐字相等、changes 0）／沒展開完被退回。`jsonl-paging.eval.js` 四種模型情境照舊通過。
+
+### 還沒做（待改善）
+
+- ~~`browser_get_page_text` 的新分支沒有用真的 Chrome 擴充功能實測~~：**2026-11-06 用真 Chrome 156 實測並修了一個真 bug**（第十節）。擴充功能連線本身（配對、`chrome.scripting`）還是沒有端對端跑過。
+- `midi_song_jsonl read` 的 `song` 參數用的是 midi 工具既有的拍為單位格式，只有 `song_id`／`file_id` 走 tick 格式；要讀已存的曲子請給 `song_id`。
+- ~~MIDI 的 `compose_tree` 作曲樹沒動~~：**2026-11-06 已做**（第十節 `midi_compose_tree`）。
+
+## 十、第三批（2026-11-06）：小窗口、頁數預估、真瀏覽器實測
+
+使用者原話（2026-11-06）：「JSONL 分頁的舊待改善：`knowledge_ask`／`repo_*` 帶 `_page`、頁數預估接 `fitToBudget`、離線小模型（4096）調校、超大檔行索引」「`browser_get_page_text` 長頁面章節索引，用真的 Chrome 擴充功能實測」「MIDI `compose_tree` 攤平，以及 UML／MIDI 的『小窗口分段寫』」。
+
+| 項目 | 做法 | 位置 |
+|---|---|---|
+| 頁數預估 | 頁面 meta 多一個 `pages_left`（照這頁讀到的筆數估後面還有幾頁）；帳本每個來源記讀過幾頁，`estimate()` 算「約還要幾頁」，提醒文字帶上；代理迴圈提醒時傳入「上下文還剩幾 token、一頁約幾 token」，放不下就明說「別一頁頁全讀，先用 `big_content` 的 grep／json，或把已讀的重點寫成一小段摘要」（舊頁本來就會被 `fitMessages` 換成 placeholder，所以摘要是模型自己留的）。注意：`fitToBudget` 在這個 repo 裡叫 `fitMessages`（`vlm_core.js`） | `jsonl_pager.js`、`read_ledger.js`、`vlm_core.js` |
+| 小窗口調校（4096） | 以前一頁預算用「3 字元＝1 token」估，中文 JSON 大約 1 字 1 token，會低估 3 倍：實測 4096 窗口一頁吃掉 21%（目標 13.5%）。現在 `page()` 可給 `maxTokens`＋`tokensOf`（宿主的 token 估計），整頁、單筆分段、head 判斷都用 token 算；沒給就照舊用字元。FA 的 `_pagerBudgetOpts()` 知道窗口大小就走 token。真 Electron：4096／8192／32768 窗口的一頁分別是預算的 95%、94%、97%，`pages_left` 分別 18、8、1 | `jsonl_pager.js`、`floating-assistant.js` |
+| `knowledge_ask` | 新增 `offset`（往後翻排名），回傳帶 `_page`（`blocking:false`、`next_offset`）。排名搜尋的翻頁是選擇性的，所以帳本看到 `blocking:false` 不記、不逼模型翻完 | `knowledge_host.js`、`read_ledger.js` |
+| `repo_*` | `repo_map` 的清單（`find`／`explore`／`tree`…）本來就有 `offset`／`next_offset`，現在經 `_repoApplyBudget` 也帶 `_page`（`unit:record`，缺口提示用 `offset：N` 而不是 cursor）；`repo_ask` 的 `search` 新增 `offset`＋`_page`（`blocking:false`）。`repo_read_doc`（字元 offset 的文字）、`repo_sql`、`repo_wiki` 沒動 | `floating-assistant.js`、`read_ledger.js` |
+| 超大 JSONL 檢視 | `FaDataCore.parseJsonlWindow(lines,from,size)`：只解析一批（預設 2 萬筆，行號是整份的行號、壞行保留）。超過 5 萬行的 JSONL，Viewer／表格一次只載入一批，工具列出現 ◂ 上一批／下一批 ▸（有堆疊，可退回）；Source 本來就是虛擬捲動，另外把「最長行」改成只算一次（以前每次捲動都掃全部行）；匯出 JSON／CSV／XLSX／SQLite 才解析整份，JSONL 匯出用原始行 | `data_core.js`、`data_ui.js` |
+| 網頁文字 | `WebBlocks.readAll(call,args,{chunk})`：一段段向擴充功能要、接成全文；欄位 `total_chars` 與 `total_length` 都認 | `web_blocks.js` |
+| 作曲樹 JSONL | `FaComposeTree.toJsonl(tree,{ask,pendingOnly})`：第 0 層 `tree` 行（規格、`pending` 節點清單）＋一個節點一行（`id,parent,depth,label,value,source,tries,decided`；沒決定的可帶 `ask`＝單獨就答得出來的一題）；`fromJsonl` 還原（規格與每個節點逐項相同，組出的曲子也相同；壞值列在 `problems`，缺的補範本）；`setNode(tree,id,value,'ai')` 標 ai。工具 `midi_compose_tree`：`start`／`read`／`set`／`assemble`，一次寫一個節點，程式馬上核對（不合格退回並附該節點的題目），任何時候 `assemble` 都做得出曲子（沒決定的用範本） | `compose_tree.js`、`floating-assistant.js` |
+| UML 小窗口分段寫 | `FaUmlEdit.nextUnit(model)`：程式從目前模型決定「下一格」（參與者與使用案例 → 類別 → 每個空類別的成員 → 每個太短的使用案例 → 沒接上的類別），附焦點標頭（目標、已定的、這格做什麼）、兄弟已用的命名風格、答法範例；`uml_edit({next:true})` 只回這一格，`uml_edit({ops,queue:true})` 套完自動附下一格，直到 `done`。從空白照範例答，4 格就做出驗證通過的模型 | `uml_edit_core.js`、`floating-assistant.js` |
+
+### 用真 Chrome 實測抓到的 bug
+
+`browser_get_page_text` 的長頁面分支原本判斷 `first.total_chars > 預算`，但真的擴充功能（`browser-control-extension/background.js` 的 `pageTextExtractor`）回的是 **`total_length`**，沒有 `total_chars`。所以長頁面**永遠不會走分層**，只有明確給 `output:'jsonl'` 才會。純函式測試與假擴充功能都測不出來（假資料是照我自己的猜測寫的）。
+- 做法：用 Playwright＋系統 Chrome 156 載入長頁面，執行擴充功能原始碼裡真的 `pageTextExtractor`，把輸出存成 `renderer/src/agent/fixtures/chrome_page_text.json`；測試回放它（`web_blocks.test.js` 27 項）。
+- 沒有做的：擴充功能的連線層（配對碼、`chrome.scripting.executeScript` 注入）沒有端對端跑過；擴充功能的 `get_page_text` 不回 `title`／`url`，所以分層索引的標題目前是空的（要補得另外呼叫取分頁資訊）。擴充功能原始碼不在這個 repo（在網頁版專案），所以改它不在這次範圍。
+
+### 真 Electron 實測
+
+`scripts/eval/small-window.eval.js`：`midi_compose_tree` 從 start 到 assemble（錯的和弦被擋並附題目、10 個節點逐個寫完、組出曲子沒警告）；`uml_edit` 從空白 4 格做完；4096／8192／32768 窗口的頁預算與 `pages_left`；`knowledge_ask` 的 `offset`／`_page`。`jsonl-paging.eval.js`、`layers-jsonl.eval.js` 重跑通過（沒有退步）。
+
+### 一個陷阱
+
+`scripts/embed-code-ui.js` 會把 `renderer/src/` 下各模組整份蓋回 `floating-assistant.js` 的嵌入區塊——**直接在 `floating-assistant.js` 裡改嵌入區塊的程式，下次嵌入就會被蓋掉**（這次 `knowledge_ask` 與代理迴圈提醒各被蓋掉一次，是真 Electron 評估發現的）。改之前先 `grep -rl` 看這段程式的來源檔（`knowledge_host.js`、`vlm_core.js`…）。
+
+### 還沒做
+
+- 真 Chrome 擴充功能的端對端（連線層）；擴充功能回 `title`／`url`。
+- `repo_read_doc`／`repo_sql` 的 `_page`；`repo_ask` 的 `ask` 動作（非清單）沒有翻頁。
+- 4096 窗口的 `fraction`（15%／自動代理 25%）沒有再調，只是改成不低估；沒有用真的 4096 小模型跑完整問答量「一次問答讀幾頁」。
+- JSONL 檢視器在 Electron 對話區塊裡的實際畫面（這次是在真瀏覽器頁面載入同一份 `data_ui.js` 實測：15 萬行、批次前後翻、Source 捲到 14 萬行、匯出整份 JSON 17 MB）。

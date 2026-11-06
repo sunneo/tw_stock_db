@@ -118,3 +118,15 @@ qwen3-0.6b q8、CPU、**不開思考**（write_code 領域整個關思考）：
 - **泛化驗證**（`py_lessons.test.js`）：16 個沒見過的改寫（換變數名稱、不同的隨機測資、期望輸出由參考程式算出）**離線自己做對 16/16（全靠課）**；不認得的算法不會亂套課，回報需要模型。邊界：改寫只換變數名稱與測資、句型仍在讀取器認得的範圍內；課只涵蓋這 17 種算法；新算法要靠老師（`/teacher-loop`）再教。
 - **處理模型（範式）**：動作表給每種算法標範式（`intent.paradigms`）：動態規劃、BFS、DFS、分治／二分、資料結構對應（雜湊、堆疊）、前綴和、數論、雙指標、排序掃描、矩陣快速冪…；課也記範式。下一階段把範式本身做成「帶槽位的區塊骨架」，新題套範式、填槽位，不必每題各教一堂課。
 - **矩陣相乘求解**：`@`（修了 codegen 漏掉 `@` 的優先順序）、`np.linalg.matrix_power`、`np.eye`、行列式；純 Python 的區塊 `mat_mul`（矩陣相乘）、`mat_identity`、`mat_pow`（快速冪求方陣的 n 次方）。驗證：把費氏數映射成轉移矩陣 `[[1,1],[1,0]]`，用 `mat_pow` 算出第 n 個（n=90 也對），判題通過。
+
+### 7.3 範式骨架庫：每個範式一個帶槽位的區塊骨架（2026-11-06）
+
+- **檔案**：`renderer/src/uml/py_paradigms_core.js`（`FaPyParadigms`，Python 專屬）。23 個骨架（原 17＋後加 6）：一維 DP（費氏、硬幣最少、LIS、0/1 背包）、區間 DP（最長回文子序列）、二維 DP（LCS）、分治（歸併數逆序對）、樹走訪（前／中／後序，堆疊模擬）、堆積（第 k 小）、矩陣快速冪（費氏取餘，2x2 用四個變數）、BFS（網格最短步數）、DFS／並查集（連通分量）、二分（lower_bound）、前綴和（區間和）、雜湊計數、堆疊（括號）、排序後掃描（合併區間）、暴力雙迴圈（兩數之和）、排序取第 k 個、篩法、數論（gcd／lcm）、雙指標（迴文）、變位詞。
+- **骨架＋槽位**：骨架固定這種算法該有的迴圈與資料結構，槽位是 1～3 個小選單（初值、比較方向、邊界、索引起點、輸出哪個…），每個骨架 ≤ 12 個組合。骨架以「程式區塊：」包 Python 輸出成受控自然語言（CNL），之後走 `parseCNL` → 區塊 → IR → codegen，跟其他區塊同一條路。
+- **窮舉＋沙盒，不靠模型**：`solve` 把槽位組合逐個交判題器，第一個 AC 就用；`rank`（模型的 pick）只決定順序，沒有也行。**測試證明靠窮舉而不是排前面**：選項順序反過來，結果一樣。
+- **接進管線**：`buildFromUML` 順序 ＝ 配方 → 課 → **範式骨架** → 區塊迴圈（模型）；回傳多 `paradigm`、`slots`、`tried`。局部變數撞到題目的變數名稱會自動改名（`名稱_2`）。
+- **驗證（Node，`py_paradigms.test.js`，不給課）**：種子題有範式的 17/17、沒見過的改寫（換變數名稱＋隨機測資）16/16、選項反序 16/16，皆由判題器驗證，0 次模型呼叫。
+- **宿主接線**：`code_agent_core.runCode` 新增 `offline` 掛鉤（Python、有測試、有判題器才試；AC 才採用，否則退回模型路線並在 gaps 說明）；`floating-assistant.js` 的 `_codeOffline`（tree-sitter 用 `_behTsHost`）；`write_code` 在沒有模型時對 Python 算法題仍可離線做。`embed-code-ui.js` 嵌入 `py_*`、`algo_intent_core`、內建課。
+- **老師迴圈接線（`/teacher-loop`）**：`_otTeacherTryOffline(text, s, item)` 對 Python 判題項目先走離線組合；老師教完、離線自己重做通過驗證後，`_pyLearnLesson` 用 `deriveLesson` 把解答抽成課——**只靠這一堂課自己重做、過判題器才收**（否則不收），存 localStorage（`fa_py_runtime_lessons`，跟內建分開），`_pyLessonsExport()` 匯出 JSON 供轉成內建。`deriveLesson` 可記 `paradigm`＋`slots`。真 Electron 驗證：`scripts/eval/teach-lesson.eval.js`。
+- **骨架的限制**：骨架本文走「程式區塊：」→ `parseCNL`，**巢狀 `def` 會被丟掉**（`stmtsOfSource` 只取敘述），所以骨架要寫成不含 `def`（遞迴改堆疊／由下而上，矩陣用四個變數）；也避免 `a = b = 0` 連續賦值。
+- **還沒做**：沒有範式的算法（骨架是人寫的，新算法仍要請老師或模型）、非 Python 語言；內建課遇到 n 很大的題（如費氏取餘）會先試課而逾時才退到範式。

@@ -9,14 +9,15 @@
 
 | 項目 | 狀態 | 下一步 | 在哪 |
 |---|---|---|---|
-| 寫程式：`uml_design` 讀算法題、內建的課、區塊庫 | **已核對**：內建課讓離線（不問模型）20/20；沒見過的改寫 16/16；核心測試全過 | 範式骨架庫（分治／DFS／BFS／樹走訪／資料結構對應／DP／矩陣快速冪）；把管線接進 `write_code` | 原檔：block-writer、`DESIGN.ast-nodes.md` 第六、七節 |
+| 寫程式：`uml_design` 讀算法題、內建的課、區塊庫、範式骨架庫 | **已核對**：不給課、只用範式骨架＋槽位窮舉＋沙盒，種子 17/17、沒見過的改寫 16/16（選項反序也 16/16）；`write_code` 已接離線組合（無模型也能做 Python 算法題）；真 Electron 逐題結果見 `STATUS.md` | 範式 23 個（缺回溯、圖最短路、線段樹等）；其他語言；老師迴圈對寫程式只在「離線自己重做通過」時抽課 | 原檔：block-writer、`DESIGN.ast-nodes.md` 第七節 7.3 |
 | `/teacher-loop`（＝`/offline-trainer-by-ai`）的客觀驗證 | **已核對**：驗證、老師教完離線重做、回歸、回滾，真 Electron 端到端（假模型）通過 | 寫程式的離線組合接進來，才能對真任務跑 | `DESIGN.offline-trainer.md` 5.1、`scripts/e2e/teacher_loop.e2e.mjs` |
+| 「萬物皆矩陣相乘」評估（矩陣＋狀態機、LALR 狀態矩陣、未知題 body→矩陣） | **評估完成＋已驗證**：DFA／min-plus／布林圖／線性遞推（BM）／CYK 布林矩陣／LALR 表矩陣＋有界堆疊／Hankel 學習，49 項測試含隨機對照與反例；種子 20 題 A3／B5／C12（A、B 各有部分只是推測）；追加：多個小矩陣＋狀態機、ReLU vs CoLU、矩陣 VM（19 種封閉指令、JSONL、8 個編譯對照；種子 20 題中矩陣指令是主角 6 題） | 是否把 state-machine／semiring-closure／linear-recurrence 範式接進範式骨架庫，由使用者決定（未動產品） | `DESIGN.matrix-algorithms.md`、`renderer/src/algo/` |
 | 發布 | **已核對**：patch v310；網頁版沒同步（這台機器找不到 `videos-嗨投資`） | 要同步請給 repo 路徑，或確認不需要 | `DESIGN.release.md` |
 | 核心測試 `tray_dialog.test` 整組失敗 | **已核對**：根因是最後一行 `N checks passed` 不符合跑器的 `N passed`，已改輸出格式 | — | `scripts/main-tests/tray_dialog.test.js` |
-| JSONL／JSONC 檢視器 | 另一條線盤點：只測過純函式與建置，沒有在真 Electron 畫面開過 | 在真 Electron 打開看一次 | `DESIGN.jsonl-paging.md` |
-| 思考堆疊「兄弟一致性」 | 另一條線盤點：只有假模型模擬，不能算效果證據 | 用真 qwen3-0.6b 在 `uml_bench_core` 加評分比較有無標頭 | `DESIGN.think-stack.md` |
-| `browser_get_page_text` 長頁面章節索引 | 另一條線盤點：沒用真 Chrome 擴充功能實測 | 實測 | `DESIGN.jsonl-paging.md` |
-| JSONL 分頁的舊待改善（`knowledge_ask`／`repo_*` 帶 `_page`、頁數預估接 `fitToBudget`、4096 fraction 調校、超大檔索引） | 另一條線盤點：未做 | 依序做 | `DESIGN.jsonl-paging.md` 第六節 |
+| JSONL／JSONC 檢視器 | **已核對（2026-11-06）**：在真瀏覽器頁面載入 `data_ui.js`，15 萬行 JSONL：Source 捲到 14 萬行、Viewer 一批 2 萬筆可前後翻、匯出整份 JSON 17 MB；超大檔批次視窗已做 | Electron 對話區塊裡的畫面沒另外看（同一份程式） | `DESIGN.jsonl-paging.md` 第八、十節 |
+| 思考堆疊「兄弟一致性」 | **已核對（2026-11-06）**：真 qwen3-0.6b，16 組成對（4 個有效情境）：有標頭一致性 1.00 vs 無 0.99（風格 1.00 vs 0.89），較好 5／較差 0／持平 11；額外檢查沒有更好；完成率與一次合格率沒有可分辨的差別（member 情境因評測設定問題無效）。生 0.6B 連參與者階段都過不了，所以前兩階段由程式回答 | 還沒量：CoLU 計畫階段／`chooseTool` 路由、開思考、不同溫度 | `DESIGN.think-stack.md` 最後一節 |
+| `browser_get_page_text` 長頁面章節索引 | **已核對（2026-11-06）**：用真 Chrome 156 跑擴充功能的 `pageTextExtractor`，抓到真 bug（擴充功能回 `total_length`，程式只認 `total_chars`，長頁面永遠不分層），已修並用真輸出做回放測試 | 擴充功能連線層端對端沒跑過；擴充功能不回 `title`／`url` | `DESIGN.jsonl-paging.md` 第十節 |
+| JSONL 分頁的舊待改善 | **已做（2026-11-06）**：`_page`＋`offset`（`knowledge_ask`、`repo_map` 清單、`repo_ask search`）、頁數預估（`pages_left`＋帳本提醒放得下幾頁）、4096 小窗口改 token 預算（中文不再低估 3 倍）、超大檔批次視窗；真 Electron 評估通過 | `repo_read_doc`／`repo_sql` 的 `_page`；沒用真 4096 小模型跑完整問答 | `DESIGN.jsonl-paging.md` 第十節 |
 | `docs/HANDOFF.md` | 另一條線盤點：開頭停在 v299、待辦過期、後面補了很多段，不適合當起點頁 | 整理成一頁起點（版本、現況、下一步），歷史段落往後放 | `docs/HANDOFF.md` |
 | 其他（merge diff patcher、函式內部再切步驟、套件／類別層接 `design_core`、以樹為基礎的修復、其他語言） | 未做 | 見各文件「還沒做」 | `DESIGN.code-repair.md`、`DESIGN.fn-template.md`、`DESIGN.ast-nodes.md` |
 
@@ -4402,7 +4403,7 @@ rg 收到 task(sub=false, fromName=N)
 
 ## JSONL 分頁器與檢視器（2026-11-05，唯讀調查後的設計）
 
-**進度（2026-11-05）**：分頁器、總截斷轉 JSONL、`big_content page`、讀取帳本四個缺口、VLM 拆解的 JSONL 續傳**已實作並移到 `DESIGN.jsonl-paging.md`**（含調查實證與測試）。下面的設計全文保留；**還沒做、仍是待改善的**：2.6 檢視器（`.jsonl`／`.ndjson`／`.jsonc` 與離線種類表）、2.5 的「一次問答最多讀幾頁」預估與離線小模型的比例調校、`knowledge_ask`／`repo_*` 帶 `_page` meta。
+**進度（2026-11-05）**：分頁器、總截斷轉 JSONL、`big_content page`、讀取帳本四個缺口、VLM 拆解的 JSONL 續傳**已實作並移到 `DESIGN.jsonl-paging.md`**（含調查實證與測試）。下面的設計全文保留；**2.6 檢視器已做（2026-11-05，見 `DESIGN.jsonl-paging.md` 第八節；僅缺 JSONL 超大檔行索引虛擬捲動）。還沒做、仍是待改善的**：2.5 的「一次問答最多讀幾頁」預估與離線小模型的比例調校、`knowledge_ask`／`repo_*` 帶 `_page` meta。
 
 使用者原話（2026-11-05）：「tool 的超大 json 回應都統一 jsonl 格式，並提供 paginator，要有辦法讓 ai 可以完整讀完。然後我們 viewer 也要支援 jsonl、jsonc」。
 標記：【確認】＝這次讀程式確認過；【推測】＝沒親眼驗證。行號是 `renderer/src/floating-assistant.js`（簡稱 FA）在 2026-11-05 的行號，會漂移，改之前先用內容搜尋。
@@ -4582,8 +4583,8 @@ UMD、無 DOM、無 I/O、可 `new Function` 載入（跟 `read_ledger.js` 一�
 - 區塊庫 130 個陳述範本＋103 個運算式積木（科學：math、numpy、statistics、random、scipy、matplotlib 繪圖；矩陣：mat_mul／mat_pow／numpy 矩陣乘冪），庫存與範本規則（三區、型別、終止條件、模組要先引入）；程式碼→UML→程式 46 個真實檔 AST 全相同。
 
 **未完成（依序）**
-1. **範式骨架庫（處理模型）**：分治（divide-and-conquer）、DFS、BFS、樹走訪（前序／中序／後序／層序）、資料結構對應（雜湊、堆疊、佇列、堆積、並查集）、動態規劃（一維、二維、背包、區間）、矩陣快速冪（線性遞推、轉移矩陣、路徑計數）、前綴和、二分、雙指標…；每個範式一個帶槽位的區塊骨架（槽位用小選單選：狀態是什麼、轉移是什麼、終止條件是什麼），動作表從敘述的特徵挑範式；課變成範式的實例。這是讓「新題」不必逐題教課的關鍵。
-2. **宿主接線**：`write_code` 接 `uml_design → 課／配方 → 區塊迴圈 → 沙盒`（`py_*` 模組要用 `embed-code-ui.js` 嵌入、前端要有 tree-sitter 解析）；內建的課要載入；`/teacher-loop` 對寫程式項目要能「離線試做」走這條管線，老師成功後用 `deriveLesson` 抽成課存進訓練器（執行期的課，另外存、可匯出成內建）。目前老師迴圈的驗證擴充已通用（contains／regex／equals／judge），但寫程式的離線組合還沒接進產品。
+1. （**27 個已做**，見 `DESIGN.ast-nodes.md` 7.3；2026-11-06 補了回溯 N 皇后、Dijkstra、樹狀陣列、KMP；仍缺：排列組合回溯、線段樹（區間更新）、Z 函式…）**範式骨架庫（處理模型）**：分治（divide-and-conquer）、DFS、BFS、樹走訪（前序／中序／後序／層序）、資料結構對應（雜湊、堆疊、佇列、堆積、並查集）、動態規劃（一維、二維、背包、區間）、矩陣快速冪（線性遞推、轉移矩陣、路徑計數）、前綴和、二分、雙指標…；每個範式一個帶槽位的區塊骨架（槽位用小選單選：狀態是什麼、轉移是什麼、終止條件是什麼），動作表從敘述的特徵挑範式；課變成範式的實例。這是讓「新題」不必逐題教課的關鍵。
+2. （**`write_code` 接離線組合、`/teacher-loop` 離線試做、`deriveLesson` 執行期存課都已做**）**宿主接線**：`write_code` 接 `uml_design → 課／配方 → 區塊迴圈 → 沙盒`（`py_*` 模組要用 `embed-code-ui.js` 嵌入、前端要有 tree-sitter 解析）；內建的課要載入；`/teacher-loop` 對寫程式項目要能「離線試做」走這條管線，老師成功後用 `deriveLesson` 抽成課存進訓練器（執行期的課，另外存、可匯出成內建）。目前老師迴圈的驗證擴充已通用（contains／regex／equals／judge），但寫程式的離線組合還沒接進產品。
 3. **模型的選擇仍弱**：0.6B 在合法選單裡接近隨機（同題換選項順序答案就變；逐項是／否 0/4；開思考 8 次只對 2 次）。現在能靠內建的課避開，但新算法仍需要：範式骨架把選單壓到 1～4 個；目標動詞過濾選單；規則再緊（題目有輸入就一定先讀入、常數只能來自題目）。
 4. **讀取器覆蓋範圍小**：輸入格式只認種子題規整的句型；要擴充（多組測資、二維陣列、含空白字串、整數範圍）、輸出格式（多行、保留小數、YES/NO 變體）與更多寫法，並用沒見過的題目持續驗證。
 5. **積木庫擴充（越大越好）**：字串處理、二維走訪、DP 表、圖演算法、遞迴、類別方法；scipy、pandas、matplotlib 子圖、3D；每個新積木補型別表（`py_blocks_lib_core.js` 的 `TYPES`／`ETYPES`／`REQ`）與反推測試；槽位型別再細（list 元素型別）。
