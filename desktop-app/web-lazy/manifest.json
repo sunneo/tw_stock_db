@@ -210,6 +210,14 @@
    "size": 23102,
    "md5": "fa222e84080a502ea660c118c4462313"
   },
+  "matrixgraph": {
+   "file": "chunks/matrixgraph.js",
+   "names": [
+    "FaMatrixGraph"
+   ],
+   "size": 18255,
+   "md5": "d2367de91d1d572f7f7966bf67e2e548"
+  },
   "teachercheck": {
    "file": "chunks/teachercheck.js",
    "names": [
@@ -1412,7 +1420,7 @@
   }
  },
  "core": {
-  "size": 5621972,
-  "md5": "cb530b5518eafe3825240750f8412e6d"
+  "size": 5622108,
+  "md5": "3c9c444345345bf606681ceae6c774ee"
  }
 }
