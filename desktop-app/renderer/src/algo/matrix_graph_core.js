@@ -148,5 +148,5 @@
         return { ok: true, source: ['def main():'].concat(rd, py.map((l) => '    ' + l), pr).join('\n') + '\n', kind: 'matrix', level: 'L3', size: py.length, tried, ambiguous: !unique, desc: '方陣範本：' + t.name, matrixForm: { kind: 'matrix', name: t.name } };
     }
     function install(M) { if (!M || !M.register) return false; M.register('graph', synthGraph, { order: 30, level: 'L3', note: '邊表形狀＋圖範本（半環矩陣冪／走訪）' }); M.register('grid', synthGrid, { order: 35, level: 'L4', note: '格子形狀＋變換／計數範本' }); M.register('sqmat', synthSq, { order: 36, level: 'L3', note: '方陣形狀（乘法／相加／冪／跡）' }); return true; }
-    return { install, synthGraph, synthGrid, synthSq, parseGraph, parseGrid, hdrNames, GT, GR };
+    return { build, bfs, baseOf, dirOf, labelsOf, norm, parseGraphFull: parseGraph, install, synthGraph, synthGrid, synthSq, parseGraph, parseGrid, hdrNames, GT, GR };
 });

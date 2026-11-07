@@ -2,7 +2,7 @@
 // 矩陣層（含 graph／grid 模組）對題庫的量測：node scripts/eval/matrix_bench.js <題庫.jsonl> [--ex 2] [--json out.json]
 // 範例＝題目 tests 的前 N 筆（預設 2）；隱藏測資只給 judge 驗證。誠實計數：ok＝合成成功且 judge 通過（含 hidden）；verified＝ok 且不 ambiguous。
 const fs = require('fs'), path = require('path');
-const S = require('../../renderer/src/algo/matrix_synth_core.js'); const G = require('../../renderer/src/algo/matrix_graph_core.js'); G.install(S); require('../../renderer/src/algo/matrix_l0_core.js').install(S);
+const S = require('../../renderer/src/algo/matrix_synth_core.js'); const G = require('../../renderer/src/algo/matrix_graph_core.js'); G.install(S); require('../../renderer/src/algo/matrix_l0_core.js').install(S); require('../../renderer/src/algo/matrix_compose_core.js').install(S, G);
 const J = require('../../judge-runner.js');
 const file = process.argv[2]; const nEx = Number((process.argv.indexOf('--ex') > 0 && process.argv[process.argv.indexOf('--ex') + 1]) || 2);
 const jp = process.argv.indexOf('--json') > 0 ? process.argv[process.argv.indexOf('--json') + 1] : null;

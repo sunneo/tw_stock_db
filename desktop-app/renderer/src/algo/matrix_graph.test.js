@@ -6,19 +6,22 @@
 //    5 題新題型（二分圖、奇度數個數、對角線和、對稱判斷、行列式）必須誠實回 ok:false。
 //  - 邊界：形狀不認得時要明確失敗；沒有範例要明確失敗。
 const assert = require('assert'), fs = require('fs'), path = require('path');
-const S = require('./matrix_synth_core.js'); const G = require('./matrix_graph_core.js'); const L0 = require('./matrix_l0_core.js'); const J = require(path.join(__dirname, '..', '..', '..', 'judge-runner.js'));
-assert.strictEqual(G.install(S), true); assert.strictEqual(L0.install(S), true); const names = S.list().map((x) => x.name); assert.ok(names.includes('graph') && names.includes('grid'), '模組有註冊'); assert.ok(names.indexOf('graph') < names.indexOf('formula'), 'graph 要排在公式枚舉之前');
+const S = require('./matrix_synth_core.js'); const G = require('./matrix_graph_core.js'); const L0 = require('./matrix_l0_core.js'); const CP = require('./matrix_compose_core.js'); const J = require(path.join(__dirname, '..', '..', '..', 'judge-runner.js'));
+assert.strictEqual(G.install(S), true); assert.strictEqual(L0.install(S), true); assert.strictEqual(CP.install(S, G), true); const names = S.list().map((x) => x.name); assert.ok(names.includes('graph') && names.includes('grid'), '模組有註冊'); assert.ok(names.indexOf('graph') < names.indexOf('formula'), 'graph 要排在公式枚舉之前');
 const dir = path.join(__dirname, '..', 'recipe', 'seed'); const load = (f) => fs.readFileSync(path.join(dir, f), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
 async function run(f) { const out = []; for (const p of load(f)) { const ex = p.tests.slice(0, 2), hid = p.tests.slice(2).concat(p.hidden || []); const problem = { id: p.id, tests: ex, hidden: hid, checker: p.checker || 'tokens' }; const r = await S.synth({ statement: p.statement, examples: ex, judge: async (src) => { const j = await J.judge({ lang: 'python', source: src + '\nmain()\n', problem }); return { verdict: j.verdict, detail: j.detail }; } }); out.push({ id: p.id, ok: r.ok, verified: !!r.verified }); } return out; }
 (async () => {
     const h2 = await run('heldout2_graph.jsonl'); const v2 = h2.filter((x) => x.verified).length; console.log('heldout2 verified ' + v2 + '/' + h2.length); assert.ok(v2 >= 20, 'heldout2 回歸下限 20：' + v2);
     const h3 = await run('heldout3_graph.jsonl'); const v3 = h3.filter((x) => x.verified).length; console.log('heldout3 verified ' + v3 + '/' + h3.length); assert.ok(v3 >= 21, 'heldout3 回歸下限 21：' + v3);
-    const h4 = await run('heldout4_graph.jsonl'); const v4 = h4.filter((x) => x.verified).length; console.log('heldout4 verified ' + v4 + '/' + h4.length); assert.ok(v4 >= 14, 'heldout4 下限 14：' + v4);
-    for (const id of ['h4-bipartite', 'h4-euler-deg', 'h4-diag-sum', 'h4-symmetric', 'h4-det']) { const x = h4.find((y) => y.id === id); assert.ok(x && !x.ok, id + ' 範本庫沒有，必須誠實失敗'); }
+    const h4 = await run('heldout4_graph.jsonl'); const v4 = h4.filter((x) => x.verified).length; console.log('heldout4 verified ' + v4 + '/' + h4.length); assert.ok(v4 >= 15, 'heldout4 下限 15（組合層讓「奇度數個數」也解出來，原本 14）：' + v4);
+    for (const id of ['h4-bipartite', 'h4-diag-sum', 'h4-det']) { const x = h4.find((y) => y.id === id); assert.ok(x && !x.ok, id + ' 範本庫沒有，必須誠實失敗'); }
+    { const x = h4.find((y) => y.id === 'h4-symmetric'); assert.ok(x && !x.verified, 'h4-symmetric 沒有對的積木：就算組合層湊出碰巧過隱藏測資的程式（row-sum→all-odd），也不能標 verified'); }
         // heldout5（L0：條件判斷／多輸出／小數）：基線 0/12；modules 後 7/12 合成成功、4 verified（另 3 題是範例太少湊出的 ambiguous，不算 verified）；
     // 5 題範本沒有的題型（gcd、階乘、冪取模、兩數和奇偶）必須誠實失敗，不能被說成 verified。
     const h5 = await run('heldout5_l0.jsonl'); const v5 = h5.filter((y) => y.verified).length; console.log('heldout5 verified ' + v5 + '/' + h5.length); assert.ok(v5 >= 4, 'heldout5 下限 4：' + v5);
     for (const id of ['h5-gcd', 'h5-fact', 'h5-powmod', 'h5-sum-parity']) { const y = h5.find((z) => z.id === id); assert.ok(y && !y.verified, id + ' 不能是 verified'); }
+    // heldout6（需要「組合」：向量積木 × 過濾 × 歸約積木）：基線 0/12 → 12/12 合成成功、verified ≥ 9（其餘因 2 個範例下有多個候選標 ambiguous）
+    const h6 = await run('heldout6_compose.jsonl'); const ok6 = h6.filter((y) => y.ok).length, v6 = h6.filter((y) => y.verified).length; console.log('heldout6 ok ' + ok6 + ' verified ' + v6 + '/' + h6.length); assert.ok(ok6 >= 12 && v6 >= 9, 'heldout6 下限 12／9：' + ok6 + '／' + v6);
     // 主動要更多範例（資料面）：2 個範例湊出 ambiguous 候選時，要給出「前幾名候選答案不一致」的輸入讓使用者補輸出
     { const leap = load('heldout5_l0.jsonl').find((p) => p.id === 'h5-leap'); const r = L0.synthPredicate({ statement: leap.statement, examples: leap.tests.slice(0, 2) }); assert.ok(r.ok && r.ambiguous, 'leap 兩個範例必須標 ambiguous'); assert.ok(Array.isArray(r.suggest) && r.suggest.length >= 1, '要給 suggest'); assert.ok(r.suggest.every((s) => /^-?\d+$/.test(s)), 'suggest 是可以直接當輸入的整數'); }
     const bad = await S.synth({ statement: '輸入一些東西，輸出答案。', examples: [{ in: '1 2\n3 4\n', out: '5\n' }] }); assert.ok(!bad.ok || !bad.verified, '不認得的形狀不能被說成 verified');

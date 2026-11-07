@@ -1,18 +1,18 @@
 # 核心測試報告
 
-產生時間：2026-11-07T17:41:14.662Z　（`node scripts/run-core-tests.js`）
+產生時間：2026-11-07T17:54:09.017Z　（`node scripts/run-core-tests.js`）
 
-結果：221 / 221 組通過，全部通過；總耗時 462 秒（只含這些純函式核心，不含 Electron／瀏覽器的真實環境測試）
+結果：221 / 221 組通過，全部通過；總耗時 460 秒（只含這些純函式核心，不含 Electron／瀏覽器的真實環境測試）
 
 | 結果 | 測試組 | 摘要／失敗原因 | 耗時 |
 |---|---|---|---|
-| 通過 | 知識引擎（類型、驗證、展開、知識包） | 66 passed, 0 failed [] | 0.1 秒 |
+| 通過 | 知識引擎（類型、驗證、展開、知識包） | 66 passed, 0 failed [] | 0.2 秒 |
 | 通過 | 標註核心（魔術棒、切格、猜字） | 22 passed, 0 failed [] | 0.0 秒 |
 | 通過 | 蒙皮核心（骨架、權重、動作） | 17 passed, 0 failed [] | 0.0 秒 |
 | 通過 | 名稱表（C++ STL、Rust、Go） | 59 passed, 0 failed [] | 0.0 秒 |
 | 通過 | 名稱表（C#、Ruby、Lua；Python、Java、JavaScript 補強） | 94 passed, 0 failed [] | 0.0 秒 |
 | 通過 | 圖片處理核心（灰階／強化／減色／模糊／馬賽克／旋轉／縮放／頁面排版） | 31 passed, 0 failed [] | 0.3 秒 |
-| 通過 | 文件合併核心（種類判斷、文字解碼、docx／xlsx 簡化轉換、排版） | 7 passed, 0 failed [] | 0.0 秒 |
+| 通過 | 文件合併核心（種類判斷、文字解碼、docx／xlsx 簡化轉換、排版） | 7 passed, 0 failed [] | 0.1 秒 |
 | 通過 | 依任務文字補專用工具（圖片轉PDF、合併文件成PDF） | 5 passed, 0 failed [] | 0.1 秒 |
 | 通過 | 工具預算：短說明、精簡參數、階段切割、檢索 | 9 passed, 0 failed [] | 0.0 秒 |
 | 通過 | Agent Model Configure：階段圖、特性估計、自動決定、內建預設、開關不動設定、重置、解析與備援順序、AI 回覆檢查 | PASS Agent Model Configure（階段圖、特性估計、自動決定、內建預設、開關不動設定、重置、解析與備援順序、AI 回覆檢查）：35 passed, 0 failed [] | 0.0 秒 |
@@ -25,25 +25,25 @@
 | 通過 | 程式碼 → tree-sitter → UML（指令層級）→ Python 往返（需 tree-sitter 快取，沒有就略過） | 20 passed, 0 failed | 1.9 秒 |
 | 通過 | 程式區塊範本庫（90 個範本：程式↔區塊↔受控自然語言雙向、種子程式往返判題；需 tree-sitter 快取） | 20 passed, 0 failed | 2.0 秒 |
 | 通過 | 老師迴圈的客觀驗證核心（check 種類、抽出程式碼、判題器問題形狀） | 4 passed, 0 failed | 0.0 秒 |
-| 通過 | 內建的課泛化：沒見過的改寫（換變數名稱、隨機測資）離線自己做對，不認得的算法不亂套（需 tree-sitter 快取） | 17 passed, 0 failed | 2.4 秒 |
+| 通過 | 內建的課泛化：沒見過的改寫（換變數名稱、隨機測資）離線自己做對，不認得的算法不亂套（需 tree-sitter 快取） | 17 passed, 0 failed | 2.5 秒 |
 | 通過 | uml_design 先讀情境：算法題讀成 UML（0 次模型）→ 骨架 → 區塊 → 沙盒；含沒見過的寫法（需 tree-sitter 快取） | 7 passed, 0 failed | 0.4 秒 |
-| 通過 | 範式骨架庫：不給課，範式骨架＋槽位窮舉＋沙盒解出種子題與沒見過的改寫（選項順序反過來也找得到；需 tree-sitter 快取） | 89 passed, 0 failed | 15.8 秒 |
-| 通過 | Linux 工具題（cat／grep／xxd／tar／gzip／xz／bmp）：輸入形狀、否決條件、範式（只用 train 題；需 tree-sitter 快取） | Linux 工具範式測試：125 passed, 0 failed | 75.9 秒 |
+| 通過 | 範式骨架庫：不給課，範式骨架＋槽位窮舉＋沙盒解出種子題與沒見過的改寫（選項順序反過來也找得到；需 tree-sitter 快取） | 89 passed, 0 failed | 16.3 秒 |
+| 通過 | Linux 工具題（cat／grep／xxd／tar／gzip／xz／bmp）：輸入形狀、否決條件、範式（只用 train 題；需 tree-sitter 快取） | Linux 工具範式測試：125 passed, 0 failed | 75.6 秒 |
 | 通過 | 位元／位元組／格式化／字串進階積木（G3）：每個積木的往返、反推與 Python 求值（需 tree-sitter 快取） | 位元／位元組／格式化／字串積木：35 passed, 0 failed | 0.8 秒 |
-| 通過 | 領域包 DSP：18 題種子（原敘述＋改寫＋選項反序），不給課、0 次模型，float 容差判題，含隱藏大測資（需 tree-sitter 快取） | 72 passed, 0 failed | 16.4 秒 |
-| 通過 | 領域包 algo2：矩陣層沒解出的 15 個演算法家族（歐拉函數、完全數、步數、k 進位、直方圖、更暖天數、巢狀展開、最長合法括號、約瑟夫、視窗聚合、區間聯集、配對計數、RLE 解碼、回文子串、巴斯卡）；train 30/30（需 tree-sitter 快取） | 60 passed, 0 failed | 13.6 秒 |
-| 通過 | 領域包 os（作業系統模擬）：CPU 排程（非搶先／RR／SRTF）、分頁置換、記憶體配適、磁碟排程；train 全過、holdout 只量測（需 tree-sitter 快取） | 66 passed, 0 failed | 42.8 秒 |
-| 通過 | 領域包 ds（資料結構操作序列）：雜湊表、LRU、堆積、BST、Trie、並查集、鏈結串列；train 全過、holdout 只量測（需 tree-sitter 快取） | 48 passed, 0 failed | 18.2 秒 |
-| 通過 | 領域包 linuxtext（cut／sort／uniq／wc／head／tail／tr／sed／awk 行為）：train 全過、holdout 只量測（需 tree-sitter 快取） | 56 passed, 0 failed | 63.3 秒 |
-| 通過 | 領域包 sync（同步原語事件模擬）：信號量、互斥鎖、條件變數、生產者消費者；train 全過、holdout 只量測（需 tree-sitter 快取） | 32 passed, 0 failed | 11.8 秒 |
+| 通過 | 領域包 DSP：18 題種子（原敘述＋改寫＋選項反序），不給課、0 次模型，float 容差判題，含隱藏大測資（需 tree-sitter 快取） | 72 passed, 0 failed | 16.6 秒 |
+| 通過 | 領域包 algo2：矩陣層沒解出的 15 個演算法家族（歐拉函數、完全數、步數、k 進位、直方圖、更暖天數、巢狀展開、最長合法括號、約瑟夫、視窗聚合、區間聯集、配對計數、RLE 解碼、回文子串、巴斯卡）；train 30/30（需 tree-sitter 快取） | 60 passed, 0 failed | 14.0 秒 |
+| 通過 | 領域包 os（作業系統模擬）：CPU 排程（非搶先／RR／SRTF）、分頁置換、記憶體配適、磁碟排程；train 全過、holdout 只量測（需 tree-sitter 快取） | 66 passed, 0 failed | 42.7 秒 |
+| 通過 | 領域包 ds（資料結構操作序列）：雜湊表、LRU、堆積、BST、Trie、並查集、鏈結串列；train 全過、holdout 只量測（需 tree-sitter 快取） | 48 passed, 0 failed | 17.2 秒 |
+| 通過 | 領域包 linuxtext（cut／sort／uniq／wc／head／tail／tr／sed／awk 行為）：train 全過、holdout 只量測（需 tree-sitter 快取） | 56 passed, 0 failed | 64.1 秒 |
+| 通過 | 領域包 sync（同步原語事件模擬）：信號量、互斥鎖、條件變數、生產者消費者；train 全過、holdout 只量測（需 tree-sitter 快取） | 32 passed, 0 failed | 11.6 秒 |
 | 通過 | 領域包 graph2（進階圖與樹）：最小生成樹、強連通、Bellman-Ford、樹直徑、LCA、二分圖、最大流；train 全過、holdout 只量測（需 tree-sitter 快取） | 26 passed, 0 failed | 9.5 秒 |
 | 通過 | 領域包 twofile（Linux 兩段輸入）：cat -n 兩檔、comm／diff、join、paste、cmp；train 全過、holdout 只量測（需 tree-sitter 快取） | 20 passed, 0 failed | 11.3 秒 |
 | 通過 | 領域包 fs（檔案系統）：FAT 簇鏈／空閒簇、inode 區塊階層與佔用區塊數；train 全過、holdout 只量測（需 tree-sitter 快取） | 20 passed, 0 failed | 8.2 秒 |
 | 通過 | 領域包 linuxsem（Linux 行為語意模擬）：fd 表（open／dup／dup2／close）、管線緩衝、信號遮罩、TCP 狀態機；train 全過、holdout 只量測（需 tree-sitter 快取） | 22 passed, 0 failed | 12.6 秒 |
-| 通過 | 領域包 linuxfmt（格式型小工具家族）：樣板變數展開、區塊對齊計數、範式前綴碼；train 全過、holdout 只量測（需 tree-sitter 快取） | 12 passed, 0 failed | 5.7 秒 |
+| 通過 | 領域包 linuxfmt（格式型小工具家族）：樣板變數展開、區塊對齊計數、範式前綴碼；train 全過、holdout 只量測（需 tree-sitter 快取） | 12 passed, 0 failed | 5.8 秒 |
 | 通過 | 區塊的庫存與範本規則（三區、型別、終止條件、模組需求；需 tree-sitter 快取） | 9 passed, 0 failed | 0.1 秒 |
 | 通過 | UML 遞迴切割寫 body（假模型：補全式逐行、縮排結構、退回重寫、區塊版；需 tree-sitter 快取） | 5 passed, 0 failed | 0.1 秒 |
-| 通過 | AST 建樹：隨機建樹與真 tree-sitter 一致、種子程式重放（需 tree-sitter 快取） | 20 passed, 0 failed | 1.9 秒 |
+| 通過 | AST 建樹：隨機建樹與真 tree-sitter 一致、種子程式重放（需 tree-sitter 快取） | 20 passed, 0 failed | 2.0 秒 |
 | 通過 | CoLU+Thinking 階段 3（計畫階段接上 thinking：開關、逾時退路、推理不進 messages） | think_plan_uml: 25 passed, 0 failed | 0.0 秒 |
 | 通過 | CoLU+Thinking 階段 4（反思：有缺口重做一次、上限、逾時與解析失敗退路、其他模型不變） | 26 passed, 0 failed | 0.1 秒 |
 | 通過 | CoLU+Thinking 階段 5（設定開關預設值、推理區塊跳脫 HTML、空推理不顯示、長推理截斷） | colu_think_ui.test: 20 passed, 0 failed | 0.0 秒 |
@@ -73,13 +73,13 @@
 | 通過 | ReLU 網路 → CoLU 決策樹／機器的編譯（精確等價、exact 與 domain 模式、JSONL、區域數 vs 神經元數、域外與浮點的反例、驗證會擋） | 16 passed, 0 failed [] | 0.3 秒 |
 | 通過 | 矩陣接不起來的地方的銜接（佇列 BFS、one-hot 記憶體＝矩陣、雙調排序不經意網路、並查集與指標跳躍、有界堆疊＝移位矩陣、種子 20 題最少記憶體） | 11 passed, 0 failed [] | 0.1 秒 |
 | 通過 | 矩陣反編譯與可讀性（矩陣→遞推式、one-hot 矩陣→DFA→狀態圖／正規表示式、ReLU 樹→if／else、VM→中文 CNL；結構式 vs 稠密學出的矩陣） | 15 passed, 0 failed [] | 0.1 秒 |
-| 通過 | 矩陣層後備（只靠敘述＋2 筆範例合成：L1 線性遞推枚舉＋矩陣冪、L2 自動機家族；形狀不支援／不是線性遞推要明確失敗；範例不足回報 ambiguous） | 17 passed, 0 failed | 3.2 秒 |
-| 通過 | 矩陣層 graph／grid 模組（邊表／格子形狀＋L3 半環與走訪範本；heldout2 ≥20/22、heldout3 ≥21/21 回歸，heldout4 ≥14/19、heldout5（L0）verified ≥4/12，範本庫沒有的題型要誠實失敗） | 7 passed, 0 failed | 21.3 秒 |
-| 通過 | 矩陣 → code edit（合成程式整理成可編輯版：形態往返、改係數／轉移表行為跟著變、走 Python→UML 路徑 raw=0、改壞時降級；需 tree-sitter 快取） | 7 passed, 0 failed | 0.8 秒 |
+| 通過 | 矩陣層後備（只靠敘述＋2 筆範例合成：L1 線性遞推枚舉＋矩陣冪、L2 自動機家族；形狀不支援／不是線性遞推要明確失敗；範例不足回報 ambiguous） | 17 passed, 0 failed | 3.1 秒 |
+| 通過 | 矩陣層 graph／grid 模組（邊表／格子形狀＋L3 半環與走訪範本；heldout2 ≥20/22、heldout3 ≥21/21 回歸，heldout4 ≥14/19、heldout5（L0）verified ≥4/12、heldout6（組合）12 成功 verified ≥9，範本庫沒有的題型要誠實失敗） | 7 passed, 0 failed | 19.4 秒 |
+| 通過 | 矩陣 → code edit（合成程式整理成可編輯版：形態往返、改係數／轉移表行為跟著變、走 Python→UML 路徑 raw=0、改壞時降級；需 tree-sitter 快取） | 7 passed, 0 failed | 0.7 秒 |
 | 通過 | 程式優化對照表（13 條慢寫法→優化寫法（含 two-sum 計數題型），含記憶體實測；輸出一致、實測不變慢、不安全不動、沒測資不改） | 13 passed, 0 failed | 13.5 秒 |
 | 通過 | 型別接線矩陣與路徑搜尋（回傳型別推論、具體程度、布林矩陣連乘、前 K 條接線與得分、萬用結構強制轉型） | matrix_core: 53 passed | 0.1 秒 |
 | 通過 | 單元目錄：Python 原型抽取（註解 → 型別、原型 → 單元、真實跑抽取腳本） | extract_py: 74 passed | 0.1 秒 |
-| 通過 | 單元目錄：型別存根轉換（typeshed 風格的 .pyi → 型別表：TypeVar／別名展開、多載合併、版本與平台分支）與存根型別套進單元 | stub_to_types: 33 passed | 0.1 秒 |
+| 通過 | 單元目錄：型別存根轉換（typeshed 風格的 .pyi → 型別表：TypeVar／別名展開、多載合併、版本與平台分支）與存根型別套進單元 | stub_to_types: 33 passed | 0.2 秒 |
 | 通過 | 單元目錄：探測執行（輸入產生、結果套回單元、真實跑探測腳本：擋檔案／系統呼叫、SystemExit、非決定性） | probe_core: 59 passed | 0.2 秒 |
 | 通過 | 單元目錄：catalog_onboard 核心（請求驗證與安全關卡、為什麼沒晉升、摘要、持久化與合併、過期判斷、查詢） | onboard_core: 53 passed | 0.0 秒 |
 | 通過 | 單元選擇評測核心（中英文檢索、候選與提示、答案解析、選擇與填參數評分、評測集檢查） | select_core: 54 passed | 0.0 秒 |
@@ -102,10 +102,10 @@
 | 通過 | 資料離線精準查詢（SPDX／工作表：結構、讀問題、計畫、檢查、執行、SQL、放寬與最接近的值、歧義問字母、題庫） | dataquery_core: 31 passed, 0 failed | 0.1 秒 |
 | 通過 | UML → LLVM IR → wasm32-wasi（IR 解析與型別檢查、wasm 產生、真的執行、運算／迴圈／遞迴／struct／全域／字串、檢查器擋錯、UML 軌跡一致） | llvm_core: 103 passed, 0 failed | 0.1 秒 |
 | 通過 | 探索時的反思（錯字：英文編輯距離／中文同音近形字、不認得的字、概念再找、可能是新的需求、整份計畫反思：問使用者／統一走建議／上限） | reflect_core: 40 passed | 0.0 秒 |
-| 通過 | CoLU 的 ReLU 形式（relu／sat／max2、可達性逐位元等於位元版、ReLU 層疊網路、最佳接線分數等於 findPipelines、矩陣連乘後端一致性檢查） | relu_core: 20 passed | 0.1 秒 |
-| 通過 | CoLU 接線題（出題、評分、退化偵測、假模型跑整套、建議 self／guided／auto／unknown、使用時的提示） | colu_bench_core: 42 passed | 0.0 秒 |
+| 通過 | CoLU 的 ReLU 形式（relu／sat／max2、可達性逐位元等於位元版、ReLU 層疊網路、最佳接線分數等於 findPipelines、矩陣連乘後端一致性檢查） | relu_core: 20 passed | 0.2 秒 |
+| 通過 | CoLU 接線題（出題、評分、退化偵測、假模型跑整套、建議 self／guided／auto／unknown、使用時的提示） | colu_bench_core: 42 passed | 0.1 秒 |
 | 通過 | 弱模型 harness 迴圈（程式路由、封閉題核對、退回重答、預設退路、判定、命令列續跑；假模型：完美、亂答、沉默、連線失敗） | 27 passed, 0 failed | 0.0 秒 |
-| 通過 | harness 經驗與回流閘門（去識別、簽名去重、拒絕附原因、上限、migrate、訓練器 pattern、UML 編修問題） | 26 passed, 0 failed | 0.0 秒 |
+| 通過 | harness 經驗與回流閘門（去識別、簽名去重、拒絕附原因、上限、migrate、訓練器 pattern、UML 編修問題） | 26 passed, 0 failed | 0.1 秒 |
 | 通過 | harness 經驗匯入離線訓練器（只收 harness 來源、拒絕含路徑金鑰的、獨立領域預設停用、重複只更新） | 7 passed, 0 failed | 0.0 秒 |
 | 通過 | harness skill 可攜（vendor 與來源一致、搬到 repo 外仍能跑迴圈、經驗閘門、離線訓練器乾跑與規則比對、行為分析引擎載入） | 11 passed, 0 failed | 0.2 秒 |
 | 通過 | harness 共識閘門（中文字面與正規表達式條款、行號、allow 遮罩、必須缺漏、結束碼 0／1／2、--root 與 scope、--json） | 14 passed, 0 failed | 0.1 秒 |
@@ -121,8 +121,8 @@
 | 通過 | 檔案用途／函式做什麼的說明產生器（FaExplain） | 16 passed, 0 failed [] | 0.0 秒 |
 | 通過 | CI 核心（Gerrit／GitHub／Jenkins 整理、失敗記錄分診 triage） | 21 passed, 0 failed [] | 0.6 秒 |
 | 通過 | Pipeline 解析／lint／本機重現／樣板（Jenkinsfile、GitHub Actions、GitLab CI） | 13 passed, 0 failed [] | 0.0 秒 |
-| 通過 | coding_edit 核心（搜尋取代、regex、unified diff 用 git apply 驗證） | 12 passed, 0 failed [] | 1.2 秒 |
-| 通過 | coding_edit／coding_patch_tool 整合（真的暫存工作區、git、腳本乾跑與套用） | 14 passed, 0 failed [] | 5.3 秒 |
+| 通過 | coding_edit 核心（搜尋取代、regex、unified diff 用 git apply 驗證） | 12 passed, 0 failed [] | 0.8 秒 |
+| 通過 | coding_edit／coding_patch_tool 整合（真的暫存工作區、git、腳本乾跑與套用） | 14 passed, 0 failed [] | 5.2 秒 |
 | 通過 | CI 連線 HTTP（讀取上限、tail、寫入確認、逾時） | 7 passed, 0 failed [] | 2.1 秒 |
 | 通過 | 行為描述 8 種語言（真的 tree-sitter 文法；離線時略過） | 263 passed, 0 failed [] | 0.9 秒 |
 | 通過 | sqlitebrowser 純函式（過濾語法、DDL 預覽、儲存格、匯出） | 9 passed, 0 failed [] | 0.0 秒 |
@@ -131,7 +131,7 @@
 | 通過 | 遠端群組：密碼規則、金鑰推導、加解密、群組（人數上限、名稱不重複、訊息切塊） | rg_core: 34 passed | 1.6 秒 |
 | 通過 | 遠端群組：函式清單（防止新功能插入時蓋掉別組功能） | rg_methods: 102 passed | 0.0 秒 |
 | 通過 | 遠端群組：慢速信箱（Cloudflare KV，用假 KV 測 Worker 與傳輸） | rg_kv: 20 passed | 10.4 秒 |
-| 通過 | 遠端群組：內容傳輸（直連與轉送備援、完整性驗證、未宣告拒絕） | rg_files: 10 passed | 0.3 秒 |
+| 通過 | 遠端群組：內容傳輸（直連與轉送備援、完整性驗證、未宣告拒絕） | rg_files: 10 passed | 0.4 秒 |
 | 通過 | 遠端編輯器橋接（文件快取、素材往返、允許名單與閘門、取消、by 蓋章） | rg_edit: 32 passed | 1.4 秒 |
 | 通過 | 多人同編核心（主持機排序、副本收斂、衝突略過、各人獨立復原、離線暫存） | rg_session: 27 passed, 0 failed | 0.0 秒 |
 | 通過 | 多人同編訊息層（列表、加入、提出與廣播、by 蓋章、唯讀、各人復原、presence、漏補、離線暫存） | rg_collab: 26 passed, 0 failed | 2.9 秒 |
@@ -143,7 +143,7 @@
 | 通過 | 本機檔案綁定核心（開檔、存回、外部修改衝突、讀回驗證、web 控制代碼） | local_file: 25 passed, 0 failed | 0.0 秒 |
 | 通過 | 表格／文字／Word 離線 harness 領域（細切、推導、缺口、工具呼叫→封閉動作） | doc_semantics: 52 passed, 0 failed | 0.0 秒 |
 | 通過 | 遠端共筆 patch 模式（id 定址的 JSON 差異、套用與略過、逐行 diff3） | rg_patch: 21 passed | 0.0 秒 |
-| 通過 | 環境基準線（檔位判斷、政策、OOM 辨識、資源治理：讓位／排隊／跑完卸載／壓力／降級） | env_profile: 36 passed | 0.4 秒 |
+| 通過 | 環境基準線（檔位判斷、政策、OOM 辨識、資源治理：讓位／排隊／跑完卸載／壓力／降級） | env_profile: 36 passed | 0.6 秒 |
 | 通過 | 模擬 swap（熱區上限、最久沒用的先寫出、讀回、丟掉） | swap: 12 passed | 0.0 秒 |
 | 通過 | 文件類編輯器核心：markdown／純文字（往返位元組一致、區塊解析、封閉動作） | text_core: 61 passed | 0.0 秒 |
 | 通過 | 動畫簡報：格式、驗證、時間軸、渲染（deck_core） | deck_core: 82 passed, 0 failed | 0.1 秒 |
@@ -201,12 +201,12 @@
 | 通過 | 電腦操作：PNG 編解碼、裁切縮放、差異、格線 | computer-png: 15 passed, 0 failed | 0.0 秒 |
 | 通過 | 電腦操作：安全閘門（範圍、被蓋住、拒絕清單、密碼欄、按鍵、速率、中止、預覽） | computer-use-safety: 69 passed, 0 failed | 0.0 秒 |
 | 通過 | 電腦操作：RFB 編解碼（DES、持續狀態 inflate、ZRLE 磁磚） | rfb-codec: 13 passed, 0 failed | 0.0 秒 |
-| 通過 | 電腦操作：RFB 用戶端（假伺服器：Raw／RRE／Hextile／ZRLE／CopyRect／游標／驗證／輸入／WebSocket／候選物件） | rfb-client: 23 passed, 0 failed | 1.5 秒 |
+| 通過 | 電腦操作：RFB 用戶端（假伺服器：Raw／RRE／Hextile／ZRLE／CopyRect／游標／驗證／輸入／WebSocket／候選物件） | rfb-client: 23 passed, 0 failed | 1.4 秒 |
 | 通過 | 電腦操作：遠端協定探測（RDP／SPICE／NX／SSH／HTTP／RFB）、畫布視窗偵測、WebSocket 用戶端 | computer-remote: 46 passed, 0 failed | 9.0 秒 |
 | 通過 | 電腦操作：Windows 後端（PowerShell 腳本產生、C# 編譯檢查、nircmd、UI Automation 轉換；Windows 實跑未實測） | computer-use-windows: 38 passed, 0 failed | 0.3 秒 |
 | 通過 | 電腦操作：主行程 IPC（假 Electron：原生核准、權限提升、全域中止鍵、機密） | computer-use-ipc: 40 passed, 0 failed | 4.4 秒 |
 | 通過 | 電腦操作：renderer 核心（詞彙與主行程一致、動作整理、座標換算、視覺答案解析、驗證評分、/computer 指令） | computer_core: 40 passed, 0 failed | 0.0 秒 |
-| 通過 | 電腦操作：視覺慢路徑（切磚、定位、驗證、探索；假視覺模型） | computer_vision: 17 passed, 0 failed | 0.0 秒 |
+| 通過 | 電腦操作：視覺慢路徑（切磚、定位、驗證、探索；假視覺模型） | computer_vision: 17 passed, 0 failed | 0.1 秒 |
 | 通過 | 電腦操作：renderer 工具層（19 個 computer_* 工具、/computer 指令、網頁版不註冊） | computer_host: 47 passed, 0 failed | 0.0 秒 |
 | 通過 | 電腦操作：INTEGRATION.md 的貼上用區塊（領域、任務提示 regex、YAML、embed 片段、接線補丁） | integration_doc: 36 passed, 0 failed | 0.1 秒 |
 | 通過 | 圖片轉3D核心（封閉殼、平滑殼、背景差分、全景分層、貼材質） | 65 passed | 5.5 秒 |
@@ -214,7 +214,7 @@
 | 通過 | 音樂：MIDI 核心（解析、寫出、往返、量化、移調、合併拆分、速度表） | 29 passed, 0 failed | 0.1 秒 |
 | 通過 | 音樂：播放排程（事件、頻道配置、前瞻排程、靜音獨奏、跳轉、迴圈） | 64 passed, 0 failed | 0.0 秒 |
 | 通過 | 音樂：MIDI 編輯器純函式層（封閉動作、中文指令、復原重做） | 29 passed, 0 failed | 0.0 秒 |
-| 通過 | 音樂：MIDI 遠端共編（共編訊息層、事件層級合併） | 4 passed, 0 failed | 0.7 秒 |
+| 通過 | 音樂：MIDI 遠端共編（共編訊息層、事件層級合併） | 4 passed, 0 failed | 0.8 秒 |
 | 通過 | 音樂：作曲的理解需求（假 AI：完美、亂答、部分答對、沉默、逾時、丟錯；使用者說的優先；改成…；說明卡片） | 55 passed, 0 failed | 9.3 秒 |
 | 通過 | 音樂：作曲樹（曲式、和聲、聲部、動機逐節點；假模型七種；重做節點、改成…、組裝掃描） | 96 passed, 0 failed | 7.3 秒 |
 | 通過 | 音樂：midigenai 橋（假引擎：完美、沒引擎、超出範圍、不合格重生、逾時、出錯、模型壞掉、部分通過） | 56 passed, 0 failed | 0.3 秒 |
