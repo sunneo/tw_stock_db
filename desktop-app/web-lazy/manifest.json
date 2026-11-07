@@ -215,8 +215,8 @@
    "names": [
     "FaMatrixGraph"
    ],
-   "size": 18255,
-   "md5": "d2367de91d1d572f7f7966bf67e2e548"
+   "size": 24709,
+   "md5": "45059748f9d402843cc9a82e810522a2"
   },
   "teachercheck": {
    "file": "chunks/teachercheck.js",
