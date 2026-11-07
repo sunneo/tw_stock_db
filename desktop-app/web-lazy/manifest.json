@@ -450,6 +450,14 @@
    "size": 15380,
    "md5": "b7efc507ab16b644b7eef4ad768c494d"
   },
+  "codeopt": {
+   "file": "chunks/codeopt.js",
+   "names": [
+    "FaCodeOptimize"
+   ],
+   "size": 9679,
+   "md5": "70f3c235f5628c9e4e7efceba26808b4"
+  },
   "view": {
    "file": "chunks/view.js",
    "names": [
@@ -1444,7 +1452,7 @@
   }
  },
  "core": {
-  "size": 5622464,
-  "md5": "cb3a515766fcfa0c4f550c146fd7206c"
+  "size": 5625618,
+  "md5": "2207a4037fa52f2ce735dd1f715aced7"
  }
 }
