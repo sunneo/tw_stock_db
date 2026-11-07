@@ -153,10 +153,13 @@
             return withRoute(Object.assign(r, { mode: 'project', lang }));
         }
         const problem = a.problem && a.problem.statement ? a.problem : { id: 'user-task', title: clip(a.text, 40), statement: String(a.text || '') };
+        // 缺口 D：離線各層已試過什麼，交給模型當「已試」前置，避免它重走同一條路（只加在給模型的敘述，不動測資與判題）
+        const triedNote = offlineGaps.filter((g) => /^離線組合沒解出來/.test(g)).map((g) => g.replace(/，改用模型$/, '')).join('；');
+        const problemForModel = triedNote ? Object.assign({}, problem, { statement: String(problem.statement || '') + '\n\n（補充：離線的程式組合已經試過但沒成功——' + triedNote + '。請用不同的做法。）' }) : problem;
         const hasTests = !!(problem.tests && problem.tests.length);
         const verify = hasTests && a.judge ? ({ lang: l, source }) => a.judge({ lang: l, source, problem }) : (a.check ? ({ lang: l, source }) => a.check({ lang: l, source }) : null);
         if (!verify) return Object.assign(base, { mode: 'problem', verdict: 'NONE', reason: 'no_checker', gaps: ['沒有檢查器（check）也沒有判題器（judge），無法驗證任何東西'] });
-        const r = await Loop.solve({ problem, lang, ask: backend.ask, write: backend.write, judge: verify, repair: makeRepair(hasTests ? problem : null), choose: backend.choose, free: backend.free, lm: backend.lm, stackMod, opts, onEvent: a.onEvent });
+        const r = await Loop.solve({ problem: problemForModel, lang, ask: backend.ask, write: backend.write, judge: verify, repair: makeRepair(hasTests ? problem : null), choose: backend.choose, free: backend.free, lm: backend.lm, stackMod, opts, onEvent: a.onEvent });
         return withRoute(Object.assign(r, { mode: 'problem', lang }));
     }
 

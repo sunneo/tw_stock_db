@@ -93,7 +93,7 @@
 | A | 離線失敗時 `rounds` 被丟掉 | **已補（97231841）** | `_codeOffline` 失敗與成功都帶回 `rounds`；`runCode` 外層把「配方✘→課✘→範式✘(試 N 個)→矩陣✘」摘進 `gaps`（後面的路線會整個換掉 gaps，所以在最外層補回）；`code_agent_core.test.js` 有測試 |
 | B | 成功時也帶回 rounds | **已補（97231841）** | `offline.rounds` |
 | C | 離線沒有思考堆疊框（`buildFromUML` 每層 push／失敗 pop） | **未做（大）** | 離線全是純程式層、沒有模型呼叫，框的價值只在診斷；要先設計「層」對應哪種框（recipe／lesson／paradigm／matrix／blocks）與結果寫回格式。進 renderer：否 |
-| D | 離線失敗轉模型路線時，已試過的層沒交給模型 | **部分**：A 把各層摘要放進 `gaps`，但沒進模型提示 | 要把 `kept` 的各層摘要塞進 `Stack.decide` 的前置「已試」；等 C |
+| D | 離線失敗轉模型路線時，已試過的層沒交給模型 | **已補（2026-11-08）**：`runCode` 把離線各層摘要附在給模型的敘述尾端（「離線的程式組合已經試過但沒成功——…請用不同的做法」），只動敘述、不動測資與判題；`code_agent_core.test.js` 有測試。`Stack.decide` 的框化版本仍等 C | 做 C 時再改成框 |
 | E | 離線沒有 stackChecks | **未做（中）** | 只對 `writeBlocks` 外層加一次 `selfValidate`，預設跟隨 `stack_checks`；先看 C |
 | F | 兄弟一致性只在基準腳本 | **未做（小）** | 對離線輸出補「函式名／變數命名風格」純程式檢查；離線模型固定單類別，跨類別需設計 |
 | G | CoLU 規劃路由未接到寫程式流程 | **不建議接** | `FaRoute` 是「找不到工具」的路線，離線組合不是它的場景；只在 gap 說明。若要接，先釐清需求 |

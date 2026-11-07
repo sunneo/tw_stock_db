@@ -136,5 +136,12 @@ const checkOK = async () => ({ verdict: 'CHECKED', passed: 0, total: 0, failedIn
     const good = await A.runCode({ text: '寫一個 python 程式讀兩個整數印出和', problem: { statement: 's', tests: [{ in: '1 2\n', out: '3\n' }] }, opts: { writeMode: 'free' }, offline: async () => ({ ok: true, source: 'print(3)', verdict: 'AC', by: 'paradigm', rounds: [{ by: 'paradigm', ok: true, tried: 1 }] }), generate: fakeGen({ plan: PLAN, codes: CODES }), judge: judgeAC, check: checkOK });
     assert.ok(good.offline && good.offline.rounds && good.offline.rounds[0].by === 'paradigm');
   });
+  await t('缺口 D：離線失敗轉模型路線時，已試過的層摘要放進給模型的敘述（只動敘述，不動測資）', async () => {
+    const rounds = [{ by: 'recipe', ok: false, reason: '沒有配方' }, { by: 'paradigm', ok: false, tried: 3 }]; const seen = []; const g0 = fakeGen({ plan: PLAN, codes: CODES }); const gen = async (req) => { seen.push(JSON.stringify(req.messages || '')); return g0(req); };
+    await A.runCode({ text: '寫一個 python 程式讀兩個整數印出和', problem: { statement: 's', tests: [{ in: '1 2\n', out: '3\n' }] }, opts: { writeMode: 'free' }, offline: async () => ({ ok: false, reason: '沒解出', rounds }), generate: gen, judge: judgeAC, check: checkOK });
+    assert.ok(seen.some((x) => x.indexOf('離線的程式組合已經試過') >= 0 && x.indexOf('範式✘') >= 0), '模型提示要帶「已試」');
+    seen.length = 0; await A.runCode({ text: '寫一個 python 程式讀兩個整數印出和', problem: { statement: 's', tests: [{ in: '1 2\n', out: '3\n' }] }, opts: { writeMode: 'free' }, generate: gen, judge: judgeAC, check: checkOK });
+    assert.ok(seen.every((x) => x.indexOf('離線的程式組合已經試過') < 0), '沒走離線就沒有這段');
+  });
   console.log('\n' + n + ' passed');
 })().catch((e) => { console.error('FAIL', e && e.stack || e); process.exit(1); });
