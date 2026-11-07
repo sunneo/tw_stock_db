@@ -84,7 +84,14 @@
         detect(src) { return /\bin\s+(?:list\(\s*)?\w+\.keys\(\)\s*\)?\s*(?::|\band\b|\bor\b|\))/.test(src) ? {} : null; },
         rewrite(src) { return src.replace(/\bin\s+(?:list\(\s*)?(\w+)\.keys\(\)\s*\)?(?=\s*(?::|\band\b|\bor\b|\)))/g, 'in $1'); },
     };
-    const RULES = [listAsSet, queuePop, memoRec, strConcat, sortedExtreme, readonlyIn, countLoop, listConcat, rangeSum, insertFront, genexp, keysIn];
+    // ---- 13. 雙層迴圈數「和為 T 的配對」→ 一趟 Counter（題型：two-sum 計數） ----
+    const PAIR_RE = /^([ \t]*)for\s+(\w+)\s+in\s+range\(\s*([^)\n]+?)\s*\)\s*:\s*\n\1[ \t]+for\s+(\w+)\s+in\s+range\(\s*\2\s*\+\s*1\s*,\s*\3\s*\)\s*:\s*\n\1[ \t]+[ \t]+if\s+(\w+)\[\2\]\s*\+\s*\5\[\4\]\s*==\s*([^:\n]+?)\s*:\s*\n\1[ \t]+[ \t]+[ \t]+(\w+)\s*\+=\s*1[ \t]*$/m;
+    const pairCount = {
+        id: 'pair-sum-count', name: '雙層迴圈數「和為 T 的配對」→ 一趟掃描＋Counter（two-sum 計數題型）', before: 'O(n²)', after: 'O(n)', memory: '多一份計數表',
+        detect(src) { const m = PAIR_RE.exec(src); return m && m[3] ? { arr: m[5], t: m[6].trim(), c: m[7] } : null; },
+        rewrite(src, p) { let s = addImport(src, 'from collections import Counter'); const m = PAIR_RE.exec(s); if (!m) return null; const ind = m[1]; const rep = ind + '_seen = Counter()\n' + ind + 'for _x in ' + p.arr + ':\n' + ind + '    ' + p.c + ' += _seen[' + p.t + ' - _x]\n' + ind + '    _seen[_x] += 1'; return s.replace(m[0], rep); },
+    };
+    const RULES = [listAsSet, queuePop, memoRec, strConcat, sortedExtreme, readonlyIn, countLoop, listConcat, rangeSum, insertFront, genexp, keysIn, pairCount];
     const detectAll = (src) => RULES.map((r) => { let p = null; try { p = r.detect(src); } catch (e) { p = null; } return p ? { id: r.id, name: r.name, before: r.before, after: r.after, memory: r.memory, params: p } : null; }).filter(Boolean);
     async function optimize(o) {
         let cur = String(o.source); const applied = [], skipped = []; const inputs = (o.inputs || []).slice(0, 12); const run = o.run; const note = [];

@@ -19,6 +19,7 @@
 | prefix-sum | 迴圈裡 `sum(a[l:r])` | 前綴和 | O(nq)→O(n+q) | 多一個陣列 |
 | insert-front | `lst.insert(0, x)` | deque.appendleft | O(n²)→O(n) | 同階 |
 | listcomp-genexp | `sum／min／max／any／all([… for …])` | 產生器運算式 | 同階（any／all 可提早停） | **實測 32MB→9MB** |
+| pair-sum-count | 雙層迴圈數「和為 T 的配對」（題型 two-sum 計數） | 一趟掃描＋Counter | O(n²)→O(n)（實測 ×30） | 多一份計數表 |
 | keys-in | `k in d.keys()` | `k in d` | 少一層呼叫 | 不建視圖 |
 
 3. **驗證才收**：記憶體也量（測試端實測峰值：listcomp-genexp 32→9MB）；改完峰值變大超過 1.5 倍＋5MB 也退回——例：`str-join` 在 CPython 上實測記憶體 10→24MB、時間沒變，**被退回，不硬換**（宿主端的判題器目前只回時間，沒有峰值記憶體，所以宿主只擋變慢；測試端執行器有量記憶體）。每條改寫後，要在 tests／hidden 上輸出與目前版本相同才收；有 `perf`（一組大輸入與正確輸出）會量時間，比原本慢超過 20% 就退回。沒給測資就完全不改。
@@ -28,7 +29,7 @@
 `code_optimize.test.js`：9 條各自「認得、輸出一致、大輸入實測（queue ×61、list-append ×105、count ×20、遞迴 ×29…）、另一組大輸入一致」；不安全寫法（list 被索引、佇列被索引、遞迴有 print）不動；沒執行器不改；改壞要退回；報告寫出驗證範圍。真 Electron：`scripts/e2e/code_optimize.e2e.mjs`（pop(0)→deque，56ms→14ms）。
 
 ## 還沒做（下一步）
-- 與題型家族（骨架／範式）接起來：認出「這是 two-sum 暴力」→ 換成雜湊範式（要保持輸出順序語意，需要逐題型的等價處理）。
+- 與題型家族（骨架／範式）接起來：`pair-sum-count` 是第一個「認出題型 → 換成該題型的快範式」的規則（數配對可以精確等價）；「找第一組配對」要保持 (最小 i, 最小 j) 的輸出順序，還沒做。
 - 宿主端的記憶體量測（判題器 IPC 還沒回峰值記憶體）。
 - 更多規則：重複計算的不變量提到迴圈外、二維 DP 滾動陣列。
 - 非 Python 語言。
