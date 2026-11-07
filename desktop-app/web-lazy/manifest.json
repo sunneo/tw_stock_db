@@ -215,8 +215,8 @@
    "names": [
     "FaMatrixGraph"
    ],
-   "size": 24709,
-   "md5": "45059748f9d402843cc9a82e810522a2"
+   "size": 24782,
+   "md5": "a14f7d6b9b2184de5ae3a09c5b639995"
   },
   "matrixl0": {
    "file": "chunks/matrixl0.js",
@@ -233,6 +233,14 @@
    ],
    "size": 4684,
    "md5": "f3e67ecec0841acb75f077353e412b5c"
+  },
+  "matrixcompose": {
+   "file": "chunks/matrixcompose.js",
+   "names": [
+    "FaMatrixCompose"
+   ],
+   "size": 13663,
+   "md5": "0383c420f2864fadeab7774e4ce552d6"
   },
   "teachercheck": {
    "file": "chunks/teachercheck.js",
@@ -1452,7 +1460,7 @@
   }
  },
  "core": {
-  "size": 5625618,
-  "md5": "2207a4037fa52f2ce735dd1f715aced7"
+  "size": 5625785,
+  "md5": "50b6fd7cd9bbfcbab175da6ce5836ecc"
  }
 }
