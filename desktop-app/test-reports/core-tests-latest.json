@@ -1,5 +1,5 @@
 {
- "at": "2026-11-07T16:52:47.497Z",
+ "at": "2026-11-07T17:05:59.369Z",
  "failed": 0,
  "failed_new": 0,
  "results": [
@@ -12,7 +12,7 @@
    "summary": "66 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 150
+   "ms": 151
   },
   {
    "name": "標註核心（魔術棒、切格、猜字）",
@@ -23,7 +23,7 @@
    "summary": "22 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 38
+   "ms": 36
   },
   {
    "name": "蒙皮核心（骨架、權重、動作）",
@@ -34,7 +34,7 @@
    "summary": "17 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 22
+   "ms": 21
   },
   {
    "name": "名稱表（C++ STL、Rust、Go）",
@@ -56,7 +56,7 @@
    "summary": "94 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 38
+   "ms": 35
   },
   {
    "name": "圖片處理核心（灰階／強化／減色／模糊／馬賽克／旋轉／縮放／頁面排版）",
@@ -67,7 +67,7 @@
    "summary": "31 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 311
+   "ms": 335
   },
   {
    "name": "文件合併核心（種類判斷、文字解碼、docx／xlsx 簡化轉換、排版）",
@@ -78,7 +78,7 @@
    "summary": "7 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 47
+   "ms": 48
   },
   {
    "name": "依任務文字補專用工具（圖片轉PDF、合併文件成PDF）",
@@ -89,7 +89,7 @@
    "summary": "5 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 70
+   "ms": 68
   },
   {
    "name": "工具預算：短說明、精簡參數、階段切割、檢索",
@@ -100,7 +100,7 @@
    "summary": "9 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 23
+   "ms": 22
   },
   {
    "name": "Agent Model Configure：階段圖、特性估計、自動決定、內建預設、開關不動設定、重置、解析與備援順序、AI 回覆檢查",
@@ -111,7 +111,7 @@
    "summary": "PASS Agent Model Configure（階段圖、特性估計、自動決定、內建預設、開關不動設定、重置、解析與備援順序、AI 回覆檢查）：35 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 20
+   "ms": 19
   },
   {
    "name": "專案索引的定義抽取（C# 方法／屬性／namespace、Kotlin object、Java）",
@@ -122,7 +122,7 @@
    "summary": "5 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 62
+   "ms": 66
   },
   {
    "name": "離線圖像轉文字（模型登記、裝置、快取用量）",
@@ -133,7 +133,7 @@
    "summary": "143 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 28
+   "ms": 30
   },
   {
    "name": "離線小模型食譜（路由、填欄位、驗證、決策紀錄、多步驟引擎）",
@@ -155,7 +155,7 @@
    "summary": "49 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 20
+   "ms": 21
   },
   {
    "name": "離線多步驟計畫（目標、規劃、狀態機、決策樹）",
@@ -166,7 +166,7 @@
    "summary": "60 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 47
+   "ms": 42
   },
   {
    "name": "UML → 程式骨架（DSL、驗證、圖、template、情境到 UML）",
@@ -177,7 +177,7 @@
    "summary": "80 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 44
+   "ms": 48
   },
   {
    "name": "程式碼 → tree-sitter → UML（指令層級）→ Python 往返（需 tree-sitter 快取，沒有就略過）",
@@ -188,7 +188,7 @@
    "summary": "20 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 1877
+   "ms": 1834
   },
   {
    "name": "程式區塊範本庫（90 個範本：程式↔區塊↔受控自然語言雙向、種子程式往返判題；需 tree-sitter 快取）",
@@ -199,7 +199,7 @@
    "summary": "20 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 1950
+   "ms": 1906
   },
   {
    "name": "老師迴圈的客觀驗證核心（check 種類、抽出程式碼、判題器問題形狀）",
@@ -210,7 +210,7 @@
    "summary": "4 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 21
+   "ms": 18
   },
   {
    "name": "內建的課泛化：沒見過的改寫（換變數名稱、隨機測資）離線自己做對，不認得的算法不亂套（需 tree-sitter 快取）",
@@ -221,7 +221,7 @@
    "summary": "17 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 2508
+   "ms": 2594
   },
   {
    "name": "uml_design 先讀情境：算法題讀成 UML（0 次模型）→ 骨架 → 區塊 → 沙盒；含沒見過的寫法（需 tree-sitter 快取）",
@@ -232,7 +232,7 @@
    "summary": "7 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 381
+   "ms": 376
   },
   {
    "name": "範式骨架庫：不給課，範式骨架＋槽位窮舉＋沙盒解出種子題與沒見過的改寫（選項順序反過來也找得到；需 tree-sitter 快取）",
@@ -243,7 +243,7 @@
    "summary": "89 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 16244
+   "ms": 15661
   },
   {
    "name": "Linux 工具題（cat／grep／xxd／tar／gzip／xz／bmp）：輸入形狀、否決條件、範式（只用 train 題；需 tree-sitter 快取）",
@@ -254,7 +254,7 @@
    "summary": "Linux 工具範式測試：125 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 75986
+   "ms": 76648
   },
   {
    "name": "位元／位元組／格式化／字串進階積木（G3）：每個積木的往返、反推與 Python 求值（需 tree-sitter 快取）",
@@ -265,7 +265,7 @@
    "summary": "位元／位元組／格式化／字串積木：35 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 775
+   "ms": 801
   },
   {
    "name": "領域包 DSP：18 題種子（原敘述＋改寫＋選項反序），不給課、0 次模型，float 容差判題，含隱藏大測資（需 tree-sitter 快取）",
@@ -276,7 +276,7 @@
    "summary": "72 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 16148
+   "ms": 16967
   },
   {
    "name": "領域包 algo2：矩陣層沒解出的 15 個演算法家族（歐拉函數、完全數、步數、k 進位、直方圖、更暖天數、巢狀展開、最長合法括號、約瑟夫、視窗聚合、區間聯集、配對計數、RLE 解碼、回文子串、巴斯卡）；train 30/30（需 tree-sitter 快取）",
@@ -287,7 +287,7 @@
    "summary": "60 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 13327
+   "ms": 14247
   },
   {
    "name": "領域包 os（作業系統模擬）：CPU 排程（非搶先／RR／SRTF）、分頁置換、記憶體配適、磁碟排程；train 全過、holdout 只量測（需 tree-sitter 快取）",
@@ -298,7 +298,7 @@
    "summary": "66 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 42835
+   "ms": 42630
   },
   {
    "name": "領域包 ds（資料結構操作序列）：雜湊表、LRU、堆積、BST、Trie、並查集、鏈結串列；train 全過、holdout 只量測（需 tree-sitter 快取）",
@@ -309,7 +309,7 @@
    "summary": "48 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 17853
+   "ms": 18075
   },
   {
    "name": "領域包 linuxtext（cut／sort／uniq／wc／head／tail／tr／sed／awk 行為）：train 全過、holdout 只量測（需 tree-sitter 快取）",
@@ -320,7 +320,7 @@
    "summary": "56 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 64381
+   "ms": 64662
   },
   {
    "name": "領域包 sync（同步原語事件模擬）：信號量、互斥鎖、條件變數、生產者消費者；train 全過、holdout 只量測（需 tree-sitter 快取）",
@@ -331,7 +331,7 @@
    "summary": "32 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 11705
+   "ms": 11940
   },
   {
    "name": "領域包 graph2（進階圖與樹）：最小生成樹、強連通、Bellman-Ford、樹直徑、LCA、二分圖、最大流；train 全過、holdout 只量測（需 tree-sitter 快取）",
@@ -342,7 +342,7 @@
    "summary": "26 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 9498
+   "ms": 9466
   },
   {
    "name": "領域包 twofile（Linux 兩段輸入）：cat -n 兩檔、comm／diff、join、paste、cmp；train 全過、holdout 只量測（需 tree-sitter 快取）",
@@ -353,7 +353,7 @@
    "summary": "20 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 11391
+   "ms": 11436
   },
   {
    "name": "領域包 fs（檔案系統）：FAT 簇鏈／空閒簇、inode 區塊階層與佔用區塊數；train 全過、holdout 只量測（需 tree-sitter 快取）",
@@ -364,7 +364,7 @@
    "summary": "20 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 8325
+   "ms": 8406
   },
   {
    "name": "領域包 linuxsem（Linux 行為語意模擬）：fd 表（open／dup／dup2／close）、管線緩衝、信號遮罩、TCP 狀態機；train 全過、holdout 只量測（需 tree-sitter 快取）",
@@ -375,7 +375,7 @@
    "summary": "22 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 12714
+   "ms": 12807
   },
   {
    "name": "領域包 linuxfmt（格式型小工具家族）：樣板變數展開、區塊對齊計數、範式前綴碼；train 全過、holdout 只量測（需 tree-sitter 快取）",
@@ -386,7 +386,7 @@
    "summary": "12 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 5745
+   "ms": 5856
   },
   {
    "name": "區塊的庫存與範本規則（三區、型別、終止條件、模組需求；需 tree-sitter 快取）",
@@ -408,7 +408,7 @@
    "summary": "5 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 132
+   "ms": 133
   },
   {
    "name": "AST 建樹：隨機建樹與真 tree-sitter 一致、種子程式重放（需 tree-sitter 快取）",
@@ -419,7 +419,7 @@
    "summary": "20 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 2089
+   "ms": 2021
   },
   {
    "name": "CoLU+Thinking 階段 3（計畫階段接上 thinking：開關、逾時退路、推理不進 messages）",
@@ -441,7 +441,7 @@
    "summary": "26 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 63
+   "ms": 58
   },
   {
    "name": "CoLU+Thinking 階段 5（設定開關預設值、推理區塊跳脫 HTML、空推理不顯示、長推理截斷）",
@@ -452,7 +452,7 @@
    "summary": "colu_think_ui.test: 20 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 19
+   "ms": 23
   },
   {
    "name": "CoLU+Thinking 階段 7（思考逾時的硬性上限：準時、超時放棄、舊結果丟棄、連續不錯位、沒給 timeoutMs 不變、逾時退路）",
@@ -463,7 +463,7 @@
    "summary": "19 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 5050
+   "ms": 5059
   },
   {
    "name": "設計抉擇與 framework 目錄（推薦、片段、rework、專案展開）",
@@ -474,7 +474,7 @@
    "summary": "72 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 75
+   "ms": 99
   },
   {
    "name": "膠水（接到真正的 library、經驗、登記）",
@@ -485,7 +485,7 @@
    "summary": "23 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 74
+   "ms": 78
   },
   {
    "name": "設計檢視器資料（節點樹、UML↔原始碼對應）",
@@ -496,7 +496,7 @@
    "summary": "21 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 44
+   "ms": 42
   },
   {
    "name": "互動對話卡片（規格、驗證、wizard、還原唯讀）",
@@ -507,7 +507,7 @@
    "summary": "29 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 21
+   "ms": 23
   },
   {
    "name": "UML 設計引導（卡片流程、套用答案）",
@@ -540,7 +540,7 @@
    "summary": "44 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 35
+   "ms": 34
   },
   {
    "name": "文法自己發現（讀→建規則→驗證→再長；YAML、BitBake、nginx、Dockerfile、自創格式）",
@@ -551,7 +551,7 @@
    "summary": "46 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 38
+   "ms": 37
   },
   {
    "name": "LALR(1) 表產生器與驅動程式（遞迴文法、衝突處理、優先序、bison 輸出）",
@@ -562,7 +562,7 @@
    "summary": "17 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 265
+   "ms": 267
   },
   {
    "name": "遞迴文法與分析表的學習（讀→找解析不了的地方→換成別的規則／組合／新規則→驗證）",
@@ -584,7 +584,7 @@
    "summary": "24 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 172
+   "ms": 175
   },
   {
    "name": "混合內容語法高亮（切段、語言識別、信心度、自學習、逐詞著色）",
@@ -595,7 +595,7 @@
    "summary": "35 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 103
+   "ms": 102
   },
   {
    "name": "英文句子理解（詞類、片語、LALR 子句文法、框架、意圖、混合內容引用）",
@@ -606,7 +606,7 @@
    "summary": "26 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 96
+   "ms": 101
   },
   {
    "name": "意圖推導（受詞／目標型別、簽名比對、離線計畫可行性）",
@@ -617,7 +617,7 @@
    "summary": "16 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 55
+   "ms": 54
   },
   {
    "name": "離線理解閘（動作、目標種類、開啟工具、後置步驟、處理建議）",
@@ -628,7 +628,7 @@
    "summary": "49 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 76
+   "ms": 77
   },
   {
    "name": "離線理解閘接進執行流程（找主題、站內搜尋、摘要、路由）",
@@ -639,7 +639,7 @@
    "summary": "30 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 95
+   "ms": 97
   },
   {
    "name": "離線理解閘：理解不了先思考、問使用者並記憶、最後核對",
@@ -650,7 +650,7 @@
    "summary": "27 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 80
+   "ms": 78
   },
   {
    "name": "離線理解閘：打開的種類表（MIME 對應）、覆蓋測試、終端機、語意推導命中率",
@@ -661,7 +661,7 @@
    "summary": "70 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 206
+   "ms": 209
   },
   {
    "name": "離線理解閘：探索迴圈（目錄→知識庫→小模型→問使用者）與反思換路線",
@@ -683,7 +683,7 @@
    "summary": "catalog_core: 82 passed",
    "failures": [],
    "error": "",
-   "ms": 22
+   "ms": 23
   },
   {
    "name": "萬物皆矩陣相乘的驗證（半環矩陣、DFA 連乘與掃描、min-plus／布林圖、Berlekamp–Massey 遞推、LALR 表矩陣＋有界堆疊、CYK 布林矩陣、Hankel 秩與從範例學矩陣）",
@@ -694,7 +694,7 @@
    "summary": "53 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 985
+   "ms": 990
   },
   {
    "name": "矩陣＋狀態機＋ReLU 電路＋矩陣 VM 的驗證（暫存器機：費氏／DFA 計數／括號堆疊／gcd／質數／固定 n 排序與二分；直和 vs 乘積；ReLU 閘數；VM 指令集、驗證器、JSONL、編譯對照）",
@@ -705,7 +705,7 @@
    "summary": "28 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 431
+   "ms": 422
   },
   {
    "name": "ReLU 網路 → CoLU 決策樹／機器的編譯（精確等價、exact 與 domain 模式、JSONL、區域數 vs 神經元數、域外與浮點的反例、驗證會擋）",
@@ -716,7 +716,7 @@
    "summary": "16 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 309
+   "ms": 316
   },
   {
    "name": "矩陣接不起來的地方的銜接（佇列 BFS、one-hot 記憶體＝矩陣、雙調排序不經意網路、並查集與指標跳躍、有界堆疊＝移位矩陣、種子 20 題最少記憶體）",
@@ -727,7 +727,7 @@
    "summary": "11 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 70
+   "ms": 69
   },
   {
    "name": "矩陣反編譯與可讀性（矩陣→遞推式、one-hot 矩陣→DFA→狀態圖／正規表示式、ReLU 樹→if／else、VM→中文 CNL；結構式 vs 稠密學出的矩陣）",
@@ -738,7 +738,7 @@
    "summary": "15 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 96
+   "ms": 97
   },
   {
    "name": "矩陣層後備（只靠敘述＋2 筆範例合成：L1 線性遞推枚舉＋矩陣冪、L2 自動機家族；形狀不支援／不是線性遞推要明確失敗；範例不足回報 ambiguous）",
@@ -749,7 +749,7 @@
    "summary": "17 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 3119
+   "ms": 3226
   },
   {
    "name": "矩陣層 graph／grid 模組（邊表／格子形狀＋L3 半環與走訪範本；heldout2 ≥20/22、heldout3 ≥21/21 回歸，heldout4 ≥14/19、heldout5（L0）verified ≥4/12，範本庫沒有的題型要誠實失敗）",
@@ -760,7 +760,7 @@
    "summary": "7 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 21339
+   "ms": 21610
   },
   {
    "name": "矩陣 → code edit（合成程式整理成可編輯版：形態往返、改係數／轉移表行為跟著變、走 Python→UML 路徑 raw=0、改壞時降級；需 tree-sitter 快取）",
@@ -771,7 +771,18 @@
    "summary": "7 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 839
+   "ms": 780
+  },
+  {
+   "name": "程式優化對照表（9 條慢寫法→優化寫法：list-as-set／queue／遞迴記憶化／join／max-min／readonly-in／Counter／append／前綴和；輸出一致、實測不變慢、不安全不動、沒測資不改）",
+   "file": "renderer/src/recipe/code_optimize.test.js",
+   "ok": true,
+   "known": false,
+   "reason": "",
+   "summary": "9 passed, 0 failed",
+   "failures": [],
+   "error": "",
+   "ms": 8653
   },
   {
    "name": "型別接線矩陣與路徑搜尋（回傳型別推論、具體程度、布林矩陣連乘、前 K 條接線與得分、萬用結構強制轉型）",
@@ -782,7 +793,7 @@
    "summary": "matrix_core: 53 passed",
    "failures": [],
    "error": "",
-   "ms": 151
+   "ms": 147
   },
   {
    "name": "單元目錄：Python 原型抽取（註解 → 型別、原型 → 單元、真實跑抽取腳本）",
@@ -793,7 +804,7 @@
    "summary": "extract_py: 74 passed",
    "failures": [],
    "error": "",
-   "ms": 132
+   "ms": 143
   },
   {
    "name": "單元目錄：型別存根轉換（typeshed 風格的 .pyi → 型別表：TypeVar／別名展開、多載合併、版本與平台分支）與存根型別套進單元",
@@ -804,7 +815,7 @@
    "summary": "stub_to_types: 33 passed",
    "failures": [],
    "error": "",
-   "ms": 145
+   "ms": 164
   },
   {
    "name": "單元目錄：探測執行（輸入產生、結果套回單元、真實跑探測腳本：擋檔案／系統呼叫、SystemExit、非決定性）",
@@ -815,7 +826,7 @@
    "summary": "probe_core: 59 passed",
    "failures": [],
    "error": "",
-   "ms": 151
+   "ms": 163
   },
   {
    "name": "單元目錄：catalog_onboard 核心（請求驗證與安全關卡、為什麼沒晉升、摘要、持久化與合併、過期判斷、查詢）",
@@ -826,7 +837,7 @@
    "summary": "onboard_core: 53 passed",
    "failures": [],
    "error": "",
-   "ms": 28
+   "ms": 35
   },
   {
    "name": "單元選擇評測核心（中英文檢索、候選與提示、答案解析、選擇與填參數評分、評測集檢查）",
@@ -837,7 +848,7 @@
    "summary": "select_core: 54 passed",
    "failures": [],
    "error": "",
-   "ms": 23
+   "ms": 24
   },
   {
    "name": "呼叫格式（IR）與直譯器（靜態檢查、引用與型別、條件與有上限的迴圈、逾時／取消／預算、確認閘、模擬執行、從路徑產生程式）",
@@ -848,7 +859,7 @@
    "summary": "ir_core: 56 passed",
    "failures": [],
    "error": "",
-   "ms": 89
+   "ms": 90
   },
   {
    "name": "歷史呼叫逆向推論（從實際回傳值反推 JSON 結構、合併樣本、選填欄位、狀態可存檔累積、套進目錄）",
@@ -859,7 +870,7 @@
    "summary": "shape_core: 40 passed",
    "failures": [],
    "error": "",
-   "ms": 25
+   "ms": 29
   },
   {
    "name": "JavaScript 單元抽取（匯出方式、JSDoc 型別、副作用與呼叫鏈、類別與 prototype、真實 UMD 檔案）",
@@ -870,7 +881,7 @@
    "summary": "extract_js: 36 passed",
    "failures": [],
    "error": "",
-   "ms": 61
+   "ms": 62
   },
   {
    "name": "能力卡片（長文切片與地圖縮放、事實抽取、多片段投票融合、各種文件種類）",
@@ -892,7 +903,7 @@
    "summary": "rank_train: 11 passed",
    "failures": [],
    "error": "",
-   "ms": 50
+   "ms": 56
   },
   {
    "name": "MCP（設定檔各家寫法、bundle manifest、專案偵測、JSON-RPC 用戶端、stdio／Streamable HTTP／SSE 傳輸、結果格式）",
@@ -903,7 +914,7 @@
    "summary": "mcp_core: 53 passed",
    "failures": [],
    "error": "",
-   "ms": 136
+   "ms": 138
   },
   {
    "name": "壓縮檔（檔頭辨識 zip／jar／7z／rar／tar／gzip／bzip2／xz／iso、bzip2 解碼、tar 的 pax／GNU 長檔名、內容判斷、jar 摘要）",
@@ -914,7 +925,7 @@
    "summary": "archive_core: 37 passed",
    "failures": [],
    "error": "",
-   "ms": 111
+   "ms": 122
   },
   {
    "name": "中英互譯的核心（方向判斷、切句、檢查譯文：語言／網址／重複／數字、提示詞、術語、自然語言命令不誤判）",
@@ -925,7 +936,7 @@
    "summary": "translate_core: 87 passed",
    "failures": [],
    "error": "",
-   "ms": 24
+   "ms": 22
   },
   {
    "name": "語音合成的意圖辨識（用英文語音說…、把「…」念出來、tts: …；提問與別的「念／讀」不誤判）",
@@ -936,7 +947,7 @@
    "summary": "tts_intent: 48 passed",
    "failures": [],
    "error": "",
-   "ms": 20
+   "ms": 23
   },
   {
    "name": "「沒有工具」的反思（宣稱偵測、搜尋所有領域的工具、提示文字）",
@@ -947,7 +958,7 @@
    "summary": "cap_reflect: 45 passed",
    "failures": [],
    "error": "",
-   "ms": 30
+   "ms": 28
   },
   {
    "name": "UML 拆解題（真的拆解流程＋假模型：完美、亂答、靠退回重來、連線失敗、空白；評分同義詞與中文關鍵字；建議 self／stepwise／program_first／unknown）",
@@ -969,7 +980,7 @@
    "summary": "uml_edit_core: 54 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 30
+   "ms": 29
   },
   {
    "name": "達成路線（分類、依環境選程式語言、寄信三條路線、手動／自動閘門與副作用一定先問、缺能力→UML 編修）",
@@ -980,7 +991,7 @@
    "summary": "route_core: 41 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 29
+   "ms": 28
   },
   {
    "name": "技能→食譜編譯器（抽步驟與工具、綁欄位、缺口交給 UML design、資料流）",
@@ -991,7 +1002,7 @@
    "summary": "PASS 技能→食譜編譯器：48 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 24
+   "ms": 25
   },
   {
    "name": "意圖解析（文字切割、語意角色、行為、隱含期待與驗證、缺口問題、UML、測試案例、中英翻譯輔助與媒合）",
@@ -1002,7 +1013,7 @@
    "summary": "PASS 意圖解析（文字切割、語意角色、行為、隱含期待與驗證、缺口問題、UML、測試案例）：78 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 39
+   "ms": 35
   },
   {
    "name": "瀏覽器控制穩定生成（動作檢查、狀態接線、副作用標記、UML 來回、計畫一批、等擴充功能連上、執行驗證重試、整個任務）",
@@ -1013,7 +1024,7 @@
    "summary": "bcplan_core: 70 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 32
+   "ms": 33
   },
   {
    "name": "資料離線精準查詢（SPDX／工作表：結構、讀問題、計畫、檢查、執行、SQL、放寬與最接近的值、歧義問字母、題庫）",
@@ -1024,7 +1035,7 @@
    "summary": "dataquery_core: 31 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 52
+   "ms": 51
   },
   {
    "name": "UML → LLVM IR → wasm32-wasi（IR 解析與型別檢查、wasm 產生、真的執行、運算／迴圈／遞迴／struct／全域／字串、檢查器擋錯、UML 軌跡一致）",
@@ -1035,7 +1046,7 @@
    "summary": "llvm_core: 103 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 83
+   "ms": 82
   },
   {
    "name": "探索時的反思（錯字：英文編輯距離／中文同音近形字、不認得的字、概念再找、可能是新的需求、整份計畫反思：問使用者／統一走建議／上限）",
@@ -1046,7 +1057,7 @@
    "summary": "reflect_core: 40 passed",
    "failures": [],
    "error": "",
-   "ms": 41
+   "ms": 43
   },
   {
    "name": "CoLU 的 ReLU 形式（relu／sat／max2、可達性逐位元等於位元版、ReLU 層疊網路、最佳接線分數等於 findPipelines、矩陣連乘後端一致性檢查）",
@@ -1068,7 +1079,7 @@
    "summary": "colu_bench_core: 42 passed",
    "failures": [],
    "error": "",
-   "ms": 47
+   "ms": 49
   },
   {
    "name": "弱模型 harness 迴圈（程式路由、封閉題核對、退回重答、預設退路、判定、命令列續跑；假模型：完美、亂答、沉默、連線失敗）",
@@ -1101,7 +1112,7 @@
    "summary": "7 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 18
+   "ms": 19
   },
   {
    "name": "harness skill 可攜（vendor 與來源一致、搬到 repo 外仍能跑迴圈、經驗閘門、離線訓練器乾跑與規則比對、行為分析引擎載入）",
@@ -1112,7 +1123,7 @@
    "summary": "11 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 248
+   "ms": 256
   },
   {
    "name": "harness 共識閘門（中文字面與正規表達式條款、行號、allow 遮罩、必須缺漏、結束碼 0／1／2、--root 與 scope、--json）",
@@ -1123,7 +1134,7 @@
    "summary": "14 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 99
+   "ms": 90
   },
   {
    "name": "harness 老師端閘門（派工紀錄、提交範圍、共識在提交內容上檢查、驗收指令結束碼、宣稱檢查、原話逐條對照預設否、observe、命令列結束碼）",
@@ -1134,7 +1145,7 @@
    "summary": "27 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 380
+   "ms": 432
   },
   {
    "name": "harness 速度守則（派工附上守則與上限、報告與新增行的超限等待／逾時／排程警告、警告不改變通過與否、舊派工紀錄相容）",
@@ -1145,7 +1156,7 @@
    "summary": "13 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 68
+   "ms": 52
   },
   {
    "name": "計畫的分歧偵測（沒有分歧不問、分數接近／取捨／勉強合格／找不到、題數上限、套用回答、打字補充撿網址、摘要）",
@@ -1156,7 +1167,7 @@
    "summary": "branch_core: 40 passed",
    "failures": [],
    "error": "",
-   "ms": 27
+   "ms": 22
   },
   {
    "name": "採用／退回的回饋累積（壓縮卡片、計畫轉標註、權重、覆蓋規則、轉成訓練資料、可不可以訓練、樣本權重）",
@@ -1167,7 +1178,7 @@
    "summary": "feedback_core: 22 passed",
    "failures": [],
    "error": "",
-   "ms": 122
+   "ms": 115
   },
   {
    "name": "缺口驅動探索（缺口、搜尋關鍵字、候選排名、錯誤歸類與換做法、整個迴圈用假主機）",
@@ -1178,7 +1189,7 @@
    "summary": "discover_core: 50 passed",
    "failures": [],
    "error": "",
-   "ms": 40
+   "ms": 39
   },
   {
    "name": "單元嵌入檢索（單元文字、向量打包與失效、餘弦排名、排名融合）",
@@ -1189,7 +1200,7 @@
    "summary": "embed_core: 24 passed",
    "failures": [],
    "error": "",
-   "ms": 19
+   "ms": 18
   },
   {
    "name": "需求→活動→單元（UML 型別合約、檢索加型別打分、資料流、橋接、型別接線）",
@@ -1211,7 +1222,7 @@
    "summary": "data_core: 60 passed",
    "failures": [],
    "error": "",
-   "ms": 39
+   "ms": 33
   },
   {
    "name": "SQL 語句切分與完整性判斷",
@@ -1222,7 +1233,7 @@
    "summary": "14 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 21
+   "ms": 17
   },
   {
    "name": "檔案用途／函式做什麼的說明產生器（FaExplain）",
@@ -1233,7 +1244,7 @@
    "summary": "16 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 22
+   "ms": 20
   },
   {
    "name": "CI 核心（Gerrit／GitHub／Jenkins 整理、失敗記錄分診 triage）",
@@ -1244,7 +1255,7 @@
    "summary": "21 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 635
+   "ms": 629
   },
   {
    "name": "Pipeline 解析／lint／本機重現／樣板（Jenkinsfile、GitHub Actions、GitLab CI）",
@@ -1266,7 +1277,7 @@
    "summary": "12 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 1355
+   "ms": 1473
   },
   {
    "name": "coding_edit／coding_patch_tool 整合（真的暫存工作區、git、腳本乾跑與套用）",
@@ -1277,7 +1288,7 @@
    "summary": "14 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 5254
+   "ms": 5231
   },
   {
    "name": "CI 連線 HTTP（讀取上限、tail、寫入確認、逾時）",
@@ -1288,7 +1299,7 @@
    "summary": "7 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 2105
+   "ms": 2101
   },
   {
    "name": "行為描述 8 種語言（真的 tree-sitter 文法；離線時略過）",
@@ -1299,7 +1310,7 @@
    "summary": "263 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 916
+   "ms": 908
   },
   {
    "name": "sqlitebrowser 純函式（過濾語法、DDL 預覽、儲存格、匯出）",
@@ -1310,7 +1321,7 @@
    "summary": "9 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 20
+   "ms": 23
   },
   {
    "name": "終端機 /mnt 即時 FAP 檔案系統（wasi-sh 契約、快取、寫回、衝突）",
@@ -1321,7 +1332,7 @@
    "summary": "15 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 182
+   "ms": 183
   },
   {
    "name": "桌面版終端機 /mnt 的同步檔案後端（fsx-sync：真的碰磁碟）",
@@ -1343,7 +1354,7 @@
    "summary": "rg_core: 34 passed",
    "failures": [],
    "error": "",
-   "ms": 1635
+   "ms": 1629
   },
   {
    "name": "遠端群組：函式清單（防止新功能插入時蓋掉別組功能）",
@@ -1354,7 +1365,7 @@
    "summary": "rg_methods: 102 passed",
    "failures": [],
    "error": "",
-   "ms": 32
+   "ms": 30
   },
   {
    "name": "遠端群組：慢速信箱（Cloudflare KV，用假 KV 測 Worker 與傳輸）",
@@ -1365,7 +1376,7 @@
    "summary": "rg_kv: 20 passed",
    "failures": [],
    "error": "",
-   "ms": 10362
+   "ms": 10385
   },
   {
    "name": "遠端群組：內容傳輸（直連與轉送備援、完整性驗證、未宣告拒絕）",
@@ -1376,7 +1387,7 @@
    "summary": "rg_files: 10 passed",
    "failures": [],
    "error": "",
-   "ms": 370
+   "ms": 322
   },
   {
    "name": "遠端編輯器橋接（文件快取、素材往返、允許名單與閘門、取消、by 蓋章）",
@@ -1387,7 +1398,7 @@
    "summary": "rg_edit: 32 passed",
    "failures": [],
    "error": "",
-   "ms": 1461
+   "ms": 1465
   },
   {
    "name": "多人同編核心（主持機排序、副本收斂、衝突略過、各人獨立復原、離線暫存）",
@@ -1398,7 +1409,7 @@
    "summary": "rg_session: 27 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 26
+   "ms": 37
   },
   {
    "name": "多人同編訊息層（列表、加入、提出與廣播、by 蓋章、唯讀、各人復原、presence、漏補、離線暫存）",
@@ -1409,7 +1420,7 @@
    "summary": "rg_collab: 26 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 2907
+   "ms": 2903
   },
   {
    "name": "多人同編素材（加入時取齊、參與者新增的圖經主持機轉給大家）",
@@ -1420,7 +1431,7 @@
    "summary": "rg_collab_assets: 7 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 1859
+   "ms": 1862
   },
   {
    "name": "多人同編接手（主持機離線太久由 nodeId 最小的在線者接手、改連、舊主持機回來被通知）",
@@ -1431,7 +1442,7 @@
    "summary": "rg_collab_failover: 11 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 4858
+   "ms": 4865
   },
   {
    "name": "試算表公式求值器（四則、範圍、統計、文字、IF、查找、循環與錯誤）",
@@ -1442,7 +1453,7 @@
    "summary": "sheet_formula: 22 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 21
+   "ms": 20
   },
   {
    "name": "表格文件核心（CSV 往返位元組一致、動作、公式參照位移、程式白話、xlsx 讀寫）",
@@ -1453,7 +1464,7 @@
    "summary": "sheet_core: 60 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 114
+   "ms": 115
   },
   {
    "name": "Word 文件核心（讀、沒改的區塊原樣輸出、package patching、格式、清單、表格、程式白話）",
@@ -1475,7 +1486,7 @@
    "summary": "local_file: 25 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 18
+   "ms": 21
   },
   {
    "name": "表格／文字／Word 離線 harness 領域（細切、推導、缺口、工具呼叫→封閉動作）",
@@ -1486,7 +1497,7 @@
    "summary": "doc_semantics: 52 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 38
+   "ms": 44
   },
   {
    "name": "遠端共筆 patch 模式（id 定址的 JSON 差異、套用與略過、逐行 diff3）",
@@ -1497,7 +1508,7 @@
    "summary": "rg_patch: 21 passed",
    "failures": [],
    "error": "",
-   "ms": 22
+   "ms": 25
   },
   {
    "name": "環境基準線（檔位判斷、政策、OOM 辨識、資源治理：讓位／排隊／跑完卸載／壓力／降級）",
@@ -1508,7 +1519,7 @@
    "summary": "env_profile: 36 passed",
    "failures": [],
    "error": "",
-   "ms": 572
+   "ms": 578
   },
   {
    "name": "模擬 swap（熱區上限、最久沒用的先寫出、讀回、丟掉）",
@@ -1563,7 +1574,7 @@
    "summary": "PASS 動畫物件描述（場景、物件動畫、鏡頭、連動音效、對話泡泡、敘事文字、要點 highlight、疊字幕）：52 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 74
+   "ms": 77
   },
   {
    "name": "動畫簡報：RPG 式對話場景（程序化地圖／人物／頭像、格子座標走路、A* 繞路、對話框與字幕、聚光、黑幕轉場、使用者素材、CoLU 故事規劃）",
@@ -1574,7 +1585,7 @@
    "summary": "93 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 142
+   "ms": 138
   },
   {
    "name": "動畫簡報：點陣精靈（去背、縮進畫格、調色盤、外框、物件樣板）",
@@ -1585,7 +1596,7 @@
    "summary": "36 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 57
+   "ms": 56
   },
   {
    "name": "動畫簡報：點陣圖物件設計工具（調色盤、字母列、鏡射、繪圖指令、亮暗部、外框、內建範例）",
@@ -1596,7 +1607,7 @@
    "summary": "28 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 36
+   "ms": 35
   },
   {
    "name": "動畫簡報：人物精靈圖（3D 人物零件、z-buffer 光柵、多格共用調色盤、精靈圖打包、三種風格）",
@@ -1607,7 +1618,7 @@
    "summary": "39 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 397
+   "ms": 404
   },
   {
    "name": "動畫簡報：故事／名詞清單→舞台（意象推導＋CoLU：角色與對話、動作與音效、進出場景、名詞清單、封閉問題）",
@@ -1618,7 +1629,7 @@
    "summary": "PASS 故事→舞台（意象推導＋CoLU：角色與對話、動作與音效、進出場景、名詞清單、封閉問題）：39 passed, 0 failed []",
    "failures": [],
    "error": "",
-   "ms": 69
+   "ms": 66
   },
   {
    "name": "教育文書（學習單）：讀請求、驗證、排版、SVG／HTML／PDF、參考圖片、編輯動作、封閉題",
@@ -1651,7 +1662,7 @@
    "summary": "edit_objects_core: 46 passed",
    "failures": [],
    "error": "",
-   "ms": 20
+   "ms": 22
   },
   {
    "name": "SVG／圖片編輯器的圖片來源：維基共享資源與 Openverse 的排序、網址、授權",
@@ -1684,7 +1695,7 @@
    "summary": "svg_trace: 11 passed",
    "failures": [],
    "error": "",
-   "ms": 76
+   "ms": 77
   },
   {
    "name": "圖片編輯器：風格濾鏡、修復（補洞／去雜訊／去污點）",
@@ -1706,7 +1717,7 @@
    "summary": "27 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 33
+   "ms": 35
   },
   {
    "name": "圖片編輯器：圖層（濾鏡層、修復層）、風格、相對放置、程式先讀的指令",
@@ -1717,7 +1728,7 @@
    "summary": "edit_picture_core: 37 passed",
    "failures": [],
    "error": "",
-   "ms": 36
+   "ms": 33
   },
   {
    "name": "3D 場景編輯器：以使用者視角的相對放置、封閉動作、群組、貼皮、YAML 往返、程式先讀的指令",
@@ -1728,7 +1739,7 @@
    "summary": "edit3d_core: 59 passed",
    "failures": [],
    "error": "",
-   "ms": 54
+   "ms": 51
   },
   {
    "name": "3D 單一物件編輯（貼皮）：面、位置、顏色、圖、程式先讀的指令",
@@ -1750,7 +1761,7 @@
    "summary": "game_sim: 42 passed",
    "failures": [],
    "error": "",
-   "ms": 123
+   "ms": 127
   },
   {
    "name": "遊戲編輯器：封閉動作、相對放置、影響範圍、YAML 往返、脈絡包、程式先讀的指令、範本",
@@ -1761,7 +1772,7 @@
    "summary": "game_core: 44 passed",
    "failures": [],
    "error": "",
-   "ms": 85
+   "ms": 87
   },
   {
    "name": "遊戲編輯器：畫法、聲音合成、UML、遊戲包 .fagame",
@@ -1772,7 +1783,7 @@
    "summary": "game_parts: 23 passed",
    "failures": [],
    "error": "",
-   "ms": 226
+   "ms": 224
   },
   {
    "name": "遊戲編輯器：目標原始碼（網頁／Electron／Node.js 由程式產生、AI 逐檔計畫、舊機種適配檢查、測試向量）",
@@ -1783,7 +1794,7 @@
    "summary": "game_gen: 31 passed",
    "failures": [],
    "error": "",
-   "ms": 237
+   "ms": 238
   },
   {
    "name": "簡報編輯器：簡報檔的物件模型、封閉動作（加頁、改旁白、搬動、隱藏、鎖定、整份替換）、程式先讀的白話、前後版本差異",
@@ -1805,7 +1816,7 @@
    "summary": "article_outline: 20 passed",
    "failures": [],
    "error": "",
-   "ms": 21
+   "ms": 23
   },
   {
    "name": "NVIDIA 線上圖像生成：請求整理、參數夾範圍、回應解析",
@@ -1816,7 +1827,7 @@
    "summary": "nvidia_image: 18 passed",
    "failures": [],
    "error": "",
-   "ms": 18
+   "ms": 17
   },
   {
    "name": "本機小模型生圖（SDXS-512 GPU／CPU 版）：選版本、取樣的數學、亂數、張量轉圖片、錯誤說明",
@@ -1827,7 +1838,7 @@
    "summary": "local_sd: 33 passed",
    "failures": [],
    "error": "",
-   "ms": 25
+   "ms": 24
   },
   {
    "name": "sd-turbo 圖生圖改圖：時間點、加噪與還原、遮罩混合、尺寸、強度、選版本",
@@ -1838,7 +1849,7 @@
    "summary": "sd_turbo: 25 passed",
    "failures": [],
    "error": "",
-   "ms": 21
+   "ms": 22
   },
   {
    "name": "圖像生成分流：形狀圖（SVG／Mermaid 純文字）或擴散模型、提示詞範本（SD／FLUX／SD3）、圖片描述轉欄位",
@@ -1849,7 +1860,7 @@
    "summary": "image_route: 80 passed",
    "failures": [],
    "error": "",
-   "ms": 31
+   "ms": 30
   },
   {
    "name": "主題簡報食譜（/media-presentation 只給主題）：需求解析、規劃與樣板、旁白驗收、組簡報、修復",
@@ -1860,7 +1871,7 @@
    "summary": "deck_topic: 27 passed",
    "failures": [],
    "error": "",
-   "ms": 21
+   "ms": 30
   },
   {
    "name": "/image 的規劃：由上而下細切成單元、樣板退路、依輸入輸出欄位接線成 IR 程式",
@@ -1871,7 +1882,7 @@
    "summary": "image_plan: 17 passed",
    "failures": [],
    "error": "",
-   "ms": 26
+   "ms": 28
   },
   {
    "name": "文件撰寫器（/user-guide、/design-guide）：掃描與證據、架構比對、範本選擇、組文件、驗證、潤飾驗收、md／wiki／html／pdf／docx 輸出",
@@ -1882,7 +1893,7 @@
    "summary": "docgen: 47 passed",
    "failures": [],
    "error": "",
-   "ms": 38
+   "ms": 37
   },
   {
    "name": "YAML 用途標記（#!fa:deck 這類開頭／結尾宣告）：偵測、檢查、加標記",
@@ -1904,7 +1915,7 @@
    "summary": "knowledge_core: 55 passed",
    "failures": [],
    "error": "",
-   "ms": 28
+   "ms": 29
   },
   {
    "name": "Knowledge Inventory 儲存層（真的 SQLite＋FTS5；沒有 node:sqlite 的 Node 會略過）",
@@ -1915,7 +1926,7 @@
    "summary": "knowledge_store: skipped（沒有 node:sqlite，要 Node 22.5 以上才會跑）0 failed",
    "failures": [],
    "error": "",
-   "ms": 16
+   "ms": 19
   },
   {
    "name": "動畫簡報：程式碼視窗、patch、問答卡、小工具沙盒、互動視覺的格式規則",
@@ -1926,7 +1937,7 @@
    "summary": "97 passed",
    "failures": [],
    "error": "",
-   "ms": 65
+   "ms": 73
   },
   {
    "name": "動畫簡報：影片視覺（播放、重播、快轉、速度、A-B 循環的格式規則）",
@@ -1937,7 +1948,7 @@
    "summary": "20 passed",
    "failures": [],
    "error": "",
-   "ms": 41
+   "ms": 57
   },
   {
    "name": "動畫簡報：每份簡報自己的外框配色（deck.colors）",
@@ -1948,7 +1959,7 @@
    "summary": "deck_colors: 8 passed",
    "failures": [],
    "error": "",
-   "ms": 36
+   "ms": 41
   },
   {
    "name": "動畫簡報：內建可愛插圖（注音與第一個符號核對）",
@@ -1970,7 +1981,7 @@
    "summary": "main_ext: 24 passed",
    "failures": [],
    "error": "",
-   "ms": 39
+   "ms": 37
   },
   {
    "name": "系統匣縮小時的對話框處理（子視窗取消、原生對話框擋住、顯示視窗帶回）",
@@ -1981,7 +1992,7 @@
    "summary": "7 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 123
+   "ms": 127
   },
   {
    "name": "JSONL 分頁器（一行一筆、cursor、單筆過大分段、壞行保留、窗口按比例）",
@@ -1992,7 +2003,7 @@
    "summary": "23 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 76
+   "ms": 81
   },
   {
    "name": "網頁內文區塊化（章節索引、區塊、連結、參照文件偏移）",
@@ -2003,7 +2014,7 @@
    "summary": "web_blocks: 27 passed",
    "failures": [],
    "error": "",
-   "ms": 32
+   "ms": 26
   },
   {
    "name": "思考堆疊（push／pop、焦點標頭與字元上限、wrap、verify 重試、JSONL 往返）",
@@ -2036,7 +2047,7 @@
    "summary": "14 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 10270
+   "ms": 10275
   },
   {
    "name": "本地中文語音：文字轉音素（1379 個音節與 misaki 逐字相同）",
@@ -2047,7 +2058,7 @@
    "summary": "zh_g2p: 13 passed",
    "failures": [],
    "error": "",
-   "ms": 27
+   "ms": 25
   },
   {
    "name": "動畫簡報：問答頁把關（標題不洩漏答案、問「這個東西」要有畫面）",
@@ -2069,7 +2080,7 @@
    "summary": "19 passed",
    "failures": [],
    "error": "",
-   "ms": 35
+   "ms": 37
   },
   {
    "name": "動畫簡報：小工具範例（打磚塊）真的玩到通關",
@@ -2080,7 +2091,7 @@
    "summary": "widget_example: 6 passed",
    "failures": [],
    "error": "",
-   "ms": 45
+   "ms": 46
   },
   {
    "name": "動畫簡報：工具（長文字 handle、圖片目錄、長度估算）",
@@ -2091,7 +2102,7 @@
    "summary": "deck_tools: 31 passed",
    "failures": [],
    "error": "",
-   "ms": 32
+   "ms": 31
   },
   {
    "name": "動畫簡報：樣板（預設值、複寫會改變繪製）",
@@ -2102,7 +2113,7 @@
    "summary": "deck_template: 18 passed",
    "failures": [],
    "error": "",
-   "ms": 39
+   "ms": 38
   },
   {
    "name": "電腦操作：PNG 編解碼、裁切縮放、差異、格線",
@@ -2113,7 +2124,7 @@
    "summary": "computer-png: 15 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 25
+   "ms": 26
   },
   {
    "name": "電腦操作：安全閘門（範圍、被蓋住、拒絕清單、密碼欄、按鍵、速率、中止、預覽）",
@@ -2124,7 +2135,7 @@
    "summary": "computer-use-safety: 69 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 22
+   "ms": 21
   },
   {
    "name": "電腦操作：RFB 編解碼（DES、持續狀態 inflate、ZRLE 磁磚）",
@@ -2135,7 +2146,7 @@
    "summary": "rfb-codec: 13 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 33
+   "ms": 31
   },
   {
    "name": "電腦操作：RFB 用戶端（假伺服器：Raw／RRE／Hextile／ZRLE／CopyRect／游標／驗證／輸入／WebSocket／候選物件）",
@@ -2146,7 +2157,7 @@
    "summary": "rfb-client: 23 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 1467
+   "ms": 1479
   },
   {
    "name": "電腦操作：遠端協定探測（RDP／SPICE／NX／SSH／HTTP／RFB）、畫布視窗偵測、WebSocket 用戶端",
@@ -2157,7 +2168,7 @@
    "summary": "computer-remote: 46 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 9064
+   "ms": 9035
   },
   {
    "name": "電腦操作：Windows 後端（PowerShell 腳本產生、C# 編譯檢查、nircmd、UI Automation 轉換；Windows 實跑未實測）",
@@ -2168,7 +2179,7 @@
    "summary": "computer-use-windows: 38 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 259
+   "ms": 271
   },
   {
    "name": "電腦操作：主行程 IPC（假 Electron：原生核准、權限提升、全域中止鍵、機密）",
@@ -2179,7 +2190,7 @@
    "summary": "computer-use-ipc: 40 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 4355
+   "ms": 4357
   },
   {
    "name": "電腦操作：renderer 核心（詞彙與主行程一致、動作整理、座標換算、視覺答案解析、驗證評分、/computer 指令）",
@@ -2190,7 +2201,7 @@
    "summary": "computer_core: 40 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 33
+   "ms": 45
   },
   {
    "name": "電腦操作：視覺慢路徑（切磚、定位、驗證、探索；假視覺模型）",
@@ -2201,7 +2212,7 @@
    "summary": "computer_vision: 17 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 44
+   "ms": 43
   },
   {
    "name": "電腦操作：renderer 工具層（19 個 computer_* 工具、/computer 指令、網頁版不註冊）",
@@ -2212,7 +2223,7 @@
    "summary": "computer_host: 47 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 29
+   "ms": 28
   },
   {
    "name": "電腦操作：INTEGRATION.md 的貼上用區塊（領域、任務提示 regex、YAML、embed 片段、接線補丁）",
@@ -2223,7 +2234,7 @@
    "summary": "integration_doc: 36 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 95
+   "ms": 99
   },
   {
    "name": "圖片轉3D核心（封閉殼、平滑殼、背景差分、全景分層、貼材質）",
@@ -2234,7 +2245,7 @@
    "summary": "65 passed",
    "failures": [],
    "error": "",
-   "ms": 5632
+   "ms": 5592
   },
   {
    "name": "圖片轉3D主機端模擬（只要主體：挑主體、貼圖流程、擺到桌子上）",
@@ -2245,7 +2256,7 @@
    "summary": "14 passed",
    "failures": [],
    "error": "",
-   "ms": 136
+   "ms": 137
   },
   {
    "name": "音樂：MIDI 核心（解析、寫出、往返、量化、移調、合併拆分、速度表）",
@@ -2256,7 +2267,7 @@
    "summary": "29 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 74
+   "ms": 73
   },
   {
    "name": "音樂：播放排程（事件、頻道配置、前瞻排程、靜音獨奏、跳轉、迴圈）",
@@ -2267,7 +2278,7 @@
    "summary": "64 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 40
+   "ms": 38
   },
   {
    "name": "音樂：MIDI 編輯器純函式層（封閉動作、中文指令、復原重做）",
@@ -2278,7 +2289,7 @@
    "summary": "29 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 23
+   "ms": 21
   },
   {
    "name": "音樂：MIDI 遠端共編（共編訊息層、事件層級合併）",
@@ -2289,7 +2300,7 @@
    "summary": "4 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 738
+   "ms": 736
   },
   {
    "name": "音樂：作曲的理解需求（假 AI：完美、亂答、部分答對、沉默、逾時、丟錯；使用者說的優先；改成…；說明卡片）",
@@ -2300,7 +2311,7 @@
    "summary": "55 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 9300
+   "ms": 9264
   },
   {
    "name": "音樂：作曲樹（曲式、和聲、聲部、動機逐節點；假模型七種；重做節點、改成…、組裝掃描）",
@@ -2322,7 +2333,7 @@
    "summary": "56 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 303
+   "ms": 291
   },
   {
    "name": "音樂：作曲說法的路由（寫貝多芬風格的 MIDI → midi_compose）與成品用卡片交付的規則",
@@ -2333,7 +2344,7 @@
    "summary": "36 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 81
+   "ms": 63
   },
   {
    "name": "音樂：配樂共用介面（簡報、遊戲、影片剪輯的背景音樂：規格、淡入淡出、循環鋪滿、播放控制）",
@@ -2344,7 +2355,7 @@
    "summary": "14 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 23
+   "ms": 20
   },
   {
    "name": "音樂：程式作曲（風格範本、和弦進行、旋律檢查、同種子同曲）",
@@ -2355,7 +2366,7 @@
    "summary": "49 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 498
+   "ms": 497
   },
   {
    "name": "音樂：音色庫樣本內部 loop 偵測與瘦身規則（週期、無縫 loop、截尾、降取樣）",
@@ -2366,7 +2377,7 @@
    "summary": "13 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 71
+   "ms": 72
   },
   {
    "name": "音樂：音訊轉 MIDI 的規則部分（鼓拆解、音高追蹤、速度、量化、樂器標籤、組裝）",
@@ -2377,7 +2388,7 @@
    "summary": "12 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 174
+   "ms": 178
   },
   {
    "name": "音樂：音訊轉 MIDI 流程（分段、可插拔分軌器與轉譜器、續跑、中斷、誠實報告）",
@@ -2388,7 +2399,7 @@
    "summary": "12 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 4287
+   "ms": 4249
   },
   {
    "name": "音樂：Basic Pitch 視窗與音符解碼（真模型輸出固定資料）",
@@ -2399,7 +2410,7 @@
    "summary": "5 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 25
+   "ms": 26
   },
   {
    "name": "音樂：樂器分類（封閉候選清單、GM 對應）",
@@ -2410,7 +2421,7 @@
    "summary": "7 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 19
+   "ms": 20
   },
   {
    "name": "音樂：模型分片下載（續傳、核對、重試）",
@@ -2421,7 +2432,7 @@
    "summary": "15 passed, 0 failed",
    "failures": [],
    "error": "",
-   "ms": 181
+   "ms": 179
   }
  ]
 }

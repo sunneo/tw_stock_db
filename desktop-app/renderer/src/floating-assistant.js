@@ -1555,7 +1555,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     coding: {
         enabled: true,
         label: '程式設計（評估／需求分析／設計計畫／git patch實作／語法檢查／測試／發佈，可中斷恢復）',
-        toolNames: ['uml_to_code', 'design_choices', 'uml_design', 'uml_guide', 'uml_edit', 'write_code', 'fix_code', 'intent_parse', 'uml_to_wasm', 'plan_route', 'ask_user_card', 'log_learn', 'log_ask', 'mix_understand', 'mix_highlight', 'glue_list', 'glue_define', 'glue_report', 'list_file_access_points', 'fap_list_files', 'fap_find_file', 'repo_map', 'repo_ask', 'repo_sql', 'repo_read_doc', 'repo_wiki', 'explain_code', 'behavior_define', 'coding_workspace', 'coding_read_file', 'apply_git_patch', 'git_inspect', 'git_commit', 'git_push', 'coding_task_state', 'coding_run_check', 'coding_run_tests', 'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'terminal_cp_to', 'terminal_cp_from', 'browser_search', 'fetch_web_page', 'article_outline', 'article_section'],
+        toolNames: ['uml_to_code', 'design_choices', 'uml_design', 'uml_guide', 'uml_edit', 'write_code', 'fix_code', 'optimize_code', 'intent_parse', 'uml_to_wasm', 'plan_route', 'ask_user_card', 'log_learn', 'log_ask', 'mix_understand', 'mix_highlight', 'glue_list', 'glue_define', 'glue_report', 'list_file_access_points', 'fap_list_files', 'fap_find_file', 'repo_map', 'repo_ask', 'repo_sql', 'repo_read_doc', 'repo_wiki', 'explain_code', 'behavior_define', 'coding_workspace', 'coding_read_file', 'apply_git_patch', 'git_inspect', 'git_commit', 'git_push', 'coding_task_state', 'coding_run_check', 'coding_run_tests', 'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'terminal_cp_to', 'terminal_cp_from', 'browser_search', 'fetch_web_page', 'article_outline', 'article_section'],
         systemPrompt: _faBuildCodingSystemPrompt({ kind: 'web' }),
     },
     // tw_stock_db客製: 2026-09-20使用者要求——skills domain：建立Claude格式的skill（SKILL.md＋scripts/references）。
@@ -17419,6 +17419,112 @@ const holder = {};
 return holder.FaCodeAgent;
 })();
 /* CODEAGENT-END */
+/* CODEOPT-BEGIN */
+const FaCodeOptimize = (function () {
+const holder = {};
+(function (module, self) {
+/* 程式優化：從程式看出「慢的寫法」（題型）→ 對照優化表換成同功能、更有效率的寫法 → 沙盒驗證輸出一致且不變慢才替換。純函式 UMD，Python 專屬，不問模型。
+ *   RULES：優化對照表。每條 {id, name, before, after, memory, detect(src) → 參數|null, rewrite(src, 參數) → 新程式|null}。
+ *   detect 只看「這個程式裡有沒有那個慢寫法、而且換掉是安全的」（例如 list 只被拿來 in／append／len，才能換成 set）；認不出就不動。
+ *   optimize({source, run, inputs, bigInput?}) → { ok, source, applied:[{id,name,before,after,memory,speedup?}], skipped:[{id,reason}], notes }
+ *       run(src, input) → Promise<{out, ms, ok}>：呼叫端提供的執行器（沙盒）。每條規則套完後，要在 inputs（範例＋隨機輸入）上輸出與「目前版本」相同才收；
+ *       有 bigInput 時量時間，比原本慢超過 20% 就退回（只換對照表上「應該更快」的，實際沒更快就不留）。
+ * 誠實限制：「輸出一致」只是在給的輸入上一致，不是證明等價；回報裡一定寫出驗證了幾組輸入、有沒有量時間。 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaCodeOptimize = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const lines = (s) => String(s).replace(/\n+$/, '').split('\n');
+    const ind = (l) => /^ */.exec(l)[0].length;
+    const addImport = (src, imp) => (new RegExp('^' + esc(imp) + '$', 'm').test(src) ? src : imp + '\n' + src);
+    const uses = (src, name) => [...src.matchAll(new RegExp('(?<![\\w.])' + esc(name) + '(?!\\w)', 'g'))].length;
+    // ---- 1. list 當集合用（in＋append）→ set ----
+    const listAsSet = {
+        id: 'list-as-set', name: '用 list 做「出現過沒」→ 改用 set', before: 'O(n²)（每次 in 掃整個 list）', after: 'O(n)（set 查詢 O(1)）', memory: '多一份雜湊表，同階',
+        detect(src) { const out = []; for (const m of src.matchAll(/^([ \t]*)([A-Za-z_]\w*)\s*=\s*\[\s*\]\s*$/gm)) { const v = m[2]; const body = src.slice(m.index + m[0].length); const tot = uses(src, v); const ok = uses(src.replace(new RegExp('(?<![\\w.])' + esc(v) + '\\s*=\\s*\\[\\s*\\]', 'g'), ''), v); const a = (body.match(new RegExp('(?<![\\w.])' + esc(v) + '\\.append\\(', 'g')) || []).length, i = (body.match(new RegExp('\\bin\\s+' + esc(v) + '(?!\\w)', 'g')) || []).length, l = (body.match(new RegExp('len\\(' + esc(v) + '\\)', 'g')) || []).length; if (a && i && a + i + l === ok && tot >= 1) out.push(v); } return out.length ? { vars: out } : null; },
+        rewrite(src, p) { let s = src; for (const v of p.vars) s = s.replace(new RegExp('^([ \\t]*)' + esc(v) + '\\s*=\\s*\\[\\s*\\]\\s*$', 'm'), '$1' + v + ' = set()').replace(new RegExp('(?<![\\w.])' + esc(v) + '\\.append\\(', 'g'), v + '.add('); return s; },
+    };
+    // ---- 2. list.pop(0) 當佇列 → deque ----
+    const queuePop = {
+        id: 'queue-popleft', name: 'list.pop(0) 當佇列 → deque.popleft()', before: 'O(n²)（pop(0) 每次搬整個 list）', after: 'O(n)', memory: '同階',
+        detect(src) { const out = []; for (const m of src.matchAll(/(?<![\w.])([A-Za-z_]\w*)\.pop\(\s*0\s*\)/g)) { const v = m[1]; if (out.includes(v)) continue; if (new RegExp('(?<![\\w.])' + esc(v) + '\\[').test(src)) continue; if (new RegExp('(?<![\\w.])' + esc(v) + '\\.(?:sort|reverse|insert|remove|index|extend\\b)').test(src)) continue; if (!new RegExp('^[ \\t]*' + esc(v) + '\\s*=\\s*(?:\\[.*\\]|list\\(.*\\))\\s*$', 'm').test(src)) continue; out.push(v); } return out.length ? { vars: out } : null; },
+        rewrite(src, p) { let s = addImport(src, 'from collections import deque'); for (const v of p.vars) s = s.replace(new RegExp('^([ \\t]*' + esc(v) + '\\s*=\\s*)(\\[.*\\]|list\\(.*\\))\\s*$', 'm'), '$1deque($2)').replace(new RegExp('(?<![\\w.])' + esc(v) + '\\.pop\\(\\s*0\\s*\\)', 'g'), v + '.popleft()'); return s; },
+    };
+    // ---- 3. 重複算的遞迴 → lru_cache ----
+    const memoRec = {
+        id: 'recursion-memo', name: '重複計算的遞迴（同一函式遞迴呼叫兩次以上）→ 加 lru_cache', before: '指數時間', after: '每個引數只算一次（線性或多項式）', memory: '多存一張快取表',
+        detect(src) { const out = []; for (const m of src.matchAll(/^def (\w+)\(([^)]*)\):\s*\n((?:[ \t]+.*\n?|\n)*)/gm)) { const [, name, params, body] = m; if (/^\s*@/m.test(src.slice(Math.max(0, m.index - 40), m.index))) continue; const ps = params.split(',').map((x) => x.trim()).filter(Boolean); if (!ps.length || ps.some((x) => !/^\w+$/.test(x))) continue; const calls = (body.match(new RegExp('(?<![\\w.])' + esc(name) + '\\(', 'g')) || []).length; if (calls < 2) continue; if (/\b(global|nonlocal|print|input)\b|\.append\(|\.add\(|\[[^\]]*\]\s*=[^=]/.test(body)) continue; out.push(name); } return out.length ? { names: out } : null; },
+        rewrite(src, p) { let s = addImport(src, 'from functools import lru_cache'); for (const n of p.names) s = s.replace(new RegExp('^def ' + esc(n) + '\\(', 'm'), '@lru_cache(maxsize=None)\ndef ' + n + '('); return s; },
+    };
+    // ---- 4. 字串用 += 一直接 → list＋join ----
+    const strConcat = {
+        id: 'str-join', name: '迴圈裡用 += 一直接字串 → 收進 list 最後 join', before: 'O(n²)（每次複製整個字串；CPython 有時會自動優化）', after: 'O(n)', memory: '同階',
+        detect(src) { const out = []; for (const m of src.matchAll(/^([ \t]*)([A-Za-z_]\w*)\s*=\s*(?:""|'')\s*$/gm)) { const v = m[2]; const rest = src.slice(m.index + m[0].length); const adds = (rest.match(new RegExp('^[ \\t]+' + esc(v) + '\\s*\\+=\\s*.+$', 'gm')) || []).length; if (!adds) continue; const stripped = rest.replace(new RegExp('^[ \\t]+' + esc(v) + '\\s*\\+=\\s*.+$', 'gm'), ''); const left = [...stripped.matchAll(new RegExp('(?<![\\w.])' + esc(v) + '(?!\\w)', 'g'))]; const okUse = left.every((x) => { const pre = stripped.slice(Math.max(0, x.index - 7), x.index); return /print\($|return $/.test(pre); }); if (okUse && left.length >= 1) out.push(v); } return out.length ? { vars: out } : null; },
+        rewrite(src, p) { let s = src; for (const v of p.vars) s = s.replace(new RegExp('^([ \\t]*)' + esc(v) + '\\s*=\\s*(?:""|\'\')\\s*$', 'm'), '$1' + v + '_parts = []').replace(new RegExp('^([ \\t]+)' + esc(v) + '\\s*\\+=\\s*(.+)$', 'gm'), '$1' + v + '_parts.append($2)').replace(new RegExp('(print\\(|return )' + esc(v) + '(?!\\w)', 'g'), '$1"".join(' + v + '_parts)'); return s; },
+    };
+    // ---- 5. sorted 只為了取最大／最小 → max／min ----
+    const sortedExtreme = {
+        id: 'sorted-extreme', name: 'sorted(...)[-1]／[0] 只為了取極值 → max／min', before: 'O(n log n)，且多一份排序後的 list', after: 'O(n)，不建新 list', memory: '省一份 list',
+        detect(src) { return /sorted\(([^()]|\([^()]*\))*\)\[(?:-1|0)\]/.test(src) ? {} : null; },
+        rewrite(src) { return src.replace(/sorted\(((?:[^()]|\([^()]*\))*?)(,\s*reverse\s*=\s*(True|False))?\)\[(-1|0)\]/g, (m, a, rv, flag, idx) => { const rev = flag === 'True'; const last = idx === '-1'; return ((rev ? !last : last) ? 'max(' : 'min(') + a.trim() + ')'; }); },
+    };
+    // ---- 6. 迴圈裡對「沒被改過的 list」做 in → 先轉 set ----
+    const readonlyIn = {
+        id: 'readonly-in-set', name: '迴圈裡對不會被改的 list 做 in → 先 set()', before: 'O(n·m)', after: 'O(n+m)', memory: '多一份雜湊表',
+        detect(src) { const out = []; for (const m of src.matchAll(/^([ \t]+)(?:if|elif|while)\b[^\n]*?\bin\s+([A-Za-z_]\w*)\s*(?::|\band\b|\bor\b|\))/gm)) { const v = m[2]; if (out.includes(v)) continue; const asg = [...src.matchAll(new RegExp('^([ \\t]*)' + esc(v) + '\\s*=\\s*(.+)$', 'gm'))]; if (asg.length !== 1 || !/(?:list\(|\[|split\(|map\()/.test(asg[0][2]) || /\[\s*\]\s*$|\bset\(|\{/.test(asg[0][2])) continue; if (new RegExp('(?<![\\w.])' + esc(v) + '(?:\\.(?:append|insert|pop|remove|extend|sort|reverse|clear)\\b|\\[[^\\]]*\\]\\s*(?:=|\\+=)[^=])').test(src)) continue; const after = src.slice(asg[0].index); if (!new RegExp('^[ \\t]+(?:for|while)\\b[\\s\\S]*?\\bin\\s+' + esc(v) + '\\b', 'm').test(after) && !/^[ \t]*(?:for|while)\b/m.test(after)) continue; out.push(v); } return out.length ? { vars: out } : null; },
+        rewrite(src, p) { let s = src; for (const v of p.vars) { s = s.replace(new RegExp('^([ \\t]*)' + esc(v) + '\\s*=\\s*(.+)$', 'm'), (m, i, rhs) => i + v + ' = ' + rhs + '\n' + i + v + '_set = set(' + v + ')'); s = s.replace(new RegExp('(\\bin\\s+)' + esc(v) + '(\\s*(?::|\\band\\b|\\bor\\b|\\)))', 'g'), '$1' + v + '_set$2'); } return s; },
+    };
+    // ---- 7. for x in a: ... a.count(x) → Counter ----
+    const countLoop = {
+        id: 'count-counter', name: '迴圈裡反覆 list.count(x) → 先 Counter 一次', before: 'O(n²)', after: 'O(n)', memory: '多一份計數表',
+        detect(src) { const m = /^([ \t]*)for\s+(\w+)\s+in\s+(\w+)\s*:[\s\S]*?(?<![\w.])\3\.count\(\s*\2\s*\)/m.exec(src); return m ? { it: m[2], lst: m[3] } : null; },
+        rewrite(src, p) { let s = addImport(src, 'from collections import Counter'); s = s.replace(new RegExp('^([ \\t]*)for\\s+' + esc(p.it) + '\\s+in\\s+' + esc(p.lst) + '\\s*:', 'm'), (m, i) => i + p.lst + '_cnt = Counter(' + p.lst + ')\n' + m); return s.replace(new RegExp('(?<![\\w.])' + esc(p.lst) + '\\.count\\(\\s*' + esc(p.it) + '\\s*\\)', 'g'), p.lst + '_cnt[' + p.it + ']'); },
+    };
+    // ---- 8. res = res + [x] → append ----
+    const listConcat = {
+        id: 'list-append', name: 'lst = lst + [x] → lst.append(x)', before: 'O(n²)（每次複製整個 list）', after: 'O(n)', memory: '不再每次產生新 list',
+        detect(src) { return /^[ \t]+(\w+)\s*=\s*\1\s*\+\s*\[[^\]\n]*\]\s*$/m.test(src) ? {} : null; },
+        rewrite(src) { return src.replace(/^([ \t]+)(\w+)\s*=\s*\2\s*\+\s*\[([^\]\n]*)\]\s*$/gm, '$1$2.append($3)'); },
+    };
+    // ---- 9. 迴圈裡反覆 sum(a[l:r]) → 前綴和 ----
+    const rangeSum = {
+        id: 'prefix-sum', name: '迴圈裡反覆 sum(a[l:r]) → 先做前綴和', before: 'O(n·q)', after: 'O(n+q)', memory: '多一個前綴和陣列',
+        detect(src) { const m = /^([ \t]+)[^\n]*\bsum\(\s*(\w+)\[([^\]:\n]+):([^\]:\n]+)\]\s*\)/m.exec(src); return m && !/^\s*$/.test(m[2]) ? { arr: m[2] } : null; },
+        rewrite(src, p) { const a = p.arr; let s = src.replace(new RegExp('\\bsum\\(\\s*' + esc(a) + '\\[([^\\]:\\n]+):([^\\]:\\n]+)\\]\\s*\\)', 'g'), '(' + a + '_pre[$2] - ' + a + '_pre[$1])'); const asg = new RegExp('^([ \\t]*)' + esc(a) + '\\s*=\\s*.+$', 'm').exec(s); if (!asg) return null; return s.replace(asg[0], asg[0] + '\n' + asg[1] + a + '_pre = [0]\n' + asg[1] + 'for _v in ' + a + ':\n' + asg[1] + '    ' + a + '_pre.append(' + a + '_pre[-1] + _v)'); },
+    };
+    const RULES = [listAsSet, queuePop, memoRec, strConcat, sortedExtreme, readonlyIn, countLoop, listConcat, rangeSum];
+    const detectAll = (src) => RULES.map((r) => { let p = null; try { p = r.detect(src); } catch (e) { p = null; } return p ? { id: r.id, name: r.name, before: r.before, after: r.after, memory: r.memory, params: p } : null; }).filter(Boolean);
+    async function optimize(o) {
+        let cur = String(o.source); const applied = [], skipped = []; const inputs = (o.inputs || []).slice(0, 12); const run = o.run; const note = [];
+        if (typeof run !== 'function' || !inputs.length) return { ok: false, source: cur, applied, skipped, notes: ['沒有執行器或沒有輸入，無法驗證輸出一致，所以不改程式'], detected: detectAll(cur) };
+        const base = []; for (const i of inputs) { const r = await run(cur, i); if (!r || r.ok === false) return { ok: false, source: cur, applied, skipped, notes: ['原程式在給的輸入上就跑不過（' + String((r && r.err) || '') .slice(0, 80) + '），不動'], detected: detectAll(cur) }; base.push(String(r.out).trim()); }
+        const tm = async (src) => { if (o.bigInput == null) return null; const t = []; for (let k = 0; k < 2; k++) { const r = await run(src, o.bigInput); if (!r || r.ok === false) return Infinity; t.push(r.ms); } return Math.min(...t); };
+        let t0 = await tm(cur);
+        for (const r of RULES) {
+            let p = null; try { p = r.detect(cur); } catch (e) { p = null; } if (!p) continue;
+            let next = null; try { next = r.rewrite(cur, p); } catch (e) { next = null; } if (!next || next === cur) { skipped.push({ id: r.id, reason: '認得但改寫失敗' }); continue; }
+            let same = true; for (let k = 0; k < inputs.length && same; k++) { const x = await run(next, inputs[k]); if (!x || x.ok === false || String(x.out).trim() !== base[k]) same = false; }
+            if (!same) { skipped.push({ id: r.id, reason: '改完輸出和原本不同或跑不過，退回' }); continue; }
+            let t1 = await tm(next); if (t0 != null && t1 != null && t1 > t0 * 1.2 + 15) { skipped.push({ id: r.id, reason: '量時間：改完比原本慢（' + Math.round(t0) + 'ms → ' + Math.round(t1) + 'ms），退回' }); continue; }
+            applied.push({ id: r.id, name: r.name, before: r.before, after: r.after, memory: r.memory, ms: t0 != null ? [Math.round(t0), Math.round(t1)] : null, speedup: t0 != null && t1 ? Math.round((t0 / Math.max(t1, 1)) * 10) / 10 : null }); cur = next; t0 = t1 != null ? t1 : t0;
+        }
+        note.push('輸出一致只在 ' + inputs.length + ' 組輸入上驗證（不是等價證明）；' + (o.bigInput != null ? '有量時間（大輸入）' : '沒有量時間'));
+        return { ok: true, changed: applied.length > 0, source: cur, applied, skipped, notes: note, detected: detectAll(String(o.source)) };
+    }
+    function report(r) {
+        if (!r) return '沒有結果'; const L = [];
+        if (!r.ok) return '沒有優化：' + (r.notes || []).join('；');
+        if (!r.applied.length) L.push('沒有找到可以安全換掉的慢寫法' + (r.detected && r.detected.length ? '（認得 ' + r.detected.map((d) => d.name).join('、') + '，但改完驗證沒過）' : ''));
+        for (const a of r.applied) L.push('✔ ' + a.name + '：' + a.before + ' → ' + a.after + '；記憶體：' + a.memory + (a.ms ? '；實測 ' + a.ms[0] + 'ms → ' + a.ms[1] + 'ms（約 ' + a.speedup + ' 倍）' : ''));
+        for (const s of r.skipped) L.push('✘ ' + s.id + '：' + s.reason);
+        L.push((r.notes || []).join('；')); return L.join('\n');
+    }
+    return { RULES, detectAll, optimize, report };
+});
+
+}).call(null, undefined, holder);
+return holder.FaCodeOptimize;
+})();
+/* CODEOPT-END */
 /* VIEW-BEGIN */
 const FaView = (function () {
 const holder = {};
@@ -68832,6 +68938,15 @@ ${fnData.code}
             },
             { type: 'object', properties: { source: { type: 'string', description: '要修的程式碼（整份）' }, language: { type: 'string', enum: ['python', 'nodejs', 'c', 'cpp', 'java', 'ruby', 'perl', 'bash', 'csharp'], description: '（選填）不給就從程式碼判斷' }, tests: { type: 'array', items: { type: 'object', properties: { in: { type: 'string' }, out: { type: 'string' } }, required: ['in', 'out'] }, description: '（選填）範例測試（stdin→stdout）；有給才會修行為' }, goal: { type: 'string', description: '（選填）這份程式應該做什麼（修行為時給模型看）' }, model: { type: 'string', enum: ['offline', 'online'], description: '（選填）需要重寫函式時用的模型' }, max_rethink: { type: 'integer', description: '（選填）行為驗收沒過最多重寫幾次，預設 3、最多 5' } }, required: ['source'], additionalProperties: false }
         );
+        registerOptional('optimize_code',
+            '把一份「已經能跑、答案正確」的 Python 程式換成「功能一樣但更有效率」的寫法：先從程式看出慢的寫法（list 當集合用、list.pop(0) 當佇列、重複計算的遞迴、迴圈裡反覆 list.count／in／sum 切片、迴圈裡 lst = lst + [x]、sorted 只為了取極值、字串 += 一直接），再依優化對照表換成 set／deque／lru_cache／Counter／前綴和／max／min／append／join；**每一條都要在 tests（含隱藏測試）上輸出與原程式相同才收，有給 perf（一組大輸入與它的正確輸出）還會量時間，變慢就退回**。回傳 applied（換了什麼、複雜度前後、記憶體、實測毫秒）、skipped（認得但沒換的原因）、source（優化後的程式）。「輸出一致」只在給的測資上驗證，不是等價證明；沒給 tests 就不會改。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                if (typeof a.source !== 'string' || !a.source.trim()) return JSON.stringify({ ok: false, error: '缺少 source（要優化的 Python 程式碼）' });
+                try { return JSON.stringify(await this._codeOptimize(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+            },
+            { type: 'object', properties: { source: { type: 'string', description: '要優化的 Python 程式（整份，要能直接執行、從標準輸入讀資料）' }, tests: { type: 'array', description: '[{in,out}]：可見測資（必給；輸出就是要保持一致的標準）', items: { type: 'object', properties: { in: { type: 'string' }, out: { type: 'string' } } } }, hidden: { type: 'array', description: '[{in,out}]：隱藏測資（選填，一樣要保持一致）', items: { type: 'object', properties: { in: { type: 'string' }, out: { type: 'string' } } } }, perf: { type: 'object', description: '選填：{in,out} 一組「夠大、會顯出差別」的輸入與正確輸出，用來量時間', properties: { in: { type: 'string' }, out: { type: 'string' } } } }, required: ['source', 'tests'] }
+        );
         registerOptional('uml_design',
             '用「這台電腦上的離線小模型」把情境一步一步設計成 UML 再產生程式骨架：程式把設計拆成封閉的小問題（參與者與使用案例 → 類別 → 每個類別的屬性與操作 → 關係 → 呼叫順序），模型一次只回答一個、每個回覆都被驗證，之後只重做有問題的那一區（top-down rework），再用 design_choices 的規則選架構與 library。比較強的線上 AI 不需要這個：自己寫 UML 文字直接呼叫 uml_to_code 更快更準。這是線上模型的補救能力：大問題自己一次做不完時用它。大問題會先由程式切成小塊（依句子，每塊一個領域），每塊各自一次一小題拆完，再合併成一份。預設用目前的線上模型（體檢結果是「程式先讀情境」的除外，那種改用離線模型或 uml_guide）；model 可以指定 offline（離線小模型，第一次要下載）或 online。回傳的 model_used 說明這次用了哪個。',
             async function (rawArgs) {
@@ -108714,6 +108829,15 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         return { ok: true, rounds: r.rounds, source: r.source + '\nmain()\n', verdict: r.verdict, by: mx ? 'matrix' : r.recipe ? 'recipe' : r.lesson ? 'lesson' : r.paradigm ? 'paradigm' : 'blocks', recipe: r.recipe, lesson: r.lesson, paradigm: r.paradigm, slots: r.slots, tried: r.tried, usedModel: r.usedModel, matrix: mx ? { level: mx.level, kind: mx.kind, desc: mx.desc, verified: mxVerified, ambiguous: !!mx.ambiguous, suggest: mx.suggest || null, editable: !!mx.editable } : undefined, verified: mx ? mxVerified : true, onlyExamples: mx ? !mxVerified : false };
     }
     // a: { task（需求文字）, language, tests:[{in,out}], uml（DSL 文字）, use_last_design, source（任意現有程式碼）, goal, driver, model, _gen（CoLU 計畫裡直接給模型） }
+    // 程式優化：source 要先通過 tests（輸出就是「保持一致」的標準）；run 轉成判題器呼叫（判 AC＝輸出與期望相同），perf 有給才量時間（maxMs）
+    async _codeOptimize(a) {
+        const bridge = this._codeJudgeBridge(); if (!bridge.judge) return { ok: false, error: '判題器不能用（沒有桌面版沙盒）' };
+        const known = new Map(); for (const t of [].concat(a.tests || [], a.hidden || [], a.perf ? [a.perf] : [])) if (t && typeof t.in === 'string' && typeof t.out === 'string') known.set(t.in, t.out);
+        const inputs = [].concat(a.tests || [], a.hidden || []).filter((t) => t && typeof t.in === 'string').map((t) => t.in).slice(0, 12); if (!inputs.length) return { ok: false, error: '缺少 tests（沒有測資就無法驗證輸出一致，所以不改）' };
+        const run = async (src, input) => { const out = known.get(input); const j = await bridge.judge({ lang: 'python', source: src, problem: { id: 'opt', tests: [{ in: input, out }], checker: a.checker || 'tokens', timeoutMs: 20000 } }); if (j.verdict === 'UNAVAILABLE') throw new Error('判題器不能用：' + String(j.detail || '').slice(0, 100)); return { ok: j.verdict === 'AC', out: j.verdict === 'AC' ? out : '', err: j.verdict + ' ' + String(j.detail || '').slice(0, 60), ms: j.maxMs || 0 }; };
+        const r = await FaCodeOptimize.optimize({ source: a.source, run, inputs, bigInput: a.perf && typeof a.perf.in === 'string' ? a.perf.in : undefined });
+        return Object.assign({}, r, { report: FaCodeOptimize.report(r), detected: (r.detected || []).map((d) => ({ id: d.id, name: d.name })) });
+    }
     async _codeAgent(a) {
         a = a || {}; const task = String(a.task || a.scenario || a.goal || '').trim(); const source = a.source != null ? String(a.source) : null;
         if (source == null && !task && !a.uml && !a.use_last_design) return { ok: false, error: '缺少 task（要寫什麼）、uml 或 source（要修的程式碼）' };
